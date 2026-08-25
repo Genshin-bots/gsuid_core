@@ -104,12 +104,30 @@ def test_multi_speaker_message():
     assert not is_multi_speaker_message("小明(用户ID:9001)：@早柚 查天气")
 
 
-def test_turn_graph_and_cheap_gate():
+def test_turn_graph_and_cheap_gate(monkeypatch):
+    from gsuid_core.ai_core.configs import ai_config as cfg_mod
     from gsuid_core.ai_core.interaction_scaffold import (
+        QUOTE_TOME_HINT,
         CheapGate,
         build_turn_graph,
         decide_cheap_gate,
+        scaffold_hints_from_graph,
     )
+
+    real = cfg_mod.ai_config.get_config
+
+    class _Box:
+        def __init__(self, data: object) -> None:
+            self.data = data
+
+    def fake(key: str) -> _Box:
+        if key == "group_lurk_mode":
+            return _Box(False)
+        if key == "group_repeat_body_n":
+            return _Box(99)
+        return real(key)
+
+    monkeypatch.setattr(cfg_mod.ai_config, "get_config", fake)
 
     # 私聊 full
     tg_dm = build_turn_graph(
@@ -178,6 +196,46 @@ def test_turn_graph_and_cheap_gate():
     assert tg_other.address_gated
     assert decide_cheap_gate(tg_other) is CheapGate.SILENCE
 
+    tg_quote = build_turn_graph(
+        "买个贵点的椅子是对的家人们",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+        has_reply=True,
+    )
+    assert tg_quote.quoted_tome
+    assert tg_quote.call_to_self
+    assert QUOTE_TOME_HINT in scaffold_hints_from_graph(tg_quote, cheap=CheapGate.FULL)
+    tg_at_no_reply = build_turn_graph(
+        "帮我设个提醒",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+        has_reply=False,
+    )
+    assert not tg_at_no_reply.quoted_tome
+    assert tg_at_no_reply.call_to_self
+    tg_at_and_reply = build_turn_graph(
+        "小明(用户ID:9001)：@早柚 帮我设个提醒",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+        has_reply=True,
+    )
+    assert not tg_at_and_reply.quoted_tome
+    tg_ask_on_quote = build_turn_graph(
+        "帮我设个提醒",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+        has_reply=True,
+    )
+    assert not tg_ask_on_quote.quoted_tome
+
 
 def test_group_open_gate():
     from gsuid_core.ai_core.interaction_scaffold import (
@@ -198,6 +256,10 @@ def test_group_open_gate():
         extra_names=("柚柚",),
     )
     assert not is_addressed_to_self("小明(用户ID:1)：我昨天梦到早柚了哈哈", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：早柚子你在不", "早柚", False)
+    assert is_addressed_to_self("p早呀今天好安静", "p", False)
+    assert is_addressed_to_self("小 帮我看一下", "小", False)
+    assert not is_addressed_to_self("小姐姐今天天气不错", "小", False)
 
     assert (
         decide_group_open_gate(

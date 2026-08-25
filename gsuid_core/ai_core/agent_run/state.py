@@ -49,6 +49,7 @@ class RunOnceState:
 
     # 环内可变
     tool_call_list: list[str] = field(default_factory=list)
+    effectual_mutate: bool = False
     wall_nudged: bool = False
     ooc_blocked: list[tuple[str, output_firewall.FirewallHit]] = field(default_factory=list)
     ab_pending_nudges: list[str] = field(default_factory=list)

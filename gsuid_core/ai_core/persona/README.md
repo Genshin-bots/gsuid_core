@@ -41,6 +41,8 @@ persona/
 | `persona.json` | 称呼与失败短句（GSC） | 否（首次读取生成） |
 | `avatar.png` | 角色头像图片 | 否 |
 | `image.png` | 角色立绘图片 | 否 |
+| `appearance.txt` | 视觉指纹（启动识图生成；system 只吃一行摘要） | 否 |
+| `self_refs/` | 部署者投放的表情包/变体（只入库 pHash，不写进正典卡） | 否 |
 | `audio.mp3` | 角色音频文件 | 否 |
 | `audio.ogg` | 角色音频文件（备选格式） | 否 |
 | `audio.wav` | 角色音频文件（备选格式） | 否 |
@@ -48,6 +50,13 @@ persona/
 | `audio.flac` | 角色音频文件（备选格式） | 否 |
 
 **音频格式优先级**：mp3 > ogg > wav > m4a > flac
+
+### 视觉自我（appearance.txt）
+
+启动时若缺卡或立绘更新，对 `image`/`avatar` 做一次远程识图，写成可对照的视觉指纹。
+`system` 只注入一行摘要（前缀缓存）；完整卡只在 `read_image` 看图当下附上。
+人格目录里的立绘/头像/`self_refs/` 会做 dHash：同一张表情包看图时钉死「这是你」。
+**群友说「这就是你」不入库**——他人指认不是证据。
 
 ## 提示词模板 (prompts.py)
 

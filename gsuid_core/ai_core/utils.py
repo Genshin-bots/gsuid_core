@@ -112,6 +112,26 @@ ERROR_CONTENT_REJECTED = "内容被模型安全策略拒绝"
 ERROR_TIMEOUT_TEXT = "请求超时"
 NO_RESULT_TEXT = "Agent 执行完成，但未返回有效结果"
 
+_CONTROL_BLOCK_RE = re.compile(r"<control\b[^>]*>.*?</control>", re.DOTALL | re.IGNORECASE)
+_MAX_ITER_LEAK_RE = re.compile(r"⚠️\s*已达最大思考轮数[^\n]*(?:\n中间产物[^\n]*)?")
+_INTERNAL_CHANNEL_RE = re.compile(
+    r"（这条是内部通道，不向用户解释。）|"
+    r"本段是框架内部通道，不是群友发言：不要向用户解释、道歉或复述本段。"
+)
+
+
+def strip_framework_user_leaks(text: str) -> str:
+    """剥进用户可见正文的控制信封 / 超轮数 / 内部通道。空则调用方当沉默。"""
+    if not text:
+        return text
+    out = _CONTROL_BLOCK_RE.sub("", text)
+    out = _MAX_ITER_LEAK_RE.sub("", out)
+    out = _INTERNAL_CHANNEL_RE.sub("", out)
+    if NO_RESULT_TEXT in out:
+        out = out.replace(NO_RESULT_TEXT, "")
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    return "\n".join(lines).strip()
+
 
 def has_model_visible_content(ev: Event) -> bool:
     """该消息是否含模型可见内容——判据与 prepare_content_payload 的模态清单同源。
@@ -638,6 +658,8 @@ def _build_relationship_description(
 async def prepare_content_payload(
     ev: Event,
     task_level: Literal["high", "low"] = "high",
+    *,
+    quoted_tome: bool = False,
 ) -> Tuple[Sequence[UserContent], "GuardFlags"]:
     """
     准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
@@ -677,11 +699,16 @@ async def prepare_content_payload(
 
     # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）。
     # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它，别在此写字面量）
-    from gsuid_core.ai_core.interaction_scaffold import DIRECT_MARKER, AT_OTHER_MARKER
+    from gsuid_core.ai_core.interaction_scaffold import (
+        DIRECT_MARKER,
+        AT_OTHER_MARKER,
+        QUOTE_TOME_MARKER,
+    )
 
     is_at_me = getattr(ev, "is_tome", False) or (ev.user_type == "direct")
     if is_at_me:
-        current_turn_header += f"{DIRECT_MARKER}\n"
+        # 引用 bot 仍是 is_tome，但不要写成「直接找你」逼模型必回。
+        current_turn_header += f"{QUOTE_TOME_MARKER if quoted_tome else DIRECT_MARKER}\n"
 
     current_turn_header += "--- 消息 ---\n"
 
@@ -1257,6 +1284,9 @@ async def send_chat_result(
     _speech = remainder_after_protocol_tags(_trimmed).strip()
     if not _speech:
         return
+    _speech = strip_framework_user_leaks(_speech)
+    if not _speech:
+        return
     text = _speech
 
     # 拦截 LLM API 错误消息（429/超时等），角色化替换后下发
@@ -1697,17 +1727,6 @@ def compact_session_history(
     low_target = max(1, int(max_history * trim_ratio))
     trimmed = _truncate_history_keep_prefix(history, low_target)
     cleaned = _drop_orphan_tool_results(trimmed)
-    if len(cleaned) < before:
-        kept_ids = {id(m) for m in cleaned}
-        dropped = [m for m in history if id(m) not in kept_ids]
-        summary = _extractive_middle_summary(dropped)
-        if summary:
-            prefix_n = max(2, int(low_target * 0.35))
-            prefix_n = min(prefix_n, max(1, len(cleaned) - 1))
-            summary_msg = ModelRequest(parts=[UserPromptPart(content=summary)])
-            candidate = cleaned[:prefix_n] + [summary_msg] + cleaned[prefix_n:]
-            if not _has_orphan_tool_returns(candidate):
-                cleaned = candidate
     return cleaned, len(cleaned) < before
 
 
@@ -2030,15 +2049,73 @@ def _is_delivery_frame(content: str) -> bool:
     return s.startswith("[框架·任务完成]") or s.startswith("【子任务交付")
 
 
+_EPHEMERAL_SYSTEM_PREFIXES: tuple[str, ...] = (
+    "（系统：",
+    "（系统提示：",
+    "（系统校验",
+)
+
+
 def _peel_ephemeral_system_lines(content: str) -> str:
-    """入史前剥引用/归属提示，避免当成用户原话。"""
+    """入史前剥（系统：）类 per-turn 提示，避免污染后续轮。"""
     kept: list[str] = []
     for ln in content.splitlines():
         s = ln.strip()
-        if s.startswith("（系统：引用对象：") or s.startswith("（系统：归属："):
+        if s.startswith(_EPHEMERAL_SYSTEM_PREFIXES):
             continue
         kept.append(ln)
-    return "\n".join(kept)
+    return "\n".join(kept).rstrip("\n")
+
+
+def _hint_matches_strip(content: str, strip_hint_texts: Tuple[str, ...]) -> bool:
+    return any(content == h or (bool(h) and content.startswith(h)) for h in strip_hint_texts)
+
+
+def _relean_user_prompt_part(
+    part: UserPromptPart,
+    lean_content: Union[str, List[UserContent]],
+    strip_hint_texts: Tuple[str, ...],
+) -> UserPromptPart | None:
+    content = part.content
+    if isinstance(content, str):
+        if _is_framework_prompt_content(content):
+            if _is_delivery_frame(content):
+                lean = lean_content if isinstance(lean_content, str) and lean_content else lean_delivery_frame(content)
+                if lean:
+                    return UserPromptPart(content=lean)
+            return None
+        if _hint_matches_strip(content, strip_hint_texts):
+            return None
+        peeled = _peel_ephemeral_system_lines(content)
+        if not peeled.strip():
+            return None
+        if peeled != content:
+            return UserPromptPart(content=peeled)
+        return part
+    new_items: list[UserContent] = []
+    changed = False
+    for item in content:
+        if not isinstance(item, str):
+            new_items.append(item)
+            continue
+        if _is_framework_prompt_content(item) and not _is_delivery_frame(item):
+            changed = True
+            continue
+        if _hint_matches_strip(item, strip_hint_texts):
+            changed = True
+            continue
+        peeled = _peel_ephemeral_system_lines(item)
+        if not peeled.strip():
+            changed = True
+            continue
+        if peeled != item:
+            changed = True
+        new_items.append(peeled)
+    if not new_items:
+        return None
+    if changed:
+        return UserPromptPart(content=new_items)
+    return part
 
 
 def _relean_user_turn(
@@ -2052,25 +2129,11 @@ def _relean_user_turn(
             continue
         kept_parts = []
         for part in msg.parts:
-            if isinstance(part, UserPromptPart) and isinstance(part.content, str):
-                if _is_framework_prompt_content(part.content):
-                    if _is_delivery_frame(part.content):
-                        lean = (
-                            lean_content
-                            if isinstance(lean_content, str) and lean_content
-                            else lean_delivery_frame(part.content)
-                        )
-                        if lean:
-                            kept_parts.append(UserPromptPart(content=lean))
-                    continue
-                if any(part.content == h or (bool(h) and part.content.startswith(h)) for h in strip_hint_texts):
-                    continue
-                peeled = _peel_ephemeral_system_lines(part.content)
-                if not peeled.strip():
-                    continue
-                if peeled != part.content:
-                    kept_parts.append(UserPromptPart(content=peeled))
-                    continue
+            if isinstance(part, UserPromptPart):
+                kept = _relean_user_prompt_part(part, lean_content, strip_hint_texts)
+                if kept is not None:
+                    kept_parts.append(kept)
+                continue
             kept_parts.append(part)
         msg.parts = kept_parts
 

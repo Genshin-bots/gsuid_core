@@ -50,6 +50,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _tool_return_looks_failed,
     _tool_return_is_async_pending,
     _tool_call_targets_render_agent,
+    _tool_return_is_effectual_write,
     _update_thrash_streak_for_response,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -100,6 +101,24 @@ def decide_text_outbound_slot(
             return "send_accept"
         return "unsent"
     return "send_final"
+
+
+_STAGE_REPLY_INNER: frozenset[str] = frozenset(
+    {"ok", "okay", "yes", "no", "好", "嗯", "哦", "喔", "哈", "行", "是", "对"}
+)
+
+
+def is_stage_direction(text: str) -> bool:
+    """成对括号包裹、无句子标点 → 舞台指示，不出站。短确认不算。"""
+    body = text.strip()
+    if len(body) < 2 or (body[0], body[-1]) not in (("（", "）"), ("(", ")")):
+        return False
+    inner = body[1:-1].strip()
+    if not inner or "<" in inner:
+        return False
+    if any(ch in inner for ch in "。！？!?；;"):
+        return False
+    return inner.casefold() not in _STAGE_REPLY_INNER
 
 
 class LoopPhase(RunOnceHost):
@@ -390,6 +409,13 @@ class LoopPhase(RunOnceHost):
                     )
                 )
                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
+                _ret_body = part.content if isinstance(part.content, str) else str(part.content or "")
+                if _tool_return_is_effectual_write(
+                    part.tool_name or "",
+                    _ret_body,
+                    failed=_tool_return_looks_failed(part),
+                ):
+                    st.effectual_mutate = True
 
         # 事件驱动输出契约：仅终态工具返回才注入（异步 ack 不触发）
         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
@@ -630,6 +656,9 @@ class LoopPhase(RunOnceHost):
                     _text = _stripped_protocol
                     if not _text:
                         continue
+                if is_stage_direction(_text):
+                    _resp_unsent.append(_text)
+                    continue
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
                     continue
@@ -764,8 +793,8 @@ class LoopPhase(RunOnceHost):
                         if _slot == "send_accept":
                             _resp_unsent.append(_text)
                         continue
-                    # 假完成预检（结构判据：完成声明 + 本轮至今零工具调用）：
-                    _fab_gate_on = not st.fake_done_retry and not st.tool_call_list and bool(st.tool_names)
+                    # 假完成预检：完成声明 + 本轮没有生效的写入（含 PIN 拒绝）
+                    _fab_gate_on = not st.fake_done_retry and not st.effectual_mutate and bool(st.tool_names)
                     if _fab_gate_on and _claims_fake_done(_text):
                         logger.warning(i18n_t("log.agent.fakedone_zero_claim_pending_ok", p0=repr(_text[:40])))
                         st.fab_blocked.append(_text)

@@ -29,6 +29,8 @@
   "log.mcp.mcp_server_bearer_token_authentication_ok": "[MCP Server] 静的 Bearer Token 認証を有効化",
   "log.mcp.mcp_server_bearer_token_verification_fail": "[MCP Server] Bearer Token 検証失敗",
   "log.mcp.mcp_server_token_verifier_register": "[MCP Server] プラグイン token 検証器を登録: {p0}",
+  "log.mcp.mcp_server_event_enricher_register": "[MCP Server] Event 補完器を登録: {p0}",
+  "log.mcp.mcp_server_export_filter_register": "[MCP Server] ツールエクスポートフィルタを登録: {p0}",
   "log.mcp.mcp_server_token_verifier_fail": "[MCP Server] プラグイン検証器 {p0} 例外: {e}",
   "log.mcp.mcp_server_token_verifier_missing_user_id": "[MCP Server] プラグイン検証器の claims に user_id が無く無視",
   "log.mcp.mcp_server_calling_ai_tool": "[MCP Server] @ai_tools [{tool_name}] を呼び出し (category={category}), args={call_args}",

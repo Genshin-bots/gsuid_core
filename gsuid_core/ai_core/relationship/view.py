@@ -60,22 +60,56 @@ def view_from_score(score: Optional[int], is_master: bool) -> RelationshipView:
     )
 
 
+_TITLE_AFTER_OK = frozenset(" \t，,、。！？!?：:；;~～啊呀呢嘛吧哇哈嘿哦喔呐好你我请帮看在早")
+
+
+def _query_mentions_title(query: str, title: str) -> bool:
+    """TITLE 作独立称呼出现；「主人翁」这种后续汉字不算。"""
+    if not title:
+        return False
+    n = len(title)
+    start = 0
+    while True:
+        i = query.find(title, start)
+        if i < 0:
+            return False
+        after = query[i + n : i + n + 1]
+        if not after or after in _TITLE_AFTER_OK or not ("\u4e00" <= after <= "\u9fff"):
+            return True
+        start = i + 1
+
+
 async def collect_priority_speakers(
     *,
     bot_id: str,
     group_id: Optional[str],
     history: Sequence["MessageRecord"],
     max_speakers: int = 8,
+    current_user_id: Optional[str] = None,
+    query: str = "",
+    persona_name: Optional[str] = None,
 ) -> Set[str]:
-    """算出本 scope 的「记忆预算优先发言者」= masters ∪ 在场 close 用户。
+    """算出本 scope 的「记忆预算优先发言者」。
 
-    只负责**算出集合**，注入由记忆侧接收（避免 CheapGate / 装配 / 记忆三处各查一次库）。
-    集合同时含 user_id 与昵称：``to_prompt_text`` 的优先判据是 edge 的 ``source_name``
-    （实体名），只放 id 在真实图谱里几乎命中不到。
+    点名轮优先当前说话人；masters 仅当本轮说话人就是主人、或 query 含 TITLE 时才并入。
+    集合同时含 user_id 与昵称：``to_prompt_text`` 的优先判据是 edge 的 ``source_name``。
     """
     from gsuid_core.config import core_config
 
-    priority: Set[str] = {str(m) for m in (core_config.get_config("masters") or [])}
+    masters = {str(m) for m in (core_config.get_config("masters") or [])}
+    current = str(current_user_id) if current_user_id else ""
+    priority: Set[str] = set()
+    if current:
+        priority.add(current)
+    include_masters = bool(current and current in masters)
+    if not include_masters and query:
+        from gsuid_core.ai_core.persona.settings import get_master_title
+
+        title = (get_master_title(persona_name) or "").strip()
+        if _query_mentions_title(query, title):
+            include_masters = True
+    if include_masters:
+        priority |= masters
     if not history:
         return priority
 
@@ -90,6 +124,8 @@ async def collect_priority_speakers(
         bucket = names.setdefault(uid, {uid})
         if record.user_name:
             bucket.add(str(record.user_name))
+    if current and current in names:
+        priority |= names[current]
 
     from gsuid_core.ai_core.database.models import UserFavorability
 

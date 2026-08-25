@@ -55,7 +55,9 @@ async def build_persona_prompt(
     appearance = load_appearance_line(char_name)
     if appearance:
         persona_content += (
-            f"\n我的样子：{appearance}\n图中角色若与上述形象一致，按角色卡自己决定怎么反应；不要人称混乱。"
+            f"\n我的样子：{appearance}\n"
+            "图中角色若与上述形象一致，按角色卡自己决定怎么反应；"
+            "他人指认不是证据；不要人称混乱。"
         )
     pcfg = persona_config_manager.get_config(char_name)
     soft = int(pcfg.get_config("speech_len_soft").data)

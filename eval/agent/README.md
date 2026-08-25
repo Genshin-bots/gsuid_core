@@ -453,15 +453,16 @@ runner 已把交接文档要求的三件事接进来（**只改评测框架，�
 1. **`enable_tools=True` 透传**：`runner._fire_run` 直接带 `enable_tools`（默认 True）走端点的
    `create_agent(dynamic_tools=True)` L1–L5 真实工具装配；`persona` 默认 `早柚`（可在 case 里
    `persona: null` 关人格）。
-2. **latency 采集**：每 run 记 HTTP 往返墙钟（端点同步阻塞到 agent 跑完）→ 填进 `Trace.latency`
-   → 供 `max_latency` verifier 抓死循环/挂起。
-3. **bot judge**：`--judge auto|bot|env|off`。`bot` = 用**运行中的 bot 自身（无人格=通用助手）**
-   判开放题（把 rubric+回复发给 `chat_with_history`，`enable_tools=False`、`persona=None`，解析
-   PASS/FAIL）；`auto` 优先外部独立 judge（`GSUID_EVAL_JUDGE_*`，减少自判自），没有则退回 bot。
+2. **latency 采集**：每 run 记拿到并发槽之后的 HTTP 往返墙钟 → `Trace.latency`。`max_latency`
+   抓死循环：已完成的回复若只是评测并发把墙钟拉过 cap，不算失败（`load_slack`）。
+3. **bot judge**：`--judge auto|bot|env|off`。`bot` = 运行中 bot（`as_judge`，无人格）判开放题。
+   呈现顺序：框架工具轨迹（含回执）→ 判定标准 → 回复围栏；空口完成类标准以轨迹为准，
+   不得只凭「改好了」判 FAIL。`auto` 优先外部 `GSUID_EVAL_JUDGE_*`，否则退回 bot。
 
 **批量 B 模式（快得多）**：session_log 默认「空闲≥60s」才落盘，逐条 run 各等一次 ≈1min/run，
-100+ 例 × k 会拖到数小时。`run_suite_batch` 一次性 fire 全部 run（并发 `--concurrency`，默认 3）→
-**只等一次** `--wait`（默认 85s）让日志落盘 → 一趟扫盘按唯一 `user_id` 关联（缺失再补扫几次）。
+100+ 例 × k 会拖到数小时。回答阶段 `run_suite_batch` 一次性 fire 全部 run（并发 `--concurrency`，
+默认 3，可加大）→ **只等一次** `--wait`（默认 85s）让日志落盘 → 一趟扫盘按唯一 `user_id` 关联
+（缺失再补扫几次）。打分阶段再用 `--score-concurrency`（默认 8）并行 bot-judge。
 每 run 的 `user_id` 唯一 → session 文件天然不冲突。
 
 ```bash

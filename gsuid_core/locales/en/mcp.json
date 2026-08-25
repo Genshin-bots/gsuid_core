@@ -29,6 +29,8 @@
   "log.mcp.mcp_server_bearer_token_authentication_ok": "[MCP Server] Static Bearer Token authentication enabled",
   "log.mcp.mcp_server_bearer_token_verification_fail": "[MCP Server] Bearer Token verification failed",
   "log.mcp.mcp_server_token_verifier_register": "[MCP Server] Registered plugin token verifier: {p0}",
+  "log.mcp.mcp_server_event_enricher_register": "[MCP Server] Registered Event enricher: {p0}",
+  "log.mcp.mcp_server_export_filter_register": "[MCP Server] Registered tool export filter: {p0}",
   "log.mcp.mcp_server_token_verifier_fail": "[MCP Server] Plugin verifier {p0} error: {e}",
   "log.mcp.mcp_server_token_verifier_missing_user_id": "[MCP Server] Plugin verifier claims missing user_id, ignored",
   "log.mcp.mcp_server_calling_ai_tool": "[MCP Server] Calling @ai_tools [{tool_name}] (category={category}), args={call_args}",

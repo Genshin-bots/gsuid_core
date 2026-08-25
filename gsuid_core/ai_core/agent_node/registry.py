@@ -140,62 +140,32 @@ def list_nodes(include_persona: bool = False) -> List[AgentNode]:
     return nodes
 
 
-_ROSTER_COVER_MAX = 120
-
-
 def format_capability_roster() -> str:
-    """可委派能力代理清单（供 system_prompt 固化，避免每轮 user 侧重复注入）。
-
-    同插件节点公共 covers 提到插件行，节点行只写差异；单节点 covers 上限 120 字。
-    """
-    from .semantic_routing import aggregate_node_covers
-
+    """可委派短花名册：每节点一行 node_id + when_to_use。covers 不进 system。"""
     nodes: list[AgentNode] = [n for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"]
-    by_plugin: dict[str, list[AgentNode]] = {}
-    for node in nodes:
-        plugin = (node.plugin or node.source or "core").strip() or "core"
-        by_plugin.setdefault(plugin, []).append(node)
-
-    lines: list[str] = []
-    for plugin, group in by_plugin.items():
-        cover_sets: list[set[str]] = []
-        for node in group:
-            cover_sets.append(set(aggregate_node_covers(node)))
-        shared: set[str] = set.intersection(*cover_sets) if len(cover_sets) > 1 else set()
-        if shared and len(group) > 1:
-            lines.append(f"[{plugin}] 公共覆盖：{_clip_covers(sorted(shared))}")
-        for node in group:
-            when = (node.when_to_use or "").strip()
-            if not when:
-                from gsuid_core.logger import logger
-
-                logger.warning(t("log.agent.capability_node_missing_when", node=node.node_id))
-                when = "专业任务"
-            line = f"- `{node.node_id}`（{node.display_name}）：{when}"
-            covers = [c for c in aggregate_node_covers(node) if c not in shared]
-            if covers:
-                line += f"\n  数据覆盖：{_clip_covers(covers)}"
-            lines.append(line)
-    if not lines:
-        return ""
-    text = (
-        "（可用能力代理——B 类组合/分析/推荐任务必须 "
-        '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
-        "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
-    )
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     cap = int(ai_config.get_config("capability_roster_max").data)
-    if cap > 0 and len(text) > cap:
-        return text[: cap - 1] + "…"
-    return text
+    lines: list[str] = []
+    for node in nodes:
+        when = (node.when_to_use or "").strip()
+        if not when:
+            from gsuid_core.logger import logger
 
-
-def _clip_covers(covers: list[str]) -> str:
-    text = "、".join(covers)
-    if len(text) <= _ROSTER_COVER_MAX:
-        return text
-    return text[: _ROSTER_COVER_MAX - 1] + "等"
+            logger.warning(t("log.agent.capability_node_missing_when", node=node.node_id))
+            when = "专业任务"
+        prefix = f"- `{node.node_id}`："
+        line = prefix + when
+        if cap > 0 and len(line) > cap:
+            line = prefix if len(prefix) >= cap else line[: cap - 1] + "…"
+        lines.append(line)
+    if not lines:
+        return ""
+    return (
+        "（可用能力代理——须 "
+        '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
+        "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
+    )
 
 
 def owning_nodes_of_tools(tool_names: List[str]) -> Dict[str, List[str]]:

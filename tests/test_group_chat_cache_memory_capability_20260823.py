@@ -20,13 +20,14 @@ from gsuid_core.ai_core.prefix_probe import (
     hash_text,
     classify_prefix_break,
 )
-from gsuid_core.ai_core.agent_run.loop import decide_text_outbound_slot
+from gsuid_core.ai_core.agent_run.loop import is_stage_direction, decide_text_outbound_slot
 from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.ai_core.agent_run.tools import (
     _take_extra_seeds,
     is_group_send_extra,
     snapshot_tool_allowed,
     l2_state_driven_wanted,
+    should_skip_tool_search,
     group_idle_request_limit,
     complete_kernel_family_names,
     stabilize_session_tool_names,
@@ -446,6 +447,8 @@ def test_group_recall_allowed_ignores_soft_continue() -> None:
 def test_snapshot_tool_allowed_hides_create_and_recall() -> None:
     assert snapshot_tool_allowed("add_once_task", create_ok=False, mutate_ok=True, recall_ok=True) is False
     assert snapshot_tool_allowed("list_scheduled_tasks", create_ok=False, mutate_ok=True, recall_ok=True) is True
+    assert snapshot_tool_allowed("query_scheduled_task", create_ok=True, mutate_ok=False, recall_ok=True) is False
+    assert snapshot_tool_allowed("query_scheduled_task", create_ok=True, mutate_ok=True, recall_ok=True) is True
     assert snapshot_tool_allowed("search_cognition", create_ok=True, mutate_ok=True, recall_ok=False) is False
     assert snapshot_tool_allowed("find_tools", create_ok=True, mutate_ok=True, recall_ok=False) is False
     assert snapshot_tool_allowed("send_message_by_ai", create_ok=False, mutate_ok=False, recall_ok=False) is True
@@ -458,7 +461,7 @@ def test_visible_when_group_recall_flag() -> None:
     ctx = SimpleNamespace(deps=ToolContext())
     assert visible_when_group_recall(ctx) is True
     ctx.deps.extra[GROUP_RECALL_OK_KEY] = False
-    assert visible_when_group_recall(ctx) is False
+    assert visible_when_group_recall(ctx) is True
     ctx.deps.extra[GROUP_RECALL_OK_KEY] = True
     assert visible_when_group_recall(ctx) is True
 
@@ -582,8 +585,8 @@ def test_visible_when_sched_flags() -> None:
     assert visible_when_sched_mutate(ctx) is True
     ctx.deps.extra[SCHED_CREATE_OK_KEY] = False
     ctx.deps.extra[SCHED_MUTATE_OK_KEY] = False
-    assert visible_when_sched_create(ctx) is False
-    assert visible_when_sched_mutate(ctx) is False
+    assert visible_when_sched_create(ctx) is True
+    assert visible_when_sched_mutate(ctx) is True
 
 
 def test_self_whitelist_includes_scheduler_family() -> None:
@@ -638,3 +641,447 @@ def test_find_tools_already_loaded_skips_hidden_create() -> None:
     assert "list_scheduled_tasks" in out
     assert "add_interval_task" not in out
     assert "create_subagent" not in out
+
+
+def test_frozen_names_survive_idle_flags() -> None:
+    frozen = ["find_tools", "create_subagent", "capability_map", "add_once_task"]
+    names = stabilize_session_tool_names(frozen, [], exclusive=set(), ceiling=24)
+    assert names == frozen
+    from gsuid_core.ai_core.buildin_tools.visibility import visibility_user_hint
+
+    hint = visibility_user_hint(
+        is_group=True,
+        call_to_self=False,
+        followup_detected=False,
+        has_active_task=False,
+        create_ok=True,
+    )
+    assert hint
+    assert "未点名" in hint
+    private = visibility_user_hint(
+        is_group=False,
+        call_to_self=False,
+        followup_detected=False,
+        has_active_task=False,
+        create_ok=True,
+    )
+    assert private == ""
+
+
+def test_check_sched_create_rejects_when_flag_false() -> None:
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.buildin_tools.visibility import (
+        GROUP_RECALL_OK_KEY,
+        SCHED_CREATE_OK_KEY,
+        SCHED_MUTATE_OK_KEY,
+        check_group_recall,
+        check_sched_create,
+        check_sched_mutate,
+    )
+
+    deps = ToolContext()
+    deps.extra[SCHED_CREATE_OK_KEY] = False
+    ok, msg = check_sched_create(deps)
+    assert ok is False
+    assert "查询" in msg or "修改" in msg
+    deps.extra[SCHED_CREATE_OK_KEY] = True
+    assert check_sched_create(deps)[0] is True
+    deps.extra[SCHED_MUTATE_OK_KEY] = False
+    ok_m, msg_m = check_sched_mutate(deps)
+    assert ok_m is False
+    assert "未点名" in msg_m
+    deps.extra[SCHED_MUTATE_OK_KEY] = True
+    assert check_sched_mutate(deps)[0] is True
+    deps.extra[GROUP_RECALL_OK_KEY] = False
+    ok_r, msg_r = check_group_recall(deps)
+    assert ok_r is False
+    assert "未点名" in msg_r
+
+
+def test_skip_search_light_addressed_skips_full_does_not() -> None:
+    assert (
+        should_skip_tool_search(
+            in_flight_short=False,
+            group_slim=True,
+            followup_detected=False,
+            has_active_task=False,
+            has_media=False,
+            call_to_self=True,
+            is_light=True,
+        )
+        is True
+    )
+    assert (
+        should_skip_tool_search(
+            in_flight_short=False,
+            group_slim=True,
+            followup_detected=False,
+            has_active_task=False,
+            has_media=False,
+            call_to_self=True,
+            is_light=False,
+        )
+        is False
+    )
+    assert (
+        should_skip_tool_search(
+            in_flight_short=False,
+            group_slim=True,
+            followup_detected=False,
+            has_active_task=False,
+            has_media=False,
+            call_to_self=False,
+            is_light=False,
+        )
+        is True
+    )
+
+
+def test_compact_does_not_insert_summary() -> None:
+    from gsuid_core.ai_core.utils import compact_session_history
+
+    history: list[ModelRequest | ModelResponse] = []
+    for i in range(20):
+        history.append(ModelRequest(parts=[UserPromptPart(content=f"[用户发言]\n消息{i}")]))
+        history.append(ModelResponse(parts=[TextPart(content=f"回复{i}")]))
+    head = history[0]
+    out, did = compact_session_history(list(history), max_history=15, trim_ratio=0.6)
+    assert did is True
+    assert out[0] is head
+    blobs: list[str] = []
+    for msg in out:
+        if isinstance(msg, ModelRequest):
+            for p in msg.parts:
+                if isinstance(p, UserPromptPart) and isinstance(p.content, str):
+                    blobs.append(p.content)
+    assert all("更早对话摘要" not in c for c in blobs)
+
+
+def test_stage_direction_unsent() -> None:
+    assert is_stage_direction("（挠头）") is True
+    assert is_stage_direction("(ok)") is False
+    assert is_stage_direction("（好）") is False
+    assert is_stage_direction("（挠头）然后呢") is False
+    assert is_stage_direction("普通一句") is False
+
+
+def test_idle_suffix_has_no_memory_block() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+
+    ev = Event(
+        bot_id="b",
+        bot_self_id="s",
+        user_id="guest_001",
+        group_id="g_001",
+        user_type="group",
+        WS_BOT_ID="ws",
+    )
+    tg = build_turn_graph("今天天气还行", persona_name="p", is_tome=False, user_type="group")
+    ctx = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        ev=ev,
+        turn_graph=tg,
+        cheap_gate=CheapGate.FULL.value,
+    )
+    full, _ = asyncio.run(
+        assemble_dynamic_context(
+            query="今天天气还行",
+            user_id="guest_001",
+            bot_id="b",
+            persona_name="p",
+            mood_key="g_001",
+            group_id="g_001",
+            rel=None,
+            history_context="[历史对话] 旧句",
+            memory_context_text="旧切片",
+            event=ev,
+            hook_ctx=ctx,
+        )
+    )
+    assert "[长期记忆" not in full
+    assert "[历史对话]" not in full
+
+
+def test_addressed_suffix_has_plan_or_task_only() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+
+    ev = Event(
+        bot_id="b",
+        bot_self_id="s",
+        user_id="guest_001",
+        group_id="g_001",
+        user_type="group",
+        WS_BOT_ID="ws",
+        is_tome=True,
+    )
+    tg = build_turn_graph("p 帮我看一下", persona_name="p", is_tome=True, user_type="group")
+    ctx = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        ev=ev,
+        turn_graph=tg,
+        cheap_gate=CheapGate.FULL.value,
+    )
+    full, _ = asyncio.run(
+        assemble_dynamic_context(
+            query="p 帮我看一下",
+            user_id="guest_001",
+            bot_id="b",
+            persona_name="p",
+            mood_key="g_001",
+            group_id="g_001",
+            rel=None,
+            history_context="[历史对话] 他人句",
+            event=ev,
+            hook_ctx=ctx,
+        )
+    )
+    assert "[长期记忆·检索于" not in full
+
+
+def test_roster_lists_all_dummy_nodes(monkeypatch) -> None:
+    from gsuid_core.ai_core.configs import ai_config as cfg_mod
+    from gsuid_core.ai_core.agent_node.models import AgentNode
+    from gsuid_core.ai_core.agent_node.registry import (
+        register_agent_node,
+        unregister_agent_node,
+        format_capability_roster,
+    )
+
+    real = cfg_mod.ai_config.get_config
+
+    class _Box:
+        def __init__(self, data: object) -> None:
+            self.data = data
+
+    def fake(key: str) -> _Box:
+        if key == "capability_roster_max":
+            return _Box(12)
+        return real(key)
+
+    monkeypatch.setattr(cfg_mod.ai_config, "get_config", fake)
+    a = AgentNode(node_id="dummy_node_a", display_name="A", prompt="x", when_to_use="外部只读查询")
+    b = AgentNode(node_id="dummy_node_b", display_name="B", prompt="x", when_to_use="外部只读查询")
+    register_agent_node(a)
+    register_agent_node(b)
+    try:
+        roster = format_capability_roster()
+        assert "`dummy_node_a`" in roster
+        assert "`dummy_node_b`" in roster
+        assert "数据覆盖" not in roster
+    finally:
+        unregister_agent_node("dummy_node_a")
+        unregister_agent_node("dummy_node_b")
+
+
+def test_non_master_turn_forbids_master_title() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.relationship import view_from_score
+    from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+    from gsuid_core.ai_core.persona.settings import DEFAULT_MASTER_TITLE
+
+    ev = Event(
+        bot_id="b",
+        bot_self_id="s",
+        user_id="guest_001",
+        group_id="g_001",
+        user_type="group",
+        WS_BOT_ID="ws",
+        is_tome=True,
+    )
+    rel = view_from_score(90, is_master=False)
+    tg = build_turn_graph("你好呀", persona_name="p", is_tome=True, user_type="group", primary_speaker="guest_001")
+    ctx = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        ev=ev,
+        relationship=rel,
+        turn_graph=tg,
+        cheap_gate=CheapGate.FULL.value,
+    )
+    full, _ = asyncio.run(
+        assemble_dynamic_context(
+            query="你好呀",
+            user_id="guest_001",
+            bot_id="b",
+            persona_name="p",
+            mood_key="g_001",
+            group_id="g_001",
+            rel=rel,
+            event=ev,
+            hook_ctx=ctx,
+        )
+    )
+    assert "禁止" in full
+    assert DEFAULT_MASTER_TITLE in full
+    assert "是我的主人" not in full
+
+
+def test_master_turn_may_use_title() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.relationship import view_from_score
+    from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+
+    ev = Event(
+        bot_id="b",
+        bot_self_id="s",
+        user_id="master_001",
+        group_id="g_001",
+        user_type="group",
+        WS_BOT_ID="ws",
+        is_tome=True,
+    )
+    rel = view_from_score(90, is_master=True)
+    tg = build_turn_graph("你好", persona_name="p", is_tome=True, user_type="group", primary_speaker="master_001")
+    ctx = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        ev=ev,
+        relationship=rel,
+        turn_graph=tg,
+        cheap_gate=CheapGate.FULL.value,
+    )
+    full, _ = asyncio.run(
+        assemble_dynamic_context(
+            query="你好",
+            user_id="master_001",
+            bot_id="b",
+            persona_name="p",
+            mood_key="g_001",
+            group_id="g_001",
+            rel=rel,
+            event=ev,
+            hook_ctx=ctx,
+        )
+    )
+    assert "是我的主人" in full
+    assert "禁止称" not in full
+
+
+def test_system_constraints_no_blanket_title() -> None:
+    from gsuid_core.ai_core.persona.prompts import SYSTEM_CONSTRAINTS
+
+    assert "一律用" not in SYSTEM_CONSTRAINTS
+    assert "只有本轮说话人" in SYSTEM_CONSTRAINTS
+
+
+def test_lurk_does_not_treat_soft_continue_as_address(monkeypatch) -> None:
+    from gsuid_core.ai_core.configs import ai_config as cfg_mod
+
+    real = cfg_mod.ai_config.get_config
+
+    class _Box:
+        def __init__(self, data: object) -> None:
+            self.data = data
+
+    def fake(key: str) -> _Box:
+        if key == "group_lurk_mode":
+            return _Box(True)
+        if key == "group_repeat_body_n":
+            return _Box(99)
+        return real(key)
+
+    monkeypatch.setattr(cfg_mod.ai_config, "get_config", fake)
+    tg = build_turn_graph("嗯", persona_name="p", is_tome=False, user_type="group")
+    tg.soft_continue = True
+    assert decide_cheap_gate(tg) is CheapGate.SILENCE
+    tg_name = build_turn_graph("p早呀今天好安静", persona_name="p", is_tome=False, user_type="group")
+    assert tg_name.call_to_self
+    assert decide_cheap_gate(tg_name) is not CheapGate.SILENCE
+    tg_cancel = build_turn_graph("把那个取消了吧。", persona_name="p", is_tome=False, user_type="group")
+    assert decide_cheap_gate(tg_cancel) is not CheapGate.SILENCE
+
+
+def test_group_compose_skips_identity_when_ev_missing() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+
+    ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, persona_name="p")
+    full, _ = asyncio.run(
+        assemble_dynamic_context(
+            query="hi",
+            user_id="guest_001",
+            bot_id="b",
+            persona_name="p",
+            mood_key="x",
+            hook_ctx=ctx,
+        )
+    )
+    assert "身份：你是" not in full
+
+
+def test_should_prefetch_memory_skips_group_idle_keeps_private() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import should_prefetch_memory
+
+    ev_priv = Event(
+        bot_id="b",
+        bot_self_id="s",
+        user_id="u1",
+        user_type="direct",
+        WS_BOT_ID="ws",
+    )
+    tg_priv = build_turn_graph("你好", persona_name="p", is_tome=True, user_type="direct")
+    ctx_priv = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        ev=ev_priv,
+        turn_graph=tg_priv,
+    )
+    assert should_prefetch_memory(ctx_priv) is True
+
+    ev_g = Event(
+        bot_id="b",
+        bot_self_id="s",
+        user_id="guest_001",
+        group_id="g_001",
+        user_type="group",
+        WS_BOT_ID="ws",
+    )
+    tg_idle = build_turn_graph("今天天气还行", persona_name="p", is_tome=False, user_type="group")
+    ctx_idle = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        ev=ev_g,
+        turn_graph=tg_idle,
+    )
+    assert should_prefetch_memory(ctx_idle) is False
+
+    tg_addr = build_turn_graph("p 帮我看一下", persona_name="p", is_tome=True, user_type="group")
+    ctx_addr = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        ev=ev_g,
+        turn_graph=tg_addr,
+        cheap_gate=CheapGate.FULL.value,
+    )
+    assert should_prefetch_memory(ctx_addr) is True
+
+
+def test_empty_agent_profile_rejected() -> None:
+    from gsuid_core.ai_core.buildin_tools.subagent import _create_subagent_impl
+
+    class _StubCtx:
+        deps = None
+
+    out = asyncio.run(
+        _create_subagent_impl(
+            _StubCtx(),
+            task="随便规划一下",
+            max_tokens=100,
+            max_iterations=1,
+            agent_profile="",
+            transient=True,
+        )
+    )
+    assert "未指定 agent_profile" in out
+
+
+def test_query_mentions_title_skips_longer_cjk() -> None:
+    from gsuid_core.ai_core.relationship.view import _query_mentions_title
+
+    assert _query_mentions_title("主人好", "主人") is True
+    assert _query_mentions_title("主人翁情结", "主人") is False
+    assert _query_mentions_title("叫一声主人！", "主人") is True

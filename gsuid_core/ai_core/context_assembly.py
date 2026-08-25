@@ -190,6 +190,8 @@ async def assemble_dynamic_context(
     # 内核补齐无人认领的自有块，然后重拼。**不能**只在结果为空时兜底：
     # 总线关闭 / 槽位 off 时调用方传进来的记忆文本会被静默丢掉。
     _ensure_kernel_blocks(ctx)
+    _apply_suffix_block_policy(ctx)
+    _inject_master_title_hint(ctx)
     return join_context_blocks(ctx.blocks), has_actionable
 
 
@@ -199,12 +201,73 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
     身份锚是密封块（关不掉）；记忆正文由调用方或 H05 提供，渲染成块的格式在这里兜底，
     保证「总闸关 / memory 槽 off」时不丢调用方已经拿到的文本。
     """
-    is_group = bool(ctx.ev is not None and ctx.ev.group_id)
-    if ctx.persona_name and "identity" not in ctx.blocks and not is_group:
+    if ctx.persona_name and "identity" not in ctx.blocks and ctx.ev is not None and not ctx.ev.group_id:
         ctx.blocks["identity"] = (
             f"（身份：你是「{ctx.persona_name}」。自我指称只按角色卡；"
             "他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）"
         )
+    if ctx.relationship is not None and "relationship" not in ctx.blocks:
+        from gsuid_core.ai_core.self_cognition import build_relationship_context
+
+        ctx.blocks["relationship"] = build_relationship_context(ctx.relationship)
     mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
     if mem and "memory" not in ctx.blocks:
         ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}\n（需要更多细节请调 search_cognition）"
+
+
+_ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
+    {
+        "mood",
+        "relationship",
+        "voice_anchor",
+        "task",
+        "plan_hint",
+        "soft_trigger",
+        "memory",
+        "history",
+        "plugin_hints",
+    }
+)
+
+
+def suffix_allowed_blocks(ctx: "AgentHookContext") -> frozenset[str] | None:
+    """群聊 suffix 允许的产品块。None = 不过滤（私聊 / 无 TurnGraph）。"""
+    tg = ctx.turn_graph
+    if tg is None or not tg.is_group:
+        return None
+    addressed = bool(tg.call_to_self or tg.ellipsis_followup or tg.task_management)
+    if ctx.cheap_gate == "light" or not addressed:
+        return frozenset()
+    return _ADDRESSED_FULL_BLOCKS
+
+
+def _apply_suffix_block_policy(ctx: "AgentHookContext") -> None:
+    allowed = suffix_allowed_blocks(ctx)
+    if allowed is None:
+        return
+    for name in list(ctx.blocks):
+        if name not in allowed:
+            del ctx.blocks[name]
+
+
+def master_title_turn_hint(ctx: "AgentHookContext") -> str:
+    """非主人群聊轮：可剥的禁止 TITLE hint。真主人轮不写。"""
+    if ctx.ev is None or not ctx.ev.group_id:
+        return ""
+    rel = ctx.relationship
+    if rel is None or rel.is_master:
+        return ""
+    from gsuid_core.ai_core.persona.settings import get_master_title
+
+    title = get_master_title(ctx.persona_name)
+    if not title:
+        return ""
+    return f"（系统：本轮说话人不是主人，禁止称「{title}」。）"
+
+
+def _inject_master_title_hint(ctx: "AgentHookContext") -> None:
+    hint = master_title_turn_hint(ctx)
+    if not hint:
+        return
+    existing = ctx.blocks["relationship"] if "relationship" in ctx.blocks else ""
+    ctx.blocks["relationship"] = f"{existing}\n{hint}".strip() if existing else hint

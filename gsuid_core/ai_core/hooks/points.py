@@ -105,7 +105,14 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
         _spec(AgentHookPoint.ON_INBOUND, "handler.handle_event", 200),
         _spec(AgentHookPoint.BEFORE_AI_CHAT, "handle_ai.handle_ai_chat:budget_passed", 500, _C.ABORT, _C.SILENCE),
         _spec(AgentHookPoint.AFTER_SESSION, "handle_ai.handle_ai_chat:get_ai_session", 500),
-        _spec(AgentHookPoint.CLASSIFY, "handle_ai.handle_ai_chat:intent", 2000, _C.SET_INTENT, _C.ABORT),
+        _spec(
+            AgentHookPoint.CLASSIFY,
+            "handle_ai.handle_ai_chat:intent",
+            2000,
+            _C.SET_INTENT,
+            _C.SET_ACTIONABLE,
+            _C.ABORT,
+        ),
         _spec(
             AgentHookPoint.REACTIVE_GATE,
             "handle_ai.handle_ai_chat:soft_gate",

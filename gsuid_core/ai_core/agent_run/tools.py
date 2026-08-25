@@ -57,6 +57,7 @@ _SCHED_CREATE_NAMES: frozenset[str] = frozenset({"add_once_task", "add_interval_
 _SCHED_MUTATE_NAMES: frozenset[str] = frozenset(
     {
         "list_scheduled_tasks",
+        "query_scheduled_task",
         "modify_scheduled_task",
         "cancel_scheduled_task",
         "pause_scheduled_task",
@@ -117,7 +118,7 @@ def snapshot_tool_allowed(
     mutate_ok: bool,
     recall_ok: bool,
 ) -> bool:
-    """本轮快照是否保留该名。旗缺省时由调用方传 True（偏可见）。"""
+    """是否把该名作为**本轮新 extras**。不用于从 frozen schema 摘名。"""
     if name in _SCHED_CREATE_NAMES:
         return create_ok
     if name in _SCHED_MUTATE_NAMES:
@@ -125,6 +126,26 @@ def snapshot_tool_allowed(
     if name in _GROUP_RECALL_NAMES:
         return recall_ok
     return True
+
+
+def should_skip_tool_search(
+    *,
+    in_flight_short: bool,
+    group_slim: bool,
+    followup_detected: bool,
+    has_active_task: bool,
+    has_media: bool,
+    call_to_self: bool,
+    is_light: bool,
+) -> bool:
+    """向量预检索是否跳过。点名+LIGHT 不预检索但仍挂 find_tools；FULL 才检索。"""
+    if in_flight_short:
+        return True
+    if not group_slim:
+        return False
+    if followup_detected or has_active_task or has_media:
+        return False
+    return (not call_to_self) or is_light
 
 
 def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool, bool]:
@@ -491,17 +512,14 @@ class ToolsPhase(RunOnceHost):
                 _recall_limit = int(ai_config.get_config("tool_search_recall").data)
                 max_extra_tools: int = int(ai_config.get_config("tool_extra_pool_max").data)
                 _recall_threshold = float(ai_config.get_config("tool_recall_threshold").data)
-                _soft_cont = bool(st.tg.soft_continue) if st.tg is not None else False
-                _ellip = bool(st.tg.ellipsis_followup) if st.tg is not None else False
-                # 瘦核已不含 web_search：点名/跟进不得因 LIGHT 或误判闲聊跳过检索。
-                _skip_search = st.in_flight_short or (
-                    st.group_slim
-                    and not _call_self
-                    and not st.followup_detected
-                    and not st.has_active_task
-                    and not st.has_media
-                    and not _ellip
-                    and not _soft_cont
+                _skip_search = should_skip_tool_search(
+                    in_flight_short=st.in_flight_short,
+                    group_slim=st.group_slim,
+                    followup_detected=st.followup_detected,
+                    has_active_task=st.has_active_task,
+                    has_media=st.has_media,
+                    call_to_self=_call_self,
+                    is_light=st.is_light,
                 )
                 if (
                     st.intent == "闲聊"
@@ -547,6 +565,17 @@ class ToolsPhase(RunOnceHost):
                 # 群聊 extras 只留种子；私聊仍整族展开（能建就能改靠核内族闭合，不靠 L4）
                 if _interactive:
                     extra_tools = _without_progress_tool(extra_tools)
+                _create_ok_ex, _mutate_ok_ex, _ = _snapshot_visibility_flags(st)
+                extra_tools = [
+                    t
+                    for t in extra_tools
+                    if snapshot_tool_allowed(
+                        t.name,
+                        create_ok=_create_ok_ex,
+                        mutate_ok=_mutate_ok_ex,
+                        recall_ok=True,
+                    )
+                ]
                 if st.group_slim:
                     deduped_extra = _take_extra_seeds(extra_tools, core_names, max_extra_tools)
                 else:
@@ -604,8 +633,7 @@ class ToolsPhase(RunOnceHost):
                         if _domain_pid:
                             _need_subagent = True
                             deleg_pid = _domain_pid
-                _recall_ok = _snapshot_visibility_flags(st)[2]
-                if _recall_ok and _need_subagent and not any(t.name == "create_subagent" for t in st.tools):
+                if _need_subagent and not any(t.name == "create_subagent" for t in st.tools):
                     cs = find_tool_base("create_subagent")
                     if cs is not None:
                         st.tools.append(cs.tool)
@@ -616,8 +644,8 @@ class ToolsPhase(RunOnceHost):
                             )
                         )
 
-                # 渐进式工具暴露：常挂 find_tools + RetrievableToolset（含误判闲聊轮）。
-                if ENABLE_PROGRESSIVE_TOOLS and _recall_ok:
+                # 渐进式工具暴露：PIN 恒在 schema；未点名由 check_func 拒执行。
+                if ENABLE_PROGRESSIVE_TOOLS:
                     if any(t.name == "find_tools" for t in st.tools):
                         st.expose_dynamic = True
                     else:
@@ -627,8 +655,6 @@ class ToolsPhase(RunOnceHost):
                             st.expose_dynamic = True
                     if st.expose_dynamic:
                         logger.debug(i18n_t("log.agent.find_tools_progressive_exposure"))
-                elif not _recall_ok:
-                    st.expose_dynamic = False
 
                 logger.debug(
                     i18n_t(
@@ -660,12 +686,6 @@ class ToolsPhase(RunOnceHost):
 
         # 最终去重（兼容外部直接传入 st.tools 的情况）
         st.tools = list({obj.name: obj for obj in st.tools}.values())
-        _create_ok, _mutate_ok, _recall_ok_f = _snapshot_visibility_flags(st)
-        st.tools = [
-            t
-            for t in st.tools
-            if snapshot_tool_allowed(t.name, create_ok=_create_ok, mutate_ok=_mutate_ok, recall_ok=_recall_ok_f)
-        ]
         st.tool_names = [t.name for t in st.tools]
         st.exposed_tool_names = list(st.tool_names)
         _ctx = _require_context(st)

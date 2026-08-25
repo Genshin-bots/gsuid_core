@@ -16,7 +16,7 @@ class IdentityKit(AgentKit):
     async def inject(self, ctx: AgentHookContext) -> None:
         if not ctx.persona_name:
             return
-        if ctx.ev is not None and ctx.ev.group_id:
+        if ctx.ev is None or ctx.ev.group_id:
             return
         ctx.set_context_block(
             "identity",

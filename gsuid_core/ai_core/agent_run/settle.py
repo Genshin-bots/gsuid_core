@@ -33,6 +33,7 @@ from gsuid_core.ai_core.utils import (
     _relean_user_turn,
     is_silence_marker,
     _extract_run_context,
+    strip_framework_user_leaks,
 )
 from gsuid_core.ai_core.register import find_tool_base
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
@@ -50,6 +51,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _claims_fake_done,
     _correction_nudge_markers,
     _looks_like_report_speech,
+    usage_limit_return_payload,
 )
 from gsuid_core.ai_core.control.directive import (
     Directive,
@@ -296,6 +298,9 @@ class SettlePhase(RunOnceHost):
         diff: dict[str, list[str]] | None = None
         if prev is not None and reason == "tools":
             diff = _tools_diff(prev.tool_names, st.tool_names)
+            removed = diff["removed"] if "removed" in diff else []
+            if removed:
+                logger.warning(i18n_t("log.agent.prefix_tools_removed", names=removed[:12]))
         record_prefix_break(reason)
         self._session_logger.log_prefix_break(reason, tools_hash=tools_hash, system_hash=system_hash, tools_diff=diff)
         combined = list(self.history) + list(new_msgs)
@@ -497,10 +502,10 @@ class SettlePhase(RunOnceHost):
                 await _resend_fab_blocked()
             elif (
                 result_msg
-                and not st.tool_call_list
+                and not st.effectual_mutate
                 and st.tool_names
                 and not st.fake_done_retry
-                # 结构证据：预检暂扣 or 文本宣称完成；不靠 st.intent 标签（误标会误伤闲聊）
+                # 结构证据：预检暂扣 or 文本宣称完成；PIN 拒绝也算没改世界
                 and (st.fab_blocked or _claims_fake_done(result_msg))
             ):
                 _settle_correction_ran = True
@@ -750,6 +755,12 @@ class SettlePhase(RunOnceHost):
                     )
                     if _ooc_scrubbed:
                         logger.warning(i18n_t("log.agent.firewall_run_return_value_hit"))
+            if isinstance(result_msg, str) and not (
+                self.is_subagent or self.create_by in ("CapabilityAgent", "AutoPlanner")
+            ):
+                result_msg = strip_framework_user_leaks(result_msg)
+                if not result_msg.strip():
+                    result_msg = "<SILENCE>"
             return result_msg
 
         # result 为空时的默认返回值（常量：handle_ai 好感度门等消费端按它识别准失败轮）
@@ -766,15 +777,13 @@ class SettlePhase(RunOnceHost):
         statistics_manager.record_error(error_type="usage_limit")
         self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {_require_limits(st).request_limit}")
 
-        # 子代理（return 模式，如 Kanban 能力代理 / plugin_developer_agent）： **绝不**直接对用户的 st.bot 说话
-        # 也**绝不**把超轮数的中间产物强制总结后回灌
+        # 子代理 return：不对用户说话、不把中间产物回灌。评测静音；能力代理要可识别失败。
         if st.return_mode == "return":
-            # 出图在途：内部轮数耗尽不对用户念框架错误
-            if st.delegated_render and not st.image_sent_this_run:
-                return "<SILENCE>"
-            return (
-                "⚠️ 已达最大思考轮数，未能在限定步数内完成本任务。"
-                "中间产物（如已写入的文件 / artifact）已留在工作区，未回传以避免刷屏。"
+            return usage_limit_return_payload(
+                create_by=self.create_by,
+                is_subagent=self.is_subagent,
+                delegated_render=st.delegated_render,
+                image_sent=st.image_sent_this_run,
             )
 
         if st.delegated_render and not st.image_sent_this_run:

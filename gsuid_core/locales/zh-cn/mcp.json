@@ -29,6 +29,8 @@
   "log.mcp.mcp_server_bearer_token_authentication_ok": "[MCP Server] 已启用静态 Bearer Token 认证",
   "log.mcp.mcp_server_bearer_token_verification_fail": "[MCP Server] Bearer Token 验证失败",
   "log.mcp.mcp_server_token_verifier_register": "[MCP Server] 已注册插件 token 校验器: {p0}",
+  "log.mcp.mcp_server_event_enricher_register": "[MCP Server] 已注册 Event 补全器: {p0}",
+  "log.mcp.mcp_server_export_filter_register": "[MCP Server] 已注册工具导出过滤器: {p0}",
   "log.mcp.mcp_server_token_verifier_fail": "[MCP Server] 插件校验器 {p0} 异常: {e}",
   "log.mcp.mcp_server_token_verifier_missing_user_id": "[MCP Server] 插件校验器返回 claims 缺少 user_id，已忽略",
   "log.mcp.mcp_server_calling_ai_tool": "[MCP Server] 调用 @ai_tools [{tool_name}] (category={category}), args={call_args}",

@@ -115,6 +115,8 @@ RESOURCE_PATH/persona/{persona_name}/
 ├── persona.json         # 称呼与用户可见短句（GSC，控制台「人格设定」）
 ├── persona.md           # 角色设定（Markdown）
 ├── avatar.png / image.png   # 头像 / 立绘（可选）
+├── appearance.txt           # 视觉指纹（启动识图；system 只吃摘要）
+├── self_refs/               # 可选：表情包/变体，只入库 pHash
 └── audio.{mp3,ogg,wav,m4a,flac}   # 音频（可选，优先级 mp3 > ogg > wav > m4a > flac）
 ```
 
@@ -184,6 +186,7 @@ RESOURCE_PATH/persona/{persona_name}/
 | 情绪状态机 | `persona/mood.py` | 角色情绪状态 |
 | 群聊适应性 | `persona/group_context.py` | 按群画像调整口吻 |
 | 自我认知 | `ai_core/self_cognition.py` | `self_model` 演化层（`commitments`/`preferences_learned`/`recurring_topics`/`self_notes`）。**O-3 之后（2026-07）注入拆成两半**：self_model 自述块（bot/scope 级慢变）随 session 固化进 **system_prompt 稳定前缀**（`context_assembly.build_stable_context`，含群画像/词汇映射）；per-user 的关系行由 `build_relationship_context` **每轮注入用户消息侧**（群共享 session，关系随对话者变、不能冻进共享前缀）——每轮动态注入的顺序唯一定义在 `context_assembly.assemble_dynamic_context`（handle_ai 与评测端点共同消费） |
+| 视觉指纹 | `persona/appearance.py` | 启动识图写 `appearance.txt`（摘要进 system，全文只在看图时对照）。`read_image` 对人格目录受信任图做 dHash，命中则钉死「这是你」。不打破惰性；群友口头不入库。 |
 
 > `voice_anchor` 是逐轮口吻锚点（旁路字段），Persona 启动迁移会处理它。
 

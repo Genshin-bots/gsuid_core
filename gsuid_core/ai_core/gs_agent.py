@@ -121,9 +121,11 @@ from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
     _correction_nudge_markers,
     _format_capability_roster,
     _tool_return_looks_failed,
+    usage_limit_return_payload,
     _tool_return_is_async_pending,
     _pool_overlaps_capability_agent,
     _tool_call_targets_render_agent,
+    _tool_return_is_effectual_write,
     _capability_exclusive_tool_names,
     _matched_delegation_only_profile,
     _update_thrash_streak_for_response,
@@ -163,6 +165,8 @@ _ = (
     _pool_overlaps_capability_agent,
     _tool_call_targets_render_agent,
     _tool_return_is_async_pending,
+    _tool_return_is_effectual_write,
+    usage_limit_return_payload,
     _tool_return_looks_failed,
     _update_thrash_streak_for_response,
     reset_budget_scope_context,
@@ -384,6 +388,11 @@ class GsCoreAIAgent(RunOnceMixin):
         不能以返回值判断"本轮说过话"，须读本属性（评审修复 F1）。
         """
         return bool(self._run_sent_texts)
+
+    @property
+    def last_run_visible_texts(self) -> tuple[str, ...]:
+        """本轮已出站的可见台词（插入序）。评测 HTTP 在 SILENCE 返回时拼回这条。"""
+        return tuple(self._run_sent_texts)
 
     def _emit_trace(self, kind: TraceKind, text: str) -> None:
         """把模型思考 / 工具调用轨迹推给观察者（``on_trace``）。
@@ -672,7 +681,14 @@ class GsCoreAIAgent(RunOnceMixin):
 
         if "image" in model_support:
             # 模型支持图片，保留原始内容；
+            from gsuid_core.ai_core.persona.appearance import (
+                bytes_from_image_ref,
+                format_look_identity_note,
+            )
+
             result: list[UserContent] = []
+            notes: list[str] = []
+            seen_notes: set[str] = set()
             for item in content_list:
                 if isinstance(item, str):
                     result.append(f"[用户发言]\n{item}")
@@ -684,8 +700,19 @@ class GsCoreAIAgent(RunOnceMixin):
                         logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
                         continue
                     result.append(ImageUrl(url=url))
+                    if self.persona_name:
+                        note = format_look_identity_note(self.persona_name, bytes_from_image_ref(url))
+                        if note and note not in seen_notes:
+                            seen_notes.add(note)
+                            notes.append(note)
                 else:
                     result.append(item)
+            if notes:
+                joined = "\n".join(notes)
+                if result and isinstance(result[0], str):
+                    result[0] = f"{result[0]}\n{joined}"
+                else:
+                    result.insert(0, joined)
             return result
 
         # 模型不支持图片，调用图片理解模块转述
@@ -693,6 +720,11 @@ class GsCoreAIAgent(RunOnceMixin):
             logger.info(i18n_t("log.agent.imgund_images_image_paraphrasing", p0=len(image_urls)))
             # 用户问题：用于把冗长的图片描述按需精简到与问题相关的部分
             user_question = "\n".join(text_parts).strip()
+            from gsuid_core.ai_core.persona.appearance import (
+                bytes_from_image_ref,
+                format_look_identity_note,
+            )
+
             descriptions: list[str] = []
             for idx, url in enumerate(image_urls):
                 try:
@@ -702,7 +734,12 @@ class GsCoreAIAgent(RunOnceMixin):
                         persona_name=self.persona_name,
                     )
                     description = await self._summarize_image_description(description, user_question)
-                    descriptions.append(f"图片{idx + 1}: {description}")
+                    line = f"图片{idx + 1}: {description}"
+                    if self.persona_name:
+                        note = format_look_identity_note(self.persona_name, bytes_from_image_ref(url))
+                        if note:
+                            line = f"{line}\n{note}"
+                    descriptions.append(line)
                 except Exception as e:
                     logger.error(i18n_t("log.agent.imgund_understand_image", p0=idx + 1, e=e))
                     descriptions.append(f"图片{idx + 1}: [图片理解失败]")

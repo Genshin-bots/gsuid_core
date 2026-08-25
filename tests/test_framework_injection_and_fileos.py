@@ -127,3 +127,30 @@ def test_relean_keeps_real_user_and_strips_nudge() -> None:
     _relean_user_turn(msgs, lean_content="[用户发言]\n你好")
     assert len(msgs[0].parts) == 1
     assert msgs[0].parts[0].content == "[用户发言]\n你好\n\n[历史对话] 很长…"
+
+
+def test_relean_peels_ephemeral_system_lines() -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from gsuid_core.ai_core.utils import _relean_user_turn
+
+    msgs = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(
+                    content=(
+                        "[用户发言]\n你好呀\n"
+                        "（系统：本轮说话人不是主人，禁止称「主人」。）\n"
+                        "（系统：本轮未点名：不要调用发现/调度/回想；默认 <SILENCE>。）"
+                    )
+                )
+            ]
+        )
+    ]
+    _relean_user_turn(msgs, lean_content="[用户发言]\n你好呀")
+    assert len(msgs[0].parts) == 1
+    body = str(msgs[0].parts[0].content)
+    assert "你好呀" in body
+    assert "禁止称" not in body
+    assert "未点名" not in body
+    assert "（系统：" not in body

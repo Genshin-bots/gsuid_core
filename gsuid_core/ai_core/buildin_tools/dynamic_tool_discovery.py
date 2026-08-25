@@ -15,7 +15,12 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
-from gsuid_core.ai_core.buildin_tools.visibility import visible_when_group_recall
+from gsuid_core.ai_core.buildin_tools.visibility import (
+    check_group_recall,
+    check_sched_create,
+    check_sched_mutate,
+    visible_when_group_recall,
+)
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
 FIND_TOOLS_GAP_NOTE = (
@@ -172,6 +177,7 @@ def _format_already_loaded(names: Sequence[str]) -> str:
 async def visible_offered_names(ctx: RunContext[ToolContext], names: Sequence[str]) -> list[str]:
     """已加载名单去掉本步 visible_when 隐藏的（否则会诱导调用 Unknown tool）。"""
     from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.agent_run.tools import _SCHED_CREATE_NAMES, _SCHED_MUTATE_NAMES
 
     out: list[str] = []
     for name in names:
@@ -187,8 +193,13 @@ async def visible_offered_names(ctx: RunContext[ToolContext], names: Sequence[st
         except Exception as e:
             logger.debug(t("log.ai.find_tools_prepare_treated_unavailable_fail", p0=name, e=e))
             tool_def = tb.tool
-        if tool_def:
-            out.append(name)
+        if not tool_def:
+            continue
+        if name in _SCHED_CREATE_NAMES and not check_sched_create(ctx.deps)[0]:
+            continue
+        if name in _SCHED_MUTATE_NAMES and not check_sched_mutate(ctx.deps)[0]:
+            continue
+        out.append(name)
     return out
 
 
@@ -211,7 +222,7 @@ def get_capability_gaps(limit: int = 20) -> list[tuple[str, int]]:
 
 # 不声明 capability_domain（会被 L3 按族驻留带进闲聊轮）；category 必须为 meta：
 # 落入 buildin 等保底分类会让渐进式暴露门控失效、加载的工具无人暴露（实测踩坑）。
-@ai_tools(category="meta", visible_when=visible_when_group_recall)
+@ai_tools(category="meta", visible_when=visible_when_group_recall, check_func=check_group_recall)
 async def find_tools(
     ctx: RunContext[ToolContext],
     need: str,
@@ -370,7 +381,7 @@ async def find_tools(
         return f"⚠️ 工具加载失败: {str(e)}"
 
 
-@ai_tools(category="meta", visible_when=visible_when_group_recall)
+@ai_tools(category="meta", visible_when=visible_when_group_recall, check_func=check_group_recall)
 async def capability_map(
     ctx: RunContext[ToolContext],
     scope: str = "all",

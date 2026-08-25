@@ -358,6 +358,56 @@ def test_hostile_but_addressed_still_serves() -> None:
     assert decide_cheap_gate(tg, rel=hostile, intent="工具") is not CheapGate.SILENCE
 
 
+def test_hostile_active_task_still_serves() -> None:
+    """未点名但有在途任务：履约 > 脾气，不在第一道门掐死。"""
+    from gsuid_core.ai_core.interaction_scaffold import CheapGate, decide_cheap_gate
+
+    tg = _graph(message_text="今天天气不错")
+    hostile = view_from_score(-80, False)
+    assert decide_cheap_gate(tg, rel=hostile, has_active_task=True) is not CheapGate.SILENCE
+
+
+def test_quote_tome_is_tome_but_flagged() -> None:
+    from gsuid_core.ai_core.interaction_scaffold import build_turn_graph
+
+    tg = build_turn_graph(
+        "老登猫",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="u1",
+        has_reply=True,
+    )
+    assert tg.is_tome
+    assert tg.quoted_tome
+    assert tg.call_to_self
+
+
+def test_hostile_quote_still_enters_loop() -> None:
+    """引用 is_tome：低好感也进环，由人格判断是否 SILENCE。"""
+    from gsuid_core.ai_core.interaction_scaffold import CheapGate, build_turn_graph, decide_cheap_gate
+
+    hostile = view_from_score(-80, False)
+    tg = build_turn_graph(
+        "老登猫",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="u1",
+        has_reply=True,
+    )
+    assert decide_cheap_gate(tg, rel=hostile, intent="闲聊") is CheapGate.LIGHT
+
+
+def test_hostile_chitchat_at_enters_light() -> None:
+    """惹毛了的闲聊 @ 仍进环（light），不在 CheapGate 直接掐死。"""
+    from gsuid_core.ai_core.interaction_scaffold import CheapGate, decide_cheap_gate
+
+    hostile = view_from_score(-80, False)
+    tg = _graph(message_text="早柚 你真烦", is_tome=True)
+    assert decide_cheap_gate(tg, rel=hostile, intent="闲聊") is CheapGate.LIGHT
+
+
 def test_hostile_with_active_task_is_not_silenced() -> None:
     from gsuid_core.ai_core.interaction_scaffold import CheapGate, decide_cheap_gate
 

@@ -39,6 +39,8 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
 from gsuid_core.ai_core.buildin_tools.visibility import (
+    check_sched_create,
+    check_sched_mutate,
     visible_when_sched_create,
     visible_when_sched_mutate,
 )
@@ -99,7 +101,12 @@ def _get_execute_scheduled_task():
 # ============ 添加任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_create)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_create,
+    check_func=check_sched_create,
+)
 async def add_once_task(
     ctx: RunContext[ToolContext],
     run_time: str,
@@ -246,7 +253,12 @@ async def add_once_task(
         return f"⚠️ 添加任务失败: {str(e)}"
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_create)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_create,
+    check_func=check_sched_create,
+)
 async def add_interval_task(
     ctx: RunContext[ToolContext],
     interval_value: int,
@@ -472,7 +484,12 @@ async def add_interval_task(
 # ============ 查询任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_mutate,
+    check_func=check_sched_mutate,
+)
 async def list_scheduled_tasks(
     ctx: RunContext[ToolContext],
 ) -> str:
@@ -562,7 +579,12 @@ async def list_scheduled_tasks(
         return f"⚠️ 查询任务列表失败: {str(e)}"
 
 
-@ai_tools(category="self", capability_domain="定时任务")
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_mutate,
+    check_func=check_sched_mutate,
+)
 async def query_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -650,7 +672,12 @@ async def query_scheduled_task(
 # ============ 修改任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_mutate,
+    check_func=check_sched_mutate,
+)
 async def modify_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -795,7 +822,12 @@ def _reschedule_job_run_time(task: AIScheduledTask, new_dt: datetime) -> None:
 # ============ 删除/取消任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_mutate,
+    check_func=check_sched_mutate,
+)
 async def cancel_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -854,7 +886,12 @@ async def cancel_scheduled_task(
 # ============ 暂停/恢复任务 ============
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_mutate,
+    check_func=check_sched_mutate,
+)
 async def pause_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,
@@ -914,7 +951,12 @@ async def pause_scheduled_task(
         return f"⚠️ 暂停任务失败: {str(e)}"
 
 
-@ai_tools(category="self", capability_domain="定时任务", visible_when=visible_when_sched_mutate)
+@ai_tools(
+    category="self",
+    capability_domain="定时任务",
+    visible_when=visible_when_sched_mutate,
+    check_func=check_sched_mutate,
+)
 async def resume_scheduled_task(
     ctx: RunContext[ToolContext],
     task_id: str,

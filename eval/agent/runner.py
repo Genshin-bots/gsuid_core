@@ -31,21 +31,56 @@ SESSION_LOG_DIR = Path("data/ai_core/session_logs")
 AGENT_EVAL_MAX_HISTORY = 30
 
 
+def _doc_sort_key(doc: dict, mtime: float) -> float:
+    """段文件越新越大。setup 与打分枪同 uid 时用它选打分那一段。"""
+    for field in ("updated_at", "created_at"):
+        if field in doc:
+            v = doc[field]
+            if isinstance(v, (int, float)):
+                return float(v)
+    return mtime
+
+
+def _log_complete(doc: dict) -> bool:
+    types = {e.get("type") for e in doc.get("entries") or []}
+    return ("result" in types) or ("run_end" in types)
+
+
+def _prefer_log(current: dict | None, candidate: dict, cand_key: float) -> tuple[dict, float]:
+    """完整段优先，其次时间戳更新的（避开 setup 枪盖住打分枪）。"""
+    if current is None:
+        return candidate, cand_key
+    cur_key = _doc_sort_key(current, 0.0)
+    cur_ok = _log_complete(current)
+    cand_ok = _log_complete(candidate)
+    if cand_ok and not cur_ok:
+        return candidate, cand_key
+    if cur_ok and not cand_ok:
+        return current, cur_key
+    if cand_key >= cur_key:
+        return candidate, cand_key
+    return current, cur_key
+
+
 def _find_log_by_session_id(session_id: str) -> Optional[dict]:
+    best: dict | None = None
+    best_key = -1.0
     f = SESSION_LOG_DIR / f"{session_id}.json"
     if f.exists():
         try:
-            return json.loads(f.read_text(encoding="utf-8"))
+            doc = json.loads(f.read_text(encoding="utf-8"))
+            best, best_key = _prefer_log(best, doc, _doc_sort_key(doc, f.stat().st_mtime))
         except Exception:
-            return None
+            pass
     for p in SESSION_LOG_DIR.glob("*.json"):
         try:
             doc = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if doc.get("session_id") == session_id:
-            return doc
-    return None
+        if "session_id" not in doc or doc["session_id"] != session_id:
+            continue
+        best, best_key = _prefer_log(best, doc, _doc_sort_key(doc, p.stat().st_mtime))
+    return best
 
 
 def _scan_log_by_user(user_id: str, since: float, wait: float) -> Optional[dict]:
@@ -131,8 +166,8 @@ async def run_once(
     # persona 默认早柚（全局默认人格会暴露 AI 身份，非角色，评测须显式指定）；
     # 允许 case 传 persona: null 显式关人格（judge/通用助手场景）。
     persona = case["persona"] if "persona" in case else "早柚"
-    enable_tools = case.get("enable_tools", True)
-    group_id = _case_group_id(case)
+    enable_tools = case["enable_tools"] if "enable_tools" in case else True
+    group_id = _case_group_id(case, run_tag=uid)
 
     # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测用）
     if case.get("warmup_turns"):
@@ -200,41 +235,44 @@ async def run_case(client: httpx.AsyncClient, base_url: str, case: dict, k: int,
 
 
 # ───────────────────────── 批量 B 模式（快得多） ─────────────────────────
-# 交接文档第 2 节：session_log 空闲≥60s（POLL 15s）才落盘；逐条 run 各等一次 ≈ 1min/run，
-# 100+ 例 × k 会拖到数小时。批量模式：一次性 fire 全部 run（并发≤3）→ 全部返回后**只等一次**
-# flush → 一趟扫盘按唯一 user_id 关联。每 run user_id 唯一 → session 文件天然不冲突。
+# session_log 空闲≥60s 才落盘；逐条各等一次 ≈1min/run。批量：并发 fire 全部 run
+# → 只等一次 flush → 按唯一 user_id 扫盘。每 run user_id 唯一，session 文件不冲突。
 
 
-def _case_group_id(case: dict) -> Optional[str]:
+def _case_group_id(case: dict, run_tag: str = "") -> Optional[str]:
     """群聊向用例注入合成 group_id，让端点走群会话语义（沉默/is_tome/多人）。
 
-    case 可显式 ``group_id``；或 targets 含 group-chat/multi-user 时自动生成稳定合成 ID。
-    不含真实群号。
+    case 可显式 ``group_id``；或 targets 含 group-chat/multi-user 时自动生成。
+    ``run_tag`` 把同 case 的 k 次 run 隔开，避免并发抢同一群会话。
     """
-    if "group_id" in case:
-        gid = case.get("group_id")
-        return str(gid) if gid else None
-    targets = case.get("targets") or []
-    domain = str(case.get("domain") or "")
-    flags = set(targets) | {domain}
-    if flags & {
-        "group-chat",
-        "multi-user",
-        "multi_user_session",
-        "implicit_addressing",
-        "silence_judgment",
-        "multi_speaker",
-    }:
-        return f"eval_grp_{case.get('id', 'x')}"
-    return None
+    gid = ""
+    if "group_id" in case and case["group_id"]:
+        gid = str(case["group_id"])
+    else:
+        targets = case["targets"] if "targets" in case and case["targets"] else []
+        domain = str(case["domain"]) if "domain" in case and case["domain"] else ""
+        flags = set(targets) | {domain}
+        if flags & {
+            "group-chat",
+            "multi-user",
+            "multi_user_session",
+            "implicit_addressing",
+            "silence_judgment",
+            "multi_speaker",
+        }:
+            cid = str(case["id"]) if "id" in case else "x"
+            gid = f"eval_grp_{cid}"
+    if not gid:
+        return None
+    return f"{gid}_{run_tag}" if run_tag else gid
 
 
 async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
     uid = f"eval_{case['id']}_{run_idx}_{uuid.uuid4().hex[:6]}"
     queued = time.time()
     persona = case["persona"] if "persona" in case else "早柚"
-    enable_tools = case.get("enable_tools", True)
-    group_id = _case_group_id(case)
+    enable_tools = case["enable_tools"] if "enable_tools" in case else True
+    group_id = _case_group_id(case, run_tag=uid)
     async with sem:
         # setup（可选）：跨轮 modify/cancel 类用例需要**真实的既有任务**才能被"定位并修改"。
         # 合成 history 里写"已设好"却从未真调工具落库 → 评测里根本无任务可改（假失败）。
@@ -290,24 +328,30 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
 
 
 def _scan_all_logs(uids: set, since: float) -> dict:
-    """一趟扫 session_logs，返回 {uid: doc}（优先含 result/run_end 的完整轨迹）。"""
+    """一趟扫 session_logs，返回 {uid: doc}。
+
+    setup 与打分枪共用 uid、各写一段完整 log。必须取 **updated_at 最晚的完整段**，
+    不能按 glob 顺序后者覆盖——否则工具断言打在「建任务」那一轮上。
+    """
     out: dict = {}
     for p in glob.glob(str(SESSION_LOG_DIR / "*.json")):
         pp = Path(p)
         try:
-            if pp.stat().st_mtime < since - 2:
+            mtime = pp.stat().st_mtime
+            if mtime < since - 2:
                 continue
             doc = json.loads(pp.read_text(encoding="utf-8"))
         except Exception:
             continue
         blob = json.dumps(doc, ensure_ascii=False)
-        types = {e.get("type") for e in doc.get("entries", [])}
-        complete = ("result" in types) or ("run_end" in types)
+        cand_key = _doc_sort_key(doc, mtime)
         for uid in uids:
-            if uid in blob:
-                if uid not in out or complete:
-                    out[uid] = doc
-                break
+            if uid not in blob:
+                continue
+            prev = out[uid] if uid in out else None
+            chosen, _ = _prefer_log(prev, doc, cand_key)
+            out[uid] = chosen
+            break
     return out
 
 
@@ -355,7 +399,11 @@ async def run_suite_batch(
 
     earliest = time.time()
     total = len(specs)
-    print(f"[batch] firing {total} runs (concurrency={concurrency})…", flush=True)
+    print(
+        f"[batch] firing {total} runs in parallel (concurrency={concurrency}; "
+        f"same-case setup/warmup/probe stay serial)…",
+        flush=True,
+    )
 
     done = 0
 
@@ -363,11 +411,12 @@ async def run_suite_batch(
         nonlocal done
         f = await _fire_run(client, base_url, c, i, sem, timeout)
         done += 1
-        err = f["resp"].get("error")
+        err = f["resp"]["error"] if "error" in f["resp"] and f["resp"]["error"] else None
         if done % 10 == 0 or err:
             tag = f"ERR({err})" if err else "ok"
             print(
-                f"[batch] fired {done}/{total}  last={f['case_id']}#{f['run_idx']} {f['latency']:.0f}s {tag}",
+                f"[batch] fired {done}/{total} left={total - done}  "
+                f"last={f['case_id']}#{f['run_idx']} {f['latency']:.0f}s {tag}",
                 flush=True,
             )
         return f
@@ -378,13 +427,19 @@ async def run_suite_batch(
     # 只等一次让日志 flush（空闲≥60s 才落盘），再一趟扫盘；缺失的补扫
     await asyncio.sleep(wait)
     all_uids = {f["uid"] for f in fired}
-    docs = await asyncio.to_thread(_scan_all_logs, all_uids, earliest)
-    for _ in range(rescans):
-        missing = {u for u in all_uids if u not in docs}
-        if not missing:
+    docs: dict = {}
+    for i in range(1 + rescans):
+        found = await asyncio.to_thread(_scan_all_logs, all_uids, earliest)
+        for uid, doc in found.items():
+            if uid not in docs:
+                docs[uid] = doc
+                continue
+            chosen, _ = _prefer_log(docs[uid], doc, _doc_sort_key(doc, 0.0))
+            docs[uid] = chosen
+        if all(u in docs for u in all_uids):
             break
-        await asyncio.sleep(rescan_gap)
-        docs.update(await asyncio.to_thread(_scan_all_logs, missing, earliest))
+        if i < rescans:
+            await asyncio.sleep(rescan_gap)
 
     per_case: dict = {}
     for f in fired:

@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 
+def test_cjk_control_tags_are_illegal() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import has_illegal_angle_tags, find_illegal_angle_tags
+
+    text = "<要求用其他语言复述用户的请求>\n早柚：困"
+    assert has_illegal_angle_tags(text)
+    assert any("要求" in t for t in find_illegal_angle_tags(text))
+    assert not has_illegal_angle_tags("1 < 2 且 3 > 0")
+
+
 def test_allows_protocol_tags_only() -> None:
     from gsuid_core.ai_core.angle_bracket_guard import has_illegal_angle_tags
 

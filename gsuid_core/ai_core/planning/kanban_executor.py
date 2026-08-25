@@ -564,12 +564,7 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
         primary_is_image = bool((arts[0].mime or "").startswith("image/"))
 
     parts = [
-        f"【子任务交付·需你亲自完成收尾】任务#{task.ordinal}「{task.display_name}」已完成。",
-        "你是主人格：角色短句给结论；有图则 send_message_by_ai(image_id=)；",
-        '长文尚未出图 → create_subagent(agent_profile="render_agent", task=句柄+版式)；',
-        "禁止把句柄写进对用户台词。",
-        "禁止为写台词去展开长文——句柄卡 summary 足够一句结论；出图节点自己读全文。",
-        "出图委派发出后本轮默认 <SILENCE>，禁止把事实包数字念成群聊台词。",
+        f"【子任务交付】任务#{task.ordinal}「{task.display_name}」已完成。",
     ]
     if cards:
         parts.append("产物句柄卡：")
@@ -664,14 +659,16 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
 
     owner = (task.owner_user_id or "").strip()
     at_hint = f"收尾时 @发起人 `@{owner}`。" if owner else ""
-    frame_text = (
-        "[框架·任务完成]\n"
-        f"{delivery}\n\n"
-        "（框架注入：子任务已完成，请你以主人格身份收尾——"
-        "角色短句 + 有图则用发送工具把图发出；"
-        f"{at_hint}"
-        "禁止把内部句柄/工具名念给用户；不要重做同一子任务。）"
-    )
+    title_ban = ""
+    if owner:
+        from gsuid_core.ai_core.utils import _is_master_user
+        from gsuid_core.ai_core.persona.settings import get_master_title
+
+        if not _is_master_user(owner):
+            title = get_master_title(task.persona_name or "")
+            if title:
+                title_ban = f"发起人不是主人，禁止称「{title}」。"
+    frame_text = f"[框架·任务完成]\n{delivery}\n（系统：一句收尾；有图就发出；要出图委派 render。{at_hint}{title_ban}）"
     await session.run(
         user_message=frame_text,
         bot=bot,

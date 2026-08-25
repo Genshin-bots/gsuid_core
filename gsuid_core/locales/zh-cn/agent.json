@@ -125,6 +125,7 @@
   "log.agent.tool_count_baseline_extra": "[GsCoreAIAgent] 工具数量: {p0} (保底 {p1} + 附加 {p2})",
   "log.agent.tool_execution_compl_name_result_passed_ok": "[✅ 工具执行完毕]: 工具名称='{p0}', 结果给到Agent={tool_result_str}",
   "log.agent.tool_list": "[GsCoreAIAgent] 工具列表: {p0}",
+  "log.agent.prefix_tools_removed": "[GsCoreAIAgent] 本轮工具名前缀 removed={names}",
   "log.agent.remote_web_search_attached": "[GsCoreAIAgent] 本轮启用 Responses hosted web_search，本地 web_search_tool 不发给模型",
   "log.agent.tool_thrash_fuse": "工具空转熔断: {tool_name}×{streak}",
   "log.agent.tool_thrash_strip_duplicate": "工具空转截断: 丢弃重复 {tool_name}",

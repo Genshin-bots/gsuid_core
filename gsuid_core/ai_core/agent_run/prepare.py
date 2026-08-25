@@ -97,7 +97,8 @@ class PreparePhase(RunOnceHost):
         # _prepare_user_message 的图片理解）都按此记账；finally 还原，泄漏至多止于本 task。
         st.budget_scope_token = _current_budget_scope.set(st.budget_scope) if st.budget_scope is not None else None
 
-        st.tool_call_list = []  # 用于记录本次运行中被调用的工具列表，供后续统计使用
+        st.tool_call_list = []
+        st.effectual_mutate = False
         # 同引用暴露给 _execute_run 的干净重试分支：判断失败前是否已有工具副作用（F14）
         self._last_attempt_tool_calls = st.tool_call_list
         self._last_attempt_delegated_render = False
@@ -187,6 +188,7 @@ class PreparePhase(RunOnceHost):
             DISPUTE_EXTRA_KEY: self._run_disputes,
             "speech_policy": "free",
             "has_status_tool": False,
+            "parent_create_by": self.create_by,
         }
         if self.persona_name:
             st.run_extra["persona_name"] = self.persona_name
@@ -298,6 +300,7 @@ class PreparePhase(RunOnceHost):
                 _ut = "direct"
                 if st.ev is not None:
                     _ut = str(st.ev.user_type or ("group" if st.ev.group_id else "direct"))
+                _has_reply = bool(st.ev.reply or st.ev.reply_id) if st.ev is not None else False
                 st.tg = interaction_scaffold.build_turn_graph(
                     _probe or _cur_text,
                     persona_name=self.persona_name or "",
@@ -308,6 +311,7 @@ class PreparePhase(RunOnceHost):
                     recent_tool_call=interaction_scaffold.has_recent_tool_call(self.history),
                     followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
                     ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
+                    has_reply=_has_reply,
                 )
             if st.cheap is None:
                 st.cheap = interaction_scaffold.decide_cheap_gate(
@@ -344,6 +348,17 @@ class PreparePhase(RunOnceHost):
             )
             st.run_extra[SCHED_CREATE_OK_KEY] = _create_ok
             st.run_extra[SCHED_MUTATE_OK_KEY] = _mutate_ok
+            from gsuid_core.ai_core.buildin_tools.visibility import visibility_user_hint
+
+            _vh = visibility_user_hint(
+                is_group=bool(st.tg.is_group),
+                call_to_self=bool(st.tg.call_to_self),
+                followup_detected=st.followup_detected,
+                has_active_task=st.has_active_task,
+                create_ok=_create_ok,
+            )
+            if _vh:
+                st.final_user_message = _append_user_text(st.final_user_message, f"\n{_vh}")
             if self.max_iterations is None and st.limits is not None:
                 from gsuid_core.ai_core.agent_run.tools import group_idle_request_limit
 

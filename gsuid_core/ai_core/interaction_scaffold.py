@@ -286,6 +286,14 @@ def count_style_pushes(current_text: str, recent: List[Tuple[str, str]], speaker
 # C-3 寻址前置门 @ 标注文案的**唯一**定义点：utils.prepare_content_payload / history_format 渲染
 AT_OTHER_MARKER = "（@的是这位用户，不是你）"
 DIRECT_MARKER = "（直接找你说的）"
+# 引用 bot 仍是 is_tome，但不能写成「直接找你」——交给主循环里的人格判断。
+QUOTE_TOME_MARKER = "（引用了你的上一条。先判断对方是不是在找你：追问或吩咐你才回；跟别人说话或故意惹你则 <SILENCE>。）"
+QUOTE_TOME_HINT = (
+    "\n\n（系统提示：对方引用了你的上一条，不等于在找你。"
+    "是追问/反驳/吩咐你才开口；在跟群里别人说话或故意惹你，输出 <SILENCE>。）"
+)
+# 引用同时带第二人称祈使：按直接找你，不用 quoted_tome。
+_QUOTE_DIRECTED_RE = re.compile(r"^(?:你|您)?\s*(?:帮|给|查|看|设|改|取消|删|列)")
 
 ADDRESS_GATE_HINT = (
     "\n\n（系统提示：这条消息 @ 的是群里另一个人、并不是在叫你，本轮已不提供任何工具。"
@@ -338,6 +346,13 @@ def is_addressed_to_self(
     if not body:
         return False
     for name in names:
+        if body.startswith(name):
+            rest = body[len(name) :]
+            if not rest or rest[0] in " \t，,、：:!！?？~～":
+                return True
+            # 单 ASCII 名（评测夹具 p）可紧贴中文；单汉字「小」不当「小姐姐」
+            if len(name) == 1 and name.isascii():
+                return True
         if re.match(rf"{re.escape(name)}(?:\s+|[，,、：:])", body):
             return True
         pat = _VOCATIVE_AFTER_NAME_TMPL.format(name=re.escape(name))
@@ -477,6 +492,7 @@ class TurnGraph:
     speaker_ids: List[str] = field(default_factory=list)
     multi_speaker: bool = False
     call_to_self: bool = False
+    quoted_tome: bool = False
     address_gated: bool = False
     ellipsis_followup: bool = False
     task_management: bool = False
@@ -532,6 +548,7 @@ def build_turn_graph(
     recent_tool_call: bool = False,
     followup_max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
     ambient_max_len: int = AMBIENT_MAXLEN_DEFAULT,
+    has_reply: bool = False,
 ) -> TurnGraph:
     """从本轮消息 + 近历史构建 TurnGraph（唯一权威结构源）。"""
     recent_list = list(recent) if recent is not None else []
@@ -543,6 +560,13 @@ def build_turn_graph(
         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
         extra = collect_persona_surfaces(persona_name)
+    # 引用 bot 仍是 is_tome（call_to_self）；quoted_tome 只改注入，不拦进环。
+    textual = is_addressed_to_self(text, persona_name, False, extra_names=extra)
+    quoted_tome = bool(is_tome) and has_reply and not textual
+    if quoted_tome:
+        body = extract_message_body(text)
+        if references_task_management(body) or _QUOTE_DIRECTED_RE.match(body):
+            quoted_tome = False
     call = is_addressed_to_self(text, persona_name, is_tome, extra_names=extra)
     multi = len(speakers) >= 2
     addr = (
@@ -584,6 +608,7 @@ def build_turn_graph(
         speaker_ids=speakers,
         multi_speaker=multi,
         call_to_self=call,
+        quoted_tome=quoted_tome,
         address_gated=addr,
         ellipsis_followup=ellipsis,
         task_management=task_mgmt,
@@ -625,12 +650,10 @@ def decide_cheap_gate(
 
     - 私聊 → full
     - 开口门/寻址门强负（多人互聊、@别人、ambient 催别人）→ silence
-    - **群聊 + 未 @ + zone ∈ {hostile, cold} → silence**（人设 Presence「低好感仅 @ 才回」
-      终于是门，不是散文）。呼名 / 活跃任务 / 省略跟进 / soft_continue 抬回：
-      履约 > 脾气，且要给「人格被点名但 @ 丢了」留缺口。
+    - **群聊 + 未 @ + zone ∈ {hostile, cold} → silence**。引用 bot 的 is_tome
+      仍进环，由人格判断是否 <SILENCE>。呼名 / 活跃任务 / 省略跟进抬回。
     - 被 @ 且分类为闲聊、无任务证据 → light（短回、零工具）
     - 其余（含未 @ 的群消息）→ full，由模型/C-3 决定是否 <SILENCE>
-      （硬静音未 @ 会误吞迎新/旁观应回/拆条请求等）
     """
     if not tg.is_group:
         return CheapGate.FULL
@@ -650,7 +673,8 @@ def decide_cheap_gate(
             and not tg.is_tome
             and not tg.call_to_self
             and not tg.ellipsis_followup
-            and not tg.soft_continue
+            and not tg.task_management
+            and not is_manage_ellipsis_form(tg.message_text)
             and not has_active_task
         ):
             return CheapGate.SILENCE
@@ -685,6 +709,8 @@ def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
         return hints
     if cheap is CheapGate.LIGHT:
         hints.append(LIGHT_MODE_HINT)
+    if tg.quoted_tome:
+        hints.append(QUOTE_TOME_HINT)
     if tg.ellipsis_followup:
         hints.append(FOLLOWUP_HINT)
     elif tg.soft_continue:

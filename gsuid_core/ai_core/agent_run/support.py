@@ -36,6 +36,53 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     tool_call_targets_render_agent as _tool_call_targets_render_agent_core,
 )
 
+# 写入类日程工具：PIN 拒绝或失败不算生效。list 只读，不算。
+_EFFECTUAL_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "add_once_task",
+        "add_interval_task",
+        "modify_scheduled_task",
+        "cancel_scheduled_task",
+        "pause_scheduled_task",
+        "resume_scheduled_task",
+    }
+)
+
+
+def _tool_return_is_effectual_write(name: str, content: str, *, failed: bool) -> bool:
+    """日程写入是否真正改了世界。闸门拒绝文案不算。"""
+    if failed or name not in _EFFECTUAL_WRITE_TOOLS:
+        return False
+    from gsuid_core.ai_core.buildin_tools.visibility import tool_return_is_gate_reject
+
+    return not tool_return_is_gate_reject(content)
+
+
+# 须与 capability_agents.runner.CAPABILITY_AGENT_ERROR_PREFIX 同前缀，供看板认失败。
+_MAX_ITER_INTERNAL = "⚠️ 能力代理执行失败: 已达最大思考轮数，未能在限定步数内完成本任务。中间产物已留在工作区。"
+_MAX_ITER_VISIBLE = (
+    "⚠️ 已达最大思考轮数，未能在限定步数内完成本任务。"
+    "中间产物（如已写入的文件 / artifact）已留在工作区，未回传以避免刷屏。"
+)
+
+
+def usage_limit_return_payload(
+    *,
+    create_by: str,
+    is_subagent: bool,
+    delegated_render: bool,
+    image_sent: bool,
+) -> str:
+    """return 模式超轮数回给调用方。评测静音；能力代理必须是可识别失败。"""
+    if delegated_render and not image_sent:
+        return "<SILENCE>"
+    if create_by in ("TEST", "EvalJudge"):
+        return "<SILENCE>"
+    if is_subagent or create_by in ("CapabilityAgent", "AutoPlanner"):
+        return _MAX_ITER_INTERNAL
+    return _MAX_ITER_VISIBLE
+
+
 # 假完成闸——**结构判据**：动作完成声明 + 本轮零工具调用。声明的识别只用
 # 闭类完成动词 + 第一人称施动锚点（语言学范畴，非业务域词表）
 _FAKE_DONE_RE = re.compile(

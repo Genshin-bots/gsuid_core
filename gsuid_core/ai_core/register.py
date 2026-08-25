@@ -205,7 +205,11 @@ def ai_tools(
                 for name, param in check_sig.parameters.items():
                     # 获取类型注解的字符串表示
                     anno_str = str(param.annotation)
-                    if "Event" in anno_str:
+                    if "RunContext" in anno_str:
+                        check_call_kwargs[name] = ctx
+                    elif "ToolContext" in anno_str:
+                        check_call_kwargs[name] = ctx.deps
+                    elif "Event" in anno_str:
                         check_call_kwargs[name] = ctx.deps.ev
                     elif "Bot" in anno_str:
                         check_call_kwargs[name] = ctx.deps.bot

@@ -173,7 +173,7 @@ async def chatWithHistory(
         task_level="low" if req.as_judge else "high",
         session_id=f"{'judge' if req.as_judge else 'test'}_{user_id}",
         dynamic_tools=False if req.as_judge else (True if req.enable_tools else None),
-        wall_clock_budget=30.0 if req.as_judge else None,
+        wall_clock_budget=60.0 if req.as_judge else None,
     )
     if not req.as_judge:
         _load_request_history(agent, req.history, _guard_on)
@@ -199,6 +199,12 @@ async def chatWithHistory(
         if not req.as_judge and await fire_hooks(AgentHookPoint.BEFORE_AI_CHAT, hook_ctx) is not HookDecision.CONTINUE:
             return {"status_code": 200, "data": "<SILENCE>", "memory": ""}
 
+        if req.as_judge:
+            # 声明是跳过人设/脚手架/工具；走 run_interactive_turn 会灌 suffix/闸门，判分常不成 PASS/FAIL。
+            raw = await agent.run(req.message, bot=bot, ev=event, return_mode="return")
+            judge_text = raw if isinstance(raw, str) else str(raw)
+            return {"status_code": 200, "data": judge_text, "memory": ""}
+
         outcome = await run_interactive_turn(
             bot=bot,
             event=event,
@@ -211,11 +217,19 @@ async def chatWithHistory(
             history_context="",
         )
         memory_text = hook_ctx.retrieved["memory"] if "memory" in hook_ctx.retrieved else ""
-        if outcome.silenced_early or outcome.is_silence:
+        from gsuid_core.ai_core.utils import is_silence_marker, strip_framework_user_leaks
+
+        sent = "\n".join(t for t in agent.last_run_visible_texts if t.strip())
+        if outcome.silenced_early and not sent:
             return {"status_code": 200, "data": "<SILENCE>", "memory": memory_text}
-        if outcome.result:
-            return {"status_code": 200, "data": outcome.result_text, "memory": memory_text}
-        return {"status_code": -100, "data": None}
+        data = outcome.result_text if outcome.result else ""
+        if isinstance(data, str):
+            data = strip_framework_user_leaks(data)
+        if (not data or is_silence_marker(data) or outcome.is_silence) and sent:
+            data = strip_framework_user_leaks(sent)
+        if not data or is_silence_marker(data):
+            return {"status_code": 200, "data": "<SILENCE>", "memory": memory_text}
+        return {"status_code": 200, "data": data, "memory": memory_text}
     except Exception as e:
         logger.error(t("log.webconsole.gscore_exception_chat_history", e=e))
         logger.exception(t("log.webconsole.gscore_history_fail_details"))

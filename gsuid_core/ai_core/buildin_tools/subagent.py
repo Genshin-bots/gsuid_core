@@ -5,9 +5,8 @@
 
 ## 三条委派路径
 
-- ``create_subagent(task=...)``（无 agent_profile）：跑一个临时的通用
-  Plan-and-Solve Agent，工具向量检索装配，**不挂任何 Kanban 树**。适合
-  完全一次性、无产物、主人格自己直接对话回答用户的内部小步骤。
+- ``create_subagent(task=...)``（空 agent_profile）：模型路径拒绝，须填花名册
+  node_id。内核 ``summarize_long_input``（无 ctx）仍走通用 Plan-and-Solve。
 - ``create_subagent(task=..., agent_profile=...)``（默认 transient=False）：
   **自动转为创建一棵单子任务的 Kanban 叶子根树**——同步等待该子任务跑完，把
   代理返回值 + artifact 句柄拼成回执串返回给主人格。这条路径之所以走 Kanban：
@@ -37,7 +36,10 @@ from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.delegation import await_delegation, delegation_handle
-from gsuid_core.ai_core.buildin_tools.visibility import visible_when_group_recall
+from gsuid_core.ai_core.buildin_tools.visibility import (
+    check_group_recall,
+    visible_when_group_recall,
+)
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入
 # 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
@@ -219,6 +221,7 @@ _TRANSIENT_DEFAULT_PROFILES = frozenset(
     capability_domain="长期任务编排",
     timeout=500.0,
     visible_when=visible_when_group_recall,
+    check_func=check_group_recall,
 )
 async def create_subagent(
     ctx: RunContext[ToolContext],
@@ -248,7 +251,7 @@ async def create_subagent(
     Args:
         ctx: 工具执行上下文
         task: 任务全文（事实包请直接写进 task，勿只写「帮我出图」）。
-        agent_profile: 能力代理 node_id 或可 resolve 的自然语言；空=通用规划子 Agent。
+        agent_profile: 必填 node_id（或可 resolve 的自然语言）；禁止空、禁止自造名。
         transient: True 仅纯 lookup；出图/落盘/改状态必须 False（默认）。
 
     **何时不要用 create_subagent**：
@@ -345,17 +348,11 @@ async def _create_subagent_impl(
         return await _dispatch_via_kanban(ctx, task, agent_profile)
 
     if ctx is not None and not agent_profile:
-        from gsuid_core.ai_core.agent_node import get_node, match_capability_node
+        from gsuid_core.ai_core.agent_node import list_nodes
 
-        auto_pid = match_capability_node(task)
-        if auto_pid and get_node(auto_pid) is not None:
-            logger.info(
-                i18n_t("log.ai.subagent_convert_kanban_leaf", p0=0, p1=auto_pid[:6], pid=auto_pid, p2=repr(task[:60]))
-            )
-            use_transient = transient or auto_pid in _TRANSIENT_DEFAULT_PROFILES
-            if use_transient:
-                return await _dispatch_transient_capability_agent(ctx, task, auto_pid)
-            return await _dispatch_via_kanban(ctx, task, auto_pid)
+        ids = [n.node_id for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"][:8]
+        listed = "、".join(ids) if ids else "（花名册为空）"
+        return f"未指定 agent_profile。请从花名册填写 node_id：{listed}"
 
     logger.info(i18n_t("log.ai.subagent_general_planning_executor_start", p0=task[:50]))
 
@@ -709,8 +706,12 @@ async def _dispatch_via_kanban(
 
     # 同步等待根任务进终态：与 check_delegation 共用 await_delegation，
     # 「内联等 5s」因此只是同一入口的默认参数，不再是独立轮询路径。
-    waited = _KANBAN_INLINE_WAIT_TIMEOUT_SEC
-    deleg = await await_delegation(delegation_handle(root.id), wait_sec=_KANBAN_INLINE_WAIT_TIMEOUT_SEC)
+    extra = ctx.deps.extra if ctx.deps is not None else {}
+    parent_cb = extra["parent_create_by"] if "parent_create_by" in extra else ""
+    # TEST/评测 HTTP 等不到回灌；生产仍 5s 以免占 _run_lock。
+    wait_sec = 90.0 if parent_cb == "TEST" else _KANBAN_INLINE_WAIT_TIMEOUT_SEC
+    waited = wait_sec
+    deleg = await await_delegation(delegation_handle(root.id), wait_sec=wait_sec)
     if deleg is None:
         return f"⚠️ Kanban 任务记录消失（task_id={root.id}）；可能被并发删除，请到 webconsole 看任务列表。"
     final: Optional[AIAgentTask] = await AIAgentTask.get_by_id(root.id) if deleg.is_terminal else None

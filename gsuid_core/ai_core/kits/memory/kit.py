@@ -36,6 +36,20 @@ _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
 _CHITCHAT_SHORT_LEN = 12
 
 
+def should_prefetch_memory(ctx: AgentHookContext) -> bool:
+    """闲聊/旁观不预灌。点名或任务跟进才允许目录卡。"""
+    tg = ctx.turn_graph
+    if tg is None or not tg.is_group:
+        return True
+    if not tg.call_to_self and not tg.needs_task_tools:
+        return False
+    if ctx.cheap_gate == "light":
+        return False
+    if (ctx.intent or "") == "闲聊" and not tg.needs_task_tools:
+        return False
+    return True
+
+
 def should_retrieve(query: str, intent: str, user_id: str) -> bool:
     """C4 寒暄门控（纯规则，无 LLM）：本轮值不值得开贵检索窗。
 
@@ -193,19 +207,20 @@ class MemoryKit(AgentKit):
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
-        """H05 贵检索窗：寒暄门控、scope、偏好能力域全在套件内部决定。"""
+        """H05：旁观不预灌；点名/私聊走 dual_route，全文走 search_cognition。"""
         from gsuid_core.ai_core.memory.config import memory_config
         from gsuid_core.ai_core.cognition.facade import inject_memory_slice
         from gsuid_core.ai_core.configs.ai_config import ai_config
 
         if not ai_config.get_config("enable_memory").data or not memory_config.enable_retrieval:
             return
+        if not should_prefetch_memory(ctx):
+            return
         if not should_retrieve(ctx.query, ctx.intent or "", ctx.user_id):
             logger.debug(t("log.ai.memory_skip_hit_small_talk_gate"))
             return
 
-        # 偏好注入是**能力域过滤**不是整轮开关：闲聊轮传空 list（检索侧只留
-        # general/纠错），而不是 None（= 不过滤，全量注入）。
+        # 闲聊传空 list：检索侧只留 general/纠错；None 会关掉过滤灌全量。
         pref_contexts: List[str] = []
         if ctx.intent != "闲聊":
             domains: Set[str] = set(relevant_preference_contexts(ctx.query))
@@ -217,7 +232,6 @@ class MemoryKit(AgentKit):
             ctx.query,
             scope=cog_scope_from_ctx(ctx),
             priority_speakers=priority,
-            # §7 第三方隐私拦截：敏感事实仅当事人在场才注入
             current_speaker_ids={ctx.user_id} if ctx.user_id else set(),
             preference_contexts=pref_contexts,
         )
@@ -272,11 +286,8 @@ class MemoryKit(AgentKit):
         parts: List[str] = []
         text = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
         if text:
-            from datetime import datetime
-
             guide = ctx.memory_guide or ""
-            stamp = datetime.now().strftime("%H:%M")
-            parts.append(f"{guide}[长期记忆·检索于 {stamp}]\n{text}")
+            parts.append(f"{guide}[长期记忆]\n{text}")
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:
             parts.append(prefetch)

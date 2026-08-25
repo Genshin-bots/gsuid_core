@@ -220,7 +220,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "单会话注入模型的最大历史消息条数。工具型 run 单轮产生 10+ 条消息, 过小会导致"
         "几乎每轮触发 compact、provider 前缀缓存反复失效(方案五); 调大可记住更多上文、"
         "减少 compact, 但更费 Token、也更易超出模型上下文",
-        30,
+        50,
         options=[10, 15, 20, 30, 50, 80],
     ),
     "suppress_intermediate_text": GsBoolConfig(
@@ -255,7 +255,7 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "group_lurk_mode": GsBoolConfig(
         "群聊未点名默认静默",
-        "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。默认关闭。修改后即时生效",
+        "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。不含 soft_continue。默认关闭。修改后即时生效",
         False,
     ),
     "group_at_list_max": GsIntConfig(
@@ -289,10 +289,10 @@ AI_CONFIG: Dict[str, GSC] = {
         options=[8, 12, 16, 24],
     ),
     "capability_roster_max": GsIntConfig(
-        "能力花名册字数硬帽",
-        "system 里可委派能力清单的最大字数。详情走 capability_map。修改后下次新建会话生效",
-        800,
-        options=[800, 1200, 1800, 2400],
+        "能力花名册单行字数上限",
+        "system 花名册每行 when_to_use 上限；不截断丢节点。详情走 capability_map。修改后下次新建会话生效",
+        120,
+        options=[80, 120, 200, 800, 1800],
     ),
     "agent_max_run_attempts": GsIntConfig(
         "核心请求重试次数",

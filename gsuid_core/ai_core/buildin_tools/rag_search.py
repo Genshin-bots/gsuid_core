@@ -21,6 +21,7 @@ from gsuid_core.ai_core.cognition import (
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 from gsuid_core.ai_core.buildin_tools.visibility import (
+    check_group_recall,
     visible_when_group_recall,
     visible_to_capability_only,
 )
@@ -72,7 +73,12 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
     )
 
 
-@ai_tools(category="buildin", capability_domain="回想", visible_when=visible_when_group_recall)
+@ai_tools(
+    category="buildin",
+    capability_domain="回想",
+    visible_when=visible_when_group_recall,
+    check_func=check_group_recall,
+)
 async def search_cognition(
     ctx: RunContext[ToolContext],
     query: str,

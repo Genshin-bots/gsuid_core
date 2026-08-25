@@ -17,18 +17,20 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
 import uuid
 import asyncio
 import argparse
 from pathlib import Path
+from collections.abc import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import yaml  # noqa: E402
 
-from eval.agent.harness import aggregate, score_case_passk, parse_judge_verdict  # noqa: E402
+from eval.agent.harness import Trace, aggregate, score_case_passk, parse_judge_verdict  # noqa: E402
 
 
 def make_env_judge():
@@ -143,7 +145,54 @@ def load_cases(path: Path, extra: list[Path] | None = None) -> tuple[int, list[d
     return k, list(by_id.values())
 
 
-async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
+def _case_score_row(cid: str, case: dict, traces: list[Trace], r: dict) -> dict:
+    tool_counts = [len(t.tool_calls) for t in traces]
+    latencies = [t.latency for t in traces if t.latency]
+    fw_saved = 0
+    expect = case["expect"] if "expect" in case else {}
+    pats = expect["final_regex_absent"] if "final_regex_absent" in expect else []
+    if pats:
+        for t in traces:
+            raw_hit = any(re.search(p, t.final_text, re.I) for p in pats)
+            deliv_hit = any(re.search(p, t.content_text, re.I) for p in pats)
+            if raw_hit and not deliv_hit:
+                fw_saved += 1
+    sample: dict[str, str | list[str]] = {}
+    for t, ok in zip(traces, r["per_run_pass"]):
+        if not ok:
+            sample = {
+                "delivered": (t.content_text or "")[:220],
+                "raw": (t.final_text or "")[:220],
+                "tools": t.called_names,
+            }
+            break
+    in_tok = sum(t.input_tokens for t in traces)
+    out_tok = sum(t.output_tokens for t in traces)
+    cr_tok = sum(t.cache_read_tokens for t in traces)
+    cw_tok = sum(t.cache_write_tokens for t in traces)
+    case_cache = round(cr_tok / in_tok, 4) if in_tok else 0.0
+    return {
+        "id": cid,
+        "domain": case["domain"] if "domain" in case else "?",
+        "targets": case["targets"] if "targets" in case else [],
+        "case_pass": r["case_pass"],
+        "per_run": r["per_run_pass"],
+        "fails": r["fail_reasons"],
+        "avg_tools": round(sum(tool_counts) / len(tool_counts), 2) if tool_counts else 0.0,
+        "max_tools": max(tool_counts) if tool_counts else 0,
+        "avg_latency": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
+        "max_latency": round(max(latencies), 1) if latencies else 0.0,
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "cache_read_tokens": cr_tok,
+        "cache_write_tokens": cw_tok,
+        "cache_rate": case_cache,
+        "firewall_saved_runs": fw_saved,
+        "sample": sample,
+    }
+
+
+async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], bool] | None) -> list[dict]:
     import httpx
 
     from eval.agent.runner import run_suite_batch
@@ -151,8 +200,13 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
     by_id = {c["id"]: c for c in active}
     # CLI 显式 --k 时硬覆盖所有 case 的 per-case k（冒烟要全 k=1）；未给则用 per-case/yaml 默认
     force_k = args.k is not None
+    if args.reset_state:
+        from eval.agent.reset_state import reset_eval_side_effects
+
+        stats = await reset_eval_side_effects()
+        print(f"[reset] {stats}", flush=True)
     async with httpx.AsyncClient() as client:
-        # 批量 B 模式：fire 全部 run（并发≤args.concurrency）→ 只等一次 flush → 一趟扫盘
+        # 回答阶段：fire 全部 run（并发=args.concurrency）→ 只等一次 flush → 一趟扫盘
         traces_by_case = await run_suite_batch(
             client,
             args.base_url,
@@ -164,71 +218,38 @@ async def _run_live(active: list[dict], k: int, args, judge) -> list[dict]:
             force_k=force_k,
         )
 
-    import re as _re
+    ids = [c["id"] for c in active]
+    total = len(ids)
+    score_cc = max(1, int(args.score_concurrency))
+    print(f"[score] scoring {total} cases (concurrency={score_cc})…", flush=True)
+    sem = asyncio.Semaphore(score_cc)
+    print_lock = asyncio.Lock()
+    done = 0
 
-    results: list[dict] = []
-    for i, cid in enumerate([c["id"] for c in active], 1):
-        c = by_id[cid]
-        expect = c.get("expect") or {}
-        traces = traces_by_case.get(cid, [])
-        r = score_case_passk(traces, expect, judge=judge)
-        tool_counts = [len(t.tool_calls) for t in traces]
-        latencies = [t.latency for t in traces if t.latency]
-        # 出戏防火墙依赖度：对含 final_regex_absent 的例，统计"原始输出泄露但交付文本已被 scrub 干净"
-        # 的 run 数（= 防火墙救场次数），量化人格是否靠防火墙兜底而非模型自守。
-        fw_saved = 0
-        pats = expect.get("final_regex_absent") or []
-        if pats:
-            for t in traces:
-                raw_hit = any(_re.search(p, t.final_text, _re.I) for p in pats)
-                deliv_hit = any(_re.search(p, t.content_text, _re.I) for p in pats)
-                if raw_hit and not deliv_hit:
-                    fw_saved += 1
-        # 失败样本：取首个失败 run（per_run_pass 与 traces 同序）的交付文本+原始文本（截断）
-        sample = {}
-        for t, ok in zip(traces, r["per_run_pass"]):
-            if not ok:
-                sample = {
-                    "delivered": (t.content_text or "")[:220],
-                    "raw": (t.final_text or "")[:220],
-                    "tools": t.called_names,
-                }
-                break
-        in_tok = sum(t.input_tokens for t in traces)
-        out_tok = sum(t.output_tokens for t in traces)
-        cr_tok = sum(t.cache_read_tokens for t in traces)
-        cw_tok = sum(t.cache_write_tokens for t in traces)
-        case_cache = round(cr_tok / in_tok, 4) if in_tok else 0.0
-        results.append(
-            {
-                "id": cid,
-                "domain": c.get("domain", "?"),
-                "targets": c.get("targets", []),
-                "case_pass": r["case_pass"],
-                "per_run": r["per_run_pass"],
-                "fails": r["fail_reasons"],
-                "avg_tools": round(sum(tool_counts) / len(tool_counts), 2) if tool_counts else 0.0,
-                "max_tools": max(tool_counts) if tool_counts else 0,
-                "avg_latency": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
-                "max_latency": round(max(latencies), 1) if latencies else 0.0,
-                "input_tokens": in_tok,
-                "output_tokens": out_tok,
-                "cache_read_tokens": cr_tok,
-                "cache_write_tokens": cw_tok,
-                "cache_rate": case_cache,
-                "firewall_saved_runs": fw_saved,
-                "sample": sample,
-            }
-        )
-        mark = "PASS" if r["case_pass"] else "FAIL"
-        print(
-            f"[{i:>3}/{len(active)}] [{mark}] {cid:30s} per_run={r['per_run_pass']} "
-            f"tools~{results[-1]['avg_tools']} {results[-1]['avg_latency']}s "
-            f"in={in_tok} cache={case_cache:.0%}"
-        )
-        if not r["case_pass"] and r["fail_reasons"]:
-            print(f"        ↳ {str(r['fail_reasons'][0])[:160]}")
-    return results
+    async def _score_one(cid: str) -> dict:
+        nonlocal done
+        case = by_id[cid]
+        traces = traces_by_case[cid] if cid in traces_by_case else []
+        expect = case["expect"] if "expect" in case else {}
+        async with sem:
+            # bot-judge 是同步 httpx；放线程池才能真正并行
+            r = await asyncio.to_thread(score_case_passk, traces, expect, judge)
+        row = _case_score_row(cid, case, traces, r)
+        async with print_lock:
+            done += 1
+            mark = "PASS" if r["case_pass"] else "FAIL"
+            print(
+                f"[{done:>3}/{total}] [{mark}] {cid:30s} per_run={r['per_run_pass']} "
+                f"tools~{row['avg_tools']} {row['avg_latency']}s "
+                f"in={row['input_tokens']} cache={row['cache_rate']:.0%}",
+                flush=True,
+            )
+            if not r["case_pass"] and r["fail_reasons"]:
+                print(f"        ↳ {str(r['fail_reasons'][0])[:160]}", flush=True)
+        return row
+
+    # gather 保输入序，报告仍按用例表顺序；打印按完成先后
+    return list(await asyncio.gather(*[_score_one(cid) for cid in ids]))
 
 
 def main() -> int:
@@ -244,7 +265,31 @@ def main() -> int:
     ap.add_argument("--token", default=os.getenv("GSUID_LOCAL_TEST_TOKEN", ""))
     ap.add_argument("--k", type=int, default=None, help="覆盖 yaml 里的 k（pass^k）")
     ap.add_argument("--wait", type=float, default=85.0, help="批量 B 模式：全部 fire 后只等一次 session_log 落盘秒数")
-    ap.add_argument("--concurrency", type=int, default=3, help="批量并发 run 数（≤3，避免压垮 provider）")
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=3,
+        help="回答阶段并发 run 数（已并行；加大可加速，但会压 core/provider）",
+    )
+    ap.add_argument(
+        "--score-concurrency",
+        type=int,
+        default=8,
+        help="打分阶段并发（bot-judge HTTP，与回答阶段独立；judge=off 时几乎无开销）",
+    )
+    ap.add_argument(
+        "--reset-state",
+        dest="reset_state",
+        action="store_true",
+        default=True,
+        help="开跑前取消 pending/paused 及 eval_ 前缀定时任务（默认开）",
+    )
+    ap.add_argument(
+        "--no-reset-state",
+        dest="reset_state",
+        action="store_false",
+        help="跳过评测前清定时任务",
+    )
     ap.add_argument(
         "--timeout",
         type=float,
@@ -302,6 +347,7 @@ def main() -> int:
 
     print(
         f"用例总数={len(cases)}  运行={len(active)}  跳过(needs_fixture)={len(skipped)}  k(pass^k)={k}  "
+        f"fire_concurrency={args.concurrency}  score_concurrency={args.score_concurrency}  "
         f"judge={args.judge}({'ON' if judge else 'OFF→开放题严格判失败'})\n"
     )
 

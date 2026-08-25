@@ -107,7 +107,12 @@ def register_mcp_event_enricher(fn: McpEventEnricher) -> None:
     if fn in _mcp_event_enrichers:
         return
     _mcp_event_enrichers.append(fn)
-    logger.info(f"[mcp] event enricher registered: {_callable_label(fn)}")
+    logger.info(
+        t(
+            "log.mcp.mcp_server_event_enricher_register",
+            p0=_callable_label(fn),
+        )
+    )
 
 
 def unregister_mcp_event_enricher(fn: McpEventEnricher) -> None:
@@ -120,7 +125,12 @@ def register_mcp_export_filter(fn: McpExportFilter) -> None:
     if fn in _mcp_export_filters:
         return
     _mcp_export_filters.append(fn)
-    logger.info(f"[mcp] export filter registered: {_callable_label(fn)}")
+    logger.info(
+        t(
+            "log.mcp.mcp_server_export_filter_register",
+            p0=_callable_label(fn),
+        )
+    )
 
 
 def unregister_mcp_export_filter(fn: McpExportFilter) -> None:

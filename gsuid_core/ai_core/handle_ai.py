@@ -52,7 +52,7 @@ from gsuid_core.ai_core.trigger_bridge import MockBot
 from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.relationship.engine import settle_turn
-from gsuid_core.ai_core.interaction_scaffold import CheapGate
+from gsuid_core.ai_core.interaction_scaffold import CheapGate, GroupOpenGate
 
 # AI并发控制配置
 MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
@@ -205,10 +205,11 @@ async def run_interactive_turn(
         recent_tool_call=has_recent_tool_call(session.history),
         followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
         ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
+        has_reply=bool(event.reply or event.reply_id),
     )
-    # 结构性静音（@了别人 / 多人互聊 / 催别人）：内容不是冲着人格，不结算。
-    cheap = decide_cheap_gate(turn_graph, soft_triggered=soft_triggered)
-    if cheap is CheapGate.SILENCE:
+    hook_ctx.turn_graph = turn_graph
+    # 只拦开口门 / 寻址门。lurk / 低好感区要 rel，不能在 AFTER_SESSION 前判。
+    if turn_graph.open_gate is GroupOpenGate.SILENCE or turn_graph.address_gated:
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         return InteractiveTurnResult("", "<SILENCE>", True, False, "", True, hook_ctx, hook_ctx.relationship)
 
@@ -227,7 +228,17 @@ async def run_interactive_turn(
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
 
-    cheap = decide_cheap_gate(turn_graph, soft_triggered=soft_triggered, intent=intent, rel=rel)
+    cheap = decide_cheap_gate(
+        turn_graph,
+        soft_triggered=soft_triggered,
+        intent=intent,
+        rel=rel,
+        # H03 套件旗 + history 工具证据；装配后的第二道仍用 has_actionable
+        has_active_task=(
+            hook_ctx.has_actionable or has_recent_tool_call(session.history) or bool(hook_ctx.prev_turn_used_tools)
+        ),
+    )
+    hook_ctx.cheap_gate = cheap.value
     if cheap is CheapGate.SILENCE:
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         if settle:
@@ -246,7 +257,7 @@ async def run_interactive_turn(
         if enqueue_ts is not None:
             enqueue_ts = time.time()
 
-    user_messages, guard_flags = await prepare_content_payload(event)
+    user_messages, guard_flags = await prepare_content_payload(event, quoted_tome=turn_graph.quoted_tome)
     await apply_summary_guard(event, user_messages)
     stamp_current_time(user_messages)
 
@@ -255,6 +266,9 @@ async def run_interactive_turn(
         bot_id=bot_id,
         group_id=str(event.group_id) if event.group_id else None,
         history=hist_records,
+        current_user_id=str(event.user_id) if event.user_id else None,
+        query=query,
+        persona_name=session.persona_name,
     )
     await fire_hooks(AgentHookPoint.RETRIEVE_CONTEXT, hook_ctx)
     # 检索预算最长 15s，超过队头 TTL；检索结束后重新计时，避免刚查完就被当过期丢弃。
@@ -264,7 +278,13 @@ async def run_interactive_turn(
     hook_ctx.turn_graph = turn_graph
     hook_ctx.cheap_gate = cheap.value
     hook_ctx.recent_report_titles = recent_report_titles(session.history)
-    hist_block = build_group_history_block(event) if history_context is None else history_context
+    hist_block = ""
+    if history_context is not None:
+        hist_block = history_context
+    elif cheap is CheapGate.FULL and (
+        turn_graph.call_to_self or turn_graph.ellipsis_followup or turn_graph.task_management
+    ):
+        hist_block = build_group_history_block(event)
     full_context, has_actionable = await assemble_dynamic_context(
         query=query,
         user_id=str(event.user_id),

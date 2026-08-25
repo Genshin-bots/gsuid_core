@@ -87,14 +87,9 @@ def group_recall_allowed(*, is_group: bool, call_to_self: bool, followup_detecte
 
 
 def visible_when_group_recall(ctx: RunContext[ToolContext]) -> bool:
-    """群聊未点名且非任务跟进时隐藏回想。缺旗则偏可见。"""
-    deps = ctx.deps
-    if deps is None:
-        return True
-    extra = deps.extra
-    if GROUP_RECALL_OK_KEY not in extra:
-        return True
-    return bool(extra[GROUP_RECALL_OK_KEY])
+    """PIN 恒可见。未点名由 check_func 拒执行，不拆 schema。"""
+    _ = ctx
+    return True
 
 
 def sched_tool_visibility(
@@ -115,25 +110,72 @@ def sched_tool_visibility(
 
 
 def visible_when_sched_create(ctx: RunContext[ToolContext]) -> bool:
-    """跟进已有条目时隐藏新建。缺旗则偏可见。"""
-    deps = ctx.deps
-    if deps is None:
-        return True
-    extra = deps.extra
-    if SCHED_CREATE_OK_KEY not in extra:
-        return True
-    return bool(extra[SCHED_CREATE_OK_KEY])
+    """调度新建恒可见。管理形由 check_func 拒执行，不拆 schema。"""
+    _ = ctx
+    return True
 
 
 def visible_when_sched_mutate(ctx: RunContext[ToolContext]) -> bool:
-    """群聊未点名或提问者没有本人条目时隐藏变更。缺旗则偏可见。"""
-    deps = ctx.deps
-    if deps is None:
-        return True
+    """调度变更恒可见。未点名由 check_func 拒执行，不拆 schema。"""
+    _ = ctx
+    return True
+
+
+_GATE_REJECT_MARKERS: tuple[str, ...] = (
+    "本轮是管理已有条目",
+    "本轮未点名：不要",
+)
+
+
+def tool_return_is_gate_reject(content: str) -> bool:
+    """PIN check_func 拒绝回执。outcome 仍可能是 success，世界没改。"""
+    return any(m in content for m in _GATE_REJECT_MARKERS)
+
+
+def check_sched_create(deps: ToolContext) -> tuple[bool, str]:
+    """create_ok=False 时拒 add_*，提示改用查询/修改/取消。"""
+    extra = deps.extra
+    if SCHED_CREATE_OK_KEY not in extra:
+        return True, ""
+    if bool(extra[SCHED_CREATE_OK_KEY]):
+        return True, ""
+    return False, "本轮是管理已有条目：请用查询/修改/取消，不要新建。"
+
+
+def check_sched_mutate(deps: ToolContext) -> tuple[bool, str]:
+    """mutate_ok=False 时拒 list/modify/cancel/pause/resume。"""
     extra = deps.extra
     if SCHED_MUTATE_OK_KEY not in extra:
-        return True
-    return bool(extra[SCHED_MUTATE_OK_KEY])
+        return True, ""
+    if bool(extra[SCHED_MUTATE_OK_KEY]):
+        return True, ""
+    return False, "本轮未点名：不要查询/修改/取消定时任务。"
+
+
+def check_group_recall(deps: ToolContext) -> tuple[bool, str]:
+    """recall_ok=False 时拒发现/委派/回想。"""
+    extra = deps.extra
+    if GROUP_RECALL_OK_KEY not in extra:
+        return True, ""
+    if bool(extra[GROUP_RECALL_OK_KEY]):
+        return True, ""
+    return False, "本轮未点名：不要调用发现/委派/回想。"
+
+
+def visibility_user_hint(
+    *,
+    is_group: bool,
+    call_to_self: bool,
+    followup_detected: bool,
+    has_active_task: bool,
+    create_ok: bool,
+) -> str:
+    """进当前 user 的结构 hint；用（系统：）包裹以便入史可识别。"""
+    if is_group and not call_to_self and not followup_detected and not has_active_task:
+        return "（系统：本轮未点名：不要调用发现/调度/回想；默认 <SILENCE>。）"
+    if not create_ok:
+        return "（系统：本轮是管理已有条目：不要新建，用查询/修改/取消。）"
+    return ""
 
 
 def context_has_image(ctx: RunContext[ToolContext]) -> bool:

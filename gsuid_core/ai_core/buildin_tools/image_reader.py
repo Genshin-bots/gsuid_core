@@ -7,7 +7,10 @@ Agent 对当前问题的注意力。因此框架的策略是：图片本体存�
 ``RM.register`` + ``ev.image_id_list``）。
 
 当 Agent 确实需要「看」某一张图时，再调用本工具 :func:`read_image` 按 ID 取回图片。
-取回后**分两条路**（惰性投喂不变，只是「按需读」这一下更聪明）：
+惰性投喂不变。主人格看图时附视觉身份（受信任图 dHash 命中则钉死，否则对照形象卡）；
+他人指认不是证据，不写回形象库。
+
+取回后**分两条路**：
 
 - **主模型支持多模态** → 把图片**直接塞回会话**（``ToolReturn(content=[ImageUrl])``），
   让主模型当轮原生看图。无损、省一次模型调用、也不受转述子代理的超时约束。
@@ -320,6 +323,32 @@ def _bump_read_count(extra: dict[str, object], image_id: str) -> int:
     return count
 
 
+def _current_persona_name(parent_session_id: str | None) -> str:
+    if not parent_session_id:
+        return ""
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    sess = get_ai_session_registry().get_ai_session(parent_session_id)
+    if sess is None:
+        return ""
+    name = sess.persona_name
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    return name.strip()
+
+
+def _self_visual_note(ctx: RunContext[ToolContext], image_url: str) -> str:
+    """主人格看图时附视觉身份；能力代理不演戏。不打破惰性。"""
+    if not ctx.deps.allow_user_outbound:
+        return ""
+    persona = _current_persona_name(ctx.deps.parent_session_id)
+    if not persona:
+        return ""
+    from gsuid_core.ai_core.persona.appearance import bytes_from_image_ref, format_look_identity_note
+
+    return format_look_identity_note(persona, bytes_from_image_ref(image_url))
+
+
 @ai_tools(category="buildin", visible_when=context_has_image, timeout=120.0)
 async def read_image(
     ctx: RunContext[ToolContext],
@@ -366,8 +395,10 @@ async def read_image(
             return inject_err
         if injected is not None:
             logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
+            shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
+            note = _self_visual_note(ctx, image_url)
             return ToolReturn(
-                return_value=f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。",
+                return_value=f"{note}\n{shown}" if note else shown,
                 content=injected,
             )
 
@@ -408,6 +439,9 @@ async def read_image(
     logger.info(t("log.ai.buildintools_read_image_id", image_id=image_id, p0=len(description)))
     reads = _bump_read_count(ctx.deps.extra, image_id)
     body = f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)
+    note = _self_visual_note(ctx, image_url)
+    if note:
+        body = f"{note}\n{body}"
     if reads >= _REREAD_HINT_THRESHOLD:
         body += "\n" + _REREAD_EXHAUSTED_NOTE.format(reads=reads)
     return body

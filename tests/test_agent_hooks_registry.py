@@ -185,6 +185,14 @@ def test_intent_values_are_constrained() -> None:
         ctx.set_intent("胡说")
 
 
+def test_classify_can_set_actionable() -> None:
+    """H03 可写 has_actionable，供第一道 CheapGate 看见在途 Kanban。"""
+    ctx = AgentHookContext(point=AgentHookPoint.CLASSIFY)
+    ctx.set_has_actionable(True)
+    assert ctx.has_actionable is True
+    assert HookCapability.SET_ACTIONABLE in spec_for(AgentHookPoint.CLASSIFY).capabilities
+
+
 def test_reused_context_switches_capability_with_fire_point() -> None:
     """外环复用同一 Context：fire 时必须把 point 切到本次点位，否则 CLASSIFY 写不进 intent。"""
 

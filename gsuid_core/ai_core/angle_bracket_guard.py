@@ -32,6 +32,8 @@ _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 _ANGLE_TAG_RE = re.compile(
     r"</?[A-Za-z][\w:.-]*(?:\s[^<>]*?)?/?>",
 )
+# 模型自造中文控制标签：`<要求用其他语言…>`。比较符 `1 < 2` 不含 CJK 名。
+_CJK_ANGLE_TAG_RE = re.compile(r"</?[\u4e00-\u9fff][^<>]{0,80}>")
 
 # 常见 HTML / 模型自造控制标签：永不按「泛型类型参数」豁免
 _HTML_OR_CONTROL_TAG_NAMES: frozenset[str] = frozenset(
@@ -253,6 +255,11 @@ def find_illegal_angle_tags(text: str) -> List[str]:
             continue
         if _is_generic_type_arg_context(residual, m.start(), raw):
             continue
+        if raw not in seen:
+            seen.add(raw)
+            out.append(raw)
+    for m in _CJK_ANGLE_TAG_RE.finditer(residual):
+        raw = m.group(0)
         if raw not in seen:
             seen.add(raw)
             out.append(raw)
