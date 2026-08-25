@@ -308,8 +308,10 @@ MCP 服务器（fastmcp，stdio）→ `list_tools()` → 为每个工具动态�
 - **热重载**：`POST /api/ai/mcp/reload` 清掉已注册 MCP 工具、重读配置、重连重注册，无需重启。
 - **MCP Server**（`mcp/server.py`）：反向把 **`_TOOL_REGISTRY` 启动快照**对外暴露；默认挂载
   主服务 **`/api/mcp`**（Streamable HTTP，与 8765 同端口），或 stdio。鉴权：
-  静态 key 与/或 ``register_mcp_token_verifier`` 插件钩子（**框架不 import 任何插件**；
-  二者均空时为开发用开放模式）。
+  静态 key 与/或插件钩子（**框架不 import 任何插件**；二者均空时为开发用开放模式）。
+  插件在 import 时注册：`register_mcp_token_verifier` / `register_mcp_event_enricher` /
+  `register_mcp_export_filter`。签名与示例见
+  [gscore-ai-core-api §11.1.7](../../gscore-ai-core-api/references/11-mcp-image-search-and-meme.md#117-mcp-server-插件扩展点)。
 
 ## 7.10 运行时 Skill 系统与统一安装链路（`ai_core/skills/`，2026-07）
 

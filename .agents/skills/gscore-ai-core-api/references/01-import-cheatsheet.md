@@ -100,6 +100,13 @@ from gsuid_core.ai_core.mcp import (
     unregister_mcp_server,   # 注销 MCP 服务器
     get_mcp_server,          # 获取 MCP Server 实例
     get_mcp_trigger_count,   # 获取 MCP 触发器注册数量
+    get_mcp_exported_tool_count,     # MCP Server 已导出工具数
+    register_mcp_token_verifier,     # MCP Server：Bearer 校验
+    unregister_mcp_token_verifier,
+    register_mcp_event_enricher,     # MCP Server：Event 会话补全
+    unregister_mcp_event_enricher,
+    register_mcp_export_filter,      # MCP Server：工具导出过滤
+    unregister_mcp_export_filter,
 )
 
 from gsuid_core.ai_core.mcp.mcp_tool_caller import (

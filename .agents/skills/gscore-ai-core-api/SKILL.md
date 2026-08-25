@@ -6,6 +6,8 @@ description: >
   "怎么把已有触发器改造成 AI 工具 to_ai / MockBot / ai_return 怎么用"、
   "create_agent 怎么创建临时 Agent"、"ai_entity / ai_alias / ai_image 怎么注册"、
   "Persona / Memory / Scheduled Task / MCP / 嵌入 Provider 怎么调"、
+  "register_mcp_token_verifier / event_enricher / export_filter 怎么用"、
+  "MCP Server 怎么鉴权 / 过滤导出工具 / 补 Event 会话字段"、
   "ToolContext / ToolBase / KnowledgePoint / ImageEntity 是什么类型"、
   "buildin 都有哪些内置工具"、"get_registered_tools / get_all_tools 怎么查"、
   "send_meme / collect_meme / understand_image / web_search 怎么用"时触发此 SKILL。
@@ -23,7 +25,7 @@ description: >
   数据模型、工具注册表查询 API（get_registered_tools / get_all_tools / ToolBase）、
   全部类型定义（ToolContext / KnowledgeBase / KnowledgePoint / ManualKnowledgeBase /
   ImageEntity / ToolBase / CheckFunc）、MCP 工具集成（Client/Config/ToolID 格式/
-  call_mcp_tool）、Image Understand 图片理解、Web Search 统一搜索、Meme 表情包
+  call_mcp_tool、MCP Server 插件钩子 token/enricher/export filter）、Image Understand 图片理解、Web Search 统一搜索、Meme 表情包
   模块、嵌入 Provider 注册表、3 个完整示例 + 6 条常见问题。
 
   与 `gscore-plugin-development` 的区别：该 SKILL 讲「怎么写一个插件并接 AI」，
@@ -52,7 +54,7 @@ description: >
 | 八 | Persona 角色系统 + Memory 记忆系统（Persona 类、build_persona_prompt、`memory_config` / `dual_route_retrieve` / `observe`） | [references/08-persona-and-memory.md](./references/08-persona-and-memory.md) |
 | 九 | Scheduled Task 定时任务（`AIScheduledTask` 数据模型） | [references/09-scheduled-tasks.md](./references/09-scheduled-tasks.md) |
 | 十 | 工具注册表查询 API + 全部类型定义（`get_registered_tools` / `get_all_tools` / `ToolBase` / `ToolContext` / `KnowledgeBase` / `KnowledgePoint` / `ManualKnowledgeBase` / `ImageEntity` / `CheckFunc`） | [references/10-registry-and-types.md](./references/10-registry-and-types.md) |
-| 十一 | MCP + Image Understand + **Web Search（Tavily 默认 + 多源）** + **Web Fetch（Jina/local）** + Meme | [references/11-mcp-image-search-and-meme.md](./references/11-mcp-image-search-and-meme.md) |
+| 十一 | MCP（含 **Server 插件钩子**）+ Image Understand + **Web Search（Tavily 默认 + 多源）** + **Web Fetch（Jina/local）** + Meme | [references/11-mcp-image-search-and-meme.md](./references/11-mcp-image-search-and-meme.md) |
 | 十二 | 嵌入 Provider 注册表（`register_embedding_provider` / `EmbeddingProviderEntry` 字段 / 懒 import 工厂模式 / 降级策略） | [references/12-embedding-provider.md](./references/12-embedding-provider.md) |
 | 十三 | 完整示例 + 常见问题（基础工具注册 / 翻译 Agent / 插件入口 / 6 条 FAQ） | [references/13-full-examples-and-faq.md](./references/13-full-examples-and-faq.md) |
 
@@ -66,7 +68,7 @@ description: >
 6. **要查所有内置工具的签名**：看 [七、内置工具大全](./references/07-builtin-tools.md)。
 7. **要碰 Persona / Memory / 定时任务**：分别看 [八、Persona + Memory](./references/08-persona-and-memory.md) 与 [九、Scheduled Task](./references/09-scheduled-tasks.md)。
 8. **要查类型 / 反射工具注册表**：看 [十、注册表 + 类型](./references/10-registry-and-types.md)。
-9. **要接 MCP / 图片理解 / 网络搜索 / 网页抓取 / 表情包**：看 [十一](./references/11-mcp-image-search-and-meme.md)（§11.3 搜索多源、§11.3b 抓取）。
+9. **要接 MCP / 图片理解 / 网络搜索 / 网页抓取 / 表情包**：看 [十一](./references/11-mcp-image-search-and-meme.md)（§11.1.7 MCP Server 插件钩子、§11.3 搜索多源、§11.3b 抓取）。
 10. **要扩展 RAG 嵌入后端**：看 [十二、嵌入 Provider](./references/12-embedding-provider.md)。
 11. **要参考端到端示例或 FAQ**：看 [十三、完整示例 + FAQ](./references/13-full-examples-and-faq.md)。
 
@@ -89,6 +91,7 @@ description: >
 - **能力代理（Capability Agent）= 无人格专职执行者**：主人格只识别派发 / 查进度 / 转译汇报，执行交给画像（`research_agent` / `code_agent` 等 6 个内置 + 插件业务画像）。`create_subagent(agent_profile="...")` 也支持即时单步委派。详见 [§7.8](./references/07-builtin-tools.md)。
 - **`self_model` 演化层 4 字段**：`commitments` / `preferences_learned` / `recurring_topics` / `self_notes`。**2026-07 O-3 缓存优化后注入拆两半**：`build_self_cognition_context(bot_id, scope_key, include_relationship=False)` 产出的 self_model 自述块（慢变、bot/scope 级）由 `ai_router` 在**建 session 时固化进 system_prompt 稳定前缀**（跨轮命中 provider 缓存，按 TTL 刷新），per-user 的当前对话者关系行改由 `build_relationship_context(user_id, favorability)` **每轮注入用户消息侧**。签名变更：`build_self_cognition_context` 的 `user_id` 现可选（`include_relationship=False` 时不需要），新增 `include_relationship` 参数（默认 True，保持旧插件调用兼容）。详见 [§7.9](./references/07-builtin-tools.md) 与 `gscore-development` §6.7.1。
 - **MCP 工具 ID 格式**：`{mcp_id} - {tool_name}`，如 `minimax - web_search`；可用 `parse_mcp_tool_id` / `format_mcp_tool_id` 解析与组装。详见 [§11.1](./references/11-mcp-image-search-and-meme.md)。
+- **MCP Server 插件钩子**（`__init__.py` 顶层注册）：`register_mcp_token_verifier`（Bearer → claims，须含 `user_id`）、`register_mcp_event_enricher`（同步补 Event 会话字段）、`register_mcp_export_filter`（启动快照白名单，未注册则导出全部）。详见 [§11.1.7](./references/11-mcp-image-search-and-meme.md#117-mcp-server-插件扩展点)。
 - **Web Search 统一接口**：`web_search()` 按 `websearch_provider`（默认 **AnySearch**，可匿名）+ `websearch_lb_strategy`（默认 **error_switch**）调度 AnySearch / Tavily / Jina(`s.jina.ai`) / Exa / MCP；**异常或空结果**会按备用链切换；密钥与策略热读、无需重启。详见 [§11.3](./references/11-mcp-image-search-and-meme.md)。
 - **Web Fetch**：`fetch_webpage_as_markdown` / `web_fetch_tool` 默认 **Jina**(`r.jina.ai`，Key 可选) + 备用 **local**；策略字段 `webfetch_*` 与搜索同构；工具外层 `timeout=100`。详见 [§11.3b](./references/11-mcp-image-search-and-meme.md)。
 - **Meme 表情包集成点**：`handler.py` 中通过 `asyncio.create_task(observe_message_for_memes(event))` 异步采集；`handle_ai.py` 中导入 `meme.startup` 和 `meme_tools` 触发 `@on_core_start` 钩子与 `@ai_tools` 注册。详见 [§11.4](./references/11-mcp-image-search-and-meme.md)。

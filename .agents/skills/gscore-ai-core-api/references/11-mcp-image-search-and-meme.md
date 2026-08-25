@@ -19,6 +19,12 @@ from gsuid_core.ai_core.mcp import (
     register_all_mcp_tools,  # 注册所有 MCP 工具
     register_single_mcp_server,  # 注册单个 MCP 服务器
     unregister_mcp_server,   # 注销 MCP 服务器
+    register_mcp_token_verifier,     # MCP Server：Bearer 校验
+    register_mcp_event_enricher,     # MCP Server：Event 会话补全
+    register_mcp_export_filter,      # MCP Server：工具导出过滤
+    unregister_mcp_token_verifier,
+    unregister_mcp_event_enricher,
+    unregister_mcp_export_filter,
 )
 
 from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
@@ -98,6 +104,91 @@ success, msg = mcp_config_manager.create_config("my_server", MCPConfig(
 
 # 列出所有工具
 tools = mcp_config_manager.list_all_tools()
+```
+
+### 11.1.7 MCP Server 插件扩展点
+
+GsCore 可把 `_TOOL_REGISTRY` 反向暴露为 MCP 服务（默认 HTTP `/api/mcp`，与主端口同机）。
+框架**不 import 任何插件**；插件在 **`__init__.py` 顶层**调用下列注册函数（插件加载早于
+`init_ai_core`，顶层注册即可赶在 MCP Server 启动前）。
+
+```python
+from gsuid_core.ai_core.mcp import (
+    register_mcp_token_verifier,
+    register_mcp_event_enricher,
+    register_mcp_export_filter,
+)
+from gsuid_core.ai_core.models import ToolBase
+from gsuid_core.models import Event
+```
+
+对应卸载：`unregister_mcp_token_verifier` / `unregister_mcp_event_enricher` /
+`unregister_mcp_export_filter`（测试 / 关闭用）。
+
+#### Bearer 校验器
+
+`register_mcp_token_verifier(fn)`：`async (token: str) -> dict | None`。
+可多次注册，按序短路成功。成功返回的 claims **必须含 `user_id`**；缺 `user_pm` 时框架写入
+最低权限 `6`。静态配置 `mcp_server_api_key` 与任一校验器**存在即强制鉴权**；二者都空则为
+开发用开放模式。
+
+```python
+async def _verify_mcp_token(token: str) -> dict | None:
+    user_id = await my_plugin_auth(token)  # 失败返回 None
+    if user_id is None:
+        return None
+    return {"user_id": user_id, "user_pm": 6}
+
+
+register_mcp_token_verifier(_verify_mcp_token)
+```
+
+Claims 会写入本次 `tools/call` 的 `Event` 与 `ToolContext.extra`。
+
+#### Event 补全器
+
+`register_mcp_event_enricher(fn)`：`(ev: Event) -> None`。**同步、廉价**，禁止查库 / 发网络。
+每次 `tools/call` 在框架构造完模拟 Event 之后调用。框架**不**代填业务 `bot_id`；
+插件若用 `visible_when` 认身份，必须在此写入。
+
+HTTP 头（均可选，写入 Event，无业务域语义）也可补会话，且**先于**补全器生效，补全器可覆盖：
+
+- `X-MCP-Group-Id` → `Event.group_id`
+- `X-MCP-Bot-Id` → `Event.bot_id`
+
+```python
+def _enrich_mcp_event(ev: Event) -> None:
+    # 框架不代填 bot_id；插件自己写入会话身份。同步、禁止 I/O
+    ev.bot_id = MY_BOT_ID
+    if ev.user_id in MY_SESSION_MAP and not ev.group_id:
+        ev.group_id = MY_SESSION_MAP[ev.user_id]
+        ev.user_type = "group"
+
+
+register_mcp_event_enricher(_enrich_mcp_event)
+```
+
+#### 工具导出过滤器
+
+`register_mcp_export_filter(fn)`：`(export_name: str, category: str, tool: ToolBase) -> bool`。
+在 **MCP Server 启动时**对 `_TOOL_REGISTRY` 快照逐个询问，热注册不会自动进 MCP 列表。
+
+| 状态 | 行为 |
+|------|------|
+| 一个过滤器都没注册 | 导出全部（兼容旧部署） |
+| 已注册 ≥1 个 | **并集白名单**：任一过滤器返回 True 即导出 |
+
+一旦有人注册，未命中任何过滤器的工具（含框架内置）不再导出。只想给本插件工具开绿灯、
+同时保留其它工具时，对非本插件工具也返回 `True`。
+
+```python
+def _export_mcp_tool(export_name: str, category: str, tool: ToolBase) -> bool:
+    if category in ("buildin", "common", "by_trigger"):
+        return True
+    return export_name.startswith("my_plugin_")
+
+
+register_mcp_export_filter(_export_mcp_tool)
 ```
 
 ---

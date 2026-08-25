@@ -146,7 +146,7 @@ result = await heavy_calc(my_list)
 ```
 
 适合：图片合成、数据分析、`requests` / `PIL.Image.thumbnail` 等无法异步化的库。
-**不适合**：网络 I/O（应该用 `httpx.AsyncClient`）、数据库 I/O（应该用 `@with_session`）。
+**不适合**：网络 I/O（应该用 `httpx.AsyncClient`）、数据库 I/O（应该用 `@with_session` / `@with_read_session`）。
 
 ## 16.8 第三方 API 缓存：`@cache_data`
 
@@ -204,7 +204,8 @@ from gsuid_core.config import core_config
 # —— 数据 / 资源 / 配置 ——
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.database.base_models import (
-    BaseIDModel, BaseBotIDModel, BaseModel, Bind, Push, with_session, async_maker,
+    BaseIDModel, BaseBotIDModel, BaseModel, Bind, Push,
+    with_session, with_read_session, async_maker,
 )
 from gsuid_core.utils.plugins_config.models import (
     GSC, GsStrConfig, GsBoolConfig, GsIntConfig, GsFloatConfig,

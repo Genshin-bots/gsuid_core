@@ -145,15 +145,17 @@ BaseIDModel              # 最基础，只有 id
 
 1. **不写 `__tablename__`**：表名 = 类名全小写无下划线（`AiMemeRecord` → `aimemerecord`）。
    自定义约束/索引用 `__table_args__`。
-2. **数据库方法写在模型类里**，用 `@with_session`（自动建 session / 提交 / 异常回滚 / 归还连接池）。
-   签名第二参必须是 `session: AsyncSession`（紧跟 cls/self）。
+2. **数据库方法写在模型类里**，用 `@with_session`（写 / 混合）或 `@with_read_session`（纯 SELECT；
+   SQLite 走独立读槽）。自动建 session / 提交 / 异常回滚 / 归还连接池。
+   签名第二参必须是 `session: AsyncSession`（紧跟 cls/self）。插件侧完整说明见
+   [gscore-plugin-development §5.3](../../gscore-plugin-development/references/05-database.md#53-with_session--with_read_session)。
 3. 复杂场景手动管理用 `async_maker()`。
 4. 全异步；CPU 密集用 `to_thread`。
 
 ```python
 class CoreUser(BaseBotIDModel, table=True):
     @classmethod
-    @with_session
+    @with_read_session
     async def get_user_by_name(cls, session: AsyncSession, name: str) -> "CoreUser | None":
         stmt = select(cls).where(cls.name == name)
         return (await session.execute(stmt)).scalar_one_or_none()

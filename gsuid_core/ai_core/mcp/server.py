@@ -62,6 +62,14 @@ _DEFAULT_USER_PM = 6
 McpTokenVerifier = Callable[[str], Awaitable[Optional[Dict[str, Any]]]]
 _mcp_token_verifiers: List[McpTokenVerifier] = []
 
+#: 插件在构造 MCP Event 后补会话字段（如 group_id / user_pm）。同步、廉价。
+McpEventEnricher = Callable[[Event], None]
+_mcp_event_enrichers: List[McpEventEnricher] = []
+
+#: 导出白名单：任一过滤器返回 True 即导出；一个都不注册则导出全部（兼容旧部署）。
+McpExportFilter = Callable[[str, str, ToolBase], bool]
+_mcp_export_filters: List[McpExportFilter] = []
+
 
 def _callable_label(fn: Callable[..., Any]) -> str:
     """日志用短名；避免 getattr 兜底。"""
@@ -92,6 +100,41 @@ def unregister_mcp_token_verifier(verifier: McpTokenVerifier) -> None:
 def clear_mcp_token_verifiers() -> None:
     """清空全部插件校验器（测试 / 关闭用）。"""
     _mcp_token_verifiers.clear()
+
+
+def register_mcp_event_enricher(fn: McpEventEnricher) -> None:
+    """注册 MCP Event 补全器：每次 tools/call 构造 Event 后由插件补会话字段。"""
+    if fn in _mcp_event_enrichers:
+        return
+    _mcp_event_enrichers.append(fn)
+    logger.info(f"[mcp] event enricher registered: {_callable_label(fn)}")
+
+
+def unregister_mcp_event_enricher(fn: McpEventEnricher) -> None:
+    if fn in _mcp_event_enrichers:
+        _mcp_event_enrichers.remove(fn)
+
+
+def register_mcp_export_filter(fn: McpExportFilter) -> None:
+    """注册 MCP 工具导出过滤器。任一过滤器 True 即导出；全未注册则导出全部。"""
+    if fn in _mcp_export_filters:
+        return
+    _mcp_export_filters.append(fn)
+    logger.info(f"[mcp] export filter registered: {_callable_label(fn)}")
+
+
+def unregister_mcp_export_filter(fn: McpExportFilter) -> None:
+    if fn in _mcp_export_filters:
+        _mcp_export_filters.remove(fn)
+
+
+def _should_export_tool(export_name: str, category: str, tool_base: ToolBase) -> bool:
+    if not _mcp_export_filters:
+        return True
+    for fn in _mcp_export_filters:
+        if fn(export_name, category, tool_base):
+            return True
+    return False
 
 
 def _json_schema_type_to_python(param_schema: Dict[str, Any]) -> type:
@@ -270,7 +313,7 @@ def _http_session_overrides() -> Dict[str, str]:
     """从 HTTP 请求头读取框架通用会话覆盖（无业务域语义）。
 
     支持头（均可选）:
-    - ``X-MCP-Group-Id`` → Event.group_id（插件侧会话键；画布为 canvas_id#session）
+    - ``X-MCP-Group-Id`` → Event.group_id（插件侧会话键）
     - ``X-MCP-Bot-Id`` → Event.bot_id（一般**不必传**；默认见 _build_run_context）
     """
     out: Dict[str, str] = {}
@@ -309,21 +352,24 @@ def _create_mock_event(
     *,
     user_id: str = "mcp_client",
     user_pm: int = _DEFAULT_USER_PM,
-    bot_id: str = "CanvasBackend",
+    bot_id: str = "",
     group_id: str = "",
 ) -> Event:
-    """MCP 调用用的模拟 Event（默认 bot_id 与画布前端 inject 一致）。"""
+    """MCP 调用用的模拟 Event。bot_id / group_id 未给时不替插件填业务身份。"""
     ev = Event()
     ev.text = text
     ev.command = command
     ev.raw_text = f"{command} {text}".strip()
     ev.user_pm = user_pm
     ev.user_id = user_id
-    ev.bot_id = bot_id
     ev.bot_self_id = "MCP_Server"
-    ev.user_type = "group" if bot_id == "CanvasBackend" else "direct"
+    if bot_id:
+        ev.bot_id = bot_id
     if group_id:
         ev.group_id = group_id
+        ev.user_type = "group"
+    else:
+        ev.user_type = "direct"
     return ev
 
 
@@ -348,14 +394,13 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
     else:
         user_pm = _DEFAULT_USER_PM
 
-    # 与画布前端 inject 一致：默认 bot_id=CanvasBackend（画布工具 visible_when 依赖它）。
-    # 仅当 Header / claims 显式覆盖时才改（其它插件若共用 MCP 可传 X-MCP-Bot-Id）。
+    # bot_id / group_id 只认 Header 与 claims；空则交给插件 enricher。
     if "bot_id" in sess:
         bot_id = sess["bot_id"]
     elif "bot_id" in ident:
         bot_id = str(ident["bot_id"])
     else:
-        bot_id = "CanvasBackend"
+        bot_id = ""
 
     if "group_id" in sess:
         group_id = sess["group_id"]
@@ -363,7 +408,6 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
         group_id = str(ident["group_id"])
     else:
         group_id = ""
-    # 未设 group_id 时由插件工具自行解析（如 canvas_open 的 session_bind），框架不 import 插件
 
     fake_ev = _create_mock_event(
         command=tool_name,
@@ -372,6 +416,8 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
         bot_id=bot_id,
         group_id=group_id,
     )
+    for enrich in _mcp_event_enrichers:
+        enrich(fake_ev)
     mock_bot = _create_mock_bot(fake_ev)
     extra: Dict[str, Any] = {"source": "mcp_server", **ident, **sess}
     deps = ToolContext(bot=mock_bot, ev=fake_ev, extra=extra)
@@ -534,6 +580,8 @@ def _create_mcp_server(auth: Optional[BearerTokenAuth] = None) -> FastMCP:
 
     registered_count = 0
     for export_name, category, tool_base in tools:
+        if not _should_export_tool(export_name, category, tool_base):
+            continue
         try:
             handler = _build_ai_tool_handler(tool_base, category)
             if handler.__name__ != export_name:

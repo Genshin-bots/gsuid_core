@@ -207,7 +207,7 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 
 - 新配置项放进对应 `setup_config()`/`CONFIG_DEFAULT`，消费侧"每次用时读"即自动热重载（见
   [§03](./03-plugin-loading-and-config.md)）。
-- SQLModel 不写 `__tablename__`；数据库方法写类里、用 `@with_session`；Schema 升级走
+- SQLModel 不写 `__tablename__`；数据库方法写类里、用 `@with_session`（写）/ `@with_read_session`（纯 SELECT）；Schema 升级走
   `on_core_start_before` 的 `exec_list`/`trans_adapter`（见 [§11](./11-statistics-webconsole-database.md)）。
 - AI 表要挂到受总开关控制的建表路径，不要无条件建。
 - **ORM 查询类型安全**（别用 `cast`/`type:ignore`/`getattr` 糊弄 basedpyright，见

@@ -47,8 +47,12 @@ from gsuid_core.ai_core.mcp.server import (
     get_mcp_server,
     get_mcp_trigger_count,
     clear_mcp_token_verifiers,
+    register_mcp_export_filter,
     get_mcp_exported_tool_count,
+    register_mcp_event_enricher,
     register_mcp_token_verifier,
+    unregister_mcp_export_filter,
+    unregister_mcp_event_enricher,
     unregister_mcp_token_verifier,
 )
 from gsuid_core.ai_core.mcp.startup import (
@@ -104,6 +108,10 @@ __all__ = [
     "register_mcp_token_verifier",
     "unregister_mcp_token_verifier",
     "clear_mcp_token_verifiers",
+    "register_mcp_event_enricher",
+    "unregister_mcp_event_enricher",
+    "register_mcp_export_filter",
+    "unregister_mcp_export_filter",
     # utils
     "MCP_PROVIDER",
     "get_mcp_tool_id",

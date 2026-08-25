@@ -427,29 +427,30 @@ class MemeRecord(SQLModel, table=True):
 3. **禁止**使用 `__tablename__` 覆盖
 4. 如果需要自定义表名约束（如索引），使用 `__table_args__`
 
-### 3.2 @with_session 装饰器的使用
+### 3.2 `@with_session` / `@with_read_session`
 
-所有数据库类方法必须使用 `@with_session` 装饰器，它会自动：
+所有数据库类方法必须挂其中一个装饰器：
 
-- 创建 session
-- 处理事务提交
-- 异常时回滚
-- 归还连接池
+- `@with_session`：写入 / 读后写 / 删除（SQLite 走写槽）
+- `@with_read_session`：纯 SELECT（SQLite 走独立读槽，不跟大写抢）
+
+二者都会自动创建 session、提交、异常回滚、归还连接池。
 
 ```python
-from gsuid_core.utils.database.base_models import with_session
+from gsuid_core.utils.database.base_models import with_session, with_read_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 class User(BaseModel):
     @classmethod
-    @with_session
+    @with_read_session
     async def get_user_by_name(cls, session: AsyncSession, name: str) -> User | None:
         stmt = select(cls).where(cls.name == name)
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 ```
 
-**注意**：使用 `@with_session` 时，函数签名必须包含 `session: AsyncSession` 参数作为第二个参数（紧跟 cls 或 self）。
+**注意**：签名必须包含 `session: AsyncSession` 作为第二个参数（紧跟 cls 或 self）。
+插件侧完整说明见 `gscore-plugin-development` §5.3。
 
 ### 3.3 复杂场景下的 async_maker()
 
@@ -732,7 +733,7 @@ bot = Bot(_bot, mock_ev)
 
 1. **类型问题 → 从类型标注和代码逻辑解决，不使用兜底语法；禁止 `Any`，运行时变量类型必须可追踪（§1.8）**
 2. **人格 / 能力锁定 → 框架不写死某个人格的口癖，也不内置业务垂直词表（§1.9）**
-3. **数据库操作 → 继承基类 + @with_session 装饰器**
+3. **数据库操作 → 继承基类 + `@with_session`（写）/ `@with_read_session`（纯 SELECT）**
 4. **异步要求 → 所有可能阻塞的方法都用 async def**
 5. **代码组织 → 相关方法封装在类中，使用 dataclass/TypedDict 定义数据结构**
 6. **Bot 类型 → 插件/触发器用 `Bot`（高层），框架内部用 `_Bot`（底层），禁止混用**

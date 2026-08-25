@@ -325,7 +325,8 @@ if is_mcp_provider(provider):
 - 调用：`RunContext[ToolContext]` + `tool.function`；claims 写入 Event / extra
 
 **核心函数:** `get_mcp_server` / `get_mcp_exported_tool_count` / `get_mcp_trigger_count`
-  / `register_mcp_token_verifier`
+  / `register_mcp_token_verifier` / `register_mcp_event_enricher` / `register_mcp_export_filter`
+  （插件扩展点签名见 `gscore-ai-core-api` §11.1.7）
 
 ---
 

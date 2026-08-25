@@ -33,7 +33,7 @@ description: >
 | 二 | SV 与触发器（SV 实例、八种触发器语义对比、装饰器通用参数、签名规范） | [references/02-sv-and-triggers.md](./references/02-sv-and-triggers.md) |
 | 三 | 消息收发（Event 属性、bot.send 各种形态、send_option、多步会话） | [references/03-messaging.md](./references/03-messaging.md) |
 | 四 | 配置管理（CONFIG_DEFAULT、StringConfig、所有配置类型） | [references/04-config-management.md](./references/04-config-management.md) |
-| 五 | 数据库操作（SQLModel 基类、`@with_session`、`async_maker`、注册到 Web 控制台、`exec_list` 自动迁移） | [references/05-database.md](./references/05-database.md) |
+| 五 | 数据库操作（SQLModel 基类、`@with_session` / `@with_read_session`、`async_maker`、注册到 Web 控制台、`exec_list` 自动迁移） | [references/05-database.md](./references/05-database.md) |
 | 六 | 定时任务与订阅（APScheduler、`gs_subscribe` 全套 API） | [references/06-scheduler-and-subscribe.md](./references/06-scheduler-and-subscribe.md) |
 | 七 | 启动 / 关闭 / Bot 上线钩子（4 类钩子的区别与适用场景） | [references/07-lifecycle-hooks.md](./references/07-lifecycle-hooks.md) |
 | 八 | 帮助系统注册（`register_help`、`get_new_help`、`register_status`） | [references/08-help-system.md](./references/08-help-system.md) |
@@ -56,7 +56,7 @@ description: >
 1. **新建插件**：先看 [一、插件基础结构](./references/01-plugin-basics.md) 确定目录与命名，参考 [十五、完整插件示例](./references/15-full-plugin-example.md) 起步。
 2. **加命令**：看 [二、SV 与触发器](./references/02-sv-and-triggers.md) 选合适触发器，按 [三、消息收发](./references/03-messaging.md) 写发送 / 多步会话；要监听进群/退群/戳一戳用 `on_meta`（[§2.6](./references/02-sv-and-triggers.md#26-on_meta监听平台元事件进群--退群--戳一戳)），要撤回/禁言看 [§3.5](./references/03-messaging.md#35-撤回消息wait_recall--unsend与禁言ban)。
 3. **加配置**：看 [四、配置管理](./references/04-config-management.md) 定义 `CONFIG_DEFAULT` 与 `StringConfig`。
-4. **加数据库表**：看 [五、数据库操作](./references/05-database.md)；要可视化后台看 §5.5，要给已部署用户补字段看 §5.7。
+4. **加数据库表**：看 [五、数据库操作](./references/05-database.md)；纯 SELECT 用 `@with_read_session`，写入仍用 `@with_session`；要可视化后台看 §5.5，要给已部署用户补字段看 §5.7。
 5. **加定时推送**：看 [六、定时任务与订阅](./references/06-scheduler-and-subscribe.md) 的 `gs_subscribe` 强制规范。
 6. **加启动逻辑**：在 [七、生命周期钩子](./references/07-lifecycle-hooks.md) 选合适的钩子。
 7. **加帮助 / 状态**：看 [八、帮助系统注册](./references/08-help-system.md)。
@@ -71,8 +71,9 @@ description: >
    - **批量改造已有触发器支持 AI** → [十八、to_ai 批量改造工作流](./references/18-ai-trigger-migration.md)
 10. **挂自己的 HTTP 后端接口**：看 [十九、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)——复用 `gsuid_core.webconsole.app_app.app`，3 行加一个接口。
 11. **扩展 RAG 嵌入后端**：看 [二十、嵌入 Provider 注册表](./references/20-embedding-provider-registry.md)——用 `register_embedding_provider` 注册 `sentence_transformers` / `llama.cpp embedding` 等自定义 Provider，懒 import + 工厂模式，自动出现在 WebConsole 下拉选项。
-12. **遇到 API 缓存 / 限流 / 字体 / 错误码 / 推主人 / 批量播报** 等问题：直接看 [十六、常用工具模块速查](./references/16-common-utilities.md)。
-13. **写完代码**：用 [十七、代码规范红线](./references/17-code-redlines.md) 自查（try/except、cast、type:ignore、getattr 兜底、Any、同步阻塞函数全部禁止）。
+12. **定制 MCP Server**（Bearer 鉴权 / 工具导出过滤 / Event 会话补全）：看 [gscore-ai-core-api §11.1.7](../gscore-ai-core-api/references/11-mcp-image-search-and-meme.md#117-mcp-server-插件扩展点)。
+13. **遇到 API 缓存 / 限流 / 字体 / 错误码 / 推主人 / 批量播报** 等问题：直接看 [十六、常用工具模块速查](./references/16-common-utilities.md)。
+14. **写完代码**：用 [十七、代码规范红线](./references/17-code-redlines.md) 自查（try/except、cast、type:ignore、getattr 兜底、Any、同步阻塞函数全部禁止）。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
@@ -87,6 +88,8 @@ description: >
 - **插件工具要被跨措辞召回**：填 **`covers`（数据域）** + **`aliases`（领域·同义问法）**，勿只靠 docstring。详见 [§11.5](./references/11-ai-tools-decorator.md#115-covers--aliases跨措辞召回2026-08)。
 - **主动推送必须用 `gs_subscribe`**：不要 `for bot in gss.active_bot.items(): await bot.target_send(...)` 硬塞群号。详见 [§6.2](./references/06-scheduler-and-subscribe.md#62-主动推送强制规范)。
 - **数据库 Schema 变更用 `exec_list`**：放在 `on_core_start_before` 阶段执行。详见 [§5.7](./references/05-database.md#57-为已定义的表添加新列)。
+- **只读查询用 `@with_read_session`**：纯 SELECT 走独立读槽（SQLite WAL）；写入 / 读后写仍用 `@with_session`。详见 [§5.3](./references/05-database.md#53-with_session--with_read_session)。
+- **MCP Server 插件钩子**：`register_mcp_token_verifier` / `register_mcp_event_enricher` / `register_mcp_export_filter`，在插件 `__init__.py` 顶层注册。详见 [gscore-ai-core-api §11.1.7](../gscore-ai-core-api/references/11-mcp-image-search-and-meme.md#117-mcp-server-插件扩展点)。
 - **唯一允许 `try/except` 的地方**：`_ai_return_xxx()` 辅助函数。详见 [§17.3](./references/17-code-redlines.md#173-ai_return-辅助函数的特殊说明)。
 - **图片渲染优先级**：PIL（首选）→ pytakumi（推荐）→ playwright（兜底）。详见 [§9.1](./references/09-image-rendering.md#91-三档渲染方案优先级从高到低)。
 - **能力代理用 `AgentNode` + `register_agent_node`**：交付边界默认框架叠加；出图派 `render_agent`；业务强制「插件工具 > web」。详见 [§14](./references/14-ai-capability-profile.md)。
@@ -107,5 +110,5 @@ description: >
 - AI Agent 总架构：[`docs/AI_AGENT_ARCHITECTURE.md`](../../../docs/AI_AGENT_ARCHITECTURE.md)
 - AI 触发流程 / 框架开发：[`.agents/skills/gscore-development/SKILL.md`](../gscore-development/SKILL.md)
 - AGENTS.md（代码红线）：仓库根目录 [`AGENTS.md`](../../../AGENTS.md)
-- AI Core API（给插件用）：[`docs/ai_core_api_for_plugins.md`](../../../docs/ai_core_api_for_plugins.md)
+- AI Core API（给插件用）：[gscore-ai-core-api](../gscore-ai-core-api/SKILL.md)；MCP Server 钩子见 [§11.1.7](../gscore-ai-core-api/references/11-mcp-image-search-and-meme.md#117-mcp-server-插件扩展点)
 - WebConsole 后端 API 设计：[`gsuid_core/webconsole/docs/README.md`](../../../gsuid_core/webconsole/docs/README.md)

@@ -1,6 +1,7 @@
 # 五、数据库操作
 
-GsCore 使用 SQLModel 作为 ORM，**所有数据库操作必须在模型类内部**，使用 `@with_session` 装饰器管理会话。
+GsCore 使用 SQLModel 作为 ORM，**所有数据库操作必须在模型类内部**，用
+`@with_session`（写 / 混合）或 `@with_read_session`（纯 SELECT）管理会话。
 
 ## 5.1 三级基类
 
@@ -18,7 +19,11 @@ from gsuid_core.utils.database.base_models import (
 # utils/database/models.py
 from typing import Optional
 from sqlmodel import Field
-from gsuid_core.utils.database.base_models import BaseModel, with_session
+from gsuid_core.utils.database.base_models import (
+    BaseModel,
+    with_session,
+    with_read_session,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -30,7 +35,7 @@ class GameBind(BaseModel, table=True):
     cookie: Optional[str] = Field(default=None, title="Cookie")
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_bind(
         cls, session: AsyncSession, user_id: str, bot_id: str
     ) -> Optional["GameBind"]:
@@ -65,7 +70,7 @@ class GameBind(BaseModel, table=True):
         return bind
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_uid_list(
         cls, session: AsyncSession, user_id: str, bot_id: str
     ) -> list[str]:
@@ -98,12 +103,26 @@ class GameBind(BaseModel, table=True):
         return True
 ```
 
-## 5.3 `@with_session` 装饰器
+## 5.3 `@with_session` / `@with_read_session`
 
-所有数据库操作方法必须使用 `@with_session` 装饰器：
+所有数据库类方法必须挂**其中一个**装饰器：
+
+| 装饰器 | 适用 | SQLite（WAL） |
+|--------|------|----------------|
+| `@with_session` | 写入 / 读后写 / 删除 | 写槽（上限 8） |
+| `@with_read_session` | **纯 SELECT** | 独立读槽（上限 24），不跟大写抢 |
+
+MySQL / PostgreSQL 没有这两条信号量，两者都走连接池；SQLite 部署下只读查询请用
+`@with_read_session`，避免大写占满写槽后把只读查询堵住。
+
+签名规则两者相同：
 
 ```python
-from gsuid_core.utils.database.base_models import BaseModel, with_session
+from gsuid_core.utils.database.base_models import (
+    BaseModel,
+    with_session,
+    with_read_session,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field
 
@@ -112,11 +131,11 @@ class UserData(BaseModel, table=True):
     level: int = Field(default=1, title="等级")
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_user_by_name(
         cls, session: AsyncSession, name: str
     ) -> 'UserData | None':
-        """根据名称查询用户"""
+        """根据名称查询用户（纯 SELECT）"""
         from sqlalchemy import select
         stmt = select(cls).where(cls.name == name)
         result = await session.execute(stmt)
@@ -127,10 +146,10 @@ class UserData(BaseModel, table=True):
     async def create_user(
         cls, session: AsyncSession, name: str, level: int = 1
     ) -> 'UserData':
-        """创建新用户"""
+        """创建新用户（写入）"""
         user = cls(name=name, level=level)
         session.add(user)
-        # @with_session 会自动 commit
+        # 装饰器会自动 commit
         return user
 ```
 
@@ -139,7 +158,8 @@ class UserData(BaseModel, table=True):
 - **必须是 `classmethod`** 且 **`async def`**
 - `session: AsyncSession` 必须是第二个参数（紧跟 `cls`）
 - 装饰器自动 commit，异常自动回滚
-- `@with_session` 已处理事务，**不要**在方法内手动 `await session.commit()`
+- 已处理事务，**不要**在方法内手动 `await session.commit()`
+- 方法里有 `session.add` / `delete` / `update` → 只能 `@with_session`，不能挂读装饰器
 
 ## 5.4 `async_maker` — 手动管理 Session
 
@@ -156,7 +176,7 @@ async def batch_cleanup():
         await session.commit()  # ⚠️ 使用 async_maker 时必须手动 commit
 ```
 
-> **⚠️ 警告**：使用 `async_maker` 时需要手动调用 `await session.commit()`，这与 `@with_session` 装饰器自动 commit 不同。
+> **⚠️ 警告**：使用 `async_maker` 时需要手动调用 `await session.commit()`，这与会话装饰器自动 commit 不同。
 
 ## 5.5 把数据库表注册到 Web 控制台
 
@@ -295,7 +315,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.webconsole.mount_app import PageSchema, GsAdminModel, site
-from gsuid_core.utils.database.base_models import BaseModel, with_session
+from gsuid_core.utils.database.base_models import (
+    BaseModel,
+    with_read_session,
+)
 from gsuid_core.utils.database.startup import exec_list
 
 
@@ -311,7 +334,7 @@ class MyUser(BaseModel, table=True):
     auto_sign: str = Field(default="off", title="自动签到")
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_user(
         cls, session: AsyncSession, user_id: str, bot_id: str
     ) -> Optional["MyUser"]:

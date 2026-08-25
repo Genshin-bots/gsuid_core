@@ -74,6 +74,7 @@ server_engine = None
 _db_init_lock = asyncio.Lock()
 _db_initialized = False
 sqlite_semaphore = None
+sqlite_read_semaphore = None
 
 if _db_type == "sqlite":
     sync_url = "sqlite:///"
@@ -99,7 +100,7 @@ else:
 
 
 async def init_database():
-    global _db_initialized, engine, finally_url, async_maker, sqlite_semaphore
+    global _db_initialized, engine, finally_url, async_maker, sqlite_semaphore, sqlite_read_semaphore
 
     if _db_initialized:
         return
@@ -138,8 +139,9 @@ async def init_database():
                     cursor.close()
 
                 # 并发 session 上限：原先 20 > QueuePool 的 15，信号量比池还松。
-                # NullPool 下信号量才是真正闸门；8 对单写 SQLite 更稳。
+                # NullPool 下信号量才是真正闸门；写 8 / 读 24 分开，避免大写占槽堵住读请求。
                 sqlite_semaphore = asyncio.Semaphore(8)
+                sqlite_read_semaphore = asyncio.Semaphore(24)
             else:
                 db_config.update(
                     {
@@ -216,8 +218,10 @@ def _is_transient_db_error(err: BaseException) -> bool:
     return "database is locked" in msg or "database table is locked" in msg or "busy" in msg or "disk i/o error" in msg
 
 
-def with_session(
+def _session_wrapper(
     func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
+    *,
+    read_only: bool,
 ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
     @wraps(func)
     async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
@@ -225,8 +229,9 @@ def with_session(
         last_err: BaseException | None = None
         for attempt in range(max_retries):
             try:
-                if sqlite_semaphore:
-                    async with sqlite_semaphore:
+                sem = sqlite_read_semaphore if read_only else sqlite_semaphore
+                if sem:
+                    async with sem:
                         async with async_maker() as session:
                             data = await func(self, session, *args, **kwargs)
                             await session.commit()
@@ -267,6 +272,19 @@ def with_session(
         raise RuntimeError(i18n_t("[数据库] with_session 未知失败"))
 
     return wrapper  # type: ignore
+
+
+def with_session(
+    func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
+) -> Callable[Concatenate[Any, P], Awaitable[R]]:
+    return _session_wrapper(func, read_only=False)
+
+
+def with_read_session(
+    func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
+) -> Callable[Concatenate[Any, P], Awaitable[R]]:
+    """SELECT 走独立读槽，不跟大写抢 sqlite_semaphore。WAL 下可读。"""
+    return _session_wrapper(func, read_only=True)
 
 
 async def get_all_table_ddl(engine: AsyncEngine) -> Dict[str, str]:
