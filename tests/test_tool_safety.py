@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.test import TestModel
@@ -69,3 +70,51 @@ def test_agent_without_safety_raises() -> None:
     except SkillNotFoundError:
         raised = True
     assert raised
+
+
+def test_clean_retry_on_last_attempt_reruns(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    import gsuid_core.ai_core.gs_agent as ga
+    from gsuid_core.ai_core.utils import ERROR_RESULT_PREFIX
+
+    class _Log:
+        run_end = 0
+
+        def log_run_end(self) -> None:
+            self.run_end += 1
+
+        def log_result(self, text: str, tools: object) -> None:
+            return
+
+        def log_error(self, kind: str, msg: str) -> None:
+            return
+
+    original_get = ga.ai_config.get_config
+
+    def fake_get(key: str) -> SimpleNamespace:
+        if key == "agent_max_run_attempts":
+            return SimpleNamespace(data=1)
+        if key == "agent_run_retry_delay":
+            return SimpleNamespace(data=0.0)
+        return original_get(key)
+
+    monkeypatch.setattr(ga.ai_config, "get_config", fake_get)
+    agent = object.__new__(ga.GsCoreAIAgent)
+    agent._run_sent_texts = set()
+    agent._last_attempt_tool_calls = ["send_message_by_ai"]
+    agent._session_logger = _Log()
+    calls = {"n": 0}
+    err = ModelHTTPError(status_code=400, model_name="m", body={"message": "invalid function arguments"})
+
+    async def fake_once(**kwargs: object) -> str:
+        calls["n"] += 1
+        raise err
+
+    agent._execute_run_once = fake_once
+    result = asyncio.run(agent._execute_run(user_message="hi"))
+    assert calls["n"] == 2
+    assert agent._session_logger.run_end == 1
+    assert result.startswith(ERROR_RESULT_PREFIX)

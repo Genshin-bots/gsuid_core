@@ -25,6 +25,9 @@ eval/agent/
   selftest.py                   # 离线自测：验证打分逻辑 + 演示难度校准（现在就能跑）
 ```
 
+手写 WS / 出图脚本（**不是 pytest**）在 [`eval/manual/`](../manual/README.md)。
+
+
 ## 快速开始
 
 ```bash

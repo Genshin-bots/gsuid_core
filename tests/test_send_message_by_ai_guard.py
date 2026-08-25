@@ -138,12 +138,77 @@ def test_throttle_resets_on_new_turn_and_after_clear():
         ok_new_turn = _run(ms.send_message_by_ai(c2, text="new-turn"))
         assert "消息已发送" in ok_new_turn
 
-        # 手动清理后同回合也重置（模拟 gs_agent finally）
         ms.clear_turn_send_throttle("reset_s", "turn_1")
         c1b = _make_ctx(ev, "turn_1", bot)
         ok_after_clear = _run(ms.send_message_by_ai(c1b, text="after-clear"))
         assert "消息已发送" in ok_after_clear
-    print("[OK] 换回合 / 清理后额度重置")
+
+
+def test_wait_text_does_not_set_delivered() -> None:
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="s_wait", user_id="u1")
+    extra: dict[str, object] = {"turn_id": "t_wait", "speech_policy": "free", "has_status_tool": False}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("s_wait", "t_wait")
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, text="马上好。"))
+    assert "消息已发送" in result
+    assert "delivered_with_speech" not in extra
+
+
+def test_status_ok_refuses_without_status_tool() -> None:
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="s_st", user_id="u1")
+    ev.raw_text = "图呢"
+    extra: dict[str, object] = {"turn_id": "t_st", "speech_policy": "status_ok", "has_status_tool": False}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("s_st", "t_st")
+    result = _run(ms.send_message_by_ai(ctx, text="做完了"))
+    assert "追问进度" in result
+    assert bot.send.await_count == 0
+
+
+def test_at_digits_become_at_segment() -> None:
+    from gsuid_core.ai_core.utils import _parse_at_segments
+
+    segments = _parse_at_segments("好哦 @100000001 你来看")
+    types = [s.type for s in segments]
+    assert "at" in types
+    at_seg = segments[types.index("at")]
+    assert at_seg.data == "100000001" or "100000001" in str(at_seg.data)
+    for s in segments:
+        if s.type == "text":
+            assert "100000001" not in str(s.data)
+
+
+def test_has_model_visible_content_covers_modalities() -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.utils import has_model_visible_content
+
+    def _ev(**overrides: Any) -> Event:
+        fields: dict[str, Any] = {"bot_id": "onebot", "bot_self_id": "1", "msg_id": "m", "user_type": "group"}
+        fields.update(overrides)
+        return Event(**fields)
+
+    assert has_model_visible_content(_ev()) is False
+    assert has_model_visible_content(_ev(text="在吗")) is True
+    assert has_model_visible_content(_ev(image_id_list=["img_1"])) is True
+    assert has_model_visible_content(_ev(audio_id="aud_1")) is True
+    assert has_model_visible_content(_ev(audio_id_list=["aud_2"])) is True
+    assert has_model_visible_content(_ev(file="base64data")) is True
 
 
 if __name__ == "__main__":

@@ -88,6 +88,23 @@ def test_system_constraints_keeps_placeholders() -> None:
     assert "__MASTERS__" in SYSTEM_CONSTRAINTS
 
 
+def test_sanitized_error_texts_survive_persona_cleanup() -> None:
+    from gsuid_core.ai_core.utils import NO_RESULT_TEXT, ERROR_RESULT_PREFIX, _strip_persona_markdown
+
+    samples = [
+        f"{ERROR_RESULT_PREFIX}: 内容被模型安全策略拒绝",
+        f"{ERROR_RESULT_PREFIX}: 请求超时",
+        f"{ERROR_RESULT_PREFIX}: status_code: 400, body: {{'x': 1}}",
+        NO_RESULT_TEXT,
+    ]
+    for raw in samples:
+        cleaned = _strip_persona_markdown(sanitize_error_for_user(raw)).strip()
+        assert cleaned, raw
+        assert "status_code" not in cleaned
+    note = _strip_persona_markdown("BTC 跌破 60000，快跑\n⏰ 定时任务 sched_ab12")
+    assert "sched_ab12" in note
+
+
 def test_render_system_constraints_fills_title(monkeypatch) -> None:
     from gsuid_core.ai_core.persona import processor
 

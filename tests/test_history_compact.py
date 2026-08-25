@@ -48,5 +48,31 @@ def test_include_current_turn_optional() -> None:
     assert "当前·" not in plain
     with_cur = format_history_for_agent(history, current_user_id="9", current_user_name="主", include_current_turn=True)
     assert "当前·主(用户ID:9)" in with_cur
-    # 当前句不进历史块重复
     assert with_cur.count("当前句") == 1
+
+
+def test_interleaved_speaker_breaks_merge() -> None:
+    t0 = time.time() - 600
+    history = [
+        _rec("100000005", "蓝蓝", "喝", t0),
+        _rec("100000005", "蓝蓝", "我陪你", t0 + 5),
+        _rec("100000004", "小禾", "昨天刚喝", t0 + 60),
+        _rec("100000005", "蓝蓝", "没事的", t0 + 70),
+        _rec("100000004", "小禾", "多邻国？", t0 + 80),
+    ]
+    text = format_history_for_agent(history)
+    for content in ("喝", "我陪你", "昨天刚喝", "没事的", "多邻国？"):
+        assert content in text, content
+    assert text.index("昨天刚喝") < text.index("没事的") < text.index("多邻国？")
+    assert text.index("我陪你") < text.index("昨天刚喝")
+
+
+def test_same_speaker_burst_merged() -> None:
+    t0 = time.time() - 600
+    history = [
+        _rec("100000004", "小禾", "多邻国？", t0),
+        _rec("100000004", "小禾", "算了，明天晚上点个汉堡", t0 + 10),
+        _rec("100000004", "小禾", "今天先不喝", t0 + 20),
+    ]
+    text = format_history_for_agent(history)
+    assert text.count("小禾(用户ID:100000004)") == 1

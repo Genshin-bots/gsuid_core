@@ -273,6 +273,42 @@ def test_session_window_throttles_ordinary_gain() -> None:
     assert _plan(sig, session_gain_used=True)[0] == 0
 
 
+def test_silence_and_error_rounds_skip_positive_gain() -> None:
+    kw = {"intent": "问答", "is_light": False, "is_master": False}
+    sig = scan_signals("帮我看看这个报错怎么修", effective=True, **kw)
+    delta, reason, _ = plan_delta(
+        sig,
+        zone=Zone.DISTANT,
+        effective=True,
+        error=False,
+        reached_model=True,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert delta == 1 and reason == "pos.first_meaningful", (delta, reason)
+    silent = scan_signals("帮我看看这个报错怎么修", effective=False, **kw)
+    d0, _, _ = plan_delta(
+        silent,
+        zone=Zone.DISTANT,
+        effective=False,
+        error=False,
+        reached_model=True,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert d0 == 0
+    d_err, _, _ = plan_delta(
+        sig,
+        zone=Zone.DISTANT,
+        effective=True,
+        error=True,
+        reached_model=True,
+        first_meaningful_today=True,
+        session_gain_used=False,
+    )
+    assert d_err == 0
+
+
 def test_negatives_ignore_effective_and_reached_model() -> None:
     """成功标准 4（吸收态回归锁）：被骂但人格选择沉默，也要记一笔。"""
     sig = _scan("你这个垃圾", effective=False)

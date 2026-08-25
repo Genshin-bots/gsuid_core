@@ -459,6 +459,11 @@ def test_slim_group_pool_carries_control_tools() -> None:
 
     assert "dispute_directive" in SLIM_GROUP_CORE_TOOLS
     assert "check_delegation" not in SLIM_GROUP_CORE_TOOLS
+    assert "find_tools" in SLIM_GROUP_CORE_TOOLS
+    assert "create_subagent" in SLIM_GROUP_CORE_TOOLS
+    assert "send_meme" in SLIM_GROUP_CORE_TOOLS
+    assert "capability_map" in SLIM_GROUP_CORE_TOOLS
+    assert "web_search_tool" not in SLIM_GROUP_CORE_TOOLS
 
 
 def test_control_tools_are_registered_buildin() -> None:
@@ -585,6 +590,7 @@ def test_protocol_silence_variants_are_parsed() -> None:
         assert not is_silence_marker(raw), raw
     assert is_silence_marker("<SILENCE>...")
     assert is_silence_marker("<silence>……</silence>")
+    assert not is_silence_marker("请输出 `<SILENCE>` 三个字")
 
 
 def test_protocol_legacy_marker_set_still_parses() -> None:

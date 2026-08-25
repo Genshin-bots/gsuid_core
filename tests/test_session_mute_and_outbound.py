@@ -107,3 +107,23 @@ def test_interactive_and_deferred_flags_independent() -> None:
     assert ke._consume_deferred_main_delivery(rid) is True
     assert ke._consume_interactive_relay(rid) is True
     ke.discard_interactive_relay_root(rid)
+
+
+def test_delivery_ledger_unique_constraint_present() -> None:
+    from sqlalchemy import UniqueConstraint
+
+    from gsuid_core.ai_core.database.outbound import DeliveryLedger
+
+    args = DeliveryLedger.__table_args__
+    constraints = [a for a in args if isinstance(a, UniqueConstraint)]
+    assert constraints
+    assert constraints[0].name == "ux_deliveryledger_group_res"
+    assert hasattr(DeliveryLedger, "release")
+
+
+def test_image_placeholder_keeps_topic_and_handle() -> None:
+    from gsuid_core.ai_core.outbound import format_outbound_image_placeholder
+
+    assert format_outbound_image_placeholder("对照图A", "res_e82bab86168f").startswith("[图片·")
+    assert "res_e82bab86168f" in format_outbound_image_placeholder("对照图A", "res_e82bab86168f")
+    assert format_outbound_image_placeholder("", "") == "[图片]"

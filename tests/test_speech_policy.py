@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    IN_FLIGHT_WAIT_TEMPLATES,
     wall_clock_nudge_for,
     resolve_speech_policy,
     looks_like_process_meta,
     looks_like_empty_handoff,
+    looks_like_wait_template,
     claims_premature_delivery,
     looks_like_status_inquiry,
     content_is_render_candidate,
     has_orchestration_narration,
+    should_mark_speech_delivered,
     should_block_user_visible_text,
+    looks_like_inflight_quota_speech,
 )
 
 
@@ -367,19 +371,64 @@ def test_empty_handoff_and_wait_comfort() -> None:
     )[0]
 
 
-def test_persona_bubble_clamp() -> None:
-    """空行拆条后超过 2 段应并入末条（逻辑与 send_chat_result 一致）。"""
-    import re
+def test_wait_comfort_does_not_mark_delivered() -> None:
+    assert not should_mark_speech_delivered(text="马上好。", has_media=False)
+    assert not should_mark_speech_delivered(text="这就去办", has_media=False)
+    assert should_mark_speech_delivered(text="查到了，出门带伞。", has_media=False)
+    assert should_mark_speech_delivered(text="出门带伞", has_media=True)
+    assert not should_mark_speech_delivered(text="", has_media=True)
 
-    text = "a\n\nb\n\nc\n\nd\n\ne\n\nf\n\ng"
-    blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
-    max_b = 2
-    if len(blocks) > max_b:
-        head = blocks[: max_b - 1]
-        tail = "\n".join(b.strip() for b in blocks[max_b - 1 :])
-        blocks = [*head, tail]
-    assert len(blocks) == 2
-    assert "g" in blocks[-1]
+
+def test_wait_templates_are_legal_inflight_exit() -> None:
+    for s in IN_FLIGHT_WAIT_TEMPLATES:
+        assert looks_like_wait_template(s)
+        assert looks_like_inflight_quota_speech(s)
+        blk, why = should_block_user_visible_text(
+            "silence_only",
+            s,
+            pending_async=True,
+            image_sent=False,
+            has_status_tool=False,
+            tool_calls_so_far=["create_subagent"],
+            wait_comfort_sent=False,
+        )
+        assert not blk, why
+    improv = "唔…等一下嘛"
+    assert looks_like_inflight_quota_speech(improv)
+    assert not looks_like_inflight_quota_speech("唔…图还在渲…呼，再眯一小会儿就好")
+
+
+def test_first_ack_with_tools_keeps_accept_speech() -> None:
+    from gsuid_core.ai_core.agent_run.loop import decide_text_outbound_slot
+
+    assert decide_text_outbound_slot(has_fn_tool=True, tool_bearing_index=1, accept_slot_used=False) == "send_accept"
+    assert decide_text_outbound_slot(has_fn_tool=True, tool_bearing_index=1, accept_slot_used=True) == "unsent"
+    assert decide_text_outbound_slot(has_fn_tool=True, tool_bearing_index=2, accept_slot_used=False) == "unsent"
+    assert decide_text_outbound_slot(has_fn_tool=False, tool_bearing_index=0, accept_slot_used=False) == "send_final"
+    blk, why = should_block_user_visible_text(
+        "silence_only",
+        "…等数据回来再继续…",
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=True,
+    )
+    assert blk and why == "silence_only_or_async"
+
+
+def test_function_tool_detected_even_if_text_part_comes_first() -> None:
+    from pydantic_ai.messages import TextPart, ToolCallPart, NativeToolCallPart
+
+    from gsuid_core.ai_core.agent_run.loop import _response_has_function_tool_call
+
+    thinking = TextPart(content="让我先查一下再决定怎么回。")
+    for name in ("find_tools", "web_search_tool", "read_handle", "send_message_by_ai"):
+        call = ToolCallPart(tool_name=name, args="{}")
+        assert _response_has_function_tool_call([thinking, call]) is True
+        assert _response_has_function_tool_call([call, thinking]) is True
+    assert _response_has_function_tool_call([thinking]) is False
+    assert _response_has_function_tool_call([thinking, NativeToolCallPart(tool_name="web_search", args="{}")]) is False
 
 
 def test_long_task_wait_announce_allowed() -> None:

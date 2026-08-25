@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import time
 import base64
@@ -10,17 +9,14 @@ import shutil
 import asyncio
 from pathlib import Path
 
+import _ws_env
 import websockets
 from msgspec import json as msgjson
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
 
-WS_TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
-WS_URL = f"ws://localhost:8765/ws/Nonebot?token={WS_TOKEN}"
-OUT = Path(__file__).resolve().parent / "test_output"
-ROOT = Path(__file__).resolve().parent.parent / "test_output"
-OUT.mkdir(exist_ok=True)
-ROOT.mkdir(exist_ok=True)
+OUT = _ws_env.OUTPUT_DIR
+ROOT = OUT
 
 
 def _save(data: str, name: str, idx: int) -> Path | None:
@@ -79,8 +75,10 @@ async def recv(ws, name: str, idle=90.0, hard=420.0):
 
 
 async def main() -> None:
-    print("connect", WS_URL)
-    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
+    OUT.mkdir(exist_ok=True)
+    url = _ws_env.ws_url()
+    print("connect", url)
+    ws = await websockets.connect(url, max_size=2**25, open_timeout=30)
     msg = MessageReceive(
         bot_id="console",
         bot_self_id="900000001",

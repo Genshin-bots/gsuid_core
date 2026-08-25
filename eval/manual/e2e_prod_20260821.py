@@ -15,18 +15,15 @@ import asyncio
 from typing import Literal
 from pathlib import Path
 
+import _ws_env
 import websockets
 from PIL import Image
 from msgspec import json as msgjson
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
 
-WS_TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
-WS_URL = f"ws://localhost:8765/ws/Nonebot?token={WS_TOKEN}"
-OUT = Path(__file__).resolve().parent / "test_output"
-ROOT = Path(__file__).resolve().parent.parent / "test_output"
-OUT.mkdir(exist_ok=True)
-ROOT.mkdir(exist_ok=True)
+OUT = _ws_env.OUTPUT_DIR
+ROOT = OUT
 
 BOT_SELF = os.environ.get("GSUID_E2E_BOT_SELF", "900000001")
 USER_ID = os.environ.get("GSUID_E2E_USER_ID", "99999")
@@ -181,8 +178,10 @@ async def scene(ws, name: str, text: str, *, group_id: str | None, expect_image:
 
 
 async def main() -> None:
-    print("connect", WS_URL)
-    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
+    OUT.mkdir(exist_ok=True)
+    url = _ws_env.ws_url()
+    print("connect", url)
+    ws = await websockets.connect(url, max_size=2**25, open_timeout=30)
     gid = GROUP_ID or None
     results: list[dict[str, object]] = []
     results.append(await scene(ws, "span_info", SPAN_Q, group_id=gid, expect_image=True))

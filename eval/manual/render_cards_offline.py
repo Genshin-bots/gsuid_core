@@ -6,13 +6,13 @@ import sys
 import asyncio
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "test_output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "test_output"
 
 
 async def main() -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     from gsuid_core.utils.html_render import render_html_to_bytes
     from gsuid_core.ai_core.buildin_tools.html_render_tools import (
         _build_card_html,

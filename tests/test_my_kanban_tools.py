@@ -392,6 +392,58 @@ def test_resume_periodic_arm_fails():
     print("[OK] resume 周期模板 arm 失败 → 错误提示")
 
 
+class _FakeKanbanTask:
+    def __init__(self, ordinal: int, name: str, group_id: Optional[str]) -> None:
+        self.id = f"id_{ordinal}"
+        self.ordinal = ordinal
+        self.display_name = name
+        self.group_id = group_id
+        self.status = "running"
+        self.updated_at = None
+        self.recurring_trigger = None
+        self.goal = name
+        self.agent_profile = None
+
+
+def test_other_group_and_private_tasks_masked() -> None:
+    import gsuid_core.ai_core.planning.context as ctx_mod
+
+    async def fake_list_for_owner(user_id: str, only_active: bool = True, root_only: bool = True) -> list:
+        return [
+            _FakeKanbanTask(36, "他群周期托管", "200000002"),
+            _FakeKanbanTask(37, "本群翻译任务", "200000003"),
+            _FakeKanbanTask(1, "调研跳槽公司名单", None),
+        ]
+
+    async def fake_get_task_tree(task_id: str) -> tuple:
+        return None, []
+
+    with (
+        patch.object(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner),
+        patch.object(ctx_mod.kanban_manager, "get_task_tree", fake_get_task_tree),
+    ):
+        text = _run(ctx_mod.build_task_context("100000001", current_group_id="200000003"))
+        assert "本群翻译任务" in text
+        assert "200000002" not in text
+        assert "他群周期托管" not in text
+        assert "跳槽" not in text
+        assert "其他会话" in text
+        priv = _run(ctx_mod.build_task_context("100000001", current_group_id=None))
+        assert "跳槽" in priv
+
+
+def test_has_actionable_task_scoped_by_group() -> None:
+    import gsuid_core.ai_core.planning.context as ctx_mod
+
+    async def fake_list_for_owner(user_id: str, only_active: bool = True, root_only: bool = True) -> list:
+        return [_FakeKanbanTask(1, "任务", "group_A")]
+
+    with patch.object(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner):
+        assert _run(ctx_mod.has_actionable_task("u1")) is True
+        assert _run(ctx_mod.has_actionable_task("u1", current_group_id="group_A")) is True
+        assert _run(ctx_mod.has_actionable_task("u1", current_group_id="group_B")) is False
+
+
 if __name__ == "__main__":
     test_list_no_ev()
     test_list_no_tasks()

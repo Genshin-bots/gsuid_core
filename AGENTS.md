@@ -117,7 +117,8 @@ uv run core --port 8765
 
 ## Testing
 
-- 测试在 `tests/`，`pytest`，文件 `test_*.py`。
+- 测试在 `tests/`，`pytest`，文件 `test_*.py`。默认收集面必须离线、无 LLM。
+- 需要已启动 core 的 WS/HTTP 脚本放 `eval/manual/`（不要 `test_` 前缀）或 `eval/agent/`；禁止再往 `tests/` 加。
 - 类型：basedpyright / pyright，`typeCheckingMode=basic`；`gsuid_core/plugins` 与 `data` 已排除。
 - 行宽 120（ruff）；`#` 注释更严，见 §1.6。
 - 改交互脚手架必须跑 `tests/test_interaction_scaffold.py`（正反双向）。

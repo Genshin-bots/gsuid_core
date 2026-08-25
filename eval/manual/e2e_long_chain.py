@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import json
 import time
@@ -18,18 +17,15 @@ import shutil
 import asyncio
 from pathlib import Path
 
+import _ws_env
 import websockets
 from msgspec import json as msgjson
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
 
-WS_TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "KLtc5aJxG4NrpiG7fSnvUsGRILSP5u5Q5QqqPIwhfjk")
-WS_URL = f"ws://localhost:8765/ws/Nonebot?token={WS_TOKEN}"
-OUT = Path(__file__).resolve().parent / "test_output"
-ROOT = Path(__file__).resolve().parent.parent / "test_output"
-LOG_DIR = Path(__file__).resolve().parent.parent / "data" / "ai_core" / "session_logs"
-OUT.mkdir(exist_ok=True)
-ROOT.mkdir(exist_ok=True)
+OUT = _ws_env.OUTPUT_DIR
+ROOT = OUT
+LOG_DIR = _ws_env.SESSION_LOG_DIR
 
 # 追问泄漏模式：把框架注入当群友
 _LEAK_RE = re.compile(
@@ -148,8 +144,10 @@ def _analyze_session(path: Path) -> dict:
 
 
 async def main() -> None:
-    print("connect", WS_URL)
-    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
+    OUT.mkdir(exist_ok=True)
+    url = _ws_env.ws_url()
+    print("connect", url)
+    ws = await websockets.connect(url, max_size=2**25, open_timeout=30)
     results: dict[str, bool] = {}
 
     # ── Turn 1: 天气 → 委派 render ──

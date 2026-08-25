@@ -13,7 +13,10 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = Path(__file__).parent / "results"
-TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "KLtc5aJxG4NrpiG7fSnvUsGRILSP5u5Q5QqqPIwhfjk")
+_token = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "").strip()
+if not _token:
+    raise SystemExit("GSUID_LOCAL_TEST_TOKEN is required (no fallback)")
+TOKEN = _token
 BASE = "http://127.0.0.1:8765"
 CHUNK = int(os.environ.get("EVAL_CHUNK", "35"))
 CONCURRENCY = int(os.environ.get("EVAL_CONCURRENCY", "2"))

@@ -65,8 +65,22 @@ def test_scaffold_reads_tone_markers_from_persona() -> None:
     src = (_AI_CORE / "kits" / "scaffold" / "kit.py").read_text(encoding="utf-8")
     assert "get_tone_markers" in src
     assert "reply_ends_with_tone_marker" in src
+    assert 'endswith(("zzz"' not in src
+    assert '"呼"' not in src and '"唔"' not in src
 
 
 def test_ai_config_persona_options_not_hardcoded() -> None:
     src = (_AI_CORE / "configs" / "ai_config.py").read_text(encoding="utf-8")
     assert 'options=["早柚"]' not in src
+
+
+def test_tone_markers_come_from_persona_card() -> None:
+    from gsuid_core.ai_core.persona.resource import extract_tone_markers, reply_ends_with_tone_marker
+
+    card = "Tone Markers (语气词):\n        啧、哈、呵\n        配额：每 3-5 条至多 1 条带语气词结尾；其余条不带。\n"
+    markers = extract_tone_markers(card)
+    assert markers == ("啧", "哈", "呵")
+    assert "唔" not in markers and "zzz" not in markers
+    assert reply_ends_with_tone_marker("行吧啧", markers)
+    assert not reply_ends_with_tone_marker("行吧唔…呼zzz", markers)
+    assert extract_tone_markers("Style (风格):\n        短句。\n") == ()

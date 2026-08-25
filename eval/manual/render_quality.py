@@ -2,7 +2,7 @@
 
 无需启动服务，直接调用渲染引擎。
 用法::
-    .venv\\Scripts\\python.exe test_render_quality.py
+    uv run python eval/manual/render_quality.py
 """
 
 from __future__ import annotations
@@ -11,10 +11,9 @@ import sys
 import asyncio
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "test_output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "test_output"
 
 
 WEATHER_HTML = """
@@ -114,11 +113,10 @@ STOCK_HTML = """
 
 
 async def main() -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     from gsuid_core.utils.html_render import render_md_to_bytes, render_html_to_bytes
 
-    css_path = str(
-        Path(__file__).resolve().parent.parent / "gsuid_core" / "utils" / "html_render" / "markdown_dark.css"
-    )
+    css_path = str(Path(__file__).resolve().parents[2] / "gsuid_core" / "utils" / "html_render" / "markdown_dark.css")
 
     print("=" * 60)
     print("离线渲染质量测试")

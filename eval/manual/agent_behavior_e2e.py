@@ -1,15 +1,12 @@
-"""Agent 行为综合测试：渲染/人设/拒绝/工具召回（需先 uv run core 启动服务）。
+"""Agent 行为综合测试：渲染/人设/拒绝/工具召回（需先 uv run core）。
 
 用法::
     set GSUID_LOCAL_TEST_TOKEN=...
-    .venv\\Scripts\\python.exe tests\\test_agent_behavior_e2e.py
-
-图片与摘要写入 tests/test_output/ 与根目录 test_output/。
+    uv run python eval/manual/agent_behavior_e2e.py
 """
 
 from __future__ import annotations
 
-import os
 import re
 import time
 import base64
@@ -18,41 +15,15 @@ import asyncio
 from typing import Literal
 from pathlib import Path
 
-import pytest
+import _ws_env
 import websockets
 from msgspec import json as msgjson
 from websockets.asyncio.client import ClientConnection
 
 from gsuid_core.models import Message, MessageSend, MessageReceive
 
-# 本文件是需要 `uv run core` 在线服务的端到端脚本（main() 统一编排）；
-# pytest 收集到的 test_* 函数依赖 ws 夹具，服务不在时由夹具 skip，而非报错。
-pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
-@pytest.fixture
-async def ws():
-    token = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
-    url = f"ws://localhost:8765/ws/Nonebot?token={token}"
-    try:
-        conn = await websockets.connect(url, max_size=2**25, open_timeout=5)
-    except OSError:
-        pytest.skip("e2e 服务未启动（先 uv run core），跳过在线行为测试")
-    yield conn
-    await conn.close()
-
-
-WS_TOKEN = os.environ.get("GSUID_LOCAL_TEST_TOKEN", "1")
-WS_URL = f"ws://localhost:8765/ws/Nonebot?token={WS_TOKEN}"
-OUTPUT_DIR = Path(__file__).resolve().parent / "test_output"
-ROOT_OUTPUT = Path(__file__).resolve().parent.parent / "test_output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-ROOT_OUTPUT.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = _ws_env.OUTPUT_DIR
+ROOT_OUTPUT = OUTPUT_DIR
 
 BOT_SELF = "900000001"
 MASTER_UID = "99999"
@@ -161,7 +132,7 @@ async def _send(
     print(f"\n[SENT] {text[:80]}")
 
 
-async def test_weather_render(ws: ClientConnection) -> bool:
+async def scene_weather_render(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 天气查询 → 应产出可视化图片")
     print("=" * 60)
@@ -177,7 +148,7 @@ async def test_weather_render(ws: ClientConnection) -> bool:
     return ok
 
 
-async def test_news_render(ws: ClientConnection) -> bool:
+async def scene_news_render(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 晨间新闻汇总 → 应产出图片")
     print("=" * 60)
@@ -192,7 +163,7 @@ async def test_news_render(ws: ClientConnection) -> bool:
     return ok
 
 
-async def test_persona_consistency(ws: ClientConnection) -> bool:
+async def scene_persona_consistency(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 多轮对话人设一致性")
     print("=" * 60)
@@ -216,7 +187,7 @@ async def test_persona_consistency(ws: ClientConnection) -> bool:
     return ok
 
 
-async def test_rejection(ws: ClientConnection) -> bool:
+async def scene_rejection(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 不合理请求 → 应拒绝")
     print("=" * 60)
@@ -237,7 +208,7 @@ async def test_rejection(ws: ClientConnection) -> bool:
     return ok
 
 
-async def test_silence_in_group(ws: ClientConnection) -> bool:
+async def scene_silence_in_group(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 群聊非@消息 → 应沉默")
     print("=" * 60)
@@ -258,7 +229,7 @@ async def test_silence_in_group(ws: ClientConnection) -> bool:
     return ok
 
 
-async def test_papertrade_recall(ws: ClientConnection) -> bool:
+async def scene_papertrade_recall(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 模拟盘情况 → 应召回工具/委派并尽量出图")
     print("=" * 60)
@@ -280,7 +251,7 @@ async def test_papertrade_recall(ws: ClientConnection) -> bool:
     return ok
 
 
-async def test_stock_query(ws: ClientConnection) -> bool:
+async def scene_stock_query(ws: ClientConnection) -> bool:
     print("\n" + "=" * 60)
     print("TEST: 东山怎么样 → 股票语境分析/出图")
     print("=" * 60)
@@ -301,32 +272,34 @@ async def test_stock_query(ws: ClientConnection) -> bool:
 
 
 async def main() -> None:
-    print(f"连接 {WS_URL} ...")
-    ws = await websockets.connect(WS_URL, max_size=2**25, open_timeout=30)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    url = _ws_env.ws_url()
+    print(f"连接 {url} ...")
+    ws = await websockets.connect(url, max_size=2**25, open_timeout=30)
     print("已连接！\n")
 
     results: dict[str, bool] = {}
     await asyncio.sleep(2)
 
-    results["天气渲染"] = await test_weather_render(ws)
+    results["天气渲染"] = await scene_weather_render(ws)
     await asyncio.sleep(3)
 
-    results["新闻渲染"] = await test_news_render(ws)
+    results["新闻渲染"] = await scene_news_render(ws)
     await asyncio.sleep(3)
 
-    results["人设一致"] = await test_persona_consistency(ws)
+    results["人设一致"] = await scene_persona_consistency(ws)
     await asyncio.sleep(2)
 
-    results["拒绝不合理"] = await test_rejection(ws)
+    results["拒绝不合理"] = await scene_rejection(ws)
     await asyncio.sleep(2)
 
-    results["群聊沉默"] = await test_silence_in_group(ws)
+    results["群聊沉默"] = await scene_silence_in_group(ws)
     await asyncio.sleep(2)
 
-    results["模拟盘召回"] = await test_papertrade_recall(ws)
+    results["模拟盘召回"] = await scene_papertrade_recall(ws)
     await asyncio.sleep(3)
 
-    results["东山股票"] = await test_stock_query(ws)
+    results["东山股票"] = await scene_stock_query(ws)
 
     await ws.close()
 

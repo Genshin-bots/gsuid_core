@@ -149,6 +149,36 @@ def test_favor_clamp():
     print("[OK] 好感度 clamp 到 [-100,100]")
 
 
+def test_fund_claim_hits_and_benign() -> None:
+    from gsuid_core.ai_core.output_firewall import check_ooc, _fund_claim_hit
+
+    assert _fund_claim_hit("放心，钱已经转过去了") is not None
+    assert _fund_claim_hit("明明发过去了", user_text="没收到啊") is not None
+    assert _fund_claim_hit("@100000001 主人能不能v50 很急") == "代向第三方索要钱财"
+    hit = check_ooc("明明发过去了", user_text="钱呢")
+    assert hit is not None and hit.category == "fund_claim"
+    for text, user_text in (
+        ("这个皮肤要 50 块钱，好贵", ""),
+        ("我把作业发过去了", ""),
+        ("新版本v2发了，快去更新", ""),
+        ("收到啦，文件已经转发了", "刚才的文件收到了吗"),
+    ):
+        assert _fund_claim_hit(text, user_text) is None, (text, user_text)
+
+
+def test_fund_claim_never_released() -> None:
+    from gsuid_core.ai_core.output_gate import tool_gate_feedback
+    from gsuid_core.ai_core.output_firewall import NEVER_RELEASE_CATEGORIES, FirewallHit, build_rewrite_warning
+
+    assert "fund_claim" in NEVER_RELEASE_CATEGORIES
+    extra: dict = {"turn_id": "turn_fund"}
+    text = "钱已经转过去了"
+    assert tool_gate_feedback(text, extra) is not None
+    assert tool_gate_feedback(text, extra) is not None
+    warning = build_rewrite_warning(FirewallHit(category="fund_claim", matched=["声称已完成转账/付款"]))
+    assert "不得声称已转账" in warning
+
+
 if __name__ == "__main__":
     test_firewall_catches_model_identity()
     test_firewall_catches_ai_selfref_and_system_terms()

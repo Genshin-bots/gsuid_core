@@ -236,6 +236,24 @@ def test_episodes_with_time_come_before_undated() -> None:
     assert text.index("有时间的对话片段内容") < text.index("没有时间的对话片段内容")
 
 
+def test_untrusted_fence_closed_under_budget() -> None:
+    episodes = [
+        Episode(id=f"ep{i}", content="长" * 400, valid_at="2026-07-16T12:00:00", scope_key="g1", embedding=[])
+        for i in range(8)
+    ]
+    text = MemoryContext(episodes=episodes).to_prompt_text(max_chars=600)
+    assert "<untrusted" in text
+    assert text.rstrip().endswith("</untrusted>")
+
+
+def test_fact_mentions_speaker_uses_digit_boundary() -> None:
+    from gsuid_core.ai_core.memory.retrieval.dual_route import _fact_mentions_speaker
+
+    edge = _edge("用户9123456780", "用户9123456780 最近在办离婚")
+    assert _fact_mentions_speaker(edge, {"12345"}) is False
+    assert _fact_mentions_speaker(edge, {"9123456780"}) is True
+
+
 def test_categories_only_when_query_overlaps() -> None:
     from gsuid_core.ai_core.memory.retrieval.types import Category
 
