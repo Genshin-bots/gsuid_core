@@ -35,8 +35,8 @@ def register_help(
 def clean_plugin_help(plugin_name: str) -> None:
     """清理指定插件的帮助缓存与一览条目，并使 GsCore 主帮助图失效。"""
     from gsuid_core.data_store import get_res_path
-    from gsuid_core.help.draw_new_plugin_help import cache as new_cache
     from gsuid_core.help.draw_plugin_help import cache as old_cache
+    from gsuid_core.help.draw_new_plugin_help import cache as new_cache
 
     # 清理内存 cache 标记（含自身与 GsCore 主帮助）
     new_cache.pop(plugin_name, None)
