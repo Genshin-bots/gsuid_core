@@ -30,3 +30,28 @@ def register_help(
     }
     if plugin_help not in plugins_help["插件帮助一览"]["data"]:
         plugins_help["插件帮助一览"]["data"].append(plugin_help)
+
+
+def clean_plugin_help(plugin_name: str) -> None:
+    """清理指定插件的帮助缓存与一览条目，并使 GsCore 主帮助图失效。"""
+    from gsuid_core.data_store import get_res_path
+    from gsuid_core.help.draw_plugin_help import cache as old_cache
+    from gsuid_core.help.draw_new_plugin_help import cache as new_cache
+
+    # 清理内存 cache 标记（含自身与 GsCore 主帮助）
+    new_cache.pop(plugin_name, None)
+    new_cache.pop("GsCore", None)
+    old_cache.pop(plugin_name, None)
+    old_cache.pop("GsCore", None)
+
+    # 剔除一览表中的注册条目
+    category = plugins_help.get("插件帮助一览")
+    if category is not None:
+        category["data"] = [item for item in category["data"] if item["name"] != plugin_name]
+
+    # 删除磁盘上的过期帮助图
+    help_dir = get_res_path("help")
+    for pattern in (f"{plugin_name}_*.jpg", f"{plugin_name}.jpg", "GsCore_*.jpg", "GsCore.jpg"):
+        for file in help_dir.glob(pattern):
+            if file.is_file():
+                file.unlink(missing_ok=True)

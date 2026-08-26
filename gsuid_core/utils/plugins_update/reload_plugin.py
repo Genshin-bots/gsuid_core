@@ -161,6 +161,14 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
     # ④ Agent 环 hook + 套件槽 + AI 工具注册表
     _clean_plugin_agent_state(plugin_name)
 
+    # ⑤ 帮助图缓存与一览注册条目
+    try:
+        from gsuid_core.help.utils import clean_plugin_help
+
+        clean_plugin_help(plugin_name)
+    except Exception as e:
+        logger.warning(i18n_t("log.plugin.gscore_fail_help_cache", plugin_name=plugin_name, e=e))
+
 
 def _clean_plugin_agent_state(plugin_name: str) -> None:
     """摘掉插件的 Agent 环 hook、让它占用的槽位回落默认套件、卸掉它注册的 AI 工具。
