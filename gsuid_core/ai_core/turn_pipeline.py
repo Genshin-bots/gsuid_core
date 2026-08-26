@@ -5,8 +5,10 @@
 就把它们做成可关的套件槽。
 """
 
+from __future__ import annotations
+
 import time
-from typing import List, Tuple, Optional, Sequence
+from typing import TYPE_CHECKING, List, Tuple, Optional, Sequence
 from datetime import datetime
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -31,6 +33,9 @@ from gsuid_core.ai_core.history_format import format_history_for_agent
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.budget.manager import BudgetDecision
+
 # 双层长度防护（D-10）：绝对上限硬截断，摘要阈值走子 Agent 智能摘要
 ABSOLUTE_MAX_LENGTH = 60000
 MAX_SUMMARY_LENGTH = 15000
@@ -40,17 +45,12 @@ _HISTORY_LIMIT = 20
 _MAX_OTHER_RECORDS = 6
 
 
-async def check_budget_gate(bot: Bot, event: Event) -> bool:
-    """预算闸门（被动交互路径·前置短路）。返回是否放行。
-
-    **不可套件化**：预算闸与 token 记账是配额防线，做成可关的套件等于把防线做成可关的。
-    超额早退能省下后续记忆/分类/RAG/主 Agent 的开销；check 本身异常 fail-open。
-    """
-    decision = None
+async def evaluate_budget(event: Event) -> BudgetDecision | None:
+    """预算判定（无 bot.send）。失败返回 None（fail-open）。"""
     try:
         from gsuid_core.ai_core.budget import budget_manager
 
-        decision = await budget_manager.check_scope(
+        return await budget_manager.check_scope(
             str(event.group_id) if event.group_id else "",
             str(event.user_id),
             event.bot_id or "",
@@ -60,6 +60,16 @@ async def check_budget_gate(bot: Bot, event: Event) -> bool:
         logger.warning(t("log.ai.gscore_budget_check_db", e=e))
     except Exception as e:
         logger.exception(t("log.ai.gscore_budget_check_fail", e=e))
+    return None
+
+
+async def check_budget_gate(bot: Bot, event: Event) -> bool:
+    """预算闸门（被动交互路径·前置短路）。返回是否放行。
+
+    **不可套件化**：预算闸与 token 记账是配额防线，做成可关的套件等于把防线做成可关的。
+    超额早退能省下后续记忆/分类/RAG/主 Agent 的开销；check 本身异常 fail-open。
+    """
+    decision = await evaluate_budget(event)
 
     if decision is None or decision.allowed:
         return True

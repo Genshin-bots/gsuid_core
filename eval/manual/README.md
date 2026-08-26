@@ -9,3 +9,10 @@ uv run python eval/manual/e2e_quick.py
 ```
 
 `GSUID_LOCAL_TEST_TOKEN` 必填，文件内无密钥 fallback。图片写到仓库根目录 `test_output/`（已 gitignore）。
+
+HTTP Agent SSE（需已启动 core，勿 `--dev`；AI 总开关与 `enable_http_agent_api` 都要开）。
+对接说明：[`docs/HTTP_AGENT_API.md`](../../docs/HTTP_AGENT_API.md)。
+
+```powershell
+uv run python eval/manual/http_agent_stream.py --base-url http://127.0.0.1:8765
+```

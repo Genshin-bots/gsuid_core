@@ -87,6 +87,13 @@ if "提及应答" in ai_mode:
 其他模式：`定时巡检`（见 [§08](./08-heartbeat-scheduled-planning.md)）；`趣向捕捉` / `困境救场`
 暂不可用。
 
+## 4.3b HTTP Agent 面（不是 `handle_event`）
+
+`POST /api/v1/agent/chat/stream` **禁止**注入 `handle_event`。开流后只补 H00/A 轨，然后调用
+与适配器同源的 `run_passive_interactive_chat`（H01/长度/预算/session/turn）。`is_http` 的
+`wait_task` 只绑命令路径，不是禁 `handle_event` 的理由。AI 总开关关闭时
+`register_http_agent_routes` 不挂该面。
+
 ## 4.4 `handle_ai_chat` 全链路（`handle_ai.py`）
 
 ```

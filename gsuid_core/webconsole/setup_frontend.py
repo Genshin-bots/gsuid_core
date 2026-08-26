@@ -131,6 +131,7 @@ def _import_webconsole_apis() -> None:
         git_update_api,
         core_config_api,
         plugin_icon_api,
+        http_agent_keys_api,
     )
 
     # —— AI API（拉起 AI 重依赖，仅在 AI 开启时导入）——

@@ -1,0 +1,9 @@
+{
+  "log.ai.http_agent_key_created": "[HttpAgent] API キーを作成しました {key_id} user_id={user_id}",
+  "log.ai.http_agent_key_revoked": "[HttpAgent] API キーを失効しました {key_id}",
+  "log.ai.http_agent_keys_load_fail": "[HttpAgent] キー表の読み込みに失敗: {e}",
+  "log.ai.http_agent_observe_fail": "[HttpAgent] 出站 observe に失敗: {e}",
+  "log.ai.http_agent_session_reset": "[HttpAgent] セッションをリセットしました {session_id}",
+  "log.ai.http_agent_skip_ai_disabled": "[HttpAgent] AI 総スイッチがオフのため Agent 面をマウントしません",
+  "log.ai.http_agent_turn_fail": "[HttpAgent] ターン実行に失敗: {e}"
+}

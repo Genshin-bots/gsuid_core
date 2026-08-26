@@ -49,7 +49,8 @@ gsuid_core/
 gsuid_core/ai_core/
 ├── __init__.py          # 核心初始化
 ├── startup.py           # 唯一 AI 启动钩子 init_ai_core（按 _INIT_STEPS 串行初始化各子系统）
-├── handle_ai.py         # AI 聊天处理入口 handle_ai_chat（双层长度防护 + 意图 + 记忆 + run）
+├── handle_ai.py         # AI 聊天入口：handle_ai_chat + 共用 run_passive_interactive_chat
+├── http_agent/          # HTTP 流式 Agent API（默认关；不进 handle_event）
 ├── ai_router.py         # Session 路由（get_ai_session / Persona 热重载检测）
 ├── session_registry.py  # AISessionRegistry：GsCoreAIAgent 对象注册表 + 空闲清理
 ├── gs_agent.py          # GsCoreAIAgent：工具装配、Agent.iter 环、输出闸接线、收尾重写
@@ -122,6 +123,10 @@ core.py::websocket_endpoint  ──►  _Bot._process()  ──►  handler.py::
                                   bot.send + observe 入队记忆
 ```
 
+**HTTP Agent 面**（`POST /api/v1/agent/chat/stream`；AI 关或不挂路由 / `enable_http_agent_api=false`
+时 404）**不**进上图 `handle_event`，而是 Bearer 钥 → `CaptureBot` →
+`run_passive_interactive_chat`（H01 在此入口内）→ 闸后 SSE。
+
 > 输出闸与呈现分层、尖括号熔断、自由 HTML 出图：见 [§7.12–§7.13](./07-tool-registry-and-agent.md)
 > 与 [`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。
 
@@ -140,6 +145,6 @@ core.py::websocket_endpoint  ──►  _Bot._process()  ──►  handler.py::
 2. **绝不打断主链路**：解析 LLM 自由文本 / Qdrant payload / 外部不可信输入处按需保留
    `try/except` 兜底（这是 `AGENTS.md` §1.1 的少数例外），保证一个子系统异常不拖垮
    整条消息处理。
-3. **AI 总开关一票否决**：AI 关闭时不建 AI 表、不起 AI 后台任务、不进 AI 链路。
+3. **AI 总开关一票否决**：AI 关闭时不建 AI 表、不起 AI 后台任务、不进 AI 链路、不挂 HTTP Agent 路由。
 4. **配置即时持久化**：WebConsole 改配置立即落盘，绝大多数下次消息处理即生效。
 5. **源码是唯一事实源**：文档（含本 SKILL）描述设计意图与导航；改了核心逻辑要回头同步。

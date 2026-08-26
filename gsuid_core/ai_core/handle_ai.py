@@ -73,6 +73,14 @@ class InteractiveTurnResult:
     rel: Optional[RelationshipView]
 
 
+@dataclass
+class PassiveChatResult:
+    """``run_passive_interactive_chat`` 的早退/完成结果（H01 之前到 turn）。"""
+
+    status: Literal["ok", "silence", "disabled", "not_ready", "budget"]
+    turn: Optional[InteractiveTurnResult] = None
+
+
 async def _wait_core_ready() -> bool:
     """AI 核心未就绪时等待迁移完成，避免迁移期间处理聊天触发旧向量查询。"""
     try:
@@ -87,6 +95,81 @@ async def _wait_core_ready() -> bool:
     except Exception as e:
         logger.warning(t("log.ai.gscore_check_core_init", e=e))
     return True
+
+
+async def run_passive_interactive_chat(
+    bot: Bot,
+    event: Event,
+    *,
+    enqueue_ts: Optional[float] = None,
+    soft_triggered: bool = False,
+    budget_mode: Literal["gate", "decision", "skip"] = "gate",
+    wall_clock_budget: Optional[float] = None,
+    return_mode: Literal["always", "return", "by_bot"] = "by_bot",
+    deliver: bool = True,
+    settle: bool = True,
+) -> PassiveChatResult:
+    """适配器与 HTTP Agent 共用的被动聊天入口（不含 ``_ai_semaphore``）。
+
+    顺序：enable / ready → 预算 → H01 → 长度 → 空内容门 → session → turn。
+    HTTP 开流前已查预算时传 ``budget_mode="skip"``；墙钟仅 ``HTTP_AGENT:`` session。
+    """
+    if not ai_config.get_config("enable").data:
+        logger.debug(t("log.ai.gscore_service_enabled_skipping"))
+        return PassiveChatResult("disabled")
+    if not await _wait_core_ready():
+        return PassiveChatResult("not_ready")
+
+    query = event.raw_text
+    if budget_mode == "gate":
+        if not await check_budget_gate(bot, event):
+            return PassiveChatResult("budget")
+    elif budget_mode == "decision":
+        from gsuid_core.ai_core.turn_pipeline import evaluate_budget
+
+        decision = await evaluate_budget(event)
+        if decision is not None and not decision.allowed:
+            return PassiveChatResult("budget")
+
+    hook_ctx = AgentHookContext(
+        point=AgentHookPoint.BEFORE_AI_CHAT,
+        ev=event,
+        bot=bot if isinstance(bot, Bot) else None,
+        session_id=event.session_id,
+        create_by="Chat",
+        query=query,
+        soft_triggered=soft_triggered,
+    )
+    if await fire_hooks(AgentHookPoint.BEFORE_AI_CHAT, hook_ctx) is not HookDecision.CONTINUE:
+        return PassiveChatResult("silence")
+
+    query = apply_absolute_length_guard(event, query)
+    hook_ctx.query = query
+
+    _is_at_me = bool(event.is_tome) or event.user_type == "direct"
+    if not query.strip() and not has_model_visible_content(event) and not _is_at_me:
+        logger.info(t("log.ai.gscore_empty_content_visible"))
+        return PassiveChatResult("silence")
+
+    session = await get_ai_session(event)
+    if wall_clock_budget is not None and event.session_id.startswith("HTTP_AGENT:"):
+        session.wall_clock_budget = wall_clock_budget
+    hook_ctx.persona_name = session.persona_name
+    turn = await run_interactive_turn(
+        bot=bot,
+        event=event,
+        session=session,
+        query=query,
+        hook_ctx=hook_ctx,
+        soft_triggered=soft_triggered,
+        enqueue_ts=enqueue_ts,
+        return_mode=return_mode,
+        deliver=deliver,
+        settle=settle,
+    )
+    if turn.is_silence:
+        return PassiveChatResult("silence", turn=turn)
+    return PassiveChatResult("ok", turn=turn)
 
 
 async def handle_ai_chat(
@@ -117,47 +200,12 @@ async def handle_ai_chat(
         if stale_request(enqueue_ts, STALE_CHAT_REQUEST_TTL):
             return
         try:
-            query = event.raw_text
-            if not await check_budget_gate(bot, event):
-                return
-
-            # 本轮 hook Context：一次建好，各点位复用（字段跨点位传递）
-            hook_ctx = AgentHookContext(
-                point=AgentHookPoint.BEFORE_AI_CHAT,
-                ev=event,
-                bot=bot if isinstance(bot, Bot) else None,
-                session_id=event.session_id,
-                create_by="Chat",
-                query=query,
-                soft_triggered=soft_triggered,
-            )
-            # H01：会话静默窗等「整轮不跑」的判定
-            if await fire_hooks(AgentHookPoint.BEFORE_AI_CHAT, hook_ctx) is not HookDecision.CONTINUE:
-                return
-
-            query = apply_absolute_length_guard(event, query)
-            hook_ctx.query = query
-
-            # 空内容前置门：无可见内容且未@我则静默（与 payload 同源）
-            _is_at_me = bool(event.is_tome) or event.user_type == "direct"
-            if not query.strip() and not has_model_visible_content(event) and not _is_at_me:
-                logger.info(t("log.ai.gscore_empty_content_visible"))
-                return
-
-            session = await get_ai_session(event)
-            hook_ctx.persona_name = session.persona_name
-            await run_interactive_turn(
-                bot=bot,
-                event=event,
-                session=session,
-                query=query,
-                hook_ctx=hook_ctx,
-                soft_triggered=soft_triggered,
+            await run_passive_interactive_chat(
+                bot,
+                event,
                 enqueue_ts=enqueue_ts,
-                return_mode="by_bot",
-                deliver=True,
+                soft_triggered=soft_triggered,
             )
-
         except Exception as e:
             logger.exception(t("log.ai.gscore_ai_exception_chat_error", e=e))
 

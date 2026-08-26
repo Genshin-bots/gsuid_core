@@ -1,0 +1,9 @@
+{
+  "log.ai.http_agent_key_created": "[HttpAgent] 已创建 API key {key_id} user_id={user_id}",
+  "log.ai.http_agent_key_revoked": "[HttpAgent] 已吊销 API key {key_id}",
+  "log.ai.http_agent_keys_load_fail": "[HttpAgent] 钥表加载失败: {e}",
+  "log.ai.http_agent_observe_fail": "[HttpAgent] 出站 observe 失败: {e}",
+  "log.ai.http_agent_session_reset": "[HttpAgent] 已重置会话 {session_id}",
+  "log.ai.http_agent_skip_ai_disabled": "[HttpAgent] AI 总开关关闭，不挂 Agent 面",
+  "log.ai.http_agent_turn_fail": "[HttpAgent] 一轮执行失败: {e}"
+}

@@ -39,6 +39,7 @@ Core 是**单进程单事件循环**。以下状态都是**进程内存 / 单进
 | AI Session 注册表 | `AISessionRegistry._ai_sessions` |
 | 记忆观察队列 | `memory/observer.py` 的 `queue.Queue` |
 | 各类 Semaphore / mtime 缓存 | 全局模块变量 |
+| HTTP Agent 钥 / 限流槽 / 幂等 | `ai_core/http_agent/` |
 
 > **当前单进程事件循环模型下符合预期**。若将来要水平扩展，这些都需要外部化（Redis/DB/共享
 > 存储）。现在写新状态时，默认"只有一个进程"，但心里要清楚这是个约束。
@@ -102,6 +103,8 @@ AI 关闭时**不该有任何 AI 逻辑在跑**。改 AI 模块时务必保留�
 - `scheduled_task/executor.py`、`heartbeat/inspector.py` 执行前查总开关。
 - `create_core_tables` 跳过 AI 表创建。
 - `handle_ai` 里 `enable_ai` **函数内动态读取**（不要缓存进模块级常量，否则切开关要重启）。
+- HTTP Agent：`register_http_agent_routes` 总开关关则不 `include_router`（再开需重启）。
+  已挂上后关掉仍 404。Admin 建钥不走 Agent 面、不查总开关。
 
 ## 12.5 Bot 类型混淆（D-5）
 
@@ -776,7 +779,7 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
 1. 类型：无 `try/except` 兜底（除不可信外部输入）、无 `cast`、无 `type:ignore`、无 `getattr/
    dict.get` 兜底、无 `Any`（含 `dict[str, Any]`），参数返回值与运行时变量类型可追踪。
 2. 异步：可能阻塞的都 `async def`，CPU 密集走 `to_thread`/线程池，没在事件循环里同步跑。
-3. AI 总开关：新加的 AI 初始化/定时任务/建表都查了 `enable`。
+3. AI 总开关：新加的 AI 初始化/定时任务/建表/HTTP 面都查了 `enable`。
 4. 状态：新加的进程内存状态知道多实例不共享；没碰 IngestionWorker 的独立线程禁区。
 5. Bot：取 `_Bot` 用 `WS_BOT_ID`；需要 `Bot` 的地方没传裸 `_Bot`。
 6. 历史/记忆：截断保留 ToolCall/ToolReturn 配对；记忆改动没踩 D-12~D-19。
@@ -797,6 +800,28 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
     调语气的档位都带履约地板；没有依据（未打分 / 无数据）时不注入。
 14. 单测全绿不等于没回归：碰了装配 / 闸门 / 每轮注入 / 启动顺序的改动，跑一轮
     `eval/agent` 群聊基准并与上一份报告逐例对比（`--concurrency 1` 排除争用）。
+
+## 12.25 HTTP 流式 Agent API（2026-08-26）
+
+生产面 `POST /api/v1/agent/chat/stream`（包 `ai_core/http_agent/`）：
+
+- **禁止**调用 `handle_event`（会进命令匹配 / `_Bot.queue` / 适配器黑白名单）。只走
+  `msg_process` + H00/A 轨 + **`run_passive_interactive_chat`**。
+- **H01 / 长度 / 预算**在共用被动入口内，不要在 bridge 再手搓一套。
+- 独立限流槽，**不**占 `handle_ai._ai_semaphore`；断连必须 `finally` 还槽。
+- Session 私聊：`HTTP_AGENT:{bot_id}:{key_id}_{client_session}:private:{user_id}`
+  （多钥不共享 Agent）。群聊：`HTTP_AGENT:{bot_id}:g_{client_session}:group:{group_id}`
+  （同 bot_id + session + group 共享；`group_id` 是房间口令）。
+  同 `user_id` 多钥仍可能共享预算 / `USER_GLOBAL` 记忆 / 好感。
+- v1 SSE 只有 `run.start` / `text` / `attachment` / `run.done` / `run.error`（无 tool/thinking）。
+- v1 同 session **抢答**：新流 `register_run` 后 `cancel_session_runs(..., except_run_id=自己)`，
+  先到的 SSE 应 `run.done cancelled`。`on_busy=queue` / shield 还没做。
+- 关闸 / 鉴权 **先于** 读 body；实读字节计数 cap（缺 `Content-Length` 也算）。
+- 鉴权封禁：公网按 IP；loopback/私网按 Bearer 哈希，避免 nginx 一把封死整条代理。
+- 上行 `images[]` 只收 `data:image` / `base64://`，禁止 URL（Bearer 面 SSRF）。
+- AI 总开关关：启动时不挂 `agent_router`（再开需重启）。已挂上后关掉 AI 仍 404。
+  `enable_http_agent_api` 关闸是运行时 404，路由仍在。Admin 建钥两开关都无关。
+  客户端对接：[`docs/HTTP_AGENT_API.md`](../../../../docs/HTTP_AGENT_API.md)。
 
 ## 12.24 认知枢纽（2026-08-16）
 

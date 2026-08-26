@@ -134,6 +134,12 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
 ⑫ 异步沉淀：session_log 刷盘 / 记忆 flush / 统计 / 认知节点回流
 ```
 
+**HTTP Agent（v1）**：`POST /api/v1/agent/chat/stream` 不进 `handle_event`。开流后
+`msg_process` + H00/A 轨 + **`run_passive_interactive_chat`**（H01 在此入口内，与适配器同源）。
+SSE 仅闸后 `text`/`attachment` 与单一终态；无 tool/thinking。取消语义与今日 `run()` 一致
+（无 `gen_task`/`shield`）。AI 总开关关则启动不挂该面；已挂上后关掉 AI 仍 404。
+客户端对接见 [`HTTP_AGENT_API.md`](./HTTP_AGENT_API.md)。
+
 ### 1.1 内核 vs 套件（2026-08-15 起）
 
 上面 12 阶段是**内核编排**。产品能力（记忆 / 关系温度 / 情绪 / 意图分类 / 软门 /

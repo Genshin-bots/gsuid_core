@@ -1,0 +1,9 @@
+{
+  "log.ai.http_agent_key_created": "[HttpAgent] created API key {key_id} user_id={user_id}",
+  "log.ai.http_agent_key_revoked": "[HttpAgent] revoked API key {key_id}",
+  "log.ai.http_agent_keys_load_fail": "[HttpAgent] failed to load key store: {e}",
+  "log.ai.http_agent_observe_fail": "[HttpAgent] outbound observe failed: {e}",
+  "log.ai.http_agent_session_reset": "[HttpAgent] reset session {session_id}",
+  "log.ai.http_agent_skip_ai_disabled": "[HttpAgent] AI master switch is off; Agent routes not mounted",
+  "log.ai.http_agent_turn_fail": "[HttpAgent] turn failed: {e}"
+}

@@ -14,6 +14,9 @@
       例: "ws-onebot:onebot:bot_001:group:789012"
 私聊: f"{WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}"
       例: "ws-onebot:onebot:bot_001:private:345678"
+HTTP Agent:
+      `HTTP_AGENT:{bot_id}:{key_id}_{client_session}:private:{key.user_id}`
+      同 user_id 多钥不共享 Agent/history，共享预算与 USER_GLOBAL 记忆/好感。
 ```
 
 > **群聊 Session ID 不含 `user_id`**——群内所有用户共享同一个 Session 与记忆。这是历史致命
