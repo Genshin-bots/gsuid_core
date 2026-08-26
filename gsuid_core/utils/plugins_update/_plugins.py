@@ -265,6 +265,14 @@ async def uninstall_plugin(path: Path):
         unregister_meta_plugin(name)
         logger.warning(t("log.plugin.uninstall_meta_warn", plugin_name=name))
         warn = f"⚠️ 已卸载基础设施插件 {name}，依赖它的插件下次调用会失败。\n"
+
+    try:
+        from gsuid_core.help.utils import clean_plugin_help
+
+        clean_plugin_help(name)
+    except Exception as e:
+        logger.warning(t("log.plugin.gscore_fail_help_cache", plugin_name=name, e=e))
+
     kind = "目录" if was_dir else "文件"
     return f"{warn}✅ 插件{kind} {name} 删除成功!"
 
