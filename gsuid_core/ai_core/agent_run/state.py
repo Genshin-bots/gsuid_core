@@ -42,6 +42,10 @@ class RunOnceState:
     turn_graph: Any | None
     cheap_gate: Any | None
     is_framework_injection: bool
+    #: 出站是否按 delta 推。与 pydantic-ai node.stream（TTFT/TPS）正交。
+    outbound_stream: bool = False
+    #: Token 用量分类；空则 settle 用 create_by。HTTP 入口写 Http_Chat。
+    stats_chat_type: str = ""
 
     # 预算
     budget_scope: tuple[str, str, str] | None = None
@@ -63,8 +67,10 @@ class RunOnceState:
     same_tool_name: str = ""
     thrash_fused: bool = False
     thinking_segments: list[str] = field(default_factory=list)
-    #: 本轮已从 pydantic-ai 流式 event 推过 thinking_delta，CallTools 勿再整段重放
+    #: 本 ModelRequest 已从流式 event 推过 thinking_delta，CallTools 勿再整段重放
     thinking_streamed: bool = False
+    #: 本 ModelRequest 流式已见函数 ToolCall；中间 OS 不再入出站流
+    stream_saw_fn_tool: bool = False
     generation_cancelled: bool = False
     cancel_ev: Any | None = None
     # 出站话术：free / silence_only / status_ok / framework_nudge /

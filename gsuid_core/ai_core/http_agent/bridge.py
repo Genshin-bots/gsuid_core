@@ -7,7 +7,7 @@ import asyncio
 from gsuid_core.bot import _Bot
 from gsuid_core.models import Event
 from gsuid_core.ai_core.handle_ai import PassiveChatResult, run_passive_interactive_chat
-from gsuid_core.ai_core.http_agent.types import HTTP_AGENT_WS_BOT_ID
+from gsuid_core.ai_core.http_agent.types import HTTP_AGENT_WS_BOT_ID, HTTP_STATS_CHAT_TYPE
 from gsuid_core.ai_core.http_agent.runtime import bind_agent
 from gsuid_core.ai_core.http_agent.capture_bot import CaptureBot, CaptureItem
 
@@ -76,4 +76,6 @@ async def run_http_agent_turn(
         wall_clock_budget=float(wall_clock),
         return_mode="by_bot",
         deliver=True,
+        outbound_stream=True,
+        stats_chat_type=HTTP_STATS_CHAT_TYPE,
     )

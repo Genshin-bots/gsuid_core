@@ -3,10 +3,9 @@
 可见台词有两条路径：
 
 - **流式**：``enqueue_text_delta`` 在 pydantic-ai ``TextPartDelta`` 到达时入队，
-  供 SSE ``text`` 帧追加。不写 history（完整段再记一次）。
-- **整段**：``send`` / ``send_chat_result``。若本段已作为 delta 推过，
-  调用方应 ``consume_streamed_text`` 后走 ``commit_streamed_history``，
-  避免同一段再入队一次。
+  供 SSE ``text`` 帧追加。不写 history（CallTools 过闸后再 ``commit_streamed_history``）。
+- **整段**：``send`` / ``send_chat_result``。闸门通过后 ``take_unsent_suffix``：
+  已全部推过则只记 history；只推了前缀则补后缀；否则整段 ``send``。
 """
 
 from __future__ import annotations
@@ -83,22 +82,29 @@ class CaptureBot(Bot):
         self._overflow = False
         self._streamed_text = ""
         self._delta_buf = ""
+        self._hold = ""
 
     def reset_text_stream(self) -> None:
-        """新的 ModelRequest 开始前丢掉未对齐的合批缓冲。"""
+        """丢掉未对齐的合批缓冲（新 ModelRequest，或本段 leftover 刚入 SSE）。"""
         self._streamed_text = ""
         self._delta_buf = ""
+        self._hold = ""
+
+    def has_queued_text(self) -> bool:
+        return bool(self._streamed_text)
 
     def enqueue_text_delta(self, piece: str) -> None:
         """把模型可见文本增量推进 SSE 队列（不写 history）。"""
         if not piece:
             return
-        from gsuid_core.ai_core.utils import is_silence_marker
+        from gsuid_core.ai_core.utils import is_silence_marker, split_protocol_hold
 
-        if is_silence_marker(piece):
+        if is_silence_marker(piece) and not self._hold and not self._delta_buf:
             return
-        self._streamed_text += piece
-        self._delta_buf += piece
+        visible, self._hold = split_protocol_hold(self._hold + piece, force=False)
+        if not visible:
+            return
+        self._delta_buf += visible
         if len(self._delta_buf) >= _DELTA_FLUSH_CHARS:
             self._try_flush_delta()
 
@@ -108,27 +114,35 @@ class CaptureBot(Bot):
         item = CaptureItem("text", text=self._delta_buf)
         try:
             self._cap_queue.put_nowait(item)
-            self._delta_buf = ""
         except asyncio.QueueFull:
             # 不标 overflow：留给 flush_text_delta 阻塞推完。
             return
+        self._streamed_text += self._delta_buf
+        self._delta_buf = ""
 
     async def flush_text_delta(self) -> None:
         """流结束时把合批残余推进队列；队列满则背压等待。"""
-        if not self._delta_buf:
-            return
-        item = CaptureItem("text", text=self._delta_buf)
+        from gsuid_core.ai_core.utils import split_protocol_hold
+
+        vis, _ = split_protocol_hold(self._hold, force=True)
+        self._hold = ""
+        chunk = self._delta_buf + vis
         self._delta_buf = ""
+        if not chunk:
+            return
+        item = CaptureItem("text", text=chunk)
         try:
             self._cap_queue.put_nowait(item)
         except asyncio.QueueFull:
-            await self._cap_queue.put(item)
+            try:
+                await self._cap_queue.put(item)
+            except asyncio.CancelledError:
+                self._delta_buf = chunk
+                raise
+        self._streamed_text += chunk
 
     def consume_streamed_text(self, text: str) -> bool:
-        """CallTools 完整段与已推 delta 对齐则消耗缓冲，返回 True（勿再 ``send`` 入队）。
-
-        调用前必须先 ``flush_text_delta``，否则合批残余还在 buf 里、未入 SSE。
-        """
+        """已入 SSE 的缓冲是否完整覆盖 ``text``。调用前须先 ``flush_text_delta``。"""
         raw = self._streamed_text
         if not raw:
             return False
@@ -140,17 +154,38 @@ class CaptureBot(Bot):
         stripped = raw.lstrip()
         lead = len(raw) - len(stripped)
         if stripped.startswith(text):
-            rest = raw[lead + len(text) :]
-            self._streamed_text = rest.lstrip()
-            return True
-        if text.startswith(stripped):
-            self._streamed_text = ""
-            return True
-        # CallTools 拆掉 <think> 后只剩正文：已推 SSE 的是「思考+正文」
-        if stripped.endswith(text):
-            self._streamed_text = ""
+            self._streamed_text = raw[lead + len(text) :].lstrip()
             return True
         return False
+
+    def take_unsent_suffix(self, text: str) -> str | None:
+        """闸门通过后：``None`` 已全部在 SSE；否则返回仍需入队的后缀或全文。"""
+        raw = self._streamed_text
+        # 未入队残余改由返回值负责，避免 cancel 恢复的 buf 再被 flush 重复推
+        self._delta_buf = ""
+        self._hold = ""
+        if not raw:
+            return text
+        stripped = raw.lstrip()
+        if not text:
+            return text
+        if stripped.startswith(text):
+            self._streamed_text = stripped[len(text) :].lstrip()
+            return None
+        if text.startswith(stripped):
+            self._streamed_text = ""
+            rest = text[len(stripped) :]
+            return rest if rest else None
+        self._streamed_text = ""
+        return None
+
+    def discard_streamed_preview(self, text: str = "") -> None:
+        """闸门拒绝：只丢掉与 text 对齐的预览前缀。空或对不上则保留后续 part。"""
+        if not text:
+            return
+        if self.consume_streamed_text(text):
+            self._delta_buf = ""
+            self._hold = ""
 
     async def commit_streamed_history(
         self,

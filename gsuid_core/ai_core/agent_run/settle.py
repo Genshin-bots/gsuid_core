@@ -412,7 +412,7 @@ class SettlePhase(RunOnceHost):
                 if input_tokens > 0 or output_tokens > 0:
                     statistics_manager.record_token_usage(
                         model_name=st.model_name,
-                        chat_type=self.create_by,
+                        chat_type=st.stats_chat_type if st.stats_chat_type else self.create_by,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         cache_read_tokens=cache_read_tokens,

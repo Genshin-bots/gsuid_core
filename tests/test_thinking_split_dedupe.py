@@ -9,6 +9,7 @@ from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 
 from gsuid_core.ai_core.utils import (
     ThinkTagSplitter,
+    split_protocol_hold,
     _dedupe_thinking_parts,
     _normalize_thinking_tags,
     _split_embedded_thinking,
@@ -130,3 +131,80 @@ def test_think_tag_splitter_keeps_plain_text() -> None:
     vis, th = sp.feed("Let me think about it.")
     assert vis == "Let me think about it."
     assert th == ""
+
+
+def test_think_tag_splitter_unclosed_stays_thought() -> None:
+    sp = ThinkTagSplitter("<think>", "</think>")
+    vis, th = sp.feed("<think>secret")
+    assert vis == ""
+    assert th == "secret"
+    vis, th = sp.flush()
+    assert vis == "" and th == ""
+
+
+def test_think_tag_splitter_flush_drops_partial_start_tag() -> None:
+    sp = ThinkTagSplitter("<think>", "</think>")
+    vis, th = sp.feed("<th")
+    assert vis == "" and th == ""
+    vis, th = sp.flush()
+    assert vis == "" and th == ""
+
+
+def test_split_unclosed_think_is_thinking_not_text() -> None:
+    """未闭合 <think> 必须当思考，不能当可见正文（与 ThinkTagSplitter 对齐）。"""
+    parts = _split_embedded_thinking(
+        [TextPart(content="<think>secret")],
+        ("<think>", "</think>"),
+    )
+    assert len(parts) == 1
+    assert isinstance(parts[0], ThinkingPart)
+    assert parts[0].content == "secret"
+
+
+def test_split_protocol_hold_silence_and_visible() -> None:
+    vis, hold = split_protocol_hold("<SILEN", force=False)
+    assert vis == "" and hold == "<SILEN"
+    vis, hold = split_protocol_hold("<SILENCE>", force=False)
+    assert vis == "" and hold == ""
+    vis, hold = split_protocol_hold("你好<SILENCE>世界", force=False)
+    assert vis == "你好世界" and hold == ""
+    vis, hold = split_protocol_hold("hello<SIL", force=True)
+    assert vis == "hello" and hold == ""
+    vis, hold = split_protocol_hold("plain text", force=False)
+    assert vis == "plain text" and hold == ""
+
+
+def test_split_protocol_hold_lone_bracket_is_visible() -> None:
+    """单独 [ / < 是 JSON、比较、markdown 字面量；force 也不得丢掉。"""
+    vis, hold = split_protocol_hold("hello[", force=False)
+    assert vis == "hello[" and hold == ""
+    vis, hold = split_protocol_hold("hello[", force=True)
+    assert vis == "hello[" and hold == ""
+    vis, hold = split_protocol_hold("score < 10", force=True)
+    assert vis == "score < 10" and hold == ""
+    vis, hold = split_protocol_hold("arr[0]", force=False)
+    assert vis == "arr[0]" and hold == ""
+
+
+def test_split_protocol_hold_junk_after_name_is_visible() -> None:
+    """名字后已跟非标签字符则不是未闭合标签，force 也不得丢掉后半句。"""
+    blob = "hello<SILENCE leftover without close"
+    vis, hold = split_protocol_hold(blob, force=False)
+    assert vis == blob and hold == ""
+    vis, hold = split_protocol_hold(blob, force=True)
+    assert vis == blob and hold == ""
+    vis, hold = split_protocol_hold("hello<SILENCE", force=False)
+    assert vis == "hello" and hold == "<SILENCE"
+
+
+def test_split_protocol_hold_keeps_code_span_tags() -> None:
+    """代码围栏/行内代码里的协议标签当字面量，与 remainder_after_protocol_tags 对齐。"""
+    inline = "use `<SILENCE>` please"
+    vis, hold = split_protocol_hold(inline, force=False)
+    assert vis == inline and hold == ""
+    fenced = "```\n<SILENCE>\n```"
+    vis, hold = split_protocol_hold(fenced, force=False)
+    assert vis == fenced and hold == ""
+    mixed = "see `<SILENCE>` then <SILENCE>ok"
+    vis, hold = split_protocol_hold(mixed, force=False)
+    assert vis == "see `<SILENCE>` then ok" and hold == ""

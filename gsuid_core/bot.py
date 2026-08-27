@@ -752,6 +752,34 @@ class Bot:
         # 当前用户语言缓存（懒解析，一次事件内复用），见 get_lang()
         self._lang: Optional[str] = None
 
+    def reset_text_stream(self) -> None:
+        """出站流式：新模型请求前清对齐缓冲。默认无缓冲。"""
+        return
+
+    def enqueue_text_delta(self, piece: str) -> None:
+        """出站流式：可见文本增量。默认丢弃，等完整 TextPart。"""
+        return
+
+    async def flush_text_delta(self) -> None:
+        """出站流式：把合批残余推出去。默认无操作。"""
+        return
+
+    def take_unsent_suffix(self, text: str) -> str | None:
+        """闸门通过后：None=已全部出站；否则未出站后缀或全文。默认返回全文。"""
+        return text
+
+    def discard_streamed_preview(self, text: str = "") -> None:
+        """闸门拒绝：丢掉已推预览的对齐缓冲。默认无缓冲。"""
+        return
+
+    async def commit_streamed_history(
+        self,
+        text: str,
+        extra_metadata: Optional[Dict[str, object]] = None,
+    ) -> None:
+        """增量已出站：只记 history，不再 send。默认无操作。"""
+        return
+
     async def get_lang(self) -> str:
         """当前用户语言：用户自定义 > 全局 LANGUAGE；结果缓存到本 Bot 实例。"""
         if self._lang is None:

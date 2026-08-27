@@ -813,6 +813,11 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
   （多钥不共享 Agent）。群聊：`HTTP_AGENT:{bot_id}:g_{client_session}:group:{group_id}`
   （同 bot_id + session + group 共享；`group_id` 是房间口令）。
   同 `user_id` 多钥仍可能共享预算 / `USER_GLOBAL` 记忆 / 好感。
+- 出站是否流式由入口参数 ``outbound_stream`` 决定，与 pydantic-ai ``node.stream()``（TTFT/TPS）正交。
+  HTTP 默认 True；IM 默认 False。loop 只看这个开关，不 ``isinstance(CaptureBot)``。
+  Bot 上流式钩子默认 no-op（等完整 TextPart）；CaptureBot / 未来流式 IM 覆盖。
+- HTTP 用量 ``chat_type=Http_Chat``（``HTTP_STATS_CHAT_TYPE``），与 IM 的 ``Chat`` 分开。
+  ``create_by`` 仍是 ``Chat``（工具装配 / 话术门与 IM 相同）。
 - v1 SSE 只有 `run.start` / `text` / `attachment` / `run.done` / `run.error`（无 tool/thinking）。
 - v1 同 session **抢答**：新流 `register_run` 后 `cancel_session_runs(..., except_run_id=自己)`，
   先到的 SSE 应 `run.done cancelled`。`on_busy=queue` / shield 还没做。

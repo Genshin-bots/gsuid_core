@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from typing import Any, Sequence
-from inspect import isawaitable
 
 from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
@@ -12,12 +11,18 @@ from pydantic_ai.messages import (
     TextPart,
     ThinkingPart,
     ToolCallPart,
+    TextPartDelta,
+    PartDeltaEvent,
+    PartStartEvent,
     ToolReturnPart,
     UserPromptPart,
+    ThinkingPartDelta,
     NativeToolCallPart,
     NativeToolReturnPart,
+    ModelResponseStreamEvent,
 )
 
+from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import (
@@ -127,44 +132,44 @@ class LoopPhase(RunOnceHost):
     async def _emit_stream_events(
         self,
         st: RunOnceState,
-        event: Any,
+        event: ModelResponseStreamEvent,
         *,
         text_starts: set[int],
         splitter: ThinkTagSplitter,
     ) -> None:
         """从 pydantic-ai 流式 event 抽出 thinking / 可见 text delta。
 
-        thinking 走 ``on_trace``（画布折叠块）；text 仅 CaptureBot 有
-        ``enqueue_text_delta`` 时入 SSE。QQ 等 IM 仍等完整 TextPart + 闸门。
-        Text 里夹的 ``<think>`` 在这里剥掉，避免思考进气泡正文。
+        thinking 走 ``on_trace``（旁路轨迹）；text 仅 ``outbound_stream`` 时入队。
+        非流式出站仍等完整 TextPart + 闸门。Text 里夹的 ``<think>`` 在此剥掉。
         """
-        kind = getattr(event, "event_kind", None)
-        if kind == "part_delta":
-            delta = getattr(event, "delta", None)
-            dkind = getattr(delta, "part_delta_kind", None)
-            piece = getattr(delta, "content_delta", None) or ""
-            if dkind == "thinking" and piece:
-                st.thinking_streamed = True
-                self._emit_trace("thinking_delta", piece)
-            elif dkind == "text" and piece:
-                await self._enqueue_text_delta(st, piece, splitter)
+        if isinstance(event, PartDeltaEvent):
+            delta = event.delta
+            if isinstance(delta, ThinkingPartDelta):
+                piece = delta.content_delta or ""
+                if piece:
+                    st.thinking_streamed = True
+                    self._emit_trace("thinking_delta", piece)
+            elif isinstance(delta, TextPartDelta):
+                piece = delta.content_delta
+                if piece:
+                    await self._enqueue_text_delta(st, piece, splitter)
             return
-        if kind == "part_start":
-            part = getattr(event, "part", None)
-            idx = getattr(event, "index", None)
+        if isinstance(event, PartStartEvent):
+            part = event.part
             if isinstance(part, ThinkingPart):
                 piece = part.content or ""
                 if piece:
                     st.thinking_streamed = True
                     self._emit_trace("thinking_delta", piece)
             elif isinstance(part, TextPart):
-                if isinstance(idx, int):
-                    if idx in text_starts:
-                        return
-                    text_starts.add(idx)
+                if event.index in text_starts and event.previous_part_kind is None:
+                    return
+                text_starts.add(event.index)
                 piece = part.content or ""
                 if piece:
                     await self._enqueue_text_delta(st, piece, splitter)
+            elif isinstance(part, ToolCallPart) and not isinstance(part, NativeToolCallPart):
+                st.stream_saw_fn_tool = True
 
     async def _enqueue_text_delta(
         self,
@@ -182,23 +187,31 @@ class LoopPhase(RunOnceHost):
                 self._emit_trace("thinking_delta", thought)
         if not visible:
             return
-        # 终局静默轮不要把内心 OS 打到 SSE
+        # 终局静默 / 已见函数工具的中间 OS 不要打到流式出站
         if st.speech_policy in ("silence_only", "delivered"):
             return
-        enqueue = getattr(st.bot, "enqueue_text_delta", None)
-        if not callable(enqueue):
+        if st.suppress_intermediate_text and st.stream_saw_fn_tool:
             return
-        maybe = enqueue(visible)
-        if isawaitable(maybe):
-            await maybe
+        bot = self._outbound_bot(st)
+        if bot is None:
+            return
+        bot.enqueue_text_delta(visible)
+
+    def _outbound_bot(self, st: RunOnceState) -> Bot | None:
+        """出站流式模式才返回 bot；pydantic-ai 流式打点不走这里。"""
+        if not st.outbound_stream:
+            return None
+        return st.bot
 
     async def _flush_bot_text_delta(self, st: RunOnceState) -> None:
-        flush = getattr(st.bot, "flush_text_delta", None) if st.bot else None
-        if not callable(flush):
-            return
-        maybe = flush()
-        if isawaitable(maybe):
-            await maybe
+        bot = self._outbound_bot(st)
+        if bot is not None:
+            await bot.flush_text_delta()
+
+    def _discard_stream_preview(self, st: RunOnceState, text: str = "") -> None:
+        bot = self._outbound_bot(st)
+        if bot is not None:
+            bot.discard_streamed_preview(text)
 
     async def _commit_streamed_or_send(
         self,
@@ -208,18 +221,34 @@ class LoopPhase(RunOnceHost):
         already_streamed: bool,
         at_user_id: str | None = None,
     ) -> None:
+        bot = st.bot
+        if bot is None:
+            return
         if already_streamed:
-            commit = getattr(st.bot, "commit_streamed_history", None) if st.bot else None
-            if callable(commit):
-                maybe = commit(text)
-                if isawaitable(maybe):
-                    await maybe
+            if st.outbound_stream:
+                await bot.commit_streamed_history(text)
             self._run_sent_texts.add(text)
             st.main_channel_sends += 1
             return
-        await send_chat_result(st.bot, text, ev=st.ev, at_user_id=at_user_id)
+        await send_chat_result(bot, text, ev=st.ev, at_user_id=at_user_id)
         self._run_sent_texts.add(text)
         st.main_channel_sends += 1
+
+    async def _send_gated_text(self, st: RunOnceState, text: str, *, at_user_id: str | None) -> None:
+        """闸门已通过：流式只补未推后缀，否则 ``send_chat_result``。"""
+        already = False
+        bot = self._outbound_bot(st)
+        if bot is not None:
+            leftover = bot.take_unsent_suffix(text)
+            if leftover is None:
+                already = True
+            elif leftover != text:
+                bot.enqueue_text_delta(leftover)
+                await bot.flush_text_delta()
+                # leftover 已出站；本段吃掉整段流，对齐缓冲勿留给下一 part
+                bot.reset_text_stream()
+                already = True
+        await self._commit_streamed_or_send(st, text, already_streamed=already, at_user_id=at_user_id)
 
     def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
@@ -605,9 +634,11 @@ class LoopPhase(RunOnceHost):
         st.req_start = time.perf_counter()
         st.first_event_at = None
         st.last_event_at = None
-        reset_stream = getattr(st.bot, "reset_text_stream", None) if st.bot else None
-        if callable(reset_stream):
-            reset_stream()
+        st.thinking_streamed = False
+        st.stream_saw_fn_tool = False
+        bot = self._outbound_bot(st)
+        if bot is not None:
+            bot.reset_text_stream()
         _text_starts: set[int] = set()
         _tags = st.thinking_tags if st.thinking_tags else ("<think>", "</think>")
         splitter = ThinkTagSplitter(_tags[0], _tags[1])
@@ -621,9 +652,7 @@ class LoopPhase(RunOnceHost):
                     st.last_event_at = time.perf_counter()
                     if st.first_event_at is None:
                         st.first_event_at = st.last_event_at
-                    await self._emit_stream_events(
-                        st, _event, text_starts=_text_starts, splitter=splitter
-                    )
+                    await self._emit_stream_events(st, _event, text_starts=_text_starts, splitter=splitter)
             finally:
                 vis, th = splitter.flush()
                 if th:
@@ -765,36 +794,29 @@ class LoopPhase(RunOnceHost):
             # 大模型直接输出文本
             elif isinstance(part, TextPart):
                 _text = part.content.strip()
-                _consume = getattr(st.bot, "consume_streamed_text", None) if st.bot else None
-                _already = bool(_consume(_text)) if callable(_consume) else False
-                # 拆出 <think> 后只剩空白的文本片段（如纯思考+工具调用轮）， 既无需打印也无需下发，
+                # 拆出 <think> 后只剩空白的文本片段（如纯思考+工具调用轮），既无需打印也无需下发
                 if not _text:
+                    self._discard_stream_preview(st)
                     continue
                 logger.debug(i18n_t("log.agent.llm_text", _text=_text))
                 self._session_logger.log_text_output(_text)
                 if is_silence_marker(_text):
                     logger.info(i18n_t("log.agent.silent_skipping_text", _text=_text))
-                    continue
-                if _already:
-                    # 已作为 SSE text 帧推过：闸门无法撤回，只记 history，禁止整段再入队。
-                    if _text not in self._run_sent_texts:
-                        try:
-                            await self._commit_streamed_or_send(st, _text, already_streamed=True)
-                        except Exception as _e:
-                            logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
-                    if not _saw_tool_call_this_turn:
-                        st.saw_final_response = True
+                    self._discard_stream_preview(st, _text)
                     continue
                 _stripped_protocol = remainder_after_protocol_tags(_text).strip()
                 if _stripped_protocol != _text:
                     _text = _stripped_protocol
                     if not _text:
+                        self._discard_stream_preview(st)
                         continue
                 if is_stage_direction(_text):
                     _resp_unsent.append(_text)
+                    self._discard_stream_preview(st, _text)
                     continue
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
+                    self._discard_stream_preview(st, _text)
                     continue
                 # 同响应已有函数工具：规划/内心 OS 不出站。主人格一句接任务应除外（不按 12 字）。
                 # 不按工具名特判。hosted 搜索不置位（答案就在 TextPart）。
@@ -814,6 +836,7 @@ class LoopPhase(RunOnceHost):
                 if _slot == "unsent":
                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
                     _resp_unsent.append(_text)
+                    self._discard_stream_preview(st, _text)
                     continue
                 if _slot == "send_final":
                     st.saw_final_response = True
@@ -858,6 +881,7 @@ class LoopPhase(RunOnceHost):
                         )
                         if _slot == "send_accept":
                             _resp_unsent.append(_text)
+                        self._discard_stream_preview(st, _text)
                         continue
                     _inflight_now = bool(
                         st.pending_async_delivery
@@ -872,6 +896,7 @@ class LoopPhase(RunOnceHost):
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
                     _text = strip_open_solicitations(_text)
                     if not _text.strip():
+                        self._discard_stream_preview(st)
                         continue
                 if st.bot and _text and st.return_mode in ["always", "by_bot"]:
                     # 统一输出闸门；同 response 尖括号只计一次 attempt
@@ -896,6 +921,7 @@ class LoopPhase(RunOnceHost):
                         )
                         if _slot == "send_accept":
                             _resp_unsent.append(_text)
+                        self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.REWRITE:
                         if _gr.defer_ooc and _gr.ooc_hit is not None:
@@ -916,8 +942,10 @@ class LoopPhase(RunOnceHost):
                                 st.ab_abort = True
                         if _slot == "send_accept":
                             _resp_unsent.append(_text)
+                        self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
+                        self._discard_stream_preview(st, _text)
                         _fb = _gr.send_text or output_firewall.fallback_machine_text(self.persona_name)
                         try:
                             await send_chat_result(st.bot, _fb, ev=st.ev, ooc_check=False)
@@ -934,6 +962,7 @@ class LoopPhase(RunOnceHost):
                         st.fab_blocked.append(_text)
                         if _slot == "send_accept":
                             _resp_unsent.append(_text)
+                        self._discard_stream_preview(st, _text)
                         continue
                     # 单轮出站配额兜底（4.10）：主通道台词超限即静默，防多 TextPart 刷屏
                     _cap = int(ai_config.get_config("main_channel_visible_limit").data)
@@ -947,6 +976,7 @@ class LoopPhase(RunOnceHost):
                             )
                         )
                         _resp_unsent.append(_text)
+                        self._discard_stream_preview(st, _text)
                         continue
                     # Why: send_chat_result 抛异常会穿透 _agent.iter() 的 async st.context 触发
                     # athrow/cancel scope
@@ -954,9 +984,7 @@ class LoopPhase(RunOnceHost):
                         _extra = _require_context(st).extra
                         _at_uid = _extra["at_user_id"] if "at_user_id" in _extra else None
                         _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
-                        await self._commit_streamed_or_send(
-                            st, _text, already_streamed=False, at_user_id=_at
-                        )
+                        await self._send_gated_text(st, _text, at_user_id=_at)
                     except Exception as _e:
                         logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
 

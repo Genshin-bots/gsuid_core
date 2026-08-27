@@ -83,6 +83,8 @@ class OrchestratorPhase(RunOnceHost):
             turn_graph=turn_graph,
             cheap_gate=cheap_gate,
             is_framework_injection=is_framework_injection,
+            outbound_stream=self._outbound_stream,
+            stats_chat_type=self._stats_chat_type if self._stats_chat_type else self.create_by,
         )
 
         # 1) 预算闸门（可早退；放行返回哨兵，尚未 install 墙钟 / scope token）

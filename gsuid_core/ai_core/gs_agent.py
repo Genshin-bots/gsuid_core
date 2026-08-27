@@ -274,7 +274,7 @@ class GsCoreAIAgent(RunOnceMixin):
         dynamic_tools: Optional[bool] = None,
         scope_key: Optional[str] = None,
         wall_clock_budget: Optional[float] = None,
-        on_trace: Optional[Callable[[str, str], None]] = None,
+        on_trace: Optional[Callable[[TraceKind, str], None]] = None,
         capability_node_id: Optional[str] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
@@ -310,6 +310,9 @@ class GsCoreAIAgent(RunOnceMixin):
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
 
         self.create_by = create_by
+        # 本 run 出站模式 / 用量分类；run() 入口写入，纠正轮读同一份
+        self._outbound_stream: bool = False
+        self._stats_chat_type: str = ""
         # 能力代理 node_id（仅 CapabilityAgent）；契约/日志用，勿靠 session 子串猜
         self.capability_node_id: str = (capability_node_id or "").strip()
         # 未显式给 session_id 的来源（能力评估 / meme 打标 / 记忆摄入·检索等后台 LLM
@@ -394,7 +397,7 @@ class GsCoreAIAgent(RunOnceMixin):
         """本轮已出站的可见台词（插入序）。评测 HTTP 在 SILENCE 返回时拼回这条。"""
         return tuple(self._run_sent_texts)
 
-    def _emit_trace(self, kind: str, text: str) -> None:
+    def _emit_trace(self, kind: TraceKind, text: str) -> None:
         """把模型思考 / 工具调用轨迹推给观察者（``on_trace``）。
 
         ``kind="tool"`` 的 text 形如 ``"<工具名>|<参数JSON>"``。
@@ -1343,6 +1346,8 @@ class GsCoreAIAgent(RunOnceMixin):
         turn_graph: Optional[TurnGraph] = None,
         cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
+        outbound_stream: bool = False,
+        stats_chat_type: Optional[str] = None,
     ) -> str: ...
 
     @overload
@@ -1364,6 +1369,8 @@ class GsCoreAIAgent(RunOnceMixin):
         turn_graph: Optional[TurnGraph] = None,
         cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
+        outbound_stream: bool = False,
+        stats_chat_type: Optional[str] = None,
     ) -> _T: ...
 
     async def run(
@@ -1383,6 +1390,8 @@ class GsCoreAIAgent(RunOnceMixin):
         turn_graph: Optional[TurnGraph] = None,
         cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
+        outbound_stream: bool = False,
+        stats_chat_type: Optional[str] = None,
     ) -> object:
         """
         运行 Agent 并返回结果
@@ -1409,10 +1418,15 @@ class GsCoreAIAgent(RunOnceMixin):
                 一次（不按 12 字；结构垃圾仍压）。无工具的最终回复照常发送。
             turn_graph: 入口构建的 TurnGraph（可选）；缺省时在装配层现场构建。
             cheap_gate: CheapGate 成本档（可选）；驱动 light 零工具 / 群聊瘦保底。
+            outbound_stream: True=可见文本按 delta 出站；False=等完整 TextPart。
+                与 pydantic-ai ``node.stream()``（TTFT/TPS）正交。
+            stats_chat_type: Token 用量分类；空则用 ``create_by``。HTTP 入口传 Http_Chat。
 
         Returns:
             Agent 执行结果。默认返回 str，当 output_type 指定时返回对应模型实例
         """
+        self._outbound_stream = outbound_stream
+        self._stats_chat_type = stats_chat_type if stats_chat_type else ""
         # A: 同 Session 抢答——仅「真人 vs 真人」才 cancel；
         # 框架回灌与真人互不 supersede（排队等锁），避免交付被闲聊顶掉 / 回灌打断用户。
         if self.create_by in _INTERACTIVE_CREATE_BY and self._run_lock.locked():
@@ -1590,7 +1604,7 @@ def create_agent(
     dynamic_tools: Optional[bool] = None,
     scope_key: Optional[str] = None,
     wall_clock_budget: Optional[float] = None,
-    on_trace: Optional[Callable[[str, str], None]] = None,
+    on_trace: Optional[Callable[[TraceKind, str], None]] = None,
     capability_node_id: Optional[str] = None,
 ) -> GsCoreAIAgent:
     """
@@ -1611,9 +1625,9 @@ def create_agent(
         wall_clock_budget: C-4 墙钟软预算(秒)覆写。None=沿用全局 scaffold_wall_clock_budget(默认 45s，
             按聊天回复标定)；<=0=关闭软预算。长流程编排入口（一轮几十次工具调用、还要等人确认）
             必须显式放宽，否则会在半途被"停止新工具轮"提示逼停
-        on_trace: 轨迹观察者 `on_trace(kind, text)`，kind ∈ {"thinking","tool"}（tool 的 text 为
-            `"<工具名>|<参数JSON>"`）。宿主用它把模型推理与工具调用实时呈现给用户
-            （如前端「思考过程」折叠块）。旁路钩子，异常会被吞掉，不影响 run
+        on_trace: 轨迹观察者 `on_trace(kind, text)`，kind ∈ TraceKind
+            ``thinking`` / ``thinking_delta`` / ``tool`` / ``tool_result``。
+            ``tool`` 的 text 为 ``"<工具名>|<参数JSON>"``。旁路钩子，异常不影响 run
 
     Returns:
         PydanticAIAgent 实例

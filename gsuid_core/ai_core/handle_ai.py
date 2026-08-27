@@ -108,11 +108,14 @@ async def run_passive_interactive_chat(
     return_mode: Literal["always", "return", "by_bot"] = "by_bot",
     deliver: bool = True,
     settle: bool = True,
+    outbound_stream: bool = False,
+    stats_chat_type: Optional[str] = None,
 ) -> PassiveChatResult:
     """适配器与 HTTP Agent 共用的被动聊天入口（不含 ``_ai_semaphore``）。
 
     顺序：enable / ready → 预算 → H01 → 长度 → 空内容门 → session → turn。
     HTTP 开流前已查预算时传 ``budget_mode="skip"``；墙钟仅 ``HTTP_AGENT:`` session。
+    ``outbound_stream`` / ``stats_chat_type`` 由入口传入，loop 与用量记账读取。
     """
     if not ai_config.get_config("enable").data:
         logger.debug(t("log.ai.gscore_service_enabled_skipping"))
@@ -166,6 +169,8 @@ async def run_passive_interactive_chat(
         return_mode=return_mode,
         deliver=deliver,
         settle=settle,
+        outbound_stream=outbound_stream,
+        stats_chat_type=stats_chat_type,
     )
     if turn.is_silence:
         return PassiveChatResult("silence", turn=turn)
@@ -223,6 +228,8 @@ async def run_interactive_turn(
     deliver: bool = True,
     settle: bool = True,
     history_context: Optional[str] = None,
+    outbound_stream: bool = False,
+    stats_chat_type: Optional[str] = None,
 ) -> InteractiveTurnResult:
     """生产与评测共用的一轮编排（H01 之后的分类 / 检索 / 装配 / 结算）。
 
@@ -374,6 +381,8 @@ async def run_interactive_turn(
         has_active_task=has_actionable,
         turn_graph=turn_graph,
         cheap_gate=cheap,
+        outbound_stream=outbound_stream,
+        stats_chat_type=stats_chat_type,
     )
 
     result_text, is_silence, is_error = classify_run_result(chat_result)

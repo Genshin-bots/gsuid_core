@@ -105,6 +105,64 @@ def is_silence_marker(text: str) -> bool:
     return _PROTOCOL_EMPTYISH_RE.match(leftover) is not None
 
 
+_PROTOCOL_TAG_NAMES: tuple[str, ...] = ("silence", "end_turn", "no_tool_call")
+_PROTOCOL_COMPLETE_COMPACT: tuple[str, ...] = (
+    *(form for name in _PROTOCOL_TAG_NAMES for form in (f"<{name}>", f"<{name}/>", f"</{name}>", f"</{name}/>")),
+    "[silence]",
+)
+
+
+def _is_protocol_hold(text: str) -> bool:
+    """完整标签的真前缀才 hold。单独 ``[`` / ``<``、名字后跟正文都不是。"""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    compact = re.sub(r"\s+", "", raw).lower()
+    if len(compact) < 2:
+        return False
+    if compact in _PROTOCOL_COMPLETE_COMPACT:
+        return False
+    return any(tag.startswith(compact) for tag in _PROTOCOL_COMPLETE_COMPACT)
+
+
+def split_protocol_hold(buf: str, *, force: bool = False) -> tuple[str, str]:
+    """从流式缓冲切出可见文本；完整协议标签丢掉，未闭合开标签留 hold。
+
+    ``force=True``（流结束）时未闭合协议开标签也丢掉，避免 ``<SILENCE`` 漏成正文。
+    """
+    if not buf:
+        return "", ""
+    if is_silence_marker(buf):
+        return "", ""
+    spans = [(m.start(), m.end()) for m in _PROTOCOL_CODE_SPAN_RE.finditer(buf)]
+    hold_at: int | None = None
+    for i, ch in enumerate(buf):
+        if ch not in "<[":
+            continue
+        if any(start <= i < end for start, end in spans):
+            continue
+        rest = buf[i:]
+        if _PROTOCOL_TAG_RE.match(rest) is not None or _is_protocol_hold(rest) or is_silence_marker(rest):
+            hold_at = i
+            break
+    if hold_at is None:
+        return buf, ""
+    visible = buf[:hold_at]
+    rest = buf[hold_at:]
+    matched = _PROTOCOL_TAG_RE.match(rest)
+    if matched is not None:
+        more_vis, hold = split_protocol_hold(rest[matched.end() :], force=force)
+        return visible + more_vis, hold
+    if is_silence_marker(rest):
+        return visible, ""
+    if force and _is_protocol_hold(rest):
+        return visible, ""
+    if not _is_protocol_hold(rest):
+        more_vis, hold = split_protocol_hold(rest[1:], force=force)
+        return visible + rest[:1] + more_vis, hold
+    return visible, rest
+
+
 # run 失败返回值协议：生产端(gs_agent)与全部消费端(handle_ai/executor/sanitize)引用
 # 同一组常量做前缀/子串判断，文案微调不再让嗅探点静默失效（评审修复 E11）。
 ERROR_RESULT_PREFIX = "执行出错"
@@ -2232,6 +2290,9 @@ class ThinkTagSplitter:
             return "", ""
         if self.in_think:
             return "", leftover
+        # 半截起始标签不是正文（与未闭合思考一致，不进气泡）
+        if self.start.startswith(leftover):
+            return "", ""
         return leftover, ""
 
 
@@ -2298,8 +2359,8 @@ def _split_embedded_thinking(
                 think, content = content[:end_index], content[end_index + len(end_tag) :]
                 result.append(ThinkingPart(content=think))
             else:
-                # 缺少闭合标签：丢弃 <think> 起始标签，剩余内容按文本处理
-                result.append(TextPart(content=content))
+                # 缺少闭合标签：与 ThinkTagSplitter 一致，未闭合内容当思考
+                result.append(ThinkingPart(content=content))
                 content = ""
             start_index = content.find(start_tag)
         if content:

@@ -15,6 +15,7 @@ from gsuid_core.ai_core.rag.tools import ToolList
 from gsuid_core.ai_core.configs.models import AnyModel
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
+from gsuid_core.ai_core.agent_run.support import TraceKind
 from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 
 ReturnMode = Literal["always", "return", "by_bot"]
@@ -59,6 +60,10 @@ class RunOnceHost:
     _recent_tool_families: dict[str, int]
     _recent_user_texts: list[str]
     _last_assembled_domains: set[str]
+    #: 本 run 出站是否流式；入口写入，loop 读取
+    _outbound_stream: bool
+    #: Token 用量分类；空则用 create_by
+    _stats_chat_type: str
 
     # ── GsCoreAIAgent 实现 ──
     def extract_history(self) -> None:
@@ -67,7 +72,7 @@ class RunOnceHost:
     def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None:
         raise NotImplementedError
 
-    def _emit_trace(self, kind: str, text: str) -> None:
+    def _emit_trace(self, kind: TraceKind, text: str) -> None:
         raise NotImplementedError
 
     def _resolve_budget_scope(self, ev: Event | None) -> tuple[str, str, str] | None:

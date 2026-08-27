@@ -7,6 +7,8 @@ from typing import Literal, TypedDict
 HTTP_AGENT_WS_BOT_ID = "HTTP_AGENT"
 TOKEN_PREFIX = "gsk_"
 KEY_ID_LEN = 8
+#: Token 用量分类（与 IM 的 Chat 分开）。settle 按此写入 token_by_type。
+HTTP_STATS_CHAT_TYPE = "Http_Chat"
 
 SseEventName = Literal["run.start", "text", "attachment", "run.done", "run.error"]
 RunDoneStatus = Literal["ok", "silence", "cancelled"]

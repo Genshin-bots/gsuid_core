@@ -38,7 +38,9 @@ GET /api/v1/agent/health
 
 ## 1. 这是什么
 
-把 GsCore 的 **同一套** 被动聊天（人格、工具、记忆、闸门）暴露成 HTTP SSE。
+把 GsCore 的 **同一套** 被动聊天（人格、工具、记忆）暴露成 HTTP SSE。
+
+HTTP 入口默认 `outbound_stream=True`：`text` 帧在模型 delta 到达时增量推（预览）。**history / 主通道配额**仍在完整 TextPart 上走与 IM 相同的闸门（`pre_send_gate`、中间 OS 抑制、speech_policy 等）；闸门拒绝的预览不落 history、不计配额。IM 入口默认 `outbound_stream=False`，等完整 TextPart + 闸门。两边都走 pydantic-ai `node.stream()`（TTFT/TPS）。HTTP 用量记为 `Http_Chat`，与 IM 的 `Chat` 分开。
 
 - **不是** OpenAI `chat/completions` 兼容接口。
 - **不是** WebConsole `/api/chat_with_history`（那是评测门，非流）。
@@ -184,8 +186,8 @@ data: {"run_id":"…","session_id":"default","seq":1}
 不变量：
 
 1. 成功开流后，**恰好一个**终态（`run.done` 或 `run.error`）。
-2. 人格面 v1 没有 `thinking` / `tool.*`（画布 BFF 额外发 `thinking` 快照）。工具在跑时可能长时间只有 `: ping`。
-3. `text` 在 pydantic-ai 流式 delta 到达时就开始推；IM 闸门仍在完整 TextPart 上跑，已推过的 delta 不会再入队一次。
+2. 本 API v1 没有 `thinking` / `tool.*`。需要思考增量的上层可自己接 `on_trace` 另发；工具在跑时可能长时间只有 `: ping`。
+3. `outbound_stream=True` 时 `text` 在 pydantic-ai delta 到达时就开始推（合批、剥 `<think>`、hold 未闭合协议标签）。完整 TextPart 仍过与 IM 同一套闸门：通过则只补未推后缀、不整包重发；拒绝则不写 history。`outbound_stream=False` 时闸门后整段入队。
 4. `silence` 不是失败：模型决定不说。UI 应显示「无回复」，不要当报错。
 5. 客户端主动断开（`AbortController.abort()`）时，服务端停本轮；**不一定**还能把终态写完。按「用户取消」处理即可。
 6. 同 `session_id` 再发一条：v1 是 **抢答**（后到取消先到）。先到的流可能 `run.done cancelled`。要排队自己在前端做。
