@@ -36,10 +36,6 @@ from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.delegation import await_delegation, delegation_handle
-from gsuid_core.ai_core.buildin_tools.visibility import (
-    check_group_recall,
-    visible_when_group_recall,
-)
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入
 # 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
@@ -220,8 +216,6 @@ _TRANSIENT_DEFAULT_PROFILES = frozenset(
     category="common",
     capability_domain="长期任务编排",
     timeout=500.0,
-    visible_when=visible_when_group_recall,
-    check_func=check_group_recall,
 )
 async def create_subagent(
     ctx: RunContext[ToolContext],

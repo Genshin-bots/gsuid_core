@@ -16,10 +16,8 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
 from gsuid_core.ai_core.buildin_tools.visibility import (
-    check_group_recall,
     check_sched_create,
     check_sched_mutate,
-    visible_when_group_recall,
 )
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
@@ -198,7 +196,7 @@ def get_capability_gaps(limit: int = 20) -> list[tuple[str, int]]:
 
 # 不声明 capability_domain（会被 L3 按族驻留带进闲聊轮）；category 必须为 meta：
 # 落入 buildin 等保底分类会让渐进式暴露门控失效、加载的工具无人暴露（实测踩坑）。
-@ai_tools(category="meta", visible_when=visible_when_group_recall, check_func=check_group_recall)
+@ai_tools(category="meta")
 async def find_tools(
     ctx: RunContext[ToolContext],
     need: str,
@@ -354,7 +352,7 @@ async def find_tools(
         return f"⚠️ 工具加载失败: {str(e)}"
 
 
-@ai_tools(category="meta", visible_when=visible_when_group_recall, check_func=check_group_recall)
+@ai_tools(category="meta")
 async def capability_map(
     ctx: RunContext[ToolContext],
     scope: str = "all",

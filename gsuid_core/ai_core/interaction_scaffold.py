@@ -314,6 +314,46 @@ _VOCATIVE_AFTER_NAME_TMPL = (
 )
 _DIRECTED_REQ_RE = re.compile(r"^(?:帮我|请帮|麻烦你|你(?:帮|给|查|看)|给我(?:查|看|设|改|搜|找|订))")
 _SELF_ASK_RE = re.compile(r"我.{0,16}(?:来着|是哪|几[个天票月]|多少[钱个天次度点钟]|有没有)")
+# 句首呼名后的合法词界（空格/标点/语气）。不含「的」——「名的图」是旁述。
+_NAME_TAIL_OK = frozenset(" \t，,、：:!！?？~～啊呀呢吧嘛哦喔诶喂哈")
+# 粘在中文名后会把名字加长的昵称后缀（名+子 / 小姐姐）。今/记/帮 不是后缀。
+_CJK_DIMINUTIVE = frozenset("子酱君桑哥姐妹宝喵")
+
+
+def _rest_after_name(body: str, name: str) -> str | None:
+    """正文以该表面开头则返回后缀；ASCII 名大小写不敏感。对不上则 None。"""
+    n = len(name)
+    if n == 0 or len(body) < n:
+        return None
+    head = body[:n]
+    if head == name or (name.isascii() and head.casefold() == name.casefold()):
+        return body[n:]
+    return None
+
+
+def _call_boundary_ok(name: str, rest: str) -> bool:
+    """句首名后是否算呼叫：分隔/语气、脚本切换、或非昵称后缀的 CJK 粘连。"""
+    if not rest:
+        return True
+    ch = rest[0]
+    if ch in _NAME_TAIL_OK:
+        return True
+    name_ascii = name.isascii()
+    if name_ascii and not ch.isascii():
+        return True
+    if (not name_ascii) and ch.isascii() and ch.isalpha():
+        return True
+    if (not name_ascii) and (not ch.isascii()) and ch not in _CJK_DIMINUTIVE:
+        return True
+    return False
+
+
+def _at_mentions_name(message_text: str, name: str) -> bool:
+    if f"@{name}" in message_text:
+        return True
+    if name.isascii():
+        return re.search(rf"@{re.escape(name)}\b", message_text, re.IGNORECASE) is not None
+    return False
 
 
 class GroupOpenGate(str, Enum):
@@ -341,6 +381,7 @@ def is_addressed_to_self(
     """结构判据：消息是否在**呼叫**自己（非旁述提及）。
 
     is_tome / DIRECT / @名 / 句首呼名 / 名+呼语 → 呼叫。无 @ 的帮我/自问见 TurnGraph。
+    句首名可紧贴 CJK（脚本边界或非昵称后缀）；名+子/酱 这类加长仍不算。
     """
     if is_tome or DIRECT_MARKER in message_text:
         return True
@@ -349,26 +390,22 @@ def is_addressed_to_self(
         s = (n or "").strip()
         if s and s not in names:
             names.append(s)
+    names.sort(key=len, reverse=True)
     if not names:
         return False
     for name in names:
-        if f"@{name}" in message_text:
+        if _at_mentions_name(message_text, name):
             return True
     body = extract_message_body(message_text)
     if not body:
         return False
     for name in names:
-        if body.startswith(name):
-            rest = body[len(name) :]
-            if not rest or rest[0] in " \t，,、：:!！?？~～":
-                return True
-            # 单 ASCII 名（评测夹具 p）可紧贴中文；单汉字「小」不当「小姐姐」
-            if len(name) == 1 and name.isascii():
-                return True
-        if re.match(rf"{re.escape(name)}(?:\s+|[，,、：:])", body):
+        rest = _rest_after_name(body, name)
+        if rest is not None and _call_boundary_ok(name, rest):
             return True
+        voc_flags = re.IGNORECASE if name.isascii() else 0
         pat = _VOCATIVE_AFTER_NAME_TMPL.format(name=re.escape(name))
-        if re.search(pat, body):
+        if re.search(pat, body, voc_flags):
             return True
     return False
 

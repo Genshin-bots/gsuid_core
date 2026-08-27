@@ -85,23 +85,9 @@ def visible_to_capability_only(ctx: RunContext[ToolContext]) -> bool:
     return capability_only_from_deps(ctx.deps)
 
 
-GROUP_RECALL_OK_KEY = "group_recall_ok"
 SCHED_CREATE_OK_KEY = "sched_create_ok"
 SCHED_MUTATE_OK_KEY = "sched_mutate_ok"
 MODEL_DECLARES_VIDEO_KEY = "model_declares_video"
-
-
-def group_recall_allowed(*, is_group: bool, call_to_self: bool, followup_detected: bool) -> bool:
-    """群聊回想/发现工具是否该露。点名或任务跟进才开；不含 soft_continue。"""
-    if not is_group:
-        return True
-    return call_to_self or followup_detected
-
-
-def visible_when_group_recall(ctx: RunContext[ToolContext]) -> bool:
-    """PIN 恒可见。未点名由 check_func 拒执行，不拆 schema。"""
-    _ = ctx
-    return True
 
 
 def sched_tool_visibility(
@@ -164,34 +150,18 @@ def check_sched_mutate(deps: ToolContext) -> tuple[bool, str]:
     return False, "本轮未点名：不要查询/修改/取消定时任务。"
 
 
-def check_group_recall(deps: ToolContext) -> tuple[bool, str]:
-    """recall_ok=False 时拒发现/委派/回想。能力代理 / 无 ev 后台恒放行。"""
-    extra = deps.extra
-    create_by = extra["parent_create_by"] if "parent_create_by" in extra else ""
-    if create_by == "CapabilityAgent":
-        return True, ""
-    if isinstance(deps, ToolContext) and not deps.allow_user_outbound:
-        return True, ""
-    if deps.ev is None:
-        return True, ""
-    if GROUP_RECALL_OK_KEY not in extra:
-        return True, ""
-    if bool(extra[GROUP_RECALL_OK_KEY]):
-        return True, ""
-    return False, "本轮未点名：不要调用发现/委派/回想。"
-
-
 def visibility_user_hint(
     *,
     is_group: bool,
     call_to_self: bool,
     followup_detected: bool,
-    has_active_task: bool,
     create_ok: bool,
 ) -> str:
     """进当前 user 的结构 hint；用（系统：）包裹以便入史可识别。"""
-    if is_group and not call_to_self and not followup_detected and not has_active_task:
-        return "（系统：本轮未点名：不要调用发现/调度/回想；默认 <SILENCE>。）"
+    # 发现/委派/回想是否调用交给模型；未点名不得伪装成「管理已有条目」。
+    addressed = (not is_group) or call_to_self or followup_detected
+    if not addressed:
+        return ""
     if not create_ok:
         return "（系统：本轮是管理已有条目：不要新建，用查询/修改/取消。）"
     return ""

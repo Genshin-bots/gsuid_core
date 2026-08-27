@@ -276,6 +276,25 @@ def test_group_open_gate():
     assert is_addressed_to_self("小 帮我看一下", "小", False)
     assert not is_addressed_to_self("小姐姐今天天气不错", "小", False)
     assert is_addressed_to_self("小明(用户ID:1)：早柚最近咋样", "早柚", False)
+    # 句首唤醒词紧贴 CJK 是呼叫（群聊常写 sayu今天 / 早柚记住，中间没有空格）
+    assert is_addressed_to_self("sayu今天什么天气啊", "早柚", False, extra_names=("sayu",))
+    assert is_addressed_to_self("Sayu记住我在广州", "早柚", False, extra_names=("sayu",))
+    assert is_addressed_to_self("早柚今天什么天气", "早柚", False)
+    assert is_addressed_to_self("早柚记住我在广州", "早柚", False)
+    assert not is_addressed_to_self("sayubot帮我看看", "早柚", False, extra_names=("sayu",))
+    assert is_addressed_to_self("@Sayu 帮我看下", "早柚", False, extra_names=("sayu",))
+    glue_payload = (
+        "[用户发言]\n[⚡主人] Wuyi(用户ID:1)\n--- 消息 ---\nsayu今天什么天气啊\n[当前时间：2026-08-28 05:58:00]"
+    )
+    assert is_addressed_to_self(glue_payload, "早柚", False, extra_names=("sayu",))
+    tg_glue = build_turn_graph(
+        "小明(用户ID:1)：早柚今天什么天气",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+    )
+    assert tg_glue.call_to_self
     assert not is_addressed_to_self("小明(用户ID:1)：帮我查一下", "早柚", False)
     assert not is_addressed_to_self("小明(用户ID:1)：我设过提醒来着吗", "早柚", False)
     assert not is_addressed_to_self("小明(用户ID:1)：给我让一下", "早柚", False)

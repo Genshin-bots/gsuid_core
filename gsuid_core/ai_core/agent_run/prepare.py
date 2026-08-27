@@ -324,18 +324,11 @@ class PreparePhase(RunOnceHost):
             st.addr_gated = bool(st.tg.address_gated)
             st.followup_detected = bool(st.tg.needs_task_tools)
             from gsuid_core.ai_core.buildin_tools.visibility import (
-                GROUP_RECALL_OK_KEY,
                 SCHED_CREATE_OK_KEY,
                 SCHED_MUTATE_OK_KEY,
-                group_recall_allowed,
                 sched_tool_visibility,
             )
 
-            st.run_extra[GROUP_RECALL_OK_KEY] = group_recall_allowed(
-                is_group=bool(st.tg.is_group),
-                call_to_self=bool(st.tg.call_to_self),
-                followup_detected=st.followup_detected,
-            )
             _has_sched = False
             if st.ev is not None and st.ev.user_id:
                 from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
@@ -358,7 +351,6 @@ class PreparePhase(RunOnceHost):
                 is_group=bool(st.tg.is_group),
                 call_to_self=bool(st.tg.call_to_self),
                 followup_detected=st.followup_detected,
-                has_active_task=st.has_active_task,
                 create_ok=_create_ok,
             )
             if _vh:

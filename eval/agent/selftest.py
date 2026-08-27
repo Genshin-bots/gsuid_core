@@ -84,8 +84,8 @@ def verifier_units():
         "must_call_any counts effectual modify",
         score_trace(tr_pin, {"must_call_any": ["modify_scheduled_task", "list_scheduled_tasks"]})[0],
     )
-    tr_rej_only = T(calls=["search_cognition"])
-    tr_rej_only.tool_returns = [{"name": "search_cognition", "content": "本轮未点名：不要调用发现/委派/回想。"}]
+    tr_rej_only = T(calls=["list_scheduled_tasks"])
+    tr_rej_only.tool_returns = [{"name": "list_scheduled_tasks", "content": "本轮未点名：不要查询/修改/取消定时任务。"}]
     _assert("no_tool_calls ignores policy reject", score_trace(tr_rej_only, {"no_tool_calls": True})[0])
     tr_real_add = T(calls=["add_once_task"])
     tr_real_add.tool_returns = [{"name": "add_once_task", "content": "✅ 添加任务成功"}]
@@ -189,7 +189,7 @@ def verifier_units():
         "max_latency unfinished over cap",
         not score_trace(T(final="", latency=50), {"max_latency": 40})[0],
     )
-    rej = "本轮未点名：不要调用发现/委派/回想。"
+    rej = "本轮是管理已有条目：请用查询/修改/取消，不要新建。"
     tr_intent = T(calls=["add_interval_task"])
     tr_intent.tool_returns = [{"name": "add_interval_task", "content": rej}]
     _assert(

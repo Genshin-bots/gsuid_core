@@ -1085,7 +1085,7 @@ registry.get_ai_session(session_id)
 | 字段 | 含义 |
 |------|------|
 | `is_tome` | 适配器/msg_process 置位：@bot、私聊、**引用 bot** |
-| `call_to_self` | 呼叫自己：`is_tome` **或** 正文呼名 / `@名` / 句首角色名 |
+| `call_to_self` | 呼叫自己：`is_tome` **或** 正文呼名 / `@名` / 句首角色名（可紧贴 CJK；ASCII 名大小写不敏感；名+子/酱 不算） |
 | `quoted_tome` | `is_tome` 且有 `reply`/`reply_id` 且正文没有呼名/吩咐。引用 bot 仍算点名，**只改注入** |
 | `address_gated` | @别人 / ambient 催被@者 / 乙继承甲的省略槽 |
 | `ellipsis_followup` / `task_management` / `soft_continue` | 省略跟进 / 任务管理形 / 同人短续聊 |
@@ -1456,7 +1456,7 @@ session_logger.log_user_input(final_user_message)
 | 语境 | 有 group | 群画像 tags → 附加池；**exclusive 永不进主会话**（无 shield） |
 | L4/L5 向量 | 非 in_flight 短轮 | 近文 + 本轮检索；新名字只 append，禁止删除/排序/热槽替换。点名/跟进不因 LIGHT 跳过（瘦核不含 web_search） |
 | 委派 | 交互主人格 | exclusive 集合来自节点注册表；roster 在 **system** |
-| 渐进 | 每轮可挂 | `find_tools` 先节点后向量；RetrievableToolset 防 exclusive 回灌。群聊回想旗 = 点名或任务跟进（**不含** soft_continue）。日程 create/mutate 与回想 **PIN 恒可见**，未点名由 `check_func` 拒执行（拒绝文案 ≠ effectual write） |
+| 渐进 | 每轮可挂 | `find_tools` 先节点后向量；RetrievableToolset 防 exclusive 回灌。发现/委派/回想不按点名硬拒（交给模型）。日程 create/mutate **PIN 恒可见**，管理形由 `check_func` 拒执行（拒绝文案 ≠ effectual write） |
 | 出图 | **主路径** | **`create_subagent(agent_profile="render_agent")`** 自由 HTML → 图句柄；主人格 `send_message_by_ai(image_id=)` |
 | media 直调 | 能力/特例 | `render_html_to_image` 挂在 render_agent 白名单；主人格契约 **禁止自渲** |
 

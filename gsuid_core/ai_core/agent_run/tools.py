@@ -64,7 +64,6 @@ _SCHED_MUTATE_NAMES: frozenset[str] = frozenset(
         "resume_scheduled_task",
     }
 )
-_GROUP_RECALL_NAMES: frozenset[str] = frozenset({"search_cognition", "find_tools", "create_subagent", "capability_map"})
 
 
 def _session_tool_ceiling(*, group_slim: bool = False) -> int:
@@ -116,15 +115,12 @@ def snapshot_tool_allowed(
     *,
     create_ok: bool,
     mutate_ok: bool,
-    recall_ok: bool,
 ) -> bool:
     """是否把该名作为**本轮新 extras**。不用于从 frozen schema 摘名。"""
     if name in _SCHED_CREATE_NAMES:
         return create_ok
     if name in _SCHED_MUTATE_NAMES:
         return mutate_ok
-    if name in _GROUP_RECALL_NAMES:
-        return recall_ok
     return True
 
 
@@ -148,10 +144,9 @@ def should_skip_tool_search(
     return (not call_to_self) or is_light
 
 
-def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool, bool]:
-    """从 run_extra 读创建/变更/回想三旗；缺旗偏可见。"""
+def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool]:
+    """从 run_extra 读创建/变更两旗；缺旗偏可见。"""
     from gsuid_core.ai_core.buildin_tools.visibility import (
-        GROUP_RECALL_OK_KEY,
         SCHED_CREATE_OK_KEY,
         SCHED_MUTATE_OK_KEY,
     )
@@ -159,8 +154,7 @@ def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool, bool]:
     extra = st.run_extra
     create_ok = True if SCHED_CREATE_OK_KEY not in extra else bool(extra[SCHED_CREATE_OK_KEY])
     mutate_ok = True if SCHED_MUTATE_OK_KEY not in extra else bool(extra[SCHED_MUTATE_OK_KEY])
-    recall_ok = True if GROUP_RECALL_OK_KEY not in extra else bool(extra[GROUP_RECALL_OK_KEY])
-    return create_ok, mutate_ok, recall_ok
+    return create_ok, mutate_ok
 
 
 def is_group_send_extra(name: str) -> bool:
@@ -571,7 +565,7 @@ class ToolsPhase(RunOnceHost):
                 # 群聊 extras 只留种子；私聊仍整族展开（能建就能改靠核内族闭合，不靠 L4）
                 if _interactive:
                     extra_tools = _without_progress_tool(extra_tools)
-                _create_ok_ex, _mutate_ok_ex, _ = _snapshot_visibility_flags(st)
+                _create_ok_ex, _mutate_ok_ex = _snapshot_visibility_flags(st)
                 extra_tools = [
                     t
                     for t in extra_tools
@@ -579,7 +573,6 @@ class ToolsPhase(RunOnceHost):
                         t.name,
                         create_ok=_create_ok_ex,
                         mutate_ok=_mutate_ok_ex,
-                        recall_ok=True,
                     )
                 ]
                 if st.group_slim:
@@ -650,7 +643,7 @@ class ToolsPhase(RunOnceHost):
                             )
                         )
 
-                # 渐进式工具暴露：PIN 恒在 schema；未点名由 check_func 拒执行。
+                # 渐进式工具暴露：PIN 恒在 schema，是否调用交给模型。
                 if ENABLE_PROGRESSIVE_TOOLS:
                     if any(t.name == "find_tools" for t in st.tools):
                         st.expose_dynamic = True

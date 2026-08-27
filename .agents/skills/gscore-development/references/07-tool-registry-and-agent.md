@@ -247,10 +247,11 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 > ⚠️ **约束**：`prepare` 每 step 对每个工具求值，`visible_when` 谓词**必须廉价、内存判定**，
 > 切忌每步查库/发网络。贵的前置条件走 L2 状态驱动（加载时判一次）。
 
-**群聊回想 / 调度族（2026-08-24）**：`group_recall_ok` = 点名或任务跟进（**不含**
-`soft_continue`，避免旁观同人短句误开 `search_cognition`）。调度新建/变更另用
-`sched_create_ok` / `sched_mutate_ok`（管理形藏新建，不要求 history 有 ToolCall）。
-装配层 `snapshot_tool_allowed` 按旗从本轮快照拿掉对应名；`visible_when` 仍作第二道。
+**群聊发现/委派/回想（2026-08-28）**：点名无法用正则穷尽，`find_tools` /
+`create_subagent` / `capability_map` / `search_cognition` **不再按点名硬拒**，是否调用交给
+模型（prompt 仍写「别人互聊就别调」）。调度新建/变更仍用 `sched_create_ok` /
+`sched_mutate_ok`（管理形藏新建，不要求 history 有 ToolCall）。装配层
+`snapshot_tool_allowed` 只按日程旗从本轮快照拿掉对应名。C-3 `@别人` 仍零工具。
 LIGHT / 误判闲聊**不得**让点名轮跳过向量检索（瘦核已不含 `web_search_tool`）。
 
 ## 7.7 两段式 domain 检索（`search_tools_by_domain`）

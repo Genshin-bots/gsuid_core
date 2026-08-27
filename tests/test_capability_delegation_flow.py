@@ -122,25 +122,47 @@ def test_exclusive_tools_blocked_from_progressive_path() -> None:
     assert exclusive <= ctx.blocked_tool_names or not exclusive
 
 
-def test_check_group_recall_capability_agent_always_ok() -> None:
-    from gsuid_core.models import Event
-    from gsuid_core.ai_core.models import ToolContext
-    from gsuid_core.ai_core.buildin_tools.visibility import GROUP_RECALL_OK_KEY, check_group_recall
+def test_visibility_user_hint_does_not_lie_about_manage() -> None:
+    from gsuid_core.ai_core.buildin_tools.visibility import visibility_user_hint
 
-    ev = Event(bot_id="b", user_id="u", group_id="g")
-    cap = ToolContext(
-        ev=ev,
-        extra={GROUP_RECALL_OK_KEY: False, "parent_create_by": "CapabilityAgent"},
+    unnamed = visibility_user_hint(
+        is_group=True,
+        call_to_self=False,
+        followup_detected=False,
+        create_ok=False,
     )
-    ok, _msg = check_group_recall(cap)
-    assert ok
-    bg = ToolContext(ev=None, extra={GROUP_RECALL_OK_KEY: False, "parent_create_by": "Chat"})
-    ok_bg, _ = check_group_recall(bg)
-    assert ok_bg
-    gated = ToolContext(ev=ev, extra={GROUP_RECALL_OK_KEY: False, "parent_create_by": "Chat"})
-    ok_g, msg = check_group_recall(gated)
-    assert not ok_g
-    assert "未点名" in msg
+    assert unnamed == ""
+    assert "管理已有" not in unnamed
+    manage = visibility_user_hint(
+        is_group=True,
+        call_to_self=True,
+        followup_detected=False,
+        create_ok=False,
+    )
+    assert "管理已有" in manage
+    clear = visibility_user_hint(
+        is_group=True,
+        call_to_self=True,
+        followup_detected=False,
+        create_ok=True,
+    )
+    assert clear == ""
+
+
+def test_group_recall_tools_are_not_hard_gated() -> None:
+    """发现/委派/回想不按点名硬拒；群聊寻址交给模型。"""
+    from pathlib import Path
+
+    files = (
+        Path("gsuid_core/ai_core/buildin_tools/dynamic_tool_discovery.py"),
+        Path("gsuid_core/ai_core/buildin_tools/subagent.py"),
+        Path("gsuid_core/ai_core/buildin_tools/rag_search.py"),
+        Path("gsuid_core/ai_core/buildin_tools/visibility.py"),
+    )
+    for path in files:
+        src = path.read_text(encoding="utf-8")
+        assert "check_group_recall" not in src, path
+        assert "本轮未点名：不要调用发现/委派/回想" not in src, path
 
 
 def test_find_tools_match_is_unidirectional() -> None:
