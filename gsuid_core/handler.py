@@ -793,24 +793,29 @@ async def msg_process(msg: MessageReceive) -> Event:
 async def count_data(event: Event, trigger: Trigger):
     local_val = get_platform_val(event.real_bot_id, event.bot_self_id)
     local_val["command"] += 1
+
+    # on_message / on_regex 的 keyword 不是用户输入的命令：
+    # message 类型默认取 uuid4 作 unique_id, regex 类型取正则模式本身，
+    # 且两者对每条消息都会匹配，计入命令明细会污染统计并掩盖真实热门命令。
+    # 仍计入 command 总数与用户 / 群活跃数，只跳过 per-command 明细。
+    count_command = trigger.type not in ("message", "regex")
+
     if event.group_id:
         if event.group_id not in local_val["group"]:
             local_val["group"][event.group_id] = {}
 
-        if trigger.keyword not in local_val["group"][event.group_id]:
-            local_val["group"][event.group_id][trigger.keyword] = 1
-        else:
-            local_val["group"][event.group_id][trigger.keyword] += 1
+        if count_command:
+            group_val = local_val["group"][event.group_id]
+            group_val[trigger.keyword] = group_val.get(trigger.keyword, 0) + 1
         local_val["group_count"] = len(local_val["group"])
 
     if event.user_id:
         if event.user_id not in local_val["user"]:
             local_val["user"][event.user_id] = {}
-        if trigger.keyword not in local_val["user"][event.user_id]:
-            local_val["user"][event.user_id][trigger.keyword] = 1
-        else:
-            local_val["user"][event.user_id][trigger.keyword] += 1
 
+        if count_command:
+            user_val = local_val["user"][event.user_id]
+            user_val[trigger.keyword] = user_val.get(trigger.keyword, 0) + 1
         local_val["user_count"] = len(local_val["user"])
 
 
