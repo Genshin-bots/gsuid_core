@@ -756,6 +756,10 @@ async def msg_process(msg: MessageReceive) -> Event:
             if _msg.data:
                 event.audio_id = RM.register_audio(_msg.data)
                 event.audio_id_list.append(event.audio_id)
+        elif _msg.type == "video":
+            if _msg.data:
+                event.video_id = RM.register_video(_msg.data)
+                event.video_id_list.append(event.video_id)
         elif _msg.type == "reply":
             event.reply = _msg.data
         elif _msg.type == "reply_id" and _msg.data is not None:

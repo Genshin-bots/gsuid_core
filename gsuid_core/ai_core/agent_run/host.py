@@ -84,6 +84,9 @@ class RunOnceHost:
     async def _prepare_user_message(self, content_list: list[UserContent]) -> Union[str, list[UserContent]]:
         raise NotImplementedError
 
+    def _model_declares_video(self) -> bool:
+        raise NotImplementedError
+
     async def _resolve_output_gate_after_run(
         self,
         context: ToolContext,

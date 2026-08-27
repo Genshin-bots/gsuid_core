@@ -550,6 +550,58 @@ class GsCoreAIAgent(RunOnceMixin):
             return True
         return isinstance(item, BinaryContent) and str(item.media_type or "").startswith("video/")
 
+    @staticmethod
+    def _is_native_video_part(item: UserContent) -> bool:
+        """已转成可直投模型的视频 file（不含图片 BinaryContent）。"""
+        if isinstance(item, BinaryContent):
+            return str(item.media_type or "").startswith("video/")
+        if isinstance(item, UploadedFile):
+            return str(item.media_type or "").startswith("video/")
+        return False
+
+    def _routed_provider(self) -> str:
+        """本轮实际模型的 provider，不用任务主配置（failover 后会不同）。"""
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
+        from pydantic_ai.models.anthropic import AnthropicModel
+
+        from gsuid_core.ai_core.configs.models import (
+            get_provider_for_task,
+            parse_provider_config_name,
+        )
+
+        name = self._active_config_name or self.model_config_name
+        if name:
+            return parse_provider_config_name(name)[0]
+        model = self.model
+        if isinstance(model, (OpenAIChatModel, OpenAIResponsesModel)):
+            return "openai"
+        if isinstance(model, AnthropicModel):
+            return "anthropic"
+        if model is not None:
+            return "gemini"
+        return get_provider_for_task(self.task_level)
+
+    def _routed_model_support(self, fallback: str | list[str]) -> str | list[str]:
+        """本轮实际配置的 model_support；无配置文件时用调用方传入值。"""
+        from gsuid_core.ai_core.configs.models import get_model_config_by_full_name
+
+        name = self._active_config_name or self.model_config_name
+        if not name:
+            return fallback
+        data = get_model_config_by_full_name(name).get_config("model_support").data
+        if isinstance(data, list):
+            return [str(x) for x in data]
+        if isinstance(data, str):
+            return data
+        return fallback
+
+    def _model_declares_video(self) -> bool:
+        """当前路由配置是否声明 video。无配置文件时偏可见（True）。"""
+        name = self._active_config_name or self.model_config_name
+        if not name:
+            return True
+        return "video" in self._routed_model_support("")
+
     async def _video_item_to_bytes(self, item: UserContent) -> tuple[bytes, str]:
         """视频内容项 → (字节, mime)。"""
         if isinstance(item, BinaryContent):
@@ -557,40 +609,61 @@ class GsCoreAIAgent(RunOnceMixin):
         assert isinstance(item, VideoUrl)
         return await fetch_video_bytes(item.url)
 
+    async def _frames_from_video_bytes(self, data: bytes, mime: str, video_idx: int) -> list[UserContent]:
+        from gsuid_core.ai_core.multimodal.frame_extract import extract_frames_ffmpeg
+
+        video_format = mime.split("/")[-1] or "mp4"
+        frames = await extract_frames_ffmpeg(data, video_format=video_format, interval_seconds=2.0)
+        result: list[UserContent] = [
+            f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---"
+        ]
+        for frame in frames:
+            b64 = base64.b64encode(frame).decode("ascii")
+            result.append(ImageUrl(url=f"data:image/jpeg;base64,{b64}"))
+        logger.info(
+            i18n_t(
+                "log.agent.video_frame_sampled_images",
+                p0=video_idx,
+                p1=len(frames),
+            )
+        )
+        return result
+
     async def _prepare_video_content(
         self,
         content_list: list[UserContent],
-        model_support: str,
+        model_support: str | list[str],
     ) -> list[UserContent]:
-        """视频内容项的三分支兼容处理（在图片分支**之前**执行）。
+        """视频内容项转换（在图片分支**之前**执行）。
 
-        pydantic_ai 的 OpenAI/Anthropic 模型不接受 VideoUrl——若原样留在
-        message_history 里，请求时直接抛错且每轮重发都会复现。因此视频项必须
-        在入历史前就地转换为该 provider 可消费的形式：
-
-        - **gemini + 支持 video**：经 Gemini File API 上传到 Google 服务器，
-          转为 ``UploadedFile(file_id=<file_uri>, provider_name="google-gla")``
-          按引用传递（文件在 Google 侧保留 48h，超长会话中过期后重发会报错）；
-          已是 Files API URI 的 VideoUrl 直接转引用，不重复上传。
-        - **非 gemini + 支持 video（且支持 image）**：本地 ffmpeg 每 2 秒抽一帧，
-          转成 ImageUrl(base64 DataURI) 列表塞进 messages（帧数上限见
-          ``frame_extract.DEFAULT_MAX_FRAMES``，超限等距采样）。
-        - **不支持 video**：替换为文本占位说明，模型至少知道"这里有个视频"。
-
-        任一视频处理失败只影响该视频（替换为失败说明文本），不阻断整条消息。
+        IM 视频不要喂 VideoUrl（Gemini 只认 YouTube / Files URI）。字节按实际
+        路由模型投递：gemini Files API、openai ``type=file``、否则抽帧或文本占位。
+        ``/v1/files`` 缺失时禁止无界 base64。
         """
         if not any(self._is_video_item(item) for item in content_list):
             return content_list
 
-        from gsuid_core.ai_core.configs.models import get_provider_for_task
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
+
         from gsuid_core.ai_core.multimodal.gemini_files import (
             is_gemini_file_uri,
             upload_media_for_task,
         )
+        from gsuid_core.ai_core.multimodal.openai_files import (
+            video_delivery_mode,
+            video_bytes_to_openai_content,
+            openai_files_client_from_model,
+        )
 
-        provider = get_provider_for_task(self.task_level)
+        model_support = self._routed_model_support(model_support)
+        provider = self._routed_provider()
         supports_video = "video" in model_support
         supports_image = "image" in model_support
+        mode = video_delivery_mode(
+            supports_video=supports_video,
+            supports_image=supports_image,
+            provider=provider,
+        )
 
         result: list[UserContent] = []
         video_idx = 0
@@ -600,17 +673,19 @@ class GsCoreAIAgent(RunOnceMixin):
                 continue
             video_idx += 1
 
-            if not supports_video:
-                logger.warning(i18n_t("log.agent.declare_video_analysis_capability"))
-                result.append(f"--- 视频{video_idx}: [当前模型不支持视频分析，无法查看该视频内容] ---")
+            if mode == "unavailable":
+                if supports_video:
+                    logger.warning(i18n_t("log.agent.declared_video_image_frame"))
+                    result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
+                else:
+                    logger.warning(i18n_t("log.agent.declare_video_analysis_capability"))
+                    result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
                 continue
 
             try:
-                if provider == "gemini":
-                    # ⚠️ media_type 必传：Files API URI 无扩展名，pydantic_ai 猜不出
-                    # mime 会按 application/octet-stream 发送，Gemini 直接 400
+                if mode == "gemini":
+                    # media_type 必传：Files API URI 无扩展名，缺 mime 会 400
                     if isinstance(item, VideoUrl) and is_gemini_file_uri(item.url):
-                        # 已是 Files API 引用：直接转 UploadedFile，不重复上传
                         result.append(
                             UploadedFile(file_id=item.url, provider_name="google-gla", media_type="video/mp4")
                         )
@@ -620,28 +695,49 @@ class GsCoreAIAgent(RunOnceMixin):
                     result.append(UploadedFile(file_id=file_uri, provider_name="google-gla", media_type=mime))
                     continue
 
-                # 非 gemini：抽帧兼容路径要求模型至少能看图
-                if not supports_image:
-                    logger.warning(i18n_t("log.agent.declared_video_image_frame"))
-                    result.append(f"--- 视频{video_idx}: [当前模型不支持图片，无法用抽帧方式分析该视频] ---")
+                if mode == "openai_file":
+                    data, mime = await self._video_item_to_bytes(item)
+                    client = None
+                    if isinstance(self.model, (OpenAIChatModel, OpenAIResponsesModel)):
+                        client = openai_files_client_from_model(self.model)
+                    # Responses 父类不 map video BinaryContent，禁止 inline
+                    allow_inline = not isinstance(self.model, OpenAIResponsesModel)
+                    converted, how = await video_bytes_to_openai_content(data, mime, client, allow_inline=allow_inline)
+                    size_mb = len(data) / 1024 / 1024
+                    if how == "files_missing" or converted is None:
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.video_openai_files_missing",
+                                p0=video_idx,
+                                size=size_mb,
+                            )
+                        )
+                        if supports_image:
+                            result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
+                        else:
+                            result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
+                        continue
+                    result.append(converted)
+                    if how == "uploaded" and isinstance(converted, UploadedFile):
+                        logger.info(
+                            i18n_t(
+                                "log.agent.video_openai_file_uploaded",
+                                p0=video_idx,
+                                file_id=converted.file_id,
+                            )
+                        )
+                    else:
+                        logger.info(
+                            i18n_t(
+                                "log.agent.video_openai_file_inline",
+                                p0=video_idx,
+                                size=size_mb,
+                            )
+                        )
                     continue
 
-                from gsuid_core.ai_core.multimodal.frame_extract import extract_frames_ffmpeg
-
                 data, mime = await self._video_item_to_bytes(item)
-                video_format = mime.split("/")[-1] or "mp4"
-                frames = await extract_frames_ffmpeg(data, video_format=video_format, interval_seconds=2.0)
-                result.append(f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---")
-                for frame in frames:
-                    b64 = base64.b64encode(frame).decode("ascii")
-                    result.append(ImageUrl(url=f"data:image/jpeg;base64,{b64}"))
-                logger.info(
-                    i18n_t(
-                        "log.agent.video_frame_sampled_images",
-                        p0=video_idx,
-                        p1=len(frames),
-                    )
-                )
+                result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
             except Exception as e:
                 logger.error(i18n_t("log.agent.process_video", p0=video_idx, e=e))
                 result.append(f"--- 视频{video_idx}: [视频处理失败: {e}] ---")
@@ -654,10 +750,11 @@ class GsCoreAIAgent(RunOnceMixin):
         """处理用户消息中的图片/视频内容
 
         当 user_message 为 Sequence[UserContent] 时，检查其中是否包含多模态内容。
-        视频项先经 :meth:`_prepare_video_content` 三分支转换（gemini 直传 /
-        抽帧兼容 / 占位说明）；随后根据当前模型的 model_support 配置处理图片：
+        视频项先经 :meth:`_prepare_video_content` 转换（gemini / openai file /
+        抽帧 / 占位）；随后根据当前模型的 model_support 配置处理图片：
         - 模型支持图片：保留 ImageUrl，返回 list[UserContent]
-        - 模型不支持图片：调用 understand_image 将图片转述为文本，合并到文本消息中
+        - 模型不支持图片：图片转述为文本；只保留视频 file，图片 BinaryContent 丢弃；
+          无法投喂的视频改成「无法读取」文本。
 
         Args:
             content_list: 用户消息内容列表
@@ -753,7 +850,17 @@ class GsCoreAIAgent(RunOnceMixin):
                 text_parts.append(image_text)
 
         combined = "\n".join(text_parts) if text_parts else ""
-        return f"[用户发言]\n{combined}"
+        native_videos = [item for item in content_list if self._is_native_video_part(item)]
+        if not native_videos:
+            if any(self._is_video_item(item) for item in content_list):
+                if combined:
+                    combined = f"{combined}\n用户发送了视频，但当前模型无法读取视频内容。"
+                else:
+                    combined = "用户发送了视频，但当前模型无法读取视频内容。"
+            return f"[用户发言]\n{combined}"
+        mixed: list[UserContent] = [f"[用户发言]\n{combined}"]
+        mixed.extend(native_videos)
+        return mixed
 
     async def _summarize_image_description(
         self,

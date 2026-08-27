@@ -280,7 +280,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `budget/` | 用量预算规则 + `budget_manager` 闸门（交互/自主 scope）。 |
 | `approval/` | 统一审批中心（`AIApprovalRequest` + submit/resolve）。 |
 | `command_exec/` | 主人 shell 审批执行链（policy / runner / audit）。 |
-| `multimodal/` | ASR / 文档 / 视频帧 / Gemini Files 等。 |
+| `multimodal/` | ASR / 文档 / 视频帧 / Gemini Files / OpenAI file 视频 等。 |
 | `image_understand/` | 图片理解入口（可被 run 内嵌调用）。 |
 
 ### `database/` — ai_core 自有 ORM 模型

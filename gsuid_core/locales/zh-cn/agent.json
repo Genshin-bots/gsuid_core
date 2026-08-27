@@ -132,7 +132,10 @@
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ 触发节点: CallToolsNode",
   "log.agent.trigger_node_modelrequestnode": "[GsCoreAIAgent] ⚡ 触发节点: ModelRequestNode",
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] 用户消息: {truncated_msg}",
-  "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（当前模型非 gemini）",
+  "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（model_support 未声明 video）",
+  "log.agent.video_openai_file_inline": "[GsCoreAIAgent] 视频{p0} 已按 OpenAI file(base64) 进入消息（{size:.1f}MB）",
+  "log.agent.video_openai_file_uploaded": "[GsCoreAIAgent] 视频{p0} 已上传 /v1/files → {file_id}",
+  "log.agent.video_openai_files_missing": "[GsCoreAIAgent] /v1/files 不可用，视频{p0}（{size:.1f}MB）不走无界 base64，改抽帧或占位",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 墙钟软预算已超（{p0:.0f}s），注入收敛提示",
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}"
 }

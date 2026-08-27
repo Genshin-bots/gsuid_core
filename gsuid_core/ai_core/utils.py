@@ -198,7 +198,7 @@ def has_model_visible_content(ev: Event) -> bool:
     """
     if ev.text and ev.text.strip():
         return True
-    return bool(ev.image_id_list or ev.audio_id or ev.audio_id_list or ev.file or ev.node)
+    return bool(ev.image_id_list or ev.audio_id or ev.audio_id_list or ev.video_id_list or ev.file or ev.node)
 
 
 # 工具调用标记残留正则（弱模型 / 兼容网关把工具调用当普通文本输出）， 详见 _strip_tool_call_artifacts 的 docstring。
@@ -822,6 +822,19 @@ async def prepare_content_payload(
 
     for i in getattr(ev, "audio_id_list", []):
         text += f"\n--- 用户上传音频ID: {i} ---\n"
+
+    # 视频始终惰性：只透传 ID。未声明 video 时不指引 read_video（工具也不会挂）
+    if ev.video_id_list:
+        from gsuid_core.ai_core.configs.models import get_model_config_for_task
+
+        _support = get_model_config_for_task(task_level).get_config("model_support").data
+        if "video" in _support:
+            text += "\n--- 用户发送了视频(未展开, 需要查看内容时调用 read_video(视频ID)) ---"
+            for i in ev.video_id_list:
+                text += f"\n视频ID: {i}"
+            text += "\n"
+        else:
+            text += "\n--- 用户发送了视频(当前模型无法查看视频内容) ---\n"
 
     # @Bot 自己在入库层已转成 is_tome（见 handler.msg_process），at_list 里只会有
     # 别的用户——显式标注，防止模型把"@某人+提问"误读成在叫自己。

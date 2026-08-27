@@ -137,8 +137,8 @@ def _absorb_attempt_facts(
 _RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_handoff", "numeric_recitation"})
 
 
-def _has_unread_attachment(st: RunOnceState) -> bool:
-    """本条是否带未读附件（图/音频/文件）。只看 Event 结构字段。"""
+def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
+    """本条是否带未读附件（图/音频/文件/可读视频）。只看 Event 结构字段。"""
     ev = st.ev
     if ev is None:
         return False
@@ -146,12 +146,16 @@ def _has_unread_attachment(st: RunOnceState) -> bool:
         return True
     if ev.audio_id_list or ev.audio_id:
         return True
-    return bool(ev.file)
+    if ev.file:
+        return True
+    if video_readable and (ev.video_id_list or ev.video_id):
+        return True
+    return False
 
 
-def _zero_tool_needs_correction(st: RunOnceState) -> bool:
+def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool) -> bool:
     """零工具纠正只认正证据：未读附件或可继承的上轮工具任务。"""
-    if _has_unread_attachment(st):
+    if _has_unread_attachment(st, video_readable=video_readable):
         return True
     if st.followup_detected:
         return True
@@ -549,7 +553,7 @@ class SettlePhase(RunOnceHost):
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
                 and st.ev is not None
-                and _zero_tool_needs_correction(st)
+                and _zero_tool_needs_correction(st, video_readable=self._model_declares_video())
                 and not is_silence_marker(result_msg.strip())
             ):
                 _settle_correction_ran = True

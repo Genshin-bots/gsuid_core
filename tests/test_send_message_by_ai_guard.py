@@ -209,6 +209,7 @@ def test_has_model_visible_content_covers_modalities() -> None:
     assert has_model_visible_content(_ev(audio_id="aud_1")) is True
     assert has_model_visible_content(_ev(audio_id_list=["aud_2"])) is True
     assert has_model_visible_content(_ev(file="base64data")) is True
+    assert has_model_visible_content(_ev(video_id_list=["vid_1"])) is True
 
 
 if __name__ == "__main__":

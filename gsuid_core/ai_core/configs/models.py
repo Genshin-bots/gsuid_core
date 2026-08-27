@@ -43,6 +43,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
+from gsuid_core.ai_core.multimodal.openai_files import OpenAIChatModelWithVideo
 
 from .ai_config import ai_config
 from .gemini_config import get_gemini_config, get_gemini_config_dict
@@ -291,7 +292,7 @@ class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
 
 
 @final
-class AutoUsageOpenAIChatModel(OpenAIChatModel):
+class AutoUsageOpenAIChatModel(OpenAIChatModelWithVideo):
     """auto 模式下使用的 ChatModel：流式响应走 usage 语义在线探测。"""
 
     @property
@@ -387,6 +388,7 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
         profile_spec: Callable[[ModelProfile], ModelProfile] = lambda default: default  # noqa: E731
 
     if request_method == "responses":
+        # 视频走 /v1/files UploadedFile，不覆写 pydantic_ai 父类静态 mapper
         return OpenAIResponsesModel(
             model_name=model_name,
             provider=provider,
@@ -395,7 +397,9 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
 
     # cumulative 语义网关须取「最后累计值」而非逐 chunk 累加, 否则统计膨胀数十倍;
     # auto 模式用探测子类兜底白名单外的网关（见 _AutoUsageStreamedResponse）
-    model_cls = OpenAIChatModel if usage_stats_mode in ("incremental", "cumulative") else AutoUsageOpenAIChatModel
+    model_cls = (
+        OpenAIChatModelWithVideo if usage_stats_mode in ("incremental", "cumulative") else AutoUsageOpenAIChatModel
+    )
     return model_cls(
         model_name=model_name,
         provider=provider,
@@ -569,6 +573,12 @@ def get_model_by_full_name(full_name: str) -> AnyModel:
     if provider == "anthropic":
         return get_anthropic_chat_model_by_name(config_name)
     return get_gemini_model_by_name(config_name)
+
+
+def get_model_config_by_full_name(full_name: str) -> StringConfig:
+    """按 provider++name 取对应配置文件（failover 后读实际模型的 model_support）。"""
+    provider, config_name = parse_provider_config_name(full_name)
+    return _get_provider_string_config(provider, config_name)
 
 
 def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfig:

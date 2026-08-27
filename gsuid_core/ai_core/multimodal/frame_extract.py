@@ -1,7 +1,7 @@
 """本地 ffmpeg 视频抽帧
 
-给「非 Gemini 但声明支持视频分析」的模型做兼容: 视频无法直接进 messages,
-按固定间隔(默认 2 秒一帧)抽成 JPEG 序列, 由调用方转成 image_url 列表提交。
+给「未在 model_support 声明 video、但能看图」的模型做兼容: 视频无法直接进
+messages, 按固定间隔(默认 2 秒一帧)抽成 JPEG 序列再当图片提交。
 
 与 ``multimodal/video.py`` 的 MCP 抽帧不同, 本模块直接调本机 ``ffmpeg``
 可执行文件(异步子进程), 不依赖任何外部服务; 未安装 ffmpeg 时抛出明确错误。

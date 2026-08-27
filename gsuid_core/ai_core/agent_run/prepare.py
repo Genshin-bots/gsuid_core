@@ -181,6 +181,8 @@ class PreparePhase(RunOnceHost):
         st.allow_outbound = self.create_by == "Kanban_Relay" or (
             self.create_by in ("Chat", "Agent", "TEST") and not self.is_subagent
         )
+        from gsuid_core.ai_core.buildin_tools.visibility import MODEL_DECLARES_VIDEO_KEY
+
         st.run_extra = {
             "turn_id": st.turn_id,
             "agent_run_id": st.turn_id,
@@ -190,6 +192,7 @@ class PreparePhase(RunOnceHost):
             "speech_policy": "free",
             "has_status_tool": False,
             "parent_create_by": self.create_by,
+            MODEL_DECLARES_VIDEO_KEY: self._model_declares_video(),
         }
         if self.persona_name:
             st.run_extra["persona_name"] = self.persona_name
