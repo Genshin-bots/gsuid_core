@@ -10,9 +10,9 @@ import asyncio
 
 import pytest
 
-from gsuid_core.trigger import Trigger
 from gsuid_core.models import Event
 from gsuid_core.handler import count_data
+from gsuid_core.trigger import Trigger
 from gsuid_core.global_val import get_platform_val
 
 
