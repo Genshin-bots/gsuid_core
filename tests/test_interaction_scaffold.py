@@ -108,6 +108,7 @@ def test_turn_graph_and_cheap_gate(monkeypatch):
     from gsuid_core.ai_core.configs import ai_config as cfg_mod
     from gsuid_core.ai_core.interaction_scaffold import (
         QUOTE_TOME_HINT,
+        SPEAKER_RECALL_HINT,
         CheapGate,
         build_turn_graph,
         decide_cheap_gate,
@@ -138,6 +139,10 @@ def test_turn_graph_and_cheap_gate(monkeypatch):
         primary_speaker="u1",
     )
     assert decide_cheap_gate(tg_dm) is CheapGate.FULL
+    assert SPEAKER_RECALL_HINT in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL)
+    assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.LIGHT)
+    assert "说话人ID + 要填的槽" in SPEAKER_RECALL_HINT
+    assert "外部题目" in SPEAKER_RECALL_HINT
 
     # 群多人互聊 silence
     tg_chat = build_turn_graph(
@@ -236,6 +241,16 @@ def test_turn_graph_and_cheap_gate(monkeypatch):
     )
     assert not tg_ask_on_quote.quoted_tome
 
+    tg_voc = build_turn_graph(
+        "小明(用户ID:9001)：早柚最近咋样",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+    )
+    assert tg_voc.call_to_self
+    assert decide_cheap_gate(tg_voc) is CheapGate.FULL
+
 
 def test_group_open_gate():
     from gsuid_core.ai_core.interaction_scaffold import (
@@ -260,6 +275,57 @@ def test_group_open_gate():
     assert is_addressed_to_self("p早呀今天好安静", "p", False)
     assert is_addressed_to_self("小 帮我看一下", "小", False)
     assert not is_addressed_to_self("小姐姐今天天气不错", "小", False)
+    assert is_addressed_to_self("小明(用户ID:1)：早柚最近咋样", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：帮我查一下", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：我设过提醒来着吗", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：给我让一下", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：我明天去吗", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：我饿了呢", "早柚", False)
+    assert not is_addressed_to_self("小明(用户ID:1)：我多少有点累", "早柚", False)
+    assert not is_addressed_to_self("小明帮我带瓶水", "早柚", False)
+
+    tg_ask = build_turn_graph(
+        "小明(用户ID:1)：我设过提醒来着吗",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+    )
+    assert tg_ask.call_to_self
+    tg_help = build_turn_graph(
+        "小明(用户ID:1)：帮我查一下",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+    )
+    assert not tg_help.call_to_self
+    tg_help_follow = build_turn_graph(
+        "小明(用户ID:1)：帮我查一下",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+        recent_tool_call=True,
+        recent=[("user", "小明(用户ID:1)：@早柚 查北京"), ("assistant", "晴。")],
+    )
+    assert tg_help_follow.call_to_self
+    tg_give = build_turn_graph(
+        "小明(用户ID:1)：给我让一下",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+    )
+    assert not tg_give.call_to_self
+    tg_go = build_turn_graph(
+        "小明(用户ID:1)：我明天去吗",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+    )
+    assert not tg_go.call_to_self
 
     assert (
         decide_group_open_gate(

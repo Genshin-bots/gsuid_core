@@ -16,6 +16,8 @@ def test_exclusive_tools_exclude_task_basics_shared() -> None:
     exclusive = _capability_exclusive_tool_names()
     # 空环境（无插件专属工具）下 exclusive 可能为空；有 code_agent 时也不应含 task_basics
     assert exclusive.isdisjoint(basics)
+    assert "read_handle" in basics
+    assert "list_persisted_outputs" in basics
 
 
 def test_roster_lists_node_ids_not_invented_names() -> None:
@@ -118,3 +120,47 @@ def test_exclusive_tools_blocked_from_progressive_path() -> None:
     rt = RetrievableToolset(exclude_names={"find_tools"} | set(exclusive))
     assert exclusive <= rt._exclude or not exclusive
     assert exclusive <= ctx.blocked_tool_names or not exclusive
+
+
+def test_check_group_recall_capability_agent_always_ok() -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.buildin_tools.visibility import GROUP_RECALL_OK_KEY, check_group_recall
+
+    ev = Event(bot_id="b", user_id="u", group_id="g")
+    cap = ToolContext(
+        ev=ev,
+        extra={GROUP_RECALL_OK_KEY: False, "parent_create_by": "CapabilityAgent"},
+    )
+    ok, _msg = check_group_recall(cap)
+    assert ok
+    bg = ToolContext(ev=None, extra={GROUP_RECALL_OK_KEY: False, "parent_create_by": "Chat"})
+    ok_bg, _ = check_group_recall(bg)
+    assert ok_bg
+    gated = ToolContext(ev=ev, extra={GROUP_RECALL_OK_KEY: False, "parent_create_by": "Chat"})
+    ok_g, msg = check_group_recall(gated)
+    assert not ok_g
+    assert "未点名" in msg
+
+
+def test_find_tools_match_is_unidirectional() -> None:
+    from pathlib import Path
+
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import _need_matches_tool_text
+
+    src = Path("gsuid_core/ai_core/buildin_tools/dynamic_tool_discovery.py").read_text(encoding="utf-8")
+    assert "offered_names_in_hit_domains" not in src
+    assert "n in hay or hay in n" not in src
+    assert _need_matches_tool_text("网页搜索", "tool 网页搜索 docs", [])
+    assert _need_matches_tool_text("帮我网页搜索一下", "other", ["网页搜索"])
+    assert not _need_matches_tool_text("帮我分析很长的需求描述xyz", "分析", [])
+    assert _need_matches_tool_text("北京这周的天气", "weather_handler", ["天气", "气象"])
+
+
+def test_capability_agent_loop_folds_tool_return() -> None:
+    from pathlib import Path
+
+    src = Path("gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
+    assert 'self.create_by in _MAIN_PERSONA_CREATE_BY or self.create_by == "CapabilityAgent"' in src
+    assert "needs_task_ack_turn" in src
+    assert "tools_warrant_task_ack" in src

@@ -217,9 +217,9 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
 
 _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
     {
+        "voice_anchor",
         "mood",
         "relationship",
-        "voice_anchor",
         "task",
         "plan_hint",
         "soft_trigger",
@@ -227,6 +227,19 @@ _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
         "history",
         "plugin_hints",
     }
+)
+# 点名 suffix 产品块合计帽；voice_anchor 在帽外。history 排最后。
+_SUFFIX_PRODUCT_CAP = 400
+_SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor"})
+_SUFFIX_KEEP_ORDER: tuple[str, ...] = (
+    "task",
+    "plan_hint",
+    "relationship",
+    "mood",
+    "memory",
+    "soft_trigger",
+    "plugin_hints",
+    "history",
 )
 
 
@@ -241,6 +254,35 @@ def suffix_allowed_blocks(ctx: "AgentHookContext") -> frozenset[str] | None:
     return _ADDRESSED_FULL_BLOCKS
 
 
+def _cap_group_suffix_blocks(blocks: Dict[str, str], cap: int) -> None:
+    kept: Dict[str, str] = {}
+    for name in _SUFFIX_EXEMPT_BLOCKS:
+        if name not in blocks:
+            continue
+        text = blocks[name].strip()
+        if text:
+            kept[name] = text
+    used = 0
+    for name in _SUFFIX_KEEP_ORDER:
+        if name not in blocks:
+            continue
+        text = blocks[name].strip()
+        if not text:
+            continue
+        room = cap - used
+        if room <= 0:
+            break
+        if len(text) > room:
+            text = text[: max(0, room - 1)] + "…"
+        kept[name] = text
+        used += len(text)
+    for name in list(blocks):
+        if name in kept:
+            blocks[name] = kept[name]
+        else:
+            del blocks[name]
+
+
 def _apply_suffix_block_policy(ctx: "AgentHookContext") -> None:
     allowed = suffix_allowed_blocks(ctx)
     if allowed is None:
@@ -248,6 +290,8 @@ def _apply_suffix_block_policy(ctx: "AgentHookContext") -> None:
     for name in list(ctx.blocks):
         if name not in allowed:
             del ctx.blocks[name]
+    if allowed:
+        _cap_group_suffix_blocks(ctx.blocks, _SUFFIX_PRODUCT_CAP)
 
 
 def master_title_turn_hint(ctx: "AgentHookContext") -> str:

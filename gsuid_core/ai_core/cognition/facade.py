@@ -24,6 +24,8 @@ from gsuid_core.ai_core.cognition.types import (
     MEDIA_KINDS,
     MEMORY_KINDS,
     KNOWLEDGE_KINDS,
+    DEFAULT_RECALL_KINDS,
+    SPEAKER_RECALL_KINDS,
     CogKind,
     CogScope,
     CognitiveHit,
@@ -50,15 +52,43 @@ def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
     return "落盘"
 
 
-# 融合后至少这么多条无条件可见：渲染层只印高置信行，全被判弱相关时回执会变成
-# 「命中 N」+ 零内容，模型只能重搜或原地编——比不检索更糟。
-_ALWAYS_SHOWN_TOP = 3
+# 各路头名相对分永远过线；融合名次也要过这道帽，否则知识/落盘/表情头名全标高置信。
+_HIGH_CONF_FUSED_CAP = 4
 
 
 def _min_score_ratio() -> float:
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     return float(ai_config.get_config("cognition_min_score_ratio").data)
+
+
+def query_mentions_speaker(query: str, user_id: str) -> bool:
+    """query 是否点名该 user_id（整串边界，避免短号/子串误伤）。"""
+    uid = (user_id or "").strip()
+    body = query or ""
+    if not uid or not body:
+        return False
+    if uid.isdigit():
+        return re.search(rf"(?<!\d){re.escape(uid)}(?!\d)", body) is not None
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(uid)}(?![A-Za-z0-9_])", body) is not None
+
+
+def resolve_recall_kinds(
+    requested: FrozenSet[CogKind],
+    *,
+    query: str,
+    user_id: str,
+) -> FrozenSet[CogKind]:
+    """工具未声明 kinds 时的默认面。点名说话人 ID 则只查身上的记忆槽。"""
+    if requested:
+        return requested
+    if query_mentions_speaker(query, user_id):
+        return SPEAKER_RECALL_KINDS
+    return DEFAULT_RECALL_KINDS
+
+
+def _text_mentions_speaker(text: str, user_id: str) -> bool:
+    return query_mentions_speaker(text, user_id)
 
 
 async def search_cognition(
@@ -140,13 +170,12 @@ async def search_cognition(
 
     fused_ids = rrf_fuse(ranked_lists, limit=limit)
     ordered = [merged[i] for i in fused_ids if i in merged]
-
-    # 一条都不高置信时把融合头部提上来，避免「命中 N」下面空列表。
-    if ordered and not any(h.high_confidence for h in ordered):
-        final = [replace(h, high_confidence=True) if i < _ALWAYS_SHOWN_TOP else h for i, h in enumerate(ordered)]
-    else:
-        final = ordered
-    final = await _drop_stale_handles(final)
+    capped: List[CognitiveHit] = []
+    for i, hit in enumerate(ordered):
+        if i >= _HIGH_CONF_FUSED_CAP and hit.high_confidence:
+            hit = replace(hit, high_confidence=False)
+        capped.append(hit)
+    final = await _drop_stale_handles(capped)
     logger.debug(t("log.ai.cognition_hits", n=len(final), backends=",".join(labels)))
     return final
 
@@ -202,7 +231,9 @@ async def _search_memory(
     limit: int,
 ) -> _BackendResult:
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
+    from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
+    from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity
+    from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve, _fact_mentions_speaker
 
     ctx = await dual_route_retrieve(
         query=query,
@@ -219,6 +250,7 @@ async def _search_memory(
     )
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
+    speaker_ids = {scope.user_id} if scope.user_id else set()
 
     def _add(hit: CognitiveHit) -> None:
         if hit.id in hits:
@@ -243,10 +275,20 @@ async def _search_memory(
                 )
             )
     if CogKind.FACT in kinds:
-        for i, edge in enumerate(ctx.edges):
+        # 点名说话人时只把「身上」的事实提前，不丢其它 S1 命中。
+        # 地点类事实常是「住在杭州」，字面没有 user_id，整表过滤会变成零命中。
+        primary: list[Edge] = []
+        rest: list[Edge] = []
+        for edge in ctx.edges:
             fact = str(edge["fact"]) if "fact" in edge else ""
-            if not fact:
+            if not fact or _DANGLING_FACT_RE.search(fact):
                 continue
+            if speaker_ids and _fact_mentions_speaker(edge, speaker_ids):
+                primary.append(edge)
+            else:
+                rest.append(edge)
+        for i, edge in enumerate(primary + rest):
+            fact = str(edge["fact"]) if "fact" in edge else ""
             _add(
                 CognitiveHit(
                     kind=CogKind.FACT,
@@ -258,16 +300,28 @@ async def _search_memory(
                 )
             )
     if CogKind.ENTITY in kinds:
-        for i, ent in enumerate(ctx.entities):
+        primary_e: list[Entity] = []
+        rest_e: list[Entity] = []
+        for ent in ctx.entities:
             name = str(ent["name"]) if "name" in ent else ""
             if not name:
                 continue
+            summary = str(ent["summary"]) if "summary" in ent else ""
+            if speaker_ids and (
+                _text_mentions_speaker(name, scope.user_id) or _text_mentions_speaker(summary, scope.user_id)
+            ):
+                primary_e.append(ent)
+            else:
+                rest_e.append(ent)
+        for i, ent in enumerate(primary_e + rest_e):
+            name = str(ent["name"]) if "name" in ent else ""
+            summary = str(ent["summary"]) if "summary" in ent else ""
             _add(
                 CognitiveHit(
                     kind=CogKind.ENTITY,
                     id=f"ent_{ent['id']}" if "id" in ent else f"ent_{i}",
                     title=name,
-                    summary=str(ent["summary"]) if "summary" in ent else "",
+                    summary=summary,
                     score=float(ent["score"]) if "score" in ent else 0.5,
                     source="memory",
                 )
@@ -731,6 +785,8 @@ __all__ = [
     "WORK_KINDS",
     "inject_memory_slice",
     "kinds_from_names",
+    "query_mentions_speaker",
     "render_cognition_block",
+    "resolve_recall_kinds",
     "search_cognition",
 ]

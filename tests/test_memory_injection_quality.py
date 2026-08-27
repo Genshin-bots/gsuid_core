@@ -267,3 +267,27 @@ def test_categories_only_when_query_overlaps() -> None:
     hit = mc.to_prompt_text(max_chars=2000, query="NorthStation 手册")
     assert "NorthStation" in hit
     assert "AcmeCorp" not in hit
+
+
+def test_memory_catalog_keeps_preference_polarity_and_episode_titles() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import _format_memory_catalog
+    from gsuid_core.ai_core.memory.retrieval.dual_route import PreferencePrompt
+
+    pref: PreferencePrompt = {
+        "target_context": "general",
+        "preference_rule": "回复保持简短",
+        "polarity": "do",
+        "is_correction": True,
+        "id": "p1",
+    }
+    mc = MemoryContext(
+        preferences=[pref],
+        episodes=[_episode("昨天说了对海鲜过敏")],
+        edges=[_edge("100000001", "住在杭州")],
+    )
+    text = _format_memory_catalog(mc)
+    assert "[须/纠正过]" in text
+    assert "回复保持简短" in text
+    assert "昨天说了对海鲜过敏" in text
+    assert "住在杭州" in text
+    assert "search_cognition" in text

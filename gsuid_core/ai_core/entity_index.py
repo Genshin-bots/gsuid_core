@@ -22,7 +22,7 @@
 """
 
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Sequence
 from dataclasses import field, dataclass
 
 from gsuid_core.i18n import t
@@ -119,6 +119,27 @@ def _scan_order() -> List[str]:
     if _SCAN_ORDER is None:
         _SCAN_ORDER = sorted(_SURFACE_INDEX, key=len, reverse=True)
     return _SCAN_ORDER
+
+
+def strip_surfaces(text: str, surfaces: Sequence[str]) -> str:
+    """从文本拿掉一组 surface（最长优先）。边界规则与 ``_contains`` 相同。
+
+    唤醒词/人格名走这条，不当成游戏实体去路由。
+    """
+    body = text or ""
+    names = sorted({s.strip() for s in surfaces if s and s.strip()}, key=len, reverse=True)
+    if not body or not names:
+        return body
+    out = body
+    for raw in names:
+        key = _normalize_surface(raw)
+        if not key:
+            continue
+        if key.isascii():
+            out = re.sub(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", " ", out, flags=re.IGNORECASE)
+        else:
+            out = out.replace(raw, " ").replace(key, " ")
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def _contains(text: str, surface: str) -> bool:

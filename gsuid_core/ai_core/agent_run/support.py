@@ -205,6 +205,31 @@ _FAKE_DONE_NUDGE = (
     "本校验轮禁止抱怨式闲聊；做不到就角色短句或 <SILENCE>。）"
 )
 
+_SCHED_MUTATE_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_scheduled_tasks",
+        "cancel_scheduled_task",
+        "modify_scheduled_task",
+        "pause_scheduled_task",
+        "resume_scheduled_task",
+    }
+)
+_MISSING_OFFERED_TOOL_RE = re.compile(r"没有.{0,16}工具")
+_DEFER_WORK_RE = re.compile(r"明天再|等我.{0,8}再(查|设|弄|翻)")
+
+
+def _claims_missing_offered_tool(text: str, offered: Sequence[str]) -> bool:
+    """声称没有工具，但本轮 schema 非空。"""
+    if not _MISSING_OFFERED_TOOL_RE.search(text or ""):
+        return False
+    return bool(offered)
+
+
+def _claims_deferred_work(text: str) -> bool:
+    """把该办的事推到明天或「等我…再动手」。"""
+    return bool(_DEFER_WORK_RE.search(text or ""))
+
+
 # 结构假完成：被呼叫 + 池内有工具 + 零调用 + 非沉默/非极短寒暄（不解析用户话题词）
 _STRUCTURAL_ZERO_TOOL_NUDGE = (
     "（系统校验：本轮你被直接呼叫（或同人省略续聊），且工具池非空，但你没有调用任何工具就结束了。"
@@ -354,9 +379,19 @@ def _capability_exclusive_tool_names() -> set[str]:
     走「直接调专业工具」捷径。共享集合 = task_basics + 保底分类(self/buildin/meta)
     + 与主人格日常对话重叠的 common 基建（提醒管理/审批/表情等）——
     能力代理可复用这些工具，但不得把它们从主人格池里「独占剥离」。
+    节点域下非 shared 工具全部 exclusive（含未写入 tool_names 的同域名）。
     """
-    from gsuid_core.ai_core.register import get_registered_tools
-    from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, list_nodes, resolve_pack_tool_names
+    from gsuid_core.ai_core.register import (
+        find_tool_base,
+        get_registered_tools,
+        get_tools_by_capability_domain,
+    )
+    from gsuid_core.ai_core.agent_node import (
+        DYNAMIC_PACK,
+        TASK_BASICS_PACK,
+        list_nodes,
+        resolve_pack_tool_names,
+    )
 
     shared: set[str] = set(resolve_pack_tool_names([TASK_BASICS_PACK]))
     registered = get_registered_tools()
@@ -377,6 +412,25 @@ def _capability_exclusive_tool_names() -> set[str]:
             continue
         owned = set(resolve_pack_tool_names(node.tool_packs) + list(node.tool_names))
         exclusive |= owned - shared
+        domains: set[str] = set()
+        for pack in node.tool_packs:
+            if pack in (DYNAMIC_PACK, TASK_BASICS_PACK):
+                continue
+            domain_tools = get_tools_by_capability_domain(pack)
+            if domain_tools:
+                domains.add(pack)
+        for name in owned:
+            tb = find_tool_base(name)
+            if tb is not None:
+                dom = tb.capability_domain
+                if dom:
+                    domains.add(dom)
+        for dom in domains:
+            if dom in _daily_common_domains:
+                continue
+            for tb in get_tools_by_capability_domain(dom):
+                if tb.name not in shared:
+                    exclusive.add(tb.name)
     return exclusive
 
 

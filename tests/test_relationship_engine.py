@@ -134,6 +134,7 @@ def test_quiet_zone_marks_only_cold_and_hostile() -> None:
     assert view_from_score(-20, False).is_quiet_zone
     assert not view_from_score(0, False).is_quiet_zone
     assert not view_from_score(90, False).is_quiet_zone
+    assert not view_from_score(None, False).is_quiet_zone
 
 
 # ── signals：宁窄勿宽 ──
@@ -383,6 +384,8 @@ def test_hostile_unaddressed_is_silenced() -> None:
     assert decide_cheap_gate(tg, rel=hostile) is CheapGate.SILENCE
     # 无 zone 信息时不静音（回滚开关：rel=None 即旧行为）
     assert decide_cheap_gate(tg, rel=None) is not CheapGate.SILENCE
+    unscored = view_from_score(None, False)
+    assert decide_cheap_gate(tg, rel=unscored) is not CheapGate.SILENCE
 
 
 def test_hostile_but_addressed_still_serves() -> None:

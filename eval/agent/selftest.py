@@ -52,6 +52,18 @@ def verifier_units():
     # no_tool_calls
     _assert("no_tool_calls pass", score_trace(T(), {"no_tool_calls": True})[0])
     _assert("no_tool_calls fail", not score_trace(T(calls=["x"]), {"no_tool_calls": True})[0])
+    _assert(
+        "no_tool_calls ignores send_message_by_ai",
+        score_trace(T(calls=["send_message_by_ai"]), {"no_tool_calls": True})[0],
+    )
+    _assert(
+        "max_tool_calls ignores send_message_by_ai",
+        score_trace(T(calls=["send_message_by_ai"]), {"max_tool_calls": 0})[0],
+    )
+    _assert(
+        "max_tool_calls still counts work tools",
+        not score_trace(T(calls=["send_message_by_ai", "web_search_tool"]), {"max_tool_calls": 0})[0],
+    )
     # must_not_call
     _assert("must_not_call pass", score_trace(T(calls=["a"]), {"must_not_call": ["execute_shell_command"]})[0])
     _assert(
@@ -123,6 +135,23 @@ def verifier_units():
             T(calls=["web_fetch_tool", "web_search_tool"]), {"call_before": ["web_search_tool", "web_fetch_tool"]}
         )[0],
     )
+    _assert(
+        "if_call_then_before skip when b absent",
+        score_trace(T(calls=["search_cognition"]), {"if_call_then_before": ["search_cognition", "web_search_tool"]})[0],
+    )
+    _assert(
+        "if_call_then_before fail web without recall",
+        not score_trace(T(calls=["web_search_tool"]), {"if_call_then_before": ["search_cognition", "web_search_tool"]})[
+            0
+        ],
+    )
+    _assert(
+        "if_call_then_before pass recall then web",
+        score_trace(
+            T(calls=["search_cognition", "web_search_tool"]),
+            {"if_call_then_before": ["search_cognition", "web_search_tool"]},
+        )[0],
+    )
     # 交付文本优先：原始输出泄露"8888"但 scrub 后的交付文本干净 → final_not_contains 应 PASS
     _assert(
         "content_text prefers post-scrub",
@@ -153,13 +182,75 @@ def verifier_units():
         score_trace(T(final="早", latency=43.6), {"max_latency": 40})[0],
     )
     _assert(
-        "max_latency hang when huge",
-        not score_trace(T(final="早", latency=200), {"max_latency": 40})[0],
+        "max_latency completed too late still fails",
+        not score_trace(T(final="早", latency=360), {"max_latency": 40})[0],
     )
     _assert(
         "max_latency unfinished over cap",
         not score_trace(T(final="", latency=50), {"max_latency": 40})[0],
     )
+    rej = "本轮未点名：不要调用发现/委派/回想。"
+    tr_intent = T(calls=["add_interval_task"])
+    tr_intent.tool_returns = [{"name": "add_interval_task", "content": rej}]
+    _assert(
+        "must_call_any counts gate-reject as called",
+        score_trace(tr_intent, {"must_call_any": ["add_interval_task"]})[0],
+    )
+    tr_deleg = T(calls=["create_subagent"], final="收到。")
+    _assert(
+        "bare create_subagent does not satisfy web_search",
+        not score_trace(tr_deleg, {"must_call_any": ["web_search_tool", "get_weather"]})[0],
+    )
+    tr_weather_del = T(calls=[("create_subagent", {"task": "查北京明天天气"})], final="收到。")
+    _assert(
+        "weather-task create_subagent satisfies get_weather",
+        score_trace(tr_weather_del, {"must_call_any": ["web_search_tool", "get_weather"]})[0],
+    )
+    _assert(
+        "weather-task create_subagent does not satisfy cancel",
+        not score_trace(tr_weather_del, {"must_call_any": ["cancel_scheduled_task"]})[0],
+    )
+    _assert(
+        "must_call_any weather_handler satisfies weather",
+        score_trace(T(calls=["weather_handler"]), {"must_call_any": ["get_weather", "weather"]})[0],
+    )
+    tr_sub_arg = T(calls=[("create_subagent", {"task": "每天8点喝水提醒"})])
+    _assert(
+        "arg_contains via create_subagent.task",
+        score_trace(tr_sub_arg, {"arg_contains": {"add_interval_task": {"content": "喝水"}}})[0],
+    )
+    _assert(
+        "judge None is JUDGE_ERROR",
+        "JUDGE_ERROR" in score_trace(T(final="x"), {"judge": {"rubric": "x"}}, judge=lambda p: None)[1][0],
+    )
+    from eval.agent.harness import aggregate, parse_session_log, pick_user_visible
+
+    doc = {
+        "entries": [
+            {"type": "run_start", "data": {}},
+            {"type": "tool_call", "data": {"tool_name": "add_once_task", "args": "{}"}},
+            {"type": "result", "data": {"output": "设好了"}},
+            {"type": "run_start", "data": {}},
+            {"type": "tool_call", "data": {"tool_name": "create_subagent", "args": "{}"}},
+            {"type": "text_output", "data": {"content": "收到。"}},
+            {"type": "result", "data": {"output": "收到。"}},
+            {"type": "run_start", "data": {}},
+            {"type": "text_output", "data": {"content": "北京明天小雨。"}},
+            {"type": "result", "data": {"output": "北京明天小雨。"}},
+        ]
+    }
+    tr_skip = parse_session_log(doc, skip_runs=1)
+    _assert("parse skip_runs keeps probe tools", "create_subagent" in tr_skip.called_names)
+    _assert("parse skip_runs drops setup tools", "add_once_task" not in tr_skip.called_names)
+    _assert("parse last visible is deferred", tr_skip.final_text == "北京明天小雨。")
+    _assert("pick_user_visible prefers later", pick_user_visible("收到。", "北京明天小雨。") == "北京明天小雨。")
+    agg = aggregate(
+        [
+            {"id": "a", "domain": "x", "case_pass": True, "status": "pass"},
+            {"id": "b", "domain": "x", "case_pass": False, "status": "judge_error"},
+        ]
+    )
+    _assert("aggregate excludes judge_error", agg["passed_cases"] == 1 and agg["scored_cases"] == 1)
     from eval.agent.harness import format_judge_prompt
 
     jp = format_judge_prompt(

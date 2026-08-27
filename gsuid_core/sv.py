@@ -331,6 +331,8 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ):
         def deco(func: Callable) -> Callable:
             if isinstance(keyword, str):
@@ -395,6 +397,8 @@ class SV:
                         to_ai_doc=to_ai.strip(),
                         sv=self,
                         trigger_type=type,
+                        covers=covers,
+                        aliases=aliases,
                     )
 
             @wraps(func)
@@ -413,8 +417,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("fullmatch", keyword, block, to_me, prefix, to_ai=to_ai)
+        return self._on("fullmatch", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_prefix(
         self,
@@ -423,8 +429,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("prefix", keyword, block, to_me, prefix, to_ai=to_ai)
+        return self._on("prefix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_suffix(
         self,
@@ -433,8 +441,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("suffix", keyword, block, to_me, prefix, to_ai=to_ai)
+        return self._on("suffix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_keyword(
         self,
@@ -443,8 +453,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("keyword", keyword, block, to_me, prefix, to_ai=to_ai)
+        return self._on("keyword", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_command(
         self,
@@ -453,8 +465,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("command", keyword, block, to_me, prefix, to_ai=to_ai)
+        return self._on("command", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_file(
         self,
@@ -463,8 +477,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("file", file_type, block, to_me, prefix, to_ai=to_ai)
+        return self._on("file", file_type, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_regex(
         self,
@@ -473,8 +489,10 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
-        return self._on("regex", keyword, block, to_me, prefix, to_ai=to_ai)
+        return self._on("regex", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_message(
         self,
@@ -483,10 +501,12 @@ class SV:
         to_me: bool = False,
         prefix: bool = True,
         to_ai: str = "",
+        covers: list[str] | None = None,
+        aliases: list[str] | None = None,
     ) -> Callable:
         if unique_id is None:
             unique_id = str(uuid.uuid4())
-        return self._on("message", unique_id, block, to_me, prefix, to_ai=to_ai)
+        return self._on("message", unique_id, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
 
     def on_meta(
         self,

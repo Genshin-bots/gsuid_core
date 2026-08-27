@@ -165,8 +165,15 @@ def check_sched_mutate(deps: ToolContext) -> tuple[bool, str]:
 
 
 def check_group_recall(deps: ToolContext) -> tuple[bool, str]:
-    """recall_ok=False 时拒发现/委派/回想。"""
+    """recall_ok=False 时拒发现/委派/回想。能力代理 / 无 ev 后台恒放行。"""
     extra = deps.extra
+    create_by = extra["parent_create_by"] if "parent_create_by" in extra else ""
+    if create_by == "CapabilityAgent":
+        return True, ""
+    if isinstance(deps, ToolContext) and not deps.allow_user_outbound:
+        return True, ""
+    if deps.ev is None:
+        return True, ""
     if GROUP_RECALL_OK_KEY not in extra:
         return True, ""
     if bool(extra[GROUP_RECALL_OK_KEY]):

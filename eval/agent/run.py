@@ -42,7 +42,7 @@ def make_env_judge():
         return None
     import httpx
 
-    def judge(prompt: str) -> bool:
+    def judge(prompt: str) -> bool | None:
         r = httpx.post(
             f"{base.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
@@ -58,8 +58,7 @@ def make_env_judge():
         )
         r.raise_for_status()
         txt = r.json()["choices"][0]["message"]["content"]
-        v = parse_judge_verdict(str(txt) if txt is not None else "")
-        return bool(v)
+        return parse_judge_verdict(str(txt) if txt is not None else "")
 
     return judge
 
@@ -95,8 +94,8 @@ def make_bot_judge(base_url: str, token: str = ""):
         r.raise_for_status()
         return extract_text_from_response(r.json().get("data"))
 
-    def judge(prompt: str) -> bool:
-        # 判分器与被测 Agent 共用同一个 core。传输层异常 / 无裁决各重试；仍失败才 FAIL。
+    def judge(prompt: str) -> bool | None:
+        # 无裁决返回 None（harness 记 JUDGE_ERROR 并重试），不算产品 FAIL。
         last = ""
         for attempt in (1, 2, 3):
             msg = prompt if attempt == 1 else prompt + "\n\n只输出一行：PASS 或 FAIL。"
@@ -111,7 +110,7 @@ def make_bot_judge(base_url: str, token: str = ""):
                 return v
             print(f"  [WARN] bot-judge 无裁决(第{attempt}次): {last[:80]!r}")
         print(f"  [WARN] bot-judge 放弃: {last[:80]!r}")
-        return False
+        return None
 
     return judge
 
@@ -176,6 +175,7 @@ def _case_score_row(cid: str, case: dict, traces: list[Trace], r: dict) -> dict:
         "domain": case["domain"] if "domain" in case else "?",
         "targets": case["targets"] if "targets" in case else [],
         "case_pass": r["case_pass"],
+        "status": r["status"] if "status" in r else ("pass" if r["case_pass"] else "fail"),
         "per_run": r["per_run_pass"],
         "fails": r["fail_reasons"],
         "avg_tools": round(sum(tool_counts) / len(tool_counts), 2) if tool_counts else 0.0,
@@ -192,7 +192,7 @@ def _case_score_row(cid: str, case: dict, traces: list[Trace], r: dict) -> dict:
     }
 
 
-async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], bool] | None) -> list[dict]:
+async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], bool | None] | None) -> list[dict]:
     import httpx
 
     from eval.agent.runner import run_suite_batch
@@ -216,6 +216,7 @@ async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], boo
             concurrency=args.concurrency,
             timeout=args.timeout,
             force_k=force_k,
+            delivery_wait=args.delivery_wait,
         )
 
     ids = [c["id"] for c in active]
@@ -237,7 +238,8 @@ async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], boo
         row = _case_score_row(cid, case, traces, r)
         async with print_lock:
             done += 1
-            mark = "PASS" if r["case_pass"] else "FAIL"
+            st = r["status"] if "status" in r else ("pass" if r["case_pass"] else "fail")
+            mark = {"pass": "PASS", "fail": "FAIL", "judge_error": "JERR"}.get(st, st.upper())
             print(
                 f"[{done:>3}/{total}] [{mark}] {cid:30s} per_run={r['per_run_pass']} "
                 f"tools~{row['avg_tools']} {row['avg_latency']}s "
@@ -266,6 +268,12 @@ def main() -> int:
     ap.add_argument("--k", type=int, default=None, help="覆盖 yaml 里的 k（pass^k）")
     ap.add_argument("--wait", type=float, default=85.0, help="批量 B 模式：全部 fire 后只等一次 session_log 落盘秒数")
     ap.add_argument(
+        "--delivery-wait",
+        type=float,
+        default=90.0,
+        help="委派未回灌时额外等待秒数（对齐短应+后台完成合同）",
+    )
+    ap.add_argument(
         "--concurrency",
         type=int,
         default=3,
@@ -282,7 +290,7 @@ def main() -> int:
         dest="reset_state",
         action="store_true",
         default=True,
-        help="开跑前取消 pending/paused 及 eval_ 前缀定时任务（默认开）",
+        help="开跑前取消 eval_ 定时任务并清空 eval_ 记忆/好感（默认开）",
     )
     ap.add_argument(
         "--no-reset-state",
@@ -324,6 +332,7 @@ def main() -> int:
         # 生产群聊结构抽象出的合成用例（无真实 ID/原文）
         extra_paths.append(cases_dir / "group_chat_prod_patterns.yaml")
         extra_paths.append(cases_dir / "cognition_hub_mixed.yaml")
+        extra_paths.append(cases_dir / "speaker_slot_recall.yaml")
     if args.extra_cases:
         for p in args.extra_cases.split(","):
             p = p.strip()
@@ -380,7 +389,12 @@ def main() -> int:
         json.dumps({"summary": agg, "results": results}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print("\n===== 汇总 (pass^k) =====")
-    print(f"总通过率: {agg['passed_cases']}/{agg['total_cases']} = {agg['pass_rate'] * 100:.1f}%")
+    scored = int(agg.get("scored_cases") or agg["total_cases"])
+    n_je = int(agg.get("judge_error_cases") or 0)
+    print(
+        f"总通过率: {agg['passed_cases']}/{scored} = {agg['pass_rate'] * 100:.1f}%"
+        f"  （跑 {agg['total_cases']} 例，judge_error {n_je} 不进分母）"
+    )
     print(f"平均工具数/例: {agg['avg_tools_per_case']}   平均延迟: {agg['avg_latency_s']}s")
     print(
         f"token input={agg.get('input_tokens', 0)}  output={agg.get('output_tokens', 0)}  "

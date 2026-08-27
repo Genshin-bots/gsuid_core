@@ -1519,10 +1519,11 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         ToolReturn create_subagent → inflight_after_create_subagent_return：
                     异步 ack / 完成回执确认在途；失败且未 ack 则回滚抢先静默
         TextPart  → log_text_output；return_mode=by_bot 时按序：
-                    0) 出站槽（只看 part 类型 + 本 run 第几次带函数 ToolCall 的响应）：
-                       第 1 次 → 至多一条非空非 SILENCE TextPart（接任务应，仍过闸门；
-                       过不了也消耗名额）；第 2 次及以后 → 全部 TextPart 记 unsent；
-                       无函数 ToolCall → 终局开口。hosted 搜索不当函数工具。
+                    0) 出站槽（只看 part 类型 + 本响应是否含重工具）：
+                       委派/出图等重工具且尚未接任务应 → 至多一条非空非 SILENCE TextPart
+                       （接任务应，仍过闸门；过不了也消耗名额）；轻查询（回想/网页检索）
+                       与其后工具轮 TextPart 记 unsent；无函数 ToolCall → 终局开口。
+                       hosted 搜索不当函数工具。
                     1) SILENCE / 本轮去重
                     2) **speech_policy.should_block**（delivered/silence_only/…
                        话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报；

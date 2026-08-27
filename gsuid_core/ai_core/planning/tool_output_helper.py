@@ -282,7 +282,7 @@ async def persist_and_fold_tool_return(
     *,
     is_group: bool = False,
 ) -> Optional[str]:
-    """主人格热路径：落盘并返回句柄卡；群聊不内嵌要点。"""
+    """过阈值落盘并返回句柄卡；群聊不内嵌要点。主人格与能力代理共用。"""
     tn = tool_name or ""
     if not should_persist_tool_return(tn, content):
         await _remember_short_tool_fact(tn, content, ev, session_id)

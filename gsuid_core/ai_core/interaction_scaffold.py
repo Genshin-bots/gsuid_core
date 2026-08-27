@@ -104,6 +104,13 @@ SOFT_CONTINUE_HINT = (
     "缺细节时先用上文实体或记忆/查询工具尝试，禁止空口编造或只用澄清结束。）"
 )
 
+# 办眼前的事要填说话人槽：模型自己组合 search_cognition 的 query，不靠问句向量碰巧召回。
+SPEAKER_RECALL_HINT = (
+    "\n\n（系统提示：办眼前的事若要填说话人身上的事实且本句/上文没写，"
+    "先 search_cognition，query 只写「说话人ID + 要填的槽」，不要把本次外部题目的词拼进去；"
+    "回想不到就问一句，禁止空槽硬查。）"
+)
+
 MULTI_SPEAKER_HINT = (
     "\n\n（系统提示：本条混入了多人发言。"
     "只处理明确找你的那一位的请求；旁白/对别人说的话不抢答、不串请求、不把甲的槽位继承给乙。"
@@ -301,7 +308,12 @@ ADDRESS_GATE_HINT = (
 )
 
 # 呼语：角色名后紧接第二人称/祈使（模板，运行时 escape 名）
-_VOCATIVE_AFTER_NAME_TMPL = r"(?:^|[\s，,、：:（(]){name}(?:\s*[，,、]?\s*)(?:你|您|帮|查|看|在|醒|听|说|来|给)"
+_VOCATIVE_AFTER_NAME_TMPL = (
+    r"(?:^|[\s，,、：:（(]){name}(?:\s*[，,、]?\s*)"
+    r"(?:你|您|帮|查|看|在|醒|听|说|来|给|最近|咋样|怎么样)"
+)
+_DIRECTED_REQ_RE = re.compile(r"^(?:帮我|请帮|麻烦你|你(?:帮|给|查|看)|给我(?:查|看|设|改|搜|找|订))")
+_SELF_ASK_RE = re.compile(r"我.{0,16}(?:来着|是哪|几[个天票月]|多少[钱个天次度点钟]|有没有)")
 
 
 class GroupOpenGate(str, Enum):
@@ -328,7 +340,7 @@ def is_addressed_to_self(
 ) -> bool:
     """结构判据：消息是否在**呼叫**自己（非旁述提及）。
 
-    框架 is_tome / DIRECT / @名 / 句首呼名 / 名+呼语 → 呼叫；句中旁述出现名 → 不算。
+    is_tome / DIRECT / @名 / 句首呼名 / 名+呼语 → 呼叫。无 @ 的帮我/自问见 TurnGraph。
     """
     if is_tome or DIRECT_MARKER in message_text:
         return True
@@ -589,6 +601,12 @@ def build_turn_graph(
         speaker_id=primary,
     )
     task_mgmt = references_task_management(text)
+    if not call and not addr and AT_OTHER_MARKER not in text:
+        body = extract_message_body(text)
+        if body and _SELF_ASK_RE.search(body):
+            call = True
+        elif body and _DIRECTED_REQ_RE.match(body) and (ellipsis or task_mgmt or recent_tool_call):
+            call = True
     soft_c = (not call) and detect_soft_continue(text, recent_list, primary)
     pushes = count_style_pushes(text, recent_list, speaker_id=primary)
     open_g = decide_group_open_gate(
@@ -720,6 +738,8 @@ def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
         hints.append(MULTI_SPEAKER_HINT)
     if tg.style_push_count >= 2:
         hints.append(DRIFT_REMINDER)
+    if cheap is CheapGate.FULL and (not tg.is_group or tg.call_to_self):
+        hints.append(SPEAKER_RECALL_HINT)
     return hints
 
 

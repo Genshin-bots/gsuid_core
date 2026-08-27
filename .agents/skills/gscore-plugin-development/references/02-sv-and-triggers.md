@@ -73,6 +73,8 @@ add_sv = SV(name="查询帮助信息", pm=6, area="ALL") # 一般只需要定义
 | `to_me` | `bool` | `False` | 是否必须 @ 机器人才触发（`ev.is_tome=True`） |
 | `prefix` | `bool` | `True` | 是否给关键词自动拼上插件的 `force_prefix`/`prefix`（**几乎总是 True**） |
 | `to_ai` | `str` | `""` | 非空时自动把本触发器注册为 AI 工具（详见第十章）。⚠️ 与 `@ai_tools` 冲突，不可同时使用 |
+| `covers` | `list[str] \| None` | `None` | 数据/能力覆盖面，进向量检索与 `find_tools` 单向命中（仅 `to_ai` 非空时生效） |
+| `aliases` | `list[str] \| None` | `None` | 带领域前缀的同义问法，如 `["天气·查城市天气"]`（仅 `to_ai` 非空时生效） |
 
 **`block=True` 使用建议**：
 - 高优先级"短路"触发器（如插件级帮助、错误提示）应 `block=True`，避免兜底触发器再次响应。

@@ -13,11 +13,11 @@ from gsuid_core.ai_core.rag import search_images
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.cognition import (
-    ALL_KINDS,
     CogKind,
     CogScope,
     kinds_from_names,
     search_cognition as federated_search,
+    resolve_recall_kinds,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 from gsuid_core.ai_core.buildin_tools.visibility import (
@@ -97,7 +97,10 @@ async def search_cognition(
     什么时候用：
     - 用户问到过去的事（"上周/上次/之前我们聊过…""你说过的那个…"），当前上下文没答案时；
     - 需要"已有材料"（专业知识、说明文档、稳定资料、以前搜过的长文）时；
-    - 想确认"我对某人了解多少 / 有没有答应过什么"时。
+    - 想确认"我对某人了解多少 / 有没有答应过什么"时；
+    - 办眼前的事需要说话人身上的事实、当前消息和上文都没写：自己组合 query
+      （只写说话人ID + 要填的槽，不要把本次外部题目的词拼进去），填槽后再
+      web_search / 专域工具。
 
     无命中的含义是**没存过**，不是"要再搜一次"——换个说法重复调用只会浪费一轮。
     找不到就换工具（`web_search_tool` 查外部、`find_tools` 找专域工具）或直接说不知道。
@@ -105,20 +108,20 @@ async def search_cognition(
     Args:
         ctx: 工具执行上下文
         query: 自然语言查询，如"上周聊过的旅行计划""出图规范"
-        kinds: 可选，逗号分隔的类型过滤，缩小范围更准：
-            episode/entity/fact/preference/knowledge/tool_output/artifact/
-            record/image/meme/outbound。留空=全查（含近窗群聊、业务记录、图片、表情、出站）。
+        kinds: 可选，逗号分隔的类型过滤。留空=记忆+知识+落盘；
+            query 含当前说话人 ID 时只查 entity/fact/preference。
+            图片/表情/出站/业务记录须显式打开。查说话人槽时 query 只写
+            「说话人 + 要填的槽」，不要把本次外部题目的词拼进去。
         limit: 返回条数上限，默认 12
 
     Returns:
         路径卡（若命中枢纽）+ 选定全文 + 统一命中列表。无命中时只回一行。
     """
-    selected = kinds_from_names(set(kinds.split(","))) if kinds else ALL_KINDS
-    if not selected:
-        selected = ALL_KINDS
     scope = _scope_from_ctx(ctx)
     if not scope.user_id:
         return "⚠️ 无用户上下文，拒绝检索（防跨用户泄漏）。"
+    selected = kinds_from_names(set(kinds.split(","))) if kinds else frozenset()
+    selected = resolve_recall_kinds(selected, query=query, user_id=scope.user_id)
 
     # 认知层只读，同一 query 重搜必然同结果；不挡会连打到 thrash 熔断。
     seen = _seen_queries(ctx)

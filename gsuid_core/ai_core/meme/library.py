@@ -655,6 +655,7 @@ async def _ensure_meme_collection() -> None:
                     except Exception as e:
                         # 索引已存在或后端不支持，幂等场景下属预期
                         logger.debug(t("log.meme.payload_field_name", field_name=field_name, e=e))
+                await _backfill_missing_meme_vectors()
                 return
 
     if MEME_COLLECTION_NAME not in existing or should_reindex:
@@ -696,15 +697,62 @@ async def _eligible_meme_records() -> list[AiMemeRecord]:
     return [record for record in records if record.status in {"tagged", "manual"}]
 
 
+def _needs_full_meme_reindex(*, point_count: int, eligible: int) -> bool:
+    """只有集合被掏空才整库重建。少数点缺失（空描述/写入失败）走补齐，禁止每次启动删库。"""
+    return eligible > 0 and point_count <= 0
+
+
+async def _meme_indexed_ids() -> set[str]:
+    from gsuid_core.ai_core.rag.collection_migration import scroll_all_payloads
+
+    ids: set[str] = set()
+    for _pid, payload in await scroll_all_payloads(MEME_COLLECTION_NAME):
+        raw = payload["meme_id"] if "meme_id" in payload else ""
+        if isinstance(raw, str) and raw:
+            ids.add(raw)
+    return ids
+
+
+async def _backfill_missing_meme_vectors() -> None:
+    """已有集合上补写缺失点，不 delete collection。"""
+    records = await _eligible_meme_records()
+    if not records:
+        return
+    indexed = await _meme_indexed_ids()
+    missing = [record for record in records if record.meme_id not in indexed]
+    if not missing:
+        return
+    restored = 0
+    skipped = 0
+    for record in missing:
+        content = f"{record.description} {' '.join(record.all_tags)}".strip()
+        if not content:
+            skipped += 1
+            continue
+        try:
+            await MemeLibrary.sync_to_qdrant(record)
+            restored += 1
+        except Exception as e:
+            skipped += 1
+            logger.warning(t("log.meme.fail_skip_vector", p0=record.meme_id, e=e))
+    logger.info(
+        t(
+            "log.meme.backfill_missing_vectors",
+            restored=restored,
+            skipped=skipped,
+        )
+    )
+
+
 async def _meme_collection_needs_recovery() -> bool:
-    """检测 Meme Collection 是否可能处于上次迁移/同步失败后的不完整状态。"""
+    """集合被掏空才整库重建；点略少于 SQL 只补齐。"""
     from gsuid_core.ai_core.rag.collection_migration import count_collection_points
 
     records = await _eligible_meme_records()
     if not records:
         return False
     point_count = await count_collection_points(MEME_COLLECTION_NAME)
-    return point_count < len(records)
+    return _needs_full_meme_reindex(point_count=point_count, eligible=len(records))
 
 
 async def _reindex_meme_collection_from_db() -> None:

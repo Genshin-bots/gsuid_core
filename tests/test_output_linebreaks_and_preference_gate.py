@@ -348,7 +348,11 @@ def test_chitchat_turn_still_passes_empty_contexts_not_none() -> None:
 
     assert "should_prefetch_memory" in kit
     retrieve_src = kit.split("async def retrieve", 1)[1].split("async def _prefetch", 1)[0]
-    assert "inject_memory_slice" in retrieve_src
+    assert "inject_memory_slice" not in retrieve_src
+    assert "dual_route_retrieve" in retrieve_src
+    assert "_format_memory_catalog" in retrieve_src
+    assert "mem.episodes" in kit
+    assert 'pref["polarity"]' in kit
     assert "inject_preferences=True" in facade, "偏好注入没有恒开"
     for src in (kit, facade, _src("gsuid_core/ai_core/handle_ai.py")):
         assert "inject_preferences=intent" not in src.replace(" ", "")

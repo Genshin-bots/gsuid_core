@@ -164,7 +164,9 @@ def format_capability_roster() -> str:
     return (
         "（可用能力代理——须 "
         '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
-        "agent_profile 只填下列 node_id，禁止自造名字：\n" + "\n".join(lines) + "）"
+        "agent_profile 只填下列 node_id，禁止自造名字：\n"
+        + "\n".join(lines)
+        + "\n提醒的增删改查在主会话；禁止声称没有对应工具。）"
     )
 
 

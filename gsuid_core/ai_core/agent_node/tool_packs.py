@@ -36,6 +36,8 @@ _TASK_BASICS_TOOLS: List[str] = [
     "search_cognition",
     "web_search_tool",
     "web_fetch_tool",
+    "read_handle",
+    "list_persisted_outputs",
 ]
 
 _STATIC_PACKS: Dict[str, List[str]] = {TASK_BASICS_PACK: list(_TASK_BASICS_TOOLS)}

@@ -23,6 +23,7 @@ from gsuid_core.ai_core.kits.registry import register_agent_kit
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.cognition import CogScope
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
 # C4 寒暄门控：回指 / 实体 / 任务引用词，命中则强制检索
 _FORCE_RETRIEVE_RE = re.compile(
@@ -34,6 +35,48 @@ _EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤�
 _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
 # 「短寒暄」的长度上限，与关系温度的 meaningful 判据同源
 _CHITCHAT_SHORT_LEN = 12
+
+
+def _format_memory_catalog(mem: "MemoryContext") -> str:
+    """标题目录卡：偏好极性 + episode 标题 + 边摘要，不灌 dual_route 正文。"""
+    lines = ["[记忆目录]"]
+    shown = 0
+
+    def _add(text: str) -> bool:
+        nonlocal shown
+        body = text.replace("\n", " ").strip()
+        if not body:
+            return True
+        shown += 1
+        lines.append(f"{shown}. {body[:40]}")
+        return shown < 8
+
+    for pref in mem.preferences:
+        rule = pref["preference_rule"].replace("\n", " ").strip()
+        if not rule:
+            continue
+        pol = pref["polarity"]
+        tag = "勿" if pol == "dont" else ("须" if pol == "do" else "")
+        corr = "纠正过" if pref["is_correction"] else ""
+        mark = "/".join(part for part in (tag, corr) if part)
+        item = f"[{mark}] {rule}" if mark else rule
+        if not _add(item):
+            break
+    if shown < 8:
+        for ep in mem.episodes:
+            if not _add(ep["content"]):
+                break
+    if shown < 8:
+        for edge in mem.edges:
+            fact = edge["fact"].replace("\n", " ").strip()
+            if not fact:
+                continue
+            if not _add(fact.split("。", 1)[0]):
+                break
+    if shown == 0:
+        return ""
+    lines.append("（详情 search_cognition / read_handle）")
+    return "\n".join(lines)
 
 
 def should_prefetch_memory(ctx: AgentHookContext) -> bool:
@@ -207,10 +250,10 @@ class MemoryKit(AgentKit):
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
-        """H05：旁观不预灌；点名/私聊走 dual_route，全文走 search_cognition。"""
+        """H05：旁观不预灌；点名最多目录卡，正文走 search_cognition。"""
         from gsuid_core.ai_core.memory.config import memory_config
-        from gsuid_core.ai_core.cognition.facade import inject_memory_slice
         from gsuid_core.ai_core.configs.ai_config import ai_config
+        from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
         if not ai_config.get_config("enable_memory").data or not memory_config.enable_retrieval:
             return
@@ -220,23 +263,28 @@ class MemoryKit(AgentKit):
             logger.debug(t("log.ai.memory_skip_hit_small_talk_gate"))
             return
 
-        # 闲聊传空 list：检索侧只留 general/纠错；None 会关掉过滤灌全量。
         pref_contexts: List[str] = []
         if ctx.intent != "闲聊":
             domains: Set[str] = set(relevant_preference_contexts(ctx.query))
             domains.update(ctx.assembled_domains)
             pref_contexts = list(domains)
-
-        priority: Set[str] = set(ctx.priority_speakers)
-        text = await inject_memory_slice(
+        scope = cog_scope_from_ctx(ctx)
+        mem = await dual_route_retrieve(
             ctx.query,
-            scope=cog_scope_from_ctx(ctx),
-            priority_speakers=priority,
-            current_speaker_ids={ctx.user_id} if ctx.user_id else set(),
+            ctx.user_id,
+            enable_system2=scope.enable_system2,
+            group_id=scope.group_id,
+            top_k=memory_config.retrieval_top_k,
+            enable_user_global=scope.enable_user_global,
+            inject_preferences=True,
             preference_contexts=pref_contexts,
+            bot_id=scope.bot_id,
+            bot_self_id=scope.bot_self_id,
+            include_self=True,
         )
-        if text.strip():
-            ctx.stash_retrieved("memory", text.strip())
+        text = _format_memory_catalog(mem)
+        if text:
+            ctx.stash_retrieved("memory", text)
             logger.debug(t("log.ai.memory_retrieved_context_characters", p0=len(text)))
             from gsuid_core.ai_core.statistics import statistics_manager
 

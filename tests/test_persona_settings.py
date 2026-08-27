@@ -26,6 +26,37 @@ def test_defaults_are_persona_neutral() -> None:
         assert "早柚" not in s
         assert "唔…" not in s
         assert "本貉" not in s
+    assert default_phrase("task_ack") == ""
+    from gsuid_core.ai_core.agent_run.loop import task_ack_phrase
+
+    assert task_ack_phrase(None) == "收到。"
+    assert "早柚" not in task_ack_phrase(None)
+    assert "唔…" not in task_ack_phrase(None)
+
+
+def test_task_ack_uses_persona_tone_markers(tmp_path, monkeypatch) -> None:
+    import gsuid_core.ai_core.resource as core_res
+    from gsuid_core.ai_core.persona import resource as pres, settings as settings_mod
+    from gsuid_core.ai_core.agent_run.loop import task_ack_phrase
+
+    monkeypatch.setattr(core_res, "PERSONA_PATH", tmp_path)
+    monkeypatch.setattr(settings_mod, "PERSONA_PATH", tmp_path)
+    settings_mod.persona_settings_manager._base_path = tmp_path
+    settings_mod.persona_settings_manager._cache.clear()
+    pres._tone_marker_cache.clear()
+    name = "设定测试丙"
+    (tmp_path / name).mkdir()
+    (tmp_path / name / "persona.md").write_text(
+        "Tone Markers (语气词):\n        唔…\n        呼\n",
+        encoding="utf-8",
+    )
+    phrase = task_ack_phrase(name)
+    assert phrase == "唔…好。"
+    assert "收到" not in phrase
+    cfg = settings_mod.persona_settings_manager.get_config(name)
+    assert cfg.set_config("task_ack", "行，去翻。")
+    settings_mod.persona_settings_manager._cache.clear()
+    assert task_ack_phrase(name) == "行，去翻。"
 
 
 def test_get_persona_setting_without_persona_uses_template() -> None:

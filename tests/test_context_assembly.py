@@ -126,6 +126,53 @@ def test_block_order_is_single_source() -> None:
     print("[OK] 块顺序单源")
 
 
+def test_addressed_suffix_keeps_voice_anchor_outside_product_cap() -> None:
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.hooks.points import AgentHookPoint
+    from gsuid_core.ai_core.context_assembly import (
+        _SUFFIX_PRODUCT_CAP,
+        suffix_allowed_blocks,
+        _apply_suffix_block_policy,
+    )
+    from gsuid_core.ai_core.interaction_scaffold import TurnGraph
+
+    tg = TurnGraph(
+        user_type="group",
+        message_text="hi",
+        persona_name="p",
+        is_tome=True,
+        primary_speaker="u1",
+        call_to_self=True,
+    )
+    ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=tg, cheap_gate="full")
+    allowed = suffix_allowed_blocks(ctx)
+    assert allowed is not None
+    assert "voice_anchor" in allowed
+    voice = "（口吻：短）"
+    ctx.blocks = {
+        "voice_anchor": voice,
+        "task": "任务块",
+        "relationship": "R" * 80,
+        "memory": "M" * 80,
+        "history": "H" * 500,
+    }
+    _apply_suffix_block_policy(ctx)
+    assert ctx.blocks["voice_anchor"] == voice
+    assert ctx.blocks["task"] == "任务块"
+    product = sum(len(v) for k, v in ctx.blocks.items() if k != "voice_anchor")
+    assert product <= _SUFFIX_PRODUCT_CAP
+    idle = TurnGraph(
+        user_type="group",
+        message_text="hi",
+        persona_name="p",
+        is_tome=False,
+        primary_speaker="u1",
+        call_to_self=False,
+    )
+    idle_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=idle, cheap_gate="full")
+    assert suffix_allowed_blocks(idle_ctx) == frozenset()
+
+
 if __name__ == "__main__":
     test_both_entries_consume_shared_assembly()
     test_dynamic_context_ordering_contract()

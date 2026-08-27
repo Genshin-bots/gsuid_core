@@ -59,7 +59,7 @@ cases:
       must_call_any: ["find_tools", "get_weather", "weather", "web_search_tool"]
       max_latency: 90
       judge:
-        rubric: "用户刚问了北京天气，接着问'那上海呢'，明显是续聊。Agent应该继承上轮动作查上海天气。调了天气/搜索工具=PASS，装傻或SILENCE=FAIL。"
+        rubric: "用户刚问了北京天气，接着问'那上海呢'，明显是续聊。Agent应该继承上轮动作查上海天气。调了天气/搜索工具（或委派且任务写明查天气）=PASS，装傻或SILENCE=FAIL。"
 
   # ── 多人归属 ──────────────────────────────────────────
   - id: grp_multi_speaker_attribution
@@ -108,6 +108,8 @@ cases:
         content: "小明(用户ID:9001)：@早柚 我设了个明天7点的闹钟"
       - role: assistant
         content: "好…记下了。"
+    setup:
+      - message: "小明(用户ID:9001)：@早柚 帮我设个明天7点的闹钟"
     message: "小明(用户ID:9001)：@早柚 那个闹钟…取消吧"
     expect:
       must_call_any: ["find_tools", "list_scheduled_tasks", "cancel_scheduled_task", "modify_scheduled_task"]
@@ -144,7 +146,7 @@ cases:
     why_hard: 对比数据必须出图
     message: "小红(用户ID:9002)：@早柚 帮我对比一下iPhone 16和三星S25的参数"
     expect:
-      must_call_any: ["find_tools", "web_search_tool", "create_subagent"]
+      must_call_any: ["find_tools", "web_search_tool"]
       max_latency: 120
       judge:
         rubric: "用户要求对比两款手机参数（多维数据对比）。Agent应该搜索后调渲染工具出对比图，而不是念一大段文字。调了渲染工具出图=PASS，纯文字对比=FAIL。"
@@ -185,13 +187,14 @@ cases:
   - id: grp_persona_lazy_but_comply
     domain: persona_consistency
     targets: [group-chat, self-ooc]
-    why_hard: 性格可以懒但正当请求必须执行
+    why_hard: 性格可以懒但正当请求必须报出具体时刻
     message: "小红(用户ID:9002)：@早柚 帮我查一下现在几点了"
     expect:
-      must_call_any: ["find_tools", "get_time", "get_current_time"]
+      final_regex: ["\\d{1,2}[:：点]"]
+      must_not_call: ["create_subagent", "register_kanban_task"]
       max_latency: 60
       judge:
-        rubric: "用户要求查时间，这是正当的简单请求。Agent可以用慵懒的语气回应，但必须实际调用时间工具。调了时间工具=PASS，以'好麻烦/不想动'为由不查=FAIL。"
+        rubric: "用户要求现在几点。Agent可用慵懒语气，但必须给出一个具体时刻（调时间工具或根据当前时间直答均可）。给出时刻=PASS，以'好麻烦/不想动'为由不报时间=FAIL。为这种小事 create_subagent=FAIL。"
 
   # ── 跨轮回忆（群聊版）────────────────────────────────
   - id: grp_xturn_recall_preference
@@ -291,7 +294,7 @@ cases:
     message: "小明(用户ID:9001)：@早柚 帮我搜一下最近有什么好看的电影"
     expect:
       # 必须真搜/查知识，仅 find_tools 不算
-      must_call_any: ["web_search_tool", "web_search", "search_cognition", "create_subagent"]
+      must_call_any: ["web_search_tool", "web_search", "search_cognition"]
       max_latency: 90
       judge:
         rubric: "用户要求搜索电影推荐，这是正当请求。Agent可以用慵懒语气但必须真正检索（亲自搜或委派）。调了搜索/委派=PASS，以'好麻烦/不想搜'为由拒绝或只回空话=FAIL。"
@@ -410,7 +413,7 @@ cases:
     why_hard: 多条新闻汇总必须出图不念表
     message: "小明(用户ID:9001)：@早柚 帮我汇总一下今天科技圈大事"
     expect:
-      must_call_any: ["web_search_tool", "web_search", "create_subagent"]
+      must_call_any: ["web_search_tool", "web_search"]
       max_latency: 300
       judge:
         rubric: "用户要多项信息汇总。Agent应检索（亲自搜或委派）后尽量出图，而不是念一长串列表当台词。完成检索=最低PASS门槛；若同时出了图更佳。完全不搜只空话=FAIL。"

@@ -3,6 +3,7 @@
   "log.meme.added_library_id": "[Meme] 新規ミーム入库: {meme_id} ({width}x{height}, {file_mime})",
   "log.meme.added_tagging_queue": "[Meme] タグ付けキューに追加: {meme_id}",
   "log.meme.available_search_results_folder": "[Meme] 利用可能な検索結果がありません: folder={folder}、query={query_text}",
+  "log.meme.backfill_missing_vectors": "[Meme] 欠損ミームベクトルを補完: 書き込み {restored} 件、スキップ {skipped} 件（コレクションは維持）",
   "log.meme.bulk_delete_failed_fallback": "[Meme] 一括削除失敗、個別削除にフォールバック: {e}",
   "log.meme.bulk_delete_rowcount_short": "[Meme] 一括削除 rowcount={deleted} < batch={batch}",
   "log.meme.clean_vector_point_continuing": "[Meme] 旧ベクトルポイントの清理失敗 (書き込み継続): {meme_id}: {e}",

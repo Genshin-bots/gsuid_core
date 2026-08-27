@@ -388,6 +388,7 @@ async def search_tools_with_entity_routing(
     non_category: Union[str, list[str]] = "",
     threshold: float = 0.38,
     scope_key: str = "",
+    ignore_surfaces: Sequence[str] = (),
 ) -> ToolList:
     """两级召回：实体身份**确定性**定插件，向量检索在插件内做细选（L0）。
 
@@ -398,12 +399,15 @@ async def search_tools_with_entity_routing(
     - **没有实体命中 / 歧义且本群不能收成一个插件** → 与普通 `search_tools` 一致；
     - 只按**当前消息**路由，不吃 L5 拼进来的历史原话；
     - 至少留 1 个种子名额给通用最佳匹配，实体路由是加分项。
+    - ``ignore_surfaces``（唤醒词/人格名）从 ``route_text`` 剥掉再查表，避免把点名
+      当成游戏实体。
     """
-    from gsuid_core.ai_core.entity_index import plugins_in_text
+    from gsuid_core.ai_core.entity_index import strip_surfaces, plugins_in_text
 
-    routed = plugins_in_text(route_text)
+    scan = strip_surfaces(route_text, ignore_surfaces) if ignore_surfaces else route_text
+    routed = plugins_in_text(scan)
     if not routed and scope_key:
-        routed = await _plugins_from_scope_ambiguity(route_text, scope_key)
+        routed = await _plugins_from_scope_ambiguity(scan, scope_key)
     if not routed:
         return await search_tools(query=query, limit=limit, non_category=non_category, threshold=threshold)
 

@@ -46,12 +46,15 @@ from gsuid_core.ai_core.agent_run.support import (
     _WALL_CLOCK_NUDGE,
     _RENDER_TOOL_NAMES,
     _THRASH_FUSE_NUDGE,
+    _SCHED_MUTATE_TOOLS,
     _WALL_CLOCK_PIPELINE,
     _INTERACTIVE_CREATE_BY,
     _claims_fake_done,
+    _claims_deferred_work,
     _correction_nudge_markers,
     _looks_like_report_speech,
     usage_limit_return_payload,
+    _claims_missing_offered_tool,
 )
 from gsuid_core.ai_core.control.directive import (
     Directive,
@@ -61,7 +64,9 @@ from gsuid_core.ai_core.control.directive import (
 from gsuid_core.ai_core.control.corrections import (
     fake_done_directive,
     status_zero_tool_directive,
+    addressed_silence_directive,
     render_obligation_directive,
+    missing_offered_tool_directive,
     structural_zero_tool_directive,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
@@ -153,13 +158,17 @@ def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
     return False
 
 
-def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool) -> bool:
-    """零工具纠正只认正证据：未读附件或可继承的上轮工具任务。"""
+def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool, result_msg: str = "") -> bool:
+    """零工具纠正：未读附件、可继承跟进、点名任务管理、或把该办的事推到明天。"""
     if _has_unread_attachment(st, video_readable=video_readable):
         return True
     if st.followup_detected:
         return True
-    return bool(st.tg is not None and st.tg.ellipsis_followup)
+    if st.tg is not None and st.tg.ellipsis_followup:
+        return True
+    if st.tg is not None and st.tg.call_to_self and st.tg.task_management:
+        return True
+    return bool(st.tg is not None and st.tg.call_to_self and _claims_deferred_work(result_msg))
 
 
 def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
@@ -274,6 +283,33 @@ def _corrected_or_original(corrected: object, *, original: str) -> str:
 
 
 class SettlePhase(RunOnceHost):
+    async def _try_correction_pass(
+        self,
+        st: RunOnceState,
+        directives: tuple[Directive, ...],
+        *,
+        suppress_intermediate_text: bool | None = None,
+    ) -> object:
+        """纠正重跑；失败返回 None，原答案按 INV-3 生效。"""
+        _suppress = st.suppress_intermediate_text if suppress_intermediate_text is None else suppress_intermediate_text
+        # Why: 纠正是增强路径，失败不得毁掉已完成的用户轮（INV-3）
+        try:
+            return await self._execute_run_once(
+                user_message=render_control_envelope(directives),
+                bot=st.bot,
+                ev=st.ev,
+                tools=st.tools,
+                return_mode=st.return_mode,
+                intent=st.intent,
+                has_active_task=st.has_active_task,
+                suppress_intermediate_text=_suppress,
+                fake_done_retry=True,
+                is_framework_injection=True,
+            )
+        except Exception as _fe:
+            logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
+            return None
+
     def _record_prefix_break_probe(self, st: RunOnceState, new_msgs: List[ModelMessage]) -> None:
         """对比上一 run 发送快照与当前 history 头，记 prefix_break_reason。"""
         from gsuid_core.ai_core.prefix_probe import (
@@ -553,29 +589,15 @@ class SettlePhase(RunOnceHost):
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
                 and st.ev is not None
-                and _zero_tool_needs_correction(st, video_readable=self._model_declares_video())
+                and _zero_tool_needs_correction(st, video_readable=self._model_declares_video(), result_msg=result_msg)
                 and not is_silence_marker(result_msg.strip())
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                try:
-                    corrected = await self._execute_run_once(
-                        user_message=render_control_envelope(
-                            (structural_zero_tool_directive(tool_pool_size=len(st.tool_names)),)
-                        ),
-                        bot=st.bot,
-                        ev=st.ev,
-                        tools=st.tools,
-                        return_mode=st.return_mode,
-                        intent=st.intent,
-                        has_active_task=st.has_active_task,
-                        suppress_intermediate_text=st.suppress_intermediate_text,
-                        fake_done_retry=True,
-                        is_framework_injection=True,
-                    )
-                except Exception as _fe:
-                    logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
-                    corrected = None
+                corrected = await self._try_correction_pass(
+                    st,
+                    (structural_zero_tool_directive(tool_pool_size=len(st.tool_names)),),
+                )
                 # 自洽出口（INV-3）：纠正沉默 → 原答案生效；只有真产出才替换并剥旧答
                 _prior = result_msg.strip()
                 result_msg = _corrected_or_original(corrected, original=result_msg)
@@ -583,6 +605,49 @@ class SettlePhase(RunOnceHost):
                     self._scrub_fake_done_history({_prior} if _prior else set())
                 else:
                     self._scrub_fake_done_history(set())
+
+            # 声称没有工具，但任务管理轮已装配对应工具
+            elif (
+                result_msg
+                and not st.fake_done_retry
+                and self.create_by in _INTERACTIVE_CREATE_BY
+                and self.create_by != "CapabilityAgent"
+                and st.tg is not None
+                and st.tg.task_management
+                and _claims_missing_offered_tool(result_msg, st.tool_names)
+                and not (_SCHED_MUTATE_TOOLS.intersection(st.tool_call_list))
+            ):
+                _settle_correction_ran = True
+                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
+                corrected = await self._try_correction_pass(
+                    st,
+                    (missing_offered_tool_directive(tool_pool_size=len(st.tool_names)),),
+                )
+                _prior = result_msg.strip()
+                result_msg = _corrected_or_original(corrected, original=result_msg)
+                if result_msg.strip() != _prior:
+                    self._scrub_fake_done_history({_prior} if _prior else set())
+                else:
+                    self._scrub_fake_done_history(set())
+
+            # 被直接呼叫却整段沉默（引用/寻址门仍允许沉默）
+            elif (
+                result_msg
+                and is_silence_marker(result_msg.strip())
+                and not st.fake_done_retry
+                and not st.tool_call_list
+                and self.create_by in _INTERACTIVE_CREATE_BY
+                and self.create_by != "CapabilityAgent"
+                and st.tg is not None
+                and st.tg.call_to_self
+                and not st.tg.quoted_tome
+                and not st.tg.address_gated
+            ):
+                _settle_correction_ran = True
+                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
+                _sc = await self._try_correction_pass(st, (addressed_silence_directive(),))
+                result_msg = _corrected_or_original(_sc, original=result_msg)
+                self._scrub_fake_done_history(set())
 
             # 进度追问却零工具：纠正重跑去查 kanban/artifact
             elif (
@@ -596,22 +661,7 @@ class SettlePhase(RunOnceHost):
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                try:
-                    _sc = await self._execute_run_once(
-                        user_message=render_control_envelope((status_zero_tool_directive(),)),
-                        bot=st.bot,
-                        ev=st.ev,
-                        tools=st.tools,
-                        return_mode=st.return_mode,
-                        intent=st.intent,
-                        has_active_task=st.has_active_task,
-                        suppress_intermediate_text=st.suppress_intermediate_text,
-                        fake_done_retry=True,
-                        is_framework_injection=True,
-                    )
-                except Exception as _se:
-                    logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_se))
-                    _sc = None
+                _sc = await self._try_correction_pass(st, (status_zero_tool_directive(),))
                 result_msg = _corrected_or_original(_sc, original=result_msg)
                 self._scrub_fake_done_history(set())
 
@@ -638,22 +688,11 @@ class SettlePhase(RunOnceHost):
                 )
                 _disputes_before = len(self._run_disputes)
                 _sent_before_correction = set(self._run_sent_texts)
-                try:
-                    _rc = await self._execute_run_once(
-                        user_message=render_control_envelope((_directive,)),
-                        bot=st.bot,
-                        ev=st.ev,
-                        tools=st.tools,
-                        return_mode=st.return_mode,
-                        intent=st.intent,
-                        has_active_task=st.has_active_task,
-                        suppress_intermediate_text=True,
-                        fake_done_retry=True,
-                        is_framework_injection=True,
-                    )
-                except Exception as _re:
-                    logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_re))
-                    _rc = None
+                _rc = await self._try_correction_pass(
+                    st,
+                    (_directive,),
+                    suppress_intermediate_text=True,
+                )
                 # 纠正轮是新 st；先并回父级再判义务，否则嵌套 create_subagent 恒未履行
                 _absorb_attempt_facts(
                     st,

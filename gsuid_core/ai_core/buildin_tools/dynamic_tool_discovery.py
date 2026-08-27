@@ -30,15 +30,16 @@ FIND_TOOLS_GAP_NOTE = (
 
 
 def _need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) -> bool:
+    """单向命中：need 出现在 retrieval，或 cover 出现在 need。禁止互为子串双向。"""
     n = (need or "").strip().lower()
     hay = (retrieval_text or "").strip().lower()
     if not n:
         return False
-    if hay and (n in hay or hay in n):
+    if hay and n in hay:
         return True
     for c in covers:
         cl = (c or "").strip().lower()
-        if cl and (cl in n or n in cl):
+        if cl and cl in n:
             return True
     tokens = [t for t in n.replace("，", " ").replace(",", " ").split() if len(t) >= 2]
     if not tokens or not hay:
@@ -144,31 +145,6 @@ def _delegation_directive(lines: list[str]) -> str:
     return '请用 create_subagent(agent_profile="<node_id>", task=...) 委派给下列能力代理：\n' + "\n".join(lines)
 
 
-def offered_names_in_hit_domains(offered: Sequence[str], hit_names: Sequence[str]) -> list[str]:
-    """检索命中工具的能力族若已在当前列表，返回已加载的同族名。"""
-    from gsuid_core.ai_core.register import find_tool_base
-
-    hit_domains: set[str] = set()
-    for name in hit_names:
-        tb = find_tool_base(name)
-        domain = tb.capability_domain if tb is not None else None
-        if domain:
-            hit_domains.add(domain)
-    if not hit_domains:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for name in offered:
-        if name in seen:
-            continue
-        tb = find_tool_base(name)
-        domain = tb.capability_domain if tb is not None else None
-        if domain and domain in hit_domains:
-            seen.add(name)
-            out.append(name)
-    return out
-
-
 def _format_already_loaded(names: Sequence[str]) -> str:
     listing = "\n".join(f"- {name}" for name in names)
     return f"✅ 当前列表已有对应能力族工具，直接调用，不要委派：\n{listing}"
@@ -243,16 +219,13 @@ async def find_tools(
         offered_raw = ctx.deps.extra[EXPOSED_TOOLS_EXTRA_KEY] if EXPOSED_TOOLS_EXTRA_KEY in ctx.deps.extra else None
         offered: list[str] = [n for n in offered_raw if isinstance(n, str)] if isinstance(offered_raw, list) else []
         if offered:
-            family_probe = await search_tools_by_domain(query=need, domain_limit=3, per_domain_limit=6)
-            probe_names = [t.name for t in family_probe]
-            loaded_hits = offered_names_in_hit_domains(offered, probe_names)
-            if not loaded_hits:
-                for name in offered:
-                    tb = find_tool_base(name)
-                    covers = list(tb.covers) if tb is not None else []
-                    retrieval = tb.retrieval_text if tb is not None else name
-                    if _need_matches_tool_text(need, retrieval, covers) and name not in loaded_hits:
-                        loaded_hits.append(name)
+            loaded_hits: list[str] = []
+            for name in offered:
+                tb = find_tool_base(name)
+                covers = list(tb.covers) if tb is not None else []
+                retrieval = tb.retrieval_text if tb is not None else name
+                if _need_matches_tool_text(need, retrieval, covers) and name not in loaded_hits:
+                    loaded_hits.append(name)
             loaded_hits = await visible_offered_names(ctx, loaded_hits)
             if loaded_hits:
                 stale_l = _record_find_tools_round(ctx.deps.extra, loaded_hits)

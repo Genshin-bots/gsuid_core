@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 import glob
 import json
 import time
@@ -21,10 +22,53 @@ from pathlib import Path
 
 import httpx
 
-from eval.agent.harness import Trace, parse_session_log
+from eval.agent.harness import Trace, parse_session_log, pick_user_visible, trace_awaits_delivery
 from eval.common.http_client import call_chat_with_history
 
+# 与 interaction_scaffold 说话人前缀同形，避免 runner 去 import 生产脚手架。
+_SPEAKER_HEAD_RE = re.compile(r"^[^：:（()）\n]{1,16}\(用户ID:[^)]{1,24}\)[：:]\s*")
+
 SESSION_LOG_DIR = Path("data/ai_core/session_logs")
+
+
+def _owner_prefix(case: dict) -> str:
+    """从 probe / history 抽出「昵称(用户ID:x)：」，setup 必须挂同一说话人。"""
+    texts: list[str] = [str(case["message"] if "message" in case else "")]
+    for turn in reversed(list(case.get("history") or [])):
+        if not isinstance(turn, dict):
+            continue
+        if turn.get("role") == "user":
+            texts.append(str(turn.get("content") or ""))
+    for text in texts:
+        m = _SPEAKER_HEAD_RE.match((text or "").strip())
+        if m:
+            return m.group(0)
+    return ""
+
+
+def _with_owner_prefix(message: str, prefix: str) -> str:
+    raw = (message or "").strip()
+    if not prefix or not raw:
+        return message
+    if _SPEAKER_HEAD_RE.match(raw):
+        return message
+    return f"{prefix}{raw}"
+
+
+def _prefix_run_count(case: dict) -> int:
+    n = len(case.get("setup") or [])
+    n += len(case.get("warmup_turns") or [])
+    return n
+
+
+def _setup_messages(case: dict) -> list[str]:
+    prefix = _owner_prefix(case)
+    out: list[str] = []
+    for su in case.get("setup") or []:
+        raw = su["message"] if isinstance(su, dict) else str(su)
+        out.append(_with_owner_prefix(raw, prefix))
+    return out
+
 
 # agent 评测靠请求 history 做多轮上下文；端点默认 max_history=0 会清空它（extract_history），
 # 故显式传正值让端点把 history 真正喂进模型上下文（case 可用 max_history 覆盖）。
@@ -169,6 +213,21 @@ async def run_once(
     enable_tools = case["enable_tools"] if "enable_tools" in case else True
     group_id = _case_group_id(case, run_tag=uid)
 
+    for setup_msg in _setup_messages(case):
+        await call_chat_with_history(
+            client,
+            base_url=base_url,
+            user_id=uid,
+            message=setup_msg,
+            history=[],
+            persona_name=persona,
+            enable_observer=False,
+            enable_tools=enable_tools,
+            max_history=0,
+            group_id=group_id,
+            timeout=timeout,
+        )
+
     # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测用）
     if case.get("warmup_turns"):
         history = await _run_warmup_turns(
@@ -197,15 +256,18 @@ async def run_once(
         timeout=timeout,  # 评测隔离：默认不写记忆
     )
     latency = time.time() - since
-    delivered = resp.get("data") if isinstance(resp.get("data"), str) else ""
+    _raw_data: object = resp["data"] if "data" in resp else None
+    delivered = _raw_data if isinstance(_raw_data, str) else ""
     if resp.get("error"):
         return Trace(error=f"api:{resp.get('error')}", latency=latency)
 
     # A 模式：端点已返回 trace / session_id
+    skip = _prefix_run_count(case)
     if isinstance(resp.get("trace"), dict):
-        tr = parse_session_log(resp["trace"])
+        tr = parse_session_log(resp["trace"], skip_runs=skip)
         tr.latency = latency
-        tr.returned_text = delivered or ""
+        log_last = tr.visible_texts[-1] if tr.visible_texts else tr.final_text
+        tr.returned_text = pick_user_visible(delivered, log_last)
         return tr
     doc = None
     session_id = resp.get("session_id")
@@ -223,9 +285,10 @@ async def run_once(
         if delivered:
             return Trace(final_text=delivered, returned_text=delivered, latency=latency)
         return Trace(error="session_log_not_found（建议按 README 让端点返回 session_id/trace）", latency=latency)
-    tr = parse_session_log(doc)
+    tr = parse_session_log(doc, skip_runs=skip)
     tr.latency = latency
-    tr.returned_text = delivered or ""
+    log_last = tr.visible_texts[-1] if tr.visible_texts else tr.final_text
+    tr.returned_text = pick_user_visible(delivered, log_last)
     return tr
 
 
@@ -278,12 +341,12 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
         # 合成 history 里写"已设好"却从未真调工具落库 → 评测里根本无任务可改（假失败）。
         # 这里先按 setup 里的消息真跑一遍（同 uid，工具落 DB），主消息再借状态池定位到它，
         # 与生产"先建后改"完全一致。setup 结果不参与打分。
-        for _su in case.get("setup", []) or []:
+        for setup_msg in _setup_messages(case):
             await call_chat_with_history(
                 client,
                 base_url=base_url,
                 user_id=uid,
-                message=_su["message"] if isinstance(_su, dict) else str(_su),
+                message=setup_msg,
                 history=[],
                 persona_name=persona,
                 enable_observer=False,
@@ -324,7 +387,15 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
             timeout=timeout,
         )
         latency = time.time() - call_start
-    return {"case_id": case["id"], "run_idx": run_idx, "uid": uid, "since": queued, "resp": resp, "latency": latency}
+    return {
+        "case_id": case["id"],
+        "run_idx": run_idx,
+        "uid": uid,
+        "since": queued,
+        "resp": resp,
+        "latency": latency,
+        "skip_runs": _prefix_run_count(case),
+    }
 
 
 def _scan_all_logs(uids: set, since: float) -> dict:
@@ -357,12 +428,13 @@ def _scan_all_logs(uids: set, since: float) -> dict:
 
 def _trace_from_fired(f: dict, doc) -> Trace:
     resp = f["resp"]
-    # HTTP data = 出戏防火墙 scrub 之后、用户真正看到的交付文本（内容断言判它）
     delivered = resp.get("data") if isinstance(resp.get("data"), str) else ""
+    skip = int(f["skip_runs"] if "skip_runs" in f else 0)
     if doc is not None:
-        tr = parse_session_log(doc)  # session_log = 工具轨迹 + 原始(pre-scrub) final_text
+        tr = parse_session_log(doc, skip_runs=skip)
         tr.latency = f["latency"]
-        tr.returned_text = delivered or ""
+        log_last = tr.visible_texts[-1] if tr.visible_texts else tr.final_text
+        tr.returned_text = pick_user_visible(delivered, log_last)
         return tr
     if resp.get("error"):
         return Trace(error=f"api:{resp.get('error')}", latency=f["latency"])
@@ -383,6 +455,7 @@ async def run_suite_batch(
     rescans: int = 4,
     rescan_gap: float = 15.0,
     force_k: bool = False,
+    delivery_wait: float = 90.0,
 ) -> dict:
     """批量跑整套 → {case_id: [Trace, ...]}（按 run_idx 有序）。
 
@@ -442,7 +515,49 @@ async def run_suite_batch(
             await asyncio.sleep(rescan_gap)
 
     per_case: dict = {}
+    pending_delivery: list[dict] = []
     for f in fired:
         tr = _trace_from_fired(f, docs.get(f["uid"]))
+        if trace_awaits_delivery(tr) and _is_eval_silence_or_ack(tr):
+            pending_delivery.append(f)
         per_case.setdefault(f["case_id"], []).append((f["run_idx"], tr))
+
+    if pending_delivery and delivery_wait > 0:
+        uids = {f["uid"] for f in pending_delivery}
+        print(
+            f"[batch] {len(pending_delivery)} runs await deferred delivery; wait {delivery_wait:.0f}s…",
+            flush=True,
+        )
+        deadline = time.time() + delivery_wait
+        while time.time() < deadline:
+            await asyncio.sleep(min(8.0, max(2.0, delivery_wait / 8)))
+            found = await asyncio.to_thread(_scan_all_logs, uids, earliest)
+            still: list[dict] = []
+            for f in pending_delivery:
+                uid = f["uid"]
+                if uid in found:
+                    docs[uid] = found[uid]
+                tr = _trace_from_fired(f, docs.get(uid))
+                if trace_awaits_delivery(tr) and _is_eval_silence_or_ack(tr):
+                    still.append(f)
+            pending_delivery = still
+            if not pending_delivery:
+                break
+        # 回灌可能已进 log，按最新 doc 重填
+        rebuilt: dict = {}
+        for f in fired:
+            tr = _trace_from_fired(f, docs.get(f["uid"]))
+            rebuilt.setdefault(f["case_id"], []).append((f["run_idx"], tr))
+        per_case = rebuilt
+
     return {cid: [t for _, t in sorted(runs)] for cid, runs in per_case.items()}
+
+
+def _is_eval_silence_or_ack(tr: Trace) -> bool:
+    """短应/沉默：回灌尚未变成终局结论。"""
+    text = (tr.content_text or "").strip()
+    if not text:
+        return True
+    if text in {"<SILENCE>", "[SILENCE]", "SILENCE"}:
+        return True
+    return len(text) <= 40

@@ -59,6 +59,11 @@ DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
         "回复像技术堆栈或状态 JSON 时发给用户的短句。",
         DEFAULT_FALLBACK_MACHINE,
     ),
+    "task_ack": GsStrConfig(
+        "接任务应",
+        "点名办事且本轮要调工具时，模型没写短应则发这句。空则用当前人格卡语气词拼一句；还没有才用中性「收到。」。",
+        "",
+    ),
 }
 
 

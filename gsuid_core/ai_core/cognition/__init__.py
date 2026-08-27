@@ -20,6 +20,8 @@ from gsuid_core.ai_core.cognition.types import (
     MEDIA_KINDS,
     MEMORY_KINDS,
     KNOWLEDGE_KINDS,
+    DEFAULT_RECALL_KINDS,
+    SPEAKER_RECALL_KINDS,
     CogKind,
     CogScope,
     CognitiveHit,
@@ -28,16 +30,20 @@ from gsuid_core.ai_core.cognition.facade import (
     kinds_from_names,
     search_cognition,
     probe_handle_alive,
+    resolve_recall_kinds,
+    query_mentions_speaker,
     render_cognition_block,
 )
 from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
 __all__ = [
     "ALL_KINDS",
+    "DEFAULT_RECALL_KINDS",
     "KIND_LABEL",
     "KNOWLEDGE_KINDS",
     "MEDIA_KINDS",
     "MEMORY_KINDS",
+    "SPEAKER_RECALL_KINDS",
     "WORK_KINDS",
     "CogKind",
     "CogScope",
@@ -46,9 +52,11 @@ __all__ = [
     "expand_hub",
     "kinds_from_names",
     "probe_handle_alive",
+    "query_mentions_speaker",
     "rebuild_cognition_mount",
     "remember",
     "render_cognition_block",
+    "resolve_recall_kinds",
     "run_cognition_mount",
     "search_cognition",
 ]

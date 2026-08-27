@@ -38,6 +38,9 @@ def test_format_disclaimer_is_generic() -> None:
     text = _format_results_for_model([{"title": "T", "url": "https://e.com", "content": "body", "score": 0.1}])
     assert "时效存疑" not in text
     assert "市价" not in text
+    assert "结果页默认值" in text
+    assert "天气" not in text
+    assert "合肥" not in text
     assert "点位" not in text
     assert "报价" not in text
     assert "仅供参考" in text or "外部资料" in text

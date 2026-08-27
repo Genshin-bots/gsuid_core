@@ -34,6 +34,42 @@ def fake_done_directive(*, tool_pool_size: int) -> Directive:
     )
 
 
+def missing_offered_tool_directive(*, tool_pool_size: int) -> Directive:
+    """声称没有工具，但本轮 schema 已有可用工具。"""
+    return Directive(
+        kind="correction",
+        reason_code="missing_offered_tool",
+        observation=(
+            "你声称没有对应工具，但本轮主会话已经装配了查询/修改/取消类工具。"
+            "先用列表类工具定位目标，再修改或取消。"
+            "禁止再说没有工具，禁止为此 create_subagent。"
+        ),
+        obligations=(
+            Obligation(
+                must="call_tool",
+                satisfied_by=("any_tool_called",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail=f"可用工具 {tool_pool_size} 个"),
+    )
+
+
+def addressed_silence_directive() -> Directive:
+    """被呼叫却整段沉默。"""
+    return Directive(
+        kind="correction",
+        reason_code="addressed_silence",
+        observation=("本轮你被直接呼叫，却只输出了沉默。该拒就短拒，该办事就调工具，该闲聊就短回；不要只沉默。"),
+        obligations=(
+            Obligation(
+                must="deliver",
+                satisfied_by=("any_tool_called",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0),
+    )
+
+
 def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
     """未读附件或可继承跟进 + 工具池非空 + 零调用。"""
     return Directive(

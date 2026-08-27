@@ -43,6 +43,8 @@ Args:
 
 **`to_ai` 写得好不好，决定 AI 能否正确调用触发器**。
 
+跨措辞召回还要填 **`covers`**（用户可能说的短词 + 数据域陈述）和 **`aliases`**（必须带领域前缀，如 `天气·查城市天气`）。二者与 docstring 拼进 `retrieval_text`；`find_tools` 还用 covers 做「cover 出现在 need 里」的单向命中。不填则只能靠 docstring 子串，中文整句 need 经常召不回。
+
 ## 10.3 基础用法示例
 
 ```python

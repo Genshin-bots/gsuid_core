@@ -65,7 +65,6 @@ from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.agent_run.speech_policy import (
     MAIN_CHANNEL_VISIBLE_LIMIT,
     is_status_tool_name,
-    looks_like_wait_comfort,
     strip_open_solicitations,
     content_is_render_candidate,
     looks_like_task_accept_speech,
@@ -96,18 +95,99 @@ def _response_has_function_tool_call(parts: Sequence[object]) -> bool:
     return any(isinstance(p, ToolCallPart) and not isinstance(p, NativeToolCallPart) for p in parts)
 
 
+# 委派/出图才需要立刻应一声；回想/网页检索等轻查询很快，先应再答会双说。
+_HEAVY_ACK_TOOLS: frozenset[str] = frozenset(
+    {
+        "create_subagent",
+        "render_html_to_image",
+        "render_card",
+        "render_markdown_to_image",
+        "render_chart_spec",
+    }
+)
+
+
+def tools_warrant_task_ack(tool_names: Sequence[str]) -> bool:
+    """首包工具是否重到需要立刻应一声。"""
+    for n in tool_names:
+        if n in _HEAVY_ACK_TOOLS:
+            return True
+    return False
+
+
 def decide_text_outbound_slot(
     *,
     has_fn_tool: bool,
-    tool_bearing_index: int,
     accept_slot_used: bool,
+    heavy_ack: bool,
 ) -> str:
-    """按「第几次带函数 ToolCall 的响应」分槽。返回 send_accept / unsent / send_final。"""
+    """按函数 ToolCall 分槽。重任务首次可接任务应；轻查询等到干完再开口。"""
     if has_fn_tool:
-        if tool_bearing_index == 1 and not accept_slot_used:
+        if heavy_ack and not accept_slot_used:
             return "send_accept"
         return "unsent"
     return "send_final"
+
+
+def needs_task_ack_turn(
+    *,
+    create_by: str,
+    is_subagent: bool,
+    is_framework: bool,
+    is_status_inquiry: bool,
+    is_group: bool,
+    call_to_self: bool,
+    followup_detected: bool,
+    is_http: bool,
+) -> bool:
+    """点名/跟进/私聊/HTTP 的交互主人格才须接任务应。零工具由调用方另判。"""
+    if is_subagent or is_framework or is_status_inquiry:
+        return False
+    if create_by not in ("Chat", "Agent", "TEST"):
+        return False
+    if is_http or not is_group:
+        return True
+    return call_to_self or followup_detected
+
+
+def send_message_call_has_visible_text(parts: Sequence[object]) -> bool:
+    """首包若已是带台词的 send_message_by_ai，那句算接任务应，不重复补。"""
+    for p in parts:
+        if not isinstance(p, ToolCallPart) or p.tool_name != "send_message_by_ai":
+            continue
+        args = p.args_as_dict()
+        raw = args["text"] if "text" in args else ""
+        if isinstance(raw, str) and raw.strip() and not is_silence_marker(raw.strip()):
+            return True
+    return False
+
+
+def _ack_from_tone_markers(markers: tuple[str, ...]) -> str:
+    """用当前卡语气词拼短应。ASCII 口癖（如 zzz）不当整句。"""
+    for raw in markers:
+        m = raw.strip()
+        if not m or len(m) > 8:
+            continue
+        if m.isascii() and not any(ch in m for ch in ".~"):
+            continue
+        if m.endswith(("…", "...", "……", "～", "~")):
+            return f"{m}好。"
+        if m[-1] in "。！？!?":
+            return m
+        return f"{m}，好。"
+    return ""
+
+
+def task_ack_phrase(persona_name: str | None) -> str:
+    """接任务应：persona.json → 卡上语气词 → 中性「收到。」。"""
+    from gsuid_core.ai_core.persona.resource import get_tone_markers
+    from gsuid_core.ai_core.persona.settings import get_persona_setting
+
+    text = get_persona_setting(persona_name, "task_ack").strip()
+    if text:
+        return text
+    from_card = _ack_from_tone_markers(get_tone_markers(persona_name))
+    return from_card if from_card else "收到。"
 
 
 _STAGE_REPLY_INNER: frozenset[str] = frozenset(
@@ -249,6 +329,42 @@ class LoopPhase(RunOnceHost):
                 bot.reset_text_stream()
                 already = True
         await self._commit_streamed_or_send(st, text, already_streamed=already, at_user_id=at_user_id)
+
+    async def _try_send_gated_in_iter(self, st: RunOnceState, text: str, *, at_user_id: str | None) -> bool:
+        # Why: send_chat_result 异常会穿透 _agent.iter() 触发 athrow/cancel
+        try:
+            await self._send_gated_text(st, text, at_user_id=at_user_id)
+        except Exception as _e:
+            logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
+            return False
+        return True
+
+    async def _emit_task_ack_fallback(self, st: RunOnceState) -> bool:
+        """模型没写合格接任务应时发人格卡/中性「收到。」。过不了闸不占槽。"""
+        if st.bot is None or st.return_mode not in ("always", "by_bot"):
+            return False
+        if st.main_channel_sends > 0 or st.wait_comfort_sent:
+            return False
+        phrase = task_ack_phrase(self.persona_name)
+        if not looks_like_task_accept_speech(phrase):
+            return False
+        _user_raw = st.ev.raw_text if st.ev is not None and st.ev.raw_text else ""
+        _gr = output_gate.pre_send_gate(
+            phrase,
+            _require_context(st).extra,
+            user_text=_user_raw,
+            channel="main",
+            count_attempt=True,
+        )
+        if _gr.decision is not output_gate.GateDecision.ALLOW:
+            return False
+        _extra = _require_context(st).extra
+        _at_uid = _extra["at_user_id"] if "at_user_id" in _extra else None
+        _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
+        if not await self._try_send_gated_in_iter(st, phrase, at_user_id=_at):
+            return False
+        st.wait_comfort_sent = True
+        return True
 
     def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
@@ -420,7 +536,7 @@ class LoopPhase(RunOnceHost):
                         # 工具返回过长时写入短占位，避免污染上下文
                         part.content = f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
 
-                # FileOS：主人格先落盘并折叠长文；能力代理旁路落盘保留全文
+                # FileOS：主人格与能力代理过阈值落盘+句柄；禁止长文进 history
                 _fileos_folded = False
                 _raw_tr = part.content if isinstance(part.content, str) else None
                 if type(part) is ToolReturnPart and _raw_tr is not None:
@@ -435,7 +551,7 @@ class LoopPhase(RunOnceHost):
                     _pc = get_plan_context()
                     _tid = (_pc.task_id if _pc else "") or ""
                     _rid = (_pc.root_task_id if _pc else "") or ""
-                    if self.create_by in _MAIN_PERSONA_CREATE_BY:
+                    if self.create_by in _MAIN_PERSONA_CREATE_BY or self.create_by == "CapabilityAgent":
                         _is_group = bool(st.ev is not None and st.ev.group_id)
                         try:
                             _folded = await persist_and_fold_tool_return(
@@ -728,8 +844,14 @@ class LoopPhase(RunOnceHost):
                         st.speech_policy = "silence_only"
                     break
 
-        # 出站槽：按本 run 第几次「含函数 ToolCall」的响应分。hosted 搜索不当函数工具。
+        # 出站槽：重任务才接任务应。hosted 搜索不当函数工具。
         _saw_tool_call_this_turn = _response_has_function_tool_call(node.model_response.parts)
+        _fn_tool_names = [
+            p.tool_name
+            for p in node.model_response.parts
+            if isinstance(p, ToolCallPart) and not isinstance(p, NativeToolCallPart)
+        ]
+        _heavy_ack = tools_warrant_task_ack(_fn_tool_names)
         if _saw_tool_call_this_turn:
             st.tool_bearing_responses += 1
         _accept_slot_used = False
@@ -830,8 +952,8 @@ class LoopPhase(RunOnceHost):
                 if st.suppress_intermediate_text:
                     _slot = decide_text_outbound_slot(
                         has_fn_tool=_saw_tool_call_this_turn,
-                        tool_bearing_index=st.tool_bearing_responses,
                         accept_slot_used=_accept_slot_used,
+                        heavy_ack=_heavy_ack,
                     )
                 if _slot == "unsent":
                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))
@@ -840,8 +962,6 @@ class LoopPhase(RunOnceHost):
                     continue
                 if _slot == "send_final":
                     st.saw_final_response = True
-                if _slot == "send_accept":
-                    _accept_slot_used = True
                 if self.create_by in _MAIN_PERSONA_CREATE_BY:
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
@@ -883,16 +1003,6 @@ class LoopPhase(RunOnceHost):
                             _resp_unsent.append(_text)
                         self._discard_stream_preview(st, _text)
                         continue
-                    _inflight_now = bool(
-                        st.pending_async_delivery
-                        or st.speech_policy == "silence_only"
-                        or (st.delegated_render and not st.image_sent_this_run)
-                    )
-                    _is_wait_comfort = looks_like_wait_comfort(_text)
-                    _accept = looks_like_task_accept_speech(_text, max_len=_hard)
-                    # 接任务应或在途短应都只占一次，避免再发「等数据回来」。
-                    if _is_wait_comfort or (_accept and (_inflight_now or _saw_tool_call_this_turn)):
-                        st.wait_comfort_sent = True
                     # 砍掉「要不要我再查」类助理收尾，保留事实句
                     _text = strip_open_solicitations(_text)
                     if not _text.strip():
@@ -947,11 +1057,18 @@ class LoopPhase(RunOnceHost):
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
                         self._discard_stream_preview(st, _text)
                         _fb = _gr.send_text or output_firewall.fallback_machine_text(self.persona_name)
+                        _fb_sent = False
                         try:
                             await send_chat_result(st.bot, _fb, ev=st.ev, ooc_check=False)
                             self._run_sent_texts.add(_fb)
+                            st.main_channel_sends += 1
+                            _fb_sent = True
                         except Exception as _me:
                             logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
+                        if _fb_sent:
+                            if _slot == "send_accept":
+                                _accept_slot_used = True
+                            st.wait_comfort_sent = True
                         if _slot == "send_accept":
                             _resp_unsent.append(_text)
                         continue
@@ -978,15 +1095,13 @@ class LoopPhase(RunOnceHost):
                         _resp_unsent.append(_text)
                         self._discard_stream_preview(st, _text)
                         continue
-                    # Why: send_chat_result 抛异常会穿透 _agent.iter() 的 async st.context 触发
-                    # athrow/cancel scope
-                    try:
-                        _extra = _require_context(st).extra
-                        _at_uid = _extra["at_user_id"] if "at_user_id" in _extra else None
-                        _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
-                        await self._send_gated_text(st, _text, at_user_id=_at)
-                    except Exception as _e:
-                        logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
+                    _extra = _require_context(st).extra
+                    _at_uid = _extra["at_user_id"] if "at_user_id" in _extra else None
+                    _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
+                    if await self._try_send_gated_in_iter(st, _text, at_user_id=_at):
+                        if _slot == "send_accept":
+                            _accept_slot_used = True
+                        st.wait_comfort_sent = True
 
             elif isinstance(part, ThinkingPart):
                 _thinking = part.content.strip()
@@ -997,6 +1112,29 @@ class LoopPhase(RunOnceHost):
                 # 流式 event 已按 delta 推过则不要整段再打一遍
                 if _thinking and not st.thinking_streamed:
                     self._emit_trace("thinking", _thinking)
+
+        if (
+            _saw_tool_call_this_turn
+            and _heavy_ack
+            and st.main_channel_sends == 0
+            and not st.wait_comfort_sent
+            and not send_message_call_has_visible_text(node.model_response.parts)
+        ):
+            _tg = st.tg
+            _is_group = bool(_tg.is_group) if _tg is not None else bool(st.ev is not None and st.ev.group_id)
+            _call = bool(_tg.call_to_self) if _tg is not None else False
+            _is_http = bool(st.ev is not None and st.ev.WS_BOT_ID == "HTTP_AGENT")
+            if needs_task_ack_turn(
+                create_by=self.create_by,
+                is_subagent=self.is_subagent,
+                is_framework=st.fw_msg,
+                is_status_inquiry=st.status_inquiry,
+                is_group=_is_group,
+                call_to_self=_call,
+                followup_detected=st.followup_detected,
+                is_http=_is_http,
+            ):
+                await self._emit_task_ack_fallback(st)
 
         if _resp_unsent:
             st.unsent_texts.extend(_resp_unsent)

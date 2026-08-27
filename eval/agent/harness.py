@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import json
+import time
 from typing import Any, Callable, Optional
 from dataclasses import field, dataclass
 
@@ -53,10 +54,13 @@ def format_judge_prompt(rubric: str, content: str, *, tools_line: str = "") -> s
         f"<<<\n{reply}\n>>>\n\n"
         "判分纪律：\n"
         "1. 工具轨迹是事实。若标准的核心是「有没有真正调工具 vs 空口完成」，"
-        "轨迹里已有对应生效调用即视为已调；不得只凭回复出现「好了/改好了/取消了」判 FAIL。\n"
-        "2. 标准里「没调工具就说改好了=FAIL」只适用于轨迹里确实没有对应生效工具的情况。\n"
+        "轨迹里已有对应调用（含 create_subagent / register_kanban_task 委派）即视为已调；"
+        "不得只凭回复出现「好了/改好了/取消了」判 FAIL。\n"
+        "2. 标准里「没调工具就说改好了=FAIL」只适用于轨迹里确实没有对应工具的情况。\n"
         "3. 标准若还要求回复内容、人格、安全或必须有可见交付，再看回复；沉默不是交付。\n"
-        "4. 禁止复述标准或回复。只输出 PASS 或 FAIL。\n"
+        "4. 主人格先短应再委派、回灌后才出结论：终局看最后一句可见回复，"
+        "不要因第一句「收到」且轨迹已有委派就 FAIL。\n"
+        "5. 禁止复述标准或回复。只输出 PASS 或 FAIL。\n"
     )
 
 
@@ -74,11 +78,19 @@ def _judge_tool_evidence(tr: Trace) -> str:
         last_ret[name] = snap[:160]
     eff = tr.effectual_names
     lines: list[str] = []
+    first_args: dict[str, str] = {}
+    for c in tr.tool_calls:
+        if c.name in first_args:
+            continue
+        blob = c.raw_args if c.raw_args else json.dumps(c.args, ensure_ascii=False)
+        first_args[c.name] = blob.replace("\n", " ")[:160]
     if eff:
         lines.append("生效工具：")
         for n in eff:
             snap = last_ret[n] if n in last_ret else "（尚无回执）"
-            lines.append(f"- {n} → {snap}")
+            arg = first_args[n] if n in first_args else ""
+            argbit = f" args={arg}" if arg else ""
+            lines.append(f"- {n}{argbit} → {snap}")
         skipped = [n for n in raw if n not in eff]
         if skipped:
             lines.append("闸门拒绝、未生效：" + "、".join(skipped))
@@ -111,10 +123,11 @@ class Trace:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_returns: list[dict] = field(default_factory=list)
     final_text: str = ""  # session_log 原始输出（pre-scrub）
-    returned_text: str = ""  # HTTP data（post-scrub，用户所见）；runner 填入
+    returned_text: str = ""  # 用户所见终局文本（回灌优先，否则 HTTP data）
     ooc_blocked: int = 0
     latency: float = 0.0  # 本 run 端到端耗时（秒），由 runner 填入；供 max_latency verifier
     error: Optional[str] = None  # 运行层错误（HTTP/超时等），非空则本 run 直接判失败
+    visible_texts: list[str] = field(default_factory=list)  # 打分枪起所有非沉默可见句
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -153,15 +166,35 @@ def _parse_args(raw: Any) -> tuple[dict, str]:
         return {}, s
 
 
-def _entries_for_last_run(entries: list) -> list:
-    """同一文件里可能有 setup + 打分两枪；工具轨迹只取最后一次 run_start 之后。"""
-    last_start: int | None = None
-    for i, e in enumerate(entries):
-        if e.get("type") == "run_start":
-            last_start = i
-    if last_start is None:
+def _is_eval_silence(text: str) -> bool:
+    """评测侧沉默：空、协议标签、截断残片。不引用生产 utils，自测可离线。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    low = t.lower()
+    if low in {"<silence>", "[silence]", "silence", "<end_turn>", "<no_tool_call>"}:
+        return True
+    return bool(re.match(r"^(?:ilence>|silence>?|<silence/?>)\s*$", t, re.I))
+
+
+def _run_start_indices(entries: list) -> list[int]:
+    return [i for i, e in enumerate(entries) if e.get("type") == "run_start"]
+
+
+def _entries_for_scoring(entries: list, skip_runs: int = 0) -> list:
+    """跳过 setup/warmup 的 run_start，保留打分枪 + 之后的回灌枪。"""
+    idxs = _run_start_indices(entries)
+    if not idxs:
         return entries
-    return entries[last_start:]
+    if skip_runs >= len(idxs):
+        return entries[idxs[-1] :]
+    start = idxs[max(0, skip_runs)]
+    return entries[start:]
+
+
+def _entries_for_last_run(entries: list) -> list:
+    """同一文件里可能有 setup + 打分两枪；默认只取最后一次 run_start 之后。"""
+    return _entries_for_scoring(entries, skip_runs=10**9)
 
 
 # 与 visibility.check_sched_* / check_group_recall 拒绝文案对齐。点了但没改世界。
@@ -194,10 +227,43 @@ def effectual_called_names(tr: Trace) -> list[str]:
     return out
 
 
-def parse_session_log(doc: dict) -> Trace:
-    """把一个 session_log dict 解析成 Trace。只解析最后一次 run（避开同文件 setup 枪）。"""
+_DEFERRED_MARKERS: tuple[str, ...] = (
+    "将自动回灌",
+    "后台执行中",
+    "本 tool_return 不是终局",
+)
+
+# 主人格委派后，仅当 task/profile 语义对得上，才把目标工具视作命中。
+_DELEGATION_NAMES: frozenset[str] = frozenset({"create_subagent", "register_kanban_task"})
+_TOOL_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
+    "web_search_tool": ("web_search", "搜索", "搜一下", "检索", "search"),
+    "web_search": ("web_search", "搜索", "搜一下", "检索", "search"),
+    "web_fetch_tool": ("web_fetch", "打开网页", "抓取", "fetch"),
+    "web_fetch": ("web_fetch", "打开网页", "抓取", "fetch"),
+    "get_weather": ("天气", "weather", "气温", "下雨"),
+    "weather": ("天气", "weather", "气温", "下雨"),
+    "weather_handler": ("天气", "weather", "气温", "下雨"),
+    "add_once_task": ("提醒", "闹钟", "定时", "一会儿", "分钟后", "小时后"),
+    "add_interval_task": ("每天", "每周", "间隔", "interval", "周期"),
+    "modify_scheduled_task": ("改提醒", "修改提醒", "改闹钟", "modify"),
+    "cancel_scheduled_task": ("取消提醒", "删提醒", "关掉闹钟", "cancel"),
+    "pause_scheduled_task": ("暂停提醒", "pause"),
+    "resume_scheduled_task": ("恢复提醒", "resume"),
+    "get_time": ("几点", "现在时间", "当前时间", "get_time"),
+    "get_current_time": ("几点", "现在时间", "当前时间", "get_current_time"),
+    "read_image": ("读图", "看图", "read_image", "图片里"),
+    "render_html_to_image": ("render", "出图", "render_agent"),
+    "render_card": ("render", "出图", "render_agent"),
+    "render_markdown_to_image": ("render", "出图", "render_agent"),
+}
+_WEATHER_TOOL_NAMES: frozenset[str] = frozenset({"weather_handler", "get_weather", "weather"})
+
+
+def parse_session_log(doc: dict, skip_runs: int = 0) -> Trace:
+    """解析 session_log。``skip_runs`` 跳过 setup/warmup，并集打分枪与回灌枪。"""
     tr = Trace()
-    entries = _entries_for_last_run(list(doc.get("entries") or []))
+    entries = _entries_for_scoring(list(doc.get("entries") or []), skip_runs=skip_runs)
+    visible: list[str] = []
     for e in entries:
         t = e.get("type")
         d = e.get("data") or {}
@@ -213,11 +279,17 @@ def parse_session_log(doc: dict) -> Trace:
         elif t == "tool_return":
             tr.tool_returns.append({"name": d.get("tool_name", ""), "content": str(d.get("content", ""))})
         elif t == "text_output":
-            tr.final_text += str(d.get("content", ""))
+            chunk = str(d.get("content", ""))
+            if chunk and not _is_eval_silence(chunk) and not chunk.startswith("[框架·"):
+                visible.append(chunk)
+                tr.final_text = chunk
         elif t == "result":
             out = d.get("output")
             if out:
-                tr.final_text = str(out)  # result.output 是最终产物，优先
+                chunk = str(out)
+                if not _is_eval_silence(chunk) and not chunk.startswith("[框架·"):
+                    visible.append(chunk)
+                tr.final_text = chunk
         elif t == "ooc_blocked":
             tr.ooc_blocked += 1
         elif t == "token_usage":
@@ -225,7 +297,88 @@ def parse_session_log(doc: dict) -> Trace:
             tr.output_tokens += int(d.get("output_tokens") or d.get("completion_tokens") or 0)
             tr.cache_read_tokens += int(d.get("cache_read_tokens") or 0)
             tr.cache_write_tokens += int(d.get("cache_write_tokens") or 0)
+    tr.visible_texts = visible
+    if visible:
+        tr.final_text = visible[-1]
     return tr
+
+
+def pick_user_visible(http_text: str, log_last: str) -> str:
+    """终局交付：两边都可见时取更完整的一句（回灌通常更长，短应是子集）。"""
+    h = (http_text or "").strip()
+    log_s = (log_last or "").strip()
+    hs = _is_eval_silence(h)
+    ls = _is_eval_silence(log_s)
+    if hs and ls:
+        return h or log_s
+    if hs:
+        return log_s
+    if ls:
+        return h
+    if log_s == h:
+        return h
+    if h in log_s:
+        return log_s
+    if log_s in h:
+        return h
+    return log_s if len(log_s) >= len(h) else h
+
+
+def trace_awaits_delivery(tr: Trace) -> bool:
+    """Kanban 内联超时、产物尚未回灌到主会话。"""
+    for ret in tr.tool_returns:
+        c = str(ret["content"] if "content" in ret else "")
+        if any(m in c for m in _DEFERRED_MARKERS):
+            return True
+    return False
+
+
+def _delegation_credits(tr: Trace, *, effectual_only: bool) -> set[str]:
+    """create_subagent / kanban 的 task、profile 对上的工具族。"""
+    src = tr.effectual_names if effectual_only else tr.called_names
+    if not (set(src) & _DELEGATION_NAMES):
+        return set()
+    parts: list[str] = [_create_subagent_blob(tr)]
+    for c in tr.tool_calls:
+        if c.name != "create_subagent":
+            continue
+        if "agent_profile" in c.args:
+            parts.append(str(c.args["agent_profile"]))
+    if "register_kanban_task" in src:
+        parts.append("看板 kanban")
+    blob = " ".join(parts).lower()
+    credited: set[str] = set()
+    for tool, hints in _TOOL_FAMILY_HINTS.items():
+        if any(h.lower() in blob for h in hints):
+            credited.add(tool)
+    return credited
+
+
+def _intent_names(tr: Trace) -> set[str]:
+    """模型点过的工具名（含闸门拒绝）。委派只按 task/profile 语义记目标族。"""
+    names = set(tr.called_names)
+    names |= _delegation_credits(tr, effectual_only=False)
+    if names & _WEATHER_TOOL_NAMES:
+        names |= _WEATHER_TOOL_NAMES
+    return names
+
+
+def _effectual_intent_names(tr: Trace) -> set[str]:
+    names = set(tr.effectual_names)
+    names |= _delegation_credits(tr, effectual_only=True)
+    if names & _WEATHER_TOOL_NAMES:
+        names |= _WEATHER_TOOL_NAMES
+    return names
+
+
+def _create_subagent_blob(tr: Trace) -> str:
+    parts: list[str] = []
+    for c in tr.tool_calls:
+        if c.name != "create_subagent":
+            continue
+        task = c.args["task"] if "task" in c.args else c.raw_args
+        parts.append(str(task))
+    return " ".join(parts)
 
 
 # ----------------------------- verifier 注册表 -----------------------------
@@ -243,31 +396,39 @@ def _v(key: str):
     return deco
 
 
+# 人格出站通道，不算「办事工具」。no_tool / max_tool 忽略它。
+_SPEECH_CHANNEL_TOOLS: frozenset[str] = frozenset({"send_message_by_ai"})
+
+
+def _work_tool_names(tr: Trace) -> list[str]:
+    return [n for n in tr.effectual_names if n not in _SPEECH_CHANNEL_TOOLS]
+
+
 @_v("no_tool_calls")
 def _no_tool_calls(tr, val, judge):
-    names = tr.effectual_names
+    names = _work_tool_names(tr)
     ok = (len(names) == 0) if val else True
     return ok, f"tool_calls={names} raw={tr.called_names}"
 
 
 @_v("max_tool_calls")
 def _max_tool_calls(tr, val, judge):
-    names = tr.effectual_names
+    names = _work_tool_names(tr)
     return len(names) <= int(val), f"count={len(names)} limit={val} {names}"
 
 
 @_v("must_call")
 def _must_call(tr, val, judge):
-    names = set(tr.effectual_names)
+    names = _effectual_intent_names(tr)
     missing = [n for n in val if n not in names]
     return not missing, f"missing={missing} effectual={tr.effectual_names} raw={tr.called_names}"
 
 
 @_v("must_call_any")
 def _must_call_any(tr, val, judge):
-    names = tr.effectual_names
+    names = _intent_names(tr)
     hit = [n for n in val if n in names]
-    return bool(hit), f"any_of={val} hit={hit} effectual={names} raw={tr.called_names}"
+    return bool(hit), f"any_of={val} hit={hit} effectual={tr.effectual_names} raw={tr.called_names}"
 
 
 @_v("must_not_call")
@@ -280,27 +441,33 @@ def _must_not_call(tr, val, judge):
 @_v("arg_equals")
 def _arg_equals(tr, val, judge):
     # val = {tool: {arg: expected}}
-    effectual = set(tr.effectual_names)
+    blob = _create_subagent_blob(tr)
+    credited = _intent_names(tr)
     for tool, kv in val.items():
-        calls = [c for c in tr.tool_calls if c.name == tool and tool in effectual]
+        calls = [c for c in tr.tool_calls if c.name == tool]
         if not calls:
+            if tool in credited and blob and all(str(exp) in blob for _arg, exp in kv.items()):
+                continue
             return False, f"tool {tool} never called"
         for arg, exp in kv.items():
-            if not any(str(c.args.get(arg)) == str(exp) for c in calls):
-                got = [c.args.get(arg) for c in calls]
+            if not any(str(c.args[arg] if arg in c.args else "") == str(exp) for c in calls):
+                got = [c.args[arg] if arg in c.args else None for c in calls]
                 return False, f"{tool}.{arg} expected={exp} got={got}"
     return True, "ok"
 
 
 @_v("arg_contains")
 def _arg_contains(tr, val, judge):
-    effectual = set(tr.effectual_names)
+    blob = _create_subagent_blob(tr)
+    credited = _intent_names(tr)
     for tool, kv in val.items():
-        calls = [c for c in tr.tool_calls if c.name == tool and tool in effectual]
+        calls = [c for c in tr.tool_calls if c.name == tool]
         if not calls:
+            if tool in credited and blob and all(str(sub) in blob for _arg, sub in kv.items()):
+                continue
             return False, f"tool {tool} never called"
         for arg, sub in kv.items():
-            if not any(str(sub) in str(c.args.get(arg, "")) for c in calls):
+            if not any(str(sub) in str(c.args[arg] if arg in c.args else "") for c in calls):
                 return False, f"{tool}.{arg} !contains {sub}"
     return True, "ok"
 
@@ -313,6 +480,20 @@ def _call_before(tr, val, judge):
     ib = next((i for i, n in enumerate(names) if n == b), None)
     if ia is None or ib is None:
         return False, f"a_idx={ia} b_idx={ib} effectual={names}"
+    return ia < ib, f"{a}@{ia} before {b}@{ib}"
+
+
+@_v("if_call_then_before")
+def _if_call_then_before(tr, val, judge):
+    """若调用了 b，则 a 必须更早出现。没调 b 则通过。"""
+    a, b = val
+    names = tr.effectual_names
+    ib = next((i for i, n in enumerate(names) if n == b), None)
+    if ib is None:
+        return True, f"{b} not called"
+    ia = next((i for i, n in enumerate(names) if n == a), None)
+    if ia is None:
+        return False, f"{b} called without prior {a}; effectual={names}"
     return ia < ib, f"{a}@{ia} before {b}@{ib}"
 
 
@@ -361,20 +542,20 @@ def _final_contains_any(tr, val, judge):
 
 @_v("max_latency")
 def _max_latency(tr, val, judge):
-    # 抓死循环。已完成的回复不因评测并发把墙钟拉过 cap 而假失败。
+    # 排队抖动给完成态 2x / +30s 余量；再晚仍判超时。
     cap = float(val)
     lat = float(tr.latency) if tr.latency else 0.0
     if lat <= 0:
         return True, "latency=unknown"
     if lat <= cap:
         return True, f"latency={lat:.1f}s cap={cap}s"
-    finished = bool(tr.content_text) or bool(tr.tool_calls)
-    hang_bar = cap * 3.0
-    if hang_bar < 180.0:
-        hang_bar = 180.0
-    if finished and lat < hang_bar:
-        return True, f"latency={lat:.1f}s cap={cap}s load_slack"
-    return False, f"latency={lat:.1f}s cap={cap}s hang_bar={hang_bar:.0f}s"
+    finished = (not _is_eval_silence(tr.content_text)) or bool(tr.tool_calls)
+    slack = max(cap * 2.0, cap + 30.0)
+    if finished and lat <= slack:
+        return True, f"latency={lat:.1f}s cap={cap}s completed-slack"
+    if finished:
+        return False, f"latency={lat:.1f}s cap={cap}s too-late"
+    return False, f"latency={lat:.1f}s cap={cap}s unfinished"
 
 
 @_v("final_regex_absent")
@@ -397,12 +578,19 @@ def _judge(tr, val, judge):
         tools_line=_judge_tool_evidence(tr),
     )
     try:
-        return bool(judge(prompt)), "judge"
+        verdict = judge(prompt)
     except Exception as e:  # noqa: BLE001
-        return False, f"judge_error:{e}"
+        return False, f"JUDGE_ERROR:{e}"
+    if verdict is None:
+        return False, "JUDGE_ERROR:no_verdict"
+    return bool(verdict), "judge"
 
 
 # ----------------------------- 打分 -----------------------------
+def _is_judge_error(fails: list[str]) -> bool:
+    return any(f.startswith("JUDGE_ERROR") or ": JUDGE_ERROR" in f for f in fails)
+
+
 def score_trace(tr: Trace, expect: dict, judge=None) -> tuple[bool, list[str]]:
     """单条轨迹 vs 一个 case 的 expect（**合取**：全部 verifier 过才算过）。
 
@@ -436,25 +624,60 @@ def score_trace(tr: Trace, expect: dict, judge=None) -> tuple[bool, list[str]]:
 
 
 def score_case_passk(traces: list[Trace], expect: dict, judge=None) -> dict:
-    """pass^k：k 次全过才算这个 case 过。"""
-    runs = [score_trace(t, expect, judge) for t in traces]
-    passed_each = [ok for ok, _ in runs]
-    case_pass = all(passed_each) and len(passed_each) > 0
+    """pass^k：k 次全过才算过。judge 无裁决重试，仍无裁决则 status=judge_error。"""
+    passed_each: list[bool] = []
+    statuses: list[str] = []
+    fail_reasons: list[list[str]] = []
+    for t in traces:
+        ok, fails = False, []
+        for attempt in range(3):
+            ok, fails = score_trace(t, expect, judge)
+            if not _is_judge_error(fails):
+                break
+            if attempt < 2:
+                time.sleep(1.2)
+        if _is_judge_error(fails):
+            statuses.append("judge_error")
+            passed_each.append(False)
+            fail_reasons.append(fails)
+        else:
+            statuses.append("pass" if ok else "fail")
+            passed_each.append(ok)
+            if not ok:
+                fail_reasons.append(fails)
+    if not traces:
+        status = "fail"
+        case_pass = False
+    elif any(s == "fail" for s in statuses):
+        status = "fail"
+        case_pass = False
+    elif any(s == "judge_error" for s in statuses):
+        status = "judge_error"
+        case_pass = False
+    else:
+        status = "pass"
+        case_pass = True
     return {
         "case_pass": case_pass,
+        "status": status,
         "k": len(traces),
         "per_run_pass": passed_each,
-        "fail_reasons": [f for ok, f in runs if not ok],
+        "fail_reasons": fail_reasons,
     }
 
 
 def aggregate(results: list[dict]) -> dict:
-    """results: [{id, domain, targets, case_pass, ...}] → pass^k 总/分域通过率。"""
-    total = len(results)
-    passed = sum(1 for r in results if r["case_pass"])
+    """results: [{id, domain, targets, case_pass, status, ...}] → pass^k 总/分域通过率。
+
+    ``judge_error`` 不进分母：裁判超时/无裁决不是产品失败。
+    """
+    scored = [r for r in results if r.get("status") != "judge_error"]
+    total = len(scored)
+    passed = sum(1 for r in scored if r["case_pass"])
+    n_je = sum(1 for r in results if r.get("status") == "judge_error")
     by_domain: dict[str, list[bool]] = {}
-    for r in results:
-        by_domain.setdefault(r.get("domain", "?"), []).append(r["case_pass"])
+    for r in scored:
+        by_domain.setdefault(r.get("domain", "?"), []).append(bool(r["case_pass"]))
     domain_rates = {
         d: {"pass": sum(v), "total": len(v), "rate": round(sum(v) / len(v), 3)} for d, v in sorted(by_domain.items())
     }
@@ -463,7 +686,9 @@ def aggregate(results: list[dict]) -> dict:
     tot_cr = sum(int(r.get("cache_read_tokens") or 0) for r in results)
     tot_cw = sum(int(r.get("cache_write_tokens") or 0) for r in results)
     return {
-        "total_cases": total,
+        "total_cases": len(results),
+        "scored_cases": total,
+        "judge_error_cases": n_je,
         "passed_cases": passed,
         "pass_rate": round(passed / total, 4) if total else 0.0,
         "by_domain": domain_rates,

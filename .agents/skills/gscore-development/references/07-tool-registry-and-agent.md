@@ -174,10 +174,11 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
    每轮新建，作用域天然是"单次 run"，轮末自然丢弃）。
 2. **`find_tools` meta-tool**（`buildin_tools/dynamic_tool_discovery.py`，`category="meta"`）——
    模型发现缺工具时调用。**不声明 `capability_domain`**。
-   **三段顺序（2026-08-23）**：
-   0. 已加载工具与命中域同族 → 回「直接调用」，且剔除本步 `visible_when` 隐藏名；
+   **三段顺序（2026-08-26）**：
+   0. 已加载工具 **covers / retrieval_text 单向命中**（need∈retrieval 或 cover∈need）才回「已加载」；
+      **禁止**同域立刻 return 直接调用（`n in hay or hay in n` 已删）；
    1. `match_capability_node` / `semantic_match_nodes` 命中 → 只回委派指令，不装 exclusive schema；
-   2. 向量召族；已加载工具的 `covers`/`retrieval_text` 与 need 对不上当 miss，不得「已加载」；
+   2. 向量召族；covers/retrieval 对不上当 miss；
    3. 仅 blocked hits：所有者须也能被步骤 1 认上，否则中性缺口。回执不推销网页检索。
 3. **`RetrievableToolset(AbstractToolset)`**（`dynamic_toolset.py`）——`get_tools(ctx)` 每个 step
    读 `dynamic_tool_names`，逐名 `find_tool_base` + `prepare_tool_def` 解析成可调用工具；用
@@ -410,9 +411,12 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 `<SILENCE>`。开场接任务应一句必须出站（**不按 12 字**，对齐人格 `speech_len_hard`；
 编排词/过程动词/长结构仍拦）；之后默认静默。清单/念白/第二执行者不占额度。
 群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
-**出站槽（2026-08-23）**：按本 run 第几次带**函数** ToolCall 的响应分槽——首次至多一条 TextPart
-（接任务应，仍过 `pre_send_gate` / `should_block`；过不了也消耗名额），其后切工具静默，
-无 ToolCall 终局开口。hosted 搜索不当函数工具。unsent 从 `new_messages` 尾部剥掉。
+**出站槽（2026-08-26）**：按本 run 是否含**函数** ToolCall 分槽。委派/出图等重工具首次至多一条
+TextPart（接任务应，仍过 `pre_send_gate` / `should_block`；**过不了闸不得占槽**）。点名/跟进/
+私聊/HTTP 且本响应含重工具：模型没写合格短应则发人格卡 `task_ack` 或中性「收到。」。
+回想/网页检索等轻查询不先应，干完再开口。零工具/未点名不补。其后切工具静默，无 ToolCall
+终局开口。hosted 搜索不当函数工具。
+HTTP SSE 第一帧可见必须是 `event: text`（`: ping` 不是接任务应）。unsent 从 `new_messages` 尾部剥掉。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

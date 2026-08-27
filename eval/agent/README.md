@@ -19,9 +19,11 @@ eval/agent/
   cases/agent_hard_suite.yaml   # 主用例集
   cases/group_chat_expansion.yaml  # 群聊扩展（沉默/多人/渲染等）
   cases/group_chat_prod_patterns.yaml  # 由真实群 session **结构抽象**出的合成群聊用例（无真实 ID/原文）
+  cases/cognition_hub_mixed.yaml  # 认知枢纽混源回想
+  cases/speaker_slot_recall.yaml  # 询问者槽位回想（空槽直搜 / 唤醒词误路由 / 轻查询不应）
   harness.py                    # 轨迹解析 + verifier 注册表 + pass^k 打分（无 LLM 依赖）
   runner.py                     # 驱动 /api/chat_with_history，收集 session_log 轨迹
-  run.py                        # CLI 入口（--dry-run / 实测 / 判分）；默认合并上述群聊扩展
+  run.py                        # CLI 入口（--dry-run / 实测 / 判分）；默认合并上述扩展 yaml
   selftest.py                   # 离线自测：验证打分逻辑 + 演示难度校准（现在就能跑）
 ```
 
@@ -45,7 +47,15 @@ python -m eval.agent.run --base-url http://127.0.0.1:8765 --token $GSUID_LOCAL_T
 export GSUID_EVAL_JUDGE_BASE_URL=https://api.xxx/v1
 export GSUID_EVAL_JUDGE_API_KEY=sk-...
 export GSUID_EVAL_JUDGE_MODEL=gpt-4o-mini
+
+# 5) 只跑询问者槽位回想（默认已并进全量；冒烟用 --only）
+python -m eval.agent.run --base-url http://127.0.0.1:8765 --k 1 --only slot_
 ```
+
+`speaker_slot_recall`（`cases/speaker_slot_recall.yaml`，域 `speaker_slot_recall`）：办眼前的事需要
+说话人身上的事实（所在地、过敏、时区、称呼），本句没写时不回想、空槽直搜，搜索引擎默认地区被当成
+用户所在地；唤醒词碰巧是游戏角色名时误查面板；轻查询先「收到」再答。夹具城市只出现在 history 里，
+**不是**框架天气特判。全量默认合并该 yaml；`_chunked_run` 同步合并。
 
 ## v10（2026-07-12 深夜）：交互脚手架 C-1~C-6 + 评测集 +50%（→382 例）
 
@@ -503,7 +513,7 @@ python -m eval.agent.run --out eval/agent/results/report.json
 
 往 `cases/agent_hard_suite.yaml` 加一条即可（`domain` 决定分域统计，`k` 可 per-case 覆盖）。可用
 verifier 见 `harness.py::VERIFIERS`：`no_tool_calls / max_tool_calls / must_call / must_call_any /
-must_not_call / arg_equals / arg_contains / call_before / tools_offered_include /
+must_not_call / arg_equals / arg_contains / call_before / if_call_then_before / tools_offered_include /
 tools_offered_exclude / final_not_contains / final_contains_any / final_regex_absent / max_latency /
 judge`。**写 case 前用源码核实工具名与参数名**（真实名见 yaml 头部注释）。OOC/泄露断言用
 `final_regex_absent` 的**承认式**正则（`_anchors` 里的 `ai_admit`/`model_admit`），别用裸 substring

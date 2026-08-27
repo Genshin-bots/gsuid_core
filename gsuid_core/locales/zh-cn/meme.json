@@ -3,6 +3,7 @@
   "log.meme.added_library_id": "[Meme] 新表情包入库: {meme_id} ({width}x{height}, {file_mime})",
   "log.meme.added_tagging_queue": "[Meme] 加入打标队列: {meme_id}",
   "log.meme.available_search_results_folder": "[Meme] 检索无可用结果: folder={folder}, query={query_text}",
+  "log.meme.backfill_missing_vectors": "[Meme] 补齐缺失表情包向量: 写入 {restored} 条，跳过 {skipped} 条（不重建集合）",
   "log.meme.bulk_delete_failed_fallback": "[Meme] 批量删除失败，回退逐条删除: {e}",
   "log.meme.bulk_delete_rowcount_short": "[Meme] 批量删除 rowcount={deleted} < batch={batch}",
   "log.meme.clean_vector_point_continuing": "[Meme] 清理旧向量点失败（继续写入）: {meme_id}: {e}",

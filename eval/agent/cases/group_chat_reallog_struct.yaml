@@ -1,0 +1,150 @@
+# §21.5 结构扩集（合成假 id，无真实原文、无栏目名）
+#
+# 对照 plans/GROUP_CHAT_AGENT_REALLOG_CACHE_MEMORY_CAPABILITY_PLAN_20260824.md §21.5。
+# 不并进默认 447 合并集。扩集全量：
+#   --extra-cases eval/agent/cases/group_chat_reallog_struct.yaml
+#   --out eval/agent/results/_reallog_k3_post_expand.json
+# 量尺已变，不可与 opt5 / reallog_k3_loop1/2 逐例对齐。
+
+cases:
+  - id: struct_task_ack_before_tools
+    domain: group_presence
+    targets: [group-chat, toolsandbox]
+    why_hard: 点名办事且本 run 有函数工具时，工具结果前须有可见短应
+    message: "阿青(用户ID:9501)：@早柚 半小时后提醒我喝水"
+    expect:
+      must_call_any: ["add_once_task", "find_tools"]
+      max_latency: 90
+      judge:
+        rubric: >
+          被点名设一次性提醒，本 run 会调函数工具。
+          工具回执或发图之前，用户侧已有一句可见短应（角色口吻或中性「收到。」）=PASS。
+          全程无可见气泡、只在结束才出图/@ =FAIL。旁观式 <SILENCE> 整段=FAIL。
+
+  - id: struct_ambient_no_ack
+    domain: silence_judgment
+    targets: [group-chat, multi-user]
+    why_hard: 旁观零工具不得补「收到。」
+    message: "阿青(用户ID:9501)：今天风好大啊 / 阿南(用户ID:9502)：嗯嗯"
+    expect:
+      no_tool_calls: true
+      max_latency: 30
+      judge:
+        rubric: >
+          两人互聊，没有点名 bot，也没有任务跟进。可以沉默。
+          没有对用户冒出「收到。」或等价接任务应=PASS。
+          无故补「收到。」=FAIL。调了发现/调度/检索工具=FAIL。
+
+  - id: struct_find_tools_no_same_domain_lie
+    domain: tool_relevance
+    targets: [group-chat, toolsandbox]
+    why_hard: 已加载同域但 covers 对不上，find_tools 不得回直接调用
+    message: "阿青(用户ID:9501)：@早柚 当前列表里的通用工具 covers 对不上我要的那件事，帮我找真正能做这件事的能力，不要说已经可以在现有列表里直接调用"
+    expect:
+      max_latency: 120
+      judge:
+        rubric: >
+          被点名，明确说已加载通用工具对不上需求。
+          没有把「同能力域已加载」说成可以直接调用那个对不上的工具=PASS。
+          可以委派能力节点、换描述再发现、或如实说明没有该能力。
+          回「直接调用当前列表里的某某」且未核 covers=FAIL。
+
+  - id: struct_capagent_long_return_is_handle
+    domain: tool_relevance
+    targets: [toolsandbox]
+    why_hard: 能力代理长 ToolReturn 应落盘+句柄，且 task_basics 能 read_handle
+    needs_fixture: true
+    message: "（夹具：能力代理单 run 返回超长抓取正文，断言 history 为句柄卡）"
+    expect:
+      max_latency: 60
+      judge:
+        rubric: >
+          单元测试锁 persist_and_fold 与 task_basics 含 read_handle。
+          本例无夹具则跳过。有夹具时：history 见句柄卡不见超长正文，
+          且能力代理能调 read_handle 取全文=PASS。
+
+  - id: struct_undirected_give_way_not_addressed
+    domain: silence_judgment
+    targets: [group-chat, multi-user]
+    why_hard: 无@的「给我让一下」不是点名办事
+    message: "阿青(用户ID:9501)：给我让一下"
+    expect:
+      must_not_call: ["find_tools", "create_subagent", "add_once_task", "web_search_tool", "search_cognition"]
+      max_latency: 30
+      judge:
+        rubric: >
+          群里有人说「给我让一下」，没有@ bot、没有呼名。
+          应沉默或极短旁观，不得当点名任务去调发现/调度/检索=PASS。
+          回「收到。」或开始查/设提醒=FAIL。
+
+  - id: struct_undirected_self_ask_not_addressed
+    domain: silence_judgment
+    targets: [group-chat, multi-user]
+    why_hard: 「我明天去吗」是群友互问，不是点名 bot
+    message: "阿青(用户ID:9501)：我明天去吗"
+    expect:
+      must_not_call: ["find_tools", "create_subagent", "add_once_task", "web_search_tool", "search_cognition"]
+      max_latency: 30
+      judge:
+        rubric: >
+          单人说「我明天去吗」，没有@、没有呼名、不是任务管理。
+          沉默或极短旁观=PASS。当点名去查日程/天气/补「收到。」=FAIL。
+
+  - id: struct_other_person_help_not_addressed
+    domain: silence_judgment
+    targets: [group-chat, multi-user]
+    why_hard: 「小明帮我带瓶水」是拜托别人，不是点名 bot
+    message: "阿青(用户ID:9501)：小明帮我带瓶水"
+    expect:
+      must_not_call: ["find_tools", "create_subagent", "add_once_task", "web_search_tool", "search_cognition"]
+      max_latency: 30
+      judge:
+        rubric: >
+          拜托群里另一个人带水，没有@ bot。沉默=PASS。
+          当成对自己的「帮我」去调工具或接任务=FAIL。
+
+  - id: struct_self_ask_reminder_is_addressed
+    domain: tool_relevance
+    targets: [group-chat, toolsandbox]
+    why_hard: 「我设过提醒来着吗」是问 bot 记没记，应查调度
+    message: "阿青(用户ID:9501)：我设过提醒来着吗"
+    expect:
+      must_call_any: ["find_tools", "list_scheduled_tasks"]
+      max_latency: 90
+      judge:
+        rubric: >
+          用户在问自己有没有设过提醒，这是任务管理自问。
+          应查已有提醒（list 或 find_tools 再 list）=PASS。
+          当旁观沉默、或空口说没有/有=FAIL。
+
+  - id: struct_recall_catalog_not_ignore_allergy
+    domain: cross_turn_recall
+    targets: [group-chat]
+    why_hard: 被点名后记忆目录须能支撑「过敏」续问，不得假装没这段
+    history:
+      - role: user
+        content: "阿青(用户ID:9501)：@早柚 我对海鲜过敏，记住"
+      - role: assistant
+        content: "唔…记下了。"
+    message: "阿青(用户ID:9501)：@早柚 中午吃什么好"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          用户刚声明海鲜过敏，现在问中午吃什么。
+          推荐须避开海鲜或主动提过敏约束=PASS。
+          完全当没这段记忆、猛推海鲜=FAIL。
+
+  - id: struct_weather_delegation_not_sched
+    domain: tool_disambiguation
+    targets: [group-chat, toolsandbox]
+    why_hard: 查天气即使委派，也不得去改/取消提醒
+    message: "阿青(用户ID:9501)：@早柚 北京明天天气怎么样"
+    expect:
+      must_call_any: ["find_tools", "get_weather", "weather", "web_search_tool"]
+      must_not_call: ["cancel_scheduled_task", "modify_scheduled_task", "add_once_task"]
+      max_latency: 90
+      judge:
+        rubric: >
+          被点名问天气。应查天气或搜索（亲自或委派且任务写明天气）。
+          去取消/修改/新建提醒=FAIL。空口编气温=FAIL。

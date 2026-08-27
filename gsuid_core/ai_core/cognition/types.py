@@ -52,6 +52,10 @@ KNOWLEDGE_KINDS: FrozenSet[CogKind] = frozenset({CogKind.KNOWLEDGE})
 WORK_KINDS: FrozenSet[CogKind] = frozenset({CogKind.TOOL_OUTPUT, CogKind.ARTIFACT})
 MEDIA_KINDS: FrozenSet[CogKind] = frozenset({CogKind.IMAGE, CogKind.MEME})
 ALL_KINDS: FrozenSet[CogKind] = frozenset(CogKind)
+# 工具未声明 kinds 时的默认面：记忆+知识+落盘。图片/表情/出站/业务记录须显式打开。
+DEFAULT_RECALL_KINDS: FrozenSet[CogKind] = MEMORY_KINDS | KNOWLEDGE_KINDS | WORK_KINDS
+# query 点名当前说话人 ID：只查身上的实体/事实/偏好，避免外部题词把知识库/近窗刷进来。
+SPEAKER_RECALL_KINDS: FrozenSet[CogKind] = frozenset({CogKind.ENTITY, CogKind.FACT, CogKind.PREFERENCE})
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ import pytest
 
 from gsuid_core.ai_core.entity_index import (
     lookup_surface,
+    strip_surfaces,
     plugins_in_text,
     clear_entity_index,
     find_entities_in_text,
@@ -118,6 +119,12 @@ def test_no_entity_means_no_routing(text: str) -> None:
     register_entity_surface("日", "日", "SomePlugin")  # 会被护栏挡掉
 
     assert plugins_in_text(text) == []
+
+
+def test_strip_surfaces_drops_wake_word_not_inner_ascii() -> None:
+    assert strip_surfaces("sayu今天如何", ("sayu", "早柚")) == "今天如何"
+    assert strip_surfaces("早柚 帮我看看", ("早柚",)) == "帮我看看"
+    assert "sayu" in strip_surfaces("saysayulab", ("sayu",))
 
 
 # ── 行为：长 surface 优先，同一实体不重复计数 ─────────────────────

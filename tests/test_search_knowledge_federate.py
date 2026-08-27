@@ -95,6 +95,7 @@ def test_cognition_federates_knowledge_and_fileos() -> None:
         patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_empty_profile_async),
         patch("gsuid_core.ai_core.cognition.nodes.AICogNode.list_world_canons_in_scope", new=_no_canons),
         patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=AsyncMock(return_value=([], {}))),
+        patch("gsuid_core.ai_core.cognition.facade.probe_handle_alive", new=AsyncMock(return_value=True)),
     ):
         out = _run(search_cognition(_ctx(), query="测试主题"))
 

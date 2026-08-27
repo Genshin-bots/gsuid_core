@@ -362,6 +362,18 @@ async def _sse_run(
     try:
         yield _next("run.start", {"run_id": run_id, "session_id": client_session})
         last_sent = time.monotonic()
+        text_emitted = False
+        held_atts: list[CaptureItem] = []
+
+        def _att_data(item: CaptureItem) -> dict[str, object]:
+            return {
+                "kind": item.att_kind,
+                "encoding": item.encoding,
+                "mime": item.mime,
+                "data": item.data,
+                "nbytes": item.nbytes,
+            }
+
         while True:
             if await request.is_disconnected():
                 live = get_run(run_id)
@@ -382,34 +394,40 @@ async def _sse_run(
                 continue
             if item.kind == "text":
                 yield _next("text", {"text": item.text})
+                text_emitted = True
                 last_sent = time.monotonic()
+                for att in held_atts:
+                    yield _next("attachment", _att_data(att))
+                held_atts.clear()
             elif item.kind == "attachment":
-                yield _next(
-                    "attachment",
-                    {
-                        "kind": item.att_kind,
-                        "encoding": item.encoding,
-                        "mime": item.mime,
-                        "data": item.data,
-                        "nbytes": item.nbytes,
-                    },
-                )
-                last_sent = time.monotonic()
+                if text_emitted:
+                    yield _next("attachment", _att_data(item))
+                    last_sent = time.monotonic()
+                else:
+                    held_atts.append(item)
         while not queue.empty():
             item = queue.get_nowait()
             if item.kind == "text":
                 yield _next("text", {"text": item.text})
+                text_emitted = True
+                for att in held_atts:
+                    yield _next("attachment", _att_data(att))
+                held_atts.clear()
             elif item.kind == "attachment":
-                yield _next(
-                    "attachment",
-                    {
-                        "kind": item.att_kind,
-                        "encoding": item.encoding,
-                        "mime": item.mime,
-                        "data": item.data,
-                        "nbytes": item.nbytes,
-                    },
-                )
+                if text_emitted:
+                    yield _next("attachment", _att_data(item))
+                else:
+                    held_atts.append(item)
+        if held_atts and not text_emitted:
+            from gsuid_core.ai_core.agent_run.loop import task_ack_phrase
+            from gsuid_core.ai_core.http_agent.persona import peek_bound_persona
+
+            ack = task_ack_phrase(peek_bound_persona(event.session_id))
+            yield _next("text", {"text": ack})
+            text_emitted = True
+        for att in held_atts:
+            yield _next("attachment", _att_data(att))
+        held_atts.clear()
         raw_out: PassiveChatResult | BaseException | None = outcome[0] if outcome else None
         if isinstance(raw_out, asyncio.CancelledError) or isinstance(raw_out, asyncio.TimeoutError):
             code = "timeout" if isinstance(raw_out, asyncio.TimeoutError) else "cancelled"

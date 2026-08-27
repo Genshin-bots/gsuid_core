@@ -541,6 +541,11 @@ class ToolsPhase(RunOnceHost):
                     )
                     logger.debug(i18n_t("log.agent.attempting_search_tools_query", search_query=search_query))
 
+                    _ignore: tuple[str, ...] = ()
+                    if self.persona_name:
+                        from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+                        _ignore = collect_persona_surfaces(self.persona_name)
                     extra_tools += await search_tools_with_entity_routing(
                         query=search_query,
                         route_text=qy,
@@ -548,6 +553,7 @@ class ToolsPhase(RunOnceHost):
                         non_category=["self", "buildin"],
                         threshold=_recall_threshold,
                         scope_key=ctx_scope_key,
+                        ignore_surfaces=_ignore,
                     )
                     # 外部检索不进瘦核；问答/工具轮才 append（不钉核，避免闲聊付税）
                     if (st.group_slim or st.is_light) and st.intent in ("工具", "问答"):

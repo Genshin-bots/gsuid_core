@@ -20,10 +20,14 @@ from gsuid_core.ai_core.cognition import (
     WORK_KINDS,
     MEMORY_KINDS,
     KNOWLEDGE_KINDS,
+    DEFAULT_RECALL_KINDS,
+    SPEAKER_RECALL_KINDS,
     CogKind,
     CogScope,
     CognitiveHit,
     kinds_from_names,
+    resolve_recall_kinds,
+    query_mentions_speaker,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 
@@ -52,6 +56,11 @@ def test_kind_taxonomy_is_complete_and_labelled() -> None:
     assert MEMORY_KINDS < ALL_KINDS
     assert KNOWLEDGE_KINDS == {CogKind.KNOWLEDGE}
     assert WORK_KINDS == {CogKind.TOOL_OUTPUT, CogKind.ARTIFACT}
+    assert DEFAULT_RECALL_KINDS < ALL_KINDS
+    assert CogKind.MEME not in DEFAULT_RECALL_KINDS
+    assert CogKind.OUTBOUND not in DEFAULT_RECALL_KINDS
+    assert SPEAKER_RECALL_KINDS < MEMORY_KINDS
+    assert CogKind.EPISODE not in SPEAKER_RECALL_KINDS
     # ⑧ 每轮默认切片不含知识/落盘（延迟不回退）
     assert CogKind.KNOWLEDGE not in MEMORY_KINDS
     assert CogKind.TOOL_OUTPUT not in MEMORY_KINDS
@@ -158,6 +167,18 @@ def test_kinds_from_names_ignores_unknown() -> None:
     assert kinds_from_names({" Knowledge "}) == frozenset({CogKind.KNOWLEDGE})
 
 
+def test_resolve_recall_kinds_defaults_and_speaker_query() -> None:
+    uid = "user_web_01"
+    empty: frozenset[CogKind] = frozenset()
+    assert resolve_recall_kinds(empty, query="今天怎样", user_id=uid) == DEFAULT_RECALL_KINDS
+    assert resolve_recall_kinds(empty, query=f"{uid} 所在地", user_id=uid) == SPEAKER_RECALL_KINDS
+    asked = frozenset({CogKind.KNOWLEDGE})
+    assert resolve_recall_kinds(asked, query=f"{uid} 所在地", user_id=uid) == asked
+    assert query_mentions_speaker(f"{uid} 所在地", uid)
+    assert not query_mentions_speaker("user_web_010 所在地", uid)
+    assert not query_mentions_speaker("今天怎样", uid)
+
+
 def test_relative_score_floor_marks_high_confidence() -> None:
     """相对分下限：只有过门槛的条目才允许标高置信。"""
     from gsuid_core.ai_core.cognition import search_cognition
@@ -188,6 +209,102 @@ def test_relative_score_floor_marks_high_confidence() -> None:
     by_id = {h.id: h for h in hits}
     assert by_id["s"].high_confidence
     assert not by_id["w"].high_confidence
+
+
+def _empty_backend(*args: Any, **kwargs: Any) -> Any:
+    async def _empty(*_a: Any, **_k: Any) -> Any:
+        return [], {}
+
+    return _empty
+
+
+def test_fused_rank_caps_high_confidence() -> None:
+    """各路头名相对分过线后，融合名次仍要收口，避免 12 条噪声全标高置信。"""
+    from gsuid_core.ai_core.cognition import search_cognition
+
+    packed = {
+        f"m{i}": CognitiveHit(kind=CogKind.FACT, id=f"m{i}", title=f"t{i}", summary="", score=1.0) for i in range(6)
+    }
+
+    async def _fake_memory(query: str, *, kinds: Any, scope: Any, limit: int) -> Any:
+        _ = (query, kinds, scope, limit)
+        return [f"m{i}" for i in range(6)], packed
+
+    empty = _empty_backend()
+    with (
+        patch("gsuid_core.ai_core.cognition.facade._search_memory", new=_fake_memory),
+        patch("gsuid_core.ai_core.cognition.facade._search_knowledge_backend", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_fileos", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_meme_knowledge", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_outbound", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=empty),
+    ):
+        hits = _run(search_cognition("q", kinds=MEMORY_KINDS, scope=CogScope(user_id="u1"), limit=10))
+    assert len(hits) == 6
+    assert sum(1 for h in hits if h.high_confidence) == 4
+    assert hits[0].high_confidence
+    assert not hits[4].high_confidence
+
+
+def test_weak_hits_are_not_promoted_to_high_confidence() -> None:
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "gsuid_core/ai_core/cognition/facade.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_ALWAYS_SHOWN_TOP" not in src
+    assert "_HIGH_CONF_FUSED_CAP" in src
+
+
+def test_speaker_query_keeps_location_facts_without_userid() -> None:
+    """地点事实常是「住在杭州」，字面没有 user_id，不得整表过滤成零命中。"""
+    from gsuid_core.ai_core.cognition.facade import _search_memory
+    from gsuid_core.ai_core.memory.retrieval.types import Edge
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    def _edge(source: str, fact: str, eid: str) -> Edge:
+        return Edge(
+            id=eid,
+            source_id=f"src_{eid}",
+            target_id=f"tgt_{eid}",
+            source_name=source,
+            target_name="",
+            fact=fact,
+            weight=0.9,
+            score=0.9,
+            valid_at_ts=None,
+            invalid_at_ts=None,
+        )
+
+    async def _fake(*args: Any, **kwargs: Any) -> MemoryContext:
+        _ = (args, kwargs)
+        return MemoryContext(
+            edges=[
+                _edge("某站", "发布在该网站", "e2"),
+                _edge("小明", "住在杭州", "e1"),
+                _edge("user_web_01", "user_web_01 喜欢早起", "e0"),
+                _edge("user_web_01", "用户user_web_01提到", "e3"),
+            ]
+        )
+
+    with patch("gsuid_core.ai_core.memory.retrieval.dual_route.dual_route_retrieve", new=_fake):
+        ids, hits = _run(
+            _search_memory(
+                "user_web_01 所在地",
+                kinds=SPEAKER_RECALL_KINDS,
+                scope=CogScope(user_id="user_web_01"),
+                limit=8,
+            )
+        )
+    titles = [hits[i].title for i in ids]
+    assert "住在杭州" in titles
+    assert titles[0] == "user_web_01 喜欢早起"
+    assert all(not t.endswith("提到") for t in titles)
 
 
 def test_one_backend_failure_only_drops_that_leg() -> None:
@@ -525,8 +642,18 @@ def test_cognition_tool_docstring_steers_away_from_realtime_data() -> None:
     assert "不查实时" in doc
     assert "web_search_tool" in doc
     assert "find_tools" in doc
+    assert "自己组合 query" in doc
     head = doc[: doc.find("Args:")] if "Args:" in doc else doc
     assert head.index("不查实时") < head.index("什么时候用"), "边界必须先于用法"
+    assert "不要把本次外部题目的词拼进去" in doc
+
+
+def test_web_search_docstring_defers_to_speaker_recall() -> None:
+    from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool
+
+    doc = web_search_tool.__doc__ or ""
+    assert "search_cognition" in doc
+    assert "空槽" in doc
 
 
 def test_memory_budget_literal_is_gone() -> None:

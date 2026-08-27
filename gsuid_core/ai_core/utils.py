@@ -68,6 +68,11 @@ _PROTOCOL_TAG_RE = re.compile(
 _PROTOCOL_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 _BARE_SILENCE_RE = re.compile(r"^\s*silence\s*$", re.IGNORECASE)
 _PROTOCOL_EMPTYISH_RE = re.compile(r"^[\s\-–—.,，。！？!?、；;：:\u3000·•…]*$")
+# 截断残片：ILENCE> / SILENCE> / <SILENCE（完整标签仍走协议剥离）
+_SILENCE_FRAGMENT_RE = re.compile(
+    r"^\s*(?:ilence>|silence>?|<silence/?)\s*$",
+    re.IGNORECASE,
+)
 
 
 def remainder_after_protocol_tags(text: str) -> str:
@@ -96,6 +101,8 @@ def is_silence_marker(text: str) -> bool:
     if not raw:
         return False
     if _BARE_SILENCE_RE.match(raw) is not None:
+        return True
+    if _SILENCE_FRAGMENT_RE.match(raw) is not None:
         return True
     leftover = remainder_after_protocol_tags(raw).strip()
     if leftover == raw:

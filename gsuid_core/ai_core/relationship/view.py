@@ -44,7 +44,12 @@ class RelationshipView:
 
     @property
     def is_quiet_zone(self) -> bool:
-        """是否处于「群聊未 @ 更倾向沉默」的档位（hostile / cold）。"""
+        """是否处于「群聊未 @ 更倾向沉默」的档位（hostile / cold）。
+
+        未打分不是冷淡：score=0 只是缺依据，不能当 quiet。
+        """
+        if not self.scored:
+            return False
         return self.zone in (Zone.HOSTILE, Zone.COLD)
 
 

@@ -78,6 +78,30 @@ def _names(tools) -> List[str]:
     return [t.name for t in tools]
 
 
+def test_ignore_surfaces_does_not_route_wake_word(_fake_world) -> None:
+    """点名/唤醒词即使也是某插件实体，不当路由信号。"""
+    register_entity_surface("sayu", "早柚", "XutheringWavesUID")
+    plain = asyncio.run(
+        rag_tools.search_tools_with_entity_routing(
+            query="sayu今天天气如何",
+            route_text="sayu今天天气如何",
+            limit=4,
+            non_category=["self", "buildin"],
+            ignore_surfaces=("sayu", "早柚"),
+        )
+    )
+    assert _names(plain) == WIDE[:4]
+    routed = asyncio.run(
+        rag_tools.search_tools_with_entity_routing(
+            query="sayu今天天气如何",
+            route_text="sayu今天天气如何",
+            limit=4,
+            non_category=["self", "buildin"],
+        )
+    )
+    assert routed[0].name == "get_user_wuwa_char_detail"
+
+
 def test_no_entity_hit_behaves_exactly_like_plain_search(_fake_world) -> None:
     """底线：没有实体命中 → 与普通 search_tools 逐字节一致（含 limit / threshold 透传）。"""
     out = asyncio.run(

@@ -1,0 +1,861 @@
+# 询问者槽位回想（2026-08-28 生产日志抽象 · 扩题）
+#
+# 生产事故不是「天气特判」，是：办眼前的事需要说话人身上的事实（所在地、时区、过敏、
+# 称呼、家庭、通勤），本句没写时不回想、空槽直搜，搜索引擎默认地区被当成用户所在地。
+# 夹具城市/过敏只用 history 里用户自己说过的；框架代码不得写死这些词。
+# eval 默认 enable_observer=False，长期图不会被本套用例写入——槽位只在注入的 history 里。
+#
+# 本会话复现过的翻车（每条都有多题）：
+# - 空槽 web_search("今天天气") → 引擎默认地区当「你那儿」（含全国公报）
+# - 上文已有所在地仍空槽搜 / 另猜城市
+# - 查过别人的城市后把「我这边」继承成那个城市
+# - 群里乙继承甲的城市
+# - 唤醒词碰巧是游戏角色名 → 去查角色面板
+# - 轻查询先框架「收到」再答
+# - 回想 query 把眼前题目原话/一袋同义词丢进记忆（召回无关网页知识）
+# - 反向：本句已给槽、查过的城市≠住在那、游戏角色提问≠点名 bot
+
+k: 1
+
+_anchors:
+  empty_web: &empty_web
+    if_call_then_before: ["search_cognition", "web_search_tool"]
+    max_latency: 120
+  weather_any: &weather_any
+    must_call_any: ["search_cognition", "web_search_tool", "find_tools", "get_weather", "weather"]
+    max_latency: 120
+  wake_weather: &wake_weather
+    must_not_call: ["get_character", "get_char", "character_detail"]
+    if_call_then_before: ["search_cognition", "web_search_tool"]
+    max_latency: 120
+
+cases:
+  # ════════ 1. 空槽天气：本句没地点，禁止引擎默认地区 ════════
+  - id: slot_weather_no_city
+    domain: speaker_slot_recall
+    targets: [longmemeval, gaia]
+    k: 1
+    why_hard: 私聊只问天气没给城市；空槽 web_search 会被引擎填默认地区
+    message: "今天天气如何？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          用户没说自己在哪。正确做法是先回想说话人信息，或询问所在地，再查天气。
+          空槽直搜、把搜索引擎默认城市（或全国公报）当成用户当地天气=FAIL。
+          先回想/先问城市=PASS。委派任务的 query 没带用户所在地、让引擎自己填，同样 FAIL。
+
+  - id: slot_no_national_bulletin
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 空槽搜天气容易拿中央气象台全国公报冒充当地
+    message: "外面冷不冷？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          用户没说在哪。不得把全国范围天气公报或某默认城市气温当成「你那儿」的体感。
+          先回想/询问所在地=PASS；直接报某个未提及城市或全国天气当用户当地=FAIL。
+
+  - id: slot_no_engine_default_as_home
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 生产曾把搜索引擎默认省会当成用户所在地播报
+    message: "今天天气怎么样"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          用户从未报过所在地。若回复把某个具体城市当作「你那儿/当地」来报天气，
+          而该城市既不是用户说的、也不是回想命中的，=FAIL（搜索引擎默认地区不算用户所在地）。
+          询问所在地、或先回想再决定、或明确说还不知道你在哪=PASS。
+
+  - id: slot_rain_today_no_city
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 「今天下雨吗」同样缺地点，换一种问法
+    message: "今天下雨吗？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          没说在哪。不能空槽搜雨情再拿默认城市/全国预报当答案。
+          先问或先回想所在地=PASS；把未提及城市的下雨情况当成用户当地=FAIL。
+
+  - id: slot_jacket_no_city
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 「要不要加衣服」隐含当地气温
+    message: "出门要不要加衣服？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          加衣服取决于当地气温。用户没说在哪。应先回想或询问所在地。
+          按某个未提及城市给穿衣建议=FAIL；问/回想=PASS。
+
+  - id: slot_air_quality_no_city
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 空气质量是地点槽，不是全国一句话
+    message: "空气质量怎么样？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          空气质量必须绑定地点。没说在哪就报某个默认城市 AQI、或全国空气概述当「你那儿」=FAIL。
+          先问/先回想=PASS。
+
+  - id: slot_weekend_outing_no_city
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 「周末出去玩」缺地点也缺天气
+    message: "周末适合出去玩吗？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          「出去玩」依赖当地天气。没说在哪。不得按默认城市周末预报给建议。
+          问所在地或先回想=PASS；拿未提及城市的预报当用户当地=FAIL。
+
+  - id: slot_run_tomorrow_no_city
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 跑步适不适合同样是当地天气
+    message: "明天适合跑步吗？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          没说在哪。不能按默认城市明天天气判断适不适合跑。
+          问/回想所在地=PASS；把未提及城市预报当用户当地=FAIL。
+
+  # ════════ 2. 上文已有所在地：必须沿用，禁止另猜 / 再问 ════════
+  - id: slot_weather_history_city
+    domain: speaker_slot_recall
+    targets: [longmemeval, tau-bench]
+    k: 1
+    why_hard: 上文说过住杭州，本句只问天气，必须沿用杭州而不是另猜城市
+    history:
+      - role: user
+        content: "记一下，我住杭州，平时都在这边。"
+      - role: assistant
+        content: "嗯，杭州。"
+    message: "今天天气如何？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          上文用户明确说住杭州。本轮问天气应沿用杭州去查或说明杭州天气。
+          改用未提及的城市、或空槽搜「今天天气」让引擎自己填地区=FAIL。
+          沿用杭州（亲自搜/专域工具/委派任务写明杭州）=PASS。不要再问在哪个城市。
+
+  - id: slot_umbrella_history_city
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 问带伞没提城市，槽在上文「成都」
+    history:
+      - role: user
+        content: "我现在在成都上班。"
+      - role: assistant
+        content: "成都啊。"
+    message: "明天出门要不要带伞？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          上文在成都。问明天出门带不带伞=查成都天气，不要再问在哪个城市，也不要报别的城市。
+          沿用成都去查或据此建议=PASS；当没这段话另猜城市=FAIL。
+
+  - id: slot_this_side_after_city
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 「我这边」必须接到上文自己的城市
+    history:
+      - role: user
+        content: "我常驻青岛。"
+      - role: assistant
+        content: "青岛，记下了。"
+    message: "我这边今天怎么样？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          「我这边」=上文青岛。应查/报青岛，不要问在哪，不要换成别的城市。
+          沿用青岛=PASS；另猜或空槽默认地区=FAIL。
+
+  - id: slot_colloquial_local_weather
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 口语「咱这儿」同样是所在地槽
+    history:
+      - role: user
+        content: "我人在沈阳。"
+      - role: assistant
+        content: "沈阳。"
+    message: "咱这儿今儿冷不冷？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          「咱这儿」=沈阳。应沿用沈阳，不要再问城市，不要报别的地方。
+          沈阳=PASS；其它城市或全国公报当当地=FAIL。
+
+  - id: slot_distant_history_city
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 所在地在多轮闲聊之前，不能因为隔了几句就丢
+    history:
+      - role: user
+        content: "对了，我定居厦门。"
+      - role: assistant
+        content: "厦门。"
+      - role: user
+        content: "中午吃了牛肉面，有点咸。"
+      - role: assistant
+        content: "那下次少放点盐。"
+      - role: user
+        content: "下午还要开会，先不聊这个了。"
+      - role: assistant
+        content: "好，开会去吧。"
+    message: "今天天气如何？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          几轮闲聊之前用户说过定居厦门。本轮问天气应沿用厦门，不能当没说过、空槽直搜或另猜。
+          沿用厦门=PASS；丢了这段记忆=FAIL。
+
+  - id: slot_city_moved
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 所在地已更新，必须用最新的，不能用旧城
+    history:
+      - role: user
+        content: "我之前一直住杭州。"
+      - role: assistant
+        content: "杭州。"
+      - role: user
+        content: "上周搬家了，以后都在苏州，别再按杭州算。"
+      - role: assistant
+        content: "改成苏州。"
+    message: "今天天气如何？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          用户已声明搬到苏州、不要再按杭州。本轮天气必须用苏州。
+          苏州=PASS；仍报杭州或另猜/空槽默认=FAIL。
+
+  - id: slot_bike_commute_weather
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 出行方式+所在地都在上文，问出门注意啥要两槽一起用
+    history:
+      - role: user
+        content: "我在杭州，每天骑车上班。"
+      - role: assistant
+        content: "杭州骑车通勤，记下了。"
+    message: "明天出门要注意啥？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          上文杭州+骑车通勤。回答应针对杭州天气给骑车建议（雨/风/温度），
+          不要问在哪、不要当开车/地铁、不要报别的城市。
+          接上杭州且考虑骑车=PASS；空槽或忽略骑车=FAIL。
+
+  # ════════ 3. 查过的城市 ≠ 住在那里 ════════
+  - id: slot_lookup_city_not_home
+    domain: speaker_slot_recall
+    targets: [longmemeval, tau-bench]
+    k: 1
+    why_hard: 上一轮是替朋友查北京，本轮「我这边」不能继承北京
+    history:
+      - role: user
+        content: "帮我查一下北京今天天气，我要给朋友打电话。"
+      - role: assistant
+        content: "北京今天晴，大概 26 度。"
+    message: "那我这边呢？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          上一轮查北京是给朋友打电话，用户没说自己住北京。
+          「我这边」不得直接报北京。应询问用户所在地或回想用户自己的城市。
+          把北京当用户当地=FAIL；问/回想用户自己的槽=PASS。
+
+  - id: slot_home_vs_lookup
+    domain: speaker_slot_recall
+    targets: [longmemeval, tau-bench]
+    k: 1
+    why_hard: 自己住杭州，中间查过北京，『我这边』仍是杭州
+    history:
+      - role: user
+        content: "我住杭州。"
+      - role: assistant
+        content: "杭州。"
+      - role: user
+        content: "北京今天天气咋样，我朋友在那儿。"
+      - role: assistant
+        content: "北京今天多云。"
+    message: "那我这边呢？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          「我这边」=用户自己住的杭州，不是刚查过的朋友所在地北京。
+          沿用杭州=PASS；报北京或另猜=FAIL。不要再问用户住哪。
+
+  # ════════ 4. 反向：本句已经给了地点，不要再问 / 不要空回想拖着 ════════
+  - id: slot_explicit_city_no_quiz
+    domain: speaker_slot_recall
+    targets: [BFCL-args]
+    k: 1
+    why_hard: 本句已经给了城市，不要再问在哪、不要先空回想再拖
+    message: "帮我查深圳今天天气"
+    expect:
+      must_call_any: ["web_search_tool", "find_tools", "get_weather", "weather"]
+      max_latency: 120
+      judge:
+        rubric: >
+          用户已经点名深圳。应直接查深圳天气，不要再问「你在哪个城市」。
+          查了深圳（工具 query/参数含深圳，或答复明确是深圳）=PASS；无视深圳另猜或只问城市=FAIL。
+
+  - id: slot_explicit_city_bare
+    domain: speaker_slot_recall
+    targets: [BFCL-args]
+    k: 1
+    why_hard: 更短的「上海今天天气」同样已给槽
+    message: "上海今天天气"
+    expect:
+      must_call_any: ["web_search_tool", "find_tools", "get_weather", "weather"]
+      max_latency: 120
+      judge:
+        rubric: >
+          本句已点名上海。直接查上海=PASS；再问在哪或查成别的城市=FAIL。
+
+  - id: slot_compare_two_cities
+    domain: speaker_slot_recall
+    targets: [BFCL-args]
+    k: 1
+    why_hard: 两个城市都给了，不要再问用户在哪
+    message: "对比一下杭州和南京今天天气"
+    expect:
+      must_call_any: ["web_search_tool", "find_tools", "get_weather", "weather"]
+      max_latency: 120
+      judge:
+        rubric: >
+          用户要对比杭州和南京，两城都已点名。应查这两城，不要问用户住哪，也不要只查一城冒充对比。
+          两边都覆盖（工具或答复）=PASS；只报一城或改问所在地=FAIL。
+
+  # ════════ 5. 「附近」类空槽 ════════
+  - id: slot_nearby_food_no_place
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 「附近吃什么」缺地点槽，不能让搜索引擎默认城市
+    message: "附近有什么好吃的？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          用户没说自己在哪。「附近」需要地点。应先回想或询问所在地。
+          空槽网页搜、把结果里默认城市当成用户所在=FAIL。问/回想=PASS。
+
+  - id: slot_nearby_hospital
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 附近医院同样缺地点
+    message: "附近哪家医院比较靠谱？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          「附近」需要地点，用户没给。先问或先回想=PASS。
+          按搜索引擎默认城市列医院、当成用户当地=FAIL。
+
+  - id: slot_nearby_charger
+    domain: speaker_slot_recall
+    targets: [gaia]
+    k: 1
+    why_hard: 附近充电桩同样缺地点
+    message: "附近有充电桩吗？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          没说在哪。不能按默认城市报充电桩。问/回想所在地=PASS；把未提及城市当「附近」=FAIL。
+
+  - id: slot_workplace_lunch
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 「附近午饭」应接到上文职场地点，不是引擎默认城
+    history:
+      - role: user
+        content: "我在陆家嘴上班，中午就在公司附近解决。"
+      - role: assistant
+        content: "陆家嘴，记下了。"
+    message: "中午附近吃什么好？"
+    expect:
+      max_latency: 120
+      judge:
+        rubric: >
+          上文职场在陆家嘴。附近午饭应围绕陆家嘴/该商圈，不要问在哪，不要换成别的城市。
+          接上陆家嘴=PASS；默认城市或完全忽略这段=FAIL。
+
+  # ════════ 6. 其它询问者槽：过敏 / 时区 / 称呼 / 家庭 / 饮食 / 宠物 / 语言 ════════
+  - id: slot_allergy_lunch
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 推荐午饭必须避开上文过敏原，不能当没这段记忆
+    history:
+      - role: user
+        content: "对了记一下，我对海鲜严重过敏。"
+      - role: assistant
+        content: "记住了，海鲜不行。"
+    message: "中午吃什么好？"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          用户刚说过海鲜过敏。推荐须避开海鲜或主动提过敏约束=PASS。
+          完全当没这段、猛推海鲜=FAIL。
+
+  - id: slot_diet_dinner
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 晚饭推荐要遵守上文饮食约束
+    history:
+      - role: user
+        content: "我这阵子减脂，晚上不吃主食碳水。"
+      - role: assistant
+        content: "晚上不吃主食，记下了。"
+    message: "晚饭吃啥？"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          上文晚上不吃主食碳水。推荐须避开米饭面条等主食或主动提这个约束=PASS。
+          当没这段猛推盖饭炒面=FAIL。
+
+  - id: slot_timezone_morning_alarm
+    domain: speaker_slot_recall
+    targets: [longmemeval, BFCL-args]
+    k: 1
+    why_hard: 设早八提醒须用上文时区，不能默认部署机时区
+    history:
+      - role: user
+        content: "我常驻美西，时间按太平洋时间来。"
+      - role: assistant
+        content: "好，按美西。"
+    message: "帮我设个每天早上八点的起床提醒"
+    expect:
+      must_call_any: ["add_interval_task", "add_once_task", "find_tools", "search_cognition"]
+      max_latency: 120
+      judge:
+        rubric: >
+          上文要求按美西/太平洋时间。设早上八点提醒应体现该时区（参数或口头说明），
+          不能当没说过、按默认时区 silently 落地。
+          体现美西/太平洋=PASS；完全忽略时区当本地早八=FAIL。
+
+  - id: slot_how_to_address_me
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 称呼偏好在上文，本句没重复
+    history:
+      - role: user
+        content: "以后叫我老王就行，别叫全名。"
+      - role: assistant
+        content: "好，老王。"
+    message: "你该怎么称呼我来着？"
+    expect:
+      max_latency: 60
+      final_contains_any: ["老王"]
+      judge:
+        rubric: >
+          用户要求叫老王。回答应是老王（或说明叫老王），不要编别的昵称或说不记得。
+          答老王=PASS。
+
+  - id: slot_child_ticket
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 买票问法没提孩子，槽在上文「上小学的女儿」
+    history:
+      - role: user
+        content: "我家女儿今年上小学二年级。"
+      - role: assistant
+        content: "二年级呀。"
+    message: "帮我看看儿童票怎么买比较合适"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          上文有上小学的女儿。回答儿童票应接得上小学生/女儿，不要当完全不认识的路人
+          空口编一个年龄，也不要当没这段记忆。合理接上=PASS；编造没说过的年龄细节或完全忽略=FAIL。
+
+  - id: slot_pet_allergy_food
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 买猫粮必须避开上文过敏原
+    history:
+      - role: user
+        content: "我家布偶对鸡肉过敏，别推荐含鸡肉的。"
+      - role: assistant
+        content: "鸡肉不行，记下了。"
+    message: "猫粮买哪种比较合适？"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          上文布偶对鸡肉过敏。推荐须避开鸡肉或主动提这个约束=PASS。
+          当没这段猛推鸡肉猫粮=FAIL。
+
+  - id: slot_language_pref
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 语言偏好在上文，本句只问该用什么语言
+    history:
+      - role: user
+        content: "以后请用英语跟我说话。"
+      - role: assistant
+        content: "Got it, I'll use English."
+    message: "你该用什么语言回我来着？"
+    expect:
+      max_latency: 60
+      judge:
+        rubric: >
+          用户要求用英语。回答应说明用英语（或直接用英语答）。
+          英语=PASS；改口中文或说不记得=FAIL。
+
+  - id: slot_coffee_pref
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 推荐饮品要遵守上文口味
+    history:
+      - role: user
+        content: "我只喝美式，不放糖、不放奶。"
+      - role: assistant
+        content: "美式，无糖无奶。"
+    message: "给我推荐一杯咖啡。"
+    expect:
+      max_latency: 60
+      judge:
+        rubric: >
+          上文只喝美式且无糖无奶。推荐须符合，不能推拿铁/甜咖啡当没这段。
+          美式且无糖无奶（或明确遵守）=PASS；推含奶含糖当默认可接受=FAIL。
+
+  - id: slot_never_said_hometown
+    domain: speaker_slot_recall
+    targets: [longmemeval, gaia]
+    k: 1
+    why_hard: 没说过籍贯就不能编一个城市
+    message: "我是哪里人来着？你记得吗？"
+    expect:
+      max_latency: 60
+      judge:
+        rubric: >
+          本会话用户从未说过籍贯/所在地。应如实说不记得或没听你说过，可以请用户再说一次。
+          编造一个具体城市当作用户籍贯=FAIL；承认不知道=PASS。
+
+  - id: slot_spouse_diet
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 晚饭约束在「对象」身上，不能当没有
+    history:
+      - role: user
+        content: "我对象乳糖不耐，一起吃饭别点奶制品。"
+      - role: assistant
+        content: "乳糖不耐，记下了。"
+    message: "晚上两人吃什么好？"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          上文对象乳糖不耐。双人晚饭须避开奶制品或主动提这个约束=PASS。
+          猛推芝士/奶油/牛奶餐当没这段=FAIL。
+
+  # ════════ 7. 群聊：点名用自己的槽，禁止继承别人的 ════════
+  - id: slot_grp_at_weather_own_city
+    domain: speaker_slot_recall
+    targets: [group-chat, multi-user, longmemeval]
+    k: 1
+    why_hard: 群里点名问天气，沿用该说话人自己说过的城市
+    history:
+      - role: user
+        content: "阿青(用户ID:9501)：@早柚 记一下我在广州出差。"
+      - role: assistant
+        content: "广州出差，记下了。"
+    message: "阿青(用户ID:9501)：@早柚 今天天气如何"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          阿青说过在广州出差，现在点名问天气。应查广州，不要问他在哪，也不要套别人的城市。
+          沿用广州=PASS。
+
+  - id: slot_grp_dont_inherit_others_city
+    domain: speaker_slot_recall
+    targets: [group-chat, multi-user]
+    k: 1
+    why_hard: 乙问天气不能继承甲的城市
+    history:
+      - role: user
+        content: "阿青(用户ID:9501)：@早柚 我在北京，今天风好大。"
+      - role: assistant
+        content: "北京啊。"
+    message: "小周(用户ID:9502)：@早柚 那我这边今天天气怎么样"
+    expect:
+      max_latency: 120
+      judge:
+        rubric: >
+          小周没说过自己在哪，只说「我这边」。不得把阿青的北京当成小周所在地来报天气。
+          应询问小周在哪或回想小周自己的信息。套用北京=FAIL；问/回想小周=PASS。
+
+  - id: slot_grp_third_speaker
+    domain: speaker_slot_recall
+    targets: [group-chat, multi-user]
+    k: 1
+    why_hard: 丙问天气，桌上已有甲乙两个城市，都不能套
+    history:
+      - role: user
+        content: "阿青(用户ID:9501)：@早柚 我在广州。"
+      - role: assistant
+        content: "广州。"
+      - role: user
+        content: "小周(用户ID:9502)：@早柚 我在上海出差。"
+      - role: assistant
+        content: "上海出差。"
+    message: "阿珍(用户ID:9503)：@早柚 那我这边今天天气呢"
+    expect:
+      max_latency: 120
+      judge:
+        rubric: >
+          阿珍没说过自己在哪。「我这边」不是广州也不是上海。
+          套用桌上任一城市=FAIL；询问阿珍所在地或回想阿珍自己的槽=PASS。
+
+  - id: slot_grp_self_after_others
+    domain: speaker_slot_recall
+    targets: [group-chat, multi-user, longmemeval]
+    k: 1
+    why_hard: 甲的城市之后夹了乙的城市，甲再问仍用甲自己的
+    history:
+      - role: user
+        content: "阿青(用户ID:9501)：@早柚 我在北京。"
+      - role: assistant
+        content: "北京。"
+      - role: user
+        content: "小周(用户ID:9502)：@早柚 我在广州出差，这边好热。"
+      - role: assistant
+        content: "广州出差。"
+    message: "阿青(用户ID:9501)：@早柚 今天天气如何"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          当前说话人是阿青，他在北京。应查北京，不要用小周的广州。
+          北京=PASS；广州或另猜=FAIL。
+
+  - id: slot_grp_continuation_umbrella
+    domain: speaker_slot_recall
+    targets: [group-chat, longmemeval]
+    k: 1
+    why_hard: 同一人续问带伞，城市在上一轮自己说的
+    history:
+      - role: user
+        content: "阿青(用户ID:9501)：@早柚 我在厦门出差这周。"
+      - role: assistant
+        content: "厦门出差。"
+    message: "阿青(用户ID:9501)：明天出门要不要带伞"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          同一人刚说在厦门出差，续问带伞=厦门天气。沿用厦门=PASS；问在哪或报别的城市=FAIL。
+
+  # ════════ 8. 唤醒词 ≠ 游戏实体 ════════
+  - id: slot_wake_word_not_game_entity
+    domain: speaker_slot_recall
+    targets: [toolsandbox, group-chat]
+    k: 1
+    why_hard: 唤醒词碰巧是某游戏角色名，问天气不能去查角色面板
+    message: "sayu今天天气如何？"
+    expect:
+      <<: *wake_weather
+      judge:
+        rubric: >
+          这是在叫 bot 查天气（sayu 是唤醒/点名），不是问某款游戏角色的面板或设定。
+          去查游戏角色资料/练度/面板=FAIL。
+          按天气请求处理（回想地点、询问城市、或查天气）=PASS。
+
+  - id: slot_wake_zaoyou_weather
+    domain: speaker_slot_recall
+    targets: [toolsandbox]
+    k: 1
+    why_hard: 中文唤醒词+天气，同样不是角色查询
+    message: "早柚今天天气如何？"
+    expect:
+      <<: *wake_weather
+      judge:
+        rubric: >
+          这是点名 bot 查天气，不是问游戏角色。去查角色面板/技能=FAIL。
+          按天气处理（问所在地/回想/查天气）=PASS。空槽把默认城市当用户当地同样 FAIL。
+
+  - id: slot_wake_sayu_help_weather
+    domain: speaker_slot_recall
+    targets: [toolsandbox]
+    k: 1
+    why_hard: 「sayu 帮我查天气」空格分隔仍是点名
+    message: "sayu 帮我查一下天气"
+    expect:
+      <<: *wake_weather
+      judge:
+        rubric: >
+          点名 bot 查天气。不是游戏角色。空槽默认城市当用户当地=FAIL。
+          问/回想所在地或按天气处理=PASS。查角色面板=FAIL。
+
+  - id: slot_wake_at_sayu_cold
+    domain: speaker_slot_recall
+    targets: [toolsandbox, group-chat]
+    k: 1
+    why_hard: 群里 @ 英文唤醒词问冷不冷
+    message: "阿青(用户ID:9501)：@sayu 今天冷不冷"
+    expect:
+      <<: *wake_weather
+      judge:
+        rubric: >
+          @ 的是 bot，问体感冷不冷。需要地点槽（问或回想），不是游戏角色查询。
+          查角色=FAIL；空槽默认城市当阿青当地=FAIL；问/回想=PASS。
+
+  - id: slot_reverse_game_char_query
+    domain: speaker_slot_recall
+    targets: [toolsandbox]
+    k: 1
+    why_hard: 反向——明确问游戏角色，不要当成对 bot 点名查天气
+    message: "原神里那个叫早柚的角色，技能是什么？"
+    expect:
+      must_not_call: ["get_weather", "weather", "weather_handler"]
+      max_latency: 120
+      judge:
+        rubric: >
+          这是在问某款游戏里一个同名角色的技能，不是点名 bot 去查用户当地天气。
+          按游戏角色资料回答或去查设定=PASS；当成唤醒词去报天气/问用户在哪=FAIL。
+
+  # ════════ 9. 轻查询不要先应一声 ════════
+  - id: slot_light_query_no_ack_then_answer
+    domain: speaker_slot_recall
+    targets: [efficiency]
+    k: 1
+    why_hard: 轻查询先框架「收到」再报天气=双说；重任务才需要接任务应
+    history:
+      - role: user
+        content: "我住杭州。"
+      - role: assistant
+        content: "杭州，好。"
+    message: "今天天气如何？"
+    expect:
+      max_latency: 120
+      judge:
+        rubric: >
+          这是单点查询，不是委派出图/长任务。用户可见回复不应先来一句无内容的「收到」再报天气。
+          可以一句回答杭州天气，或先问缺的槽。
+          只有一句有效回答=PASS；先空洞接任务应再报结果=FAIL。
+          本例不应走 render/create_subagent/kanban。不要套用「短应再委派」纪律：
+          若轨迹没有这些重任务工具，先「收到」再答就是 FAIL。
+
+  - id: slot_light_named_city_no_ack
+    domain: speaker_slot_recall
+    targets: [efficiency]
+    k: 1
+    why_hard: 本句已给城市的轻查询同样不该先「收到」
+    message: "帮我查深圳今天天气"
+    expect:
+      must_call_any: ["web_search_tool", "find_tools", "get_weather", "weather"]
+      max_latency: 120
+      judge:
+        rubric: >
+          单点查深圳天气。直接查并回答即可。
+          轨迹没有 create_subagent/render/kanban 时，先来一句无内容「收到」再报天气=FAIL。
+          一句有效回答（含深圳）=PASS。
+
+  # ════════ 10. 回想 query 质量：说话人+槽，不要粘贴眼前题目 ════════
+  - id: slot_cognition_query_is_speaker_slot
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 回想应用说话人+槽组词，不要把「今天天气如何」原样当记忆 query
+    history:
+      - role: user
+        content: "我定居南京，别搞错城市。"
+      - role: assistant
+        content: "南京。"
+    message: "今天天气如何？"
+    expect:
+      <<: *weather_any
+      judge:
+        rubric: >
+          上文已给南京。若调用了 search_cognition，其参数应针对说话人/所在地/南京，
+          而不是把用户原话「今天天气如何」原样当记忆检索词（那会召回无关网页知识）。
+          若没调回想、但 web_search/天气工具的 query 带了南京，也算 PASS。
+          空槽搜「今天天气」或回想 query 只有天气没有说话人/城市=FAIL。
+          工具参数见上方轨迹 args。
+
+  - id: slot_cognition_empty_slot_query_quality
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 空槽时回想也要组「说话人+所在地」，不能把天气原话丢进记忆
+    message: "今天天气如何？"
+    expect:
+      <<: *empty_web
+      judge:
+        rubric: >
+          用户没给城市。若调用了 search_cognition，query 应是说话人标识+所在地/城市/住址这类槽，
+          不要把「今天天气如何」原样、或「天气 地点 城市 位置」一袋同义词当记忆检索词
+          （后者会召回无关图片模型/网页句子）。
+          也可以不调回想、直接询问用户在哪——这算 PASS。
+          空槽 web_search 把引擎默认城市当用户当地=FAIL。
+          工具参数见上方轨迹 args。
+
+  - id: slot_cognition_allergy_query_quality
+    domain: speaker_slot_recall
+    targets: [longmemeval]
+    k: 1
+    why_hard: 推荐午饭若走回想，query 应是过敏/饮食槽而不是「中午吃什么」
+    history:
+      - role: user
+        content: "我对海鲜严重过敏。"
+      - role: assistant
+        content: "海鲜过敏，记下了。"
+    message: "中午吃什么好？"
+    expect:
+      max_latency: 90
+      judge:
+        rubric: >
+          推荐必须避开海鲜。若调用了 search_cognition，参数应针对说话人/过敏/饮食，
+          而不是把「中午吃什么好」原样当记忆检索词。
+          不调回想但答复已避开海鲜，也算 PASS。
+          猛推海鲜=FAIL。工具参数见上方轨迹 args。

@@ -3,6 +3,7 @@
   "log.meme.added_library_id": "[Meme] New meme added to library: {meme_id} ({width}x{height}, {file_mime})",
   "log.meme.added_tagging_queue": "[Meme] Added to tagging queue: {meme_id}",
   "log.meme.available_search_results_folder": "[Meme] No available search results: folder={folder}, query={query_text}",
+  "log.meme.backfill_missing_vectors": "[Meme] Backfill missing meme vectors: wrote {restored}, skipped {skipped} (collection kept)",
   "log.meme.bulk_delete_failed_fallback": "[Meme] Bulk delete failed, fallback per-id: {e}",
   "log.meme.bulk_delete_rowcount_short": "[Meme] Bulk delete rowcount={deleted} < batch={batch}",
   "log.meme.clean_vector_point_continuing": "[Meme] Failed to clean old vector point (continuing write): {meme_id}: {e}",
