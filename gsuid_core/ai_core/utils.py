@@ -2175,6 +2175,76 @@ def _normalize_thinking_tags(thinking_tags: tuple[str, str]) -> tuple[str, str]:
     return (start, end)
 
 
+class ThinkTagSplitter:
+    """把流式 TextPartDelta 里的 ``<think>…</think>`` 拆成 (可见文本, 思考增量)。
+
+    标签可能跨 chunk 切开，所以要保留半截前缀。未闭合的思考不进可见文本。
+    """
+
+    __slots__ = ("start", "end", "in_think", "hold")
+
+    def __init__(self, start: str = "<think>", end: str = "</think>") -> None:
+        start, end = _normalize_thinking_tags((start, end))
+        self.start = start
+        self.end = end
+        self.in_think = False
+        self.hold = ""
+
+    def reset(self) -> None:
+        self.in_think = False
+        self.hold = ""
+
+    def feed(self, piece: str) -> tuple[str, str]:
+        if not piece:
+            return "", ""
+        s = self.hold + piece
+        self.hold = ""
+        visible: list[str] = []
+        thought: list[str] = []
+        i = 0
+        while i < len(s):
+            token = self.end if self.in_think else self.start
+            j = s.find(token, i)
+            if j < 0:
+                cut = _partial_token_suffix(s, i, token)
+                chunk = s[i:] if cut < 0 else s[i:cut]
+                if self.in_think:
+                    thought.append(chunk)
+                else:
+                    visible.append(chunk)
+                if cut >= 0:
+                    self.hold = s[cut:]
+                break
+            chunk = s[i:j]
+            if self.in_think:
+                thought.append(chunk)
+                self.in_think = False
+            else:
+                visible.append(chunk)
+                self.in_think = True
+            i = j + len(token)
+        return "".join(visible), "".join(thought)
+
+    def flush(self) -> tuple[str, str]:
+        leftover = self.hold
+        self.hold = ""
+        if not leftover:
+            return "", ""
+        if self.in_think:
+            return "", leftover
+        return leftover, ""
+
+
+def _partial_token_suffix(s: str, start: int, token: str) -> int:
+    """``s[start:]`` 若以 ``token`` 的真前缀结尾，返回截断下标，否则 -1。"""
+    tail = s[start:]
+    max_k = min(len(tail), len(token) - 1)
+    for k in range(max_k, 0, -1):
+        if token.startswith(tail[-k:]):
+            return len(s) - k
+    return -1
+
+
 def _dedupe_thinking_parts(parts: Sequence[ModelResponsePart]) -> List[ModelResponsePart]:
     """同一响应里相同思考只留一份（先出现的优先，通常是原生 reasoning 字段）。
 

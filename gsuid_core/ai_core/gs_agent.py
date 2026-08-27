@@ -274,7 +274,7 @@ class GsCoreAIAgent(RunOnceMixin):
         dynamic_tools: Optional[bool] = None,
         scope_key: Optional[str] = None,
         wall_clock_budget: Optional[float] = None,
-        on_trace: Optional[Callable[[TraceKind, str], None]] = None,
+        on_trace: Optional[Callable[[str, str], None]] = None,
         capability_node_id: Optional[str] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
@@ -394,10 +394,11 @@ class GsCoreAIAgent(RunOnceMixin):
         """本轮已出站的可见台词（插入序）。评测 HTTP 在 SILENCE 返回时拼回这条。"""
         return tuple(self._run_sent_texts)
 
-    def _emit_trace(self, kind: TraceKind, text: str) -> None:
+    def _emit_trace(self, kind: str, text: str) -> None:
         """把模型思考 / 工具调用轨迹推给观察者（``on_trace``）。
 
         ``kind="tool"`` 的 text 形如 ``"<工具名>|<参数JSON>"``。
+        ``kind="thinking_delta"`` 为流式思考增量；``tool_result`` 为工具返回。
 
         宿主可据此把"Agent 在想什么、调了什么工具"实时呈现给用户
         （例如前端「思考过程」折叠块），而不必去翻 session log 文件。

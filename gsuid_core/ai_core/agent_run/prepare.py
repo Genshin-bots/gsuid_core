@@ -123,6 +123,7 @@ class PreparePhase(RunOnceHost):
         st.same_tool_name = ""
         st.thrash_fused = False
         st.thinking_segments = []  # 累积本轮模型 thinking 文本，供意图-行为一致性检测
+        st.thinking_streamed = False
         # A: 被同 Session 更新消息 supersede 时置位，不写 history、不收尾发
         st.generation_cancelled = False
         st.cancel_ev = self._cancel_generation

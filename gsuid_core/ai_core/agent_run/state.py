@@ -63,6 +63,8 @@ class RunOnceState:
     same_tool_name: str = ""
     thrash_fused: bool = False
     thinking_segments: list[str] = field(default_factory=list)
+    #: 本轮已从 pydantic-ai 流式 event 推过 thinking_delta，CallTools 勿再整段重放
+    thinking_streamed: bool = False
     generation_cancelled: bool = False
     cancel_ev: Any | None = None
     # 出站话术：free / silence_only / status_ok / framework_nudge /

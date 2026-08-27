@@ -196,7 +196,7 @@ _INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST", "CapabilityAgent")
 _MAIN_PERSONA_CREATE_BY = frozenset({"Chat", "Agent", "Plan"})
 
 # on_trace 轨迹事件类型：模型推理段 / 工具调用（见 GsCoreAIAgent._emit_trace）
-TraceKind = Literal["thinking", "tool"]
+TraceKind = Literal["thinking", "thinking_delta", "tool", "tool_result"]
 
 _FAKE_DONE_NUDGE = (
     "（系统校验：你上一条回复声称已完成某个操作，但本轮没有任何工具调用记录，该声明是编造的。"

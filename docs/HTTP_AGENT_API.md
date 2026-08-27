@@ -176,7 +176,7 @@ data: {"run_id":"…","session_id":"default","seq":1}
 | `event` | `data` | 前端该做什么 |
 |---------|--------|----------------|
 | `run.start` | `run_id`，`session_id`（**客户端**会话名），`seq` | 记下 `run_id`，用于取消。开始「生成中」。 |
-| `text` | `text`，`seq` | **追加**到当前气泡。可能有多帧；已过输出闸。 |
+| `text` | `text`，`seq` | **追加**到当前气泡。可能有多帧（模型 token / 短合批）。完整段不再整包重发。 |
 | `attachment` | 见 §8 | 渲染图/文件，或提示「过大已省略」。 |
 | `run.done` | `status`: `ok` \| `silence` \| `cancelled`，`seq` | **终态**。停 spinner。 |
 | `run.error` | `code`，`message`，`seq` | **终态**。展示 `message`（已脱敏，无供应商原文）。 |
@@ -184,10 +184,11 @@ data: {"run_id":"…","session_id":"default","seq":1}
 不变量：
 
 1. 成功开流后，**恰好一个**终态（`run.done` 或 `run.error`）。
-2. 没有 `thinking` / `tool.*`。工具在跑时可能长时间只有 `: ping`。
-3. `silence` 不是失败：模型决定不说。UI 应显示「无回复」，不要当报错。
-4. 客户端主动断开（`AbortController.abort()`）时，服务端停本轮；**不一定**还能把终态写完。按「用户取消」处理即可。
-5. 同 `session_id` 再发一条：v1 是 **抢答**（后到取消先到）。先到的流可能 `run.done cancelled`。要排队自己在前端做。
+2. 人格面 v1 没有 `thinking` / `tool.*`（画布 BFF 额外发 `thinking` 快照）。工具在跑时可能长时间只有 `: ping`。
+3. `text` 在 pydantic-ai 流式 delta 到达时就开始推；IM 闸门仍在完整 TextPart 上跑，已推过的 delta 不会再入队一次。
+4. `silence` 不是失败：模型决定不说。UI 应显示「无回复」，不要当报错。
+5. 客户端主动断开（`AbortController.abort()`）时，服务端停本轮；**不一定**还能把终态写完。按「用户取消」处理即可。
+6. 同 `session_id` 再发一条：v1 是 **抢答**（后到取消先到）。先到的流可能 `run.done cancelled`。要排队自己在前端做。
 
 `run.error.code` 常见：`timeout`、`internal`、`ai_unavailable`、`output_truncated`（出站队列溢出，transcript 可能不完整）。
 

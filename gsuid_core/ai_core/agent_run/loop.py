@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Sequence
+from inspect import isawaitable
 
 from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
@@ -26,6 +27,7 @@ from gsuid_core.ai_core import (
     angle_bracket_guard,
 )
 from gsuid_core.ai_core.utils import (
+    ThinkTagSplitter,
     send_chat_result,
     is_silence_marker,
     _split_embedded_thinking,
@@ -122,6 +124,103 @@ def is_stage_direction(text: str) -> bool:
 
 
 class LoopPhase(RunOnceHost):
+    async def _emit_stream_events(
+        self,
+        st: RunOnceState,
+        event: Any,
+        *,
+        text_starts: set[int],
+        splitter: ThinkTagSplitter,
+    ) -> None:
+        """从 pydantic-ai 流式 event 抽出 thinking / 可见 text delta。
+
+        thinking 走 ``on_trace``（画布折叠块）；text 仅 CaptureBot 有
+        ``enqueue_text_delta`` 时入 SSE。QQ 等 IM 仍等完整 TextPart + 闸门。
+        Text 里夹的 ``<think>`` 在这里剥掉，避免思考进气泡正文。
+        """
+        kind = getattr(event, "event_kind", None)
+        if kind == "part_delta":
+            delta = getattr(event, "delta", None)
+            dkind = getattr(delta, "part_delta_kind", None)
+            piece = getattr(delta, "content_delta", None) or ""
+            if dkind == "thinking" and piece:
+                st.thinking_streamed = True
+                self._emit_trace("thinking_delta", piece)
+            elif dkind == "text" and piece:
+                await self._enqueue_text_delta(st, piece, splitter)
+            return
+        if kind == "part_start":
+            part = getattr(event, "part", None)
+            idx = getattr(event, "index", None)
+            if isinstance(part, ThinkingPart):
+                piece = part.content or ""
+                if piece:
+                    st.thinking_streamed = True
+                    self._emit_trace("thinking_delta", piece)
+            elif isinstance(part, TextPart):
+                if isinstance(idx, int):
+                    if idx in text_starts:
+                        return
+                    text_starts.add(idx)
+                piece = part.content or ""
+                if piece:
+                    await self._enqueue_text_delta(st, piece, splitter)
+
+    async def _enqueue_text_delta(
+        self,
+        st: RunOnceState,
+        piece: str,
+        splitter: ThinkTagSplitter | None,
+    ) -> None:
+        if not piece or st.bot is None:
+            return
+        visible = piece
+        if splitter is not None:
+            visible, thought = splitter.feed(piece)
+            if thought:
+                st.thinking_streamed = True
+                self._emit_trace("thinking_delta", thought)
+        if not visible:
+            return
+        # 终局静默轮不要把内心 OS 打到 SSE
+        if st.speech_policy in ("silence_only", "delivered"):
+            return
+        enqueue = getattr(st.bot, "enqueue_text_delta", None)
+        if not callable(enqueue):
+            return
+        maybe = enqueue(visible)
+        if isawaitable(maybe):
+            await maybe
+
+    async def _flush_bot_text_delta(self, st: RunOnceState) -> None:
+        flush = getattr(st.bot, "flush_text_delta", None) if st.bot else None
+        if not callable(flush):
+            return
+        maybe = flush()
+        if isawaitable(maybe):
+            await maybe
+
+    async def _commit_streamed_or_send(
+        self,
+        st: RunOnceState,
+        text: str,
+        *,
+        already_streamed: bool,
+        at_user_id: str | None = None,
+    ) -> None:
+        if already_streamed:
+            commit = getattr(st.bot, "commit_streamed_history", None) if st.bot else None
+            if callable(commit):
+                maybe = commit(text)
+                if isawaitable(maybe):
+                    await maybe
+            self._run_sent_texts.add(text)
+            st.main_channel_sends += 1
+            return
+        await send_chat_result(st.bot, text, ev=st.ev, at_user_id=at_user_id)
+        self._run_sent_texts.add(text)
+        st.main_channel_sends += 1
+
     def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
         async_ack = bool(_tool_return_is_async_pending(part) or ("后台执行" in body) or ("自动回灌" in body))
@@ -409,6 +508,11 @@ class LoopPhase(RunOnceHost):
                     )
                 )
                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
+                _trace_out = part.content if isinstance(part.content, str) else str(part.content or "")
+                if _trace_out.startswith("base64://") or isinstance(part.content, bytes):
+                    _trace_out = "[binary]"
+                if _trace_out.strip():
+                    self._emit_trace("tool_result", f"{part.tool_name or ''}|{_trace_out[:2000]}")
                 _ret_body = part.content if isinstance(part.content, str) else str(part.content or "")
                 if _tool_return_is_effectual_write(
                     part.tool_name or "",
@@ -501,15 +605,33 @@ class LoopPhase(RunOnceHost):
         st.req_start = time.perf_counter()
         st.first_event_at = None
         st.last_event_at = None
+        reset_stream = getattr(st.bot, "reset_text_stream", None) if st.bot else None
+        if callable(reset_stream):
+            reset_stream()
+        _text_starts: set[int] = set()
+        _tags = st.thinking_tags if st.thinking_tags else ("<think>", "</think>")
+        splitter = ThinkTagSplitter(_tags[0], _tags[1])
         async with node.stream(agent_run.ctx) as request_stream:
-            async for _event in request_stream:
-                if st.cancel_ev is not None and st.cancel_ev.is_set():
-                    st.generation_cancelled = True
-                    logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
-                    break
-                st.last_event_at = time.perf_counter()
-                if st.first_event_at is None:
-                    st.first_event_at = st.last_event_at
+            try:
+                async for _event in request_stream:
+                    if st.cancel_ev is not None and st.cancel_ev.is_set():
+                        st.generation_cancelled = True
+                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                        break
+                    st.last_event_at = time.perf_counter()
+                    if st.first_event_at is None:
+                        st.first_event_at = st.last_event_at
+                    await self._emit_stream_events(
+                        st, _event, text_starts=_text_starts, splitter=splitter
+                    )
+            finally:
+                vis, th = splitter.flush()
+                if th:
+                    st.thinking_streamed = True
+                    self._emit_trace("thinking_delta", th)
+                if vis:
+                    await self._enqueue_text_delta(st, vis, None)
+                await self._flush_bot_text_delta(st)
 
     async def _run_once_on_call_tools(
         self,
@@ -643,6 +765,8 @@ class LoopPhase(RunOnceHost):
             # 大模型直接输出文本
             elif isinstance(part, TextPart):
                 _text = part.content.strip()
+                _consume = getattr(st.bot, "consume_streamed_text", None) if st.bot else None
+                _already = bool(_consume(_text)) if callable(_consume) else False
                 # 拆出 <think> 后只剩空白的文本片段（如纯思考+工具调用轮）， 既无需打印也无需下发，
                 if not _text:
                     continue
@@ -650,6 +774,16 @@ class LoopPhase(RunOnceHost):
                 self._session_logger.log_text_output(_text)
                 if is_silence_marker(_text):
                     logger.info(i18n_t("log.agent.silent_skipping_text", _text=_text))
+                    continue
+                if _already:
+                    # 已作为 SSE text 帧推过：闸门无法撤回，只记 history，禁止整段再入队。
+                    if _text not in self._run_sent_texts:
+                        try:
+                            await self._commit_streamed_or_send(st, _text, already_streamed=True)
+                        except Exception as _e:
+                            logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
+                    if not _saw_tool_call_this_turn:
+                        st.saw_final_response = True
                     continue
                 _stripped_protocol = remainder_after_protocol_tags(_text).strip()
                 if _stripped_protocol != _text:
@@ -820,10 +954,9 @@ class LoopPhase(RunOnceHost):
                         _extra = _require_context(st).extra
                         _at_uid = _extra["at_user_id"] if "at_user_id" in _extra else None
                         _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
-                        await send_chat_result(st.bot, _text, ev=st.ev, at_user_id=_at)
-                        # 发送成功才登记去重：发送失败的段允许后续相同输出补发。
-                        self._run_sent_texts.add(_text)
-                        st.main_channel_sends += 1
+                        await self._commit_streamed_or_send(
+                            st, _text, already_streamed=False, at_user_id=_at
+                        )
                     except Exception as _e:
                         logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_e))
 
@@ -833,7 +966,9 @@ class LoopPhase(RunOnceHost):
                 if _thinking:
                     st.thinking_segments.append(_thinking)
                 self._session_logger.log_thinking(_thinking)
-                self._emit_trace("thinking", _thinking)
+                # 流式 event 已按 delta 推过则不要整段再打一遍
+                if _thinking and not st.thinking_streamed:
+                    self._emit_trace("thinking", _thinking)
 
         if _resp_unsent:
             st.unsent_texts.extend(_resp_unsent)

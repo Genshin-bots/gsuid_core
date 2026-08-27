@@ -8,6 +8,7 @@ content 里再包一层 ``<think>…</think>``；流式补拆后 parts 里出现
 from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 
 from gsuid_core.ai_core.utils import (
+    ThinkTagSplitter,
     _dedupe_thinking_parts,
     _normalize_thinking_tags,
     _split_embedded_thinking,
@@ -108,3 +109,24 @@ def test_session_logger_skips_consecutive_duplicate_thinking() -> None:
         assert [e["data"]["content"] for e in thinkings] == ["same blob", "different blob"]
     finally:
         slog._closed = True
+
+
+def test_think_tag_splitter_strips_across_chunks() -> None:
+    sp = ThinkTagSplitter("<think>", "</think>")
+    vis, th = sp.feed("<th")
+    assert vis == "" and th == ""
+    vis, th = sp.feed("ink>内心独白")
+    assert vis == ""
+    assert th == "内心独白"
+    vis, th = sp.feed("</think>你好")
+    assert vis == "你好"
+    assert th == ""
+    vis, th = sp.flush()
+    assert vis == "" and th == ""
+
+
+def test_think_tag_splitter_keeps_plain_text() -> None:
+    sp = ThinkTagSplitter("<think>", "</think>")
+    vis, th = sp.feed("Let me think about it.")
+    assert vis == "Let me think about it."
+    assert th == ""

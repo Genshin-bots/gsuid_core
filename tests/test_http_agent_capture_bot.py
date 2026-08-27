@@ -98,6 +98,52 @@ def test_queue_overflow_sets_flag() -> None:
     asyncio.run(_run())
 
 
+def test_text_delta_coalesces_and_skips_duplicate_send() -> None:
+    cap, q = _bot_pair()
+
+    async def _run() -> None:
+        cap.enqueue_text_delta("Hel")
+        cap.enqueue_text_delta("lo, ")
+        cap.enqueue_text_delta("world")
+        await cap.flush_text_delta()
+        frames = []
+        while not q.empty():
+            frames.append(q.get_nowait().text)
+        assert "".join(frames) == "Hello, world"
+        assert cap.consume_streamed_text("Hello, world") is True
+        await cap.commit_streamed_history("Hello, world")
+        assert q.empty()
+
+    asyncio.run(_run())
+
+
+def test_text_delta_consume_prefix_then_remainder() -> None:
+    cap, q = _bot_pair()
+
+    async def _run() -> None:
+        cap.enqueue_text_delta("aaa")
+        cap.enqueue_text_delta("bbb")
+        await cap.flush_text_delta()
+        assert cap.consume_streamed_text("aaa") is True
+        assert cap.consume_streamed_text("bbb") is True
+        assert cap.consume_streamed_text("ccc") is False
+
+    asyncio.run(_run())
+
+
+def test_text_delta_consume_visible_suffix_after_thinking() -> None:
+    cap, q = _bot_pair()
+
+    async def _run() -> None:
+        cap.enqueue_text_delta("用户打招呼了。保持简短。")
+        cap.enqueue_text_delta("你好！画布是空的。")
+        await cap.flush_text_delta()
+        assert cap.consume_streamed_text("你好！画布是空的。") is True
+        assert cap._streamed_text == ""
+
+    asyncio.run(_run())
+
+
 def test_large_attachment_omitted() -> None:
     cap, q = _bot_pair()
     raw = b"x" * (ATTACHMENT_FRAME_MAX + 10)

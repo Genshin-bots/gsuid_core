@@ -1,4 +1,13 @@
-"""CaptureBot：闸后 ``send`` 入队，不走 ``super().send`` / ``send_bytes``。"""
+"""CaptureBot：出站入队，不走 ``super().send`` / ``send_bytes``。
+
+可见台词有两条路径：
+
+- **流式**：``enqueue_text_delta`` 在 pydantic-ai ``TextPartDelta`` 到达时入队，
+  供 SSE ``text`` 帧追加。不写 history（完整段再记一次）。
+- **整段**：``send`` / ``send_chat_result``。若本段已作为 delta 推过，
+  调用方应 ``consume_streamed_text`` 后走 ``commit_streamed_history``，
+  避免同一段再入队一次。
+"""
 
 from __future__ import annotations
 
@@ -60,6 +69,10 @@ def _b64_payload(s: str) -> tuple[str, str, int]:
     return "image/png", s, len(s)
 
 
+# 流式 delta 合批：过短就等下一块，避免一 token 一帧打爆队列。
+_DELTA_FLUSH_CHARS = 8
+
+
 class CaptureBot(Bot):
     """只覆盖 ``send`` / ``send_option``；主人 DM 走 ``target_send`` 不入队。"""
 
@@ -68,6 +81,87 @@ class CaptureBot(Bot):
         self._cap_queue = queue
         self._out_bytes = 0
         self._overflow = False
+        self._streamed_text = ""
+        self._delta_buf = ""
+
+    def reset_text_stream(self) -> None:
+        """新的 ModelRequest 开始前丢掉未对齐的合批缓冲。"""
+        self._streamed_text = ""
+        self._delta_buf = ""
+
+    def enqueue_text_delta(self, piece: str) -> None:
+        """把模型可见文本增量推进 SSE 队列（不写 history）。"""
+        if not piece:
+            return
+        from gsuid_core.ai_core.utils import is_silence_marker
+
+        if is_silence_marker(piece):
+            return
+        self._streamed_text += piece
+        self._delta_buf += piece
+        if len(self._delta_buf) >= _DELTA_FLUSH_CHARS:
+            self._try_flush_delta()
+
+    def _try_flush_delta(self) -> None:
+        if not self._delta_buf:
+            return
+        item = CaptureItem("text", text=self._delta_buf)
+        try:
+            self._cap_queue.put_nowait(item)
+            self._delta_buf = ""
+        except asyncio.QueueFull:
+            # 不标 overflow：留给 flush_text_delta 阻塞推完。
+            return
+
+    async def flush_text_delta(self) -> None:
+        """流结束时把合批残余推进队列；队列满则背压等待。"""
+        if not self._delta_buf:
+            return
+        item = CaptureItem("text", text=self._delta_buf)
+        self._delta_buf = ""
+        try:
+            self._cap_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            await self._cap_queue.put(item)
+
+    def consume_streamed_text(self, text: str) -> bool:
+        """CallTools 完整段与已推 delta 对齐则消耗缓冲，返回 True（勿再 ``send`` 入队）。
+
+        调用前必须先 ``flush_text_delta``，否则合批残余还在 buf 里、未入 SSE。
+        """
+        raw = self._streamed_text
+        if not raw:
+            return False
+        if not text:
+            if not raw.strip():
+                self._streamed_text = ""
+                return True
+            return False
+        stripped = raw.lstrip()
+        lead = len(raw) - len(stripped)
+        if stripped.startswith(text):
+            rest = raw[lead + len(text) :]
+            self._streamed_text = rest.lstrip()
+            return True
+        if text.startswith(stripped):
+            self._streamed_text = ""
+            return True
+        # CallTools 拆掉 <think> 后只剩正文：已推 SSE 的是「思考+正文」
+        if stripped.endswith(text):
+            self._streamed_text = ""
+            return True
+        return False
+
+    async def commit_streamed_history(
+        self,
+        text: str,
+        extra_metadata: Optional[Dict[str, object]] = None,
+    ) -> None:
+        """delta 已出站：只记 history / observe，不再入 SSE。"""
+        if not text:
+            return
+        await self._record_history(text, extra_metadata)
+        await self._observe_outbound(text)
 
     async def send(
         self,
