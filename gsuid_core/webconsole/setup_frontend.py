@@ -129,6 +129,7 @@ def _import_webconsole_apis() -> None:
         scheduler_api,
         git_mirror_api,
         git_update_api,
+        http_trace_api,
         core_config_api,
         plugin_icon_api,
         http_agent_keys_api,

@@ -21,10 +21,23 @@ from gsuid_core.webconsole.web_api import require_auth
 from ._api_tags import TRACE
 
 
+def _clamp_page(page: int) -> int:
+    return 1 if page < 1 else page
+
+
+def _clamp_per_page(per_page: int) -> int:
+    if per_page < 1:
+        return 1
+    if per_page > 100:
+        return 100
+    return per_page
+
+
 @app.get("/api/traces", summary="获取追踪列表（统一入口）", tags=TRACE)
 async def get_traces(
     date: Optional[str] = None,
-    limit: int = 500,
+    page: int = 1,
+    per_page: int = 100,
     _user: Dict[str, Any] = Depends(require_auth),
 ):
     """获取追踪列表（统一入口）
@@ -35,14 +48,20 @@ async def get_traces(
     - 内存中的 running 覆盖 JSONL 中的同名记录（running 是最新实时状态）
     - 内存中的 completed 不覆盖 JSONL（JSONL 数据更完整）
     """
+    page = _clamp_page(page)
+    per_page = _clamp_per_page(per_page)
     try:
         date = parse_iso_date(date, default_today=True)
     except PathEscapeError:
-        return {"status": 1, "msg": "非法日期", "data": []}
+        return {
+            "status": 1,
+            "msg": "非法日期",
+            "data": {"rows": [], "count": 0, "page": page, "per_page": per_page},
+        }
 
     # 1. 先放 JSONL 记录（completed 数据更完整）
     merged: Dict[str, Dict[str, Any]] = {}
-    for record in list_traces_from_jsonl(date, limit):
+    for record in list_traces_from_jsonl(date):
         merged[record["trace_id"]] = record
 
     # 2. 内存 running 覆盖 JSONL（running 是最新实时状态）
@@ -60,10 +79,24 @@ async def get_traces(
                 "status": "running",
             }
 
-    # 3. 按 start_time 倒序（最近的在前）
+    # 3. 按 start_time 倒序（最近的在前），再按页切片
     result = list(merged.values())
     result.sort(key=lambda x: x["start_time"], reverse=True)
-    return {"status": 0, "msg": "ok", "data": result[:limit]}
+    total = len(result)
+    max_page = max(1, (total + per_page - 1) // per_page) if total else 1
+    if page > max_page:
+        page = max_page
+    start = (page - 1) * per_page
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "rows": result[start : start + per_page],
+            "count": total,
+            "page": page,
+            "per_page": per_page,
+        },
+    }
 
 
 # 注意：本路由必须声明在 `/api/traces/{trace_id}` **之前**，否则 FastAPI 会把

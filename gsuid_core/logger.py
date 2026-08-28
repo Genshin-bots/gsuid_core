@@ -24,7 +24,15 @@ from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
 from gsuid_core.i18n import LOG_MODULE_EMOJI, t, starts_with_emoji
 from gsuid_core.config import core_config
-from gsuid_core.models import Event, Message, TraceContext
+from gsuid_core.models import (
+    Event,
+    Message,
+    TraceContext,
+    HttpTraceDetail,
+    HttpTraceContext,
+    HttpTraceLogLine,
+    HttpTraceListItem,
+)
 from gsuid_core.data_store import get_res_path, error_mark_path
 
 # WebConsole SSE 实时日志缓冲。必须有界：无界缓冲在高吞吐下（单请求数百条长日志）能堆出
@@ -366,8 +374,251 @@ class TraceCollector:
         return self._traces.get(trace_id)
 
 
+# ── HTTP 请求追踪 ──
+_HTTP_ERROR_LEVELS: frozenset[str] = frozenset({"error", "critical", "exception"})
+_HTTP_MAX_EVENT_LEN: int = 4096
+_HTTP_MAX_TRACE_LOGS: int = 5000
+
+
+@dataclass
+class HttpTraceLogEntry:
+    timestamp: str
+    level: str
+    event: str
+    plugin: str
+
+
+def _http_error_count(bucket: List[HttpTraceLogEntry]) -> int:
+    n = 0
+    for entry in bucket:
+        if entry.level.lower() in _HTTP_ERROR_LEVELS:
+            n += 1
+    return n
+
+
+class HttpTraceCollector:
+    """以 http_trace_id 为维度收集执行中 HTTP 请求的日志；结束即落盘并从内存移除。"""
+
+    def __init__(
+        self,
+        max_traces: int = 2000,
+        stale_running_sec: float = 600.0,
+    ):
+        self._traces: Dict[str, List[HttpTraceLogEntry]] = {}
+        self._trace_meta: Dict[str, HttpTraceContext] = {}
+        self._max_traces = max_traces
+        self._stale_running_sec = stale_running_sec
+        self._last_capacity_warn: float = 0.0
+
+    def start_trace(self, ctx: HttpTraceContext) -> None:
+        if len(self._traces) >= self._max_traces:
+            self._evict_to_capacity()
+        self._traces[ctx.trace_id] = []
+        self._trace_meta[ctx.trace_id] = ctx
+        try:
+            from gsuid_core.http_trace_archive import write_http_trace_meta
+
+            write_http_trace_meta(ctx, status="running", log_count=0)
+        except Exception as e:
+            _slg = structlog.get_logger("GsCore")
+            _slg.error(
+                t(
+                    "log.logger.http_trace_jsonl_running_write",
+                    trace_id=ctx.trace_id,
+                    e=e,
+                )
+            )
+
+    def _drop(self, trace_id: str) -> None:
+        self._traces.pop(trace_id, None)
+        self._trace_meta.pop(trace_id, None)
+
+    def reclaim_stale(self) -> int:
+        now = time.perf_counter()
+        to_drop: List[str] = []
+        for tid in list(self._traces.keys()):
+            meta = self._trace_meta.get(tid)
+            age = now - meta.start_time if meta else float("inf")
+            if age >= self._stale_running_sec:
+                to_drop.append(tid)
+        for tid in to_drop:
+            self._drop(tid)
+        return len(to_drop)
+
+    def _evict_to_capacity(self) -> None:
+        target = self._max_traces - 1
+        if len(self._traces) <= target:
+            return
+        now = time.perf_counter()
+        stale_running: List[str] = []
+        running_active: List[str] = []
+        for tid in list(self._traces.keys()):
+            meta = self._trace_meta.get(tid)
+            age = now - meta.start_time if meta else float("inf")
+            if age >= self._stale_running_sec:
+                stale_running.append(tid)
+            else:
+                running_active.append(tid)
+        sacrificed = 0
+        for group, is_safe in ((stale_running, True), (running_active, False)):
+            for tid in group:
+                if len(self._traces) <= target:
+                    break
+                self._drop(tid)
+                if not is_safe:
+                    sacrificed += 1
+            if len(self._traces) <= target:
+                break
+        if sacrificed:
+            self._warn_capacity(sacrificed)
+
+    def _warn_capacity(self, sacrificed: int) -> None:
+        now = time.perf_counter()
+        if now - self._last_capacity_warn < 60.0:
+            return
+        self._last_capacity_warn = now
+        _slg = structlog.get_logger("GsCore")
+        _slg.warning(
+            t(
+                "log.logger.http_trace_max_traces_sacrificed",
+                max_traces=self._max_traces,
+                sacrificed=sacrificed,
+            )
+        )
+
+    def collect(self, event_dict: EventDict) -> None:
+        if "http_trace_id" not in event_dict:
+            return
+        tid = event_dict["http_trace_id"]
+        if not isinstance(tid, str) or not tid:
+            return
+        bucket = self._traces.get(tid)
+        if bucket is None:
+            return
+        raw_event = str(event_dict["event"]) if "event" in event_dict else ""
+        if len(raw_event) > _HTTP_MAX_EVENT_LEN:
+            raw_event = raw_event[:_HTTP_MAX_EVENT_LEN] + " [truncated]"
+        raw_plugin = event_dict["plugin"] if "plugin" in event_dict else None
+        plugin = raw_plugin if isinstance(raw_plugin, str) and raw_plugin else _CORE_ORIGIN_LABEL
+        entry = HttpTraceLogEntry(
+            timestamp=str(event_dict["timestamp"]) if "timestamp" in event_dict else "",
+            level=str(event_dict["level"]) if "level" in event_dict else "",
+            event=raw_event,
+            plugin=plugin,
+        )
+        bucket.append(entry)
+        if len(bucket) > _HTTP_MAX_TRACE_LOGS:
+            truncated = bucket[:100] + bucket[-100:]
+            truncated.insert(
+                100,
+                HttpTraceLogEntry(
+                    timestamp=bucket[100].timestamp,
+                    level="warning",
+                    event=f"[HttpTraceCollector] 日志过多，已截断，原始条数={len(bucket)}",
+                    plugin=_CORE_ORIGIN_LABEL,
+                ),
+            )
+            if tid in self._traces:
+                self._traces[tid] = truncated
+
+    def get_short_id(self, trace_id: str) -> Optional[str]:
+        meta = self._trace_meta.get(trace_id)
+        return meta.short_id if meta else None
+
+    def finalize_trace(self, trace_id: str, status_code: int) -> Optional[List[HttpTraceLogEntry]]:
+        meta = self._trace_meta.get(trace_id)
+        if meta is None:
+            return None
+        logs = self._traces.get(trace_id)
+        log_count = len(logs) if logs else 0
+        error_count = _http_error_count(logs) if logs else 0
+        duration_ms = int((time.perf_counter() - meta.start_time) * 1000)
+        try:
+            from gsuid_core.http_trace_archive import write_http_trace_meta
+
+            write_http_trace_meta(
+                meta,
+                status="completed",
+                log_count=log_count,
+                duration_ms=duration_ms,
+                status_code=status_code,
+                error_count=error_count,
+            )
+        except Exception as e:
+            _slg = structlog.get_logger("GsCore")
+            _slg.error(t("log.logger.http_trace_jsonl_archive_id", trace_id=trace_id, e=e))
+        finally:
+            self._drop(trace_id)
+        return logs
+
+    def get_active_traces(self) -> Dict[str, HttpTraceListItem]:
+        out: Dict[str, HttpTraceListItem] = {}
+        for tid, meta in self._trace_meta.items():
+            bucket = self._traces[tid] if tid in self._traces else []
+            out[tid] = {
+                "trace_id": tid,
+                "method": meta.method,
+                "path": meta.path,
+                "query_redacted": meta.query_redacted,
+                "client_ip": meta.client_ip,
+                "user_id": meta.user_id,
+                "user_name": meta.user_name,
+                "start_time": meta.start_ts,
+                "duration_ms": None,
+                "log_count": len(bucket),
+                "error_count": _http_error_count(bucket),
+                "status_code": None,
+                "status": "running",
+            }
+        return out
+
+    def get_trace_meta(self, trace_id: str) -> Optional[HttpTraceContext]:
+        return self._trace_meta.get(trace_id)
+
+    def get_trace_logs(self, trace_id: str) -> Optional[List[HttpTraceLogEntry]]:
+        return self._traces.get(trace_id)
+
+    def memory_detail(self, trace_id: str) -> Optional[HttpTraceDetail]:
+        """Running 详情；形状与 completed 相同。"""
+        meta = self._trace_meta.get(trace_id)
+        logs = self._traces.get(trace_id)
+        if meta is None or logs is None:
+            return None
+        lines: List[HttpTraceLogLine] = [
+            {
+                "timestamp": e.timestamp,
+                "level": e.level,
+                "event": e.event,
+                "plugin": e.plugin,
+            }
+            for e in logs
+        ]
+        detail: HttpTraceDetail = {
+            "trace_id": trace_id,
+            "method": meta.method,
+            "path": meta.path,
+            "query_redacted": meta.query_redacted,
+            "client_ip": meta.client_ip,
+            "user_id": meta.user_id,
+            "user_name": meta.user_name,
+            "start_time": meta.start_ts,
+            "duration_ms": None,
+            "log_count": len(logs),
+            "error_count": _http_error_count(logs),
+            "status_code": None,
+            "status": "running",
+            "client_request_id": meta.client_request_id,
+            "content_length": meta.content_length,
+            "response_content_type": meta.response_content_type,
+            "response_preview": meta.response_preview,
+            "logs": lines,
+        }
+        return detail
+
+
 # ── 绑定 / 解绑 ──
 _TRACE_CONTEXT_KEYS = ("trace_id",)
+_HTTP_TRACE_CONTEXT_KEYS = ("http_trace_id",)
 
 
 def bind_trace_context(ctx: TraceContext) -> None:
@@ -380,12 +631,24 @@ def clear_trace_context() -> None:
     structlog.contextvars.unbind_contextvars(*_TRACE_CONTEXT_KEYS)
 
 
+def bind_http_trace_context(ctx: HttpTraceContext) -> None:
+    structlog.contextvars.bind_contextvars(http_trace_id=ctx.trace_id)
+
+
+def clear_http_trace_context() -> None:
+    structlog.contextvars.unbind_contextvars(*_HTTP_TRACE_CONTEXT_KEYS)
+
+
 def trace_collect_processor(_logger: WrappedLogger, _method_name: str, event_dict: EventDict) -> EventDict:
-    """将带有 trace_id 的日志同时收集到 TraceCollector"""
+    """将带有 trace_id / http_trace_id 的日志收集到各自 collector。"""
     if "trace_id" in event_dict:
         _collector = _get_trace_collector()
         if _collector is not None:
             _collector.collect(event_dict)
+    if "http_trace_id" in event_dict:
+        _http = _get_http_trace_collector()
+        if _http is not None:
+            _http.collect(event_dict)
     return event_dict
 
 
@@ -415,6 +678,20 @@ def _init_trace_collector() -> TraceCollector:
     if _trace_collector_instance is None:
         _trace_collector_instance = TraceCollector()
     return _trace_collector_instance
+
+
+_http_trace_collector_instance: Optional[HttpTraceCollector] = None
+
+
+def _get_http_trace_collector() -> Optional[HttpTraceCollector]:
+    return _http_trace_collector_instance
+
+
+def _init_http_trace_collector() -> HttpTraceCollector:
+    global _http_trace_collector_instance
+    if _http_trace_collector_instance is None:
+        _http_trace_collector_instance = HttpTraceCollector()
+    return _http_trace_collector_instance
 
 
 class TraceCapableLogger(Protocol):
@@ -910,6 +1187,8 @@ _HISTORY_SKIP_KEYS: frozenset = frozenset(
         "pathname",  # 内部路径，前端不需要
         "lineno",
         "func_name",
+        "trace_id",
+        "http_trace_id",
     }
 )
 
@@ -1158,6 +1437,7 @@ logger: TraceCapableLogger = structlog.get_logger("GsCore")
 
 # 初始化追踪收集器（在 setup_logging 和 logger 就绪后）
 trace_collector = _init_trace_collector()
+http_trace_collector = _init_http_trace_collector()
 
 
 async def read_log(
@@ -1250,6 +1530,16 @@ async def clean_trace_collector():
                 dropped = collector.reclaim_stale()
                 if dropped:
                     logger.debug(t("log.logger.trace_scheduled_reclamation_removed_delete", dropped=dropped))
+            http_collector = _get_http_trace_collector()
+            if http_collector is not None:
+                dropped_http = http_collector.reclaim_stale()
+                if dropped_http:
+                    logger.debug(
+                        t(
+                            "log.logger.http_trace_scheduled_reclamation_removed_delete",
+                            dropped=dropped_http,
+                        )
+                    )
         except Exception as e:
             logger.warning(t("log.logger.tracecollector_exception", e=e))
 

@@ -8,5 +8,9 @@
   "log.logger.trace_scheduled_reclamation_removed_delete": "[TraceCollector] 定期回収によりゾンビトレース {dropped} 件を削除しました",
   "log.logger.trace_start_event": "[TraceStart] trace_id={trace_id} command={command} user_id={user_id}",
   "log.logger.tracecollector_exception": "[TraceCollector] 定时回收异常: {e}",
+  "log.logger.http_trace_jsonl_archive_id": "[HttpTraceCollector] JSONL アーカイブに失敗しました trace_id={trace_id}: {e}",
+  "log.logger.http_trace_jsonl_running_write": "[HttpTraceCollector] JSONL running マーカーの書き込みに失敗しました trace_id={trace_id}: {e}",
+  "log.logger.http_trace_max_traces_sacrificed": "[HttpTraceCollector] 実行中 HTTP トレースが上限 {max_traces} に達し、{sacrificed} 件を回収しました",
+  "log.logger.http_trace_scheduled_reclamation_removed_delete": "[HttpTraceCollector] 定期回収によりゾンビ HTTP トレース {dropped} 件を削除しました",
   "log.logger.unhandled_exception": "未処理の例外"
 }

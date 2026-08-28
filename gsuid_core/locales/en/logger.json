@@ -8,5 +8,9 @@
   "log.logger.trace_scheduled_reclamation_removed_delete": "[TraceCollector] Scheduled reclamation removed {dropped} zombie traces",
   "log.logger.trace_start_event": "[TraceStart] trace_id={trace_id} command={command} user_id={user_id}",
   "log.logger.tracecollector_exception": "[TraceCollector] 定时回收异常: {e}",
+  "log.logger.http_trace_jsonl_archive_id": "[HttpTraceCollector] JSONL archive failed trace_id={trace_id}: {e}",
+  "log.logger.http_trace_jsonl_running_write": "[HttpTraceCollector] JSONL running marker write failed trace_id={trace_id}: {e}",
+  "log.logger.http_trace_max_traces_sacrificed": "[HttpTraceCollector] in-flight HTTP traces hit {max_traces}, reclaimed {sacrificed} active traces",
+  "log.logger.http_trace_scheduled_reclamation_removed_delete": "[HttpTraceCollector] scheduled reclamation removed {dropped} stale HTTP traces",
   "log.logger.unhandled_exception": "Unhandled exception"
 }

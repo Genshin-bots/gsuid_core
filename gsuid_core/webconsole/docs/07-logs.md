@@ -389,6 +389,8 @@ PUT /api/logs/config
 ## 7.8 追踪日志 API
 
 > **适用范围**：仅追踪**命令执行路径**（用户发送 `/command` 或消息触发插件函数）。AI 核心路径（LLM 调用、tool use 等）有独立的 `ai_session_logs_api`，不走此追踪系统。
+>
+> HTTP `/api` 请求追踪是另一套账本，见 [45-http-traces.md](./45-http-traces.md)；不要把 HTTP 流量写入本节的 `logs/traces/` 或 `/api/traces*`。
 
 ### 存储架构
 
@@ -402,42 +404,38 @@ PUT /api/logs/config
 
 ### 7.8.1 获取追踪列表（统一入口）
 ```
-GET /api/traces?date=2026-05-28&limit=100
+GET /api/traces?date=2026-05-28&page=1&per_page=100
 ```
 
 **Query 参数**：
 - `date`: 日期 YYYY-MM-DD，默认今天。用于扫描 JSONL 已完成追踪。
-- `limit`: 返回条数上限，默认 500
+- `page`: 页码，从 1 起，默认 1；超出末页时夹到末页
+- `per_page`: 每页条数，默认 100，夹取 `[1, 100]`
 
-合并内存中的 **running** 追踪和 JSONL 中的 **completed** 追踪，返回统一目录。前端点击 `trace_id` 后可调用 `GET /api/traces/{trace_id}` 查看详情。
+合并内存中的 **running** 追踪和 JSONL 中的 **completed** 追踪，过滤后分页。前端点击 `trace_id` 后可调用 `GET /api/traces/{trace_id}` 查看详情。
 
 **响应**：
 ```json
 {
     "status": 0,
     "msg": "ok",
-    "data": [
-        {
-            "trace_id": "a1b2c3d4-xxx",
-            "command": "签到",
-            "user_id": "12345",
-            "group_id": "67890",
-            "start_time": 1748356800.123,
-            "duration_ms": 3000,
-            "log_count": 15,
-            "status": "completed"
-        },
-        {
-            "trace_id": "e5f6g7h8-xxx",
-            "command": "我的自选",
-            "user_id": "12345",
-            "group_id": "67890",
-            "start_time": 1748356900.456,
-            "duration_ms": null,
-            "log_count": 42,
-            "status": "running"
-        }
-    ]
+    "data": {
+        "rows": [
+            {
+                "trace_id": "a1b2c3d4-xxx",
+                "command": "签到",
+                "user_id": "12345",
+                "group_id": "67890",
+                "start_time": 1748356800.123,
+                "duration_ms": 3000,
+                "log_count": 15,
+                "status": "completed"
+            }
+        ],
+        "count": 1,
+        "page": 1,
+        "per_page": 100
+    }
 }
 ```
 

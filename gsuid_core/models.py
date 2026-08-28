@@ -1,6 +1,17 @@
 import time
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Literal, Optional, Awaitable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Tuple,
+    Literal,
+    Optional,
+    Awaitable,
+    TypedDict,
+    NotRequired,
+)
 from dataclasses import dataclass
 
 from msgspec import Struct
@@ -22,6 +33,80 @@ class TraceContext:
     session_id: str  # 会话 ID
     start_time: float  # 命令开始时间（perf_counter，单调时钟）——仅用于算 duration/存活时长
     start_ts: float  # 命令开始的墙钟时间戳（time.time()，Unix 秒）——对外展示/排序用
+
+
+HttpTraceLife = Literal["running", "completed"]
+
+
+@dataclass
+class HttpTraceContext:
+    """追踪上下文，以单次 HTTP `/api` 请求为维度记录日志。"""
+
+    trace_id: str
+    short_id: str
+    method: str
+    path: str
+    client_ip: str
+    user_id: Optional[str]
+    user_name: Optional[str]
+    start_time: float
+    start_ts: float
+    content_length: Optional[int]
+    query_redacted: str
+    client_request_id: Optional[str]
+    response_content_type: Optional[str] = None
+    response_preview: Optional[str] = None
+
+
+class HttpTraceListItem(TypedDict):
+    trace_id: str
+    method: str
+    path: str
+    query_redacted: str
+    client_ip: str
+    user_id: Optional[str]
+    user_name: Optional[str]
+    start_time: float
+    duration_ms: Optional[int]
+    log_count: int
+    error_count: int
+    status_code: Optional[int]
+    status: HttpTraceLife
+
+
+class HttpTraceLogLine(TypedDict):
+    timestamp: str
+    level: str
+    event: str
+    plugin: str
+
+
+class HttpTraceDetail(HttpTraceListItem):
+    client_request_id: Optional[str]
+    content_length: Optional[int]
+    response_content_type: Optional[str]
+    response_preview: Optional[str]
+    logs: List[HttpTraceLogLine]
+
+
+class HttpTraceJsonlRecord(TypedDict):
+    trace_id: str
+    method: str
+    path: str
+    query_redacted: str
+    client_ip: str
+    user_id: Optional[str]
+    user_name: Optional[str]
+    client_request_id: Optional[str]
+    content_length: Optional[int]
+    start_time: float
+    status: HttpTraceLife
+    log_count: int
+    duration_ms: NotRequired[int]
+    status_code: NotRequired[int]
+    error_count: NotRequired[int]
+    response_content_type: NotRequired[str]
+    response_preview: NotRequired[str]
 
 
 @dataclass

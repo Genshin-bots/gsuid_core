@@ -73,10 +73,10 @@ def get_trace_from_jsonl(trace_id: str, date_str: str | None = None) -> Optional
     return result
 
 
-def list_traces_from_jsonl(date_str: str | None = None, limit: int = 500) -> List[Dict]:
+def list_traces_from_jsonl(date_str: str | None = None, limit: int | None = None) -> List[Dict]:
     """从 JSONL 读取指定日期的追踪目录列表（倒序，最近更新的在前）。
 
-    同 trace_id 只保留最新状态记录。
+    同 trace_id 只保留最新状态记录。``limit is None`` 表示当天全量（分页在 API 层切）。
     """
     jsonl_path = _get_jsonl_path(date_str)
     if not jsonl_path.exists():
@@ -106,6 +106,8 @@ def list_traces_from_jsonl(date_str: str | None = None, limit: int = 500) -> Lis
 
     records = list(seen.values())
     records.sort(key=lambda x: x["start_time"], reverse=True)
+    if limit is None:
+        return records
     return records[:limit]
 
 

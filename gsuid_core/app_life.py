@@ -56,6 +56,10 @@ app = FastAPI(
     openapi_url="/openapi.json" if _ENABLE_OPENAPI else None,
 )
 
+from gsuid_core.http_trace_middleware import HttpTraceMiddleware  # noqa: E402
+
+app.add_middleware(HttpTraceMiddleware)
+
 from gsuid_core.ai_core.http_agent.register import register_http_agent_routes  # noqa: E402
 
 register_http_agent_routes(app)
