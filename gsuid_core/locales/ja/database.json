@@ -21,5 +21,7 @@
   "log.database.stop_retry": "[データベース] データベースを開けないため、再試行を停止",
   "log.database.subscription_bot_exist_cannot_send": "[購読] Bot {p0} が存在しないため、このメッセージは送信できません！",
   "log.database.subscription_ws_bot_id_invalid": "[購読] WS_BOT_ID {p0} は無効なため、{ws_bot_id} に自動的に切り替える",
-  "log.database.temporary_connection": "[データベース] 一時データベース接続を解放した！"
+  "log.database.temporary_connection": "[データベース] 一時データベース接続を解放した！",
+  "log.database.uuid4_command_purge_done": "[データベース] on_message の uuid4 偽コマンドを {deleted} 件削除し、要約 {summaries} 件を書き戻した",
+  "log.database.uuid4_command_purge_skip": "[データベース] CoreDataAnalysis に uuid4 偽コマンドはないため、清理をスキップ"
 }

@@ -511,7 +511,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         message = await trigger.get_command(_event)
         _event.task_id = str(uuid4())
         bot = Bot(ws, _event)
-        await count_data(event, trigger)
+        # on_message 被动监听，不记命令统计（keyword 常为 uuid4，会污染看板）
         logger.trace(t("log.handler.cmd_on_message"), command=message)
         coro = trigger.func(bot, message)
         func_name = getattr(coro, "__qualname__", str(coro))
@@ -795,6 +795,9 @@ async def msg_process(msg: MessageReceive) -> Event:
 
 
 async def count_data(event: Event, trigger: Trigger):
+    # on_message 每条消息必触发；计入命令会污染看板 / core信息
+    if trigger.type == "message":
+        return
     local_val = get_platform_val(event.real_bot_id, event.bot_self_id)
     local_val["command"] += 1
     if event.group_id:

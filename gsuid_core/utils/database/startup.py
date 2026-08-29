@@ -216,3 +216,21 @@ async def trans_adapter():
                 await session.commit()
             except:  # noqa: E722
                 pass
+
+
+@on_core_start_before(priority=-60)
+async def purge_uuid4_command_stats() -> None:
+    """删掉 on_message uuid4 伪命令，且必须在 load_global_val 之前跑完。"""
+    from gsuid_core.utils.database.global_val_models import CoreDataAnalysis
+
+    result = await CoreDataAnalysis.purge_uuid4_command_names()
+    if result.deleted == 0:
+        logger.debug(t("log.database.uuid4_command_purge_skip"))
+        return
+    logger.warning(
+        t(
+            "log.database.uuid4_command_purge_done",
+            deleted=result.deleted,
+            summaries=result.summaries_updated,
+        )
+    )

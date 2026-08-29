@@ -21,5 +21,7 @@
   "log.database.stop_retry": "[Database] Cannot open database, stopping retries",
   "log.database.subscription_bot_exist_cannot_send": "[Subscription] Bot {p0} does not exist; this message cannot be sent!",
   "log.database.subscription_ws_bot_id_invalid": "[Subscription] WS_BOT_ID {p0} is invalid; automatically switching to {ws_bot_id}",
-  "log.database.temporary_connection": "[Database] Temporary database connection released!"
+  "log.database.temporary_connection": "[Database] Temporary database connection released!",
+  "log.database.uuid4_command_purge_done": "[Database] Deleted {deleted} on_message uuid4 fake commands; rewrote {summaries} summaries",
+  "log.database.uuid4_command_purge_skip": "[Database] No uuid4 fake commands in CoreDataAnalysis; skip purge"
 }

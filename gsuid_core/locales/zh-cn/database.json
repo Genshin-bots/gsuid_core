@@ -21,5 +21,7 @@
   "log.database.stop_retry": "[数据库] 数据库无法打开，停止重试",
   "log.database.subscription_bot_exist_cannot_send": "[订阅] 机器人{p0}不存在, 该消息无法发送!",
   "log.database.subscription_ws_bot_id_invalid": "[订阅] WS_BOT_ID {p0} 已失效，自动切换到 {ws_bot_id}",
-  "log.database.temporary_connection": "[数据库] 临时数据库连接已释放!"
+  "log.database.temporary_connection": "[数据库] 临时数据库连接已释放!",
+  "log.database.uuid4_command_purge_done": "[数据库] 已删除 {deleted} 条 on_message uuid4 伪命令，回写 {summaries} 条摘要",
+  "log.database.uuid4_command_purge_skip": "[数据库] CoreDataAnalysis 无 uuid4 伪命令，跳过清理"
 }

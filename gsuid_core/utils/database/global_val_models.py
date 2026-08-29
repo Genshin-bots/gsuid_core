@@ -1,9 +1,12 @@
+import re
 import enum
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Tuple, Optional, Sequence, TypedDict
 from datetime import date as ymddate, datetime, timedelta
+from dataclasses import dataclass
 
-from sqlmodel import Field, Index, col, func, delete, select
-from sqlalchemy import UniqueConstraint, distinct
+from sqlmodel import Field, Index, col, func, delete, select, update
+from sqlalchemy import UniqueConstraint, tuple_, distinct
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Select
 
@@ -37,6 +40,159 @@ class BotTraffic(TypedDict):
 class DataType(enum.Enum):
     GROUP = "group"
     USER = "user"
+
+
+# on_message() 默认 unique_id=uuid4()；落库 command_name 即该串
+_UUID4_COMMAND_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+UUID4_COMMAND_LIKE = "________-____-____-____-____________"
+_UUID4_DELETE_ID_CHUNK = 400
+_UUID4_KEY_CHUNK = 100
+
+SummaryKey = Tuple[ymddate, str, str]
+
+
+@dataclass(frozen=True)
+class Uuid4CandidateRow:
+    row_id: int
+    command_name: str
+    date: ymddate
+    bot_id: str
+    bot_self_id: str
+
+
+@dataclass(frozen=True)
+class AnalysisRemainRow:
+    date: ymddate
+    bot_id: str
+    bot_self_id: str
+    data_type: DataType
+    target_id: str
+    command_count: int
+
+
+@dataclass(frozen=True)
+class AnalysisTypeAgg:
+    date: ymddate
+    bot_id: str
+    bot_self_id: str
+    data_type: DataType
+    command_sum: int
+    distinct_targets: int
+
+
+@dataclass(frozen=True)
+class SummaryPatch:
+    date: ymddate
+    bot_id: str
+    bot_self_id: str
+    command: int
+    user_count: int
+    group_count: int
+
+
+@dataclass(frozen=True)
+class Uuid4CommandPurgeResult:
+    deleted: int
+    summaries_updated: int
+
+
+def is_uuid4_command_name(command_name: str) -> bool:
+    """on_message 默认 keyword 是 uuid4 标准串，真命令几乎不可能撞上。"""
+    return _UUID4_COMMAND_RE.fullmatch(command_name) is not None
+
+
+def collect_uuid4_analysis_ids(
+    rows: Sequence[Uuid4CandidateRow],
+) -> tuple[list[int], list[SummaryKey]]:
+    ids: list[int] = []
+    keys: list[SummaryKey] = []
+    seen: set[SummaryKey] = set()
+    for row in rows:
+        if not is_uuid4_command_name(row.command_name):
+            continue
+        ids.append(row.row_id)
+        key = (row.date, row.bot_id, row.bot_self_id)
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return ids, keys
+
+
+def aggregate_remain_rows(rows: Sequence[AnalysisRemainRow]) -> list[AnalysisTypeAgg]:
+    command_sum: dict[tuple[SummaryKey, DataType], int] = {}
+    targets: dict[tuple[SummaryKey, DataType], set[str]] = {}
+    for row in rows:
+        gk = ((row.date, row.bot_id, row.bot_self_id), row.data_type)
+        if gk not in command_sum:
+            command_sum[gk] = 0
+            targets[gk] = set()
+        command_sum[gk] += row.command_count
+        targets[gk].add(row.target_id)
+    aggs: list[AnalysisTypeAgg] = []
+    for gk in command_sum:
+        key, dtype = gk
+        aggs.append(
+            AnalysisTypeAgg(
+                date=key[0],
+                bot_id=key[1],
+                bot_self_id=key[2],
+                data_type=dtype,
+                command_sum=command_sum[gk],
+                distinct_targets=len(targets[gk]),
+            )
+        )
+    return aggs
+
+
+def merge_type_aggs_to_patches(
+    aggs: Sequence[AnalysisTypeAgg],
+    affected: Sequence[SummaryKey],
+) -> list[SummaryPatch]:
+    command_by_key: dict[SummaryKey, int] = {}
+    users_by_key: dict[SummaryKey, int] = {}
+    groups_by_key: dict[SummaryKey, int] = {}
+    for agg in aggs:
+        key = (agg.date, agg.bot_id, agg.bot_self_id)
+        if agg.data_type == DataType.USER:
+            command_by_key[key] = agg.command_sum
+            users_by_key[key] = agg.distinct_targets
+        elif agg.data_type == DataType.GROUP:
+            groups_by_key[key] = agg.distinct_targets
+    patches: list[SummaryPatch] = []
+    for key in affected:
+        command = 0
+        if key in command_by_key:
+            command = command_by_key[key]
+        user_count = 0
+        if key in users_by_key:
+            user_count = users_by_key[key]
+        group_count = 0
+        if key in groups_by_key:
+            group_count = groups_by_key[key]
+        patches.append(
+            SummaryPatch(
+                date=key[0],
+                bot_id=key[1],
+                bot_self_id=key[2],
+                command=command,
+                user_count=user_count,
+                group_count=group_count,
+            )
+        )
+    return patches
+
+
+def _parse_data_type(value: object) -> DataType | None:
+    if isinstance(value, DataType):
+        return value
+    if value == DataType.USER.value:
+        return DataType.USER
+    if value == DataType.GROUP.value:
+        return DataType.GROUP
+    return None
 
 
 class CoreTraffic(BaseIDModel, table=True):
@@ -432,6 +588,81 @@ class CoreDataAnalysis(BaseIDModel, table=True):
                 key = str(d)[:10]
             out[key] = int(total or 0)
         return out
+
+    @classmethod
+    @with_session
+    async def purge_uuid4_command_names(
+        cls,
+        session: AsyncSession,
+    ) -> Uuid4CommandPurgeResult:
+        """删除 on_message uuid4 伪命令行，并按剩余 USER 维回写 Summary.command。"""
+        candidate_stmt = select(cls).where(
+            func.length(col(cls.command_name)) == 36,
+            col(cls.command_name).like(UUID4_COMMAND_LIKE),
+        )
+        raw_candidates = (await session.execute(candidate_stmt)).scalars().all()
+        candidates: list[Uuid4CandidateRow] = []
+        for row in raw_candidates:
+            row_id = row.id
+            if isinstance(row_id, bool) or not isinstance(row_id, int):
+                continue
+            candidates.append(
+                Uuid4CandidateRow(
+                    row_id=row_id,
+                    command_name=row.command_name,
+                    date=row.date,
+                    bot_id=row.bot_id,
+                    bot_self_id=row.bot_self_id,
+                )
+            )
+        ids, affected = collect_uuid4_analysis_ids(candidates)
+        if not ids:
+            return Uuid4CommandPurgeResult(deleted=0, summaries_updated=0)
+
+        deleted = 0
+        for offset in range(0, len(ids), _UUID4_DELETE_ID_CHUNK):
+            chunk = ids[offset : offset + _UUID4_DELETE_ID_CHUNK]
+            result = await session.execute(delete(cls).where(col(cls.id).in_(chunk)))
+            deleted += result.rowcount if isinstance(result, CursorResult) else 0
+
+        remain_rows: list[AnalysisRemainRow] = []
+        for offset in range(0, len(affected), _UUID4_KEY_CHUNK):
+            key_chunk = affected[offset : offset + _UUID4_KEY_CHUNK]
+            remain_stmt = select(cls).where(tuple_(col(cls.date), col(cls.bot_id), col(cls.bot_self_id)).in_(key_chunk))
+            for row in (await session.execute(remain_stmt)).scalars().all():
+                parsed_type = _parse_data_type(row.data_type)
+                if parsed_type is None:
+                    continue
+                remain_rows.append(
+                    AnalysisRemainRow(
+                        date=row.date,
+                        bot_id=row.bot_id,
+                        bot_self_id=row.bot_self_id,
+                        data_type=parsed_type,
+                        target_id=row.target_id,
+                        command_count=row.command_count,
+                    )
+                )
+
+        aggs = aggregate_remain_rows(remain_rows)
+        patches = merge_type_aggs_to_patches(aggs, affected)
+        updated = 0
+        for patch in patches:
+            result = await session.execute(
+                update(CoreDataSummary)
+                .where(
+                    col(CoreDataSummary.date) == patch.date,
+                    col(CoreDataSummary.bot_id) == patch.bot_id,
+                    col(CoreDataSummary.bot_self_id) == patch.bot_self_id,
+                )
+                .values(
+                    command=patch.command,
+                    user_count=patch.user_count,
+                    group_count=patch.group_count,
+                )
+            )
+            updated += result.rowcount if isinstance(result, CursorResult) else 0
+        return Uuid4CommandPurgeResult(deleted=deleted, summaries_updated=updated)
 
     @classmethod
     @with_session

@@ -58,6 +58,7 @@ def on_core_shutdown(func=None, /, priority: int = 0): ...      # 关闭
 | `move_database` | `utils/database/startup.py` | -100 | 旧 `GsData.db` 迁移到新路径 + 清 `global_val/*.json` |
 | `create_core_tables` | `utils/database/startup.py` | -90 | 建核心表（**AI 总开关关闭时跳过 AI 表**） |
 | `trans_adapter` | `utils/database/startup.py` | -80 | 执行 ALTER / CREATE INDEX 等 Schema 升级 |
+| `purge_uuid4_command_stats` | `utils/database/startup.py` | -60 | 删除 `CoreDataAnalysis` 中 on_message uuid4 伪命令并回写 `CoreDataSummary`（须在 load 前） |
 | `load_global_val` | `buildin_plugins/.../command_global_val.py` | 0 | 加载 Bot 流量统计 / QPS 配置 |
 
 > 给已部署用户**补数据库列**（Schema 升级）走这个阶段：插件用 `exec_list`，框架用
@@ -163,7 +164,7 @@ HTTP Agent 路由在 `app_life` 构造 app 时按总开关决定是否 `include_
 `app_life.lifespan` 在 uvicorn 内部执行，顺序：
 
 1. `await core_start_before_execute()` —— 阶段一钩子（`move_database` → `create_core_tables`
-   → `trans_adapter` → `load_global_val`）
+   → `trans_adapter` → `purge_uuid4_command_stats` → `load_global_val`）
 2. `asyncio.create_task(check_speed())` —— 后台测速选镜像源
 3. `asyncio.create_task(core_start_execute())` —— **后台异步**跑全部 `@on_core_start`
    （`_start_rm_cleanup` + `init_ai_core`）
