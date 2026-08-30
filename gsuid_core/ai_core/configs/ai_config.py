@@ -97,7 +97,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定网络搜索的主用提供方。未配置或主用无 Key 时走 AnySearch 匿名额度。"
         "多源策略非「无」时，失败会按备用顺序切换到其它已配置源",
         "AnySearch",
-        options=["AnySearch", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "Tavily", "Jina", "Exa", "MCP"],
     ),
     "websearch_lb_strategy": GsStrConfig(
         "网络搜索多源策略",
@@ -108,9 +108,9 @@ AI_CONFIG: Dict[str, GSC] = {
     "websearch_fallback_order": GsListStrConfig(
         "网络搜索备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用源）。留空则自动收集已配置源"
-        "（顺序：AnySearch → Tavily → Exa → Jina → MCP）",
+        "（顺序：AnySearch → Firecrawl → Tavily → Exa → Jina → MCP）",
         [],
-        options=["AnySearch", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "Tavily", "Jina", "Exa", "MCP"],
     ),
     "webfetch_provider": GsStrConfig(
         "网页抓取服务提供方（主用）",
@@ -701,6 +701,29 @@ ANYSEARCH_CONFIG: Dict[str, GSC] = {
     ),
 }
 
+FIRECRAWL_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "Firecrawl API密钥",
+        "指定 Firecrawl API 的密钥。可不填：走 keyless 免费档（按 IP 限流）。"
+        "请前往 https://www.firecrawl.dev 获取。无效 Key 不会回落匿名。支持多 Key 池轮询",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "AsyncFirecrawl.search 的 limit，默认 10，范围 1–100",
+        10,
+        max_value=100,
+        options=[5, 10, 15, 20, 50, 100],
+    ),
+    "timeout": GsIntConfig(
+        "请求超时(秒)",
+        "调用 Firecrawl /v2/search 的超时时间（SDK timeout 以毫秒下发）",
+        30,
+        options=[10, 15, 20, 30, 45, 60],
+    ),
+}
+
 MINIMAX_CONFIG: Dict[str, GSC] = {
     "api_key": GsListStrConfig(
         "MiniMax API密钥",
@@ -1221,6 +1244,12 @@ anysearch_config = StringConfig(
     "GsCore AI AnySearch搜索配置",
     get_res_path("ai_core") / "anysearch_config.json",
     ANYSEARCH_CONFIG,
+)
+
+firecrawl_config = StringConfig(
+    "GsCore AI Firecrawl搜索配置",
+    get_res_path("ai_core") / "firecrawl_config.json",
+    FIRECRAWL_CONFIG,
 )
 
 jina_config = StringConfig(

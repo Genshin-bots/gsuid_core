@@ -250,7 +250,7 @@ async def web_search_tool(
 ) -> str
 ```
 
-> **注意**：统一走 `web_search()`，默认主用 **AnySearch**（Key 可选，匿名有额度），另支持 Tavily / Jina（`s.jina.ai`，需 Key）/ Exa / MCP。
+> **注意**：统一走 `web_search()`，默认主用 **AnySearch**（Key 可选，匿名有额度），另支持 Firecrawl（官方 SDK，Key 可选）/ Tavily / Jina（`s.jina.ai`，需 Key）/ Exa / MCP。
 > 调度字段：`websearch_provider` / `websearch_lb_strategy`（默认 `error_switch`）/ `websearch_fallback_order`。
 > **异常或空结果**会在多源策略下切换下一源。工具外层 `timeout=100` 覆盖串行 failover。
 > MCP 时配置 `mcp_tools_config.websearch_mcp_tool_id`。详见 [§11.3](./11-mcp-image-search-and-meme.md)。

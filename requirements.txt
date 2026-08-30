@@ -110,6 +110,7 @@ aiohttp==3.13.3 \
     --hash=sha256:fc353029f176fd2b3ec6cfc71be166aba1936fe5d73dd1992ce289ca6647a9aa
     # via
     #   aiobotocore
+    #   firecrawl-py
     #   gsuid-core
 aioitertools==0.13.0 \
     --hash=sha256:0be0292b856f08dfac90e31f4739432f4cb6d7520ab9eb73e143f4f2fa5259be \
@@ -495,6 +496,10 @@ filelock==3.20.3 \
     --hash=sha256:18c57ee915c7ec61cff0ecf7f0f869936c7c30191bb0cf406f1341778d0834e1 \
     --hash=sha256:4b0dda527ee31078689fc205ec4f1c1bf7d56cf88b6dc9426c4f230e46c2dce1
     # via huggingface-hub
+firecrawl-py==4.40.0 \
+    --hash=sha256:4b68709871962b8c214e4113e8100633d9d7c66567536a0214402ef8638f3581 \
+    --hash=sha256:a2e7816d65aa794fa269bc96fa90680767cbdb139faf227bcd88a1281975fa0e
+    # via gsuid-core
 flatbuffers==25.12.19 \
     --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
     # via onnxruntime
@@ -771,6 +776,7 @@ httpx==0.28.1 \
     #   anthropic
     #   exa-py
     #   fastmcp
+    #   firecrawl-py
     #   google-genai
     #   gsuid-core
     #   huggingface-hub
@@ -1405,6 +1411,10 @@ multidict==6.7.1 \
     # via
     #   aiohttp
     #   yarl
+nest-asyncio==1.6.0 \
+    --hash=sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe \
+    --hash=sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c
+    # via firecrawl-py
 numpy==2.4.1 \
     --hash=sha256:0093e85df2960d7e4049664b26afc58b03236e967fb942354deef3208857a04c \
     --hash=sha256:09aa8a87e45b55a1c2c205d42e2808849ece5c484b2aab11fecabec3841cafba \
@@ -1828,6 +1838,7 @@ pydantic==2.12.5 \
     #   exa-py
     #   fastapi
     #   fastmcp
+    #   firecrawl-py
     #   genai-prices
     #   google-genai
     #   gsuid-core
@@ -2019,6 +2030,7 @@ python-dotenv==1.2.1 \
     # via
     #   exa-py
     #   fastmcp
+    #   firecrawl-py
     #   pydantic-settings
 python-multipart==0.0.22 \
     --hash=sha256:2b2cd894c83d21bf49d702499531c7bafd057d730c201782048f7945d82de155 \
@@ -2224,6 +2236,7 @@ requests==2.32.5 \
     # via
     #   exa-py
     #   fastembed
+    #   firecrawl-py
     #   google-auth
     #   google-genai
     #   tavily-python
@@ -2829,6 +2842,7 @@ websockets==16.0 \
     --hash=sha256:fd3cb4adb94a2a6e2b7c0d8d05cb94e6f1c81a0cf9dc2694fb65c7e8d94c42e4
     # via
     #   fastmcp
+    #   firecrawl-py
     #   google-genai
     #   gsuid-core
 win32-setctime==1.2.0 ; sys_platform == 'win32' \

@@ -572,7 +572,7 @@ AI 核心模块，位于 `gsuid_core/ai_core/`，包含：
 | `scheduled_task/` | 定时任务系统 |
 | `persona/` | 人设系统 |
 | `history/` | 对话历史管理 |
-| `web_search/` | 统一网页搜索（Tavily/Jina/Exa/AnySearch/MCP + 多源策略） |
+| `web_search/` | 统一网页搜索（Tavily/Jina/Exa/AnySearch/Firecrawl/MCP + 多源策略） |
 | `web_fetch/` | 网页抓取转 Markdown（Jina Reader / local + 多源策略） |
 
 ### 5.2 webconsole 模块

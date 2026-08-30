@@ -248,6 +248,7 @@ answer = await understand_image(
 | `jina_search.py` | **Jina** `https://s.jina.ai`（备选；**搜索需要 API Key**） |
 | `exa_search.py` | Exa |
 | `anysearch_search.py` | **AnySearch**（默认主用）`POST https://api.anysearch.com/v1/search`（Key 可选，匿名有每日免费额度） |
+| `firecrawl_search.py` | **Firecrawl** 官方 SDK `AsyncFirecrawl.search`（Key 可选；无 Key 走 keyless 免费档，按 IP 限流） |
 | MCP 分支 | `websearch_mcp_tool_id` 指向的 MCP 工具 |
 
 调用方（插件 / 内置 `web_search_tool`）**只应** `from gsuid_core.ai_core.web_search import web_search`，不要直接绑死某一家 SDK。
@@ -283,9 +284,9 @@ async def web_search_with_context(
 
 | 配置项 | 类型 | 默认值 | 选项 / 说明 |
 |--------|------|--------|-------------|
-| `websearch_provider` | str | **`AnySearch`** | 主用：`AnySearch` / `Tavily` / `Jina` / `Exa` / `MCP`。未填或主用无 Key 时落到 AnySearch 匿名额度 |
+| `websearch_provider` | str | **`AnySearch`** | 主用：`AnySearch` / `Firecrawl` / `Tavily` / `Jina` / `Exa` / `MCP`。未填或主用无 Key 时落到 AnySearch 匿名额度 |
 | `websearch_lb_strategy` | str | **`error_switch`** | `none`：仅主用；`error_switch`：主用失败按备用顺序试下一源；`auto_balance`：已配置源间轮询 |
-| `websearch_fallback_order` | list[str] | `[]` | 备用顺序（不含主用）。**空 = 自动收集所有已配置源**（顺序 AnySearch → Tavily → Exa → Jina → MCP） |
+| `websearch_fallback_order` | list[str] | `[]` | 备用顺序（不含主用）。**空 = 自动收集所有已配置源**（顺序 AnySearch → Firecrawl → Tavily → Exa → Jina → MCP） |
 | `mcp_tools_config.websearch_mcp_tool_id` | str | `""` | provider=MCP 时必填，格式 `"{mcp_id} - {tool_name}"` |
 
 各源密钥（独立 StringConfig，热读）：
@@ -296,13 +297,14 @@ async def web_search_with_context(
 | `GsCore AI Jina搜索抓取配置` | `jina_config.json` | `api_key` 池（**搜索必填**；抓取可选）、`max_results`、`timeout`、`search_base_url`（默认 `https://s.jina.ai`）、`reader_base_url`（抓取共用） |
 | `GsCore AI Exa搜索配置` | `exa_config.json` | `api_key` 池、`max_results`、`search_type` |
 | `GsCore AI AnySearch搜索配置` | `anysearch_config.json` | `api_key` 池（**可选**；空则匿名）、`max_results`（1–100）、`timeout`、`zone`（`cn`/`intl`，可空）、`language`（`zh-CN`/`en`，可空） |
+| `GsCore AI Firecrawl搜索配置` | `firecrawl_config.json` | `api_key` 池（**可选**；空则 keyless 免费档）、`max_results`（1–100）、`timeout` |
 
 ### 11.3.4 多源策略行为
 
 1. **构建链**：主用置首；`none` 时链仅含主用。
 2. **error_switch**：按链顺序调用；某源**抛错**或**空结果**则试下一个；非空成功即返回。
 3. **auto_balance**：在「已配置」源上轮询起点，再按 error_switch 语义失败切换。
-4. **已配置判定**：Tavily/Exa/Jina 有非空 `api_key`；AnySearch **始终视为已配置**（可匿名）；MCP 有有效 `websearch_mcp_tool_id`。空备用链自动收集含 AnySearch。
+4. **已配置判定**：Tavily/Exa/Jina 有非空 `api_key`；AnySearch / Firecrawl **始终视为已配置**（可匿名 / keyless）；MCP 有有效 `websearch_mcp_tool_id`。空备用链自动收集含 AnySearch 与 Firecrawl。
 
 日志关键字：`[WebSearch] 提供方 {provider} 失败`、`已切换到 {provider}`、`全部提供方失败`。
 

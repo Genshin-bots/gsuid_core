@@ -79,7 +79,7 @@ results = await search_cognition(ctx, query="已有资料里的入门说明")
 ### Web搜索工具 (web_search.py)
 
 #### `web_search_tool`（Agent 工具）
-统一 Web 搜索：底层走 `ai_core.web_search.web_search`，按配置在 **AnySearch（默认主用，可匿名）/ Tavily / Jina / Exa / MCP** 间调度。
+统一 Web 搜索：底层走 `ai_core.web_search.web_search`，按配置在 **AnySearch（默认主用，可匿名）/ Firecrawl（可 keyless）/ Tavily / Jina / Exa / MCP** 间调度。
 
 ```python
 from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool

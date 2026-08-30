@@ -200,6 +200,20 @@ def _check_websearch_config() -> Dict[str, Any]:
             result["note"] = f"已配置 {keyed} 个 AnySearch API Key"
         else:
             result["note"] = "AnySearch 可用匿名额度（未配置 API Key）"
+    elif provider == "Firecrawl":
+        from gsuid_core.ai_core.configs.ai_config import firecrawl_config
+
+        api_keys = firecrawl_config.get_config("api_key").data
+        keyed = 0
+        if isinstance(api_keys, list):
+            keyed = len([k for k in api_keys if k])
+        elif isinstance(api_keys, str) and api_keys:
+            keyed = 1
+        result["configured"] = True
+        if keyed:
+            result["note"] = f"已配置 {keyed} 个 Firecrawl API Key"
+        else:
+            result["note"] = "Firecrawl 可用无密钥免费额度（未配置 API Key）"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:

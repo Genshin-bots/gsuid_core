@@ -53,9 +53,10 @@ dependencies = [
     "markdownify>=1.2.2",
     "onnxruntime>=1.24.1",
     "pytakumi>=0.1.0",
+    "firecrawl-py>=4.40.0",
 ]
 name = "gsuid-core"
-version = "0.10.7"
+version = "0.10.8"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
