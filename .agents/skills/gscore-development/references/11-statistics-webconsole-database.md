@@ -83,7 +83,9 @@ async def example(_user: Dict = Depends(require_auth)): ...
 > 必要时手工清理该表让用户额度立即恢复正常。
 
 > 插件也可复用 `gsuid_core.webconsole.app_app.app` 挂自己的 `/api/<插件名>/...` 路由 +
-> `Depends(require_auth)`。详见 `gscore-plugin-development` 的 FastAPI 插件 API 章。
+> `Depends(require_auth)`。前端页用 `register_plugin_page`（`webconsole/plugin_page.py`），
+> 静态资源 `/plugin-pages/<plugin_id>/<page_id>/`，列表字段 `pages`。
+> 详见 `gscore-plugin-development` §19 / §22。
 
 ### 评测端点 `/api/chat_with_history`（本地测试专用，默认 404）
 

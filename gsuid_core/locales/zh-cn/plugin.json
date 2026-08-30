@@ -41,6 +41,8 @@
   "log.plugin.gscore_cleanup_global_registration_start": "[GsCore] 开始清理插件 {plugin_name} 的全局注册状态...",
   "log.plugin.gscore_fail_agent_hooks": "[GsCore] 清理 {plugin_name} 的 Agent 环 hook / 套件槽失败: {e}",
   "log.plugin.gscore_fail_help_cache": "[GsCore] 清理插件 {plugin_name} 的帮助缓存与一览注册时异常: {e}",
+  "log.plugin.gscore_fail_plugin_pages": "[GsCore] 清理插件 {plugin_name} 的 Web 页面注册表时异常: {e}",
+  "log.plugin.gscore_plugin_pages_unregistered": "[GsCore] 已卸掉插件 {plugin_name} 的 {removed_pages} 个 Web 页面",
   "log.plugin.gscore_fail_lifecycle_hooks": "[GsCore] 清理插件 {plugin_name} 的生命周期 Hook 时异常: {e}",
   "log.plugin.gscore_fail_running_startup_hook": "[GsCore] 插件 {plugin_name} 启动 Hook {p0} 执行异常: {res}",
   "log.plugin.gscore_fail_web_routes": "[GsCore] 清理插件 {plugin_name} 的 web 路由时异常: {e}",

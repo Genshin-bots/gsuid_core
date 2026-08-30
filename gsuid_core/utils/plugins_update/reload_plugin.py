@@ -169,6 +169,22 @@ def _clean_plugin_global_state(plugin_name: str) -> None:
     except Exception as e:
         logger.warning(i18n_t("log.plugin.gscore_fail_help_cache", plugin_name=plugin_name, e=e))
 
+    # ⑥ 插件 Web 页面注册表（静态页 metadata；路由本身由 Core 统一 catch-all 提供）
+    try:
+        from gsuid_core.webconsole.plugin_page import unregister_plugin_pages
+
+        removed_pages = unregister_plugin_pages(plugin_name)
+        if removed_pages:
+            logger.info(
+                i18n_t(
+                    "log.plugin.gscore_plugin_pages_unregistered",
+                    plugin_name=plugin_name,
+                    removed_pages=removed_pages,
+                )
+            )
+    except Exception as e:
+        logger.warning(i18n_t("log.plugin.gscore_fail_plugin_pages", plugin_name=plugin_name, e=e))
+
 
 def _clean_plugin_agent_state(plugin_name: str) -> None:
     """摘掉插件的 Agent 环 hook、让它占用的槽位回落默认套件、卸掉它注册的 AI 工具。

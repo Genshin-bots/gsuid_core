@@ -62,6 +62,7 @@ GsCore WebConsole 提供基于 FastAPI 的 RESTful API，供前端 React 应用�
 39. [品牌信息 API - /api/brand](./42-brand.md)
 40. [插件商店 API - /api/plugin-store](./43-plugin-store.md)（含按 URL 安装）
 41. [HTTP 请求追踪 API - /api/http-traces](./45-http-traces.md)
+42. [插件页面 - /plugin-pages 与 /api/plugin-pages](./46-plugin-pages.md)
 
 ---
 

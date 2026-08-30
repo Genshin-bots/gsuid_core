@@ -6,6 +6,7 @@ description: >
   "能力代理/代理画像"、"怎么为触发器添加AI功能"、"几个触发器的差别在哪"、"数据库和配置项怎么添加"
   "如何把数据库表挂到网页控制台"、"PIL/pytakumi/playwright 哪个用哪个"、
   "插件怎么挂自己的 HTTP 接口"、"插件怎么注册 FastAPI 路由"、
+  "插件怎么挂前端页面"、"register_plugin_page"、"插件页 iframe"、
   "怎么扩展 RAG 嵌入后端"、"注册自定义 Embedding Provider"时触发此 SKILL。
   对所有 GsCore Bot 插件开发任务都应优先读取此 SKILL。
 
@@ -50,6 +51,7 @@ description: >
 | 十九 | 为插件挂 FastAPI 后端接口（共享 app、鉴权、CRUD、命名规范、反模式） | [references/19-fastapi-plugin-api.md](./references/19-fastapi-plugin-api.md) |
 | 二十 | 嵌入 Provider 注册表（插件扩展 RAG 嵌入后端：懒 import、工厂模式、降级策略） | [references/20-embedding-provider-registry.md](./references/20-embedding-provider-registry.md) |
 | 二十一 | AI 集成：在插件 repo 内管理 AI Skill（`ai_skill` 注册目录式 `SKILL.md` + 脚本/资源） | [references/21-ai-skill-registration.md](./references/21-ai-skill-registration.md) |
+| 二十二 | 为插件挂 Web 控制台页面（`register_plugin_page` + `PluginAPI` + 页面 i18n + Hub iframe） | [references/22-plugin-pages.md](./references/22-plugin-pages.md) |
 
 ## 推荐开发流程（按需跳转）
 
@@ -69,7 +71,7 @@ description: >
    - 业务专业代理 → [十四、能力代理画像](./references/14-ai-capability-profile.md)
    - 随插件分发 Markdown「技能」（SKILL.md + 脚本/资源，模型 `list_skills`/`run_skill_script` 调用）→ [二十一、AI Skill 注册](./references/21-ai-skill-registration.md)
    - **批量改造已有触发器支持 AI** → [十八、to_ai 批量改造工作流](./references/18-ai-trigger-migration.md)
-10. **挂自己的 HTTP 后端接口**：看 [十九、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)——复用 `gsuid_core.webconsole.app_app.app`，3 行加一个接口。
+10. **挂自己的 HTTP 后端接口**：看 [十九、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)——复用 `gsuid_core.webconsole.app_app.app`，3 行加一个接口；要同时挂 **前端页** 用 [二十二、插件 Web 页面](./references/22-plugin-pages.md) 的 `register_plugin_page` + `PluginAPI`。
 11. **扩展 RAG 嵌入后端**：看 [二十、嵌入 Provider 注册表](./references/20-embedding-provider-registry.md)——用 `register_embedding_provider` 注册 `sentence_transformers` / `llama.cpp embedding` 等自定义 Provider，懒 import + 工厂模式，自动出现在 WebConsole 下拉选项。
 12. **定制 MCP Server**（Bearer 鉴权 / 工具导出过滤 / Event 会话补全）：看 [gscore-ai-core-api §11.1.7](../gscore-ai-core-api/references/11-mcp-image-search-and-meme.md#117-mcp-server-插件扩展点)。
 13. **遇到 API 缓存 / 限流 / 字体 / 错误码 / 推主人 / 批量播报** 等问题：直接看 [十六、常用工具模块速查](./references/16-common-utilities.md)。
@@ -96,6 +98,7 @@ description: >
 - **`to_ai` 改造三层**：触发器层 `to_ai="..."` + 数据/渲染层 `ai_return()` + 业务画像 `CapabilityAgentProfile`；详见 [§18.1](./references/18-ai-trigger-migration.md#181-背景你要做的事) 与 [§18.3 Step 0.4](./references/18-ai-trigger-migration.md#step-04-判断是否需要注册-capability-agent-画像)。
 - **`ai_return` 注入点 = 数据已拿到 / 图片未生成**：必须在数据层函数里，不能只在触发器层。详见 [§18.3 Step 3](./references/18-ai-trigger-migration.md#step-3逐层分析调用链找出数据层注入-ai_return)。
 - **插件 FastAPI = 共享 app + `Depends(require_auth)`**：从 `gsuid_core.webconsole.app_app import app` 即可挂自己的 `/api/<插件名>/...` 路由；详见 [§19.2](./references/19-fastapi-plugin-api.md#192-最简示例3-行代码加一个-get-接口) 与 [§19.3](./references/19-fastapi-plugin-api.md#193-加鉴权推荐-复用-require_auth)。
+- **插件前端页 = `register_plugin_page` + `web/` 静态目录**：Hub `/plugins` 右侧按钮打开 iframe；页面 i18n 放 `web/locales/{zh-CN,en-US,ja-JP}.json`，引入 `/plugin-pages/_sdk/gshub-plugin.js`。API 用 `PluginAPI()` 前缀 `/api/<plugin_id>`。详见 [§22](./references/22-plugin-pages.md)。
 - **嵌入 Provider 注册 = 懒 import + 工厂模式**：插件 `__init__.py` 顶层调用 `register_embedding_provider` 注册 `EmbeddingProviderEntry`，重依赖只能在 `factory` 内部 import；注册时序保证早于消费；配置指向的 Provider 不可用时框架自动降级回 `local` 并记录 error，不会导致 AI 核心整体不可用。详见 [§20](./references/20-embedding-provider-registry.md)。
 - **AI Skill 随插件走 = `ai_skill(目录)`**：插件 `__init__.py` 顶层一行 `ai_skill(Path(__file__).parent / "skills")` 即把 repo 内 `skills/<name>/SKILL.md`（+ 脚本/资源）注册为运行时技能，无需挪进 `data/ai_core/skills/`；webconsole 内标记 `source="plugin"` 且只读。注意「运行时 Skill」≠「`.agents/skills` 开发文档 skill」。详见 [§21](./references/21-ai-skill-registration.md)。
 
@@ -103,6 +106,7 @@ description: >
 
 - 触发器 → AI 迁移工作流：[§18、to_ai 批量改造](./references/18-ai-trigger-migration.md)
 - 插件挂后端 API：[§19、FastAPI 插件 API](./references/19-fastapi-plugin-api.md)
+- 插件挂前端页：[§22、插件 Web 页面](./references/22-plugin-pages.md)
 - 嵌入 Provider 注册：[§20、嵌入 Provider 注册表](./references/20-embedding-provider-registry.md)
 
 ## 关联文档（同仓库其他位置）

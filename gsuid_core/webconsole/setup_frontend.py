@@ -132,6 +132,7 @@ def _import_webconsole_apis() -> None:
         http_trace_api,
         core_config_api,
         plugin_icon_api,
+        plugin_page_api,
         http_agent_keys_api,
     )
 

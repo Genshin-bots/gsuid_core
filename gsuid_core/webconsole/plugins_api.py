@@ -18,6 +18,7 @@ from gsuid_core.utils.secret_mask import (
 )
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
+from gsuid_core.webconsole.plugin_page import pages_for_plugin
 from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsDivider,
@@ -206,6 +207,7 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
                 "commit": get_plugin_commit(plugin_name),
                 "kind": "meta" if provides is not None else "plugin",
                 "provides": provides,
+                "pages": pages_for_plugin(plugin_name),
             }
         )
 
@@ -410,6 +412,7 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
             "service_config": service_config,
             "sv_list": sv_list,
             "icon": icon_base64,
+            "pages": pages_for_plugin(actual_plugin_name),
         },
     }
 

@@ -4,6 +4,7 @@
   "log.webconsole.ai_budget_limit_api": "[WebConsole] AI 予算制限 API を登録した (/api/ai/budget)",
   "log.webconsole.api_import_fail": "[WebConsole] API モジュールのインポートに失敗（一部のルートが利用できない可能性がある）: {e}",
   "log.webconsole.apirouter_app": "[WebConsole] APIRouter 経由でフロントエンドを /app にマウントした",
+  "log.webconsole.plugin_page_registered": "[plugin-page] {plugin} → /plugin-pages/{plugin_id}/{page_id}/",
   "log.webconsole.app_dist_path": "[WebConsole] フロントエンドを /app にマウントする準備中、ディレクトリ: {dist_path}",
   "log.webconsole.approvals_registered": "[Approval] WebAPI /api/ai/approvals/* を登録しました。",
   "log.webconsole.auth_avatar_get_fail": "アバターの取得に失敗しました: {error}",

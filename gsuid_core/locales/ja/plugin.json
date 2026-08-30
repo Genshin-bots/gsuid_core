@@ -41,6 +41,8 @@
   "log.plugin.gscore_cleanup_global_registration_start": "[GsCore] プラグイン {plugin_name} のグローバル登録状態のクリーンアップを開始...",
   "log.plugin.gscore_fail_agent_hooks": "[GsCore] {plugin_name} の Agent フック / キットスロットの整理に失敗: {e}",
   "log.plugin.gscore_fail_help_cache": "[GsCore] プラグイン {plugin_name} のヘルプキャッシュと登録のクリア中に例外が発生: {e}",
+  "log.plugin.gscore_fail_plugin_pages": "[GsCore] プラグイン {plugin_name} の Web ページ登録のクリア中に例外が発生: {e}",
+  "log.plugin.gscore_plugin_pages_unregistered": "[GsCore] プラグイン {plugin_name} の Web ページ {removed_pages} 件を登録解除した",
   "log.plugin.gscore_fail_lifecycle_hooks": "[GsCore] プラグイン {plugin_name} のライフサイクル Hook のクリア中に例外が発生: {e}",
   "log.plugin.gscore_fail_running_startup_hook": "[GsCore] プラグイン {plugin_name} の起動 Hook {p0} の実行中に例外が発生: {res}",
   "log.plugin.gscore_fail_web_routes": "[GsCore] プラグイン {plugin_name} の web ルートのクリア中に例外が発生: {e}",

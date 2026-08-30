@@ -4,6 +4,7 @@
   "log.webconsole.ai_budget_limit_api": "[WebConsole] AI 预算限制 API 已注册 (/api/ai/budget)",
   "log.webconsole.api_import_fail": "[网页控制台] API 模块导入失败（部分路由可能不可用）: {e}",
   "log.webconsole.apirouter_app": "[网页控制台] 已通过 APIRouter 挂载前端到 /app",
+  "log.webconsole.plugin_page_registered": "[插件页面] {plugin} → /plugin-pages/{plugin_id}/{page_id}/",
   "log.webconsole.app_dist_path": "[网页控制台] 准备挂载前端到 /app, 目录: {dist_path}",
   "log.webconsole.approvals_registered": "[Approval] WebAPI /api/ai/approvals/* 已注册。",
   "log.webconsole.auth_avatar_get_fail": "获取头像失败: {error}",

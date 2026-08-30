@@ -4,6 +4,7 @@
   "log.webconsole.ai_budget_limit_api": "[WebConsole] AI budget limit API registered (/api/ai/budget)",
   "log.webconsole.api_import_fail": "[WebConsole] Failed to import API module (some routes may be unavailable): {e}",
   "log.webconsole.apirouter_app": "[WebConsole] Frontend mounted at /app via APIRouter",
+  "log.webconsole.plugin_page_registered": "[plugin-page] {plugin} → /plugin-pages/{plugin_id}/{page_id}/",
   "log.webconsole.app_dist_path": "[WebConsole] Preparing to mount the frontend at /app, directory: {dist_path}",
   "log.webconsole.approvals_registered": "[Approval] WebAPI /api/ai/approvals/* registered.",
   "log.webconsole.auth_avatar_get_fail": "Failed to get avatar: {error}",

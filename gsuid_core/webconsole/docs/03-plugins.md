@@ -17,7 +17,19 @@ GET /api/plugins/list
             "description": "插件描述",
             "enabled": true,
             "status": "running",
-            "commit": "a1b2c3d"
+            "commit": "a1b2c3d",
+            "pages": [
+                {
+                    "id": "console",
+                    "plugin": "ZZZeroUID",
+                    "plugin_id": "zzzerouid",
+                    "path": "/plugin-pages/zzzerouid/console/",
+                    "title": { "zh-CN": "抽卡与角色管理", "en-US": "Gacha & Agents", "ja-JP": "ガチャとエージェント" },
+                    "description": { "zh-CN": "...", "en-US": "...", "ja-JP": "..." },
+                    "confirm_message": { "zh-CN": "...", "en-US": "...", "ja-JP": "..." },
+                    "icon": "layout-dashboard"
+                }
+            ]
         }
     ]
 }

@@ -488,6 +488,9 @@ WebConsole 已有 **40+ 个官方 API**，全部以 `/api/<domain>/...` 为前�
    7. 前端 / 第三方 HTTP 客户端可访问 https://host:8765/api/myplugin/xxx
 ```
 
+> 若还要在 Hub `/plugins` 挂自己的 **前端页**（iframe + i18n），用
+> [`register_plugin_page` / `PluginAPI`](./22-plugin-pages.md)，不要再 `app.mount` 静态目录。
+
 ## 19.11 关联参考
 
 - 启动 / 关闭钩子时序：[七、生命周期钩子 §7.1](./references/07-lifecycle-hooks.md#71-钩子总览)
