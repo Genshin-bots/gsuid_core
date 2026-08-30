@@ -51,6 +51,16 @@ active-users / trigger-distribution / intent-distribution / errors / heartbeat /
 
 ## 11.2 网页控制台（`gsuid_core/webconsole/`）
 
+Hub 静态资源由 `webconsole/static_serve.py::build_frontend_router` 挂在 `/app/`：
+
+- 带 hash 的 `assets/**`：`Cache-Control: public, max-age=31536000, immutable`
+- `index.html` / `version.json`：`no-cache`（禁止长期缓存 HTML，否则升级后会请求已删除的旧 hash）
+- 若存在 `.br` / `.gz` 且 `Accept-Encoding` 允许，按 Brotli 优先返回并设 `Content-Encoding` + `Vary: Accept-Encoding`
+- 缺失的 js/css/图片 **404**，不要 SPA 回落成 `index.html`（否则浏览器把 HTML 当 JS 解析）
+- `GZipMiddleware`（`app_life.py`）给未预压的文本响应做动态 gzip；已有 `Content-Encoding` 的预压文件不会再压
+
+前端构建（gsuid_hub `precompressDist`）负责写出 `.gz` / `.br`。只改 Vite 插件、不改本文件的协商逻辑，浏览器看不到压缩。
+
 FastAPI 路由，全部走鉴权依赖：
 
 ```python

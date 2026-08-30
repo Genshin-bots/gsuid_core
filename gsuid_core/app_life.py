@@ -56,9 +56,13 @@ app = FastAPI(
     openapi_url="/openapi.json" if _ENABLE_OPENAPI else None,
 )
 
+from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
+
 from gsuid_core.http_trace_middleware import HttpTraceMiddleware  # noqa: E402
 
 app.add_middleware(HttpTraceMiddleware)
+# 后注册的中间件更靠外：动态 gzip 兜底未预压的文本响应；已有 Content-Encoding 的 .br/.gz 不会再压。
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
 from gsuid_core.ai_core.http_agent.register import register_http_agent_routes  # noqa: E402
 

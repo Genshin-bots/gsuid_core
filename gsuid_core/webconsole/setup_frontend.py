@@ -1,65 +1,9 @@
 import json
 from typing import Optional
-from pathlib import Path
-
-from fastapi.responses import FileResponse, HTMLResponse
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
-from gsuid_core.utils.path_safety import PathEscapeError, safe_join
-
-# 常见文件扩展名到 MIME 类型的映射
-MIME_TYPES = {
-    # JavaScript
-    ".js": "application/javascript",
-    ".mjs": "application/javascript",
-    # CSS
-    ".css": "text/css",
-    # 图片
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    # 字体
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".ttf": "font/ttf",
-    ".eot": "application/vnd.ms-fontobject",
-    ".otf": "font/otf",
-    # 文档
-    ".html": "text/html",
-    ".htm": "text/html",
-    ".json": "application/json",
-    ".xml": "application/xml",
-    ".txt": "text/plain",
-    # 其他
-    ".wasm": "application/wasm",
-    ".map": "application/json",
-    ".webmanifest": "application/manifest+json",
-}
-
-
-def get_mime_type(file_path: Path) -> str:
-    """根据文件扩展名获取 MIME 类型"""
-
-    import mimetypes
-
-    suffix = file_path.suffix.lower()
-    mime_type = MIME_TYPES.get(suffix, None)
-
-    if mime_type is None:
-        # 尝试使用 mimetypes 模块
-        mime_type, _ = mimetypes.guess_type(str(file_path))
-        logger.debug(t("log.webconsole.mime_type_file_path", file_path=file_path, mime_type=mime_type))
-
-    if mime_type is None:
-        mime_type = "application/octet-stream"
-
-    return mime_type
 
 
 def parse_version(version_str: str) -> tuple[int, ...]:
@@ -273,40 +217,9 @@ async def setup_frontend_b() -> None:
 
         logger.info(t("log.webconsole.app_dist_path", dist_path=dist_path))
 
-        # 使用 APIRouter 来托管前端
-        from fastapi import APIRouter
+        from gsuid_core.webconsole.static_serve import build_frontend_router
 
-        router = APIRouter()
-
-        @router.get("/")
-        @router.get("/{path:path}")
-        async def serve_frontend(path: str = ""):
-            # 如果路径为空或只有 /，返回 index.html
-            if not path or path == "/":
-                index_path = dist_path / "index.html"
-                if index_path.exists():
-                    return FileResponse(index_path, media_type="text/html")
-                return HTMLResponse("Not Found", status_code=404)
-
-            # 越界 / 绝对路径 / 盘符：直接 404，禁止回落 SPA（避免探测）
-            try:
-                file_path = safe_join(dist_path, path)
-            except PathEscapeError:
-                return HTMLResponse("Not Found", status_code=404)
-
-            if file_path.exists() and file_path.is_file():
-                mime_type = get_mime_type(file_path)
-                return FileResponse(file_path, media_type=mime_type)
-
-            # 对于 SPA，返回 index.html 让前端路由处理（仅限未越界的虚路径）
-            index_path = dist_path / "index.html"
-            if index_path.exists():
-                return FileResponse(index_path, media_type="text/html")
-
-            return HTMLResponse("Not Found", status_code=404)
-
-        # 注册路由，添加 /app 前缀
-        app.include_router(router, prefix="/app")
+        app.include_router(build_frontend_router(dist_path), prefix="/app")
 
         logger.info(t("log.webconsole.apirouter_app"))
 

@@ -7,7 +7,7 @@ from typing import Any, Dict
 from pathlib import Path
 
 from fastapi import Depends, Request
-from fastapi.responses import Response, FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import Response, HTMLResponse, JSONResponse
 
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
 from gsuid_core.webconsole.app_app import app
@@ -17,6 +17,7 @@ from gsuid_core.webconsole.plugin_page import (
     list_plugin_pages,
     resolve_page_file,
 )
+from gsuid_core.webconsole.static_serve import static_file_response
 
 from ._api_tags import PLUGIN_PAGES
 
@@ -103,29 +104,41 @@ async def api_list_plugin_pages(
 
 
 @app.get("/plugin-pages/_sdk/gshub-plugin.js", summary="插件页 i18n/鉴权 SDK", tags=PLUGIN_PAGES)
-async def serve_plugin_sdk() -> Response:
+async def serve_plugin_sdk(request: Request) -> Response:
     sdk = resolve_hub_sdk_path()
     if sdk is None:
         return HTMLResponse("SDK missing; rebuild gsuid_hub into webconsole/dist", status_code=404)
-    return FileResponse(
-        path=str(sdk),
+    return static_file_response(
+        sdk,
+        rel_path=_SDK_NAME,
+        accept_encoding=request.headers.get("accept-encoding"),
         media_type="application/javascript; charset=utf-8",
-        filename="gshub-plugin.js",
     )
 
 
 @app.get("/plugin-pages/{plugin_id}/{page_id}", include_in_schema=False)
 @app.get("/plugin-pages/{plugin_id}/{page_id}/", include_in_schema=False)
-async def serve_plugin_page_index(plugin_id: str, page_id: str) -> Response:
-    return await serve_plugin_page_file(plugin_id, page_id, "")
+async def serve_plugin_page_index(plugin_id: str, page_id: str, request: Request) -> Response:
+    return await serve_plugin_page_file(plugin_id, page_id, "", request)
 
 
 @app.get("/plugin-pages/{plugin_id}/{page_id}/{rest:path}", include_in_schema=False)
-async def serve_plugin_page_file(plugin_id: str, page_id: str, rest: str) -> Response:
+async def serve_plugin_page_file(
+    plugin_id: str,
+    page_id: str,
+    rest: str,
+    request: Request,
+) -> Response:
     spec = get_plugin_page(plugin_id, page_id)
     if spec is None:
         return JSONResponse({"status": 1, "msg": "plugin page not found", "data": None}, status_code=404)
     path = resolve_page_file(spec, rest)
     if path is None:
         return JSONResponse({"status": 1, "msg": "file not found", "data": None}, status_code=404)
-    return FileResponse(path=str(path), media_type=_mime(path))
+    rel = rest or path.name
+    return static_file_response(
+        path,
+        rel_path=rel,
+        accept_encoding=request.headers.get("accept-encoding"),
+        media_type=_mime(path),
+    )

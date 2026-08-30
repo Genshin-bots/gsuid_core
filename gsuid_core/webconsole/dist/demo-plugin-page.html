@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ZZZeroUID · Demo</title>
+  <style>
+    :root {
+      --bg: hsl(var(--background, 240 4% 95%));
+      --card: hsl(var(--card, 0 0% 98%));
+      --line: hsl(var(--border, 240 4% 83%));
+      --gold: #c9a006;
+      --fg: hsl(var(--foreground, 240 5% 10%));
+      --muted: hsl(var(--muted-foreground, 240 5% 32%));
+    }
+    html.dark {
+      --gold: #ffc801;
+    }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui,sans-serif; }
+    .wrap { display:grid; grid-template-columns:240px 1fr; height:100%; }
+    aside { border-right:1px solid var(--line); padding:16px; }
+    h1 { font-size:18px; margin:0 0 12px; color:var(--gold); }
+    .uid { padding:10px 12px; border-radius:8px; background:var(--card); margin-bottom:8px; }
+    .uid.active { outline:1px solid var(--gold); }
+    main { padding:20px; overflow:auto; }
+    .stats { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+    .stat { background:var(--card); padding:14px 18px; border-radius:10px; min-width:120px; }
+    .stat b { display:block; font-size:22px; color:var(--gold); }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    .chip { background:var(--card); padding:8px 10px; border-radius:8px; font-size:13px; }
+    .s { color:var(--gold); }
+    .hint { color:var(--muted); font-size:13px; margin-top:18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <aside>
+      <h1>ZZZeroUID</h1>
+      <div class="uid active">UID 1000000001 · 12 角色</div>
+      <div class="uid">UID 1000000002 · 4 角色</div>
+      <div class="uid">UID 1000000003 · 8 角色</div>
+    </aside>
+    <main>
+      <div class="stats">
+        <div class="stat"><span>抽卡总数</span><b>328</b></div>
+        <div class="stat"><span>S 级</span><b>14</b></div>
+        <div class="stat"><span>角色卡片</span><b>12</b></div>
+      </div>
+      <div class="row">
+        <div class="chip s">仪玄 · 78抽 UP</div>
+        <div class="chip s">耀嘉音 · 64抽</div>
+        <div class="chip s">扳机 · 81抽</div>
+      </div>
+      <p class="hint">演示模式：这是插件页面嵌入预览。连接真实 gsuid_core 后将显示本地玩家的抽卡记录与 PIL 渲染预览。</p>
+    </main>
+  </div>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      function apply(data) {
+        var mode = (data && data.mode) || new URLSearchParams(location.search).get('theme') || 'light';
+        root.classList.toggle('dark', mode === 'dark');
+        root.setAttribute('data-theme', mode);
+        if (data && data.style) root.setAttribute('data-style', data.style);
+        var vars = data && data.vars;
+        if (vars) {
+          Object.keys(vars).forEach(function (name) {
+            if (name.indexOf('--') === 0) root.style.setProperty(name, vars[name]);
+          });
+        }
+      }
+      apply(null);
+      window.addEventListener('message', function (ev) {
+        if (ev.data && ev.data.type === 'gshub:theme') apply(ev.data);
+      });
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'gshub:theme-request' }, '*');
+      }
+    })();
+  </script>
+</body>
+</html>
