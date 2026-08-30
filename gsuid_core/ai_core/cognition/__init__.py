@@ -33,6 +33,7 @@ from gsuid_core.ai_core.cognition.facade import (
     resolve_recall_kinds,
     query_mentions_speaker,
     render_cognition_block,
+    strip_speaker_from_query,
 )
 from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
@@ -54,6 +55,7 @@ __all__ = [
     "probe_handle_alive",
     "query_mentions_speaker",
     "rebuild_cognition_mount",
+    "strip_speaker_from_query",
     "remember",
     "render_cognition_block",
     "resolve_recall_kinds",

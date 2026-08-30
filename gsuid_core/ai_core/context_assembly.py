@@ -125,9 +125,13 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
     )
 
 
-def join_context_blocks(blocks: Dict[str, str]) -> str:
+def join_context_blocks(
+    blocks: Dict[str, str],
+    create_by: str = "Chat",
+    skip_memory_cap: bool = False,
+) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装命名块（顺序的**唯一**执行点）。"""
-    return join_named_blocks(blocks)
+    return join_named_blocks(blocks, create_by=create_by, skip_memory_cap=skip_memory_cap)
 
 
 async def assemble_dynamic_context(
@@ -178,7 +182,8 @@ async def assemble_dynamic_context(
     ctx.soft_triggered = soft_triggered
     ctx.prev_turn_used_tools = prev_turn_used_tools
     ctx.recent_report_titles = recent_report_titles
-    ctx.memory_guide = memory_guide
+    if memory_guide:
+        ctx.memory_guide = memory_guide
 
     # 内核填的两块：history 是消息基础设施；memory 文本由 ⑧ 已检索好（或套件 H05 暂存）
     if history_context:
@@ -192,7 +197,8 @@ async def assemble_dynamic_context(
     _ensure_kernel_blocks(ctx)
     _apply_suffix_block_policy(ctx)
     _inject_master_title_hint(ctx)
-    return join_context_blocks(ctx.blocks), has_actionable
+    skip_mem = ctx.memory_eval
+    return join_context_blocks(ctx.blocks, create_by=ctx.create_by, skip_memory_cap=skip_mem), has_actionable
 
 
 def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
@@ -212,7 +218,8 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
         ctx.blocks["relationship"] = build_relationship_context(ctx.relationship)
     mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
     if mem and "memory" not in ctx.blocks:
-        ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}\n（需要更多细节请调 search_cognition）"
+        hint = "" if ctx.memory_eval else "\n（需要更多细节请调 search_cognition）"
+        ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}{hint}"
 
 
 _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(

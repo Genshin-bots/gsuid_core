@@ -166,6 +166,8 @@ def test_text_delta_skips_silence_fragments() -> None:
     async def _run() -> None:
         cap.enqueue_text_delta("<SILEN")
         cap.enqueue_text_delta("CE>")
+        cap.enqueue_text_delta("<SILENCE")
+        cap.enqueue_text_delta(">")
         await cap.flush_text_delta()
         assert q.empty()
         assert cap.has_queued_text() is False

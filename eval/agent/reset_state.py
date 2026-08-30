@@ -61,3 +61,88 @@ async def reset_eval_side_effects() -> dict[str, int]:
         "cleared_memory_scopes": n_scope,
         "deleted_episodes": n_ep,
     }
+
+
+# 全量对话记忆 wipe：只清记忆 SQL + memory_* 向量集合 + 定时任务，不动 knowledge / 插件。
+# 必须在 core 未运行时执行。
+_DIALOGUE_MEM_TABLES = (
+    "mem_episode_entity_mentions",
+    "mem_category_entity_members",
+    "aimemcategoryedge",
+    "aimemconflict",
+    "aimemedge",
+    "aimemcategory",
+    "aimementity",
+    "aimemepisode",
+    "aimempreference",
+    "aimemhierarchicalgraphmeta",
+)
+_MEMORY_COLLECTIONS = (
+    "memory_episodes",
+    "memory_episodes_cold",
+    "memory_entities",
+    "memory_edges",
+)
+
+
+def wipe_dialogue_memory_offline(*, qdrant_url: str = "http://127.0.0.1:6333") -> int:
+    """离线清空全部对话记忆与定时任务。返回 0 成功。"""
+    import sqlite3
+    from pathlib import Path
+    from urllib.error import URLError, HTTPError
+    from urllib.request import Request, urlopen
+
+    db = Path(__file__).resolve().parents[2] / "data" / "GsData.db"
+    if not db.exists():
+        print(f"missing db: {db}")
+        return 1
+
+    def _qdrant(method: str, path: str) -> None:
+        req = Request(f"{qdrant_url}{path}", method=method, headers={})
+        with urlopen(req, timeout=120) as resp:
+            resp.read()
+
+    conn = sqlite3.connect(str(db))
+    print("=== before ===")
+    for t in (*_DIALOGUE_MEM_TABLES, "aischeduledtask"):
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()
+            print(f"  {t}: {int(n[0]) if n else 0}")
+        except sqlite3.Error as e:
+            print(f"  {t}: ERR {e}")
+    for t in _DIALOGUE_MEM_TABLES:
+        try:
+            n = conn.execute(f"DELETE FROM {t}").rowcount
+            print(f"deleted {t}: {n}")
+        except sqlite3.Error as e:
+            print(f"skip {t}: {e}")
+    n_sched = conn.execute("DELETE FROM aischeduledtask").rowcount
+    print(f"deleted aischeduledtask: {n_sched}")
+    conn.commit()
+    conn.execute("VACUUM")
+    conn.close()
+    for name in _MEMORY_COLLECTIONS:
+        try:
+            _qdrant("DELETE", f"/collections/{name}")
+            print(f"deleted qdrant collection {name}")
+        except HTTPError as e:
+            print(f"qdrant delete {name}: HTTP {e.code}")
+        except (URLError, TimeoutError) as e:
+            print(f"qdrant delete {name}: {e}")
+    return 0
+
+
+if __name__ == "__main__":
+    import asyncio
+    import argparse
+
+    p = argparse.ArgumentParser(description="评测副作用清理")
+    p.add_argument(
+        "--all-dialogue",
+        action="store_true",
+        help="离线清空全部对话记忆 SQL + memory_* 集合 + 定时任务（core 必须已停；不动 knowledge）",
+    )
+    args = p.parse_args()
+    if args.all_dialogue:
+        raise SystemExit(wipe_dialogue_memory_offline())
+    print(asyncio.run(reset_eval_side_effects()))

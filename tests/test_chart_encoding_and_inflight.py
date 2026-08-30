@@ -219,10 +219,9 @@ def test_delivery_copy_forbids_expanding_long_text() -> None:
     task: Any = _Task()
     arts: Any = [_Art()]
     text = _format_delivery_for_main_agent(task, "A" * 50_000, arts)
-    assert "禁止为写台词去展开长文" in text
-    assert "禁止把事实包数字念成群聊台词" in text
+    assert "禁止展开念台词" in text
+    assert "禁止把对照表念进气泡" in text
     assert "A" * 100 not in text
-    assert "limit=8000" not in text
     assert "limit=8000" not in text
 
 

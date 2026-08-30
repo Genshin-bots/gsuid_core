@@ -18,6 +18,7 @@ from gsuid_core.ai_core.cognition import (
     kinds_from_names,
     search_cognition as federated_search,
     resolve_recall_kinds,
+    strip_speaker_from_query,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 from gsuid_core.ai_core.buildin_tools.visibility import (
@@ -95,19 +96,18 @@ async def search_cognition(
     - 需要"已有材料"（专业知识、说明文档、稳定资料、以前搜过的长文）时；
     - 想确认"我对某人了解多少 / 有没有答应过什么"时；
     - 办眼前的事需要说话人身上的事实、当前消息和上文都没写：自己组合 query
-      （只写说话人ID + 要填的槽，不要把本次外部题目的词拼进去），填槽后再
-      web_search / 专域工具。
+      （说话人ID + 要填的槽），不要把本次外部题目的词拼进去；填槽后再 web_search / 专域工具。
 
     无命中的含义是**没存过**，不是"要再搜一次"——换个说法重复调用只会浪费一轮。
     找不到就换工具（`web_search_tool` 查外部、`find_tools` 找专域工具）或直接说不知道。
 
     Args:
         ctx: 工具执行上下文
-        query: 自然语言查询，如"上周聊过的旅行计划""出图规范"
+        query: 自然语言查询，如"上周聊过的旅行计划""出图规范"。回想说话人记忆时
+            只写「说话人ID + 要填的槽」，不要把本次外部题目的词拼进去。
         kinds: 可选，逗号分隔的类型过滤。留空=记忆+知识+落盘；
-            query 含当前说话人 ID 时只查 entity/fact/preference。
-            图片/表情/出站/业务记录须显式打开。查说话人槽时 query 只写
-            「说话人 + 要填的槽」，不要把本次外部题目的词拼进去。
+            query 含当前说话人 ID 时查 entity/fact/preference（不含近窗/片段）。
+            图片/表情/出站/业务记录须显式打开。
         limit: 返回条数上限，默认 12
 
     Returns:
@@ -131,7 +131,8 @@ async def search_cognition(
             "要外部数据请用 web_search_tool，要全文请用 read_handle，或直接据已有信息作答。）"
         )
 
-    hits = await federated_search(query, kinds=selected, scope=scope, limit=max(1, min(limit, 30)))
+    search_q = strip_speaker_from_query(query, scope.user_id)
+    hits = await federated_search(search_q, kinds=selected, scope=scope, limit=max(1, min(limit, 30)))
     from gsuid_core.ai_core.cognition.hub import expand_hub, render_expand_result
 
     expansion = await expand_hub(query, hits, scope=scope)

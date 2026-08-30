@@ -1,7 +1,7 @@
 import re
 import random
 from copy import deepcopy
-from typing import Dict, Literal, Optional
+from typing import Dict, Tuple, Literal, Optional
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -80,6 +80,11 @@ async def get_new_help(
     enable_cache: bool = True,
     pm: int = 6,
     highlight_bg: Optional[Image.Image] = None,
+    banner_title_color: Optional[Tuple[int, int, int]] = None,
+    banner_sub_color: Optional[Tuple[int, int, int]] = None,
+    cag_title_color: Optional[Tuple[int, int, int]] = None,
+    cag_sub_color: Optional[Tuple[int, int, int]] = None,
+    plugin_icon_size: int = 128,
 ):
     return await _get_new_help(
         plugin_name,
@@ -100,6 +105,11 @@ async def get_new_help(
         enable_cache,
         pm,
         highlight_bg,
+        banner_title_color,
+        banner_sub_color,
+        cag_title_color,
+        cag_sub_color,
+        plugin_icon_size,
     )
 
 
@@ -123,6 +133,11 @@ def _get_new_help(
     enable_cache: bool = True,
     pm: int = 6,
     highlight_bg: Optional[Image.Image] = None,
+    banner_title_color: Optional[Tuple[int, int, int]] = None,
+    banner_sub_color: Optional[Tuple[int, int, int]] = None,
+    cag_title_color: Optional[Tuple[int, int, int]] = None,
+    cag_sub_color: Optional[Tuple[int, int, int]] = None,
+    plugin_icon_size: int = 128,
 ):
     help_path = get_res_path("help") / f"{plugin_name}_{pm}.jpg"
 
@@ -149,6 +164,11 @@ def _get_new_help(
         main_color = (0, 0, 0)
         sub_color = (102, 102, 102)
 
+    title_color = banner_title_color or main_color
+    banner_sub_fill = banner_sub_color or sub_color
+    cag_name_fill = cag_title_color or main_color
+    cag_desc_fill = cag_sub_color or sub_color
+
     banner_bg = banner_bg.convert("RGBA")
     help_bg = help_bg.convert("RGBA")
     cag_bg = cag_bg.convert("RGBA")
@@ -157,7 +177,11 @@ def _get_new_help(
     highlight_bg = highlight_bg.convert("RGBA")
 
     # PIL 掩码仅接受 RGBA/L 等模式，第三方图标常为 P/RGB
-    plugin_icon = plugin_icon.convert("RGBA").resize((128, 128))
+    icon_size = max(1, plugin_icon_size)
+    plugin_icon = plugin_icon.convert("RGBA").resize(
+        (icon_size, icon_size),
+        Image.Resampling.LANCZOS,
+    )
 
     # 准备计算整体帮助图大小
     w, h = 120 + 475 * column, footer.height
@@ -174,22 +198,24 @@ def _get_new_help(
         h += (((sv_num - 1) // column) + 1) * 175
 
     banner_h = banner_bg.size[1]
-    # 绘制banner
-    banner_bg.paste(plugin_icon, (89, banner_h - 212), plugin_icon)
+    # 绘制banner；按默认 128 尺寸的中心对齐，避免放大后贴到标题上
+    icon_x = 89 + (128 - icon_size) // 2
+    icon_y = banner_h - 212 + (128 - icon_size) // 2
+    banner_bg.paste(plugin_icon, (max(0, icon_x), max(0, icon_y)), plugin_icon)
     banner_draw: ImageDraw.ImageDraw = ImageDraw.Draw(banner_bg)
 
     _banner_name = plugin_name + "帮助"
     banner_draw.text(
         (262, banner_h - 172),
         _banner_name,
-        main_color,
+        title_color,
         font=core_font(50),
         anchor="lm",
     )
     banner_draw.text(
         (262, banner_h - 117),
         banner_sub_text,
-        sub_color,
+        banner_sub_fill,
         font=core_font(30),
         anchor="lm",
     )
@@ -272,7 +298,7 @@ def _get_new_help(
         cag_draw.text(
             (136, 50),
             cag,
-            main_color,
+            cag_name_fill,
             font=core_font(45),
             anchor="lm",
         )
@@ -282,7 +308,7 @@ def _get_new_help(
         cag_draw.text(
             (136 + cag_name_len + 15, 55),
             cag_desc,
-            sub_color,
+            cag_desc_fill,
             font=core_font(30),
             anchor="lm",
         )

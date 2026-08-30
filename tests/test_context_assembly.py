@@ -24,6 +24,17 @@ def test_both_entries_consume_shared_assembly() -> None:
 
     assert "async def run_interactive_turn(" in handle_ai, "一轮编排必须收在 run_interactive_turn"
     assert "run_interactive_turn(" in endpoint, "评测入口必须走 run_interactive_turn，不许另开一口"
+    assert 'else "Chat"' in endpoint, "非判分评测须 create_by=Chat，才能装配 search_cognition"
+    assert "memory_eval=_memory_eval" in endpoint, "LongMem 转储只认 memory_eval，不许走 TEST"
+    guide_at = endpoint.index("_MEMORY_EVAL_GUIDE")
+    guide = endpoint[guide_at : guide_at + 2800]
+    assert "【本题证据会话】" in guide
+    assert "【其他历史会话】" in guide
+    assert "【相关对话片段】" not in guide
+    loop = _src("gsuid_core/ai_core/agent_run/loop.py")
+    assert 'create_by in _MAIN_PERSONA_CREATE_BY and st.return_mode != "return"' in loop
+    assert "http_dynamic_tools(" in endpoint
+    assert "dynamic_tools=http_dynamic_tools(" in endpoint
     assert "dual_route_retrieve(" not in endpoint, "评测不得自己检索"
     assert "classifier_service" not in endpoint, "评测不得自己分类"
     assert "settle_turn(" not in endpoint, "评测不得自己结算"
@@ -79,7 +90,9 @@ def test_dynamic_context_ordering_contract() -> None:
     # 短状态（关系行等）可在历史前；历史 → 记忆 → 软触发 的相对顺序锁死
     assert i_hist >= 0 and i_mem > i_hist, "长期记忆须在历史之后"
     assert i_soft > i_mem, "软触发提示须在记忆之后"
-    assert "[guide]" in full and full.find("[guide]") < i_mem + len("[长期记忆")
+    i_guide = full.find("[guide]")
+    assert i_guide > i_mem, "评测指南须跟在记忆正文后，避免 800 字预算把目录卡截掉"
+    assert i_soft > i_guide
     assert full.endswith(SOFT_TRIGGER_NOTE), "软触发提示必须最后"
     print("[OK] 动态上下文顺序契约")
 

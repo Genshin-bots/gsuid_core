@@ -350,7 +350,8 @@ def test_chitchat_turn_still_passes_empty_contexts_not_none() -> None:
     retrieve_src = kit.split("async def retrieve", 1)[1].split("async def _prefetch", 1)[0]
     assert "inject_memory_slice" not in retrieve_src
     assert "dual_route_retrieve" in retrieve_src
-    assert "_format_memory_catalog" in retrieve_src
+    assert "format_retrieved_memory" in retrieve_src
+    assert "_format_memory_catalog" in kit
     assert "mem.episodes" in kit
     assert 'pref["polarity"]' in kit
     assert "inject_preferences=True" in facade, "偏好注入没有恒开"

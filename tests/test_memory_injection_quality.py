@@ -35,8 +35,8 @@ def _edge(source_name: str, fact: str) -> Edge:
     )
 
 
-def _episode(content: str) -> Episode:
-    return Episode(id="ep_x", content=content, valid_at="2026-07-15T14:34:00", scope_key="group:1", embedding=[])
+def _episode(content: str, valid_at: str = "2026-07-15T14:34:00", eid: str = "ep_x") -> Episode:
+    return Episode(id=eid, content=content, valid_at=valid_at, scope_key="group:1", embedding=[])
 
 
 # ─────────────────────────────────────────────
@@ -291,3 +291,336 @@ def test_memory_catalog_keeps_preference_polarity_and_episode_titles() -> None:
     assert "昨天说了对海鲜过敏" in text
     assert "住在杭州" in text
     assert "search_cognition" in text
+
+
+def test_http_dynamic_tools_false_stays_off_for_chat() -> None:
+    from gsuid_core.webconsole.chat_with_history_api import http_dynamic_tools
+
+    assert http_dynamic_tools(as_judge=True, enable_tools=True) is False
+    assert http_dynamic_tools(as_judge=False, enable_tools=False) is False
+    assert http_dynamic_tools(as_judge=False, enable_tools=True) is True
+
+
+def test_eval_memory_scope_key_matches_dual_route() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_memory_scope_key
+
+    assert eval_memory_scope_key("u1", None) == "user_global:u1"
+    assert eval_memory_scope_key("u1", "g9") == "group:g9"
+
+
+def test_eval_query_tokens_keeps_two_char_cjk() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_query_tokens
+
+    toks = {t.lower() for t in eval_query_tokens("杭州过敏了吗")}
+    assert "杭州" in toks
+    assert "过敏" in toks
+
+
+def test_retrieve_query_strips_inject_date_and_clock_line() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import retrieve_query_for_search
+
+    q = "当前时间：2023/05/30 23:40\n\nCan you recommend Premiere Pro tutorials?"
+    assert retrieve_query_for_search(q) == "Can you recommend Premiere Pro tutorials?"
+    q2 = "hello\n[当前时间：2026-08-16 20:25:28]"
+    body = retrieve_query_for_search(q2)
+    assert "hello" in body
+    assert "当前时间" not in body
+
+
+def test_format_retrieved_memory_test_path_dumps_full_text() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+    from gsuid_core.ai_core.memory.retrieval.dual_route import PreferencePrompt
+
+    long_ep = (
+        "I prefer Adobe Premiere Pro tutorials that cover advanced color grading "
+        "settings and not generic DaVinci Resolve intros."
+    )
+    pref: PreferencePrompt = {
+        "target_context": "general",
+        "preference_rule": "回复保持简短",
+        "polarity": "do",
+        "is_correction": True,
+        "id": "p1",
+    }
+    mc = MemoryContext(preferences=[pref], episodes=[_episode(long_ep)])
+    test_ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="TEST",
+        query="当前时间：2023/05/30 23:40\n\nrecommend video editing resources",
+    )
+    # TEST 不再当评测门：无 memory_eval 就走目录卡，避免 TEST 改装配污染分数。
+    catalog_via_test = format_retrieved_memory(
+        test_ctx, MemoryContext(preferences=[pref], episodes=[_episode(long_ep)])
+    )
+    assert "search_cognition" in catalog_via_test
+    assert "advanced color grading" not in catalog_via_test
+    chat_ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="recommend video editing resources",
+    )
+    catalog = format_retrieved_memory(chat_ctx, mc)
+    assert "search_cognition" in catalog
+    assert "回复保持简短" in catalog
+    eval_chat = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="recommend video editing resources",
+        memory_eval=True,
+        memory_guide="[Memory-usage guidelines]\n",
+    )
+    dumped_eval = format_retrieved_memory(eval_chat, MemoryContext(preferences=[pref], episodes=[_episode(long_ep)]))
+    assert "Adobe Premiere Pro" in dumped_eval
+    assert "advanced color grading" in dumped_eval
+    assert "search_cognition" not in dumped_eval
+    assert "untrusted" not in dumped_eval
+    assert "<untrusted" not in dumped_eval
+
+
+def test_eval_dump_keeps_session_neighbors_without_query_overlap() -> None:
+    """问句词只命中会话里一条时，邻条（专名）不得被 overlap 重排挤出预算。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "planning dinner this weekend with homegrown ingredients",
+                valid_at="2023-05-01 10:00:00",
+                eid="a",
+            ),
+            _episode(
+                "I grew cherry tomatoes and basil and mint in the garden",
+                valid_at="2023-05-01 10:02:00",
+                eid="b",
+            ),
+            _episode("unrelated dinner party at a restaurant last year", valid_at="2022-01-01 10:00:00", eid="c"),
+            _episode(
+                "To write a product profile description, list the product ingredients and materials",
+                valid_at="2023-05-25 00:06:10",
+                eid="d",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What should I serve for dinner with my homegrown ingredients?",
+        memory_eval=True,
+        memory_guide="[Memory-usage guidelines]\n",
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "cherry tomatoes" in dumped
+    assert "basil" in dumped
+    assert dumped.find("cherry tomatoes") < dumped.find("product profile")
+    assert "【本题证据会话】" in dumped
+
+
+def test_eval_dump_session_embed_outranks_vector_seed_noise() -> None:
+    """向量种子在早餐会话、金标在园子：会话向量分必须把园子排成主证据。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "espresso breakfast toast and jam this morning",
+                valid_at="2023-05-25 08:00:00",
+                eid="seed1",
+            ),
+            _episode(
+                "I harvested basil and cherry tomatoes in the garden",
+                valid_at="2023-05-23 10:00:00",
+                eid="gold1",
+            ),
+            _episode(
+                "mint and parsley from the backyard planter",
+                valid_at="2023-05-23 10:02:00",
+                eid="gold2",
+            ),
+        ],
+        seed_ids=["seed1"],
+        session_scores={"gold1": 0.82, "gold2": 0.80, "seed1": 0.31},
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What should I serve for dinner with my homegrown ingredients?",
+        memory_eval=True,
+        memory_guide="[Memory-usage guidelines]\n",
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert dumped.find("basil") < dumped.find("espresso")
+    assert "【本题证据会话】" in dumped
+    assert "【其他历史会话】" in dumped
+
+
+def test_eval_dump_lists_proper_nouns_and_extra_sessions() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I prefer Adobe Premiere Pro tutorials covering color grading",
+                valid_at="2023-04-01 10:00:00",
+                eid="p1",
+            ),
+            _episode(
+                "unrelated hiking trip to Yosemite last spring",
+                valid_at="2023-03-01 10:00:00",
+                eid="h1",
+            ),
+            _episode(
+                "bought a new utensil holder for the granite counter",
+                valid_at="2023-02-01 10:00:00",
+                eid="k1",
+            ),
+        ],
+        session_scores={"p1": 0.9, "h1": 0.2, "k1": 0.1},
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="recommend video editing resources",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "【必须点名】" in dumped
+    assert "Premiere Pro" in dumped
+    assert "【其他历史会话】" in dumped
+    assert "Yosemite" in dumped
+    assert "utensil holder" in dumped
+
+
+def test_eval_dump_query_place_name_beats_same_template_session() -> None:
+    """同是订酒店模板时，问句里的 Miami 必须压过 Seattle 干扰会话。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I'm planning a trip to Seattle and need a hotel with a great view of the city",
+                valid_at="2023-05-29 14:06:00",
+                eid="sea",
+            ),
+            _episode(
+                "I'm planning a trip to Miami and want a hotel with ocean views and a rooftop pool",
+                valid_at="2023-05-20 10:00:00",
+                eid="mia",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="Can you suggest a hotel for my upcoming trip to Miami?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    primary = dumped.split("【其他历史会话】", 1)[0]
+    assert "Miami" in primary
+    assert "rooftop pool" in primary
+    assert dumped.find("Miami") < dumped.find("Seattle")
+
+
+def test_inject_skips_tool_hint_for_memory_eval() -> None:
+    import asyncio
+
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import MemoryKit
+
+    kit = MemoryKit(kit_id="gscore.memory", slot="memory", display_name="长期记忆", owns_tools=())
+    test_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, create_by="TEST")
+    test_ctx.retrieved["memory"] = "【核心事实】\n• 喜欢 Premiere Pro 高级调色教程"
+    asyncio.run(kit.inject(test_ctx))
+    block = test_ctx.blocks["memory"]
+    assert "Premiere Pro" in block
+    assert "search_cognition" in block
+    assert "禁止调用" not in block
+
+    chat_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, create_by="Chat")
+    chat_ctx.retrieved["memory"] = "【核心事实】\n• 喜欢 Premiere Pro 高级调色教程"
+    asyncio.run(kit.inject(chat_ctx))
+    assert "search_cognition" in chat_ctx.blocks["memory"]
+    chat_ctx.memory_guide = "[guide]\n"
+    chat_ctx.blocks.clear()
+    asyncio.run(kit.inject(chat_ctx))
+    block = chat_ctx.blocks["memory"]
+    assert "禁止调用" not in block
+    assert "search_cognition" in block
+    chat_ctx.memory_eval = True
+    chat_ctx.blocks.clear()
+    asyncio.run(kit.inject(chat_ctx))
+    block = chat_ctx.blocks["memory"]
+    assert block.find("[长期记忆]") < block.find("[guide]")
+    assert "禁止调用" in block
+    assert "search_cognition" not in block
+    assert block.find("（系统：") < block.find("[长期记忆]")
+    assert block.rfind("（系统：") > block.find("[guide]")
+
+
+def test_memory_eval_skips_memory_block_char_budget() -> None:
+    from gsuid_core.ai_core.kits.base import join_named_blocks
+
+    blob = "P" * 3000
+    chat = join_named_blocks({"memory": blob}, create_by="Chat")
+    assert len(chat) <= 800
+    assert chat.endswith("…")
+    still_capped = join_named_blocks({"memory": blob}, create_by="TEST")
+    assert len(still_capped) <= 800
+    skipped = join_named_blocks({"memory": blob}, create_by="Chat", skip_memory_cap=True)
+    assert blob in skipped
+    assert len(skipped) >= 3000
+
+
+def test_prioritize_retrieved_puts_query_overlap_first() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import prioritize_retrieved_for_query
+    from gsuid_core.ai_core.memory.retrieval.dual_route import PreferencePrompt
+
+    pref_noise: PreferencePrompt = {
+        "target_context": "general",
+        "preference_rule": "回复时不要使用代码块",
+        "polarity": "dont",
+        "is_correction": True,
+        "id": "p_noise",
+    }
+    pref_hit: PreferencePrompt = {
+        "target_context": "general",
+        "preference_rule": "Miami hotels should have rooftop pools",
+        "polarity": "do",
+        "is_correction": False,
+        "id": "p_hit",
+    }
+    mc = MemoryContext(
+        preferences=[pref_noise, pref_hit],
+        episodes=[_episode("Ticket to Ride won 6 of 8 tickets"), _episode("Looking for a Miami beach hotel")],
+        edges=[_edge("u", "玩过 Ticket to Ride"), _edge("u", "planning a Miami hotel with ocean view")],
+    )
+    prioritize_retrieved_for_query(mc, "Can you suggest a hotel for my upcoming trip to Miami?")
+    assert "Miami" in mc.episodes[0]["content"]
+    assert "Miami" in mc.edges[0]["fact"]
+    assert all("Ticket" not in e["fact"] for e in mc.edges)
+    assert len(mc.preferences) == 1
+    assert "Miami" in mc.preferences[0]["preference_rule"]
+
+
+def test_eval_query_tokens_drops_stopwords_keeps_content_words() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_query_tokens
+
+    toks = [t.lower() for t in eval_query_tokens("Can you suggest a hotel for my upcoming trip to Miami?")]
+    assert "hotel" in toks
+    assert "miami" in toks
+    assert "suggest" not in toks
+    assert "recommend" not in toks
+
+
+def test_to_prompt_text_can_skip_untrusted_wrap() -> None:
+    mc = MemoryContext(edges=[_edge("100000001", "喜欢吃紫菜包饭")])
+    wrapped = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000001"})
+    assert "<untrusted" in wrapped
+    bare = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000001"}, wrap_recall=False)
+    assert "<untrusted" not in bare
+    assert "紫菜包饭" in bare

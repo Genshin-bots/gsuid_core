@@ -139,7 +139,8 @@ def split_protocol_hold(buf: str, *, force: bool = False) -> tuple[str, str]:
     """
     if not buf:
         return "", ""
-    if is_silence_marker(buf):
+    # 未闭合 <SILENCE 是 hold 前缀，不能当残片丢掉，否则下一分片 `>` 会漏出去
+    if is_silence_marker(buf) and not _is_protocol_hold(buf):
         return "", ""
     spans = [(m.start(), m.end()) for m in _PROTOCOL_CODE_SPAN_RE.finditer(buf)]
     hold_at: int | None = None
@@ -160,7 +161,7 @@ def split_protocol_hold(buf: str, *, force: bool = False) -> tuple[str, str]:
     if matched is not None:
         more_vis, hold = split_protocol_hold(rest[matched.end() :], force=force)
         return visible + more_vis, hold
-    if is_silence_marker(rest):
+    if is_silence_marker(rest) and not _is_protocol_hold(rest):
         return visible, ""
     if force and _is_protocol_hold(rest):
         return visible, ""

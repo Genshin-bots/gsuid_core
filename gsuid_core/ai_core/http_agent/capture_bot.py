@@ -97,10 +97,8 @@ class CaptureBot(Bot):
         """把模型可见文本增量推进 SSE 队列（不写 history）。"""
         if not piece:
             return
-        from gsuid_core.ai_core.utils import is_silence_marker, split_protocol_hold
+        from gsuid_core.ai_core.utils import split_protocol_hold
 
-        if is_silence_marker(piece) and not self._hold and not self._delta_buf:
-            return
         visible, self._hold = split_protocol_hold(self._hold + piece, force=False)
         if not visible:
             return

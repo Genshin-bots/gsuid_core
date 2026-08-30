@@ -9,6 +9,9 @@
 
 记忆子系统的 bring-up 归 ``startup._INIT_STEPS``（它要排在 RAG 之后拿 Embedding），
 本套件不带 ``init_step``（否则同一个初始化每次启动跑两遍）。
+
+LongMem 证据转储不在本文件：见 ``eval_protocol.py``，仅 ``memory_eval`` 时懒加载。
+评测 ``create_by`` 必须是 Chat；TEST 会改装配/闸门，不能当评测入口。
 """
 
 import re
@@ -35,6 +38,8 @@ _EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤�
 _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
 # 「短寒暄」的长度上限，与关系温度的 meaningful 判据同源
 _CHITCHAT_SHORT_LEN = 12
+# LongMem inject_date 前缀；剥掉后再检索，避免日期词带偏向量。
+_EVAL_NOW_PREFIX_RE = re.compile(r"^(?:当前时间[：:]\s*[^\n]+\n+)+")
 
 
 def _format_memory_catalog(mem: "MemoryContext") -> str:
@@ -77,6 +82,24 @@ def _format_memory_catalog(mem: "MemoryContext") -> str:
         return ""
     lines.append("（详情 search_cognition / read_handle）")
     return "\n".join(lines)
+
+
+def retrieve_query_for_search(query: str) -> str:
+    """检索用 query：剥墙钟行和 eval「当前时间」前缀。"""
+    from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+
+    body = extract_message_body(query)
+    body = _EVAL_NOW_PREFIX_RE.sub("", body).strip()
+    return body or query.strip()
+
+
+def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
+    """Chat 默认目录卡；仅 ``memory_eval`` 灌完整证据片段（create_by 应是 Chat）。"""
+    if not ctx.memory_eval:
+        return _format_memory_catalog(mem)
+    from gsuid_core.ai_core.kits.memory.eval_protocol import format_eval_memory
+
+    return format_eval_memory(mem, retrieve_query_for_search(ctx.query))
 
 
 def should_prefetch_memory(ctx: AgentHookContext) -> bool:
@@ -151,6 +174,7 @@ def cog_scope_from_ctx(ctx: AgentHookContext) -> "CogScope":
         group_id=ctx.group_id,
         enable_system2=enable_system2,
         enable_user_global=memory_config.enable_user_global_memory,
+        memory_eval=ctx.memory_eval,
     )
 
 
@@ -250,7 +274,7 @@ class MemoryKit(AgentKit):
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
-        """H05：旁观不预灌；点名最多目录卡，正文走 search_cognition。"""
+        """H05：旁观不预灌；Chat 给目录卡；仅 memory_eval 灌证据会话。"""
         from gsuid_core.ai_core.memory.config import memory_config
         from gsuid_core.ai_core.configs.ai_config import ai_config
         from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
@@ -259,22 +283,28 @@ class MemoryKit(AgentKit):
             return
         if not should_prefetch_memory(ctx):
             return
-        if not should_retrieve(ctx.query, ctx.intent or "", ctx.user_id):
+        search_q = retrieve_query_for_search(ctx.query)
+        if not should_retrieve(search_q, ctx.intent or "", ctx.user_id):
             logger.debug(t("log.ai.memory_skip_hit_small_talk_gate"))
             return
 
         pref_contexts: List[str] = []
         if ctx.intent != "闲聊":
-            domains: Set[str] = set(relevant_preference_contexts(ctx.query))
+            domains: Set[str] = set(relevant_preference_contexts(search_q))
             domains.update(ctx.assembled_domains)
             pref_contexts = list(domains)
         scope = cog_scope_from_ctx(ctx)
+        top_k = memory_config.retrieval_top_k
+        if ctx.memory_eval:
+            from gsuid_core.ai_core.kits.memory.eval_protocol import EVAL_RETRIEVAL_TOP_K
+
+            top_k = max(int(top_k), EVAL_RETRIEVAL_TOP_K)
         mem = await dual_route_retrieve(
-            ctx.query,
+            search_q,
             ctx.user_id,
             enable_system2=scope.enable_system2,
             group_id=scope.group_id,
-            top_k=memory_config.retrieval_top_k,
+            top_k=top_k,
             enable_user_global=scope.enable_user_global,
             inject_preferences=True,
             preference_contexts=pref_contexts,
@@ -282,7 +312,12 @@ class MemoryKit(AgentKit):
             bot_self_id=scope.bot_self_id,
             include_self=True,
         )
-        text = _format_memory_catalog(mem)
+        if ctx.memory_eval:
+            from gsuid_core.ai_core.kits.memory.eval_protocol import boost_retrieved_memory
+
+            mem.seed_ids = [e["id"] for e in mem.episodes[:12]]
+            await boost_retrieved_memory(mem, search_q, ctx.user_id, ctx.group_id)
+        text = format_retrieved_memory(ctx, mem)
         if text:
             ctx.stash_retrieved("memory", text)
             logger.debug(t("log.ai.memory_retrieved_context_characters", p0=len(text)))
@@ -323,8 +358,6 @@ class MemoryKit(AgentKit):
         )
         if not hits:
             return
-        # 只把过了相对分下限的条目算作「已检索」的高置信部分；弱相关在渲染里
-        # 折成一句「另有 N 条弱相关」，不贴高置信标签。
         block = render_cognition_block(ctx.query, hits, header="已检索·目录")
         ctx.stash_retrieved("cognition_prefetch", block)
         logger.info(t("log.ai.cognition_prefetch", intent=intent or "-", n=len(hits)))
@@ -334,8 +367,15 @@ class MemoryKit(AgentKit):
         parts: List[str] = []
         text = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
         if text:
-            guide = ctx.memory_guide or ""
-            parts.append(f"{guide}[长期记忆]\n{text}")
+            if ctx.memory_eval:
+                from gsuid_core.ai_core.kits.memory.eval_protocol import inject_eval_memory_parts
+
+                parts.extend(inject_eval_memory_parts(text, ctx.memory_guide or ""))
+            else:
+                parts.append(f"[长期记忆]\n{text}")
+                guide = ctx.memory_guide or ""
+                if guide:
+                    parts.append(guide)
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:
             parts.append(prefetch)
@@ -344,7 +384,8 @@ class MemoryKit(AgentKit):
             parts.append(meme_block)
         if not parts:
             return
-        parts.append("（需要更多细节请调 search_cognition / read_handle）")
+        if not ctx.memory_eval:
+            parts.append("（需要更多细节请调 search_cognition / read_handle）")
         ctx.set_context_block("memory", "\n".join(parts))
 
     async def _meme_preinject(self, ctx: AgentHookContext) -> str:

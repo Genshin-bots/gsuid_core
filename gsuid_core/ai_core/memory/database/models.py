@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import JSON
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vector
-from gsuid_core.utils.database.base_models import async_maker, with_session
+from gsuid_core.utils.database.base_models import async_maker, with_session, with_read_session
 
 # ─────────────────────────────────────────────
 # 多对多关联表
@@ -191,6 +191,86 @@ class AIMemEpisode(SQLModel, table=True):
             await upsert_episode_vectors_batch(payload)
             written += len(chunk)
         return written
+
+    @classmethod
+    @with_read_session
+    async def search_by_tokens(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        tokens: list[str],
+        limit: int = 24,
+    ) -> list["AIMemEpisode"]:
+        """按 token OR LIKE 召回本 scope 的 Episode（评测词面补召）。"""
+        if not tokens or not scope_key:
+            return []
+        likes = [col(cls.content).like(f"%{tok}%") for tok in tokens]
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, or_(*likes))
+            .order_by(col(cls.valid_at).desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def neighbors_by_time(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        valid_at: datetime,
+        before: int = 6,
+        after: int = 6,
+    ) -> list["AIMemEpisode"]:
+        """同一 scope 按 valid_at 取前后邻条，拼回证据会话。"""
+        if not scope_key or (before <= 0 and after <= 0):
+            return []
+        rows: list["AIMemEpisode"] = []
+        seen: set[str] = set()
+        if before > 0:
+            stmt_b = (
+                select(cls)
+                .where(col(cls.scope_key) == scope_key, col(cls.valid_at) <= valid_at)
+                .order_by(col(cls.valid_at).desc())
+                .limit(before + 1)
+            )
+            earlier = list((await session.execute(stmt_b)).scalars().all())
+            for row in reversed(earlier):
+                if row.id in seen:
+                    continue
+                seen.add(row.id)
+                rows.append(row)
+        if after > 0:
+            stmt_a = (
+                select(cls)
+                .where(col(cls.scope_key) == scope_key, col(cls.valid_at) > valid_at)
+                .order_by(col(cls.valid_at).asc())
+                .limit(after)
+            )
+            later = list((await session.execute(stmt_a)).scalars().all())
+            for row in later:
+                if row.id in seen:
+                    continue
+                seen.add(row.id)
+                rows.append(row)
+        return rows
+
+    @classmethod
+    @with_read_session
+    async def list_by_scope(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int = 2000,
+    ) -> list["AIMemEpisode"]:
+        """同一 scope 按时间取出全部 Episode（评测还原 haystack 会话）。"""
+        if not scope_key or limit <= 0:
+            return []
+        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.valid_at).asc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
 
     # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────
     # Episode 是"每条放行消息都写"的无界增长主力（P0-2）。以下方法为生命周期 Worker
@@ -918,6 +998,28 @@ class AIMemEdge(SQLModel, table=True):
             .order_by(col(cls.valid_at).desc())
             .limit(limit)
         )
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def search_by_tokens(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        tokens: list[str],
+        limit: int = 24,
+    ) -> list["AIMemEdge"]:
+        """按 token OR LIKE 召回本 scope 的 Edge（评测词面补召）。"""
+        if not tokens or not scope_key:
+            return []
+        likes = [col(cls.fact).like(f"%{tok}%") for tok in tokens]
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, or_(*likes))
+            .order_by(col(cls.valid_at).desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
     # ── C11 记忆生命周期 ───────────────────────────

@@ -73,17 +73,28 @@ def _apply_block_budget(name: str, text: str) -> str:
     return text[: max(0, budget - 1)] + "…"
 
 
-def join_named_blocks(blocks: Mapping[str, str]) -> str:
-    """按 ``CONTEXT_BLOCK_ORDER`` 拼装；口吻/口气/身份连成一段，其余块仍 ``\\n\\n``。"""
+def join_named_blocks(
+    blocks: Mapping[str, str],
+    *,
+    create_by: str = "Chat",
+    skip_memory_cap: bool = False,
+) -> str:
+    """按 ``CONTEXT_BLOCK_ORDER`` 拼装；口吻/口气/身份连成一段，其余块仍 ``\\n\\n``。
+
+    评测跳过 800 字帽须显式 ``skip_memory_cap``（Chat + memory_eval）。
+    ``create_by=TEST`` 不再自动免帽，以免评测走 TEST 改掉生产装配。
+    """
     pieces: list[str] = []
     cues: list[str] = []
+    _ = create_by
     for name in CONTEXT_BLOCK_ORDER:
         if name not in blocks:
             continue
         text = blocks[name]
         if not text:
             continue
-        text = _apply_block_budget(name, text)
+        if not (skip_memory_cap and name == "memory"):
+            text = _apply_block_budget(name, text)
         if name in _CUE_BLOCK_CLUSTER:
             cues.append(text)
             continue

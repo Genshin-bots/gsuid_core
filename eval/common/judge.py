@@ -74,7 +74,7 @@ async def judge_single_answer(
     通过 ``/api/chat_with_history`` 接口发送评判请求，让 LLM 判断回答是否正确。
     使用独立的 ``user_id`` 避免与其他会话冲突。
     """
-    judge_prompt = f"""请判断 Agent 的回答是否正确。
+    judge_prompt = f"""请判断 Agent 的回答是否与标准答案语义一致。
 
 问题: {question}
 
@@ -82,8 +82,7 @@ async def judge_single_answer(
 
 Agent 的回答: {agent_answer}
 
-请判断 Agent 的回答是否与标准答案语义一致，只输出 JSON:
-{{"correct": true/false, "reason": "判断理由"}}"""
+只输出单独一行：PASS 或 FAIL。"""
 
     # 判分走 provider，高并发命中连接/限流时 agent 管线把错误当正文返回（HTTP 200），不重试
     # 会被 parse 成 FAIL 大批误判——指数退避仅对瞬时故障重试，真实判决直接返回。
@@ -97,6 +96,7 @@ Agent 的回答: {agent_answer}
             message=judge_prompt,
             history=[],
             timeout=timeout,
+            as_judge=True,
         )
         last_status = resp.get("status_code", -1)
         last_text = extract_text_from_response(resp.get("data")) if last_status == 200 else ""
@@ -120,6 +120,10 @@ def parse_judge_response(text: str) -> Dict[str, Any]:
     """
     if not text:
         return {"correct": False, "reason": "评判回复为空"}
+
+    head = text.strip().splitlines()[0].strip()
+    if re.fullmatch(r"PASS|FAIL", head, flags=re.IGNORECASE):
+        return {"correct": head.upper() == "PASS", "reason": text.strip()[:500]}
 
     # 1) 直接解析
     try:

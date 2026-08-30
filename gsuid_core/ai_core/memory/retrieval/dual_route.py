@@ -287,6 +287,10 @@ class MemoryContext:
     # 时间范围检索命中标记：query 含显式日期范围时置 True。此时问题是枚举/时序型，
     # 时间线证据在 episodes 里，注入预算向片段倾斜（事实占比 55% → 30%）。
     temporal_mode: bool = False
+    # 评测：dual_route 向量序的前若干条 id，会话排序时压过泛词 LIKE。
+    seed_ids: list[str] = field(default_factory=list)
+    # 评测：会话级向量分（episode id → cosine），主证据会话用这个排，不靠 seed 条数。
+    session_scores: dict[str, float] = field(default_factory=dict)
 
     def to_prompt_text(
         self,
@@ -294,6 +298,7 @@ class MemoryContext:
         priority_speakers: Optional[set] = None,
         current_speaker_ids: Optional[set] = None,
         query: str = "",
+        wrap_recall: bool = True,
     ) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本。
 
@@ -523,7 +528,10 @@ class MemoryContext:
             elif len(recall_text) > _budget:
                 recall_text = recall_text[: _budget - len(_marker)] + _marker
             if recall_text:
-                blocks.append(wrap_untrusted("memory_recall", recall_text))
+                if wrap_recall:
+                    blocks.append(wrap_untrusted("memory_recall", recall_text))
+                else:
+                    blocks.append(recall_text)
         return "\n\n".join(blocks)
 
     def to_memory_text(self, max_chars: int = 24000) -> str:

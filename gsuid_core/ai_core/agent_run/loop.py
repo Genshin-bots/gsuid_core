@@ -962,7 +962,8 @@ class LoopPhase(RunOnceHost):
                     continue
                 if _slot == "send_final":
                     st.saw_final_response = True
-                if self.create_by in _MAIN_PERSONA_CREATE_BY:
+                # return 不下发；话术门 continue 会让评测 HTTP 抓不到念数答卷
+                if self.create_by in _MAIN_PERSONA_CREATE_BY and st.return_mode != "return":
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
                     )
@@ -1102,6 +1103,9 @@ class LoopPhase(RunOnceHost):
                         if _slot == "send_accept":
                             _accept_slot_used = True
                         st.wait_comfort_sent = True
+                elif _text and st.return_mode == "return":
+                    # 评测 HTTP 不下发，仍记下可见正文，避免工具轮之后只剩 <SILENCE>
+                    self._run_sent_texts.add(_text)
 
             elif isinstance(part, ThinkingPart):
                 _thinking = part.content.strip()

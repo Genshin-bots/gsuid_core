@@ -197,7 +197,7 @@ def _entries_for_last_run(entries: list) -> list:
     return _entries_for_scoring(entries, skip_runs=10**9)
 
 
-# 与 visibility.check_sched_* / check_group_recall 拒绝文案对齐。点了但没改世界。
+# 与 visibility.check_sched_* 拒绝文案对齐。点了但没改世界。
 _POLICY_REJECT_MARKERS: tuple[str, ...] = (
     "本轮是管理已有条目",
     "本轮未点名：不要",
@@ -556,6 +556,13 @@ def _max_latency(tr, val, judge):
     if finished:
         return False, f"latency={lat:.1f}s cap={cap}s too-late"
     return False, f"latency={lat:.1f}s cap={cap}s unfinished"
+
+
+@_v("final_regex")
+def _final_regex(tr, val, judge):
+    # 交付文本须命中任一正则（与 final_regex_absent 相反）。
+    hit = [p for p in val if re.search(p, tr.content_text)]
+    return bool(hit), f"regex_hit={hit}"
 
 
 @_v("final_regex_absent")

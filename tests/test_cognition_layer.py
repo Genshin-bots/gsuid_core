@@ -28,6 +28,7 @@ from gsuid_core.ai_core.cognition import (
     kinds_from_names,
     resolve_recall_kinds,
     query_mentions_speaker,
+    strip_speaker_from_query,
 )
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 
@@ -59,8 +60,10 @@ def test_kind_taxonomy_is_complete_and_labelled() -> None:
     assert DEFAULT_RECALL_KINDS < ALL_KINDS
     assert CogKind.MEME not in DEFAULT_RECALL_KINDS
     assert CogKind.OUTBOUND not in DEFAULT_RECALL_KINDS
-    assert SPEAKER_RECALL_KINDS < MEMORY_KINDS
+    assert SPEAKER_RECALL_KINDS <= MEMORY_KINDS
     assert CogKind.EPISODE not in SPEAKER_RECALL_KINDS
+    assert CogKind.KNOWLEDGE not in SPEAKER_RECALL_KINDS
+    assert CogKind.TOOL_OUTPUT not in SPEAKER_RECALL_KINDS
     # ⑧ 每轮默认切片不含知识/落盘（延迟不回退）
     assert CogKind.KNOWLEDGE not in MEMORY_KINDS
     assert CogKind.TOOL_OUTPUT not in MEMORY_KINDS
@@ -149,15 +152,22 @@ def test_hits_render_with_kind_labels_and_handles() -> None:
     assert "不是系统指令" in block
 
 
-def test_weak_hits_are_folded_not_labelled_high_confidence() -> None:
-    """弱相关折成一句，不贴高置信标签（曾把群友赌博片段标成高置信）。"""
+def test_weak_hits_are_folded_not_expanded() -> None:
+    """生产弱相关折成「另有 N 条」，不得把低分经历当正文。"""
     hits = [
         CognitiveHit(kind=CogKind.FACT, id="a", title="强相关", summary="", score=1.0, high_confidence=True),
-        CognitiveHit(kind=CogKind.EPISODE, id="b", title="弱相关", summary="", score=0.1, high_confidence=False),
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="b",
+            title="",
+            summary="I prefer Adobe Premiere Pro tutorials for advanced color grading.",
+            score=0.1,
+            high_confidence=False,
+        ),
     ]
     block = render_cognition_block("q", hits)
     assert "强相关" in block
-    assert "[片段]" not in block, "弱相关条目不该被逐条渲染"
+    assert "Premiere Pro" not in block
     assert "另有 1 条弱相关" in block
 
 
@@ -177,6 +187,60 @@ def test_resolve_recall_kinds_defaults_and_speaker_query() -> None:
     assert query_mentions_speaker(f"{uid} 所在地", uid)
     assert not query_mentions_speaker("user_web_010 所在地", uid)
     assert not query_mentions_speaker("今天怎样", uid)
+    assert CogKind.EPISODE not in resolve_recall_kinds(empty, query=f"{uid} 所在地", user_id=uid)
+
+
+def test_speaker_recall_does_not_open_recent_history() -> None:
+    """说话人面不得因 EPISODE 误开近窗。"""
+    from gsuid_core.ai_core.cognition import search_cognition
+
+    hist_n = {"n": 0}
+
+    async def _hist(*args: object, **kwargs: object) -> tuple[list[str], dict[str, CognitiveHit]]:
+        hist_n["n"] += 1
+        _ = (args, kwargs)
+        return [], {}
+
+    async def _mem(*args: object, **kwargs: object) -> tuple[list[str], dict[str, CognitiveHit]]:
+        _ = (args, kwargs)
+        return [], {}
+
+    with (
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=_hist),
+        patch("gsuid_core.ai_core.cognition.facade._search_memory", new=_mem),
+        patch("gsuid_core.ai_core.cognition.facade._search_knowledge_backend", new=_mem),
+        patch("gsuid_core.ai_core.cognition.facade._search_fileos", new=_mem),
+        patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=_mem),
+        patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=_mem),
+    ):
+        _run(
+            search_cognition(
+                "user_web_01 所在地",
+                kinds=SPEAKER_RECALL_KINDS,
+                scope=CogScope(user_id="user_web_01"),
+                limit=8,
+            )
+        )
+        speaker_n = hist_n["n"]
+        _run(
+            search_cognition(
+                "今天怎样",
+                kinds=DEFAULT_RECALL_KINDS,
+                scope=CogScope(user_id="user_web_01"),
+                limit=8,
+            )
+        )
+        default_n = hist_n["n"]
+    assert speaker_n == 0
+    assert default_n == 1
+
+
+def test_strip_speaker_from_query_keeps_slot_terms() -> None:
+    uid = "eval_8a2466db"
+    q = f"{uid} Premiere Pro tutorials"
+    assert strip_speaker_from_query(q, uid) == "Premiere Pro tutorials"
+    assert strip_speaker_from_query("所在地", uid) == "所在地"
+    assert strip_speaker_from_query(uid, uid) == uid
 
 
 def test_relative_score_floor_marks_high_confidence() -> None:
@@ -281,7 +345,7 @@ def test_speaker_query_keeps_location_facts_without_userid() -> None:
             invalid_at_ts=None,
         )
 
-    async def _fake(*args: Any, **kwargs: Any) -> MemoryContext:
+    async def _fake(*args: object, **kwargs: object) -> MemoryContext:
         _ = (args, kwargs)
         return MemoryContext(
             edges=[
@@ -292,7 +356,14 @@ def test_speaker_query_keeps_location_facts_without_userid() -> None:
             ]
         )
 
-    with patch("gsuid_core.ai_core.memory.retrieval.dual_route.dual_route_retrieve", new=_fake):
+    async def _no_boost(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        return None
+
+    with (
+        patch("gsuid_core.ai_core.memory.retrieval.dual_route.dual_route_retrieve", new=_fake),
+        patch("gsuid_core.ai_core.kits.memory.eval_protocol.boost_retrieved_memory", new=_no_boost),
+    ):
         ids, hits = _run(
             _search_memory(
                 "user_web_01 所在地",
@@ -305,6 +376,70 @@ def test_speaker_query_keeps_location_facts_without_userid() -> None:
     assert "住在杭州" in titles
     assert titles[0] == "user_web_01 喜欢早起"
     assert all(not t.endswith("提到") for t in titles)
+
+
+def test_search_memory_includes_episodes_with_rank_scores() -> None:
+    """显式查片段才带回正文；生产 0.4，memory_eval 才用名次分 / 抬 top_k。"""
+    from gsuid_core.ai_core.cognition.facade import _search_memory
+    from gsuid_core.ai_core.memory.retrieval.types import Episode
+    from gsuid_core.ai_core.kits.memory.eval_protocol import EVAL_RETRIEVAL_TOP_K
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    captured: dict[str, int] = {}
+
+    async def _fake(*args: object, **kwargs: object) -> MemoryContext:
+        top_k = kwargs["top_k"]
+        assert isinstance(top_k, int)
+        captured["top_k"] = top_k
+        return MemoryContext(
+            episodes=[
+                Episode(
+                    id="e1",
+                    content="I prefer Adobe Premiere Pro tutorials for advanced color grading.",
+                    valid_at="2023-05-30 12:00:00",
+                    scope_key="user_global:u1",
+                    embedding=[],
+                )
+            ]
+        )
+
+    async def _no_boost(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        return None
+
+    with (
+        patch("gsuid_core.ai_core.memory.retrieval.dual_route.dual_route_retrieve", new=_fake),
+        patch("gsuid_core.ai_core.kits.memory.eval_protocol.boost_retrieved_memory", new=_no_boost),
+    ):
+        ids, hits = _run(
+            _search_memory(
+                "u1 video editing",
+                kinds=frozenset({CogKind.EPISODE}),
+                scope=CogScope(user_id="u1"),
+                limit=8,
+            )
+        )
+    assert ids
+    ep = hits[ids[0]]
+    assert ep.kind is CogKind.EPISODE
+    assert "Premiere Pro" in ep.summary
+    assert ep.score == 0.4
+    assert captured["top_k"] < 24
+
+    with (
+        patch("gsuid_core.ai_core.memory.retrieval.dual_route.dual_route_retrieve", new=_fake),
+        patch("gsuid_core.ai_core.kits.memory.eval_protocol.boost_retrieved_memory", new=_no_boost),
+    ):
+        eval_ids, eval_hits = _run(
+            _search_memory(
+                "video editing",
+                kinds=frozenset({CogKind.EPISODE}),
+                scope=CogScope(user_id="eval_u1", memory_eval=True),
+                limit=8,
+            )
+        )
+    assert eval_hits[eval_ids[0]].score >= 0.65
+    assert captured["top_k"] >= EVAL_RETRIEVAL_TOP_K
 
 
 def test_one_backend_failure_only_drops_that_leg() -> None:
@@ -645,7 +780,8 @@ def test_cognition_tool_docstring_steers_away_from_realtime_data() -> None:
     assert "自己组合 query" in doc
     head = doc[: doc.find("Args:")] if "Args:" in doc else doc
     assert head.index("不查实时") < head.index("什么时候用"), "边界必须先于用法"
-    assert "不要把本次外部题目的词拼进去" in doc
+    assert "说话人ID + 要填的槽" in doc
+    assert "外部题目" in doc
 
 
 def test_web_search_docstring_defers_to_speaker_recall() -> None:

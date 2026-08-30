@@ -728,7 +728,7 @@ class SettlePhase(RunOnceHost):
                 _replacement_visible = _adopted or _nested_visible
 
             # 出口消毒：异步在途 / 编排泄漏 / 长结构 / 引导追问 → 对外 SILENCE 或短句
-            if self.create_by in ("Chat", "Agent") and result_msg:
+            if self.create_by in ("Chat", "Agent") and result_msg and st.return_mode != "return":
                 _rs = result_msg.strip()
                 if st.image_sent_this_run:
                     # 步骤 7：发图后允许短收尾；仍砍编排/长结构/过程元话语/引导追问

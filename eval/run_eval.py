@@ -9,6 +9,7 @@
   python eval/run_eval.py longmem probe --concurrency 12 [--start 0 --end 100]
   python eval/run_eval.py longmem judge --concurrency 12
   python eval/run_eval.py longmem report
+  python eval/run_eval.py longmem diagnose --answers-file eval/longmemeval/results/answers_ssp_v3.json
 
   # BEAM-10M：委托既有 run_beam_eval.py（保持其 CLI 与状态文件不变）
   python eval/run_eval.py beam probe --conv 0
@@ -80,23 +81,31 @@ def _lm_load(args: argparse.Namespace) -> List[Dict[str, Any]]:
 
     data = load_eval_data(args.eval_data or resolve_eval_data_path())
     s, e = args.start or 0, args.end or len(data)
-    return data[s:e]
+    items = data[s:e]
+    qtype = args.question_type
+    if qtype:
+        items = [q for q in items if q.get("question_type") == qtype]
+    return items
 
 
 async def _lm_probe(args: argparse.Namespace) -> None:
     from eval.longmemeval.run_longmem_eval import flatten_haystack_with_dates
 
-    extract = getattr(args, "extract", False)
-    system2 = getattr(args, "system2", False)
-    inject_date = getattr(args, "inject_date", False)
-    clear_first = getattr(args, "clear_first", False)
+    extract = args.extract
+    system2 = args.system2
+    inject_date = args.inject_date
+    clear_first = args.clear_first
+    skip_ingest = args.skip_ingest
+    qtype = args.question_type or "*"
     # extract=True 会额外跑 LLM 实体/边抽取，一窗口一次；用 batch_observe 的 extra_payload 透传，
     # 让 System-1 检索能命中 entity/edge（而非纯 episode-RAG）。
-    extra_payload = {"extract": True, "extract_concurrency": 3} if extract else None
+    extra_payload = {"extract": True, "extract_concurrency": 10} if extract else None
     answers_file, _ = _lm_paths(args)
     print(
         f"[lm-probe] extract={extract} system2={system2} inject_date={inject_date} "
-        f"clear_first={clear_first} concurrency={args.concurrency} -> {os.path.basename(answers_file)}"
+        f"clear_first={clear_first} skip_ingest={skip_ingest} type={qtype} "
+        f"persona={args.persona_name or '评测助手'} "
+        f"concurrency={args.concurrency} -> {os.path.basename(answers_file)}"
     )
     items = _lm_load(args)
     async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout)) as client:
@@ -104,21 +113,22 @@ async def _lm_probe(args: argparse.Namespace) -> None:
         async def one(q: Dict[str, Any]) -> Dict[str, Any]:
             qid = q["question_id"]
             user_id = f"eval_{qid}"
-            turns = flatten_haystack_with_dates(q.get("haystack_sessions", []), q.get("haystack_dates", []))
-            # 清库再灌，避免历史遗留 / 部分 scope 污染检索（评测态每题独立 scope）
-            if clear_first:
-                await call_clear_user_global(client, args.base_url, user_id, timeout=args.timeout)
-            obs = await call_batch_observe(
-                client=client,
-                base_url=args.base_url,
-                user_id=user_id,
-                turns=turns,
-                flush=True,
-                timeout=args.timeout,
-                extra_payload=extra_payload,
-            )
-            if obs.get("status") != 0:
-                raise RuntimeError(f"batch_observe: {obs.get('msg')}")
+            if not skip_ingest:
+                turns = flatten_haystack_with_dates(q.get("haystack_sessions", []), q.get("haystack_dates", []))
+                # 清库再灌，避免历史遗留 / 部分 scope 污染检索（评测态每题独立 scope）
+                if clear_first:
+                    await call_clear_user_global(client, args.base_url, user_id, timeout=args.timeout)
+                obs = await call_batch_observe(
+                    client=client,
+                    base_url=args.base_url,
+                    user_id=user_id,
+                    turns=turns,
+                    flush=True,
+                    timeout=args.timeout,
+                    extra_payload=extra_payload,
+                )
+                if obs.get("status") != 0:
+                    raise RuntimeError(f"batch_observe: {obs.get('msg')}")
             # 注入"当前时间"：temporal-reasoning 依赖"今天"计算"多少天前"
             message = q["question"]
             if inject_date:
@@ -134,6 +144,9 @@ async def _lm_probe(args: argparse.Namespace) -> None:
                 timeout=args.timeout,
                 enable_observer=False,
                 enable_system2=system2,
+                enable_tools=False,
+                memory_eval=True,
+                persona_name=args.persona_name or "评测助手",
             )
             status = resp.get("status_code", -1)
             answer = extract_text_from_response(resp.get("data")) if status == 200 else f"[ERROR] status_code={status}"
@@ -209,6 +222,66 @@ def _lm_report(judge_file: str = LM_JUDGE) -> None:
     dump_json(os.path.join(LM_RESULTS, summary_name), {"stats": stats, "total": total})
 
 
+def _lm_diagnose(args: argparse.Namespace) -> None:
+    """对照答卷/判分，并可选查库里金标词是否落在该题 scope。"""
+    import re
+    import sqlite3
+
+    answers_file, judge_file = _lm_paths(args)
+    if not os.path.isfile(answers_file):
+        print(f"[lm-diagnose] 无答卷 {answers_file}")
+        return
+    answers = load_json(answers_file)
+    judges = {r["question_id"]: r for r in (load_json(judge_file) if os.path.isfile(judge_file) else [])}
+    passed = 0
+    total = 0
+    db = os.path.join(_PROJECT_ROOT, "data", "GsData.db")
+    conn: sqlite3.Connection | None = sqlite3.connect(db) if os.path.isfile(db) else None
+    tok_re = re.compile(r"[A-Za-z]{4,}|[0-9]{3,}|[一-鿿]{2,}")
+    print(f"[lm-diagnose] answers={os.path.basename(answers_file)} judge={os.path.basename(judge_file)}")
+    for a in answers:
+        qid = str(a.get("question_id") or "")
+        rec = judges[qid] if qid in judges else {}
+        judge = rec["judge"] if "judge" in rec and isinstance(rec["judge"], dict) else {}
+        ok = bool(judge["passed"]) if "passed" in judge else False
+        total += 1
+        if ok:
+            passed += 1
+        gold = str(a.get("standard_answer") or "")
+        ans = str(a.get("agent_answer") or "").replace("\n", " / ")
+        mark = "PASS" if ok else "FAIL"
+        print(f"\n{mark} {qid}  {(a.get('question') or '')[:80]}")
+        print(f"  GOLD {gold[:140].replace(chr(10), ' / ')}")
+        print(f"  ANS  {ans[:160]}")
+        if conn is None or not qid:
+            continue
+        scope = f"user_global:eval_{qid}"
+        n_ep = conn.execute("SELECT COUNT(*) FROM aimemepisode WHERE scope_key=?", (scope,)).fetchone()
+        ep_n = int(n_ep[0]) if n_ep else 0
+        kws = []
+        seen: set[str] = set()
+        for m in tok_re.finditer(gold):
+            w = m.group(0)
+            key = w.lower()
+            if key in seen or len(w) < 4:
+                continue
+            seen.add(key)
+            kws.append(w)
+            if len(kws) >= 6:
+                break
+        hits = []
+        for kw in kws:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM aimemepisode WHERE scope_key=? AND content LIKE ?",
+                (scope, f"%{kw}%"),
+            ).fetchone()
+            hits.append(f"{kw}={int(row[0]) if row else 0}")
+        print(f"  DB   episodes={ep_n}  {', '.join(hits)}")
+    if conn is not None:
+        conn.close()
+    print(f"\n===== diagnose {passed}/{total} ({passed / max(total, 1) * 100:.1f}%) =====")
+
+
 # ─────────────────────────────────────────────
 # BEAM（委托既有脚本，保持状态文件/CLI 兼容）
 # ─────────────────────────────────────────────
@@ -229,7 +302,7 @@ def _beam_delegate(stage: str, extra: List[str]) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description="统一评测入口")
     p.add_argument("benchmark", choices=["longmem", "beam"])
-    p.add_argument("stage", help="longmem: probe/judge/report; beam: 透传 run_beam_eval 子命令")
+    p.add_argument("stage", help="longmem: probe/judge/report/diagnose; beam: 透传 run_beam_eval 子命令")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--eval-data", default=None)
     p.add_argument("--start", type=int, default=None)
@@ -246,6 +319,21 @@ def main() -> int:
     p.add_argument("--clear-first", action="store_true", help="probe: 每题摄入前清空该 scope，避免历史遗留污染")
     p.add_argument("--answers-file", default=None, help="覆盖答卷文件路径（子集实验隔离用）")
     p.add_argument("--judge-file", default=None, help="覆盖判分文件路径（子集实验隔离用）")
+    p.add_argument(
+        "--question-type",
+        default=None,
+        help="probe/load: 只跑该 question_type（如 single-session-preference）",
+    )
+    p.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        help="probe: 跳过 clear/batch_observe，复用库里已摄入记忆只重作答",
+    )
+    p.add_argument(
+        "--persona-name",
+        default="评测助手",
+        help="probe: 作答人格（默认评测助手：必须作答、禁止静音）",
+    )
     args, extra = p.parse_known_args()
 
     if args.benchmark == "beam":
@@ -257,6 +345,8 @@ def main() -> int:
     elif args.stage == "report":
         _, judge_file = _lm_paths(args)
         _lm_report(judge_file)
+    elif args.stage == "diagnose":
+        _lm_diagnose(args)
     else:
         print(f"未知 stage: {args.stage}")
         return 2

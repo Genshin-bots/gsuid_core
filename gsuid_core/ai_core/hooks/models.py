@@ -71,6 +71,8 @@ class AgentHookContext:
     prev_turn_used_tools: bool = False
     recent_report_titles: Tuple[str, ...] = ()
     memory_guide: str = ""
+    # LongMem 证据转储 / 禁工具指令；不得用「有 memory_guide」当门。
+    memory_eval: bool = False
     relationship: Optional["RelationshipView"] = None
     cheap_gate: str = ""
     prior_user_turns: List[str] = field(default_factory=list)

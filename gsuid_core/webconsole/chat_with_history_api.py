@@ -12,6 +12,7 @@ Chat With History API
     }
 """
 
+import uuid
 import asyncio
 from typing import TYPE_CHECKING, List, Union, Optional
 
@@ -60,6 +61,12 @@ class ChatWithHistoryRequest(BaseModel):
     # 评测夹具：直接注入关系温度分数（None=真查库）。让 rel_style_* 用例不必写 SQL。
     rel_score: Optional[int] = None
     as_judge: bool = False  # 评测判分：跳过人设/脚手架/工具，只出 PASS/FAIL
+    memory_eval: bool = False  # LongMem：灌证据会话、跳过 800 字帽、禁工具指令
+
+
+def http_dynamic_tools(*, as_judge: bool, enable_tools: bool) -> bool:
+    """HTTP 评测的工具装配开关。False 必须是关，不能退化成 None（Chat 会按 agentic 再打开）。"""
+    return False if as_judge else bool(enable_tools)
 
 
 # 记忆评测专用：片段带时点，回答须取最新值 / 指出矛盾。不进生产 system。
@@ -75,12 +82,13 @@ _MEMORY_EVAL_GUIDE = (
     "do X'), explicitly state that there is contradictory information and ask them to "
     "clarify; do NOT silently pick one or downplay it as an exception.\n"
     "3) Quote the exact number/version/date/price from the fragments; don't paraphrase.\n"
-    "3b) Dates on 【核心事实】 lines and timestamps on 【相关对话片段】 are both STATEMENT "
-    "times (when the user actually said it). Use them directly to decide which value is "
-    "'latest'; when a fact line and a conversation fragment disagree about the same "
-    "attribute, prefer the source with the later statement time.\n"
-    "4) If memory genuinely lacks the SPECIFIC thing asked, plainly say there is no such "
-    "information; don't pad with loosely-related content or speculate.\n"
+    "3b) Dates on 【核心事实】 lines and timestamps on 【本题证据会话】 / 【其他历史会话】 "
+    "are both STATEMENT times (when the user actually said it). Use them directly to "
+    "decide which value is 'latest'; when a fact line and a conversation block disagree "
+    "about the same attribute, prefer the source with the later statement time.\n"
+    "4) If a 【本题证据会话】 block is present, answer FROM it even when wording differs "
+    "(garden herbs count as homegrown ingredients; a named product counts as the preference). "
+    "Only say there is no information when that evidence block is missing entirely.\n"
     "5) Do not infer a PERSON's background, qualifications or role solely from the "
     "assistant's own past suggestions/praise (e.g. 'choose experienced reviewers like X' "
     "does not establish X's expertise); for such personal attributes require an explicit "
@@ -163,7 +171,8 @@ async def chatWithHistory(
                 )
             )
 
-    _create_by = "EvalJudge" if req.as_judge else "TEST"
+    _create_by = "EvalJudge" if req.as_judge else "Chat"
+    _memory_eval = (not req.as_judge) and bool(req.memory_eval)
     agent = create_agent(
         system_prompt=_sys_prompt,
         persona_name=persona_name,
@@ -171,8 +180,8 @@ async def chatWithHistory(
         max_history=0 if req.as_judge else req.max_history,
         max_iterations=1 if req.as_judge else None,
         task_level="low" if req.as_judge else "high",
-        session_id=f"{'judge' if req.as_judge else 'test'}_{user_id}",
-        dynamic_tools=False if req.as_judge else (True if req.enable_tools else None),
+        session_id=(f"judge_{user_id}" if req.as_judge else f"test_{user_id}_{uuid.uuid4().hex[:8]}"),
+        dynamic_tools=http_dynamic_tools(as_judge=req.as_judge, enable_tools=req.enable_tools),
         wall_clock_budget=60.0 if req.as_judge else None,
     )
     if not req.as_judge:
@@ -188,7 +197,8 @@ async def chatWithHistory(
         create_by=_create_by,
         query=req.message,
         persona_name=persona_name,
-        memory_guide="" if req.as_judge else (_MEMORY_EVAL_GUIDE if memory_config.enable_retrieval else ""),
+        memory_guide=_MEMORY_EVAL_GUIDE if _memory_eval else "",
+        memory_eval=_memory_eval,
     )
     if req.enable_system2 is not None:
         hook_ctx.enable_system2 = bool(req.enable_system2)

@@ -70,8 +70,8 @@ def test_tool_assembly_sorted_and_vector_pool_always_on_query() -> None:
 
     # agent_run 拆分后工具五层装配在 agent_run/tools.py（读源文件避免 import 依赖链）
     src = Path("gsuid_core/ai_core/agent_run/tools.py").read_text(encoding="utf-8")
-    assert "core_tools.sort(key=lambda _t: _t.name)" in src
-    assert "deduped_extra.sort(key=lambda _t: _t.name)" in src
+    assert "stabilize_session_tool_names(" in src
+    assert "self._stabilize_session_toolset(" in src
     q_idx = src.index("search_tools_with_entity_routing(")
     gate_block = src[max(0, q_idx - 800) : q_idx]
     assert "if qy" in gate_block
