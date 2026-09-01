@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional, TypedDict
+from typing import Dict, List, Iterator, Optional, TypedDict
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -16,12 +16,13 @@ from gsuid_core.models import (
     HttpTraceJsonlRecord,
 )
 from gsuid_core.day_jsonl_store import (
+    gil_pause,
     shard_key,
     load_day_record,
-    load_day_records,
     parse_jsonl_line,
     count_day_records,
     enqueue_day_jsonl,
+    iter_day_list_records,
     flush_day_jsonl_writes,
 )
 
@@ -199,14 +200,23 @@ def get_http_trace_from_jsonl(trace_id: str, date_str: str | None = None) -> Opt
     return _pack_full_record(record, item)
 
 
-def list_http_traces_from_jsonl(date_str: str | None = None) -> List[HttpTraceListItem]:
-    """读指定日期；同 uuid 只留最后一行。不加 limit，过滤由 API 做。"""
-    items: list[HttpTraceListItem] = []
-    for record in load_day_records(_traces_root(), date_str).values():
+def iter_http_list_items(date_str: str | None = None, *, flush: bool = True) -> Iterator[HttpTraceListItem]:
+    """Newest-first unique list items from index (or leftover tail). Does not load the whole day."""
+    seen: set[str] = set()
+    for record in iter_day_list_records(_traces_root(), date_str, flush=flush):
         item = _jsonl_to_list_item(record)
         if item is None:
             continue
-        items.append(item)
+        tid = item["trace_id"]
+        if tid in seen:
+            continue
+        seen.add(tid)
+        yield item
+
+
+def list_http_traces_from_jsonl(date_str: str | None = None) -> List[HttpTraceListItem]:
+    """读指定日期；同 uuid 只留最后一行（文件倒序先见到的即最后写）。"""
+    items = list(iter_http_list_items(date_str))
     items.sort(key=lambda x: x["start_time"], reverse=True)
     return items
 
@@ -239,8 +249,10 @@ def get_http_trace_logs_from_daily_log(trace_id: str, date_str: str | None = Non
     if not log_file.exists():
         return []
     logs: List[HttpTraceLogLine] = []
+    n = 0
     with open(log_file, "r", encoding="utf-8") as f:
         for line in f:
+            n = gil_pause(n)
             record = _parse_jsonl_line(line)
             if record is None:
                 continue

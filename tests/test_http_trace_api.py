@@ -114,6 +114,27 @@ def test_filters_and_errors_only_before_limit(api_env: tuple[Path, HttpTraceColl
     assert paged["rows"][0]["trace_id"] == err.trace_id
 
 
+def test_unfiltered_page_does_not_need_all_rows(api_env: tuple[Path, HttpTraceCollector]) -> None:
+    _log_dir, _http = api_env
+    base = time.time()
+    ids: list[str] = []
+    for i in range(5):
+        ctx = _ctx(path=f"/api/n{i}")
+        ctx.start_ts = base + i
+        write_http_trace_meta(ctx, status="completed", log_count=0, duration_ms=i, status_code=200)
+        ids.append(ctx.trace_id)
+    today = time.strftime("%Y-%m-%d")
+    page = merge_http_trace_list(today, 1, 2, None, None, None, None, False)
+    assert page["count"] == 5
+    assert len(page["rows"]) == 2
+    assert page["rows"][0]["trace_id"] == ids[-1]
+    assert page["rows"][1]["trace_id"] == ids[-2]
+    page2 = merge_http_trace_list(today, 3, 2, None, None, None, None, False)
+    assert page2["page"] == 3
+    assert len(page2["rows"]) == 1
+    assert page2["rows"][0]["trace_id"] == ids[0]
+
+
 def test_silent_completed_empty_logs(api_env: tuple[Path, HttpTraceCollector]) -> None:
     _log_dir, http = api_env
     ctx = _ctx()

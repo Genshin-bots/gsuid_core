@@ -95,7 +95,7 @@ v1 **不承诺** `/api/send_msg` 触发的命令函数体内日志进入 HTTP �
 | K9 | 长连接：**路径黑名单 + `text/event-stream` 早 detach** | 产品排除列表 + 插件私自挂 SSE。NDJSON 首版靠 10min stale。 |
 | K10 | JSONL 文件，不上 SQL | 与命令运维一致。 |
 | K11 | `HttpTraceCollector.collect` **只**读 `http_trace_id` | 抄命令 `collect` 的 `trace_id` 门会把全部 HTTP 行丢掉。 |
-| K12 | 列表/详情文件 IO 走 `to_thread`；页面 visible 时每 5s 刷列表（与 running 无关） | HTTP 请求毫秒级，`running>0` 门控会看起来永远空。详情 completed 后停轮询。 |
+| K12 | 列表/详情文件 IO 走独立 1 worker 线程（禁止默认 `asyncio.to_thread` 池）；同参 in-flight 合并；无筛选只读 index 尾部 + 换行计数 | `json.loads` 占 GIL。默认池 + 5s 轮询叠几十路全表扫描会卡死整个进程。有 index 后不读 leftover 整日 jsonl。 |
 
 ---
 

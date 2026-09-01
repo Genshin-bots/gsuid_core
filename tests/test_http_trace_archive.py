@@ -14,6 +14,7 @@ from gsuid_core.http_trace_archive import (
     _shard_key,
     write_http_trace_meta,
     daily_http_trace_counts,
+    flush_http_trace_writes,
     get_http_trace_from_jsonl,
     list_http_traces_from_jsonl,
     count_http_traces_from_jsonl,
@@ -109,6 +110,67 @@ def test_legacy_flat_jsonl_still_readable(archive_env: Path) -> None:
     detail = get_http_trace_from_jsonl(tid, today)
     assert detail is not None
     assert detail["response_preview"] == "legacy-preview"
+
+
+def test_list_ignores_legacy_when_index_exists(archive_env: Path) -> None:
+    ctx = _ctx(path="/api/new")
+    write_http_trace_meta(ctx, status="completed", log_count=0, duration_ms=1, status_code=200)
+    today = time.strftime("%Y-%m-%d")
+    flush_http_trace_writes()
+    leftover_tid = str(uuid.uuid4())
+    traces_root = archive_env / "http_traces"
+    traces_root.mkdir(parents=True, exist_ok=True)
+    legacy = traces_root / f"{today}.jsonl"
+    legacy.write_text(
+        json.dumps(
+            {
+                "trace_id": leftover_tid,
+                "method": "GET",
+                "path": "/api/old",
+                "query_redacted": "",
+                "client_ip": "127.0.0.1",
+                "user_id": None,
+                "user_name": None,
+                "start_time": time.time(),
+                "status": "completed",
+                "log_count": 0,
+                "duration_ms": 1,
+                "status_code": 200,
+                "error_count": 0,
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rows = list_http_traces_from_jsonl(today)
+    ids = [r["trace_id"] for r in rows]
+    assert ctx.trace_id in ids
+    assert leftover_tid not in ids
+    assert count_http_traces_from_jsonl(today) == 1
+
+
+def test_detail_skips_oversized_legacy(archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.day_jsonl_store as store
+
+    monkeypatch.setattr(store, "_MAX_FULL_SCAN_BYTES", 40)
+    today = time.strftime("%Y-%m-%d")
+    tid = str(uuid.uuid4())
+    payload = {
+        "trace_id": tid,
+        "method": "GET",
+        "path": "/api/old",
+        "query_redacted": "",
+        "client_ip": "127.0.0.1",
+        "start_time": time.time(),
+        "status": "completed",
+        "log_count": 0,
+        "pad": "x" * 80,
+    }
+    legacy = archive_env / "http_traces"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / f"{today}.jsonl").write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert get_http_trace_from_jsonl(tid, today) is None
 
 
 def test_http_calendar_includes_running(archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:

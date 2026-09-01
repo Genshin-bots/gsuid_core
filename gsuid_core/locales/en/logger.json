@@ -17,5 +17,6 @@
   "log.logger.trace_jsonl_writer_crashed": "trace JSONL writer crashed",
   "log.logger.trace_jsonl_queue_full": "trace JSONL queue full, dropped {n} lines",
   "log.logger.trace_jsonl_drain_queue_full": "trace JSONL drain: queue full, skip join",
+  "log.logger.trace_jsonl_missing_index": "trace dir has no index.jsonl, listing will scan shards (slow): {path}",
   "log.logger.unhandled_exception": "Unhandled exception"
 }

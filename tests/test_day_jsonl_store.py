@@ -199,6 +199,69 @@ def test_empty_past_day_does_not_create_sidecar(tmp_path: Path) -> None:
     assert not (tmp_path / day / COUNT_NAME).exists()
 
 
+def test_reversed_jsonl_newest_first(tmp_path: Path) -> None:
+    from gsuid_core.day_jsonl_store import iter_jsonl_records_reversed
+
+    path = tmp_path / "t.jsonl"
+    a = json.dumps({"trace_id": "a", "n": 1}, ensure_ascii=False)
+    b = json.dumps({"trace_id": "b", "n": 2}, ensure_ascii=False)
+    path.write_text(a + "\n" + b + "\n", encoding="utf-8")
+    recs = list(iter_jsonl_records_reversed(path))
+    assert [r["trace_id"] for r in recs] == ["b", "a"]
+
+
+def test_index_hides_legacy_for_list_and_count(tmp_path: Path) -> None:
+    from gsuid_core.day_jsonl_store import (
+        INDEX_NAME,
+        load_day_records,
+        count_day_records,
+        iter_day_list_records,
+    )
+
+    day = "2020-02-01"
+    _enqueue(tmp_path, date_str=day)
+    flush_day_jsonl_writes()
+    leftover_tid = str(uuid.uuid4())
+    legacy = tmp_path / f"{day}.jsonl"
+    legacy.write_text(_index_line(leftover_tid), encoding="utf-8")
+    recs = list(iter_day_list_records(tmp_path, day, flush=False))
+    ids = [r["trace_id"] for r in recs if "trace_id" in r]
+    assert leftover_tid not in ids
+    loaded = load_day_records(tmp_path, day, flush=False)
+    assert leftover_tid not in loaded
+    assert (tmp_path / day / INDEX_NAME).is_file()
+    assert count_day_records(tmp_path, day, flush=False) == 1
+
+
+def test_oversized_legacy_only_reads_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.day_jsonl_store as store
+
+    monkeypatch.setattr(store, "_MAX_FULL_SCAN_BYTES", 80)
+    day = "2020-02-02"
+    old = {"trace_id": "old-id", "status": "completed", "pad": "x" * 120}
+    new = {"trace_id": "new-id", "status": "completed"}
+    legacy = tmp_path / f"{day}.jsonl"
+    legacy.write_text(
+        json.dumps(old, ensure_ascii=False) + "\n" + json.dumps(new, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    recs = list(store.iter_day_list_records(tmp_path, day, flush=False))
+    ids = [r["trace_id"] for r in recs if "trace_id" in r]
+    assert "new-id" in ids
+    assert "old-id" not in ids
+
+
+def test_newline_count_incremental(tmp_path: Path) -> None:
+    from gsuid_core.day_jsonl_store import count_jsonl_lines
+
+    path = tmp_path / "n.jsonl"
+    path.write_text("a\nb\n", encoding="utf-8")
+    assert count_jsonl_lines(path) == 2
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("c\n")
+    assert count_jsonl_lines(path) == 3
+
+
 def test_corrupt_count_sidecar_falls_back_to_scan(tmp_path: Path) -> None:
     day = "2020-01-18"
     _enqueue(tmp_path, date_str=day)

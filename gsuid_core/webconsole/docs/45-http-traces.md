@@ -1,7 +1,7 @@
 # HTTP 请求追踪 API - `/api/http-traces`
 
 > 后端：`gsuid_core/webconsole/http_trace_api.py`
-> 存储：`data/logs/http_traces/YYYY-MM-DD/index.jsonl`（列表，无 preview）+ `{trace_id 前 2 位 hex}.jsonl`（详情）+ `count`（非今天的去重条数旁路）+ `data/logs/YYYY-MM-DD.log`（字段 `http_trace_id`）。旧的单日 `YYYY-MM-DD.jsonl` 仍可读。与命令追踪共用 **一条** 写线程（`day_jsonl_store`），不是各开一条。
+> 存储：`data/logs/http_traces/YYYY-MM-DD/index.jsonl`（列表，无 preview）+ `{trace_id 前 2 位 hex}.jsonl`（详情）+ `count`（非今天的去重条数旁路）+ `data/logs/YYYY-MM-DD.log`（字段 `http_trace_id`）。有 index 后旧的单日 `YYYY-MM-DD.jsonl` **不再读**（可删）。无 index 时 leftover 仍可读，超过 64MB 只读文件尾。与命令追踪共用 **一条** 写线程（`day_jsonl_store`）和 **一条** HTTP 读线程，不是各开一条。
 > 与 [07-logs.md](./07-logs.md) §7.8 **命令追踪**相互独立，禁止写入 `logs/traces/`。
 
 按一次 `/api` HTTP 请求查看该 **ASGI 请求任务**内的官方 `gsuid_core.logger` 行。插件挂在共享 `app` 上且使用官方 logger 时无需额外代码。
@@ -35,7 +35,11 @@ GET /api/http-traces
 | `user_id` | 不筛 | 精确匹配 |
 | `errors_only` | 假 | `1`/`true`/`yes`：`error_count>0` 或 `status_code>=400`；在分页 **之前**过滤 |
 
-`data` 为 `{rows, count, page, per_page}`。合并：当天 JSONL 去重 → 内存 running 覆盖同 id → 过滤 → `start_time` 倒序 → 切片。内存 running 即使跨日也会出现在本次列表。
+`data` 为 `{rows, count, page, per_page}`。合并：当天 **index.jsonl**（有 index 即忽略 leftover 整日 jsonl / shard）去重 → 内存 running 覆盖同 id → 过滤 → 文件倒序约等于 `start_time` 倒序 → 切片。无筛选时只从文件尾读当前页，用换行计数，不把整天装进内存。有筛选才扫 index。内存 running 即使跨日也会出现在本次列表。
+
+读路径走独立 1 线程池（不进默认 `asyncio.to_thread` 池）；相同 query 合并成一次扫描。前端 5s 轮询叠请求也不会并行扫盘。`json.loads` 循环会隔一段 `sleep`，避免占死 GIL 导致其它 API 无响应。
+
+有 `YYYY-MM-DD/index.jsonl` 后，旧的 `YYYY-MM-DD.jsonl`（可能十几 GB）不再被列表/计数读取，可手工删掉回收磁盘。
 
 `client_request_id` / `content_length` 只在详情。
 
@@ -47,7 +51,7 @@ GET /api/http-traces
 GET /api/http-traces/daily_counts?days=60
 ```
 
-`days` 夹取 `[1, 366]`。`data` 升序，长度恒等于 `days`。`count==0` 的日期日历不可点。此路径必须声明在 `/{trace_id}` **之前**。今天的计数含内存中尚未落盘的 running 请求（jsonl 只写 completed），每次扫当天 index。非今天读 `{date}/count`（与 index/legacy 大小指纹一起）；源文件变了会重扫并回写。
+`days` 夹取 `[1, 366]`。`data` 升序，长度恒等于 `days`。`count==0` 的日期日历不可点。此路径必须声明在 `/{trace_id}` **之前**。今天的计数含内存中尚未落盘的 running 请求（jsonl 只写 completed）。有 index 且文件较大时按换行计数（不 json.loads 整天）。非今天读 `{date}/count`（与 index/legacy 大小指纹一起）；源文件变了会重扫并回写。与列表共用同一读线程，不堵事件循环。
 
 ---
 
@@ -57,7 +61,7 @@ GET /api/http-traces/daily_counts?days=60
 GET /api/http-traces/{trace_id}?date=YYYY-MM-DD
 ```
 
-内存 running 优先；否则 JSONL 元数据 + `to_thread` 扫描当天 daily log（键为 `http_trace_id`）。首版不自动试 `date-1`。
+内存 running 优先；否则 JSONL 元数据（只开对应 shard，不扫 leftover 巨文件）+ 扫描当天 daily log（键为 `http_trace_id`）。`log_count==0` 不扫 daily log。首版不自动试 `date-1`。走同一独立读线程。
 
 - 存在：`{status:0, msg:"ok", data: detail}`
 - 不存在：HTTP 200 + `{status:404, msg:"追踪不存在", data:null}`

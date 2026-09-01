@@ -8,6 +8,9 @@
 入队 put_nowait，不堵事件循环；线程批量 append，不 fsync。
 队列满丢行；flush 等未完成批，空闲立即返回。关机 drain。
 不要为命令再开第二条线程。
+
+列表只读 index（有 index 就不碰 leftover 整日 jsonl / shard）。
+json.loads 占 GIL：扫描循环隔一段 sleep，避免卡死其它 API。
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import time
 import queue
 import atexit
 import threading
-from typing import Dict, Optional
+from typing import Dict, Iterator, Optional
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -33,6 +36,14 @@ _QUEUE_MAX = 32768
 _FLUSH_TIMEOUT = 2.0
 _DRAIN_TIMEOUT = 5.0
 _DROP_WARN_SEC = 60.0
+# leftover 整日 jsonl 曾到十几 GB；超过此大小只从文件尾读，禁止整文件 json.loads
+_MAX_FULL_SCAN_BYTES = 64 * 1024 * 1024
+# 小于此用去重计数（命令 running+completed 同 id 两行）；更大只数换行
+_UNIQUE_PARSE_MAX_BYTES = 8 * 1024 * 1024
+_GIL_YIELD_EVERY = 4096
+_GIL_YIELD_SEC = 0.001
+_NEWLINE_CHUNK = 1024 * 1024
+_REVERSE_CHUNK = 1024 * 1024
 
 _START_LOCK = threading.Lock()
 _PROGRESS = threading.Condition()
@@ -75,6 +86,13 @@ def day_dir(root: Path, date_str: str) -> Path:
 
 def legacy_jsonl_path(root: Path, date_str: str) -> Path:
     return root / f"{date_str}.jsonl"
+
+
+def gil_pause(n: int) -> int:
+    nxt = n + 1
+    if nxt % _GIL_YIELD_EVERY == 0:
+        time.sleep(_GIL_YIELD_SEC)
+    return nxt
 
 
 def parse_jsonl_line(line: str) -> Optional[Dict[str, object]]:
@@ -304,8 +322,10 @@ def _trace_id_of(record: Dict[str, object]) -> Optional[str]:
 def ingest_jsonl_file(path: Path, seen: dict[str, Dict[str, object]]) -> None:
     if not path.exists() or not path.is_file():
         return
+    n = 0
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
+            n = gil_pause(n)
             record = parse_jsonl_line(line)
             if record is None:
                 continue
@@ -318,8 +338,10 @@ def ingest_jsonl_file(path: Path, seen: dict[str, Dict[str, object]]) -> None:
 def _ingest_ids(path: Path, seen: set[str]) -> None:
     if not path.exists() or not path.is_file():
         return
+    n = 0
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
+            n = gil_pause(n)
             record = parse_jsonl_line(line)
             if record is None:
                 continue
@@ -333,8 +355,10 @@ def last_record_in_file(path: Path, trace_id: str) -> Optional[Dict[str, object]
     if not path.exists() or not path.is_file():
         return None
     result: Optional[Dict[str, object]] = None
+    n = 0
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
+            n = gil_pause(n)
             record = parse_jsonl_line(line)
             if record is None:
                 continue
@@ -360,24 +384,196 @@ def shard_files(day: Path) -> list[Path]:
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class _LineCountMemo:
+    size: int
+    n: int
+
+
+_LINE_COUNT_MEMO: dict[str, _LineCountMemo] = {}
+_LINE_COUNT_LOCK = threading.Lock()
+_MISSING_INDEX_WARNED: set[str] = set()
+
+
+def _count_newlines_from(path: Path, start: int, end: int) -> int:
+    if end <= start:
+        return 0
+    n = 0
+    with open(path, "rb") as f:
+        f.seek(start)
+        left = end - start
+        while left > 0:
+            chunk = f.read(min(_NEWLINE_CHUNK, left))
+            if not chunk:
+                break
+            n += chunk.count(b"\n")
+            left -= len(chunk)
+    return n
+
+
+def count_jsonl_lines(path: Path) -> int:
+    """按换行计数；只 append 的 jsonl 可用。大文件按 size 增量，不 json.loads。"""
+    if not path.is_file():
+        return 0
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= 0:
+        return 0
+    key = str(path)
+    with _LINE_COUNT_LOCK:
+        memo = _LINE_COUNT_MEMO[key] if key in _LINE_COUNT_MEMO else None
+        if memo is not None and memo.size == size:
+            return memo.n
+        start = 0
+        n = 0
+        if memo is not None and memo.size < size:
+            start = memo.size
+            n = memo.n
+    n += _count_newlines_from(path, start, size)
+    with _LINE_COUNT_LOCK:
+        _LINE_COUNT_MEMO[key] = _LineCountMemo(size=size, n=n)
+    return n
+
+
+def iter_jsonl_records_reversed(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> Iterator[Dict[str, object]]:
+    """从文件尾往前吐记录。max_bytes 只读尾部（切点丢半行）。"""
+    if not path.is_file():
+        return
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size <= 0:
+        return
+    limit_pos = 0
+    if max_bytes is not None and size > max_bytes:
+        limit_pos = size - max_bytes
+    n = 0
+    with open(path, "rb") as f:
+        pos = size
+        buf = b""
+        while pos > limit_pos:
+            read_at = pos - _REVERSE_CHUNK
+            if read_at < limit_pos:
+                read_at = limit_pos
+            f.seek(read_at)
+            chunk = f.read(pos - read_at)
+            pos = read_at
+            buf = chunk + buf
+            parts = buf.split(b"\n")
+            buf = parts[0]
+            for raw in reversed(parts[1:]):
+                if not raw:
+                    continue
+                n = gil_pause(n)
+                record = parse_jsonl_line(raw.decode("utf-8", errors="replace"))
+                if record is not None:
+                    yield record
+        if buf and pos == 0:
+            record = parse_jsonl_line(buf.decode("utf-8", errors="replace"))
+            if record is not None:
+                yield record
+
+
+def _warn_missing_index(day: Path) -> None:
+    key = str(day)
+    if key in _MISSING_INDEX_WARNED:
+        return
+    _MISSING_INDEX_WARNED.add(key)
+    logger.warning(t("log.logger.trace_jsonl_missing_index", path=key))
+
+
+def iter_day_list_records(
+    root: Path,
+    date_str: str | None = None,
+    *,
+    flush: bool = True,
+) -> Iterator[Dict[str, object]]:
+    """列表源：只读 index；无 index 才读 leftover / shard。有 index 绝不打开十几 GB 旧文件。"""
+    if flush:
+        flush_day_jsonl_writes()
+    day = parse_iso_date(date_str, default_today=True)
+    index_path = day_dir(root, day) / INDEX_NAME
+    if index_path.is_file():
+        yield from iter_jsonl_records_reversed(index_path)
+        return
+    legacy = legacy_jsonl_path(root, day)
+    if legacy.is_file():
+        size = _file_size(legacy)
+        cap = _MAX_FULL_SCAN_BYTES if size > _MAX_FULL_SCAN_BYTES else None
+        yield from iter_jsonl_records_reversed(legacy, max_bytes=cap)
+        return
+    shards = shard_files(day_dir(root, day))
+    if not shards:
+        return
+    _warn_missing_index(day_dir(root, day))
+    for path in reversed(shards):
+        yield from iter_jsonl_records_reversed(path)
+
+
+def _count_list_source(root: Path, date_str: str) -> int:
+    index_path = day_dir(root, date_str) / INDEX_NAME
+    if index_path.is_file():
+        size = _file_size(index_path)
+        if size > _UNIQUE_PARSE_MAX_BYTES:
+            return count_jsonl_lines(index_path)
+        seen: set[str] = set()
+        _ingest_ids(index_path, seen)
+        return len(seen)
+    legacy = legacy_jsonl_path(root, date_str)
+    if legacy.is_file():
+        size = _file_size(legacy)
+        if size > _UNIQUE_PARSE_MAX_BYTES:
+            return count_jsonl_lines(legacy)
+        seen = set()
+        _ingest_ids(legacy, seen)
+        return len(seen)
+    shards = shard_files(day_dir(root, date_str))
+    if not shards:
+        return 0
+    _warn_missing_index(day_dir(root, date_str))
+    n = 0
+    for path in shards:
+        n += count_jsonl_lines(path)
+    return n
+
+
 def load_day_records(
     root: Path,
     date_str: str | None = None,
     *,
     flush: bool = True,
 ) -> dict[str, Dict[str, object]]:
-    """旧整日文件 + 新 index/shard；同 id 后写覆盖先写。"""
+    """同 id 后写覆盖先写。有 index 不读 leftover / shard。"""
     if flush:
         flush_day_jsonl_writes()
     day = parse_iso_date(date_str, default_today=True)
     seen: dict[str, Dict[str, object]] = {}
-    ingest_jsonl_file(legacy_jsonl_path(root, day), seen)
     index_path = day_dir(root, day) / INDEX_NAME
     if index_path.exists():
         ingest_jsonl_file(index_path, seen)
-    else:
-        for path in shard_files(day_dir(root, day)):
-            ingest_jsonl_file(path, seen)
+        return seen
+    legacy = legacy_jsonl_path(root, day)
+    legacy_size = _file_size(legacy)
+    if legacy_size > 0 and legacy_size <= _MAX_FULL_SCAN_BYTES:
+        ingest_jsonl_file(legacy, seen)
+        return seen
+    if legacy_size > _MAX_FULL_SCAN_BYTES:
+        for record in iter_jsonl_records_reversed(legacy, max_bytes=_MAX_FULL_SCAN_BYTES):
+            tid = _trace_id_of(record)
+            if tid is None:
+                continue
+            if tid not in seen:
+                seen[tid] = record
+        return seen
+    for path in shard_files(day_dir(root, day)):
+        ingest_jsonl_file(path, seen)
     return seen
 
 
@@ -394,7 +590,10 @@ def load_day_record(
     found = last_record_in_file(day_dir(root, day) / f"{shard_key(trace_id)}.jsonl", trace_id)
     if found is not None:
         return found
-    return last_record_in_file(legacy_jsonl_path(root, day), trace_id)
+    legacy = legacy_jsonl_path(root, day)
+    if _file_size(legacy) > _MAX_FULL_SCAN_BYTES:
+        return None
+    return last_record_in_file(legacy, trace_id)
 
 
 def _file_size(path: Path) -> int:
@@ -471,15 +670,7 @@ def count_day_records(root: Path, date_str: str, *, flush: bool = True) -> int:
         cached = _read_count_sidecar(cache_path)
         if cached is not None and cached[1:] == stamp:
             return cached[0]
-    seen: set[str] = set()
-    _ingest_ids(legacy_jsonl_path(root, day), seen)
-    index_path = day_dir(root, day) / INDEX_NAME
-    if index_path.exists():
-        _ingest_ids(index_path, seen)
-    else:
-        for path in shard_files(day_dir(root, day)):
-            _ingest_ids(path, seen)
-    n = len(seen)
+    n = _count_list_source(root, day)
     if past:
         after = _day_stamp(root, day)
         if after == stamp and after != (0, 0, 0):
