@@ -12,5 +12,10 @@
   "log.logger.http_trace_jsonl_running_write": "[HttpTraceCollector] JSONL running marker write failed trace_id={trace_id}: {e}",
   "log.logger.http_trace_max_traces_sacrificed": "[HttpTraceCollector] in-flight HTTP traces hit {max_traces}, reclaimed {sacrificed} active traces",
   "log.logger.http_trace_scheduled_reclamation_removed_delete": "[HttpTraceCollector] scheduled reclamation removed {dropped} stale HTTP traces",
+  "log.logger.trace_jsonl_flush_retry": "trace JSONL flush failed, retrying",
+  "log.logger.trace_jsonl_flush_dropped": "trace JSONL flush failed, dropped a batch",
+  "log.logger.trace_jsonl_writer_crashed": "trace JSONL writer crashed",
+  "log.logger.trace_jsonl_queue_full": "trace JSONL queue full, dropped {n} lines",
+  "log.logger.trace_jsonl_drain_queue_full": "trace JSONL drain: queue full, skip join",
   "log.logger.unhandled_exception": "Unhandled exception"
 }

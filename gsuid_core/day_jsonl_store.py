@@ -21,6 +21,7 @@ from typing import Dict, Optional
 from pathlib import Path
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.path_safety import parse_iso_date
 
@@ -122,11 +123,11 @@ def _write_batch(batch: list[_QueuedTrace]) -> None:
     try:
         _flush_batch(batch)
     except Exception:
-        logger.exception("trace jsonl flush failed, retry")
+        logger.exception(t("log.logger.trace_jsonl_flush_retry"))
         try:
             _flush_batch(batch)
         except Exception:
-            logger.exception("trace jsonl flush dropped a batch")
+            logger.exception(t("log.logger.trace_jsonl_flush_dropped"))
     finally:
         _finish_batch(len(batch))
 
@@ -171,7 +172,7 @@ def _writer_main() -> None:
     try:
         _writer_loop()
     except Exception:
-        logger.exception("trace jsonl writer crashed")
+        logger.exception(t("log.logger.trace_jsonl_writer_crashed"))
     finally:
         with _PROGRESS:
             _PROGRESS.notify_all()
@@ -211,7 +212,7 @@ def _warn_queue_full() -> None:
     n = _DROPS
     _DROPS = 0
     _LAST_DROP_WARN = now
-    logger.warning("trace jsonl queue full, dropped %s lines", n)
+    logger.warning(t("log.logger.trace_jsonl_queue_full", n=n))
 
 
 def flush_day_jsonl_writes(timeout: float = _FLUSH_TIMEOUT) -> None:
@@ -244,7 +245,7 @@ def drain_day_jsonl_writes(timeout: float = _DRAIN_TIMEOUT) -> None:
     try:
         _WRITE_QUEUE.put(_STOP, timeout=timeout)
     except queue.Full:
-        logger.warning("trace jsonl drain: queue full, skip join")
+        logger.warning(t("log.logger.trace_jsonl_drain_queue_full"))
         return
     stopping.join(timeout)
     leftover_after: list[_QueuedTrace] = []
