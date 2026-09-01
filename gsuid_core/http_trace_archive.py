@@ -1,12 +1,8 @@
-"""HTTP 请求追踪 JSONL 元数据与 daily log 扫描。
-
-读路径不加锁；写路径仅在一行 append 上持 threading.Lock。
-"""
+"""HTTP 请求追踪落盘与扫描。分片布局见 ``day_jsonl_store``（与命令追踪共用写线程）。"""
 
 from __future__ import annotations
 
 import json
-import threading
 from typing import Dict, List, Optional, TypedDict
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -19,10 +15,19 @@ from gsuid_core.models import (
     HttpTraceListItem,
     HttpTraceJsonlRecord,
 )
-from gsuid_core.utils.path_safety import parse_iso_date
+from gsuid_core.day_jsonl_store import (
+    shard_key,
+    load_day_record,
+    load_day_records,
+    parse_jsonl_line,
+    count_day_records,
+    enqueue_day_jsonl,
+    flush_day_jsonl_writes,
+)
 
-_WRITE_LOCK = threading.Lock()
 _CORE_PLUGIN = "SayuCore"
+_shard_key = shard_key
+flush_http_trace_writes = flush_day_jsonl_writes
 
 
 class HttpTraceDayCount(TypedDict):
@@ -36,11 +41,8 @@ def _log_path() -> Path:
     return LOG_PATH
 
 
-def _jsonl_path(date_str: str | None = None) -> Path:
-    date_str = parse_iso_date(date_str, default_today=True)
-    folder = _log_path() / "http_traces"
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder / f"{date_str}.jsonl"
+def _traces_root() -> Path:
+    return _log_path() / "http_traces"
 
 
 def write_http_trace_meta(
@@ -52,6 +54,8 @@ def write_http_trace_meta(
     error_count: int | None = None,
 ) -> None:
     """写入 HTTP 追踪元数据。同 uuid 可多次写，读时取最后一行。"""
+    if status == "running":
+        return
     record: HttpTraceJsonlRecord = {
         "trace_id": meta.trace_id,
         "method": meta.method,
@@ -77,24 +81,18 @@ def write_http_trace_meta(
     if meta.response_preview is not None:
         record["response_preview"] = meta.response_preview
 
-    line = json.dumps(record, ensure_ascii=False) + "\n"
-    jsonl_path = _jsonl_path()
-    with _WRITE_LOCK:
-        with open(jsonl_path, "a", encoding="utf-8") as f:
-            f.write(line)
+    item = _jsonl_to_list_item(dict(record))
+    if item is None:
+        return
+    enqueue_day_jsonl(
+        _traces_root(),
+        meta.trace_id,
+        json.dumps(record, ensure_ascii=False) + "\n",
+        json.dumps(item, ensure_ascii=False) + "\n",
+    )
 
 
-def _parse_jsonl_line(line: str) -> Optional[Dict[str, object]]:
-    text = line.strip()
-    if not text:
-        return None
-    try:
-        record = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(record, dict):
-        return None
-    return record
+_parse_jsonl_line = parse_jsonl_line
 
 
 def _optional_int(record: Dict[str, object], key: str) -> Optional[int]:
@@ -160,96 +158,76 @@ def _jsonl_to_list_item(record: Dict[str, object]) -> Optional[HttpTraceListItem
     }
 
 
+def _pack_full_record(record: Dict[str, object], item: HttpTraceListItem) -> HttpTraceJsonlRecord:
+    packed: HttpTraceJsonlRecord = {
+        "trace_id": item["trace_id"],
+        "method": item["method"],
+        "path": item["path"],
+        "query_redacted": item["query_redacted"],
+        "client_ip": item["client_ip"],
+        "user_id": item["user_id"],
+        "user_name": item["user_name"],
+        "client_request_id": _optional_str(record, "client_request_id"),
+        "content_length": _optional_int(record, "content_length"),
+        "start_time": item["start_time"],
+        "status": item["status"],
+        "log_count": item["log_count"],
+    }
+    duration_ms = item["duration_ms"]
+    if duration_ms is not None:
+        packed["duration_ms"] = duration_ms
+    status_code = item["status_code"]
+    if status_code is not None:
+        packed["status_code"] = status_code
+    packed["error_count"] = item["error_count"]
+    ct = _optional_str(record, "response_content_type")
+    if ct is not None:
+        packed["response_content_type"] = ct
+    preview = _optional_str(record, "response_preview")
+    if preview is not None:
+        packed["response_preview"] = preview
+    return packed
+
+
 def get_http_trace_from_jsonl(trace_id: str, date_str: str | None = None) -> Optional[HttpTraceJsonlRecord]:
-    jsonl_path = _jsonl_path(date_str)
-    if not jsonl_path.exists():
+    record = load_day_record(_traces_root(), trace_id, date_str)
+    if record is None:
         return None
-    result: Optional[HttpTraceJsonlRecord] = None
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        for line in f:
-            record = _parse_jsonl_line(line)
-            if record is None:
-                continue
-            if "trace_id" not in record:
-                continue
-            if record["trace_id"] != trace_id:
-                continue
-            item = _jsonl_to_list_item(record)
-            if item is None:
-                continue
-            packed: HttpTraceJsonlRecord = {
-                "trace_id": item["trace_id"],
-                "method": item["method"],
-                "path": item["path"],
-                "query_redacted": item["query_redacted"],
-                "client_ip": item["client_ip"],
-                "user_id": item["user_id"],
-                "user_name": item["user_name"],
-                "client_request_id": _optional_str(record, "client_request_id"),
-                "content_length": _optional_int(record, "content_length"),
-                "start_time": item["start_time"],
-                "status": item["status"],
-                "log_count": item["log_count"],
-            }
-            duration_ms = item["duration_ms"]
-            if duration_ms is not None:
-                packed["duration_ms"] = duration_ms
-            status_code = item["status_code"]
-            if status_code is not None:
-                packed["status_code"] = status_code
-            packed["error_count"] = item["error_count"]
-            ct = _optional_str(record, "response_content_type")
-            if ct is not None:
-                packed["response_content_type"] = ct
-            preview = _optional_str(record, "response_preview")
-            if preview is not None:
-                packed["response_preview"] = preview
-            result = packed
-    return result
+    item = _jsonl_to_list_item(record)
+    if item is None:
+        return None
+    return _pack_full_record(record, item)
 
 
 def list_http_traces_from_jsonl(date_str: str | None = None) -> List[HttpTraceListItem]:
-    """读指定日期 JSONL；同 uuid 只留最后一行。不加 limit，过滤由 API 做。"""
-    jsonl_path = _jsonl_path(date_str)
-    if not jsonl_path.exists():
-        return []
-    seen: Dict[str, HttpTraceListItem] = {}
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        for line in f:
-            record = _parse_jsonl_line(line)
-            if record is None:
-                continue
-            item = _jsonl_to_list_item(record)
-            if item is None:
-                continue
-            seen[item["trace_id"]] = item
-    records = list(seen.values())
-    records.sort(key=lambda x: x["start_time"], reverse=True)
-    return records
+    """读指定日期；同 uuid 只留最后一行。不加 limit，过滤由 API 做。"""
+    items: list[HttpTraceListItem] = []
+    for record in load_day_records(_traces_root(), date_str).values():
+        item = _jsonl_to_list_item(record)
+        if item is None:
+            continue
+        items.append(item)
+    items.sort(key=lambda x: x["start_time"], reverse=True)
+    return items
 
 
-def count_http_traces_from_jsonl(date_str: str) -> int:
-    jsonl_path = _jsonl_path(date_str)
-    if not jsonl_path.exists():
-        return 0
-    seen: set[str] = set()
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        for line in f:
-            record = _parse_jsonl_line(line)
-            if record is None:
-                continue
-            tid = _required_str(record, "trace_id")
-            if tid:
-                seen.add(tid)
-    return len(seen)
+def count_http_traces_from_jsonl(date_str: str, *, flush: bool = True) -> int:
+    return count_day_records(_traces_root(), date_str, flush=flush)
 
 
 def daily_http_trace_counts(days: int = 60) -> List[HttpTraceDayCount]:
+    flush_day_jsonl_writes()
     today = datetime.now().date()
+    today_str = today.strftime("%Y-%m-%d")
     result: List[HttpTraceDayCount] = []
     for offset in range(days - 1, -1, -1):
         date_str = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
-        result.append({"date": date_str, "count": count_http_traces_from_jsonl(date_str)})
+        n = count_http_traces_from_jsonl(date_str, flush=False)
+        if date_str == today_str:
+            from gsuid_core.logger import http_trace_collector
+
+            n += len(http_trace_collector.get_active_traces())
+        result.append({"date": date_str, "count": n})
     return result
 
 

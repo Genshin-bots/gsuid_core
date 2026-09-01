@@ -3,12 +3,17 @@ Trace APIs
 提供追踪日志相关的 RESTful APIs
 """
 
-from typing import Any, Dict, Optional
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Dict, Optional, TypedDict
 
 from fastapi import Depends
 
 from gsuid_core.logger import trace_collector
 from gsuid_core.trace_archive import (
+    CommandTraceDayCount,
+    CommandTraceListItem,
     daily_trace_counts,
     get_trace_from_jsonl,
     list_traces_from_jsonl,
@@ -21,6 +26,13 @@ from gsuid_core.webconsole.web_api import require_auth
 from ._api_tags import TRACE
 
 
+class CommandTraceListPage(TypedDict):
+    rows: list[CommandTraceListItem]
+    count: int
+    page: int
+    per_page: int
+
+
 def _clamp_page(page: int) -> int:
     return 1 if page < 1 else page
 
@@ -31,6 +43,64 @@ def _clamp_per_page(per_page: int) -> int:
     if per_page > 100:
         return 100
     return per_page
+
+
+def _empty_list_page(page: int, per_page: int) -> CommandTraceListPage:
+    return {"rows": [], "count": 0, "page": page, "per_page": per_page}
+
+
+def _running_list_item(trace_id: str, meta: Dict[str, object]) -> CommandTraceListItem | None:
+    if "status" not in meta or meta["status"] != "running":
+        return None
+    if "command" not in meta or "user_id" not in meta or "start_time" not in meta or "log_count" not in meta:
+        return None
+    command = meta["command"]
+    user_id = meta["user_id"]
+    start_time = meta["start_time"]
+    log_count = meta["log_count"]
+    if not isinstance(command, str) or not isinstance(user_id, str):
+        return None
+    if isinstance(log_count, bool) or not isinstance(log_count, int):
+        return None
+    if isinstance(start_time, bool) or not isinstance(start_time, (int, float)):
+        return None
+    trace_meta = trace_collector.get_trace_meta(trace_id)
+    return {
+        "trace_id": trace_id,
+        "command": command,
+        "user_id": user_id,
+        "group_id": trace_meta.group_id if trace_meta else None,
+        "start_time": float(start_time),
+        "duration_ms": None,
+        "log_count": log_count,
+        "status": "running",
+    }
+
+
+def merge_command_trace_list(date: str, page: int, per_page: int) -> CommandTraceListPage:
+    merged: dict[str, CommandTraceListItem] = {}
+    for record in list_traces_from_jsonl(date):
+        merged[record["trace_id"]] = record
+    for trace_id, meta in trace_collector.get_active_traces().items():
+        row = _running_list_item(trace_id, meta)
+        if row is None:
+            continue
+        merged[trace_id] = row
+    result = list(merged.values())
+    result.sort(key=lambda x: x["start_time"], reverse=True)
+    total = len(result)
+    per_page = _clamp_per_page(per_page)
+    page = _clamp_page(page)
+    max_page = max(1, (total + per_page - 1) // per_page) if total else 1
+    if page > max_page:
+        page = max_page
+    start = (page - 1) * per_page
+    return {
+        "rows": result[start : start + per_page],
+        "count": total,
+        "page": page,
+        "per_page": per_page,
+    }
 
 
 @app.get("/api/traces", summary="获取追踪列表（统一入口）", tags=TRACE)
@@ -51,52 +121,16 @@ async def get_traces(
     page = _clamp_page(page)
     per_page = _clamp_per_page(per_page)
     try:
-        date = parse_iso_date(date, default_today=True)
+        day = parse_iso_date(date, default_today=True)
     except PathEscapeError:
         return {
             "status": 1,
             "msg": "非法日期",
-            "data": {"rows": [], "count": 0, "page": page, "per_page": per_page},
+            "data": _empty_list_page(page, per_page),
         }
 
-    # 1. 先放 JSONL 记录（completed 数据更完整）
-    merged: Dict[str, Dict[str, Any]] = {}
-    for record in list_traces_from_jsonl(date):
-        merged[record["trace_id"]] = record
-
-    # 2. 内存 running 覆盖 JSONL（running 是最新实时状态）
-    for trace_id, meta in trace_collector.get_active_traces().items():
-        if meta["status"] == "running":
-            trace_meta = trace_collector.get_trace_meta(trace_id)
-            merged[trace_id] = {
-                "trace_id": trace_id,
-                "command": meta["command"],
-                "user_id": meta["user_id"],
-                "group_id": trace_meta.group_id if trace_meta else None,
-                "start_time": meta["start_time"],
-                "duration_ms": None,
-                "log_count": meta["log_count"],
-                "status": "running",
-            }
-
-    # 3. 按 start_time 倒序（最近的在前），再按页切片
-    result = list(merged.values())
-    result.sort(key=lambda x: x["start_time"], reverse=True)
-    total = len(result)
-    max_page = max(1, (total + per_page - 1) // per_page) if total else 1
-    if page > max_page:
-        page = max_page
-    start = (page - 1) * per_page
-    return {
-        "status": 0,
-        "msg": "ok",
-        "data": {
-            "rows": result[start : start + per_page],
-            "count": total,
-            "page": page,
-            "per_page": per_page,
-        },
-    }
+    data = await asyncio.to_thread(merge_command_trace_list, day, page, per_page)
+    return {"status": 0, "msg": "ok", "data": data}
 
 
 # 注意：本路由必须声明在 `/api/traces/{trace_id}` **之前**，否则 FastAPI 会把
@@ -115,7 +149,57 @@ async def get_trace_daily_counts(
     无命令记录、日历上不可点击。今天的计数实时可见（running 追踪已计入）。
     """
     days = max(1, min(days, 366))
-    return {"status": 0, "msg": "ok", "data": daily_trace_counts(days)}
+    data: list[CommandTraceDayCount] = await asyncio.to_thread(daily_trace_counts, days)
+    return {"status": 0, "msg": "ok", "data": data}
+
+
+def _str_field(record: dict[str, object], key: str) -> str:
+    if key not in record:
+        return ""
+    value = record[key]
+    return value if isinstance(value, str) else ""
+
+
+def _optional_str_field(record: dict[str, object], key: str) -> str | None:
+    if key not in record:
+        return None
+    value = record[key]
+    if value is None:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _optional_int_field(record: dict[str, object], key: str) -> int | None:
+    if key not in record:
+        return None
+    value = record[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _detail_from_disk(trace_id: str, day: str) -> dict[str, object] | None:
+    meta = get_trace_from_jsonl(trace_id, day)
+    if meta is None:
+        return None
+    logs = get_trace_logs_from_daily_log(trace_id, day)
+    start_time = meta["start_time"] if "start_time" in meta else 0
+    if isinstance(start_time, bool) or not isinstance(start_time, (int, float)):
+        start_time = 0
+    status = _str_field(meta, "status")
+    return {
+        "trace_id": trace_id,
+        "command": _str_field(meta, "command"),
+        "user_id": _str_field(meta, "user_id"),
+        "group_id": _optional_str_field(meta, "group_id"),
+        "bot_id": _str_field(meta, "bot_id"),
+        "session_id": _str_field(meta, "session_id"),
+        "start_time": float(start_time),
+        "duration_ms": _optional_int_field(meta, "duration_ms"),
+        "log_count": _optional_int_field(meta, "log_count"),
+        "status": status if status else "completed",
+        "logs": logs,
+    }
 
 
 @app.get("/api/traces/{trace_id}", summary="获取追踪详情", tags=TRACE)
@@ -129,7 +213,7 @@ async def get_trace_detail(
     优先查内存；未命中时通过 trace_id 扫描 daily log 文件提取完整日志。
     """
     try:
-        date = parse_iso_date(date, default_today=True)
+        day = parse_iso_date(date, default_today=True)
     except PathEscapeError:
         return {"status": 1, "msg": "非法日期", "data": None}
 
@@ -153,26 +237,7 @@ async def get_trace_detail(
             },
         }
 
-    # 未命中内存：先查 JSONL 目录确认元数据，再从 daily log 提取日志
-    meta = get_trace_from_jsonl(trace_id, date)
-    if meta is not None:
-        logs = get_trace_logs_from_daily_log(trace_id, date)
-        return {
-            "status": 0,
-            "msg": "ok",
-            "data": {
-                "trace_id": trace_id,
-                "command": meta["command"],
-                "user_id": meta["user_id"],
-                "group_id": meta.get("group_id"),
-                "bot_id": meta["bot_id"],
-                "session_id": meta["session_id"],
-                "start_time": meta["start_time"],
-                "duration_ms": meta.get("duration_ms"),
-                "log_count": meta.get("log_count"),
-                "status": meta.get("status", "completed"),
-                "logs": logs,
-            },
-        }
-
-    return {"status": 404, "msg": "追踪不存在", "data": None}
+    detail = await asyncio.to_thread(_detail_from_disk, trace_id, day)
+    if detail is None:
+        return {"status": 404, "msg": "追踪不存在", "data": None}
+    return {"status": 0, "msg": "ok", "data": detail}

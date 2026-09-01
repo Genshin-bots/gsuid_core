@@ -397,7 +397,7 @@ PUT /api/logs/config
 | 层级 | 内容 | 用途 |
 |------|------|------|
 | 内存（仅执行中） | `TraceLogEntry` 列表 | **正在执行中**追踪的实时查询；命令一结束即落盘并从内存移除，不做内存保留 |
-| JSONL 目录 | 元数据（trace_id, command, user_id, status, duration_ms, log_count） | 已完成追踪目录索引 |
+| JSONL 目录 | `logs/traces/YYYY-MM-DD/index.jsonl` + `{ab}.jsonl` + `count`（非今天日历旁路；与 HTTP 同一套分片；旧整日 jsonl 仍可读） | 已完成追踪目录索引 |
 | daily log | 每条 JSON 带 `trace_id` 字段 | 完整日志持久化，供扫描提取 |
 
 > 已完成追踪不再驻留内存：查询其详情时从 JSONL（元数据）+ daily log（完整日志，按 `trace_id` 扫描重建）读取。异常退出导致未正常结束的 running 追踪，由后台任务按 `stale_running_sec`（默认 1h）兜底回收。
@@ -521,8 +521,9 @@ GET /api/traces/daily_counts?days=60
 - `days`: 回溯天数，默认 `60`（约两个月），服务端自动夹取到 `[1, 366]`。
 
 **统计口径**：
-- 数据源为 JSONL 目录（`logs/traces/YYYY-MM-DD.jsonl`），按 `trace_id` 去重计数，同一追踪的 `running -> completed` 多条记录只算一次。
-- **今天的计数实时可见**：running 追踪在开始时即写入 JSONL running 标记，无需等命令结束。
+- 数据源为 JSONL 目录（`logs/traces/YYYY-MM-DD/index.jsonl`，旧整日文件仍可读），按 `trace_id` 去重计数，同一追踪的 `running -> completed` 多条记录只算一次。
+- **今天的计数实时可见**：running 追踪在开始时即写入 JSONL running 标记，无需等命令结束；今天每次扫 index。
+- **非今天**读 `{date}/count` 旁路（带 index/legacy 大小指纹）；源文件变了会重扫并回写。
 - 当天无命令（JSONL 文件不存在）→ 计数为 `0`。
 
 **响应**：

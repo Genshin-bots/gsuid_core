@@ -124,11 +124,14 @@ def test_command_jsonl_dir_untouched(
     http.start_trace(ctx)
     http.finalize_trace(ctx.trace_id, 200)
     clear_http_trace_context()
+    from gsuid_core.http_trace_archive import flush_http_trace_writes
+
+    flush_http_trace_writes()
     traces_dir = log_dir / "traces"
     assert not traces_dir.exists() or not any(traces_dir.iterdir())
     http_dir = log_dir / "http_traces"
     assert http_dir.exists()
-    assert any(http_dir.glob("*.jsonl"))
+    assert any(http_dir.rglob("*.jsonl"))
 
 
 def test_command_collector_capacity_unchanged(
@@ -174,7 +177,7 @@ def test_silent_request_empty_logs_no_breadcrumb(
     assert meta["log_count"] == 0
 
 
-def test_write_lock_does_not_block_list_reads(
+def test_running_http_trace_not_written_until_finalize(
     http_logs: tuple[Path, HttpTraceCollector, TraceCollector],
 ) -> None:
     log_dir, http, _cmd = http_logs
@@ -183,7 +186,7 @@ def test_write_lock_does_not_block_list_reads(
     from gsuid_core.http_trace_archive import list_http_traces_from_jsonl
 
     rows = list_http_traces_from_jsonl()
-    assert any(r["trace_id"] == ctx.trace_id for r in rows)
+    assert not any(r["trace_id"] == ctx.trace_id for r in rows)
     http.finalize_trace(ctx.trace_id, 201)
     rows2 = list_http_traces_from_jsonl()
     found = [r for r in rows2 if r["trace_id"] == ctx.trace_id]

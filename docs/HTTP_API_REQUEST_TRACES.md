@@ -39,7 +39,7 @@ v1 **不承诺** `/api/send_msg` 触发的命令函数体内日志进入 HTTP �
 | 绑定 | `logger.bind_trace_context` / `clear_trace_context` | 只 bind/unbind **`trace_id`**（`_TRACE_CONTEXT_KEYS = ("trace_id",)`） |
 | 内存 | `logger.TraceCollector`（`max_traces=1000`，stale 1h） | 只保留 **running**；`finalize` 后立刻 `_drop` |
 | 收集键 | `TraceCollector.collect` 读 `event_dict["trace_id"]` | 无该键直接 return |
-| 元数据 | `data/logs/traces/YYYY-MM-DD.jsonl`（`trace_archive.py`） | running + completed 各写一行，同 id 以最后一条为准 |
+| 元数据 | `data/logs/traces/YYYY-MM-DD/`（`index.jsonl` + `{ab}.jsonl`，与 HTTP 共用写线程；旧整日 jsonl 仍可读） | running + completed 各写一行，同 id 以最后一条为准 |
 | 日志正文 | `data/logs/YYYY-MM-DD.log` | 每条 JSON 带 `trace_id`，详情靠扫描重建 |
 | API | `GET /api/traces`、`/api/traces/daily_counts`、`/api/traces/{trace_id}` | `require_auth`；固定路径必须声明在 `{trace_id}` **之前** |
 | 前端 | `gsuid_hub`：`#/traces`、`src/pages/TracesPage.tsx`、`traceApi` | 日历 `daily_counts`、展开 `ConsolePanel` |
@@ -86,7 +86,7 @@ v1 **不承诺** `/api/send_msg` 触发的命令函数体内日志进入 HTTP �
 |---|------|------|
 | K1 | **独立 collector**：类写在 `logger.py`（与 `TraceCollector` 并列），JSONL 在 `http_trace_archive.py` | 命令内存槽位硬上限 1000，HTTP 不能抢。同文件可避免 `logger.py` ↔ 新模块循环 import。 |
 | K2 | contextvars 键用 **`http_trace_id`**，**不复用** `trace_id` | 纵深隔离：`clear_trace_context` 只 unbind `trace_id`。**不是**因为 `_safe_run` 会拷贝 HTTP 上下文——生产里它不会（§D.8）。 |
-| K3 | 元数据 **`data/logs/http_traces/`**；正文仍 **`data/logs/YYYY-MM-DD.log`**（字段名 `http_trace_id`） | 日历隔离。扫描键禁止抄命令的 `trace_id`。不刷 info Start/End，避免 daily log 被面包屑撑爆。 |
+| K3 | 元数据 **`data/logs/http_traces/YYYY-MM-DD/`**（`index.jsonl` + `{ab}.jsonl` 分片 + 非今天 `count` 旁路）；正文仍 **`data/logs/YYYY-MM-DD.log`**（字段名 `http_trace_id`） | 日历隔离。禁止单日一个十几 GB jsonl：列表只读 index，详情只开对应 shard。扫描键禁止抄命令的 `trace_id`。 |
 | K4 | **纯 ASGI middleware** 挂在 `app_life.py` 的 `FastAPI()` 之后、首请求之前 | `BaseHTTPMiddleware` / `@app.middleware("http")` 会泄漏 contextvars 并预读 body。 |
 | K5 | 前端 **独立 `#/http-traces`**，不做 `/traces` Tab | 列、日历、流量模型都不同。 |
 | K6 | REST **`/api/http-traces`**，`daily_counts` 在 `{trace_id}` 之前 | 避开 §7.8.3 坑；与 `git-mirror` 连字符风格一致。 |
@@ -112,7 +112,7 @@ flowchart LR
   App --> Logger["GsCore logger + merge_contextvars"]
   Logger --> Daily["data/logs/YYYY-MM-DD.log 含 http_trace_id"]
   Logger --> Coll["HttpTraceCollector 键=http_trace_id"]
-  Bind --> JSONL["data/logs/http_traces/YYYY-MM-DD.jsonl"]
+  Bind --> JSONL["data/logs/http_traces/YYYY-MM-DD/index + shard jsonl"]
   App --> Send["copy 后的 http.response.start/body"]
   Send --> Fin["finalize status/499/500 + JSONL completed + _drop"]
   UI["#/http-traces"] --> API["/api/http-traces* 自身不追踪"]
@@ -212,14 +212,15 @@ excluded = path == mcp or path.startswith(mcp + "/")
 | 前缀 | `/api/dashboard` | 仪表盘轮询 |
 | 前缀 | `/api/version` | 首页/顶栏版本与 bot 列表轮询 |
 | 运行时前缀 | `_normalize_mcp_path(mcp_server_path)` | Streamable HTTP MCP |
-| 精确或前缀 | `/api/v1/agent/chat/stream` | Agent SSE。**不**排除 `/health`、`/sessions/reset`、`/runs/{id}/cancel` |
-| 精确 | `/api/system/health` | 无鉴权短 JSON；K8s/探活会每秒打，必须排除 |
-| 仅 GET 精确 | `/api/auth/me` `/api/auth/pubkey` `/api/auth/admin/exists` `/api/brand` `/api/brand/icon` `/api/theme/config` `/api/assets/preview` | 登录态/壳子；POST 登录改密改品牌仍记 |
-| 仅 GET 前缀 | `/api/auth/avatar` `/api/plugins/icon` | 头像与插件图标文件 |
+| 精确或前缀 | `/api/v1/agent/chat/stream` | Agent SSE。**不**排除 `/sessions/reset`、`/runs/{id}/cancel` |
+| 精确 | `/api/system/health` `/api/v1/agent/health` | 探活短 JSON，K8s/负载均衡会连打 |
+| 仅 GET 精确 | `/api/auth/me` `/api/auth/pubkey` `/api/auth/admin/exists` `/api/brand` `/api/brand/icon` `/api/theme/config` `/api/theme/presets` `/api/assets/preview` `/api/system/info` `/api/plugins/list` `/api/plugin-pages` `/api/persona/list` `/api/persona/config/global` `/api/persona/heartbeat/status` `/api/ai/wizard/status` `/api/ai/kanban/board` `/api/ai/approvals/list` `/api/live-chat/bootstrap` `/api/live-chat/state` `/api/scheduler/jobs` `/api/git-update/status` `/api/ai/budget/overview` | 壳子/看板刷新；POST 登录、改品牌、存主题、跑任务仍记 |
+| 仅 GET 前缀 | `/api/auth/avatar` `/api/plugins/icon` `/api/getImage` `/api/image` `/api/meme/image` `/api/ops` `/api/git-update/status` `/api/ai/budget/usage` `/api/ai/statistics` `/api/ai/performance` | 读图、运维看板、统计轮询。`/api/image` 不匹配 `/api/ai/images` |
+| 仅 GET 后缀 | `/api/persona/*/{avatar,image,audio}` | 人格头像/立绘/音频文件 |
 
 兜底（K9）：路径未排除，但 `http.response.start` 的 `content-type`（header 名小写）含 `text/event-stream` → **立即 finalize + unbind**（duration = TTFB）。后续 generator 不再进该 HTTP 桶。
 
-**要追踪：** `/api/auth/login` 等 POST（不读 body）、`/api/ai/mcp`、插件 `/api/<plugin>/...`。控制台轮询与 GET 壳子/图标不记。
+**要追踪：** `/api/auth/login` 等 POST（不读 body）、`/api/ai/mcp`、插件 `/api/<plugin>/...`、控制台写操作（改配置/重启/跑任务）。探活、壳子 GET、读图、统计/看板刷新不记。
 
 **首版不按 Content-Type 早 detach：** `GET /api/ai/knowledge/backup/export`（`application/x-ndjson`）。大导出最多占一个 in-flight 槽直到 10min stale。Open Q1 维持 SSE-only。
 
@@ -344,7 +345,7 @@ class HttpTraceCollector:
 2. 建**空**桶（不塞合成行）。
 3. **不** `logger.info` Start（避免 SSE/`LOG_HISTORY_MAXLEN=2000`/daily log 被每个 `/api/dashboard` 打两条 info）。
 4. **禁止**向桶 append 仅内存、不进 daily log 的面包屑。静默 200（无 GsCore logger）的诚实结果是 `log_count=0` 且 `logs=[]`，JSONL 的 method/path/status 已足够标识该请求。
-5. `write_http_trace_meta(..., status="running", log_count=0)`；IO 失败 `logger.error`（稀有），仍保留内存桶。
+5. **不**写 JSONL running；running 只在内存。`write_http_trace_meta(..., status="running")` 直接 return。IO 失败 `logger.error`（稀有），仍保留内存桶。
 
 `finalize_trace(trace_id, status_code: int)`：`log_count=len(bucket)`（只含 `collect` 进来的真实 logger 行），写 JSONL completed，**无** info End 行，`finally: _drop`。JSONL 失败同样 `_drop`。
 
@@ -482,7 +483,7 @@ class HttpTraceMiddleware:
                 _finish(499 if cancelled else status_code)
 ```
 
-JSONL 锁见 §A：**只包一行 append**。中间件调用 `write_http_trace_meta` 时持锁时间 = 一次 `f.write`；**禁止**持锁跨越 `self.app`。
+JSONL 写入见 §A：`enqueue_day_jsonl` 只 `put_nowait`，**禁止**在中间件/`self.app` 路径上同步 `open().write` 或 `time.sleep` 等盘。
 
 ---
 
@@ -490,16 +491,20 @@ JSONL 锁见 §A：**只包一行 append**。中间件调用 `write_http_trace_m
 
 ```
 data/logs/
-  YYYY-MM-DD.log                 # structlog JSON；请求任务期间可能含 http_trace_id
-  traces/YYYY-MM-DD.jsonl        # 命令。HTTP 禁止写入
-  http_traces/YYYY-MM-DD.jsonl   # HTTP 元数据
+  YYYY-MM-DD.log                      # structlog JSON；请求任务期间可能含 http_trace_id
+  traces/YYYY-MM-DD.jsonl             # 命令旧单日文件，只读兼容
+  traces/YYYY-MM-DD/index.jsonl       # 命令列表（与 HTTP 同一套分片）
+  traces/YYYY-MM-DD/{ab}.jsonl        # 命令详情 shard
+  http_traces/YYYY-MM-DD.jsonl        # 旧单日文件，只读兼容
+  http_traces/YYYY-MM-DD/index.jsonl  # 列表/计数（无 response_preview）
+  http_traces/YYYY-MM-DD/{ab}.jsonl   # 详情；ab = trace_id 去横线后前 2 位 hex
 ```
 
-`DailyNamedFileHandler.backupCount=0`：不自动删。HTTP JSONL 同样按日切、不自动删。
+`DailyNamedFileHandler.backupCount=0`：不自动删。HTTP 按日目录切，不自动删。不要每个请求一个文件（一天百万级小文件在 NTFS 上更差）。
 
 #### JSONL
 
-同 uuid 至少两行（running / completed），读时取最后一行。
+running 只留内存 collector，不写盘。completed 各写 index 一行 + 对应 shard 一行；读时同 uuid 取最后一行。
 
 ```python
 from typing import Literal, NotRequired, TypedDict
@@ -537,7 +542,7 @@ class HttpTraceJsonlRecord(TypedDict):
 | `client_ip` | 见 D.12 |
 | daily log 匹配 | `"http_trace_id" in record and record["http_trace_id"] == trace_id`。禁止抄命令 `record.get("trace_id")`。缺键 ≠ 命中 |
 | JSONL 的 id 字段 | 文件里叫 `trace_id`；event_dict / daily log 里叫 `http_trace_id`。内存桶键是 uuid 字符串 |
-| JSONL 锁 | 模块级 `threading.Lock` **只**包 `write_http_trace_meta` 里那一次 `f.write(line+"\n")`。`list_*` / `count_*` / `get_*` / daily log 扫描 **永不** `acquire`。读路径跳过 `JSONDecodeError` 与过短/半截最后一行（与命令 JSONL 相同）。因此 `to_thread` 扫描不会让事件循环上的 start/finalize 卡在 `Lock.acquire`。写入仍在事件循环上做同步一行 append（与命令 `write_trace_meta` 相同），临界区必须保持「一行」。 |
+| JSONL 写 | `enqueue_day_jsonl`：`put_nowait` 进有界队列，**不**等磁盘。单 daemon 线程批量 append（不 fsync）。队列满则丢行并节流 warning。`list_*` / `count_*` / `get_*` 先 `flush_day_jsonl_writes`（`Condition` 等到未完成批为 0 或 2s），再读；读不持写锁。非法 JSON / 半截行跳过。禁止在事件循环上 `time.sleep` 等盘。日历 `daily_*_counts` 每请求 flush 一次，不是按天各 flush 一次。非今天的去重计数落 `{date}/count`（带源文件大小指纹）；今天仍扫 index。 |
 
 #### 正文 vs 元数据
 
@@ -636,7 +641,7 @@ class HttpTraceListItem(TypedDict):
 
 #### B.2 `GET /api/http-traces/daily_counts`
 
-`days` 默认 60，夹取 `[1,366]`。`data` 升序、长度恒等于 `days`。只读 `http_traces/` JSONL 去重。今天含 running 标记。`count==0` 日历不可点。
+`days` 默认 60，夹取 `[1,366]`。`data` 升序、长度恒等于 `days`。只读 `http_traces/` JSONL 去重。今天含 running 标记，每次扫当天 index。非今天读 `{date}/count`。`count==0` 日历不可点。
 
 #### B.3 详情 `GET /api/http-traces/{trace_id}`
 
@@ -892,7 +897,7 @@ contextvars + 读 body。**否决。**
 | 路径穿越 | `parse_iso_date` + 固定 `LOG_PATH` |
 | 自指递归 | `/api/http-traces` 排除 |
 | SSE 吞全世界 | `/api/logs/stream` 排除 |
-| 探活打爆 | `/api/system/health` 排除 |
+| 探活打爆 | `/api/system/health`、`/api/v1/agent/health` 排除 |
 | 信任 XFF | v1 不用 |
 | admin 路径名暴露给普通控制台用户 | 与「能登录就能看命令 user_id」同一边界；在文档标明 |
 
@@ -983,7 +988,7 @@ contextvars + 读 body。**否决。**
   - 命令 collector 容量不因 HTTP `start_trace` 下降。
   - **无** info Start/End 进入 SSE 缓冲。
   - `start_trace` + `finalize` 且中间无 `logger.info` → JSONL `log_count=0`、内存 `logs` 为空（无合成面包屑）。
-  - `write_http_trace_meta` 持锁；`list_*` / 扫描函数不持锁（可用「读循环中途 write」断言读不被阻塞）。
+  - running 不写 jsonl；`list_*` 在 finalize 后才看到该 uuid。读路径 `flush` 是 Condition 屏障，不是 sleep。
 - **不**把 processor 再写进第二个模块。
 
 ### PR2 — ASGI middleware

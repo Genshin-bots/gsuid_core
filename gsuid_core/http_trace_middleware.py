@@ -25,7 +25,7 @@ _PREVIEW_CHARS = 4096
 
 _API_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"})
 _QUERY_SECRET_EXTRA = frozenset({"token", "access_token", "code", "key", "api_key"})
-# 控制台轮询 / 自指 / 探活：记下来没有排障价值，只会淹没真正的业务 /api。
+# 控制台轮询 / 自指 / 探活 / 读图：记下来没有排障价值，只会淹没业务 /api。
 _EXCLUDE_PREFIXES = (
     "/api/traces",
     "/api/http-traces",
@@ -34,8 +34,8 @@ _EXCLUDE_PREFIXES = (
     "/api/version",
 )
 _EXCLUDE_EXACT_OR_PREFIX = ("/api/v1/agent/chat/stream",)
-_EXCLUDE_EXACT = frozenset({"/api/system/health"})
-# 仅 GET：控制台壳子 / 图标。同路径的 POST（登录、改品牌、存主题）仍记。
+_EXCLUDE_EXACT = frozenset({"/api/system/health", "/api/v1/agent/health"})
+# 仅 GET：壳子、看板刷新、静态读图。同路径 POST/PUT 仍记。
 _GET_EXCLUDE_EXACT = frozenset(
     {
         "/api/auth/me",
@@ -44,10 +44,38 @@ _GET_EXCLUDE_EXACT = frozenset(
         "/api/brand",
         "/api/brand/icon",
         "/api/theme/config",
+        "/api/theme/presets",
         "/api/assets/preview",
+        "/api/system/info",
+        "/api/plugins/list",
+        "/api/plugin-pages",
+        "/api/persona/list",
+        "/api/persona/config/global",
+        "/api/persona/heartbeat/status",
+        "/api/ai/wizard/status",
+        "/api/ai/kanban/board",
+        "/api/ai/approvals/list",
+        "/api/live-chat/bootstrap",
+        "/api/live-chat/state",
+        "/api/scheduler/jobs",
+        "/api/git-update/status",
+        "/api/ai/budget/overview",
     }
 )
-_GET_EXCLUDE_PREFIXES = ("/api/auth/avatar", "/api/plugins/icon")
+_GET_EXCLUDE_PREFIXES = (
+    "/api/auth/avatar",
+    "/api/plugins/icon",
+    "/api/getImage",
+    "/api/image",
+    "/api/meme/image",
+    "/api/ops",
+    "/api/git-update/status",
+    "/api/ai/budget/usage",
+    "/api/ai/statistics",
+    "/api/ai/performance",
+)
+_GET_PERSONA_MEDIA_PREFIX = "/api/persona/"
+_GET_PERSONA_MEDIA_SUFFIXES = ("/avatar", "/image", "/audio")
 
 
 def norm_http_path(raw: str) -> str:
@@ -74,6 +102,15 @@ def _matches_prefix(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(prefix + "/")
 
 
+def _is_get_persona_media(path: str) -> bool:
+    if not path.startswith(_GET_PERSONA_MEDIA_PREFIX):
+        return False
+    for suffix in _GET_PERSONA_MEDIA_SUFFIXES:
+        if path.endswith(suffix):
+            return True
+    return False
+
+
 def is_http_trace_excluded(path: str, method: str = "GET") -> bool:
     if path in _EXCLUDE_EXACT:
         return True
@@ -92,6 +129,8 @@ def is_http_trace_excluded(path: str, method: str = "GET") -> bool:
         for prefix in _GET_EXCLUDE_PREFIXES:
             if _matches_prefix(path, prefix):
                 return True
+        if _is_get_persona_media(path):
+            return True
     return False
 
 
