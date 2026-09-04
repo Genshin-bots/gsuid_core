@@ -62,6 +62,14 @@ LM_DIR = os.path.join(_PROJECT_ROOT, "eval", "longmemeval")
 LM_RESULTS = os.path.join(LM_DIR, "results")
 LM_ANSWERS = os.path.join(LM_RESULTS, "answers_runner.json")
 LM_JUDGE = os.path.join(LM_RESULTS, "judge_runner.json")
+LM_DOMAIN_ORDER = (
+    "single-session-preference",
+    "single-session-user",
+    "single-session-assistant",
+    "knowledge-update",
+    "multi-session",
+    "temporal-reasoning",
+)
 
 
 def _lm_paths(args: argparse.Namespace) -> tuple[str, str]:
@@ -103,8 +111,9 @@ async def _lm_probe(args: argparse.Namespace) -> None:
     answers_file, _ = _lm_paths(args)
     print(
         f"[lm-probe] extract={extract} system2={system2} inject_date={inject_date} "
-        f"clear_first={clear_first} skip_ingest={skip_ingest} type={qtype} "
-        f"persona={args.persona_name or '评测助手'} "
+        f"clear_first={clear_first} skip_ingest={skip_ingest} "
+        f"enable_tools={args.enable_tools} memory_eval={not args.no_memory_eval} "
+        f"type={qtype} persona={args.persona_name or '评测助手'} "
         f"concurrency={args.concurrency} -> {os.path.basename(answers_file)}"
     )
     items = _lm_load(args)
@@ -129,12 +138,10 @@ async def _lm_probe(args: argparse.Namespace) -> None:
                 )
                 if obs.get("status") != 0:
                     raise RuntimeError(f"batch_observe: {obs.get('msg')}")
-            # 注入"当前时间"：temporal-reasoning 依赖"今天"计算"多少天前"
             message = q["question"]
+            clock_at = None
             if inject_date:
-                cur = _fmt_question_date(q.get("question_date", ""))
-                if cur:
-                    message = f"当前时间：{cur}\n\n{q['question']}"
+                clock_at = _fmt_question_date(q.get("question_date", "")) or None
             resp = await call_chat_with_history(
                 client=client,
                 base_url=args.base_url,
@@ -144,9 +151,10 @@ async def _lm_probe(args: argparse.Namespace) -> None:
                 timeout=args.timeout,
                 enable_observer=False,
                 enable_system2=system2,
-                enable_tools=False,
-                memory_eval=True,
+                enable_tools=args.enable_tools,
+                memory_eval=not args.no_memory_eval,
                 persona_name=args.persona_name or "评测助手",
+                clock_at=clock_at,
             )
             status = resp.get("status_code", -1)
             answer = extract_text_from_response(resp.get("data")) if status == 200 else f"[ERROR] status_code={status}"
@@ -282,6 +290,104 @@ def _lm_diagnose(args: argparse.Namespace) -> None:
     print(f"\n===== diagnose {passed}/{total} ({passed / max(total, 1) * 100:.1f}%) =====")
 
 
+def _domain_files(qtype: str, tag: str | None) -> tuple[str, str]:
+    slug = qtype.replace("-", "_")
+    suffix = f"_{tag}" if tag else ""
+    return (
+        os.path.join(LM_RESULTS, f"answers_{slug}{suffix}.json"),
+        os.path.join(LM_RESULTS, f"judge_{slug}{suffix}.json"),
+    )
+
+
+async def _lm_run_domains(args: argparse.Namespace) -> None:
+    """按域 probe+judge。生产 Chat：tools + 目录卡 + clock_at + skip-ingest。"""
+    types = (args.question_type,) if args.question_type else LM_DOMAIN_ORDER
+    tag = args.tag if args.tag else None
+    args.skip_ingest = True
+    args.inject_date = True
+    args.enable_tools = True
+    args.no_memory_eval = True
+    args.concurrency = 1
+    for qtype in types:
+        args.question_type = qtype
+        args.answers_file, args.judge_file = _domain_files(qtype, tag)
+        print(f"\n===== domain {qtype} =====", flush=True)
+        args.timeout = 4000.0
+        await _lm_probe(args)
+        args.timeout = 180.0
+        await _lm_judge(args)
+    print("\n===== run-domains done =====", flush=True)
+
+
+def _lm_answer_is_infra(answer: dict[str, object]) -> bool:
+    """传输/进程故障，不是内容 FAIL。内容错题不得被 mark-fails 重跑。"""
+    status = answer["status_code"] if "status_code" in answer else 200
+    if isinstance(status, int) and status not in (200, 0):
+        return True
+    raw = answer["agent_answer"] if "agent_answer" in answer else ""
+    text = raw if isinstance(raw, str) else str(raw)
+    if not text.strip():
+        return True
+    if text.startswith("[ERROR]"):
+        return True
+    low = text.lower()
+    if "connecterror" in low or "all connection" in low:
+        return True
+    return "session_log_not_found" in low
+
+
+def _lm_mark_fails(args: argparse.Namespace) -> None:
+    """只把传输/空答失败改成 [ERROR] rerun，内容 FAIL 保留。"""
+    tag = args.tag if args.tag else None
+    if args.answers_file or args.judge_file:
+        pairs = [_lm_paths(args)]
+    else:
+        types = (args.question_type,) if args.question_type else LM_DOMAIN_ORDER
+        pairs = [_domain_files(qtype, tag) for qtype in types]
+    total_fail = 0
+    for ans_path, jdg_path in pairs:
+        if not os.path.isfile(ans_path) or not os.path.isfile(jdg_path):
+            print(f"[mark-fails] skip missing {os.path.basename(ans_path)}")
+            continue
+        answers = load_json(ans_path)
+        judges = load_json(jdg_path)
+        answers_by_id: dict[str, dict[str, object]] = {}
+        for a in answers:
+            if isinstance(a, dict) and "question_id" in a:
+                answers_by_id[str(a["question_id"])] = a
+        fail_ids: set[str] = set()
+        for it in judges:
+            if not isinstance(it, dict) or "question_id" not in it:
+                continue
+            judge = it["judge"] if "judge" in it else None
+            if not isinstance(judge, dict):
+                continue
+            passed = bool(judge["passed"]) if "passed" in judge else False
+            if passed:
+                continue
+            qid = str(it["question_id"])
+            ans = answers_by_id[qid] if qid in answers_by_id else None
+            if ans is None or _lm_answer_is_infra(ans):
+                fail_ids.add(qid)
+        n_ans = 0
+        for a in answers:
+            if not isinstance(a, dict) or "question_id" not in a:
+                continue
+            if str(a["question_id"]) not in fail_ids:
+                continue
+            a["agent_answer"] = "[ERROR] rerun"
+            a["status_code"] = -1
+            n_ans += 1
+        dump_json(ans_path, answers)
+        kept = [
+            j for j in judges if isinstance(j, dict) and "question_id" in j and str(j["question_id"]) not in fail_ids
+        ]
+        dump_json(jdg_path, kept)
+        total_fail += len(fail_ids)
+        print(f"[mark-fails] {os.path.basename(ans_path)}: marked {n_ans} infra fails, kept {len(kept)} judges")
+    print(f"[mark-fails] total infra fails marked {total_fail}")
+
+
 # ─────────────────────────────────────────────
 # BEAM（委托既有脚本，保持状态文件/CLI 兼容）
 # ─────────────────────────────────────────────
@@ -302,7 +408,7 @@ def _beam_delegate(stage: str, extra: List[str]) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description="统一评测入口")
     p.add_argument("benchmark", choices=["longmem", "beam"])
-    p.add_argument("stage", help="longmem: probe/judge/report/diagnose; beam: 透传 run_beam_eval 子命令")
+    p.add_argument("stage", help="longmem: probe/judge/report/diagnose/run-domains/mark-fails; beam: 透传")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--eval-data", default=None)
     p.add_argument("--start", type=int, default=None)
@@ -314,7 +420,7 @@ def main() -> int:
     )
     p.add_argument("--system2", action="store_true", help="probe: 作答时启用 System-2 分层图遍历")
     p.add_argument(
-        "--inject-date", action="store_true", help="probe: 把 question_date 作为'当前时间'注入作答消息（时序推理必需）"
+        "--inject-date", action="store_true", help="probe: 把 question_date 作为 clock_at 传入（时序推理必需）"
     )
     p.add_argument("--clear-first", action="store_true", help="probe: 每题摄入前清空该 scope，避免历史遗留污染")
     p.add_argument("--answers-file", default=None, help="覆盖答卷文件路径（子集实验隔离用）")
@@ -334,6 +440,17 @@ def main() -> int:
         default="评测助手",
         help="probe: 作答人格（默认评测助手：必须作答、禁止静音）",
     )
+    p.add_argument(
+        "--enable-tools",
+        action="store_true",
+        help="probe: 装配真实工具（含 search_cognition），对齐生产 Chat",
+    )
+    p.add_argument(
+        "--no-memory-eval",
+        action="store_true",
+        help="probe: 不灌评测证据块，走生产目录卡 + 模型自己 search_cognition",
+    )
+    p.add_argument("--tag", default=None, help="run-domains/mark-fails: 答卷文件后缀，如 prod7")
     args, extra = p.parse_known_args()
 
     if args.benchmark == "beam":
@@ -347,6 +464,10 @@ def main() -> int:
         _lm_report(judge_file)
     elif args.stage == "diagnose":
         _lm_diagnose(args)
+    elif args.stage == "run-domains":
+        asyncio.run(_lm_run_domains(args))
+    elif args.stage == "mark-fails":
+        _lm_mark_fails(args)
     else:
         print(f"未知 stage: {args.stage}")
         return 2

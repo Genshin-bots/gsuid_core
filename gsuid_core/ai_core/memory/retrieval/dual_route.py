@@ -25,6 +25,7 @@ from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
 from .types import Edge, Entity, Episode, Category, RetrievalMeta
 from .system1 import System1Result, system1_search
 from .system2 import System2Result, system2_global_selection
+from .event_time import event_times_in_text
 
 # untrusted 栅栏自身的字符开销：episodes 预算与终装配截断都要预留它，
 # 否则 </untrusted> 闭合标签会被尾截断切掉（评审修复 F9）
@@ -110,15 +111,27 @@ def _fact_mentions_speaker(edge: "Edge", speaker_ids: set) -> bool:
     return False
 
 
+_TS_MAX = 4_102_444_800.0
+
+
+def _ts_to_dt(ts: float | int | None) -> datetime | None:
+    if not isinstance(ts, (int, float)) or ts <= 0 or ts > _TS_MAX:
+        return None
+    return datetime.fromtimestamp(float(ts))
+
+
 def _edge_date_prefix(e: "Edge") -> str:
-    """edge 的 [YYYY-MM-DD] 日期前缀；无 valid_at_ts（旧数据/迁移缺失）返回空串。"""
-    ts = e["valid_at_ts"] if "valid_at_ts" in e else None
-    if not ts:
+    """陈述日必带；原文相对语另标发生日。无 valid_at_ts 返回空串。"""
+    said = _ts_to_dt(e["valid_at_ts"] if "valid_at_ts" in e else None)
+    if said is None:
         return ""
-    try:
-        return f"[{datetime.fromtimestamp(ts).strftime('%Y-%m-%d')}] "
-    except Exception:
-        return ""
+    stamp = f"[{said.strftime('%Y-%m-%d')}] "
+    events = event_times_in_text(e["fact"] or "", said)
+    if events:
+        ev = min(events)
+        if ev.date() != said.date():
+            stamp += f"[发生 {ev.strftime('%Y-%m-%d')}] "
+    return stamp
 
 
 # 时间范围检索：query 中显式出现的日期（ISO / 中文 / 斜杠格式）。命中≥1 个日期视为
@@ -1044,6 +1057,13 @@ async def dual_route_retrieve(
                 pref_task.add_done_callback(_on_pref_task_done)
         except Exception as e:
             logger.warning(i18n_t("log.memory.preference_retrieval", e=e))
+
+    # 未落库原文：闲聊进行中要等 idle 才写 SQL，检索必须先看见缓冲。
+    from gsuid_core.ai_core.memory.observer import pending_episodes_for_scopes
+
+    pending = pending_episodes_for_scopes(scope_keys)
+    if pending:
+        ranked_episodes = _merge_episodes(pending, ranked_episodes)
 
     return MemoryContext(
         episodes=ranked_episodes,

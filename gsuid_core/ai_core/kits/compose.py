@@ -17,11 +17,12 @@ def join_blocks(ctx: AgentHookContext) -> str:
     return join_named_blocks(ctx.blocks, create_by=ctx.create_by, skip_memory_cap=skip)
 
 
-async def compose_dynamic_context(ctx: AgentHookContext) -> Tuple[str, bool]:
+async def compose_dynamic_context(ctx: AgentHookContext, *, join: bool = True) -> Tuple[str, bool]:
     """开火 H06/H07 并拼装。返回 ``(full_context, has_actionable_task)``。
 
     H06 填正式命名块（mood / relationship / memory / task / …），
     H07 供第三方追加 hint（汇入 ``plugin_hints`` 块，恒在最后）。
+    ``join=False``：装配入口还要补内核块后再拼，避免预算截断 warning 打两遍。
     """
     await fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx)
 
@@ -45,4 +46,6 @@ async def compose_dynamic_context(ctx: AgentHookContext) -> Tuple[str, bool]:
 
     if ctx.hints:
         ctx.blocks["plugin_hints"] = ctx.hint_text()
+    if not join:
+        return "", ctx.has_actionable
     return join_blocks(ctx), ctx.has_actionable

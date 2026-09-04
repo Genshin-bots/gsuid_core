@@ -580,7 +580,7 @@ def collapse_family_domains(domains: List[str]) -> List[str]:
 
 
 def format_capability_family_overview(*, max_families: int = 30, max_chars: int = 1200) -> str:
-    """按 capability_domain 聚合的工具族速览（建 session 时固化进 system）。"""
+    """按 capability_domain 聚合的工具族速览。只给 find_tools / get_self 回执，不进 system。"""
     grouped: dict[str, list[ToolBase]] = {}
     for tb in get_all_tools().values():
         domain = tb.capability_domain

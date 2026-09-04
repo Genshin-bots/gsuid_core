@@ -37,3 +37,34 @@ def test_parse_judge_json_fallback() -> None:
 def test_judge_prompt_matches_as_judge_pass_fail() -> None:
     assert '"correct": true/false' not in _JUDGE_SRC
     assert "只输出单独一行：PASS 或 FAIL" in _JUDGE_SRC
+
+
+def test_silence_is_transient_judge_failure() -> None:
+    from eval.common.judge import _is_transient_judge_failure
+
+    assert _is_transient_judge_failure(200, "<SILENCE>") is True
+    assert _is_transient_judge_failure(200, "SILENCE") is True
+    assert _is_transient_judge_failure(200, "PASS") is False
+
+
+def test_judge_silence_is_not_gold_string_pass() -> None:
+    src = Path(__file__).resolve().parent.parent.joinpath("eval", "common", "judge.py").read_text(encoding="utf-8")
+    assert "gold string in answer" not in src
+    from eval.common.judge import simple_string_match
+
+    assert simple_string_match("Sound effects", "27. **Sound effects** (e.g., ambient)") is True
+    assert simple_string_match("Manolo García", "Marina Rossell was the example") is False
+    assert simple_string_match(3, "You attended 3 workshops") is True
+    assert simple_string_match(3, "13 workshops") is False
+    assert simple_string_match(5, "15 days") is False
+    assert simple_string_match(15, "5 days in NYC only") is False
+
+
+def test_as_judge_allows_more_than_one_iteration() -> None:
+    src = (
+        Path(__file__)
+        .resolve()
+        .parent.parent.joinpath("gsuid_core", "webconsole", "chat_with_history_api.py")
+        .read_text(encoding="utf-8")
+    )
+    assert "max_iterations=4 if req.as_judge" in src

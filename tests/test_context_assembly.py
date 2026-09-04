@@ -27,10 +27,18 @@ def test_both_entries_consume_shared_assembly() -> None:
     assert 'else "Chat"' in endpoint, "非判分评测须 create_by=Chat，才能装配 search_cognition"
     assert "memory_eval=_memory_eval" in endpoint, "LongMem 转储只认 memory_eval，不许走 TEST"
     guide_at = endpoint.index("_MEMORY_EVAL_GUIDE")
-    guide = endpoint[guide_at : guide_at + 2800]
-    assert "【本题证据会话】" in guide
-    assert "【其他历史会话】" in guide
-    assert "【相关对话片段】" not in guide
+    guide = endpoint[guide_at : guide_at + 4200]
+    assert "【核心事实】" in guide
+    assert "【相关对话片段】" in guide
+    assert "【本题证据会话】" not in guide
+    assert "UPDATES" in guide
+    assert "ALL injected facts" in guide
+    assert "Garden herbs" not in guide
+    assembly = _src("gsuid_core/ai_core/context_assembly.py")
+    assert "parse_injected_clock" not in assembly
+    assert "parse_injected_clock" not in endpoint
+    assert "parse_clock_at" in endpoint
+    assert "req.clock_at" in endpoint
     loop = _src("gsuid_core/ai_core/agent_run/loop.py")
     assert 'create_by in _MAIN_PERSONA_CREATE_BY and st.return_mode != "return"' in loop
     assert "http_dynamic_tools(" in endpoint

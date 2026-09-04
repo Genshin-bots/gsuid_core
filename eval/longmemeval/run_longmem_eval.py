@@ -204,6 +204,7 @@ def flatten_haystack_with_dates(
     from datetime import datetime, timedelta
 
     turns: List[Dict[str, str]] = []
+    seen_ts: Dict[str, int] = {}
     for i, session in enumerate(haystack_sessions):
         if not isinstance(session, list):
             continue
@@ -219,6 +220,12 @@ def flatten_haystack_with_dates(
                 except ValueError:
                     continue
         base_dt = datetime.fromisoformat(ts_iso) if ts_iso else None
+        # 同日同分钟的第二条起错开 1 小时，避免 valid_at 重叠后聚成一团。
+        if ts_iso:
+            dup_n = seen_ts[ts_iso] if ts_iso in seen_ts else 0
+            seen_ts[ts_iso] = dup_n + 1
+            if base_dt is not None and dup_n:
+                base_dt = base_dt + timedelta(hours=dup_n)
         for j, turn in enumerate(session):
             if not isinstance(turn, dict):
                 continue

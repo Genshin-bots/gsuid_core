@@ -30,7 +30,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import yaml  # noqa: E402
 
-from eval.agent.harness import Trace, aggregate, score_case_passk, parse_judge_verdict  # noqa: E402
+from eval.agent.harness import (  # noqa: E402
+    Trace,
+    aggregate,
+    score_case_passk,
+    parse_judge_verdict,
+    judge_text_is_transient,
+)
 
 
 def make_env_judge():
@@ -105,6 +111,9 @@ def make_bot_judge(base_url: str, token: str = ""):
                 print(f"  [WARN] bot-judge 异常(第{attempt}次): {e}")
                 continue
             last = str(raw or "")
+            if judge_text_is_transient(last):
+                print(f"  [WARN] bot-judge 瞬时故障(第{attempt}次): {last[:80]!r}")
+                continue
             v = parse_judge_verdict(last)
             if v is not None:
                 return v

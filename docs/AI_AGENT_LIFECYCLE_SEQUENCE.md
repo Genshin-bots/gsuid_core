@@ -589,7 +589,7 @@ sequenceDiagram
     Note over GsAgent: 交互脚手架 C-1 省略跟进 / C-2 漂移 / C-3 @别人→零工具
 
     GsAgent->>Toolset: 装配
-    Note over Toolset: L1 保底 self+buildin（会话内只增不重排，无 Jaccard 重建）<br/>L2 状态/跟进/补搜进尾槽，不进 frozen core<br/>L3 驻留族 append 进 core<br/>L4/L5 向量进尾槽；roster+工具族速览在 system<br/>find_tools 常挂；check_delegation 不常挂<br/>主人格禁直调专域 exclusive（靠委派）
+    Note over Toolset: L1 内核 find_tools/create_subagent/capability_map+履约/认知/建提醒<br/>L2 状态/跟进/补搜进尾槽，不进 frozen core<br/>L3 驻留族 append 进 core<br/>L4/L5 向量进尾槽；roster 在 system（工具族速览只进 find_tools/self_info）<br/>find_tools 常挂；check_delegation 不常挂<br/>主人格禁直调专域 exclusive（靠委派）
 
     GsAgent->>SessLog: log_tools_list
 
@@ -699,7 +699,7 @@ sequenceDiagram
 
 **委派闭环（主人格池）**：交互 `create_by` 剥离能力代理 exclusive 工具 → 模型只能
 `create_subagent(agent_profile=真实 node_id)`；`find_tools` / `RetrievableToolset`
-同步 `blocked_tool_names` 禁止回灌。roster + **工具族速览**固化在 **system**。
+同步 `blocked_tool_names` 禁止回灌。roster 固化在 **system**；工具族速览只进 `find_tools` / `get_self_persona_info`。
 `check_delegation` 不进群聊瘦保底，追问进度时经 `find_tools` 召回。
 `_build_event` 必须回填 `WS_BOT_ID`；`_get_bot` / `_resolve_active_bot` **禁止任意适配器兜底**。
 同 `(group_id, res_id)` 由 `DeliveryLedger` 原子占位，拦跨 session 二发。

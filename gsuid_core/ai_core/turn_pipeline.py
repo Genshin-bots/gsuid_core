@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import TYPE_CHECKING, List, Tuple, Optional, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic_ai.messages import UserContent, ModelMessage
@@ -43,6 +44,11 @@ MAX_SUMMARY_LENGTH = 15000
 # 群聊历史窗口：靠紧凑格式 + 当前用户优先，而不是堆 30 条散句
 _HISTORY_LIMIT = 20
 _MAX_OTHER_RECORDS = 6
+_WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+_CLOCK_AT_RE = re.compile(
+    r"^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})"
+    r"(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?"
+)
 
 
 async def evaluate_budget(event: Event) -> BudgetDecision | None:
@@ -135,23 +141,57 @@ async def apply_summary_guard(event: Event, user_messages: Sequence[UserContent]
     logger.info(t("log.ai.gscore_summarization_summary_length", p0=len(summarized)))
 
 
-def current_time_line() -> str:
+def parse_clock_at(raw: str | None) -> datetime | None:
+    """整字段时钟：YYYY/MM/DD HH:MM、剥 (Tue)、ISO。不扫用户原文。"""
+    body = (raw or "").strip()
+    if not body:
+        return None
+    body = " ".join(p for p in body.split() if not (p.startswith("(") and p.endswith(")")))
+    m = _CLOCK_AT_RE.match(body)
+    if m is not None:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        hh = int(m.group(4)) if m.group(4) else 12
+        mm = int(m.group(5)) if m.group(5) else 0
+        ss = int(m.group(6)) if m.group(6) else 0
+        try:
+            return datetime(y, mo, d, hh, mm, ss)
+        except ValueError:
+            return None
+    iso = body.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(iso[:32])
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def injected_clock_date_label(clock: datetime) -> str:
+    """人设「当前日期」用的日级标签。只许评测 HTTP ``clock_at`` 显式传入，禁止从用户原文解析。"""
+    return f"{clock.strftime('%Y年%m月%d日')}（{_WEEKDAYS[clock.weekday()]}）"
+
+
+def current_time_line(now: datetime | None = None) -> str:
     """本轮精确时间行的**唯一产出点**（生产与评测共用）。
 
     人设 system_prompt 只放到「日」级以保住 provider 前缀缓存，分秒级时间按约定由
     user 侧每轮补上。两条入口各自拼这行的话，漏掉的那条会让模型只知道日期不知道
     时刻——问「现在几点」时它只能答「不知道」，而且**没有任何报错**。
     """
-    return f"[当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
+    dt = now if now is not None else datetime.now()
+    extra = f" {_WEEKDAYS[dt.weekday()]}" if now is not None else ""
+    return f"[当前时间：{dt.strftime('%Y-%m-%d %H:%M:%S')}]{extra}"
 
 
-def stamp_current_time(user_messages: Sequence[UserContent]) -> None:
+def stamp_current_time(user_messages: Sequence[UserContent], now: datetime | None = None) -> None:
     """把精确时间钉在本轮发言块末尾（摘要之后、动态上下文之前）。
 
     **只进 user 侧**：每轮变化的内容进 system 会让 provider 前缀缓存每轮失效。
+    ``now`` 只接受调用方显式传入的时钟（评测 ``clock_at``）；禁止从用户原文解析。
     """
     if isinstance(user_messages, list) and user_messages and isinstance(user_messages[0], str):
-        user_messages[0] += f"\n{current_time_line()}"
+        user_messages[0] += f"\n{current_time_line(now)}"
 
 
 def build_group_history_block(event: Event) -> str:

@@ -7,19 +7,19 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 ## 一、工具分类（category）与"框架保底池"的关系
 
-工具是否属于"框架保底"主要由注册时声明的 ``category`` 字符串决定：
+工具是否属于"框架通道核"由 ``MAIN_AGENT_CORE_TOOLS`` 名单决定（群/私同一份）：
 
-- ``get_main_agent_tools()``     → 加载 ``self`` + ``buildin`` 两个分类（**保底池**）；
-                                   其中 ``self`` 再经 ``_SELF_CATEGORY_WHITELIST`` 收敛到
-                                   3 个核心工具，防插件滥用 ``category="self"`` 撑大保底池。
-- ``search_tools(query=...)``    → 在 ``planning`` / ``common`` / ``media`` / ``default``
-                                   与插件注册的 ``by_trigger`` 等分类里做向量检索按需加载。
-- ``tool_state_signals``         → 按"用户名下持久实体"把 ``planning`` 能力族精确补进工具列表。
+- ``get_main_agent_tools()``     → 加载通道核（发现 / 回想 / 委派 / 发送 /
+                                   一次性与周期提醒入口）。列出/改/删/暂停、
+                                   web_search、self 信息、命令执行不进核，由状态信号、
+                                   本句检索或 ``find_tools`` 补上。
+- ``search_tools(query=...)``    → 在未暴露工具里做向量检索（含未进核的 self/buildin）；
+                                   ``meta`` / ``plugin_dev`` 永不被检索。
+- ``tool_state_signals``         → 按"用户名下持久实体"把能力族精确补进工具列表。
 - ``create_subagent`` 默认子代理 → 默认装配 ``default`` 分类 + ``buildin`` 部分。
 
-要让一个新工具成为保底工具，注册时写 ``category="self"`` 或 ``category="buildin"``。
-要让新工具仅在向量检索命中时出现，留 ``category="common"`` / ``"media"`` /
-``"default"`` 即可。
+要让一个新工具进入通道核，把它的名字加进 ``MAIN_AGENT_CORE_TOOLS``（并想清楚 schema 税）。
+要让新工具仅在向量检索命中时出现，不要进该名单即可。
 
 ## 二、按 category 列出所有内置工具
 
@@ -28,16 +28,15 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 分类而本文档没同步，请以 ``register.py`` 的 ``_TOOL_REGISTRY`` 为准。
 
 ### 2.1 ``category="self"`` —— 仅主人格保底（不会装配进能力代理）
-这些是"只能由主人格直接调用"的工具：副作用强、面向用户。``get_main_agent_tools``
-还会用 ``rag.tools._SELF_CATEGORY_WHITELIST`` 把 self 保底池收敛到这 3 个核心工具
-（防插件滥用 ``category="self"`` 撑大保底池），故下表即当前的 self 白名单全集：
+这些是"只能由主人格直接调用"的工具：副作用强、面向用户。通道核收发送类 self
+以及一次性/周期提醒入口；列出/改/删/暂停仍注册为 self，由状态信号或 find_tools 带出。
 
 | 工具 | 来源 | 说明 |
 |---|---|---|
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
-| ``send_meme`` | ``meme_tools.py`` | 按情绪从库里发一张表情包（主人格保底 / 群聊瘦核常驻） |
-| ``add_once_task`` | ``scheduler.py`` | 注册一次性定时任务（口语触发，需常驻主人格手边） |
-| ``add_interval_task`` | ``scheduler.py`` | 注册周期定时任务（同上） |
+| ``send_meme`` | ``meme_tools.py`` | 按情绪从库里发一张表情包 |
+| ``add_once_task`` | ``scheduler.py`` | 一次性定时任务（通道核入口） |
+| ``add_interval_task`` | ``scheduler.py`` | 周期定时任务（通道核入口） |
 
 > ``create_subagent`` / ``evaluate_agent_mesh_capability`` 为 ``common``。
 > 好感度由框架每轮结算，没有增量工具；绝对值覆盖仅主人 ``set_user_favorability``。
@@ -240,7 +239,6 @@ from gsuid_core.ai_core.buildin_tools.meme_tools import (
 # RAG检索工具 - 知识库查询，支持类别/插件筛选
 from gsuid_core.ai_core.buildin_tools.rag_search import (
     search_image,
-    attach_article,
     search_cognition,
 )
 
@@ -290,6 +288,7 @@ from gsuid_core.ai_core.buildin_tools.identity_tools import (
 from gsuid_core.ai_core.buildin_tools.message_sender import (
     send_message_by_ai,
 )
+from gsuid_core.ai_core.buildin_tools.cognition_write import attach_article
 
 # 文件操作工具 - artifacts 路径内的文件移动/复制/打包 zip
 from gsuid_core.ai_core.buildin_tools.file_operations import (

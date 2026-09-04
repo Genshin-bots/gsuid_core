@@ -35,7 +35,7 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
 BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "mood": 80,
     "relationship": 100,
-    "voice_anchor": 100,
+    "voice_anchor": 180,
     "identity": 80,
     "history": 600,
     "group_context": 200,

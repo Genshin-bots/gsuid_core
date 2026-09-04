@@ -66,11 +66,9 @@ _SCHED_MUTATE_NAMES: frozenset[str] = frozenset(
 )
 
 
-def _session_tool_ceiling(*, group_slim: bool = False) -> int:
-    key = "group_session_tool_ceiling" if group_slim else "session_tool_ceiling"
-    raw = ai_config.get_config(key).data
-    fallback = 20 if group_slim else 24
-    return int(raw) if isinstance(raw, int) else fallback
+def _session_tool_ceiling() -> int:
+    raw = ai_config.get_config("session_tool_ceiling").data
+    return int(raw) if isinstance(raw, int) else 24
 
 
 def l2_state_driven_wanted(
@@ -127,21 +125,24 @@ def snapshot_tool_allowed(
 def should_skip_tool_search(
     *,
     in_flight_short: bool,
-    group_slim: bool,
+    is_group: bool,
     followup_detected: bool,
     has_active_task: bool,
     has_media: bool,
     call_to_self: bool,
     is_light: bool,
+    intent: str = "",
 ) -> bool:
-    """向量预检索是否跳过。点名+LIGHT 不预检索但仍挂 find_tools；FULL 才检索。"""
+    """向量预检索是否跳过。闲聊/旁观/LIGHT 不预检索；跟进/媒体/在途任务仍搜。"""
     if in_flight_short:
         return True
-    if not group_slim:
-        return False
     if followup_detected or has_active_task or has_media:
         return False
-    return (not call_to_self) or is_light
+    if is_light:
+        return True
+    if is_group and not call_to_self:
+        return True
+    return intent == "闲聊"
 
 
 def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool]:
@@ -158,8 +159,12 @@ def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool]:
 
 
 def is_group_send_extra(name: str) -> bool:
-    """群聊 extras 里的对用户发送工具（不在瘦核）。只许本轮 find_tools 动态暴露。"""
-    return name.startswith("send_") and name not in interaction_scaffold.SLIM_GROUP_CORE_TOOLS
+    """对用户发送 extras（不在通道核）。只许本轮 find_tools 动态暴露。"""
+    return name.startswith("send_") and name not in interaction_scaffold.MAIN_AGENT_CORE_TOOLS
+
+
+# 回想核内只有 search_cognition；attach_article 走 find_tools，避免每轮写工具进 schema。
+_KERNEL_NO_FAMILY_CLOSE_DOMAINS = frozenset({"回想"})
 
 
 def complete_kernel_family_names(core_names: Sequence[str], *, exclusive: set[str]) -> list[str]:
@@ -184,7 +189,7 @@ def complete_kernel_family_names(core_names: Sequence[str], *, exclusive: set[st
         if domain and domain not in domains:
             domains.append(domain)
     for domain in domains:
-        if domain in STATE_DRIVEN_FAMILY_DOMAINS:
+        if domain in STATE_DRIVEN_FAMILY_DOMAINS or domain in _KERNEL_NO_FAMILY_CLOSE_DOMAINS:
             continue
         for tb in get_tools_by_capability_domain(domain):
             _add(tb.name)
@@ -194,21 +199,6 @@ def complete_kernel_family_names(core_names: Sequence[str], *, exclusive: set[st
 STATE_PERSISTED_FAMILY_HINT = (
     "\n\n（系统提示：当前会话已有持久条目。变更已有条目请用对应能力族的查询/修改/取消工具，不要再创建一条来代替。）"
 )
-
-
-def _take_extra_seeds(tools: ToolList, exclude_names: set[str], max_tools: int) -> ToolList:
-    """群聊 extras 只保留召回种子，不整族展开。"""
-    out: ToolList = []
-    seen = set(exclude_names)
-    cap = max_tools if max_tools > 0 else 0
-    for t in tools:
-        if t.name in seen:
-            continue
-        seen.add(t.name)
-        out.append(t)
-        if cap and len(out) >= cap:
-            break
-    return out
 
 
 def stabilize_session_tool_names(
@@ -281,10 +271,8 @@ class ToolsPhase(RunOnceHost):
         core: ToolList,
         extras: ToolList,
         ctx_tags: list[str],
-        *,
-        group_slim: bool = False,
     ) -> ToolList:
-        """Append-only：首轮拍快照（瘦核 ∪ pin）；其后只 append，exclusive 永不进表。"""
+        """Append-only：首轮拍快照（通道核 ∪ pin）；其后只 append，exclusive 永不进表。"""
         tags = frozenset(ctx_tags)
         rebuild = self._session_toolset_frozen is None
         exclusive = _capability_exclusive_tool_names()
@@ -299,7 +287,7 @@ class ToolsPhase(RunOnceHost):
             None if rebuild else self._session_toolset_frozen,
             incoming,
             exclusive=exclusive,
-            ceiling=_session_tool_ceiling(group_slim=group_slim),
+            ceiling=_session_tool_ceiling(),
         )
         self._session_toolset_frozen = names
         self._session_toolset_tags = tags
@@ -386,28 +374,17 @@ class ToolsPhase(RunOnceHost):
                     elif st.ev is not None:
                         qy = st.ev.raw_text
 
-                # 第一层：保底池。群聊（含 light）瘦保底；私聊/能力代理仍全量。
-                if st.group_slim or st.is_light:
-                    core_tools = []
-                    core_names: set[str] = set()
-                    for _tn in interaction_scaffold.SLIM_GROUP_CORE_TOOLS:
-                        _tb = find_tool_base(_tn)
-                        if _tb is not None and _tn not in core_names:
-                            core_names.add(_tn)
-                            core_tools.append(_tb.tool)
-                else:
-                    core_tools = await get_main_agent_tools()
-                    core_names = {t.name for t in core_tools}
-
-                if st.group_slim or st.is_light:
-                    _fam_exclusive = _capability_exclusive_tool_names()
-                    for _tn in complete_kernel_family_names(list(core_names), exclusive=_fam_exclusive):
-                        if _tn in core_names:
-                            continue
-                        _tb = find_tool_base(_tn)
-                        if _tb is not None:
-                            core_names.add(_tn)
-                            core_tools.append(_tb.tool)
+                # 第一层：群/私同一通道核（创建类提醒钉核；列出/改/删走 L2 / 检索 / find_tools）。
+                core_tools = await get_main_agent_tools()
+                core_names = {t.name for t in core_tools}
+                _fam_exclusive = _capability_exclusive_tool_names()
+                for _tn in complete_kernel_family_names(list(core_names), exclusive=_fam_exclusive):
+                    if _tn in core_names:
+                        continue
+                    _tb = find_tool_base(_tn)
+                    if _tb is not None:
+                        core_names.add(_tn)
+                        core_tools.append(_tb.tool)
 
                 # 调用方显式传入的基础工具（dynamic 节点的 packs+白名单）并入保底
                 for _bt in st.tools:
@@ -416,7 +393,7 @@ class ToolsPhase(RunOnceHost):
                         core_tools.append(_bt)
 
                 # 节点显式白名单：persona 投影节点在 config.json 声明的 st.tool_names 并入保底
-                if self.persona_name and not st.group_slim:
+                if self.persona_name:
                     from gsuid_core.ai_core.agent_node import get_node as _get_agent_node
 
                     _node = _get_agent_node(self.persona_name)
@@ -486,7 +463,7 @@ class ToolsPhase(RunOnceHost):
                     try:
                         ctx_tags = await get_scope_context_tags(ctx_scope_key)
                         if ctx_tags:
-                            _ctx_max = 4 if st.group_slim else 8
+                            _ctx_max = 4 if _is_group else 8
                             ctx_tools = get_tools_by_context_tags(ctx_tags, max_count=_ctx_max)
                             if ctx_tools:
                                 extra_tools += ctx_tools
@@ -501,19 +478,19 @@ class ToolsPhase(RunOnceHost):
                     except Exception as e:
                         logger.debug(i18n_t("log.agent.load_contextual_pool", e=e))
 
-                # 第三层：向量检索。light 或群聊纯闲聊可跳过（保底已含搜/图/渲/调度入口）。
-                # soft_continue / ellipsis 与呼叫跟进同权：不得因 st.intent=闲聊 跳过检索。
+                # 第三层：向量检索。闲聊/旁观/LIGHT 可跳过；跟进与工具/问答必搜。
                 _recall_limit = int(ai_config.get_config("tool_search_recall").data)
                 max_extra_tools: int = int(ai_config.get_config("tool_extra_pool_max").data)
                 _recall_threshold = float(ai_config.get_config("tool_recall_threshold").data)
                 _skip_search = should_skip_tool_search(
                     in_flight_short=st.in_flight_short,
-                    group_slim=st.group_slim,
+                    is_group=_is_group,
                     followup_detected=st.followup_detected,
                     has_active_task=st.has_active_task,
                     has_media=st.has_media,
                     call_to_self=_call_self,
                     is_light=st.is_light,
+                    intent=st.intent or "",
                 )
                 if (
                     st.intent == "闲聊"
@@ -523,7 +500,7 @@ class ToolsPhase(RunOnceHost):
                 ):
                     _recall_limit = max(2, _recall_limit // 2)
                     max_extra_tools = max(3, max_extra_tools // 2)
-                if st.group_slim or st.is_light or st.in_flight_short:
+                if st.is_light or st.in_flight_short:
                     max_extra_tools = min(max_extra_tools, 6)
                 if st.in_flight_short:
                     max_extra_tools = min(max_extra_tools, 2)
@@ -532,6 +509,7 @@ class ToolsPhase(RunOnceHost):
                         qy,
                         self._recent_user_texts,
                         ctx_tags,
+                        include_recent=bool(st.followup_detected),
                     )
                     logger.debug(i18n_t("log.agent.attempting_search_tools_query", search_query=search_query))
 
@@ -544,13 +522,12 @@ class ToolsPhase(RunOnceHost):
                         query=search_query,
                         route_text=qy,
                         limit=_recall_limit,
-                        non_category=["self", "buildin"],
                         threshold=_recall_threshold,
                         scope_key=ctx_scope_key,
                         ignore_surfaces=_ignore,
+                        exclude_names=core_names,
                     )
-                    # 外部检索不进瘦核；问答/工具轮才 append（不钉核，避免闲聊付税）
-                    if (st.group_slim or st.is_light) and st.intent in ("工具", "问答"):
+                    if st.intent in ("工具", "问答"):
                         for _tn in ("web_search_tool", "web_fetch_tool"):
                             if _tn in core_names:
                                 continue
@@ -562,7 +539,6 @@ class ToolsPhase(RunOnceHost):
                 if st.group_slim or st.is_light or _interactive:
                     extra_tools = [t for t in extra_tools if not is_group_send_extra(t.name)]
 
-                # 群聊 extras 只留种子；私聊仍整族展开（能建就能改靠核内族闭合，不靠 L4）
                 if _interactive:
                     extra_tools = _without_progress_tool(extra_tools)
                 _create_ok_ex, _mutate_ok_ex = _snapshot_visibility_flags(st)
@@ -575,14 +551,11 @@ class ToolsPhase(RunOnceHost):
                         mutate_ok=_mutate_ok_ex,
                     )
                 ]
-                if st.group_slim:
-                    deduped_extra = _take_extra_seeds(extra_tools, core_names, max_extra_tools)
-                else:
-                    deduped_extra = expand_tools_to_families(
-                        extra_tools,
-                        exclude_names=core_names,
-                        max_tools=max_extra_tools,
-                    )
+                deduped_extra = expand_tools_to_families(
+                    extra_tools,
+                    exclude_names=core_names,
+                    max_tools=max_extra_tools,
+                )
                 if _interactive:
                     deduped_extra = _without_progress_tool(deduped_extra)
 
@@ -593,9 +566,7 @@ class ToolsPhase(RunOnceHost):
                     if _edom:
                         self._recent_tool_families[_edom] = _STICKY_FAMILY_TURNS
 
-                st.tools = self._stabilize_session_toolset(
-                    core_tools, deduped_extra, ctx_tags, group_slim=st.group_slim
-                )
+                st.tools = self._stabilize_session_toolset(core_tools, deduped_extra, ctx_tags)
                 if _interactive:
                     st.tools = _without_progress_tool(st.tools)
 

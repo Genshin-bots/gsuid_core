@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import json
+import time
 from typing import Any, Set, Dict, List, Tuple, Optional
 
 # ─────────────────────────────────────────────
@@ -44,7 +45,17 @@ def dump_json(path: str, data: Any) -> None:
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    last_err: PermissionError | None = None
+    for _ in range(8):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as e:
+            # Windows：目标文件被 Defender / 索引锁住时 replace 会 WinError 5
+            last_err = e
+            time.sleep(0.05)
+    if last_err is not None:
+        raise last_err
 
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:

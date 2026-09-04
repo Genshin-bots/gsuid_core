@@ -22,6 +22,15 @@ from .http_client import (
     extract_text_from_response,
 )
 
+
+def _judge_text(value: str | int | float | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 # 判定阶段的瞬时故障标记：agent 管线捕获 LLM 连接/限流错误后会把它当作正文文本返回
 # （HTTP 仍是 200），parse 不到 JSON 就默认判错——必须识别并重试，否则大批答卷被误判为 FAIL。
 _TRANSIENT_JUDGE_MARKERS = (
@@ -38,6 +47,8 @@ _TRANSIENT_JUDGE_MARKERS = (
     "502",
     "connection aborted",
     "connection reset",
+    "<silence>",
+    "[silence]",
 )
 
 
@@ -49,9 +60,12 @@ def _is_transient_judge_failure(status_code: int, judge_text: str) -> bool:
     """判定这次评判是否命中瞬时故障（应退避重试），而非模型给出的真实判决。"""
     if status_code != 200:
         return True
-    if not judge_text or not judge_text.strip():
+    body = (judge_text or "").strip()
+    if not body:
         return True
-    low = judge_text.lower()
+    low = body.lower()
+    if low in {"<silence>", "[silence]", "silence", "</silence>", "<silence/>"}:
+        return True
     return any(m in low for m in _TRANSIENT_JUDGE_MARKERS)
 
 
@@ -64,8 +78,8 @@ async def judge_single_answer(
     client: httpx.AsyncClient,
     base_url: str,
     question: str,
-    standard_answer: str,
-    agent_answer: str,
+    standard_answer: str | int | float | None,
+    agent_answer: str | int | float | None,
     timeout: float = 60.0,
     user_id: str = "judge_user",
 ) -> Dict[str, Any]:
@@ -74,6 +88,8 @@ async def judge_single_answer(
     通过 ``/api/chat_with_history`` 接口发送评判请求，让 LLM 判断回答是否正确。
     使用独立的 ``user_id`` 避免与其他会话冲突。
     """
+    standard_answer = _judge_text(standard_answer)
+    agent_answer = _judge_text(agent_answer)
     judge_prompt = f"""请判断 Agent 的回答是否与标准答案语义一致。
 
 问题: {question}
@@ -105,7 +121,6 @@ Agent 的回答: {agent_answer}
         if attempt < _JUDGE_MAX_RETRIES - 1:
             await asyncio.sleep(_JUDGE_BACKOFF_BASE * (2**attempt))
 
-    # 重试耗尽：明确标记为瞬时故障，交由 runner 的 repair 标记重跑，不污染真实统计
     detail = last_text.strip() or resp.get("error", "unknown")
     return {"correct": False, "reason": f"评判请求失败(瞬时故障, 重试耗尽): status={last_status}, {detail[:120]}"}
 
@@ -174,16 +189,22 @@ def parse_judge_response(text: str) -> Dict[str, Any]:
     return {"correct": False, "reason": f"无法解析评判回复: {text[:200]}"}
 
 
-def simple_string_match(standard_answer: str, agent_answer: str) -> bool:
+def simple_string_match(standard_answer: str | int | float | None, agent_answer: str | int | float | None) -> bool:
     """简单字符串匹配评判（作为 LLM 评判的备选）。
 
     判断标准答案的核心词是否出现在 Agent 回答中（80% 分词命中率）。
     """
+    agent_answer = _judge_text(agent_answer)
+    standard_answer = _judge_text(standard_answer)
     if not agent_answer or agent_answer.startswith("[ERROR]"):
         return False
 
     std_lower = standard_answer.lower().strip()
     agent_lower = agent_answer.lower().strip()
+
+    # 纯数字金标必须整词，避免 3 命中 13 workshops。
+    if std_lower.isdigit() or (std_lower.startswith("-") and std_lower[1:].isdigit()):
+        return re.search(rf"(?<!\d){re.escape(std_lower)}(?!\d)", agent_lower) is not None
 
     if std_lower in agent_lower:
         return True

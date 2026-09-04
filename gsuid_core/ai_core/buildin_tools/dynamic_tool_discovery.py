@@ -236,7 +236,9 @@ async def find_tools(
             msg = _delegation_directive(node_lines)
             return f"{msg}\n{FIND_TOOLS_GAP_NOTE}" if stale_n else msg
 
-        family_tools = await search_tools_by_domain(query=need, domain_limit=3, per_domain_limit=6)
+        family_tools = await search_tools_by_domain(
+            query=need, domain_limit=3, per_domain_limit=6, exclude_names=set(offered)
+        )
         related: list[Any] = []
         for tool in family_tools:
             tb = find_tool_base(tool.name)

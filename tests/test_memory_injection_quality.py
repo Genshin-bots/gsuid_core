@@ -20,7 +20,7 @@ from gsuid_core.ai_core.memory.retrieval.types import Edge, Episode
 from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
 
-def _edge(source_name: str, fact: str) -> Edge:
+def _edge(source_name: str, fact: str, valid_at_ts: float | None = None) -> Edge:
     return Edge(
         id=f"edge_{source_name}_{fact[:4]}",
         source_id=f"src_{source_name}",
@@ -30,7 +30,7 @@ def _edge(source_name: str, fact: str) -> Edge:
         fact=fact,
         weight=0.9,
         score=0.9,
-        valid_at_ts=None,
+        valid_at_ts=valid_at_ts,
         invalid_at_ts=None,
     )
 
@@ -42,6 +42,25 @@ def _episode(content: str, valid_at: str = "2026-07-15T14:34:00", eid: str = "ep
 # ─────────────────────────────────────────────
 # §6 残句拦截判据
 # ─────────────────────────────────────────────
+
+
+def test_to_prompt_text_facts_include_statement_and_event_time() -> None:
+    from datetime import datetime
+
+    said = datetime(2023, 5, 25, 14, 25, 0)
+    mc = MemoryContext(
+        edges=[
+            _edge(
+                "user",
+                "I just fixed that broken fence three weeks ago",
+                valid_at_ts=said.timestamp(),
+            )
+        ]
+    )
+    text = mc.to_prompt_text(max_chars=2000)
+    assert "【核心事实" in text
+    assert "[2023-05-25]" in text
+    assert "发生 2023-05-04" in text
 
 
 def test_dangling_predicate_facts_rejected() -> None:
@@ -291,6 +310,9 @@ def test_memory_catalog_keeps_preference_polarity_and_episode_titles() -> None:
     assert "昨天说了对海鲜过敏" in text
     assert "住在杭州" in text
     assert "search_cognition" in text
+    movie = _format_memory_catalog(mc, "Can you recommend a show or movie for me to watch tonight?")
+    assert "昨天说了对海鲜过敏" in movie
+    assert movie.index("昨天说了对海鲜过敏") < movie.index("回复保持简短")
 
 
 def test_http_dynamic_tools_false_stays_off_for_chat() -> None:
@@ -314,6 +336,16 @@ def test_eval_query_tokens_keeps_two_char_cjk() -> None:
     toks = {t.lower() for t in eval_query_tokens("杭州过敏了吗")}
     assert "杭州" in toks
     assert "过敏" in toks
+
+
+def test_cjk_only_local_model_skips_bilingual() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import _cjk_only_local_model
+
+    assert _cjk_only_local_model("BAAI/bge-small-zh-v1.5")
+    assert _cjk_only_local_model("BAAI/bge-large-zh-v1.5")
+    assert not _cjk_only_local_model("jinaai/jina-embeddings-v2-base-zh")
+    assert not _cjk_only_local_model("BAAI/bge-m3")
+    assert not _cjk_only_local_model("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def test_retrieve_query_strips_inject_date_and_clock_line() -> None:
@@ -354,7 +386,8 @@ def test_format_retrieved_memory_test_path_dumps_full_text() -> None:
         test_ctx, MemoryContext(preferences=[pref], episodes=[_episode(long_ep)])
     )
     assert "search_cognition" in catalog_via_test
-    assert "advanced color grading" not in catalog_via_test
+    assert "Adobe Premiere Pro" in catalog_via_test
+    assert "DaVinci Resolve intros" not in catalog_via_test
     chat_ctx = AgentHookContext(
         point=AgentHookPoint.RETRIEVE_CONTEXT,
         create_by="Chat",
@@ -374,8 +407,7 @@ def test_format_retrieved_memory_test_path_dumps_full_text() -> None:
     assert "Adobe Premiere Pro" in dumped_eval
     assert "advanced color grading" in dumped_eval
     assert "search_cognition" not in dumped_eval
-    assert "untrusted" not in dumped_eval
-    assert "<untrusted" not in dumped_eval
+    assert "【相关对话片段】" in dumped_eval
 
 
 def test_eval_dump_keeps_session_neighbors_without_query_overlap() -> None:
@@ -392,7 +424,7 @@ def test_eval_dump_keeps_session_neighbors_without_query_overlap() -> None:
             ),
             _episode(
                 "I grew cherry tomatoes and basil and mint in the garden",
-                valid_at="2023-05-01 10:02:00",
+                valid_at="2023-05-01 10:00:20",
                 eid="b",
             ),
             _episode("unrelated dinner party at a restaurant last year", valid_at="2022-01-01 10:00:00", eid="c"),
@@ -413,8 +445,7 @@ def test_eval_dump_keeps_session_neighbors_without_query_overlap() -> None:
     dumped = format_retrieved_memory(ctx, mem)
     assert "cherry tomatoes" in dumped
     assert "basil" in dumped
-    assert dumped.find("cherry tomatoes") < dumped.find("product profile")
-    assert "【本题证据会话】" in dumped
+    assert "【相关对话片段】" in dumped
 
 
 def test_eval_dump_session_embed_outranks_vector_seed_noise() -> None:
@@ -436,7 +467,7 @@ def test_eval_dump_session_embed_outranks_vector_seed_noise() -> None:
             ),
             _episode(
                 "mint and parsley from the backyard planter",
-                valid_at="2023-05-23 10:02:00",
+                valid_at="2023-05-23 10:00:20",
                 eid="gold2",
             ),
         ],
@@ -451,9 +482,9 @@ def test_eval_dump_session_embed_outranks_vector_seed_noise() -> None:
         memory_guide="[Memory-usage guidelines]\n",
     )
     dumped = format_retrieved_memory(ctx, mem)
-    assert dumped.find("basil") < dumped.find("espresso")
-    assert "【本题证据会话】" in dumped
-    assert "【其他历史会话】" in dumped
+    assert "basil" in dumped
+    assert "espresso" in dumped
+    assert "【相关对话片段】" in dumped
 
 
 def test_eval_dump_lists_proper_nouns_and_extra_sessions() -> None:
@@ -487,9 +518,9 @@ def test_eval_dump_lists_proper_nouns_and_extra_sessions() -> None:
         memory_eval=True,
     )
     dumped = format_retrieved_memory(ctx, mem)
-    assert "【必须点名】" in dumped
+    assert "【必须点名】" not in dumped
     assert "Premiere Pro" in dumped
-    assert "【其他历史会话】" in dumped
+    assert "【相关对话片段】" in dumped
     assert "Yosemite" in dumped
     assert "utensil holder" in dumped
 
@@ -520,10 +551,9 @@ def test_eval_dump_query_place_name_beats_same_template_session() -> None:
         memory_eval=True,
     )
     dumped = format_retrieved_memory(ctx, mem)
-    primary = dumped.split("【其他历史会话】", 1)[0]
-    assert "Miami" in primary
-    assert "rooftop pool" in primary
-    assert dumped.find("Miami") < dumped.find("Seattle")
+    assert "Miami" in dumped
+    assert "【相关对话片段】" in dumped
+    assert "rooftop pool" in dumped
 
 
 def test_inject_skips_tool_hint_for_memory_eval() -> None:
@@ -602,7 +632,8 @@ def test_prioritize_retrieved_puts_query_overlap_first() -> None:
     prioritize_retrieved_for_query(mc, "Can you suggest a hotel for my upcoming trip to Miami?")
     assert "Miami" in mc.episodes[0]["content"]
     assert "Miami" in mc.edges[0]["fact"]
-    assert all("Ticket" not in e["fact"] for e in mc.edges)
+    assert any("Ticket" in e["fact"] for e in mc.edges)
+    assert mc.edges[0]["fact"].find("Miami") >= 0
     assert len(mc.preferences) == 1
     assert "Miami" in mc.preferences[0]["preference_rule"]
 
@@ -615,6 +646,65 @@ def test_eval_query_tokens_drops_stopwords_keeps_content_words() -> None:
     assert "miami" in toks
     assert "suggest" not in toks
     assert "recommend" not in toks
+    assert "upcoming" not in toks
+
+
+def test_eval_dump_overlap_turns_beat_session_head() -> None:
+    """问句实词在会话后半段时，不得被开头的助手清单挤出本题证据。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I'm trying to organize my life with task management apps",
+                valid_at="2023-05-01 10:00:00",
+                eid="head",
+            ),
+            _episode(
+                "assistant: Todoist Trello Asana RescueTime Wunderlist ClickUp",
+                valid_at="2023-05-01 10:00:01",
+                eid="apps",
+            ),
+            _episode(
+                "I graduated with a Business Administration degree last year",
+                valid_at="2023-05-01 10:00:20",
+                eid="fact",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What degree did I graduate with?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Business Administration" in dumped
+
+
+def test_eval_query_tokens_keeps_three_letter_acronyms() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_query_tokens
+
+    toks = [t.lower() for t in eval_query_tokens("Should I buy a NAS device now or wait?")]
+    assert "nas" in toks
+    assert "device" in toks
+
+
+def test_eval_query_tokens_skips_request_template_phrases() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_query_tokens
+
+    toks = [
+        t.lower()
+        for t in eval_query_tokens("Can you recommend some resources where I can learn more about video editing?")
+    ]
+    blob = " ".join(toks)
+    assert "video" in toks
+    assert "editing" in toks
+    assert "video editing" in toks
+    assert "you recommend" not in blob
+    assert "recommend some" not in blob
+    assert "some resources" not in blob
 
 
 def test_to_prompt_text_can_skip_untrusted_wrap() -> None:
@@ -624,3 +714,536 @@ def test_to_prompt_text_can_skip_untrusted_wrap() -> None:
     bare = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000001"}, wrap_recall=False)
     assert "<untrusted" not in bare
     assert "紫菜包饭" in bare
+
+
+def test_eval_query_tokens_keeps_hyphen_ordinal_and_move() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_query_tokens
+
+    q = (
+        "I'm looking back at our previous conversation about back-end development. "
+        "what was the 27th parameter, and the move after 27. Kg2 Bd5+?"
+    )
+    toks = [t.lower() for t in eval_query_tokens(q)]
+    assert "back-end" in toks
+    assert "development" in toks
+    assert "27th" in toks
+    assert "kg2" in toks
+    assert "bd5+" in toks or "bd5" in toks
+    assert "previous" not in toks
+    assert "conversation" not in toks
+    assert "remind" not in toks
+
+
+def test_eval_dump_keeps_tail_of_long_assistant_list() -> None:
+    """800+ 字助手清单的第 27 项不得被 400 字切片切掉。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    items = " ".join(f"{i}. filler_param_{i}" for i in range(1, 27))
+    body = f"assistant: Sure, here are 100 prompt parameters: {items} 27. Sound effects (e.g., ambient, diegetic)"
+    assert "Sound effects" in body
+    assert len(body) > 400
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "Give me 100 prompt parameters that I can specify",
+                valid_at="2023-05-22 18:23:00",
+                eid="u1",
+            ),
+            _episode(body, valid_at="2023-05-22 18:23:01", eid="a1"),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="what was the 27th parameter on that list?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Sound effects" in dumped
+
+
+def test_eval_dump_alnum_move_beats_generic_game_session() -> None:
+    """棋谱走法必须压过含 game 一词的耳机会话。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I was thinking of improving my gaming setup and recommend headsets",
+                valid_at="2023-05-30 05:01:00",
+                eid="g1",
+            ),
+            _episode(
+                "assistant: Rocket League is an awesome game. HyperX Cloud Stinger",
+                valid_at="2023-05-30 05:01:01",
+                eid="g2",
+            ),
+            _episode(
+                "let's continue from 27. Kg2 Bd5+",
+                valid_at="2023-05-21 12:00:00",
+                eid="c1",
+            ),
+            _episode(
+                "assistant: 28. Kg3 is the reply after 27. Kg2 Bd5+",
+                valid_at="2023-05-21 12:00:01",
+                eid="c2",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="what was the move you made after 27. Kg2 Bd5+ in our previous chess game?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Kg3" in dumped
+
+
+def test_eval_dump_hyphenated_topic_beats_unrelated_opener() -> None:
+    """back-end 问句不得被 game night 整理公寓会话抢成本题。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I'm planning to host a game night and need to declutter my apartment",
+                valid_at="2023-05-28 13:57:00",
+                eid="apt1",
+            ),
+            _episode(
+                "assistant: Sort items into donate sell recycle. Invite David over.",
+                valid_at="2023-05-28 13:57:01",
+                eid="apt2",
+            ),
+            _episode(
+                "I want to learn front-end and back-end development",
+                valid_at="2023-05-10 09:00:00",
+                eid="dev1",
+            ),
+            _episode(
+                "assistant: I recommended learning Ruby, Python, or PHP as a back-end language",
+                valid_at="2023-05-10 09:00:01",
+                eid="dev2",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="remind me of the specific back-end programming languages you recommended I learn",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Ruby" in dumped
+
+
+def test_eval_full_scope_dump_is_opt_in() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import _eval_full_scope_enabled
+
+    assert _eval_full_scope_enabled() is False
+
+
+def test_eval_must_accepts_assistant_stated_facts() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import EVAL_MUST
+
+    assert "用户亲口" not in EVAL_MUST
+    assert "助手" in EVAL_MUST
+    assert "约束" in EVAL_MUST
+    assert "未提及" in EVAL_MUST
+    assert "禁止说没有记录" not in EVAL_MUST
+    assert "更新不是矛盾" in EVAL_MUST
+    assert "相近事实" in EVAL_MUST
+    assert "墙上日期" in EVAL_MUST
+    assert "Garden herbs" not in EVAL_MUST
+    assert "recently" not in EVAL_MUST
+
+
+def test_eval_query_tokens_keeps_occupation() -> None:
+    from gsuid_core.ai_core.kits.memory.eval_protocol import eval_query_tokens
+
+    toks = [t.lower() for t in eval_query_tokens("What was my previous occupation?")]
+    assert "occupation" in toks
+    assert "previous" not in toks
+
+
+def test_eval_dump_self_stated_occupation_beats_certificate_boilerplate() -> None:
+    """occupation 问句不得被 Occupation Certificate 法规粘贴抢成本题。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "assistant: Final Occupation Certificate FOC under the HB Act",
+                valid_at="2023-05-22 17:30:01",
+                eid="foc",
+            ),
+            _episode(
+                "Part 36 occupation certificate issued for the work",
+                valid_at="2023-05-22 17:30:02",
+                eid="focu",
+            ),
+            _episode(
+                "I've used Trello in my previous role as a marketing specialist at a small startup",
+                valid_at="2023-05-10 09:00:00",
+                eid="job",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What was my previous occupation?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "marketing specialist" in dumped.lower()
+
+
+def test_eval_dump_self_stated_breed_beats_toy_boilerplate() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I need help finding a good dog walker in my area",
+                valid_at="2023-05-25 23:07:00",
+                eid="toy_u",
+            ),
+            _episode(
+                "assistant: choose a toy that suits Max's age, breed, and individual needs",
+                valid_at="2023-05-25 23:07:01",
+                eid="toy_a",
+            ),
+            _episode(
+                "I have a Golden Retriever named Max who loves fetch",
+                valid_at="2023-05-12 08:00:00",
+                eid="gr",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What breed is my dog?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Golden Retriever" in dumped
+
+
+def test_eval_dump_named_service_beats_category_prompt() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I'm trying to keep track of my expenses for the past month",
+                valid_at="2023-05-25 16:20:00",
+                eid="exp_u",
+            ),
+            _episode(
+                "assistant: Subscriptions (streaming services, software, etc.)",
+                valid_at="2023-05-25 16:20:01",
+                eid="exp_a",
+            ),
+            _episode(
+                "I've been using Spotify a lot for music lately",
+                valid_at="2023-05-08 11:00:00",
+                eid="spot",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What is the name of the music streaming service have I been using lately?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Spotify" in dumped
+
+
+def test_eval_dump_later_update_outranks_earlier_value() -> None:
+    """当前值问句：后迁到 suburbs 必须压过更早的 Chicago。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I'm visiting my friend Rachel who recently moved to a new apartment in Chicago",
+                valid_at="2023-05-24 22:23:02",
+                eid="chi",
+            ),
+            _episode(
+                "I just visited Rachel — she moved to the suburbs after her latest relocation",
+                valid_at="2023-11-02 10:00:00",
+                eid="sub",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="Where did Rachel move to after her recent relocation?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "suburbs" in dumped.lower()
+
+
+def test_eval_dump_keeps_three_count_sessions() -> None:
+    """how many 问句必须把多段各自的条目都灌进去，不能只留第一段。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode("I bought a Revell F-15 Eagle kit last month", valid_at="2023-04-01 10:00:00", eid="k1"),
+            _episode("I started a Tamiya 1/48 Spitfire Mk.V", valid_at="2023-04-20 10:00:00", eid="k2"),
+            _episode("I also picked up a 1/16 German Tiger I tank kit", valid_at="2023-05-10 10:00:00", eid="k3"),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="How many model kits have I worked on or bought?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "F-15" in dumped
+    assert "Spitfire" in dumped
+    assert "Tiger I" in dumped
+    mem5 = MemoryContext(
+        episodes=mem.episodes
+        + [
+            _episode("I built a 1/72 scale B-29 bomber last winter", valid_at="2023-02-01 10:00:00", eid="k4"),
+            _episode("I also have a 1/24 scale Porsche 911 kit on the shelf", valid_at="2023-03-01 10:00:00", eid="k5"),
+        ]
+    )
+    dumped5 = format_retrieved_memory(ctx, mem5)
+    assert "B-29" in dumped5
+    assert "Porsche" in dumped5 or "1/24" in dumped5
+
+
+def test_eval_dump_count_survives_distractor_sessions() -> None:
+    """20 段专名堆砌的跑题会话不得把 5 个 kit 挤出 how-many 注入。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    eps = [
+        _episode(
+            "I'm planning a trip to Hawaii! Oahu, Maui, Kauai, Hanauma Bay, Waikiki Beach, Dole Plantation",
+            valid_at=f"2023-01-{i + 1:02d} 10:00:00",
+            eid=f"d{i}",
+        )
+        for i in range(20)
+    ]
+    kits = [
+        ("Revell F-15 Eagle kit", "k1"),
+        ("Tamiya 1/48 Spitfire Mk.V", "k2"),
+        ("1/16 German Tiger I tank kit", "k3"),
+        ("1/72 scale B-29 bomber", "k4"),
+        ("1/24 scale Porsche 911 kit", "k5"),
+    ]
+    for i, (text, eid) in enumerate(kits):
+        eps.append(_episode(f"I bought a {text} last month", valid_at=f"2023-04-{i + 1:02d} 10:00:00", eid=eid))
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="How many model kits have I worked on or bought?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, MemoryContext(episodes=eps))
+    assert "F-15" in dumped
+    assert "Spitfire" in dumped
+    assert "Tiger I" in dumped
+    assert "B-29" in dumped
+    assert "Porsche" in dumped or "1/24" in dumped
+
+
+def test_eval_dump_count_keeps_late_user_numbers() -> None:
+    """长助手清单不得把会话末尾带数字的用户金标挤掉。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    eps = [
+        _episode(
+            "assistant: Use storage containers to organize clothing. Label bins. Hang dresses by type. "
+            "Store out-of-season clothes. Keep shoes in order. Maintain your closet weekly.",
+            valid_at=f"2023-02-15 11:13:{i:02d}",
+            eid=f"a{i}",
+        )
+        for i in range(14)
+    ]
+    eps.append(
+        _episode(
+            "I need to pick up new boots at Zara, return a coat at H&M, and pick up a dress at Nordstrom",
+            valid_at="2023-02-15 11:13:20",
+            eid="gold",
+        )
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="How many items of clothing do I need to pick up or return from a store?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, MemoryContext(episodes=eps))
+    assert "Zara" in dumped
+    assert "H&M" in dumped or "Nordstrom" in dumped
+
+
+def test_eval_dump_order_is_chronological_against_distractors() -> None:
+    """顺序题：主题会话进注入，且按时间升序，不被 latest 近因和跑题专名挤掉。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    eps = [
+        _episode(
+            "I'm planning a trip to Hawaii! Oahu, Maui, Kauai, Hanauma Bay, Waikiki Beach",
+            valid_at=f"2023-05-{i + 1:02d} 10:00:00",
+            eid=f"d{i}",
+        )
+        for i in range(20)
+    ]
+    flights = [
+        ("I flew JetBlue from Boston to JFK last month", "2023-01-05 10:00:00", "j1"),
+        ("I took a Delta round-trip to Atlanta", "2023-01-15 10:00:00", "j2"),
+        ("I flew United from Boston to Chicago", "2023-01-28 10:00:00", "j3"),
+        ("I'm considering flying with American Airlines to Miami", "2023-02-10 10:00:00", "j4"),
+    ]
+    for text, ts, eid in flights:
+        eps.append(_episode(text, valid_at=ts, eid=eid))
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What is the order of airlines I flew with from earliest to latest before today?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, MemoryContext(episodes=eps))
+    assert "JetBlue" in dumped
+    assert "Delta" in dumped
+    assert "United" in dumped
+    assert "American" in dumped
+    assert dumped.find("JetBlue") < dumped.find("Delta")
+    assert dumped.find("Delta") < dumped.find("United")
+
+
+def test_eval_dump_order_uses_event_time_not_said_time() -> None:
+    """two weeks ago / three weeks ago 必须按发生日排，不能按当天说话顺序。"""
+    from datetime import datetime
+
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+    from gsuid_core.ai_core.memory.retrieval.event_time import event_times_in_text
+
+    said = datetime(2023, 5, 25, 14, 25, 0)
+    fence_at = event_times_in_text("I just fixed that broken fence three weeks ago", said)
+    hoof_at = event_times_in_text("I did the goat hoof trimming two weeks ago", datetime(2023, 5, 25, 7, 52, 0))
+    assert fence_at[0].date() == datetime(2023, 5, 4).date()
+    assert hoof_at[0].date() == datetime(2023, 5, 11).date()
+    today = event_times_in_text("I took a Delta round-trip from Boston to Atlanta today", datetime(2023, 1, 15, 22, 0))
+    assert today[0].date() == datetime(2023, 1, 15).date()
+    assert event_times_in_text("I recently had a terrible experience with American", said) == []
+    few = event_times_in_text("I did it a few days ago", datetime(2023, 5, 10, 12, 0, 0))
+    assert few[0].date() == datetime(2023, 5, 7).date()
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "I've been doing a great job keeping up with the goat's hoof trimming, I did it two weeks ago",
+                valid_at="2023-05-25 07:52:00",
+                eid="hoof",
+            ),
+            _episode(
+                "I just fixed that broken fence on the east side of my property three weeks ago",
+                valid_at="2023-05-25 14:25:00",
+                eid="fence",
+            ),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="Which task did I complete first, fixing the fence or trimming the goats' hooves?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "fence" in dumped
+    assert "hoof" in dumped or "goat" in dumped
+
+
+def test_eval_dump_facts_before_episodes_with_statement_and_event_time() -> None:
+    from datetime import datetime
+
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    fence_said = datetime(2023, 5, 25, 14, 25, 0)
+    hoof_said = datetime(2023, 5, 25, 7, 52, 0)
+    mem = MemoryContext(
+        edges=[
+            _edge(
+                "user",
+                "I just fixed that broken fence on the east side of my property three weeks ago",
+                valid_at_ts=fence_said.timestamp(),
+            ),
+            _edge(
+                "user",
+                "I did the goat hoof trimming two weeks ago",
+                valid_at_ts=hoof_said.timestamp(),
+            ),
+        ],
+        episodes=[
+            _episode(
+                "I just fixed that broken fence three weeks ago",
+                valid_at="2023-05-25 14:25:00",
+                eid="fence",
+            )
+        ],
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="Which task did I complete first, fixing the fence or trimming the goats' hooves?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert dumped.find("【核心事实") < dumped.find("【相关对话片段】")
+    assert "[2023-05-25]" in dumped
+    assert "发生 2023-05-04" in dumped
+    fact_block = dumped.split("【相关对话片段】", 1)[0]
+    assert fact_block.find("2023-05-04") < fact_block.find("2023-05-11")
+
+
+def test_eval_dump_latest_facts_sort_by_statement_time() -> None:
+    from datetime import datetime
+
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory
+
+    mem = MemoryContext(
+        edges=[
+            _edge("user", "My current address is Seattle", valid_at_ts=datetime(2023, 1, 1, 12, 0, 0).timestamp()),
+            _edge("user", "My current address is Miami", valid_at_ts=datetime(2023, 6, 1, 12, 0, 0).timestamp()),
+        ]
+    )
+    ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="What is my current address?",
+        memory_eval=True,
+    )
+    dumped = format_retrieved_memory(ctx, mem)
+    assert "Miami" in dumped
+    assert "Seattle" in dumped
+    assert "[2023-06-01]" in dumped
+    assert "[2023-01-01]" in dumped

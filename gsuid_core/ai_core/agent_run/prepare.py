@@ -198,6 +198,8 @@ class PreparePhase(RunOnceHost):
             st.run_extra["persona_name"] = self.persona_name
         if st.user_turn_id:
             st.run_extra["user_turn_id"] = st.user_turn_id
+        if self.turn_clock is not None:
+            st.run_extra["turn_clock"] = self.turn_clock.isoformat(sep=" ", timespec="seconds")
         # 框架身份由**类型**判定（is_framework_injection / <control> 信封），
         # 前缀嗅探只作遗留兼容：靠前缀曾漏掉 `（系统校验·内部轮）` 导致控制面穿数据面。
         st.fw_msg = isinstance(st.user_message, str) and (
@@ -372,7 +374,12 @@ class PreparePhase(RunOnceHost):
                 )
                 if _capped != st.limits.request_limit:
                     st.limits = UsageLimits(request_limit=_capped)
-            _hints = interaction_scaffold.scaffold_hints_from_graph(st.tg, cheap=st.cheap)
+            _hints = interaction_scaffold.scaffold_hints_from_graph(
+                st.tg,
+                cheap=st.cheap,
+                speaker_recall=self.dynamic_tools is not False,
+                intent=str(st.intent or ""),
+            )
             # C-2：≥2 且比上轮增加才保留漂移提醒（hints 里可能已有，按计数裁）
             _pushes = st.tg.style_push_count
             if interaction_scaffold.DRIFT_REMINDER in _hints:

@@ -9,6 +9,7 @@ import uuid
 import base64
 import asyncio
 from typing import Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
+from datetime import datetime
 
 import httpx
 from pydantic_ai import Agent
@@ -329,6 +330,8 @@ class GsCoreAIAgent(RunOnceMixin):
         # 五层自动装配（dynamic 能力族）开关：True=每轮装配并与显式 tools 合并；
         # False=永不装配；None=沿用旧门（create_by ∈ _AGENTIC_CREATE_BY 且未传 tools）。
         self.dynamic_tools: Optional[bool] = dynamic_tools
+        # 本轮显式时钟（评测 HTTP clock_at）。生产 WS 为 None，检索回落墙上时钟。
+        self.turn_clock: Optional[datetime] = None
         # 预算归属 scope：(group_id, user_id, bot_id)。ev 缺失的自主入口经 bind_budget_scope
         # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
         self._budget_scope: Optional[Tuple[str, str, str]] = None

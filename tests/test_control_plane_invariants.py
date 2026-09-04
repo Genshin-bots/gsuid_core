@@ -473,6 +473,9 @@ def test_slim_group_pool_carries_control_tools() -> None:
     assert "send_meme" in SLIM_GROUP_CORE_TOOLS
     assert "capability_map" in SLIM_GROUP_CORE_TOOLS
     assert "web_search_tool" not in SLIM_GROUP_CORE_TOOLS
+    assert "add_once_task" in SLIM_GROUP_CORE_TOOLS
+    assert "add_interval_task" in SLIM_GROUP_CORE_TOOLS
+    assert "list_scheduled_tasks" not in SLIM_GROUP_CORE_TOOLS
 
 
 def test_control_tools_are_registered_buildin() -> None:

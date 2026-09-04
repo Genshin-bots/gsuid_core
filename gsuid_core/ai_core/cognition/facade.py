@@ -15,6 +15,7 @@
 import re
 import asyncio
 from typing import Set, Dict, List, Tuple, FrozenSet
+from datetime import datetime
 from dataclasses import replace
 
 from gsuid_core.i18n import t
@@ -29,6 +30,14 @@ from gsuid_core.ai_core.cognition.types import (
     CogKind,
     CogScope,
     CognitiveHit,
+)
+from gsuid_core.ai_core.memory.retrieval.types import Episode
+from gsuid_core.ai_core.memory.retrieval.lexical import (
+    SET_RECALL_HINT,
+    LATEST_WINS_HINT,
+    strip_clock_lines,
+    query_overlaps_text,
+    expand_lexical_recall,
 )
 
 # 一路后端返回的 (排名列表, id→命中) 二元组
@@ -52,8 +61,10 @@ def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
     return "落盘"
 
 
-# 各路头名相对分永远过线；融合名次也要过这道帽，否则知识/落盘/表情头名全标高置信。
+# 各路头名相对分永远过线；知识/落盘/媒体融合名次再收口，避免公共库噪声全标高置信。
+# 记忆片段/事实/偏好不过这条帽——否则「命中 12」只展开 4 条，比纯 Episode dump 更差。
 _HIGH_CONF_FUSED_CAP = 4
+_FUSED_CAP_KINDS = KNOWLEDGE_KINDS | WORK_KINDS | MEDIA_KINDS
 
 
 def _min_score_ratio() -> float:
@@ -93,7 +104,7 @@ def resolve_recall_kinds(
     query: str,
     user_id: str,
 ) -> FrozenSet[CogKind]:
-    """工具未声明 kinds 时的默认面。点名说话人 ID 则只查身上的记忆槽。"""
+    """工具未声明 kinds 时的默认面。点名说话人 ID 则只查身上的记忆（含片段）。"""
     if requested:
         return requested
     if query_mentions_speaker(query, user_id):
@@ -110,7 +121,7 @@ async def search_cognition(
     *,
     kinds: FrozenSet[CogKind],
     scope: CogScope,
-    limit: int = 12,
+    limit: int = 24,
 ) -> List[CognitiveHit]:
     """联邦检索认知层。``kinds`` 与 ``scope`` **必填、无内部兜底**（见 types 模块 docstring）。
 
@@ -123,7 +134,16 @@ async def search_cognition(
     tasks: List[asyncio.Task[_BackendResult]] = []
     labels: List[str] = []
     if kinds & MEMORY_KINDS:
-        tasks.append(asyncio.create_task(_search_memory(query, kinds=kinds, scope=scope, limit=limit)))
+        tasks.append(
+            asyncio.create_task(
+                _search_memory(
+                    query,
+                    kinds=kinds,
+                    scope=scope,
+                    limit=limit,
+                )
+            )
+        )
         labels.append("memory")
     if kinds & KNOWLEDGE_KINDS:
         tasks.append(asyncio.create_task(_search_knowledge_backend(query, scope=scope, limit=limit)))
@@ -154,9 +174,10 @@ async def search_cognition(
     if CogKind.OUTBOUND in kinds:
         tasks.append(asyncio.create_task(_search_outbound(query, scope=scope, limit=limit)))
         labels.append("outbound")
-    # 节点是索引层：原库过期后靠它召回蒸馏结论。
-    tasks.append(asyncio.create_task(_search_nodes(query, kinds=kinds, scope=scope, limit=limit)))
-    labels.append("nodes")
+    # 节点是索引层。说话人/纯记忆面不跑：公共实体节点会把 episode 挤出 RRF。
+    if CogKind.KNOWLEDGE in kinds or CogKind.SELF_NOTE in kinds:
+        tasks.append(asyncio.create_task(_search_nodes(query, kinds=kinds, scope=scope, limit=limit)))
+        labels.append("nodes")
 
     if not tasks:
         return []
@@ -181,18 +202,43 @@ async def search_cognition(
         logger.debug(t("log.ai.cognition_empty", q=query[:40]))
         return []
 
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
-
-    fused_ids = rrf_fuse(ranked_lists, limit=limit)
+    fused_ids = _fuse_ids(ranked_lists, labels, limit=limit)
     ordered = [merged[i] for i in fused_ids if i in merged]
     capped: List[CognitiveHit] = []
     for i, hit in enumerate(ordered):
-        if i >= _HIGH_CONF_FUSED_CAP and hit.high_confidence:
+        if i >= _HIGH_CONF_FUSED_CAP and hit.high_confidence and hit.kind in _FUSED_CAP_KINDS:
             hit = replace(hit, high_confidence=False)
         capped.append(hit)
     final = await _drop_stale_handles(capped)
     logger.debug(t("log.ai.cognition_hits", n=len(final), backends=",".join(labels)))
     return final
+
+
+def _fuse_ids(ranked_lists: List[List[str]], labels: List[str], *, limit: int) -> List[str]:
+    """记忆路先占满 limit，知识/落盘只填剩余。RRF 平权会把公共文插进个人片段名额。"""
+    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
+
+    memory_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab == "memory"]
+    other_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab != "memory"]
+    mem_ids = rrf_fuse(memory_lists, limit=limit) if memory_lists else []
+    other_ids = rrf_fuse(other_lists, limit=limit) if other_lists else []
+    out: List[str] = []
+    seen: Set[str] = set()
+    for rid in mem_ids:
+        if rid in seen:
+            continue
+        seen.add(rid)
+        out.append(rid)
+        if len(out) >= limit:
+            return out
+    for rid in other_ids:
+        if rid in seen:
+            continue
+        seen.add(rid)
+        out.append(rid)
+        if len(out) >= limit:
+            break
+    return out
 
 
 _HANDLE_PREFIXES = ("res_", "aud_", "img_", "to_", "sa_")
@@ -238,6 +284,64 @@ def _artifact_enabled() -> bool:
 # ── 后端 1：记忆 + 偏好（复用双路检索）──
 
 
+def _parse_episode_ts(raw: str) -> datetime | None:
+    s = (raw or "").strip()[:19].replace("T", " ")
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+async def _expand_time_neighbors(
+    episodes: list[Episode],
+    *,
+    seed: int,
+    before: int,
+    after: int,
+    order_by_time: bool,
+) -> list[Episode]:
+    """命中后再取同 scope 时间邻条。计数/顺序题靠邻条拼回会话，不是全库 dump。"""
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+
+    if not episodes or (before <= 0 and after <= 0):
+        return episodes
+    extra: list[Episode] = []
+    seen = {str(ep["id"]) for ep in episodes if "id" in ep}
+    for ep in list(episodes)[: max(1, seed)]:
+        dt = _parse_episode_ts(str(ep["valid_at"]) if "valid_at" in ep else "")
+        scope_key = str(ep["scope_key"]) if "scope_key" in ep else ""
+        if dt is None or not scope_key:
+            continue
+        try:
+            rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=before, after=after)
+        except (TypeError, RuntimeError) as e:
+            # 单测无 async_maker / 库未就绪：保留向量命中，不打断回想
+            logger.debug(t("log.ai.cognition_backend_fail", backend="neighbors", e=e))
+            return episodes
+        for row in rows:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            va = row.valid_at
+            extra.append(
+                Episode(
+                    id=row.id,
+                    content=row.content,
+                    valid_at=va.strftime("%Y-%m-%d %H:%M:%S") if va else "",
+                    scope_key=row.scope_key,
+                    embedding=[],
+                )
+            )
+    merged = list(episodes) + extra
+    if order_by_time:
+        merged = sorted(merged, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    return merged[:40]
+
+
 async def _search_memory(
     query: str,
     *,
@@ -250,12 +354,9 @@ async def _search_memory(
     from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity
     from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve, _fact_mentions_speaker
 
-    search_q = strip_speaker_from_query(query, scope.user_id)
-    top_k = int(memory_config.retrieval_top_k)
-    if scope.memory_eval:
-        from gsuid_core.ai_core.kits.memory.eval_protocol import EVAL_RETRIEVAL_TOP_K
-
-        top_k = max(top_k, EVAL_RETRIEVAL_TOP_K)
+    stripped_speaker = strip_speaker_from_query(query, scope.user_id)
+    search_q = strip_clock_lines(stripped_speaker) or stripped_speaker
+    top_k = max(int(memory_config.retrieval_top_k), limit)
     ctx = await dual_route_retrieve(
         query=search_q,
         user_id=scope.user_id,
@@ -269,10 +370,22 @@ async def _search_memory(
         bot_self_id=scope.bot_self_id,
         include_self=True,
     )
-    if scope.memory_eval:
-        from gsuid_core.ai_core.kits.memory.eval_protocol import boost_retrieved_memory
-
-        await boost_retrieved_memory(ctx, search_q, scope.user_id, scope.group_id)
+    if CogKind.EPISODE in kinds:
+        if ctx.episodes:
+            ctx.episodes = await _expand_time_neighbors(
+                ctx.episodes,
+                seed=6,
+                before=4,
+                after=4,
+                order_by_time=False,
+            )
+        ctx.episodes = await expand_lexical_recall(
+            ctx.episodes,
+            query=search_q,
+            user_id=scope.user_id,
+            group_id=scope.group_id,
+            clock=scope.clock_at,
+        )
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
     speaker_ids = {scope.user_id} if scope.user_id else set()
@@ -288,6 +401,8 @@ async def _search_memory(
         for i, pref in enumerate(ctx.preferences):
             rule = str(pref["preference_rule"]) if "preference_rule" in pref else ""
             target = str(pref["target_context"]) if "target_context" in pref else ""
+            if rule and not query_overlaps_text(search_q, rule):
+                continue
             pid = f"pref_{pref['id']}" if "id" in pref else f"pref_{i}"
             _add(
                 CognitiveHit(
@@ -300,22 +415,17 @@ async def _search_memory(
                 )
             )
     if CogKind.EPISODE in kinds:
-        n_ep = len(ctx.episodes)
         for i, ep in enumerate(ctx.episodes):
             content = str(ep["content"]) if "content" in ep else ""
             if not content:
                 continue
-            # Episode TypedDict 无 score；生产保持 0.4 弱相关门槛，评测才用名次顶过下限。
-            ep_score = 0.4
-            if scope.memory_eval:
-                ep_score = 1.0 - (i / max(n_ep - 1, 1)) * 0.35
             _add(
                 CognitiveHit(
                     kind=CogKind.EPISODE,
                     id=f"ep_{ep['id']}" if "id" in ep else f"ep_{i}",
                     title="",
                     summary=content,
-                    score=ep_score,
+                    score=0.8,  # dual_route 已精排；0.4 会被 pref(1.0)×0.55 折成弱相关
                     as_of=str(ep["valid_at"])[:16] if "valid_at" in ep else "",
                     source="memory",
                 )
@@ -335,6 +445,10 @@ async def _search_memory(
                 rest.append(edge)
         for i, edge in enumerate(primary + rest):
             fact = str(edge["fact"]) if "fact" in edge else ""
+            ts = edge["valid_at_ts"] if "valid_at_ts" in edge else None
+            as_of = ""
+            if isinstance(ts, (int, float)) and 0 < ts <= 4_102_444_800:
+                as_of = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
             _add(
                 CognitiveHit(
                     kind=CogKind.FACT,
@@ -342,6 +456,7 @@ async def _search_memory(
                     title=fact,
                     summary="",
                     score=float(edge["score"]) if "score" in edge else 0.6,
+                    as_of=as_of,
                     source="memory",
                 )
             )
@@ -775,7 +890,13 @@ async def inject_memory_slice(
     return memory_text
 
 
-def render_cognition_block(query: str, hits: List[CognitiveHit], *, header: str = "认知检索") -> str:
+def render_cognition_block(
+    query: str,
+    hits: List[CognitiveHit],
+    *,
+    header: str = "认知检索",
+    hint_query: str = "",
+) -> str:
     """把命中渲染成注入块。**空结果只回一行**。
 
     历史上空结果要拼「知识库段 + 落盘段 + 过时声明」三大段，
@@ -784,10 +905,14 @@ def render_cognition_block(query: str, hits: List[CognitiveHit], *, header: str 
     if not hits:
         # 空结果必须带下一步，否则模型会原地编或换说法重搜。
         return (
-            f"【{header}】query={query[:30]!r} 无命中（= 没存过，重搜同样查不到）。"
-            "要外部/实时数据请用 web_search_tool，要专域工具请用 find_tools，都没有就直说不知道。"
+            f"【{header}】query={query[:30]!r} 无命中（本 query 未召回，≠没存过）。"
+            "请换槽位词再 search_cognition；外部用 web_search_tool，专域用 find_tools。"
         )
-    lines = [f"【{header}】query={query[:30]!r} 命中 {len(hits)}"]
+    lines = [f"【{header}】query={(hint_query or query)[:30]!r} 命中 {len(hits)}"]
+    if any(h.as_of for h in hits):
+        lines.append(LATEST_WINS_HINT)
+    if any(h.kind is CogKind.EPISODE for h in hits):
+        lines.append(SET_RECALL_HINT)
     weak_n = 0
     shown = 0
     for hit in hits:

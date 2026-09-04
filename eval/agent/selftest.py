@@ -21,7 +21,10 @@ from eval.agent.harness import (  # noqa: E402
     aggregate,
     score_trace,
     score_case_passk,
+    parse_session_log,
+    pick_user_visible,
     parse_judge_verdict,
+    judge_text_is_transient,
 )
 
 
@@ -223,7 +226,8 @@ def verifier_units():
         "judge None is JUDGE_ERROR",
         "JUDGE_ERROR" in score_trace(T(final="x"), {"judge": {"rubric": "x"}}, judge=lambda p: None)[1][0],
     )
-    from eval.agent.harness import aggregate, parse_session_log, pick_user_visible
+    _assert("404 judge body is transient", judge_text_is_transient("执行出错: status_code: 404, model_name: x"))
+    _assert("404 judge body is not FAIL", parse_judge_verdict("执行出错: status_code: 404 FAIL") is None)
 
     doc = {
         "entries": [

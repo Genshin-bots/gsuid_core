@@ -7,6 +7,7 @@
 
 from enum import Enum
 from typing import Dict, Tuple, Optional, FrozenSet
+from datetime import datetime
 from dataclasses import dataclass
 
 
@@ -54,9 +55,11 @@ MEDIA_KINDS: FrozenSet[CogKind] = frozenset({CogKind.IMAGE, CogKind.MEME})
 ALL_KINDS: FrozenSet[CogKind] = frozenset(CogKind)
 # 工具未声明 kinds 时的默认面：记忆+知识+落盘。图片/表情/出站/业务记录须显式打开。
 DEFAULT_RECALL_KINDS: FrozenSet[CogKind] = MEMORY_KINDS | KNOWLEDGE_KINDS | WORK_KINDS
-# query 点名当前说话人 ID：只查身上的记忆槽（实体/事实/偏好）。
-# 不开放知识库/落盘/近窗；片段须显式 kinds=episode 或默认联邦面，避免 CogKind.EPISODE 误开近窗。
-SPEAKER_RECALL_KINDS: FrozenSet[CogKind] = frozenset({CogKind.ENTITY, CogKind.FACT, CogKind.PREFERENCE})
+# query 点名当前说话人 ID：只查身上的记忆（片段+实体+事实+偏好）。
+# 不开放知识库/落盘/近窗。近窗只在 DEFAULT_RECALL_KINDS ⊆ kinds 时开，加 EPISODE 不会误开。
+SPEAKER_RECALL_KINDS: FrozenSet[CogKind] = frozenset(
+    {CogKind.EPISODE, CogKind.ENTITY, CogKind.FACT, CogKind.PREFERENCE}
+)
 
 
 @dataclass(frozen=True)
@@ -74,8 +77,10 @@ class CogScope:
     # 语义性开关，由调用方从配置显式表态（不在这里给默认真值）
     enable_system2: bool = False
     enable_user_global: bool = True
-    # LongMem 证据转储：抬 top_k、词面补召、片段名次分。默认关，生产/Agent 评测不得打开。
+    # LongMem 证据转储（format_eval_memory）。默认关，生产/Agent 评测不得打开。
     memory_eval: bool = False
+    # 评测 HTTP clock_at。None=检索用墙上时钟；禁止从用户原文解析。
+    clock_at: Optional[datetime] = None
 
     @property
     def is_private(self) -> bool:
@@ -107,7 +112,7 @@ class CognitiveHit:
     def render_line(self, index: int) -> str:
         """单行渲染。空结果只回一行，绝不再拼双段「未找到 + 无匹配 + 长说明」。"""
         # 片段常无 title：旧逻辑只露 40 字，专名被截掉。
-        body_budget = 500 if self.kind is CogKind.EPISODE else 160
+        body_budget = 800 if self.kind is CogKind.EPISODE else 160
         head_src = (self.title or self.summary).replace("\n", " ").strip()
         parts = [f"{index}. [{self.label}] {head_src[:body_budget]}"]
         extra = self.summary.replace("\n", " ").strip() if self.summary and self.title else ""

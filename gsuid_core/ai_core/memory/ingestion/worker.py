@@ -17,7 +17,7 @@ import re
 import time
 import queue as sync_queue
 import asyncio
-from typing import Tuple, Optional, TypedDict
+from typing import Tuple, Optional, Sequence, TypedDict
 from collections import defaultdict
 
 from gsuid_core.i18n import t as i18n_t
@@ -354,6 +354,16 @@ class IngestionWorker:
             return
         self._priority_flush_at[scope_key] = now
         asyncio.create_task(self._priority_flush(scope_key))
+
+    def peek_buffers(self, scope_keys: Sequence[str]) -> list[ObservationRecord]:
+        """只读复制指定 scope 尚未 flush 的记录（不建空桶）。"""
+        wanted = frozenset(scope_keys)
+        out: list[ObservationRecord] = []
+        for key in wanted:
+            if key not in self._buffers:
+                continue
+            out.extend(self._buffers[key])
+        return out
 
     async def _priority_flush(self, scope_key: str):
         """先把队列里待处理记录搬进 buffers（与 _consume_loop 同逻辑，确保刚入队的纠错记录

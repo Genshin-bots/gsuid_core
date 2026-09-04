@@ -833,9 +833,12 @@ WEB_FETCH_CONFIG: Dict[str, GSC] = {
 LOCAL_EMBEDDING_CONFIG: Dict[str, GSC] = {
     "embedding_model_name": GsStrConfig(
         "指定嵌入模型名称",
-        "指定启用的嵌入模型名称",
+        "本地 fastembed 模型。jina-v2-base-zh 中英混合且 8192 token；bge-small-zh 仅中文且 512 token 会截断长片段",
         "BAAI/bge-small-zh-v1.5",
-        options=["BAAI/bge-small-zh-v1.5"],
+        options=[
+            "jinaai/jina-embeddings-v2-base-zh",
+            "BAAI/bge-small-zh-v1.5",
+        ],
     ),
     "embedding_modalities": GsListStrConfig(
         "嵌入模型支持的模态",

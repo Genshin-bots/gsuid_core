@@ -314,7 +314,7 @@ async def run_interactive_turn(
 
     user_messages, guard_flags = await prepare_content_payload(event, quoted_tome=turn_graph.quoted_tome)
     await apply_summary_guard(event, user_messages)
-    stamp_current_time(user_messages)
+    stamp_current_time(user_messages, now=hook_ctx.clock_at)
 
     hook_ctx.assembled_domains = session.get_assembled_capability_domains()
     hook_ctx.priority_speakers = await collect_priority_speakers(

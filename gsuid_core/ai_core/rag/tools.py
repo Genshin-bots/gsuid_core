@@ -299,39 +299,18 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
         await upsert_points_with_backoff(points, _do_upsert_after_recreate, initial_batch_size=bs, log_tag="Tools")
 
 
-# 框架保底工具分类——这些分类下的工具会被无条件全部注入主Agent，
-# 不受向量搜索影响。"保底工具"由工具注册时声明的 category 决定，而非硬编码名单：
-#   - "self"    ：主Agent核心工具（好感度、子Agent、定时任务、消息发送等）
-#   - "buildin" ：框架基础工具（搜索、记忆、自我认知、持久状态 state_* 等）
-#
-# planning（长任务编排 / 产物 / 结构化集合：register_kanban_task、respawn_subtask、
-# fail_task_tree、respond_subtask_approval、artifact_*、record_*）**刻意不再保底**：
-# 这 15 个重型 schema 每轮常驻会显著抬高 Token 并稀释工具选择精度（实测闲聊一句
-# "宝宝下午好"也挂满 15 个规划工具）。改为按持久状态精确召回——
-#   · 有活跃 Kanban 任务      → 状态驱动补「长期任务编排」+「产物」族（见 tool_state_signals）
-#   · 有未完成定时任务        → 状态驱动补「定时任务」族
-#   · 名下有 record:* 集合     → 状态驱动补「结构化记录」族
-#   · 临时起意（记账/建任务/查产物）→ 第 3 层向量检索命中后按能力族整族展开（L4）
-# 既解决 A-1「想调却无工具」（状态驱动让 artifact_get_recent / record_* 在该场景下
-# 必然在列），又避免无关轮次的全量常驻。
-# 插件/核心若要让某个工具进入保底池，只需注册时使用 self / buildin 分类即可。
+# 历史分类名：self/buildin 曾整类进保底。现通道核是 MAIN_AGENT_CORE_TOOLS 名单，
+# 本常量只给注释/诊断对照，装配不再按它全量加载。
 GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
 
-# O-B 白名单：只有框架核心 self 工具才允许进入保底池。
-# 插件滥用 category="self" 会导致保底池膨胀（把一堆业务查询工具注册为 self，
-# 闲聊时也常驻）。此处用函数名白名单兜底，不依赖插件自觉。
-# 不在白名单中的 self 分类工具，降级走向量检索（common/media 路径）。
+# 允许进入通道核的 self 工具。调度整族仍是 self（仅主人格），但不进核、走检索。
+# 插件滥用 category="self" 的不进核；检索按「本轮未暴露」召回，不再按分类一刀切。
 _SELF_CATEGORY_WHITELIST: Set[str] = {
     "send_message_by_ai",
     "send_meme",
+    "record_meme",
     "add_once_task",
     "add_interval_task",
-    "list_scheduled_tasks",
-    "query_scheduled_task",
-    "modify_scheduled_task",
-    "cancel_scheduled_task",
-    "pause_scheduled_task",
-    "resume_scheduled_task",
 }
 
 
@@ -389,6 +368,7 @@ async def search_tools_with_entity_routing(
     threshold: float = 0.38,
     scope_key: str = "",
     ignore_surfaces: Sequence[str] = (),
+    exclude_names: Optional[Set[str]] = None,
 ) -> ToolList:
     """两级召回：实体身份**确定性**定插件，向量检索在插件内做细选（L0）。
 
@@ -409,16 +389,32 @@ async def search_tools_with_entity_routing(
     if not routed and scope_key:
         routed = await _plugins_from_scope_ambiguity(scan, scope_key)
     if not routed:
-        return await search_tools(query=query, limit=limit, non_category=non_category, threshold=threshold)
+        return await search_tools(
+            query=query,
+            limit=limit,
+            non_category=non_category,
+            threshold=threshold,
+            exclude_names=exclude_names,
+        )
 
-    wide = await search_tools(query=query, limit=_ENTITY_ROUTE_RECALL, non_category=non_category, threshold=threshold)
+    wide = await search_tools(
+        query=query,
+        limit=_ENTITY_ROUTE_RECALL,
+        non_category=non_category,
+        threshold=threshold,
+        exclude_names=exclude_names,
+    )
     hits = [t for t in wide if _tool_plugin(t.name) in routed]
 
     # 命中插件一个工具都没进宽召回（被阈值砍掉了）→ 撤掉阈值再捞一次。
     # 插件归属已由实体索引**确定性**确认，不必再让一个按模型标定的语义阈值来否决它。
     if not hits:
         deep = await search_tools(
-            query=query, limit=_ENTITY_ROUTE_DEEP_RECALL, non_category=non_category, threshold=0.0
+            query=query,
+            limit=_ENTITY_ROUTE_DEEP_RECALL,
+            non_category=non_category,
+            threshold=0.0,
+            exclude_names=exclude_names,
         )
         hits = [t for t in deep if _tool_plugin(t.name) in routed]
 
@@ -520,6 +516,7 @@ async def search_tools_by_domain(
     domain_limit: int = 3,
     per_domain_limit: int = 6,
     recall: int = 12,
+    exclude_names: Optional[Set[str]] = None,
 ) -> ToolList:
     """两段式·domain 粒度工具检索（Phase 3a）。
 
@@ -539,7 +536,8 @@ async def search_tools_by_domain(
     """
     from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
 
-    seeds = await search_tools(query=query, limit=recall, non_category=["self", "buildin", "meta"])
+    seeds = await search_tools(query=query, limit=recall, exclude_names=exclude_names)
+    skip = set(exclude_names or set())
 
     out: ToolList = []
     seen_names: Set[str] = set()
@@ -549,6 +547,8 @@ async def search_tools_by_domain(
     for seed in seeds:
         if slots_used >= domain_limit:
             break
+        if seed.name in skip:
+            continue
         tb = find_tool_base(seed.name)
         dom = tb.capability_domain if tb else None
         if dom:
@@ -558,9 +558,10 @@ async def search_tools_by_domain(
             slots_used += 1
             members = get_tools_by_capability_domain(dom)[:per_domain_limit]
             for m in members:
-                if m.name not in seen_names:
-                    seen_names.add(m.name)
-                    out.append(m.tool)
+                if m.name in seen_names or m.name in skip:
+                    continue
+                seen_names.add(m.name)
+                out.append(m.tool)
         else:
             if seed.name in seen_names:
                 continue
@@ -624,52 +625,31 @@ async def get_scope_context_tags(scope_key: str) -> List[str]:
 
 
 async def get_main_agent_tools(query: str = "", exclude_categories: Optional[List[str]] = None) -> ToolList:
-    """获取主Agent的框架保底工具集。
+    """主 Agent 通道核（群/私同一份名单，见 MAIN_AGENT_CORE_TOOLS）。
 
-    `GUARANTEED_TOOL_CATEGORIES`（即 `self` + `buildin` 分类）下的工具
-    **无条件全部加载**，不受向量搜索影响——这些分类就是"框架保底工具池"，
-    覆盖搜索、记忆、自我认知、持久状态、好感度、子Agent、定时任务等基础能力。
-
-    判定一个工具是否为保底工具，完全取决于它注册时声明的 `category`，
-    不再依赖任何硬编码的工具名单。
-
-    `planning` / `by_trigger` / `common` / `media` / `mcp` 等分类的工具不在此函数加载，
-    而是通过状态驱动工具池（见 tool_state_signals）与 `search_tools()` 向量检索按需
-    加载，避免重型规划工具与插件工具膨胀浪费 Token。
+    发现 / 回想 / 委派 / 发送 / 一次性与周期提醒入口常驻。列出/改/删/暂停、
+    web_search、self 信息、命令执行不进核，由本句检索、find_tools、或 L2 补上。
 
     Args:
-        query: 保留参数（保底工具不再依赖 query 筛选），仅作签名兼容。
-        exclude_categories: 可选，按需从保底池再剔除的分类（保留给调用方做进一步精简）。
+        query: 保留参数，仅签名兼容。
+        exclude_categories: 再按注册分类剔除（调用方精简）。
     """
-    all_tools_cag = get_registered_tools()
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.interaction_scaffold import MAIN_AGENT_CORE_TOOLS
+
     result_tools: ToolList = []
-
-    cats = [c for c in GUARANTEED_TOOL_CATEGORIES if not (exclude_categories and c in exclude_categories)]
-    for cat in cats:
-        if cat not in all_tools_cag:
+    seen: Set[str] = set()
+    for name in MAIN_AGENT_CORE_TOOLS:
+        if name in seen:
             continue
-        loaded = 0
-        skipped = 0
-        for tool_base in all_tools_cag[cat].values():
-            # O-B self 白名单：只有框架核心 self 工具才进保底池。
-            # 插件滥用 category="self" 的，降级走向量检索（search_tools 仍会召回）。
-            if cat == "self" and tool_base.name not in _SELF_CATEGORY_WHITELIST:
-                skipped += 1
-                continue
-            result_tools.append(tool_base.tool)
-            loaded += 1
-        if skipped:
-            logger.debug(
-                i18n_t(
-                    "log.rag.tools_fallback_category_cat_2",
-                    cat=cat,
-                    loaded=loaded,
-                    skipped=skipped,
-                )
-            )
-        else:
-            logger.debug(i18n_t("log.rag.tools_fallback_category_cat", cat=cat, loaded=loaded))
-
+        tb = find_tool_base(name)
+        if tb is None:
+            continue
+        if exclude_categories and tb.category in exclude_categories:
+            continue
+        seen.add(name)
+        result_tools.append(tb.tool)
+    logger.debug(i18n_t("log.rag.tools_fallback_category_cat", cat="kernel", loaded=len(result_tools)))
     return result_tools
 
 
@@ -681,6 +661,7 @@ async def search_tools(
     threshold: float = 0.38,
     debug: bool = False,
     rerank: bool = True,
+    exclude_names: Optional[Set[str]] = None,
 ) -> ToolList:
     """根据自然语言意图检索关联工具
 
@@ -695,6 +676,7 @@ async def search_tools(
         limit: 返回结果数量限制，默认为10
         category: 工具分类名称，可选值："buildin"、"default"、"common"、"all"，默认为"all", 也可传入列表
         non_category: 将不会在这个分类中找工具, 优先级比category高，可选值："self"、"buildin"、"common"，默认为空
+        exclude_names: 已暴露给模型的工具名，从候选剔除（核内工具改走检索时用）
         threshold: 相似度分数阈值，只有分数高于该值的工具才会被返回，默认为0.38
         debug: 是否启用调试模式，启用后会记录所有返回工具的分数（无论是否超过阈值），默认为False
         rerank: 是否启用 Reranker 二次精排（默认开）。仅当系统已启用 rerank 功能时实际生效。
@@ -713,6 +695,8 @@ async def search_tools(
     # 接 Reranker 时向量侧要多召回一些候选喂给精排；否则只取 limit 即可。
     do_rerank = rerank and is_enable_rerank()
     recall_limit = max(limit, _RERANK_RECALL_LIMIT) if do_rerank else limit
+    if exclude_names:
+        recall_limit = max(recall_limit, limit + len(exclude_names) + 8)
 
     logger.info(
         i18n_t(
@@ -819,6 +803,11 @@ async def search_tools(
             continue
         for hidden_name in all_tools_cag[hidden_cat]:
             if hidden_name in all_tools_dict:
+                del all_tools_dict[hidden_name]
+
+    if exclude_names:
+        for hidden_name in list(all_tools_dict.keys()):
+            if hidden_name in exclude_names:
                 del all_tools_dict[hidden_name]
 
     # 从 all_tools_dict 中筛选出 tool_names 中的候选（保持向量分数降序）。

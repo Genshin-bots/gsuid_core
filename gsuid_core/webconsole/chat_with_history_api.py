@@ -62,6 +62,7 @@ class ChatWithHistoryRequest(BaseModel):
     rel_score: Optional[int] = None
     as_judge: bool = False  # 评测判分：跳过人设/脚手架/工具，只出 PASS/FAIL
     memory_eval: bool = False  # LongMem：灌证据会话、跳过 800 字帽、禁工具指令
+    clock_at: Optional[str] = None  # 评测墙上「今天」；整字段，禁止从 message 解析
 
 
 def http_dynamic_tools(*, as_judge: bool, enable_tools: bool) -> bool:
@@ -69,36 +70,30 @@ def http_dynamic_tools(*, as_judge: bool, enable_tools: bool) -> bool:
     return False if as_judge else bool(enable_tools)
 
 
-# 记忆评测专用：片段带时点，回答须取最新值 / 指出矛盾。不进生产 system。
+# 记忆评测专用：通用时间戳规则。不进生产 system，不含题型金标提示。
 _MEMORY_EVAL_GUIDE = (
     "[Memory-usage guidelines] The fragments below are timestamped. When answering:\n"
-    "1) For a question about a CURRENT/latest value where the same attribute has several "
-    "values over time, the user UPDATED it — answer with the MOST RECENT value; don't list "
-    "the historical ones. (This applies to a single attribute, NOT to summing/combining "
-    "figures from different projects/sources — there, use each source's relevant figure. "
-    "When summing, first check whether one figure is ALREADY a combined total covering the "
-    "others; if so report that total instead of double-counting.)\n"
-    "2) If the user made directly CONTRADICTORY statements (e.g. 'I always do X' vs 'I never "
-    "do X'), explicitly state that there is contradictory information and ask them to "
-    "clarify; do NOT silently pick one or downplay it as an exception.\n"
+    "1) For a CURRENT/latest value of the SAME attribute, later timestamps are UPDATES — "
+    "answer with the most recent; do not list older values or ask which is correct. "
+    "Do not double-count a figure that is already a combined total.\n"
+    "2) Different timestamps of the SAME attribute are UPDATES, not contradictions. "
+    "Only call it contradictory when two claims cannot be ordered as an update.\n"
     "3) Quote the exact number/version/date/price from the fragments; don't paraphrase.\n"
-    "3b) Dates on 【核心事实】 lines and timestamps on 【本题证据会话】 / 【其他历史会话】 "
-    "are both STATEMENT times (when the user actually said it). Use them directly to "
-    "decide which value is 'latest'; when a fact line and a conversation block disagree "
-    "about the same attribute, prefer the source with the later statement time.\n"
-    "4) If a 【本题证据会话】 block is present, answer FROM it even when wording differs "
-    "(garden herbs count as homegrown ingredients; a named product counts as the preference). "
-    "Only say there is no information when that evidence block is missing entirely.\n"
-    "5) Do not infer a PERSON's background, qualifications or role solely from the "
-    "assistant's own past suggestions/praise (e.g. 'choose experienced reviewers like X' "
-    "does not establish X's expertise); for such personal attributes require an explicit "
-    "user statement, otherwise say the information is not available. All other content "
-    "(plans, numbers, task details) counts as evidence regardless of speaker.\n"
-    "6) When the user asks HOW to do a task (structure a calculation, write code, plan "
-    "something), ground your answer in THEIR remembered specifics — their actual providers, "
-    "prices, versions, latency/throughput targets from the fragments — as the working values, "
-    "instead of inventing placeholder numbers or generic examples.\n"
+    "3b) 【核心事实】 timestamps are statement time (when said); [发生 YYYY-MM-DD] is event "
+    "time. Current/latest values use the later statement time; event order uses event time.\n"
+    "4) Prefer 【核心事实】 for current attributes; use 【相关对话片段】 for what was "
+    "said/listed. If the question asks what was recommended/listed/said, use assistant "
+    "turns; for a personal fact about the user, use user turns.\n"
+    "5) Do not infer a person's qualifications solely from the assistant's past praise; "
+    "require an explicit user statement.\n"
+    "6) When the user asks HOW to do a task, ground the answer in remembered specifics "
+    "from the fragments instead of inventing placeholders.\n"
     "7) Reply in the same language as the user's question.\n"
+    "8) Use evidence from ALL injected facts and fragments; do not stop after the first block.\n"
+    "9) If an asked constraint is absent from the fragments, say it is not mentioned — "
+    "do not substitute a nearby fact.\n"
+    "10) Relative phrases (how many days/weeks ago, last Friday) are relative to "
+    "the injected clock_at / [当前时间] stamp, not the real-world calendar.\n"
 )
 
 
@@ -149,6 +144,11 @@ async def chatWithHistory(
     if _enable_observer:
         await _ingest_request_history(req, user_id, group_id, bot_id)
 
+    _create_by = "EvalJudge" if req.as_judge else "Chat"
+    _memory_eval = (not req.as_judge) and bool(req.memory_eval)
+    from gsuid_core.ai_core.turn_pipeline import parse_clock_at, injected_clock_date_label
+
+    clock = parse_clock_at(req.clock_at)
     _sys_prompt = "你是一个智能助手，请根据对话历史回答用户的问题。"
     if req.as_judge:
         _sys_prompt = (
@@ -161,8 +161,9 @@ async def chatWithHistory(
         from gsuid_core.ai_core.persona.persona import Persona
         from gsuid_core.ai_core.context_assembly import build_session_system_prompt
 
+        clock_date = injected_clock_date_label(clock) if clock is not None else None
         if Persona(persona_name).exists() or persona_name == "智能助手":
-            _sys_prompt = await build_session_system_prompt(event, persona_name)
+            _sys_prompt = await build_session_system_prompt(event, persona_name, clock_date=clock_date)
         else:
             logger.warning(
                 t(
@@ -170,20 +171,18 @@ async def chatWithHistory(
                     persona_name=persona_name,
                 )
             )
-
-    _create_by = "EvalJudge" if req.as_judge else "Chat"
-    _memory_eval = (not req.as_judge) and bool(req.memory_eval)
     agent = create_agent(
         system_prompt=_sys_prompt,
         persona_name=persona_name,
         create_by=_create_by,
         max_history=0 if req.as_judge else req.max_history,
-        max_iterations=1 if req.as_judge else None,
+        max_iterations=4 if req.as_judge else None,
         task_level="low" if req.as_judge else "high",
         session_id=(f"judge_{user_id}" if req.as_judge else f"test_{user_id}_{uuid.uuid4().hex[:8]}"),
         dynamic_tools=http_dynamic_tools(as_judge=req.as_judge, enable_tools=req.enable_tools),
         wall_clock_budget=60.0 if req.as_judge else None,
     )
+    agent.turn_clock = clock
     if not req.as_judge:
         _load_request_history(agent, req.history, _guard_on)
 
@@ -199,6 +198,7 @@ async def chatWithHistory(
         persona_name=persona_name,
         memory_guide=_MEMORY_EVAL_GUIDE if _memory_eval else "",
         memory_eval=_memory_eval,
+        clock_at=clock,
     )
     if req.enable_system2 is not None:
         hook_ctx.enable_system2 = bool(req.enable_system2)

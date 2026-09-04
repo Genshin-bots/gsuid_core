@@ -99,7 +99,7 @@ async def fire_stable_context_hooks(event: Event, persona_name: str = "") -> str
     return "\n\n".join(parts)
 
 
-async def build_session_system_prompt(event: Event, persona_name: str) -> str:
+async def build_session_system_prompt(event: Event, persona_name: str, *, clock_date: str | None = None) -> str:
     """session 级 system prompt 的唯一装配点：persona + 群简介 + 稳定前缀。
 
     ai_router 的建会话与 TTL 刷新、评测端点共用；两处此前各写一份已漂移过（F9/§5.3）。
@@ -107,6 +107,8 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
     再进 system prompt 就是同一信息双写、且最多滞后一个 TTL 与每轮值互相矛盾；更关键的是
     mood 常变会让 TTL 刷新必然产出不同的 system prompt 白白打掉 provider 前缀缓存——
     不含 mood 时画像/自述未变的刷新产出逐字节相同的串，缓存自然保持。
+    ``clock_date`` 只许评测 HTTP 显式传入（``clock_at`` 字段）；生产 WS 不传。
+    禁止从用户原文解析（§1.7：动态日进 TTL=inf 的 system 会打掉前缀缓存）。
     """
     from gsuid_core.ai_core.persona import build_persona_prompt
     from gsuid_core.ai_core.persona.group_context import get_group_context
@@ -122,6 +124,7 @@ async def build_session_system_prompt(event: Event, persona_name: str) -> str:
         persona_name,
         group_description=group_description or None,
         extra_stable_context=extra_stable_context or None,
+        clock_date=clock_date,
     )
 
 
@@ -191,7 +194,7 @@ async def assemble_dynamic_context(
     if memory_context_text and "memory" not in ctx.retrieved:
         ctx.retrieved["memory"] = memory_context_text.strip()
 
-    _, has_actionable = await compose_dynamic_context(ctx)
+    _, has_actionable = await compose_dynamic_context(ctx, join=False)
     # 内核补齐无人认领的自有块，然后重拼。**不能**只在结果为空时兜底：
     # 总线关闭 / 槽位 off 时调用方传进来的记忆文本会被静默丢掉。
     _ensure_kernel_blocks(ctx)

@@ -225,7 +225,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 |---|---|
 | `persona.py` | `Persona` 主类（懒加载 / 文件路径管理）。 |
 | `processor.py` | **`build_persona_prompt(name, mood_key=None, group_description=None)`**：把 persona md + mood + group_description 组装成 system_prompt。 |
-| `prompts.py` | `SYSTEM_CONSTRAINTS` / `TOOL_ORCHESTRATION_*` / 人设模板；含**对外单一表面**与**进行中任务**纪律。 |
+| `prompts.py` | `SYSTEM_CONSTRAINTS` / `TOOL_ORCHESTRATION_*` / 人设模板；含**对外单一表面**与**长任务/在途**纪律。 |
 | `resource.py` | `load_persona / extract_compact_persona`（Heartbeat 决策阶段用压缩版 persona 节省 token）。 |
 | `mood.py` | 情绪状态机（per `mood_key` 隔离）。 |
 | `config.py` | `persona_config_manager`：每个 persona 一份 config.json，含 `ai_mode / inspect_interval / scope / target_groups / tool_packs / tool_names` 等。 |

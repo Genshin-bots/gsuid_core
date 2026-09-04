@@ -8,7 +8,8 @@ from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, on_agent_
 from gsuid_core.ai_core.kits.base import AgentKit
 from gsuid_core.ai_core.kits.registry import register_agent_kit
 
-# 口吻锚点太长会挤占注意力；system 已有完整约束，这里只钉一下防长会话漂移
+# 口吻锚点太长会挤占注意力；system 已有完整约束，这里只钉一下防长会话漂移。
+# 拼上「口气」后仍须落在 BLOCK_CHAR_BUDGET.voice_anchor（180）内。
 _VOICE_ANCHOR_MAX = 80
 
 

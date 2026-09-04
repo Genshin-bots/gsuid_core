@@ -47,8 +47,8 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
-| `self` | **保底**：无条件加载进主 Agent | `send_message_by_ai`、`send_meme`、定时任务整族（白名单拦插件滥用 `self`） |
-| `buildin` | **保底**：无条件加载进主 Agent | `search_cognition`、`web_search_tool`、`web_fetch_tool`、`get_self_info`、`state_set`/`state_get` |
+| `self` | 仅主 Agent 可执行；**不一定进通道核** | `send_message_by_ai`、`send_meme`；`add_once_task`/`add_interval_task` 钉核，列出/改/删走 L2 或检索（白名单拦插件滥用 `self`） |
+| `buildin` | 可检索；核内只留通道能力 | 核：`search_cognition`、`read_handle`。`web_search_tool` / `get_self_info` / `state_*` 按需 |
 | `common` | 向量检索按需 | `create_subagent`、`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
@@ -56,14 +56,16 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
 | `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`（见 §7.5） |
 
-> **保底池完全由 category 决定，无硬编码名单**。`get_main_agent_tools()` 把 `self`+`buildin`
-> 两个分类全部无条件加载。插件想让某工具成为主 Agent 保底工具，注册时 `category="buildin"`。
+> **通道核是固定名单**（`MAIN_AGENT_CORE_TOOLS`，群/私同一份）：发现、回想、委派、发送、一次性/周期提醒入口。
+> `get_main_agent_tools()` 按该名单装配，不再把整个 `self`+`buildin` 分类铺进 schema。
+> 定时任务仍注册为 `self`（仅主人格可执行）；创建入口钉核，列出/改/删经状态信号 / `find_tools` / 本句检索进入附加池。
 >
 > **安全隔离**：`self` 工具仅主 Agent（防子 Agent 直接操作用户数据）；`default` 工具（文件/
 > 系统命令）仅子 Agent。改 category 等于改安全边界，谨慎。
 >
-> 主人格 system 的「工具族速览」(`format_capability_family_overview`) 与 `capability_map`
-> 不列 exclusive / `visible_to_capability_only` / media·plugin_dev·default·meta，避免广告调不到的名字。
+> 主人格 system **不**贴工具族速览（避免把插件名写进每个会话的稳定前缀）。
+> `format_capability_family_overview` 只出现在 `find_tools` / `get_self_persona_info` 回执。
+> `capability_map` 与速览都不列 exclusive / `visible_to_capability_only` / media·plugin_dev·default·meta。
 
 ## 7.3 主 Agent 三层工具池（`gs_agent.py::_execute_run`）
 
@@ -71,12 +73,12 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 | 层 | 机制 | 作用 |
 |---|---|---|
-| L1 保底池 | `get_main_agent_tools()`：`self`+`buildin` 无条件加载 | 框架基础能力常驻 |
+| L1 通道核 | `get_main_agent_tools()`：`MAIN_AGENT_CORE_TOOLS`（群/私同一份） | 发现/回想/委派/发送 + 一次性/周期提醒入口；列出/改/删走 L2 或检索 |
 | L2 状态驱动 | `get_state_driven_family_tools()`：按用户持久实体补能力族 | 跨轮追问定时任务/Kanban/record |
 | L3 会话驻留 | `_recent_tool_families`（sticky 3 轮） | 刚用过的族继续常驻数轮 |
-| 语境池 | `get_tools_by_context_tags()` | 群画像标签匹配工具（最多 8 个） |
+| 语境池 | `get_tools_by_context_tags()` | 群画像标签匹配工具（群聊最多 4 个） |
 | L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族（"能建就能改/删"） |
-| L5 上文增强检索 | `_recent_user_texts` 拼进检索 query | "改成后天吧"借上文召回 |
+| L5 本句检索 | 当前句向量召回未暴露工具（含 self/buildin）；省略跟进才拼上文 | 闲聊跳过；工具/问答必搜 |
 
 保底池全保留；语境 + 查询池合并去重后限制附加数量上限（`tool_extra_pool_max`，默认 8）。
 
@@ -115,9 +117,8 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 ```python
 def get_main_agent_tools() -> ToolList:
-    """仅 self + buildin 分类，无条件加载。by_trigger 等不再无条件全载，避免插件膨胀
-    导致 100+ 工具列表浪费 Token 并降低 LLM 选工具准确率。"""
-async def search_tools(query, limit=4, category="all", non_category="", rerank=True) -> ToolList: ...
+    """通道核 MAIN_AGENT_CORE_TOOLS（群/私同一份）。"""
+async def search_tools(query, limit=4, category="all", non_category="", rerank=True, exclude_names=None) -> ToolList: ...
 def get_all_tools() -> Dict[str, ToolBase]: ...          # 平铺所有工具
 def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
 ```
@@ -155,8 +156,7 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
 
 ## 7.4 主 / 子 Agent 工具集差异
 
-- **主 Agent**：保底（`self`+`buildin`）+ 语境 + 查询池（`search_tools(non_category=["self","buildin"])`
-  检索 `by_trigger`/`common`/`media`/`mcp`）。**不调 `default`**。
+- **主 Agent**：通道核 + 语境 + 查询池（`search_tools(exclude_names=核内名)` 检索未暴露工具，含未进核的 self/buildin）。**不调 `default` 专属文件工具作为核**。
 - **子 Agent**（`create_subagent`）：`search_tools(non_category="self")`，加载 `buildin`/`common`/
   `default`。**不调 `self`**。有 `max_iterations=3` 硬限制（防"思考→执行→报错→思考"死循环）。
 

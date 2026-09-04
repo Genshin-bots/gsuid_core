@@ -16,7 +16,6 @@ from gsuid_core.ai_core.kits.registry import register_agent_kit
 class ScaffoldKit(AgentKit):
     def register(self) -> None:
         on_agent_hook(AgentHookPoint.COMPOSE_CONTEXT, priority=170, kit_id=self.kit_id)(self.inject_style)
-        on_agent_hook(AgentHookPoint.AFTER_PREPARE_USER, priority=110, kit_id=self.kit_id)(self.inject_hints)
 
     async def inject_style(self, ctx: AgentHookContext) -> None:
         """闲聊风格 / 事务优先级 / 上一轮资料图标题。
@@ -24,7 +23,10 @@ class ScaffoldKit(AgentKit):
         intent 不可靠：上轮用过工具或有活跃任务时**不压短**，否则会把正在办事的轮次
         压成寒暄短句。
         """
-        if ctx.intent == "闲聊" and not ctx.prev_turn_used_tools and not ctx.has_actionable:
+        tg = ctx.turn_graph
+        is_group = tg is not None and tg.is_group
+        # 私聊建议不是寒暄。群聊闲聊才压短，避免评测/私聊偏好题被 ≤15 字掐死。
+        if is_group and ctx.intent == "闲聊" and not ctx.prev_turn_used_tools and not ctx.has_actionable:
             last_had_tick = False
             history = ctx.gate_history
             if not history and ctx.ev is not None:
@@ -45,7 +47,9 @@ class ScaffoldKit(AgentKit):
                 "chitchat_style",
                 f"（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）{quota}",
             )
-        if ctx.intent in ("工具", "问答"):
+        # 私聊 FULL 一律催工具（分类超时 intent 为空时也要搜）；群聊仅问答/工具。
+        need_tools = (not is_group) or ctx.intent in ("工具", "问答")
+        if need_tools and not ctx.memory_eval:
             ctx.set_context_block(
                 "transaction_priority",
                 "（本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。）",
@@ -53,17 +57,6 @@ class ScaffoldKit(AgentKit):
         if ctx.recent_report_titles:
             titles = "、".join(ctx.recent_report_titles[-3:])
             ctx.set_context_block("report_titles", f"（上一轮资料图：{titles}）")
-
-    async def inject_hints(self, ctx: AgentHookContext) -> None:
-        """C-1/C-2 脚手架提示（省略跟进 / 漂移预算）。TurnGraph 由内核写入 ctx。"""
-        from gsuid_core.ai_core.interaction_scaffold import CheapGate, scaffold_hints_from_graph
-
-        tg = ctx.turn_graph
-        if tg is None:
-            return
-        cheap = CheapGate(ctx.cheap_gate) if ctx.cheap_gate else CheapGate.FULL
-        for hint in scaffold_hints_from_graph(tg, cheap=cheap):
-            ctx.append_user_hint(hint)
 
 
 KIT = register_agent_kit(ScaffoldKit(kit_id="gscore.scaffold", slot="scaffold", display_name="交互脚手架"))

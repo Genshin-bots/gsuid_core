@@ -111,6 +111,14 @@ SPEAKER_RECALL_HINT = (
     "回想不到就问一句，禁止空槽硬查。）"
 )
 
+# 问已有记忆 / 按偏好给建议：必须搜，且 query 带本题主题，不要抄目录干扰标题。
+MEMORY_QA_HINT = (
+    "\n\n（系统提示：这是在问或用已有记忆。必须 search_cognition；"
+    "query 写说话人ID + 问题里的专名/主题 + 偏好或已有做法；目录卡不是全文。"
+    "不要把目录里不相干的标题词拼进 query。作答点名命中里的专名原话，不要用上位词；"
+    "不相干主题不要写进建议。本页未齐时用命中专名再搜。）"
+)
+
 MULTI_SPEAKER_HINT = (
     "\n\n（系统提示：本条混入了多人发言。"
     "只处理明确找你的那一位的请求；旁白/对别人说的话不抢答、不串请求、不把甲的槽位继承给乙。"
@@ -461,18 +469,21 @@ def build_tool_search_query(
     recent_user_texts: Sequence[str] = (),
     context_tags: Sequence[str] = (),
     *,
+    include_recent: bool = False,
     max_chars: int = 800,
 ) -> str:
-    """拼工具向量检索 query：本轮原话 + 近轮用户句 + 群语境标签。
+    """拼工具向量检索 query。默认只用本轮原话，避免「早安+天气」串味漏召。
 
-    增强检索召回，不改 route_text（实体路由仍用本轮原话）。超长截尾保留当前句。
+    include_recent 仅省略跟进时打开：拼近轮用户句 + 群语境标签。超长截尾留当前句。
     """
+    cur = (current or "").strip()
+    if not include_recent:
+        return cur or (current or "")
     parts: list[str] = []
     for t in recent_user_texts[-3:]:
         s = (t or "").strip()
         if s:
             parts.append(s)
-    cur = (current or "").strip()
     if cur:
         parts.append(cur)
     tags = [x.strip() for x in context_tags if x and x.strip()]
@@ -756,7 +767,13 @@ def decide_cheap_gate(
     return CheapGate.FULL
 
 
-def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
+def scaffold_hints_from_graph(
+    tg: TurnGraph,
+    *,
+    cheap: CheapGate,
+    speaker_recall: bool = True,
+    intent: str = "",
+) -> List[str]:
     """由 TurnGraph 生成注入 user 侧的脚手架提示（单一出口）。"""
     hints: list[str] = []
     if tg.address_gated:
@@ -775,31 +792,33 @@ def scaffold_hints_from_graph(tg: TurnGraph, *, cheap: CheapGate) -> List[str]:
         hints.append(MULTI_SPEAKER_HINT)
     if tg.style_push_count >= 2:
         hints.append(DRIFT_REMINDER)
-    if cheap is CheapGate.FULL and (not tg.is_group or tg.call_to_self):
-        hints.append(SPEAKER_RECALL_HINT)
+    if cheap is CheapGate.FULL and (not tg.is_group or tg.call_to_self) and speaker_recall:
+        # 私聊一律记忆接地（分类器常把「给建议」标成工具）。群聊工具仍填槽。
+        if intent == "工具" and tg.is_group:
+            hints.append(SPEAKER_RECALL_HINT)
+        else:
+            hints.append(MEMORY_QA_HINT)
     return hints
 
 
-# 群聊瘦保底：按**通道能力**固定（多模态 / 回想 / 出图 / 调度入口 / 发现），
-# 不按用户话题词扩池。外部检索不钉核，问答轮经 extras append。
-# 已有持久实体的同族管理工具由 L2 状态驱动补，不写进瘦核。
-SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(
-    {
-        "send_message_by_ai",
-        "send_meme",
-        "add_once_task",
-        "add_interval_task",
-        "find_tools",
-        "read_image",
-        "read_handle",  # FileOS 折叠后续读
-        "search_cognition",  # 记忆+偏好+知识+落盘+产物的单一「回想」入口
-        "create_subagent",  # 含 render_agent / research 委派入口
-        # 控制面：纠正信封让模型申辩。check_delegation 不常挂，追问进度时 find_tools 召回。
-        "dispute_directive",
-        "record_meme",
-        "capability_map",
-    }
+# 群/私同一通道核：发现、回想、委派、发送、一次性/周期提醒入口。
+# 列出/改/删/暂停不钉核（L2 有持久任务或本句检索 / find_tools）。
+# web_search 不钉核，问答/工具轮 extras append。
+MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
+    "find_tools",
+    "create_subagent",
+    "capability_map",
+    "send_message_by_ai",
+    "send_meme",
+    "search_cognition",
+    "read_handle",
+    "read_image",
+    "dispute_directive",
+    "record_meme",
+    "add_once_task",
+    "add_interval_task",
 )
+SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(MAIN_AGENT_CORE_TOOLS)
 
 
 # 框架自己的资源句柄 / 装配标注（非业务话题词）

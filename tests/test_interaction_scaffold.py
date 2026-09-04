@@ -107,7 +107,7 @@ def test_multi_speaker_message():
 def test_turn_graph_and_cheap_gate(monkeypatch):
     from gsuid_core.ai_core.configs import ai_config as cfg_mod
     from gsuid_core.ai_core.interaction_scaffold import (
-        QUOTE_TOME_HINT,
+        MEMORY_QA_HINT,
         SPEAKER_RECALL_HINT,
         CheapGate,
         build_turn_graph,
@@ -139,10 +139,101 @@ def test_turn_graph_and_cheap_gate(monkeypatch):
         primary_speaker="u1",
     )
     assert decide_cheap_gate(tg_dm) is CheapGate.FULL
-    assert SPEAKER_RECALL_HINT in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL)
-    assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.LIGHT)
+    assert MEMORY_QA_HINT in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL, intent="工具")
+    assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL, intent="工具")
+    assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.LIGHT, intent="工具")
+    assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(
+        tg_dm, cheap=CheapGate.FULL, speaker_recall=False, intent="工具"
+    )
     assert "说话人ID + 要填的槽" in SPEAKER_RECALL_HINT
     assert "外部题目" in SPEAKER_RECALL_HINT
+
+
+def test_memory_qa_hint_not_speaker_slot():
+    """问已有记忆不得套用「ID+空槽」，否则 how many 进不了集合召回。"""
+    from gsuid_core.ai_core.interaction_scaffold import (
+        MEMORY_QA_HINT,
+        SPEAKER_RECALL_HINT,
+        CheapGate,
+        build_turn_graph,
+        scaffold_hints_from_graph,
+    )
+
+    tg_count = build_turn_graph(
+        "How many projects have I led?",
+        persona_name="评测助手",
+        is_tome=True,
+        user_type="direct",
+        primary_speaker="u1",
+    )
+    hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="问答")
+    assert MEMORY_QA_HINT in hints
+    assert SPEAKER_RECALL_HINT not in hints
+
+    tg_remind = build_turn_graph(
+        "帮我设个提醒",
+        persona_name="评测助手",
+        is_tome=True,
+        user_type="direct",
+        primary_speaker="u1",
+    )
+    tool_hints = scaffold_hints_from_graph(tg_remind, cheap=CheapGate.FULL, intent="工具")
+    assert MEMORY_QA_HINT in tool_hints
+    assert SPEAKER_RECALL_HINT not in tool_hints
+
+    qa_hints = scaffold_hints_from_graph(tg_remind, cheap=CheapGate.FULL, intent="问答")
+    assert MEMORY_QA_HINT in qa_hints
+    assert SPEAKER_RECALL_HINT not in qa_hints
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, speaker_recall=False)
+
+    tg_degree = build_turn_graph(
+        "当前时间：2023/05/30 23:32\n\nWhat degree did I graduate with?",
+        persona_name="评测助手",
+        is_tome=True,
+        user_type="direct",
+        primary_speaker="u1",
+    )
+    dated_hints = scaffold_hints_from_graph(tg_degree, cheap=CheapGate.FULL, intent="问答")
+    assert MEMORY_QA_HINT in dated_hints
+    assert SPEAKER_RECALL_HINT not in dated_hints
+
+    chat_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="闲聊")
+    assert MEMORY_QA_HINT in chat_hints
+    assert SPEAKER_RECALL_HINT not in chat_hints
+
+    empty_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="")
+    assert MEMORY_QA_HINT in empty_hints
+    assert SPEAKER_RECALL_HINT not in empty_hints
+    assert "偏好或已有做法" in MEMORY_QA_HINT
+    assert "不相干的标题词" in MEMORY_QA_HINT
+    assert "专名原话" in MEMORY_QA_HINT
+
+
+def test_turn_graph_group_gates(monkeypatch):
+    from gsuid_core.ai_core.configs import ai_config as cfg_mod
+    from gsuid_core.ai_core.interaction_scaffold import (
+        QUOTE_TOME_HINT,
+        SPEAKER_RECALL_HINT,
+        CheapGate,
+        build_turn_graph,
+        decide_cheap_gate,
+        scaffold_hints_from_graph,
+    )
+
+    real = cfg_mod.ai_config.get_config
+
+    class _Box:
+        def __init__(self, data: object) -> None:
+            self.data = data
+
+    def fake(key: str) -> _Box:
+        if key == "group_lurk_mode":
+            return _Box(False)
+        if key == "group_repeat_body_n":
+            return _Box(99)
+        return real(key)
+
+    monkeypatch.setattr(cfg_mod.ai_config, "get_config", fake)
 
     # 群多人互聊 silence
     tg_chat = build_turn_graph(
@@ -165,6 +256,7 @@ def test_turn_graph_and_cheap_gate(monkeypatch):
     )
     assert tg_at.call_to_self
     assert decide_cheap_gate(tg_at, intent="工具") is CheapGate.FULL
+    assert SPEAKER_RECALL_HINT in scaffold_hints_from_graph(tg_at, cheap=CheapGate.FULL, intent="工具")
     # @ bot 闲聊 → light
     assert decide_cheap_gate(tg_at, intent="闲聊") is CheapGate.LIGHT
 
@@ -393,7 +485,14 @@ def test_group_open_gate():
     )
 
     q = build_tool_search_query("那家店怎么样", ["最近在聊对照资料"], ["信息", "对照"])
-    assert "那家店怎么样" in q and "信息" in q
+    assert q == "那家店怎么样"
+    q_follow = build_tool_search_query(
+        "那家店怎么样",
+        ["最近在聊对照资料"],
+        ["信息", "对照"],
+        include_recent=True,
+    )
+    assert "那家店怎么样" in q_follow and "对照资料" in q_follow and "信息" in q_follow
 
 
 def test_task_management_intent():

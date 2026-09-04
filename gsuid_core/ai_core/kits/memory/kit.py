@@ -38,14 +38,15 @@ _EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤�
 _ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
 # 「短寒暄」的长度上限，与关系温度的 meaningful 判据同源
 _CHITCHAT_SHORT_LEN = 12
-# LongMem inject_date 前缀；剥掉后再检索，避免日期词带偏向量。
-_EVAL_NOW_PREFIX_RE = re.compile(r"^(?:当前时间[：:]\s*[^\n]+\n+)+")
 
 
-def _format_memory_catalog(mem: "MemoryContext") -> str:
+def _format_memory_catalog(mem: "MemoryContext", _query: str = "") -> str:
     """标题目录卡：偏好极性 + episode 标题 + 边摘要，不灌 dual_route 正文。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import query_overlaps_text
+
     lines = ["[记忆目录]"]
     shown = 0
+    cap = 12
 
     def _add(text: str) -> bool:
         nonlocal shown
@@ -53,9 +54,11 @@ def _format_memory_catalog(mem: "MemoryContext") -> str:
         if not body:
             return True
         shown += 1
-        lines.append(f"{shown}. {body[:40]}")
-        return shown < 8
+        lines.append(f"{shown}. {body[:96]}")
+        return shown < cap
 
+    matched_prefs: List[str] = []
+    unmatched_prefs: List[str] = []
     for pref in mem.preferences:
         rule = pref["preference_rule"].replace("\n", " ").strip()
         if not rule:
@@ -65,13 +68,22 @@ def _format_memory_catalog(mem: "MemoryContext") -> str:
         corr = "纠正过" if pref["is_correction"] else ""
         mark = "/".join(part for part in (tag, corr) if part)
         item = f"[{mark}] {rule}" if mark else rule
+        if _query and not query_overlaps_text(_query, rule):
+            unmatched_prefs.append(item)
+        else:
+            matched_prefs.append(item)
+    for item in matched_prefs:
         if not _add(item):
             break
-    if shown < 8:
+    if shown < cap:
         for ep in mem.episodes:
             if not _add(ep["content"]):
                 break
-    if shown < 8:
+    if shown < cap:
+        for item in unmatched_prefs:
+            if not _add(item):
+                break
+    if shown < cap:
         for edge in mem.edges:
             fact = edge["fact"].replace("\n", " ").strip()
             if not fact:
@@ -87,16 +99,16 @@ def _format_memory_catalog(mem: "MemoryContext") -> str:
 def retrieve_query_for_search(query: str) -> str:
     """检索用 query：剥墙钟行和 eval「当前时间」前缀。"""
     from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+    from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
 
-    body = extract_message_body(query)
-    body = _EVAL_NOW_PREFIX_RE.sub("", body).strip()
+    body = strip_clock_lines(extract_message_body(query))
     return body or query.strip()
 
 
 def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
-    """Chat 默认目录卡；仅 ``memory_eval`` 灌完整证据片段（create_by 应是 Chat）。"""
+    """Chat 默认目录卡；``memory_eval`` 用生产 ``to_prompt_text``（同一 dual_route 命中）。"""
     if not ctx.memory_eval:
-        return _format_memory_catalog(mem)
+        return _format_memory_catalog(mem, retrieve_query_for_search(ctx.query))
     from gsuid_core.ai_core.kits.memory.eval_protocol import format_eval_memory
 
     return format_eval_memory(mem, retrieve_query_for_search(ctx.query))
@@ -175,6 +187,7 @@ def cog_scope_from_ctx(ctx: AgentHookContext) -> "CogScope":
         enable_system2=enable_system2,
         enable_user_global=memory_config.enable_user_global_memory,
         memory_eval=ctx.memory_eval,
+        clock_at=ctx.clock_at,
     )
 
 
@@ -202,7 +215,9 @@ class MemoryKit(AgentKit):
     def register(self) -> None:
         on_agent_hook(AgentHookPoint.ON_INBOUND, priority=110, kit_id=self.kit_id, timeout_ms=500)(self.observe)
         on_agent_hook(AgentHookPoint.AFTER_SESSION, priority=150, kit_id=self.kit_id)(self.observe_active_session)
-        on_agent_hook(AgentHookPoint.RETRIEVE_CONTEXT, priority=110, kit_id=self.kit_id)(self.retrieve)
+        on_agent_hook(AgentHookPoint.RETRIEVE_CONTEXT, priority=110, kit_id=self.kit_id, timeout_ms=15_000)(
+            self.retrieve
+        )
         on_agent_hook(AgentHookPoint.COMPOSE_CONTEXT, priority=150, kit_id=self.kit_id)(self.inject)
         on_agent_hook(AgentHookPoint.ON_TOOL_CALL, priority=110, kit_id=self.kit_id)(self.trace_tool)
 
@@ -294,11 +309,7 @@ class MemoryKit(AgentKit):
             domains.update(ctx.assembled_domains)
             pref_contexts = list(domains)
         scope = cog_scope_from_ctx(ctx)
-        top_k = memory_config.retrieval_top_k
-        if ctx.memory_eval:
-            from gsuid_core.ai_core.kits.memory.eval_protocol import EVAL_RETRIEVAL_TOP_K
-
-            top_k = max(int(top_k), EVAL_RETRIEVAL_TOP_K)
+        top_k = int(memory_config.retrieval_top_k)
         mem = await dual_route_retrieve(
             search_q,
             ctx.user_id,
@@ -313,10 +324,22 @@ class MemoryKit(AgentKit):
             include_self=True,
         )
         if ctx.memory_eval:
-            from gsuid_core.ai_core.kits.memory.eval_protocol import boost_retrieved_memory
+            from gsuid_core.ai_core.kits.memory.eval_protocol import (
+                boost_retrieved_memory,
+                _eval_full_scope_enabled,
+            )
 
-            mem.seed_ids = [e["id"] for e in mem.episodes[:12]]
-            await boost_retrieved_memory(mem, search_q, ctx.user_id, ctx.group_id)
+            if _eval_full_scope_enabled():
+                import asyncio
+
+                mem.seed_ids = [e["id"] for e in mem.episodes[:12]]
+                try:
+                    await asyncio.wait_for(
+                        boost_retrieved_memory(mem, search_q, ctx.user_id, ctx.group_id),
+                        timeout=25.0,
+                    )
+                except TimeoutError as e:
+                    logger.warning(t("log.ai.memory_compute_preference_related_fail", e=e))
         text = format_retrieved_memory(ctx, mem)
         if text:
             ctx.stash_retrieved("memory", text)

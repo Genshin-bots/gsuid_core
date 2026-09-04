@@ -70,6 +70,7 @@ async def call_chat_with_history(
     max_history: Optional[int] = None,
     as_judge: Optional[bool] = None,
     memory_eval: Optional[bool] = None,
+    clock_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """调用 ``/api/chat_with_history`` 接口。
 
@@ -117,6 +118,8 @@ async def call_chat_with_history(
         payload["as_judge"] = as_judge
     if memory_eval is not None:
         payload["memory_eval"] = memory_eval
+    if clock_at is not None:
+        payload["clock_at"] = clock_at
 
     try:
         response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)

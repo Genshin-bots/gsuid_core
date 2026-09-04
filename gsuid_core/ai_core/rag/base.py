@@ -3,6 +3,7 @@
 import os
 import json
 import uuid
+import asyncio
 import hashlib
 import zipfile
 import tempfile
@@ -69,6 +70,10 @@ def _get_embedding_hf_repo(model_name: str) -> str:
     if "bge-small-zh-v1.5" in model_name:
         return "Qdrant/bge-small-zh-v1.5"
     return model_name
+
+
+def _hf_cache_dirname(repo_id: str) -> str:
+    return "models--" + repo_id.replace("/", "--")
 
 
 EMBEDDING_HF_REPO: Final[str] = _get_embedding_hf_repo(EMBEDDING_MODEL_NAME)
@@ -489,18 +494,27 @@ def _get_dir_size(path: Path) -> int:
     return total
 
 
-def _is_models_cache_valid() -> bool:
-    """检查模型缓存是否已存在且有效
-
-    通过检查 models--Qdrant--bge-small-zh-v1.5 文件夹是否存在且大小超过 88MB 来判断。
-    """
-    embedding_model_dir = MODELS_CACHE / "models--Qdrant--bge-small-zh-v1.5"
-    if not embedding_model_dir.is_dir():
+def _dir_has_onnx(path: Path) -> bool:
+    if not path.is_dir():
         return False
+    try:
+        for entry in path.rglob("*"):
+            if entry.is_file() and entry.suffix.lower() == ".onnx":
+                return True
+    except OSError:
+        return False
+    return False
 
+
+def _is_models_cache_valid() -> bool:
+    """当前配置的本地嵌入模型是否已在 MODELS_CACHE 里（含 ONNX）。"""
+    model_name = str(local_embedding_config.get_config("embedding_model_name").data)
+    repo = _get_embedding_hf_repo(model_name)
+    embedding_model_dir = MODELS_CACHE / _hf_cache_dirname(repo)
     dir_size = _get_dir_size(embedding_model_dir)
-    min_size = 88 * 1024 * 1024  # 88MB
-    if dir_size < min_size:
+    # bge-small-zh 量化包约 90MB；其它模型只防空目录。
+    min_size = 88 * 1024 * 1024 if "bge-small-zh-v1.5" in repo else 10 * 1024 * 1024
+    if not _dir_has_onnx(embedding_model_dir) or dir_size < min_size:
         logger.info(
             t(
                 "log.rag.embedding_cache_directory_exists",
@@ -514,13 +528,24 @@ def _is_models_cache_valid() -> bool:
     return True
 
 
+def _prefetch_local_embedding_model(model_name: str) -> None:
+    """用 fastembed 拉当前模型的 ONNX，保证 local_files_only 启动能命中缓存。"""
+    from fastembed import TextEmbedding
+
+    TextEmbedding(
+        model_name=model_name,
+        cache_dir=str(MODELS_CACHE),
+        local_files_only=False,
+    )
+
+
 async def pre_download_models():
     """提前下载所有模型到缓存目录
 
     优先从资源库下载zip包并解压，如果失败则回退到HuggingFace下载。
 
     下载三个模型：
-    1. Embedding模型: Qdrant/bge-small-zh-v1.5 -> MODELS_CACHE
+    1. Embedding模型: 当前 local_embedding_config 指定的 fastembed 模型
     2. Sparse模型: Qdrant/bm25 -> MODELS_CACHE
     3. Reranker模型: BAAI/bge-reranker-base -> RERANK_MODELS_CACHE
     """
@@ -531,12 +556,14 @@ async def pre_download_models():
     if _is_models_cache_valid():
         return
 
-    # 优先尝试从资源库下载zip包
-    logger.info(t("log.rag.preferring_download_cache_resource"))
-    resource_ok = await _try_download_from_resource_lib()
-    if resource_ok:
-        logger.success(t("log.rag.resource_hub_cache_download"))
-        return
+    model_name = str(local_embedding_config.get_config("embedding_model_name").data)
+    # 资源包只有默认中文 bge；其它模型必须走 HF / fastembed。
+    if "bge-small-zh-v1.5" in model_name:
+        logger.info(t("log.rag.preferring_download_cache_resource"))
+        resource_ok = await _try_download_from_resource_lib()
+        if resource_ok:
+            logger.success(t("log.rag.resource_hub_cache_download"))
+            return
 
     logger.info(t("log.rag.resource_hub_download_falling"))
 
@@ -550,12 +577,27 @@ async def pre_download_models():
     logger.info(t("log.rag.huggingface_endpoint_set_hf", p0=hf_constants.ENDPOINT))
 
     try:
-        # 下载Embedding模型
-        logger.info(t("log.rag.pre_downloading_embedding_hf", EMBEDDING_HF_REPO=EMBEDDING_HF_REPO))
-        snapshot_download(
-            repo_id=EMBEDDING_HF_REPO,
-            cache_dir=str(MODELS_CACHE),
-        )
+        # 下载Embedding模型。镜像缺文件时回退官方 Hub。
+        embed_repo = _get_embedding_hf_repo(model_name)
+        logger.info(t("log.rag.pre_downloading_embedding_hf", EMBEDDING_HF_REPO=embed_repo))
+        endpoints: list[str] = []
+        for ep in (_get_hf_endpoint(), "https://huggingface.co"):
+            body = ep.strip().rstrip("/")
+            if body and body not in endpoints:
+                endpoints.append(body)
+        last_err: OSError | RuntimeError | ValueError | None = None
+        for ep in endpoints:
+            os.environ["HF_ENDPOINT"] = ep
+            hf_constants.ENDPOINT = ep
+            try:
+                await asyncio.to_thread(_prefetch_local_embedding_model, model_name)
+                last_err = None
+                break
+            except (OSError, RuntimeError, ValueError) as e:
+                last_err = e
+                logger.warning(t("log.rag.pre_download_attempt_load", e=e))
+        if last_err is not None:
+            raise last_err
         logger.info(t("log.rag.embedding_pre_download"))
 
         # 下载Sparse模型

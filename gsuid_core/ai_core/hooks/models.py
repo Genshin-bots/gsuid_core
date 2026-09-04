@@ -7,6 +7,7 @@
 
 from enum import Enum
 from typing import TYPE_CHECKING, Set, Dict, List, Tuple, Union, Callable, Optional, Awaitable
+from datetime import datetime
 from dataclasses import field, dataclass
 
 from gsuid_core.bot import Bot
@@ -73,6 +74,8 @@ class AgentHookContext:
     memory_guide: str = ""
     # LongMem 证据转储 / 禁工具指令；不得用「有 memory_guide」当门。
     memory_eval: bool = False
+    # 本轮显式时钟（评测 HTTP clock_at）。None=墙上时钟。
+    clock_at: Optional[datetime] = None
     relationship: Optional["RelationshipView"] = None
     cheap_gate: str = ""
     prior_user_turns: List[str] = field(default_factory=list)

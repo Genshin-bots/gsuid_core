@@ -4,7 +4,7 @@
 前置条件：rag/base.py 的 init_embedding_model() 必须已执行。
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -12,6 +12,7 @@ from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
 if TYPE_CHECKING:
+    from .observer import ObservationRecord
     from .ingestion.worker import IngestionWorker
 
 # 模块级引用，供 /api/chat_with_history 调用 flush_all()
@@ -106,6 +107,18 @@ def get_ingestion_worker():
     if _ingestion_worker is None:
         logger.warning(t("log.memory.ingestionworker_initialized_make_sure"))
     return _ingestion_worker
+
+
+def get_ingestion_worker_or_none() -> Optional["IngestionWorker"]:
+    """检索/观察热路径用：worker 未启动时返回 None，不打 warning。"""
+    return _ingestion_worker
+
+
+def peek_ingestion_buffers(scope_keys: Sequence[str]) -> list["ObservationRecord"]:
+    """只读复制尚未 flush 的缓冲；worker 未启动则空列表。"""
+    if _ingestion_worker is None:
+        return []
+    return _ingestion_worker.peek_buffers(scope_keys)
 
 
 @on_core_shutdown(priority=20)

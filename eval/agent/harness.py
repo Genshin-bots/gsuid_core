@@ -23,6 +23,27 @@ from dataclasses import field, dataclass
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _VERDICT_TOKEN_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+_JUDGE_TRANSIENT_MARKERS = (
+    "执行出错",
+    "status_code: 404",
+    "connection error",
+    "rate limit",
+    "rate_limit",
+    "too many request",
+    "服务器繁忙",
+    "timed out",
+)
+
+
+def judge_text_is_transient(text: str) -> bool:
+    """判分器正文是瞬时故障（404/限流/静音），不能当 PASS/FAIL。"""
+    s = (text or "").strip()
+    if not s:
+        return True
+    low = s.lower()
+    if low in {"<silence>", "[silence]", "silence", "</silence>", "<silence/>"}:
+        return True
+    return any(m.lower() in low for m in _JUDGE_TRANSIENT_MARKERS)
 
 
 def parse_judge_verdict(text: str) -> bool | None:
@@ -30,7 +51,7 @@ def parse_judge_verdict(text: str) -> bool | None:
 
     取**最后一个**独立 token，避免 rubric 里「拒绝=PASS」被先命中。
     """
-    if not text:
+    if not text or judge_text_is_transient(text):
         return None
     s = _THINK_BLOCK_RE.sub(" ", text)
     s = s.replace("<SILENCE>", " ")

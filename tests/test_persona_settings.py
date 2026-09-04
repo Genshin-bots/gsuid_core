@@ -1,7 +1,12 @@
 """persona.json：称呼与用户可见短句。"""
 
 from gsuid_core.ai_core.utils import sanitize_error_for_user
-from gsuid_core.ai_core.persona.prompts import SYSTEM_CONSTRAINTS
+from gsuid_core.ai_core.persona.prompts import (
+    SYSTEM_CONSTRAINTS,
+    TOOL_ORCHESTRATION_CONSTRAINTS,
+    sayu_persona_prompt,
+)
+from gsuid_core.ai_core.persona.resource import extract_tone_markers
 from gsuid_core.ai_core.persona.settings import (
     DEFAULT_FALLBACK_OOC,
     DEFAULT_MASTER_TITLE,
@@ -11,6 +16,7 @@ from gsuid_core.ai_core.persona.settings import (
     get_master_title,
     get_persona_setting,
 )
+from gsuid_core.ai_core.persona.processor import build_persona_prompt
 
 
 def test_defaults_are_persona_neutral() -> None:
@@ -117,6 +123,16 @@ def test_sanitize_error_reads_persona_setting(tmp_path, monkeypatch) -> None:
 def test_system_constraints_keeps_placeholders() -> None:
     assert "__MASTER_TITLE__" in SYSTEM_CONSTRAINTS
     assert "__MASTERS__" in SYSTEM_CONSTRAINTS
+
+
+def test_shared_system_prompt_is_compact() -> None:
+    assert len(SYSTEM_CONSTRAINTS) <= 1600
+    assert len(TOOL_ORCHESTRATION_CONSTRAINTS) <= 700
+    assert len(sayu_persona_prompt.strip()) <= 2300
+    src = build_persona_prompt.__code__.co_names
+    assert "format_capability_family_overview" not in src
+    markers = extract_tone_markers(sayu_persona_prompt)
+    assert "唔" in markers and "zzz" in markers
 
 
 def test_sanitized_error_texts_survive_persona_cleanup() -> None:

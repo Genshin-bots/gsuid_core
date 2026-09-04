@@ -210,7 +210,7 @@ async def assemble_tools_preview(
         query=body.query,
         route_text=body.query,
         limit=recall,
-        non_category=["self", "buildin"],
+        exclude_names=core_names,
     )
     pool = expand_tools_to_families(seeds, exclude_names=core_names, max_tools=max_extra)
 
@@ -225,6 +225,7 @@ async def assemble_tools_preview(
         "msg": "ok",
         "data": {
             "query": body.query,
+            "core": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in core_tools],
             "seeds": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in seeds],
             "pool": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in pool],
             "core_pool_size": len(core_names),

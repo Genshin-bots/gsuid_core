@@ -1,4 +1,4 @@
-"""LongMemEval 证据转储：词面补召 / 邻条 / 会话重排 / 注入。
+"""LongMemEval：默认生产 dual_route + to_prompt_text；全 scope dump 仅诊断开关。
 
 生产 ``MemoryKit`` 只保留目录卡。本模块仅在 ``memory_eval`` 时被懒加载。
 评测 ``create_by`` 必须是 Chat：TEST 会改装配/闸门，分数不能代表生产。
@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import math
 from typing import TYPE_CHECKING
@@ -13,21 +14,30 @@ from datetime import datetime, timezone
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.memory.retrieval.lexical import (
+    query_tokens as eval_query_tokens,
+    token_in_text as _token_in_text,
+    memory_scope_key as eval_memory_scope_key,
+)
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Episode
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
-_OVERLAP_TOKEN_RE = re.compile(r"[A-Za-z]{4,}|[0-9]{3,}|[一-鿿]{2,}")
-# 只灌检索命中的会话。预算给 2～4 段证据，避免整库倒进 prompt。
-EVAL_MEMORY_INJECT_CHARS = 24_000
-EVAL_RETRIEVAL_TOP_K = 40
-_EVAL_MAX_SESSIONS = 4
+# 评测禁工具，不能再调 search_cognition；预算须装下 dual_route 的 top_k 命中，不是 haystack。
+EVAL_MEMORY_INJECT_CHARS = 8_000
+# LME 会话内 turn 间隔 1s；>45s 视为下一条 haystack 会话。
+_EVAL_SESSION_GAP_SEC = 45
+_EVAL_EMBED_SESSIONS = 48
 
 EVAL_MUST = (
-    "（系统：先根据【本题证据会话】作答；若它和问题主题明显不符，必须改用【其他历史会话】里主题匹配的那一段。"
-    "必须点名所用会话里的专名（产品/宠物/地点/既有方案）；禁止通用清单；"
-    "禁止推荐会话里没出现的替代品；禁止说没有记录；禁止再问用户已经说过的内容；禁止调用任何工具。）"
+    "（系统：根据注入的【核心事实】与【相关对话片段】作答。"
+    "数字、日期、专名以片段原文为准，不要改写或编造。"
+    "问当时推荐/列出/说过什么时以助手原句为准；问用户自身事实时以用户原句为准。"
+    "同一属性在不同时间戳上的多个值是更新不是矛盾，只答最晚一条。"
+    "问几天前/上周时，以注入的 clock_at / [当前时间] 为今天，禁止用墙上日期。"
+    "问题约束在注入里找不到时答未提及，禁止用相近事实顶替。"
+    "禁止调用任何工具。）"
 )
 
 
@@ -48,284 +58,28 @@ class _EnSessionEmbedder:
 
 
 _EN_EMBEDDER: _EnSessionEmbedder | None = None
-_EVAL_STOPWORDS = frozenset(
-    {
-        "that",
-        "this",
-        "with",
-        "have",
-        "been",
-        "some",
-        "about",
-        "your",
-        "from",
-        "they",
-        "them",
-        "what",
-        "when",
-        "would",
-        "could",
-        "should",
-        "please",
-        "recommend",
-        "suggest",
-        "thinking",
-        "lately",
-        "again",
-        "there",
-        "their",
-        "where",
-        "which",
-        "while",
-        "after",
-        "before",
-        "into",
-        "just",
-        "more",
-        "than",
-        "very",
-        "really",
-        "like",
-        "the",
-        "and",
-        "for",
-        "can",
-        "you",
-        "any",
-        "not",
-        "but",
-        "how",
-        "who",
-        "why",
-        "are",
-        "was",
-        "did",
-        "has",
-        "had",
-        "our",
-        "out",
-        "all",
-        "new",
-        "now",
-        "get",
-        "got",
-        "use",
-        "ingredients",
-        "resources",
-        "activities",
-        "suggestions",
-        "happening",
-        "tonight",
-        "trouble",
-        "inviting",
-        "colleagues",
-        "gathering",
-        "dinner",
-        "serve",
-        "looking",
-        "advice",
-        "ideas",
-        "weekend",
-        "help",
-        "give",
-        "make",
-        "want",
-        "need",
-        "find",
-        "best",
-        "good",
-        "great",
-        "maybe",
-        "also",
-        "still",
-        "even",
-        "only",
-        "much",
-        "many",
-        "other",
-        "another",
-        "something",
-        "anything",
-    }
-)
-_PREF_MARK_RE = re.compile(
-    r"\b(prefer|preference|rather than|instead of|i like|i love|i hate|"
-    r"i always|i never|i want|don't like|dont like|do not like)\b",
-    re.IGNORECASE,
-)
-_PROPER_NOUN_RE = re.compile(r"\b[A-Z][A-Za-z0-9]+(?:[ \-][A-Z][A-Za-z0-9]+){0,3}\b")
-_PROPER_STOP = frozenset(
-    {
-        "The",
-        "This",
-        "That",
-        "These",
-        "Those",
-        "What",
-        "When",
-        "Where",
-        "Which",
-        "Your",
-        "You",
-        "Can",
-        "Could",
-        "Would",
-        "Should",
-        "Please",
-        "Thanks",
-        "Hello",
-        "I",
-        "We",
-        "They",
-        "And",
-        "But",
-        "For",
-        "With",
-        "From",
-        "Assistant",
-        "User",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-        "Sunday",
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-        "How",
-        "Who",
-        "Why",
-        "Not",
-        "Any",
-        "Some",
-        "Have",
-        "Has",
-        "Had",
-        "Will",
-        "Just",
-        "Also",
-        "Very",
-        "Really",
-        "About",
-        "After",
-        "Before",
-        "Here",
-        "There",
-        "Yes",
-        "Great",
-        "Sure",
-        "Now",
-        "Keep",
-        "Aim",
-        "Avoid",
-        "Stick",
-        "Online",
-        "Then",
-        "Once",
-        "Always",
-        "Never",
-        "Still",
-        "Even",
-        "Only",
-        "Since",
-        "While",
-        "During",
-        "Using",
-        "Make",
-        "Take",
-        "Give",
-        "Find",
-        "Help",
-        "Need",
-        "Want",
-        "Look",
-        "Check",
-        "Start",
-        "Try",
-        "Use",
-        "Add",
-        "Buy",
-        "Get",
-        "See",
-        "Let",
-        "Put",
-        "Set",
-        "Many",
-        "Some",
-        "Also",
-        "Just",
-        "Like",
-    }
-)
+_SELF_TURN_RE = re.compile(r"\b(i|i'm|i've|i'd|i'll|my|me)\b", re.IGNORECASE)
 
 
 def _overlap_score(text: str, query: str) -> int:
-    """query 词在 text 中命中数。把相关边/片段顶到注入预算前面。"""
-    tokens = {m.group(0).lower() for m in _OVERLAP_TOKEN_RE.finditer(query)}
+    """query 实词在 text 中命中数。把相关边/片段顶到注入预算前面。"""
+    tokens = eval_query_tokens(query)
     if not tokens:
         return 0
     blob = text.lower()
-    return sum(1 for tok in tokens if tok in blob)
-
-
-def eval_query_tokens(query: str) -> list[str]:
-    """评测词面召回用的 token：丢掉停用词，LIKE 特殊字符剥掉。"""
-    out: list[str] = []
-    seen: set[str] = set()
-    for m in _OVERLAP_TOKEN_RE.finditer(query):
-        tok = m.group(0).replace("%", "").replace("_", "").replace("\\", "")
-        pieces = [tok]
-        if not tok.isascii() and len(tok) > 2:
-            pieces = [tok[i : i + 2] for i in range(len(tok) - 1)]
-        for piece in pieces:
-            key = piece.lower()
-            min_len = 3 if piece.isascii() else 2
-            if len(piece) < min_len or key in _EVAL_STOPWORDS or key in seen:
-                continue
-            seen.add(key)
-            out.append(piece)
-            if len(out) >= 8:
-                return out
-    words = [m.group(0) for m in re.finditer(r"[A-Za-z]{3,}", query)]
-    for i in range(len(words) - 1):
-        phrase = f"{words[i]} {words[i + 1]}"
-        if len(phrase) < 8 or phrase.lower() in seen:
-            continue
-        seen.add(phrase.lower())
-        out.append(phrase)
-        if len(out) >= 12:
-            break
-    return out
-
-
-def eval_memory_scope_key(user_id: str, group_id: str | None) -> str:
-    """与 dual_route 一致：群用 group:，私聊才是 user_global:。"""
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-
-    if group_id:
-        return make_scope_key(ScopeType.GROUP, group_id)
-    return make_scope_key(ScopeType.USER_GLOBAL, user_id)
+    return sum(1 for tok in tokens if _token_in_text(tok, blob))
 
 
 def prioritize_retrieved_for_query(mem: "MemoryContext", query: str) -> None:
-    """按 query 词重叠重排；零重叠边/程序性偏好丢掉，避免挤掉本题证据。"""
+    """按 query 词重叠重排。零重叠边仍保留（System-1 向量命中），只沉到后面。"""
     q = query.strip()
     if not q:
         return
     scored_edges = [(_overlap_score(e["fact"] or "", q), e) for e in mem.edges]
     hits = [e for s, e in scored_edges if s > 0]
-    mem.edges = sorted(hits, key=lambda e: _overlap_score(e["fact"] or "", q), reverse=True) if hits else mem.edges
+    rest = [e for s, e in scored_edges if s <= 0]
+    if hits:
+        mem.edges = sorted(hits, key=lambda e: _overlap_score(e["fact"] or "", q), reverse=True) + rest
     mem.episodes = sorted(mem.episodes, key=lambda e: _overlap_score(e["content"] or "", q), reverse=True)
     mem.preferences = [p for p in mem.preferences if _overlap_score(p["preference_rule"] or "", q) > 0]
 
@@ -405,8 +159,25 @@ def _latin_ratio(text: str) -> float:
     return latin / len(letters)
 
 
+def _cjk_only_local_model(name: str) -> bool:
+    """仅中文 bge 会把英文近邻（迈阿密/西雅图）打成一团。"""
+    n = name.lower()
+    if "bge-m3" in n or "multilingual" in n or "jina-embeddings-v2-base-zh" in n:
+        return False
+    return "bge-" in n and "zh" in n
+
+
+def _production_embedder_is_cjk_only() -> bool:
+    from gsuid_core.ai_core.configs.ai_config import ai_config, local_embedding_config
+
+    provider = str(ai_config.get_config("embedding_provider").data)
+    if provider != "local":
+        return False
+    return _cjk_only_local_model(str(local_embedding_config.get_config("embedding_model_name").data))
+
+
 def _embed_english_sync(texts: list[str]) -> list[list[float]]:
-    """评测英文问句专用。生产检索仍走配置里的中文 bge-small-zh，这里不改 Qdrant。"""
+    """仅当生产嵌入仍是中文 bge 时，评测英文会话重排才走这套独立模型。"""
     global _EN_EMBEDDER
     from gsuid_core.ai_core.rag.base import MODELS_CACHE
 
@@ -445,15 +216,25 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def _cluster_user_blob(cluster: list["Episode"], cap: int = 1800) -> str:
+    """用户轮优先，再补助手轮，避免金标只在推荐清单里时向量分瞎打。"""
     parts: list[str] = []
+    delayed: list[str] = []
     used = 0
     for ep in cluster:
         raw = (ep["content"] or "").strip()
         if not raw:
             continue
-        if raw.lower().startswith("assistant:"):
-            continue
         chunk = raw[:500]
+        if raw.lower().startswith("assistant:"):
+            delayed.append(chunk)
+            continue
+        if used + len(chunk) > cap and parts:
+            break
+        parts.append(chunk)
+        used += len(chunk) + 1
+    for chunk in delayed:
+        if used >= cap:
+            break
         if used + len(chunk) > cap and parts:
             break
         parts.append(chunk)
@@ -465,7 +246,7 @@ def _cluster_user_blob(cluster: list["Episode"], cap: int = 1800) -> str:
 
 
 async def _score_sessions_by_embed(mem: "MemoryContext", query: str) -> None:
-    """会话级向量分。英文问句禁止走中文 bge-zh，否则迈阿密和西雅图会被打成近邻。"""
+    """会话级向量分。生产已是双语时走同一套向量；仅中文 bge 才切英文模型。"""
     import asyncio
 
     from gsuid_core.ai_core.kits.memory.kit import retrieve_query_for_search
@@ -474,8 +255,11 @@ async def _score_sessions_by_embed(mem: "MemoryContext", query: str) -> None:
     if not clusters or not query.strip():
         return
     topic = " ".join(eval_query_tokens(query)) or retrieve_query_for_search(query)
-    blobs = [_cluster_user_blob(c, cap=800) for c in clusters]
-    if _latin_ratio(query) >= 0.6:
+    # 只向量化词面分最高的若干会话，避免 H05 超时把整次检索取消。
+    ranked = sorted(clusters, key=lambda c: _cluster_query_score(c, query, mem.episodes), reverse=True)
+    to_embed = ranked[:_EVAL_EMBED_SESSIONS]
+    blobs = [_cluster_user_blob(c, cap=600) for c in to_embed]
+    if _latin_ratio(query) >= 0.6 and _production_embedder_is_cjk_only():
         vecs = await asyncio.to_thread(_embed_english_sync, [topic] + blobs)
         qv = vecs[0]
         rest = vecs[1:]
@@ -485,7 +269,7 @@ async def _score_sessions_by_embed(mem: "MemoryContext", query: str) -> None:
         qv = await embed_query(topic)
         rest = await _embed_batch_async(blobs)
     scores: dict[str, float] = {}
-    for cluster, vec in zip(clusters, rest):
+    for cluster, vec in zip(to_embed, rest):
         cos = _cosine(qv, list(vec) if vec else []) if vec else 0.0
         for ep in cluster:
             scores[ep["id"]] = cos
@@ -525,17 +309,55 @@ async def _expand_episode_neighbors(mem: "MemoryContext", user_id: str, group_id
         mem.episodes = mem.episodes + extra
 
 
+async def _replace_with_scope_episodes(mem: "MemoryContext", user_id: str, group_id: str | None = None) -> bool:
+    """评测把本 scope 全部 Episode 拉齐，避免向量 top-k 漏掉金标会话。"""
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.types import Episode
+
+    if not user_id:
+        return False
+    scope_key = eval_memory_scope_key(user_id, group_id)
+    rows = await AIMemEpisode.list_by_scope(scope_key, limit=2000)
+    if not rows:
+        return False
+    eps: list[Episode] = []
+    for row in rows:
+        va = row.valid_at
+        eps.append(
+            Episode(
+                id=row.id,
+                content=row.content,
+                valid_at=va.strftime("%Y-%m-%d %H:%M:%S") if va else "",
+                scope_key=row.scope_key,
+                embedding=[],
+            )
+        )
+    mem.episodes = eps
+    return True
+
+
+def _eval_full_scope_enabled() -> bool:
+    """诊断开关：默认关。打开后才把本 scope 全部 Episode 拉齐再重排。"""
+    if "GSUID_EVAL_MEMORY_FULL_SCOPE" not in os.environ:
+        return False
+    return os.environ["GSUID_EVAL_MEMORY_FULL_SCOPE"].strip().lower() in {"1", "true", "yes"}
+
+
 async def boost_retrieved_memory(mem: "MemoryContext", query: str, user_id: str, group_id: str | None = None) -> None:
-    """词面补召 + 邻条 + 会话重排。调用方须已判定 memory_eval。"""
-    await _lexical_boost_eval_memory(mem, query, user_id, group_id)
-    await _expand_episode_neighbors(mem, user_id, group_id)
+    """检索后再词面补召 + 邻条。全 scope dump 仅 ``GSUID_EVAL_MEMORY_FULL_SCOPE``。"""
+    loaded = False
+    if _eval_full_scope_enabled():
+        loaded = await _replace_with_scope_episodes(mem, user_id, group_id)
+    if not loaded:
+        await _lexical_boost_eval_memory(mem, query, user_id, group_id)
+        await _expand_episode_neighbors(mem, user_id, group_id)
     try:
         await _score_sessions_by_embed(mem, query)
     except (OSError, RuntimeError, ValueError) as e:
         logger.warning(t("log.ai.memory_compute_preference_related_fail", e=e))
 
 
-def _cluster_episodes_by_time(eps: list["Episode"], gap_sec: int = 45 * 60) -> list[list["Episode"]]:
+def _cluster_episodes_by_time(eps: list["Episode"], gap_sec: int = _EVAL_SESSION_GAP_SEC) -> list[list["Episode"]]:
     """按发言间隔聚成会话；组内保持时间序。"""
     dated: list[tuple[datetime, "Episode"]] = []
     undated: list["Episode"] = []
@@ -574,155 +396,47 @@ def _cluster_query_score(cluster: list["Episode"], query: str, all_eps: list["Ep
     for ep in all_eps:
         blob = (ep["content"] or "").lower()
         for k in keys:
-            if k in blob:
+            if _token_in_text(k, blob):
                 df[k] += 1
-    blob = " ".join((ep["content"] or "") for ep in cluster).lower()
+    self_parts: list[str] = []
+    other_parts: list[str] = []
+    asst_parts: list[str] = []
+    for ep in cluster:
+        raw = (ep["content"] or "").strip()
+        blob_i = raw.lower().replace("’", "'")
+        if raw.lower().startswith("assistant:"):
+            asst_parts.append(blob_i)
+        elif _SELF_TURN_RE.search(blob_i):
+            self_parts.append(blob_i)
+        else:
+            other_parts.append(blob_i)
+    self_blob = " ".join(self_parts)
+    other_blob = " ".join(other_parts)
+    asst_blob = " ".join(asst_parts)
     score = 0.0
     for k in keys:
-        if k not in blob:
+        in_self = _token_in_text(k, self_blob)
+        in_other = _token_in_text(k, other_blob)
+        in_asst = _token_in_text(k, asst_blob)
+        if not (in_self or in_other or in_asst):
             continue
         rare = n / (df[k] + 1)
-        score += rare * max(len(k) - 3, 1)
+        w = min(max(len(k) - 3, 1), 3)
+        if in_self:
+            score += rare * w
+        elif in_other:
+            score += rare * w * 0.4
+        else:
+            score += rare * w * 0.2
     return score
 
 
-def _cluster_embed_score(cluster: list["Episode"], scores: dict[str, float]) -> float:
-    best = 0.0
-    for ep in cluster:
-        eid = ep["id"]
-        if eid in scores and scores[eid] > best:
-            best = scores[eid]
-    return best
-
-
-def _cluster_rank_score(
-    cluster: list["Episode"],
-    query: str,
-    all_eps: list["Episode"],
-    seed_ids: list[str],
-    session_scores: dict[str, float],
-) -> float:
-    """专名/词面优先；向量只做加分。中文 dense 种子条数不得压过金标会话。"""
-    lex = _cluster_query_score(cluster, query, all_eps)
-    embed = _cluster_embed_score(cluster, session_scores)
-    seeds = set(seed_ids)
-    n_seed = sum(1 for ep in cluster if ep["id"] in seeds)
-    density = n_seed / max(len(cluster), 1)
-    blob = " ".join((ep["content"] or "") for ep in cluster)
-    blob_l = blob.lower()
-    pref = 1.2 if _PREF_MARK_RE.search(blob) else 0.0
-    name_hits = 0.0
-    for m in _PROPER_NOUN_RE.finditer(query):
-        name = m.group(0)
-        if name in _PROPER_STOP or len(name) < 3:
-            continue
-        if name.lower() in blob_l:
-            name_hits += 1.0
-    return name_hits * 80.0 + lex * 3.0 + embed * 8.0 + density * 0.4 + pref
-
-
-def _episode_as_turn(content: str) -> str:
-    """把落库片段还原成用户/助手对白，方便模型当『已经聊过』用。"""
-    raw = (content or "").strip()
-    if not raw:
-        return ""
-    low = raw.lower()
-    if low.startswith("assistant:"):
-        return "助手: " + raw.split(":", 1)[1].strip()
-    if ":" in raw[:48]:
-        prefix, rest = raw.split(":", 1)
-        pl = prefix.strip().lower()
-        if pl.startswith("eval_") or pl in ("user", "用户"):
-            return "用户: " + rest.strip()
-    return raw
-
-
-def _extract_session_proper_nouns(cluster: list["Episode"], limit: int = 10) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    blob = " ".join((ep["content"] or "") for ep in cluster)
-    for m in _PROPER_NOUN_RE.finditer(blob):
-        name = m.group(0).strip()
-        key = name.lower()
-        if name in _PROPER_STOP or key in seen or len(name) < 3:
-            continue
-        seen.add(key)
-        out.append(name)
-        if len(out) >= limit:
-            break
-    return out
-
-
 def format_eval_memory(mem: "MemoryContext", query: str) -> str:
-    """评测注入：只灌检索排到的前几段会话，不把整个 haystack 倒进去。"""
-    prioritize_retrieved_for_query(mem, query)
-    seed_ids = list(mem.seed_ids) if mem.seed_ids else [e["id"] for e in mem.episodes[:12]]
-    session_scores = mem.session_scores
-    clusters = _cluster_episodes_by_time(mem.episodes)
-    clusters.sort(
-        key=lambda c: _cluster_rank_score(c, query, mem.episodes, seed_ids, session_scores),
-        reverse=True,
-    )
-    parts: list[str] = []
-    used = 0
-    budget = EVAL_MEMORY_INJECT_CHARS
-    seen: set[str] = set()
+    """评测注入：与生产同一套 ``to_prompt_text``（事实边 + 片段），只放大预算。"""
+    from gsuid_core.ai_core.memory.config import memory_config
 
-    def _take_cluster(cluster: list["Episode"], header: str, cap: int) -> str:
-        nonlocal used
-        lines: list[str] = []
-        for ep in cluster:
-            raw = (ep["content"] or "").strip()
-            if len(raw) < 8:
-                continue
-            key = raw[:80]
-            if key in seen:
-                continue
-            seen.add(key)
-            turn = _episode_as_turn(raw)[:1500]
-            stamp = (ep["valid_at"] or "").strip()
-            line = f"[{stamp}] {turn}" if stamp else turn
-            if lines and used + len(line) > budget:
-                break
-            lines.append(line)
-            used += len(line) + 1
-            if len(lines) >= cap:
-                break
-        if not lines:
-            return ""
-        return header + "\n" + "\n".join(lines)
-
-    dumped = 0
-    for cluster in clusters:
-        if used >= budget or dumped >= _EVAL_MAX_SESSIONS:
-            break
-        if dumped == 0:
-            names = _extract_session_proper_nouns(cluster)
-            if names:
-                tag = "【必须点名】" + "、".join(names)
-                parts.append(tag)
-                used += len(tag) + 1
-            header = "【本题证据会话】"
-            cap = 80
-        else:
-            header = "【其他历史会话】"
-            cap = 40
-        block = _take_cluster(cluster, header, cap)
-        if block:
-            parts.append(block)
-            dumped += 1
-
-    fact_lines: list[str] = []
-    for e in mem.edges:
-        fact = (e["fact"] or "").strip()
-        if not fact or _overlap_score(fact, query) <= 0:
-            continue
-        fact_lines.append(f"• {fact}")
-        if len(fact_lines) >= 4:
-            break
-    if fact_lines:
-        parts.append("【核心事实】\n" + "\n".join(fact_lines))
-    return "\n\n".join(parts)
+    cap = max(int(memory_config.memory_inject_max_chars), EVAL_MEMORY_INJECT_CHARS)
+    return mem.to_prompt_text(max_chars=cap, query=query)
 
 
 def inject_eval_memory_parts(text: str, guide: str) -> list[str]:
