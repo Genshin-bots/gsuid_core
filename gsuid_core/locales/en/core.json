@@ -15,6 +15,7 @@
   "log.core.core_restart_custom_command_start": "[Core Restart] Using custom restart command: {restart_command}",
   "log.core.core_restart_default_command_start": "[Core Restart] Using default restart command: {command}",
   "log.core.core_restart_subscription_found_start": "[Core Restart] No [Core Restart] subscription found, no push messages!",
+  "log.core.core_restart_throttled": "[Core Restart] More than {max_count} restarts within {window_seconds}s, cancelled this restart",
   "log.core.gscore_cache_cleanup": "[GsCore] Cache has been cleared!",
   "log.core.gscore_clear_database_start": "[GsCore] Starting execution [Clear Database]",
   "log.core.gscore_database": "[GsCore] Database has been backed up!",

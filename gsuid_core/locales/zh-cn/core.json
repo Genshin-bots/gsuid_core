@@ -15,6 +15,7 @@
   "log.core.core_restart_custom_command_start": "[Core重启] 使用自定义重启命令: {restart_command}",
   "log.core.core_restart_default_command_start": "[Core重启] 使用默认重启命令: {command}",
   "log.core.core_restart_subscription_found_start": "[Core重启] 没有找到[Core重启]的订阅, 无推送消息！",
+  "log.core.core_restart_throttled": "[Core重启] {window_seconds} 秒内重启超过 {max_count} 次，已取消本次重启",
   "log.core.gscore_cache_cleanup": "[早柚核心] 缓存已清除!",
   "log.core.gscore_clear_database_start": "[早柚核心] 开始执行[清除数据库]",
   "log.core.gscore_database": "[早柚核心] 数据库已备份!",

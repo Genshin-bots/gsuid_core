@@ -15,6 +15,7 @@
   "log.core.core_restart_custom_command_start": "[Core再起動] カスタム再起動コマンドを使用: {restart_command}",
   "log.core.core_restart_default_command_start": "[Core再起動] デフォルト再起動コマンドを使用: {command}",
   "log.core.core_restart_subscription_found_start": "[Core再起動] [Core再起動] の購読が見つからないため、プッシュメッセージを送信しない！",
+  "log.core.core_restart_throttled": "[Core再起動] {window_seconds} 秒以内の再起動が {max_count} 回を超えたため、今回の再起動を取り消した",
   "log.core.gscore_cache_cleanup": "[早柚コア] キャッシュをクリアした！",
   "log.core.gscore_clear_database_start": "[早柚コア] [データベースクリア] を実行開始",
   "log.core.gscore_database": "[早柚コア] データベースをバックアップした！",

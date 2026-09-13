@@ -1,9 +1,11 @@
 import os
+import json
 import time
 import platform
 import subprocess
 from typing import Optional
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -11,6 +13,7 @@ from gsuid_core.models import Event
 from gsuid_core.server import core_shutdown_execute
 from gsuid_core.version import __version__
 from gsuid_core.subscribe import gs_subscribe
+from gsuid_core.data_store import get_res_path
 from gsuid_core.startup_info import core_startup_info
 from gsuid_core.utils.database.models import CoreUser, Subscribe
 from gsuid_core.utils.plugins_update.utils import check_start_tool
@@ -24,8 +27,97 @@ _restart_sh = """#!/bin/bash
 kill -9 {}
 {} &"""
 
+# uv run 用环境变量计递归层数；Popen 默认全量继承，连重启也会被算进去。
+_UV_RECURSION_ENV_KEYS = (
+    "UV_RUN_RECURSION_DEPTH",
+    "UV_INTERNAL__RECURSION_DEPTH",
+)
+RESTART_GUARD_WINDOW_SECONDS = 60.0
+RESTART_GUARD_MAX_IN_WINDOW = 8
 
-def get_restart_command():
+
+def sanitize_restart_env(source_env: Mapping[str, str]) -> dict[str, str]:
+    drop = {key.upper() for key in _UV_RECURSION_ENV_KEYS}
+    return {key: value for key, value in source_env.items() if key.upper() not in drop}
+
+
+def build_restart_shell_command(system: str, pid: int, command: str) -> str:
+    if system == "Linux" or system == "Darwin":
+        return f"kill -9 {pid} ; sleep 1 ; {command}"
+    # Windows: timeout 等待文件锁释放后再拉起
+    return f"taskkill /F /PID {pid} & timeout /t 2 /nobreak > NUL & {command}"
+
+
+def parse_restart_timestamps(raw: str) -> list[float]:
+    data = json.loads(raw)
+    if not isinstance(data, list):
+        return []
+    timestamps: list[float] = []
+    for item in data:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (int, float)):
+            timestamps.append(float(item))
+    return timestamps
+
+
+def filter_restart_timestamps(
+    timestamps: Sequence[float],
+    now: float,
+    window_seconds: float = RESTART_GUARD_WINDOW_SECONDS,
+) -> list[float]:
+    cutoff = now - window_seconds
+    return [ts for ts in timestamps if ts > cutoff]
+
+
+def can_spawn_restart(
+    timestamps: Sequence[float],
+    now: float,
+    *,
+    window_seconds: float = RESTART_GUARD_WINDOW_SECONDS,
+    max_in_window: int = RESTART_GUARD_MAX_IN_WINDOW,
+) -> bool:
+    recent = filter_restart_timestamps(timestamps, now, window_seconds)
+    return len(recent) < max_in_window
+
+
+def restart_guard_path() -> Path:
+    return get_res_path() / "core_restart_guard.json"
+
+
+def record_restart_and_allow(
+    guard_path: Path,
+    now: float,
+    *,
+    window_seconds: float = RESTART_GUARD_WINDOW_SECONDS,
+    max_in_window: int = RESTART_GUARD_MAX_IN_WINDOW,
+) -> bool:
+    timestamps: list[float] = []
+    if guard_path.is_file():
+        try:
+            timestamps = parse_restart_timestamps(guard_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            timestamps = []
+    recent = filter_restart_timestamps(timestamps, now, window_seconds)
+    if len(recent) >= max_in_window:
+        return False
+    recent.append(now)
+    try:
+        guard_path.write_text(json.dumps(recent), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+def _popen_restart_shell(cmdline: str) -> None:
+    subprocess.Popen(
+        cmdline,
+        shell=True,
+        env=sanitize_restart_env(os.environ),
+    )
+
+
+def get_restart_command() -> str:
     is_use_custom_restart_command = core_plugins_config.get_config("is_use_custom_restart_command").data
     if is_use_custom_restart_command:
         restart_command = core_plugins_config.get_config("restart_command").data
@@ -56,6 +148,16 @@ async def restart_genshinuid(
     event: Optional[Event] = None,
     is_send: bool = True,
 ) -> None:
+    if not record_restart_and_allow(restart_guard_path(), time.time()):
+        logger.error(
+            t(
+                "log.core.core_restart_throttled",
+                window_seconds=int(RESTART_GUARD_WINDOW_SECONDS),
+                max_count=RESTART_GUARD_MAX_IN_WINDOW,
+            )
+        )
+        return
+
     pid = os.getpid()
     restart_sh = await get_restart_sh()
     with open(restart_sh_path, "w", encoding="utf8") as f:
@@ -78,24 +180,9 @@ async def restart_genshinuid(
 
     await core_shutdown_execute()
 
-    if platform.system() == "Linux":
-        subprocess.Popen(
-            f"kill -9 {pid} ; sleep 1 ; {get_restart_command()}",
-            shell=True,
-        )
-    elif platform.system() == "Darwin":
-        # macOS (Darwin)
-        subprocess.Popen(
-            f"kill -9 {pid} ; sleep 1 ; {get_restart_command()}",
-            shell=True,
-        )
-    else:
-        # Windows
-        # 加入 timeout /t 2 /nobreak 来等待 2 秒，确保旧进程彻底死亡，文件锁释放
-        subprocess.Popen(
-            f"taskkill /F /PID {pid} & timeout /t 2 /nobreak > NUL & {get_restart_command()}",
-            shell=True,
-        )
+    command = get_restart_command()
+    system = platform.system()
+    _popen_restart_shell(build_restart_shell_command(system, pid, command))
 
 
 async def restart_message():
