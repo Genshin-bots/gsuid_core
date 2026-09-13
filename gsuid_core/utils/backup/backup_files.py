@@ -5,20 +5,60 @@ from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import LOG_PATH, logger
+from gsuid_core.data_store import error_mark_path
 from gsuid_core.utils.plugins_config.gs_config import log_config
 
-CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
+
+def _retention_days() -> int:
+    """Read ScheduledCleanLogDay at call time. 0 / negative = do not clean."""
+    raw = log_config.get_config("ScheduledCleanLogDay").data
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 8
 
 
 def clean_log():
-    day = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 5
+    """Delete daily ``*.log`` and ``error_reports/*.json`` older than retention days.
+
+    Error reports (one JSON per error/critical/exception) live in a subdirectory
+    and were previously never cleaned, so they piled up without bound.
+    """
+    day = _retention_days()
+    if day <= 0:
+        return
+
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=day)).timestamp()
+
     for i in LOG_PATH.glob("*.log"):
         try:
-            if i.stat().st_mtime < (datetime.datetime.now() - datetime.timedelta(days=day)).timestamp():
+            if i.stat().st_mtime < cutoff:
                 logger.warning(t("log.backup.cleaning_log_file_cleanup", p0=i.name))
                 i.unlink()
         except FileNotFoundError:
             pass
+
+    if not error_mark_path.exists():
+        return
+
+    removed_reports = 0
+    for i in error_mark_path.glob("error_report_*.json"):
+        try:
+            if i.is_file() and i.stat().st_mtime < cutoff:
+                i.unlink()
+                removed_reports += 1
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.warning(t("log.backup.delete_fail_2", p0=i.name, e=e))
+    if removed_reports:
+        logger.info(
+            t(
+                "log.backup.cleaned_error_reports_delete",
+                removed=removed_reports,
+                days=day,
+            )
+        )
 
 
 def _get_filename(file_path: Path, date: str):

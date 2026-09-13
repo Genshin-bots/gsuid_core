@@ -3,6 +3,7 @@
   "log.backup.backup_ok": "[バックアップコア] {backup} のバックアップに成功しました",
   "log.backup.backup_path_skip": "バックアップディレクトリが存在しない: {backup_path}、クリーンアップをスキップ。",
   "log.backup.cleaning_log_file_cleanup": "ログファイル {p0} をクリーンアップ",
+  "log.backup.cleaned_error_reports_delete": "期限切れのエラー報告を {removed} 件削除（{days} 日保持）",
   "log.backup.compress_directory_fail": "バックアップディレクトリの圧縮に失敗: {e}",
   "log.backup.create_fail": "バックアップディレクトリの作成に失敗: {e}",
   "log.backup.days_start": "{days} 日を超えたバックアップファイルのクリーンアップを開始...",

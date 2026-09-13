@@ -3,7 +3,9 @@ Backup APIs
 提供备份管理相关的 RESTful APIs
 """
 
-from typing import Any, Dict
+import os
+import asyncio
+from typing import Any, Dict, List, Tuple
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +20,21 @@ from gsuid_core.webconsole.web_api import require_admin, require_admin_header
 from gsuid_core.utils.backup.backup_core import backup_config, copy_and_rebase_paths
 
 from ._api_tags import BACKUP
+
+# 备份选择器默认每页条数；客户端不可一次拉更大窗口，避免再灌爆主循环 / 前端。
+FILE_TREE_PAGE = 100
+SKIP_DIR_NAMES = frozenset(
+    {
+        "IMAGE_TEMP",
+        "DATA_CACHE_PATH",
+        "data_cache",
+        "GsCore_BACKUP_PATH",
+        "dist",
+        "__pycache__",
+        "node_modules",
+        ".git",
+    }
+)
 
 
 @app.get("/api/backup/files", summary="获取备份文件列表", tags=BACKUP)
@@ -222,52 +239,150 @@ async def set_backup_config(request: Request, data: Dict[str, Any], _user: Dict[
     return {"status": 0, "msg": "备份配置已保存"}
 
 
-@app.get("/api/backup/file-tree", summary="获取备份文件树", tags=BACKUP)
-async def get_backup_file_tree(request: Request, _user: Dict[str, Any] = Depends(require_admin)):
-    """
-    获取文件树用于备份选择
+def _skip_name(name: str) -> bool:
+    return name.startswith(".") or name in SKIP_DIR_NAMES
 
-    返回数据目录下最多 3 层深度的文件树结构，供用户选择需要备份的目录。
 
-    Args:
-        request: FastAPI 请求对象
-        _user: 认证用户信息
+def _rel_posix(path: Path, root: Path) -> str:
+    rel = path.resolve().relative_to(root.resolve()).as_posix()
+    return "" if rel == "." else rel
 
-    Returns:
-        status: 0成功
-        data: 文件树结构列表
-    """
 
-    def build_file_tree(path: Path, root_path: Path, depth: int = 0):
-        """Recursively build file tree structure with maximum 3 levels"""
-        name = path.name
-        relative_path = str(path.relative_to(root_path))
+def _dir_stats(path: Path) -> Tuple[int, int]:
+    """Recursive (size_bytes, file_count), skipping blacklisted names and symlinks."""
+    total_size = 0
+    file_count = 0
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                if _skip_name(entry.name):
+                    continue
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_file(follow_symlinks=False):
+                        file_count += 1
+                        total_size += entry.stat(follow_symlinks=False).st_size
+                    elif entry.is_dir(follow_symlinks=False):
+                        nested_size, nested_count = _dir_stats(Path(entry.path))
+                        total_size += nested_size
+                        file_count += nested_count
+                except OSError:
+                    continue
+    except OSError:
+        return 0, 0
+    return total_size, file_count
 
-        if path.is_file() or depth >= 3:
+
+def _entry_node(entry: os.DirEntry, root: Path) -> Dict[str, Any] | None:
+    try:
+        if entry.is_symlink():
+            return None
+        path = Path(entry.path)
+        rel = _rel_posix(path, root)
+        if entry.is_file(follow_symlinks=False):
+            size = entry.stat(follow_symlinks=False).st_size
             return {
-                "id": relative_path,
-                "name": name,
-                "type": "file" if path.is_file() else "directory",
-                "path": relative_path,
-                "children": [],
+                "id": rel,
+                "name": entry.name,
+                "type": "file",
+                "path": rel,
+                "size_bytes": size,
+                "file_count": 1,
+                "has_children": False,
             }
+        if entry.is_dir(follow_symlinks=False):
+            size, count = _dir_stats(path)
+            return {
+                "id": rel,
+                "name": entry.name,
+                "type": "directory",
+                "path": rel,
+                "size_bytes": size,
+                "file_count": count,
+                "has_children": True,
+            }
+    except OSError:
+        return None
+    return None
 
-        children = []
-        for child in path.iterdir():
-            # Skip hidden files and directories
-            if child.name.startswith("."):
-                continue
-            # Skip __pycache__ directories
-            if child.name == "__pycache__":
-                continue
-            try:
-                children.append(build_file_tree(child, root_path, depth + 1))
-            except (PermissionError, OSError):
-                # Skip inaccessible files/directories
-                continue
 
-        return {"id": relative_path, "name": name, "type": "directory", "path": relative_path, "children": children}
+def list_backup_dir(
+    rel_path: str,
+    sort: str = "size",
+    offset: int = 0,
+    limit: int = FILE_TREE_PAGE,
+    root: Path | None = None,
+) -> Dict[str, Any]:
+    """List one directory's children. Sort then slice; never returns more than FILE_TREE_PAGE."""
+    base = (root or gs_data_path).resolve()
+    rel_path = (rel_path or "").strip().replace("\\", "/")
+    if rel_path in {"", "."}:
+        target = base
+        rel_path = ""
+    else:
+        target = confine_to_root(rel_path, base)
+    if not target.is_dir():
+        raise FileNotFoundError(f"不是目录: {rel_path or '.'}")
 
-    file_tree = build_file_tree(gs_data_path, gs_data_path)
+    children: List[Dict[str, Any]] = []
+    try:
+        with os.scandir(target) as it:
+            for entry in it:
+                if _skip_name(entry.name):
+                    continue
+                node = _entry_node(entry, base)
+                if node is not None:
+                    children.append(node)
+    except OSError as e:
+        raise FileNotFoundError(str(e)) from e
 
-    return {"status": 0, "msg": "ok", "data": [file_tree]}
+    sort_key = "file_count" if sort == "count" else "size_bytes"
+    children.sort(key=lambda n: (-int(n[sort_key]), str(n["name"]).lower()))
+
+    child_total = len(children)
+    offset = max(0, offset)
+    limit = FILE_TREE_PAGE if limit <= 0 else min(limit, FILE_TREE_PAGE)
+    sliced = children[offset : offset + limit]
+    omitted = max(0, child_total - offset - len(sliced))
+    dir_size, dir_count = _dir_stats(target)
+    return {
+        "path": rel_path,
+        "name": target.name if rel_path else "data",
+        "type": "directory",
+        "size_bytes": dir_size,
+        "file_count": dir_count,
+        "child_total": child_total,
+        "offset": offset,
+        "limit": limit,
+        "truncated": omitted > 0,
+        "omitted_count": omitted,
+        "sort": "count" if sort == "count" else "size",
+        "children": sliced,
+    }
+
+
+@app.get("/api/backup/file-tree", summary="获取备份文件树（分页）", tags=BACKUP)
+async def get_backup_file_tree(
+    path: str = "",
+    sort: str = "size",
+    offset: int = 0,
+    limit: int = FILE_TREE_PAGE,
+    _user: Dict[str, Any] = Depends(require_admin),
+):
+    """列出 ``data/`` 下某一目录的直接子项，供备份勾选。
+
+    默认每页 100 条（``limit`` 上限同此）。缓存目录不出现。
+    扫盘在线程池，不堵 Core 主循环。继续拉下一页用更大的 ``offset``。
+    """
+    if sort not in {"size", "count"}:
+        sort = "size"
+    try:
+        listing = await asyncio.to_thread(list_backup_dir, path, sort, offset, limit)
+    except PathEscapeError as e:
+        return {"status": 1, "msg": f"非法路径: {e}", "data": None}
+    except FileNotFoundError as e:
+        return {"status": 1, "msg": str(e), "data": None}
+    except OSError as e:
+        return {"status": 1, "msg": str(e), "data": None}
+    return {"status": 0, "msg": "ok", "data": listing}

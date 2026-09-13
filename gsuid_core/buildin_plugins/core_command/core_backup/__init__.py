@@ -1,3 +1,5 @@
+import asyncio
+
 from gsuid_core.sv import SV
 from gsuid_core.aps import scheduler
 from gsuid_core.bot import Bot
@@ -68,7 +70,7 @@ async def database_backup():
 
     # 正常备份数据库等用户保存内容
     await backup_file(DB_PATH, DB_BACKUP)
-    clean_log()
+    await asyncio.to_thread(clean_log)
 
     # AI 会话日志也遵循 ScheduledCleanLogDay 清理（与框架日志同一配置；0 = 不清理）
     ai_clean_days = int(CLEAN_DAY) if CLEAN_DAY and CLEAN_DAY.isdigit() else 8

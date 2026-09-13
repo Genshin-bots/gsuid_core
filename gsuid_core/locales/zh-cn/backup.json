@@ -3,6 +3,7 @@
   "log.backup.backup_ok": "[备份核心] 已成功备份 {backup}",
   "log.backup.backup_path_skip": "备份目录不存在: {backup_path}，跳过清理。",
   "log.backup.cleaning_log_file_cleanup": "清理日志文件 {p0}",
+  "log.backup.cleaned_error_reports_delete": "已清理 {removed} 个过期错误报告（保留 {days} 天）",
   "log.backup.compress_directory_fail": "压缩备份目录失败: {e}",
   "log.backup.create_fail": "创建备份目录失败: {e}",
   "log.backup.days_start": "开始清理超过 {days} 天的备份文件...",
