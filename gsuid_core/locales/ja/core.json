@@ -18,6 +18,7 @@
   "log.core.gscore_cache_cleanup": "[早柚コア] キャッシュをクリアした！",
   "log.core.gscore_clear_database_start": "[早柚コア] [データベースクリア] を実行開始",
   "log.core.gscore_database": "[早柚コア] データベースをバックアップした！",
+  "log.core.gscore_database_skip_covered": "[早柚コア] 選択したバックアップパスに DB が含まれるため、専用バックアップをスキップ",
   "log.core.gscore_duplicate_users_groups_cleanup": "[早柚コア] 重複ユーザーと重複グループをクリアした！",
   "log.core.gscore_help_image_start": "[早柚コア] [ヘルプ画像] を実行開始",
   "log.core.gscore_info_start": "早柚コア [情報] を実行開始",

@@ -18,6 +18,7 @@
   "log.core.gscore_cache_cleanup": "[GsCore] Cache has been cleared!",
   "log.core.gscore_clear_database_start": "[GsCore] Starting execution [Clear Database]",
   "log.core.gscore_database": "[GsCore] Database has been backed up!",
+  "log.core.gscore_database_skip_covered": "[GsCore] Selected backup paths already include the database; skipping dedicated DB backup",
   "log.core.gscore_duplicate_users_groups_cleanup": "[GsCore] Duplicate users and groups have been cleared!",
   "log.core.gscore_help_image_start": "[GsCore] Starting execution [Help Image]",
   "log.core.gscore_info_start": "Starting execution GsCore [Info]",

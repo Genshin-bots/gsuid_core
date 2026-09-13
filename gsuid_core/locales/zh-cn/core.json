@@ -18,6 +18,7 @@
   "log.core.gscore_cache_cleanup": "[早柚核心] 缓存已清除!",
   "log.core.gscore_clear_database_start": "[早柚核心] 开始执行[清除数据库]",
   "log.core.gscore_database": "[早柚核心] 数据库已备份!",
+  "log.core.gscore_database_skip_covered": "[早柚核心] 自选备份路径已包含数据库，跳过专用库备份",
   "log.core.gscore_duplicate_users_groups_cleanup": "[早柚核心] 重复用户和群组已清除!",
   "log.core.gscore_help_image_start": "[早柚核心] 开始执行[帮助图]",
   "log.core.gscore_info_start": "开始执行 早柚核心 [信息]",

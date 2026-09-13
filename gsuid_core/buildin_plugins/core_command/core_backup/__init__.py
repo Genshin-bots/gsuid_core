@@ -16,6 +16,7 @@ from gsuid_core.utils.database.models import (
 from gsuid_core.utils.backup.backup_core import (
     remove_old_backups,
     copy_and_rebase_paths,
+    backup_dir_covers_path,
 )
 from gsuid_core.utils.backup.backup_files import clean_log, backup_file
 from gsuid_core.utils.database.base_models import DB_PATH
@@ -68,8 +69,11 @@ async def database_backup():
 
     CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
 
-    # 正常备份数据库等用户保存内容
-    await backup_file(DB_PATH, DB_BACKUP)
+    # 自选 backup_dir 已包含 GsData.db（文件本身或父目录）时不再另拷一份
+    if backup_dir_covers_path(DB_PATH):
+        logger.info(t("log.core.gscore_database_skip_covered"))
+    else:
+        await backup_file(DB_PATH, DB_BACKUP)
     await asyncio.to_thread(clean_log)
 
     # AI 会话日志也遵循 ScheduledCleanLogDay 清理（与框架日志同一配置；0 = 不清理）

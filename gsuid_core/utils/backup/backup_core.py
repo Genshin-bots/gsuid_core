@@ -9,6 +9,39 @@ from gsuid_core.data_store import backup_path, gs_data_path
 from gsuid_core.utils.plugins_config.gs_config import backup_config
 
 
+def resolve_backup_src(p: str | Path, root: Path | None = None) -> Path:
+    """Join a configured backup entry onto ``gs_data_path`` the same way copy does."""
+    base = root if root is not None else gs_data_path
+    path = Path(p)
+    if not path.is_absolute() or not path.is_relative_to(base):
+        path = base / path
+    return path
+
+
+def backup_dir_covers_path(target: Path, config_paths: Optional[List] = None) -> bool:
+    """True if user-selected ``backup_dir`` already copies ``target`` (file or ancestor dir)."""
+    if config_paths is None:
+        config_paths = backup_config.get_config("backup_dir").data or []
+    try:
+        target_res = target.resolve()
+    except OSError:
+        return False
+    for raw in config_paths:
+        path = resolve_backup_src(raw)
+        try:
+            selected = path.resolve()
+        except OSError:
+            selected = path
+        if selected == target_res:
+            return True
+        try:
+            if selected.is_dir() and target_res.is_relative_to(selected):
+                return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
 def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: Optional[str] = None) -> int:
     """
     将路径列表中的文件/文件夹复制到备份目录，并移除指定的路径前缀。
@@ -18,13 +51,7 @@ def copy_and_rebase_paths(_paths_to_copy: Optional[List[Path]] = None, file_id: 
     if _paths_to_copy is None:
         # 获取配置中的路径，并确保它们是相对于gs_data_path的完整路径
         config_paths = backup_config.get_config("backup_dir").data
-        paths_to_copy: List[Path] = []
-        for p in config_paths:
-            path = Path(p)
-            # 如果路径不是绝对路径，或者不是以gs_data_path开头的，就拼接上gs_data_path
-            if not path.is_absolute() or not path.is_relative_to(gs_data_path):
-                path = gs_data_path / path
-            paths_to_copy.append(path)
+        paths_to_copy = [resolve_backup_src(p) for p in config_paths]
     else:
         paths_to_copy = _paths_to_copy
 
