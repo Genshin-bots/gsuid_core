@@ -236,3 +236,38 @@ def query_time_window(query: str, clock: datetime) -> tuple[datetime, datetime] 
         return None
     slack = timedelta(days=_window_slack_days(query))
     return min(times) - slack, max(times) + slack + timedelta(hours=23, minutes=59)
+
+
+_QUERY_DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?")
+_TEMPORAL_ENUM_RE = re.compile(
+    r"(in order|sequence|chronolog|progress|summar|overview|evol|develop|timeline|history|"
+    r"依次|顺序|时间线|先后|经过|演变|变化|历程|总结|概述|回顾)",
+    re.IGNORECASE,
+)
+_ENUM_FILLER_RE = re.compile(
+    r"\b(?:from|between|until|through|list|please|can you|could you|the|topics?|events?|items?)\b",
+    re.IGNORECASE,
+)
+
+
+def query_explicit_time_range(query: str) -> tuple[datetime, datetime] | None:
+    """≥2 个日期且带时序/枚举词 → [最早, 最晚+1天]。点查不触发。"""
+    if not _TEMPORAL_ENUM_RE.search(query or ""):
+        return None
+    dates: list[datetime] = []
+    for m in _QUERY_DATE_RE.finditer(query or ""):
+        try:
+            dates.append(datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            continue
+    if len(set(dates)) < 2:
+        return None
+    return min(dates), max(dates) + timedelta(days=1)
+
+
+def temporal_search_query(query: str) -> str:
+    """去掉日期和枚举套话，留给分桶语义检索的主题词。"""
+    body = _QUERY_DATE_RE.sub(" ", query or "")
+    body = _TEMPORAL_ENUM_RE.sub(" ", body)
+    body = _ENUM_FILLER_RE.sub(" ", body)
+    return re.sub(r"\s+", " ", body).strip()

@@ -196,6 +196,9 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)
+    from io import TextIOWrapper
+
+    stdout = sys.stdout
+    if isinstance(stdout, TextIOWrapper):
+        stdout.reconfigure(line_buffering=True)
     asyncio.run(main())

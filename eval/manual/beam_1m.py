@@ -249,7 +249,11 @@ async def cmd_ingest(
         print(f"[ingest] conv={conv} 已标记完成，跳过（--force 可重灌）")
         return 0
     if clear:
-        await cmd_clear(base_url, user_id, timeout=timeout)
+        cleared = await cmd_clear(base_url, user_id, timeout=timeout)
+        st = cleared["status"] if isinstance(cleared, dict) and "status" in cleared else 1
+        if st != 0:
+            print(f"[ingest] conv={conv} clear 失败，停止以免往脏库上灌")
+            return 2
     results: list[dict[str, Any]] = []
     n = len(plan_ids)
     for i, pid in enumerate(plan_ids):

@@ -3,15 +3,30 @@
 提供数据库表的增删改查功能
 """
 
+import io
+import csv
+import json
+import asyncio
 import inspect
+from types import SimpleNamespace
 from typing import Any, Dict, List, Type, Tuple, Optional
+from datetime import datetime
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
-from sqlmodel import SQLModel, func, select
+from sqlmodel import SQLModel, or_, and_, func, select
+from sqlalchemy import Table, String, cast
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.mount_app import GsAdminModel, site
-from gsuid_core.utils.database.base_models import async_maker
+from gsuid_core.utils.database.base_models import async_maker, sqlite_read_semaphore
+
+# 每批行数。encode 丢线程池、批间 sleep(0)，避免全表导出占住 Core 主循环。
+CSV_EXPORT_BATCH = 200
+CSV_BOM = b"\xef\xbb\xbf"
 
 
 class ColumnInfo:
@@ -375,6 +390,227 @@ def get_table_info(table_name: str) -> Optional[DatabaseTableInfo]:
     return None
 
 
+def _sa_table(model_class: type[SQLModel]) -> Table | None:
+    name = model_class.__name__.lower()
+    tables = model_class.metadata.tables
+    if name not in tables:
+        return None
+    return tables[name]
+
+
+def _build_where_clause(
+    model_class: Type[SQLModel],
+    table_info: DatabaseTableInfo,
+    search: str = "",
+    search_columns: str = "",
+    filter_columns: str = "",
+    filter_values: str = "",
+) -> ColumnElement[bool] | None:
+    """Build the same WHERE clause used by paginated list and CSV export."""
+    table = _sa_table(model_class)
+    if table is None:
+        return None
+    conditions: list[ColumnElement[bool]] = []
+    valid_names = {col.name for col in table_info.columns}
+    col_type_by_name = {col.name: col.col_type for col in table_info.columns}
+
+    if search:
+        search_term = f"%{search}%"
+        search_conditions: list[ColumnElement[bool]] = []
+        if search_columns:
+            search_col_list = [col.strip() for col in search_columns.split(",") if col.strip()]
+        else:
+            search_col_list = [col.name for col in table_info.columns]
+        for col_name in search_col_list:
+            if col_name not in valid_names or col_name not in table.c:
+                continue
+            col_attr = table.c[col_name]
+            col_type = col_type_by_name[col_name] if col_name in col_type_by_name else "str"
+            if col_type in ("str", "text", "json"):
+                search_conditions.append(col_attr.ilike(search_term))
+            elif col_type in ("int", "float", "datetime", "date", "time"):
+                search_conditions.append(cast(col_attr, String).ilike(search_term))
+        if search_conditions:
+            conditions.append(or_(*search_conditions))
+
+    if filter_columns and filter_values:
+        filter_col_list = [col.strip() for col in filter_columns.split(",")]
+        filter_val_list = [val.strip() for val in filter_values.split(",")]
+        min_len = min(len(filter_col_list), len(filter_val_list))
+        for i in range(min_len):
+            col_name = filter_col_list[i]
+            filter_val = filter_val_list[i]
+            if col_name not in valid_names or col_name not in table.c:
+                continue
+            col_attr = table.c[col_name]
+            col_type = col_type_by_name[col_name] if col_name in col_type_by_name else "str"
+            if col_type in ("str", "text", "json"):
+                conditions.append(col_attr.ilike(f"%{filter_val}%"))
+            else:
+                conditions.append(col_attr == filter_val)
+
+    if conditions:
+        return and_(*conditions)
+    return None
+
+
+def _serialize_cell(value: object, col_type: str) -> object:
+    """Serialize a cell the same way the paginated list API does (minus wrapping in dict)."""
+    if value is None:
+        return None
+    if col_type == "datetime":
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+    if col_type == "json":
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError, OverflowError):
+            return str(value)
+    return value
+
+
+def _excel_neutralize(text: str) -> str:
+    if not text:
+        return text
+    head = text[0]
+    if head in ("=", "@", "\t", "\r"):
+        return f"'{text}"
+    if head in ("+", "-") and (len(text) == 1 or not text[1].isdigit()):
+        return f"'{text}"
+    return text
+
+
+def csv_cell(value: object, col_type: str = "str") -> str:
+    """Normalize a DB value to a CSV cell string (empty for NULL)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    serialized = _serialize_cell(value, col_type)
+    if serialized is None:
+        return ""
+    return _excel_neutralize(str(serialized))
+
+
+def encode_csv_rows(rows: List[List[str]]) -> bytes:
+    """Encode rows as UTF-8 CSV. CPU-bound; call via asyncio.to_thread."""
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
+def _row_mapping(item: object) -> dict[str, object]:
+    if isinstance(item, SQLModel):
+        return dict(item.model_dump())
+    if isinstance(item, SimpleNamespace):
+        return dict(vars(item))
+    return {}
+
+
+def _row_cells(item: object, columns: List[ColumnInfo]) -> List[str]:
+    data = _row_mapping(item)
+    cells: List[str] = []
+    for column in columns:
+        value = data[column.name] if column.name in data else None
+        cells.append(csv_cell(value, column.col_type))
+    return cells
+
+
+def _pk_column(model_class: type[SQLModel]) -> ColumnElement[str] | None:
+    table = _sa_table(model_class)
+    if table is None or "id" not in table.c:
+        return None
+    pk = table.c.id
+    assert isinstance(pk, ColumnElement)
+    return pk
+
+
+@asynccontextmanager
+async def _csv_db_session() -> AsyncIterator[AsyncSession]:
+    sem = sqlite_read_semaphore
+    if sem is not None:
+        async with sem:
+            async with async_maker() as session:
+                yield session
+        return
+    async with async_maker() as session:
+        yield session
+
+
+async def iter_table_csv(
+    table_name: str,
+    search: str = "",
+    search_columns: str = "",
+    filter_columns: str = "",
+    filter_values: str = "",
+) -> AsyncIterator[bytes]:
+    """Stream a full-table (or filtered) CSV in small batches.
+
+    Must not block the Core event loop: each batch is an awaited DB fetch,
+    CSV encoding runs in a thread, and we ``sleep(0)`` between batches so
+    bot WS / scheduler / other HTTP can run.
+    """
+    table_info = get_table_info(table_name)
+    if not table_info:
+        return
+
+    columns = table_info.columns
+    header = [col.name for col in columns]
+    yield CSV_BOM + encode_csv_rows([header])
+    await asyncio.sleep(0)
+
+    model_class = table_info.model_class
+    where_clause = _build_where_clause(
+        model_class,
+        table_info,
+        search=search,
+        search_columns=search_columns,
+        filter_columns=filter_columns,
+        filter_values=filter_values,
+    )
+    pk_col = _pk_column(model_class) if isinstance(model_class, type) and issubclass(model_class, SQLModel) else None
+
+    try:
+        async with _csv_db_session() as session:
+            last_pk: str | int | None = None
+            offset = 0
+            while True:
+                query = select(model_class)
+                if where_clause is not None:
+                    query = query.where(where_clause)
+                if pk_col is not None:
+                    query = query.order_by(pk_col)
+                    if last_pk is not None:
+                        query = query.where(pk_col > last_pk)
+                    query = query.limit(CSV_EXPORT_BATCH)
+                else:
+                    query = query.offset(offset).limit(CSV_EXPORT_BATCH)
+
+                result = await session.execute(query)
+                items = result.scalars().all()
+                if not items:
+                    break
+
+                rows = [_row_cells(item, columns) for item in items]
+                chunk = await asyncio.to_thread(encode_csv_rows, rows)
+                yield chunk
+
+                if pk_col is not None:
+                    mapping = _row_mapping(items[-1])
+                    pk_val = mapping["id"] if "id" in mapping else None
+                    if isinstance(pk_val, bool) or not isinstance(pk_val, (str, int)):
+                        raise RuntimeError("csv export keyset requires str|int id")
+                    last_pk = pk_val
+                else:
+                    offset += len(items)
+                if len(items) < CSV_EXPORT_BATCH:
+                    break
+                await asyncio.sleep(0)
+    except Exception as e:
+        logger.error(t("log.db_admin.get_table_data_fail", error=e))
+        raise
+
+
 async def get_table_data(
     table_name: str,
     page: int = 1,
@@ -385,9 +621,6 @@ async def get_table_data(
     filter_values: str = "",
 ) -> PaginatedData:
     """Get paginated data from a table with optional search and filter"""
-    from sqlmodel import or_, and_
-    from sqlalchemy import String, cast
-
     page = max(1, page)
     per_page = max(1, min(per_page, 500))
 
@@ -396,69 +629,17 @@ async def get_table_data(
         return PaginatedData([], 0, page, per_page)
 
     model_class = table_info.model_class
+    where_clause = _build_where_clause(
+        model_class,
+        table_info,
+        search=search,
+        search_columns=search_columns,
+        filter_columns=filter_columns,
+        filter_values=filter_values,
+    )
 
     try:
         async with async_maker() as session:
-            # 构建查询条件
-            conditions = []
-
-            # 处理搜索条件 (search)
-            if search:
-                search_term = f"%{search}%"
-                search_conditions = []
-                valid_names = {col.name for col in table_info.columns}
-
-                # 指定列则只搜这些列；否则搜全部列（含 int 等，CAST 成文本后模糊匹配）
-                if search_columns:
-                    search_col_list = [col.strip() for col in search_columns.split(",") if col.strip()]
-                else:
-                    search_col_list = [col.name for col in table_info.columns]
-
-                col_type_by_name = {col.name: col.col_type for col in table_info.columns}
-                for col_name in search_col_list:
-                    if col_name not in valid_names:
-                        continue
-                    col_attr = getattr(model_class, col_name, None)
-                    if col_attr is None:
-                        continue
-                    col_type = col_type_by_name.get(col_name, "str")
-                    if col_type in ("str", "text", "json"):
-                        search_conditions.append(col_attr.ilike(search_term))
-                    elif col_type in ("int", "float", "datetime", "date", "time"):
-                        # 非文本列 CAST 后再模糊匹配，否则搜 UID 等数字字段会被静默跳过
-                        search_conditions.append(cast(col_attr, String).ilike(search_term))
-
-                if search_conditions:
-                    conditions.append(or_(*search_conditions))
-
-            # 处理筛选条件 (filter_columns 和 filter_values)
-            if filter_columns and filter_values:
-                filter_col_list = [col.strip() for col in filter_columns.split(",")]
-                filter_val_list = [val.strip() for val in filter_values.split(",")]
-
-                # 如果列数和值数不匹配，以列数为准
-                min_len = min(len(filter_col_list), len(filter_val_list))
-
-                for i in range(min_len):
-                    col_name = filter_col_list[i]
-                    filter_val = filter_val_list[i]
-
-                    # 验证列名是否有效
-                    if col_name in [col.name for col in table_info.columns]:
-                        # 对于文本列使用模糊匹配，其他列使用精确匹配
-                        col_info = next((col for col in table_info.columns if col.name == col_name), None)
-                        if col_info and col_info.col_type in ("str", "text", "json"):
-                            conditions.append(getattr(model_class, col_name).ilike(f"%{filter_val}%"))
-                        else:
-                            conditions.append(getattr(model_class, col_name) == filter_val)
-
-            # 构建最终的查询
-            if conditions:
-                where_clause = and_(*conditions)
-            else:
-                where_clause = None
-
-            # 获取总数
             if where_clause is not None:
                 count_query = select(func.count()).select_from(model_class).where(where_clause)
             else:
@@ -466,7 +647,6 @@ async def get_table_data(
             count_result = await session.execute(count_query)
             total = count_result.scalar() or 0
 
-            # 获取分页数据
             offset = (page - 1) * per_page
             if where_clause is not None:
                 query = select(model_class).where(where_clause).offset(offset).limit(per_page)
@@ -476,25 +656,12 @@ async def get_table_data(
             result = await session.execute(query)
             items = result.scalars().all()
 
-            # 转换为字典
             dict_items = []
             for item in items:
                 item_dict = {}
                 for column in table_info.columns:
                     if hasattr(item, column.name):
-                        value = getattr(item, column.name)
-                        # 处理特殊类型
-                        if value is not None:
-                            if column.col_type == "datetime":
-                                value = value.isoformat()
-                            elif column.col_type == "json":
-                                import json
-
-                                try:
-                                    value = json.dumps(value, ensure_ascii=False)
-                                except Exception:
-                                    value = str(value)
-                        item_dict[column.name] = value
+                        item_dict[column.name] = _serialize_cell(getattr(item, column.name), column.col_type)
                 dict_items.append(item_dict)
 
             return PaginatedData(dict_items, total, page, per_page)

@@ -5,8 +5,10 @@
 """
 
 from typing import Optional
+from collections.abc import Callable, Sequence
 
 from sqlmodel import col, func, delete, select
+from sqlalchemy.sql.dml import Delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.i18n import t
@@ -23,6 +25,19 @@ from gsuid_core.ai_core.memory.database.models import (
     mem_episode_entity_mentions,
 )
 from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
+
+# SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER=999；10-plan 摄入后 episode 远超此数
+_IN_CHUNK = 400
+
+
+async def _exec_in_chunks(
+    session: AsyncSession,
+    ids: Sequence[str],
+    make_stmt: Callable[[Sequence[str]], Delete],
+) -> None:
+    for i in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[i : i + _IN_CHUNK]
+        await session.execute(make_stmt(chunk))
 
 
 async def _collect_scope_keys_by_prefix(
@@ -158,26 +173,46 @@ async def _delete_db_by_scope_keys(
     cat_ids_result = await session.execute(select(AIMemCategory.id).where(col(AIMemCategory.scope_key).in_(scope_keys)))
     cat_ids = [row[0] for row in cat_ids_result.fetchall()]
     if cat_ids:
-        await session.execute(delete(AIMemCategoryEdge).where(col(AIMemCategoryEdge.parent_category_id).in_(cat_ids)))
-        await session.execute(delete(AIMemCategoryEdge).where(col(AIMemCategoryEdge.child_category_id).in_(cat_ids)))
-        await session.execute(
-            mem_category_entity_members.delete().where(mem_category_entity_members.c.category_id.in_(cat_ids))
+        await _exec_in_chunks(
+            session,
+            cat_ids,
+            lambda chunk: delete(AIMemCategoryEdge).where(col(AIMemCategoryEdge.parent_category_id).in_(chunk)),
+        )
+        await _exec_in_chunks(
+            session,
+            cat_ids,
+            lambda chunk: delete(AIMemCategoryEdge).where(col(AIMemCategoryEdge.child_category_id).in_(chunk)),
+        )
+        await _exec_in_chunks(
+            session,
+            cat_ids,
+            lambda chunk: mem_category_entity_members.delete().where(
+                mem_category_entity_members.c.category_id.in_(chunk)
+            ),
         )
 
     # 2. Entity → 清理 Episode-Entity 关联
     ent_ids_result = await session.execute(select(AIMemEntity.id).where(col(AIMemEntity.scope_key).in_(scope_keys)))
     ent_ids = [row[0] for row in ent_ids_result.fetchall()]
     if ent_ids:
-        await session.execute(
-            mem_episode_entity_mentions.delete().where(mem_episode_entity_mentions.c.entity_id.in_(ent_ids))
+        await _exec_in_chunks(
+            session,
+            ent_ids,
+            lambda chunk: mem_episode_entity_mentions.delete().where(
+                mem_episode_entity_mentions.c.entity_id.in_(chunk)
+            ),
         )
 
     # 3. Episode → 清理 Episode-Entity 关联（反向）
     ep_ids_result = await session.execute(select(AIMemEpisode.id).where(col(AIMemEpisode.scope_key).in_(scope_keys)))
     ep_ids = [row[0] for row in ep_ids_result.fetchall()]
     if ep_ids:
-        await session.execute(
-            mem_episode_entity_mentions.delete().where(mem_episode_entity_mentions.c.episode_id.in_(ep_ids))
+        await _exec_in_chunks(
+            session,
+            ep_ids,
+            lambda chunk: mem_episode_entity_mentions.delete().where(
+                mem_episode_entity_mentions.c.episode_id.in_(chunk)
+            ),
         )
 
     # 4. 删除主表记录

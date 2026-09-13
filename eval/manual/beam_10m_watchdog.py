@@ -20,7 +20,7 @@ _CAMPAIGN_ERR = _OUT / "campaign.err"
 _CORE_OUT = _OUT / "core.out"
 _CORE_ERR = _OUT / "core.err"
 _INTERVAL_S = 180
-_STALL_S = 18 * 60
+_STALL_S = 45 * 60
 _STALL_REBUILD_S = 45 * 60
 _HOST = "127.0.0.1"
 _PORT = 8765
@@ -119,7 +119,7 @@ def _campaign_done() -> bool:
 
 def _stall_limit_s(last_lines: list[str]) -> int:
     blob = "\n".join(last_lines)
-    if "last=True" in blob or "'rebuild': True" in blob or "rebuild=True" in blob:
+    if "last=True" in blob or "'rebuild': True" in blob or "rebuild=True" in blob or "[Clear]" in blob:
         return _STALL_REBUILD_S
     if "[Probe]" in blob or "[judge]" in blob or "[smoke5]" in blob:
         return 25 * 60
@@ -206,14 +206,17 @@ def tick() -> str:
         return "restarted_missing"
     if stalled:
         _log(f"campaign stalled age={age:.0f}s limit={limit}s last={last[-1] if last else ''}")
-        a = _pids_matching("core --port 8765") or []
-        b = _pids_matching("core.exe --port 8765") or []
-        core_pids = a + b
-        if core_pids:
-            _log(f"restart core pids={core_pids}")
-            _kill_pids(core_pids)
-            time.sleep(3)
-        _ensure_core()
+        if not _tcp_up():
+            a = _pids_matching("core --port 8765") or []
+            b = _pids_matching("core.exe --port 8765") or []
+            core_pids = a + b
+            if core_pids:
+                _log(f"restart core pids={core_pids}")
+                _kill_pids(core_pids)
+                time.sleep(3)
+            _ensure_core()
+        else:
+            _log("core listen ok; not killing core on ingest stall")
         _ensure_campaign(restart=True)
         return "restarted_stall"
     _log(f"ok campaign_pids={pids} age={0 if age is None else int(age)}s last={last[-1] if last else ''}")

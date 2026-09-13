@@ -13,6 +13,7 @@ from qdrant_client.models import (
     Distance,
     MatchAny,
     Modifier,
+    Condition,
     MatchValue,
     PointStruct,
     PointIdsList,
@@ -1401,7 +1402,7 @@ async def get_manual_knowledge_list(
         logger.warning(i18n_t("log.rag.kb_ai_feature_enabled_unable_3"))
         return {"list": [], "total": 0}
 
-    must_conditions: List[FieldCondition] = []
+    must_conditions: List[Condition] = []
     if source_filter != "all":
         must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
     if plugin:
@@ -1519,7 +1520,7 @@ async def search_manual_knowledge(
     query_dense = _vectors[0]
     query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
-    must_conditions: List[FieldCondition] = []
+    must_conditions: List[Condition] = []
     if source_filter != "all":
         must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
     if plugin:

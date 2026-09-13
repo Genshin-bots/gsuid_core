@@ -529,10 +529,16 @@ async def batch_observe(
         # 解析每条 turn 的可选 timestamp，失败时累计 ts_failures（不静默吞）
         parsed_turns: List[Tuple[BatchObserveTurn, Optional[datetime]]] = []
         ts_failures = 0
+        raw_ts: List[Optional[datetime]] = []
         for turn in req.turns:
             ts_obj = parse_iso_or_unix_timestamp(turn.timestamp)
             if turn.timestamp is not None and ts_obj is None:
                 ts_failures += 1
+            raw_ts.append(ts_obj)
+        from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+
+        spread_ts = spread_datetimes(raw_ts)
+        for turn, ts_obj in zip(req.turns, spread_ts):
             parsed_turns.append((turn, ts_obj))
 
         # 评测回放：user / assistant 两侧都是对话内容，统一落到目标 scope。提前算好

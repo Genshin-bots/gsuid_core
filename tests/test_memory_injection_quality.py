@@ -1247,3 +1247,263 @@ def test_eval_dump_latest_facts_sort_by_statement_time() -> None:
     assert "Seattle" in dumped
     assert "[2023-06-01]" in dumped
     assert "[2023-01-01]" in dumped
+
+
+def test_chat_long_memory_qa_uses_prompt_text_not_catalog() -> None:
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.memory.kit import format_retrieved_memory, wants_evidence_injection
+
+    long_q = "Have I ever formulated heat equation problems before in our previous sessions?"
+    short_q = "hi"
+    long_ep = "beam_eval_3: I've never formulated any heat equation problems before today."
+    mem = MemoryContext(episodes=[_episode(long_ep, valid_at="2024-11-02 10:00:00", eid="u1")])
+    chat_long = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query=long_q,
+        intent="问答",
+    )
+    assert wants_evidence_injection(chat_long)
+    dumped = format_retrieved_memory(chat_long, mem)
+    assert "【相关对话片段】" in dumped
+    assert "never formulated any heat equation problems" in dumped
+    assert "[记忆目录]" not in dumped
+    chat_short = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query=short_q,
+        intent="闲聊",
+    )
+    assert not wants_evidence_injection(chat_short)
+    catalog = format_retrieved_memory(chat_short, mem)
+    assert "[记忆目录]" in catalog
+    assert "search_cognition" in catalog
+
+
+def test_to_prompt_text_prefers_user_turns_over_assistant() -> None:
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "assistant: Here is a curriculum on Green's functions.",
+                valid_at="2025-03-01 09:00:00",
+                eid="a",
+            ),
+            _episode(
+                "beam_eval_3: I'm starting my deep dive into Green's functions.",
+                valid_at="2025-03-01 10:00:00",
+                eid="u",
+            ),
+        ],
+        temporal_mode=True,
+    )
+    text = mem.to_prompt_text(max_chars=4000, query="list the order from 2025-03-01 to 2025-03-31")
+    assert "deep dive into Green's functions" in text
+    assert "curriculum" not in text
+
+
+def test_to_prompt_text_temporal_drops_out_of_window() -> None:
+    from datetime import datetime
+
+    mem = MemoryContext(
+        episodes=[
+            _episode("beam_eval_3: March topic A", valid_at="2025-03-01 00:00:00", eid="m1"),
+            _episode("beam_eval_3: June grant writing", valid_at="2025-06-17 00:00:00", eid="j1"),
+        ],
+        temporal_mode=True,
+        time_range=(datetime(2025, 3, 1), datetime(2025, 4, 1)),
+    )
+    text = mem.to_prompt_text(max_chars=4000, query="list the order from 2025-03-01 to 2025-03-31")
+    assert "March topic A" in text
+    assert "June grant writing" not in text
+
+
+def test_spread_datetimes_keeps_calendar_day() -> None:
+    from datetime import datetime
+
+    from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+
+    d0 = datetime(2025, 3, 1, 0, 0, 0)
+    d1 = datetime(2025, 3, 2, 0, 0, 0)
+    out = spread_datetimes([d0, d0, d0, d1, d1])
+    assert out[0] == d0
+    assert out[1] == datetime(2025, 3, 1, 0, 0, 1)
+    assert out[2] == datetime(2025, 3, 1, 0, 0, 2)
+    assert out[3] == d1
+    assert out[4] == datetime(2025, 3, 2, 0, 0, 1)
+
+
+def test_spread_datetimes_monotonic_across_chunk_size() -> None:
+    from datetime import datetime
+
+    from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+
+    d0 = datetime(2025, 3, 1, 0, 0, 0)
+    out = spread_datetimes([d0] * 250)
+    assert out[0] == d0
+    for i in range(1, 250):
+        prev = out[i - 1]
+        cur = out[i]
+        assert prev is not None and cur is not None
+        assert cur > prev
+        assert cur.date() == d0.date()
+
+
+def test_spread_datetimes_clamps_same_calendar_day() -> None:
+    from datetime import datetime
+
+    from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+
+    late = datetime(2025, 3, 1, 23, 59, 59)
+    out = spread_datetimes([late, late, late])
+    assert out[0] == late
+    assert out[1] is not None and out[1].date() == late.date()
+    assert out[2] is not None and out[2].date() == late.date()
+    assert out[1] > late
+    assert out[2] is not None and out[1] is not None and out[2] > out[1]
+
+
+def test_looks_like_self_history_query_skips_howto() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import looks_like_self_history_query
+
+    assert looks_like_self_history_query("Have I ever formulated heat equation problems before?")
+    assert looks_like_self_history_query("What is my current address?")
+    assert looks_like_self_history_query(
+        "Can you list the order in which I brought up Green's functions from 2025-03-01 to 2025-03-31, in order?"
+    )
+    assert not looks_like_self_history_query("How do I use the plot function in MATLAB?")
+    assert not looks_like_self_history_query("How do I use Green's functions to solve a PDE?")
+
+
+def test_refine_retrieved_memory_flags_opposite_user_stances() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import refine_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode(
+                "beam_eval_3: I've never formulated any heat equation problems before today.",
+                valid_at="2024-11-02 10:00:00",
+                eid="neg",
+            ),
+            _episode(
+                "beam_eval_3: I completed 5 heat equation problems this week.",
+                valid_at="2024-12-01 10:00:00",
+                eid="pos",
+            ),
+            _episode(
+                "assistant: Here is a curriculum on heat equations.",
+                valid_at="2024-11-03 10:00:00",
+                eid="asst",
+            ),
+        ]
+    )
+    refine_retrieved_memory(mem, "Have I ever formulated heat equation problems before?")
+    assert mem.conflicts
+    blob = "\n".join(mem.conflicts)
+    assert "never formulated" in blob
+    assert "completed 5" in blob
+
+
+def test_inject_groundedness_only_for_self_history() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import looks_like_self_history_query
+
+    history = "Have I ever formulated heat equation problems before in our previous sessions?"
+    howto = "How do I use Green's functions to solve a PDE?"
+    assert looks_like_self_history_query(history)
+    assert not looks_like_self_history_query(howto)
+
+
+def test_timeline_query_is_not_point_lookup() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import (
+        looks_like_count_query,
+        looks_like_timeline_query,
+        looks_like_self_history_query,
+    )
+
+    order_q = "Can you list the order in which I brought up Green's functions from 2025-03-01 to 2025-03-31, in order?"
+    assert looks_like_timeline_query(order_q)
+    assert looks_like_self_history_query(order_q)
+    assert not looks_like_timeline_query("Have I ever formulated heat equation problems before?")
+    assert looks_like_count_query("How many total problems did I practice across calculus sets?")
+    assert looks_like_count_query("我一共做了多少题")
+    assert not looks_like_count_query("What is my current address?")
+    assert not looks_like_count_query("这个多少钱")
+    assert not looks_like_count_query("外面多少度")
+
+
+def test_refine_temporal_keeps_window_ends() -> None:
+    from datetime import datetime, timedelta
+
+    from gsuid_core.ai_core.kits.memory.kit import refine_retrieved_memory
+
+    t0 = datetime(2025, 3, 1, 12, 0, 0)
+    eps = [
+        _episode(
+            f"day {d}",
+            valid_at=(t0 + timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"),
+            eid=f"d{d}",
+        )
+        for d in range(30)
+    ]
+    mem = MemoryContext(episodes=eps, temporal_mode=True)
+    refine_retrieved_memory(mem, "list the order from 2025-03-01 to 2025-03-31 in order")
+    ids = [e["id"] for e in mem.episodes]
+    assert "d0" in ids
+    assert "d29" in ids
+    assert len(ids) == 30
+
+
+def test_to_prompt_text_temporal_keeps_dense_user_turns() -> None:
+    from datetime import datetime, timedelta
+
+    t0 = datetime(2025, 3, 1)
+    eps = [
+        _episode(
+            f"beam_eval_3: March topic unique-{i}",
+            valid_at=(t0 + timedelta(days=i)).strftime("%Y-%m-%d 00:00:00"),
+            eid=f"m{i}",
+        )
+        for i in range(25)
+    ]
+    mem = MemoryContext(
+        episodes=eps,
+        temporal_mode=True,
+        time_range=(datetime(2025, 3, 1), datetime(2025, 4, 1)),
+    )
+    text = mem.to_prompt_text(max_chars=12000, query="list the order from 2025-03-01 to 2025-03-31")
+    kept = sum(1 for i in range(25) if f"unique-{i}" in text)
+    assert kept >= 14
+    assert "unique-0" in text
+    assert "unique-24" in text
+
+
+def test_to_prompt_text_temporal_keeps_day_opener_not_homework() -> None:
+    from datetime import datetime, timedelta
+
+    t0 = datetime(2025, 3, 1, 8, 0, 0)
+    eps = []
+    for d in range(8):
+        day = t0 + timedelta(days=d)
+        eps.append(
+            _episode(
+                f"beam_eval_3: I'm starting aspect unique-{d} today.",
+                valid_at=day.strftime("%Y-%m-%d %H:%M:%S"),
+                eid=f"open{d}",
+            )
+        )
+        eps.append(
+            _episode(
+                f"beam_eval_3: I scored 85% on 10 homework problems unique-hw-{d}.",
+                valid_at=(day + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S"),
+                eid=f"hw{d}",
+            )
+        )
+    mem = MemoryContext(
+        episodes=eps,
+        temporal_mode=True,
+        time_range=(datetime(2025, 3, 1), datetime(2025, 4, 1)),
+    )
+    text = mem.to_prompt_text(max_chars=12000, query="list the order from 2025-03-01 to 2025-03-31 in order")
+    assert "unique-0" in text
+    assert "unique-7" in text
+    assert "unique-hw-0" not in text
+    assert "unique-hw-7" not in text

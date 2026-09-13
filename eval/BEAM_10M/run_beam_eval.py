@@ -256,11 +256,11 @@ def _arrow_plan_from_batch(batch: object, user_idx: int) -> Dict[str, Any] | Non
                     return normalize_plan(rec)
     if "chat" in names:
         chat_col = batch.column("chat")  # type: ignore[attr-defined]
-        nlist = pc.list_value_length(chat_col)[0].as_py()
+        nlist = pc.list_value_length(chat_col)[0].as_py()  # type: ignore[attr-defined]
         key = f"plan-{user_idx}"
         if isinstance(nlist, int):
             for slot in range(nlist):
-                head = pc.list_element(chat_col, slot)
+                head = pc.list_element(chat_col, slot)  # type: ignore[attr-defined]
                 struct_names = list(head.type.names)
                 if key not in struct_names:
                     continue
@@ -509,6 +509,14 @@ def extract_standard_answer(probe: Dict[str, Any], category: str) -> str:
     return str(val).strip() if val is not None else ""
 
 
+def _provider_overloaded(status_code: int, answer: str) -> bool:
+    """上游 429/503/529 或正文 overloaded。HTTP 200 包着 529 也要重试。"""
+    if status_code in (429, 502, 503, 529):
+        return True
+    blob = (answer or "").lower()
+    return "overloaded" in blob or "status_code: 529" in blob or "http_code': '529" in blob
+
+
 # ─────────────────────────────────────────────
 # 子命令实现
 # ─────────────────────────────────────────────
@@ -518,12 +526,13 @@ async def cmd_clear(
     base_url: str,
     user_id: str,
     timeout: float,
-) -> None:
+) -> Dict[str, Any]:
     """清空 ``user_global:<user_id>`` 范围内的全部记忆。"""
     print(f"[Clear] user_id={user_id}")
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
         resp = await call_clear_user_global(client, base_url, user_id)
     print(f"[Clear] -> {resp}")
+    return resp
 
 
 async def cmd_ingest_plan(
@@ -542,19 +551,23 @@ async def cmd_ingest_plan(
     print(f"[Ingest] user_id={user_id}, plan_id={plan_id}, turns={len(turns)}")
 
     # 整包 POST 会撞 300s 默认超时；200 条一块，末块才 flush/rebuild。
+    # 必须先对整表 spread 再切片，否则每块都从 00:00:00 重撞。
     chunk_size = 200
     last_resp: Dict[str, Any] = {"status": 1, "msg": "no chunks", "data": None}
+    payload: List[Dict[str, Any]] = []
+    for t in turns:
+        item: Dict[str, Any] = {"role": t["role"], "content": t["content"]}
+        iso = parse_time_anchor(t["time_anchor"] if "time_anchor" in t else "")
+        if iso:
+            item["timestamp"] = iso
+        payload.append(item)
+    from eval.BEAM_10M.timestamps import spread_payload_timestamps
+
+    payload = spread_payload_timestamps(payload)
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-        n = len(turns)
+        n = len(payload)
         for start in range(0, n, chunk_size):
-            raw = turns[start : start + chunk_size]
-            chunk: List[Dict[str, Any]] = []
-            for t in raw:
-                item: Dict[str, Any] = {"role": t["role"], "content": t["content"]}
-                iso = parse_time_anchor(t["time_anchor"] if "time_anchor" in t else "")
-                if iso:
-                    item["timestamp"] = iso
-                chunk.append(item)
+            chunk = payload[start : start + chunk_size]
             last = start + chunk_size >= n
             print(
                 f"[Ingest] plan_id={plan_id} chunk {start // chunk_size + 1}"
@@ -698,30 +711,38 @@ async def cmd_probe(
             print(f"\n[Probe] ({category} #{idx_in_cat}) {question[:80]}")
 
             clock_at = parse_time_anchor(str(time_anchor)) if time_anchor else None
-            resp = await call_chat_with_history(
-                client=client,
-                base_url=base_url,
-                user_id=user_id,
-                message=question,
-                history=[],
-                persona_name=persona_name,
-                enable_observer=enable_observer,
-                # 评测已在摄入收尾触发分层图重建，探针显式开 System-2 以利用它：
-                # 事件排序/摘要/跨会话等聚合题靠类目自顶向下遍历召回，纯 System-1 向量召回不足。
-                enable_system2=enable_system2,
-                enable_tools=enable_tools,
-                memory_eval=memory_eval,
-                clock_at=clock_at,
-            )
-
-            status_code = resp.get("status_code", -1)
-            if status_code == 200:
-                agent_answer = extract_text_from_response(resp.get("data"))
-                memory = resp.get("memory")
-            else:
-                error_msg = resp.get("error", "unknown")
-                agent_answer = f"[ERROR] status={status_code}, error={error_msg}"
-                memory = None
+            status_code = -1
+            agent_answer = ""
+            memory = None
+            for attempt in range(4):
+                resp = await call_chat_with_history(
+                    client=client,
+                    base_url=base_url,
+                    user_id=user_id,
+                    message=question,
+                    history=[],
+                    persona_name=persona_name,
+                    enable_observer=enable_observer,
+                    # 评测已在摄入收尾触发分层图重建，探针显式开 System-2 以利用它：
+                    # 事件排序/摘要/跨会话等聚合题靠类目自顶向下遍历召回，纯 System-1 向量召回不足。
+                    enable_system2=enable_system2,
+                    enable_tools=enable_tools,
+                    memory_eval=memory_eval,
+                    clock_at=clock_at,
+                )
+                status_code = resp.get("status_code", -1)
+                if status_code == 200:
+                    agent_answer = extract_text_from_response(resp.get("data"))
+                    memory = resp.get("memory")
+                else:
+                    error_msg = resp.get("error", "unknown")
+                    agent_answer = f"[ERROR] status={status_code}, error={error_msg}"
+                    memory = None
+                if not _provider_overloaded(status_code, agent_answer):
+                    break
+                wait_s = 20 * (attempt + 1)
+                print(f"  [retry] provider overloaded attempt={attempt + 1} wait={wait_s}s")
+                await asyncio.sleep(wait_s)
 
             record = {
                 "question_id": qid,

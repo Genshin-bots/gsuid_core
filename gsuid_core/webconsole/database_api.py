@@ -3,10 +3,13 @@ Database APIs
 提供数据库管理相关的 RESTful APIs
 """
 
+import re
 import base64
 from typing import Any, Dict
+from urllib.parse import quote
 
 from fastapi import Body, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from gsuid_core.i18n import t
 from gsuid_core.webconsole.app_app import app
@@ -17,12 +20,19 @@ from gsuid_core.utils.database.admin_api import (
     update_record,
     get_table_data,
     get_table_info,
+    iter_table_csv,
     get_plugin_databases,
     get_all_plugin_databases,
 )
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH
 
 from ._api_tags import DATABASE
+
+
+def _csv_content_disposition(table_name: str) -> str:
+    ascii_name = re.sub(r"[^A-Za-z0-9_-]+", "_", table_name).strip("_") or "table"
+    utf8_name = quote(f"{table_name}.csv", safe="")
+    return f"attachment; filename=\"{ascii_name}.csv\"; filename*=UTF-8''{utf8_name}"
 
 
 @app.get("/api/database/plugins", summary="获取所有插件数据库", tags=DATABASE)
@@ -189,6 +199,44 @@ async def get_table_data_api(
 
         logger.error(t("log.webconsole.database_data_fail", error=e))
         return {"status": 1, "msg": str(e), "data": {"items": [], "total": 0, "page": page, "per_page": per_page}}
+
+
+@app.get("/api/database/table/{table_name}/export.csv", summary="导出表数据为 CSV（全量，流式）", tags=DATABASE)
+async def export_table_csv(
+    table_name: str,
+    search: str = "",
+    search_columns: str = "",
+    filter_columns: str = "",
+    filter_values: str = "",
+    _user: Dict[str, Any] = Depends(require_admin),
+):
+    """流式导出整张表（或当前筛选条件下的全部行）为 CSV，不是当前页。
+
+    分批查询 + 线程池编码 + 批间让出事件循环，避免大表导出卡住 Core 主循环。
+    筛选参数与 ``GET .../data`` 相同；忽略 page / per_page。
+    """
+    table_info = get_table_info(table_name)
+    if not table_info:
+        return JSONResponse(
+            {"status": 1, "msg": f"Table {table_name} not found", "data": None},
+            status_code=404,
+        )
+
+    return StreamingResponse(
+        iter_table_csv(
+            table_name,
+            search=search,
+            search_columns=search_columns,
+            filter_columns=filter_columns,
+            filter_values=filter_values,
+        ),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": _csv_content_disposition(table_name),
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/database/table/{table_name}/data", summary="创建记录", tags=DATABASE)

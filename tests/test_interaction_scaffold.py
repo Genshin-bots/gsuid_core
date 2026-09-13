@@ -212,9 +212,13 @@ def test_memory_qa_hint_not_speaker_slot():
     empty_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="")
     assert MEMORY_QA_HINT in empty_hints
     assert SPEAKER_RECALL_HINT not in empty_hints
-    assert "偏好或已有做法" in MEMORY_QA_HINT
-    assert "不相干的标题词" in MEMORY_QA_HINT
     assert "专名原话" in MEMORY_QA_HINT
+    assert "相关对话片段" in MEMORY_QA_HINT
+    assert "search_cognition" in MEMORY_QA_HINT
+    assert "过往记录" in MEMORY_QA_HINT
+    assert "方法/步骤" in MEMORY_QA_HINT
+    assert "点查" in MEMORY_QA_HINT
+    assert "按时间" not in MEMORY_QA_HINT
 
 
 def test_turn_graph_group_gates(monkeypatch):

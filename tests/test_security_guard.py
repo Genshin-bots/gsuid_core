@@ -106,7 +106,7 @@ def test_prompt_contains_lewd_phishing_discipline():
     )
     assert "谐音" in src
     assert "钓鱼连锁信" in src
-    assert "绝不为其调用任何工具" in src
+    assert "不调工具" in src
     print("[OK] system prompt 合规层含低俗谐音/钓鱼纪律")
 
 

@@ -134,40 +134,11 @@ def _edge_date_prefix(e: "Edge") -> str:
     return stamp
 
 
-# 时间范围检索：query 中显式出现的日期（ISO / 中文 / 斜杠格式）。命中≥1 个日期视为
-# 时间锚定问题（"从X到Y依次…"、"X期间…"），语义相似检索对这类枚举/时序问题召回
-# 严重不足（相似度只召回字面相近片段，漏掉时间窗内大量相关片段），需按时间窗直查补召回。
-_QUERY_DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?")
-
-# 时序/枚举/总结类意图词：时间范围补召回只对这类问题有益（需要整段时间线覆盖）；
-# 对"某个时点的具体取值"类精确问题反而会稀释语义命中（BEAM 教训：带两个日期的
-# preference/knowledge_update 点查题被时间泛洪拖垮），故意图词与 ≥2 日期须同时满足。
-_TEMPORAL_INTENT_RE = re.compile(
-    r"(in order|sequence|chronolog|progress|summar|overview|evol|develop|timeline|history|"
-    r"依次|顺序|时间线|先后|经过|演变|变化|历程|总结|概述|回顾)",
-    re.IGNORECASE,
-)
-
-
 def _extract_time_range(query: str) -> Optional[tuple[datetime, datetime]]:
-    """从 query 中提取显式时间范围；无日期或解析失败返回 None。
+    """≥2 日期且带时序/枚举词才开时间窗；点查走语义。"""
+    from .event_time import query_explicit_time_range
 
-    仅当 query 含 ≥2 个日期 **且** 带时序/枚举/总结意图词才触发 → [最早, 最晚+1天]。
-    单个日期或纯点查（"X 那天的值是多少"）不触发：点查靠语义检索更准。
-    """
-    if not _TEMPORAL_INTENT_RE.search(query):
-        return None
-    dates: list[datetime] = []
-    for m in _QUERY_DATE_RE.finditer(query):
-        try:
-            dates.append(datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))))
-        except ValueError:
-            continue
-    if len(set(dates)) < 2:
-        return None
-    from datetime import timedelta
-
-    return min(dates), max(dates) + timedelta(days=1)
+    return query_explicit_time_range(query)
 
 
 async def _fetch_temporal_episodes(
@@ -187,6 +158,11 @@ async def _fetch_temporal_episodes(
     """
     from gsuid_core.ai_core.memory.vector.ops import search_episodes_in_range
 
+    from .event_time import temporal_search_query
+
+    topic = temporal_search_query(query)
+    if len(topic) < 8:
+        return []
     start_ts = start.timestamp()
     end_ts = end.timestamp()
     span = (end_ts - start_ts) / max(buckets, 1)
@@ -194,7 +170,7 @@ async def _fetch_temporal_episodes(
     async def _one_bucket(i: int) -> list[Episode]:
         try:
             return await search_episodes_in_range(
-                query,
+                topic,
                 scope_keys,
                 start_ts + i * span,
                 start_ts + (i + 1) * span,
@@ -300,6 +276,7 @@ class MemoryContext:
     # 时间范围检索命中标记：query 含显式日期范围时置 True。此时问题是枚举/时序型，
     # 时间线证据在 episodes 里，注入预算向片段倾斜（事实占比 55% → 30%）。
     temporal_mode: bool = False
+    time_range: Optional[tuple[datetime, datetime]] = None
     # 评测：dual_route 向量序的前若干条 id，会话排序时压过泛词 LIKE。
     seed_ids: list[str] = field(default_factory=list)
     # 评测：会话级向量分（episode id → cosine），主证据会话用这个排，不靠 seed 条数。
@@ -369,9 +346,9 @@ class MemoryContext:
                     "（各规则按其触发条件适用；未写明条件的按字面最小范围理解，不扩大化）\n" + "\n".join(taken)
                 )
 
-        # 核心事实（最高优先级）
+        # 时间线压到 15%，把预算留给按日用户开场。
         if self.edges:
-            fact_budget = int(max_chars * (0.3 if self.temporal_mode else 0.55))
+            fact_budget = int(max_chars * (0.15 if self.temporal_mode else 0.55))
             edges = self.edges[: memory_config.search_edge_count]
 
             # C4 预算优先级：主人 edge 稳定上浮；A-5 降噪：事件型 trivia 下沉，
@@ -497,8 +474,11 @@ class MemoryContext:
                 self_budget = min(int(max_chars * 0.10), max(0, ep_budget // 5))
                 recent_budget = min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
-                # temporal_mode：单条上限压到 600，让更多时段进入预算
-                ep_cap = 600 if self.temporal_mode else 1000
+                ep_cap = 280 if self.temporal_mode else 1000
+
+                def _assistant_turn(raw: str) -> bool:
+                    low = raw.lstrip().lower()
+                    return low.startswith("assistant:") or raw.lstrip().startswith("[我此前说过]")
 
                 def _ep_lines(items: list[Episode], *, self_mark: bool) -> list[str]:
                     dated: list[str] = []
@@ -520,10 +500,41 @@ class MemoryContext:
                             undated.append(f"{prefix}{raw[:ep_cap]}")
                     return dated + undated
 
-                taken_other = _take(_ep_lines(other_eps, self_mark=False), other_budget)
-                taken_recent = _take(_ep_lines(recent_self, self_mark=True), recent_budget)
-                taken_self = _take(_ep_lines(old_self, self_mark=True), self_budget)
-                taken = taken_other + taken_recent + taken_self
+                if self.temporal_mode and self.time_range is not None:
+                    from gsuid_core.ai_core.memory.retrieval.lexical import parse_episode_valid_at
+
+                    _t0, _t1 = self.time_range
+
+                    def _in_win(ep: Episode) -> bool:
+                        dt = parse_episode_valid_at(ep["valid_at"] or "")
+                        return dt is not None and _t0 <= dt < _t1
+
+                    other_eps = [e for e in other_eps if _in_win(e)]
+                from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    looks_like_count_query,
+                    apply_query_episode_pack,
+                )
+
+                packed = apply_query_episode_pack(
+                    other_eps,
+                    query,
+                    temporal_mode=self.temporal_mode,
+                    time_range=self.time_range,
+                )
+                user_eps = [e for e in packed if not _assistant_turn(e["content"] or "")]
+                asst_eps = [e for e in packed if _assistant_turn(e["content"] or "")]
+                if self.temporal_mode:
+                    taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
+                elif looks_like_count_query(query):
+                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 1600))
+                else:
+                    taken_other = _take(_ep_lines(user_eps, self_mark=False), other_budget)
+                    rest = other_budget - sum(len(x) for x in taken_other)
+                    if rest > 80 and asst_eps:
+                        taken_other.extend(_take(_ep_lines(asst_eps, self_mark=False), rest))
+                    taken_recent = _take(_ep_lines(recent_self, self_mark=True), recent_budget)
+                    taken_self = _take(_ep_lines(old_self, self_mark=True), min(self_budget, 400))
+                    taken = taken_other + taken_recent + taken_self
                 if taken:
                     parts.append("【相关对话片段】\n" + "\n".join(taken))
 
@@ -917,30 +928,39 @@ async def dual_route_retrieve(
     if temporal_task is not None:
         try:
             temporal_eps = await temporal_task
+            from gsuid_core.ai_core.memory.retrieval.lexical import (
+                stride_episodes_chrono,
+                episodes_in_time_window,
+            )
+
             if temporal_eps:
-                # 语义命中在前（rerank 相关性序）、时间分桶结果补尾：BEAM 教训——重排为
-                # 时间序会把语义命中挤出注入预算，换进大量同时段但无关主题的片段。
-                # 语义头部截 20 条给时间补位留出预算空间；temporal 部分按时间轴均匀采样到
-                # 24 条——它是时间升序的，若超预算被尾部截断会恒丢时间窗后半段（BEAM eo__0
-                # 教训：rubric 后半段检查点全 miss）。片段自带日期戳，时序重建交给 LLM。
+                # 语义命中在前；分桶结果补尾。超 24 条按时间轴均匀取样，避免只留窗尾。
                 if len(temporal_eps) > 24:
-                    _step = len(temporal_eps) / 24
-                    temporal_eps = [temporal_eps[int(i * _step)] for i in range(24)]
+                    temporal_eps = stride_episodes_chrono(temporal_eps, cap=24)
                 ranked_episodes = _merge_episodes(ranked_episodes[:20], temporal_eps)
-                # temporal_task 与 time_range 同生命周期; 局部展开帮助 pyright
-                # 把 time_range 收窄到非 None tuple[datetime, datetime]。
-                if time_range is not None:
-                    _t_start, _t_end = time_range
-                else:
-                    _t_start, _t_end = None, None
-                logger.info(
-                    i18n_t(
-                        "log.memory.time_range_supplemental_retrieval_2",
-                        p0=len(temporal_eps),
-                        p1=_t_start,
-                        p2=_t_end,
-                    )
+            # 主题词被剥光时分桶会空；时间窗直查仍要跑，否则整段时间线没了。
+            if time_range is not None and user_id:
+                win_eps = await episodes_in_time_window(
+                    user_id=user_id,
+                    group_id=group_id,
+                    start=time_range[0],
+                    end=time_range[1],
+                    limit=80,
                 )
+                if win_eps:
+                    ranked_episodes = _merge_episodes(ranked_episodes, win_eps)
+            if time_range is not None:
+                _t_start, _t_end = time_range
+            else:
+                _t_start, _t_end = None, None
+            logger.info(
+                i18n_t(
+                    "log.memory.time_range_supplemental_retrieval_2",
+                    p0=len(temporal_eps),
+                    p1=_t_start,
+                    p2=_t_end,
+                )
+            )
         except Exception as e:
             logger.warning(i18n_t("log.memory.time_range_supplemental_retrieval", e=e))
 
@@ -1079,4 +1099,5 @@ async def dual_route_retrieve(
         },
         retrieval_paths=s2_retrieval_paths,
         temporal_mode=time_range is not None,
+        time_range=time_range,
     )

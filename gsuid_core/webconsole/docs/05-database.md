@@ -80,7 +80,28 @@ GET /api/database/table/{table_name}/data
 
 ---
 
-## 5.5 创建记录
+## 5.5 导出表数据为 CSV（全量，流式）
+```
+GET /api/database/table/{table_name}/export.csv
+```
+
+导出**整张表**（或当前筛选条件下的全部行），**不是**当前分页那一页。
+
+**Query 参数**（与 5.4 相同，忽略 `page` / `per_page`）：
+- `search`: 搜索关键字
+- `search_columns`: 搜索列（逗号分隔）
+- `filter_columns`: 过滤列（逗号分隔）
+- `filter_values`: 过滤值（逗号分隔）
+
+**响应**：`text/csv; charset=utf-8` 流。UTF-8 BOM + 表头（字段名）+ 全部匹配行。
+
+实现约束：分批查询（默认 200 行）+ `asyncio.to_thread` 编码 CSV + 批间 `asyncio.sleep(0)`，避免大表导出卡住 Core 主循环。
+
+表不存在时 HTTP 404，封套 `{status: 1, msg, data: null}`。
+
+---
+
+## 5.6 创建记录
 ```
 POST /api/database/table/{table_name}/data
 ```
@@ -89,7 +110,7 @@ POST /api/database/table/{table_name}/data
 
 ---
 
-## 5.6 更新记录
+## 5.7 更新记录
 ```
 PUT /api/database/table/{table_name}/data/{id}
 ```
@@ -98,7 +119,7 @@ PUT /api/database/table/{table_name}/data/{id}
 
 ---
 
-## 5.7 删除记录
+## 5.8 删除记录
 ```
 DELETE /api/database/table/{table_name}/data/{id}
 ```

@@ -29,6 +29,7 @@ from sqlalchemy import (
     union as sql_union,
     exists,
     insert,
+    literal_column,
 )
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,12 +40,39 @@ from sqlalchemy.dialects.postgresql import JSON
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vector
-from gsuid_core.utils.database.base_models import async_maker, with_session, with_read_session
+from gsuid_core.utils.database.base_models import (
+    _db_type,
+    async_maker,
+    with_session,
+    with_read_session,
+)
 
 
 def _like_contains(token: str) -> str:
     escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def _model_table(model: type[SQLModel]) -> Table:
+    name = model.__name__.lower()
+    tables = model.metadata.tables
+    assert name in tables, name
+    return tables[name]
+
+
+def _as_str_col(field: object) -> ColumnElement[str]:
+    assert isinstance(field, ColumnElement)
+    return field
+
+
+def _as_dt_col(field: object) -> ColumnElement[datetime]:
+    assert isinstance(field, ColumnElement)
+    return field
+
+
+def _as_bool_expr(field: object) -> ColumnElement[bool]:
+    assert isinstance(field, ColumnElement)
+    return field
 
 
 def _ids_matching_tokens(
@@ -55,19 +83,17 @@ def _ids_matching_tokens(
     scope_key: str,
     tokens: list[str],
     limit: int,
+    extra_conds: tuple[ColumnElement[bool], ...] = (),
 ) -> Select[tuple[str]]:
-    """每个 token 各自 LIMIT 后 UNION。SQLite 必须包成子查询才认分段 LIMIT。"""
+    """每个 token 最新+最旧各 LIMIT 后 UNION，避免热词只留下半段。"""
     per = max(6, min(12, limit // max(len(tokens), 1) + 2))
     pieces: list[Select[tuple[str]]] = []
     for tok in tokens:
-        inner = (
-            select(id_col.label("eid"))
-            .where(scope_col == scope_key, text_col.like(_like_contains(tok), escape="\\"))
-            .order_by(order_col.desc())
-            .limit(per)
-            .subquery()
-        )
-        pieces.append(select(inner.c.eid))
+        conds = (scope_col == scope_key, text_col.like(_like_contains(tok), escape="\\"), *extra_conds)
+        inner_new = select(id_col.label("eid")).where(*conds).order_by(order_col.desc()).limit(per).subquery()
+        inner_old = select(id_col.label("eid")).where(*conds).order_by(order_col.asc()).limit(per).subquery()
+        pieces.append(select(inner_new.c.eid))
+        pieces.append(select(inner_old.c.eid))
     if len(pieces) == 1:
         return pieces[0]
     unioned = sql_union(*pieces).subquery()
@@ -249,20 +275,35 @@ class AIMemEpisode(SQLModel, table=True):
         scope_key: str,
         tokens: list[str],
         limit: int = 24,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        user_only: bool = False,
     ) -> list["AIMemEpisode"]:
         """按 token 词面召回本 scope 的 Episode（每 token 限条后 UNION，一次往返）。"""
         if not tokens or not scope_key:
             return []
+        extra: list[ColumnElement[bool]] = []
+        c = _model_table(cls).c
+        if start is not None:
+            lo = start.astimezone(timezone.utc).replace(tzinfo=None) if start.tzinfo is not None else start
+            extra.append(_as_bool_expr(c.valid_at >= lo))
+        if end is not None:
+            hi = end.astimezone(timezone.utc).replace(tzinfo=None) if end.tzinfo is not None else end
+            extra.append(_as_bool_expr(c.valid_at < hi))
+        if user_only:
+            extra.append(_as_bool_expr(~c.content.like("assistant:%")))
+            extra.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
         id_q = _ids_matching_tokens(
-            col(cls.id),
-            col(cls.scope_key),
-            col(cls.content),
-            col(cls.valid_at),
+            _as_str_col(c.id),
+            _as_str_col(c.scope_key),
+            _as_str_col(c.content),
+            _as_dt_col(c.valid_at),
             scope_key,
             tokens[:18],
             limit,
+            extra_conds=tuple(extra),
         )
-        stmt = select(cls).where(col(cls.id).in_(id_q))
+        stmt = select(cls).where(c.id.in_(id_q))
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -275,22 +316,105 @@ class AIMemEpisode(SQLModel, table=True):
         start: datetime,
         end: datetime,
         limit: int = 24,
+        ascending: bool = False,
+        offset: int = 0,
+        user_only: bool = False,
     ) -> list["AIMemEpisode"]:
-        """本 scope 在 [start, end] 内的片段。相对日问句用，不是全库 dump。"""
+        """本 scope 在 [start, end) 内的片段。相对日问句用，不是全库 dump。"""
         if not scope_key or limit <= 0:
             return []
         lo = start.astimezone(timezone.utc).replace(tzinfo=None) if start.tzinfo is not None else start
         hi = end.astimezone(timezone.utc).replace(tzinfo=None) if end.tzinfo is not None else end
-        stmt = (
-            select(cls)
-            .where(
-                col(cls.scope_key) == scope_key,
-                col(cls.valid_at) >= lo,
-                col(cls.valid_at) <= hi,
+        c = _model_table(cls).c
+        conds: list[ColumnElement[bool]] = [
+            _as_bool_expr(c.scope_key == scope_key),
+            _as_bool_expr(c.valid_at >= lo),
+            _as_bool_expr(c.valid_at < hi),
+        ]
+        if user_only:
+            conds.append(_as_bool_expr(~c.content.like("assistant:%")))
+            conds.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
+        tie = literal_column("rowid") if _db_type == "sqlite" else c.id
+        if ascending:
+            stmt = select(cls).where(*conds).order_by(c.valid_at.asc(), tie.asc())
+        else:
+            stmt = select(cls).where(*conds).order_by(c.valid_at.desc(), tie.desc())
+        if offset > 0:
+            stmt = stmt.offset(offset)
+        stmt = stmt.limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def count_by_valid_at_range(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        start: datetime,
+        end: datetime,
+        user_only: bool = False,
+    ) -> int:
+        """窗口内条数。user_only 时去掉 assistant 长回复。"""
+        if not scope_key:
+            return 0
+        lo = start.astimezone(timezone.utc).replace(tzinfo=None) if start.tzinfo is not None else start
+        hi = end.astimezone(timezone.utc).replace(tzinfo=None) if end.tzinfo is not None else end
+        c = _model_table(cls).c
+        conds: list[ColumnElement[bool]] = [
+            _as_bool_expr(c.scope_key == scope_key),
+            _as_bool_expr(c.valid_at >= lo),
+            _as_bool_expr(c.valid_at < hi),
+        ]
+        if user_only:
+            conds.append(_as_bool_expr(~c.content.like("assistant:%")))
+            conds.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
+        stmt = select(func.count()).select_from(cls).where(*conds)
+        result = await session.execute(stmt)
+        val = result.scalar_one()
+        return int(val or 0)
+
+    @classmethod
+    @with_read_session
+    async def search_user_day_openers(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        start: datetime,
+        end: datetime,
+        limit: int = 40,
+    ) -> list["AIMemEpisode"]:
+        """每个日历日最早一条用户话。时间线真源。"""
+        if not scope_key or limit <= 0:
+            return []
+        lo = start.astimezone(timezone.utc).replace(tzinfo=None) if start.tzinfo is not None else start
+        hi = end.astimezone(timezone.utc).replace(tzinfo=None) if end.tzinfo is not None else end
+        c = _model_table(cls).c
+        conds: list[ColumnElement[bool]] = [
+            _as_bool_expr(c.scope_key == scope_key),
+            _as_bool_expr(c.valid_at >= lo),
+            _as_bool_expr(c.valid_at < hi),
+            _as_bool_expr(~c.content.like("assistant:%")),
+            _as_bool_expr(~c.content.like("[我此前说过]%")),
+        ]
+        day_col = func.date(c.valid_at)
+        # SQLite 同日撞 00:00:00 时 rowid 才是摄入序；其它库靠 spread 后的 min(valid_at)。
+        if _db_type == "sqlite":
+            rowid = literal_column("rowid")
+            firsts = select(day_col.label("d"), func.min(rowid).label("rid")).where(*conds).group_by(day_col).subquery()
+            stmt = (
+                select(cls)
+                .where(literal_column("aimemepisode.rowid").in_(select(firsts.c.rid)), *conds)
+                .order_by(c.valid_at.asc())
+                .limit(limit)
             )
-            .order_by(col(cls.valid_at).desc())
-            .limit(limit)
-        )
+        else:
+            firsts = (
+                select(day_col.label("d"), func.min(c.valid_at).label("t0")).where(*conds).group_by(day_col).subquery()
+            )
+            stmt = (
+                select(cls).where(c.valid_at.in_(select(firsts.c.t0)), *conds).order_by(c.valid_at.asc()).limit(limit)
+            )
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -1092,16 +1216,17 @@ class AIMemEdge(SQLModel, table=True):
         """按 token 词面召回本 scope 的 Edge（每 token 限条后 UNION，一次往返）。"""
         if not tokens or not scope_key:
             return []
+        c = _model_table(cls).c
         id_q = _ids_matching_tokens(
-            col(cls.id),
-            col(cls.scope_key),
-            col(cls.fact),
-            col(cls.valid_at),
+            _as_str_col(c.id),
+            _as_str_col(c.scope_key),
+            _as_str_col(c.fact),
+            _as_dt_col(c.valid_at),
             scope_key,
             tokens[:18],
             limit,
         )
-        stmt = select(cls).where(col(cls.id).in_(id_q))
+        stmt = select(cls).where(c.id.in_(id_q))
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Union, Literal, Optional, Sequence
 from asyncio import Event as AsyncEvent
+from datetime import datetime
 
 from pydantic_ai.messages import UserContent, ModelMessage
 
@@ -42,6 +43,7 @@ class RunOnceHost:
     dynamic_tools: bool | None
     wall_clock_budget: float | None
     capability_node_id: str
+    turn_clock: datetime | None
     _session_logger: AISessionLogger
     _run_sent_texts: set[str]
     _run_disputes: list[str]

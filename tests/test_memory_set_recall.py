@@ -67,6 +67,46 @@ def test_merge_prefer_extras_keeps_cross_session_hits() -> None:
     assert "zumba" not in {e["id"] for e in dropped}
 
 
+def test_stride_episodes_chrono_keeps_both_ends() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import stride_episodes_chrono
+
+    t0 = datetime(2025, 3, 1, 8, 0, 0)
+    eps = [_ep(f"d{d}", f"day {d}", (t0 + timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")) for d in range(40)]
+    packed = stride_episodes_chrono(eps, cap=24)
+    assert packed[0]["id"] == "d0"
+    assert packed[-1]["id"] == "d39"
+    ids = {e["id"] for e in packed}
+    assert "d0" in ids
+    assert "d39" in ids
+    assert len(packed) == 24
+
+
+def test_stride_episodes_chrono_keeps_last_of_31() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import stride_episodes_chrono
+
+    t0 = datetime(2025, 3, 1, 8, 0, 0)
+    eps = [_ep(f"d{d}", f"day {d}", (t0 + timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")) for d in range(31)]
+    packed = stride_episodes_chrono(eps, cap=16)
+    assert packed[0]["id"] == "d0"
+    assert packed[-1]["id"] == "d30"
+    assert len(packed) == 16
+
+
+def test_pack_timeline_episodes_keeps_each_day() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import pack_timeline_episodes
+
+    t0 = datetime(2025, 3, 1, 8, 0, 0)
+    eps: list[Episode] = []
+    for d in range(8):
+        for j in range(4):
+            dt = t0 + timedelta(days=d, hours=j)
+            eps.append(_ep(f"d{d}t{j}", f"day {d} turn {j}", dt.strftime("%Y-%m-%d %H:%M:%S")))
+    packed = pack_timeline_episodes(eps, cap=10)
+    days = {(e["valid_at"] or "")[:10] for e in packed}
+    assert len(days) >= 8
+    assert packed[0]["id"] == "d0t0"
+
+
 def test_diversify_episodes_round_robins_sessions() -> None:
     t0 = datetime(2023, 5, 1, 12, 0, 0)
     eps: list[Episode] = []
@@ -302,6 +342,116 @@ def test_catalog_timestamp_hint_without_recency_sort() -> None:
     text = _format_memory_catalog(mc, "What is my current salary?")
     assert "350000" in text
     assert "400000" in text
+
+
+def test_query_explicit_time_range_needs_enum_intent() -> None:
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        temporal_search_query,
+        query_explicit_time_range,
+    )
+
+    span = query_explicit_time_range("list the topics in order from 2025-03-01 to 2025-03-31")
+    assert span is not None
+    assert span[0].strftime("%Y-%m-%d") == "2025-03-01"
+    assert span[1].strftime("%Y-%m-%d") == "2025-04-01"
+    assert query_explicit_time_range("What was my salary on 2023-01-01 versus 2023-06-01?") is None
+    topic = temporal_search_query("list the order of Green's functions from 2025-03-01 to 2025-03-31 in order")
+    assert "Green's" in topic or "functions" in topic.lower()
+    assert "2025" not in topic
+
+
+def test_collect_user_stance_skips_not_sure() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import collect_user_stance_conflicts
+
+    q = "summarize my Green's functions learning"
+    eps = [
+        _ep("n", "User: I'm not sure how to track Green's functions progress.", "2025-03-07 10:00:00"),
+        _ep("p", "User: I'm starting my deep dive into Green's functions.", "2025-03-01 10:00:00"),
+    ]
+    assert collect_user_stance_conflicts(eps, q) == []
+
+
+def test_collect_user_stance_conflicts_needs_both_sides() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import collect_user_stance_conflicts
+
+    q = "Have I ever formulated heat equation problems before?"
+    only_neg = [_ep("n", "User: I've never formulated any heat equation problems before today.", "2024-11-02 10:00:00")]
+    assert collect_user_stance_conflicts(only_neg, q) == []
+    both = only_neg + [_ep("p", "User: I completed 5 heat equation problems this week.", "2024-12-01 10:00:00")]
+    hits = collect_user_stance_conflicts(both, q)
+    assert hits
+    assert "never formulated" in hits[0]
+    assert "completed 5" in hits[0]
+
+
+def test_episodes_in_time_window_merges_both_ends() -> None:
+    from datetime import datetime as dt
+
+    from gsuid_core.ai_core.memory.retrieval.lexical import episodes_in_time_window
+
+    class _Row:
+        def __init__(self, eid: str, content: str, valid_at: dt) -> None:
+            self.id = eid
+            self.content = content
+            self.valid_at = valid_at
+            self.scope_key = "user_global:u1"
+
+    newest = [_Row("new", "newest topic", dt(2025, 3, 31, 12, 0, 0))]
+    oldest = [_Row("old", "oldest topic", dt(2025, 3, 1, 12, 0, 0))]
+
+    async def fake_search(
+        scope_key: str,
+        start: dt,
+        end: dt,
+        limit: int = 24,
+        ascending: bool = False,
+        offset: int = 0,
+        user_only: bool = False,
+    ) -> list[_Row]:
+        return oldest if ascending else newest
+
+    async def fake_count(
+        scope_key: str,
+        start: dt,
+        end: dt,
+        user_only: bool = False,
+    ) -> int:
+        return 40
+
+    async def fake_openers(
+        scope_key: str,
+        start: dt,
+        end: dt,
+        limit: int = 40,
+    ) -> list[_Row]:
+        return []
+
+    with (
+        patch(
+            "gsuid_core.ai_core.memory.database.models.AIMemEpisode.search_by_valid_at_range",
+            new=fake_search,
+        ),
+        patch(
+            "gsuid_core.ai_core.memory.database.models.AIMemEpisode.count_by_valid_at_range",
+            new=fake_count,
+        ),
+        patch(
+            "gsuid_core.ai_core.memory.database.models.AIMemEpisode.search_user_day_openers",
+            new=fake_openers,
+        ),
+    ):
+        eps = _run(
+            episodes_in_time_window(
+                user_id="u1",
+                group_id=None,
+                start=dt(2025, 3, 1),
+                end=dt(2025, 4, 1),
+                limit=8,
+            )
+        )
+    ids = [e["id"] for e in eps]
+    assert "old" in ids
+    assert "new" in ids
 
 
 def test_production_paths_do_not_import_eval_protocol() -> None:

@@ -756,7 +756,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = "<SILENCE>"
                 elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
                     result_msg = "<SILENCE>"
-                elif not st.image_sent_this_run and looks_like_numeric_recitation(_rs):
+                elif not st.image_sent_this_run and looks_like_numeric_recitation(_rs) and st.intent != "问答":
                     result_msg = "<SILENCE>"
                 elif (
                     _render_obligation

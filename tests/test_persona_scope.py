@@ -132,5 +132,8 @@ def test_inspector_should_inspect_respects_channel() -> None:
 
 
 def test_template_options_include_new_scopes() -> None:
-    options = persona_config_manager._config_template["scope"].options
-    assert list(options) == list(PERSONA_SCOPE_VALUES)
+    from gsuid_core.utils.plugins_config.models import GsStrConfig
+
+    scope_cfg = persona_config_manager._config_template["scope"]
+    assert isinstance(scope_cfg, GsStrConfig)
+    assert list(scope_cfg.options) == list(PERSONA_SCOPE_VALUES)

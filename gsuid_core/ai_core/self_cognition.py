@@ -155,7 +155,8 @@ async def add_self_note(
 
     def _mutate(current: Any) -> Dict[str, object]:
         model = _self_model_state(current)
-        items = list(model[field]) if isinstance(model[field], list) else []
+        raw_items = model[field]
+        items: list[str] = [x for x in raw_items if isinstance(x, str)] if isinstance(raw_items, list) else []
         if content in items:
             items.remove(content)
         items.append(content)

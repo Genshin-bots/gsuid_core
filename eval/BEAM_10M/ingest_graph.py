@@ -137,7 +137,9 @@ def _plan_payload_turns(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         if iso:
             item["timestamp"] = iso
         payload_turns.append(item)
-    return payload_turns
+    from eval.BEAM_10M.timestamps import spread_payload_timestamps
+
+    return spread_payload_timestamps(payload_turns)
 
 
 async def ingest_segment_extract(

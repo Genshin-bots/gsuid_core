@@ -79,18 +79,17 @@ def test_clean_retry_on_last_attempt_reruns(monkeypatch: pytest.MonkeyPatch) -> 
 
     import gsuid_core.ai_core.gs_agent as ga
     from gsuid_core.ai_core.utils import ERROR_RESULT_PREFIX
+    from gsuid_core.ai_core.session_logger import AISessionLogger
 
-    class _Log:
+    class _Log(AISessionLogger):
         run_end = 0
+
+        def __init__(self) -> None:
+            super().__init__(session_id="test", is_subagent=True)
+            self.run_end = 0
 
         def log_run_end(self) -> None:
             self.run_end += 1
-
-        def log_result(self, text: str, tools: object) -> None:
-            return
-
-        def log_error(self, kind: str, msg: str) -> None:
-            return
 
     original_get = ga.ai_config.get_config
 
@@ -105,16 +104,17 @@ def test_clean_retry_on_last_attempt_reruns(monkeypatch: pytest.MonkeyPatch) -> 
     agent = object.__new__(ga.GsCoreAIAgent)
     agent._run_sent_texts = set()
     agent._last_attempt_tool_calls = ["send_message_by_ai"]
-    agent._session_logger = _Log()
+    session_log = _Log()
+    agent._session_logger = session_log
     calls = {"n": 0}
     err = ModelHTTPError(status_code=400, model_name="m", body={"message": "invalid function arguments"})
 
-    async def fake_once(**kwargs: object) -> str:
+    async def fake_once(*_a: object, **_k: object) -> str:
         calls["n"] += 1
         raise err
 
     agent._execute_run_once = fake_once
     result = asyncio.run(agent._execute_run(user_message="hi"))
     assert calls["n"] == 2
-    assert agent._session_logger.run_end == 1
+    assert session_log.run_end == 1
     assert result.startswith(ERROR_RESULT_PREFIX)

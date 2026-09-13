@@ -399,13 +399,21 @@ def _eval_ooc(
 
     if channel == "tool":
         mark_ooc_reminded(extra)
-    logger.warning(
-        i18n_t(
-            "log.ai.output_gate_ooc_defer" if channel == "main" else "log.ai.output_gate_ooc_rewrite_first_warn",
-            category=hit.category,
-            matched=repr(hit.matched[:4]),
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_rewrite_first_warn",
+                category=hit.category,
+                matched=repr(hit.matched[:4]),
+            )
         )
-    )
+    else:
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_defer",
+                category=hit.category,
+                matched=repr(hit.matched[:4]),
+            )
+        )
     return GateResult(
         decision=GateDecision.REWRITE,
         policy="ooc",

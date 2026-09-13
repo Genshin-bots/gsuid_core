@@ -17,8 +17,9 @@ import re
 import time
 import queue as sync_queue
 import asyncio
-from typing import Tuple, Optional, Sequence, TypedDict
+from typing import Tuple, Optional, TypedDict
 from collections import defaultdict
+from collections.abc import Collection
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -355,7 +356,7 @@ class IngestionWorker:
         self._priority_flush_at[scope_key] = now
         asyncio.create_task(self._priority_flush(scope_key))
 
-    def peek_buffers(self, scope_keys: Sequence[str]) -> list[ObservationRecord]:
+    def peek_buffers(self, scope_keys: Collection[str]) -> list[ObservationRecord]:
         """只读复制指定 scope 尚未 flush 的记录（不建空桶）。"""
         wanted = frozenset(scope_keys)
         out: list[ObservationRecord] = []

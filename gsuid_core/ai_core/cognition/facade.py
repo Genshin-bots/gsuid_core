@@ -394,6 +394,14 @@ async def _search_memory(
             group_id=scope.group_id,
             clock=scope.clock_at,
         )
+        from gsuid_core.ai_core.memory.retrieval.lexical import apply_query_episode_pack
+
+        ctx.episodes = apply_query_episode_pack(
+            ctx.episodes,
+            search_q,
+            temporal_mode=ctx.temporal_mode,
+            time_range=ctx.time_range,
+        )
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
     speaker_ids = {scope.user_id} if scope.user_id else set()
@@ -893,8 +901,9 @@ async def inject_memory_slice(
         bot_self_id=scope.bot_self_id,
         include_self=True,
     )
+    cap = int(memory_config.memory_inject_max_chars)
     memory_text = ctx.to_prompt_text(
-        max_chars=memory_config.memory_inject_max_chars,
+        max_chars=cap,
         priority_speakers=priority_speakers or None,
         current_speaker_ids=current_speaker_ids or None,
         query=query,

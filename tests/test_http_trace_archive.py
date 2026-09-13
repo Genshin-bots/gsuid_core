@@ -109,7 +109,8 @@ def test_legacy_flat_jsonl_still_readable(archive_env: Path) -> None:
     assert rows[0]["trace_id"] == tid
     detail = get_http_trace_from_jsonl(tid, today)
     assert detail is not None
-    assert detail["response_preview"] == "legacy-preview"
+    preview = detail["response_preview"] if "response_preview" in detail else None
+    assert preview == "legacy-preview"
 
 
 def test_list_ignores_legacy_when_index_exists(archive_env: Path) -> None:

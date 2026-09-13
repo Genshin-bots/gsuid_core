@@ -1,12 +1,15 @@
 """生产词面召回：query 实词 + 命中专名跨会话补条。Chat 不走 eval_protocol。
 
-问句类型不在这里用正则分流。预算由意图/CheapGate 定；时间戳交给模型取最晚。
+时间线/计数问句在 apply_query_episode_pack 整形；点查保持检索序。
 """
 
 from __future__ import annotations
 
 import re
+import asyncio
 from datetime import datetime, timezone
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from gsuid_core.ai_core.memory.retrieval.types import Episode
 
@@ -156,10 +159,10 @@ _CLOCK_PREFIX_RE = re.compile(r"^(?:当前时间[：:]\s*[^\n]+\n+)+")
 _CLOCK_LINE_RE = re.compile(r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
 _SHORT_TOKEN_RES: dict[str, re.Pattern[str]] = {}
 _SESSION_GAP_SEC = 45
-_LEXICAL_CAP = 56
+_LEXICAL_CAP = 72
 _PRIMARY_KEEP = 16
 _HOP_TOKEN_CAP = 12
-_WINDOW_EPISODE_CAP = 24
+_WINDOW_EPISODE_CAP = 64
 
 LATEST_WINS_HINT = "同一属性多个时间戳是更新，只取最晚 as_of。"
 SET_RECALL_HINT = "计数/清单可能跨多段会话；本页未齐时用命中里的专名再 search_cognition。"
@@ -250,11 +253,40 @@ def query_tokens(query: str) -> list[str]:
     return out
 
 
+def _assistant_turn(raw: str) -> bool:
+    low = raw.lstrip().lower()
+    return low.startswith("assistant:") or raw.lstrip().startswith("[我此前说过]")
+
+
+def _polarity_samples(episodes: list[Episode], per_side: int) -> list[Episode]:
+    """用户话正反极性各取几条，避免 hop 只从单侧簇长出来。"""
+    from gsuid_core.ai_core.memory.ingestion.edge import _fact_polarity
+
+    pos: list[Episode] = []
+    neg: list[Episode] = []
+    for ep in episodes:
+        raw = ep["content"] or ""
+        if _assistant_turn(raw):
+            continue
+        bucket = neg if _fact_polarity(raw) else pos
+        if len(bucket) < per_side:
+            bucket.append(ep)
+        if len(pos) >= per_side and len(neg) >= per_side:
+            break
+    return pos + neg
+
+
 def extra_tokens_from_hits(episodes: list[Episode], query: str, cap: int = _HOP_TOKEN_CAP) -> list[str]:
     """从已命中片段抽专名，用来跨会话 LIKE。泛词（class/session）不进。"""
     qset = {t.lower() for t in query_tokens(query)}
     counts: dict[str, int] = {}
     sample = diversify_episodes(episodes, cap=16) if len(episodes) > 6 else list(episodes)
+    seen_ids = {str(e["id"]) for e in sample if "id" in e}
+    for ep in _polarity_samples(episodes, per_side=4):
+        eid = str(ep["id"]) if "id" in ep else ""
+        if eid and eid not in seen_ids:
+            sample.append(ep)
+            seen_ids.add(eid)
     for ep in sample:
         content = str(ep["content"]) if "content" in ep else ""
         if not content:
@@ -323,6 +355,138 @@ def cluster_episodes_by_time(eps: list[Episode], gap_sec: int = _SESSION_GAP_SEC
     if undated:
         clusters.append(undated)
     return clusters
+
+
+def _inclusive_stride_indices(n: int, cap: int) -> list[int]:
+    """均匀取样下标，强制含 0 和 n-1。"""
+    if cap <= 0 or n <= 0:
+        return []
+    if n <= cap:
+        return list(range(n))
+    if cap == 1:
+        return [0]
+    return [int(i * (n - 1) / (cap - 1)) for i in range(cap)]
+
+
+def stride_episodes_chrono(episodes: list[Episode], cap: int) -> list[Episode]:
+    """按 valid_at 均匀取样，两端都留。禁止取时间序前缀。"""
+    if cap <= 0:
+        return []
+    eps = sorted(episodes, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    return [eps[i] for i in _inclusive_stride_indices(len(eps), cap)]
+
+
+async def expand_episode_neighbors(
+    episodes: list[Episode],
+    *,
+    seed: int = 8,
+    before: int = 3,
+    after: int = 3,
+    cap: int = 72,
+) -> list[Episode]:
+    """命中后再取同 scope 时间邻条，把同一会话的计数/主题补回来。"""
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+
+    if not episodes or (before <= 0 and after <= 0):
+        return episodes
+    extra: list[Episode] = []
+    seen = {str(ep["id"]) for ep in episodes if "id" in ep}
+    for ep in list(episodes)[: max(1, seed)]:
+        dt = parse_episode_valid_at(str(ep["valid_at"]) if "valid_at" in ep else "")
+        scope_key = str(ep["scope_key"]) if "scope_key" in ep else ""
+        if dt is None or not scope_key:
+            continue
+        try:
+            rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=before, after=after)
+        except (TypeError, RuntimeError, OSError):
+            return episodes
+        for row in rows:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            extra.append(_episode_from_row(row.id, row.content or "", row.valid_at, row.scope_key))
+    if not extra:
+        return episodes
+    return merge_episode_lists(list(episodes), extra, prefer_extras=True, limit=cap)
+
+
+_COUNT_QUERY_RE = re.compile(
+    r"\bhow many\b|"
+    r"(?:一共|总共|合计|共).{0,12}(?:多少|几)|"
+    r"(?:多少|几)(?:个|次|条|题|项|遍|件)|"
+    r"几次",
+    re.IGNORECASE,
+)
+_COUNT_EXCLUDE_RE = re.compile(
+    r"多少钱|多少块|多少岁|多少度|多少号|how much (?:is|does|for)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_count_query(query: str) -> bool:
+    """过往数量/次数。排除多少钱/多少度等实时问价。"""
+    q = strip_clock_lines(query or "")
+    if not q or _COUNT_EXCLUDE_RE.search(q):
+        return False
+    if _COUNT_QUERY_RE.search(q):
+        return True
+    return bool(re.search(r"\bhow many\b.{0,80}\b(?:I|we|my)\b|\b(?:I|we|my)\b.{0,80}\bhow many\b", q, re.I))
+
+
+def apply_query_episode_pack(
+    episodes: list[Episode],
+    query: str,
+    *,
+    temporal_mode: bool,
+    time_range: tuple[datetime, datetime] | None,
+) -> list[Episode]:
+    """Chat 注入与 search_cognition 共用。时间线/计数才改形状，点查保持检索序。"""
+    eps = list(episodes)
+    if temporal_mode:
+        if time_range is not None:
+            t0, t1 = time_range
+            kept: list[Episode] = []
+            for e in eps:
+                dt = parse_episode_valid_at(e["valid_at"] or "")
+                if dt is not None and t0 <= dt < t1:
+                    kept.append(e)
+            eps = kept
+        user = [e for e in eps if not _assistant_turn(e["content"] or "")]
+        user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+        return pack_timeline_episodes(user, cap=16)
+    if looks_like_count_query(query):
+        user = [e for e in eps if not _assistant_turn(e["content"] or "")]
+        digit = [e for e in user if re.search(r"\d", e["content"] or "")]
+        rest = [e for e in user if not re.search(r"\d", e["content"] or "")]
+        return (digit + rest)[:48]
+    return eps
+
+
+def pack_timeline_episodes(episodes: list[Episode], cap: int) -> list[Episode]:
+    """每个日历日保留输入序第一条用户话。同日 valid_at 常撞 00:00:00，须调用方按 rowid 序传入。"""
+    if cap <= 0:
+        return []
+    by_day: dict[str, Episode] = {}
+    undated: list[Episode] = []
+    for ep in episodes:
+        day = (ep["valid_at"] or "")[:10]
+        if len(day) < 10:
+            undated.append(ep)
+            continue
+        if day in by_day:
+            continue
+        if _assistant_turn(ep["content"] or ""):
+            continue
+        by_day[day] = ep
+    days = sorted(by_day)
+    if len(days) > cap:
+        days = [days[i] for i in _inclusive_stride_indices(len(days), cap)]
+    out = [by_day[d] for d in days]
+    for ep in undated:
+        if len(out) >= cap:
+            break
+        out.append(ep)
+    return out[:cap]
 
 
 def diversify_episodes(episodes: list[Episode], cap: int) -> list[Episode]:
@@ -404,6 +568,9 @@ async def lexical_search_episodes(
     group_id: str | None,
     hits: list[Episode],
     limit: int = _LEXICAL_CAP,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    user_only: bool = False,
 ) -> list[Episode]:
     """SQL LIKE 跨会话补条。一次 UNION 往返；单测无库则空列表。"""
     if not user_id or not (query or "").strip():
@@ -422,7 +589,14 @@ async def lexical_search_episodes(
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
     try:
-        rows = await AIMemEpisode.search_by_tokens(memory_scope_key(user_id, group_id), tokens, limit=limit)
+        rows = await AIMemEpisode.search_by_tokens(
+            memory_scope_key(user_id, group_id),
+            tokens,
+            limit=limit,
+            start=start,
+            end=end,
+            user_only=user_only,
+        )
     except (TypeError, RuntimeError, OSError) as e:
         from gsuid_core.i18n import t
         from gsuid_core.logger import logger
@@ -452,25 +626,87 @@ async def episodes_in_time_window(
     end: datetime,
     limit: int = _WINDOW_EPISODE_CAP,
 ) -> list[Episode]:
-    """按 valid_at 取相对日窗口内的片段。无库则空。"""
+    """用户话两端取样。同日 00:00:00 时 GROUP BY 会把 LIMIT 打满在第一天。"""
     if not user_id:
         return []
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
+    fetch_n = max(limit, 80)
+    scope = memory_scope_key(user_id, group_id)
     try:
-        rows = await AIMemEpisode.search_by_valid_at_range(
-            memory_scope_key(user_id, group_id),
-            start,
-            end,
-            limit=limit,
-        )
-    except (TypeError, RuntimeError, OSError) as e:
+        n = await AIMemEpisode.count_by_valid_at_range(scope, start, end, user_only=True)
+        jobs = [
+            AIMemEpisode.search_user_day_openers(scope, start, end, limit=max(limit, 40)),
+            AIMemEpisode.search_by_valid_at_range(scope, start, end, limit=fetch_n, user_only=True, ascending=True),
+            AIMemEpisode.search_by_valid_at_range(scope, start, end, limit=fetch_n, user_only=True),
+        ]
+        if n > fetch_n * 2:
+            for frac in (0.25, 0.5, 0.75):
+                jobs.append(
+                    AIMemEpisode.search_by_valid_at_range(
+                        scope,
+                        start,
+                        end,
+                        limit=fetch_n,
+                        user_only=True,
+                        ascending=True,
+                        offset=int(n * frac),
+                    )
+                )
+        batches = await asyncio.gather(*jobs)
+        openers = batches[0]
+        oldest = batches[1]
+        newest = batches[2]
+        extra_rows = [row for batch in batches[3:] for row in batch]
+    except (TypeError, RuntimeError, OSError, SQLAlchemyError) as e:
         from gsuid_core.i18n import t
         from gsuid_core.logger import logger
 
         logger.debug(t("log.ai.cognition_backend_fail", backend="time_window", e=e))
         return []
-    return [_episode_from_row(row.id, row.content or "", row.valid_at, row.scope_key) for row in rows]
+    seen: set[str] = set()
+    eps: list[Episode] = []
+    # 日开场在前，pack 才不会被同日作业题占掉；DESC 切片倒过来取当天最早而非最晚。
+    for row in list(openers) + list(oldest) + extra_rows + list(reversed(list(newest))):
+        if row.id in seen:
+            continue
+        seen.add(row.id)
+        eps.append(_episode_from_row(row.id, row.content or "", row.valid_at, row.scope_key))
+    return pack_timeline_episodes(eps, cap=limit)
+
+
+_WEAK_NEG_RE = re.compile(
+    r"\bnot sure\b|\bnot certain\b|\bdon't know\b|\bdo not know\b|不确定|不知道",
+    re.IGNORECASE,
+)
+
+
+def collect_user_stance_conflicts(episodes: list[Episode], query: str, cap: int = 3) -> list[str]:
+    """问句主题上用户正说/反说同时出现时，写成矛盾摘要。"""
+    from gsuid_core.ai_core.memory.ingestion.edge import _fact_polarity
+
+    q_toks = {t.lower() for t in query_tokens(query)}
+    if not q_toks:
+        return []
+    need = 2 if len(q_toks) >= 3 else 1
+    pos: list[str] = []
+    neg: list[str] = []
+    for ep in episodes:
+        raw = (ep["content"] or "").strip()
+        if len(raw) < 8 or _assistant_turn(raw):
+            continue
+        blob = raw.lower()
+        overlap = sum(1 for t in q_toks if token_in_text(t, blob))
+        if overlap < need:
+            continue
+        stance = _WEAK_NEG_RE.sub(" ", raw)
+        (neg if _fact_polarity(stance) else pos).append(raw)
+        if len(pos) >= 4 and len(neg) >= 4:
+            break
+    if not pos or not neg:
+        return []
+    n = min(cap, len(pos), len(neg))
+    return [f"用户曾说「{neg[i][:120]}」，也说过「{pos[i][:120]}」" for i in range(n)]
 
 
 async def expand_lexical_recall(
@@ -486,6 +722,7 @@ async def expand_lexical_recall(
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         query_time_window,
         has_relative_time_span,
+        query_explicit_time_range,
         strip_relative_time_spans,
     )
 
@@ -493,12 +730,21 @@ async def expand_lexical_recall(
     relative = has_relative_time_span(body)
     search_q = strip_relative_time_spans(body) if relative else body
     search_q = search_q or body
+    clock_used = clock if clock is not None else datetime.now()
+    window = query_time_window(body, clock_used)
+    if window is None:
+        window = query_explicit_time_range(body)
+    in_win = window is not None
+    count_q = looks_like_count_query(body)
     extras = await lexical_search_episodes(
         search_q,
         user_id=user_id,
         group_id=group_id,
         hits=episodes,
         limit=limit,
+        start=window[0] if in_win else None,
+        end=window[1] if in_win else None,
+        user_only=in_win or count_q,
     )
     merged = merge_episode_lists(episodes, extras, prefer_extras=True, limit=limit)
     if extras:
@@ -510,10 +756,11 @@ async def expand_lexical_recall(
                 group_id=group_id,
                 hits=merged,
                 limit=limit,
+                start=window[0] if in_win else None,
+                end=window[1] if in_win else None,
+                user_only=in_win or count_q,
             )
             merged = merge_episode_lists(merged, hop, prefer_extras=True, limit=limit)
-    clock_used = clock if clock is not None else datetime.now()
-    window = query_time_window(body, clock_used)
     if window is not None:
         ranged = await episodes_in_time_window(
             user_id=user_id,
@@ -522,7 +769,8 @@ async def expand_lexical_recall(
             end=window[1],
             limit=_WINDOW_EPISODE_CAP,
         )
-        merged = merge_episode_lists(merged, ranged, prefer_extras=True, limit=limit)
+        if ranged:
+            merged = merge_episode_lists(merged, ranged, prefer_extras=True, limit=limit)
     return merged[:limit]
 
 
@@ -533,16 +781,22 @@ apply_set_recall = expand_lexical_recall
 __all__ = [
     "LATEST_WINS_HINT",
     "SET_RECALL_HINT",
+    "apply_query_episode_pack",
     "apply_set_recall",
     "cluster_episodes_by_time",
+    "collect_user_stance_conflicts",
     "diversify_episodes",
     "episodes_in_time_window",
+    "expand_episode_neighbors",
     "expand_lexical_recall",
     "extra_tokens_from_hits",
     "lexical_search_episodes",
+    "looks_like_count_query",
     "memory_scope_key",
     "merge_episode_lists",
+    "pack_timeline_episodes",
     "parse_episode_valid_at",
+    "stride_episodes_chrono",
     "query_overlaps_text",
     "query_tokens",
     "sql_like_tokens",

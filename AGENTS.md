@@ -97,10 +97,7 @@ uv run core --host 0.0.0.0 --port 9527     # CLI 覆盖不写回文件
 ```
 
 ```sh
-# 检查
-uv run ruff check gsuid_core tests eval
-uv run ruff format --check gsuid_core tests eval
-uv run pytest tests/test_interaction_scaffold.py -q
+# 检查命令见下「交付闸」——改完必须全绿，否则不算完成
 ```
 
 实机评测必须打**已启动且加载全部插件**的 core（不要 `--dev`）：
@@ -123,6 +120,22 @@ uv run core --port 8765
 - 行宽 120（ruff）；`#` 注释更严，见 §1.6。
 - 改交互脚手架必须跑 `tests/test_interaction_scaffold.py`（正反双向）。
 - 改工具 docstring / covers：`tests/test_ai_tool_docstrings.py`。
+- 框架 `logger.*` 必须走 `t()` / `i18n_t()`，**第一参必须是静态字符串 key**（`log.<module>.<semantic>`）；禁止三元 / 拼接 / 变量当 key。改日志或 locale 必须跑 `tests/test_logger_i18n.py`（即 `.github/workflows/i18n.yml`）。
+
+## 交付闸（改完必须过，否则不算完成）
+
+**每次改动在向用户宣告完成之前**，必须在仓库根目录把下面全部跑绿。缺一项、失败一项都不许交付：
+
+```sh
+uv run ruff check gsuid_core tests eval
+uv run ruff format --check gsuid_core tests eval
+uv run pytest tests -q
+uv run basedpyright
+```
+
+- **CI**：当前仓库 CI 含 i18n 守门（`tests/test_logger_i18n.py`）。`pytest tests` 已覆盖；若只改了触及面，至少跑触及测试 **加上** `tests/test_logger_i18n.py`。
+- **pyright**：`basedpyright` 与 `pyright` 择一，配置见 `pyrightconfig.json`（`basic`，排除 `plugins` / `data`）。新增标红必须按 §1.5 修掉，禁止 `cast` / `type: ignore` / `Any` 糊弄。
+- 装配 / 闸门 / 每轮注入 / 启动顺序：单测全绿仍不够，还要对照 `eval/agent` 群聊基准（见上）。
 
 ## Security notes
 
@@ -298,6 +311,11 @@ PERSONA_FALLBACK_TEXT = "这个不太想说呢。"
 - 插件代码；评测 / 单测用某个已启用人格名做寻址 fixture；历史事故注释点名具体插件。
 - HTML 模板库的通用版式名（metrics / ranking / weather 卡片）是可视化原语，不是路由特判。
 - 遗留的游戏 UID / Cookie / Enka 工具在 `utils/`，服务已装插件，不进 AI 路由词表。
+
+### 1.10 未过交付闸禁止宣告完成
+
+改完必须把「交付闸」跑绿（ruff / format / `pytest tests` / basedpyright，以及 CI 的 i18n）。
+缺项或失败不许说做完。`i18n_t()` / `t()` 的 key 必须是静态字符串，禁止三元表达式。
 
 ---
 
@@ -739,5 +757,6 @@ bot = Bot(_bot, mock_ev)
 5. **代码组织 → 相关方法封装在类中，使用 dataclass/TypedDict 定义数据结构**
 6. **Bot 类型 → 插件/触发器用 `Bot`（高层），框架内部用 `_Bot`（底层），禁止混用**
 7. **注释精简 → `#` 注释最多两行、每行 ≤88 字，只写「为什么/坑/边界」，不复述代码**
+8. **交付闸 → ruff / format / pytest / basedpyright（及 CI 的 i18n）全绿才允许说做完**
 
 专题细节按 Skills 表按需加载，不要把整本 `references/` 一次读完。

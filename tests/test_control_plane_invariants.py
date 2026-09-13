@@ -421,6 +421,13 @@ def test_inv4_settle_absorbs_nested_facts_before_obligation_check() -> None:
     assert src.index("_obligations_met(_directive, st)") < src.index("_should_deliver_withheld(")
 
 
+def test_qa_intent_does_not_skip_report_dump_silence() -> None:
+    src = inspect.getsource(settle_mod.SettlePhase._run_once_settle_result)
+    assert 'looks_like_numeric_recitation(_rs) and st.intent != "问答"' in src
+    dump = src.rindex("_looks_like_report_speech(_rs)")
+    assert "问答" not in src[dump : dump + 80]
+
+
 def test_inv4_prepare_skips_hints_on_framework_envelope() -> None:
     from gsuid_core.ai_core.agent_run import prepare as prepare_mod
 

@@ -863,10 +863,17 @@ def update_manual_knowledge(entity_id: str, updates: ManualKnowledgeUpdate) -> b
     """
     for i, existing in enumerate(_MANUAL_ENTITIES):
         if existing["id"] == entity_id:
-            # 不允许修改 id 和 source
-            updates.pop("id", None)
-            updates.pop("source", None)
-            _MANUAL_ENTITIES[i].update(updates)
+            row: ManualKnowledgeBase = {
+                "id": existing["id"],
+                "plugin": updates["plugin"] if "plugin" in updates else existing["plugin"],
+                "title": updates["title"] if "title" in updates else existing["title"],
+                "content": updates["content"] if "content" in updates else existing["content"],
+                "tags": updates["tags"] if "tags" in updates else existing["tags"],
+                "source": existing["source"],
+            }
+            if "entity" in existing:
+                row["entity"] = existing["entity"]
+            _MANUAL_ENTITIES[i] = row
             logger.trace(t("log.ai_registry.manual_entity_updated", entity_id=entity_id))
             return True
     return False

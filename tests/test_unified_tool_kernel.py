@@ -43,18 +43,48 @@ def test_kernel_is_channel_agnostic() -> None:
 
 
 def test_skip_search_idle_both_channels() -> None:
-    idle = dict(
+    assert (
+        should_skip_tool_search(
+            is_group=False,
+            call_to_self=True,
+            in_flight_short=False,
+            followup_detected=False,
+            has_active_task=False,
+            has_media=False,
+            intent="闲聊",
+        )
+        is False
+    )
+    assert (
+        should_skip_tool_search(
+            is_group=True,
+            call_to_self=True,
+            in_flight_short=False,
+            followup_detected=False,
+            has_active_task=False,
+            has_media=False,
+            intent="闲聊",
+        )
+        is False
+    )
+    assert not should_skip_tool_search(
+        is_group=False,
+        call_to_self=True,
         in_flight_short=False,
         followup_detected=False,
         has_active_task=False,
         has_media=False,
-        intent="闲聊",
+        intent="工具",
     )
-    assert should_skip_tool_search(is_group=False, call_to_self=True, **idle) is False
-    assert should_skip_tool_search(is_group=True, call_to_self=True, **idle) is False
-    work = {**idle, "intent": "工具"}
-    assert not should_skip_tool_search(is_group=False, call_to_self=True, **work)
-    assert not should_skip_tool_search(is_group=True, call_to_self=True, **work)
+    assert not should_skip_tool_search(
+        is_group=True,
+        call_to_self=True,
+        in_flight_short=False,
+        followup_detected=False,
+        has_active_task=False,
+        has_media=False,
+        intent="工具",
+    )
 
 
 def test_group_idle_request_limit_addressed_not_capped() -> None:

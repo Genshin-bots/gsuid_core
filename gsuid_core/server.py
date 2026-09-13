@@ -158,12 +158,16 @@ _pending_update: List[str] = []
 _import_durations: List[Tuple[str, float]] = []
 
 
+@overload
+def on_core_start(func: F, /) -> F: ...
+@overload
+def on_core_start(*, priority: int = 0) -> Callable[[F], F]: ...
 def on_core_start(
-    func: Optional[Callable] = None,
+    func: Optional[F] = None,
     /,
     priority: int = 0,
-):
-    def decorator(f: Callable) -> Callable:
+) -> F | Callable[[F], F]:
+    def decorator(f: F) -> F:
         core_start_def.add(_DefHook(priority=priority, func=f))
         return f
 

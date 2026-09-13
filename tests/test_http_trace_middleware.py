@@ -205,7 +205,8 @@ def test_post_json_body_identity(mw_env: tuple[Path, HttpTraceCollector]) -> Non
     meta = get_http_trace_from_jsonl(tid)
     assert meta is not None
     assert meta["status"] == "completed"
-    assert meta["status_code"] == 200
+    status_code = meta["status_code"] if "status_code" in meta else None
+    assert status_code == 200
     assert meta["method"] == "POST"
     assert meta["path"] == "/api/echo"
 

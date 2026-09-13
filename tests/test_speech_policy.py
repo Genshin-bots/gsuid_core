@@ -414,10 +414,11 @@ def test_task_ack_is_required_not_optional() -> None:
     speech = (root / "gsuid_core/ai_core/agent_run/speech_policy.py").read_text(encoding="utf-8")
     prompts = (root / "gsuid_core/ai_core/persona/prompts.py").read_text(encoding="utf-8")
     sub = (root / "gsuid_core/ai_core/buildin_tools/subagent.py").read_text(encoding="utf-8")
+    web = (root / "gsuid_core/ai_core/buildin_tools/web_search.py").read_text(encoding="utf-8")
     assert "重任务接任务必须短应" in speech
     assert "轻查询不先应" in speech
     assert "或直接干活" not in prompts
-    assert "自己组合查询词" in prompts
+    assert "自己组合查询词" in web
     assert "短应走正文或" not in sub
     assert needs_task_ack_turn(
         create_by="Chat",

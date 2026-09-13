@@ -4,7 +4,8 @@
 前置条件：rag/base.py 的 init_embedding_model() 必须已执行。
 """
 
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Optional
+from collections.abc import Collection
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -114,7 +115,7 @@ def get_ingestion_worker_or_none() -> Optional["IngestionWorker"]:
     return _ingestion_worker
 
 
-def peek_ingestion_buffers(scope_keys: Sequence[str]) -> list["ObservationRecord"]:
+def peek_ingestion_buffers(scope_keys: Collection[str]) -> list["ObservationRecord"]:
     """只读复制尚未 flush 的缓冲；worker 未启动则空列表。"""
     if _ingestion_worker is None:
         return []

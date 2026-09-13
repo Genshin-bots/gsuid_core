@@ -6,6 +6,8 @@ exclude = [
     "__pycache__",
     "build",
     "dist",
+    "gsuid_core/plugins",
+    "eval/**/results",
 ]
 
 [lint]

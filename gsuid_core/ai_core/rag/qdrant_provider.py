@@ -158,10 +158,11 @@ def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
         # 默认 5s 在启动高负载窗口会对瞬时调用误报 ReadTimeout，
         # 导致 RAG 步骤判失败、进程"暂不接收 AI 会话"；放宽容忍启动尖峰。
         httpx_kw = remote_qdrant_httpx_kwargs(url)
-        if httpx_kw.get("trust_env") is False:
+        disable_env = "trust_env" in httpx_kw and httpx_kw["trust_env"] is False
+        if disable_env:
             with _temporary_loopback_no_proxy():
-                return AsyncQdrantClient(url=url, api_key=api_key, timeout=30, **httpx_kw)
-        return AsyncQdrantClient(url=url, api_key=api_key, timeout=30, **httpx_kw)
+                return AsyncQdrantClient(url=url, api_key=api_key, timeout=30, trust_env=False)
+        return AsyncQdrantClient(url=url, api_key=api_key, timeout=30)
 
     logger.info(t("log.rag.qdrant_local_embedded_db", LOCAL_QDRANT_DB_PATH=LOCAL_QDRANT_DB_PATH))
     return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))
