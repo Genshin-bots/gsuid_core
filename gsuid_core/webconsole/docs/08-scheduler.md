@@ -1,5 +1,8 @@
 # 8. 调度器 API - /api/scheduler
 
+列表 / 暂停 / 恢复 / 触发 / 删除都在**线程池**里访问 APScheduler jobstore。
+不要在事件循环线程里调用 `scheduler.get_jobs()` / `get_job()`：jobstore 锁会卡住 WS 与 AI。
+
 ## 8.1 获取任务列表
 ```
 GET /api/scheduler/jobs

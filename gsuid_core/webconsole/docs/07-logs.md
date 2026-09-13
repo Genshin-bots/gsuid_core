@@ -565,3 +565,92 @@ GET /api/traces/daily_counts?days=60
 - `date` 与 `start_date/end_date` 互斥，不能同时使用
 - `search` 参数支持模糊匹配，不区分大小写
 - 多日期范围搜索时，页码基于所有匹配日志的总数计算
+- `per_page` 最大 200。解析在线程池中完成，同一文件按 size/mtime 缓存，避免卡住事件循环
+
+---
+
+## 7.10 错误报告（error_reports）
+
+`logger.save_error_report_processor` 在 `error` / `critical` / `exception` 时把结构化 JSON 写到 `data/logs/error_reports/error_report_YYYY-MM-DD_HH-MM-SS-ffffff.json`。与按级别过滤的每日 `.log` **不是同一份数据**。
+
+### 7.10.1 列表（分页）
+
+```
+GET /api/logs/error-reports?page=1&per_page=50&search=&level=
+```
+
+**Query 参数**：
+- `page`: 页码，从 1 起，默认 1
+- `per_page`: 每页条数，默认 50，夹取 `[1, 100]`
+- `search`: 可选，匹配 `event` / `pathname` / 文件名（不区分大小写）
+- `level`: 可选，按 `_log_level` 筛选（如 `error`）
+- `date`: 可选，`YYYY-MM-DD`，只列当天（从文件名提取，不读 JSON）
+- `start_date` / `end_date`: 可选，日期范围（与 `date` 互斥，优先范围）
+
+列表按**内容指纹**合并：除 `timestamp` / `_report_timestamp` 外完全相同的报告算一条，`count` 为出现次数。时间不同仍合并。扫描在**单线程 worker**里做，每解析若干文件就让出 GIL；meta 落在 `error_reports/.fingerprint_index.jsonl`，二次打开只 `stat` 不重读 JSON。详情只读最新一份全文。
+
+日期筛选只看文件名里的 `YYYY-MM-DD`。当前筛选范围内再合并，详情里的出现时间与该范围一致。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "count": 12,
+        "rows": [
+            {
+                "id": "a1b2c3d4e5f678901234567890123456",
+                "filename": "error_report_2026-09-14_12-00-00-123456.json",
+                "timestamp": "2026-09-14_12-00-00-123456",
+                "first_timestamp": "2026-09-10_08-11-22-000000",
+                "count": 4,
+                "level": "error",
+                "event": "数据库连接失败",
+                "pathname": "gsuid_core/foo.py",
+                "lineno": 42,
+                "size": 1024
+            }
+        ],
+        "page": 1,
+        "per_page": 50
+    }
+}
+```
+
+列表按文件名倒序（最新在前）。`event` 预览最长 500 字。日期筛选只看文件名里的 `YYYY-MM-DD`，不读文件内容。
+
+```
+GET /api/logs/error-reports/available-dates
+```
+
+返回有报告的日期数组（新→旧），供日历高亮。该固定路径必须写在 `/{filename}` 之前。
+
+### 7.10.2 详情
+
+```
+GET /api/logs/error-reports/{filename}
+```
+
+路径参数是列表返回的 **fingerprint**（32 位 hex），也兼容旧的 `error_report_*.json` 文件名（会解析成指纹再合并）。`..` / 绝对路径返回 `status=400`。
+
+可带与列表相同的 `date` / `start_date` / `end_date`，出现时间只含当前筛选范围。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "fingerprint": "a1b2c3d4e5f678901234567890123456",
+        "count": 4,
+        "report": {"event": "数据库连接失败", "exception": "..."},
+        "occurrences": [
+            {"filename": "error_report_2026-09-14_12-00-00-123456.json", "timestamp": "2026-09-14_12-00-00-123456"},
+            {"filename": "error_report_2026-09-10_08-11-22-000000.json", "timestamp": "2026-09-10_08-11-22-000000"}
+        ]
+    }
+}
+```
+
+`report` 取该组最新一份 JSON。单文件超过 2MB 拒绝读取。

@@ -6,6 +6,7 @@ import zlib
 import asyncio
 import logging
 import datetime
+import threading
 from copy import deepcopy
 from typing import Any, Set, Dict, List, Deque, Optional, Protocol, Sequence, TypedDict, NotRequired, AsyncGenerator
 from pathlib import Path
@@ -15,7 +16,6 @@ from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
 
 import msgspec
-import aiofiles
 import structlog
 from colorama import Fore, Style, init
 from structlog.dev import Column, ConsoleRenderer, KeyValueColumnFormatter
@@ -1571,42 +1571,134 @@ class LogEntry(TypedDict):
     _date: NotRequired[str]
 
 
+@dataclass
+class _LogFileCache:
+    mtime: float
+    size: int
+    entries: list[LogEntry]
+    parsed_offset: int
+
+
+_MAX_CACHED_LOG_FILES = 16
+_LOG_PARSE_CACHE: dict[str, _LogFileCache] = {}
+_LOG_PARSE_LOCKS: dict[str, threading.Lock] = {}
+_LOG_PARSE_LOCKS_GUARD = threading.Lock()
+
+
+def _log_file_lock(key: str) -> threading.Lock:
+    with _LOG_PARSE_LOCKS_GUARD:
+        if key not in _LOG_PARSE_LOCKS:
+            _LOG_PARSE_LOCKS[key] = threading.Lock()
+        return _LOG_PARSE_LOCKS[key]
+
+
+def _trim_log_parse_cache(keep_key: str) -> None:
+    if len(_LOG_PARSE_CACHE) <= _MAX_CACHED_LOG_FILES:
+        return
+    for old_key in list(_LOG_PARSE_CACHE.keys()):
+        if old_key == keep_key:
+            continue
+        del _LOG_PARSE_CACHE[old_key]
+        if len(_LOG_PARSE_CACHE) <= _MAX_CACHED_LOG_FILES:
+            return
+
+
+def _entry_from_log_line(line: str, entry_id: int) -> LogEntry | None:
+    try:
+        raw = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    ts_obj = raw["timestamp"] if "timestamp" in raw else ""
+    level_obj = raw["level"] if "level" in raw else "info"
+    event_obj = raw["event"] if "event" in raw else ""
+    ts = ts_obj if isinstance(ts_obj, str) else str(ts_obj)
+    level = level_obj if isinstance(level_obj, str) else str(level_obj)
+    return {
+        "id": entry_id,
+        "时间": ts,
+        "日志等级": level.upper(),
+        "内容": event_obj,
+    }
+
+
+def parse_history_logs_sync(log_file_path: Path) -> list[LogEntry]:
+    """Parse a daily JSONL log. Process-wide cache; append-only files re-read the tail.
+
+    Returned list is shared — callers must not mutate entries.
+    """
+    if not log_file_path.is_file():
+        return []
+    try:
+        key = str(log_file_path.resolve())
+        stat = log_file_path.stat()
+    except OSError:
+        return []
+
+    lock = _log_file_lock(key)
+    with lock:
+        cached = _LOG_PARSE_CACHE[key] if key in _LOG_PARSE_CACHE else None
+        if cached is not None and cached.size == stat.st_size and cached.mtime == stat.st_mtime:
+            return cached.entries
+
+        entries: list[LogEntry] = []
+        start_offset = 0
+        next_id = 1
+        if cached is not None and 0 < cached.parsed_offset <= stat.st_size:
+            entries = list(cached.entries)
+            start_offset = cached.parsed_offset
+            next_id = len(entries) + 1
+
+        try:
+            with open(log_file_path, "r", encoding="utf-8") as file:
+                file.seek(start_offset)
+                chunk = file.read()
+        except OSError:
+            return entries
+
+        complete = chunk
+        incomplete_len = 0
+        if chunk and not chunk.endswith(("\n", "\r")):
+            last_nl = max(chunk.rfind("\n"), chunk.rfind("\r"))
+            if last_nl >= 0:
+                complete = chunk[: last_nl + 1]
+                incomplete_len = len(chunk) - last_nl - 1
+            else:
+                complete = ""
+                incomplete_len = len(chunk)
+
+        for line in complete.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            entry = _entry_from_log_line(stripped, next_id)
+            if entry is None:
+                continue
+            entries.append(entry)
+            next_id += 1
+
+        parsed_offset = stat.st_size - incomplete_len
+        _LOG_PARSE_CACHE[key] = _LogFileCache(stat.st_mtime, stat.st_size, entries, parsed_offset)
+        _trim_log_parse_cache(key)
+        return entries
+
+
+async def get_parse_logs(log_file_path: Path) -> list[LogEntry]:
+    return await asyncio.to_thread(parse_history_logs_sync, log_file_path)
+
+
 class HistoryLogData:
-    def __init__(self):
+    """Compatibility wrapper; parse cache is process-wide in parse_history_logs_sync."""
+
+    def __init__(self) -> None:
         self.log_list: Dict[str, List[LogEntry]] = {}
 
     async def get_parse_logs(self, log_file_path: Path) -> List[LogEntry]:
-        if log_file_path.name in self.log_list:
-            return self.log_list[log_file_path.name]
-
-        log_entries: List[LogEntry] = []
-
-        async with aiofiles.open(log_file_path, "r", encoding="utf-8") as file:
-            lines = await file.readlines()
-
-        current_entry: Optional[LogEntry] = None
-
-        _id = 1
-        for line in lines:
-            ev: Dict[str, str] = json.loads(line.strip())
-
-            if current_entry:
-                log_entries.append(current_entry)
-            current_entry = {
-                "id": _id,
-                "时间": ev["timestamp"],
-                "日志等级": ev["level"].upper(),
-                # '模块': ev['pathname'],
-                "内容": ev["event"],
-            }
-            _id += 1
-
-        if current_entry:
-            log_entries.append(current_entry)
-
-        self.log_list[log_file_path.name] = log_entries
-        return log_entries
+        return await get_parse_logs(log_file_path)
 
 
-def get_all_log_path():
+def get_all_log_path() -> list[Path]:
+    if not LOG_PATH.exists():
+        return []
     return [file for file in LOG_PATH.iterdir() if file.is_file() and file.suffix == ".log"]
