@@ -314,7 +314,7 @@ def _self_bound_model_leak(text: str, extra_terms: Tuple[str, ...]) -> bool:
 class FirewallHit:
     """出戏命中：类别 + 命中片段（供警告文案与日志）。"""
 
-    category: str  # "model_identity" | "system_term" | "ai_selfref"
+    category: str  # model_identity | system_term | ai_selfref | capability_absence | stale_present
     matched: List[str]
 
 
@@ -366,11 +366,19 @@ def check_ooc(
     if not text or tier == "plain":
         return None
 
-    # 交付状态汇报（系统日志腔）：优先于词库——形态独立，误杀面由双信号共现约束
-    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_delivery_status_narration
+    # 交付状态汇报 / 能力缺失 / 过期时点：结构判定，优先于词库
+    from gsuid_core.ai_core.agent_run.speech_policy import (
+        looks_like_capability_absence,
+        looks_like_stale_present_tense,
+        looks_like_delivery_status_narration,
+    )
 
     if looks_like_delivery_status_narration(text):
         return FirewallHit(category="delivery_narration", matched=["交付状态汇报"])
+    if looks_like_capability_absence(text):
+        return FirewallHit(category="capability_absence", matched=["能力缺失叙述"])
+    if looks_like_stale_present_tense(text):
+        return FirewallHit(category="stale_present", matched=["过期时点当现在"])
 
     norm = normalize_for_match(text)
     extra = _extra_terms()
@@ -463,7 +471,9 @@ def is_enabled() -> bool:
 
 
 # 资金欺骗 / 机器腔：提醒后仍不得放行。软出戏（身份词）走系统提醒 + 自主判断。
-NEVER_RELEASE_CATEGORIES: frozenset[str] = frozenset({"fund_claim", "machine_dump"})
+NEVER_RELEASE_CATEGORIES: frozenset[str] = frozenset(
+    {"fund_claim", "machine_dump", "capability_absence", "stale_present"}
+)
 SOFT_JUDGE_CATEGORIES: frozenset[str] = frozenset({"model_identity", "ai_selfref"})
 OOC_JUDGE_MARKER = "（系统校验：刚才要发的内容可能出戏"
 
@@ -484,6 +494,19 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
             "⛔ 你在用系统日志口吻向用户播报「任务已完成/图已发送/无需追加发言」。"
             "交付已经完成，此刻正确的输出是 <SILENCE>；若确需收尾，只用一句角色口吻的短话，"
             "禁止汇报任务状态、禁止念收件人、禁止自我静默声明。"
+        )
+    if hit.category == "capability_absence":
+        return (
+            "⛔ 不要对用户讲自身能力集合（没装/没挂/没接口/没有对应工具），"
+            "也不要把办事推给另一套指令或另一个机器人。"
+            "用角色口吻表示此刻翻不到；可请对方补充材料或稍后再问。"
+            "禁止命令前缀、禁止工具名。直接输出重写后的正文。"
+        )
+    if hit.category == "stale_present":
+        return (
+            "⛔ 不要把记忆里带过期日期的数字说成今天或现在。"
+            "实时数必须走检索/委派；翻不到就角色化短说翻不到，禁止编造时点。"
+            "直接输出重写后的正文。"
         )
     if any("框架泄漏" in m or "系统文案" in m for m in hit.matched):
         return (

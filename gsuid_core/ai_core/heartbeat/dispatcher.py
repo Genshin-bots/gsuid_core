@@ -18,6 +18,7 @@ C8（plans/agent_design_review.md 建议二）：Heartbeat 定时巡检与定时
 状态为纯内存，进程重启即清空——属"重启即重置"内容，无需向后兼容。
 """
 
+import re
 import time
 from typing import Dict, List, Tuple, Optional
 
@@ -31,6 +32,25 @@ MAX_PROACTIVE_PER_HOUR = 1
 MAX_PROACTIVE_PER_DAY = 5
 _HOUR_SECONDS = 3600
 _DAY_SECONDS = 86400
+
+
+def ngram_jaccard(a: str, b: str, n: int = 3) -> float:
+    """字符 n-gram Jaccard；空串为 0。"""
+    ta = re.sub(r"\s+", "", a or "")
+    tb = re.sub(r"\s+", "", b or "")
+    if not ta or not tb:
+        return 0.0
+    ga = {ta[i : i + n] for i in range(max(1, len(ta) - n + 1))} if len(ta) >= n else {ta}
+    gb = {tb[i : i + n] for i in range(max(1, len(tb) - n + 1))} if len(tb) >= n else {tb}
+    if not ga or not gb:
+        return 0.0
+    inter = len(ga & gb)
+    union = len(ga | gb)
+    return float(inter) / float(union) if union else 0.0
+
+
+def texts_too_similar(a: str, b: str, *, threshold: float = 0.45) -> bool:
+    return ngram_jaccard(a, b) >= threshold
 
 
 def make_target_key(group_id: Optional[str], user_id: Optional[str]) -> str:
@@ -57,6 +77,8 @@ class UnifiedProactiveDispatcher:
         self._pending_merge: Dict[str, str] = {}
         # C-3：target_key -> Heartbeat 主动发言时间戳历史（用于按小时/天限流）
         self._heartbeat_history: Dict[str, List[float]] = {}
+        # target_key -> 最近主动正文（语义去重）
+        self._recent_texts: Dict[str, List[str]] = {}
 
     def register_send(self, target_key: str, source: str, summary: str = "") -> None:
         """登记一次主动发送。
@@ -64,7 +86,7 @@ class UnifiedProactiveDispatcher:
         Args:
             target_key: 目标标识（群号或用户号）
             source:     来源，"heartbeat" 或 "task"
-            summary:    定时任务结果摘要，仅 source="task" 时有意义
+            summary:    heartbeat 近窗去重正文；task 则为合并语境摘要
         """
         if not target_key:
             return
@@ -74,9 +96,12 @@ class UnifiedProactiveDispatcher:
             self._pending_merge[target_key] = summary.strip()[:500]
         # 仅记录 Heartbeat 主动闲聊到频率历史，并顺手裁掉 1 天前的旧记录
         if source == "heartbeat":
-            hist = [t for t in self._heartbeat_history.get(target_key, []) if now - t < _DAY_SECONDS]
+            hist = [t for t in self._heartbeat_history[target_key]] if target_key in self._heartbeat_history else []
+            hist = [t for t in hist if now - t < _DAY_SECONDS]
             hist.append(now)
             self._heartbeat_history[target_key] = hist
+            if summary.strip():
+                self.remember_heartbeat_text(target_key, summary)
 
     def should_suppress_heartbeat(self, target_key: str) -> bool:
         """同一目标在 MIN_GAP_SECONDS 内刚有主动输出时，抑制本次 Heartbeat 发言。"""
@@ -102,11 +127,53 @@ class UnifiedProactiveDispatcher:
             return True
         return False
 
+    def _repeat_window(self, window: Optional[int]) -> int:
+        if window is not None and window > 0:
+            return window
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        n = int(ai_config.get_config("heartbeat_repeat_window").data)
+        return n if n > 0 else 8
+
+    def remember_heartbeat_text(self, target_key: str, text: str, *, window: Optional[int] = None) -> None:
+        if not target_key:
+            return
+        body = text.strip()
+        if not body:
+            return
+        cap = self._repeat_window(window)
+        hist = list(self._recent_texts[target_key]) if target_key in self._recent_texts else []
+        hist.append(body)
+        self._recent_texts[target_key] = hist[-max(1, cap) :]
+
+    def would_repeat_heartbeat(self, target_key: str, text: str, *, window: Optional[int] = None) -> bool:
+        if not target_key or not text.strip():
+            return False
+        cap = self._repeat_window(window)
+        hist = self._recent_texts[target_key] if target_key in self._recent_texts else []
+        recent = hist[-max(1, cap) :]
+        for prev in recent:
+            if texts_too_similar(prev, text):
+                return True
+        return False
+
+    def peek_merge_context(self, target_key: str) -> str:
+        """读合并语境但不弹出；过期则清掉。开口成功后再 consume。"""
+        if not target_key or target_key not in self._pending_merge:
+            return ""
+        summary = self._pending_merge[target_key]
+        if not summary or target_key not in self._last_send:
+            return ""
+        ts, _source = self._last_send[target_key]
+        if (time.time() - ts) < MERGE_WINDOW_SECONDS:
+            return summary
+        self._pending_merge.pop(target_key, None)
+        return ""
+
     def consume_merge_context(self, target_key: str) -> str:
         """取出并清除窗口内待合并的定时任务结果摘要。
 
-        供 Heartbeat 作为 context_hook 注入提示词。超出合并窗口则视为过期，
-        不再合并。
+        供 Heartbeat 开口成功后丢弃已用过的合并语境。超出合并窗口则视为过期。
         """
         if not target_key or target_key not in self._pending_merge:
             return ""

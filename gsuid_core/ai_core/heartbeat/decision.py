@@ -1,7 +1,7 @@
 import re
 import json
 import time
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from datetime import datetime
 
 from gsuid_core.i18n import t
@@ -48,6 +48,7 @@ DECISION_USER_TEMPLATE = """现在你独自看着群里的聊天记录，思考�
 **可以开口**（should_speak=true）：
 - 有人提到你感兴趣的事、或抛出你能轻松接话的日常话题；
 - 群里气氛适合你这个角色插一句（吐槽、附和、调侃、关心都行）。
+- context_hook 必须能在人类消息或「刚完成的事」里找到对应句；只凭时刻/心情、对不上原句 → 沉默。
 
 把握分寸：不必为说而说，也别过度高冷——像个真实的群友那样自然。
 
@@ -67,6 +68,7 @@ PROACTIVE_MESSAGE_USER_TEMPLATE = """[群里最近发生的事]
 你决定开口了。
 称呼必须与消息记录对齐：要回应哪条消息，就看清那条消息的发言人是谁——
 不是主人发的就绝不称"{master_title}"，认不准发言人就不用任何称呼。
+话头必须能在人类消息或「刚完成的事」里找到对应句；找不到就不要说话。
 直接输出你想说的话，不要任何前缀、引号或解释。
 
 [主动发言角色约束（OOC 修复 5.8）]
@@ -88,6 +90,55 @@ STALENESS_NOTE_TEMPLATE = (
     "不要去回应/附和那些旧消息（不要'说得对''我也觉得'式接话），"
     "要说就说与它们无关的新话头，否则保持沉默。）"
 )
+
+
+def _recent_human_bodies(history: List[MessageRecord], *, limit: int = 12) -> list[str]:
+    from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+
+    bodies: list[str] = []
+    for rec in reversed(history):
+        if rec.role != "user":
+            continue
+        body = extract_message_body(rec.content).strip()
+        if body:
+            bodies.append(body)
+        if len(bodies) >= limit:
+            break
+    return bodies
+
+
+def hook_cites_human_span(hook: str, bodies: Sequence[str]) -> bool:
+    """hook 是否引用近窗人类句：整句包含，或人类句 ≥4 字窗口落在 hook 里。"""
+    hn = re.sub(r"\s+", "", (hook or "").strip())
+    if not hn:
+        return False
+    for raw in bodies:
+        b = re.sub(r"\s+", "", raw)
+        if not b:
+            continue
+        if len(b) <= 8 and b in hn:
+            return True
+        if len(b) > 8 and (b[:12] in hn or hn in b):
+            return True
+        if len(b) >= 4:
+            for i in range(0, len(b) - 3):
+                if b[i : i + 4] in hn:
+                    return True
+    return False
+
+
+def _hook_must_cite_human() -> bool:
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    return bool(ai_config.get_config("heartbeat_hook_require_human_span").data)
+
+
+def _hook_span_sources(history: List[MessageRecord], extra_context: str = "") -> list[str]:
+    bodies = _recent_human_bodies(history)
+    extra = extra_context.strip()
+    if extra:
+        bodies.append(extra)
+    return bodies
 
 
 def build_staleness_section(history: List[MessageRecord], now_ts: float) -> str:
@@ -467,6 +518,9 @@ async def run_heartbeat(
     if not _hook.strip():
         logger.debug(t("log.ai.heartbeat_no_hook_silent", mood=mood))
         return None
+    if _hook_must_cite_human() and not hook_cites_human_span(_hook, _hook_span_sources(history, extra_context)):
+        logger.debug(t("log.heartbeat.hook_span_miss", mood=mood))
+        return None
 
     logger.info(t("log.ai.heartbeat_decided_interject_mood", mood=mood, event=event))
 
@@ -510,6 +564,9 @@ async def run_heartbeat(
         return None
 
     message: str = _strip_message_quotes(result)
+    if get_dispatcher().would_repeat_heartbeat(target_key, message):
+        logger.debug(t("log.heartbeat.repeat_suppressed", mood=mood))
+        return None
     logger.info(t("log.ai.heartbeat_message_proactive", message=repr(message)))
     return mood, message, generator_log_files
 

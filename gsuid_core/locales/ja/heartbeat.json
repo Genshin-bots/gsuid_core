@@ -2,5 +2,7 @@
   "log.heartbeat.reactive_decision": "[ReactiveGate] should_speak={should} reason={reason!r}",
   "log.heartbeat.reactive_decision_missing": "[ReactiveGate] 決定に有効な should_speak がありません、デフォルトで沈黙",
   "log.heartbeat.reactive_gate_error": "[ReactiveGate] 反応型ゲートでエラー、メインエージェントにフォールバック: {e}",
-  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}"
+  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}",
+  "log.heartbeat.repeat_suppressed": "[Heartbeat] 直近の能動発言と類似のため抑制 mood={mood!r}",
+  "log.heartbeat.hook_span_miss": "[Heartbeat] フックが直近の人間の発話にも完了した事にも対応せず沈黙 mood={mood!r}"
 }

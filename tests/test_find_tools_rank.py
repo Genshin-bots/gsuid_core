@@ -14,6 +14,7 @@ from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
     build_find_tools_plan,
     classify_callable_tool,
     format_find_tools_plan,
+    need_matches_node_text,
     need_matches_tool_text,
     covers_from_trigger_keywords,
 )
@@ -21,6 +22,24 @@ from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
 
 def _hit(name: str, label: str = "", score: float = 1.0) -> RankedHit:
     return RankedHit(name=name, label=label or name, score=score)
+
+
+def test_need_matches_node_text_rejects_unrelated_hay() -> None:
+    stock_when = "分析个股指数板块期货的实时行情量价估值财务"
+    assert not need_matches_node_text(
+        "查询指定城市的天气和气温",
+        when_to_use=stock_when,
+        display_name="个股分析",
+        keywords=("查询", "行情", "分析"),
+        covers=("个股", "指数"),
+    )
+    assert need_matches_node_text(
+        "查询鸣潮矩阵叠兵个人战绩",
+        when_to_use="查询用户本人在全息矩阵的挑战记录",
+        display_name="矩阵叠兵",
+        keywords=("矩阵叠兵",),
+        covers=("矩阵叠兵",),
+    )
 
 
 def test_need_match_unidirectional_and_cjk_window() -> None:
@@ -158,7 +177,7 @@ def test_generic_only_when_no_dedicated() -> None:
 
 def test_orchestration_prompt_follows_tier_order() -> None:
     assert "专用能力>专用工具>通用能力>通用工具" in TOOL_ORCHESTRATION_CONSTRAINTS
-    assert "有专用项禁止改用通用项" in TOOL_ORCHESTRATION_CONSTRAINTS
+    assert "对口专用项禁止改用通用项" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "有专用工具直接调勿改派" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "优先 subagent" not in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "优先 create_subagent" not in TOOL_ORCHESTRATION_CONSTRAINTS
@@ -442,6 +461,10 @@ def test_find_tools_folds_exclusive_render_to_agent() -> None:
                 "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._node_hit",
                 fake_node_hit,
             ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._node_on_topic",
+                lambda _need, nid: nid == "render_agent",
+            ),
         ):
             return await find_tools(ctx, "把这份对比表出成图")
 
@@ -451,3 +474,145 @@ def test_find_tools_folds_exclusive_render_to_agent() -> None:
     assert "render_html_to_image" not in out
     assert "research_agent" not in out
     assert "render_html_to_image" not in ctx.deps.dynamic_tool_names
+
+
+def test_find_tools_unrelated_keyword_node_keeps_generic() -> None:
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    async def fake_search(**_kwargs: object) -> list[_FakeTool]:
+        return []
+
+    async def fake_matched(_need: str, *, limit: int = 5) -> list[str]:
+        return ["research_agent"]
+
+    def fake_node_hit(node_id: str, score: float) -> RankedHit | None:
+        return RankedHit(name=node_id, label=node_id, score=score)
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={EXPOSED_TOOLS_EXTRA_KEY: []}, blocked_tool_names=set())
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.register.find_tool_base", lambda _n: None),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                fake_matched,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _n: ["stock_agent"],
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._node_on_topic",
+                lambda _need, _nid: False,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._node_hit",
+                fake_node_hit,
+            ),
+        ):
+            return await find_tools(ctx, "查询指定城市的天气和气温")
+
+    out = asyncio.run(_run())
+    assert "stock_agent" not in out
+    assert "research_agent" in out
+    assert "有专用项时禁止选通用项" not in out
+    assert "做不到" not in out
+
+
+def test_find_tools_unrelated_exclusive_fold_keeps_generic() -> None:
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    tb = SimpleNamespace(
+        name="render_html_to_image",
+        category="media",
+        plugin="core",
+        hide_from_main=False,
+        covers=["HTML出图"],
+        description="把 HTML 渲成图",
+        retrieval_text="render_html_to_image 把 HTML 渲成图片",
+    )
+    tool = _FakeTool("render_html_to_image")
+    render_node = SimpleNamespace(
+        node_id="render_agent",
+        when_to_use="把已有事实包/对比表/指标/清单渲成美观图片",
+        display_name="视觉渲染",
+        match_keywords=("出图", "对比表", "信息图"),
+    )
+
+    async def fake_search(**_kwargs: object) -> list[_FakeTool]:
+        return [tool]
+
+    async def fake_matched(_need: str, *, limit: int = 5) -> list[str]:
+        return ["research_agent"]
+
+    def fake_find(name: str) -> SimpleNamespace | None:
+        if name == "render_html_to_image":
+            return tb
+        return None
+
+    def fake_owning(_names: list[str]) -> dict[str, list[str]]:
+        return {"render_html_to_image": ["render_agent"]}
+
+    def fake_get_node(nid: str) -> SimpleNamespace | None:
+        if nid == "render_agent":
+            return render_node
+        return None
+
+    def fake_node_hit(node_id: str, score: float) -> RankedHit | None:
+        if node_id == "render_agent":
+            return RankedHit(name="render_agent", label="把已有事实包渲成图片", score=score)
+        if node_id == "research_agent":
+            return RankedHit(name="research_agent", label="多步外部资料收集", score=score)
+        return None
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={EXPOSED_TOOLS_EXTRA_KEY: []}, blocked_tool_names={"render_html_to_image"})
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.register.find_tool_base", fake_find),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                fake_matched,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _n: [],
+            ),
+            patch(
+                "gsuid_core.ai_core.agent_node.registry.owning_nodes_of_tools",
+                fake_owning,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._node_hit",
+                fake_node_hit,
+            ),
+            patch("gsuid_core.ai_core.agent_node.get_node", fake_get_node),
+            patch(
+                "gsuid_core.ai_core.agent_node.semantic_routing.aggregate_node_covers",
+                lambda _n: ["出图", "对比表"],
+            ),
+        ):
+            return await find_tools(ctx, "查询指定城市的天气和气温")
+
+    out = asyncio.run(_run())
+    assert "render_agent" not in out
+    assert "research_agent" in out
+    assert "有专用项时禁止选通用项" not in out
+
+
+def test_find_tools_gap_note_does_not_tell_model_to_give_up() -> None:
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import FIND_TOOLS_GAP_NOTE
+
+    assert "做不到" not in FIND_TOOLS_GAP_NOTE
+    assert "capability_map" not in FIND_TOOLS_GAP_NOTE
+    assert "禁止对用户讲检索过程" in FIND_TOOLS_GAP_NOTE

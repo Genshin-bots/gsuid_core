@@ -120,10 +120,14 @@ def decide_text_outbound_slot(
     has_fn_tool: bool,
     accept_slot_used: bool,
     heavy_ack: bool,
+    light_accept: bool = False,
 ) -> str:
-    """按函数 ToolCall 分槽。重任务首次可接任务应；轻查询等到干完再开口。"""
+    """按函数 ToolCall 分槽。重任务首次可接任务应；轻查询等到干完再开口。
+
+    轻工具同包若已是合格接任务应（light_accept），允许出站，避免稍后只能补模板句。
+    """
     if has_fn_tool:
-        if heavy_ack and not accept_slot_used:
+        if (heavy_ack or light_accept) and not accept_slot_used:
             return "send_accept"
         return "unsent"
     return "send_final"
@@ -162,32 +166,11 @@ def send_message_call_has_visible_text(parts: Sequence[object]) -> bool:
     return False
 
 
-def _ack_from_tone_markers(markers: tuple[str, ...]) -> str:
-    """用当前卡语气词拼短应。ASCII 口癖（如 zzz）不当整句。"""
-    for raw in markers:
-        m = raw.strip()
-        if not m or len(m) > 8:
-            continue
-        if m.isascii() and not any(ch in m for ch in ".~"):
-            continue
-        if m.endswith(("…", "...", "……", "～", "~")):
-            return f"{m}好。"
-        if m[-1] in "。！？!?":
-            return m
-        return f"{m}，好。"
-    return ""
-
-
 def task_ack_phrase(persona_name: str | None) -> str:
-    """接任务应：persona.json → 卡上语气词 → 中性「收到。」。"""
-    from gsuid_core.ai_core.persona.resource import get_tone_markers
+    """接任务应：只读 persona.json 的 task_ack。空则不补句。"""
     from gsuid_core.ai_core.persona.settings import get_persona_setting
 
-    text = get_persona_setting(persona_name, "task_ack").strip()
-    if text:
-        return text
-    from_card = _ack_from_tone_markers(get_tone_markers(persona_name))
-    return from_card if from_card else "收到。"
+    return get_persona_setting(persona_name, "task_ack").strip()
 
 
 class LoopPhase(RunOnceHost):
@@ -322,13 +305,13 @@ class LoopPhase(RunOnceHost):
         return True
 
     async def _emit_task_ack_fallback(self, st: RunOnceState) -> bool:
-        """模型没写合格接任务应时发人格卡/中性「收到。」。过不了闸不占槽。"""
+        """模型没写合格接任务应时发 persona.json 配置句。空配置不补。过不了闸不占槽。"""
         if st.bot is None or st.return_mode not in ("always", "by_bot"):
             return False
         if st.main_channel_sends > 0 or st.wait_comfort_sent:
             return False
         phrase = task_ack_phrase(self.persona_name)
-        if not looks_like_task_accept_speech(phrase):
+        if not phrase or not looks_like_task_accept_speech(phrase):
             return False
         _user_raw = st.ev.raw_text if st.ev is not None and st.ev.raw_text else ""
         _gr = output_gate.pre_send_gate(
@@ -345,6 +328,8 @@ class LoopPhase(RunOnceHost):
         _at = str(_at_uid) if isinstance(_at_uid, str) and _at_uid else None
         if not await self._try_send_gated_in_iter(st, phrase, at_user_id=_at):
             return False
+        self._session_logger.log_text_output(phrase)
+        self._session_logger.log_task_ack(phrase, source="persona_setting")
         st.wait_comfort_sent = True
         return True
 
@@ -934,10 +919,14 @@ class LoopPhase(RunOnceHost):
                     _hard = int(_pc.get_config("speech_len_hard").data)
                 _slot = "send_final"
                 if st.suppress_intermediate_text:
+                    _light_accept = False
+                    if _saw_tool_call_this_turn and not _heavy_ack and not _accept_slot_used:
+                        _light_accept = looks_like_task_accept_speech(_text, max_len=_hard)
                     _slot = decide_text_outbound_slot(
                         has_fn_tool=_saw_tool_call_this_turn,
                         accept_slot_used=_accept_slot_used,
                         heavy_ack=_heavy_ack,
+                        light_accept=_light_accept,
                     )
                 if _slot == "unsent":
                     logger.debug(i18n_t("log.agent.suppressing_intermediate_text", p0=repr(_text[:40])))

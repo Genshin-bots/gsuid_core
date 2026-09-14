@@ -4,7 +4,7 @@
 exclusive 工具不出现在可调用名单，折叠成所属专用能力。
 """
 
-from typing import Literal
+from typing import Literal, Sequence
 from dataclasses import dataclass
 
 ToolTier = Literal["dedicated", "generic", "fold"]
@@ -109,6 +109,29 @@ def _hay_has_cjk_window(need: str, hay: str, min_len: int = _CJK_MIN_WINDOW) -> 
                     return True
         i = j
     return False
+
+
+def need_matches_node_text(
+    need: str,
+    *,
+    when_to_use: str,
+    display_name: str,
+    keywords: Sequence[str],
+    covers: Sequence[str],
+) -> bool:
+    """节点是否对口：when_to_use / 名 / 关键词 / covers 与 need 过同一套单向命中。"""
+    cover_list = [c for c in covers if c]
+    hay = " ".join(
+        p
+        for p in (
+            when_to_use,
+            display_name,
+            " ".join(k for k in keywords if k),
+            " ".join(cover_list),
+        )
+        if p and p.strip()
+    )
+    return need_matches_tool_text(need, hay, cover_list)
 
 
 def need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) -> bool:

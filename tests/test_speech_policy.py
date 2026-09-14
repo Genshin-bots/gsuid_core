@@ -14,6 +14,8 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     content_is_render_candidate,
     has_orchestration_narration,
     should_mark_speech_delivered,
+    looks_like_capability_absence,
+    looks_like_stale_present_tense,
     should_block_user_visible_text,
     looks_like_inflight_quota_speech,
 )
@@ -470,7 +472,7 @@ def test_task_ack_is_required_not_optional() -> None:
         followup_detected=False,
         is_http=False,
     )
-    assert task_ack_phrase(None) == "收到。"
+    assert task_ack_phrase(None) == ""
     assert looks_like_task_accept_speech("收到。")
     silent = ToolCallPart(tool_name="create_subagent", args="{}")
     spoken = ToolCallPart(tool_name="send_message_by_ai", args='{"text": "好，我去查。"}')
@@ -487,6 +489,10 @@ def test_first_ack_with_tools_keeps_accept_speech() -> None:
     assert not tools_warrant_task_ack(["search_cognition", "find_tools"])
     assert decide_text_outbound_slot(has_fn_tool=True, accept_slot_used=False, heavy_ack=True) == "send_accept"
     assert decide_text_outbound_slot(has_fn_tool=True, accept_slot_used=True, heavy_ack=True) == "unsent"
+    assert (
+        decide_text_outbound_slot(has_fn_tool=True, accept_slot_used=False, heavy_ack=False, light_accept=True)
+        == "send_accept"
+    )
     assert decide_text_outbound_slot(has_fn_tool=True, accept_slot_used=False, heavy_ack=False) == "unsent"
     assert decide_text_outbound_slot(has_fn_tool=False, accept_slot_used=False, heavy_ack=False) == "send_final"
     blk, why = should_block_user_visible_text(
@@ -608,3 +614,47 @@ def test_async_blocks_non_wait_until_image() -> None:
         wait_comfort_sent=True,
     )
     assert blk and why == "silence_only_or_async"
+
+
+def test_capability_absence_and_stale_present() -> None:
+    from datetime import datetime
+
+    from gsuid_core.ai_core.output_firewall import NEVER_RELEASE_CATEGORIES, check_ooc
+
+    assert looks_like_capability_absence("呼工具里没挂实时天气，搜出来都是气候平均")
+    assert looks_like_capability_absence("天气这个我没装那玩意儿，查不了实时")
+    assert looks_like_capability_absence("我这边没接口拿你游戏里的练度数据")
+    assert looks_like_capability_absence("更新面板是群里那个机器人干的活")
+    assert looks_like_capability_absence("你平时用那种指令，是别的家伙管的")
+    assert looks_like_capability_absence("主人你直接发 `gs深渊` 嘛")
+    assert not looks_like_capability_absence("翻不到卷轴…先睡了")
+    assert not looks_like_capability_absence("报错一般是券商没单独开通权限")
+    assert not looks_like_capability_absence("接口文档发我一份")
+    assert not looks_like_capability_absence("工具人没来开会")
+    assert not looks_like_capability_absence("我没接口文档")
+    assert not looks_like_capability_absence("先发「图片」我看看")
+    assert not looks_like_capability_absence("那种指令听着就烦")
+    assert not looks_like_capability_absence("你直接发「晚安」给她")
+    hit = check_ooc("呼工具里没挂实时天气")
+    assert hit is not None
+    assert hit.category == "capability_absence"
+    assert "capability_absence" in NEVER_RELEASE_CATEGORIES
+    assert looks_like_stale_present_tense(
+        "今天广州是2020年5月25日晴，27度",
+        now=datetime(2026, 9, 14),
+    )
+    assert not looks_like_stale_present_tense(
+        "5月25日那天好热",
+        now=datetime(2026, 9, 14),
+    )
+    assert not looks_like_stale_present_tense(
+        "今天突然想起2020年5月25日那天",
+        now=datetime(2026, 9, 14),
+    )
+    assert not looks_like_stale_present_tense(
+        "现在想想2023年1月1日那次",
+        now=datetime(2026, 9, 14),
+    )
+    stale_hit = check_ooc("现在还是2020-05-25的气温")
+    assert stale_hit is not None
+    assert stale_hit.category == "stale_present"

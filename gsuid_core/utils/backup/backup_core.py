@@ -18,15 +18,22 @@ def resolve_backup_src(p: str | Path, root: Path | None = None) -> Path:
     return path
 
 
-def backup_dir_covers_path(target: Path, config_paths: Optional[List] = None) -> bool:
+def backup_dir_covers_path(target: Path, config_paths: Optional[List[str]] = None) -> bool:
     """True if user-selected ``backup_dir`` already copies ``target`` (file or ancestor dir)."""
-    if config_paths is None:
-        config_paths = backup_config.get_config("backup_dir").data or []
+    paths: List[str]
+    if config_paths is not None:
+        paths = config_paths
+    else:
+        raw = backup_config.get_config("backup_dir").data
+        if isinstance(raw, list):
+            paths = [str(x) for x in raw]
+        else:
+            paths = []
     try:
         target_res = target.resolve()
     except OSError:
         return False
-    for raw in config_paths:
+    for raw in paths:
         path = resolve_backup_src(raw)
         try:
             selected = path.resolve()

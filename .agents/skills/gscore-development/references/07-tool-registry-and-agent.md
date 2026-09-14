@@ -179,8 +179,11 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
       真正命中的专用工具并入分档回执（提醒直调），短 cover（不足 3 字）不算命中。
       **禁止**同域立刻 return（`n in hay or hay in n` 已删）；中文另用 ≥4 字窗口。
    1. 向量召族 + 节点匹配，代码分层后一组回执。exclusive 工具折叠成所属专用能力，不回灌主人格。
+      折叠所属节点同样过对口检查。
    2. 通用节点（research / memory_curator / internal_reporter / scheduler）不得压过插件专用工具。
-   3. 有专用项时丢掉通用档。系统提示只陈述分档，不写「优先 subagent」。
+   3. **专用节点入档前必须对口**（`need_matches_node_text`：when_to_use / covers / ≥4 字窗口）。
+      短关键词或语义邻居不算命中。对口专用才丢掉通用档；不对口保留通用调研/网页搜索。
+      缺口文案禁止教模型「做不到」。系统提示只陈述分档，不写「优先 subagent」。
 3. **`RetrievableToolset(AbstractToolset)`**（`dynamic_toolset.py`）——`get_tools(ctx)` 每个 step
    读 `dynamic_tool_names`，逐名 `find_tool_base` + `prepare_tool_def` 解析成可调用工具；用
    `exclude_names`（本轮静态已装配工具名）去重避免跨 toolset 重名冲突。
@@ -399,8 +402,8 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
    - 工具路径（`tool_gate_feedback`）：软出戏持续打回，要求改用正文；资金 / 机器腔
      **never-release** 持续打回。
    - OOC 类目：`model_identity` / `ai_selfref` / `system_term` / `fund_claim` /
-     `machine_dump` / **`delivery_narration`**（2026-08-10，交付状态汇报系统日志腔，
-     `speech_policy.looks_like_delivery_status_narration` 双信号结构检测）。
+     `machine_dump` / **`delivery_narration`** / **`capability_absence`**（工具/接口+没挂没装，
+     或另一个机器人+管/干，never-release）/ **`stale_present`**（同句把过期年月日说成今天/现在的读数）。
 
 **DELIVERED 交付终局态（2026-08-10，P0 OOC 根治）**：在 `pre_send_gate` **之前**还有一道
 `speech_policy.should_block_user_visible_text` 话术闸（`agent_run/speech_policy.py`）。
@@ -417,9 +420,10 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
 **出站槽（2026-08-26）**：按本 run 是否含**函数** ToolCall 分槽。委派/出图等重工具首次至多一条
 TextPart（接任务应，仍过 `pre_send_gate` / `should_block`；**过不了闸不得占槽**）。点名/跟进/
-私聊/HTTP 且本响应含重工具：模型没写合格短应则发人格卡 `task_ack` 或中性「收到。」。
-回想/网页检索等轻查询不先应，干完再开口。零工具/未点名不补。其后切工具静默，无 ToolCall
-终局开口。hosted 搜索不当函数工具。
+私聊/HTTP 且本响应含重工具：模型没写合格短应则发 `persona.json` 的 `task_ack`（空则不补）。
+轻工具同包若已是合格接任务应可出站。零工具/未点名不补。
+其后切工具静默，无 ToolCall 终局开口。hosted 搜索不当函数工具。
+交互主人格 `create_subagent(..., transient=true)` 会被忽略（lookup 白名单除外），改走看板后台。
 HTTP SSE 第一帧可见必须是 `event: text`（`: ping` 不是接任务应）。unsent 从 `new_messages` 尾部剥掉。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。

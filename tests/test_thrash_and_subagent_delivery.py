@@ -80,6 +80,16 @@ def test_research_agent_not_default_transient() -> None:
     assert "internal_reporter" in _TRANSIENT_DEFAULT_PROFILES
 
 
+def test_interactive_main_ignores_model_transient_flag() -> None:
+    from inspect import getsource
+
+    from gsuid_core.ai_core.buildin_tools import subagent as sub
+
+    src = getsource(sub._create_subagent_impl)
+    assert "allow_user_outbound" in src
+    assert "use_transient = pid in _TRANSIENT_DEFAULT_PROFILES" in src
+
+
 def test_incomplete_delivery_detects_process_only() -> None:
     from gsuid_core.ai_core.buildin_tools.subagent import (
         looks_like_incomplete_subagent_delivery,

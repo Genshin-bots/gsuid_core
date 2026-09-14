@@ -270,6 +270,17 @@ AI_CONFIG: Dict[str, GSC] = {
         3,
         options=[2, 3, 5, 8],
     ),
+    "heartbeat_hook_require_human_span": GsBoolConfig(
+        "巡检话头必须引用人类原句",
+        "开启后 context_hook 对不上近窗人类句或刚完成的事则沉默。修改后即时生效",
+        True,
+    ),
+    "heartbeat_repeat_window": GsIntConfig(
+        "巡检近窗去重条数",
+        "与最近 N 条主动正文过相似则沉默。修改后即时生效",
+        8,
+        options=[4, 6, 8, 12],
+    ),
     "thinking_text_max": GsIntConfig(
         "thinking 蒸馏字数上限",
         "hook_ctx.thinking_text 取 thinking 尾部的最大字数。修改后即时生效",

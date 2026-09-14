@@ -423,6 +423,8 @@ async def _sse_run(
             from gsuid_core.ai_core.http_agent.persona import peek_bound_persona
 
             ack = task_ack_phrase(peek_bound_persona(event.session_id))
+            if not ack:
+                ack = "收到。"
             yield _next("text", {"text": ack})
             text_emitted = True
         for att in held_atts:

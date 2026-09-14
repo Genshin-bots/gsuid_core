@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from typing import Literal, Sequence
+from datetime import datetime
 
 from gsuid_core.ai_core.utils import is_silence_marker
 from gsuid_core.ai_core.content_guard import is_observation_untrusted
@@ -68,6 +69,26 @@ _PROCESS_META_RE = re.compile(
     r"how_to_read|persisted\s+id)",
     re.IGNORECASE,
 )
+
+# 能力缺失：工具/接口 + 没挂/没装。不收「没接口文档」或裸「那种指令」。
+_OWN_TOOLKIT_DENY_RE = re.compile(
+    r"(?:工具(?!人)|接口).{0,8}没(?:挂|装|配)"
+    r"|(?:没|未)(?:挂|装).{0,8}(?:工具(?!人)|接口|那玩意)"
+    r"|没(?:有)?接口(?!文档|说明|手册)"
+    r"|没有.{0,6}对应工具"
+)
+_REDIRECT_EXECUTOR_RE = re.compile(
+    r"(?:别的家伙|另一个机器人|那个机器人).{0,16}(?:管|干|指令|命令)"
+    r"|(?:那种指令|那种命令).{0,16}(?:别的家伙|另一个机器人|那个机器人)"
+    r"|你直接发\s*[`]"
+    r"|你直接发\s*[「『\"]\s*(?:/|gs)"
+    r"|先发\s*[`]"
+    r"|先发\s*[「『\"]\s*(?:/|gs)"
+)
+_TODAY_NOW_RE = re.compile(r"今天|今日|现在|此刻")
+_YMD_RE = re.compile(r"(20\d{2})[-年./](\d{1,2})[-月./](\d{1,2})")
+_REMINISCE_RE = re.compile(r"想起|记得|回忆|想想|那年|那天|那次|那会儿|那时候")
+_STALE_READING_RE = re.compile(r"是|为|气温|温度|°C|℃|晴|阴|雨|雪|度")
 
 # 交付状态汇报：模型以系统日志口吻向用户播报「任务/发送已完成、无需再说话」。
 # 双信号共现才命中（精度优先）：
@@ -300,6 +321,57 @@ def looks_like_process_meta(text: str) -> bool:
     return bool(_PROCESS_META_RE.search(body))
 
 
+def looks_like_capability_absence(text: str) -> bool:
+    """是否在对用户讲自身能力集合缺失，或把办事推给另一套指令/机器人。"""
+    body = (text or "").strip()
+    if not body or is_silence_marker(body):
+        return False
+    if _OWN_TOOLKIT_DENY_RE.search(body) is not None:
+        return True
+    return _REDIRECT_EXECUTOR_RE.search(body) is not None
+
+
+def _clause_around(text: str, idx: int) -> str:
+    start = 0
+    end = len(text)
+    for i in range(idx - 1, -1, -1):
+        if text[i] in "。！？\n；":
+            start = i + 1
+            break
+    for i in range(idx, len(text)):
+        if text[i] in "。！？\n；":
+            end = i
+            break
+    return text[start:end]
+
+
+def looks_like_stale_present_tense(text: str, *, now: datetime | None = None) -> bool:
+    """是否把过期年月日说成今天/现在的读数。回忆句、无年份月日不判。"""
+    body = (text or "").strip()
+    if not body or is_silence_marker(body):
+        return False
+    clock = now if now is not None else datetime.now()
+    today = clock.date()
+    for m in _YMD_RE.finditer(body):
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            dated = datetime(year, month, day).date()
+        except ValueError:
+            continue
+        if dated >= today:
+            continue
+        clause = _clause_around(body, m.start())
+        if _TODAY_NOW_RE.search(clause) is None:
+            continue
+        if _REMINISCE_RE.search(clause) is not None:
+            continue
+        win_lo = max(0, m.start() - 10)
+        win_hi = min(len(body), m.end() + 12)
+        if _STALE_READING_RE.search(body[win_lo:win_hi]) is not None:
+            return True
+    return False
+
+
 def looks_like_wait_template(text: str) -> bool:
     return (text or "").strip() in IN_FLIGHT_WAIT_TEMPLATES
 
@@ -346,6 +418,10 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
     if looks_like_empty_handoff(body):
         return False
     if looks_like_process_meta(body):
+        return False
+    if looks_like_capability_absence(body):
+        return False
+    if looks_like_stale_present_tense(body):
         return False
     if looks_like_machine_latin(body):
         return False

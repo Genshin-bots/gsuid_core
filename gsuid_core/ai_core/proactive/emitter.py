@@ -241,7 +241,7 @@ async def emit_proactive_message(
     #    source 字段为兼容老 dispatcher 仍只接受 "heartbeat" / "task" 两种字面量，
     #    其它来源（kanban / tool）登记成 "task" 走"对 Heartbeat 抑制 + 不进合并语境"。
     legacy_source: LegacyDispatcherSource = "heartbeat" if source == "heartbeat" else "task"
-    summary: str = out_msg if source == "scheduled_task" else ""
+    summary: str = out_msg if source in ("scheduled_task", "heartbeat") else ""
     dispatcher.register_send(target_key, legacy_source, summary)
 
     logger.info(

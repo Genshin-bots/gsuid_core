@@ -2,5 +2,7 @@
   "log.heartbeat.reactive_decision": "[ReactiveGate] should_speak={should} reason={reason!r}",
   "log.heartbeat.reactive_decision_missing": "[ReactiveGate] 决策缺合法 should_speak，默认沉默",
   "log.heartbeat.reactive_gate_error": "[ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}",
-  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}"
+  "log.heartbeat.speak_mood_context_hook_ok": "[Heartbeat] should_speak={should_speak} mood={mood!r} context_hook={context_hook!r}",
+  "log.heartbeat.repeat_suppressed": "[Heartbeat] 与近窗主动句过相似，抑制本次发言 mood={mood!r}",
+  "log.heartbeat.hook_span_miss": "[Heartbeat] 话头对不上近窗人类句或刚完成的事，降级沉默 mood={mood!r}"
 }

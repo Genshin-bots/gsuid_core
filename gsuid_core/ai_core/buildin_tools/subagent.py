@@ -244,7 +244,7 @@ async def create_subagent(
         ctx: 工具执行上下文
         task: 任务全文（事实包请直接写进 task，勿只写「帮我出图」）。
         agent_profile: 必填 node_id（或可 resolve 的自然语言）；禁止空、禁止自造名。
-        transient: True 仅纯 lookup；出图/落盘/改状态必须 False（默认）。
+        transient: 仅 lookup 白名单节点生效。交互主人格传入 True 也会改走看板后台。
 
     **何时不要用 create_subagent**：
     - ≥2 能力接力或周期任务 → ``register_kanban_task``。
@@ -334,7 +334,9 @@ async def _create_subagent_impl(
             ids = [n.node_id for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"][:8]
             listed = "、".join(ids) if ids else "（花名册为空）"
             return f"未匹配到能力节点 `{agent_profile.strip()}`。可用 node_id：{listed}"
-        use_transient = transient or pid in _TRANSIENT_DEFAULT_PROFILES
+        use_transient = pid in _TRANSIENT_DEFAULT_PROFILES
+        if not use_transient and transient and not ctx.deps.allow_user_outbound:
+            use_transient = True
         if use_transient:
             return await _dispatch_transient_capability_agent(ctx, task, agent_profile)
         return await _dispatch_via_kanban(ctx, task, agent_profile)
