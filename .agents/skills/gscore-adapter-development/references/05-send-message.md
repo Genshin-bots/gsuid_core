@@ -71,12 +71,13 @@ data == "纯文本"
 # → MessageSegment.text(data)
 ```
 
-### `image`（**双形态，必须都处理**）
-
-`data` 有两种前缀，缺一不可：
+### `image`（**三种形态，必须都处理**）
 
 ```python
-if image.startswith("link://"):
+if image.startswith("file://"):
+    # 原样给协议端；本机文件存在时可改走 path
+    # MessageSegment.image(image)
+elif image.startswith("link://"):
     url = image.replace("link://", "")        # 远程 URL，直接发 url 或下载
     # 多数平台：MessageSegment.image(url)
 else:  # "base64://"
@@ -86,7 +87,8 @@ else:  # "base64://"
 
 - **`base64://`**：默认形态。`data[9:]` 是 base64，`b64decode` 得 bytes。
 - **`link://`**：core 开启「发送图片自动转链接」时给的远程 URL（`data[7:]` 是 url）。
-- ⚠️ **两种都要写**，否则用户一旦开启转链接，你的适配器就发不出图。详见 [§7](./07-image-and-media.md)。
+- **`file://`**：Core 原样下发，指向**协议端（或适配器本机）**文件系统。不要转 base64 / 当 HTTP 下载。
+- ⚠️ **三种都要写**。详见 [§7](./07-image-and-media.md)。
 
 ### `at`
 
@@ -214,7 +216,7 @@ MessageSend(
 | `type` | `data` 格式 | 落地方式 | 平台支持度 |
 |--------|------------|----------|-----------|
 | `text` | str | 文本段 | 全部 |
-| `image` | `base64://` 或 `link://` | 图片段（双处理）| 全部 |
+| `image` | `base64://` / `link://` / `file://` | 图片段（三形态）| 全部；`file://` 主要 OneBot/Milky |
 | `at` | 用户 ID str | @ 段（仅群） | 多数 |
 | `reply` / `reply_id` | msg_id str | 引用段（下发按 id） | 部分 |
 | `record` | `base64://` | 语音段 | 部分 |

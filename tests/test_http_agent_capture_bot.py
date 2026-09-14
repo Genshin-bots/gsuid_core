@@ -16,7 +16,7 @@ from pydantic_ai.messages import (
 )
 
 from gsuid_core.bot import Bot, _Bot
-from gsuid_core.models import Event
+from gsuid_core.models import Event, Message
 from gsuid_core.ai_core.utils import ThinkTagSplitter
 from gsuid_core.ai_core.agent_run.loop import LoopPhase
 from gsuid_core.ai_core.agent_run.state import RunOnceState
@@ -585,6 +585,20 @@ def test_discard_preview_skips_history_commit() -> None:
         while not q.empty():
             frames.append(q.get_nowait().text)
         assert "".join(frames) == "规划内心独白足够长"
+
+    asyncio.run(_run())
+
+
+def test_file_uri_attachment_keeps_url_encoding() -> None:
+    cap, q = _bot_pair()
+    uri = "file:///tmp/a.jpg"
+
+    async def _run() -> None:
+        await cap.send(Message(type="image", data=uri))
+        item = q.get_nowait()
+        assert item.kind == "attachment"
+        assert item.encoding == "url"
+        assert item.data == uri
 
     asyncio.run(_run())
 

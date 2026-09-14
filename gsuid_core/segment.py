@@ -107,6 +107,9 @@ class MessageSegment:
         else:
             if img.startswith("http"):
                 return Message(type="image", data=f"link://{img}")
+            # file:// 指向协议端/适配器本机盘，Core 不读、不转码
+            if img.startswith("file://"):
+                return Message(type="image", data=img)
             if img.startswith("base64://") and not IS_UPLOAD:
                 return Message(type="image", data=img)
             elif img.startswith("base64://"):
@@ -187,7 +190,7 @@ class MessageSegment:
             elif isinstance(msg, (bytearray, memoryview)):
                 continue
             else:
-                if msg.startswith("base64://"):
+                if msg.startswith("base64://") or msg.startswith("file://"):
                     msg_list.append(Message(type="image", data=msg))
                 elif msg.startswith("http"):
                     msg_list.append(Message(type="image", data=f"link://{msg}"))
@@ -205,7 +208,7 @@ class MessageSegment:
             with open(str(content), "rb") as fp:
                 content = fp.read()
         else:
-            if content.startswith("base64://"):
+            if content.startswith("base64://") or content.startswith("file://"):
                 return Message(type="record", data=content)
             with open(content, "rb") as fp:
                 content = fp.read()
@@ -248,7 +251,7 @@ class MessageSegment:
             with open(str(content), "rb") as fp:
                 content = fp.read()
         else:
-            if content.startswith("base64://"):
+            if content.startswith("base64://") or content.startswith("file://"):
                 return Message(type="video", data=content)
             with open(content, "rb") as fp:
                 content = fp.read()
@@ -335,6 +338,8 @@ async def _convert_message_to_image(message: Message, bot_id: str, bot_self_id: 
         local_val = await get_global_val(bot_id, bot_self_id)
         local_val["image"] += 1
         img: Union[bytes, str] = message.data  # type: ignore
+        if isinstance(img, str) and img.startswith("file://"):
+            return [message]
         if isinstance(img, str) and img.startswith("base64://"):
             image_b64 = img
             image_bytes = b64decode(img[9:])
@@ -381,7 +386,7 @@ async def _convert_message(message: Union[Message, str, bytes], bot_id: str, bot
         else:
             _message = [message]
     elif isinstance(message, str):
-        if message.startswith("base64://"):
+        if message.startswith("base64://") or message.startswith("file://"):
             _str_message = Message(type="image", data=message)
         else:
             _str_message = Message(type="text", data=message)
@@ -496,7 +501,9 @@ async def to_markdown(
     for m in message:
         if m.type == "image":
             if isinstance(m.data, str):
-                if m.data.startswith("link://"):
+                if m.data.startswith("file://"):
+                    _message.append(m)
+                elif m.data.startswith("link://"):
                     url = m.data.replace("link://", "")
                     if not size:
                         logger.warning(t("log.segment.to_markdown_url_messagesegment_image"))

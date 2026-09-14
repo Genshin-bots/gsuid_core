@@ -16,10 +16,11 @@
 - 含 `:` 的平台 ID（`onebot:red`）：core 会按 `:` 拆，`event.bot_id` 只取前半，但下发 `MessageSend.bot_id`
   回填的是**完整值**，你的路由判断要用完整值。详见 [§2.2](./02-data-structures.md)。
 
-## 红线 3：图片必须双形态处理
+## 红线 3：图片必须处理 base64 / link / file
 
-- `image` 段 `data` 既可能 `base64://` 又可能 `link://`。**只写一种 = 用户开了"自动转链接"就静默发不出图**。
-- 标准模板见 [§7.2](./07-image-and-media.md)。`record`/`video` 恒 base64，`file` 内容也可能是 link。
+- `image` 段 `data` 可能是 `base64://`、`link://` 或 `file://`。**只写 base64 = 开转链接或下发 file URI 就静默发不出图**。
+- `file://` 原样透传给 OneBot，不要 `open()`、不要当 HTTP、不要塞进 Alconna `Image(url=)`。
+- 标准模板见 [§7.2](./07-image-and-media.md)。`record`/`video` 也可带 `file://`；`file` 段内容也可能是 link。
 
 ## 红线 4：`log_` 包不能当消息发
 
@@ -109,7 +110,7 @@
 
 - [ ] 发的是二进制帧，`max_size` 已调大
 - [ ] 上报/下发用同一平台 `bot_id`；含 `:` 的路由判断用完整值
-- [ ] `image` 同时处理 `base64://` 和 `link://`
+- [ ] `image` 同时处理 `base64://`、`link://` 和 `file://`
 - [ ] `log_` 包已特判、不外发
 - [ ] `node` 下发遍历逐发、不嵌套；上报会展开合并转发，引用转发带 `[合并转发]` + `node`
 - [ ] 断线重连有退避有限次、复用同一路由 `bot_id`

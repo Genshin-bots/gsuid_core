@@ -81,8 +81,8 @@ description: >
   ③ `bot_self_id`（机器人账号 ID）。详见 [§2.2](./references/02-data-structures.md)。
 - **`bot_id` 含 `:` 会被 core 拆分**：core 用 `:` 前的部分做 `event.bot_id`，完整值留在 `real_bot_id`
   （如 `onebot:red` → `event.bot_id='onebot'`）。这是同一协议多实现共用触发器的机制。详见 [§2.2](./references/02-data-structures.md)。
-- **图片永远是双形态**：core 下发的 `image` 既可能是 `base64://...` 也可能是 `link://...`（开了"自动转链接"时），
-  适配器**两种都必须处理**，否则用户一开转链接就发不出图。详见 [§7.1](./references/07-image-and-media.md) 与 [§10 红线 3](./references/10-pitfalls.md)。
+- **图片三种形态**：core 下发的 `image` 是 `base64://`、`link://`（开了"自动转链接"）或 `file://`（协议端/本机路径，原样透传）。
+  适配器**三种都必须处理**。详见 [§7.1](./references/07-image-and-media.md) 与 [§10 红线 3](./references/10-pitfalls.md)。
 - **`is_tome` 靠 `at` 段触发**：上报时若把一条 `at` 段的 `data` 填成 `bot_self_id`，core 会判定"@了机器人"
   （`is_tome=True`）；私聊（`direct`）则 core 自动置 `is_tome=True`。详见 [§4.4](./references/04-report-message.md)。
 - **引用拆成 `reply` + `reply_id`**：上报时 `reply` 填引用**正文**，`reply_id` 填被引用消息 id，引用图

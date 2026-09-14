@@ -1,16 +1,17 @@
 # 七、图片与多媒体
 
 图片是适配器最常出问题的地方，单独成章。核心就一句话：**`image` 永远要同时处理
-`base64://` 和 `link://` 两种前缀。**
+`base64://`、`link://`，以及原样透传的 `file://`。**
 
-## 7.1 图片的两种形态（必背）
+## 7.1 图片的形态（必背）
 
-core 下发的 `image` 段，`data` 只会是这两种之一：
+core 下发的 `image` 段，`data` 是这三种之一：
 
 | 前缀 | 含义 | 解出内容 |
 |------|------|---------|
 | `base64://` | 图片的 base64（默认形态） | `base64.b64decode(data[9:])` → `bytes` |
 | `link://` | 远程图片 URL（开启"自动转链接"时） | `data[7:]` → `str` URL |
+| `file://` | 协议端/适配器本机文件 URI | **原样**交给 OneBot `data.file`；Core **不读盘、不转码** |
 
 为什么有两种？core 有个「发送图片自动转链接」配置（`send_pic_config`）：
 
@@ -18,13 +19,17 @@ core 下发的 `image` 段，`data` 只会是这两种之一：
 - 开启：core 先把图片传到本地图床/对象存储，下发 `link://https://...`，省带宽、绕过部分平台的
   base64 大小限制。
 
-⚠️ **只处理一种 = 埋雷**：你只写了 `base64://` 分支，用户某天开了转链接，所有图片瞬间发不出且不报错
-（`data` 不以 `base64://` 开头，被你的 `else` 吞了）。这是最高频的适配 bug。
+⚠️ **只处理 base64 = 埋雷**：用户开了转链接，或插件下发 `file://`，图会静默发不出。
+`file://` **禁止**当 HTTP 去下、禁止当裸路径 `open()`、禁止塞进 Alconna `Image(url=…)`
+（无 hostname 的 `file:///` 会被补成 `https://file:///`）。本机文件存在 → `Image(path=…)`；
+否则把 URI 原样写入 OneBot `{type: image, data: {file: "file://…"}}`。
 
-## 7.2 标准双形态处理模板
+## 7.2 标准处理模板
 
 ```python
 def make_image(image: str):
+    if image.startswith("file://"):
+        return PlatformSeg.image(image)            # 原样 file URI，协议端读盘
     if image.startswith("link://"):
         url = image.replace("link://", "")
         return PlatformSeg.image(url)              # 平台支持直接发 URL
@@ -159,7 +164,7 @@ def b64_to_bytes(data: str) -> bytes:
 
 ## 7.7 一句话清单
 
-- [ ] `image` 同时处理 `base64://` 和 `link://`。
+- [ ] `image` 同时处理 `base64://`、`link://` 和 `file://`（后者原样透传）。
 - [ ] 平台只收 URL → base64 先上传/下载换 url。
 - [ ] 需要宽高的平台：base64 用 PIL 读真实尺寸，link 给合理默认值。
 - [ ] `record`/`video` 恒 base64；`file` 是 `名|内容` 且内容也可能是 link。

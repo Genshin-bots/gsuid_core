@@ -68,8 +68,8 @@ def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
     if isinstance(obj, str):
         if obj.startswith("base64://") and len(obj) > 100:
             return f"base64://...({len(obj)} chars)"
-        elif obj.startswith("link://"):
-            return obj  # 链接保持原样
+        elif obj.startswith("link://") or obj.startswith("file://"):
+            return obj
         elif len(obj) > max_str_len:
             return obj[:max_str_len] + f"...({len(obj)} chars)"
         return obj
