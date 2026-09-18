@@ -305,6 +305,17 @@ if is_mcp_provider(provider):
 - **`stdio`**：进程 stdin/stdout（本地子进程）。
 - 旧配置 `sse` 视为 `http`。
 
+**HTTP 健壮性（`McpHttpGuard`）:**
+- 挂载点外包一层护栏：子应用跑在 `anyio.CancelScope(shield=True)` 内；HTTP `send`
+  失败（客户端断开）不回灌 SDK
+- 子应用未写 `http.response.start` 就返回，或抛 `ClosedResourceError` /
+  `ExceptionGroup` 时：护栏回 **503 + JSON-RPC error**（已写 start 则不再写 503），
+  并重建 HTTP 子应用与 `StreamableHTTPSessionManager`（冷却 5s；建失败则保留旧挂载）
+- 线上形态（2026-09-18）：`writer.send` → `ClosedResourceError` → SDK 记
+  `SSE response error` 后吞掉、不写响应 → Starlette `No response returned.` →
+  `POST /api/mcp/` 永久 500。`stateless_http` 把每请求任务 spawn 进终身 task group，
+  毒化后不会自愈，必须换 lifespan 拿新的 session manager
+
 **鉴权（框架零插件依赖；方向永远是插件 → 框架）:**
 - `Authorization: Bearer <token>`
 - 静态 `mcp_server_api_key`（框架内建）
