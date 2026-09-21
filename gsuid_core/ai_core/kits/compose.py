@@ -8,13 +8,18 @@
 from typing import Tuple
 
 from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks
-from gsuid_core.ai_core.kits.base import join_named_blocks
+from gsuid_core.ai_core.kits.base import join_named_blocks, timeline_memory_budget
 
 
 def join_blocks(ctx: AgentHookContext) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装。空块丢弃，未知块名进不来（写入侧已白名单校验）。"""
     skip = ctx.memory_eval
-    return join_named_blocks(ctx.blocks, create_by=ctx.create_by, skip_memory_cap=skip)
+    return join_named_blocks(
+        ctx.blocks,
+        create_by=ctx.create_by,
+        skip_memory_cap=skip,
+        memory_budget=timeline_memory_budget(ctx.query),
+    )
 
 
 async def compose_dynamic_context(ctx: AgentHookContext, *, join: bool = True) -> Tuple[str, bool]:

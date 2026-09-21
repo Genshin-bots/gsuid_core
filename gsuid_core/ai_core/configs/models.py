@@ -546,14 +546,14 @@ def get_2nd_config_name_for_task(task_level: Literal["high", "low"]) -> str:
 
 
 def get_max_concurrency_for_config(full_name: str) -> int:
-    """读取配置文件的允许并发数，缺失/异常回退 1，并 clamp 到 [1, 10]"""
+    """读取配置文件的允许并发数，缺失/异常回退 1，并 clamp 到 [1, 12]"""
     try:
         provider, config_name = parse_provider_config_name(full_name)
         cfg = _get_provider_string_config(provider, config_name)
         val = int(cfg.get_config("max_concurrency").data)
     except Exception:
         return 1
-    return max(1, min(10, val))
+    return max(1, min(12, val))
 
 
 def _get_provider_string_config(provider: str, config_name: str) -> StringConfig:

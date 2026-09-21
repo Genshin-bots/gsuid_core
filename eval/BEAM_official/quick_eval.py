@@ -4,8 +4,8 @@
 重新摄入**，只需对受影响的少数类别快速重测，几分钟即可验证，而非每次跑满 20 题（~16min）。
 
 用法：
-  python eval/BEAM_10M/quick_eval.py --conv 0 --cats abstention,contradiction_resolution
-  python eval/BEAM_10M/quick_eval.py --conv 0            # 不传 cats = 全部 20 题
+  python eval/BEAM_official/quick_eval.py --conv 0 --cats abstention,contradiction_resolution
+  python eval/BEAM_official/quick_eval.py --conv 0            # 不传 cats = 全部 20 题
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from eval.common import DEFAULT_BASE_URL, load_json  # noqa: E402
-from eval.BEAM_10M.run_beam_eval import (  # noqa: E402
+from eval.common.beam_runner import (  # noqa: E402
     USER_ID_TEMPLATE,
     cmd_judge,
     cmd_probe,

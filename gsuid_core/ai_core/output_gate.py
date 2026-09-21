@@ -207,6 +207,26 @@ def _eval_angle_bracket(
     if not tags:
         return None
 
+    if ab.looks_like_dated_or_ordered_answer(text):
+        cleaned = ab.sanitize_illegal_angle_tags(text)
+        if cleaned and not ab.has_illegal_angle_tags(cleaned):
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_angle_bracket_rewrite",
+                    attempts=0,
+                    max_retries=ab.MAX_RETRIES,
+                    channel=channel,
+                    tags=repr(tags[:4]),
+                    preview=repr(text[:80]),
+                )
+            )
+            return GateResult(
+                decision=GateDecision.FALLBACK,
+                policy="angle_bracket",
+                send_text=cleaned,
+                detail="sanitized_list",
+            )
+
     attempts = _record_block(extra, "angle_bracket", text, count_attempt=count_attempt)
     if attempts >= ab.MAX_RETRIES:
         _set_abort(extra, "angle_bracket")

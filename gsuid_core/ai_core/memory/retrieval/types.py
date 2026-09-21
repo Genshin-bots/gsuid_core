@@ -1,6 +1,6 @@
 """记忆检索模块的共享类型定义"""
 
-from typing import Optional, TypedDict
+from typing import Optional, TypedDict, NotRequired
 
 
 class Episode(TypedDict):
@@ -11,6 +11,8 @@ class Episode(TypedDict):
     valid_at: str
     scope_key: str
     embedding: list[float]
+    session_id: NotRequired[str]
+    turn_index: NotRequired[int]
 
 
 class Entity(TypedDict):
@@ -37,6 +39,18 @@ class Edge(TypedDict):
     score: float
     valid_at_ts: Optional[float]
     invalid_at_ts: Optional[float]
+    expired_at_ts: NotRequired[Optional[float]]
+
+
+class MemoryEventCue(TypedDict):
+    """睡眠期事件线索，只当指针，证据仍是源 turn。"""
+
+    summary: str
+    stated_at: str
+    event_at: str
+    turn_episode_id: str
+    thread_id: str
+    source: NotRequired[str]
 
 
 class Category(TypedDict):

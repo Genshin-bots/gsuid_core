@@ -16,14 +16,14 @@
 用法::
 
   # 全量：plan 1..10 抽取 → rebuild（断点续跑安全，可重复执行）
-  PYTHONIOENCODING=utf-8 python eval/BEAM_10M/ingest_graph.py --conv 0
+  PYTHONIOENCODING=utf-8 python eval/BEAM_official/ingest_graph.py --conv 0
 
   # 子集快速验证：只抽 plan 1 的前 8 个窗口，不 rebuild
-  PYTHONIOENCODING=utf-8 python eval/BEAM_10M/ingest_graph.py --conv 0 --plans 1 \
+  PYTHONIOENCODING=utf-8 python eval/BEAM_official/ingest_graph.py --conv 0 --plans 1 \
       --max-windows 8 --no-rebuild
 
   # 仅做 rebuild（抽取已完成）
-  PYTHONIOENCODING=utf-8 python eval/BEAM_10M/ingest_graph.py --conv 0 --rebuild-only
+  PYTHONIOENCODING=utf-8 python eval/BEAM_official/ingest_graph.py --conv 0 --rebuild-only
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from eval.common import (  # noqa: E402
     call_batch_observe,
     call_rebuild_hiergraph,
 )
-from eval.BEAM_10M.run_beam_eval import (  # noqa: E402
+from eval.common.beam_runner import (  # noqa: E402
     USER_ID_TEMPLATE,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PARQUET_GLOB,
@@ -137,7 +137,7 @@ def _plan_payload_turns(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         if iso:
             item["timestamp"] = iso
         payload_turns.append(item)
-    from eval.BEAM_10M.timestamps import spread_payload_timestamps
+    from eval.common.timestamps import spread_payload_timestamps
 
     return spread_payload_timestamps(payload_turns)
 

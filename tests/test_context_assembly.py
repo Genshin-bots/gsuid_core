@@ -99,7 +99,7 @@ def test_dynamic_context_ordering_contract() -> None:
     assert i_hist >= 0 and i_mem > i_hist, "长期记忆须在历史之后"
     assert i_soft > i_mem, "软触发提示须在记忆之后"
     i_guide = full.find("[guide]")
-    assert i_guide > i_mem, "评测指南须跟在记忆正文后，避免 800 字预算把目录卡截掉"
+    assert i_guide > i_mem, "评测指南须跟在记忆正文后，避免记忆字帽把目录卡截掉"
     assert i_soft > i_guide
     assert full.endswith(SOFT_TRIGGER_NOTE), "软触发提示必须最后"
     print("[OK] 动态上下文顺序契约")

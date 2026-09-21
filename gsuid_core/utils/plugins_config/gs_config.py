@@ -258,17 +258,29 @@ class StringConfig:
         self.write_config()
 
     def write_config(self):
-        with atomic_save(
-            str(self.CONFIG_PATH),
-            text_mode=False,
-            overwrite=True,
-            overwrite_part=True,
-            file_perms=0o644,
-        ) as file:
-            if file:
-                file.write(msgjson.format(msgjson.encode(self.config), indent=4))
-            else:
-                logger.error(t("log.config.write_fail"))
+        import time
+
+        payload = msgjson.format(msgjson.encode(self.config), indent=4)
+        last_err: OSError | None = None
+        for attempt in range(5):
+            try:
+                with atomic_save(
+                    str(self.CONFIG_PATH),
+                    text_mode=False,
+                    overwrite=True,
+                    overwrite_part=True,
+                    file_perms=0o644,
+                ) as file:
+                    if file:
+                        file.write(payload)
+                        return
+                    logger.error(t("log.config.write_fail"))
+                    return
+            except OSError as e:
+                last_err = e
+                time.sleep(0.25 * (attempt + 1))
+        if last_err is not None:
+            raise last_err
 
     def repair_config(self):
         with open(self.CONFIG_PATH, "r", encoding="UTF-8") as f:

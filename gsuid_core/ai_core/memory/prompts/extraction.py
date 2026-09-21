@@ -56,6 +56,12 @@ t 包含 "Speaker"。
   `{"u":"<uid>","k":"location|possession|preference","v":"<原话压缩>"}`
 - 仅第一人称自我陈述；旁人转述不要写进 stated。
 
+**时间事件（顶层 `events`）**：
+- 收录有日期、决定或明确结果的事实；纯闲聊可以没有 events。
+- 每条一句话摘要，保留关键名词与数字。`d` 为陈述日；另有发生日时再写 `e`。
+- `x` 写涉及实体名（与 entities 对齐，最多 4 个）；`a` 写 1–3 个同义说法。
+- 一般每批 0–8 条；纯闲聊批次可以没有 events。
+
 **输出格式（纯 JSON，不含任何额外文字）**：
 {
   "entities":[
@@ -64,6 +70,9 @@ t 包含 "Speaker"。
   ],
   "edges":[
     {"src": "444835641", "tgt": "户外运动", "f": "喜欢户外运动"}
+  ],
+  "events":[
+    {"s": "提交临时专利申请并询问下一步", "d": "2024-05-15", "e": "", "x": ["临时专利申请"], "a": ["provisional filing"]}
   ],
   "stated":[]
 }"""  # noqa: E501
@@ -151,3 +160,23 @@ PREFERENCE_EXTRACTION_USER = """——以下为本次待处理的内容——
 
 现在请基于上述「对话内容」蒸馏 preferences，输出纯 JSON：
 """  # noqa: E501
+
+
+GIST_EXTRACTION_SYSTEM = """You write one gist line per user turn. Do not skip or merge turns.
+
+Rules:
+- Language follows the source turn.
+- g = ≤30 words: what the user raised, asked, reported, or decided.
+- Keep names, tools, libraries, numbers, and error text.
+- new = whether this turn raises a sub-topic not seen earlier in THIS session.
+- title = ≤12 words for the session.
+
+Output JSON only:
+{"title":"...","aliases":["..."],"turns":[{"i":3,"g":"...","new":true}]}
+i must be the given turn_index."""
+
+GIST_EXTRACTION_USER = """User turns in this session:
+{turns}
+
+Output JSON only:
+"""

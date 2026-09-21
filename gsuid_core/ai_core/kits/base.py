@@ -31,7 +31,10 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "plugin_hints",
 )
 
-# 单轮动态块合计目标 ≤2000 字：join 时按块截断并 warning。
+# 排序/摘要/跨月题 pack 到 16k，join 必须同帽，否则从尾部砍掉后期里程碑。
+TIMELINE_MEMORY_JOIN_BUDGET = 16000
+
+# 长库时 800 字会把专名/数字切掉；join 仍按块截断
 BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "mood": 80,
     "relationship": 100,
@@ -39,7 +42,7 @@ BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "identity": 80,
     "history": 600,
     "group_context": 200,
-    "memory": 800,
+    "memory": 8000,
     "task": 250,
     "plan_hint": 250,
     "chitchat_style": 160,
@@ -57,20 +60,38 @@ _KNOWN_BLOCKS: FrozenSet[str] = frozenset(CONTEXT_BLOCK_ORDER) | STABLE_BLOCK_NA
 _CUE_BLOCK_CLUSTER: FrozenSet[str] = frozenset({"voice_anchor", "identity"})
 
 
+def timeline_memory_budget(query: str) -> int | None:
+    """order/span/summary 与 pack 对齐；其它问句仍走默认 8000。"""
+    from gsuid_core.ai_core.memory.config import memory_config
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_span_query,
+        looks_like_order_query,
+        looks_like_summary_query,
+    )
+
+    if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
+        if memory_config.eo_strategy == "ledger":
+            return max(TIMELINE_MEMORY_JOIN_BUDGET, int(memory_config.ledger_max_chars))
+        return TIMELINE_MEMORY_JOIN_BUDGET
+    return None
+
+
 def is_known_block(name: str) -> bool:
     """块名白名单校验。未知名一律拒绝，防套件私自插块。"""
     return name in _KNOWN_BLOCKS
 
 
-def _apply_block_budget(name: str, text: str) -> str:
+def _apply_block_budget(name: str, text: str, *, budget: int | None = None) -> str:
     """超 per-block 预算则截断。预算表缺名时不截（稳定块不在此表）。"""
-    if name not in BLOCK_CHAR_BUDGET:
+    cap = budget
+    if cap is None:
+        if name not in BLOCK_CHAR_BUDGET:
+            return text
+        cap = BLOCK_CHAR_BUDGET[name]
+    if len(text) <= cap:
         return text
-    budget = BLOCK_CHAR_BUDGET[name]
-    if len(text) <= budget:
-        return text
-    logger.warning(t("log.agent.context_block_truncated", name=name, before=len(text), after=budget))
-    return text[: max(0, budget - 1)] + "…"
+    logger.warning(t("log.agent.context_block_truncated", name=name, before=len(text), after=cap))
+    return text[: max(0, cap - 1)] + "…"
 
 
 def join_named_blocks(
@@ -78,10 +99,11 @@ def join_named_blocks(
     *,
     create_by: str = "Chat",
     skip_memory_cap: bool = False,
+    memory_budget: int | None = None,
 ) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装；口吻/口气/身份连成一段，其余块仍 ``\\n\\n``。
 
-    评测跳过 800 字帽须显式 ``skip_memory_cap``（Chat + memory_eval）。
+    评测跳过记忆字帽须显式 ``skip_memory_cap``（Chat + memory_eval）。
     ``create_by=TEST`` 不再自动免帽，以免评测走 TEST 改掉生产装配。
     """
     pieces: list[str] = []
@@ -93,7 +115,11 @@ def join_named_blocks(
         text = blocks[name]
         if not text:
             continue
-        if not (skip_memory_cap and name == "memory"):
+        if skip_memory_cap and name == "memory":
+            pass
+        elif name == "memory" and memory_budget is not None:
+            text = _apply_block_budget(name, text, budget=memory_budget)
+        else:
             text = _apply_block_budget(name, text)
         if name in _CUE_BLOCK_CLUSTER:
             cues.append(text)

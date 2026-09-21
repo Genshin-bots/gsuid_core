@@ -28,8 +28,8 @@ from gsuid_core.ai_core.memory.config import memory_config
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Episode
 
-# 评测侧时间戳格式表：ISO8601 / Unix / LongMemEval / BEAM-10M，全部失败兜底 None。
-# 与 eval/BEAM_10M/run_beam_eval.py:parse_time_anchor 对齐，保证两侧可互换。
+# 评测侧时间戳格式表：ISO8601 / Unix / LongMemEval / BEAM，全部失败兜底 None。
+# 与 eval.common.beam_runner.parse_time_anchor 对齐，保证两侧可互换。
 _TIMESTAMP_STRPTIME_FORMATS = (
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%d %H:%M:%S",
@@ -445,6 +445,12 @@ async def observe(
             parsed = parse_meme_explain(content)
             if parsed is not None:
                 _schedule_meme_knowledge_write(bot_id, group_id, parsed[0], parsed[1])
+        elif value_tier == "HIGH":
+            from gsuid_core.ai_core.memory.lifecycle.predict_calibrate import should_downgrade_high
+
+            if await should_downgrade_high(scope_key, content):
+                value_tier = "LOW"
+                logger.debug(t("log.memory.predict_calibrate_down", scope_key=scope_key))
 
     record = ObservationRecord(
         raw_content=content,

@@ -277,3 +277,17 @@ def test_angle_short_circuit_then_ooc_safe_helper(monkeypatch: Any) -> None:
     assert hit is not None
     safe = of.MACHINE_FALLBACK_TEXT if hit.category == "machine_dump" else of.PERSONA_FALLBACK_TEXT
     assert safe == of.PERSONA_FALLBACK_TEXT
+
+
+def test_angle_bracket_list_with_br_is_sanitized_not_fused() -> None:
+    from gsuid_core.ai_core.output_gate import GateDecision, is_fused, pre_send_gate
+
+    extra: dict = {}
+    text = "1. 2024-03-15 Core features<br>2. 2024-04-05 Transaction error handling\n3. 2024-04-25 Security"
+    r = pre_send_gate(text, extra, channel="main")
+    assert r.decision is GateDecision.FALLBACK
+    assert r.policy == "angle_bracket"
+    assert "Core features" in r.send_text
+    assert "br" not in r.send_text.lower()
+    assert "Transaction error handling" in r.send_text
+    assert not is_fused(extra)

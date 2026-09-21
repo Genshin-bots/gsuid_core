@@ -16,9 +16,13 @@ from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.database.models import (
     AIMemEdge,
+    AIMemEvent,
     AIMemEntity,
+    AIMemThread,
     AIMemEpisode,
+    AIMemSession,
     AIMemCategory,
+    AIMemTurnGist,
     AIMemPreference,
     AIMemCategoryEdge,
     mem_category_entity_members,
@@ -57,7 +61,7 @@ async def _collect_scope_keys_by_prefix(
     scope_keys = [row[0] for row in result.fetchall()]
 
     # 补充从 Entity / Edge / Category 表中获取的 scope_key（避免 Episode 为空但其他表有数据的情况）
-    for model in (AIMemEntity, AIMemEdge, AIMemCategory):
+    for model in (AIMemEntity, AIMemEdge, AIMemCategory, AIMemSession, AIMemThread, AIMemTurnGist, AIMemEvent):
         result = await session.execute(select(model.scope_key).where(col(model.scope_key).like(pattern)).distinct())
         for row in result.fetchall():
             sk = row[0]
@@ -84,7 +88,7 @@ async def _collect_scope_keys_by_suffix(
     )
     scope_keys = [row[0] for row in result.fetchall()]
 
-    for model in (AIMemEntity, AIMemEdge, AIMemCategory):
+    for model in (AIMemEntity, AIMemEdge, AIMemCategory, AIMemSession, AIMemThread, AIMemTurnGist, AIMemEvent):
         result = await session.execute(select(model.scope_key).where(col(model.scope_key).like(pattern)).distinct())
         for row in result.fetchall():
             sk = row[0]
@@ -216,6 +220,10 @@ async def _delete_db_by_scope_keys(
         )
 
     # 4. 删除主表记录
+    await session.execute(delete(AIMemSession).where(col(AIMemSession.scope_key).in_(scope_keys)))
+    await session.execute(delete(AIMemThread).where(col(AIMemThread.scope_key).in_(scope_keys)))
+    await session.execute(delete(AIMemTurnGist).where(col(AIMemTurnGist.scope_key).in_(scope_keys)))
+    await session.execute(delete(AIMemEvent).where(col(AIMemEvent.scope_key).in_(scope_keys)))
     await session.execute(delete(AIMemEdge).where(col(AIMemEdge.scope_key).in_(scope_keys)))
     await session.execute(delete(AIMemEpisode).where(col(AIMemEpisode.scope_key).in_(scope_keys)))
     await session.execute(delete(AIMemEntity).where(col(AIMemEntity.scope_key).in_(scope_keys)))

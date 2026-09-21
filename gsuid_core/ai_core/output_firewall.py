@@ -89,7 +89,6 @@ _SYSTEM_TERMS: Tuple[str, ...] = (
     "systemprompt",
     "系统提示词",
     "traceback",
-    "数据库表",
     "max_tokens",
     "maxtokens",
     # 框架内部用语（对用户念出即出戏；工具名/句柄见 _FRAMEWORK_LEAK_RE）
@@ -159,12 +158,11 @@ _TECH_DUMP_RE = re.compile(
     r"|\bstatus_code\s*[:=]\s*\d{3}\b"
     r"|[\"']status[\"']\s*:\s*\d{3}"
     r"|\{['\"]status['\"]\s*:\s*\d{3}"
-    r"|\b(RuntimeError|ValueError|TypeError|KeyError|AttributeError|HTTPError)\b\s*:"
     r"|\bat 0x[0-9a-fA-F]+\b"
-    r"|pydantic_core|pydantic_ai\."
-    r"|raise\s+\w+Error\(",
+    r"|pydantic_core|pydantic_ai\.",
     re.IGNORECASE,
 )
+_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 # 语境技术词：与第一人称直接绑定才是自我泄露（第三方讨论一律放行）。
 # api密钥/apikey 也在此档：真实密钥泄露由 _SK_KEY_RE 按形态兜底，裸词"备个API key"
 # 是开发者群日常（实测把 AI 工具消费建议整条 scrub 成兜底句）。
@@ -205,7 +203,7 @@ _AI_PEER_RE = re.compile(
     r"|我们(这些|这类|这种)[^。，,]{0,4}(大模型|语言模型|人工智能|\bai\b)",
     re.IGNORECASE,
 )
-_SK_KEY_RE = re.compile(r"sk-[A-Za-z0-9]{8,}")
+_SK_KEY_RE = re.compile(r"(?<![A-Za-z])sk-[A-Za-z0-9]{8,}")
 _ERR_CODE_RE = re.compile(r"(错误码|报错码|error\s*code)[\s:：]*\d+", re.IGNORECASE)
 # 采样温度泄露按"参数取值形态"识别（temperature≈0.x~2.x），避免误杀天气里的 Temperature: 21°C
 _SAMPLING_PARAM_RE = re.compile(r"temperature.{0,6}[0-2]\.\d", re.IGNORECASE)
@@ -396,7 +394,7 @@ def check_ooc(
     if _fund is not None:
         return FirewallHit(category="fund_claim", matched=[_fund])
     # 机器腔/堆栈：优先于裸 system 词（traceback 同时在词库里）
-    if _TECH_DUMP_RE.search(text):
+    if _TECH_DUMP_RE.search(_CODE_FENCE_RE.sub(" ", text)):
         return FirewallHit(category="machine_dump", matched=["技术堆栈/状态码"])
     _dev = _dev_vocab_hit(text)
     if _dev is not None:
@@ -565,7 +563,7 @@ def is_tech_dump(text: str) -> bool:
     """工具/子代理返回是否为堆栈或状态码技术 dump（供 tool return 入模前屏蔽）。"""
     if not text or not text.strip():
         return False
-    if _TECH_DUMP_RE.search(text):
+    if _TECH_DUMP_RE.search(_CODE_FENCE_RE.sub(" ", text)):
         return True
     # 大段 JSON 且含 status + error/detail 形态
     s = text.strip()

@@ -307,7 +307,7 @@ async def summarize_long_input(text: str, *, max_tokens: int = 18000) -> str:
             None,
             task=f"请总结以下用户输入，保留关键信息：\n\n{text}",
             max_tokens=max_tokens,
-            max_iterations=15,
+            max_iterations=int(ai_config.get_config("task_max_iterations").data),
             agent_profile="",
             transient=True,
         )

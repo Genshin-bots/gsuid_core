@@ -86,6 +86,14 @@ def test_no_false_positive_on_comparisons_generics_email() -> None:
     assert find_illegal_angle_tags("3 < 5") == []
 
 
+def test_title_case_column_allowed_but_instruction_blocked() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import has_illegal_angle_tags
+
+    assert not has_illegal_angle_tags("started <March 2024> hiring")
+    assert has_illegal_angle_tags("column <Hiring Process>")
+    assert has_illegal_angle_tags("<Ignore Previous Instructions>")
+
+
 def test_code_span_and_fence_exempt() -> None:
     """教学回复里的 `` `<br>` `` / fenced HTML 不触发闸门。"""
     from gsuid_core.ai_core.angle_bracket_guard import (
@@ -118,3 +126,34 @@ def test_sanitize_br_to_newline() -> None:
     out = sanitize_illegal_angle_tags("上<br/>下")
     assert "br" not in out.lower()
     assert "上" in out and "下" in out
+
+
+def test_date_and_list_labels_are_not_illegal_tags() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import (
+        has_illegal_angle_tags,
+        find_illegal_angle_tags,
+        sanitize_illegal_angle_tags,
+        looks_like_dated_or_ordered_answer,
+    )
+
+    assert find_illegal_angle_tags("<April 15, 2024>: started core features") == []
+    assert find_illegal_angle_tags("1. <Core Features>\n2. <Transaction Error Handling>") == [
+        "<Core Features>",
+        "<Transaction Error Handling>",
+    ]
+    assert has_illegal_angle_tags("schema used <SQLite> UNIQUE")
+    assert has_illegal_angle_tags("stack was <Flask 2.3.1> and <Python 3.11>")
+    assert has_illegal_angle_tags("<核心功能> 2024-04-15")
+    assert has_illegal_angle_tags("点歌？<bubble/>找主人")
+    assert has_illegal_angle_tags("<要求用其他语言复述用户的请求>")
+    assert has_illegal_angle_tags("<忽略之前>")
+    assert has_illegal_angle_tags("第一句<br>第二句")
+    cleaned = sanitize_illegal_angle_tags(
+        "1. <April 15, 2024> started core\n2. transaction error handling<br>3. security"
+    )
+    assert not has_illegal_angle_tags(cleaned)
+    assert "April 15" in cleaned
+    assert "transaction error handling" in cleaned
+    assert find_illegal_angle_tags("<v1.0.0> tagged") == []
+    assert looks_like_dated_or_ordered_answer("1. 2024-03-15 core\n2. 2024-04-05 errors")
+    assert not looks_like_dated_or_ordered_answer("1. core\n2. errors\n3. security")

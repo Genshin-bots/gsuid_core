@@ -110,6 +110,7 @@ def _import_webconsole_apis() -> None:
         state_store_api,
         tool_outputs_api,
         ai_statistics_api,
+        ai_memory_eval_api,
         ai_performance_api,
         knowledge_base_api,
         ai_session_logs_api,

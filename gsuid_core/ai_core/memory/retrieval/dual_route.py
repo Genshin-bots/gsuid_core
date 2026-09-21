@@ -22,10 +22,16 @@ from gsuid_core.ai_core.memory.config import memory_config
 # §6 残句拦截判据定义在摄入侧，注入侧兜底复用同一常量（"用户X提到"悬空谓语垃圾）
 from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
 
-from .types import Edge, Entity, Episode, Category, RetrievalMeta
+from .types import Edge, Entity, Episode, Category, RetrievalMeta, MemoryEventCue
 from .system1 import System1Result, system1_search
 from .system2 import System2Result, system2_global_selection
-from .event_time import event_times_in_text
+from .event_time import (
+    event_at_from_text,
+    looks_like_span_query,
+    looks_like_order_query,
+    looks_like_summary_query,
+)
+from .ledger_timeline import LedgerView, format_ledger_block
 
 # untrusted 栅栏自身的字符开销：episodes 预算与终装配截断都要预留它，
 # 否则 </untrusted> 闭合标签会被尾截断切掉（评审修复 F9）
@@ -126,19 +132,29 @@ def _edge_date_prefix(e: "Edge") -> str:
     if said is None:
         return ""
     stamp = f"[{said.strftime('%Y-%m-%d')}] "
-    events = event_times_in_text(e["fact"] or "", said)
-    if events:
-        ev = min(events)
-        if ev.date() != said.date():
-            stamp += f"[发生 {ev.strftime('%Y-%m-%d')}] "
+    ev = event_at_from_text(e["fact"] or "", said)
+    if ev.date() != said.date():
+        stamp += f"[发生 {ev.strftime('%Y-%m-%d')}] "
     return stamp
 
 
 def _extract_time_range(query: str) -> Optional[tuple[datetime, datetime]]:
-    """≥2 日期且带时序/枚举词才开时间窗；点查走语义。"""
+    """只有问句里的显式日期窗才当 temporal_mode。全程合成窗只给分桶补召回。"""
     from .event_time import query_explicit_time_range
 
     return query_explicit_time_range(query)
+
+
+def _span_search_window(query: str) -> Optional[tuple[datetime, datetime]]:
+    """span 无日期时用 2000–2100 做 temporal arm，不写进 MemoryContext.time_range。"""
+    from .event_time import looks_like_span_query, query_explicit_time_range
+
+    explicit = query_explicit_time_range(query)
+    if explicit is not None:
+        return explicit
+    if looks_like_span_query(query):
+        return datetime(2000, 1, 1), datetime(2100, 1, 1)
+    return None
 
 
 async def _fetch_temporal_episodes(
@@ -262,6 +278,7 @@ class MemoryContext:
     episodes: list[Episode] = field(default_factory=list)
     entities: list[Entity] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
+    events: list[MemoryEventCue] = field(default_factory=list)
     categories: list[Category] = field(default_factory=list)
     # C11 矛盾提示：命中边对应的 AIMemConflict 摘要。旧矛盾边已被软删除、检索不可见，
     # 注入摘要让 Agent 知道该事实历史上存在相反陈述（应指出矛盾而非武断单侧结论）。
@@ -281,6 +298,17 @@ class MemoryContext:
     seed_ids: list[str] = field(default_factory=list)
     # 评测：会话级向量分（episode id → cosine），主证据会话用这个排，不靠 seed 条数。
     session_scores: dict[str, float] = field(default_factory=dict)
+    low_evidence: bool = False
+    # C2：主题 rerank 后的 N 条阶段；A2 分段指标用。
+    order_stages: list[Episode] = field(default_factory=list)
+    pool_ids: list[str] = field(default_factory=list)
+    inject_ids: list[str] = field(default_factory=list)
+    skeleton_ids: list[str] = field(default_factory=list)
+    ledger: Optional[LedgerView] = None
+    # 群聊钉本人的后一次赋值；私聊留空，scope 已经是这个用户。
+    asker_id: str = ""
+    # 问句话题上带数字/日期的原句。单独占预算，邻近片段不能把它截掉。
+    reserved_episodes: list[Episode] = field(default_factory=list)
 
     def to_prompt_text(
         self,
@@ -319,8 +347,61 @@ class MemoryContext:
                 used += len(line)
             return out
 
+        def _take_head_tail(items: list[str], budget: int) -> list[str]:
+            """全历程注入：头尾交替占预算，避免只留下开头几天。"""
+            n = len(items)
+            if n == 0:
+                return []
+            if sum(len(x) for x in items) <= budget:
+                return items
+            keep: set[int] = set()
+            used = 0
+            i, j = 0, n - 1
+            left = True
+            while i <= j:
+                idx = i if left else j
+                ln = len(items[idx])
+                if used + ln > budget and keep:
+                    break
+                keep.add(idx)
+                used += ln
+                if left:
+                    i += 1
+                else:
+                    j -= 1
+                left = not left
+            return [items[k] for k in range(n) if k in keep]
+
+        if (
+            self.ledger is not None
+            and memory_config.eo_strategy == "ledger"
+            and (looks_like_order_query(query) or looks_like_summary_query(query) or looks_like_span_query(query))
+        ):
+            body = format_ledger_block(self.ledger, query)
+            self.inject_ids = list(self.ledger.inject_ids)
+            self.pool_ids = list(self.ledger.pool_ids)
+            self.skeleton_ids = []
+            if wrap_recall:
+                return wrap_untrusted("memory_recall", body[: max(0, max_chars)])
+            return body[: max(0, max_chars)]
+
         parts: list[str] = []
         pref_block: Optional[str] = None
+        self.inject_ids = []
+        self.skeleton_ids = []
+        if self.low_evidence:
+            parts.append("【检索提示】记忆中没有与该问题直接相关的证据。")
+        if self.events:
+            if looks_like_order_query(query) or looks_like_summary_query(query) or looks_like_span_query(query):
+                ev_lines: list[str] = []
+                for ev in self.events[:16]:
+                    src = ev["source"] if "source" in ev else ""
+                    if src != "llm":
+                        continue
+                    stamp = (ev["stated_at"] or ev["event_at"] or "")[:10]
+                    ev_lines.append(f"{len(ev_lines) + 1}. {stamp} · {ev['summary']}")
+                if ev_lines:
+                    parts.append("【事件线索】\n" + "\n".join(ev_lines))
 
         # 程序性/偏好规则（最高优先级，置顶 + 强约束语气）：区别于"核心事实"的背景陈述，
         # 这是针对 Agent 未来行为的硬约束（如"调 generate_image 用竖图"），必须让工具调用
@@ -375,10 +456,14 @@ class MemoryContext:
             seen_facts: set = set()
             now_ts = time.time()
             _extra_sensitive = _get_sensitive_extra_terms()
+            from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_latest_slot_query
+            from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_revision_query
+
+            keep_versions = looks_like_revision_query(query) or looks_like_latest_slot_query(query)
             for e in edges:
-                # 过滤已失效边（invalid_at_ts 过期）与低置信边（weight 低于阈值）
+                # 默认过滤已失效边；KU/CR 保留全版本。
                 invalid_at = e["invalid_at_ts"]
-                if invalid_at and invalid_at < now_ts:
+                if invalid_at and invalid_at < now_ts and not keep_versions:
                     continue
                 if e["weight"] < memory_config.min_edge_weight:
                     continue
@@ -419,10 +504,9 @@ class MemoryContext:
             conf_lines = [f"• {s[:300]}" for s in self.conflicts[:6]]
             taken = _take(conf_lines, int(max_chars * 0.12))
             if taken:
-                parts.append(
-                    "【矛盾记录 - 该话题存在相互冲突的历史陈述，回答涉及时请明确指出矛盾并请用户澄清哪个正确】\n"
-                    + "\n".join(taken)
-                )
+                from gsuid_core.ai_core.memory.retrieval.lexical import CONFLICT_BANNER
+
+                parts.append(CONFLICT_BANNER + "\n" + "\n".join(taken))
 
         # 语义类目摘要（话题大纲）
         if self.categories:
@@ -447,6 +531,21 @@ class MemoryContext:
             used = sum(len(p) for p in parts) + 2 * len(parts) + _pref_used + _UNTRUSTED_WRAP_OVERHEAD
             ep_budget = max_chars - used
             if ep_budget > 120:
+                from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    looks_like_count_query,
+                    apply_query_episode_pack,
+                    looks_like_attribute_query,
+                    looks_like_latest_slot_query,
+                )
+                from gsuid_core.ai_core.memory.retrieval.event_time import (
+                    query_only_item_cap,
+                    looks_like_duration_query,
+                )
+
+                # 全历程题（排序/摘要/时间线）本就不注入 SELF / 近期续聊，预算全给历史片段。
+                cross_session = (
+                    looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query)
+                )
                 eps = self.episodes
                 self_eps = [e for e in eps if (e["scope_key"] or "").startswith("self:")]
                 other_eps = [e for e in eps if not (e["scope_key"] or "").startswith("self:")]
@@ -471,16 +570,18 @@ class MemoryContext:
                         recent_self.append(ep)
                     else:
                         old_self.append(ep)
-                self_budget = min(int(max_chars * 0.10), max(0, ep_budget // 5))
-                recent_budget = min(int(ep_budget * 0.25), 400)
+                self_budget = 0 if cross_session else min(int(max_chars * 0.10), max(0, ep_budget // 5))
+                recent_budget = 0 if cross_session else min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
-                ep_cap = 280 if self.temporal_mode else 1000
+                ep_cap = 480 if self.temporal_mode else 1000
 
                 def _assistant_turn(raw: str) -> bool:
                     low = raw.lstrip().lower()
                     return low.startswith("assistant:") or raw.lstrip().startswith("[我此前说过]")
 
                 def _ep_lines(items: list[Episode], *, self_mark: bool) -> list[str]:
+                    from gsuid_core.ai_core.memory.retrieval.lexical import parse_episode_valid_at
+
                     dated: list[str] = []
                     undated: list[str] = []
                     seen_content: set[str] = set()
@@ -493,11 +594,22 @@ class MemoryContext:
                             continue
                         seen_content.add(key)
                         prefix = "[我此前说过] " if self_mark else ""
+                        shown = raw[:ep_cap]
+                        if looks_like_summary_query(query):
+                            from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_around_tokens
+
+                            shown = excerpt_around_tokens(raw, query, 480)
                         ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
                         if ts:
-                            dated.append(f"[{ts}] {prefix}{raw[:ep_cap]}")
+                            stamp = f"[{ts}] "
+                            said = parse_episode_valid_at(ep["valid_at"] or "")
+                            if said is not None:
+                                ev = event_at_from_text(raw, said)
+                                if ev.date() != said.date():
+                                    stamp += f"[发生 {ev.strftime('%Y-%m-%d')}] "
+                            dated.append(f"{stamp}{prefix}{shown}")
                         else:
-                            undated.append(f"{prefix}{raw[:ep_cap]}")
+                            undated.append(f"{prefix}{shown}")
                     return dated + undated
 
                 if self.temporal_mode and self.time_range is not None:
@@ -510,23 +622,65 @@ class MemoryContext:
                         return dt is not None and _t0 <= dt < _t1
 
                     other_eps = [e for e in other_eps if _in_win(e)]
-                from gsuid_core.ai_core.memory.retrieval.lexical import (
-                    looks_like_count_query,
-                    apply_query_episode_pack,
-                )
-
+                if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
+                    ep_cap = 240
+                haystack = list(other_eps)
                 packed = apply_query_episode_pack(
-                    other_eps,
+                    haystack,
                     query,
                     temporal_mode=self.temporal_mode,
                     time_range=self.time_range,
+                    char_budget=min(other_budget, 16000 if cross_session else 8000),
+                    asker_id=self.asker_id,
                 )
+                if cross_session:
+                    packed = packed[:60]
+                if looks_like_order_query(query) or looks_like_summary_query(query):
+                    packed = sorted(packed, key=lambda e: e["valid_at"] if "valid_at" in e else "")
+                if looks_like_order_query(query):
+                    from gsuid_core.ai_core.memory.retrieval.lexical import (
+                        pack_order_dialogue,
+                        format_order_skeleton,
+                    )
+
+                    stage_eps = self.order_stages if self.order_stages else packed
+                    skel = format_order_skeleton(stage_eps, query=query)
+                    self.skeleton_ids = [e["id"] for e in stage_eps if "id" in e]
+                    if skel:
+                        _sk_block = "【事件顺序（按时间）】\n" + "\n".join(skel)
+                        parts.append(_sk_block)
+                        other_budget = max(0, other_budget - len(_sk_block) - 2)
+                    n = query_only_item_cap(query) or len(skel)
+                    dial_n = max(n * 2, min(n * 3, 24)) if n else 16
+                    packed = pack_order_dialogue(haystack, query, dial_n)
+                    self.inject_ids = [e["id"] for e in packed if "id" in e]
+                if not self.inject_ids:
+                    self.inject_ids = [e["id"] for e in packed if "id" in e]
                 user_eps = [e for e in packed if not _assistant_turn(e["content"] or "")]
                 asst_eps = [e for e in packed if _assistant_turn(e["content"] or "")]
-                if self.temporal_mode:
+                if self.reserved_episodes and looks_like_attribute_query(query):
+                    from gsuid_core.ai_core.memory.retrieval.lexical import render_value_timeline
+
+                    reserve_budget = min(3600, max(0, other_budget // 2))
+                    reserved_block = render_value_timeline(self.reserved_episodes, query, reserve_budget)
+                    if reserved_block:
+                        parts.append(reserved_block)
+                        other_budget = max(0, other_budget - len(reserved_block) - 2)
+                        reserved_ids = {ep["id"] for ep in self.reserved_episodes if "id" in ep}
+                        user_eps = [ep for ep in user_eps if "id" not in ep or ep["id"] not in reserved_ids]
+                timeline_q = (
+                    looks_like_span_query(query) or looks_like_duration_query(query) or looks_like_summary_query(query)
+                )
+                if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
+                    taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), other_budget)
+                elif self.temporal_mode:
                     taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
-                elif looks_like_count_query(query):
-                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 1600))
+                elif looks_like_count_query(query) or looks_like_latest_slot_query(query):
+                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
+                elif looks_like_duration_query(query):
+                    taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
+                elif timeline_q:
+                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
                 else:
                     taken_other = _take(_ep_lines(user_eps, self_mark=False), other_budget)
                     rest = other_budget - sum(len(x) for x in taken_other)
@@ -536,7 +690,28 @@ class MemoryContext:
                     taken_self = _take(_ep_lines(old_self, self_mark=True), min(self_budget, 400))
                     taken = taken_other + taken_recent + taken_self
                 if taken:
-                    parts.append("【相关对话片段】\n" + "\n".join(taken))
+                    ep_head = "【相关对话片段】"
+                    if looks_like_duration_query(query):
+                        ep_head += "\n（[]是发言时刻；事件日期以正文为准，两端都要保留。）"
+                    elif looks_like_order_query(query):
+                        ep_head += (
+                            "\n（按时间顺序列出相关阶段；"
+                            "条目不足或主题线不确定时先 recall_timeline，再按需 recall_session。）"
+                        )
+                    elif looks_like_span_query(query):
+                        ep_head += (
+                            "\n（按「编号 · 日期 · 一句话」列跨月份里程碑；不要只写开头几天；"
+                            "条目不足时先 recall_timeline，再按需 recall_session。）"
+                        )
+                    elif looks_like_count_query(query):
+                        from gsuid_core.ai_core.memory.retrieval.lexical import COUNT_ANSWER_HINT
+
+                        ep_head += "\n（" + COUNT_ANSWER_HINT + "）"
+                    elif looks_like_attribute_query(query):
+                        from gsuid_core.ai_core.memory.retrieval.lexical import VALUE_UPDATE_HINT
+
+                        ep_head += "\n（" + VALUE_UPDATE_HINT + "）"
+                    parts.append(ep_head + "\n" + "\n".join(taken))
 
         # §8 注入防线对齐：偏好保持裸注入可执行（写入端有闸）；其余召回统一 untrusted
         # 栅栏——复用 content_guard.wrap_untrusted，栅栏格式全通道唯一定义（评审修复 F9）。
@@ -578,10 +753,9 @@ class MemoryContext:
             parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
 
         if self.conflicts:
-            parts.append(
-                "【矛盾记录 - 存在相互冲突的历史陈述，回答涉及时请指出矛盾并请用户澄清】\n"
-                + "\n".join(f"• {s[:300]}" for s in self.conflicts[:6])
-            )
+            from gsuid_core.ai_core.memory.retrieval.lexical import CONFLICT_BANNER
+
+            parts.append(CONFLICT_BANNER + "\n" + "\n".join(f"• {s[:300]}" for s in self.conflicts[:6]))
 
         if self.episodes:
             ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content']}" for ep in self.episodes]
@@ -639,6 +813,61 @@ async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list
         return items[:top_k]
     ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:top_k]]
+
+
+async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> list[Episode]:
+    """C2：对用户 turn 用主题短语 rerank，再聚类成恰好 N 条阶段。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        _embedding_map,
+        _assistant_turn,
+        _topic_hit_count,
+        _skip_order_noise,
+        _speaker_stripped,
+        pack_first_mention_episodes,
+    )
+    from gsuid_core.ai_core.memory.retrieval.event_time import order_topic_span, temporal_search_query
+    from gsuid_core.ai_core.memory.retrieval.order_reconstruct import (
+        cluster_first_mentions,
+        select_by_topic_scores,
+    )
+
+    if n <= 0 or not episodes:
+        return []
+    user: list[Episode] = []
+    for ep in episodes:
+        raw = ep["content"] or ""
+        if _assistant_turn(raw) or _skip_order_noise(_speaker_stripped(raw)):
+            continue
+        user.append(ep)
+    if not user:
+        return []
+    topic = order_topic_span(query) or temporal_search_query(query) or query
+    if topic and len(user) > 120:
+        user = sorted(user, key=lambda e: -_topic_hit_count(topic, e["content"] or ""))[:120]
+        user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    reranker = get_reranker()
+    pool = user
+    if reranker is not None and topic:
+        texts = [_speaker_stripped(e["content"] or "")[:200] for e in user]
+        scores = list(await _run_sync_rerank(reranker, topic, texts))
+        if len(scores) == len(user):
+            missing = [e["id"] for e in user if "id" in e and not (e["embedding"] if "embedding" in e else [])]
+            vecs: dict[str, list[float]] = {}
+            if missing:
+                from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
+
+                vecs = await retrieve_episode_dense_vectors(missing)
+            for e in user:
+                eid = e["id"] if "id" in e else ""
+                if eid and eid in vecs:
+                    e["embedding"] = vecs[eid]
+            have = _embedding_map([e for e in user if "embedding" in e and e["embedding"]])
+            return select_by_topic_scores(user, scores, n, have)
+    with_vec = [e for e in pool if "embedding" in e and e["embedding"]]
+    emap = _embedding_map(with_vec)
+    if emap is not None and with_vec:
+        return cluster_first_mentions(with_vec, n, emap)
+    return pack_first_mention_episodes(pool, query, n)
 
 
 async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[Entity]:
@@ -763,6 +992,61 @@ async def dual_route_retrieve(
         if self_scope not in scope_keys:
             scope_keys.append(self_scope)
 
+    if (
+        memory_config.eo_strategy == "ledger"
+        and scope_keys
+        and (looks_like_order_query(query) or looks_like_summary_query(query) or looks_like_span_query(query))
+    ):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from gsuid_core.ai_core.agent_run.order_answer import set_turn_ledger
+
+        from .ledger_timeline import build_ledger
+
+        view = await build_ledger(scope_keys, query)
+        set_turn_ledger(view)
+        ledger_prefs: list[PreferencePrompt] = []
+        if memory_config.enable_preference_memory and inject_preferences:
+            try:
+                from gsuid_core.ai_core.memory.database.models import AIMemPreference
+
+                fetch_limit = (
+                    memory_config.preference_max_inject * 3
+                    if preference_contexts is not None
+                    else memory_config.preference_max_inject
+                )
+                pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
+                if preference_contexts is not None:
+                    ctx_set = set(preference_contexts)
+                    pref_rows = [
+                        r
+                        for r in pref_rows
+                        if r.is_correction or r.target_context == "general" or r.target_context in ctx_set
+                    ]
+                pref_rows = pref_rows[: memory_config.preference_max_inject]
+                ledger_prefs = [
+                    {
+                        "id": r.id,
+                        "target_context": r.target_context,
+                        "preference_rule": r.preference_rule,
+                        "polarity": r.polarity,
+                        "is_correction": r.is_correction,
+                    }
+                    for r in pref_rows
+                ]
+            except (OSError, RuntimeError, SQLAlchemyError) as e:
+                logger.warning(i18n_t("log.memory.preference_retrieval", e=e))
+        return MemoryContext(
+            episodes=[],
+            preferences=ledger_prefs,
+            retrieval_meta={"s1_episodes": 0, "s2_episodes": 0, "scope_keys": scope_keys},
+            temporal_mode=True,
+            ledger=view,
+            pool_ids=list(view.pool_ids),
+            inject_ids=list(view.inject_ids),
+            asker_id=user_id if group_id else "",
+        )
+
     # RF-Mem 熟悉度路由（默认关，零影响）：用一次零 LLM 的向量探针的 s̄/熵 逐查询决定
     # "检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。路由只在"低熟悉/高
     # 不确定"时才放行 System-2，且**永远受用户总开关约束**——用户关了 System-2 就永不
@@ -770,6 +1054,7 @@ async def dual_route_retrieve(
     effective_enable_system2 = enable_system2
     is_recollection_route = False
     probe_vec: Optional[list[float]] = None
+    probe_mean: float | None = None
     # P1：仅当探针结论会被消费时才发探针——System-2 开（可被熟悉度抑制）或回忆环可用
     # （enable_recollection_path + remote Qdrant）。两者皆无时探针白跑一次 embedding+dense、
     # 改变不了任何分支，直接短路省成本。
@@ -782,13 +1067,41 @@ async def dual_route_retrieve(
         route, _signal, probe_vec = await probe_and_route(query, scope_keys)
         is_recollection_route = route == ROUTE_RECOLLECTION
         effective_enable_system2 = enable_system2 and is_recollection_route
+        if _signal is not None:
+            probe_mean = _signal.mean_score
 
     # 时间范围补召回：query 显式含日期时按时间窗直查 Episode（与 S1/S2 并行），
     # 解决枚举/时序类问题（"从X到Y依次…"）语义相似检索召回不足的问题。
     time_range = _extract_time_range(query)
+    thread_cues: list[MemoryEventCue] = []
+    span_eps: list[Episode] = []
+    if (looks_like_order_query(query) or looks_like_summary_query(query)) and user_id and scope_keys:
+        from sqlalchemy.exc import SQLAlchemyError
+        from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
+
+        from .thread_recall import recall_span_threads
+
+        try:
+            span_eps, thread_cues = await asyncio.wait_for(
+                recall_span_threads(query, scope_keys, user_id, group_id),
+                timeout=6.0,
+            )
+        except TimeoutError:
+            span_eps, thread_cues = [], []
+        except (
+            OSError,
+            RuntimeError,
+            ConnectionError,
+            SQLAlchemyError,
+            UnexpectedResponse,
+            ResponseHandlingException,
+        ) as e:
+            logger.warning(i18n_t("log.memory.thread_recall_fail", e=e))
+            span_eps, thread_cues = [], []
+    span_window = _span_search_window(query)
     temporal_task: Optional[asyncio.Task] = None
-    if time_range and scope_keys:
-        temporal_task = asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, time_range[0], time_range[1]))
+    if span_window and scope_keys:
+        temporal_task = asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, span_window[0], span_window[1]))
 
     # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
     s1_task = asyncio.create_task(
@@ -920,6 +1233,45 @@ async def dual_route_retrieve(
         _rerank_entities(query, all_entities, top_k * 2),
         _rerank_edges(query, all_edges, top_k * 2),
     )
+    if span_eps:
+        ranked_episodes = _merge_episodes(ranked_episodes, span_eps)
+    from .lexical import looks_like_latest_slot_query
+    from .event_time import looks_like_revision_query
+
+    if (looks_like_revision_query(query) or looks_like_latest_slot_query(query)) and ranked_edges and scope_keys:
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        pairs = [(e["source_id"], e["target_id"]) for e in ranked_edges[:12] if "source_id" in e and "target_id" in e]
+        names: dict[str, str] = {}
+        for e in ranked_edges:
+            names[e["source_id"]] = e["source_name"]
+            names[e["target_id"]] = e["target_name"]
+        have = {e["id"] for e in ranked_edges if "id" in e}
+        extra: list[Edge] = []
+        for sk in scope_keys:
+            vers = await AIMemEdge.list_pair_versions(sk, pairs, limit=40)
+            for v in vers:
+                if v.id in have:
+                    continue
+                mark = " 〔当前有效〕" if v.invalid_at is None else " 〔已被更新〕"
+                extra.append(
+                    {
+                        "id": v.id,
+                        "source_id": v.source_entity_id,
+                        "target_id": v.target_entity_id,
+                        "source_name": names[v.source_entity_id] if v.source_entity_id in names else "",
+                        "target_name": names[v.target_entity_id] if v.target_entity_id in names else "",
+                        "fact": (v.fact or "") + mark,
+                        "weight": 1.0,
+                        "score": 0.0,
+                        "valid_at_ts": v.valid_at.timestamp() if v.valid_at else None,
+                        "invalid_at_ts": v.invalid_at.timestamp() if v.invalid_at else None,
+                        "expired_at_ts": v.expired_at.timestamp() if v.expired_at else None,
+                    }
+                )
+                have.add(v.id)
+        if extra:
+            ranked_edges = extra + ranked_edges
     # Category 按 layer 降序排列（最抽象的在前），不经过 Reranker
     ranked_categories: list[Category] = sorted(all_categories, key=lambda c: c["layer"], reverse=True)
 
@@ -934,8 +1286,10 @@ async def dual_route_retrieve(
             )
 
             if temporal_eps:
-                # 语义命中在前；分桶结果补尾。超 24 条按时间轴均匀取样，避免只留窗尾。
-                if len(temporal_eps) > 24:
+                from .event_time import looks_like_order_query as _is_order_q
+
+                # 排序题要全序，不能 stride 压成 24 条。
+                if len(temporal_eps) > 24 and not _is_order_q(query):
                     temporal_eps = stride_episodes_chrono(temporal_eps, cap=24)
                 ranked_episodes = _merge_episodes(ranked_episodes[:20], temporal_eps)
             # 主题词被剥光时分桶会空；时间窗直查仍要跑，否则整段时间线没了。
@@ -1085,6 +1439,19 @@ async def dual_route_retrieve(
     if pending:
         ranked_episodes = _merge_episodes(pending, ranked_episodes)
 
+    order_stages: list[Episode] = []
+    if looks_like_order_query(query) and ranked_episodes:
+        from gsuid_core.ai_core.memory.retrieval.event_time import query_only_item_cap
+
+        _n_stages = query_only_item_cap(query) or 8
+        try:
+            order_stages = await asyncio.wait_for(
+                _select_order_stages(query, ranked_episodes, _n_stages),
+                timeout=8.0,
+            )
+        except TimeoutError:
+            order_stages = []
+
     return MemoryContext(
         episodes=ranked_episodes,
         entities=ranked_entities,
@@ -1100,4 +1467,9 @@ async def dual_route_retrieve(
         retrieval_paths=s2_retrieval_paths,
         temporal_mode=time_range is not None,
         time_range=time_range,
+        low_evidence=probe_mean is not None and probe_mean < memory_config.abstention_score_threshold,
+        events=thread_cues,
+        order_stages=order_stages,
+        asker_id=user_id if group_id else "",
+        pool_ids=[e["id"] for e in ranked_episodes if "id" in e],
     )

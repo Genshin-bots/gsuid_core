@@ -122,6 +122,7 @@ async def get_help():
 - `name` 命令名（也是 `icon_path/<name>.png` 图标查找键，没图标可省略）。
 - `eg` 用户实际要发的示例（含前缀）。
 - `need_ck`/`need_sk`/`need_admin` 控制图标右上角的标签。
+- `cag_bg` 兼容原单张 `Image.Image`；也可传图片列表，或带 `.cag_bg` 属性的贴图包（如 `buts.cag_bg`），按分组循环作为分类条。
 
 ## 8.3 注册到 "core 状态"（`register_status`）
 

@@ -1,6 +1,6 @@
 """通用评测 runner：probe / judge 的并发 + 断点续跑 + 坏答卷修复（repair）骨架。
 
-BEAM_10M 与 LongMemEval（以及未来新增基准）共用的执行层：
+BEAM 官方 ladder 与 LongMemEval（以及未来新增基准）共用的执行层：
 - **resume**：answers/judge 文件按 ``question_id`` 增量跳过；
 - **repair**：加载已有结果时剔除失败记录（``[ERROR]`` / ``评判请求失败`` / 超时空答），
   这些题会被重新执行——替代以前会话 scratchpad 里的 repair_full.py 手工流程；

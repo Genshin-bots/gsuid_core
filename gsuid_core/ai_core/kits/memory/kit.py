@@ -4,7 +4,8 @@
 的四处（寒暄门 + 双路检索 + 预算格式化 + 装配层再硬截一刀）。
 实现仍在 ``ai_core/memory/`` 与 ``ai_core/cognition/``。
 
-挂点：H00 入站观察 · H05 检索（唯一允许的长超时 15s）· H06 注入 · H18 工具轨迹。
+挂点：H00 入站观察 · H05 检索（默认 15s；ledger+dedicated 为 120s）
+· H06 注入 · H18 工具轨迹。
 关槽 = 不注册 = 自然跳过；内核里**不写** ``if enable_memory``（闸门应过滤，不该整轮跳过）。
 
 记忆子系统的 bring-up 归 ``startup._INIT_STEPS``（它要排在 RAG 之后拿 Embedding），
@@ -135,11 +136,11 @@ def retrieve_query_for_search(query: str) -> str:
 
 
 def looks_like_timeline_query(query: str) -> bool:
-    """显式起止日期 + 时序/枚举词：要整段时间线，不是点查。"""
+    """排序/全历程/显式日期窗：要整段时间线，不是点查。"""
     from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
-    from gsuid_core.ai_core.memory.retrieval.event_time import query_explicit_time_range
+    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_span_query
 
-    return query_explicit_time_range(strip_clock_lines(query or "")) is not None
+    return looks_like_span_query(strip_clock_lines(query or ""))
 
 
 def looks_like_self_history_query(query: str) -> bool:
@@ -168,15 +169,27 @@ def refine_retrieved_memory(mem: "MemoryContext", query: str) -> None:
     """非时间线才跨会话取样；用户正反说并存时写入 conflicts。"""
     from gsuid_core.ai_core.memory.retrieval.lexical import (
         diversify_episodes,
+        looks_like_latest_slot_query,
         collect_user_stance_conflicts,
     )
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_span_query,
+        looks_like_order_query,
+        looks_like_summary_query,
+        looks_like_duration_query,
+    )
 
-    if mem.temporal_mode or mem.time_range is not None:
+    if mem.temporal_mode or mem.time_range is not None or looks_like_timeline_query(query):
         pass
-    elif looks_like_count_query(query):
+    elif looks_like_count_query(query) or looks_like_duration_query(query):
+        pass
+    elif looks_like_span_query(query) or looks_like_order_query(query) or looks_like_summary_query(query):
+        # 跨会话题型由 pack（里程碑/首次出现）自己收口，48 条裁剪会把周覆盖砍到几天。
         pass
     elif len(mem.episodes) > 8:
         mem.episodes = diversify_episodes(mem.episodes, cap=48)
+    if looks_like_latest_slot_query(query) or looks_like_duration_query(query) or looks_like_span_query(query):
+        return
     extra = collect_user_stance_conflicts(mem.episodes, query)
     if not extra:
         return
@@ -207,6 +220,22 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
     from gsuid_core.ai_core.memory.config import memory_config
 
     cap = int(memory_config.memory_inject_max_chars)
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_span_query,
+        looks_like_order_query,
+        looks_like_summary_query,
+    )
+
+    if looks_like_order_query(q) or looks_like_span_query(q) or looks_like_summary_query(q):
+        if memory_config.eo_strategy == "ledger":
+            if memory_config.eo_selector == "dedicated" and looks_like_order_query(q):
+                from gsuid_core.ai_core.agent_run.order_answer import get_order_rendered
+
+                if get_order_rendered().strip():
+                    return ""
+            cap = max(cap, int(memory_config.ledger_max_chars))
+        else:
+            cap = max(cap, 16000)
     speakers = ctx.priority_speakers if ctx.priority_speakers else None
     current = {ctx.user_id} if ctx.user_id else None
     return mem.to_prompt_text(
@@ -320,9 +349,7 @@ class MemoryKit(AgentKit):
     def register(self) -> None:
         on_agent_hook(AgentHookPoint.ON_INBOUND, priority=110, kit_id=self.kit_id, timeout_ms=500)(self.observe)
         on_agent_hook(AgentHookPoint.AFTER_SESSION, priority=150, kit_id=self.kit_id)(self.observe_active_session)
-        on_agent_hook(AgentHookPoint.RETRIEVE_CONTEXT, priority=110, kit_id=self.kit_id, timeout_ms=15_000)(
-            self.retrieve
-        )
+        on_agent_hook(AgentHookPoint.RETRIEVE_CONTEXT, priority=110, kit_id=self.kit_id)(self.retrieve)
         on_agent_hook(AgentHookPoint.COMPOSE_CONTEXT, priority=150, kit_id=self.kit_id)(self.inject)
         on_agent_hook(AgentHookPoint.ON_TOOL_CALL, priority=110, kit_id=self.kit_id)(self.trace_tool)
 
@@ -401,6 +428,8 @@ class MemoryKit(AgentKit):
 
         if not ai_config.get_config("enable_memory").data or not memory_config.enable_retrieval:
             return
+        if ctx.skip_memory:
+            return
         if not should_prefetch_memory(ctx):
             return
         search_q = retrieve_query_for_search(ctx.query)
@@ -428,23 +457,41 @@ class MemoryKit(AgentKit):
             bot_self_id=scope.bot_self_id,
             include_self=True,
         )
+        from gsuid_core.ai_core.memory.retrieval.types import Episode
         from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
+        from gsuid_core.ai_core.memory.retrieval.ledger_timeline import LedgerView
 
-        mem.episodes = await expand_lexical_recall(
-            mem.episodes,
-            query=search_q,
-            user_id=ctx.user_id,
-            group_id=ctx.group_id,
-            clock=ctx.clock_at,
-        )
-        if wants_evidence_injection(ctx):
+        if isinstance(mem.ledger, LedgerView):
+            from gsuid_core.ai_core.memory.config import memory_config as _eo_cfg
+            from gsuid_core.ai_core.agent_run.order_answer import set_turn_ledger
+
+            set_turn_ledger(mem.ledger)
+            if _eo_cfg.eo_selector == "dedicated":
+                from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query
+
+                if looks_like_order_query(search_q):
+                    from gsuid_core.ai_core.agent_run.eo_selector import select_from_ledger
+
+                    await select_from_ledger(search_q)
+        else:
+            reserved_turns: list[Episode] = []
+            mem.episodes = await expand_lexical_recall(
+                mem.episodes,
+                query=search_q,
+                user_id=ctx.user_id,
+                group_id=ctx.group_id,
+                clock=ctx.clock_at,
+                reserved=reserved_turns,
+            )
+            mem.reserved_episodes = reserved_turns
+        if mem.ledger is None and wants_evidence_injection(ctx):
             # 时间线邻条会把同日练习题灌满，冲掉主题演进；只给计数题补会话。
             if looks_like_count_query(search_q) and not mem.temporal_mode:
                 from gsuid_core.ai_core.memory.retrieval.lexical import expand_episode_neighbors
 
                 mem.episodes = await expand_episode_neighbors(mem.episodes)
             refine_retrieved_memory(mem, search_q)
-        if ctx.memory_eval:
+        if ctx.memory_eval and mem.ledger is None:
             from gsuid_core.ai_core.kits.memory.eval_protocol import (
                 boost_retrieved_memory,
                 _eval_full_scope_enabled,
@@ -522,24 +569,50 @@ class MemoryKit(AgentKit):
                     parts.append(guide)
                 if wants_evidence_injection(ctx):
                     q = retrieve_query_for_search(ctx.query)
-                    parts.append(
-                        "（做过/没做过这类相反说法是矛盾，指出两边并问哪条为准；"
-                        "地址/分数/版本这类取值更新才取最晚一条。"
-                        "已注入的【相关对话片段】可直接作答；不够再 search_cognition。）"
+                    from gsuid_core.ai_core.memory.retrieval.lexical import (
+                        SET_RECALL_HINT,
+                        VALUE_UPDATE_HINT,
+                        looks_like_attribute_query,
+                        looks_like_latest_slot_query,
                     )
-                    if looks_like_timeline_query(q):
+                    from gsuid_core.ai_core.memory.retrieval.event_time import (
+                        looks_like_order_query,
+                        looks_like_summary_query,
+                    )
+
+                    if looks_like_attribute_query(q):
+                        parts.append(VALUE_UPDATE_HINT)
+                    else:
                         parts.append(
-                            "（按时间戳从窗口最早一天列到最晚一天，把各段用户原话主题依次列出或总结；"
-                            "不要只写开头几天，也不要因为条数不够拒答或改写成别的主题。）"
+                            "（做过/没做过这类相反说法是矛盾，指出两边并问哪条为准；"
+                            "地址/分数/版本这类取值更新才取最晚一条。"
+                            "已注入的【相关对话片段】可直接作答；不够再 search_cognition。）"
                         )
-                    elif looks_like_self_history_query(q):
+                    if looks_like_order_query(q):
+                        from gsuid_core.ai_core.memory.config import memory_config as _mc
+
+                        if _mc.eo_strategy != "ledger":
+                            parts.append(
+                                "（按上面【事件顺序】的时间序作答；"
+                                "条目不足或主题线不确定时先 recall_timeline，再按需 recall_session。）"
+                            )
+                    elif looks_like_summary_query(q):
+                        parts.append(
+                            "（摘要须覆盖问句点名的要点，写出记忆里的具体专名与日期；"
+                            "条目不足或主题线不确定时先 recall_timeline，再按需 recall_session；"
+                            "以片段时间戳为准，不要因为墙上日期距今很久就说记忆停更。）"
+                        )
+                    elif looks_like_timeline_query(q):
+                        parts.append(
+                            "（按时间戳从窗口最早一天列到最晚一天；"
+                            "条目不足时先 recall_timeline，再按需 recall_session。）"
+                        )
+                    elif looks_like_self_history_query(q) and not looks_like_latest_slot_query(q):
                         parts.append(
                             "（问句里的人物+场景/属性必须在同一段原文里同时出现才算有记录；"
                             "只有同名或相近主题不够，应说没有。）"
                         )
                     if looks_like_count_query(q):
-                        from gsuid_core.ai_core.memory.retrieval.lexical import SET_RECALL_HINT
-
                         parts.append(SET_RECALL_HINT)
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:

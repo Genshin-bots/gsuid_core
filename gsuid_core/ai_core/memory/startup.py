@@ -97,6 +97,15 @@ async def init_memory_system():
             replace_existing=True,
         )
         logger.info(t("log.memory.c11_lifecycle_maintenance"))
+        from .lifecycle.sleep_extract import run_sleep_extract_tick
+
+        scheduler.add_job(
+            func=run_sleep_extract_tick,
+            trigger="interval",
+            hours=24,
+            id="ai_memory_sleep_extract",
+            replace_existing=True,
+        )
     except Exception as e:
         logger.warning(t("log.memory.register_c11_lifecycle_maintenance", e=e))
 

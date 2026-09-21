@@ -90,8 +90,11 @@ def is_api_http_path(path: str) -> bool:
 
 
 def _runtime_mcp_path() -> str:
-    from gsuid_core.ai_core.mcp.server import _DEFAULT_MCP_PATH, _normalize_mcp_path
-    from gsuid_core.ai_core.configs.ai_config import mcp_server_config
+    try:
+        from gsuid_core.ai_core.mcp.server import _DEFAULT_MCP_PATH, _normalize_mcp_path
+        from gsuid_core.ai_core.configs.ai_config import mcp_server_config
+    except ImportError:
+        return "/mcp"
 
     raw = mcp_server_config.get_config("mcp_server_path").data
     text = str(raw) if raw else _DEFAULT_MCP_PATH

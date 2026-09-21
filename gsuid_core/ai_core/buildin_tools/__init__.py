@@ -296,6 +296,14 @@ from gsuid_core.ai_core.buildin_tools.file_operations import (
     move_file,
     pack_to_zip,
 )
+from gsuid_core.ai_core.buildin_tools.memory_timeline import (
+    timeline,
+    read_session,
+    search_turns,
+    mark_evidence,
+    recall_session,
+    recall_timeline,
+)
 
 # 技能安装工具 - 从 git/zip/SKILL.md 直链安装技能到 SKILLS_PATH 并热重载（限主人）
 from gsuid_core.ai_core.buildin_tools.skill_installer import install_skill
@@ -345,6 +353,12 @@ __all__ = [
     # 认知检索（主人格唯一「回想」动词）+ RAG 图片检索
     "search_cognition",
     "search_image",
+    "recall_timeline",
+    "recall_session",
+    "search_turns",
+    "read_session",
+    "timeline",
+    "mark_evidence",
     "attach_article",
     # 图片读取工具（按ID取图转述，保底）
     "read_image",

@@ -56,7 +56,12 @@ async def fire_hooks(
 
     for reg in regs:
         ctx.current_kit_id = reg.kit_id
-        result = await _invoke(reg.func, ctx, reg.timeout_ms, reg.label, point)
+        timeout_ms = reg.timeout_ms
+        if point is AgentHookPoint.RETRIEVE_CONTEXT:
+            from gsuid_core.ai_core.memory.config import memory_config
+
+            timeout_ms = memory_config.retrieve_hook_timeout_ms
+        result = await _invoke(reg.func, ctx, timeout_ms, reg.label, point)
         if result is not None and result.decision is not HookDecision.CONTINUE:
             ctx.decision = result.decision
             ctx.decision_reason = result.reason

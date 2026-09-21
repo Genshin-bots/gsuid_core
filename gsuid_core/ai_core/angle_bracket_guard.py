@@ -196,7 +196,31 @@ def _looks_like_markup_tag(raw: str) -> bool:
         return True
     if "/" in raw:
         return True
-    if re.search(r"\s", raw):
+    if "=" in raw:
+        return True
+    return False
+
+
+_MONTH_NAME_RE = re.compile(
+    r"\b(?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_prose_angle(raw: str) -> bool:
+    """月份+数字或版本号，不是 HTML 控制标签。"""
+    if raw.startswith("</") or raw.endswith("/>") or "=" in raw or "/" in raw:
+        return False
+    name = _tag_name(raw)
+    if not name or name in _HTML_OR_CONTROL_TAG_NAMES:
+        return False
+    inner = raw[1:-1].strip() if raw.startswith("<") and raw.endswith(">") else raw
+    if not inner:
+        return False
+    if _MONTH_NAME_RE.search(inner) and re.search(r"\d", inner):
+        return True
+    if re.fullmatch(r"v?\d[\w.+-]*", inner, re.I):
         return True
     return False
 
@@ -253,6 +277,8 @@ def find_illegal_angle_tags(text: str) -> List[str]:
         raw = m.group(0)
         if "@" in raw:
             continue
+        if _looks_like_prose_angle(raw):
+            continue
         if _is_generic_type_arg_context(residual, m.start(), raw):
             continue
         if raw not in seen:
@@ -264,6 +290,15 @@ def find_illegal_angle_tags(text: str) -> List[str]:
             seen.add(raw)
             out.append(raw)
     return out
+
+
+def looks_like_dated_or_ordered_answer(text: str) -> bool:
+    """带明确日期的清单：非法标签剥掉后放行。裸编号列表仍走改写。"""
+    if not text:
+        return False
+    if _MONTH_NAME_RE.search(text) and re.search(r"\d", text):
+        return True
+    return len(re.findall(r"\d{4}-\d{2}-\d{2}", text)) >= 2
 
 
 def has_illegal_angle_tags(text: str) -> bool:
@@ -287,6 +322,8 @@ def _sanitize_region(text: str) -> str:
     def _sub(m: re.Match[str]) -> str:
         raw = m.group(0)
         if "@" in raw:
+            return raw
+        if _looks_like_prose_angle(raw):
             return raw
         if _is_generic_type_arg_context(text, m.start(), raw):
             return raw

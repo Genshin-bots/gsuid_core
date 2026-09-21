@@ -12,3 +12,5 @@ MEMORY_EDGES_COLLECTION = "memory_edges"  # Edge fact 向量
 # 规模可控（缓解 P0-1 本地向量库暴力扫描）。冷集合不参与 System-1 在线检索，
 # 仅作可审计 / 可按需检索的归档；其向量为派生数据，真值始终在 SQL（AIMemEpisode）。
 MEMORY_EPISODES_COLD_COLLECTION = "memory_episodes_cold"  # 冷 Episode 归档向量
+MEMORY_GISTS_COLLECTION = "memory_gists"
+MEMORY_THREADS_COLLECTION = "memory_threads"

@@ -32,11 +32,22 @@ class ExtractedEdge(BaseModel):
     user_id: Optional[str] = Field(default=None, description="关联的 user_id")
 
 
+class ExtractedEvent(BaseModel):
+    """LLM 提取的单个时间事件（SVO 摘要 + 归一化日期 + 同义说法）。"""
+
+    summary: str = Field(description="事件一句话摘要，保留关键名词/数字，不超过40字")
+    start_date: str = Field(default="", description="事件发生（或首次提及）日期，ISO8601 YYYY-MM-DD；不确定留空")
+    end_date: str = Field(default="", description="事件结束日期 ISO8601，可空")
+    entities: list[str] = Field(default_factory=list, description="涉及实体名，最多4个")
+    aliases: list[str] = Field(default_factory=list, description="同义说法/近义词，最多3个")
+
+
 class ExtractionOutput(BaseModel):
     """Entity & Edge 提取的完整输出"""
 
     entities: list[ExtractedEntity] = Field(default_factory=list, description="提取的实体列表")
     edges: list[ExtractedEdge] = Field(default_factory=list, description="提取的关系列表")
+    events: list[ExtractedEvent] = Field(default_factory=list, description="时间事件列表（含日期的事件/决定/里程碑）")
 
 
 # ====== Category 分类输出模型 ======

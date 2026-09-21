@@ -131,8 +131,8 @@ class MemoryConfig:
 
     # ====== 程序性 / 偏好记忆：即时 flush 去抖（运行时字段，进阶可调） ======
     # 总开关 enable_preference_memory 与注入/裁剪阈值已上 MEMORY_CONFIG（见下方 @property）。
-    preference_flush_debounce_seconds: float = 60.0
-    """同一 scope 两次优先 flush 的最小间隔，防"连环纠正→flush 风暴"。"""
+    preference_flush_settle_seconds: float = 60.0
+    """同一 scope 两次优先 flush 的最小间隔，防连环纠正触发 flush 风暴。"""
 
     @property
     def retrieval_top_k(self) -> int:
@@ -143,6 +143,26 @@ class MemoryConfig:
     def memory_inject_max_chars(self) -> int:
         """单次注入对话上下文的记忆文本最大字符数（Token 预算）"""
         return mrc.get_config("memory_inject_max_chars").data
+
+    @property
+    def session_gap_seconds(self) -> int:
+        """相邻 Episode 超过此时长则切新 session（秒）。"""
+        return mrc.get_config("session_gap_seconds").data
+
+    @property
+    def abstention_score_threshold(self) -> float:
+        """熟悉度探针 s̄ 低于此值时，span/点查注入头提示证据不足。"""
+        return 0.22
+
+    @property
+    def predict_calibrate_threshold(self) -> float:
+        """Phase 7：近邻余弦 ≥ 此值视为已知，HIGH 降为 LOW。"""
+        return 0.92
+
+    @property
+    def sleep_extract_batch(self) -> int:
+        """浅睡每轮最多消化的 session 数。"""
+        return 8
 
     @property
     def fact_max_inject(self) -> int:
@@ -158,6 +178,49 @@ class MemoryConfig:
     def eval_mode(self) -> bool:
         """评测模式：启用后摄入时不自动触发分层图重建，由外部统一调用 rebuild_task"""
         return mrc.get_config("eval_mode").data
+
+    def _eo_choice(self, key: str, allowed: tuple[str, ...], default: str, *, stored: bool = False) -> str:
+        import os
+
+        env = os.environ.get(f"GSUID_{key.upper()}", "").strip()
+        if env in allowed:
+            return env
+        if not stored:
+            return default
+        raw = mrc.get_config(key).data
+        val = str(raw) if isinstance(raw, str) else default
+        return val if val in allowed else default
+
+    def _eo_int(self, key: str, default: int, *, stored: bool = False) -> int:
+        import os
+
+        env = os.environ.get(f"GSUID_{key.upper()}", "").strip()
+        if env.isdigit():
+            return int(env)
+        if not stored:
+            return default
+        raw = mrc.get_config(key).data
+        return int(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else default
+
+    @property
+    def eo_strategy(self) -> str:
+        """legacy=骨架选 N；ledger=全量时间线。控制台 + GSUID_EO_STRATEGY。"""
+        return self._eo_choice("eo_strategy", ("legacy", "ledger"), "legacy", stored=True)
+
+    @property
+    def eo_selector(self) -> str:
+        return self._eo_choice("eo_selector", ("persona", "dedicated"), "persona", stored=True)
+
+    @property
+    def retrieve_hook_timeout_ms(self) -> int:
+        """H05 默认 15s；ledger + dedicated 才放到 120s。"""
+        if self.eo_strategy == "ledger" and self.eo_selector == "dedicated":
+            return 120_000
+        return 15_000
+
+    @property
+    def ledger_max_chars(self) -> int:
+        return self._eo_int("ledger_max_chars", 28000, stored=True)
 
     @property
     def qdrant_provider(self) -> str:
@@ -233,7 +296,7 @@ class MemoryConfig:
 
     @property
     def preference_immediate_flush(self) -> bool:
-        """纠错命中即时写：命中纠错意图的 scope 走优先 flush 快路径（带 debounce），
+        """纠错命中即时写：命中纠错意图的 scope 走优先 flush 快路径，
         让数分钟内的"下一次"请求即可召回，而非等 batch_interval_seconds 大窗。"""
         return mrc.get_config("preference_immediate_flush").data
 

@@ -514,6 +514,31 @@ class SettlePhase(RunOnceHost):
 
             # 始终返回字符串类型
             result_msg = str(result.output).strip()
+            from gsuid_core.ai_core.memory.config import memory_config as _eo_mc
+            from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query as _eo_order
+
+            _eo_q = st.user_message if isinstance(st.user_message, str) else ""
+            if not _eo_q and st.ev is not None:
+                _eo_q = st.ev.raw_text or ""
+            if self.create_by != "EoSelector" and _eo_mc.eo_strategy == "ledger" and _eo_order(_eo_q):
+                from gsuid_core.ai_core.agent_run.order_answer import (
+                    get_order_meta,
+                    set_order_meta,
+                    apply_order_answer,
+                    get_order_rendered,
+                    maybe_override_persona,
+                )
+
+                _eo_list = get_order_rendered()
+                _eo_prev = get_order_meta()
+                if _eo_mc.eo_selector == "dedicated":
+                    if _eo_list:
+                        result_msg, _over = maybe_override_persona(result_msg, _eo_list)
+                        if _over and _eo_prev is not None:
+                            _eo_prev["fallback_used"] = "eo_override"
+                            set_order_meta(_eo_prev)
+                else:
+                    result_msg, _eo_meta = apply_order_answer(result_msg, _eo_q)
             # 工具调用列表只进调试日志，不追加到用户可见消息
             if st.tool_call_list:
                 logger.debug(i18n_t("log.agent.current_tool_call_event", p0=", ".join(st.tool_call_list)))
@@ -783,7 +808,7 @@ class SettlePhase(RunOnceHost):
             if st.return_mode in ["by_bot"] and st.bot and st.ev:
                 return ""
             # 对用户可见出口才做 roleplay OOC；子代理/能力代理 return 必须保留 res_ 句柄
-            if result_msg and output_firewall.is_enabled():
+            if result_msg and output_firewall.is_enabled() and self.create_by not in ("EvalJudge", "TEST"):
                 _skip_roleplay_scrub = self.is_subagent or self.create_by in (
                     "CapabilityAgent",
                     "AutoPlanner",

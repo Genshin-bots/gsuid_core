@@ -117,7 +117,8 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   `prefetch_hybrid_name_ids`，锁内只 SQL 写（防持锁做 embed）。
 - **Edge 冲突检测**（`edge.py`）：向量搜在 session 外；同 src/tgt 极性相反 → 软删旧边 +
   `AIMemConflict.attach` **同事务**（勿再 `@with_session` 嵌套）。极性中英双语
-  （`_NEGATION_MARKERS` + `_NEGATION_RE_EN`）。
+  （`_NEGATION_MARKERS` + `_NEGATION_RE_EN`）。语义等价只 `mention_count++`，**不刷
+  `valid_at`**；其余同 src/tgt 只追加（版本更新两条并存）。
 - **SQLite 写队列**（`ingestion/eval_write_lock.py`）：`db_write_guard` 串行化 Episode / Entity /
   Edge / Preference / 检索 touch / 生命周期写；LLM 与向量在锁外。
 
@@ -141,6 +142,26 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   Entity 叶子。多次 LLM 调用，可 `enable_system2=False` 关。
 - **合并 + Reranker**（`dual_route.py`）：`dual_route_retrieve()` 并行跑双路 → 合并去重 →
   Reranker 重排（三路 episodes/entities/edges `asyncio.gather` 并行）→ `MemoryContext`。
+  排序 / 摘要问句有主题词时走 **thread recall**（`thread_recall.py`）：混合检索只用来
+  **给 session 打分**；命中 session 后 SQL `list_by_sessions` 展开用户原文（RPE），再
+  `chrono_diverse` 按词面新颖度取样。禁止只用 hybrid 名次当证据。会话少时全收。
+  `expand_lexical_recall` 不再二次 thread recall，候选过薄才时间采样。
+  注入前按 session 轮询收敛到 N，只改 user 侧（§1.7）。主题词空才退回 `user_episodes_chrono_sample`。
+  写成编号骨架（日期 · 一句话），只改 user 侧（§1.7）。生产注入只给时间序，禁止评测金标口径与框架领域词表。
+  有 embedding 时 `pack_first_mention` 必须走 `cluster_first_mentions`（禁止向量旁路 chrono）。
+  Chat join：order/span/summary 与 pack 同帽 16k，其它问句仍 8k。骨架不在 H06 再打一轮 LLM。
+  证据分过低时注入头加一行 abstention；KU 同主题按 `valid_at` 升序 + `LATEST_WINS_HINT`。
+  `looks_like_span_query` 也开 temporal arm；无显式日期则该 scope 全程、bucket 按 session 数自适应。
+  工具：`search_turns` / `read_session` / `timeline` / `mark_evidence`（`visible_when` 仅 order/span/summary）。
+  `eo_strategy=ledger`（`GSUID_EO_STRATEGY`）时 order/summary/span **不选 N**：注入全量 turn gist
+  时间线（超 cap 缩行宽，不按主题余弦丢后段）。`eo_selector=dedicated` 时由 `EoSelector`
+  挑 `#id`，人格只复述；`eo_direct_answer` 评测可直出清单。`eo_render=gist` 时答卷用 rule gist
+  而非 14 字 label。`eo_shortlist` 时 Selector 只看抽出来的时间线（#id 仍是全量编号；评测约 96 行才能盖住 gold），
+  失败用 session 轮转填 N（`eo_llm_on_fail=spread`）。代码按 `(valid_at, turn_index)` 排序。
+  v11–v13：96 选 N 与「金标+N 干扰」均不过。评测保持 `eo_pick=v9`。
+  冻结 100k 官方 EO 停，见 `docs/MEMORY_EO_LEDGER_20260921.md`。
+  禁止 walk / ground / cluster / two_pass / pack。不要再开选 N 计划。
+  `legacy` 保持骨架选 N。睡眠期用 `gist_backfill` 写 `AIMemTurnGist` 侧表。
 
 ```python
 @dataclass
@@ -166,14 +187,23 @@ LLM 分类与向量检索在 session / 写锁外：
 
 | 模型 | 表名 | 说明 |
 |------|------|------|
-| `AIMemEpisode` | `aimemepisode` | 原始对话片段 |
+| `AIMemEpisode` | `aimemepisode` | 原始对话片段；可空 `session_id` / `turn_index`；索引 `(scope_key, session_id, valid_at)` |
+| `AIMemSession` | `aimemsession` | gap 切出的会话（`start_at` / `end_at` / `n_turns` / `opener_episode_id`）；title / thread_id 留给睡眠期抽取 |
 | `AIMemEntity` | `aimementity` | 实体节点（唯一约束 `(scope_key, name)`） |
 | `AIMemEdge` | `aimemedge` | 实体间关系边（`fact`/`valid_at`/`invalid_at`/`decay_score`/`mention_count`/`last_accessed`） |
+| `AIMemEvent` | `aimemevent` | 抽取事件行（清 scope 必须一并删，避免以后 `search_by_scope` 混入） |
 | `AIMemCategory` | `aimemcategory` | 分层语义图节点 |
 | `AIMemCategoryEdge` | `aimemcategoryedge` | Category↔Category 层次关联 |
 | `AIMemHierarchicalGraphMeta` | `aimemhierarchicalgraphmeta` | 分层图构建状态（定义在 `hiergraph.py` 而非 models.py） |
 
 关联表：`mem_episode_entity_mentions`、`mem_category_entity_members`。
+
+`session_id` 按 `valid_at` 间隔切（默认 `session_gap_seconds=1800`）。`create_episode` /
+`create_episodes_bulk` 在 `db_write_guard` 内读 cursor、分配、insert、touch（禁止锁外算 assignment）。
+旧行由 `AIMemEpisode.ensure_sessions` / `backfill_sessions` 懒回填（`dual_route_retrieve`
+首次碰到 `session_id IS NULL` 时跑一次）。`neighbors_by_time(..., mode="session")` 取整段；
+`episodes_in_time_window` 的日 opener 走 `AIMemSession.openers_for`（同日两 session 不丢）。
+清 scope 时同步删 `AIMemSession` 与 `AIMemEvent`。事件 bulk upsert 同样进写队列。
 
 > ⚠️ **ORM Relationship 用 `lazy='noload'` 显式加载**，不是 `'selectin'`（历史缺陷 D-17：N+1
 > 查询）。向量去重用 `asyncio.gather` 并行而非 O(N) 串行 await（D-15）。

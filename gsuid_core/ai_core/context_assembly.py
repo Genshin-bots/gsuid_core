@@ -21,7 +21,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.kits.base import join_named_blocks
+from gsuid_core.ai_core.kits.base import join_named_blocks, timeline_memory_budget
 from gsuid_core.ai_core.relationship import RelationshipView
 
 if TYPE_CHECKING:
@@ -132,9 +132,10 @@ def join_context_blocks(
     blocks: Dict[str, str],
     create_by: str = "Chat",
     skip_memory_cap: bool = False,
+    memory_budget: int | None = None,
 ) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装命名块（顺序的**唯一**执行点）。"""
-    return join_named_blocks(blocks, create_by=create_by, skip_memory_cap=skip_memory_cap)
+    return join_named_blocks(blocks, create_by=create_by, skip_memory_cap=skip_memory_cap, memory_budget=memory_budget)
 
 
 async def assemble_dynamic_context(
@@ -201,7 +202,12 @@ async def assemble_dynamic_context(
     _apply_suffix_block_policy(ctx)
     _inject_master_title_hint(ctx)
     skip_mem = ctx.memory_eval
-    return join_context_blocks(ctx.blocks, create_by=ctx.create_by, skip_memory_cap=skip_mem), has_actionable
+    return join_context_blocks(
+        ctx.blocks,
+        create_by=ctx.create_by,
+        skip_memory_cap=skip_mem,
+        memory_budget=timeline_memory_budget(ctx.query),
+    ), has_actionable
 
 
 def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:

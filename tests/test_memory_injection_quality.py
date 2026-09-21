@@ -63,6 +63,66 @@ def test_to_prompt_text_facts_include_statement_and_event_time() -> None:
     assert "发生 2023-05-04" in text
 
 
+def test_classify_edge_write_add_only() -> None:
+    from gsuid_core.ai_core.memory.ingestion.edge import classify_edge_write
+
+    assert classify_edge_write("user lives in A", "user lives in A") == "merge"
+    assert classify_edge_write("user lives in A", "user lives in A ") == "merge"
+    assert classify_edge_write("user uses Milvus 2.2.0", "user uses Milvus 2.3.1") == "add"
+    assert classify_edge_write("user likes coffee", "user does not like coffee") == "conflict"
+
+
+def test_to_prompt_text_order_query_emits_numbered_skeleton() -> None:
+    q = (
+        "Can you list the order in which I brought up different aspects of developing "
+        "my personal budget tracker throughout our conversations, in order? "
+        "Mention ONLY and ONLY three items."
+    )
+    mc = MemoryContext(
+        episodes=[
+            _episode(
+                "User: Finalizing security hashing and deployment checklist.",
+                valid_at="2024-04-25 10:00:00",
+                eid="sec",
+            ),
+            _episode(
+                "User: I started the budget tracker core authentication module.",
+                valid_at="2024-03-14 10:00:00",
+                eid="core",
+            ),
+            _episode(
+                "User: Implementing transaction creation with proper error handling.",
+                valid_at="2024-04-05 10:00:00",
+                eid="err",
+            ),
+        ]
+    )
+    text = mc.to_prompt_text(max_chars=8000, query=q)
+    assert "【事件顺序" in text
+    assert "1. 2024-03-14 ·" in text
+    assert "2. 2024-04-05 ·" in text
+    assert "3. 2024-04-25 ·" in text
+    i1 = text.index("1. 2024-03-14 ·")
+    i2 = text.index("2. 2024-04-05 ·")
+    i3 = text.index("3. 2024-04-25 ·")
+    assert i1 < i2 < i3
+
+
+def test_to_prompt_text_episodes_include_event_at() -> None:
+    mc = MemoryContext(
+        episodes=[
+            _episode(
+                "User: I obtained my OpenWeather API key three months ago.",
+                valid_at="2024-07-01 10:00:00",
+                eid="k",
+            )
+        ]
+    )
+    text = mc.to_prompt_text(max_chars=4000, query="")
+    assert "[2024-07-01 10:00:00]" in text
+    assert "发生 2024-04-02" in text
+
+
 def test_dangling_predicate_facts_rejected() -> None:
     """生产日志里的真实垃圾条目全部命中。"""
     junk = ["用户100000003提到", "用户100000007被提及", "[100000008]提及", "用户100000009提到。", "路人丙提到"]
@@ -595,15 +655,24 @@ def test_inject_skips_tool_hint_for_memory_eval() -> None:
 def test_memory_eval_skips_memory_block_char_budget() -> None:
     from gsuid_core.ai_core.kits.base import join_named_blocks
 
-    blob = "P" * 3000
+    blob = "P" * 9000
     chat = join_named_blocks({"memory": blob}, create_by="Chat")
-    assert len(chat) <= 800
+    assert len(chat) <= 8000
     assert chat.endswith("…")
     still_capped = join_named_blocks({"memory": blob}, create_by="TEST")
-    assert len(still_capped) <= 800
+    assert len(still_capped) <= 8000
     skipped = join_named_blocks({"memory": blob}, create_by="Chat", skip_memory_cap=True)
     assert blob in skipped
-    assert len(skipped) >= 3000
+    assert len(skipped) >= 9000
+    mid = "Q" * 12000
+    timeline = join_named_blocks({"memory": mid}, create_by="Chat", memory_budget=16000)
+    assert mid in timeline
+    assert len(timeline) == 12000
+    from gsuid_core.ai_core.kits.base import timeline_memory_budget
+
+    order_q = "List the order I brought up hiring aspects, in order. Mention ONLY three items."
+    assert timeline_memory_budget(order_q) == 16000
+    assert timeline_memory_budget("今天天气怎么样") is None
 
 
 def test_prioritize_retrieved_puts_query_overlap_first() -> None:
@@ -1403,6 +1472,19 @@ def test_refine_retrieved_memory_flags_opposite_user_stances() -> None:
     assert "completed 5" in blob
 
 
+def test_refine_skips_conflicts_on_latest_slot() -> None:
+    from gsuid_core.ai_core.kits.memory.kit import refine_retrieved_memory
+
+    mem = MemoryContext(
+        episodes=[
+            _episode("User: daily quota is 1,000 calls per day.", valid_at="2024-03-14 16:00:46", eid="old"),
+            _episode("User: update the daily quota to 1,200 calls per day.", valid_at="2024-03-14 16:01:06", eid="new"),
+        ]
+    )
+    refine_retrieved_memory(mem, "What is the daily call quota for the API key used in my application?")
+    assert mem.conflicts == []
+
+
 def test_inject_groundedness_only_for_self_history() -> None:
     from gsuid_core.ai_core.kits.memory.kit import looks_like_self_history_query
 
@@ -1422,9 +1504,37 @@ def test_timeline_query_is_not_point_lookup() -> None:
     order_q = "Can you list the order in which I brought up Green's functions from 2025-03-01 to 2025-03-31, in order?"
     assert looks_like_timeline_query(order_q)
     assert looks_like_self_history_query(order_q)
+    assert looks_like_timeline_query(
+        "Can you list the order in which I brought up different aspects of developing my personal "
+        "budget tracker throughout our conversations, in order? Mention ONLY and ONLY three items."
+    )
+    assert looks_like_timeline_query(
+        "Can you provide a comprehensive summary of how my budget tracker project has progressed, "
+        "including the key features implemented"
+    )
     assert not looks_like_timeline_query("Have I ever formulated heat equation problems before?")
+    assert not looks_like_timeline_query(
+        "How did the user feedback influence the UI/UX improvements I made before the public launch?"
+    )
     assert looks_like_count_query("How many total problems did I practice across calculus sets?")
     assert looks_like_count_query("我一共做了多少题")
+    assert looks_like_count_query("How many commits have been merged into the main branch of my Git repository?")
+    assert not looks_like_count_query("How many days passed between when I obtained my API key and the UI wireframe?")
+    assert not looks_like_count_query("How many weeks do I have between finishing the features and the deadline?")
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        query_only_item_cap,
+        looks_like_order_query,
+        looks_like_duration_query,
+    )
+
+    assert looks_like_duration_query(
+        "How many days passed between when I obtained my API key and when I completed the UI wireframe?"
+    )
+    assert query_only_item_cap("Mention ONLY and ONLY three items.") == 3
+    assert query_only_item_cap("Mention ONLY and ONLY five items.") == 5
+    assert query_only_item_cap("Please list 3 items") == 3
+    assert query_only_item_cap("列出5条") == 5
+    assert not looks_like_order_query("Mention ONLY and ONLY three items.")
     assert not looks_like_count_query("What is my current address?")
     assert not looks_like_count_query("这个多少钱")
     assert not looks_like_count_query("外面多少度")
@@ -1505,5 +1615,53 @@ def test_to_prompt_text_temporal_keeps_day_opener_not_homework() -> None:
     text = mem.to_prompt_text(max_chars=12000, query="list the order from 2025-03-01 to 2025-03-31 in order")
     assert "unique-0" in text
     assert "unique-7" in text
-    assert "unique-hw-0" not in text
-    assert "unique-hw-7" not in text
+    skel = text.split("【相关对话片段】")[0]
+    assert "unique-0" in skel
+    assert "unique-hw-0" not in skel
+    assert "unique-hw-7" not in skel
+
+
+def test_to_prompt_text_summary_keeps_late_milestones() -> None:
+    pad = " implementation notes and review comments. " * 10
+    eps = []
+    for i in range(12):
+        month = 3 + (i // 2)
+        day = 1 + (i % 2) * 10
+        extra = " Redis lockout and Confluence docs." if i == 11 else f" early auth flask week {i}."
+        eps.append(
+            _episode(
+                f"User: Budget tracker update{extra}{pad} MVP deadline April 15.",
+                valid_at=f"2024-{month:02d}-{day:02d} 10:00:00",
+                eid=f"e{i}",
+            )
+        )
+    mem = MemoryContext(episodes=eps)
+    text = mem.to_prompt_text(
+        max_chars=3500,
+        query=(
+            "Can you provide a comprehensive summary of how my budget tracker project has progressed, "
+            "including the key features implemented, the development timeline, security enhancements, "
+            "and documentation efforts?"
+        ),
+    )
+    assert "Redis lockout" in text
+    assert "Confluence" in text
+
+
+def test_to_prompt_text_count_query_keeps_latest_not_old_tail() -> None:
+    pad = " repository history notes and review comments. " * 12
+    eps = [
+        _episode(
+            f"User: my repository had {150 + i} commits merged into main.{pad}",
+            valid_at=f"2024-04-{i + 1:02d} 10:00:00",
+            eid=f"c{i}",
+        )
+        for i in range(8)
+    ]
+    mem = MemoryContext(episodes=eps)
+    text = mem.to_prompt_text(
+        max_chars=2800,
+        query="How many commits have been merged into the main branch of my Git repository?",
+    )
+    assert "157 commits" in text
+    assert "150 commits" not in text

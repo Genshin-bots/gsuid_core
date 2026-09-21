@@ -18,6 +18,7 @@ import time
 import queue as sync_queue
 import asyncio
 from typing import Tuple, Optional, TypedDict
+from datetime import datetime, timezone
 from collections import defaultdict
 from collections.abc import Collection
 
@@ -159,16 +160,20 @@ class StatedFact(TypedDict):
     v: str
 
 
-class ExtractedResult(TypedDict):
-    """LLM 实体/关系提取的规整结果。
+class ExtractedEventRow(TypedDict):
+    summary: str
+    start_date: str
+    end_date: str
+    entities: list[str]
+    aliases: list[str]
 
-    由 _restore_keys 将 LLM 原始 JSON 规整产出，entities / edges 两键必然存在。
-    列表元素仍为普通 dict（其形状由 _restore_keys 保证），以兼容下游
-    extract_and_upsert_* 的 list[dict] 入参，避免 list 不变性带来的类型级联。
-    """
+
+class ExtractedResult(TypedDict):
+    """LLM 实体/关系提取的规整结果。entities / edges 由 _restore_keys 保证键存在。"""
 
     entities: list[dict]
     edges: list[dict]
+    events: list[ExtractedEventRow]
     # 程序性偏好门控信号：实体抽取 LLM 顺手判定的"本批是否含针对助手未来行为的纠正/偏好"。
     # 取代纯正则硬门控来决定是否触发第二次偏好蒸馏（仅 enable_preference_memory 时有意义）。
     has_preference: bool
@@ -202,7 +207,7 @@ class IngestionWorker:
         self._stop_event: asyncio.Event | None = None  # start() 时创建
         # 主循环上的后台任务句柄
         self._task: asyncio.Task | None = None
-        # 程序性记忆：纠错即时 flush 的 per-scope 上次触发时间（debounce 防 flush 风暴）
+        # 程序性记忆：纠错即时 flush 的 per-scope 上次触发时间（防 flush 风暴）
         self._priority_flush_at: dict[str, float] = {}
 
     def start(self):
@@ -344,14 +349,14 @@ class IngestionWorker:
         """纠错即时写快路径（程序性记忆 §4.3）：在主循环上调度一次该 scope 的优先 flush，
         让数分钟内的"下一次"请求即可召回纠错偏好，而非等 batch_interval_seconds 大窗。
 
-        带 per-scope debounce（preference_flush_debounce_seconds）防"连环纠正→flush 风暴"。
+        带 per-scope 间隔（preference_flush_settle_seconds）防连环纠正触发 flush 风暴。
         由 observer.observe() 在纠错门控命中时调用（运行在主事件循环上）。
         """
         if not self._running:
             return
         now = time.time()
         last = self._priority_flush_at[scope_key] if scope_key in self._priority_flush_at else 0.0
-        if now - last < memory_config.preference_flush_debounce_seconds:
+        if now - last < memory_config.preference_flush_settle_seconds:
             return
         self._priority_flush_at[scope_key] = now
         asyncio.create_task(self._priority_flush(scope_key))
@@ -703,6 +708,26 @@ async def extract_window(
     )
 
 
+def _parse_event_date(raw: str, fallback: "datetime | None") -> "datetime | None":
+    """把 LLM 给的 ISO 日期解析成 datetime（缺日按 1 号补），失败回落 fallback。"""
+    text = (raw or "").strip()
+    if not text:
+        return fallback
+    full = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if full:
+        try:
+            return datetime(int(full.group(1)), int(full.group(2)), int(full.group(3)), tzinfo=timezone.utc)
+        except ValueError:
+            return fallback
+    month = re.match(r"(\d{4})-(\d{1,2})", text)
+    if month:
+        try:
+            return datetime(int(month.group(1)), int(month.group(2)), 1, tzinfo=timezone.utc)
+        except ValueError:
+            return fallback
+    return fallback
+
+
 async def _extract_and_upsert_from_episode(
     *,
     episode_id: str,
@@ -795,6 +820,27 @@ async def _extract_and_upsert_from_episode(
         entity_name_to_id=entity_name_to_id,
         valid_at=stmt_ts,
     )
+
+    # Step 6: 时间事件写入（排序/时间线题素材）。日期取事件自报 ISO 日期，缺失用本窗口
+    # 最新对话时间戳兜底——保证「首次提及顺序」在时间轴上可比。
+    from gsuid_core.ai_core.memory.database.models import AIMemEvent, EventWriteRow
+
+    event_rows: list[EventWriteRow] = []
+    for ev in extracted["events"] if "events" in extracted else []:
+        summary = ev["summary"].strip()
+        if not summary:
+            continue
+        event_rows.append(
+            {
+                "summary": summary,
+                "start_at": _parse_event_date(ev["start_date"], stmt_ts),
+                "end_at": _parse_event_date(ev["end_date"], None),
+                "entities": ev["entities"],
+                "aliases": ev["aliases"],
+            }
+        )
+    if event_rows:
+        await AIMemEvent.upsert_events_bulk(scope_key, event_rows, episode_id=episode_id, fallback_at=stmt_ts)
 
     # Step 7: user_global Scope 的跨群属性
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
@@ -1074,12 +1120,14 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     all_entities: list[dict] = []
     all_edges: list[dict] = []
     all_stated: list[StatedFact] = []
+    all_events: list[ExtractedEventRow] = []
     has_preference = False
     for i, chunk in enumerate(chunks):
         result = await _llm_extract_single(chunk, scope_key)
         all_entities.extend(result["entities"])
         all_edges.extend(result["edges"])
         all_stated.extend(result["stated"] if "stated" in result else [])
+        all_events.extend(result["events"] if "events" in result else [])
         # 任一分片判出偏好信号即视为整批命中（偏好往往集中在某一段对话）
         if "has_preference" in result and result["has_preference"]:
             has_preference = True
@@ -1106,6 +1154,7 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     return {
         "entities": list(seen_names.values()),
         "edges": list(seen_edges.values()),
+        "events": all_events,
         "has_preference": has_preference,
         "stated": all_stated,
     }
@@ -1195,6 +1244,28 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
                     }
                 )
 
+        # 时间事件：s=摘要 d=开始日期 e=结束日期 x=涉及实体 a=别名（LLM 简写键）
+        events: list[ExtractedEventRow] = []
+        raw_events = data["events"] if "events" in data else None
+        if isinstance(raw_events, list):
+            for ev in raw_events:
+                if not isinstance(ev, dict):
+                    continue
+                summary = ev["s"] if "s" in ev and isinstance(ev["s"], str) else ""
+                if not summary.strip():
+                    continue
+                raw_entities = ev["x"] if "x" in ev and isinstance(ev["x"], list) else []
+                raw_aliases = ev["a"] if "a" in ev and isinstance(ev["a"], list) else []
+                events.append(
+                    {
+                        "summary": summary.strip(),
+                        "start_date": ev["d"] if "d" in ev and isinstance(ev["d"], str) else "",
+                        "end_date": ev["e"] if "e" in ev and isinstance(ev["e"], str) else "",
+                        "entities": [x for x in raw_entities if isinstance(x, str)],
+                        "aliases": [x for x in raw_aliases if isinstance(x, str)],
+                    }
+                )
+
         # 程序性偏好门控信号（仅在 system prompt 追加了判定指令时模型才会产出）：取顶层 pref
         has_preference = bool(data["pref"]) if "pref" in data else False
         stated: list[StatedFact] = []
@@ -1209,7 +1280,13 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
                 if uid and value:
                     stated.append({"u": uid, "k": kind, "v": value})
 
-        return {"entities": entities, "edges": edges, "has_preference": has_preference, "stated": stated}
+        return {
+            "entities": entities,
+            "edges": edges,
+            "events": events,
+            "has_preference": has_preference,
+            "stated": stated,
+        }
 
     try:
         # 偏好门控开启时，把"顺手判 pref"指令追加到 system 末尾（不动稳定前缀的实体抽取部分，
@@ -1290,7 +1367,7 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         except Exception:
             pass
 
-    return {"entities": [], "edges": [], "has_preference": False, "stated": []}
+    return {"entities": [], "edges": [], "events": [], "has_preference": False, "stated": []}
 
 
 # ─────────────────────────────────────────────

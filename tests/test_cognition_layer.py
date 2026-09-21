@@ -191,6 +191,8 @@ def test_episode_render_keeps_name_but_caps_body() -> None:
 
 
 def test_episode_expand_cap_folds_overflow() -> None:
+    from gsuid_core.ai_core.cognition.facade import _EPISODE_EXPAND_CAP
+
     hits = [
         CognitiveHit(
             kind=CogKind.EPISODE,
@@ -200,11 +202,11 @@ def test_episode_expand_cap_folds_overflow() -> None:
             score=0.8,
             high_confidence=True,
         )
-        for i in range(8)
+        for i in range(_EPISODE_EXPAND_CAP + 2)
     ]
     block = render_cognition_block("q", hits)
-    assert "专名0" in block and "专名5" in block
-    assert "专名6" not in block and "专名7" not in block
+    assert "专名0" in block and f"专名{_EPISODE_EXPAND_CAP - 1}" in block
+    assert f"专名{_EPISODE_EXPAND_CAP}" not in block
     assert "另有 2 条弱相关" in block
 
 
@@ -484,6 +486,58 @@ def test_memory_hits_are_not_evicted_by_knowledge_rrf() -> None:
     assert all(h.kind is CogKind.EPISODE for h in hits)
 
 
+def test_search_cognition_drops_weak_episodes_without_needles() -> None:
+    """专名不在正文里的片段不得以「命中 24」展开。"""
+    from gsuid_core.ai_core.cognition import search_cognition
+
+    packed = {
+        "ep_hit": CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="ep_hit",
+            title="",
+            summary="Johnny reviewed the tuning logic.",
+            score=0.8,
+        ),
+        "ep_miss": CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="ep_miss",
+            title="",
+            summary="We discussed RAG sharding and dense search.",
+            score=0.8,
+        ),
+    }
+
+    async def _fake_memory(query: str, *, kinds: Any, scope: Any, limit: int, **_kw: Any) -> Any:
+        _ = (query, kinds, scope, limit)
+        return ["ep_hit", "ep_miss"], packed
+
+    empty = _empty_backend()
+    with (
+        patch("gsuid_core.ai_core.cognition.facade._search_memory", new=_fake_memory),
+        patch("gsuid_core.ai_core.cognition.facade._search_knowledge_backend", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_fileos", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_meme_knowledge", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_outbound", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=empty),
+    ):
+        hits = _run(
+            search_cognition(
+                "Does Johnny have expertise?",
+                kinds=MEMORY_KINDS,
+                scope=CogScope(user_id="u1"),
+                limit=10,
+            )
+        )
+    ids = [h.id for h in hits]
+    assert "ep_hit" in ids
+    assert "ep_miss" not in ids
+
+
 def test_weak_hits_are_not_promoted_to_high_confidence() -> None:
     from pathlib import Path
 
@@ -596,7 +650,7 @@ def test_search_memory_includes_episodes_with_rank_scores() -> None:
             episodes=[
                 Episode(
                     id="e1",
-                    content="I prefer Adobe Premiere Pro tutorials for advanced color grading.",
+                    content="I prefer Adobe Premiere Pro video editing tutorials for advanced color grading.",
                     valid_at="2023-05-30 12:00:00",
                     scope_key="user_global:u1",
                     embedding=[],

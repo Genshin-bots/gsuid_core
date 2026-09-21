@@ -8,6 +8,7 @@ import re
 import uuid
 import asyncio
 import logging
+from typing import Literal
 from datetime import datetime, timezone
 
 from sqlmodel import col, select
@@ -53,6 +54,15 @@ def _norm_fact(fact: str) -> str:
     return fact.strip().lower().replace(" ", "")
 
 
+def classify_edge_write(old_fact: str, new_fact: str) -> Literal["merge", "conflict", "add"]:
+    """重复陈述只累加；极性相反关窗；其余当版本更新追加，不覆盖 valid_at。"""
+    if _fact_polarity(old_fact) != _fact_polarity(new_fact):
+        return "conflict"
+    if _norm_fact(old_fact) == _norm_fact(new_fact):
+        return "merge"
+    return "add"
+
+
 async def _eval_find_mergeable_edges(
     scope_key: str,
     valid_edges: list[tuple[dict, str, str, str]],
@@ -82,17 +92,14 @@ async def _eval_find_mergeable_edges(
         cands = by_pair.get((sid, tid), [])
         mid = ""
         if cands:
-            new_norm = _norm_fact(fact)
-            # ① 精确重复 fact → 归并（mention++）
+            # ① 精确重复 → 归并；② 极性相反 → 矛盾。版本更新不归并。
             for c in cands:
-                if _norm_fact(c.fact) == new_norm:
+                if classify_edge_write(c.fact, fact) == "merge":
                     mid = c.id
                     break
-            # ② 同 (src,tgt) 极性相反 → 矛盾（下游会失效旧边 + 记 Conflict）
             if not mid:
-                new_pol = _fact_polarity(fact)
                 for c in cands:
-                    if _fact_polarity(c.fact) != new_pol:
+                    if classify_edge_write(c.fact, fact) == "conflict":
                         mid = c.id
                         break
         out.append(mid)
@@ -159,16 +166,14 @@ async def extract_and_upsert_edges(
                 and sim_edge["target_id"] == target_id
                 and sim_edge["invalid_at_ts"] is None
             ):
-                return sim_edge["id"]
+                action = classify_edge_write(sim_edge["fact"] or "", fact)
+                if action in ("merge", "conflict"):
+                    return sim_edge["id"]
         return ""
 
     if memory_config.eval_mode:
-        # §14 大规模回灌优化：eval_mode 下用一次"按 (src,tgt) 预取既有有效边"的 SQL 替代
-        # 每条边一次向量检索（search_edges = embed+Qdrant，窗口化并发下是主要耗时来源之一）。
-        # 归并判定：①新 fact 与既有 fact 归一化后完全相同 → 归并(mention++)；②同 (src,tgt)
-        # 但极性相反 → 矛盾(失效旧边+记 Conflict)；③其余（同 (src,tgt) 不同 fact，如版本更新）
-        # → 不归并，两条都保留为有效边（检索期由"取最新值"提示择新，优于旧逻辑把版本更新误并）。
-        # 不做语义近似归并（省去向量检索），代价仅是近义重复事实多留几条，对 BEAM 探针无碍。
+        # eval_mode 用 SQL 预取代替每条边的向量检索。
+        # 只做精确重复与极性相反，近义重复会多留几条。
         merge_results = await _eval_find_mergeable_edges(scope_key, valid_edges)
     else:
         merge_results = await asyncio.gather(
@@ -195,14 +200,14 @@ async def extract_and_upsert_edges(
                         result = await session.execute(select(AIMemEdge).where(col(AIMemEdge.id) == merge_into))
                         old_edge = result.scalar_one_or_none()
                         if old_edge is not None:
-                            if _fact_polarity(old_edge.fact) != _fact_polarity(fact):
-                                # C11：同 src/tgt 极性相反 → 软删旧边，下文建新边并记 Conflict。
+                            action = classify_edge_write(old_edge.fact, fact)
+                            if action == "conflict":
                                 old_edge.invalid_at = now
+                                old_edge.expired_at = datetime.now(timezone.utc).replace(tzinfo=None)
                                 conflict_old = (old_edge.id, old_edge.fact)
-                            else:
-                                # 命中既有等价 Edge：累加提及次数并刷新有效期，不写重复 Edge
+                            elif action == "merge":
+                                # 只累加提及，保留首次 valid_at（EO/KU 要这条链）。
                                 old_edge.mention_count = (old_edge.mention_count or 1) + 1
-                                old_edge.valid_at = now
                                 merged_count += 1
                                 continue
 
@@ -228,6 +233,7 @@ async def extract_and_upsert_edges(
                             old_edge_id=old_id,
                             new_edge_id=edge_id,
                             summary=f"[事实更新] 旧:{old_fact[:120]} → 新:{fact[:120]}",
+                            relation="supersedes",
                         )
 
                     # 收集向量写入数据（session 外批量执行）

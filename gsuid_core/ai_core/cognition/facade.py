@@ -38,6 +38,7 @@ from gsuid_core.ai_core.memory.retrieval.lexical import (
     strip_clock_lines,
     query_overlaps_text,
     expand_lexical_recall,
+    text_has_query_needles,
 )
 
 # 一路后端返回的 (排名列表, id→命中) 二元组
@@ -66,7 +67,7 @@ def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
 _HIGH_CONF_FUSED_CAP = 4
 _FUSED_CAP_KINDS = KNOWLEDGE_KINDS | WORK_KINDS | MEDIA_KINDS
 # 工具回执：高置信片段最多摊开这么多条，其余进「未展开」。
-_EPISODE_EXPAND_CAP = 6
+_EPISODE_EXPAND_CAP = 16
 _EPISODE_SEED_SCORE = 0.8
 _EPISODE_NEIGHBOR_SCORE = 0.4
 
@@ -200,7 +201,11 @@ async def search_cognition(
         backend_top = max((h.score for h in hits.values()), default=0.0)
         backend_floor = backend_top * floor_ratio if backend_top > 0 else 0.0
         for hid, hit in hits.items():
-            merged[hid] = replace(hit, high_confidence=hit.score >= backend_floor)
+            confident = hit.score >= backend_floor
+            body = hit.summary or hit.title
+            if hit.kind is CogKind.EPISODE and not text_has_query_needles(query, body):
+                confident = False
+            merged[hid] = replace(hit, high_confidence=confident)
 
     if not merged:
         logger.debug(t("log.ai.cognition_empty", q=query[:40]))
@@ -214,6 +219,21 @@ async def search_cognition(
             hit = replace(hit, high_confidence=False)
         capped.append(hit)
     final = await _drop_stale_handles(capped)
+    # 弱相关片段不进结果：相对分在 RRF 名次上几乎拉不开，专名零命中也会报「命中 24」。
+    has_strong_ep = any(h.kind is CogKind.EPISODE and h.high_confidence for h in final)
+    if has_strong_ep:
+        final = [h for h in final if h.kind is not CogKind.EPISODE or h.high_confidence]
+    else:
+        best_ep_id = ""
+        best_ep_score = -1.0
+        for h in final:
+            if h.kind is CogKind.EPISODE and h.score > best_ep_score:
+                best_ep_score = h.score
+                best_ep_id = h.id
+        if best_ep_id:
+            final = [h for h in final if h.kind is not CogKind.EPISODE or h.id == best_ep_id]
+        else:
+            final = [h for h in final if h.kind is not CogKind.EPISODE]
     logger.debug(t("log.ai.cognition_hits", n=len(final), backends=",".join(labels)))
     return final
 
@@ -401,6 +421,7 @@ async def _search_memory(
             search_q,
             temporal_mode=ctx.temporal_mode,
             time_range=ctx.time_range,
+            asker_id=scope.user_id if scope.group_id else "",
         )
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
@@ -442,6 +463,8 @@ async def _search_memory(
                 if raw_id and raw_id in neighbor_ep_ids and raw_id not in seed_ep_ids
                 else _EPISODE_SEED_SCORE
             )
+            if not text_has_query_needles(search_q, content):
+                ep_score = min(ep_score, 0.2)
             _add(
                 CognitiveHit(
                     kind=CogKind.EPISODE,

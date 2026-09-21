@@ -350,6 +350,10 @@ async def run_lifecycle_maintenance() -> None:
 
     logger.info(i18n_t("log.memory.lifecycle_maintenance_2"))
     try:
+        from gsuid_core.ai_core.memory.lifecycle.sleep_extract import run_sleep_extract_tick
+
+        slept = await run_sleep_extract_tick()
+        logger.info(i18n_t("log.memory.lifecycle_sleep_extract", n=slept))
         consolidated = await _consolidate()
         decayed = await AIMemEdge.apply_decay(
             stale_days=DECAY_STALE_DAYS,

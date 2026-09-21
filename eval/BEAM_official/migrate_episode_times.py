@@ -3,9 +3,9 @@
 SQL valid_at 是窗口召回真源。向量 valid_at_ts 仍按日历日分桶，同日 +1s 不换日；
 若要向量日内序与 SQL 一致，请重灌。
 
-  uv run python eval/BEAM_10M/migrate_episode_times.py
-  uv run python eval/BEAM_10M/migrate_episode_times.py --dry-run
-  uv run python eval/BEAM_10M/migrate_episode_times.py --db path/to/GsData.db
+  uv run python eval/BEAM_official/migrate_episode_times.py
+  uv run python eval/BEAM_official/migrate_episode_times.py --dry-run
+  uv run python eval/BEAM_official/migrate_episode_times.py --db path/to/GsData.db
 """
 
 from __future__ import annotations

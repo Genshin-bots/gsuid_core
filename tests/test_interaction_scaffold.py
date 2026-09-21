@@ -333,6 +333,7 @@ def test_turn_graph_group_gates(monkeypatch):
     )
     assert tg_quote.quoted_tome
     assert tg_quote.call_to_self
+    assert decide_cheap_gate(tg_quote) is CheapGate.SILENCE
     assert QUOTE_TOME_HINT in scaffold_hints_from_graph(tg_quote, cheap=CheapGate.FULL)
     tg_at_no_reply = build_turn_graph(
         "帮我设个提醒",
@@ -362,6 +363,16 @@ def test_turn_graph_group_gates(monkeypatch):
         has_reply=True,
     )
     assert not tg_ask_on_quote.quoted_tome
+    tg_eval_on_quote = build_turn_graph(
+        "你如何评价这算不算自首？",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+        has_reply=True,
+    )
+    assert not tg_eval_on_quote.quoted_tome
+    assert decide_cheap_gate(tg_eval_on_quote) is CheapGate.FULL
 
     tg_voc = build_turn_graph(
         "小明(用户ID:9001)：早柚最近咋样",

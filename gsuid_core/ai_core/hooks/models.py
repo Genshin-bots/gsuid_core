@@ -74,6 +74,8 @@ class AgentHookContext:
     memory_guide: str = ""
     # LongMem 证据转储 / 禁工具指令；不得用「有 memory_guide」当门。
     memory_eval: bool = False
+    # True：本轮不检索、不注入记忆（同账号 U_full / 金标粘贴）。
+    skip_memory: bool = False
     # 本轮显式时钟（评测 HTTP clock_at）。None=墙上时钟。
     clock_at: Optional[datetime] = None
     relationship: Optional["RelationshipView"] = None

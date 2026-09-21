@@ -436,6 +436,17 @@ def format_eval_memory(mem: "MemoryContext", query: str) -> str:
     from gsuid_core.ai_core.memory.config import memory_config
 
     cap = max(int(memory_config.memory_inject_max_chars), EVAL_MEMORY_INJECT_CHARS)
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_span_query,
+        looks_like_order_query,
+        looks_like_summary_query,
+    )
+
+    if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
+        if memory_config.eo_strategy == "ledger":
+            cap = max(cap, int(memory_config.ledger_max_chars))
+        else:
+            cap = max(cap, 16000)
     return mem.to_prompt_text(max_chars=cap, query=query)
 
 

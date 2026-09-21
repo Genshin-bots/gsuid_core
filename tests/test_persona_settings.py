@@ -128,6 +128,7 @@ def test_system_constraints_keeps_placeholders() -> None:
 
 def test_shared_system_prompt_is_compact() -> None:
     assert len(SYSTEM_CONSTRAINTS) <= 1600
+    assert "记忆原话照给" in SYSTEM_CONSTRAINTS
     assert len(TOOL_ORCHESTRATION_CONSTRAINTS) <= 700
     assert len(sayu_persona_prompt.strip()) <= 2300
     src = build_persona_prompt.__code__.co_names

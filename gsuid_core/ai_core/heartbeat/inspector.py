@@ -30,7 +30,7 @@ MAX_CONCURRENT_LLM_CALLS = 5
 # 冷场阈值：超过 1 小时不活跃的群不再巡检
 INACTIVE_THRESHOLD_HOURS = 1
 # 被动→主动冷却：最近一条 AI 消息（无论主动/被动）距今 < 此值（分钟）则不主动插话
-RECENT_AI_COOLDOWN_MINUTES = 12
+RECENT_AI_COOLDOWN_MINUTES = 45
 
 
 class HeartbeatInspector:

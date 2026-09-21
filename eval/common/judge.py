@@ -1,17 +1,19 @@
 """LLM 评判 + 简单字符串匹配。
 
-包含两个核心入口：
+包含三个核心入口：
 
 - :func:`judge_single_answer` —— LongMemEval 风格，给定 (question, standard_answer,
   agent_answer) 直接让 LLM 判 PASS / FAIL，返回 ``{"correct": bool, "reason": str}``；
 - :func:`judge_beam_single` —— BEAM-10M 风格，按 rubric 列表逐条给分，返回
-  ``{"rubric_scores": [...], "passed": bool, "reason": str}``。
+  ``{"rubric_scores": [...], "passed": bool, "reason": str}``；
+- :func:`judge_beam_order` —— event_ordering：对齐矩阵 + 本地 coverage / Kendall τ-b。
 """
 
 from __future__ import annotations
 
 import re
 import json
+import math
 import asyncio
 from typing import Any, Dict, List
 
@@ -49,6 +51,9 @@ _TRANSIENT_JUDGE_MARKERS = (
     "connection reset",
     "<silence>",
     "[silence]",
+    "不太想说",
+    "额…出错了",
+    "额...出错了",
 )
 
 
@@ -249,6 +254,220 @@ _BEAM_JUDGE_PROMPT = """你是一名长对话记忆评测裁判。基于【类�
 """
 
 
+# BEAM 官方 Listing 21 / compute_metrics.llm_equivalence 原文（逐对 YES/NO）。
+_BEAM_EQ_SYSTEM = (
+    "You are a binary classifier.\n"
+    "If the TWO snippets describe the SAME event/fact, reply **YES**\n"
+    "Otherwise reply **NO**. No extra words.\n"
+    "DO NOT provide any exaplanation."
+)
+
+_BEAM_EQ_BATCH_PROMPT = """{system}
+
+Pairs below. For each pair output one line: PAIR i-j YES|NO
+
+{pairs}
+
+Output only those PAIR lines.
+"""
+
+_DOUBLE_JUDGE_PREFIXES = (
+    "beam_off_100k_0__",
+    "beam_off_100k_10__",
+    "beam_off_100k_13__",
+    "beam_off_100k_17__",
+)
+
+
+def kendall_tau_b(xs: List[int], ys: List[int]) -> float | None:
+    """Kendall τ-b。长度不同或不足 2 对时返回 None。"""
+    n = len(xs)
+    if n != len(ys) or n < 2:
+        return None
+    conc = 0
+    disc = 0
+    ties_x = 0
+    ties_y = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = xs[i] - xs[j]
+            dy = ys[i] - ys[j]
+            if dx == 0 and dy == 0:
+                continue
+            if dx == 0:
+                ties_x += 1
+            elif dy == 0:
+                ties_y += 1
+            elif (dx > 0) == (dy > 0):
+                conc += 1
+            else:
+                disc += 1
+    denom = math.sqrt((conc + disc + ties_x) * (conc + disc + ties_y))
+    if denom == 0.0:
+        return None
+    return (conc - disc) / denom
+
+
+def parse_align_list(raw: object, n: int) -> List[int | None]:
+    """把裁判输出的 align 收成长度 n 的 1-based 编号或 None。"""
+    out: List[int | None] = [None] * n
+    if not isinstance(raw, list) or n <= 0:
+        return out
+    for i, item in enumerate(raw[:n]):
+        if item is None:
+            continue
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int):
+            out[i] = item if item >= 1 else None
+            continue
+        if isinstance(item, float) and item.is_integer():
+            val = int(item)
+            out[i] = val if val >= 1 else None
+            continue
+        if isinstance(item, str) and item.strip().isdigit():
+            val = int(item.strip())
+            out[i] = val if val >= 1 else None
+    return out
+
+
+def official_tau_from_align(align: List[int | None]) -> float | None:
+    """官方式 τ-b：全部对齐才算 Kendall，否则 0（Kimi / 参考实现）。"""
+    if any(item is None for item in align):
+        return 0.0
+    n = len(align)
+    if n < 2:
+        return None
+    pred = [int(item) for item in align if item is not None]
+    if len(pred) != n:
+        return 0.0
+    return kendall_tau_b(list(range(n)), pred)
+
+
+def order_metrics_from_align(align: List[int | None]) -> tuple[float, float | None]:
+    """coverage = 对齐条数 / N；τ-b 仅在全部对齐时计算。"""
+    n = len(align)
+    if n == 0:
+        return 0.0, None
+    ranks: List[int] = []
+    missing = 0
+    for item in align:
+        if item is None:
+            missing += 1
+        else:
+            ranks.append(item)
+    coverage = (n - missing) / n
+    if missing > 0:
+        return coverage, None
+    return coverage, kendall_tau_b(list(range(n)), ranks)
+
+
+_NUMBERED_ITEM = re.compile(r"^\d+[\.\)]\s+\S")
+
+
+def split_agent_items(agent_answer: str) -> List[str]:
+    """只收编号清单行，丢掉散文噪声。"""
+    items: List[str] = []
+    for line in (agent_answer or "").splitlines():
+        s = line.strip()
+        if _NUMBERED_ITEM.match(s):
+            items.append(s)
+    return items
+
+
+def pair_line_stats(text: str) -> tuple[int, int]:
+    """解析到的 PAIR 行数、YES 数。"""
+    n_pair = 0
+    n_yes = 0
+    for raw in (text or "").splitlines():
+        m = re.search(r"PAIR\s+(\d+)\s*[-:]\s*(\d+)\s+(YES|NO)", raw.strip().upper())
+        if m is None:
+            continue
+        n_pair += 1
+        if m.group(3) == "YES":
+            n_yes += 1
+    return n_pair, n_yes
+
+
+def parse_eq_pair_lines(text: str, n_r: int, n_a: int) -> List[List[bool]]:
+    """解析 PAIR i-j YES|NO 成 n_r × n_a 矩阵。"""
+    mat: List[List[bool]] = [[False] * n_a for _ in range(n_r)]
+    if not text:
+        return mat
+    for raw in text.splitlines():
+        line = raw.strip().upper()
+        m = re.search(r"PAIR\s+(\d+)\s*[-:]\s*(\d+)\s+(YES|NO)", line)
+        if m is None:
+            continue
+        i = int(m.group(1)) - 1
+        j = int(m.group(2)) - 1
+        if 0 <= i < n_r and 0 <= j < n_a:
+            mat[i][j] = m.group(3) == "YES"
+    return mat
+
+
+def align_from_eq_matrix(mat: List[List[bool]]) -> List[int | None]:
+    """每个 rubric 取第一个未占用的 YES agent 项（1-based）。"""
+    n_r = len(mat)
+    used: set[int] = set()
+    align: List[int | None] = [None] * n_r
+    for i, row in enumerate(mat):
+        for j, hit in enumerate(row):
+            if hit and (j + 1) not in used:
+                align[i] = j + 1
+                used.add(j + 1)
+                break
+    return align
+
+
+def intersect_align(a: List[int | None], b: List[int | None]) -> List[int | None]:
+    n = max(len(a), len(b))
+    out: List[int | None] = []
+    for i in range(n):
+        x = a[i] if i < len(a) else None
+        y = b[i] if i < len(b) else None
+        out.append(x if x == y else None)
+    return out
+
+
+def majority_align(first: List[int | None], second: List[int | None]) -> List[int | None]:
+    """两次 align 按位多数；不一致留第一次，禁止交集直接变 null。"""
+    n = max(len(first), len(second))
+    out: List[int | None] = []
+    for i in range(n):
+        x = first[i] if i < len(first) else None
+        y = second[i] if i < len(second) else None
+        out.append(x if x == y else x)
+    return out
+
+
+def should_double_judge(question_id: str) -> bool:
+    if "event_ordering" not in (question_id or ""):
+        return False
+    return any(question_id.startswith(p) for p in _DOUBLE_JUDGE_PREFIXES)
+
+
+def attach_order_metrics(parsed: Dict[str, Any], rubric: List[str]) -> Dict[str, Any]:
+    """给已解析的 BEAM judge 对象补 align / coverage / tau。"""
+    raw_align = parsed["align"] if "align" in parsed else None
+    align = parse_align_list(raw_align, len(rubric))
+    coverage, tau = order_metrics_from_align(align)
+    parsed["align"] = align
+    parsed["coverage"] = coverage
+    parsed["tau"] = tau
+    parsed["tau_official"] = official_tau_from_align(align)
+    raw_scores = parsed["rubric_scores"] if "rubric_scores" in parsed else []
+    rubric_all = False
+    if isinstance(raw_scores, list) and len(raw_scores) == len(rubric):
+        rubric_all = True
+        for v in raw_scores:
+            if not isinstance(v, (int, float)) or int(v) < 1:
+                rubric_all = False
+                break
+    parsed["passed"] = coverage >= 1.0 and tau is not None and tau >= 0.999 and rubric_all
+    return parsed
+
+
 async def judge_beam_single(
     client: httpx.AsyncClient,
     base_url: str,
@@ -278,27 +497,122 @@ async def judge_beam_single(
         agent_answer=agent_answer,
     )
 
-    resp = await call_chat_with_history(
-        client=client,
-        base_url=base_url,
-        user_id=user_id,
-        message=prompt,
-        history=[],
-        timeout=timeout,
-    )
+    last_text = ""
+    last_status = -1
+    last_error = "unknown"
+    for attempt in range(_JUDGE_MAX_RETRIES):
+        resp = await call_chat_with_history(
+            client=client,
+            base_url=base_url,
+            user_id=user_id,
+            message=prompt,
+            history=[],
+            timeout=timeout,
+            as_judge=True,
+        )
+        last_status = resp.get("status_code", -1)
+        last_error = str(resp.get("error", "unknown"))
+        last_text = extract_text_from_response(resp.get("data")) if last_status == 200 else ""
+        parsed = parse_beam_judge_response(last_text, rubric)
+        reason = str(parsed.get("reason", ""))
+        if not _is_transient_judge_failure(last_status, last_text) and not reason.startswith("无法解析"):
+            return parsed
+        if attempt < _JUDGE_MAX_RETRIES - 1:
+            await asyncio.sleep(_JUDGE_BACKOFF_BASE * (2**attempt))
 
-    status_code = resp.get("status_code", -1)
-    if status_code != 200:
-        error_msg = resp.get("error", "unknown")
+    if last_status != 200:
         return {
             "rubric_scores": [0] * len(rubric),
             "passed": False,
-            "reason": f"评判请求失败: status={status_code}, error={error_msg}",
+            "reason": f"评判请求失败(瞬时故障, 重试耗尽): status={last_status}, error={last_error}",
         }
+    return parse_beam_judge_response(last_text, rubric)
 
-    raw_data = resp.get("data")
-    judge_text = extract_text_from_response(raw_data)
-    return parse_beam_judge_response(judge_text, rubric)
+
+async def _eq_matrix_once(
+    client: httpx.AsyncClient,
+    base_url: str,
+    rubric: List[str],
+    agent_items: List[str],
+    timeout: float,
+    user_id: str,
+) -> tuple[List[List[bool]], int, str, str]:
+    pair_lines: list[str] = []
+    for i, ref in enumerate(rubric, 1):
+        for j, sys in enumerate(agent_items, 1):
+            pair_lines.append(f"PAIR {i}-{j}\nFirst snippet: {ref}\nSecond snippet: {sys}")
+    prompt = _BEAM_EQ_BATCH_PROMPT.format(system=_BEAM_EQ_SYSTEM, pairs="\n\n".join(pair_lines))
+    last_text = ""
+    last_status = -1
+    last_error = "unknown"
+    for attempt in range(_JUDGE_MAX_RETRIES):
+        resp = await call_chat_with_history(
+            client=client,
+            base_url=base_url,
+            user_id=user_id,
+            message=prompt,
+            history=[],
+            timeout=timeout,
+            as_judge=True,
+        )
+        last_status = resp["status_code"] if "status_code" in resp else -1
+        last_error = str(resp["error"] if "error" in resp else "unknown")
+        last_text = extract_text_from_response(resp["data"]) if last_status == 200 and "data" in resp else ""
+        if not _is_transient_judge_failure(last_status, last_text):
+            mat = parse_eq_pair_lines(last_text, len(rubric), len(agent_items))
+            return mat, last_status, last_error, last_text
+        if attempt < _JUDGE_MAX_RETRIES - 1:
+            await asyncio.sleep(_JUDGE_BACKOFF_BASE * (2**attempt))
+    return parse_eq_pair_lines(last_text, len(rubric), len(agent_items)), last_status, last_error, last_text
+
+
+async def judge_beam_order(
+    client: httpx.AsyncClient,
+    base_url: str,
+    question: str,
+    standard_answer: str,
+    agent_answer: str,
+    rubric: List[str],
+    category: str,
+    timeout: float = 60.0,
+    user_id: str = "judge_beam_order_user",
+    question_id: str = "",
+) -> Dict[str, Any]:
+    """event_ordering：Listing 21 逐对 YES/NO，本地拼 align / τ。"""
+    _ = question
+    _ = standard_answer
+    _ = category
+    items = split_agent_items(agent_answer)
+    if not rubric:
+        empty = {"rubric_scores": [], "passed": False, "reason": "empty rubric", "align": []}
+        return attach_order_metrics(empty, rubric)
+    if not items:
+        empty = {
+            "rubric_scores": [0] * len(rubric),
+            "passed": False,
+            "reason": "Agent 答案无条目",
+            "align": [None] * len(rubric),
+        }
+        return attach_order_metrics(empty, rubric)
+    mat, status, err, text = await _eq_matrix_once(client, base_url, rubric, items, timeout, user_id)
+    align = align_from_eq_matrix(mat)
+    pair_n, yes_n = pair_line_stats(text)
+    if should_double_judge(question_id):
+        mat2, _st2, _err2, text2 = await _eq_matrix_once(client, base_url, rubric, items, timeout, user_id + "_b")
+        align = majority_align(align, align_from_eq_matrix(mat2))
+        p2, y2 = pair_line_stats(text2)
+        pair_n += p2
+        yes_n += y2
+    scores = [1 if x is not None else 0 for x in align]
+    parsed: Dict[str, Any] = {
+        "align": align,
+        "rubric_scores": scores,
+        "passed": False,
+        "reason": (
+            f"Listing21 pairs={len(rubric) * len(items)} pair_lines={pair_n} yes={yes_n} status={status} {err[:80]}"
+        ),
+    }
+    return attach_order_metrics(parsed, rubric)
 
 
 def parse_beam_judge_response(text: str, rubric: List[str]) -> Dict[str, Any]:
@@ -377,8 +691,11 @@ def parse_beam_judge_response(text: str, rubric: List[str]) -> Dict[str, Any]:
     else:
         passed = all(s == 1 for s in rubric_scores) and len(rubric_scores) > 0
 
-    return {
+    out: Dict[str, Any] = {
         "rubric_scores": rubric_scores,
         "passed": passed,
-        "reason": str(parsed.get("reason", "")),
+        "reason": str(parsed["reason"] if "reason" in parsed else ""),
     }
+    if "align" in parsed:
+        out["align"] = parsed["align"]
+    return out

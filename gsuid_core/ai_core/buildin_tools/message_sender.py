@@ -203,6 +203,16 @@ async def send_message_by_ai(
         text = strip_open_solicitations(text)
         _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
         if text:
+            from gsuid_core.ai_core.angle_bracket_guard import (
+                has_illegal_angle_tags,
+                sanitize_illegal_angle_tags,
+            )
+
+            if has_illegal_angle_tags(text):
+                cleaned = sanitize_illegal_angle_tags(text)
+                if cleaned:
+                    text = cleaned
+        if text:
             _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
             if _gate_fb is not None:
                 if has_media:

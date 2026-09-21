@@ -44,6 +44,38 @@ def test_firewall_passes_normal_and_plain_tier():
     print("[OK] 正常人格话放行；plain 入口豁免")
 
 
+def test_firewall_spares_user_db_table_prose() -> None:
+    from gsuid_core.ai_core.output_firewall import check_ooc
+
+    prose = "You added a UNIQUE constraint on the transactions 数据库表 and kept SQLite locally."
+    assert check_ooc(prose) is None
+
+
+def test_firewall_spares_error_handling_prose_not_traceback() -> None:
+    from gsuid_core.ai_core.output_firewall import check_ooc, is_tech_dump
+
+    prose = (
+        "You resolved a UNIQUE constraint IntegrityError on the transactions table "
+        "and returned HTTP 500 from the Flask route after logging."
+    )
+    hit = check_ooc(prose)
+    assert hit is None or hit.category != "machine_dump"
+    assert not is_tech_dump(prose)
+    fenced = "```python\nraise ValueError('x')\n```\nThen you continued the security work."
+    assert not is_tech_dump(fenced)
+    dump = 'Traceback (most recent call last):\n  File "app.py", line 1, in <module>'
+    assert is_tech_dump(dump)
+
+
+def test_firewall_spares_flask_sqlalchemy_not_api_key() -> None:
+    from gsuid_core.ai_core.output_firewall import check_ooc
+
+    assert check_ooc("Libraries: Flask 2.3.1, Flask-SQLAlchemy, SQLite 3.39.") is None
+    hit = check_ooc("the token is sk-abcdefghijklmnopqrstuv")
+    assert hit is not None
+    assert hit.category == "system_term"
+
+
 def test_firewall_scrub_fallback():
     from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, scrub_or_fallback
 

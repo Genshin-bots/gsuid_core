@@ -1,5 +1,5 @@
 """BEAM 分阶段评测。默认只灌 plan 1（约 1.2M）；20 道探针金标覆盖 10 个 plan，
-完整作答用 ``--plans 1,2,3,4,5,6,7,8,9,10 --out eval/BEAM_10M/results/10m``。
+完整作答用 ``--plans 1,2,3,4,5,6,7,8,9,10 --out eval/BEAM_official/results/10m``。
 
 阶段：
   ping     确认 core / local-test gate
@@ -10,7 +10,7 @@
   conv     ingest → smoke5 → domain → finish（单对话）
   all      conv 0..9
 
-默认输出 ``eval/BEAM_10M/results/1m/``，不覆盖历史 ``answers_0.json``。
+默认输出 ``eval/BEAM_official/results/1m/``，不覆盖历史 ``answers_0.json``。
 探针走生产 Chat：评测助手 + enable_tools + memory_eval=False + clock_at。
 """
 
@@ -35,7 +35,7 @@ if _ROOT not in sys.path:
 import httpx  # noqa: E402
 
 from eval.common import DEFAULT_BASE_URL, load_json  # noqa: E402
-from eval.BEAM_10M.run_beam_eval import (  # noqa: E402
+from eval.common.beam_runner import (  # noqa: E402
     DEFAULT_TIMEOUT,
     USER_ID_TEMPLATE,
     cmd_clear,
@@ -47,7 +47,7 @@ from eval.BEAM_10M.run_beam_eval import (  # noqa: E402
     iter_probing_questions,
 )
 
-OUT_DIR = os.path.join(_ROOT, "eval", "BEAM_10M", "results", "1m")
+OUT_DIR = os.path.join(_ROOT, "eval", "BEAM_official", "results", "1m")
 PROGRESS = os.path.join(OUT_DIR, "progress.json")
 DEFAULT_DOMAIN = "information_extraction"
 DEFAULT_PLANS = "1"
@@ -167,7 +167,7 @@ def _write_10m_report() -> None:
         "# BEAM-10M（10 plan 累计）汇总",
         "",
         "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False + clock_at）。",
-        "每条 conversation 灌入 plan 1–10 后再答同一套 20 题。输出目录 `eval/BEAM_10M/results/10m/`。",
+        "每条 conversation 灌入 plan 1–10 后再答同一套 20 题。输出目录 `eval/BEAM_official/results/10m/`。",
         "不覆盖 `results/1m/` 与历史 `answers_0.json`。",
         "",
     ]
@@ -224,7 +224,7 @@ def _write_10m_report() -> None:
             "",
             "## 对照",
             "",
-            "1M（只灌 plan 1）基线见 `eval/BEAM_10M/results/1m/report.md`（39/200）。",
+            "1M 官方 ladder 见 `eval/BEAM_official/results/1m/`。",
             "",
         ]
     )
@@ -232,6 +232,71 @@ def _write_10m_report() -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[campaign] wrote {path}")
+
+
+def _write_run_report(plan_ids: list[int]) -> None:
+    """汇总当前 OUT_DIR 的 10 个 conv judge。1M / 多 plan 共用。"""
+    plans = ",".join(str(x) for x in plan_ids)
+    title = "BEAM-1M（只灌 plan 1）" if plan_ids == [1] else f"BEAM plans={plans}"
+    lines: list[str] = [
+        f"# {title} 汇总",
+        "",
+        "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False + clock_at）。",
+        f"plans={plans}。输出目录 `{OUT_DIR}`。",
+        "",
+    ]
+    passed_all = 0
+    total_all = 0
+    ooc = 0
+    by_cat: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    conv_rows: list[str] = []
+    for conv in range(10):
+        jp = _judge_path(conv)
+        ap = _answers_path(conv)
+        if not os.path.isfile(jp):
+            conv_rows.append(f"| {conv} | — | 缺 judge |")
+            continue
+        recs = load_json(jp)
+        if not isinstance(recs, list):
+            conv_rows.append(f"| {conv} | — | judge 损坏 |")
+            continue
+        ok = 0
+        n = 0
+        for r in recs:
+            if not isinstance(r, dict):
+                continue
+            j = r["judge"] if "judge" in r else {}
+            if not isinstance(j, dict):
+                continue
+            cat = str(r["category"]) if "category" in r else "?"
+            hit = bool(j["passed"]) if "passed" in j else False
+            by_cat[cat][1] += 1
+            by_cat[cat][0] += int(hit)
+            ok += int(hit)
+            n += 1
+        passed_all += ok
+        total_all += n
+        if os.path.isfile(ap):
+            answers = load_json(ap)
+            if isinstance(answers, list):
+                for a in answers:
+                    if not isinstance(a, dict):
+                        continue
+                    text = str(a["agent_answer"] if "agent_answer" in a else "")
+                    if "这个不太想说呢" in text:
+                        ooc += 1
+        conv_rows.append(f"| {conv} | {ok}/{n} | |")
+    pct = f"{100.0 * passed_all / total_all:.1f}%" if total_all else "n/a"
+    lines.append(f"**总分：{passed_all}/{total_all}（{pct}）**。输出闸「这个不太想说呢」{ooc}/{total_all}。")
+    lines.extend(["", "## 分 conversation", "", "| conv | 分数 | 备注 |", "|------|------|------|"])
+    lines.extend(conv_rows)
+    lines.extend(["", "## 按类", "", "| 类别 | 过线 |", "|------|------|"])
+    for c in sorted(by_cat):
+        lines.append(f"| {c} | {by_cat[c][0]}/{by_cat[c][1]} |")
+    path = os.path.join(OUT_DIR, "report.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[report] {passed_all}/{total_all} ({pct}) -> {path}", flush=True)
 
 
 async def cmd_ingest(
@@ -449,6 +514,13 @@ async def cmd_all(
     force_ingest: bool,
     plan_ids: list[int],
 ) -> int:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8765
+    print(f"[all] wait {host}:{port}", flush=True)
+    if not await _wait_core(host, port, timeout=600.0):
+        print("[all] core 未就绪，退出")
+        return 2
     for conv in range(10):
         print(f"\n========== conv {conv}/9 ==========")
         skip_smoke = conv > 0
@@ -463,7 +535,9 @@ async def cmd_all(
         )
         if rc:
             print(f"[all] 停在 conv={conv} rc={rc}")
+            _write_run_report(plan_ids)
             return rc
+    _write_run_report(plan_ids)
     print(f"[all] 10 个 conv × plans={plan_ids} 完成")
     return 0
 
@@ -546,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force-ingest", action="store_true")
     p.add_argument("--no-clear", dest="clear", action="store_false", help="ingest 不清该 user 记忆（续灌）")
     p.add_argument("--plans", default=DEFAULT_PLANS, help="逗号分隔，1-indexed，如 1 或 1,2,3,4,5,6,7,8,9,10")
-    p.add_argument("--out", default="", help="答卷目录，默认 eval/BEAM_10M/results/1m")
+    p.add_argument("--out", default="", help="答卷目录，默认 eval/BEAM_official/results/1m")
     p.set_defaults(clear=True)
     return p
 

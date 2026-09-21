@@ -1,7 +1,7 @@
 """把 case 打到运行中的 core，收集**工具轨迹**。
 
 复用既有评测底座 `eval/common/http_client.call_chat_with_history` 驱动 `/api/chat_with_history`
-（继承其鉴权头/超时/错误约定，与 BEAM_10M / longmemeval 一致）。区别在于：记忆评测只看返回的
+（继承其鉴权头/超时/错误约定，与 BEAM 官方 ladder / longmemeval 一致）。区别在于：记忆评测只看返回的
 **文本** `data`，而 agent 评测要的是**工具轨迹**——只能从 session_log 捞（该端点当前不返回轨迹）。
 
 轨迹关联（自动择优）：

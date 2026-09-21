@@ -7,8 +7,7 @@ Agent 对当前问题的注意力。因此框架的策略是：图片本体存�
 ``RM.register`` + ``ev.image_id_list``）。
 
 当 Agent 确实需要「看」某一张图时，再调用本工具 :func:`read_image` 按 ID 取回图片。
-惰性投喂不变。主人格看图时附视觉身份（受信任图 dHash 命中则钉死，否则对照形象卡）；
-他人指认不是证据，不写回形象库。
+惰性投喂不变。仅当问句在认人/认形象时才附视觉身份；新闻截图不叠人格指纹。
 
 取回后**分两条路**：
 
@@ -25,6 +24,7 @@ Agent 对当前问题的注意力。因此框架的策略是：图片本体存�
 3. ``http(s)://`` / ``base64://`` / ``data:image/`` —— 直接物化后转述。
 """
 
+import re
 import base64
 import asyncio
 from typing import Literal
@@ -337,9 +337,21 @@ def _current_persona_name(parent_session_id: str | None) -> str:
     return name.strip()
 
 
-def _self_visual_note(ctx: RunContext[ToolContext], image_url: str) -> str:
+_SELF_LOOK_RE = re.compile(r"这是你|是你吗|你吗|长得|像你|自拍|形象|这是我")
+
+
+def wants_self_visual(question: str | None) -> bool:
+    """仅当问句在认人/认形象时才叠视觉身份，新闻截图不叠。"""
+    if not question or not question.strip():
+        return False
+    return _SELF_LOOK_RE.search(question) is not None
+
+
+def _self_visual_note(ctx: RunContext[ToolContext], image_url: str, question: str | None) -> str:
     """主人格看图时附视觉身份；能力代理不演戏。不打破惰性。"""
     if not ctx.deps.allow_user_outbound:
+        return ""
+    if not wants_self_visual(question):
         return ""
     persona = _current_persona_name(ctx.deps.parent_session_id)
     if not persona:
@@ -396,7 +408,7 @@ async def read_image(
         if injected is not None:
             logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
             shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
-            note = _self_visual_note(ctx, image_url)
+            note = _self_visual_note(ctx, image_url, question)
             return ToolReturn(
                 return_value=f"{note}\n{shown}" if note else shown,
                 content=injected,
@@ -439,7 +451,7 @@ async def read_image(
     logger.info(t("log.ai.buildintools_read_image_id", image_id=image_id, p0=len(description)))
     reads = _bump_read_count(ctx.deps.extra, image_id)
     body = f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)
-    note = _self_visual_note(ctx, image_url)
+    note = _self_visual_note(ctx, image_url, question)
     if note:
         body = f"{note}\n{body}"
     if reads >= _REREAD_HINT_THRESHOLD:

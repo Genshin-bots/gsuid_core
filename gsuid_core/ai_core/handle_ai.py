@@ -326,7 +326,7 @@ async def run_interactive_turn(
         persona_name=session.persona_name,
     )
     await fire_hooks(AgentHookPoint.RETRIEVE_CONTEXT, hook_ctx)
-    # 检索预算最长 15s，超过队头 TTL；检索结束后重新计时，避免刚查完就被当过期丢弃。
+    # 检索结束后重新计时：ledger dedicated 最长 120s，默认 15s。
     if enqueue_ts is not None:
         enqueue_ts = time.time()
 

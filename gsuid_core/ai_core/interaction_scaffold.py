@@ -328,7 +328,7 @@ QUOTE_TOME_HINT = (
     "是追问/反驳/吩咐你才开口；在跟群里别人说话或故意惹你，输出 <SILENCE>。）"
 )
 # 引用同时带第二人称祈使：按直接找你，不用 quoted_tome。
-_QUOTE_DIRECTED_RE = re.compile(r"^(?:你|您)?\s*(?:帮|给|查|看|设|改|取消|删|列)")
+_QUOTE_DIRECTED_RE = re.compile(r"^(?:你|您)?\s*(?:帮|给|查|看|设|改|取消|删|列|如何|怎么|怎样|评价|觉得|认为)")
 
 ADDRESS_GATE_HINT = (
     "\n\n（系统提示：这条消息 @ 的是群里另一个人、并不是在叫你，本轮已不提供任何工具。"
@@ -636,7 +636,7 @@ def build_turn_graph(
         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
         extra = collect_persona_surfaces(persona_name)
-    # 引用 bot 仍是 is_tome（call_to_self）；quoted_tome 只改注入，不拦进环。
+    # 引用 bot 仍是 is_tome；quoted_tome 走 CheapGate.SILENCE，不进环。
     textual = is_addressed_to_self(text, persona_name, False, extra_names=extra)
     quoted_tome = bool(is_tome) and has_reply and not textual
     if quoted_tome:
@@ -742,6 +742,8 @@ def decide_cheap_gate(
     if tg.open_gate is GroupOpenGate.SILENCE:
         return CheapGate.SILENCE
     if tg.address_gated:
+        return CheapGate.SILENCE
+    if tg.quoted_tome:
         return CheapGate.SILENCE
     from gsuid_core.ai_core.configs.ai_config import ai_config
 

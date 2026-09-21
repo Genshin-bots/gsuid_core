@@ -329,8 +329,8 @@ def test_both_entries_stamp_current_time_from_one_producer() -> None:
     assert "run_interactive_turn(" in endpoint, "评测必须走同一轮编排（时间行在那里钉）"
     assert "[当前时间：" not in handle_ai and "[当前时间：" not in endpoint
     kit = (root / "ai_core" / "kits" / "memory" / "kit.py").read_text(encoding="utf-8")
-    assert "timeout_ms=15_000" in kit
-    assert "timeout_ms=45_000" not in kit
+    assert "timeout_ms=120_000" not in kit
+    assert "RETRIEVE_CONTEXT" in kit
     assert "clock_date=clock_date" in endpoint
     assert "memory_eval" in endpoint
 

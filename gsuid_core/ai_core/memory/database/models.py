@@ -11,10 +11,10 @@
 
 import uuid
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, TypedDict, NotRequired
 from datetime import datetime, timezone, timedelta
 
-from sqlmodel import Field, SQLModel, Relationship, col, select
+from sqlmodel import Field, SQLModel, Relationship, col, select, update
 from sqlalchemy import (
     Text,
     Index,
@@ -46,6 +46,7 @@ from gsuid_core.utils.database.base_models import (
     with_session,
     with_read_session,
 )
+from gsuid_core.ai_core.memory.database.session_split import SessionCursor
 
 
 def _like_contains(token: str) -> str:
@@ -130,6 +131,7 @@ class AIMemEpisode(SQLModel, table=True):
         Index("ix_mem_episode_scope_valid_at", "scope_key", "valid_at"),
         # §3.2① 保留策略/冷热分集合：按 (scope, 冷热, 时间) 高效取降级/物理上限候选
         Index("ix_mem_episode_scope_archived_valid", "scope_key", "is_archived", "valid_at"),
+        Index("ix_mem_episode_scope_session", "scope_key", "session_id", "valid_at"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
@@ -144,6 +146,9 @@ class AIMemEpisode(SQLModel, table=True):
     # 只查热集合，故冷 Episode 退出在线向量暴力扫描、不再抬高交互检索成本（缓解 P0-1/P0-2）。
     # 旧库无此列，由 utils/database/startup.py 的 ALTER 语句补齐（默认 False）。
     is_archived: bool = Field(default=False)
+    # 时间 gap 切出的 session；旧库由 ALTER + backfill_sessions 补齐。
+    session_id: Optional[str] = Field(default=None, max_length=36, index=True)
+    turn_index: int = Field(default=0)
 
     mentioned_entities: List["AIMemEntity"] = Relationship(
         back_populates="episodes",
@@ -174,21 +179,39 @@ class AIMemEpisode(SQLModel, table=True):
             新创建的 AIMemEpisode 对象
         """
         episode_id = str(uuid.uuid4())
-
-        episode = AIMemEpisode(
-            id=episode_id,
-            scope_key=scope_key,
-            content=content,
-            speaker_ids=speaker_ids,
-            valid_at=valid_at,
-            created_at=datetime.now(timezone.utc),
-            qdrant_id=episode_id,
-        )
+        from gsuid_core.ai_core.memory.database.session_split import continue_session
         from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
         async with db_write_guard(), async_maker() as session:
+            cursor = await _cursor_in_tx(session, scope_key)
+            assignment = continue_session(cursor, valid_at, _session_gap_seconds(), str(uuid.uuid4()))
+            episode = AIMemEpisode(
+                id=episode_id,
+                scope_key=scope_key,
+                content=content,
+                speaker_ids=speaker_ids,
+                valid_at=valid_at,
+                created_at=datetime.now(timezone.utc),
+                qdrant_id=episode_id,
+                session_id=assignment.session_id,
+                turn_index=assignment.turn_index,
+            )
             session.add(episode)
+            await _touch_session_row(
+                session,
+                session_id=assignment.session_id,
+                scope_key=scope_key,
+                valid_at=valid_at,
+                opener_episode_id=episode_id,
+                is_new=assignment.is_new_session,
+            )
             await session.commit()
+        session_id = assignment.session_id
+        turn_index = assignment.turn_index
+        if assignment.is_new_session:
+            from gsuid_core.ai_core.memory.lifecycle.sleep_extract import enqueue_session
+
+            enqueue_session(session_id)
 
         try:
             await upsert_episode_vector(
@@ -197,6 +220,8 @@ class AIMemEpisode(SQLModel, table=True):
                 scope_key=scope_key,
                 valid_at_ts=valid_at.timestamp(),
                 speaker_ids=speaker_ids,
+                session_id=session_id,
+                turn_index=turn_index,
             )
         except Exception as e:
             logger.warning(t("log.memory.episode_vector_upsert_fail", episode_id=episode_id, error=str(e)))
@@ -224,28 +249,51 @@ class AIMemEpisode(SQLModel, table=True):
         if not items:
             return 0
 
-        episodes: list["AIMemEpisode"] = []
         now = datetime.now(timezone.utc)
+        prepared: list[tuple[str, datetime, list[str]]] = []
         for it in items:
             content = str(it["content"])
             valid_at = it["valid_at"] if isinstance(it["valid_at"], datetime) else now
-            episode_id = str(uuid.uuid4())
-            episodes.append(
-                cls(
-                    id=episode_id,
-                    scope_key=scope_key,
-                    content=content,
-                    speaker_ids=list(it["speaker_ids"]) if it["speaker_ids"] else [],
-                    valid_at=valid_at,
-                    created_at=now,
-                    qdrant_id=episode_id,
-                )
-            )
+            speakers = list(it["speaker_ids"]) if it["speaker_ids"] else []
+            prepared.append((content, valid_at, speakers))
+        prepared.sort(key=lambda row: row[1])
 
+        from gsuid_core.ai_core.memory.database.session_split import SessionCursor, continue_session
         from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
+        gap = _session_gap_seconds()
+        episodes: list["AIMemEpisode"] = []
         async with db_write_guard(), async_maker() as session:
+            cursor = await _cursor_in_tx(session, scope_key)
+            session_touches: list[tuple[str, datetime, str, bool]] = []
+            for content, valid_at, speakers in prepared:
+                assignment = continue_session(cursor, valid_at, gap, str(uuid.uuid4()))
+                episode_id = str(uuid.uuid4())
+                episodes.append(
+                    cls(
+                        id=episode_id,
+                        scope_key=scope_key,
+                        content=content,
+                        speaker_ids=speakers,
+                        valid_at=valid_at,
+                        created_at=now,
+                        qdrant_id=episode_id,
+                        session_id=assignment.session_id,
+                        turn_index=assignment.turn_index,
+                    )
+                )
+                session_touches.append((assignment.session_id, valid_at, episode_id, assignment.is_new_session))
+                cursor = SessionCursor(assignment.session_id, assignment.turn_index, valid_at)
             session.add_all(episodes)
+            for sid, at, opener_id, is_new in session_touches:
+                await _touch_session_row(
+                    session,
+                    session_id=sid,
+                    scope_key=scope_key,
+                    valid_at=at,
+                    opener_episode_id=opener_id,
+                    is_new=is_new,
+                )
             await session.commit()
 
         from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vectors_batch
@@ -260,11 +308,18 @@ class AIMemEpisode(SQLModel, table=True):
                     "scope_key": ep.scope_key,
                     "valid_at_ts": ep.valid_at.timestamp(),
                     "speaker_ids": ep.speaker_ids,
+                    "session_id": ep.session_id,
+                    "turn_index": ep.turn_index,
                 }
                 for ep in chunk
             ]
             await upsert_episode_vectors_batch(payload)
             written += len(chunk)
+        from gsuid_core.ai_core.memory.lifecycle.sleep_extract import enqueue_session
+
+        for sid, _at, _opener, is_new in session_touches:
+            if is_new:
+                enqueue_session(sid)
         return written
 
     @classmethod
@@ -304,6 +359,49 @@ class AIMemEpisode(SQLModel, table=True):
             extra_conds=tuple(extra),
         )
         stmt = select(cls).where(c.id.in_(id_q))
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def search_by_all_tokens(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        tokens: list[str],
+        *,
+        limit: int = 8,
+        ascending: bool = False,
+        user_only: bool = False,
+        speaker: str | None = None,
+    ) -> list["AIMemEpisode"]:
+        """实词同时出现。一个话题词也要能取头尾，否则中段那次赋值进不了页。"""
+        if not scope_key or limit <= 0 or not tokens:
+            return []
+        c = _model_table(cls).c
+        conds: list[ColumnElement[bool]] = [_as_bool_expr(c.scope_key == scope_key)]
+        for tok in tokens[:4]:
+            if not tok:
+                return []
+            conds.append(_as_bool_expr(c.content.like(_like_contains(tok), escape="\\")))
+        if user_only:
+            conds.append(_as_bool_expr(~c.content.like("assistant:%")))
+            conds.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
+        if speaker:
+            # [id]: 与 id: 两种前缀；只钉本人，避免群里别人的后一次赋值盖过来。
+            conds.append(
+                _as_bool_expr(
+                    or_(
+                        c.content.like(_like_contains(f"{speaker}:"), escape="\\"),
+                        c.content.like(_like_contains(f"[{speaker}]:"), escape="\\"),
+                    )
+                )
+            )
+        tie = literal_column("rowid") if _db_type == "sqlite" else c.id
+        if ascending:
+            stmt = select(cls).where(*conds).order_by(c.valid_at.asc(), tie.asc()).limit(limit)
+        else:
+            stmt = select(cls).where(*conds).order_by(c.valid_at.desc(), tie.desc()).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -427,9 +525,24 @@ class AIMemEpisode(SQLModel, table=True):
         valid_at: datetime,
         before: int = 6,
         after: int = 6,
+        mode: str = "window",
     ) -> list["AIMemEpisode"]:
-        """同一 scope 按 valid_at 取前后邻条，拼回证据会话。"""
-        if not scope_key or (before <= 0 and after <= 0):
+        """同一 scope 按 valid_at 取前后邻条；mode=session 时取整段。"""
+        if not scope_key:
+            return []
+        if mode == "session":
+            hit = await session.execute(
+                select(cls).where(col(cls.scope_key) == scope_key, col(cls.valid_at) == valid_at).limit(1)
+            )
+            ep = hit.scalar_one_or_none()
+            if ep is not None and ep.session_id:
+                full = await session.execute(
+                    select(cls)
+                    .where(col(cls.session_id) == ep.session_id)
+                    .order_by(col(cls.turn_index).asc(), col(cls.valid_at).asc())
+                )
+                return list(full.scalars().all())
+        if before <= 0 and after <= 0:
             return []
         rows: list["AIMemEpisode"] = []
         seen: set[str] = set()
@@ -475,6 +588,206 @@ class AIMemEpisode(SQLModel, table=True):
         stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.valid_at).asc()).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def last_in_scope(cls, session: AsyncSession, scope_key: str) -> Optional["AIMemEpisode"]:
+        if not scope_key:
+            return None
+        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.valid_at).desc()).limit(1)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_read_session
+    async def recent_ids(cls, session: AsyncSession, scope_key: str, limit: int = 8) -> list[str]:
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(col(cls.id)).where(col(cls.scope_key) == scope_key).order_by(col(cls.valid_at).desc()).limit(limit)
+        )
+        result = await session.execute(stmt)
+        return [str(eid) for (eid,) in result.all() if isinstance(eid, str)]
+
+    @classmethod
+    @with_read_session
+    async def get_session(cls, session: AsyncSession, session_id: str) -> list["AIMemEpisode"]:
+        if not session_id:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.session_id) == session_id)
+            .order_by(col(cls.turn_index).asc(), col(cls.valid_at).asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_by_sessions(
+        cls,
+        session: AsyncSession,
+        session_ids: list[str],
+        limit: int = 2000,
+    ) -> list["AIMemEpisode"]:
+        """命中 session 后的 RPE：一次取出原文 turn，不再按 hybrid 名次截断。"""
+        if not session_ids or limit <= 0:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.session_id).in_(session_ids))
+            .order_by(col(cls.valid_at).asc(), col(cls.turn_index).asc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def session_map_by_ids(cls, session: AsyncSession, episode_ids: list[str]) -> dict[str, str]:
+        """{episode_id: session_id}，只含已回填的行。"""
+        if not episode_ids:
+            return {}
+        result = await session.execute(
+            select(col(cls.id), col(cls.session_id)).where(
+                col(cls.id).in_(episode_ids), col(cls.session_id).is_not(None)
+            )
+        )
+        out: dict[str, str] = {}
+        for eid, sid in result.all():
+            if isinstance(eid, str) and isinstance(sid, str) and sid:
+                out[eid] = sid
+        return out
+
+    @classmethod
+    @with_read_session
+    async def _has_null_session(cls, session: AsyncSession, scope_key: str) -> bool:
+        stmt = select(cls.id).where(col(cls.scope_key) == scope_key, col(cls.session_id).is_(None)).limit(1)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    @classmethod
+    async def ensure_sessions(cls, scope_key: str, gap_seconds: int | None = None) -> int:
+        """该 scope 仍有空 session_id 时回填一次。"""
+        if not scope_key:
+            return 0
+        if not await cls._has_null_session(scope_key):
+            return 0
+        return await cls.backfill_sessions(scope_key, gap_seconds=gap_seconds)
+
+    @classmethod
+    async def backfill_sessions(cls, scope_key: str, gap_seconds: int | None = None) -> int:
+        """只给仍为空的 session_id 补段。不删除、不改写已有 session。"""
+        if not scope_key:
+            return 0
+        gap = gap_seconds if gap_seconds is not None else _session_gap_seconds()
+        from sqlalchemy import case, update as _update
+
+        from gsuid_core.ai_core.memory.database.session_split import naive_utc, plan_null_session_backfill
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+        async with db_write_guard(), async_maker() as session:
+            still_null = await session.execute(
+                select(col(cls.id)).where(col(cls.scope_key) == scope_key, col(cls.session_id).is_(None)).limit(1)
+            )
+            if still_null.scalar_one_or_none() is None:
+                return 0
+            result = await session.execute(
+                select(col(cls.id), col(cls.valid_at), col(cls.session_id), col(cls.turn_index)).where(
+                    col(cls.scope_key) == scope_key
+                )
+            )
+            stamped: list[tuple[str, datetime, str | None, int]] = []
+            for eid, at, sid, turn in result.all():
+                if not isinstance(eid, str) or not isinstance(at, datetime):
+                    continue
+                have = sid if isinstance(sid, str) and sid else None
+                stamped.append((eid, naive_utc(at), have, turn if isinstance(turn, int) else 0))
+            stamped.sort(key=lambda row: (row[1], row[3], row[0]))
+            planned = plan_null_session_backfill(stamped, gap, lambda: str(uuid.uuid4()))
+            if not planned:
+                return 0
+            fresh: dict[str, list[tuple[str, int, datetime]]] = {}
+            extend: dict[str, list[tuple[str, int, datetime]]] = {}
+            new_ids: set[str] = set()
+            for item in planned:
+                if item.is_new_session:
+                    new_ids.add(item.session_id)
+                slot = (item.episode_id, item.turn_index, item.valid_at)
+                if item.session_id in new_ids:
+                    fresh.setdefault(item.session_id, []).append(slot)
+                else:
+                    extend.setdefault(item.session_id, []).append(slot)
+            for sid, slots in fresh.items():
+                session.add(
+                    AIMemSession(
+                        id=sid,
+                        scope_key=scope_key,
+                        start_at=slots[0][2],
+                        end_at=slots[-1][2],
+                        n_turns=len(slots),
+                        opener_episode_id=slots[0][0],
+                    )
+                )
+            for sid, slots in extend.items():
+                await session.execute(
+                    _update(AIMemSession)
+                    .where(col(AIMemSession.id) == sid)
+                    .values(end_at=slots[-1][2], n_turns=col(AIMemSession.n_turns) + len(slots))
+                )
+            written = 0
+            payload_items: list[tuple[str, str, int]] = []
+            assigns = [(item.episode_id, item.session_id, item.turn_index) for item in planned]
+            for offset in range(0, len(assigns), 400):
+                chunk = assigns[offset : offset + 400]
+                ids = [eid for eid, _sid, _turn in chunk]
+                upd = await session.execute(
+                    _update(cls)
+                    .where(col(cls.id).in_(ids), col(cls.session_id).is_(None))
+                    .values(
+                        session_id=case(*[(col(cls.id) == eid, sid) for eid, sid, _turn in chunk], else_=""),
+                        turn_index=case(*[(col(cls.id) == eid, turn) for eid, _sid, turn in chunk], else_=0),
+                    )
+                )
+                if isinstance(upd, CursorResult):
+                    written += upd.rowcount
+                payload_items.extend(chunk)
+            gist_ids = [eid for eid, _sid, _turn in assigns]
+            gist_rows = await session.execute(
+                select(col(AIMemTurnGist.episode_id)).where(
+                    col(AIMemTurnGist.episode_id).in_(gist_ids),
+                    col(AIMemTurnGist.session_id) == "",
+                )
+            )
+            empty_gists = {eid for eid in gist_rows.scalars().all() if isinstance(eid, str)}
+            gist_chunk = [item for item in assigns if item[0] in empty_gists]
+            for offset in range(0, len(gist_chunk), 400):
+                chunk = gist_chunk[offset : offset + 400]
+                gids = [eid for eid, _sid, _turn in chunk]
+                await session.execute(
+                    _update(AIMemTurnGist)
+                    .where(col(AIMemTurnGist.episode_id).in_(gids), col(AIMemTurnGist.session_id) == "")
+                    .values(
+                        session_id=case(
+                            *[(col(AIMemTurnGist.episode_id) == eid, sid) for eid, sid, _turn in chunk],
+                            else_="",
+                        ),
+                        turn_index=case(
+                            *[(col(AIMemTurnGist.episode_id) == eid, turn) for eid, _sid, turn in chunk],
+                            else_=0,
+                        ),
+                    )
+                )
+            await session.commit()
+
+        try:
+            from gsuid_core.ai_core.memory.vector.ops import set_episode_session_payload
+
+            await set_episode_session_payload(payload_items)
+        except Exception as e:
+            logger.warning(t("log.memory.session_payload_fail", scope_key=scope_key, error=str(e)))
+        logger.info(t("log.memory.session_backfill", scope_key=scope_key, n=written, sessions=len(fresh)))
+        return written
 
     # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────
     # Episode 是"每条放行消息都写"的无界增长主力（P0-2）。以下方法为生命周期 Worker
@@ -644,6 +957,297 @@ class AIMemEpisode(SQLModel, table=True):
             .distinct()
         )
         return [row[0] for row in result.all()]
+
+
+def _session_gap_seconds() -> int:
+    from gsuid_core.ai_core.memory.config import memory_config
+
+    gap = memory_config.session_gap_seconds
+    return gap if gap > 0 else 1800
+
+
+async def _cursor_in_tx(session: AsyncSession, scope_key: str) -> SessionCursor:
+    """写锁内读同 scope 最后一条，避免 allocate 与 insert 不在同一临界区。"""
+    if not scope_key:
+        return SessionCursor(None, 0, None)
+    stmt = (
+        select(AIMemEpisode)
+        .where(col(AIMemEpisode.scope_key) == scope_key)
+        .order_by(col(AIMemEpisode.valid_at).desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return SessionCursor(None, 0, None)
+    return SessionCursor(row.session_id, row.turn_index, row.valid_at)
+
+
+async def _touch_session_row(
+    session: AsyncSession,
+    *,
+    session_id: str,
+    scope_key: str,
+    valid_at: datetime,
+    opener_episode_id: str,
+    is_new: bool,
+) -> None:
+    from sqlalchemy import update as _update
+
+    from gsuid_core.ai_core.memory.database.session_split import naive_utc
+
+    at = naive_utc(valid_at)
+    if is_new:
+        session.add(
+            AIMemSession(
+                id=session_id,
+                scope_key=scope_key,
+                start_at=at,
+                end_at=at,
+                n_turns=1,
+                opener_episode_id=opener_episode_id,
+            )
+        )
+        return
+    await session.execute(
+        _update(AIMemSession)
+        .where(col(AIMemSession.id) == session_id)
+        .values(end_at=at, n_turns=col(AIMemSession.n_turns) + 1)
+    )
+
+
+class AIMemSession(SQLModel, table=True):
+    """时间 gap 切出的对话 session；title / thread_id 由睡眠期回填。"""
+
+    __table_args__ = (
+        Index("ix_mem_session_scope_start", "scope_key", "start_at"),
+        Index("ix_mem_session_thread", "thread_id"),
+    )
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+    scope_key: str = Field(index=True, max_length=128)
+    start_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    end_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    n_turns: int = Field(default=0)
+    opener_episode_id: str = Field(default="", max_length=36)
+    title: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    title_qdrant_id: Optional[str] = Field(default=None, max_length=36)
+    thread_id: Optional[str] = Field(default=None, max_length=36, index=True)
+    title_source: str = Field(default="opener", max_length=16)
+
+    @classmethod
+    @with_read_session
+    async def list_by_scope(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 200,
+    ) -> list["AIMemSession"]:
+        if not scope_key or limit <= 0:
+            return []
+        conds: list[ColumnElement[bool]] = [_as_bool_expr(col(cls.scope_key) == scope_key)]
+        if start is not None:
+            lo = start.astimezone(timezone.utc).replace(tzinfo=None) if start.tzinfo is not None else start
+            conds.append(_as_bool_expr(col(cls.end_at) >= lo))
+        if end is not None:
+            hi = end.astimezone(timezone.utc).replace(tzinfo=None) if end.tzinfo is not None else end
+            conds.append(_as_bool_expr(col(cls.start_at) < hi))
+        stmt = select(cls).where(*conds).order_by(col(cls.start_at).asc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def openers_for(cls, session: AsyncSession, session_ids: list[str]) -> list["AIMemEpisode"]:
+        if not session_ids:
+            return []
+        sess_rows = await session.execute(select(cls).where(col(cls.id).in_(session_ids)))
+        opener_ids = [row.opener_episode_id for row in sess_rows.scalars().all() if row.opener_episode_id]
+        if not opener_ids:
+            return []
+        ep_rows = await session.execute(
+            select(AIMemEpisode).where(col(AIMemEpisode.id).in_(opener_ids)).order_by(col(AIMemEpisode.valid_at).asc())
+        )
+        return list(ep_rows.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def get_by_ids(cls, session: AsyncSession, session_ids: list[str]) -> list["AIMemSession"]:
+        if not session_ids:
+            return []
+        result = await session.execute(select(cls).where(col(cls.id).in_(session_ids)))
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def untitled_for_scope(cls, session: AsyncSession, scope_key: str, limit: int = 80) -> list["AIMemSession"]:
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, col(cls.thread_id).is_(None))
+            .order_by(col(cls.end_at).desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_untitled(cls, session: AsyncSession, limit: int = 8) -> list["AIMemSession"]:
+        if limit <= 0:
+            return []
+        stmt = select(cls).where(col(cls.thread_id).is_(None)).order_by(col(cls.end_at).desc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def ids_for_threads(cls, session: AsyncSession, thread_ids: list[str]) -> list[str]:
+        if not thread_ids:
+            return []
+        result = await session.execute(select(col(cls.id)).where(col(cls.thread_id).in_(thread_ids)))
+        return [str(sid) for (sid,) in result.all() if isinstance(sid, str)]
+
+    @classmethod
+    @with_session
+    async def set_title(cls, session: AsyncSession, session_id: str, title: str, source: str) -> None:
+        if not session_id or not title:
+            return
+        stmt = update(cls).where(col(cls.id) == session_id).values(title=title[:80], title_source=source[:16])
+        await session.execute(stmt)
+
+
+class AIMemTurnGist(SQLModel, table=True):
+    """用户 turn 一行 gist（侧表，不改 Episode）。"""
+
+    __table_args__ = (
+        Index("ix_mem_gist_scope_valid", "scope_key", "valid_at", "turn_index"),
+        Index("ix_mem_gist_session_turn", "session_id", "turn_index"),
+    )
+
+    episode_id: str = Field(primary_key=True, max_length=36)
+    scope_key: str = Field(index=True, max_length=128)
+    session_id: str = Field(default="", max_length=36, index=True)
+    turn_index: int = Field(default=0)
+    valid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    gist: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
+    gist_source: str = Field(default="rule", max_length=8)
+    is_new_aspect: Optional[bool] = Field(default=None)
+    code_digest: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
+    source_tag: str = Field(default="", max_length=64)
+    model: str = Field(default="", max_length=64)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @with_read_session
+    async def list_by_scope(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int = 4000,
+    ) -> list["AIMemTurnGist"]:
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key)
+            .order_by(col(cls.valid_at).asc(), col(cls.turn_index).asc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_by_session(cls, session: AsyncSession, session_id: str) -> list["AIMemTurnGist"]:
+        if not session_id:
+            return []
+        stmt = select(cls).where(col(cls.session_id) == session_id).order_by(col(cls.turn_index).asc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def upsert_rows(cls, session: AsyncSession, rows: list["AIMemTurnGist"]) -> int:
+        if not rows:
+            return 0
+        n = 0
+        for row in rows:
+            exist = await session.get(cls, row.episode_id)
+            if exist is None:
+                session.add(row)
+            else:
+                exist.gist = row.gist
+                exist.gist_source = row.gist_source
+                exist.is_new_aspect = row.is_new_aspect
+                exist.code_digest = row.code_digest
+                exist.source_tag = row.source_tag
+                exist.model = row.model
+                exist.session_id = row.session_id
+                exist.turn_index = row.turn_index
+                exist.valid_at = row.valid_at
+                exist.scope_key = row.scope_key
+            n += 1
+        return n
+
+
+class AIMemThread(SQLModel, table=True):
+    """跨 session 的主题线程（Graphiti Saga / Phase 5）。"""
+
+    __table_args__ = (Index("ix_mem_thread_scope_first", "scope_key", "first_at"),)
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+    scope_key: str = Field(index=True, max_length=128)
+    title: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
+    aliases: List[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    first_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    n_sessions: int = Field(default=0)
+    qdrant_id: str = Field(default="", max_length=36)
+    mention_count: int = Field(default=1)
+    last_mentioned_at: Optional[datetime] = Field(default=None)
+    title_source: str = Field(default="opener", max_length=16)
+    watermark_valid_at: Optional[datetime] = Field(default=None)
+
+    @classmethod
+    @with_read_session
+    async def list_by_scope(cls, session: AsyncSession, scope_key: str, limit: int = 80) -> list["AIMemThread"]:
+        if not scope_key or limit <= 0:
+            return []
+        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.first_at).asc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_by_title_source(cls, session: AsyncSession, source: str, limit: int = 8) -> list["AIMemThread"]:
+        if not source or limit <= 0:
+            return []
+        stmt = select(cls).where(col(cls.title_source) == source).order_by(col(cls.last_at).desc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def apply_llm_title(
+        cls,
+        session: AsyncSession,
+        thread_id: str,
+        title: str,
+        aliases: list[str],
+    ) -> None:
+        if not thread_id or not title:
+            return
+        from sqlalchemy import update as _update
+
+        await session.execute(
+            _update(cls)
+            .where(col(cls.id) == thread_id)
+            .values(title=title[:240], aliases=aliases[:8], title_source="llm")
+        )
 
 
 # ─────────────────────────────────────────────
@@ -1135,6 +1739,114 @@ class AIMemEntity(SQLModel, table=True):
 # ─────────────────────────────────────────────
 # Edge：实体间的关系（Base Graph 第三层）
 # ─────────────────────────────────────────────
+class EventWriteRow(TypedDict):
+    summary: str
+    start_at: datetime | None
+    end_at: datetime | None
+    entities: list[str]
+    aliases: list[str]
+    stated_at: NotRequired[datetime | None]
+    event_at: NotRequired[datetime | None]
+    thread_id: NotRequired[str | None]
+    turn_episode_id: NotRequired[str | None]
+
+
+class AIMemEvent(SQLModel, table=True):
+    """抽取出的时间事件（摘要 + 归一化日期 + 别名），供排序/时间线题按时间检索。"""
+
+    __table_args__ = (
+        Index("ix_mem_event_scope_start", "scope_key", "start_at"),
+        Index("ix_mem_event_thread", "thread_id", "stated_at"),
+    )
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+    scope_key: str = Field(index=True, max_length=128)
+    episode_id: str = Field(default="", index=True, max_length=36)
+    summary: str = Field(sa_column=Column(Text, nullable=False))
+    start_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    end_at: Optional[datetime] = Field(default=None)
+    entities: List[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    aliases: List[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    stated_at: Optional[datetime] = Field(default=None)
+    event_at: Optional[datetime] = Field(default=None)
+    thread_id: Optional[str] = Field(default=None, max_length=36, index=True)
+    turn_episode_id: Optional[str] = Field(default=None, max_length=36)
+    mention_count: int = Field(default=1)
+    last_mentioned_at: Optional[datetime] = Field(default=None)
+    qdrant_id: Optional[str] = Field(default=None, max_length=36)
+
+    @classmethod
+    async def upsert_events_bulk(
+        cls,
+        scope_key: str,
+        rows: list[EventWriteRow],
+        *,
+        episode_id: str = "",
+        fallback_at: Optional[datetime] = None,
+    ) -> int:
+        """批量写入事件；同 scope 内摘要重复只跳过（抽取窗口重叠时的自然去重）。"""
+        if not rows:
+            return 0
+        inserted = 0
+        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
+        async with db_write_guard(), async_maker() as session:
+            existing = await session.execute(select(col(cls.summary)).where(col(cls.scope_key) == scope_key))
+            seen = {str(s) for s in existing.scalars().all()}
+            for row in rows:
+                summary = str(row["summary"]) if "summary" in row else ""
+                summary = summary.strip()
+                if not summary or summary in seen:
+                    continue
+                raw_start = row["start_at"] if "start_at" in row else None
+                raw_end = row["end_at"] if "end_at" in row else None
+                raw_entities = row["entities"] if "entities" in row else None
+                raw_aliases = row["aliases"] if "aliases" in row else None
+                start_at = raw_start if isinstance(raw_start, datetime) else (fallback_at or datetime.now(timezone.utc))
+                raw_stated = row["stated_at"] if "stated_at" in row else None
+                raw_event = row["event_at"] if "event_at" in row else None
+                raw_thread = row["thread_id"] if "thread_id" in row else None
+                raw_turn = row["turn_episode_id"] if "turn_episode_id" in row else None
+                session.add(
+                    cls(
+                        scope_key=scope_key,
+                        episode_id=episode_id,
+                        summary=summary,
+                        start_at=start_at,
+                        end_at=raw_end if isinstance(raw_end, datetime) else None,
+                        entities=[str(x) for x in raw_entities] if isinstance(raw_entities, list) else [],
+                        aliases=[str(x) for x in raw_aliases] if isinstance(raw_aliases, list) else [],
+                        stated_at=raw_stated if isinstance(raw_stated, datetime) else start_at,
+                        event_at=raw_event if isinstance(raw_event, datetime) else None,
+                        thread_id=str(raw_thread) if isinstance(raw_thread, str) else None,
+                        turn_episode_id=str(raw_turn) if isinstance(raw_turn, str) else episode_id,
+                    )
+                )
+                seen.add(summary)
+                inserted += 1
+            await session.commit()
+        return inserted
+
+    @classmethod
+    @with_read_session
+    async def search_by_scope(cls, session: AsyncSession, scope_key: str, *, limit: int = 240) -> List["AIMemEvent"]:
+        """按时间升序取该 scope 的事件（时间线/排序题用）。"""
+        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.start_at)).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_by_threads(cls, session: AsyncSession, thread_ids: list[str], limit: int = 64) -> list["AIMemEvent"]:
+        if not thread_ids or limit <= 0:
+            return []
+        stamp = func.coalesce(col(cls.event_at), col(cls.stated_at), col(cls.start_at))
+        stmt = select(cls).where(col(cls.thread_id).in_(thread_ids)).order_by(stamp.asc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
 class AIMemEdge(SQLModel, table=True):
     """实体之间的有向关系边，存储一条可验证的事实。"""
 
@@ -1151,6 +1863,7 @@ class AIMemEdge(SQLModel, table=True):
     target_entity_id: str = Field(foreign_key="aimementity.id", max_length=36)
     valid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     invalid_at: Optional[datetime] = Field(default=None)
+    expired_at: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
     # C1 跨发言者归并：同一 fact 被不同 source 重复陈述时，命中既有 Edge 只累加此计数，
@@ -1188,12 +1901,13 @@ class AIMemEdge(SQLModel, table=True):
         scope_key: str,
         limit: int = 30,
     ) -> list["AIMemEdge"]:
-        """获取与指定 Entity 关联的有效 Edge"""
+        """获取与指定 Entity 关联的有效 Edge（invalid_at 空或未到 as-of）。"""
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         result = await session.execute(
             select(cls)
             .where(
                 cls.scope_key == scope_key,
-                col(cls.invalid_at).is_(None),
+                or_(col(cls.invalid_at).is_(None), col(cls.invalid_at) > now),
                 or_(
                     col(cls.source_entity_id).in_(entity_ids),
                     col(cls.target_entity_id).in_(entity_ids),
@@ -1203,6 +1917,41 @@ class AIMemEdge(SQLModel, table=True):
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_pair_versions(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        pairs: list[tuple[str, str]],
+        limit: int = 40,
+    ) -> list["AIMemEdge"]:
+        """同 (src,tgt) 全版本，含已失效，按 valid_at 升序。"""
+        if not scope_key or not pairs or limit <= 0:
+            return []
+        src_ids = {a for a, _b in pairs}
+        tgt_ids = {b for _a, b in pairs}
+        want = set(pairs)
+        stmt = (
+            select(cls)
+            .where(
+                col(cls.scope_key) == scope_key,
+                col(cls.source_entity_id).in_(src_ids),
+                col(cls.target_entity_id).in_(tgt_ids),
+            )
+            .order_by(col(cls.valid_at).asc())
+            .limit(max(limit * 2, 8))
+        )
+        result = await session.execute(stmt)
+        kept: list[AIMemEdge] = []
+        for row in result.scalars().all():
+            if (row.source_entity_id, row.target_entity_id) not in want:
+                continue
+            kept.append(row)
+            if len(kept) >= limit:
+                break
+        return kept
 
     @classmethod
     @with_read_session
@@ -1398,6 +2147,7 @@ class AIMemConflict(SQLModel, table=True):
     new_edge_id: str = Field(default="", max_length=36)
     summary: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    relation: str = Field(default="contradicts", max_length=16)
 
     @classmethod
     def attach(
@@ -1409,8 +2159,10 @@ class AIMemConflict(SQLModel, table=True):
         old_edge_id: str,
         new_edge_id: str,
         summary: str,
+        relation: str = "contradicts",
     ) -> None:
         """把矛盾行挂到调用方 session（与 edge 写同事务，避免嵌套 with_session 自锁）。"""
+        rel = relation if relation in ("supersedes", "contradicts") else "contradicts"
         session.add(
             cls(
                 scope_key=scope_key,
@@ -1418,6 +2170,7 @@ class AIMemConflict(SQLModel, table=True):
                 old_edge_id=old_edge_id,
                 new_edge_id=new_edge_id,
                 summary=summary[:2000],
+                relation=rel,
             )
         )
 

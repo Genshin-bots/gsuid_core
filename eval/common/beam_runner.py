@@ -1,10 +1,10 @@
-"""BEAM-10M 评测脚本
+"""BEAM 评测脚本（官方 100k–10M 共用 runner）
 
 针对 gsuid_core 框架的 AI Memory 模块，对 BEAM-10M（10 conversations × 10 plans ×
 100+ turns，单对话最高 1000 万 Token）做长上下文记忆评测。
 
 =============================================================================
-数据集布局（参考 ``eval/BEAM_10M/README.md``）
+数据集布局（参考 ``eval/BEAM_official/README.md``）
 =============================================================================
 
 每条 row（1 条 conversation）字段：
@@ -46,18 +46,18 @@
 =============================================================================
 
   # 单 plan 一站式
-  python eval/BEAM_10M/run_beam_eval.py all --conv 0 --plans 1
+  python eval/BEAM_official/run_beam_eval.py all --conv 0 --plans 1
 
   # 多 plan 累计
-  python eval/BEAM_10M/run_beam_eval.py ingest-batch --conv 0 --plans 1,2,3
-  python eval/BEAM_10M/run_beam_eval.py probe --conv 0
+  python eval/BEAM_official/run_beam_eval.py ingest-batch --conv 0 --plans 1,2,3
+  python eval/BEAM_official/run_beam_eval.py probe --conv 0
 
   # 仅评判已有答卷
-  python eval/BEAM_10M/run_beam_eval.py judge --answers eval/BEAM_10M/results/answers_0.json
+  python eval/BEAM_official/run_beam_eval.py judge --answers eval/BEAM_official/results/10m/answers_0.json
 
   # 全部 10 条对话 × 单 plan 批量跑
   for i in $(seq 0 9); do
-    python eval/BEAM_10M/run_beam_eval.py all --conv $i --plans 1
+    python eval/BEAM_official/run_beam_eval.py all --conv $i --plans 1
   done
 """
 
@@ -74,18 +74,16 @@ from typing import Any, Set, Dict, List, Tuple, Optional
 
 import httpx
 
-# 允许以 ``python eval/BEAM_10M/run_beam_eval.py`` 直接运行
+# 允许以 ``python eval/BEAM_official/run_beam_eval.py`` 直接运行
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from eval.common import (  # noqa: E402
+from eval.common.io import dump_json, load_json, read_existing_ids  # noqa: E402
+from eval.common.judge import judge_beam_order, judge_beam_single  # noqa: E402
+from eval.common.http_client import (  # noqa: E402
     DEFAULT_TIMEOUT,
     DEFAULT_BASE_URL,
-    dump_json,
-    load_json,
-    judge_beam_single,
-    read_existing_ids,
     call_batch_observe,
     call_chat_with_history,
     call_clear_user_global,
@@ -96,8 +94,8 @@ from eval.common import (  # noqa: E402
 # 常量
 # ─────────────────────────────────────────────
 
-DEFAULT_PARQUET_GLOB = "eval/BEAM_10M/data/10M-*.parquet"
-DEFAULT_OUTPUT_DIR = "eval/BEAM_10M/results"
+DEFAULT_PARQUET_GLOB = "eval/BEAM_official/data/data/10M-*.parquet"
+DEFAULT_OUTPUT_DIR = "eval/BEAM_official/results/10m"
 
 # BEAM-10M 标准答案字段在不同类别下的命名
 _STANDARD_ANSWER_FIELD = {
@@ -115,6 +113,10 @@ _STANDARD_ANSWER_FIELD = {
 
 # user_id 模板（每条 conversation 唯一）
 USER_ID_TEMPLATE = "beam_eval_{conv_id}"
+
+
+def _clamp_concurrency(n: int) -> int:
+    return max(1, min(12, n))
 
 
 # ─────────────────────────────────────────────
@@ -429,15 +431,20 @@ def extract_turns_from_plan(plan_norm: Dict[str, Any]) -> List[Dict[str, str]]:
             ta = turn.get("time_anchor") or last_anchor or ""
             if ta:
                 last_anchor = str(ta)
-            turns.append(
-                {
-                    "role": role,
-                    "content": content,
-                    "time_anchor": str(ta),
-                    "plan_id": str(plan_norm["plan_id"]),
-                    "batch_number": str(batch.get("batch_number") or ""),
-                }
-            )
+            rec: Dict[str, str] = {
+                "role": role,
+                "content": content,
+                "time_anchor": str(ta),
+                "plan_id": str(plan_norm["plan_id"]),
+                "batch_number": str(batch.get("batch_number") or ""),
+            }
+            qt = turn.get("question_type")
+            if qt:
+                rec["question_type"] = str(qt)
+            tid = turn.get("id")
+            if tid:
+                rec["turn_id"] = str(tid)
+            turns.append(rec)
     return turns
 
 
@@ -542,9 +549,12 @@ async def cmd_ingest_plan(
     *,
     flush: bool = True,
     trigger_rebuild: bool = False,
+    extract: bool = False,
     timeout: float = 300.0,
 ) -> Dict[str, Any]:
     """把单个 plan 的所有 turn 通过 ``batch_observe`` 灌入。"""
+
+    extra_payload: Dict[str, Any] = {"extract": True} if extract else {}
     plan_id = plan["plan_id"]
     turns = extract_turns_from_plan(plan)
     plan["batches"] = []
@@ -561,7 +571,7 @@ async def cmd_ingest_plan(
         if iso:
             item["timestamp"] = iso
         payload.append(item)
-    from eval.BEAM_10M.timestamps import spread_payload_timestamps
+    from eval.common.timestamps import spread_payload_timestamps
 
     payload = spread_payload_timestamps(payload)
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
@@ -585,6 +595,7 @@ async def cmd_ingest_plan(
                     flush=flush if last else False,
                     trigger_rebuild=trigger_rebuild and last,
                     timeout=timeout,
+                    extra_payload=extra_payload if extract else None,
                 )
                 print(
                     f"[Ingest] chunk -> {last_resp.get('status')}: {last_resp.get('msg')} "
@@ -652,13 +663,16 @@ async def cmd_probe(
     persona_name: Optional[str] = "评测助手",
     enable_tools: Optional[bool] = True,
     memory_eval: Optional[bool] = False,
+    fallback_clock: Optional[str] = None,
+    concurrency: int = 1,
 ) -> str:
-    """遍历 20 道探针题，逐条调 ``chat_with_history`` 收集回答。
+    """遍历 20 道探针题，调 ``chat_with_history`` 收集回答。
 
     Args:
         probes: :func:`iter_probing_questions` 输出。
         answers_file: 答卷落盘路径；每答完一题立即写入（断点续跑友好）。
         resume: 启用增量更新（跳过已有 ``question_id`` 的题目）。
+        concurrency: 同时在飞的探针数；同一 ``user_id`` 的评测 session 彼此隔离。
     """
     existing_ids: Set[str] = set()
     existing_results: List[Dict[str, Any]] = []
@@ -671,10 +685,11 @@ async def cmd_probe(
         except Exception as e:
             print(f"[Probe] 读取已有答卷失败: {e}")
 
+    conc = _clamp_concurrency(concurrency)
     print(
         f"[Probe] user_id={user_id} persona={persona_name} "
         f"enable_tools={enable_tools} memory_eval={memory_eval} "
-        f"共 {len(probes)} 题，已存在 {len(existing_ids)} 条"
+        f"共 {len(probes)} 题，已存在 {len(existing_ids)} 条，并发 {conc}"
     )
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
@@ -695,12 +710,16 @@ async def cmd_probe(
             return answers_file
 
         results: List[Dict[str, Any]] = list(existing_results)
+        sem = asyncio.Semaphore(conc)
+        lock = asyncio.Lock()
+        todo = [
+            (category, idx_in_cat, probe)
+            for category, idx_in_cat, probe in probes
+            if f"{user_id}__{category}__{idx_in_cat}" not in existing_ids
+        ]
 
-        for category, idx_in_cat, probe in probes:
+        async def _one(category: str, idx_in_cat: int, probe: Dict[str, Any]) -> None:
             qid = f"{user_id}__{category}__{idx_in_cat}"
-            if qid in existing_ids:
-                continue
-
             question = probe.get("question") or ""
             standard_answer = extract_standard_answer(probe, category)
             time_anchor = probe.get("time_anchor", "")
@@ -708,42 +727,53 @@ async def cmd_probe(
             if isinstance(rubric, str):
                 rubric = [rubric]
 
-            print(f"\n[Probe] ({category} #{idx_in_cat}) {question[:80]}")
+            async with sem:
+                print(f"\n[Probe] ({category} #{idx_in_cat}) {question[:80]}", flush=True)
+                clock_at = parse_time_anchor(str(time_anchor)) if time_anchor else None
+                if not clock_at and fallback_clock:
+                    clock_at = parse_time_anchor(str(fallback_clock)) or str(fallback_clock)
+                status_code = -1
+                agent_answer = ""
+                memory = None
+                resp: Dict[str, Any] = {}
+                for attempt in range(4):
+                    resp = await call_chat_with_history(
+                        client=client,
+                        base_url=base_url,
+                        user_id=user_id,
+                        message=question,
+                        history=[],
+                        persona_name=persona_name,
+                        enable_observer=enable_observer,
+                        # 评测已在摄入收尾触发分层图重建，探针显式开 System-2 以利用它：
+                        # 事件排序/摘要/跨会话等聚合题靠类目自顶向下遍历召回，纯 System-1 向量召回不足。
+                        enable_system2=enable_system2,
+                        enable_tools=enable_tools,
+                        memory_eval=memory_eval,
+                        clock_at=clock_at,
+                    )
+                    status_code = resp.get("status_code", -1)
+                    if status_code == 200:
+                        agent_answer = extract_text_from_response(resp.get("data"))
+                        memory = resp.get("memory")
+                    else:
+                        error_msg = resp.get("error", "unknown")
+                        agent_answer = f"[ERROR] status={status_code}, error={error_msg}"
+                        memory = None
+                    transient = _provider_overloaded(status_code, agent_answer) or status_code in (
+                        -1,
+                        404,
+                        502,
+                        503,
+                    )
+                    if status_code == 200 or not transient:
+                        break
+                    wait_s = 20 * (attempt + 1)
+                    print(f"  [retry] {qid} status={status_code} attempt={attempt + 1} wait={wait_s}s", flush=True)
+                    await asyncio.sleep(wait_s)
 
-            clock_at = parse_time_anchor(str(time_anchor)) if time_anchor else None
-            status_code = -1
-            agent_answer = ""
-            memory = None
-            for attempt in range(4):
-                resp = await call_chat_with_history(
-                    client=client,
-                    base_url=base_url,
-                    user_id=user_id,
-                    message=question,
-                    history=[],
-                    persona_name=persona_name,
-                    enable_observer=enable_observer,
-                    # 评测已在摄入收尾触发分层图重建，探针显式开 System-2 以利用它：
-                    # 事件排序/摘要/跨会话等聚合题靠类目自顶向下遍历召回，纯 System-1 向量召回不足。
-                    enable_system2=enable_system2,
-                    enable_tools=enable_tools,
-                    memory_eval=memory_eval,
-                    clock_at=clock_at,
-                )
-                status_code = resp.get("status_code", -1)
-                if status_code == 200:
-                    agent_answer = extract_text_from_response(resp.get("data"))
-                    memory = resp.get("memory")
-                else:
-                    error_msg = resp.get("error", "unknown")
-                    agent_answer = f"[ERROR] status={status_code}, error={error_msg}"
-                    memory = None
-                if not _provider_overloaded(status_code, agent_answer):
-                    break
-                wait_s = 20 * (attempt + 1)
-                print(f"  [retry] provider overloaded attempt={attempt + 1} wait={wait_s}s")
-                await asyncio.sleep(wait_s)
-
+            raw_tc = resp["tool_calls"] if "tool_calls" in resp else []
+            tool_calls: List[str] = [str(x) for x in raw_tc] if isinstance(raw_tc, list) else []
             record = {
                 "question_id": qid,
                 "category": category,
@@ -755,12 +785,36 @@ async def cmd_probe(
                 "time_anchor": str(time_anchor),
                 "status_code": status_code,
                 "user_id": user_id,
+                "tool_calls": tool_calls,
+                "picks_raw": list(resp["picks_raw"])
+                if "picks_raw" in resp and isinstance(resp["picks_raw"], list)
+                else [],
+                "picks_sorted": list(resp["picks_sorted"])
+                if "picks_sorted" in resp and isinstance(resp["picks_sorted"], list)
+                else [],
+                "fallback_used": str(resp["fallback_used"]) if "fallback_used" in resp else "",
+                "inject_ids": list(resp["inject_ids"])
+                if "inject_ids" in resp and isinstance(resp["inject_ids"], list)
+                else [],
+                "pool_ids": list(resp["pool_ids"]) if "pool_ids" in resp and isinstance(resp["pool_ids"], list) else [],
+                "inject_chars": int(resp["inject_chars"])
+                if "inject_chars" in resp and isinstance(resp["inject_chars"], int)
+                else 0,
+                "selector_ms": int(resp["selector_ms"])
+                if "selector_ms" in resp and isinstance(resp["selector_ms"], int)
+                else 0,
             }
-            results.append(record)
-            dump_json(answers_file, results)
-
+            async with lock:
+                results.append(record)
+                dump_json(answers_file, results)
             preview = agent_answer[:200].replace("\n", " ")
-            print(f"  -> {preview}{'...' if len(agent_answer) > 200 else ''}")
+            print(f"  -> {qid} {preview}{'...' if len(agent_answer) > 200 else ''}", flush=True)
+
+        if conc <= 1:
+            for item in todo:
+                await _one(item[0], item[1], item[2])
+        else:
+            await asyncio.gather(*[_one(c, i, p) for c, i, p in todo])
 
     print(f"\n[Probe] 完成，答卷: {answers_file}")
     return answers_file
@@ -773,6 +827,7 @@ async def cmd_judge(
     *,
     timeout: float = 240.0,
     resume: bool = True,
+    concurrency: int = 1,
 ) -> str:
     """用 rubric-based judge 给分，支持断点续跑。"""
     answers = load_json(answers_file)
@@ -790,52 +845,90 @@ async def cmd_judge(
         except Exception as e:
             print(f"[Judge] 读取已有评判失败: {e}")
 
-    print(f"[Judge] 共 {len(answers)} 条答卷，已评判 {len(existing_ids)} 条")
+    conc = _clamp_concurrency(concurrency)
+    print(f"[Judge] 共 {len(answers)} 条答卷，已评判 {len(existing_ids)} 条，并发 {conc}")
 
     results: List[Dict[str, Any]] = list(existing_results)
+    todo = [ans for ans in answers if isinstance(ans, dict) and ans.get("question_id") not in existing_ids]
+    sem = asyncio.Semaphore(conc)
+    lock = asyncio.Lock()
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-        for ans in answers:
-            qid = ans.get("question_id", "")
-            if not qid or qid in existing_ids:
-                continue
-            category = ans.get("category", "")
-            question = ans.get("question", "")
-            std = ans.get("standard_answer", "")
-            agent_answer = ans.get("agent_answer", "")
+
+        async def _one(ans: Dict[str, Any]) -> None:
+            qid = str(ans.get("question_id", ""))
+            if not qid:
+                return
+            category = str(ans.get("category", ""))
+            question = str(ans.get("question", ""))
+            std = str(ans.get("standard_answer", ""))
+            agent_answer = str(ans.get("agent_answer", ""))
             rubric = ans.get("rubric") or []
             if not isinstance(rubric, list):
                 rubric = [str(rubric)]
+            judge_uid = f"judge_{qid}"[:80]
 
-            if agent_answer.startswith("[ERROR]"):
-                judge_result = {
-                    "rubric_scores": [0] * len(rubric),
-                    "passed": False,
-                    "reason": "Agent 执行失败",
-                }
-            else:
-                judge_result = await judge_beam_single(
-                    client=client,
-                    base_url=base_url,
-                    question=question,
-                    standard_answer=std,
-                    agent_answer=agent_answer,
-                    rubric=rubric,
-                    category=category,
-                    timeout=timeout,
-                )
+            async with sem:
+                if agent_answer.startswith("[ERROR]"):
+                    judge_result = {
+                        "rubric_scores": [0] * len(rubric),
+                        "passed": False,
+                        "reason": "Agent 执行失败",
+                    }
+                    if category == "event_ordering":
+                        from eval.common.judge import attach_order_metrics
+
+                        judge_result = attach_order_metrics(judge_result, rubric)
+                elif category == "event_ordering":
+                    judge_result = await judge_beam_order(
+                        client=client,
+                        base_url=base_url,
+                        question=question,
+                        standard_answer=std,
+                        agent_answer=agent_answer,
+                        rubric=rubric,
+                        category=category,
+                        timeout=timeout,
+                        user_id=judge_uid,
+                        question_id=str(qid),
+                    )
+                else:
+                    judge_result = await judge_beam_single(
+                        client=client,
+                        base_url=base_url,
+                        question=question,
+                        standard_answer=std,
+                        agent_answer=agent_answer,
+                        rubric=rubric,
+                        category=category,
+                        timeout=timeout,
+                        user_id=judge_uid,
+                    )
 
             record = {
                 "question_id": qid,
                 "category": category,
                 "judge": judge_result,
             }
-            results.append(record)
-            dump_json(judge_file, results)
+            async with lock:
+                results.append(record)
+                dump_json(judge_file, results)
+            extra = ""
+            if category == "event_ordering" and "coverage" in judge_result:
+                extra = f" coverage={judge_result['coverage']}"
+                if "tau" in judge_result and judge_result["tau"] is not None:
+                    extra += f" tau={judge_result['tau']}"
             print(
-                f"  [{category}] {qid} -> passed={judge_result.get('passed')} "
-                f"scores={judge_result.get('rubric_scores')}"
+                f"  [{category}] {qid} -> passed={judge_result['passed'] if 'passed' in judge_result else None} "
+                f"scores={judge_result['rubric_scores'] if 'rubric_scores' in judge_result else []}{extra}",
+                flush=True,
             )
+
+        if conc <= 1:
+            for ans in todo:
+                await _one(ans)
+        else:
+            await asyncio.gather(*[_one(ans) for ans in todo])
 
     print(f"\n[Judge] 完成，结果: {judge_file}")
     return judge_file
@@ -883,11 +976,11 @@ def _resolve_plans(row: Dict[str, Any], plan_ids: List[int]) -> List[Dict[str, A
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="BEAM-10M 评测脚本")
+    parser = argparse.ArgumentParser(description="BEAM 评测脚本（官方 100k–10M 共用 runner）")
     parser.add_argument(
         "--data",
         default=DEFAULT_PARQUET_GLOB,
-        help="parquet 文件路径或 glob（默认 eval/BEAM_10M/data/10M-*.parquet）",
+        help="parquet 文件路径或 glob（默认 eval/BEAM_official/data/data/10M-*.parquet）",
     )
     parser.add_argument(
         "--output-dir",

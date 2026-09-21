@@ -4,6 +4,8 @@
 提供 Episode/Entity/Edge 的向量 upsert 和 search 函数。
 """
 
+from __future__ import annotations
+
 import asyncio
 from typing import TYPE_CHECKING, Optional, TypedDict, cast
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +15,7 @@ from qdrant_client.models import (
     Filter,
     Vector,
     MatchAny,
+    Condition,
     MatchValue,
     PointStruct,
     SparseVector,
@@ -125,6 +128,11 @@ async def _embed_batch_async(texts: list[str]) -> list[list[float]]:
         if vec is None:
             raise RuntimeError(t("🧠 [Memory] 文本 {i} 嵌入失败（413 限流），无法继续", i=i))
     return [list(vec) for vec in results if vec is not None]
+
+
+async def embed_texts_dense(texts: list[str]) -> list[list[float]]:
+    """评测只读：用记忆同一套 dense 模型嵌一批文本。"""
+    return await _embed_batch_async(texts)
 
 
 def _sparse_embed(text: str) -> Optional[SparseVector]:
@@ -244,6 +252,8 @@ async def upsert_episode_vector(
     scope_key: str,
     valid_at_ts: float,
     speaker_ids: list[str],
+    session_id: str | None = None,
+    turn_index: int = 0,
 ):
     from gsuid_core.ai_core.rag.base import client
 
@@ -257,15 +267,19 @@ async def upsert_episode_vector(
     # 2. 锁内写入 (防止并发破坏索引长度同步)
     async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
         try:
+            payload: dict[str, object] = {
+                "content": content,
+                "scope_key": scope_key,
+                "valid_at_ts": valid_at_ts,
+                "speaker_ids": speaker_ids,
+                "turn_index": turn_index,
+            }
+            if session_id:
+                payload["session_id"] = session_id
             point = PointStruct(
                 id=episode_id,
                 vector={"dense": vector} if sparse_vector is None else {"dense": vector, "sparse": sparse_vector},
-                payload={
-                    "content": content,
-                    "scope_key": scope_key,
-                    "valid_at_ts": valid_at_ts,
-                    "speaker_ids": speaker_ids,
-                },
+                payload=payload,
             )
             await client.upsert(
                 collection_name=MEMORY_EPISODES_COLLECTION,
@@ -293,12 +307,7 @@ async def upsert_episode_vectors_batch(episodes_data: list[dict]):
             PointStruct(
                 id=d["episode_id"],
                 vector={"dense": dense_vectors[i]} if sv is None else {"dense": dense_vectors[i], "sparse": sv},
-                payload={
-                    "content": d["content"],
-                    "scope_key": d["scope_key"],
-                    "valid_at_ts": d["valid_at_ts"],
-                    "speaker_ids": d.get("speaker_ids", []),
-                },
+                payload=_episode_payload(d),
             )
         )
 
@@ -314,6 +323,39 @@ async def upsert_episode_vectors_batch(episodes_data: list[dict]):
         except Exception as e:
             logger.error(t("log.memory.qdrant_batch_write_episode", e=e))
             raise
+
+
+def _episode_payload(d: dict[str, object]) -> dict[str, object]:
+    speakers = d["speaker_ids"] if "speaker_ids" in d and isinstance(d["speaker_ids"], list) else []
+    payload: dict[str, object] = {
+        "content": d["content"],
+        "scope_key": d["scope_key"],
+        "valid_at_ts": d["valid_at_ts"],
+        "speaker_ids": speakers,
+        "turn_index": d["turn_index"] if "turn_index" in d and isinstance(d["turn_index"], int) else 0,
+    }
+    sid = d["session_id"] if "session_id" in d else None
+    if isinstance(sid, str) and sid:
+        payload["session_id"] = sid
+    return payload
+
+
+async def set_episode_session_payload(items: list[tuple[str, str, int]]) -> None:
+    """回填后批量写 session_id / turn_index，失败由调用方记日志。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not items:
+        return
+    async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
+        for i in range(0, len(items), 64):
+            chunk = items[i : i + 64]
+            for eid, sid, turn in chunk:
+                await client.set_payload(
+                    collection_name=MEMORY_EPISODES_COLLECTION,
+                    payload={"session_id": sid, "turn_index": turn},
+                    points=[eid],
+                    wait=True,
+                )
 
 
 async def upsert_entity_vector(
@@ -540,9 +582,19 @@ async def _hybrid_search_episodes(
     scope_keys: list[str],
     top_k: int = 10,
     ts_range: Optional[tuple[float, float]] = None,
+    score_threshold: float = 0.3,
+    session_ids: Optional[list[str]] = None,
 ) -> list["Episode"]:
     """搜索 Episode"""
-    results = await _hybrid_search_impl(MEMORY_EPISODES_COLLECTION, query, scope_keys, top_k, ts_range=ts_range)
+    results = await _hybrid_search_impl(
+        MEMORY_EPISODES_COLLECTION,
+        query,
+        scope_keys,
+        top_k,
+        score_threshold=score_threshold,
+        ts_range=ts_range,
+        session_ids=session_ids,
+    )
     episodes: list["Episode"] = []
     for r in results:
         # valid_at_ts 是存储的时间戳，需要转换为字符串格式
@@ -553,15 +605,20 @@ async def _hybrid_search_episodes(
             valid_at_str = datetime.fromtimestamp(valid_at_ts, tz=timezone.utc).isoformat()
         else:
             valid_at_str = ""
-        episodes.append(
-            {
-                "id": r["id"],
-                "content": r["content"] if "content" in r else "",
-                "valid_at": valid_at_str,
-                "scope_key": r["scope_key"] if "scope_key" in r else "",
-                "embedding": [],
-            }
-        )
+        ep: Episode = {
+            "id": str(r["id"]),
+            "content": r["content"] if "content" in r and isinstance(r["content"], str) else "",
+            "valid_at": valid_at_str,
+            "scope_key": r["scope_key"] if "scope_key" in r and isinstance(r["scope_key"], str) else "",
+            "embedding": [],
+        }
+        sid = r["session_id"] if "session_id" in r else None
+        if isinstance(sid, str) and sid:
+            ep["session_id"] = sid
+        turn = r["turn_index"] if "turn_index" in r else None
+        if isinstance(turn, int):
+            ep["turn_index"] = turn
+        episodes.append(ep)
     return episodes
 
 
@@ -685,6 +742,7 @@ async def _hybrid_search_impl(
     score_threshold: float = 0.3,
     dense_vector_name: str = "dense",
     ts_range: Optional[tuple[float, float]] = None,
+    session_ids: Optional[list[str]] = None,
 ) -> list[dict]:
     """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合
 
@@ -710,13 +768,22 @@ async def _hybrid_search_impl(
 
     # 时间范围过滤（valid_at_ts payload Range）：时间分桶语义检索用，
     # 把"相关"和"落在指定时段"两个条件同时下推到 Qdrant。
+    extra_conds: list[Condition] = []
     if ts_range is not None:
-        ts_cond = FieldCondition(key="valid_at_ts", range=Range(gte=ts_range[0], lte=ts_range[1]))
+        extra_conds.append(FieldCondition(key="valid_at_ts", range=Range(gte=ts_range[0], lte=ts_range[1])))
+    if session_ids:
+        extra_conds.append(FieldCondition(key="session_id", match=MatchAny(any=session_ids)))
+    if extra_conds:
         if scope_filter is None:
-            scope_filter = Filter(must=[ts_cond])
+            scope_filter = Filter(must=extra_conds)
         else:
-            must = list(scope_filter.must) if isinstance(scope_filter.must, list) else [scope_filter.must]
-            scope_filter = Filter(must=[c for c in must if c is not None] + [ts_cond])
+            raw_must = scope_filter.must
+            must: list[Condition] = []
+            if isinstance(raw_must, list):
+                must.extend(c for c in raw_must if c is not None)
+            elif raw_must is not None:
+                must.append(raw_must)
+            scope_filter = Filter(must=must + extra_conds)
 
     # 余弦门**只能**下推到 dense 分支（hybrid_query 的 dense_score_threshold）：混合检索时
     # query_points 返回的是 RRF 名次分（~1/(60+rank)≈0.016），再用余弦阈值后筛会误杀全部命中
@@ -735,8 +802,53 @@ async def _hybrid_search_impl(
     return results
 
 
-async def search_episodes(query: str, scope_keys: list[str], top_k: int = 10) -> list["Episode"]:
-    return await _hybrid_search_episodes(query, scope_keys, top_k)
+async def search_episodes(
+    query: str,
+    scope_keys: list[str],
+    top_k: int = 10,
+    score_threshold: float = 0.3,
+    session_ids: Optional[list[str]] = None,
+) -> list["Episode"]:
+    return await _hybrid_search_episodes(
+        query, scope_keys, top_k, score_threshold=score_threshold, session_ids=session_ids
+    )
+
+
+def _dense_from_point_vector(vector: object) -> list[float]:
+    if isinstance(vector, dict) and "dense" in vector:
+        raw = vector["dense"]
+        if isinstance(raw, list):
+            return [float(x) for x in raw if isinstance(x, (int, float))]
+    if isinstance(vector, list):
+        return [float(x) for x in vector if isinstance(x, (int, float))]
+    return []
+
+
+async def retrieve_episode_dense_vectors(episode_ids: list[str]) -> dict[str, list[float]]:
+    """按 id 拉 Episode dense，供 first-mention 聚类。失败返回已取到的子集。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not episode_ids:
+        return {}
+    out: dict[str, list[float]] = {}
+    chunk = 256
+    for i in range(0, len(episode_ids), chunk):
+        batch = episode_ids[i : i + chunk]
+        try:
+            records = await client.retrieve(
+                collection_name=MEMORY_EPISODES_COLLECTION,
+                ids=list(batch),
+                with_payload=False,
+                with_vectors=["dense"],
+            )
+        except Exception as e:
+            logger.warning(t("log.memory.qdrant_retrieve_hot_episode_fail", e=e))
+            continue
+        for point in records:
+            dense = _dense_from_point_vector(point.vector)
+            if dense:
+                out[str(point.id)] = dense
+    return out
 
 
 async def search_episodes_in_range(
@@ -966,7 +1078,7 @@ async def dense_search_episodes_with_vectors(
     # 即便 scope_filter 为 None（未来可能出现"空 scope 全量检索 + 去重"的调用）也保证去重生效，
     # 不让 must_not 因缺 scope 条件而静默失效。
     if exclude_ids:
-        from qdrant_client.models import Condition, HasIdCondition, ExtendedPointId
+        from qdrant_client.models import HasIdCondition, ExtendedPointId
 
         # str id 是合法的 ExtendedPointId，但 qdrant stub 中 list 不变性令直传报错；
         # must_not 的输出元素类型(含 tuple)亦宽于其入参所需的 List[Condition]——均用 cast 收口。

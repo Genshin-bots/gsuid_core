@@ -2,9 +2,9 @@
 
 ``gsuid_core`` 框架的离线评测脚本集合，按数据集分目录：
 
-- :mod:`eval.common`          : 评测公共模块（HTTP 客户端、IO、LLM 评判）
+- :mod:`eval.common`          : 评测公共模块（HTTP 客户端、IO、LLM 评判、BEAM runner）
 - :mod:`eval.longmemeval`     : LongMemEval-S 评测入口
-- :mod:`eval.BEAM_10M`        : BEAM-10M 评测入口
+- :mod:`eval.BEAM_official`   : 官方 BEAM 100k/500k/1M/10M ladder
 
 运行方式：
 

@@ -1,7 +1,7 @@
 import re
 import random
 from copy import deepcopy
-from typing import Dict, Tuple, Literal, Optional
+from typing import Dict, List, Tuple, Union, Literal, Optional, Protocol, runtime_checkable
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -23,6 +23,12 @@ cache: Dict[str, int] = {}
 ICON_PATH = Path(__file__).parent / "new_icon"
 TEXT_PATH = Path(__file__).parent / "texture2d"
 pic_quality: int = pic_gen_config.get_config("PicQuality").data
+CagBgInput = Optional[Union[Image.Image, List[Image.Image], Tuple[Image.Image, ...], object]]
+
+
+@runtime_checkable
+class _HasCagBg(Protocol):
+    cag_bg: object
 
 
 def find_icon(name: str, icon_path: Path = ICON_PATH):
@@ -41,6 +47,38 @@ def find_icon(name: str, icon_path: Path = ICON_PATH):
             else:
                 _r = random.choice(list(icon_path.iterdir()))
     return Image.open(_r)
+
+
+def _unwrap_cag_bg(cag_bg: object) -> object:
+    """把贴图包对象（如 buts.cag_bg）展开成真正的分类条来源。"""
+    if cag_bg is None or isinstance(cag_bg, Image.Image):
+        return cag_bg
+    if isinstance(cag_bg, (list, tuple)):
+        return cag_bg
+    if isinstance(cag_bg, _HasCagBg):
+        packed = cag_bg.cag_bg
+        if packed is not None:
+            return packed
+    return cag_bg
+
+
+def _normalize_cag_bgs(
+    cag_bg: object,
+    help_mode: Literal["dark", "light"],
+) -> List[Image.Image]:
+    """单张图保持原行为；多张图按分组循环使用。"""
+    cag_bg = _unwrap_cag_bg(cag_bg)
+    if cag_bg is None:
+        images = [Image.open(TEXT_PATH / f"cag_bg_{help_mode}.png")]
+    elif isinstance(cag_bg, Image.Image):
+        images = [cag_bg]
+    elif isinstance(cag_bg, (list, tuple)):
+        images = [img for img in cag_bg if isinstance(img, Image.Image)]
+        if not images:
+            images = [Image.open(TEXT_PATH / f"cag_bg_{help_mode}.png")]
+    else:
+        images = [Image.open(TEXT_PATH / f"cag_bg_{help_mode}.png")]
+    return [img.convert("RGBA") for img in images]
 
 
 def calculate_string_length(s: str):
@@ -71,7 +109,7 @@ async def get_new_help(
     banner_bg: Optional[Image.Image] = None,
     banner_sub_text: str = "💖且听风吟。",
     help_bg: Optional[Image.Image] = None,
-    cag_bg: Optional[Image.Image] = None,
+    cag_bg: CagBgInput = None,
     item_bg: Optional[Image.Image] = None,
     icon_path: Path = ICON_PATH,
     footer: Optional[Image.Image] = None,
@@ -124,7 +162,7 @@ def _get_new_help(
     banner_bg: Optional[Image.Image] = None,
     banner_sub_text: str = "💖且听风吟。",
     help_bg: Optional[Image.Image] = None,
-    cag_bg: Optional[Image.Image] = None,
+    cag_bg: CagBgInput = None,
     item_bg: Optional[Image.Image] = None,
     icon_path: Path = ICON_PATH,
     footer: Optional[Image.Image] = None,
@@ -148,8 +186,7 @@ def _get_new_help(
         banner_bg = Image.open(TEXT_PATH / f"banner_bg_{help_mode}.jpg")
     if help_bg is None:
         help_bg = Image.open(TEXT_PATH / f"bg_{help_mode}.jpg")
-    if cag_bg is None:
-        cag_bg = Image.open(TEXT_PATH / f"cag_bg_{help_mode}.png")
+    cag_bgs = _normalize_cag_bgs(cag_bg, help_mode)
     if footer is None:
         footer = Image.open(TEXT_PATH / f"footer_{help_mode}.png")
     if item_bg is None:
@@ -171,7 +208,6 @@ def _get_new_help(
 
     banner_bg = banner_bg.convert("RGBA")
     help_bg = help_bg.convert("RGBA")
-    cag_bg = cag_bg.convert("RGBA")
     item_bg = item_bg.convert("RGBA")
     footer = footer.convert("RGBA")
     highlight_bg = highlight_bg.convert("RGBA")
@@ -186,14 +222,12 @@ def _get_new_help(
     # 准备计算整体帮助图大小
     w, h = 120 + 475 * column, footer.height
 
-    cag_num = 0
     for cag in plugin_help:
         cag_data = plugin_help[cag]["data"]
         sv = plugin_help[cag]
         if "pm" in sv and isinstance(sv["pm"], int) and pm > sv["pm"]:
             continue
 
-        cag_num += 1
         sv_num = len(cag_data)
         h += (((sv_num - 1) // column) + 1) * 175
 
@@ -244,12 +278,18 @@ def _get_new_help(
 
     bscale = w / banner_bg.size[0]
     new_banner_h = int(banner_h * bscale)
-    new_cag_h = int(cag_bg.size[1] * bscale)
     banner_bg = banner_bg.resize((w, new_banner_h))
 
     h += new_banner_h
     soft = 10
-    h += cag_num * (new_cag_h + soft)
+    visible_index = 0
+    for cag in plugin_help:
+        sv = plugin_help[cag]
+        if "pm" in sv and isinstance(sv["pm"], int) and pm > sv["pm"]:
+            continue
+        this_cag_h = int(cag_bgs[visible_index % len(cag_bgs)].size[1] * bscale)
+        h += this_cag_h + soft
+        visible_index += 1
 
     # 基准图
     img = crop_center_img(help_bg, w, h)
@@ -285,12 +325,17 @@ def _get_new_help(
 
     # 开始粘贴服务
     hs = 0
+    visible_index = 0
     for cag in plugin_help:
         sv = plugin_help[cag]
-        cag_bar = deepcopy(cag_bg)
         cag_desc = sv["desc"]
         if "pm" in sv and isinstance(sv["pm"], int) and pm > sv["pm"]:
             continue
+
+        cag_src = cag_bgs[visible_index % len(cag_bgs)]
+        new_cag_h = int(cag_src.size[1] * bscale)
+        cag_bar = deepcopy(cag_src)
+        visible_index += 1
 
         cag_data = sv["data"]
         cag_draw = ImageDraw.Draw(cag_bar)

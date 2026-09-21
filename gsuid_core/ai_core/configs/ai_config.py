@@ -1020,8 +1020,14 @@ MEMORY_CONFIG: Dict[str, GSC] = {
     "memory_inject_max_chars": GsIntConfig(
         "记忆注入字符预算",
         "单次注入对话上下文的记忆文本最大字符数, 调大可保留更多历史但更费 Token",
-        800,
-        options=[400, 800, 1000, 2000, 4000],
+        8000,
+        options=[800, 2000, 4000, 8000, 16000],
+    ),
+    "session_gap_seconds": GsIntConfig(
+        "Session 切分静默阈值（秒）",
+        "同 scope 相邻 Episode 间隔超过此秒数则开新 session；默认 1800（30 分钟）",
+        1800,
+        options=[600, 1800, 3600, 7200],
     ),
     "enable_system2get": GsBoolConfig(
         "是否启用 System-2",
@@ -1215,6 +1221,24 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "记忆评测模式",
         "指定是否启用记忆评测模式, 启用后无法使用 System-2 和 Rerank",
         False,
+    ),
+    "eo_strategy": GsStrConfig(
+        "长时序注入策略",
+        "legacy=注入若干首次提及；ledger=注入压缩全量时间线。环境变量 GSUID_EO_STRATEGY 可覆盖",
+        "legacy",
+        options=["legacy", "ledger"],
+    ),
+    "eo_selector": GsStrConfig(
+        "长时序选择器",
+        "仅 ledger 生效。persona=主人格自选；dedicated=另开一次选择模型。GSUID_EO_SELECTOR 可覆盖",
+        "persona",
+        options=["persona", "dedicated"],
+    ),
+    "ledger_max_chars": GsIntConfig(
+        "时间线总预算",
+        "ledger 策略下排序/摘要题时间线最大字符数。GSUID_LEDGER_MAX_CHARS 可覆盖",
+        28000,
+        options=[8000, 16000, 28000, 40000, 48000],
     ),
 }
 

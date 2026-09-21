@@ -68,6 +68,10 @@ async def reset_eval_side_effects() -> dict[str, int]:
 _DIALOGUE_MEM_TABLES = (
     "mem_episode_entity_mentions",
     "mem_category_entity_members",
+    "aimemturngist",
+    "aimemthread",
+    "aimemsession",
+    "aimemevent",
     "aimemcategoryedge",
     "aimemconflict",
     "aimemedge",

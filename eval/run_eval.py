@@ -11,7 +11,7 @@
   python eval/run_eval.py longmem report
   python eval/run_eval.py longmem diagnose --answers-file eval/longmemeval/results/answers_ssp_v3.json
 
-  # BEAM-10M：委托既有 run_beam_eval.py（保持其 CLI 与状态文件不变）
+  # BEAM：委托 eval/BEAM_official/run_beam_eval.py
   python eval/run_eval.py beam probe --conv 0
   python eval/run_eval.py beam judge --conv 0
 """
@@ -394,7 +394,7 @@ def _lm_mark_fails(args: argparse.Namespace) -> None:
 
 
 def _beam_delegate(stage: str, extra: List[str]) -> int:
-    script = os.path.join(_PROJECT_ROOT, "eval", "BEAM_10M", "run_beam_eval.py")
+    script = os.path.join(_PROJECT_ROOT, "eval", "BEAM_official", "run_beam_eval.py")
     cmd = [sys.executable, script, stage, *extra]
     print("[beam] delegate:", " ".join(cmd))
     return subprocess.call(cmd, cwd=_PROJECT_ROOT)
