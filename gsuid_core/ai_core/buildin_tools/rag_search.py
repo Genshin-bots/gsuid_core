@@ -13,7 +13,6 @@ from gsuid_core.ai_core.rag import search_images
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.cognition import (
-    MEMORY_KINDS,
     CogKind,
     CogScope,
     kinds_from_names,
@@ -102,6 +101,7 @@ async def search_cognition(
     - 需要"已有材料"（专业知识、说明文档、稳定资料、以前搜过的长文）时；
     - 想确认"我对某人了解多少 / 有没有答应过什么"时；
     - 问已有记忆：query 带上问题里的专名/数字/约束；
+    - 问已入库的专名时，片段再多也先看路径卡；路径卡在就不改走 web_search。
     - 办眼前的事需要说话人身上的事实、当前消息和上文都没写：query 写「说话人ID + 要填的槽」，
       不要把本次外部题目的词拼进去；填槽后再 web_search / 专域工具。
 
@@ -153,9 +153,8 @@ async def search_cognition(
     )
     from gsuid_core.ai_core.cognition.hub import expand_hub, render_expand_result
 
-    # 说话人面不含知识库：query 词面去挂公共枢纽会把「morning coffee」打成角色卡。
-    mem_n = sum(1 for h in hits if h.kind in MEMORY_KINDS)
-    if CogKind.KNOWLEDGE in selected and mem_n < 8:
+    # 说话人面不含知识。片段很多也展开：否则聊过的专名会盖住已挂载枢纽。
+    if CogKind.KNOWLEDGE in selected:
         expansion = await expand_hub(query, hits, scope=scope)
     else:
         expansion = None

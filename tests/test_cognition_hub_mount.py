@@ -1245,6 +1245,63 @@ def test_expand_ranks_hub_linked_in_current_scope() -> None:
     clear_entity_index()
 
 
+def test_query_token_hits_mounted_hub_without_alias() -> None:
+    """启动挂上的枢纽不在别名表里，query 里的正式名仍要出路径卡。"""
+    clear_entity_index()
+    mem = _HubMem()
+    mem.add_node(_node(nid=1, ref="world:Plug:WindBlade", title="WindBlade"))
+    mem.add_node(_node(nid=2, ref="world:Plug:SilverCup", title="SilverCup"))
+    mem.atts.append(_att(aid=1, node_id=1, slot="资料", title="WindBlade 基础", ref="plugin:a", handle="kb_plugin:a"))
+    mem.atts.append(_att(aid=2, node_id=2, slot="资料", title="SilverCup 基础", ref="plugin:b", handle="kb_plugin:b"))
+    with _mem_patches(mem):
+        with patch("gsuid_core.ai_core.cognition.hub._read_article", new=AsyncMock(return_value="")):
+            with patch("gsuid_core.ai_core.cognition.hub._facts_for_hub", new=AsyncMock(return_value=[])):
+                out = _run(
+                    _expand_hub_body(
+                        "WindBlade 和 SilverCup 哪个合适",
+                        [],
+                        scope=CogScope(user_id="u1", group_id="g1"),
+                    )
+                )
+    assert [c.title for c in out.cards] == ["WindBlade", "SilverCup"] or set(c.title for c in out.cards) == {
+        "WindBlade",
+        "SilverCup",
+    }
+    clear_entity_index()
+
+
+def test_expand_hub_runs_when_memory_fills_page() -> None:
+    from gsuid_core.ai_core.buildin_tools.rag_search import search_cognition
+
+    calls: list[int] = []
+
+    async def _memory_page(query: str, *, kinds: Any, scope: Any, limit: int) -> Any:
+        _ = (query, kinds, scope, limit)
+        return [CognitiveHit(kind=CogKind.EPISODE, id=f"e{i}", title="", summary="chat", score=0.5) for i in range(10)]
+
+    async def _expand(query: str, hits: Any, *, scope: Any) -> ExpandResult:
+        _ = (query, hits, scope)
+        calls.append(1)
+        return ExpandResult(
+            cards=[HubCard(title="WindBlade", hub_ref="world:Plug:WindBlade", as_of="1", plugin="Plug")]
+        )
+
+    deps = SimpleNamespace(
+        ev=SimpleNamespace(user_id="u1", group_id="g1", session_id="s1"),
+        bot=None,
+        extra={},
+        parent_session_id=None,
+    )
+    ctx: Any = SimpleNamespace(deps=deps)
+    with (
+        patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_memory_page),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=_expand),
+    ):
+        text = _run(search_cognition(ctx, query="WindBlade"))
+    assert calls == [1]
+    assert "路径:" in text
+
+
 def test_expand_does_not_inherit_other_scope_link() -> None:
     clear_entity_index()
     register_entity_surface("AbyssPeak", "PeakA", "GameA")

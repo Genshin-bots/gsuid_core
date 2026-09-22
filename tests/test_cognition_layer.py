@@ -486,6 +486,68 @@ def test_memory_hits_are_not_evicted_by_knowledge_rrf() -> None:
     assert all(h.kind is CogKind.EPISODE for h in hits)
 
 
+def test_named_knowledge_keeps_slots_when_memory_fills_limit() -> None:
+    """片段占满 limit 时，标题带专名的知识仍留下，无关知识不占名额。"""
+    from gsuid_core.ai_core.cognition import search_cognition
+
+    mem_hits = {
+        f"m{i}": CognitiveHit(kind=CogKind.EPISODE, id=f"m{i}", title=f"ep{i}", summary="chat", score=0.8)
+        for i in range(8)
+    }
+    kb_hits = {
+        "k_hit": CognitiveHit(
+            kind=CogKind.KNOWLEDGE,
+            id="k_hit",
+            title="北站手册-基础信息",
+            summary="station",
+            score=1.0,
+        ),
+        "k_miss": CognitiveHit(
+            kind=CogKind.KNOWLEDGE,
+            id="k_miss",
+            title="无关条目",
+            summary="other",
+            score=0.9,
+        ),
+    }
+
+    async def _fake_memory(query: str, *, kinds: Any, scope: Any, limit: int, **_kw: Any) -> Any:
+        _ = (query, kinds, scope, limit)
+        return [f"m{i}" for i in range(8)], mem_hits
+
+    async def _fake_kb(query: str, *, scope: Any, limit: int) -> Any:
+        _ = (query, scope, limit)
+        return ["k_hit", "k_miss"], kb_hits
+
+    empty = _empty_backend()
+    with (
+        patch("gsuid_core.ai_core.cognition.facade._search_memory", new=_fake_memory),
+        patch("gsuid_core.ai_core.cognition.facade._search_knowledge_backend", new=_fake_kb),
+        patch("gsuid_core.ai_core.cognition.facade._search_fileos", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_artifacts", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_history", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_records", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_images", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_memes", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_meme_knowledge", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_outbound", new=empty),
+        patch("gsuid_core.ai_core.cognition.facade._search_nodes", new=empty),
+    ):
+        hits = _run(
+            search_cognition(
+                "北站手册 和另一本",
+                kinds=MEMORY_KINDS | KNOWLEDGE_KINDS,
+                scope=CogScope(user_id="u1"),
+                limit=8,
+            )
+        )
+    ids = [h.id for h in hits]
+    assert ids[0].startswith("m")
+    assert "k_hit" in ids
+    assert "k_miss" not in ids
+    assert hits[ids.index("k_hit")].high_confidence
+
+
 def test_search_cognition_drops_weak_episodes_without_needles() -> None:
     """专名不在正文里的片段不得以「命中 24」展开。"""
     from gsuid_core.ai_core.cognition import search_cognition

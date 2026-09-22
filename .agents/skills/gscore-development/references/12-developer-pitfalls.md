@@ -881,6 +881,9 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
   落盘弱挂用搜索 query：先查已有枢纽，过门才建；禁止拿工具名 / `<search_results>` 当标题。
   整页 SERP 只留规则摘要（FileOS `summary` + 挂件），下次用原 query 走 `search_cognition`。
   群关系/进度留记忆边，不要升级成公共层的边。
+- **回想**：片段占满 limit 时仍展开 query 点名的枢纽。别名表没有的正式名，按已挂载枢纽
+  title 精确匹配（不子串；同名多插件不猜）。点名枢纽先于本群偶发枢纽，避免 cap 只剩聊过的名字。
+  专名对得上的知识条留名额，不能被片段路整表挤掉。高置信帽按 kind 计，不按融合下标。
 - **门面**：不要改 `search_cognition → List[CognitiveHit]` 把路径卡塞进返回类型。
   `expand_hub` 外层 fail-open 用独立 i18n `cognition_expand_fail`，不要复用 mount_fail。
 - **A 线旧口径**：跨 kind 自动 RELATED 的 0.92 方案**已被收窄为完整匹配**（T5），

@@ -45,6 +45,8 @@ FULLTEXT_CHAR_LIMIT = 6000
 PATH_ATTACH_CAP = 8
 PATH_FACT_CAP = 4
 HUB_CARD_CAP = 2
+# query 点名的枢纽单独留位。本群偶发枢纽不能把点名的第二、第三个挤出卡片。
+NAMED_HUB_CAP = 4
 MOUNT_YIELD_EVERY = 200
 ENTITY_PAGE_SIZE = 200
 
@@ -1193,9 +1195,10 @@ async def _hubs_from_hits(
     scope: CogScope,
 ) -> Tuple[List[AICogNode], List[str]]:
     seen: set[int] = set()
+    named_ids: set[int] = set()
     hubs: List[AICogNode] = []
 
-    async def _add(node: Optional[AICogNode]) -> None:
+    async def _add(node: Optional[AICogNode], *, named: bool = False) -> None:
         if node is None or node.id is None:
             return
         target = node
@@ -1208,7 +1211,11 @@ async def _hubs_from_hits(
             target = found
         else:
             return
-        if target.id is None or target.id in seen:
+        if target.id is None:
+            return
+        if named:
+            named_ids.add(target.id)
+        if target.id in seen:
             return
         seen.add(target.id)
         hubs.append(target)
@@ -1237,15 +1244,21 @@ async def _hubs_from_hits(
             continue
         seen_surface.add(key)
         ref = lookup_surface(surface_text)
-        if ref is None or not ref.bindings:
+        if ref is not None and ref.bindings:
+            for owner, canon in ref.bindings:
+                if not owner or not canon:
+                    continue
+                await _add(await AICogNode.get(CogKind.ENTITY, make_world_ref(owner, canon)), named=True)
+                for hub in await AICogNode.list_world_hubs_by_title(canon):
+                    if plugin_from_world_ref(hub.ref) == owner:
+                        await _add(hub, named=True)
             continue
-        for owner, canon in ref.bindings:
-            if not owner or not canon:
-                continue
-            await _add(await AICogNode.get(CogKind.ENTITY, make_world_ref(owner, canon)))
-            for hub in await AICogNode.list_world_hubs_by_title(canon):
-                if plugin_from_world_ref(hub.ref) == owner:
-                    await _add(hub)
+        # 别名表没有的正式名：启动已挂上的枢纽按 title 精确命中。同名多插件不猜。
+        if not _is_indexable(key):
+            continue
+        titled = await AICogNode.list_world_hubs_by_title(surface_text)
+        if len(titled) == 1:
+            await _add(titled[0], named=True)
 
     fact_scope = _fact_scope_key(scope)
     mappings: Dict[str, str] = {}
@@ -1257,16 +1270,24 @@ async def _hubs_from_hits(
         mappings = profile["term_mappings"]
         for formal in mapping_formals_in_query(query, mappings):
             for hub in await AICogNode.list_world_hubs_by_title(formal):
-                await _add(hub)
+                await _add(hub, named=True)
         canons = set(await AICogNode.list_world_canons_in_scope(fact_scope))
 
     formal = _formal_from_query(query)
     if formal:
         for hub in await AICogNode.list_world_hubs_by_title(formal):
-            await _add(hub)
+            await _add(hub, named=True)
 
     ordered = _rank_hubs_for_scope(hubs, query, canons=canons, mappings=mappings)
-    return ordered[:HUB_CARD_CAP], [h.title for h in ordered[HUB_CARD_CAP:]]
+    named = [h for h in ordered if h.id in named_ids]
+    rest = [h for h in ordered if h.id not in named_ids]
+    shown = named[:NAMED_HUB_CAP]
+    if len(shown) < HUB_CARD_CAP:
+        shown.extend(rest[: HUB_CARD_CAP - len(shown)])
+        extra_nodes = rest[HUB_CARD_CAP - len(shown) :]
+    else:
+        extra_nodes = named[NAMED_HUB_CAP:] + rest
+    return shown, [h.title for h in extra_nodes]
 
 
 def _is_public_article_handle(handle: str) -> bool:

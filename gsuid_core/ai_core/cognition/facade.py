@@ -38,6 +38,7 @@ from gsuid_core.ai_core.memory.retrieval.lexical import (
     strip_clock_lines,
     query_overlaps_text,
     expand_lexical_recall,
+    query_required_needles,
     text_has_query_needles,
 )
 
@@ -62,9 +63,12 @@ def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
     return "落盘"
 
 
-# 各路头名相对分永远过线；知识/落盘/媒体融合名次再收口，避免公共库噪声全标高置信。
+# 各路头名相对分永远过线；知识/落盘/媒体按本类名次收口，避免公共库噪声全标高置信。
 # 记忆片段/事实/偏好不过这条帽——否则「命中 12」只展开 4 条，比纯 Episode dump 更差。
+# 帽按 kind 计，不按融合下标：片段占满前排时，排在后面的知识不能整段变成弱相关。
 _HIGH_CONF_FUSED_CAP = 4
+# 专名对得上的知识条预留名额。片段先占满 limit 时，已挂载资料会整路消失。
+_KNOWLEDGE_SLOT_RESERVE = 4
 _FUSED_CAP_KINDS = KNOWLEDGE_KINDS | WORK_KINDS | MEDIA_KINDS
 # 工具回执：高置信片段最多摊开这么多条，其余进「未展开」。
 _EPISODE_EXPAND_CAP = 16
@@ -211,12 +215,17 @@ async def search_cognition(
         logger.debug(t("log.ai.cognition_empty", q=query[:40]))
         return []
 
-    fused_ids = _fuse_ids(ranked_lists, labels, limit=limit)
+    fused_ids = _fuse_ids(ranked_lists, labels, limit=limit, merged=merged, query=query)
     ordered = [merged[i] for i in fused_ids if i in merged]
+    kind_hi: Dict[CogKind, int] = {}
     capped: List[CognitiveHit] = []
-    for i, hit in enumerate(ordered):
-        if i >= _HIGH_CONF_FUSED_CAP and hit.high_confidence and hit.kind in _FUSED_CAP_KINDS:
-            hit = replace(hit, high_confidence=False)
+    for hit in ordered:
+        if hit.high_confidence and hit.kind in _FUSED_CAP_KINDS:
+            n = kind_hi[hit.kind] if hit.kind in kind_hi else 0
+            if n >= _HIGH_CONF_FUSED_CAP:
+                hit = replace(hit, high_confidence=False)
+            else:
+                kind_hi[hit.kind] = n + 1
         capped.append(hit)
     final = await _drop_stale_handles(capped)
     # 弱相关片段不进结果：相对分在 RRF 名次上几乎拉不开，专名零命中也会报「命中 24」。
@@ -238,30 +247,67 @@ async def search_cognition(
     return final
 
 
-def _fuse_ids(ranked_lists: List[List[str]], labels: List[str], *, limit: int) -> List[str]:
-    """记忆路先占满 limit，知识/落盘只填剩余。RRF 平权会把公共文插进个人片段名额。"""
+def _knowledge_mentions_query(hit: CognitiveHit, query: str) -> bool:
+    """知识条要带上 query 里的专名才占预留名额。汉字不进专名正则，改对可索引词。"""
+    body = f"{hit.title}\n{hit.summary}"
+    if query_required_needles(query):
+        return text_has_query_needles(query, body)
+    from gsuid_core.ai_core.entity_index import _normalize_surface
+    from gsuid_core.ai_core.cognition.hub import title_tokens
+
+    blob = _normalize_surface(body)
+    for tok in title_tokens(query):
+        key = _normalize_surface(tok)
+        if len(key) < 2 or (key.isascii() and len(key) < 3):
+            continue
+        if key in blob:
+            return True
+    return False
+
+
+def _fuse_ids(
+    ranked_lists: List[List[str]],
+    labels: List[str],
+    *,
+    limit: int,
+    merged: Dict[str, CognitiveHit],
+    query: str,
+) -> List[str]:
+    """记忆在前。专名对得上的知识留名额，避免片段占满后知识整路消失。"""
     from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
 
     memory_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab == "memory"]
     other_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab != "memory"]
     mem_ids = rrf_fuse(memory_lists, limit=limit) if memory_lists else []
     other_ids = rrf_fuse(other_lists, limit=limit) if other_lists else []
+    knowledge_ids = [
+        rid
+        for rid in other_ids
+        if rid in merged and merged[rid].kind is CogKind.KNOWLEDGE and _knowledge_mentions_query(merged[rid], query)
+    ]
+    reserve = min(_KNOWLEDGE_SLOT_RESERVE, len(knowledge_ids))
+    mem_cap = limit - reserve
     out: List[str] = []
     seen: Set[str] = set()
-    for rid in mem_ids:
+
+    def _take(rid: str) -> bool:
         if rid in seen:
-            continue
+            return False
         seen.add(rid)
         out.append(rid)
-        if len(out) >= limit:
+        return len(out) >= limit
+
+    for rid in mem_ids:
+        if len(out) >= mem_cap:
+            break
+        if _take(rid):
+            return out
+    for rid in knowledge_ids:
+        if _take(rid):
             return out
     for rid in other_ids:
-        if rid in seen:
-            continue
-        seen.add(rid)
-        out.append(rid)
-        if len(out) >= limit:
-            break
+        if _take(rid):
+            return out
     return out
 
 
