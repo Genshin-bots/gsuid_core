@@ -23,5 +23,8 @@
   "log.database.subscription_ws_bot_id_invalid": "[購読] WS_BOT_ID {p0} は無効なため、{ws_bot_id} に自動的に切り替える",
   "log.database.temporary_connection": "[データベース] 一時データベース接続を解放した！",
   "log.database.uuid4_command_purge_done": "[データベース] on_message の uuid4 偽コマンドを {deleted} 件削除し、要約 {summaries} 件を書き戻した",
-  "log.database.uuid4_command_purge_skip": "[データベース] CoreDataAnalysis に uuid4 偽コマンドはないため、清理をスキップ"
+  "log.database.uuid4_command_purge_skip": "[データベース] CoreDataAnalysis に uuid4 偽コマンドはないため、清理をスキップ",
+  "log.database.write_timeout": "[データベース] 書き込みが {budget}s を超えたため中止し、書き込みロックを解放した: {operation}",
+  "log.database.write_timeout_close_fail": "[データベース] 書き込み中止時に接続を閉じられなかった: {e}",
+  "log.database.write_timeout_linger": "[データベース] 書き込みは中止したが、コルーチンはまだ動いている: {operation}"
 }

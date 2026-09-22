@@ -20,6 +20,7 @@ from .base_models import (
     BaseIDModel,
     BaseBotIDModel,
     with_session,
+    with_read_session,
 )
 
 
@@ -258,7 +259,7 @@ class CoreUser(BaseBotIDModel, table=True):
         return len(to_delete_ids)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_user(
         cls,
         session: AsyncSession,
@@ -267,7 +268,7 @@ class CoreUser(BaseBotIDModel, table=True):
         return result
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_user_list(
         cls,
         session: AsyncSession,
@@ -280,7 +281,7 @@ class CoreUser(BaseBotIDModel, table=True):
         return data
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_distinct_user_count(
         cls,
         session: AsyncSession,
@@ -290,7 +291,7 @@ class CoreUser(BaseBotIDModel, table=True):
         return int(result.scalar_one() or 0)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_group_all_user(
         cls,
         session: AsyncSession,
@@ -300,7 +301,7 @@ class CoreUser(BaseBotIDModel, table=True):
         return result
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_group_all_user_count(
         cls,
         session: AsyncSession,
@@ -310,8 +311,35 @@ class CoreUser(BaseBotIDModel, table=True):
         return len(result) if result else 0
 
     @classmethod
-    @with_session
     async def insert_user(
+        cls,
+        bot_id: str,
+        user_id: str,
+        group_id: Optional[str],
+        user_name: Optional[str],
+        user_icon: Optional[str],
+    ) -> int:
+        # 每条消息都会进来。画像没变时只读，不占写闸门。
+        matched = await cls.base_select_data(
+            bot_id=bot_id,
+            user_id=user_id,
+            group_id=group_id,
+            user_name=user_name,
+            user_icon=user_icon,
+        )
+        if matched is not None:
+            return 1
+        return await cls._insert_user_if_changed(
+            bot_id,
+            user_id,
+            group_id,
+            user_name,
+            user_icon,
+        )
+
+    @classmethod
+    @with_session
+    async def _insert_user_if_changed(
         cls,
         session: AsyncSession,
         bot_id: str,
@@ -425,7 +453,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         return len(to_delete_ids)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_group(
         cls,
         session: AsyncSession,
@@ -434,7 +462,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         return result
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_group_list(
         cls,
         session: AsyncSession,
@@ -447,7 +475,7 @@ class CoreGroup(BaseBotIDModel, table=True):
         return data
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_distinct_group_count(
         cls,
         session: AsyncSession,

@@ -446,13 +446,18 @@ class AIKnowledgeChunk(SQLModel, table=True):
         if not rows:
             return 0
         await cls.ensure_table()
-        from gsuid_core.utils.database.base_models import async_maker
+        from gsuid_core.utils.database.base_models import _UPSERT_CHUNK
 
-        async with async_maker() as session:
-            for row in rows:
-                await session.merge(row)
-            await session.commit()
+        step = _UPSERT_CHUNK
+        for start in range(0, len(rows), step):
+            await cls._merge_chunk(rows[start : start + step])
         return len(rows)
+
+    @classmethod
+    @with_session
+    async def _merge_chunk(cls, session: AsyncSession, rows: List["AIKnowledgeChunk"]) -> None:
+        for row in rows:
+            await session.merge(row)
 
     @classmethod
     async def get_by_id(cls, entity_id: str) -> Optional["AIKnowledgeChunk"]:
@@ -523,25 +528,30 @@ class AIKnowledgeChunk(SQLModel, table=True):
         if not ids:
             return 0
         await cls.ensure_table()
-        from gsuid_core.utils.database.base_models import async_maker
+        from gsuid_core.utils.database.base_models import _UPSERT_CHUNK
 
-        async with async_maker() as session:
-            await session.execute(delete(cls).where(col(cls.id).in_(ids)))
-            await session.commit()
+        step = _UPSERT_CHUNK
+        for start in range(0, len(ids), step):
+            await cls._delete_id_chunk(ids[start : start + step])
         return len(ids)
+
+    @classmethod
+    @with_session
+    async def _delete_id_chunk(cls, session: AsyncSession, ids: List[str]) -> None:
+        await session.execute(delete(cls).where(col(cls.id).in_(ids)))
 
     @classmethod
     async def delete_doc(cls, doc_id: str) -> List[str]:
         """删除整篇文档的全部分片，返回被删分片的 qdrant_id 列表（供清理向量）。"""
         await cls.ensure_table()
-        from gsuid_core.utils.database.base_models import async_maker
+        return await cls._delete_doc(doc_id)
 
-        async with async_maker() as session:
-            rows = (await session.execute(select(cls).where(cls.doc_id == doc_id))).scalars().all()
-            qids = [r.qdrant_id for r in rows if r.qdrant_id]
-            if rows:
-                # AGENTS.md §3.5.1: 比较表达式一律用 col() 包裹列
-                # (delete 是 SQLAlchemy 原生, where() 严格只收 ColumnElement[bool])。
-                await session.execute(delete(cls).where(col(cls.doc_id) == doc_id))
-                await session.commit()
-            return qids
+    @classmethod
+    @with_session
+    async def _delete_doc(cls, session: AsyncSession, doc_id: str) -> List[str]:
+        rows = (await session.execute(select(cls).where(cls.doc_id == doc_id))).scalars().all()
+        qids = [r.qdrant_id for r in rows if r.qdrant_id]
+        if rows:
+            # delete().where 只收 ColumnElement，裸比较在这里是 bool。
+            await session.execute(delete(cls).where(col(cls.doc_id) == doc_id))
+        return qids

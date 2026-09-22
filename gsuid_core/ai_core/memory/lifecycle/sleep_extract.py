@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.utils.database.base_models import DatabaseWriteTimeout
 
 _THREAD_COSINE = 0.92
 _SLEEP_BATCH = 8
@@ -253,6 +254,6 @@ async def run_sleep_extract_tick(limit: int = _SLEEP_BATCH) -> int:
 
         try:
             done += await run_gist_backfill_tick(limit=limit - done)
-        except (OSError, SQLAlchemyError) as e:
+        except (OSError, SQLAlchemyError, DatabaseWriteTimeout) as e:
             logger.debug(i18n_t("log.memory.gist_backfill_fail", scope_key="tick", e=e))
     return done

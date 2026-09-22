@@ -941,7 +941,7 @@ class AIMemEpisode(SQLModel, table=True):
         return len(episode_ids)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_mentioned_entity_ids(cls, session: AsyncSession, episode_ids: list[str]) -> list[str]:
         """取一批 Episode 提及的全部 Entity ID（去重）。
 
@@ -1170,10 +1170,20 @@ class AIMemTurnGist(SQLModel, table=True):
         return list(result.scalars().all())
 
     @classmethod
-    @with_session
-    async def upsert_rows(cls, session: AsyncSession, rows: list["AIMemTurnGist"]) -> int:
+    async def upsert_rows(cls, rows: list["AIMemTurnGist"]) -> int:
         if not rows:
             return 0
+        from gsuid_core.utils.database.base_models import _UPSERT_CHUNK
+
+        total = 0
+        step = _UPSERT_CHUNK
+        for start in range(0, len(rows), step):
+            total += await cls._upsert_row_chunk(rows[start : start + step])
+        return total
+
+    @classmethod
+    @with_session
+    async def _upsert_row_chunk(cls, session: AsyncSession, rows: list["AIMemTurnGist"]) -> int:
         n = 0
         for row in rows:
             exist = await session.get(cls, row.episode_id)
@@ -1681,7 +1691,7 @@ class AIMemEntity(SQLModel, table=True):
         return victims
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_frequent_names(
         cls,
         session: AsyncSession,
@@ -1702,7 +1712,7 @@ class AIMemEntity(SQLModel, table=True):
         return [row[0] for row in result.all()]
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_names_by_ids(cls, session: AsyncSession, entity_ids: list[str]) -> dict[str, str]:
         """批量取 {entity_id: name}（供 RF-Mem 关系投影补全 Edge 的 source/target 名称）。"""
         if not entity_ids:
@@ -1893,7 +1903,7 @@ class AIMemEdge(SQLModel, table=True):
     )
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_for_entities(
         cls,
         session: AsyncSession,
@@ -1982,7 +1992,7 @@ class AIMemEdge(SQLModel, table=True):
     # ── C11 记忆生命周期 ───────────────────────────
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_confidence_inputs(cls, session: AsyncSession, edge_ids: list[str]) -> dict[str, tuple[int, float]]:
         """批量取边的置信度输入 {id: (mention_count, decay_score)}。
 
@@ -2196,7 +2206,7 @@ class AIMemConflict(SQLModel, table=True):
         )
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_signatures(
         cls,
         session: AsyncSession,
@@ -2443,7 +2453,7 @@ class AIMemPreference(SQLModel, table=True):
         return new_id, True
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_active(
         cls,
         session: AsyncSession,
@@ -2488,7 +2498,7 @@ class AIMemPreference(SQLModel, table=True):
         )
 
     @classmethod
-    @with_session
+    @with_read_session
     async def count_active(cls, session: AsyncSession, scope_keys: Optional[list[str]] = None) -> int:
         """统计活跃偏好规则数（WebConsole stats 用）。"""
         stmt = select(func.count()).select_from(cls).where(col(cls.is_active).is_(True))

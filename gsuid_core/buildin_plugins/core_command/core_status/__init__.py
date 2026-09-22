@@ -20,19 +20,20 @@ template = """收:{}
 当前会话调用：{}"""
 
 
-async def count_group_user():
+async def count_group_user() -> None:
     user_list: Sequence[CoreUser] = await CoreUser.get_all_data()
-    group_data = {}
+    group_data: dict[str, int] = {}
     for user in user_list:
-        if user.group_id and user.group_id not in group_data:
-            data = await CoreUser.select_rows(group_id=user.group_id)
-            if data:
-                group_data[user.group_id] = len(data)
-            else:
-                group_data[user.group_id] = 0
+        gid = user.group_id
+        if not gid:
+            continue
+        if gid in group_data:
+            group_data[gid] += 1
+        else:
+            group_data[gid] = 1
 
-    for g in group_data:
-        await CoreGroup.update_data_by_xx({"group_id": g}, group_count=group_data[g])
+    for gid in group_data:
+        await CoreGroup.update_data_by_xx({"group_id": gid}, group_count=group_data[gid])
 
 
 @scheduler.scheduled_job("cron", hour="0", minute="0")

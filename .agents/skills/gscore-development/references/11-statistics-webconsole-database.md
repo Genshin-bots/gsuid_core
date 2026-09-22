@@ -173,6 +173,20 @@ class CoreUser(BaseBotIDModel, table=True):
         return (await session.execute(stmt)).scalar_one_or_none()
 ```
 
+SQLite 写走一把进程内闸门（`sqlite_write_gate`，与记忆的 `db_write_guard` 是同一把）。
+`gsuid_core.*` 的写在排队时排在插件前面。纯 SELECT（`select_rows` / `get_all_data` 等）
+走 `@with_read_session`：读连接 `query_only`，不进这把闸门。`journal_mode=WAL` 只在启动时
+设一次；每条连接先设 `busy_timeout`（5 秒）。`batch_insert_data_with_update` 按 400 行提交。
+
+`@with_session` 在 SQLite 上从拿到闸门起最多 10 秒（`_WRITE_BUDGET_S`）。超时取消该协程、
+等连接 `close()` 结束才放开闸门、打 `log.database.write_timeout`，并抛 `DatabaseWriteTimeout`，
+不进入锁竞争重试。MySQL / PostgreSQL 不套这道预算。收尾宽限内协程若已正常返回，调用方拿到
+该返回值，不报超时。同一任务里的嵌套写复用外层连接，包一层 savepoint：失败只回滚这一层并重试
+锁错误，外层 `commit` 不会把失败语句之前的半截写入一起提交。`create_task` 出去的子任务另开连接。
+检索用的纯 SELECT（偏好、边、实体名、日统计、`CoreUser.get_all_user` / `CoreGroup.get_all_group`）
+走读会话。每条消息的 `insert_user` 在画像未变时不进写闸门。`DeliveryLedger.check_and_claim` 的插入、
+过期 state 删除、知识库分片写入走同一把闸门。插件里直接 `async_maker()` 的写仍不进闸门。
+
 **AI 表与总开关的关系（重要）**：`create_core_tables`（`on_core_start_before`，见 [§02](./02-startup-lifecycle.md)）
 在 **AI 总开关关闭时跳过创建所有 AI 表**。所以关 AI 时 SQLite 不会出现任何 AI 相关表，省体积。
 加 AI 表时记得挂到这条受总开关控制的建表路径，而非无条件建。

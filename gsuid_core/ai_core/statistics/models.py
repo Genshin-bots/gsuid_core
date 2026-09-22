@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.base_models import BaseIDModel, with_session
+from gsuid_core.utils.database.base_models import BaseIDModel, with_session, with_read_session
 
 
 class AIDailyStatistics(BaseIDModel, table=True):
@@ -116,7 +116,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
         return datetime.now().strftime("%Y-%m-%d")
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_daily_stats(
         cls,
         session: AsyncSession,
@@ -128,7 +128,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
         return result.scalars().first()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_stats_between(
         cls,
         session: AsyncSession,

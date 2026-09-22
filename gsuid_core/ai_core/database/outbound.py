@@ -16,7 +16,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gsuid_core.utils.database.base_models import BaseIDModel, async_maker, with_session
+from gsuid_core.utils.database.base_models import (
+    BaseIDModel,
+    async_maker,
+    with_session,
+    sqlite_gated_write,
+)
 
 _TTL_SEC = 7 * 24 * 3600
 
@@ -204,23 +209,25 @@ class DeliveryLedger(BaseIDModel, table=True):
             existing = (await session.execute(stmt)).scalar_one_or_none()
             if existing is not None:
                 return DeliveryHit(ts=int(existing.ts), session_id=existing.session_id or "")
-            session.add(
-                cls(
-                    group_id=gid[:80],
-                    res_id=rid[:64],
-                    session_id=(session_id or "")[:256],
-                    ts=int(time.time()),
+            # 已存在只读。插入才占写闸门，冲突靠唯一约束收回。
+            async with sqlite_gated_write():
+                session.add(
+                    cls(
+                        group_id=gid[:80],
+                        res_id=rid[:64],
+                        session_id=(session_id or "")[:256],
+                        ts=int(time.time()),
+                    )
                 )
-            )
-            try:
-                await session.commit()
-            except IntegrityError:
-                await session.rollback()
-                raced = (await session.execute(stmt)).scalar_one_or_none()
-                if raced is None:
-                    return DeliveryHit(ts=int(time.time()), session_id=session_id)
-                return DeliveryHit(ts=int(raced.ts), session_id=raced.session_id or "")
-            return None
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    raced = (await session.execute(stmt)).scalar_one_or_none()
+                    if raced is None:
+                        return DeliveryHit(ts=int(time.time()), session_id=session_id)
+                    return DeliveryHit(ts=int(raced.ts), session_id=raced.session_id or "")
+                return None
 
     @classmethod
     @with_session

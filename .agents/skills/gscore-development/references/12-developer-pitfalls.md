@@ -213,6 +213,15 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 - SQLModel 不写 `__tablename__`；数据库方法写类里、用 `@with_session`（写）/ `@with_read_session`（纯 SELECT）；Schema 升级走
   `on_core_start_before` 的 `exec_list`/`trans_adapter`（见 [§11](./11-statistics-webconsole-database.md)）。
 - AI 表要挂到受总开关控制的建表路径，不要无条件建。
+- **`@with_session` 写预算只作用于 SQLite**（`_WRITE_BUDGET_S` = 10 秒，不含等闸门）。超时取消这次调用、
+  等连接 `close()` 结束才放开闸门、打 `log.database.write_timeout`，抛 `DatabaseWriteTimeout`，不重试。
+  MySQL / PostgreSQL 不套这道预算。收尾宽限内协程若已正常返回，把返回值交回调用方。
+  插件吞掉 `CancelledError` 时仍会关连接，避免一把坏写卡住后面的写。
+  SQLite 写只有一把闸门，优先级按**定义模块**而不是调用方；WAL 只在启动时打开，读连接是 `query_only`。
+  嵌套复用只认打开 session 的那个任务，并用 savepoint 包住这一层：失败语句不会跟着外层 `commit` 落库。
+  `state_set_value` / `state_mutate` / `state_delete_value` 走 `db_write_guard()`。过期 state 删除、
+  `DeliveryLedger.check_and_claim` 的插入、知识库 `upsert_many` / `delete_ids` / `delete_doc` 也进闸门。
+  插件里直接 `async_maker()` 的写仍不进闸门。`AIMemTurnGist.upsert_rows` 按 400 行分块提交。
 - **ORM 查询类型安全**（别用 `cast`/`type:ignore`/`getattr` 糊弄 basedpyright，见
   [`AGENTS.md`](../../../../AGENTS.md) §3.5）：① `where`/`order_by`/`group_by` 里的列一律 `col()` 包裹
   （`col(cls.x) >= v` 才是 `ColumnElement[bool]`，裸 `cls.x >= v` 是 `bool`，`delete()/update().where()`
@@ -327,8 +336,8 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
   **不走 C6 SELF 轻量路由**，否则半数事实被跳过抽取、探针召回不到。
 - **SQLite 写并发**：窗口化并发多路写会撞 `UNIQUE(scope_key,name)` / `database is locked`。
   `entity.py`/`edge.py` 用**乐观重试**（`IntegrityError`/`OperationalError` 退避 6 次）+
-  进程内 `db_write_guard()` / `under_db_write()`（`eval_write_lock.py`，**线上与 eval 共用**）
-  串行化 commit 级写。**铁律**：LLM / 嵌入 / Qdrant 混合检索必须在写锁外（entity 先
+  进程内 `db_write_guard()` / `under_db_write()`（`eval_write_lock.py`，**线上与 eval 共用**，
+  与 `@with_session` 是同一把 `sqlite_write_gate`）串行化 commit 级写。**铁律**：LLM / 嵌入 / Qdrant 混合检索必须在写锁外（entity 先
   `prefetch_hybrid_name_ids` 再锁内 SQL 写；hiergraph 向量预分配同理）。热路径 Episode /
   Preference / `touch_accessed` / `touch_applied` / 生命周期大写也走同一把锁。Conflict 记
   录用 `AIMemConflict.attach(session, …)` **同事务**，禁止在未提交 session 内再调

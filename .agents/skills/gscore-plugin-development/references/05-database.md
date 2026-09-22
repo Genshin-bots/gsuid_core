@@ -109,11 +109,11 @@ class GameBind(BaseModel, table=True):
 
 | 装饰器 | 适用 | SQLite（WAL） |
 |--------|------|----------------|
-| `@with_session` | 写入 / 读后写 / 删除 | 写槽（上限 8） |
-| `@with_read_session` | **纯 SELECT** | 独立读槽（上限 24），不跟大写抢 |
+| `@with_session` | 写入 / 读后写 / 删除 | 单写者闸门；`gsuid_core.*` 排队时优先于插件 |
+| `@with_read_session` | **纯 SELECT** | 独立读槽（上限 24），连接为 `query_only` |
 
-MySQL / PostgreSQL 没有这两条信号量，两者都走连接池；SQLite 部署下只读查询请用
-`@with_read_session`，避免大写占满写槽后把只读查询堵住。
+MySQL / PostgreSQL 没有这把闸门，两者都走连接池；SQLite 部署下只读查询请用
+`@with_read_session`，避免只读查询占住唯一的写者。
 
 签名规则两者相同：
 
@@ -160,6 +160,14 @@ class UserData(BaseModel, table=True):
 - 装饰器自动 commit，异常自动回滚
 - 已处理事务，**不要**在方法内手动 `await session.commit()`
 - 方法里有 `session.add` / `delete` / `update` → 只能 `@with_session`，不能挂读装饰器
+- SQLite 上 `@with_session` 有 **10 秒硬超时**（从拿到写闸门开始算，不含排队）。
+  MySQL / PostgreSQL 没有这道超时。超时抛
+  `gsuid_core.utils.database.base_models.DatabaseWriteTimeout`，并在连接关掉之后才放开写闸门。
+  收尾宽限内若写协程已经正常返回，调用方拿到返回值，不报超时。
+  不要在写方法里等待 HTTP / 长时间 `sleep`。`@with_read_session` 不套这个预算。
+  定义在插件模块里的写会排在 `gsuid_core.*` 写的后面。优先级看方法定义在哪个模块，
+  不看是谁调用的。同一个任务里的嵌套写复用外层连接，并用 savepoint 包住；内层失败不会让外层
+  把半截写入提交掉。`create_task` 的子任务不会复用。
 
 ## 5.4 `async_maker` — 手动管理 Session
 
@@ -177,6 +185,7 @@ async def batch_cleanup():
 ```
 
 > **⚠️ 警告**：使用 `async_maker` 时需要手动调用 `await session.commit()`，这与会话装饰器自动 commit 不同。
+> SQLite 上直接 `async_maker()` 的写不进单写者闸门。会和聊天抢锁的写请用 `@with_session`。
 
 ## 5.5 把数据库表注册到 Web 控制台
 

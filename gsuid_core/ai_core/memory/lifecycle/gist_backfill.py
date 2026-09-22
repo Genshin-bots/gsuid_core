@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.utils.database.base_models import DatabaseWriteTimeout
 
 
 async def backfill_rule_scope(scope_key: str, limit: int = 4000) -> int:
@@ -17,7 +18,6 @@ async def backfill_rule_scope(scope_key: str, limit: int = 4000) -> int:
         return 0
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemTurnGist
     from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
     from gsuid_core.ai_core.memory.retrieval.ledger_timeline import LEDGER_LINE_CHARS, rule_gist
 
     eps = await AIMemEpisode.list_by_scope(scope_key, limit=limit)
@@ -54,8 +54,7 @@ async def backfill_rule_scope(scope_key: str, limit: int = 4000) -> int:
         )
     if not rows:
         return 0
-    async with db_write_guard():
-        n = await AIMemTurnGist.upsert_rows(rows)
+    n = await AIMemTurnGist.upsert_rows(rows)
     logger.info(i18n_t("log.memory.gist_backfill", scope_key=scope_key, n=n, source="rule"))
     return n
 
@@ -142,8 +141,7 @@ async def backfill_llm_session(session_id: str, *, force: bool = False) -> int:
         )
     if not out:
         return 0
-    async with db_write_guard():
-        n = await AIMemTurnGist.upsert_rows(out)
+    n = await AIMemTurnGist.upsert_rows(out)
     if title:
         async with db_write_guard():
             await AIMemSession.set_title(session_id, title, "llm")
@@ -164,7 +162,7 @@ async def run_gist_backfill_tick(limit: int = 8) -> int:
         seen.add(sess.scope_key)
         try:
             done += await backfill_rule_scope(sess.scope_key)
-        except (OSError, SQLAlchemyError) as e:
+        except (OSError, SQLAlchemyError, DatabaseWriteTimeout) as e:
             logger.debug(i18n_t("log.memory.gist_backfill_fail", scope_key=sess.scope_key, e=e))
         if done >= limit:
             break

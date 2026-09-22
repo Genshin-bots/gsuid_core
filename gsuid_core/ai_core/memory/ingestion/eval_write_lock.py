@@ -1,31 +1,33 @@
-"""进程内 SQLite 写串行化锁（记忆热路径 commit 级写）。
+"""进程内 SQLite 写闸门（记忆热路径 commit 级写）。
 
-SQLite 单写者：多 scope flush、检索 touch、偏好/生命周期写会互撞。
-规则：① LLM/嵌入/Qdrant 检索在锁外；② 仅短 SQL 写事务持锁（毫秒交接）。
+与 ``@with_session`` 共用 ``sqlite_write_gate``。规则：
+① LLM/嵌入/Qdrant 检索在锁外；② 仅短 SQL 写事务持锁。
+``async with`` 走框架优先级。同一任务可重入。
 """
 
-import asyncio
 from typing import TypeVar
 from collections.abc import Callable, Awaitable
 
+from gsuid_core.utils.database.write_gate import SqliteWriteGate, sqlite_write_gate
+
 # 兼容旧名：历史文档/评测 changelog 仍称 EVAL_DB_WRITE_LOCK
-EVAL_DB_WRITE_LOCK = asyncio.Lock()
-DB_WRITE_LOCK = EVAL_DB_WRITE_LOCK
+EVAL_DB_WRITE_LOCK = sqlite_write_gate
+DB_WRITE_LOCK = sqlite_write_gate
 
 _T = TypeVar("_T")
 
 
-def eval_write_guard() -> asyncio.Lock:
-    """返回进程内 SQLite 写串行化锁（线上与 eval 共用，async with 即可）。"""
-    return DB_WRITE_LOCK
+def eval_write_guard() -> SqliteWriteGate:
+    """返回进程内 SQLite 写闸门（线上与 eval 共用，async with 走框架优先级）。"""
+    return sqlite_write_gate
 
 
-def db_write_guard() -> asyncio.Lock:
+def db_write_guard() -> SqliteWriteGate:
     """eval_write_guard 的语义别名（非 eval 专用）。"""
-    return DB_WRITE_LOCK
+    return sqlite_write_gate
 
 
 async def under_db_write(fn: Callable[[], Awaitable[_T]]) -> _T:
-    """在写锁内执行无参协程（供 with_session 写方法外包一层）。"""
-    async with DB_WRITE_LOCK:
+    """在写闸门内执行无参协程（供 with_session 写方法外包一层）。"""
+    async with sqlite_write_gate:
         return await fn()
