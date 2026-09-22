@@ -31,6 +31,7 @@ from gsuid_core.ai_core.rag.tools import (
     get_tools_by_context_tags,
     search_tools_with_entity_routing,
 )
+from gsuid_core.ai_core.tool_risk import skill_tool_visible
 from gsuid_core.ai_core.tool_safety import build_tool_safety_capability
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
@@ -739,7 +740,9 @@ class ToolsPhase(RunOnceHost):
         """构建 pydantic-ai Agent 与流式统计元数据；返回 Agent 实例。"""
         # 当 return_model 指定时，使用 st.output_type 让 pydantic_ai 强制结构化输出
         # st.output_type 默认为 str（返回文本），指定 Pydantic 模型时强制返回结构化 JSON
-        _toolsets = [skills_toolset] if self.create_by in _SKILLS_CREATE_BY and not st.addr_gated else []
+        # 非主人在 get_tools 时看不见 run_skill_script；执行期还有 wrap_tool_execute。
+        _guarded_skills = skills_toolset.filtered(skill_tool_visible)
+        _toolsets = [_guarded_skills] if self.create_by in _SKILLS_CREATE_BY and not st.addr_gated else []
         # 启用渐进式暴露时挂 RetrievableToolset：每个 step 读 dynamic_tool_names 即时暴露命中工具。
         # exclude_names：静态池 + 能力代理专属（防 find_tools 把已剥离工具回灌主人格）。
         if st.expose_dynamic:

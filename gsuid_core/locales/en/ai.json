@@ -623,5 +623,9 @@
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results",
   "log.ai.outbound_read_skip": "[Outbound] skip ledger read: {e}",
   "log.ai.outbound_purge_skip": "[Outbound] skip expiry purge: {e}",
-  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] refuse duplicate image {res_id} group={group_id} sent at {ts}"
+  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] refuse duplicate image {res_id} group={group_id} sent at {ts}",
+  "log.ai.tool_risk_refused_node": "[ToolRisk] refused non-master capability node node={node_id} user={user_id}",
+  "log.ai.tool_risk_refused_tool": "[ToolRisk] refused non-master high-risk tool user={user_id}",
+  "log.ai.tool_risk_master_exec_file": "[ToolRisk] master executed file user={user_id} path={path}",
+  "log.ai.tool_risk_stripped": "[ToolRisk] stripped high-risk tools from non-master agent user={user_id} names={names}"
 }

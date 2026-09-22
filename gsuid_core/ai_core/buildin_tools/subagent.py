@@ -229,7 +229,7 @@ async def create_subagent(
     ## 路由（agent_profile 填 node_id，禁止自造名）
     - ``research_agent``：外部检索 / 综合分析 → **只交事实包**（来源+时点）
     - ``render_agent``：把**已有**事实包渲成美观信息图（多项数据出图**必走**；主人格禁自渲）
-    - ``code_agent``：写代码 / PIL·脚本真文件产物（不是 HTML 信息卡）
+    - ``code_agent``：写代码 / PIL·脚本真文件产物（不是 HTML 信息卡；仅主人可委派）
     - ``internal_reporter`` / ``memory_curator`` / ``scheduler_assistant`` / …
       见本轮 system 能力清单
 
@@ -334,6 +334,12 @@ async def _create_subagent_impl(
             ids = [n.node_id for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"][:8]
             listed = "、".join(ids) if ids else "（花名册为空）"
             return f"未匹配到能力节点 `{agent_profile.strip()}`。可用 node_id：{listed}"
+        from gsuid_core.ai_core.tool_risk import refuse_master_only_node
+        from gsuid_core.ai_core.agent_node import get_node
+
+        blocked = refuse_master_only_node(ctx.deps.ev, get_node(pid))
+        if blocked:
+            return blocked
         use_transient = pid in _TRANSIENT_DEFAULT_PROFILES
         if not use_transient and transient and not ctx.deps.allow_user_outbound:
             use_transient = True
@@ -357,8 +363,10 @@ async def _create_subagent_impl(
             limit=8,
             non_category="self",
         )
-        # 子Agent不能再创建子Agent，防止递归爆炸
-        tools = [t for t in tools if t.name != "create_subagent"]
+        # 子Agent不能再创建子Agent，防止递归爆炸。内核摘要没有说话人，高危工具一律拿掉。
+        from gsuid_core.ai_core.tool_risk import strip_high_risk_tools
+
+        tools = strip_high_risk_tools([t for t in tools if t.name != "create_subagent"], None)
         logger.debug(i18n_t("log.ai.subagent_tool_list", p0=[tool.name for tool in tools]))
 
         # ✨ 内置一个 Plan-and-Solve System Prompt

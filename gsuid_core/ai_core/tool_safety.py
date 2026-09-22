@@ -15,6 +15,7 @@ from pydantic_ai.capabilities import Hooks
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.tool_risk import block_high_risk_execute
 
 _TOOL_SAFETY_CAP_ID = "gscore-tool-safety"
 
@@ -57,6 +58,7 @@ async def _on_tool_execute_error(
 def build_tool_safety_capability() -> Hooks[Any]:
     """供 Agent(capabilities=[...]) 挂载的工具失败回收 capability。"""
     return Hooks(
+        tool_execute=block_high_risk_execute,
         tool_execute_error=_on_tool_execute_error,
         id=_TOOL_SAFETY_CAP_ID,
     )

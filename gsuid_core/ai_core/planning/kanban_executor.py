@@ -742,6 +742,23 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         if fresh is None or fresh.status != "pending":
             return
 
+        # 派活前按主人名单拦截：user_pm 可被任务行伪造，只认 owner_user_id。
+        from gsuid_core.ai_core.tool_risk import refuse_master_only_node
+        from gsuid_core.ai_core.agent_node import get_node
+
+        ev = _build_event(fresh)
+        blocked = refuse_master_only_node(ev, get_node(fresh.agent_profile or ""))
+        if blocked:
+            await kanban.mark_subtask_failed(fresh, blocked)
+            await _finish_capability_delivery(
+                root=root,
+                child=fresh,
+                raw_result=blocked,
+                bot=_get_bot(fresh, ev),
+                is_failure=True,
+            )
+            return
+
         # 1) 条件 SQL 抢锁
         won = await kanban.mark_subtask_running(fresh)
         if not won:

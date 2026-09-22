@@ -18,6 +18,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.resource import FILE_PATH
+from gsuid_core.ai_core.tool_risk import check_high_risk_operator, visible_to_master_operator
 
 # Windows 分支是历史兜底（宿主已改回 Proactor，asyncio 子进程可用）；
 # 与 command_executor.py 同源——见同名常量的注释与 dev §12.3。
@@ -231,7 +232,11 @@ async def _record_workspace_violation(req_path: str, detail: str) -> None:
         return
 
 
-@ai_tools(capability_domain="文件")
+@ai_tools(
+    capability_domain="文件",
+    check_func=check_high_risk_operator,
+    visible_when=visible_to_master_operator,
+)
 async def execute_file(
     ctx: RunContext[ToolContext],
     file_path: str,
@@ -306,6 +311,9 @@ async def execute_file(
         exec_cwd_path = _resolve_exec_cwd(FILE_PATH)
         exec_cwd = str(exec_cwd_path)
 
+        ev = ctx.deps.ev
+        uid = str(ev.user_id) if ev is not None else ""
+        logger.info(t("log.ai.tool_risk_master_exec_file", user_id=uid, path=file_path[:120]))
         logger.info(t("log.ai.buildintools_file_cwd_exec", p0=" ".join(cmd), exec_cwd=exec_cwd))
 
         # 执行前快照 workspace（仅当 cwd 是任务的 workspace 时——非任务上下文跑

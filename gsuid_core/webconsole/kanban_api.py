@@ -279,6 +279,21 @@ async def admin_create_kanban_task(
     if not body.goal.strip() or not body.subtasks:
         return {"status": 1, "msg": "goal / subtasks 不能为空", "data": None}
 
+    from gsuid_core.ai_core.tool_risk import operator_is_master, node_requires_master
+    from gsuid_core.ai_core.agent_node import get_node
+
+    owner = body.owner_user_id or "admin"
+    if not operator_is_master(owner):
+        denied: List[str] = []
+        for spec in body.subtasks:
+            if "agent_profile" not in spec:
+                continue
+            node = get_node(str(spec["agent_profile"]))
+            if node is not None and node_requires_master(node):
+                denied.append(node.node_id)
+        if denied:
+            return {"status": 1, "msg": "能力代理仅主人可触发: " + "、".join(denied), "data": None}
+
     scope_key = make_scope_key(ScopeType.USER_GLOBAL, body.owner_user_id or "admin")
     root, children = await kanban.create_kanban_tree(
         goal=body.goal,
@@ -506,6 +521,12 @@ async def patch_kanban_subtask(
     if body.goal is not None:
         update_data["goal"] = body.goal[:2000]
     if body.agent_profile is not None:
+        from gsuid_core.ai_core.tool_risk import operator_is_master, node_requires_master
+        from gsuid_core.ai_core.agent_node import get_node
+
+        target = get_node(body.agent_profile)
+        if target is not None and node_requires_master(target) and not operator_is_master(task.owner_user_id):
+            return {"status": 1, "msg": f"能力代理 {target.node_id} 仅主人可触发", "data": None}
         update_data["agent_profile"] = body.agent_profile[:64]
     if body.dependency_task_ids is not None:
         update_data["dependency_task_ids"] = body.dependency_task_ids

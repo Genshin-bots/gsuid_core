@@ -236,6 +236,11 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 > `visible_to_admin` 只判 `user_pm == 0`。`command_exec/tools.py` 的
 > `_cmd_visible_to_master` / `_has_pending_for_master` **刻意不共用**：它们还叠加了命令执行器
 > `enable` 开关与 `operator_user_ids` 操作员白名单（后者无 ev 时偏隐藏），语义不同不要合并。
+>
+> **高危执行工具**（`execute_file` / `execute_shell_command`）不走 `visible_to_admin`。
+> 它们用 `tool_risk.visible_to_master_operator` + `check_high_risk_operator`：只认
+> `core_config["masters"]`，**无 Event 也拒绝**（不认任务行上的 `user_pm`）。
+> 主人格和子代理同一道门。详见 [§8.3](./08-heartbeat-scheduled-planning.md)。
 
 **保底池条件隐藏（2026-06-20）**：`visible_when` 已从附加池下沉到**保底池**里的窄场景常驻
 `@ai_tools` 默认 `timeout=60`；`web_search_tool` / `web_fetch_tool` 显式 `100` 以覆盖多源 failover；

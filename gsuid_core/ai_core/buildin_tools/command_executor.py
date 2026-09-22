@@ -18,8 +18,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.check_func import check_pm
-from gsuid_core.ai_core.buildin_tools.visibility import visible_to_admin
+from gsuid_core.ai_core.tool_risk import check_high_risk_operator, visible_to_master_operator
 
 # Windows 分支是历史兜底：宿主曾切 SelectorEventLoop（不支持 asyncio 子进程）。
 # 现为 ProactorEventLoop，子进程已可用；分支保留无害，新代码勿照抄。见 dev §12.3。
@@ -322,7 +321,11 @@ def _get_safe_environment() -> dict:
 
 
 # 参数 timeout 最大 300s，外层包装需 ≥ 该上限，否则会被默认 60s 误杀。
-@ai_tools(check_func=check_pm, visible_when=visible_to_admin, timeout=300.0)
+@ai_tools(
+    check_func=check_high_risk_operator,
+    visible_when=visible_to_master_operator,
+    timeout=300.0,
+)
 async def execute_shell_command(
     ctx: RunContext[ToolContext],
     command: str,

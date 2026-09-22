@@ -46,6 +46,7 @@ class AgentNodeDTO(TypedDict, total=False):
     tool_names: List[str]
     tool_query: str
     boundary_override: str
+    master_only: bool
     source: ProfileSource
     plugin: str
     version: int
@@ -64,6 +65,7 @@ def _node_to_dto(node: AgentNode) -> AgentNodeDTO:
         tool_names=list(node.tool_names),
         tool_query=node.tool_query,
         boundary_override=node.boundary_override,
+        master_only=node.master_only,
         source=node.source,
         plugin=node.plugin or "",
         version=node.version,
@@ -94,6 +96,7 @@ def _dto_to_node(dto: Dict[str, Any]) -> Optional[AgentNode]:
         tool_names=[str(x) for x in dto["tool_names"]] if "tool_names" in dto else [],
         tool_query=str(dto["tool_query"]) if "tool_query" in dto and dto["tool_query"] else "",
         boundary_override=str(dto["boundary_override"]) if "boundary_override" in dto else "",
+        master_only=bool(dto["master_only"]) if "master_only" in dto else False,
         source="user",
         plugin=str(dto["plugin"]) if "plugin" in dto and dto["plugin"] else "",
     )

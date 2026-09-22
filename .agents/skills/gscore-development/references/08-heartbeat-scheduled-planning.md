@@ -189,6 +189,15 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 `finance_agent`）由插件注册（`source` 三态 builtin/plugin/user，用户画像落
 `data/ai_core/capability_agents/<id>.json` 启动自动挂回）。
 
+> **仅主人节点 + 高危执行工具（2026-09-22）**：`code_agent` / `plugin_developer_agent`
+> 以及白名单含 `execute_file` / `execute_shell_command` / `run_command` 的节点是
+> `master_only`。非主人在 `create_subagent`、`register_kanban_task`、重派、执行器派活前
+> 都会被拒（认主人名单，不认任务上的 `user_pm`）。即便节点门被绕过，`execute_file`、
+> `execute_shell_command`、`run_command`、`run_skill_script` 在**主人格和子代理**里仍由
+> `wrap_tool_execute`（`block_high_risk_execute`）在函数体之前拒绝；非主人的能力代理
+> 装配时还会把这些名字从列表里剥掉，技能工具集对非主人隐藏 `run_skill_script`。
+> 实现在 `ai_core/tool_risk.py`。
+
 > **Windows subprocess 兼容（2026-08-14 更正）**：此处此前写「SelectorEventLoop 不支持子进程，
 > `code_agent` 跑 `execute_shell_command`/`execute_file` 在 Windows 必抛 `NotImplementedError`」
 > ——**该前提已过期**。`core.py` 现在不设事件循环策略，Windows 跑 `ProactorEventLoop`，

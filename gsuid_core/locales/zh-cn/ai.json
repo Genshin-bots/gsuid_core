@@ -623,5 +623,9 @@
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果",
   "log.ai.outbound_read_skip": "[Outbound] 读账本跳过: {e}",
   "log.ai.outbound_purge_skip": "[Outbound] 过期清理跳过: {e}",
-  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] 拒发重复图 {res_id} group={group_id} 已于 {ts} 发送"
+  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] 拒发重复图 {res_id} group={group_id} 已于 {ts} 发送",
+  "log.ai.tool_risk_refused_node": "[ToolRisk] 拒绝非主人触发能力代理 node={node_id} user={user_id}",
+  "log.ai.tool_risk_refused_tool": "[ToolRisk] 拒绝非主人执行高危工具 user={user_id}",
+  "log.ai.tool_risk_master_exec_file": "[ToolRisk] 主人执行文件 user={user_id} path={path}",
+  "log.ai.tool_risk_stripped": "[ToolRisk] 已从非主人代理剥离高危工具 user={user_id} names={names}"
 }

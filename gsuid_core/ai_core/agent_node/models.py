@@ -62,6 +62,8 @@ class AgentNode:
     tool_query: str = ""
     # ── task-mode 行为 ──
     boundary_override: str = ""
+    # 非主人不能拉起。白名单含高危执行工具时 tool_risk 也会当成仅主人。
+    master_only: bool = False
     # ── interaction（入口模式行为；spoke 时忽略）──
     ai_mode: List[str] = field(default_factory=lambda: ["提及应答"])
     scope: str = "disabled"

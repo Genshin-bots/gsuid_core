@@ -134,6 +134,13 @@ def _diagnose_register_loop(owner_id: str) -> str:
             "**最近多次拒绝原因 = 子任务字段非法**：检查每个子任务的 `agent_profile` "
             "是否在 evaluator 返回的 available_profiles 里、`not_before` 是否标准 ISO 时间。"
         )
+    if top_code == "master_only":
+        return (
+            "**最近多次拒绝原因 = 能力代理仅主人可触发**：本轮说话人不是主人。"
+            "不要再派 code_agent / plugin_developer_agent，也不要派白名单里带"
+            " execute_file / execute_shell_command / run_command 的节点。"
+            "改用公开节点，或直接拒绝该请求。"
+        )
     return "**停下来检查 args**：按上一次工具拒绝文本里的具体原因修正后再试。"
 
 
@@ -230,12 +237,14 @@ async def evaluate_agent_mesh_capability(
     except ImportError:
         pass
 
+    from gsuid_core.ai_core.tool_risk import event_is_master
     from gsuid_core.ai_core.capability_agents.evaluator import evaluate_capability
 
     result = await evaluate_capability(
         user_goal=user_goal,
         owner_user_id=str(ev.user_id),
         persona_name=persona_name,
+        caller_is_master=event_is_master(ev),
     )
     return json.dumps(result.to_dict(), ensure_ascii=False)
 
@@ -468,6 +477,17 @@ async def register_kanban_task(
     if invalid:
         _record_register_reject(owner_id, "bad_args")
         return f"⚠️ 以下子任务的 agent_profile 未注册：{invalid}"
+
+    from gsuid_core.ai_core.tool_risk import refuse_master_only_node
+
+    denied: List[str] = []
+    for i, s in enumerate(subtasks):
+        msg = refuse_master_only_node(ev, get_node(s.agent_profile))
+        if msg:
+            denied.append(f"#{i}({s.agent_profile})")
+    if denied:
+        _record_register_reject(owner_id, "master_only")
+        return "🚫 以下能力代理仅主人可触发：" + "、".join(denied)
 
     # 3) 整理 spec（含 subtask 级 recurring_trigger 字段）
     spec_dicts: List[Dict[str, Any]] = []
@@ -734,11 +754,17 @@ async def respawn_subtask(
     if task is None:
         return f"⚠️ 找不到子任务: {subtask_ref}"
 
-    if new_agent_profile:
-        from gsuid_core.ai_core.agent_node import get_node
+    from gsuid_core.ai_core.tool_risk import refuse_master_only_node
+    from gsuid_core.ai_core.agent_node import get_node
 
-        if get_node(new_agent_profile) is None:
+    target_profile = new_agent_profile or task.agent_profile or ""
+    if target_profile:
+        target_node = get_node(target_profile)
+        if new_agent_profile and target_node is None:
             return f"⚠️ 改派的 agent_profile 未注册: {new_agent_profile}"
+        blocked = refuse_master_only_node(ev, target_node)
+        if blocked:
+            return blocked
 
     ok, msg = await kanban.respawn_child_task(
         task,

@@ -62,6 +62,10 @@ class CreateNodeRequest(BaseModel):
     tool_names: List[str] = Field(default_factory=list, description="显式工具白名单（按名）")
     tool_query: str = Field("", description="可选：再做一次向量检索补充工具的查询词")
     boundary_override: str = Field("", description="可选：覆写 task-mode 交付边界（空=框架默认）")
+    master_only: Optional[bool] = Field(
+        None,
+        description="仅主人可触发。白名单含高危执行工具时即使用 false 也会被运行时锁成仅主人",
+    )
     base: Optional[str] = Field(None, description="（可选）以哪个已存在节点为模板复制字段，再用本请求覆盖")
 
 
@@ -76,6 +80,7 @@ class PatchNodeRequest(BaseModel):
     tool_names: Optional[List[str]] = None
     tool_query: Optional[str] = None
     boundary_override: Optional[str] = None
+    master_only: Optional[bool] = None
 
 
 # ─────────────────────────────────────────────
@@ -133,6 +138,12 @@ async def create_capability_agent(
         return {"status": 1, "msg": f"节点 {body.node_id} 已存在，请改用 PATCH 编辑", "data": None}
 
     base_node = get_node(body.base) if body.base else None
+    if body.master_only is not None:
+        master_only = body.master_only
+    elif base_node is not None:
+        master_only = base_node.master_only
+    else:
+        master_only = False
     node = AgentNode(
         node_id=body.node_id,
         display_name=body.display_name or (base_node.display_name if base_node is not None else body.node_id),
@@ -152,6 +163,7 @@ async def create_capability_agent(
         ),
         tool_query=body.tool_query or (base_node.tool_query if base_node is not None else ""),
         boundary_override=body.boundary_override or (base_node.boundary_override if base_node is not None else ""),
+        master_only=master_only,
         source="user",
     )
 
@@ -202,6 +214,7 @@ async def patch_capability_agent(
         boundary_override=(
             body.boundary_override if body.boundary_override is not None else existing.boundary_override
         ),
+        master_only=body.master_only if body.master_only is not None else existing.master_only,
         source="user",
     )
     register_agent_node(patched)

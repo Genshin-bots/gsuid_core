@@ -117,9 +117,10 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 - ``read_file_content`` / ``write_file_content`` / ``diff_file_content`` /
   ``list_directory`` / ``execute_file``（``file_manager.py``）：
-  Artifact Workspace 沙盒文件操作
-- ``execute_shell_command``（``command_executor.py``）：沙盒 shell
-  （``check_pm`` 权限校验）
+  Artifact Workspace 沙盒文件操作。``execute_file`` 仅主人可执行
+  （``check_high_risk_operator``，无 Event 也拒绝）
+- ``execute_shell_command``（``command_executor.py``）：沙盒 shell，
+  同样只认主人名单，不认任务行上的 ``user_pm``
 - ``_get_current_date``（``get_time.py``）：当前日期时间（注册名带下划线前缀）
 - ``move_file`` / ``copy_file`` / ``pack_to_zip``（``file_operations.py``）：
   artifacts 路径内文件移动（不可覆盖）/ 复制 / 打包 zip

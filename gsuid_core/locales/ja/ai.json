@@ -623,5 +623,9 @@
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した",
   "log.ai.outbound_read_skip": "[Outbound] 台帳読み取りをスキップ: {e}",
   "log.ai.outbound_purge_skip": "[Outbound] 期限切れ掃除をスキップ: {e}",
-  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] 重複画像 {res_id} を拒否 group={group_id} {ts} 送信済み"
+  "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] 重複画像 {res_id} を拒否 group={group_id} {ts} 送信済み",
+  "log.ai.tool_risk_refused_node": "[ToolRisk] 非マスターの能力ノードを拒否 node={node_id} user={user_id}",
+  "log.ai.tool_risk_refused_tool": "[ToolRisk] 非マスターの高リスクツールを拒否 user={user_id}",
+  "log.ai.tool_risk_master_exec_file": "[ToolRisk] マスターがファイルを実行 user={user_id} path={path}",
+  "log.ai.tool_risk_stripped": "[ToolRisk] 非マスター代理から高リスクツールを除去 user={user_id} names={names}"
 }

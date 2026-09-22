@@ -351,9 +351,16 @@ def register_capability_evaluator() -> None:
 def _build_evaluator_context(
     user_goal: str,
     persona_name: str,
+    caller_is_master: bool = True,
 ) -> str:
     """拼装喂给 evaluator 的输入文本（人格 / 画像清单 / 能力域）。"""
-    profiles = [p for p in list_nodes() if p.node_id != _EVALUATOR_PROFILE_ID]
+    from gsuid_core.ai_core.tool_risk import node_requires_master
+
+    profiles = [
+        p
+        for p in list_nodes()
+        if p.node_id != _EVALUATOR_PROFILE_ID and (caller_is_master or not node_requires_master(p))
+    ]
     lines = [
         f"【主人格】{persona_name or '（未知）'}",
         f"【用户任务】{user_goal}",
@@ -527,6 +534,7 @@ async def evaluate_capability(
     user_goal: str,
     owner_user_id: str,
     persona_name: str = "",
+    caller_is_master: bool = True,
 ) -> CapabilityEvaluationResult:
     """跑一次能力评估代理，落入近期评估缓存并返回结构化结果。
 
@@ -545,7 +553,7 @@ async def evaluate_capability(
     if cached is not None:
         return cached
 
-    context = _build_evaluator_context(user_goal, persona_name)
+    context = _build_evaluator_context(user_goal, persona_name, caller_is_master)
     last_raw = ""
     last_result: Optional[CapabilityEvaluationResult] = None
     for attempt in range(1, _EVAL_MAX_ATTEMPTS + 1):

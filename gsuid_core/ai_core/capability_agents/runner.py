@@ -247,6 +247,10 @@ async def run_capability_agent(
             logger.debug(i18n_t("log.ai.cap_retrieval", e=e))
 
     tools = _strip_non_render_cap_deny(tools, node_id=node.node_id)
+    # 非主人即使绕过节点门，装配结果里也不留高危执行工具。
+    from gsuid_core.ai_core.tool_risk import strip_high_risk_tools
+
+    tools = strip_high_risk_tools(tools, ev)
 
     session_id = f"capagent_{node.node_id}_{session_id_suffix or 'adhoc'}"
 

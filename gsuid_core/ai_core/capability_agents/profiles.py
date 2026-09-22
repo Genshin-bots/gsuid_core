@@ -10,7 +10,7 @@
 | ``internal_reporter`` | 内部数据报告员 | 仅查内部库后渲染 markdown 报告 |
 | ``memory_curator`` | 记忆管家 | 用户偏好 / 承诺 / 反思的轻量维护（写 ``update_self_note``） |
 | ``scheduler_assistant`` | 日程助手 | 自然语言时间解析 + AIScheduledTask 增删改查 |
-| ``plugin_developer_agent`` | 插件开发代理 | 为框架编写新插件并自助热加载（仅主人 PM=0） |
+| ``plugin_developer_agent`` | 插件开发代理 | 为框架编写新插件并自助热加载（``master_only``） |
 
 内部节点 ``capability_evaluator`` 由 ``evaluator.py`` 注册，不参与自然语言路由。
 
@@ -1020,7 +1020,8 @@ def register_builtin_profiles() -> None:
             prompt=_CODE_PROMPT,
             when_to_use=(
                 "需要写代码、跑脚本、用 PIL/matplotlib 等生成真文件图、调试修复、"
-                "批处理文件；不要把「事实包 HTML 出图」派给它（那是 render_agent）"
+                "批处理文件；不要把「事实包 HTML 出图」派给它（那是 render_agent）。"
+                "仅主人可委派。"
             ),
             match_keywords=[
                 "代码",
@@ -1057,6 +1058,7 @@ def register_builtin_profiles() -> None:
                 "execute_shell_command",
                 "_get_current_date",
             ],
+            master_only=True,
             source="builtin",
         )
     )
@@ -1162,7 +1164,7 @@ def register_builtin_profiles() -> None:
             source="builtin",
         )
     )
-    # ── 插件开发代理（写入 plugins/ + 热加载，仅主人 PM=0 可用）──────────
+    # 写入 plugins/ 并热加载。master_only：非主人连节点都拉不起来。
     register_agent_node(
         AgentNode(
             node_id="plugin_developer_agent",
@@ -1195,6 +1197,7 @@ def register_builtin_profiles() -> None:
                 "read_plugin_dev_guide",
             ],
             boundary_override=_PLUGIN_DEV_DELIVERY_BOUNDARY,
+            master_only=True,
             source="builtin",
         )
     )
