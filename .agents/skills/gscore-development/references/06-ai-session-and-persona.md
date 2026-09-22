@@ -204,7 +204,7 @@ RESOURCE_PATH/persona/{persona_name}/
    `_maybe_refresh_stable_prompt` 直接 return。需要「系统提醒」时只在 **user 侧
    `UserPromptPart` 追加**，落盘前由 `_relean_user_turn` / `_is_framework_prompt_content` 剥掉。
 2. **`message_history` 保头**：`compact_session_history` 裁中段，禁止砍头、禁止锚点插头。
-3. **动态内容进 user**：mood / 关系 / 记忆 / 精确时间 / 身份锚只进每轮 user 装配。
+3. **动态内容进 user**：mood / 关系 / 记忆 / 当前说话人偏好 / 精确时间 / 身份锚只进每轮 user 装配。`preferences_learned` 与 `AIMemPreference` 不进 system：群会话前缀整群共享，按人换系统提示会打掉缓存。偏好拼在本轮 user 尾，按说话人取，不靠问句词面命中。
 4. **persona 文件 mtime 变化** 仍会整会话重建（显式热重载，非每轮改 system）。
 
 历史曾用有限 TTL 原地刷新 system（O-3）；现行默认 **inf = 最大化 cache**。若显式改回有限

@@ -199,6 +199,7 @@ def format_ledger_block(view: LedgerView, query: str, *, subset: bool = False) -
     if english:
         head = (
             f"Cite timeline #id lines about {topic}{n_en}. Stay on the asked storyline. "
+            "Each line is what was said then, not a current fact. "
             "★ marks a new sub-topic versus earlier lines."
         )
         title = (
@@ -207,7 +208,10 @@ def format_ledger_block(view: LedgerView, query: str, *, subset: bool = False) -
             else "【User-turn timeline (complete, chronological; ★ = new sub-topic vs earlier; #id for answers)】"
         )
     else:
-        head = f"按时间线 #id 引用与「{topic}」相关的发言{n_zh}。★ 表示相对之前出现了新子话题。"
+        head = (
+            f"按时间线 #id 引用与「{topic}」相关的发言{n_zh}。"
+            "每行只是当时的发言，不是当前事实。★ 表示相对之前出现了新子话题。"
+        )
         title = (
             "【用户发言时间线（节选；#id 与全量时间线一致）】"
             if subset

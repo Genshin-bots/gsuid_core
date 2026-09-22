@@ -418,6 +418,8 @@ def test_render_block_hints_follow_as_of_and_episodes() -> None:
     ]
     block = render_cognition_block("竖图偏好", dated)
     assert LATEST_WINS_HINT in block
+    assert "谁在该时点说过" in block
+    assert "只取最晚" not in block
     assert SET_RECALL_HINT in block
     undated = [
         CognitiveHit(
@@ -432,6 +434,54 @@ def test_render_block_hints_follow_as_of_and_episodes() -> None:
     plain = render_cognition_block("竖图偏好", undated)
     assert LATEST_WINS_HINT not in plain
     assert SET_RECALL_HINT not in plain
+
+
+def test_quote_is_not_rendered_as_current_fact() -> None:
+    """还有几天：注入只保留谁在何时说过，不许可把原话里的日期当成已经发生。"""
+    from gsuid_core.ai_core.interaction_scaffold import MEMORY_QA_HINT
+    from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT, EVIDENCE_USE_HINT
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    quote = "[__assistant_onebot__]: 明天就开门了，16号周三"
+    block = render_cognition_block(
+        "活动还有几天开始",
+        [
+            CognitiveHit(
+                kind=CogKind.EPISODE,
+                id="e1",
+                title="",
+                summary=quote,
+                score=0.9,
+                as_of="2026-09-15 09:36",
+                high_confidence=True,
+            )
+        ],
+    )
+    assert SPEECH_ACT_HINT in block
+    assert "只取最晚" not in block
+    assert "可直接作答" not in EVIDENCE_USE_HINT
+    assert "取最晚一条" not in EVIDENCE_USE_HINT
+    assert "当前事实" in MEMORY_QA_HINT
+    assert "按时间" not in MEMORY_QA_HINT
+    text = MemoryContext(
+        episodes=[_ep("said", quote, "2026-09-15 09:36:00")],
+    ).to_prompt_text(max_chars=4000, query="活动还有几天开始？")
+    assert "谁在该时点说过" in text
+    assert "只取最晚" not in text
+    assert quote in text
+    prefs = MemoryContext(
+        preferences=[
+            {
+                "id": "p1",
+                "target_context": "general",
+                "preference_rule": "回复保持简短",
+                "polarity": "do",
+                "is_correction": False,
+            }
+        ]
+    ).to_prompt_text(max_chars=2000, query="活动还有几天开始？")
+    assert "回复保持简短" in prefs
+    assert "谁在该时点说过" not in prefs.split("回复保持简短", 1)[0]
 
 
 def test_query_overlaps_text_skips_unrelated_rules() -> None:
@@ -2550,5 +2600,6 @@ def test_count_prompt_prefers_stated_total_over_listing_every_mention() -> None:
     assert "总数优先" in text
     assert "逐条列出" not in text
     assert "极性相反" in text
-    assert "较晚的用户原话" in text
+    assert "不是两个现成答案" in text
+    assert "较晚的用户原话" not in text
     assert "12 books" in text

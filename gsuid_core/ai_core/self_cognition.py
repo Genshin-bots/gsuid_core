@@ -5,9 +5,9 @@
 
 架构约束（约束 1）：自我认知的**演化层绝不写入 persona 目录文件**——
 那会触发 ai_router 的人格热重载、滚动销毁会话短期记忆。本模块把演化层存于
-通用持久化 state_store（scope=`self:{bot_id}`），并由 handle_ai 在**每轮**
-对话动态拼接为 `self_cognition_context` 注入 user message 侧，宪法层身份仍由
-persona markdown 静态 system_prompt 承担。
+通用持久化 state_store（scope=`self:{bot_id}`）。承诺 / 话题 / 反思进 session
+的 system 前缀；学到的偏好按当前说话人拼在 user 尾，不进共享 system。
+宪法层身份仍由 persona markdown 静态 system_prompt 承担。
 
 self_model 结构（存于 state_store）::
 
@@ -19,6 +19,7 @@ self_model 结构（存于 state_store）::
     }
 """
 
+import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gsuid_core.i18n import t as i18n_t
@@ -37,6 +38,10 @@ _MAX_NOTE_CHARS = 200
 # self_model 的合法列表字段
 _FIELDS = ("commitments", "preferences_learned", "recurring_topics", "self_notes")
 _ONTOLOGY_FIELD = "self_ontology"
+# 笔记里点名的用户。短数字（日期、版本）不算。
+_PINNED_SPEAKER_RE = re.compile(r"\d{5,}|[0-9A-Fa-f]{16,}")
+# 主人自述槽，不跟纠错规则抢本轮名额。
+_STANDING_PREF_CONTEXTS = frozenset({"location", "possession"})
 
 
 def default_self_ontology() -> str:
@@ -361,14 +366,7 @@ async def build_self_cognition_context(
 
     if model["commitments"]:
         lines.append(f"我的承诺: {'；'.join(model['commitments'][-5:])}")
-    if model["preferences_learned"]:
-        lines.append(f"我学到的偏好: {'；'.join(model['preferences_learned'][-5:])}")
-        # 免疫条款：self_model 是 bot 级共享状态，"偏好"可能来自别的群友/早已过时——
-        # 实测旧印象会被拿来拒绝眼前用户的明确请求（"你说过不用设提醒"张冠李戴）。
-        lines.append(
-            "（这些旧印象仅供参考：可能过时、也可能只属于某个特定的人——"
-            "当前对话者**此刻的明确请求永远优先**，绝不拿旧印象当拒绝眼前请求的理由）"
-        )
+    # 学到的偏好按当前说话人放在 user 尾，不进共享 system（换人会打掉前缀缓存）。
 
     # recurring_topics：先尝试用本 scope 的 group_profile 累计 tag 实时计算
     # （由 memory.ingestion.worker._ingest_batch 中的 record_entity_tags 维护），
@@ -392,6 +390,100 @@ async def build_self_cognition_context(
     if len(lines) <= 1:
         return ""
     return "\n".join(lines)
+
+
+def note_applies_to_speaker(note: str, speaker_id: str) -> bool:
+    """没点名的笔记人人可见；点了用户 ID 的只给那个人。"""
+    pinned = set(_PINNED_SPEAKER_RE.findall(note))
+    if not pinned:
+        return True
+    return speaker_id in pinned
+
+
+def collect_speaker_preference_rules(
+    notes: list[str],
+    scoped_rules: list[tuple[str, str, bool]],
+    speaker_id: str,
+    *,
+    limit: int,
+) -> list[str]:
+    """SQL 规则先留自述槽和纠错，再补只属于这个说话人的自我笔记。"""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def push(text: str) -> None:
+        body = text.strip()
+        if not body or len(out) >= limit:
+            return
+        key = body.lower().replace(" ", "")
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(body)
+
+    ranked = sorted(
+        scoped_rules,
+        key=lambda item: (
+            0 if item[0] in _STANDING_PREF_CONTEXTS else (1 if item[2] else 2),
+            item[0],
+        ),
+    )
+    for ctx, rule, _corr in ranked:
+        tag = f"{ctx}：" if ctx and ctx != "general" else ""
+        push(f"{tag}{rule}" if tag else rule)
+    for note in notes:
+        if note_applies_to_speaker(note, speaker_id):
+            push(note)
+    return out
+
+
+def render_speaker_preference_tail(rules: list[str]) -> str:
+    """当前说话人的偏好。拼在本轮 user 尾，入史前不留。"""
+    if not rules:
+        return ""
+    lines = [f"• {rule}" for rule in rules]
+    return "【当前说话人的偏好】只约束这一轮的说话人。问句里没写到这些词也要遵守；别的群友不适用。\n" + "\n".join(lines)
+
+
+async def load_speaker_preference_tail(bot_id: str, speaker_id: str) -> str:
+    """读这个人的 USER_GLOBAL 偏好和他名下的自我笔记。库未建则空。"""
+    speaker = speaker_id.strip()
+    if not speaker:
+        return ""
+    from gsuid_core.utils.database.base_models import async_maker
+
+    if async_maker is None:
+        return ""
+    from gsuid_core.ai_core.memory.config import memory_config
+
+    model = await get_self_model(bot_id)
+    scoped: list[tuple[str, str, bool]] = []
+    if memory_config.enable_preference_memory:
+        from gsuid_core.ai_core.memory.database.models import AIMemPreference
+
+        scope = make_scope_key(ScopeType.USER_GLOBAL, speaker)
+        cap = int(memory_config.preference_max_inject)
+        standing_rows = await AIMemPreference.get_active(
+            [scope],
+            target_contexts=list(_STANDING_PREF_CONTEXTS),
+            limit=cap,
+        )
+        other_rows = await AIMemPreference.get_active([scope], limit=cap * 3)
+        seen_ids: set[str] = set()
+        merged: list[AIMemPreference] = []
+        for row in standing_rows + other_rows:
+            if row.id in seen_ids:
+                continue
+            seen_ids.add(row.id)
+            merged.append(row)
+        scoped = [(row.target_context, row.preference_rule, row.is_correction) for row in merged]
+    rules = collect_speaker_preference_rules(
+        model["preferences_learned"],
+        scoped,
+        speaker,
+        limit=int(memory_config.preference_max_inject),
+    )
+    return render_speaker_preference_tail(rules)
 
 
 def build_relationship_context(rel: "RelationshipView") -> str:

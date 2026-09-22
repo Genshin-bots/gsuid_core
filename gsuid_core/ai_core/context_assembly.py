@@ -202,12 +202,18 @@ async def assemble_dynamic_context(
     _apply_suffix_block_policy(ctx)
     _inject_master_title_hint(ctx)
     skip_mem = ctx.memory_eval
-    return join_context_blocks(
+    text = join_context_blocks(
         ctx.blocks,
         create_by=ctx.create_by,
         skip_memory_cap=skip_mem,
         memory_budget=timeline_memory_budget(ctx.query),
-    ), has_actionable
+    )
+    from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
+
+    tail = await load_speaker_preference_tail(bot_id, user_id)
+    if tail:
+        text = f"{text}\n\n{tail}" if text else tail
+    return text, has_actionable
 
 
 def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:

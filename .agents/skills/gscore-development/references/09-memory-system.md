@@ -150,7 +150,7 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   写成编号骨架（日期 · 一句话），只改 user 侧（§1.7）。生产注入只给时间序，禁止评测金标口径与框架领域词表。
   有 embedding 时 `pack_first_mention` 必须走 `cluster_first_mentions`（禁止向量旁路 chrono）。
   Chat join：order/span/summary 与 pack 同帽 16k，其它问句仍 8k。骨架不在 H06 再打一轮 LLM。
-  证据分过低时注入头加一行 abstention；KU 同主题按 `valid_at` 升序 + `LATEST_WINS_HINT`。
+  证据分过低时注入头加一行 abstention。召回原话只证明谁在该时点说过，不把句中日期或状态当成当前事实（`SPEECH_ACT_HINT`）。
   `looks_like_span_query` 也开 temporal arm；无显式日期则该 scope 全程、bucket 按 session 数自适应。
   工具：`search_turns` / `read_session` / `timeline` / `mark_evidence`（`visible_when` 仅 order/span/summary）。
   `eo_strategy=ledger`（`GSUID_EO_STRATEGY`）时 order/summary/span **不选 N**：注入全量 turn gist

@@ -385,10 +385,21 @@ class MemoryContext:
                 return wrap_untrusted("memory_recall", body[: max(0, max_chars)])
             return body[: max(0, max_chars)]
 
+        from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT
+
         parts: list[str] = []
         pref_block: Optional[str] = None
         self.inject_ids = []
         self.skeleton_ids = []
+        speech_noted = False
+
+        def _speech(block: str) -> str:
+            nonlocal speech_noted
+            if speech_noted:
+                return block
+            speech_noted = True
+            return "（" + SPEECH_ACT_HINT + "）\n" + block
+
         if self.low_evidence:
             parts.append("【检索提示】记忆中没有与该问题直接相关的证据。")
         if self.events:
@@ -401,7 +412,7 @@ class MemoryContext:
                     stamp = (ev["stated_at"] or ev["event_at"] or "")[:10]
                     ev_lines.append(f"{len(ev_lines) + 1}. {stamp} · {ev['summary']}")
                 if ev_lines:
-                    parts.append("【事件线索】\n" + "\n".join(ev_lines))
+                    parts.append(_speech("【事件线索】\n" + "\n".join(ev_lines)))
 
         # 程序性/偏好规则（最高优先级，置顶 + 强约束语气）：区别于"核心事实"的背景陈述，
         # 这是针对 Agent 未来行为的硬约束（如"调 generate_image 用竖图"），必须让工具调用
@@ -496,7 +507,7 @@ class MemoryContext:
                     break
             taken = _take(fact_lines, fact_budget)
             if taken:
-                parts.append("【核心事实 - 与当前问题相关】\n" + "\n".join(taken))
+                parts.append(_speech("【核心事实 - 与当前问题相关】\n" + "\n".join(taken)))
 
         # C11 矛盾提示：紧跟核心事实。历史上有过相反陈述的事实，Agent 应指出矛盾
         # 并请用户澄清，而不是把（可能是误抽的）单侧最新值当作定论。
@@ -664,7 +675,7 @@ class MemoryContext:
                     reserve_budget = min(3600, max(0, other_budget // 2))
                     reserved_block = render_value_timeline(self.reserved_episodes, query, reserve_budget)
                     if reserved_block:
-                        parts.append(reserved_block)
+                        parts.append(_speech(reserved_block))
                         other_budget = max(0, other_budget - len(reserved_block) - 2)
                         reserved_ids = {ep["id"] for ep in self.reserved_episodes if "id" in ep}
                         user_eps = [ep for ep in user_eps if "id" not in ep or ep["id"] not in reserved_ids]
@@ -711,7 +722,7 @@ class MemoryContext:
                         from gsuid_core.ai_core.memory.retrieval.lexical import VALUE_UPDATE_HINT
 
                         ep_head += "\n（" + VALUE_UPDATE_HINT + "）"
-                    parts.append(ep_head + "\n" + "\n".join(taken))
+                    parts.append(_speech(ep_head + "\n" + "\n".join(taken)))
 
         # §8 注入防线对齐：偏好保持裸注入可执行（写入端有闸）；其余召回统一 untrusted
         # 栅栏——复用 content_guard.wrap_untrusted，栅栏格式全通道唯一定义（评审修复 F9）。
@@ -741,6 +752,8 @@ class MemoryContext:
         部署召回到的对话片段无从注入）。
         """
 
+        from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT
+
         parts: list[str] = []
 
         if self.edges:
@@ -762,6 +775,8 @@ class MemoryContext:
             parts.append("【相关对话片段】\n" + "\n".join(ep_lines))
 
         result = str("\n\n".join(parts))
+        if result and "谁在该时点说过" not in result:
+            result = "（" + SPEECH_ACT_HINT + "）\n" + result
         if len(result) > max_chars:
             result = result[:max_chars] + "\n...[记忆已截断]"
         return str(result)

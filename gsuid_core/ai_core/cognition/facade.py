@@ -34,7 +34,7 @@ from gsuid_core.ai_core.cognition.types import (
 from gsuid_core.ai_core.memory.retrieval.types import Episode
 from gsuid_core.ai_core.memory.retrieval.lexical import (
     SET_RECALL_HINT,
-    LATEST_WINS_HINT,
+    SPEECH_ACT_HINT,
     strip_clock_lines,
     query_overlaps_text,
     expand_lexical_recall,
@@ -956,8 +956,9 @@ def render_cognition_block(
             "请换槽位词再 search_cognition；外部用 web_search_tool，专域用 find_tools。"
         )
     lines = [f"【{header}】query={(hint_query or query)[:30]!r} 命中 {len(hits)}"]
-    if any(h.as_of for h in hits):
-        lines.append(LATEST_WINS_HINT)
+    # 带时点或对话片段时标明：这是谁说过，不是当前事实。知识条目不贴这句。
+    if any(h.as_of for h in hits) or any(h.kind is CogKind.EPISODE for h in hits):
+        lines.append(SPEECH_ACT_HINT)
     if any(h.kind is CogKind.EPISODE for h in hits):
         lines.append(SET_RECALL_HINT)
     weak_n = 0

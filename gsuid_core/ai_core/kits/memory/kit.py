@@ -571,6 +571,7 @@ class MemoryKit(AgentKit):
                     q = retrieve_query_for_search(ctx.query)
                     from gsuid_core.ai_core.memory.retrieval.lexical import (
                         SET_RECALL_HINT,
+                        EVIDENCE_USE_HINT,
                         VALUE_UPDATE_HINT,
                         looks_like_attribute_query,
                         looks_like_latest_slot_query,
@@ -583,11 +584,7 @@ class MemoryKit(AgentKit):
                     if looks_like_attribute_query(q):
                         parts.append(VALUE_UPDATE_HINT)
                     else:
-                        parts.append(
-                            "（做过/没做过这类相反说法是矛盾，指出两边并问哪条为准；"
-                            "地址/分数/版本这类取值更新才取最晚一条。"
-                            "已注入的【相关对话片段】可直接作答；不够再 search_cognition。）"
-                        )
+                        parts.append("（" + EVIDENCE_USE_HINT + "）")
                     if looks_like_order_query(q):
                         from gsuid_core.ai_core.memory.config import memory_config as _mc
 

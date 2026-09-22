@@ -194,20 +194,32 @@ _WINDOW_EPISODE_CAP = 64
 _ORDER_POOL_CAP = 400
 _ORDER_TAIL_CAP = 80
 
-LATEST_WINS_HINT = "同一属性多个时间戳是更新，只取最晚 as_of。"
+# 原话只证明谁在该时点说过。as_of / [发生] 都不是「现在如此」。
+SPEECH_ACT_HINT = (
+    "每条只证明谁在该时点说过这句。[]是说话时间，[发生]是原话里的相对日期折到那天，"
+    "都不是现在已经如此。问现在的日期、数量或有没有发生，没有本轮工具结果就只转述谁在何时说过；"
+    "问谁说过什么时照原话并带上说话时间。"
+)
+# 旧名仍被检索渲染引用；语义已是陈述记录，不再许可「取最晚当事实」。
+LATEST_WINS_HINT = SPEECH_ACT_HINT
 SET_RECALL_HINT = "计数/清单可能跨多段会话；本页未齐时用命中里的专名再 search_cognition。"
 VALUE_UPDATE_HINT = (
-    "问的是哪一件事，就用那件事上较晚的用户原话作答，不要改用另一件事的数字，"
-    "也不要并列两个值让用户挑。约定的时间即使已经过去也要写出。"
-    "做过/没做过这种极性相反，才指出两边并问以哪边为准。"
+    "前后几句都是各时点的原话。不要把较晚一句里的数字或日期说成当前值，"
+    "也不要并列两个值让用户挑。问谁说过什么时照原话并带上说话时间。"
+)
+EVIDENCE_USE_HINT = (
+    "做过/没做过这类相反说法指出两边并问哪条为准。"
+    "片段里的日期、数量、状态只是当时的原话，不能当成现在；"
+    "问这些时先搜索或委派。问谁说过什么则按原话；不够再 search_cognition。"
 )
 COUNT_ANSWER_HINT = (
     "用户原话里已经给出的总数优先。问多少种、哪些时同一件事只计一次；"
     "问多少次时按不同场合计，不要把同一句的重复算多次。不要按常识补。"
 )
 CONFLICT_BANNER = (
-    "【矛盾记录】做过/没做过这种极性相反，指出两边并问用户以哪边为准；"
-    "同一件事只是数字或日期前后不同时，以较晚的用户原话作答，不要让用户挑选。"
+    "【陈述不一致】下面是不同时间的原话，不是两个现成答案。"
+    "做过/没做过这种极性相反，指出两边并问以哪边为准；"
+    "数字或日期前后不同时，只转述各句，不要把较晚一句说成当前事实。"
 )
 
 
@@ -669,7 +681,7 @@ def attribute_content_tokens(query: str, *, limit: int = 8) -> list[str]:
 
 
 def looks_like_attribute_query(query: str) -> bool:
-    """在问一个可被后一次说法覆盖的现状。排序/摘要/时长不算。"""
+    """问句像在要一个会变的值。注入的仍是原话，不是当前值。"""
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         looks_like_order_query,
         looks_like_summary_query,
@@ -1517,7 +1529,10 @@ def render_value_timeline(episodes: list[Episode], query: str, budget: int) -> s
     """赋值原句整段放进预算。缩行宽，不把较晚的那次截掉。"""
     if not episodes or budget < 80:
         return ""
-    header = "【该事项的原话】用户就问句话题说过的、带数字或日期的原句，早中晚都留。后面的邻近片段不能替换这些原句。"
+    header = (
+        "【该事项的原话】谁就这个话题说过的、带数字或日期的原句，早中晚都留。"
+        "这些原句不是当前值。后面的邻近片段不能替换这些原句。"
+    )
     for width in (480, 280, 160):
         lines: list[str] = []
         for ep in episodes:
@@ -1876,8 +1891,10 @@ apply_set_recall = expand_lexical_recall
 __all__ = [
     "CONFLICT_BANNER",
     "COUNT_ANSWER_HINT",
+    "EVIDENCE_USE_HINT",
     "LATEST_WINS_HINT",
     "SET_RECALL_HINT",
+    "SPEECH_ACT_HINT",
     "VALUE_UPDATE_HINT",
     "attribute_pin_episodes",
     "excerpt_around_tokens",
