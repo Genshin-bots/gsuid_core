@@ -400,11 +400,39 @@ async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> b
         return False
 
 
+_RENDER_SUMMARY_CHARS = 512
+
+
+def clip_render_summary(goal: str, *, default: str = "render output") -> str:
+    """图片摘要给 read_handle。默认「render output」读不到图上写了什么。"""
+    text = goal.strip()
+    if not text:
+        return default
+    if len(text) <= _RENDER_SUMMARY_CHARS:
+        return text
+    return text[: _RENDER_SUMMARY_CHARS - 1] + "…"
+
+
+async def _summary_for_render(default: str) -> str:
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+    plan = get_plan_context()
+    if plan is None or not plan.task_id:
+        return default
+    task = await AIAgentTask.get_by_id(plan.task_id)
+    if task is None:
+        return default
+    return clip_render_summary(task.goal, default=default)
+
+
 async def _register_image_artifact(image_bytes: bytes, *, summary: str = "render output") -> str:
     """Kanban 上下文：落盘 PNG 并 artifact_put；成功返回 res_ 句柄，否则空串。"""
     from gsuid_core.ai_core.planning.runtime import get_plan_context
     from gsuid_core.ai_core.planning.workspace import put_artifact
 
+    if summary == "render output":
+        summary = await _summary_for_render(summary)
     plan = get_plan_context()
     if plan is None or not plan.root_task_id:
         return ""

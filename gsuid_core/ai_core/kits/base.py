@@ -40,7 +40,8 @@ BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "relationship": 100,
     "voice_anchor": 180,
     "identity": 80,
-    "history": 600,
+    # 同人线程 14 条 + 旁人 6 条；600 会从尾部截掉最新出站句柄。
+    "history": 4000,
     "group_context": 200,
     "memory": 8000,
     "task": 250,

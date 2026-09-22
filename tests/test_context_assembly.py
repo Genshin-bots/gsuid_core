@@ -180,7 +180,8 @@ def test_addressed_suffix_keeps_voice_anchor_outside_product_cap() -> None:
     _apply_suffix_block_policy(ctx)
     assert ctx.blocks["voice_anchor"] == voice
     assert ctx.blocks["task"] == "任务块"
-    product = sum(len(v) for k, v in ctx.blocks.items() if k != "voice_anchor")
+    assert ctx.blocks["history"] == "H" * 500
+    product = sum(len(v) for k, v in ctx.blocks.items() if k not in ("voice_anchor", "history"))
     assert product <= _SUFFIX_PRODUCT_CAP
     idle = TurnGraph(
         user_type="group",

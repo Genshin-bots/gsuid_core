@@ -393,6 +393,13 @@ async def send_message_by_ai(
         elif text:
             sent = True
 
+        if sent:
+            from gsuid_core.ai_core.history_format import note_thread_handle
+
+            for hid in (image_id, video_id, audio_id):
+                if hid:
+                    note_thread_handle(tool_ctx, hid)
+
         # 计数放在真正发出之后：媒体解析报错的早退不占额度
         if throttle_key is not None:
             _PER_TURN_SEND_MESSAGE_COUNT[throttle_key] = _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) + 1

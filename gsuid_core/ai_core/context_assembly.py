@@ -250,9 +250,9 @@ _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
         "plugin_hints",
     }
 )
-# 点名 suffix 产品块合计帽；voice_anchor 在帽外。history 排最后。
+# 点名 suffix 产品块合计帽。voice_anchor 与历史线程在帽外。
 _SUFFIX_PRODUCT_CAP = 400
-_SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor"})
+_SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history"})
 _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
     "task",
     "plan_hint",
@@ -261,7 +261,6 @@ _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
     "memory",
     "soft_trigger",
     "plugin_hints",
-    "history",
 )
 
 

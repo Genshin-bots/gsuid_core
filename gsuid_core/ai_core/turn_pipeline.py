@@ -30,7 +30,7 @@ from gsuid_core.ai_core.utils import (
     notify_master_of_budget_block,
 )
 from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.history_format import format_history_for_agent
+from gsuid_core.ai_core.history_format import compose_group_history
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
@@ -41,9 +41,6 @@ if TYPE_CHECKING:
 ABSOLUTE_MAX_LENGTH = 60000
 MAX_SUMMARY_LENGTH = 15000
 
-# 群聊历史窗口：靠紧凑格式 + 当前用户优先，而不是堆 30 条散句
-_HISTORY_LIMIT = 20
-_MAX_OTHER_RECORDS = 6
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 _CLOCK_AT_RE = re.compile(
     r"^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})"
@@ -195,37 +192,31 @@ def stamp_current_time(user_messages: Sequence[UserContent], now: datetime | Non
 
 
 def build_group_history_block(event: Event) -> str:
-    """群聊 IM 历史块（带「[历史对话]」标头的成品文本）。私聊返回空串。
+    """群聊 IM 历史块。私聊返回空串。
 
     **不可套件化**：HistoryManager 是消息基础设施，不是 AI 产品。私聊时
     pydantic_ai 的 session.history 已覆盖对话，再注入 IM 历史既冗余又破坏缓存前缀。
+    同人线程走 A 轨全文，避免 B 轨 compact 把出站句柄裁掉。
     """
     if not event.group_id:
         return ""
-    history_manager = get_history_manager()
-    raw = history_manager.get_history(event, limit=_HISTORY_LIMIT)
-    # 排除最后一条（当前用户刚发的消息），避免与 user_messages 重复
+    raw = get_history_manager().get_history(event)
+    # 本轮已在 [用户发言]，再留会双写。
     records = raw[:-1] if raw else []
     if not records:
         return ""
-
-    # IM 只注入 B 轨没有的他人句：跳过 assistant（已在 session history）
-    records = [r for r in records if r.role != "assistant"]
-    if not records:
-        return ""
-
-    current_user_id = str(event.user_id)
-    others = [r for r in records if r.user_id != current_user_id][-_MAX_OTHER_RECORDS:]
-    selected = sorted(others, key=lambda r: r.timestamp)
-
-    block = format_history_for_agent(
-        history=selected,
-        current_user_id=current_user_id,
-        current_user_name=event.sender.get("nickname") if event.sender else None,
-        include_current_turn=False,
+    nickname: Optional[str] = None
+    if event.sender and "nickname" in event.sender:
+        nick = event.sender["nickname"]
+        if isinstance(nick, str) and nick.strip():
+            nickname = nick.strip()
+    block = compose_group_history(
+        records,
+        current_user_id=str(event.user_id),
+        current_user_name=nickname,
     )
     if block:
-        logger.debug(t("log.ai.gscore_historical", p0=len(selected)))
+        logger.debug(t("log.ai.gscore_historical", p0=len(records)))
     return block
 
 

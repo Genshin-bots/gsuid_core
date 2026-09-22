@@ -262,6 +262,10 @@ async def create_subagent(
             agent_profile=agent_profile,
             transient=transient,
         )
+        if ctx is not None and ctx.deps is not None:
+            from gsuid_core.ai_core.history_format import note_thread_handles_in_text
+
+            note_thread_handles_in_text(ctx.deps, raw)
         head = (task or "").strip().split("\n", 1)[0][:80]
         if ctx.deps is not None:
             from gsuid_core.ai_core.outbound import write_decision_memo, remember_outbound_topic

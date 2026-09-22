@@ -133,11 +133,15 @@ _STATUS_LABEL: dict[DelegationStatus, str] = {
 }
 
 
+# 追问用 read_handle(dlg_) 回看事实包；120 字只剩抬头。
+_GOAL_EXCERPT = 800
+
+
 def format_delegation(d: Delegation) -> str:
     """给模型看的状态卡（句柄只进工具参数，禁写入台词）。"""
     lines = [
         f"委派 {d.id} | {_STATUS_LABEL[d.status]} | 节点={d.profile or '未指定'} | 任务#{d.ordinal}",
-        f"任务: {d.goal[:120]}",
+        f"任务: {d.goal[:_GOAL_EXCERPT]}",
     ]
     if d.failure_reason:
         lines.append(f"失败原因: {d.failure_reason[:300]}")

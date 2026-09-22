@@ -10,10 +10,13 @@ AI 可用的 prompt / messages / Agent 上下文格式。
 
 from __future__ import annotations
 
+import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 from datetime import datetime
 
+from gsuid_core.models import Event
+from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.message_history import MessageRecord
 
 
@@ -158,12 +161,25 @@ def _merge_window() -> float:
     return float(ai_config.get_config("history_merge_window").data)
 
 
+# 出站产物句柄。不含 to_/sa_：那些是检索落盘，不是对这个人发出去的内容。
+_THREAD_HANDLE_RE = re.compile(r"\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b|\bdlg_[0-9a-fA-F-]{8,}\b")
+SPEAKER_THREAD_LIMIT = 14
+SPEAKER_THREAD_HEADER = "[与你的对话] 旧→新"
+_OTHERS_WINDOW = 20
+_OTHERS_LIMIT = 6
+_THREAD_HANDLES_KEY = "thread_handles"
+_MAX_NOTED_HANDLES = 4
+_HANDLE_LINE_SUFFIX = "（read_handle；句柄勿念出）"
+
+
 def format_history_for_agent(
     history: List[MessageRecord],
     current_user_id: Optional[str] = None,
     current_user_name: Optional[str] = None,
     *,
     include_current_turn: bool = False,
+    block_header: str = "[历史对话] 旧→新",
+    content_limit: int = 280,
 ) -> str:
     """
     将历史记录格式化为 Agent 可用的紧凑上下文。
@@ -242,9 +258,13 @@ def format_history_for_agent(
 
     def _content_one_line(record: MessageRecord) -> str:
         content = record.content.strip().replace("\n", " / ")
-        # 极长发言截断，避免单条历史吃掉过多预算
-        if len(content) > 280:
-            content = content[:277] + "…"
+        # 句柄行不能按普通正文裁，否则 read_handle 拿到半个 id。
+        if _THREAD_HANDLE_RE.search(content):
+            if len(content) > 400:
+                return content[:397] + "…"
+            return content
+        if len(content) > content_limit:
+            return content[: content_limit - 1] + "…"
         return content
 
     def _render_group(records: List[MessageRecord], speaker: str) -> str:
@@ -317,7 +337,234 @@ def format_history_for_agent(
     _flush_group()
 
     if history_lines:
-        output.append("[历史对话] 旧→新")
+        output.append(block_header)
         output.extend(history_lines)
 
     return "\n".join(output)
+
+
+def extract_thread_handles(text: str) -> List[str]:
+    """正文里的出站句柄，去重保序。"""
+    found: List[str] = []
+    for hid in _THREAD_HANDLE_RE.findall(text or ""):
+        if hid not in found:
+            found.append(hid)
+    return found
+
+
+def _handles_from_metadata(record: MessageRecord) -> List[str]:
+    meta = record.metadata
+    if "outbound_handles" not in meta:
+        return []
+    raw = meta["outbound_handles"]
+    if not isinstance(raw, list):
+        return []
+    found: List[str] = []
+    for item in raw:
+        if isinstance(item, str) and item and item not in found:
+            found.append(item)
+    return found
+
+
+def _handle_line(handles: Sequence[str]) -> str:
+    shown = [h for h in handles if h][:_MAX_NOTED_HANDLES]
+    return f"{' '.join(shown)}{_HANDLE_LINE_SUFFIX}"
+
+
+def _speech_residue(content: str) -> str:
+    text = _THREAD_HANDLE_RE.sub("", content)
+    text = re.sub(r"\[图片[^\]]*\]", "", text)
+    text = text.replace(_HANDLE_LINE_SUFFIX, "")
+    return re.sub(r"[\s|（）()：:，,。…·]+", "", text)
+
+
+def assistant_visible_body(record: MessageRecord) -> Optional[str]:
+    """出站在同人线程里的正文。纯静默且无句柄返回 None，不占 14 条名额。"""
+    content = record.content.strip()
+    handles = _handles_from_metadata(record)
+    for hid in extract_thread_handles(content):
+        if hid not in handles:
+            handles.append(hid)
+    if "read_handle" in content and handles:
+        return content
+    from gsuid_core.ai_core.utils import is_silence_marker
+
+    if is_silence_marker(content):
+        if not handles:
+            return None
+        return _handle_line(handles)
+    if not content and not handles:
+        return None
+    if handles and len(_speech_residue(content)) < 4:
+        return _handle_line(handles)
+    if handles:
+        speech = _THREAD_HANDLE_RE.sub("", content)
+        speech = re.sub(r"\[图片[^\]]*\]", "", speech)
+        speech = re.sub(r"\s+", " ", speech).strip(" |")
+        if speech:
+            return f"{speech} | {_handle_line(handles)}"
+        return _handle_line(handles)
+    return content
+
+
+def select_speaker_thread(
+    records: Sequence[MessageRecord],
+    current_user_id: str,
+    *,
+    limit: int = SPEAKER_THREAD_LIMIT,
+) -> List[MessageRecord]:
+    """从新到旧凑满 limit：当前说话人的 user 句（含未点名）与出站。不成对。"""
+    uid = str(current_user_id)
+    picked: List[MessageRecord] = []
+    for record in reversed(list(records)):
+        if record.role == "user" and str(record.user_id) == uid:
+            picked.append(record)
+        elif record.role == "assistant" and assistant_visible_body(record) is not None:
+            picked.append(record)
+        if len(picked) >= limit:
+            break
+    picked.reverse()
+    return picked
+
+
+def materialize_speaker_thread(records: Sequence[MessageRecord]) -> List[MessageRecord]:
+    """静默格换成句柄行；没有句柄的静默丢掉。"""
+    out: List[MessageRecord] = []
+    for record in records:
+        if record.role != "assistant":
+            out.append(record)
+            continue
+        body = assistant_visible_body(record)
+        if body is None:
+            continue
+        if body == record.content:
+            out.append(record)
+            continue
+        out.append(
+            MessageRecord(
+                role=record.role,
+                content=body,
+                user_id=record.user_id,
+                user_name=record.user_name,
+                user_avatar=record.user_avatar,
+                timestamp=record.timestamp,
+                metadata=record.metadata,
+            )
+        )
+    return out
+
+
+def compose_group_history(
+    records: Sequence[MessageRecord],
+    *,
+    current_user_id: str,
+    current_user_name: Optional[str] = None,
+) -> str:
+    """同人线程在前（裁预算时先保住句柄），旁人块仍是最近窗里的他人 user 句。"""
+    if not records:
+        return ""
+    uid = str(current_user_id)
+    recent = list(records)[-_OTHERS_WINDOW:]
+    others = [r for r in recent if r.role == "user" and str(r.user_id) != uid][-_OTHERS_LIMIT:]
+    thread = materialize_speaker_thread(select_speaker_thread(records, uid))
+    parts: List[str] = []
+    if thread:
+        parts.append(
+            format_history_for_agent(
+                thread,
+                current_user_id=uid,
+                current_user_name=current_user_name,
+                block_header=SPEAKER_THREAD_HEADER,
+                content_limit=160,
+            )
+        )
+    if others:
+        parts.append(
+            format_history_for_agent(
+                others,
+                current_user_id=uid,
+                current_user_name=current_user_name,
+            )
+        )
+    return "\n\n".join(parts)
+
+
+def _read_handle_list(ctx: ToolContext) -> List[str]:
+    extra = ctx.extra
+    if _THREAD_HANDLES_KEY not in extra:
+        return []
+    raw = extra[_THREAD_HANDLES_KEY]
+    if not isinstance(raw, list):
+        return []
+    found: List[str] = []
+    for item in raw:
+        if isinstance(item, str) and item not in found:
+            found.append(item)
+    return found
+
+
+def note_thread_handle(ctx: ToolContext, handle: str) -> None:
+    """本轮出站句柄记在 ToolContext 上，静默收尾时写入群历史。"""
+    hid = handle.strip().strip("`")
+    if _THREAD_HANDLE_RE.fullmatch(hid) is None:
+        return
+    current = _read_handle_list(ctx)
+    if hid in current or len(current) >= _MAX_NOTED_HANDLES:
+        return
+    current.append(hid)
+    ctx.extra[_THREAD_HANDLES_KEY] = current
+
+
+def note_thread_handles_in_text(ctx: ToolContext, text: str) -> None:
+    for hid in extract_thread_handles(text):
+        note_thread_handle(ctx, hid)
+
+
+def noted_thread_handles(ctx: Optional[ToolContext]) -> List[str]:
+    if ctx is None:
+        return []
+    return _read_handle_list(ctx)
+
+
+def remember_silence_handles(
+    event: Event,
+    handles: Sequence[str],
+    *,
+    manager: object = None,
+) -> None:
+    """静默轮把句柄写入 A 轨。已出现在近期出站里的不重复记。"""
+    if not event.group_id:
+        return
+    fresh: List[str] = []
+    for hid in handles:
+        if hid and hid not in fresh and _THREAD_HANDLE_RE.fullmatch(hid) is not None:
+            fresh.append(hid)
+        if len(fresh) >= _MAX_NOTED_HANDLES:
+            break
+    if not fresh:
+        return
+    from gsuid_core.message_history.manager import HistoryManager
+
+    mgr: HistoryManager
+    if isinstance(manager, HistoryManager):
+        mgr = manager
+    else:
+        from gsuid_core.message_history import get_history_manager
+
+        mgr = get_history_manager()
+    recorded: List[str] = []
+    for record in mgr.get_history(event):
+        if record.role != "assistant":
+            continue
+        recorded.extend(extract_thread_handles(record.content))
+        recorded.extend(_handles_from_metadata(record))
+    kept = [hid for hid in fresh if hid not in recorded]
+    if not kept:
+        return
+    mgr.add_message(
+        event=event,
+        role="assistant",
+        content=" ".join(kept),
+        user_name="AI",
+        metadata={"outbound_handles": kept},
+    )

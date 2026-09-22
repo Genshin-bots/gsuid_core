@@ -829,6 +829,8 @@ class SettlePhase(RunOnceHost):
                 result_msg = strip_framework_user_leaks(result_msg)
                 if not result_msg.strip():
                     result_msg = "<SILENCE>"
+            if isinstance(result_msg, str):
+                self._remember_outbound_on_silence(st, result_msg)
             return result_msg
 
         # result 为空时的默认返回值（常量：handle_ai 好感度门等消费端按它识别准失败轮）
@@ -855,6 +857,7 @@ class SettlePhase(RunOnceHost):
             )
 
         if st.delegated_render and not st.image_sent_this_run:
+            self._remember_outbound_on_silence(st, "<SILENCE>")
             return "<SILENCE>"
 
         # 安抚用户
@@ -925,6 +928,19 @@ class SettlePhase(RunOnceHost):
 
             # 瞬时故障（超时/网络/5xx/529 等）一律不在此捕获，向上抛给 _execute_run
             # 统一重试；download image 自愈与错误文案/统计也收敛到 _execute_run。
+
+    def _remember_outbound_on_silence(self, st: RunOnceState, result_msg: str) -> None:
+        """静默不进 A 轨；把本轮出站句柄补上，追问才能 read_handle。"""
+        if self.is_subagent or self.create_by not in ("Chat", "Agent"):
+            return
+        if not result_msg or not is_silence_marker(result_msg.strip()):
+            return
+        ev = st.ev
+        if ev is None or not ev.group_id:
+            return
+        from gsuid_core.ai_core.history_format import noted_thread_handles, remember_silence_handles
+
+        remember_silence_handles(ev, noted_thread_handles(st.context))
 
     def _run_once_cleanup(self, st: RunOnceState) -> None:
         """finally：还原 budget scope / 墙钟 / 单轮节流。"""
