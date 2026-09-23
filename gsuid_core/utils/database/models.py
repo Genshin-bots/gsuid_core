@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Type, Union, Optional, Sequence
 
 from sqlmodel import Field, Index, col, select, update
@@ -23,6 +24,22 @@ from .base_models import (
     with_read_session,
 )
 
+# 订阅表没有唯一约束。锁要包住提交，第二条才能看见第一条。
+_OWNER_SUBSCRIBE_LOCK: asyncio.Lock | None = None
+_OWNER_SUBSCRIBE_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _owner_subscribe_lock() -> asyncio.Lock:
+    """锁绑在当前事件循环上。测试里多次 asyncio.run 不能复用上一轮的锁。"""
+    global _OWNER_SUBSCRIBE_LOCK, _OWNER_SUBSCRIBE_LOOP
+    loop = asyncio.get_running_loop()
+    lock = _OWNER_SUBSCRIBE_LOCK
+    if lock is None or _OWNER_SUBSCRIBE_LOOP is not loop:
+        lock = asyncio.Lock()
+        _OWNER_SUBSCRIBE_LOCK = lock
+        _OWNER_SUBSCRIBE_LOOP = loop
+    return lock
+
 
 class Subscribe(BaseModel, table=True):
     __table_args__ = (
@@ -43,6 +60,45 @@ class Subscribe(BaseModel, table=True):
     uid: Optional[str] = Field(title="账户ID", default=None, index=True)
     extra_data: Optional[str] = Field(title="额外消息2", default=None)
     msg_id: Optional[str] = Field(title="消息ID", default=None)
+
+    @classmethod
+    async def ensure_owner(cls, event: Event) -> None:
+        """确认主人订阅。锁包住提交，并发调用只会留下一行。"""
+        async with _owner_subscribe_lock():
+            await cls._ensure_owner_row(event)
+
+    @classmethod
+    @with_session
+    async def _ensure_owner_row(cls, session: AsyncSession, event: Event) -> None:
+        stmt = select(cls).where(
+            col(cls.user_id) == event.user_id,
+            col(cls.task_name) == "主人用户",
+            col(cls.bot_id) == event.bot_id,
+        )
+        result = await session.execute(stmt)
+        blank: Optional["Subscribe"] = None
+        for row in result.scalars().all():
+            if not isinstance(row, cls):
+                continue
+            if row.WS_BOT_ID == event.WS_BOT_ID:
+                return
+            if not row.WS_BOT_ID and blank is None:
+                blank = row
+        if blank is not None:
+            blank.WS_BOT_ID = event.WS_BOT_ID
+            return
+        session.add(
+            cls(
+                user_id=event.user_id,
+                bot_id=event.bot_id,
+                group_id=event.group_id,
+                task_name="主人用户",
+                bot_self_id=event.bot_self_id,
+                user_type=event.user_type,
+                WS_BOT_ID=event.WS_BOT_ID,
+                msg_id=event.msg_id,
+            )
+        )
 
     async def send(
         self,

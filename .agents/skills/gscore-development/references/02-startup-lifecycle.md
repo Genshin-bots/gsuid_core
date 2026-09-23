@@ -185,8 +185,8 @@ HTTP Agent 路由在 `app_life` 构造 app 时按总开关决定是否 `include_
   **不**走核心 `WS_TOKEN`，也**不**因本机 IP 而跳过鉴权。其它适配器 bot 行为不变。
 - **5 分钟重连复用**：`gss.connect()` 内部启 `start_send_worker()`；断开后 `_Bot` 实例保留
   5 分钟以便重连复用（在途消息继续投递），超时才丢弃。详见 [§05](./05-bot-classes.md)。
-- **两个并发协程**：`start()`（`receive_bytes` 带 1s 超时检查 `shutdown_event` → `handle_event`）
-  与 `process()`（`bot._process()` 任务消费循环）。
+- **两个并发协程**：`start()`（`receive_bytes` 带 1s 超时检查 `shutdown_event` → `run_inbound_event`，
+  不在读循环里等待 `handle_event`）与 `process()`（`bot._process()` 任务消费循环）。断线会取消并等完该条入站处理。
 
 ### HTTP 端点（可选）
 

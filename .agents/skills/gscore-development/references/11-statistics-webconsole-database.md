@@ -179,12 +179,14 @@ SQLite 写走一把进程内闸门（`sqlite_write_gate`，与记忆的 `db_writ
 设一次；每条连接先设 `busy_timeout`（5 秒）。`batch_insert_data_with_update` 按 400 行提交。
 
 `@with_session` 在 SQLite 上从拿到闸门起最多 10 秒（`_WRITE_BUDGET_S`）。超时取消该协程、
-等连接 `close()` 结束才放开闸门、打 `log.database.write_timeout`，并抛 `DatabaseWriteTimeout`，
-不进入锁竞争重试。MySQL / PostgreSQL 不套这道预算。收尾宽限内协程若已正常返回，调用方拿到
+`close()` 最多再等 2 秒（`_CLOSE_DEADLINE_S`）后必须放开闸门、打 `log.database.write_timeout`，并抛
+`DatabaseWriteTimeout`，不进入锁竞争重试。排队超过 20 秒（`GATE_WAIT_S`）抛 `WriteGateTimeout`，
+并取消占锁任务，等它退出后再交接，避免两个人同时写。WebSocket 读循环不 `await handle_event`，入站处理有独立预算，一条卡住不会停读。断线会等这条入站处理结束。
+MySQL / PostgreSQL 不套这道预算。收尾宽限内协程若已正常返回，调用方拿到
 该返回值，不报超时。同一任务里的嵌套写复用外层连接，包一层 savepoint：失败只回滚这一层并重试
 锁错误，外层 `commit` 不会把失败语句之前的半截写入一起提交。`create_task` 出去的子任务另开连接。
 检索用的纯 SELECT（偏好、边、实体名、日统计、`CoreUser.get_all_user` / `CoreGroup.get_all_group`）
-走读会话。每条消息的 `insert_user` 在画像未变时不进写闸门。`DeliveryLedger.check_and_claim` 的插入、
+走读会话。每条消息的 `insert_user` / 主人订阅在后台写，不在收发循环里等待；画像未变时 `insert_user` 仍只读、不进写闸门。`DeliveryLedger.check_and_claim` 的插入、
 过期 state 删除、知识库分片写入走同一把闸门。插件里直接 `async_maker()` 的写仍不进闸门。
 
 **AI 表与总开关的关系（重要）**：`create_core_tables`（`on_core_start_before`，见 [§02](./02-startup-lifecycle.md)）

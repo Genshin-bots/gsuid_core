@@ -91,7 +91,7 @@ async def main():
     from gsuid_core.bot import _Bot
     from gsuid_core.config import core_config
     from gsuid_core.models import MessageReceive
-    from gsuid_core.handler import handle_event
+    from gsuid_core.handler import _INBOUND_SLOTS, handle_event, run_inbound_event
     from gsuid_core.security_manager import sec_manager
     from gsuid_core.utils.database.startup import (  # noqa: F401
         trans_adapter as ta,
@@ -152,6 +152,7 @@ async def main():
 
         try:
             bot = await gss.connect(websocket, bot_id)
+            inbound_slots = asyncio.Semaphore(_INBOUND_SLOTS)
 
             async def start():
                 try:
@@ -163,7 +164,7 @@ async def main():
                             # 优先拦截 recall_message_id 回执，避免其进入正常消息管道
                             if bot.resolve_recall(msg):
                                 continue
-                            await handle_event(bot, msg)
+                            bot._add_bg_task(asyncio.create_task(run_inbound_event(bot, msg, inbound_slots)))
                         except asyncio.TimeoutError:
                             continue
                         except WebSocketDisconnect:

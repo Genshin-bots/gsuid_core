@@ -162,7 +162,8 @@ class UserData(BaseModel, table=True):
 - 方法里有 `session.add` / `delete` / `update` → 只能 `@with_session`，不能挂读装饰器
 - SQLite 上 `@with_session` 有 **10 秒硬超时**（从拿到写闸门开始算，不含排队）。
   MySQL / PostgreSQL 没有这道超时。超时抛
-  `gsuid_core.utils.database.base_models.DatabaseWriteTimeout`，并在连接关掉之后才放开写闸门。
+  `gsuid_core.utils.database.base_models.DatabaseWriteTimeout`。`close()` 最多再等 2 秒就放开写闸门。
+  排队等闸门超过 20 秒抛 `WriteGateTimeout`，占锁任务会被取消，等它退出后再交接。
   收尾宽限内若写协程已经正常返回，调用方拿到返回值，不报超时。
   不要在写方法里等待 HTTP / 长时间 `sleep`。`@with_read_session` 不套这个预算。
   定义在插件模块里的写会排在 `gsuid_core.*` 写的后面。优先级看方法定义在哪个模块，

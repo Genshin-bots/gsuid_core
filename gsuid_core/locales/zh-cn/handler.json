@@ -12,9 +12,14 @@
   "log.handler.cmd_on_message": "[命令触发] [on_message]",
   "log.handler.cmd_triggered": "[命令触发]",
   "log.handler.event_received": "[收到事件]",
+  "log.handler.owner_subscribe_fail": "[GsCore] 主人订阅后台写入失败: {error}",
+  "log.handler.inbound_busy": "[GsCore] 入站处理槽已满，丢弃这一条消息",
+  "log.handler.inbound_fail": "[GsCore] 入站消息处理失败: {e}",
+  "log.handler.inbound_timeout": "[GsCore] 入站消息处理超时，已放弃这一条",
   "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command 异常: keyword={keyword}",
   "log.handler.meta_received": "[收到Meta事件]",
   "log.handler.meta_triggered": "[Meta事件触发]",
   "log.handler.same_msg_cd": "[GsCore][触发相同消息CD] 忽略{user_id}该消息!",
+  "log.handler.user_touch_fail": "[GsCore] 用户/群记账后台写入失败: {error}",
   "log.handler.duplicate_ws_bridge": "[GsCore] 同一账号 {bot_self_id} 的群 {group_id} 被多个 WS 适配器桥接（{ws_ids}）。同群请只留一个适配器。"
 }

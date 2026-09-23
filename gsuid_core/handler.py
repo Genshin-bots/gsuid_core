@@ -21,7 +21,6 @@ from gsuid_core.models import (
 )
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
-from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.global_val import get_platform_val
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
@@ -34,6 +33,65 @@ from gsuid_core.utils.plugins_config.gs_config import (
 
 # 注意：handle_ai / history / memory / statistics 等 AI 重模块改为在
 # handle_event 内按需懒加载，避免 import handler 时同步拉起 AI ML 栈而阻塞启动。
+
+# 读循环不 await 这条。预算要长于写闸门排队，好让超时先变成失败而不是取消到一半。
+_INBOUND_BUDGET_S = 30.0
+_INBOUND_SLOT_WAIT_S = 1.0
+_INBOUND_SLOTS = 32
+
+
+def _consume_inbound(task: asyncio.Task[object]) -> None:
+    if task.cancelled():
+        return
+    task.exception()
+
+
+def _slot_taken(task: asyncio.Task[bool]) -> bool:
+    return task.done() and not task.cancelled() and task.exception() is None
+
+
+async def _release_if_taken(slots: asyncio.Semaphore, task: asyncio.Task[bool]) -> None:
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    if _slot_taken(task):
+        slots.release()
+
+
+async def run_inbound_event(ws: _Bot, msg: MessageReceive, slots: asyncio.Semaphore) -> None:
+    """在读循环之外处理一条入站消息。槽满或超时只丢掉这一条，不堵住后续读取。"""
+    acquire_task: asyncio.Task[bool] = asyncio.create_task(slots.acquire())
+    try:
+        acquired, _pending = await asyncio.wait({acquire_task}, timeout=_INBOUND_SLOT_WAIT_S)
+    except asyncio.CancelledError:
+        await _release_if_taken(slots, acquire_task)
+        raise
+    if acquire_task not in acquired:
+        await _release_if_taken(slots, acquire_task)
+        logger.error(t("log.handler.inbound_busy"))
+        return
+    if not _slot_taken(acquire_task):
+        return
+    try:
+        event_task: asyncio.Task[object] = asyncio.create_task(handle_event(ws, msg))
+        try:
+            finished, _pending = await asyncio.wait({event_task}, timeout=_INBOUND_BUDGET_S)
+        except asyncio.CancelledError:
+            if not event_task.done():
+                event_task.cancel()
+            await asyncio.gather(event_task, return_exceptions=True)
+            raise
+        if event_task not in finished:
+            event_task.cancel()
+            event_task.add_done_callback(_consume_inbound)
+            logger.error(t("log.handler.inbound_timeout"))
+        elif not event_task.cancelled():
+            err = event_task.exception()
+            if err is not None:
+                logger.error(t("log.handler.inbound_fail", e=err))
+    finally:
+        slots.release()
+
 
 command_start = core_config.get_config("command_start")
 enable_empty = core_config.get_config("enable_empty_start")
@@ -76,15 +134,15 @@ def set_handle(is_handle: bool):
     IS_HANDDLE = is_handle
 
 
-# ===== CoreUser / CoreGroup 缓冲写入（参考 XutheringWavesUID 活跃度模式）=====
-# 默认关闭, 走原同步 await 路径; 启用后 60s 批量 flush, 退出时强制 flush.
+# 入站只记一笔，真正写库在后台。写闸门被占死时不能挡住命令匹配和收发。
 _BUFFERED_USER_WRITES: bool = bool(core_config.get_config("buffered_user_writes"))
 _USER_FLUSH_INTERVAL: float = 60.0
 
 _user_buffer: Dict[Tuple[str, str], Tuple[Optional[str], Optional[str], Optional[str]]] = {}
-_group_buffer: set = set()
+_group_buffer: set[Tuple[str, str]] = set()
 _user_flush_shutdown_event: asyncio.Event = asyncio.Event()
-_user_flush_task: Optional[asyncio.Task] = None
+_user_flush_task: Optional[asyncio.Task[None]] = None
+_bookkeeping_tasks: set[asyncio.Task[None]] = set()
 
 
 async def _flush_user_group_buffer():
@@ -122,6 +180,61 @@ async def _user_flush_loop():
             logger.warning(t("log.handler.buffer_flush_loop_fail", error=e))
 
 
+def _track_bookkeeping(task: asyncio.Task[None]) -> None:
+    _bookkeeping_tasks.add(task)
+    task.add_done_callback(_bookkeeping_tasks.discard)
+
+
+async def _write_user_group_now(
+    bot_id: str,
+    user_id: str,
+    group_id: Optional[str],
+    user_name: Optional[str],
+    user_icon: Optional[str],
+) -> None:
+    try:
+        await CoreUser.insert_user(bot_id, user_id, group_id, user_name, user_icon)
+        if group_id:
+            await CoreGroup.insert_group(bot_id, group_id)
+    except Exception as e:
+        logger.warning(t("log.handler.user_touch_fail", error=e))
+
+
+def _schedule_user_group_write(
+    bot_id: str,
+    user_id: str,
+    group_id: Optional[str],
+    user_name: Optional[str],
+    user_icon: Optional[str],
+) -> None:
+    """消息路径上的用户/群记账。缓冲或单条后台写，调用方都不等待。"""
+    if _BUFFERED_USER_WRITES:
+        key = (bot_id, user_id)
+        if key in _user_buffer:
+            old_gid, old_nick, old_avatar = _user_buffer[key]
+            if not user_name:
+                user_name = old_nick
+            if not user_icon:
+                user_icon = old_avatar
+        _user_buffer[key] = (group_id, user_name, user_icon)
+        if group_id:
+            _group_buffer.add((bot_id, group_id))
+        _ensure_flush_task_started()
+        return
+    _track_bookkeeping(asyncio.create_task(_write_user_group_now(bot_id, user_id, group_id, user_name, user_icon)))
+
+
+async def _ensure_owner_subscribe(event: Event) -> None:
+    try:
+        await Subscribe.ensure_owner(event)
+    except Exception as e:
+        logger.warning(t("log.handler.owner_subscribe_fail", error=e))
+
+
+def _schedule_owner_subscribe(event: Event) -> None:
+    _track_bookkeeping(asyncio.create_task(_ensure_owner_subscribe(event)))
+
+
 def _ensure_flush_task_started():
     """首次缓冲写入时懒启动后台 flush 任务."""
     global _user_flush_task
@@ -135,6 +248,10 @@ def _ensure_flush_task_started():
 @on_core_shutdown
 async def _flush_user_buffer_on_shutdown():
     """退出前最后一次刷写, 防止丢数据."""
+    if _bookkeeping_tasks:
+        _done, pending = await asyncio.wait(set(_bookkeeping_tasks), timeout=2)
+        for task in pending:
+            task.cancel()
     if not _BUFFERED_USER_WRITES:
         return
     logger.info(t("log.handler.buffer_stop"))
@@ -365,33 +482,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # ============================================
 
     if event.user_pm == 0:
-        if not await Subscribe.data_exist(
-            user_id=event.user_id,
-            task_name="主人用户",
-            bot_id=event.bot_id,
-            WS_BOT_ID=event.WS_BOT_ID,
-        ):
-            # 检查是否存在 WS_BOT_ID 为空的同名记录，若有则更新而非新增
-            existing_sub = await Subscribe.base_select_data(
-                user_id=event.user_id,
-                task_name="主人用户",
-                bot_id=event.bot_id,
-            )
-            if existing_sub and not existing_sub.WS_BOT_ID:
-                await Subscribe.update_data_by_data(
-                    {
-                        "user_id": event.user_id,
-                        "task_name": "主人用户",
-                        "bot_id": event.bot_id,
-                    },
-                    {"WS_BOT_ID": event.WS_BOT_ID},
-                )
-            else:
-                await gs_subscribe.add_subscribe(
-                    "single",
-                    "主人用户",
-                    event,
-                )
+        _schedule_owner_subscribe(event)
 
     local_val = get_platform_val(event.real_bot_id, event.bot_self_id)
     local_val["receive"] += 1
@@ -403,31 +494,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if event.sender and "avatar" in event.sender:
         sender_avater = event.sender["avatar"]
 
-    if _BUFFERED_USER_WRITES:
-        _key_u = (event.real_bot_id, event.user_id)
-        if _key_u in _user_buffer:
-            _old_gid, _old_nick, _old_avatar = _user_buffer[_key_u]
-            if not sender_nickname:
-                sender_nickname = _old_nick
-            if not sender_avater:
-                sender_avater = _old_avatar
-        _user_buffer[_key_u] = (event.group_id, sender_nickname, sender_avater)
-        if event.group_id:
-            _group_buffer.add((event.real_bot_id, event.group_id))
-        _ensure_flush_task_started()
-    else:
-        await CoreUser.insert_user(
-            event.real_bot_id,
-            event.user_id,
-            event.group_id,
-            sender_nickname,
-            sender_avater,
-        )
-        if event.group_id:
-            await CoreGroup.insert_group(
-                event.real_bot_id,
-                event.group_id,
-            )
+    _schedule_user_group_write(
+        event.real_bot_id,
+        event.user_id,
+        event.group_id,
+        sender_nickname,
+        sender_avater,
+    )
 
     bid = event.bot_id if event.bot_id else "0"
     uid = event.user_id if event.user_id else "0"

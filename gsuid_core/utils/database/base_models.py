@@ -14,7 +14,7 @@ from typing import (
     Awaitable,
 )
 from functools import wraps
-from collections.abc import AsyncIterator
+from collections.abc import Coroutine, AsyncIterator
 from typing_extensions import ParamSpec, Concatenate
 
 import aiosqlite
@@ -36,7 +36,7 @@ from sqlalchemy.sql.expression import func, null, true
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
-from gsuid_core.utils.database.write_gate import sqlite_write_gate
+from gsuid_core.utils.database.write_gate import WriteGateTimeout, sqlite_write_gate
 from gsuid_core.utils.plugins_config.gs_config import database_config
 
 T_BaseModel = TypeVar("T_BaseModel", bound="BaseModel")
@@ -306,6 +306,8 @@ def _is_transient_db_error(err: BaseException) -> bool:
 # 从拿到写槽开始计。超时后取消并关连接，避免一个插件占住 SQLite 写锁。
 _WRITE_BUDGET_S = 10.0
 _WRITE_ABORT_GRACE_S = 1.0
+# close() 排队在卡住的 sqlite 线程后面时不能一直占着闸门。
+_CLOSE_DEADLINE_S = 2.0
 
 
 class DatabaseWriteTimeout(Exception):
@@ -359,6 +361,31 @@ async def _close_driver(driver: aiosqlite.Connection) -> None:
         logger.error(i18n_t("log.database.write_timeout_close_fail", e=exc))
 
 
+_LINGERING_CLOSES: set[asyncio.Task[None]] = set()
+
+
+def _track_close(task: asyncio.Task[None]) -> None:
+    _LINGERING_CLOSES.add(task)
+    task.add_done_callback(_LINGERING_CLOSES.discard)
+    task.add_done_callback(_consume_task_exception)
+
+
+async def _run_driver_op(label: str, op: Coroutine[object, object, None]) -> asyncio.Task[None] | None:
+    """驱动调用超过期限就先返回。没跑完的收尾留在后台，不能占着写闸门。"""
+    op_task: asyncio.Task[None] = asyncio.create_task(op)
+    done, _pending = await asyncio.wait({op_task}, timeout=_CLOSE_DEADLINE_S)
+    if op_task in done:
+        _consume_task_exception(op_task)
+        return None
+    logger.error(i18n_t("log.database.write_timeout_close_hung", step=label))
+    _track_close(op_task)
+    return op_task
+
+
+async def _close_driver_bounded(driver: aiosqlite.Connection) -> None:
+    await _run_driver_op("close", _close_driver(driver))
+
+
 async def _stop_write_task(task: asyncio.Task[object], lease: _SqliteDriverLease) -> bool:
     """取消写任务。返回协程是否在宽限后仍活着。"""
     if task.done():
@@ -366,14 +393,16 @@ async def _stop_write_task(task: asyncio.Task[object], lease: _SqliteDriverLease
         return False
     task.cancel()
     driver = lease.connection
+    hung_interrupt: asyncio.Task[None] | None = None
     if driver is not None:
-        await _interrupt_driver(driver)
+        hung_interrupt = await _run_driver_op("interrupt", _interrupt_driver(driver))
     _done, _pending = await asyncio.wait({task}, timeout=_WRITE_ABORT_GRACE_S)
     if task.done():
         _consume_task_exception(task)
         return False
-    if driver is not None:
-        await _close_driver(driver)
+    # interrupt 还挂着时不能对同一条连接再 close。
+    if driver is not None and (hung_interrupt is None or hung_interrupt.done()):
+        await _close_driver_bounded(driver)
     task.add_done_callback(_consume_task_exception)
     return True
 
@@ -384,7 +413,7 @@ async def _retry_db(call: Callable[[], Awaitable[R]]) -> R:
     for attempt in range(max_retries):
         try:
             return await call()
-        except DatabaseWriteTimeout:
+        except (DatabaseWriteTimeout, WriteGateTimeout):
             raise
         except Exception as e:
             last_err = e

@@ -24,7 +24,9 @@
   "log.database.temporary_connection": "[Database] Temporary database connection released!",
   "log.database.uuid4_command_purge_done": "[Database] Deleted {deleted} on_message uuid4 fake commands; rewrote {summaries} summaries",
   "log.database.uuid4_command_purge_skip": "[Database] No uuid4 fake commands in CoreDataAnalysis; skip purge",
+  "log.database.write_gate_stolen": "[Database] Write gate held over {budget}s; cancelled the holder until it releases",
   "log.database.write_timeout": "[Database] Write exceeded {budget}s and was aborted to release the write lock: {operation}",
   "log.database.write_timeout_close_fail": "[Database] Failed to close the connection while aborting a write: {e}",
+  "log.database.write_timeout_close_hung": "[Database] Write connection {step} exceeded the deadline; releasing the write gate",
   "log.database.write_timeout_linger": "[Database] Write was aborted, but the coroutine is still running: {operation}"
 }

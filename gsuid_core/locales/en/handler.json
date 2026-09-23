@@ -12,9 +12,14 @@
   "log.handler.cmd_on_message": "[Command Triggered] [on_message]",
   "log.handler.cmd_triggered": "[Command Triggered]",
   "log.handler.event_received": "[Event Received]",
+  "log.handler.owner_subscribe_fail": "[GsCore] Background owner-subscribe write failed: {error}",
+  "log.handler.inbound_busy": "[GsCore] Inbound slots are full; dropped this message",
+  "log.handler.inbound_fail": "[GsCore] Inbound message failed: {e}",
+  "log.handler.inbound_timeout": "[GsCore] Inbound message timed out; dropped this one",
   "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command error: keyword={keyword}",
   "log.handler.meta_received": "[Meta Event Received]",
   "log.handler.meta_triggered": "[Meta Event Triggered]",
   "log.handler.same_msg_cd": "[GsCore][SameMsgCD] Ignoring this message from {user_id}!",
+  "log.handler.user_touch_fail": "[GsCore] Background user/group bookkeeping write failed: {error}",
   "log.handler.duplicate_ws_bridge": "[GsCore] Same account {bot_self_id} group {group_id} is bridged by multiple WS adapters ({ws_ids}). Keep one adapter per group."
 }

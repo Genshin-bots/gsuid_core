@@ -214,7 +214,8 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
   `on_core_start_before` 的 `exec_list`/`trans_adapter`（见 [§11](./11-statistics-webconsole-database.md)）。
 - AI 表要挂到受总开关控制的建表路径，不要无条件建。
 - **`@with_session` 写预算只作用于 SQLite**（`_WRITE_BUDGET_S` = 10 秒，不含等闸门）。超时取消这次调用、
-  等连接 `close()` 结束才放开闸门、打 `log.database.write_timeout`，抛 `DatabaseWriteTimeout`，不重试。
+  `close()` 最多再等 `_CLOSE_DEADLINE_S`（2 秒）后必须放开闸门、打 `log.database.write_timeout`，抛
+  `DatabaseWriteTimeout`，不重试。排队等闸门超过 `GATE_WAIT_S`（20 秒）抛 `WriteGateTimeout`，并取消占锁任务，等它退出后再交接。
   MySQL / PostgreSQL 不套这道预算。收尾宽限内协程若已正常返回，把返回值交回调用方。
   插件吞掉 `CancelledError` 时仍会关连接，避免一把坏写卡住后面的写。
   SQLite 写只有一把闸门，优先级按**定义模块**而不是调用方；WAL 只在启动时打开，读连接是 `query_only`。

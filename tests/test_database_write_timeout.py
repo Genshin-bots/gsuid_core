@@ -353,3 +353,78 @@ async def _gate_stays_held_until_close_finishes(
             await asyncio.sleep(0.2)
     finally:
         await engine.dispose()
+
+
+def test_hung_close_returns_before_the_driver_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_hung_close_returns_before_the_driver_finishes(monkeypatch))
+
+
+async def _hung_close_returns_before_the_driver_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(base_models, "_CLOSE_DEADLINE_S", 0.1)
+    finished = asyncio.Event()
+
+    async def hung_close(_driver: aiosqlite.Connection) -> None:
+        try:
+            await asyncio.sleep(30)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(base_models, "_close_driver", hung_close)
+    db = await aiosqlite.connect(":memory:")
+    try:
+        started = time.monotonic()
+        await base_models._close_driver_bounded(db)
+        assert time.monotonic() - started < 1
+        assert not finished.is_set()
+    finally:
+        for lingering in list(base_models._LINGERING_CLOSES):
+            lingering.cancel()
+        await asyncio.gather(*list(base_models._LINGERING_CLOSES), return_exceptions=True)
+        await db.close()
+
+
+def test_hung_interrupt_does_not_start_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_hung_interrupt_does_not_start_close(monkeypatch))
+
+
+async def _hung_interrupt_does_not_start_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(base_models, "_CLOSE_DEADLINE_S", 0.05)
+    monkeypatch.setattr(base_models, "_WRITE_ABORT_GRACE_S", 0.05)
+    calls: list[str] = []
+
+    async def hung_interrupt(_driver: aiosqlite.Connection) -> None:
+        calls.append("interrupt")
+        await asyncio.sleep(30)
+
+    async def record_close(_driver: aiosqlite.Connection) -> None:
+        calls.append("close")
+
+    monkeypatch.setattr(base_models, "_interrupt_driver", hung_interrupt)
+    monkeypatch.setattr(base_models, "_close_driver", record_close)
+    db = await aiosqlite.connect(":memory:")
+    lease = base_models._SqliteDriverLease()
+    lease.connection = db
+
+    started = asyncio.Event()
+
+    async def cling() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+            await asyncio.sleep(30)
+
+    task: asyncio.Task[None] = asyncio.create_task(cling())
+    await asyncio.wait_for(started.wait(), 2)
+    try:
+        assert await base_models._stop_write_task(task, lease) is True
+        assert calls == ["interrupt"]
+    finally:
+        task.cancel()
+        for lingering in list(base_models._LINGERING_CLOSES):
+            lingering.cancel()
+        await asyncio.gather(task, *list(base_models._LINGERING_CLOSES), return_exceptions=True)
+        await db.close()

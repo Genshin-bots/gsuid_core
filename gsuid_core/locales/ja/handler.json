@@ -12,9 +12,14 @@
   "log.handler.cmd_on_message": "[コマンド発火] [on_message]",
   "log.handler.cmd_triggered": "[コマンド発火]",
   "log.handler.event_received": "[イベント受信]",
+  "log.handler.owner_subscribe_fail": "[GsCore] オーナー購読のバックグラウンド書き込みに失敗した: {error}",
+  "log.handler.inbound_busy": "[GsCore] 受信処理スロットが満杯のため、このメッセージを破棄した",
+  "log.handler.inbound_fail": "[GsCore] 受信メッセージの処理に失敗した: {e}",
+  "log.handler.inbound_timeout": "[GsCore] 受信メッセージの処理がタイムアウトしたため、この1件を破棄した",
   "log.handler.meta_check_fail": "[GsCore] meta trigger.check_command で例外: keyword={keyword}",
   "log.handler.meta_received": "[Meta イベント受信]",
   "log.handler.meta_triggered": "[Meta イベント発火]",
   "log.handler.same_msg_cd": "[GsCore][同一メッセージCD] {user_id} のメッセージを無視します！",
+  "log.handler.user_touch_fail": "[GsCore] ユーザー/グループ台帳のバックグラウンド書き込みに失敗した: {error}",
   "log.handler.duplicate_ws_bridge": "[GsCore] 同一アカウント {bot_self_id} の群 {group_id} が複数 WS アダプタ（{ws_ids}）でブリッジされています。群ごとにアダプタは一つにしてください。"
 }

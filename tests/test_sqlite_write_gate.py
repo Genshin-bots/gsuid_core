@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import asyncio
 import sqlite3
 from pathlib import Path
@@ -19,6 +20,72 @@ from gsuid_core.utils.database.base_models import (
     with_session,
     with_read_session,
 )
+
+
+def test_stuck_owner_is_dropped_when_a_waiter_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_stuck_owner_is_dropped_when_a_waiter_times_out(monkeypatch))
+
+
+async def _stuck_owner_is_dropped_when_a_waiter_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.utils.database.write_gate as write_gate
+
+    monkeypatch.setattr(write_gate, "GATE_WAIT_S", 0.15)
+    gate = write_gate.SqliteWriteGate()
+    started = asyncio.Event()
+
+    async def blocker() -> None:
+        async with gate.hold(core=False):
+            started.set()
+            await asyncio.sleep(30)
+
+    blocked = asyncio.create_task(blocker())
+    await asyncio.wait_for(started.wait(), 2)
+    t0 = time.monotonic()
+    with pytest.raises(write_gate.WriteGateTimeout):
+        async with gate.hold(core=True):
+            pass
+    assert time.monotonic() - t0 < 2
+    async with gate.hold(core=True):
+        assert blocked.done()
+    await asyncio.gather(blocked, return_exceptions=True)
+
+
+def test_cancelled_owner_keeps_the_gate_until_it_leaves(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_cancelled_owner_keeps_the_gate_until_it_leaves(monkeypatch))
+
+
+async def _cancelled_owner_keeps_the_gate_until_it_leaves(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.utils.database.write_gate as write_gate
+
+    monkeypatch.setattr(write_gate, "GATE_WAIT_S", 0.15)
+    gate = write_gate.SqliteWriteGate()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def swallower() -> None:
+        async with gate.hold(core=False):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await release.wait()
+
+    async def follower() -> None:
+        async with gate.hold(core=True):
+            entered.set()
+
+    blocked = asyncio.create_task(swallower())
+    await asyncio.wait_for(started.wait(), 2)
+    with pytest.raises(write_gate.WriteGateTimeout):
+        async with gate.hold(core=True):
+            pass
+    nxt = asyncio.create_task(follower())
+    await asyncio.sleep(0.05)
+    assert not entered.is_set()
+    release.set()
+    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.gather(blocked, nxt, return_exceptions=True)
 
 
 def test_core_writer_runs_before_a_queued_plugin() -> None:
