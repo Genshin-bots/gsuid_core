@@ -415,6 +415,30 @@ def test_zero_output_voice_block_asks_rewrite_not_render() -> None:
     assert voice.obligations[0].satisfied_by == ("user_visible_sent",)
 
 
+def test_voice_retry_sends_deliverable_rewrite_not_silence() -> None:
+    """过程词被拦后，Agent 改成可交付短句必须留下，不能退回沉默。"""
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_process_meta
+
+    blocked = "你要是真在意，就自己再验证一下…"
+    rewrite = "唔…有媒体报道过这个争议…但原帖自己也说没完全证实…你自己再看看吧…"
+    assert looks_like_process_meta(blocked)
+    assert not looks_like_process_meta(rewrite)
+    assert settle_mod._voice_retry_text(rewrite, disputed=False, blocked=blocked) == rewrite
+    assert settle_mod._voice_retry_text("你自己再验证一下", disputed=False, blocked=blocked) == "<SILENCE>"
+    assert settle_mod._voice_retry_text("", disputed=False, blocked=blocked) == "<SILENCE>"
+    assert settle_mod._voice_retry_text("<SILENCE>", disputed=True, blocked=blocked) == blocked
+
+
+def test_voice_correction_returns_text_instead_of_by_bot_empty() -> None:
+    """群聊 by_bot 的纠正轮若 return ""，父级补发永远看不到改写。"""
+    src = inspect.getsource(settle_mod.SettlePhase._run_once_settle_result)
+    idx = src.index("blocked_voice_directive")
+    window = src[idx : idx + 1600]
+    assert 'return_mode="return"' in window
+    assert "_voice_retry_text(" in window
+    assert "send_chat_result(st.bot, result_msg, ev=st.ev)" in window
+
+
 def test_blocked_numeric_recitation_requires_render_without_tools() -> None:
     """念数被拦且本轮零工具：仍要纠正去 render，不能整轮静默。"""
     from gsuid_core.ai_core.control.corrections import numeric_recitation_directive

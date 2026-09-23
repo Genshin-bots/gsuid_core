@@ -38,6 +38,7 @@ from gsuid_core.ai_core.utils import (
 from gsuid_core.ai_core.register import find_tool_base
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
+    ReturnMode,
     RunOnceState,
     _require_limits,
     _require_context,
@@ -248,6 +249,16 @@ def _correction_is_deliverable(text: str) -> bool:
     )
 
 
+def _voice_retry_text(corrected: object, *, disputed: bool, blocked: str) -> str:
+    """话术闸拦下后交回一次：申辩则交还原文，否则只收可交付改写。"""
+    if disputed:
+        body = blocked.strip()
+        if body and not is_silence_marker(body):
+            return body
+        return "<SILENCE>"
+    return _corrected_or_original(corrected, original="<SILENCE>")
+
+
 _DLG_ROOT_RE = re.compile(r"dlg_([0-9a-fA-F-]{8,})")
 
 
@@ -321,9 +332,12 @@ class SettlePhase(RunOnceHost):
         directives: tuple[Directive, ...],
         *,
         suppress_intermediate_text: bool | None = None,
+        return_mode: ReturnMode | None = None,
     ) -> object:
         """纠正重跑；失败返回 None，原答案按 INV-3 生效。"""
         _suppress = st.suppress_intermediate_text if suppress_intermediate_text is None else suppress_intermediate_text
+        # 话术纠正要拿回文本：by_bot 成功路径会 return ""，父级补发看不到改写。
+        _mode = st.return_mode if return_mode is None else return_mode
         # Why: 纠正是增强路径，失败不得毁掉已完成的用户轮（INV-3）
         try:
             return await self._execute_run_once(
@@ -331,7 +345,7 @@ class SettlePhase(RunOnceHost):
                 bot=st.bot,
                 ev=st.ev,
                 tools=st.tools,
-                return_mode=st.return_mode,
+                return_mode=_mode,
                 intent=st.intent,
                 has_active_task=st.has_active_task,
                 suppress_intermediate_text=_suppress,
@@ -735,14 +749,22 @@ class SettlePhase(RunOnceHost):
                 _voice_directive = (
                     premature_claim_directive() if _voice_reason == "premature_delivery" else blocked_voice_directive()
                 )
+                _blocked = result_msg.strip()
+                _disputes_before = len(self._run_disputes)
+                # 内层 framework_nudge 会丢掉改写；文本交回本层再发。
                 _vc = await self._try_correction_pass(
                     st,
                     (_voice_directive,),
-                    suppress_intermediate_text=False,
+                    suppress_intermediate_text=True,
+                    return_mode="return",
                 )
-                result_msg = _corrected_or_original(_vc, original="<SILENCE>")
+                _disputed = len(self._run_disputes) > _disputes_before
+                if _disputed:
+                    logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
+                result_msg = _voice_retry_text(_vc, disputed=_disputed, blocked=_blocked)
                 if (
-                    _correction_is_deliverable(result_msg)
+                    result_msg.strip()
+                    and not is_silence_marker(result_msg.strip())
                     and result_msg.strip() not in self._run_sent_texts
                     and st.bot is not None
                     and st.return_mode in ("always", "by_bot")
@@ -820,7 +842,10 @@ class SettlePhase(RunOnceHost):
             # 出口消毒：异步在途 / 编排泄漏 / 长结构 / 引导追问 → 对外 SILENCE 或短句
             if self.create_by in ("Chat", "Agent") and result_msg and st.return_mode != "return":
                 _rs = result_msg.strip()
-                if st.image_sent_this_run:
+                # 本轮已发出的句子不再改写成沉默（话术纠正/申辩的补发）。
+                if _rs in self._run_sent_texts:
+                    pass
+                elif st.image_sent_this_run:
                     # 步骤 7：发图后允许短收尾；仍砍编排/长结构/过程元话语/引导追问
                     if (
                         has_orchestration_narration(_rs)
