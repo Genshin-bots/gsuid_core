@@ -1253,8 +1253,9 @@ async def _hubs_from_hits(
                     if plugin_from_world_ref(hub.ref) == owner:
                         await _add(hub, named=True)
             continue
-        # 别名表没有的正式名：启动已挂上的枢纽按 title 精确命中。同名多插件不猜。
-        if not _is_indexable(key):
+        # 别名表没有的正式名：按枢纽 title 精确命中。两字及以下不走这条，
+        # 否则通名会命中别的插件同名枢纽，盖住真正的专名。
+        if not _is_indexable(key) or len(key) <= 2:
             continue
         titled = await AICogNode.list_world_hubs_by_title(surface_text)
         if len(titled) == 1:

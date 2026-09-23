@@ -592,6 +592,7 @@ def test_missing_offered_tool_and_addressed_silence_are_wired() -> None:
     assert "task_management" in miss_block
     assert _claims_deferred_work("太困了明天再查吧")
     assert _claims_deferred_work("等我回头再查")
+    assert _claims_deferred_work("等我回去翻翻新版本的情报再回你吧")
     assert not _claims_deferred_work("太困了…")
     assert not _claims_deferred_work("等我醒")
     assert not _claims_deferred_work("好，现在就查。")

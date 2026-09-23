@@ -306,6 +306,19 @@ def test_turn_graph_group_gates(monkeypatch):
     assert tg_sc.soft_continue
     assert decide_cheap_gate(tg_sc) is CheapGate.FULL
 
+    # 引用 bot 的同人短续聊要进环，不能当群聊引用静音
+    tg_quote_follow = build_turn_graph(
+        "小明(用户ID:9001)：你仔细搜搜",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+        recent=hist,
+        has_reply=True,
+    )
+    assert not tg_quote_follow.quoted_tome
+    assert decide_cheap_gate(tg_quote_follow) is CheapGate.FULL
+
     # 跨人省略：不是你的槽 → address_gated，cheap 静音
     tg_other = build_turn_graph(
         "小红(用户ID:9002)：那明天呢",

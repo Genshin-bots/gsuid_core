@@ -738,7 +738,7 @@ async def _dispatch_via_kanban(
                 f"⏳ 子任务后台执行中（将自动回灌）。"
                 f"task#{root.ordinal} / {pid} / 句柄 {handle}\n"
                 "本 tool_return 不是终局结论。"
-                "对用户默认 <SILENCE>"
+                "若用户正在催你，先用一句角色短句应一声再 <SILENCE>；没在催则对用户默认 <SILENCE>"
                 "（禁止过程动词、任务编号、句柄、编排词、叙述第二个执行者）。"
                 "禁止再 create_subagent 同任务。\n"
                 "完成后自动回灌。用户之后追问进度时，用 find_tools 召回 check_delegation"

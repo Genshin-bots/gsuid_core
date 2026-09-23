@@ -36,6 +36,27 @@ def _seen_queries(ctx: RunContext[ToolContext]) -> Dict[str, str]:
     return extra[_SEEN_QUERIES_KEY]
 
 
+def _append_alias_canonicals(query: str) -> str:
+    """已登记别名展开成正式名再检索，错字才能命中正式名枢纽。"""
+    from gsuid_core.ai_core.entity_index import lookup_surface
+    from gsuid_core.ai_core.cognition.hub import title_tokens
+
+    extras: list[str] = []
+    seen: set[str] = set()
+    for tok in title_tokens(query):
+        ref = lookup_surface(tok)
+        if ref is None or ref.is_ambiguous or not ref.canonicals:
+            continue
+        canon = ref.canonicals[0]
+        if not canon or canon in query or canon in seen:
+            continue
+        seen.add(canon)
+        extras.append(canon)
+    if not extras:
+        return query
+    return f"{query} {' '.join(extras)}"
+
+
 def _query_key(query: str, kinds: FrozenSet[CogKind]) -> str:
     """归一化后的 query + kinds 切片作为去重键（空白与大小写差异不算新 query）。"""
     normalized = "".join(query.split()).lower()
@@ -143,6 +164,7 @@ async def search_cognition(
     from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
 
     search_q = strip_clock_lines(search_q) or search_q
+    search_q = _append_alias_canonicals(search_q)
 
     lim = max(1, min(limit, 48))
     hits = await federated_search(

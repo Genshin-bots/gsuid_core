@@ -215,7 +215,7 @@ _SCHED_MUTATE_TOOLS: frozenset[str] = frozenset(
     }
 )
 _MISSING_OFFERED_TOOL_RE = re.compile(r"没有.{0,16}工具")
-_DEFER_WORK_RE = re.compile(r"明天再|等我.{0,8}再(查|设|弄|翻)")
+_DEFER_WORK_RE = re.compile(r"明天再|等我.{0,8}再(查|设|弄|翻)|等我.{0,16}(翻|查|搜)")
 
 
 def _claims_missing_offered_tool(text: str, offered: Sequence[str]) -> bool:
