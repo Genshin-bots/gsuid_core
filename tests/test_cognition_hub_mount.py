@@ -152,6 +152,14 @@ def test_search_cognition_signature_unchanged() -> None:
     assert "CognitiveHit" in str(sig.return_annotation)
 
 
+def test_short_self_title_skipped_inside_longer_query() -> None:
+    from gsuid_core.ai_core.cognition.hub import _skip_generic_short_title
+
+    assert _skip_generic_short_title("甲乙", "丙丁 甲乙", "甲乙")
+    assert not _skip_generic_short_title("甲乙", "甲乙", "甲乙")
+    assert not _skip_generic_short_title("甲乙", "丙丁 甲乙", "戊己庚")
+
+
 def test_expand_hub_and_link_have_no_scope_defaults() -> None:
     sig = inspect.signature(expand_hub)
     assert sig.parameters["scope"].default is inspect.Parameter.empty

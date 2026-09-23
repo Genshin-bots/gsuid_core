@@ -136,7 +136,8 @@ _WAIT_COMFORT_RE = re.compile(
     r"这就(去|来)?(翻|弄|查|办|看|整)|"
     r"(比较|有点|会)?(久|慢|费时|花(点|些)?时间)|"
     r"耐心|等着|先等着|得翻|得查|得弄|翻会儿|查会儿|"
-    r"别急|慢慢|稍后|等等我)",
+    r"别急|慢慢|稍后|等等我|"
+    r"先让我|还缺|再查|接着查|继续查|先查)",
     re.IGNORECASE,
 )
 
@@ -395,6 +396,15 @@ def looks_like_wait_comfort(text: str) -> bool:
     return bool(_WAIT_COMFORT_RE.search(body))
 
 
+def _keeps_working(body: str) -> bool:
+    """一句里还在查，不算已经交付。空交付摆烂不算。"""
+    if looks_like_empty_handoff(body):
+        return False
+    if looks_like_wait_comfort(body):
+        return True
+    return _WAIT_COMFORT_RE.search(body) is not None
+
+
 def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
     """开场接任务应：一句角色发言，表示接下来去做。
 
@@ -427,7 +437,7 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
         return False
     if body.count("\n") >= 2:
         return False
-    if claims_premature_delivery(body) and not looks_like_wait_comfort(body):
+    if claims_premature_delivery(body) and not _keeps_working(body):
         return False
     if looks_like_wait_comfort(body):
         return True
@@ -623,7 +633,7 @@ def should_block_user_visible_text(
     if looks_like_process_meta(body):
         return True, "process_meta"
 
-    if claims_premature_delivery(body) and not image_sent:
+    if claims_premature_delivery(body) and not image_sent and not _keeps_working(body):
         return True, "premature_delivery"
 
     # 多点读数进气泡 = 该走资料图。不要求已有在途任务（首轮对照同样适用）。

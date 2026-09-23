@@ -366,6 +366,34 @@ def test_inflight_quota_allows_short_ack_once() -> None:
     assert blk2 and why2 == "silence_only_or_async"
 
 
+def test_inflight_partial_progress_ack_is_sent_once() -> None:
+    """翻完一部分但仍要查，是接任务应，在途只放行一次。"""
+    line = "（揉眼睛）唔…风鹰剑的卷轴翻完了，银缸那边还缺数据…先让我查查…呼"
+    assert looks_like_task_accept_speech(line, max_len=150)
+    blk, why = should_block_user_visible_text(
+        "silence_only",
+        line,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=False,
+        speech_len_hard=150,
+    )
+    assert not blk, why
+    blk2, why2 = should_block_user_visible_text(
+        "silence_only",
+        line,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+        wait_comfort_sent=True,
+        speech_len_hard=150,
+    )
+    assert blk2 and why2 == "silence_only_or_async"
+
+
 def test_inflight_quota_rejects_wait_plus_list() -> None:
     dump = (
         "唔…图还在渲，先给你看要点：\n\n"

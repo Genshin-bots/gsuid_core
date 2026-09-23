@@ -177,7 +177,7 @@ async def search_cognition(
 
     # 说话人面不含知识。片段很多也展开：否则聊过的专名会盖住已挂载枢纽。
     if CogKind.KNOWLEDGE in selected:
-        expansion = await expand_hub(query, hits, scope=scope)
+        expansion = await expand_hub(search_q, hits, scope=scope)
     else:
         expansion = None
     from gsuid_core.ai_core.content_guard import wrap_untrusted

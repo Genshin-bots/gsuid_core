@@ -425,6 +425,15 @@ def _formal_from_query(query: str) -> Optional[str]:
     return qn if _is_indexable(qn) else None
 
 
+def _skip_generic_short_title(surface_key: str, query: str, canon: str) -> bool:
+    """两字及以下且正式名等于表面：通名，不在更长 query 里点枢纽。"""
+    if len(surface_key) > 2:
+        return False
+    if _normalize_surface(canon) != surface_key:
+        return False
+    return surface_key != _normalize_surface(query)
+
+
 def _alias_formal(name: str) -> Optional[str]:
     """别名唯一命中用正式名；未注册则用原名。歧义或不可索引返回 None。"""
     n = (name or "").strip()
@@ -1245,14 +1254,19 @@ async def _hubs_from_hits(
         seen_surface.add(key)
         ref = lookup_surface(surface_text)
         if ref is not None and ref.bindings:
+            added = False
             for owner, canon in ref.bindings:
                 if not owner or not canon:
+                    continue
+                if _skip_generic_short_title(key, query, canon):
                     continue
                 await _add(await AICogNode.get(CogKind.ENTITY, make_world_ref(owner, canon)), named=True)
                 for hub in await AICogNode.list_world_hubs_by_title(canon):
                     if plugin_from_world_ref(hub.ref) == owner:
                         await _add(hub, named=True)
-            continue
+                added = True
+            if added:
+                continue
         # 别名表没有的正式名：按枢纽 title 精确命中。两字及以下不走这条，
         # 否则通名会命中别的插件同名枢纽，盖住真正的专名。
         if not _is_indexable(key) or len(key) <= 2:
