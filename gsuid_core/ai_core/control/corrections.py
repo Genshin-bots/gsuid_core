@@ -111,6 +111,68 @@ def status_zero_tool_directive() -> Directive:
     )
 
 
+def premature_claim_directive() -> Directive:
+    """完成态被拦、图还没发出。纠正改口，不许再宣称完成，也不出图。"""
+    return Directive(
+        kind="correction",
+        reason_code="premature_delivery",
+        observation=(
+            "你上一段被拦下了，用户没看到。图还没发出，回复却是完成态。"
+            "用当前人格改成一句短话，不要宣称已经做好或已经发出。"
+            "不要委派出图，不要只输出 <SILENCE>。"
+        ),
+        obligations=(
+            Obligation(
+                must="deliver",
+                satisfied_by=("user_visible_sent",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="出站话术闸拦下了完成态"),
+    )
+
+
+def blocked_voice_directive() -> Directive:
+    """过程词或编排词被拦，用户没看到。纠正成角色短句，不出图。"""
+    return Directive(
+        kind="correction",
+        reason_code="blocked_voice",
+        observation=(
+            "你上一段被拦下了，用户没看到：过程说明或内部编排不能当对用户的话。"
+            "用当前人格改成一句短话再说。"
+            "不要委派出图，不要只输出 <SILENCE>。"
+        ),
+        obligations=(
+            Obligation(
+                must="deliver",
+                satisfied_by=("user_visible_sent",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="出站话术闸拦下了过程或编排"),
+    )
+
+
+def numeric_recitation_directive() -> Directive:
+    """念数被拦、用户没看到。纠正只许改委派出图，不许再念进气泡。"""
+    return Directive(
+        kind="correction",
+        reason_code="numeric_recitation",
+        observation=(
+            "你上一段给用户的回复被拦下了，没有发出去：多点数字对照不能当群聊台词。"
+            '把那段改委派 create_subagent(agent_profile="render_agent") 出图。'
+            "不要再把数字念进气泡，不要只输出 <SILENCE>。"
+        ),
+        obligations=(
+            Obligation(
+                must="call_tool",
+                tool_name="create_subagent",
+                tool_args_match={"agent_profile": "render_agent"},
+                satisfied_by=("render_delegated", "image_sent"),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="出站话术闸拦下了念数"),
+    )
+
+
 def render_obligation_directive(*, recited_report: bool, tool_calls: int) -> Directive:
     """真把长结构当台词念出来时，才建议改出图。短答不纠。"""
     observation = "本轮工具返回里有较长结构，你把它整段念出来了。" if recited_report else "本轮工具返回里有较长结构。"

@@ -181,6 +181,20 @@ def test_status_ok_refuses_without_status_tool() -> None:
     assert bot.send.await_count == 0
 
 
+def test_nickname_at_becomes_user_id_or_drops() -> None:
+    from gsuid_core.ai_core.utils import rewrite_nickname_mentions
+
+    names = {"小明": "10001", "小红": "10002"}
+    dropped = rewrite_nickname_mentions("图好了。@小明", names, already_at="10001")
+    assert "@小明" not in dropped
+    assert "图好了" in dropped
+    rewritten = rewrite_nickname_mentions("看这个 @小明", names)
+    assert "@10001" in rewritten
+    assert "@小明" not in rewritten
+    unknown = rewrite_nickname_mentions("嗨 @不存在的人", names)
+    assert "@" not in unknown
+
+
 def test_at_digits_become_at_segment() -> None:
     from gsuid_core.ai_core.utils import _parse_at_segments
 

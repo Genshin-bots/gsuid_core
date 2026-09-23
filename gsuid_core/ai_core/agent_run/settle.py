@@ -63,14 +63,18 @@ from gsuid_core.ai_core.control.directive import (
 )
 from gsuid_core.ai_core.control.corrections import (
     fake_done_directive,
+    blocked_voice_directive,
+    premature_claim_directive,
     status_zero_tool_directive,
     addressed_silence_directive,
     render_obligation_directive,
+    numeric_recitation_directive,
     missing_offered_tool_directive,
     structural_zero_tool_directive,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    ZERO_OUTPUT_VOICE_REASONS,
     looks_like_process_meta,
     looks_like_wait_comfort,
     looks_like_empty_handoff,
@@ -107,6 +111,8 @@ def _satisfaction_facts(st: RunOnceState) -> tuple[str, ...]:
         facts.append("any_tool_called")
     if "check_delegation" in st.tool_call_list:
         facts.append("delegation_checked")
+    if st.main_channel_sends > 0:
+        facts.append("user_visible_sent")
     return tuple(facts)
 
 
@@ -171,8 +177,34 @@ def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool, resul
     return bool(st.tg is not None and st.tg.call_to_self and _claims_deferred_work(result_msg))
 
 
+def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
+    """整轮零输出时，该改口的拦截原因。在途或已出图不叫醒。"""
+    if st.main_channel_sends > 0 or st.image_sent_this_run:
+        return ""
+    if st.pending_async_delivery or st.delegated_render:
+        return ""
+    if "numeric_recitation" in st.presentation_withheld_reasons:
+        return ""
+    for reason in st.presentation_withheld_reasons:
+        if reason in ZERO_OUTPUT_VOICE_REASONS:
+            return reason
+    body = (result_msg or "").strip()
+    if not body or is_silence_marker(body):
+        return ""
+    if claims_premature_delivery(body):
+        return "premature_delivery"
+    if has_orchestration_narration(body) or looks_like_process_meta(body):
+        return "process_meta"
+    return ""
+
+
 def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
-    """有出处凭据且台词呈报告体 / 空交付暂扣时才进纠正。mismatch 单独不够。"""
+    """有出处凭据且台词呈报告体 / 空交付暂扣时才进纠正。mismatch 单独不够。
+
+    念数被话术闸拦下时，即使本轮没工具，也要纠正去出图，否则用户什么都看不到。
+    """
+    if "numeric_recitation" in st.presentation_withheld_reasons:
+        return True
     if not st.saw_structured_return or not st.tool_call_list:
         return False
     if _looks_like_report_speech(result_msg or ""):
@@ -690,6 +722,36 @@ class SettlePhase(RunOnceHost):
                 result_msg = _corrected_or_original(_sc, original=result_msg)
                 self._scrub_fake_done_history(set())
 
+            _voice_reason = _voice_block_reason(st, result_msg)
+            if (
+                not _settle_correction_ran
+                and _voice_reason
+                and not st.fake_done_retry
+                and self.create_by in _INTERACTIVE_CREATE_BY
+                and self.create_by != "CapabilityAgent"
+            ):
+                _settle_correction_ran = True
+                logger.warning(i18n_t("log.agent.render_data_nudge_once"))
+                _voice_directive = (
+                    premature_claim_directive() if _voice_reason == "premature_delivery" else blocked_voice_directive()
+                )
+                _vc = await self._try_correction_pass(
+                    st,
+                    (_voice_directive,),
+                    suppress_intermediate_text=False,
+                )
+                result_msg = _corrected_or_original(_vc, original="<SILENCE>")
+                if (
+                    _correction_is_deliverable(result_msg)
+                    and result_msg.strip() not in self._run_sent_texts
+                    and st.bot is not None
+                    and st.return_mode in ("always", "by_bot")
+                ):
+                    await send_chat_result(st.bot, result_msg, ev=st.ev)
+                    self._run_sent_texts.add(result_msg.strip())
+                    if st.main_channel_sends == 0:
+                        st.main_channel_sends = 1
+
             # 申辩/义务未履行时，出口消毒不得再按报告体静默（否则暂扣原文永远发不出）
             _skip_report_exit = False
             _replacement_visible = False
@@ -707,10 +769,13 @@ class SettlePhase(RunOnceHost):
                 and self.create_by != "CapabilityAgent"
             ):
                 logger.warning(i18n_t("log.agent.render_data_nudge_once"))
-                _directive = render_obligation_directive(
-                    recited_report=_looks_like_report_speech(result_msg or ""),
-                    tool_calls=len(st.tool_call_list),
-                )
+                if "numeric_recitation" in st.presentation_withheld_reasons and not st.saw_structured_return:
+                    _directive = numeric_recitation_directive()
+                else:
+                    _directive = render_obligation_directive(
+                        recited_report=_looks_like_report_speech(result_msg or ""),
+                        tool_calls=len(st.tool_call_list),
+                    )
                 _disputes_before = len(self._run_disputes)
                 _sent_before_correction = set(self._run_sent_texts)
                 _rc = await self._try_correction_pass(

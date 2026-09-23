@@ -21,6 +21,7 @@ from pydantic_ai.messages import (
     NativeToolReturnPart,
     ModelResponseStreamEvent,
 )
+from pydantic_ai.exceptions import ModelRetry
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
@@ -63,6 +64,7 @@ from gsuid_core.ai_core.agent_run.support import (
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
     is_status_tool_name,
     strip_open_solicitations,
@@ -167,7 +169,7 @@ def send_message_call_has_visible_text(parts: Sequence[object]) -> bool:
 
 
 def task_ack_phrase(persona_name: str | None) -> str:
-    """接任务应：只读 persona.json 的 task_ack。空则不补句。"""
+    """人格配置的接任务应。空串表示没写，框架不代说。"""
     from gsuid_core.ai_core.persona.settings import get_persona_setting
 
     return get_persona_setting(persona_name, "task_ack").strip()
@@ -275,7 +277,19 @@ class LoopPhase(RunOnceHost):
             self._run_sent_texts.add(text)
             st.main_channel_sends += 1
             return
-        await send_chat_result(bot, text, ev=st.ev, at_user_id=at_user_id)
+        _mention_raw = st.run_extra["mention_names"] if "mention_names" in st.run_extra else None
+        _mentions: dict[str, str] = {}
+        if isinstance(_mention_raw, dict):
+            for _mk, _mv in _mention_raw.items():
+                if isinstance(_mk, str) and isinstance(_mv, str) and _mk and _mv:
+                    _mentions[_mk] = _mv
+        await send_chat_result(
+            bot,
+            text,
+            ev=st.ev,
+            at_user_id=at_user_id,
+            mention_names=_mentions,
+        )
         self._run_sent_texts.add(text)
         st.main_channel_sends += 1
 
@@ -305,7 +319,7 @@ class LoopPhase(RunOnceHost):
         return True
 
     async def _emit_task_ack_fallback(self, st: RunOnceState) -> bool:
-        """模型没写合格接任务应时发 persona.json 配置句。空配置不补。过不了闸不占槽。"""
+        """模型没写接任务应、且人格配置了 task_ack 时才发那句。空配置不代说。"""
         if st.bot is None or st.return_mode not in ("always", "by_bot"):
             return False
         if st.main_channel_sends > 0 or st.wait_comfort_sent:
@@ -963,8 +977,8 @@ class LoopPhase(RunOnceHost):
                             if _text not in st.presentation_withheld:
                                 st.presentation_withheld.append(_text)
                                 st.presentation_withheld_reasons.append(_why)
-                        elif _why == "numeric_recitation":
-                            # 念数丢掉、不进 INV-4；记原因以便 settle 走 render 纠正。
+                        elif _why == "numeric_recitation" or _why in ZERO_OUTPUT_VOICE_REASONS:
+                            # 不进 INV-4。原因留给 settle：念数出图，完成态/过程词改口。
                             st.presentation_mismatch = True
                             st.presentation_withheld_reasons.append(_why)
                         logger.info(
@@ -1117,6 +1131,28 @@ class LoopPhase(RunOnceHost):
                 is_http=_is_http,
             ):
                 await self._emit_task_ack_fallback(st)
+                _held = st.run_extra["task_ack_hold"] is True if "task_ack_hold" in st.run_extra else False
+                _fn_parts = [
+                    p
+                    for p in node.model_response.parts
+                    if isinstance(p, ToolCallPart) and not isinstance(p, NativeToolCallPart)
+                ]
+                if (
+                    not _held
+                    and st.main_channel_sends == 0
+                    and not st.wait_comfort_sent
+                    and _fn_parts
+                    and all(p.tool_call_id for p in _fn_parts)
+                ):
+                    # 重工具先不执行。模型用当前人格说一句之后再调，框架不代写台词。
+                    st.run_extra["task_ack_hold"] = True
+                    node.tool_call_results = {
+                        p.tool_call_id: ModelRetry(
+                            "先用当前人格写一句短话，告诉用户你接下了、要等一会儿，然后再调用工具。"
+                            "怎么说由你判断。不要 <SILENCE>，不要复述这句说明。"
+                        )
+                        for p in _fn_parts
+                    }
 
         if _resp_unsent:
             st.unsent_texts.extend(_resp_unsent)

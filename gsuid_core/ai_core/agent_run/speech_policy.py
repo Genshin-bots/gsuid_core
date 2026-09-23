@@ -21,6 +21,16 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     fact_pack_is_multi_point as _fact_lines_multi_point,
 )
 
+# 整轮因此零输出时要回灌改口，不走出图。在途静默不在此列。
+ZERO_OUTPUT_VOICE_REASONS = frozenset(
+    {
+        "premature_delivery",
+        "process_meta",
+        "orchestration_leak",
+        "delivery_narration",
+    }
+)
+
 SpeechPolicy = Literal[
     "free",
     "silence_only",

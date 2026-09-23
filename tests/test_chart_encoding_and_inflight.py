@@ -368,7 +368,7 @@ def test_inflight_quota_allows_short_ack_once() -> None:
 
 def test_inflight_partial_progress_ack_is_sent_once() -> None:
     """翻完一部分但仍要查，是接任务应，在途只放行一次。"""
-    line = "（揉眼睛）唔…风鹰剑的卷轴翻完了，银缸那边还缺数据…先让我查查…呼"
+    line = "前面那份翻完了，另一份还缺，先让我查查。"
     assert looks_like_task_accept_speech(line, max_len=150)
     blk, why = should_block_user_visible_text(
         "silence_only",

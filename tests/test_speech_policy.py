@@ -473,6 +473,9 @@ def test_task_ack_is_required_not_optional() -> None:
         is_http=False,
     )
     assert task_ack_phrase(None) == ""
+    loop_src = (root / "gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
+    assert "知道了，稍等" not in loop_src
+    assert "ModelRetry" in loop_src
     assert looks_like_task_accept_speech("收到。")
     silent = ToolCallPart(tool_name="create_subagent", args="{}")
     spoken = ToolCallPart(tool_name="send_message_by_ai", args='{"text": "好，我去查。"}')

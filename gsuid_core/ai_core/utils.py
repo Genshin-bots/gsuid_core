@@ -1330,6 +1330,54 @@ async def _try_render_markdown_image(
     return True
 
 
+_NICK_AT_RE = re.compile(r"@(?!\d)([^\s@，。！？、,.!?]{1,16})")
+_MENTION_LABEL_RE = re.compile(r"([^\s()（）\n]{1,16})\(用户ID:([^)]+)\)")
+
+
+def mention_names_in_text(text: str) -> Dict[str, str]:
+    """从「名(用户ID:id)」抽出可解析的提及。"""
+    names: Dict[str, str] = {}
+    for match in _MENTION_LABEL_RE.finditer(text or ""):
+        name = match.group(1).strip()
+        uid = match.group(2).strip()
+        if name and uid and name != uid:
+            names[name] = uid
+    return names
+
+
+def mention_names_from_event(ev: Event | None) -> Dict[str, str]:
+    if ev is None:
+        return {}
+    sender = ev.sender
+    nick = ""
+    if isinstance(sender, dict) and "nickname" in sender and isinstance(sender["nickname"], str):
+        nick = sender["nickname"].strip()
+    uid = str(ev.user_id).strip() if ev.user_id else ""
+    if nick and uid and nick != uid:
+        return {nick: uid}
+    return {}
+
+
+def rewrite_nickname_mentions(
+    text: str,
+    names: Dict[str, str],
+    *,
+    already_at: str | None = None,
+) -> str:
+    """@昵称 收成 @用户ID。已经在 @ 的人去掉重复；对不上的 @昵称 删掉。"""
+
+    def _repl(match: re.Match[str]) -> str:
+        name = match.group(1)
+        uid = names[name] if name in names else ""
+        if not uid:
+            return ""
+        if already_at and uid == already_at:
+            return ""
+        return f"@{uid} "
+
+    return _NICK_AT_RE.sub(_repl, text)
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -1337,6 +1385,7 @@ async def send_chat_result(
     extra_metadata: Optional[Dict[str, Any]] = None,
     ooc_check: bool = True,
     at_user_id: str | None = None,
+    mention_names: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     解析并发送聊天结果，支持：
@@ -1400,6 +1449,10 @@ async def send_chat_result(
 
     # <br> 漏网已在 sanitize 落成换行；再统一其它 HTML 换行写法
     text = _normalize_html_linebreaks(text)
+    _names = mention_names_from_event(ev)
+    if mention_names:
+        _names.update(mention_names)
+    text = rewrite_nickname_mentions(text, _names, already_at=at_user_id)
 
     # Trace 日志：记录原始输出
     logger.trace(i18n_t("log.ai.meme_text_raw_output", text=repr(text)))
@@ -1563,8 +1616,8 @@ def _parse_at_segments(text: str) -> list[Message]:
     规则：
     - @后跟纯数字（QQ号格式）才会被解析为 at segment
     - 其余文本保持为 text segment
-    - 示例输入："好哦 @444835641 你来看"
-    - 示例输出：[Text("好哦 "), At(444835641), Text(" 你来看")]
+    - 示例输入："好哦 @100000001 你来看"
+    - 示例输出：[Text("好哦 "), At(100000001), Text(" 你来看")]
     """
     # 匹配 @数字，前后允许空格（空格属于分隔符，不计入文本内容）
     pattern = re.compile(r"\s*@(\d+)\s*")

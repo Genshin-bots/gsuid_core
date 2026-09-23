@@ -395,6 +395,39 @@ def test_inv4_empty_handoff_enters_render_obligation() -> None:
     assert settle_mod._needs_render_obligation(st, "懒得念，细节都在里面了")
 
 
+def test_zero_output_voice_block_asks_rewrite_not_render() -> None:
+    """完成态或过程词拦成零输出：回灌改口，不委派出图。在途不叫醒。"""
+    from gsuid_core.ai_core.control.corrections import blocked_voice_directive, premature_claim_directive
+
+    st = _mk_state(tool_call_list=[], saw_structured_return=False)
+    st.presentation_withheld_reasons.append("premature_delivery")
+    assert settle_mod._voice_block_reason(st, "<SILENCE>") == "premature_delivery"
+    assert not settle_mod._needs_render_obligation(st, "<SILENCE>")
+    claim = premature_claim_directive()
+    assert claim.obligations[0].must == "deliver"
+    assert "render_agent" not in claim.observation
+    st.pending_async_delivery = True
+    assert settle_mod._voice_block_reason(st, "<SILENCE>") == ""
+    voice_st = _mk_state()
+    voice_st.presentation_withheld_reasons.append("process_meta")
+    assert settle_mod._voice_block_reason(voice_st, "") == "process_meta"
+    voice = blocked_voice_directive()
+    assert voice.obligations[0].satisfied_by == ("user_visible_sent",)
+
+
+def test_blocked_numeric_recitation_requires_render_without_tools() -> None:
+    """念数被拦且本轮零工具：仍要纠正去 render，不能整轮静默。"""
+    from gsuid_core.ai_core.control.corrections import numeric_recitation_directive
+
+    st = _mk_state(tool_call_list=[], saw_structured_return=False)
+    st.presentation_withheld_reasons.append("numeric_recitation")
+    assert settle_mod._needs_render_obligation(st, "<SILENCE>")
+    directive = numeric_recitation_directive()
+    assert directive.reason_code == "numeric_recitation"
+    assert directive.obligations[0].tool_name == "create_subagent"
+    assert directive.obligations[0].tool_args_match == {"agent_profile": "render_agent"}
+
+
 def test_short_character_reply_skips_render_obligation() -> None:
     """轻问题口头短答（气候常态/没查到实时）不因「>40 字」被纠出图。"""
     st = _mk_state(

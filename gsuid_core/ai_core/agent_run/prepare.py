@@ -259,6 +259,9 @@ class PreparePhase(RunOnceHost):
         elif isinstance(st.user_message, Sequence):
             # 从 Sequence[UserContent] 中提取纯文本
             st.last_user_question = "\n".join(item for item in st.user_message if isinstance(item, str)).strip()
+        from gsuid_core.ai_core.utils import mention_names_in_text
+
+        st.run_extra["mention_names"] = mention_names_in_text(st.last_user_question)
 
         # 处理用户消息：框架注入不加 [用户发言]；真人句才加外壳
         if isinstance(st.user_message, Sequence) and not isinstance(st.user_message, str):

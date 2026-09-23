@@ -35,6 +35,7 @@ _SATISFACTION_FACTS = frozenset(
         "status_tool_called",
         "any_tool_called",
         "delegation_checked",
+        "user_visible_sent",
     }
 )
 

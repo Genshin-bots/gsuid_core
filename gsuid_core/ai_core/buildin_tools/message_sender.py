@@ -368,7 +368,20 @@ async def send_message_by_ai(
                 logger.info(t("log.ai.buildintools_skipping_duplicate_run_skip"))
                 text = ""
             else:
-                await send_chat_result(bot, text, ev=ev, ooc_check=False, at_user_id=_at_uid)
+                _mention_raw = tool_ctx.extra["mention_names"] if "mention_names" in tool_ctx.extra else None
+                _mentions: dict[str, str] = {}
+                if isinstance(_mention_raw, dict):
+                    for _mk, _mv in _mention_raw.items():
+                        if isinstance(_mk, str) and isinstance(_mv, str) and _mk and _mv:
+                            _mentions[_mk] = _mv
+                await send_chat_result(
+                    bot,
+                    text,
+                    ev=ev,
+                    ooc_check=False,
+                    at_user_id=_at_uid,
+                    mention_names=_mentions,
+                )
                 if isinstance(_sent_registry, set):
                     _sent_registry.add(text.strip())
                 _at_uid = None  # 文本已 @，媒体不再重复
