@@ -133,6 +133,7 @@
   "log.agent.remote_web_search_attached": "[GsCoreAIAgent] このラウンドは Responses の hosted web_search を使用し、ローカル web_search_tool はモデルに送りません",
   "log.agent.tool_thrash_fuse": "ツール空転ヒューズ: {tool_name}×{streak}",
   "log.agent.tool_thrash_strip_duplicate": "ツール空転切り捨て: 重複 {tool_name} を破棄",
+  "log.agent.turn_seed_exposed": "[GsCoreAIAgent] 今ターンのシード {n} 件（スナップショット外）: {names}",
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ トリガーノード: CallToolsNode",
   "log.agent.trigger_node_modelrequestnode": "[GsCoreAIAgent] ⚡ トリガーノード: ModelRequestNode",
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] ユーザーメッセージ: {truncated_msg}",

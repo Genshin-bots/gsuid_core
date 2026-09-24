@@ -69,18 +69,18 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 
 ## 7.3 主 Agent 三层工具池（`gs_agent.py::_execute_run`）
 
-主 Agent 每轮工具列表 = **保底池 + 语境池 + 查询池**，再叠加状态驱动与会话驻留：
+主 Agent 每轮工具列表 = **保底池 + 状态驱动 + 查询池快照**，再在快照之后追加**本轮种子**：
 
 | 层 | 机制 | 作用 |
 |---|---|---|
 | L1 通道核 | `get_main_agent_tools()`：`MAIN_AGENT_CORE_TOOLS`（群/私同一份） | 发现/回想/委派/发送 + 一次性/周期提醒入口；列出/改/删走 L2 或检索 |
 | L2 状态驱动 | `get_state_driven_family_tools()`：按用户持久实体补能力族 | 跨轮追问定时任务/Kanban/record |
 | L3 会话驻留 | `_recent_tool_families`（sticky 3 轮） | 刚用过的族继续常驻数轮 |
-| 语境池 | `get_tools_by_context_tags()` | 群画像标签匹配工具（群聊最多 4 个） |
 | L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族（"能建就能改/删"） |
 | L5 本句检索 | 当前句向量召回未暴露工具（含 self/buildin）；省略跟进才拼上文 | 闲聊跳过；工具/问答必搜 |
+| 本轮种子 | 检索命中 + 触发词钉扎（含 `send_*`），`append_turn_seeds` | 当轮可见，**不写入**会话快照 |
 
-保底池全保留；语境 + 查询池合并去重后限制附加数量上限（`tool_extra_pool_max`，默认 8）。
+保底池全保留；查询池族展开后受 `tool_extra_pool_max` 限制。本轮种子另计，最多 4 个。群画像标签不再把工具冻进快照，只在省略跟进时拼进检索 query。`send_*` 仍不进静态附加池，但本轮种子豁免这层剥离。
 
 > **在途短轮瘦池（2026-08-16）**：`has_active_task` 且剥壳后真人句 ≤48 字时置
 > `RunOnceState.in_flight_short`。装配层跳过语境标签池与向量检索，`max_extra_tools≤2`，
@@ -106,7 +106,7 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 > **单领域部署不必付检索开销**：persona `config.json` 的 `tool_packs` 可以直接写
 > `capability_domain` 名（`tool_packs.py::resolve_pack_tool_names` 会解析），整族**无条件常驻**
 > 保底池——纯鸣潮 bot 写 `"tool_packs": ["鸣潮面板"]` 即可，零向量检索、零族展开。
-> 群维度则用 `context_tags` + 语境池（L2）。
+> 群画像标签不预装工具。本轮对口工具走种子名单，不进快照。
 
 > ⚠️ **工具能被召回的前提是完整检索面**。入库 / 精排文本 = **`ToolBase.retrieval_text`**
 > = `name` + docstring（`description`）+ 可选 `covers` + 可选 `aliases`。

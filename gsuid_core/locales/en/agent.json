@@ -133,6 +133,7 @@
   "log.agent.remote_web_search_attached": "[GsCoreAIAgent] Responses hosted web_search enabled this run; local web_search_tool is not sent to the model",
   "log.agent.tool_thrash_fuse": "Tool thrash fuse: {tool_name}×{streak}",
   "log.agent.tool_thrash_strip_duplicate": "Tool thrash strip: dropped duplicate {tool_name}",
+  "log.agent.turn_seed_exposed": "[GsCoreAIAgent] Turn seeds {n} (not frozen): {names}",
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ Trigger node: CallToolsNode",
   "log.agent.trigger_node_modelrequestnode": "[GsCoreAIAgent] ⚡ Trigger node: ModelRequestNode",
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] User message: {truncated_msg}",

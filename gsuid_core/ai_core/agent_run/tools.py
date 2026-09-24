@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Sequence
+from typing import Any, List, TypeVar, Protocol, Sequence
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings, merge_model_settings
@@ -28,7 +28,7 @@ from gsuid_core.ai_core.rag.tools import (
     get_main_agent_tools,
     get_scope_context_tags,
     expand_tools_to_families,
-    get_tools_by_context_tags,
+    pin_trigger_keyword_hits,
     search_tools_with_entity_routing,
 )
 from gsuid_core.ai_core.tool_risk import skill_tool_visible
@@ -153,8 +153,40 @@ def _snapshot_visibility_flags(st: RunOnceState) -> tuple[bool, bool]:
 
 
 def is_group_send_extra(name: str) -> bool:
-    """对用户发送 extras（不在通道核）。只许本轮 find_tools 动态暴露。"""
+    """对用户发送 extras（不在通道核）。静态快照不收，本轮种子可以收。"""
     return name.startswith("send_") and name not in interaction_scaffold.MAIN_AGENT_CORE_TOOLS
+
+
+_TURN_SEED_CAP = 4
+
+
+class _NamedTool(Protocol):
+    name: str
+
+
+_SeedT = TypeVar("_SeedT", bound=_NamedTool)
+
+
+def append_turn_seeds(
+    tools: list[_SeedT],
+    seeds: Sequence[_SeedT],
+    *,
+    exclusive: set[str],
+    cap: int = _TURN_SEED_CAP,
+) -> list[str]:
+    """把本轮种子接到 schema 末尾。调用方不得把这些名字写入会话快照。"""
+    seen = {tool.name for tool in tools}
+    added: list[str] = []
+    for tool in seeds:
+        if len(added) >= cap:
+            break
+        name = tool.name
+        if not name or name in seen or name in exclusive:
+            continue
+        tools.append(tool)
+        seen.add(name)
+        added.append(name)
+    return added
 
 
 # 回想核内只有 search_cognition；attach_article 走 find_tools，避免每轮写工具进 schema。
@@ -441,10 +473,10 @@ class ToolsPhase(RunOnceHost):
                     core_names.discard(_PROGRESS_TOOL)
                     extra_tools = _without_progress_tool(extra_tools)
 
-                # 附加工具池 = L2/跟进尾槽 + 语境 + 查询
-                _ctx_pool_names: set[str] = set()
+                # 附加工具池 = L2/跟进尾槽 + 查询。语境标签只参与省略跟进的检索 query。
+                # 本轮种子（含 send_*）在快照之后另挂，不写进 frozen。
+                turn_seeds: ToolList = []
 
-                # 第二层：语境工具池（群聊瘦模式也保留标签池，上限更紧）
                 ctx_tags: list[str] = []
                 ctx_scope_key = ""
                 if st.ev is not None and st.ev.group_id:
@@ -454,19 +486,6 @@ class ToolsPhase(RunOnceHost):
                 if ctx_scope_key and not st.in_flight_short:
                     try:
                         ctx_tags = await get_scope_context_tags(ctx_scope_key)
-                        if ctx_tags:
-                            _ctx_max = 4 if _is_group else 8
-                            ctx_tools = get_tools_by_context_tags(ctx_tags, max_count=_ctx_max)
-                            if ctx_tools:
-                                extra_tools += ctx_tools
-                                _ctx_pool_names = {t.name for t in ctx_tools}
-                                logger.debug(
-                                    i18n_t(
-                                        "log.agent.contextual_pool_context_tags",
-                                        p0=len(ctx_tools),
-                                        ctx_tags=ctx_tags,
-                                    )
-                                )
                     except Exception as e:
                         logger.debug(i18n_t("log.agent.load_contextual_pool", e=e))
 
@@ -516,7 +535,7 @@ class ToolsPhase(RunOnceHost):
                         ignore_surfaces=_ignore,
                         exclude_names=core_names,
                     )
-                    extra_tools += _found
+                    turn_seeds = pin_trigger_keyword_hits(qy, _found, limit=_TURN_SEED_CAP)
                     if _call_self:
                         from gsuid_core.ai_core.entity_index import strip_surfaces, plugins_in_text
 
@@ -552,7 +571,7 @@ class ToolsPhase(RunOnceHost):
                             if _tb is not None:
                                 extra_tools.append(_tb.tool)
 
-                # 对用户发送 extras 不进静态附加池；只许本轮 find_tools 动态暴露
+                # 静态附加池仍去掉 send_*。本轮种子在快照后追加，不受这层剥离。
                 if st.group_slim or _interactive:
                     extra_tools = [t for t in extra_tools if not is_group_send_extra(t.name)]
 
@@ -607,6 +626,20 @@ class ToolsPhase(RunOnceHost):
                                     names=sorted(_stripped)[:12],
                                 )
                             )
+
+                _added_seeds = append_turn_seeds(
+                    st.tools,
+                    turn_seeds,
+                    exclusive=_capability_exclusive_tool_names(),
+                )
+                if _added_seeds:
+                    logger.debug(
+                        i18n_t(
+                            "log.agent.turn_seed_exposed",
+                            n=len(_added_seeds),
+                            names=_added_seeds,
+                        )
+                    )
 
                 _need_subagent = _did_strip_exclusive
                 deleg_pid = ""

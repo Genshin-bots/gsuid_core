@@ -1,7 +1,7 @@
 """工具向量存储 - 管理工具的入库和检索"""
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Optional, Protocol, Sequence
 
 from qdrant_client.models import (
     Distance,
@@ -511,6 +511,140 @@ def expand_tools_to_families(
     return out
 
 
+_COVER_HIT_MIN = 3
+
+
+class _NamedTool(Protocol):
+    name: str
+
+
+def _longest_cover_in_text(covers: Sequence[str], text: str) -> int:
+    """covers 里整段出现在 text 中的最长一条。短于 3 字不算，避免单字误钉。"""
+    best = 0
+    for raw in covers:
+        cover = raw.strip()
+        if len(cover) < _COVER_HIT_MIN or cover not in text:
+            continue
+        if len(cover) > best:
+            best = len(cover)
+    return best
+
+
+_PIN_CATEGORIES = frozenset({"by_trigger", "common"})
+
+
+def trigger_keyword_hits(text: str, *, limit: int = 4) -> list[ToolBase]:
+    """by_trigger / common 的 covers 整段出现在原话里则钉住。更长的命令词排前面。"""
+    utterance = text.strip()
+    if not utterance or limit < 1:
+        return []
+    registered = get_registered_tools()
+    scored: list[tuple[int, str, ToolBase]] = []
+    for category, bucket in registered.items():
+        if category not in _PIN_CATEGORIES:
+            continue
+        for name, tb in bucket.items():
+            if tb.hide_from_main:
+                continue
+            hit = _longest_cover_in_text(tb.covers, utterance)
+            if hit <= 0:
+                continue
+            scored.append((hit, name, tb))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [tb for _, _, tb in scored[:limit]]
+
+
+def pin_trigger_keyword_hits(utterance: str, seeds: ToolList, *, limit: int = 4) -> ToolList:
+    """触发词命中插到种子队列最前，已在队列里的不重复。"""
+    out: ToolList = []
+    seen: set[str] = set()
+    for tb in trigger_keyword_hits(utterance, limit=limit):
+        if tb.name in seen:
+            continue
+        seen.add(tb.name)
+        out.append(tb.tool)
+    for seed in seeds:
+        if seed.name in seen:
+            continue
+        seen.add(seed.name)
+        out.append(seed)
+    return out
+
+
+def _ordered_domain_members(domain: str, seed_name: str, query: str) -> list[ToolBase]:
+    """种子排第一，其余按 covers 是否出现在 query 里。不按注册顺序截。"""
+    from gsuid_core.ai_core.register import get_tools_by_capability_domain
+
+    members = get_tools_by_capability_domain(domain)
+
+    def _key(tb: ToolBase) -> tuple[int, int, str]:
+        return (
+            0 if tb.name == seed_name else 1,
+            -_longest_cover_in_text(tb.covers, query),
+            tb.name,
+        )
+
+    return sorted(members, key=_key)
+
+
+def collect_domain_tools(
+    query: str,
+    seeds: Sequence[_NamedTool],
+    *,
+    domain_limit: int = 3,
+    per_domain_limit: int = 6,
+    exclude_names: Optional[Set[str]] = None,
+) -> tuple[list[_NamedTool], int]:
+    """触发词钉扎不占名额；无域种子共用 1 个名额；有域族按匹配分排序后截断。"""
+    from gsuid_core.ai_core.register import find_tool_base
+
+    skip = set(exclude_names or set())
+    out: list[_NamedTool] = []
+    seen: set[str] = set()
+    for tb in trigger_keyword_hits(query, limit=per_domain_limit):
+        if tb.name in skip or tb.name in seen:
+            continue
+        seen.add(tb.name)
+        out.append(tb.tool)
+
+    selected_domains: set[str] = set()
+    slots_used = 0
+    bucket_open = False
+    domainless_count = 0
+    for seed in seeds:
+        if seed.name in skip:
+            continue
+        tb = find_tool_base(seed.name)
+        dom = tb.capability_domain if tb is not None and tb.capability_domain else ""
+        if dom:
+            if dom in selected_domains:
+                continue
+            if slots_used >= domain_limit:
+                break
+            selected_domains.add(dom)
+            slots_used += 1
+            ordered = _ordered_domain_members(dom, seed.name, query)
+            for member in ordered[:per_domain_limit]:
+                if member.name in seen or member.name in skip:
+                    continue
+                seen.add(member.name)
+                out.append(member.tool)
+            continue
+        if seed.name in seen:
+            continue
+        if not bucket_open:
+            if slots_used >= domain_limit:
+                break
+            bucket_open = True
+            slots_used += 1
+        if domainless_count >= per_domain_limit:
+            continue
+        domainless_count += 1
+        seen.add(seed.name)
+        out.append(seed)
+    return out, slots_used
+
+
 async def search_tools_by_domain(
     query: str,
     domain_limit: int = 3,
@@ -518,57 +652,23 @@ async def search_tools_by_domain(
     recall: int = 12,
     exclude_names: Optional[Set[str]] = None,
 ) -> ToolList:
-    """两段式·domain 粒度工具检索（Phase 3a）。
+    """两段式·domain 粒度工具检索。
 
-    先按语义召回（已含 Reranker 精排）得到若干种子工具，再**聚合到 capability_domain**：
-    取语义上最靠前的至多 ``domain_limit`` 个不同能力族，整族纳入（每族至多
-    ``per_domain_limit`` 个）；未声明 capability_domain 的种子按"单工具族"各占一个名额。
-
-    相比逐工具检索，本函数以"能力族"为最小装配单位，保证装配进来的工具语义连贯、
-    "能创建就能改/删"，同时用 domain 数量（而非工具总数）控制规模，避免半个族被截断。
-    主要供 ``find_tools`` meta-tool 在运行时按需拉取工具时使用。
-
-    Args:
-        query: 需要的能力的自然语言描述。
-        domain_limit: 最多纳入的能力族数量（含 domainless 单工具名额）。
-        per_domain_limit: 每个能力族最多纳入的工具数。
-        recall: 语义召回的种子工具数量（喂给 domain 聚合）。
+    触发词整段命中的 by_trigger 先入结果且不占 ``domain_limit``。
+    语义种子再按域聚合：有域的族把种子和 covers 命中排前面再截断；
+    没声明域的种子共用 1 个名额，避免「刷新」占满 3 格把「查看」挤掉。
     """
-    from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
+    from pydantic_ai.tools import Tool
 
     seeds = await search_tools(query=query, limit=recall, exclude_names=exclude_names)
-    skip = set(exclude_names or set())
-
-    out: ToolList = []
-    seen_names: Set[str] = set()
-    selected_domains: Set[str] = set()
-    slots_used = 0
-
-    for seed in seeds:
-        if slots_used >= domain_limit:
-            break
-        if seed.name in skip:
-            continue
-        tb = find_tool_base(seed.name)
-        dom = tb.capability_domain if tb else None
-        if dom:
-            if dom in selected_domains:
-                continue
-            selected_domains.add(dom)
-            slots_used += 1
-            members = get_tools_by_capability_domain(dom)[:per_domain_limit]
-            for m in members:
-                if m.name in seen_names or m.name in skip:
-                    continue
-                seen_names.add(m.name)
-                out.append(m.tool)
-        else:
-            if seed.name in seen_names:
-                continue
-            seen_names.add(seed.name)
-            out.append(seed)
-            slots_used += 1
-
+    collected, slots_used = collect_domain_tools(
+        query,
+        seeds,
+        domain_limit=domain_limit,
+        per_domain_limit=per_domain_limit,
+        exclude_names=exclude_names,
+    )
+    out: ToolList = [item for item in collected if isinstance(item, Tool)]
     logger.info(
         i18n_t(
             "log.rag.tools_two_stage_domain_retrieval",
