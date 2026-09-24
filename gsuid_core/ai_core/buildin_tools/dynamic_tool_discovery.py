@@ -294,6 +294,16 @@ async def find_tools(
         family_tools = await search_tools_by_domain(
             query=need, domain_limit=3, per_domain_limit=6, exclude_names=offered_set
         )
+        from gsuid_core.ai_core.rag.tools import align_seeds_to_context_plugin
+        from gsuid_core.ai_core.entity_index import ALIAS_PLUGIN_EXTRA_KEY
+
+        _alias_plugin = ""
+        if ALIAS_PLUGIN_EXTRA_KEY in ctx.deps.extra:
+            _raw_plugin = ctx.deps.extra[ALIAS_PLUGIN_EXTRA_KEY]
+            if isinstance(_raw_plugin, str):
+                _alias_plugin = _raw_plugin
+        if _alias_plugin:
+            family_tools = await align_seeds_to_context_plugin(family_tools, _alias_plugin, need)
         dedicated_tools: list[RankedHit] = list(offered_hits)
         generic_tools: list[RankedHit] = []
         fold_names: list[str] = []

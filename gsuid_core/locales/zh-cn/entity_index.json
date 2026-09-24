@@ -1,3 +1,4 @@
 {
+  "log.entity_index.alias_binding_injected": "[EntityIndex] 别名表已注入 user 侧：{note}",
   "log.entity_index.ambiguous_skip": "[EntityIndex] surface {surface!r} 归属歧义 {plugins}，不路由"
 }

@@ -213,6 +213,12 @@ async def assemble_dynamic_context(
     tail = await load_speaker_preference_tail(bot_id, user_id)
     if tail:
         text = f"{text}\n\n{tail}" if text else tail
+    from gsuid_core.ai_core.entity_index import format_alias_bindings
+
+    alias_note = format_alias_bindings(f"{query}\n{history_context}")
+    if alias_note:
+        text = f"{text}\n\n{alias_note}" if text else alias_note
+        logger.debug(t("log.entity_index.alias_binding_injected", note=alias_note))
     return text, has_actionable
 
 

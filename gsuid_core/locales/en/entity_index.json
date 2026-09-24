@@ -1,3 +1,4 @@
 {
+  "log.entity_index.alias_binding_injected": "[EntityIndex] alias binding injected on the user side: {note}",
   "log.entity_index.ambiguous_skip": "[EntityIndex] surface {surface!r} is ambiguous across {plugins}; skipping routing"
 }

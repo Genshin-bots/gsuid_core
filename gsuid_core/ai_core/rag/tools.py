@@ -324,6 +324,9 @@ _ENTITY_ROUTE_RECALL: int = 20
 _ENTITY_ROUTE_DEEP_RECALL: int = 60
 
 
+_NEUTRAL_PLUGINS = frozenset({"", "core", "unknown", "gsuid_core"})
+
+
 def _tool_plugin(tool_name: str) -> str:
     from gsuid_core.ai_core.register import find_tool_base
 
@@ -358,6 +361,31 @@ async def _plugins_from_scope_ambiguity(route_text: str, scope_key: str) -> List
     if len(uniq) != 1:
         return []
     return uniq
+
+
+async def align_seeds_to_context_plugin(found: ToolList, plugin: str, query: str) -> ToolList:
+    """最近对白已确定插件时，丢掉别的插件工具，并用该插件的深召回补位。
+
+    当前句自己没有实体。提醒类等无插件工具保留。没有跨插件碰撞则原样返回。
+    """
+    if not plugin or not found:
+        return found
+    foreign_names = {tool.name for tool in found if _tool_plugin(tool.name) not in _NEUTRAL_PLUGINS | {plugin}}
+    if not foreign_names:
+        return found
+    kept = [tool for tool in found if tool.name not in foreign_names]
+    have = {tool.name for tool in kept}
+    deep = await search_tools(query=query, limit=_ENTITY_ROUTE_DEEP_RECALL, threshold=0.0, exclude_names=have)
+    added = 0
+    for tool in deep:
+        if _tool_plugin(tool.name) != plugin or tool.name in have:
+            continue
+        kept.append(tool)
+        have.add(tool.name)
+        added += 1
+        if added >= 4:
+            break
+    return kept
 
 
 async def search_tools_with_entity_routing(

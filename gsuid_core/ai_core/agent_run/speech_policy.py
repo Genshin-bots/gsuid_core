@@ -801,6 +801,14 @@ def content_is_render_candidate(
     return False
 
 
+_TERMINAL_DELIVERY_TOOLS = frozenset({"send_message_by_ai", "send_meme"})
+
+
+def batch_still_working(tool_names: Sequence[str]) -> bool:
+    """同一步除了发送以外还有工具返回，接话不是终局。"""
+    return any(name and name not in _TERMINAL_DELIVERY_TOOLS for name in tool_names)
+
+
 def should_mark_speech_delivered(*, text: str, has_media: bool) -> bool:
     """send_message 是否置交付终局：媒体配台词，或非等待的纯文本。"""
     body = (text or "").strip()
@@ -809,6 +817,14 @@ def should_mark_speech_delivered(*, text: str, has_media: bool) -> bool:
     if not body:
         return False
     if looks_like_wait_comfort(body):
+        return False
+    # 「等我去翻」常超过 12 字，仍是接任务，不是终局交付。
+    if (
+        len(body) <= FIRST_ACK_SPEECH_MAX
+        and _WAIT_COMFORT_RE.search(body)
+        and not claims_premature_delivery(body)
+        and not has_orchestration_narration(body)
+    ):
         return False
     return True
 

@@ -67,6 +67,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
     non_master_title,
+    batch_still_working,
     is_status_tool_name,
     strip_open_solicitations,
     content_is_render_candidate,
@@ -655,21 +656,23 @@ class LoopPhase(RunOnceHost):
         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
             _any_fail = False
             _any_actionable = False
+            _return_names: list[str] = []
             for _p in node.request.parts:
                 if type(_p) is not ToolReturnPart:
                     continue
                 if _tool_return_is_async_pending(_p):
                     continue
                 _any_actionable = True
+                _return_names.append(_p.tool_name or "")
                 if _tool_return_looks_failed(_p):
                     _any_fail = True
-            # 交付终局：send_message_by_ai 已带台词成功交付（工具侧结构信号）。
-            # media-only 交付不置位——保留一句角色收尾额度（post_image_ok）。
+            # 交付终局：本步只有发送。同一步还有 find_tools 等，接话不算做完。
             _extra_ref = _require_context(st).extra
             if (
                 "delivered_with_speech" in _extra_ref
                 and bool(_extra_ref["delivered_with_speech"])
                 and not st.delivered_terminal
+                and not batch_still_working(_return_names)
             ):
                 st.delivered_terminal = True
                 st.speech_policy = "delivered"

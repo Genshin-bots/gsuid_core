@@ -14,6 +14,8 @@ from gsuid_core.ai_core.entity_index import (
     plugins_in_text,
     clear_entity_index,
     find_entities_in_text,
+    format_alias_bindings,
+    sole_background_plugin,
     register_entity_surface,
 )
 
@@ -119,6 +121,17 @@ def test_no_entity_means_no_routing(text: str) -> None:
     register_entity_surface("日", "日", "SomePlugin")  # 会被护栏挡掉
 
     assert plugins_in_text(text) == []
+
+
+def test_recent_alias_binds_followup_without_guessing() -> None:
+    """当前句没有名字时，最近对白里的别名仍是硬事实，且只此一个插件才用于消歧。"""
+    register_entity_surface("沃雅妮莎", "沃雅妮莎", "GenshinUID")
+    register_entity_surface("维里奈", "维里奈", "XutheringWavesUID")
+    history = "gs查询沃雅妮莎"
+    assert "沃雅妮莎→GenshinUID" in format_alias_bindings(f"深渊怎么打\n{history}")
+    assert sole_background_plugin("深渊怎么打", history) == "GenshinUID"
+    assert sole_background_plugin("维里奈深渊怎么打", history) == ""
+    assert sole_background_plugin("设个提醒", f"{history}\n维里奈") == ""
 
 
 def test_strip_surfaces_drops_wake_word_not_inner_ascii() -> None:

@@ -31,6 +31,8 @@ from gsuid_core.logger import logger
 # CJK surface 至少 2 字、ASCII surface 至少 3 字才允许入索引（见模块 docstring）。
 _MIN_CJK_LEN: int = 2
 _MIN_ASCII_LEN: int = 3
+# 最近对白唯一插件。find_tools 读 ToolContext.extra，避免模型改判游戏。
+ALIAS_PLUGIN_EXTRA_KEY = "alias_context_plugin"
 
 
 @dataclass
@@ -181,6 +183,35 @@ def find_entities_in_text(text: str, max_hits: int = 8) -> List[EntityRef]:
         hits.append(_SURFACE_INDEX[surface])
 
     return hits
+
+
+def format_alias_bindings(text: str, *, limit: int = 6) -> str:
+    """无歧义别名写成 user 侧硬事实。插件名来自注册表，框架不写游戏词。"""
+    parts: List[str] = []
+    seen: set[str] = set()
+    for ref in find_entities_in_text(text, max_hits=limit):
+        if ref.is_ambiguous or not ref.plugins:
+            continue
+        plugin = ref.plugins[0]
+        name = ref.canonicals[0] if ref.canonicals else ref.surface
+        key = f"{name}\t{plugin}"
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(f"{name}→{plugin}")
+    if not parts:
+        return ""
+    return "（系统：别名表命中，归属只认下表，禁止改判成别的插件：" + "；".join(parts) + "。）"
+
+
+def sole_background_plugin(current: str, background: str) -> str:
+    """当前句没有实体时，最近对白里唯一无歧义插件。当前句已有实体则返回空。"""
+    if plugins_in_text(current):
+        return ""
+    found = plugins_in_text(background)
+    if len(found) == 1:
+        return found[0]
+    return ""
 
 
 def plugins_in_text(text: str) -> List[str]:

@@ -29,6 +29,7 @@ from gsuid_core.ai_core.rag.tools import (
     get_scope_context_tags,
     expand_tools_to_families,
     pin_trigger_keyword_hits,
+    align_seeds_to_context_plugin,
     search_tools_with_entity_routing,
 )
 from gsuid_core.ai_core.tool_risk import skill_tool_visible
@@ -536,6 +537,17 @@ class ToolsPhase(RunOnceHost):
                         exclude_names=core_names,
                     )
                     turn_seeds = pin_trigger_keyword_hits(qy, _found, limit=_TURN_SEED_CAP)
+                    if st.ev is not None:
+                        from gsuid_core.ai_core.entity_index import (
+                            ALIAS_PLUGIN_EXTRA_KEY,
+                            sole_background_plugin,
+                        )
+                        from gsuid_core.ai_core.turn_pipeline import build_group_history_block
+
+                        _ctx_plugin = sole_background_plugin(qy, build_group_history_block(st.ev))
+                        if _ctx_plugin:
+                            st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _ctx_plugin
+                            turn_seeds = await align_seeds_to_context_plugin(turn_seeds, _ctx_plugin, qy)
                     if _call_self:
                         from gsuid_core.ai_core.entity_index import strip_surfaces, plugins_in_text
 

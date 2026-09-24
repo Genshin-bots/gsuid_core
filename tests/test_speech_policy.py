@@ -373,7 +373,17 @@ def test_empty_handoff_and_wait_comfort() -> None:
     )[0]
 
 
+def test_ack_plus_find_tools_is_not_terminal() -> None:
+    from gsuid_core.ai_core.agent_run.speech_policy import batch_still_working
+
+    assert batch_still_working(["send_message_by_ai", "find_tools"])
+    assert batch_still_working(["find_tools"])
+    assert not batch_still_working(["send_message_by_ai"])
+    assert not batch_still_working(["send_meme"])
+
+
 def test_wait_comfort_does_not_mark_delivered() -> None:
+    assert not should_mark_speech_delivered(text="唔…深塔啊…等我去翻卷轴…zzz", has_media=False)
     assert not should_mark_speech_delivered(text="马上好。", has_media=False)
     assert not should_mark_speech_delivered(text="这就去办", has_media=False)
     assert should_mark_speech_delivered(text="查到了，出门带伞。", has_media=False)
