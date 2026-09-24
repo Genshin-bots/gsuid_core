@@ -1104,8 +1104,10 @@ class LoopPhase(RunOnceHost):
                             _accept_slot_used = True
                         st.wait_comfort_sent = True
                 elif _text and st.return_mode == "return":
-                    # 评测 HTTP 不下发，仍记下可见正文，避免工具轮之后只剩 <SILENCE>
-                    self._run_sent_texts.add(_text)
+                    # 评测记下正文，避免工具轮之后只剩 <SILENCE>。
+                    # 纠正轮由外层发送；先记入已发送会让外层当成重复而丢掉。
+                    if not st.fake_done_retry:
+                        self._run_sent_texts.add(_text)
 
             elif isinstance(part, ThinkingPart):
                 _thinking = part.content.strip()
