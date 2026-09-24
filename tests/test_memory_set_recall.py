@@ -2814,6 +2814,9 @@ def test_named_fact_lines_survive_common_token() -> None:
     assert looks_like_fact_excerpt_query("How many movie festivals that I attended?")
     assert not looks_like_fact_excerpt_query("List the museums in order from earliest to latest?")
     assert spread_topic_tokens("What is my ethnicity?")[0].lower() == "ethnicity"
+    yoga = spread_topic_tokens("Where do I take yoga classes?")
+    assert yoga[0].lower() == "yoga"
+    assert "classes" not in {t.lower() for t in yoga}
 
 
 def test_hours_and_named_place_stay_in_pack() -> None:
@@ -2841,3 +2844,62 @@ def test_hours_and_named_place_stay_in_pack() -> None:
         time_range=None,
     )
     assert placed[0]["id"] == "hi"
+
+
+def test_ordinal_excerpt_and_assistant_hits_kept() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        spread_topic_tokens,
+        excerpt_around_ordinal,
+        should_keep_assistant_hits,
+    )
+
+    head = " ".join(f"{i}. filler item {i}." for i in range(1, 26))
+    tail = "27. Sound effects (ambient, diegetic). 28. Music."
+    blob = head + " " + tail + " " + ("pad " * 80)
+    snippet = excerpt_around_ordinal(blob, "what was the 27th parameter", 180)
+    assert "Sound effects" in snippet
+    assert "1. filler" not in snippet
+    dated = "On May 27 the list started. " + blob
+    dated_snippet = excerpt_around_ordinal(dated, "what was the 27th parameter", 180)
+    assert "Sound effects" in dated_snippet
+    zh_blob = " ".join(f"{i}. 填充 {i}。" for i in range(1, 26)) + " 27. 音效。 " + ("垫 " * 80)
+    assert "音效" in excerpt_around_ordinal(zh_blob, "第27项是什么", 180)
+    assert excerpt_around_ordinal("On May 27 we talked.", "what was the 27th parameter", 80) == ""
+    assert should_keep_assistant_hits("What was my last name before I changed it?")
+    assert should_keep_assistant_hits("Can you remind me what was the 27th parameter?")
+    assert not should_keep_assistant_hits("hi")
+    ordinal_toks = {t.lower() for t in spread_topic_tokens("what was the 27th parameter")}
+    assert "27" in ordinal_toks
+    assert "parameter" in ordinal_toks
+    assert "27" in {t.lower() for t in spread_topic_tokens("第27项是什么参数")}
+    from gsuid_core.ai_core.memory.retrieval.lexical import apply_query_episode_pack
+
+    name_q = "What was my last name before I changed it?"
+    noise = [
+        _ep(f"n{i}", f"eval_x: unrelated note {i} about the weather today.", f"2023-05-{(i % 28) + 1:02d} 08:00:00")
+        for i in range(20)
+    ]
+    packed = apply_query_episode_pack(
+        [
+            _ep(
+                "cats",
+                "assistant: I have 3 cats and visited Paris yesterday.",
+                "2023-05-01 08:00:00",
+            ),
+            _ep(
+                "user",
+                "eval_x: I just recently changed my last name, and I'm still getting used to it.",
+                "2023-05-28 10:00:00",
+            ),
+            _ep(
+                "asst",
+                "assistant: Let them know you need to update your name (from Johnson to Winters).",
+                "2023-05-28 10:00:02",
+            ),
+            *noise,
+        ],
+        name_q,
+        temporal_mode=False,
+        time_range=None,
+    )
+    assert packed[0]["id"] == "asst"

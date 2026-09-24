@@ -72,6 +72,7 @@ from gsuid_core.ai_core.control.corrections import (
     addressed_silence_directive,
     render_obligation_directive,
     numeric_recitation_directive,
+    cover_hit_zero_tool_directive,
     missing_offered_tool_directive,
     structural_zero_tool_directive,
     framework_idle_deliver_directive,
@@ -169,6 +170,15 @@ def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
     if video_readable and (ev.video_id_list or ev.video_id):
         return True
     return False
+
+
+def _utterance_cover_hit(st: RunOnceState) -> bool:
+    """原话去掉 cover 后几乎没剩内容，才算这条命令就是本轮请求。"""
+    if st.ev is None or not st.ev.raw_text:
+        return False
+    from gsuid_core.ai_core.rag.tools import cover_dominates_utterance
+
+    return cover_dominates_utterance(st.ev.raw_text.strip())
 
 
 def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool, result_msg: str = "") -> bool:
@@ -769,7 +779,7 @@ class SettlePhase(RunOnceHost):
 
             # 实体已装上查询工具却空口作答：先拦住，纠正轮拿回文本再发。
             elif (
-                st.entity_routed
+                (st.entity_routed or _utterance_cover_hit(st))
                 and st.tg is not None
                 and st.tg.call_to_self
                 and not st.tool_call_list
@@ -780,18 +790,23 @@ class SettlePhase(RunOnceHost):
                 and self.create_by != "CapabilityAgent"
             ):
                 _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.entity_zero_tool_correction"))
+                _cover_hit = _utterance_cover_hit(st)
+                if _cover_hit:
+                    logger.warning(i18n_t("log.agent.cover_hit_zero_tool_correction"))
+                else:
+                    logger.warning(i18n_t("log.agent.entity_zero_tool_correction"))
                 _prior = result_msg.strip()
                 _disputes_before = len(self._run_disputes)
                 _ec = await self._try_correction_pass(
                     st,
-                    (entity_zero_tool_directive(),),
+                    (cover_hit_zero_tool_directive() if _cover_hit else entity_zero_tool_directive(),),
                     suppress_intermediate_text=True,
                     return_mode="return",
                 )
                 _disputed = len(self._run_disputes) > _disputes_before
                 _called = [n for n in self._last_attempt_tool_calls if n != "dispute_directive"]
-                if _disputed:
+                # 命中 cover 的空口建议不能靠申辩留住。
+                if _disputed and not _cover_hit:
                     result_msg = _prior
                 elif _called and isinstance(_ec, str) and _correction_is_deliverable(_ec):
                     result_msg = strip_open_solicitations(_ec.strip()) or "<SILENCE>"

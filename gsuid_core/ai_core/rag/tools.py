@@ -582,6 +582,32 @@ def trigger_keyword_hits(text: str, *, limit: int = 4) -> list[ToolBase]:
     return [tb for _, _, tb in scored[:limit]]
 
 
+_COVER_NOISE = frozenset(" \t\r\n，。！？、,.!?;；:：~～…（）()【】\"“”‘’'吧啊呀呢嘛哦哈")
+
+
+def cover_dominates_utterance(text: str) -> bool:
+    """去掉命中的 cover 和标点后几乎没剩内容，才算本轮就是这条命令。"""
+    utterance = text.strip()
+    if not utterance:
+        return False
+    hits = trigger_keyword_hits(utterance, limit=4)
+    if not hits:
+        return False
+    leftover = utterance
+    for tb in hits:
+        best = ""
+        for raw in tb.covers:
+            cover = raw.strip()
+            if len(cover) < _COVER_HIT_MIN or cover not in leftover:
+                continue
+            if len(cover) > len(best):
+                best = cover
+        if best:
+            leftover = leftover.replace(best, "", 1)
+    compact = "".join(ch for ch in leftover if ch not in _COVER_NOISE)
+    return len(compact) <= 6
+
+
 def pin_trigger_keyword_hits(utterance: str, seeds: ToolList, *, limit: int = 4) -> ToolList:
     """触发词命中插到种子队列最前，已在队列里的不重复。"""
     out: ToolList = []

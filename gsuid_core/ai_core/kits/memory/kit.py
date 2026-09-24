@@ -202,6 +202,19 @@ def wants_evidence_injection(ctx: AgentHookContext) -> bool:
     if ctx.memory_eval:
         return True
     body = retrieve_query_for_search(ctx.query)
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        looks_like_attribute_query,
+        looks_like_assistant_quote_query,
+    )
+
+    # 短闲聊里只有第一人称取值和复述才注入全文。泛泛的「推荐」仍走目录。
+    personal = bool(_FIRST_PERSON_RE.search(body))
+    if (
+        looks_like_self_history_query(body)
+        or looks_like_assistant_quote_query(body)
+        or (looks_like_attribute_query(body) and personal)
+    ):
+        return True
     intent = ctx.intent or ""
     if intent == "闲聊" and len(body) < 40:
         return False

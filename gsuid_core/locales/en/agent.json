@@ -25,6 +25,7 @@
   "log.agent.directive_disputed": "[ControlPlane] Model disputed the framework check; keeping original answer: {reason}",
   "log.agent.directive_obligation_unmet": "[ControlPlane] Obligation unmet ({code}); keeping original answer this turn",
   "log.agent.ds_inject": "[GsCoreAIAgent] Injected DS roleplay marker (first user message)",
+  "log.agent.cover_hit_zero_tool_correction": "[GsCoreAIAgent] The utterance matched a tool cover but no tool was called; appending a correction",
   "log.agent.entity_zero_tool_correction": "[GsCoreAIAgent] Entity query tools are mounted but the reply used none; appending a correction",
   "log.agent.fakedone_bot_object_unavailable": "[FakeDoneGate] Failed to re-send withheld text: Bot object unavailable",
   "log.agent.fakedone_call_action_appending_ok": "[FakeDoneGate] No tool call yet claims to have completed the action; appending correction re-run",

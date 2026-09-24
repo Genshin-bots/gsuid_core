@@ -611,9 +611,14 @@ class MemoryContext:
                         if is_fact_sheet(ep):
                             shown = raw[:4800]
                         elif _assistant_turn(raw) and len(raw) > ep_cap:
-                            from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_keep_numbers
+                            from gsuid_core.ai_core.memory.retrieval.lexical import (
+                                excerpt_keep_numbers,
+                                excerpt_around_ordinal,
+                            )
 
-                            shown = excerpt_keep_numbers(raw, ep_cap)
+                            shown = excerpt_around_ordinal(raw, query, max(ep_cap, 900))
+                            if not shown:
+                                shown = excerpt_keep_numbers(raw, ep_cap)
                         if looks_like_summary_query(query):
                             from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_around_tokens
 

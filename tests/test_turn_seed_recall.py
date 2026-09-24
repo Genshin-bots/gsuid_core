@@ -52,6 +52,23 @@ def test_longer_cover_wins_when_both_match(monkeypatch: pytest.MonkeyPatch) -> N
     assert [tb.name for tb in hits] == ["send_refresh_gacha_info", "send_gacha_log_card_info"]
 
 
+def test_cover_hit_is_only_the_current_utterance(monkeypatch: pytest.MonkeyPatch) -> None:
+    abyss = _tb("send_abyss_review", ["深渊怎么打"])
+    _install_triggers(monkeypatch, [abyss])
+    assert rag_tools.trigger_keyword_hits("深渊怎么打")
+    assert rag_tools.trigger_keyword_hits("那你倒是看啊") == []
+
+
+def test_cover_command_ignores_a_longer_mention(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = _tb("send_status", ["刷新状态"])
+    _install_triggers(monkeypatch, [status])
+    assert rag_tools.cover_dominates_utterance("刷新状态")
+    assert rag_tools.cover_dominates_utterance("请帮我看看刷新状态？")
+    mentioned = "刷新状态这个说法先别查，你说说思路"
+    assert rag_tools.trigger_keyword_hits(mentioned)
+    assert not rag_tools.cover_dominates_utterance(mentioned)
+
+
 def test_abyss_howto_pins_short_cover(monkeypatch: pytest.MonkeyPatch) -> None:
     lineup = _tb("send_abyss_review", ["深渊怎么打", "深渊阵容"])
     floor = _tb("get_user_genshin_player_info", ["深渊层数", "原神冒险等阶"])

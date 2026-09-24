@@ -138,6 +138,14 @@ def join_context_blocks(
     return join_named_blocks(blocks, create_by=create_by, skip_memory_cap=skip_memory_cap, memory_budget=memory_budget)
 
 
+def history_line_is_assistant(line: str) -> bool:
+    """助手历史行。普通回复是 AI:，点名回复是 AI→。"""
+    mark = "] "
+    at = line.find(mark)
+    rest = line[at + len(mark) :] if at >= 0 else line
+    return rest.startswith("AI:") or rest.startswith("AI→")
+
+
 async def assemble_dynamic_context(
     *,
     query: str,
@@ -215,7 +223,13 @@ async def assemble_dynamic_context(
         text = f"{text}\n\n{tail}" if text else tail
     from gsuid_core.ai_core.entity_index import format_alias_bindings
 
-    alias_note = format_alias_bindings(f"{query}\n{history_context}")
+    # 只扫用户原话和用户历史行。助手自己提过的角色名不算本轮归属。
+    alias_lines = [query]
+    for line in history_context.splitlines():
+        if history_line_is_assistant(line):
+            continue
+        alias_lines.append(line)
+    alias_note = format_alias_bindings("\n".join(alias_lines))
     if alias_note:
         text = f"{text}\n\n{alias_note}" if text else alias_note
         logger.debug(t("log.entity_index.alias_binding_injected", note=alias_note))

@@ -926,6 +926,16 @@ def topic_pin_tokens(query: str, limit: int = 2) -> list[str]:
     return kept[:limit]
 
 
+def should_keep_assistant_hits(query: str) -> bool:
+    """助手回复里才有的专名要留下。用户句被截断时姓氏、店名只在回复里。"""
+    body = strip_clock_lines(query or "")
+    if not body:
+        return False
+    if looks_like_assistant_quote_query(body) or looks_like_attribute_query(body):
+        return True
+    return bool(_WHAT_IS_MINE_RE.search(body))
+
+
 def looks_like_assistant_quote_query(query: str) -> bool:
     """问助手当时推荐/说过什么。排序和摘要不走这条。"""
     from gsuid_core.ai_core.memory.retrieval.event_time import (
@@ -1027,6 +1037,66 @@ def excerpt_around_tokens(text: str, query: str, width: int) -> str:
 
 _NUMBERED_SENT_RE = re.compile(r"(?<=[.!?。])\s+")
 _HAS_DIGIT_RE = re.compile(r"\d")
+
+
+_ORDINAL_RE = re.compile(r"\b(\d+)(?:st|nd|rd|th)\b|第\s*(\d{1,4})", re.IGNORECASE)
+_MONTH_BEFORE_RE = re.compile(
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def ordinal_index(query: str) -> str:
+    """问句里的序数。英文 27th，中文第 27 项。"""
+    found = _ORDINAL_RE.search(query or "")
+    if found is None:
+        return ""
+    return found.group(1) or found.group(2) or ""
+
+
+def _date_like_number(prose: str, start: int, end: int) -> bool:
+    prefix = prose[max(0, start - 16) : start]
+    if prose[end : end + 1] in {"日", "月", "号"}:
+        return True
+    trimmed = prefix.rstrip()
+    if trimmed.endswith(("-", "/", "月", "年")):
+        return True
+    return _MONTH_BEFORE_RE.search(prefix) is not None
+
+
+def _ordinal_span(prose: str, number: str) -> tuple[int, int] | None:
+    listed = re.finditer(rf"(?<!\d){re.escape(number)}\s*[\.、．\)）:：]", prose)
+    for hit in listed:
+        if not _date_like_number(prose, hit.start(), hit.end()):
+            return hit.start(), hit.end()
+    for hit in re.finditer(rf"(?<!\d){re.escape(number)}(?:st|nd|rd|th)?\b", prose, re.IGNORECASE):
+        if _date_like_number(prose, hit.start(), hit.end()):
+            continue
+        return hit.start(), hit.end()
+    return None
+
+
+def excerpt_around_ordinal(text: str, query: str, width: int) -> str:
+    """问第 N 项时截到那个序号，避免清单头几条占满窗口。"""
+    number = ordinal_index(query)
+    if not number or width <= 0:
+        return ""
+    prose = " ".join((text or "").split())
+    span = _ordinal_span(prose, number)
+    if span is None:
+        return ""
+    if len(prose) <= width:
+        return prose
+    start = max(0, span[0] - width // 5)
+    end = min(len(prose), start + width)
+    start = max(0, end - width)
+    snippet = prose[start:end].strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(prose):
+        snippet = snippet + "…"
+    return snippet
 
 
 def excerpt_keep_numbers(text: str, width: int) -> str:
@@ -1246,6 +1316,32 @@ def pack_attribute_episodes(
     tail = [e for e in strong + weak + rest if "id" not in e or e["id"] not in seen]
     tail.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""), reverse=True)
     limit = max(cap, 48)
+    # 取值题的答案常在助手句。只留问句主题对得上的，避免任意数字插队。
+    if should_keep_assistant_hits(query):
+        needles = [t.lower() for t in toks]
+        ordinal = ordinal_index(query)
+        if ordinal and ordinal not in needles:
+            needles.append(ordinal)
+
+        def _overlap(ep: Episode) -> int:
+            blob = (ep["content"] or "").lower()
+            return sum(1 for t in needles if token_in_text(t, blob))
+
+        assist_named = [
+            ep
+            for ep in rest
+            if _assistant_turn(ep["content"] or "")
+            and _overlap(ep) > 0
+            and sentence_has_extra_name(ep["content"] or "", topic_words)
+        ]
+        assist_named.sort(
+            key=lambda ep: (_overlap(ep), str(ep["valid_at"] if "valid_at" in ep else "")),
+            reverse=True,
+        )
+        assist_named = assist_named[:6]
+        assist_ids = {ep["id"] for ep in assist_named if "id" in ep}
+        tail = [ep for ep in tail if "id" not in ep or ep["id"] not in assist_ids]
+        return (assist_named + named + pinned + tail)[:limit]
     return (named + pinned + tail)[:limit]
 
 
@@ -2361,6 +2457,32 @@ _SPREAD_FRAME = frozenset(
         "latest",
         "order",
         "visited",
+        "classes",
+        "class",
+        "take",
+        "taking",
+        "going",
+        "looking",
+        "want",
+        "wanted",
+        "need",
+        "needed",
+        "help",
+        "please",
+        "some",
+        "more",
+        "good",
+        "best",
+        "just",
+        "really",
+        "think",
+        "thinking",
+        "trying",
+        "actually",
+        "recommend",
+        "suggestion",
+        "suggestions",
+        "tips",
     }
 )
 
@@ -2369,7 +2491,11 @@ def spread_topic_tokens(query: str) -> list[str]:
     """铺开用的主题词。去掉次数、时间单位，避免 times/weeks 把 bake 挤掉。"""
     raw = topic_pin_tokens(query, limit=6)
     kept = [t for t in raw if t.lower() not in _SPREAD_FRAME]
-    return (kept or raw)[:2]
+    out = (kept or raw)[:2]
+    ordinal = ordinal_index(query)
+    if ordinal and ordinal.lower() not in {t.lower() for t in out}:
+        out.append(ordinal)
+    return out
 
 
 def fact_sweep_tokens(query: str) -> list[str]:
@@ -2533,7 +2659,7 @@ async def _assistant_topic_hits(
     user_id: str,
     group_id: str | None,
 ) -> list[Episode]:
-    """主题词只在助手回复里时拿来当邻句种子，长回复本身不注入。"""
+    """主题词命中的助手回复。序数保留，避免被前两个实词挤掉。"""
     if not user_id:
         return []
     toks = spread_topic_tokens(query)
@@ -2547,7 +2673,7 @@ async def _assistant_topic_hits(
     hits: list[Episode] = []
     seen: set[str] = set()
     try:
-        for tok in toks[:2]:
+        for tok in toks:
             rows = await AIMemEpisode.search_by_all_tokens(
                 scope,
                 [tok],
@@ -3000,8 +3126,12 @@ async def expand_lexical_recall(
             named_only=True,
             extra_cap=20,
         )
-        drop = {ep["id"] for ep in assist if "id" in ep}
-        merged = [ep for ep in seeded if "id" not in ep or ep["id"] not in drop]
+        # 长回复默认只当邻句种子。点名/取值题的答案经常只写在助手句里。
+        if should_keep_assistant_hits(body):
+            merged = merge_episode_lists(assist, seeded, prefer_extras=True, limit=max(limit, 96))
+        else:
+            drop = {ep["id"] for ep in assist if "id" in ep}
+            merged = [ep for ep in seeded if "id" not in ep or ep["id"] not in drop]
         sheet = await build_fact_sweep(
             spread_q,
             user_id=user_id,

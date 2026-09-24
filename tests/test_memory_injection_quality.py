@@ -1347,6 +1347,23 @@ def test_chat_long_memory_qa_uses_prompt_text_not_catalog() -> None:
     catalog = format_retrieved_memory(chat_short, mem)
     assert "[记忆目录]" in catalog
     assert "search_cognition" in catalog
+    short_fact = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="Where do I take yoga classes?",
+        intent="闲聊",
+    )
+    assert wants_evidence_injection(short_fact)
+    dumped_fact = format_retrieved_memory(short_fact, mem)
+    assert "[记忆目录]" not in dumped_fact
+    assert "【相关对话片段】" in dumped_fact
+    where = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        create_by="Chat",
+        query="where is it?",
+        intent="闲聊",
+    )
+    assert not wants_evidence_injection(where)
 
 
 def test_to_prompt_text_prefers_user_turns_over_assistant() -> None:

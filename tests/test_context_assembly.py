@@ -195,6 +195,15 @@ def test_addressed_suffix_keeps_voice_anchor_outside_product_cap() -> None:
     assert suffix_allowed_blocks(idle_ctx) == frozenset()
 
 
+def test_directed_assistant_line_is_not_a_user_alias_source() -> None:
+    from gsuid_core.ai_core.context_assembly import history_line_is_assistant
+
+    assert history_line_is_assistant("[14:32:18] AI: 晴天")
+    assert history_line_is_assistant("[14:32:18] AI→小明(用户ID:456): 晴天")
+    assert not history_line_is_assistant("[14:32:05] 小明(用户ID:456): 今天天气怎么样")
+    assert not history_line_is_assistant("[历史对话] 旧→新")
+
+
 if __name__ == "__main__":
     test_both_entries_consume_shared_assembly()
     test_dynamic_context_ordering_contract()

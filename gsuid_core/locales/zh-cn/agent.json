@@ -25,6 +25,7 @@
   "log.agent.directive_disputed": "[ControlPlane] 模型对框架校验提出申辩，保留原答案：{reason}",
   "log.agent.directive_obligation_unmet": "[ControlPlane] 义务未履行（{code}），本轮保留原答案",
   "log.agent.ds_inject": "[GsCoreAIAgent] 已注入 DS 角色扮演 Marker（第一条 user message）",
+  "log.agent.cover_hit_zero_tool_correction": "[GsCoreAIAgent] 原话命中工具 cover，但零调用就作答，追加纠正",
   "log.agent.entity_zero_tool_correction": "[GsCoreAIAgent] 实体查询工具已装配，但零调用就作答，追加纠正",
   "log.agent.fakedone_bot_object_unavailable": "[FakeDoneGate] 暂扣文本补发失败：Bot对象不可用",
   "log.agent.fakedone_call_action_appending_ok": "[FakeDoneGate] 零工具调用却声称已完成动作，追加纠正重跑",

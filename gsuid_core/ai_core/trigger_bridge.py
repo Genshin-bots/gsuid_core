@@ -454,8 +454,8 @@ def _register_trigger_as_ai_tool(
         if parts:
             return "\n".join(parts)
 
-        # 如果触发器没有调用 ai_return() 也没有 send 内容，返回通用成功提示
-        return f"✅ 命令 [{primary_keyword}] 已执行，结果已发送给用户。"
+        # 没有拦截到文本或图片。禁止谎称已经发给用户。
+        return f"命令 [{primary_keyword}] 已执行，但没有产出可发送的文本或图片。不要对用户说已经发出。"
 
     # 手动设置元数据，使 PydanticAI 能正确解析
     _ai_tool_wrapper.__name__ = tool_func_name

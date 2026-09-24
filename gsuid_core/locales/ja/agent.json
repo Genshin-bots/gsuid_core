@@ -25,6 +25,7 @@
   "log.agent.directive_disputed": "[ControlPlane] モデルがフレームワーク検証に異議を申し立てたため、元の回答を保持します: {reason}",
   "log.agent.directive_obligation_unmet": "[ControlPlane] 義務が未履行です（{code}）。今回は元の回答を保持します",
   "log.agent.ds_inject": "[GsCoreAIAgent] DS ロールプレイマーカーを注入しました（最初の user message）",
+  "log.agent.cover_hit_zero_tool_correction": "[GsCoreAIAgent] 発話がツール cover に一致したのに未呼び出しのため、訂正を追加します",
   "log.agent.entity_zero_tool_correction": "[GsCoreAIAgent] エンティティ照会ツールは装着済みですが、未呼び出しのまま回答したため訂正を追加します",
   "log.agent.fakedone_bot_object_unavailable": "[FakeDoneGate] 保留テキストの再送に失敗しました: Bot オブジェクトが利用できません",
   "log.agent.fakedone_call_action_appending_ok": "[GsCoreAIAgent] ツール呼び出しがゼロなのに動作完了を主張しているため、修正リランを追加します",

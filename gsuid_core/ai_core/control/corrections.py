@@ -70,6 +70,26 @@ def addressed_silence_directive() -> Directive:
     )
 
 
+def cover_hit_zero_tool_directive() -> Directive:
+    """用户原话命中已注册工具 cover，却零调用空口作答。"""
+    return Directive(
+        kind="correction",
+        reason_code="cover_hit_zero_tool",
+        observation=(
+            "用户原话命中了已注册工具的覆盖句，但本轮没有调用任何工具，刚才的答案是空口编的。"
+            "现在调用 find_tools 或对口工具。禁止用 dispute_directive 把空口建议留住。"
+            "不要重复刚才那句。"
+        ),
+        obligations=(
+            Obligation(
+                must="call_tool",
+                satisfied_by=("any_tool_called",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="原话命中工具 cover"),
+    )
+
+
 def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
     """未读附件或可继承跟进 + 工具池非空 + 零调用。"""
     return Directive(
