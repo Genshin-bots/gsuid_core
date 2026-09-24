@@ -90,6 +90,66 @@ def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
     )
 
 
+def framework_idle_deliver_directive() -> Directive:
+    """交付回灌零工具却对用户报进度。纠正去出图/发图，进度句不放行。"""
+    return Directive(
+        kind="correction",
+        reason_code="framework_idle_deliver",
+        observation=(
+            "这是任务交付回灌，不是用户在催进度。上一条进度话用户看不到。"
+            "有图就 send_message_by_ai 发给发起人；长事实包只可 "
+            'create_subagent(agent_profile="render_agent")。'
+            "不要新开查询。对用户只输出 <SILENCE>。"
+        ),
+        obligations=(
+            Obligation(
+                must="call_tool",
+                satisfied_by=("any_tool_called",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="交付回灌零工具"),
+    )
+
+
+def master_title_directive(title: str) -> Directive:
+    """非主人收件人的台词里出现了主人称呼。改写后再发，不许原样放行。"""
+    return Directive(
+        kind="correction",
+        reason_code="master_title",
+        observation=(
+            f"接收人不是主人，上一段含有「{title}」，用户看不到。"
+            "改写成不含这个称呼的一句再发给用户。不要只输出 <SILENCE>。"
+        ),
+        obligations=(
+            Obligation(
+                must="deliver",
+                satisfied_by=("user_visible_sent",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="主人称呼"),
+    )
+
+
+def entity_zero_tool_directive() -> Directive:
+    """点名提问已装上查询工具，却零调用作答。"""
+    return Directive(
+        kind="correction",
+        reason_code="entity_without_tool",
+        observation=(
+            "本轮已经为这句装上了查询工具，但没有调用任何工具就回答了。"
+            "先调用能回答这句的查询工具，再按工具结果用角色口吻回答。"
+            "若这句只是闲聊、不需要查数据，调用 dispute_directive 申辩。"
+        ),
+        obligations=(
+            Obligation(
+                must="call_tool",
+                satisfied_by=("any_tool_called",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0),
+    )
+
+
 def status_zero_tool_directive() -> Directive:
     """用户追问进度，但零查询工具就报了状态。"""
     return Directive(

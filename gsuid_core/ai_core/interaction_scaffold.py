@@ -642,7 +642,7 @@ def build_turn_graph(
         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
         extra = collect_persona_surfaces(persona_name)
-    # 引用 bot 仍是 is_tome；quoted_tome 走 CheapGate.SILENCE，不进环。
+    # 引用 bot 仍是 is_tome；quoted_tome 只换注入，CheapGate 不因此静默。
     textual = is_addressed_to_self(text, persona_name, False, extra_names=extra)
     quoted_tome = bool(is_tome) and has_reply and not textual
     if quoted_tome:
@@ -748,8 +748,6 @@ def decide_cheap_gate(
     if tg.open_gate is GroupOpenGate.SILENCE:
         return CheapGate.SILENCE
     if tg.address_gated:
-        return CheapGate.SILENCE
-    if tg.quoted_tome:
         return CheapGate.SILENCE
     from gsuid_core.ai_core.configs.ai_config import ai_config
 

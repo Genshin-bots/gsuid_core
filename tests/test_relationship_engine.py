@@ -421,7 +421,7 @@ def test_quote_tome_is_tome_but_flagged() -> None:
 
 
 def test_hostile_quote_still_enters_loop() -> None:
-    """纯引用未追问：CheapGate 直接沉默，不进环。"""
+    """引用 bot 即使低好感也进环，由 QUOTE_TOME_HINT 决定是否沉默。"""
     from gsuid_core.ai_core.interaction_scaffold import CheapGate, build_turn_graph, decide_cheap_gate
 
     hostile = view_from_score(-80, False)
@@ -433,7 +433,7 @@ def test_hostile_quote_still_enters_loop() -> None:
         primary_speaker="u1",
         has_reply=True,
     )
-    assert decide_cheap_gate(tg, rel=hostile, intent="闲聊") is CheapGate.SILENCE
+    assert decide_cheap_gate(tg, rel=hostile, intent="闲聊") is CheapGate.FULL
 
 
 def test_hostile_chitchat_at_enters_loop() -> None:

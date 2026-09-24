@@ -2603,3 +2603,241 @@ def test_count_prompt_prefers_stated_total_over_listing_every_mention() -> None:
     assert "不是两个现成答案" in text
     assert "较晚的用户原话" not in text
     assert "12 books" in text
+
+
+def test_latest_value_hint_skips_order_and_sum() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        VALUE_UPDATE_HINT,
+        topic_pin_tokens,
+        pack_sum_episodes,
+        looks_like_sum_query,
+        looks_like_attribute_query,
+        pack_assistant_quote_episodes,
+        looks_like_recommendation_query,
+        looks_like_assistant_quote_query,
+    )
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query
+
+    eo = "List my personal budget tracker throughout our conversations, in order?"
+    assert looks_like_order_query(eo)
+    assert not looks_like_attribute_query(eo)
+    assert not looks_like_assistant_quote_query(eo)
+    assert looks_like_assistant_quote_query("I was wondering if you could remind me of the name of that restaurant")
+    assert looks_like_attribute_query("Where did Rachel move to after her recent relocation?")
+    assert not looks_like_attribute_query("How much total money have I spent on bike-related expenses?")
+    assert not looks_like_sum_query(eo)
+    assert "只答最晚一条" in VALUE_UPDATE_HINT
+    assert "按时间保留全部" in VALUE_UPDATE_HINT
+
+    bike = "How much total money have I spent on bike-related expenses since the start of the year?"
+    assert looks_like_sum_query(bike)
+    assert topic_pin_tokens(bike, limit=2)[0].lower() == "bike"
+    packed_sum = pack_sum_episodes(
+        [
+            _ep("lights", "User: I got a new set of bike lights, which were $40.", "2023-05-05 10:00:00"),
+            _ep("helm", "User: I bought my Bell Zephyr helmet for $120 at the bike shop.", "2023-04-10 10:00:00"),
+            _ep("chain", "User: The bike tune-up replaced the chain, which was $25.", "2023-04-20 10:00:00"),
+            _ep("noise", "User: I asked about bike insurance but did not buy it.", "2023-05-01 10:00:00"),
+        ],
+        bike,
+    )
+    assert [e["id"] for e in packed_sum] == ["helm", "chain", "lights"]
+    from gsuid_core.ai_core.memory.retrieval.lexical import turn_near_seed, keep_sum_values, spread_value_episodes
+
+    middle = [_ep(f"v{i}", f"User: bike note {i} costs {i + 10}.", f"2023-04-{i + 1:02d} 10:00:00") for i in range(14)]
+    middle[8] = _ep("helm120", "User: bought a bike helmet for $120.", "2023-04-09 10:00:00")
+    summed = keep_sum_values(middle, bike, cap=24)
+    assert any(e["id"] == "helm120" for e in summed)
+    spread = spread_value_episodes(middle, cap=8)
+    assert all(e["id"] != "helm120" for e in spread)
+    assert turn_near_seed(26, 31)
+    assert not turn_near_seed(26, 50)
+
+    quote = "Can you remind me of the name of the romantic Italian restaurant in Rome you recommended?"
+    assert looks_like_assistant_quote_query(quote)
+    assert not looks_like_recommendation_query(quote)
+    packed_q = pack_assistant_quote_episodes(
+        [
+            _ep("list", "assistant: Trattoria, Roscioli, and La Pergola are in Rome.", "2023-05-30 04:20:00"),
+            _ep("gold", "assistant: For a romantic dinner, I would recommend Roscioli.", "2023-05-30 04:21:00"),
+            _ep("user", "User: Which Rome restaurant is romantic?", "2023-05-30 04:19:00"),
+        ],
+        quote,
+    )
+    assert packed_q[0]["id"] == "gold"
+
+    ask = "Can you recommend a show or movie for me to watch tonight?"
+    assert looks_like_recommendation_query(ask)
+    assert not looks_like_assistant_quote_query(ask)
+    from gsuid_core.ai_core.memory.retrieval.lexical import recommend_topic_tokens
+
+    kitchen = "My kitchen's becoming a bit of a mess again. Any tips for keeping it clean?"
+    assert recommend_topic_tokens(kitchen, limit=2)[0].lower() == "kitchen"
+    from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_personal_upkeep_query
+
+    assert looks_like_personal_upkeep_query(kitchen)
+    assert not looks_like_personal_upkeep_query(eo)
+
+    mc = MemoryContext(
+        episodes=[
+            _ep("a", "User: started the tracker.", "2024-01-01 00:00:00"),
+            _ep("b", "User: shipped the first release.", "2024-06-01 00:00:00"),
+        ]
+    )
+    text = mc.to_prompt_text(max_chars=8000, query=eo)
+    assert "只答最晚一条" not in text
+    assert "都不是现在已经如此" not in text
+
+
+def test_count_prompt_counts_each_name() -> None:
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "How many movie festivals that I attended?"
+    mc = MemoryContext(
+        episodes=[
+            _ep("a", "I attended AFI Fest in Los Angeles.", "2023-05-01 10:00:00"),
+            _ep("b", "I attended Austin Film Festival.", "2023-05-20 10:00:00"),
+        ]
+    )
+    text = mc.to_prompt_text(max_chars=8000, query=q)
+    assert "不同专名各计一次" in text
+    assert "都不是现在已经如此" not in text
+    assert "只报最晚一条" not in text
+
+
+def test_compact_event_lines_keep_each_place_once() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import compact_event_lines
+
+    rows = [
+        (
+            "2023-05-01",
+            "I've been thinking about Joker. I attended AFI Fest in Los Angeles and saw a screening.",
+        ),
+        ("2023-05-20", "Can you recommend some films like Parasite?"),
+        ("2023-05-18", "I attended AFI Fest again and met the director."),
+        ("2023-05-26", "I attended Austin Film Festival and talked to a director."),
+        (
+            "2023-05-26",
+            "That's a great point about the cinematography in Joker!",
+        ),
+    ]
+    lines = compact_event_lines(rows, collapse_names=True)
+    text = "\n".join(piece for _day, piece in lines)
+    assert "AFI" in text
+    assert "Austin" in text
+    assert text.lower().count("afi") == 1
+    assert "recommend" not in text.lower()
+    assert "cinematography" not in text.lower()
+
+
+def test_hours_in_total_is_a_sum_not_a_span() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_sum_query, looks_like_count_query
+
+    q = "How many hours have I spent playing games in total?"
+    assert looks_like_sum_query(q)
+    assert not looks_like_count_query(q)
+    breaks = "How many days did I take social media breaks in total?"
+    assert looks_like_sum_query(breaks)
+
+
+def test_sum_sheet_keeps_hour_lines_not_unrelated_names() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import _fact_sweep_relevant
+
+    q = "How many hours have I spent playing games in total?"
+    assert _fact_sweep_relevant("Hyper Light Drifter took me 5 hours to finish.", q)
+    assert not _fact_sweep_relevant("Toronto Raptors recently signed some new players.", q)
+
+
+def test_fact_sweep_relevant_filters_bake_noise() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import _fact_sweep_relevant
+
+    q = "How many times did I bake something in the past two weeks?"
+    assert _fact_sweep_relevant("I baked a batch of cookies on Thursday.", q)
+    assert not _fact_sweep_relevant("Toronto Raptors recently signed some new players.", q)
+
+
+def test_museum_order_query_is_orderish() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import fact_sweep_tokens, spread_topic_tokens
+    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query
+
+    q = "What is the order of the six museums I visited from earliest to latest?"
+    assert looks_like_order_query(q)
+    assert "earliest" not in {t.lower() for t in spread_topic_tokens(q)}
+    assert "museums" in {t.lower() for t in fact_sweep_tokens(q)}
+
+
+def test_topic_spread_keeps_middle_and_numbered_tail() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        stride_keep,
+        topic_pin_tokens,
+        token_search_forms,
+        excerpt_keep_numbers,
+        merge_strided_groups,
+    )
+
+    forms = [f.lower() for f in token_search_forms("festivals")]
+    assert "festival" in forms
+    fest = "How many movie festivals that I attended?"
+    assert topic_pin_tokens(fest, limit=2)[0].lower() == "festivals"
+    from gsuid_core.ai_core.memory.retrieval.lexical import spread_topic_tokens
+
+    bake = "How many times did I bake something in the past two weeks?"
+    assert spread_topic_tokens(bake)[0].lower() == "bake"
+    eps = [_ep(str(i), f"User: note {i}", f"2023-01-{i + 1:02d} 00:00:00") for i in range(10)]
+    kept = [e["id"] for e in stride_keep(eps, 4)]
+    assert kept[0] == "0"
+    assert kept[-1] == "9"
+    assert any(i not in {"0", "9"} for i in kept)
+    long = "Start of the study. " + ("padding " * 40) + "The study had 38 subjects. " + ("ending " * 40)
+    assert "38" in excerpt_keep_numbers(long, 180)
+    rare = [_ep("tank", "User: I set up a tank.", "2023-03-01 00:00:00")]
+    common = [_ep(f"c{i}", f"User: currently note {i}", f"2023-01-{i + 1:02d} 00:00:00") for i in range(20)]
+    merged = merge_strided_groups([common, rare], 12)
+    assert merged[0]["id"] == "tank"
+
+
+def test_named_fact_lines_survive_common_token() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        prefer_named_lines,
+        spread_topic_tokens,
+        excerpt_named_sentences,
+        looks_like_fact_excerpt_query,
+    )
+
+    hawaii = _ep("hi", "I am going back to Hawaii with my family for a week.", "2023-02-04 00:00:00")
+    paris = [_ep(f"p{i}", "I visited Paris with my family.", f"2023-03-{i + 1:02d} 00:00:00") for i in range(10)]
+    crowded = prefer_named_lines([*paris, hawaii], "Where did I go with my family?", 3)
+    assert any(ep["id"] == "hi" for ep in crowded)
+    blob = ("I want camera tips. " * 30) + "I attended Sundance last March. " + ("More notes. " * 20)
+    assert "Sundance" in excerpt_named_sentences(blob, "How many movie festivals that I attended?", 180)
+    assert looks_like_fact_excerpt_query("How many movie festivals that I attended?")
+    assert not looks_like_fact_excerpt_query("List the museums in order from earliest to latest?")
+    assert spread_topic_tokens("What is my ethnicity?")[0].lower() == "ethnicity"
+
+
+def test_hours_and_named_place_stay_in_pack() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import apply_query_episode_pack
+
+    hours = "How many hours have I spent playing games in total?"
+    packed = apply_query_episode_pack(
+        [
+            _ep("new", "I played games for 5 hours.", "2023-05-29 10:00:00"),
+            _ep("old", "I spent around 70 hours playing Assassin's Creed Odyssey.", "2023-05-20 10:00:00"),
+        ],
+        hours,
+        temporal_mode=False,
+        time_range=None,
+    )
+    assert {ep["id"] for ep in packed} >= {"new", "old"}
+    where = "Where did I go on a week-long trip with my family?"
+    placed = apply_query_episode_pack(
+        [
+            _ep("noise", "I went with my family to the store.", "2023-06-01 10:00:00"),
+            _ep("hi", "I went with my family for a week in Hawaii.", "2023-04-01 10:00:00"),
+        ],
+        where,
+        temporal_mode=False,
+        time_range=None,
+    )
+    assert placed[0]["id"] == "hi"

@@ -30,6 +30,7 @@ from pydantic_ai import RunContext
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
@@ -344,6 +345,21 @@ async def _create_subagent_impl(
         blocked = refuse_master_only_node(ctx.deps.ev, get_node(pid))
         if blocked:
             return blocked
+        _extra = ctx.deps.extra
+        _wake = _extra["delivery_wake"] if "delivery_wake" in _extra else False
+        if _wake is True and pid != "render_agent":
+            return (
+                '⚠️ 本轮是任务交付回灌，只可 create_subagent(agent_profile="render_agent") 出图，'
+                "或 send_message_by_ai 发送已有的图。不要新开查询。"
+            )
+        _follow = _extra["turn_followup"] is True if "turn_followup" in _extra else False
+        if pid != "render_agent" and not _follow and ctx.deps.ev is not None:
+            _ground = turn_ground_source(ctx.deps.ev)
+            if _ground and not delegation_grounded(task, _ground):
+                return (
+                    "⚠️ 这个任务对不上本轮说话人的原话。"
+                    "群历史里别人的话题不能派成他的任务；只处理他这一句，或引用里点名的内容。"
+                )
         use_transient = pid in _TRANSIENT_DEFAULT_PROFILES
         if not use_transient and transient and not ctx.deps.allow_user_outbound:
             use_transient = True
@@ -598,6 +614,133 @@ async def _dispatch_transient_capability_agent(
     return f"{prefix_note}\n\n{raw_result}{note}"
 
 
+_TURN_GLUE = frozenset(
+    {
+        "帮我",
+        "帮忙",
+        "一下",
+        "看看",
+        "看下",
+        "分析",
+        "比较",
+        "对比",
+        "怎么",
+        "什么",
+        "还是",
+        "可以",
+        "这个",
+        "那个",
+        "现在",
+        "今天",
+        "麻烦",
+        "给我",
+    }
+)
+_CONTENT_CHUNK_RE = re.compile(r"[0-9A-Za-z]{3,}|[\u4e00-\u9fff]+")
+_ASCII_ANCHOR_STOP = frozenset(
+    {
+        "the",
+        "and",
+        "with",
+        "this",
+        "that",
+        "from",
+        "have",
+        "been",
+        "your",
+        "what",
+        "when",
+        "where",
+        "which",
+        "would",
+        "could",
+        "should",
+        "about",
+        "there",
+        "their",
+        "them",
+        "then",
+        "than",
+        "into",
+        "over",
+        "also",
+        "just",
+        "some",
+        "more",
+        "help",
+        "please",
+        "today",
+    }
+)
+
+
+def _glue_span(span: str) -> bool:
+    if span in _TURN_GLUE:
+        return True
+    if len(span) < 4:
+        return False
+    return all(span[i : i + 2] in _TURN_GLUE for i in range(len(span) - 1))
+
+
+def turn_content_anchors(text: str) -> list[str]:
+    """原话里能锚定任务的片段。英文至少 4 字且不是功能词；中文滑窗至少 4 字。"""
+    seen: set[str] = set()
+    anchors: list[str] = []
+    for chunk in _CONTENT_CHUNK_RE.findall(text or ""):
+        if chunk.isascii():
+            token = chunk.lower()
+            if len(token) < 4 or token in _ASCII_ANCHOR_STOP or token in seen:
+                continue
+            seen.add(token)
+            anchors.append(token)
+            continue
+        n = len(chunk)
+        if 2 <= n <= 3 and chunk not in _TURN_GLUE and chunk not in seen:
+            seen.add(chunk)
+            anchors.append(chunk)
+        for size in range(min(8, n), 3, -1):
+            for i in range(0, n - size + 1):
+                span = chunk[i : i + size]
+                if span in seen or _glue_span(span):
+                    continue
+                seen.add(span)
+                anchors.append(span)
+                if len(anchors) >= 40:
+                    return anchors
+    return anchors
+
+
+def delegation_grounded(task: str, ground: str) -> bool:
+    """任务要含原话里的一个长锚，或两个标点切开的短锚。对不上就拒绝。"""
+    anchors = turn_content_anchors(ground)
+    if not anchors:
+        return False
+    hay = task or ""
+    hay_low = hay.lower()
+    short_hits = 0
+    for span in anchors:
+        found = span in hay_low if span.isascii() else span in hay
+        if not found:
+            continue
+        if len(span) >= 4:
+            return True
+        short_hits += 1
+        if short_hits >= 2:
+            return True
+    return False
+
+
+def turn_ground_source(ev: Event) -> str:
+    parts: list[str] = []
+    if ev.raw_text:
+        parts.append(ev.raw_text)
+    elif ev.text:
+        parts.append(ev.text)
+    if ev.reply:
+        parts.append(ev.reply)
+    return "\n".join(parts)
+
+
 async def _dispatch_via_kanban(
     ctx: RunContext[ToolContext],
     task: str,
@@ -622,6 +765,12 @@ async def _dispatch_via_kanban(
     from gsuid_core.ai_core.agent_node import get_node, resolve_node
 
     pid = resolve_node(agent_profile)
+    _wake = ctx.deps.extra["delivery_wake"] if "delivery_wake" in ctx.deps.extra else False
+    if _wake is True and pid != "render_agent":
+        return (
+            '⚠️ 本轮是任务交付回灌，只可 create_subagent(agent_profile="render_agent") 出图，'
+            "或 send_message_by_ai 发送已有的图。不要新开查询。"
+        )
     profile = get_node(pid)
     if profile is None:
         from gsuid_core.ai_core.agent_node import list_nodes

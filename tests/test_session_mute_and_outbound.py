@@ -52,6 +52,36 @@ def test_delivery_boundary_forbids_all_direct_send() -> None:
     assert "禁止" in DELIVERY_BOUNDARY
     assert "send_message_by_ai" in DELIVERY_BOUNDARY
     assert "直发" in DELIVERY_BOUNDARY
+    assert "需主人决策" not in DELIVERY_BOUNDARY
+    assert "发起人确认" in DELIVERY_BOUNDARY
+
+
+def test_group_broadcast_is_not_directed_at_event_user() -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.outbound import proactive_directed_target
+
+    ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g1",
+        user_id="100000002",
+        WS_BOT_ID="ws1",
+    )
+    fill = "群通知：记录已完成"
+    assert proactive_directed_target(ev, fill) == ""
+    assert proactive_directed_target(ev, "@100000001 图给你了") == "100000001"
+    assert proactive_directed_target(ev, "@user-42 图给你了") == "user-42"
+    assert proactive_directed_target(ev, "@the 图给你了") == ""
+    private = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="direct",
+        group_id=None,
+        user_id="100000002",
+        WS_BOT_ID="ws1",
+    )
+    assert proactive_directed_target(private, fill) == "100000002"
 
 
 def test_ooc_blocks_framework_tool_leak() -> None:

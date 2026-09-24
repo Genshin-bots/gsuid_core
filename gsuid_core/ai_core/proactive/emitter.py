@@ -216,7 +216,7 @@ async def emit_proactive_message(
         elif _gr.decision is GateDecision.FALLBACK:
             out_msg = _gr.send_text or fallback_ooc_text(pname)
     await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
-    from gsuid_core.ai_core.outbound import record_outbound
+    from gsuid_core.ai_core.outbound import record_outbound, proactive_directed_target
 
     await record_outbound(
         ev=event,
@@ -224,7 +224,7 @@ async def emit_proactive_message(
         text=out_msg,
         image_id="",
         topic="",
-        target_user=str(event.user_id) if event.user_id else "",
+        target_user=proactive_directed_target(event, out_msg),
         target_name="",
     )
 

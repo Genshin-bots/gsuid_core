@@ -73,6 +73,19 @@ def test_post_tool_contracts_split_persona_vs_capability() -> None:
     assert "render_html_to_image" not in fail_c or "禁止" in fail_c
 
 
+def test_delegation_rejects_other_speakers_history_topic() -> None:
+    from gsuid_core.ai_core.buildin_tools.subagent import delegation_grounded
+
+    said = "帮忙比较一下样本甲组、样本乙组和样本丙组"
+    assert delegation_grounded("对比样本甲组、样本乙组、样本丙组的要点", said)
+    assert not delegation_grounded("分析样本丁组并给出方案", said)
+    assert not delegation_grounded("深度分析样本戊组", said)
+    assert delegation_grounded("甲组配置里，成员乙已经带了丙类部件", "甲组配置，成员乙已经带了丙类部件，成员丁带什么")
+    assert not delegation_grounded("随便查点别的", "救我")
+    assert not delegation_grounded("analyze the market", "help me with the report")
+    assert delegation_grounded("compare sample alpha", "please compare sample alpha today")
+
+
 def test_research_agent_not_default_transient() -> None:
     from gsuid_core.ai_core.buildin_tools.subagent import _TRANSIENT_DEFAULT_PROFILES
 

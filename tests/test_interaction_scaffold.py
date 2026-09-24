@@ -346,7 +346,7 @@ def test_turn_graph_group_gates(monkeypatch):
     )
     assert tg_quote.quoted_tome
     assert tg_quote.call_to_self
-    assert decide_cheap_gate(tg_quote) is CheapGate.SILENCE
+    assert decide_cheap_gate(tg_quote) is CheapGate.FULL
     assert QUOTE_TOME_HINT in scaffold_hints_from_graph(tg_quote, cheap=CheapGate.FULL)
     tg_at_no_reply = build_turn_graph(
         "帮我设个提醒",

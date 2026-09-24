@@ -490,6 +490,14 @@ class MemoryKit(AgentKit):
                 from gsuid_core.ai_core.memory.retrieval.lexical import expand_episode_neighbors
 
                 mem.episodes = await expand_episode_neighbors(mem.episodes)
+            else:
+                from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    expand_topic_session_turns,
+                    looks_like_personal_upkeep_query,
+                )
+
+                if looks_like_personal_upkeep_query(search_q) and not mem.temporal_mode:
+                    mem.episodes = await expand_topic_session_turns(mem.episodes, search_q)
             refine_retrieved_memory(mem, search_q)
         if ctx.memory_eval and mem.ledger is None:
             from gsuid_core.ai_core.kits.memory.eval_protocol import (
@@ -571,18 +579,34 @@ class MemoryKit(AgentKit):
                     q = retrieve_query_for_search(ctx.query)
                     from gsuid_core.ai_core.memory.retrieval.lexical import (
                         SET_RECALL_HINT,
+                        SUM_ANSWER_HINT,
+                        COUNT_ANSWER_HINT,
                         EVIDENCE_USE_HINT,
                         VALUE_UPDATE_HINT,
+                        ASSISTANT_QUOTE_HINT,
+                        RECOMMEND_CONSTRAINT_HINT,
+                        looks_like_sum_query,
                         looks_like_attribute_query,
                         looks_like_latest_slot_query,
+                        looks_like_recommendation_query,
+                        looks_like_assistant_quote_query,
                     )
                     from gsuid_core.ai_core.memory.retrieval.event_time import (
                         looks_like_order_query,
                         looks_like_summary_query,
                     )
 
-                    if looks_like_attribute_query(q):
+                    if looks_like_assistant_quote_query(q):
+                        parts.append(ASSISTANT_QUOTE_HINT)
+                    elif looks_like_sum_query(q):
+                        parts.append(SUM_ANSWER_HINT)
+                    elif looks_like_count_query(q):
+                        parts.append(COUNT_ANSWER_HINT)
+                    elif looks_like_attribute_query(q):
                         parts.append(VALUE_UPDATE_HINT)
+                    elif looks_like_recommendation_query(q):
+                        parts.append(RECOMMEND_CONSTRAINT_HINT)
+                        parts.append("（" + EVIDENCE_USE_HINT + "）")
                     else:
                         parts.append("（" + EVIDENCE_USE_HINT + "）")
                     if looks_like_order_query(q):
@@ -590,8 +614,8 @@ class MemoryKit(AgentKit):
 
                         if _mc.eo_strategy != "ledger":
                             parts.append(
-                                "（按上面【事件顺序】的时间序作答；"
-                                "条目不足或主题线不确定时先 recall_timeline，再按需 recall_session。）"
+                                "（每行一件事。只算用户说过自己做过的，助手推荐不算。"
+                                "按发生日从早到晚排，不要用别的名字顶上。）"
                             )
                     elif looks_like_summary_query(q):
                         parts.append(

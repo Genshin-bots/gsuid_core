@@ -374,6 +374,7 @@ class AIMemEpisode(SQLModel, table=True):
         ascending: bool = False,
         user_only: bool = False,
         speaker: str | None = None,
+        offset: int = 0,
     ) -> list["AIMemEpisode"]:
         """实词同时出现。一个话题词也要能取头尾，否则中段那次赋值进不了页。"""
         if not scope_key or limit <= 0 or not tokens:
@@ -399,10 +400,12 @@ class AIMemEpisode(SQLModel, table=True):
             )
         tie = literal_column("rowid") if _db_type == "sqlite" else c.id
         if ascending:
-            stmt = select(cls).where(*conds).order_by(c.valid_at.asc(), tie.asc()).limit(limit)
+            stmt = select(cls).where(*conds).order_by(c.valid_at.asc(), tie.asc())
         else:
-            stmt = select(cls).where(*conds).order_by(c.valid_at.desc(), tie.desc()).limit(limit)
-        result = await session.execute(stmt)
+            stmt = select(cls).where(*conds).order_by(c.valid_at.desc(), tie.desc())
+        if offset > 0:
+            stmt = stmt.offset(offset)
+        result = await session.execute(stmt.limit(limit))
         return list(result.scalars().all())
 
     @classmethod
@@ -621,6 +624,13 @@ class AIMemEpisode(SQLModel, table=True):
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def get_one(cls, session: AsyncSession, episode_id: str) -> "AIMemEpisode | None":
+        if not episode_id:
+            return None
+        return await session.get(cls, episode_id)
 
     @classmethod
     @with_read_session

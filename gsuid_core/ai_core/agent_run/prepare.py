@@ -238,6 +238,9 @@ class PreparePhase(RunOnceHost):
             has_active_task=st.has_active_task,
             user_text=_probe_for_policy,
         )
+        # 只锁框架回灌。真人消息里出现这四个字不算交付轮。
+        if st.speech_policy == "framework_deliver" or (st.fw_msg and "交付回灌" in _probe_for_policy):
+            st.run_extra["delivery_wake"] = True
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
         st.context = ToolContext(
             bot=st.bot,
@@ -321,6 +324,7 @@ class PreparePhase(RunOnceHost):
                 )
             st.addr_gated = bool(st.tg.address_gated)
             st.followup_detected = bool(st.tg.needs_task_tools)
+            st.run_extra["turn_followup"] = st.followup_detected
             from gsuid_core.ai_core.buildin_tools.visibility import (
                 SCHED_CREATE_OK_KEY,
                 SCHED_MUTATE_OK_KEY,

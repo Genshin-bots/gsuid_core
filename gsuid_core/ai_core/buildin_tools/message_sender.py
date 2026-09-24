@@ -238,6 +238,13 @@ async def send_message_by_ai(
     # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev
     target_id = user_id or (str(ev.user_id) if ev is not None else "")
+    if text:
+        from gsuid_core.ai_core.persona.settings import persona_name_from_event
+        from gsuid_core.ai_core.agent_run.speech_policy import title_mentioned, non_master_title
+
+        _ban = non_master_title(target_id, persona_name_from_event(ev))
+        if title_mentioned(_ban, text):
+            return f"⚠️ 接收人不是主人，台词不能出现「{_ban}」。改写后再发，不要用这个称呼。"
     session_id = str(ev.session_id) if ev is not None else (tool_ctx.parent_session_id or "")
     if image_id.startswith("dlg_"):
         return (

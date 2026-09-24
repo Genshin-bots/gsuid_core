@@ -315,6 +315,10 @@ _SPAN_ORDER_RE = re.compile(
     r"walk me through the order|"
     r"list the order|"
     r"the order in which|"
+    r"\bthe order of\b|"
+    r"\bearliest to latest\b|"
+    r"\bfrom earliest\b|"
+    r"先后顺序|"
     r"依次|顺序|时间线|先后|历程",
     re.IGNORECASE,
 )

@@ -64,24 +64,30 @@ from gsuid_core.ai_core.control.directive import (
 )
 from gsuid_core.ai_core.control.corrections import (
     fake_done_directive,
+    master_title_directive,
     blocked_voice_directive,
     premature_claim_directive,
+    entity_zero_tool_directive,
     status_zero_tool_directive,
     addressed_silence_directive,
     render_obligation_directive,
     numeric_recitation_directive,
     missing_offered_tool_directive,
     structural_zero_tool_directive,
+    framework_idle_deliver_directive,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
+    title_mentioned,
+    non_master_title,
     looks_like_process_meta,
     looks_like_wait_comfort,
     looks_like_empty_handoff,
     strip_open_solicitations,
     claims_premature_delivery,
     has_orchestration_narration,
+    looks_like_deliver_progress,
     looks_like_numeric_recitation,
 )
 from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
@@ -234,6 +240,14 @@ def _should_deliver_withheld(
         return True
     # 未进纠正（短 empty_handoff）时不能只靠 _skip_report_exit，否则整轮零输出
     return bool(st.saw_structured_return)
+
+
+def _forbid_title(st: RunOnceState, persona_name: str | None) -> str:
+    raw = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
+    uid = str(raw) if isinstance(raw, str) and raw else ""
+    if not uid and st.ev is not None and st.ev.user_id:
+        uid = str(st.ev.user_id)
+    return non_master_title(uid, persona_name)
 
 
 def _correction_is_deliverable(text: str) -> bool:
@@ -735,6 +749,108 @@ class SettlePhase(RunOnceHost):
                 _sc = await self._try_correction_pass(st, (status_zero_tool_directive(),))
                 result_msg = _corrected_or_original(_sc, original=result_msg)
                 self._scrub_fake_done_history(set())
+
+            # 交付回灌的进度句或长文：补一次出图/发图。短收尾留给用户。
+            elif (
+                st.fw_msg
+                and ("delivery_wake" in st.run_extra and st.run_extra["delivery_wake"] is True)
+                and not st.fake_done_retry
+                and not st.tool_call_list
+                and not st.image_sent_this_run
+                and result_msg
+                and not is_silence_marker(result_msg.strip())
+                and (looks_like_deliver_progress(result_msg) or len(result_msg.strip()) > 40)
+                and self.create_by in ("Chat", "Agent")
+            ):
+                _settle_correction_ran = True
+                logger.warning(i18n_t("log.agent.delivery_idle_correction"))
+                await self._try_correction_pass(st, (framework_idle_deliver_directive(),))
+                result_msg = "<SILENCE>"
+
+            # 实体已装上查询工具却空口作答：先拦住，纠正轮拿回文本再发。
+            elif (
+                st.entity_routed
+                and st.tg is not None
+                and st.tg.call_to_self
+                and not st.tool_call_list
+                and not st.fake_done_retry
+                and result_msg
+                and not is_silence_marker(result_msg.strip())
+                and self.create_by in _INTERACTIVE_CREATE_BY
+                and self.create_by != "CapabilityAgent"
+            ):
+                _settle_correction_ran = True
+                logger.warning(i18n_t("log.agent.entity_zero_tool_correction"))
+                _prior = result_msg.strip()
+                _disputes_before = len(self._run_disputes)
+                _ec = await self._try_correction_pass(
+                    st,
+                    (entity_zero_tool_directive(),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
+                )
+                _disputed = len(self._run_disputes) > _disputes_before
+                _called = [n for n in self._last_attempt_tool_calls if n != "dispute_directive"]
+                if _disputed:
+                    result_msg = _prior
+                elif _called and isinstance(_ec, str) and _correction_is_deliverable(_ec):
+                    result_msg = strip_open_solicitations(_ec.strip()) or "<SILENCE>"
+                else:
+                    result_msg = "<SILENCE>"
+                if title_mentioned(_forbid_title(st, self.persona_name), result_msg):
+                    result_msg = "<SILENCE>"
+                if (
+                    result_msg.strip()
+                    and not is_silence_marker(result_msg.strip())
+                    and result_msg.strip() not in self._run_sent_texts
+                    and st.bot is not None
+                    and st.return_mode in ("always", "by_bot")
+                ):
+                    _send_at = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
+                    await send_chat_result(
+                        st.bot,
+                        result_msg,
+                        ev=st.ev,
+                        at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
+                    )
+                    self._run_sent_texts.add(result_msg.strip())
+
+            elif (
+                not st.fake_done_retry
+                and result_msg
+                and not is_silence_marker(result_msg.strip())
+                and self.create_by in _INTERACTIVE_CREATE_BY
+                and self.create_by != "CapabilityAgent"
+                and title_mentioned(_forbid_title(st, self.persona_name), result_msg)
+            ):
+                _settle_correction_ran = True
+                _ban = _forbid_title(st, self.persona_name)
+                logger.warning(i18n_t("log.agent.master_title_correction"))
+                _tc = await self._try_correction_pass(
+                    st,
+                    (master_title_directive(_ban),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
+                )
+                if isinstance(_tc, str) and _correction_is_deliverable(_tc) and not title_mentioned(_ban, _tc):
+                    result_msg = strip_open_solicitations(_tc.strip()) or "<SILENCE>"
+                else:
+                    result_msg = "<SILENCE>"
+                if (
+                    result_msg.strip()
+                    and not is_silence_marker(result_msg.strip())
+                    and result_msg.strip() not in self._run_sent_texts
+                    and st.bot is not None
+                    and st.return_mode in ("always", "by_bot")
+                ):
+                    _send_at = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
+                    await send_chat_result(
+                        st.bot,
+                        result_msg,
+                        ev=st.ev,
+                        at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
+                    )
+                    self._run_sent_texts.add(result_msg.strip())
 
             _voice_reason = _voice_block_reason(st, result_msg)
             if (

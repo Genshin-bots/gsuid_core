@@ -661,3 +661,86 @@ def test_capability_absence_and_stale_present() -> None:
     stale_hit = check_ooc("现在还是2020-05-25的气温")
     assert stale_hit is not None
     assert stale_hit.category == "stale_present"
+    assert not looks_like_stale_present_tense(
+        "今天是 2023-04-18，从 2023-02-15 到 2023-04-18 相差约 2 个月。",
+        now=datetime(2026, 9, 24),
+    )
+
+
+def test_framework_deliver_blocks_status_ping_before_image() -> None:
+    """交付回灌未发图时，短进度句也不出站。"""
+    blk, why = should_block_user_visible_text(
+        "framework_deliver",
+        "（揉了揉眼睛）还没…别催…",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+    )
+    assert blk and why == "deliver_before_send"
+
+
+def test_master_title_blocked_for_non_master_addressee() -> None:
+    blk, why = should_block_user_visible_text(
+        "framework_deliver",
+        "唔…图给你…剩下的交给主人判断了",
+        pending_async=False,
+        image_sent=True,
+        has_status_tool=False,
+        tool_calls_so_far=["send_message_by_ai"],
+        forbid_title="主人",
+    )
+    assert blk and why == "master_title"
+    ok, _ = should_block_user_visible_text(
+        "free",
+        "图给你了…你自己看",
+        pending_async=False,
+        image_sent=True,
+        has_status_tool=False,
+        tool_calls_so_far=["send_message_by_ai"],
+        forbid_title="主人",
+    )
+    assert not ok
+
+
+def test_entity_routed_blocks_answer_without_tools() -> None:
+    blk, why = should_block_user_visible_text(
+        "free",
+        "这种材料给能稳定满足条件的人。",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+        entity_routed=True,
+    )
+    assert blk and why == "entity_without_tool"
+    ok, _ = should_block_user_visible_text(
+        "free",
+        "这种材料给能稳定满足条件的人。",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["lookup_record"],
+        entity_routed=True,
+    )
+    assert not ok
+
+
+def test_framework_deliver_allows_short_close_without_image() -> None:
+    blk, _why = should_block_user_visible_text(
+        "framework_deliver",
+        "按卡片上的那条。",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=[],
+    )
+    assert not blk
+
+
+def test_short_title_is_not_a_master_title_hit() -> None:
+    from gsuid_core.ai_core.agent_run.speech_policy import title_mentioned
+
+    assert not title_mentioned("主", "交给主人判断")
+    assert not title_mentioned("lord", "landlord said hello")
+    assert title_mentioned("主人", "交给主人判断")

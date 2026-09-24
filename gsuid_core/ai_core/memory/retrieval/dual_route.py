@@ -543,6 +543,8 @@ class MemoryContext:
             ep_budget = max_chars - used
             if ep_budget > 120:
                 from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    is_fact_sheet,
+                    looks_like_sum_query,
                     looks_like_count_query,
                     apply_query_episode_pack,
                     looks_like_attribute_query,
@@ -606,6 +608,12 @@ class MemoryContext:
                         seen_content.add(key)
                         prefix = "[我此前说过] " if self_mark else ""
                         shown = raw[:ep_cap]
+                        if is_fact_sheet(ep):
+                            shown = raw[:4800]
+                        elif _assistant_turn(raw) and len(raw) > ep_cap:
+                            from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_keep_numbers
+
+                            shown = excerpt_keep_numbers(raw, ep_cap)
                         if looks_like_summary_query(query):
                             from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_around_tokens
 
@@ -664,12 +672,21 @@ class MemoryContext:
                     n = query_only_item_cap(query) or len(skel)
                     dial_n = max(n * 2, min(n * 3, 24)) if n else 16
                     packed = pack_order_dialogue(haystack, query, dial_n)
+                    lead = [ep for ep in haystack if is_fact_sheet(ep)]
+                    if lead:
+                        packed = lead + [ep for ep in packed if not is_fact_sheet(ep)]
                     self.inject_ids = [e["id"] for e in packed if "id" in e]
                 if not self.inject_ids:
                     self.inject_ids = [e["id"] for e in packed if "id" in e]
                 user_eps = [e for e in packed if not _assistant_turn(e["content"] or "")]
                 asst_eps = [e for e in packed if _assistant_turn(e["content"] or "")]
-                if self.reserved_episodes and looks_like_attribute_query(query):
+                if (
+                    self.reserved_episodes
+                    and looks_like_attribute_query(query)
+                    and not looks_like_count_query(query)
+                    and not looks_like_sum_query(query)
+                    and not looks_like_order_query(query)
+                ):
                     from gsuid_core.ai_core.memory.retrieval.lexical import render_value_timeline
 
                     reserve_budget = min(3600, max(0, other_budget // 2))
@@ -706,8 +723,8 @@ class MemoryContext:
                         ep_head += "\n（[]是发言时刻；事件日期以正文为准，两端都要保留。）"
                     elif looks_like_order_query(query):
                         ep_head += (
-                            "\n（按时间顺序列出相关阶段；"
-                            "条目不足或主题线不确定时先 recall_timeline，再按需 recall_session。）"
+                            "\n（每行一件事。只算用户说过自己做过的，助手推荐不算。"
+                            "按发生日从早到晚排，不要用别的名字顶上。）"
                         )
                     elif looks_like_span_query(query):
                         ep_head += (
@@ -718,11 +735,28 @@ class MemoryContext:
                         from gsuid_core.ai_core.memory.retrieval.lexical import COUNT_ANSWER_HINT
 
                         ep_head += "\n（" + COUNT_ANSWER_HINT + "）"
+                    elif looks_like_sum_query(query):
+                        from gsuid_core.ai_core.memory.retrieval.lexical import SUM_ANSWER_HINT
+
+                        ep_head += "\n（" + SUM_ANSWER_HINT + "）"
                     elif looks_like_attribute_query(query):
                         from gsuid_core.ai_core.memory.retrieval.lexical import VALUE_UPDATE_HINT
 
                         ep_head += "\n（" + VALUE_UPDATE_HINT + "）"
-                    parts.append(_speech(ep_head + "\n" + "\n".join(taken)))
+                    value_update = (
+                        looks_like_attribute_query(query)
+                        and not looks_like_count_query(query)
+                        and not looks_like_sum_query(query)
+                        and not looks_like_order_query(query)
+                    )
+                    list_events = (
+                        looks_like_count_query(query) or looks_like_order_query(query) or looks_like_sum_query(query)
+                    )
+                    if value_update or list_events:
+                        taken = sorted(taken) if value_update else taken
+                        parts.append(ep_head + "\n" + "\n".join(taken))
+                    else:
+                        parts.append(_speech(ep_head + "\n" + "\n".join(taken)))
 
         # §8 注入防线对齐：偏好保持裸注入可执行（写入端有闸）；其余召回统一 untrusted
         # 栅栏——复用 content_guard.wrap_untrusted，栅栏格式全通道唯一定义（评审修复 F9）。

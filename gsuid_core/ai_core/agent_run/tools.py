@@ -507,7 +507,7 @@ class ToolsPhase(RunOnceHost):
                         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
                         _ignore = collect_persona_surfaces(self.persona_name)
-                    extra_tools += await search_tools_with_entity_routing(
+                    _found = await search_tools_with_entity_routing(
                         query=search_query,
                         route_text=qy,
                         limit=_recall_limit,
@@ -516,6 +516,34 @@ class ToolsPhase(RunOnceHost):
                         ignore_surfaces=_ignore,
                         exclude_names=core_names,
                     )
+                    extra_tools += _found
+                    if _call_self:
+                        from gsuid_core.ai_core.entity_index import strip_surfaces, plugins_in_text
+
+                        _utter = ""
+                        if st.ev is not None and st.ev.raw_text:
+                            _utter = st.ev.raw_text
+                        elif st.ev is not None and st.ev.text:
+                            _utter = st.ev.text
+                        else:
+                            from gsuid_core.ai_core.agent_run.speech_policy import spoken_user_body
+
+                            _utter = spoken_user_body(qy)
+                        _scan = strip_surfaces(_utter, _ignore) if _ignore else _utter
+                        _routed = plugins_in_text(_scan)
+                        # 向量检索命中不算。要实体路由真正装上该插件的工具。
+                        if len(_utter) >= 12 and _routed:
+                            _wanted = {name for name in _routed if name}
+
+                            def _mounted(tool_name: str) -> bool:
+                                base = find_tool_base(tool_name)
+                                return base is not None and bool(base.plugin) and base.plugin in _wanted
+
+                            _hit = any(_mounted(tool.name) for tool in _found)
+                            if not _hit:
+                                _hit = any(_mounted(name) for name in core_names)
+                            if _hit:
+                                st.entity_routed = True
                     if st.intent in ("工具", "问答"):
                         for _tn in ("web_search_tool", "web_fetch_tool"):
                             if _tn in core_names:

@@ -13,6 +13,7 @@ class Episode(TypedDict):
     embedding: list[float]
     session_id: NotRequired[str]
     turn_index: NotRequired[int]
+    kind: NotRequired[str]
 
 
 class Entity(TypedDict):

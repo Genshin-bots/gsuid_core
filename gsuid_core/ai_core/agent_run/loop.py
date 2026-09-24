@@ -66,6 +66,7 @@ from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
+    non_master_title,
     is_status_tool_name,
     strip_open_solicitations,
     content_is_render_candidate,
@@ -954,6 +955,11 @@ class LoopPhase(RunOnceHost):
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
                     )
+                    _gate_extra = _require_context(st).extra
+                    _at_raw = _gate_extra["at_user_id"] if "at_user_id" in _gate_extra else None
+                    _addr = str(_at_raw) if isinstance(_at_raw, str) and _at_raw else ""
+                    if not _addr and st.ev is not None and st.ev.user_id:
+                        _addr = str(st.ev.user_id)
                     _blk, _why = should_block_user_visible_text(
                         st.speech_policy,
                         _text,
@@ -967,6 +973,8 @@ class LoopPhase(RunOnceHost):
                         render_inflight=bool(st.delegated_render and not st.image_sent_this_run),
                         speech_len_hard=_hard,
                         user_asked_detail=False,
+                        forbid_title=non_master_title(_addr, self.persona_name),
+                        entity_routed=st.entity_routed,
                     )
                     if _blk:
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，

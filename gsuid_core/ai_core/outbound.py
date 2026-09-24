@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional
 from datetime import datetime
@@ -78,6 +79,26 @@ class QuoteResolve:
 
 def _fmt_hm(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M")
+
+
+# 与 send 路径的 @数字 对齐，并收带数字的平台 ID。纯单词 @the 不是接收人。
+_AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
+
+
+def proactive_directed_target(event: Event, message: str) -> str:
+    """群播报只有正文里的 @用户ID 才算定向。
+
+    没有点名时不要把 Event.user_id 写成接收人，否则下一条别人的话会被记成发给这个人。
+    """
+    if event.group_id:
+        matched = _AT_ID_RE.search(message or "")
+        if matched is None:
+            return ""
+        token = matched.group(1)
+        if any(ch.isdigit() for ch in token):
+            return token
+        return ""
+    return str(event.user_id) if event.user_id else ""
 
 
 async def record_outbound(

@@ -98,7 +98,8 @@ _REDIRECT_EXECUTOR_RE = re.compile(
 _TODAY_NOW_RE = re.compile(r"今天|今日|现在|此刻")
 _YMD_RE = re.compile(r"(20\d{2})[-年./](\d{1,2})[-月./](\d{1,2})")
 _REMINISCE_RE = re.compile(r"想起|记得|回忆|想想|那年|那天|那次|那会儿|那时候")
-_STALE_READING_RE = re.compile(r"是|为|气温|温度|°C|℃|晴|阴|雨|雪|度")
+# 「是/为」太宽：日期句「今天是某日」不是过期气温。
+_STALE_READING_RE = re.compile(r"气温|温度|°C|℃|晴|阴|雨|雪|度")
 
 # 交付状态汇报：模型以系统日志口吻向用户播报「任务/发送已完成、无需再说话」。
 # 双信号共现才命中（精度优先）：
@@ -567,6 +568,46 @@ def wall_clock_nudge_for(*, need_render_pipeline: bool) -> str:
     return _WALL_CLOCK_PIPELINE if need_render_pipeline else _WALL_CLOCK_CLOSE
 
 
+def non_master_title(user_id: str, persona_name: str | None) -> str:
+    """接收人不是主人时返回该人格的主人称呼，否则空串。"""
+    uid = (user_id or "").strip()
+    if not uid:
+        return ""
+    from gsuid_core.ai_core.utils import _is_master_user
+
+    if _is_master_user(uid):
+        return ""
+    from gsuid_core.ai_core.persona.settings import get_master_title
+
+    return get_master_title(persona_name).strip()
+
+
+def title_mentioned(title: str, body: str) -> bool:
+    """称呼是否出现在台词里。短于两字或夹在更长英文词中的不算。"""
+    token = (title or "").strip()
+    if len(token) < 2:
+        return False
+    text = body or ""
+    if token.isascii():
+        return re.search(rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])", text, re.IGNORECASE) is not None
+    return token in text
+
+
+_DELIVER_PROGRESS_RE = re.compile(r"别催|还没|催一下|在弄")
+
+
+def looks_like_deliver_progress(text: str) -> bool:
+    """交付回灌里的进度/催促句。短收尾不走这里。"""
+    body = (text or "").strip()
+    if not body:
+        return False
+    if looks_like_wait_comfort(body) or looks_like_process_meta(body):
+        return True
+    if looks_like_delivery_status_narration(body):
+        return True
+    return _DELIVER_PROGRESS_RE.search(body) is not None
+
+
 def should_block_user_visible_text(
     policy: str,
     text: str,
@@ -581,6 +622,8 @@ def should_block_user_visible_text(
     render_inflight: bool = False,
     speech_len_hard: int = 0,
     user_asked_detail: bool = False,
+    forbid_title: str = "",
+    entity_routed: bool = False,
 ) -> tuple[bool, str]:
     """是否拦截本段对用户可见文本。返回 (block, reason)。"""
     body = (text or "").strip()
@@ -607,6 +650,10 @@ def should_block_user_visible_text(
     # 交付终局：本 run 已经由发送工具交付完毕，对用户只许 <SILENCE>。
     if pol == "delivered":
         return True, "delivered_terminal"
+
+    # 接收人不是主人时，称呼出现在配图收尾里也要拦（image_sent 会提前放行短句）。
+    if title_mentioned(forbid_title, body):
+        return True, "master_title"
 
     # 图已发出：放行极短角色收尾；仍拦长结构 / 编排词 / 引导追问
     if image_sent:
@@ -660,10 +707,14 @@ def should_block_user_visible_text(
     if pol in ("free", "status_ok", "framework_deliver") and fact_pack_pending and looks_like_report_speech(body):
         return True, "report_speech"
 
+    if entity_routed and not image_sent and not tool_calls_so_far and pol in ("free", "status_ok"):
+        # 本轮检索已装上查询工具，空口答会被当成事实。同响应后面的工具调用仍会执行。
+        return True, "entity_without_tool"
+
     if pol == "framework_deliver":
-        # 回灌：未发图前禁止完成腔；发图后允许极短角色句（image_sent 已在上面处理）
-        if not image_sent and len(body) > 40 and not looks_like_wait_comfort(body):
-            return True, "deliver_before_send_long"
+        # 进度句和长文不出站。没有图时仍允许一句短收尾。
+        if not image_sent and (looks_like_deliver_progress(body) or len(body) > 40):
+            return True, "deliver_before_send"
         return False, "ok"
 
     if pol == "status_ok":
