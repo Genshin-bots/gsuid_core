@@ -15,10 +15,21 @@ from sqlalchemy.exc import SQLAlchemyError
 from gsuid_core.ai_core.memory.retrieval.types import Episode
 
 _FACT_SHEET_KIND = "fact_sheet"
+_SESSION_READ_KIND = "session_read"
 
 
 def is_fact_sheet(ep: Episode) -> bool:
     return "kind" in ep and ep["kind"] == _FACT_SHEET_KIND
+
+
+def is_session_read(ep: Episode) -> bool:
+    return "kind" in ep and ep["kind"] == _SESSION_READ_KIND
+
+
+def _without_ids(episodes: list[Episode], banned: set[str]) -> list[Episode]:
+    if not banned:
+        return episodes
+    return [ep for ep in episodes if "id" not in ep or ep["id"] not in banned]
 
 
 @runtime_checkable
@@ -576,6 +587,124 @@ async def expand_episode_neighbors(
     return merge_episode_lists(list(episodes), extra, prefer_extras=True, limit=cap)
 
 
+def _copy_as_session_read(ep: Episode) -> Episode:
+    copied: Episode = {
+        "id": ep["id"],
+        "content": ep["content"],
+        "valid_at": ep["valid_at"],
+        "scope_key": ep["scope_key"],
+        "embedding": [],
+        "kind": _SESSION_READ_KIND,
+    }
+    if "session_id" in ep and ep["session_id"]:
+        copied["session_id"] = ep["session_id"]
+    if "turn_index" in ep:
+        copied["turn_index"] = ep["turn_index"]
+    return copied
+
+
+_CJK_QUOTED_RE = re.compile(r"[「“]([一-鿿]{2,8})[」”]")
+_SESSION_RADIUS = 12
+
+
+def session_topic_tokens(query: str) -> list[str]:
+    """点查实词。中文二字保留；英文仍要 4 字母，避免短词铺开。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in query_tokens(query):
+        if " " in tok:
+            continue
+        if tok.isascii():
+            if len(tok) < 4:
+                continue
+        elif len(tok) < 2:
+            continue
+        key = tok.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tok)
+    return out
+
+
+def session_topic_hit_count(query: str, text: str) -> int:
+    toks = session_topic_tokens(query)
+    if not toks:
+        return 0
+    blob = (text or "").lower()
+    return sum(1 for tok in toks if token_in_text(tok, blob))
+
+
+def _has_quoted_cjk_name(text: str, query: str) -> bool:
+    body = query or ""
+    for match in _CJK_QUOTED_RE.finditer(text or ""):
+        if match.group(1) not in body:
+            return True
+    return False
+
+
+def _dist_to_seeds(index: int, seed_idxs: list[int]) -> int:
+    return min(abs(index - seed) for seed in seed_idxs)
+
+
+def anchor_session_seed_ids(turns: list[Episode], origin_id: str, query: str) -> set[str]:
+    """种子只留打开会话的那条，再加离它最近的最强命中。"""
+    seed_ids: set[str] = set()
+    if origin_id:
+        seed_ids.add(origin_id)
+    origin = next((i for i, ep in enumerate(turns) if ep["id"] == origin_id), None)
+    best_id = ""
+    best_hit = 0
+    best_dist = 10**9
+    for i, turn in enumerate(turns):
+        hit = session_topic_hit_count(query, turn["content"])
+        if hit < 1:
+            continue
+        dist = abs(i - origin) if origin is not None else i
+        if hit > best_hit or (hit == best_hit and dist < best_dist):
+            best_hit = hit
+            best_dist = dist
+            best_id = turn["id"]
+    if best_id:
+        seed_ids.add(best_id)
+    return seed_ids
+
+
+def select_session_window(turns: list[Episode], seed_ids: set[str], query: str) -> list[Episode]:
+    """命中轮、紧随助手、距离 2 以内的邻句，以及 8 轮内带专名或数字的句子。"""
+    if not turns or not seed_ids:
+        return []
+    query_words = {t.lower() for t in query_tokens(query)}
+    seed_idxs = [i for i, ep in enumerate(turns) if ep["id"] in seed_ids]
+    if not seed_idxs:
+        return []
+    keep: set[int] = set(seed_idxs)
+    for i in seed_idxs:
+        nxt = i + 1
+        if nxt < len(turns) and _assistant_turn(turns[nxt]["content"]):
+            keep.add(nxt)
+    named: list[tuple[int, int]] = []
+    for j, ep in enumerate(turns):
+        if j in keep:
+            continue
+        dist = _dist_to_seeds(j, seed_idxs)
+        if dist <= 2:
+            keep.add(j)
+            continue
+        raw = ep["content"]
+        if dist > 8:
+            continue
+        extra_name = sentence_has_extra_name(raw, query_words) or states_a_value(raw)
+        if extra_name or _has_quoted_cjk_name(raw, query):
+            named.append((dist, j))
+    named.sort()
+    for _dist, j in named[:6]:
+        keep.add(j)
+    # 离种子近的排前面，合并时不会被时间序前 16 条挤掉后文答案。
+    ordered = sorted(keep, key=lambda j: (_dist_to_seeds(j, seed_idxs), j))
+    return [_copy_as_session_read(turns[j]) for j in ordered]
+
+
 def turn_near_seed(seed_turn: int | None, row_turn: int | None, radius: int = 12) -> bool:
     """同一会话里，离命中轮太远的原句不补。"""
     if seed_turn is None or row_turn is None:
@@ -991,6 +1120,34 @@ def looks_like_personal_upkeep_query(query: str) -> bool:
     return bool(re.search(r"\b(?:tips|keeping|clean|organize)\b", body, re.IGNORECASE))
 
 
+def looks_like_session_read_query(query: str) -> bool:
+    """点查整段读会话。合计、计数、排序、摘要仍走各自的打包。"""
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_span_query,
+        looks_like_order_query,
+        looks_like_summary_query,
+        looks_like_duration_query,
+    )
+
+    body = strip_clock_lines(query or "")
+    if not body:
+        return False
+    if (
+        looks_like_order_query(body)
+        or looks_like_summary_query(body)
+        or looks_like_span_query(body)
+        or looks_like_duration_query(body)
+        or looks_like_count_query(body)
+        or looks_like_sum_query(body)
+    ):
+        return False
+    return (
+        should_keep_assistant_hits(body)
+        or looks_like_recommendation_query(body)
+        or looks_like_personal_upkeep_query(body)
+    )
+
+
 def episode_mentions_speaker(content: str, user_id: str) -> bool:
     """本条里有没有这个说话人。群聊钉本人，私聊不靠这个过滤。"""
     uid = (user_id or "").strip()
@@ -1097,6 +1254,43 @@ def excerpt_around_ordinal(text: str, query: str, width: int) -> str:
     if end < len(prose):
         snippet = snippet + "…"
     return snippet
+
+
+def _slice_around(prose: str, index: int, width: int) -> str:
+    start = max(0, index - width // 3)
+    end = min(len(prose), start + width)
+    start = max(0, end - width)
+    snippet = prose[start:end].strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(prose):
+        snippet = snippet + "…"
+    return snippet
+
+
+def excerpt_session_read(text: str, query: str, width: int = 1800) -> str:
+    """点查会话轮对齐序号或实词。中文二字也算，避免只留开头。"""
+    prose = " ".join((text or "").split())
+    if not prose or width <= 0:
+        return ""
+    ordinal = excerpt_around_ordinal(prose, query, width)
+    if ordinal:
+        return ordinal
+    if len(prose) <= width:
+        return prose
+    low = prose.lower()
+    idx = -1
+    best_len = -1
+    for tok in session_topic_tokens(query):
+        at = low.find(tok.lower())
+        if at >= 0 and len(tok) > best_len:
+            idx = at
+            best_len = len(tok)
+    if idx >= 0:
+        return _slice_around(prose, idx, width)
+    if _HAS_DIGIT_RE.search(prose):
+        return excerpt_keep_numbers(prose, width)
+    return excerpt_around_tokens(prose, query, width)
 
 
 def excerpt_keep_numbers(text: str, width: int) -> str:
@@ -1316,6 +1510,11 @@ def pack_attribute_episodes(
     tail = [e for e in strong + weak + rest if "id" not in e or e["id"] not in seen]
     tail.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""), reverse=True)
     limit = max(cap, 48)
+    session_eps = [ep for ep in episodes if is_session_read(ep)]
+    session_ids = {ep["id"] for ep in session_eps if "id" in ep}
+    named = _without_ids(named, session_ids)
+    pinned = _without_ids(pinned, session_ids)
+    tail = _without_ids(tail, session_ids)
     # 取值题的答案常在助手句。只留问句主题对得上的，避免任意数字插队。
     if should_keep_assistant_hits(query):
         needles = [t.lower() for t in toks]
@@ -1338,11 +1537,11 @@ def pack_attribute_episodes(
             key=lambda ep: (_overlap(ep), str(ep["valid_at"] if "valid_at" in ep else "")),
             reverse=True,
         )
-        assist_named = assist_named[:6]
+        assist_named = _without_ids(assist_named, session_ids)[:6]
         assist_ids = {ep["id"] for ep in assist_named if "id" in ep}
-        tail = [ep for ep in tail if "id" not in ep or ep["id"] not in assist_ids]
-        return (assist_named + named + pinned + tail)[:limit]
-    return (named + pinned + tail)[:limit]
+        tail = _without_ids(tail, assist_ids)
+        return (session_eps + assist_named + named + pinned + tail)[:limit]
+    return (session_eps + named + pinned + tail)[:limit]
 
 
 def _latest_first(episodes: list[Episode]) -> list[Episode]:
@@ -1686,9 +1885,12 @@ def pack_assistant_quote_episodes(episodes: list[Episode], query: str, cap: int 
     assistants.sort(key=lambda e: -_topic_hit_count(query, e["content"] or ""))
     hit = [e for e in assistants if _topic_hit_count(query, e["content"] or "") >= 1]
     head = (hit or assistants)[:cap]
-    seen = {e["id"] for e in head if "id" in e}
+    session_eps = [ep for ep in episodes if is_session_read(ep)]
+    session_ids = {ep["id"] for ep in session_eps if "id" in ep}
+    seen = {e["id"] for e in session_eps + head if "id" in e}
     tail = [e for e in users if "id" not in e or e["id"] not in seen]
-    return (head + tail)[: max(cap, 24)]
+    head = _without_ids(head, session_ids)
+    return (session_eps + head + tail)[: max(cap, 24)]
 
 
 def pack_duration_anchor_episodes(episodes: list[Episode], query: str) -> list[Episode]:
@@ -2990,6 +3192,69 @@ async def build_fact_sweep(
     return sheet
 
 
+async def read_hit_sessions(episodes: list[Episode], query: str, *, session_cap: int = 4) -> list[Episode]:
+    """点查打开命中会话，而不是只留一句摘录。"""
+    if not looks_like_session_read_query(query) or not episodes:
+        return []
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+
+    ranked = sorted(episodes, key=lambda ep: -session_topic_hit_count(query, ep["content"]))
+    picked: list[tuple[Episode, str, int]] = []
+    seen_sid: set[str] = set()
+    try:
+        for ep in ranked:
+            if is_fact_sheet(ep) or session_topic_hit_count(query, ep["content"]) < 1:
+                continue
+            sid = ep["session_id"] if "session_id" in ep else ""
+            turn_index = ep["turn_index"] if "turn_index" in ep else None
+            if not sid or turn_index is None:
+                eid = ep["id"]
+                if not eid:
+                    continue
+                row = await AIMemEpisode.get_one(eid)
+                if row is None:
+                    continue
+                if not sid:
+                    found = row.session_id
+                    if not found:
+                        continue
+                    sid = found
+                if turn_index is None:
+                    turn_index = row.turn_index
+            if turn_index is None or sid in seen_sid:
+                continue
+            seen_sid.add(sid)
+            picked.append((ep, sid, turn_index))
+            if len(picked) >= session_cap:
+                break
+        opened: list[Episode] = []
+        for ep, sid, turn_index in picked:
+            rows = await AIMemEpisode.get_session_around(
+                sid,
+                turn_index,
+                radius=_SESSION_RADIUS,
+                seed_id=ep["id"],
+            )
+            turns = [_episode_from_orm(row) for row in rows]
+            seed_ids = anchor_session_seed_ids(turns, ep["id"], query)
+            opened.extend(select_session_window(turns, seed_ids, query))
+    except (OSError, SQLAlchemyError, TypeError) as e:
+        if not _recall_db_failed(e, "session_read"):
+            raise
+        return []
+    return opened
+
+
+async def _prepend_session_reads(episodes: list[Episode], query: str, limit: int) -> list[Episode]:
+    opened = await read_hit_sessions(episodes, query)
+    if not opened:
+        return episodes[: max(limit, 1)]
+    # 窗口已按离种子的距离排过，整窗优先，避免时间序前 16 条挤掉后文答案。
+    return merge_episode_lists(opened, episodes, prefer_extras=False, limit=max(limit, 96))
+
+
 async def expand_lexical_recall(
     episodes: list[Episode],
     *,
@@ -3178,15 +3443,15 @@ async def expand_lexical_recall(
             cap=max(limit, 96),
             include_assistant=True,
         )
-        return merged[: max(limit, 96)]
+        return await _prepend_session_reads(merged, body, max(limit, 96))
     if looks_like_attribute_query(body):
         pins = await attribute_pin_episodes(body, user_id=user_id, group_id=group_id)
         if reserved is not None:
             reserved.extend(pins)
         if pins:
             merged = merge_episode_lists(pins, merged, prefer_extras=False, limit=max(limit, 96))
-        return merged[: max(limit, 96)]
-    return merged[:limit]
+        return await _prepend_session_reads(merged, body, max(limit, 96))
+    return await _prepend_session_reads(merged, body, limit)
 
 
 async def assistant_quote_episodes(

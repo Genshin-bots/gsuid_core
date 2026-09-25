@@ -431,7 +431,13 @@ TextPart（接任务应，仍过 `pre_send_gate` / `should_block`；**过不了�
 轻工具同包若已是合格接任务应可出站。零工具/未点名不补。
 其后切工具静默，无 ToolCall 终局开口。hosted 搜索不当函数工具。
 交互主人格 `create_subagent(..., transient=true)` 会被忽略（lookup 白名单除外），改走看板后台。
-HTTP SSE 第一帧可见必须是 `event: text`（`: ping` 不是接任务应）。unsent 从 `new_messages` 尾部剥掉。
+**委派并列（2026-09-25）**：同一次模型回复里的多个 `create_subagent` 由运行时一起开工。
+框架不会把一条任务自动拆成多次调用；模型没在这一次里并列发出的，deferred 回执之后
+同 run 再补会被挡住，等回灌再决定自己答还是 `render_agent`。
+**接任务应**：委派前若模型没写短句，且人格配置了 `task_ack`，发那一句再执行工具。
+空则不代说，把本批工具打回，由模型用当前人格写一句再调。
+HTTP SSE 的 `: ping` 不是接任务应。只有图、模型没写字时直接出 attachment，不补固定台词。
+unsent 从 `new_messages` 尾部剥掉。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

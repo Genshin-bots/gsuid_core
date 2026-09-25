@@ -74,15 +74,15 @@ class AISessionRegistry:
 
 | 机制 | 所属 | 配置 | 效果 |
 |------|------|------|------|
-| 滑动窗口 | `HistoryManager` | `deque(maxlen=40)` | 每 Session 最多 40 条消息 |
-| Token 上限 | `HistoryManager` | `MAX_HISTORY_TOKENS=160000` | 单 Session Token 超限淘汰最旧 |
+| 滚动记录 | `HistoryManager` | `RETAIN_SECONDS=12h` | 每 Session 保留最近 12 小时，跨过零点的仍留着 |
+| Token 计数 | `HistoryManager` | 只统计，不按 token 删 | 12 小时窗口里的长文仍占内存 |
 | AI 历史限制 | `AISessionRegistry` | `MAX_AI_HISTORY_LENGTH=30` | AI 对话历史 ≤ 30 条 |
 | Agent 内部截断 | `GsCoreAIAgent` | `agent_max_history` 默认 **30**（可配） | 超水位 **保头裁中段**（`compact_session_history`） |
 | 空闲清理 | `AISessionRegistry` | `IDLE_THRESHOLD=1800`(30min) | 30 分钟不活跃 Session 自动清除 |
 | 定时清理 | `AISessionRegistry` | `CLEANUP_INTERVAL=3600`(1h) | 每小时检查一次 |
 
-> ⚠️ **隐形 Token 爆炸**：`deque(maxlen=40)` 只按**条数**截断。群里 5 个人各发 10 篇 5000 字
-> 长文 = 50 条但 25 万字，瞬间突破 Token 上限。所以 `GsCoreAIAgent.extract_history` 走
+> ⚠️ **隐形 Token 爆炸**：`HistoryManager` 按 12 小时留消息，长文仍占内存。
+> 所以 `GsCoreAIAgent.extract_history` 走
 > **`compact_session_history`（保头裁中段 + 工具配对）**——**永不砍 `history[0]`**，只丢中间段、
 > 留近期尾，保证 provider **前缀缓存**头部字节跨 compact 不变。配对保护见
 > `_truncate_history_keep_prefix` / `_drop_orphan_tool_results`。
@@ -204,6 +204,7 @@ RESOURCE_PATH/persona/{persona_name}/
    `_maybe_refresh_stable_prompt` 直接 return。需要「系统提醒」时只在 **user 侧
    `UserPromptPart` 追加**，落盘前由 `_relean_user_turn` / `_is_framework_prompt_content` 剥掉。
 2. **`message_history` 保头**：`compact_session_history` 裁中段，禁止砍头、禁止锚点插头。
+   发言文本仍在 `HistoryManager`（最近 12 小时）。`read_chat_history` 用 query 或 at 取片段，不一次倒出；别人的私聊只有主人能读。
 3. **动态内容进 user**：mood / 关系 / 记忆 / 当前说话人偏好 / 精确时间 / 身份锚只进每轮 user 装配。`preferences_learned` 与 `AIMemPreference` 不进 system：群会话前缀整群共享，按人换系统提示会打掉缓存。偏好拼在本轮 user 尾，按说话人取，不靠问句词面命中。
 4. **persona 文件 mtime 变化** 仍会整会话重建（显式热重载，非每轮改 system）。
 

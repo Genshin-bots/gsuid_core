@@ -248,6 +248,7 @@ from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool
 
 # 用户头像工具 - 按用户ID取头像并注册到RM，返回图片ID
 from gsuid_core.ai_core.buildin_tools.avatar_tools import get_user_avatar
+from gsuid_core.ai_core.buildin_tools.chat_history import read_chat_history
 
 # 文件管理工具 - 读写执行文件和diff对比
 from gsuid_core.ai_core.buildin_tools.file_manager import (
@@ -360,6 +361,7 @@ __all__ = [
     "read_session",
     "timeline",
     "mark_evidence",
+    "read_chat_history",
     "attach_article",
     # 图片读取工具（按ID取图转述，保底）
     "read_image",

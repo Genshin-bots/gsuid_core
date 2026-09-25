@@ -1,16 +1,14 @@
 """
 通用消息历史管理器
 
-管理每个 session（群聊/私聊）的最近若干条 Bot 消息输入/输出记录，
-使用滑动窗口机制。本模块不涉及任何 AI 功能，仅负责消息历史的存取。
+管理每个 session（群聊/私聊）最近 12 小时的 Bot 消息输入/输出记录。
+超过 12 小时从队头丢掉。本模块不涉及任何 AI 功能。
 
 群聊场景：整个群共享历史记录（不区分用户）
 私聊场景：单独维护用户历史记录
 
-Token 上限控制：
-- 每个 session 维护一个滑动窗口 Token 总量上限（MAX_HISTORY_TOKENS）
-- 新消息加入时估算 Token 数，超限时从最旧消息开始逐条删除
-- Token 估算使用快速字符比例法（1 中文字符 ≈ 2 tokens，1 英文单词 ≈ 1.3 tokens）
+保留边界是 12 小时，不按日历日截断，也不按 token 提前丢掉。
+Token 估算仍用于统计（1 中文字符 ≈ 2 tokens，1 英文单词 ≈ 1.3 tokens）。
 """
 
 from __future__ import annotations
@@ -96,28 +94,19 @@ class HistoryManager:
     """
     通用消息历史管理器
 
-    使用滑动窗口机制，为每个 session 单独维护最近若干条消息。
+    为每个 session 滚动保留最近 12 小时的消息。
     - 群聊：整个群共享历史记录（不区分用户）
     - 私聊：单独维护用户历史记录
 
-    Token 上限控制：
-    - 每个 session 维护一个滑动窗口 Token 总量上限（MAX_HISTORY_TOKENS）
-    - 新消息加入时估算 Token 数，超限时从最旧消息开始逐条删除
+    不按日历日清空，也不按 token 提前丢掉。
 
     线程安全，支持并发访问。
     """
 
-    DEFAULT_MAX_MESSAGES = 40
-    MAX_HISTORY_TOKENS = 160000  # 每个 session 的 Token 总量上限
+    RETAIN_SECONDS = 12 * 60 * 60
 
-    def __init__(self, max_messages: int = DEFAULT_MAX_MESSAGES):
-        """
-        初始化历史管理器
-
-        Args:
-            max_messages: 每个session保留的最大消息数
-        """
-        self._max_messages = max_messages
+    def __init__(self) -> None:
+        """为每个 session 滚动保留最近 12 小时。不按条数、不按 token 截断。"""
         # 存储结构: {Event: deque[MessageRecord]}，Event 的哈希基于 session 标识字段
         self._histories: Dict["Event", deque] = {}
         # session 元数据: {Event: {created_at, last_access, history_length,
@@ -157,8 +146,7 @@ class HistoryManager:
         """
         添加一条消息到历史记录
 
-        添加时自动估算 Token 数并维护滑动窗口 Token 上限。
-        当 Token 总量超限时，从最旧的消息开始逐条删除直到回到限制内。
+        写入后丢掉超过 12 小时的旧消息。Token 计数只做统计，不提前删。
 
         Args:
             event: Event 事件对象（包含 bot_id/bot_self_id/group_id/user_id/user_type，WS_BOT_ID 用于发送）
@@ -200,17 +188,16 @@ class HistoryManager:
 
         with self._lock:
             if storage_event not in self._histories:
-                self._histories[storage_event] = deque(maxlen=self._max_messages)
+                self._histories[storage_event] = deque()
                 self._session_tokens[storage_event] = 0
 
             history = self._histories[storage_event]
             history.append(record)
 
             # 更新 Token 计数
-            self._session_tokens[storage_event] = self._session_tokens.get(storage_event, 0) + new_tokens
-
-            # Token 上限控制：超限时从最旧消息开始逐条删除
-            self._enforce_token_limit(storage_event)
+            previous = self._session_tokens[storage_event] if storage_event in self._session_tokens else 0
+            self._session_tokens[storage_event] = previous + new_tokens
+            self._retain_rolling(storage_event)
 
             # 更新 session 元数据
             now = time.time()
@@ -232,26 +219,19 @@ class HistoryManager:
 
         return record
 
-    def _enforce_token_limit(self, storage_event: "Event") -> None:
-        """强制执行 Token 上限，从最旧消息开始逐条删除直到回到限制内
-
-        Args:
-            storage_event: session 的存储 key
-        """
-        history = self._histories.get(storage_event)
-        if history is None:
+    def _retain_rolling(self, storage_event: "Event") -> None:
+        """只留最近 12 小时。队头早于窗口的丢掉，跨过零点的仍留着。"""
+        if storage_event not in self._histories:
             return
-
-        current_tokens = self._session_tokens.get(storage_event, 0)
-
-        while current_tokens > self.MAX_HISTORY_TOKENS and len(history) > 1:
-            # 从最旧的消息开始删除
-            oldest = history[0]
-            removed_tokens = _estimate_tokens(oldest.content)
-            history.popleft()
-            current_tokens -= removed_tokens
-
-        self._session_tokens[storage_event] = current_tokens
+        history = self._histories[storage_event]
+        if not history:
+            return
+        cutoff = history[-1].timestamp - self.RETAIN_SECONDS
+        current = self._session_tokens[storage_event] if storage_event in self._session_tokens else 0
+        while history and history[0].timestamp < cutoff:
+            oldest = history.popleft()
+            current -= _estimate_tokens(oldest.content)
+        self._session_tokens[storage_event] = current if current > 0 else 0
 
     def get_history(
         self,
@@ -408,14 +388,13 @@ class HistoryManager:
             if not source_history:
                 return False
 
-            target_history = self._histories.setdefault(target_key, deque(maxlen=self._max_messages))
+            target_history = self._histories.setdefault(target_key, deque())
             merged_records = list(target_history) + list(source_history)
             target_history.clear()
-            target_history.extend(merged_records[-self._max_messages :])
-
-            source_tokens = self._session_tokens.pop(source_key, 0)
-            self._session_tokens[target_key] = self._session_tokens.get(target_key, 0) + source_tokens
-            self._enforce_token_limit(target_key)
+            target_history.extend(merged_records)
+            self._session_tokens.pop(source_key, None)
+            self._session_tokens[target_key] = sum(_estimate_tokens(rec.content) for rec in target_history)
+            self._retain_rolling(target_key)
 
             now = time.time()
             source_metadata = self._session_metadata.pop(source_key, {})
@@ -541,11 +520,13 @@ class HistoryManager:
                     user_type=user_type,
                     WS_BOT_ID=ws_bot_id,
                 )
-                history = deque(maxlen=self._max_messages)
+                history = deque()
                 for msg_data in messages:
                     record = MessageRecord.from_dict(msg_data)
                     history.append(record)
                 self._histories[event_key] = history
+                self._session_tokens[event_key] = sum(_estimate_tokens(rec.content) for rec in history)
+                self._retain_rolling(event_key)
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -564,7 +545,6 @@ class HistoryManager:
             "total_sessions": total_sessions,
             "total_messages": total_messages,
             "group_sessions": group_sessions,
-            "max_messages_per_session": self._max_messages,
         }
 
 
@@ -573,21 +553,11 @@ _history_manager_instance: Optional[HistoryManager] = None
 _history_manager_lock = Lock()
 
 
-def get_history_manager(
-    max_messages: int = HistoryManager.DEFAULT_MAX_MESSAGES,
-) -> HistoryManager:
-    """
-    获取全局历史管理器实例（单例模式）
-
-    Args:
-        max_messages: 每个session的最大消息数，仅在首次创建时生效
-
-    Returns:
-        HistoryManager实例
-    """
+def get_history_manager() -> HistoryManager:
+    """获取全局历史管理器实例（单例模式）。"""
     global _history_manager_instance
 
     with _history_manager_lock:
         if _history_manager_instance is None:
-            _history_manager_instance = HistoryManager(max_messages=max_messages)
+            _history_manager_instance = HistoryManager()
         return _history_manager_instance

@@ -240,6 +240,9 @@ async def create_subagent(
     - 出图：粘贴完整事实包（或 res_ 句柄）+ 可选版式偏好；写明**禁止再检索**。
     - 禁止把「漂亮出图」派给 research；禁止主人格自己写 HTML 调 render_*。
     - 接任务应走主通道 TextPart（或框架兜底）；本工具回执不对用户播报过程。
+    - 多个互不依赖的对象：同一次回复并列多次调用，各写各的 task；不要等上一个回执再派下一个。
+    - 下一步要看本次结果才能选（自己答 / render_agent）：只派当前这步，等回灌。
+      不要提前派 render，也不要在等待时逐个补派。
 
     Args:
         ctx: 工具执行上下文
@@ -251,6 +254,15 @@ async def create_subagent(
     - ≥2 能力接力或周期任务 → ``register_kanban_task``。
     - 要事后追溯产物 → 默认 transient=False。
     """
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        PENDING_DELEGATION_HOLD,
+        delegation_is_inflight,
+    )
+
+    # 回执之后再补派只会串行。并列窗口在第一次 deferred ack 之前。
+    if ctx.deps is not None and delegation_is_inflight(ctx.deps.extra):
+        return PENDING_DELEGATION_HOLD
+
     # 子代理墙钟不计入主人格 soft budget（research 常 >45s，否则触发禁工具→无法 render）
     from gsuid_core.ai_core.wall_clock import pause_wall_clock
 
@@ -883,15 +895,11 @@ async def _dispatch_via_kanban(
                     "请只输出 <SILENCE>，勿向用户说话、勿重复 create_subagent。"
                 )
         else:
-            return (
-                f"⏳ 子任务后台执行中（将自动回灌）。"
-                f"task#{root.ordinal} / {pid} / 句柄 {handle}\n"
-                "本 tool_return 不是终局结论。对用户默认 <SILENCE>"
-                "（禁止过程动词、任务编号、句柄、编排词、叙述第二个执行者）。"
-                "禁止再 create_subagent 同任务。\n"
-                "完成后自动回灌。用户之后追问进度时，用 find_tools 召回 check_delegation"
-                "（句柄只进工具参数，绝不写进给用户看的台词）。"
+            from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+                format_deferred_subagent_ack,
             )
+
+            return format_deferred_subagent_ack(ordinal=root.ordinal, pid=pid, handle=handle)
 
     # 抓 artifact（最新一份用作产物展示）
     arts = await AIAgentArtifact.list_for_task(final.id)

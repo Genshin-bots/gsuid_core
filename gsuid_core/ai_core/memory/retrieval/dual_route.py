@@ -544,6 +544,8 @@ class MemoryContext:
             if ep_budget > 120:
                 from gsuid_core.ai_core.memory.retrieval.lexical import (
                     is_fact_sheet,
+                    is_session_read,
+                    excerpt_session_read,
                     looks_like_sum_query,
                     looks_like_count_query,
                     apply_query_episode_pack,
@@ -608,7 +610,9 @@ class MemoryContext:
                         seen_content.add(key)
                         prefix = "[我此前说过] " if self_mark else ""
                         shown = raw[:ep_cap]
-                        if is_fact_sheet(ep):
+                        if is_session_read(ep):
+                            shown = excerpt_session_read(raw, query) or raw[:2400]
+                        elif is_fact_sheet(ep):
                             shown = raw[:4800]
                         elif _assistant_turn(raw) and len(raw) > ep_cap:
                             from gsuid_core.ai_core.memory.retrieval.lexical import (

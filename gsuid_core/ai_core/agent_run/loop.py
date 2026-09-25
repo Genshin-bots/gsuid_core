@@ -76,6 +76,8 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
 )
 from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_name
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+    DELEGATION_INFLIGHT_KEY as _DELEGATION_INFLIGHT_KEY,
+    PENDING_DELEGATION_HOLD as _PENDING_DELEGATION_HOLD,
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
     RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
@@ -175,6 +177,19 @@ def task_ack_phrase(persona_name: str | None) -> str:
     from gsuid_core.ai_core.persona.settings import get_persona_setting
 
     return get_persona_setting(persona_name, "task_ack").strip()
+
+
+def needs_create_subagent_ack(
+    *,
+    create_by: str,
+    is_subagent: bool,
+    is_framework: bool,
+    is_status_inquiry: bool,
+) -> bool:
+    """交互主人格委派前都要先有一句可见接任务应。"""
+    if is_subagent or is_framework or is_status_inquiry:
+        return False
+    return create_by in ("Chat", "Agent", "TEST")
 
 
 class LoopPhase(RunOnceHost):
@@ -366,6 +381,9 @@ class LoopPhase(RunOnceHost):
         st.delegated_render = delegated
         st.speech_policy = policy
         st.render_ack_seen = ack
+        # 回执之后再补派只会串行。并列窗口在第一次 deferred ack 之前。
+        if async_ack:
+            _require_context(st).extra[_DELEGATION_INFLIGHT_KEY] = True
         if (
             not _tool_return_looks_failed(part)
             and not async_ack
@@ -678,6 +696,13 @@ class LoopPhase(RunOnceHost):
                 st.speech_policy = "delivered"
             if st.pending_async_delivery:
                 _any_actionable = False
+                if not any(
+                    isinstance(p, UserPromptPart) and p.content == _PENDING_DELEGATION_HOLD for p in node.request.parts
+                ):
+                    node.request.parts = [
+                        *node.request.parts,
+                        UserPromptPart(content=_PENDING_DELEGATION_HOLD),
+                    ]
             if _any_actionable:
                 if st.delivered_terminal:
                     # 交付已完成：不再注入 POST_TOOL 契约（那会提醒模型「再说一句」），
@@ -1133,16 +1158,26 @@ class LoopPhase(RunOnceHost):
             _is_group = bool(_tg.is_group) if _tg is not None else bool(st.ev is not None and st.ev.group_id)
             _call = bool(_tg.call_to_self) if _tg is not None else False
             _is_http = bool(st.ev is not None and st.ev.WS_BOT_ID == "HTTP_AGENT")
-            if needs_task_ack_turn(
-                create_by=self.create_by,
-                is_subagent=self.is_subagent,
-                is_framework=st.fw_msg,
-                is_status_inquiry=st.status_inquiry,
-                is_group=_is_group,
-                call_to_self=_call,
-                followup_detected=st.followup_detected,
-                is_http=_is_http,
-            ):
+            _delegating = "create_subagent" in _fn_tool_names
+            if _delegating:
+                _need_ack = needs_create_subagent_ack(
+                    create_by=self.create_by,
+                    is_subagent=self.is_subagent,
+                    is_framework=st.fw_msg,
+                    is_status_inquiry=st.status_inquiry,
+                )
+            else:
+                _need_ack = needs_task_ack_turn(
+                    create_by=self.create_by,
+                    is_subagent=self.is_subagent,
+                    is_framework=st.fw_msg,
+                    is_status_inquiry=st.status_inquiry,
+                    is_group=_is_group,
+                    call_to_self=_call,
+                    followup_detected=st.followup_detected,
+                    is_http=_is_http,
+                )
+            if _need_ack:
                 await self._emit_task_ack_fallback(st)
                 _held = st.run_extra["task_ack_hold"] is True if "task_ack_hold" in st.run_extra else False
                 _fn_parts = [

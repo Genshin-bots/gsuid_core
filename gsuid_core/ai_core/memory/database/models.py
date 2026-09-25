@@ -24,6 +24,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
     or_,
+    and_,
     desc,
     func,
     union as sql_union,
@@ -621,6 +622,33 @@ class AIMemEpisode(SQLModel, table=True):
             select(cls)
             .where(col(cls.session_id) == session_id)
             .order_by(col(cls.turn_index).asc(), col(cls.valid_at).asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def get_session_around(
+        cls,
+        session: AsyncSession,
+        session_id: str,
+        turn_index: int,
+        radius: int = 12,
+        seed_id: str = "",
+    ) -> list["AIMemEpisode"]:
+        """命中轮前后各 radius 条，避免把整段会话载入。"""
+        if not session_id or radius < 0:
+            return []
+        window: ColumnElement[bool] = and_(
+            col(cls.turn_index) >= turn_index - radius,
+            col(cls.turn_index) <= turn_index + radius,
+        )
+        span = or_(window, col(cls.id) == seed_id) if seed_id else window
+        stmt = (
+            select(cls)
+            .where(col(cls.session_id) == session_id, span)
+            .order_by(col(cls.turn_index).asc(), col(cls.valid_at).asc())
+            .limit(radius * 2 + 8)
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())

@@ -313,8 +313,7 @@ Authorization: Bearer <token>
         "history_manager": {
             "total_sessions": 10,
             "total_messages": 150,
-            "group_sessions": 5,
-            "max_messages_per_session": 30
+            "group_sessions": 5
         },
         "ai_router_sessions": {
             "count": 8,
@@ -338,7 +337,6 @@ Authorization: Bearer <token>
 | data.history_manager.total_sessions | integer | 总 session 数量 |
 | data.history_manager.total_messages | integer | 总消息数量 |
 | data.history_manager.group_sessions | integer | 群聊 session 数量 |
-| data.history_manager.max_messages_per_session | integer | 每个 session 最大消息数 |
 | data.ai_router_sessions | object | AI 会话注册表中的 session 信息（AI 关闭时为空统计 `{"count": 0, "sessions": []}`） |
 | data.ai_router_sessions.count | integer | AI 会话注册表中的 session 数量 |
 | data.ai_router_sessions.sessions | object | 各 session 的详细信息 |

@@ -58,8 +58,8 @@ def test_empty_task_ack_does_not_use_tone_markers(tmp_path, monkeypatch) -> None
     )
     phrase = task_ack_phrase(name)
     assert phrase == ""
-    assert "收到" not in phrase
     assert "唔" not in phrase
+    assert "收到" not in phrase
     cfg = settings_mod.persona_settings_manager.get_config(name)
     assert cfg.set_config("task_ack", "行，去翻。")
     settings_mod.persona_settings_manager._cache.clear()

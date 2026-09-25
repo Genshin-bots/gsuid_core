@@ -8,6 +8,39 @@ from __future__ import annotations
 import re
 import json
 from typing import Any
+from collections.abc import Mapping
+
+# 同一次 run 里 deferred 回执已发出。之后再 create_subagent 只会串行补派。
+DELEGATION_INFLIGHT_KEY = "delegation_inflight"
+
+# 并列必须发生在看到回执之前；回执之后只许等，不许逐个补。
+DELEGATION_FANOUT_RULE = (
+    "互不依赖的调查必须在同一次回复里并列 create_subagent，不要等回执再逐个补派。"
+    "下一步要看结果才能决定自己答还是 render_agent 时，等自动回灌，现在不要再派。"
+)
+
+PENDING_DELEGATION_HOLD = (
+    "（系统：已有子任务在后台，这不是终局结果。对用户只输出 <SILENCE>。" + DELEGATION_FANOUT_RULE + "）"
+)
+
+
+def delegation_is_inflight(extra: Mapping[str, object]) -> bool:
+    """本 run 已有 deferred 委派。并列派发窗口已关。"""
+    flagged = extra[DELEGATION_INFLIGHT_KEY] if DELEGATION_INFLIGHT_KEY in extra else False
+    return flagged is True
+
+
+def format_deferred_subagent_ack(*, ordinal: int, pid: str, handle: str) -> str:
+    """生产路径立刻回灌时的回执。告诉模型不要把 ack 当成下一轮派发信号。"""
+    return (
+        f"⏳ 子任务后台执行中（将自动回灌）。task#{ordinal} / {pid} / 句柄 {handle}\n"
+        "本 tool_return 不是终局结论。对用户默认 <SILENCE>"
+        "（禁止过程动词、任务编号、句柄、编排词、叙述第二个执行者）。"
+        f"{DELEGATION_FANOUT_RULE}\n"
+        "完成后自动回灌。用户之后追问进度时，用 find_tools 召回 check_delegation"
+        "（句柄只进工具参数，绝不写进给用户看的台词）。"
+    )
+
 
 # 主人格：有工具返回后的软提示。出图/再搜/短答由模型自己选，不锁死下一步。
 POST_TOOL_OUTPUT_CONTRACT = (

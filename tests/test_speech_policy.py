@@ -483,8 +483,25 @@ def test_task_ack_is_required_not_optional() -> None:
         is_http=False,
     )
     assert task_ack_phrase(None) == ""
+    from gsuid_core.ai_core.agent_run.loop import needs_create_subagent_ack
+
+    assert "早柚" not in task_ack_phrase(None)
+    assert "唔" not in task_ack_phrase(None)
+    assert needs_create_subagent_ack(
+        create_by="Chat",
+        is_subagent=False,
+        is_framework=False,
+        is_status_inquiry=False,
+    )
+    assert not needs_create_subagent_ack(
+        create_by="Chat",
+        is_subagent=False,
+        is_framework=True,
+        is_status_inquiry=False,
+    )
     loop_src = (root / "gsuid_core/ai_core/agent_run/loop.py").read_text(encoding="utf-8")
     assert "知道了，稍等" not in loop_src
+    assert "收到。" not in loop_src
     assert "ModelRetry" in loop_src
     assert looks_like_task_accept_speech("收到。")
     silent = ToolCallPart(tool_name="create_subagent", args="{}")

@@ -2903,3 +2903,74 @@ def test_ordinal_excerpt_and_assistant_hits_kept() -> None:
         time_range=None,
     )
     assert packed[0]["id"] == "asst"
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        select_session_window,
+        looks_like_session_read_query,
+    )
+
+    assert looks_like_session_read_query("What was my last name before I changed it?")
+    assert not looks_like_session_read_query("How many times did I bake something?")
+    window = select_session_window(
+        [
+            _ep("u1", "eval_x: I just changed my last name.", "2023-05-28 10:00:00"),
+            _ep("a1", "assistant: Update the name from Johnson to Winters.", "2023-05-28 10:00:02"),
+            _ep("u2", "eval_x: I also picked up a Nimbus card for the trains.", "2023-05-28 10:00:04"),
+            _ep("far", "eval_x: the weather looks fine today.", "2023-05-28 12:00:00"),
+        ],
+        {"u1"},
+        "What was my last name before I changed it?",
+    )
+    kept = [ep["id"] for ep in window]
+    assert kept[:2] == ["u1", "a1"]
+    assert "u2" in kept
+    assert "far" not in kept
+    assert "kind" in window[0] and window[0]["kind"] == "session_read"
+
+
+def test_session_read_keeps_late_answer_and_cjk() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        excerpt_session_read,
+        select_session_window,
+        anchor_session_seed_ids,
+        session_topic_hit_count,
+        looks_like_session_read_query,
+    )
+
+    ask = "你之前推荐过哪家店"
+    assert looks_like_session_read_query(ask)
+    assert session_topic_hit_count(ask, "助手：之前推荐过南风小馆。") >= 1
+    long = ("铺垫。" * 800) + "之前推荐过南风小馆。"
+    assert "南风" in excerpt_session_read(long, ask)
+
+    name_q = "What was my last name before I changed it?"
+    turns = [
+        _ep(f"f{i}", f"eval_x: the name list item {i} stays on the page.", f"2023-05-01 10:{i:02d}:00")
+        for i in range(24)
+    ]
+    turns.append(_ep("u1", "eval_x: I just changed my last name.", "2023-05-28 10:00:00"))
+    turns.append(_ep("a1", "assistant: Update the name from Kalder to Voss.", "2023-05-28 10:00:02"))
+    seeds = anchor_session_seed_ids(turns, "u1", name_q)
+    assert seeds == {"u1"}
+    window = select_session_window(turns, seeds, name_q)
+    ids = [ep["id"] for ep in window]
+    assert ids[0] == "u1"
+    assert "a1" in ids[:4]
+    assert "f0" not in ids
+
+    cjk_q = "你之前说过哪一家"
+    cjk_turns = [
+        _ep("u1", "用户：我想起你当时的推荐。", "2023-06-01 10:00:00"),
+        _ep("a1", "助手：我当时推荐的是「青禾」。", "2023-06-01 10:00:02"),
+        _ep("u2", "用户：后来护照也换了。", "2023-06-01 10:00:04"),
+        *[_ep(f"p{i}", "用户：中间在聊别的日常。", f"2023-06-01 10:0{i}:00") for i in range(3, 8)],
+        _ep("mark", "用户：另外还提过「南风」。", "2023-06-01 10:08:00"),
+        _ep("far", "用户：今天风很大。", "2023-06-01 12:00:00"),
+    ]
+    cjk_ids = [ep["id"] for ep in select_session_window(cjk_turns, {"u1"}, cjk_q)]
+    assert cjk_ids[0] == "u1"
+    assert "a1" in cjk_ids
+    assert "u2" in cjk_ids
+    assert "mark" in cjk_ids
+    assert "far" not in cjk_ids
+    tail = ("note " * 500) + "the previous surname was Kalder."
+    assert "Kalder" in excerpt_session_read(tail, name_q)

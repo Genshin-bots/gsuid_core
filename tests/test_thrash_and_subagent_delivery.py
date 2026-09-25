@@ -86,6 +86,27 @@ def test_delegation_rejects_other_speakers_history_topic() -> None:
     assert delegation_grounded("compare sample alpha", "please compare sample alpha today")
 
 
+def test_deferred_ack_closes_serial_followup() -> None:
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        DELEGATION_FANOUT_RULE,
+        DELEGATION_INFLIGHT_KEY,
+        PENDING_DELEGATION_HOLD,
+        delegation_is_inflight,
+        format_deferred_subagent_ack,
+    )
+
+    assert not delegation_is_inflight({})
+    assert not delegation_is_inflight({DELEGATION_INFLIGHT_KEY: False})
+    assert delegation_is_inflight({DELEGATION_INFLIGHT_KEY: True})
+    ack = format_deferred_subagent_ack(ordinal=64, pid="research_agent", handle="dlg_x")
+    assert "task#64" in ack
+    assert DELEGATION_FANOUT_RULE in ack
+    assert "逐个补派" in ack
+    assert "render_agent" in ack
+    assert "<SILENCE>" in PENDING_DELEGATION_HOLD
+    assert DELEGATION_FANOUT_RULE in PENDING_DELEGATION_HOLD
+
+
 def test_research_agent_not_default_transient() -> None:
     from gsuid_core.ai_core.buildin_tools.subagent import _TRANSIENT_DEFAULT_PROFILES
 

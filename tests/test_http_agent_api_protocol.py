@@ -66,7 +66,7 @@ def test_stream_emits_start_text_one_terminal(monkeypatch, tmp_path: Path) -> No
     assert "gated-line" in texts
 
 
-def test_stream_first_visible_is_text_not_attachment(monkeypatch, tmp_path: Path) -> None:
+def test_stream_image_only_does_not_invent_ack(monkeypatch, tmp_path: Path) -> None:
     store = reset_key_store_for_tests(tmp_path / "keys.json")
     token, _rec = store.create(user_id="u1", bot_id="bot")
     patch_settings(monkeypatch, sample_settings(enable=True))
@@ -90,10 +90,9 @@ def test_stream_first_visible_is_text_not_attachment(monkeypatch, tmp_path: Path
     frames = parse_sse_chunk(r.text)
     visible = [f.event for f in frames if f.event in ("text", "attachment")]
     assert visible, frames
-    assert visible[0] == "text"
-    assert any(f.event == "attachment" for f in frames)
+    assert visible[0] == "attachment"
     texts = [f.data["text"] for f in frames if f.event == "text"]
-    assert "收到。" in texts
+    assert "收到。" not in texts
 
 
 def test_remote_image_rejected(monkeypatch, tmp_path: Path) -> None:
