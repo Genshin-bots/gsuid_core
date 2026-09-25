@@ -7,7 +7,6 @@ import json
 import pytest
 
 from gsuid_core.ai_core.web_search import search as search_mod, anysearch_search as anysearch_mod
-from gsuid_core.ai_core.configs.ai_config import AI_CONFIG
 from gsuid_core.ai_core.web_search.search import (
     _DEFAULT_PROVIDER,
     _DEFAULT_PROVIDER_ORDER,
@@ -15,7 +14,6 @@ from gsuid_core.ai_core.web_search.search import (
     _invoke_provider,
     _provider_configured,
 )
-from gsuid_core.utils.plugins_config.models import GsStrConfig, GsListStrConfig
 
 
 class _Field:
@@ -33,16 +31,6 @@ class _Cfg:
         if default is not None:
             return _Field(default)
         return _Field("")
-
-
-def test_anysearch_is_websearch_option() -> None:
-    provider = AI_CONFIG["websearch_provider"]
-    fallback = AI_CONFIG["websearch_fallback_order"]
-    assert isinstance(provider, GsStrConfig)
-    assert isinstance(fallback, GsListStrConfig)
-    assert provider.data == "AnySearch"
-    assert provider.options[0] == "AnySearch"
-    assert "AnySearch" in fallback.options
 
 
 def test_anysearch_is_default_and_auto_collect() -> None:

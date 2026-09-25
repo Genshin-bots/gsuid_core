@@ -19,8 +19,8 @@ from gsuid_core.ai_core.tool_risk import (
 )
 from gsuid_core.ai_core.agent_node.models import AgentNode
 
-_MASTER = "444835641"
-_OTHER = "2457738122"
+_MASTER = "master_uid"
+_OTHER = "other_uid"
 
 
 class _Named:

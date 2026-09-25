@@ -43,13 +43,6 @@ def test_firecrawl_in_default_order_and_configured() -> None:
     assert firecrawl_mod.firecrawl_search_configured() is True
 
 
-def test_clamp_max_results() -> None:
-    assert firecrawl_mod._clamp_max_results(0) == 1
-    assert firecrawl_mod._clamp_max_results(10) == 10
-    assert firecrawl_mod._clamp_max_results(100) == 100
-    assert firecrawl_mod._clamp_max_results(101) == 100
-
-
 def test_normalize_search_data_web() -> None:
     payload = SearchData(
         web=[

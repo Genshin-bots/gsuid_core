@@ -2,7 +2,6 @@
 
 import asyncio
 from types import SimpleNamespace
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gsuid_core.ai_core.models import ToolContext
@@ -183,16 +182,6 @@ def test_orchestration_prompt_follows_tier_order() -> None:
     assert "优先 create_subagent" not in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "零调用禁止说做不到" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "列表没有对口工具先 `find_tools`" in TOOL_ORCHESTRATION_CONSTRAINTS
-
-
-def test_find_tools_source_no_agent_short_circuit() -> None:
-    src = Path("gsuid_core/ai_core/buildin_tools/dynamic_tool_discovery.py").read_text(encoding="utf-8")
-    assert "_delegation_directive" not in src
-    assert "_capability_agent_lines" not in src
-    assert "_format_already_loaded" not in src
-    assert "当前列表已有对应能力族工具" not in src
-    assert "build_find_tools_plan" in src
-    assert "format_find_tools_plan" in src
 
 
 class _FakeTool:

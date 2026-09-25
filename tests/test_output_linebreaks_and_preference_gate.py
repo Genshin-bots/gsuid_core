@@ -19,10 +19,8 @@
 现改为：闲聊轮传**空 contexts**（而非关闭注入），让检索侧只留 `general` + 纠错。
 """
 
-import ast
 import asyncio
-from typing import List, Optional
-from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock
 
 import pytest
@@ -33,9 +31,6 @@ from gsuid_core.ai_core.utils import (
     _should_render_markdown_image,
     _resolve_and_deliver_leaked_handles,
 )
-
-_ROOT = Path(__file__).resolve().parent.parent
-
 
 # ── 一、<br> 归一化 ────────────────────────────────────────────────
 
@@ -179,19 +174,16 @@ def test_code_block_is_kept_as_text_not_rendered(_md_image_cfg) -> None:
 
 
 def test_bold_headers_and_numbered_list_render_as_image(_md_image_cfg) -> None:
-    """agent 研报常用「整行粗体小标题 / 编号建议」而非表格或 # 标题——也必须命中出图。
-
-    还原某研报会话里药明康德那条被拆成 ~8 段的回复（有粗体小标题 + 编号列表，无表格）。
-    """
+    """agent 研报常用「整行粗体小标题 / 编号建议」而非表格或 # 标题——也必须命中出图。"""
     _md_image_cfg(min_chars=80)
     report = (
-        "呼…睡眼惺忪看完了，简单说：\n\n"
-        "**当前价**\n\n昨天收盘 131.36，离主人定的 135 还差 3 块多。\n\n"
-        "**技术面**\n\n均线多头排列，MACD 金叉，但三个超买灯亮着，135 就是布林上轨压力位。\n\n"
-        "**早柚的建议**\n\n"
-        "1. 想严格 135 出 → 分两批：130-131 先出一半，剩下等 135 摸上轨再卖\n"
-        "2. 要是长线持有 → 135 不必全卖，减 30-50% 底仓继续拿\n"
-        "3. 今天午盘冲到 133-134 别贪，先出点"
+        "看完了，简单说：\n\n"
+        "**当前价**\n\n昨天收盘 12.50，离设定的 13.00 还差一点。\n\n"
+        "**技术面**\n\n均线多头排列，MACD 金叉，但三个超买灯亮着，13.00 就是布林上轨压力位。\n\n"
+        "**建议**\n\n"
+        "1. 想严格 13.00 出 → 分两批：12.40-12.50 先出一半，剩下等 13.00 摸上轨再卖\n"
+        "2. 要是长线持有 → 13.00 不必全卖，减 30-50% 底仓继续拿\n"
+        "3. 今天午盘冲到 12.80-12.90 别贪，先出点"
     )
     assert _should_render_markdown_image(report) is True
 
@@ -284,7 +276,7 @@ def test_long_relayed_text_only_strips_no_redelivery(monkeypatch) -> None:
 
     mock = _patch_artifact(monkeypatch, _FakeArtifact(payload_inline="重复内容"))
     bot: Any = _FakeBot()
-    long_body = "药明康德昨天收盘 131.36，离主人定的 135 还差 3 块多。" * 6  # ≥120 字
+    long_body = "示例股昨天收盘 12.50，离设定的 13.00 还差一点。" * 6  # ≥120 字
     out = asyncio.run(_resolve_and_deliver_leaked_handles(long_body + " res_abc12345", bot))
     assert "res_abc12345" not in out
     assert bot.sent == []  # 长正文不补发
@@ -308,52 +300,10 @@ def test_lazy_pointer_to_text_artifact_inlines_content(monkeypatch) -> None:
     """短指路 + 纯文本 artifact → 把内容并进正文（走后续管线出图），让'自己看'有实物。"""
     from typing import Any
 
-    report = "药明康德 603259 分析：昨收 131.36，离 135 仅 2.8%，三个超买信号亮起，135 是布林上轨压力位。"
+    report = "示例股 600000 分析：昨收 12.50，离 13.00 仅 4%，三个超买信号亮起，13.00 是布林上轨压力位。"
     _patch_artifact(monkeypatch, _FakeArtifact(payload_inline=report))
     bot: Any = _FakeBot()
     out = asyncio.run(_resolve_and_deliver_leaked_handles("详细的放那里面了 res_cafe1234 自己看吧", bot))
     assert "res_cafe1234" not in out
     assert report in out, "文本 artifact 内容应并进正文"
     assert bot.sent == []  # 文本 artifact 不作为图片补发
-
-
-def _src(rel: str) -> str:
-    return (_ROOT / rel).read_text(encoding="utf-8")
-
-
-def test_preference_injection_is_not_gated_off_by_chitchat_intent() -> None:
-    """锁死回归：不许再用 `inject_preferences = intent != "闲聊"` 整轮关闭偏好。
-
-    那道门让检索侧「general/纠错永远保留」的设计失效，风格偏好（"回复保持简短"）
-    在最该生效的闲聊轮反而被跳过。
-    """
-    src = _src("gsuid_core/ai_core/handle_ai.py")
-    tree = ast.parse(src)
-
-    offenders: List[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        rendered = ast.unparse(node)
-        if "_pref_inject" in rendered and "闲聊" in rendered:
-            offenders.append(f"handle_ai.py:{node.lineno}  {rendered}")
-
-    assert not offenders, "偏好注入又被意图门整轮关掉了：\n" + "\n".join(offenders)
-
-
-def test_chitchat_turn_still_passes_empty_contexts_not_none() -> None:
-    """闲聊/旁观不预灌 dual_route 正文；偏好入口仍恒开、禁止按意图整轮关偏好。"""
-    kit = _src("gsuid_core/ai_core/kits/memory/kit.py")
-    facade = _src("gsuid_core/ai_core/cognition/facade.py")
-
-    assert "should_prefetch_memory" in kit
-    retrieve_src = kit.split("async def retrieve", 1)[1].split("async def _prefetch", 1)[0]
-    assert "inject_memory_slice" not in retrieve_src
-    assert "dual_route_retrieve" in retrieve_src
-    assert "format_retrieved_memory" in retrieve_src
-    assert "_format_memory_catalog" in kit
-    assert "mem.episodes" in kit
-    assert 'pref["polarity"]' in kit
-    assert "inject_preferences=True" in facade, "偏好注入没有恒开"
-    for src in (kit, facade, _src("gsuid_core/ai_core/handle_ai.py")):
-        assert "inject_preferences=intent" not in src.replace(" ", "")

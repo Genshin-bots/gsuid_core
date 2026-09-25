@@ -56,13 +56,13 @@ def test_read_other_group_and_block_foreign_private() -> None:
     other = _ev("1", "666")
     private = _ev("888", None, "direct")
     own_private = _ev("321", None, "direct")
-    mgr.add_message(here, "user", "本群刚才说了户晨风", user_name="甲")
+    mgr.add_message(here, "user", "本群刚才说了某主播", user_name="甲")
     mgr.add_message(other, "user", "另一群的手办", user_name="乙")
     mgr.add_message(private, "user", "私聊秘密", user_name="丙")
     mgr.add_message(own_private, "user", "自己的私聊", user_name="甲")
 
-    current = read_chat_history_text(mgr, here, "", query="户晨风", is_master=False)
-    assert "户晨风" in current
+    current = read_chat_history_text(mgr, here, "", query="某主播", is_master=False)
+    assert "某主播" in current
     assert "手办" not in current
 
     listed = read_chat_history_text(mgr, here, "list", is_master=False)
@@ -85,7 +85,7 @@ def test_read_other_group_and_block_foreign_private() -> None:
 def test_read_chat_history_keeps_match_in_long_paste() -> None:
     mgr = HistoryManager()
     ev = _ev("321", "929")
-    needle = "户晨风同期还有谁"
+    needle = "某主播同期还有谁"
     long = ("前" * 5000) + needle + ("后" * 100)
     mgr.add_message(ev, "user", long, user_name="甲")
     found = read_chat_history_text(mgr, ev, "", query=needle, is_master=False)

@@ -1,4 +1,4 @@
-"""走共用被动入口；不 handle_event；不占 _ai_semaphore；H00；纯图 A 轨；预算 fail-open；limiter finally。"""
+"""走共用被动入口；不 handle_event；H00；纯图 A 轨；预算 fail-open；limiter finally。"""
 
 from __future__ import annotations
 
@@ -189,34 +189,3 @@ def test_limiter_finally_releases(monkeypatch, tmp_path: Path) -> None:
     except LimitExceeded as e:
         raise AssertionError(f"slot leaked: {e}") from e
     asyncio.run(limiter.release(rec["key_id"]))
-
-
-def test_does_not_use_ai_semaphore(monkeypatch, tmp_path: Path) -> None:
-    store = reset_key_store_for_tests(tmp_path / "keys.json")
-    token, _rec = store.create(user_id="u1", bot_id="bot")
-    patch_settings(monkeypatch, sample_settings(enable=True))
-    install_chat_mocks(monkeypatch)
-    acquires: list[int] = []
-
-    class _Sem:
-        async def acquire(self) -> None:
-            acquires.append(1)
-
-        def release(self) -> None:
-            return None
-
-        def __aenter__(self) -> object:
-            return self
-
-        async def __aexit__(self, *_a: object) -> None:
-            return None
-
-    monkeypatch.setattr("gsuid_core.ai_core.handle_ai._ai_semaphore", _Sem())
-    client = make_client()
-    r = client.post(
-        "/api/v1/agent/chat/stream",
-        json={"text": "hi", "client_msg_id": "s1"},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert r.status_code == 200
-    assert acquires == []

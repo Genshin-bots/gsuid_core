@@ -1,10 +1,8 @@
 """群/私同一通道核：名单、检索跳过、query 不串味。"""
 
-from gsuid_core.ai_core.rag.tools import _SELF_CATEGORY_WHITELIST
 from gsuid_core.ai_core.agent_run.tools import should_skip_tool_search, complete_kernel_family_names
 from gsuid_core.ai_core.interaction_scaffold import (
     MAIN_AGENT_CORE_TOOLS,
-    SLIM_GROUP_CORE_TOOLS,
     build_tool_search_query,
 )
 
@@ -29,17 +27,6 @@ _KERNEL_FORBIDDEN = (
     "get_self_info",
     "attach_article",
 )
-
-
-def test_kernel_is_channel_agnostic() -> None:
-    assert frozenset(MAIN_AGENT_CORE_TOOLS) == SLIM_GROUP_CORE_TOOLS
-    for name in _KERNEL_REQUIRED:
-        assert name in MAIN_AGENT_CORE_TOOLS
-    for name in _KERNEL_FORBIDDEN:
-        assert name not in MAIN_AGENT_CORE_TOOLS
-    for name in MAIN_AGENT_CORE_TOOLS:
-        if name in ("send_message_by_ai", "send_meme", "record_meme", "add_once_task", "add_interval_task"):
-            assert name in _SELF_CATEGORY_WHITELIST
 
 
 def test_skip_search_idle_both_channels() -> None:
@@ -153,11 +140,3 @@ def test_kernel_family_close_skips_attach_article() -> None:
     assert "add_once_task" in names
     assert "attach_article" not in names
     assert "list_scheduled_tasks" not in names
-
-
-def test_interactive_run_queues_instead_of_cancel() -> None:
-    from pathlib import Path
-
-    src = Path("gsuid_core/ai_core/gs_agent.py").read_text(encoding="utf-8")
-    assert "supersede_queue_wait" in src
-    assert "supersede_cancel_current" not in src

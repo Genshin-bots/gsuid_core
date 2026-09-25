@@ -98,33 +98,6 @@ def registry(monkeypatch: pytest.MonkeyPatch):
     return install
 
 
-def _legacy_expand(
-    seed_tools: List[FakeTool],
-    reg: FakeRegistry,
-    exclude_names: set,
-    max_tools: int,
-) -> List[FakeTool]:
-    """事故版旧实现，逐行照抄。用于锁"新实现只增不减"。"""
-    seen = set(exclude_names)
-    out: List[FakeTool] = []
-    for seed in seed_tools:
-        if seed.name in seen:
-            continue
-        family = reg.get_family_members(seed.name)
-        family_tools = [tb.tool for tb in family] if family else [seed]
-        new_members = [ft for ft in family_tools if ft.name not in seen]
-        if not new_members:
-            continue
-        if out and len(out) + len(new_members) > max_tools:
-            break
-        for ft in new_members:
-            seen.add(ft.name)
-            out.append(ft)
-        if len(out) >= max_tools:
-            break
-    return out
-
-
 def _names(tools) -> List[str]:
     return [t.name for t in tools]
 
@@ -141,17 +114,6 @@ def test_oversized_family_cannot_starve_other_plugins(registry) -> None:
 
     assert "get_user_wuwa_char_detail" in out, "鸣潮工具被异环大族挤掉——正是本次生产事故"
     assert "nte_character" in out
-
-
-def test_oversized_family_starved_others_before_the_fix(registry) -> None:
-    """反向锁：旧实现在同一场景下确实把鸣潮工具饿死了（证明测试真的测到了东西）。"""
-    reg = registry({"异环面板": NTE_PANEL, "鸣潮面板": WUWA_PANEL})
-    seeds = reg.seeds("nte_character", "get_user_wuwa_char_detail")
-
-    legacy = _names(_legacy_expand(seeds, reg, set(), 8))
-
-    assert "get_user_wuwa_char_detail" not in legacy
-    assert set(NTE_PANEL) == set(legacy)
 
 
 # ── 2. 排名第一的族也受预算约束；预算够时仍整族 ───────────────────

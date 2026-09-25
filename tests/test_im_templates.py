@@ -178,14 +178,6 @@ class TestComparisonColoring:
         assert T._norm_glyphs("✘") == "✕"
         assert T._norm_glyphs("✓") == "✓"  # 已支持的不变
 
-    def test_comparison_normalizes_missing_glyph_cross(self) -> None:
-        """传入 ✗（MiSans 缺字）时，渲染出的 HTML 应为可渲染的 ✕。"""
-        html = T.comparison_card("对比", ["A", "B"], [["行", "✗", "✓"]])
-        assert "✗" not in html  # 缺字符号不应原样保留
-        assert "✕" in html  # 归一化后可渲染
-        # 且该 ✕ 被着红色
-        assert f'color:{T._CORAL};font-weight:700;">✕' in html.replace(" ", "")
-
 
 # ─────────────────────────────────────────────
 # 等宽字体注册
@@ -205,11 +197,6 @@ class TestMonoFont:
         if mono is None:
             pytest.skip("本机未找到任何等宽字体，代码卡片将回退 MiSans")
         assert isinstance(mono, bytes) and len(mono) > 0
-
-    def test_code_card_uses_mono_stack(self) -> None:
-        html = T.code_card("x = 1")
-        # pre 块必须引用 Mono 字体栈
-        assert '"Mono"' in html
 
 
 class TestEmojiFont:

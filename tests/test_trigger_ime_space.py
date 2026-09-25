@@ -141,8 +141,8 @@ def test_short_ascii_prefix_does_not_eat_following_word(sv: SV) -> None:
         async def price(bot, ev): ...
 
         assert "a:command:股价" in _hits(bare, "a股价")
-        assert "a:command:股价" in _hits(bare, "a 股价 茅台")
-        assert _text_of(bare, "a 股价 茅台 600519", "股价", "a") == "茅台 600519"
+        assert "a:command:股价" in _hits(bare, "a 股价 示例股")
+        assert _text_of(bare, "a 股价 示例股 600000", "股价", "a") == "示例股 600000"
         assert "a:command:股价" not in _hits(bare, "apple")
         assert "a:command:股价" not in _hits(bare, "a apple")
         assert ":command:股价" in _hits(bare, "股价")

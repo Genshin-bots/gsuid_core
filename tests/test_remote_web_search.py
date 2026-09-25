@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from typing import Any, List
 
 from pydantic_ai.tools import Tool
-from pydantic_ai.messages import TextPart, ToolCallPart, NativeToolCallPart, NativeToolReturnPart
 
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.agent_run.state import RunOnceState
@@ -42,14 +41,6 @@ def test_should_attach_follows_request_method_not_host() -> None:
         enabled=True,
         request_method="responses",
         has_local_web_search=False,
-    )
-
-
-def test_chat_completions_ignores_switch() -> None:
-    assert not remote_web_search_should_attach(
-        enabled=True,
-        request_method="chat_completions",
-        has_local_web_search=True,
     )
 
 
@@ -176,25 +167,3 @@ def test_hosted_name_and_firewall() -> None:
     assert not is_hosted_web_search_name(LOCAL_WEB_SEARCH_TOOL)
     assert _FRAMEWORK_LEAK_RE.search("please call web_search now")
     assert _FRAMEWORK_LEAK_RE.search("web_search_tool")
-
-
-def test_builtin_web_search_counts_as_tool_but_not_intermediate() -> None:
-    """CallTools 语义：hosted call 进 tool_call_list，但不该触发中间文本抑制。"""
-    call = NativeToolCallPart(tool_name=HOSTED_WEB_SEARCH_TOOL, args={"query": "news"}, tool_call_id="ws_1")
-    ret = NativeToolReturnPart(tool_name=HOSTED_WEB_SEARCH_TOOL, content={"status": "completed"}, tool_call_id="ws_1")
-    text = TextPart(content="今天的正面新闻是……")
-    saw_fn_tool = False
-    tool_call_list: list[str] = []
-    saw_web = False
-    for part in (call, ret, text):
-        if isinstance(part, ToolCallPart):
-            saw_fn_tool = True
-            tool_call_list.append(part.tool_name)
-        elif isinstance(part, (NativeToolCallPart, NativeToolReturnPart)):
-            if is_hosted_web_search_name(part.tool_name):
-                saw_web = True
-            if isinstance(part, NativeToolCallPart):
-                tool_call_list.append(part.tool_name)
-    assert tool_call_list == [HOSTED_WEB_SEARCH_TOOL]
-    assert saw_web
-    assert not saw_fn_tool

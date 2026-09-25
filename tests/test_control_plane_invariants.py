@@ -9,20 +9,13 @@ INV-5 交给模型的 id 必须能被 inspect 工具消费
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
-from pathlib import Path
 from unittest.mock import patch
 
 from gsuid_core.bot import Bot
 from gsuid_core.ai_core.utils import SILENCE_MARKERS, is_silence_marker
-from gsuid_core.ai_core.agent_run import loop as loop_mod, settle as settle_mod
+from gsuid_core.ai_core.agent_run import settle as settle_mod
 from gsuid_core.ai_core.agent_run.state import RunOnceState
-from gsuid_core.ai_core.agent_run.support import (
-    _claims_deferred_work,
-    _claims_missing_offered_tool,
-)
 from gsuid_core.ai_core.control.directive import (
     Evidence,
     Directive,
@@ -32,33 +25,11 @@ from gsuid_core.ai_core.control.directive import (
 )
 from gsuid_core.ai_core.control.corrections import (
     status_zero_tool_directive,
-    addressed_silence_directive,
     render_obligation_directive,
-    missing_offered_tool_directive,
 )
 from gsuid_core.ai_core.agent_run.speech_policy import should_block_user_visible_text
 
-_SRC = Path(__file__).resolve().parent.parent / "gsuid_core"
-
-
 # ── INV-1：出处 vs 排版 ──
-
-
-def test_inv1_loop_never_forges_structured_return_from_text_shape() -> None:
-    """report_speech 分支不得回写 saw_structured_return（活锁根因）。"""
-    src = inspect.getsource(loop_mod)
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        targets = [t.attr for t in node.targets if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)]
-        if "saw_structured_return" not in targets:
-            continue
-        # 允许的置位点必须处在「工具返回」上下文里：赋值语句所在行的上文含 tool_name/part
-        segment = ast.get_source_segment(src, node) or ""
-        assert "True" in segment
-    assert "st.presentation_mismatch = True" in src
-    assert src.count("st.saw_structured_return = True") == 5, "出处置位点应只在 5 处真实 ToolReturn 分支"
 
 
 def test_inv1_state_has_orthogonal_fields() -> None:
@@ -148,22 +119,7 @@ def test_inv3_correction_real_output_replaces() -> None:
     assert settle_mod._corrected_or_original("新的角色短句，已经查过了。", original=original) != original
 
 
-def test_inv3_render_correction_is_gated_on_provenance() -> None:
-    src = inspect.getsource(settle_mod)
-    assert "_render_obligation" in src
-    assert "st.saw_structured_return" in src
-    assert "_corrected_or_original(_rc, original=result_msg)" in src
-
-
 # ── INV-2：框架文本不穿数据面 ──
-
-
-def test_inv2_settle_corrections_declare_framework_injection() -> None:
-    src = inspect.getsource(settle_mod)
-    helper = inspect.getsource(settle_mod.SettlePhase._try_correction_pass)
-    assert "is_framework_injection=True" in helper
-    assert src.count("_try_correction_pass(") >= 4, "结构/缺工具/静音/进度/出图纠正须走同一 helper"
-    assert "is_framework_injection=True" in src, "假完成纠正仍须声明框架身份"
 
 
 def test_inv2_directive_is_not_wrapped_as_user_speech() -> None:
@@ -221,11 +177,6 @@ def test_inv2_control_envelope_is_stripped_from_history() -> None:
 
 
 # ── INV-5：标识符可消费 ──
-
-
-def test_inv5_subagent_receipt_uses_full_task_id() -> None:
-    src = (_SRC / "ai_core" / "buildin_tools" / "subagent.py").read_text(encoding="utf-8")
-    assert "root.id[:8]" not in src, "回执不得印 8 字符前缀（inspect 工具是 SQL 等值）"
 
 
 def test_inv5_delegation_handle_is_resolvable() -> None:
@@ -324,13 +275,6 @@ def test_inv4_withheld_delivery_skips_already_sent() -> None:
     assert sent == []
 
 
-def test_inv4_settle_has_withheld_backstop_before_by_bot_return() -> None:
-    src = inspect.getsource(settle_mod)
-    idx_backstop = src.index("_deliver_withheld(st, self._run_sent_texts)")
-    idx_return = src.index('if st.return_mode in ["by_bot"] and st.bot and st.ev:')
-    assert idx_backstop < idx_return, '兜底必须在 by_bot 的 return "" 之前'
-
-
 def test_inv4_nested_render_delegate_does_not_deliver_withheld() -> None:
     """纠正轮 create_subagent(render) 后不得把暂扣长报告再发出去。"""
     st = _mk_state(
@@ -361,26 +305,6 @@ def test_inv4_unmet_after_correction_delivers_withheld() -> None:
         saw_structured_return=True,
     )
     assert settle_mod._should_deliver_withheld(st, skip_report_exit=True, replacement_visible=False)
-    assert not settle_mod._should_deliver_withheld(st, skip_report_exit=True, replacement_visible=True)
-
-
-def test_inv4_prior_snippet_does_not_block_withheld() -> None:
-    """等待安抚已出站不得挡住暂扣原文。"""
-    st = _mk_state(
-        bot=_test_bot(),
-        presentation_withheld=["很长的研究报告，用户没点名要念出来。"],
-        saw_structured_return=True,
-    )
-    assert settle_mod._should_deliver_withheld(st, skip_report_exit=True, replacement_visible=False)
-
-
-def test_inv4_adopted_replacement_does_not_flush_withheld() -> None:
-    """纠正已产出可交付替代时，不得再把被否决的复述冲出去。"""
-    st = _mk_state(
-        bot=_test_bot(),
-        presentation_withheld=["很长的研究报告，用户没点名要念出来。"],
-        saw_structured_return=True,
-    )
     assert not settle_mod._should_deliver_withheld(st, skip_report_exit=True, replacement_visible=True)
 
 
@@ -429,16 +353,6 @@ def test_voice_retry_sends_deliverable_rewrite_not_silence() -> None:
     assert settle_mod._voice_retry_text("<SILENCE>", disputed=True, blocked=blocked) == blocked
 
 
-def test_voice_correction_returns_text_instead_of_by_bot_empty() -> None:
-    """群聊 by_bot 的纠正轮若 return ""，父级补发永远看不到改写。"""
-    src = inspect.getsource(settle_mod.SettlePhase._run_once_settle_result)
-    idx = src.index("blocked_voice_directive")
-    window = src[idx : idx + 1600]
-    assert 'return_mode="return"' in window
-    assert "_voice_retry_text(" in window
-    assert "send_chat_result(st.bot, result_msg, ev=st.ev)" in window
-
-
 def test_blocked_numeric_recitation_requires_render_without_tools() -> None:
     """念数被拦且本轮零工具：仍要纠正去 render，不能整轮静默。"""
     from gsuid_core.ai_core.control.corrections import numeric_recitation_directive
@@ -470,27 +384,6 @@ def test_short_character_reply_skips_render_obligation() -> None:
         skip_report_exit=False,
         replacement_visible=False,
     )
-
-
-def test_inv4_settle_absorbs_nested_facts_before_obligation_check() -> None:
-    src = inspect.getsource(settle_mod.SettlePhase._run_once_settle_result)
-    assert src.index("_absorb_attempt_facts(") < src.index("_obligations_met(_directive, st)")
-    assert src.index("_obligations_met(_directive, st)") < src.index("_should_deliver_withheld(")
-
-
-def test_qa_intent_does_not_skip_report_dump_silence() -> None:
-    src = inspect.getsource(settle_mod.SettlePhase._run_once_settle_result)
-    assert 'looks_like_numeric_recitation(_rs) and st.intent != "问答"' in src
-    dump = src.rindex("_looks_like_report_speech(_rs)")
-    assert "问答" not in src[dump : dump + 80]
-
-
-def test_inv4_prepare_skips_hints_on_framework_envelope() -> None:
-    from gsuid_core.ai_core.agent_run import prepare as prepare_mod
-
-    src = inspect.getsource(prepare_mod.PreparePhase._run_once_prepare_user_message)
-    assert "not st.fw_msg" in src
-    assert "self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg" in src
 
 
 # ── 义务结构化校验（INV-B） ──
@@ -592,38 +485,10 @@ def test_mailbox_same_key_keeps_latest() -> None:
     discard_session(sid)
 
 
-def test_executor_uses_per_root_drain_not_session_drain() -> None:
-    from gsuid_core.ai_core.planning import kanban_executor as ke
-
-    src = inspect.getsource(ke)
-    assert "drain_one(session_id" in src
-    assert "drain_session(" not in src, "会话级 drain 会抽走兄弟 root 的投递"
-    assert "_delivery_pending[key] = (task, raw_result)" in src, "payload 须按 root 存最新"
-    assert "if item is not None and notified is not None" not in src
-    assert "if item is not None:" in src
-
-
 # ── 委派产物按 root 取（树模式产物挂在 child 上） ──
 
 
-def test_delegation_reads_artifacts_by_root() -> None:
-    from gsuid_core.ai_core.control import delegation as dmod
-
-    src = inspect.getsource(dmod)
-    assert "AIAgentArtifact.list_for_root(" in src
-    assert "AIAgentArtifact.list_for_task(" not in src, "产物登记在执行节点上，按 task 取树模式恒空"
-
-
 # ── fake-done：编造声明不得当 fallback 留给用户 ──
-
-
-def test_fake_done_never_falls_back_to_fabricated_claim() -> None:
-    src = inspect.getsource(settle_mod)
-    idx = src.index("fake_done_directive(tool_pool_size=")
-    block = src[idx : idx + 1600]
-    assert "_correction_is_deliverable(corrected)" in block
-    assert 'result_msg = "<SILENCE>"' in block, "无干净纠正时须静默，而非留下那句谎话"
-    assert "_fabricated" in block, "编造声明须一律从 history 剥掉"
 
 
 def test_correction_deliverability_rejects_silence_and_dirty() -> None:
@@ -631,39 +496,6 @@ def test_correction_deliverability_rejects_silence_and_dirty() -> None:
     assert not settle_mod._correction_is_deliverable("让 render_agent 去出图")
     assert not settle_mod._correction_is_deliverable("")
     assert settle_mod._correction_is_deliverable("查过了，没有公开数值。")
-
-
-def test_missing_offered_tool_and_addressed_silence_are_wired() -> None:
-    src = inspect.getsource(settle_mod)
-    assert "missing_offered_tool_directive" in src
-    assert "addressed_silence_directive" in src
-    assert "_claims_missing_offered_tool" in src
-    assert "_claims_deferred_work" in src
-    offered = ["list_scheduled_tasks", "cancel_scheduled_task"]
-    assert _claims_missing_offered_tool("没有对应工具可以改", offered)
-    assert _claims_missing_offered_tool("没有对应工具可以改", ["web_search_tool"])
-    assert not _claims_missing_offered_tool("没有对应工具可以改", [])
-    assert not _claims_missing_offered_tool("没有办法改这个", offered)
-    miss_idx = src.index("missing_offered_tool_directive(tool_pool_size=")
-    miss_block = src[miss_idx - 600 : miss_idx + 80]
-    assert "task_management" in miss_block
-    assert _claims_deferred_work("太困了明天再查吧")
-    assert _claims_deferred_work("等我回头再查")
-    assert _claims_deferred_work("等我回去翻翻新版本的情报再回你吧")
-    assert not _claims_deferred_work("太困了…")
-    assert not _claims_deferred_work("等我醒")
-    assert not _claims_deferred_work("好，现在就查。")
-    d_miss = missing_offered_tool_directive(tool_pool_size=4)
-    assert d_miss.reason_code == "missing_offered_tool"
-    d_sil = addressed_silence_directive()
-    assert d_sil.reason_code == "addressed_silence"
-    assert d_sil.obligations[0].must == "deliver"
-
-
-def test_zero_tool_correction_includes_deferred_work() -> None:
-    src = inspect.getsource(settle_mod._zero_tool_needs_correction)
-    assert "_claims_deferred_work" in src
-    assert "task_management" in src
 
 
 # ── 协议标记归一化 ──

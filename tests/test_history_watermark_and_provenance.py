@@ -192,10 +192,10 @@ def _group_task(**overrides) -> Any:
     fields = {
         "task_id": "scheduled_task_5cad21ace9f5",
         "task_type": "interval",
-        "user_id": "100000002",  # 化名：小北
+        "user_id": "100000002",
         "group_id": "200000001",
         "bot_id": "onebot",
-        "task_prompt": "检查巨化股份（600160）当前价格",
+        "task_prompt": "检查示例股（600000）当前价格",
         "status": "pending",
         "interval_seconds": 1800,
         "max_executions": 12,

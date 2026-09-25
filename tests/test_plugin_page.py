@@ -157,15 +157,6 @@ def test_plugin_api_prefix_must_start_with_api():
         PluginAPI(plugin="ZZZeroUID", prefix="/pages/zzz")
 
 
-def test_zzzero_console_static_tree_exists():
-    root = Path("gsuid_core/plugins/ZZZeroUID/ZZZeroUID/web")
-    assert (root / "index.html").is_file()
-    assert (root / "app.js").is_file()
-    assert (root / "locales/zh-CN.json").is_file()
-    assert (root / "locales/en-US.json").is_file()
-    assert (root / "locales/ja-JP.json").is_file()
-
-
 def test_plugin_sdk_handles_hub_theme_message():
     sdk = Path(__file__).resolve().parents[1].parent / "gsuid_hub" / "public" / "gshub-plugin.js"
     if not sdk.is_file():

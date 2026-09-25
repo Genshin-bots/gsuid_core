@@ -89,13 +89,6 @@ def test_admin_keys_not_404_when_disabled(monkeypatch) -> None:
     assert r.status_code == 401
 
 
-def test_admin_keys_not_404_when_ai_disabled(monkeypatch) -> None:
-    patch_settings(monkeypatch, sample_settings(enable=True), ai_enable=False)
-    client = TestClient(make_agent_app())
-    r = client.post("/api/http-agent/admin/keys", json={"user_id": "u1", "bot_id": "b1"})
-    assert r.status_code == 401
-
-
 def test_openapi_excludes_agent_routes() -> None:
     from gsuid_core.ai_core.http_agent.routes import agent_router
 

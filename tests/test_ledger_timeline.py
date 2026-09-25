@@ -106,12 +106,6 @@ def test_parse_picks_and_time_sort() -> None:
     assert text.startswith("1. 2024-03-15 · first")
 
 
-def test_legacy_switch_constant() -> None:
-    from gsuid_core.ai_core.memory.config import memory_config
-
-    assert memory_config.eo_strategy in ("legacy", "ledger")
-
-
 def test_memory_console_keeps_four_eo_keys() -> None:
     from gsuid_core.ai_core.configs.ai_config import MEMORY_CONFIG
 

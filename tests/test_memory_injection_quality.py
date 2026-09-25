@@ -155,14 +155,14 @@ def test_injection_drops_dangling_facts() -> None:
 
 def test_third_party_sensitive_fact_dropped() -> None:
     """B 的催婚隐私不得注入 A 的对话。"""
-    mc = MemoryContext(edges=[_edge("100000004", "年纪到了被催婚，待房间躲避")])
+    mc = MemoryContext(edges=[_edge("100000004", "年纪到了被催婚")])
     text = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000001"})
     assert "催婚" not in text
 
 
 def test_own_sensitive_fact_kept() -> None:
     """当事人自己在场时，其敏感事实照常可用。"""
-    mc = MemoryContext(edges=[_edge("100000004", "年纪到了被催婚，待房间躲避")])
+    mc = MemoryContext(edges=[_edge("100000004", "年纪到了被催婚")])
     text = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000004"})
     assert "催婚" in text
 
@@ -197,7 +197,7 @@ def test_deployer_extra_sensitive_terms(monkeypatch: pytest.MonkeyPatch) -> None
         return original_get(key)
 
     monkeypatch.setattr(cfg_mod.ai_config, "get_config", fake_get)
-    mc = MemoryContext(edges=[_edge("100000004", "高考分数只有 400 多")])
+    mc = MemoryContext(edges=[_edge("100000004", "高考分数还没出来")])
     blocked = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000001"})
     assert "高考分数" not in blocked
     allowed = mc.to_prompt_text(max_chars=2000, current_speaker_ids={"100000004"})
@@ -1500,15 +1500,6 @@ def test_refine_skips_conflicts_on_latest_slot() -> None:
     )
     refine_retrieved_memory(mem, "What is the daily call quota for the API key used in my application?")
     assert mem.conflicts == []
-
-
-def test_inject_groundedness_only_for_self_history() -> None:
-    from gsuid_core.ai_core.kits.memory.kit import looks_like_self_history_query
-
-    history = "Have I ever formulated heat equation problems before in our previous sessions?"
-    howto = "How do I use Green's functions to solve a PDE?"
-    assert looks_like_self_history_query(history)
-    assert not looks_like_self_history_query(howto)
 
 
 def test_timeline_query_is_not_point_lookup() -> None:

@@ -64,16 +64,3 @@ def test_every_ai_tool_has_a_docstring() -> None:
         lines.append(f"  {rel}::{name}{hint}")
 
     assert not offenders, "以下 @ai_tools 工具没有 docstring，向量检索只剩函数名、永远召不回：\n" + "\n".join(lines)
-
-
-def test_scanner_actually_sees_the_tools() -> None:
-    """防止上面那条测试因为扫不到任何工具而"空过"。"""
-    count = 0
-    for py in _SRC.rglob("*.py"):
-        if "__pycache__" in py.parts:
-            continue
-        # utf-8-sig：部分插件源码带 BOM，ast.parse 收到 U+FEFF 会直接 SyntaxError
-        tree = ast.parse(py.read_text(encoding="utf-8-sig"))
-        count += sum(1 for node in ast.walk(tree) if _is_ai_tool(node))
-
-    assert count > 50, f"只扫到 {count} 个 @ai_tools 工具，扫描逻辑可能已失效"

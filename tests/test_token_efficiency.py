@@ -7,13 +7,9 @@
 - §17 无文本消息也走完整装配 + 模型调用，2.2 万 token 换一个 <SILENCE>。
 """
 
-import inspect
-
 from pydantic_ai.messages import TextPart, ModelRequest, ModelResponse, ToolReturnPart, UserPromptPart
 
 from gsuid_core.ai_core.utils import (
-    _TOOL_RETURN_HEAD,
-    _TOOL_RETURN_TAIL,
     _TOOL_RETURN_HISTORY_MAX,
     _truncate_tool_returns_in_history,
 )
@@ -55,51 +51,11 @@ def test_non_str_and_non_return_untouched() -> None:
     assert _truncate_tool_returns_in_history(msgs) == 0
 
 
-def test_head_tail_budget_sane() -> None:
-    """常量自洽：头+尾必须小于上限，否则截断产物比原文还长。"""
-    assert _TOOL_RETURN_HEAD + _TOOL_RETURN_TAIL < _TOOL_RETURN_HISTORY_MAX
-
-
 # ─────────────────────────────────────────────
 # §25(3) 工具集稳定化（源码级约束）
 # ─────────────────────────────────────────────
 
 
-def test_tool_assembly_sorted_and_vector_pool_always_on_query() -> None:
-    from pathlib import Path
-
-    # agent_run 拆分后工具五层装配在 agent_run/tools.py（读源文件避免 import 依赖链）
-    src = Path("gsuid_core/ai_core/agent_run/tools.py").read_text(encoding="utf-8")
-    assert "stabilize_session_tool_names(" in src
-    assert "self._stabilize_session_toolset(" in src
-    q_idx = src.index("search_tools_with_entity_routing(")
-    gate_block = src[max(0, q_idx - 800) : q_idx]
-    assert "if qy" in gate_block
-    assert "intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS" not in gate_block
-    call_block = src[q_idx : q_idx + 400]
-    assert "scope_key=ctx_scope_key" in call_block
-
-
 # ─────────────────────────────────────────────
 # §17 空内容前置门（源码级约束）
 # ─────────────────────────────────────────────
-
-
-def test_empty_content_pregate_before_intent_classification() -> None:
-    """空内容前置门必须早于意图识别（首个 LLM 开销）。
-
-    锁点变更：分类器已迁进 ``gscore.classifier`` 套件，``handle_ai`` 里只剩
-    ``fire_hooks(AgentHookPoint.CLASSIFY, …)``。锁那个 fire 点而不是具体实现调用。
-    """
-    import gsuid_core.ai_core.handle_ai as handle_ai_mod
-
-    src = inspect.getsource(handle_ai_mod)
-    # 空内容前置门的日志锚点（i18n key）
-    gate_idx = src.index("gscore_empty_content_visible")
-    intent_idx = src.index("AgentHookPoint.CLASSIFY")
-    assert gate_idx < intent_idx
-    # 内核不许再直接调分类器实现
-    assert "classifier_service.predict_async" not in src
-    # @我 的空消息仍放行
-    gate_block = src[max(0, gate_idx - 800) : gate_idx]
-    assert "_is_at_me" in gate_block

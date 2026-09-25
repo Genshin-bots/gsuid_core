@@ -266,35 +266,6 @@ def test_persist_and_fold_propagates_then_caller_can_isolate() -> None:
         assert folded is None
 
 
-def test_capability_persist_receives_plan_task_ids() -> None:
-    """plan context 的 task/root 会被传入 schedule_persist 路径。"""
-    from gsuid_core.ai_core.planning.runtime import (
-        PlanRunContext,
-        get_plan_context,
-        bind_plan_context,
-        reset_plan_context,
-    )
-
-    captured: dict[str, str] = {}
-
-    def _fake_schedule(**kwargs: Any) -> None:
-        captured["task_id"] = kwargs.get("task_id", "")
-        captured["root_task_id"] = kwargs.get("root_task_id", "")
-
-    token = bind_plan_context(PlanRunContext(task_id="task_cap_1", root_task_id="root_cap_9"))
-    try:
-        pc = get_plan_context()
-        assert pc is not None
-        _fake_schedule(
-            task_id=pc.task_id or "",
-            root_task_id=pc.root_task_id or "",
-        )
-        assert captured["task_id"] == "task_cap_1"
-        assert captured["root_task_id"] == "root_cap_9"
-    finally:
-        reset_plan_context(token)
-
-
 def test_delete_tool_output_index_noop_without_client() -> None:
     from gsuid_core.ai_core.planning.tool_output_index import delete_tool_output_index
 

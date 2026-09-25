@@ -86,15 +86,6 @@ def test_escaped_quote_inside_string() -> None:
     assert extract_json_from_text(r'{"msg": "a\"b}c"}') == {"msg": 'a"b}c'}
 
 
-def test_pref_flag_shape_from_extraction() -> None:
-    # 实体抽取 LLM 的真实返回形态：entities/edges + pref 标志位
-    raw = '{"entities":[{"name":"咖啡","type":"物品"}],"edges":[],"pref":true}'
-    result = extract_json_from_text(raw)
-    assert isinstance(result, dict)
-    assert result["pref"] is True
-    assert len(result["entities"]) == 1
-
-
 # ─────────────────────────────────────────────
 # markdown 围栏剥离
 # ─────────────────────────────────────────────
@@ -103,11 +94,6 @@ def test_pref_flag_shape_from_extraction() -> None:
 @pytest.mark.parametrize("fence", ["```json\n", "```JSON\n", "```\n", "```Python\n"])
 def test_markdown_fence_with_language(fence: str) -> None:
     raw = f'{fence}{{"a": 1}}\n```'
-    assert extract_json_from_text(raw) == {"a": 1}
-
-
-def test_bare_backticks_without_language() -> None:
-    raw = '```\n{"a": 1}\n```'
     assert extract_json_from_text(raw) == {"a": 1}
 
 

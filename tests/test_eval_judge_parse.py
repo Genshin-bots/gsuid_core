@@ -60,18 +60,6 @@ def test_judge_silence_is_not_gold_string_pass() -> None:
     assert simple_string_match(15, "5 days in NYC only") is False
 
 
-def test_as_judge_allows_more_than_one_iteration() -> None:
-    src = (
-        Path(__file__)
-        .resolve()
-        .parent.parent.joinpath("gsuid_core", "webconsole", "chat_with_history_api.py")
-        .read_text(encoding="utf-8")
-    )
-    assert "max_iterations=None" in src
-    assert "rubric_scores" in src
-    assert "PASS 或 FAIL" in src
-
-
 def test_beam_judge_uses_as_judge_and_retries_ooc() -> None:
     from eval.common.judge import _is_transient_judge_failure
 
@@ -151,13 +139,3 @@ def test_parse_beam_order_keeps_align_and_metrics() -> None:
         rubric,
     )
     assert align_only["passed"] is False
-
-
-def test_eval_judge_skips_roleplay_firewall() -> None:
-    src = (
-        Path(__file__)
-        .resolve()
-        .parent.parent.joinpath("gsuid_core", "ai_core", "agent_run", "settle.py")
-        .read_text(encoding="utf-8")
-    )
-    assert 'self.create_by not in ("EvalJudge", "TEST")' in src

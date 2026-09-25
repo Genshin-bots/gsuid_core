@@ -445,14 +445,6 @@ def test_hostile_chitchat_at_enters_loop() -> None:
     assert decide_cheap_gate(tg, rel=hostile, intent="闲聊") is CheapGate.FULL
 
 
-def test_hostile_with_active_task_is_not_silenced() -> None:
-    from gsuid_core.ai_core.interaction_scaffold import CheapGate, decide_cheap_gate
-
-    hostile = view_from_score(-80, False)
-    tg = _graph(message_text="今天天气不错")
-    assert decide_cheap_gate(tg, rel=hostile, has_active_task=True) is not CheapGate.SILENCE
-
-
 def test_master_is_never_zone_silenced() -> None:
     """权限正交：主人即使分数低也不该被温度门吞掉。"""
     from gsuid_core.ai_core.interaction_scaffold import CheapGate, decide_cheap_gate

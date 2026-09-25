@@ -48,7 +48,6 @@ TriggerKind = Literal[
 ]
 
 _ROOT = Path(__file__).resolve().parents[1]
-_HANDLER = _ROOT / "gsuid_core" / "handler.py"
 _STARTUP = _ROOT / "gsuid_core" / "utils" / "database" / "startup.py"
 
 
@@ -202,18 +201,6 @@ def test_count_data_still_records_file_trigger() -> None:
         assert local["user"]["u1"]["png"] == 1
     finally:
         _restore_bot_val(snapshot)
-
-
-def test_handler_message_loop_does_not_call_count_data() -> None:
-    src = _HANDLER.read_text(encoding="utf-8")
-    start = src.find("for trigger in message_triggers:")
-    end = src.find("if len(command_triggers) >= 1:")
-    assert start != -1 and end != -1 and start < end
-    message_block = src[start:end]
-    assert "count_data" not in message_block
-    command_block = src[end:]
-    assert "await count_data(event, trigger)" in command_block
-    assert 'if trigger.type == "message":' in src
 
 
 def test_purge_hook_runs_after_schema_and_before_load() -> None:

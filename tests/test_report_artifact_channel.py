@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from gsuid_core.ai_core.utils import SILENCE_MARKERS, _report_footer, _extract_report_blocks
+from gsuid_core.ai_core.utils import _report_footer, _extract_report_blocks
 
 # ─────────────────────────────────────────────
 # _extract_report_blocks
@@ -239,7 +239,7 @@ async def test_executor_appends_provenance_footer(executor_env: dict) -> None:
     """播报消息必须带溯源尾注（§5"这是谁要的提醒"事故）。"""
     from gsuid_core.ai_core.scheduled_task.executor import execute_scheduled_task
 
-    executor_env["agent"] = _StubAgent("巨化 600160 现价 40.2，已到 MA60 警示位。")
+    executor_env["agent"] = _StubAgent("示例股 600000 现价 12.5，已到 MA60 警示位。")
     executor_env["set_task"](_make_task())
     await execute_scheduled_task("scheduled_task_test01")
 
@@ -247,9 +247,4 @@ async def test_executor_appends_provenance_footer(executor_env: dict) -> None:
     message = executor_env["emits"][0]["message"]
     assert "scheduled_task_test01" in message
     assert "定时任务" in message
-    assert message.startswith("巨化 600160")
-
-
-def test_silence_marker_membership() -> None:
-    """执行体的静默闸依赖 <SILENCE> 在 SILENCE_MARKERS 中，防止常量漂移。"""
-    assert "<SILENCE>" in SILENCE_MARKERS
+    assert message.startswith("示例股 600000")

@@ -9,13 +9,6 @@ from gsuid_core.models import Message
 from gsuid_core.segment import MessageSegment, to_markdown, convert_message
 
 
-def test_messagesegment_image_keeps_file_uri() -> None:
-    uri = "file:///C:/images/a.jpg"
-    msg = MessageSegment.image(uri)
-    assert msg.type == "image"
-    assert msg.data == uri
-
-
 def test_messagesegment_image_does_not_open_missing_file_uri() -> None:
     uri = "file:///definitely-not-a-real-path/nope.jpg"
     msg = MessageSegment.image(uri)

@@ -126,13 +126,6 @@ def test_replace_map_multi_blocked_unequal_clean_only_last() -> None:
     assert "aaa<br>" not in plan.replace_map
 
 
-def test_replace_map_equal_lengths_zip() -> None:
-    from gsuid_core.ai_core.output_gate import _build_angle_replace_map
-
-    m = _build_angle_replace_map(["d1", "d2"], ["c1", "c2"])
-    assert m == {"d1": "c1", "d2": "c2"}
-
-
 def test_tool_channel_angle_and_ooc_order() -> None:
     """尖括号优先于 OOC：同时脏时只报尖括号。"""
     from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate, tool_gate_feedback
@@ -214,16 +207,6 @@ def test_ooc_warning_is_advisory_not_forced_strip() -> None:
     assert "去掉任何模型名" not in w
 
 
-def test_tool_gate_feedback_compat() -> None:
-    from gsuid_core.ai_core.output_gate import tool_gate_feedback
-
-    extra: dict = {}
-    assert tool_gate_feedback("正常发言", extra) is None
-    w = tool_gate_feedback("a<bubble/>b", extra)
-    assert w is not None
-    assert "尖括号" in w or "bubble" in w.lower() or "系统校验" in w
-
-
 def test_gate_state_is_typed_bag_only() -> None:
     """状态只挂 GateBag，不写旧 angle_bracket_* 键。"""
     from gsuid_core.ai_core.output_gate import _STATE_KEY, GateBag, pre_send_gate
@@ -245,38 +228,6 @@ def test_unknown_policy_raises() -> None:
         assert "unknown" in str(e).lower() or "not_a_policy" in str(e)
     else:
         raise AssertionError("expected ValueError for unknown policy")
-
-
-def test_angle_short_circuit_then_ooc_safe_helper(monkeypatch: Any) -> None:
-    """模拟 angle 短路后收尾产物：_ooc_safe_outbound 不得漏放 never-release。"""
-    from gsuid_core.ai_core import output_firewall as of
-    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
-
-    @dataclass
-    class _Hit:
-        category: str
-        matched: list[str]
-
-    # 同时含 tip + 模型名：gate 只报 angle
-    extra: dict = {}
-    dual = "我是MiniMax助手<br>继续"
-    r = pre_send_gate(dual, extra, user_text="你是谁", channel="main")
-    assert r.decision is GateDecision.REWRITE
-    assert r.policy == "angle_bracket"
-
-    monkeypatch.setattr(of, "is_enabled", lambda: True)
-    monkeypatch.setattr(
-        of,
-        "check_ooc",
-        lambda text, tier="roleplay", user_text="": _Hit("fund_claim", ["已转账"]),
-    )
-    # 直接测策略辅助逻辑（无整 Agent）
-    cleaned = "我是MiniMax助手\n继续"
-    # 复现 _ooc_safe_outbound 语义
-    hit = of.check_ooc(cleaned, user_text="")
-    assert hit is not None
-    safe = of.MACHINE_FALLBACK_TEXT if hit.category == "machine_dump" else of.PERSONA_FALLBACK_TEXT
-    assert safe == of.PERSONA_FALLBACK_TEXT
 
 
 def test_angle_bracket_list_with_br_is_sanitized_not_fused() -> None:

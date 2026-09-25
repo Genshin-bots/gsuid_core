@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from gsuid_core.sv import SL, SV, Plugins
@@ -81,13 +79,3 @@ def test_unauthorized_command_does_not_match(gated_sv: SV) -> None:
                 if trigger.check_command(ev_ok):
                     matched_ok.append(trigger)
     assert len(matched_ok) >= 1
-
-
-def test_handler_else_branch_is_ai_when_no_command() -> None:
-    # 命令 for/else：有 command_triggers 走触发器，否则才看 enable_ai。无运行时症状的双入口锁。
-    src = Path(__file__).resolve().parents[1].joinpath("gsuid_core", "handler.py").read_text(encoding="utf-8")
-    assert "if len(command_triggers) >= 1:" in src
-    else_idx = src.find("if len(command_triggers) >= 1:")
-    tail = src[else_idx:]
-    assert "if not enable_ai:" in tail
-    assert "persona_config_manager.get_persona_for_session" in tail

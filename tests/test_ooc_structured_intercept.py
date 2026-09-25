@@ -60,11 +60,11 @@ ETF: 有色金属ETF南方 (512400)
 
 def test_xml_report_legacy_still_extracted() -> None:
     """协议已废止，呈现层仍剥 body 进制品通道（兼容漏网）。"""
-    text = '唔…看完了…\n\n<report title="茅台">| 指标 | 值 |\n|---|---|\n| PE | 30 |</report>'
+    text = '看完了…\n\n<report title="示例股">| 指标 | 值 |\n|---|---|\n| PE | 30 |</report>'
     speech, blocks = _split_speech_and_artifacts(text)
     assert "看完了" in speech
     assert len(blocks) == 1
-    assert blocks[0][0] == "茅台"
+    assert blocks[0][0] == "示例股"
     assert "PE" in blocks[0][1]
 
 
@@ -88,7 +88,7 @@ def test_unclosed_fence_with_json_body() -> None:
 
 ```report
 {
-  "stock": "招商轮船",
+  "stock": "示例股",
   "last_close": 7.0,
   "trend": "震荡",
   "support": 6.5,
@@ -98,7 +98,7 @@ def test_unclosed_fence_with_json_body() -> None:
     speech, blocks = _split_speech_and_artifacts(text)
     assert "```" not in speech
     assert len(blocks) == 1
-    assert "招商轮船" in blocks[0][0] or "招商轮船" in blocks[0][1]
+    assert "示例股" in blocks[0][0] or "示例股" in blocks[0][1]
 
 
 def test_unclosed_fence_keeps_trailing_speech() -> None:

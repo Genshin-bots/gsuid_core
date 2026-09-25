@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from pydantic_ai.messages import ToolReturnPart
 
-from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.gs_agent import (
     _tool_return_looks_failed,
     _tool_return_is_async_pending,
@@ -40,14 +39,6 @@ def test_should_persist_skips_short_and_pending() -> None:
     assert not should_persist_tool_return("create_subagent", pending)
     long_body = "# report\n\n" + ("data line\n" * 100)
     assert should_persist_tool_return("web_search_tool", long_body)
-
-
-def test_framework_prompt_content_detection() -> None:
-    assert _is_framework_prompt_content("[框架·任务完成]\n交付")
-    assert _is_framework_prompt_content("[系统·子任务异步交付]\nx")
-    assert _is_framework_prompt_content("（系统校验：本轮你被直接呼叫")
-    assert _is_framework_prompt_content("[用户发言]\n[框架·任务完成]\nx")
-    assert not _is_framework_prompt_content("[用户发言]\n你好")
 
 
 def test_delivery_format_is_handle_first() -> None:

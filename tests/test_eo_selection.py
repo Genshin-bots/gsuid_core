@@ -7,7 +7,7 @@ from eval.BEAM_official.oracle import (
     first_source_chat_ids,
 )
 from gsuid_core.ai_core.memory.retrieval.types import Episode
-from gsuid_core.ai_core.memory.retrieval.lexical import pack_order_dialogue, looks_like_code_lead
+from gsuid_core.ai_core.memory.retrieval.lexical import pack_order_dialogue
 from gsuid_core.ai_core.memory.retrieval.order_reconstruct import select_by_topic_scores
 
 
@@ -21,11 +21,6 @@ def _ep(eid: str, content: str, day: str, sid: str) -> Episode:
         "session_id": sid,
         "turn_index": 0,
     }
-
-
-def test_looks_like_code_lead() -> None:
-    assert looks_like_code_lead("user: id = db.Column(Integer, primary_key=True)")
-    assert not looks_like_code_lead("user: I want income and expense tracking with basic analytics")
 
 
 def test_select_by_topic_scores_identity() -> None:

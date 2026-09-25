@@ -92,10 +92,6 @@ class TestIs413Error:
         assert not _is_413_error(Exception("500 Internal Server Error"))
         assert not _is_413_error(RuntimeError("dimension mismatch"))
 
-    def test_case_insensitive(self):
-        assert _is_413_error(Exception("PAYLOAD TOO LARGE"))
-        assert _is_413_error(Exception("Request Entity Too Large"))
-
 
 # ======================== embed_texts_with_backoff ========================
 

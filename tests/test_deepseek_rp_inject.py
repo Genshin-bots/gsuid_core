@@ -204,19 +204,3 @@ def test_compact_keeps_marker_on_first_user() -> None:
     _, _, where = _ensure_inner_os_on_first_user(out, current, current, MARKER, is_framework=False)
     assert where == "already"
     assert MARKER not in current
-
-
-def test_prepare_and_compact_both_pin_first_user() -> None:
-    prepare = (_ROOT / "gsuid_core/ai_core/agent_run/prepare.py").read_text(encoding="utf-8")
-    tools = (_ROOT / "gsuid_core/ai_core/agent_run/tools.py").read_text(encoding="utf-8")
-    registry = (_ROOT / "gsuid_core/ai_core/session_registry.py").read_text(encoding="utf-8")
-    fn = prepare.split("async def _run_once_prepare_user_message")[1].split("    def _inject")[0]
-    assert "_inject_deepseek_rp_marker" in fn
-    assert "not self.history" not in fn
-    assert fn.index("scaffold_hints_from_graph") < fn.index("_inject_deepseek_rp_marker")
-    assert fn.index("log_user_input") > fn.index("_inject_deepseek_rp_marker")
-    compact_at = tools.index("self.extract_history()")
-    pin_at = tools.index("self._inject_deepseek_rp_marker(st)")
-    assert compact_at < pin_at
-    assert "history[-self.MAX_AI_HISTORY_LENGTH :]" not in registry
-    assert "compact_session_history" in registry

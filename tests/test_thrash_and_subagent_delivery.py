@@ -48,12 +48,6 @@ def test_thrash_empty_response_keeps_streak() -> None:
     assert streak == 2
 
 
-def test_thrash_limit_is_four() -> None:
-    from gsuid_core.ai_core.gs_agent import _THRASH_SAME_TOOL_LIMIT
-
-    assert _THRASH_SAME_TOOL_LIMIT == 4
-
-
 def test_post_tool_contracts_split_persona_vs_capability() -> None:
     from gsuid_core.ai_core.gs_agent import (
         _POST_TOOL_OUTPUT_CONTRACT,

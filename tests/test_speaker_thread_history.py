@@ -60,7 +60,7 @@ def _group_ev(user_id: str) -> Event:
 def test_thread_keeps_unaddressed_user_lines_and_skips_bare_silence() -> None:
     t0 = time.time() - 4000
     records = [
-        _rec("u1", "甲", "没叫你，先说银缸", t0),
+        _rec("u1", "甲", "没叫你，先说那把枪", t0),
         _rec("u2", "乙", "旁边的人", t0 + 200),
         _rec("bot", "AI", "<SILENCE>", t0 + 400, role="assistant"),
         _rec("u1", "甲", "还是没叫你", t0 + 600),
@@ -72,14 +72,14 @@ def test_thread_keeps_unaddressed_user_lines_and_skips_bare_silence() -> None:
             role="assistant",
             handles=["res_f00d78425572"],
         ),
-        _rec("u1", "甲", "你这风鹰剑叠什么层", t0 + 1000),
+        _rec("u1", "甲", "你这号叠什么层", t0 + 1000),
     ]
     block = compose_group_history(records, current_user_id="u1", current_user_name="甲")
     thread, _, others = block.partition("\n\n[历史对话]")
     assert thread.index("[与你的对话]") < block.index("[历史对话]")
-    assert "没叫你，先说银缸" in thread
+    assert "没叫你，先说那把枪" in thread
     assert "还是没叫你" in thread
-    assert "你这风鹰剑叠什么层" in thread
+    assert "你这号叠什么层" in thread
     assert "<SILENCE>" not in block
     assert "res_f00d78425572" in thread
     assert "read_handle" in thread

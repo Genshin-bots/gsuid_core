@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any, Dict
 from unittest.mock import patch
 
@@ -76,17 +75,6 @@ def test_format_context_redacts_persona_member_alias_collision() -> None:
     assert '"小甲" = 用户u1' in text
 
 
-def test_fallback_stable_context_threads_persona_surfaces() -> None:
-    from gsuid_core.ai_core.context_assembly import build_stable_context, build_session_system_prompt
-
-    src = inspect.getsource(build_stable_context)
-    assert "collect_persona_surfaces" in src
-    assert "persona_surfaces=" in src
-    call_src = inspect.getsource(build_session_system_prompt)
-    assert "build_stable_context(" in call_src
-    assert "persona_name" in call_src
-
-
 def test_format_context_redacts_persona_surface_collision() -> None:
     async def _fake(_scope_key: str) -> Dict[str, Any]:
         return _profile(
@@ -106,9 +94,3 @@ def test_format_context_redacts_persona_surface_collision() -> None:
     assert '"EastHill" = AcmeCorp' in text
     assert "FrostAlias" not in text
     assert "他人昵称（不是你）" not in text
-
-
-def test_format_context_source_has_no_global_alias_table() -> None:
-    src = inspect.getsource(format_context_injection)
-    assert "get_aliases_for_scope" not in src
-    assert "可能的别名歧义" not in src

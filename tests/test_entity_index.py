@@ -79,7 +79,7 @@ def test_cjk_surface_matches_as_substring() -> None:
     """中文没有词边界，必须允许子串匹配（"玄翎秧秧" 要能命中 "玄翎"）。"""
     register_entity_surface("玄翎", "秧秧·玄翎", "XutheringWavesUID")
 
-    assert plugins_in_text("岸岸看下我玄翎秧秧面板") == ["XutheringWavesUID"]
+    assert plugins_in_text("用户看下我玄翎秧秧面板") == ["XutheringWavesUID"]
 
 
 # ── 护栏三：归属歧义时绝不路由 ────────────────────────────────────

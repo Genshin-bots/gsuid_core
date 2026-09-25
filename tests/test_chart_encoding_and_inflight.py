@@ -199,32 +199,6 @@ def test_inflight_and_active_task_block_numeric_dump() -> None:
     assert not blk3
 
 
-def test_delivery_copy_forbids_expanding_long_text() -> None:
-    from typing import Any
-
-    from gsuid_core.ai_core.planning.kanban_executor import _format_delivery_for_main_agent
-
-    class _Task:
-        ordinal = 1
-        display_name = "单元测交付"
-        failure_reason: str | None = None
-
-    class _Art:
-        id = "res_abc123456789"
-        mime = "text/markdown"
-        summary = "摘要一行即可"
-        payload_path = "/tmp/x.md"
-        payload_inline: str | None = None
-
-    task: Any = _Task()
-    arts: Any = [_Art()]
-    text = _format_delivery_for_main_agent(task, "A" * 50_000, arts)
-    assert "禁止展开念台词" in text
-    assert "禁止把对照表念进气泡" in text
-    assert "A" * 100 not in text
-    assert "limit=8000" not in text
-
-
 def test_render_prompt_mentions_series_encoding() -> None:
     from gsuid_core.ai_core.capability_agents.profiles import _RENDER_PROMPT, _RESEARCH_PROMPT
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (

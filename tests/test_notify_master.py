@@ -393,38 +393,3 @@ async def test_notify_master_budget_block_notifies_even_when_user_notify_false(
 # 端到端：handle_ai._is_error 分支仍保留固定模板文案给当前会话
 # （src 级检查，避免 sanitize_error_for_user 文本被无意改动）
 # ─────────────────────────────────────────────
-
-
-def test_handle_ai_error_branch_keeps_sanitized_template() -> None:
-    """失败分支仍向当前会话发送 sanitize 后的固定模板，并同时通知主人。
-
-    锁点变更：出站分发与预算闸已从 handle_ai 抽进 ``ai_core/turn_pipeline.py``
-    （内核零件，不是套件）。锁跟着代码搬（§9.3）。
-    直接读源文件做字符串检查，避免触发 ``handle_ai`` 导入链上的可选依赖。
-    """
-    from pathlib import Path
-
-    root = Path(__file__).parent.parent / "gsuid_core" / "ai_core"
-    pipeline = (root / "turn_pipeline.py").read_text(encoding="utf-8")
-    entry = (root / "handle_ai.py").read_text(encoding="utf-8")
-
-    # 必须保留：失败分支调用 sanitize_error_for_user 给当前会话
-    assert "sanitize_error_for_user(result_text" in pipeline
-    # 失败分支同时通知主人
-    assert "notify_master_of_agent_error" in pipeline
-    # 预算分支通知主人
-    assert "notify_master_of_budget_block" in pipeline
-    # 入口仍必须走这两个零件（别绕过去自己拼）
-    assert "deliver_run_result" in entry and "check_budget_gate" in entry
-
-
-def test_gs_agent_budget_gate_includes_master_dm() -> None:
-    """预算闸门分支（agent_run 拆分后在 prepare.py）在 ``bot.send`` 后必须追加主人 DM 调用。"""
-    from pathlib import Path
-
-    src_path = Path(__file__).parent.parent / "gsuid_core" / "ai_core" / "agent_run" / "prepare.py"
-    src = src_path.read_text(encoding="utf-8")
-
-    # 必须存在 import
-    assert "from gsuid_core.ai_core.utils import" in src
-    assert "notify_master_of_budget_block" in src

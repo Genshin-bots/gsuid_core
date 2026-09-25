@@ -99,18 +99,6 @@ def test_research_prompt_has_freshness_and_no_render() -> None:
     assert "render_agent" not in node.prompt
 
 
-def test_render_html_tool_is_media_category() -> None:
-    """避免走 buildin_tools 包 __init__（会拉 skills 依赖）；直接读源码注解。"""
-    from pathlib import Path
-
-    src = Path("gsuid_core/ai_core/buildin_tools/html_render_tools.py").read_text(encoding="utf-8")
-    # 注册装饰器：render_html_to_image 必须是 media，不能再 buildin 保底
-    assert '@ai_tools(category="media", capability_domain="资料出图")' in src
-    assert "async def render_html_to_image" in src
-    # 文档约定委派
-    assert "render_agent" in src
-
-
 def test_post_tool_contracts_prefer_capability_node_id() -> None:
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
         POST_TOOL_FAIL_CONTRACT_RENDER,

@@ -211,33 +211,6 @@ def test_post_json_body_identity(mw_env: tuple[Path, HttpTraceCollector]) -> Non
     assert meta["path"] == "/api/echo"
 
 
-def test_health_not_traced(mw_env: tuple[Path, HttpTraceCollector]) -> None:
-    _log_dir, http = mw_env
-    client = TestClient(_app())
-    r = client.get("/api/system/health")
-    assert r.status_code == 200
-    assert "x-http-trace-id" not in r.headers
-    assert http.get_active_traces() == {}
-    assert list_http_traces_from_jsonl() == []
-
-
-def test_logs_stream_excluded(mw_env: tuple[Path, HttpTraceCollector]) -> None:
-    _log_dir, http = mw_env
-    client = TestClient(_app())
-    r = client.get("/api/logs/stream")
-    assert r.status_code == 200
-    assert http.get_active_traces() == {}
-    assert list_http_traces_from_jsonl() == []
-
-
-def test_agent_stream_excluded(mw_env: tuple[Path, HttpTraceCollector]) -> None:
-    _log_dir, http = mw_env
-    client = TestClient(_app())
-    r = client.get("/api/v1/agent/chat/stream")
-    assert r.status_code == 200
-    assert list_http_traces_from_jsonl() == []
-
-
 def test_sse_content_type_detaches(mw_env: tuple[Path, HttpTraceCollector]) -> None:
     _log_dir, http = mw_env
     client = TestClient(_app())

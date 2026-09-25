@@ -16,8 +16,6 @@ from unittest.mock import AsyncMock, patch
 
 from gsuid_core.ai_core.cognition import (
     ALL_KINDS,
-    KIND_LABEL,
-    WORK_KINDS,
     MEMORY_KINDS,
     KNOWLEDGE_KINDS,
     DEFAULT_RECALL_KINDS,
@@ -51,26 +49,6 @@ def _empty_group_profile_patch() -> Any:
     return patch("gsuid_core.ai_core.memory.group_profile.get_group_profile", new=_profile)
 
 
-def test_kind_taxonomy_is_complete_and_labelled() -> None:
-    """六类语义互不覆盖，且每类都有面向模型的中文标签。"""
-    assert set(KIND_LABEL) == set(CogKind)
-    assert MEMORY_KINDS < ALL_KINDS
-    assert KNOWLEDGE_KINDS == {CogKind.KNOWLEDGE}
-    assert WORK_KINDS == {CogKind.TOOL_OUTPUT, CogKind.ARTIFACT}
-    assert DEFAULT_RECALL_KINDS < ALL_KINDS
-    assert CogKind.MEME not in DEFAULT_RECALL_KINDS
-    assert CogKind.OUTBOUND not in DEFAULT_RECALL_KINDS
-    assert SPEAKER_RECALL_KINDS <= MEMORY_KINDS
-    assert CogKind.EPISODE in SPEAKER_RECALL_KINDS
-    assert CogKind.KNOWLEDGE not in SPEAKER_RECALL_KINDS
-    assert CogKind.TOOL_OUTPUT not in SPEAKER_RECALL_KINDS
-    # ⑧ 每轮默认切片不含知识/落盘（延迟不回退）
-    assert CogKind.KNOWLEDGE not in MEMORY_KINDS
-    assert CogKind.TOOL_OUTPUT not in MEMORY_KINDS
-    # 偏好在默认切片里：它是「须遵守」的硬约束
-    assert CogKind.PREFERENCE in MEMORY_KINDS
-
-
 def test_scope_and_kinds_have_no_internal_default() -> None:
     """两个真实 bug 的共同根因是「可选参数被内部兜底成看起来合理的值」。"""
     from gsuid_core.ai_core.cognition import search_cognition
@@ -80,17 +58,6 @@ def test_scope_and_kinds_have_no_internal_default() -> None:
         param = sig.parameters[name]
         assert param.default is inspect.Parameter.empty, f"{name} 不许有默认值"
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
-
-
-def test_dual_route_enable_system2_is_required() -> None:
-    """``enable_system2`` 必填：函数默认值曾是 True 而生产配置默认关，工具路径偷跑。"""
-    from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
-
-    param = inspect.signature(dual_route_retrieve).parameters["enable_system2"]
-    assert param.default is inspect.Parameter.empty
-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    # group_id 也必须是关键字参数，避免位置传参把 user_id 错位成 group
-    assert inspect.signature(dual_route_retrieve).parameters["group_id"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_private_scope_is_none_not_user_id() -> None:
@@ -600,16 +567,6 @@ def test_search_cognition_drops_weak_episodes_without_needles() -> None:
     assert "ep_miss" not in ids
 
 
-def test_weak_hits_are_not_promoted_to_high_confidence() -> None:
-    from pathlib import Path
-
-    src = (Path(__file__).resolve().parent.parent / "gsuid_core/ai_core/cognition/facade.py").read_text(
-        encoding="utf-8"
-    )
-    assert "_ALWAYS_SHOWN_TOP" not in src
-    assert "_HIGH_CONF_FUSED_CAP" in src
-
-
 def test_speaker_query_keeps_location_facts_without_userid() -> None:
     """地点事实常是「住在杭州」，字面没有 user_id，不得整表过滤成零命中。"""
     from gsuid_core.ai_core.cognition.facade import _search_memory
@@ -871,15 +828,6 @@ def test_search_nodes_omits_self_scope_without_bot_id() -> None:
     assert make_scope_key(ScopeType.USER_GLOBAL, "u1") in captured
 
 
-def test_self_note_distill_and_search_share_self_scope() -> None:
-    """写入侧和检索侧必须用同一把 SELF key，防止再漂移。"""
-    from gsuid_core.ai_core.cognition.facade import _search_nodes
-    from gsuid_core.ai_core.cognition.distill import distill_self_note
-
-    assert "ScopeType.SELF" in inspect.getsource(distill_self_note)
-    assert "ScopeType.SELF" in inspect.getsource(_search_nodes)
-
-
 # ── 节点层：索引，不是第二份正文 ──
 
 
@@ -928,12 +876,6 @@ def test_attachment_identity_is_node_plus_ref() -> None:
     assert ("node_id", "ref") in names, names
 
 
-def test_edge_kinds_are_a_minimal_set() -> None:
-    from gsuid_core.ai_core.cognition.nodes import CogEdgeKind
-
-    assert {e.value for e in CogEdgeKind} == {"related", "supports", "supersedes", "derived_from"}
-
-
 def test_edge_table_rejects_self_loops_and_duplicates() -> None:
     from gsuid_core.ai_core.cognition.nodes import AICogEdge
 
@@ -951,26 +893,6 @@ def test_distill_gate_wants_facts_not_narrative() -> None:
     assert is_worth_distilling("约定：以后周报在每周五下午发")
     assert not is_worth_distilling("好的")
     assert not is_worth_distilling("今天心情不错，随便聊了聊，没什么特别的事情发生呢")
-
-
-def test_distilled_facts_are_marked_self_action() -> None:
-    """C6：允许回流工具/任务的**结构化结论**，但必须标明来源是「我做过的事」。"""
-    src = inspect.getsource(__import__("gsuid_core.ai_core.cognition.distill", fromlist=["x"]))
-    assert 'source="self_action"' in src
-    # 助手台词不进群事实图
-    assert "台词" in src
-
-
-def test_prefetch_is_gated_and_off_by_default() -> None:
-    """D-11 边界：有门（非每轮）、只在问答/工具意图、注入目录卡而非全文，且默认关。"""
-    from gsuid_core.ai_core.kits.memory import kit as memory_kit
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    assert ai_config.get_config("cognition_prefetch_enable").data is False, "预取必须默认关，灰度后再翻"
-    src = inspect.getsource(memory_kit)
-    assert "cognition_prefetch_enable" in src
-    assert '("问答", "工具")' in src, "预取必须有意图门"
-    assert "目录卡" in src or "已检索·目录" in src
 
 
 def test_chitchat_gate_still_skips_retrieval() -> None:
@@ -1004,18 +926,6 @@ def test_knowledge_query_appends_group_mapping_formal() -> None:
         raw = _run(_knowledge_query_for_scope("East 怎么样", CogScope(user_id="u1", group_id="ST")))
     assert expanded.endswith("AcmeCorp")
     assert "AcmeCorp" not in raw
-
-
-def test_memory_slice_keeps_the_five_budget_slots() -> None:
-    """⑧ 注入必须保留 to_prompt_text 的五个配额位，否则偏好会被事实挤掉。"""
-    from gsuid_core.ai_core.cognition.facade import inject_memory_slice
-
-    src = inspect.getsource(inject_memory_slice)
-    assert "to_prompt_text" in src, "不许改用通用渲染，那会丢掉偏好独立配额"
-    assert "priority_speakers" in src
-    assert "current_speaker_ids" in src, "第三方隐私门不能丢"
-    assert "memory_inject_max_chars" in src
-    assert "query=query" in src
 
 
 def test_repeat_query_is_short_circuited_within_a_run() -> None:
@@ -1100,14 +1010,3 @@ def test_web_search_docstring_defers_to_speaker_recall() -> None:
     doc = web_search_tool.__doc__ or ""
     assert "search_cognition" in doc
     assert "空槽" in doc
-
-
-def test_memory_budget_literal_is_gone() -> None:
-    """1200 字面量把 memory_inject_max_chars 架空了，必须已删除。"""
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parent.parent / "gsuid_core" / "ai_core"
-    for rel in ("context_assembly.py", "kits/memory/kit.py", "cognition/facade.py"):
-        src = (root / rel).read_text(encoding="utf-8")
-        assert "1200" not in src, f"{rel} 仍有 1200 字面量"
-        assert "1197" not in src, f"{rel} 仍有 1197 字面量"

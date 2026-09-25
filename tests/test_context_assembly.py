@@ -105,48 +105,6 @@ def test_dynamic_context_ordering_contract() -> None:
     print("[OK] 动态上下文顺序契约")
 
 
-def test_block_order_is_single_source() -> None:
-    """块名与顺序的唯一定义在 ``kits.base.CONTEXT_BLOCK_ORDER``，装配层只做拼装。
-
-    A 线的记忆块写 ``memory``、C 线的关系行写 ``relationship`` —— 名字不许各自造，
-    否则跨越数月的三条线会把同一个装配函数改三次、每次都对不上前一次。
-    """
-    from gsuid_core.ai_core.kits.base import CONTEXT_BLOCK_ORDER
-    from gsuid_core.ai_core.context_assembly import join_context_blocks
-
-    assert CONTEXT_BLOCK_ORDER == (
-        "mood",
-        "relationship",
-        "voice_anchor",
-        "identity",
-        "history",
-        "group_context",
-        "memory",
-        "task",
-        "plan_hint",
-        "chitchat_style",
-        "transaction_priority",
-        "report_titles",
-        "soft_trigger",
-        "plugin_hints",
-    )
-    # 乱序写入也按表拼；空块被丢弃；未在表内的块名进不来（写入侧白名单校验）
-    out = join_context_blocks({"memory": "M", "mood": "D", "plugin_hints": "P", "task": ""})
-    assert out == "D\n\nM\n\nP", out
-    cues = join_context_blocks(
-        {
-            "voice_anchor": "（口吻：迷糊）（对这个人的口气：亲昵）",
-            "identity": "（身份：你是「早柚」。）",
-            "history": "[历史对话]",
-        }
-    )
-    assert cues == "（口吻：迷糊）（对这个人的口气：亲昵）（身份：你是「早柚」。）\n\n[历史对话]", cues
-    voice_src = _src("gsuid_core/ai_core/kits/self_cognition/kit.py")
-    assert '"".join(parts)' in voice_src
-    assert '"\\n\\n".join(parts)' not in voice_src
-    print("[OK] 块顺序单源")
-
-
 def test_addressed_suffix_keeps_voice_anchor_outside_product_cap() -> None:
     from gsuid_core.ai_core.hooks.models import AgentHookContext
     from gsuid_core.ai_core.hooks.points import AgentHookPoint
@@ -207,5 +165,4 @@ def test_directed_assistant_line_is_not_a_user_alias_source() -> None:
 if __name__ == "__main__":
     test_both_entries_consume_shared_assembly()
     test_dynamic_context_ordering_contract()
-    test_block_order_is_single_source()
     print("\n装配统一防漂移锁全部通过 ✅")

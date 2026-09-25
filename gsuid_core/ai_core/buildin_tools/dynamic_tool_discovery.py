@@ -36,11 +36,6 @@ FIND_TOOLS_GAP_NOTE = (
 )
 
 
-def _need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) -> bool:
-    """兼容旧导入；实现见 find_tools_rank.need_matches_tool_text。"""
-    return need_matches_tool_text(need, retrieval_text, covers)
-
-
 def _record_find_tools_round(extra: dict[str, Any], loaded: list[str]) -> bool:
     """记下本轮暴露名。返回 True 表示相对上一轮没有新名字。"""
     from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY

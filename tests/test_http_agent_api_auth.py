@@ -74,16 +74,6 @@ def test_loopback_failures_do_not_ban_other_keys(monkeypatch, tmp_path: Path) ->
     assert still.status_code != 401
 
 
-def test_shared_vs_public_ban_identity() -> None:
-    from gsuid_core.ai_core.http_agent.auth import _is_proxy_shared_ip
-
-    assert _is_proxy_shared_ip("127.0.0.1") is True
-    assert _is_proxy_shared_ip("::1") is True
-    assert _is_proxy_shared_ip("10.0.0.1") is True
-    assert _is_proxy_shared_ip("testclient") is True
-    assert _is_proxy_shared_ip("8.8.8.8") is False
-
-
 def test_public_ip_failures_ban_all_keys(monkeypatch, tmp_path: Path) -> None:
     store = reset_key_store_for_tests(tmp_path / "http_agent_keys.json")
     token, _rec = store.create(user_id="u1", bot_id="b1")

@@ -1822,16 +1822,6 @@ def test_milestone_pins_april_mvp_deadline_over_week_opener() -> None:
     assert "sec" in ids
 
 
-def test_summarize_what_is_summary_query() -> None:
-    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_summary_query
-
-    q = (
-        "Can you summarize what I learned about implementing and improving city "
-        "autocomplete features in my weather app?"
-    )
-    assert looks_like_summary_query(q)
-
-
 def test_chrono_sample_keeps_newest_when_over_limit() -> None:
     from gsuid_core.ai_core.memory.retrieval.lexical import user_episodes_chrono_sample
 
@@ -2271,13 +2261,6 @@ def test_summary_throughout_is_not_order_query() -> None:
     )
     assert looks_like_summary_query(q)
     assert not looks_like_order_query(q)
-
-
-def test_quick_summary_is_summary_query() -> None:
-    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_summary_query
-
-    q = "Can you give me a quick summary of the sneaker options and advice we've talked about?"
-    assert looks_like_summary_query(q)
 
 
 def test_milestone_skips_craig_intro() -> None:

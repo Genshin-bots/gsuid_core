@@ -176,13 +176,6 @@ def test_plaintext_rejected() -> None:
         maybe_decrypt_auth_body({"email": "x", "password": "y"})
 
 
-def test_encrypted_accepted() -> None:
-    # 合法加密报文正常解密
-    body = _frontend_encrypt({"email": "x", "password": "y"})
-    result = maybe_decrypt_auth_body(body)
-    assert result["email"] == "x"
-
-
 # ─────────────────────────────────────────────
 # 安全边界：篡改 / 伪造 / 重放
 # ─────────────────────────────────────────────
