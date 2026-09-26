@@ -74,6 +74,13 @@ def timeline_memory_budget(query: str) -> int | None:
         if memory_config.eo_strategy == "ledger":
             return max(TIMELINE_MEMORY_JOIN_BUDGET, int(memory_config.ledger_max_chars))
         return TIMELINE_MEMORY_JOIN_BUDGET
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        wants_parallel_document_coverage,
+    )
+
+    if wants_parallel_document_coverage(query):
+        return PARALLEL_DOC_CHAR_BUDGET
     return None
 
 

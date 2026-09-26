@@ -460,7 +460,12 @@ class LoopPhase(RunOnceHost):
             and _wall_elapsed > _wall_budget
         ):
             _need_pipe = bool(st.saw_structured_return and not st.delegated_render)
-            _wall_txt = _wall_clock_nudge_for(need_render_pipeline=_need_pipe)
+            from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+            _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
+            if _need_pipe and not _allow_render:
+                _need_pipe = False
+            _wall_txt = _wall_clock_nudge_for(need_render_pipeline=_need_pipe, allow_render=_allow_render)
             node.request.parts = [*node.request.parts, UserPromptPart(content=_wall_txt)]
             st.wall_nudged = True
             logger.info(
@@ -624,12 +629,16 @@ class LoopPhase(RunOnceHost):
                                 fileos_folded=False,
                             ):
                                 st.saw_structured_return = True
-                            part.content = (
-                                _summarize_structured_data(part.content)
-                                + "\n（结构数据已折叠。综合分析请 create_subagent；"
-                                "多项数据 create_subagent(render_agent) 出图，勿台词复述。"
-                                "聊天通道禁止念节点名。）"
-                            )
+                            from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+                            _fold = "\n（结构数据已折叠。综合分析请 create_subagent；聊天通道禁止念节点名。）"
+                            if persona_allows_capability_agent(self.persona_name, "render_agent"):
+                                _fold = (
+                                    "\n（结构数据已折叠。综合分析请 create_subagent；"
+                                    "多项数据 create_subagent(render_agent) 出图，勿台词复述。"
+                                    "聊天通道禁止念节点名。）"
+                                )
+                            part.content = _summarize_structured_data(part.content) + _fold
                         elif content_is_render_candidate(
                             tool_name=part.tool_name or "",
                             content=part.content,

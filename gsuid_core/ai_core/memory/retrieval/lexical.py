@@ -9,6 +9,7 @@ import re
 import asyncio
 from typing import Protocol, runtime_checkable
 from datetime import datetime, timezone
+from dataclasses import dataclass
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -217,40 +218,36 @@ SPEECH_ACT_HINT = (
     "都不是现在已经如此。问现在的日期、数量或有没有发生，没有本轮工具结果就只转述谁在何时说过；"
     "问谁说过什么时照原话并带上说话时间。"
 )
-# 旧名仍被检索渲染引用；语义已是陈述记录，不再许可「取最晚当事实」。
-LATEST_WINS_HINT = SPEECH_ACT_HINT
-SET_RECALL_HINT = "计数/清单可能跨多段会话；本页未齐时用命中里的专名再 search_cognition。"
-VALUE_UPDATE_HINT = (
-    "同一属性在不同时间戳上的多个值是更新，只答最晚一条，不要并列，也不要问用户选哪条。"
-    "做过/没做过这种极性相反，指出两边并问以哪边为准。"
-    "问顺序、历程、清单时不要用这条，按时间保留全部。"
-)
-ASSISTANT_QUOTE_HINT = "问当时推荐、列出或说过什么时以助手原句为准。原句不在就答未提及，不要用邻近清单里的另一项顶替。"
-RECOMMEND_CONSTRAINT_HINT = "推荐必须满足召回里用户原话写过的限制，不要追加原话没要的品类或平台。"
-SUM_ANSWER_HINT = "同一主题下各笔带金额或数量的原话都要加总，不要只留最后一笔。"
+# 比较题要装下每一份的栏目行。16k 按 800 字一份只能放下大约 20 份。
+PARALLEL_DOC_CHAR_BUDGET = 48000
 _SUM_RE = re.compile(
     r"\bhow much total\b|\btotal money\b|\bspent on\b|\bexpenses\b|一共花|总共花|合计|"
-    r"\bhow many (?:hours?|days?)\b.{0,80}\b(?:in total|altogether)\b",
+    r"\bhow many (?:hours?|days?)\b.{0,80}\b(?:in total|altogether)\b|"
+    r"\btotal (?:number|sum) of\b|summed across",
     re.IGNORECASE,
 )
+# 问句自己点名多份材料。裸 list/which/for each、合计、是多少不算。
+_DOC_NOUN = r"(?:reports?|files?|documents?|tables?|materials?|材料|文件|文档|报告|表格)"
+_SET_QUERY_RE = re.compile(
+    r"\b(?:list (?:all|every) (?:the )?" + _DOC_NOUN + r"|"
+    r"across (?:all |these |those |the )?" + _DOC_NOUN + r"|"
+    r"among (?:all |these |those |the )?" + _DOC_NOUN + r"|"
+    r"each of (?:these |those )?" + _DOC_NOUN + r"|"
+    r"every one of (?:these |those )?" + _DOC_NOUN + r"|"
+    r"for each " + _DOC_NOUN + r"|"
+    r"which of (?:these|those) " + _DOC_NOUN + r")\b|"
+    r"这些" + _DOC_NOUN + r"|"
+    r"几份" + _DOC_NOUN + r"|"
+    r"各(?:份|篇)|每(?:份|篇)|哪(?:一|几)份|"
+    r"哪些" + _DOC_NOUN + r"|"
+    r"所有" + _DOC_NOUN + r"|"
+    r"跨(?:文件|材料|文档|报告)|多份",
+    re.IGNORECASE,
+)
+_DOC_SOURCE_RE = re.compile(r"【文档(?:续)?】([^\n]+)")
 _LIST_SPREAD_RE = re.compile(r"\bhow many\b|\bhow much\b|\blist\b", re.IGNORECASE)
 _WHAT_IS_MINE_RE = re.compile(r"\bwhat(?:'s| is) my\b", re.IGNORECASE)
 _WHAT_DID_RE = re.compile(r"\bwhat\b.{0,60}\bdid I\b", re.IGNORECASE)
-EVIDENCE_USE_HINT = (
-    "做过/没做过这类相反说法指出两边并问哪条为准。"
-    "片段里的日期、数量、状态只是当时的原话，不能当成现在；"
-    "问这些时先搜索或委派。问谁说过什么则按原话；不够再 search_cognition。"
-)
-COUNT_ANSWER_HINT = (
-    "用户原话里已经给出的总数优先；同一件事前后两个总数，只采用最晚一次说出的那个。"
-    "问有哪些、多少种时，不同专名各计一次，按发生日从早到晚列出再数。"
-    "助手的推荐不算用户做过，不要按常识补，也不要问用户选。"
-)
-CONFLICT_BANNER = (
-    "【陈述不一致】下面是不同时间的原话，不是两个现成答案。"
-    "做过/没做过这种极性相反，指出两边并问以哪边为准；"
-    "数字或日期前后不同时，只转述各句，不要把较晚一句说成当前事实。"
-)
 
 
 def strip_clock_lines(query: str) -> str:
@@ -854,7 +851,7 @@ _VALUE_SLOT_RE = re.compile(
     r"\bwhere (?:did|does|do|is|was|are)\b|"
     r"\bwhat was\b|"
     r"\bhow often\b|"
-    r"\bwhich (?:company|city|place|one)\b",
+    r"\bwhich (?:company|city|place|one)\s+(?:did|do|does|is|was|are)\b",
     re.IGNORECASE,
 )
 
@@ -941,6 +938,8 @@ def looks_like_attribute_query(query: str) -> bool:
     if looks_like_sum_query(body):
         return False
     if looks_like_count_query(body):
+        return False
+    if looks_like_set_query(body):
         return False
     if looks_like_latest_slot_query(body):
         return True
@@ -1078,6 +1077,20 @@ def looks_like_assistant_quote_query(query: str) -> bool:
     return bool(_ASSISTANT_QUOTE_RE.search(body))
 
 
+def looks_like_set_query(query: str) -> bool:
+    """跨多份材料的清单/比较/聚合。单槽「我现在的值」不算。"""
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_order_query,
+        looks_like_summary_query,
+        looks_like_duration_query,
+    )
+
+    body = strip_clock_lines(query or "")
+    if not body or looks_like_order_query(body) or looks_like_summary_query(body) or looks_like_duration_query(body):
+        return False
+    return bool(_SET_QUERY_RE.search(body))
+
+
 def looks_like_sum_query(query: str) -> bool:
     """多笔加总。排序、摘要、计数和单值更新不算。"""
     from gsuid_core.ai_core.memory.retrieval.event_time import (
@@ -1096,6 +1109,52 @@ def looks_like_sum_query(query: str) -> bool:
     ):
         return False
     return bool(_SUM_RE.search(body))
+
+
+# 问的是说话人自己的经历时，不改走平行材料摘录。
+_PERSONAL_DOC_RE = re.compile(
+    r"\b(?:i|me|my|mine|i'm|i've|i'll)\b|我的|我有|我在|我当时|我们",
+    re.IGNORECASE,
+)
+_DOC_TOKEN_SKIP = frozenset(
+    {
+        "这个",
+        "那个",
+        "什么",
+        "怎么",
+        "我们",
+        "你们",
+        "他们",
+        "一个",
+        "没有",
+        "可以",
+        "已经",
+        "以及",
+        "其中",
+        "通过",
+        "进行",
+        "相关",
+        "以下",
+    }
+)
+
+
+def wants_parallel_document_coverage(query: str) -> bool:
+    """比较或汇总多份材料。个人经历、排序和摘要不走这条。"""
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_order_query,
+        looks_like_summary_query,
+        looks_like_duration_query,
+    )
+
+    body = strip_clock_lines(query or "")
+    if not body or _PERSONAL_DOC_RE.search(body):
+        return False
+    if looks_like_order_query(body) or looks_like_summary_query(body) or looks_like_duration_query(body):
+        return False
+    if looks_like_sum_query(body):
+        return False
+    return looks_like_set_query(body)
 
 
 def looks_like_recommendation_query(query: str) -> bool:
@@ -1458,7 +1517,10 @@ def pack_attribute_episodes(
     asker_id: str = "",
     cap: int = 12,
 ) -> list[Episode]:
-    """同一天只留较晚的那次说法，并按天从新到旧排，避免 8k 只剩更早的数字。"""
+    """同一来源同一天只留较晚说法，按天从新到旧排。
+
+    不同来源（文档标题或闲聊正文前缀）即使同一天也分开保留。
+    """
     toks = attribute_content_tokens(query)
     need = 2 if len(toks) >= 2 else 1
     user: list[Episode] = []
@@ -1484,11 +1546,13 @@ def pack_attribute_episodes(
     by_day: dict[str, Episode] = {}
     for ep in strong:
         day = str(ep["valid_at"] if "valid_at" in ep else "")[:10]
-        prev = by_day[day] if day in by_day else None
+        src = episode_source_key(ep["content"] or "")
+        slot = f"{day}\0{src}"
+        prev = by_day[slot] if slot in by_day else None
         stamp = str(ep["valid_at"] if "valid_at" in ep else "")
         prev_stamp = str(prev["valid_at"] if prev is not None and "valid_at" in prev else "")
         if prev is None or stamp >= prev_stamp:
-            by_day[day] = ep
+            by_day[slot] = ep
     days = sorted(by_day, reverse=True)
     if cap > 0 and len(days) > cap:
         head = days[0]
@@ -1846,6 +1910,675 @@ def pack_milestone_episodes(episodes: list[Episode], query: str, cap: int, char_
     return pack_first_mention_episodes(episodes, query, cap)
 
 
+def episode_source_key(content: str) -> str:
+    """平行材料的来源键：文档标题，否则说话人前缀，否则开头若干字。"""
+    raw = (content or "").strip()
+    m = _DOC_SOURCE_RE.search(raw)
+    if m:
+        return m.group(1).strip()[:80]
+    if ": " in raw[:96]:
+        head, rest = raw.split(": ", 1)
+        if len(head) <= 64 and "\n" not in head:
+            raw = rest
+            m = _DOC_SOURCE_RE.search(raw)
+            if m:
+                return m.group(1).strip()[:80]
+    hm = re.search(r"^#\s+(.+)$", raw, re.M)
+    if hm:
+        return hm.group(1).strip()[:80]
+    return raw[:48]
+
+
+def is_ingested_document_episode(content: str) -> bool:
+    return bool(_DOC_SOURCE_RE.search(content or ""))
+
+
+def merge_document_sibling_episodes(hits: list[Episode], pool: list[Episode]) -> list[Episode]:
+    """命中某篇入库文档的一块后，把同标题的其余块并回来。"""
+    wanted: set[str] = set()
+    for ep in hits:
+        raw = ep["content"] or ""
+        if not is_ingested_document_episode(raw):
+            continue
+        key = episode_source_key(raw)
+        if key:
+            wanted.add(key)
+    if not wanted:
+        return list(hits)
+    seen = {str(ep["id"]) for ep in hits if "id" in ep}
+    extra: list[Episode] = []
+    for ep in pool:
+        eid = str(ep["id"]) if "id" in ep else ""
+        if eid and eid in seen:
+            continue
+        raw = ep["content"] or ""
+        if episode_source_key(raw) not in wanted:
+            continue
+        if eid:
+            seen.add(eid)
+        extra.append(ep)
+    return list(hits) + extra
+
+
+def pack_coverage_episodes(episodes: list[Episode], query: str, cap: int = 256) -> list[Episode]:
+    """集合题按整篇文档排出：同标题块按入库顺序连在一起，文档按本题命中排序。"""
+    groups: dict[str, list[Episode]] = {}
+    order: list[str] = []
+    for ep in episodes:
+        raw = ep["content"] or ""
+        if _assistant_turn(raw):
+            continue
+        key = episode_source_key(raw) or "_"
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(ep)
+    if not order:
+        return list(episodes)[:cap]
+    for key in groups:
+        groups[key].sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+
+    def _doc_score(key: str) -> int:
+        return sum(_topic_hit_count(query, e["content"] or "") for e in groups[key])
+
+    order.sort(key=_doc_score, reverse=True)
+    out: list[Episode] = []
+    seen: set[str] = set()
+    for key in order:
+        for ep in groups[key]:
+            eid = str(ep["id"]) if "id" in ep else ""
+            if eid and eid in seen:
+                continue
+            if eid:
+                seen.add(eid)
+            out.append(ep)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def collapse_document_episodes(items: list[Episode]) -> list[Episode]:
+    """把同标题连续块拼成一篇，召回粒度是文档而不是 900 字切片。"""
+    out: list[Episode] = []
+    i = 0
+    while i < len(items):
+        ep = items[i]
+        raw = ep["content"] or ""
+        if not is_ingested_document_episode(raw):
+            out.append(ep)
+            i += 1
+            continue
+        key = episode_source_key(raw)
+        parts = [raw]
+        j = i + 1
+        while j < len(items):
+            nxt = items[j]["content"] or ""
+            if is_ingested_document_episode(nxt) and episode_source_key(nxt) == key:
+                m = _DOC_SOURCE_RE.search(nxt)
+                parts.append(nxt[m.end() :].lstrip() if m else nxt)
+                j += 1
+                continue
+            break
+        joined = "\n".join(parts)
+        out.append(
+            Episode(
+                id=ep["id"],
+                content=joined,
+                valid_at=ep["valid_at"] if "valid_at" in ep else "",
+                scope_key=ep["scope_key"] if "scope_key" in ep else "",
+                embedding=list(ep["embedding"]) if "embedding" in ep else [],
+            )
+        )
+        i = j
+    return out
+
+
+def _coverage_tokens(query: str) -> list[str]:
+    """问句里的实词。不按出现顺序截断，否则后半句的栏目词进不了权重。"""
+    body = strip_clock_lines(query or "")
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(piece: str) -> None:
+        key = piece.lower()
+        if not key or key in seen:
+            return
+        if key in _ASK_FILLER or key in _TOPIC_SKIP or key in _DOC_TOKEN_SKIP or key in _QUERY_STOPWORDS:
+            return
+        if piece.isascii() and piece.isdigit() and len(piece) < 4:
+            return
+        if piece.isascii() and len(piece) < 4 and not any(ch.isdigit() for ch in piece):
+            return
+        if not piece.isascii() and len(piece) < 2:
+            return
+        seen.add(key)
+        out.append(piece)
+
+    for match in _OVERLAP_TOKEN_RE.finditer(body):
+        tok = match.group(0).replace("%", "").replace("\\", "")
+        cjk = not tok.isascii() and "-" not in tok and not any(ch.isdigit() for ch in tok)
+        if cjk and len(tok) > 2:
+            if len(tok) <= 6:
+                add(tok)
+            for size in (3, 2):
+                if len(tok) < size:
+                    continue
+                for i in range(len(tok) - size + 1):
+                    add(tok[i : i + size])
+            continue
+        add(tok)
+    if len(out) <= 64:
+        return out
+    longer = [tok for tok in out if (not tok.isascii() and len(tok) >= 3) or len(tok) >= 6]
+    return longer if len(longer) >= 8 else out[:64]
+
+
+def _text_token_score(text: str, weights: dict[str, float]) -> float:
+    blob = (text or "").lower()
+    total = 0.0
+    for tok, weight in weights.items():
+        if token_in_text(tok, blob):
+            total += weight
+    return total
+
+
+def _is_table_header_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped.startswith("|") or stripped.count("|") < 3:
+        return False
+    letters = 0
+    digits = 0
+    for ch in stripped:
+        if ch.isdigit():
+            digits += 1
+        elif ch.isalpha() or "\u4e00" <= ch <= "\u9fff":
+            letters += 1
+    return letters >= 4 and digits <= 2
+
+
+def _focus_tokens(weights: dict[str, float]) -> list[str]:
+    """权重最高的几个实词。每个都要在摘录里留一行，避免只剩下得分最高的那一栏。"""
+    ranked = sorted(weights.items(), key=lambda item: -item[1])
+    if not ranked:
+        return []
+    top = ranked[0][1]
+    out: list[str] = []
+    for tok, weight in ranked:
+        if weight < top * 0.25:
+            break
+        out.append(tok)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _cover_focus(weights: dict[str, float]) -> list[str]:
+    """比较题多留几个栏目词。最高词若是 report 这类套话，后面的栏目词仍要留下。"""
+    ranked = sorted(weights.items(), key=lambda item: -item[1])
+    if not ranked:
+        return []
+    floor = max(0.2, ranked[0][1] * 0.05)
+    out: list[str] = []
+    for tok, weight in ranked:
+        if weight < floor:
+            break
+        out.append(tok)
+        if len(out) >= 12:
+            break
+    return out
+
+
+_MONTH_WORD: dict[str, int] = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sept": 9,
+    "sep": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+_SPAN_RE = re.compile(
+    r"(20\d{2})[/.年-](\d{1,2})(?:月)?"
+    r".{0,48}?(?:\bto\b|\bthrough\b|至|到)"
+    r".{0,16}?(20\d{2})[/.年-](\d{1,2})",
+    re.IGNORECASE,
+)
+_HTML_CELL_RE = re.compile(r"<t([dh])([^>]*)>(.*?)</t\1>", re.IGNORECASE | re.DOTALL)
+_SPAN_ATTR_RE = re.compile(r"""(rowspan|colspan)\s*=\s*["']?(\d+)""", re.IGNORECASE)
+_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
+
+
+@dataclass
+class _CoverLine:
+    text: str
+    section: str
+    score: float
+    protected: bool
+    year: int
+    month: int
+
+
+def _query_month_span(query: str) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """问句里的起止年月。表从年份开头排时，要的月份在后部。"""
+    match = _SPAN_RE.search(query or "")
+    if match is None:
+        return None
+    y1, m1, y2, m2 = (int(match.group(i)) for i in range(1, 5))
+    if not (1 <= m1 <= 12 and 1 <= m2 <= 12):
+        return None
+    start, end = (y1, m1), (y2, m2)
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def _focus_hit(text: str, focus: list[str], *, loose: bool) -> bool:
+    blob = (text or "").lower()
+    for tok in focus:
+        if token_in_text(tok, blob):
+            return True
+        if not loose or not tok.isascii() or len(tok) < 6:
+            continue
+        stem = tok.lower()
+        for suf in ("ing", "ed", "es", "s"):
+            if stem.endswith(suf) and len(stem) - len(suf) >= 4:
+                stem = stem[: -len(suf)]
+                break
+        head = stem[:6]
+        if len(head) >= 5 and re.search(rf"\b{re.escape(head)}", blob):
+            return True
+    return False
+
+
+def _window_focus(line: str, focus: list[str], limit: int = 420) -> str:
+    if len(line) <= limit:
+        return line
+    low = line.lower()
+    idx = -1
+    for tok in focus:
+        found = low.find(tok.lower())
+        if found >= 0:
+            idx = found
+            break
+    if idx < 0:
+        return line[:limit]
+    start = max(0, idx - limit // 5)
+    return line[start : start + limit]
+
+
+def _html_grid(table_html: str) -> list[list[str]]:
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.IGNORECASE | re.DOTALL)
+    grid: list[list[str]] = []
+    carry: dict[tuple[int, int], str] = {}
+    for r_i, row_html in enumerate(rows):
+        cells = list(_HTML_CELL_RE.finditer(row_html))
+        row: list[str] = []
+        col = 0
+        seen = 0
+        while seen < len(cells) or (r_i, col) in carry:
+            if (r_i, col) in carry:
+                row.append(carry.pop((r_i, col)))
+                col += 1
+                continue
+            if seen >= len(cells):
+                break
+            matched = cells[seen]
+            seen += 1
+            text = re.sub(r"<[^>]+>", " ", matched.group(3))
+            text = re.sub(r"\s+", " ", text).strip()
+            colspan = 1
+            rowspan = 1
+            for attr in _SPAN_ATTR_RE.finditer(matched.group(2)):
+                span_n = int(attr.group(2))
+                if attr.group(1).lower() == "colspan":
+                    colspan = max(1, span_n)
+                else:
+                    rowspan = max(1, span_n)
+            for _off in range(colspan):
+                while (r_i, col) in carry:
+                    row.append(carry.pop((r_i, col)))
+                    col += 1
+                row.append(text)
+                if rowspan > 1:
+                    for rr in range(1, rowspan):
+                        carry[(r_i + rr, col)] = text
+                col += 1
+        if any(cell for cell in row):
+            grid.append(row)
+    return grid
+
+
+def _header_labels(grid: list[list[str]]) -> tuple[list[str], int]:
+    n_header = 0
+    for row in grid[:3]:
+        letters = 0
+        digits = 0
+        for cell in row:
+            for ch in cell:
+                if ch.isdigit():
+                    digits += 1
+                elif ch.isalpha() or "\u4e00" <= ch <= "\u9fff":
+                    letters += 1
+        if letters >= 4 and digits <= 2:
+            n_header += 1
+            continue
+        break
+    if n_header == 0:
+        return [], 0
+    width = max(len(row) for row in grid[:n_header])
+    labels: list[str] = []
+    for col in range(width):
+        parts: list[str] = []
+        for row in grid[:n_header]:
+            cell = row[col].strip() if col < len(row) else ""
+            if cell and (not parts or parts[-1] != cell):
+                parts.append(cell)
+        labels.append(" ".join(parts))
+    return labels, n_header
+
+
+def _flatten_html_tables(text: str) -> str:
+    """把 HTML 表摊成「表题 + 列名 + 数据行」，避免整表从开头被截掉。"""
+    if "<table" not in (text or "").lower():
+        return text
+    parts: list[str] = []
+    cursor = 0
+    for match in _TABLE_RE.finditer(text):
+        before = text[cursor : match.start()]
+        plain = re.sub(r"<[^>]+>", " ", before)
+        plain = re.sub(r"[ \t]+", " ", plain).strip()
+        if plain:
+            parts.append(plain)
+        grid = _html_grid(match.group(0))
+        labels, n_header = _header_labels(grid)
+        if labels:
+            parts.append(" | ".join(labels))
+        for row in grid[n_header:]:
+            width = max(len(labels), len(row))
+            cells = [(row[i] if i < len(row) else "") for i in range(width)]
+            line = " | ".join(cells).strip()
+            if line.strip("| "):
+                parts.append(line)
+        cursor = match.end()
+    tail = re.sub(r"<[^>]+>", " ", text[cursor:])
+    tail = re.sub(r"[ \t]+", " ", tail).strip()
+    if tail:
+        parts.append(tail)
+    return "\n".join(parts)
+
+
+def _split_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.split("|")]
+
+
+def _year_marker(cells: list[str]) -> int | None:
+    if not cells:
+        return None
+    matched = re.fullmatch(r"20\d{2}", cells[0].strip())
+    if matched is None:
+        return None
+    rest = "".join(cells[1:])
+    if _HAS_DIGIT_RE.search(rest):
+        return None
+    return int(matched.group(0))
+
+
+def _month_of_cell(cell: str) -> int | None:
+    word = re.match(r"[A-Za-z]+", cell.strip())
+    if word is not None:
+        return _MONTH_WORD[word.group(0).lower()] if word.group(0).lower() in _MONTH_WORD else None
+    num = re.match(r"(\d{1,2})\s*月", cell.strip())
+    if num is None:
+        return None
+    month = int(num.group(1))
+    if 1 <= month <= 12:
+        return month
+    return None
+
+
+def _section_matches(line: str, focus: list[str]) -> bool:
+    """用较长的问句词判断这张表，避免 total 把每张表都打开。"""
+    long = [tok for tok in focus if len(tok) >= 6]
+    return _focus_hit(line, long or focus, loose=True)
+
+
+def _select_cover_lines(
+    text: str,
+    focus: list[str],
+    weights: dict[str, float],
+    span: tuple[tuple[int, int], tuple[int, int]] | None,
+) -> list[_CoverLine]:
+    """留下栏目行；问句有月份区间时，连同该区间的表行，不从第一行往下切。"""
+    flat = _flatten_html_tables(text)
+    raw_lines = [line.strip() for line in flat.splitlines() if line.strip()]
+    chosen: list[_CoverLine] = []
+    best_hit: dict[str, tuple[float, str, str]] = {}
+    section = ""
+    section_on = False
+    section_score = 0.0
+    year = 0
+    months_kept = 0
+    header_kept = False
+    for line in raw_lines:
+        if "【文档" in line:
+            chosen.append(_CoverLine(line, "", 1.0, True, 0, 0))
+            continue
+        cells = _split_cells(line)
+        marked = _year_marker(cells)
+        if marked is not None:
+            year = marked
+            continue
+        month = _month_of_cell(cells[0]) if cells else None
+        heading = "|" not in line and sum(ch.isdigit() for ch in line) <= 2 and 8 <= len(line) <= 280
+        table_label = bool(re.search(r"\btable\s+\d", line, re.IGNORECASE))
+        if heading or table_label:
+            section = line[:120]
+            section_on = _section_matches(line, focus)
+            section_score = _text_token_score(line, weights)
+            header_kept = False
+            if section_on and table_label:
+                chosen.append(_CoverLine(line[:180], section, section_score, False, 0, 0))
+            months_kept = 0
+            continue
+        headerish = "|" in line and month is None and sum(ch.isdigit() for ch in line) <= 2
+        if section_on and not header_kept and (_is_table_header_line(line) or headerish):
+            chosen.append(_CoverLine(line[:400], section, section_score, True, 0, 0))
+            header_kept = True
+            continue
+        in_span = month is not None and year > 0 and span is not None and span[0] <= (year, month) <= span[1]
+        if section_on and in_span and month is not None and months_kept < 36:
+            chosen.append(_CoverLine(line[:500], section, section_score + 0.5, False, year, month))
+            months_kept += 1
+            continue
+        if len(line) > 220 or not _focus_hit(line, focus, loose=False):
+            continue
+        score = _text_token_score(line, weights)
+        low = line.lower()
+        for tok in focus:
+            if not token_in_text(tok, low):
+                continue
+            prev = best_hit[tok] if tok in best_hit else None
+            shorter = prev is not None and abs(score - prev[0]) < 0.05 and len(line) < len(prev[1])
+            if prev is None or score > prev[0] or shorter:
+                best_hit[tok] = (score, line, section)
+    seen_hit: set[str] = set()
+    for _tok, (score, line, sec) in best_hit.items():
+        clipped = _window_focus(line, focus)
+        if clipped in seen_hit:
+            continue
+        seen_hit.add(clipped)
+        chosen.append(_CoverLine(clipped, sec, score + 1.0, False, 0, 0))
+    if not any(line.score > 1.0 or line.month for line in chosen):
+        return []
+    # 每份至少保住权重最高的那一行，缩预算时不能把它删掉。
+    best_i = -1
+    best_s = -1.0
+    for i, line in enumerate(chosen):
+        if line.protected and "【文档" in line.text:
+            continue
+        if line.score >= best_s:
+            best_s = line.score
+            best_i = i
+    if best_i >= 0:
+        kept = chosen[best_i]
+        chosen[best_i] = _CoverLine(kept.text, kept.section, kept.score, True, kept.year, kept.month)
+    return chosen
+
+
+def _fit_cover_lines(groups: list[list[_CoverLine]], budget: int) -> list[list[_CoverLine]]:
+    def total() -> int:
+        return sum(len("\n".join(line.text for line in group)) for group in groups)
+
+    guard = 0
+    while total() > budget and guard < 8000:
+        guard += 1
+        drop_g = -1
+        drop_i = -1
+        # 先删非月份的多余行，每份至少留一行，避免预算把后面的来源整份丢掉。
+        drop_key = (2, 10**9.0)
+        for g_i, group in enumerate(groups):
+            idxs = [i for i, line in enumerate(group) if "【文档" not in line.text]
+            if len(idxs) <= 1:
+                continue
+            for i in idxs:
+                line = group[i]
+                if line.protected:
+                    continue
+                kind = 0 if line.month <= 0 else 1
+                key = (kind, line.score)
+                if drop_g < 0 or key < drop_key:
+                    drop_key = key
+                    drop_g = g_i
+                    drop_i = i
+        if drop_g < 0:
+            break
+        del groups[drop_g][drop_i]
+    return [group for group in groups if any("【文档" in line.text or line.score > 0 for line in group)]
+
+
+def cover_document_excerpts(
+    episodes: list[Episode],
+    query: str,
+    *,
+    char_budget: int = PARALLEL_DOC_CHAR_BUDGET,
+) -> list[Episode]:
+    """每份入库文档只留下和问句重叠的段落，预算按来源分。
+
+    拼全文再从开头截，会只剩封面，问到的表在后面。
+    """
+    groups: dict[str, list[Episode]] = {}
+    order: list[str] = []
+    for ep in episodes:
+        raw = ep["content"] or ""
+        if not is_ingested_document_episode(raw):
+            continue
+        key = episode_source_key(raw)
+        if not key:
+            continue
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(ep)
+    if len(order) < 2:
+        return []
+    tokens = _coverage_tokens(query)
+    if not tokens:
+        return []
+    for key in order:
+        groups[key].sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    # 多份材料都出现、但每份只出现少数次的词，才像「同一栏目」。
+    doc_df = {tok: 0 for tok in tokens}
+    chunk_df = {tok: 0 for tok in tokens}
+    for key in order:
+        seen_in_doc: set[str] = set()
+        for ep in groups[key]:
+            blob = (ep["content"] or "").lower()
+            for tok in tokens:
+                if not token_in_text(tok, blob):
+                    continue
+                chunk_df[tok] += 1
+                seen_in_doc.add(tok)
+        for tok in seen_in_doc:
+            doc_df[tok] += 1
+    weights: dict[str, float] = {}
+    for tok in tokens:
+        docs_n = doc_df[tok]
+        chunks_n = chunk_df[tok]
+        if docs_n < 2 or chunks_n <= 0:
+            continue
+        weights[tok] = (docs_n * docs_n) / chunks_n
+    if len(weights) > 24:
+        weights = dict(sorted(weights.items(), key=lambda item: -item[1])[:24])
+    if not weights:
+        return []
+    focus = _cover_focus(weights)
+    if not focus:
+        return []
+    budget = char_budget if char_budget > 0 else PARALLEL_DOC_CHAR_BUDGET
+    span = _query_month_span(query)
+    built: list[tuple[str, str, list[_CoverLine]]] = []
+    for key in order:
+        chunks = groups[key]
+        parts: list[str] = []
+        for ep in chunks:
+            raw = (ep["content"] or "").strip()
+            marker = _DOC_SOURCE_RE.search(raw)
+            body = raw[marker.end() :].lstrip() if marker else raw
+            if body:
+                parts.append(body)
+        joined = "".join(parts) if any("<tr" in part.lower() for part in parts) else "\n".join(parts)
+        if "【文档" not in joined:
+            joined = f"【文档】{key}\n{joined}"
+        lines = _select_cover_lines(joined, focus, weights, span)
+        if not lines:
+            continue
+        anchor = chunks[0]
+        valid_at = str(anchor["valid_at"] if "valid_at" in anchor else "")
+        built.append((key, valid_at, lines))
+    if len(built) < 2:
+        return []
+    _fit_cover_lines([lines for _key, _va, lines in built], budget)
+    out: list[Episode] = []
+    for key, valid_at, lines in built:
+        if not lines:
+            continue
+        anchor = groups[key][0]
+        text = "\n".join(line.text for line in lines).strip()
+        if not text:
+            continue
+        if "【文档" not in text:
+            text = f"【文档】{key}\n{text}"
+        out.append(
+            Episode(
+                id=anchor["id"],
+                content=text,
+                valid_at=valid_at,
+                scope_key=anchor["scope_key"] if "scope_key" in anchor else "",
+                embedding=[],
+            )
+        )
+    if len(out) < 2:
+        return []
+    return out
+
+
 def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 24) -> list[Episode]:
     """加总题留下同一主题里每笔带数字的原话，不按天只留最后一次。"""
     cands = topic_pin_tokens(query, limit=4)
@@ -2083,6 +2816,13 @@ def _pack_without_sweep(
         return pack_assistant_quote_episodes(eps, query)
     if looks_like_sum_query(query):
         return pack_sum_episodes(eps, query)
+    if wants_parallel_document_coverage(query):
+        covered = cover_document_excerpts(eps, query, char_budget=char_budget)
+        if covered:
+            rest = [ep for ep in eps if not is_ingested_document_episode(ep["content"] or "")]
+            return covered + rest[:8]
+    if looks_like_set_query(query):
+        return pack_coverage_episodes(eps, query)
     if _COUNT_EXCLUDE_RE.search(query or "") and re.search(r"\bhow many\b", query or "", re.IGNORECASE):
         user = [e for e in eps if not _assistant_turn(e["content"] or "")]
         valued = [
@@ -2404,10 +3144,7 @@ def render_value_timeline(episodes: list[Episode], query: str, budget: int) -> s
     """赋值原句整段放进预算。缩行宽，不把较晚的那次截掉。"""
     if not episodes or budget < 80:
         return ""
-    header = (
-        "【该事项的原话】同一属性的早中晚原句都留在这里供核对。"
-        "作答只报最晚一条，不要并列，也不要问用户选。极性相反仍指出两边。"
-    )
+    header = "【该事项的原话】"
     for width in (480, 280, 160):
         lines: list[str] = []
         for ep in episodes:
@@ -3181,10 +3918,6 @@ async def build_fact_sweep(
     if not body_lines:
         return None
     body = "\n".join(body_lines)
-    if looks_like_sum_query(query):
-        body = SUM_ANSWER_HINT + "\n" + body
-    elif looks_like_count_query(query) or looks_like_order_query(query):
-        body = "每行一件事。不同专名各计一次，按日期从早到晚。助手推荐不算用户做过。\n" + body
     days = [day for day, _piece in chosen if day]
     stamp = f"{days[-1]} 23:59:59" if days else ""
     sheet = _episode_from_row("fact-sheet", body, stamp, scope)
@@ -3505,24 +4238,13 @@ async def assistant_quote_episodes(
     return found[:16]
 
 
-# 旧名：评测脚本/单测若还 import 这个，指向同一实现。
-apply_set_recall = expand_lexical_recall
-
-
 __all__ = [
-    "CONFLICT_BANNER",
-    "COUNT_ANSWER_HINT",
-    "EVIDENCE_USE_HINT",
-    "LATEST_WINS_HINT",
-    "SET_RECALL_HINT",
     "SPEECH_ACT_HINT",
-    "VALUE_UPDATE_HINT",
     "attribute_pin_episodes",
     "excerpt_around_tokens",
     "looks_like_attribute_query",
     "pack_attribute_episodes",
     "apply_query_episode_pack",
-    "apply_set_recall",
     "cluster_episodes_by_time",
     "collect_user_stance_conflicts",
     "diversify_episodes",
@@ -3533,6 +4255,16 @@ __all__ = [
     "lexical_search_episodes",
     "looks_like_count_query",
     "looks_like_latest_slot_query",
+    "looks_like_set_query",
+    "looks_like_sum_query",
+    "wants_parallel_document_coverage",
+    "cover_document_excerpts",
+    "PARALLEL_DOC_CHAR_BUDGET",
+    "episode_source_key",
+    "is_ingested_document_episode",
+    "merge_document_sibling_episodes",
+    "pack_coverage_episodes",
+    "collapse_document_episodes",
     "memory_scope_key",
     "merge_episode_lists",
     "pack_duration_anchor_episodes",

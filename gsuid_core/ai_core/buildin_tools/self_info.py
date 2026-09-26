@@ -127,16 +127,24 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
 
     persona_name = "未知"
     try:
-        from gsuid_core.ai_core.persona import persona_config_manager
+        if ctx.deps is not None and ctx.deps.parent_session_id:
+            from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-        if session_id:
-            pn = persona_config_manager.get_persona_for_session(session_id)
-            if pn:
-                persona_name = pn
+            agent = get_ai_session_registry().get_ai_session(ctx.deps.parent_session_id)
+            if agent is not None and agent.persona_name:
+                persona_name = str(agent.persona_name)
+        if persona_name == "未知":
+            from gsuid_core.ai_core.persona import persona_config_manager
+
+            if session_id:
+                pn = persona_config_manager.get_persona_for_session(session_id)
+                if pn:
+                    persona_name = pn
     except Exception:
         pass
 
-    roster = format_capability_roster() or "（无能力代理）"
+    roster_persona = persona_name if persona_name != "未知" else None
+    roster = format_capability_roster(roster_persona) or "（无能力代理）"
     families = format_capability_family_overview(max_families=8, max_chars=600) or "（无工具族）"
     capability_lines = [
         roster,

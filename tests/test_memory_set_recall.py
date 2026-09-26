@@ -13,8 +13,7 @@ from gsuid_core.ai_core.cognition.types import CogKind, CognitiveHit
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 from gsuid_core.ai_core.memory.retrieval.types import Episode
 from gsuid_core.ai_core.memory.retrieval.lexical import (
-    SET_RECALL_HINT,
-    LATEST_WINS_HINT,
+    SPEECH_ACT_HINT,
     query_tokens,
     diversify_episodes,
     merge_episode_lists,
@@ -417,10 +416,9 @@ def test_render_block_hints_follow_as_of_and_episodes() -> None:
         )
     ]
     block = render_cognition_block("竖图偏好", dated)
-    assert LATEST_WINS_HINT in block
+    assert SPEECH_ACT_HINT in block
     assert "谁在该时点说过" in block
     assert "只取最晚" not in block
-    assert SET_RECALL_HINT in block
     undated = [
         CognitiveHit(
             kind=CogKind.KNOWLEDGE,
@@ -432,14 +430,12 @@ def test_render_block_hints_follow_as_of_and_episodes() -> None:
         )
     ]
     plain = render_cognition_block("竖图偏好", undated)
-    assert LATEST_WINS_HINT not in plain
-    assert SET_RECALL_HINT not in plain
+    assert SPEECH_ACT_HINT not in plain
 
 
 def test_quote_is_not_rendered_as_current_fact() -> None:
     """还有几天：注入只保留谁在何时说过，不许可把原话里的日期当成已经发生。"""
     from gsuid_core.ai_core.interaction_scaffold import MEMORY_QA_HINT
-    from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT, EVIDENCE_USE_HINT
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
     quote = "[__assistant_onebot__]: 明天就开门了，16号周三"
@@ -459,8 +455,6 @@ def test_quote_is_not_rendered_as_current_fact() -> None:
     )
     assert SPEECH_ACT_HINT in block
     assert "只取最晚" not in block
-    assert "可直接作答" not in EVIDENCE_USE_HINT
-    assert "取最晚一条" not in EVIDENCE_USE_HINT
     assert "当前事实" in MEMORY_QA_HINT
     assert "按时间" not in MEMORY_QA_HINT
     text = MemoryContext(
@@ -2580,17 +2574,16 @@ def test_count_prompt_prefers_stated_total_over_listing_every_mention() -> None:
         conflicts=["用户曾说没定过目标，也说过定过目标"],
     )
     text = mc.to_prompt_text(max_chars=8000, query=q)
-    assert "总数优先" in text
-    assert "逐条列出" not in text
-    assert "极性相反" in text
-    assert "不是两个现成答案" in text
-    assert "较晚的用户原话" not in text
+    assert "谁在该时点说过" in text
+    assert "【陈述不一致】" in text
+    assert "没定过目标" in text
+    assert "总数优先" not in text
+    assert "只采用最晚" not in text
     assert "12 books" in text
 
 
 def test_latest_value_hint_skips_order_and_sum() -> None:
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        VALUE_UPDATE_HINT,
         topic_pin_tokens,
         pack_sum_episodes,
         looks_like_sum_query,
@@ -2607,11 +2600,15 @@ def test_latest_value_hint_skips_order_and_sum() -> None:
     assert not looks_like_attribute_query(eo)
     assert not looks_like_assistant_quote_query(eo)
     assert looks_like_assistant_quote_query("I was wondering if you could remind me of the name of that restaurant")
-    assert looks_like_attribute_query("Where did Rachel move to after her recent relocation?")
+    attr_q = "Where did Rachel move to after her recent relocation?"
+    assert looks_like_attribute_query(attr_q)
     assert not looks_like_attribute_query("How much total money have I spent on bike-related expenses?")
     assert not looks_like_sum_query(eo)
-    assert "只答最晚一条" in VALUE_UPDATE_HINT
-    assert "按时间保留全部" in VALUE_UPDATE_HINT
+    attr_text = MemoryContext(
+        episodes=[_ep("a", "User: Rachel moved to Seattle.", "2024-01-01 00:00:00")],
+    ).to_prompt_text(max_chars=8000, query=attr_q)
+    assert "谁在该时点说过" in attr_text
+    assert "只答最晚一条" not in attr_text
 
     bike = "How much total money have I spent on bike-related expenses since the start of the year?"
     assert looks_like_sum_query(bike)
@@ -2669,8 +2666,162 @@ def test_latest_value_hint_skips_order_and_sum() -> None:
         ]
     )
     text = mc.to_prompt_text(max_chars=8000, query=eo)
+    assert "谁在该时点说过" in text
     assert "只答最晚一条" not in text
-    assert "都不是现在已经如此" not in text
+
+
+def test_document_siblings_collapse_to_one_block() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        pack_coverage_episodes,
+        collapse_document_episodes,
+        merge_document_sibling_episodes,
+    )
+
+    hit = _ep("a1", "User: 【文档】north.md\nEnrollment 1000.", "2026-09-25 18:00:00")
+    sib = _ep("a2", "User: 【文档续】north.md\nFaculty 80.", "2026-09-25 18:00:01")
+    other = _ep("b1", "User: 【文档】south.md\nEnrollment 2500.", "2026-09-25 18:00:02")
+    merged = merge_document_sibling_episodes([hit], [hit, sib, other])
+    ids = {e["id"] for e in merged}
+    assert "a1" in ids and "a2" in ids
+    assert "b1" not in ids
+    packed = pack_coverage_episodes(merged + [other], "enrollment listed across all files", cap=10)
+    packed_ids = [e["id"] for e in packed]
+    assert packed_ids.index("a1") < packed_ids.index("a2")
+    collapsed = collapse_document_episodes(packed)
+    north = [e for e in collapsed if "north.md" in (e["content"] or "")]
+    assert len(north) == 1
+    assert "Enrollment 1000" in north[0]["content"]
+    assert "Faculty 80" in north[0]["content"]
+
+
+def test_set_query_packs_parallel_sources() -> None:
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        looks_like_set_query,
+        pack_coverage_episodes,
+        pack_attribute_episodes,
+        apply_query_episode_pack,
+        looks_like_attribute_query,
+    )
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    rank_q = "Which of these reports has the highest total enrollment, listed across all files?"
+    assert looks_like_set_query(rank_q)
+    assert not looks_like_attribute_query(rank_q)
+    assert not looks_like_set_query("Where did Rachel move to after her recent relocation?")
+    assert looks_like_attribute_query("Where did Rachel move to after her recent relocation?")
+    assert looks_like_set_query("哪些材料的合计最高？")
+    assert not looks_like_attribute_query("Which company has the highest ratio listed across the files?")
+    assert not looks_like_set_query("which of the answers is correct")
+    assert not looks_like_set_query("list all the reasons")
+    assert not looks_like_set_query("for each item in the list")
+
+    same_day = [
+        _ep("a", "User: 【文档】north.md\nEnrollment total 1000.", "2026-09-25 18:00:00"),
+        _ep("b", "User: 【文档】south.md\nEnrollment total 2500.", "2026-09-25 18:01:00"),
+        _ep("c", "User: 【文档续】north.md\nFaculty full-time 80.", "2026-09-25 18:02:00"),
+    ]
+    covered = pack_coverage_episodes(same_day, rank_q, cap=4)
+    ids = {e["id"] for e in covered}
+    assert "a" in ids and "b" in ids
+    attr = pack_attribute_episodes(same_day, "What was the enrollment total?", cap=12)
+    attr_ids = {e["id"] for e in attr}
+    assert "a" in attr_ids and "b" in attr_ids
+    packed = apply_query_episode_pack(same_day, rank_q, temporal_mode=False, time_range=None)
+    packed_ids = {e["id"] for e in packed}
+    assert "a" in packed_ids and "b" in packed_ids
+    mc = MemoryContext(episodes=same_day)
+    text = mc.to_prompt_text(max_chars=8000, query=rank_q)
+    assert "谁在该时点说过" in text
+    assert "只答最晚一条" not in text
+    assert "Enrollment total 1000" in text
+    assert "Enrollment total 2500" in text
+
+
+def test_parallel_documents_keep_lines_buried_under_the_opening() -> None:
+    """封面很长时，注入仍要带上每份材料里被问到的那一行。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "在已经入库的几份材料里，公积金最高的是哪一份？"
+    assert wants_parallel_document_coverage(q)
+    assert not wants_parallel_document_coverage("Where did Rachel move to after her recent relocation?")
+    assert not wants_parallel_document_coverage("What is my reserve across these files?")
+    assert not wants_parallel_document_coverage("哪些歌好听")
+    assert not wants_parallel_document_coverage("这个价格是多少")
+    assert not wants_parallel_document_coverage("哪些材料的合计最高？")
+    pad = "封面说明。" * 4000
+    docs = [
+        _ep("a0", f"【文档】a.md\n{pad}", "2026-09-25 18:00:00"),
+        _ep("a1", "【文档续】a.md\n公积金 10", "2026-09-25 18:00:01"),
+        _ep("b0", f"【文档】b.md\n{pad}", "2026-09-25 18:00:02"),
+        _ep("b1", "【文档续】b.md\n公积金 99", "2026-09-25 18:00:03"),
+        _ep("c0", f"【文档】c.md\n{pad}", "2026-09-25 18:00:04"),
+        _ep("c1", "【文档续】c.md\n公积金 40", "2026-09-25 18:00:05"),
+    ]
+    text = MemoryContext(episodes=docs).to_prompt_text(max_chars=8000, query=q)
+    assert "公积金 10" in text
+    assert "公积金 99" in text
+    assert "公积金 40" in text
+    assert "只答最晚一条" not in text
+
+
+def test_parallel_cover_keeps_every_source_inside_the_budget() -> None:
+    """来源多于二十份时，每一份的栏目行都要留下，不能只留前十几份。"""
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "这些材料里余额最高的是哪一份？"
+    docs = []
+    for i in range(30):
+        pad = "封面说明。\n" * 40
+        docs.append(_ep(str(i), f"【文档】c{i}.md\n{pad}余额 {i}", f"2026-09-25 18:{i % 60:02d}:00"))
+    from gsuid_core.ai_core.kits.base import timeline_memory_budget
+
+    budget = timeline_memory_budget(q)
+    assert budget is not None and budget >= 48000
+    assert timeline_memory_budget("哪些歌好听") is None
+    text = MemoryContext(episodes=docs).to_prompt_text(max_chars=48000, query=q)
+    for i in range(30):
+        assert f"余额 {i}" in text
+    assert "封面说明" not in text
+
+
+def test_parallel_cover_keeps_month_rows_inside_the_asked_span() -> None:
+    """表从年份开头排，问句要的月份在后部，不能只剩上一年。"""
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    table = (
+        "<table>"
+        '<tr><td rowspan="2">Period</td><td colspan="2">South</td></tr>'
+        "<tr><td>Total</td><td>1 unit</td></tr>"
+        "<tr><td>2024</td><td></td><td></td></tr>"
+        "<tr><td>May</td><td>100</td><td>40</td></tr>"
+        "<tr><td>2025</td><td></td><td></td></tr>"
+        "<tr><td>February</td><td>10</td><td>4</td></tr>"
+        "<tr><td>March (r)</td><td>20</td><td>8</td></tr>"
+        "<tr><td>May (p)</td><td>30</td><td>9</td></tr>"
+        "</table>"
+    )
+    q = (
+        "Across these reports, from 2025/02 to 2025/05, which month has the highest "
+        "not seasonally adjusted South total?"
+    )
+    older = _ep(
+        "old",
+        f"【文档】newresconst_202502.md\nHousing Units Started\nTable 3b - Not seasonally adjusted\n{table}",
+        "2026-09-25 18:00:00",
+    )
+    newer_table = table.replace("<td>20</td>", "<td>77</td>")
+    newer = _ep(
+        "new",
+        f"【文档】newresconst_202505.md\nHousing Units Started\nTable 3b - Not seasonally adjusted\n{newer_table}",
+        "2026-09-25 18:05:00",
+    )
+    text = MemoryContext(episodes=[older, newer]).to_prompt_text(max_chars=48000, query=q)
+    assert "February" in text
+    assert "March" in text
+    assert "77" in text
+    assert "100" not in text
+    assert "2025-02" not in text
 
 
 def test_count_prompt_counts_each_name() -> None:
@@ -2684,9 +2835,11 @@ def test_count_prompt_counts_each_name() -> None:
         ]
     )
     text = mc.to_prompt_text(max_chars=8000, query=q)
-    assert "不同专名各计一次" in text
-    assert "都不是现在已经如此" not in text
+    assert "谁在该时点说过" in text
+    assert "AFI Fest" in text
+    assert "Austin Film Festival" in text
     assert "只报最晚一条" not in text
+    assert "只采用最晚" not in text
 
 
 def test_compact_event_lines_keep_each_place_once() -> None:

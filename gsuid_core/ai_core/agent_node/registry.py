@@ -140,9 +140,71 @@ def list_nodes(include_persona: bool = False) -> List[AgentNode]:
     return nodes
 
 
-def format_capability_roster() -> str:
+def _delegable_capability_nodes() -> list[AgentNode]:
+    return [n for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"]
+
+
+def parse_capability_agent_spec(raw: list[str]) -> tuple[bool, frozenset[str], frozenset[str]]:
+    """解析人格 config 的 capability_agents：``(allow_all, allow, deny)``。
+
+    ``*`` / ``all`` 表示全部；``!node_id`` 禁用；无星号则只允许列出的 id。
+    空列表表示不可委派。
+    """
+    items = [x.strip() for x in raw if x.strip()]
+    allow: set[str] = set()
+    deny: set[str] = set()
+    star = False
+    for it in items:
+        if it in {"*", "all"}:
+            star = True
+            continue
+        if it.startswith("!") and len(it) > 1:
+            deny.add(it[1:])
+            continue
+        allow.add(it)
+    if not items:
+        return False, frozenset(), frozenset()
+    if star:
+        return True, frozenset(), frozenset(deny)
+    return False, frozenset(allow), frozenset(deny)
+
+
+def persona_capability_spec(persona_name: str | None) -> tuple[bool, frozenset[str], frozenset[str]]:
+    if not persona_name:
+        return True, frozenset(), frozenset()
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    cfg = persona_config_manager.get_config(persona_name)
+    raw = cfg.get_config("capability_agents").data
+    if not isinstance(raw, list):
+        return False, frozenset(), frozenset()
+    items: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            items.append(item.strip())
+    return parse_capability_agent_spec(items)
+
+
+def persona_allows_capability_agent(persona_name: str | None, node_id: str) -> bool:
+    """当前主人格是否允许委派该 node_id。无名人格默认全开。"""
+    nid = (node_id or "").strip()
+    if not nid:
+        return False
+    star, allow, deny = persona_capability_spec(persona_name)
+    if nid in deny:
+        return False
+    if star:
+        return True
+    return nid in allow
+
+
+def list_persona_capability_nodes(persona_name: str | None) -> list[AgentNode]:
+    return [n for n in _delegable_capability_nodes() if persona_allows_capability_agent(persona_name, n.node_id)]
+
+
+def format_capability_roster(persona_name: str | None = None) -> str:
     """可委派短花名册：每节点一行 node_id + when_to_use。covers 不进 system。"""
-    nodes: list[AgentNode] = [n for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"]
+    nodes: list[AgentNode] = list_persona_capability_nodes(persona_name)
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     cap = int(ai_config.get_config("capability_roster_max").data)

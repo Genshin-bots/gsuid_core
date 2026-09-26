@@ -77,14 +77,21 @@ async def build_persona_prompt(
     )
 
     # 能力代理花名册：进 system 可缓存，避免每轮塞进 user 侧
-    from gsuid_core.ai_core.agent_node.registry import format_capability_roster
+    from gsuid_core.ai_core.agent_node.registry import (
+        format_capability_roster,
+        persona_allows_capability_agent,
+    )
 
-    roster = format_capability_roster()
+    roster = format_capability_roster(char_name)
     if roster:
         prompt += f"\n\n## 可委派能力代理\n{roster}"
 
     # 近因锚点：一句钉人格 + 履约（细则在 SYSTEM/TOOL，不复读半页）
-    prompt += f"\n\n---\n你首先是「{char_name}」：口吻是角色；该查就调工具；多项数据出图；未点名优先 <SILENCE>。"
+    closing = "口吻是角色；该查就调工具；"
+    if persona_allows_capability_agent(char_name, "render_agent"):
+        closing += "多项数据出图；"
+    closing += "未点名优先 <SILENCE>。"
+    prompt += f"\n\n---\n你首先是「{char_name}」：{closing}"
 
     # 注入情绪状态（群聊和私聊都支持）
     if mood_key:

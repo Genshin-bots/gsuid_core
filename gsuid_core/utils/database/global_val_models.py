@@ -10,7 +10,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Select
 
-from .base_models import BaseIDModel, with_session
+from .base_models import BaseIDModel, with_session, with_read_session
 
 
 class CountVal(TypedDict):
@@ -588,6 +588,30 @@ class CoreDataAnalysis(BaseIDModel, table=True):
                 key = str(d)[:10]
             out[key] = int(total or 0)
         return out
+
+    @classmethod
+    @with_read_session
+    async def sum_user_commands_between(
+        cls,
+        session: AsyncSession,
+        start_date: ymddate,
+        end_date_exclusive: ymddate,
+    ) -> Dict[str, int]:
+        """按 command_name 汇总 USER 次数。不含 end 当天（当天走内存，避免和落库快照重复加）。
+
+        只返回分组结果，不把用户/群明细拉回进程。
+        """
+        query = (
+            select(col(cls.command_name), func.coalesce(func.sum(cls.command_count), 0))
+            .where(
+                cls.data_type == DataType.USER,
+                cls.date >= start_date,
+                cls.date < end_date_exclusive,
+            )
+            .group_by(col(cls.command_name))
+        )
+        rows = (await session.execute(query)).all()
+        return {str(name): int(total or 0) for name, total in rows if name}
 
     @classmethod
     @with_session

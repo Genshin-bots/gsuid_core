@@ -33,7 +33,6 @@ from gsuid_core.ai_core.cognition.types import (
 )
 from gsuid_core.ai_core.memory.retrieval.types import Episode
 from gsuid_core.ai_core.memory.retrieval.lexical import (
-    SET_RECALL_HINT,
     SPEECH_ACT_HINT,
     strip_clock_lines,
     query_overlaps_text,
@@ -460,7 +459,11 @@ async def _search_memory(
             group_id=scope.group_id,
             clock=scope.clock_at,
         )
-        from gsuid_core.ai_core.memory.retrieval.lexical import apply_query_episode_pack
+        from gsuid_core.ai_core.memory.retrieval.lexical import (
+            looks_like_set_query,
+            apply_query_episode_pack,
+            collapse_document_episodes,
+        )
 
         ctx.episodes = apply_query_episode_pack(
             ctx.episodes,
@@ -469,6 +472,8 @@ async def _search_memory(
             time_range=ctx.time_range,
             asker_id=scope.user_id if scope.group_id else "",
         )
+        if looks_like_set_query(search_q):
+            ctx.episodes = collapse_document_episodes(ctx.episodes)
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
     speaker_ids = {scope.user_id} if scope.user_id else set()
@@ -971,6 +976,13 @@ async def inject_memory_slice(
         include_self=True,
     )
     cap = int(memory_config.memory_inject_max_chars)
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        wants_parallel_document_coverage,
+    )
+
+    if wants_parallel_document_coverage(query):
+        cap = max(cap, PARALLEL_DOC_CHAR_BUDGET)
     memory_text = ctx.to_prompt_text(
         max_chars=cap,
         priority_speakers=priority_speakers or None,
@@ -1005,8 +1017,6 @@ def render_cognition_block(
     # 带时点或对话片段时标明：这是谁说过，不是当前事实。知识条目不贴这句。
     if any(h.as_of for h in hits) or any(h.kind is CogKind.EPISODE for h in hits):
         lines.append(SPEECH_ACT_HINT)
-    if any(h.kind is CogKind.EPISODE for h in hits):
-        lines.append(SET_RECALL_HINT)
     weak_n = 0
     shown = 0
     ep_shown = 0

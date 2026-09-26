@@ -693,6 +693,10 @@ gsuid_hub
 
 longmemeval_s_cleaned.json
 
+eval/corpusqa/data/*.jsonl
+eval/corpusqa/data/cache/
+eval/loft/data/
+
 eval/*/results
 
 plans

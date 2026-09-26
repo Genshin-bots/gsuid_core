@@ -50,6 +50,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _SCHED_MUTATE_TOOLS,
     _WALL_CLOCK_PIPELINE,
     _INTERACTIVE_CREATE_BY,
+    _WALL_CLOCK_CLOSE_NO_RENDER,
     _claims_fake_done,
     _claims_deferred_work,
     _correction_nudge_markers,
@@ -215,11 +216,14 @@ def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
     return ""
 
 
-def _needs_render_obligation(st: RunOnceState, result_msg: str) -> bool:
+def _needs_render_obligation(st: RunOnceState, result_msg: str, *, allow_render: bool = True) -> bool:
     """有出处凭据且台词呈报告体 / 空交付暂扣时才进纠正。mismatch 单独不够。
 
     念数被话术闸拦下时，即使本轮没工具，也要纠正去出图，否则用户什么都看不到。
+    人格关掉 render_agent 时不把委派出图当成义务。
     """
+    if not allow_render:
+        return False
     if "numeric_recitation" in st.presentation_withheld_reasons:
         return True
     if not st.saw_structured_return or not st.tool_call_list:
@@ -443,6 +447,7 @@ class SettlePhase(RunOnceHost):
                 st.lean_user_message,
                 strip_hint_texts=(
                     _WALL_CLOCK_NUDGE,
+                    _WALL_CLOCK_CLOSE_NO_RENDER,
                     _WALL_CLOCK_PIPELINE,
                     _THRASH_FUSE_NUDGE,
                     *output_gate.GATE_NUDGE_MARKERS,
@@ -909,10 +914,14 @@ class SettlePhase(RunOnceHost):
             _skip_report_exit = False
             _replacement_visible = False
             # 出处凭据 + 尚未出图。排版失配只决定要不要进纠正，不单独构成义务。
-            _render_obligation = _needs_render_obligation(st, result_msg)
+            from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+            _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
+            _chart_like = _needs_render_obligation(st, result_msg)
+            _render_obligation = _chart_like and _allow_render
             if (
                 not _settle_correction_ran
-                and _render_obligation
+                and _chart_like
                 and not st.delegated_render
                 and not st.pending_async_delivery
                 and not st.image_sent_this_run
@@ -923,11 +932,12 @@ class SettlePhase(RunOnceHost):
             ):
                 logger.warning(i18n_t("log.agent.render_data_nudge_once"))
                 if "numeric_recitation" in st.presentation_withheld_reasons and not st.saw_structured_return:
-                    _directive = numeric_recitation_directive()
+                    _directive = numeric_recitation_directive(allow_render=_allow_render)
                 else:
                     _directive = render_obligation_directive(
                         recited_report=_looks_like_report_speech(result_msg or ""),
                         tool_calls=len(st.tool_call_list),
+                        allow_render=_allow_render,
                     )
                 _disputes_before = len(self._run_disputes)
                 _sent_before_correction = set(self._run_sent_texts)

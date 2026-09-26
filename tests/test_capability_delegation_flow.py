@@ -29,6 +29,37 @@ def test_roster_lists_node_ids_not_invented_names() -> None:
         assert "`" in roster  # node_id 用反引号标出
 
 
+def test_capability_agent_spec_star_and_deny() -> None:
+    """人格 config：* 全开，!id 关掉，空列表全关。"""
+    from gsuid_core.ai_core.agent_node.registry import parse_capability_agent_spec, persona_allows_capability_agent
+
+    star, allow, deny = parse_capability_agent_spec(["*", "!render_agent"])
+    assert star is True
+    assert "render_agent" in deny
+    assert not allow
+    assert parse_capability_agent_spec([]) == (False, frozenset(), frozenset())
+    star2, allow2, deny2 = parse_capability_agent_spec(["research_agent"])
+    assert star2 is False
+    assert "research_agent" in allow2
+    assert not deny2
+    assert persona_allows_capability_agent(None, "render_agent") is True
+
+
+def test_roster_hides_denied_capability_agent(monkeypatch) -> None:
+    """花名册不列出人格关掉的 node_id。"""
+    from gsuid_core.ai_core.agent_node import registry as reg
+
+    monkeypatch.setattr(
+        reg,
+        "persona_capability_spec",
+        lambda _name: (True, frozenset(), frozenset({"render_agent"})),
+    )
+    assert reg.persona_allows_capability_agent("评测助手", "render_agent") is False
+    assert reg.persona_allows_capability_agent("评测助手", "research_agent") is True
+    roster = reg.format_capability_roster("评测助手")
+    assert "`render_agent`" not in roster
+
+
 def test_pool_overlap_empty_on_empty_pool() -> None:
     assert _pool_overlaps_capability_agent(set()) == ""
 

@@ -850,6 +850,23 @@ async def update_persona_config(
             }
         results.append(f"tool_names: {tool_names}")
 
+    if "capability_agents" in data:
+        capability_agents = data["capability_agents"]
+        if not isinstance(capability_agents, list):
+            return {
+                "status": 1,
+                "msg": "capability_agents 必须是列表",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_capability_agents(persona_name, [str(x) for x in capability_agents])
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"capability_agents: {capability_agents}")
+
     # 返回更新后的配置
     updated_config = persona_config_manager.get_persona_config_dict(persona_name)
     return {

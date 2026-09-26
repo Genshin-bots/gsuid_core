@@ -11,7 +11,7 @@
 
 import uuid
 import asyncio
-from typing import List, Optional, TypedDict, NotRequired
+from typing import List, Self, Optional, TypedDict, NotRequired
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Field, SQLModel, Relationship, col, select, update
@@ -592,6 +592,84 @@ class AIMemEpisode(SQLModel, table=True):
         stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.valid_at).asc()).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_ingested_documents(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int = 12000,
+    ) -> list["AIMemEpisode"]:
+        """同一 scope 里带入库文档标记的片段，按时间取出。"""
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, col(cls.content).like("%【文档%"))
+            .order_by(col(cls.valid_at).asc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_ingested_document_heads(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int = 4000,
+    ) -> list[str]:
+        """文档标记所在行的前 180 字，用来数来源，不把正文拉进内存。"""
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(func.substr(col(cls.content), 1, 180))
+            .where(col(cls.scope_key) == scope_key, col(cls.content).like("%【文档%"))
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        heads: list[str] = []
+        for row in result.all():
+            cell = row[0]
+            if isinstance(cell, str) and cell:
+                heads.append(cell)
+        return heads
+
+    @classmethod
+    @with_read_session
+    async def list_document_chunks(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        title: str,
+        limit: int = 40,
+    ) -> list[Self]:
+        """同一标题的入库块。开头留表头，其余取时间上最晚的块。"""
+        if not scope_key or not title or limit <= 0:
+            return []
+        escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cond = or_(
+            col(cls.content).like(f"%【文档】{escaped}\n%", escape="\\"),
+            col(cls.content).like(f"%【文档续】{escaped}\n%", escape="\\"),
+        )
+        where = and_(col(cls.scope_key) == scope_key, cond)
+        head_n = min(8, limit)
+        head_stmt = select(cls).where(where).order_by(col(cls.valid_at).asc()).limit(head_n)
+        head = list((await session.execute(head_stmt)).scalars().all())
+        tail_n = limit - head_n
+        if tail_n <= 0:
+            return head
+        tail_stmt = select(cls).where(where).order_by(col(cls.valid_at).desc()).limit(tail_n)
+        tail = list((await session.execute(tail_stmt)).scalars().all())
+        seen = {row.id for row in head}
+        for row in reversed(tail):
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            head.append(row)
+        return head
 
     @classmethod
     @with_read_session

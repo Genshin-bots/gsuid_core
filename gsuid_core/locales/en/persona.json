@@ -10,6 +10,7 @@
   "log.persona.personaconfig_deleted_name_config": "[PersonaConfig] Deleted '{persona_name}' config file",
   "log.persona.personaconfig_updated_name_ai": "[PersonaConfig] Updated '{persona_name}' AI mode: {ai_mode}",
   "log.persona.personaconfig_updated_name_capability": "[PersonaConfig] Updated '{persona_name}' tool capability packs: {cleaned}",
+  "log.persona.personaconfig_updated_name_agents": "[PersonaConfig] Updated '{persona_name}' delegable capability agents: {cleaned}",
   "log.persona.personaconfig_updated_name_enabled": "[PersonaConfig] Updated '{persona_name}' enabled scope: {scope}",
   "log.persona.personaconfig_updated_name_explicit": "[PersonaConfig] Updated '{persona_name}' explicit tool whitelist: {cleaned}",
   "log.persona.personaconfig_updated_name_inspection": "[PersonaConfig] Updated '{persona_name}' inspection interval: {inspect_interval} minutes",

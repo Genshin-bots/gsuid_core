@@ -20,6 +20,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory import (
     parse_iso_or_unix_timestamp,
 )
+from gsuid_core.ai_core.text_chunk import chunk_text as _chunk_text
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
@@ -277,45 +278,6 @@ async def search_memory(
 
 
 # 1.5 批量摄入 API（评测 / 回灌专用，无需 web 控制台鉴权，但受 local-test 守卫保护）
-
-# 回灌切块上限（字符）：本地 bge-small 嵌入截断在 512 token(~2000 字符)、
-# 按句子边界打包到约 900 字符一块，保证每块完整入嵌入
-_INGEST_CHUNK_CHARS = 900
-
-_SENT_SPLIT_RE = __import__("re").compile(r"(?<=[。.!?！？\n])\s+")
-
-
-def _chunk_text(text: str, target: int = _INGEST_CHUNK_CHARS) -> List[str]:
-    """把一条长 turn 按句子边界打包成 ≤target 字符的块；过长的单句硬切。
-
-    不做重叠（重叠会引入重复块、稀释 reranker 候选）；短 turn 原样返回单块。
-    """
-    text = text.strip()
-    if len(text) <= target:
-        return [text] if text else []
-
-    chunks: List[str] = []
-    cur = ""
-    for piece in _SENT_SPLIT_RE.split(text):
-        piece = piece.strip()
-        if not piece:
-            continue
-        if len(piece) > target:
-            # 超长单句（如代码块/无标点长串）：先收掉当前块，再硬切
-            if cur:
-                chunks.append(cur)
-                cur = ""
-            for i in range(0, len(piece), target):
-                chunks.append(piece[i : i + target])
-            continue
-        if cur and len(cur) + 1 + len(piece) > target:
-            chunks.append(cur)
-            cur = piece
-        else:
-            cur = f"{cur} {piece}" if cur else piece
-    if cur:
-        chunks.append(cur)
-    return chunks
 
 
 # §14.1 窗口化实体/边抽取（评测/回灌专用） Episode 粒度（granular，由 create_episodes_bulk 写入）与抽取批次粒度在此解耦

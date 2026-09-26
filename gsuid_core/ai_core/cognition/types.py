@@ -115,8 +115,11 @@ class CognitiveHit:
     def render_line(self, index: int) -> str:
         """单行渲染。空结果只回一行，绝不再拼双段「未找到 + 无匹配 + 长说明」。"""
         # 片段无 title：40 字会切掉专名，800 字会把邻条闲聊整段摊开。
-        body_budget = EPISODE_BODY_BUDGET if self.kind is CogKind.EPISODE else 160
-        head_src = (self.title or self.summary).replace("\n", " ").strip()
+        # 入库文档摘录要留表格换行，240 字从开头切会把问到的行切掉。
+        ingested = self.kind is CogKind.EPISODE and "【文档" in f"{self.title}{self.summary}"
+        body_budget = 3200 if ingested else (EPISODE_BODY_BUDGET if self.kind is CogKind.EPISODE else 160)
+        raw_head = self.summary if ingested and self.summary else (self.title or self.summary)
+        head_src = raw_head.strip() if ingested else raw_head.replace("\n", " ").strip()
         parts = [f"{index}. [{self.label}] {head_src[:body_budget]}"]
         extra = self.summary.replace("\n", " ").strip() if self.summary and self.title else ""
         if extra and extra not in head_src:

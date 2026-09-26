@@ -17,6 +17,7 @@ from gsuid_core.webconsole.static_serve import (
     build_frontend_router,
     parse_accept_encoding,
     cache_control_for_relpath,
+    build_console_fonts_router,
 )
 
 
@@ -110,6 +111,30 @@ def test_index_html_is_not_cached(tmp_path: Path):
     r2 = client.get("/app/version.json")
     assert r2.status_code == 200
     assert r2.headers["cache-control"] == CACHE_NO_CACHE
+
+
+def test_console_fonts_only_serve_named_files(tmp_path: Path):
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    (fonts / "MiSansVF.ttf").write_bytes(b"ttf-bytes")
+    (fonts / "TwemojiMozilla-colr.woff2").write_bytes(b"woff2-bytes")
+    (fonts / "secret.txt").write_text("no", encoding="utf-8")
+    app = FastAPI()
+    app.include_router(build_console_fonts_router(fonts))
+    client = TestClient(app)
+
+    misans = client.get("/utils/fonts/MiSansVF.ttf")
+    assert misans.status_code == 200
+    assert misans.content == b"ttf-bytes"
+    assert misans.headers["content-type"].startswith("font/ttf")
+
+    twemoji = client.get("/utils/fonts/TwemojiMozilla-colr.woff2")
+    assert twemoji.status_code == 200
+    assert twemoji.content == b"woff2-bytes"
+    assert twemoji.headers["content-type"].startswith("font/woff2")
+
+    assert client.get("/utils/fonts/secret.txt").status_code == 404
+    assert client.get("/utils/fonts/missing.ttf").status_code == 404
 
 
 def test_unhashed_icon_uses_short_cache(tmp_path: Path):

@@ -271,6 +271,9 @@ def test_wall_clock_pipeline_branch() -> None:
     assert "SILENCE" in pipe
     # 有事实包时必须硬开 render 例外
     assert ("禁止" in pipe and "停工具" in pipe) or ("硬例外" in pipe)
+    blocked = wall_clock_nudge_for(need_render_pipeline=True, allow_render=False)
+    assert "render_agent" not in blocked
+    assert "不要再发起新的工具调用" in blocked
 
 
 def test_report_speech_and_solicitation() -> None:

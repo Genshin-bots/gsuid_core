@@ -157,6 +157,22 @@ def test_episode_render_keeps_name_but_caps_body() -> None:
     assert len(line) < 40 + EPISODE_BODY_BUDGET
 
 
+def test_document_excerpt_render_keeps_a_late_row() -> None:
+    row = "公积金 99"
+    summary = "【文档】a.md\n" + ("封面\n" * 200) + row
+    hit = CognitiveHit(
+        kind=CogKind.EPISODE,
+        id="doc1",
+        title="",
+        summary=summary,
+        score=0.8,
+        high_confidence=True,
+    )
+    line = hit.render_line(1)
+    assert row in line
+    assert "封面" in line
+
+
 def test_episode_expand_cap_folds_overflow() -> None:
     from gsuid_core.ai_core.cognition.facade import _EPISODE_EXPAND_CAP
 

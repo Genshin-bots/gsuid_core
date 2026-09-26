@@ -14,6 +14,15 @@
   # BEAM：委托 eval/BEAM_official/run_beam_eval.py
   python eval/run_eval.py beam probe --conv 0
   python eval/run_eval.py beam judge --conv 0
+
+  # CorpusQA：委托 eval/corpusqa/run_corpusqa.py（语料级统计 / 跨文档聚合）
+  python eval/run_eval.py corpusqa download --scale 128k
+  python eval/run_eval.py corpusqa all --scale 128k --limit 40
+  python eval/run_eval.py corpusqa all --scale 1m --limit 20
+
+  # LOFT：BEIR 检索 + RAG / GlobalQA
+  python eval/run_eval.py loft all --task retrieval --dataset scifact --length 128k --limit 20
+  python eval/run_eval.py loft all --task rag --dataset nq --length 128k --limit 20
 """
 
 from __future__ import annotations
@@ -393,11 +402,19 @@ def _lm_mark_fails(args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────
 
 
-def _beam_delegate(stage: str, extra: List[str]) -> int:
-    script = os.path.join(_PROJECT_ROOT, "eval", "BEAM_official", "run_beam_eval.py")
-    cmd = [sys.executable, script, stage, *extra]
-    print("[beam] delegate:", " ".join(cmd))
-    return subprocess.call(cmd, cwd=_PROJECT_ROOT)
+_DELEGATED_SCRIPTS = {
+    "beam": os.path.join("eval", "BEAM_official", "run_beam_eval.py"),
+    "corpusqa": os.path.join("eval", "corpusqa", "run_corpusqa.py"),
+    "loft": os.path.join("eval", "loft", "run_loft.py"),
+}
+
+
+def delegated_command(argv: list[str]) -> list[str] | None:
+    """beam / corpusqa / loft 原样把子命令参数转给脚本，不套 LongMem 默认值。"""
+    if len(argv) < 3 or argv[1] not in _DELEGATED_SCRIPTS:
+        return None
+    script = os.path.join(_PROJECT_ROOT, _DELEGATED_SCRIPTS[argv[1]])
+    return [sys.executable, script, argv[2], *argv[3:]]
 
 
 # ─────────────────────────────────────────────
@@ -406,8 +423,12 @@ def _beam_delegate(stage: str, extra: List[str]) -> int:
 
 
 def main() -> int:
+    forwarded = delegated_command(sys.argv)
+    if forwarded is not None:
+        print("[delegate]", " ".join(forwarded))
+        return subprocess.call(forwarded, cwd=_PROJECT_ROOT)
     p = argparse.ArgumentParser(description="统一评测入口")
-    p.add_argument("benchmark", choices=["longmem", "beam"])
+    p.add_argument("benchmark", choices=["longmem", "beam", "corpusqa", "loft"])
     p.add_argument("stage", help="longmem: probe/judge/report/diagnose/run-domains/mark-fails; beam: 透传")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--eval-data", default=None)
@@ -451,10 +472,11 @@ def main() -> int:
         help="probe: 不灌评测证据块，走生产目录卡 + 模型自己 search_cognition",
     )
     p.add_argument("--tag", default=None, help="run-domains/mark-fails: 答卷文件后缀，如 prod7")
-    args, extra = p.parse_known_args()
+    args, _extra = p.parse_known_args()
 
-    if args.benchmark == "beam":
-        return _beam_delegate(args.stage, extra)
+    if args.benchmark in _DELEGATED_SCRIPTS:
+        print(f"未知 stage: {args.stage}")
+        return 2
     if args.stage == "probe":
         asyncio.run(_lm_probe(args))
     elif args.stage == "judge":

@@ -366,6 +366,27 @@ def test_blocked_numeric_recitation_requires_render_without_tools() -> None:
     assert directive.obligations[0].tool_args_match == {"agent_profile": "render_agent"}
 
 
+def test_numeric_recitation_skips_render_when_persona_disables_it() -> None:
+    """人格关掉 render_agent：念数纠正改短答，不再派 render。"""
+    from gsuid_core.ai_core.control.corrections import (
+        render_obligation_directive,
+        numeric_recitation_directive,
+    )
+
+    st = _mk_state(tool_call_list=[], saw_structured_return=False)
+    st.presentation_withheld_reasons.append("numeric_recitation")
+    assert not settle_mod._needs_render_obligation(st, "<SILENCE>", allow_render=False)
+    assert settle_mod._needs_render_obligation(st, "<SILENCE>")
+    numeric = numeric_recitation_directive(allow_render=False)
+    assert numeric.obligations[0].must == "deliver"
+    assert "create_subagent" not in numeric.observation
+    assert "不要委派 render_agent" in numeric.observation
+    report = render_obligation_directive(recited_report=True, tool_calls=1, allow_render=False)
+    assert report.obligations[0].must == "deliver"
+    assert "create_subagent" not in report.observation
+    assert "不要委派 render_agent" in report.observation
+
+
 def test_short_character_reply_skips_render_obligation() -> None:
     """轻问题口头短答（气候常态/没查到实时）不因「>40 字」被纠出图。"""
     st = _mk_state(

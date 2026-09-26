@@ -127,6 +127,14 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    "capability_agents": GsListStrConfig(
+        "可委派能力代理",
+        "该人格允许 create_subagent 的 node_id。"
+        "含 * 表示全部；!node_id 表示禁用（如 !render_agent）。"
+        "只填具体 id 则仅这些可委派。空列表表示不可委派任何能力代理。",
+        ["*"],
+        options=["*"],
+    ),
 }
 
 
@@ -440,6 +448,22 @@ class PersonaConfigManager(ConfigSetManager):
         else:
             return False, "配置写入失败"
 
+    def set_capability_agents(self, persona_name: str, agents: List[str]) -> tuple[bool, str]:
+        """设置该人格可委派的能力代理 node_id（含 * / !node_id）。"""
+        cleaned = list(dict.fromkeys(n.strip() for n in agents if n.strip()))
+        config = self.get_config(persona_name)
+        success = config.set_config("capability_agents", cleaned)
+        if success:
+            logger.info(
+                t(
+                    "log.persona.personaconfig_updated_name_agents",
+                    persona_name=persona_name,
+                    cleaned=cleaned,
+                )
+            )
+            return True, "ok"
+        return False, "配置写入失败"
+
     def get_persona_for_session(self, session_id: str) -> Optional[str]:
         """
         根据 Session ID 获取应该使用的 Persona
@@ -526,6 +550,7 @@ class PersonaConfigManager(ConfigSetManager):
             "keywords": config.get_config("keywords").data,
             "tool_packs": config.get_config("tool_packs").data,
             "tool_names": config.get_config("tool_names").data,
+            "capability_agents": config.get_config("capability_agents").data,
         }
 
     def delete_persona_config(self, persona_name: str) -> bool:

@@ -29,6 +29,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
     _WALL_CLOCK_PIPELINE,
     _RENDER_DELEGATE_NUDGE,
     _STATUS_ZERO_TOOL_NUDGE,
+    _WALL_CLOCK_CLOSE_NO_RENDER,
     wall_clock_nudge_for as _wall_clock_nudge_for,
     looks_like_report_speech as _looks_like_report_speech,
 )
@@ -438,11 +439,11 @@ def _capability_exclusive_tool_names() -> set[str]:
     return exclusive
 
 
-def _format_capability_roster() -> str:
+def _format_capability_roster(persona_name: str | None = None) -> str:
     """兼容旧调用点；实现已迁到 agent_node.registry.format_capability_roster。"""
     from gsuid_core.ai_core.agent_node.registry import format_capability_roster
 
-    return format_capability_roster()
+    return format_capability_roster(persona_name)
 
 
 # 工具返回后的输出契约：事件驱动（本轮出现过 ToolReturn），不认业务关键词

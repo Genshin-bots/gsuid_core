@@ -218,8 +218,12 @@ async def setup_frontend_b() -> None:
 
         logger.info(t("log.webconsole.app_dist_path", dist_path=dist_path))
 
-        from gsuid_core.webconsole.static_serve import build_frontend_router
+        from gsuid_core.webconsole.static_serve import (
+            build_frontend_router,
+            build_console_fonts_router,
+        )
 
+        app.include_router(build_console_fonts_router())
         app.include_router(build_frontend_router(dist_path), prefix="/app")
 
         logger.info(t("log.webconsole.apirouter_app"))

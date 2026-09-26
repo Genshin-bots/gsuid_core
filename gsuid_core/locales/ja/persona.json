@@ -10,6 +10,7 @@
   "log.persona.personaconfig_deleted_name_config": "[PersonaConfig] '{persona_name}' の設定ファイルを削除した",
   "log.persona.personaconfig_updated_name_ai": "[PersonaConfig] '{persona_name}' の AI モードを更新した: {ai_mode}",
   "log.persona.personaconfig_updated_name_capability": "[PersonaConfig] '{persona_name}' のツール能力パックを更新した: {cleaned}",
+  "log.persona.personaconfig_updated_name_agents": "[PersonaConfig] '{persona_name}' の委譲可能な能力エージェントを更新した: {cleaned}",
   "log.persona.personaconfig_updated_name_enabled": "[PersonaConfig] '{persona_name}' の有効化スコープを更新した: {scope}",
   "log.persona.personaconfig_updated_name_explicit": "[PersonaConfig] '{persona_name}' の明示的ツールホワイトリストを更新した: {cleaned}",
   "log.persona.personaconfig_updated_name_inspection": "[PersonaConfig] '{persona_name}' の巡検間隔を更新した: {inspect_interval} 分",

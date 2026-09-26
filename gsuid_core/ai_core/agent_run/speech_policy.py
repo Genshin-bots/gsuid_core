@@ -190,6 +190,13 @@ _WALL_CLOCK_CLOSE = (
     "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
     "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
 )
+_WALL_CLOCK_CLOSE_NO_RENDER = (
+    "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复；"
+    "不要再发起新的工具调用；"
+    "信息不全就如实说明现状，绝不编造。"
+    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
+    "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
+)
 
 _WALL_CLOCK_PIPELINE = (
     "（系统提示：本轮处理耗时已超预算，但**已有事实包未出图**——"
@@ -564,8 +571,12 @@ def resolve_speech_policy(
     return "free"
 
 
-def wall_clock_nudge_for(*, need_render_pipeline: bool) -> str:
-    return _WALL_CLOCK_PIPELINE if need_render_pipeline else _WALL_CLOCK_CLOSE
+def wall_clock_nudge_for(*, need_render_pipeline: bool, allow_render: bool = True) -> str:
+    if need_render_pipeline and allow_render:
+        return _WALL_CLOCK_PIPELINE
+    if allow_render:
+        return _WALL_CLOCK_CLOSE
+    return _WALL_CLOCK_CLOSE_NO_RENDER
 
 
 def non_master_title(user_id: str, persona_name: str | None) -> str:

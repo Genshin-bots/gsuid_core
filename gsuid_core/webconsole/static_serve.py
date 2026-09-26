@@ -133,6 +133,39 @@ def static_file_response(
     )
 
 
+CONSOLE_FONT_FILES = {
+    "MiSansVF.ttf": "font/ttf",
+    "TwemojiMozilla-colr.woff2": "font/woff2",
+}
+
+
+def default_console_fonts_dir() -> Path:
+    """gsuid_core/utils/fonts，与 webconsole/dist/assets 的 ../../../utils/fonts 对应。"""
+    return Path(__file__).resolve().parents[1] / "utils" / "fonts"
+
+
+def build_console_fonts_router(fonts_dir: Optional[Path] = None) -> APIRouter:
+    """只提供控制台用的两份字体。路径固定为 /utils/fonts/<文件名>。"""
+    directory = fonts_dir if fonts_dir is not None else default_console_fonts_dir()
+    router = APIRouter()
+
+    @router.get("/utils/fonts/{name}", response_model=None)
+    async def serve_console_font(name: str) -> Response:
+        if name not in CONSOLE_FONT_FILES:
+            return HTMLResponse("Not Found", status_code=404)
+        media_type = CONSOLE_FONT_FILES[name]
+        file_path = directory / name
+        if not file_path.is_file():
+            return HTMLResponse("Not Found", status_code=404)
+        return FileResponse(
+            path=str(file_path),
+            media_type=media_type,
+            headers={"Cache-Control": CACHE_SHORT},
+        )
+
+    return router
+
+
 def build_frontend_router(dist_path: Path) -> APIRouter:
     router = APIRouter()
 

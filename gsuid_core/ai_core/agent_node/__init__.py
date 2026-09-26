@@ -22,6 +22,11 @@ from .registry import (
     register_agent_node,
     match_capability_node,
     unregister_agent_node,
+    persona_capability_spec,
+    format_capability_roster,
+    parse_capability_agent_spec,
+    list_persona_capability_nodes,
+    persona_allows_capability_agent,
 )
 from .tool_packs import (
     DYNAMIC_PACK,
@@ -43,6 +48,11 @@ __all__ = [
     "list_nodes",
     "match_capability_node",
     "resolve_node",
+    "format_capability_roster",
+    "parse_capability_agent_spec",
+    "persona_capability_spec",
+    "list_persona_capability_nodes",
+    "persona_allows_capability_agent",
     "get_persona_node",
     "list_persona_nodes",
     "DYNAMIC_PACK",

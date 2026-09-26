@@ -171,6 +171,7 @@ def refine_retrieved_memory(mem: "MemoryContext", query: str) -> None:
         diversify_episodes,
         looks_like_latest_slot_query,
         collect_user_stance_conflicts,
+        wants_parallel_document_coverage,
     )
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         looks_like_span_query,
@@ -185,6 +186,9 @@ def refine_retrieved_memory(mem: "MemoryContext", query: str) -> None:
         pass
     elif looks_like_span_query(query) or looks_like_order_query(query) or looks_like_summary_query(query):
         # 跨会话题型由 pack（里程碑/首次出现）自己收口，48 条裁剪会把周覆盖砍到几天。
+        pass
+    elif wants_parallel_document_coverage(query):
+        # 同一天灌入的平行材料会被收成一簇，再截前 48 条就把后面的来源丢掉。
         pass
     elif len(mem.episodes) > 8:
         mem.episodes = diversify_episodes(mem.episodes, cap=48)
@@ -233,12 +237,18 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
     from gsuid_core.ai_core.memory.config import memory_config
 
     cap = int(memory_config.memory_inject_max_chars)
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        wants_parallel_document_coverage,
+    )
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         looks_like_span_query,
         looks_like_order_query,
         looks_like_summary_query,
     )
 
+    if wants_parallel_document_coverage(q):
+        cap = max(cap, PARALLEL_DOC_CHAR_BUDGET)
     if looks_like_order_query(q) or looks_like_span_query(q) or looks_like_summary_query(q):
         if memory_config.eo_strategy == "ledger":
             if memory_config.eo_selector == "dedicated" and looks_like_order_query(q):
@@ -588,66 +598,6 @@ class MemoryKit(AgentKit):
                 guide = ctx.memory_guide or ""
                 if guide:
                     parts.append(guide)
-                if wants_evidence_injection(ctx):
-                    q = retrieve_query_for_search(ctx.query)
-                    from gsuid_core.ai_core.memory.retrieval.lexical import (
-                        SET_RECALL_HINT,
-                        SUM_ANSWER_HINT,
-                        COUNT_ANSWER_HINT,
-                        EVIDENCE_USE_HINT,
-                        VALUE_UPDATE_HINT,
-                        ASSISTANT_QUOTE_HINT,
-                        RECOMMEND_CONSTRAINT_HINT,
-                        looks_like_sum_query,
-                        looks_like_attribute_query,
-                        looks_like_latest_slot_query,
-                        looks_like_recommendation_query,
-                        looks_like_assistant_quote_query,
-                    )
-                    from gsuid_core.ai_core.memory.retrieval.event_time import (
-                        looks_like_order_query,
-                        looks_like_summary_query,
-                    )
-
-                    if looks_like_assistant_quote_query(q):
-                        parts.append(ASSISTANT_QUOTE_HINT)
-                    elif looks_like_sum_query(q):
-                        parts.append(SUM_ANSWER_HINT)
-                    elif looks_like_count_query(q):
-                        parts.append(COUNT_ANSWER_HINT)
-                    elif looks_like_attribute_query(q):
-                        parts.append(VALUE_UPDATE_HINT)
-                    elif looks_like_recommendation_query(q):
-                        parts.append(RECOMMEND_CONSTRAINT_HINT)
-                        parts.append("（" + EVIDENCE_USE_HINT + "）")
-                    else:
-                        parts.append("（" + EVIDENCE_USE_HINT + "）")
-                    if looks_like_order_query(q):
-                        from gsuid_core.ai_core.memory.config import memory_config as _mc
-
-                        if _mc.eo_strategy != "ledger":
-                            parts.append(
-                                "（每行一件事。只算用户说过自己做过的，助手推荐不算。"
-                                "按发生日从早到晚排，不要用别的名字顶上。）"
-                            )
-                    elif looks_like_summary_query(q):
-                        parts.append(
-                            "（摘要须覆盖问句点名的要点，写出记忆里的具体专名与日期；"
-                            "条目不足或主题线不确定时先 recall_timeline，再按需 recall_session；"
-                            "以片段时间戳为准，不要因为墙上日期距今很久就说记忆停更。）"
-                        )
-                    elif looks_like_timeline_query(q):
-                        parts.append(
-                            "（按时间戳从窗口最早一天列到最晚一天；"
-                            "条目不足时先 recall_timeline，再按需 recall_session。）"
-                        )
-                    elif looks_like_self_history_query(q) and not looks_like_latest_slot_query(q):
-                        parts.append(
-                            "（问句里的人物+场景/属性必须在同一段原文里同时出现才算有记录；"
-                            "只有同名或相近主题不够，应说没有。）"
-                        )
-                    if looks_like_count_query(q):
-                        parts.append(SET_RECALL_HINT)
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:
             parts.append(prefetch)

@@ -177,6 +177,8 @@
   "log.memory.system_retrieval_s1_raw": "[Memory] System-1 検索に失敗した: {s1_raw}",
   "log.memory.system_retrieval_scope_episode": "[Memory] System-2 検索が完了した（scope={p0}）。Episode {p1} 件、Entity {p2} 個、Edge {p3} 件",
   "log.memory.system_retrieval_scope_raw": "[Memory] System-2 検索に失敗した（scope={p0}）: {raw_result}",
+  "log.memory.document_coverage_failed": "[Memory] 文書抜粋に失敗したため、元の検索結果に戻す: {e}",
+  "log.memory.document_pool_load_failed": "[Memory] 取り込み済み文書の読み込みに失敗した: {e}",
   "log.memory.task_ingestionworker_background_started": "[Memory] IngestionWorker のバックグラウンドタスクを起動した",
   "log.memory.time_bucket_retrieval": "[Memory] 時間バケット検索 bucket={i} に失敗した: {e}",
   "log.memory.time_range_supplemental_retrieval": "[Memory] 時間範囲の補足検索に失敗した: {e}",

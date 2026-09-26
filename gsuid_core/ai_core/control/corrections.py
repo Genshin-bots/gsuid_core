@@ -231,8 +231,25 @@ def blocked_voice_directive() -> Directive:
     )
 
 
-def numeric_recitation_directive() -> Directive:
-    """念数被拦、用户没看到。纠正只许改委派出图，不许再念进气泡。"""
+def numeric_recitation_directive(*, allow_render: bool = True) -> Directive:
+    """念数被拦、用户没看到。能出图才改委派；否则短答，不许再念进气泡。"""
+    if not allow_render:
+        return Directive(
+            kind="correction",
+            reason_code="numeric_recitation",
+            observation=(
+                "你上一段给用户的回复被拦下了，没有发出去：多点数字对照不能当群聊台词。"
+                "用一两句短话说明结论，或如实说明当前不能出图。"
+                "不要委派 render_agent，不要只输出 <SILENCE>。"
+            ),
+            obligations=(
+                Obligation(
+                    must="deliver",
+                    satisfied_by=("user_visible_sent",),
+                ),
+            ),
+            evidence=Evidence(tool_calls=0, detail="出站话术闸拦下了念数，且当前人格未启用出图"),
+        )
     return Directive(
         kind="correction",
         reason_code="numeric_recitation",
@@ -253,9 +270,25 @@ def numeric_recitation_directive() -> Directive:
     )
 
 
-def render_obligation_directive(*, recited_report: bool, tool_calls: int) -> Directive:
-    """真把长结构当台词念出来时，才建议改出图。短答不纠。"""
+def render_obligation_directive(*, recited_report: bool, tool_calls: int, allow_render: bool = True) -> Directive:
+    """真把长结构当台词念出来时，才建议改出图。短答不纠。未启用出图则只要求短答。"""
     observation = "本轮工具返回里有较长结构，你把它整段念出来了。" if recited_report else "本轮工具返回里有较长结构。"
+    if not allow_render:
+        return Directive(
+            kind="correction",
+            reason_code="report_speech" if recited_report else "render_pending",
+            observation=(
+                observation + "一两句能说清就保持原答或申辩；"
+                "当前人格未启用出图，不要委派 render_agent，不要自己写 HTML。"
+            ),
+            obligations=(
+                Obligation(
+                    must="deliver",
+                    satisfied_by=("user_visible_sent",),
+                ),
+            ),
+            evidence=Evidence(tool_calls=tool_calls, structured_returns=1),
+        )
     return Directive(
         kind="correction",
         reason_code="report_speech" if recited_report else "render_pending",

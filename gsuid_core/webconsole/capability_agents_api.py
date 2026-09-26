@@ -92,6 +92,10 @@ class PatchNodeRequest(BaseModel):
 async def list_capability_agents(
     _: Dict[str, Any] = Depends(require_auth),
     source: Optional[str] = Query(None, description="按来源筛选：builtin / plugin / user / persona"),
+    delegable: bool = Query(
+        False,
+        description="仅可委派节点：排除 persona 投影与 capability_evaluator",
+    ),
 ) -> Dict[str, Any]:
     """列出所有节点（含 ``source`` 与 ``plugin`` 来源插件名）。
 
@@ -99,10 +103,17 @@ async def list_capability_agents(
     """
     from gsuid_core.ai_core.capability_agents.persistence import _node_to_dto
 
-    include_persona = source is None or source == "persona"
+    include_persona = (source is None or source == "persona") and not delegable
     items: List[AgentNodeDTO] = [_node_to_dto(n) for n in list_nodes(include_persona=include_persona)]
     if source:
         items = [x for x in items if "source" in x and x["source"] == source]
+    if delegable:
+        items = [
+            x
+            for x in items
+            if ("source" not in x or x["source"] != "persona")
+            and ("node_id" not in x or x["node_id"] != "capability_evaluator")
+        ]
     return {"status": 0, "msg": "ok", "data": {"items": items, "count": len(items)}}
 
 

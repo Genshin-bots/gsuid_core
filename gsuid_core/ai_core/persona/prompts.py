@@ -156,7 +156,7 @@ __MASTERS__ 为配置中的主人（仅此列表）。只有本轮说话人在�
 # 闲聊轮轻量工具规程（user 侧按需；保持极短）
 TOOL_ORCHESTRATION_LITE = """
 ## 轻量工具
-表情/提醒/简单查询可用；多项数据 `create_subagent(render_agent)` 出图；
+表情/提醒/简单查询可用；花名册含出图节点时才委派它出图；
 省略跟进继承上轮动作；列表没有先 `find_tools`，零调用禁止说做不到；组合分析 `create_subagent`。
 """
 
@@ -174,7 +174,7 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
 6. 列表没有对口工具先 `find_tools`，零调用禁止说做不到/没装。
    没调工具绝不说已设置/已取消/查到了。别人互聊且没找你 → 别调。
 7. `send_message_by_ai` 仅途中追加；资源 ID 原样传。web_search 的 query 须带具体槽。
-8. 插件文章只读，补充用 `attach_article`。多项对照出图，台词一两句。
+8. 插件文章只读，补充用 `attach_article`。台词一两句。
 """
 
 

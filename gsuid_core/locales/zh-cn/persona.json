@@ -10,6 +10,7 @@
   "log.persona.personaconfig_deleted_name_config": "[PersonaConfig] 已删除 '{persona_name}' 的配置文件",
   "log.persona.personaconfig_updated_name_ai": "[PersonaConfig] 已更新 '{persona_name}' 的 AI 模式: {ai_mode}",
   "log.persona.personaconfig_updated_name_capability": "[PersonaConfig] 已更新 '{persona_name}' 的工具能力族: {cleaned}",
+  "log.persona.personaconfig_updated_name_agents": "[PersonaConfig] 已更新 '{persona_name}' 的可委派能力代理: {cleaned}",
   "log.persona.personaconfig_updated_name_enabled": "[PersonaConfig] 已更新 '{persona_name}' 的启用范围: {scope}",
   "log.persona.personaconfig_updated_name_explicit": "[PersonaConfig] 已更新 '{persona_name}' 的显式工具白名单: {cleaned}",
   "log.persona.personaconfig_updated_name_inspection": "[PersonaConfig] 已更新 '{persona_name}' 的巡检间隔: {inspect_interval} 分钟",

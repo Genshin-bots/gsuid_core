@@ -309,3 +309,45 @@ def test_voice_anchor_budget_fits_anchor_plus_voice() -> None:
     typical = "x" * 102
     assert typical == _apply_block_budget("voice_anchor", typical)
     assert BLOCK_CHAR_BUDGET["voice_anchor"] >= 180
+
+
+def test_ingest_table_chunks_repeat_header() -> None:
+    """表格切块后每一段都带列名，避免只嵌入到无表头的数字行。"""
+    from gsuid_core.webconsole.ai_memory_api import _chunk_text
+
+    header = "| metric | alpha | beta |"
+    sep = "| --- | --- | --- |"
+    rows = [f"| row{i} | {i} | {i * 2} |" for i in range(40)]
+    text = "\n".join([header, sep, *rows])
+    chunks = _chunk_text(text, target=180)
+    assert len(chunks) >= 2
+    for ch in chunks:
+        assert "metric" in ch or "alpha" in ch
+
+
+def test_ingest_blank_line_starts_a_new_table_header() -> None:
+    """空行隔开的下一张表用自己的列名，不能贴上一张表头。"""
+    from gsuid_core.ai_core.text_chunk import chunk_text
+
+    first = "\n".join(
+        [
+            "| city | temp |",
+            "| --- | --- |",
+            "| shanghai | 1 |",
+            "| beijing | 2 |",
+        ]
+    )
+    second = "\n".join(
+        [
+            "| sku | price |",
+            "| --- | --- |",
+            "| pen | 9 |",
+            "| book | 8 |",
+        ]
+    )
+    chunks = chunk_text(f"{first}\n\n{second}", target=70)
+    assert chunks
+    for ch in chunks:
+        if "sku" in ch or "pen" in ch:
+            assert not ch.strip().startswith("| city")
+    assert any("sku" in ch and "price" in ch for ch in chunks)

@@ -134,6 +134,7 @@ RESOURCE_PATH/persona/{persona_name}/
 | `keywords` | List[str] | `[]` | 唤醒关键词 |
 | `tool_packs` | List[str] | `["dynamic"]` | 工具能力族（dynamic=五层自动装配 / task_basics / capability_domain 族名） |
 | `tool_names` | List[str] | `[]` | 显式工具白名单（并入保底池，不经向量检索） |
+| `capability_agents` | List[str] | `["*"]` | 可委派能力代理 node_id。`*`=全部；`!render_agent` 禁用出图。空列表=不可委派 |
 
 > **AgentNode 同构（2026-07-07）**：每个 persona 目录经 `ai_core/agent_node/persona_proj.py`
 > 投影为 `source="persona"` 的只读 AgentNode（与能力代理同一注册表 / 同一 schema），

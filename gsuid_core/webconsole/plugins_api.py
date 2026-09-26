@@ -214,6 +214,15 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
     return {"status": 0, "msg": "ok", "data": tasks}
 
 
+@app.get("/api/plugins/usage", summary="插件命令触发热度", tags=PLUGINS)
+async def get_plugin_usage_rank(_user: Dict[str, Any] = Depends(require_auth)):
+    """近 7 天命令触发次数，按插件汇总。结果缓存 10 分钟，不扫消息流水。"""
+    from gsuid_core.webconsole.plugin_usage import get_plugin_usage
+
+    data = await get_plugin_usage()
+    return {"status": 0, "msg": "ok", "data": data}
+
+
 @app.get("/api/plugins/{plugin_name}", summary="获取插件详情", tags=PLUGINS)
 async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str, Any] = Depends(require_admin_header)):
     """

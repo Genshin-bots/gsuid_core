@@ -177,6 +177,8 @@
   "log.memory.system_retrieval_s1_raw": "[Memory] System-1 检索失败: {s1_raw}",
   "log.memory.system_retrieval_scope_episode": "[Memory] System-2 检索完成 (scope={p0})，共 {p1} 条 Episode, {p2} 个 Entity, {p3} 条 Edge",
   "log.memory.system_retrieval_scope_raw": "[Memory] System-2 检索失败 (scope={p0}): {raw_result}",
+  "log.memory.document_coverage_failed": "[Memory] 文档摘录失败，退回原检索: {e}",
+  "log.memory.document_pool_load_failed": "[Memory] 入库文档读取失败: {e}",
   "log.memory.task_ingestionworker_background_started": "[Memory] IngestionWorker 后台任务已启动",
   "log.memory.time_bucket_retrieval": "[Memory] 时间分桶检索 bucket={i} 失败: {e}",
   "log.memory.time_range_supplemental_retrieval": "[Memory] 时间范围补召回失败: {e}",

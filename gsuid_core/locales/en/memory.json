@@ -177,6 +177,8 @@
   "log.memory.system_retrieval_s1_raw": "[Memory] System-1 retrieval failed: {s1_raw}",
   "log.memory.system_retrieval_scope_episode": "[Memory] System-2 retrieval completed (scope={p0}): {p1} Episode records, {p2} Entity items, {p3} Edge records",
   "log.memory.system_retrieval_scope_raw": "[Memory] System-2 retrieval failed (scope={p0}): {raw_result}",
+  "log.memory.document_coverage_failed": "[Memory] Document excerpt failed; falling back to the original hits: {e}",
+  "log.memory.document_pool_load_failed": "[Memory] Failed to load ingested documents: {e}",
   "log.memory.task_ingestionworker_background_started": "[Memory] IngestionWorker background task started",
   "log.memory.time_bucket_retrieval": "[Memory] Time-bucket retrieval failed for bucket={i}: {e}",
   "log.memory.time_range_supplemental_retrieval": "[Memory] Time-range supplemental retrieval failed: {e}",

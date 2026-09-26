@@ -271,6 +271,113 @@ def compute_edge_confidence(mention_count: Optional[int], decay_score: Optional[
     return round(corroboration * decay, 4)
 
 
+def _episode_from_stored(
+    row_id: str,
+    content: str | None,
+    valid_at: datetime | None,
+    scope_key: str,
+) -> Episode:
+    return Episode(
+        id=row_id,
+        content=content or "",
+        valid_at=valid_at.strftime("%Y-%m-%d %H:%M:%S") if valid_at else "",
+        scope_key=scope_key,
+        embedding=[],
+    )
+
+
+async def _parallel_document_sources(scope_keys: list[str]) -> int:
+    """至少两份不同标题才值得扫正文。数据库失败记日志并当作没有。"""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import episode_source_key, is_ingested_document_episode
+
+    seen: set[str] = set()
+    for sk in scope_keys:
+        try:
+            heads = await AIMemEpisode.list_ingested_document_heads(sk, limit=4000)
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
+            logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
+            return 0
+        for snippet in heads:
+            if not is_ingested_document_episode(snippet):
+                continue
+            key = episode_source_key(snippet)
+            if key:
+                seen.add(key)
+            if len(seen) >= 2:
+                return len(seen)
+    return len(seen)
+
+
+async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Episode]:
+    """比较题按 scope 把每份入库文档的重叠段摘出来。失败则退回原检索。"""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        cover_document_excerpts,
+    )
+
+    if await _parallel_document_sources(scope_keys) < 2:
+        return []
+    pool: list[Episode] = []
+    for sk in scope_keys:
+        try:
+            rows = await AIMemEpisode.list_ingested_documents(sk, limit=12000)
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
+            logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
+            return []
+        for row in rows:
+            pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
+    if not pool:
+        return []
+    return cover_document_excerpts(pool, query, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+
+
+async def _expand_document_siblings(hits: list[Episode], scope_keys: list[str]) -> list[Episode]:
+    """向量命中某篇入库文档后，按标题把同文档其余块拉回来。"""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        episode_source_key,
+        is_ingested_document_episode,
+        merge_document_sibling_episodes,
+    )
+
+    titles: list[str] = []
+    seen_titles: set[str] = set()
+    for ep in hits:
+        raw = ep["content"] or ""
+        if not is_ingested_document_episode(raw):
+            continue
+        key = episode_source_key(raw)
+        if not key or key in seen_titles:
+            continue
+        seen_titles.add(key)
+        titles.append(key)
+        if len(titles) >= 8:
+            break
+    if not titles or not scope_keys:
+        return hits
+    pool: list[Episode] = []
+    for sk in scope_keys:
+        for title in titles:
+            try:
+                rows = await AIMemEpisode.list_document_chunks(sk, title, limit=40)
+            except (OSError, RuntimeError, SQLAlchemyError) as exc:
+                logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
+                return hits
+            for row in rows:
+                pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
+    if not pool:
+        return hits
+    return merge_document_sibling_episodes(hits, pool)
+
+
 @dataclass
 class MemoryContext:
     """双路检索的最终输出，直接注入 Prompt"""
@@ -515,9 +622,7 @@ class MemoryContext:
             conf_lines = [f"• {s[:300]}" for s in self.conflicts[:6]]
             taken = _take(conf_lines, int(max_chars * 0.12))
             if taken:
-                from gsuid_core.ai_core.memory.retrieval.lexical import CONFLICT_BANNER
-
-                parts.append(CONFLICT_BANNER + "\n" + "\n".join(taken))
+                parts.append("【陈述不一致】\n" + "\n".join(taken))
 
         # 语义类目摘要（话题大纲）
         if self.categories:
@@ -543,14 +648,19 @@ class MemoryContext:
             ep_budget = max_chars - used
             if ep_budget > 120:
                 from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    PARALLEL_DOC_CHAR_BUDGET,
                     is_fact_sheet,
                     is_session_read,
                     excerpt_session_read,
+                    looks_like_set_query,
                     looks_like_sum_query,
                     looks_like_count_query,
                     apply_query_episode_pack,
+                    collapse_document_episodes,
                     looks_like_attribute_query,
+                    is_ingested_document_episode,
                     looks_like_latest_slot_query,
+                    wants_parallel_document_coverage,
                 )
                 from gsuid_core.ai_core.memory.retrieval.event_time import (
                     query_only_item_cap,
@@ -589,6 +699,10 @@ class MemoryContext:
                 recent_budget = 0 if cross_session else min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
                 ep_cap = 480 if self.temporal_mode else 1000
+                doc_cap = 12000 if looks_like_set_query(query) else max(ep_cap, 2400)
+                parallel_q = wants_parallel_document_coverage(query)
+                if parallel_q:
+                    doc_cap = PARALLEL_DOC_CHAR_BUDGET
 
                 def _assistant_turn(raw: str) -> bool:
                     low = raw.lstrip().lower()
@@ -610,6 +724,10 @@ class MemoryContext:
                         seen_content.add(key)
                         prefix = "[我此前说过] " if self_mark else ""
                         shown = raw[:ep_cap]
+                        if is_ingested_document_episode(raw):
+                            # 入库时刻不是报告期，标上去会把多份材料当成同一条的更新。
+                            undated.append(f"{prefix}{raw[:doc_cap]}")
+                            continue
                         if is_session_read(ep):
                             shown = excerpt_session_read(raw, query) or raw[:2400]
                         elif is_fact_sheet(ep):
@@ -658,9 +776,16 @@ class MemoryContext:
                     query,
                     temporal_mode=self.temporal_mode,
                     time_range=self.time_range,
-                    char_budget=min(other_budget, 16000 if cross_session else 8000),
+                    char_budget=min(
+                        other_budget,
+                        PARALLEL_DOC_CHAR_BUDGET
+                        if (cross_session or looks_like_set_query(query) or parallel_q)
+                        else 8000,
+                    ),
                     asker_id=self.asker_id,
                 )
+                if looks_like_set_query(query):
+                    packed = collapse_document_episodes(packed)
                 if cross_session:
                     packed = packed[:60]
                 if looks_like_order_query(query) or looks_like_summary_query(query):
@@ -727,45 +852,7 @@ class MemoryContext:
                     taken_self = _take(_ep_lines(old_self, self_mark=True), min(self_budget, 400))
                     taken = taken_other + taken_recent + taken_self
                 if taken:
-                    ep_head = "【相关对话片段】"
-                    if looks_like_duration_query(query):
-                        ep_head += "\n（[]是发言时刻；事件日期以正文为准，两端都要保留。）"
-                    elif looks_like_order_query(query):
-                        ep_head += (
-                            "\n（每行一件事。只算用户说过自己做过的，助手推荐不算。"
-                            "按发生日从早到晚排，不要用别的名字顶上。）"
-                        )
-                    elif looks_like_span_query(query):
-                        ep_head += (
-                            "\n（按「编号 · 日期 · 一句话」列跨月份里程碑；不要只写开头几天；"
-                            "条目不足时先 recall_timeline，再按需 recall_session。）"
-                        )
-                    elif looks_like_count_query(query):
-                        from gsuid_core.ai_core.memory.retrieval.lexical import COUNT_ANSWER_HINT
-
-                        ep_head += "\n（" + COUNT_ANSWER_HINT + "）"
-                    elif looks_like_sum_query(query):
-                        from gsuid_core.ai_core.memory.retrieval.lexical import SUM_ANSWER_HINT
-
-                        ep_head += "\n（" + SUM_ANSWER_HINT + "）"
-                    elif looks_like_attribute_query(query):
-                        from gsuid_core.ai_core.memory.retrieval.lexical import VALUE_UPDATE_HINT
-
-                        ep_head += "\n（" + VALUE_UPDATE_HINT + "）"
-                    value_update = (
-                        looks_like_attribute_query(query)
-                        and not looks_like_count_query(query)
-                        and not looks_like_sum_query(query)
-                        and not looks_like_order_query(query)
-                    )
-                    list_events = (
-                        looks_like_count_query(query) or looks_like_order_query(query) or looks_like_sum_query(query)
-                    )
-                    if value_update or list_events:
-                        taken = sorted(taken) if value_update else taken
-                        parts.append(ep_head + "\n" + "\n".join(taken))
-                    else:
-                        parts.append(_speech(ep_head + "\n" + "\n".join(taken)))
+                    parts.append(_speech("【相关对话片段】\n" + "\n".join(taken)))
 
         # §8 注入防线对齐：偏好保持裸注入可执行（写入端有闸）；其余召回统一 untrusted
         # 栅栏——复用 content_guard.wrap_untrusted，栅栏格式全通道唯一定义（评审修复 F9）。
@@ -809,9 +896,7 @@ class MemoryContext:
             parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
 
         if self.conflicts:
-            from gsuid_core.ai_core.memory.retrieval.lexical import CONFLICT_BANNER
-
-            parts.append(CONFLICT_BANNER + "\n" + "\n".join(f"• {s[:300]}" for s in self.conflicts[:6]))
+            parts.append("【陈述不一致】\n" + "\n".join(f"• {s[:300]}" for s in self.conflicts[:6]))
 
         if self.episodes:
             ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content']}" for ep in self.episodes]
@@ -1005,6 +1090,11 @@ async def dual_route_retrieve(
             通用规则永远注入，其余非纠错规则仅当 ``target_context`` 命中本集合时才注入，避免
             无关工具规则挤占预算、分散工具调用注意力。
     """
+    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
+
+    if wants_parallel_document_coverage(query):
+        top_k = max(int(top_k), 80)
+
     scope_keys: list[str] = []
     group_scope = None
     if group_id:
@@ -1160,6 +1250,11 @@ async def dual_route_retrieve(
     temporal_task: Optional[asyncio.Task] = None
     if span_window and scope_keys:
         temporal_task = asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, span_window[0], span_window[1]))
+    cover_task: asyncio.Task[list[Episode]] | None = None
+    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
+
+    if scope_keys and wants_parallel_document_coverage(query):
+        cover_task = asyncio.create_task(_load_document_coverage(query, scope_keys))
 
     # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
     s1_task = asyncio.create_task(
@@ -1242,6 +1337,18 @@ async def dual_route_retrieve(
 
     # 先合并 S1 + S2 结果（去重）
     all_episodes: list[Episode] = _merge_episodes(s1.episodes if s1 else [], s2_episodes)
+    covered: list[Episode] = []
+    if cover_task is not None:
+        from sqlalchemy.exc import SQLAlchemyError
+
+        try:
+            covered = await cover_task
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
+            logger.warning(i18n_t("log.memory.document_coverage_failed", e=exc))
+            covered = []
+    # 已按文档摘录时不再把同标题全文拉进 rerank，否则封面会挤掉问到的表。
+    if not covered:
+        all_episodes = await _expand_document_siblings(all_episodes, scope_keys)
     all_entities: list[Entity] = _merge_entities(s1.entities if s1 else [], s2_entities)
     all_edges: list[Edge] = _merge_edges(s1.edges if s1 else [], s2_edges)
     all_categories: list[Category] = _merge_categories([], s2_categories)
@@ -1496,6 +1603,17 @@ async def dual_route_retrieve(
     pending = pending_episodes_for_scopes(scope_keys)
     if pending:
         ranked_episodes = _merge_episodes(pending, ranked_episodes)
+    if covered:
+        from gsuid_core.ai_core.memory.retrieval.lexical import is_ingested_document_episode
+
+        chat: list[Episode] = []
+        for ep in ranked_episodes:
+            if is_ingested_document_episode(ep["content"] or ""):
+                continue
+            chat.append(ep)
+            if len(chat) >= 6:
+                break
+        ranked_episodes = covered + chat
 
     order_stages: list[Episode] = []
     if looks_like_order_query(query) and ranked_episodes:

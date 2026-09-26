@@ -211,6 +211,20 @@ _TRANSIENT_DEFAULT_PROFILES = frozenset(
 )
 
 
+def _caller_persona_name(ctx: RunContext[ToolContext] | None) -> str:
+    """主人格名：从父 session 的 Agent 读，评测强制 persona 也走这里。"""
+    if ctx is None or ctx.deps is None:
+        return ""
+    sid = ctx.deps.parent_session_id or ""
+    if not sid:
+        return ""
+    agent = get_ai_session_registry().get_ai_session(sid)
+    if agent is None:
+        return ""
+    name = agent.persona_name
+    return str(name) if name else ""
+
+
 @ai_tools(
     category="common",
     capability_domain="长期任务编排",
@@ -229,7 +243,7 @@ async def create_subagent(
 
     ## 路由（agent_profile 填 node_id，禁止自造名）
     - ``research_agent``：外部检索 / 综合分析 → **只交事实包**（来源+时点）
-    - ``render_agent``：把**已有**事实包渲成美观信息图（多项数据出图**必走**；主人格禁自渲）
+    - ``render_agent``：把**已有**事实包渲成信息图（花名册启用时多项数据交给它；主人格禁自渲）
     - ``code_agent``：写代码 / PIL·脚本真文件产物（不是 HTML 信息卡；仅主人可委派）
     - ``internal_reporter`` / ``memory_curator`` / ``scheduler_assistant`` / …
       见本轮 system 能力清单
@@ -346,11 +360,21 @@ async def _create_subagent_impl(
 
         pid = resolve_node(agent_profile)
         if not pid:
-            from gsuid_core.ai_core.agent_node import list_nodes
+            from gsuid_core.ai_core.agent_node.registry import list_persona_capability_nodes
 
-            ids = [n.node_id for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"][:8]
+            _pn = _caller_persona_name(ctx)
+            ids = [n.node_id for n in list_persona_capability_nodes(_pn)][:8]
             listed = "、".join(ids) if ids else "（花名册为空）"
             return f"未匹配到能力节点 `{agent_profile.strip()}`。可用 node_id：{listed}"
+        from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+        _pn = _caller_persona_name(ctx)
+        if not persona_allows_capability_agent(_pn, pid):
+            from gsuid_core.ai_core.agent_node.registry import list_persona_capability_nodes
+
+            ids = [n.node_id for n in list_persona_capability_nodes(_pn)][:8]
+            listed = "、".join(ids) if ids else "（无）"
+            return f"当前人格未启用能力代理 `{pid}`。可用 node_id：{listed}"
         from gsuid_core.ai_core.tool_risk import refuse_master_only_node
         from gsuid_core.ai_core.agent_node import get_node
 
@@ -360,10 +384,12 @@ async def _create_subagent_impl(
         _extra = ctx.deps.extra
         _wake = _extra["delivery_wake"] if "delivery_wake" in _extra else False
         if _wake is True and pid != "render_agent":
-            return (
-                '⚠️ 本轮是任务交付回灌，只可 create_subagent(agent_profile="render_agent") 出图，'
-                "或 send_message_by_ai 发送已有的图。不要新开查询。"
-            )
+            if persona_allows_capability_agent(_pn, "render_agent"):
+                return (
+                    '⚠️ 本轮是任务交付回灌，只可 create_subagent(agent_profile="render_agent") 出图，'
+                    "或 send_message_by_ai 发送已有的图。不要新开查询。"
+                )
+            return "⚠️ 本轮是任务交付回灌。当前人格未启用出图代理，请直接用已有事实作答，不要新开查询。"
         _follow = _extra["turn_followup"] is True if "turn_followup" in _extra else False
         if pid != "render_agent" and not _follow and ctx.deps.ev is not None:
             _ground = turn_ground_source(ctx.deps.ev)
@@ -380,9 +406,9 @@ async def _create_subagent_impl(
         return await _dispatch_via_kanban(ctx, task, agent_profile)
 
     if ctx is not None and not agent_profile:
-        from gsuid_core.ai_core.agent_node import list_nodes
+        from gsuid_core.ai_core.agent_node.registry import list_persona_capability_nodes
 
-        ids = [n.node_id for n in list_nodes() if n.source != "persona" and n.node_id != "capability_evaluator"][:8]
+        ids = [n.node_id for n in list_persona_capability_nodes(_caller_persona_name(ctx))][:8]
         listed = "、".join(ids) if ids else "（花名册为空）"
         return f"未指定 agent_profile。请从花名册填写 node_id：{listed}"
 
