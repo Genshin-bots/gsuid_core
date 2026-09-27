@@ -357,6 +357,25 @@ class ToolsPhase(RunOnceHost):
             logger.info(i18n_t("log.agent.tool_assembly_slot_not_kernel"))
             _assemble = False
 
+        # persona 的 enabled_tools 作用域：本轮向量检索 / find_tools / 动态暴露的收放口径。
+        # 只管检索池，不动常驻直装工具与 tool_packs 静态挂载。
+        from gsuid_core.ai_core.agent_node.tool_scope import get_tool_scope as _get_tool_scope
+
+        _scope = _get_tool_scope(self.persona_name)
+        if not _scope.is_open and self.persona_name:
+            logger.info(
+                i18n_t(
+                    "log.agent.tool_scope_restricted_recall",
+                    p0=self.persona_name,
+                    p1="all" if _scope.allow_all else ",".join(sorted(_scope.allow)) or "none",
+                )
+            )
+        if st.context is not None:
+            # find_tools 在 step 内现查，须能读到本轮作用域
+            st.context.tool_scope = _scope
+        # 建 Agent 阶段（RetrievableToolset）跨方法复用同一份快照
+        st.tool_scope = _scope
+
         # persona 会话与其 AgentNode 声明同步：packs 去掉 dynamic 即关闭五层自动装配
         # 改为静态解析 packs + st.tool_names（与 task-mode 的 runner 同语义）。
         if _assemble and self.dynamic_tools is None and self.persona_name:
@@ -455,6 +474,9 @@ class ToolsPhase(RunOnceHost):
                                 exclude_names=core_names | _exclusive_now,
                                 has_active_task=st.has_active_task,
                             )
+                            # 状态族是「有持久实体就整族可用」，但仍受 enabled_tools 收放
+                            if not _scope.is_open:
+                                extra_tools = _scope.filter_tools(extra_tools)
                             st.final_user_message = _append_user_text(
                                 st.final_user_message, STATE_PERSISTED_FAMILY_HINT
                             )
@@ -535,8 +557,9 @@ class ToolsPhase(RunOnceHost):
                         scope_key=ctx_scope_key,
                         ignore_surfaces=_ignore,
                         exclude_names=core_names,
+                        scope=_scope,
                     )
-                    turn_seeds = pin_trigger_keyword_hits(qy, _found, limit=_TURN_SEED_CAP)
+                    turn_seeds = pin_trigger_keyword_hits(qy, _found, limit=_TURN_SEED_CAP, scope=_scope)
                     if st.ev is not None:
                         from gsuid_core.ai_core.entity_index import (
                             ALIAS_PLUGIN_EXTRA_KEY,
@@ -547,7 +570,7 @@ class ToolsPhase(RunOnceHost):
                         _ctx_plugin = sole_background_plugin(qy, build_group_history_block(st.ev))
                         if _ctx_plugin:
                             st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _ctx_plugin
-                            turn_seeds = await align_seeds_to_context_plugin(turn_seeds, _ctx_plugin, qy)
+                            turn_seeds = await align_seeds_to_context_plugin(turn_seeds, _ctx_plugin, qy, _scope)
                     if _call_self:
                         from gsuid_core.ai_core.entity_index import strip_surfaces, plugins_in_text
 
@@ -606,6 +629,9 @@ class ToolsPhase(RunOnceHost):
                 )
                 if _interactive:
                     deduped_extra = _without_progress_tool(deduped_extra)
+                if not _scope.is_open:
+                    # 族展开会带出同域的跨插件成员，收口到作用域内
+                    deduped_extra = _scope.filter_tools(deduped_extra)
 
                 # L3 只记族 TTL，不把专属工具写进 core（exclusive 会闪烁前缀）
                 for _et in deduped_extra:
@@ -820,7 +846,11 @@ class ToolsPhase(RunOnceHost):
         # exclude_names：静态池 + 能力代理专属（防 find_tools 把已剥离工具回灌主人格）。
         if st.expose_dynamic:
             _dyn_exclude = set(st.tool_names) | set(_require_context(st).blocked_tool_names)
-            _toolsets = [*_toolsets, RetrievableToolset(exclude_names=_dyn_exclude)]
+            _scope = st.tool_scope
+            _toolsets = [
+                *_toolsets,
+                RetrievableToolset(exclude_names=_dyn_exclude, scope=_scope if _scope is not None else None),
+            ]
         # eval_mode 下固定 temperature=0：记忆评测的答案须可复现，
         from gsuid_core.ai_core.memory.config import memory_config
 

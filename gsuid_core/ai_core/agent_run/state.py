@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Union, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Union, Literal, Sequence
 from dataclasses import field, dataclass
 
 from pydantic_ai.usage import UsageLimits
@@ -13,6 +13,9 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core import output_firewall
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import ToolList
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.agent_node.tool_scope import ToolScope
 
 ReturnMode = Literal["always", "return", "by_bot"]
 
@@ -135,6 +138,8 @@ class RunOnceState:
     # 上下文 / 用户消息
     blocked_exclusive: set[str] = field(default_factory=set)
     allow_outbound: bool = False
+    # persona enabled_tools 作用域快照：装配阶段解析，建 Agent / 检索两处共用
+    tool_scope: ToolScope | None = None
     run_extra: dict[str, Any] = field(default_factory=dict)
     fw_msg: bool = False
     context: ToolContext | None = None

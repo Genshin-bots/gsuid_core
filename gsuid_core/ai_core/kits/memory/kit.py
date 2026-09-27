@@ -187,12 +187,15 @@ def refine_retrieved_memory(mem: "MemoryContext", query: str) -> None:
     elif looks_like_span_query(query) or looks_like_order_query(query) or looks_like_summary_query(query):
         # 跨会话题型由 pack（里程碑/首次出现）自己收口，48 条裁剪会把周覆盖砍到几天。
         pass
-    elif wants_parallel_document_coverage(query):
+    elif mem.covered or wants_parallel_document_coverage(query):
         # 同一天灌入的平行材料会被收成一簇，再截前 48 条就把后面的来源丢掉。
         pass
     elif len(mem.episodes) > 8:
         mem.episodes = diversify_episodes(mem.episodes, cap=48)
     if looks_like_latest_slot_query(query) or looks_like_duration_query(query) or looks_like_span_query(query):
+        return
+    # 平行材料覆盖时，不同来源不是同一属性的正反说；stance 会把它们打成【陈述不一致】。
+    if mem.covered or wants_parallel_document_coverage(query):
         return
     extra = collect_user_stance_conflicts(mem.episodes, query)
     if not extra:
@@ -247,7 +250,8 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
         looks_like_summary_query,
     )
 
-    if wants_parallel_document_coverage(q):
+    # 逐份材料覆盖真的打出来了才放宽预算：按产出判定，不按问句措辞。
+    if mem.covered or wants_parallel_document_coverage(q):
         cap = max(cap, PARALLEL_DOC_CHAR_BUDGET)
     if looks_like_order_query(q) or looks_like_span_query(q) or looks_like_summary_query(q):
         if memory_config.eo_strategy == "ledger":
@@ -498,15 +502,20 @@ class MemoryKit(AgentKit):
                     await select_from_ledger(search_q)
         else:
             reserved_turns: list[Episode] = []
-            mem.episodes = await expand_lexical_recall(
-                mem.episodes,
-                query=search_q,
-                user_id=ctx.user_id,
-                group_id=ctx.group_id,
-                clock=ctx.clock_at,
-                reserved=reserved_turns,
-            )
-            mem.reserved_episodes = reserved_turns
+            if mem.covered:
+                # 逐份材料覆盖已按来源把每份需要的栏目行都算好了；词面补齐只会往里
+                # 灌闲聊/邻条，把覆盖按预算挤掉（25 份曾被挤到 17 份）。
+                mem.reserved_episodes = reserved_turns
+            else:
+                mem.episodes = await expand_lexical_recall(
+                    mem.episodes,
+                    query=search_q,
+                    user_id=ctx.user_id,
+                    group_id=ctx.group_id,
+                    clock=ctx.clock_at,
+                    reserved=reserved_turns,
+                )
+                mem.reserved_episodes = reserved_turns
         if mem.ledger is None and wants_evidence_injection(ctx):
             # 时间线邻条会把同日练习题灌满，冲掉主题演进；只给计数题补会话。
             if looks_like_count_query(search_q) and not mem.temporal_mode:

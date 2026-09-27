@@ -626,8 +626,8 @@ gate 误判的代价只能是"本该有工具却没给"，绝不能是"本该沉
 > （专武推荐等）就没了。种子是本轮的语义命中，一个都不该被大族挤掉。
 
 **新增能力族时留意族大小**——族大于附加池上限时，它在旧逻辑下会挤掉所有人。反过来，
-**单领域部署根本不必付这份检索开销**：persona `config.json` 的 `tool_packs` 可直接写
-`capability_domain` 名，整族无条件常驻保底池（见 [§7.3](./07-tool-registry-and-agent.md)）。
+**单领域部署**：人格没有 `tool_packs` 配置项。要整族常驻走 `tool_names`，缩小检索池走
+`enabled_tools`（见 [§7.3](./07-tool-registry-and-agent.md) / [§6.6](./06-ai-session-and-persona.md)）。
 
 **🔴 四、评测期配置遗留污染生产（本次真正的元凶，也是最容易复发的一类）**
 

@@ -113,17 +113,19 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         150,
         options=[80, 120, 150, 200, 300],
     ),
-    # AgentNode 同构：persona 投影节点的工具装配声明（GSC 模板 append-only 自动升级）
-    "tool_packs": GsListStrConfig(
-        "工具能力族",
-        "该人格挂载的工具能力族。dynamic=运行时五层自动装配（默认，与历史行为一致）；"
-        "task_basics=任务基础族；也可填 @ai_tools 声明的 capability_domain 族名",
-        ["dynamic"],
-        options=["dynamic", "task_basics"],
+    # 检索池按插件收放；能力族固定 dynamic，不进人格模板。
+    "enabled_tools": GsListStrConfig(
+        "启用工具（按插件）",
+        "决定该人格的向量检索池收录哪些插件的工具。默认 * = 全部插件都进检索池；"
+        "!插件名 = 排除该插件；只填具体插件名 = 仅这些进检索池。"
+        "不影响常驻直装工具（send_message_by_ai 等框架能力）与显式工具白名单里的常驻工具。",
+        ["*"],
+        options=["*"],
     ),
     "tool_names": GsListStrConfig(
         "显式工具白名单",
-        "该人格额外常驻挂载的工具名（并入保底池，不经向量检索）。多个用换行分隔",
+        "该人格常驻直装的工具名：每轮直接进工具表，不经向量检索，也不占检索名额。"
+        "框架默认常驻工具（send_message_by_ai、find_tools 等）默认已写入，其余按需增删。多个用换行分隔。",
         [],
         options=[],
     ),
@@ -388,35 +390,25 @@ class PersonaConfigManager(ConfigSetManager):
         else:
             return False, "配置写入失败"
 
-    def set_tool_packs(self, persona_name: str, tool_packs: List[str]) -> tuple[bool, str]:
+    def set_enabled_tools(self, persona_name: str, enabled_tools: List[str]) -> tuple[bool, str]:
+        """设置该人格进入向量检索池的插件名单（含 * / !插件名）。
+
+        不做注册表强校验：插件可能晚于本次写入才加载，未知插件名由
+        ToolScope 在运行时自然不匹配任何工具。
         """
-        设置 Persona 挂载的工具能力族
-
-        不做注册表强校验：插件族可能晚于本次写入才注册，未知族由
-        resolve_pack_tool_names 在运行时记 warning 并跳过。
-
-        Args:
-            persona_name: Persona 名称
-            tool_packs: 能力族名列表（"dynamic" / "task_basics" / capability_domain 族名）
-
-        Returns:
-            (是否成功, 消息)
-        """
-        cleaned = list(dict.fromkeys(p.strip() for p in tool_packs if p.strip()))
+        cleaned = list(dict.fromkeys(n.strip() for n in enabled_tools if n.strip()))
         config = self.get_config(persona_name)
-
-        success = config.set_config("tool_packs", cleaned)
+        success = config.set_config("enabled_tools", cleaned)
         if success:
             logger.info(
                 t(
-                    "log.persona.personaconfig_updated_name_capability",
+                    "log.persona.personaconfig_updated_name_enabled_tools",
                     persona_name=persona_name,
                     cleaned=cleaned,
                 )
             )
             return True, "ok"
-        else:
-            return False, "配置写入失败"
+        return False, "配置写入失败"
 
     def set_tool_names(self, persona_name: str, tool_names: List[str]) -> tuple[bool, str]:
         """
@@ -548,7 +540,7 @@ class PersonaConfigManager(ConfigSetManager):
             "target_groups": config.get_config("target_groups").data,
             "inspect_interval": config.get_config("inspect_interval").data,
             "keywords": config.get_config("keywords").data,
-            "tool_packs": config.get_config("tool_packs").data,
+            "enabled_tools": config.get_config("enabled_tools").data,
             "tool_names": config.get_config("tool_names").data,
             "capability_agents": config.get_config("capability_agents").data,
         }

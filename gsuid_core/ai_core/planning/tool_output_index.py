@@ -36,14 +36,29 @@ async def ensure_tool_output_collection() -> None:
         get_dimension,
         get_strict_dimension,
     )
-    from gsuid_core.ai_core.rag.collection_migration import ensure_payload_indexes
+    from gsuid_core.ai_core.rag.collection_migration import (
+        ensure_payload_indexes,
+        force_recreate_collection,
+        collection_vector_mismatched,
+    )
 
     if client is None:
         return
     try:
+        dim = get_strict_dimension() or get_dimension()
         exists = await client.collection_exists(TOOL_OUTPUT_COLLECTION)
-        if not exists:
-            dim = get_strict_dimension() or get_dimension()
+        # 维度不符必须重建：只按「存在就跳过」会让旧维度集合长期留着，运行时
+        # 每次检索都撞 "expected dim: 512, got 768" 并降级为空。工具产物向量是
+        # 「落盘文件 + SQL」的可再生产物，重建后由索引流程重新写入。
+        if exists and await collection_vector_mismatched(TOOL_OUTPUT_COLLECTION, dim, TOOL_OUTPUT_DENSE):
+            logger.warning(t("log.ai.tool_output_index_dimension_mismatch_rebuild", p0=dim))
+            await force_recreate_collection(
+                collection_name=TOOL_OUTPUT_COLLECTION,
+                vectors_config=tool_output_vectors_config(dim),
+                sparse_vectors_config=tool_output_sparse_config(),
+                on_disk_payload=True,
+            )
+        elif not exists:
             await client.create_collection(
                 collection_name=TOOL_OUTPUT_COLLECTION,
                 vectors_config=tool_output_vectors_config(dim),

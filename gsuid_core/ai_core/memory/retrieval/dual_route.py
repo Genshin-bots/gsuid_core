@@ -319,9 +319,12 @@ async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Epi
     from gsuid_core.ai_core.memory.retrieval.lexical import (
         PARALLEL_DOC_CHAR_BUDGET,
         cover_document_excerpts,
+        has_document_coverage_tokens,
     )
 
     if await _parallel_document_sources(scope_keys) < 2:
+        return []
+    if not has_document_coverage_tokens(query):
         return []
     pool: list[Episode] = []
     for sk in scope_keys:
@@ -412,6 +415,11 @@ class MemoryContext:
     inject_ids: list[str] = field(default_factory=list)
     skeleton_ids: list[str] = field(default_factory=list)
     ledger: Optional[LedgerView] = None
+    # 本轮真的打出了逐份材料覆盖摘录（每份入库文档各留一行）。预算按这个事实放宽，
+    # 不按问句措辞判断——问句没点名「报告/文档」时措辞门会漏，而摘录已经算出来了。
+    covered: bool = False
+    # cover 产出的 episode id；注入时与 S1 指标命中分预算，避免均分把栏目摘录削没。
+    cover_ids: frozenset[str] = field(default_factory=frozenset)
     # 群聊钉本人的后一次赋值；私聊留空，scope 已经是这个用户。
     asker_id: str = ""
     # 问句话题上带数字/日期的原句。单独占预算，邻近片段不能把它截掉。
@@ -452,6 +460,23 @@ class MemoryContext:
                     break
                 out.append(line)
                 used += len(line)
+            return out
+
+        def _take_even(items: list[str], budget: int) -> list[str]:
+            """逐份材料都要出场时用：先均分额度再削长行，避免先到先得把后面来源挤掉。"""
+            if not items:
+                return []
+            if sum(len(x) for x in items) <= budget:
+                return list(items)
+            share = max(1, budget // len(items))
+            out: list[str] = []
+            used = 0
+            for line in items:
+                text = line if len(line) <= share else line[:share]
+                if used + len(text) > budget and out:
+                    break
+                out.append(text)
+                used += len(text)
             return out
 
         def _take_head_tail(items: list[str], budget: int) -> list[str]:
@@ -700,7 +725,7 @@ class MemoryContext:
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
                 ep_cap = 480 if self.temporal_mode else 1000
                 doc_cap = 12000 if looks_like_set_query(query) else max(ep_cap, 2400)
-                parallel_q = wants_parallel_document_coverage(query)
+                parallel_q = wants_parallel_document_coverage(query) or self.covered
                 if parallel_q:
                     doc_cap = PARALLEL_DOC_CHAR_BUDGET
 
@@ -771,19 +796,27 @@ class MemoryContext:
                 if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
                     ep_cap = 240
                 haystack = list(other_eps)
-                packed = apply_query_episode_pack(
-                    haystack,
-                    query,
-                    temporal_mode=self.temporal_mode,
-                    time_range=self.time_range,
-                    char_budget=min(
-                        other_budget,
-                        PARALLEL_DOC_CHAR_BUDGET
-                        if (cross_session or looks_like_set_query(query) or parallel_q)
-                        else 8000,
-                    ),
-                    asker_id=self.asker_id,
-                )
+                if self.covered:
+                    # 检索侧已 cover；再 pack 会重切摘录并被均分额度削短。
+                    packed = list(haystack)
+                    cover_first = [ep for ep in packed if "id" in ep and str(ep["id"]) in self.cover_ids]
+                    rest_pack = [ep for ep in packed if "id" not in ep or str(ep["id"]) not in self.cover_ids]
+                    # 来源清单无【文档】头，不能按 ingested 过滤，否则清单沉底被挤掉。
+                    packed = cover_first + rest_pack
+                else:
+                    packed = apply_query_episode_pack(
+                        haystack,
+                        query,
+                        temporal_mode=self.temporal_mode,
+                        time_range=self.time_range,
+                        char_budget=min(
+                            other_budget,
+                            PARALLEL_DOC_CHAR_BUDGET
+                            if (cross_session or looks_like_set_query(query) or parallel_q)
+                            else 8000,
+                        ),
+                        asker_id=self.asker_id,
+                    )
                 if looks_like_set_query(query):
                     packed = collapse_document_episodes(packed)
                 if cross_session:
@@ -837,14 +870,30 @@ class MemoryContext:
                     taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), other_budget)
                 elif self.temporal_mode:
                     taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
-                elif looks_like_count_query(query) or looks_like_latest_slot_query(query):
+                elif not self.covered and (looks_like_count_query(query) or looks_like_latest_slot_query(query)):
+                    # 逐份材料覆盖时不能走 8k 点查帽：「What is the average …」会被
+                    # latest_slot 命中，_take 先到先得只留下前几份摘录。
                     taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
-                elif looks_like_duration_query(query):
+                elif looks_like_duration_query(query) and not self.covered:
                     taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
-                elif timeline_q:
+                elif timeline_q and not self.covered:
                     taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
                 else:
-                    taken_other = _take(_ep_lines(user_eps, self_mark=False), other_budget)
+                    _ep_taken = _ep_lines(user_eps, self_mark=False)
+                    if self.covered and self.cover_ids:
+                        # cover 先均分出场；吃不完的预算全给 S1 指标命中，尽量把证据塞满。
+                        cover_eps = [ep for ep in user_eps if "id" in ep and str(ep["id"]) in self.cover_ids]
+                        rest_eps = [ep for ep in user_eps if "id" not in ep or str(ep["id"]) not in self.cover_ids]
+                        if cover_eps:
+                            taken_cover = _take_even(_ep_lines(cover_eps, self_mark=False), other_budget)
+                            rest_budget = max(0, other_budget - sum(len(x) for x in taken_cover))
+                            taken_other = taken_cover + _take(_ep_lines(rest_eps, self_mark=False), rest_budget)
+                        else:
+                            taken_other = _take_even(_ep_taken, other_budget)
+                    else:
+                        # 逐份材料覆盖：均分预算让每份都出场，别让长文档吃掉后面的来源。
+                        _picker = _take_even if self.covered else _take
+                        taken_other = _picker(_ep_taken, other_budget)
                     rest = other_budget - sum(len(x) for x in taken_other)
                     if rest > 80 and asst_eps:
                         taken_other.extend(_take(_ep_lines(asst_eps, self_mark=False), rest))
@@ -1251,9 +1300,8 @@ async def dual_route_retrieve(
     if span_window and scope_keys:
         temporal_task = asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, span_window[0], span_window[1]))
     cover_task: asyncio.Task[list[Episode]] | None = None
-    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
-
-    if scope_keys and wants_parallel_document_coverage(query):
+    if scope_keys:
+        # 覆盖摘录自带内容守卫（不足两份入库文档或无跨文档栏目词则空）。
         cover_task = asyncio.create_task(_load_document_coverage(query, scope_keys))
 
     # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
@@ -1604,16 +1652,9 @@ async def dual_route_retrieve(
     if pending:
         ranked_episodes = _merge_episodes(pending, ranked_episodes)
     if covered:
-        from gsuid_core.ai_core.memory.retrieval.lexical import is_ingested_document_episode
+        from gsuid_core.ai_core.memory.retrieval.lexical import merge_coverage_with_metric_hits
 
-        chat: list[Episode] = []
-        for ep in ranked_episodes:
-            if is_ingested_document_episode(ep["content"] or ""):
-                continue
-            chat.append(ep)
-            if len(chat) >= 6:
-                break
-        ranked_episodes = covered + chat
+        ranked_episodes = merge_coverage_with_metric_hits(covered, ranked_episodes)
 
     order_stages: list[Episode] = []
     if looks_like_order_query(query) and ranked_episodes:
@@ -1628,10 +1669,13 @@ async def dual_route_retrieve(
         except TimeoutError:
             order_stages = []
 
+    cover_ids = frozenset(str(ep["id"]) for ep in covered if "id" in ep) if covered else frozenset()
     return MemoryContext(
         episodes=ranked_episodes,
         entities=ranked_entities,
         edges=ranked_edges,
+        covered=bool(covered),
+        cover_ids=cover_ids,
         categories=ranked_categories,
         preferences=preference_items,
         conflicts=conflict_summaries,

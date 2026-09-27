@@ -211,6 +211,11 @@ _HOP_TOKEN_CAP = 12
 _WINDOW_EPISODE_CAP = 64
 _ORDER_POOL_CAP = 400
 _ORDER_TAIL_CAP = 80
+# 表头命中后连带保留的数据行数。表头只有列名，跨文档比较要的是它下面的数字。
+# 多留几行：同一栏目常有期初/变动/期末或多期并列，3 行容易只剩表头附近噪声。
+_DATA_ROWS_AFTER_HEADER = 8
+# 每个栏目词最多保留几条命中行（不再 top-1），预算由 _fit_cover_lines 收。
+_COVER_HITS_PER_TOKEN = 3
 
 # 原话只证明谁在该时点说过。as_of / [发生] 都不是「现在如此」。
 SPEECH_ACT_HINT = (
@@ -218,8 +223,8 @@ SPEECH_ACT_HINT = (
     "都不是现在已经如此。问现在的日期、数量或有没有发生，没有本轮工具结果就只转述谁在何时说过；"
     "问谁说过什么时照原话并带上说话时间。"
 )
-# 比较题要装下每一份的栏目行。16k 按 800 字一份只能放下大约 20 份。
-PARALLEL_DOC_CHAR_BUDGET = 48000
+# 比较题要装下每一份的栏目行 + S1 数值命中。48k 在 20+ 源时常填不满有效行。
+PARALLEL_DOC_CHAR_BUDGET = 96000
 _SUM_RE = re.compile(
     r"\bhow much total\b|\btotal money\b|\bspent on\b|\bexpenses\b|一共花|总共花|合计|"
     r"\bhow many (?:hours?|days?)\b.{0,80}\b(?:in total|altogether)\b|"
@@ -1116,25 +1121,180 @@ _PERSONAL_DOC_RE = re.compile(
     r"\b(?:i|me|my|mine|i'm|i've|i'll)\b|我的|我有|我在|我当时|我们",
     re.IGNORECASE,
 )
+# 问句虚词/套话不能当栏目 focus。单字（的了吗呢）已由长度门丢掉。
 _DOC_TOKEN_SKIP = frozenset(
     {
         "这个",
         "那个",
-        "什么",
-        "怎么",
+        "这些",
+        "那些",
+        "哪些",
+        "哪个",
+        "哪种",
+        "这样",
+        "那样",
+        "这么",
+        "那么",
+        "这里",
+        "那里",
+        "这儿",
+        "那儿",
         "我们",
         "你们",
         "他们",
-        "一个",
-        "没有",
-        "可以",
+        "她们",
+        "它们",
+        "咱们",
+        "大家",
+        "自己",
+        "别人",
+        "其他",
+        "其它",
+        "有人",
+        "什么",
+        "怎么",
+        "如何",
+        "为何",
+        "多少",
+        "几个",
+        "为什么",
+        "怎么样",
+        "是不是",
+        "有没有",
+        "能不能",
+        "会不会",
+        "要不要",
+        "对不对",
+        "好不好",
+        "行不行",
         "已经",
+        "正在",
+        "将要",
+        "即将",
+        "一直",
+        "仍然",
+        "还是",
+        "就是",
+        "不是",
+        "没有",
+        "不会",
+        "不能",
+        "不要",
+        "不用",
+        "是否",
+        "非常",
+        "十分",
+        "比较",
+        "更加",
+        "几乎",
+        "大概",
+        "可能",
+        "应该",
+        "必须",
+        "一定",
+        "当然",
+        "其实",
+        "确实",
+        "似乎",
+        "好像",
+        "现在",
+        "目前",
+        "当前",
+        "当时",
+        "以前",
+        "之后",
+        "然后",
+        "接着",
+        "于是",
+        "都是",
+        "也是",
+        "只是",
         "以及",
-        "其中",
+        "并且",
+        "而且",
+        "或者",
+        "但是",
+        "可是",
+        "然而",
+        "因此",
+        "所以",
+        "因为",
+        "如果",
+        "假如",
+        "虽然",
+        "尽管",
+        "无论",
+        "不管",
+        "另外",
+        "此外",
+        "同时",
+        "否则",
+        "对于",
+        "关于",
+        "根据",
+        "按照",
+        "作为",
+        "由于",
         "通过",
-        "进行",
-        "相关",
+        "经过",
+        "针对",
+        "基于",
+        "除了",
+        "包括",
+        "其中",
+        "之中",
+        "之间",
+        "之内",
+        "之外",
+        "以上",
         "以下",
+        "以内",
+        "以外",
+        "之前",
+        "可以",
+        "能够",
+        "需要",
+        "应当",
+        "得以",
+        "进行",
+        "加以",
+        "予以",
+        "给予",
+        "一个",
+        "一些",
+        "一种",
+        "一类",
+        "有些",
+        "所有",
+        "每个",
+        "各个",
+        "各种",
+        "全部",
+        "部分",
+        "任何",
+        "若干",
+        "相关",
+        "有关",
+        "所谓",
+        "如下",
+        "上述",
+        "等等",
+        "之类",
+        "请问",
+        "分别",
+        "总共",
+        "一共",
+        "having",
+        "also",
+        "being",
+        "those",
+        "these",
+        "each",
+        "such",
+        "both",
+        "same",
+        "other",
+        "others",
     }
 )
 
@@ -2033,6 +2193,11 @@ def collapse_document_episodes(items: list[Episode]) -> list[Episode]:
     return out
 
 
+def has_document_coverage_tokens(query: str) -> bool:
+    """问句里有可当栏目的实词。没有则不必加载入库文档池。"""
+    return bool(_coverage_tokens(query))
+
+
 def _coverage_tokens(query: str) -> list[str]:
     """问句里的实词。不按出现顺序截断，否则后半句的栏目词进不了权重。"""
     body = strip_clock_lines(query or "")
@@ -2091,9 +2256,42 @@ def _is_table_header_line(line: str) -> bool:
     for ch in stripped:
         if ch.isdigit():
             digits += 1
-        elif ch.isalpha() or "\u4e00" <= ch <= "\u9fff":
+        elif ch.isalpha() or "一" <= ch <= "鿿":
             letters += 1
     return letters >= 4 and digits <= 2
+
+
+def _is_spaced_table_header_line(line: str, focus: list[str]) -> bool:
+    """空格对齐表头：没有 ``|``，列名成串、几乎没有独立数字。认不出就只留列名。"""
+    stripped = line.strip()
+    if not stripped or "|" in stripped:
+        return False
+    letters = sum(1 for ch in stripped if ch.isalpha() or "一" <= ch <= "鿿")
+    if letters < 12:
+        return False
+    # 命中 focus 词才认，且要求「字母远多于数字」——数据行正好相反。
+    if letters < sum(1 for ch in stripped if ch.isdigit()) * 4:
+        return False
+    return _focus_hit(stripped, focus, loose=False)
+
+
+def _clip_data_row(line: str, label_chars: int = 90, max_numbers: int = 10) -> str:
+    """展平表格的数据行 → 「行标签 + 前几个数」，去掉补齐用的长空格。
+
+    空格对齐展平出来的行有 350+ 字符，一半以上是补空格；整行带进摘录会把同文档
+    的其它栏目和后续来源全挤掉。行标签与若干数字才是比较要用的。
+    """
+    parts = [p for p in re.split(r"\s{2,}", line.strip()) if p]
+    if len(parts) <= 1:
+        return line.strip()[:280]
+    label = parts[0][:label_chars]
+    numbers: list[str] = []
+    for part in parts[1:]:
+        if any(ch.isdigit() for ch in part):
+            numbers.append(part)
+        if len(numbers) >= max_numbers:
+            break
+    return " | ".join([label, *numbers])
 
 
 def _focus_tokens(weights: dict[str, float]) -> list[str]:
@@ -2207,7 +2405,7 @@ def _focus_hit(text: str, focus: list[str], *, loose: bool) -> bool:
     return False
 
 
-def _window_focus(line: str, focus: list[str], limit: int = 420) -> str:
+def _window_focus(line: str, focus: list[str], limit: int = 800) -> str:
     if len(line) <= limit:
         return line
     low = line.lower()
@@ -2354,9 +2552,16 @@ def _month_of_cell(cell: str) -> int | None:
 
 
 def _section_matches(line: str, focus: list[str]) -> bool:
-    """用较长的问句词判断这张表，避免 total 把每张表都打开。"""
+    """用较长的问句词判断这张表，避免 total 把每张表都打开。
+
+    必须精确命中：loose 会把 universities 对上 University，题头几乎全亮。
+    """
     long = [tok for tok in focus if len(tok) >= 6]
-    return _focus_hit(line, long or focus, loose=True)
+    return _focus_hit(line, long or focus, loose=False)
+
+
+def _line_has_digit(line: str) -> bool:
+    return any(ch.isdigit() for ch in line)
 
 
 def _select_cover_lines(
@@ -2364,18 +2569,31 @@ def _select_cover_lines(
     focus: list[str],
     weights: dict[str, float],
     span: tuple[tuple[int, int], tuple[int, int]] | None,
+    *,
+    section_focus: list[str] | None = None,
 ) -> list[_CoverLine]:
-    """留下栏目行；问句有月份区间时，连同该区间的表行，不从第一行往下切。"""
+    """留下栏目行；问句有月份区间时，连同该区间的表行，不从第一行往下切。
+
+    ``section_focus`` 是去掉「来源标题里普遍出现的词」后的栏目词。标题词
+    （University / 公司简称）会出现在每份材料的题头，拿去开 section 会让
+    ``section_on`` 整篇常亮，表头连带数据行把无关表塞满预算。
+    """
+    open_focus = section_focus if section_focus is not None else focus
+    # 逐行命中仍用完整 focus；但若行只命中标题词、没命中栏目词，则丢掉。
+    content_focus = open_focus if open_focus else focus
+    content_set = set(content_focus)
     flat = _flatten_html_tables(text)
     raw_lines = [line.strip() for line in flat.splitlines() if line.strip()]
     chosen: list[_CoverLine] = []
-    best_hit: dict[str, tuple[float, str, str]] = {}
+    # 每个栏目词保留 top-k 行，避免只剩一条表头说明而丢掉同栏目的数值行。
+    best_hit: dict[str, list[tuple[float, str, str]]] = {}
     section = ""
     section_on = False
     section_score = 0.0
     year = 0
     months_kept = 0
     header_kept = False
+    header_rows_left = 0
     for line in raw_lines:
         if "【文档" in line:
             chosen.append(_CoverLine(line, "", 1.0, True, 0, 0))
@@ -2390,41 +2608,108 @@ def _select_cover_lines(
         table_label = bool(re.search(r"\btable\s+\d", line, re.IGNORECASE))
         if heading or table_label:
             section = line[:120]
-            section_on = _section_matches(line, focus)
+            # 长问句/问卷题干不当栏目标题，否则会连带灌进无关问答。
+            title_like = table_label or (heading and len(line) <= 100 and not line.rstrip().endswith("?"))
+            section_on = bool(title_like and _section_matches(line, open_focus))
             section_score = _text_token_score(line, weights)
             header_kept = False
             if section_on and table_label:
                 chosen.append(_CoverLine(line[:180], section, section_score, False, 0, 0))
             months_kept = 0
             continue
-        headerish = "|" in line and month is None and sum(ch.isdigit() for ch in line) <= 2
-        if section_on and not header_kept and (_is_table_header_line(line) or headerish):
-            chosen.append(_CoverLine(line[:400], section, section_score, True, 0, 0))
-            header_kept = True
-            continue
+        # 月份行有自己的保留路径（按问句的月份区间筛），必须先于「表头连带数据行」
+        # 判定——否则带月份的行会被当成普通数据行提前吃掉，月份区间就失效了。
         in_span = month is not None and year > 0 and span is not None and span[0] <= (year, month) <= span[1]
         if section_on and in_span and month is not None and months_kept < 36:
             chosen.append(_CoverLine(line[:500], section, section_score + 0.5, False, year, month))
             months_kept += 1
             continue
-        if len(line) > 220 or not _focus_hit(line, focus, loose=False):
+        headerish = "|" in line and month is None and sum(ch.isdigit() for ch in line) <= 2
+        spaced_header = _is_spaced_table_header_line(line, open_focus)
+        if section_on and not header_kept and (_is_table_header_line(line) or headerish or spaced_header):
+            chosen.append(_CoverLine(line[:400], section, section_score, True, 0, 0))
+            header_kept = True
+            header_rows_left = _DATA_ROWS_AFTER_HEADER
+            continue
+        # 表头命中后连带数字行；空格对齐表没有 `|`，不能用管道符当数据行判据。
+        if header_kept and header_rows_left > 0 and any(ch.isdigit() for ch in line):
+            # 问句给了月份区间时，表头连带不能把区间外月份带进来。
+            if month is not None and span is not None and not in_span:
+                header_rows_left -= 1
+                if header_rows_left == 0:
+                    header_kept = False
+                continue
+            # 展平数据行很长，只留「行标签 + 前几个数」以免吃光预算。
+            chosen.append(
+                _CoverLine(
+                    _clip_data_row(line) if month is None else line[:500],
+                    section,
+                    section_score + 0.25,
+                    False,
+                    year,
+                    month or 0,
+                )
+            )
+            header_rows_left -= 1
+            if header_rows_left == 0:
+                header_kept = False
+            continue
+        # 宽表行是栏目+数值所在；命中 focus 就截窗留下，不再按长度否决。
+        if not _focus_hit(line, focus, loose=False):
+            continue
+        # 只命中标题词（校名/公司名）的行不是栏目行。
+        if content_focus is not focus and not _focus_hit(line, content_focus, loose=False):
+            continue
+        digit = _line_has_digit(line)
+        # 无数字的长说明/问句不进 best_hit。
+        if not digit and (line.rstrip().endswith("?") or len(line) > 160):
+            continue
+        # 申请说明长句（单空格散文）丢掉；宽表是多空格对齐或带 |。
+        if len(line) > 200 and line.count("|") < 2 and "  " not in line and line.count(" ") > 20:
+            continue
+        # 无数字的超长粘连行丢掉；带数字的空格对齐宽表行要留。
+        if len(line) > 800 and not digit:
             continue
         score = _text_token_score(line, weights)
+        # 表格式数值行加分，压过只点到一个栏目词的申请说明长句。
+        if "|" in line and digit:
+            score += max(0.35, 0.08 * len(content_set))
         low = line.lower()
-        for tok in focus:
+        for tok in content_focus:
             if not token_in_text(tok, low):
                 continue
-            prev = best_hit[tok] if tok in best_hit else None
-            shorter = prev is not None and abs(score - prev[0]) < 0.05 and len(line) < len(prev[1])
-            if prev is None or score > prev[0] or shorter:
-                best_hit[tok] = (score, line, section)
+            bucket = best_hit[tok] if tok in best_hit else []
+            # 同分时优先带数字、更短的行。
+            entry = (score, line, section)
+            bucket.append(entry)
+            bucket.sort(
+                key=lambda item: (
+                    -item[0],
+                    0 if _line_has_digit(item[1]) else 1,
+                    len(item[1]),
+                )
+            )
+            # 去重：同一行只留一次。
+            dedup: list[tuple[float, str, str]] = []
+            seen_lines: set[str] = set()
+            for item in bucket:
+                key = item[1]
+                if key in seen_lines:
+                    continue
+                seen_lines.add(key)
+                dedup.append(item)
+                if len(dedup) >= _COVER_HITS_PER_TOKEN:
+                    break
+            best_hit[tok] = dedup
     seen_hit: set[str] = set()
-    for _tok, (score, line, sec) in best_hit.items():
-        clipped = _window_focus(line, focus)
-        if clipped in seen_hit:
-            continue
-        seen_hit.add(clipped)
-        chosen.append(_CoverLine(clipped, sec, score + 1.0, False, 0, 0))
+    for tok, entries in best_hit.items():
+        for score, line, sec in entries:
+            # 按该栏目词截窗，避免 focus 列表里靠前的标题词把窗口拉到校名说明段。
+            clipped = _window_focus(line, [tok, *content_focus])
+            if clipped in seen_hit:
+                continue
+            seen_hit.add(clipped)
+            chosen.append(_CoverLine(clipped, sec, score + 1.0, False, 0, 0))
     if not any(line.score > 1.0 or line.month for line in chosen):
         return []
     # 每份至少保住权重最高的那一行，缩预算时不能把它删掉。
@@ -2446,13 +2731,31 @@ def _fit_cover_lines(groups: list[list[_CoverLine]], budget: int) -> list[list[_
     def total() -> int:
         return sum(len("\n".join(line.text for line in group)) for group in groups)
 
+    def per_group_cap() -> int:
+        """每份材料的行数上限：先按份数均分预算，再留出余量给超长行。"""
+        n = max(1, len(groups))
+        return max(8, budget // n // 80)
+
+    # 表头连带数据行后单份能出很多行；按份数均分行数上限，避免总量冲破预算。
+    cap = per_group_cap()
+    for group in groups:
+        if len(group) > cap:
+            # 保留文档头行 + 分数最高的若干行，其余从低到高丢。
+            keep_idx = {i for i, line in enumerate(group) if "【文档" in line.text}
+            rest = [(i, line) for i, line in enumerate(group) if i not in keep_idx]
+            rest.sort(key=lambda item: -item[1].score)
+            keep_idx.update(i for i, _ in rest[: max(3, cap - len(keep_idx))])
+            group[:] = [line for i, line in enumerate(group) if i in keep_idx]
+
     guard = 0
-    while total() > budget and guard < 8000:
+    # 上限按「还要删的行数」给，别按固定 8000：guard 提前耗尽会放任超预算内容注入。
+    limit = sum(len(group) for group in groups) + 16
+    while total() > budget and guard < limit:
         guard += 1
         drop_g = -1
         drop_i = -1
-        # 先删非月份的多余行，每份至少留一行，避免预算把后面的来源整份丢掉。
-        drop_key = (2, 10**9.0)
+        # 先删非月份、且不带数字的多余行，每份至少留一行，避免预算把后面的来源整份丢掉。
+        drop_key = (2, 2, 10**9.0)
         for g_i, group in enumerate(groups):
             idxs = [i for i, line in enumerate(group) if "【文档" not in line.text]
             if len(idxs) <= 1:
@@ -2461,8 +2764,9 @@ def _fit_cover_lines(groups: list[list[_CoverLine]], budget: int) -> list[list[_
                 line = group[i]
                 if line.protected:
                     continue
+                digit = 1 if _line_has_digit(line.text) else 0
                 kind = 0 if line.month <= 0 else 1
-                key = (kind, line.score)
+                key = (digit, kind, line.score)
                 if drop_g < 0 or key < drop_key:
                     drop_key = key
                     drop_g = g_i
@@ -2471,6 +2775,41 @@ def _fit_cover_lines(groups: list[list[_CoverLine]], budget: int) -> list[list[_
             break
         del groups[drop_g][drop_i]
     return [group for group in groups if any("【文档" in line.text or line.score > 0 for line in group)]
+
+
+def merge_coverage_with_metric_hits(
+    covered: list[Episode],
+    pool: list[Episode],
+    *,
+    max_metric_docs: int = 48,
+    max_chat: int = 8,
+) -> list[Episode]:
+    """Cover 置顶；再保留池里带数字的文档命中与少量闲聊。
+
+    栏目摘行会漏叙述句里的数字，S1 向量命中正好补上。
+    """
+    cover_ids = {str(ep["id"]) for ep in covered if "id" in ep}
+    metric_docs: list[Episode] = []
+    chat: list[Episode] = []
+    seen_metric: set[str] = set()
+    for ep in pool:
+        eid = str(ep["id"]) if "id" in ep else ""
+        if eid and eid in cover_ids:
+            continue
+        raw = ep["content"] or ""
+        if is_ingested_document_episode(raw):
+            if len(metric_docs) >= max_metric_docs:
+                continue
+            if not any(ch.isdigit() for ch in raw):
+                continue
+            sig = eid or raw[:96]
+            if sig in seen_metric:
+                continue
+            seen_metric.add(sig)
+            metric_docs.append(ep)
+        elif len(chat) < max_chat:
+            chat.append(ep)
+    return list(covered) + metric_docs + chat
 
 
 def cover_document_excerpts(
@@ -2531,6 +2870,17 @@ def cover_document_excerpts(
     focus = _cover_focus(weights)
     if not focus:
         return []
+    # 来源标题里普遍出现的词打不开栏目，否则 section_on 整篇常亮。
+    title_df = {tok: 0 for tok in focus}
+    for key in order:
+        low = key.lower()
+        for tok in focus:
+            if token_in_text(tok, low) or _focus_hit(low, [tok], loose=True):
+                title_df[tok] += 1
+    title_floor = max(2, (len(order) + 1) // 2)
+    section_focus = [tok for tok in focus if title_df[tok] < title_floor]
+    if not section_focus:
+        section_focus = list(focus)
     budget = char_budget if char_budget > 0 else PARALLEL_DOC_CHAR_BUDGET
     span = _query_month_span(query)
     built: list[tuple[str, str, list[_CoverLine]]] = []
@@ -2546,7 +2896,7 @@ def cover_document_excerpts(
         joined = "".join(parts) if any("<tr" in part.lower() for part in parts) else "\n".join(parts)
         if "【文档" not in joined:
             joined = f"【文档】{key}\n{joined}"
-        lines = _select_cover_lines(joined, focus, weights, span)
+        lines = _select_cover_lines(joined, focus, weights, span, section_focus=section_focus)
         if not lines:
             continue
         anchor = chunks[0]
@@ -2576,7 +2926,32 @@ def cover_document_excerpts(
         )
     if len(out) < 2:
         return []
+    out.insert(0, _source_manifest_episode(out))
     return out
+
+
+def _source_manifest_episode(built: list[Episode]) -> Episode:
+    """覆盖块的来源清单：共 N 份、来源名，并要求每一份都纳入。"""
+    titles: list[str] = []
+    for ep in built:
+        m = _DOC_SOURCE_RE.search(ep["content"] or "")
+        title = m.group(1).strip() if m else ""
+        if title and title not in titles:
+            titles.append(title)
+    n = len(titles)
+    head = (
+        f"（下面按来源交错排列。不同文件或标题不是同一条记录的更新，不要只留最后一份。"
+        f"每段是该来源里和问句重叠的摘录，不是文件开头。共{n}份，每一份都要纳入，"
+        f"不要只拿其中几份下结论。来源：{'、'.join(titles)}）"
+    )
+    anchor = built[0]
+    return Episode(
+        id=str(anchor["id"]),
+        content=head,
+        valid_at=str(anchor["valid_at"]) if "valid_at" in anchor else "",
+        scope_key=str(anchor["scope_key"]) if "scope_key" in anchor else "",
+        embedding=[],
+    )
 
 
 def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 24) -> list[Episode]:
@@ -2810,17 +3185,19 @@ def _pack_without_sweep(
     )
 
     eps = list(episodes)
+    # 逐份材料覆盖先试一次（自带内容守卫：不足两份入库文档、或没有跨文档共享的
+    # 栏目词就返回空）。必须排在 looks_like_sum_query 之前——「每所大学的本科
+    # total number of students」这类问句会被 _SUM_RE 的 "total number of" 命中，
+    # 先走加总就会把按来源算好的覆盖按条数截掉（1M 语料下 34 份只剩 24 份）。
+    covered = cover_document_excerpts(eps, query, char_budget=char_budget)
+    if covered:
+        return merge_coverage_with_metric_hits(covered, eps, max_chat=8)
     if looks_like_duration_query(query):
         return pack_duration_anchor_episodes(eps, query)
     if looks_like_assistant_quote_query(query):
         return pack_assistant_quote_episodes(eps, query)
     if looks_like_sum_query(query):
         return pack_sum_episodes(eps, query)
-    if wants_parallel_document_coverage(query):
-        covered = cover_document_excerpts(eps, query, char_budget=char_budget)
-        if covered:
-            rest = [ep for ep in eps if not is_ingested_document_episode(ep["content"] or "")]
-            return covered + rest[:8]
     if looks_like_set_query(query):
         return pack_coverage_episodes(eps, query)
     if _COUNT_EXCLUDE_RE.search(query or "") and re.search(r"\bhow many\b", query or "", re.IGNORECASE):
@@ -4259,6 +4636,8 @@ __all__ = [
     "looks_like_sum_query",
     "wants_parallel_document_coverage",
     "cover_document_excerpts",
+    "has_document_coverage_tokens",
+    "merge_coverage_with_metric_hits",
     "PARALLEL_DOC_CHAR_BUDGET",
     "episode_source_key",
     "is_ingested_document_episode",

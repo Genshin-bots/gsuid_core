@@ -675,6 +675,23 @@ def test_memory_eval_skips_memory_block_char_budget() -> None:
     assert timeline_memory_budget("今天天气怎么样") is None
 
 
+def test_join_named_blocks_caps_non_memory_blocks() -> None:
+    from gsuid_core.ai_core.kits.base import BLOCK_CHAR_BUDGET, join_named_blocks
+
+    history = "H" * 5000
+    voice = "V" * 300
+    out = join_named_blocks({"history": history, "voice_anchor": voice})
+    hist_cap = BLOCK_CHAR_BUDGET["history"]
+    voice_cap = BLOCK_CHAR_BUDGET["voice_anchor"]
+    assert history not in out
+    assert voice not in out
+    assert out.count("…") >= 2
+    assert len(out) <= hist_cap + voice_cap + 8
+    still = join_named_blocks({"history": history}, memory_budget=96000)
+    assert len(still) <= hist_cap
+    assert still.endswith("…")
+
+
 def test_prioritize_retrieved_puts_query_overlap_first() -> None:
     from gsuid_core.ai_core.kits.memory.eval_protocol import prioritize_retrieved_for_query
     from gsuid_core.ai_core.memory.retrieval.dual_route import PreferencePrompt

@@ -32,8 +32,19 @@ from .tool_packs import (
     DYNAMIC_PACK,
     TASK_BASICS_PACK,
     has_dynamic_pack,
+    list_static_packs,
     register_tool_pack,
+    list_capability_domains,
     resolve_pack_tool_names,
+)
+from .tool_scope import (
+    NEUTRAL_PLUGINS,
+    ENABLED_TOOLS_KEY,
+    ToolScope,
+    tool_catalog,
+    get_tool_scope,
+    list_known_plugins,
+    parse_enabled_tools_spec,
 )
 from .persona_proj import get_persona_node, list_persona_nodes
 
@@ -60,4 +71,13 @@ __all__ = [
     "register_tool_pack",
     "resolve_pack_tool_names",
     "has_dynamic_pack",
+    "list_static_packs",
+    "list_capability_domains",
+    "ENABLED_TOOLS_KEY",
+    "NEUTRAL_PLUGINS",
+    "ToolScope",
+    "get_tool_scope",
+    "list_known_plugins",
+    "parse_enabled_tools_spec",
+    "tool_catalog",
 ]

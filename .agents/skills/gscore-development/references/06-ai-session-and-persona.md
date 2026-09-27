@@ -130,11 +130,27 @@ RESOURCE_PATH/persona/{persona_name}/
 | `ai_mode` | List[str] | `["提及应答"]` | AI 行动模式 |
 | `scope` | str | `"disabled"` | 启用范围 |
 | `target_groups` | List[str] | `[]` | 目标群聊 |
-| `inspect_interval` | int | `30` | 巡检间隔（分钟） |
+| `inspect_interval` | int | `60` | 巡检间隔（分钟） |
 | `keywords` | List[str] | `[]` | 唤醒关键词 |
-| `tool_packs` | List[str] | `["dynamic"]` | 工具能力族（dynamic=五层自动装配 / task_basics / capability_domain 族名） |
-| `tool_names` | List[str] | `[]` | 显式工具白名单（并入保底池，不经向量检索） |
+| `speech_len_soft` | int | `60` | 台词软上限（字） |
+| `speech_len_hard` | int | `150` | 台词硬上限（字） |
+| `enabled_tools` | List[str] | `["*"]` | 启用工具（按插件），管辖向量检索池。`*`=全部插件；`!插件名`=排除；只列具体名=仅这些。空列表=一个都不启用 |
+| `tool_names` | List[str] | `[]` | 显式工具白名单（常驻直装，不经向量检索） |
 | `capability_agents` | List[str] | `["*"]` | 可委派能力代理 node_id。`*`=全部；`!render_agent` 禁用出图。空列表=不可委派 |
+
+### 工具三层来源（`enabled_tools` 只管中间一层）
+
+| 层 | 内容 | 受 `enabled_tools` 收放 |
+|----|------|----------------------|
+| 常驻直装 | `MAIN_AGENT_CORE_TOOLS`（`send_message_by_ai` / `find_tools` / `create_subagent` …）+ persona `tool_names` | ❌ 框架能力，恒在场 |
+| 向量检索 | L3 语义召回 + `find_tools` 域检索 + `RetrievableToolset` 动态暴露 | ✅ 唯一受管辖的一层 |
+| 能力族静态挂载 | 仅能力代理节点仍可显式声明静态族（`task_basics` 等）；persona 侧已固定 `dynamic`，不再开放配置 | ❌ |
+
+判定口是 `ai_core/agent_node/tool_scope.py` 的 `ToolScope`（一次装配取一次快照，
+装配链路全程只读同一份）。`core` / 空插件名视为框架自身，永远启用；未注册工具放行。
+人格模板 **没有** `tool_packs`：五层自动装配由 `persona_proj.py` 恒定挂 `[DYNAMIC_PACK]`
+（`agent_run/tools.py` 的 `has_dynamic_pack` 恒真）。静态族只出现在能力代理节点。
+控制台选择器是「显式工具白名单」与「按插件」（`GET /api/persona/tools/catalog`）。
 
 > **AgentNode 同构（2026-07-07）**：每个 persona 目录经 `ai_core/agent_node/persona_proj.py`
 > 投影为 `source="persona"` 的只读 AgentNode（与能力代理同一注册表 / 同一 schema），
@@ -157,7 +173,8 @@ RESOURCE_PATH/persona/{persona_name}/
 ```
 
 `PersonaConfigManager` 提供 `set_scope` / `set_target_groups` / `set_ai_mode` /
-`set_inspect_interval` / `set_keywords` 等方法，全部即时持久化。
+`set_inspect_interval` / `set_keywords` / `set_enabled_tools` / `set_tool_names` 等方法，
+全部即时持久化。
 
 ### `persona.json`（`persona/settings.py`）
 

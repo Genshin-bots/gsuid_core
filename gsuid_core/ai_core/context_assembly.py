@@ -21,7 +21,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.kits.base import join_named_blocks, timeline_memory_budget
+from gsuid_core.ai_core.kits.base import join_named_blocks, resolve_memory_budget
 from gsuid_core.ai_core.relationship import RelationshipView
 
 if TYPE_CHECKING:
@@ -210,11 +210,12 @@ async def assemble_dynamic_context(
     _apply_suffix_block_policy(ctx)
     _inject_master_title_hint(ctx)
     skip_mem = ctx.memory_eval
+    memory_text = ctx.blocks["memory"] if "memory" in ctx.blocks else ""
     text = join_context_blocks(
         ctx.blocks,
         create_by=ctx.create_by,
         skip_memory_cap=skip_mem,
-        memory_budget=timeline_memory_budget(ctx.query),
+        memory_budget=resolve_memory_budget(ctx.query, memory_text),
     )
     from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
 

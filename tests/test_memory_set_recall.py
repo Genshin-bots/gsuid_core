@@ -2765,6 +2765,324 @@ def test_parallel_documents_keep_lines_buried_under_the_opening() -> None:
     assert "只答最晚一条" not in text
 
 
+def test_merge_coverage_keeps_metric_document_hits() -> None:
+    """covered 时不能丢掉带数字的 S1 文档命中——那是 financial_en 注入变薄的根因。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        cover_document_excerpts,
+        apply_query_episode_pack,
+        merge_coverage_with_metric_hits,
+    )
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "What is the average Quality of Earnings ratio using operating cash flow and net income?"
+    cover_pool = [
+        _ep(
+            f"c{i}",
+            f"【文档】10-Q_co{i}.htm\nCash provided by operating activities {100 + i}\n"
+            f"Other note without the earnings line.",
+            f"2026-09-25 18:{i:02d}:00",
+        )
+        for i in range(4)
+    ]
+    # S1 命中：cover 栏目行没抽到的 net earnings 叙述句
+    s1_hits = [
+        _ep(
+            "s1_flr",
+            "【文档】10-Q_co0.htm\nNet earnings (loss) attributable to Fluor "
+            "$ (241) $ 59 for the quarter ended March 31, 2025.",
+            "2026-09-25 18:00:01",
+        ),
+        _ep(
+            "s1_txn",
+            "【文档】10-Q_co1.htm\nInvesting activities for the first three months of 2025 "
+            "provided $1.25 billion compared with $3.33 billion used.",
+            "2026-09-25 18:01:01",
+        ),
+        _ep("chat", "speaker: unrelated hello", "2026-09-25 18:02:00"),
+    ]
+    covered = cover_document_excerpts(cover_pool, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    assert covered, "cover should fire on shared operating/cash tokens"
+    merged = merge_coverage_with_metric_hits(covered, cover_pool + s1_hits)
+    merged_ids = {e["id"] for e in merged}
+    assert "s1_flr" in merged_ids
+    assert "s1_txn" in merged_ids
+    assert "chat" in merged_ids
+
+    # pack 重跑 cover 后仍要留下指标命中
+    packed = apply_query_episode_pack(
+        cover_pool + s1_hits,
+        q,
+        temporal_mode=False,
+        time_range=None,
+        char_budget=PARALLEL_DOC_CHAR_BUDGET,
+    )
+    packed_text = "\n".join(e["content"] or "" for e in packed)
+    assert "Net earnings" in packed_text or "(241)" in packed_text
+    assert "1.25 billion" in packed_text or "Investing activities" in packed_text
+
+    # 注入：cover_ids 分预算后，指标句仍进 prompt。
+    # 「What is the average …」会命中 latest_slot，旧逻辑用 8k _take 只留前几份。
+    cover_ids = frozenset(str(e["id"]) for e in covered if "id" in e)
+    text = MemoryContext(
+        episodes=merged,
+        covered=True,
+        cover_ids=cover_ids,
+    ).to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    assert "Net earnings" in text or "(241)" in text
+    for i in range(4):
+        assert f"10-Q_co{i}.htm" in text
+    assert len(text) > 8000 or text.count("【文档】") >= 4
+
+
+def test_covered_inject_ignores_latest_slot_8k_cap() -> None:
+    """covered 路径不被 latest_slot 的 8k 点查帽截断。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import PARALLEL_DOC_CHAR_BUDGET
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "What is the average Quality of Earnings ratio across these filings?"
+    docs = [
+        _ep(
+            f"d{i}",
+            f"【文档】co{i}.htm\n"
+            + ("operating cash flow and consolidated net income numbers. " * 40)
+            + f"cash {1000 + i} income {200 + i}\n",
+            f"2026-09-25 18:{i:02d}:00",
+        )
+        for i in range(6)
+    ]
+    cover_ids = frozenset(str(e["id"]) for e in docs if "id" in e)
+    text = MemoryContext(episodes=docs, covered=True, cover_ids=cover_ids).to_prompt_text(
+        max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q
+    )
+    assert len(text) > 12000
+    for i in range(6):
+        assert f"co{i}.htm" in text
+        assert f"cash {1000 + i}" in text
+
+
+def test_title_tokens_do_not_open_unrelated_tables() -> None:
+    """来源标题里的词不能打开无关表；要留下 enrollment / graduation 行。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        cover_document_excerpts,
+        is_ingested_document_episode,
+    )
+
+    q = (
+        "Which university has a total enrollment closest to the median, "
+        "while also having a six-year graduation rate for the 2015 cohort "
+        "in the top 20% of all universities?"
+    )
+    junk = (
+        "Computer/information sciences | | | 4.6%\n"
+        "Construction trades | 15.2%\n"
+        "Education | 1.4% | | | 1.8%\n"
+        "Engineering technologies | 0.8%\n"
+    )
+    # 问卷长题干里也有 enrollment/graduation，不能当栏目标题开 section。
+    prompt_junk = (
+        "Does your institution allow high school students to enroll as full-time, "
+        "first-time (freshman) students one year or more before high school graduation?\n"
+        "Yes | No\n"
+    )
+    docs = []
+    for name, enroll, grad in (
+        ("Boston University", 32000, "89%"),
+        ("Ithaca College", 6200, "77%"),
+        ("University of Kansas", 26000, "66%"),
+        ("University of Rochester", 12000, "86%"),
+    ):
+        body = (
+            f"【文档】2021-22 {name}.md\n"
+            f"| Boston MA 02215\nMain Phone: | (617) 353-2000\n"
+            f"{prompt_junk}"
+            f"{junk}"
+            f"# {name} Common Data Set B1. Institutional enrollment - men and women\n"
+            f"Total enrollment | {enroll} | {enroll // 2} | {enroll // 2}\n"
+            f"H. Six-year graduation rate for 2015 cohort (G divided by C) | {grad} | {grad} | {grad}\n"
+            f"C.Final 2015 cohort, after adjusting for allowable exclusions | 1000 | 2000 | 3000\n"
+        )
+        docs.append(_ep(name, body, "2026-09-25 18:00:00"))
+    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    texts = [e["content"] or "" for e in covered if is_ingested_document_episode(e["content"] or "")]
+    assert len(texts) == 4
+    joined = "\n".join(texts)
+    assert "Total enrollment" in joined
+    assert "graduation rate for 2015" in joined
+    assert "Computer/information sciences" not in joined
+    assert "Construction trades" not in joined
+    assert "Main Phone" not in joined
+    assert "allow high school students" not in joined
+
+
+def test_parallel_cover_skips_stance_conflicts_when_covered() -> None:
+    """覆盖路径下不同来源不是正反说，不得写入【陈述不一致】。"""
+    from gsuid_core.ai_core.kits.memory.kit import refine_retrieved_memory
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        cover_document_excerpts,
+    )
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "哪些公司的权益乘数大于3，且加权平均净资产收益率大于5%？"
+    docs = [
+        _ep(
+            f"d{i}",
+            f"【文档】co{i}.md\n2025年第一季度报告\n权益乘数 {3 + i % 3}  总资产 {i}0000\n"
+            f"加权平均净资产收益率 {1 + i % 7}.20%\n"
+            f"{'不' if i % 2 else ''}满足条件的公司还有若干。",
+            f"2026-09-25 18:{i % 60:02d}:00",
+        )
+        for i in range(6)
+    ]
+    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    mem = MemoryContext(episodes=covered, covered=True)
+    refine_retrieved_memory(mem, q)
+    assert mem.conflicts == []
+    text = mem.to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    assert "【陈述不一致】" not in text
+
+
+def test_parallel_cover_prefers_numeric_metric_lines() -> None:
+    """同分时优先带数字的栏目行，不要留下只有文字说明的命中。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        cover_document_excerpts,
+        is_ingested_document_episode,
+    )
+
+    q = "List companies by retained earnings across these reports."
+    docs = [
+        _ep(
+            "a",
+            "【文档】10-Q_alpha.htm\n"
+            "Discussion of retained earnings policy appears in the notes.\n"
+            "Retained earnings | 1,234 | 990\n"
+            "Other comprehensive income | 12 | 8\n",
+            "2026-09-25 18:00:00",
+        ),
+        _ep(
+            "b",
+            "【文档】10-Q_beta.htm\n"
+            "The board reviewed retained earnings distributions this quarter.\n"
+            "Retained earnings | 5,678 | 4,100\n"
+            "Other comprehensive income | 3 | 1\n",
+            "2026-09-25 18:01:00",
+        ),
+    ]
+    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    texts = [e["content"] or "" for e in covered if is_ingested_document_episode(e["content"] or "")]
+    joined = "\n".join(texts)
+    assert "1,234" in joined
+    assert "5,678" in joined
+    assert "Discussion of retained earnings policy" not in joined
+    assert "board reviewed retained earnings" not in joined
+
+
+def test_parallel_cover_runs_without_naming_documents_in_the_query() -> None:
+    """问句只说「哪些公司…」而没点名报告时，覆盖仍要按每份材料出行。
+
+    覆盖打包器自带内容守卫，所以不需要问句措辞门；措辞门曾把这类问句
+    全部挡在外面，几十份材料只注入前十几份。
+    """
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        episode_source_key,
+        cover_document_excerpts,
+        apply_query_episode_pack,
+    )
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "哪些公司的权益乘数大于3，且加权平均净资产收益率大于5%？"
+    docs = [
+        _ep(
+            f"d{i}",
+            f"【文档】co{i}.md\n2025年第一季度报告\n权益乘数 {3 + i % 3}  总资产 {i}0000\n"
+            f"加权平均净资产收益率 {1 + i % 7}.20%",
+            f"2026-09-25 18:{i % 60:02d}:00",
+        )
+        for i in range(30)
+    ]
+    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    # 首位是来源清单（不带【文档】标记），其后每份材料一条摘录。
+    from gsuid_core.ai_core.memory.retrieval.lexical import is_ingested_document_episode
+
+    doc_covered = [e for e in covered if is_ingested_document_episode(e["content"])]
+    assert len({episode_source_key(e["content"]) for e in doc_covered}) == 30
+
+    # Chat 注入：pack 与 to_prompt_text 都要保住这三十份。
+    packed = apply_query_episode_pack(
+        docs, q, temporal_mode=False, time_range=None, char_budget=PARALLEL_DOC_CHAR_BUDGET
+    )
+    text = MemoryContext(episodes=packed, covered=True).to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    for i in range(30):
+        assert f"co{i}.md" in text
+
+
+def test_parallel_cover_stays_off_for_plain_chat_scope() -> None:
+    """没有入库文档、或没有跨文档共享栏目词时，覆盖自行返回空。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import cover_document_excerpts
+
+    chat = [
+        _ep("c1", "speaker: I went to Zumba on Monday.", "2026-09-25 18:00:00"),
+        _ep("c2", "speaker: My salary is 4200 in March.", "2026-09-25 18:00:01"),
+    ]
+    assert cover_document_excerpts(chat, "What is my current salary?") == []
+    docs = [
+        _ep("a", "【文档】a.md\nAlpha revenue 1200.", "2026-09-25 18:00:00"),
+        _ep("b", "【文档】b.md\nBeta revenue 340.", "2026-09-25 18:00:01"),
+    ]
+    assert cover_document_excerpts(docs, "What is my current salary?") == []
+    assert cover_document_excerpts(docs, "哪些歌好听") == []
+
+
+def test_memory_block_cap_follows_covered_documents_not_question_wording() -> None:
+    """装配层字帽按块里实际有几份材料收，不按问句是否点名「文档」。"""
+    from gsuid_core.ai_core.kits.base import memory_block_budget
+
+    q = "哪些公司的权益乘数大于3？"
+    block = "\n".join(f"【文档】co{i}.md\n权益乘数 {i}" for i in range(30))
+    assert memory_block_budget(block) == 96000
+    assert memory_block_budget("【文档】a.md\n只有一个来源") is None
+    assert memory_block_budget("普通闲聊记忆，没有入库文档") is None
+    from gsuid_core.ai_core.kits.base import resolve_memory_budget
+    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
+
+    assert not wants_parallel_document_coverage(q)
+    assert resolve_memory_budget(q, block) == 96000
+    assert resolve_memory_budget("今天天气怎么样", "普通闲聊记忆") is None
+
+
+def test_parallel_cover_states_source_count_and_titles() -> None:
+    """逐份覆盖要声明共几份、来源名，并要求每一份都纳入。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        PARALLEL_DOC_CHAR_BUDGET,
+        cover_document_excerpts,
+    )
+    from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
+
+    q = "哪些公司的权益乘数大于3，且加权平均净资产收益率大于5%？"
+    docs = [
+        _ep(
+            f"d{i}",
+            f"【文档】co{i}.md\n2025年第一季度报告\n权益乘数 {3 + i % 3}  总资产 {i}0000\n"
+            f"加权平均净资产收益率 {1 + i % 7}.20%",
+            f"2026-09-25 18:{i % 60:02d}:00",
+        )
+        for i in range(9)
+    ]
+    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    manifest = covered[0]["content"]
+    assert "共9份" in manifest
+    assert "每一份都要纳入" in manifest
+    for i in range(9):
+        assert f"co{i}.md" in manifest
+    text = MemoryContext(episodes=covered, covered=True).to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    assert "共9份" in text
+    assert "每一份都要纳入" in text
+
+
 def test_parallel_cover_keeps_every_source_inside_the_budget() -> None:
     """来源多于二十份时，每一份的栏目行都要留下，不能只留前十几份。"""
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
@@ -2777,9 +3095,9 @@ def test_parallel_cover_keeps_every_source_inside_the_budget() -> None:
     from gsuid_core.ai_core.kits.base import timeline_memory_budget
 
     budget = timeline_memory_budget(q)
-    assert budget is not None and budget >= 48000
+    assert budget is not None and budget >= 96000
     assert timeline_memory_budget("哪些歌好听") is None
-    text = MemoryContext(episodes=docs).to_prompt_text(max_chars=48000, query=q)
+    text = MemoryContext(episodes=docs).to_prompt_text(max_chars=96000, query=q)
     for i in range(30):
         assert f"余额 {i}" in text
     assert "封面说明" not in text
@@ -2816,7 +3134,7 @@ def test_parallel_cover_keeps_month_rows_inside_the_asked_span() -> None:
         f"【文档】newresconst_202505.md\nHousing Units Started\nTable 3b - Not seasonally adjusted\n{newer_table}",
         "2026-09-25 18:05:00",
     )
-    text = MemoryContext(episodes=[older, newer]).to_prompt_text(max_chars=48000, query=q)
+    text = MemoryContext(episodes=[older, newer]).to_prompt_text(max_chars=96000, query=q)
     assert "February" in text
     assert "March" in text
     assert "77" in text

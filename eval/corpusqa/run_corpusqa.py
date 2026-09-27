@@ -30,7 +30,7 @@ import asyncio
 import hashlib
 import argparse
 import urllib.request
-from typing import Any
+from typing import Any, Dict
 from pathlib import Path
 from collections import defaultdict
 from urllib.parse import urlparse
@@ -177,9 +177,10 @@ def _progress_path(scale: str) -> Path:
     return _results_dir(scale) / "progress.json"
 
 
-def domain_user_id(scale: str, domain: str) -> str:
+def domain_user_id(scale: str, domain: str, suffix: str = "") -> str:
     # BatchObserveRequest.user_id max_length=64；eval_ 前缀方便评测清库
-    return f"eval_cqa_{scale}_{domain}"
+    # suffix 用于 A/B：同一语料灌进另一个 scope，只切换单个变量（如 extract 开关）。
+    return f"eval_cqa_{scale}_{domain}{suffix}"
 
 
 def iter_jsonl_objects(path: Path) -> Any:
@@ -248,6 +249,19 @@ def gold_text(value: object) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False)
+
+
+def _system2_arg(args: argparse.Namespace) -> bool | None:
+    """System-2 取值：显式开/关，否则 None 交回服务端按配置决定。
+
+    事实（edge）只从 System-2 进注入上下文，不传则吃 ``enable_system2get``
+    的全局配置（默认关）——那样 extract 抽出的事实不会被读到。
+    """
+    if getattr(args, "enable_system2", False):
+        return True
+    if getattr(args, "no_system2", False):
+        return False
+    return None
 
 
 def extract_final_answer(text: str) -> str:
@@ -535,12 +549,22 @@ async def ingest_domain(
     *,
     timeout: float,
     force: bool,
+    extract: bool = False,
+    write_episodes: bool = True,
+    extract_window_chars: int = 12000,
+    extract_window_turns: int = 20,
+    extract_window_timeout: float = 300.0,
+    extract_concurrency: int = 4,
+    trigger_rebuild: bool = False,
+    user_suffix: str = "",
 ) -> int:
-    user_id = domain_user_id(scale, domain)
+    user_id = domain_user_id(scale, domain, user_suffix)
     progress = load_progress(scale)
     ingested = progress["ingest"] if "ingest" in progress and isinstance(progress["ingest"], list) else []
-    if domain in ingested and not force:
-        print(f"[ingest] {domain} 已完成，跳过")
+    # A/B 的对照 scope 用独立 key，否则会被主 scope 的「已完成」静默跳过。
+    slot = f"{domain}{user_suffix}"
+    if slot in ingested and not force:
+        print(f"[ingest] {slot} 已完成，跳过（要重抽事实加 --force-ingest --extract）")
         return 0
     docs = load_domain_docs(scale, domain)
     if not docs:
@@ -552,6 +576,24 @@ async def ingest_domain(
     if cleared.get("status") not in (0, None) and "status" in cleared:
         print(f"[ingest] clear 警告: {cleared.get('msg')}")
     observed = 0
+    # extract=True 走窗口化实体/边抽取（§14.1），复用 worker._extract_and_upsert_from_episode
+    # 下游：实体/边/user_global 属性 → System-2 图谱检索 → 注入。跨文档聚合题靠这条路，
+    # 不靠「把几十份材料压进一段摘录」。参数与 BEAM 官方灌库一致。
+    extra: Dict[str, Any] | None = None
+    if extract:
+        extra = {
+            "extract": True,
+            "write_episodes": write_episodes,
+            "extract_window_chars": extract_window_chars,
+            "extract_window_turns": extract_window_turns,
+            "extract_window_timeout": extract_window_timeout,
+            "extract_concurrency": extract_concurrency,
+        }
+    if trigger_rebuild:
+        # System-2 读 AIMemHierarchicalGraphMeta，max_layer=0 时直接返回空结果：
+        # 抽了实体/边却不建图，事实就没有任何消费方。
+        assert extra is not None, "trigger_rebuild 需与 --extract 同用"
+        extra["trigger_rebuild"] = True
     for i in range(0, len(turns), _INGEST_BATCH):
         batch = turns[i : i + _INGEST_BATCH]
         last = i + _INGEST_BATCH >= len(turns)
@@ -562,6 +604,7 @@ async def ingest_domain(
             turns=batch,
             flush=last,
             timeout=timeout,
+            extra_payload=extra,
         )
         if resp.get("status") != 0:
             print(f"[ingest] {domain} batch {i} 失败: {resp.get('msg')}")
@@ -569,9 +612,17 @@ async def ingest_domain(
         data = resp["data"] if "data" in resp and isinstance(resp["data"], dict) else {}
         n = int(data["observed"]) if "observed" in data else len(batch)
         observed += n
-        print(f"[ingest] {domain} {min(i + len(batch), len(turns))}/{len(turns)} observed+={n}")
-    ingested = [x for x in ingested if x != domain]
-    ingested.append(domain)
+        ex = data.get("extract") if isinstance(data.get("extract"), dict) else {}
+        if ex:
+            suffix = (
+                f" extract(w={ex.get('windows_done', 0)}/{ex.get('windows_total', 0)}"
+                f" e+{ex.get('entities_added', 0)} g+{ex.get('edges_added', 0)})"
+            )
+        else:
+            suffix = ""
+        print(f"[ingest] {domain} {min(i + len(batch), len(turns))}/{len(turns)} observed+={n}{suffix}")
+    ingested = [x for x in ingested if x != slot]
+    ingested.append(slot)
     progress["ingest"] = ingested
     save_progress(scale, progress)
     print(f"[ingest] {domain} done observed≈{observed}")
@@ -595,6 +646,14 @@ async def cmd_ingest(args: argparse.Namespace) -> int:
                 domain,
                 timeout=timeout,
                 force=bool(args.force_ingest),
+                extract=bool(getattr(args, "extract", False)),
+                write_episodes=not bool(getattr(args, "no_write_episodes", False)),
+                extract_window_chars=int(getattr(args, "extract_window_chars", 12000)),
+                extract_window_turns=int(getattr(args, "extract_window_turns", 20)),
+                extract_window_timeout=float(getattr(args, "extract_window_timeout", 300.0)),
+                extract_concurrency=int(getattr(args, "extract_concurrency", 4)),
+                trigger_rebuild=bool(getattr(args, "trigger_rebuild", False)),
+                user_suffix=str(getattr(args, "user_suffix", "") or ""),
             )
             if rc:
                 return rc
@@ -615,7 +674,10 @@ async def cmd_probe(args: argparse.Namespace) -> int:
     tag = args.tag or (f"n{len(chosen)}" if args.limit else "")
     out_file = str(_answers_path(scale, tag))
     _results_dir(scale).mkdir(parents=True, exist_ok=True)
-    print(f"[probe] scale={scale} n={len(chosen)} persona={args.persona_name} tools={args.enable_tools} -> {out_file}")
+    print(
+        f"[probe] scale={scale} n={len(chosen)} persona={args.persona_name} "
+        f"tools={args.enable_tools} system2={_system2_arg(args)} user={args.user_suffix or '-'} -> {out_file}"
+    )
     if not await wait_core(args.base_url):
         print("[probe] core 未就绪")
         return 2
@@ -626,7 +688,7 @@ async def cmd_probe(args: argparse.Namespace) -> int:
             qid = str(q["question_id"])
             domain = str(q["domain"])
             question = str(q["question"])
-            user_id = domain_user_id(scale, domain)
+            user_id = domain_user_id(scale, domain, str(getattr(args, "user_suffix", "") or ""))
             resp = await call_chat_with_history(
                 client=client,
                 base_url=args.base_url,
@@ -635,6 +697,7 @@ async def cmd_probe(args: argparse.Namespace) -> int:
                 history=[],
                 timeout=timeout,
                 enable_observer=False,
+                enable_system2=_system2_arg(args),
                 enable_tools=bool(args.enable_tools),
                 memory_eval=False,
                 persona_name=str(args.persona_name),
@@ -817,10 +880,44 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--seed", type=int, default=0)
     common.add_argument("--tag", default=None, help="答卷/判分文件后缀")
     common.add_argument("--force-ingest", action="store_true")
+    common.add_argument(
+        "--extract",
+        action="store_true",
+        help="灌库时开窗口化实体/边抽取（逐份抽事实 → 实体/边 → System-2 聚合）",
+    )
+    common.add_argument("--no-write-episodes", action="store_true", help="只抽事实不写 granular Episode")
+    common.add_argument(
+        "--trigger-rebuild",
+        action="store_true",
+        help="灌库后同步建分层图（System-2 读它选节点；不建图则抽出的事实无人消费）",
+    )
+    common.add_argument("--extract-window-chars", type=int, default=12000)
+    common.add_argument("--extract-window-turns", type=int, default=20)
+    common.add_argument("--extract-window-timeout", type=float, default=300.0)
+    common.add_argument("--extract-concurrency", type=int, default=4)
     common.add_argument("--no-resume", action="store_true")
     common.add_argument("--persona-name", default="评测助手")
     common.add_argument("--enable-tools", dest="enable_tools", action="store_true", default=True)
     common.add_argument("--no-tools", dest="enable_tools", action="store_false")
+    common.add_argument(
+        "--enable-system2",
+        dest="enable_system2",
+        action="store_true",
+        default=False,
+        help="查询时放行 System-2（走分层图选节点/边；不传则吃服务端配置）",
+    )
+    common.add_argument(
+        "--no-system2",
+        dest="no_system2",
+        action="store_true",
+        default=False,
+        help="查询时显式关 System-2（对照臂，避免受服务端配置漂移影响）",
+    )
+    common.add_argument(
+        "--user-suffix",
+        default="",
+        help="给评测 user_id 加后缀（灌库与探针必须同后缀）：A/B 对照灌到独立 scope",
+    )
     common.add_argument("--answers-file", default=None)
     common.add_argument("--judge-file", default=None)
     common.add_argument("--llm-only", action="store_true", help="跳过数字/列表规则匹配，全部走 LLM")

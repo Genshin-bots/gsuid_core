@@ -814,23 +814,23 @@ async def update_persona_config(
             }
         results.append(f"keywords: {keywords}")
 
-    # 更新 tool_packs（如果提供）
-    if "tool_packs" in data:
-        tool_packs = data["tool_packs"]
-        if not isinstance(tool_packs, list):
+    # 更新 enabled_tools（如果提供）
+    if "enabled_tools" in data:
+        enabled_tools = data["enabled_tools"]
+        if not isinstance(enabled_tools, list):
             return {
                 "status": 1,
-                "msg": "tool_packs 必须是列表",
+                "msg": "enabled_tools 必须是列表",
                 "data": None,
             }
-        success, msg = persona_config_manager.set_tool_packs(persona_name, [str(x) for x in tool_packs])
+        success, msg = persona_config_manager.set_enabled_tools(persona_name, [str(x) for x in enabled_tools])
         if not success:
             return {
                 "status": 1,
                 "msg": msg,
                 "data": None,
             }
-        results.append(f"tool_packs: {tool_packs}")
+        results.append(f"enabled_tools: {enabled_tools}")
 
     # 更新 tool_names（如果提供）
     if "tool_names" in data:
@@ -873,6 +873,46 @@ async def update_persona_config(
         "status": 0,
         "msg": f"已更新: {', '.join(results)}" if results else "没有更新任何配置",
         "data": updated_config,
+    }
+
+
+@app.get("/api/persona/tools/catalog", summary="工具装配目录（前端选择器用）", tags=PERSONA)
+async def get_persona_tool_catalog(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """人格工具配置页的选择器所需的全部可选项。
+
+    - ``plugins``：进入向量检索池的插件维度（``enabled_tools`` 按此多选）。
+    - ``tools``：按插件分组的工具目录，每项带 ``always_mounted``——常驻直装工具
+      不经向量检索，前端要能明确区分「默认就有」与「靠检索召回」。
+    """
+    from gsuid_core.ai_core.agent_node import (
+        tool_catalog,
+        list_known_plugins,
+        list_capability_domains,
+    )
+
+    domains = list_capability_domains()
+    by_plugin = tool_catalog()
+
+    plugin_items: list[Dict[str, Any]] = [
+        {
+            "name": name,
+            "tool_count": len(tools),
+            "always_mounted": sorted(t["name"] for t in tools if t["always_mounted"]),
+        }
+        for name, tools in sorted(by_plugin.items())
+    ]
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "plugins": plugin_items,
+            "tools": by_plugin,
+            "known_plugins": list_known_plugins(),
+            "capability_domains": domains,
+        },
     }
 
 

@@ -52,6 +52,21 @@ def register_tool_pack(pack_name: str, tool_names: List[str]) -> None:
     logger.info(t("log.ai.toolpack_registered_capability_pack_register", pack_name=pack_name, p0=len(tool_names)))
 
 
+def list_static_packs() -> Dict[str, List[str]]:
+    """已注册的静态能力族快照（族名 → 工具名列表），供 webconsole 渲染多选。"""
+    return {name: list(tools) for name, tools in sorted(_STATIC_PACKS.items())}
+
+
+def list_capability_domains() -> List[str]:
+    """当前注册表里出现过的 capability_domain 族名（去重排序）。
+
+    与静态族一起构成前端「工具能力族」的全部可选项。
+    """
+    from gsuid_core.ai_core.register import get_all_tools
+
+    return sorted({tb.capability_domain for tb in get_all_tools().values() if tb.capability_domain})
+
+
 def has_dynamic_pack(packs: List[str]) -> bool:
     """节点是否声明了 ``dynamic``（五层自动装配）能力族。"""
     return DYNAMIC_PACK in packs

@@ -455,12 +455,12 @@ async def ops_tool_topology(
     by_cat = get_registered_tools()
     category_counts = {k: len(v) for k, v in by_cat.items()}
 
+    # 工具能力族已固定 dynamic：这里只上报拓扑，不再回读人格配置的历史值
     tool_packs: List[str] = ["dynamic"]
     tool_names: List[str] = []
     if persona_name:
         try:
             cfg = persona_config_manager.get_config(persona_name)
-            tool_packs = list(cfg.get_config("tool_packs").data or ["dynamic"])
             tool_names = list(cfg.get_config("tool_names").data or [])
         except Exception:
             pass

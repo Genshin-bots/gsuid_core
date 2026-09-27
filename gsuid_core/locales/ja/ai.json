@@ -547,6 +547,8 @@
   "log.ai.tool_output_hybrid_search_skip": "tool_output hybrid search skip: {e}",
   "log.ai.tool_output_index_delete_skip": "tool_output index delete skip: {e}",
   "log.ai.tool_output_index_ensure_fail": "tool_output index ensure skip: {e}",
+  "log.ai.tool_output_index_dimension_mismatch_rebuild": "ツール成果物コレクションの次元不一致、{p0} 次元で強制再構築しました（索引は再書き込み）",
+  "log.ai.artifact_index_dimension_mismatch_rebuild": "成果物コレクションの次元不一致、{p0} 次元で強制再構築しました（ベクトルは SQL から再生成可能）",
   "log.ai.tool_output_index_skip_after_retry": "tool_output index skip after retry: {e}",
   "log.ai.tool_output_persist_skip": "tool_output persist skip: {e}",
   "log.ai.tool_safety_execute_failed": "[ToolSafety] ツール {name} の実行に失敗しました（{err_type}）: {e}",

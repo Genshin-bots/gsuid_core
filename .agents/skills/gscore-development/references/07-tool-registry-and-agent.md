@@ -103,10 +103,10 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 > 不变量与回归用例见 `tests/test_tool_family_expansion.py`（含"新实现 ⊇ 旧实现"超集断言、
 > 跨族提问用例）。
 >
-> **单领域部署不必付检索开销**：persona `config.json` 的 `tool_packs` 可以直接写
-> `capability_domain` 名（`tool_packs.py::resolve_pack_tool_names` 会解析），整族**无条件常驻**
-> 保底池——纯鸣潮 bot 写 `"tool_packs": ["鸣潮面板"]` 即可，零向量检索、零族展开。
-> 群画像标签不预装工具。本轮对口工具走种子名单，不进快照。
+> **单领域部署**：人格侧能力族固定 `dynamic`，`config.json` **没有** `tool_packs`。
+> 要某插件工具每轮都在，写进 `tool_names`；只要缩小检索池，用 `enabled_tools`
+> （如 `["*", "!别的插件"]` 或只列该插件名）。能力代理节点仍可用 `tool_packs`
+> 挂 `capability_domain` 整族。群画像标签不预装工具。本轮对口工具走种子名单，不进快照。
 
 > ⚠️ **工具能被召回的前提是完整检索面**。入库 / 精排文本 = **`ToolBase.retrieval_text`**
 > = `name` + docstring（`description`）+ 可选 `covers` + 可选 `aliases`。
@@ -361,8 +361,8 @@ Persona 与能力代理画像统一为 **AgentNode**（`ai_core/agent_node/`）�
 （`register_agent_node` / `get_node` / `resolve_node`）+ persona 目录只读投影
 （mtime 自动刷新）。工具装配抹平为**能力族（tool packs）**（`agent_node/tool_packs.py`）：
 
-- `dynamic`：五层自动装配（本章 7.x 描述的整套），persona 默认；能力节点声明后
-  `runner` 传 `create_agent(dynamic_tools=True)`，gs_agent 装配并与显式工具合并；
+- `dynamic`：五层自动装配（本章 7.x 描述的整套）。人格投影恒挂此族（不进 `config.json`）；
+  能力节点声明后 `runner` 传 `create_agent(dynamic_tools=True)`，gs_agent 装配并与显式工具合并；
 - `task_basics`：原 `runner._ALWAYS_TOOLS`（artifact/state/record/search/web 族）；
 - 任意 `capability_domain` 名可整族挂载；插件可 `register_tool_pack` 注册静态族。
 

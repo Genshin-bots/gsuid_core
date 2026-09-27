@@ -282,12 +282,19 @@ async def find_tools(
 
         # 已加载命中不短路：短 cover 会误把列表里的工具当对口，真正缺的就搜不到。
         offered_hits = _offered_dedicated_hits(names=offered, need=need, exclusive=exclusive)
+        _scope = ctx.deps.tool_scope
+        if _scope is not None and not _scope.is_open:
+            offered_hits = [h for h in offered_hits if _scope.tool_enabled(h.name)]
         visible_offered = await visible_offered_names(ctx, [h.name for h in offered_hits])
         visible_offered_set = set(visible_offered)
         offered_hits = [h for h in offered_hits if h.name in visible_offered_set]
 
         family_tools = await search_tools_by_domain(
-            query=need, domain_limit=3, per_domain_limit=6, exclude_names=offered_set
+            query=need,
+            domain_limit=3,
+            per_domain_limit=6,
+            exclude_names=offered_set,
+            scope=ctx.deps.tool_scope,
         )
         from gsuid_core.ai_core.rag.tools import align_seeds_to_context_plugin
         from gsuid_core.ai_core.entity_index import ALIAS_PLUGIN_EXTRA_KEY
@@ -298,7 +305,9 @@ async def find_tools(
             if isinstance(_raw_plugin, str):
                 _alias_plugin = _raw_plugin
         if _alias_plugin:
-            family_tools = await align_seeds_to_context_plugin(family_tools, _alias_plugin, need)
+            family_tools = await align_seeds_to_context_plugin(family_tools, _alias_plugin, need, ctx.deps.tool_scope)
+        if _scope is not None and not _scope.is_open:
+            family_tools = [t for t in family_tools if _scope.tool_enabled(t.name)]
         dedicated_tools: list[RankedHit] = list(offered_hits)
         generic_tools: list[RankedHit] = []
         fold_names: list[str] = []
@@ -522,6 +531,7 @@ async def discover_tools(
             query=task,
             limit=limit,
             non_category="self",
+            scope=ctx.deps.tool_scope,
         )
 
         if not discovered_tools:
@@ -590,6 +600,10 @@ async def list_available_tools(
             tools_dict = {}
             for cat_tools in all_tools_cag.values():
                 tools_dict.update(cat_tools)
+
+        _scope = ctx.deps.tool_scope
+        if _scope is not None and not _scope.is_open:
+            tools_dict = {name: tb for name, tb in tools_dict.items() if _scope.tool_enabled(name)}
 
         if not tools_dict:
             return "⚠️ 当前没有可用的工具。"

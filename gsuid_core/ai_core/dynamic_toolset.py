@@ -42,16 +42,20 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import find_tool_base
+from gsuid_core.ai_core.agent_node.tool_scope import ToolScope
 
 
 class RetrievableToolset(AbstractToolset[ToolContext]):
     """按 ``ctx.deps.dynamic_tool_names`` 在每个 step 动态暴露工具的 toolset。"""
 
-    def __init__(self, exclude_names: Set[str], max_retries: int = 1):
+    def __init__(self, exclude_names: Set[str], max_retries: int = 1, scope: ToolScope | None = None):
         # 本轮静态已装配的工具名（保底 + 状态驱动 + 向量召回族展开 + find_tools 自身），
         # 动态暴露时跳过它们以免跨 toolset 重名。
         self._exclude = set(exclude_names)
         self._max_retries = max_retries
+        # 人格 enabled_tools 作用域：find_tools 检索时已过滤，这里再兜一层，
+        # 防止外部直接写 dynamic_tool_names 绕过收放。
+        self._scope = scope
 
     @property
     def id(self) -> str | None:
@@ -61,6 +65,11 @@ class RetrievableToolset(AbstractToolset[ToolContext]):
         allowed: Set[str] = set(ctx.deps.dynamic_tool_names)
         if not allowed:
             return {}
+
+        if self._scope is not None and not self._scope.is_open:
+            allowed = {name for name in allowed if self._scope.tool_enabled(name)}
+            if not allowed:
+                return {}
 
         out: dict[str, ToolsetTool[ToolContext]] = {}
         for name in allowed:

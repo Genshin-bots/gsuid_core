@@ -5,6 +5,7 @@
 各套件只填命名块，不得自己拼接顺序——否则第 12 个块会插到身份锚前面。
 """
 
+import re
 from typing import Tuple, Mapping, Callable, Optional, Awaitable, FrozenSet
 from dataclasses import dataclass
 
@@ -60,6 +61,27 @@ _KNOWN_BLOCKS: FrozenSet[str] = frozenset(CONTEXT_BLOCK_ORDER) | STABLE_BLOCK_NA
 # 口吻 / 口气 / 身份是同一组角色提示，拼在一起中间不要空行。
 _CUE_BLOCK_CLUSTER: FrozenSet[str] = frozenset({"voice_anchor", "identity"})
 
+# 记忆块里出现这么多份不同来源的入库文档，就按逐份覆盖帽收，而不是默认 8000。
+_PARALLEL_DOC_MIN_HEADERS = 3
+_DOC_HEAD_RE = re.compile(r"【文档】\s*([^\n]{1,120})")
+
+
+def memory_block_budget(text: str) -> int | None:
+    """记忆块已有逐份覆盖时按覆盖帽收，否则默认 8000。看产出不看问句措辞。"""
+    if _distinct_document_markers(text) >= _PARALLEL_DOC_MIN_HEADERS:
+        from gsuid_core.ai_core.memory.retrieval.lexical import PARALLEL_DOC_CHAR_BUDGET
+
+        return PARALLEL_DOC_CHAR_BUDGET
+    return None
+
+
+def _distinct_document_markers(text: str) -> int:
+    """记忆块里 `【文档】<标题>` 的不同来源数。"""
+    seen: set[str] = set()
+    for m in _DOC_HEAD_RE.finditer(text):
+        seen.add(m.group(1).strip())
+    return len(seen)
+
 
 def timeline_memory_budget(query: str) -> int | None:
     """order/span/summary 与 pack 对齐；其它问句仍走默认 8000。"""
@@ -81,6 +103,14 @@ def timeline_memory_budget(query: str) -> int | None:
 
     if wants_parallel_document_coverage(query):
         return PARALLEL_DOC_CHAR_BUDGET
+    return None
+
+
+def resolve_memory_budget(query: str, text: str) -> int | None:
+    """记忆块最终字帽：时间线帽 > 实际覆盖帽 > 问句措辞帽。"""
+    for candidate in (timeline_memory_budget(query), memory_block_budget(text)):
+        if candidate is not None:
+            return candidate
     return None
 
 
@@ -125,8 +155,9 @@ def join_named_blocks(
             continue
         if skip_memory_cap and name == "memory":
             pass
-        elif name == "memory" and memory_budget is not None:
-            text = _apply_block_budget(name, text, budget=memory_budget)
+        elif name == "memory":
+            cap = memory_budget if memory_budget is not None else memory_block_budget(text)
+            text = _apply_block_budget(name, text, budget=cap)
         else:
             text = _apply_block_budget(name, text)
         if name in _CUE_BLOCK_CLUSTER:

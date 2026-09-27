@@ -14,6 +14,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .models import AgentNode
+from .tool_packs import DYNAMIC_PACK
 
 # persona_name -> (md_mtime, cfg_mtime, node)
 _PROJECTION_CACHE: Dict[str, Tuple[float, float, AgentNode]] = {}
@@ -50,7 +51,9 @@ def _project(persona_name: str) -> Optional[AgentNode]:
         display_name=persona_name,
         prompt=prompt,
         prompt_style="roleplay",
-        tool_packs=list(cfg.get_config("tool_packs").data),
+        # 能力族固定 dynamic：五层自动装配恒开，历史 tool_packs 配置值忽略。
+        # 下调召回范围走 enabled_tools，固定单个工具走 tool_names。
+        tool_packs=[DYNAMIC_PACK],
         tool_names=list(cfg.get_config("tool_names").data),
         ai_mode=list(cfg.get_config("ai_mode").data),
         scope=str(cfg.get_config("scope").data),

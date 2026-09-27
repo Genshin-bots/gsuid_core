@@ -981,7 +981,8 @@ async def inject_memory_slice(
         wants_parallel_document_coverage,
     )
 
-    if wants_parallel_document_coverage(query):
+    # 逐份材料覆盖真的打出来了才放宽预算：按产出判定，不按问句措辞。
+    if ctx.covered or wants_parallel_document_coverage(query):
         cap = max(cap, PARALLEL_DOC_CHAR_BUDGET)
     memory_text = ctx.to_prompt_text(
         max_chars=cap,

@@ -33,20 +33,37 @@ async def ensure_artifact_collection() -> None:
     from gsuid_core.i18n import t
     from gsuid_core.logger import logger
     from gsuid_core.ai_core.rag.base import client, get_dimension, get_strict_dimension
-    from gsuid_core.ai_core.rag.collection_migration import ensure_payload_indexes
+    from gsuid_core.ai_core.rag.collection_migration import (
+        ensure_payload_indexes,
+        force_recreate_collection,
+        collection_vector_mismatched,
+    )
 
     if client is None:
         return
     try:
+        dim = get_strict_dimension() or get_dimension()
         exists = await client.collection_exists(ARTIFACT_COLLECTION)
-        if not exists:
-            dim = get_strict_dimension() or get_dimension()
-            await client.create_collection(
-                collection_name=ARTIFACT_COLLECTION,
-                vectors_config=artifact_vectors_config(dim),
-                sparse_vectors_config=artifact_sparse_config(),
-                on_disk_payload=True,
-            )
+        # 维度不符必须重建：只按「存在就跳过」会让旧维度集合长期留着，运行时
+        # 每次检索都撞 "expected dim: 512, got 768" 并降级为空。产物向量是
+        # 「SQL 真值 + 磁盘文件」的可再生产物，重建后由索引流程重新写入。
+        need_recreate = exists and await collection_vector_mismatched(ARTIFACT_COLLECTION, dim, ARTIFACT_DENSE)
+        if need_recreate or not exists:
+            if not exists:
+                await client.create_collection(
+                    collection_name=ARTIFACT_COLLECTION,
+                    vectors_config=artifact_vectors_config(dim),
+                    sparse_vectors_config=artifact_sparse_config(),
+                    on_disk_payload=True,
+                )
+            else:
+                logger.warning(t("log.ai.artifact_index_dimension_mismatch_rebuild", p0=dim))
+                await force_recreate_collection(
+                    collection_name=ARTIFACT_COLLECTION,
+                    vectors_config=artifact_vectors_config(dim),
+                    sparse_vectors_config=artifact_sparse_config(),
+                    on_disk_payload=True,
+                )
         await ensure_payload_indexes(
             collection_name=ARTIFACT_COLLECTION,
             keyword_fields=["scope_key", "owner_user_id", "date_str", "profile"],

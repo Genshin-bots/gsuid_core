@@ -7,6 +7,8 @@ from gsuid_core.models import Event
 if TYPE_CHECKING:
     from pydantic_ai.tools import Tool
 
+    from gsuid_core.ai_core.agent_node.tool_scope import ToolScope
+
 
 @dataclass
 class ToolContext:
@@ -30,6 +32,8 @@ class ToolContext:
     blocked_tool_names: Set[str] = field(default_factory=set)
     # True：允许工具路径对用户会话出站（主人格）。能力代理 / 子 Agent 恒 False。
     allow_user_outbound: bool = True
+    # 人格 enabled_tools 作用域快照。find_tools 检索时按它收放；None = 不限。
+    tool_scope: Optional["ToolScope"] = None
 
 
 class KnowledgeBase(TypedDict):
