@@ -1,0 +1,1 @@
+import{r as u}from"./react-vendor-thDRAXiv.js";var t=Object.defineProperty,o=(r,e)=>t(r,"name",{value:e,configurable:!0});function n(r){const e=u.useRef({value:r,previous:r});return u.useMemo(()=>(e.current.value!==r&&(e.current.previous=e.current.value,e.current.value=r),e.current.previous),[r])}o(n,"usePrevious");export{n as u};

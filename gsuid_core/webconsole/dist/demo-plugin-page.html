@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ZZZeroUID · Demo</title>
+  <link rel="stylesheet" href="./misans-vf/MiSansVF.min.css" />
   <style>
     :root {
       --bg: hsl(var(--background, 240 4% 95%));
@@ -16,7 +17,13 @@
     html.dark {
       --gold: #ffc801;
     }
-    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui,sans-serif; }
+    @font-face {
+      font-family: 'Twemoji Mozilla';
+      src: url('/fonts/TwemojiMozilla-colr.woff2') format('woff2'),
+           url('../../../utils/fonts/TwemojiMozilla-colr.woff2') format('woff2');
+      font-display: swap;
+    }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:'MiSans VF','Twemoji Mozilla',sans-serif; }
     .wrap { display:grid; grid-template-columns:240px 1fr; height:100%; }
     aside { border-right:1px solid var(--line); padding:16px; }
     h1 { font-size:18px; margin:0 0 12px; color:var(--gold); }
