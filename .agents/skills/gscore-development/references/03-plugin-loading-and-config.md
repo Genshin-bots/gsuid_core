@@ -121,7 +121,7 @@ CONFIG_DEFAULT = {
     "masters": [], "superusers": [], "REGISTER_CODE": _generate_register_code(),
     "misfire_grace_time": 90, "log": {...},
     "enable_empty_start": True, "command_start": [],
-    "buffered_user_writes": False, "sv": {},
+    "sv": {},
 }
 ```
 

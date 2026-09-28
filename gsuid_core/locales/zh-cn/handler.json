@@ -20,6 +20,5 @@
   "log.handler.meta_received": "[收到Meta事件]",
   "log.handler.meta_triggered": "[Meta事件触发]",
   "log.handler.same_msg_cd": "[GsCore][触发相同消息CD] 忽略{user_id}该消息!",
-  "log.handler.user_touch_fail": "[GsCore] 用户/群记账后台写入失败: {error}",
   "log.handler.duplicate_ws_bridge": "[GsCore] 同一账号 {bot_self_id} 的群 {group_id} 被多个 WS 适配器桥接（{ws_ids}）。同群请只留一个适配器。"
 }

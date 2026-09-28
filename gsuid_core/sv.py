@@ -12,7 +12,7 @@ from gsuid_core.i18n import t
 from gsuid_core.config import core_config, plugins_sample, plugin_config_store
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.trigger import Trigger
+from gsuid_core.trigger import Trigger, bump_registry_version
 
 
 class SVList:
@@ -381,6 +381,9 @@ class SV:
                             to_me,
                         )
                         logger.trace(t("log.sv.type_trigger_k_load", type=type, _k=_k))
+
+                    # 触发器集合变了，候选索引下次访问时据此重建
+                    bump_registry_version()
 
             # 声明 to_ai 时注册为 AI 工具；懒加载 + enable 网关，避免 sv 在 AI 关闭时拉入 pydantic_ai
             if to_ai.strip():

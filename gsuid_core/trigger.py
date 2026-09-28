@@ -8,6 +8,24 @@ from gsuid_core.models import Event
 _CMD_GAP = " \t\u3000\u00a0"
 
 
+def gap_chars() -> str:
+    """可跳过的空白集合。索引与 check_command 必须共用同一份，否则空格语义会漂。"""
+    return _CMD_GAP
+
+
+# 触发器集合的版本号。新增触发器时自增，候选索引据此判定是否重建。
+_REGISTRY_VERSION = 0
+
+
+def bump_registry_version() -> None:
+    global _REGISTRY_VERSION
+    _REGISTRY_VERSION += 1
+
+
+def registry_version() -> int:
+    return _REGISTRY_VERSION
+
+
 def _is_cjk(ch: str) -> bool:
     code = ord(ch)
     return 0x3400 <= code <= 0x4DBF or 0x4E00 <= code <= 0x9FFF or 0xF900 <= code <= 0xFAFF
@@ -123,6 +141,35 @@ class Trigger:
         self._head = prefix + keyword
         self._flex_gap = _needs_flex_gap(keyword)
         self._probe = prefix[:1] if prefix else (keyword[:1] if self._flex_gap else "")
+        # 注册时编译一次，省掉每条消息都走的 re._cache 查找与分派。
+        # 插件作者写错 pattern 属于外部输入，编译失败退回未编译路径，
+        # 保持"匹配时抛错、由 handler 逐条兜"的原行为，不在这里改变故障时机。
+        self._pattern: re.Pattern[str] | None = None
+        if type == "regex":
+            try:
+                self._pattern = re.compile(keyword)
+            except re.error:
+                self._pattern = None
+
+    def trie_head(self) -> str:
+        """进前缀树用的匹配串。与 check_command 的快速路径同源。"""
+        return self._head
+
+    def gap_positions(self) -> frozenset[int]:
+        """head 中允许「先吃若干空格再继续」的位置（按已吃字符数计）。
+
+        规则必须与 _after_prefix / _consume_keyword 一致，否则前缀树会漏匹配：
+        - 非空前缀之后：_after_prefix 会 lstrip，前缀与命令字之间可插空格
+        - flex 关键字内部保守全开：_consume_keyword 在中英交界处容错，
+          数量个位数，宁可多给候选（由 check_command 否掉）也不漏
+        """
+        if not self._head:
+            return frozenset()
+        if self._flex_gap:
+            return frozenset(range(len(self._head) + 1))
+        if self.prefix:
+            return frozenset({len(self.prefix)})
+        return frozenset()
 
     def check_command(self, ev: Event) -> bool:
         if self.to_me and not ev.is_tome:
@@ -280,6 +327,9 @@ class Trigger:
         rest = self._after_prefix(msg)
         if rest is None:
             return False
+        compiled = self._pattern
+        if compiled is not None:
+            return bool(compiled.findall(rest))
         return bool(re.findall(pattern, rest))
 
     def _check_message(self, keyword: str, msg: str):

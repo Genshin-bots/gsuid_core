@@ -22,6 +22,7 @@ from gsuid_core.models import (
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
 from gsuid_core.global_val import get_platform_val
+from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
@@ -134,8 +135,7 @@ def set_handle(is_handle: bool):
     IS_HANDDLE = is_handle
 
 
-# 入站只记一笔，真正写库在后台。写闸门被占死时不能挡住命令匹配和收发。
-_BUFFERED_USER_WRITES: bool = bool(core_config.get_config("buffered_user_writes"))
+# 入站只记一笔，真正写库在后台 60s 批量刷。写闸门被占死时不能挡住命令匹配和收发。
 _USER_FLUSH_INTERVAL: float = 60.0
 
 _user_buffer: Dict[Tuple[str, str], Tuple[Optional[str], Optional[str], Optional[str]]] = {}
@@ -185,21 +185,6 @@ def _track_bookkeeping(task: asyncio.Task[None]) -> None:
     task.add_done_callback(_bookkeeping_tasks.discard)
 
 
-async def _write_user_group_now(
-    bot_id: str,
-    user_id: str,
-    group_id: Optional[str],
-    user_name: Optional[str],
-    user_icon: Optional[str],
-) -> None:
-    try:
-        await CoreUser.insert_user(bot_id, user_id, group_id, user_name, user_icon)
-        if group_id:
-            await CoreGroup.insert_group(bot_id, group_id)
-    except Exception as e:
-        logger.warning(t("log.handler.user_touch_fail", error=e))
-
-
 def _schedule_user_group_write(
     bot_id: str,
     user_id: str,
@@ -207,21 +192,18 @@ def _schedule_user_group_write(
     user_name: Optional[str],
     user_icon: Optional[str],
 ) -> None:
-    """消息路径上的用户/群记账。缓冲或单条后台写，调用方都不等待。"""
-    if _BUFFERED_USER_WRITES:
-        key = (bot_id, user_id)
-        if key in _user_buffer:
-            old_gid, old_nick, old_avatar = _user_buffer[key]
-            if not user_name:
-                user_name = old_nick
-            if not user_icon:
-                user_icon = old_avatar
-        _user_buffer[key] = (group_id, user_name, user_icon)
-        if group_id:
-            _group_buffer.add((bot_id, group_id))
-        _ensure_flush_task_started()
-        return
-    _track_bookkeeping(asyncio.create_task(_write_user_group_now(bot_id, user_id, group_id, user_name, user_icon)))
+    """消息路径上的用户/群记账。纯内存记账，调用方永不等待，也不碰 DB。"""
+    key = (bot_id, user_id)
+    if key in _user_buffer:
+        old_gid, old_nick, old_avatar = _user_buffer[key]
+        if not user_name:
+            user_name = old_nick
+        if not user_icon:
+            user_icon = old_avatar
+    _user_buffer[key] = (group_id, user_name, user_icon)
+    if group_id:
+        _group_buffer.add((bot_id, group_id))
+    _ensure_flush_task_started()
 
 
 async def _ensure_owner_subscribe(event: Event) -> None:
@@ -252,8 +234,6 @@ async def _flush_user_buffer_on_shutdown():
         _done, pending = await asyncio.wait(set(_bookkeeping_tasks), timeout=2)
         for task in pending:
             task.cancel()
-    if not _BUFFERED_USER_WRITES:
-        return
     logger.info(t("log.handler.buffer_stop"))
     _user_flush_shutdown_event.set()
     global _user_flush_task
@@ -556,25 +536,34 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
     valid_event: Dict[Trigger, int] = {}
     if msg.group_id not in black_list and msg.user_id not in black_list:
-        for _sv_name in SL.lst:
-            _sv = SL.lst[_sv_name]
+        # 先算鉴权通过的 SV（空的直接跳过，省掉无用的属性读），再用候选索引收窄。
+        # 索引只给「不漏」的超集，真正的判定仍然是 check_command。
+        authorized: Dict[SV, int] = {}
+        for _sv in SL.lst.values():
+            if not _sv.TL:
+                continue
             if not _sv_authorized(_sv, event, user_pm):
                 continue
+            authorized[_sv] = _sv.priority
 
-            _priority = _sv.priority
-            for _trigger_dict in _sv.TL.values():
-                for _trigger in _trigger_dict.values():
-                    try:
-                        if _trigger.check_command(event):
-                            valid_event[_trigger] = _priority
-                    except Exception:
-                        logger.exception(
-                            t(
-                                "log.handler.check_command_fail",
-                                type=_trigger.type,
-                                keyword=repr(_trigger.keyword),
-                            )
+        if authorized:
+            _index = get_trigger_index()
+            for _trigger in _index.candidates(event):
+                _sv = _index.owner_of(_trigger)
+                _priority = authorized.get(_sv) if _sv is not None else None
+                if _priority is None:
+                    continue
+                try:
+                    if _trigger.check_command(event):
+                        valid_event[_trigger] = _priority
+                except Exception:
+                    logger.exception(
+                        t(
+                            "log.handler.check_command_fail",
+                            type=_trigger.type,
+                            keyword=repr(_trigger.keyword),
                         )
+                    )
 
     command_triggers = {t: p for t, p in valid_event.items() if t.type != "message"}
     message_triggers = {t: p for t, p in valid_event.items() if t.type == "message"}

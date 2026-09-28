@@ -25,8 +25,7 @@
   },
   "enable_empty_start": true,
   "command_start": [],
-  "buffered_user_writes": false,
-  "sv": {}
+    "sv": {}
 }
 ```
 
@@ -168,12 +167,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 - 留空 / `[""]` / `[]` = 无命令头（默认）。
 - **填了之后所有命令都必须带命令头**才能触发，否则 `gs帮助` 都打不出来。
 
-### 5.2.13 `buffered_user_writes` — 用户写入缓冲
-
-- 默认 `false`。
-- 主要影响数据库写入的批量合并策略，高并发时再开。
-
-### 5.2.14 `sv` — 服务（触发器）权限矩阵
+### 5.2.13 `sv` — 服务（触发器）权限矩阵
 
 ```json
 {
@@ -203,7 +197,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 > 每个插件启动时会把自己的 SV 注册到这里；WebConsole 改完大多数可热更。
 
-### 5.2.15 `plugin_config_store`（运行时对象，非 JSON 字段）
+### 5.2.14 `plugin_config_store`（运行时对象，非 JSON 字段）
 
 `plugins_configs/` 目录下每个插件一份 JSON，由 `PluginConfigStore` 管理（见
 [`config.py:194-307`](../../../gsuid_core/config.py)）。**不是 `config.json` 的字段**，

@@ -17,29 +17,68 @@ from gsuid_core.models import Event
 from gsuid_core.utils.database.models import Subscribe
 
 
-def test_user_touch_returns_while_the_write_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
-    asyncio.run(_user_touch_returns_while_the_write_is_blocked(monkeypatch))
+def test_user_touch_never_touches_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """记账入口只写内存缓冲，绝不发起 DB 调用（原 buffered_user_writes 已移除）。"""
+    asyncio.run(_user_touch_never_touches_db(monkeypatch))
 
 
-async def _user_touch_returns_while_the_write_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(handler, "_BUFFERED_USER_WRITES", False)
-    release = asyncio.Event()
-    started = asyncio.Event()
+async def _user_touch_never_touches_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    touched: list[str] = []
 
-    async def slow_insert(*_args: object, **_kwargs: object) -> int:
-        started.set()
-        await release.wait()
-        return 1
+    async def forbidden(*_args: object, **_kwargs: object) -> int:
+        touched.append("db")
+        raise AssertionError("记账入口不应直接写库")
 
-    monkeypatch.setattr(handler.CoreUser, "insert_user", slow_insert)
-    monkeypatch.setattr(handler.CoreGroup, "insert_group", slow_insert)
+    monkeypatch.setattr(handler.CoreUser, "insert_user", forbidden)
+    monkeypatch.setattr(handler.CoreGroup, "insert_group", forbidden)
+    monkeypatch.setattr(handler, "_user_buffer", {})
+    monkeypatch.setattr(handler, "_group_buffer", set())
+    monkeypatch.setattr(handler, "_ensure_flush_task_started", lambda: None)
+
     t0 = asyncio.get_running_loop().time()
     handler._schedule_user_group_write("bot", "user", "group", "nick", "icon")
-    assert asyncio.get_running_loop().time() - t0 < 0.2
-    await asyncio.wait_for(started.wait(), 1)
-    release.set()
-    if handler._bookkeeping_tasks:
-        await asyncio.wait(set(handler._bookkeeping_tasks), timeout=1)
+    handler._schedule_user_group_write("bot", "user", None, None, None)
+    elapsed = asyncio.get_running_loop().time() - t0
+
+    assert elapsed < 0.05
+    assert not touched
+    # 同一 (bot, user) 只留一条；空昵称/头像沿用旧值
+    assert handler._user_buffer[("bot", "user")] == (None, "nick", "icon")
+    assert handler._group_buffer == {("bot", "group")}
+
+
+def test_flush_writes_buffered_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """真正落库只发生在刷写，且按 (bot,user)/(bot,group) 去重。"""
+    asyncio.run(_flush_writes_buffered_rows(monkeypatch))
+
+
+async def _flush_writes_buffered_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_users: list[tuple[str, str]] = []
+    seen_groups: list[tuple[str, str]] = []
+
+    async def rec_user(bot_id: str, user_id: str, *_rest: object) -> int:
+        seen_users.append((bot_id, user_id))
+        return 1
+
+    async def rec_group(bot_id: str, group_id: str) -> int:
+        seen_groups.append((bot_id, group_id))
+        return 1
+
+    monkeypatch.setattr(handler.CoreUser, "insert_user", rec_user)
+    monkeypatch.setattr(handler.CoreGroup, "insert_group", rec_group)
+    monkeypatch.setattr(handler, "_user_buffer", {})
+    monkeypatch.setattr(handler, "_group_buffer", set())
+    monkeypatch.setattr(handler, "_ensure_flush_task_started", lambda: None)
+
+    for _ in range(5):
+        handler._schedule_user_group_write("bot", "u1", "g1", "n", "i")
+        handler._schedule_user_group_write("bot", "u2", "g1", "n", "i")
+    await handler._flush_user_group_buffer()
+
+    assert sorted(seen_users) == [("bot", "u1"), ("bot", "u2")]
+    assert seen_groups == [("bot", "g1")]
+    assert not handler._user_buffer
+    assert not handler._group_buffer
 
 
 def test_owner_subscribe_returns_while_the_write_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
