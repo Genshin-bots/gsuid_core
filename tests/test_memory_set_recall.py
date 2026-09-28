@@ -2767,8 +2767,9 @@ def test_parallel_documents_keep_lines_buried_under_the_opening() -> None:
 
 def test_merge_coverage_keeps_metric_document_hits() -> None:
     """covered 时不能丢掉带数字的 S1 文档命中——那是 financial_en 注入变薄的根因。"""
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
         apply_query_episode_pack,
         merge_coverage_with_metric_hits,
@@ -2801,7 +2802,7 @@ def test_merge_coverage_keeps_metric_document_hits() -> None:
         ),
         _ep("chat", "speaker: unrelated hello", "2026-09-25 18:02:00"),
     ]
-    covered = cover_document_excerpts(cover_pool, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    covered = cover_document_excerpts(cover_pool, q, char_budget=DOC_COVER_EXTRACT_BUDGET)
     assert covered, "cover should fire on shared operating/cash tokens"
     merged = merge_coverage_with_metric_hits(covered, cover_pool + s1_hits)
     merged_ids = {e["id"] for e in merged}
@@ -2815,7 +2816,7 @@ def test_merge_coverage_keeps_metric_document_hits() -> None:
         q,
         temporal_mode=False,
         time_range=None,
-        char_budget=PARALLEL_DOC_CHAR_BUDGET,
+        char_budget=DOC_COVER_EXTRACT_BUDGET,
     )
     packed_text = "\n".join(e["content"] or "" for e in packed)
     assert "Net earnings" in packed_text or "(241)" in packed_text
@@ -2828,7 +2829,7 @@ def test_merge_coverage_keeps_metric_document_hits() -> None:
         episodes=merged,
         covered=True,
         cover_ids=cover_ids,
-    ).to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    ).to_prompt_text(max_chars=inject_memory_cap(q, covered=True), query=q)
     assert "Net earnings" in text or "(241)" in text
     for i in range(4):
         assert f"10-Q_co{i}.htm" in text
@@ -2837,7 +2838,7 @@ def test_merge_coverage_keeps_metric_document_hits() -> None:
 
 def test_covered_inject_ignores_latest_slot_8k_cap() -> None:
     """covered 路径不被 latest_slot 的 8k 点查帽截断。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import PARALLEL_DOC_CHAR_BUDGET
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
     q = "What is the average Quality of Earnings ratio across these filings?"
@@ -2853,7 +2854,7 @@ def test_covered_inject_ignores_latest_slot_8k_cap() -> None:
     ]
     cover_ids = frozenset(str(e["id"]) for e in docs if "id" in e)
     text = MemoryContext(episodes=docs, covered=True, cover_ids=cover_ids).to_prompt_text(
-        max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q
+        max_chars=inject_memory_cap(q, covered=True), query=q
     )
     assert len(text) > 12000
     for i in range(6):
@@ -2864,7 +2865,7 @@ def test_covered_inject_ignores_latest_slot_8k_cap() -> None:
 def test_title_tokens_do_not_open_unrelated_tables() -> None:
     """来源标题里的词不能打开无关表；要留下 enrollment / graduation 行。"""
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
         is_ingested_document_episode,
     )
@@ -2904,7 +2905,7 @@ def test_title_tokens_do_not_open_unrelated_tables() -> None:
             f"C.Final 2015 cohort, after adjusting for allowable exclusions | 1000 | 2000 | 3000\n"
         )
         docs.append(_ep(name, body, "2026-09-25 18:00:00"))
-    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    covered = cover_document_excerpts(docs, q, char_budget=DOC_COVER_EXTRACT_BUDGET)
     texts = [e["content"] or "" for e in covered if is_ingested_document_episode(e["content"] or "")]
     assert len(texts) == 4
     joined = "\n".join(texts)
@@ -2918,9 +2919,10 @@ def test_title_tokens_do_not_open_unrelated_tables() -> None:
 
 def test_parallel_cover_skips_stance_conflicts_when_covered() -> None:
     """覆盖路径下不同来源不是正反说，不得写入【陈述不一致】。"""
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.kits.memory.kit import refine_retrieved_memory
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
     )
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
@@ -2936,18 +2938,18 @@ def test_parallel_cover_skips_stance_conflicts_when_covered() -> None:
         )
         for i in range(6)
     ]
-    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    covered = cover_document_excerpts(docs, q, char_budget=DOC_COVER_EXTRACT_BUDGET)
     mem = MemoryContext(episodes=covered, covered=True)
     refine_retrieved_memory(mem, q)
     assert mem.conflicts == []
-    text = mem.to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    text = mem.to_prompt_text(max_chars=inject_memory_cap(q, covered=True), query=q)
     assert "【陈述不一致】" not in text
 
 
 def test_parallel_cover_prefers_numeric_metric_lines() -> None:
     """同分时优先带数字的栏目行，不要留下只有文字说明的命中。"""
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
         is_ingested_document_episode,
     )
@@ -2971,7 +2973,7 @@ def test_parallel_cover_prefers_numeric_metric_lines() -> None:
             "2026-09-25 18:01:00",
         ),
     ]
-    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    covered = cover_document_excerpts(docs, q, char_budget=DOC_COVER_EXTRACT_BUDGET)
     texts = [e["content"] or "" for e in covered if is_ingested_document_episode(e["content"] or "")]
     joined = "\n".join(texts)
     assert "1,234" in joined
@@ -2986,8 +2988,9 @@ def test_parallel_cover_runs_without_naming_documents_in_the_query() -> None:
     覆盖打包器自带内容守卫，所以不需要问句措辞门；措辞门曾把这类问句
     全部挡在外面，几十份材料只注入前十几份。
     """
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         episode_source_key,
         cover_document_excerpts,
         apply_query_episode_pack,
@@ -3004,7 +3007,7 @@ def test_parallel_cover_runs_without_naming_documents_in_the_query() -> None:
         )
         for i in range(30)
     ]
-    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    covered = cover_document_excerpts(docs, q, char_budget=DOC_COVER_EXTRACT_BUDGET)
     # 首位是来源清单（不带【文档】标记），其后每份材料一条摘录。
     from gsuid_core.ai_core.memory.retrieval.lexical import is_ingested_document_episode
 
@@ -3013,9 +3016,11 @@ def test_parallel_cover_runs_without_naming_documents_in_the_query() -> None:
 
     # Chat 注入：pack 与 to_prompt_text 都要保住这三十份。
     packed = apply_query_episode_pack(
-        docs, q, temporal_mode=False, time_range=None, char_budget=PARALLEL_DOC_CHAR_BUDGET
+        docs, q, temporal_mode=False, time_range=None, char_budget=DOC_COVER_EXTRACT_BUDGET
     )
-    text = MemoryContext(episodes=packed, covered=True).to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    text = MemoryContext(episodes=packed, covered=True).to_prompt_text(
+        max_chars=inject_memory_cap(q, covered=True), query=q
+    )
     for i in range(30):
         assert f"co{i}.md" in text
 
@@ -3037,27 +3042,29 @@ def test_parallel_cover_stays_off_for_plain_chat_scope() -> None:
     assert cover_document_excerpts(docs, "哪些歌好听") == []
 
 
-def test_memory_block_cap_follows_covered_documents_not_question_wording() -> None:
-    """装配层字帽按块里实际有几份材料收，不按问句是否点名「文档」。"""
-    from gsuid_core.ai_core.kits.base import memory_block_budget
+def test_inject_memory_cap_follows_document_sources_not_question_wording() -> None:
+    """总帽按块里实际有几份材料收，不按问句是否点名「文档」；单一出口。"""
+    from gsuid_core.ai_core.kits.base import inject_memory_cap, count_document_sources
+    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
 
     q = "哪些公司的权益乘数大于3？"
     block = "\n".join(f"【文档】co{i}.md\n权益乘数 {i}" for i in range(30))
-    assert memory_block_budget(block) == 96000
-    assert memory_block_budget("【文档】a.md\n只有一个来源") is None
-    assert memory_block_budget("普通闲聊记忆，没有入库文档") is None
-    from gsuid_core.ai_core.kits.base import resolve_memory_budget
-    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
-
     assert not wants_parallel_document_coverage(q)
-    assert resolve_memory_budget(q, block) == 96000
-    assert resolve_memory_budget("今天天气怎么样", "普通闲聊记忆") is None
+    plain = inject_memory_cap(q)
+    assert count_document_sources(block) == 30
+    assert inject_memory_cap(q, n_doc_sources=count_document_sources(block)) > plain
+    assert inject_memory_cap(q, covered=True) > plain
+    assert inject_memory_cap(q, n_doc_sources=2) > plain
+    # 只有一份来源 / 普通闲聊：仍走常规帽。
+    assert inject_memory_cap(q, n_doc_sources=count_document_sources("【文档】a.md\n只有一个来源")) == plain
+    assert inject_memory_cap("今天天气怎么样", n_doc_sources=count_document_sources("普通闲聊记忆")) == plain
 
 
 def test_parallel_cover_states_source_count_and_titles() -> None:
     """逐份覆盖要声明共几份、来源名，并要求每一份都纳入。"""
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
     )
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
@@ -3072,19 +3079,22 @@ def test_parallel_cover_states_source_count_and_titles() -> None:
         )
         for i in range(9)
     ]
-    covered = cover_document_excerpts(docs, q, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    covered = cover_document_excerpts(docs, q, char_budget=DOC_COVER_EXTRACT_BUDGET)
     manifest = covered[0]["content"]
     assert "共9份" in manifest
     assert "每一份都要纳入" in manifest
     for i in range(9):
         assert f"co{i}.md" in manifest
-    text = MemoryContext(episodes=covered, covered=True).to_prompt_text(max_chars=PARALLEL_DOC_CHAR_BUDGET, query=q)
+    text = MemoryContext(episodes=covered, covered=True).to_prompt_text(
+        max_chars=inject_memory_cap(q, covered=True), query=q
+    )
     assert "共9份" in text
     assert "每一份都要纳入" in text
 
 
 def test_parallel_cover_keeps_every_source_inside_the_budget() -> None:
     """来源多于二十份时，每一份的栏目行都要留下，不能只留前十几份。"""
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
     q = "这些材料里余额最高的是哪一份？"
@@ -3092,12 +3102,9 @@ def test_parallel_cover_keeps_every_source_inside_the_budget() -> None:
     for i in range(30):
         pad = "封面说明。\n" * 40
         docs.append(_ep(str(i), f"【文档】c{i}.md\n{pad}余额 {i}", f"2026-09-25 18:{i % 60:02d}:00"))
-    from gsuid_core.ai_core.kits.base import timeline_memory_budget
-
-    budget = timeline_memory_budget(q)
-    assert budget is not None and budget >= 96000
-    assert timeline_memory_budget("哪些歌好听") is None
-    text = MemoryContext(episodes=docs).to_prompt_text(max_chars=96000, query=q)
+    budget = inject_memory_cap(q, covered=True)
+    assert budget >= inject_memory_cap("哪些歌好听")
+    text = MemoryContext(episodes=docs).to_prompt_text(max_chars=budget, query=q)
     for i in range(30):
         assert f"余额 {i}" in text
     assert "封面说明" not in text

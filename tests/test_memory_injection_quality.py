@@ -652,27 +652,42 @@ def test_inject_skips_tool_hint_for_memory_eval() -> None:
     assert block.rfind("（系统：") > block.find("[guide]")
 
 
-def test_memory_eval_skips_memory_block_char_budget() -> None:
-    from gsuid_core.ai_core.kits.base import join_named_blocks
+def test_memory_block_cap_comes_from_inject_memory_cap() -> None:
+    """记忆块的帽只有一个出口：``inject_memory_cap``；pack 的 covered 必须传到 join。"""
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.kits.base import inject_memory_cap, join_named_blocks
+    from gsuid_core.ai_core.kits.compose import join_blocks
 
-    blob = "P" * 9000
-    chat = join_named_blocks({"memory": blob}, create_by="Chat")
-    assert len(chat) <= 8000
-    assert chat.endswith("…")
-    still_capped = join_named_blocks({"memory": blob}, create_by="TEST")
-    assert len(still_capped) <= 8000
-    skipped = join_named_blocks({"memory": blob}, create_by="Chat", skip_memory_cap=True)
-    assert blob in skipped
-    assert len(skipped) >= 9000
-    mid = "Q" * 12000
-    timeline = join_named_blocks({"memory": mid}, create_by="Chat", memory_budget=16000)
-    assert mid in timeline
-    assert len(timeline) == 12000
-    from gsuid_core.ai_core.kits.base import timeline_memory_budget
-
+    default = inject_memory_cap("今天天气怎么样")
     order_q = "List the order I brought up hiring aspects, in order. Mention ONLY three items."
-    assert timeline_memory_budget(order_q) == 16000
-    assert timeline_memory_budget("今天天气怎么样") is None
+    wide = inject_memory_cap(order_q)
+    assert wide > default
+    assert inject_memory_cap("今天天气怎么样", n_doc_sources=2) == wide
+
+    blob = "P" * (default + 1000)
+    chat = join_named_blocks({"memory": blob})
+    assert len(chat) <= default
+    assert chat.endswith("…")
+    # 不传 budget 时仍按问句抬帽，空 query 不会误走宽档。
+    still_capped = join_named_blocks({"memory": blob}, query="今天天气怎么样")
+    assert len(still_capped) <= default
+    assert still_capped.endswith("…")
+    timeline = join_named_blocks({"memory": blob}, query=order_q)
+    assert len(timeline) == len(blob)
+
+    # 块里有 ≥2 份入库文档时不传 budget，join 也按宽档收（不再从尾部切掉后期来源）。
+    doc_block = "【文档】a.md\n" + "x" * (default + 1000) + "\n【文档】b.md\n" + "y" * 200
+    multi = join_named_blocks({"memory": doc_block})
+    assert len(multi) == len(doc_block)
+    explicit = join_named_blocks({"memory": doc_block}, memory_budget=wide)
+    assert len(explicit) == len(doc_block)
+
+    # 覆盖包即使还没写出两份文档头，join 也要跟 pack 同一档。
+    ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, query="哪些歌好听")
+    ctx.blocks["memory"] = blob
+    assert len(join_blocks(ctx)) <= default
+    ctx.memory_covered = True
+    assert len(join_blocks(ctx)) == len(blob)
 
 
 def test_join_named_blocks_caps_non_memory_blocks() -> None:

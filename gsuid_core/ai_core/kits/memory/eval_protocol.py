@@ -24,8 +24,7 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Episode
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
-# 评测禁工具，不能再调 search_cognition；预算须装下 dual_route 的 top_k 命中，不是 haystack。
-EVAL_MEMORY_INJECT_CHARS = 8_000
+# 评测禁工具，不能再调 search_cognition；预算由 inject_memory_cap 与生产同一档。
 # LME 会话内 turn 间隔 1s；>45s 视为下一条 haystack 会话。
 _EVAL_SESSION_GAP_SEC = 45
 _EVAL_EMBED_SESSIONS = 48
@@ -432,22 +431,10 @@ def _cluster_query_score(cluster: list["Episode"], query: str, all_eps: list["Ep
 
 
 def format_eval_memory(mem: "MemoryContext", query: str) -> str:
-    """评测注入：与生产同一套 ``to_prompt_text``（事实边 + 片段），只放大预算。"""
-    from gsuid_core.ai_core.memory.config import memory_config
+    """评测注入：与生产同一套 ``to_prompt_text``（事实边 + 片段）、同一顶总帽。"""
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
 
-    cap = max(int(memory_config.memory_inject_max_chars), EVAL_MEMORY_INJECT_CHARS)
-    from gsuid_core.ai_core.memory.retrieval.event_time import (
-        looks_like_span_query,
-        looks_like_order_query,
-        looks_like_summary_query,
-    )
-
-    if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
-        if memory_config.eo_strategy == "ledger":
-            cap = max(cap, int(memory_config.ledger_max_chars))
-        else:
-            cap = max(cap, 16000)
-    return mem.to_prompt_text(max_chars=cap, query=query)
+    return mem.to_prompt_text(max_chars=inject_memory_cap(query, covered=mem.covered), query=query)
 
 
 def inject_eval_memory_parts(text: str, guide: str) -> list[str]:

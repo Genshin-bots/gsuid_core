@@ -21,7 +21,11 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.kits.base import join_named_blocks, resolve_memory_budget
+from gsuid_core.ai_core.kits.base import (
+    inject_memory_cap,
+    join_named_blocks,
+    count_document_sources,
+)
 from gsuid_core.ai_core.relationship import RelationshipView
 
 if TYPE_CHECKING:
@@ -130,12 +134,11 @@ async def build_session_system_prompt(event: Event, persona_name: str, *, clock_
 
 def join_context_blocks(
     blocks: Dict[str, str],
-    create_by: str = "Chat",
-    skip_memory_cap: bool = False,
+    query: str = "",
     memory_budget: int | None = None,
 ) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装命名块（顺序的**唯一**执行点）。"""
-    return join_named_blocks(blocks, create_by=create_by, skip_memory_cap=skip_memory_cap, memory_budget=memory_budget)
+    return join_named_blocks(blocks, query=query, memory_budget=memory_budget)
 
 
 def history_line_is_assistant(line: str) -> bool:
@@ -209,13 +212,15 @@ async def assemble_dynamic_context(
     _ensure_kernel_blocks(ctx)
     _apply_suffix_block_policy(ctx)
     _inject_master_title_hint(ctx)
-    skip_mem = ctx.memory_eval
     memory_text = ctx.blocks["memory"] if "memory" in ctx.blocks else ""
     text = join_context_blocks(
         ctx.blocks,
-        create_by=ctx.create_by,
-        skip_memory_cap=skip_mem,
-        memory_budget=resolve_memory_budget(ctx.query, memory_text),
+        query=ctx.query,
+        memory_budget=inject_memory_cap(
+            ctx.query,
+            covered=ctx.memory_covered,
+            n_doc_sources=count_document_sources(memory_text),
+        ),
     )
     from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
 

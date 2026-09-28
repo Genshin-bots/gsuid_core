@@ -37,6 +37,9 @@ from .ledger_timeline import LedgerView, format_ledger_block
 # 否则 </untrusted> 闭合标签会被尾截断切掉（评审修复 F9）
 _UNTRUSTED_WRAP_OVERHEAD = len(wrap_untrusted("memory_recall", ""))
 
+# 点查题的片段预算：先到先得取前几条，别让长片段把答案行挤出视野。
+_POINT_LOOKUP_EP_BUDGET = 8000
+
 
 class PreferencePrompt(TypedDict):
     """注入 Prompt 的单条偏好规则（``MemoryContext.preferences`` 的元素）。
@@ -317,7 +320,7 @@ async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Epi
 
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
     from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
+        DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
         has_document_coverage_tokens,
     )
@@ -337,7 +340,7 @@ async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Epi
             pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
     if not pool:
         return []
-    return cover_document_excerpts(pool, query, char_budget=PARALLEL_DOC_CHAR_BUDGET)
+    return cover_document_excerpts(pool, query, char_budget=DOC_COVER_EXTRACT_BUDGET)
 
 
 async def _expand_document_siblings(hits: list[Episode], scope_keys: list[str]) -> list[Episode]:
@@ -427,7 +430,7 @@ class MemoryContext:
 
     def to_prompt_text(
         self,
-        max_chars: int = 2000,
+        max_chars: int,
         priority_speakers: Optional[set] = None,
         current_speaker_ids: Optional[set] = None,
         query: str = "",
@@ -435,10 +438,9 @@ class MemoryContext:
     ) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本。
 
-        采用 Token 预算控制，按"信息密度"分配空间：
-        - 核心事实（edges）：约 55%，是最可供 Agent 推理的内容，优先保证
-        - 语义类目（categories）：约 15%，提供话题大纲
-        - 相关对话片段（episodes）：约 30%，只保留少量最相关轮次
+        总帽由调用方经 ``inject_memory_cap`` 定好（无默认值：写过默认值就等于第二个总帽）。
+        帽内按"信息密度"分配：偏好独立占 ``preference_inject_budget_ratio``，核心事实
+        时间线模式 15%、否则 55%，陈述不一致 12%，语义类目 15%，对话片段吃掉用剩的全部。
 
         每个区块在自己的预算内逐条累加，超预算即停止，避免低价值内容挤占空间。
 
@@ -673,7 +675,6 @@ class MemoryContext:
             ep_budget = max_chars - used
             if ep_budget > 120:
                 from gsuid_core.ai_core.memory.retrieval.lexical import (
-                    PARALLEL_DOC_CHAR_BUDGET,
                     is_fact_sheet,
                     is_session_read,
                     excerpt_session_read,
@@ -724,10 +725,9 @@ class MemoryContext:
                 recent_budget = 0 if cross_session else min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
                 ep_cap = 480 if self.temporal_mode else 1000
-                doc_cap = 12000 if looks_like_set_query(query) else max(ep_cap, 2400)
                 parallel_q = wants_parallel_document_coverage(query) or self.covered
-                if parallel_q:
-                    doc_cap = PARALLEL_DOC_CHAR_BUDGET
+                # 覆盖是逐份材料按行摘的：不给单条再设帽，总帽本来就装不下第二条。
+                doc_cap = max_chars if parallel_q else (12000 if looks_like_set_query(query) else max(ep_cap, 2400))
 
                 def _assistant_turn(raw: str) -> bool:
                     low = raw.lstrip().lower()
@@ -804,17 +804,15 @@ class MemoryContext:
                     # 来源清单无【文档】头，不能按 ingested 过滤，否则清单沉底被挤掉。
                     packed = cover_first + rest_pack
                 else:
+                    # 宽档（跨会话 / 集合题 / 逐份覆盖）不额外再压一次：总帽已经收过。
+                    wide_pack = cross_session or looks_like_set_query(query) or parallel_q
+                    pack_cap = max_chars if wide_pack else _POINT_LOOKUP_EP_BUDGET
                     packed = apply_query_episode_pack(
                         haystack,
                         query,
                         temporal_mode=self.temporal_mode,
                         time_range=self.time_range,
-                        char_budget=min(
-                            other_budget,
-                            PARALLEL_DOC_CHAR_BUDGET
-                            if (cross_session or looks_like_set_query(query) or parallel_q)
-                            else 8000,
-                        ),
+                        char_budget=min(other_budget, pack_cap),
                         asker_id=self.asker_id,
                     )
                 if looks_like_set_query(query):
@@ -871,13 +869,14 @@ class MemoryContext:
                 elif self.temporal_mode:
                     taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
                 elif not self.covered and (looks_like_count_query(query) or looks_like_latest_slot_query(query)):
-                    # 逐份材料覆盖时不能走 8k 点查帽：「What is the average …」会被
-                    # latest_slot 命中，_take 先到先得只留下前几份摘录。
-                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
+                    # 覆盖均分时不能走点查帽：latest_slot 命中后 _take 先到先得，只留前几份。
+                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET))
                 elif looks_like_duration_query(query) and not self.covered:
-                    taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
+                    taken = _take_head_tail(
+                        _ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET)
+                    )
                 elif timeline_q and not self.covered:
-                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, 8000))
+                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET))
                 else:
                     _ep_taken = _ep_lines(user_eps, self_mark=False)
                     if self.covered and self.cover_ids:
@@ -922,41 +921,6 @@ class MemoryContext:
                 else:
                     blocks.append(recall_text)
         return "\n\n".join(blocks)
-
-    def to_memory_text(self, max_chars: int = 24000) -> str:
-        """格式化为可注入 Memory 的记忆上下文文本。
-
-        含【已知事实】(edges) + 【相关对话片段】(episodes)：纯 episode-RAG（无图谱）时
-        edges 为空，必须带上 episodes，否则该字段恒空（探针 ``memory`` 字段失真、且无图谱
-        部署召回到的对话片段无从注入）。
-        """
-
-        from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT
-
-        parts: list[str] = []
-
-        if self.edges:
-            fact_lines: list[str] = []
-            for e in self.edges[: memory_config.search_edge_count]:
-                fact = _complete_fact_subject(e["fact"], e["source_name"])
-                if fact:
-                    fact_lines.append(f"• {_edge_date_prefix(e)}{fact}")
-            facts_text = "\n".join(fact_lines)
-            parts.append(f"【已知事实】\n{facts_text if facts_text else '暂无已知事实'}")
-
-        if self.conflicts:
-            parts.append("【陈述不一致】\n" + "\n".join(f"• {s[:300]}" for s in self.conflicts[:6]))
-
-        if self.episodes:
-            ep_lines = [f"[{ep['valid_at'][:16].replace('T', ' ')}] {ep['content']}" for ep in self.episodes]
-            parts.append("【相关对话片段】\n" + "\n".join(ep_lines))
-
-        result = str("\n\n".join(parts))
-        if result and "谁在该时点说过" not in result:
-            result = "（" + SPEECH_ACT_HINT + "）\n" + result
-        if len(result) > max_chars:
-            result = result[:max_chars] + "\n...[记忆已截断]"
-        return str(result)
 
 
 def _merge_episodes(list_a: Sequence[Episode], list_b: Sequence[Episode]) -> list[Episode]:

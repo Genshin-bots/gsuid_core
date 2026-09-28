@@ -32,10 +32,8 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "plugin_hints",
 )
 
-# 排序/摘要/跨月题 pack 到 16k，join 必须同帽，否则从尾部砍掉后期里程碑。
-TIMELINE_MEMORY_JOIN_BUDGET = 16000
-
-# 长库时 800 字会把专名/数字切掉；join 仍按块截断
+# 长库时 800 字会把专名/数字切掉；join 仍按块截断。memory 不在此表：
+# 它的帽只能来自 inject_memory_cap，表里再写一个 8000 会让配置形同虚设。
 BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "mood": 80,
     "relationship": 100,
@@ -44,7 +42,6 @@ BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     # 同人线程 14 条 + 旁人 6 条；600 会从尾部截掉最新出站句柄。
     "history": 4000,
     "group_context": 200,
-    "memory": 8000,
     "task": 250,
     "plan_hint": 250,
     "chitchat_style": 160,
@@ -61,21 +58,12 @@ _KNOWN_BLOCKS: FrozenSet[str] = frozenset(CONTEXT_BLOCK_ORDER) | STABLE_BLOCK_NA
 # 口吻 / 口气 / 身份是同一组角色提示，拼在一起中间不要空行。
 _CUE_BLOCK_CLUSTER: FrozenSet[str] = frozenset({"voice_anchor", "identity"})
 
-# 记忆块里出现这么多份不同来源的入库文档，就按逐份覆盖帽收，而不是默认 8000。
-_PARALLEL_DOC_MIN_HEADERS = 3
+# 记忆块里出现这么多份不同来源的入库文档，就按宽帽收，而不是默认帽。
+_MEMORY_WIDE_MIN_DOC_SOURCES = 2
 _DOC_HEAD_RE = re.compile(r"【文档】\s*([^\n]{1,120})")
 
 
-def memory_block_budget(text: str) -> int | None:
-    """记忆块已有逐份覆盖时按覆盖帽收，否则默认 8000。看产出不看问句措辞。"""
-    if _distinct_document_markers(text) >= _PARALLEL_DOC_MIN_HEADERS:
-        from gsuid_core.ai_core.memory.retrieval.lexical import PARALLEL_DOC_CHAR_BUDGET
-
-        return PARALLEL_DOC_CHAR_BUDGET
-    return None
-
-
-def _distinct_document_markers(text: str) -> int:
+def count_document_sources(text: str) -> int:
     """记忆块里 `【文档】<标题>` 的不同来源数。"""
     seen: set[str] = set()
     for m in _DOC_HEAD_RE.finditer(text):
@@ -83,35 +71,27 @@ def _distinct_document_markers(text: str) -> int:
     return len(seen)
 
 
-def timeline_memory_budget(query: str) -> int | None:
-    """order/span/summary 与 pack 对齐；其它问句仍走默认 8000。"""
+def inject_memory_cap(query: str, *, covered: bool = False, n_doc_sources: int = 0) -> int:
+    """记忆整块总帽的**唯一**出口：pack 与 join 都调这里，两边不会各抬一个数。
+
+    只按「有没有逐份材料覆盖 / 问句是不是长时序或跨文档比较」选档。覆盖守卫
+    （scope、≥2 份、栏目实词、df）决定摘哪些行，留在检索侧，不搬进预算函数。
+    """
     from gsuid_core.ai_core.memory.config import memory_config
+    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         looks_like_span_query,
         looks_like_order_query,
         looks_like_summary_query,
     )
 
-    if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
-        if memory_config.eo_strategy == "ledger":
-            return max(TIMELINE_MEMORY_JOIN_BUDGET, int(memory_config.ledger_max_chars))
-        return TIMELINE_MEMORY_JOIN_BUDGET
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
-        wants_parallel_document_coverage,
-    )
-
-    if wants_parallel_document_coverage(query):
-        return PARALLEL_DOC_CHAR_BUDGET
-    return None
-
-
-def resolve_memory_budget(query: str, text: str) -> int | None:
-    """记忆块最终字帽：时间线帽 > 实际覆盖帽 > 问句措辞帽。"""
-    for candidate in (timeline_memory_budget(query), memory_block_budget(text)):
-        if candidate is not None:
-            return candidate
-    return None
+    default = int(memory_config.memory_inject_max_chars)
+    wide = max(default, int(memory_config.memory_inject_wide_chars))
+    multi_source = n_doc_sources >= _MEMORY_WIDE_MIN_DOC_SOURCES
+    timeline = looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query)
+    if covered or multi_source or timeline or wants_parallel_document_coverage(query):
+        return wide
+    return default
 
 
 def is_known_block(name: str) -> bool:
@@ -135,28 +115,26 @@ def _apply_block_budget(name: str, text: str, *, budget: int | None = None) -> s
 def join_named_blocks(
     blocks: Mapping[str, str],
     *,
-    create_by: str = "Chat",
-    skip_memory_cap: bool = False,
+    query: str = "",
     memory_budget: int | None = None,
 ) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装；口吻/口气/身份连成一段，其余块仍 ``\\n\\n``。
 
-    评测跳过记忆字帽须显式 ``skip_memory_cap``（Chat + memory_eval）。
-    ``create_by=TEST`` 不再自动免帽，以免评测走 TEST 改掉生产装配。
+    记忆块的帽由调用方从 :func:`inject_memory_cap` 取（生产与评测同一条函数）；
+    不传就按问句 + 块里来源数现算一次，免得绕过预算。
     """
     pieces: list[str] = []
     cues: list[str] = []
-    _ = create_by
     for name in CONTEXT_BLOCK_ORDER:
         if name not in blocks:
             continue
         text = blocks[name]
         if not text:
             continue
-        if skip_memory_cap and name == "memory":
-            pass
-        elif name == "memory":
-            cap = memory_budget if memory_budget is not None else memory_block_budget(text)
+        if name == "memory":
+            cap = memory_budget
+            if cap is None:
+                cap = inject_memory_cap(query, n_doc_sources=count_document_sources(text))
             text = _apply_block_budget(name, text, budget=cap)
         else:
             text = _apply_block_budget(name, text)

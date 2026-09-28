@@ -8,18 +8,24 @@
 from typing import Tuple
 
 from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks
-from gsuid_core.ai_core.kits.base import join_named_blocks, resolve_memory_budget
+from gsuid_core.ai_core.kits.base import (
+    inject_memory_cap,
+    join_named_blocks,
+    count_document_sources,
+)
 
 
 def join_blocks(ctx: AgentHookContext) -> str:
     """按 ``CONTEXT_BLOCK_ORDER`` 拼装。空块丢弃，未知块名进不来（写入侧已白名单校验）。"""
-    skip = ctx.memory_eval
     memory_text = ctx.blocks["memory"] if "memory" in ctx.blocks else ""
     return join_named_blocks(
         ctx.blocks,
-        create_by=ctx.create_by,
-        skip_memory_cap=skip,
-        memory_budget=resolve_memory_budget(ctx.query, memory_text),
+        query=ctx.query,
+        memory_budget=inject_memory_cap(
+            ctx.query,
+            covered=ctx.memory_covered,
+            n_doc_sources=count_document_sources(memory_text),
+        ),
     )
 
 
@@ -46,6 +52,7 @@ async def compose_dynamic_context(ctx: AgentHookContext, *, join: bool = True) -
         hints=ctx.hints,
         has_actionable=ctx.has_actionable,
         relationship=ctx.relationship,
+        memory_covered=ctx.memory_covered,
     )
     await fire_hooks(AgentHookPoint.AFTER_CONTEXT, after_ctx)
     ctx.has_actionable = after_ctx.has_actionable

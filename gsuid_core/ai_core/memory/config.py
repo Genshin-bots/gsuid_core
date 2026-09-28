@@ -145,6 +145,15 @@ class MemoryConfig:
         return mrc.get_config("memory_inject_max_chars").data
 
     @property
+    def memory_inject_wide_chars(self) -> int:
+        """逐份材料覆盖 / 长时序题的记忆总帽（``inject_memory_cap`` 的宽档）。
+
+        与 ``ledger_max_chars`` 分开：后者是 ledger 时间线正文自己的预算，也被
+        ``GSUID_LEDGER_MAX_CHARS`` 覆盖；两档同用一个键会让改一边牵动另一边。
+        """
+        return self._eo_int("memory_inject_wide_chars", 48000, stored=True)
+
+    @property
     def session_gap_seconds(self) -> int:
         """相邻 Episode 超过此时长则切新 session（秒）。"""
         return mrc.get_config("session_gap_seconds").data

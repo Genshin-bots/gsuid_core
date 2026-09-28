@@ -238,6 +238,7 @@ async def search_memory(
         data: 包含 episodes、entities、edges、retrieval_meta 的检索结果
     """
     try:
+        from gsuid_core.ai_core.kits.base import inject_memory_cap
         from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
         if not memory_config.enable_retrieval:
@@ -266,7 +267,9 @@ async def search_memory(
                 # 本次会命中并注入的偏好/纠错硬约束，便于控制台排查"为什么 Agent 还调错"
                 "preferences": mem_ctx.preferences,
                 "retrieval_meta": mem_ctx.retrieval_meta,
-                "prompt_text": mem_ctx.to_prompt_text(),
+                "prompt_text": mem_ctx.to_prompt_text(
+                    inject_memory_cap(req.query, covered=mem_ctx.covered), query=req.query
+                ),
             },
         }
     except _RUNTIME_ERRORS as e:

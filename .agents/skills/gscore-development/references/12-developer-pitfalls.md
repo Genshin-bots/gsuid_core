@@ -346,9 +346,11 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 - **`write_episodes=False`**：对已摄入 Episode 的 scope 只补抽取，避免重复嵌入 6 万+ 条、规避高并发
   重嵌入丢向量。**`trigger_rebuild=true` 仍同步 `await rebuild_task(scope_key)`**（曾被误删致静默
   失效、响应谎报 `rebuild:true`，现已恢复）——rebuild 要在 episodes/实体/边都落库后才看得到最新图。
-- **注入侧配套**：`chat_with_history` 必须传 `to_prompt_text(max_chars=memory_config.memory_inject_max_chars)`
-  （默认 `2000` 只够 ~2 条 Episode，是长对话事实"检索到却答不出"的暗坑）；纯 episode-RAG（无图谱）时
-  `to_memory_text` / `to_prompt_text` 都要带上 episodes，否则 `memory` 字段恒空。
+- **注入侧配套**：注入路径一律经 `kits/base.py` 的 `inject_memory_cap(query, covered=…, n_doc_sources=…)`
+  取总帽（常规档 `memory_inject_max_chars` / 宽档 `memory_inject_wide_chars`），再传给
+  `to_prompt_text(max_chars=…)`——**该参数必填**，别在调用点手写第二个数（曾经写死的 2000
+  只够 ~2 条 Episode，是长对话事实"检索到却答不出"的暗坑）。纯 episode-RAG（无图谱）时
+  `to_prompt_text` 必须带上 episodes，否则 `memory` 字段恒空。
 
 驱动脚本见 `eval/BEAM_10M/ingest_graph.py`（逐 plan 断点续跑 + 统一 rebuild 轮询）/ `quick_eval.py`
 （复用已摄入记忆、调参后分钟级子集重测）。

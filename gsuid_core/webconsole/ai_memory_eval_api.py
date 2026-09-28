@@ -110,6 +110,7 @@ async def eval_retrieve(
     req: EvalRetrieveRequest,
     _gate: None = Depends(require_local_test),
 ) -> EvalRetrieveOut:
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
     ctx = await dual_route_retrieve(
@@ -125,19 +126,7 @@ async def eval_retrieve(
         bot_self_id="ai",
         include_self=True,
     )
-    cap = int(memory_config.memory_inject_max_chars)
-    from gsuid_core.ai_core.memory.retrieval.event_time import (
-        looks_like_span_query,
-        looks_like_order_query,
-        looks_like_summary_query,
-    )
-
-    if looks_like_order_query(req.query) or looks_like_span_query(req.query) or looks_like_summary_query(req.query):
-        if memory_config.eo_strategy == "ledger":
-            cap = max(cap, int(memory_config.ledger_max_chars))
-        else:
-            cap = max(cap, 16000)
-    prompt = ctx.to_prompt_text(max_chars=cap, query=req.query)
+    prompt = ctx.to_prompt_text(max_chars=inject_memory_cap(req.query, covered=ctx.covered), query=req.query)
     return EvalRetrieveOut(
         pool_ids=list(ctx.pool_ids),
         inject_ids=list(ctx.inject_ids),

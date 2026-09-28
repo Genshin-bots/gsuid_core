@@ -230,6 +230,7 @@ def wants_evidence_injection(ctx: AgentHookContext) -> bool:
 
 def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
     """Chat 短闲聊目录卡；问答/长问句与 ``memory_eval`` 同一套 ``to_prompt_text``。"""
+    ctx.memory_covered = mem.covered
     q = retrieve_query_for_search(ctx.query)
     if ctx.memory_eval:
         from gsuid_core.ai_core.kits.memory.eval_protocol import format_eval_memory
@@ -237,32 +238,17 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
         return format_eval_memory(mem, q)
     if not wants_evidence_injection(ctx):
         return _format_memory_catalog(mem, q)
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.config import memory_config
+    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query
 
-    cap = int(memory_config.memory_inject_max_chars)
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
-        wants_parallel_document_coverage,
-    )
-    from gsuid_core.ai_core.memory.retrieval.event_time import (
-        looks_like_span_query,
-        looks_like_order_query,
-        looks_like_summary_query,
-    )
+    cap = inject_memory_cap(q, covered=mem.covered)
+    # ledger + dedicated：排序题已由专用选择器渲染过，本块不再重复注入。
+    if memory_config.eo_strategy == "ledger" and memory_config.eo_selector == "dedicated" and looks_like_order_query(q):
+        from gsuid_core.ai_core.agent_run.order_answer import get_order_rendered
 
-    # 逐份材料覆盖真的打出来了才放宽预算：按产出判定，不按问句措辞。
-    if mem.covered or wants_parallel_document_coverage(q):
-        cap = max(cap, PARALLEL_DOC_CHAR_BUDGET)
-    if looks_like_order_query(q) or looks_like_span_query(q) or looks_like_summary_query(q):
-        if memory_config.eo_strategy == "ledger":
-            if memory_config.eo_selector == "dedicated" and looks_like_order_query(q):
-                from gsuid_core.ai_core.agent_run.order_answer import get_order_rendered
-
-                if get_order_rendered().strip():
-                    return ""
-            cap = max(cap, int(memory_config.ledger_max_chars))
-        else:
-            cap = max(cap, 16000)
+        if get_order_rendered().strip():
+            return ""
     speakers = ctx.priority_speakers if ctx.priority_speakers else None
     current = {ctx.user_id} if ctx.user_id else None
     return mem.to_prompt_text(

@@ -1023,6 +1023,12 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         8000,
         options=[800, 2000, 4000, 8000, 16000],
     ),
+    "memory_inject_wide_chars": GsIntConfig(
+        "记忆注入宽档预算",
+        "逐份材料覆盖 / 排序摘要长时序题的记忆整块上限, 不低于上面的常规预算。GSUID_MEMORY_INJECT_WIDE_CHARS 可覆盖",
+        48000,
+        options=[16000, 28000, 48000, 64000, 96000],
+    ),
     "session_gap_seconds": GsIntConfig(
         "Session 切分静默阈值（秒）",
         "同 scope 相邻 Episode 间隔超过此秒数则开新 session；默认 1800（30 分钟）",

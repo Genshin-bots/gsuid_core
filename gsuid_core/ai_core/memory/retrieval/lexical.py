@@ -223,8 +223,9 @@ SPEECH_ACT_HINT = (
     "都不是现在已经如此。问现在的日期、数量或有没有发生，没有本轮工具结果就只转述谁在何时说过；"
     "问谁说过什么时照原话并带上说话时间。"
 )
-# 比较题要装下每一份的栏目行 + S1 数值命中。48k 在 20+ 源时常填不满有效行。
-PARALLEL_DOC_CHAR_BUDGET = 96000
+# 覆盖摘录的抽取预算，不是注入预算：先按来源选行，注入再按 inject_memory_cap 收。
+# 抽取侧必须比注入宽档大，否则均分行数会在注入截断之前就被饿死。
+DOC_COVER_EXTRACT_BUDGET = 96000
 _SUM_RE = re.compile(
     r"\bhow much total\b|\btotal money\b|\bspent on\b|\bexpenses\b|一共花|总共花|合计|"
     r"\bhow many (?:hours?|days?)\b.{0,80}\b(?:in total|altogether)\b|"
@@ -2816,7 +2817,7 @@ def cover_document_excerpts(
     episodes: list[Episode],
     query: str,
     *,
-    char_budget: int = PARALLEL_DOC_CHAR_BUDGET,
+    char_budget: int = DOC_COVER_EXTRACT_BUDGET,
 ) -> list[Episode]:
     """每份入库文档只留下和问句重叠的段落，预算按来源分。
 
@@ -2881,7 +2882,7 @@ def cover_document_excerpts(
     section_focus = [tok for tok in focus if title_df[tok] < title_floor]
     if not section_focus:
         section_focus = list(focus)
-    budget = char_budget if char_budget > 0 else PARALLEL_DOC_CHAR_BUDGET
+    budget = char_budget if char_budget > 0 else DOC_COVER_EXTRACT_BUDGET
     span = _query_month_span(query)
     built: list[tuple[str, str, list[_CoverLine]]] = []
     for key in order:
@@ -4638,7 +4639,7 @@ __all__ = [
     "cover_document_excerpts",
     "has_document_coverage_tokens",
     "merge_coverage_with_metric_hits",
-    "PARALLEL_DOC_CHAR_BUDGET",
+    "DOC_COVER_EXTRACT_BUDGET",
     "episode_source_key",
     "is_ingested_document_episode",
     "merge_document_sibling_episodes",

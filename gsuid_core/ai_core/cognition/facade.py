@@ -952,13 +952,16 @@ async def inject_memory_slice(
 ) -> str:
     """⑧ 每轮自动注入的**记忆+偏好切片**（与工具路径同一入口、同一 scope 纪律）。
 
-    刻意不走 :func:`render_cognition_block`：``to_prompt_text`` 的五个配额位
-    （偏好独立 0.10 / 事实 55%（temporal 降 30%）/ 类目 15% / 冲突 ~12% / 片段吃剩余）
+    刻意不走 :func:`render_cognition_block`：``to_prompt_text`` 的配额位
+    （偏好独立 ``preference_inject_budget_ratio`` / 事实 / 冲突 / 类目，片段吃剩余）
     与第三方隐私门（敏感事实仅当事人在场才注入）必须保留——统一成通用渲染会让偏好
     被事实挤掉，那正是「语义类型保留」不变量要防的事。
 
+    总帽只从 :func:`inject_memory_cap` 取：与 H05 注入同一条函数，工具路径不会另抬一档。
+
     全联邦（知识 / 落盘 / 产物）只在工具调用或问答预取时跑，不进每轮路径。
     """
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.config import memory_config
     from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
@@ -975,15 +978,7 @@ async def inject_memory_slice(
         bot_self_id=scope.bot_self_id,
         include_self=True,
     )
-    cap = int(memory_config.memory_inject_max_chars)
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        PARALLEL_DOC_CHAR_BUDGET,
-        wants_parallel_document_coverage,
-    )
-
-    # 逐份材料覆盖真的打出来了才放宽预算：按产出判定，不按问句措辞。
-    if ctx.covered or wants_parallel_document_coverage(query):
-        cap = max(cap, PARALLEL_DOC_CHAR_BUDGET)
+    cap = inject_memory_cap(query, covered=ctx.covered)
     memory_text = ctx.to_prompt_text(
         max_chars=cap,
         priority_speakers=priority_speakers or None,
