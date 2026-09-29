@@ -17,7 +17,7 @@ from gsuid_core.utils.path_safety import PathEscapeError, safe_join, confine_to_
 from gsuid_core.utils.secret_mask import looks_masked
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_admin, require_admin_header
-from gsuid_core.utils.backup.backup_core import backup_config, copy_and_rebase_paths
+from gsuid_core.utils.backup.backup_core import backup_config, backup_and_package
 
 from ._api_tags import BACKUP
 
@@ -80,7 +80,7 @@ async def create_backup(request: Request, _user: Dict[str, Any] = Depends(requir
         status: 0成功，1失败
         msg: 操作结果信息
     """
-    retcode = copy_and_rebase_paths(None, "NowFile")
+    retcode = await backup_and_package("NowFile")
     if retcode != 0:
         return {"status": 1, "msg": "备份创建失败"}
 

@@ -386,7 +386,7 @@ async def _write_record(
 
         if not isinstance(e, IntegrityError) and "UNIQUE" not in str(e).upper() and "unique" not in str(e).lower():
             if payload_path:
-                Path(payload_path).unlink(missing_ok=True)
+                await asyncio.to_thread(Path(payload_path).unlink, missing_ok=True)
             raise
         existing2 = await AIToolOutputRecord.get_by_hash(
             content_hash=chash,
@@ -395,7 +395,7 @@ async def _write_record(
             tool_name=tool_name or "",
         )
         if payload_path:
-            Path(payload_path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(payload_path).unlink, missing_ok=True)
         if existing2 is not None:
             fileos_metrics.inc_dedup()
             return _card_for_record(existing2, long_structured=long_structured)

@@ -8,6 +8,7 @@ Theme APIs
 """
 
 import json
+import asyncio
 from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 
@@ -135,6 +136,13 @@ def save_theme_config(config: Dict[str, Any]) -> bool:
         return True
     except Exception:
         return False
+
+
+def _write_preset_file(path: Path, config_dict: Dict[str, Any]) -> None:
+    """同步落盘预设 JSON；async 端点里用 asyncio.to_thread 调用。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
 
 def _clamp_config_dict(config_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -494,9 +502,7 @@ async def save_theme_preset(
         config_dict = _merge_defaults(current)
 
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "w", encoding="utf-8") as f:
-            json.dump(config_dict, f, indent=2, ensure_ascii=False)
+        await asyncio.to_thread(_write_preset_file, target, config_dict)
     except Exception as e:
         logger.exception(t("log.webconsole.theme_save_preset", e=e))
         return {"status": 1, "msg": f"保存失败: {e}"}

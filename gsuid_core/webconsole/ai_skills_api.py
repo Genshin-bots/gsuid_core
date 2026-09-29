@@ -227,8 +227,7 @@ async def get_ai_skill_markdown(
         }
 
     try:
-        with open(md_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = await asyncio.to_thread(md_path.read_text, "utf-8")
         return {
             "status": 0,
             "msg": "ok",

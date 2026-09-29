@@ -24,6 +24,7 @@ dependencies = [
     "jinja2<4.0.0,>=3.1.2",
     "colorama<1.0.0,>=0.4.6",
     "async-timeout>=4.0.3",
+    "typing-extensions>=4.9",
     "toml>=0.10.2",
     "bcrypt>=4.0.1,<5.0.0",
     "sqlmodel<0.0.31",
@@ -68,7 +69,9 @@ requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
 [dependency-groups]
-dev = ["ruff>=0.14.7", "pre-commit>=2.21.0", "pytest>=8.3.0"]
+# ruff==0.16.6 对齐 pre-commit；ASYNC240（pathlib）从 0.16 才有。
+# basedpyright 放进 dev，uv sync 之后才能跑交付闸。
+dev = ["ruff==0.16.6", "basedpyright==1.39.7", "pre-commit>=2.21.0", "pytest>=8.3.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -83,7 +86,9 @@ homepage = "https://github.com/Genshin-bots/gsuid-core"
 repository = "https://github.com/Genshin-bots/gsuid-core"
 
 [tool.uv]
-default-groups = []
+# dev 组是默认组：交付闸的 ruff / basedpyright / pytest 靠 uv sync 装齐。
+# 生产镜像与部署环境用 `uv sync --no-dev` 跳过（见 Dockerfile）。
+default-groups = ["dev"]
 
 [tool.pdm.resolution]
 respect-source-order = true

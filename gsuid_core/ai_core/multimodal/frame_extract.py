@@ -41,6 +41,11 @@ def _find_ffmpeg() -> str:
     return path
 
 
+def _sorted_frame_files(tmp_dir: Path) -> list[Path]:
+    """列出抽帧输出(排序)。glob 会遍历目录, 同步执行由调用方丢线程池。"""
+    return sorted(tmp_dir.glob("frame_*.jpg"))
+
+
 async def extract_frames_ffmpeg(
     video_data: bytes,
     video_format: str = "mp4",
@@ -98,7 +103,7 @@ async def extract_frames_ffmpeg(
                 )
             )
 
-        frame_files = sorted(tmp_dir.glob("frame_*.jpg"))
+        frame_files = await asyncio.to_thread(_sorted_frame_files, tmp_dir)
         if not frame_files:
             raise RuntimeError(t("🎬 [FrameExtract] ffmpeg 未输出任何帧(视频可能损坏或无视频流)"))
 

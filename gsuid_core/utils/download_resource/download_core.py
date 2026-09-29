@@ -17,6 +17,7 @@ from .download_file import download
 global_tag, global_url = "", ""
 NOW_SPEED_TEST = False
 _SPEED_TEST_DONE = False  # 标记是否已完成过一次测速（即使结果为空也不再重复）
+_SPEED_TEST_EVENT = asyncio.Event()  # 测速完成时唤醒所有等待方，替代轮询 sleep
 
 
 def _sync_check_url(tag: str, url: str):
@@ -72,16 +73,27 @@ async def find_fastest_url(urls: Dict[str, str]):
     return fastest_tag, fastest_url
 
 
-async def check_speed():
+async def check_speed() -> tuple[str, str]:
+    """测速一次并让并发调用方等到结果发布之后。
+
+    空结果也算测完。失败或取消不写缓存，等待方改抢下一轮，而不是拿走启动时的空地址。
+    """
     global global_tag, global_url, NOW_SPEED_TEST, _SPEED_TEST_DONE
 
-    # 已测速过（不管结果是否为空），直接返回缓存值，不再重复测速
-    if _SPEED_TEST_DONE:
-        return global_tag, global_url
+    while True:
+        if _SPEED_TEST_DONE:
+            return global_tag, global_url
 
-    # 第一个到达的协程负责测速
-    if not NOW_SPEED_TEST:
+        if NOW_SPEED_TEST:
+            await _SPEED_TEST_EVENT.wait()
+            if _SPEED_TEST_DONE:
+                return global_tag, global_url
+            # 领跑方失败或被取消时结果还没写上，清掉信号再抢下一轮。
+            _SPEED_TEST_EVENT.clear()
+            continue
+
         NOW_SPEED_TEST = True
+        _SPEED_TEST_EVENT.clear()
         logger.info(t("log.download.gscore_download_testing_speed"))
 
         URL_LIB = {
@@ -98,23 +110,19 @@ async def check_speed():
             "[Elysia]": "https://silverwing.elysia.beauty",
         }
 
-        TAG, BASE_URL = await find_fastest_url(URL_LIB)
-        global_tag, global_url = TAG, BASE_URL
-        _SPEED_TEST_DONE = True  # 无论结果如何，标记为已完成
-        NOW_SPEED_TEST = False
-
-        if TAG:
-            logger.info(t("log.download.tag_base_url", TAG=TAG, BASE_URL=BASE_URL))
-        else:
-            logger.warning(t("log.download.speed_test_available_resource_source_fail"))
-
-        return TAG, BASE_URL
-
-    # 其他协程等待测速完成
-    while NOW_SPEED_TEST:
-        await asyncio.sleep(0.5)
-
-    return global_tag, global_url
+        # 赋值完成后再开门闩。finally 仍要放行，否则等待方会卡在 Event 上。
+        try:
+            tag, base_url = await find_fastest_url(URL_LIB)
+            global_tag, global_url = tag, base_url
+            _SPEED_TEST_DONE = True
+            if tag:
+                logger.info(t("log.download.tag_base_url", TAG=tag, BASE_URL=base_url))
+            else:
+                logger.warning(t("log.download.speed_test_available_resource_source_fail"))
+            return tag, base_url
+        finally:
+            NOW_SPEED_TEST = False
+            _SPEED_TEST_EVENT.set()
 
 
 async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:

@@ -458,6 +458,11 @@ async def git_diff_commits(
     return [line.strip() for line in stdout.split("\n") if line.strip()]
 
 
+def _is_existing_dir(path: Path) -> bool:
+    """同步判断目录是否存在；调用点须用 asyncio.to_thread，避免阻塞事件循环。"""
+    return path.exists() and path.is_dir()
+
+
 async def git_is_valid_repo(repo_path: Path) -> bool:
     """
     检查路径是否是有效的 git 仓库。
@@ -468,7 +473,7 @@ async def git_is_valid_repo(repo_path: Path) -> bool:
     Returns:
         是否是有效的 git 仓库
     """
-    if not repo_path.exists() or not repo_path.is_dir():
+    if not await asyncio.to_thread(_is_existing_dir, repo_path):
         return False
 
     returncode, _, _ = await run_git(repo_path, "rev-parse", "--git-dir")

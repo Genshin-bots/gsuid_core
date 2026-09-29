@@ -24,6 +24,7 @@
   "log.core.gscore_help_image_start": "[早柚コア] [ヘルプ画像] を実行開始",
   "log.core.gscore_info_start": "早柚コア [情報] を実行開始",
   "log.core.gscore_path": "[早柚コア] パスをバックアップした！",
+  "log.core.gscore_path_fail": "[早柚コア] パスのバックアップに失敗した: {retcode}",
   "log.core.gscore_restart_start": "[早柚コア] [再起動] を実行開始",
   "log.core.gscore_shutdown_process_setting_start": "[GsCore] シャットダウン処理を開始、shutdown_event を設定しています...",
   "log.core.gscore_shutdown_start": "[早柚コア] [シャットダウン] を実行開始",

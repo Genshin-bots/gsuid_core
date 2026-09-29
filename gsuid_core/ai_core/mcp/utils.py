@@ -24,6 +24,7 @@ MCP 工具复用函数模块
 import os
 import re
 import base64
+import asyncio
 import tempfile
 from typing import Any, Optional
 
@@ -353,7 +354,7 @@ async def parse_binary_result(
     stripped = result_text.strip()
 
     # 情况1: 返回的是文件路径（存在且是文件）
-    if os.path.isfile(stripped):
+    if await asyncio.to_thread(os.path.isfile, stripped):
         async with aiofiles.open(stripped, "rb") as f:
             return await f.read()
 
@@ -477,7 +478,7 @@ async def prepare_source_for_mcp(
         return source
 
     # 已存在的文件路径直接返回
-    if os.path.exists(source):
+    if await asyncio.to_thread(os.path.exists, source):
         return source
 
     # DataURI 格式保存为临时文件

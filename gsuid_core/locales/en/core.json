@@ -24,6 +24,7 @@
   "log.core.gscore_help_image_start": "[GsCore] Starting execution [Help Image]",
   "log.core.gscore_info_start": "Starting execution GsCore [Info]",
   "log.core.gscore_path": "[GsCore] Path has been backed up!",
+  "log.core.gscore_path_fail": "[GsCore] Path backup failed: {retcode}",
   "log.core.gscore_restart_start": "[GsCore] Starting execution [Restart]",
   "log.core.gscore_shutdown_process_setting_start": "[GsCore] Starting shutdown process, setting shutdown_event...",
   "log.core.gscore_shutdown_start": "[GsCore] Starting execution [Shutdown]",

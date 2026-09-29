@@ -13,6 +13,7 @@
 import os
 import json
 import base64
+import asyncio
 
 import aiofiles
 
@@ -217,7 +218,7 @@ async def _parse_frames_result(result_text: str) -> list[bytes]:
     result = []
     for line in lines:
         path = line.strip()
-        if path and os.path.isfile(path):
+        if path and await asyncio.to_thread(os.path.isfile, path):
             async with aiofiles.open(path, "rb") as f:
                 result.append(await f.read())
 

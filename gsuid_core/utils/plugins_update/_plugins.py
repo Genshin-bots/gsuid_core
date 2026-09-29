@@ -219,46 +219,61 @@ async def check_plugin_exist(name: str):
                 return i
 
 
+def _remove_plugin_path(path: Path) -> tuple[bool, str]:
+    """同步删除插件目录 / 文件，返回 (是否为目录, 错误信息)。
+
+    rmtree + chmod 重试都是阻塞调用，调用方必须放进 asyncio.to_thread（见 §4.2）。
+    """
+    name = path.name
+    was_dir = path.is_dir()
+    if not was_dir:
+        path.unlink()
+        return False, ""
+    locked_msg = f"⚠️ 插件目录 {name} 部分文件被锁定,请手动删除或重启后重试!"
+
+    # Windows下处理被锁定的文件
+    def onerror(func, path, exc):
+        """处理删除文件时的权限错误"""
+        import stat
+
+        # 检查文件是否只读
+        if not os.access(path, os.W_OK):
+            # 尝试移除只读属性
+            try:
+                os.chmod(path, stat.S_IWUSR)
+                func(path)
+            except Exception:
+                pass  # 忽略二次错误
+        else:
+            raise exc
+
+    try:
+        shutil.rmtree(path)
+    except PermissionError:
+        try:
+            shutil.rmtree(path, onerror=onerror)
+            if path.exists():
+                _try_manual_delete(path)
+        except Exception:
+            return True, locked_msg
+    if path.exists():
+        return True, locked_msg
+    return True, ""
+
+
 async def uninstall_plugin(path: Path):
-    if not path.exists():
-        return f"❌ 插件 {path.name} 不存在!"
+    name = path.name
+    if not await asyncio.to_thread(path.exists):
+        return f"❌ 插件 {name} 不存在!"
 
     from gsuid_core.server import read_meta_plugin_info
     from gsuid_core.meta_plugins import unregister_meta_plugin
 
-    meta_info = read_meta_plugin_info(path)
-    was_dir = path.is_dir()
-    name = path.name
-    if was_dir:
-        # Windows下处理被锁定的文件
-        def onerror(func, path, exc):
-            """处理删除文件时的权限错误"""
-            import stat
-
-            # 检查文件是否只读
-            if not os.access(path, os.W_OK):
-                # 尝试移除只读属性
-                try:
-                    os.chmod(path, stat.S_IWUSR)
-                    func(path)
-                except Exception:
-                    pass  # 忽略二次错误
-            else:
-                raise exc
-
-        try:
-            shutil.rmtree(path)
-        except PermissionError:
-            try:
-                shutil.rmtree(path, onerror=onerror)
-                if path.exists():
-                    _try_manual_delete(path)
-            except Exception:
-                return f"⚠️ 插件目录 {name} 部分文件被锁定,请手动删除或重启后重试!"
-        if path.exists():
-            return f"⚠️ 插件目录 {name} 部分文件被锁定,请手动删除或重启后重试!"
-    else:
-        path.unlink()
+    # meta 信息必须在删除前读完
+    meta_info = await asyncio.to_thread(read_meta_plugin_info, path)
+    was_dir, err = await asyncio.to_thread(_remove_plugin_path, path)
+    if err:
+        return err
 
     warn = ""
     if meta_info is not None:
@@ -706,7 +721,8 @@ async def update_from_git_async(
         repo_path = CORE_PATH
         plugin_name = "早柚核心"
         if is_install_dep:
-            run_install(CORE_PATH)
+            # uv sync / pip install 是长耗时子进程，必须挪出事件循环，否则整轮 core 无响应
+            await asyncio.to_thread(run_install, CORE_PATH)
     elif isinstance(repo_like, Path):
         repo_path = repo_like
         plugin_name = repo_like.name

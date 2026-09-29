@@ -8,14 +8,36 @@ Provides RESTful APIs for the React frontend
 - 本文件作为聚合文件，统一导入并注册所有路由
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional, TypedDict
 
 from fastapi import Query, Header, Depends, HTTPException
 from pydantic import BaseModel
 
 from gsuid_core.webconsole.session_store import SessionRecord, session_store
 
-TEMP_DICT: Dict[str, Dict[str, Any]] = {}
+
+class DailyCountCache(TypedDict):
+    c_data: dict[str, int]
+    g_data: dict[str, dict[str, int]]
+    u_data: dict[str, dict[str, int]]
+
+
+TEMP_DICT: dict[str, DailyCountCache] = {}
+
+# TEMP_DICT 跨请求共享且只增不减，长期运行会无界增长；超限后按插入序淘汰最旧。
+TEMP_DICT_MAX_ENTRIES = 64
+
+
+def set_temp_dict(key: str, value: DailyCountCache) -> list[str]:
+    """写入 TEMP_DICT 并维持容量上限。返回被挤掉的 key，调用方同步丢掉轮次。"""
+    TEMP_DICT.pop(key, None)
+    TEMP_DICT[key] = value
+    evicted: list[str] = []
+    while len(TEMP_DICT) > TEMP_DICT_MAX_ENTRIES:
+        oldest = next(iter(TEMP_DICT))
+        del TEMP_DICT[oldest]
+        evicted.append(oldest)
+    return evicted
 
 
 def verify_token(authorization: str | None = None, token: str | None = None) -> Optional[SessionRecord]:

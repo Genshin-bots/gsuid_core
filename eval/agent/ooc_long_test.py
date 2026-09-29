@@ -21,7 +21,7 @@ import sys
 import json
 import time
 import asyncio
-from typing import List
+from typing import Dict, List
 from dataclasses import field, dataclass
 
 if isinstance(sys.stdout, io.TextIOWrapper):
@@ -275,6 +275,12 @@ def build_conversation_script() -> List[dict]:
     return turns
 
 
+def _dump_report(path: str, payload: Dict[str, object]) -> None:
+    """同步写结果 JSON；async 测试里用 to_thread 调用，避免阻塞事件循环。"""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
 async def run_long_session_test():
     """执行完整长对话测试。"""
     import httpx
@@ -491,34 +497,32 @@ async def run_long_session_test():
 
     # 保存详细结果
     output_path = "_ooc_test_results.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "user_id": USER_ID,
-                "total_turns": total_turns,
-                "turns": [
-                    {
-                        "turn": t.turn,
-                        "phase": t.phase,
-                        "reply_len": t.reply_len,
-                        "tone_density": round(t.tone_density, 4),
-                        "ooc_density": round(t.ooc_density, 4),
-                        "has_structured": t.has_structured,
-                        "has_raw_leak": t.has_raw_leak,
-                        "raw_had_fence": t.raw_had_fence,
-                        "latency_s": round(t.latency_s, 2),
-                        "reply_preview": t.reply[:100],
-                    }
-                    for t in report.turns
-                ],
-                "phase_summaries": report.phase_summaries,
-                "ooc_detected": ooc_detected,
-                "leak_count": len(leak_turns),
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
+    await asyncio.to_thread(
+        _dump_report,
+        output_path,
+        {
+            "user_id": USER_ID,
+            "total_turns": total_turns,
+            "turns": [
+                {
+                    "turn": t.turn,
+                    "phase": t.phase,
+                    "reply_len": t.reply_len,
+                    "tone_density": round(t.tone_density, 4),
+                    "ooc_density": round(t.ooc_density, 4),
+                    "has_structured": t.has_structured,
+                    "has_raw_leak": t.has_raw_leak,
+                    "raw_had_fence": t.raw_had_fence,
+                    "latency_s": round(t.latency_s, 2),
+                    "reply_preview": t.reply[:100],
+                }
+                for t in report.turns
+            ],
+            "phase_summaries": report.phase_summaries,
+            "ooc_detected": ooc_detected,
+            "leak_count": len(leak_turns),
+        },
+    )
     print(f"\n  详细结果已保存: {output_path}")
     return not ooc_detected
 

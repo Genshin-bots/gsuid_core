@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import asyncio
 import argparse
 from typing import TypedDict
 
@@ -64,6 +65,21 @@ def _hit_rate(gold_ids: list[str], have: list[str]) -> float:
         return 0.0
     s = set(have)
     return sum(1 for g in gold_ids if g and g in s) / len(gold_ids)
+
+
+def _dump_json_file(path: str, payload: object) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _read_text_file(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _write_text_file(path: str, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 async def _episodes(client: httpx.AsyncClient, base: str, user_id: str) -> list[dict[str, str]]:
@@ -165,8 +181,7 @@ async def run_metrics(scale: str, base_url: str, timeout: float) -> int:
                     flush=True,
                 )
     gold_path = os.path.join(dest_dir, f"eo_gold_turns_{spec.key}.json")
-    with open(gold_path, "w", encoding="utf-8") as f:
-        json.dump(gold_map, f, ensure_ascii=False, indent=2)
+    await asyncio.to_thread(_dump_json_file, gold_path, gold_map)
     n = len(rows_out)
     mapped_rows = [r for r in rows_out if r["n_mapped"] > 0]
     mn = len(mapped_rows)
@@ -198,8 +213,8 @@ async def run_metrics(scale: str, base_url: str, timeout: float) -> int:
 
     struct_p = gold_struct_path(dest_dir, spec.key)
     report.extend(["", "## 非单调 gold（墙钟序可能 ≠ 金标序）", ""])
-    if os.path.isfile(struct_p):
-        raw_g = json.loads(open(struct_p, encoding="utf-8").read())
+    if await asyncio.to_thread(os.path.isfile, struct_p):
+        raw_g = json.loads(await asyncio.to_thread(_read_text_file, struct_p))
         report.append("| conv | q | ids | sessions |")
         report.append("|------|---|-----|----------|")
         n_nm = 0
@@ -218,11 +233,9 @@ async def run_metrics(scale: str, base_url: str, timeout: float) -> int:
         report.append("")
         report.append(f"非单调 {n_nm} 题。代码仍按 (valid_at, turn_index) 排。")
     out_md = os.path.join(dest_dir, "eo_stage_metrics.md")
-    with open(out_md, "w", encoding="utf-8") as f:
-        f.write("\n".join(report) + "\n")
+    await asyncio.to_thread(_write_text_file, out_md, "\n".join(report) + "\n")
     dump = os.path.join(dest_dir, "eo_stage_metrics.json")
-    with open(dump, "w", encoding="utf-8") as f:
-        json.dump(rows_out, f, ensure_ascii=False, indent=2)
+    await asyncio.to_thread(_dump_json_file, dump, rows_out)
     print(f"[metrics] pool={pool_m:.3f} inject={inj_m:.3f} skeleton={skel_m:.3f} -> {out_md}", flush=True)
     return 0
 
@@ -237,8 +250,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    import asyncio
-
     return asyncio.run(run_metrics(str(args.scale), str(args.base_url).rstrip("/"), float(args.timeout)))
 
 

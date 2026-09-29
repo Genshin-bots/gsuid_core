@@ -676,7 +676,7 @@ async def cmd_probe(
     """
     existing_ids: Set[str] = set()
     existing_results: List[Dict[str, Any]] = []
-    if resume and os.path.isfile(answers_file):
+    if resume and await asyncio.to_thread(os.path.isfile, answers_file):
         try:
             existing_results = load_json(answers_file)
             if not isinstance(existing_results, list):
@@ -836,7 +836,7 @@ async def cmd_judge(
 
     existing_ids: Set[str] = set()
     existing_results: List[Dict[str, Any]] = []
-    if resume and os.path.isfile(judge_file):
+    if resume and await asyncio.to_thread(os.path.isfile, judge_file):
         try:
             existing_results = load_json(judge_file)
             if not isinstance(existing_results, list):

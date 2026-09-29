@@ -591,7 +591,7 @@ async def cmd_judge_conv(
     concurrency: int = 7,
 ) -> int:
     answers = _answers_path(spec, conv)
-    if not os.path.isfile(answers):
+    if not await asyncio.to_thread(os.path.isfile, answers):
         print(f"[judge] 缺答卷 {answers}", flush=True)
         return 2
     await cmd_judge(

@@ -1,4 +1,5 @@
 {
+  "log.backup.already_running": "バックアップ {final_backup_dir} を書き込み中のため、今回はスキップします。",
   "log.backup.backup_core_path_ok": "[バックアップコア] パス {path} のクリアに成功しました！",
   "log.backup.backup_ok": "[バックアップコア] {backup} のバックアップに成功しました",
   "log.backup.backup_path_skip": "バックアップディレクトリが存在しない: {backup_path}、クリーンアップをスキップ。",

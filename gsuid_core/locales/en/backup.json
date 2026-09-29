@@ -1,4 +1,5 @@
 {
+  "log.backup.already_running": "A backup is already writing {final_backup_dir}; skipping this one.",
   "log.backup.backup_core_path_ok": "[Backup Core] Successfully cleared path {path}!",
   "log.backup.backup_ok": "[Backup Core] Successfully backed up {backup}",
   "log.backup.backup_path_skip": "Backup directory does not exist: {backup_path}; skipping cleanup.",

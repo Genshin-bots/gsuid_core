@@ -299,6 +299,11 @@ def _write_run_report(plan_ids: list[int]) -> None:
     print(f"[report] {passed_all}/{total_all} ({pct}) -> {path}", flush=True)
 
 
+def _answer_count(path: str) -> int:
+    """答卷条数；文件不存在按 0 算（探针跑完才落盘）。"""
+    return len(load_json(path)) if os.path.isfile(path) else 0
+
+
 async def cmd_ingest(
     base_url: str,
     conv: int,
@@ -431,7 +436,7 @@ async def cmd_domain(base_url: str, conv: int, timeout: float, cat: str) -> int:
         print(f"[domain] 无类别 {cat}")
         return 2
     answers = _answers_path(conv)
-    before = len(load_json(answers)) if os.path.isfile(answers) else 0
+    before = await asyncio.to_thread(_answer_count, answers)
     await cmd_probe(
         base_url=base_url,
         user_id=user_id,
@@ -440,7 +445,7 @@ async def cmd_domain(base_url: str, conv: int, timeout: float, cat: str) -> int:
         timeout=timeout,
         resume=True,
     )
-    after = len(load_json(answers)) if os.path.isfile(answers) else 0
+    after = await asyncio.to_thread(_answer_count, answers)
     added = max(after - before, 0)
     if added and not _answers_sane(answers, added):
         return 2

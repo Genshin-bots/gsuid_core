@@ -14,7 +14,9 @@ UUID 主键，不复用 BaseIDModel 的自增 int 主键，因此通过下方 ``
 """
 
 import uuid
+import asyncio
 from typing import List, Optional
+from pathlib import Path
 from datetime import datetime
 
 from sqlmodel import Field, SQLModel, col, select, update
@@ -47,6 +49,20 @@ KANBAN_COLUMNS = ("target", "progress", "Done", "Blocked", "failed")
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+# 同步删落盘 payload 并尝试清空目录壳：async 侧只能经 asyncio.to_thread 调它
+def _purge_artifact_payload(payload_path: str) -> None:
+    payload_file = Path(payload_path)
+    if payload_file.exists():
+        payload_file.unlink(missing_ok=True)
+    # 仅清空目录壳（workspace 内还有其它代理产物 / 未过期 artifact 时不删）
+    parent = payload_file.parent
+    try:
+        if parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
 
 
 class _PlanCRUD:
@@ -390,8 +406,6 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
         Returns:
             实际删除的 artifact 行数（不含静默忽略的落盘清理错误）。
         """
-        from pathlib import Path
-
         cut = now or datetime.now()
         stmt = select(cls).where(col(cls.expires_at).is_not(None)).where(col(cls.expires_at) < cut)
         result = await session.execute(stmt)
@@ -410,16 +424,7 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
             if art.payload_path in seen_paths:
                 continue
             seen_paths.add(art.payload_path)
-            payload_file = Path(art.payload_path)
-            if payload_file.exists():
-                payload_file.unlink(missing_ok=True)
-            # 仅清空目录壳（workspace 内还有其它代理产物 / 未过期 artifact 时不删）
-            parent = payload_file.parent
-            try:
-                if parent.exists() and not any(parent.iterdir()):
-                    parent.rmdir()
-            except OSError:
-                pass
+            await asyncio.to_thread(_purge_artifact_payload, art.payload_path)
 
         # 批量 DELETE
         from sqlmodel import delete as sql_delete

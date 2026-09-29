@@ -155,6 +155,21 @@ async def write_file_content(
         return f"错误：写入文件失败: {str(e)}"
 
 
+def _workspace_file_size(path: Path, workspace: Path) -> Optional[int]:
+    """存在 / 是普通文件 / 在 workspace 内时返回字节数，否则 None。
+
+    同步执行（stat 会打盘），调用方须 ``asyncio.to_thread`` 丢线程池。
+    """
+    if not path.exists() or not path.is_file():
+        return None
+    # 确保路径在 workspace 内
+    try:
+        path.resolve().relative_to(workspace.resolve())
+    except ValueError:
+        return None
+    return path.stat().st_size
+
+
 async def _register_single_workspace_file(path: Path) -> None:
     """把单个 workspace 内文件登记为 workspace_file artifact（如未登记）。
 
@@ -169,14 +184,9 @@ async def _register_single_workspace_file(path: Path) -> None:
         plan_ctx = get_plan_context()
         if plan_ctx is None or plan_ctx.artifact_workspace is None or not plan_ctx.task_id:
             return
-        if not path.exists() or not path.is_file():
+        size = await asyncio.to_thread(_workspace_file_size, path, plan_ctx.artifact_workspace)
+        if size is None:
             return
-        # 确保路径在 workspace 内
-        try:
-            path.resolve().relative_to(plan_ctx.artifact_workspace.resolve())
-        except ValueError:
-            return
-        size = path.stat().st_size
         await register_workspace_artifacts(
             root_task_id=plan_ctx.root_task_id,
             task_id=plan_ctx.task_id,
@@ -329,7 +339,8 @@ async def execute_file(
                 # 仅当 exec_cwd 就是当前任务的 workspace 时才扫描——避免把 FILE_PATH
                 # 沙盒的产物错登记到任务 workspace（虽然两者通常一致）
                 if str(exec_cwd_path.resolve()) == str(ws.resolve()):
-                    before_snapshot = snapshot_workspace(ws)
+                    # rglob 全量遍历，扔线程池避免阻塞事件循环
+                    before_snapshot = await asyncio.to_thread(snapshot_workspace, ws)
         except ImportError:
             before_snapshot = None
 
@@ -350,7 +361,9 @@ async def execute_file(
 
                 plan_ctx = get_plan_context()
                 if plan_ctx is not None and plan_ctx.artifact_workspace is not None and plan_ctx.task_id:
-                    changes = scan_workspace_changes(plan_ctx.artifact_workspace, before_snapshot)
+                    changes = await asyncio.to_thread(
+                        scan_workspace_changes, plan_ctx.artifact_workspace, before_snapshot
+                    )
                     if changes:
                         await register_workspace_artifacts(
                             root_task_id=plan_ctx.root_task_id,

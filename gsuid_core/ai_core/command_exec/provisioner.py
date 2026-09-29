@@ -21,6 +21,7 @@ from pathlib import Path
 from dataclasses import field, dataclass
 
 import httpx
+import aiofiles
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -190,9 +191,10 @@ async def _download(url: str, dest: Path) -> str:
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
-            with open(dest, "wb") as f:
+            # 分块流式落盘：整包读进内存再写会吃满 event loop 线程的堆
+            async with aiofiles.open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(65536):
-                    f.write(chunk)
+                    await f.write(chunk)
                     sha.update(chunk)
     return sha.hexdigest()
 

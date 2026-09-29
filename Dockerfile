@@ -26,7 +26,7 @@ WORKDIR /gsuid_core
 COPY pyproject.toml README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --index ${GSCORE_PYTHON_INDEX}
+    uv sync --no-dev --index ${GSCORE_PYTHON_INDEX}
 
 COPY . .
 

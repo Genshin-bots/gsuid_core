@@ -7,7 +7,8 @@ AI Image RAG APIs
 
 import uuid
 import shutil
-from typing import Any, Dict, List, Optional
+import asyncio
+from typing import Any, Dict, List, BinaryIO, Optional
 from pathlib import Path
 
 from fastapi import File, Form, Depends, UploadFile
@@ -28,6 +29,12 @@ from gsuid_core.ai_core.rag.image_rag import (
 )
 
 from ._api_tags import IMAGE_RAG
+
+
+def _dump_upload(src: BinaryIO, dest: Path) -> None:
+    """同步拷贝上传流到磁盘；调用点须用 asyncio.to_thread，避免阻塞事件循环。"""
+    with dest.open("wb") as buffer:
+        shutil.copyfileobj(src, buffer)
 
 
 def _resolve_image_plugin_args(
@@ -282,8 +289,7 @@ async def upload_image(
         file_path = safe_join(local_embedding_images, unique_filename)
 
         # 保存文件
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        await asyncio.to_thread(_dump_upload, file.file, file_path)
 
         # 返回相对路径
         relative_path = str(file_path.relative_to(local_embedding_images.parent.parent))

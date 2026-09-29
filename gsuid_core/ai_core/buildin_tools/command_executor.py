@@ -441,7 +441,8 @@ async def execute_shell_command(
         try:
             from gsuid_core.ai_core.planning.workspace import snapshot_workspace
 
-            pre_snapshot = snapshot_workspace(work_path)
+            # rglob 全量遍历，扔线程池避免阻塞事件循环
+            pre_snapshot = await asyncio.to_thread(snapshot_workspace, work_path)
         except ImportError:
             pre_snapshot = None
 
@@ -573,7 +574,7 @@ def _resolve_workspace_cwd() -> Optional[Path]:
         return None
 
 
-async def _register_workspace_changes(workspace: Path, before_snapshot: dict) -> None:
+async def _register_workspace_changes(workspace: Path, before_snapshot: dict[str, float]) -> None:
     """命令执行后扫描 workspace 变更，把新增 / 修改的文件登记为 workspace_file artifact。"""
     try:
         from gsuid_core.ai_core.planning.runtime import get_plan_context
@@ -585,7 +586,7 @@ async def _register_workspace_changes(workspace: Path, before_snapshot: dict) ->
         plan_ctx = get_plan_context()
         if plan_ctx is None or not plan_ctx.root_task_id:
             return
-        changes = scan_workspace_changes(workspace, before_snapshot)
+        changes = await asyncio.to_thread(scan_workspace_changes, workspace, before_snapshot)
         if not changes:
             return
         await register_workspace_artifacts(

@@ -1,9 +1,30 @@
 import json
-from typing import Optional
+import asyncio
+from typing import TypedDict
+from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
+
+
+class FrontendVersionFile(TypedDict):
+    version: str
+
+
+def _read_version_json(path: Path) -> FrontendVersionFile | None:
+    """解析失败或没有 version 字符串时按无版本处理。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded: object = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(loaded, dict) or "version" not in loaded:
+        return None
+    version = loaded["version"]
+    if not isinstance(version, str):
+        return None
+    return {"version": version}
 
 
 def parse_version(version_str: str) -> tuple[int, ...]:
@@ -14,7 +35,7 @@ def parse_version(version_str: str) -> tuple[int, ...]:
         return (0, 0, 0)
 
 
-def compare_versions(v1: Optional[dict], v2: Optional[dict]) -> int:
+def compare_versions(v1: FrontendVersionFile | None, v2: FrontendVersionFile | None) -> int:
     """
     比较两个version.json的版本
     返回: 1表示v1更新, -1表示v2更新, 0表示相同或无效
@@ -26,11 +47,8 @@ def compare_versions(v1: Optional[dict], v2: Optional[dict]) -> int:
     if v2 is None:
         return 1
 
-    v1_str = v1.get("version", "0.0.0")
-    v2_str = v2.get("version", "0.0.0")
-
-    v1_tuple = parse_version(v1_str)
-    v2_tuple = parse_version(v2_str)
+    v1_tuple = parse_version(v1["version"])
+    v2_tuple = parse_version(v2["version"])
 
     # 补齐长度
     max_len = max(len(v1_tuple), len(v2_tuple))
@@ -148,27 +166,21 @@ async def setup_frontend_b() -> None:
     dvj = DIST_PATH / "version.json"
     devj = DIST_EX_PATH / "version.json"
 
-    dvj_version: Optional[dict] = None
-    devj_version: Optional[dict] = None
+    dvj_version: FrontendVersionFile | None = None
+    devj_version: FrontendVersionFile | None = None
 
-    def get_version_str(v: Optional[dict]) -> str:
+    def get_version_str(v: FrontendVersionFile | None) -> str:
         """安全获取版本字符串"""
-        return v.get("version", "unknown") if v else "unknown"
+        if v is None:
+            return "unknown"
+        return v["version"]
 
     # 读取 version.json 文件
     if dvj.exists():
-        try:
-            with open(dvj, "r", encoding="utf-8") as f:
-                dvj_version = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+        dvj_version = await asyncio.to_thread(_read_version_json, dvj)
 
     if devj.exists():
-        try:
-            with open(devj, "r", encoding="utf-8") as f:
-                devj_version = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+        devj_version = await asyncio.to_thread(_read_version_json, devj)
 
     # 根据版本号比较选择使用哪个dist目录
     dist_ex_exists = DIST_EX_PATH.exists() and list(DIST_EX_PATH.iterdir())

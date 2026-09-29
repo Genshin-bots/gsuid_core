@@ -1,4 +1,5 @@
 import json
+import asyncio
 import datetime
 from typing import Dict, Union, Optional
 from pathlib import Path
@@ -45,16 +46,27 @@ async def download(
         logger.warning(t("log.download.tag_name_download_fail", tag=tag, name=name))
 
 
+def _local_cache_mtime(path: Path) -> float | None:
+    """取本地缓存 mtime；文件不存在返回 None。
+
+    原来在 async 里 stat 了两次（判存在 + 取 mtime），会留竞态窗口，
+    且两次文件系统调用都卡事件循环，故合并成一次同步调用（见 §4.2）。
+    """
+    if not path.exists():
+        return None
+    return path.stat().st_mtime
+
+
 async def get_data_from_url(url: str, path: Path, expire_sec: Optional[float] = None) -> Dict:
     time_difference = 10
-    if path.exists() and expire_sec is not None:
-        modified_time = path.stat().st_mtime
-        modified_datetime = datetime.datetime.fromtimestamp(modified_time)
+    mtime = await asyncio.to_thread(_local_cache_mtime, path)
+    if mtime is not None and expire_sec is not None:
+        modified_datetime = datetime.datetime.fromtimestamp(mtime)
         current_datetime = datetime.datetime.now()
 
         time_difference = (current_datetime - modified_datetime).total_seconds()
 
-    if (expire_sec is not None and time_difference >= expire_sec) or not path.exists():
+    if (expire_sec is not None and time_difference >= expire_sec) or mtime is None:
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
             data = response.json()

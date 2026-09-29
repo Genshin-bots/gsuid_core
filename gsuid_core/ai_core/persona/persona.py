@@ -142,8 +142,8 @@ class Persona:
         """
         self.dir_path.mkdir(parents=True, exist_ok=True)
 
-        with open(self._files.avatar_path, "wb") as f:
-            f.write(image_data)
+        async with aiofiles.open(str(self._files.avatar_path), "wb") as f:
+            await f.write(image_data)
 
         return str(self._files.avatar_path.absolute())
 
@@ -159,8 +159,8 @@ class Persona:
         """
         self.dir_path.mkdir(parents=True, exist_ok=True)
 
-        with open(self._files.image_path, "wb") as f:
-            f.write(image_data)
+        async with aiofiles.open(str(self._files.image_path), "wb") as f:
+            await f.write(image_data)
 
         return str(self._files.image_path.absolute())
 
@@ -182,8 +182,8 @@ class Persona:
             extension = f".{extension}"
 
         audio_path = self._files.persona_dir / f"audio{extension}"
-        with open(audio_path, "wb") as f:
-            f.write(audio_data)
+        async with aiofiles.open(str(audio_path), "wb") as f:
+            await f.write(audio_data)
 
         return str(audio_path.absolute())
 

@@ -8,8 +8,9 @@ Meme Management APIs
 
 import io
 import json
+import asyncio
 import zipfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -960,6 +961,35 @@ def _record_to_export_dict(record: AiMemeRecord) -> Dict[str, Any]:
     }
 
 
+def _build_meme_zip(records: Sequence[AiMemeRecord], base_path: Path) -> io.BytesIO:
+    """把表情包记录压成 .meme(ZIP) 包写入内存缓冲（同步，供 ``asyncio.to_thread`` 调用）。"""
+    from gsuid_core.utils.path_safety import PathEscapeError, safe_join
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        manifest = {
+            "version": MEME_FORMAT_VERSION,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "total_count": len(records),
+        }
+        zf.writestr(MEME_MANIFEST_FILE, json.dumps(manifest, ensure_ascii=False, indent=2))
+
+        metadata = [_record_to_export_dict(r) for r in records]
+        zf.writestr(MEME_METADATA_FILE, json.dumps(metadata, ensure_ascii=False, indent=2))
+
+        for record in records:
+            try:
+                file_path = safe_join(base_path, record.file_path)
+            except PathEscapeError:
+                continue
+            if file_path.exists():
+                # ZIP 内路径: files/{meme_id}.{ext}
+                file_name = Path(record.file_path).name
+                zf.writestr(f"{MEME_FILES_DIR}/{file_name}", file_path.read_bytes())
+
+    return buf
+
+
 @app.post("/api/meme/export", summary="批量导出表情包（.meme 格式）", tags=MEME)
 async def export_memes(
     req: MemeBatchExportRequest,
@@ -997,37 +1027,9 @@ async def export_memes(
                 status_code=400,
             )
 
-        # ── 构建 ZIP 到内存 ──
-        buf = io.BytesIO()
+        # ── 构建 ZIP 到内存（压缩是 CPU 密集阻塞，丢线程池） ──
         base_path = get_memes_base_path()
-
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            # manifest.json
-            manifest = {
-                "version": MEME_FORMAT_VERSION,
-                "exported_at": datetime.now(timezone.utc).isoformat(),
-                "total_count": len(records),
-            }
-            zf.writestr(MEME_MANIFEST_FILE, json.dumps(manifest, ensure_ascii=False, indent=2))
-
-            # metadata.json
-            metadata = [_record_to_export_dict(r) for r in records]
-            zf.writestr(MEME_METADATA_FILE, json.dumps(metadata, ensure_ascii=False, indent=2))
-
-            # files/ - 写入源文件
-            from gsuid_core.utils.path_safety import PathEscapeError, safe_join
-
-            for record in records:
-                try:
-                    file_path = safe_join(base_path, record.file_path)
-                except PathEscapeError:
-                    continue
-                if file_path.exists():
-                    file_data = file_path.read_bytes()
-                    # ZIP 内路径: files/{meme_id}.{ext}
-                    file_name = Path(record.file_path).name
-                    zf.writestr(f"{MEME_FILES_DIR}/{file_name}", file_data)
-
+        buf = await asyncio.to_thread(_build_meme_zip, records, base_path)
         buf.seek(0)
 
         # 生成文件名

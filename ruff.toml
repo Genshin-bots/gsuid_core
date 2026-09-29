@@ -1,5 +1,6 @@
 line-length = 120
-target-version = "py310"
+# 与 pyproject requires-python / pyrightconfig 保持一致：3.11 起有 asyncio.timeout、typing.Self。
+target-version = "py311"
 exclude = [
     ".git",
     ".venv",
@@ -11,8 +12,13 @@ exclude = [
 ]
 
 [lint]
-select = ["E", "F", "I", "W"]
-ignore = []
+# ASYNC：全异步项目里禁止在 async 函数中直接做阻塞 I/O / sleep 忙等。
+# 业务阻塞调用一律 `asyncio.to_thread(...)`（见 AGENTS.md §4.2）。
+select = ["E", "F", "I", "W", "ASYNC"]
+# ASYNC109 只按「函数签名里有 timeout 参数」就报，不判断该超时是否真的生效。
+# 仓库里 timeout 多是透传给 httpx/aiohttp 的客户端参数，或本身就是对外的等待 API
+# （如 Bot.wait_for_key），由调用方掌握截止时间才是正确语义 —— 不改。
+ignore = ["ASYNC109"]
 
 [lint.isort]
 force-sort-within-sections = false

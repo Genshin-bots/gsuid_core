@@ -9,6 +9,7 @@
 
 import os
 import shutil
+import asyncio
 import zipfile
 from typing import List, Optional
 from pathlib import Path
@@ -185,6 +186,28 @@ async def copy_file(
         return f"错误：文件复制失败: {str(e)}"
 
 
+def _write_zip(safe_zip: Path, resolved_sources: List[Path]) -> int:
+    """把若干文件/目录压进 ``safe_zip``，返回写入的文件数（同步，供线程池调用）。"""
+    safe_zip.parent.mkdir(parents=True, exist_ok=True)
+
+    file_count = 0
+    with zipfile.ZipFile(str(safe_zip), "w", zipfile.ZIP_DEFLATED) as zf:
+        for src in resolved_sources:
+            if src.is_file():
+                # 单个文件：以文件名作为 zip 内路径
+                zf.write(str(src), src.name)
+                file_count += 1
+            elif src.is_dir():
+                # 目录：递归添加，保持相对结构
+                for root, _dirs, files in os.walk(str(src)):
+                    for fname in files:
+                        file_path = Path(root) / fname
+                        arcname = file_path.relative_to(src.parent)
+                        zf.write(str(file_path), str(arcname))
+                        file_count += 1
+    return file_count
+
+
 @ai_tools(category="default", capability_domain="文件")
 async def pack_to_zip(
     ctx: RunContext[ToolContext],
@@ -238,24 +261,8 @@ async def pack_to_zip(
         resolved_sources.append(sp)
 
     try:
-        # 确保目标父目录存在
-        safe_zip.parent.mkdir(parents=True, exist_ok=True)
-
-        file_count = 0
-        with zipfile.ZipFile(str(safe_zip), "w", zipfile.ZIP_DEFLATED) as zf:
-            for src in resolved_sources:
-                if src.is_file():
-                    # 单个文件：以文件名作为 zip 内路径
-                    zf.write(str(src), src.name)
-                    file_count += 1
-                elif src.is_dir():
-                    # 目录：递归添加，保持相对结构
-                    for root, dirs, files in os.walk(str(src)):
-                        for fname in files:
-                            file_path = Path(root) / fname
-                            arcname = file_path.relative_to(src.parent)
-                            zf.write(str(file_path), str(arcname))
-                            file_count += 1
+        # 压缩是 CPU 密集阻塞 I/O，丢线程池
+        file_count = await asyncio.to_thread(_write_zip, safe_zip, resolved_sources)
 
         zip_size = safe_zip.stat().st_size
         logger.info(

@@ -5,6 +5,7 @@ Assets APIs
 """
 
 import base64
+import asyncio
 from typing import Any, Dict, Optional
 from pathlib import Path
 
@@ -74,8 +75,7 @@ async def upload_asset(
         file_path = safe_join(save_dir, filename)
 
         # 保存文件（直接覆盖）
-        with open(file_path, "wb") as f:
-            f.write(image_data)
+        await asyncio.to_thread(file_path.write_bytes, image_data)
 
         abs_path = str(file_path)
 

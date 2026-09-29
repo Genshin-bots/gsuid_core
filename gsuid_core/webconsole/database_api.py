@@ -5,6 +5,7 @@ Database APIs
 
 import re
 import base64
+import asyncio
 from typing import Any, Dict
 from urllib.parse import quote
 
@@ -68,9 +69,8 @@ async def get_database_plugins(request: Request, _user: Dict[str, Any] = Depends
                 if plugin_dir.exists() and plugin_dir.is_dir():
                     icon_path = plugin_dir / "ICON.png"
                     if icon_path.exists() and icon_path.is_file():
-                        with open(icon_path, "rb") as f:
-                            icon_data = f.read()
-                            icon_base64 = f"data:image/png;base64,{base64.b64encode(icon_data).decode('utf-8')}"
+                        icon_data = await asyncio.to_thread(icon_path.read_bytes)
+                        icon_base64 = f"data:image/png;base64,{base64.b64encode(icon_data).decode('utf-8')}"
                         break
 
             plugin.icon = icon_base64

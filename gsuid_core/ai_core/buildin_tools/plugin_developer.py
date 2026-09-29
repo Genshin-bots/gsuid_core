@@ -26,8 +26,10 @@
 """
 
 import shutil
+import asyncio
+import functools
 import py_compile
-from typing import Dict, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
 from pydantic_ai import RunContext
@@ -326,6 +328,12 @@ async def scaffold_plugin(
     )
 
 
+def _copy_tree_and_list(src: Path, dest: Path, root: Path) -> List[str]:
+    """把 ``src`` 整树复制到 ``dest``，返回相对 ``root`` 的文件路径列表（供工作区提示用）。"""
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return sorted(str(p.relative_to(root)).replace("\\", "/") for p in dest.rglob("*") if p.is_file())
+
+
 @ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
 async def pull_installed_plugin(ctx: RunContext[ToolContext], plugin_name: str) -> str:
     """把一个**已安装**在 plugins/ 里的插件完整拷贝进当前工作区，用于在其**现有代码**上修改 / 修复。
@@ -364,12 +372,12 @@ async def pull_installed_plugin(ctx: RunContext[ToolContext], plugin_name: str) 
         return "错误：当前不在工作区上下文，无法拉取插件。"
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        # copytree / rglob 都是阻塞 I/O，整体挪到线程池
+        files = await asyncio.to_thread(_copy_tree_and_list, src, dest, root)
     except OSError as e:
         logger.exception(t("log.ai.plugindev_pulling_installed_plugin_fail", real_name=real_name, e=e))
         return f"错误：拉取已安装插件失败：{e}"
 
-    files = sorted(str(p.relative_to(root)).replace("\\", "/") for p in dest.rglob("*") if p.is_file())
     logger.info(t("log.ai.plugindev_pulled_installed_plugin", real_name=real_name, p0=len(files)))
     listing = "\n".join(f"  - {p}" for p in files[:40])
     more = f"\n  …还有 {len(files) - 40} 个文件未列出" if len(files) > 40 else ""
@@ -433,6 +441,8 @@ def _physical_install(src: Path, dest: Path) -> Optional[str]:
     误伤 plugins/ 本身、其它插件或目录外路径（不依赖调用方先校验）。**不**对 data/ 做任何
     特殊保留：插件运行期 data 的兼容性应由插件自身负责（插件本就会读写自己的 data 区），
     开发期不代为搬运 / 备份用户数据。
+
+    同步实现（rmtree + copytree 都是阻塞 I/O），异步侧一律走 ``_physical_install_async``。
     """
     if not _is_plugin_child(dest):
         logger.error(t("log.ai.plugindev_install_target_bounds", dest=dest))
@@ -445,6 +455,11 @@ def _physical_install(src: Path, dest: Path) -> Optional[str]:
         logger.exception(t("log.ai.plugindev_installing_plugin", p0=dest.name, e=e))
         return f"错误：复制到 plugins/ 失败：{e}"
     return None
+
+
+async def _physical_install_async(src: Path, dest: Path) -> Optional[str]:
+    """``_physical_install`` 的异步包装：整目录复制可能耗时较久，不能阻塞事件循环。"""
+    return await asyncio.to_thread(_physical_install, src, dest)
 
 
 def _finalize_update(dest: Path, staged: Path) -> Optional[str]:
@@ -708,7 +723,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
 
     # 0) 本会话已安装过 → 直接重新同步工作区最新代码（已获审批，无需再审批）
     if phase == "installed":
-        sync_err = _physical_install(src, dest)
+        sync_err = await _physical_install_async(src, dest)
         if sync_err:
             return sync_err
         logger.info(t("log.ai.plugindev_syncing_installed_plugin", plugin_name=plugin_name))
@@ -746,9 +761,10 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
         if staging_name is None:
             return f"错误：找不到可用的临时安装目录名（{plugin_name}_new* 均被占用）。"
         staging_dest = (_plugin_root() / staging_name).resolve()
-        install_err = _physical_install(src, staging_dest)
+        install_err = await _physical_install_async(src, staging_dest)
         if install_err:
-            shutil.rmtree(staging_dest, ignore_errors=True)  # 失败清理半成品，不留垃圾目录
+            # 失败清理半成品，不留垃圾目录
+            await asyncio.to_thread(functools.partial(shutil.rmtree, staging_dest, ignore_errors=True))
             return install_err
         await _record(_mark(plugin_name, f"staged|{staging_name}"))  # 只记录成功的移动
         await _record(_mark(plugin_name, "req-delete"))
@@ -773,7 +789,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
                 )
             )
             return await _request_overwrite_stage(task, plugin_name)
-        install_err = _physical_install(src, dest)
+        install_err = await _physical_install_async(src, dest)
         if install_err:
             return install_err
         await _record(_mark(plugin_name, "installed"))
@@ -832,7 +848,7 @@ async def load_plugin_into_core(
     if ws is not None and ws.exists() and any(ws.rglob("*.py")):
         if not _is_installed(await _task_logs(), plugin_name):
             return "错误：工作区有未安装的插件改动，请先 copy_to_plugin_dir 走主人审批安装，再 load。"
-        sync_err = _physical_install(ws, (_plugin_root() / plugin_name).resolve())
+        sync_err = await _physical_install_async(ws, (_plugin_root() / plugin_name).resolve())
         if sync_err:
             return sync_err
 

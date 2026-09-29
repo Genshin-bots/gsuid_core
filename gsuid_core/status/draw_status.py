@@ -123,7 +123,7 @@ async def draw_title():
     icon_path = ICON
     if status_config.get_config("CustomIcon").data:
         _icon_path = Path(status_config.get_config("CustomIconPath").data)
-        if _icon_path.exists():
+        if await asyncio.to_thread(_icon_path.exists):
             icon_path = _icon_path
 
     icon = Image.open(icon_path)
@@ -694,7 +694,7 @@ async def draw_bg(w: int, h: int):
     path = TEXT_PATH / "bg.jpg"
     if status_config.get_config("CustomBg").data:
         bg_path = Path(status_config.get_config("CustomBgPath").data)
-        if bg_path.exists():
+        if await asyncio.to_thread(bg_path.exists):
             path = bg_path
 
     bg = Image.open(path).convert("RGBA")

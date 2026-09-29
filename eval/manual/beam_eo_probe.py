@@ -23,6 +23,13 @@ os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
 from eval.BEAM_official import run_official as ro  # noqa: E402
 
 
+def _remove_if_present(paths: tuple[str, ...]) -> None:
+    """按给定顺序删已存在的文件；不存在就跳过（--keep 之外的清理）。"""
+    for path in paths:
+        if os.path.isfile(path):
+            os.remove(path)
+
+
 async def _run(convs: list[int], base_url: str, timeout: float, keep: bool) -> int:
     spec = ro._spec("100k")
     parsed = urlparse(base_url)
@@ -41,9 +48,7 @@ async def _run(convs: list[int], base_url: str, timeout: float, keep: bool) -> i
         answers = str(Path(ro._out_dir(spec)) / f"_eo_answers_{conv}.json")
         judge = str(Path(ro._out_dir(spec)) / f"_eo_judge_{conv}.json")
         if not keep:
-            for path in (answers, judge):
-                if os.path.isfile(path):
-                    os.remove(path)
+            await asyncio.to_thread(_remove_if_present, (answers, judge))
         fallback = ro._fallback_clock_from_chat(row["chat"] if "chat" in row else [])
         await ro.cmd_probe(
             base_url=base_url,

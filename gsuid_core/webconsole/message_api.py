@@ -501,11 +501,16 @@ async def get_image(
 # ===================
 
 
+def _unlink_if_exists(path: Path) -> None:
+    """同步删除已存在文件；调用点须用 asyncio.to_thread，unlink 异常照旧抛出。"""
+    if path.exists():
+        path.unlink()
+
+
 async def delete_image(image_path: Path):
     """异步定时删除图片"""
     await asyncio.sleep(int(pic_expire_time))
-    if image_path.exists():
-        image_path.unlink()
+    await asyncio.to_thread(_unlink_if_exists, image_path)
 
 
 @app.head("/api/image/{image_id}")

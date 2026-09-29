@@ -1,4 +1,5 @@
 {
+  "log.backup.already_running": "已有备份正在写入 {final_backup_dir}，跳过本次。",
   "log.backup.backup_core_path_ok": "[备份核心] 清空路径 {path} 成功！",
   "log.backup.backup_ok": "[备份核心] 已成功备份 {backup}",
   "log.backup.backup_path_skip": "备份目录不存在: {backup_path}，跳过清理。",

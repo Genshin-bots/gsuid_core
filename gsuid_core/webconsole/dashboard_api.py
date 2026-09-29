@@ -4,17 +4,159 @@ Dashboard APIs
 """
 
 import asyncio
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Literal, Sequence, TypedDict
 from datetime import date as dt_date, datetime, timedelta
 
 from fastapi import Depends, Request
+from async_timeout import timeout as atimeout
 
 from gsuid_core.i18n import t
+from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import TEMP_DICT, require_auth
+from gsuid_core.webconsole.web_api import TEMP_DICT, TEMP_DICT_MAX_ENTRIES, DailyCountCache, require_auth, set_temp_dict
 from gsuid_core.utils.database.global_val_models import DataType, CoreDataSummary, CoreDataAnalysis
 
 from ._api_tags import DASHBOARD
+
+# 三个接口并发：commands 先作废上一轮，查完再发布。失败不能留在缓存里。
+_DAILY_CACHE_MAX_WAIT_S = 30.0
+# 轮次标记和 TEMP_DICT 一起淘汰，避免有图无标记或有标记无图。
+_DAILY_STATE_MAX_ENTRIES = TEMP_DICT_MAX_ENTRIES
+_daily_cond: asyncio.Condition | None = None
+_daily_version: dict[str, int] = {}
+_daily_settled: set[str] = set()
+_daily_failed: set[str] = set()
+_DailyOutcome = Literal["ok", "failed", "timeout"]
+
+
+class _DailyChartResponse(TypedDict):
+    status: int
+    msg: str
+    data: list[dict[str, str | int]]
+
+
+def _daily_condition() -> asyncio.Condition:
+    global _daily_cond
+    if _daily_cond is None:
+        _daily_cond = asyncio.Condition()
+    return _daily_cond
+
+
+def _daily_version_of(cache_key: str) -> int:
+    if cache_key not in _daily_version:
+        return 0
+    return _daily_version[cache_key]
+
+
+def _drop_round(key: str) -> None:
+    _daily_version.pop(key, None)
+    _daily_settled.discard(key)
+    _daily_failed.discard(key)
+    TEMP_DICT.pop(key, None)
+
+
+def _touch_daily_key(cache_key: str) -> None:
+    """移到登记序末尾。超限时连同载荷一起丢掉，避免标记和图表各淘汰各的。"""
+    version = _daily_version.pop(cache_key, 0)
+    _daily_version[cache_key] = version
+    while len(_daily_version) > _DAILY_STATE_MAX_ENTRIES:
+        _drop_round(next(iter(_daily_version)))
+
+
+def _version_is_stale(cache_key: str, start: int, accept_same: bool) -> bool:
+    version = _daily_version_of(cache_key)
+    return version < start or (version == start and not accept_same)
+
+
+def _daily_outcome(cache_key: str, start: int, accept_same: bool) -> Literal["ok", "failed"] | None:
+    """有成功载荷就返回 ok。已结束的失败轮返回 failed。载荷被挤掉不算查询失败。"""
+    if cache_key in TEMP_DICT and cache_key not in _daily_failed:
+        if cache_key in _daily_version and _version_is_stale(cache_key, start, accept_same):
+            return None
+        if cache_key not in _daily_version or cache_key in _daily_settled:
+            return "ok"
+        return None
+    if cache_key not in _daily_settled:
+        return None
+    if _version_is_stale(cache_key, start, accept_same):
+        return None
+    if cache_key in _daily_failed:
+        return "failed"
+    return None
+
+
+async def begin_daily_round(cache_key: str) -> int:
+    """作废上一轮。失败占位不能让下一次并发读立刻拿到空图。"""
+    cond = _daily_condition()
+    async with cond:
+        _touch_daily_key(cache_key)
+        version = _daily_version_of(cache_key) + 1
+        _daily_version[cache_key] = version
+        _daily_settled.discard(cache_key)
+        _daily_failed.discard(cache_key)
+        TEMP_DICT.pop(cache_key, None)
+        cond.notify_all()
+        return version
+
+
+async def publish_daily_round(cache_key: str, version: int, payload: DailyCountCache | None) -> None:
+    """只发布仍是最新的那一轮；更晚的 commands 已经作废这一轮时直接丢掉。"""
+    cond = _daily_condition()
+    async with cond:
+        _touch_daily_key(cache_key)
+        if _daily_version_of(cache_key) != version:
+            return
+        if payload is None:
+            TEMP_DICT.pop(cache_key, None)
+            _daily_failed.add(cache_key)
+        else:
+            for stale in set_temp_dict(cache_key, payload):
+                if stale != cache_key:
+                    _drop_round(stale)
+            _daily_failed.discard(cache_key)
+        _daily_settled.add(cache_key)
+        cond.notify_all()
+
+
+async def _wait_for_daily_cache(cache_key: str) -> tuple[_DailyOutcome, DailyCountCache | None]:
+    """等这一轮 commands。上一轮的失败结果不算数，超时与失败跟空数据分开。
+
+    成功时在锁内把缓存对象交出去。下一轮 ``begin`` 会删掉键，锁外再查会丢数据。
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _DAILY_CACHE_MAX_WAIT_S
+    cond = _daily_condition()
+    async with cond:
+        start = _daily_version_of(cache_key)
+        settled_failure = cache_key in _daily_settled and cache_key in _daily_failed
+        accept_same = not settled_failure
+        while True:
+            outcome = _daily_outcome(cache_key, start, accept_same)
+            if outcome == "ok":
+                return outcome, TEMP_DICT[cache_key]
+            if outcome is not None:
+                return outcome, None
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return "timeout", None
+            try:
+                # 用 async-timeout 而非 asyncio.timeout：3.11+ 上它就是同语义，跨版本也不必改
+                async with atimeout(remaining):
+                    await cond.wait()
+            except TimeoutError:
+                return "timeout", None
+
+
+def _daily_blocked_response(cache_key: str, outcome: str) -> _DailyChartResponse:
+    if outcome == "timeout":
+        logger.warning(t("log.webconsole.dashboard_daily_wait_timeout", cache_key=cache_key))
+        return {"status": 1, "msg": t("msg.webconsole.daily_stats_timeout"), "data": []}
+    return {"status": 1, "msg": t("msg.webconsole.daily_stats_failed"), "data": []}
+
+
+def _daily_failed_response() -> _DailyChartResponse:
+    """统计出错必须与「当天确实没有命令」区分开，不能返回 status 0 的空图。"""
+    return {"status": 1, "msg": t("msg.webconsole.daily_stats_failed"), "data": []}
 
 
 def simplify_regex_command(command: str) -> str:
@@ -118,8 +260,6 @@ async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Di
             },
         }
     except Exception as e:
-        from gsuid_core.logger import logger
-
         logger.warning(t("log.webconsole.dashboard_metrics_fail", error=e))
         # Fallback to mock data if no real data
         return {
@@ -277,8 +417,6 @@ async def get_daily_command_counts(
             data.append({"date": key, "count": int(totals.get(key, 0))})
         return {"status": 0, "msg": "ok", "data": data}
     except Exception as e:
-        from gsuid_core.logger import logger
-
         logger.exception(t("log.webconsole.fetch_daily_command_counts", error=e))
         # 降级：仍返回连续日期，count=0，避免前端日历空白
         today = datetime.now().date()
@@ -314,9 +452,15 @@ async def get_daily_commands(
     if bot_id and bot_id != "all" and ":" in bot_id:
         _bot_self_id, _bot_id = bot_id.split(":", 1)
 
+    # key 在查库前就定下来：失败也要结束这一轮，不能把上一轮结果留给并发读者。
+    try:
+        cache_key = f"{_bot_id}/{_bot_self_id}/{dt_date.fromisoformat(date).strftime('%Y-%m-%d')}"
+    except ValueError:
+        cache_key = f"{_bot_id}/{_bot_self_id}/{date}"
+
+    version = await begin_daily_round(cache_key)
     try:
         date_obj = dt_date.fromisoformat(date)
-        date_format = date_obj.strftime("%Y-%m-%d")
 
         # 获取数据
         datas: Sequence[CoreDataAnalysis] = await CoreDataAnalysis.get_sp_data(
@@ -347,36 +491,25 @@ async def get_daily_commands(
                     g_data[d.target_id][d.command_name] = 0
                 g_data[d.target_id][d.command_name] += d.command_count
 
-        TEMP_DICT[f"{_bot_id}/{_bot_self_id}/{date_format}"] = {
-            "c_data": c_data,
-            "g_data": g_data,
-            "u_data": u_data,
-        }
-
-        # 按值从大到小排序
+        payload: DailyCountCache = {"c_data": c_data, "g_data": g_data, "u_data": u_data}
         sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
         result = [{"command": simplify_regex_command(k), "count": v} for k, v in sorted_items]
-
+        await publish_daily_round(cache_key, version, payload)
         return {
             "status": 0,
             "msg": "ok",
             "data": result,
         }
     except Exception as e:
-        from gsuid_core.logger import logger
-
         logger.exception(t("log.webconsole.dashboard_daily_commands_fail", error=e))
-        return {
-            "status": 0,
-            "msg": "ok",
-            "data": [],
-        }
+        await publish_daily_round(cache_key, version, None)
+        return _daily_failed_response()
 
 
 @app.get("/api/dashboard/daily/group-triggers", summary="每日群触发统计", tags=DASHBOARD)
 async def get_daily_group_triggers(
     request: Request, date: str, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)
-):
+) -> _DailyChartResponse:
     """
     获取指定日期的群组命令触发统计
 
@@ -400,15 +533,14 @@ async def get_daily_group_triggers(
 
     try:
         date_obj = dt_date.fromisoformat(date)
-        date_format = date_obj.strftime("%Y-%m-%d")
-        cache_key = f"{_bot_id}/{_bot_self_id}/{date_format}"
+        cache_key = f"{_bot_id}/{_bot_self_id}/{date_obj.strftime('%Y-%m-%d')}"
 
-        # 等待数据准备好
-        while cache_key not in TEMP_DICT:
-            await asyncio.sleep(0.5)
+        outcome, payload = await _wait_for_daily_cache(cache_key)
+        if payload is None:
+            return _daily_blocked_response(cache_key, outcome)
 
-        g_data = TEMP_DICT[cache_key]["g_data"]
-        c_data = TEMP_DICT[cache_key]["c_data"]
+        g_data = payload["g_data"]
+        c_data = payload["c_data"]
 
         # 计算每个群组的命令总数，取前20个
         group_total = {gid: sum(cmds.values()) for gid, cmds in g_data.items()}
@@ -423,9 +555,9 @@ async def get_daily_group_triggers(
         top_commands = list(cmd_mapping.values()) + ["其他命令"]
 
         # 构建结果
-        result = []
+        result: list[dict[str, str | int]] = []
         for group_id, cmds in g_data.items():
-            group_data = {"group": group_id}
+            group_data: dict[str, str | int] = {"group": group_id}
             others = 0
             for cmd, count in cmds.items():
                 simplified_cmd = cmd_mapping.get(cmd)
@@ -446,20 +578,14 @@ async def get_daily_group_triggers(
             "data": result,
         }
     except Exception as e:
-        from gsuid_core.logger import logger
-
         logger.warning(t("log.webconsole.fetch_daily_group_triggers", error=e))
-        return {
-            "status": 0,
-            "msg": "ok",
-            "data": [],
-        }
+        return _daily_failed_response()
 
 
 @app.get("/api/dashboard/daily/personal-triggers", summary="每日个人触发统计", tags=DASHBOARD)
 async def get_daily_personal_triggers(
     request: Request, date: str, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)
-):
+) -> _DailyChartResponse:
     """
     获取指定日期的个人命令触发统计
 
@@ -483,15 +609,14 @@ async def get_daily_personal_triggers(
 
     try:
         date_obj = dt_date.fromisoformat(date)
-        date_format = date_obj.strftime("%Y-%m-%d")
-        cache_key = f"{_bot_id}/{_bot_self_id}/{date_format}"
+        cache_key = f"{_bot_id}/{_bot_self_id}/{date_obj.strftime('%Y-%m-%d')}"
 
-        # 等待数据准备好
-        while cache_key not in TEMP_DICT:
-            await asyncio.sleep(0.5)
+        outcome, payload = await _wait_for_daily_cache(cache_key)
+        if payload is None:
+            return _daily_blocked_response(cache_key, outcome)
 
-        u_data = TEMP_DICT[cache_key]["u_data"]
-        c_data = TEMP_DICT[cache_key]["c_data"]
+        u_data = payload["u_data"]
+        c_data = payload["c_data"]
 
         # 计算每个用户的命令总数，取前20个
         user_total = {uid: sum(cmds.values()) for uid, cmds in u_data.items()}
@@ -506,9 +631,9 @@ async def get_daily_personal_triggers(
         top_commands = list(cmd_mapping.values()) + ["其他命令"]
 
         # 构建结果
-        result = []
+        result: list[dict[str, str | int]] = []
         for user_id, cmds in u_data.items():
-            user_data = {"user": user_id}
+            user_data: dict[str, str | int] = {"user": user_id}
             others = 0
             for cmd, count in cmds.items():
                 simplified_cmd = cmd_mapping.get(cmd)
@@ -529,14 +654,8 @@ async def get_daily_personal_triggers(
             "data": result,
         }
     except Exception as e:
-        from gsuid_core.logger import logger
-
         logger.warning(t("log.webconsole.fetch_daily_personal_triggers", error=e))
-        return {
-            "status": 0,
-            "msg": "ok",
-            "data": [],
-        }
+        return _daily_failed_response()
 
 
 @app.get("/api/dashboard/bots", summary="获取 Bot 列表", tags=DASHBOARD)
@@ -581,8 +700,6 @@ async def get_dashboard_bots(_user: Dict[str, Any] = Depends(require_auth)):
             "data": bot_list,
         }
     except Exception as e:
-        from gsuid_core.logger import logger
-
         logger.warning(t("log.webconsole.dashboard_bot_list_fail", error=e))
         return {
             "status": 0,

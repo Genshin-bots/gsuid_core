@@ -190,7 +190,7 @@ async def record_violation(
 
 def scan_workspace_changes(
     workspace: Path,
-    before_snapshot: dict,
+    before_snapshot: dict[str, float],
 ) -> List[Tuple[Path, int]]:
     """对比命令执行前后的 workspace 快照，返回新增 / 修改文件列表。
 
@@ -220,9 +220,9 @@ def scan_workspace_changes(
     return changes
 
 
-def snapshot_workspace(workspace: Path) -> dict:
+def snapshot_workspace(workspace: Path) -> dict[str, float]:
     """拍一份 workspace 内文件 mtime 快照，供 ``scan_workspace_changes`` 对比。"""
-    snap: dict = {}
+    snap: dict[str, float] = {}
     if not workspace.exists():
         return snap
     for p in workspace.rglob("*"):

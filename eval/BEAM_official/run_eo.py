@@ -199,6 +199,19 @@ async def cmd_gist_backfill(scale: str, base_url: str, timeout: float, source: s
     return 0
 
 
+def _read_ceiling_prefix(path: str) -> str:
+    """同步读旧 ceiling 文本；文件不存在返回空串（由 async 端落线程池调用）。"""
+    if not os.path.isfile(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read().rstrip() + "\n\n"
+
+
+def _write_text(path: str, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 async def cmd_ceiling(
     scale: str,
     base_url: str,
@@ -315,10 +328,7 @@ async def cmd_ceiling(
             if isinstance(off, (int, float)):
                 tau_off.append(float(off))
     dest = os.path.join(dest_dir, "eo_ceiling.md")
-    prev = ""
-    if os.path.isfile(dest):
-        with open(dest, encoding="utf-8") as f:
-            prev = f.read().rstrip() + "\n\n"
+    prev = await asyncio.to_thread(_read_ceiling_prefix, dest)
     cov_s = f"{100.0 * sum(cov) / len(cov):.1f}%" if cov else "n/a"
     tau_s = f"{sum(tau_off) / len(tau_off):.3f}" if tau_off else "n/a"
     block = [
@@ -329,8 +339,11 @@ async def cmd_ceiling(
         f"- answers `{answers_file}`",
         "",
     ]
-    with open(dest, "w", encoding="utf-8") as f:
-        f.write((prev if prev.startswith("# EO ceiling") else "# EO ceiling\n\n" + prev) + "\n".join(block) + "\n")
+    await asyncio.to_thread(
+        _write_text,
+        dest,
+        (prev if prev.startswith("# EO ceiling") else "# EO ceiling\n\n" + prev) + "\n".join(block) + "\n",
+    )
     print(f"[ceiling] {tag} {passed}/{total} cov={cov_s} tau={tau_s} -> {dest}", flush=True)
     return 0
 

@@ -5,7 +5,9 @@
 """
 
 import json
+import asyncio
 from typing import Literal
+from pathlib import Path
 
 from pydantic_ai import RunContext
 
@@ -15,6 +17,12 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.persona.persona import Persona
+
+
+def _read_text(path: Path) -> str:
+    """同步读文本；必须经 asyncio.to_thread 调用，否则阻塞事件循环。"""
+    with path.open("r", encoding="utf-8") as f:
+        return f.read()
 
 
 @ai_tools(category="buildin")
@@ -53,8 +61,7 @@ async def get_self_persona_info(
             return f"⚠️ Persona配置不存在: {config_path}"
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config_data = json.load(f)
+            config_data = json.loads(await asyncio.to_thread(_read_text, config_path))
             # 不返回 introduction 字段（那是 persona.md 的内容）
             if "introduction" in config_data:
                 del config_data["introduction"]

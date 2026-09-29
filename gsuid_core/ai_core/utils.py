@@ -351,6 +351,23 @@ def _strip_resource_handles(text: str) -> str:
     return cleaned
 
 
+# 同步读落盘图片：async 侧只能经 asyncio.to_thread 调它，文件不存在返回 None
+def _read_image_artifact_bytes(payload_path: str) -> Optional[bytes]:
+    from pathlib import Path
+
+    p = Path(payload_path)
+    if not p.exists():
+        return None
+    return p.read_bytes()
+
+
+# markdown_dark.css 路径含 __file__ resolve（阻塞 IO），async 侧经 to_thread 取
+def _markdown_dark_css_path() -> str:
+    from pathlib import Path
+
+    return str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
+
+
 async def _resolve_and_deliver_leaked_handles(
     text: str,
     bot: Bot,
@@ -398,11 +415,9 @@ async def _resolve_and_deliver_leaked_handles(
                 if art is None:
                     continue
                 if art.payload_path and (art.mime or "").startswith("image/"):
-                    from pathlib import Path
-
-                    p = Path(art.payload_path)
-                    if p.exists():
-                        await bot.send(MessageSegment.image(p.read_bytes()), extra_metadata=extra_metadata)
+                    image_data = await asyncio.to_thread(_read_image_artifact_bytes, art.payload_path)
+                    if image_data is not None:
+                        await bot.send(MessageSegment.image(image_data), extra_metadata=extra_metadata)
                         logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
                 elif art.payload_inline and art.payload_inline.strip():
                     inline_texts.append(art.payload_inline.strip())
@@ -1295,13 +1310,11 @@ async def _send_report_images(
 
     主路径应已由 ``render_agent`` 出图；此处是呈现层兜底。
     """
-    from pathlib import Path
-
     from gsuid_core.utils.html_render import render_md_to_bytes
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     max_width: int = ai_config.get_config("markdown_image_max_width").data
-    css_path = str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
+    css_path = await asyncio.to_thread(_markdown_dark_css_path)
     for title, body in reports:
         md = f"# {title}\n\n{body}" if title else body
         md = f"{md}{_report_footer()}"
@@ -1336,9 +1349,7 @@ async def _try_render_markdown_image(
 
     max_width: int = ai_config.get_config("markdown_image_max_width").data
     try:
-        from pathlib import Path
-
-        css_path = str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
+        css_path = await asyncio.to_thread(_markdown_dark_css_path)
         image_bytes = await render_md_to_bytes(
             md=f"{md}{_report_footer()}",
             css_path=css_path,

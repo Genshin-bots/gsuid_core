@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import asyncio
 import platform
 import subprocess
 from typing import Optional
@@ -144,6 +145,12 @@ async def get_restart_sh() -> str:
     return _restart_sh.format(str(bot_start.absolute()), args)
 
 
+def _write_restart_sh(path: Path, content: str) -> None:
+    """同步写盘；重启流程在 async 里调用，落盘交线程池避免阻塞事件循环。"""
+    with open(path, "w", encoding="utf8") as f:
+        f.write(content)
+
+
 async def restart_genshinuid(
     event: Optional[Event] = None,
     is_send: bool = True,
@@ -160,8 +167,7 @@ async def restart_genshinuid(
 
     pid = os.getpid()
     restart_sh = await get_restart_sh()
-    with open(restart_sh_path, "w", encoding="utf8") as f:
-        f.write(restart_sh)
+    await asyncio.to_thread(_write_restart_sh, restart_sh_path, restart_sh)
 
     if platform.system() == "Linux":
         # os.system(f'chmod +x {str(restart_sh_path)}')

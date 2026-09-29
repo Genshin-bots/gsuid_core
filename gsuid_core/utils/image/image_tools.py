@@ -2,6 +2,7 @@ import io
 import math
 import base64
 import random
+import asyncio
 import mimetypes
 from io import BytesIO
 from typing import List, Tuple, Union, Optional, overload
@@ -268,6 +269,11 @@ def get_v4_bg(w: int, h: int, is_dark: bool = False, is_blur: bool = False):
     return img
 
 
+def _list_dir(path: Path) -> List[Path]:
+    """同步列目录内容；调用点须用 asyncio.to_thread，避免阻塞事件循环。"""
+    return list(path.iterdir())
+
+
 async def get_event_avatar(ev: Event, avatar_path: Optional[Path] = None) -> Image.Image:
     img = None
     if ev.bot_id == "onebot" and ev.at:
@@ -288,7 +294,7 @@ async def get_event_avatar(ev: Event, avatar_path: Optional[Path] = None) -> Ima
         img = await get_qqgroup_avatar(ev.bot_self_id, ev.user_id)
 
     if img is None and avatar_path:
-        pic_path_list = list(avatar_path.iterdir())
+        pic_path_list = await asyncio.to_thread(_list_dir, avatar_path)
         if pic_path_list:
             path = random.choice(pic_path_list)
             img = Image.open(path).convert("RGBA")

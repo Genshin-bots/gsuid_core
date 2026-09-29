@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import List, Optional, Sequence
+from pathlib import Path
 from datetime import datetime
 
 from sqlmodel import Field, SQLModel, UniqueConstraint, col, select
@@ -10,6 +12,13 @@ from sqlalchemy import Text, Column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.utils.database.base_models import with_session
+
+
+# 同步删 payload：async 侧只能经 asyncio.to_thread 调它，文件 IO 不阻塞事件循环
+def _unlink_payload(payload_path: str) -> None:
+    p = Path(payload_path)
+    if p.exists():
+        p.unlink(missing_ok=True)
 
 
 class _ToolOutputCRUD:
@@ -147,8 +156,6 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         root_task_ids: Sequence[str],
     ) -> tuple[int, List[str], List[str]]:
         """按 root_task_id 硬删 FileOS 行；返回 (条数, payload 路径, 记录 id)。"""
-        from pathlib import Path
-
         from sqlmodel import delete as sql_delete
 
         ids = [r for r in root_task_ids if r]
@@ -167,9 +174,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
             if rec.payload_path and rec.payload_path not in seen:
                 seen.add(rec.payload_path)
                 paths.append(rec.payload_path)
-                p = Path(rec.payload_path)
-                if p.exists():
-                    p.unlink(missing_ok=True)
+                await asyncio.to_thread(_unlink_payload, rec.payload_path)
         await session.execute(sql_delete(cls).where(col(cls.root_task_id).in_(ids)))
         return len(rows), paths, rids
 
@@ -181,8 +186,6 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         now: Optional[datetime] = None,
     ) -> tuple[int, List[str]]:
         """删除过期行与 payload 文件；返回 (条数, 记录 id 列表) 供索引清理。"""
-        from pathlib import Path
-
         from sqlmodel import delete as sql_delete
 
         cut = now or datetime.now()
@@ -197,9 +200,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
             rids.append(rec.id)
             if rec.payload_path and rec.payload_path not in seen:
                 seen.add(rec.payload_path)
-                p = Path(rec.payload_path)
-                if p.exists():
-                    p.unlink(missing_ok=True)
+                await asyncio.to_thread(_unlink_payload, rec.payload_path)
         del_stmt = sql_delete(cls).where(col(cls.expires_at).is_not(None)).where(col(cls.expires_at) < cut)
         await session.execute(del_stmt)
         return len(expired), rids
@@ -212,8 +213,6 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         record_ids: Sequence[str],
     ) -> tuple[int, List[str]]:
         """按主键批量硬删；返回 (条数, 已删 id) 供 Qdrant 清理。"""
-        from pathlib import Path
-
         from sqlmodel import delete as sql_delete
 
         ids = [r for r in record_ids if r]
@@ -230,9 +229,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
             rids.append(rec.id)
             if rec.payload_path and rec.payload_path not in seen:
                 seen.add(rec.payload_path)
-                p = Path(rec.payload_path)
-                if p.exists():
-                    p.unlink(missing_ok=True)
+                await asyncio.to_thread(_unlink_payload, rec.payload_path)
         await session.execute(sql_delete(cls).where(col(cls.id).in_(rids)))
         return len(rids), rids
 

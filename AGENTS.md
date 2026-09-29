@@ -96,6 +96,10 @@ uv run core --dev                          # 只加载目录名以 -dev 结尾�
 uv run core --host 0.0.0.0 --port 9527     # CLI 覆盖不写回文件
 ```
 
+`dev` 组是 uv 的默认组（`pyproject.toml` 的 `default-groups`），所以 `uv sync` 会连
+ruff / basedpyright / pytest 一起装，交付闸才开箱可跑。**生产镜像与部署环境用
+`uv sync --no-dev`**（`Dockerfile` 已如此），别把测试工具打进线上 venv。
+
 ```sh
 # 检查命令见下「交付闸」——改完必须全绿，否则不算完成
 ```

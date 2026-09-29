@@ -1,4 +1,4 @@
-import os
+import asyncio
 import datetime
 from shutil import copyfile
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 from gsuid_core.i18n import t
 from gsuid_core.logger import LOG_PATH, logger
 from gsuid_core.data_store import error_mark_path
+from gsuid_core.utils.database.base_models import is_live_sqlite, sqlite_consistent_snapshot
 from gsuid_core.utils.plugins_config.gs_config import log_config
 
 
@@ -96,10 +97,14 @@ async def backup_file(file_path: Path, backup_path: Path, backup_day: int = 5):
     backup = backup_path / backup_filename
     end_day_backup = backup_path / end_day_filename
 
-    copyfile(str(file_path), backup)
+    # 主库走在线备份 API：WAL 里未 checkpoint 的写入才不会丢（见 base_models.sqlite_consistent_snapshot）
+    if is_live_sqlite(file_path):
+        await asyncio.to_thread(sqlite_consistent_snapshot, file_path, backup)
+    else:
+        await asyncio.to_thread(copyfile, str(file_path), backup)
 
-    if os.path.exists(end_day_backup):
-        os.remove(end_day_backup)
+    if end_day_backup.exists():
+        end_day_backup.unlink()
         logger.warning(t("log.backup.end_day_backup_delete", end_day_backup=end_day_backup))
 
     logger.success(t("log.backup.backup_ok", backup=backup))

@@ -24,6 +24,7 @@
   "log.core.gscore_help_image_start": "[早柚核心] 开始执行[帮助图]",
   "log.core.gscore_info_start": "开始执行 早柚核心 [信息]",
   "log.core.gscore_path": "[早柚核心] 路径已备份!",
+  "log.core.gscore_path_fail": "[早柚核心] 路径备份失败: {retcode}",
   "log.core.gscore_restart_start": "[早柚核心] 开始执行[重启]",
   "log.core.gscore_shutdown_process_setting_start": "[GsCore] 开始关闭流程，设置 shutdown_event...",
   "log.core.gscore_shutdown_start": "[早柚核心] 开始执行[关闭]",

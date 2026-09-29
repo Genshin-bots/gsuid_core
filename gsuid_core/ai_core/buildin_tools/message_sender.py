@@ -13,6 +13,7 @@
 3. ``http://`` / ``https://`` / ``base64://``——直接走 ``MessageSegment.image``。
 """
 
+import asyncio
 from typing import TYPE_CHECKING, Dict, List, Tuple, Union, Optional
 from pathlib import Path
 
@@ -100,10 +101,10 @@ async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
 
     if art.payload_path:
         p = Path(art.payload_path)
-        if not p.exists():
+        if not await asyncio.to_thread(p.exists):
             logger.debug(t("log.ai.buildintools_kanban_artifact_res", res_id=res_id, p0=art.payload_path))
             return None
-        data = p.read_bytes()
+        data = await asyncio.to_thread(p.read_bytes)
         # 以魔数为准：只有真图返回 bytes（mime 标 image/* 内容却是 md 时也拒）
         if _looks_like_image_bytes(data):
             return data

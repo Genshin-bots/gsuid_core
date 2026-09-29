@@ -13,6 +13,7 @@ from typing import (
     Sequence,
     Awaitable,
 )
+from pathlib import Path
 from functools import wraps
 from collections.abc import Coroutine, AsyncIterator
 from typing_extensions import ParamSpec, Concatenate
@@ -179,6 +180,71 @@ def _enable_sqlite_wal(db_path: str) -> None:
             mode = cell
     if mode.lower() != "wal":
         raise RuntimeError("sqlite journal_mode did not switch to wal")
+
+
+def is_sqlite_backend() -> bool:
+    """当前是否使用 SQLite 后端（决定备份是否需要走在线备份 API）。"""
+    return _db_type == "sqlite"
+
+
+def is_live_sqlite(path: Path) -> bool:
+    """该路径是否就是当前运行的 SQLite 主库（WAL 模式下备份需要一致性快照）。"""
+    if not is_sqlite_backend():
+        return False
+    return path.resolve() == DB_PATH.resolve()
+
+
+def _sqlite_sidecars(dest: Path) -> tuple[Path, Path]:
+    return Path(str(dest) + "-wal"), Path(str(dest) + "-shm")
+
+
+def _discard_sqlite_snapshot(dest: Path) -> None:
+    """删掉目标主库和旁边的 WAL 边车，避免半截文件或共享内存被当成备份。"""
+    if dest.is_file():
+        dest.unlink()
+    for sidecar in _sqlite_sidecars(dest):
+        if sidecar.is_file():
+            sidecar.unlink()
+
+
+def sqlite_consistent_snapshot(src: Path, dest: Path) -> None:
+    """用 SQLite 在线备份 API 把 ``src`` 导出一致快照到 ``dest``。
+
+    WAL 模式下最近一次 checkpoint 之后的数据还在 ``GsData.db-wal`` 里，
+    直接 ``copy2`` 主库文件会漏掉它们。这里走 ``Connection.backup``：
+    它会等写锁释放并把 WAL 内容合并进目标库，产出可独立打开的完整副本。
+    ``connect(dest)`` 会先创建空文件；失败时把该文件和边车一起删掉。
+
+    ``src`` 必须显式传入。活库快照源就是 ``DB_PATH``，但把源藏在函数里会让
+    调用方误以为可以快照任意库——普通拷贝路径必须先过 ``is_live_sqlite``。
+    """
+    if dest.resolve() == src.resolve():
+        # ValueError 在打包循环里表示前缀不匹配，会跳过并仍报成功。
+        raise RuntimeError("snapshot destination must differ from source")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _discard_sqlite_snapshot(dest)
+
+    src_conn = sqlite3.connect(str(src), timeout=_SQLITE_TIMEOUT_S)
+    out: sqlite3.Connection | None = None
+    try:
+        src_conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_MS}")
+        out = sqlite3.connect(str(dest))
+        src_conn.backup(out)
+    except Exception:
+        # 先关句柄再删，Windows 上文件仍被连接占用时 unlink 会失败。
+        if out is not None:
+            out.close()
+        _discard_sqlite_snapshot(dest)
+        raise
+    else:
+        if out is not None:
+            out.close()
+    finally:
+        src_conn.close()
+    # 目录拷贝留下的 -wal/-shm 不能跟独立快照一起打包。
+    for sidecar in _sqlite_sidecars(dest):
+        if sidecar.is_file():
+            sidecar.unlink()
 
 
 def _set_sqlite_connect_pragmas(dbapi_connection: sqlite3.Connection, _connection_record: object) -> None:

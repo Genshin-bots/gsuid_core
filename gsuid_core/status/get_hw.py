@@ -9,6 +9,21 @@ from gsuid_core.logger import logger
 # --- 优化后的异步函数 ---
 
 
+def _read_cpuinfo_model_name() -> str | None:
+    """Linux 下从 /proc/cpuinfo 取 model name；文件无该字段时返回 None。"""
+    with open("/proc/cpuinfo", "r") as f:
+        for line in f:
+            if line.startswith("model name"):
+                return line.split(": ")[1].strip()
+    return None
+
+
+def _read_link_speed(interface: str) -> float:
+    """读 /sys/class/net/<iface>/speed（Mbps），仅 Linux 分支使用。"""
+    with open(f"/sys/class/net/{interface}/speed", "r") as f:
+        return float(f.read().strip())
+
+
 async def get_cpu_info():
     """异步获取CPU信息"""
     # 耗时操作：在线程中运行 psutil.cpu_percent
@@ -19,11 +34,9 @@ async def get_cpu_info():
     cpu_name = "Unknown CPU"
     try:
         # 优先从 /proc/cpuinfo 获取 (Linux)
-        with open("/proc/cpuinfo", "r") as f:
-            for line in f:
-                if line.startswith("model name"):
-                    cpu_name = line.split(": ")[1].strip()
-                    break
+        parsed_name = await asyncio.to_thread(_read_cpuinfo_model_name)
+        if parsed_name is not None:
+            cpu_name = parsed_name
     except (FileNotFoundError, IndexError):
         # 如果失败，尝试 platform.processor()
         try:
@@ -121,8 +134,7 @@ async def get_network_info():
             stdout, _ = await proc.communicate()
             default_interface = stdout.decode().split("dev ")[1].split()[0] if "dev" in stdout.decode() else None
             if default_interface:
-                with open(f"/sys/class/net/{default_interface}/speed", "r") as f:
-                    speed_max = float(f.read().strip())
+                speed_max = await asyncio.to_thread(_read_link_speed, default_interface)
         elif platform.system() == "Windows":
             proc = await asyncio.create_subprocess_exec(
                 "powershell",

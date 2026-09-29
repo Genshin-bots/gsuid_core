@@ -167,7 +167,7 @@ async def cmd_reset(base_url: str) -> int:
     doc = _progress()
     doc["reset"] = True
     _save_progress(doc)
-    if not os.path.isfile(REPORT):
+    if not await asyncio.to_thread(os.path.isfile, REPORT):
         _append_report(
             [
                 "# LongMemEval-S fresh（清库重灌）",
@@ -227,7 +227,7 @@ async def cmd_smoke(base_url: str) -> int:
     args.judge_file = os.path.join(OUT_DIR, f"judge_smoke_{TAG}.json")
     print(f"[smoke] {SMOKE_N} 道 SSP，clear+ingest+评测助手+tools")
     await _lm_probe(args)
-    if not os.path.isfile(args.answers_file):
+    if not await asyncio.to_thread(os.path.isfile, args.answers_file):
         print("[smoke] 没有答卷，停下。")
         return 2
     args.timeout = JUDGE_TIMEOUT

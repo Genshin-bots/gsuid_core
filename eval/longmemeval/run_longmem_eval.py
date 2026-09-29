@@ -295,7 +295,7 @@ async def run_phase_s1_only(
     existing_results: List[Dict[str, Any]] = []
     existing_ids: Set[str] = set()
 
-    if resume and os.path.isfile(answers_file):
+    if resume and await asyncio.to_thread(os.path.isfile, answers_file):
         try:
             existing_results = load_json(answers_file)
         except (OSError, json.JSONDecodeError) as e:
@@ -460,7 +460,7 @@ async def run_phase_full_retrieval(
     existing_results: List[Dict[str, Any]] = []
     existing_ids: Set[str] = set()
 
-    if resume and os.path.isfile(answers_file):
+    if resume and await asyncio.to_thread(os.path.isfile, answers_file):
         try:
             existing_results = load_json(answers_file)
         except (OSError, json.JSONDecodeError) as e:
@@ -1179,7 +1179,7 @@ async def main():
 
     if args.command == "run":
         eval_data_path = args.eval_data or resolve_eval_data_path()
-        if not os.path.exists(eval_data_path):
+        if not await asyncio.to_thread(os.path.exists, eval_data_path):
             print(f"[ERROR] 评估数据文件不存在: {eval_data_path}")
             return
 
@@ -1195,7 +1195,7 @@ async def main():
 
     elif args.command == "run_s1":
         eval_data_path = args.eval_data or resolve_eval_data_path()
-        if not os.path.exists(eval_data_path):
+        if not await asyncio.to_thread(os.path.exists, eval_data_path):
             print(f"[ERROR] 评估数据文件不存在: {eval_data_path}")
             return
 
@@ -1218,7 +1218,7 @@ async def main():
 
     elif args.command == "run_full":
         eval_data_path = args.eval_data or resolve_eval_data_path()
-        if not os.path.exists(eval_data_path):
+        if not await asyncio.to_thread(os.path.exists, eval_data_path):
             print(f"[ERROR] 评估数据文件不存在: {eval_data_path}")
             return
 
@@ -1233,7 +1233,7 @@ async def main():
         )
 
     elif args.command == "judge":
-        if not os.path.exists(args.answers_file):
+        if not await asyncio.to_thread(os.path.exists, args.answers_file):
             print(f"[ERROR] 回答文件不存在: {args.answers_file}")
             return
 
@@ -1248,7 +1248,7 @@ async def main():
 
     elif args.command == "all":
         eval_data_path = args.eval_data or resolve_eval_data_path()
-        if not os.path.exists(eval_data_path):
+        if not await asyncio.to_thread(os.path.exists, eval_data_path):
             print(f"[ERROR] 评估数据文件不存在: {eval_data_path}")
             return
 

@@ -14,8 +14,8 @@ from gsuid_core.utils.database.models import (
     CoreGroup,
 )
 from gsuid_core.utils.backup.backup_core import (
+    backup_and_package,
     remove_old_backups,
-    copy_and_rebase_paths,
     backup_dir_covers_path,
 )
 from gsuid_core.utils.backup.backup_files import clean_log, backup_file
@@ -40,21 +40,28 @@ backup_hour, backup_minute = backup_time
     hour=int(backup_hour),
     minute=int(backup_minute),
 )
-async def backup_path_files():
+async def backup_path_files() -> int:
     """
     凌晨自动备份`备份管理`中的路径树
     """
     CLEAN_DAY: str = log_config.get_config("ScheduledCleanLogDay").data
-    copy_and_rebase_paths()
-    logger.success(t("log.core.gscore_path"))
-    remove_old_backups(int(CLEAN_DAY))
+    retcode = await backup_and_package()
+    if retcode != 0:
+        logger.warning(t("log.core.gscore_path_fail", retcode=retcode))
+    else:
+        logger.success(t("log.core.gscore_path"))
+    await asyncio.to_thread(remove_old_backups, int(CLEAN_DAY))
     logger.success(t("log.core.clean_day_delete", CLEAN_DAY=CLEAN_DAY))
+    return retcode
 
 
 @sv_core_backup.on_fullmatch("强制执行文件备份")
 async def get_fullmatch_msg(bot: Bot, ev: Event):
     await bot.send(await bot.t("♻️ 正在进行[强制执行文件备份]"))
-    await backup_path_files()
+    retcode = await backup_path_files()
+    if retcode != 0:
+        await bot.send(await bot.t("♻️ [强制执行文件备份] 失败"))
+        return
     await bot.send(await bot.t("♻️ [强制执行文件备份] 成功！"))
 
 

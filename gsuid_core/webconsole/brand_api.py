@@ -18,6 +18,7 @@ Brand APIs
 """
 
 import json
+import asyncio
 from typing import Any, Dict
 from pathlib import Path
 
@@ -327,6 +328,11 @@ async def delete_brand_icon(
     }
 
 
+def _is_existing_file(path: Path) -> bool:
+    """同步判断「存在且是文件」；调用点须用 asyncio.to_thread，避免阻塞事件循环。"""
+    return path.exists() and path.is_file()
+
+
 @app.get("/api/brand/icon", summary="获取品牌 ICON", tags=BRAND)
 async def get_brand_icon(request: Request):
     """获取当前品牌 ICON（公开接口）。
@@ -340,7 +346,7 @@ async def get_brand_icon(request: Request):
     _no_cache = {"Cache-Control": "no-cache"}
 
     # 1) 用户上传的优先
-    if BRAND_ICON_PATH.exists() and BRAND_ICON_PATH.is_file():
+    if await asyncio.to_thread(_is_existing_file, BRAND_ICON_PATH):
         return FileResponse(
             path=str(BRAND_ICON_PATH),
             media_type="image/png",
@@ -350,7 +356,7 @@ async def get_brand_icon(request: Request):
 
     # 2) 回退到默认 ICON（与 plugin_icon_api.py 同一文件源）
     default_icon: Path = CORE_PATH / "ICON.png"
-    if default_icon.exists() and default_icon.is_file():
+    if await asyncio.to_thread(_is_existing_file, default_icon):
         return FileResponse(
             path=str(default_icon),
             media_type="image/png",

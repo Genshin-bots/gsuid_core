@@ -1116,6 +1116,18 @@ async def fail_task_tree(root_task_id: str, reason: str) -> bool:
     return True
 
 
+# 同步删单个 artifact：async 侧只能经 asyncio.to_thread 调它，越界/异常一律静默跳过
+def _unlink_artifact_file(raw_path: str, artifact_root: Path) -> bool:
+    try:
+        p = Path(raw_path).resolve()
+        if p.exists() and p.is_file() and str(p).startswith(str(artifact_root)):
+            p.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
 async def hard_delete_task_tree(
     task_id: str,
     *,
@@ -1255,13 +1267,8 @@ async def hard_delete_task_tree(
 
             artifact_root = ARTIFACT_ROOT.resolve()
             for raw_path in artifact_paths:
-                try:
-                    p = Path(raw_path).resolve()
-                    if p.exists() and p.is_file() and str(p).startswith(str(artifact_root)):
-                        p.unlink()
-                        stats["files_deleted"] += 1
-                except OSError:
-                    pass
+                if await asyncio.to_thread(_unlink_artifact_file, raw_path, artifact_root):
+                    stats["files_deleted"] += 1
             for rid in root_ids:
                 try:
                     root_dir = (ARTIFACT_ROOT / rid).resolve()

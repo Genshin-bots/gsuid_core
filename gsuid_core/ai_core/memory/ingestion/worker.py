@@ -309,7 +309,8 @@ class IngestionWorker:
 
             scope_keys = list(self._buffers.keys())
             for scope_key in scope_keys:
-                while scope_key in self._flushing:
+                # _flushing 由各处 flush 任务在 finally 里 add/discard，per-key Event 需改全部协作方
+                while scope_key in self._flushing:  # noqa: ASYNC110
                     await asyncio.sleep(0.1)
                 if self._buffers.get(scope_key):
                     await self._flush(scope_key)

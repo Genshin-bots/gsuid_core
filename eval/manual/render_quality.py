@@ -16,6 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "test_output"
 
 
+def _dark_css_path() -> str:
+    return str(Path(__file__).resolve().parents[2] / "gsuid_core" / "utils" / "html_render" / "markdown_dark.css")
+
+
 WEATHER_HTML = """
 <h1>广州 · 七日天气</h1>
 <div class="meta">数据时点：2026-07-29 08:00 · 来源：中国气象局</div>
@@ -116,7 +120,7 @@ async def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     from gsuid_core.utils.html_render import render_md_to_bytes, render_html_to_bytes
 
-    css_path = str(Path(__file__).resolve().parents[2] / "gsuid_core" / "utils" / "html_render" / "markdown_dark.css")
+    css_path = await asyncio.to_thread(_dark_css_path)
 
     print("=" * 60)
     print("离线渲染质量测试")
