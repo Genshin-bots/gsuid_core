@@ -1196,7 +1196,8 @@ async def stream_logs(
     return StreamingResponse(
         read_log(levels=level, last_event_id=resume_from),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        # no-transform：按 RFC 7234 要求中间链路不得压缩/改写正文，nginx 等反代据此关掉 gzip。
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
 
 

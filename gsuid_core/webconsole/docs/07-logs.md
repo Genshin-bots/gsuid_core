@@ -277,6 +277,14 @@ eventSource.onmessage = (event) => {
 };
 ```
 
+> **注意（issue #283）**：本接口是 SSE，浏览器 `EventSource` 一定会带
+> `Accept-Encoding: gzip`，且 JS 侧无法去掉——所以**任何压缩 / 缓冲层都会让实时性失效**。
+> 应用层依赖 starlette ≥ 0.46（`GZipMiddleware` 会跳过 `text/event-stream`，#2871；
+> 1.5.0 起还会逐块 flush，#3419），`tests/test_sse_gzip_bypass.py` 钉住了该行为；
+> 若经 Nginx 等反代，还需对 `/api/logs/stream` 关闭 `proxy_buffering` 与 `gzip`
+> （端点已发 `X-Accel-Buffering: no` 和 `Cache-Control: no-transform` 作为提示）。
+> 排查见 `gscore-deploy` Skill 的 16.12b。
+
 ---
 
 ## 7.7 获取可用日志级别

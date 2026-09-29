@@ -86,20 +86,23 @@ GsCore 的依赖由 [`pyproject.toml`](../../../pyproject.toml) 描述，安装�
 ## 1.4 Playwright 与 Chromium（可选）
 
 Core 内置 HTML 渲染管线（`pytakumi` 负责纯 HTML/Markdown 出图；`playwright` 作
-JS/复杂图表兜底）。源码裸跑首次启动若走 playwright 路径会**自动下载 Chromium**
-（约 130MB），慢的话可手动加速：
+JS/复杂图表兜底）。
+
+**不需要手动装。** playwright 把 Chromium 绑死在自己版本对应的固定 revision 上，
+Core 启动时会跑一个后台任务自动对齐：检测缺失就下载（日志带 `🎬 playwright 浏览器`
+前缀；实测解包后约 650 MiB，含 chromium + headless shell + ffmpeg），
+已就绪则静默跳过，不阻塞启动。
 
 ```sh
-# 单独触发浏览器下载
-uv run playwright install chromium
+# 不想要自动下载（仍然只做只读检测，缺失时告警）
+export GSUID_PLAYWRIGHT_AUTOINSTALL=0
 
 # 国内加速（仅首次下载有效）
-uv run playwright install chromium --with-deps
-# 或者设置环境变量
 export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
 ```
 
-Docker 镜像 **已预装**，无需处理。
+Docker 镜像 **构建期已预装**（基础镜像 + bundle 镜像各烘一次），挂载模式下容器
+入口还会再幂等对齐一次，同样不需要手动处理。
 
 ## 1.5 系统资源
 

@@ -382,6 +382,65 @@ tail -f data/logs/<最新>
 # 重启 Core
 ```
 
+## 16.12b 网页控制台日志不是实时的
+
+**症状**：控制台「实时日志」隔几分钟成批刷一次，收到时最新一条已是几分钟前的。
+
+**先分清是哪一层在缓冲**——`/api/logs/stream` 是 SSE，浏览器一定带 `Accept-Encoding`，
+反代或应用任一层压缩 / 攒批都会让实时性失效：
+
+```sh
+# 看响应头：有 Content-Encoding: gzip 说明被压缩了，不该出现
+curl -N -H "Accept-Encoding: gzip" -I http://127.0.0.1:8765/api/logs/stream
+```
+
+- **应用层**：已修复（issue #283），方式是升级依赖而非自建旁路中间件。
+  starlette ≥ 0.46 的 `GZipMiddleware` 会跳过 `text/event-stream`（#2871），1.5.0 起
+  还会逐块 flush（#3419）。若仍复现，确认 `uv.lock` 里 starlette 没被降级
+  （`uv pip show starlette` 应 ≥ 0.46）。
+- **反代层（Nginx）**：默认会缓冲并压缩，必须对 SSE 路径单独放开：
+
+```nginx
+location /api/logs/stream {
+    proxy_pass http://127.0.0.1:8765;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;         # 关键：不攒批
+    proxy_cache off;
+    gzip off;                    # 关键：不压缩
+    proxy_read_timeout 3600s;    # 默认 60s 会掐断长连接
+}
+```
+
+端点已发 `X-Accel-Buffering: no` 与 `Cache-Control: no-cache, no-transform`，
+合规反代会自行关闭缓冲；`gzip off` 是给不认这两个头的反代兜底。
+
+## 16.12c 渲染报 Executable doesn't exist（playwright 浏览器缺失）
+
+**症状**：`Executable doesn't exist at .../ms-playwright/chromium_headless_shell-XXXX`，
+只有走 playwright 兜底渲染的图会失败。
+
+**原因**：playwright 按自身版本下载固定 revision 的 Chromium，升级 playwright 后
+旧目录不会被复用。
+
+**正常不需要处理**——Core 启动后台任务会自动对齐，缺失就下载。先确认日志里有没有
+`[Playwright]` 开头的行：
+
+```sh
+grep "\[Playwright\]" data/logs/<最新日志>
+```
+
+| 现象 | 处理 |
+|------|------|
+| 没有任何 `[Playwright]` 行，且确实报错 | 设了 `GSUID_PLAYWRIGHT_AUTOINSTALL=0`；去掉它重启 |
+| `playwright 浏览器下载失败` | 网络受限：设 `PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/` 重启 |
+| `下载完成但仍不可用` | 浏览器目录只读 / 磁盘满：查 `PLAYWRIGHT_BROWSERS_PATH` 指向的目录权限 |
+
+**Docker 用户**：基础镜像与 bundle 镜像都在**构建期**烘好了对应 revision，运行时
+入口还会再幂等对齐一次。如果报这个错，多半是自建镜像没继承 `docker/base/Dockerfile`，
+或手动改过里面的 playwright 版本——`ARG GSCORE_PLAYWRIGHT_VERSION` 必须与 `uv.lock`
+里的 `playwright` 一致。
+
 ## 16.13 提 Issue / 反馈 Bug
 
 如果本章没覆盖到你的问题：

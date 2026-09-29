@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from http_agent_support import (
     make_agent_app,
@@ -18,12 +17,14 @@ def setup_function() -> None:
     reset_http_agent_runtime()
 
 
-def _agent_paths(app: FastAPI) -> list[str]:
-    out: list[str] = []
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.path.startswith("/api/v1/agent"):
-            out.append(route.path)
-    return out
+def _agent_surface_is_live(app: FastAPI) -> bool:
+    """发真实请求判断 agent 路由是否挂上。
+
+    不能靠遍历 app.routes 里的 APIRoute：fastapi 0.142 起 include_router 不再把子路由
+    平铺进 app.routes，而是塞一个 _IncludedRouter 懒解析对象，内省会假阴性。
+    """
+    with TestClient(app) as client:
+        return client.get("/api/v1/agent/health").status_code != 404
 
 
 def test_agent_surface_404_when_disabled(monkeypatch) -> None:
@@ -69,16 +70,17 @@ def test_register_skips_when_ai_disabled(monkeypatch) -> None:
     patch_ai_enable(monkeypatch, False)
     app = FastAPI()
     register_http_agent_routes(app)
-    assert _agent_paths(app) == []
+    assert not _agent_surface_is_live(app)
 
 
 def test_register_mounts_when_ai_enabled(monkeypatch) -> None:
     from gsuid_core.ai_core.http_agent.register import register_http_agent_routes
 
-    patch_ai_enable(monkeypatch, True)
+    # AI 与 agent 都要开：health 处理器自身会在被关时主动回 404，路由挂没挂看不出来。
+    patch_settings(monkeypatch, sample_settings(enable=True), ai_enable=True)
     app = FastAPI()
     register_http_agent_routes(app)
-    assert "/api/v1/agent/health" in _agent_paths(app)
+    assert _agent_surface_is_live(app)
 
 
 def test_admin_keys_not_404_when_disabled(monkeypatch) -> None:

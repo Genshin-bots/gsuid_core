@@ -55,9 +55,11 @@ dependencies = [
     "onnxruntime>=1.24.1",
     "pytakumi>=0.1.0",
     "firecrawl-py>=4.40.0",
+    "genai-prices>=0.1.9",
+    "pydantic-monty>=1.0.0",
 ]
 name = "gsuid-core"
-version = "0.10.8"
+version = "0.11.0"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
@@ -89,6 +91,3 @@ repository = "https://github.com/Genshin-bots/gsuid-core"
 # dev 组是默认组：交付闸的 ruff / basedpyright / pytest 靠 uv sync 装齐。
 # 生产镜像与部署环境用 `uv sync --no-dev` 跳过（见 Dockerfile）。
 default-groups = ["dev"]
-
-[tool.pdm.resolution]
-respect-source-order = true

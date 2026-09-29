@@ -20,7 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Playwright Python 包 + Chromium 及其浏览器依赖
+# 版本须与 uv.lock 的 playwright 一致：它按自身版本下载固定 revision 的 chromium，
+# 不一致会报 "Executable doesn't exist at .../chromium_headless_shell-XXXX"。
+# 改 uv.lock 里的 playwright 时请同步改这里并重建镜像。
+ARG GSCORE_PLAYWRIGHT_VERSION=1.58.0
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install playwright \
+    uv pip install "playwright==${GSCORE_PLAYWRIGHT_VERSION}" \
     && playwright install --with-deps chromium \
     && apt-get clean && rm -rf /var/lib/apt/lists/*

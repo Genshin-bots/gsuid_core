@@ -1,0 +1,9 @@
+{
+  "log.playwright.autoinstall_disabled": "Playwright browser auto-alignment is off ({env}); run playwright install chromium manually when it is missing",
+  "log.playwright.probe_failed": "Failed to probe the Playwright browser, skipping auto-alignment: {error}",
+  "log.playwright.browser_ready": "Playwright browser is ready: {path}",
+  "log.playwright.browser_missing": "Playwright browser is missing, downloading now: {path}",
+  "log.playwright.install_success": "Playwright browser download finished: {path}",
+  "log.playwright.install_incomplete": "Playwright browser download finished but is still unusable; the HTML render fallback may fail: {path}",
+  "log.playwright.install_failed": "Playwright browser download failed (exit code {code}); the HTML render fallback may fail: {output}"
+}

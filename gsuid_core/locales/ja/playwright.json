@@ -1,0 +1,9 @@
+{
+  "log.playwright.autoinstall_disabled": "Playwright ブラウザの自動同期は無効です（{env}）。不足場合は手動で playwright install chromium を実行してください",
+  "log.playwright.probe_failed": "Playwright ブラウザの検出に失敗したため、自動同期をスキップします: {error}",
+  "log.playwright.browser_ready": "Playwright ブラウザの準備が完了しました: {path}",
+  "log.playwright.browser_missing": "Playwright ブラウザが見つからないため、ダウンロードを開始します: {path}",
+  "log.playwright.install_success": "Playwright ブラウザのダウンロードが完了しました: {path}",
+  "log.playwright.install_incomplete": "ダウンロードは完了しましたが、まだ使用できません。HTML レンダリングのフォールバックが失敗する可能性があります: {path}",
+  "log.playwright.install_failed": "Playwright ブラウザのダウンロードに失敗しました（終了コード {code}）。HTML レンダリングのフォールバックが失敗する可能性があります: {output}"
+}

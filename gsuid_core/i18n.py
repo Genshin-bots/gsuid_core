@@ -121,6 +121,7 @@ LOG_MODULE_EMOJI: Dict[str, str] = {
     "db_admin": "🗄️",
     "entity_index": "🧠",
     "htmlrender": "🖼️",
+    "playwright": "🎬",
     "resourcemanager": "📦",
     "ambr": "🎮",
     "upass": "🔑",

@@ -1,0 +1,9 @@
+{
+  "log.playwright.autoinstall_disabled": "playwright 浏览器自动对齐已关闭（{env}），缺失时需手动执行 playwright install chromium",
+  "log.playwright.probe_failed": "playwright 浏览器探测失败，跳过自动对齐: {error}",
+  "log.playwright.browser_ready": "playwright 浏览器已就绪: {path}",
+  "log.playwright.browser_missing": "playwright 浏览器缺失，开始自动下载: {path}",
+  "log.playwright.install_success": "playwright 浏览器下载完成: {path}",
+  "log.playwright.install_incomplete": "playwright 浏览器下载完成但仍不可用，HTML 渲染兜底可能失败: {path}",
+  "log.playwright.install_failed": "playwright 浏览器下载失败（退出码 {code}），HTML 渲染兜底可能失败: {output}"
+}

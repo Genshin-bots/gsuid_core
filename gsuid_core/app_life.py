@@ -13,6 +13,7 @@ from gsuid_core.shutdown import shutdown_event
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from gsuid_core.utils.playwright_autofix import ensure_chromium
     from gsuid_core.webconsole.setup_frontend import setup_frontend_b
     from gsuid_core.utils.download_resource.download_core import check_speed
 
@@ -21,6 +22,9 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(check_speed())
     asyncio.create_task(core_start_execute())
+
+    # playwright 的 chromium 绑死自身版本的 revision，升级后后台补齐；失败只告警
+    asyncio.create_task(ensure_chromium())
 
     async def _bgsetup_frontend_b():
         try:
@@ -62,6 +66,8 @@ from gsuid_core.http_trace_middleware import HttpTraceMiddleware  # noqa: E402
 
 app.add_middleware(HttpTraceMiddleware)
 # 后注册的中间件更靠外：动态 gzip 兜底未预压的文本响应；已有 Content-Encoding 的 .br/.gz 不会再压。
+# starlette >= 0.46 起 GZipMiddleware 会跳过 text/event-stream（#2871），SSE 不会被攒批延迟送达；
+# 测试 tests/test_sse_gzip_bypass.py 钉住该行为，锁依赖时若降级会立刻失败。
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
 from gsuid_core.ai_core.http_agent.register import register_http_agent_routes  # noqa: E402

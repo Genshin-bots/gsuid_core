@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from gsuid_core.ai_core.http_agent.types import SseEventName
 
 SSE_HEADERS: Dict[str, str] = {
-    "Cache-Control": "no-cache",
+    # no-transform：按 RFC 7234 要求中间链路不得压缩/改写正文，nginx 等反代据此关掉 gzip。
+    "Cache-Control": "no-cache, no-transform",
     "X-Accel-Buffering": "no",
 }
 
