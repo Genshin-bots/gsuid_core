@@ -145,5 +145,6 @@
   "log.agent.video_openai_file_uploaded": "[GsCoreAIAgent] Video {p0} uploaded via /v1/files → {file_id}",
   "log.agent.video_openai_files_missing": "[GsCoreAIAgent] /v1/files unavailable; video {p0} ({size:.1f}MB) will not use unbounded base64 (frames or placeholder)",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] Wall-clock soft budget exceeded ({p0:.0f}s); injecting convergence hint",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] Failed to write token usage log: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] Failed to write token usage log: {_le}",
+  "log.agent.pydanticai_quota_exhausted": "[PydanticAI] Model plan quota exhausted, not retrying this run: {e}"
 }

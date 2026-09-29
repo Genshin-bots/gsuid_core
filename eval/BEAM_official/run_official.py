@@ -61,6 +61,7 @@ _inherit_core_token()
 import httpx  # noqa: E402
 
 from eval.common import DEFAULT_BASE_URL, load_json  # noqa: E402
+from eval.common.io import replace_with_retry  # noqa: E402
 from eval.common.beam_runner import (  # noqa: E402
     DEFAULT_TIMEOUT,
     cmd_clear,
@@ -196,7 +197,7 @@ def _save_progress(spec: ScaleSpec, doc: dict[str, list[int]]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    replace_with_retry(tmp, path)
 
 
 def _mark(spec: ScaleSpec, stage: str, conv: int) -> None:
@@ -680,6 +681,7 @@ async def cmd_reprobe(
     timeout: float,
     *,
     concurrency: int = 7,
+    convs: list[int] | None = None,
 ) -> int:
     """已摄入的 conv 只重测，不 clear、不重灌。"""
     parsed = urlparse(base_url)
@@ -696,7 +698,7 @@ async def cmd_reprobe(
     if not ingested:
         print(f"[reprobe] {spec.key} 无已摄入 conv", flush=True)
         return 2
-    for conv in range(spec.n_conv):
+    for conv in convs if convs else range(spec.n_conv):
         if conv not in ingested:
             print(f"[reprobe] {spec.key} conv={conv} 未摄入，跳过", flush=True)
             continue
@@ -802,6 +804,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ladder")
     p_reprobe = sub.add_parser("reprobe")
     p_reprobe.add_argument("--scale", required=True, choices=SCALE_ORDER)
+    p_reprobe.add_argument(
+        "--conv",
+        type=int,
+        action="append",
+        default=None,
+        help="只重测指定 conv（可重复）。缺省跑该档全部已摄入 conv",
+    )
     p_rep = sub.add_parser("report")
     p_rep.add_argument("--scale", default="", choices=("", *SCALE_ORDER))
     return p
@@ -851,7 +860,8 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.cmd == "reprobe":
         spec = _spec(str(args.scale))
         ensure_data(spec)
-        return await cmd_reprobe(spec, base_url, timeout, concurrency=concurrency)
+        selected = list(args.conv) if isinstance(args.conv, list) else None
+        return await cmd_reprobe(spec, base_url, timeout, concurrency=concurrency, convs=selected)
     print(f"unknown cmd {args.cmd}", flush=True)
     return 1
 

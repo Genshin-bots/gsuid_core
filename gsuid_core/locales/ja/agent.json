@@ -145,5 +145,6 @@
   "log.agent.video_openai_file_uploaded": "[GsCoreAIAgent] 動画 {p0} を /v1/files にアップロード → {file_id}",
   "log.agent.video_openai_files_missing": "[GsCoreAIAgent] /v1/files が使えないため、動画 {p0}（{size:.1f}MB）は無制限 base64 にせず、フレーム抽出またはプレースホルダにします",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 壁時計のソフト予算を超過しました（{p0:.0f} 秒）。収束ヒントを注入します",
-  "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}"
+  "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}",
+  "log.agent.pydanticai_quota_exhausted": "[PydanticAI] モデルの利用上限に達しました。再試行せず終了します: {e}"
 }

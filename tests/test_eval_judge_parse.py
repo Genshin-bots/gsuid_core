@@ -109,6 +109,57 @@ def test_kendall_tau_b_perfect_and_reversed() -> None:
     assert n_yes == 1
 
 
+def test_align_uses_max_cardinality_not_greedy_first_fit() -> None:
+    """贪心 first-fit 会因为「前排抢走、后排无路」而丢掉本可命中的行。
+
+    R1 有 A1/A2 两个候选却先抢 A1，A2 因此被 R2 占死，R1 再也换不到 A2；
+    正确解是让 R1 让出 A1 去拿 A2、R3 接手 A1，三条全中。贪心只能匹配 2 条。
+    """
+    from eval.common.judge import align_from_eq_matrix
+
+    mat = [
+        [True, True, False],  # R1: A1 或 A2
+        [False, True, True],  # R2: A2 或 A3
+        [True, False, False],  # R3: 只认 A1
+    ]
+    align = align_from_eq_matrix(mat)
+    matched = [a for a in align if a is not None]
+    assert len(matched) == 3, f"最大基数应为 3，贪心只会给 2；实际 {align}"
+    assert sorted(a for a in matched if a is not None) == [1, 2, 3], f"一对一被破坏: {align}"
+
+
+def test_align_recovers_edges_greedy_discarded() -> None:
+    """BEAM 100K conv=1 EO 实测形态：yes=4/25 却只对齐 3 行，多余命中被一对一挤掉。
+
+    这里构造「两行争同一列 + 一行争同一列」的组合，最大匹配应把四行全部接住。
+    """
+    from eval.common.judge import align_from_eq_matrix
+
+    mat = [
+        [False, False, True, False, False],  # R1 -> A3
+        [False, False, False, False, True],  # R2 -> A5
+        [False, False, False, False, True],  # R3 -> A5（R2 的同列竞争者）
+        [False, False, True, False, False],  # R4 -> A3（R1 的同列竞争者）
+        [False, False, False, True, False],  # R5 -> A4
+    ]
+    align = align_from_eq_matrix(mat)
+    # 可用列只有 A3/A4/A5 三列，最大匹配就是 3；关键是不得把 A4 也漏掉
+    assert align[4] == 4
+    assert len([a for a in align if a is not None]) == 3
+
+
+def test_align_keeps_unmatched_rows_none() -> None:
+    """无任何 YES 的行仍是 None；空矩阵不炸。"""
+    from eval.common.judge import align_from_eq_matrix
+
+    assert align_from_eq_matrix([]) == []
+    mat = [
+        [True, False],
+        [False, False],
+    ]
+    assert align_from_eq_matrix(mat) == [1, None]
+
+
 def test_parse_beam_order_keeps_align_and_metrics() -> None:
     from eval.common.judge import attach_order_metrics, parse_beam_judge_response
 

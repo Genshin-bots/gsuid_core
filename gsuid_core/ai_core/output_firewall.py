@@ -81,14 +81,14 @@ _MODEL_TERMS: Tuple[str, ...] = (
 )
 
 # 系统 / 技术术语（出戏痕迹）——**硬词**：任何角色语境下出现都算泄露，裸子串匹配。
-# 裸 "temperature" 不入词库（天气回复高频合法），由 _SAMPLING_PARAM_RE 按取值形态识别。
+# 裸 temperature / traceback 不入词库（天气、代码评审高频合法），改由 _SAMPLING_PARAM_RE
+# 与 _TECH_DUMP_RE 按取值形态识别。
 # 训练数据/参数量/上下文窗口/知识截止/采样参数 是 AI 行业闲聊高频词（"7B参数量真能打"），
 # 移到 _CTX_TECH_SELF_RE：仅绑定第一人称（"我的训练数据"）才算；"供应商"删除（电商日常词，
 # 真泄露必伴随其他硬词）。与 C-5"聊行业新闻正常参与"对齐。
 _SYSTEM_TERMS: Tuple[str, ...] = (
     "systemprompt",
     "系统提示词",
-    "traceback",
     "max_tokens",
     "maxtokens",
     # 框架内部用语（对用户念出即出戏；工具名/句柄见 _FRAMEWORK_LEAK_RE）
@@ -152,12 +152,14 @@ _SYSTEM_COPY_LEAK_RE = re.compile(
 )
 
 # 工具/子代理回灌的技术堆栈或状态 JSON 被模型当台词复读 → 机器腔熔断
+# 状态码只认 4xx/5xx：2xx 是成功态，"接口 status_code 返回 200" 是运维/代码评审日常，
+# 按 \d{3} 无差别拦会把整条 scrub 成兜底句（与裸 traceback 同类的误杀面）。
 _TECH_DUMP_RE = re.compile(
     r"Traceback \(most recent call last\)"
     r"|File \"[^\"]+\", line \d+"
-    r"|\bstatus_code\s*[:=]\s*\d{3}\b"
-    r"|[\"']status[\"']\s*:\s*\d{3}"
-    r"|\{['\"]status['\"]\s*:\s*\d{3}"
+    r"|\bstatus_code\s*[:=]\s*[45]\d\d\b"
+    r"|[\"']status[\"']\s*:\s*[45]\d\d"
+    r"|\{['\"]status['\"]\s*:\s*[45]\d\d"
     r"|\bat 0x[0-9a-fA-F]+\b"
     r"|pydantic_core|pydantic_ai\.",
     re.IGNORECASE,
@@ -393,7 +395,7 @@ def check_ooc(
     _fund = _fund_claim_hit(text, user_text)
     if _fund is not None:
         return FirewallHit(category="fund_claim", matched=[_fund])
-    # 机器腔/堆栈：优先于裸 system 词（traceback 同时在词库里）
+    # 机器腔/堆栈：优先于裸 system 词
     if _TECH_DUMP_RE.search(_CODE_FENCE_RE.sub(" ", text)):
         return FirewallHit(category="machine_dump", matched=["技术堆栈/状态码"])
     _dev = _dev_vocab_hit(text)

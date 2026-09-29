@@ -171,6 +171,16 @@ FIREWALL_BENIGN: List[str] = [
     "你直接发「晚安」给她",
     "今天突然想起2020年5月25日那天",
     "现在想想2023年1月1日那次",
+    # —— 讲报错 / 代码评审里的 "traceback"（曾是 _SYSTEM_TERMS 裸词误杀面）——
+    # BEAM 500K 实测：一篇 3789 字的 Flask 安全评审因正文出现 traceback 被整条 scrub 成兜底句
+    "报错信息里有 traceback，栈顶是 config.py 第 3 行，这个异常得看调用栈才能定位",
+    "把 traceback 贴出来我看看，光看报错摘要猜不出来源",
+    "这段 traceback 指向的是连接池超时，不是 SQL 本身写错了",
+    "You should wrap that in try/except and log the traceback so you can see which call failed",
+    # —— 状态码只认 4xx/5xx：2xx 是成功态，报成功码不是机器腔泄露 ——
+    "接口 status_code 返回 200，数据拿到了",
+    "刚测了一下，status_code = 201，创建成功了",
+    "网关那边 status_code: 302 跳登录，不用管",
 ]
 
 
@@ -208,9 +218,18 @@ def test_firewall_positive_controls() -> None:
         "我的api密钥放在后台配置里，不能给你看啦",
         "呼工具里没挂实时天气，搜出来都是气候平均",
         "天气这个我没装那玩意儿，查不了实时",
+        # 真堆栈：裸 traceback 移出词库后，必须仍由 _TECH_DUMP_RE 的精确形态拦下
+        'Traceback (most recent call last):\n  File "app.py", line 42, in handler\n    raise ValueError(x)',
+        '  File "worker.py", line 7, in poll\nTimeoutError: queue empty',
+        "status_code: 500 一直失败，重试也没用",
+        "网关又 502 了，status_code = 503，上游说是集群重启",
     ]
     for s in leaks:
         assert check_ooc(s) is not None, f"真泄露漏放: {s!r}"
+    # 堆栈类必须归到 machine_dump（走机器腔兜底），不能因移出词库而掉出拦截
+    for s in leaks[-4:]:
+        hit = check_ooc(s)
+        assert hit is not None and hit.category == "machine_dump", f"堆栈未归入 machine_dump: {s[:40]!r}"
     # 句首认领式承认（多轮软磨下的真实泄露形态，无第一人称主语）——认领判定带
     # 身份逼问语境门：泄露高发场景的来话必然在逼问身份，正向对照按真实语境传 user_text。
     admit_leaks = [

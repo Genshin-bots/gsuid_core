@@ -249,9 +249,10 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "main_channel_visible_limit": GsIntConfig(
         "主通道单轮出站上限",
-        "同 run 主通道可见台词段数上限(接任务应 + 终局各占一格)。修改后即时生效",
+        "本项管模型单轮能发几段 TextPart（接任务应 + 终局各占一格）。"
+        "一段拆几条由人格「说话强度」决定，两闸相乘。修改后即时生效",
         2,
-        options=[1, 2, 3],
+        options=[1, 2, 3, 4, 5, 6],
     ),
     "group_lurk_mode": GsBoolConfig(
         "群聊未点名默认静默",

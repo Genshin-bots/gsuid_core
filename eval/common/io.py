@@ -36,6 +36,23 @@ def load_eval_data(json_path: str) -> List[Dict[str, Any]]:
     return data
 
 
+def replace_with_retry(tmp: str, path: str, attempts: int = 8) -> None:
+    """原子替换；Windows 目标被 Defender / 索引 / 读句柄锁住时会 WinError 5。
+
+    单次 PermissionError 会让整条评测命令崩掉并丢失阶段标记，故指数退避重试。
+    """
+    delay = 0.05
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+
+
 def dump_json(path: str, data: Any) -> None:
     """把 Python 对象以格式化 JSON 写入文件（原子覆盖：写 temp 再 os.replace）。
 
@@ -45,17 +62,7 @@ def dump_json(path: str, data: Any) -> None:
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    last_err: PermissionError | None = None
-    for _ in range(8):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError as e:
-            # Windows：目标文件被 Defender / 索引锁住时 replace 会 WinError 5
-            last_err = e
-            time.sleep(0.05)
-    if last_err is not None:
-        raise last_err
+    replace_with_retry(tmp, path)
 
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:

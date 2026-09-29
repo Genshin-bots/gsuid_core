@@ -435,6 +435,51 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 - 状态只写 `extra["output_gate"]` → `GateBag`，勿发明平行计数键。
 - `check_ooc(tier="plain")` 生产尚无调用方，别当它已接线。
 
+### 🔴 拆条靠空行：呈现层任何一步都不能压掉 `\n\n`（2026-09-28 修复）
+
+`send_chat_result` 拆多条气泡的唯一分隔符是 `\n\s*\n`。这条链路上**任何**"顺手清理空行"的
+写法都会让多消息能力静默全灭，且单测某个正则时完全看不出来。
+
+已修实例：`strip_framework_user_leaks` 曾用 `splitlines()` + `"\n".join()` 剥信封，把模型写的
+空行全压成单换行。结果 `re.split(r"\n\s*\n", …)` 永远只切出 1 块、`_PERSONA_MAX_BUBBLES`
+成了永不触发的死代码——人格「连发 2-3 条短消息」在代码层面失效两个月无人发现
+（实机复盘：4 群 60 条可见台词，`实际气泡分布 {1: 60}`，其中 10 条模型本意就是 2 条）。
+
+改呈现层/归一化链时：
+
+- **不许**用 `splitlines()` + `"\n".join()` 重排正文（它丢"哪里有空行"的信息）；要保留
+  就按 `"\n"` 切、显式保留**至多一个**空行作分隔。归一化链里已有两处同类坑：
+  `strip_framework_user_leaks`（已修）与 `re.sub(r"[ \t]{2,}", …)`（早前已改成只压空格/制表符）。
+- 端到端锁必须落在 `send_chat_result`（断言 `Bot.send` 被调几次），
+  `tests/test_send_chat_result_bubbles.py`；只单测 `_normalize_html_linebreaks` 层级太浅。
+- 单换行**不是**分隔符：「一段话三行」是合法形态，靠提示词让模型改用空行，不靠呈现层切。
+
+### 🔴 气泡上限是两把闸，且只有一把可配
+
+| 闸 | 位置 | 管什么 | 默认 | 可配 |
+|----|------|--------|------|------|
+| `main_channel_visible_limit` | `ai_config.py` | 模型单轮能发几段 TextPart | 2 | 是（≤6） |
+| `chat_style.bubbles` | `persona/chat_style.py` | 一段 TextPart 能拆成几条气泡 | 2 | 是 |
+
+两把闸相乘，只调一把会「改了没反应」。`chat_style` 是**建 session 时**进 system 稳定前缀的
+（§1.7：会话内不得改串），改配置需新会话生效。
+
+### 🔴 429 不都是限流：套餐打满要熔断而不是重试
+
+`const._RETRYABLE_4XX` 把 429 归为可重试，但 MiniMax 的**用量上限**（2056）也走 429。
+重试必然复现，还会把同一句兜底文案在群里连喷 N 次。`ai_core/quota_guard.py` 按错误码/关键词
+分四类：`quota`（fail-fast + 按激活模型配置分闸）/ `rate_limit` / `overloaded`（仍退避重试）/ `other`。
+
+- 分闸键用 `_quota_breaker_key()`（只读 `_active_config_name` / `model_config_name`），
+  **不要**在请求前 / 异常路径调 `_routed_provider()`——那会读 `model` / `task_level`，让熔断判定本身
+  成为新的失败源（`tests/test_tool_safety.py` 的裸 fake 会直接 AttributeError）。
+- 闸开着时在 `_execute_run` 的 `while` 入口短路，不要等 `_execute_run_once` 打完一轮再看闸。
+  except 里只按本次 `classify_provider_error` 走配额文案，别把超时/内容审核改写成套餐打满。
+- 兜底去重只压**配额类**重复失败；超时等偶发失败不压——用户重问就该重答。
+  成功一轮要 `quota_breaker.reset()`，否则后续真实失败也被静默。
+  `_opened_at` / `_notified_at` 在读取时清过期项（session 去重键只增不减）。
+
+
 ### 🔴 低俗谐音 / 钓鱼识别是 prompt 层防线，不要复活词库
 
 初版曾做过 `_LEWD_TERMS` 词库 + scheduler 内容闸门，**已于 2026-07-08 评审整体移除**：

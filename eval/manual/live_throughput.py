@@ -26,7 +26,6 @@ URL = "ws://127.0.0.1:8765/ws/ThruBot"
 OUT = Path(__file__).resolve().parents[2] / "eval" / "manual" / "_ab_out"
 USER = "99000002"
 GROUP = "99000002"
-
 NOISE = [
     "今天天气真不错啊大家吃了吗",
     "哈哈哈哈哈哈哈",
@@ -94,10 +93,10 @@ def _count_drops(tag: str) -> int:
     return n
 
 
-async def run(tag: str, count: int, interval_ms: int) -> None:
+async def run(tag: str, count: int, interval_ms: int, port: str) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     proc = _core_proc()
-    uri = URL + "?token=1"
+    uri = f"ws://127.0.0.1:{port}/ws/ThruBot?token=1"
     async with websockets.connect(uri, max_size=None) as ws:
         # 先灌 20 条预热，避免把插件首次触发的懒加载算进来
         for i in range(20):
@@ -155,5 +154,6 @@ if __name__ == "__main__":
                 sys.argv[1],
                 int(sys.argv[2]) if len(sys.argv) > 2 else 300,
                 int(sys.argv[3]) if len(sys.argv) > 3 else 20,
+                sys.argv[4] if len(sys.argv) > 4 else "8765",
             )
         )

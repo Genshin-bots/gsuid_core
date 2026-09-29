@@ -21,7 +21,8 @@
 |------|--------|------|------|
 | **Agent 硬核套件** | 群聊 Agent：工具、寻址、人格、跨轮、安全、出图… | 独立 `user_id`；**pass^k=1**；通道核 12 工具 | **443/496 = 89.3%**（2026-09-04） |
 | **LongMemEval-S（生产 Chat）** | 目录卡 + 模型自己 `search_cognition` | `--enable-tools --no-memory-eval --inject-date` | **462/500 = 92.4%**（2026-09-03） |
-| **BEAM 100k（官方 128K）** | 多会话记忆探针（20 conv × 20 题） | 评测助手 + tools；`batch_observe` 灌对话；`clock_at` | **226/400 = 56.5%**（2026-09） |
+| **BEAM 100k（官方 128K）** | 多会话记忆探针（20 conv × 20 题） | 评测助手 + tools；`batch_observe` 灌对话；`clock_at` | **226/400 = 56.5%**（2026-09 · judge v1 贪心对齐，待复跑） |
+| **BEAM 500k（官方 500K）** | 同上，500K 语料（4 conv × 20 题） | 同上 | **37/80 = 46.2%**（2026-09-29 · judge v1 贪心对齐，待复跑） |
 | **CorpusQA 128k** | 跨文档统计 / 比较（分层 40 题，每域 10） | 评测助手 + tools；语料 `batch_observe`；不塞全文进当前轮 | **36/40 = 90.0%**（2026-09-28） |
 | **CorpusQA 1m** | 同上，1M 语料分层 40 题 | 同上 | **10/40 = 25.0%**（2026-09-27） |
 | **LOFT RAG · nq · 128k** | GlobalQA 语料级问答（100 题） | 评测助手 + tools；语料灌记忆 | **94/100 = 94.0%**（2026-09） |
@@ -30,6 +31,11 @@
 ### 1.0 BEAM 100k（官方 128K）
 
 报告：`eval/BEAM_official/results/100k/_runs/v2_reprobe_m3_c11/report.md`。
+
+> ⚠️ **判分器版本**：本节数字由 judge v1（`align_from_eq_matrix` 贪心 first-fit）产出。
+> 贪心在多行争抢同一列时会丢掉本可命中的边，而 `event_ordering` 的通过条件是「全对齐」，
+> 故 EO 类被系统性低估。判分器已改为最大基数匹配（Kuhn 增广路），
+> 重跑 judge + report 后本节数字需上调，勿拿它当现役基线。
 
 | 类别 | 过线 |
 |------|------|
@@ -45,7 +51,29 @@
 | temporal_reasoning | 29/40 |
 | **合计** | **226/400 = 56.5%** |
 
-### 1.1 CorpusQA 128k（分层 40 题）
+### 1.1 BEAM 500k（官方 500K）
+
+报告：`eval/BEAM_official/results/500k/report.md`。
+
+> ⚠️ **判分器版本**：同上，judge v1（贪心对齐）产物。该档 EO 只有 8 题，
+> 丢一两边就足以让 `event_ordering 0/8`、`coverage 41.9%`、`τ官 0.000` 全线偏低。
+> 复跑优先级：500k 题目量小、判分开销最低，适合先拿它验证 Kuhn 对齐的增益。
+
+| 类别 | 过线 |
+|------|------|
+| abstention | 5/8 |
+| contradiction_resolution | 6/8 |
+| event_ordering | 0/8（coverage 41.9% · τ官 0.000） |
+| information_extraction | 4/8 |
+| instruction_following | 4/8 |
+| knowledge_update | 6/8 |
+| multi_session_reasoning | 3/8 |
+| preference_following | 6/8 |
+| summarization | 0/8 |
+| temporal_reasoning | 3/8 |
+| **合计** | **37/80 = 46.2%** |
+
+### 1.2 CorpusQA 128k（分层 40 题）
 
 报告：`eval/corpusqa/results/128k/report_n40_v15.md`。
 
@@ -57,7 +85,7 @@
 | real_estate_en | 7/10 (70%) |
 | **合计** | **36/40 = 90.0%** |
 
-### 1.2 CorpusQA 1m（分层 40 题）
+### 1.3 CorpusQA 1m（分层 40 题）
 
 报告：`eval/corpusqa/results/1m/report_n40_v10.md`。
 
@@ -69,15 +97,15 @@
 | real_estate_en | 4/10 (40%) |
 | **合计** | **10/40 = 25.0%** |
 
-### 1.3 LOFT RAG · nq · 128k
+### 1.4 LOFT RAG · nq · 128k
 
 报告：`eval/loft/results/rag/nq/128k/report_full_v7.md`。**94/100 = 94.0%**。
 
-### 1.4 LOFT retrieval · scifact · 128k
+### 1.5 LOFT retrieval · scifact · 128k
 
 报告：`eval/loft/results/retrieval/scifact/128k/report_full_v7.md`。**87/100 = 87.0%**（recall@1 均值 0.870）。
 
-### 1.5 LongMemEval-S 生产 Chat
+### 1.6 LongMemEval-S 生产 Chat
 
 HTTP **500/500**，`<SILENCE>` **0**。
 
@@ -91,7 +119,7 @@ HTTP **500/500**，`<SILENCE>` **0**。
 | TR | 118/133 (88.7%) |
 | **合计** | **462/500 = 92.4%** |
 
-### 1.6 Agent 硬核套件（pass^k=1）
+### 1.7 Agent 硬核套件（pass^k=1）
 
 报告：`eval/agent/results/_kernel_unify_k1.json`。
 
@@ -176,14 +204,20 @@ uv run python eval/run_eval.py longmem run-domains --tag prod7
 # 单规模全流程（ingest + probe + judge）
 uv run python eval/BEAM_official/run_official.py all --scale 100k
 
-# 已灌库只重答
+# 已灌库只重答（不 clear、不重灌；会删掉该 conv 旧的 answers/judge 再重建）
 uv run python eval/BEAM_official/run_official.py reprobe --scale 100k
+
+# 只重答指定 conv（--conv 可重复），做新旧代码对照
+uv run python eval/BEAM_official/run_official.py reprobe --scale 100k --conv 0 --conv 4 --conv 8
 
 # 官方 ladder 顺序（100k → 500k → 1M → 10M）
 uv run python eval/BEAM_official/run_official.py ladder
 ```
 
 口径：评测助手 + `enable_tools` + `memory_eval=False` + `clock_at`。`user_id=beam_off_<scale>_<conv>`。
+
+长跑必须用 `Start-Process` 脱离终端；后台任务有 50 分钟硬上限，单 conv 灌库就会超时被杀。
+旧一轮结果归档在 `results/<scale>/_runs/<tag>/`，对照前先把当前 `answers_*.json` 拷进去。
 
 ### A.4 CorpusQA
 

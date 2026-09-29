@@ -965,10 +965,10 @@ class LoopPhase(RunOnceHost):
                 # 不按工具名特判。hosted 搜索不置位（答案就在 TextPart）。
                 _hard = 0
                 if self.create_by in _MAIN_PERSONA_CREATE_BY and self.persona_name:
-                    from gsuid_core.ai_core.persona.config import persona_config_manager
+                    # 取 chat_style 派生档而非原始配置：否则 terse 人格仍按默认 150 字放行
+                    from gsuid_core.ai_core.persona.chat_style import resolve_chat_style
 
-                    _pc = persona_config_manager.get_config(self.persona_name)
-                    _hard = int(_pc.get_config("speech_len_hard").data)
+                    _hard = resolve_chat_style(self.persona_name).hard
                 _slot = "send_final"
                 if st.suppress_intermediate_text:
                     _light_accept = False

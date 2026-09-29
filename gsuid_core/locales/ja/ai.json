@@ -629,5 +629,6 @@
   "log.ai.tool_risk_refused_node": "[ToolRisk] 非マスターの能力ノードを拒否 node={node_id} user={user_id}",
   "log.ai.tool_risk_refused_tool": "[ToolRisk] 非マスターの高リスクツールを拒否 user={user_id}",
   "log.ai.tool_risk_master_exec_file": "[ToolRisk] マスターがファイルを実行 user={user_id} path={path}",
-  "log.ai.tool_risk_stripped": "[ToolRisk] 非マスター代理から高リスクツールを除去 user={user_id} names={names}"
+  "log.ai.tool_risk_stripped": "[ToolRisk] 非マスター代理から高リスクツールを除去 user={user_id} names={names}",
+  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] 使用量制限の持続失敗により、重複したフォールバック文言を抑制"
 }

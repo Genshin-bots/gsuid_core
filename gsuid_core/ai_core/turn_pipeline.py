@@ -19,6 +19,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.const import ERROR_QUOTA_EXHAUSTED
 from gsuid_core.ai_core.utils import (
     NO_RESULT_TEXT,
     ERROR_RESULT_PREFIX,
@@ -30,6 +31,7 @@ from gsuid_core.ai_core.utils import (
     notify_master_of_budget_block,
 )
 from gsuid_core.message_history import get_history_manager
+from gsuid_core.ai_core.quota_guard import quota_breaker
 from gsuid_core.ai_core.history_format import compose_group_history
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
@@ -255,10 +257,16 @@ async def deliver_run_result(
     if is_error:
         logger.warning(t("log.ai.gscore_sanitized_fallback_user", r=result_text[:200]))
         user_facing = sanitize_error_for_user(result_text, persona_name_from_event(event))
-        try:
-            await send_chat_result(bot, user_facing, ev=event)
-        except Exception as e:
-            logger.warning(t("log.ai.gscore_sanitized_fallback", e=e))
+        # 配额熔断期内会连着若干轮同样失败；同一会话短窗内只放行第一句，其余静默。
+        # 超时等偶发失败不抑制——用户重问就该重答。两种情况都照常私聊主人报详情。
+        quota_hit = ERROR_QUOTA_EXHAUSTED in result_text
+        if quota_hit and not quota_breaker.should_notify(f"notify:{event.session_id}"):
+            logger.info(t("log.ai.gscore_fallback_suppressed_repeat"))
+        else:
+            try:
+                await send_chat_result(bot, user_facing, ev=event)
+            except Exception as e:
+                logger.warning(t("log.ai.gscore_sanitized_fallback", e=e))
         await notify_master_of_agent_error(
             bot=bot,
             ev=event,
@@ -268,6 +276,7 @@ async def deliver_run_result(
         )
         return
     # send_chat_result 只接文本；结构化返回已在 classify_run_result 里 str 化
+    quota_breaker.reset(f"notify:{event.session_id}")
     await send_chat_result(bot, chat_result if isinstance(chat_result, str) else result_text, ev=event)
     logger.info(t("log.ai.gscore_ai_intent_reply_sent_mode", intent=intent))
 

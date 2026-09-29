@@ -698,6 +698,7 @@ eval/corpusqa/data/cache/
 eval/loft/data/
 
 eval/*/results
+eval/manual/_memout/
 
 plans
 

@@ -36,6 +36,10 @@ _CONTENT_REJECT_HINTS = ("sensitive", "content policy", "content_policy", "conte
 # 内容审核错误码（如 MiniMax 1026）。按词边界匹配，避免误命中 request-id / 时间戳里的数字。
 _CONTENT_REJECT_CODES = ("1026",)
 
+# 套餐用量打满（MiniMax 2056 / 各家 quota exhausted）。与 429「速率限制」区别在于：
+# 这个重试必然复现，需要熔断而不是退避重试。判定见 quota_guard.classify_provider_error。
+ERROR_QUOTA_EXHAUSTED = "模型套餐用量已达上限"
+
 # O-A 群聊队头阻塞防护：交互式回复在 _run_lock 上排队超过此秒数（话题大概率已翻篇）
 # 则丢弃本次回复，避免对早已结束的话题"过期答复"。仅作用于 create_by=="Chat" 的主对话。
 STALE_CHAT_REQUEST_TTL = 8.0

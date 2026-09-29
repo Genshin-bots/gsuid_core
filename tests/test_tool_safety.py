@@ -104,6 +104,9 @@ def test_clean_retry_on_last_attempt_reruns(monkeypatch: pytest.MonkeyPatch) -> 
     agent = object.__new__(ga.GsCoreAIAgent)
     agent._run_sent_texts = set()
     agent._last_attempt_tool_calls = ["send_message_by_ai"]
+    # 配额熔断按「本轮激活的模型配置」分闸，错误路径会读它；两个属性 __init__ 必有。
+    agent._active_config_name = None
+    agent.model_config_name = None
     session_log = _Log()
     agent._session_logger = session_log
     calls = {"n": 0}

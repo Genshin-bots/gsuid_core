@@ -629,5 +629,6 @@
   "log.ai.tool_risk_refused_node": "[ToolRisk] 拒绝非主人触发能力代理 node={node_id} user={user_id}",
   "log.ai.tool_risk_refused_tool": "[ToolRisk] 拒绝非主人执行高危工具 user={user_id}",
   "log.ai.tool_risk_master_exec_file": "[ToolRisk] 主人执行文件 user={user_id} path={path}",
-  "log.ai.tool_risk_stripped": "[ToolRisk] 已从非主人代理剥离高危工具 user={user_id} names={names}"
+  "log.ai.tool_risk_stripped": "[ToolRisk] 已从非主人代理剥离高危工具 user={user_id} names={names}",
+  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] 配额熔断期内重复失败，已抑制重复兜底文案"
 }

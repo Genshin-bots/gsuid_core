@@ -15,7 +15,7 @@ import re
 import json
 import math
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Set, Dict, List
 
 import httpx
 
@@ -407,17 +407,33 @@ def parse_eq_pair_lines(text: str, n_r: int, n_a: int) -> List[List[bool]]:
 
 
 def align_from_eq_matrix(mat: List[List[bool]]) -> List[int | None]:
-    """每个 rubric 取第一个未占用的 YES agent 项（1-based）。"""
+    """rubric→agent 一对一对齐，取**最大基数匹配**（Kuhn 增广路）。
+
+    曾用贪心 first-fit（逐行取第一个未被占用的 YES）：前排 rubric 抢走某列后，后排
+    只能被判 None，哪怕判分器对那对也给了 YES。实测 100K conv=1 的 EO 题里
+    ``yes=4``（4 条边成立）却只对齐 3 行，多余的边被一对一约束挤掉。
+    """
     n_r = len(mat)
-    used: set[int] = set()
-    align: List[int | None] = [None] * n_r
-    for i, row in enumerate(mat):
-        for j, hit in enumerate(row):
-            if hit and (j + 1) not in used:
-                align[i] = j + 1
-                used.add(j + 1)
-                break
-    return align
+    n_a = len(mat[0]) if mat else 0
+    match_a: Dict[int, int] = {}  # agent idx(0-based) -> rubric idx
+    match_r: Dict[int, int] = {}  # rubric idx -> agent idx(0-based)
+
+    def try_assign(i: int, seen: Set[int]) -> bool:
+        for j in range(n_a):
+            if not mat[i][j] or j in seen:
+                continue
+            seen.add(j)
+            prev = match_a.get(j)
+            if prev is None or try_assign(prev, seen):
+                match_a[j] = i
+                match_r[i] = j
+                return True
+        return False
+
+    for i in range(n_r):
+        try_assign(i, set())
+
+    return [match_r[i] + 1 if i in match_r else None for i in range(n_r)]
 
 
 def intersect_align(a: List[int | None], b: List[int | None]) -> List[int | None]:

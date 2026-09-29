@@ -3,7 +3,20 @@ import re
 import json
 import base64
 import asyncio
-from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Literal, Optional, Protocol, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Set,
+    Dict,
+    List,
+    Tuple,
+    Union,
+    Literal,
+    Callable,
+    Optional,
+    Protocol,
+    Sequence,
+)
 
 import httpx
 from PIL import Image
@@ -33,6 +46,7 @@ from gsuid_core.ai_core.const import (
     _RETRYABLE_4XX,
     _CONTENT_REJECT_CODES,
     _CONTENT_REJECT_HINTS,
+    ERROR_QUOTA_EXHAUSTED,
 )
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
@@ -187,7 +201,11 @@ _INTERNAL_CHANNEL_RE = re.compile(
 
 
 def strip_framework_user_leaks(text: str) -> str:
-    """剥进用户可见正文的控制信封 / 超轮数 / 内部通道。空则调用方当沉默。"""
+    """剥进用户可见正文的控制信封 / 超轮数 / 内部通道。空则调用方当沉默。
+
+    保留（至多一个）空行：``send_chat_result`` 靠 ``\\n\\s*\\n`` 拆多条气泡，
+    早期版本这里 splitlines+join 把空行全压成单换行，等于让拆条永久失效。
+    """
     if not text:
         return text
     out = _CONTROL_BLOCK_RE.sub("", text)
@@ -195,8 +213,15 @@ def strip_framework_user_leaks(text: str) -> str:
     out = _INTERNAL_CHANNEL_RE.sub("", out)
     if NO_RESULT_TEXT in out:
         out = out.replace(NO_RESULT_TEXT, "")
-    lines = [ln for ln in out.splitlines() if ln.strip()]
-    return "\n".join(lines).strip()
+    kept: list[str] = []
+    for ln in out.split("\n"):
+        if ln.strip():
+            kept.append(ln)
+        elif kept and kept[-1] != "":
+            kept.append("")
+    while kept and not kept[-1]:
+        kept.pop()
+    return "\n".join(kept).strip()
 
 
 def has_model_visible_content(ev: Event) -> bool:
@@ -1378,6 +1403,45 @@ def rewrite_nickname_mentions(
     return _NICK_AT_RE.sub(_repl, text)
 
 
+def _persona_max_bubbles(ev: Event | None) -> int:
+    """单轮主通道气泡上限。按当前人格的 ``chat_style`` 派生，缺人格回落默认档。"""
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
+    from gsuid_core.ai_core.persona.chat_style import resolve_chat_style
+
+    return resolve_chat_style(persona_name_from_event(ev)).bubbles
+
+
+def _outbound_auditor(ev: Event | None) -> Optional[Callable[[str, int, int], None]]:
+    """主通道出站审计回调。拿不到 session 时返回 None（评估 / 子代理等无归属场景）。
+
+    session 在发送前解析一次，不在气泡循环里反复查注册表。
+    """
+    if ev is None or not ev.session_id:
+        return None
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    sess = get_ai_session_registry().get_ai_session(ev.session_id)
+    if sess is None or sess._session_logger is None:
+        return None
+
+    group_id = str(ev.group_id) if ev.group_id else ""
+    target_user = str(ev.user_id) if ev.user_id else ""
+    session_logger = sess._session_logger
+
+    def _log(text: str, index: int, total: int) -> None:
+        session_logger.log_outbound_audit(
+            group_id=group_id,
+            text=text,
+            image_id="",
+            topic="",
+            target_user=target_user,
+            bubble_index=index,
+            bubble_total=total,
+        )
+
+    return _log
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -1530,9 +1594,9 @@ async def send_chat_result(
             await _send_trailing_artifacts()
             return
 
-    # 按空行分割为多条消息；人格连发上限 2 条（真人不会刷 5～7 段）
+    # 按空行分割为多条消息；条数上限由人格「说话强度」决定（chat_style 派生）。
     # 超出部分并入最后一条，避免 IM 刷屏。
-    _PERSONA_MAX_BUBBLES = 2
+    _PERSONA_MAX_BUBBLES = _persona_max_bubbles(ev)
     blocks = [b for b in re.split(r"\n\s*\n", clean_text) if b.strip()]
     if len(blocks) > _PERSONA_MAX_BUBBLES:
         head = blocks[: _PERSONA_MAX_BUBBLES - 1]
@@ -1541,8 +1605,10 @@ async def send_chat_result(
         logger.debug(i18n_t("log.ai.persona_bubbles_clamped", p0=_PERSONA_MAX_BUBBLES))
     _force_at = (at_user_id or "").strip()
     _at_done = False
+    _audit = _outbound_auditor(ev)
+    _total = len(blocks)
 
-    for block in blocks:
+    for _idx, block in enumerate(blocks, 1):
         if not block.strip():
             continue
 
@@ -1567,6 +1633,8 @@ async def send_chat_result(
         await asyncio.sleep(delay)
 
         await bot.send(segments, extra_metadata=extra_metadata)
+        if _audit is not None:
+            _audit(plain_text.strip(), _idx, _total)
 
     # 台词发完补发资料图（制品通道兜底），再发表情包
     await _send_trailing_artifacts()
@@ -2510,6 +2578,8 @@ def sanitize_error_for_user(result_text: str, persona_name: str | None = None) -
     # 用角色短句，不用整行（…）当失败文案（人设可能把括号当可见心声）
     if ERROR_CONTENT_REJECTED in result_text:
         return get_persona_setting(persona_name, "error_content_policy")
+    if ERROR_QUOTA_EXHAUSTED in result_text:
+        return get_persona_setting(persona_name, "error_quota")
     if ERROR_TIMEOUT_TEXT in result_text:
         return get_persona_setting(persona_name, "error_timeout")
     return get_persona_setting(persona_name, "error_generic")
@@ -2520,6 +2590,7 @@ def sanitize_error_for_user(result_text: str, persona_name: str | None = None) -
 _ERROR_TYPE_LABEL_NO_RESULT = "无有效结果"
 _ERROR_TYPE_LABEL_CONTENT = "内容安全"
 _ERROR_TYPE_LABEL_TIMEOUT = "超时"
+_ERROR_TYPE_LABEL_QUOTA = "套餐用量打满"
 _ERROR_TYPE_LABEL_OTHER = "其他错误"
 _ERROR_TYPE_LABEL_UNKNOWN = "未知"
 
@@ -2567,6 +2638,8 @@ def classify_error_type(result_text: str) -> str:
         return _ERROR_TYPE_LABEL_UNKNOWN
     if ERROR_CONTENT_REJECTED in result_text:
         return _ERROR_TYPE_LABEL_CONTENT
+    if ERROR_QUOTA_EXHAUSTED in result_text:
+        return _ERROR_TYPE_LABEL_QUOTA
     if ERROR_TIMEOUT_TEXT in result_text:
         return _ERROR_TYPE_LABEL_TIMEOUT
     return _ERROR_TYPE_LABEL_OTHER

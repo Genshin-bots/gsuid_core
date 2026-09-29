@@ -18,6 +18,7 @@ from ..resource import PERSONA_PATH
 DEFAULT_MASTER_TITLE = "主人"
 DEFAULT_ERROR_GENERIC = "这条消息我处理失败了，稍后再试一次吧"
 DEFAULT_ERROR_TIMEOUT = "刚才网络太慢处理超时了，稍后再试试吧"
+DEFAULT_ERROR_QUOTA = "今天聊得有点多，脑子转不动了，等会儿再找你"
 DEFAULT_ERROR_CONTENT_POLICY = "这条消息触发了内容安全策略，我没法处理"
 DEFAULT_FALLBACK_OOC = "这个不太想说呢。"
 DEFAULT_FALLBACK_MACHINE = "额…出错了，稍后再试"
@@ -43,6 +44,11 @@ DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
         "处理超时",
         "请求超时或网络过慢时发给用户的短句。",
         DEFAULT_ERROR_TIMEOUT,
+    ),
+    "error_quota": GsStrConfig(
+        "套餐用量打满",
+        "模型套餐额度耗尽（熔断期内）时发给用户的短句。建议提示稍后再试，别写具体厂商/套餐名。",
+        DEFAULT_ERROR_QUOTA,
     ),
     "error_content_policy": GsStrConfig(
         "内容安全拦截",

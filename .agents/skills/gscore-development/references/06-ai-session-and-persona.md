@@ -132,11 +132,32 @@ RESOURCE_PATH/persona/{persona_name}/
 | `target_groups` | List[str] | `[]` | 目标群聊 |
 | `inspect_interval` | int | `60` | 巡检间隔（分钟） |
 | `keywords` | List[str] | `[]` | 唤醒关键词 |
-| `speech_len_soft` | int | `60` | 台词软上限（字） |
-| `speech_len_hard` | int | `150` | 台词硬上限（字） |
+| `speech_len_soft` | int | `60` | 台词软上限（字）。**留默认即跟随 `chat_style` 派生** |
+| `speech_len_hard` | int | `150` | 台词硬上限（字）。同上。注意终局正文**没有长度硬拦**（`speech_policy.py` 显式弃用），只写进 prompt 起偏置作用 |
+| `chat_style` | int | `50` | **说话强度** 0~100：0=惜字如金 / 50=默认 / 100=连珠炮 |
 | `enabled_tools` | List[str] | `["*"]` | 启用工具（按插件），管辖向量检索池。`*`=全部插件；`!插件名`=排除；只列具体名=仅这些。空列表=一个都不启用 |
 | `tool_names` | List[str] | `[]` | 显式工具白名单（常驻直装，不经向量检索） |
 | `capability_agents` | List[str] | `["*"]` | 可委派能力代理 node_id。`*`=全部；`!render_agent` 禁用出图。空列表=不可委派 |
+
+#### `chat_style`：发言**形态**档（`persona/chat_style.py`，2026-09-28）
+
+与 `relationship/zones.py` **正交且不重叠**：zone 管「对这个人什么态度」（冷热 / 主动与否），
+`chat_style` 管「发成什么形状」（几条 / 多长 / 怎么分段）。刻意不合并——`zones` 要求同一语义
+只有一处定义，**欲望不在 persona 配置里开第二把尺**。
+
+| `chat_style` | 气泡数 | soft / hard | 分段契约 |
+|---|---|---|---|
+| 0–24 | 1 | 30 / 80 | 一次只说一件事，说完即止，不分段 |
+| 25–74（默认 50） | 2 | 60 / 150 | 默认一整段；层次确实不同才用空行分两条 |
+| 75–100 | 4 | 90 / 200 | 可连发多条：**每条之间用一个空行分隔**，每条独立完整 |
+
+- 契约句只讲**结构**，不含业务垂直词与角色口癖，框架层人格中性（AGENTS.md §1.9）。
+- 建 session 时经 `processor.build_persona_prompt` 进 **system 稳定前缀**，会话内不改串
+  （§1.7）；改配置需**新会话**才生效。
+- 气泡数与 `ai_config.main_channel_visible_limit` 是**两把相乘的闸**，只调一把没反应。
+- ⚠️ 边界对齐 `options=[0, 25, 50, 75, 100]`，**默认 50 必须落在「默认」档**——
+  改分档时别让默认值掉进 terse，否则升级即静默把「最多 2 条」降成 1 条。
+  锁在 `tests/test_send_chat_result_bubbles.py`。
 
 ### 工具三层来源（`enabled_tools` 只管中间一层）
 

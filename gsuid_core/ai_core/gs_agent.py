@@ -34,6 +34,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core import output_gate, output_firewall, angle_bracket_guard
 from gsuid_core.ai_core.const import (
+    ERROR_QUOTA_EXHAUSTED,
     STALE_CHAT_REQUEST_TTL,
 )
 from gsuid_core.ai_core.utils import (
@@ -54,6 +55,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import (
     ToolList,
 )
+from gsuid_core.ai_core.quota_guard import quota_breaker, classify_provider_error
 from gsuid_core.ai_core.prefix_probe import PrefixSnapshot
 from gsuid_core.ai_core.configs.models import (
     AnyModel,
@@ -584,6 +586,14 @@ class GsCoreAIAgent(RunOnceMixin):
             return "gemini"
         return get_provider_for_task(self.task_level)
 
+    def _quota_breaker_key(self) -> str:
+        """配额熔断的分闸键：本轮实际激活的模型配置全名。
+
+        刻意只用 ``__init__`` 必然建好的两个属性：熔断判定在请求前和异常路径上跑，
+        不能让探测 provider（读 model 类 / task_level）成为新的失败源。
+        """
+        return self._active_config_name or self.model_config_name or "unknown"
+
     def _routed_model_support(self, fallback: str | list[str]) -> str | list[str]:
         """本轮实际配置的 model_support；无配置文件时用调用方传入值。"""
         from gsuid_core.ai_core.configs.models import get_model_config_by_full_name
@@ -1027,6 +1037,12 @@ class GsCoreAIAgent(RunOnceMixin):
         total_attempts = max_attempts
         while attempt < total_attempts:
             attempt += 1
+            # 闸开着别再打上游；套餐打满重试必复现。
+            _qkey = self._quota_breaker_key()
+            if quota_breaker.is_open(_qkey):
+                statistics_manager.record_error(error_type="quota_breaker_open")
+                self._session_logger.log_error("quota_breaker_open", "breaker_open")
+                return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
             try:
                 return await self._execute_run_once(
                     user_message=user_message,
@@ -1056,6 +1072,15 @@ class GsCoreAIAgent(RunOnceMixin):
                                 stripped=stripped,
                             )
                         )
+
+                # 只按本次异常分类走配额文案，别把超时/审核改写成套餐打满。
+                _qkind = classify_provider_error(e)
+                quota_breaker.note_hit(_qkey, _qkind)
+                if _qkind == "quota":
+                    logger.warning(i18n_t("log.agent.pydanticai_quota_exhausted", e=e))
+                    statistics_manager.record_error(error_type="quota_exhausted")
+                    self._session_logger.log_error("quota_exhausted", err_str)
+                    return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
 
                 # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast， 不再消耗剩余重试次数。
                 non_retryable = _is_non_retryable_model_error(e)
