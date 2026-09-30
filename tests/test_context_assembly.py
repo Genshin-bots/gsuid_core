@@ -150,7 +150,21 @@ def test_addressed_suffix_keeps_voice_anchor_outside_product_cap() -> None:
         call_to_self=False,
     )
     idle_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=idle, cheap_gate="full")
-    assert suffix_allowed_blocks(idle_ctx) == frozenset()
+    # 未寻址轮不再返回空集：口吻锚（身份连续性）与群转录（"这是个群"）必须留下。
+    # 早先返回空集时策略先删光所有块、豁免集只在 allowed 非空时才补回，机制整体失效。
+    assert suffix_allowed_blocks(idle_ctx) == frozenset({"voice_anchor", "history"})
+    idle_ctx.blocks = {
+        "voice_anchor": voice,
+        "task": "任务块",
+        "relationship": "R" * 80,
+        "memory": "M" * 80,
+        "history": "H" * 500,
+    }
+    _apply_suffix_block_policy(idle_ctx)
+    assert idle_ctx.blocks["voice_anchor"] == voice
+    assert idle_ctx.blocks["history"] == "H" * 500
+    assert "task" not in idle_ctx.blocks
+    assert "memory" not in idle_ctx.blocks
 
 
 def test_directed_assistant_line_is_not_a_user_alias_source() -> None:

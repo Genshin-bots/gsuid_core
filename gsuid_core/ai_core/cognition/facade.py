@@ -1004,10 +1004,11 @@ def render_cognition_block(
     调错库的代价比不调更高——模型于是宁愿用参数知识糊弄过去。
     """
     if not hits:
-        # 空结果必须带下一步，否则模型会原地编或换说法重搜。
+        # 空结果只给「本次没有可用材料」+ 下一步。原文是检索术语 + 工具名，
+        # 模型会照抄这套口径讲给用户（曾直出「无命中 / 未召回 ≠没存过」）。
         return (
-            f"【{header}】query={query[:30]!r} 无命中（本 query 未召回，≠没存过）。"
-            "请换槽位词再 search_cognition；外部用 web_search_tool，专域用 find_tools。"
+            f"【{header}】{query[:30]!r}：本次没有可用材料。"
+            "换一种问法重试；实时事实改用联网来源，专域信息改用对应能力。"
         )
     lines = [f"【{header}】query={(hint_query or query)[:30]!r} 命中 {len(hits)}"]
     # 带时点或对话片段时标明：这是谁说过，不是当前事实。知识条目不贴这句。

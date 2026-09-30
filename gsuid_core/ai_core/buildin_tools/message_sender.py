@@ -368,6 +368,7 @@ async def send_message_by_ai(
         _at_uid = str(_at_raw) if isinstance(_at_raw, str) and _at_raw else None
         if text:
             from gsuid_core.ai_core.utils import send_chat_result
+            from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
             # run 级发送去重（与 gs_agent 主循环共用 extra 里的同一集合）：干净历史重试 /
             # 模型重复调用不再把同一段话发两遍，媒体不受影响（评审修复 F14）
@@ -382,6 +383,11 @@ async def send_message_by_ai(
                     for _mk, _mv in _mention_raw.items():
                         if isinstance(_mk, str) and isinstance(_mv, str) and _mk and _mv:
                             _mentions[_mk] = _mv
+                # 显式 @ 了别人就记给别人，否则记当前说话人；名字对不上目标，必须去掉
+                _meta = turn_reply_metadata(ev)
+                if _at_uid:
+                    _meta["reply_to_user_id"] = _at_uid
+                    _meta.pop("reply_to_user_name", None)
                 await send_chat_result(
                     bot,
                     text,
@@ -389,6 +395,7 @@ async def send_message_by_ai(
                     ooc_check=False,
                     at_user_id=_at_uid,
                     mention_names=_mentions,
+                    extra_metadata=_meta,
                 )
                 if isinstance(_sent_registry, set):
                     _sent_registry.add(text.strip())

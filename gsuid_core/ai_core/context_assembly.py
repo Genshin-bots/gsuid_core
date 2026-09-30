@@ -291,13 +291,20 @@ _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
 
 
 def suffix_allowed_blocks(ctx: "AgentHookContext") -> frozenset[str] | None:
-    """群聊 suffix 允许的产品块。None = 不过滤（私聊 / 无 TurnGraph）。"""
+    """群聊 suffix 允许的产品块。None = 不过滤（私聊 / 无 TurnGraph）。
+
+    未寻址轮只保留 :data:`_SUFFIX_EXEMPT_BLOCKS`（口吻锚 + 群转录）——**这两个不是
+    "被点名才给的加分项"**：口吻锚是身份连续性，群转录是"这是个群、别人在跟谁说话"
+    的唯一证据。早先这里返回空集，而 :func:`_apply_suffix_block_policy` 会先删光不在
+    ``allowed`` 里的块、豁免集却只在 ``allowed`` 非空时才补回，于是豁免机制在未寻址
+    路径上整体失效：软触发轮同时丢掉上文与人格锚，模型只剩一条光消息，只能猜指代。
+    """
     tg = ctx.turn_graph
     if tg is None or not tg.is_group:
         return None
     addressed = bool(tg.call_to_self or tg.ellipsis_followup or tg.task_management)
     if not addressed:
-        return frozenset()
+        return _SUFFIX_EXEMPT_BLOCKS
     return _ADDRESSED_FULL_BLOCKS
 
 

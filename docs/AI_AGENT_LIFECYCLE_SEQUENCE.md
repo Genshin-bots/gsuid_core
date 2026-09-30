@@ -1716,9 +1716,9 @@ session_log entries（磁盘，可稍后刷）：
 
 | 条件 | 行为 | 原因 |
 |------|------|------|
-| `is_subagent` 或 `create_by ∈ {CapabilityAgent, AutoPlanner}` | **跳过** `scrub_or_fallback`（roleplay OOC） | 事实包必含 `res_` / `artifact_put` / `render_agent` 等「框架泄漏」形态词；若 scrub 会整段换成中性兜底句 → 主人格误判失败 |
+| `is_subagent` 或 `create_by ∈ {CapabilityAgent, AutoPlanner}` | **跳过** roleplay OOC scrub | 事实包必含 `res_` / `artifact_put` / `render_agent` 等「框架泄漏」形态词；若 scrub 会整段丢弃 → 主人格误判失败 |
 | 同上 | 仅 `is_tech_dump` → 替换为短错误摘要 | 仍防堆栈回灌 |
-| 其它 Chat 等 return 消费方 | 仍可 scrub | 对用户可见出口保持防火墙 |
+| 其它 Chat 等 return 消费方 | 仍可 scrub（`_ooc_recover_persona_voice` 让人格重说一句，两次不行就原样返回） | 对用户可见出口保持防火墙 |
 
 `create_subagent` 对 capability 回执：
 

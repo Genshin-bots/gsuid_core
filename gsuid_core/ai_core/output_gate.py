@@ -268,13 +268,6 @@ def _eval_angle_bracket(
 # ── 策略：ooc ───────────────────────────────────────────────────────
 
 
-def _persona_from_extra(extra: Dict[str, Any]) -> str | None:
-    if "persona_name" not in extra:
-        return None
-    raw = extra["persona_name"]
-    return raw if isinstance(raw, str) and raw else None
-
-
 def _extra_turn_id(extra: Dict[str, Any]) -> str:
     if "turn_id" not in extra or extra["turn_id"] is None:
         return ""
@@ -324,25 +317,22 @@ def _eval_ooc(
         return None
 
     if hit.category == "machine_dump":
+        # 主通道也走重写：技术堆栈不该由框架罐头代答，改由当前人格自己重说一句
+        # （defer_ooc → run 末 _ooc_rewrite_and_send）。工具通道无 run，当场打回。
         if channel == "main":
             logger.warning(
                 i18n_t(
-                    "log.ai.output_gate_ooc_fallback_machine_dump",
+                    "log.ai.output_gate_ooc_rewrite_machine_dump_main",
                     preview=repr(text[:80]),
                 )
             )
-            return GateResult(
-                decision=GateDecision.FALLBACK,
-                policy="ooc",
-                send_text=of.fallback_machine_text(_persona_from_extra(extra)),
-                ooc_hit=hit,
-                detail=hit.category,
-            )
-        logger.warning(i18n_t("log.ai.output_gate_ooc_rewrite_machine_dump_tool"))
+        else:
+            logger.warning(i18n_t("log.ai.output_gate_ooc_rewrite_machine_dump_tool"))
         return GateResult(
             decision=GateDecision.REWRITE,
             policy="ooc",
             feedback=of.build_rewrite_warning(hit),
+            defer_ooc=channel == "main",
             ooc_hit=hit,
             detail=hit.category,
         )

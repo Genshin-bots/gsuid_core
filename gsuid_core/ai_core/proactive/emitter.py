@@ -191,7 +191,6 @@ async def emit_proactive_message(
         "trigger_reason": trigger_reason,
     }
     from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
-    from gsuid_core.ai_core.output_firewall import fallback_ooc_text
     from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
     pname = persona_name_from_event(event)
@@ -205,6 +204,7 @@ async def emit_proactive_message(
             logger.warning(t("log.ai.firewall_result_hit_ooc_red", p0="fuse", p1="proactive"))
             return False
         if _gr.decision is GateDecision.REWRITE:
+            # 主动播报没有 run 可让人格重说，也不发罐头：不播报（§1.9）
             logger.warning(
                 t(
                     "log.ai.firewall_result_hit_ooc_red",
@@ -212,9 +212,11 @@ async def emit_proactive_message(
                     p1=(_gr.ooc_hit.matched if _gr.ooc_hit is not None else ""),
                 )
             )
-            out_msg = fallback_ooc_text(pname)
-        elif _gr.decision is GateDecision.FALLBACK:
-            out_msg = _gr.send_text or fallback_ooc_text(pname)
+            return False
+        if _gr.decision is GateDecision.FALLBACK:
+            out_msg = _gr.send_text
+            if not out_msg:
+                return False
     await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
     from gsuid_core.ai_core.outbound import record_outbound, proactive_directed_target
 

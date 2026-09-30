@@ -8,10 +8,8 @@ from gsuid_core.ai_core.persona.prompts import (
 )
 from gsuid_core.ai_core.persona.resource import extract_tone_markers
 from gsuid_core.ai_core.persona.settings import (
-    DEFAULT_FALLBACK_OOC,
     DEFAULT_MASTER_TITLE,
     DEFAULT_ERROR_GENERIC,
-    DEFAULT_FALLBACK_MACHINE,
     default_phrase,
     get_master_title,
     get_persona_setting,
@@ -23,8 +21,6 @@ def test_defaults_are_persona_neutral() -> None:
     for s in (
         DEFAULT_MASTER_TITLE,
         DEFAULT_ERROR_GENERIC,
-        DEFAULT_FALLBACK_OOC,
-        DEFAULT_FALLBACK_MACHINE,
         default_phrase("error_timeout"),
         default_phrase("error_content_policy"),
     ):
@@ -69,8 +65,35 @@ def test_empty_task_ack_does_not_use_tone_markers(tmp_path, monkeypatch) -> None
 def test_get_persona_setting_without_persona_uses_template() -> None:
     assert get_master_title(None) == DEFAULT_MASTER_TITLE
     assert get_persona_setting(None, "error_generic") == DEFAULT_ERROR_GENERIC
-    assert get_persona_setting("", "fallback_ooc") == DEFAULT_FALLBACK_OOC
     assert get_persona_setting("不存在的人格xyz", "master_title") == DEFAULT_MASTER_TITLE
+
+
+def test_canned_interception_fallbacks_are_gone() -> None:
+    """出戏拦截不再有罐头文案：命中由当前人格重说一句，重说不出来就沉默。
+
+    留下的只有供应商侧失败短句（超时 / 套餐 / 审核）——那不是「角色在说话」。
+    """
+    from gsuid_core.ai_core import output_firewall
+    from gsuid_core.ai_core.persona import settings as settings_mod
+
+    for key in ("fallback_ooc", "fallback_machine"):
+        assert key not in settings_mod.DEFAULT_PERSONA_SETTINGS, f"{key} 配置项没删干净"
+        assert settings_mod.default_phrase(key) == ""
+        assert get_persona_setting(None, key) == ""
+    for name in ("DEFAULT_FALLBACK_OOC", "DEFAULT_FALLBACK_MACHINE"):
+        assert not hasattr(settings_mod, name), f"{name} 常量没删干净"
+    for name in ("get_fallback_ooc", "get_fallback_machine"):
+        assert not hasattr(settings_mod, name), f"{name} 访问器没删干净"
+    for name in (
+        "fallback_ooc_text",
+        "fallback_machine_text",
+        "PERSONA_FALLBACK_TEXT",
+        "MACHINE_FALLBACK_TEXT",
+    ):
+        assert not hasattr(output_firewall, name), f"{name} 没删干净"
+    # 供应商侧失败短句仍在
+    assert default_phrase("error_timeout").strip()
+    assert default_phrase("error_quota").strip()
 
 
 def test_settings_roundtrip(tmp_path, monkeypatch) -> None:

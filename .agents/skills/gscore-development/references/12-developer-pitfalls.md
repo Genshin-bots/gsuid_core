@@ -140,12 +140,16 @@ Session ID 群聊**不含 user_id**（`…:group:{group_id}`），群内共享 S
 Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 AI "自我总结思考过程"，必须
 **直接回答用户原问题**。正确做法（`gs_agent.py` v4）：
 
-- `_extract_run_context()` 按轮次提取"用户原问题 + 已知事实 + LLM 中间推理"打包成**一条干净
-  消息**；`message_history=[]`（排除上一轮"工具调用模式"惯性）。
+- 证据只认**本轮**：`st.run_tool_outputs`（折叠前的真实回执正文，工具名不算材料）+
+  `st.thinking_segments`。**不要**把 `self.history` 抽出的旧事实标成「已获取的信息」——它作为
+  上下文经 `message_history` 给出即可，再当证据只会让总结拿旧话题答当前问题。
+- 本轮一份材料都没有时：旁观/未寻址轮 `<SILENCE>`；私聊或 @点名轮走
+  `_deliver_no_material_reply`，用人设口吻认一句「没答上来」（措辞由 `ANSWER_CONTRACT` +
+  `meta_narration` 闸兜住）。**禁止**留"按你自己的知识回答"这种编造入口。
 - fallback Agent `tools=[]`（从根源消除 schema 注入）、**不带** `deps_type/deps`、`retries=0`、
   `usage_limits=UsageLimits(request_limit=1)`。
-- 错误处理一致性：有 `bot` 时 `bot.send()` 发最终错误并 `return ""`；无 `bot` 时返回字符串由
-  调用方处理——**避免"安抚消息 + 错误消息"双发**。
+- 兜底总结里的异常**不捕获**：超时/网络/5xx 要冒泡给 `_execute_run` 统一重试，也别往群里塞
+  框架原文（`log.ai_agent.chain_too_long_summary` 那类 locale 串曾整条外泄过）。
 
 **瞬时失败重试（核心回复请求）**：`_execute_run` 现为重试包装——单次执行落在 `_execute_run_once`，
 网络/超时/5xx/529 等瞬时故障以异常冒泡，等 `_RUN_RETRY_DELAY`(3s) 后重试，至多 `_MAX_RUN_ATTEMPTS`(3)
@@ -416,9 +420,10 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 
 | 路径 | 检测点 | 命中行为 |
 |------|--------|----------|
-| 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；软 OOC 注入系统提醒，提醒后放行下一句；无下一轮 → 自判发送；machine_dump → FALLBACK；delivery_narration → FUSE |
+| 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；软 OOC 注入系统提醒，提醒后放行下一句；无下一轮 → 自判发送；machine_dump → REWRITE+defer（同 never-release 走人格重说）；delivery_narration → FUSE |
 | 工具发送（`send_message_by_ai`） | `tool_gate_feedback`（历史别名 `gate_warn_once`） | 软 OOC 系统提醒、不二次放行（改用正文）；尖括号与 never-release 持续打回 |
-| 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `check_ooc` + 尖括号 sanitize | 替换 `PERSONA_FALLBACK_TEXT` / 删非法标签 |
+| 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `check_ooc` + 尖括号 sanitize | 丢弃台词 / 删非法标签，**不发罐头** |
+| run 末 never-release 恢复 | `_ooc_recover_persona_voice` | 当前人格重说一句 → 复检 → 再给一次「只许结论」；两次都不干净：人格/一致性类**原样发送**（`_LAST_RESORT_SEND_ORIGINAL`），`fund_claim`/`machine_dump` 与模型主动沉默才丢弃（`_ooc_safe_outbound` / settle return 出口同此口径） |
 
 - **DELIVERED 终局态（2026-08-10）在 gate 之前**：`send_message_by_ai` 带台词成功交付 →
   本 run `speech_policy="delivered"`，`should_block_user_visible_text` 对非 SILENCE 一律拦
@@ -526,9 +531,11 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 历史事故 ×2：内容闸门拒绝文案写死"早柚才不记呢"（生产 persona 是达妮娅→自我指涉错乱）；
 框架级前摇台词模块（已整体移除，见下）。规矩：
 
-- **框架层给用户的文本要么人格中性，要么是"给 Agent 的指令"让它自己组织语言**
-  （工具 return 天然是反馈通道）。末端兜底（`PERSONA_FALLBACK_TEXT`）必须中性，
-  禁止抄默认人格口癖（唔/呼/zzz/卷轴）。
+- **框架层给用户的文本要么是"给 Agent 的指令"让它自己组织语言，要么是供应商侧失败短句**
+  （工具 return 天然是反馈通道）。**出戏拦截没有罐头兜底**（2026-09）：`fallback_ooc` /
+  `fallback_machine` 键与 `PERSONA_FALLBACK_TEXT` 已删除，命中一律让当前人格重说一句。
+  两次都不干净时也别再写"人格中性但仍是罐头"的句子（唔/呼/zzz/卷轴 更不行）：
+  人格/一致性类原样发送，只有 `fund_claim` / `machine_dump` 走沉默。
 - 口癖配额从当前人格卡 Tone Markers 解析，禁止 `endswith(("zzz","呼","唔"))`。
 - 意图分类 / 规划词表禁止收插件专属域词（圣遗物/命座/模拟盘/研报）。垂直能力靠插件
   `covers` / 带前缀 `aliases` / `ai_entity` 自描述。

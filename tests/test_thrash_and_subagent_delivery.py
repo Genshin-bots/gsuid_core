@@ -168,15 +168,15 @@ def test_incomplete_delivery_accepts_res_handle_summary() -> None:
 
 
 def test_ooc_scrub_kills_res_handle_but_capability_path_must_not() -> None:
-    """roleplay scrub 会杀 res_；能力代理 return 不得走该路径。"""
-    from gsuid_core.ai_core.output_firewall import check_ooc, scrub_or_fallback
+    """roleplay scrub 会杀 res_（丢弃整句，不罐头代答）；能力代理 return 不得走该路径。"""
+    from gsuid_core.ai_core.output_firewall import check_ooc, scrub_or_drop
 
     sample = "事实包已登记为 **`res_fa2c9a5b1364`**，请转 render_agent。"
     hit = check_ooc(sample)
     assert hit is not None
-    out, scrubbed = scrub_or_fallback(sample)
+    out, scrubbed = scrub_or_drop(sample)
     assert scrubbed is True
-    assert "res_" not in out
+    assert out == ""
 
 
 def test_followup_task_mentions_no_render() -> None:

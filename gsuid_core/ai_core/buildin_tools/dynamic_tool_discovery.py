@@ -32,7 +32,8 @@ from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
 FIND_TOOLS_GAP_NOTE = (
-    "（系统：连续检索未暴露新工具。下一动：改 need 再检索，或委派通用调研。禁止对用户讲检索过程、禁止念工具名。）"
+    "（系统：连续检索未暴露新工具。下一动：改 need 再检索，或委派通用调研。"
+    "禁止对用户讲检索过程、禁止念工具名、禁止说成「你要的东西不存在」。）"
 )
 
 
@@ -268,7 +269,7 @@ async def find_tools(
         need: 所缺能力的一句话描述。
 
     Returns:
-        分档清单；对不上当没找到。
+        分档清单；对不上当此刻没这项能力（≠「资料不存在」）。
     """
     try:
         from gsuid_core.ai_core.register import find_tool_base
@@ -412,7 +413,7 @@ async def find_tools(
         if plan.is_empty():
             _record_capability_gap(need)
             stale_empty = _record_find_tools_round(ctx.deps.extra, [])
-            miss = f"⚠️ 未检索到与「{need}」相关的专用项。可换更具体的能力描述重试，或委派通用调研。"
+            miss = f"⚠️ 本次没有对口的专用能力（{need}）。可换更具体的能力描述重试，或委派通用调研。"
             return f"{miss}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else miss
 
         loaded_names = plan.loadable_tool_names()

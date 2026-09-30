@@ -154,7 +154,6 @@ class PreparePhase(RunOnceHost):
         st.render_ack_seen = False
 
         # 使用自定义迭代次数限制（如果有），否则使用配置默认值。
-        # 群聊空闲上限在 TurnGraph 建完后再收紧（见下方）。
         if self.max_iterations is not None:
             st.limits = UsageLimits(request_limit=self.max_iterations)
         else:
@@ -357,6 +356,8 @@ class PreparePhase(RunOnceHost):
             )
             if _vh:
                 st.final_user_message = _append_user_text(st.final_user_message, f"\n{_vh}")
+            # 旁观轮仍收窄到 group_idle_max_iterations；省略续聊轮要跑得完
+            # find_tools → 真正查询的两跳链路，早先的收窄条件误伤了它们。
             if self.max_iterations is None and st.limits is not None:
                 from gsuid_core.ai_core.agent_run.tools import group_idle_request_limit
 
@@ -365,7 +366,7 @@ class PreparePhase(RunOnceHost):
                 _capped = group_idle_request_limit(
                     int(st.limits.request_limit or 0),
                     is_group=bool(st.tg.is_group),
-                    followup_detected=st.followup_detected,
+                    followup_detected=bool(st.followup_detected),
                     has_active_task=st.has_active_task,
                     idle_cap=_idle_cap,
                     call_to_self=bool(st.tg.call_to_self),

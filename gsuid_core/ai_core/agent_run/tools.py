@@ -96,7 +96,13 @@ def group_idle_request_limit(
     idle_cap: int,
     call_to_self: bool = False,
 ) -> int:
-    """旁观收紧 request_limit。点名履约不收。"""
+    """纯旁观群聊轮收窄 request_limit；点名与省略续聊不收。
+
+    收窄只针对「无人寻址 + 无跟进 + 无在途任务」这一类——它们本不该干活，
+    放开到 multi_agent_lenth 就是零工具空转的烧钱口子。省略续聊轮
+    （``followup_detected`` = ellipsis_followup / task_management）要跑得完
+    find_tools → 真正查询的两跳链路，早期的收窄误伤了它们，见 §12.8。
+    """
     if default_limit < 1 or idle_cap < 1:
         return default_limit
     if call_to_self:

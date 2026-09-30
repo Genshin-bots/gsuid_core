@@ -1,7 +1,7 @@
 import time
 import asyncio
 import inspect
-from typing import Any, Dict, List, Union, Literal, Optional
+from typing import Any, Dict, List, Union, Literal, Mapping, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -775,7 +775,7 @@ class Bot:
     async def commit_streamed_history(
         self,
         text: str,
-        extra_metadata: Optional[Dict[str, object]] = None,
+        extra_metadata: Optional[Mapping[str, object]] = None,
     ) -> None:
         """增量已出站：只记 history，不再 send。默认无操作。"""
         return

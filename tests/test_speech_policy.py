@@ -207,14 +207,21 @@ def test_process_meta_and_empty_handoff_gates() -> None:
     assert looks_like_process_meta("…时效存疑，自己再验。")
     assert looks_like_process_meta("唔…数据没刷出来，没法给你编数字。")
     assert looks_like_process_meta("…先眯会儿，回炉了你再戳我。")
+    # 已反转（群聊 OOC 事故 2026-09）：检索腔（没查到 / 没翻到）**不是**「诚实失败」。
+    # 原断言把它锁成合格样例，等于教模型用检索语汇当记忆说话；它已不再被祝福为失败说法。
     assert not looks_like_process_meta("…没查到具体数字。…困。")
+    from gsuid_core.ai_core.persona.prompts import SYSTEM_CONSTRAINTS
+
+    assert "只说没查到" not in SYSTEM_CONSTRAINTS, "prompt 仍在教模型用检索腔认输"
+    assert "此刻翻不到" not in SYSTEM_CONSTRAINTS, "prompt 仍规定「翻不到」这句固定说法"
     assert looks_like_process_meta(
         "The sub-agent is running in the background. I should not narrate the process to the user."
     )
     assert not looks_like_process_meta("https://wiki.biligame.com/ys/some-long-page-name-here")
 
-    # 无事实包：诚实失败允许（不再误武装 render）
-    honest = "唔…翻了好几页，具体数字没翻到。…好困。"
+    # 诚实失败仍放行——只是必须用人的说法：给结论，不解释这份「不知道」的形状。
+    honest = "唔…那个数字我真记不清了。…好困。"
+    # 无事实包：诚实失败允许（不再误武装 render）；措辞已从检索腔换成人的说法。
     blk, why = should_block_user_visible_text(
         "free",
         honest,

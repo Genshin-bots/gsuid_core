@@ -251,6 +251,8 @@ async def deliver_run_result(
     """
     if not chat_result:
         return
+    from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+
     if is_silence:
         logger.info(t("log.ai.gscore_persona_chose_silence"))
         return
@@ -264,7 +266,7 @@ async def deliver_run_result(
             logger.info(t("log.ai.gscore_fallback_suppressed_repeat"))
         else:
             try:
-                await send_chat_result(bot, user_facing, ev=event)
+                await send_chat_result(bot, user_facing, ev=event, extra_metadata=turn_reply_metadata(event))
             except Exception as e:
                 logger.warning(t("log.ai.gscore_sanitized_fallback", e=e))
         await notify_master_of_agent_error(
@@ -277,7 +279,12 @@ async def deliver_run_result(
         return
     # send_chat_result 只接文本；结构化返回已在 classify_run_result 里 str 化
     quota_breaker.reset(f"notify:{event.session_id}")
-    await send_chat_result(bot, chat_result if isinstance(chat_result, str) else result_text, ev=event)
+    await send_chat_result(
+        bot,
+        chat_result if isinstance(chat_result, str) else result_text,
+        ev=event,
+        extra_metadata=turn_reply_metadata(event),
+    )
     logger.info(t("log.ai.gscore_ai_intent_reply_sent_mode", intent=intent))
 
 

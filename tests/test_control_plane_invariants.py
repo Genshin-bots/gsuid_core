@@ -388,12 +388,16 @@ def test_numeric_recitation_skips_render_when_persona_disables_it() -> None:
 
 
 def test_short_character_reply_skips_render_obligation() -> None:
-    """轻问题口头短答（气候常态/没查到实时）不因「>40 字」被纠出图。"""
+    """轻问题口头短答（气候常态/答不上实时）不因「>40 字」被纠出图。
+
+    台词已从检索腔换成人的说法（群聊 OOC 事故 2026-09）：原句「没找到今天的实时数」
+    把检索语汇锁成了正面样例。本测试只关心「40+ 字短答不触发 render 义务」，与措辞无关。
+    """
     st = _mk_state(
         tool_call_list=["find_tools", "web_search_tool"],
         saw_structured_return=True,
     )
-    short = "唔…凌晨翻了下，没找到今天的实时数…\n8月广州常年大概28度上下，白天出门会热…呼。"
+    short = "唔…今天实时那个我答不上来。\n8月广州常年大概28度上下，白天出门还是热的…记得带伞…呼。"
     assert len(short) > 40
     assert not settle_mod._needs_render_obligation(st, short)
     assert settle_mod._should_deliver_withheld(

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Union, Literal, Optional
+from typing import Dict, List, Union, Literal, Mapping, Optional
 
 from gsuid_core.bot import Bot, _Bot, message_list_to_str
 from gsuid_core.i18n import t
@@ -192,7 +192,7 @@ class CaptureBot(Bot):
     async def commit_streamed_history(
         self,
         text: str,
-        extra_metadata: Optional[Dict[str, object]] = None,
+        extra_metadata: Optional[Mapping[str, object]] = None,
     ) -> None:
         """delta 已出站：只记 history / observe，不再入 SSE。"""
         if not text:
@@ -343,7 +343,7 @@ class CaptureBot(Bot):
     async def _record_history(
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
-        extra_metadata: Optional[Dict[str, object]],
+        extra_metadata: Optional[Mapping[str, object]],
     ) -> None:
         from gsuid_core.ai_core.utils import is_silence_marker
         from gsuid_core.message_history import get_history_manager

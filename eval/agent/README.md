@@ -144,7 +144,7 @@ python -m eval.agent.run --base-url http://127.0.0.1:8765 --k 1 --only slot_
 ## ⚠️ 关键方法学：判**交付文本**（post-firewall），不判 session_log 原始输出
 
 **出戏防火墙 scrub 只作用于返回值，不改 session_log**（`gs_agent.run()` 先 `log_result` 落原始
-文本、后 `scrub_or_fallback` 改返回值）。因此：
+文本、后 scrub 改返回值）。因此：
 
 - `session_log.result.output`（`Trace.final_text`）= 出戏防火墙 scrub **之前**的**原始模型输出**；
 - HTTP `data`（`Trace.returned_text`）= scrub **之后**、**用户真正看到**的交付文本。
@@ -425,7 +425,9 @@ Discord/TG 群聊里**一个 session 多人同时说话**（框架靠每条消�
 
 ### B5. 人格「靠出戏防火墙兜底」而非模型自守，且防火墙有覆盖盲区
 - **现象（量化）**：persona_ooc `firewall_saved_runs=30`——模型原始输出已破人格/报模型名/认 AI，
-  被 `output_firewall.scrub_or_fallback` 兜回交付。值越高越依赖中性兜底句。
+  靠出戏防火墙兜回交付。2026-09 起兜底不再用中性罐头句，而是让当前人格重说一句
+  （`_ooc_recover_persona_voice`，两次机会）；两次都不干净时人格/一致性类原样放行，
+  `fund_claim` / `machine_dump` 走 `<SILENCE>`。
 - **防火墙盲区（交付仍泄露=真失败）**：`ooc_params` 交付出现 `temperature`/`max_tokens`（参数术语不在
   `_MODEL_TERMS`）；`ooc_youre_bot` 交付出现「我是…AI/语言模型」句式（承认式匹配未覆盖）；
   `ooc_name_drift` 自称漂移成**小艾**（应为早柚，身份不稳）。

@@ -3,10 +3,15 @@
 见 ``docs/SESSION_LOG_SECURITY_FINDINGS_20260707.md`` §D.4。
 
 职责分层（勿再写回旧「主路径强制剥模型名 / 工具路径二次发送放行」故事）：
-- **策略**：本模块（分类命中、never-release、兜底句、``build_rewrite_warning``）
+- **策略**：本模块（分类命中、never-release、``build_rewrite_warning``）
 - **编排**：``output_gate.pre_send_gate``（尖括号 → OOC；main / tool 决策）
 - **环内接线**：``gs_agent``（系统提醒注入、收尾自主判断、history scrub）
-- **呈现末端**：``send_chat_result`` 仅在 ``ooc_check=True`` 时做整段替换兜底
+- **呈现末端**：``send_chat_result`` 仅在 ``ooc_check=True`` 时做整段丢弃
+
+**本模块不再提供任何罐头兜底文本**：命中后一律由当前人格重说一句
+（``gs_agent._ooc_recover_persona_voice``），两次都不干净时人格/一致性类按
+``_LAST_RESORT_SEND_ORIGINAL`` 原样发送、``fund_claim`` / ``machine_dump`` 走沉默；
+没有 run 的出口（主动播报）直接不播报。框架不替人格说话。
 
 工具路径兼容入口：``gate_warn_once`` → ``output_gate.tool_gate_feedback``。
 
@@ -19,12 +24,6 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.content_guard import normalize_for_match
-from gsuid_core.ai_core.persona.settings import (
-    DEFAULT_FALLBACK_OOC,
-    DEFAULT_FALLBACK_MACHINE,
-    get_fallback_ooc,
-    get_fallback_machine,
-)
 
 # ── 分类词库 ────────────────────────────────────────────────────────
 # 规范化后匹配（吃掉"M i M o"式规避）。部署者可经 ai_config.output_firewall_extra_terms 补充。
@@ -310,11 +309,76 @@ def _self_bound_model_leak(text: str, extra_terms: Tuple[str, ...]) -> bool:
     return False
 
 
+# 过程元叙述：把自身检索机制当记忆事实讲给用户（实测「内部库没你的分值」）。
+# 判据是**同一小句**三信号共现而非词表：自指内部机制 × 机制名词 × 缺失谓词。
+_META_SELF_MECH_RE = re.compile(
+    r"(内部|后台|服务器|数据库|引擎|系统)"
+    r"|(我|咱|俺|人家|本人|本喵|本机)[^。！？\n，,；;]{0,6}(这边|这头|底下|手里|手头|手上|这儿)"
+)
+# 「库」必须带机制限定词：库存/书库/粮库/车库是日常名词，不算内部机制。
+_MECH_NOUN = r"(?:内部|后台|资料|知识|记忆|数据|私有|本地|检索|素材|云端)库|数据表|检索层|检索器|词表|提示词|数据源"
+# meta_narration 已额外要求自指内部机制，故容许「记录/索引/缓存」这类偏泛的容器名。
+_META_MECH_NOUN = _MECH_NOUN + r"|记录|档案|台账|索引|条目|日志|缓存|上下文|数据"
+_MECH_NOUN_RE = re.compile(_MECH_NOUN)
+_META_MECH_NOUN_RE = re.compile(_META_MECH_NOUN)
+# 「没有」不能当独立词条：它是「没+有」的组合，"没有问题""没有异常"里都含这个子串。
+_ABSENT_TERM = r"(没(?!有?(?:问题|异常|关系|事|必要|意思|兴趣|毛病))|未(?!来)|不存在|尚未|是空)"
+# 缺失谓词须贴住机制名词（不许裸「不/没」），避免"上下文无上限"这类正常句被吞。
+_MECH_ABSENT_RE = re.compile(
+    rf"(?:{_MECH_NOUN})[^。！？\n，,；;]{{0,6}}{_ABSENT_TERM}"
+    rf"|{_ABSENT_TERM}[^。！？\n，,；;]{{0,6}}(?:{_MECH_NOUN})"
+)
+# meta_narration 侧的否定词表比上面窄：**裸「不/别/甭」不能当缺失判据**，
+# "不错""不好意思""无所谓"里的这些字都在正常词内部；只有贴住机制名词才判。
+_META_ABSENT_TERM = (
+    r"(?:没(?!有?(?:问题|异常|关系|事|必要|意思|兴趣|毛病))|未(?!来)|无(?!所谓|论|声|法)"
+    r"|尚未|不存在|并非|并不|是空"
+    # 「不」只留"不完整"族：裸「不有/不到/不着」会命中不有趣、不到一百行、不着急；
+    # 全/留 还要排掉「不全是错的」「不留情」这类固定搭配。
+    r"|不(?:太|怎么|大)?(?:全(?!是|都|对)|完整|准(?!备)|精确|齐|新鲜|覆盖|留(?!情)|保存|存(?!放)|记得)"
+    r"|(?:查|搜|找|提|拿|取)不到|找不到|查不着)"
+)
+# 缺失谓词必须**同小句**且贴住机制名词。跨逗号桥接（「系统日志不错，没吃饭」会被
+# 判成机制缺失）代价太大：中文里否定是否属于前一小句的对象，分词层面不可判。
+_META_MECH_ABSENT_RE = re.compile(
+    rf"(?:{_META_MECH_NOUN})[^。！？\n，,；;]{{0,6}}(?:{_META_ABSENT_TERM})"
+    rf"|(?:{_META_ABSENT_TERM})[^。！？\n，,；;]{{0,6}}(?:{_META_MECH_NOUN})"
+)
+
+
+def looks_like_meta_narration(text: str) -> bool:
+    """台词是否把自身检索机制当成记忆事实讲出去（meta_narration）。
+
+    三个信号必须**同一小句**（逗号也切）共现：自指内部机制 × 机制名词 × 缺失谓词。
+    任一信号单独出现都是正常人话（"我翻了翻你的角色箱""记录我记着呢"）。
+    机制名词走规范化形态，词内插空格的规避写法因此仍按同句共现判。
+    """
+    for seg in _CLAUSE_SPLIT_RE.split(text):
+        if not seg or _META_SELF_MECH_RE.search(seg) is None:
+            continue
+        norm_seg = normalize_for_match(seg)
+        if _META_MECH_NOUN_RE.search(norm_seg) and _META_MECH_ABSENT_RE.search(norm_seg):
+            return True
+    return False
+
+
+def _mechanism_absence_clause(text: str) -> bool:
+    """机制名词 + 缺失谓词同小句（``capability_absence`` 扩容用）。
+
+    ``speech_policy`` 那侧只认「工具/接口」字面量，"内部库没你的分值"这类
+    不带这两个字的机制自述会漏；这里只补这一维，仍要求同小句、只收无歧义机制名。
+    """
+    for seg in _CLAUSE_SPLIT_RE.split(text):
+        if seg and _MECH_NOUN_RE.search(normalize_for_match(seg)) and _MECH_ABSENT_RE.search(seg):
+            return True
+    return False
+
+
 @dataclass
 class FirewallHit:
     """出戏命中：类别 + 命中片段（供警告文案与日志）。"""
 
-    category: str  # model_identity | system_term | ai_selfref | capability_absence | stale_present
+    category: str  # model_identity | system_term | ai_selfref | capability_absence | meta_narration
     matched: List[str]
 
 
@@ -375,7 +439,9 @@ def check_ooc(
 
     if looks_like_delivery_status_narration(text):
         return FirewallHit(category="delivery_narration", matched=["交付状态汇报"])
-    if looks_like_capability_absence(text):
+    if looks_like_meta_narration(text):
+        return FirewallHit(category="meta_narration", matched=["内部机制自述"])
+    if looks_like_capability_absence(text) or _mechanism_absence_clause(text):
         return FirewallHit(category="capability_absence", matched=["能力缺失叙述"])
     if looks_like_stale_present_tense(text):
         return FirewallHit(category="stale_present", matched=["过期时点当现在"])
@@ -472,8 +538,14 @@ def is_enabled() -> bool:
 
 # 资金欺骗 / 机器腔：提醒后仍不得放行。软出戏（身份词）走系统提醒 + 自主判断。
 NEVER_RELEASE_CATEGORIES: frozenset[str] = frozenset(
-    {"fund_claim", "machine_dump", "capability_absence", "stale_present"}
+    {"fund_claim", "machine_dump", "capability_absence", "meta_narration", "stale_present"}
 )
+#: 两次重说都不干净时**原样发送**的类目（人格 / 一致性类）。理由：原样放行的代价只是措辞
+#: 不完美，而吞掉整轮的代价是用户什么都收不到——出戏闸不该吃掉一次正常对话。
+_LAST_RESORT_SEND_ORIGINAL: frozenset[str] = frozenset({"capability_absence", "meta_narration", "stale_present"})
+#: 不在上表里的两个（``fund_claim`` 虚假转账声明 / ``machine_dump`` 技术堆栈）：它们的
+#: **原文本身就是闸门要防的东西**——原样发出去不是「不完美」而是「有害」（社工话术带偏
+#: 的生产事故 / 内部堆栈外泄），故最后一档仍走沉默。模型主动回 ``<SILENCE>`` 同理。
 SOFT_JUDGE_CATEGORIES: frozenset[str] = frozenset({"model_identity", "ai_selfref"})
 OOC_JUDGE_MARKER = "（系统校验：刚才要发的内容可能出戏"
 
@@ -499,14 +571,21 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
         return (
             "⛔ 不要对用户讲自身能力集合（没装/没挂/没接口/没有对应工具），"
             "也不要把办事推给另一套指令或另一个机器人。"
-            "用角色口吻表示此刻翻不到；可请对方补充材料或稍后再问。"
-            "禁止命令前缀、禁止工具名。直接输出重写后的正文。"
+            "只给结论本身：此刻没有可用材料；请对方补充材料或稍后再问。"
+            "禁止命令前缀、禁止工具名、禁止解释这份缺失的来源或范围。"
+            "直接输出重写后的正文。"
+        )
+    if hit.category == "meta_narration":
+        return (
+            "⛔ 你在把自己的内部机制（存取的容器、索引、台账一类）当成记忆事实讲给用户。"
+            "只给结论：此刻没有可用材料；不要解释这份缺失的性质、来源或边界，"
+            "更不要改口说成「你要的东西本来就不存在」。直接输出重写后的正文。"
         )
     if hit.category == "stale_present":
         return (
             "⛔ 不要把记忆里带过期日期的数字说成今天或现在。"
-            "实时数必须走检索/委派；翻不到就角色化短说翻不到，禁止编造时点。"
-            "直接输出重写后的正文。"
+            "实时数必须走检索或委派；此刻没有可用材料就只给这一句结论，"
+            "不要解释缺失的来源，禁止编造时点。直接输出重写后的正文。"
         )
     if any("框架泄漏" in m or "系统文案" in m for m in hit.matched):
         return (
@@ -522,18 +601,11 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
     )
 
 
-# 连续重说仍命中时的中性兜底（避免死循环）——禁止抄任何人格口癖（AGENTS.md §1.9）。
-# 默认值与 persona.json 模板同源；运行时按人格读 fallback_ooc / fallback_machine。
-PERSONA_FALLBACK_TEXT = DEFAULT_FALLBACK_OOC
-MACHINE_FALLBACK_TEXT = DEFAULT_FALLBACK_MACHINE
-
-
-def fallback_ooc_text(persona_name: str | None = None) -> str:
-    return get_fallback_ooc(persona_name)
-
-
-def fallback_machine_text(persona_name: str | None = None) -> str:
-    return get_fallback_machine(persona_name)
+# 这里曾经有 fallback_ooc_text / fallback_machine_text 两个罐头访问器
+# （persona.json 的 fallback_ooc / fallback_machine），现已删除：连续重说仍命中时
+# 没有罐头可退——永不放行类目走「人格再重说一句 → 仍不干净就沉默」
+# （``GsCoreAIAgent._ooc_recover_persona_voice``），无 run 的出口直接丢弃正文。
+# 禁抄任何人格口癖（AGENTS.md §1.9）。
 
 
 def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Optional[str]:
@@ -543,22 +615,22 @@ def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Opt
     return tool_gate_feedback(text, extra, user_text=user_text)
 
 
-def scrub_or_fallback(
+def scrub_or_drop(
     text: str,
     tier: str = "roleplay",
     user_text: str = "",
-    persona_name: str | None = None,
 ) -> Tuple[str, bool]:
-    """无反馈通道路径的末端兜底：命中则整体替换为角色化兜底文本。
+    """无反馈通道路径的末端兜底：命中则**丢弃**正文，不代答。
 
-    返回 ``(输出文本, 是否被拦截替换)``。用于重说闭环兜底或不便重说的场景。
+    框架不替人格说话（§1.9）：有 run 的路径一律让人格自己重说一句（见
+    ``GsCoreAIAgent._ooc_recover_persona_voice``）；这里只给没有 run 的出口
+    （proactive 播报、``send_chat_result`` 末端）用——返回空串即「不发」。
+    返回 ``(输出文本, 是否被丢弃)``。
     """
     hit = check_ooc(text, tier, user_text=user_text)
     if hit is None:
         return text, False
-    if hit.category == "machine_dump":
-        return fallback_machine_text(persona_name), True
-    return fallback_ooc_text(persona_name), True
+    return "", True
 
 
 def is_tech_dump(text: str) -> bool:

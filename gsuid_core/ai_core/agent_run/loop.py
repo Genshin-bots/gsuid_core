@@ -54,7 +54,9 @@ from gsuid_core.ai_core.agent_run.support import (
     _MAIN_PERSONA_CREATE_BY,
     thrash_limit_for,
     _claims_fake_done,
+    turn_reply_metadata,
     _wall_clock_nudge_for,
+    record_run_tool_output,
     _tool_return_looks_failed,
     _tool_return_is_async_pending,
     _tool_call_targets_render_agent,
@@ -290,7 +292,8 @@ class LoopPhase(RunOnceHost):
             return
         if already_streamed:
             if st.outbound_stream:
-                await bot.commit_streamed_history(text)
+                # 收件人必须进 commit：群转录的 AI→ 分支只认这条记录上的 metadata。
+                await bot.commit_streamed_history(text, extra_metadata=turn_reply_metadata(st.ev))
             self._run_sent_texts.add(text)
             st.main_channel_sends += 1
             return
@@ -306,6 +309,7 @@ class LoopPhase(RunOnceHost):
             ev=st.ev,
             at_user_id=at_user_id,
             mention_names=_mentions,
+            extra_metadata=turn_reply_metadata(st.ev),
         )
         self._run_sent_texts.add(text)
         st.main_channel_sends += 1
@@ -548,6 +552,7 @@ class LoopPhase(RunOnceHost):
                 # FileOS：主人格与能力代理过阈值落盘+句柄；禁止长文进 history
                 _fileos_folded = False
                 _raw_tr = part.content if isinstance(part.content, str) else None
+                record_run_tool_output(st.run_tool_outputs, part.tool_name or "", _raw_tr)
                 if type(part) is ToolReturnPart and _raw_tr is not None:
                     from gsuid_core.ai_core.planning.runtime import get_plan_context
                     from gsuid_core.ai_core.planning.tool_output_helper import (
@@ -1092,15 +1097,24 @@ class LoopPhase(RunOnceHost):
                         continue
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
                         self._discard_stream_preview(st, _text)
-                        _fb = _gr.send_text or output_firewall.fallback_machine_text(self.persona_name)
+                        # send_text 才是正文（angle 净化 / inner_os 剥离）。空 = 无可发内容，
+                        # 不用罐头代答：一个字符都不发。
+                        _fb = _gr.send_text
                         _fb_sent = False
-                        try:
-                            await send_chat_result(st.bot, _fb, ev=st.ev, ooc_check=False)
-                            self._run_sent_texts.add(_fb)
-                            st.main_channel_sends += 1
-                            _fb_sent = True
-                        except Exception as _me:
-                            logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
+                        if _fb:
+                            try:
+                                await send_chat_result(
+                                    st.bot,
+                                    _fb,
+                                    ev=st.ev,
+                                    ooc_check=False,
+                                    extra_metadata=turn_reply_metadata(st.ev),
+                                )
+                                self._run_sent_texts.add(_fb)
+                                st.main_channel_sends += 1
+                                _fb_sent = True
+                            except Exception as _me:
+                                logger.debug(i18n_t("log.agent.text_send_fail_failed", _e=_me))
                         if _fb_sent:
                             if _slot == "send_accept":
                                 _accept_slot_used = True

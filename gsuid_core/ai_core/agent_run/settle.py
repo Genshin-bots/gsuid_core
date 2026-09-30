@@ -32,7 +32,6 @@ from gsuid_core.ai_core.utils import (
     send_chat_result,
     _relean_user_turn,
     is_silence_marker,
-    _extract_run_context,
     strip_framework_user_leaks,
 )
 from gsuid_core.ai_core.register import find_tool_base
@@ -52,6 +51,8 @@ from gsuid_core.ai_core.agent_run.support import (
     _INTERACTIVE_CREATE_BY,
     _WALL_CLOCK_CLOSE_NO_RENDER,
     _claims_fake_done,
+    turn_reply_metadata,
+    collect_run_thinking,
     _claims_deferred_work,
     _correction_nudge_markers,
     _looks_like_report_speech,
@@ -102,7 +103,7 @@ async def _deliver_withheld(st: RunOnceState, sent: set[str]) -> None:
             continue
         if st.bot is None:
             return
-        await send_chat_result(st.bot, body, ev=st.ev)
+        await send_chat_result(st.bot, body, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
         sent.add(body)
         return
 
@@ -632,7 +633,7 @@ class SettlePhase(RunOnceHost):
                         if st.bot is None:
                             logger.warning(i18n_t("log.agent.fakedone_bot_object_unavailable"))
                             continue
-                        await send_chat_result(st.bot, _bt, ev=st.ev)
+                        await send_chat_result(st.bot, _bt, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
                         self._run_sent_texts.add(_bt)
                     except Exception as _se:
                         logger.debug(i18n_t("log.agent.fakedone_se", _se=_se))
@@ -832,6 +833,7 @@ class SettlePhase(RunOnceHost):
                         result_msg,
                         ev=st.ev,
                         at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
+                        extra_metadata=turn_reply_metadata(st.ev),
                     )
                     self._run_sent_texts.add(result_msg.strip())
 
@@ -869,6 +871,7 @@ class SettlePhase(RunOnceHost):
                         result_msg,
                         ev=st.ev,
                         at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
+                        extra_metadata=turn_reply_metadata(st.ev),
                     )
                     self._run_sent_texts.add(result_msg.strip())
 
@@ -905,7 +908,7 @@ class SettlePhase(RunOnceHost):
                     and st.bot is not None
                     and st.return_mode in ("always", "by_bot")
                 ):
-                    await send_chat_result(st.bot, result_msg, ev=st.ev)
+                    await send_chat_result(st.bot, result_msg, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
                     self._run_sent_texts.add(result_msg.strip())
                     if st.main_channel_sends == 0:
                         st.main_channel_sends = 1
@@ -1048,12 +1051,19 @@ class SettlePhase(RunOnceHost):
                     if output_firewall.is_tech_dump(result_msg):
                         result_msg = "⚠️ 子任务返回技术错误堆栈，已屏蔽。请主人格换路或重试（勿向用户念本句）。"
                 else:
-                    result_msg, _ooc_scrubbed = output_firewall.scrub_or_fallback(
+                    # 框架不替人格说话：命中就让人格自己重说一句，重说不出来就沉默
+                    _hit = output_firewall.check_ooc(
                         result_msg,
                         user_text=st.ev.raw_text if st.ev is not None and st.ev.raw_text else "",
                     )
-                    if _ooc_scrubbed:
-                        logger.warning(i18n_t("log.agent.firewall_run_return_value_hit"))
+                    if _hit is not None:
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.firewall_run_return_value_hit",
+                                p0=_hit.category,
+                            )
+                        )
+                        result_msg = await self._ooc_recover_persona_voice(_hit, result_msg, st.ev) or "<SILENCE>"
             if isinstance(result_msg, str) and not (
                 self.is_subagent or self.create_by in ("CapabilityAgent", "AutoPlanner")
             ):
@@ -1091,74 +1101,126 @@ class SettlePhase(RunOnceHost):
             self._remember_outbound_on_silence(st, "<SILENCE>")
             return "<SILENCE>"
 
-        # 安抚用户
+        # 「思考链过长…」是框架内部状态，原样发进群等于人格当场破功（生产日志出现过
+        # 整条外泄）。预算耗尽对群友表现为"没来得及答"，由下面的强制总结接手。
+        logger.debug(i18n_t("log.agent.chain_too_long_forced_summary", p0=_require_limits(st).request_limit))
+
+        # 瞬时故障（超时/网络/5xx/529 等）不在此捕获，直接冒泡给 _execute_run 统一
+        # 重试；download image 自愈、错误文案与统计同样收敛到 _execute_run。
+        user_question = st.last_user_question or "用户之前提出的问题"
+
+        # 证据只认**本轮**：真实回执正文 + 本轮推理。旧历史不作数——它已由
+        # message_history 当上下文给出，再标成「已获取的信息」只会让总结拿旧话题作答。
+        tool_outputs = "\n".join(st.run_tool_outputs)
+        thinking = collect_run_thinking(st.thinking_segments)
+        material = ""
+        if tool_outputs:
+            material += f"【本轮已查到的内容】\n{tool_outputs}"
+        if thinking:
+            material += f"\n\n【本轮的推理线索】\n{thinking}"
+
+        if not material:
+            # 本轮一点材料都没产出：没查、也没推理。此时让模型"按自己的知识回答"只会
+            # 凭空编，那正是「内部库没你的分值」那类出戏句的产地。
+            if self._no_material_reply_expected(st):
+                return await self._deliver_no_material_reply(st, user_question)
+            logger.debug(i18n_t("log.agent.chain_too_long_no_context_silence"))
+            self._remember_outbound_on_silence(st, "<SILENCE>")
+            return "<SILENCE>"
+
+        final_message = (
+            f"【用户的问题】\n{user_question}\n\n{material}\n\n"
+            "请只根据以上材料回答用户的问题，人设风格不变。材料里没有的就说没有，"
+            "禁止补充任何未在材料中出现的信息。禁止调用任何工具，只输出自然语言文本。"
+        )
+
+        # 创建无工具精简 Agent（tools=[] = 无 schema，从根源消除工具调用）
+        from pydantic_ai.settings import ModelSettings
+
+        _fb_settings: ModelSettings | None = None
+        if self.max_tokens is not None:
+            _fb_settings = ModelSettings(max_tokens=int(self.max_tokens))
+        _fallback_agent = Agent(
+            model=self.model,
+            system_prompt=self.system_prompt or "你是一个智能助手。",
+            model_settings=_fb_settings,
+            tools=[],
+            toolsets=[],
+            retries=0,
+            output_type=str,
+        )
+
+        # 带上真实对话历史：只给 final_message 等于让总结 agent 拿着一条没有群
+        # 上下文的孤立消息发言，它既不知道在跟谁说话也不知道上一句指代什么。
+        _fb_history: List[ModelMessage] = list(self.history)
+        fallback_result = await _fallback_agent.run(
+            final_message,
+            message_history=_fb_history,
+            usage_limits=UsageLimits(request_limit=1),
+        )
+
+        # 强制总结同样是一次真实 LLM 往返，把它的最终产出记进当前 session
+        # logger（与本 run 同一文件）——否则"超轮数兜底"答复在日志里不可见。
+        fallback_text = str(fallback_result.output)
+        if not fallback_text.strip() or is_silence_marker(fallback_text.strip()):
+            self._remember_outbound_on_silence(st, "<SILENCE>")
+            return "<SILENCE>"
+        self._session_logger.log_text_output(fallback_text)
+        self._session_logger.log_result(fallback_text, st.tool_call_list)
+
         if st.bot:
-            await st.bot.send(await st.bot.t("log.ai_agent.chain_too_long_summary"))
+            await send_chat_result(st.bot, fallback_result.output, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+        return ""
 
-        # ✨ 【关键点2】发起"强制总结"请求
-        try:
-            user_question = st.last_user_question or "用户之前提出的问题"
+    def _no_material_reply_expected(self, st: RunOnceState) -> bool:
+        """本轮无材料时，用户**明确在等**回答吗（私聊 / @点名 / 省略续聊）。
 
-            # 从历史中提取已获取的事实和模型推理片段
-            run_context = _extract_run_context(self.history)
+        旁观轮与私聊不能同等对待：未寻址轮本来就该沉默，而私聊里对方问了一句话却
+        收到零输出，是把「没答上来」误装成「不想理」。
+        """
+        if st.ev is not None and not st.ev.group_id:
+            return True
+        tg = st.tg
+        if tg is None:
+            return False
+        return bool(tg.call_to_self or tg.ellipsis_followup)
 
-            if run_context:
-                final_message = (
-                    f"【用户的问题】\n{user_question}\n\n"
-                    f"【已获取的信息和推理过程】\n{run_context}\n\n"
-                    "请根据以上已知信息，根据人设风格直接回答用户的问题。"
-                    "禁止调用任何工具，只输出自然语言文本。"
-                )
-            else:
-                final_message = (
-                    f"【用户的问题】\n{user_question}\n\n"
-                    "请直接回答这个问题（根据你的已有知识和角色性格），不要调用任何工具。"
-                )
+    async def _deliver_no_material_reply(self, st: RunOnceState, user_question: str) -> str:
+        """无材料但对方在等：给一句角色口吻的「没答上来」，不解释、不编造。"""
+        from pydantic_ai.settings import ModelSettings
 
-            # 创建无工具精简 Agent（tools=[] = 无 schema，从根源消除工具调用）
-            from pydantic_ai.settings import ModelSettings
-
-            _fb_settings: ModelSettings | None = None
-            if self.max_tokens is not None:
-                _fb_settings = ModelSettings(max_tokens=int(self.max_tokens))
-            _fallback_agent = Agent(
-                model=self.model,
-                system_prompt=self.system_prompt or "你是一个智能助手。",
-                model_settings=_fb_settings,
-                tools=[],
-                toolsets=[],
-                retries=0,
-                output_type=str,
-            )
-
-            # message_history 为空：所有上下文已聚焦到 final_message 中
-            fallback_result = await _fallback_agent.run(
-                final_message,
-                message_history=[],
-                usage_limits=UsageLimits(request_limit=1),
-            )
-
-            # 强制总结同样是一次真实 LLM 往返，把它的最终产出记进当前 session
-            # logger（与本 run 同一文件）——否则"超轮数兜底"答复在日志里不可见。
-            fallback_text = str(fallback_result.output)
-            self._session_logger.log_text_output(fallback_text)
-            self._session_logger.log_result(fallback_text, st.tool_call_list)
-
-            if st.bot:
-                await send_chat_result(st.bot, fallback_result.output, ev=st.ev)
-            return ""
-
-        except Exception as e:
-            logger.error(i18n_t("log.agent.pydanticai_forced_summary", e=e))
-            self._session_logger.log_error("fallback_failed", str(e))
-            fallback_error = "⚠️ 问题较复杂，现有信息不足以给出准确答案。可以尝试提高思维链长度，或换个方式描述问题。"
-            if st.bot:
-                await st.bot.send(fallback_error)
-                return ""
-            return fallback_error
-
-            # 瞬时故障（超时/网络/5xx/529 等）一律不在此捕获，向上抛给 _execute_run
-            # 统一重试；download image 自愈与错误文案/统计也收敛到 _execute_run。
+        _fb_settings: ModelSettings | None = None
+        if self.max_tokens is not None:
+            _fb_settings = ModelSettings(max_tokens=int(self.max_tokens))
+        _agent = Agent(
+            model=self.model,
+            system_prompt=self.system_prompt or "你是一个智能助手。",
+            model_settings=_fb_settings,
+            tools=[],
+            toolsets=[],
+            retries=0,
+            output_type=str,
+        )
+        _msg = (
+            f"【用户的问题】\n{user_question}\n\n"
+            "你没查到任何材料，也还没想出结论。用人设口吻承认这次没答上来，"
+            "一句话、20 字以内。禁止编造内容，禁止解释为什么没查到，"
+            "禁止提到检索、工具、数据库一类的东西。"
+        )
+        result = await _agent.run(
+            _msg,
+            message_history=list(self.history),
+            usage_limits=UsageLimits(request_limit=1),
+        )
+        text = str(result.output)
+        if not text.strip() or is_silence_marker(text.strip()):
+            self._remember_outbound_on_silence(st, "<SILENCE>")
+            return "<SILENCE>"
+        self._session_logger.log_text_output(text)
+        self._session_logger.log_result(text, st.tool_call_list)
+        if st.bot:
+            await send_chat_result(st.bot, text, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+        return ""
 
     def _remember_outbound_on_silence(self, st: RunOnceState, result_msg: str) -> None:
         """静默不进 A 轨；把本轮出站句柄补上，追问才能 read_handle。"""

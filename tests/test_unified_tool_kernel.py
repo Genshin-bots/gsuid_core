@@ -74,23 +74,26 @@ def test_skip_search_idle_both_channels() -> None:
     )
 
 
-def test_group_idle_request_limit_addressed_not_capped() -> None:
-    from gsuid_core.ai_core.agent_run.tools import group_idle_request_limit
+def test_group_request_limit_only_narrowed_for_pure_bystander() -> None:
+    """收窄只针对纯旁观轮：点名与省略续聊轮必须拿满 multi_agent_lenth。
 
+    收窄曾把「find_tools → 真正查」这类两跳链路砍到 2 轮，撞线后走无上下文强制总结，
+    由此产出「内部库没你的分值」这类把工具缺失讲成数据事实的出戏句。但受害的是
+    ellipsis_followup / task_management 轮（``followup_detected``），它们本来就该跑满。
+    纯旁观轮（无人寻址 + 无跟进 + 无在途任务）仍需上限兜住零工具空转。
+    """
+    import gsuid_core.ai_core.agent_run.tools as tools_mod
+    from gsuid_core.ai_core.agent_run.tools import group_idle_request_limit
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    assert "group_idle_max_iterations" in ai_config.config_list
+    assert hasattr(tools_mod, "group_idle_request_limit")
+
+    full = 20
+    # 纯旁观轮收窄
     assert (
         group_idle_request_limit(
-            20,
-            is_group=True,
-            followup_detected=False,
-            has_active_task=False,
-            idle_cap=2,
-            call_to_self=True,
-        )
-        == 20
-    )
-    assert (
-        group_idle_request_limit(
-            20,
+            full,
             is_group=True,
             followup_detected=False,
             has_active_task=False,
@@ -98,6 +101,52 @@ def test_group_idle_request_limit_addressed_not_capped() -> None:
             call_to_self=False,
         )
         == 2
+    )
+    # 点名 / 省略续聊 / 在途任务 → 放行拿满
+    assert (
+        group_idle_request_limit(
+            full,
+            is_group=True,
+            followup_detected=False,
+            has_active_task=False,
+            idle_cap=2,
+            call_to_self=True,
+        )
+        == full
+    )
+    assert (
+        group_idle_request_limit(
+            full,
+            is_group=True,
+            followup_detected=True,
+            has_active_task=False,
+            idle_cap=2,
+            call_to_self=False,
+        )
+        == full
+    )
+    assert (
+        group_idle_request_limit(
+            full,
+            is_group=True,
+            followup_detected=False,
+            has_active_task=True,
+            idle_cap=2,
+            call_to_self=False,
+        )
+        == full
+    )
+    # 私聊永不收窄
+    assert (
+        group_idle_request_limit(
+            full,
+            is_group=False,
+            followup_detected=False,
+            has_active_task=False,
+            idle_cap=2,
+            call_to_self=False,
+        )
+        == full
     )
 
 

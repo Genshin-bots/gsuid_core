@@ -223,8 +223,11 @@ def test_firewall_blocks_system_copy_leaks() -> None:
         assert hit is not None, text
         assert hit.category == "system_term"
         assert any("系统文案" in m or "框架泄漏" in m for m in hit.matched), hit.matched
-    # 角色化缺口允许
-    assert check_ooc("…没查到具体数字。…困。") is None
+    # 已反转（群聊 OOC 事故 2026-09）：「没查到具体数字」原被当成角色化缺口的正面样例，
+    # 门因此认可了检索语汇。缺口仍允许，但只能用人的说法；检索腔由 meta_narration 拦。
+    assert check_ooc("…那个数字我记不清。…困。") is None
+    meta = check_ooc("…内部库没你的分值。不是 0，是压根没记过。")
+    assert meta is not None and meta.category == "meta_narration", meta
 
 
 def test_persist_and_fold_propagates_then_caller_can_isolate() -> None:

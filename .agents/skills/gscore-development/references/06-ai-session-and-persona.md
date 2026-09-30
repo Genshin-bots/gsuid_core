@@ -212,8 +212,13 @@ RESOURCE_PATH/persona/{persona_name}/
 | `error_generic` | `这条消息我处理失败了，稍后再试一次吧` | 执行失败 / 无结果 |
 | `error_timeout` | `刚才网络太慢处理超时了，稍后再试试吧` | 超时 |
 | `error_content_policy` | `这条消息触发了内容安全策略，我没法处理` | 内容安全 |
-| `fallback_ooc` | `这个不太想说呢。` | 出戏拦截兜底 |
-| `fallback_machine` | `额…出错了，稍后再试` | 技术堆栈熔断 |
+
+> **出戏拦截没有罐头文案**（2026-09 起）：`fallback_ooc` / `fallback_machine` 两个键与
+> `output_firewall.fallback_ooc_text` / `fallback_machine_text` 访问器已删除。命中闸门一律
+> 让当前人格自己重说一句（`gs_agent._ooc_recover_persona_voice`，两次机会），两次都不干净时
+> 人格/一致性类**原样发送**、`fund_claim` / `machine_dump` 与模型主动沉默才丢弃；没有 run 的
+> 出口（主动播报 / `send_chat_result` 末端）直接丢弃正文。
+> 剩下的 `error_*` 全是**供应商侧**失败（超时 / 套餐打满 / 内容审核），那不是「角色在说话」。
 
 ### Persona 配置热重载特殊处理
 

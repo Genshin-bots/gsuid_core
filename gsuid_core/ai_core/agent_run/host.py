@@ -89,6 +89,20 @@ class RunOnceHost:
     def _model_declares_video(self) -> bool:
         raise NotImplementedError
 
+    async def _lightweight_text_rewrite(self, rewrite_message: str, *, max_tokens: int | None = None) -> str:
+        raise NotImplementedError
+
+    def _ooc_hard_hit(self, text: str, ev: Event | None) -> output_firewall.FirewallHit | None:
+        raise NotImplementedError
+
+    async def _ooc_recover_persona_voice(
+        self,
+        hit: output_firewall.FirewallHit,
+        original: str,
+        ev: Event | None,
+    ) -> str:
+        raise NotImplementedError
+
     async def _resolve_output_gate_after_run(
         self,
         context: ToolContext,

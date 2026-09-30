@@ -121,6 +121,7 @@ from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
     TraceKind,
     _append_user_text,
     _claims_fake_done,
+    turn_reply_metadata,
     _correction_nudge_markers,
     _format_capability_roster,
     _tool_return_looks_failed,
@@ -1208,41 +1209,114 @@ class GsCoreAIAgent(RunOnceMixin):
             return ""
         return out
 
+    def _ooc_hard_hit(self, text: str, ev: Optional[Event]) -> Optional[output_firewall.FirewallHit]:
+        """复检：文本是否仍落在永不放行类目上。空串不算命中。"""
+        if not text:
+            return None
+        user_text = ev.raw_text if ev is not None and ev.raw_text else ""
+        hit = output_firewall.check_ooc(text, user_text=user_text)
+        if hit is not None and hit.category in output_firewall.NEVER_RELEASE_CATEGORIES:
+            return hit
+        return None
+
+    async def _ooc_persona_voice(
+        self,
+        hit: output_firewall.FirewallHit,
+        original: str,
+        *,
+        strict: bool,
+    ) -> str:
+        """让当前人格自己重说一句；说不出来或仍带尖括号返回空串。
+
+        ``strict=True`` 是第二次机会：只许给结论，不许解释这份材料为什么没有。
+        """
+        if strict:
+            ask = (
+                f"{output_firewall.build_rewrite_warning(hit)}\n\n"
+                f"【刚才那句】\n{original}\n\n"
+                "用你当前的人格自己重说一句要发给用户的话，一句话就够。"
+                "别解释这份材料为什么没有、来自哪里、覆盖到哪里。"
+                "禁止出现工具名、模型名、内部机制一类说法。直接输出那一句。"
+            )
+        else:
+            ask = (
+                f"{output_firewall.build_rewrite_warning(hit)}\n\n"
+                f"【待判断的原文】\n{original}\n\n"
+                "请自主判断后直接输出要发给用户的内容："
+                "不是出戏就原样或微调；是暴露自身身份再用角色口吻改写。不要解释。"
+            )
+        out = await self._lightweight_text_rewrite(ask, max_tokens=256 if strict else None)
+        if not out:
+            return ""
+        if angle_bracket_guard.has_illegal_angle_tags(out):
+            out = angle_bracket_guard.sanitize_illegal_angle_tags(out)
+        return out
+
+    async def _ooc_recover_persona_voice(
+        self,
+        hit: output_firewall.FirewallHit,
+        original: str,
+        ev: Optional[Event],
+    ) -> str:
+        """永不放行类目的统一恢复：重说 → 复检 → 再给一次「只许结论」的机会。
+
+        两次都不干净时：人格 / 一致性类**原样发送**（``_LAST_RESORT_SEND_ORIGINAL``）——
+        出戏闸不该吃掉整轮对话；``fund_claim`` / ``machine_dump`` 与「模型主动沉默 /
+        重说调用失败」返回空串，由调用方按不发送处理。
+        """
+        rewritten = await self._ooc_persona_voice(hit, original, strict=False)
+        if not rewritten or self._ooc_hard_hit(rewritten, ev) is None:
+            return rewritten
+        rewritten = await self._ooc_persona_voice(hit, original, strict=True)
+        if self._ooc_hard_hit(rewritten, ev) is None:
+            return rewritten
+        if hit.category in output_firewall._LAST_RESORT_SEND_ORIGINAL:
+            logger.warning(i18n_t("log.agent.firewall_rewrite_output_released_original", p0=hit.category))
+            return original
+        logger.warning(i18n_t("log.agent.firewall_rewrite_output_hit_non", p0=hit.category))
+        return ""
+
     async def _ooc_rewrite_and_send(
         self,
         blocked: List[Tuple[str, output_firewall.FirewallHit]],
         bot: Bot,
         ev: Optional[Event],
     ) -> None:
-        """出戏命中且本轮没有下一轮请求：把系统提醒交给模型自判，按它的正文发送。"""
+        """出戏命中且本轮没有下一轮请求：让当前人格重说一句。
+
+        框架不替人格说话：**没有罐头兜底**（§1.9）。两次重说都不干净时，人格 / 一致性类
+        原样发送（出戏闸不该吃掉整轮对话）；``fund_claim`` / ``machine_dump`` 与「模型主动
+        沉默 / 重说调用失败」一个字符都不发。软出戏类目本就设计成提醒一次后模型自判。
+        """
         original = "\n\n".join(text for text, _ in blocked)
         first_hit = blocked[0][1]
-        rewrite_message = (
-            f"{output_firewall.build_rewrite_warning(first_hit)}\n\n"
-            f"【待判断的原文】\n{original}\n\n"
-            "请自主判断后直接输出要发给用户的内容："
-            "不是出戏就原样或微调；是暴露自身身份再用角色口吻改写。不要解释。"
-        )
-        rewritten = await self._lightweight_text_rewrite(rewrite_message)
-        _ooc_fb = output_firewall.fallback_ooc_text(self.persona_name)
-        _hard = first_hit.category in output_firewall.NEVER_RELEASE_CATEGORIES
+        hard = first_hit.category in output_firewall.NEVER_RELEASE_CATEGORIES
+        blocked_texts = {text for text, _ in blocked}
+
+        if hard:
+            rewritten = await self._ooc_recover_persona_voice(first_hit, original, ev)
+        else:
+            # 软出戏：提醒一次后模型自判；给不出就照原样发
+            rewritten = await self._ooc_persona_voice(first_hit, original, strict=False) or original
+
         if not rewritten:
-            rewritten = _ooc_fb if _hard else original
-        if _hard:
-            _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-            _recheck = output_firewall.check_ooc(rewritten, user_text=_user_text)
-            if _recheck is not None and _recheck.category in output_firewall.NEVER_RELEASE_CATEGORIES:
-                logger.warning(i18n_t("log.agent.firewall_rewrite_output_hit_non"))
-                rewritten = _ooc_fb
-        if angle_bracket_guard.has_illegal_angle_tags(rewritten):
-            rewritten = angle_bracket_guard.sanitize_illegal_angle_tags(rewritten) or (_ooc_fb if _hard else original)
+            logger.warning(i18n_t("log.agent.firewall_ooc_dropped_no_persona_voice"))
+            self._scrub_gate_history(blocked_texts, drop_blocked=True)
+            return
+
         self._session_logger.log_text_output(rewritten)
         try:
-            await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
+            await send_chat_result(
+                bot,
+                rewritten,
+                ev=ev,
+                ooc_check=False,
+                extra_metadata=turn_reply_metadata(ev),
+            )
             self._run_sent_texts.add(rewritten)
         except Exception as e:
             logger.debug(i18n_t("log.agent.agent_event", e=e))
-        self._replace_blocked_text_in_history({text for text, _ in blocked}, rewritten)
+        self._replace_blocked_text_in_history(blocked_texts, rewritten)
 
     async def _angle_bracket_rewrite_loop(
         self,
@@ -1365,21 +1439,19 @@ class GsCoreAIAgent(RunOnceMixin):
         mapping = {b: rewritten for b in blocked}
         self._edit_history_tail(tail_n=len(self.history), replace_text_parts=mapping)
 
-    def _ooc_safe_outbound(self, text: str, ev: Optional[Event]) -> str:
-        """angle 收尾产物出站前 OOC 复检（angle 短路可能残留出戏）。"""
+    async def _ooc_safe_outbound(self, text: str, ev: Optional[Event]) -> str:
+        """angle 收尾产物出站前 OOC 复检（angle 短路可能残留出戏）。
+
+        命中就让人格自己重说一句；说两次都不行时按类目口径返回原文或空串（空串 = 不发送）。
+        """
         if not text or not output_firewall.is_enabled():
             return text
         user_text = ev.raw_text if ev is not None and ev.raw_text else ""
         hit = output_firewall.check_ooc(text, user_text=user_text)
-        if hit is None:
+        if hit is None or hit.category in output_firewall.SOFT_JUDGE_CATEGORIES:
             return text
-        if hit.category == "machine_dump":
-            return output_firewall.fallback_machine_text(self.persona_name)
-        if hit.category in output_firewall.NEVER_RELEASE_CATEGORIES:
-            return output_firewall.fallback_ooc_text(self.persona_name)
-        if hit.category in output_firewall.SOFT_JUDGE_CATEGORIES:
-            return text
-        return output_firewall.fallback_ooc_text(self.persona_name)
+        logger.warning(i18n_t("log.agent.firewall_ooc_outbound_recover", p0=hit.category))
+        return await self._ooc_recover_persona_voice(hit, text, ev)
 
     async def _resolve_output_gate_after_run(
         self,
@@ -1422,19 +1494,30 @@ class GsCoreAIAgent(RunOnceMixin):
                 attempts_already=plan.attempts,
             )
             if rewritten:
-                rewritten = self._ooc_safe_outbound(rewritten, ev)
+                rewritten = await self._ooc_safe_outbound(rewritten, ev)
                 self._session_logger.log_text_output(rewritten)
                 sent_ok = False
                 try:
-                    await send_chat_result(bot, rewritten, ev=ev, ooc_check=False)
-                    self._run_sent_texts.add(rewritten)
-                    sent_ok = True
+                    if rewritten:
+                        await send_chat_result(
+                            bot,
+                            rewritten,
+                            ev=ev,
+                            ooc_check=False,
+                            extra_metadata=turn_reply_metadata(ev),
+                        )
+                        self._run_sent_texts.add(rewritten)
+                        sent_ok = True
                 except Exception as abe:
                     logger.debug(i18n_t("log.ai.output_gate_angle_rewrite_send_fail", e=abe))
                 # 仅替换本条 rewrite_original，避免多脏文被同一产物覆盖
                 if sent_ok:
                     self._replace_blocked_text_in_history({plan.rewrite_original}, rewritten)
                     self._scrub_gate_history(set(), drop_blocked=False)
+                else:
+                    # 人格也没重说出来：丢历史里的脏 TextPart，不发
+                    self._scrub_gate_history({plan.rewrite_original}, drop_blocked=True)
+                    output_gate.set_fused(context.extra, "angle_bracket")
             else:
                 logger.warning(
                     i18n_t(

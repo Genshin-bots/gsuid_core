@@ -401,7 +401,8 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
      **只计 1 次 attempt**；多段 feedback 用 `merge_rewrite_feedbacks` 合并后注入下一轮请求。
    - 检测启发式：形如 `</?Name…>`；`List<str>` 等 PascalCase 泛型 / 含 `@` 邮箱跳过，降假阳性。
 2. **`ooc`**（`output_firewall.check_ooc`）：
-   - 主路径：`machine_dump` → `FALLBACK`「额…出错了，稍后再试」；**`delivery_narration`
+   - 主路径：`machine_dump` → `REWRITE`+`defer_ooc`（与 never-release 同路：run 末让当前
+     人格自己重说一句，**无罐头兜底**）；**`delivery_narration`
      → `FUSE`**（交付已完成，重说无意义，直接静默）；资金红线持续 `REWRITE`。
    - **软出戏**（`model_identity` / `ai_selfref` 等）：主/工具同一套——命中不强制剥模型名、
      不二次发送放行。注入 `（系统校验：…可能出戏）` 让模型自判；提醒送达后只放行**主路径

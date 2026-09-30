@@ -20,8 +20,6 @@ DEFAULT_ERROR_GENERIC = "这条消息我处理失败了，稍后再试一次吧"
 DEFAULT_ERROR_TIMEOUT = "刚才网络太慢处理超时了，稍后再试试吧"
 DEFAULT_ERROR_QUOTA = "今天聊得有点多，脑子转不动了，等会儿再找你"
 DEFAULT_ERROR_CONTENT_POLICY = "这条消息触发了内容安全策略，我没法处理"
-DEFAULT_FALLBACK_OOC = "这个不太想说呢。"
-DEFAULT_FALLBACK_MACHINE = "额…出错了，稍后再试"
 
 DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
     "_AddressDivider": GsDivider("称呼", "人格对特定对象的口头称呼", "称呼"),
@@ -32,7 +30,8 @@ DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
     ),
     "_ErrorDivider": GsDivider(
         "失败与拦截",
-        "失败或拦截时直接发给用户的台词，保持角色口吻、不要写内部错误细节。",
+        "供应商侧失败（超时 / 套餐打满 / 内容审核）时直接发给用户的台词，保持角色口吻、"
+        "不要写内部错误细节。出戏拦截不走这里——由当前人格自己重说一句，重说不出来就沉默。",
         "失败与拦截",
     ),
     "error_generic": GsStrConfig(
@@ -54,16 +53,6 @@ DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
         "内容安全拦截",
         "命中模型内容安全策略时发给用户的短句。",
         DEFAULT_ERROR_CONTENT_POLICY,
-    ),
-    "fallback_ooc": GsStrConfig(
-        "出戏拦截兜底",
-        "回复命中出戏红线且无法重说时发给用户的中性短句（不要写死某个人格的口癖）。",
-        DEFAULT_FALLBACK_OOC,
-    ),
-    "fallback_machine": GsStrConfig(
-        "技术堆栈熔断",
-        "回复像技术堆栈或状态 JSON 时发给用户的短句。",
-        DEFAULT_FALLBACK_MACHINE,
     ),
     "task_ack": GsStrConfig(
         "接任务应",
@@ -129,14 +118,6 @@ def get_persona_setting(persona_name: str | None, key: str) -> str:
 
 def get_master_title(persona_name: str | None) -> str:
     return get_persona_setting(persona_name, "master_title")
-
-
-def get_fallback_ooc(persona_name: str | None) -> str:
-    return get_persona_setting(persona_name, "fallback_ooc")
-
-
-def get_fallback_machine(persona_name: str | None) -> str:
-    return get_persona_setting(persona_name, "fallback_machine")
 
 
 def persona_name_from_event(ev: Event | None) -> str | None:

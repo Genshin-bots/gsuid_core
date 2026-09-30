@@ -209,11 +209,13 @@ def _write_10m_report() -> None:
                     if not isinstance(a, dict):
                         continue
                     text = str(a["agent_answer"] if "agent_answer" in a else "")
-                    if "这个不太想说呢" in text:
+                    # 2026-09 起出戏闸不再发罐头文案：命中即「让当前人格重说一句」，
+                    # 重说不出来就丢弃：交付为空的次数即闸门丢弃次数。
+                    if not text.strip():
                         ooc += 1
         conv_rows.append(f"| {conv} | {ok}/{n} | |")
     pct = f"{100.0 * passed_all / total_all:.1f}%" if total_all else "n/a"
-    lines.append(f"**总分：{passed_all}/{total_all}（{pct}）**。输出闸「这个不太想说呢」{ooc}/{total_all}。")
+    lines.append(f"**总分：{passed_all}/{total_all}（{pct}）**。输出闸丢弃（交付为空）{ooc}/{total_all}。")
     lines.extend(["", "## 分 conversation", "", "| conv | 分数 | 备注 |", "|------|------|------|"])
     lines.extend(conv_rows)
     lines.extend(["", "## 按类", "", "| 类别 | 过线 |", "|------|------|"])
@@ -283,11 +285,13 @@ def _write_run_report(plan_ids: list[int]) -> None:
                     if not isinstance(a, dict):
                         continue
                     text = str(a["agent_answer"] if "agent_answer" in a else "")
-                    if "这个不太想说呢" in text:
+                    # 2026-09 起出戏闸不再发罐头文案：命中即「让当前人格重说一句」，
+                    # 重说不出来就丢弃：交付为空的次数即闸门丢弃次数。
+                    if not text.strip():
                         ooc += 1
         conv_rows.append(f"| {conv} | {ok}/{n} | |")
     pct = f"{100.0 * passed_all / total_all:.1f}%" if total_all else "n/a"
-    lines.append(f"**总分：{passed_all}/{total_all}（{pct}）**。输出闸「这个不太想说呢」{ooc}/{total_all}。")
+    lines.append(f"**总分：{passed_all}/{total_all}（{pct}）**。输出闸丢弃（交付为空）{ooc}/{total_all}。")
     lines.extend(["", "## 分 conversation", "", "| conv | 分数 | 备注 |", "|------|------|------|"])
     lines.extend(conv_rows)
     lines.extend(["", "## 按类", "", "| 类别 | 过线 |", "|------|------|"])

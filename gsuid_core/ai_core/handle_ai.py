@@ -336,9 +336,9 @@ async def run_interactive_turn(
     hist_block = ""
     if history_context is not None:
         hist_block = history_context
-    elif cheap is CheapGate.FULL and (
-        turn_graph.call_to_self or turn_graph.ellipsis_followup or turn_graph.task_management
-    ):
+    elif event.group_id:
+        # 群转录是群聊轮的**必备输入**，不是"被寻址时的加分项"。寻址门只决定能不能答，
+        # 不决定看不看得见群：软触发轮砍掉它，模型只能靠语义猜指代，会安到别人头上。
         hist_block = build_group_history_block(event)
     full_context, has_actionable = await assemble_dynamic_context(
         query=query,

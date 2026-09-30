@@ -134,12 +134,16 @@ def test_cognition_empty_is_single_line() -> None:
     ):
         out = _run(search_cognition(_ctx(), query="空"))
 
-    assert "无命中" in out
+    assert "没有可用材料" in out
     assert len(out.splitlines()) == 1, out
     # 上限管的是「别再拼三大段」，不是「不许指路」：一行内必须给出下一步，否则模型
     # 会原地编答案或换个说法重搜（单一动词把这类空转全压在这一个工具上）。
     assert len(out) < 160, f"空结果应 < 160 字，实际 {len(out)}"
-    assert "web_search_tool" in out and "find_tools" in out, "空结果必须指路到外部/专域工具"
+    # 指路保留，但只能用人话指向来源：旧写法把工具名原文交给模型，
+    # 它会照抄对群里讲「没查到」——这正是实测出戏过的泄漏路径。
+    assert "联网来源" in out, "空结果必须指路到外部来源"
+    for leak in ("无命中", "召回", "web_search_tool", "find_tools", "search_cognition"):
+        assert leak not in out, f"空结果泄漏禁用口径 {leak}: {out}"
 
 
 def test_no_owner_is_fail_closed() -> None:

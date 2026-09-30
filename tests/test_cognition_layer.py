@@ -76,16 +76,18 @@ def test_scope_defaults_are_conservative() -> None:
 
 
 def test_empty_result_is_one_short_line() -> None:
-    """空结果只回一行——历史上要拼「未找到 + 无匹配 + 长说明」三大段。
+    """空结果只回一行，且**不得携带检索术语与工具名**。
 
-    一行之内还必须指路：只说「无命中」时模型会原地编答案或换个说法重搜，
-    收成单一动词后这类空转的成本全压在这一个工具上。
+    历史上这里是「无命中 / 未召回 ≠没存过」 + 三个工具名。旣一方向正确（模型会实际调工具），
+    但它同时把禁用的口径原文交到了模型手上，模型照抄就对群里讲「没查到 / 原话没存下来」。
+    因此此处是**有意的语义反转**：一行与指路保留，口径改为人话。
     """
     block = render_cognition_block("竖图偏好", [])
     assert len(block.splitlines()) == 1
     assert len(block) < 160, f"{len(block)} 字：{block}"
-    assert "无命中" in block
-    assert "web_search_tool" in block and "find_tools" in block
+    assert "没有可用材料" in block
+    for leak in ("无命中", "召回", "没存过", "web_search_tool", "find_tools", "search_cognition"):
+        assert leak not in block, f"空结果泄漏禁用口径 {leak}: {block}"
 
 
 def test_hits_render_with_kind_labels_and_handles() -> None:
@@ -979,12 +981,15 @@ def test_repeat_query_is_short_circuited_within_a_run() -> None:
         third = _run(search_cognition(ctx, query="完全不同的问题"))
 
     assert len(calls) == 2, calls
-    assert "无命中" in first
-    assert "本轮已检索过" in second
-    assert "仍无命中" in second
+    assert "没有可用材料" in first
+    assert "本轮已拿这个问法问过" in second
+    assert "仍无可用材料" in second
     assert "含路径卡" not in second
-    assert "web_search_tool" in second, "短路回执必须指路到外部检索工具"
-    assert "无命中" in third
+    # 短路回执仍须指路，但不得出现工具名或查询术语
+    assert "联网来源" in second, "短路回执必须指路到外部来源"
+    for leak in ("web_search_tool", "read_handle", "无命中", "认知层是只读的"):
+        assert leak not in second, f"短路回执泄漏禁用口径 {leak}: {second}"
+    assert "没有可用材料" in third
 
 
 def test_readonly_retrieval_tools_have_a_stricter_thrash_limit() -> None:
@@ -1006,18 +1011,23 @@ def test_cognition_tool_docstring_steers_away_from_realtime_data() -> None:
 
     收成单一「回想」动词后，模型会把它当通用搜索用（实测抢掉了 web_search_tool），
     所以边界必须写在描述开头、且指名道姓。
+
+    反转（语义修正不是回归）：原文在**空结果段落**又点了一次 ``find_tools``，
+    让模型知道"该改调哪个工具"——这类内部工具名会被照抄进台词（群聊出戏实证）。
+    现在那一段只说人话（另找联网来源 / 另找对应能力），点名只保留在开头的边界句。
     """
     from gsuid_core.ai_core.buildin_tools.rag_search import search_cognition
 
     doc = search_cognition.__doc__ or ""
     assert "不查实时" in doc
     assert "web_search_tool" in doc
-    assert "find_tools" in doc
     assert "专名/数字/约束" in doc
     head = doc[: doc.find("Args:")] if "Args:" in doc else doc
     assert head.index("不查实时") < head.index("什么时候用"), "边界必须先于用法"
+    assert "web_search_tool" in head, "边界句要指名替代工具，否则模型会拿它当通用搜索"
     assert "说话人ID + 要填的槽" in doc
     assert "外部题目" in doc
+    assert "find_tools" not in doc, "空结果段落不该再点名别的工具：工具名会被照抄进台词"
 
 
 def test_web_search_docstring_defers_to_speaker_recall() -> None:

@@ -66,10 +66,8 @@ from gsuid_core.ai_core.persona.resource import (
 from gsuid_core.ai_core.persona.settings import (
     DEFAULT_PERSONA_SETTINGS,
     PersonaSettingsManager,
-    get_fallback_ooc,
     get_master_title,
     get_persona_setting,
-    get_fallback_machine,
     persona_name_from_event,
     persona_settings_manager,
 )
@@ -116,7 +114,5 @@ __all__ = [
     "DEFAULT_PERSONA_SETTINGS",
     "get_persona_setting",
     "get_master_title",
-    "get_fallback_ooc",
-    "get_fallback_machine",
     "persona_name_from_event",
 ]

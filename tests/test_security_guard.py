@@ -76,14 +76,14 @@ def test_firewall_spares_flask_sqlalchemy_not_api_key() -> None:
     assert hit.category == "system_term"
 
 
-def test_firewall_scrub_fallback():
-    from gsuid_core.ai_core.output_firewall import PERSONA_FALLBACK_TEXT, scrub_or_fallback
+def test_firewall_scrub_drops_instead_of_canned_text():
+    from gsuid_core.ai_core.output_firewall import scrub_or_drop
 
-    out, hit = scrub_or_fallback("我是 GPT 开发的")
-    assert hit and out == PERSONA_FALLBACK_TEXT
-    out2, hit2 = scrub_or_fallback("普通的一句话")
+    out, hit = scrub_or_drop("我是 GPT 开发的")
+    assert hit and out == "", "命中必须丢弃，不许罐头代答"
+    out2, hit2 = scrub_or_drop("普通的一句话")
     assert not hit2 and out2 == "普通的一句话"
-    print("[OK] scrub_or_fallback 命中替换 / 未命中透传")
+    print("[OK] scrub_or_drop 命中丢弃 / 未命中透传")
 
 
 def test_ooc_gate_tool_keeps_warning_not_second_release():
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     test_firewall_catches_model_identity()
     test_firewall_catches_ai_selfref_and_system_terms()
     test_firewall_passes_normal_and_plain_tier()
-    test_firewall_scrub_fallback()
+    test_firewall_scrub_drops_instead_of_canned_text()
     test_ooc_gate_tool_keeps_warning_not_second_release()
     test_wrap_untrusted()
     test_lewd_phishing_lexicon_removed()

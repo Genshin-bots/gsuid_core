@@ -56,6 +56,9 @@ class RunOnceState:
 
     # 环内可变
     tool_call_list: list[str] = field(default_factory=list)
+    #: 本轮**真实**工具回执正文（折叠前截取，总量有上界）。超轮数兜底总结只能拿它当
+    #: 材料：`self.history` 此刻还没 extend 本轮，工具名也证明不了有事实。
+    run_tool_outputs: list[str] = field(default_factory=list)
     effectual_mutate: bool = False
     wall_nudged: bool = False
     ooc_blocked: list[tuple[str, output_firewall.FirewallHit]] = field(default_factory=list)

@@ -1546,11 +1546,11 @@ async def send_chat_result(
     clean_text = re.sub(r"[ \t]{2,}", " ", clean_text)
     clean_text = re.sub(r"^[，。！？\s]+|[，。！？\s]+$", "", clean_text)
 
-    # 无提醒通道（proactive 等）命中即替换；主循环自判产物走 ooc_check=False。
+    # 无提醒通道（proactive 等）没有 run 可让人格重说：命中即丢弃台词。
+    # 框架不替人格说话，也不发罐头（§1.9）；制品图/表情包仍照发。
     _ooc_replaced = False
     if (clean_text or report_blocks) and ooc_check:
-        from gsuid_core.ai_core.output_firewall import check_ooc, is_enabled, fallback_ooc_text
-        from gsuid_core.ai_core.persona.settings import persona_name_from_event
+        from gsuid_core.ai_core.output_firewall import check_ooc, is_enabled
 
         if is_enabled():
             # 短答门需要来话上下文：身份追问下的超短直答才算泄露（见 check_ooc docstring）
@@ -1564,7 +1564,7 @@ async def send_chat_result(
                         p1=_hit.matched,
                     )
                 )
-                clean_text = fallback_ooc_text(persona_name_from_event(ev))
+                clean_text = ""
                 _ooc_replaced = True
             # report 块与台词同权过末端防火墙：制品通道不能成为资金红线/出戏红线的 旁路（评审修复 F3），
             if report_blocks:
@@ -1742,48 +1742,6 @@ def _is_content_rejected(e: ModelHTTPError) -> bool:
     if any(hint in blob for hint in _CONTENT_REJECT_HINTS):
         return True
     return any(re.search(rf"\b{code}\b", blob) for code in _CONTENT_REJECT_CODES)
-
-
-def _extract_run_context(history: List[ModelMessage], max_fact_len: int = 2000) -> str:
-    """从历史消息中提取"已知事实"和"模型推理片段"，按轮次组织。
-
-    相比只提取 ToolReturnPart，还保留 TextPart（LLM 中间推理），
-    因为这些推理有时本身就是有价值的结论。
-    """
-    sections: list[str] = []
-    round_num = 0
-
-    for msg in history:
-        if isinstance(msg, ModelResponse):
-            round_num += 1
-            texts: list[str] = []
-            calls: list[str] = []
-            for part in msg.parts:
-                if isinstance(part, TextPart) and part.content.strip():
-                    t = part.content.strip()
-                    if len(t) > 500:
-                        t = t[:500] + "...[截断]"
-                    texts.append(t)
-                elif isinstance(part, ToolCallPart):
-                    calls.append(part.tool_name)
-
-            if texts or calls:
-                header = f"【第{round_num}轮】"
-                if calls:
-                    header += f" 调用工具: {', '.join(calls)}"
-                if texts:
-                    header += "\n" + "\n".join(texts)
-                sections.append(header)
-
-        elif isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart):
-                    content = str(part.content).strip()
-                    if len(content) > max_fact_len:
-                        content = content[:max_fact_len] + f"\n...[截断, 共{len(content)}字符]"
-                    sections.append(f"  → [{part.tool_name}] 返回: {content}")
-
-    return "\n".join(sections) if sections else ""
 
 
 def _truncate_message_for_log(msg: Any, max_base64_len: int = 100) -> Any:

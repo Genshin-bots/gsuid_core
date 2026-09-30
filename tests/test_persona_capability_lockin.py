@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from gsuid_core.ai_core.output_firewall import MACHINE_FALLBACK_TEXT, PERSONA_FALLBACK_TEXT
+from gsuid_core.ai_core.persona.settings import DEFAULT_PERSONA_SETTINGS, default_phrase
 from gsuid_core.ai_core.classifier.mode_classifier import KNOWLEDGE_NOUNS, FUNCTIONAL_NOUNS
 
 _CORE = Path(__file__).resolve().parent.parent / "gsuid_core"
@@ -29,12 +29,20 @@ _PLUGIN_DOMAIN_NOUNS = frozenset(
 )
 
 
-def test_fallback_texts_are_persona_neutral() -> None:
-    for s in (PERSONA_FALLBACK_TEXT, MACHINE_FALLBACK_TEXT):
+def test_remaining_canned_texts_are_persona_neutral() -> None:
+    """人格罐头兜底已整体删除；剩下的用户可见短句只剩供应商侧失败，仍须人格中性。"""
+    from gsuid_core.utils.plugins_config.models import GsStrConfig
+
+    assert "fallback_ooc" not in DEFAULT_PERSONA_SETTINGS
+    assert "fallback_machine" not in DEFAULT_PERSONA_SETTINGS
+    for key, item in DEFAULT_PERSONA_SETTINGS.items():
+        if not isinstance(item, GsStrConfig):
+            continue
+        s = item.data
         for tick in _PERSONA_TICKS:
-            assert tick not in s, f"{s!r} contains persona tick {tick!r}"
-    assert "早柚" not in PERSONA_FALLBACK_TEXT
-    assert PERSONA_FALLBACK_TEXT.strip()
+            assert tick not in s, f"persona.json[{key}]={s!r} contains persona tick {tick!r}"
+        assert "早柚" not in s, f"persona.json[{key}]={s!r} locks the default persona"
+    assert default_phrase("error_generic").strip()
 
 
 def test_classifier_nouns_exclude_plugin_domains() -> None:
