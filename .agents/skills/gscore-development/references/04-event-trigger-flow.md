@@ -65,6 +65,8 @@ for sv in SL.lst:
 > 命中后 `ev.text` 去掉命令词紧外侧的那层空格，参数内部空格不动。`raw_text` 不改写。
 > `on_regex` 只去掉前缀后面的那层空格再套正则，正则里的 `\s` 仍由插件自己写。`on_keyword` 仍是字面包含，不跨交界拼词。
 > 群聊热路径仍是注册时拼好的 `prefix+keyword` 做一次 `startswith`：首字对不上前缀就返回。只有首字是空格或前缀首字时才走慢匹配。
+> `on_prefix` 的命令词后可以跟空格（`市盈率对比 光大银行` 与 `市盈率对比光大银行` 等价），但后面必须还有内容，裸命令不命中。
+> 这条判定统一由 `Trigger._check_prefix` 承担：`check_command` 里 `prefix` 分支不落到首字探针，否则空前缀触发器（`_probe` 为空）会被误杀。
 
 ## 4.3 AI 触发条件（`handler.py`）
 

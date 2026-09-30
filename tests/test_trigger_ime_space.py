@@ -151,6 +151,38 @@ def test_short_ascii_prefix_does_not_eat_following_word(sv: SV) -> None:
         SL.plugins.pop(bare.name, None)
 
 
+def test_empty_prefix_on_prefix_accepts_gap_after_keyword() -> None:
+    bare = SV.__new__(SV, "TestImeSpaceEmptyPrefix")
+    bare.name = "TestImeSpaceEmptyPrefix"
+    bare.priority = 5
+    bare.TL = {}
+    bare.plugins = Plugins(
+        name="TestImeSpaceEmptyPrefix",
+        force_prefix=["股票"],
+        allow_empty_prefix=True,
+        force=True,
+    )
+    SL.lst[bare.name] = bare
+    try:
+
+        @bare.on_prefix("市盈率对比")
+        async def pe(bot, ev): ...
+
+        # 空前缀触发器的 _probe 为空，命令词后的空格曾被首字探针误杀
+        assert ":prefix:市盈率对比" in _hits(bare, "市盈率对比 光大银行 民生银行")
+        assert ":prefix:市盈率对比" in _hits(bare, "市盈率对比光大银行 民生银行")
+        assert ":prefix:市盈率对比" in _hits(bare, "市盈率对比\u3000光大银行")
+        assert _text_of(bare, "市盈率对比 光大银行 民生银行", "市盈率对比", "") == "光大银行 民生银行"
+        # 关键字后面必须还有内容，裸命令与纯空格仍不命中
+        assert ":prefix:市盈率对比" not in _hits(bare, "市盈率对比")
+        assert ":prefix:市盈率对比" not in _hits(bare, "市盈率对比   ")
+        # 带插件前缀的同一关键字语义不变
+        assert "股票:prefix:市盈率对比" in _hits(bare, "股票市盈率对比 光大银行")
+    finally:
+        SL.lst.pop(bare.name, None)
+        SL.plugins.pop(bare.name, None)
+
+
 def test_suffix_keyword_and_regex(sv: SV) -> None:
     @sv.on_suffix("card图")
     async def suf(bot, ev): ...

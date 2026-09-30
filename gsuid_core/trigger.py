@@ -192,6 +192,9 @@ class Trigger:
         elif kind == "prefix":
             if msg.startswith(self._head) and len(msg) > len(self._head) and msg[len(self._head)] not in _CMD_GAP:
                 return True
+            # 命令词后带空格也算命中，判定规则只有 _check_prefix 一份。
+            # 不能落到下面的首字探针：空前缀触发器的 _probe 为空，会被误杀。
+            return self._check_prefix(self.keyword, msg)
         elif kind == "suffix":
             if self.prefix and (not msg or (msg[0] not in _CMD_GAP and msg[0] != self.prefix[0])):
                 return False
