@@ -24,7 +24,7 @@
 
 import re
 import asyncio
-from typing import Optional
+from typing import Callable, Optional
 
 from pydantic_ai import RunContext
 
@@ -199,6 +199,29 @@ def _get_subagent_semaphore() -> asyncio.Semaphore:
 # create_subagent(agent_profile=...) 转 Kanban：生产立刻 deferred 回灌，不占会话锁。
 # TEST/评测仍同步等待，因评测 HTTP 等不到回灌。
 _KANBAN_TEST_WAIT_TIMEOUT_SEC = 90.0
+
+
+def _inline_claim_verdict(claimed: bool, ordinal: int) -> Optional[str]:
+    """抢到投递权返回 None；没抢到就静默，避免和执行体各交一次。"""
+    if claimed:
+        return None
+    return f"✅ 任务#{ordinal} 刚好完成，但交付已被框架接手。请只输出 <SILENCE>，勿向用户说话、勿重复 create_subagent。"
+
+
+class _InlineClaimGate:
+    """同一次等待只认领一次。已经认领成功后，不得再因第二次失败改口静默。"""
+
+    def __init__(self) -> None:
+        self.claimed = False
+
+    def take(self, claim: Callable[[], bool], ordinal: int) -> Optional[str]:
+        if self.claimed:
+            return None
+        verdict = _inline_claim_verdict(claim(), ordinal)
+        if verdict is None:
+            self.claimed = True
+        return verdict
+
 
 # 纯 lookup 默认同步 ad-hoc（transient），不建看板卡。
 # 外部检索默认 Kanban：超时可回灌，取消不会把事实包扔掉。
@@ -785,15 +808,16 @@ async def _dispatch_via_kanban(
     agent_profile: str,
 ) -> str:
     """把 create_subagent(agent_profile=...) 转为创建 Kanban **单任务**（叶子根）
-    并启动执行。生产路径立刻 deferred 回灌，不占主会话锁；TEST 仍同步等待。
+    并启动执行。生产路径先登记 deferred，再按 ``subagent_inline_wait_sec`` 内联等
+    一会儿：等到了本轮直接交回结果，等不到才退回后台回灌。设 0 即「派完就走」。
 
     每条主人格通过画像派出的任务都走这条路：
     1. ``kanban.create_kanban_tree(root_agent_profile=pid)`` 建一棵**只有根任务**
        的叶子树——根任务自身带 ``agent_profile``，被调度器当作单一可执行节点直接
        派出。**不再**创建冗余的"根 + 1 子任务"双节点结构；
     2. ``kick_root`` 立刻派活；
-    3. 生产：``mark_deferred_main_delivery`` 后立即返回，完成后
-       ``_wake_main_agent_for_delivery``；TEST 同步等到终态。
+    3. 等到终态就在本轮 claim 投递并交回全文；等超时则留给
+       ``_wake_main_agent_for_delivery`` 后台回灌（TEST 仍同步等到终态）。
     4. 抓根任务最新产出 artifact 句柄 + relay 文本，拼成回执给主人格。
     """
     ev = ctx.deps.ev
@@ -898,12 +922,18 @@ async def _dispatch_via_kanban(
 
     extra = ctx.deps.extra if ctx.deps is not None else {}
     parent_cb = extra["parent_create_by"] if "parent_create_by" in extra else ""
-    wait_sec = _KANBAN_TEST_WAIT_TIMEOUT_SEC if parent_cb == "TEST" else 0.0
+    if parent_cb == "TEST":
+        wait_sec = _KANBAN_TEST_WAIT_TIMEOUT_SEC
+    else:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        wait_sec = float(ai_config.get_config("subagent_inline_wait_sec").data)
     handle = delegation_handle(root.id)
     deleg = await await_delegation(handle, wait_sec=wait_sec)
     if deleg is None:
         return f"⚠️ Kanban 任务记录消失（task_id={root.id}）；可能被并发删除，请到 webconsole 看任务列表。"
     final: Optional[AIAgentTask] = await AIAgentTask.get_by_id(root.id) if deleg.is_terminal else None
+    claim_gate = _InlineClaimGate()
 
     if final is None:
         fresh_after = await AIAgentTask.get_by_id(root.id)
@@ -913,19 +943,22 @@ async def _dispatch_via_kanban(
             "cancelled",
             "waiting_approval",
         ):
-            if try_claim_deferred_for_inline_return(root.id):
-                final = fresh_after
-            else:
-                return (
-                    f"✅ 任务#{root.ordinal} 刚好完成，框架正在回灌产物。"
-                    "请只输出 <SILENCE>，勿向用户说话、勿重复 create_subagent。"
-                )
+            verdict = claim_gate.take(lambda: try_claim_deferred_for_inline_return(root.id), root.ordinal)
+            if verdict is not None:
+                return verdict
+            final = fresh_after
         else:
             from gsuid_core.ai_core.capability_agents.delegation_contracts import (
                 format_deferred_subagent_ack,
             )
 
             return format_deferred_subagent_ack(ordinal=root.ordinal, pid=pid, handle=handle)
+
+    # 终态与超时边界都要认领；已经认领过就不要再调，否则第二次失败会把全文丢掉。
+    # 留下 interactive：执行体见到「interactive 在、deferred 不在」就不再唤醒。
+    verdict = claim_gate.take(lambda: try_claim_deferred_for_inline_return(root.id), root.ordinal)
+    if verdict is not None:
+        return verdict
 
     # 抓 artifact（最新一份用作产物展示）
     arts = await AIAgentArtifact.list_for_task(final.id)

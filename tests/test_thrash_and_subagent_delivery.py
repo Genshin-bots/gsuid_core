@@ -80,6 +80,97 @@ def test_delegation_rejects_other_speakers_history_topic() -> None:
     assert delegation_grounded("compare sample alpha", "please compare sample alpha today")
 
 
+def test_correction_pass_repoints_host_tool_calls_to_parent() -> None:
+    """纠正成功后宿主指针指回并好的父级列表；失败则拨回，且不并入纠正轮的名字。"""
+    import asyncio
+
+    from pydantic_ai.usage import UsageLimits
+
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.agent_run.state import RunOnceState
+    from gsuid_core.ai_core.control.corrections import numeric_recitation_directive
+
+    def _agent() -> GsCoreAIAgent:
+        agent = object.__new__(GsCoreAIAgent)
+        agent._last_attempt_delegated_render = False
+        agent._last_attempt_image_sent = False
+        agent._last_attempt_pending_async = False
+        agent._last_attempt_has_status_tool = False
+        return agent
+
+    def _parent() -> tuple[GsCoreAIAgent, RunOnceState]:
+        agent = _agent()
+        st = RunOnceState(
+            user_message="总结一下",
+            bot=None,
+            ev=None,
+            rag_context=None,
+            tools=[],
+            return_mode="return",
+            output_type=None,
+            intent=None,
+            has_active_task=False,
+            budget_gate=False,
+            suppress_intermediate_text=False,
+            fake_done_retry=False,
+            turn_graph=None,
+            cheap_gate=None,
+            is_framework_injection=False,
+        )
+        st.limits = UsageLimits(request_limit=20)
+        st.tool_call_list = ["search_cognition"]
+        agent._last_attempt_tool_calls = st.tool_call_list
+        return agent, st
+
+    agent, st = _parent()
+
+    async def _ok(*_args: object, **_kwargs: object) -> str:
+        agent._last_attempt_tool_calls = ["web_search"]
+        return "rewritten"
+
+    agent._execute_run_once = _ok
+    result = asyncio.run(agent._try_correction_pass(st, (numeric_recitation_directive(),)))
+    assert result == "rewritten"
+    assert st.tool_call_list == ["search_cognition", "web_search"]
+    assert agent._last_attempt_tool_calls is st.tool_call_list
+
+    agent, st = _parent()
+
+    async def _boom(*_args: object, **_kwargs: object) -> str:
+        agent._last_attempt_tool_calls = []
+        raise RuntimeError("provider down")
+
+    agent._execute_run_once = _boom
+    failed = asyncio.run(agent._try_correction_pass(st, (numeric_recitation_directive(),)))
+    assert failed is None
+    assert st.tool_call_list == ["search_cognition"]
+    assert agent._last_attempt_tool_calls is st.tool_call_list
+
+
+def test_inline_wait_is_enabled_by_default() -> None:
+    """生产委派必须给有界内联等待，否则本轮必然拿不到结论。
+
+    历史上生产写死 ``wait_sec = 0.0``（只有 TEST 路径等），派出去立刻回「后台执行中」，
+    模型这一轮只能输出 <SILENCE>。契约又同时提供「换 query 再搜」这条本轮内就有结果的
+    便宜路，于是委派永远排在最后——不是模型不想，是本轮委派没有收益。
+    设 0 可显式退回「派完就走」。
+    """
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    assert float(ai_config.get_config("subagent_inline_wait_sec").data) > 0
+
+
+def test_post_tool_contract_does_not_rival_delegation_with_research() -> None:
+    """再搜不点名聚合节点，也不把换 query 写成下一步。"""
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import POST_TOOL_OUTPUT_CONTRACT
+
+    assert "internal_reporter" not in POST_TOOL_OUTPUT_CONTRACT
+    assert "类目词" not in POST_TOOL_OUTPUT_CONTRACT
+    assert "换更具体的词" in POST_TOOL_OUTPUT_CONTRACT
+    assert "或换 query 再搜" not in POST_TOOL_OUTPUT_CONTRACT
+    assert "换描述再 find_tools" not in POST_TOOL_OUTPUT_CONTRACT
+
+
 def test_deferred_ack_closes_serial_followup() -> None:
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
         DELEGATION_FANOUT_RULE,

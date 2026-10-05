@@ -42,11 +42,11 @@ def format_deferred_subagent_ack(*, ordinal: int, pid: str, handle: str) -> str:
     )
 
 
-# 主人格：有工具返回后的软提示。出图/再搜/短答由模型自己选，不锁死下一步。
+# 出图、再搜、短答由模型自己选，不指定下一步。
 POST_TOOL_OUTPUT_CONTRACT = (
     "（系统：本轮已有工具返回。"
     "长对照/多日清单适合委派 render_agent 出图；一两句能说清就直接答。"
-    "结果不对或不够新，可以换描述再 find_tools，或换 query 再搜。"
+    "结果不对或不够新，换更具体的词再查，或交给对口的能力节点。"
     "不要自写 HTML / 直调 render_* / 输出 <report>；"
     "委派出图时不必对用户说话；不要把整表当台词念。）"
 )

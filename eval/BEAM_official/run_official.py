@@ -19,11 +19,13 @@ import time
 import socket
 import asyncio
 import argparse
-from typing import Literal
+from typing import List, Literal
 from pathlib import Path
+from contextlib import contextmanager
 from collections import defaultdict
 from dataclasses import dataclass
 from urllib.parse import urlparse
+from collections.abc import Iterator
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT not in sys.path:
@@ -60,7 +62,7 @@ _inherit_core_token()
 
 import httpx  # noqa: E402
 
-from eval.common import DEFAULT_BASE_URL, load_json  # noqa: E402
+from eval.common import DEFAULT_BASE_URL, run_lock, load_json  # noqa: E402
 from eval.common.io import replace_with_retry  # noqa: E402
 from eval.common.beam_runner import (  # noqa: E402
     DEFAULT_TIMEOUT,
@@ -71,7 +73,9 @@ from eval.common.beam_runner import (  # noqa: E402
     load_beam_plan,
     normalize_plan,
     cmd_ingest_plan,
+    force_utf8_stdio,
     parse_time_anchor,
+    _provider_overloaded,
     iter_probing_questions,
     extract_turns_from_plan,
 )
@@ -162,6 +166,30 @@ def _spec(key: str) -> ScaleSpec:
 
 def _out_dir(spec: ScaleSpec) -> str:
     return os.path.join(_ROOT, "eval", "BEAM_official", "results", spec.key)
+
+
+@contextmanager
+def results_writer(spec: ScaleSpec | None) -> Iterator[None]:
+    """先拿天梯锁再拿档锁。对向等待会让 report 和 all 互相失败。"""
+    ladder = run_lock.require_free(Path(_ROOT), "ladder")
+    scale_holder: run_lock.LockHolder | None = None
+    try:
+        if spec is not None:
+            scale_holder = run_lock.require_free(Path(_out_dir(spec)), spec.key)
+        yield
+    finally:
+        if scale_holder is not None:
+            run_lock.release(scale_holder)
+        run_lock.release(ladder)
+
+
+def _atomic_write(path: str, text: str) -> None:
+    """先写临时文件再替换。open('w') 会让并发的 report 读到半截总分。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    replace_with_retry(tmp, path)
 
 
 def _progress_path(spec: ScaleSpec) -> str:
@@ -353,18 +381,41 @@ def _answers_sane(path: str, n_expect: int) -> bool:
         print(f"[sanity] 答卷条数 {n} < {n_expect}", flush=True)
         return False
     bad = 0
+    lens: List[int] = []
     for a in recs[-n_expect:]:
         if not isinstance(a, dict):
             bad += 1
             continue
         status = a["status_code"] if "status_code" in a else -1
         text = str(a["agent_answer"] if "agent_answer" in a else "")
+        lens.append(len(text.strip()))
+        # 拒答话术要和长度中位数一起查：配额错误一旦带上重试说明就会超过长度下限，
+        # 只靠中位数会静默收下整轮垃圾。词表复用 _provider_overloaded，不另维护一份。
         if status not in (200, 0) or text.startswith("[ERROR]") or not text.strip():
             bad += 1
             qid = a["question_id"] if "question_id" in a else "?"
             print(f"[sanity] FAIL {qid} status={status} {text[:120]!r}", flush=True)
+        elif _provider_overloaded(status, text):
+            bad += 1
+            qid = a["question_id"] if "question_id" in a else "?"
+            print(f"[sanity] REFUSAL {qid} {text[:120]!r}", flush=True)
     print(f"[sanity] bad={bad}/{n_expect}", flush=True)
-    return bad == 0
+    return bad == 0 and _answers_not_degraded(lens)
+
+
+# 过载常裹在 HTTP 200 的短客套话里。话术表漏掉的形态，靠整轮长度中位数认出来。
+_DEGRADED_MEDIAN_CHARS = 200
+
+
+def _answers_not_degraded(lens: List[int]) -> bool:
+    if not lens:
+        return False
+    ordered = sorted(lens)
+    median = ordered[len(ordered) // 2]
+    ok = median >= _DEGRADED_MEDIAN_CHARS
+    verdict = "ok" if ok else "DEGRADED"
+    print(f"[sanity] answer_len median={median} (floor={_DEGRADED_MEDIAN_CHARS}) -> {verdict}", flush=True)
+    return ok
 
 
 def _summarize_judge(path: str) -> tuple[int, int]:
@@ -389,6 +440,17 @@ def _summarize_judge(path: str) -> tuple[int, int]:
     for c in sorted(by):
         print(f"  {c:30s} {by[c][0]}/{by[c][1]}", flush=True)
     return passed, total
+
+
+def _mapped_eo_l2(rec: object, gold_ids: list[str]) -> float | None:
+    """答卷没记下注入集合时不记分。空列表才是装了但一个都没中。"""
+    if not isinstance(rec, dict) or "inject_ids" not in rec or not gold_ids:
+        return None
+    raw = rec["inject_ids"]
+    if not isinstance(raw, list):
+        return None
+    have = {str(item) for item in raw}
+    return sum(1 for gold in gold_ids if gold in have) / len(gold_ids)
 
 
 def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
@@ -487,9 +549,10 @@ def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
                         eids = [str(x) for x in raw_g]
                     if not eids:
                         continue
-                    inj = rec["inject_ids"] if "inject_ids" in rec and isinstance(rec["inject_ids"], list) else []
-                    have = {str(x) for x in inj}
-                    l2_hits.append(sum(1 for g in eids if g in have) / len(eids))
+                    hit = _mapped_eo_l2(rec, eids)
+                    if hit is None:
+                        continue
+                    l2_hits.append(hit)
     if l2_hits:
         lines.append(f"**EO L2（已映射集合）：**{100.0 * sum(l2_hits) / len(l2_hits):.1f}%（{len(l2_hits)} 题）")
     lines.extend(["", "## 分 conversation", "", "| conv | 分数 | 备注 |", "|------|------|------|"])
@@ -505,9 +568,7 @@ def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
                 extra += f" · τ齐 {sum(eo_tau) / len(eo_tau):.3f}"
         lines.append(f"| {c} | {by_cat[c][0]}/{by_cat[c][1]}{extra} |")
     path = os.path.join(_out_dir(spec), "report.md")
-    os.makedirs(_out_dir(spec), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    _atomic_write(path, "\n".join(lines) + "\n")
     print(f"[report] {spec.paper_name} {passed_all}/{total_all} ({pct}) -> {path}", flush=True)
     return passed_all, total_all
 
@@ -533,9 +594,7 @@ def write_ladder_report() -> None:
                     break
         lines.append(f"| {spec.key} | {spec.paper_name} | {spec.n_conv} × 20 | {score} |")
     dest = os.path.join(_ROOT, "eval", "BEAM_official", "results", "ladder_report.md")
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    _atomic_write(dest, "\n".join(lines) + "\n")
     print(f"[report] ladder -> {dest}", flush=True)
 
 
@@ -769,7 +828,12 @@ async def cmd_ladder(base_url: str, timeout: float, *, force_ingest: bool, concu
     for key in SCALE_ORDER:
         spec = SCALES[key]
         print(f"\n########## LADDER {spec.paper_name} ##########", flush=True)
-        rc = await cmd_all(spec, base_url, timeout, force_ingest=force_ingest, concurrency=concurrency)
+        # 外层天梯锁挡住别的官方入口；档锁挡住只抢了这个目录的写者。
+        holder = run_lock.require_free(Path(_out_dir(spec)), spec.key)
+        try:
+            rc = await cmd_all(spec, base_url, timeout, force_ingest=force_ingest, concurrency=concurrency)
+        finally:
+            run_lock.release(holder)
         if rc:
             print(f"[ladder] 停在 {spec.paper_name}", flush=True)
             return rc
@@ -829,11 +893,25 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.cmd == "ping":
         return await cmd_ping(base_url)
     if args.cmd == "report":
+        # 和 all 共用天梯锁。只锁档目录时，跑到一半的总分会被收成完整成绩。
         scale = str(args.scale)
-        if scale:
-            write_scale_report(_spec(scale))
-        write_ladder_report()
+        with results_writer(_spec(scale) if scale else None):
+            if scale:
+                write_scale_report(_spec(scale))
+            write_ladder_report()
         return 0
+    # all / conv / reprobe / ladder 都会就地覆写 results/<scale>/，必须是单写者
+    if args.cmd in ("all", "conv", "reprobe", "ladder"):
+        spec = None if args.cmd == "ladder" else _spec(str(args.scale))
+        with results_writer(spec):
+            return await _dispatch(args, base_url, timeout, force, extract, concurrency)
+    print(f"unknown cmd {args.cmd}", flush=True)
+    return 1
+
+
+async def _dispatch(
+    args: argparse.Namespace, base_url: str, timeout: float, force: bool, extract: bool, concurrency: int
+) -> int:
     if args.cmd == "all":
         return await cmd_all(
             _spec(str(args.scale)),
@@ -857,16 +935,14 @@ async def main_async(args: argparse.Namespace) -> int:
         )
     if args.cmd == "ladder":
         return await cmd_ladder(base_url, timeout, force_ingest=force, concurrency=concurrency)
-    if args.cmd == "reprobe":
-        spec = _spec(str(args.scale))
-        ensure_data(spec)
-        selected = list(args.conv) if isinstance(args.conv, list) else None
-        return await cmd_reprobe(spec, base_url, timeout, concurrency=concurrency, convs=selected)
-    print(f"unknown cmd {args.cmd}", flush=True)
-    return 1
+    spec = _spec(str(args.scale))
+    ensure_data(spec)
+    selected = list(args.conv) if isinstance(args.conv, list) else None
+    return await cmd_reprobe(spec, base_url, timeout, concurrency=concurrency, convs=selected)
 
 
 def main() -> int:
+    force_utf8_stdio()
     args = build_parser().parse_args()
     t0 = time.time()
     rc = asyncio.run(main_async(args))

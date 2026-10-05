@@ -31,7 +31,6 @@ from .event_time import (
     looks_like_order_query,
     looks_like_summary_query,
 )
-from .ledger_timeline import LedgerView, format_ledger_block
 
 # untrusted 栅栏自身的字符开销：episodes 预算与终装配截断都要预留它，
 # 否则 </untrusted> 闭合标签会被尾截断切掉（评审修复 F9）
@@ -417,7 +416,6 @@ class MemoryContext:
     pool_ids: list[str] = field(default_factory=list)
     inject_ids: list[str] = field(default_factory=list)
     skeleton_ids: list[str] = field(default_factory=list)
-    ledger: Optional[LedgerView] = None
     # 本轮真的打出了逐份材料覆盖摘录（每份入库文档各留一行）。预算按这个事实放宽，
     # 不按问句措辞判断——问句没点名「报告/文档」时措辞门会漏，而摘录已经算出来了。
     covered: bool = False
@@ -435,6 +433,7 @@ class MemoryContext:
         current_speaker_ids: Optional[set] = None,
         query: str = "",
         wrap_recall: bool = True,
+        now: datetime | None = None,
     ) -> str:
         """格式化为可注入 System Prompt 的记忆上下文文本。
 
@@ -505,19 +504,6 @@ class MemoryContext:
                     j -= 1
                 left = not left
             return [items[k] for k in range(n) if k in keep]
-
-        if (
-            self.ledger is not None
-            and memory_config.eo_strategy == "ledger"
-            and (looks_like_order_query(query) or looks_like_summary_query(query) or looks_like_span_query(query))
-        ):
-            body = format_ledger_block(self.ledger, query)
-            self.inject_ids = list(self.ledger.inject_ids)
-            self.pool_ids = list(self.ledger.pool_ids)
-            self.skeleton_ids = []
-            if wrap_recall:
-                return wrap_untrusted("memory_recall", body[: max(0, max_chars)])
-            return body[: max(0, max_chars)]
 
         from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT
 
@@ -630,8 +616,8 @@ class MemoryContext:
                 seen_facts.add(sig)
                 # 身份/称呼类事实极易抽错，加"待证"标注，避免被当成铁证盲信
                 _id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
-                # 带上事实的记录日期：knowledge_update 类问题依赖"同一属性取最新值"，
-                # 没有时间戳时多值冲突的 edge 无从排序（BEAM §7 教训）
+                # 带上事实的记录日期：同一属性多次更新时取最新值，
+                # 没有时间戳时多值冲突的 edge 无从排序。
                 _dt = _edge_date_prefix(e)
                 _cf = "⚠️[与其他陈述矛盾] " if (e["source_id"], e["target_id"]) in conflicted_pairs else ""
                 fact_lines.append(f"• {_dt}{_cf}{'（记忆·待证）' if _id else ''}{fact}")
@@ -700,8 +686,8 @@ class MemoryContext:
                 eps = self.episodes
                 self_eps = [e for e in eps if (e["scope_key"] or "").startswith("self:")]
                 other_eps = [e for e in eps if not (e["scope_key"] or "").startswith("self:")]
-                # SELF 配额 ≤10%；近 2h 的 SELF/出站豁免（续聊消解）。
-                now = datetime.now()
+                # SELF 配额 ≤10%。近 2h 用本轮时钟；缺省才是墙钟。未来时间不算近期。
+                clock = now if now is not None else datetime.now()
                 recent_self: list[Episode] = []
                 old_self: list[Episode] = []
                 for ep in self_eps:
@@ -715,8 +701,9 @@ class MemoryContext:
                                 ts = datetime.strptime(ts_raw, "%Y-%m-%d %H:%M")
                             except ValueError:
                                 ts = None
-                        if ts is not None and (now - ts).total_seconds() <= 2 * 3600:
-                            recent = True
+                        if ts is not None:
+                            delta = (clock - ts).total_seconds()
+                            recent = 0 <= delta <= 2 * 3600
                     if recent:
                         recent_self.append(ep)
                     else:
@@ -1152,61 +1139,6 @@ async def dual_route_retrieve(
         self_scope = make_scope_key(ScopeType.SELF, self_key)
         if self_scope not in scope_keys:
             scope_keys.append(self_scope)
-
-    if (
-        memory_config.eo_strategy == "ledger"
-        and scope_keys
-        and (looks_like_order_query(query) or looks_like_summary_query(query) or looks_like_span_query(query))
-    ):
-        from sqlalchemy.exc import SQLAlchemyError
-
-        from gsuid_core.ai_core.agent_run.order_answer import set_turn_ledger
-
-        from .ledger_timeline import build_ledger
-
-        view = await build_ledger(scope_keys, query)
-        set_turn_ledger(view)
-        ledger_prefs: list[PreferencePrompt] = []
-        if memory_config.enable_preference_memory and inject_preferences:
-            try:
-                from gsuid_core.ai_core.memory.database.models import AIMemPreference
-
-                fetch_limit = (
-                    memory_config.preference_max_inject * 3
-                    if preference_contexts is not None
-                    else memory_config.preference_max_inject
-                )
-                pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
-                if preference_contexts is not None:
-                    ctx_set = set(preference_contexts)
-                    pref_rows = [
-                        r
-                        for r in pref_rows
-                        if r.is_correction or r.target_context == "general" or r.target_context in ctx_set
-                    ]
-                pref_rows = pref_rows[: memory_config.preference_max_inject]
-                ledger_prefs = [
-                    {
-                        "id": r.id,
-                        "target_context": r.target_context,
-                        "preference_rule": r.preference_rule,
-                        "polarity": r.polarity,
-                        "is_correction": r.is_correction,
-                    }
-                    for r in pref_rows
-                ]
-            except (OSError, RuntimeError, SQLAlchemyError) as e:
-                logger.warning(i18n_t("log.memory.preference_retrieval", e=e))
-        return MemoryContext(
-            episodes=[],
-            preferences=ledger_prefs,
-            retrieval_meta={"s1_episodes": 0, "s2_episodes": 0, "scope_keys": scope_keys},
-            temporal_mode=True,
-            ledger=view,
-            pool_ids=list(view.pool_ids),
-            inject_ids=list(view.inject_ids),
-            asker_id=user_id if group_id else "",
-        )
 
     # RF-Mem 熟悉度路由（默认关，零影响）：用一次零 LLM 的向量探针的 s̄/熵 逐查询决定
     # "检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。路由只在"低熟悉/高

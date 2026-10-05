@@ -130,19 +130,22 @@ Agent 的回答: {agent_answer}
     return {"correct": False, "reason": f"评判请求失败(瞬时故障, 重试耗尽): status={last_status}, {detail[:120]}"}
 
 
-def parse_judge_response(text: str) -> Dict[str, Any]:
+def parse_judge_response(text: str, *, allow_lenient: bool = True) -> Dict[str, Any]:
     """解析评判 Agent 的回复，提取 ``correct`` 和 ``reason``。
 
     支持多种格式：
       - 纯 JSON：``{"correct": true, "reason": "..."}``
       - Markdown 代码块包裹的 JSON
       - 包含 JSON 片段的混合文本
+
+    ``allow_lenient=False`` 关掉「首行 PASS/FAIL」和「正文里出现 correct: true」这两条
+    文本刮取。BEAM 走 rubric 评分，一个 correct 布尔推不出 N 条逐项结果，只能判失败。
     """
     if not text:
         return {"correct": False, "reason": "评判回复为空"}
 
     head = text.strip().splitlines()[0].strip()
-    if re.fullmatch(r"PASS|FAIL", head, flags=re.IGNORECASE):
+    if allow_lenient and re.fullmatch(r"PASS|FAIL", head, flags=re.IGNORECASE):
         return {"correct": head.upper() == "PASS", "reason": text.strip()[:500]}
 
     # 1) 直接解析
@@ -186,9 +189,9 @@ def parse_judge_response(text: str) -> Dict[str, Any]:
 
     # 4) 关键词兜底
     text_lower = text.lower()
-    if '"correct": true' in text_lower or "'correct': true" in text_lower:
+    if allow_lenient and ('"correct": true' in text_lower or "'correct': true" in text_lower):
         return {"correct": True, "reason": f"基于关键词判断: {text[:200]}"}
-    if '"correct": false' in text_lower or "'correct': false" in text_lower:
+    if allow_lenient and ('"correct": false' in text_lower or "'correct': false" in text_lower):
         return {"correct": False, "reason": f"基于关键词判断: {text[:200]}"}
 
     return {"correct": False, "reason": f"无法解析评判回复: {text[:200]}"}
@@ -232,7 +235,9 @@ def simple_string_match(standard_answer: str | int | float | None, agent_answer:
 _BEAM_JUDGE_PROMPT = """你是一名长对话记忆评测裁判。基于【类别】【标准答案】和【rubric 检查点】判断 Agent 输出是否达标。
 
 请按 rubric 逐条判断是否命中（1 表示命中，0 表示未命中），并给出整体 PASS/FAIL。
-整体 PASS 定义：rubric 检查点全部命中，**或** Agent 答案的核心事实/语义与标准答案一致。
+整体 PASS 定义：**rubric 检查点必须全部命中**，缺任何一条即 FAIL。不接受"核心事实/语义与
+标准答案一致"这类自由裁量——那条逃生门让 10% 的 PASS 没有对应任何全中的 rubric，
+其中 summarization 一域占到一半以上，同一份答卷重判就在 PASS/FAIL 之间来回。
 
 【类别】{category}
 【问题】{question}
@@ -362,15 +367,17 @@ def order_metrics_from_align(align: List[int | None]) -> tuple[float, float | No
     return coverage, kendall_tau_b(list(range(n)), ranks)
 
 
-_NUMBERED_ITEM = re.compile(r"^\d+[\.\)]\s+\S")
+# 项目符号也算清单。只认编号会把整条答卷丢掉，顺序题只能得 0。
+_NUMBERED_ITEM = re.compile(r"^\d+[\.\)）]\s*\S")
+_BULLET_ITEM = re.compile(r"^[-*•–—]\s+\S")
 
 
 def split_agent_items(agent_answer: str) -> List[str]:
-    """只收编号清单行，丢掉散文噪声。"""
+    """只收清单行（编号或项目符号），丢掉散文噪声。行序即答卷给的顺序。"""
     items: List[str] = []
     for line in (agent_answer or "").splitlines():
         s = line.strip()
-        if _NUMBERED_ITEM.match(s):
+        if _NUMBERED_ITEM.match(s) or _BULLET_ITEM.match(s):
             items.append(s)
     return items
 
@@ -680,14 +687,8 @@ def parse_beam_judge_response(text: str, rubric: List[str]) -> Dict[str, Any]:
                 continue
 
     if parsed is None:
-        # 兜底：尝试 LongMemEval 风格 correct 字段
-        lm = parse_judge_response(text)
-        if lm.get("correct") is True:
-            return {
-                "rubric_scores": [1] * len(rubric),
-                "passed": True,
-                "reason": "LongMemEval-style judge fallback: correct=True",
-            }
+        # 文本刮取不能推逐项结果：JSON 抽不出东西说明裁判没按 schema 回，「首行 PASS」和
+        # 正文里 correct: true 都只给一个布尔，扩成 N 个 1 等于凭空造证据。交给上层重试。
         return fallback
 
     raw_scores = parsed.get("rubric_scores") or []
@@ -702,10 +703,8 @@ def parse_beam_judge_response(text: str, rubric: List[str]) -> Dict[str, Any]:
         rubric_scores.append(0)
     rubric_scores = rubric_scores[: len(rubric)]
 
-    if "passed" in parsed:
-        passed = bool(parsed["passed"])
-    else:
-        passed = all(s == 1 for s in rubric_scores) and len(rubric_scores) > 0
+    # 裁判自报的 passed 不采信。提示词留了语义逃生门，没全中也能被判过。
+    passed = bool(rubric_scores) and all(s == 1 for s in rubric_scores)
 
     out: Dict[str, Any] = {
         "rubric_scores": rubric_scores,

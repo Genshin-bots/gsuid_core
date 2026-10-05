@@ -144,7 +144,6 @@ def _kill_pids(pids: list[int]) -> None:
 def _spawn(args: list[str], stdout_path: Path, stderr_path: Path) -> None:
     env = os.environ.copy()
     env["GSUID_LOCAL_TEST_MODE"] = "1"
-    env["GSUID_EO_STRATEGY"] = "ledger"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"

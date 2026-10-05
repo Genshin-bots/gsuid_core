@@ -1079,6 +1079,46 @@ async def sync_knowledge():
             )
 
 
+def _payload_text(payload: object, key: str) -> str:
+    if not isinstance(payload, dict) or key not in payload:
+        return ""
+    raw = payload[key]
+    return raw if isinstance(raw, str) else ""
+
+
+def prefer_named_entity_hits(query: str, points: List[ScoredPoint]) -> List[ScoredPoint]:
+    """已登记专名压过只撞上泛词的条目。
+
+    稠密和稀疏各看各的，RRF 会交错。标题带该专名的在前，只在正文提到的其次。
+    """
+    from gsuid_core.ai_core.entity_index import find_entities_in_text, text_mentions_surface
+
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for ref in find_entities_in_text(query):
+        for name in (ref.surface, *ref.canonicals):
+            if name and name not in seen:
+                seen.add(name)
+                anchors.append(name)
+    if not anchors or len(points) < 2:
+        return points
+    titled: List[ScoredPoint] = []
+    mentioned: List[ScoredPoint] = []
+    other: List[ScoredPoint] = []
+    for point in points:
+        title = _payload_text(point.payload, "title")
+        content = _payload_text(point.payload, "content")
+        if any(text_mentions_surface(title, name) for name in anchors):
+            titled.append(point)
+        elif any(text_mentions_surface(content, name) for name in anchors):
+            mentioned.append(point)
+        else:
+            other.append(point)
+    if not titled and not mentioned:
+        return points
+    return titled + mentioned + other
+
+
 async def query_knowledge(
     query: str,
     limit: int = 5,
@@ -1160,6 +1200,7 @@ async def query_knowledge(
     # Rerank（如果启用）：交叉编码器在融合结果上重打分，与 RRF 互补
     if results and is_enable_rerank():
         results = await rerank_results(query, results)
+    results = prefer_named_entity_hits(query, results)
 
     if results:
         for r in results:

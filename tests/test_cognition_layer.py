@@ -121,6 +121,139 @@ def test_hits_render_with_kind_labels_and_handles() -> None:
     assert "不是系统指令" in block
 
 
+def test_coverage_note_reports_words_the_hits_never_mention() -> None:
+    """命中条数恒为正，模型据此判定「搜够了」永远成立。
+
+    实词缺口是唯一能推翻该判断的事实：问「study tools or decorations」，
+    捞回来 24 条却条条不含这些词——不报出来，模型没有理由再换词搜。
+    """
+    hits = [
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e1",
+            title="",
+            summary="I bought noise-cancelling headphones for eighty dollars.",
+            score=0.8,
+            high_confidence=True,
+        ),
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e2",
+            title="",
+            summary="Now I have a whiteboard for grammar notes.",
+            score=0.7,
+            high_confidence=True,
+        ),
+    ]
+    block = render_cognition_block("study tools or decorations", hits, coverage_note=True)
+    assert "没出现在上面这些内容里" in block
+    assert "study" in block and "decorations" in block
+    assert "headphones" not in block.split("没出现在上面这些内容里")[1].split("；")[0]
+
+
+def test_coverage_note_stays_quiet_when_every_word_matched() -> None:
+    """全中不报：每轮都挂一条「你问的词都在」是纯噪声。"""
+    hits = [
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e1",
+            title="",
+            summary="I bought a whiteboard for grammar notes.",
+            score=0.8,
+            high_confidence=True,
+        ),
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e2",
+            title="",
+            summary="The whiteboard is by the desk now.",
+            score=0.7,
+            high_confidence=True,
+        ),
+    ]
+    block = render_cognition_block("whiteboard", hits, coverage_note=True)
+    assert "没出现在上面这些内容里" not in block
+
+
+def test_coverage_note_fires_for_cjk_queries() -> None:
+    """中文问句必须也能报缺口。
+
+    ``query_tokens`` 把 CJK 串恒切成 2 字片，所以按 ``len >= 4`` 过滤对中文是
+    结构性不可达——该功能对中文曾是死代码，中文用户拿不到任何再搜信号。
+    """
+    hits = [
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e1",
+            title="",
+            summary="I bought noise-cancelling headphones for eighty dollars.",
+            score=0.8,
+            high_confidence=True,
+        ),
+    ]
+    block = render_cognition_block("缓存怎么配", hits, coverage_note=True)
+    assert "没出现在上面这些内容里" in block
+    listed = block.split("没出现在上面这些内容里：", 1)[1].split("；", 1)[0]
+    assert "缓存" in listed
+    assert "配" in listed
+    assert "存怎" not in listed
+    assert "么配" not in listed
+
+
+def test_coverage_note_uses_segmented_cjk_words() -> None:
+    """定长二字会把问句切成非词，并丢掉奇数长度的末字。再搜提示只能带分出来的实词。"""
+    hits = [
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e1",
+            title="",
+            summary="unrelated note about lunch",
+            score=0.8,
+            high_confidence=True,
+        ),
+    ]
+    block = render_cognition_block("我一共加过几样东西", hits, coverage_note=True)
+    listed = block.split("没出现在上面这些内容里：", 1)[1].split("；", 1)[0]
+    assert "东西" in listed
+    for fake in ("我一", "共加", "过几", "样东"):
+        assert fake not in listed
+
+
+def test_coverage_note_stays_quiet_when_phrase_words_appear_out_of_order() -> None:
+    """两个词都在、只是语序不同，不该报成「没出现」。
+
+    ``query_tokens`` 会把相邻实词拼成短语，整串子串匹配在这种文本上误报，
+    反过来把模型推去重复检索已经拿到的信息。
+    """
+    hits = [
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e1",
+            title="",
+            summary="I wired the api for translation last week.",
+            score=0.8,
+            high_confidence=True,
+        ),
+    ]
+    block = render_cognition_block("translation api", hits, coverage_note=True)
+    assert "没出现在上面这些内容里" not in block
+
+
+def test_coverage_note_is_off_for_per_turn_memory_injection() -> None:
+    """默认关：每轮记忆块是目录卡，不是覆盖度报告，加这行只会让每轮都变长。"""
+    hits = [
+        CognitiveHit(
+            kind=CogKind.EPISODE,
+            id="e1",
+            title="",
+            summary="unrelated chatter about lunch",
+            score=0.8,
+            high_confidence=True,
+        ),
+    ]
+    assert "没出现在上面这些内容里" not in render_cognition_block("study tools", hits)
+
+
 def test_weak_hits_are_folded_not_expanded() -> None:
     """生产弱相关折成「另有 N 条」，不得把低分经历当正文。"""
     hits = [
@@ -392,7 +525,7 @@ def test_fused_rank_caps_high_confidence() -> None:
 
 
 def test_fused_rank_caps_knowledge_noise() -> None:
-    """公共知识路仍只展开前 4 条高置信，避免插件文淹没记忆。"""
+    """知识不再在融合时降成弱相关；目录最多展示 8 节，6 条都应保持高置信。"""
     from gsuid_core.ai_core.cognition import search_cognition
 
     packed = {
@@ -420,9 +553,9 @@ def test_fused_rank_caps_knowledge_noise() -> None:
     ):
         hits = _run(search_cognition("q", kinds=KNOWLEDGE_KINDS, scope=CogScope(user_id="u1"), limit=10))
     assert len(hits) == 6
-    assert sum(1 for h in hits if h.high_confidence) == 4
+    assert sum(1 for h in hits if h.high_confidence) == 6
     assert hits[0].high_confidence
-    assert not hits[4].high_confidence
+    assert hits[4].high_confidence
 
 
 def test_memory_hits_are_not_evicted_by_knowledge_rrf() -> None:
@@ -990,6 +1123,329 @@ def test_repeat_query_is_short_circuited_within_a_run() -> None:
     for leak in ("web_search_tool", "read_handle", "无命中", "认知层是只读的"):
         assert leak not in second, f"短路回执泄漏禁用口径 {leak}: {second}"
     assert "没有可用材料" in third
+
+
+def test_search_cognition_returns_one_short_page_and_the_next_offset() -> None:
+    """一页最多两条片段。下一批用回执里的 offset，不再把整池交回。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.cognition.hub import ExpandResult
+    from gsuid_core.ai_core.buildin_tools.rag_search import ToolContext, search_cognition
+
+    calls: list[str] = []
+
+    async def _six(query: str, *, kinds: object, scope: object, limit: int) -> list[CognitiveHit]:
+        _ = (kinds, scope, limit)
+        calls.append(query)
+        return [
+            CognitiveHit(
+                kind=CogKind.EPISODE,
+                id=f"e{i}",
+                title="",
+                summary=f"line-{i}-kept",
+                score=0.9,
+                high_confidence=True,
+            )
+            for i in range(6)
+        ]
+
+    # 真构造 RunContext/ToolContext/Event：工具签名要求具体类型，替身过不了类型检查。
+    ctx = RunContext(
+        deps=ToolContext(
+            ev=Event(user_id="u1", group_id="g1", raw_text=""),
+            bot=None,
+            extra={},
+            parent_session_id=None,
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    with (
+        patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_six),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=AsyncMock(return_value=ExpandResult())),
+    ):
+        first = _run(search_cognition(ctx, query="how the service changed"))
+        nxt = _run(search_cognition(ctx, query="how the service changed", offset=2))
+        again = _run(search_cognition(ctx, query="how the service changed"))
+
+    assert calls == ["how the service changed"]
+    assert "line-0-kept" in first and "line-1-kept" in first
+    assert "line-2-kept" not in first
+    assert "offset 设为 2" in first
+    assert "line-2-kept" in nxt and "line-0-kept" not in nxt
+    assert "本轮已拿这个问法问过" in again
+
+
+def test_kbdoc_offset_lands_on_the_chunk() -> None:
+    """目录写进 read_handle 的 offset 必须落在该片正文起点。"""
+    from gsuid_core.ai_core.planning.handle_resolver import joined_kbdoc
+
+    text, offsets = joined_kbdoc([(0, "aaa"), (2, "c"), (1, "bbbb")])
+    assert offsets[0] == 0
+    assert offsets[1] == 4
+    assert text[offsets[1] : offsets[1] + 4] == "bbbb"
+    assert text[offsets[2] :] == "c"
+
+
+def test_search_cognition_lists_knowledge_as_a_catalog() -> None:
+    """知识回执是章节标题、三行预览和 read_handle，不把后文交回。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.cognition.hub import ExpandResult
+    from gsuid_core.ai_core.buildin_tools.rag_search import ToolContext, search_cognition
+
+    secret = "SECRET_SHOULD_NOT_SHOW"
+    weapon_secret = "WEAPON_SECRET"
+
+    async def _hits(query: str, *, kinds: object, scope: object, limit: int) -> list[CognitiveHit]:
+        _ = (query, kinds, scope, limit)
+        return [
+            CognitiveHit(
+                kind=CogKind.EPISODE,
+                id="e0",
+                title="",
+                summary="episode-kept",
+                score=0.9,
+                high_confidence=True,
+            ),
+            CognitiveHit(
+                kind=CogKind.KNOWLEDGE,
+                id="kb_a3",
+                title="手册 - 第3段",
+                summary=f"## 命座\n可见甲\n可见乙\n可见丙\n{secret}",
+                score=0.95,
+                handle="kb_kbdoc:aoda",
+                high_confidence=True,
+                chunk_index=3,
+            ),
+            CognitiveHit(
+                kind=CogKind.KNOWLEDGE,
+                id="kb_a4",
+                title="手册 - 第4段",
+                summary=f"## 命座\n续篇不应单独成行\n{secret}",
+                score=0.5,
+                handle="kb_kbdoc:aoda",
+                high_confidence=True,
+                chunk_index=4,
+            ),
+            CognitiveHit(
+                kind=CogKind.KNOWLEDGE,
+                id="kb_w",
+                title="武器",
+                summary=f"适合长枪。{'填' * 80}{weapon_secret}",
+                score=0.8,
+                handle="kb_plugin:rui",
+                high_confidence=True,
+                chunk_index=-1,
+            ),
+            CognitiveHit(
+                kind=CogKind.FACT,
+                id="f1",
+                title="偏好",
+                summary="fact-kept",
+                score=0.7,
+                high_confidence=True,
+            ),
+        ]
+
+    async def _offsets(doc_id: str) -> dict[int, int]:
+        assert doc_id == "aoda"
+        return {3: 1200, 4: 2400}
+
+    ctx = RunContext(
+        deps=ToolContext(
+            ev=Event(user_id="u1", group_id="g1", raw_text=""),
+            bot=None,
+            extra={},
+            parent_session_id=None,
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    with (
+        patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_hits),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=AsyncMock(return_value=ExpandResult())),
+        patch("gsuid_core.ai_core.planning.handle_resolver.kbdoc_char_offsets", new=_offsets),
+    ):
+        text = _run(search_cognition(ctx, query="角色资料"))
+
+    assert "episode-kept" in text
+    assert "fact-kept" in text
+    assert "1. 命座" in text
+    assert "2. 武器" in text
+    assert text.count("命座") == 1
+    assert "可见甲" in text and "可见丙" in text
+    assert secret not in text
+    assert weapon_secret not in text
+    assert "read_handle(handle_id='kb_kbdoc:aoda', offset=1200)" in text
+    assert "read_handle(handle_id='kb_plugin:rui')" in text
+    assert "第3段" not in text
+
+
+def test_search_cognition_strips_persona_triggers_before_recall() -> None:
+    """人格名和唤醒词不进检索问句；整句只剩触发词时仍用原问句。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.cognition.hub import ExpandResult
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.buildin_tools.rag_search import ToolContext, search_cognition
+
+    seen: list[str] = []
+
+    async def _hits(query: str, *, kinds: object, scope: object, limit: int) -> list[CognitiveHit]:
+        _ = (kinds, scope, limit)
+        seen.append(query)
+        return []
+
+    class _Keywords:
+        data = ["north"]
+
+    class _PersonaCfg:
+        def get_config(self, key: str) -> _Keywords:
+            assert key == "keywords"
+            return _Keywords()
+
+    ctx = RunContext(
+        deps=ToolContext(
+            ev=Event(user_id="u1", group_id="g1", raw_text=""),
+            bot=None,
+            extra={"persona_name": "北辰"},
+            parent_session_id=None,
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    with (
+        patch.object(persona_config_manager, "exists", return_value=True),
+        patch.object(persona_config_manager, "get_config", return_value=_PersonaCfg()),
+        patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_hits),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=AsyncMock(return_value=ExpandResult())),
+    ):
+        _run(search_cognition(ctx, query="北辰 north 林恩的记录"))
+        _run(search_cognition(ctx, query="北辰"))
+
+    assert seen == ["林恩的记录", "北辰"]
+
+
+def test_search_cognition_coverage_ignores_stripped_triggers() -> None:
+    """覆盖提示不该把已经剥掉的唤醒词报成缺口，再催模型去搜它。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.cognition.hub import ExpandResult
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.buildin_tools.rag_search import ToolContext, search_cognition
+
+    async def _hits(query: str, *, kinds: object, scope: object, limit: int) -> list[CognitiveHit]:
+        _ = (query, kinds, scope, limit)
+        return [
+            CognitiveHit(
+                kind=CogKind.EPISODE,
+                id="e1",
+                title="",
+                summary="I bought a whiteboard for grammar notes.",
+                score=0.9,
+                high_confidence=True,
+            )
+        ]
+
+    class _Keywords:
+        data = ["north"]
+
+    class _PersonaCfg:
+        def get_config(self, key: str) -> _Keywords:
+            assert key == "keywords"
+            return _Keywords()
+
+    ctx = RunContext(
+        deps=ToolContext(
+            ev=Event(user_id="u1", group_id="g1", raw_text=""),
+            bot=None,
+            extra={"persona_name": "北辰"},
+            parent_session_id=None,
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    with (
+        patch.object(persona_config_manager, "exists", return_value=True),
+        patch.object(persona_config_manager, "get_config", return_value=_PersonaCfg()),
+        patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_hits),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=AsyncMock(return_value=ExpandResult())),
+    ):
+        text = _run(search_cognition(ctx, query="北辰 whiteboard"))
+
+    assert "whiteboard" in text
+    assert "没出现在上面这些内容里" not in text
+
+
+def test_search_cognition_expands_alias_glued_inside_a_sentence() -> None:
+    """别名嵌在整句里也要展开成正式名，不能只认被空格切开的词。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.entity_index import clear_entity_index, register_entity_surface
+    from gsuid_core.ai_core.cognition.hub import ExpandResult
+    from gsuid_core.ai_core.buildin_tools.rag_search import ToolContext, search_cognition
+
+    seen: list[str] = []
+
+    async def _hits(query: str, *, kinds: object, scope: object, limit: int) -> list[CognitiveHit]:
+        _ = (kinds, scope, limit)
+        seen.append(query)
+        return []
+
+    clear_entity_index()
+    register_entity_surface("林恩", "林恩·远星", "PlugA")
+    ctx = RunContext(
+        deps=ToolContext(
+            ev=Event(user_id="u1", group_id="g1", raw_text=""),
+            bot=None,
+            extra={},
+            parent_session_id=None,
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    with (
+        patch("gsuid_core.ai_core.buildin_tools.rag_search.federated_search", new=_hits),
+        patch("gsuid_core.ai_core.cognition.hub.expand_hub", new=AsyncMock(return_value=ExpandResult())),
+    ):
+        _run(search_cognition(ctx, query="问问林恩的近况"))
+    clear_entity_index()
+    assert seen == ["问问林恩的近况 林恩·远星"]
+
+
+def test_named_entity_titles_outrank_generic_noun_hits() -> None:
+    """专名标题排在只含泛词的条目前；问句没有已登记专名时不改顺序。"""
+    from qdrant_client.http.models.models import ScoredPoint
+
+    from gsuid_core.ai_core.entity_index import clear_entity_index, register_entity_surface
+    from gsuid_core.ai_core.rag.knowledge import prefer_named_entity_hits
+
+    clear_entity_index()
+    register_entity_surface("林恩", "林恩·远星", "PlugA")
+    generic = ScoredPoint(id="w", version=0, score=0.9, payload={"title": "长剑", "content": "武器说明"})
+    mentioned = ScoredPoint(id="b", version=0, score=0.5, payload={"title": "杂谈", "content": "提到林恩"})
+    titled = ScoredPoint(id="c", version=0, score=0.25, payload={"title": "林恩·远星-档案", "content": "正文"})
+    ordered = prefer_named_entity_hits("林恩 记录", [generic, mentioned, titled])
+    assert [point.id for point in ordered] == ["c", "b", "w"]
+    untouched = prefer_named_entity_hits("完全无关的问句", [generic, titled])
+    assert [point.id for point in untouched] == ["w", "c"]
+    clear_entity_index()
 
 
 def test_readonly_retrieval_tools_have_a_stricter_thrash_limit() -> None:

@@ -152,16 +152,22 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   Chat join：order/span/summary 与 pack 同帽 16k，其它问句仍 8k。骨架不在 H06 再打一轮 LLM。
   证据分过低时注入头加一行 abstention。召回原话只证明谁在该时点说过，不把句中日期或状态当成当前事实（`SPEECH_ACT_HINT`）。
   `looks_like_span_query` 也开 temporal arm；无显式日期则该 scope 全程、bucket 按 session 数自适应。
-  工具：`search_turns` / `read_session` / `timeline` / `mark_evidence`（`visible_when` 仅 order/span/summary）。
-  `eo_strategy=ledger`（`GSUID_EO_STRATEGY`）时 order/summary/span **不选 N**：注入全量 turn gist
-  时间线（超 cap 缩行宽，不按主题余弦丢后段）。`eo_selector=dedicated` 时由 `EoSelector`
-  挑 `#id`，人格只复述；`eo_direct_answer` 评测可直出清单。`eo_render=gist` 时答卷用 rule gist
-  而非 14 字 label。`eo_shortlist` 时 Selector 只看抽出来的时间线（#id 仍是全量编号；评测约 96 行才能盖住 gold），
-  失败用 session 轮转填 N（`eo_llm_on_fail=spread`）。代码按 `(valid_at, turn_index)` 排序。
+  工具：`search_turns` / `read_session` / `mark_evidence` / `recall_session`（`visible_when` 仅 order/span/summary）。
+  排序题一律走编号骨架（`format_order_skeleton`，日期 · 一句话 + 同日累计序号），按 session 轮询收敛到 N。
+  **账本时间线（`eo_strategy=ledger` + `EoSelector` + `build_ledger`）已于 2026-10-05 整体删除**：
+  开关、配置项、`ledger_timeline.py` / `paging.py` / `eo_selector.py` / `order_answer.py` 一并移除，
+  order/summary/span 回到骨架注入。删除原因见下条。
   v11–v13：96 选 N 与「金标+N 干扰」均不过。评测保持 `eo_pick=v9`。
-  冻结 100k 官方 EO 停，见 `docs/MEMORY_EO_LEDGER_20260921.md`。
-  禁止 walk / ground / cluster / two_pass / pack。不要再开选 N 计划。
-  `legacy` 保持骨架选 N。睡眠期用 `gist_backfill` 写 `AIMemTurnGist` 侧表。
+  100k 官方 EO 曾冻结，见 `docs/MEMORY_EO_LEDGER_20260921.md`。
+  **2026-10-03 解冻**：冻结期只证明了「选 N」一族（walk/ground/cluster/two_pass/pack）不成立，
+  并不等于 EO 不可做。EO 0/70 的真实瓶颈可能在答卷路径（要求 5~10 对排序全对齐）而非召回，
+  要动请从**答卷/判分侧**取证，别再重复选 N 试验。
+  **2026-10-05 删除账本**：`event_ordering` 0/70、`summarization` 4/70（5.7%）在账本开启下
+  依然是全场最差两档，账本这条线被判为无收益而整体移除。注意两点取证前提：① 302/700 本来就是
+  开着账本跑的，legacy 从未在同一批语料上对照过；② `judge.py:490` 要求 `coverage≥1.0 ∧ τ≥0.999
+  ∧ rubric 全中`，而题面要 9 项，**错一项 τ 就掉到 0.9444 直接判负**——这一栏几乎没有梯度，
+  改不动它之前不要再用 43.1% 这个总数判断 EO 改动的好坏。
+  睡眠期用 `gist_backfill` 写 `AIMemTurnGist` 侧表。
 
 ```python
 @dataclass

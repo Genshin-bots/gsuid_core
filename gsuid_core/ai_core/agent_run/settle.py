@@ -363,13 +363,14 @@ class SettlePhase(RunOnceHost):
         suppress_intermediate_text: bool | None = None,
         return_mode: ReturnMode | None = None,
     ) -> object:
-        """纠正重跑；失败返回 None，原答案按 INV-3 生效。"""
+        """纠正重跑；失败返回 None，原答案按 INV-3 生效。
+        成功时把本轮工具事实并回父级，失败不并回。"""
         _suppress = st.suppress_intermediate_text if suppress_intermediate_text is None else suppress_intermediate_text
         # 话术纠正要拿回文本：by_bot 成功路径会 return ""，父级补发看不到改写。
         _mode = st.return_mode if return_mode is None else return_mode
         # Why: 纠正是增强路径，失败不得毁掉已完成的用户轮（INV-3）
         try:
-            return await self._execute_run_once(
+            corrected = await self._execute_run_once(
                 user_message=render_control_envelope(directives),
                 bot=st.bot,
                 ev=st.ev,
@@ -383,7 +384,19 @@ class SettlePhase(RunOnceHost):
             )
         except Exception as _fe:
             logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
+            # 失败时指针已指向纠正轮的空列表，拨回父级，否则对外报成没调过工具。
+            self._last_attempt_tool_calls = st.tool_call_list
             return None
+        _absorb_attempt_facts(
+            st,
+            tool_calls=self._last_attempt_tool_calls,
+            delegated_render=self._last_attempt_delegated_render,
+            image_sent=self._last_attempt_image_sent,
+            pending_async=self._last_attempt_pending_async,
+            has_status_tool=self._last_attempt_has_status_tool,
+        )
+        self._last_attempt_tool_calls = st.tool_call_list
+        return corrected
 
     def _record_prefix_break_probe(self, st: RunOnceState, new_msgs: List[ModelMessage]) -> None:
         """对比上一 run 发送快照与当前 history 头，记 prefix_break_reason。"""
@@ -521,9 +534,8 @@ class SettlePhase(RunOnceHost):
                     )
                 )
 
-                # 小时级性能统计（TTFT/TPS）已在每轮 CallToolsNode 中按请求结算,
-                # 此处记录 run 级 Token 汇总 + User Turn / Agent Run 效率计数。
-                # 计数在 token 为 0 时仍记（完整 settle 的 run 也算一次），避免漏计分母。
+                # TTFT/TPS 已在 CallToolsNode 按请求结算。这里只记 run 级 token。
+                # token 为 0 仍计数，避免漏掉分母。
                 _is_nested = bool(self.is_subagent) or (bool(st.user_turn_id) and not st.owns_user_turn)
                 if input_tokens > 0 or output_tokens > 0:
                     statistics_manager.record_token_usage(
@@ -590,31 +602,6 @@ class SettlePhase(RunOnceHost):
 
             # 始终返回字符串类型
             result_msg = str(result.output).strip()
-            from gsuid_core.ai_core.memory.config import memory_config as _eo_mc
-            from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query as _eo_order
-
-            _eo_q = st.user_message if isinstance(st.user_message, str) else ""
-            if not _eo_q and st.ev is not None:
-                _eo_q = st.ev.raw_text or ""
-            if self.create_by != "EoSelector" and _eo_mc.eo_strategy == "ledger" and _eo_order(_eo_q):
-                from gsuid_core.ai_core.agent_run.order_answer import (
-                    get_order_meta,
-                    set_order_meta,
-                    apply_order_answer,
-                    get_order_rendered,
-                    maybe_override_persona,
-                )
-
-                _eo_list = get_order_rendered()
-                _eo_prev = get_order_meta()
-                if _eo_mc.eo_selector == "dedicated":
-                    if _eo_list:
-                        result_msg, _over = maybe_override_persona(result_msg, _eo_list)
-                        if _over and _eo_prev is not None:
-                            _eo_prev["fallback_used"] = "eo_override"
-                            set_order_meta(_eo_prev)
-                else:
-                    result_msg, _eo_meta = apply_order_answer(result_msg, _eo_q)
             # 工具调用列表只进调试日志，不追加到用户可见消息
             if st.tool_call_list:
                 logger.debug(i18n_t("log.agent.current_tool_call_event", p0=", ".join(st.tool_call_list)))
@@ -638,7 +625,9 @@ class SettlePhase(RunOnceHost):
                     except Exception as _se:
                         logger.debug(i18n_t("log.agent.fakedone_se", _se=_se))
 
-            if st.fab_blocked and st.tool_call_list and st.bot and st.return_mode in ["always", "by_bot"]:
+            # 直发暂扣原文只在真改过世界时成立。tool_call_list 对只读工具（搜索/翻页）
+            # 也会填，用它当条件会让「只查了没改」也跳过纠正，把编造的完成声明发出去。
+            if st.fab_blocked and st.effectual_mutate and st.bot and st.return_mode in ["always", "by_bot"]:
                 logger.info(i18n_t("log.agent.fakedone_claim"))
                 await _resend_fab_blocked()
             elif (
@@ -651,25 +640,12 @@ class SettlePhase(RunOnceHost):
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                try:
-                    corrected = await self._execute_run_once(
-                        user_message=render_control_envelope((fake_done_directive(tool_pool_size=len(st.tool_names)),)),
-                        bot=st.bot,
-                        ev=st.ev,
-                        tools=st.tools,
-                        return_mode=st.return_mode,
-                        intent=st.intent,
-                        has_active_task=st.has_active_task,
-                        suppress_intermediate_text=st.suppress_intermediate_text,
-                        fake_done_retry=True,
-                        is_framework_injection=True,
-                    )
-                except Exception as _fe:
-                    # 纠正 pass 是增强路径，失败不影响原结果返回；暂扣文本补发防"整轮沉默"
-                    logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
-                    corrected = None
-                    if st.fab_blocked and st.bot and st.return_mode in ["always", "by_bot"]:
-                        await _resend_fab_blocked()
+                corrected = await self._try_correction_pass(
+                    st,
+                    (fake_done_directive(tool_pool_size=len(st.tool_names)),),
+                )
+                if corrected is None and st.fab_blocked and st.bot and st.return_mode in ["always", "by_bot"]:
+                    await _resend_fab_blocked()
                 # 与其它三条纠正的 INV-3 有意分岔：原答案是**编造的完成声明**，
                 # 不能当 fallback 留给用户；无干净纠正则静默，并一律剥掉那句谎话。
                 _fabricated = {t.strip() for t in st.fab_blocked}
@@ -897,6 +873,7 @@ class SettlePhase(RunOnceHost):
                     suppress_intermediate_text=True,
                     return_mode="return",
                 )
+                # 纠正轮的工具事实已由 _try_correction_pass 就地并回父级并指回。
                 _disputed = len(self._run_disputes) > _disputes_before
                 if _disputed:
                     logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
@@ -949,15 +926,8 @@ class SettlePhase(RunOnceHost):
                     (_directive,),
                     suppress_intermediate_text=True,
                 )
-                # 纠正轮是新 st；先并回父级再判义务，否则嵌套 create_subagent 恒未履行
-                _absorb_attempt_facts(
-                    st,
-                    tool_calls=self._last_attempt_tool_calls,
-                    delegated_render=self._last_attempt_delegated_render,
-                    image_sent=self._last_attempt_image_sent,
-                    pending_async=self._last_attempt_pending_async,
-                    has_status_tool=self._last_attempt_has_status_tool,
-                )
+                # 纠正轮的工具事实已由 _try_correction_pass 就地并回父级并指回，
+                # 所以下面判义务时读到的 st.tool_call_list 已含嵌套 create_subagent。
                 _disputed = len(self._run_disputes) > _disputes_before
                 _orig_before = result_msg
                 # 模型申辩了观察不成立 → 原答案照原样交付（这正是它不再对用户反驳的前提）

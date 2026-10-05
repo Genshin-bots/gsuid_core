@@ -133,15 +133,38 @@ def _plugin_article_text(entity_id: str) -> Optional[str]:
     return None
 
 
-async def _kbdoc_article_text(doc_id: str) -> Optional[str]:
+def joined_kbdoc(chunks: list[tuple[int, str]]) -> tuple[str, dict[int, int]]:
+    """按分片序号拼正文，并给出每片在拼接结果里的字符 offset。
+
+    与 ``read_handle`` 的分页窗口同一套拼接（片与片之间一个换行）。
+    """
+    ordered = sorted(chunks, key=lambda item: item[0])
+    offsets: dict[int, int] = {}
+    parts: list[str] = []
+    cursor = 0
+    for index, content in ordered:
+        offsets[index] = cursor
+        parts.append(content)
+        cursor += len(content) + 1
+    return "\n".join(parts), offsets
+
+
+async def _kbdoc_pieces(doc_id: str) -> list[tuple[int, str]]:
     from gsuid_core.ai_core.database.models import AIKnowledgeChunk
 
     rows, _total = await AIKnowledgeChunk.list_page(source="all", doc_id=doc_id, offset=0, limit=10000)
-    usable = [r for r in rows if r.source in ("manual", "agent")]
-    if not usable:
-        return None
-    usable.sort(key=lambda r: int(r.chunk_index))
-    return "\n".join(r.content for r in usable)
+    return [(int(row.chunk_index), row.content) for row in rows if row.source in ("manual", "agent")]
+
+
+async def _kbdoc_article_text(doc_id: str) -> Optional[str]:
+    text, _offsets = joined_kbdoc(await _kbdoc_pieces(doc_id))
+    return text or None
+
+
+async def kbdoc_char_offsets(doc_id: str) -> dict[int, int]:
+    """命中片在全文里的起点。目录把这个数写进 ``read_handle`` 的 offset。"""
+    _text, offsets = joined_kbdoc(await _kbdoc_pieces(doc_id))
+    return offsets
 
 
 async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:

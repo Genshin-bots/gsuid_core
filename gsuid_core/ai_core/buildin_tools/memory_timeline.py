@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Protocol
 from datetime import datetime, timedelta
+from collections.abc import Sequence
 
 from pydantic_ai import RunContext
 
@@ -43,15 +45,26 @@ def _parse_day(raw: str | None) -> datetime | None:
 
 
 def _mark_for(eid: str) -> str:
-    from gsuid_core.ai_core.agent_run.order_answer import get_turn_ledger
-
-    view = get_turn_ledger()
-    if view is None:
-        return "#" + eid[:8]
-    for ln in view.lines:
-        if ln.episode_id == eid:
-            return ln.mark
     return "#" + eid[:8]
+
+
+class _MarkedTurn(Protocol):
+    id: str
+
+
+def _locate_turn(rows: Sequence[_MarkedTurn], target: str) -> tuple[int, str]:
+    """# 前缀对 episode_id。对上多条或没有时只回说明，不展开原文。"""
+    raw = target.strip()
+    if raw.startswith("#"):
+        prefix = raw[1:]
+        hits = [i for i, row in enumerate(rows) if prefix and row.id.startswith(prefix)]
+    else:
+        hits = [i for i, row in enumerate(rows) if row.id == raw]
+    if len(hits) == 1:
+        return hits[0], ""
+    if len(hits) > 1:
+        return -1, "这个标记对上了多条，请改用完整 episode_id。"
+    return -1, "没有对上这个标记。"
 
 
 @ai_tools(category="buildin", visible_when=visible_when_timeline_query)
@@ -145,7 +158,6 @@ async def read_session(
         around: 可选 #id 或 episode_id，展开附近原文
         radius: 展开半径，默认 6
     """
-    from gsuid_core.ai_core.agent_run.order_answer import get_turn_ledger
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemTurnGist
     from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn, _speaker_stripped
 
@@ -159,116 +171,44 @@ async def read_session(
     rows = [r for r in await AIMemEpisode.get_session(sid) if r.scope_key in keys]
     if not rows and not gists:
         return f"找不到 session {sid}。"
-    view = get_turn_ledger()
-    mark_by_eid: dict[str, str] = {}
-    if view is not None:
-        for ln in view.lines:
-            mark_by_eid[ln.episode_id] = ln.mark
     gist_by_eid = {g.episode_id: g.gist for g in gists}
     lines: list[str] = [f"【session {sid} gist】"]
     user_rows = [r for r in rows if not _assistant_turn(r.content or "")]
     for row in user_rows:
         day = row.valid_at.strftime("%Y-%m-%d") if row.valid_at else ""
-        mark = mark_by_eid[row.id] if row.id in mark_by_eid else _mark_for(row.id)
+        mark = _mark_for(row.id)
         body = gist_by_eid[row.id] if row.id in gist_by_eid else _speaker_stripped(row.content or "")[:160]
         lines.append(f"{mark} · {day} · {body.replace(chr(10), ' ').strip()}")
     target = (around or "").strip()
     if target:
-        eid = ""
-        if view is not None and target in view.ledger_ids:
-            eid = view.ledger_ids[target]
-        elif target.startswith("#") and view is not None:
-            eid = view.ledger_ids[target] if target in view.ledger_ids else ""
-        else:
-            eid = target
-        idx = -1
-        for i, row in enumerate(user_rows):
-            if row.id == eid:
-                idx = i
-                break
-        if idx >= 0:
+        idx, note = _locate_turn(user_rows, target)
+        if note:
+            lines.append(note)
+        elif idx >= 0:
             lo = max(0, idx - max(0, radius))
             hi = min(len(user_rows), idx + max(0, radius) + 1)
             lines.append("【原文】")
             for row in user_rows[lo:hi]:
                 day = row.valid_at.strftime("%Y-%m-%d") if row.valid_at else ""
                 body = _speaker_stripped(row.content or "").replace("\n", " ").strip()[:400]
-                mark = mark_by_eid[row.id] if row.id in mark_by_eid else _mark_for(row.id)
+                mark = _mark_for(row.id)
                 lines.append(f"{mark} · {day} · {body}")
     return "\n".join(lines) if len(lines) > 1 else f"session {sid} 没有用户发言。"
 
 
 @ai_tools(category="buildin", visible_when=visible_when_timeline_query)
-async def timeline(
-    ctx: RunContext[ToolContext],
-    topic: str,
-    start: str = "",
-    end: str = "",
-) -> str:
-    """返回按时间排列的用户发言时间线，可按日期收窄。
-
-    Args:
-        ctx: 工具执行上下文
-        topic: 主题词，用于裁尾打分
-        start: 可选起始日 YYYY-MM-DD
-        end: 可选结束日 YYYY-MM-DD
-    """
-    from gsuid_core.ai_core.memory.retrieval.ledger_timeline import build_ledger, format_ledger_block
-
-    keys = _scope_keys(ctx.deps)
-    if not keys:
-        return "没有可检索的记忆范围。"
-    view = await build_ledger(keys, topic or "timeline")
-    lo = _parse_day(start)
-    hi = _parse_day(end)
-    if lo is not None or hi is not None:
-        kept = []
-        for ln in view.lines:
-            if lo is not None and ln.valid_at < lo:
-                continue
-            if hi is not None and ln.valid_at.date() > hi.date():
-                continue
-            kept.append(ln)
-        view.lines = kept
-        view.inject_ids = [ln.episode_id for ln in kept]
-        view.chars = 0
-    return format_ledger_block(view, topic or "timeline")
-
-
-@ai_tools(category="buildin", visible_when=visible_when_timeline_query)
 async def mark_evidence(ctx: RunContext[ToolContext], turn_ids: list[str]) -> str:
-    """把本轮认定的首次子话题 #id 登记为证据。阶段一每找到一条就调用。
+    """把本轮认定的首次子话题标记登记为证据。阶段一每找到一条就调用。
 
     Args:
         ctx: 工具执行上下文
-        turn_ids: 时间线上的 #id，如 ["#3", "#17"]
+        turn_ids: 时间线上的标记，如 ["#abcdef12"]
     """
     _ = ctx
     from gsuid_core.ai_core.agent_run.evidence_stage import mark_turn_ids
 
     n = mark_turn_ids(turn_ids)
     return f"已登记 {n} 条证据。"
-
-
-@ai_tools(category="buildin", visible_when=visible_when_timeline_query)
-async def recall_timeline(
-    ctx: RunContext[ToolContext],
-    topic: str,
-    start: str = "",
-    end: str = "",
-    n: int = 12,
-) -> str:
-    """兼容旧名：等价 ``timeline``。
-
-    Args:
-        ctx: 工具执行上下文
-        topic: 主题词
-        start: 可选起始日
-        end: 可选结束日
-        n: 忽略，保留签名
-    """
-    _ = n
-    return await timeline(ctx, topic, start, end)
 
 
 @ai_tools(category="buildin", visible_when=visible_when_timeline_query)

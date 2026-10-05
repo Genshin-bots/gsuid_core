@@ -88,7 +88,7 @@ _NOISE_WORDS = frozenset(
 # 主力 = MiniMax（用户说明：额度每 5h 重置、每窗口约 9M token，故是首选，全量需跨 2~3 个 5h 窗口
 # 续跑）。单元素 → 撞 429/额度时 _advance 为 no-op、只在 MiniMax 上退避重试，绝不自动切走（避免绕去
 # 慢/限流的备用 provider）。MiniMax 一个 5h 窗口额度用尽（429「用量上限」）时应**停下等下个窗口再续**
-# （驱动幂等续跑），而非在码内空转——见 docs/beam10m_memory_optimization.md §15。如需多家轮换，
+# （驱动幂等续跑），而非在码内空转。如需多家轮换，
 # 把 ["openai++商汤科技","openai++LongCat"] 加回本列表即可。
 _FAILOVER_LOW_PROVIDERS = ["openai++商汤科技"]
 # 撞限流后先在当前 provider 退避重试这么多次，仍失败才切下一家——避免单次抖动就切到慢/坏 provider。
@@ -812,7 +812,7 @@ async def _extract_and_upsert_from_episode(
         await increment_entity_count(scope_key, new_entity_count)
 
     # Step 5: Edge 写入。valid_at 取本窗口 turn 的最新对话时间戳（回放语料的真实陈述
-    # 时间），而非抽取时刻——否则整个图谱的时序被抽取顺序覆盖（BEAM 复盘 §17 教训）。
+    # 时间），而非抽取时刻——否则整个图谱的时序被抽取顺序覆盖。
     # ObservationRecord.timestamp 是必填 aware datetime，直接取 max（无 record 时 None）。
     stmt_ts = max((r.timestamp for r in high_records), default=None)
     await extract_and_upsert_edges(

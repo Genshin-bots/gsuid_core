@@ -64,13 +64,16 @@
 from __future__ import annotations
 
 import gc
+import io
 import os
 import ast
 import sys
+import json
 import time
 import asyncio
+import hashlib
 import argparse
-from typing import Any, Set, Dict, List, Tuple, Optional
+from typing import Any, Set, Dict, List, Tuple, Optional, TypedDict
 
 import httpx
 
@@ -84,11 +87,39 @@ from eval.common.judge import judge_beam_order, judge_beam_single  # noqa: E402
 from eval.common.http_client import (  # noqa: E402
     DEFAULT_TIMEOUT,
     DEFAULT_BASE_URL,
+    DEFAULT_CHAT_API,
+    _auth_headers,
     call_batch_observe,
     call_chat_with_history,
     call_clear_user_global,
     extract_text_from_response,
 )
+
+
+def force_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8 且不可编码字符降级替换。
+
+    评测会打印模型答案原文，而答案里出现 GBK 编不了的字符（m²、①、emoji）时，
+    默认编码会在预览打印处抛 UnicodeEncodeError，**跑到一半整轮死掉**，前面已完成的
+    判分全部作废。2026-10-03 实测一条含 ² 的答案就炸掉了一轮 70 题的 A/B。
+    """
+    # sys.stdout/stderr 的类型是 TextIO，上面没有 reconfigure；只有 TextIOWrapper 有。
+    # 被 pytest 之类的捕获对象换掉时它自带编码，跳过即可，不该 getattr 硬调。
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _preflight_verdict(alive_status: int, gate_status: Optional[int]) -> str:
+    """预检结论。抽成纯函数是为了能离线断言，别再让"误报"混进数据里。"""
+    if alive_status == 404:
+        return "服务在线但 /api/chat_with_history 未注册；请确认服务进程已启动"
+    if gate_status is None:
+        return "服务在线但 gate 探测未完成"
+    if gate_status == 200:
+        return "服务在线且 local-test gate 已开"
+    return f"⚠️ local-test gate 未开 (status={gate_status})；请确认服务进程设了 GSUID_LOCAL_TEST_MODE=1 且 token 一致"
+
 
 # ─────────────────────────────────────────────
 # 常量
@@ -516,12 +547,63 @@ def extract_standard_answer(probe: Dict[str, Any], category: str) -> str:
     return str(val).strip() if val is not None else ""
 
 
+# 上游把拒答裹在 HTTP 200 里。强信号是正常行文里不会出现的固定搭配。
+_REFUSAL_MARKERS: tuple[str, ...] = (
+    "status_code: 529",
+    "http_code': '529",
+    # 裸 "overloaded" 是常见英文单词（"nobody's overloaded" 就能把 3000 字好答案误杀），
+    # 只保留不会出现在正常行文里的固定搭配。
+    "service overloaded",
+    "server overloaded",
+    "upstream overloaded",
+    "overloaded_error",
+    # 框架自身的错误前缀。配额耗尽等错误会裹在 200 里，判分时必须当失败而不是答案。
+    "执行出错",
+    "服务繁忙",
+)
+
+# 弱信号必须整句命中。子串会把「稍等我核对」这类短回答整轮判失败。
+_WEAK_REFUSAL_ENVELOPES: frozenset[str] = frozenset(
+    {
+        "overloaded",
+        "稍等，这会儿不太方便，稍后再试",
+        "请稍后重试",
+        "稍后再试",
+        "稍后重试",
+        "不太方便",
+        "try again later",
+        "i'm overloaded, try again later",
+    }
+)
+_WEAK_REFUSAL_MAX_CHARS = 400
+_WEAK_REFUSAL_TRIM = " \t。.!！,，"
+# 探针单题尝试次数。最后一次仍拒答就不睡，直接标记失败落盘。
+_PROBE_MAX_ATTEMPTS = 4
+# 重试耗尽后写进 status_code 的标记。刻意取非 200：整轮校验会把这种题算作 bad。
+_PROBE_EXHAUSTED_STATUS = 599
+
+
 def _provider_overloaded(status_code: int, answer: str) -> bool:
-    """上游 429/503/529 或正文 overloaded。HTTP 200 包着 529 也要重试。"""
+    """上游 429/503/529 或正文是拒答话术。HTTP 200 包着过载也要重试。"""
     if status_code in (429, 502, 503, 529):
         return True
-    blob = (answer or "").lower()
-    return "overloaded" in blob or "status_code: 529" in blob or "http_code': '529" in blob
+    blob = (answer or "").strip().lower()
+    if any(m in blob for m in _REFUSAL_MARKERS):
+        return True
+    if len(blob) > _WEAK_REFUSAL_MAX_CHARS:
+        return False
+    return blob.strip(_WEAK_REFUSAL_TRIM) in _WEAK_REFUSAL_ENVELOPES
+
+
+def _retryable(status_code: int, answer: str) -> bool:
+    """这一轮要不要退避重试。
+
+    判据是「内容像失败」，**不是**「状态码不是 200」：上游会把拒答和配额错误裹在
+    200 里返回。旧写法 `if status_code == 200 or not transient: break` 被 200 短路，
+    退避重试从未生效，整轮客套话直接写进答卷，只能靠事后 sanity 把整梯判失败，
+    那一题本身没有第二次机会。
+    """
+    return _provider_overloaded(status_code, answer) or status_code in (-1, 404, 502, 503)
 
 
 # ─────────────────────────────────────────────
@@ -650,6 +732,32 @@ async def cmd_ingest_batch(
     return results
 
 
+class _ProbeConfig(TypedDict):
+    user_id: str
+    persona: str
+    tools: bool | None
+    observer: bool
+    system2: bool
+    memory_eval: bool | None
+    clock: str
+
+
+def _config_fingerprint(fields: _ProbeConfig) -> str:
+    """答卷配置指纹。断点续跑时用来判断「已有答案是不是另一套配置跑出来的」。"""
+    blob = json.dumps(dict(fields), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def _recorded_inject_ids(body: object) -> list[str] | None:
+    """聊天体没带注入集合时返回 None。空列表才是「装了但一条都没有」。"""
+    if not isinstance(body, dict) or "inject_ids" not in body:
+        return None
+    raw = body["inject_ids"]
+    if not isinstance(raw, list):
+        return None
+    return [str(item) for item in raw]
+
+
 async def cmd_probe(
     base_url: str,
     user_id: str,
@@ -674,6 +782,17 @@ async def cmd_probe(
         resume: 启用增量更新（跳过已有 ``question_id`` 的题目）。
         concurrency: 同时在飞的探针数；同一 ``user_id`` 的评测 session 彼此隔离。
     """
+    config_fp = _config_fingerprint(
+        {
+            "user_id": user_id,
+            "persona": persona_name or "",
+            "tools": enable_tools,
+            "observer": enable_observer,
+            "system2": enable_system2,
+            "memory_eval": memory_eval,
+            "clock": fallback_clock or "",
+        }
+    )
     existing_ids: Set[str] = set()
     existing_results: List[Dict[str, Any]] = []
     if resume and await asyncio.to_thread(os.path.isfile, answers_file):
@@ -684,6 +803,21 @@ async def cmd_probe(
             existing_ids = read_existing_ids(answers_file, id_field="question_id")
         except Exception as e:
             print(f"[Probe] 读取已有答卷失败: {e}")
+        # question_id 只由 user_id/category/序号组成，换配置重跑 id 照样撞上。
+        # 不比指纹就会把上一套配置的答案连同判分当成本次结果报出去。
+        known: set[str] = set()
+        for row in existing_results:
+            if not isinstance(row, dict) or "config_fp" not in row:
+                continue
+            fp = row["config_fp"]
+            if isinstance(fp, str) and fp:
+                known.add(fp)
+        if known and config_fp not in known:
+            print("[Probe] 已有答卷是另一套配置生成的，本次不复用断点（删掉答卷文件可强制沿用）")
+            existing_ids = set()
+            existing_results = []
+        elif not known:
+            print("[Probe] 已有答卷无配置指纹（旧格式），按同配置续跑；换过配置请自行删答卷")
 
     conc = _clamp_concurrency(concurrency)
     print(
@@ -693,18 +827,19 @@ async def cmd_probe(
     )
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-        # 探活用 openapi.json：能同时验证「服务在线」与「local-test gate 已开」——
-        # chat_with_history 仅在 GSUID_LOCAL_TEST_MODE=1 时才注册进 schema
+        # GET 只探存活：chat 没有 GET，405 就是活着。gate 走下一行的 POST。
         try:
-            spec = await client.get(f"{base_url}/openapi.json", timeout=5.0)
-            paths = spec.json().get("paths", {}) if spec.status_code == 200 else {}
-            if "/api/chat_with_history" in paths:
-                print(f"[Probe] 服务在线且 local-test gate 已开 (status={spec.status_code})")
-            else:
-                print(
-                    "[Probe] ⚠️ 服务在线但未见 /api/chat_with_history；请确认服务进程设了 "
-                    "GSUID_LOCAL_TEST_MODE=1（否则评测端点全 404）"
+            alive = await client.get(f"{base_url}{DEFAULT_CHAT_API}", timeout=5.0)
+            gate_status: Optional[int] = None
+            if alive.status_code != 404:
+                gate = await client.post(
+                    f"{base_url}/api/ai/memory/eval/episodes",
+                    json={"user_id": "_gate_probe", "limit": 1},
+                    headers=_auth_headers(),
+                    timeout=15.0,
                 )
+                gate_status = gate.status_code
+            print(f"[Probe] {_preflight_verdict(alive.status_code, gate_status)}")
         except Exception as e:
             print(f"[Probe] 服务连接失败: {e}（请确认 gsuid_core 服务已启动）")
             return answers_file
@@ -736,7 +871,7 @@ async def cmd_probe(
                 agent_answer = ""
                 memory = None
                 resp: Dict[str, Any] = {}
-                for attempt in range(4):
+                for attempt in range(_PROBE_MAX_ATTEMPTS):
                     resp = await call_chat_with_history(
                         client=client,
                         base_url=base_url,
@@ -760,13 +895,12 @@ async def cmd_probe(
                         error_msg = resp.get("error", "unknown")
                         agent_answer = f"[ERROR] status={status_code}, error={error_msg}"
                         memory = None
-                    transient = _provider_overloaded(status_code, agent_answer) or status_code in (
-                        -1,
-                        404,
-                        502,
-                        503,
-                    )
-                    if status_code == 200 or not transient:
+                    if not _retryable(status_code, agent_answer):
+                        break
+                    # 最后一轮再拒答就没有下一次了，睡完也是白等：直接落盘并标记失败。
+                    if attempt == _PROBE_MAX_ATTEMPTS - 1:
+                        print(f"  [giveup] {qid} 重试耗尽仍被拒答: {agent_answer[:80]!r}", flush=True)
+                        status_code = status_code if status_code != 200 else _PROBE_EXHAUSTED_STATUS
                         break
                     wait_s = 20 * (attempt + 1)
                     print(f"  [retry] {qid} status={status_code} attempt={attempt + 1} wait={wait_s}s", flush=True)
@@ -776,6 +910,7 @@ async def cmd_probe(
             tool_calls: List[str] = [str(x) for x in raw_tc] if isinstance(raw_tc, list) else []
             record = {
                 "question_id": qid,
+                "config_fp": config_fp,
                 "category": category,
                 "question": question,
                 "standard_answer": standard_answer,
@@ -793,9 +928,6 @@ async def cmd_probe(
                 if "picks_sorted" in resp and isinstance(resp["picks_sorted"], list)
                 else [],
                 "fallback_used": str(resp["fallback_used"]) if "fallback_used" in resp else "",
-                "inject_ids": list(resp["inject_ids"])
-                if "inject_ids" in resp and isinstance(resp["inject_ids"], list)
-                else [],
                 "pool_ids": list(resp["pool_ids"]) if "pool_ids" in resp and isinstance(resp["pool_ids"], list) else [],
                 "inject_chars": int(resp["inject_chars"])
                 if "inject_chars" in resp and isinstance(resp["inject_chars"], int)
@@ -804,6 +936,9 @@ async def cmd_probe(
                 if "selector_ms" in resp and isinstance(resp["selector_ms"], int)
                 else 0,
             }
+            inject_ids = _recorded_inject_ids(resp)
+            if inject_ids is not None:
+                record["inject_ids"] = inject_ids
             async with lock:
                 results.append(record)
                 dump_json(answers_file, results)

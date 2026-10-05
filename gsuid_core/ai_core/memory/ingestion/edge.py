@@ -35,7 +35,7 @@ _DANGLING_FACT_RE = re.compile(
 _NEGATION_MARKERS = ("不", "没", "无", "非", "别", "讨厌", "拒绝", "反对", "停止")
 
 # 英文否定：词边界匹配，避免 note/nothing→"not"、"knows"→"no" 类误命中。
-# （BEAM 教训：仅中文标记时英文语料 "never/not/n't" 全漏检，C11 矛盾引擎从未触发。）
+# 否定词表必须含英文，否则纯英文语料里的 never/not/n't 全漏检，矛盾引擎从不触发。
 _NEGATION_RE_EN = re.compile(
     r"\b(never|not|no|none|without|refuse[sd]?|den(?:y|ies|ied)|stopped)\b|n't\b",
     re.IGNORECASE,

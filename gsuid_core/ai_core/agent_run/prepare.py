@@ -429,30 +429,6 @@ class PreparePhase(RunOnceHost):
         if st.status_inquiry and st.has_active_task and self.create_by in ("Chat", "Agent"):
             st.final_user_message = _append_user_text(st.final_user_message, _STATUS_INQUIRY_HINT)
             logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
-        from gsuid_core.ai_core.memory.config import memory_config as _eo_mc
-        from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query as _eo_order
-
-        _eo_q = st.user_message if isinstance(st.user_message, str) else ""
-        if not _eo_q and st.ev is not None:
-            _eo_q = st.ev.raw_text or ""
-        if _eo_mc.eo_strategy == "ledger" and _eo_order(_eo_q):
-            if _eo_mc.eo_selector == "dedicated":
-                from gsuid_core.ai_core.agent_run.eo_selector import restatement_hint
-                from gsuid_core.ai_core.agent_run.order_answer import get_order_rendered
-
-                _eo_list = get_order_rendered()
-                if _eo_list:
-                    st.final_user_message = _append_user_text(
-                        st.final_user_message,
-                        "\n" + _ephemeral_system_block(restatement_hint(_eo_list)),
-                    )
-            else:
-                from gsuid_core.ai_core.agent_run.order_answer import order_protocol_hint
-
-                st.final_user_message = _append_user_text(
-                    st.final_user_message,
-                    "\n" + _ephemeral_system_block(order_protocol_hint(_eo_q)),
-                )
         if not st.fw_msg and st.has_active_task:
             st.in_flight_short = spoken_user_body_len(st.last_user_question) <= 48
         st.run_extra["speech_policy"] = st.speech_policy

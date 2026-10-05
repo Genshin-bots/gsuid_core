@@ -244,16 +244,51 @@ def query_time_window(query: str, clock: datetime) -> tuple[datetime, datetime] 
     return min(times) - slack, max(times) + slack + timedelta(hours=23, minutes=59)
 
 
-_QUERY_DATE_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?")
+# 分隔符两侧允许空格：中文正文常写成「2024 年 1 月 1 日」，不容忍空格时整句匹配不到，
+# 于是带枚举词也照样不收窄时间窗。
+_QUERY_DATE_RE = re.compile(r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?")
+# 英文保留 \b，否则 summar 会把 summary 切碎。汉字是 \w，中文枚举词不能套 \b。
 _TEMPORAL_ENUM_RE = re.compile(
-    r"(in order|sequence|chronolog|progress|summar|overview|evol|develop|timeline|history|"
-    r"依次|顺序|时间线|先后|经过|演变|变化|历程|总结|概述|回顾)",
+    r"\b(?:in order|sequence|chronolog\w*|progress(?:ed)?|summar\w*|overview|"
+    r"evol\w*|develop(?:ed|ment)?|timeline|history)\b"
+    r"|(?:依次|顺序|时间线|先后|经过|演变|变化|历程|总结|概述|回顾)",
     re.IGNORECASE,
 )
 _ENUM_FILLER_RE = re.compile(
     r"\b(?:from|between|until|through|list|please|can you|could you|the|topics?|events?|items?)\b",
     re.IGNORECASE,
 )
+# 请求套话占 token。长动词忽略大小写；a/an 与短代词区分大小写，以免剥掉 Plan A。
+# 边界用「前字符非字母」而非 \b，避免切开 improve。
+_REQUEST_VERBS = (
+    r"give|show|tell|walk|bring|provide|summari[sz]e|explain|describe|recap|"
+    r"comprehensive|complete|quick|quickest|full|thorough|detailed|brief|short|"
+    r"everything|can|could|would|please|has|have|had|been|"
+    r"of|about|for|that|this|what|how|why|when|where|which|who"
+)
+_REQUEST_PRONOUNS = r"i|we|they|it|its|my|our|me|us|you|your"
+_APOS = r"['’ʼ]"
+# 缩写单独一条：必须先于单字母代词剥除，否则 i/we 被吃掉只剩 've 挂在句首。
+_REQUEST_ABBREV_RE = re.compile(
+    r"(?<![^\W\d_])(?:i" + _APOS + r"?ve|we" + _APOS + r"?ve|you" + _APOS + r"?ve|"
+    r"they" + _APOS + r"?ve|i" + _APOS + r"?m|we" + _APOS + r"?re|you" + _APOS + r"?re|"
+    r"let" + _APOS + r"?s)(?![^\W\d_])",
+    re.IGNORECASE,
+)
+_REQUEST_BOILERPLATE_RE = re.compile(
+    # 边界按「非字母」判定：ASCII 撇号和 U+2019 弯引号都算词内字符。
+    r"(?<![^\W\d_])(?:" + _REQUEST_VERBS + r")(?![^\W\d_])",
+    re.IGNORECASE,
+)
+_REQUEST_PRONOUN_RE = re.compile(
+    r"(?<![^\W\d_])(?:" + _REQUEST_PRONOUNS + r")(?![^\W\d_])",
+)
+_REQUEST_ARTICLE_RE = re.compile(
+    r"(?<![^\W\d_])(?:a|an)(?![^\W\d_])",
+)
+# 剥除处的标点也要断词，否则会把两侧实词黏成一个（I'm→'m+前词）。
+_PUNCT_GAP_RE = re.compile(r"[,;:!?()\[\]{}\"'`]+")
+_WS_RE = re.compile(r"\s+")
 
 
 def query_explicit_time_range(query: str) -> tuple[datetime, datetime] | None:
@@ -299,11 +334,26 @@ def order_topic_span(query: str) -> str:
 
 
 def temporal_search_query(query: str) -> str:
-    """去掉日期和枚举套话，留给分桶语义检索的主题词。"""
+    """去掉日期和枚举套话，留给分桶语义检索的主题词。
+
+    剥完请求套话后若主题词被剥空（全是 give me a summary 这类），退回原问句：
+    空主题比带噪声的主题更差，后者至少还能命中专名。
+    """
     body = _QUERY_DATE_RE.sub(" ", query or "")
     body = _TEMPORAL_ENUM_RE.sub(" ", body)
     body = _ENUM_FILLER_RE.sub(" ", body)
-    return re.sub(r"\s+", " ", body).strip()
+    # 缩写先剥：否则 i/we 会先被当独立词吃掉，只剩 've 挂在句首。
+    for pattern in (
+        _REQUEST_ABBREV_RE,
+        _REQUEST_PRONOUN_RE,
+        _REQUEST_ARTICLE_RE,
+        _REQUEST_BOILERPLATE_RE,
+        _PUNCT_GAP_RE,
+        _WS_RE,
+    ):
+        body = pattern.sub(" ", body).strip()
+    body = _WS_RE.sub(" ", body).strip(" ,.?!")
+    return body or (query or "").strip()
 
 
 # 无显式起止日期的排序/全历程摘要。不含 in order to、裸 have I ever。

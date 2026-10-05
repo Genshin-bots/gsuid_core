@@ -59,23 +59,6 @@ class EvalEpisodesOut(BaseModel):
     rows: list[EvalEpisodeRow]
 
 
-class EvalLedgerLine(BaseModel):
-    mark: str
-    episode_id: str
-    session_id: str
-    gist: str
-    is_new: bool
-    day: str
-    turn_index: int
-    blob: str
-
-
-class EvalLedgerOut(BaseModel):
-    status: Literal[0] = 0
-    inject_ids: list[str]
-    lines: list[EvalLedgerLine]
-
-
 class EvalVectorsRequest(BaseModel):
     episode_ids: list[str] = Field(..., min_length=1, max_length=200)
 
@@ -171,36 +154,6 @@ async def eval_list_user_episodes(
             )
         )
     return EvalEpisodesOut(rows=out)
-
-
-@app.post(
-    "/api/ai/memory/eval/ledger",
-    include_in_schema=LOCAL_TEST_MODE,
-    summary="评测全量时间线（含短名单打分 blob）",
-    tags=AI_MEMORY,
-)
-async def eval_ledger(
-    req: EvalRetrieveRequest,
-    _gate: None = Depends(require_local_test),
-) -> EvalLedgerOut:
-    from gsuid_core.ai_core.memory.retrieval.ledger_timeline import build_ledger
-
-    scope_key = make_scope_key(ScopeType.USER_GLOBAL, req.user_id)
-    view = await build_ledger([scope_key], req.query)
-    lines = [
-        EvalLedgerLine(
-            mark=ln.mark,
-            episode_id=ln.episode_id,
-            session_id=ln.session_id,
-            gist=ln.gist,
-            is_new=ln.is_new,
-            day=ln.day,
-            turn_index=ln.turn_index,
-            blob=ln.blob,
-        )
-        for ln in view.lines
-    ]
-    return EvalLedgerOut(inject_ids=list(view.inject_ids), lines=lines)
 
 
 @app.post(

@@ -280,13 +280,16 @@ def sql_like_tokens(tokens: list[str]) -> list[str]:
 
 
 def token_in_text(tok: str, blob: str) -> bool:
-    """短英文整词匹配，避免 game 命中 gaming。"""
+    """短英文按 ASCII 词边界匹配，避免 game 命中 gaming。
+
+    不用 ``\\b``：Python 把汉字算进 ``\\w``，英文贴着中文时边界会消失。
+    """
     key = tok.lower()
     if not tok.isascii() or " " in tok or "-" in tok or len(tok) >= 8 or any(c.isdigit() for c in tok):
         return key in blob
     compiled = _SHORT_TOKEN_RES[key] if key in _SHORT_TOKEN_RES else None
     if compiled is None:
-        compiled = re.compile(rf"\b{re.escape(key)}\b")
+        compiled = re.compile(rf"(?<![a-z0-9_]){re.escape(key)}(?![a-z0-9_])")
         _SHORT_TOKEN_RES[key] = compiled
     return compiled.search(blob) is not None
 
@@ -3116,6 +3119,31 @@ def pack_order_dialogue(episodes: list[Episode], query: str, cap: int) -> list[E
     return out[:cap]
 
 
+def _order_stamps(episodes: list[Episode]) -> list[str]:
+    """排序骨架每行的时点标签。
+
+    原本一律截成 ``YYYY-MM-DD``。同一天被压成几千条时（长会话按天分块入库），
+    模型拿到的是一排完全相同的日期，无从排序——同一天内的事件因此被整段判错。
+    日期出现重复时补当天累计序号，保证同日各行标签唯一且单调。
+    """
+    days = [str(ep["valid_at"] if "valid_at" in ep else "")[:10] for ep in episodes]
+    need_finer = len(set(days)) < len(days)
+    stamps: list[str] = []
+    day_seq: dict[str, int] = {}
+    for day in days:
+        if len(day) != 10:
+            stamps.append("?")
+            continue
+        if not need_finer:
+            stamps.append(day)
+            continue
+        # turn_index 是 session 内序号，同日跨段会从 0 重开。已保序，用当天累计序号。
+        n = day_seq[day] if day in day_seq else 0
+        day_seq[day] = n + 1
+        stamps.append(f"{day} #{n}")
+    return stamps
+
+
 def format_order_skeleton(
     episodes: list[Episode],
     *,
@@ -3124,9 +3152,8 @@ def format_order_skeleton(
 ) -> list[str]:
     """把 first-mention 序列写成 ``1. YYYY-MM-DD · 主题``，生成前保序。"""
     lines: list[str] = []
-    for i, ep in enumerate(episodes, 1):
-        day = str(ep["valid_at"] if "valid_at" in ep else "")[:10]
-        stamp = day if len(day) == 10 else "?"
+    stamps = _order_stamps(episodes)
+    for i, (ep, stamp) in enumerate(zip(episodes, stamps), 1):
         phrase = _order_topic_phrase(ep["content"] or "", query=query, line_chars=line_chars)
         if not phrase:
             continue
@@ -4010,6 +4037,93 @@ async def _assistant_topic_hits(
             raise
         return []
     return hits
+
+
+_GIST_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_GIST_IMPORT_RE = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)", re.M)
+_GIST_DEF_RE = re.compile(r"^\s*def\s+(\w+)", re.M)
+_GIST_ERR_RE = re.compile(r"(?i)\b(?:error|exception|traceback)\b[:\s]+(.{0,40})")
+_GIST_SENT_RE = re.compile(r"(?<=[.!?。！？])\s+")
+# 头尾截断的落点必须落在词尾，否则 "from P…mport" 这种半截 token 既不是原词也不是别的什么。
+_BREAK_CHARS = frozenset(" \t,;:.!?)]}\"'，。；：！？）】》、")
+
+
+def _head_cut(text: str, width: int) -> str:
+    """从头截到 width，落点往回吸到最近的词尾，绝不切出半个 token。"""
+    if len(text) <= width:
+        return text
+    for i in range(min(width, len(text) - 1), max(-1, width - 24) - 1, -1):
+        if text[i] in _BREAK_CHARS:
+            return text[: i + 1]
+    return text[:width]
+
+
+def _tail_cut(text: str, width: int) -> str:
+    """从尾截到 width，起点跳过被切断的半个词。"""
+    if len(text) <= width:
+        return text
+    start = len(text) - width
+    for i in range(start, min(len(text) - 1, start + 24) + 1):
+        if text[i] in _BREAK_CHARS:
+            return text[i + 1 :]
+    return text[start:]
+
+
+def _splice(text: str, width: int) -> str:
+    """首尾各留一半（保住开场与结论），落点对齐词尾；中间空洞太小就只截头。
+
+    改的是**行内可读性**，不是信息量：被省略的中段同样丢失，省下的只是别让模型读到
+    半截词。所以调它不会改变召回内容。
+    """
+    if len(text) <= width:
+        return text
+    half = max(24, (width - 1) // 2)
+    head, tail = _head_cut(text, half), _tail_cut(text, half)
+    if len(text) - len(head) - len(tail) < 12:
+        return _head_cut(text, width)
+    return head + "…" + tail
+
+
+def rule_gist(content: str, line_chars: int) -> tuple[str, str]:
+    """零 LLM：去说话人前缀 / 代码块，丢掉自我介绍，保留首句+尾句。不丢 turn。"""
+    raw = _speaker_stripped(content or "")
+    digest_parts: list[str] = []
+    fences = _GIST_FENCE_RE.findall(raw)
+    if fences:
+        blob = "\n".join(fences)
+        imps = _GIST_IMPORT_RE.findall(blob)[:4]
+        defs = _GIST_DEF_RE.findall(blob)[:4]
+        err = _GIST_ERR_RE.search(blob)
+        nlines = sum(x.count("\n") + 1 for x in fences)
+        bits = [f"{nlines} lines"]
+        if imps:
+            bits.append("import " + ",".join(imps))
+        if defs:
+            bits.append("def " + ",".join(defs))
+        if err is not None:
+            bits.append("error: " + err.group(1).strip())
+        digest_parts.append("[code: " + "; ".join(bits) + "]")
+    prose = _prose_without_markup(_GIST_FENCE_RE.sub(" ", raw))
+    kept: list[str] = []
+    for sent in _GIST_SENT_RE.split(prose) if prose else []:
+        s = sent.strip()
+        if not s:
+            continue
+        kept.append(s)
+    if not kept:
+        body = prose
+    elif len(kept) == 1:
+        body = kept[0]
+    else:
+        body = kept[0] + " " + kept[-1]
+    if digest_parts and body:
+        body = digest_parts[0] + " " + body
+    elif digest_parts and not body:
+        body = digest_parts[0]
+    body = " ".join(body.split())
+    if len(body) > line_chars:
+        body = _splice(body, line_chars)
+    return body or "…", " ".join(digest_parts)
 
 
 def _fact_pieces(content: str, token: str, *, require_token: bool) -> list[str]:

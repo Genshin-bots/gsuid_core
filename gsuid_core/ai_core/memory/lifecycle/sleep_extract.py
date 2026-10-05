@@ -205,12 +205,12 @@ async def ensure_scope_threads(scope_key: str) -> int:
 
 
 async def extract_aspects_for_scope(scope_key: str, limit: int = 8) -> int:
-    """旧 extract-light 入口：改走 gist rule 回填，不再抽 aspect。"""
+    """评测入口。正数 limit 是本轮 episode 上限，丢掉它会扫完全部默认窗口。"""
     if not scope_key or limit <= 0:
         return 0
     from gsuid_core.ai_core.memory.lifecycle.gist_backfill import backfill_rule_scope
 
-    return await backfill_rule_scope(scope_key, limit=max(limit, 4000))
+    return await backfill_rule_scope(scope_key, limit=limit)
 
 
 async def run_sleep_extract_tick(limit: int = _SLEEP_BATCH) -> int:

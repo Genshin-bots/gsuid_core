@@ -39,6 +39,7 @@ from eval.BEAM_official.run_official import (  # noqa: E402
     _answers_path,
     _answers_sane,
     cmd_judge_conv,
+    results_writer,
     write_scale_report,
     _inherit_core_token,
     write_ladder_report,
@@ -352,29 +353,30 @@ async def main_async(args: argparse.Namespace) -> int:
     base = str(args.base_url).rstrip("/")
     timeout = float(args.timeout)
     scale = str(args.scale)
-    if args.cmd == "extract-light":
-        return await cmd_extract_light(scale, base, timeout)
-    if args.cmd == "metrics":
-        return await run_metrics(scale, base, min(timeout, 180.0))
-    if args.cmd == "gist-backfill":
-        return await cmd_gist_backfill(scale, base, timeout, str(args.source))
-    if args.cmd == "reprobe":
-        if bool(args.oracle_inject) or bool(args.full_context):
-            return await cmd_ceiling(
+    with results_writer(_spec(scale)):
+        if args.cmd == "extract-light":
+            return await cmd_extract_light(scale, base, timeout)
+        if args.cmd == "metrics":
+            return await run_metrics(scale, base, min(timeout, 180.0))
+        if args.cmd == "gist-backfill":
+            return await cmd_gist_backfill(scale, base, timeout, str(args.source))
+        if args.cmd == "reprobe":
+            if bool(args.oracle_inject) or bool(args.full_context):
+                return await cmd_ceiling(
+                    scale,
+                    base,
+                    timeout,
+                    oracle_inject=bool(args.oracle_inject),
+                    full_context=bool(args.full_context),
+                )
+            return await cmd_reprobe_only(
                 scale,
                 base,
                 timeout,
-                oracle_inject=bool(args.oracle_inject),
-                full_context=bool(args.full_context),
+                str(args.only),
+                fresh=bool(args.fresh),
             )
-        return await cmd_reprobe_only(
-            scale,
-            base,
-            timeout,
-            str(args.only),
-            fresh=bool(args.fresh),
-        )
-    return 1
+        return 1
 
 
 def main() -> int:

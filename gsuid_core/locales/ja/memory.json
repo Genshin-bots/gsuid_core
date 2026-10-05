@@ -154,8 +154,6 @@
   "log.memory.gist_backfill_fail": "[Memory] scope={scope_key} gist 補完をスキップ: {e}",
   "log.memory.evidence_stage": "[Memory] 証拠段階 n={n} fallback={fb}",
   "log.memory.evidence_stage_fail": "[Memory] 証拠段階をスキップ: {e}",
-  "log.memory.eo_selector": "[Memory] EoSelector n={n} fallback={fb} ms={ms}",
-  "log.memory.eo_selector_fail": "[Memory] EoSelector をスキップ: {e}",
   "log.memory.aspect_extract": "[Memory] session={session_id} から観点 {n} 件を抽出",
   "log.memory.aspect_extract_fail": "[Memory] session={session_id} 観点抽出をスキップ: {e}",
   "log.memory.session_ensure_fail": "[Memory] scope={scope_key} session バックフィルをスキップ: {e}",

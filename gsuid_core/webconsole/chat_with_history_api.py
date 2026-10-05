@@ -250,23 +250,6 @@ async def chatWithHistory(
             "memory": memory_text,
             "tool_calls": tool_calls,
         }
-        from gsuid_core.ai_core.agent_run.order_answer import get_order_meta, get_turn_ledger
-
-        meta = get_order_meta()
-        if meta is not None:
-            out["picks_raw"] = meta["picks_raw"]
-            out["picks_sorted"] = meta["picks_sorted"]
-            out["fallback_used"] = meta["fallback_used"]
-            out["inject_ids"] = meta["inject_ids"]
-            out["pool_ids"] = meta["pool_ids"]
-            out["inject_chars"] = meta["inject_chars"]
-            out["selector_ms"] = meta["selector_ms"]
-        else:
-            view = get_turn_ledger()
-            if view is not None:
-                out["inject_ids"] = view.inject_ids
-                out["pool_ids"] = view.pool_ids
-                out["inject_chars"] = view.chars
         return out
     except Exception as e:
         logger.error(t("log.webconsole.gscore_exception_chat_history", e=e))

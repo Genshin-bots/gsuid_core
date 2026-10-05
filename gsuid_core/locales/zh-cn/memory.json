@@ -154,8 +154,6 @@
   "log.memory.gist_backfill_fail": "[Memory] scope={scope_key} gist 回填跳过: {e}",
   "log.memory.evidence_stage": "[Memory] 证据阶段 n={n} fallback={fb}",
   "log.memory.evidence_stage_fail": "[Memory] 证据阶段跳过: {e}",
-  "log.memory.eo_selector": "[Memory] EoSelector n={n} fallback={fb} ms={ms}",
-  "log.memory.eo_selector_fail": "[Memory] EoSelector 跳过: {e}",
   "log.memory.aspect_extract": "[Memory] session={session_id} 抽出 {n} 条方面",
   "log.memory.aspect_extract_fail": "[Memory] session={session_id} 方面抽取跳过: {e}",
   "log.memory.session_ensure_fail": "[Memory] scope={scope_key} session 回填跳过: {e}",

@@ -99,18 +99,18 @@ async def relationshipView(
     分数在 prompt 里是内部量（不给模型看），但排障必须能看到——「为什么突然变冷」
     的答案就在 ``last_reason``（如 ``neg.insult`` / ``none.budget`` / ``decay.idle``）。
     """
+    from gsuid_core.ai_core.utils import _is_master_user
     from gsuid_core.ai_core.relationship import view_from_score, zone_level_name
     from gsuid_core.ai_core.database.models import UserFavorability
 
+    is_master = _is_master_user(str(user_id))
     record: Optional[UserFavorability] = None
     if bot_id:
         record = await UserFavorability.get_user_favorability(user_id=user_id, bot_id=bot_id)
     else:
-        scores = await UserFavorability.get_scores_for([user_id], "")
-        if user_id in scores:
-            record = await UserFavorability.get_user_favorability(user_id=user_id, bot_id="")
+        record = await UserFavorability.get_any_favorability(user_id)
     if record is None:
-        view = view_from_score(None, False)
+        view = view_from_score(None, is_master)
         return {
             "status_code": 200,
             "data": {
@@ -121,7 +121,7 @@ async def relationshipView(
                 "line": view.line,
             },
         }
-    view = view_from_score(record.favorability, False)
+    view = view_from_score(record.favorability, is_master)
     return {
         "status_code": 200,
         "data": {

@@ -478,6 +478,16 @@ def test_quote_is_not_rendered_as_current_fact() -> None:
     assert "谁在该时点说过" not in prefs.split("回复保持简短", 1)[0]
 
 
+def test_short_ascii_token_matches_when_glued_to_cjk() -> None:
+    """英文贴着汉字仍算命中。``\\b`` 把两者当成同一个词，覆盖提示会误报缺口。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import token_in_text
+
+    assert token_in_text("flask", "flask适合长枪")
+    assert token_in_text("flask", "适合flask")
+    assert not token_in_text("game", "gaming night")
+    assert not token_in_text("game", "endgame_mode")
+
+
 def test_query_overlaps_text_skips_unrelated_rules() -> None:
     from gsuid_core.ai_core.memory.retrieval.lexical import query_overlaps_text
 
@@ -649,6 +659,82 @@ def test_first_mention_pack_keeps_earliest_per_aspect() -> None:
     assert ids.index("core") < ids.index("err") < ids.index("sec")
     assert "greet" not in ids
     assert len(ids) == 3
+
+
+def test_order_skeleton_disambiguates_same_day_events() -> None:
+    """同一天被压成同一个日期时，骨架必须给出更细且单调的先后键。
+
+    长会话按天分块入库时一天可能有几千条，一律截成 YYYY-MM-DD 会让模型
+    拿到一排相同日期、只能猜顺序。序号取当天累计，不取 turn_index。
+    """
+    from gsuid_core.ai_core.memory.retrieval.lexical import format_order_skeleton
+
+    def row(eid: str, text: str, day: str, turn: int) -> Episode:
+        return Episode(
+            id=eid,
+            content=text,
+            valid_at=f"{day} 00:00:00",
+            scope_key="user_global:u1",
+            embedding=[],
+            session_id="s1",
+            turn_index=turn,
+        )
+
+    same_day = [
+        row("a", "User: set up the translation API integration first.", "2024-03-01", 12),
+        row("b", "User: then handled rate limiting on the queue.", "2024-03-01", 340),
+        row("c", "User: later added caching for performance.", "2024-03-01", 1290),
+    ]
+    skel = format_order_skeleton(same_day)
+    assert len(skel) == 3
+    stamps = [line.split(" · ")[0] for line in skel]
+    assert len(set(stamps)) == 3, f"日期相同时标签仍不可区分：{stamps}"
+    seqs = [int(s.rsplit("#", 1)[1]) for s in stamps]
+    assert seqs == sorted(seqs) and seqs[0] < seqs[-1], f"同日序号非单调：{stamps}"
+
+
+def test_order_stamps_do_not_collide_across_sessions_on_one_day() -> None:
+    """同一天被时间 gap 切成两段时，两段的 turn_index 都从 0 重开。
+
+    拿 turn_index 当标签会让两段都出现 #0，跨段撞号且顺序反转，
+    比整天空日期更误导。锁住「标签来自当天累计序号」这一条。
+    """
+    from gsuid_core.ai_core.memory.retrieval.lexical import format_order_skeleton
+
+    def row(eid: str, text: str, at: str, sid: str) -> Episode:
+        return Episode(
+            id=eid,
+            content=text,
+            valid_at=at,
+            scope_key="user_global:u1",
+            embedding=[],
+            session_id=sid,
+            turn_index=0,
+        )
+
+    split_day = [
+        row("a", "User: opened the tracker topic earlier in the morning.", "2024-03-01 09:00:00", "s1"),
+        row("b", "User: came back to the same topic much later.", "2024-03-01 21:00:00", "s2"),
+    ]
+    stamps = [ln.split(" · ")[0] for ln in format_order_skeleton(split_day)]
+    assert len(set(stamps)) == 2, f"跨 session 同日撞号：{stamps}"
+    assert "#0" in stamps[0] and "#1" in stamps[1], stamps
+
+
+def test_order_skeleton_stays_clean_when_days_differ() -> None:
+    """日期本来就各不相同时不加噪——序列键只在需要消歧时才出现。"""
+    from gsuid_core.ai_core.memory.retrieval.lexical import format_order_skeleton
+
+    eps = [
+        _ep("core", "User: started the budget tracker core module.", "2024-03-14 10:00:00", "s1"),
+        _ep("err", "User: added transaction error handling later.", "2024-04-05 10:00:00", "s1"),
+        _ep("sec", "User: finalized security hashing last.", "2024-04-25 10:00:00", "s1"),
+    ]
+    skel = format_order_skeleton(eps)
+    assert skel[0].startswith("1. 2024-03-14 ·")
+    assert skel[1].startswith("2. 2024-04-05 ·")
+    assert skel[2].startswith("3. 2024-04-25 ·")
+    assert "#" not in skel[0]
 
 
 def test_order_skeleton_numbered_and_ignores_input_shuffle() -> None:

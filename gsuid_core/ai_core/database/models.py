@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.base_models import BaseModel, with_session
+from gsuid_core.utils.database.base_models import BaseModel, with_session, with_read_session
 
 
 def _clamp_favor(value: int) -> int:
@@ -91,6 +91,36 @@ class UserFavorability(BaseModel, table=True):
             UserFavorability 对象，如果不存在则返回 None
         """
         stmt = select(cls).where(and_(cls.user_id == user_id, cls.bot_id == bot_id))
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    @classmethod
+    @with_read_session
+    async def get_any_favorability(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+    ) -> Optional["UserFavorability"]:
+        """跨 bot 取该用户**最近有活动**的那行（控制台「bot_id 留空」入口）。
+
+        写侧以 (user_id, bot_id) 为键，同一个人会有多行。留空**不是**要取 ``bot_id=''``
+        那行：实盘真实 bot_id 是 onebot / HTTP / web，按空串查必然落空。
+
+        排序不能用 id 定新鲜度：闲置衰减是批量 UPDATE，只写 favorability / last_reason /
+        last_delta，不碰 ``last_eval_at``，所以大量历史行 ``last_eval_at`` 恒为 0，
+        而它们的 id 往往比真实 bot 的行大（只按 id 兜底会选到 ``bot_id=''`` 的陈旧行）。
+        ``last_interaction_time`` 才是「谁在真的被结算」的旁证，三级并列才用 id 收口，
+        保证同一查询重复调用返回同一行。
+        """
+        stmt = (
+            select(cls)
+            .where(col(cls.user_id) == user_id)
+            .order_by(
+                col(cls.last_eval_at).desc(),
+                col(cls.last_interaction_time).desc(),
+                col(cls.id).desc(),
+            )
+        )
         result = await session.execute(stmt)
         return result.scalars().first()
 

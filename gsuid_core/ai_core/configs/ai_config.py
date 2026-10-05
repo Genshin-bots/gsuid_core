@@ -326,6 +326,13 @@ AI_CONFIG: Dict[str, GSC] = {
         3,
         options=[1, 2, 3, 5, 8],
     ),
+    "subagent_inline_wait_sec": GsIntConfig(
+        "委派内联等待秒数",
+        "create_subagent 在本轮内等子代理完成的上限：等到了本轮直接给结论，"
+        "等不到仍退回后台回灌。设 0 恢复「派完就走」。修改后即时生效",
+        25,
+        options=[0, 10, 25, 45, 90],
+    ),
     # 任务档预算（AgentNode 统一后节点不再携带预算, 所有能力代理统一走这两项）
     "task_max_iterations": GsIntConfig(
         "任务代理最大思考轮数",
@@ -1229,24 +1236,6 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "记忆评测模式",
         "指定是否启用记忆评测模式, 启用后无法使用 System-2 和 Rerank",
         False,
-    ),
-    "eo_strategy": GsStrConfig(
-        "长时序注入策略",
-        "legacy=注入若干首次提及；ledger=注入压缩全量时间线。环境变量 GSUID_EO_STRATEGY 可覆盖",
-        "legacy",
-        options=["legacy", "ledger"],
-    ),
-    "eo_selector": GsStrConfig(
-        "长时序选择器",
-        "仅 ledger 生效。persona=主人格自选；dedicated=另开一次选择模型。GSUID_EO_SELECTOR 可覆盖",
-        "persona",
-        options=["persona", "dedicated"],
-    ),
-    "ledger_max_chars": GsIntConfig(
-        "时间线总预算",
-        "ledger 策略下排序/摘要题时间线最大字符数。GSUID_LEDGER_MAX_CHARS 可覆盖",
-        28000,
-        options=[8000, 16000, 28000, 40000, 48000],
     ),
 }
 

@@ -20,6 +20,7 @@ from typing import (
     Optional,
     Sequence,
     TypedDict,
+    NamedTuple,
     NotRequired,
 )
 from pathlib import Path
@@ -201,8 +202,14 @@ def _build_summary_from_memory(
 #     O(1) 索引查找，彻底消除全目录扫描。
 # ─────────────────────────────────────────────
 
-# 索引类型：((session_id, session_uuid) -> 摘要, session_id -> 最新摘要)
-LogIndex = Tuple[Dict[Tuple[str, str], SessionLogSummary], Dict[str, SessionLogSummary]]
+
+# 摘要索引加上文件路径：detail / linked_agents 据此只加载目标文件。
+class LogIndex(NamedTuple):
+    by_sid_uuid: Dict[Tuple[str, str], SessionLogSummary]
+    latest_by_sid: Dict[str, SessionLogSummary]
+    path_by_sid_uuid: Dict[Tuple[str, str], Path]
+    path_by_sid: Dict[str, Path]
+
 
 # path -> ((mtime, size), base_summary)
 _BASE_SUMMARY_CACHE: Dict[str, Tuple[Tuple[float, int], SessionLogSummary]] = {}
@@ -440,21 +447,36 @@ def _parse_log_file_base(path: Path, st: Optional[os.stat_result] = None) -> Opt
     return summary
 
 
-def _index_from_bases(bases: List[SessionLogSummary]) -> LogIndex:
-    """从一组基础摘要构建查找索引，供 linked_agent enrich 时 O(1) 命中。"""
+def _index_from_bases(
+    items: Sequence[Tuple[Path, SessionLogSummary]],
+) -> LogIndex:
+    """从 (路径, 基础摘要) 列表构建查找索引，供 linked_agent enrich 与 detail 定位 O(1) 命中。
+
+    同时记录每个键对应的**文件路径**：detail / linked_agents 接口据此只加载目标单文件，
+    取代旧的全目录 json.load 扫描。
+    """
     by_sid_uuid: Dict[Tuple[str, str], SessionLogSummary] = {}
     latest_by_sid: Dict[str, SessionLogSummary] = {}
-    for b in bases:
+    path_by_sid_uuid: Dict[Tuple[str, str], Path] = {}
+    path_by_sid: Dict[str, Path] = {}
+    for path, b in items:
         sid = b["session_id"]
         if not sid:
             continue
         uuid = b["session_uuid"]
         if uuid:
-            by_sid_uuid[(sid, uuid)] = b
-        existing = latest_by_sid.get(sid)
+            # 同一 (sid, uuid) 理论上唯一（一个分段一个文件），但主目录与 subagents 目录
+            # 各自落盘时可能重复；统一按 updated_at 取最新，与 detail 旧的全目录扫描口径一致。
+            key = (sid, uuid)
+            existing = by_sid_uuid[key] if key in by_sid_uuid else None
+            if existing is None or b["updated_at"] > existing["updated_at"]:
+                by_sid_uuid[key] = b
+                path_by_sid_uuid[key] = path
+        existing = latest_by_sid[sid] if sid in latest_by_sid else None
         if existing is None or b["updated_at"] > existing["updated_at"]:
             latest_by_sid[sid] = b
-    return by_sid_uuid, latest_by_sid
+            path_by_sid[sid] = path
+    return LogIndex(by_sid_uuid, latest_by_sid, path_by_sid_uuid, path_by_sid)
 
 
 def _prune_base_cache(valid_keys: set[str]) -> None:
@@ -471,19 +493,71 @@ def _prune_base_cache(valid_keys: set[str]) -> None:
             _cache_dirty = True
 
 
+# 索引重建要扫上万个文件。detail 在 TTL 内复用，刚落盘的会话最多滞后数秒。
+_INDEX_CACHE_TTL: float = 3.0
+_index_cache: Optional[Tuple[float, LogIndex]] = None
+_INDEX_BUILD_LOCK = threading.Lock()
+
+
 def _build_log_index() -> LogIndex:
     """扫描全部日志文件并构建查找索引（基础摘要带 mtime 缓存）。
 
     供单会话详情类接口即时使用；列表接口会复用一次性构建好的索引。
     """
     _load_persist_cache()
-    bases: List[SessionLogSummary] = []
+    items: List[Tuple[Path, SessionLogSummary]] = []
     for path, st in _iter_log_files_with_stat():
         base = _parse_log_file_base(path, st)
         if base is not None:
-            bases.append(base)
+            items.append((path, base))
     _save_persist_cache()
-    return _index_from_bases(bases)
+    return _index_from_bases(items)
+
+
+def _get_log_index_cached() -> LogIndex:
+    """带极短 TTL 的磁盘索引（供 detail / linked_agents 定位目标文件）。
+
+    命中 TTL 直接复用；未命中加锁构建并二次检查，供并发请求共享同一份。
+    索引只读共享（调用方不得就地修改其中的摘要）。
+    """
+    global _index_cache
+    now = time.time()
+    cache = _index_cache
+    if cache is not None and (now - cache[0]) < _INDEX_CACHE_TTL:
+        return cache[1]
+    with _INDEX_BUILD_LOCK:
+        cache = _index_cache
+        if cache is not None and (time.time() - cache[0]) < _INDEX_CACHE_TTL:
+            return cache[1]
+        index = _build_log_index()
+        _index_cache = (time.time(), index)
+        return index
+
+
+def _path_in_index(index: LogIndex, session_id: str, session_uuid: Optional[str]) -> Optional[Path]:
+    if session_uuid is not None:
+        key = (session_id, session_uuid)
+        return index.path_by_sid_uuid[key] if key in index.path_by_sid_uuid else None
+    return index.path_by_sid[session_id] if session_id in index.path_by_sid else None
+
+
+def _lookup_log_path(session_id: str, session_uuid: Optional[str]) -> Optional[Path]:
+    """按 (session_id, session_uuid) 定位日志文件。
+
+    命中走 TTL 索引（O(1)，不进全目录扫）；**未命中时强制重建一次再找**。
+    刚落盘的会话不在 TTL 窗口内建过索引，只查缓存会返回 404，而旧的全目录扫总是找得到。
+    重建只发生在 miss 上，命中路径的省下来的时间不受影响。
+    """
+    index = _get_log_index_cached()
+    path = _path_in_index(index, session_id, session_uuid)
+    if path is not None:
+        return path
+    # 重建必须走同一把锁：否则本次的旧结果会在 TTL 内盖掉别的线程刚建好的新索引。
+    with _INDEX_BUILD_LOCK:
+        fresh = _build_log_index()
+        global _index_cache
+        _index_cache = (time.time(), fresh)
+    return _path_in_index(fresh, session_id, session_uuid)
 
 
 def _enrich_linked_agent(
@@ -566,10 +640,10 @@ def _enrich_linked_agents_list(
     if not agents:
         return []
     if index is None:
-        index = _build_log_index()
+        index = _get_log_index_cached()
     if registry is None:
         registry = get_ai_session_registry()
-    by_sid_uuid, latest_by_sid = index
+    by_sid_uuid, latest_by_sid = index.by_sid_uuid, index.latest_by_sid
     return [_enrich_linked_agent(a, by_sid_uuid, latest_by_sid, registry) for a in agents]
 
 
@@ -643,23 +717,6 @@ def _find_log_by_file_stem(file_stem: str) -> Optional[Dict[str, Any]]:
             return resp
 
     return None
-
-
-def _list_log_files(include_subagents: bool = True) -> List[Path]:
-    """列出所有日志文件
-
-    Args:
-        include_subagents: 是否包含 SubAgent 日志（session_logs/subagents/ 子目录）
-    """
-    files: List[Path] = []
-
-    if AI_SESSION_LOGS_PATH.exists():
-        files.extend([p for p in AI_SESSION_LOGS_PATH.iterdir() if p.is_file() and p.suffix == ".json"])
-
-    if include_subagents and AI_SUBAGENT_LOGS_PATH.exists():
-        files.extend([p for p in AI_SUBAGENT_LOGS_PATH.iterdir() if p.is_file() and p.suffix == ".json"])
-
-    return files
 
 
 def _seg_meta(s: SessionLogSummary) -> SegmentMeta:
@@ -775,14 +832,15 @@ def _build_unified_list() -> List[SessionLogSummary]:
     #    连文件都不开），并构建查找索引供 linked_agent enrich 做 O(1) 命中。
     _load_persist_cache()
     disk_entries = _iter_log_files_with_stat()
-    disk_bases: List[SessionLogSummary] = []
+    disk_items: List[Tuple[Path, SessionLogSummary]] = []
     for path, st in disk_entries:
         base = _parse_log_file_base(path, st)
         if base is not None:
-            disk_bases.append(base)
+            disk_items.append((path, base))
     _prune_base_cache({str(p) for p, _ in disk_entries})
     _save_persist_cache()  # 仅在本次有新增/变更/清理时才真正写盘
-    index: LogIndex = _index_from_bases(disk_bases)
+    index: LogIndex = _index_from_bases(disk_items)
+    disk_bases: List[SessionLogSummary] = [b for _, b in disk_items]
 
     # 2. 收集内存活跃 Session 的当前分段（linked_agents 复用同一索引 enrich）
     memory_segs: Dict[str, SessionLogSummary] = {}  # session_uuid -> 分段摘要
@@ -917,7 +975,7 @@ def _find_log_by_session_id_and_uuid(
     查找优先级：
     1. 文件名 stem 精确匹配（O(1)，最高效）
     2. 内存活跃会话（实时数据）
-    3. JSON 内 session_id 字段全目录扫描（兜底）
+    3. 索引定位后只加载目标文件（兜底）
 
     当 session_id 实际上是文件名 stem（如 subagent 日志的
     ``heartbeat_decision_早柚_xxx_c7b1408f_20260531_134144``）时，
@@ -943,7 +1001,10 @@ def _find_log_by_session_id_and_uuid(
         mem_uuid: str = logger_obj.session_uuid
         # 如果指定了 uuid，必须匹配；否则取内存中的
         if session_uuid is None or mem_uuid == session_uuid:
-            mem_linked: List[LinkedAgentRecord] = logger_obj.linked_agents
+            # 两份都要拷贝：本函数在 run_in_threadpool 里跑，活跃会话的事件循环正并发
+            # append 这两个列表，直接交出去遍历会抛「list changed size during iteration」。
+            mem_entries: List[SessionLogEntry] = list(logger_obj.entries)
+            mem_linked: List[LinkedAgentRecord] = list(logger_obj.linked_agents)
             mem_ended_at: Optional[float] = logger_obj.ended_at
             mem_detail: Dict[str, Any] = {
                 "session_id": session_id,
@@ -959,30 +1020,19 @@ def _find_log_by_session_id_and_uuid(
                 "ended_at": mem_ended_at,
                 "is_active": mem_ended_at is None,
                 "entry_count": len(logger_obj.entries),
-                "entries": logger_obj.entries,
+                "entries": mem_entries,
                 "linked_agents": _enrich_linked_agents_list(mem_linked),
                 "linked_agent_count": len(mem_linked),
                 "source": "memory" if logger_obj.has_unpersisted_data else "disk",
             }
             return mem_detail
 
-    # 3. 从磁盘文件查找（按 JSON 内 session_id 字段全目录扫描，兜底）
-    best_file: Optional[SessionLogFileData] = None
-    best_updated_at: float = 0.0
-    for path in _list_log_files():
-        data = _load_log_detail(path)
-        if data is None:
-            continue
-        if data.get("session_id") != session_id:
-            continue
-        # 如果指定了 uuid，必须匹配
-        if session_uuid is not None and data.get("session_uuid") != session_uuid:
-            continue
-        ua: float = data.get("updated_at", 0)
-        if ua > best_updated_at:
-            best_updated_at = ua
-            best_file = data
+    # 索引定位后只加载这一个文件，避免全目录 json.load 堵住事件循环。
+    path = _lookup_log_path(session_id, session_uuid)
 
+    if path is None:
+        return None
+    best_file = _load_log_detail(path)
     if best_file is None:
         return None
 
@@ -1192,7 +1242,7 @@ async def get_session_log_detail_by_query(
         status: 0成功，1失败
         data: 完整日志数据
     """
-    return _handle_detail_request(session_id, session_uuid)
+    return await run_in_threadpool(_handle_detail_request, session_id, session_uuid)
 
 
 @app.get("/api/ai/session_logs/{session_id}/detail", summary="获取会话日志详情", tags=AI_SESSION_LOGS)
@@ -1213,7 +1263,7 @@ async def get_session_log_detail(
         status: 0成功，1失败
         data: 完整日志数据
     """
-    return _handle_detail_request(session_id, None)
+    return await run_in_threadpool(_handle_detail_request, session_id, None)
 
 
 @app.get(
@@ -1239,7 +1289,8 @@ async def get_session_log_detail_with_uuid(
         status: 0成功，1失败
         data: 完整日志数据
     """
-    return _handle_detail_request(session_id, session_uuid)
+    # 与其余 detail 路由一样放线程池，避免磁盘 IO 堵住事件循环。
+    return await run_in_threadpool(_handle_detail_request, session_id, session_uuid)
 
 
 @app.get("/api/ai/session_logs/{rest:path}/detail", summary="获取会话日志详情", tags=AI_SESSION_LOGS)
@@ -1269,7 +1320,7 @@ async def get_session_log_detail_catch_all(
     if session_uuid is not None and session_uuid.strip() == "":
         session_uuid = None
 
-    return _handle_detail_request(session_id, session_uuid)
+    return await run_in_threadpool(_handle_detail_request, session_id, session_uuid)
 
 
 # ─────────────────────────────────────────────
@@ -1295,34 +1346,7 @@ async def get_session_log_by_file(
         data: 完整日志数据
     """
     try:
-        # 安全检查：防止目录遍历
-        if ".." in file_name or "/" in file_name or "\\" in file_name:
-            return {"status": 1, "msg": "非法文件名", "data": None}
-
-        # 使用 _find_log_by_file_stem 按文件名 stem 查找（不含 .json 后缀）
-        stem = file_name.removesuffix(".json")
-        data = _find_log_by_file_stem(stem)
-        if data is not None:
-            return {"status": 0, "msg": "ok", "data": data}
-
-        # 兜底：传统路径查找（兼容极端情况）
-        path = AI_SESSION_LOGS_PATH / file_name
-        if not path.exists():
-            path = AI_SUBAGENT_LOGS_PATH / file_name
-        if not path.exists():
-            return {"status": 1, "msg": f"未找到日志文件: {file_name}", "data": None}
-
-        file_data = _load_log_detail(path)
-        if file_data is None:
-            return {"status": 1, "msg": f"解析日志文件失败: {file_name}", "data": None}
-
-        # 在原始文件结构上 enrich linked_agents（type_counts / entry_count / is_active）
-        resp: Dict[str, Any] = dict(file_data)
-        file_linked = file_data.get("linked_agents", [])
-        if file_linked:
-            resp["linked_agents"] = _enrich_linked_agents_list(file_linked)
-
-        return {"status": 0, "msg": "ok", "data": resp}
+        return await run_in_threadpool(_get_session_log_by_file_sync, file_name)
     except Exception as e:
         logger.error(t("log.webconsole.sesslog_retrieve_log_file", e=e))
         return {
@@ -1330,6 +1354,38 @@ async def get_session_log_by_file(
             "msg": f"获取日志文件失败: {str(e)}",
             "data": None,
         }
+
+
+def _get_session_log_by_file_sync(file_name: str) -> Dict[str, Any]:
+    """按文件名取日志的同步实现（磁盘 IO 放线程池，避免阻塞事件循环）。"""
+    # 安全检查：防止目录遍历
+    if ".." in file_name or "/" in file_name or "\\" in file_name:
+        return {"status": 1, "msg": "非法文件名", "data": None}
+
+    # 使用 _find_log_by_file_stem 按文件名 stem 查找（不含 .json 后缀）
+    stem = file_name.removesuffix(".json")
+    data = _find_log_by_file_stem(stem)
+    if data is not None:
+        return {"status": 0, "msg": "ok", "data": data}
+
+    # 兜底：传统路径查找（兼容极端情况）
+    path = AI_SESSION_LOGS_PATH / file_name
+    if not path.exists():
+        path = AI_SUBAGENT_LOGS_PATH / file_name
+    if not path.exists():
+        return {"status": 1, "msg": f"未找到日志文件: {file_name}", "data": None}
+
+    file_data = _load_log_detail(path)
+    if file_data is None:
+        return {"status": 1, "msg": f"解析日志文件失败: {file_name}", "data": None}
+
+    # 在原始文件结构上 enrich linked_agents（type_counts / entry_count / is_active）
+    resp: Dict[str, Any] = dict(file_data)
+    file_linked = file_data.get("linked_agents", [])
+    if file_linked:
+        resp["linked_agents"] = _enrich_linked_agents_list(file_linked)
+
+    return {"status": 0, "msg": "ok", "data": resp}
 
 
 # ─────────────────────────────────────────────
@@ -1375,60 +1431,7 @@ async def get_session_linked_agents(
         }
     """
     try:
-        registry = get_ai_session_registry()
-        session = registry.get_ai_session(session_id)
-
-        linked_agents: List[LinkedAgentRecord] = []
-        session_uuid: Optional[str] = None
-
-        # 1. 优先从内存获取
-        if session is not None:
-            logger_obj = session._session_logger
-            session_uuid = logger_obj.session_uuid
-            all_linked: List[LinkedAgentRecord] = logger_obj.linked_agents
-            if agent_type:
-                linked_agents = [a for a in all_linked if a.get("agent_type") == agent_type]
-            else:
-                linked_agents = list(all_linked)
-        else:
-            # 2. 从磁盘文件查找
-            best_file: Optional[SessionLogFileData] = None
-            best_updated_at: float = 0.0
-            for path in _list_log_files():
-                data = _load_log_detail(path)
-                if data is None:
-                    continue
-                if data.get("session_id") != session_id:
-                    continue
-                ua: float = data.get("updated_at", 0)
-                if ua > best_updated_at:
-                    best_updated_at = ua
-                    best_file = data
-            if best_file is not None:
-                session_uuid = best_file.get("session_uuid")
-                disk_linked: List[LinkedAgentRecord] = best_file.get("linked_agents", [])
-                if agent_type:
-                    linked_agents = [a for a in disk_linked if a.get("agent_type") == agent_type]
-                else:
-                    linked_agents = list(disk_linked)
-
-        # 按类型统计
-        by_type: Dict[str, int] = {"sub_agent": 0, "peer_agent": 0, "parent_agent": 0}
-        for agent in linked_agents:
-            atype: str = agent.get("agent_type", "unknown")
-            by_type[atype] = by_type.get(atype, 0) + 1
-
-        return {
-            "status": 0,
-            "msg": "ok",
-            "data": {
-                "session_id": session_id,
-                "session_uuid": session_uuid,
-                "linked_agents": _enrich_linked_agents_list(linked_agents),
-                "total": len(linked_agents),
-                "by_type": by_type,
-            },
-        }
+        return await run_in_threadpool(_get_session_linked_agents_sync, session_id, agent_type)
     except Exception as e:
         logger.error(t("log.webconsole.sesslog_retrieve_associated_agent", e=e))
         return {
@@ -1436,6 +1439,56 @@ async def get_session_linked_agents(
             "msg": f"获取关联 Agent 失败: {str(e)}",
             "data": None,
         }
+
+
+def _get_session_linked_agents_sync(session_id: str, agent_type: Optional[str]) -> Dict[str, Any]:
+    """linked_agents 的同步实现（在线程池执行，避免扫描磁盘时阻塞事件循环）。"""
+    registry = get_ai_session_registry()
+    session = registry.get_ai_session(session_id)
+
+    linked_agents: List[LinkedAgentRecord] = []
+    session_uuid: Optional[str] = None
+
+    # 1. 优先从内存获取
+    if session is not None:
+        logger_obj = session._session_logger
+        session_uuid = logger_obj.session_uuid
+        # 线程池与事件循环并发改这份列表，先拷再过滤。
+        all_linked: List[LinkedAgentRecord] = list(logger_obj.linked_agents)
+        if agent_type:
+            linked_agents = [a for a in all_linked if a.get("agent_type") == agent_type]
+        else:
+            linked_agents = list(all_linked)
+    else:
+        # 2. 从磁盘定位：经索引 O(1) 找到该 session_id 最新的日志文件，只加载这一个。
+        #    旧实现逐个 json.load 全部日志（10822 个文件实测 ~9.5s）。
+        path = _lookup_log_path(session_id, None)
+        best_file: Optional[SessionLogFileData] = _load_log_detail(path) if path is not None else None
+        if best_file is not None:
+            session_uuid = best_file.get("session_uuid")
+            disk_linked: List[LinkedAgentRecord] = best_file.get("linked_agents", [])
+            if agent_type:
+                linked_agents = [a for a in disk_linked if a.get("agent_type") == agent_type]
+            else:
+                linked_agents = list(disk_linked)
+
+    # 按类型统计
+    by_type: Dict[str, int] = {"sub_agent": 0, "peer_agent": 0, "parent_agent": 0}
+    for agent in linked_agents:
+        atype: str = agent.get("agent_type", "unknown")
+        by_type[atype] = by_type.get(atype, 0) + 1
+
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "session_id": session_id,
+            "session_uuid": session_uuid,
+            "linked_agents": _enrich_linked_agents_list(linked_agents),
+            "total": len(linked_agents),
+            "by_type": by_type,
+        },
+    }
 
 
 # ─────────────────────────────────────────────

@@ -11,7 +11,7 @@
 
 import uuid
 import asyncio
-from typing import List, Self, Optional, TypedDict, NotRequired
+from typing import List, Self, TypeVar, Optional, TypedDict, NotRequired
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Field, SQLModel, Relationship, col, select, update
@@ -27,6 +27,7 @@ from sqlalchemy import (
     and_,
     desc,
     func,
+    not_,
     union as sql_union,
     exists,
     insert,
@@ -100,6 +101,68 @@ def _ids_matching_tokens(
         return pieces[0]
     unioned = sql_union(*pieces).subquery()
     return select(unioned.c.eid)
+
+
+_TScopeModel = TypeVar("_TScopeModel", bound=SQLModel)
+
+
+def _exclude_assistant_turns(content: ColumnElement[str]) -> ColumnElement[bool]:
+    """与 _assistant_turn 同一前缀。抽样前剔除，避免助手行占掉名额。"""
+    trimmed = func.ltrim(content)
+    return and_(
+        not_(func.lower(trimmed).startswith("assistant:")),
+        not_(trimmed.startswith("[我此前说过]")),
+    )
+
+
+async def _scope_rows_uniform(
+    session: AsyncSession,
+    model: type[_TScopeModel],
+    key: str,
+    scope_key: str,
+    limit: int,
+    ties: tuple[str, ...] = (),
+    extra: ColumnElement[bool] | None = None,
+) -> list[_TScopeModel]:
+    """同一 scope 跨全程取至多 ``limit`` 行，按 valid_at 升序返回。
+
+    总量超限时**等距抽样**而不是取前 N 条。取前 N 会让长对话的后半程完全进不来，
+    而依赖「末尾若干行不裁」的尾部保护只能在已载入的前缀里抽，前缀一截断就等于失效。
+
+    抽样判据是「缩放值相对上一行递增」，不是按固定步长取模。步长只能取整数，总量刚过
+    上限时 ceil(total/limit)=2 会让密度直接腰斩（20001/20000 只剩约 1 万行）。
+    取 v(rn)=trunc((rn-1)*(limit-1)/(total-1))：分母用 total-1 而非 total，末行才必然
+    落在一次递增上（用 total 时，total 是 limit 整数倍会漏掉末行）。每步只可能 +0/+1，
+    递增次数**恰好 limit-1**，再显式并上 rn=1，故样本数**恰好 limit**、首末行都在。
+
+    ``key`` 是该表的行身份列（主键），各表不同：episode 用 ``id``、gist 用 ``episode_id``。
+    ``ties`` 是 valid_at 并列时的定序列：不给的话 row_number 在同刻行之间不确定，
+    同一份数据两次抽样会选到不同行，A/B 就没有可比性。
+    """
+    t = _model_table(model)
+    c = t.c
+    id_col = _as_str_col(c[key])
+    scope_col = _as_str_col(c.scope_key)
+    at_col = _as_dt_col(c.valid_at)
+    tie_cols = [_as_dt_col(c[name]) if name == "valid_at" else c[name] for name in ties]
+    order = [at_col.asc(), *[col.asc() for col in tie_cols]]
+
+    scope_eq = scope_col == scope_key
+    filt = scope_eq if extra is None else and_(scope_eq, extra)
+    total = int(await session.scalar(select(func.count()).select_from(t).where(filt)) or 0)
+    if total <= limit:
+        stmt = select(model).where(_as_bool_expr(filt)).order_by(*order)
+        return list((await session.execute(stmt)).scalars().all())
+
+    inner = select(id_col.label("rid"), func.row_number().over(order_by=order).label("rn")).where(filt).subquery()
+    # 身份列显式起别名 rid：各表列名不同（id / episode_id），不能靠 inner.c.<原名> 取。
+    # 除法是各后端都有的向零截断整除；rn=1 时 (rn-2) 为负、截断成 0，故首行要显式并上。
+    step = max(0, limit - 1)
+    cur_scaled = (inner.c.rn - 1) * step // (total - 1)
+    prev_scaled = (inner.c.rn - 2) * step // (total - 1)
+    keep = select(inner.c.rid).where(or_(inner.c.rn == 1, cur_scaled > prev_scaled))
+    stmt = select(model).where(_as_bool_expr(id_col.in_(keep))).order_by(*order)
+    return list((await session.execute(stmt)).scalars().all())
 
 
 # ─────────────────────────────────────────────
@@ -585,13 +648,64 @@ class AIMemEpisode(SQLModel, table=True):
         session: AsyncSession,
         scope_key: str,
         limit: int = 2000,
+        sample: bool = False,
+        user_only: bool = False,
     ) -> list["AIMemEpisode"]:
-        """同一 scope 按时间取出全部 Episode（评测还原 haystack 会话）。"""
+        """按时间取 Episode。sample 才等距抽，默认连续前缀。
+
+        user_only 在抽样前去掉助手行，避免助手占掉回填名额。
+        """
         if not scope_key or limit <= 0:
             return []
-        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.valid_at).asc()).limit(limit)
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        extra = _exclude_assistant_turns(_as_str_col(_model_table(cls).c.content)) if user_only else None
+        if sample:
+            return await _scope_rows_uniform(
+                session,
+                cls,
+                "id",
+                scope_key,
+                limit,
+                ties=("turn_index", "id"),
+                extra=extra,
+            )
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key)
+            .order_by(col(cls.valid_at).asc(), col(cls.turn_index).asc(), col(cls.id).asc())
+            .limit(limit)
+        )
+        if extra is not None:
+            stmt = stmt.where(extra)
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_without_gist(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int,
+    ) -> list["AIMemEpisode"]:
+        """还没有 gist 的用户 turn，按时间取前 limit 条。
+
+        浅睡预算很小。等距抽样只取决于行号和 limit，每轮都会重写同一批。
+        """
+        if not scope_key or limit <= 0:
+            return []
+        user_turn = _exclude_assistant_turns(_as_str_col(_model_table(cls).c.content))
+        has_gist = exists().where(col(AIMemTurnGist.episode_id) == col(cls.id))
+        stmt = (
+            select(cls)
+            .where(
+                col(cls.scope_key) == scope_key,
+                col(cls.valid_at).is_not(None),
+                user_turn,
+                ~has_gist,
+            )
+            .order_by(col(cls.valid_at).asc(), col(cls.turn_index).asc(), col(cls.id).asc())
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
     @with_read_session
@@ -1264,17 +1378,39 @@ class AIMemTurnGist(SQLModel, table=True):
         session: AsyncSession,
         scope_key: str,
         limit: int = 4000,
+        sample: bool = False,
     ) -> list["AIMemTurnGist"]:
+        """同一 scope 的 turn gist。sample 才等距抽，默认连续前缀。"""
         if not scope_key or limit <= 0:
             return []
+        if sample:
+            # ties 含 turn_index：valid_at 并列时 row_number 才稳定。
+            # 不给 ties，同刻行两次抽样会选到不同行。
+            return await _scope_rows_uniform(
+                session, cls, "episode_id", scope_key, limit, ties=("turn_index", "episode_id")
+            )
         stmt = (
             select(cls)
             .where(col(cls.scope_key) == scope_key)
-            .order_by(col(cls.valid_at).asc(), col(cls.turn_index).asc())
+            .order_by(col(cls.valid_at).asc(), col(cls.turn_index).asc(), col(cls.episode_id).asc())
             .limit(limit)
         )
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_by_episode_ids(cls, session: AsyncSession, episode_ids: list[str]) -> list["AIMemTurnGist"]:
+        """按抽中的 episode 取 gist。IN 分块，避免一次塞过 SQLite 变量上限。"""
+        if not episode_ids:
+            return []
+        out: list[AIMemTurnGist] = []
+        # SQLite 单条语句变量上限约 3 万，IN 按 500 分块。
+        step = 500
+        for start in range(0, len(episode_ids), step):
+            chunk = episode_ids[start : start + step]
+            stmt = select(cls).where(col(cls.episode_id).in_(chunk))
+            out.extend((await session.execute(stmt)).scalars().all())
+        return out
 
     @classmethod
     @with_read_session

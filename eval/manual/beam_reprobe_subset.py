@@ -88,7 +88,8 @@ def main() -> int:
     if not convs or min(convs) < 0 or max(convs) >= spec.n_conv:
         print(f"[subset] conv 越界: {convs} (0..{spec.n_conv - 1})", flush=True)
         return 2
-    return asyncio.run(_run(spec, convs, str(args.base_url).rstrip("/"), float(args.timeout)))
+    with ro.results_writer(spec):
+        return asyncio.run(_run(spec, convs, str(args.base_url).rstrip("/"), float(args.timeout)))
 
 
 if __name__ == "__main__":

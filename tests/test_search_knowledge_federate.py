@@ -99,10 +99,9 @@ def test_cognition_federates_knowledge_and_fileos() -> None:
     ):
         out = _run(search_cognition(_ctx(), query="测试主题"))
 
-    assert "认知检索" in out
-    assert "kb doc" in out or "stable" in out
+    assert "【知识目录】" in out
+    assert "kb doc" in out
     assert "to_abc" in out
-    assert "[知识]" in out
     assert "[落盘·可能过时]" in out
     assert "read_handle" in out
 

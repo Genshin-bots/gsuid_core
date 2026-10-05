@@ -144,6 +144,14 @@ def strip_surfaces(text: str, surfaces: Sequence[str]) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def text_mentions_surface(text: str, surface: str) -> bool:
+    """正文是否带这个 surface。规则与索引扫描相同。"""
+    key = _normalize_surface(surface)
+    if not key or not text:
+        return False
+    return _contains(_normalize_surface(text), key)
+
+
 def _contains(text: str, surface: str) -> bool:
     """CJK 直接子串匹配；ASCII 要求两侧不是 ASCII 字母数字，避免 `lbk` 命中 `flbkx`。
 

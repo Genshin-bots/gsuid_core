@@ -11,18 +11,36 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.base_models import DatabaseWriteTimeout
 
+# 每次回填默认扫多少 episode。跨全程等距抽样，窗口更小会让长对话后半程永远没有 gist。
+GIST_BACKFILL_SCAN = 80000
+# 每行 gist 摘要宽度。过窄会把行中后段的库名和版本号截掉。
+GIST_LINE_CHARS = 200
 
-async def backfill_rule_scope(scope_key: str, limit: int = 4000) -> int:
-    """把该 scope 用户 turn 写成 gist_source=rule。已有 llm 行不覆盖。"""
+
+async def backfill_rule_scope(
+    scope_key: str,
+    limit: int | None = None,
+    *,
+    missing_only: bool = False,
+) -> int:
+    """把该 scope 用户 turn 写成 gist_source=rule。已有 llm 行不覆盖。
+
+    ``limit`` 缺省取 :data:`GIST_BACKFILL_SCAN`。
+    ``missing_only`` 只补还没有 gist 的行，给浅睡的行预算用。一次全量仍等距抽样。
+    """
     if not scope_key:
         return 0
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemTurnGist
-    from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn
-    from gsuid_core.ai_core.memory.retrieval.ledger_timeline import LEDGER_LINE_CHARS, rule_gist
+    from gsuid_core.ai_core.memory.retrieval.lexical import rule_gist, _assistant_turn
 
-    eps = await AIMemEpisode.list_by_scope(scope_key, limit=limit)
-    existing = {g.episode_id: g for g in await AIMemTurnGist.list_by_scope(scope_key, limit=limit)}
-    line_chars = LEDGER_LINE_CHARS
+    cap = GIST_BACKFILL_SCAN if limit is None else limit
+    if missing_only:
+        eps = await AIMemEpisode.list_without_gist(scope_key, limit=cap)
+    else:
+        # 按抽中的 episode 取 gist，不另抽一份，否则 llm 行会被漏掉后覆盖成 rule。
+        eps = await AIMemEpisode.list_by_scope(scope_key, limit=cap, sample=True, user_only=True)
+    existing = {g.episode_id: g for g in await AIMemTurnGist.list_by_episode_ids([ep.id for ep in eps])}
+    line_chars = GIST_LINE_CHARS
     rows: list[AIMemTurnGist] = []
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for ep in eps:
@@ -66,10 +84,9 @@ async def backfill_llm_session(session_id: str, *, force: bool = False) -> int:
     from gsuid_core.ai_core.utils import extract_json_from_text
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemSession, AIMemTurnGist
-    from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn, _speaker_stripped
+    from gsuid_core.ai_core.memory.retrieval.lexical import _splice, rule_gist, _assistant_turn, _speaker_stripped
     from gsuid_core.ai_core.memory.prompts.extraction import GIST_EXTRACTION_USER, GIST_EXTRACTION_SYSTEM
     from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
-    from gsuid_core.ai_core.memory.retrieval.ledger_timeline import LEDGER_LINE_CHARS, rule_gist
 
     sess_rows = await AIMemSession.get_by_ids([session_id])
     if not sess_rows:
@@ -78,7 +95,7 @@ async def backfill_llm_session(session_id: str, *, force: bool = False) -> int:
     rows = await AIMemEpisode.get_session(session_id)
     turns: list[str] = []
     by_idx: dict[int, AIMemEpisode] = {}
-    line_chars = LEDGER_LINE_CHARS
+    line_chars = GIST_LINE_CHARS
     for row in rows:
         raw = row.content or ""
         if _assistant_turn(raw):
@@ -130,7 +147,8 @@ async def backfill_llm_session(session_id: str, *, force: bool = False) -> int:
                 session_id=session_id,
                 turn_index=idx,
                 valid_at=naive,
-                gist=str(item["g"]).strip()[:200],
+                # 与 rule 路径同宽、同样走词边界拼接，两条路径的行宽必须一致。
+                gist=_splice(str(item["g"]).strip(), line_chars),
                 gist_source="llm",
                 is_new_aspect=new_flag,
                 code_digest="",
@@ -150,7 +168,9 @@ async def backfill_llm_session(session_id: str, *, force: bool = False) -> int:
 
 
 async def run_gist_backfill_tick(limit: int = 8) -> int:
-    """浅睡：先 rule 回填未挂 gist 的 scope，再可选 llm。"""
+    """浅睡一轮。limit 是 episode 预算，单个 scope 不能改走全量扫描。"""
+    if limit <= 0:
+        return 0
     from gsuid_core.ai_core.memory.database.models import AIMemSession
 
     leftover = await AIMemSession.list_untitled(limit=limit)
@@ -160,8 +180,12 @@ async def run_gist_backfill_tick(limit: int = 8) -> int:
         if sess.scope_key in seen:
             continue
         seen.add(sess.scope_key)
+        remaining = limit - done
+        if remaining <= 0:
+            break
         try:
-            done += await backfill_rule_scope(sess.scope_key)
+            # 只补缺 gist 的行。等距抽样每轮命中同一批，长对话后半段写不上。
+            done += await backfill_rule_scope(sess.scope_key, limit=remaining, missing_only=True)
         except (OSError, SQLAlchemyError, DatabaseWriteTimeout) as e:
             logger.debug(i18n_t("log.memory.gist_backfill_fail", scope_key=sess.scope_key, e=e))
         if done >= limit:

@@ -4,7 +4,7 @@
 的四处（寒暄门 + 双路检索 + 预算格式化 + 装配层再硬截一刀）。
 实现仍在 ``ai_core/memory/`` 与 ``ai_core/cognition/``。
 
-挂点：H00 入站观察 · H05 检索（默认 15s；ledger+dedicated 为 120s）
+挂点：H00 入站观察 · H05 检索
 · H06 注入 · H18 工具轨迹。
 关槽 = 不注册 = 自然跳过；内核里**不写** ``if enable_memory``（闸门应过滤，不该整轮跳过）。
 
@@ -239,16 +239,8 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
     if not wants_evidence_injection(ctx):
         return _format_memory_catalog(mem, q)
     from gsuid_core.ai_core.kits.base import inject_memory_cap
-    from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query
 
     cap = inject_memory_cap(q, covered=mem.covered)
-    # ledger + dedicated：排序题已由专用选择器渲染过，本块不再重复注入。
-    if memory_config.eo_strategy == "ledger" and memory_config.eo_selector == "dedicated" and looks_like_order_query(q):
-        from gsuid_core.ai_core.agent_run.order_answer import get_order_rendered
-
-        if get_order_rendered().strip():
-            return ""
     speakers = ctx.priority_speakers if ctx.priority_speakers else None
     current = {ctx.user_id} if ctx.user_id else None
     return mem.to_prompt_text(
@@ -256,6 +248,7 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
         query=q,
         priority_speakers=speakers,
         current_speaker_ids=current,
+        now=ctx.clock_at,
     )
 
 
@@ -472,37 +465,23 @@ class MemoryKit(AgentKit):
         )
         from gsuid_core.ai_core.memory.retrieval.types import Episode
         from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
-        from gsuid_core.ai_core.memory.retrieval.ledger_timeline import LedgerView
 
-        if isinstance(mem.ledger, LedgerView):
-            from gsuid_core.ai_core.memory.config import memory_config as _eo_cfg
-            from gsuid_core.ai_core.agent_run.order_answer import set_turn_ledger
-
-            set_turn_ledger(mem.ledger)
-            if _eo_cfg.eo_selector == "dedicated":
-                from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_order_query
-
-                if looks_like_order_query(search_q):
-                    from gsuid_core.ai_core.agent_run.eo_selector import select_from_ledger
-
-                    await select_from_ledger(search_q)
+        reserved_turns: list[Episode] = []
+        if mem.covered:
+            # 逐份材料覆盖已按来源把每份需要的栏目行都算好了；词面补齐只会往里
+            # 灌闲聊/邻条，把覆盖按预算挤掉（25 份曾被挤到 17 份）。
+            mem.reserved_episodes = reserved_turns
         else:
-            reserved_turns: list[Episode] = []
-            if mem.covered:
-                # 逐份材料覆盖已按来源把每份需要的栏目行都算好了；词面补齐只会往里
-                # 灌闲聊/邻条，把覆盖按预算挤掉（25 份曾被挤到 17 份）。
-                mem.reserved_episodes = reserved_turns
-            else:
-                mem.episodes = await expand_lexical_recall(
-                    mem.episodes,
-                    query=search_q,
-                    user_id=ctx.user_id,
-                    group_id=ctx.group_id,
-                    clock=ctx.clock_at,
-                    reserved=reserved_turns,
-                )
-                mem.reserved_episodes = reserved_turns
-        if mem.ledger is None and wants_evidence_injection(ctx):
+            mem.episodes = await expand_lexical_recall(
+                mem.episodes,
+                query=search_q,
+                user_id=ctx.user_id,
+                group_id=ctx.group_id,
+                clock=ctx.clock_at,
+                reserved=reserved_turns,
+            )
+            mem.reserved_episodes = reserved_turns
+        if wants_evidence_injection(ctx):
             # 时间线邻条会把同日练习题灌满，冲掉主题演进；只给计数题补会话。
             if looks_like_count_query(search_q) and not mem.temporal_mode:
                 from gsuid_core.ai_core.memory.retrieval.lexical import expand_episode_neighbors
@@ -517,7 +496,7 @@ class MemoryKit(AgentKit):
                 if looks_like_personal_upkeep_query(search_q) and not mem.temporal_mode:
                     mem.episodes = await expand_topic_session_turns(mem.episodes, search_q)
             refine_retrieved_memory(mem, search_q)
-        if ctx.memory_eval and mem.ledger is None:
+        if ctx.memory_eval:
             from gsuid_core.ai_core.kits.memory.eval_protocol import (
                 boost_retrieved_memory,
                 _eval_full_scope_enabled,

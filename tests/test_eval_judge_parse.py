@@ -43,8 +43,41 @@ def test_silence_is_transient_judge_failure() -> None:
     from eval.common.judge import _is_transient_judge_failure
 
     assert _is_transient_judge_failure(200, "<SILENCE>") is True
-    assert _is_transient_judge_failure(200, "SILENCE") is True
     assert _is_transient_judge_failure(200, "PASS") is False
+
+
+def test_passed_is_derived_from_rubric_not_taken_from_the_judge() -> None:
+    """裁判说 PASS 但 rubric 没全中时必须判 FAIL。
+
+    旧实现直接采信 parsed["passed"]，而提示词里还有「或语义一致」的逃生门。
+    实测 1470 条判分里有 67 条是这种幽灵 PASS，summarization 一域就占 9 条——
+    那一域的分数有一半对不上任何一条全中的 rubric。
+    """
+    from eval.common.judge import parse_beam_judge_response
+
+    rubric = ["r1", "r2", "r3"]
+    ghost = '{"rubric_scores": [1, 0, 1], "passed": true, "reason": "核心事实一致"}'
+    assert parse_beam_judge_response(ghost, rubric)["passed"] is False
+
+    honest = '{"rubric_scores": [1, 0, 1], "passed": false, "reason": "缺 r2"}'
+    assert parse_beam_judge_response(honest, rubric)["passed"] is False
+
+    all_hit = '{"rubric_scores": [1, 1, 1], "passed": false, "reason": "整体写得一般"}'
+    assert parse_beam_judge_response(all_hit, rubric)["passed"] is True
+
+
+def test_passed_is_false_when_rubric_is_empty() -> None:
+    from eval.common.judge import parse_beam_judge_response
+
+    empty = '{"rubric_scores": [], "passed": true, "reason": "看起来没问题"}'
+    assert parse_beam_judge_response(empty, [])["passed"] is False
+
+
+def test_beam_prompt_has_no_semantic_escape_hatch() -> None:
+    from eval.common.judge import _BEAM_JUDGE_PROMPT
+
+    assert "rubric 检查点全部命中，**或**" not in _BEAM_JUDGE_PROMPT
+    assert "不接受" in _BEAM_JUDGE_PROMPT
 
 
 def test_judge_silence_is_not_gold_string_pass() -> None:

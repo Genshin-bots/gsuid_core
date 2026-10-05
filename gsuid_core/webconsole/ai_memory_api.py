@@ -79,7 +79,7 @@ class BatchObserveTurn(BaseModel):
     timestamp: Optional[str] = Field(
         default=None,
         max_length=64,
-        description="可选时间戳（ISO8601 / Unix 数字），用于回填 BEAM-10M 等时序探针",
+        description="可选时间戳（ISO8601 / Unix 数字），用于回填历史对话的时序",
     )
 
 
@@ -454,7 +454,7 @@ async def batch_observe(
     """批量摄入多轮对话到记忆观测队列。
 
     与 ``/api/chat_with_history`` 的差别：仅摄入，不创建 Agent、不调用 LLM、
-    不污染 ChatSession；适合 BEAM-10M / LongMemEval 等大批量回灌场景。
+    不污染 ChatSession；适合历史语料的大批量回灌场景。
 
     鉴权：默认 404，需开启 ``GSUID_LOCAL_TEST_MODE=1``（可选 ``GSUID_LOCAL_TEST_TOKEN``）。
     与 ``/api/chat_with_history`` 共用同一守卫，避免生产环境被裸调。

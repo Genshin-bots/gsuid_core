@@ -113,10 +113,8 @@ class MemoryConfig:
     hiergraph_rebuild_interval_seconds: int = 172800
     """距上次重建超过此秒数时触发增量重建（默认 48h）"""
 
-    # ====== RF-Mem 双过程检索：回忆环内部超参（运行时字段，进阶可调） ======
-    # 总开关（enable_familiarity_routing / enable_recollection_path）与标定阈值
-    # （familiarity_theta_* / tau / lambda / probe_k）已上 MEMORY_CONFIG，见下方 @property。
-    # 以下回忆环内部超参较少需要按部署调整，保留为运行时字段（重启归位）。
+    # 回忆环内部超参。总开关和标定阈值在下方 property。
+    # 这些字段重启归位，不进控制台。
     recollection_beam: int = 3
     """回忆环 beam 宽 B（论文 2~3）。"""
 
@@ -146,11 +144,7 @@ class MemoryConfig:
 
     @property
     def memory_inject_wide_chars(self) -> int:
-        """逐份材料覆盖 / 长时序题的记忆总帽（``inject_memory_cap`` 的宽档）。
-
-        与 ``ledger_max_chars`` 分开：后者是 ledger 时间线正文自己的预算，也被
-        ``GSUID_LEDGER_MAX_CHARS`` 覆盖；两档同用一个键会让改一边牵动另一边。
-        """
+        """逐份材料覆盖 / 长时序题的记忆总帽（``inject_memory_cap`` 的宽档）。"""
         return self._eo_int("memory_inject_wide_chars", 48000, stored=True)
 
     @property
@@ -188,18 +182,6 @@ class MemoryConfig:
         """评测模式：启用后摄入时不自动触发分层图重建，由外部统一调用 rebuild_task"""
         return mrc.get_config("eval_mode").data
 
-    def _eo_choice(self, key: str, allowed: tuple[str, ...], default: str, *, stored: bool = False) -> str:
-        import os
-
-        env = os.environ.get(f"GSUID_{key.upper()}", "").strip()
-        if env in allowed:
-            return env
-        if not stored:
-            return default
-        raw = mrc.get_config(key).data
-        val = str(raw) if isinstance(raw, str) else default
-        return val if val in allowed else default
-
     def _eo_int(self, key: str, default: int, *, stored: bool = False) -> int:
         import os
 
@@ -212,24 +194,9 @@ class MemoryConfig:
         return int(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else default
 
     @property
-    def eo_strategy(self) -> str:
-        """legacy=骨架选 N；ledger=全量时间线。控制台 + GSUID_EO_STRATEGY。"""
-        return self._eo_choice("eo_strategy", ("legacy", "ledger"), "legacy", stored=True)
-
-    @property
-    def eo_selector(self) -> str:
-        return self._eo_choice("eo_selector", ("persona", "dedicated"), "persona", stored=True)
-
-    @property
     def retrieve_hook_timeout_ms(self) -> int:
-        """H05 默认 15s；ledger + dedicated 才放到 120s。"""
-        if self.eo_strategy == "ledger" and self.eo_selector == "dedicated":
-            return 120_000
+        """H05 检索钩子超时。"""
         return 15_000
-
-    @property
-    def ledger_max_chars(self) -> int:
-        return self._eo_int("ledger_max_chars", 28000, stored=True)
 
     @property
     def qdrant_provider(self) -> str:

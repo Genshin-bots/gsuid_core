@@ -107,6 +107,8 @@ class CognitiveHit:
     source: str = ""
     # 是否过了相对分下限（只有过门槛的才允许标「高置信」）
     high_confidence: bool = False
+    # kb_kbdoc 的分片序号。插件条目为 -1，全文从开头读。
+    chunk_index: int = -1
 
     @property
     def label(self) -> str:
