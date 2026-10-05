@@ -46,6 +46,7 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 │   └── ai_core/              # AI 子系统（见下）
 ├── tests/                    # pytest
 ├── eval/                     # 实机评测（打运行中的 core，不要进程内重建世界）
+├── changelogs/               # 每版一个 md：`CHANGELOG.md` 索引 + `<版本>.md`（见「变更记录」）
 └── data/                     # 运行时生成：配置 / DB / 日志 / AI 状态（不进 git）
 ```
 
@@ -77,6 +78,7 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 | 查 AI Core 给插件的 API 签名 | [gscore-ai-core-api](.agents/skills/gscore-ai-core-api/SKILL.md) |
 | 写平台适配器（WS 协议 / MessageReceive） | [gscore-adapter-development](.agents/skills/gscore-adapter-development/SKILL.md) |
 | 部署 / Docker / WebConsole / WS_TOKEN | [gscore-deploy](.agents/skills/gscore-deploy/SKILL.md) |
+| 写用户可见文字（更新日志 / 文档 / 报错 / 注释） | [human-talk](.agents/skills/human-talk/SKILL.md) |
 
 `docs/` 里还有生命周期、记忆系统、Takumi 出图等专题（见各 Skill「关联文档」）。改核心机制后同步对应章节。
 
@@ -125,6 +127,27 @@ uv run core --port 8765
 - 改交互脚手架必须跑 `tests/test_interaction_scaffold.py`（正反双向）。
 - 改工具 docstring / covers：`tests/test_ai_tool_docstrings.py`。
 - 框架 `logger.*` 必须走 `t()` / `i18n_t()`，**第一参必须是静态字符串 key**（`log.<module>.<semantic>`）；禁止三元 / 拼接 / 变量当 key。改日志或 locale 必须跑 `tests/test_logger_i18n.py`（即 `.github/workflows/i18n.yml`）。
+
+## 变更记录（CHANGELOG）
+
+`changelogs/` 里**每个版本一个文件**：`CHANGELOG.md` 是索引与约定，`<版本>.md` 是该版正文。
+
+- **动手前** 先翻相关版本的 `<版本>.md`，确认这次改动不与既有设计冲突。版本边界以 `pyproject.toml` 的 `version` 变动为准。
+- **动手后** 判断这次改动**够不够格进更新日志**。判断标准：
+
+| 要记 | 不用记 |
+|------|--------|
+| 新增能力、新增命令 / 工具 / 配置项 | 修错字、改文案、调格式 |
+| 对外行为变化（默认值、返回结构、调用方式） | 纯内部重构（外部行为不变） |
+| 破坏性变更、依赖 / 部署要求变化 | 补测试、注释、docstring |
+| 可量化的性能变化 | 日志文案微调 |
+
+> **小修小补不进更新日志。** 上面右列的改动不用写条目——写满了反而没人看。拿不准就问自己「使用者能感知到这个变化吗」，感知不到就不写。
+
+- **写了怎么写** 按 [human-talk](.agents/skills/human-talk/SKILL.md) 的受控中文：一句话一件事、写清执行者、不用「优化 / 完善 / 若干 / 显著」这类空词（要写就写具体对象或数字）、数字必须带条件。
+- **必须带证据** 每条附 commit 链接，格式：``[`短号`](https://github.com/Genshin-bots/gsuid_core/commit/短号)``。链接要能打开。
+- **emoji** 沿用仓库自己的 commit emoji 约定（`✨` 新增 / `🐛` 修复 / `🎨` 调整 / `⚡` 性能 / `💥` 破坏性 / `🔒` 安全 …），清单见 `changelogs/CHANGELOG.md`。
+- **新版本** 在 `pyproject.toml` 升 `version` 时，同步新建 `changelogs/<新版本>.md`，并在 `CHANGELOG.md` 索引表加一行。已发布版本的文件**只增不改**（历史记录不是当前状态的说明书）；确实写错了可以改，但要在新版本条目里说明。
 
 ## 交付闸（改完必须过，否则不算完成）
 
@@ -764,5 +787,6 @@ bot = Bot(_bot, mock_ev)
 6. **Bot 类型 → 插件/触发器用 `Bot`（高层），框架内部用 `_Bot`（底层），禁止混用**
 7. **注释精简 → `#` 注释最多两行、每行 ≤88 字，只写「为什么/坑/边界」，不复述代码**
 8. **交付闸 → ruff / format / pytest / basedpyright（及 CI 的 i18n）全绿才允许说做完**
+9. **用户可见文字 → 写前查 `changelogs/`，写后按 human-talk 判断要不要记更新日志（小修小补不记）**
 
 专题细节按 Skills 表按需加载，不要把整本 `references/` 一次读完。
