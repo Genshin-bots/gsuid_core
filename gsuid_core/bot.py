@@ -248,7 +248,7 @@ class _Bot:
         group_id: Optional[str] = None,
         task_id: str = "",
         task_event: Optional[asyncio.Event] = None,
-        extra_metadata: Optional[Dict[str, Any]] = None,
+        extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
         try:
@@ -1020,7 +1020,7 @@ class Bot:
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
-        extra_metadata: Optional[Dict[str, Any]] = None,
+        extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
         return await self.bot.target_send(

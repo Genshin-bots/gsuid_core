@@ -238,7 +238,12 @@ async def send_message_by_ai(
 
     # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev
-    target_id = user_id or (str(ev.user_id) if ev is not None else "")
+    _wake = extra["delivery_wake"] is True if "delivery_wake" in extra else False
+    if _wake and ev is not None and ev.user_id:
+        target_id = str(ev.user_id)
+        extra["at_user_id"] = target_id
+    else:
+        target_id = user_id or (str(ev.user_id) if ev is not None else "")
     if text:
         from gsuid_core.ai_core.persona.settings import persona_name_from_event
         from gsuid_core.ai_core.agent_run.speech_policy import title_mentioned, non_master_title
@@ -255,7 +260,26 @@ async def send_message_by_ai(
         )
     occupied = False
     if image_id.startswith("res_"):
-        from gsuid_core.ai_core.outbound import try_claim_image_delivery
+        from gsuid_core.ai_core.outbound import (
+            lookup_res_owner,
+            res_owner_refusal,
+            speaker_may_take_res,
+            try_claim_image_delivery,
+        )
+
+        # 句柄归属只认当前说话人，模型传入的 user_id 不能改收件人。
+        looked = await lookup_res_owner(image_id)
+        speaker = str(ev.user_id) if ev is not None and ev.user_id else ""
+        if not speaker_may_take_res(looked, speaker):
+            logger.warning(
+                t(
+                    "log.ai.delivery_owner_mismatch",
+                    res_id=image_id,
+                    owner=looked.owner_user_id,
+                    target=speaker,
+                )
+            )
+            return res_owner_refusal(looked, speaker)
 
         claim = await try_claim_image_delivery(ev, image_id, session_id=session_id)
         if claim.refuse is not None:
@@ -427,6 +451,8 @@ async def send_message_by_ai(
             for hid in (image_id, video_id, audio_id):
                 if hid:
                     note_thread_handle(tool_ctx, hid)
+            if image_id:
+                extra["image_sent_this_run"] = True
 
         # 计数放在真正发出之后：媒体解析报错的早退不占额度
         if throttle_key is not None:

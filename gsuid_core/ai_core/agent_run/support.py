@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
+from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
 # re-export：settle / prepare / gs_agent 与测试共用
@@ -49,6 +50,18 @@ _EFFECTUAL_WRITE_TOOLS: frozenset[str] = frozenset(
         "resume_scheduled_task",
     }
 )
+
+
+def absorb_run_image_delivered(st: RunOnceState) -> None:
+    """泄漏句柄补发不走 send_message_by_ai，这里并回本轮出图事实。"""
+    from gsuid_core.ai_core.outbound import take_run_image_delivered
+
+    if not take_run_image_delivered():
+        return
+    st.image_sent_this_run = True
+    st.pending_async_delivery = False
+    if st.speech_policy == "silence_only":
+        st.speech_policy = "framework_deliver" if st.fw_msg else "free"
 
 
 def _tool_return_is_effectual_write(name: str, content: str, *, failed: bool) -> bool:

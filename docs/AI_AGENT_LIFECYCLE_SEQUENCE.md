@@ -1912,8 +1912,8 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 
 默认 ad-hoc：`research_agent` / `internal_reporter` / `memory_curator` / `scheduler_assistant`。
 `render_agent` / `stock_report_agent` / code / plugin_dev 等需要产物与审批的通常走看板。
-常量：生产 Chat `wait_sec=0`；评测 `_KANBAN_TEST_WAIT_TIMEOUT_SEC = 90`。
-评测进程 `create_by="TEST"` 等不到 mailbox 回灌，故内联等到 90s；**不要**把 90s 抄进生产 Chat。
+常量：生产 Chat `wait_sec=0`；`create_by="TEST"` 时 `_KANBAN_TEST_WAIT_TIMEOUT_SEC = 90`。
+该入口等不到 mailbox 回灌，故同步等到 90s；不要把 90s 抄进生产 Chat。
 
 ### 16.2 能力代理工具回填与 web 降权
 

@@ -48,6 +48,7 @@ def test_delivery_format_is_handle_first() -> None:
         ordinal=1,
         display_name="单元测交付",
         failure_reason=None,
+        owner_user_id="",
     )
     art = SimpleNamespace(
         id="res_abc123456789",

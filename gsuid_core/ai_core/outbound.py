@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Optional
+from typing import Optional, NamedTuple
 from datetime import datetime
 from contextvars import Token, ContextVar
 from dataclasses import dataclass
@@ -17,6 +17,8 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
 _outbound_image_label: ContextVar[str] = ContextVar("outbound_image_label", default="")
+# 泄漏句柄补发不经过 send_message_by_ai，用这个标记并回本轮「已经出图」。
+_run_image_delivered: ContextVar[bool] = ContextVar("run_image_delivered", default=False)
 
 
 def _db_ready() -> bool:
@@ -54,6 +56,21 @@ def get_outbound_image_label() -> str:
 
 def reset_outbound_image_label(token: Token) -> None:
     _outbound_image_label.reset(token)
+
+
+def note_run_image_delivered() -> None:
+    _run_image_delivered.set(True)
+
+
+def take_run_image_delivered() -> bool:
+    if not _run_image_delivered.get():
+        return False
+    _run_image_delivered.set(False)
+    return True
+
+
+def reset_run_image_delivered() -> None:
+    _run_image_delivered.set(False)
 
 
 def topic_from_extra(extra: dict[str, object]) -> str:
@@ -253,6 +270,45 @@ async def ownership_hint(ev: Event) -> str:
 class ImageClaim:
     occupied: bool
     refuse: str | None
+
+
+class ResOwner(NamedTuple):
+    found: bool
+    owner_user_id: str
+
+
+async def lookup_res_owner(res_id: str) -> ResOwner:
+    """res_ 是否存在，以及任务树发起人。找不到产物与产物没有发起人分开。"""
+    rid = (res_id or "").strip()
+    if not rid.startswith("res_"):
+        return ResOwner(False, "")
+    from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
+
+    art = await AIAgentArtifact.get_by_id(rid)
+    if art is None:
+        return ResOwner(False, "")
+    source = await AIAgentTask.get_by_id(art.root_task_id)
+    if source is None:
+        return ResOwner(True, "")
+    return ResOwner(True, (source.owner_user_id or "").strip())
+
+
+def speaker_may_take_res(owner: ResOwner, speaker_user_id: str) -> bool:
+    """产物不存在时交给原有的解析失败路径；存在则必须是当前说话人。"""
+    if not owner.found:
+        return True
+    speaker = (speaker_user_id or "").strip()
+    if not speaker or not owner.owner_user_id:
+        return False
+    return owner.owner_user_id == speaker
+
+
+def res_owner_refusal(owner: ResOwner, speaker_user_id: str) -> str:
+    if not (speaker_user_id or "").strip():
+        return "⚠️ 当前对话没有说话人，未发送该图。"
+    if not owner.owner_user_id:
+        return "⚠️ 该图没有发起人记录，未发送。"
+    return "⚠️ 该图属于其它发起人，未发送。请用本帧交付的句柄发给当前发起人。"
 
 
 async def try_claim_image_delivery(ev: Event | None, image_id: str, *, session_id: str) -> ImageClaim:

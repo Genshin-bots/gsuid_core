@@ -326,13 +326,6 @@ AI_CONFIG: Dict[str, GSC] = {
         3,
         options=[1, 2, 3, 5, 8],
     ),
-    "subagent_inline_wait_sec": GsIntConfig(
-        "委派内联等待秒数",
-        "create_subagent 在本轮内等子代理完成的上限：等到了本轮直接给结论，"
-        "等不到仍退回后台回灌。设 0 恢复「派完就走」。修改后即时生效",
-        25,
-        options=[0, 10, 25, 45, 90],
-    ),
     # 任务档预算（AgentNode 统一后节点不再携带预算, 所有能力代理统一走这两项）
     "task_max_iterations": GsIntConfig(
         "任务代理最大思考轮数",

@@ -374,6 +374,17 @@ def _ensure_opaque_image_bytes(
     return buf.getvalue()
 
 
+def _render_emit_key(ctx: RunContext[ToolContext], task_id: str) -> str:
+    # 群会话 id 人人共享，不能当去重键；无 task 时用本轮 turn_id。
+    if task_id:
+        return task_id
+    extra = ctx.deps.extra
+    turn = extra["turn_id"] if "turn_id" in extra else ""
+    if isinstance(turn, str) and turn:
+        return f"turn:{turn}"
+    return ""
+
+
 def _mark_render_emitted(task_id: str) -> None:
     if not task_id:
         return
@@ -472,8 +483,9 @@ async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str
 
     plan = get_plan_context()
     task_id = plan.task_id if plan is not None else ""
+    emit_key = _render_emit_key(ctx, task_id)
 
-    if task_id and task_id in _RENDER_EMITTED_TASKS:
+    if emit_key and emit_key in _RENDER_EMITTED_TASKS:
         return (
             "⚠️ 本任务已成功出过图，本次未再产出。"
             "请把全部区块合并进**一张**完整 HTML，只调用一次 render_html_to_image；"
@@ -483,8 +495,8 @@ async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str
     # 能力代理 / 子 Agent：禁止直发；优先落盘 image artifact 供主人格发送
     if not ctx.deps.allow_user_outbound:
         handle = await _register_image_artifact(image_bytes)
-        _mark_render_emitted(task_id)
         if handle:
+            _mark_render_emitted(emit_key)
             return _RENDER_OK_HANDLE.format(
                 kb=len(image_bytes) // 1024,
                 handle_part=f"，句柄 `{handle}`",
@@ -493,13 +505,14 @@ async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str
         return image_bytes
 
     if await _try_send_image(ctx, image_bytes):
-        _mark_render_emitted(task_id)
+        _mark_render_emitted(emit_key)
         # 主人格直发时仍尽量登记 artifact，便于追溯
         await _register_image_artifact(image_bytes)
         return _RENDER_OK_SENT.format(kb=len(image_bytes) // 1024)
-    _mark_render_emitted(task_id)
     handle = await _register_image_artifact(image_bytes)
     if handle:
+        # 直发失败但已有句柄，仍算本轮已产出。
+        _mark_render_emitted(emit_key)
         return _RENDER_OK_HANDLE.format(
             kb=len(image_bytes) // 1024,
             handle_part=f"，句柄 `{handle}`",

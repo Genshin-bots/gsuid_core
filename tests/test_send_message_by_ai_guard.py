@@ -195,6 +195,185 @@ def test_nickname_at_becomes_user_id_or_drops() -> None:
     assert "@" not in unknown
 
 
+def test_delivery_wake_ignores_model_user_id() -> None:
+    """回灌轮 C 端 @ 跟 ev.user_id（任务发起人），模型乱填 user_id 无效。"""
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="wake_s", user_id="owner-b")
+    extra: dict[str, object] = {"turn_id": "t_wake", "delivery_wake": True}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("wake_s", "t_wake")
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, text="给你。", user_id="master-a"))
+    assert "消息已发送" in result
+    assert scr.await_count == 1
+    assert scr.await_args is not None
+    assert scr.await_args.kwargs["at_user_id"] == "owner-b"
+    assert extra["at_user_id"] == "owner-b"
+
+
+def test_cross_owner_res_handle_is_refused() -> None:
+    """回灌时不得把 A 的 res_ 发给 B。"""
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.outbound import ResOwner
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="own_s", user_id="user-b")
+    extra: dict[str, object] = {"turn_id": "t_own", "delivery_wake": True}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("own_s", "t_own")
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch(
+            "gsuid_core.ai_core.outbound.lookup_res_owner",
+            new=AsyncMock(return_value=ResOwner(True, "user-a")),
+        ),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, image_id="res_deadbeef01"))
+    assert "其它发起人" in result
+    assert bot.send.await_count == 0
+    assert scr.await_count == 0
+
+
+def test_model_user_id_cannot_take_another_owners_image() -> None:
+    """非回灌轮也只认 ev.user_id。模型把发起人填进 user_id 不能把图发出去。"""
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.outbound import ResOwner
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="bypass_s", user_id="user-b")
+    extra: dict[str, object] = {"turn_id": "t_bypass"}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("bypass_s", "t_bypass")
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch(
+            "gsuid_core.ai_core.outbound.lookup_res_owner",
+            new=AsyncMock(return_value=ResOwner(True, "user-a")),
+        ),
+        patch(
+            "gsuid_core.ai_core.outbound.try_claim_image_delivery",
+            new=AsyncMock(side_effect=AssertionError("refused send must not claim")),
+        ),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, image_id="res_ownedbya01", user_id="user-a"))
+    assert "其它发起人" in result
+    assert bot.send.await_count == 0
+    assert scr.await_count == 0
+
+
+def test_res_image_without_speaker_is_refused() -> None:
+    """当前对话没有说话人时，不能靠模型填的 user_id 把图发出去。"""
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.outbound import ResOwner
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="nospeaker_s", user_id="")
+    extra: dict[str, object] = {"turn_id": "t_nospeaker"}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("nospeaker_s", "t_nospeaker")
+    with (
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch(
+            "gsuid_core.ai_core.outbound.lookup_res_owner",
+            new=AsyncMock(return_value=ResOwner(True, "user-a")),
+        ),
+        patch(
+            "gsuid_core.ai_core.outbound.try_claim_image_delivery",
+            new=AsyncMock(side_effect=AssertionError("refused send must not claim")),
+        ),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, image_id="res_ownedbya02", user_id="user-a"))
+    assert "没有说话人" in result
+    assert bot.send.await_count == 0
+
+
+def test_res_image_without_owner_record_is_refused() -> None:
+    """产物在、发起人记录是空的，不能当成无主图发出去。"""
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.outbound import ResOwner
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="noowner_s", user_id="user-b")
+    extra: dict[str, object] = {"turn_id": "t_noowner"}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("noowner_s", "t_noowner")
+    with (
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch(
+            "gsuid_core.ai_core.outbound.lookup_res_owner",
+            new=AsyncMock(return_value=ResOwner(True, "")),
+        ),
+        patch(
+            "gsuid_core.ai_core.outbound.try_claim_image_delivery",
+            new=AsyncMock(side_effect=AssertionError("refused send must not claim")),
+        ),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, image_id="res_blankowner1"))
+    assert "没有发起人" in result
+    assert bot.send.await_count == 0
+
+
+def test_speaker_can_send_own_res_image() -> None:
+    """当前说话人就是发起人时，图要发出去。"""
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.outbound import ResOwner, ImageClaim
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="ownsend_s", user_id="user-a")
+    extra: dict[str, object] = {"turn_id": "t_ownsend"}
+    ctx = MagicMock()
+    ctx.deps = ToolContext(bot=bot, ev=ev, extra=extra, parent_session_id=None)
+    ms.clear_turn_send_throttle("ownsend_s", "t_ownsend")
+    with (
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch(
+            "gsuid_core.ai_core.outbound.lookup_res_owner",
+            new=AsyncMock(return_value=ResOwner(True, "user-a")),
+        ),
+        patch(
+            "gsuid_core.ai_core.outbound.try_claim_image_delivery",
+            new=AsyncMock(return_value=ImageClaim(occupied=True, refuse=None)),
+        ),
+        patch(
+            "gsuid_core.ai_core.buildin_tools.message_sender._resolve_kanban_artifact",
+            new=AsyncMock(return_value=b"png-bytes"),
+        ),
+        patch(
+            "gsuid_core.ai_core.buildin_tools.message_sender.RM.register",
+            return_value="img_testowned",
+        ),
+        patch("gsuid_core.ai_core.outbound.record_outbound", new=AsyncMock()),
+        patch("gsuid_core.ai_core.outbound.write_decision_memo", new=AsyncMock()),
+    ):
+        result = _run(ms.send_message_by_ai(ctx, image_id="res_ownedbya03", user_id="user-b"))
+    assert "消息已发送" in result
+    assert bot.send.await_count == 1
+
+
 def test_at_digits_become_at_segment() -> None:
     from gsuid_core.ai_core.utils import _parse_at_segments
 

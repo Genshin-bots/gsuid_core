@@ -57,3 +57,25 @@ def reset_plan_context(token: contextvars.Token) -> None:
 def get_plan_context() -> Optional[PlanRunContext]:
     """读取当前绑定的任务上下文（无绑定时返回 None）。"""
     return _current_plan.get()
+
+
+# 回灌按任务根计数。真实 id 只留在上下文里，不写进模型可见文本。
+_delivery_root_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_delivery_wake_root_id",
+    default="",
+)
+
+
+def bind_delivery_root(root_id: str) -> contextvars.Token[str]:
+    """回灌主 session 期间绑定任务根，供嵌套委派计数。"""
+    return _delivery_root_id.set(root_id)
+
+
+def reset_delivery_root(token: contextvars.Token[str]) -> None:
+    """复原回灌任务根绑定。"""
+    _delivery_root_id.reset(token)
+
+
+def current_delivery_root_id() -> str:
+    """当前回灌帧的任务根；不在回灌里时是空串。"""
+    return _delivery_root_id.get()

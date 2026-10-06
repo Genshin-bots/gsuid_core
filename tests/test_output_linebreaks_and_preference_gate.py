@@ -25,12 +25,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import (
     _strip_resource_handles,
     _normalize_html_linebreaks,
     _should_render_markdown_image,
     _resolve_and_deliver_leaked_handles,
 )
+from gsuid_core.ai_core.outbound import ImageClaim
 
 # ── 一、<br> 归一化 ────────────────────────────────────────────────
 
@@ -242,8 +244,13 @@ class _FakeBot:
     def __init__(self) -> None:
         self.sent: list = []
 
-    async def send(self, msg, extra_metadata=None) -> None:  # noqa: ANN001
-        self.sent.append(msg)
+    async def send(
+        self,
+        message: object,
+        *,
+        extra_metadata: object = None,
+    ) -> None:
+        self.sent.append(message)
 
 
 class _FakeArtifact:
@@ -283,27 +290,231 @@ def test_long_relayed_text_only_strips_no_redelivery(monkeypatch) -> None:
     mock.assert_not_called()  # 长正文压根不去解析
 
 
+def _speaker_ev(user_id: str) -> Event:
+    return Event(
+        bot_id="onebot",
+        bot_self_id="1",
+        msg_id="m-leak",
+        user_type="group",
+        group_id="g-leak",
+        user_id=user_id,
+    )
+
+
+def _patch_owner(monkeypatch: pytest.MonkeyPatch, owner_user_id: str) -> None:
+    from gsuid_core.ai_core.outbound import ResOwner
+
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.outbound.lookup_res_owner",
+        AsyncMock(return_value=ResOwner(True, owner_user_id)),
+    )
+
+
 def test_lazy_pointer_to_image_artifact_delivers_image(monkeypatch, tmp_path) -> None:
-    """短指路 + 图片 artifact → 把图发出去，剩下的短句成为图注（不再是断链引用）。"""
-    from typing import Any
+    """短指路 + 当前说话人自己的图片 artifact → 把图发出去。"""
+    from gsuid_core.ai_core.outbound import ImageClaim, reset_run_image_delivered
 
     img = tmp_path / "report.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
     _patch_artifact(monkeypatch, _FakeArtifact(payload_path=str(img), mime="image/png"))
-    bot: Any = _FakeBot()
-    out = asyncio.run(_resolve_and_deliver_leaked_handles("都画好了 res_deadbeef01 自己看吧", bot))
+    _patch_owner(monkeypatch, "user-owner")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.outbound.try_claim_image_delivery",
+        AsyncMock(return_value=ImageClaim(occupied=True, refuse=None)),
+    )
+    bot = _FakeBot()
+
+    async def _go() -> str:
+        reset_run_image_delivered()
+        return await _resolve_and_deliver_leaked_handles(
+            "都画好了 res_deadbeef01 自己看吧",
+            bot,
+            ev=_speaker_ev("user-owner"),
+        )
+
+    out = asyncio.run(_go())
     assert "res_deadbeef01" not in out
     assert len(bot.sent) == 1 and getattr(bot.sent[0], "type", None) == "image", "应把图片补发出去"
 
 
 def test_lazy_pointer_to_text_artifact_inlines_content(monkeypatch) -> None:
-    """短指路 + 纯文本 artifact → 把内容并进正文（走后续管线出图），让'自己看'有实物。"""
-    from typing import Any
-
+    """短指路 + 纯文本 artifact → 把内容并进正文，且不占图片发送位。"""
     report = "示例股 600000 分析：昨收 12.50，离 13.00 仅 4%，三个超买信号亮起，13.00 是布林上轨压力位。"
     _patch_artifact(monkeypatch, _FakeArtifact(payload_inline=report))
-    bot: Any = _FakeBot()
-    out = asyncio.run(_resolve_and_deliver_leaked_handles("详细的放那里面了 res_cafe1234 自己看吧", bot))
+    _patch_owner(monkeypatch, "user-owner")
+    claim = AsyncMock(side_effect=AssertionError("text artifact must not claim"))
+    monkeypatch.setattr("gsuid_core.ai_core.outbound.try_claim_image_delivery", claim)
+    bot = _FakeBot()
+    out = asyncio.run(
+        _resolve_and_deliver_leaked_handles(
+            "详细的放那里面了 res_cafe1234 自己看吧",
+            bot,
+            ev=_speaker_ev("user-owner"),
+        )
+    )
     assert "res_cafe1234" not in out
     assert report in out, "文本 artifact 内容应并进正文"
-    assert bot.sent == []  # 文本 artifact 不作为图片补发
+    assert bot.sent == []
+    claim.assert_not_called()
+
+
+class _MemLedger:
+    def __init__(self) -> None:
+        self.held: set[str] = set()
+
+    async def claim(self, ev: object, image_id: str, *, session_id: str) -> ImageClaim:
+        if image_id in self.held:
+            return ImageClaim(occupied=False, refuse="dup")
+        self.held.add(image_id)
+        return ImageClaim(occupied=True, refuse=None)
+
+    async def release(self, ev: object, image_id: str) -> None:
+        self.held.discard(image_id)
+
+
+class _RaisingBot(_FakeBot):
+    async def send(
+        self,
+        message: object,
+        *,
+        extra_metadata: object = None,
+    ) -> None:
+        raise RuntimeError("send down")
+
+
+def test_leaked_image_send_failure_releases_claim(monkeypatch, tmp_path) -> None:
+    """图已读出但发送失败时释放占位，下一次仍能发出。"""
+    from gsuid_core.ai_core.outbound import take_run_image_delivered, reset_run_image_delivered
+    from gsuid_core.ai_core.agent_run.state import RunOnceState
+    from gsuid_core.ai_core.agent_run.support import absorb_run_image_delivered
+
+    img = tmp_path / "report.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+    _patch_artifact(monkeypatch, _FakeArtifact(payload_path=str(img), mime="image/png"))
+    _patch_owner(monkeypatch, "user-owner")
+    ledger = _MemLedger()
+    monkeypatch.setattr("gsuid_core.ai_core.outbound.try_claim_image_delivery", ledger.claim)
+    monkeypatch.setattr("gsuid_core.ai_core.outbound.release_image_delivery", ledger.release)
+    text = "都画好了 res_deadbeef01 自己看吧"
+    ev = _speaker_ev("user-owner")
+
+    async def _go() -> tuple[bool, int, bool, bool, str]:
+        reset_run_image_delivered()
+        await _resolve_and_deliver_leaked_handles(text, _RaisingBot(), ev=ev)
+        failed_noted = take_run_image_delivered()
+        ok = _FakeBot()
+        await _resolve_and_deliver_leaked_handles(text, ok, ev=ev)
+        st = RunOnceState(
+            user_message="",
+            bot=None,
+            ev=ev,
+            rag_context=None,
+            tools=[],
+            return_mode="by_bot",
+            output_type=None,
+            intent=None,
+            has_active_task=False,
+            budget_gate=False,
+            suppress_intermediate_text=False,
+            fake_done_retry=False,
+            turn_graph=None,
+            cheap_gate=None,
+            is_framework_injection=False,
+        )
+        st.speech_policy = "silence_only"
+        st.pending_async_delivery = True
+        st.fw_msg = True
+        absorb_run_image_delivered(st)
+        return (
+            failed_noted,
+            len(ok.sent),
+            st.image_sent_this_run,
+            st.pending_async_delivery,
+            st.speech_policy,
+        )
+
+    failed_noted, sent_n, image_sent, pending, policy = asyncio.run(_go())
+    assert failed_noted is False
+    assert ledger.held == {"res_deadbeef01"}
+    assert sent_n == 1
+    assert image_sent is True
+    assert pending is False
+    assert policy == "framework_deliver"
+
+
+def test_leaked_img_send_notes_image_delivered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """img_ 补发成功记入本轮已出图；发送失败不记。"""
+    from gsuid_core.ai_core.outbound import take_run_image_delivered, reset_run_image_delivered
+
+    monkeypatch.setattr(
+        "gsuid_core.utils.resource_manager.RM.get",
+        AsyncMock(return_value=b"png-bytes"),
+    )
+    text = "图在 img_00ff8821 里"
+
+    async def _go() -> tuple[bool, int, bool, str]:
+        reset_run_image_delivered()
+        await _resolve_and_deliver_leaked_handles(text, _RaisingBot())
+        failed_noted = take_run_image_delivered()
+        reset_run_image_delivered()
+        ok = _FakeBot()
+        out = await _resolve_and_deliver_leaked_handles(text, ok)
+        return failed_noted, len(ok.sent), take_run_image_delivered(), out
+
+    failed_noted, sent_n, noted, out = asyncio.run(_go())
+    assert failed_noted is False
+    assert sent_n == 1
+    assert noted is True
+    assert "img_" not in out
+
+
+def test_leaked_res_of_other_owner_is_not_sent(monkeypatch, tmp_path) -> None:
+    """泄漏正文里别人的 res_ 只抹句柄，不发图、不占位。"""
+    img = tmp_path / "report.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+    _patch_artifact(monkeypatch, _FakeArtifact(payload_path=str(img), mime="image/png"))
+    _patch_owner(monkeypatch, "user-a")
+    claim = AsyncMock(side_effect=AssertionError("other owner must not claim"))
+    monkeypatch.setattr("gsuid_core.ai_core.outbound.try_claim_image_delivery", claim)
+    bot = _FakeBot()
+    out = asyncio.run(
+        _resolve_and_deliver_leaked_handles(
+            "都画好了 res_deadbeef01 自己看吧",
+            bot,
+            ev=_speaker_ev("user-b"),
+        )
+    )
+    assert "res_" not in out
+    assert bot.sent == []
+    claim.assert_not_called()
+
+
+def test_leaked_res_without_owner_or_speaker_is_not_sent(monkeypatch, tmp_path) -> None:
+    """没有发起人记录、或当前没有说话人时，泄漏句柄不能把图补发出去。"""
+    img = tmp_path / "report.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+    _patch_artifact(monkeypatch, _FakeArtifact(payload_path=str(img), mime="image/png"))
+    claim = AsyncMock(side_effect=AssertionError("unowned image must not claim"))
+    monkeypatch.setattr("gsuid_core.ai_core.outbound.try_claim_image_delivery", claim)
+    bot = _FakeBot()
+    _patch_owner(monkeypatch, "")
+    blank_owner = asyncio.run(
+        _resolve_and_deliver_leaked_handles(
+            "都画好了 res_deadbeef01 自己看吧",
+            bot,
+            ev=_speaker_ev("user-b"),
+        )
+    )
+    assert bot.sent == []
+    assert "res_" not in blank_owner
+    _patch_owner(monkeypatch, "user-a")
+    no_speaker = asyncio.run(
+        _resolve_and_deliver_leaked_handles(
+            "都画好了 res_deadbeef01 自己看吧",
+            bot,
+            ev=_speaker_ev(""),
+        )
+    )
+    assert bot.sent == []
+    assert "res_" not in no_speaker
+    claim.assert_not_called()

@@ -202,7 +202,7 @@ async def handle_ai_chat(
         return
 
     async with _ai_semaphore:
-        if stale_request(enqueue_ts, STALE_CHAT_REQUEST_TTL):
+        if stale_request(enqueue_ts, STALE_CHAT_REQUEST_TTL, event=event):
             return
         try:
             await run_passive_interactive_chat(

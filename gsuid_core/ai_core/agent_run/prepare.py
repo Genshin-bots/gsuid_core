@@ -145,6 +145,9 @@ class PreparePhase(RunOnceHost):
         st.status_inquiry = False
         st.pending_async_delivery = False
         st.image_sent_this_run = False
+        from gsuid_core.ai_core.outbound import reset_run_image_delivered
+
+        reset_run_image_delivered()
         st.has_status_tool_call = False
         st.presentation_mismatch = False
         st.presentation_withheld = []
@@ -240,6 +243,8 @@ class PreparePhase(RunOnceHost):
         # 只锁框架回灌。真人消息里出现这四个字不算交付轮。
         if st.speech_policy == "framework_deliver" or (st.fw_msg and "交付回灌" in _probe_for_policy):
             st.run_extra["delivery_wake"] = True
+            if "主图：`" in _probe_for_policy:
+                st.run_extra["delivery_has_image"] = True
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
         st.context = ToolContext(
             bot=st.bot,

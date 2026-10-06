@@ -626,6 +626,7 @@
   "log.ai.outbound_read_skip": "[Outbound] skip ledger read: {e}",
   "log.ai.outbound_purge_skip": "[Outbound] skip expiry purge: {e}",
   "log.ai.delivery_ledger_duplicate": "[DeliveryLedger] refuse duplicate image {res_id} group={group_id} sent at {ts}",
+  "log.ai.delivery_owner_mismatch": "[Delivery] refuse cross-owner image {res_id} owner={owner} target={target}",
   "log.ai.tool_risk_refused_node": "[ToolRisk] refused non-master capability node node={node_id} user={user_id}",
   "log.ai.tool_risk_refused_tool": "[ToolRisk] refused non-master high-risk tool user={user_id}",
   "log.ai.tool_risk_master_exec_file": "[ToolRisk] master executed file user={user_id} path={path}",

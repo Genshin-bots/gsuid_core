@@ -1626,9 +1626,8 @@ class GsCoreAIAgent(RunOnceMixin):
             output_type: 当指定为某个 Pydantic 模型类时，利用 pydantic_ai 的
                 output_type 特性，要求模型必须返回符合该模型结构的 JSON。
                 此时返回值为该 Pydantic 模型实例而非字符串。
-            enqueue_ts: 本次请求入队时间戳（O-A）。交互式主对话在 _run_lock 上排队过久
-                （> STALE_CHAT_REQUEST_TTL）则视为"过期请求"丢弃，避免对早已结束的话题
-                突兀回复。仅对 create_by=="Chat" 生效。
+            enqueue_ts: 本次请求入队时间戳（O-A）。私聊 Chat 在 _run_lock 上排队过久
+                （> STALE_CHAT_REQUEST_TTL）则丢弃。群/频道不丢。框架回灌不受 TTL。
             has_active_task: 是否存在需即时介入的 Kanban 任务，透传给状态驱动工具池（L2），
                 决定是否把"长期任务编排 + 产物"能力族补进工具列表。
             intent: 本轮意图标签（闲聊/工具/问答）。仅影响「连续无工具强制提醒」豁免与
@@ -1702,15 +1701,15 @@ class GsCoreAIAgent(RunOnceMixin):
         is_framework_injection: bool,
     ) -> Union[str, Any]:
         """已持锁：TTL 校验 + provider 路由 + 真正执行。"""
-        # O-A：队头阻塞过久丢弃（框架回灌不受 TTL）
-        if (
-            not is_framework_injection
-            and enqueue_ts is not None
-            and self.create_by == "Chat"
-            and (time.time() - enqueue_ts) > STALE_CHAT_REQUEST_TTL
+        from gsuid_core.ai_core.turn_pipeline import stale_request
+
+        # O-A：私聊队头过久丢弃；群/频道与框架回灌走 stale_request 统一策略。
+        if self.create_by == "Chat" and stale_request(
+            enqueue_ts,
+            STALE_CHAT_REQUEST_TTL,
+            event=ev,
+            is_framework_injection=is_framework_injection,
         ):
-            waited = time.time() - enqueue_ts
-            logger.info(i18n_t("log.agent.queue_wait_waited_exceeded", waited=waited))
             return "" if output_type is None else None
         await self.refresh_model_if_changed()
 

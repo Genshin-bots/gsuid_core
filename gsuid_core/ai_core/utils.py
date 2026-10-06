@@ -12,6 +12,7 @@ from typing import (
     Tuple,
     Union,
     Literal,
+    Mapping,
     Callable,
     Optional,
     Protocol,
@@ -368,10 +369,20 @@ def _markdown_dark_css_path() -> str:
     return str(Path(__file__).resolve().parent.parent / "utils" / "html_render" / "markdown_dark.css")
 
 
+class _LeakedHandleSender(Protocol):
+    async def send(
+        self,
+        message: Union[Message, List[Message], str, bytes, List[str]],
+        *,
+        extra_metadata: Optional[Mapping[str, object]] = None,
+    ) -> Optional[List[str]]: ...
+
+
 async def _resolve_and_deliver_leaked_handles(
     text: str,
-    bot: Bot,
-    extra_metadata: Optional[Dict[str, Any]] = None,
+    bot: _LeakedHandleSender,
+    extra_metadata: Optional[Mapping[str, object]] = None,
+    ev: Event | None = None,
 ) -> str:
     """处理泄漏进正文的资源句柄：尽量把它**指向的真实资源交付出去**，而不是简单删掉句柄
     留下"详细的放那里面了 …… 自己看吧"这种指向空气的破碎引用——那样对用户反而更莫名其妙
@@ -409,21 +420,56 @@ async def _resolve_and_deliver_leaked_handles(
     for h in handles:
         try:
             if h.startswith("res_"):
+                from gsuid_core.ai_core.outbound import (
+                    lookup_res_owner,
+                    speaker_may_take_res,
+                    release_image_delivery,
+                    note_run_image_delivered,
+                    try_claim_image_delivery,
+                )
                 from gsuid_core.ai_core.planning.models import AIAgentArtifact
 
                 art = await AIAgentArtifact.get_by_id(h)
                 if art is None:
                     continue
+                speaker = str(ev.user_id) if ev is not None and ev.user_id else ""
+                looked = await lookup_res_owner(h)
+                if not speaker_may_take_res(looked, speaker):
+                    logger.warning(
+                        i18n_t(
+                            "log.ai.delivery_owner_mismatch",
+                            res_id=h,
+                            owner=looked.owner_user_id,
+                            target=speaker,
+                        )
+                    )
+                    continue
                 if art.payload_path and (art.mime or "").startswith("image/"):
+                    # 先确认是这张图、再占位；发送失败要释放，避免 7 天内无法重发。
                     image_data = await asyncio.to_thread(_read_image_artifact_bytes, art.payload_path)
-                    if image_data is not None:
+                    if image_data is None:
+                        continue
+                    sid = str(ev.session_id) if ev is not None and ev.session_id else ""
+                    claim = await try_claim_image_delivery(ev, h, session_id=sid)
+                    if claim.refuse is not None:
+                        continue
+                    try:
                         await bot.send(MessageSegment.image(image_data), extra_metadata=extra_metadata)
-                        logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
+                    except Exception as send_err:
+                        logger.debug(i18n_t("log.ai.send_leaked_handle_could_not", h=h, e=send_err))
+                        if claim.occupied:
+                            await release_image_delivery(ev, h)
+                        continue
+                    note_run_image_delivered()
+                    logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
                 elif art.payload_inline and art.payload_inline.strip():
                     inline_texts.append(art.payload_inline.strip())
                 # 非图片落盘文件：不当图片发（会坏），仅抹句柄
             elif h.startswith("img_"):
+                from gsuid_core.ai_core.outbound import note_run_image_delivered
+
                 await bot.send(MessageSegment.image(await RM.get(h)), extra_metadata=extra_metadata)
+                note_run_image_delivered()
                 logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
             # aud_/vid_：极少见于泄漏，仅抹句柄不补发（避免过度耦合）
         except Exception as e:
@@ -1499,7 +1545,7 @@ async def send_chat_result(
     text = _strip_special_control_tokens(text)
     # 泄漏进正文的资源句柄（res_/img_ 等）：尽量补发所指资源、否则抹除（详见函数）。
     # 放在拆条/出图之前，让文本与出图两条路径都拿到干净正文。
-    text = await _resolve_and_deliver_leaked_handles(text, bot, extra_metadata)
+    text = await _resolve_and_deliver_leaked_handles(text, bot, extra_metadata, ev=ev)
     # 两通道分离（§1）：数据形态进制品图，剩余才是角色台词。不认包装格式名。
     text, report_blocks = _split_speech_and_artifacts(text)
 

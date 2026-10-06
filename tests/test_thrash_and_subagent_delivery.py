@@ -147,17 +147,17 @@ def test_correction_pass_repoints_host_tool_calls_to_parent() -> None:
     assert agent._last_attempt_tool_calls is st.tool_call_list
 
 
-def test_inline_wait_is_enabled_by_default() -> None:
-    """生产委派必须给有界内联等待，否则本轮必然拿不到结论。
+def test_production_delegation_does_not_inline_wait() -> None:
+    """群聊委派不得占主 session 锁等待子代理；结论只走框架回灌。"""
+    from gsuid_core.ai_core.buildin_tools.subagent import (
+        _KANBAN_TEST_WAIT_TIMEOUT_SEC,
+        _kanban_wait_sec,
+    )
 
-    历史上生产写死 ``wait_sec = 0.0``（只有 TEST 路径等），派出去立刻回「后台执行中」，
-    模型这一轮只能输出 <SILENCE>。契约又同时提供「换 query 再搜」这条本轮内就有结果的
-    便宜路，于是委派永远排在最后——不是模型不想，是本轮委派没有收益。
-    设 0 可显式退回「派完就走」。
-    """
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    assert float(ai_config.get_config("subagent_inline_wait_sec").data) > 0
+    assert _kanban_wait_sec("Chat") == 0.0
+    assert _kanban_wait_sec("Agent") == 0.0
+    assert _kanban_wait_sec("") == 0.0
+    assert _kanban_wait_sec("TEST") == _KANBAN_TEST_WAIT_TIMEOUT_SEC
 
 
 def test_post_tool_contract_does_not_rival_delegation_with_research() -> None:

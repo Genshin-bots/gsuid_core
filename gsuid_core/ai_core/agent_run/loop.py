@@ -58,6 +58,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _wall_clock_nudge_for,
     record_run_tool_output,
     _tool_return_looks_failed,
+    absorb_run_image_delivered,
     _tool_return_is_async_pending,
     _tool_call_targets_render_agent,
     _tool_return_is_effectual_write,
@@ -311,6 +312,7 @@ class LoopPhase(RunOnceHost):
             mention_names=_mentions,
             extra_metadata=turn_reply_metadata(st.ev),
         )
+        absorb_run_image_delivered(st)
         self._run_sent_texts.add(text)
         st.main_channel_sends += 1
 
@@ -367,6 +369,16 @@ class LoopPhase(RunOnceHost):
         self._session_logger.log_task_ack(phrase, source="persona_setting")
         st.wait_comfort_sent = True
         return True
+
+    def _apply_send_message_return(self, st: RunOnceState) -> None:
+        """仅在 send_message_by_ai 真正发出图片后置位，拒发不得跳过 settle 补发。"""
+        extra = _require_context(st).extra
+        if "image_sent_this_run" not in extra or extra["image_sent_this_run"] is not True:
+            return
+        st.image_sent_this_run = True
+        st.pending_async_delivery = False
+        if st.speech_policy == "silence_only":
+            st.speech_policy = "framework_deliver" if st.fw_msg else "free"
 
     def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
@@ -653,11 +665,15 @@ class LoopPhase(RunOnceHost):
                         # create_subagent：完成/异步 ack 确认在途；失败回滚抢先静默
                         if (part.tool_name or "") == "create_subagent":
                             self._apply_create_subagent_return(st, part, part.content)
+                        if (part.tool_name or "") == "send_message_by_ai":
+                            self._apply_send_message_return(st)
                 elif type(part) is ToolReturnPart and (part.tool_name or "") == "create_subagent":
                     _body_raw = (
                         _raw_tr if isinstance(_raw_tr, str) else (part.content if isinstance(part.content, str) else "")
                     )
                     self._apply_create_subagent_return(st, part, _body_raw)
+                elif type(part) is ToolReturnPart and (part.tool_name or "") == "send_message_by_ai":
+                    self._apply_send_message_return(st)
 
                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
                 tool_result_str = str(part.content)
@@ -910,12 +926,6 @@ class LoopPhase(RunOnceHost):
                 if is_status_tool_name(part.tool_name):
                     st.has_status_tool_call = True
                     _require_context(st).extra["has_status_tool"] = True
-                if part.tool_name == "send_message_by_ai":
-                    st.image_sent_this_run = True
-                    # 发图后解除异步静默，允许一句角色收尾（步骤 7）
-                    st.pending_async_delivery = False
-                    if st.speech_policy == "silence_only":
-                        st.speech_policy = "framework_deliver" if st.fw_msg else "free"
                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
                 self._emit_trace("tool", f"{part.tool_name}|{part.args_as_json_str()}")
 
@@ -1110,6 +1120,7 @@ class LoopPhase(RunOnceHost):
                                     ooc_check=False,
                                     extra_metadata=turn_reply_metadata(st.ev),
                                 )
+                                absorb_run_image_delivered(st)
                                 self._run_sent_texts.add(_fb)
                                 st.main_channel_sends += 1
                                 _fb_sent = True

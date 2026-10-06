@@ -204,7 +204,7 @@ class CaptureBot(Bot):
         self,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
-        extra_metadata: Optional[Dict[str, object]] = None,
+        extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
         await self._record_history(message, extra_metadata)

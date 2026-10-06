@@ -56,6 +56,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _claims_deferred_work,
     _correction_nudge_markers,
     _looks_like_report_speech,
+    absorb_run_image_delivered,
     usage_limit_return_payload,
     _claims_missing_offered_tool,
 )
@@ -104,6 +105,7 @@ async def _deliver_withheld(st: RunOnceState, sent: set[str]) -> None:
         if st.bot is None:
             return
         await send_chat_result(st.bot, body, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+        absorb_run_image_delivered(st)
         sent.add(body)
         return
 
@@ -447,6 +449,7 @@ class SettlePhase(RunOnceHost):
         statistics_manager: Any,
     ) -> Any:
         """iter 成功路径：history / 闸门 / token / 假完成 / OOC / return。"""
+        absorb_run_image_delivered(st)
         # 遍历完成后，直接从 agent_run 中获取最终结果
         result = agent_run.result
         if result:
@@ -621,6 +624,7 @@ class SettlePhase(RunOnceHost):
                             logger.warning(i18n_t("log.agent.fakedone_bot_object_unavailable"))
                             continue
                         await send_chat_result(st.bot, _bt, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+                        absorb_run_image_delivered(st)
                         self._run_sent_texts.add(_bt)
                     except Exception as _se:
                         logger.debug(i18n_t("log.agent.fakedone_se", _se=_se))
@@ -811,6 +815,7 @@ class SettlePhase(RunOnceHost):
                         at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
                         extra_metadata=turn_reply_metadata(st.ev),
                     )
+                    absorb_run_image_delivered(st)
                     self._run_sent_texts.add(result_msg.strip())
 
             elif (
@@ -849,6 +854,7 @@ class SettlePhase(RunOnceHost):
                         at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
                         extra_metadata=turn_reply_metadata(st.ev),
                     )
+                    absorb_run_image_delivered(st)
                     self._run_sent_texts.add(result_msg.strip())
 
             _voice_reason = _voice_block_reason(st, result_msg)
@@ -886,6 +892,7 @@ class SettlePhase(RunOnceHost):
                     and st.return_mode in ("always", "by_bot")
                 ):
                     await send_chat_result(st.bot, result_msg, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+                    absorb_run_image_delivered(st)
                     self._run_sent_texts.add(result_msg.strip())
                     if st.main_channel_sends == 0:
                         st.main_channel_sends = 1
@@ -1140,6 +1147,7 @@ class SettlePhase(RunOnceHost):
 
         if st.bot:
             await send_chat_result(st.bot, fallback_result.output, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+            absorb_run_image_delivered(st)
         return ""
 
     def _no_material_reply_expected(self, st: RunOnceState) -> bool:
@@ -1190,6 +1198,7 @@ class SettlePhase(RunOnceHost):
         self._session_logger.log_result(text, st.tool_call_list)
         if st.bot:
             await send_chat_result(st.bot, text, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
+            absorb_run_image_delivered(st)
         return ""
 
     def _remember_outbound_on_silence(self, st: RunOnceState, result_msg: str) -> None:
