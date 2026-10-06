@@ -1,7 +1,6 @@
-"""探针 4：证明 issue #284 背后真正可复现的缺陷 —— gss.disconnect 只按 bot_id 认人。
+"""探针 4：同一 bot_id 先连上新套接字、再关掉旧套接字时，新连接应保持可用。
 
-旧连接的收尾会把「重连后新建的那条连接」一起拆掉。
-对照组 = 先关旧再连新；实验组 = 先连新再关旧（适配器重连的真实顺序）。
+对照组先关旧连接，再连新连接。实验组先连新连接，再关旧连接。
 """
 
 import sys
@@ -53,7 +52,7 @@ async def make_endpoint(app: FastAPI) -> None:
                 except asyncio.CancelledError:
                     pass
                 finally:
-                    await gss.disconnect(bot_id)
+                    await gss.disconnect(bot_id, websocket)
 
             async def process():
                 await bot._process(None)
@@ -71,7 +70,7 @@ async def make_endpoint(app: FastAPI) -> None:
                 if isinstance(_r, BaseException) and not isinstance(_r, asyncio.CancelledError):
                     raise _r
         finally:
-            await gss.disconnect(bot_id)
+            await gss.disconnect(bot_id, websocket)
 
 
 async def alive(conn) -> bool:

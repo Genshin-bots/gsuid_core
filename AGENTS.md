@@ -145,7 +145,12 @@ uv run core --port 8765
 > **小修小补不进更新日志。** 上面右列的改动不用写条目——写满了反而没人看。拿不准就问自己「使用者能感知到这个变化吗」，感知不到就不写。
 
 - **写了怎么写** 按 [human-talk](.agents/skills/human-talk/SKILL.md) 的受控中文：一句话一件事、写清执行者、不用「优化 / 完善 / 若干 / 显著」这类空词（要写就写具体对象或数字）、数字必须带条件。
-- **必须带证据** 每条附 commit 链接，格式：``[`短号`](https://github.com/Genshin-bots/gsuid_core/commit/短号)``。链接要能打开。
+- **链接格式** ``[`短号`](https://github.com/Genshin-bots/gsuid_core/commit/短号)``，链接要能打开。
+- **链接可以先欠着** 改完就写条目，别等提交。commit 短号拿到之前，条目末尾可以不挂链接——先落地比先提交更常见。
+- **每次动 `changelogs/` 都要回填** 把目标 `<版本>.md` 里**所有没有链接的条目**逐条查一遍（`grep '^- ' changelogs/<版本>.md | grep -v 'commit/'`）：对应改动**已经提交**的，用 `git log --oneline -S'<改动关键词>'` 找到短号补上；**还没提交**的原样留着，别编链接。条目先落地、链接滚动补齐。
+
+> **别写占位符。** `core更新记录` 卡片只把 commit 链接本身剥掉（`core_update_history/changelog.py` 的 `_plain`），`[待补]`、`<待补>`、HTML 注释都会原样显示给用户。**「没有链接」本身就是待回填的标记**，不需要额外写东西。
+
 - **emoji** 沿用仓库自己的 commit emoji 约定（`✨` 新增 / `🐛` 修复 / `🎨` 调整 / `⚡` 性能 / `💥` 破坏性 / `🔒` 安全 …），清单见 `changelogs/CHANGELOG.md`。
 - **新版本** 在 `pyproject.toml` 升 `version` 时，同步新建 `changelogs/<新版本>.md`，并在 `CHANGELOG.md` 索引表加一行。已发布版本的文件**只增不改**（历史记录不是当前状态的说明书）；确实写错了可以改，但要在新版本条目里说明。
 

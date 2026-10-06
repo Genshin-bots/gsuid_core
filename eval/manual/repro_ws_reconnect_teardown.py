@@ -64,7 +64,7 @@ async def make_endpoint(app: FastAPI) -> None:
                 except asyncio.CancelledError:
                     pass
                 finally:
-                    await gss.disconnect(bot_id)
+                    await gss.disconnect(bot_id, websocket)
 
             async def process():
                 await bot._process(None)
@@ -85,7 +85,7 @@ async def make_endpoint(app: FastAPI) -> None:
             ESCAPES.append((type(exc).__name__, f"{exc}"))
             raise
         finally:
-            await gss.disconnect(bot_id)
+            await gss.disconnect(bot_id, websocket)
 
 
 def snapshot() -> dict[str, object]:
@@ -137,7 +137,7 @@ async def main() -> None:
     gss.active_ws.clear()
     gss.active_bot.clear()
 
-    # S2 关键场景：新连接先建立，旧连接再断开（旧连接的收尾按 bot_id 拆新连接）
+    # S2：新连接先建立，旧连接再断开。旧收尾不得拆掉新连接。
     async def s2():
         old = await connect(url)
         await old.send(b"{}")
@@ -146,7 +146,7 @@ async def main() -> None:
         await new.send(b"{}")
         await asyncio.sleep(0.3)
         print(f"  [reconnect done] active_ws==new? {gss.active_ws.get(BOT_ID) is new}")
-        await old.close()  # 旧连接这时才断，触发它的 finally -> gss.disconnect(bot_id)
+        await old.close()  # 旧连接这时才断，finally 调用 disconnect(bot_id, websocket)
         await asyncio.sleep(1.0)
         try:
             await asyncio.wait_for(new.recv(), timeout=1.5)

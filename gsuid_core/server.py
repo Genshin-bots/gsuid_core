@@ -645,84 +645,106 @@ class GsServer:
             logger.exception(e)
         return bot
 
-    async def disconnect(self, bot_id: str):
-        """断开 Bot 连接并清理相关资源。
+    async def disconnect(self, bot_id: str, websocket: Optional[WebSocket] = None) -> None:
+        """关闭这条连接，并保留 _Bot 供 5 分钟内重连。
 
-        修复要点：
-        1. 取消 _send_task，防止孤儿协程持续占用内存
-        2. 清理 Bot.instances / mutiply_instances / mutiply_map 中属于该 bot_id 的条目
-        3. 保留 Bot 实例在 active_bot 中，以便重连时复用（避免消息丢失）
+        websocket 是这次收尾的套接字。active_ws 已是另一条连接时直接返回。
+        close() 返回后，只删除仍指向该套接字的登记。
         """
-        if bot_id not in self.active_ws and bot_id not in self.active_bot:
-            # 已经断开过了，幂等返回
+
+        target: Optional[WebSocket] = None
+
+        def still_ours(candidate: _Bot) -> bool:
+            if self.active_bot.get(bot_id) is not candidate:
+                return False
+            current = self.active_ws.get(bot_id)
+            owned = websocket if websocket is not None else target
+            if current is not None and owned is not None and current is not owned:
+                return False
+            if owned is None:
+                return True
+            live = candidate.bot
+            return live is None or live is owned
+
+        registered = self.active_ws.get(bot_id)
+        if websocket is not None and registered is not None and registered is not websocket:
+            # 新套接字已登记。这次收尾只属于传入的那条连接。
             return
 
-        # ws 已移除且实例已标记断连(保留等待重连)时, 重复调用幂等返回, 避免重复清理与告警
+        if bot_id not in self.active_ws and bot_id not in self.active_bot:
+            return
+
         if bot_id not in self.active_ws:
-            _retained = self.active_bot.get(bot_id)
-            if _retained is not None and getattr(_retained, "_disconnected_at", None) is not None:
+            retained = self.active_bot.get(bot_id)
+            if retained is None:
+                return
+            if retained._disconnected_at is not None or not still_ours(retained):
                 return
 
         from gsuid_core.bot import Bot
 
-        if bot_id in self.active_ws:
+        target = self.active_ws.get(bot_id)
+        if target is not None and (websocket is None or target is websocket):
             try:
-                await self.active_ws[bot_id].close(code=1001)
+                await target.close(code=1001)
             except Exception:
                 pass
-            del self.active_ws[bot_id]
+            # close() 会让出事件循环。期间换上的新登记必须留下。
+            if self.active_ws.get(bot_id) is target:
+                del self.active_ws[bot_id]
 
-        if bot_id in self.active_bot:
-            bot = self.active_bot[bot_id]
+        bot = self.active_bot.get(bot_id)
+        if bot is None:
+            logger.warning(t("log.server.bot_disconnect_keep", bot_id=bot_id))
+            return
+        if not still_ours(bot):
+            return
 
-            # 1. 取消发送 worker，防止孤儿 Task
-            if bot._send_task and not bot._send_task.done():
-                bot._send_task.cancel()
-                try:
-                    await bot._send_task
-                except asyncio.CancelledError:
-                    pass
-            bot._send_task = None
-            bot.bot = None  # 标记 ws 已断开，send_worker 重启前不会发送
-            bot._disconnected_at = time.time()
+        if bot._send_task and not bot._send_task.done():
+            bot._send_task.cancel()
+            try:
+                await bot._send_task
+            except asyncio.CancelledError:
+                pass
+        if not still_ours(bot):
+            # 等待发送任务时，connect() 可能已换上新的 _Bot。
+            return
+        bot._send_task = None
+        bot.bot = None
+        bot._disconnected_at = time.time()
 
-            # 2. 取消所有后台任务并等待其真正结束
-            tasks_to_cancel = [_t for _t in bot.bg_tasks if not _t.done()]
-            for _t in tasks_to_cancel:
-                _t.cancel()
-            for _t in tasks_to_cancel:
-                try:
-                    await _t
-                except (asyncio.CancelledError, Exception):
-                    pass
+        tasks_to_cancel = [_t for _t in bot.bg_tasks if not _t.done()]
+        for _t in tasks_to_cancel:
+            _t.cancel()
+        for _t in tasks_to_cancel:
+            try:
+                await _t
+            except (asyncio.CancelledError, Exception):
+                pass
+        if not still_ours(bot):
+            return
 
-            # 2.5 唤醒所有等待 recall 回执的 future（set_result(None)），避免插件协程挂起到超时；
-            # None 会在收集时被过滤 ⇒ 调用方拿到已到达的部分（可能为空 list）。并清空防止跨重连泄漏。
-            for _fut in list(bot._recall_waiters.values()):
-                if not _fut.done():
-                    _fut.set_result(None)
-            bot._recall_waiters.clear()
-            bot._recall_timeout_streak = 0
+        # set_result(None) 后，收集处会丢掉 None。调用方拿到已到达的那部分。
+        for _fut in list(bot._recall_waiters.values()):
+            if not _fut.done():
+                _fut.set_result(None)
+        bot._recall_waiters.clear()
+        bot._recall_timeout_streak = 0
 
-            # 3. 清理 Bot.instances 中属于该 bot_id 的条目
-            session_ids_to_remove = [sid for sid, b in Bot.instances.items() if b.bot_id == bot_id]
-            for sid in session_ids_to_remove:
-                del Bot.instances[sid]
+        session_ids_to_remove = [sid for sid, b in Bot.instances.items() if b.bot_id == bot_id]
+        for sid in session_ids_to_remove:
+            del Bot.instances[sid]
 
-            # 4. 清理 Bot.mutiply_instances 中属于该 bot_id 的条目
-            mutiply_ids_to_remove = [sid for sid, b in Bot.mutiply_instances.items() if b.bot_id == bot_id]
-            for sid in mutiply_ids_to_remove:
-                del Bot.mutiply_instances[sid]
+        mutiply_ids_to_remove = [sid for sid, b in Bot.mutiply_instances.items() if b.bot_id == bot_id]
+        for sid in mutiply_ids_to_remove:
+            del Bot.mutiply_instances[sid]
 
-            # 5. 清理 Bot.mutiply_map 中对应的映射
-            # 假设：mutiply_map 的结构为 {gid: session_id}，与 mutiply_instances 的 key 对应
-            map_keys_to_remove = [gid for gid, sid in Bot.mutiply_map.items() if sid in mutiply_ids_to_remove]
-            for gid in map_keys_to_remove:
-                del Bot.mutiply_map[gid]
-            if mutiply_ids_to_remove and not map_keys_to_remove:
-                logger.warning(t("log.server.mutiply_map_leak", count=len(mutiply_ids_to_remove)))
-
-            # 不再删除 active_bot[bot_id]，保留实例等待重连
+        # mutiply_map 的值是 mutiply_instances 的键。只删这次移除的会话。
+        map_keys_to_remove = [gid for gid, sid in Bot.mutiply_map.items() if sid in mutiply_ids_to_remove]
+        for gid in map_keys_to_remove:
+            del Bot.mutiply_map[gid]
+        if mutiply_ids_to_remove and not map_keys_to_remove:
+            logger.warning(t("log.server.mutiply_map_leak", count=len(mutiply_ids_to_remove)))
 
         logger.warning(t("log.server.bot_disconnect_keep", bot_id=bot_id))
 

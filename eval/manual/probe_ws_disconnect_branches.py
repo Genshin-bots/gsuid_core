@@ -95,7 +95,7 @@ async def make_endpoint(app: FastAPI) -> None:
                 except asyncio.CancelledError:
                     pass
                 finally:
-                    await gss.disconnect(bot_id)
+                    await gss.disconnect(bot_id, websocket)
 
             async def process():
                 await bot._process(None)
@@ -116,7 +116,7 @@ async def make_endpoint(app: FastAPI) -> None:
             ESCAPES.append(f"{type(exc).__name__}: {exc}")
             raise
         finally:
-            await gss.disconnect(bot_id)
+            await gss.disconnect(bot_id, websocket)
 
 
 def reset() -> None:

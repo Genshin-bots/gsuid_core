@@ -115,6 +115,8 @@ class GsServer:
 - **超过 5 分钟**：cancel 旧 `_send_task` + `clear_send_queue()` 后丢弃，避免内存泄漏。
 - **断开**：close + 删 `active_ws`、cancel `_send_task` 与 bg_tasks、标记 `_disconnected_at`、
   清 `Bot.instances` 等本 bot 会话；**`active_bot[bot_id]` 不删**（留给重连）。
+- **陈旧收尾**：传入的套接字不是 `active_ws` 的当前套接字时，`disconnect` 直接返回。
+  `close()` 返回后只删除仍指向原套接字的登记，也不修改已经换上的 `_Bot`。
 
 ## 5.6 `gss.active_bot` 的 key 是 `WS_BOT_ID`（致命易错点）
 

@@ -742,7 +742,6 @@ class Bot:
 
         self.bot = bot
         self.ev = ev
-        self.logger = self.bot.logger
         self.bot_id = ev.bot_id
         self.bot_self_id = ev.bot_self_id
         self.resp: List[Event] = []
@@ -751,6 +750,11 @@ class Bot:
         self.mutiply_resp: List[Event] = []
         # 当前用户语言缓存（懒解析，一次事件内复用），见 get_lang()
         self._lang: Optional[str] = None
+
+    @property
+    def logger(self) -> GsLogger:
+        # 重连会新建 GsLogger。每次读取 _Bot.logger，避免留着旧对象。
+        return self.bot.logger
 
     def reset_text_stream(self) -> None:
         """出站流式：新模型请求前清对齐缓冲。默认无缓冲。"""

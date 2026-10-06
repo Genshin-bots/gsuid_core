@@ -177,7 +177,7 @@ async def main():
                 except CancelledError:
                     pass
                 finally:
-                    await gss.disconnect(bot_id)
+                    await gss.disconnect(bot_id, websocket)
 
             async def process():
                 try:
@@ -205,7 +205,7 @@ async def main():
                 if isinstance(_r, BaseException) and not isinstance(_r, CancelledError):
                     raise _r
         finally:
-            await gss.disconnect(bot_id)
+            await gss.disconnect(bot_id, websocket)
 
     if ENABLE_HTTP:
         _bot = _Bot("HTTP")
