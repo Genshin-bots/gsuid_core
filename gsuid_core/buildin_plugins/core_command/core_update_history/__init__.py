@@ -1,6 +1,6 @@
 """`core更新记录` → 把 changelogs/ 目录的版本记录渲染成竖屏卡片。
 
-不带参数看当前 core 版本那一版，带版本号看指定版，带「列表」看版本索引。
+不带参数看未发布段 + 上一已发布版的合集，带版本号看指定版，带「列表」看版本索引。
 """
 
 from gsuid_core.sv import SV
@@ -13,12 +13,14 @@ from .template import (
     LAYOUT_WIDTH,
     build_empty_html,
     build_index_html,
+    build_recent_html,
     build_version_html,
 )
 from .changelog import (
     VersionRef,
+    ChangelogVersion,
     is_current,
-    pick_default,
+    pick_recent,
     list_versions,
     parse_version,
     resolve_query,
@@ -28,7 +30,8 @@ from .changelog import (
 # `core更新记录` 会同时命中它，靠优先级先跑本命令再 block 掉。
 sv_core_update_history = SV("Core更新记录", pm=0, priority=1)
 
-_LIST_WORDS = ("列表", "全部", "索引", "list", "index")
+# 索引触发词：`目录`/`index`/`idx` 这些是用户会顺手敲的说法，别只认「列表」。
+_LIST_WORDS = ("列表", "目录", "全部", "索引", "list", "index", "idx", "menu")
 _CMD = "core更新记录"
 _MISSING_TITLE = "没有找到更新记录"
 _MISSING_TEXT = (
@@ -52,11 +55,17 @@ async def _send_empty(bot: Bot) -> None:
     await bot.send(await _render(build_empty_html(_MISSING_TITLE, _MISSING_TEXT)))
 
 
-def _pick_arg(arg: str, refs: tuple[VersionRef, ...]) -> VersionRef | None:
-    return pick_default(refs) if not arg else resolve_query(arg, refs)
+def _recent_versions(refs: tuple[VersionRef, ...]) -> tuple[ChangelogVersion, ...]:
+    """默认那张图要画的版本：未发布段 + 上一已发布版。"""
+    return tuple(parse_version(ref) for ref in pick_recent(refs))
 
 
-@sv_core_update_history.on_command("更新记录", block=True)
+# 别名走元组直接注册：`on_command` 接受 `Union[str, Tuple[str, ...]]`。
+# 「纪录」是常见误写，「更新目录」是口语说法，都收进来省得用户敲错。
+_COMMANDS = ("更新记录", "更新纪录", "更新日志", "更新目录", "版本记录")
+
+
+@sv_core_update_history.on_command(_COMMANDS, block=True)
 async def send_update_history(bot: Bot, ev: Event):
     refs = list_versions()
     if not refs:
@@ -68,7 +77,11 @@ async def send_update_history(bot: Bot, ev: Event):
         await bot.send(await _render(build_index_html(refs, total=len(refs))))
         return
 
-    ref = _pick_arg(arg, refs)
+    if not arg:
+        await bot.send(await _render(build_recent_html(_recent_versions(refs))))
+        return
+
+    ref = resolve_query(arg, refs)
     if ref is None:
         await bot.send(
             await bot.t(

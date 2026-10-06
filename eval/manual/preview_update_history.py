@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "test_output"
 PREFIX = "update_history_"
 
-# (输出名, 版本号, 是否按「当前版本」渲染)
+# (输出名, 版本号, 是否按「当前版本」渲染)；版本号留空 = 默认那张合集图
 CASES: list[tuple[str, str, bool]] = [
-    ("01_default.png", "", True),
+    ("01_recent_default.png", "", False),
     ("02_latest_released.png", "0.11.0", False),
     ("03_unreleased.png", "0.11.0-unreleased", False),
     ("04_minimal_old.png", "0.7.4", False),
@@ -54,17 +54,22 @@ async def main() -> None:
     command = import_module("gsuid_core.buildin_plugins.core_command.core_update_history")
 
     refs = source.list_versions()
-    default = source.pick_default(refs)
+    recent = source.pick_recent(refs)
     print(f"core __version__={__version__} changelogs 版本数={len(refs)}")
-    print(f"默认展示: {default.version if default is not None else '无'}")
+    labels = " + ".join(f"{ref.version}{'' if ref.released else '（未发布）'}" for ref in recent)
+    print(f"默认合集: {labels or '无'}")
     print(f"最新一条: {refs[0].version if refs else '无'} released={refs[0].released if refs else '-'}\n")
 
     for name, query, force_current in CASES:
         if query == "列表":
             html = template.build_index_html(refs, total=len(refs))
             detail = f"{len(refs)} 个版本"
+        elif not query:
+            versions = [source.parse_version(ref) for ref in recent]
+            html = template.build_recent_html(versions)
+            detail = "合集 " + " + ".join(v.version for v in versions)
         else:
-            ref = source.pick_default(refs) if not query else source.resolve_query(query, refs)
+            ref = source.resolve_query(query, refs)
             if ref is None:
                 print(f"SKIP {name}: 找不到 {query}")
                 continue
