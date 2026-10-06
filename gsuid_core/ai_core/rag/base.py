@@ -2,6 +2,7 @@
 
 import os
 import json
+import time
 import uuid
 import asyncio
 import hashlib
@@ -175,10 +176,15 @@ async def embed_texts_with_backoff(
     if bs <= 0:
         bs = 1
     results: list[Sequence[float] | None] = [None] * len(texts)
+    total = len(texts)
     index = 0
+    last_progress = time.monotonic()
+    if total >= 32:
+        logger.info(t("log.rag.embed_batch_progress", log_tag=log_tag, done=0, total=total))
     while index < len(texts):
         current_bs = min(bs, len(texts) - index)
         batch = texts[index : index + current_bs]
+        advanced = False
         try:
             vectors = await embed_fn(batch)
         except Exception as e:
@@ -194,31 +200,40 @@ async def embed_texts_with_backoff(
                     )
                 )
                 index += 1
-                continue
-            new_bs = max(current_bs // 2, 1)
-            logger.warning(
-                t(
-                    "log.rag.log_tag_remote_rejected_large",
-                    log_tag=log_tag,
-                    current_bs=current_bs,
-                    new_bs=new_bs,
-                    e=e,
+                advanced = True
+            else:
+                new_bs = max(current_bs // 2, 1)
+                logger.warning(
+                    t(
+                        "log.rag.log_tag_remote_rejected_large",
+                        log_tag=log_tag,
+                        current_bs=current_bs,
+                        new_bs=new_bs,
+                        e=e,
+                    )
                 )
-            )
-            _cached_embed_bs = new_bs
-            bs = new_bs
-            continue  # 当前批不前进, 用更小批重试同一窗口
-        if len(vectors) != len(batch):
-            raise RuntimeError(
-                t(
-                    "log.rag.log_tag_expected_actual",
-                    log_tag=log_tag,
-                    p0=len(batch),
-                    p1=len(vectors),
+                _cached_embed_bs = new_bs
+                bs = new_bs
+        else:
+            if len(vectors) != len(batch):
+                raise RuntimeError(
+                    t(
+                        "log.rag.log_tag_expected_actual",
+                        log_tag=log_tag,
+                        p0=len(batch),
+                        p1=len(vectors),
+                    )
                 )
-            )
-        results[index : index + current_bs] = vectors
-        index += current_bs
+            results[index : index + current_bs] = vectors
+            index += current_bs
+            advanced = True
+        if not advanced:
+            continue
+        now = time.monotonic()
+        finished = index >= total
+        if total >= 32 and (finished or now - last_progress >= 15.0):
+            logger.info(t("log.rag.embed_batch_progress", log_tag=log_tag, done=index, total=total))
+            last_progress = now
     return results
 
 
@@ -721,6 +736,15 @@ def init_embedding_model():
         provider = get_embedding_provider()
         embedding_provider = provider
         embedding_model = _EmbeddingModelWrapper(provider)
+        from gsuid_core.ai_core.rag.chunking import embed_char_budget
+
+        logger.info(
+            t(
+                "log.rag.embedding_input_budget",
+                tokens=provider.max_input_tokens,
+                budget=embed_char_budget(provider.max_input_tokens),
+            )
+        )
         # 经 qdrant_provider 抽象层按配置构造本地/远程客户端，切换由抽象层内部统一处理
         client = build_qdrant_client()
 

@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 import asyncio
-from typing import Any, Dict, List, Union, Optional, Sequence, AsyncIterator
+from typing import Any, Dict, List, Union, Optional, Sequence, NamedTuple, AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 
 from qdrant_client.models import (
@@ -38,9 +38,16 @@ from gsuid_core.ai_core.rag.base import (
 )
 from gsuid_core.ai_core.register import _ENTITIES
 from gsuid_core.ai_core.rag.chunking import (
-    DEFAULT_CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP,
-    split_text,
+    chunker_stamp,
+    document_bodies,
+    pieces_for_embed,
+    chunk_method_hash,
+    embed_char_budget,
+    logical_chunk_ids,
+    should_skip_rebuild,
+    stored_hash_uniform,
+    keep_ids_after_rebuild,
 )
 from gsuid_core.ai_core.database.models import AIKnowledgeChunk
 from gsuid_core.ai_core.rag.collection_migration import (
@@ -58,7 +65,6 @@ from gsuid_core.ai_core.rag.collection_migration import (
 
 from .hybrid import hybrid_query
 from .reranker import rerank_results
-from .image_rag import build_image_text
 
 # ─────────────────────────────────────────────
 # 混合检索（Dense + BM25 Sparse）基建
@@ -78,6 +84,12 @@ _KNOWLEDGE_SPARSE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefi
 # 维度迁移时两者会各自走"强制重建"（delete+create 非原子），相互竞争导致 409 "Collection already
 # exists"、重复备份与重复重嵌。用单锁串行化：先到者完成重建后，后到者重检维度已匹配 → 直接跳过。
 _knowledge_collection_init_lock = asyncio.Lock()
+# 插件 on_core_start 与 init_all 会同时进入。先到者未写入时，后到者会把同一批再嵌一遍。
+_knowledge_sync_lock = asyncio.Lock()
+# 同一进程里切法章相同则复用片数。后到的调用仍滚动印章并核对。
+_piece_count_by_stamp: dict[str, int] = {}
+_PLUGIN_STAMP_FIELDS: list[str] = ["source", "id", "doc_id", "_hash"]
+_PLUGIN_SOURCE_FILTER = Filter(must=[FieldCondition(key="source", match=MatchValue(value="plugin"))])
 
 
 def _knowledge_vectors_config(dimension: int) -> dict:
@@ -332,6 +344,172 @@ async def _init_knowledge_collection_impl():
     )
 
 
+def _payload_tag_list(payload: object) -> list[str]:
+    if not isinstance(payload, dict) or "tags" not in payload:
+        return []
+    raw = payload["tags"]
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str)]
+
+
+def _strip_piece_title(title: str) -> str:
+    marker = " - 第"
+    if marker not in title or not title.endswith("段"):
+        return title
+    head, _, tail = title.rpartition(marker)
+    if tail.endswith("段") and tail[:-1].isdigit():
+        return head
+    return title
+
+
+def _payload_chunk_index(payload: dict[str, object]) -> int:
+    if "chunk_index" not in payload:
+        return 0
+    raw = payload["chunk_index"]
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return raw
+
+
+def _reindex_parent(payload: dict[str, object], point_id: str) -> str:
+    doc_id = _payload_text(payload, "doc_id")
+    if doc_id:
+        return doc_id
+    own_id = _payload_text(payload, "id")
+    if own_id:
+        return own_id
+    return point_id
+
+
+def _stamp_reindex_payload(
+    payload: dict[str, object],
+    *,
+    logical: str,
+    article_id: str,
+    idx: int,
+    body: str,
+    src: str,
+    stamped: str,
+) -> dict[str, object]:
+    cloned: dict[str, object] = dict(payload)
+    cloned["id"] = logical
+    cloned["doc_id"] = article_id
+    cloned["chunk_index"] = idx
+    cloned["content"] = body
+    if stamped:
+        cloned["_hash"] = stamped
+    if src:
+        cloned["_src"] = src
+    return cloned
+
+
+def _reindex_embed_rows(point_id: str, payload: dict[str, object]) -> list[tuple[str, dict[str, object], str]]:
+    """单点按当前切法展开。已是某篇的一片时，超预算套在这一片自己的 id 上。"""
+    if "path" not in payload and "content" not in payload and "title" not in payload:
+        return []
+    body = _payload_text(payload, "content")
+    title = _strip_piece_title(_payload_text(payload, "title"))
+    pieces = pieces_for_embed(body, title=title, tags=_payload_tag_list(payload))
+    if not pieces or not pieces[0].embed_text.strip():
+        return []
+    if len(pieces) == 1:
+        return [(point_id, payload, pieces[0].embed_text)]
+    own_id = _payload_text(payload, "id") or point_id
+    doc_id = _payload_text(payload, "doc_id")
+    if doc_id and own_id != doc_id:
+        split_parent = own_id
+        article_id = doc_id
+    else:
+        split_parent = doc_id or own_id
+        article_id = split_parent
+    src = _payload_text(payload, "_src") or _payload_text(payload, "_hash")
+    stamped = chunk_method_hash(src) if src else ""
+    rows: list[tuple[str, dict[str, object], str]] = []
+    for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(split_parent, len(pieces)), pieces)):
+        cloned = _stamp_reindex_payload(
+            payload,
+            logical=logical,
+            article_id=article_id,
+            idx=idx,
+            body=piece.body,
+            src=src,
+            stamped=stamped,
+        )
+        rows.append((get_point_id(logical), cloned, piece.embed_text))
+    return rows
+
+
+def _reindex_article_rows(
+    parent: str,
+    items: list[tuple[str, dict[str, object]]],
+) -> list[tuple[str, dict[str, object], str]]:
+    """同一 doc_id 先拼回一篇再切，避免两片各自发出 doc#0 互相覆盖。"""
+    ordered = sorted(
+        items,
+        key=lambda item: (_payload_chunk_index(item[1]), _payload_text(item[1], "id") or item[0]),
+    )
+    if len(ordered) == 1:
+        return _reindex_embed_rows(ordered[0][0], ordered[0][1])
+    head = ordered[0][1]
+    title = _strip_piece_title(_payload_text(head, "title"))
+    body_parts: list[str] = []
+    for _pid, payload in ordered:
+        text = _payload_text(payload, "content")
+        if text:
+            body_parts.append(text)
+    body = "\n".join(body_parts)
+    pieces = pieces_for_embed(body, title=title, tags=_payload_tag_list(head))
+    if not pieces or not pieces[0].embed_text.strip():
+        return []
+    src = _payload_text(head, "_src") or _payload_text(head, "_hash")
+    stamped = chunk_method_hash(src) if src else ""
+    if len(pieces) == 1:
+        point_id, payload = ordered[0]
+        cloned = _stamp_reindex_payload(
+            payload,
+            logical=_payload_text(payload, "id") or point_id,
+            article_id=parent,
+            idx=0,
+            body=pieces[0].body,
+            src=src,
+            stamped=stamped,
+        )
+        return [(point_id, cloned, pieces[0].embed_text)]
+    rows: list[tuple[str, dict[str, object], str]] = []
+    for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(parent, len(pieces)), pieces)):
+        cloned = _stamp_reindex_payload(
+            head,
+            logical=logical,
+            article_id=parent,
+            idx=idx,
+            body=piece.body,
+            src=src,
+            stamped=stamped,
+        )
+        rows.append((get_point_id(logical), cloned, piece.embed_text))
+    return rows
+
+
+def _prepare_knowledge_reindex(
+    payload_backup: Sequence[tuple[object, dict[str, object]]],
+) -> list[tuple[str, dict[str, object], str]]:
+    groups: dict[str, list[tuple[str, dict[str, object]]]] = {}
+    for point_id, payload in payload_backup:
+        copied: dict[str, object] = dict(payload)
+        pid = str(point_id)
+        if not _payload_text(copied, "id"):
+            copied["id"] = pid
+        parent = _reindex_parent(copied, pid)
+        if parent not in groups:
+            groups[parent] = []
+        groups[parent].append((pid, copied))
+    prepared: list[tuple[str, dict[str, object], str]] = []
+    for parent, items in groups.items():
+        prepared.extend(_reindex_article_rows(parent, items))
+    return prepared
+
+
 async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
     """基于旧 payload 重新生成知识向量。"""
     from gsuid_core.ai_core.rag.base import client, embedding_model
@@ -339,32 +517,26 @@ async def _reindex_knowledge_payloads(payload_backup: list[tuple[Any, dict[str, 
     if client is None or embedding_model is None:
         return
 
-    prepared: list[tuple[Any, dict[str, Any], str]] = []
+    prepared: list[tuple[str, dict[str, object], str]] = []
     skipped = 0
+    usable: list[tuple[object, dict[str, object]]] = []
     for point_id, payload in payload_backup:
-        try:
-            payload = dict(payload)
-            if not payload.get("id"):
-                payload["id"] = str(point_id)
-            if "path" in payload:
-                text_to_embed = build_image_text(payload)  # type: ignore[arg-type]
-            elif "content" in payload or "title" in payload:
-                text_to_embed = build_knowledge_text(payload)  # type: ignore[arg-type]
-            else:
-                skipped += 1
-                logger.warning(i18n_t("log.rag.kb_unable_recognize_payload_type", point_id=point_id))
-                continue
-            if not text_to_embed.strip():
-                skipped += 1
-                continue
-            prepared.append((point_id, payload, text_to_embed))
-        except Exception as e:
+        copied: dict[str, object] = dict(payload)
+        pid = str(point_id)
+        if not _payload_text(copied, "id"):
+            copied["id"] = pid
+        if "path" not in copied and "content" not in copied and "title" not in copied:
             skipped += 1
-            logger.warning(i18n_t("log.rag.kb_prepare_payload_embedding_fail", e=e))
+            logger.warning(i18n_t("log.rag.kb_unable_recognize_payload_type", point_id=point_id))
+            continue
+        usable.append((pid, copied))
+    prepared = _prepare_knowledge_reindex(usable)
 
     # 重嵌为命名 dense + BM25 稀疏向量（与新集合结构一致）
     points_to_upsert = await _compute_knowledge_points(prepared)
     skipped += len(prepared) - len(points_to_upsert)
+    if prepared and not points_to_upsert:
+        raise RuntimeError(i18n_t("log.rag.kb_reindex_embed_empty"))
 
     if points_to_upsert:
         await _upsert_knowledge_points(points_to_upsert)
@@ -448,19 +620,68 @@ def build_knowledge_text(kp: KnowledgeBase | ManualKnowledgeBase) -> str:
 
 
 def _chunk_embed_text(row: AIKnowledgeChunk) -> str:
-    """构造单个分片的向量化文本（标题 + 标签 + 正文，与 build_knowledge_text 同构）。
+    """构造单个分片送进嵌入的整串。前缀用去段号后的标题，避免和装箱时的预算错位。"""
+    pieces = pieces_for_embed(
+        row.content,
+        title=_strip_piece_title(row.title),
+        tags=row.tags_list(),
+    )
+    if not pieces:
+        return ""
+    return pieces[0].embed_text
 
-    直接读 ``AIKnowledgeChunk`` 字段拼接，不再构造合成 dict 传 ``build_knowledge_text``
-    （后者形参是 ``KnowledgeBase | ManualKnowledgeBase`` TypedDict，传裸 dict 会触发 arg-type）。
-    """
-    parts: List[str] = []
-    if row.title:
-        parts.append(f"标题：{row.title}")
+
+def _row_content_hash(row_id: str, title: str, content: str, tags: list[str]) -> str:
+    return calculate_hash({"id": row_id, "title": title, "content": content, "tags": tags})
+
+
+def _expand_knowledge_row(row: AIKnowledgeChunk) -> list[AIKnowledgeChunk]:
+    """一行正文仍超预算时拆成多行。已经放得下的行原样返回。"""
     tags = row.tags_list()
-    if tags:
-        parts.append(f"标签：{' '.join(tags)}")
-    parts.append(row.content)
-    return "\n".join(parts)
+    base = _strip_piece_title(row.title)
+    pieces = pieces_for_embed(row.content, title=base, tags=tags)
+    if len(pieces) <= 1:
+        if pieces and pieces[0].body and pieces[0].body != row.content:
+            row.content = pieces[0].body
+            row.content_hash = _row_content_hash(row.id, row.title, row.content, tags)
+        if not row.chunker_id:
+            row.chunker_id = chunker_stamp()
+        return [row]
+    parent = row.doc_id or row.id
+    if row.id == parent:
+        ids = logical_chunk_ids(parent, len(pieces))
+        article_id = parent
+        index_base = 0
+    else:
+        # 已经是某篇的一片：套在这一片 id 上，序号从原 chunk_index 起，避免和兄弟抢 0。
+        ids = [f"{row.id}#{idx}" for idx in range(len(pieces))]
+        article_id = parent
+        index_base = row.chunk_index * 10000
+    source_text = row.origin or row.content
+    now = int(time.time())
+    expanded: list[AIKnowledgeChunk] = []
+    title_base = base or parent
+    for idx, (cid, piece) in enumerate(zip(ids, pieces)):
+        ctitle = f"{title_base} - 第{idx + 1}段" if len(pieces) > 1 else (row.title or parent)
+        expanded.append(
+            AIKnowledgeChunk(
+                id=cid,
+                doc_id=article_id,
+                chunk_index=index_base + idx,
+                title=ctitle,
+                content=piece.body,
+                tags=row.tags,
+                source=row.source,
+                plugin=row.plugin,
+                qdrant_id=get_point_id(cid),
+                content_hash=_row_content_hash(cid, ctitle, piece.body, tags),
+                origin=source_text if idx == 0 else "",
+                chunker_id=chunker_stamp(),
+                created_at=row.created_at or now,
+                updated_at=now,
+            )
+        )
+    return expanded
 
 
 def _opt_field(data: Dict[str, Any], key: str) -> Any:
@@ -513,11 +734,17 @@ def _row_from_payload(payload: Dict[str, Any]) -> AIKnowledgeChunk:
     )
 
 
-async def _embed_and_upsert_chunks(rows: List[AIKnowledgeChunk]) -> tuple[int, int]:
+async def _embed_and_upsert_chunks(
+    rows: List[AIKnowledgeChunk],
+    *,
+    extra_retire_ids: Sequence[str] = (),
+    extra_retire_qids: Sequence[str] = (),
+) -> tuple[int, int]:
     """把一批分片写入 **SQL 真值源（先）** 再批量嵌入入 Qdrant（后）。
 
     SQL 先行是持久性契约：即使后续嵌入失败/被 413 跳过，分片仍留在 SQL，
-    可由 ``reconcile_manual_knowledge`` 在下次启动补嵌。返回 (写入向量数, 跳过数)。
+    可由 ``reconcile_manual_knowledge`` 在下次启动补嵌。旧行/旧点只在新向量
+    全部写成功后再删。返回 (写入向量数, 跳过数)。
     """
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
@@ -527,20 +754,57 @@ async def _embed_and_upsert_chunks(rows: List[AIKnowledgeChunk]) -> tuple[int, i
         logger.warning(i18n_t("log.rag.kb_initialized_unable_write"))
         return 0, len(rows)
 
-    for r in rows:
-        if not r.qdrant_id:
-            r.qdrant_id = get_point_id(r.id)
+    expanded: List[AIKnowledgeChunk] = []
+    retire_ids: List[str] = []
+    retire_qids: List[str] = []
+    for row in rows:
+        parts = _expand_knowledge_row(row)
+        new_ids = {part.id for part in parts}
+        if row.id not in new_ids:
+            retire_ids.append(row.id)
+            if row.qdrant_id:
+                retire_qids.append(row.qdrant_id)
+        expanded.extend(parts)
 
-    # 1. SQL 真值源先落盘（幂等 merge）
-    await AIKnowledgeChunk.upsert_many(rows)
+    for row in expanded:
+        if not row.qdrant_id:
+            row.qdrant_id = get_point_id(row.id)
 
-    # 2. 批量算 dense+sparse 命名向量点并写入（413 退避在内）
-    items = [(r.qdrant_id, _chunk_payload(r), _chunk_embed_text(r)) for r in rows]
+    expanded_ids = {part.id for part in expanded}
+    expanded_qids = {row.qdrant_id for row in expanded if row.qdrant_id}
+    for rid in extra_retire_ids:
+        if rid not in expanded_ids and rid not in retire_ids:
+            retire_ids.append(rid)
+    for qid in extra_retire_qids:
+        if qid not in expanded_qids and qid not in retire_qids:
+            retire_qids.append(qid)
+
+    await AIKnowledgeChunk.upsert_many(expanded)
+
+    items = []
+    for row in expanded:
+        text = _chunk_embed_text(row)
+        if not text.strip():
+            continue
+        items.append((row.qdrant_id, _chunk_payload(row), text))
     points = await _compute_knowledge_points(items)
 
     if points:
         await _upsert_knowledge_points(points)
-    return len(points), len(rows) - len(points)
+
+    written_qids = {str(point.id) for point in points}
+    expected_qids = {str(item[0]) for item in items}
+    if expected_qids and expected_qids <= written_qids:
+        leftover_sql = [rid for rid in retire_ids if rid not in expanded_ids]
+        if leftover_sql:
+            await AIKnowledgeChunk.delete_ids(leftover_sql)
+        stale_qids: list[int | str | uuid.UUID] = [qid for qid in retire_qids if qid not in expanded_qids]
+        if stale_qids:
+            await client.delete(
+                collection_name=KNOWLEDGE_COLLECTION_NAME,
+                points_selector=PointIdsList(points=stale_qids),
+            )
+    return len(points), len(expanded) - len(points)
 
 
 async def add_knowledge_document(
@@ -551,7 +815,7 @@ async def add_knowledge_document(
     items: Optional[List[dict]] = None,
     tags: Optional[List[str]] = None,
     plugin: str = "manual",
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_size: int = 0,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     source: str = "manual",
     replace: bool = True,
@@ -561,29 +825,47 @@ async def add_knowledge_document(
     Args:
         doc_id: 文档标识（同一 doc_id 重导即覆盖，分片 id = ``{doc_id}#{idx}`` 幂等）
         title: 文档标题（多分片时每片标题追加"- 第N段"）
-        full_text: 整篇长文（与 items 二选一，服务端按 chunk_size/overlap 分片）
-        items: 已分好的分片列表（每项含 content），与 full_text 二选一
+        full_text: 整篇长文（与 items 二选一）。服务端按预算再切。
+        items: 调用方预先切开的小节。每一节仍会再过同一把刀。
         tags: 统一标签（所有分片共享，建议含一个文档标识便于检索/清理）
         plugin: 所属分组（默认 manual）
-        chunk_size / chunk_overlap: 分片粒度
-        replace: True（默认）先删除该 doc_id 的旧分片再写，避免新版分片更少时残留孤儿分片
+        chunk_size / chunk_overlap: 分片粒度。0 表示按当前模型的 token 上限。更大的请求夹回该上限。
+        replace: True（默认）在新分片全部写成功后再删多余旧片，避免嵌入失败把旧文清掉
 
     Returns:
         {doc_id, total_chunks, written, skipped}
     """
     tags = tags or []
+    section_texts: list[str] = []
     if items:
-        contents = [str(_opt_field(it, "content") or "").strip() for it in items]
-        contents = [c for c in contents if c]
-    else:
-        contents = split_text(full_text or "", chunk_size, chunk_overlap)
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = str(_opt_field(item, "content") or "").strip()
+            if text:
+                section_texts.append(text)
+    chosen_budget = embed_char_budget() if chunk_size <= 0 else chunk_size
+    contents = document_bodies(
+        full_text=full_text or "",
+        sections=section_texts,
+        title=title,
+        tags=tags,
+        budget=chosen_budget,
+        overlap=chunk_overlap,
+    )
+    origin_text = (full_text or "").strip()
+    if not origin_text:
+        origin_text = "\n\n".join(section_texts)
 
     if not contents:
         return {"doc_id": doc_id, "total_chunks": 0, "written": 0, "skipped": 0}
 
-    # 幂等重导：先清掉旧分片（SQL + 向量），再写新分片
+    extra_ids: list[str] = []
+    extra_qids: list[str] = []
     if replace:
-        await delete_knowledge_document(doc_id)
+        existing = await AIKnowledgeChunk.list_by_doc(doc_id)
+        extra_ids = [row.id for row in existing]
+        extra_qids = [row.qdrant_id for row in existing if row.qdrant_id]
 
     now = int(time.time())
     tags_json = json.dumps(tags, ensure_ascii=False)
@@ -603,13 +885,19 @@ async def add_knowledge_document(
                 source=source,
                 plugin=plugin,
                 qdrant_id=get_point_id(cid),
-                content_hash=calculate_hash({"id": cid, "title": ctitle, "content": content, "tags": tags}),
+                content_hash=_row_content_hash(cid, ctitle, content, tags),
+                origin=origin_text if idx == 0 and source != "skill_doc" else "",
+                chunker_id=chunker_stamp(),
                 created_at=now,
                 updated_at=now,
             )
         )
 
-    written, skipped = await _embed_and_upsert_chunks(rows)
+    written, skipped = await _embed_and_upsert_chunks(
+        rows,
+        extra_retire_ids=extra_ids,
+        extra_retire_qids=extra_qids,
+    )
     logger.info(
         i18n_t(
             "log.rag.kb_document_import_doc_id",
@@ -812,13 +1100,70 @@ async def _reconcile_sql_source(source: str) -> None:
         await _reembed_missing_sql_chunks_for(source)
 
 
+def _rows_by_doc(rows: List[AIKnowledgeChunk]) -> Dict[str, List[AIKnowledgeChunk]]:
+    groups: Dict[str, List[AIKnowledgeChunk]] = {}
+    for row in rows:
+        key = row.doc_id or row.id
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(row)
+    for group in groups.values():
+        group.sort(key=lambda item: (item.chunk_index, item.id))
+    return groups
+
+
+async def _rechunk_sql_docs(source: str) -> None:
+    """手动/Agent 文：有原文且切法变了才整篇重切。没有原文时把超预算的片拼回一篇再切。"""
+    rows = await AIKnowledgeChunk.iter_all(source=source)
+    if not rows:
+        return
+    for doc_id, group in _rows_by_doc(rows).items():
+        origin = ""
+        stamped = ""
+        for row in group:
+            if row.chunk_index == 0 and row.origin:
+                origin = row.origin
+            if row.chunker_id and not stamped:
+                stamped = row.chunker_id
+        head = group[0]
+        if origin and stamped != chunker_stamp():
+            await add_knowledge_document(
+                doc_id=doc_id,
+                title=_strip_piece_title(head.title) or doc_id,
+                full_text=origin,
+                tags=head.tags_list(),
+                plugin=head.plugin,
+                source=head.source or source,
+                replace=True,
+            )
+            continue
+        oversize = False
+        for row in group:
+            pack_title = _strip_piece_title(row.title)
+            if len(pieces_for_embed(row.content, title=pack_title, tags=row.tags_list())) > 1:
+                oversize = True
+                break
+        if oversize:
+            full_text = "\n".join(item.content for item in group if item.content)
+            await add_knowledge_document(
+                doc_id=doc_id,
+                title=_strip_piece_title(head.title) or doc_id,
+                full_text=full_text,
+                tags=head.tags_list(),
+                plugin=head.plugin,
+                source=head.source or source,
+                replace=True,
+            )
+
+
 async def reconcile_manual_knowledge() -> None:
     """启动对账：把手动/Agent 知识的 SQL 真值源与 Qdrant 向量对齐。
 
     - Qdrant 点 > SQL 行：回填旧的"仅 Qdrant"知识到 SQL（向量已在，不重嵌）。
     - Qdrant 点 < SQL 行：SQL 有而向量缺（换模型/向量库丢失），从 SQL 重嵌入。
-    - 数量一致：视为一致，跳过逐条扫描（避免每次启动的全量探测开销）。
-    启动挂载扫描本身不触发全库重嵌。
+    - 数量一致：数量对账不再逐条比对 Qdrant。
+    随后只读 SQL。有原文且切法编号变了才整篇重切；没有原文时把超预算的片拼回一篇再切。
+    记忆库不在这次重切里。
     """
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
@@ -828,6 +1173,7 @@ async def reconcile_manual_knowledge() -> None:
         await AIKnowledgeChunk.ensure_table()
         for source in ("manual", "agent"):
             await _reconcile_sql_source(source)
+            await _rechunk_sql_docs(source)
     except Exception as e:
         logger.warning(i18n_t("log.rag.kb_manual_knowledge_reconciliation_fail", e=e))
 
@@ -932,29 +1278,48 @@ async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
     return totals
 
 
-async def sync_knowledge():
-    """同步知识到向量库
+class _StoredSlice(NamedTuple):
+    point_id: str
+    stored_hash: str
 
-    将注册的知识实体同步到Qdrant向量数据库，
-    包括新增、更新和删除操作。
-    使用内容哈希来判断是否需要更新。
 
-    注意：此函数仅同步 source="plugin" 的知识（来自插件注册）。
-    手动添加的知识 (source="manual") 不会在此同步中被检查、修改或删除。
-    """
+async def _ensure_knowledge_client() -> None:
+    """集合初始化必须在同步锁外完成，锁顺序与 init_all 一致：先集合锁，再同步锁。"""
     import gsuid_core.ai_core.rag.base as rag_base
     from gsuid_core.ai_core.rag.base import init_embedding_model, ensure_embedding_dimension
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    if not ai_config.get_config("enable").data:
-        logger.debug(i18n_t("log.rag.kb_skip_sync_ai_feature_enabled"))
-        return
 
     if rag_base.client is None or rag_base.embedding_model is None:
         logger.info(i18n_t("log.rag.kb_init_sync_ai_enabled_rag"))
         await asyncio.to_thread(init_embedding_model)
         await ensure_embedding_dimension()
-        await init_knowledge_collection()
+    # client 已有时集合可能仍在 force_recreate，须等集合锁再 scroll。
+    await init_knowledge_collection()
+
+
+async def sync_knowledge() -> None:
+    """同步插件知识到向量库。并发调用串行执行，后到者等本轮写入后再核对。
+
+    仅同步 source="plugin"。手动知识不在这里检查、修改或删除。
+    """
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        logger.debug(i18n_t("log.rag.kb_skip_sync_ai_feature_enabled"))
+        return
+    await _ensure_knowledge_client()
+    if _knowledge_sync_lock.locked():
+        logger.info(i18n_t("log.rag.kb_sync_already_running"))
+    async with _knowledge_sync_lock:
+        await _sync_knowledge_impl()
+
+
+async def _sync_knowledge_impl() -> None:
+    import gsuid_core.ai_core.rag.base as rag_base
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        logger.debug(i18n_t("log.rag.kb_skip_sync_ai_feature_enabled"))
+        return
 
     client = rag_base.client
     embedding_model = rag_base.embedding_model
@@ -964,38 +1329,48 @@ async def sync_knowledge():
 
     logger.info(i18n_t("log.rag.kb_knowledge_base_sync"))
 
-    # 1. 获取现有数据（仅插件来源的知识，用于同步检查）
-    # 手动添加的知识不会被此同步流程删除
-    existing_knowledge: Dict[str, Dict] = {}
+    # 1. 只收插件点。有 doc_id 时按文档归组，否则用 payload id（旧的一片一点）。
+    groups: Dict[str, List[_StoredSlice]] = {}
+    scanned_point_ids: List[str] = []
     next_page_offset = None
 
+    # 只取印章。正文留在插件注册表，避免每次启动把全文拉回来。
     while True:
         records, next_page_offset = await client.scroll(
             collection_name=KNOWLEDGE_COLLECTION_NAME,
-            limit=100,
-            with_payload=True,
+            scroll_filter=_PLUGIN_SOURCE_FILTER,
+            limit=512,
+            with_payload=_PLUGIN_STAMP_FIELDS,
             with_vectors=False,
             offset=next_page_offset,
         )
         for record in records:
-            if record.payload is None:
+            payload = record.payload
+            if payload is None:
                 continue
-            id_str: Optional[str] = record.payload.get("id")
-            source: Optional[str] = record.payload.get("source")
-            if id_str and source == "plugin":  # 只跟踪插件来源的知识
-                _t = {
-                    "id": record.id,
-                    "hash": record.payload.get("_hash"),
-                }
-                existing_knowledge[id_str] = _t
+            source = payload["source"] if "source" in payload else ""
+            if source != "plugin":
+                continue
+            logical = payload["id"] if "id" in payload else ""
+            if not isinstance(logical, str) or not logical:
+                continue
+            doc_raw = payload["doc_id"] if "doc_id" in payload else ""
+            parent = doc_raw if isinstance(doc_raw, str) and doc_raw else logical
+            hash_raw = payload["_hash"] if "_hash" in payload else ""
+            stored_hash = hash_raw if isinstance(hash_raw, str) else ""
+            point_id = str(record.id)
+            scanned_point_ids.append(point_id)
+            if parent not in groups:
+                groups[parent] = []
+            groups[parent].append(_StoredSlice(point_id, stored_hash))
 
         if next_page_offset is None:
             break
 
-    # 2. 准备新数据：先收集所有需要嵌入的文本，再批量调用远程 embedding，避免几千条知识逐条请求。
-    points_to_upsert = []
-    local_ids = set()
-    pending_items: list[tuple[str, dict, str, str, str]] = []
+    # 2. 内存里切一遍。哈希和片数都没变才跳过嵌入，避免每次启动重嵌短文。
+    points_to_upsert: List[PointStruct] = []
+    kept_point_ids: set[str] = set()
+    pending_items: list[tuple[str, dict, str, str, str, str, bool]] = []
 
     logger.info(i18n_t("log.rag.kb_number_knowledge_registered_register", p0=len(_ENTITIES)))
     last_scan_progress_log = time.monotonic()
@@ -1008,31 +1383,52 @@ async def sync_knowledge():
             last_scan_progress_log = now
 
         id_str = knowledge["id"]
-        local_ids.add(id_str)
-
-        current_hash = calculate_hash(dict(knowledge))
-
-        # 检查是否需要更新
-        is_new = id_str not in existing_knowledge
-        is_modified = not is_new and existing_knowledge[id_str]["hash"] != current_hash
-
-        if is_new or is_modified:
-            if "title" in knowledge:
-                text_to_embed = build_knowledge_text(knowledge)
-                log_prefix = "Knowledge"
-                log_name = str(knowledge.get("title", id_str))
-            else:
-                text_to_embed = build_image_text(knowledge)
-                log_prefix = "ImageRAG"
-                log_name = id_str
-
-            payload: dict = dict(knowledge)
-            payload["_hash"] = current_hash
-            payload["source"] = "plugin"  # 确保标记为插件来源
-            pending_items.append((id_str, payload, text_to_embed, log_prefix, log_name))
+        content_hash = calculate_hash(dict(knowledge))
+        stamped = chunk_method_hash(content_hash)
+        group = groups[id_str] if id_str in groups else []
+        stored_hash = stored_hash_uniform([item.stored_hash for item in group])
+        stored_count = len(group)
+        cached_count = _piece_count_by_stamp[stamped] if stamped in _piece_count_by_stamp else -1
+        if stored_hash == stamped and stored_count >= 1 and cached_count == stored_count:
+            for item in group:
+                kept_point_ids.add(item.point_id)
+            continue
+        if "title" in knowledge:
+            pieces = pieces_for_embed(
+                knowledge["content"],
+                title=knowledge["title"],
+                tags=list(knowledge["tags"]),
+            )
+            log_prefix = "Knowledge"
+            log_name = knowledge["title"] or id_str
+        else:
+            pieces = pieces_for_embed(knowledge["content"], tags=list(knowledge["tags"]))
+            log_prefix = "ImageRAG"
+            log_name = id_str
+        _piece_count_by_stamp[stamped] = len(pieces)
+        if should_skip_rebuild(stored_hash, stored_count, content_hash, len(pieces)):
+            for item in group:
+                kept_point_ids.add(item.point_id)
+            continue
+        if not pieces:
+            continue
+        is_new = id_str not in groups
+        for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(id_str, len(pieces)), pieces)):
+            chunk_payload = dict(knowledge)
+            chunk_payload["id"] = logical
+            chunk_payload["doc_id"] = id_str
+            chunk_payload["chunk_index"] = idx
+            chunk_payload["content"] = piece.body
+            chunk_payload["_hash"] = stamped
+            chunk_payload["_src"] = content_hash
+            chunk_payload["source"] = "plugin"
+            point_id = get_point_id(logical)
+            pending_items.append((point_id, chunk_payload, piece.embed_text, log_prefix, log_name, id_str, is_new))
 
     if pending_items:
         logger.info(i18n_t("log.rag.kb_start_update_need_add_items", p0=len(pending_items)))
+    else:
+        logger.info(i18n_t("log.rag.kb_sync_skip_embed"))
 
     async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
         return list(await embedding_model.aembed(list(texts)))
@@ -1042,40 +1438,60 @@ async def sync_knowledge():
         _embed_pending,
         log_tag="Knowledge",
     )
-    # BM25 稀疏向量（与 dense 一一对应；模型不可用时整体为 None → 仅写 dense）
     sparse_vectors = await _sparse_embed_batch_async([item[2] for item in pending_items])
-    for i, (id_str, payload, _, log_prefix, log_name) in enumerate(pending_items):
-        vector = vectors[i]
-        if vector is None:
+    parent_indexes: dict[str, list[int]] = {}
+    for i, item in enumerate(pending_items):
+        parent = item[5]
+        if parent not in parent_indexes:
+            parent_indexes[parent] = []
+        parent_indexes[parent].append(i)
+
+    announced: set[str] = set()
+    for parent, indexes in parent_indexes.items():
+        parent_vectors: list[Sequence[float] | None] = [vectors[i] if i < len(vectors) else None for i in indexes]
+        old_ids = [item.point_id for item in groups[parent]] if parent in groups else []
+        new_ids = [pending_items[i][0] for i in indexes]
+        if not keep_ids_after_rebuild(
+            kept_point_ids,
+            old_ids=old_ids,
+            new_ids=new_ids,
+            vectors=parent_vectors,
+        ):
             continue
-        action_str = "新增" if id_str not in existing_knowledge else "更新"
-        logger.info(
-            i18n_t(
-                "log.rag.log_prefix_action_str_knowledge",
-                log_prefix=log_prefix,
-                p0=payload.get("plugin"),
-                action_str=action_str,
-                log_name=log_name,
-            )
-        )
-        sv = sparse_vectors[i] if i < len(sparse_vectors) else None
-        points_to_upsert.append(_build_named_point(get_point_id(id_str), list(vector), sv, payload))
+        for i, vector in zip(indexes, parent_vectors):
+            point_id, payload, _, log_prefix, log_name, _, is_new = pending_items[i]
+            if vector is None:
+                continue
+            if parent not in announced:
+                announced.add(parent)
+                plugin_name = payload["plugin"] if "plugin" in payload else ""
+                logger.info(
+                    i18n_t(
+                        "log.rag.log_prefix_action_str_knowledge",
+                        log_prefix=log_prefix,
+                        p0=plugin_name,
+                        action_str="新增" if is_new else "更新",
+                        log_name=log_name,
+                    )
+                )
+            sv = sparse_vectors[i] if i < len(sparse_vectors) else None
+            points_to_upsert.append(_build_named_point(point_id, list(vector), sv, payload))
 
     # 3. 执行更新
     if points_to_upsert:
         logger.info(i18n_t("log.rag.kb_writing_knowledge_points", p0=len(points_to_upsert)))
         await _upsert_knowledge_points(points_to_upsert)
 
-    # 4. 清理已删除的插件知识（手动添加的知识不会被删除）
-    if local_ids:
-        ids_to_delete = [
-            existing_knowledge[id_str]["id"] for id_str in existing_knowledge.keys() if id_str not in local_ids
+    # 4. 注册表为空时不删，避免插件没加载成功把库清掉。
+    if _ENTITIES:
+        ids_to_delete: list[int | str | uuid.UUID] = [
+            point_id for point_id in scanned_point_ids if point_id not in kept_point_ids
         ]
         if ids_to_delete:
             logger.info(i18n_t("log.rag.kb_deleting_removed_plugin_delete", p0=len(ids_to_delete)))
             await client.delete(
                 collection_name=KNOWLEDGE_COLLECTION_NAME,
-                points_selector=ids_to_delete,
+                points_selector=PointIdsList(points=ids_to_delete),
             )
 
 
@@ -1238,9 +1654,19 @@ async def sync_manual_knowledge():
     items: list[tuple] = []
     for knowledge in manual_entities:
         id_str = knowledge["id"]
-        payload: dict = dict(knowledge)
-        payload["source"] = "manual"  # 确保标记为手动来源
-        items.append((get_point_id(id_str), payload, build_knowledge_text(knowledge)))
+        content_hash = calculate_hash(dict(knowledge))
+        pieces = pieces_for_embed(knowledge["content"], title=knowledge["title"], tags=list(knowledge["tags"]))
+        stamped = chunk_method_hash(content_hash)
+        for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(id_str, len(pieces)), pieces)):
+            payload: dict = dict(knowledge)
+            payload["id"] = logical
+            payload["doc_id"] = id_str
+            payload["chunk_index"] = idx
+            payload["content"] = piece.body
+            payload["_hash"] = stamped
+            payload["_src"] = content_hash
+            payload["source"] = "manual"
+            items.append((get_point_id(logical), payload, piece.embed_text))
 
     # dense + BM25 稀疏命名向量（与集合结构一致）
     points_to_upsert = await _compute_knowledge_points(items)
@@ -1250,10 +1676,9 @@ async def sync_manual_knowledge():
 
 
 async def add_manual_knowledge_to_db(knowledge: Dict[str, Any]) -> bool:
-    """添加手动知识到向量数据库（同时落 SQL 真值源）
+    """添加手动知识到向量数据库（同时落 SQL 真值源）。
 
-    单条手动知识视为"单分片文档"（doc_id 默认等于 id）。超长正文请改用
-    ``add_knowledge_document`` 走服务端分片，否则会被嵌入模型按上限截断。
+    短文保持调用方传入的 id。超预算的正文按文档切开，id 为 ``{doc_id}#{序号}``。
 
     Args:
         knowledge: 知识库条目
@@ -1262,22 +1687,38 @@ async def add_manual_knowledge_to_db(knowledge: Dict[str, Any]) -> bool:
         bool: 是否成功添加（嵌入被 413 跳过或 RAG 未就绪时返回 False）
     """
     id_str = str(knowledge["id"])
-    tags = _opt_field(knowledge, "tags") or []
-    if not isinstance(tags, list):
-        tags = []
+    tags_raw = _opt_field(knowledge, "tags") or []
+    tags = [str(tag) for tag in tags_raw] if isinstance(tags_raw, list) else []
     title = str(_opt_field(knowledge, "title") or "")
     content = str(_opt_field(knowledge, "content") or "")
+    plugin = str(_opt_field(knowledge, "plugin") or "manual")
+    doc_id = str(_opt_field(knowledge, "doc_id") or id_str)
+    pieces = pieces_for_embed(content, title=title, tags=tags)
+    if len(pieces) > 1:
+        result = await add_knowledge_document(
+            doc_id=doc_id,
+            title=title,
+            full_text=content,
+            tags=tags,
+            plugin=plugin,
+            source="manual",
+            replace=True,
+        )
+        return int(result["written"]) > 0
+    body = pieces[0].body if pieces else ""
     row = AIKnowledgeChunk(
         id=id_str,
-        doc_id=str(_opt_field(knowledge, "doc_id") or id_str),
+        doc_id=doc_id,
         chunk_index=0,
         title=title,
-        content=content,
+        content=body,
         tags=json.dumps(tags, ensure_ascii=False),
         source="manual",
-        plugin=str(_opt_field(knowledge, "plugin") or "manual"),
+        plugin=plugin,
         qdrant_id=get_point_id(id_str),
-        content_hash=calculate_hash({"id": id_str, "title": title, "content": content, "tags": tags}),
+        content_hash=_row_content_hash(id_str, title, body, tags),
+        origin=content,
+        chunker_id=chunker_stamp(),
     )
     written, _ = await _embed_and_upsert_chunks([row])
     if written:
@@ -1320,12 +1761,42 @@ async def update_manual_knowledge_in_db(entity_id: str, updates: dict) -> bool:
         row.tags = json.dumps(tags if isinstance(tags, list) else [], ensure_ascii=False)
     if "plugin" in updates:
         row.plugin = str(updates["plugin"])
+    saved = row.content
+    tags = row.tags_list()
+    pack_title = _strip_piece_title(row.title)
+    pieces = pieces_for_embed(saved, title=pack_title, tags=tags)
+    doc_id = row.doc_id or row.id
+    siblings = await AIKnowledgeChunk.list_by_doc(doc_id)
     row.updated_at = int(time.time())
-    row.content_hash = calculate_hash(
-        {"id": row.id, "title": row.title, "content": row.content, "tags": row.tags_list()}
-    )
-
-    written, _ = await _embed_and_upsert_chunks([row])
+    # 多片文档改其中一片也要整篇重写，好把 origin 拼回全文。
+    if len(pieces) > 1 or len(siblings) > 1:
+        spliced: list[str] = []
+        found = False
+        for sibling in siblings:
+            if sibling.id == row.id:
+                spliced.append(saved)
+                found = True
+            else:
+                spliced.append(sibling.content)
+        if not found:
+            spliced.append(saved)
+        result = await add_knowledge_document(
+            doc_id=doc_id,
+            title=pack_title or doc_id,
+            full_text="\n".join(part for part in spliced if part),
+            tags=tags,
+            plugin=row.plugin,
+            source=row.source or "manual",
+            replace=True,
+        )
+        written = int(result["written"])
+    else:
+        if pieces and pieces[0].body:
+            row.content = pieces[0].body
+        row.origin = saved
+        row.chunker_id = chunker_stamp()
+        row.content_hash = _row_content_hash(row.id, row.title, row.content, tags)
+        written, _ = await _embed_and_upsert_chunks([row])
     if written:
         logger.info(i18n_t("log.rag.kb_manually_knowledge_entity_update", entity_id=entity_id))
     return written > 0

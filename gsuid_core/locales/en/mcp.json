@@ -76,5 +76,6 @@
   "log.mcp.tool_calling_name_args_call": "[MCP Tool] Calling {p0}/{tool_name}, args: {call_args}",
   "log.mcp.tool_fetched_tools": "[MCP][{p0}] Fetched {p1} tools",
   "log.mcp.tools_registered_total": "[MCP] All MCP tools registered, {total_registered} tools registered in total",
-  "log.mcp.unregister_name_tool": "[MCP] Unregister tool: {tool_name}"
+  "log.mcp.unregister_name_tool": "[MCP] Unregister tool: {tool_name}",
+  "log.mcp.catalog_empty_defer_connect": "[MCP] {p0} ({config_id}) has no saved tool list, startup does not connect"
 }

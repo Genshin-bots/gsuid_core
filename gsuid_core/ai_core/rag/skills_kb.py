@@ -25,13 +25,20 @@
 ``init_knowledge_collection`` 的全量 payload 备份重嵌统一覆盖（它 scroll 全量点、含本类）。
 """
 
+import json
 import hashlib
 from typing import Dict, List, Optional
 from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.chunking import split_text
+from gsuid_core.ai_core.rag.chunking import (
+    CHUNKER_ID,
+    DEFAULT_CHUNK_OVERLAP,
+    document_bodies,
+    embed_char_budget,
+    current_max_input_tokens,
+)
 
 # 全部 skill 开发文档共用的来源标记：聊天侧据此一处排除整类。
 SKILLS_DOC_SOURCE: str = "skill_doc"
@@ -41,16 +48,6 @@ _SKILL_NS_PREFIX: str = "skilldoc:"
 # doc_id 形如 skilldoc::<skill>::<文件名 stem>；内容哈希写进分片 tags 做幂等判定。
 _DOC_ID_PREFIX: str = "skilldoc::"
 _HASH_TAG_PREFIX: str = "_srchash:"
-
-# 分片策略版本：折进内容哈希——改了切分方式（即便文件没变）也会让旧入库失配、自动重切重嵌。
-_CHUNKER_VERSION: str = "md-v1"
-
-# 按 Markdown 小节（H2）切分；超过软上限的小节再**保代码块完整地**细切，避免单片过长触发 dense
-# 静默截断（本地 bge-small-zh 仅 512 token 上限）。软上限略放宽以尽量保住"一小节一片"的完整度。
-_SECTION_SOFT_CAP: int = 1200
-_SUB_TARGET: int = 1000
-_SUB_HARD_CAP: int = 2200
-_SUB_OVERLAP: int = 120
 
 # .agents/skills 根目录（相对仓库根；parents[3] 即仓库根）。
 _SKILLS_ROOT: Path = Path(__file__).resolve().parents[3] / ".agents" / "skills"
@@ -101,126 +98,9 @@ def _doc_title(text: str, fallback: str) -> str:
 
 
 def _content_hash(text: str) -> str:
-    # 折进分片版本：切分策略变更即视为内容变更，触发重切重嵌。
-    payload = f"{_CHUNKER_VERSION}\x00{text}"
+    # 切法编号和模型 token 上限折进哈希。片文本没变时只改哈希、不重嵌。
+    payload = f"{CHUNKER_ID}\x00{current_max_input_tokens()}\x00{text}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
-
-
-# ───────────────────────── Markdown 小节级分片（代码块感知） ─────────────────────────
-
-
-def _iter_h2_sections(text: str) -> List[str]:
-    """按 H2（``## ``）把 markdown 切成"小节"块（每块含各自标题）；**代码围栏内的 ``#`` 不算标题**。
-
-    H1 标题与首个 H2 之前的引言归入第一块。H3+ 不作为切分边界——让一个小节（含其子小节）
-    保持完整，符合"按小节切"的语义。
-    """
-    lines = text.splitlines()
-    in_fence = False
-    boundaries: List[int] = [0]
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        if i != 0 and stripped.startswith("## "):  # "### " 不以 "## "（带尾空格）开头，天然排除
-            boundaries.append(i)
-    boundaries.append(len(lines))
-
-    sections: List[str] = []
-    for a, b in zip(boundaries, boundaries[1:]):
-        block = "\n".join(lines[a:b]).strip()
-        if block:
-            sections.append(block)
-    return sections
-
-
-def _section_heading(block: str) -> str:
-    """块首行若是 Markdown 标题则返回之，否则空串。"""
-    if not block:
-        return ""
-    first = block.splitlines()[0].strip()
-    return first if first.startswith("#") else ""
-
-
-def _atomic_segments(body: str) -> List[str]:
-    """把小节正文切成"原子块"：每个**完整代码围栏**是一块，围栏之间的散文按空行分段成块。"""
-    lines = body.splitlines()
-    segments: List[str] = []
-    buf: List[str] = []
-    in_fence = False
-
-    def _flush_prose() -> None:
-        text = "\n".join(buf).strip("\n")
-        for para in text.split("\n\n"):
-            if para.strip():
-                segments.append(para.strip("\n"))
-        buf.clear()
-
-    for line in lines:
-        if line.lstrip().startswith("```"):
-            if not in_fence:
-                _flush_prose()
-                buf.append(line)
-                in_fence = True
-            else:
-                buf.append(line)
-                segments.append("\n".join(buf))  # 完整代码块整块产出
-                buf.clear()
-                in_fence = False
-            continue
-        buf.append(line)
-    if in_fence:  # 容错：围栏未闭合，整块产出
-        segments.append("\n".join(buf))
-    else:
-        _flush_prose()
-    return [s for s in segments if s.strip()]
-
-
-def _pack_segments(segments: List[str]) -> List[str]:
-    """把原子块按目标片长贪心打包成片：单块超过硬上限才硬切（极少数超长块），否则整块保留。"""
-    pieces: List[str] = []
-    cur = ""
-
-    def _flush() -> None:
-        nonlocal cur
-        if cur.strip():
-            pieces.append(cur.strip("\n"))
-        cur = ""
-
-    for seg in segments:
-        if len(seg) > _SUB_HARD_CAP:
-            _flush()
-            pieces.extend(split_text(seg, _SUB_TARGET, _SUB_OVERLAP))
-            continue
-        if cur and len(cur) + len(seg) + 1 > _SUB_TARGET:
-            _flush()
-        cur = f"{cur}\n{seg}" if cur else seg
-    _flush()
-    return [p for p in pieces if p.strip()]
-
-
-def _markdown_chunks(text: str) -> List[str]:
-    """把一篇文档切成"按小节"的分片：小节整片入库；超长小节再**保代码块完整地**细切，
-    每个子片重新前置该小节标题以保持自描述（独立检索召回时仍知道自己属于哪一小节）。"""
-    chunks: List[str] = []
-    for block in _iter_h2_sections(text):
-        if len(block) <= _SECTION_SOFT_CAP:
-            chunks.append(block)
-            continue
-        heading = _section_heading(block)
-        body = block[len(heading) :].lstrip("\n") if heading else block
-        pieces = _pack_segments(_atomic_segments(body))
-        for idx, piece in enumerate(pieces):
-            if not heading:
-                chunks.append(piece)
-            elif idx == 0:
-                chunks.append(f"{heading}\n{piece}")
-            else:
-                chunks.append(f"{heading}（续{idx + 1}）\n{piece}")
-    return [c for c in chunks if c.strip()]
 
 
 # ───────────────────────── 启动挂载 + 检索 ─────────────────────────
@@ -265,9 +145,13 @@ async def sync_skill_docs() -> None:
     # 现存 skill_doc 分片：doc_id -> 已存内容哈希（取自分片 tags 里的 _srchash:）
     existing_rows = await AIKnowledgeChunk.iter_all(source=SKILLS_DOC_SOURCE)
     existing_hash: Dict[str, str] = {}
-    existing_doc_ids: set = set()
+    existing_doc_ids: set[str] = set()
+    rows_by_doc: Dict[str, List[AIKnowledgeChunk]] = {}
     for row in existing_rows:
         existing_doc_ids.add(row.doc_id)
+        if row.doc_id not in rows_by_doc:
+            rows_by_doc[row.doc_id] = []
+        rows_by_doc[row.doc_id].append(row)
         for tag in row.tags_list():
             if tag.startswith(_HASH_TAG_PREFIX):
                 existing_hash[row.doc_id] = tag[len(_HASH_TAG_PREFIX) :]
@@ -290,17 +174,36 @@ async def sync_skill_docs() -> None:
             doc_id = _doc_id_for(skill, f)
             desired_doc_ids.add(doc_id)
             h = _content_hash(text)
-            if not force and existing_hash.get(doc_id) == h:
-                continue  # 未变化 → 跳过重嵌
-            sections = _markdown_chunks(text)
-            if not sections:
+            stored = existing_hash[doc_id] if doc_id in existing_hash else ""
+            if not force and stored == h:
                 continue
-            title = _doc_title(text, f.stem)
+            title = f"[{skill}] {_doc_title(text, f.stem)}"
+            tags = [namespace, skill, f"{_HASH_TAG_PREFIX}{h}"]
+            bodies = document_bodies(
+                full_text=text,
+                sections=(),
+                title=title,
+                tags=tags,
+                budget=embed_char_budget(),
+                overlap=DEFAULT_CHUNK_OVERLAP,
+            )
+            if not bodies:
+                continue
+            old_rows = rows_by_doc[doc_id] if doc_id in rows_by_doc else []
+            old_bodies = [row.content.strip() for row in sorted(old_rows, key=lambda row: (row.chunk_index, row.id))]
+            # 切法编号变了但片文本没变：只改 SQL 里的哈希，向量不用重算。
+            if not force and old_bodies == bodies:
+                for row in old_rows:
+                    kept = [tag for tag in row.tags_list() if not tag.startswith(_HASH_TAG_PREFIX)]
+                    kept.append(f"{_HASH_TAG_PREFIX}{h}")
+                    row.tags = json.dumps(kept, ensure_ascii=False)
+                await AIKnowledgeChunk.upsert_many(old_rows)
+                continue
             await add_knowledge_document(
                 doc_id=doc_id,
-                title=f"[{skill}] {title}",
-                items=[{"content": c} for c in sections],
-                tags=[namespace, skill, f"{_HASH_TAG_PREFIX}{h}"],
+                title=title,
+                full_text=text,
+                tags=tags,
                 plugin=namespace,
                 source=SKILLS_DOC_SOURCE,
                 replace=True,

@@ -316,10 +316,11 @@ Authorization: Bearer <token>
 POST /api/ai/knowledge/bulk
 ```
 
-> 用于把长文（如手册、规则、剧本，乃至数十万字）一次导入。服务端会**自动分片**，每片单独
-> 向量化——避免整段长文被嵌入模型按上限（本地 `bge-small-zh-v1.5` 仅 512 token）静默截断、
-> 导致绝大部分内容不可检索。同一 `doc_id` 重复导入会**先清空旧分片再写**（幂等，不产生重复）。
-> 手动知识以 SQL（`AIKnowledgeChunk`）为真值源，向量库丢失/换模型后可自动从 SQL 重嵌恢复。
+> 用于把长文（如手册、规则、剧本，乃至数十万字）一次导入。服务端在嵌入前按同一把切刀切开，
+> 每片单独向量化。整串（含标题和标签前缀）不超过当前模型的字符预算。预算等于最大输入 token 减去 32。
+> `chunk_size` 为 0 时跟当前模型走。大于该预算的请求会被夹回预算。
+> 客户端预先切开的 `items` 也会再切一次。同一 `doc_id` 重复导入会先清空旧分片再写。
+> 手动知识以 SQL（`AIKnowledgeChunk`）为真值源，向量库丢失或换模型后可从 SQL 重嵌恢复。
 
 **请求体**（`full_text` 与 `items` 二选一）：
 ```json
@@ -329,7 +330,7 @@ POST /api/ai/knowledge/bulk
     "full_text": "……数十万字……",
     "tags": ["运营"],
     "plugin": "manual",
-    "chunk_size": 400,
+    "chunk_size": 0,
     "chunk_overlap": 60,
     "replace": true
 }
@@ -340,11 +341,11 @@ POST /api/ai/knowledge/bulk
 |------|------|------|------|------|
 | title | string | 是 | - | 文档标题（多分片时每片标题追加"- 第N段"） |
 | doc_id | string | 否 | 自动生成 | 文档标识；同一 doc_id 重导即覆盖。建议显式传，便于按文档管理/清理 |
-| full_text | string | 否* | - | 整篇长文，服务端按 chunk_size/overlap 分片 |
-| items | array | 否* | - | 客户端已分好的分片数组，每项形如 `{"content": "..."}` |
+| full_text | string | 否* | - | 整篇长文。服务端按 chunk_size 和 overlap 分片，再夹到当前模型的字符预算 |
+| items | array | 否* | - | 预先切开的小节，每项形如 `{"content": "..."}`。服务端仍用同一把切刀再切 |
 | tags | array | 否 | [] | 统一标签（所有分片共享） |
 | plugin | string | 否 | manual | 所属分组 |
-| chunk_size | integer | 否 | 400 | 单片最大字符数（50–4000）。本地默认模型建议 ≤400，远程大上下文模型可放宽 |
+| chunk_size | integer | 否 | 0 | 单片字符预算。0 表示跟当前模型。小于预算的正数按该值切，大于预算时夹回预算。预算含标题和标签前缀 |
 | chunk_overlap | integer | 否 | 60 | 相邻片重叠字符数 |
 | replace | boolean | 否 | true | 先删除该 doc_id 旧分片再写，避免新版分片更少时残留孤儿分片 |
 

@@ -76,5 +76,6 @@
   "log.mcp.tool_calling_name_args_call": "[MCP Tool] 呼び出し中 {p0}/{tool_name}、引数: {call_args}",
   "log.mcp.tool_fetched_tools": "[MCP][{p0}] {p1} 個のツールを取得",
   "log.mcp.tools_registered_total": "[MCP] すべての MCP ツール登録完了、合計 {total_registered} 個のツールを登録",
-  "log.mcp.unregister_name_tool": "[MCP] ツールを登録解除: {tool_name}"
+  "log.mcp.unregister_name_tool": "[MCP] ツールを登録解除: {tool_name}",
+  "log.mcp.catalog_empty_defer_connect": "[MCP] {p0} ({config_id}) に保存済みツール一覧がないため、起動時は接続しない"
 }

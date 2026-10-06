@@ -5,6 +5,7 @@
 """
 
 import time
+import uuid
 import asyncio
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from pathlib import Path
@@ -15,6 +16,7 @@ from qdrant_client.models import (
     MatchAny,
     MatchValue,
     PointStruct,
+    PointIdsList,
     VectorParams,
     FieldCondition,
 )
@@ -32,6 +34,14 @@ from gsuid_core.ai_core.rag.base import (
     upsert_points_with_backoff,
 )
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.rag.chunking import (
+    pieces_for_embed,
+    chunk_method_hash,
+    logical_chunk_ids,
+    should_skip_rebuild,
+    stored_hash_uniform,
+    keep_ids_after_rebuild,
+)
 from gsuid_core.ai_core.rag.collection_migration import (
     load_payload_backup,
     save_payload_backup,
@@ -141,6 +151,13 @@ async def init_image_collection():
     )
 
 
+def _payload_str(payload: object, key: str, fallback: str = "") -> str:
+    if not isinstance(payload, dict) or key not in payload:
+        return fallback
+    raw = payload[key]
+    return raw if isinstance(raw, str) and raw else fallback
+
+
 async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
     """基于旧 payload 重新生成图片检索向量。"""
     from gsuid_core.ai_core.rag.base import client, embedding_model
@@ -151,46 +168,51 @@ async def _reindex_image_payloads(payload_backup: list[tuple[Any, dict[str, Any]
     prepared: list[tuple[Any, dict[str, Any], str]] = []
     skipped = 0
     for point_id, payload in payload_backup:
-        try:
-            raw_id = payload.get("id") or str(point_id)
-            entity = ImageEntity(
-                id=str(raw_id),
-                plugin=str(payload.get("plugin", "manual")),
-                path=str(payload.get("path", "")),
-                tags=[str(t) for t in payload.get("tags", [])] if isinstance(payload.get("tags"), list) else [],
-                content=str(payload.get("content", "")),
-                source=str(payload.get("source", "manual")),
-                _hash=str(payload.get("_hash", "")),
-            )
-            text_to_embed = build_image_text(entity)
-            if not text_to_embed.strip():
-                skipped += 1
-                continue
-            prepared.append((point_id, dict(payload), text_to_embed))
-        except Exception as e:
+        raw_id = _payload_str(payload, "id", str(point_id))
+        raw_tags = payload["tags"] if "tags" in payload else []
+        tags = [str(tag) for tag in raw_tags] if isinstance(raw_tags, list) else []
+        content = _payload_str(payload, "content")
+        pieces = pieces_for_embed(content, tags=tags)
+        if not pieces or not pieces[0].embed_text.strip():
             skipped += 1
-            logger.warning(i18n_t("log.rag.imagerag_prepare_payload_embedding_fail", e=e))
+            continue
+        if len(pieces) == 1:
+            prepared.append((point_id, dict(payload), pieces[0].embed_text))
+            continue
+        parent = raw_id
+        src = _payload_str(payload, "_hash")
+        stamped = chunk_method_hash(src) if src else ""
+        for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(parent, len(pieces)), pieces)):
+            cloned = dict(payload)
+            cloned["id"] = logical
+            cloned["doc_id"] = parent
+            cloned["chunk_index"] = idx
+            cloned["content"] = piece.body
+            if stamped:
+                cloned["_hash"] = stamped
+            if src:
+                cloned["_src"] = src
+            prepared.append((get_point_id(logical), cloned, piece.embed_text))
 
     points_to_upsert: list[PointStruct] = []
 
     async def _embed_reembed(texts: Sequence[str]) -> list[list[float]]:
         return list(await embedding_model.aembed(list(texts)))
 
-    try:
-        vectors = await embed_texts_with_backoff(
-            [item[2] for item in prepared],
-            _embed_reembed,
-            log_tag="ImageRAG",
-        )
-        for i, (point_id, payload, _) in enumerate(prepared):
-            vec = vectors[i]
-            if vec is None:
-                skipped += 1
-                continue
-            points_to_upsert.append(PointStruct(id=point_id, vector=list(vec), payload=payload))
-    except Exception as e:
-        skipped += len(prepared)
-        logger.warning(i18n_t("log.rag.imagerag_batch_embedding_payload_fail", p0=len(prepared), e=e))
+    vectors = await embed_texts_with_backoff(
+        [item[2] for item in prepared],
+        _embed_reembed,
+        log_tag="ImageRAG",
+    )
+    for i, (point_id, payload, _) in enumerate(prepared):
+        vec = vectors[i] if i < len(vectors) else None
+        if vec is None:
+            skipped += 1
+            continue
+        points_to_upsert.append(PointStruct(id=point_id, vector=list(vec), payload=payload))
+
+    if payload_backup and not points_to_upsert:
+        raise RuntimeError(i18n_t("log.rag.imagerag_reindex_embed_empty"))
 
     if points_to_upsert:
 
@@ -260,8 +282,9 @@ async def sync_images():
 
     logger.info(i18n_t("log.rag.imagerag_image_library_sync"))
 
-    # 1. 获取现有图片数据
-    existing_images: Dict[str, Dict] = {}
+    # 1. 按图片 id 归组。多片时 payload doc_id 是图片 id，旧数据只有 payload id。
+    groups: Dict[str, list[tuple[str, str]]] = {}
+    scanned_point_ids: List[str] = []
     next_page_offset = None
 
     while True:
@@ -275,20 +298,26 @@ async def sync_images():
         for record in records:
             if record.payload is None:
                 continue
-            record_id = record.payload.get("id")
-            if isinstance(record_id, str) and record_id:
-                existing_images[record_id] = {
-                    "id": record.id,
-                    "hash": record.payload.get("_hash"),
-                }
+            record_id = record.payload["id"] if "id" in record.payload else ""
+            if not isinstance(record_id, str) or not record_id:
+                continue
+            doc_raw = record.payload["doc_id"] if "doc_id" in record.payload else ""
+            parent = doc_raw if isinstance(doc_raw, str) and doc_raw else record_id
+            hash_raw = record.payload["_hash"] if "_hash" in record.payload else ""
+            stored_hash = hash_raw if isinstance(hash_raw, str) else ""
+            point_id = str(record.id)
+            scanned_point_ids.append(point_id)
+            if parent not in groups:
+                groups[parent] = []
+            groups[parent].append((point_id, stored_hash))
 
         if next_page_offset is None:
             break
 
     # 2. 准备新数据 - 从 _ENTITIES 中筛选出图片类型；先收集文本，再统一批量 embedding。
-    points_to_upsert = []
-    pending_items: list[tuple[str, dict, str, str, list[str], bool]] = []
-    local_ids: set[str] = set()
+    points_to_upsert: List[PointStruct] = []
+    pending_items: list[tuple[str, dict, str, str, list[str], bool, str]] = []
+    kept_point_ids: set[str] = set()
 
     # 筛选图片实体（通过检查是否有 path 字段来判断）
     image_entities = [e for e in _ENTITIES if isinstance(e, dict) and "path" in e]
@@ -310,47 +339,43 @@ async def sync_images():
             logger.warning(i18n_t("log.rag.imagerag_skipping_invalid_image_skip"))
             continue
         id_str: str = raw_id
-        local_ids.add(id_str)
 
         # 获取 plugin 和 tags 用于日志
-        plugin_name = image.get("plugin", "unknown")
+        plugin_name = image["plugin"] if "plugin" in image else "unknown"
         if not isinstance(plugin_name, str):
             plugin_name = "unknown"
-        tags = image.get("tags", [])
-        if not isinstance(tags, list):
-            tags = []
+        raw_tags = image["tags"] if "tags" in image else []
+        tags = [str(tag) for tag in raw_tags] if isinstance(raw_tags, list) else []
+        content = image["content"] if "content" in image else ""
+        if not isinstance(content, str):
+            content = str(content) if "content" in image else ""
 
-        # 计算哈希（排除 _hash 字段本身）
-        hash_content = {k: v for k, v in image.items() if k != "_hash"}
-        current_hash = calculate_hash(hash_content)
-
-        # 检查是否需要更新
-        is_new = id_str not in existing_images
-        is_modified = False
-        if not is_new:
-            existing_record = existing_images.get(id_str)
-            if existing_record and isinstance(existing_record, dict):
-                existing_hash = existing_record.get("hash")
-                is_modified = existing_hash != current_hash
-
-        if is_new or is_modified:
-            # 构建 ImageEntity 并生成待嵌入文本
-            image_entity = ImageEntity(
-                id=id_str,
-                plugin=plugin_name,
-                path=str(image.get("path", "")),
-                tags=[str(t) for t in tags] if isinstance(tags, list) else [],
-                content=str(image.get("content", "")),
-                source="plugin",
-                _hash=current_hash,
-            )
-            text_to_embed = build_image_text(image_entity)
-
-            # 构建payload
+        hash_content = {key: value for key, value in image.items() if key != "_hash"}
+        content_hash = calculate_hash(hash_content)
+        pieces = pieces_for_embed(content, tags=tags)
+        group = groups[id_str] if id_str in groups else []
+        stored_hash = stored_hash_uniform([item[1] for item in group])
+        if should_skip_rebuild(stored_hash, len(group), content_hash, len(pieces)):
+            for point_id, _stored in group:
+                kept_point_ids.add(point_id)
+            continue
+        if not pieces:
+            continue
+        stamped = chunk_method_hash(content_hash)
+        is_new = id_str not in groups
+        path = image["path"] if "path" in image else ""
+        for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(id_str, len(pieces)), pieces)):
             payload: dict = dict(image)
-            payload["_hash"] = current_hash
+            payload["id"] = logical
+            payload["doc_id"] = id_str
+            payload["chunk_index"] = idx
+            payload["content"] = piece.body
+            payload["path"] = str(path)
+            payload["_hash"] = stamped
+            payload["_src"] = content_hash
             payload["source"] = "plugin"
-            pending_items.append((id_str, payload, text_to_embed, plugin_name, tags, is_new))
+            point_id = get_point_id(logical)
+            pending_items.append((point_id, payload, piece.embed_text, plugin_name, tags, is_new, id_str))
 
     if pending_items:
         logger.info(i18n_t("log.rag.imagerag_need_add_update_images", p0=len(pending_items)))
@@ -363,26 +388,47 @@ async def sync_images():
         _embed_pending,
         log_tag="ImageRAG",
     )
-    for i, (id_str, payload, _, plugin_name, tags, is_new) in enumerate(pending_items):
-        vector = vectors[i]
-        if vector is None:
+    parent_indexes: dict[str, list[int]] = {}
+    for i, item in enumerate(pending_items):
+        parent = item[6]
+        if parent not in parent_indexes:
+            parent_indexes[parent] = []
+        parent_indexes[parent].append(i)
+
+    announced: set[str] = set()
+    for parent, indexes in parent_indexes.items():
+        parent_vectors: list[Sequence[float] | None] = [vectors[i] if i < len(vectors) else None for i in indexes]
+        old_ids = [point_id for point_id, _stored in groups[parent]] if parent in groups else []
+        new_ids = [pending_items[i][0] for i in indexes]
+        if not keep_ids_after_rebuild(
+            kept_point_ids,
+            old_ids=old_ids,
+            new_ids=new_ids,
+            vectors=parent_vectors,
+        ):
             continue
-        action_str = "新增" if is_new else "更新"
-        logger.info(
-            i18n_t(
-                "log.rag.imagerag_plugin_name_action_str",
-                plugin_name=plugin_name,
-                action_str=action_str,
-                tags=tags,
+        for i, vector in zip(indexes, parent_vectors):
+            point_id, payload, _, plugin_name, tags, is_new, _parent = pending_items[i]
+            if vector is None:
+                continue
+            if parent not in announced:
+                announced.add(parent)
+                action_str = "新增" if is_new else "更新"
+                logger.info(
+                    i18n_t(
+                        "log.rag.imagerag_plugin_name_action_str",
+                        plugin_name=plugin_name,
+                        action_str=action_str,
+                        tags=tags,
+                    )
+                )
+            points_to_upsert.append(
+                PointStruct(
+                    id=point_id,
+                    vector=list(vector),
+                    payload=payload,
+                )
             )
-        )
-        points_to_upsert.append(
-            PointStruct(
-                id=get_point_id(id_str),
-                vector=list(vector),
-                payload=payload,
-            )
-        )
 
     # 3. 执行更新
     if points_to_upsert:
@@ -393,14 +439,16 @@ async def sync_images():
 
         await upsert_points_with_backoff(points_to_upsert, _do_upsert, log_tag="ImageRAG")
 
-    # 4. 清理已删除的图片
-    if local_ids:
-        ids_to_delete = [existing_images[id_str]["id"] for id_str in existing_images.keys() if id_str not in local_ids]
+    # 4. 注册表里没有图片时不删，避免没加载成功就把图库清掉。
+    if image_entities:
+        ids_to_delete: list[int | str | uuid.UUID] = [
+            point_id for point_id in scanned_point_ids if point_id not in kept_point_ids
+        ]
         if ids_to_delete:
             logger.info(i18n_t("log.rag.imagerag_deleting_removed_images", p0=len(ids_to_delete)))
             await client.delete(
                 collection_name=IMAGE_COLLECTION_NAME,
-                points_selector=ids_to_delete,
+                points_selector=PointIdsList(points=ids_to_delete),
             )
 
 
@@ -464,6 +512,28 @@ async def list_image_plugins() -> List[str]:
     return sorted(names)
 
 
+def _dedupe_scored_images(points: List[ScoredPoint]) -> List[ScoredPoint]:
+    """同一张图的多片只留第一条。查询已经按分数排过。"""
+    seen: set[str] = set()
+    kept: List[ScoredPoint] = []
+    for point in points:
+        payload = point.payload
+        key = ""
+        if isinstance(payload, dict):
+            doc = payload["doc_id"] if "doc_id" in payload else ""
+            path = payload["path"] if "path" in payload else ""
+            if isinstance(doc, str) and doc:
+                key = doc
+            elif isinstance(path, str):
+                key = path
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        kept.append(point)
+    return kept
+
+
 async def search_images(
     query: str,
     limit: int = 5,
@@ -507,7 +577,7 @@ async def search_images(
         with_payload=True,
     )
 
-    return search_result.points
+    return _dedupe_scored_images(search_result.points)
 
 
 async def get_image_path_by_query(
@@ -722,20 +792,26 @@ async def add_manual_image_to_db(image: dict) -> bool:
         _hash="",
     )
 
-    # 生成向量
-    text_to_embed = build_image_text(image_entity)
-    vector = list(await embedding_model.aembed([text_to_embed]))[0]
+    pieces = pieces_for_embed(image_entity["content"], tags=list(image_entity["tags"]))
+    if not pieces:
+        return False
+    content_hash = calculate_hash({key: value for key, value in image.items() if key != "_hash"})
+    stamped = chunk_method_hash(content_hash)
+    vectors = list(await embedding_model.aembed([piece.embed_text for piece in pieces]))
+    if len(vectors) != len(pieces):
+        return False
+    points: List[PointStruct] = []
+    for idx, (logical, piece, vector) in enumerate(zip(logical_chunk_ids(id_str, len(pieces)), pieces, vectors)):
+        payload: dict = dict(image)
+        payload["id"] = logical
+        payload["doc_id"] = id_str
+        payload["chunk_index"] = idx
+        payload["content"] = piece.body
+        payload["_hash"] = stamped
+        payload["_src"] = content_hash
+        payload["source"] = "manual"
+        points.append(PointStruct(id=get_point_id(logical), vector=list(vector), payload=payload))
 
-    # 构建payload
-    payload: dict = dict(image)
-    payload["source"] = "manual"
-
-    point = PointStruct(
-        id=get_point_id(id_str),
-        vector=list(vector),
-        payload=payload,
-    )
-
-    await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=[point])
+    await client.upsert(collection_name=IMAGE_COLLECTION_NAME, points=points)
     logger.info(i18n_t("log.rag.imagerag_manually_add_image", p0=image.get("tags", [])))
     return True

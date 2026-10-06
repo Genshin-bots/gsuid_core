@@ -422,6 +422,9 @@ class AIKnowledgeChunk(SQLModel, table=True):
     plugin: str = Field(default="manual", max_length=64, title="所属插件/分组")
     qdrant_id: str = Field(default="", index=True, max_length=64, title="向量点ID")
     content_hash: str = Field(default="", max_length=64, title="内容哈希")
+    # 切法变更要能重切，chunk 0 留原文。旧库由 startup.exec_list 补列。
+    origin: str = Field(default="", sa_column=Column(Text, nullable=False), title="原文")
+    chunker_id: str = Field(default="", max_length=32, title="切法")
     created_at: int = Field(default_factory=lambda: int(time.time()), title="创建时间戳")
     updated_at: int = Field(default_factory=lambda: int(time.time()), title="更新时间戳")
 
@@ -456,12 +459,10 @@ class AIKnowledgeChunk(SQLModel, table=True):
             from gsuid_core.utils.database.base_models import engine
 
             async with engine.begin() as conn:
-                # sqlmodel.pyi 把 ``__tablename__`` 标为 InstrumentedAttribute,
-                # 不被 metadata.tables[str] 接受。SQLModel 自动以小写类名为表名,
-                # 这里显式硬编码, 跳过 stub 噪音, 与 AGENTS.md §3.1.1 命名前缀一致。
+                # 表名是类名小写。写错键会 KeyError，except 仍把已确保标记设成真。
                 await conn.run_sync(
                     cls.metadata.create_all,
-                    tables=[cls.metadata.tables["aichunk"]],
+                    tables=[cls.metadata.tables["aiknowledgechunk"]],
                     checkfirst=True,
                 )
             _knowledge_table_ensured = True
@@ -497,6 +498,16 @@ class AIKnowledgeChunk(SQLModel, table=True):
         async with async_maker() as session:
             result = await session.execute(select(cls).where(cls.id == entity_id))
             return result.scalars().first()
+
+    @classmethod
+    async def list_by_doc(cls, doc_id: str) -> List["AIKnowledgeChunk"]:
+        """一篇文档的全部分片，按序号排列。"""
+        await cls.ensure_table()
+        from gsuid_core.utils.database.base_models import async_maker
+
+        async with async_maker() as session:
+            stmt = select(cls).where(col(cls.doc_id) == doc_id).order_by(col(cls.chunk_index), col(cls.id))
+            return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
     async def list_page(

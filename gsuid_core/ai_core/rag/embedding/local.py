@@ -1,21 +1,65 @@
 """本地嵌入模型提供方（基于 fastembed）"""
 
 import os
+import json
+from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
 
-# 本地嵌入的 CPU/内存旋钮兜底默认值：刻意与 CPU 核数解耦、取「省内存」低值。
-# 关键背景：本地嵌入走 fastembed→onnxruntime，其 CPU 内存 arena 大小由「并发峰值」决定、
-# 且只增不减（峰值即进程内存地板）。实测同一个 bge-small(90MB) 8 路并发可撑到 ~5.4GB 常驻，
-# 单路 threads=2/batch=32 仅 ~0.63GB。故旧默认 threads=cpu//2 会让核越多、内存地板越高——
-# 大机反而更吃内存。现改为「低固定值」，大机想换吞吐再显式调高（配置或环境变量）。
-# 面向 2C2G 小机的默认：threads=1 在 2 核上只吃一个核、把另一个核留给事件循环
-# （避免嵌入抢占导致 Bot 卡顿）；batch=16 进一步压 onnxruntime 内存峰值。大机想换吞吐
-# 在 WebConsole「嵌入模型配置」或用 GSUID_EMBED_* 环境变量上调即可。
+# onnxruntime arena 只增不减，兜底取低值：threads=1，batch=16。
+# 线程数和 batch 只读嵌入配置，避免 env 把内存地板抬高。
 _FALLBACK_EMBED_THREADS = 1
 _FALLBACK_EMBED_BATCH = 16
+_FALLBACK_MAX_TOKENS = 512
+_warned_legacy_env: set[str] = set()
+
+
+def _warn_legacy_embed_env(env_name: str, config_key: str) -> None:
+    if env_name in _warned_legacy_env:
+        return
+    raw = os.getenv(env_name)
+    if raw is None or raw.strip() == "":
+        return
+    _warned_legacy_env.add(env_name)
+    logger.warning(t("log.rag.embedding_env_ignored", env_name=env_name, config_key=config_key))
+
+
+def _configured_max_tokens(cache_dir: str, model_name: str) -> int:
+    """读模型 config.json 里的最大长度。tokenizer 的 512 经常是没改过的默认值。"""
+    from gsuid_core.ai_core.rag.base import _hf_cache_dirname, _get_embedding_hf_repo
+
+    root = Path(cache_dir) / _hf_cache_dirname(_get_embedding_hf_repo(model_name))
+    cfg_path: Path | None = None
+    ref = root / "refs" / "main"
+    if ref.is_file():
+        named = root / "snapshots" / ref.read_text(encoding="utf-8").strip() / "config.json"
+        if named.is_file():
+            cfg_path = named
+    if cfg_path is None:
+        snapshots = root / "snapshots"
+        if snapshots.is_dir():
+            for snap in snapshots.iterdir():
+                candidate = snap / "config.json"
+                if candidate.is_file():
+                    cfg_path = candidate
+                    break
+    if cfg_path is None:
+        return _FALLBACK_MAX_TOKENS
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return _FALLBACK_MAX_TOKENS
+    if not isinstance(raw, dict):
+        return _FALLBACK_MAX_TOKENS
+    for key in ("model_max_length", "max_position_embeddings"):
+        if key not in raw:
+            continue
+        value = raw[key]
+        if isinstance(value, int) and 8 <= value <= 32768:
+            return value
+    return _FALLBACK_MAX_TOKENS
 
 
 def _config_int(key: str) -> "int | None":
@@ -33,18 +77,12 @@ def _config_int(key: str) -> "int | None":
 
 
 def _resolve_threads() -> int:
-    # 优先级：环境变量 GSUID_EMBED_THREADS > WebConsole 配置 embed_threads > 兜底低值。
-    env = os.getenv("GSUID_EMBED_THREADS")
-    if env and env.isdigit() and int(env) > 0:
-        return int(env)
+    _warn_legacy_embed_env("GSUID_EMBED_THREADS", "embed_threads")
     return _config_int("embed_threads") or _FALLBACK_EMBED_THREADS
 
 
 def _resolve_batch_size() -> int:
-    # 优先级：环境变量 GSUID_EMBED_BATCH > WebConsole 配置 embed_batch_size > 兜底低值。
-    env = os.getenv("GSUID_EMBED_BATCH")
-    if env and env.isdigit() and int(env) > 0:
-        return int(env)
+    _warn_legacy_embed_env("GSUID_EMBED_BATCH", "embed_batch_size")
     return _config_int("embed_batch_size") or _FALLBACK_EMBED_BATCH
 
 
@@ -68,6 +106,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         # 通过一次空推断获取维度
         test_vec = list(self._model.embed(["test"]))[0]
         self._dim = len(test_vec)
+        self._max_input_tokens = _configured_max_tokens(cache_dir, model_name)
         logger.info(
             t(
                 "log.rag.embedding_local_name_dimension",
@@ -81,6 +120,10 @@ class LocalEmbeddingProvider(EmbeddingProvider):
     @property
     def dimension(self) -> int:
         return self._dim
+
+    @property
+    def max_input_tokens(self) -> int:
+        return self._max_input_tokens
 
     def embed_sync(self, texts: list[str]) -> list[list[float]]:
         # 显式限制 batch_size 控制驻留内存峰值（2C2G 关键）；fastembed 内部按此分批。

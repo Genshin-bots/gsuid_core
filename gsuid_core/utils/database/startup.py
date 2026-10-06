@@ -172,6 +172,9 @@ exec_list = [
     "CREATE INDEX IF NOT EXISTS ix_aicognode_owner_user_id ON aicognode (owner_user_id);",
     "ALTER TABLE aicognode ADD COLUMN canon VARCHAR DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS ix_aicognode_canon ON aicognode (canon);",
+    # 知识分片：chunk 0 留原文，换切法才能重切。create_all 不给旧表补列。
+    "ALTER TABLE aiknowledgechunk ADD COLUMN origin TEXT DEFAULT '';",
+    "ALTER TABLE aiknowledgechunk ADD COLUMN chunker_id VARCHAR(32) DEFAULT '';",
 ]
 
 

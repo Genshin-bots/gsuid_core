@@ -611,6 +611,22 @@ async def _knowledge_query_for_scope(query: str, scope: CogScope) -> str:
     return f"{query} {' '.join(extra)}"
 
 
+def knowledge_hit_handle(origin: str, payload_id: str, doc_id: str, chunk_index: int) -> tuple[str, int]:
+    """插件命中打开注册表里的整篇，不能拿分片 id 去查。"""
+    if origin == "plugin":
+        parent = doc_id if doc_id else payload_id
+        return f"kb_plugin:{parent}", -1
+    if doc_id:
+        return f"kb_kbdoc:{doc_id}", chunk_index
+    return "", -1
+
+
+def _plugin_knowledge_parent(origin: str, payload_id: str, doc_id: str) -> str:
+    if origin != "plugin":
+        return ""
+    return doc_id if doc_id else payload_id
+
+
 async def _search_knowledge_backend(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
     from gsuid_core.ai_core.rag import query_knowledge
     from gsuid_core.ai_core.rag.skills_kb import SKILLS_DOC_SOURCE
@@ -618,21 +634,30 @@ async def _search_knowledge_backend(query: str, *, scope: CogScope, limit: int) 
     # 过滤下推：skill_doc 整类在服务端排除，不是先搜全球再内存筛
     exclude = None if scope.include_skill_doc else [SKILLS_DOC_SOURCE]
     search_q = await _knowledge_query_for_scope(query, scope)
-    points = await query_knowledge(query=search_q, limit=limit, exclude_sources=exclude)
+    fetch = limit * 2 if limit > 0 else limit
+    points = await query_knowledge(query=search_q, limit=fetch, exclude_sources=exclude)
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
+    plugin_seen: Set[str] = set()
     for point in points:
+        if len(ids) >= limit:
+            break
         payload = point.payload
         if not payload:
             continue
         kid = str(payload["id"]) if "id" in payload else str(point.id)
-        node_id = f"kb_{kid}"
-        if node_id in hits:
-            continue
         origin = payload["source"] if "source" in payload else ""
         origin_s = origin if isinstance(origin, str) else ""
         doc_raw = payload["doc_id"] if "doc_id" in payload else ""
         doc_id = doc_raw if isinstance(doc_raw, str) else ""
+        plugin_parent = _plugin_knowledge_parent(origin_s, kid, doc_id)
+        if plugin_parent:
+            if plugin_parent in plugin_seen:
+                continue
+            plugin_seen.add(plugin_parent)
+        node_id = f"kb_{plugin_parent}" if plugin_parent else f"kb_{kid}"
+        if node_id in hits:
+            continue
         chunk_raw = payload["chunk_index"] if "chunk_index" in payload else 0
         chunk_index = chunk_raw if isinstance(chunk_raw, int) and not isinstance(chunk_raw, bool) else 0
         content_raw = payload["content"] if "content" in payload else ""
@@ -641,14 +666,7 @@ async def _search_knowledge_backend(query: str, *, scope: CogScope, limit: int) 
         title = title_raw if isinstance(title_raw, str) else ""
         plugin_raw = payload["plugin"] if "plugin" in payload else ""
         plugin = plugin_raw if isinstance(plugin_raw, str) else "knowledge"
-        if origin_s == "plugin":
-            handle = f"kb_plugin:{kid}"
-            chunk_index = -1
-        elif doc_id:
-            handle = f"kb_kbdoc:{doc_id}"
-        else:
-            handle = ""
-            chunk_index = -1
+        handle, chunk_index = knowledge_hit_handle(origin_s, kid, doc_id, chunk_index)
         hits[node_id] = CognitiveHit(
             kind=CogKind.KNOWLEDGE,
             id=node_id,

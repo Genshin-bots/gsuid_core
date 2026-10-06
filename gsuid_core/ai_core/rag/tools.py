@@ -1,11 +1,13 @@
 """工具向量存储 - 管理工具的入库和检索"""
 
+import uuid
 import asyncio
 from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Optional, Protocol, Sequence
 
 from qdrant_client.models import (
     Distance,
     PointStruct,
+    PointIdsList,
     VectorParams,
 )
 
@@ -26,6 +28,14 @@ from .base import (
     embed_texts_with_backoff,
     get_rag_upsert_batch_size,
     upsert_points_with_backoff,
+)
+from .chunking import (
+    pieces_for_embed,
+    chunk_method_hash,
+    logical_chunk_ids,
+    should_skip_rebuild,
+    stored_hash_uniform,
+    keep_ids_after_rebuild,
 )
 from .collection_migration import (
     ensure_vector_on_disk,
@@ -159,8 +169,9 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
 
     logger.info(i18n_t("log.rag.tools_library_sync"))
 
-    # 1. 获取向量库中现有工具
-    existing_tools: Dict[str, dict] = {}
+    # 1. 同一工具名可能有多片。哈希不一致视为需要重嵌。
+    existing_tools: Dict[str, list[tuple[str, str]]] = {}
+    scanned_point_ids: List[str] = []
     next_page_offset = None
 
     while True:
@@ -174,47 +185,55 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         for record in records:
             if record.payload is None:
                 continue
-            tool_name = record.payload.get("name")
-            if tool_name:
-                existing_tools[tool_name] = {
-                    "id": record.id,
-                    "hash": record.payload.get("_hash"),
-                }
+            tool_name = record.payload["name"] if "name" in record.payload else ""
+            if not isinstance(tool_name, str) or not tool_name:
+                continue
+            hash_raw = record.payload["_hash"] if "_hash" in record.payload else ""
+            stored_hash = hash_raw if isinstance(hash_raw, str) else ""
+            point_id = str(record.id)
+            scanned_point_ids.append(point_id)
+            if tool_name not in existing_tools:
+                existing_tools[tool_name] = []
+            existing_tools[tool_name].append((point_id, stored_hash))
         if next_page_offset is None:
             break
 
-    # 2. 准备要写入的工具：先收集文本，再批量 embedding，避免远程嵌入逐条请求过慢。
-    points_to_upsert = []
-    pending_items: list[tuple[str, dict, str]] = []
-    local_tool_names: Set[str] = set(tools_map.keys())
+    # 2. 检索文本过长时切开。一片且哈希仍是旧内容哈希的工具不重嵌。
+    points_to_upsert: List[PointStruct] = []
+    pending_items: list[tuple[str, dict[str, object], str, str, bool]] = []
+    kept_point_ids: set[str] = set()
 
     for tool_name, tool in tools_map.items():
-        # 计算哈希：covers/aliases 也进哈希，声明变化即触发重嵌入
         tool_dict = {
             "name": tool.name,
             "description": tool.description,
             "covers": tool.covers,
             "aliases": tool.aliases,
         }
-        current_hash = calculate_hash(tool_dict)
-
-        # 检查是否需要更新
+        content_hash = calculate_hash(tool_dict)
+        pieces = pieces_for_embed(tool.retrieval_text)
+        group = existing_tools[tool_name] if tool_name in existing_tools else []
+        stored_hash = stored_hash_uniform([item[1] for item in group])
+        if should_skip_rebuild(stored_hash, len(group), content_hash, len(pieces)):
+            for point_id, _stored in group:
+                kept_point_ids.add(point_id)
+            continue
+        if not pieces:
+            continue
+        stamped = chunk_method_hash(content_hash)
         is_new = tool_name not in existing_tools
-        is_modified = not is_new and existing_tools[tool_name]["hash"] != current_hash
-
-        if is_new or is_modified:
-            # 生成向量：name + description + covers + aliases（完整检索面）
-            retrieval_text = tool.retrieval_text
-
-            # 构建payload
-            payload = {
+        for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(tool_name, len(pieces)), pieces)):
+            point_id = get_point_id(logical)
+            payload: dict[str, object] = {
                 "name": tool.name,
                 "description": tool.description,
                 "covers": tool.covers,
                 "aliases": tool.aliases,
-                "_hash": current_hash,
+                "chunk_index": idx,
+                "_hash": stamped,
+                "_src": content_hash,
             }
-            pending_items.append((tool_name, payload, retrieval_text))
+            pending_items.append((point_id, payload, piece.embed_text, tool_name, is_new))
 
     if pending_items:
         logger.info(i18n_t("log.rag.tools_start_update_tool_need_add", p0=len(pending_items)))
@@ -227,34 +246,55 @@ async def sync_tools(tools_map: Dict[str, ToolBase]) -> None:
         _embed_pending,
         log_tag="Tools",
     )
-    for i, (tool_name, payload, _) in enumerate(pending_items):
-        vector = vectors[i]
-        if vector is None:
+    parent_indexes: dict[str, list[int]] = {}
+    for i, item in enumerate(pending_items):
+        tool_name = item[3]
+        if tool_name not in parent_indexes:
+            parent_indexes[tool_name] = []
+        parent_indexes[tool_name].append(i)
+
+    announced: set[str] = set()
+    for tool_name, indexes in parent_indexes.items():
+        parent_vectors: list[Sequence[float] | None] = [vectors[i] if i < len(vectors) else None for i in indexes]
+        old_ids = [point_id for point_id, _stored in existing_tools[tool_name]] if tool_name in existing_tools else []
+        new_ids = [pending_items[i][0] for i in indexes]
+        if not keep_ids_after_rebuild(
+            kept_point_ids,
+            old_ids=old_ids,
+            new_ids=new_ids,
+            vectors=parent_vectors,
+        ):
             continue
-        action_str = "新增" if tool_name not in existing_tools else "更新"
-        logger.info(i18n_t("log.rag.tools_action_str_name", action_str=action_str, tool_name=tool_name))
-        points_to_upsert.append(
-            PointStruct(
-                id=get_point_id(tool_name),
-                vector=list(vector),
-                payload=payload,
+        for i, vector in zip(indexes, parent_vectors):
+            point_id, payload, _, _, is_new = pending_items[i]
+            if vector is None:
+                continue
+            if tool_name not in announced:
+                announced.add(tool_name)
+                action_str = "新增" if is_new else "更新"
+                logger.info(i18n_t("log.rag.tools_action_str_name", action_str=action_str, tool_name=tool_name))
+            points_to_upsert.append(
+                PointStruct(
+                    id=point_id,
+                    vector=list(vector),
+                    payload=payload,
+                )
             )
-        )
 
     # 3. 执行更新
     if points_to_upsert:
         logger.info(i18n_t("log.rag.tools_write_tool_writing", p0=len(points_to_upsert)))
         await _upsert_tool_points(points_to_upsert)
 
-    # 4. 清理已删除的工具
-    if local_tool_names:
-        ids_to_delete = [
-            existing_tools[tool_name]["id"] for tool_name in existing_tools.keys() if tool_name not in local_tool_names
+    # 4. 工具表为空时不删，避免注册表没加载就把向量清掉。
+    if tools_map:
+        ids_to_delete: list[int | str | uuid.UUID] = [
+            point_id for point_id in scanned_point_ids if point_id not in kept_point_ids
         ]
         if ids_to_delete:
             await client.delete(
                 collection_name=TOOLS_COLLECTION_NAME,
-                points_selector=ids_to_delete,
+                points_selector=PointIdsList(points=ids_to_delete),
             )
             logger.info(i18n_t("log.rag.tools_cleaning_deleted", p0=len(ids_to_delete)))
     else:
@@ -946,20 +986,25 @@ async def search_tools(
 
     tool_names: List[str] = []
     score_map: Dict[str, float] = {}
-    all_scores_info = []
+    all_scores_info: List[str] = []
 
     for point in response.points:
-        if point.payload and point.payload.get("name"):
-            name = point.payload.get("name")
-            score = point.score
-            if name:
-                # 如果启用了 debug 且工具分数低于阈值，则不加入结果
-                if debug and threshold > 0 and score < threshold:
-                    all_scores_info.append(f"{name}={score:.4f}(未达阈值)")
-                    continue
-                tool_names.append(name)
-                score_map[name] = score
-                all_scores_info.append(f"{name}={score:.4f}")
+        if point.payload is None or "name" not in point.payload:
+            continue
+        name = point.payload["name"]
+        if not isinstance(name, str) or not name:
+            continue
+        score = float(point.score)
+        if debug and threshold > 0 and score < threshold:
+            all_scores_info.append(f"{name}={score:.4f}(未达阈值)")
+            continue
+        # 同一工具的多片只留最高分，避免名字在候选里重复。
+        if name not in score_map:
+            tool_names.append(name)
+            score_map[name] = score
+        elif score > score_map[name]:
+            score_map[name] = score
+        all_scores_info.append(f"{name}={score:.4f}")
 
     if debug:
         logger.debug(i18n_t("log.rag.tools_vector_search_scores_debug", p0=", ".join(all_scores_info)))

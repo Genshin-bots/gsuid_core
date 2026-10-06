@@ -30,11 +30,19 @@ Qdrant，换模型/目录损坏即**永久丢失**；③ Qdrant local 不支持 
 **方案**：
 
 - `AIKnowledgeChunk` 表（`ai_core/database/models.py`）= **手动知识的 SQL 真值源**（1 行 = 1 个
-  Qdrant point）。用 `__table_args__` 定义索引，无 `__tablename__`。
-- `rag/chunking.py` 长文分片（段落 → 句子 → 定长+重叠兜底），解决 512 token 截断。
+  Qdrant point）。用 `__table_args__` 定义索引，无 `__tablename__`。表名是 `aiknowledgechunk`。
+- `rag/chunking.py` 在调用嵌入之前切正文。先认围栏外的 Markdown 标题、空行段落和句末；
+  切不开时才用定长重叠。送进模型的整串含「标题：」「标签：」前缀。
+  字符预算等于当前模型的最大输入 token 减去 32。本地模型读 `config.json` 的
+  `model_max_length`，没有该字段时读 `max_position_embeddings`。远程模型只认公开规格和模型名。
+  认不出的远程模型按 512 token。`chunk_size` 为 0 时跟当前模型走。更大的请求夹回该预算。
+  切法哈希含 `embed-v1` 和这次的 token 上限。
 - `rag/knowledge.py` 文档级导入/删除/导出/导入 + **两级对账**：
   - **启动期数量对账** `reconcile_manual_knowledge()`：回填"仅 Qdrant"旧知识到 SQL、从 SQL
-    重嵌缺失分片（**数量一致则跳过逐条扫描**，轻量）。在启动链路自动跑。
+    重嵌缺失分片（**数量一致则跳过逐条扫描 Qdrant**，轻量）。在启动链路自动跑。
+    数量对齐之后，只读 `manual` / `agent` 的 SQL：chunk 0 有原文且 `chunker_id` 不是当前切法时整篇重切；
+    没有原文时把超预算的片拼回一篇再切，避免套娃 id。
+    维度迁移按 `doc_id` 归组后切一次。已经是某篇的一片时，超预算套在这一片自己的 id 上。
   - **深度对账** `deep_reconcile_manual_knowledge()`：**逐条**按 `content_hash` 比对 SQL 与
     Qdrant，覆盖"数量相等但内容分叉"盲区（Qdrant 有/SQL 无→回填；SQL 有/Qdrant 无→重嵌；hash
     不一致→以 SQL 为真值源重嵌覆盖）。**仅运维手动触发，不在启动链路自动跑**。
@@ -46,16 +54,26 @@ WebConsole 鉴权接口（`knowledge_base_api.py`）：`/api/ai/knowledge/bulk`�
 > ⚠️ **深度对账成本**：`/api/ai/knowledge/reconcile` 需全量 scroll Qdrant + 全表读 SQL + 必要时
 > 批量重嵌，大知识库耗时较长，**仅作运维手动入口（非自动）**。
 
-启动期 `reconcile_manual_knowledge()` 覆盖 `source=manual` **和** `source=agent`（Agent 用
+启动期 `reconcile_manual_knowledge()` 覆盖 `source=manual` 和 `source=agent`（Agent 用
 `attach_article` 新建的文必须能换模型重嵌）。运维深度对账 `deep_reconcile_manual_knowledge`
-同样扫这两源。启动挂载扫描本身**不**触发全库重嵌。
+同样扫这两源。启动挂载扫描本身不触发全库重嵌。记忆 episode 不参加切法重切。
+
+`sync_knowledge()`、工具同步和图片同步每次启动都在内存里切一遍。
+`sync_knowledge()` 先做集合初始化（与 `init_all` 同一把集合锁），再持有单飞锁扫点。
+client 已经就绪时仍要等这把集合锁；集合可能还在 `force_recreate`。
+插件启动钩子与 `init_all` 同时进入时，后到的调用等待本轮写入结束，再按哈希核对。同一批正文只嵌入一次。
+点上的哈希与片数已经对上当前切法时，不再嵌入。
+插件对账只滚动 `source=plugin` 的 `source`、`id`、`doc_id`、`_hash`，不取正文。
+同一进程里切法章相同的文档复用片数。后到的调用仍滚动印章并核对。注册表正文变了会重嵌。
+还没盖切法章、新切法仍然是一片的旧点也不嵌入。
+更换切法或模型 token 上限之后，只有片数或正文变了的文档才重嵌一次。之后的启动只比较哈希和片数。
 
 `sync_knowledge()` 把插件 `_ENTITIES` 同步进 Qdrant 之后，`init_ai_core` 在 READY 之后后台
 `spawn_cognition_mount()`：插件 + 手动知识建公共枢纽（`writable=false`）；随后把
 `source=agent` 文按 `hub:{正式名}` 标签挂回已有枢纽（`writable=true`，启动扫描禁止新建
-`world:`）。`attach_article` / 网页搜索 query 在**写入当时**先查已有、过门才建。
-插件正文**不复制**进 `aichunk`；全文句柄 `kb_plugin:{id}` 读注册表。手动/agent 文
-`kb_kbdoc:{doc_id}` 按 `chunk_index` 拼接 SQL。开关 `cognition_mount_enable`。
+`world:`）。`attach_article` / 网页搜索 query 在写入当时先查已有、过门才建。
+插件正文不复制进 `aiknowledgechunk`。全文句柄是 `kb_plugin:{doc_id}`，`doc_id` 缺省时用实体 id，读注册表。
+手动/agent 文 `kb_kbdoc:{doc_id}` 按 `chunk_index` 拼接 SQL。开关 `cognition_mount_enable`。
 控制台 JSONL `import_manual_knowledge` 写入成功后按 `doc_id` 即时挂载，不必等下次启动扫描。
 落盘弱挂枢纽用搜索 `query:`（不是正文首行 `<search_results>`）：先查已有 title，
 没有且过公共名词门则新建再挂；整页结果规则摘要写在 FileOS / 挂件上供下次回想。
@@ -128,25 +146,25 @@ WebConsole API：`/api/embedding_config/*`（provider / local / openai / summary
 
 **本地嵌入（fastembed ONNX）是记忆摄入吞吐与 CPU 占用的主瓶颈，不是 LLM。** 实测单条
 ~491-turn 的 haystack：**嵌入 ~68s（CPU-bound）vs 作答 LLM ~8s**（网络 I/O）——摄入慢/CPU 高
-几乎全在嵌入。三个 env 旋钮（都有 CPU-friendly 默认，大机可上调换吞吐）：
+几乎全在嵌入。线程数和 batch 只读 WebConsole 嵌入配置。并发路数仍可由环境变量覆盖：
 
-| env | 默认 | 作用 |
-|-----|------|------|
-| `GSUID_EMBED_THREADS` | `max(1, cpu//2)` | fastembed ONNX intra-op 线程。旧默认 `min(cpu,8)` 会吃满全部核（小核机 CPU 常驻 100% 抢事件循环）；`cpu//2` 留一半余量，吞吐仅微降（bge-small 8→2 仅 1.37x） |
-| `GSUID_EMBED_BATCH` | `64` | 单次推断 batch_size。fastembed 默认 256 会把驻留内存冲到 ~500MB；64 降到 ~300MB（2C2G 主要省内存点） |
-| `GSUID_EMBED_BATCH_WORKERS` | `max(1, cpu//4)` | 批量执行器并行度（并发摄入的并行嵌入路数）。小机退 1 防过订阅 |
+| 配置或环境变量 | 默认 | 作用 |
+|----------------|------|------|
+| `embed_threads` | `1` | fastembed ONNX intra-op 线程。只读配置，不读环境变量。旧默认 `cpu//2` 会随核数抬高内存地板 |
+| `embed_batch_size` | `16` | 单次推断 batch。只读配置，不读环境变量。fastembed 默认 256 会把驻留内存冲到约 500MB |
+| `GSUID_EMBED_BATCH_WORKERS` | `1` | 批量执行器并行度，优先于配置 `embed_batch_workers`。小机保持 1 |
 
 **内存真相（排障必读）**：
 - **嵌入模型驻留 ~150MB（加载）→ 单批 ~300–500MB（含 onnxruntime arena + 中间张量）**；
   batch_workers=N 时按 N 倍放大。
 - ⚠️ **onnxruntime 内存 arena 只增不减**：一次大 batch 后不释放，**峰值即稳态**——所以
-  `GSUID_EMBED_BATCH` 降峰值是**永久生效**而非只压瞬时尖峰。这不是内存泄漏。
+  把 `embed_batch_size` 调低是**永久生效**而非只压瞬时尖峰。这不是内存泄漏。
 - **满配 core 空载 ~4.6GB 的大头是游戏插件（~4GB），不是嵌入**（精简 core 无插件仅 ~624MB）。
   跑测中 RSS 随题数稳定不上行（每题 episode/向量/session 逐题释放），排"记忆泄漏"先看是不是插件基线。
 
 **2C2G / 小核机**：本地嵌入会周期性打满核，`embedding_provider=openai`（远程）几乎必选——
 既消 CPU-bound 瓶颈又去掉最大动态内存；配 reranker 关（`enable_rerank=false`，本地 reranker ONNX
-是另一大内存项）+ `qdrant_provider=remote`。**别在 2 核机设 `GSUID_EMBED_THREADS`**（默认 `cpu//2=1` 即对）。
+是另一大内存项）+ `qdrant_provider=remote`。2 核机保持 `embed_threads=1`。
 
 ## 10.6 周边 AI 接口
 

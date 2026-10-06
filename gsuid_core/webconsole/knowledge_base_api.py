@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
-from gsuid_core.ai_core.rag.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
+from gsuid_core.ai_core.rag.chunking import DEFAULT_CHUNK_OVERLAP
 from gsuid_core.ai_core.rag.knowledge import (
     add_knowledge_document,
     list_knowledge_plugins,
@@ -61,8 +61,8 @@ class KnowledgeBaseUpdate(BaseModel):
 class KnowledgeBulkImport(BaseModel):
     """批量导入（服务端分片）请求模型
 
-    full_text 与 items 二选一：full_text 由服务端按 chunk_size/overlap 分片；
-    items 为客户端已分好的分片列表（每项含 content）。
+    full_text 与 items 二选一。两者都再走同一把切刀。
+    chunk_size 为 0 时跟当前模型的 token 上限。更大的请求夹回该预算。
     """
 
     title: str
@@ -71,7 +71,7 @@ class KnowledgeBulkImport(BaseModel):
     items: Optional[List[Dict[str, Any]]] = None
     tags: List[str] = []
     plugin: str = "manual"
-    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_size: int = 0
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
     replace: bool = True
 
@@ -340,10 +340,10 @@ async def bulk_import_knowledge(
 ) -> Dict[str, Any]:
     """批量导入一篇文档（服务端分片 + 批量嵌入 + 幂等入库）
 
-    用于把数十万字长文一次导入：服务端按 chunk_size/overlap 分片，每片单独成向量，
-    避免整段长文被嵌入模型按上限静默截断。同一 doc_id 重导即覆盖（幂等）。
+    用于把数十万字长文一次导入：服务端按 chunk_size 和 overlap 分片，每片单独成向量。
+    chunk_size 为 0 时跟当前模型。整串不超过该模型的字符预算。同一 doc_id 重导即覆盖。
 
-    请求体：full_text（整篇，服务端分片）与 items（已分片数组）二选一。
+    请求体：full_text 与 items 二选一。items 里的小节也会再切。
 
     Returns:
         data: {doc_id, total_chunks, written, skipped}

@@ -11,6 +11,21 @@ from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
 from gsuid_core.ai_core.rag.embedding.modality import EmbeddingModality
 
 
+def _remote_max_input_tokens(model_name: str) -> int:
+    if model_name in OpenAIEmbeddingProvider.KNOWN_MAX_INPUT_TOKENS:
+        return OpenAIEmbeddingProvider.KNOWN_MAX_INPUT_TOKENS[model_name]
+    lowered = model_name.lower()
+    if "bge-small" in lowered or "bge-base" in lowered:
+        return 512
+    if "jina-embeddings-v2" in lowered or "jina-embeddings-v3" in lowered:
+        return 8192
+    if "text-embedding-3" in lowered or "text-embedding-ada" in lowered:
+        return 8191
+    if "nomic-embed" in lowered or "bge-m3" in lowered:
+        return 8192
+    return 512
+
+
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     """OpenAI 兼容格式的远程嵌入模型提供方"""
 
@@ -19,6 +34,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         "text-embedding-3-small": 1536,
         "text-embedding-3-large": 3072,
         "text-embedding-ada-002": 1536,
+    }
+    # 远程接口没有「最大 token」查询。只认公开规格，认不出时按 512，避免把长文打到短上下文端点。
+    KNOWN_MAX_INPUT_TOKENS: Final[dict[str, int]] = {
+        "text-embedding-3-small": 8191,
+        "text-embedding-3-large": 8191,
+        "text-embedding-ada-002": 8191,
     }
 
     # 本实现实际具备的模态能力：文本走标准 /embeddings；图片走多模态 input（Jina 风格）。
@@ -54,6 +75,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             self._dim = dimension
         elif model_name in self.KNOWN_DIMENSIONS:
             self._dim = self.KNOWN_DIMENSIONS[model_name]
+        self._max_input_tokens = _remote_max_input_tokens(model_name)
 
         logger.info(
             t(
@@ -68,6 +90,10 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
     @property
     def dimension(self) -> int:
         return self._dim
+
+    @property
+    def max_input_tokens(self) -> int:
+        return self._max_input_tokens
 
     @property
     def supported_modalities(self) -> set["EmbeddingModality"]:

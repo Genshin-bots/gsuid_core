@@ -610,7 +610,7 @@ def _meme_sparse_config() -> dict:
 
 
 async def _ensure_meme_collection() -> None:
-    """确保 ai_meme Collection 存在（命名 dense + BM25 稀疏），并在嵌入维度/结构变化时基于数据库记录重建索引。"""
+    """确保 ai_meme 存在。新建、被掏空或维度变化时，按 SQL 记录重建向量。"""
     from gsuid_core.ai_core.rag.base import client, get_strict_dimension
     from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection, collection_vector_mismatched
 
@@ -619,7 +619,8 @@ async def _ensure_meme_collection() -> None:
 
     dimension = get_strict_dimension()
     existing = {c.name for c in (await client.get_collections()).collections}
-    should_reindex = False
+    # 集合不存在时也要从 SQL 灌入。只建空集合会把重建拖到下一次启动。
+    should_reindex = MEME_COLLECTION_NAME not in existing
 
     if MEME_COLLECTION_NAME in existing:
         # 传 vector_name="dense" 同时覆盖两种迁移触发：① 维度变化（换嵌入模型）；

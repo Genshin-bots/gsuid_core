@@ -65,6 +65,11 @@ class EmbeddingProvider(ABC):
         ...
 
     @property
+    def max_input_tokens(self) -> int:
+        """模型接受的最大输入 token。子类读到模型配置后覆盖。未知时按 512。"""
+        return 512
+
+    @property
     def supported_modalities(self) -> set["EmbeddingModality"]:
         """对外声明本 provider 支持的模态，默认仅文本。
 

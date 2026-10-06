@@ -449,10 +449,10 @@ async def reload_mcp_configs(
     _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """
-    热重载所有 MCP 配置并重新注册工具
+    热重载所有 MCP 配置，并按已保存的工具清单重新注册。
 
-    重新加载配置文件，并重新连接所有启用的 MCP 服务器注册工具。
-    此操作会清除已注册的 MCP 工具并重新注册。
+    不连接 MCP 服务器。清单为空的服务器本次不注册。
+    控制台对单个服务器执行注册时才会连接。
 
     Returns:
         status: 0成功

@@ -566,20 +566,20 @@ incremental_rebuild()
 | `rerank_provider`             | `local` | Rerank 服务提供方；`eval_mode=True` 时强制不用             |
 | `qdrant_provider`             | `local` | Qdrant 部署方式（`local` 嵌入式 / `remote` 远程）        |
 
-### 8.5 本地嵌入的 CPU / 内存 env（`rag/embedding/local.py`）
+### 8.5 本地嵌入的 CPU / 内存（`rag/embedding/local.py`）
 
 **本地嵌入是摄入吞吐与 CPU 的主瓶颈（非 LLM）**，且 onnxruntime arena 只增不减（峰值即稳态）。
-三个 env 都有 CPU-friendly 默认，大机可上调换吞吐；详见
-[`skills 十.10.5.1`](skills/gscore-development/references/10-rag-knowledge-embedding.md)：
+线程数和 batch 只读 WebConsole 嵌入配置。并发路数仍可由环境变量覆盖。详见
+[`skills 十.10.5.1`](../.agents/skills/gscore-development/references/10-rag-knowledge-embedding.md)：
 
-| env | 默认 | 作用 |
-|-----|------|------|
-| `GSUID_EMBED_THREADS` | `max(1, cpu//2)` | ONNX intra-op 线程；旧 `min(cpu,8)` 会吃满全核（小机 CPU 常驻 100%） |
-| `GSUID_EMBED_BATCH` | `64` | 单次推断 batch；默认 256 驻留内存 ~500MB→64 约 ~300MB（2C2G 省内存点） |
-| `GSUID_EMBED_BATCH_WORKERS` | `max(1, cpu//4)` | 批量并行嵌入路数（小机退 1 防过订阅） |
+| 配置或环境变量 | 默认 | 作用 |
+|----------------|------|------|
+| `embed_threads` | `1` | ONNX intra-op 线程。只读配置。旧默认 `cpu//2` 会随核数抬高内存地板 |
+| `embed_batch_size` | `16` | 单次推断 batch。只读配置。fastembed 默认 256 驻留约 500MB |
+| `GSUID_EMBED_BATCH_WORKERS` | `1` | 批量并行嵌入路数，优先于配置 `embed_batch_workers` |
 
-> 2C2G/小核机：本地嵌入会周期打满核，`embedding_provider=openai`（远程）几乎必选；**别在 2 核机
-> 设 `GSUID_EMBED_THREADS`**（默认 `cpu//2=1` 即对）。空载 ~4.6GB 大头是游戏插件不是嵌入（§3.2.2）。
+> 2C2G/小核机：本地嵌入会周期打满核，`embedding_provider=openai`（远程）几乎必选。
+> 2 核机保持 `embed_threads=1`。空载约 4.6GB 的大头是游戏插件，不是嵌入（§3.2.2）。
 
 ---
 

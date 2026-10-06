@@ -76,5 +76,6 @@
   "log.mcp.tool_calling_name_args_call": "[MCP Tool] 调用 {p0}/{tool_name}, 参数: {call_args}",
   "log.mcp.tool_fetched_tools": "[MCP][{p0}] 获取到 {p1} 个工具",
   "log.mcp.tools_registered_total": "[MCP] 所有 MCP 工具注册完成，共注册 {total_registered} 个工具",
-  "log.mcp.unregister_name_tool": "[MCP] 注销工具: {tool_name}"
+  "log.mcp.unregister_name_tool": "[MCP] 注销工具: {tool_name}",
+  "log.mcp.catalog_empty_defer_connect": "[MCP] {p0} ({config_id}) 没有已保存的工具清单，启动不连接"
 }
