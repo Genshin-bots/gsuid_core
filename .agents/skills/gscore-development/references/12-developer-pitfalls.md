@@ -55,6 +55,26 @@ LLM 调用是 `await` 的纯网络 I/O，等待期间不占用事件循环。双
 InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归主循环 `asyncio.create_task`。
 **任何"把耗时 AI 任务搬去独立线程跑事件循环"的想法都要先验证它不碰这三个共享资源。**
 
+### 🔴 `pool.to_thread` 不要用来装饰协程函数
+
+`gsuid_core/pool.py` 的 `to_thread` 遇到协程函数会 `asyncio.new_event_loop()`，在**线程池里
+另起一个循环**跑它。凡是被装饰的函数体里有 `await`（尤其是 DB 访问），就踩上面那条红线。
+
+实例：`_draw_status_uncached` 曾被 `@to_thread` 装饰，`core信息` 的取数因此跑在新循环上。
+写闸门是进程级单例，队列里的 `asyncio.Future` 绑定创建者循环，跨循环排队让 `GATE_WAIT_S`
+（20 秒）到期，表现为 `WriteGateTimeout` 连发与「写闸门占用超过 20s，已取消占锁任务」，
+并把同时段的其他插件一起拖挂。
+
+判据与写法：
+
+- 纯同步函数（无 `await`）→ `@to_thread` 正确。
+- 协程函数 → **直接 `async def`**；只把其中**不碰 DB / 不碰共享客户端的纯 CPU 段**
+  用标准库 `asyncio.to_thread` 卸载（它不会新建循环）。
+- 判据不是"看起来慢"，而是"里面有没有 `await`"。`_draw_status_uncached` 现在把取数留主
+  循环、PIL 装配交给 `_compose_status_card`（同步函数）走 `asyncio.to_thread`。
+
+回归锁：`tests/test_status_render_event_loop.py` 断言渲染期间每次写闸门调用都在主循环上。
+
 ### Windows 事件循环：现在是 Proactor，子进程可用（2026-08-14 更正）
 
 > ⚠️ **本节此前写的是「`core.py` 切到 `WindowsSelectorEventLoopPolicy`，所以 Windows 不支持

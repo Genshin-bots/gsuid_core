@@ -10,7 +10,6 @@ from PIL import Image, ImageOps, ImageDraw
 
 import gsuid_core.global_val as gv
 from gsuid_core.i18n import t
-from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
@@ -116,7 +115,7 @@ def _or(value: T | None | BaseException, default: T) -> T:
     return value
 
 
-async def draw_title():
+async def draw_title() -> Image.Image:
     title = Image.new("RGBA", (1400, 300))
     title_draw = ImageDraw.Draw(title)
 
@@ -217,11 +216,11 @@ async def draw_title():
     return title
 
 
-async def draw_bar(
+def draw_bar(
     text1: str,
     text2: str,
     sample: Optional[Dict[str, Union[Tuple[int, int, int], str]]] = None,
-):
+) -> Image.Image:
     bar = Image.new("RGBA", (1400, 100))
     bar_draw = ImageDraw.Draw(bar)
 
@@ -288,13 +287,13 @@ def _change_time(time: float):
     return "".join(parts)
 
 
-async def draw_badge(
+def draw_badge(
     title: str,
     value: Union[str, int, float],
     avg_value: Optional[int] = None,
     color: Union[Tuple[int, int, int], str] = THEME_COLOR,
     is_time: bool = False,
-):
+) -> Image.Image:
     badge = Image.new("RGBA", (240, 150))
     badge_draw = ImageDraw.Draw(badge)
 
@@ -376,36 +375,36 @@ async def draw_data_analysis1(
     if not yesterday:
         yesterday = CoreDataSummary(bot_id="1", bot_self_id="2", date=datetime.datetime.now())
 
-    badge1 = await draw_badge(
+    badge1 = draw_badge(
         "今日接收",
         local_val["receive"],
         yesterday.receive,
         SE_COLOR,
     )
 
-    badge2 = await draw_badge(
+    badge2 = draw_badge(
         "今日发送",
         local_val["send"],
         yesterday.send,
         HINT_COLOR,
     )
-    badge3 = await draw_badge(
+    badge3 = draw_badge(
         "绘制图片",
         local_val["image"],
         yesterday.image,
     )
-    badge4 = await draw_badge(
+    badge4 = draw_badge(
         "触发命令",
         local_val["command"],
         yesterday.command,
     )
-    badge5 = await draw_badge(
+    badge5 = draw_badge(
         "使用群聊",
         local_val["group_count"],
         yesterday.group_count,
         SE_COLOR,
     )
-    badge6 = await draw_badge(
+    badge6 = draw_badge(
         "使用用户",
         local_val["user_count"],
         yesterday.user_count,
@@ -418,34 +417,34 @@ async def draw_data_analysis1(
     return data_bar
 
 
-async def draw_data_analysis2(
+def draw_data_analysis2(
     data: CountVal,
-):
-    badge1 = await draw_badge(
+) -> Image.Image:
+    badge1 = draw_badge(
         "DAU",
         data["DAU"],
         0,
         HINT_COLOR,
     )
-    badge2 = await draw_badge(
+    badge2 = draw_badge(
         "DAG",
         data["DAG"],
     )
-    badge3 = await draw_badge(
+    badge3 = draw_badge(
         "MAU",
         data["MAU"],
     )
-    badge4 = await draw_badge(
+    badge4 = draw_badge(
         "用户留存",
         data["OutUser"],
         0,
         HINT_COLOR,
     )
-    badge5 = await draw_badge(
+    badge5 = draw_badge(
         "群聊新增",
         data["NewGroup"],
     )
-    badge6 = await draw_badge(
+    badge6 = draw_badge(
         "用户粘性",
         data["DAU_MAU"],
         0,
@@ -501,7 +500,7 @@ def draw_hw_status_bar(title: str, value: float, msg: str):
     return img
 
 
-async def draw_hw():
+async def draw_hw() -> Image.Image:
     img = Image.new("RGBA", (1400, 300))
 
     cpu_task = asyncio.create_task(get_cpu_info())
@@ -546,7 +545,7 @@ async def _safe_call_plugin_status(fn, plugin_name: str, status_key: str) -> str
         return "未知"
 
 
-async def draw_plugins_status():
+async def draw_plugins_status() -> Image.Image:
     plugins_num = len(plugins_status)
     plugins_h = 50 + plugins_num * 180
 
@@ -593,7 +592,7 @@ async def draw_plugins_status():
                     j,
                 )
 
-                badge = await draw_badge(j, _value)
+                badge = draw_badge(j, _value)
                 plugin_bar.paste(
                     badge,
                     (605 + 210 * indexj, 11),
@@ -611,9 +610,9 @@ async def draw_plugins_status():
     return img
 
 
-async def draw_curve(
+def draw_curve(
     datas: Dict[Union[Tuple[int, int, int], str], List[float]],
-):
+) -> Image.Image:
     img = Image.new("RGBA", (1400, 550))
     img_draw = ImageDraw.Draw(img)
 
@@ -669,7 +668,7 @@ async def draw_curve(
     return img
 
 
-async def draw_curve_img(trends: Dict[str, List[int]]):
+def draw_curve_img(trends: Dict[str, List[int]]) -> Image.Image:
     result: Dict[Union[Tuple[int, int, int], str], List[float]] = {
         THEME_COLOR: [],
         HINT_COLOR: [],
@@ -686,15 +685,15 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
         result[(182, 122, 210)].append(trends["bot_user_count"][day] if day < len(trends["bot_user_count"]) else 0)
         result[(27, 146, 210)].append(trends["bot_send"][day] if day < len(trends["bot_send"]) else 0)
 
-    curve_img = await draw_curve(result)
+    curve_img = draw_curve(result)
     return curve_img
 
 
-async def draw_bg(w: int, h: int):
+def draw_bg(w: int, h: int) -> Image.Image:
     path = TEXT_PATH / "bg.jpg"
     if status_config.get_config("CustomBg").data:
         bg_path = Path(status_config.get_config("CustomBgPath").data)
-        if await asyncio.to_thread(bg_path.exists):
+        if bg_path.exists():
             path = bg_path
 
     bg = Image.open(path).convert("RGBA")
@@ -719,38 +718,38 @@ async def draw_bg(w: int, h: int):
     return bg
 
 
-async def draw_traffic_analysis():
+def draw_traffic_analysis() -> Image.Image:
     bt = gv.bot_traffic
-    badge1 = await draw_badge(
+    badge1 = draw_badge(
         "最大同时处理",
         str(bt["max_qps"]),
         None,
         HINT_COLOR,
         is_time=True,
     )
-    badge2 = await draw_badge(
+    badge2 = draw_badge(
         "最大任务时间",
         bt["max_runtime"],
         is_time=True,
     )
-    badge3 = await draw_badge(
+    badge3 = draw_badge(
         "最大耗时函数",
         bt["max_runtime_func"],
         is_time=True,
     )
-    badge4 = await draw_badge(
+    badge4 = draw_badge(
         "最大等待",
         bt["max_wait_time"],
         None,
         HINT_COLOR,
         is_time=True,
     )
-    badge5 = await draw_badge(
+    badge5 = draw_badge(
         "总处理耗时",
         bt["total_time"],
         is_time=True,
     )
-    badge6 = await draw_badge(
+    badge6 = draw_badge(
         "总时间",
         bt["max_time"],
         None,
@@ -801,11 +800,10 @@ async def draw_status(ev: Event) -> bytes:
         return res
 
 
-@to_thread
-async def _draw_status_uncached(ev: Event):
-    """
-    实际渲染逻辑。仍然用 to_thread 避免阻塞主事件循环；
-    内部用 asyncio.gather 并行化 I/O 密集步骤。
+async def _draw_status_uncached(ev: Event) -> bytes:
+    """在主事件循环上取数，纯 CPU 的装配交线程池。
+
+    取数必须留在主循环：写闸门与读信号量是进程级单例，跨循环排队会失效。
     """
     # ── 阶段 1: I/O 密集的并行 fetch ──
     # 六个独立数据源同时拉；任何一项异常不影响其他，阶段 3 入口再统一兜底
@@ -898,13 +896,40 @@ async def _draw_status_uncached(ev: Event):
         Image.new("RGBA", (1400, plugins_h), (0, 0, 0, 0)),
     )
 
-    # ── 阶段 3: 纯 PIL 装配（gather 无效，串行即可；这些函数都是 async def，必须 await） ──
-    bar1 = await draw_bar("服务器基础信息", "Base Info")
-    bar2_1 = await draw_bar("机器人数据统计(单)", "Data Analysis")
-    bar2_2 = await draw_bar("机器人数据统计(多)", "Data Analysis")
-    bar2_3 = await draw_bar("机器人流量统计", "Traffic Analysis")
+    # ── 阶段 3: 纯 PIL 装配，交线程池，不在主循环里跑 CPU ──
+    img = await asyncio.to_thread(
+        _compose_status_card,
+        title,
+        hw,
+        data_bar1_1,
+        data_bar1_2,
+        ndata,
+        mdata,
+        trends,
+        plugin_status_img,
+        plugins_h,
+    )
+    return await convert_img(img)
 
-    bar3 = await draw_bar(
+
+def _compose_status_card(
+    title: Image.Image,
+    hw: Image.Image,
+    data_bar1_1: Image.Image,
+    data_bar1_2: Image.Image,
+    ndata: CountVal,
+    mdata: CountVal,
+    trends: Dict[str, List[int]],
+    plugin_status_img: Image.Image,
+    plugins_h: int,
+) -> Image.Image:
+    """纯 PIL 装配，不碰数据库；由 to_thread 在工作线程里执行。"""
+    bar1 = draw_bar("服务器基础信息", "Base Info")
+    bar2_1 = draw_bar("机器人数据统计(单)", "Data Analysis")
+    bar2_2 = draw_bar("机器人数据统计(多)", "Data Analysis")
+    bar2_3 = draw_bar("机器人流量统计", "Traffic Analysis")
+
+    bar3 = draw_bar(
         "日活曲线",
         "Daily Activity",
         {
@@ -914,16 +939,14 @@ async def _draw_status_uncached(ev: Event):
             "发送数量": (27, 146, 210),
         },
     )
-    bar4 = await draw_bar("插件额外信息", "Extra Data")
+    bar4 = draw_bar("插件额外信息", "Extra Data")
 
-    data_bar2_1 = await draw_data_analysis2(ndata)
-    data_bar2_2 = await draw_data_analysis2(mdata)
+    data_bar2_1 = draw_data_analysis2(ndata)
+    data_bar2_2 = draw_data_analysis2(mdata)
+    traffic_bar = draw_traffic_analysis()
+    curve_img = draw_curve_img(trends)
 
-    traffic_bar = await draw_traffic_analysis()
-
-    curve_img = await draw_curve_img(trends)
-
-    img = await draw_bg(1400, 2778 + 150 + plugins_h + 310)
+    img = draw_bg(1400, 2778 + 150 + plugins_h + 310)
 
     img.paste(title, (0, 0), title)
     img.paste(bar1, (0, 855), bar1)
@@ -944,6 +967,4 @@ async def _draw_status_uncached(ev: Event):
     img.paste(bar4, (0, 2778 + 310), bar4)
     img.paste(plugin_status_img, (0, 2878 + 310), plugin_status_img)
 
-    img = add_footer(img, footer=Image.open(TEXT_PATH / "footer.png"))
-    res = await convert_img(img)
-    return res
+    return add_footer(img, footer=Image.open(TEXT_PATH / "footer.png"))
