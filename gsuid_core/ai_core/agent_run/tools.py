@@ -566,30 +566,36 @@ class ToolsPhase(RunOnceHost):
                         scope=_scope,
                     )
                     turn_seeds = pin_trigger_keyword_hits(qy, _found, limit=_TURN_SEED_CAP, scope=_scope)
+                    from gsuid_core.ai_core.entity_index import (
+                        ALIAS_ROUTE_TEXT_KEY,
+                        ALIAS_PLUGIN_EXTRA_KEY,
+                        lock_plugin,
+                        strip_surfaces,
+                        plugins_in_text,
+                    )
+
+                    _utter = ""
+                    if st.ev is not None and st.ev.raw_text:
+                        _utter = st.ev.raw_text
+                    elif st.ev is not None and st.ev.text:
+                        _utter = st.ev.text
+                    else:
+                        from gsuid_core.ai_core.agent_run.speech_policy import spoken_user_body
+
+                        _utter = spoken_user_body(qy)
+                    _scan = strip_surfaces(_utter, _ignore) if _ignore else _utter
+                    _bg = ""
                     if st.ev is not None:
-                        from gsuid_core.ai_core.entity_index import (
-                            ALIAS_PLUGIN_EXTRA_KEY,
-                            sole_background_plugin,
-                        )
                         from gsuid_core.ai_core.turn_pipeline import build_group_history_block
 
-                        _ctx_plugin = sole_background_plugin(qy, build_group_history_block(st.ev))
-                        if _ctx_plugin:
-                            st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _ctx_plugin
-                            turn_seeds = await align_seeds_to_context_plugin(turn_seeds, _ctx_plugin, qy, _scope)
+                        _bg = build_group_history_block(st.ev)
+                    _ctx_plugin = lock_plugin(_scan, _bg)
+                    if _ctx_plugin:
+                        st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _ctx_plugin
+                        if _scan:
+                            st.run_extra[ALIAS_ROUTE_TEXT_KEY] = _scan
+                        turn_seeds = await align_seeds_to_context_plugin(turn_seeds, _ctx_plugin, _scan or qy, _scope)
                     if _call_self:
-                        from gsuid_core.ai_core.entity_index import strip_surfaces, plugins_in_text
-
-                        _utter = ""
-                        if st.ev is not None and st.ev.raw_text:
-                            _utter = st.ev.raw_text
-                        elif st.ev is not None and st.ev.text:
-                            _utter = st.ev.text
-                        else:
-                            from gsuid_core.ai_core.agent_run.speech_policy import spoken_user_body
-
-                            _utter = spoken_user_body(qy)
-                        _scan = strip_surfaces(_utter, _ignore) if _ignore else _utter
                         _routed = plugins_in_text(_scan)
                         # 向量检索命中不算。要实体路由真正装上该插件的工具。
                         if len(_utter) >= 12 and _routed:

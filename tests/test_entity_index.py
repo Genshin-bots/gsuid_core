@@ -9,6 +9,7 @@
 import pytest
 
 from gsuid_core.ai_core.entity_index import (
+    lock_plugin,
     lookup_surface,
     strip_surfaces,
     plugins_in_text,
@@ -132,6 +133,28 @@ def test_recent_alias_binds_followup_without_guessing() -> None:
     assert sole_background_plugin("深渊怎么打", history) == "GenshinUID"
     assert sole_background_plugin("维里奈深渊怎么打", history) == ""
     assert sole_background_plugin("设个提醒", f"{history}\n维里奈") == ""
+
+
+def test_alias_binding_keeps_spoken_surface() -> None:
+    """用户说的别名留在别名行里，并指到正式名和插件。"""
+    register_entity_surface("薇斯纳", "薇斯纳", "GenshinUID")
+    register_entity_surface("风仙", "薇斯纳", "GenshinUID")
+    register_entity_surface("沃雅妮莎", "沃雅妮莎", "GenshinUID")
+    note = format_alias_bindings("风仙和沃雅妮莎都用什么武器")
+    assert "风仙→薇斯纳→GenshinUID" in note
+    assert "沃雅妮莎→GenshinUID" in note
+    assert "find_tools 的 need 禁止改写成别的插件" in note
+
+
+def test_lock_plugin_prefers_names_in_the_current_sentence() -> None:
+    """当前句已经点名时，不继承上一句的另一个插件。两个插件同时出现则不锁。"""
+    register_entity_surface("风仙", "薇斯纳", "GenshinUID")
+    register_entity_surface("沃雅妮莎", "沃雅妮莎", "GenshinUID")
+    register_entity_surface("维里奈", "维里奈", "XutheringWavesUID")
+    utter = "风仙和沃雅妮莎都用什么武器比较好啊"
+    assert lock_plugin(utter, "维里奈深塔怎么打") == "GenshinUID"
+    assert lock_plugin("设个提醒", "维里奈深塔怎么打") == "XutheringWavesUID"
+    assert lock_plugin("风仙和维里奈用什么武器", "") == ""
 
 
 def test_strip_surfaces_drops_wake_word_not_inner_ascii() -> None:

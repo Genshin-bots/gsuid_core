@@ -178,3 +178,26 @@ def test_align_seeds_does_not_reintroduce_denied_plugin(registry, monkeypatch: p
     assert "foo_deep" not in names
     assert "foo_a" not in names
     assert names == ["bar_a"]
+
+
+def test_align_seeds_replaces_foreign_plugin_with_locked_one(registry, monkeypatch: pytest.MonkeyPatch) -> None:
+    """别的插件占满种子时，仍按锁定插件深召回，并丢掉外来工具。"""
+    reg = registry({"waves_a": ("Waves", ""), "genshin_kb": ("GenshinUID", "")})
+    queries: list[str] = []
+
+    async def fake_search_tools(**kwargs: object) -> list[FakeTool]:
+        query = kwargs["query"] if "query" in kwargs else ""
+        queries.append(query if isinstance(query, str) else "")
+        return [reg.by_name["genshin_kb"].tool]
+
+    monkeypatch.setattr(rag_tools, "search_tools", fake_search_tools)
+    out = asyncio.run(
+        rag_tools.align_seeds_to_context_plugin(
+            [reg.by_name["waves_a"].tool],
+            "GenshinUID",
+            "风仙和沃雅妮莎都用什么武器",
+            None,
+        )
+    )
+    assert [t.name for t in out] == ["genshin_kb"]
+    assert queries == ["风仙和沃雅妮莎都用什么武器"]

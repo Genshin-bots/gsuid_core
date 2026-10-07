@@ -68,6 +68,35 @@ def _node_hit(node_id: str, score: float) -> RankedHit | None:
     return RankedHit(name=node.node_id, label=when, score=score)
 
 
+def _node_plugin_ok(node_id: str, plugin: str) -> bool:
+    """锁定插件时，别的插件的代理不进回执。空插件名的通用节点保留。"""
+    from gsuid_core.ai_core.agent_node import get_node
+
+    node = get_node(node_id)
+    if node is None:
+        return False
+    owner = node.plugin
+    return owner == "" or owner == plugin
+
+
+def _pick_locked_tools(fold_names: list[str], plugin: str, route: str) -> list[str]:
+    """没有对口代理时，从锁定插件的 exclusive 工具里挑至多 4 个。"""
+    from gsuid_core.ai_core.register import find_tool_base
+
+    matched: list[str] = []
+    rest: list[str] = []
+    for name in fold_names:
+        tb = find_tool_base(name)
+        if tb is None or tb.plugin != plugin:
+            continue
+        if need_matches_tool_text(route, tb.retrieval_text, list(tb.covers)):
+            matched.append(name)
+        else:
+            rest.append(name)
+    chosen = matched if matched else rest
+    return chosen[:4]
+
+
 def _node_on_topic(need: str, node_id: str) -> bool:
     """专用节点入档前必须对口；语义邻居 / 短关键词不算命中。"""
     from gsuid_core.ai_core.agent_node import get_node
@@ -298,15 +327,20 @@ async def find_tools(
             scope=ctx.deps.tool_scope,
         )
         from gsuid_core.ai_core.rag.tools import align_seeds_to_context_plugin
-        from gsuid_core.ai_core.entity_index import ALIAS_PLUGIN_EXTRA_KEY
+        from gsuid_core.ai_core.entity_index import ALIAS_ROUTE_TEXT_KEY, ALIAS_PLUGIN_EXTRA_KEY
 
         _alias_plugin = ""
         if ALIAS_PLUGIN_EXTRA_KEY in ctx.deps.extra:
             _raw_plugin = ctx.deps.extra[ALIAS_PLUGIN_EXTRA_KEY]
             if isinstance(_raw_plugin, str):
                 _alias_plugin = _raw_plugin
+        _route = need
+        if ALIAS_ROUTE_TEXT_KEY in ctx.deps.extra:
+            _raw_route = ctx.deps.extra[ALIAS_ROUTE_TEXT_KEY]
+            if isinstance(_raw_route, str) and _raw_route.strip():
+                _route = _raw_route.strip()
         if _alias_plugin:
-            family_tools = await align_seeds_to_context_plugin(family_tools, _alias_plugin, need, ctx.deps.tool_scope)
+            family_tools = await align_seeds_to_context_plugin(family_tools, _alias_plugin, _route, ctx.deps.tool_scope)
         if _scope is not None and not _scope.is_open:
             family_tools = [t for t in family_tools if _scope.tool_enabled(t.name)]
         dedicated_tools: list[RankedHit] = list(offered_hits)
@@ -383,6 +417,8 @@ async def find_tools(
                 continue
             if not _node_on_topic(need, node_id):
                 continue
+            if _alias_plugin and not _node_plugin_ok(node_id, _alias_plugin):
+                continue
             hit = _node_hit(node_id, float(2000 - idx))
             if hit is not None:
                 dedicated_agents.append(hit)
@@ -392,9 +428,39 @@ async def find_tools(
                 continue
             if not _node_on_topic(need, node_id):
                 continue
+            if _alias_plugin and not _node_plugin_ok(node_id, _alias_plugin):
+                continue
             hit = _node_hit(node_id, float(1500 - idx))
             if hit is not None:
                 dedicated_agents.append(hit)
+
+        if _alias_plugin and fold_names and not dedicated_agents:
+            folded_by_name = {tool.name: tool for tool in family_tools}
+            for idx, name in enumerate(_pick_locked_tools(fold_names, _alias_plugin, _route)):
+                tb = find_tool_base(name)
+                tool = folded_by_name[name] if name in folded_by_name else None
+                if tb is None or tool is None:
+                    continue
+                retries = tool.max_retries if tool.max_retries is not None else 1
+                try:
+                    run_ctx = replace(ctx, tool_name=name, retry=0, max_retries=retries)
+                except TypeError:
+                    run_ctx = ctx
+                try:
+                    tool_def = await tool.prepare_tool_def(run_ctx)
+                except Exception as e:
+                    logger.debug(t("log.ai.find_tools_prepare_treated_unavailable_fail", p0=name, e=e))
+                    tool_def = None
+                if not tool_def:
+                    continue
+                dedicated_tools.append(
+                    RankedHit(
+                        name=name,
+                        label=tool_brief(covers=list(tb.covers), description=tb.description),
+                        score=float(900 - idx),
+                    )
+                )
+                ctx.deps.alias_callable_tools.add(name)
 
         matched_ids = await _matched_capability_node_ids(need)
         for idx, node_id in enumerate(matched_ids):
