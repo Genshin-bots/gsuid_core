@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import hmac
 import time
+import base64
 import asyncio
 import inspect
 import contextlib
 from typing import Any, Dict, List, Literal, Callable, Optional, Awaitable, TypedDict, TypeGuard
+from urllib.parse import urljoin
 
 import anyio
 import httpx
@@ -51,6 +53,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event, Message as GsMessage
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.models import ToolBase, ToolContext
+from gsuid_core.utils.path_safety import reject_outbound_http_url
 from gsuid_core.utils.resource_manager import RM
 
 # ─── 常量 ───────────────────────────────────────────────────────────────────
@@ -400,8 +403,10 @@ MAX_MCP_IMAGE_BYTES: int = 2 * 1024 * 1024
 
 MessageType = GsMessage | List[GsMessage] | List[str] | str | bytes
 
-# 与 trigger_bridge._is_image_string 对齐：URL 直链同样是图片引用，RM 取回时会自行下载
+# http(s) 由 Core 拉取；file:// 留在文本里，Core 不读适配器磁盘
 _IMAGE_REF_PREFIXES = ("base64://", "data:image/", "http://", "https://")
+_REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
+_FETCH_TIMEOUT_SECONDS = 12
 
 
 def _sniff_image_format(data: bytes) -> Literal["png", "jpeg", "gif", "webp"] | None:
@@ -417,12 +422,120 @@ def _sniff_image_format(data: bytes) -> Literal["png", "jpeg", "gif", "webp"] | 
     return None
 
 
-def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str]]:
-    """从发送的消息中提取文本列表和 RM 注册后的 image_id 列表。
+class _McpImageTooLarge(Exception):
+    """解码后或读取中超过单张上限。"""
 
-    登记时不做魔数判断：URL 直链必须等 RM 取回字节才知道是不是图，
-    统一在 `_build_tool_result` 侧判定，非图片会记为「未附带」而不是无声消失。
-    """
+
+class _McpImageRejected(Exception):
+    def __init__(self, ref: str) -> None:
+        super().__init__(ref)
+        self.ref = ref
+
+
+def _short_image_ref(ref: str) -> str:
+    text = ref.strip()
+    if text.startswith("data:image/"):
+        return "data:image"
+    if len(text) > 120:
+        return text[:117] + "..."
+    return text
+
+
+def _decode_data_image(uri: str) -> bytes:
+    header, sep, payload = uri.partition(",")
+    if sep != "," or ";base64" not in header.lower():
+        raise ValueError("data uri 缺少 base64 载荷")
+    return base64.b64decode(payload)
+
+
+def _mutable_extra_list(extra: Dict[str, object], key: str) -> List[object]:
+    if key not in extra or not isinstance(extra[key], list):
+        fresh: List[object] = []
+        extra[key] = fresh
+        return fresh
+    found = extra[key]
+    assert isinstance(found, list)
+    return found
+
+
+def _append_distinct(parts: List[str], incoming: str) -> None:
+    piece = incoming.strip()
+    if piece and piece not in parts:
+        parts.append(piece)
+
+
+async def _read_capped(resp: httpx.Response) -> bytes:
+    chunks: List[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_bytes():
+        total += len(chunk)
+        if total > MAX_MCP_IMAGE_BYTES:
+            raise _McpImageTooLarge()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _fetch_mcp_image(url: str) -> bytes:
+    """拉取 http(s) 图片。超限、拒绝的主机和过多跳转都不把整段下完。"""
+    current = url
+    timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for _hop in range(4):
+            reason = reject_outbound_http_url(current)
+            if reason is not None:
+                raise _McpImageRejected(current)
+            try:
+                async with asyncio.timeout(_FETCH_TIMEOUT_SECONDS):
+                    async with client.stream("GET", current) as resp:
+                        if resp.status_code in _REDIRECT_STATUS:
+                            if "location" not in resp.headers:
+                                raise _McpImageRejected(current)
+                            current = urljoin(current, resp.headers["location"])
+                            continue
+                        resp.raise_for_status()
+                        return await _read_capped(resp)
+            except _McpImageRejected:
+                raise
+            except (TimeoutError, httpx.HTTPError, httpx.InvalidURL) as exc:
+                # 这一跳的地址才是客户端能核对的引用，资源 ID 对不上原图
+                raise _McpImageRejected(current) from exc
+    raise _McpImageRejected(url)
+
+
+async def _load_registered_image(resource_id: str) -> tuple[bytes, str]:
+    """返回字节和可展示的引用。引用为空表示登记的就是字节或 base64。"""
+    raw = RM.peek(resource_id)
+    if isinstance(raw, bytes):
+        if len(raw) > MAX_MCP_IMAGE_BYTES:
+            raise _McpImageTooLarge()
+        return raw, ""
+    text = raw.strip()
+    if text.startswith("base64://"):
+        data = base64.b64decode(text[len("base64://") :])
+        if len(data) > MAX_MCP_IMAGE_BYTES:
+            raise _McpImageTooLarge()
+        return data, ""
+    if text.startswith("data:image/"):
+        data = _decode_data_image(text)
+        if len(data) > MAX_MCP_IMAGE_BYTES:
+            raise _McpImageTooLarge()
+        return data, ""
+    if text.startswith(("http://", "https://")):
+        if reject_outbound_http_url(text) is not None:
+            raise _McpImageRejected(text)
+        try:
+            data = await _fetch_mcp_image(text)
+        except _McpImageRejected:
+            raise
+        except (TimeoutError, httpx.HTTPError, httpx.InvalidURL) as exc:
+            # 拉取函数被中断时仍把原地址写进结果，不退回资源 ID
+            raise _McpImageRejected(text) from exc
+        return data, text
+    raise _McpImageRejected(text)
+
+
+def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str]]:
+    """从发送的消息中提取文本和 RM 资源 ID。魔数与外链校验在组装结果时做。"""
     texts: List[str] = []
     image_ids: List[str] = []
 
@@ -460,12 +573,7 @@ def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str
 
 
 class _McpBot(_Bot):
-    """MCP 调用专用的模拟 _Bot：拦截出站消息中的图片与文本。
-
-    注意：此实现故意重写并绕过了父类 `_Bot.target_send` 中的静音检查（`is_mute`）与历史消息记录
-    （`message_record` 等逻辑），因为 MCP 为无状态的请求-响应式 RPC 协议，出站内容直接聚合进当前
-    工具调用的返回载荷（`mcp_texts` / `mcp_image_ids`）供 MCP 客户端接收，无需走常规平台推送链路。
-    """
+    """无连接。出站内容只进本次 MCP 结果，不写历史，也不入发送队列。"""
 
     def __init__(self, _id: str, extra: Dict[str, object]) -> None:
         super().__init__(_id, ws=None)
@@ -477,19 +585,12 @@ class _McpBot(_Bot):
         *args: object,
         **kwargs: object,
     ) -> Optional[List[str]]:
-        # 故意绕过父类静音与消息记录检查，直接将出站消息提取并暂存至 extra 字典中供 MCP 聚合返回
         texts, image_ids = _extract_messages_for_mcp(message)
         if texts:
-            target_texts = self._extra.get("mcp_texts")
-            if not isinstance(target_texts, list):
-                target_texts = []
-                self._extra["mcp_texts"] = target_texts
+            target_texts = _mutable_extra_list(self._extra, "mcp_texts")
             target_texts.extend(texts)
         if image_ids:
-            target_images = self._extra.get("mcp_image_ids")
-            if not isinstance(target_images, list):
-                target_images = []
-                self._extra["mcp_image_ids"] = target_images
+            target_images = _mutable_extra_list(self._extra, "mcp_image_ids")
             for iid in image_ids:
                 if iid not in target_images:
                     target_images.append(iid)
@@ -606,51 +707,75 @@ async def _build_tool_result(
 
     all_texts: List[str] = []
     for t_str in extra_texts:
-        if t_str.strip():
-            all_texts.append(t_str.strip())
-    if text.strip():
-        all_texts.append(text.strip())
+        _append_distinct(all_texts, t_str)
+    _append_distinct(all_texts, text)
 
-    raw_images: List[bytes] = []
+    loaded: List[tuple[bytes, str]] = []
     if _is_tool_return(raw) and raw.content and not isinstance(raw.content, str):
         for item in raw.content:
             if isinstance(item, BinaryContent):
-                raw_images.append(item.data)
+                loaded.append((item.data, ""))
 
-    for iid in image_ids:
-        try:
-            raw_images.append(await RM.get(iid))
-        except (ValueError, httpx.HTTPError) as e:
-            # 图片引用可能是外链，取回失败属于外部输入问题，不该打断整条工具结果
-            logger.warning(
-                t(
-                    "log.mcp.mcp_server_retrieve_image_resource_fail",
-                    rid=iid,
-                    e=e,
-                )
-            )
-
+    failed_refs: List[str] = []
+    skipped_refs: List[str] = []
     valid_images: List[tuple[bytes, Literal["png", "jpeg", "gif", "webp"]]] = []
     skipped_binary = 0
     has_oversized = False
     has_overcounted = False
 
-    for img_bytes in raw_images:
-        fmt = _sniff_image_format(img_bytes)
+    def _take(data: bytes, ref: str) -> None:
+        nonlocal skipped_binary, has_oversized
+        if len(data) > MAX_MCP_IMAGE_BYTES:
+            has_oversized = True
+            return
+        fmt = _sniff_image_format(data)
         if fmt is None:
-            # PDF / 音频 / HTML 等非图片二进制 MCP 无标准承载；直接丢会让整条结果退化成空串
             skipped_binary += 1
-            continue
+            if ref:
+                skipped_refs.append(_short_image_ref(ref))
+            return
+        valid_images.append((data, fmt))
+
+    for img_bytes, ref in loaded:
         if len(valid_images) >= MAX_MCP_IMAGES:
             has_overcounted = True
             break
-        if len(img_bytes) > MAX_MCP_IMAGE_BYTES:
-            has_oversized = True
-            continue
-        valid_images.append((img_bytes, fmt))
+        _take(img_bytes, ref)
+
+    if image_ids and len(valid_images) >= MAX_MCP_IMAGES:
+        has_overcounted = True
+    elif len(valid_images) < MAX_MCP_IMAGES:
+        for iid in image_ids:
+            if len(valid_images) >= MAX_MCP_IMAGES:
+                has_overcounted = True
+                break
+            try:
+                data, ref = await _load_registered_image(iid)
+            except _McpImageTooLarge:
+                has_oversized = True
+                continue
+            except (TimeoutError, httpx.HTTPError, httpx.InvalidURL, ValueError, _McpImageRejected) as e:
+                # 外链超时、拒绝或解码失败都是外部输入，不能丢掉已经拿到的文本和图片
+                logger.warning(
+                    t(
+                        "log.mcp.mcp_server_retrieve_image_resource_fail",
+                        rid=iid,
+                        e=e,
+                    )
+                )
+                shown = e.ref if isinstance(e, _McpImageRejected) else iid
+                failed_refs.append(_short_image_ref(shown))
+                continue
+            _take(data, ref)
 
     if skipped_binary:
-        all_texts.append(f"[{skipped_binary} 份非图片二进制未附带]")
+        if skipped_refs:
+            joined = ", ".join(skipped_refs)
+            all_texts.append(f"[{skipped_binary} 份非图片二进制未附带: {joined}]")
+        else:
+            all_texts.append(f"[{skipped_binary} 份非图片二进制未附带]")
+    if failed_refs:
+        all_texts.append("[取回失败未附带: " + ", ".join(failed_refs) + "]")
     if has_oversized:
         all_texts.append("[图片过大未附带]")
     if has_overcounted:

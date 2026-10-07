@@ -72,6 +72,13 @@ class ResourceManager:
         self._store[resource_id] = (data, time.time())
         return resource_id
 
+    def peek(self, resource_id: str) -> Union[str, bytes]:
+        """取回登记时的原始值，不下载、不解码。"""
+        if resource_id not in self._store:
+            raise ValueError(t("找不到资源 ID: {resource_id}", resource_id=resource_id))
+        data, _created_at = self._store[resource_id]
+        return data
+
     async def get(self, resource_id: str) -> bytes:
         """根据 ID 取回数据
 

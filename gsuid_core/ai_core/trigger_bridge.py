@@ -10,7 +10,7 @@ import re
 import inspect
 import contextvars
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple, Union, Optional
+from typing import Any, Dict, List, Tuple, Union, Optional, TypeGuard
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
@@ -253,34 +253,77 @@ def _message_to_text(message: Any) -> str:
     return str(message)
 
 
-def _assemble_trigger_output(call_ctx: Dict[str, Any]) -> str:
-    """把 MockBot 收集到的 ai_return 文本 / bot.send 文字 / 图片·音频·视频资源 ID
-    组装为返回字符串（图片等二进制绝不进返回值，只回传资源 ID）。"""
+def _as_str_list(value: object) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    found: List[str] = []
+    for item in value:
+        if isinstance(item, str):
+            found.append(item)
+    return found
+
+
+def _ctx_str_list(call_ctx: Dict[str, Any], key: str) -> List[str]:
+    if key not in call_ctx:
+        return []
+    return _as_str_list(call_ctx[key])
+
+
+def _is_mcp_extra(extra: object) -> TypeGuard[Dict[str, object]]:
+    return isinstance(extra, dict) and "source" in extra and extra["source"] == "mcp_server"
+
+
+def _remember_mcp_image_ids(extra: Dict[str, object], image_ids: List[str]) -> None:
+    if "mcp_image_ids" not in extra or not isinstance(extra["mcp_image_ids"], list):
+        extra["mcp_image_ids"] = []
+    bucket = extra["mcp_image_ids"]
+    assert isinstance(bucket, list)
+    for iid in image_ids:
+        if iid not in bucket:
+            bucket.append(iid)
+
+
+def _append_mcp_av_notes(parts: List[str], audio_ids: List[str], video_ids: List[str]) -> None:
+    if audio_ids:
+        parts.append(f"[已生成 {len(audio_ids)} 个音频，MCP 结果未附带音频字节。]")
+    if video_ids:
+        parts.append(f"[已生成 {len(video_ids)} 个视频，MCP 结果未附带视频字节。]")
+
+
+def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> str:
+    """把 MockBot 收集到的文本和资源说明组装成返回字符串。图片字节不进字符串。"""
     parts: List[str] = []
-    parts.extend(call_ctx.get("texts", []))
-    parts.extend(call_ctx.get("bot_messages", []))
-    if call_ctx.get("image_ids"):
-        id_list = ", ".join(call_ctx["image_ids"])
+    parts.extend(_ctx_str_list(call_ctx, "texts"))
+    parts.extend(_ctx_str_list(call_ctx, "bot_messages"))
+    image_ids = _ctx_str_list(call_ctx, "image_ids")
+    audio_ids = _ctx_str_list(call_ctx, "audio_ids")
+    video_ids = _ctx_str_list(call_ctx, "video_ids")
+    if _is_mcp_extra(extra):
+        _remember_mcp_image_ids(extra, image_ids)
+        _append_mcp_av_notes(parts, audio_ids, video_ids)
+        return "\n".join(parts)
+    if image_ids:
+        id_list = ", ".join(image_ids)
         parts.append(
-            f"[已生成 {len(call_ctx['image_ids'])} 张图片，资源ID: {id_list}。"
+            f"[已生成 {len(image_ids)} 张图片，资源ID: {id_list}。"
             "如需发送给用户，请调用 send_message_by_ai 传入 image_id。]"
         )
-    if call_ctx.get("audio_ids"):
-        id_list = ", ".join(call_ctx["audio_ids"])
+    if audio_ids:
+        id_list = ", ".join(audio_ids)
         parts.append(
-            f"[已生成 {len(call_ctx['audio_ids'])} 个音频，资源ID: {id_list}。"
+            f"[已生成 {len(audio_ids)} 个音频，资源ID: {id_list}。"
             "如需发送给用户，请调用 send_message_by_ai 传入 audio_id。]"
         )
-    if call_ctx.get("video_ids"):
-        id_list = ", ".join(call_ctx["video_ids"])
+    if video_ids:
+        id_list = ", ".join(video_ids)
         parts.append(
-            f"[已生成 {len(call_ctx['video_ids'])} 个视频，资源ID: {id_list}。"
+            f"[已生成 {len(video_ids)} 个视频，资源ID: {id_list}。"
             "如需发送给用户，请调用 send_message_by_ai 传入 video_id。]"
         )
     return "\n".join(parts)
 
 
-async def run_trigger_via_mockbot(real_bot: Bot, fake_ev: Event, func: Any) -> str:
+async def run_trigger_via_mockbot(real_bot: Bot, fake_ev: Event, func: Any, extra: object = None) -> str:
     """用 MockBot 实跑一个触发器处理函数并收集其产出（不真正发给用户）。
 
     供两处复用：
@@ -304,7 +347,7 @@ async def run_trigger_via_mockbot(real_bot: Bot, fake_ev: Event, func: Any) -> s
         await func(MockBot(real_bot, call_ctx), fake_ev)
     finally:
         _AI_CALL_CONTEXT.reset(token)
-    return _assemble_trigger_output(call_ctx)
+    return _assemble_trigger_output(call_ctx, extra)
 
 
 # ─── _register_trigger_as_ai_tool ─────────────────────────────────────────────
@@ -424,47 +467,38 @@ def _register_trigger_as_ai_tool(
         parts.extend(call_ctx["texts"])
         parts.extend(call_ctx["bot_messages"])
 
-        is_mcp = (
-            isinstance(ctx.deps.extra, dict) and "source" in ctx.deps.extra and ctx.deps.extra["source"] == "mcp_server"
-        )
-        if is_mcp and call_ctx["image_ids"]:
-            if "mcp_image_ids" not in ctx.deps.extra or not isinstance(ctx.deps.extra["mcp_image_ids"], list):
-                ctx.deps.extra["mcp_image_ids"] = []
-            mcp_image_ids = ctx.deps.extra["mcp_image_ids"]
-            for iid in call_ctx["image_ids"]:
-                if iid not in mcp_image_ids:
-                    mcp_image_ids.append(iid)
-
-        if call_ctx["image_ids"]:
-            image_count = len(call_ctx["image_ids"])
-            if is_mcp:
-                # MCP 侧图片直接随结果返回，资源ID 是内部实现细节，不写进给外部模型的文本
-                parts.append(f"[已生成 {image_count} 张图片，图片已随本结果附带，无需再发送。]")
-            else:
-                id_list = ", ".join(call_ctx["image_ids"])
+        image_ids = _ctx_str_list(call_ctx, "image_ids")
+        audio_ids = _ctx_str_list(call_ctx, "audio_ids")
+        video_ids = _ctx_str_list(call_ctx, "video_ids")
+        if _is_mcp_extra(ctx.deps.extra):
+            # 是否真的附上要等字节校验。这里先不说「已附带」，避免外链失败时模型不再去取图。
+            _remember_mcp_image_ids(ctx.deps.extra, image_ids)
+            _append_mcp_av_notes(parts, audio_ids, video_ids)
+        else:
+            if image_ids:
+                image_count = len(image_ids)
+                id_list = ", ".join(image_ids)
                 parts.append(
                     f"[已生成 {image_count} 张图片，资源ID: {id_list}。"
                     f"请调用 send_message_by_ai 工具传入 image_id 将图片发送给用户，"
                     f"或根据用户意图决定是否发送。]"
                 )
-
-        if call_ctx["audio_ids"]:
-            audio_count = len(call_ctx["audio_ids"])
-            id_list = ", ".join(call_ctx["audio_ids"])
-            parts.append(
-                f"[已生成 {audio_count} 个音频，资源ID: {id_list}。"
-                f"请调用 send_message_by_ai 工具传入 audio_id 将音频发送给用户，"
-                f"或根据用户意图决定是否发送。]"
-            )
-
-        if call_ctx["video_ids"]:
-            video_count = len(call_ctx["video_ids"])
-            id_list = ", ".join(call_ctx["video_ids"])
-            parts.append(
-                f"[已生成 {video_count} 个视频，资源ID: {id_list}。"
-                f"请调用 send_message_by_ai 工具传入 video_id 将视频发送给用户，"
-                f"或根据用户意图决定是否发送。]"
-            )
+            if audio_ids:
+                audio_count = len(audio_ids)
+                id_list = ", ".join(audio_ids)
+                parts.append(
+                    f"[已生成 {audio_count} 个音频，资源ID: {id_list}。"
+                    f"请调用 send_message_by_ai 工具传入 audio_id 将音频发送给用户，"
+                    f"或根据用户意图决定是否发送。]"
+                )
+            if video_ids:
+                video_count = len(video_ids)
+                id_list = ", ".join(video_ids)
+                parts.append(
+                    f"[已生成 {video_count} 个视频，资源ID: {id_list}。"
+                    f"请调用 send_message_by_ai 工具传入 video_id 将视频发送给用户，"
+                    f"或根据用户意图决定是否发送。]"
+                )
 
         if parts:
             return "\n".join(parts)

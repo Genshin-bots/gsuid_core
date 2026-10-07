@@ -218,3 +218,22 @@ def validate_install_source_url(url: str) -> str | None:
     if host.startswith("169.254.") or host.startswith("fe80:") or host.startswith("::ffff:127."):
         return "不允许指向链路本地地址的来源"
     return None
+
+
+def reject_outbound_http_url(url: str) -> str | None:
+    """Core 自己发起的 http(s)。拒绝回环、链路本地和云元数据主机。
+
+    返回 None 表示可以请求。
+    """
+    parsed = urlparse(url.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return "仅允许 http 或 https"
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return "缺少主机名"
+    if host in _LOOPBACK_HOSTS or host in _METADATA_HOSTS:
+        return "不允许指向本机或元数据地址"
+    if host.startswith("169.254.") or host.startswith("fe80:") or host.startswith("::ffff:127."):
+        return "不允许指向链路本地地址"
+    return None

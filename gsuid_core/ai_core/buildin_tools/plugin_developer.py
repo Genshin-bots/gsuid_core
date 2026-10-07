@@ -967,7 +967,7 @@ async def test_plugin_command(
             )
         )
         try:
-            result = await run_trigger_via_mockbot(ctx.deps.bot, fake_ev, raw_func)
+            result = await run_trigger_via_mockbot(ctx.deps.bot, fake_ev, raw_func, ctx.deps.extra)
         except Exception as e:
             logger.exception(t("log.ai.plugindev_self_test_command_fail", command=command, e=e))
             return (
