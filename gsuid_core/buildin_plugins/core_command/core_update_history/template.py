@@ -18,7 +18,14 @@ from pathlib import Path
 
 from gsuid_core.utils.image.image_tools import TEXT_PATH
 
-from .changelog import VersionRef, ChangelogEntry, ChangelogGroup, ChangelogVersion, peek_emoji
+from .changelog import (
+    VersionRef,
+    CommitAuthor,
+    ChangelogEntry,
+    ChangelogGroup,
+    ChangelogVersion,
+    peek_emoji,
+)
 
 # 逻辑宽（CSS px）。设备像素 = 本值 * DEVICE_SCALE，渲染时 max_width / dpi 同步翻倍。
 LAYOUT_WIDTH = 560
@@ -98,6 +105,10 @@ _KW_RE = re.compile("|".join(sorted(_KEYWORDS, key=len, reverse=True)))
 
 def _esc(text: str) -> str:
     return html.escape(text, quote=False)
+
+
+def _esc_attr(text: str) -> str:
+    return html.escape(text, quote=True)
 
 
 def _accent_hex(color: str) -> str:
@@ -297,28 +308,40 @@ body{
 .lead-rest{margin-top:4px;font-size:11px;color:#8e8e9a;line-height:1.58;}
 /* 单列分组：一组 = emoji + 粗分类胶囊 + 项数，组内子条目依次列出 */
 .groups{margin-top:14px;}
-.group{margin-bottom:10px;}
+.group{margin-bottom:14px;}
 .group:last-child{margin-bottom:0;}
 .ghead{display:flex;align-items:center;}
 .ghead-body{display:flex;align-items:center;}
 .gcount{margin-left:6px;padding:2px 8px;border-radius:9px;font-size:10px;font-weight:700;
   letter-spacing:0.04em;white-space:nowrap;}
-.gitems{margin-top:4px;padding-left:25px;}
-.item{margin-top:3px;padding-left:8px;border-left:1px solid rgba(255,255,255,0.09);}
+.gitems{margin-top:6px;padding-left:25px;}
+/* 段间距要明显大于换行行距，否则多行条目和下一条会粘成一块。 */
+.item{margin-top:9px;padding:2px 0 2px 8px;border-left:1px solid rgba(255,255,255,0.18);}
 .item:first-child{margin-top:0;}
 .ico{width:25px;flex:none;font-size:17px;line-height:1.3;}
 /* 分类标签走胶囊：圆角取到约半高，两端收成半圆 */
 .badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:10.5px;font-weight:700;
   border:1px solid transparent;white-space:nowrap;word-break:keep-all;letter-spacing:0.02em;}
-.txt{font-size:11px;color:#e8e8ec;line-height:1.52;}
+.txt{font-size:11px;font-weight:500;color:#e8e8ec;line-height:1.36;}
+.meta{font-family:"Mono","Consolas",monospace;font-size:8.5px;font-weight:400;
+  color:#6b6b78;line-height:1.36;}
+.sha{font-weight:400;letter-spacing:0.02em;}
 .hl{color:{GOLD};font-weight:600;}
 .kw{color:{ORANGE};font-weight:600;}
 /* 标题底色已是橙色，标题内的标记改奶油白提亮 */
 .title .hl,.title .kw{color:{CREAM};font-weight:700;}
 .code{font-family:"Mono","Consolas",monospace;font-size:10.5px;padding:0 3px;border-radius:3px;
   background:rgba(91,141,239,0.13);color:#7fb0ff;font-weight:600;}
-.shas{margin-top:2px;font-family:"Mono","Consolas",monospace;font-size:8.5px;
-  color:#6b6b78;line-height:1.4;word-break:break-all;}
+.avs{display:inline-block;line-height:0;vertical-align:-1px;}
+.av{display:inline-block;overflow:hidden;border-radius:50%;
+  border:1px solid rgba(255,255,255,0.22);background:#16161c;line-height:0;
+  vertical-align:middle;}
+.av+.av{margin-left:-4px;}
+.av img{display:block;width:100%;height:100%;}
+.av-letter{display:block;width:100%;height:100%;text-align:center;
+  font-size:8px;font-weight:700;color:#c9c9d4;}
+.contrib{display:flex;align-items:center;margin-top:8px;}
+.contrib-lb{margin-left:8px;font-size:10px;color:#7a7a86;letter-spacing:0.04em;}
 .rows{margin-top:14px;}
 /* 合集卡：一段一版。段头用中等字号，两版并排时不会和单版卡的超大号打架 */
 .segments{margin-top:16px;}
@@ -431,7 +454,8 @@ def _meta_bar(version: ChangelogVersion) -> str:
         items.append(_meta_item(_icon_version(_MUTED), f"本版 {version.commit_count} 个提交"))
         items.append('<span class="vline"></span>')
     items.append(_meta_item(_icon_code(_MUTED), "提交范围见 pyproject.toml"))
-    return f'<div class="metabar">{"".join(items)}<span class="backlink">&lt; 返回索引</span></div>'
+    bar = f'<div class="metabar">{"".join(items)}<span class="backlink">&lt; 返回索引</span></div>'
+    return bar + _contributors_html(version.authors)
 
 
 def _group_html(group: ChangelogGroup) -> str:
@@ -458,16 +482,49 @@ def _group_html(group: ChangelogGroup) -> str:
     )
 
 
+def _avatar_html(author: CommitAuthor, size: int) -> str:
+    """外层 span 定尺寸。pytakumi 下 img 自身宽高不可靠，同 _icon_box。"""
+    label = author.login or author.name or "?"
+    title = _esc_attr(label)
+    if author.avatar_uri:
+        inner = f'<img src="{author.avatar_uri}" alt="{title}">'
+    else:
+        letter = _esc(label[:1].upper())
+        inner = f'<span class="av-letter" style="line-height:{size}px">{letter}</span>'
+    return f'<span class="av" style="width:{size}px;height:{size}px" title="{title}">{inner}</span>'
+
+
+def _avatars_html(authors: Sequence[CommitAuthor], size: int = 18) -> str:
+    if not authors:
+        return ""
+    return f'<span class="avs">{"".join(_avatar_html(a, size) for a in authors)}</span>'
+
+
+def _contributors_html(authors: Sequence[CommitAuthor]) -> str:
+    if not authors:
+        return ""
+    count = len(authors)
+    return f'<div class="contrib">{_avatars_html(authors, 20)}<span class="contrib-lb">{count} 位贡献者</span></div>'
+
+
 def _item_html(entry: ChangelogEntry) -> str:
-    """组内子条目：正文 + 暗色 commit 串。分类标签已在组头给出，这里不重复。"""
+    """组内子条目：正文后用 `| ` 接作者头像和 commit 短号，不再单独占一行。"""
     commits = entry.commits[:_MAX_COMMITS]
     rest = len(entry.commits) - len(commits)
     sha_text = " · ".join(commits)
     if rest > 0:
         sha_text += f" · +{rest}"
-    txt = f'<div class="txt">{_rich(entry.text)}</div>' if entry.text else ""
-    shas = f'<div class="shas">{sha_text}</div>' if sha_text else ""
-    return f'<div class="item">{txt}{shas}</div>'
+    txt = f'<span class="txt">{_rich(entry.text)}</span>' if entry.text else ""
+    bits: list[str] = []
+    avatars = _avatars_html(entry.authors, 13)
+    if avatars:
+        bits.append(avatars)
+    if sha_text:
+        bits.append(f'<span class="sha">{_esc(sha_text)}</span>')
+    if not bits:
+        return f'<div class="item">{txt}</div>'
+    meta = f'<span class="meta"> | {" ".join(bits)}</span>'
+    return f'<div class="item">{txt}{meta}</div>'
 
 
 def _lead_block(version: ChangelogVersion) -> str:
@@ -513,6 +570,7 @@ def _segment_html(version: ChangelogVersion) -> str:
         f'<div class="segment"><div class="seg-head"><div class="seg-ver">{_esc(version.version)}</div>'
         f'{mark}</div><div class="seg-meta">{meta_html}</div>'
         f'<div class="seg-sub">{_rich(version.subtitle)}</div>'
+        f"{_contributors_html(version.authors)}"
         f'{_lead_block(version)}<div class="groups">'
         f"{''.join(_group_html(g) for g in version.groups)}</div></div>"
     )
@@ -526,7 +584,7 @@ def _index_date_of(date: str, released: bool) -> str:
 
 
 def build_recent_html(versions: Sequence[ChangelogVersion]) -> str:
-    """默认那张图：未发布段 + 上一已发布版合并成一张。
+    """默认那张图：当前版本；提交不超过 6 个时再拼上一版。
 
     调用方保证非空；空列表请自己走 `build_empty_html`。
     """

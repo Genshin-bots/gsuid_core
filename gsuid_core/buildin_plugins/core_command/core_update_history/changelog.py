@@ -16,6 +16,8 @@ from gsuid_core.version import __version__
 _INDEX_FILE = "CHANGELOG.md"
 _UPWARD_DEPTH = 6
 _UNRELEASED_SUFFIX = "-unreleased"
+# 当前版提交超过这个数时，recent 不再拼上一版，避免默认图过长。
+_RECENT_PREV_MAX_COMMITS = 6
 
 # `# 0.11.0（未发布）— 副标题` / `# 0.7.4 — 副标题` / `# 0.11.0 副标题`
 # 分隔符放宽到 0~2 个：`-—–:：` 任一。写成 `0,1` 个会在 `0.1.0——标题` 上把 `—` 留给副标题。
@@ -141,8 +143,8 @@ _CATEGORY_LABELS = {
     "安全": "安全",
 }
 _CATEGORY_FALLBACK = ("其他", "🎨", "c084fc")
-# 组内顺序：按性质排，读者先看新增再看修复；未列出的追加在后。
-_CATEGORY_ORDER = ("新增", "修复", "调整", "优化", "依赖", "安全", "破坏性", "移除", "其他")
+# 组序：优化 > 新增 > 调整 > 安全 > 修复，其余追加在后。
+_CATEGORY_ORDER = ("优化", "新增", "调整", "安全", "修复", "破坏性", "依赖", "移除", "其他")
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +160,15 @@ class VersionRef:
 
 
 @dataclass(frozen=True, slots=True)
+class CommitAuthor:
+    """一条 commit 的作者：显示名、GitHub 登录名、头像 data URI。"""
+
+    name: str
+    login: str
+    avatar_uri: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChangelogEntry:
     """一条变更：分类标签 + 正文 + 证据 commit。"""
 
@@ -165,6 +176,7 @@ class ChangelogEntry:
     label: str
     text: str
     commits: tuple[str, ...]
+    authors: tuple[CommitAuthor, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +205,7 @@ class ChangelogVersion:
     lead: tuple[str, ...]
     entries: tuple[ChangelogEntry, ...]
     groups: tuple[ChangelogGroup, ...]
+    authors: tuple[CommitAuthor, ...] = ()
 
 
 def changelog_dir() -> Path | None:
@@ -377,7 +390,7 @@ def peek_emoji(ref: VersionRef) -> str:
         counts[name] = counts.get(name, 0) + 1
     if not counts:
         return "📄"
-    # 并列时按 _CATEGORY_ORDER 取靠前的（新增优先于修复），别让 dict 顺序决定
+    # 并列时按 _CATEGORY_ORDER 取靠前的（优化优先于新增），别让 dict 顺序决定
     rank = {name: index for index, name in enumerate(_CATEGORY_ORDER)}
     dominant = min(counts, key=lambda name: (-counts[name], rank.get(name, len(rank))))
     return _style_of(dominant)[0]
@@ -399,16 +412,22 @@ def pick_default(refs: Sequence[VersionRef]) -> VersionRef | None:
 
 
 def pick_recent(refs: Sequence[VersionRef]) -> tuple[VersionRef, ...]:
-    """默认展示的版本：未发布段 + 上一已发布版，按新到旧。
+    """默认展示当前这段；提交不超过 6 个时再带上一个不同版本号。
 
-    没有未发布段时只给上一已发布版；一段都没有时给最新一版，保证至少有内容。
+    升版打开这一版，之后的提交仍是这个版本号。同号的「未发布」和「已发布」
+    不能并排两张。当前版已经够长时不再拼上一版。
     """
     if not refs:
         return ()
-    unreleased = [ref for ref in refs if not ref.released]
-    released = [ref for ref in refs if ref.released]
-    picked = unreleased[:1] + released[:1]
-    return tuple(picked) if picked else tuple(refs[:1])
+    first = refs[0]
+    if first.commit_count > _RECENT_PREV_MAX_COMMITS:
+        return (first,)
+    picked: list[VersionRef] = [first]
+    for ref in refs[1:]:
+        if ref.version != first.version:
+            picked.append(ref)
+            break
+    return tuple(picked)
 
 
 def resolve_query(query: str, refs: Sequence[VersionRef]) -> VersionRef | None:

@@ -3,7 +3,7 @@
 用法（仓库根目录）：
     uv run python eval/manual/preview_update_history.py
 
-只渲代表样本，不做全版本回归：最新已发布版、带未发布段的最短版、
+只渲代表样本，不做全版本回归：默认合集、当前版本、上一版本、
 条目最少的旧版（` **🎨** ` 无标签写法）、以及版本索引。
 """
 
@@ -23,7 +23,7 @@ PREFIX = "update_history_"
 CASES: list[tuple[str, str, bool]] = [
     ("01_recent_default.png", "", False),
     ("02_latest_released.png", "0.11.0", False),
-    ("03_unreleased.png", "0.11.0-unreleased", False),
+    ("03_previous_released.png", "0.10.8", False),
     ("04_minimal_old.png", "0.7.4", False),
     ("05_index.png", "列表", False),
 ]
@@ -50,6 +50,9 @@ async def main() -> None:
         template,
         changelog as source,
     )
+    from gsuid_core.buildin_plugins.core_command.core_update_history.authors import (
+        attach_authors,
+    )
 
     command = import_module("gsuid_core.buildin_plugins.core_command.core_update_history")
 
@@ -65,7 +68,7 @@ async def main() -> None:
             html = template.build_index_html(refs, total=len(refs))
             detail = f"{len(refs)} 个版本"
         elif not query:
-            versions = [source.parse_version(ref) for ref in recent]
+            versions = list(await attach_authors(tuple(source.parse_version(ref) for ref in recent)))
             html = template.build_recent_html(versions)
             detail = "合集 " + " + ".join(v.version for v in versions)
         else:
@@ -73,7 +76,7 @@ async def main() -> None:
             if ref is None:
                 print(f"SKIP {name}: 找不到 {query}")
                 continue
-            version = source.parse_version(ref)
+            version = (await attach_authors((source.parse_version(ref),)))[0]
             html = template.build_version_html(version, is_current=force_current or source.is_current(ref))
             detail = f"{len(version.entries)} 条 · {version.date or '无日期'} · {version.subtitle[:18]}"
 

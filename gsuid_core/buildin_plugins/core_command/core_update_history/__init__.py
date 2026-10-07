@@ -1,6 +1,6 @@
 """`core更新记录` → 把 changelogs/ 目录的版本记录渲染成竖屏卡片。
 
-不带参数看未发布段 + 上一已发布版的合集，带版本号看指定版，带「列表」看版本索引。
+不带参数看当前版本（提交不超过 6 个时再带上一版），带版本号看指定版，带「列表」看版本索引。
 """
 
 from gsuid_core.sv import SV
@@ -8,6 +8,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.utils.html_render import render_html_to_bytes
 
+from .authors import attach_authors
 from .template import (
     DEVICE_SCALE,
     LAYOUT_WIDTH,
@@ -56,7 +57,7 @@ async def _send_empty(bot: Bot) -> None:
 
 
 def _recent_versions(refs: tuple[VersionRef, ...]) -> tuple[ChangelogVersion, ...]:
-    """默认那张图要画的版本：未发布段 + 上一已发布版。"""
+    """默认那张图要画的版本：当前这段；提交不超过 6 个时再带上一版。"""
     return tuple(parse_version(ref) for ref in pick_recent(refs))
 
 
@@ -78,7 +79,8 @@ async def send_update_history(bot: Bot, ev: Event):
         return
 
     if not arg:
-        await bot.send(await _render(build_recent_html(_recent_versions(refs))))
+        versions = await attach_authors(_recent_versions(refs))
+        await bot.send(await _render(build_recent_html(versions)))
         return
 
     ref = resolve_query(arg, refs)
@@ -92,4 +94,5 @@ async def send_update_history(bot: Bot, ev: Event):
         )
         return
 
-    await bot.send(await _render(build_version_html(parse_version(ref), is_current=is_current(ref))))
+    version = (await attach_authors((parse_version(ref),)))[0]
+    await bot.send(await _render(build_version_html(version, is_current=is_current(ref))))

@@ -20,6 +20,9 @@ async def main() -> None:
         template,
         changelog as source,
     )
+    from gsuid_core.buildin_plugins.core_command.core_update_history.authors import (
+        attach_authors,
+    )
 
     command = import_module("gsuid_core.buildin_plugins.core_command.core_update_history")
     refs = source.list_versions()
@@ -33,7 +36,7 @@ async def main() -> None:
     for ref in refs:
         name = f"{ref.version}{'' if ref.released else '-unreleased'}.png"
         try:
-            version = source.parse_version(ref)
+            version = (await attach_authors((source.parse_version(ref),)))[0]
             html = template.build_version_html(version, is_current=source.is_current(ref))
             data = await command._render(html)
         except Exception as exc:  # noqa: BLE001 - 探针要看到全部失败
