@@ -59,5 +59,6 @@
   "log.core.startup_done": "起動完了 {duration:.2f}s · v{version}",
   "log.core.token_error": "[GsCore] トークンが無効です！残り試行回数: {remaining}",
   "log.core.web_console_background_initialization_fail": "[ウェブコンソール] バックグラウンドの初期化に失敗しました: {e}",
+  "log.core.ws_inbound_frame_skipped": "[GsCore] {bot_id} のフレームを MessageReceive に復号できません: {reason}（{size} バイト）。Core はこのフレームをスキップし、接続を維持しました。",
   "log.core.ws_starting": "[GsCore] WS サービスを開始しています..."
 }
