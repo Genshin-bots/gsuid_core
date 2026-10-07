@@ -113,6 +113,9 @@ class GsServer:
 - **5 分钟内重连**：复用旧实例，仅换 `bot.bot = websocket` 与 logger，`_send_queue` 中未发
   消息继续投递。
 - **超过 5 分钟**：cancel 旧 `_send_task` + `clear_send_queue()` 后丢弃，避免内存泄漏。
+- **判超时的依据不是 `_disconnected_at`**：复用分支会把它清回 `None`，与「从未断过」无法区分；
+  `connect()` 改用 `bot.bot is None`（实例已脱手套接字）作为前提，再叠加 5 分钟窗口。否则每次
+  重连都会被误判成超时，`clear_send_queue()` 随之丢掉在途回复（症状：消息收得到、发不出去）。
 - **断开**：close + 删 `active_ws`、cancel `_send_task` 与 bg_tasks、标记 `_disconnected_at`、
   清 `Bot.instances` 等本 bot 会话；**`active_bot[bot_id]` 不删**（留给重连）。
 - **陈旧收尾**：传入的套接字不是 `active_ws` 的当前套接字时，`disconnect` 直接返回。

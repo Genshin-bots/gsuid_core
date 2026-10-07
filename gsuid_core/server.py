@@ -594,9 +594,14 @@ class GsServer:
 
         if bot_id in self.active_bot:
             bot = self.active_bot[bot_id]
-            disconnected_at: Optional[float] = getattr(bot, "_disconnected_at", None)
-            # 若断连超过 5 分钟或 _disconnected_at 异常为 None，丢弃旧实例避免内存泄漏
-            if disconnected_at is None or time.time() - disconnected_at > 300:
+            disconnected_at: Optional[float] = bot._disconnected_at
+            # 是否丢弃旧实例，只看「实例已脱手套接字」这一条：bot.bot 非空说明实例仍被
+            # 使用中（重复拨号 / 新旧连接重叠），此时重建会 clear_send_queue() 把在途
+            # 回复全部丢掉。健康实例的 _disconnected_at 同样是 None（重连复用时会重置），
+            # 不能拿它当超时判据，否则每次重连都被误判成「断连超过 5 分钟」。
+            # 仅在实例确实已断开、且断开超 5 分钟或时间戳缺失时，才丢弃以防内存滞留。
+            stale = bot.bot is None and (disconnected_at is None or time.time() - disconnected_at > 300)
+            if stale:
                 logger.warning(t("log.server.bot_timeout_recreate", bot_id=bot_id))
                 # 先 cancel 旧 send_task，防止孤儿 Task 持续运行
                 if bot._send_task and not bot._send_task.done():
