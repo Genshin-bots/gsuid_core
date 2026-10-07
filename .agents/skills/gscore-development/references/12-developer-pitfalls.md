@@ -61,19 +61,32 @@ InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归�
 另起一个循环**跑它。凡是被装饰的函数体里有 `await`（尤其是 DB 访问），就踩上面那条红线。
 
 实例：`_draw_status_uncached` 曾被 `@to_thread` 装饰，`core信息` 的取数因此跑在新循环上。
-写闸门是进程级单例，队列里的 `asyncio.Future` 绑定创建者循环，跨循环排队让 `GATE_WAIT_S`
-（20 秒）到期，表现为 `WriteGateTimeout` 连发与「写闸门占用超过 20s，已取消占锁任务」，
-并把同时段的其他插件一起拖挂。
+
+**不要以为「跨循环排队会失效」**——实测（CPython 3.12，非 debug 模式）排队与交接是能正常
+完成的：`call_soon` 的线程检查被包在 `if self._debug:` 里，`set_result` 只是往对方循环的
+`_ready` 里塞 handle。真正出事的是另外两条：
+
+1. **读信号量会被永久绑死在临时循环上。** `asyncio.Semaphore`（`_LoopBoundMixin`）在**首次
+   竞争**时才调 `_get_loop()`，无竞争时只做 `self._value -= 1` 所以看不出来。一旦第一次竞争
+   落在临时循环上，循环随即被 `close()`，主循环之后**每一次竞争读**都抛
+   `RuntimeError: ... is bound to a different event loop`，且不会自愈。
+2. **超时路径会跨线程取消别人的写。** 写闸门排队超过 `GATE_WAIT_S` 会调 `_steal_if_overdue()`
+   去 `task.cancel()` 当前占锁的任务——从临时循环发起时，这是跨线程取消主循环那个**正常**的写。
 
 判据与写法：
 
 - 纯同步函数（无 `await`）→ `@to_thread` 正确。
-- 协程函数 → **直接 `async def`**；只把其中**不碰 DB / 不碰共享客户端的纯 CPU 段**
-  用标准库 `asyncio.to_thread` 卸载（它不会新建循环）。
-- 判据不是"看起来慢"，而是"里面有没有 `await`"。`_draw_status_uncached` 现在把取数留主
-  循环、PIL 装配交给 `_compose_status_card`（同步函数）走 `asyncio.to_thread`。
+- 协程函数 → **直接 `async def`**；只把其中**不碰 DB / 不碰共享客户端的纯 CPU 段**用标准库
+  `asyncio.to_thread` 卸载（它不会新建循环）。
+- 判据不是"看起来慢"，而是"里面有没有 `await`"。
+- 混合函数按**取数 / 渲染**拆两半：协程那半留在主循环只负责 await 数据，同步那半进
+  `_compose_status_card`。`core信息` 现在就是这么分的（`_fetch_hw` / `_fetch_plugins_status` /
+  `draw_data_analysis1` 的入参由主循环备好，PIL 全在 `_compose_status_card` 里画）。
+- 注意别把**插件公开 API** 顺手改成同步：`image_tools.draw_pic_with_ring` 是插件文档里写着
+  `await draw_pic_with_ring(...)` 的协程函数，动它属于破坏性变更。`draw_title` 因此留在主循环。
 
-回归锁：`tests/test_status_render_event_loop.py` 断言渲染期间每次写闸门调用都在主循环上。
+回归锁：`tests/test_status_render_event_loop.py` 打桩渲染会碰到的取数入口，断言它们都发生在
+调用方事件循环上（修复前 7/7 落在 `ThreadPoolExecutor-0_0`）。它不碰真实写闸门。
 
 ### Windows 事件循环：现在是 Proactor，子进程可用（2026-08-14 更正）
 

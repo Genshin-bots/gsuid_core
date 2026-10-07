@@ -253,7 +253,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         await session.commit()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_day_trends(
         cls,
         session: AsyncSession,
@@ -367,7 +367,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         return r.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_yesterday_data(
         cls,
         session: AsyncSession,
@@ -387,7 +387,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         return r.scalars().one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_distinct_date_data(
         cls,
         session: AsyncSession,
