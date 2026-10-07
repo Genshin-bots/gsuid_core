@@ -10,6 +10,7 @@
   "log.bot.recall_to": "[メッセージ取り消し] {bot_id} - {target_type} - {target_id} - {mid}",
   "log.bot.record_history_fail": "[GsCore][Bot] 履歴の記録に失敗しました: {error}",
   "log.bot.scope_muted": "[Core AI 制御] 現在のセッションスコープがミュート状態のため、送信をインターセプトしました: {scope_key}",
+  "log.bot.send_queue_cleared": "[_Bot] インスタンス破棄前に送信キューを消去、{count} 件の未送信メッセージを破棄しました",
   "log.bot.send_task_fail": "[_Bot] 送信タスクで例外: {error}",
   "log.bot.send_worker_fail": "[_Bot] 送信 worker で例外: {error}",
   "log.bot.send_worker_started": "[_Bot] {bot_id} 送信 worker が起動しました",

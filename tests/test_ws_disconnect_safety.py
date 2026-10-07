@@ -1,10 +1,12 @@
-"""WS 断开安全性：断连信号不得逃逸成未捕获异常，陈旧连接的收尾不得拆掉新连接。
+"""WS 连接生命周期安全：断连信号不得逃逸成未捕获异常，陈旧连接的收尾不得拆掉新连接，
+新连接接入时也不得误拆仍在服役的实例。
 
 对应 issue #284（断开 WS 刷整屏 WebSocketDisconnected 堆栈）。
 """
 
 from __future__ import annotations
 
+import time
 import asyncio
 from typing import List
 from collections.abc import Iterator
@@ -315,3 +317,115 @@ def test_bot_logger_tracks_reconnect() -> None:
 
     assert high.logger is replacement
     assert high.logger is not first
+
+
+async def _pending_socket() -> tuple[WebSocket, List[Message]]:
+    """造一条尚未 accept 的 starlette WebSocket，交给 ``gss.connect()`` 自己 accept。"""
+    sent: List[Message] = []
+
+    async def receive() -> Message:
+        return {"type": "websocket.connect"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    ws = WebSocket({"type": "websocket", "path": "/ws/x", "headers": []}, receive, send)
+    return ws, sent
+
+
+def _enqueue_marker(bot: _Bot, token: str, delivered: List[str]) -> None:
+    """放一个待发任务；被执行（= 真的发出）时会记录自己的标记。"""
+
+    async def _do() -> None:
+        delivered.append(token)
+
+    bot._send_queue.put_nowait(_do())
+
+
+async def _settle(delivered: List[str], want: int) -> None:
+    """给发送 worker 一点时间把在途回复投递出去。"""
+    for _ in range(100):
+        if len(delivered) >= want:
+            return
+        await asyncio.sleep(0.02)
+
+
+def test_healthy_instance_is_not_recreated_by_second_dial() -> None:
+    """实例仍握着活动套接字时，又来一条连接不得判定「断连超过 5 分钟」重建。
+
+    回归：重连分支会把 `_disconnected_at` 重置为 None，而旧判据把 None 当作
+    「断连超时」，于是每次重连都被误判成超时，`clear_send_queue()` 随之把在途回复
+    全部丢弃 —— 表现为「消息收得到、发不出去」。
+    """
+
+    async def scenario() -> None:
+        ws1, _ = await _pending_socket()
+        bot1 = await gss.connect(ws1, BOT_ID)
+        await gss.disconnect(BOT_ID, ws1)
+
+        # 立刻重连：走复用分支，_disconnected_at 被清回 None
+        ws2, _ = await _pending_socket()
+        bot2 = await gss.connect(ws2, BOT_ID)
+        assert bot2 is bot1
+        assert bot2._disconnected_at is None
+        assert bot2.bot is ws2
+
+        # 实例健康在线，队列里攒了待发回复
+        delivered: List[str] = []
+        _enqueue_marker(bot2, "pending-1", delivered)
+        _enqueue_marker(bot2, "pending-2", delivered)
+
+        # 客户端重复拨号（新旧连接重叠）：不得拆掉这个仍在服役的实例
+        ws3, _ = await _pending_socket()
+        bot3 = await gss.connect(ws3, BOT_ID)
+
+        assert bot3 is bot2, "实例仍在服役，不应被重建"
+        assert gss.active_bot[BOT_ID] is bot2
+        # 在途回复必须仍然发得出去 —— 这正是「收得到、发不出去」回归的判据
+        await _settle(delivered, 2)
+        assert delivered == ["pending-1", "pending-2"], "在途回复不得被丢弃"
+
+    asyncio.run(scenario())
+
+
+def test_genuinely_stale_instance_is_recreated() -> None:
+    """实例确实已断开且超过 5 分钟：仍要丢弃重建，避免内存滞留。"""
+
+    async def scenario() -> None:
+        ws1, _ = await _pending_socket()
+        bot1 = await gss.connect(ws1, BOT_ID)
+        await gss.disconnect(BOT_ID, ws1)
+
+        # 把断开时刻挪到 5 分钟以前，模拟长时间离线
+        bot1._disconnected_at = time.time() - 301
+        delivered: List[str] = []
+        _enqueue_marker(bot1, "stale-pending", delivered)
+
+        ws2, _ = await _pending_socket()
+        bot2 = await gss.connect(ws2, BOT_ID)
+
+        assert bot2 is not bot1, "断开超 5 分钟应重建实例"
+        assert bot2.bot is ws2
+        # 超时实例按设计丢弃，其残留任务不得流窜到新连接上执行
+        await asyncio.sleep(0.2)
+        assert delivered == [], "被丢弃实例的在途任务不应在新实例上执行"
+
+    asyncio.run(scenario())
+
+
+def test_recreate_without_timestamp_still_recovers() -> None:
+    """实例已断开但时间戳缺失（异常路径）：不得被永久保留，应重建。"""
+
+    async def scenario() -> None:
+        ws1, _ = await _pending_socket()
+        bot1 = await gss.connect(ws1, BOT_ID)
+        await gss.disconnect(BOT_ID, ws1)
+        bot1._disconnected_at = None  # 模拟收尾没跑完就丢了时间戳
+
+        ws2, _ = await _pending_socket()
+        bot2 = await gss.connect(ws2, BOT_ID)
+
+        assert bot2 is not bot1, "已脱手且无时间戳的实例应重建"
+        assert bot2.bot is ws2
+
+    asyncio.run(scenario())

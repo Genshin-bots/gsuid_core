@@ -10,6 +10,7 @@
   "log.bot.recall_to": "[RecallMsgTo] {bot_id} - {target_type} - {target_id} - {mid}",
   "log.bot.record_history_fail": "[GsCore][Bot] Failed to record history: {error}",
   "log.bot.scope_muted": "[Core AI Control] Session scope is muted; intercepting send: {scope_key}",
+  "log.bot.send_queue_cleared": "[_Bot] Clearing send queue before discarding the instance; dropped {count} pending message(s)",
   "log.bot.send_task_fail": "[_Bot] Send task error: {error}",
   "log.bot.send_worker_fail": "[_Bot] Send worker error: {error}",
   "log.bot.send_worker_started": "[_Bot] {bot_id} send worker started",

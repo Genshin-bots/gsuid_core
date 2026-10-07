@@ -10,6 +10,7 @@
   "log.bot.recall_to": "[撤回消息to] {bot_id} - {target_type} - {target_id} - {mid}",
   "log.bot.record_history_fail": "[GsCore][Bot] 记录历史记录失败: {error}",
   "log.bot.scope_muted": "[Core AI控制] 当前会话范围处于禁言状态，拦截发送: {scope_key}",
+  "log.bot.send_queue_cleared": "[_Bot] 丢弃实例前清空发送队列，丢弃 {count} 条待发消息",
   "log.bot.send_task_fail": "[_Bot] 发送任务异常: {error}",
   "log.bot.send_worker_fail": "[_Bot] 发送 worker 异常: {error}",
   "log.bot.send_worker_started": "[_Bot] {bot_id} 发送 worker 已启动",
