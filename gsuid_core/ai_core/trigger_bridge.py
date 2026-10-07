@@ -424,14 +424,28 @@ def _register_trigger_as_ai_tool(
         parts.extend(call_ctx["texts"])
         parts.extend(call_ctx["bot_messages"])
 
+        is_mcp = (
+            isinstance(ctx.deps.extra, dict) and "source" in ctx.deps.extra and ctx.deps.extra["source"] == "mcp_server"
+        )
+        if is_mcp and call_ctx["image_ids"]:
+            if "mcp_image_ids" not in ctx.deps.extra or not isinstance(ctx.deps.extra["mcp_image_ids"], list):
+                ctx.deps.extra["mcp_image_ids"] = []
+            mcp_image_ids = ctx.deps.extra["mcp_image_ids"]
+            for iid in call_ctx["image_ids"]:
+                if iid not in mcp_image_ids:
+                    mcp_image_ids.append(iid)
+
         if call_ctx["image_ids"]:
             image_count = len(call_ctx["image_ids"])
             id_list = ", ".join(call_ctx["image_ids"])
-            parts.append(
-                f"[已生成 {image_count} 张图片，资源ID: {id_list}。"
-                f"请调用 send_message_by_ai 工具传入 image_id 将图片发送给用户，"
-                f"或根据用户意图决定是否发送。]"
-            )
+            if is_mcp:
+                parts.append(f"[已生成 {image_count} 张图片，资源ID: {id_list}。图片已随结果附带，无需再发送。]")
+            else:
+                parts.append(
+                    f"[已生成 {image_count} 张图片，资源ID: {id_list}。"
+                    f"请调用 send_message_by_ai 工具传入 image_id 将图片发送给用户，"
+                    f"或根据用户意图决定是否发送。]"
+                )
 
         if call_ctx["audio_ids"]:
             audio_count = len(call_ctx["audio_ids"])

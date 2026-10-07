@@ -25,27 +25,34 @@ from __future__ import annotations
 
 import hmac
 import time
+import base64
 import asyncio
 import inspect
+import binascii
 import contextlib
-from typing import Any, Dict, List, Callable, Optional, Awaitable, TypedDict
+from typing import Any, Dict, List, Literal, Callable, Optional, Awaitable, TypedDict, TypeGuard
 
 import anyio
+import mcp.types as mcp_types
 from fastmcp import FastMCP
 from pydantic_ai import RunContext, ToolReturn
 from starlette.types import Send, Scope, ASGIApp, Message, Receive
 from pydantic_ai.usage import RunUsage
 from starlette.routing import Mount
+from fastmcp.tools.base import ToolResult
 from fastmcp.server.auth import AccessToken, AuthProvider
 from starlette.responses import JSONResponse
+from pydantic_ai.messages import BinaryContent
+from fastmcp.utilities.types import Image as FastMcpImage
 from pydantic_ai.models.test import TestModel
 
-from gsuid_core.bot import Bot
+from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.models import Event
+from gsuid_core.models import Event, Message as GsMessage
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.models import ToolBase, ToolContext
+from gsuid_core.utils.resource_manager import RM
 
 # ─── 常量 ───────────────────────────────────────────────────────────────────
 
@@ -283,20 +290,14 @@ _mcp_lifespan_cm: Optional[contextlib.AbstractAsyncContextManager[object]] = Non
 _mcp_mount_path: Optional[str] = None
 
 
-def _identity_from_access_token() -> Dict[str, Any]:
+def _identity_from_access_token() -> Dict[str, object]:
     """从当前 MCP 请求的 AccessToken.claims 取身份（结构由插件校验器约定）。"""
     # fastmcp 依赖仅在请求上下文中可用；stdio / 无上下文时回落匿名
     from fastmcp.server.dependencies import get_access_token
 
     try:
         at = get_access_token()
-    except LookupError:
-        return {
-            "auth": "none",
-            "user_id": "mcp_client",
-            "user_pm": _DEFAULT_USER_PM,
-        }
-    except RuntimeError:
+    except (LookupError, RuntimeError):
         return {
             "auth": "none",
             "user_id": "mcp_client",
@@ -314,7 +315,7 @@ def _identity_from_access_token() -> Dict[str, Any]:
         claims = at.claims
     else:
         claims = {}
-    out: Dict[str, Any] = dict(claims)
+    out: Dict[str, object] = dict(claims)
     if "auth" not in out:
         out["auth"] = "unknown"
     if "user_id" not in out:
@@ -336,9 +337,7 @@ def _http_session_overrides() -> Dict[str, str]:
 
     try:
         req = get_http_request()
-    except LookupError:
-        return out
-    except RuntimeError:
+    except (LookupError, RuntimeError):
         return out
     if req is None:
         return out
@@ -351,14 +350,18 @@ def _http_session_overrides() -> Dict[str, str]:
     return out
 
 
-def _parse_user_pm(raw: Any) -> int:
+def _parse_user_pm(raw: object) -> int:
     """claims.user_pm → int；非法或缺失用最低权限。"""
     if raw is None:
         return _DEFAULT_USER_PM
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_USER_PM
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            return _DEFAULT_USER_PM
+    return _DEFAULT_USER_PM
 
 
 def _create_mock_event(
@@ -388,11 +391,119 @@ def _create_mock_event(
     return ev
 
 
-def _create_mock_bot(ev: Event) -> Bot:
-    """MCP 调用用的模拟 Bot（无真实 WS）。"""
-    from gsuid_core.bot import _Bot
+MAX_MCP_IMAGES: int = 10
+MAX_MCP_IMAGE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
-    _bot = _Bot(str(ev.bot_id or "MCP_Server"))
+MessageType = GsMessage | List[GsMessage] | List[str] | str | bytes
+
+
+def _sniff_image_format(data: bytes) -> Literal["png", "jpeg", "gif", "webp"] | None:
+    """利用魔数判断图片格式（png/jpeg/gif/webp），无法识别则返回 None。"""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith(b"GIF8"):
+        return "gif"
+    if data.startswith(b"RIFF") and b"WEBP" in data[:16]:
+        return "webp"
+    return None
+
+
+def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str]]:
+    """从发送的消息中提取文本列表和 RM 注册后的 image_id 列表。"""
+    texts: List[str] = []
+    image_ids: List[str] = []
+
+    def _process(item: GsMessage | str | bytes) -> None:
+        if isinstance(item, bytes):
+            if _sniff_image_format(item):
+                image_ids.append(RM.register(item))
+        elif isinstance(item, str):
+            if item.startswith("data:image/"):
+                image_ids.append(RM.register(item))
+            elif item.startswith("base64://"):
+                # 嗅探 base64 前缀魔数；强制 4 字符对齐解码，失败则视为非图片直接忽略，不污染文本
+                b64_part = item[9:41]  # 取前 32 字符 (8 个 base64 block = 24 bytes)
+                b64_aligned = b64_part[: len(b64_part) - (len(b64_part) % 4)]
+                is_img = False
+                if b64_aligned:
+                    try:
+                        head = base64.b64decode(b64_aligned)
+                        is_img = _sniff_image_format(head) is not None
+                    except (binascii.Error, ValueError):
+                        is_img = False
+                if is_img:
+                    image_ids.append(RM.register(item))
+            else:
+                texts.append(item)
+        elif isinstance(item, GsMessage):
+            if item.type == "image" and item.data is not None:
+                if isinstance(item.data, (bytes, str)):
+                    image_ids.append(RM.register(item.data))
+            elif item.type == "text" and item.data is not None:
+                texts.append(str(item.data))
+            elif item.type == "record":
+                texts.append("[语音]")
+            elif item.type == "video":
+                texts.append("[视频]")
+            elif item.type == "file":
+                texts.append("[文件]")
+            elif item.type == "node":
+                texts.append("[合并转发]")
+
+    if isinstance(message, (list, tuple)):
+        for sub in message:
+            _process(sub)
+    else:
+        _process(message)
+
+    return texts, image_ids
+
+
+class _McpBot(_Bot):
+    """MCP 调用专用的模拟 _Bot：拦截出站消息中的图片与文本。
+
+    注意：此实现故意重写并绕过了父类 `_Bot.target_send` 中的静音检查（`is_mute`）与历史消息记录
+    （`message_record` 等逻辑），因为 MCP 为无状态的请求-响应式 RPC 协议，出站内容直接聚合进当前
+    工具调用的返回载荷（`mcp_texts` / `mcp_image_ids`）供 MCP 客户端接收，无需走常规平台推送链路。
+    """
+
+    def __init__(self, _id: str, extra: Dict[str, object]) -> None:
+        super().__init__(_id, ws=None)
+        self._extra = extra
+
+    async def target_send(
+        self,
+        message: MessageType,
+        *args: object,
+        **kwargs: object,
+    ) -> Optional[List[str]]:
+        # 故意绕过父类静音与消息记录检查，直接将出站消息提取并暂存至 extra 字典中供 MCP 聚合返回
+        texts, image_ids = _extract_messages_for_mcp(message)
+        if texts:
+            target_texts = self._extra.get("mcp_texts")
+            if not isinstance(target_texts, list):
+                target_texts = []
+                self._extra["mcp_texts"] = target_texts
+            target_texts.extend(texts)
+        if image_ids:
+            target_images = self._extra.get("mcp_image_ids")
+            if not isinstance(target_images, list):
+                target_images = []
+                self._extra["mcp_image_ids"] = target_images
+            for iid in image_ids:
+                if iid not in target_images:
+                    target_images.append(iid)
+        return None
+
+
+def _create_mock_bot(ev: Event, extra: Optional[Dict[str, object]] = None) -> Bot:
+    """MCP 调用用的模拟 Bot（拦截出站消息并转为 MCP 资源）。"""
+    _bot = _McpBot(
+        str(ev.bot_id or "MCP_Server"),
+        extra if extra is not None else {"source": "mcp_server", "mcp_image_ids": [], "mcp_texts": []},
+    )
     return Bot(_bot, ev)
 
 
@@ -433,8 +544,20 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
     )
     for enrich in _mcp_event_enrichers:
         enrich(fake_ev)
-    mock_bot = _create_mock_bot(fake_ev)
-    extra: Dict[str, Any] = {"source": "mcp_server", **ident, **sess}
+    extra: Dict[str, object] = {
+        "source": "mcp_server",
+        "mcp_image_ids": [],
+        "mcp_texts": [],
+        "user_id": user_id,
+        "user_pm": user_pm,
+    }
+    if "auth" in ident:
+        extra["auth"] = str(ident["auth"])
+    if bot_id:
+        extra["bot_id"] = bot_id
+    if group_id:
+        extra["group_id"] = group_id
+    mock_bot = _create_mock_bot(fake_ev, extra)
     deps = ToolContext(bot=mock_bot, ev=fake_ev, extra=extra)
     return RunContext(
         deps=deps,
@@ -444,13 +567,18 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
     )
 
 
-def _format_tool_result(result: Any) -> str:
+def _is_tool_return(item: object) -> TypeGuard[ToolReturn[object]]:
+    """判断对象是否为 pydantic_ai 的 ToolReturn。"""
+    return isinstance(item, ToolReturn)
+
+
+def _format_tool_result(result: object) -> str:
     """把 @ai_tools 返回值收成 MCP 可传的纯文本。"""
     if result is None:
         return ""
     if isinstance(result, str):
         return result
-    if isinstance(result, ToolReturn):
+    if _is_tool_return(result):
         parts: List[str] = []
         if result.return_value is not None:
             parts.append(str(result.return_value))
@@ -460,11 +588,91 @@ def _format_tool_result(result: Any) -> str:
                 parts.append(content)
             else:
                 for item in content:
+                    if isinstance(item, BinaryContent):
+                        continue
                     parts.append(str(item))
         if parts:
             return "\n".join(parts)
         return ""
     return str(result)
+
+
+async def _build_tool_result(
+    raw: object,
+    image_ids: List[str],
+    run_ctx: Optional[RunContext[ToolContext]] = None,
+) -> ToolResult | str:
+    """构建标准 MCP ToolResult 或纯文本字符串。若无图片则保持旧行为返回纯文本，有图片则返回 ToolResult。"""
+    text = _format_tool_result(raw)
+
+    extra_texts: List[str] = []
+    if run_ctx is not None and "mcp_texts" in run_ctx.deps.extra:
+        raw_extra_texts = run_ctx.deps.extra["mcp_texts"]
+        if isinstance(raw_extra_texts, list):
+            extra_texts = [str(x) for x in raw_extra_texts]
+
+    all_texts: List[str] = []
+    for t_str in extra_texts:
+        if t_str.strip():
+            all_texts.append(t_str.strip())
+    if text.strip():
+        all_texts.append(text.strip())
+
+    raw_images: List[bytes] = []
+    if _is_tool_return(raw) and raw.content:
+        if not isinstance(raw.content, str):
+            for item in raw.content:
+                if isinstance(item, BinaryContent):
+                    raw_images.append(item.data)
+
+    for iid in image_ids:
+        try:
+            raw_images.append(await RM.get(iid))
+        except ValueError as e:
+            logger.warning(
+                t(
+                    "log.mcp.mcp_server_retrieve_image_resource_fail",
+                    rid=iid,
+                    e=e,
+                )
+            )
+
+    valid_images: List[tuple[bytes, Literal["png", "jpeg", "gif", "webp"]]] = []
+    has_oversized = False
+    has_overcounted = False
+
+    for img_bytes in raw_images:
+        fmt = _sniff_image_format(img_bytes)
+        if fmt is None:
+            continue
+        if len(valid_images) >= MAX_MCP_IMAGES:
+            has_overcounted = True
+            break
+        if len(img_bytes) > MAX_MCP_IMAGE_BYTES:
+            has_oversized = True
+            continue
+        valid_images.append((img_bytes, fmt))
+
+    if has_oversized:
+        all_texts.append("[图片过大未附带]")
+    if has_overcounted:
+        all_texts.append("[部分图片超出数量上限未附带]")
+
+    final_text = "\n".join(all_texts)
+
+    # 若无图片，保持旧行为：直接返回字符串（无文本也无图时返回空字符串 ""）
+    if not valid_images:
+        return final_text
+
+    contents: list[mcp_types.TextContent | mcp_types.ImageContent] = []
+    if final_text:
+        contents.append(mcp_types.TextContent(type="text", text=final_text))
+
+    for img_bytes, fmt in valid_images:
+        img_content = FastMcpImage(data=img_bytes, format=fmt).to_image_content()
+        contents.append(img_content)
+
+    return ToolResult(content=contents)
 
 
 def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
@@ -519,7 +727,7 @@ def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
                 )
             )
 
-    async def handler(**kwargs: Any) -> str:
+    async def handler(**kwargs: Any) -> ToolResult | str:
         # 原样透传；None / 默认值语义交由工具自身与 pydantic 处理
         call_args = dict(kwargs)
         logger.info(
@@ -542,14 +750,20 @@ def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
                 )
             )
             return f"❌ 工具 [{tool_name}] 执行异常: {e}"
-        return _format_tool_result(raw)
+        extra = run_ctx.deps.extra
+        image_ids: List[str] = []
+        if "mcp_image_ids" in extra:
+            raw_img_ids = extra["mcp_image_ids"]
+            if isinstance(raw_img_ids, list):
+                image_ids = [str(x) for x in raw_img_ids]
+        return await _build_tool_result(raw, image_ids, run_ctx)
 
     handler.__name__ = tool_name
     handler.__doc__ = description
     handler.__qualname__ = f"mcp_server.{tool_name}"
     handler.__module__ = "gsuid_core.ai_core.mcp.server"
-    handler.__annotations__ = {**annotations, "return": str}
-    setattr(handler, "__signature__", inspect.Signature(parameters=params, return_annotation=str))
+    handler.__annotations__ = {**annotations, "return": ToolResult | str}
+    setattr(handler, "__signature__", inspect.Signature(parameters=params, return_annotation=ToolResult | str))
 
     return handler
 
