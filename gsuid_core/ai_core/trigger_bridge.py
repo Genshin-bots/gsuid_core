@@ -437,10 +437,11 @@ def _register_trigger_as_ai_tool(
 
         if call_ctx["image_ids"]:
             image_count = len(call_ctx["image_ids"])
-            id_list = ", ".join(call_ctx["image_ids"])
             if is_mcp:
-                parts.append(f"[已生成 {image_count} 张图片，资源ID: {id_list}。图片已随结果附带，无需再发送。]")
+                # MCP 侧图片直接随结果返回，资源ID 是内部实现细节，不写进给外部模型的文本
+                parts.append(f"[已生成 {image_count} 张图片，图片已随本结果附带，无需再发送。]")
             else:
+                id_list = ", ".join(call_ctx["image_ids"])
                 parts.append(
                     f"[已生成 {image_count} 张图片，资源ID: {id_list}。"
                     f"请调用 send_message_by_ai 工具传入 image_id 将图片发送给用户，"

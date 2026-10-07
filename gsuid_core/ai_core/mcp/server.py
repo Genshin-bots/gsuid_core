@@ -25,14 +25,13 @@ from __future__ import annotations
 
 import hmac
 import time
-import base64
 import asyncio
 import inspect
-import binascii
 import contextlib
 from typing import Any, Dict, List, Literal, Callable, Optional, Awaitable, TypedDict, TypeGuard
 
 import anyio
+import httpx
 import mcp.types as mcp_types
 from fastmcp import FastMCP
 from pydantic_ai import RunContext, ToolReturn
@@ -351,7 +350,11 @@ def _http_session_overrides() -> Dict[str, str]:
 
 
 def _parse_user_pm(raw: object) -> int:
-    """claims.user_pm → int；非法或缺失用最低权限。"""
+    """claims.user_pm → int；非法或缺失用最低权限。
+
+    claims 来自 JSON，只有 int / str 两种数字形态；其余类型一律落最低权限（fail-closed），
+    宁可少权限也不要把无法判定的值当成有效权限位。
+    """
     if raw is None:
         return _DEFAULT_USER_PM
     if isinstance(raw, int):
@@ -391,10 +394,14 @@ def _create_mock_event(
     return ev
 
 
-MAX_MCP_IMAGES: int = 10
-MAX_MCP_IMAGE_BYTES: int = 10 * 1024 * 1024  # 10 MB
+MAX_MCP_IMAGES: int = 4
+# base64 编码约膨胀 4/3，2MB 二进制 ≈ 2.7MB 文本；再乘 MAX_MCP_IMAGES 就是单次响应的上界
+MAX_MCP_IMAGE_BYTES: int = 2 * 1024 * 1024
 
 MessageType = GsMessage | List[GsMessage] | List[str] | str | bytes
+
+# 与 trigger_bridge._is_image_string 对齐：URL 直链同样是图片引用，RM 取回时会自行下载
+_IMAGE_REF_PREFIXES = ("base64://", "data:image/", "http://", "https://")
 
 
 def _sniff_image_format(data: bytes) -> Literal["png", "jpeg", "gif", "webp"] | None:
@@ -411,38 +418,29 @@ def _sniff_image_format(data: bytes) -> Literal["png", "jpeg", "gif", "webp"] | 
 
 
 def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str]]:
-    """从发送的消息中提取文本列表和 RM 注册后的 image_id 列表。"""
+    """从发送的消息中提取文本列表和 RM 注册后的 image_id 列表。
+
+    登记时不做魔数判断：URL 直链必须等 RM 取回字节才知道是不是图，
+    统一在 `_build_tool_result` 侧判定，非图片会记为「未附带」而不是无声消失。
+    """
     texts: List[str] = []
     image_ids: List[str] = []
 
     def _process(item: GsMessage | str | bytes) -> None:
         if isinstance(item, bytes):
-            if _sniff_image_format(item):
-                image_ids.append(RM.register(item))
+            image_ids.append(RM.register(item))
         elif isinstance(item, str):
-            if item.startswith("data:image/"):
+            if item.strip().startswith(_IMAGE_REF_PREFIXES):
                 image_ids.append(RM.register(item))
-            elif item.startswith("base64://"):
-                # 嗅探 base64 前缀魔数；强制 4 字符对齐解码，失败则视为非图片直接忽略，不污染文本
-                b64_part = item[9:41]  # 取前 32 字符 (8 个 base64 block = 24 bytes)
-                b64_aligned = b64_part[: len(b64_part) - (len(b64_part) % 4)]
-                is_img = False
-                if b64_aligned:
-                    try:
-                        head = base64.b64decode(b64_aligned)
-                        is_img = _sniff_image_format(head) is not None
-                    except (binascii.Error, ValueError):
-                        is_img = False
-                if is_img:
-                    image_ids.append(RM.register(item))
             else:
                 texts.append(item)
         elif isinstance(item, GsMessage):
-            if item.type == "image" and item.data is not None:
-                if isinstance(item.data, (bytes, str)):
-                    image_ids.append(RM.register(item.data))
-            elif item.type == "text" and item.data is not None:
+            if item.type == "image" and isinstance(item.data, (bytes, str)):
+                image_ids.append(RM.register(item.data))
+            elif item.type in ("text", "markdown", "template_markdown") and item.data is not None:
                 texts.append(str(item.data))
+            elif item.type == "at":
+                texts.append(f"@{item.data}")
             elif item.type == "record":
                 texts.append("[语音]")
             elif item.type == "video":
@@ -544,19 +542,14 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
     )
     for enrich in _mcp_event_enrichers:
         enrich(fake_ev)
+    # claims / 会话头全量透传：插件经 register_mcp_token_verifier 放的自定义 claim 靠这里进 extra
     extra: Dict[str, object] = {
         "source": "mcp_server",
         "mcp_image_ids": [],
         "mcp_texts": [],
-        "user_id": user_id,
-        "user_pm": user_pm,
+        **ident,
+        **sess,
     }
-    if "auth" in ident:
-        extra["auth"] = str(ident["auth"])
-    if bot_id:
-        extra["bot_id"] = bot_id
-    if group_id:
-        extra["group_id"] = group_id
     mock_bot = _create_mock_bot(fake_ev, extra)
     deps = ToolContext(bot=mock_bot, ev=fake_ev, extra=extra)
     return RunContext(
@@ -619,16 +612,16 @@ async def _build_tool_result(
         all_texts.append(text.strip())
 
     raw_images: List[bytes] = []
-    if _is_tool_return(raw) and raw.content:
-        if not isinstance(raw.content, str):
-            for item in raw.content:
-                if isinstance(item, BinaryContent):
-                    raw_images.append(item.data)
+    if _is_tool_return(raw) and raw.content and not isinstance(raw.content, str):
+        for item in raw.content:
+            if isinstance(item, BinaryContent):
+                raw_images.append(item.data)
 
     for iid in image_ids:
         try:
             raw_images.append(await RM.get(iid))
-        except ValueError as e:
+        except (ValueError, httpx.HTTPError) as e:
+            # 图片引用可能是外链，取回失败属于外部输入问题，不该打断整条工具结果
             logger.warning(
                 t(
                     "log.mcp.mcp_server_retrieve_image_resource_fail",
@@ -638,12 +631,15 @@ async def _build_tool_result(
             )
 
     valid_images: List[tuple[bytes, Literal["png", "jpeg", "gif", "webp"]]] = []
+    skipped_binary = 0
     has_oversized = False
     has_overcounted = False
 
     for img_bytes in raw_images:
         fmt = _sniff_image_format(img_bytes)
         if fmt is None:
+            # PDF / 音频 / HTML 等非图片二进制 MCP 无标准承载；直接丢会让整条结果退化成空串
+            skipped_binary += 1
             continue
         if len(valid_images) >= MAX_MCP_IMAGES:
             has_overcounted = True
@@ -653,6 +649,8 @@ async def _build_tool_result(
             continue
         valid_images.append((img_bytes, fmt))
 
+    if skipped_binary:
+        all_texts.append(f"[{skipped_binary} 份非图片二进制未附带]")
     if has_oversized:
         all_texts.append("[图片过大未附带]")
     if has_overcounted:
@@ -660,7 +658,7 @@ async def _build_tool_result(
 
     final_text = "\n".join(all_texts)
 
-    # 若无图片，保持旧行为：直接返回字符串（无文本也无图时返回空字符串 ""）
+    # 无图片走旧路径：直接返回 str，客户端拿到的 content 与 structuredContent 均与改动前一致
     if not valid_images:
         return final_text
 
@@ -672,7 +670,8 @@ async def _build_tool_result(
         img_content = FastMcpImage(data=img_bytes, format=fmt).to_image_content()
         contents.append(img_content)
 
-    return ToolResult(content=contents)
+    # 注解仍声明为 str，outputSchema 就还在；带图返回时必须补上 structuredContent，否则客户端校验 schema 失败
+    return ToolResult(content=contents, structured_content={"result": final_text})
 
 
 def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
@@ -749,7 +748,8 @@ def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
                     e=e,
                 )
             )
-            return f"❌ 工具 [{tool_name}] 执行异常: {e}"
+            # 工具中途抛错时前面 bot.send 的图已经生成，直接丢弃等于白跑一趟
+            raw = f"❌ 工具 [{tool_name}] 执行异常: {e}"
         extra = run_ctx.deps.extra
         image_ids: List[str] = []
         if "mcp_image_ids" in extra:
@@ -762,8 +762,10 @@ def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
     handler.__doc__ = description
     handler.__qualname__ = f"mcp_server.{tool_name}"
     handler.__module__ = "gsuid_core.ai_core.mcp.server"
-    handler.__annotations__ = {**annotations, "return": ToolResult | str}
-    setattr(handler, "__signature__", inspect.Signature(parameters=params, return_annotation=ToolResult | str))
+    # 下面两行是给 fastmcp 看的「假面」：注解留在 str，outputSchema 与 structuredContent 才不会被抽掉
+    # （报成 ToolResult 会让 fastmcp 判定为不可序列化，纯文本工具的 schema 也一起丢）
+    handler.__annotations__ = {**annotations, "return": str}
+    setattr(handler, "__signature__", inspect.Signature(parameters=params, return_annotation=str))
 
     return handler
 
