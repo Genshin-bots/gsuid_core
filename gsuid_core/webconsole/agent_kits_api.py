@@ -4,16 +4,80 @@
 无告警」**——控制台必须能一眼看出某个槽是不是空的、hook 有没有挂上。
 
 关系温度只读页解决另一个排障盲区：分数为什么变、上次因为什么变（``last_reason``）。
+单人查询对登录用户开放；全部角色花名册只对管理员开放。
 """
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypedDict
 
 from fastapi import Query, Depends
 
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.webconsole.web_api import require_auth, require_admin
 
 from ._api_tags import AGENT_KITS, RELATIONSHIP
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.database.models import UserFavorability
+
+
+class RelationshipListItem(TypedDict):
+    id: int
+    user_id: str
+    user_name: str
+    bot_id: str
+    is_master: bool
+    scored: bool
+    score: int
+    zone: str
+    zone_label: str
+    line: str
+    last_delta: int
+    last_reason: str
+    last_eval_at: int
+    daily_gain: int
+    daily_loss: int
+    daily_ymd: str
+    last_positive_interact_at: int
+    interaction_count: int
+
+
+class RelationshipListData(TypedDict):
+    items: List[RelationshipListItem]
+    total: int
+    offset: int
+    limit: int
+
+
+class RelationshipListResponse(TypedDict):
+    status_code: int
+    data: RelationshipListData
+
+
+def _relationship_list_item(record: "UserFavorability", *, is_master: bool) -> RelationshipListItem:
+    from gsuid_core.ai_core.relationship import view_from_score, zone_level_name
+
+    view = view_from_score(record.favorability, is_master)
+    name = record.user_name if isinstance(record.user_name, str) else ""
+    return {
+        "id": record.id,
+        "user_id": record.user_id,
+        "user_name": name,
+        "bot_id": record.bot_id,
+        "is_master": is_master,
+        "scored": True,
+        "score": record.favorability,
+        "zone": view.zone.value,
+        "zone_label": zone_level_name(view.zone),
+        "line": view.line,
+        "last_delta": record.last_delta,
+        "last_reason": record.last_reason,
+        "last_eval_at": record.last_eval_at,
+        "daily_gain": record.daily_gain,
+        "daily_loss": record.daily_loss,
+        "daily_ymd": record.daily_ymd,
+        "last_positive_interact_at": record.last_positive_interact_at,
+        "interaction_count": record.interaction_count,
+    }
 
 
 @app.get("/api/agent_kits/slots", summary="套件槽位健康", tags=AGENT_KITS)
@@ -140,6 +204,39 @@ async def relationshipView(
             "daily_ymd": record.daily_ymd,
             "last_positive_interact_at": record.last_positive_interact_at,
             "interaction_count": record.interaction_count,
+        },
+    }
+
+
+@app.get("/api/relationship/list", summary="全部角色的关系温度", tags=RELATIONSHIP)
+async def relationshipList(
+    bot_id: str = Query("", max_length=64, description="Bot ID，留空列出全部 bot"),
+    keyword: str = Query("", max_length=64, description="按 user_id 或用户名包含匹配"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    _user: Dict = Depends(require_admin),
+) -> RelationshipListResponse:
+    """只读花名册：每个已打分用户一行。非管理员 403。
+
+    分数仍是内部量，只给控制台排障。``bot_id`` 留空不是查空串 bot，而是全部 bot。
+    """
+    from gsuid_core.ai_core.utils import _is_master_user
+    from gsuid_core.ai_core.database.models import UserFavorability
+
+    rows, total = await UserFavorability.list_favorability(
+        bot_id=bot_id,
+        keyword=keyword,
+        offset=offset,
+        limit=limit,
+    )
+    items = [_relationship_list_item(row, is_master=_is_master_user(str(row.user_id))) for row in rows]
+    return {
+        "status_code": 200,
+        "data": {
+            "items": items,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
         },
     }
 

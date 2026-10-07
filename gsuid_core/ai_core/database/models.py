@@ -10,10 +10,11 @@ import time
 from typing import Any, Set, Dict, List, Optional
 from collections.abc import Sequence
 
-from sqlmodel import Field, SQLModel, col, and_, case, delete, select, update
-from sqlalchemy import Text, Column, UniqueConstraint
+from sqlmodel import Field, SQLModel, col, or_, and_, case, delete, select, update
+from sqlalchemy import Text, Column, UniqueConstraint, func
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -27,6 +28,11 @@ def _clamp_favor(value: int) -> int:
     floor: int = ai_config.get_config("favor_floor").data
     ceil: int = ai_config.get_config("favor_ceil").data
     return max(floor, min(ceil, value))
+
+
+def _escape_like(text: str) -> str:
+    # LIKE 的 % 和 _ 必须按字面量匹配，不能变成通配符。
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class UserFavorability(BaseModel, table=True):
@@ -123,6 +129,57 @@ class UserFavorability(BaseModel, table=True):
         )
         result = await session.execute(stmt)
         return result.scalars().first()
+
+    @classmethod
+    @with_read_session
+    async def list_favorability(
+        cls,
+        session: AsyncSession,
+        *,
+        bot_id: str = "",
+        keyword: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[List["UserFavorability"], int]:
+        """控制台花名册。分数从高到低，同分再按最近结算、再按 id。
+
+        ``bot_id`` 与 ``keyword`` 空串表示不筛选。``keyword`` 只匹配
+        ``user_id`` 和 ``user_name``，其中的 ``%`` / ``_`` 按字面量。
+        """
+        page_limit = limit if 1 <= limit <= 200 else 100
+        page_offset = offset if offset > 0 else 0
+        conds: List[ColumnElement[bool]] = []
+        bot = bot_id.strip()
+        if bot:
+            conds.append(col(cls.bot_id) == bot)
+        kw = keyword.strip()
+        if kw:
+            pattern = f"%{_escape_like(kw)}%"
+            conds.append(
+                or_(
+                    col(cls.user_id).like(pattern, escape="\\"),
+                    col(cls.user_name).like(pattern, escape="\\"),
+                )
+            )
+        count_stmt = select(func.count()).select_from(cls)
+        list_stmt = select(cls)
+        if conds:
+            filt = and_(*conds)
+            count_stmt = count_stmt.where(filt)
+            list_stmt = list_stmt.where(filt)
+        raw_total = (await session.execute(count_stmt)).scalar_one()
+        total = raw_total if isinstance(raw_total, int) else 0
+        list_stmt = (
+            list_stmt.order_by(
+                col(cls.favorability).desc(),
+                col(cls.last_eval_at).desc(),
+                col(cls.id).desc(),
+            )
+            .offset(page_offset)
+            .limit(page_limit)
+        )
+        rows = (await session.execute(list_stmt)).scalars().all()
+        return list(rows), total
 
     @classmethod
     @with_session
