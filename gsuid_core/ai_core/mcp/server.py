@@ -404,7 +404,7 @@ MAX_MCP_IMAGE_BYTES: int = 2 * 1024 * 1024
 MessageType = GsMessage | List[GsMessage] | List[str] | str | bytes
 
 # http(s) 由 Core 拉取；file:// 留在文本里，Core 不读适配器磁盘
-_IMAGE_REF_PREFIXES = ("base64://", "data:image/", "http://", "https://")
+_IMAGE_REF_PREFIXES = ("link://", "base64://", "data:image/", "http://", "https://")
 _REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 _FETCH_TIMEOUT_SECONDS = 12
 
@@ -432,8 +432,16 @@ class _McpImageRejected(Exception):
         self.ref = ref
 
 
+def _unwrap_image_ref(text: str) -> str:
+    # MessageSegment.image(http) 写成 link://URL，协议只包一层
+    stripped = text.strip()
+    if stripped.startswith("link://"):
+        return stripped.removeprefix("link://").strip()
+    return stripped
+
+
 def _short_image_ref(ref: str) -> str:
-    text = ref.strip()
+    text = _unwrap_image_ref(ref)
     if text.startswith("data:image/"):
         return "data:image"
     if len(text) > 120:
@@ -509,7 +517,9 @@ async def _load_registered_image(resource_id: str) -> tuple[bytes, str]:
         if len(raw) > MAX_MCP_IMAGE_BYTES:
             raise _McpImageTooLarge()
         return raw, ""
-    text = raw.strip()
+    text = _unwrap_image_ref(raw)
+    if text.startswith("file://"):
+        raise _McpImageRejected(text)
     if text.startswith("base64://"):
         data = base64.b64decode(text[len("base64://") :])
         if len(data) > MAX_MCP_IMAGE_BYTES:
@@ -643,13 +653,13 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
     )
     for enrich in _mcp_event_enrichers:
         enrich(fake_ev)
-    # claims / 会话头全量透传：插件经 register_mcp_token_verifier 放的自定义 claim 靠这里进 extra
+    # 框架键盖在 claims 之后，校验器同名键不能改 source / 出图桶
     extra: Dict[str, object] = {
+        **ident,
+        **sess,
         "source": "mcp_server",
         "mcp_image_ids": [],
         "mcp_texts": [],
-        **ident,
-        **sess,
     }
     mock_bot = _create_mock_bot(fake_ev, extra)
     deps = ToolContext(bot=mock_bot, ev=fake_ev, extra=extra)

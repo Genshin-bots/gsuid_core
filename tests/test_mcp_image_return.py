@@ -26,6 +26,7 @@ from pydantic_ai.messages import BinaryContent
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.models import Event, Message
 from gsuid_core.ai_core import trigger_bridge
+from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.mcp import server as mcp_server
 from gsuid_core.ai_core.models import ToolBase, ToolContext
 
@@ -125,6 +126,12 @@ def test_extract_treats_http_url_as_image_ref(rm_stub: _RmStub) -> None:
     assert ids and not texts
 
 
+def test_extract_treats_link_prefix_as_image_ref(rm_stub: _RmStub) -> None:
+    texts, ids = mcp_server._extract_messages_for_mcp("link://https://example.com/a.png")
+    assert ids and not texts
+    assert rm_stub.peek(ids[0]) == "link://https://example.com/a.png"
+
+
 def test_extract_keeps_plain_text_out_of_image_bucket(rm_stub: _RmStub) -> None:
     texts, ids = mcp_server._extract_messages_for_mcp("就是一段说明文字")
     assert texts == ["就是一段说明文字"]
@@ -190,6 +197,31 @@ def test_custom_claims_reach_tool_context_extra(monkeypatch: pytest.MonkeyPatch)
     assert ctx.deps.extra["source"] == "mcp_server"
     assert ctx.deps.extra["mcp_image_ids"] == []
     assert ctx.deps.extra["mcp_texts"] == []
+
+
+def test_framework_mcp_keys_win_over_claims(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_identity_from_access_token",
+        lambda: {
+            "auth": "token",
+            "user_id": "u_1",
+            "source": "forged",
+            "mcp_image_ids": ["img_other"],
+            "mcp_texts": ["hijack"],
+            "tenant": "acme",
+        },
+    )
+    monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"group_id": "g_1"})
+
+    ctx = mcp_server._build_run_context("probe_pin")
+
+    assert ctx.deps.extra["source"] == "mcp_server"
+    assert ctx.deps.extra["mcp_image_ids"] == []
+    assert ctx.deps.extra["mcp_texts"] == []
+    assert ctx.deps.extra["tenant"] == "acme"
+    assert ctx.deps.extra["group_id"] == "g_1"
+    assert ctx.deps.extra["user_id"] == "u_1"
 
 
 # ── 出图链路 ──────────────────────────────────────────────────────────────────
@@ -462,6 +494,91 @@ def test_duplicate_send_text_appears_once_and_distinct_text_stays(rm_stub: _RmSt
     assert asyncio.run(_call(_diff, "probe_diff")) == "旁白\n结果"
 
 
+def test_message_segment_http_image_is_attached(rm_stub: _RmStub, monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch = _UrlFetch(PNG)
+    monkeypatch.setattr(mcp_server, "_fetch_mcp_image", fetch)
+    url = "https://cdn.example/calendar.png"
+
+    async def _draw(ctx: RunContext[ToolContext]) -> str:
+        await _send(ctx, MessageSegment.image(url))
+        return "日历"
+
+    out = asyncio.run(_call(_draw, "probe_seg_link"))
+    assert fetch.urls == [url]
+    assert _image_payloads(out) == [PNG]
+    assert "link://" not in _result_text(out)
+    assert url not in _result_text(out)
+
+
+def test_raw_link_prefix_string_is_attached(rm_stub: _RmStub, monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch = _UrlFetch(PNG)
+    monkeypatch.setattr(mcp_server, "_fetch_mcp_image", fetch)
+    url = "https://cdn.example/raw-link.png"
+
+    async def _draw(ctx: RunContext[ToolContext]) -> str:
+        await _send(ctx, f"link://{url}")
+        return "外链"
+
+    out = asyncio.run(_call(_draw, "probe_raw_link"))
+    assert fetch.urls == [url]
+    assert _image_payloads(out) == [PNG]
+
+
+def test_link_prefix_loopback_is_not_fetched(rm_stub: _RmStub, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mcp_server, "_fetch_mcp_image", _ForbidFetch())
+    blocked = "http://127.0.0.1/a.png"
+
+    async def _draw(ctx: RunContext[ToolContext]) -> str:
+        await _send(ctx, PNG)
+        await _send(ctx, f"link://{blocked}")
+        return "正文"
+
+    out = asyncio.run(_call(_draw, "probe_link_loopback"))
+    assert isinstance(out, ToolResult)
+    text = _result_text(out)
+    assert "正文" in text
+    assert blocked in text
+    assert "取回失败未附带" in text
+    assert _image_payloads(out) == [PNG]
+
+
+def test_link_wrapped_file_uri_is_not_attached(rm_stub: _RmStub) -> None:
+    uri = "file:///C:/secret-mcp.png"
+
+    async def _draw(ctx: RunContext[ToolContext]) -> str:
+        await _send(ctx, Message("image", f"link://{uri}"))
+        return "文字还在"
+
+    out = asyncio.run(_call(_draw, "probe_link_file"))
+    assert isinstance(out, str)
+    assert uri in out
+    assert "文字还在" in out
+    assert "取回失败未附带" in out
+
+
+def test_image_tool_through_fastmcp_keeps_schema_and_bytes(rm_stub: _RmStub) -> None:
+    async def _draw(ctx: RunContext[ToolContext]) -> str:
+        await _send(ctx, PNG)
+        return "画好了"
+
+    async def run() -> Dict[str, object]:
+        handler = mcp_server._build_ai_tool_handler(_tool_base("probe_img_schema", _draw), "common")
+        tool = Tool.from_function(handler, name="probe_img_schema")
+        result = await tool.run({})
+        return {
+            "output_schema": tool.output_schema,
+            "structured": result.structured_content,
+            "kinds": _kinds(result),
+            "payloads": _image_payloads(result),
+        }
+
+    got = asyncio.run(run())
+    assert got["output_schema"] is not None
+    assert got["structured"] == {"result": "画好了"}
+    assert got["kinds"] == ["TextContent", "ImageContent"]
+    assert got["payloads"] == [PNG]
+
+
 def test_plain_file_uri_stays_text(rm_stub: _RmStub) -> None:
     uri = "file:///C:/secret-mcp.png"
 
@@ -513,6 +630,7 @@ def test_trigger_output_splits_mcp_notes_from_chat_prompt(monkeypatch: pytest.Mo
 
     async def _cmd(bot: trigger_bridge.MockBot, ev: Event) -> None:
         await bot.send(PNG)
+        await bot.send(MessageSegment.image("https://cdn.example/trig.png"))
         await bot.send(Message("record", b"aud"))
         await bot.send(Message("video", b"vid"))
         await bot.send("说明")
@@ -531,9 +649,10 @@ def test_trigger_output_splits_mcp_notes_from_chat_prompt(monkeypatch: pytest.Mo
     assert "未附带视频字节" in mcp_text
     ids = mcp_extra["mcp_image_ids"]
     assert isinstance(ids, list)
-    assert len(ids) == 1
-    assert isinstance(ids[0], str)
+    assert len(ids) == 2
+    assert all(isinstance(item, str) for item in ids)
     assert ids[0] not in mcp_text
+    assert ids[1] not in mcp_text
 
     chat_extra: Dict[str, object] = {"source": "chat"}
     chat_text = asyncio.run(trigger_bridge.run_trigger_via_mockbot(real, ev, _cmd, chat_extra))

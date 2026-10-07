@@ -173,7 +173,8 @@ def _is_image_string(s: str) -> bool:
     """检查字符串是否为图片数据（base64 编码或 data URI）。"""
     stripped = s.strip()
     return (
-        stripped.startswith("base64://")
+        stripped.startswith("link://")
+        or stripped.startswith("base64://")
         or stripped.startswith("data:image/")
         or stripped.startswith("http://")
         or stripped.startswith("https://")
