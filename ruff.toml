@@ -25,6 +25,7 @@ force-sort-within-sections = false
 combine-as-imports = true
 length-sort = true
 known-first-party = ["gsuid_core"]
+known-third-party = ["mcp"]
 extra-standard-library = ["typing_extensions"]
 section-order = [
     "future",
