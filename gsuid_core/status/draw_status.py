@@ -3,14 +3,14 @@ import re
 import time
 import asyncio
 import datetime
-from typing import Dict, List, Tuple, Union, TypeVar, Optional
+from typing import Dict, List, Tuple, Union, TypeVar, Optional, NamedTuple
 from pathlib import Path
+from collections.abc import Callable, Awaitable
 
 from PIL import Image, ImageOps, ImageDraw
 
 import gsuid_core.global_val as gv
 from gsuid_core.i18n import t
-from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.version import __version__
@@ -44,6 +44,23 @@ HINT_COLOR = (235, 54, 54)
 BLACK = (24, 24, 24)
 GREY = (101, 101, 101)
 SE_COLOR = (71, 71, 71)
+
+
+class _PluginRow(NamedTuple):
+    """插件额外信息一行：名称、图标、最多三枚 (标题, 值) 徽章。"""
+
+    name: str
+    icon: Image.Image
+    badges: List[Tuple[str, str | int | float]]
+
+
+class _Analysis1Arg(NamedTuple):
+    """draw_data_analysis1 的入参。yesterday 已由主循环解析完毕。"""
+
+    bot_id: Optional[str]
+    bot_self_id: Optional[str]
+    yesterday: CoreDataSummary
+
 
 # 状态图磁盘缓存：core信息 60s 内重复触发直接返回缓存；插件回调 35s 超时保护。
 _DEFAULT_STATUS_CACHE_TTL = 60  # 单位秒；0 表示禁用
@@ -116,7 +133,8 @@ def _or(value: T | None | BaseException, default: T) -> T:
     return value
 
 
-async def draw_title():
+async def draw_title() -> Image.Image:
+    """标题栏。仍留主循环：draw_pic_with_ring 是插件公开的 async API，不能改成同步调用。"""
     title = Image.new("RGBA", (1400, 300))
     title_draw = ImageDraw.Draw(title)
 
@@ -217,11 +235,11 @@ async def draw_title():
     return title
 
 
-async def draw_bar(
+def draw_bar(
     text1: str,
     text2: str,
     sample: Optional[Dict[str, Union[Tuple[int, int, int], str]]] = None,
-):
+) -> Image.Image:
     bar = Image.new("RGBA", (1400, 100))
     bar_draw = ImageDraw.Draw(bar)
 
@@ -288,13 +306,13 @@ def _change_time(time: float):
     return "".join(parts)
 
 
-async def draw_badge(
+def draw_badge(
     title: str,
     value: Union[str, int, float],
     avg_value: Optional[int] = None,
     color: Union[Tuple[int, int, int], str] = THEME_COLOR,
     is_time: bool = False,
-):
+) -> Image.Image:
     badge = Image.new("RGBA", (240, 150))
     badge_draw = ImageDraw.Draw(badge)
 
@@ -360,52 +378,45 @@ async def draw_badge(
     return badge
 
 
-async def draw_data_analysis1(
+def draw_data_analysis1(
     bot_id: Optional[str],
     bot_self_id: Optional[str],
-    yesterday: Optional[CoreDataSummary] = None,
-):
+    yesterday: CoreDataSummary,
+) -> Image.Image:
+    """单 bot / 全局两组的 6 枚统计徽章。yesterday 由调用方解析，这里只做 PIL。"""
     local_val = gv.get_platform_val(bot_id, bot_self_id)
     data_bar = Image.new("RGBA", (1400, 200))
 
-    if yesterday is None:
-        yesterday = await CoreDataSummary.get_yesterday_data(
-            bot_id=bot_id,
-            bot_self_id=bot_self_id,
-        )
-    if not yesterday:
-        yesterday = CoreDataSummary(bot_id="1", bot_self_id="2", date=datetime.datetime.now())
-
-    badge1 = await draw_badge(
+    badge1 = draw_badge(
         "今日接收",
         local_val["receive"],
         yesterday.receive,
         SE_COLOR,
     )
 
-    badge2 = await draw_badge(
+    badge2 = draw_badge(
         "今日发送",
         local_val["send"],
         yesterday.send,
         HINT_COLOR,
     )
-    badge3 = await draw_badge(
+    badge3 = draw_badge(
         "绘制图片",
         local_val["image"],
         yesterday.image,
     )
-    badge4 = await draw_badge(
+    badge4 = draw_badge(
         "触发命令",
         local_val["command"],
         yesterday.command,
     )
-    badge5 = await draw_badge(
+    badge5 = draw_badge(
         "使用群聊",
         local_val["group_count"],
         yesterday.group_count,
         SE_COLOR,
     )
-    badge6 = await draw_badge(
+    badge6 = draw_badge(
         "使用用户",
         local_val["user_count"],
         yesterday.user_count,
@@ -418,34 +429,34 @@ async def draw_data_analysis1(
     return data_bar
 
 
-async def draw_data_analysis2(
+def draw_data_analysis2(
     data: CountVal,
-):
-    badge1 = await draw_badge(
+) -> Image.Image:
+    badge1 = draw_badge(
         "DAU",
         data["DAU"],
         0,
         HINT_COLOR,
     )
-    badge2 = await draw_badge(
+    badge2 = draw_badge(
         "DAG",
         data["DAG"],
     )
-    badge3 = await draw_badge(
+    badge3 = draw_badge(
         "MAU",
         data["MAU"],
     )
-    badge4 = await draw_badge(
+    badge4 = draw_badge(
         "用户留存",
         data["OutUser"],
         0,
         HINT_COLOR,
     )
-    badge5 = await draw_badge(
+    badge5 = draw_badge(
         "群聊新增",
         data["NewGroup"],
     )
-    badge6 = await draw_badge(
+    badge6 = draw_badge(
         "用户粘性",
         data["DAU_MAU"],
         0,
@@ -501,32 +512,36 @@ def draw_hw_status_bar(title: str, value: float, msg: str):
     return img
 
 
-async def draw_hw():
+async def _fetch_hw() -> List[Tuple[str, float, str]]:
+    """取四项系统指标 (标题, 数值, 说明)。取数留主循环，画图交线程。"""
+    cpu, memory, disk, swap = await asyncio.gather(
+        get_cpu_info(),
+        get_memory_info(),
+        get_disk_info(),
+        get_swap_info(),
+    )
+    return [
+        ("CPU", cpu["value"], cpu["name"]),
+        ("内存", memory["value"], memory["name"]),
+        ("磁盘", disk["value"], disk["name"]),
+        ("交换", swap["value"], swap["name"]),
+    ]
+
+
+def _render_hw(rows: List[Tuple[str, float, str]]) -> Image.Image:
+    """纯 PIL；由 _compose_status_card 在工作线程里调用。"""
     img = Image.new("RGBA", (1400, 300))
-
-    cpu_task = asyncio.create_task(get_cpu_info())
-    memory_task = asyncio.create_task(get_memory_info())
-    disk_task = asyncio.create_task(get_disk_info())
-    swap_task = asyncio.create_task(get_swap_info())
-
-    cpu, memory, disk, swap = await asyncio.gather(cpu_task, memory_task, disk_task, swap_task)
-
-    cpu_img = draw_hw_status_bar("CPU", cpu["value"], cpu["name"])
-    memory_img = draw_hw_status_bar("内存", memory["value"], memory["name"])
-    disk_img = draw_hw_status_bar("磁盘", disk["value"], disk["name"])
-    swap_img = draw_hw_status_bar("交换", swap["value"], swap["name"])
-
-    for index, i in enumerate([cpu_img, memory_img, disk_img, swap_img]):
-        img.paste(
-            i,
-            (20 + (index % 2) * 670, 50 + (index // 2) * 100),
-            i,
-        )
-
+    for index, (title, value, name) in enumerate(rows):
+        bar = draw_hw_status_bar(title, value, name)
+        img.paste(bar, (20 + (index % 2) * 670, 50 + (index // 2) * 100), bar)
     return img
 
 
-async def _safe_call_plugin_status(fn, plugin_name: str, status_key: str) -> str:
+async def _safe_call_plugin_status(
+    fn: Callable[[], Awaitable[str | int | float]],
+    plugin_name: str,
+    status_key: str,
+) -> str | int | float:
     """调用插件注册的 status 回调，35s 超时保护。"""
     try:
         return await asyncio.wait_for(fn(), timeout=35.0)
@@ -546,14 +561,27 @@ async def _safe_call_plugin_status(fn, plugin_name: str, status_key: str) -> str
         return "未知"
 
 
-async def draw_plugins_status():
-    plugins_num = len(plugins_status)
-    plugins_h = 50 + plugins_num * 180
+async def _fetch_plugins_status() -> List[_PluginRow]:
+    """逐个调插件注册的 status 回调。回调是 3rd-party 且可能碰 DB，必须留主循环。"""
+    rows: List[_PluginRow] = []
+    for name in plugins_status:
+        status = plugins_status[name]["status"]
+        badges: List[Tuple[str, str | int | float]] = []
+        for key in status:
+            value = await _safe_call_plugin_status(status[key], name, key)
+            badges.append((key, value))
+            if len(badges) >= 3:
+                break
+        rows.append(_PluginRow(name, plugins_status[name]["icon"], badges))
+    return rows
 
-    img = Image.new("RGBA", (1400, plugins_h))
+
+def _render_plugins_status(rows: List[_PluginRow]) -> Image.Image:
+    """纯 PIL；由 _compose_status_card 在工作线程里调用。"""
+    img = Image.new("RGBA", (1400, 50 + len(rows) * 180))
     img_draw = ImageDraw.Draw(img)
 
-    if plugins_num == 0:
+    if not rows:
         img_draw.text(
             (700, 25),
             "当前没有插件有额外信息",
@@ -561,59 +589,48 @@ async def draw_plugins_status():
             core_font(32),
             "mm",
         )
-    else:
-        for index, i in enumerate(plugins_status):
-            plugin_bar = Image.new("RGBA", (1400, 180))
-            plugin_bar_draw = ImageDraw.Draw(plugin_bar)
+        return img
 
-            plugin_bar_draw.rounded_rectangle(
-                (115, 75, 540, 133),
-                30,
-                THEME_COLOR,
+    for index, row in enumerate(rows):
+        plugin_bar = Image.new("RGBA", (1400, 180))
+        plugin_bar_draw = ImageDraw.Draw(plugin_bar)
+
+        plugin_bar_draw.rounded_rectangle(
+            (115, 75, 540, 133),
+            30,
+            THEME_COLOR,
+        )
+
+        icon = row.icon.resize((128, 128)).convert("RGBA")
+        plugin_bar.paste(icon, (109, 30), icon)
+        plugin_bar_draw.text(
+            (251, 104),
+            row.name,
+            "White",
+            core_font(26),
+            "lm",
+        )
+
+        for indexj, (key, value) in enumerate(row.badges):
+            badge = draw_badge(key, value)
+            plugin_bar.paste(
+                badge,
+                (605 + 210 * indexj, 11),
+                badge,
             )
 
-            plugin = plugins_status[i]
-            icon = plugin["icon"]
-            icon = icon.resize((128, 128)).convert("RGBA")
-            status = plugin["status"]
-
-            plugin_bar.paste(icon, (109, 30), icon)
-            plugin_bar_draw.text(
-                (251, 104),
-                i,
-                "White",
-                core_font(26),
-                "lm",
-            )
-
-            for indexj, j in enumerate(status):
-                _value = await _safe_call_plugin_status(
-                    status[j],
-                    i,
-                    j,
-                )
-
-                badge = await draw_badge(j, _value)
-                plugin_bar.paste(
-                    badge,
-                    (605 + 210 * indexj, 11),
-                    badge,
-                )
-                if indexj >= 2:
-                    break
-
-            img.paste(
-                plugin_bar,
-                (0, 25 + 180 * index),
-                plugin_bar,
-            )
+        img.paste(
+            plugin_bar,
+            (0, 25 + 180 * index),
+            plugin_bar,
+        )
 
     return img
 
 
-async def draw_curve(
+def draw_curve(
     datas: Dict[Union[Tuple[int, int, int], str], List[float]],
-):
+) -> Image.Image:
     img = Image.new("RGBA", (1400, 550))
     img_draw = ImageDraw.Draw(img)
 
@@ -669,7 +686,7 @@ async def draw_curve(
     return img
 
 
-async def draw_curve_img(trends: Dict[str, List[int]]):
+def draw_curve_img(trends: Dict[str, List[int]]) -> Image.Image:
     result: Dict[Union[Tuple[int, int, int], str], List[float]] = {
         THEME_COLOR: [],
         HINT_COLOR: [],
@@ -686,15 +703,15 @@ async def draw_curve_img(trends: Dict[str, List[int]]):
         result[(182, 122, 210)].append(trends["bot_user_count"][day] if day < len(trends["bot_user_count"]) else 0)
         result[(27, 146, 210)].append(trends["bot_send"][day] if day < len(trends["bot_send"]) else 0)
 
-    curve_img = await draw_curve(result)
+    curve_img = draw_curve(result)
     return curve_img
 
 
-async def draw_bg(w: int, h: int):
+def draw_bg(w: int, h: int) -> Image.Image:
     path = TEXT_PATH / "bg.jpg"
     if status_config.get_config("CustomBg").data:
         bg_path = Path(status_config.get_config("CustomBgPath").data)
-        if await asyncio.to_thread(bg_path.exists):
+        if bg_path.exists():
             path = bg_path
 
     bg = Image.open(path).convert("RGBA")
@@ -719,38 +736,38 @@ async def draw_bg(w: int, h: int):
     return bg
 
 
-async def draw_traffic_analysis():
+def draw_traffic_analysis() -> Image.Image:
     bt = gv.bot_traffic
-    badge1 = await draw_badge(
+    badge1 = draw_badge(
         "最大同时处理",
         str(bt["max_qps"]),
         None,
         HINT_COLOR,
         is_time=True,
     )
-    badge2 = await draw_badge(
+    badge2 = draw_badge(
         "最大任务时间",
         bt["max_runtime"],
         is_time=True,
     )
-    badge3 = await draw_badge(
+    badge3 = draw_badge(
         "最大耗时函数",
         bt["max_runtime_func"],
         is_time=True,
     )
-    badge4 = await draw_badge(
+    badge4 = draw_badge(
         "最大等待",
         bt["max_wait_time"],
         None,
         HINT_COLOR,
         is_time=True,
     )
-    badge5 = await draw_badge(
+    badge5 = draw_badge(
         "总处理耗时",
         bt["total_time"],
         is_time=True,
     )
-    badge6 = await draw_badge(
+    badge6 = draw_badge(
         "总时间",
         bt["max_time"],
         None,
@@ -801,17 +818,16 @@ async def draw_status(ev: Event) -> bytes:
         return res
 
 
-@to_thread
-async def _draw_status_uncached(ev: Event):
-    """
-    实际渲染逻辑。仍然用 to_thread 避免阻塞主事件循环；
-    内部用 asyncio.gather 并行化 I/O 密集步骤。
+async def _draw_status_uncached(ev: Event) -> bytes:
+    """在主事件循环上取数，纯 CPU 的装配交线程池。
+
+    取数必须留在主循环：写闸门与读信号量是进程级单例，是循环亲和资源。
     """
     # ── 阶段 1: I/O 密集的并行 fetch ──
     # 六个独立数据源同时拉；任何一项异常不影响其他，阶段 3 入口再统一兜底
     fetch_results = await asyncio.gather(
-        draw_title(),  # 2 个 COUNT
-        draw_hw(),  # 4 个系统信息
+        draw_title(),  # 2 个 COUNT + 图标
+        _fetch_hw(),  # 4 个系统信息
         CoreDataAnalysis.calculate_dashboard_metrics(),  # 全局
         CoreDataAnalysis.calculate_dashboard_metrics(  # 单 bot
             ev.real_bot_id,
@@ -821,19 +837,19 @@ async def _draw_status_uncached(ev: Event):
             ev.real_bot_id,
             ev.bot_self_id,
         ),
-        draw_plugins_status(),  # 各插件状态
+        _fetch_plugins_status(),  # 各插件状态，回调可能碰 DB
         return_exceptions=True,
     )
     (
         title,
-        hw,
+        hw_rows,
         mdata,
         ndata,
         trends,
-        plugin_status_img,
+        plugin_rows,
     ) = fetch_results
 
-    # ── 阶段 2: 拿到 yesterday 数据，再渲染两组 data_analysis1 ──
+    # ── 阶段 2: 取昨日快照，作为两组 data_analysis1 的入参 ──
     yesterday_single, yesterday_all = await asyncio.gather(
         CoreDataSummary.get_yesterday_data(
             bot_id=ev.real_bot_id,
@@ -846,31 +862,26 @@ async def _draw_status_uncached(ev: Event):
         return_exceptions=True,
     )
 
-    # gather 返回异常时给占位 CoreDataSummary，避免 draw_data_analysis1 内部重查
-    # 同一失败查询（仍按零值渲染图像，不阻塞后续阶段）
+    # gather 返回异常时给占位 CoreDataSummary，避免下游重查同一失败查询
+    # （仍按零值渲染图像，不阻塞后续阶段）
     _dummy_yesterday = CoreDataSummary(
         bot_id="1",
         bot_self_id="2",
         date=datetime.datetime.now(),
     )
-    data_bar1_1 = await draw_data_analysis1(
+    single = _Analysis1Arg(
         ev.real_bot_id,
         ev.bot_self_id,
-        yesterday=_or(yesterday_single, _dummy_yesterday),
+        _or(yesterday_single, _dummy_yesterday),
     )
-    data_bar1_2 = await draw_data_analysis1(
-        None,
-        None,
-        yesterday=_or(yesterday_all, _dummy_yesterday),
-    )
+    all_bot = _Analysis1Arg(None, None, _or(yesterday_all, _dummy_yesterday))
 
-    # ── 阶段 3 入口：把阶段 1 的 gather 结果统一兜底成下游可用的占位值 ──
-    # 异常项用 0 / 空图 / 占位 dict 替换，避免 paste/[] 操作崩溃
+    # ── 阶段 3: 把阶段 1 的 gather 结果统一兜底成下游可用的占位值 ──
+    # 异常项用空图 / 占位 dict 替换，避免 paste/[] 操作崩溃
     plugins_num = len(plugins_status)
     plugins_h = 100 + plugins_num * 180
 
     title = _or(title, Image.new("RGBA", (1400, 300), (0, 0, 0, 0)))
-    hw = _or(hw, Image.new("RGBA", (1400, 300), (0, 0, 0, 0)))
     # draw_data_analysis2 访问 DAU/DAG/MAU/OutUser/NewGroup/DAU_MAU；CountVal 必填全键
     _empty_metrics: CountVal = {
         "DAU": "0",
@@ -893,18 +904,56 @@ async def _draw_status_uncached(ev: Event):
         "bot_send": [0] * 46,
     }
     trends = _or(trends, _empty_trends)
-    plugin_status_img = _or(
-        plugin_status_img,
-        Image.new("RGBA", (1400, plugins_h), (0, 0, 0, 0)),
+    # gather 回传的是异常对象而不是 None，收敛掉好让装配函数用空图兜底。
+    hw_rows = None if isinstance(hw_rows, BaseException) else hw_rows
+    plugin_rows = None if isinstance(plugin_rows, BaseException) else plugin_rows
+
+    # ── 阶段 4: 纯 PIL 装配，交线程池，不在主循环里跑 CPU ──
+    img = await asyncio.to_thread(
+        _compose_status_card,
+        title,
+        hw_rows,
+        single,
+        all_bot,
+        ndata,
+        mdata,
+        trends,
+        plugin_rows,
+        plugins_h,
+    )
+    return await convert_img(img)
+
+
+def _compose_status_card(
+    title: Image.Image,
+    hw_rows: Optional[List[Tuple[str, float, str]]],
+    single: _Analysis1Arg,
+    all_bot: _Analysis1Arg,
+    ndata: CountVal,
+    mdata: CountVal,
+    trends: Dict[str, List[int]],
+    plugin_rows: Optional[List[_PluginRow]],
+    plugins_h: int,
+) -> Image.Image:
+    """纯 PIL 装配，不碰数据库；由 to_thread 在工作线程里执行。
+
+    hw_rows / plugin_rows 为 None 表示阶段 1 取数失败，用透明空图兜底。
+    """
+    hw = _render_hw(hw_rows) if hw_rows is not None else Image.new("RGBA", (1400, 300), (0, 0, 0, 0))
+    data_bar1_1 = draw_data_analysis1(single.bot_id, single.bot_self_id, single.yesterday)
+    data_bar1_2 = draw_data_analysis1(all_bot.bot_id, all_bot.bot_self_id, all_bot.yesterday)
+    plugin_status_img = (
+        _render_plugins_status(plugin_rows)
+        if plugin_rows is not None
+        else Image.new("RGBA", (1400, plugins_h), (0, 0, 0, 0))
     )
 
-    # ── 阶段 3: 纯 PIL 装配（gather 无效，串行即可；这些函数都是 async def，必须 await） ──
-    bar1 = await draw_bar("服务器基础信息", "Base Info")
-    bar2_1 = await draw_bar("机器人数据统计(单)", "Data Analysis")
-    bar2_2 = await draw_bar("机器人数据统计(多)", "Data Analysis")
-    bar2_3 = await draw_bar("机器人流量统计", "Traffic Analysis")
+    bar1 = draw_bar("服务器基础信息", "Base Info")
+    bar2_1 = draw_bar("机器人数据统计(单)", "Data Analysis")
+    bar2_2 = draw_bar("机器人数据统计(多)", "Data Analysis")
+    bar2_3 = draw_bar("机器人流量统计", "Traffic Analysis")
 
-    bar3 = await draw_bar(
+    bar3 = draw_bar(
         "日活曲线",
         "Daily Activity",
         {
@@ -914,16 +963,14 @@ async def _draw_status_uncached(ev: Event):
             "发送数量": (27, 146, 210),
         },
     )
-    bar4 = await draw_bar("插件额外信息", "Extra Data")
+    bar4 = draw_bar("插件额外信息", "Extra Data")
 
-    data_bar2_1 = await draw_data_analysis2(ndata)
-    data_bar2_2 = await draw_data_analysis2(mdata)
+    data_bar2_1 = draw_data_analysis2(ndata)
+    data_bar2_2 = draw_data_analysis2(mdata)
+    traffic_bar = draw_traffic_analysis()
+    curve_img = draw_curve_img(trends)
 
-    traffic_bar = await draw_traffic_analysis()
-
-    curve_img = await draw_curve_img(trends)
-
-    img = await draw_bg(1400, 2778 + 150 + plugins_h + 310)
+    img = draw_bg(1400, 2778 + 150 + plugins_h + 310)
 
     img.paste(title, (0, 0), title)
     img.paste(bar1, (0, 855), bar1)
@@ -944,6 +991,4 @@ async def _draw_status_uncached(ev: Event):
     img.paste(bar4, (0, 2778 + 310), bar4)
     img.paste(plugin_status_img, (0, 2878 + 310), plugin_status_img)
 
-    img = add_footer(img, footer=Image.open(TEXT_PATH / "footer.png"))
-    res = await convert_img(img)
-    return res
+    return add_footer(img, footer=Image.open(TEXT_PATH / "footer.png"))
