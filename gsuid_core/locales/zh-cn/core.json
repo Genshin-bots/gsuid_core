@@ -59,5 +59,6 @@
   "log.core.startup_done": "启动完成 {duration:.2f}s · v{version}",
   "log.core.token_error": "[GsCore] Token 错误!剩余尝试次数: {remaining}",
   "log.core.web_console_background_initialization_fail": "[网页控制台] 后台初始化失败: {e}",
+  "log.core.ws_inbound_frame_skipped": "[GsCore] {bot_id} 上报的一帧无法解码为 MessageReceive：{reason}（{size} 字节）。Core 已跳过这一帧，连接保持。",
   "log.core.ws_starting": "[GsCore] 启动WS服务中..."
 }

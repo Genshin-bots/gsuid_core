@@ -59,5 +59,6 @@
   "log.core.startup_done": "Startup done {duration:.2f}s · v{version}",
   "log.core.token_error": "[GsCore] Invalid token! Remaining attempts: {remaining}",
   "log.core.web_console_background_initialization_fail": "[Web Console] Background initialization failed: {e}",
+  "log.core.ws_inbound_frame_skipped": "[GsCore] {bot_id} sent a frame that is not a MessageReceive: {reason} ({size} bytes). Core skipped the frame and kept the connection.",
   "log.core.ws_starting": "[GsCore] Starting WS service..."
 }

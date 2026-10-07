@@ -28,8 +28,10 @@ class ToolContext:
     # 渐进式工具暴露：find_tools 本轮命中的工具名集合，RetrievableToolset 每 step 读它
     # 解析成可调用工具。作用域为单次 run（ToolContext 每轮新建），轮末自然丢弃。
     dynamic_tool_names: Set[str] = field(default_factory=set)
-    # 主人格交互轮：能力代理专属工具名。find_tools / RetrievableToolset 均不得回灌。
+    # 主人格交互轮：能力代理专属工具名。find_tools 默认不回灌。
     blocked_tool_names: Set[str] = field(default_factory=set)
+    # 别名锁定且没有对口代理时，这些 exclusive 工具本轮可调用。
+    alias_callable_tools: Set[str] = field(default_factory=set)
     # True：允许工具路径对用户会话出站（主人格）。能力代理 / 子 Agent 恒 False。
     allow_user_outbound: bool = True
     # 人格 enabled_tools 作用域快照。find_tools 检索时按它收放；None = 不限。

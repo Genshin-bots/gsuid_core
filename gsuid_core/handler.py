@@ -4,6 +4,8 @@ from copy import deepcopy
 from uuid import uuid4
 from typing import Dict, List, Tuple, Optional
 
+from msgspec import DecodeError, ValidationError, json as msgjson
+
 from gsuid_core.sv import SL, SV
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
@@ -39,6 +41,22 @@ from gsuid_core.utils.plugins_config.gs_config import (
 _INBOUND_BUDGET_S = 30.0
 _INBOUND_SLOT_WAIT_S = 1.0
 _INBOUND_SLOTS = 32
+
+
+def decode_inbound_frame(data: bytes, bot_id: str) -> MessageReceive | None:
+    # 适配器帧不可信。解码失败只跳过这一帧，避免整条连接被 ASGI 堆栈拆掉。
+    try:
+        return msgjson.decode(data, type=MessageReceive)
+    except (DecodeError, ValidationError) as exc:
+        logger.warning(
+            t(
+                "log.core.ws_inbound_frame_skipped",
+                bot_id=bot_id,
+                reason=str(exc),
+                size=len(data),
+            )
+        )
+        return None
 
 
 def _consume_inbound(task: asyncio.Task[object]) -> None:
