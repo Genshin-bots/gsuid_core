@@ -405,27 +405,30 @@ async def _plugins_from_scope_ambiguity(route_text: str, scope_key: str) -> List
     return uniq
 
 
+_LOCKED_PLUGIN_FILL = 4
+
+
 async def align_seeds_to_context_plugin(
     found: ToolList,
     plugin: str,
     query: str,
     scope: Optional["ToolScope"] = None,
 ) -> ToolList:
-    """最近对白已确定插件时，丢掉别的插件工具，并用该插件的深召回补位。
+    """锁定插件时丢掉其它插件的工具，并补到至多 4 个该插件工具。
 
-    当前句自己没有实体。提醒类等无插件工具保留。没有跨插件碰撞则原样返回。
+    人格作用域关掉该插件时不补。无插件工具保留。
     """
-    if not plugin or not found:
+    if not plugin:
         return found
     if scope is not None and not scope.plugin_enabled(plugin):
         return [tool for tool in found if scope.tool_enabled(tool.name)]
-    foreign_names = {tool.name for tool in found if _tool_plugin(tool.name) not in _NEUTRAL_PLUGINS | {plugin}}
-    if not foreign_names:
-        return found
-    kept = [tool for tool in found if tool.name not in foreign_names]
+    kept = [tool for tool in found if _tool_plugin(tool.name) in _NEUTRAL_PLUGINS | {plugin}]
     if scope is not None and not scope.is_open:
         kept = [tool for tool in kept if scope.tool_enabled(tool.name)]
     have = {tool.name for tool in kept}
+    plugin_count = sum(1 for tool in kept if _tool_plugin(tool.name) == plugin)
+    if plugin_count >= _LOCKED_PLUGIN_FILL:
+        return kept
     deep = await search_tools(
         query=query,
         limit=_ENTITY_ROUTE_DEEP_RECALL,
@@ -433,14 +436,13 @@ async def align_seeds_to_context_plugin(
         exclude_names=have,
         scope=scope,
     )
-    added = 0
     for tool in deep:
         if _tool_plugin(tool.name) != plugin or tool.name in have:
             continue
         kept.append(tool)
         have.add(tool.name)
-        added += 1
-        if added >= 4:
+        plugin_count += 1
+        if plugin_count >= _LOCKED_PLUGIN_FILL:
             break
     return kept
 

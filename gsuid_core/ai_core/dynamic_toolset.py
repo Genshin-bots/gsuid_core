@@ -72,8 +72,9 @@ class RetrievableToolset(AbstractToolset[ToolContext]):
                 return {}
 
         out: dict[str, ToolsetTool[ToolContext]] = {}
+        unlocked = ctx.deps.alias_callable_tools
         for name in allowed:
-            if name in self._exclude:
+            if name in self._exclude and name not in unlocked:
                 continue
             tb = find_tool_base(name)
             if tb is None:

@@ -91,7 +91,7 @@ async def main():
     from gsuid_core.bot import _Bot
     from gsuid_core.config import core_config
     from gsuid_core.models import MessageReceive
-    from gsuid_core.handler import _INBOUND_SLOTS, handle_event, run_inbound_event
+    from gsuid_core.handler import _INBOUND_SLOTS, handle_event, run_inbound_event, decode_inbound_frame
     from gsuid_core.security_manager import sec_manager
     from gsuid_core.utils.database.startup import (  # noqa: F401
         trans_adapter as ta,
@@ -160,7 +160,9 @@ async def main():
                         try:
                             # 使用 wait_for 添加超时，以便定期检查 shutdown_event
                             data = await asyncio.wait_for(websocket.receive_bytes(), timeout=1.0)
-                            msg = msgjson.decode(data, type=MessageReceive)
+                            msg = decode_inbound_frame(data, bot_id)
+                            if msg is None:
+                                continue
                             # 优先拦截 recall_message_id 回执，避免其进入正常消息管道
                             if bot.resolve_recall(msg):
                                 continue
