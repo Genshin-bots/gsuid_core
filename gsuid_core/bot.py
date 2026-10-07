@@ -1,7 +1,7 @@
 import time
 import asyncio
 import inspect
-from typing import Any, Dict, List, Union, Literal, Mapping, Optional
+from typing import Any, Dict, List, Union, Literal, Mapping, Optional, Coroutine
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -120,7 +120,8 @@ class _Bot:
         self.sem = asyncio.Semaphore(command_semaphore)
         self._shutdown_event: Optional[asyncio.Event] = None
         # 独立发送队列：所有 WebSocket 发送操作通过此队列串行化执行
-        self._send_queue: asyncio.queues.Queue = asyncio.queues.Queue()
+        # 元素恒为待发送协程，标注类型实参以便 clear_send_queue 直接 close()（见 AGENTS.md §1.4）
+        self._send_queue: asyncio.queues.Queue[Coroutine[Any, Any, None]] = asyncio.queues.Queue()
         self._send_task: Optional[asyncio.Task] = None
         # 记录断连时间，用于重连时判断是否复用旧实例（避免内存泄漏）
         self._disconnected_at: Optional[float] = None
@@ -192,9 +193,7 @@ class _Bot:
             try:
                 coro = self._send_queue.get_nowait()
                 self._send_queue.task_done()
-                close = getattr(coro, "close", None)
-                if close is not None:
-                    close()
+                coro.close()
                 dropped += 1
             except asyncio.QueueEmpty:
                 break
@@ -239,7 +238,7 @@ class _Bot:
             self._send_task = asyncio.create_task(self._send_worker())
             logger.debug(t("log.bot.send_worker_started", bot_id=self.bot_id))
 
-    async def _enqueue_send(self, coro):
+    async def _enqueue_send(self, coro: Coroutine[Any, Any, None]) -> None:
         """将发送任务加入发送队列。
 
         Args:
