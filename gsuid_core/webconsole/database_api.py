@@ -9,7 +9,7 @@ import asyncio
 from typing import Any, Dict
 from urllib.parse import quote
 
-from fastapi import Body, Depends, Request
+from fastapi import Body, File, Form, Depends, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from gsuid_core.i18n import t
@@ -25,6 +25,13 @@ from gsuid_core.utils.database.admin_api import (
     get_plugin_databases,
     get_all_plugin_databases,
 )
+from gsuid_core.utils.database.csv_import import (
+    CSV_IMPORT_MAX_BYTES,
+    CsvImportError,
+    import_table_csv,
+    import_error_text,
+)
+from gsuid_core.utils.database.write_gate import WriteGateTimeout
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH
 
 from ._api_tags import DATABASE
@@ -237,6 +244,54 @@ async def export_table_csv(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+_CSV_READ_CHUNK = 1024 * 1024
+
+
+async def _read_csv_upload(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    limit_mb = CSV_IMPORT_MAX_BYTES // (1024 * 1024)
+    while True:
+        block = await file.read(_CSV_READ_CHUNK)
+        if not block:
+            break
+        total += len(block)
+        if total > CSV_IMPORT_MAX_BYTES:
+            raise CsvImportError("msg.webconsole.database_import.file_too_large", limit_mb=limit_mb)
+        chunks.append(block)
+    return b"".join(chunks)
+
+
+@app.post("/api/database/table/{table_name}/import.csv", summary="从 CSV 导入表数据", tags=DATABASE)
+async def import_table_csv_api(
+    table_name: str,
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),
+    confirm_table: str = Form(""),
+    _user: Dict[str, Any] = Depends(require_admin),
+):
+    """把 CSV 写入已注册的表。
+
+    ``merge`` 按主键增量合并，``replace`` 先清空该表再写入。
+    ``confirm_table`` 必须与路径中的表名相同。
+    """
+    try:
+        raw = await _read_csv_upload(file)
+        counts = await import_table_csv(table_name, raw, mode, confirm_table)
+        return {"status": 0, "msg": "ok", "data": counts.to_dict()}
+    except CsvImportError as err:
+        return {"status": 1, "msg": import_error_text(err), "data": None}
+    except WriteGateTimeout:
+        return {"status": 1, "msg": t("msg.webconsole.database_import.busy"), "data": None}
+    except Exception as e:
+        from gsuid_core.logger import logger
+
+        logger.error(t("log.webconsole.database_import_fail", error=e))
+        return {"status": 1, "msg": str(e), "data": None}
+    finally:
+        await file.close()
 
 
 @app.post("/api/database/table/{table_name}/data", summary="创建记录", tags=DATABASE)
