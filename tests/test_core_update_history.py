@@ -95,15 +95,22 @@ def test_pick_recent_omits_previous_when_latest_is_long(count: int, want: list[s
 
 def test_living_version_appears_once() -> None:
     refs = list_versions()
-    living = [ref for ref in refs if ref.version == "0.11.0"]
+    assert refs
+    # 当前这一版 = 最新开版的版本文件；写死版本号会每次升版连带改测试
+    living_version = refs[0].version
+    living = [ref for ref in refs if ref.version == living_version]
     assert len(living) == 1
     assert living[0].released is True
     recent = pick_recent(refs)
     versions = [ref.version for ref in recent]
     assert len(versions) == len(set(versions))
-    assert recent[0].version == "0.11.0"
-    assert living[0].commit_count > changelog._RECENT_PREV_MAX_COMMITS
-    assert len(recent) == 1
+    assert recent[0].version == living_version
+    if living[0].commit_count > changelog._RECENT_PREV_MAX_COMMITS:
+        assert len(recent) == 1
+    else:
+        # 刚开版、索引提交数还没过阈值：卡片再带上一版，不能并排同号两张
+        assert len(recent) == 2
+        assert recent[1].version != living_version
 
 
 def test_login_from_noreply_email() -> None:

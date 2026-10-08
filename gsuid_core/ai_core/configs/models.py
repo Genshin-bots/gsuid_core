@@ -25,6 +25,7 @@ from collections.abc import Callable, AsyncIterator
 from typing_extensions import override
 
 import httpx
+import httpx2
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionChunk
 from pydantic_ai.usage import RequestUsage
@@ -72,15 +73,25 @@ OpenAIModel = Union[OpenAIChatModel, OpenAIResponsesModel]
 # read 是流式段间超时，不限制正常长输出；瞬时故障重试统一由 _execute_run 负责。
 MODEL_REQUEST_TIMEOUT = httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool=30.0)
 
+# openai 3.x / anthropic 1.x 的 HTTP 栈换成了 httpx2，与 httpx 不是同一套类、不可互传；
+# 只有 google-genai 仍吃 httpx，故按库分两套池（同 §23 墙钟）。
+MODEL_REQUEST_TIMEOUT_HTTPX2 = httpx2.Timeout(connect=15.0, read=180.0, write=60.0, pool=30.0)
+
 
 @lru_cache(maxsize=None)
 def _shared_model_http_client(provider: str) -> httpx.AsyncClient:
     """进程级共享 HTTP 客户端（按 provider 一池，进程生命周期不关闭）。
 
     每次建模型都 new 私有客户端会累积不被关闭的连接池、且丢失跨请求连接复用
-    （评审修复 F8）；三类 provider 工厂统一从这里取池、统一吃 §23 墙钟超时。
+    （评审修复 F8）；provider 工厂统一从这里取池、统一吃 §23 墙钟超时。
     """
     return httpx.AsyncClient(timeout=MODEL_REQUEST_TIMEOUT)
+
+
+@lru_cache(maxsize=None)
+def _shared_model_httpx2_client(provider: str) -> httpx2.AsyncClient:
+    """已迁到 httpx2 的 SDK（openai 3.x / anthropic 1.x）用的共享池，语义同上。"""
+    return httpx2.AsyncClient(timeout=MODEL_REQUEST_TIMEOUT_HTTPX2)
 
 
 def parse_provider_config_name(full_name: str) -> tuple[str, str]:
@@ -359,14 +370,14 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
         get_openai_config_by_name(config_name)
     )
 
-    # §23 墙钟 + 共享连接池（见 MODEL_REQUEST_TIMEOUT / _shared_model_http_client）；
+    # §23 墙钟 + 共享连接池（见 MODEL_REQUEST_TIMEOUT_HTTPX2 / _shared_model_httpx2_client）；
     # timeout 显式传 SDK 保证逐请求生效，max_retries=1 收紧 SDK 内建重试。
     _client = AsyncOpenAI(
         api_key=api_key,
         base_url=base_url,
-        timeout=MODEL_REQUEST_TIMEOUT,
+        timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
         max_retries=1,
-        http_client=_shared_model_http_client("openai"),
+        http_client=_shared_model_httpx2_client("openai"),
     )
     provider = OpenAIProvider(openai_client=_client)
 
@@ -435,9 +446,9 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
     _client = AsyncAnthropic(
         api_key=api_key,
         base_url=base_url,
-        timeout=MODEL_REQUEST_TIMEOUT,
+        timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
         max_retries=1,
-        http_client=_shared_model_http_client("anthropic"),
+        http_client=_shared_model_httpx2_client("anthropic"),
     )
     return AnthropicModel(
         model_name=model_name,

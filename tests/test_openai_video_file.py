@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import httpx
+import httpx2
 import pytest
 from openai import APIStatusError
 from pydantic_ai.messages import ImageUrl, UploadedFile, BinaryContent
@@ -34,8 +34,8 @@ class _Files:
         self._file_id = file_id
 
     async def create(self, *, file: tuple[str, bytes, str], purpose: FilePurpose) -> _Created:
-        req = httpx.Request("POST", "http://example.com/v1/files")
-        resp = httpx.Response(self._status, request=req)
+        req = httpx2.Request("POST", "http://example.com/v1/files")
+        resp = httpx2.Response(self._status, request=req)
         if self._status in (404, 405, 501) or self._status >= 400:
             raise APIStatusError("files endpoint", response=resp, body=None)
         return _Created(self._file_id)

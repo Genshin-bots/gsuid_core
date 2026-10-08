@@ -97,7 +97,9 @@ def test_relean_leans_delivery_frame() -> None:
     ]
     _relean_user_turn(msgs, lean_content="")
     assert len(msgs[0].parts) == 1
-    body = str(msgs[0].parts[0].content)
+    part = msgs[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    body = str(part.content)
     assert "任务#1" in body
     assert "res_abc" in body
     assert "【子任务交付】" not in body
@@ -135,7 +137,9 @@ def test_relean_keeps_real_user_and_strips_nudge() -> None:
     ]
     _relean_user_turn(msgs, lean_content="[用户发言]\n你好")
     assert len(msgs[0].parts) == 1
-    assert msgs[0].parts[0].content == "[用户发言]\n你好\n\n[历史对话] 很长…"
+    part = msgs[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    assert part.content == "[用户发言]\n你好\n\n[历史对话] 很长…"
 
 
 def test_relean_peels_ephemeral_system_lines() -> None:
@@ -158,7 +162,9 @@ def test_relean_peels_ephemeral_system_lines() -> None:
     ]
     _relean_user_turn(msgs, lean_content="[用户发言]\n你好呀")
     assert len(msgs[0].parts) == 1
-    body = str(msgs[0].parts[0].content)
+    part = msgs[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    body = str(part.content)
     assert "你好呀" in body
     assert "禁止称" not in body
     assert "未点名" not in body

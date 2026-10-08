@@ -7,6 +7,8 @@ license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "httpx>=0.23.0",
+    # openai 3.x / anthropic 1.x 的 http_client 形参只收 httpx2 客户端, 与 httpx 不是同一套类
+    "httpx2>=2.12.0",
     "beautifulsoup4>=4.11.1",
     "lxml>=4.9.2",
     "aiohttp>=3.8.1",
@@ -46,20 +48,22 @@ dependencies = [
     "qdrant-client>=1.17.0",
     "python-multipart>=0.0.22",
     "tavily-python>=0.7.23",
-    "pydantic-ai-slim[anthropic,google,openai]>=2.13.0",
-    "pydantic-ai-skills>=0.6.0",
+    "pydantic-ai-slim[anthropic,google,openai]>=2.54.0",
+    # skills 2.x 依赖 harness>=0.52, 其本地工作区后端仅 POSIX, Windows 上构造技能能力即抛错
+    "pydantic-ai-skills>=0.6.0,<1",
     "json-repair>=0.59.4",
     "exa-py>=2.12.1",
     "fastmcp>=3.0.0,<4",
     "markdownify>=1.2.2",
     "onnxruntime>=1.24.1",
-    "pytakumi>=0.1.0",
+    "pytakumi>=0.1.5",
     "firecrawl-py>=4.40.0",
+    # 0.1.x 的 Usage 带 output_reasoning_tokens, 需 pydantic-ai-slim>=2.54.0 才认, 否则归零
     "genai-prices>=0.1.9",
     "pydantic-monty>=1.0.0",
 ]
 name = "gsuid-core"
-version = "0.11.0"
+version = "0.11.1"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 
