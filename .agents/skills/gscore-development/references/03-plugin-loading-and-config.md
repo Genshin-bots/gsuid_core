@@ -12,14 +12,15 @@ async def load_plugins(self, dev_mode=False):
     refresh_installed_dependencies()
     # 把仓库根目录加入 sys.path，让插件能 from gsuid_core ...
     # 阶段一：发现插件 + 收集缺失依赖（不立即 pip）
-    # 阶段二：flush_pending_installs() —— 合并所有插件缺失依赖，一次 pip 调用（含镜像源 fallback）
+    # 阶段二：flush_pending_installs() —— 合并所有插件缺失依赖，一次安装
+    #         索引为 UV_DEFAULT_INDEX，未设置则官方 PyPI，失败不换源
     # 阶段三：先 cached_import 基础设施插件（meta）并挂 <目录名>.api 别名，
     #         再 import 常规插件；模块级 @sv.on_xxx / @ai_tools / ai_entity 在此触发
     # 阶段四：plugin_config_store.save_all() + core_config.lazy_write_config()
 ```
 
-> **关键设计**：依赖**先收集后合并安装**。早期"每个插件单独跑 pip + 镜像源 fallback"导致
-> 首次启动巨慢，现在合并成一次 pip 调用。
+> **关键设计**：依赖**先收集后合并安装**。早期每个插件单独跑一次安装，首次启动很慢；
+> 现在合并成一次。索引只用 `UV_DEFAULT_INDEX`（未设置或空白则官方 PyPI），失败不换源。
 >
 > `core_start_def` 集合**不在** `load_plugins()` 内触发，而是由 `app_life.lifespan` 在 WS
 > 启动后 `asyncio.create_task(core_start_execute())` 跑（见 [§02](./02-startup-lifecycle.md)）。
@@ -72,10 +73,12 @@ gsuid_core/
 `check_pyproject()` 支持两种格式：PEP 621（`[project]` 表）与 Poetry（`[tool.poetry]` 表）。
 
 依赖安装流程：`normalize_name()` 规范化（小写、`-_.` 互换）→ 在 `ignore_dep` 列表则跳过 →
-未安装则入队 → 已装但版本不符则检查更新 → `install_packages()` 依次试镜像源。
+未安装则入队 → 已装但版本不符则检查更新 → `install_packages()` 按 `UV_DEFAULT_INDEX` 安装一次。
+未设置或空白时用 `https://pypi.org/simple`。PATH 上有 `uv` 时执行
+`uv pip install --python <当前解释器> --default-index <索引>`，否则执行
+`python -m pip install --index-url <索引>`。失败不换源。
 
 ```python
-mirrors = [字节(Volces), 阿里(Aliyun), 清华(Tsinghua), 官方(PyPI)]
 ignore_dep = {"python", "fastapi", "pydantic", "gsuid-core", "toml", "packaging"}
 ```
 

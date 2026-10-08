@@ -76,7 +76,8 @@ docker run -d \
 # ============= 基础 =============
 PORT=8765
 
-# Python 镜像源
+# Python 包索引。Core 的 uv sync / uv run，以及启动时给插件补依赖，都读这个值。
+# 未设置时两边都用 https://pypi.org/simple 。插件补依赖失败后不改试别的索引。
 GSCORE_PYTHON_INDEX=https://pypi.org/simple/
 
 # ============= 挂载模式（mount） =============
@@ -247,7 +248,7 @@ docker pull docker.cnb.cool/gscore-mirror/gsuid_core:latest
 | `permission denied` 写 data | 检查宿主机挂载目录权限，容器内是 root |
 | Playwright 渲染失败 | 镜像已预装，若挂载模式自建镜像需重装 |
 | `git clone` 卡死 | 配 git 代理或切镜像源 |
-| `uv sync` 超时 | PyPI 网络差，换 `GSCORE_PYTHON_INDEX` |
+| `uv sync` 或插件补依赖超时 | PyPI 网络差。把 `GSCORE_PYTHON_INDEX` 改成可达的索引后重新启动 |
 | 容器能起但 WS 连不上 | `HOST` 没改（镜像默认 `--host 0.0.0.0` 通常 OK） |
 | 升级后报错「模块找不到」 | `docker-compose down -v` 重置 venv |
 | 升级后 ws 连接被 1008 | 镜像默认设了 token 校验，但 `config.json` 是空的，需配 `WS_TOKEN` |

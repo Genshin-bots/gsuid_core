@@ -139,6 +139,7 @@ def print_usage(results: list[dict]) -> None:
     print(f"    -e UV_DEFAULT_INDEX={url}\n")
     print(f"{CYAN}▸ 手动启动{RESET}")
     print(f"    {manual}")
+    print(f"{DIM}插件启动时补依赖读取同一个 UV_DEFAULT_INDEX；未设置则用官方 PyPI。{RESET}")
 
 
 def main() -> int:

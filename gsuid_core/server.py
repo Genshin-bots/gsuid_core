@@ -1,6 +1,8 @@
+import os
 import re
 import sys
 import time
+import shutil
 import asyncio
 import inspect
 import importlib
@@ -22,7 +24,9 @@ except ImportError:
     # 引导期依赖缺失提示：早于 i18n 导入，保持纯中文
     print("正在安装必要依赖 'packaging'...")
     subprocess.check_call([sys.executable, "-m", "ensurepip"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "packaging"])
+    # 与 package_index_url() 同一规则；此处还不能调用它（import 尚未结束）。
+    _bootstrap_index = os.environ.get("UV_DEFAULT_INDEX", "").strip() or "https://pypi.org/simple"
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--index-url", _bootstrap_index, "packaging"])
     from packaging.requirements import Requirement
 
 
@@ -151,7 +155,7 @@ installed_dependencies: Dict[str, str] = {}
 _module_cache: Dict[str, ModuleType] = {}
 _added_paths: Set[str] = set()
 # 待安装/待更新依赖累积器：逐插件检查时只收集，
-# 最后由 flush_pending_installs() 合并为一次 pip 调用
+# 最后由 flush_pending_installs() 合并为一次安装
 _pending_install: List[str] = []
 _pending_update: List[str] = []
 # 插件导入耗时记录 (插件名, 耗时秒)，用于启动耗时归因
@@ -834,8 +838,8 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
     """检查依赖并收集待安装/待更新项。
 
     实际安装不在此处执行，而是由 load_plugins() 在所有插件检查完毕后
-    调用 flush_pending_installs() 合并为一次 pip 调用，
-    避免逐插件触发独立的 pip 子进程。
+    调用 flush_pending_installs() 合并为一次安装，
+    避免逐插件各起一个安装子进程。
     """
     for dep_str in dependency_list:
         try:
@@ -875,9 +879,8 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
 def flush_pending_installs():
     """合并所有插件收集到的待安装/待更新依赖，一次性安装。
 
-    避免逐插件触发独立的 pip 子进程（每次还带镜像源 fallback），
-    首次启动或新增插件时可显著缩短耗时。
-    install_packages() 内部会在结束后刷新 installed_dependencies。
+    避免逐插件各起一个安装子进程。
+    install_packages() 结束后刷新 installed_dependencies。
     """
     global _pending_install, _pending_update
 
@@ -899,59 +902,58 @@ def flush_pending_installs():
         install_packages(update_list, upgrade=True)
 
 
+# 与 Core 的 uv 共用 UV_DEFAULT_INDEX；未设置或空白则走官方 PyPI，失败不换源。
+OFFICIAL_PYPI_INDEX = "https://pypi.org/simple"
+
+
+def package_index_url() -> str:
+    configured = os.environ.get("UV_DEFAULT_INDEX", "").strip()
+    if configured:
+        return configured
+    return OFFICIAL_PYPI_INDEX
+
+
+def build_dep_install_cmd(packages: list[str], upgrade: bool, index_url: str) -> tuple[list[str], bool]:
+    uv_bin = shutil.which("uv")
+    if uv_bin is not None:
+        cmd = [
+            uv_bin,
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--default-index",
+            index_url,
+        ]
+        uses_pip = False
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--index-url", index_url]
+        uses_pip = True
+    if upgrade:
+        cmd.append("--upgrade")
+    cmd.extend(packages)
+    return cmd, uses_pip
+
+
 def install_packages(packages: List[str], upgrade: bool = False):
     if not packages:
         return
 
+    index_url = package_index_url()
     logger.info(t("log.server.install_start", packages=packages))
+    logger.info(t("log.server.install_using_index", index_url=index_url))
 
-    # 定义镜像源列表 (名称, URL)
-    # 顺序: 阿里 -> 字节 -> 清华 -> 官方
-    mirrors = [
-        ("阿里源 (Aliyun)", "https://mirrors.aliyun.com/pypi/simple/"),
-        ("字节源 (Volces)", "https://mirrors.volces.com/pypi/simple/"),
-        ("清华源 (Tsinghua)", "https://pypi.tuna.tsinghua.edu.cn/simple"),
-        ("官方源 (PyPI)", "https://pypi.org/simple"),
-    ]
+    cmd, uses_pip = build_dep_install_cmd(packages, upgrade, index_url)
+    retcode, output = execute_cmd(cmd)
+    if uses_pip and retcode != 0 and "No module named pip" in output:
+        execute_cmd([sys.executable, "-m", "ensurepip"])
+        retcode, output = execute_cmd(cmd)
 
-    # 构建基础命令
-    base_cmd = [sys.executable, "-m", "pip", "install"]
-    if upgrade:
-        base_cmd.append("-U")
+    if retcode == 0:
+        logger.info(t("log.server.install_index_ok", index_url=index_url))
+    else:
+        logger.error(t("log.server.install_index_fail", index_url=index_url))
 
-    # 追加包名
-    base_cmd.extend(packages)
-
-    install_success = False
-
-    # 轮询尝试
-    for mirror_name, mirror_url in mirrors:
-        logger.info(t("log.server.install_trying_mirror", mirror_name=mirror_name))
-
-        # 组装完整命令，加入 -i 参数
-        cmd = base_cmd + ["-i", mirror_url]
-
-        # 有些环境可能需要信任 host，防止 SSL 报错，可选添加:
-        # host = mirror_url.split("//")[-1].split("/")[0]
-        # cmd.extend(["--trusted-host", host])
-
-        retcode, result = execute_cmd(cmd)
-
-        if "No module named pip" in result:
-            execute_cmd([sys.executable, "-m", "ensurepip"])
-            execute_cmd(cmd)
-
-        if retcode == 0:
-            logger.info(t("log.server.install_mirror_ok", mirror_name=mirror_name))
-            install_success = True
-            break  # 安装成功，跳出循环
-        else:
-            logger.warning(t("log.server.install_mirror_fail", mirror_name=mirror_name))
-
-    if not install_success:
-        logger.error(t("log.server.install_all_fail"))
-
-    # 刷新依赖状态
     refresh_installed_dependencies()
 
 

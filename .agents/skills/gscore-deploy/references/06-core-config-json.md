@@ -45,7 +45,7 @@
 | `TextToPicThreshold` | `"20"` | str | 转图阈值（字符数） |
 | `EnableSpecificMsgId` | `false` | bool | 启用「特殊 msgid」（不清楚勿开） |
 | `SpecificMsgId` | `""` | str | 特殊 msgid 值 |
-| `AutoUpdateDep` | `false` | bool | 更新插件时同步 `pip install` 新依赖（多数情况不建议） |
+| `AutoUpdateDep` | `false` | bool | 启动时按 `UV_DEFAULT_INDEX` 更新已装的插件依赖（多数情况不建议） |
 | `EnablePicSrv` | `false` | bool | 把图片转公网链接（需 GsCore 所在服务器有公网 IP） |
 | `PicSrv` | `""` | str | 公网域名前缀，如 `http://1.2.3.4:8765` |
 | `ProxyURL` | `""` | str | 装插件时 git 走代理，如 `https://gh-proxy.com` |
