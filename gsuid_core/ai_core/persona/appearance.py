@@ -195,15 +195,16 @@ def visual_fingerprint(data: bytes) -> tuple[int, int] | None:
             gray = img.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
     except (OSError, ValueError):
         return None
-    pixels = list(gray.getdata())
-    if len(pixels) != 72:
+    # L 图 tobytes 是每像素 1 字节, 索引即灰度值; get_flattened_data 的联合注解要收窄
+    gray_bytes = gray.tobytes()
+    if len(gray_bytes) != 72:
         return None
     bits = 0
     for row in range(8):
         base = row * 9
         for col in range(8):
-            bits = (bits << 1) | int(pixels[base + col] > pixels[base + col + 1])
-    mean = sum(pixels) // 72
+            bits = (bits << 1) | int(gray_bytes[base + col] > gray_bytes[base + col + 1])
+    mean = sum(gray_bytes) // 72
     return bits, mean
 
 

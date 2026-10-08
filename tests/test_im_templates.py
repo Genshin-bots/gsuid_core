@@ -233,8 +233,10 @@ class TestEmojiFont:
         png = await hr.render_html_to_bytes(html, max_width=480, dpi=96)
         assert png[:8] == PNG_MAGIC
         img = Image.open(io.BytesIO(png)).convert("RGB")
+        raw = img.tobytes()
         chromatic = 0
-        for r, g, b in img.getdata():
+        for i in range(0, len(raw), 3):
+            r, g, b = raw[i], raw[i + 1], raw[i + 2]
             if max(r, g, b) - min(r, g, b) > 40:
                 chromatic += 1
         assert chromatic > 80, f"emoji 无彩色墨迹（chroma_pixels={chromatic}），仍是豆腐"

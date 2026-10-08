@@ -72,15 +72,15 @@ def image_has_visual_structure(path: Path) -> bool:
     if w < 80 or h < 80:
         return False
     sample = im.resize((80, 80))
-    colors = {px for px in sample.getdata()}
-    if len(colors) < 18:
+    # RGB 图 tobytes 是每像素 3 字节, 按通道切片即得到各通道序列
+    raw = sample.tobytes()
+    reds, greens, blues = raw[0::3], raw[1::3], raw[2::3]
+    if len(set(zip(reds, greens, blues))) < 18:
         return False
     # 水平扫描：相邻像素差，图表/卡片会有色带
     diffs = 0
-    pixels = list(sample.getdata())
-    for i in range(1, len(pixels)):
-        a, b = pixels[i - 1], pixels[i]
-        if abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2]) > 40:
+    for i in range(1, len(reds)):
+        if abs(reds[i] - reds[i - 1]) + abs(greens[i] - greens[i - 1]) + abs(blues[i] - blues[i - 1]) > 40:
             diffs += 1
     return diffs > 80
 

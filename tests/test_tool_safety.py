@@ -8,12 +8,15 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.test import TestModel
-from pydantic_ai_skills.exceptions import SkillNotFoundError
 
 from gsuid_core.ai_core.tool_safety import (
     format_tool_execute_error,
     build_tool_safety_capability,
 )
+
+
+class SkillNotFoundError(Exception):
+    """技能缺失的替身异常：skills 0.11 起删掉了自带异常模块，而 tool_safety 只读类名与 str()。"""
 
 
 def test_format_tool_execute_error_shape() -> None:

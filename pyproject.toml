@@ -13,14 +13,18 @@ dependencies = [
     "lxml>=4.9.2",
     "aiohttp>=3.8.1",
     "sqlalchemy<2.1.0,>=2.0.0",
-    "pillow>=10.2.0",
+    # 12 起 getdata 弃用(14 移除), 仓库改用 tobytes; 下限取实测过的 12.x
+    "pillow>=12.0.0",
     "aiosqlite>=0.17.0",
     "aiofiles>=0.8.0",
     "qrcode[pil]<8.0.0,>=7.3.1",
     "msgspec>=0.13.1",
     "uvicorn>=0.20.0",
     "websockets>=13.1",
-    "fastapi>=0.97.0",
+    # gs_logger 用到 starlette.websockets; 0.46 起 GZipMiddleware 才不压缩 SSE(#283)
+    "starlette>=0.46.0",
+    # 0.115.10 是首个允许 starlette>=0.46 的版本, 更早的 fastapi 把上限锁在 <0.39
+    "fastapi>=0.115.10",
     "apscheduler<4.0.0,>=3.10.1",
     "aioboto3<13.0.0,>=12.0.0",
     "jinja2<4.0.0,>=3.1.2",
@@ -29,7 +33,8 @@ dependencies = [
     "typing-extensions>=4.9",
     "toml>=0.10.2",
     "bcrypt>=4.0.1,<5.0.0",
-    "sqlmodel<0.0.31",
+    # 0.0.14 起才支持 pydantic v2, 更早的版本与 pydantic>=2.12.2 不可能同装
+    "sqlmodel>=0.0.14,<0.0.31",
     "psutil>=6.1.1",
     "pytz>=2024.2",
     "structlog>=25.3.0",
@@ -53,7 +58,8 @@ dependencies = [
     "pydantic-ai-skills>=0.6.0,<1",
     "json-repair>=0.59.4",
     "exa-py>=2.12.1",
-    "fastmcp>=3.0.0,<4",
+    # fastmcp.tools.base(ToolResult) 自 3.2.0 才有, 3.1 及以前叫 tools/tool.py
+    "fastmcp>=3.2.0,<4",
     "markdownify>=1.2.2",
     "onnxruntime>=1.24.1",
     "pytakumi>=0.1.5",

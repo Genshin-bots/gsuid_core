@@ -13,7 +13,7 @@ from collections.abc import Iterator
 
 import pytest
 from starlette.types import Message
-from starlette.websockets import WebSocket, WebSocketState, WebSocketDisconnected
+from starlette.websockets import WebSocket, WebSocketState
 
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.gss import gss
@@ -202,8 +202,12 @@ def test_disconnect_without_websocket_keeps_legacy_behavior() -> None:
     asyncio.run(scenario())
 
 
-def test_gs_logger_swallows_websocket_disconnected() -> None:
-    """应用状态仍是 CONNECTED 时，WebSocketDisconnected 不得逃出。"""
+def test_gs_logger_swallows_disconnect_race() -> None:
+    """发送途中对端断开：连接已掉出 CONNECTED，异常不得逃出。
+
+    starlette>=1.7 在 send 里抛 WebSocketDisconnected（RuntimeError 子类），旧版抛
+    RuntimeError('Cannot call "send" once a close message has been sent.')。两者同路处理。
+    """
 
     async def scenario() -> None:
         async def receive() -> Message:
@@ -211,7 +215,9 @@ def test_gs_logger_swallows_websocket_disconnected() -> None:
 
         async def send(message: Message) -> None:
             if message["type"] == "websocket.send":
-                raise WebSocketDisconnected("disconnected")
+                # 真实竞态：状态检查通过之后、真正 send 之前对端断开
+                ws.application_state = WebSocketState.DISCONNECTED
+                raise RuntimeError('Cannot call "send" once a close message has been sent.')
 
         ws = WebSocket({"type": "websocket", "path": "/ws/x", "headers": []}, receive, send)
         await ws.accept()

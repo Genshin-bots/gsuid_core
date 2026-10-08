@@ -2,7 +2,7 @@ from typing import Literal, Optional
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
-from starlette.websockets import WebSocketState, WebSocketDisconnect, WebSocketDisconnected
+from starlette.websockets import WebSocketState, WebSocketDisconnect
 
 from gsuid_core.models import MessageSend
 from gsuid_core.segment import MessageSegment
@@ -28,11 +28,13 @@ class GsLogger:
             return
         try:
             await socket.send_bytes(payload)
-        except (WebSocketDisconnect, WebSocketDisconnected):
+        except WebSocketDisconnect:
+            # 发送途中断开: starlette 把 OSError 收成 code 1006
             self.bot = None
         except RuntimeError as exc:
-            # uvicorn 在应用状态仍为 CONNECTED 时抛出这条错误。
-            if "Unexpected ASGI message" not in str(exc):
+            # 连接已掉出 CONNECTED 时只当断连: starlette>=1.7 抛 WebSocketDisconnected
+            # 旧版同场景是 RuntimeError。状态仍在线时只有 uvicorn 的 ASGI 协议错可以吞。
+            if socket.application_state == WebSocketState.CONNECTED and "Unexpected ASGI message" not in str(exc):
                 raise
             self.bot = None
 

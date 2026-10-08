@@ -292,7 +292,7 @@ def _html_to_markdown(html_content: str, url: str) -> str:
         main_content = (
             soup.find("article")
             or soup.find("main")
-            or soup.find(attrs={"role": "main"})
+            or soup.find(role="main")
             or soup.find("div", class_="markdown-body")
             or soup.find("div", id="content")
             or soup.find("body")

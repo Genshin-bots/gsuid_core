@@ -118,6 +118,11 @@ uv run core --port 8765
 
 碰装配 / 闸门 / 每轮注入 / 启动顺序时，单测全绿不够，还要对照 `eval/agent` 群聊基准。
 
+依赖锁文件 `uv.lock` / `poetry.lock` / `pdm.lock` 以 `uv.lock` 为准，版本线见 `.pre-commit-config.yaml`。
+重解 poetry.lock 只用约定的 2.5.1：`uv tool run --from "poetry==2.5.1" poetry lock`；本机 PATH 上的旧
+poetry（2.1.4）读不出 `[dependency-groups]`，会把 dev 组（pytest / ruff / basedpyright / pre-commit）
+从锁里丢掉，并误报 `pyproject.toml changed significantly`。校验用同一个 2.5.1：`poetry check --lock`。
+
 ## Testing
 
 - 测试在 `tests/`，`pytest`，文件 `test_*.py`。默认收集面必须离线、无 LLM。
