@@ -101,7 +101,7 @@ def _matches_where(record: Dict[str, Any], where_field: str, where_value: str) -
     return str(record[where_field]) == where_value
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
 async def record_put(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -149,7 +149,7 @@ async def record_put(
     return f"ok rid={rid}"
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=True)
 async def record_get(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -179,7 +179,7 @@ async def record_get(
     return json.dumps(coll[record_id], ensure_ascii=False)
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=True)
 async def record_list(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -238,7 +238,7 @@ async def record_list(
     return json.dumps(items, ensure_ascii=False)
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
 async def record_append(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -295,7 +295,7 @@ async def record_append(
     return f"ok rid={chosen['rid']}"
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
 async def record_update(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -353,7 +353,7 @@ async def record_update(
     return "updated" if flag["hit"] else "not_found"
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
 async def record_delete(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -394,7 +394,7 @@ async def record_delete(
     return "deleted" if deleted_flag["hit"] else "not_found"
 
 
-@ai_tools(category="planning", capability_domain="结构化记录")
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=True)
 async def record_summary(
     ctx: RunContext[ToolContext],
     collection: str,

@@ -28,7 +28,12 @@ def _set_favor_master_only(ev: Optional[Event]) -> tuple[bool, str]:
     return True, ""
 
 
-@ai_tools(category="common", capability_domain="用户档案", check_func=_set_favor_master_only)
+@ai_tools(
+    category="common",
+    capability_domain="用户档案",
+    check_func=_set_favor_master_only,
+    code_callable=False,
+)
 async def set_user_favorability(
     ctx: RunContext[ToolContext],
     value: int,

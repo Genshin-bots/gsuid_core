@@ -14,7 +14,7 @@ from gsuid_core.ai_core.buildin_tools.visibility import context_has_url
 
 
 # 多源 failover 可能串行两次请求，外层包装需覆盖单源超时之和
-@ai_tools(category="buildin", visible_when=context_has_url, timeout=100.0)
+@ai_tools(category="buildin", visible_when=context_has_url, timeout=100.0, code_callable=True)
 async def web_fetch_tool(
     ctx: RunContext[ToolContext],
     url: str,

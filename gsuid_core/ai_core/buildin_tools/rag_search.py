@@ -348,6 +348,7 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
 @ai_tools(
     category="buildin",
     capability_domain="回想",
+    code_callable=True,
 )
 async def search_cognition(
     ctx: RunContext[ToolContext],

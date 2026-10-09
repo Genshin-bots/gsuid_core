@@ -191,6 +191,7 @@ class ToolBase:
     schema_brief: str  # 下发 schema 用简述；检索仍用 description 全文
     category: str  # 注册分类；花名册按此跳过主人格调不到的族
     hide_from_main: bool  # visible_to_capability_only：主人格花名册/速览不列
+    code_callable: bool  # 模型写的 Python 可否按名 await 本工具
 
     def __init__(
         self,
@@ -206,6 +207,7 @@ class ToolBase:
         schema_brief: str = "",
         category: str = "",
         hide_from_main: bool = False,
+        code_callable: bool = True,
     ):
         self.name = name
         self.description = description
@@ -219,6 +221,7 @@ class ToolBase:
         self.schema_brief = schema_brief or description
         self.category = category
         self.hide_from_main = hide_from_main
+        self.code_callable = code_callable
 
     @property
     def retrieval_text(self) -> str:

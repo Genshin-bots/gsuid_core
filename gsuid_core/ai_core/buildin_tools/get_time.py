@@ -47,7 +47,7 @@ async def _get_current_date_impl(format: Optional[str] = None) -> str:
     return result
 
 
-@ai_tools()
+@ai_tools(code_callable=True)
 async def _get_current_date(
     format: Optional[str] = None,
 ) -> str:

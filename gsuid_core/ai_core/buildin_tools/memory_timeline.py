@@ -196,7 +196,7 @@ async def read_session(
     return "\n".join(lines) if len(lines) > 1 else f"session {sid} 没有用户发言。"
 
 
-@ai_tools(category="buildin", visible_when=visible_when_timeline_query)
+@ai_tools(category="buildin", visible_when=visible_when_timeline_query, code_callable=False)
 async def mark_evidence(ctx: RunContext[ToolContext], turn_ids: list[str]) -> str:
     """把本轮认定的首次子话题标记登记为证据。阶段一每找到一条就调用。
 

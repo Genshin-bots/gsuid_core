@@ -253,7 +253,7 @@ def _skeleton_files(
     }
 
 
-@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
+@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)
 async def scaffold_plugin(
     ctx: RunContext[ToolContext],
     plugin_name: str,
@@ -334,7 +334,7 @@ def _copy_tree_and_list(src: Path, dest: Path, root: Path) -> List[str]:
     return sorted(str(p.relative_to(root)).replace("\\", "/") for p in dest.rglob("*") if p.is_file())
 
 
-@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
+@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)
 async def pull_installed_plugin(ctx: RunContext[ToolContext], plugin_name: str) -> str:
     """把一个**已安装**在 plugins/ 里的插件完整拷贝进当前工作区，用于在其**现有代码**上修改 / 修复。
 
@@ -678,7 +678,7 @@ async def _request_overwrite_stage(task, plugin_name: str) -> str:
     )
 
 
-@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
+@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)
 async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> str:
     """把工作区里开发好的插件装到 plugins/——**安装前必须经主人审批**，且绝不直接删同名旧目录。
 
@@ -818,7 +818,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
     return await _request_overwrite_stage(task, plugin_name)
 
 
-@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
+@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)
 async def load_plugin_into_core(
     ctx: RunContext[ToolContext],
     plugin_name: str,
@@ -866,7 +866,7 @@ async def load_plugin_into_core(
     return reload_plugin(plugin_name)
 
 
-@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发")
+@ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)
 async def test_plugin_command(
     ctx: RunContext[ToolContext],
     plugin_name: str,

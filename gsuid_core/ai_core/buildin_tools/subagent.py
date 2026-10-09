@@ -264,6 +264,7 @@ def _caller_persona_name(ctx: RunContext[ToolContext] | None) -> str:
     category="common",
     capability_domain="长期任务编排",
     timeout=500.0,
+    code_callable=False,
 )
 async def create_subagent(
     ctx: RunContext[ToolContext],

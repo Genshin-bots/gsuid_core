@@ -57,7 +57,7 @@ def _format_size(size_bytes: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-@ai_tools(category="default", capability_domain="文件")
+@ai_tools(category="default", capability_domain="文件", code_callable=False)
 async def move_file(
     ctx: RunContext[ToolContext],
     source_path: str,
@@ -121,7 +121,7 @@ async def move_file(
         return f"错误：文件移动失败: {str(e)}"
 
 
-@ai_tools(category="default", capability_domain="文件")
+@ai_tools(category="default", capability_domain="文件", code_callable=False)
 async def copy_file(
     ctx: RunContext[ToolContext],
     source_path: str,
@@ -208,7 +208,7 @@ def _write_zip(safe_zip: Path, resolved_sources: List[Path]) -> int:
     return file_count
 
 
-@ai_tools(category="default", capability_domain="文件")
+@ai_tools(category="default", capability_domain="文件", code_callable=False)
 async def pack_to_zip(
     ctx: RunContext[ToolContext],
     source_paths: str,

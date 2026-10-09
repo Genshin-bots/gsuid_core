@@ -279,6 +279,18 @@ async def web_fetch_tool(
 > 空正文或抛错会触发换源；外层 `timeout=100`。详见 [§11.3b](./11-mcp-image-search-and-meme.md)。
 > 成功返回同样前缀 `[source=web|staleness_risk=high]\n…`（时效契约同源）。
 
+### `run_code` — 沙箱 Python 汇总只读结果
+
+```python
+@ai_tools(category="buildin", timeout=None, code_callable=False)
+async def run_code(ctx: RunContext[ToolContext], code: str) -> str
+```
+
+模型写一段 Python，汇总本轮已暴露且 `code_callable=True` 的查询/读取工具。
+`code_callable` 默认 True，插件只读工具不必声明。发消息、写入、委派必须显式
+`code_callable=False`。代码里尽量只查；发消息和写入在代码外直调。
+交回最后一行表达式。`print` 不是返回值。墙钟 230 秒。
+
 ### `get_self_info` — 获取完整自我认知
 
 ```python

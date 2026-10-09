@@ -20,6 +20,7 @@ def ai_tools(
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
     approval: Optional[str] = None,
+    code_callable: bool = True,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 ```
@@ -37,6 +38,7 @@ def ai_tools(
 | `visible_when` | `Callable` | `None` | 可见性谓词：每 step 求值，返回 False 时该工具 schema 不下发给模型（源头减噪）。必须是廉价内存判定 |
 | `timeout` | `float` | `60.0` | 工具单次执行超时秒数；超时返回错误字符串，Agent 可继续。需长时间等待的工具应显式声明更大值或 `None`（如 `ask_user` 用 `None`；`web_search_tool` / `web_fetch_tool` 用 `100` 覆盖多源 failover；`run_command` 用 `600`） |
 | `approval` | `str` | `None` | **强制审批级别**（`"user"` / `"master"`）。声明后每次调用先过统一审批中心策略门：无有效放行时自动提交审批并拦截，批准后重新调用即执行——不依赖 LLM 自觉。`"user"` 级可被「完全访问」豁免（照常留审计记录）；`"master"` 级永不可豁免。详见 [§7.10 审批与授权](./07-builtin-tools.md#710-审批与授权统一审批中心) |
+| `code_callable` | `bool` | `True` | 为 True 时，本轮 schema 里已经有的该工具可被 `run_code` 里的 Python `await`。默认打开，插件只读工具不必声明。发消息、写入、委派必须显式 `False`。打开后多次调用仍走原工具的超时、审批和权限 |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
 
 > **超时语义**：外层用 `asyncio.create_task` + `wait_for` 包装。工具内部（如 aiohttp）抛出的 `TimeoutError` 会记为「内部超时」，不会误报成「包装超时超过 N 秒」。

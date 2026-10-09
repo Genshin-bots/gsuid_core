@@ -108,6 +108,7 @@ def _get_execute_scheduled_task():
     check_func=check_sched_create,
     covers=["一次性定时提醒、几分钟后、明天某点叫我、就这一次"],
     aliases=["定时任务·一次性提醒", "定时任务·几分钟后", "定时任务·明天叫我"],
+    code_callable=False,
 )
 async def add_once_task(
     ctx: RunContext[ToolContext],
@@ -262,6 +263,7 @@ async def add_once_task(
     check_func=check_sched_create,
     covers=["每天/每周/每隔N分钟/工作日的循环提醒"],
     aliases=["定时任务·每天提醒", "定时任务·每隔几分钟", "定时任务·每周", "定时任务·工作日"],
+    code_callable=False,
 )
 async def add_interval_task(
     ctx: RunContext[ToolContext],
@@ -687,6 +689,7 @@ async def query_scheduled_task(
     check_func=check_sched_mutate,
     covers=["改提醒时间或内容、改成后天、改到几点"],
     aliases=["定时任务·改时间", "定时任务·修改提醒"],
+    code_callable=False,
 )
 async def modify_scheduled_task(
     ctx: RunContext[ToolContext],
@@ -839,6 +842,7 @@ def _reschedule_job_run_time(task: AIScheduledTask, new_dt: datetime) -> None:
     check_func=check_sched_mutate,
     covers=["取消/删掉已有提醒"],
     aliases=["定时任务·取消", "定时任务·删掉提醒"],
+    code_callable=False,
 )
 async def cancel_scheduled_task(
     ctx: RunContext[ToolContext],
@@ -905,6 +909,7 @@ async def cancel_scheduled_task(
     check_func=check_sched_mutate,
     covers=["暂停循环提醒、先别响、别删"],
     aliases=["定时任务·暂停"],
+    code_callable=False,
 )
 async def pause_scheduled_task(
     ctx: RunContext[ToolContext],
@@ -972,6 +977,7 @@ async def pause_scheduled_task(
     check_func=check_sched_mutate,
     covers=["恢复已暂停的循环提醒"],
     aliases=["定时任务·恢复"],
+    code_callable=False,
 )
 async def resume_scheduled_task(
     ctx: RunContext[ToolContext],

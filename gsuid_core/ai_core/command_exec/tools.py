@@ -76,6 +76,7 @@ async def _execute_and_report(ev: Optional[Event], plan: CommandPlan, timeout: i
     check_func=_master_and_enabled,
     visible_when=_cmd_visible_to_master,
     timeout=600.0,
+    code_callable=False,
 )
 async def run_command(
     ctx: RunContext[ToolContext],

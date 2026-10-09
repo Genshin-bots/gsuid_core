@@ -52,7 +52,7 @@ def _normalize_alias_for_guard(s: str) -> str:
 _PROTECTED_NORMALIZED = {_normalize_alias_for_guard(a) for a in PROTECTED_ALIASES}
 
 
-@ai_tools(category="common", capability_domain="用户档案")
+@ai_tools(category="common", capability_domain="用户档案", code_callable=False)
 async def remember_user_alias(
     ctx: RunContext[ToolContext],
     alias: str,

@@ -100,7 +100,7 @@ async def read_file_content(
         return f"错误：读取文件失败: {str(e)}"
 
 
-@ai_tools(capability_domain="文件")
+@ai_tools(capability_domain="文件", code_callable=False)
 async def write_file_content(
     ctx: RunContext[ToolContext],
     file_path: str,
@@ -246,6 +246,7 @@ async def _record_workspace_violation(req_path: str, detail: str) -> None:
     capability_domain="文件",
     check_func=check_high_risk_operator,
     visible_when=visible_to_master_operator,
+    code_callable=False,
 )
 async def execute_file(
     ctx: RunContext[ToolContext],

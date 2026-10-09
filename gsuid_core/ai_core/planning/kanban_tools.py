@@ -252,7 +252,7 @@ async def evaluate_agent_mesh_capability(
 # 注册任务树
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP, code_callable=False)
 async def register_kanban_task(
     ctx: RunContext[ToolContext],
     goal: str,
@@ -728,7 +728,7 @@ async def _resolve_subtask(ev, subtask_ref: str) -> Optional[AIAgentTask]:
     return children[0]
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP, code_callable=False)
 async def respawn_subtask(
     ctx: RunContext[ToolContext],
     subtask_ref: str,
@@ -781,7 +781,7 @@ async def respawn_subtask(
     return ("✅ " if ok else "ℹ️ ") + msg
 
 
-@ai_tools(category="planning", capability_domain=_CAP)
+@ai_tools(category="planning", capability_domain=_CAP, code_callable=False)
 async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reason: str) -> str:
     """停掉整棵任务树：根任务 failed，并级联 failed 未完成子任务。
 
@@ -820,7 +820,7 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
 # Artifact Hub 工具
 
 
-@ai_tools(category="planning", capability_domain="产物")
+@ai_tools(category="planning", capability_domain="产物", code_callable=False)
 async def artifact_put(
     ctx: RunContext[ToolContext],
     payload: str = "",
@@ -902,7 +902,12 @@ async def artifact_put(
     return f"✅ 已登记 artifact: {art.id}（{art.size_bytes} bytes，mime={art.mime}）{binary_hint}"
 
 
-@ai_tools(category="planning", capability_domain="产物", visible_when=visible_to_capability_only)
+@ai_tools(
+    category="planning",
+    capability_domain="产物",
+    visible_when=visible_to_capability_only,
+    code_callable=True,
+)
 async def artifact_get(
     ctx: RunContext[ToolContext],
     res_id: str,
@@ -940,7 +945,7 @@ async def artifact_get(
     return _format_artifact(art, offset=off, limit=lim)
 
 
-@ai_tools(category="planning", capability_domain="产物")
+@ai_tools(category="planning", capability_domain="产物", code_callable=True)
 async def artifact_list(
     ctx: RunContext[ToolContext],
     task_ref_text: str = "",
@@ -960,7 +965,7 @@ async def artifact_list(
     return "\n".join(lines)
 
 
-@ai_tools(category="planning", capability_domain="产物")
+@ai_tools(category="planning", capability_domain="产物", code_callable=True)
 async def artifact_get_recent(
     ctx: RunContext[ToolContext],
     task_ref_text: str = "",
@@ -1192,7 +1197,7 @@ async def list_my_kanban_tasks(
     return "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="长期任务编排")
+@ai_tools(category="common", capability_domain="长期任务编排", code_callable=False)
 async def pause_my_kanban_tree(
     ctx: RunContext[ToolContext],
     task_ref: str,
@@ -1236,7 +1241,7 @@ async def pause_my_kanban_tree(
     return f"⏸️ 已暂停一次性任务【任务#{root.ordinal}｜{root.display_name}】"
 
 
-@ai_tools(category="common", capability_domain="长期任务编排")
+@ai_tools(category="common", capability_domain="长期任务编排", code_callable=False)
 async def resume_my_kanban_tree(
     ctx: RunContext[ToolContext],
     task_ref: str,

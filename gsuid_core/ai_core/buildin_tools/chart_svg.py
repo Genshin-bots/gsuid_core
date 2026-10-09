@@ -528,7 +528,7 @@ def chart_spec_to_svg(spec: Dict[str, Any]) -> str:
     return "⚠️ chart_spec.type 只支持 line / bar / hbar / pie"
 
 
-@ai_tools(category="media", capability_domain="资料出图")
+@ai_tools(category="media", capability_domain="资料出图", code_callable=False)
 async def render_chart_spec(
     ctx: RunContext[ToolContext],
     type: str,

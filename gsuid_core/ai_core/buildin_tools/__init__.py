@@ -44,6 +44,8 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 ### 2.2 ``category="buildin"`` —— 主人格 + 能力代理都保底
 "任何任务都可能需要"的基础能力。能力代理经 ``task_basics`` 能力族拿到大部分。
 
+- ``run_code``（``run_code.py``）：沙箱 Python。只 ``await`` 本轮已暴露且
+  ``code_callable`` 的查询/读取工具；发消息和写入在代码外直调
 - ``search_cognition``（``rag_search.py``）：回想（记忆 / 偏好 / 知识 / 落盘 / 产物 / 近窗 / 记录 / 图片 / 表情）
 - ``read_handle``（``planning/tool_output_tools.py``）：统一读句柄（已删除 ``read_persisted_output``）
 - ``web_search_tool``（``web_search.py``）：统一 web 搜索（Tavily / Jina / Exa / AnySearch / Firecrawl / MCP）
@@ -202,6 +204,9 @@ from gsuid_core.ai_core.buildin_tools.get_time import (
     get_current_date,
     _get_current_date,
 )
+
+# 沙箱 Python：模型写的代码在 Monty worker 子进程里跑
+from gsuid_core.ai_core.buildin_tools.run_code import run_code
 
 # Subagent工具 - 创建子Agent完成特定任务
 from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
@@ -367,6 +372,7 @@ __all__ = [
     "get_user_avatar",
     # Web搜索工具
     "web_search_tool",
+    "run_code",
     # 网页抓取工具
     "web_fetch_tool",
     # 消息发送工具

@@ -83,7 +83,12 @@ def _has_pending(ctx: "RunContext[ToolContext]") -> bool:
     return approval_center.has_pending(str(ev.user_id))
 
 
-@ai_tools(category="buildin", capability_domain="审批交互", visible_when=_has_pending)
+@ai_tools(
+    category="buildin",
+    capability_domain="审批交互",
+    visible_when=_has_pending,
+    code_callable=False,
+)
 async def respond_approval(
     ctx: RunContext[ToolContext],
     approved: bool,
@@ -222,7 +227,7 @@ def _coerce_option_strings(options: Any) -> List[str]:
 
 # timeout=None:排队等待(前序问题各自 ≤300s)+ 自身等待(≤300s)可能超过默认
 # 60s 的工具包装超时;ask_user 的每一段等待都有自己的上界,不会永久挂起。
-@ai_tools(category="common", capability_domain="审批交互", timeout=None)
+@ai_tools(category="common", capability_domain="审批交互", timeout=None, code_callable=False)
 async def ask_user(
     ctx: RunContext[ToolContext],
     question: str,
@@ -274,7 +279,7 @@ async def ask_user(
 
 
 # timeout=None:表单收集自身有总时限(≤600s),不需要外层包装超时。
-@ai_tools(category="common", capability_domain="审批交互", timeout=None)
+@ai_tools(category="common", capability_domain="审批交互", timeout=None, code_callable=False)
 async def ask_user_form(
     ctx: RunContext[ToolContext],
     questions: List[Any],
@@ -387,7 +392,7 @@ async def ask_user_form(
     return "用户表单回答:\n" + "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="审批交互")
+@ai_tools(category="common", capability_domain="审批交互", code_callable=False)
 async def request_user_approval(ctx: RunContext[ToolContext], summary: str) -> str:
     """向当前用户发出授权请求，询问一项会消耗其资源 / 积分的操作（approval × user）。
 
@@ -412,7 +417,7 @@ async def request_user_approval(ctx: RunContext[ToolContext], summary: str) -> s
     return f"⏳ 已向用户发起授权请求 #{row.short_id}：{summary[:80]}。请转告用户并请其回复同意 / 拒绝。"
 
 
-@ai_tools(category="common", capability_domain="审批交互")
+@ai_tools(category="common", capability_domain="审批交互", code_callable=False)
 async def request_master_approval(ctx: RunContext[ToolContext], summary: str) -> str:
     """向主人发出授权请求，询问一项敏感操作（approval × master，永不可被完全访问豁免）。
 

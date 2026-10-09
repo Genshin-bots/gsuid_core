@@ -50,7 +50,7 @@ async def check_delegation(
     return format_delegation(deleg)
 
 
-@ai_tools(category="buildin", capability_domain="产物")
+@ai_tools(category="buildin", capability_domain="产物", code_callable=False)
 async def dispute_directive(ctx: RunContext[ToolContext], reason: str) -> str:
     """当框架内部校验的观察与事实不符时写入申辩，而**不要**对用户解释。
 

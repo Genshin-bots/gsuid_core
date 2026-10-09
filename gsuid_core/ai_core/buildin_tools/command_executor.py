@@ -325,6 +325,7 @@ def _get_safe_environment() -> dict:
     check_func=check_high_risk_operator,
     visible_when=visible_to_master_operator,
     timeout=300.0,
+    code_callable=False,
 )
 async def execute_shell_command(
     ctx: RunContext[ToolContext],

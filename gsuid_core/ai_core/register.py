@@ -24,6 +24,20 @@ _PARAM_ERROR_HINTS: Dict[str, str] = {
 }
 
 
+def _drop_running_task(task: asyncio.Task[object]) -> None:
+    # 3.12 的 wait_for 不取消已经 create_task 的子任务。
+    if task.done():
+        return
+    task.cancel()
+
+    def _retrieve(done: asyncio.Task[object]) -> None:
+        if done.cancelled():
+            return
+        done.exception()
+
+    task.add_done_callback(_retrieve)
+
+
 def _param_error_hint(tool_name: str, raw_result: str) -> str:
     if tool_name not in _PARAM_ERROR_HINTS:
         return ""
@@ -117,6 +131,7 @@ def ai_tools(
     timeout: Optional[float] = 60.0,
     approval: Optional[str] = None,
     brief: str = "",
+    code_callable: bool = True,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -157,6 +172,9 @@ def ai_tools(
             统一审批中心策略门：user 级可被「完全访问」豁免（照常留审计记录）、
             master 级永不可豁免；无有效放行 grant 时拦截并自动提交审批请求，
             批准后重新调用即执行（不依赖 LLM 自觉，防幻觉绕过）。
+        code_callable: 为 True 时，本轮已经暴露的该工具可被 ``run_code`` 里的
+            Python ``await``。默认 True，插件只读工具不必声明。发消息、写入、
+            委派必须显式 ``False``。
         **check_kwargs: 传递给 check_func 的额外参数
     """
 
@@ -274,6 +292,7 @@ def ai_tools(
                 try:
                     raw_result = await asyncio.wait_for(_task, timeout=timeout)
                 except asyncio.TimeoutError:
+                    _drop_running_task(_task)
                     timeout_sec = int(timeout)
                     record_tool_failure(fn.__name__, "timeout")
                     if _task.done() and not _task.cancelled():
@@ -298,6 +317,9 @@ def ai_tools(
                         )
                     )
                     return f"⚠️ 工具 {fn.__name__} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
+                except asyncio.CancelledError:
+                    _drop_running_task(_task)
+                    raise
 
             # 健康度记账（方案九）：❌ 开头视为失败信号，其余视为成功（成功清零连败）
             if isinstance(raw_result, str) and raw_result.startswith("❌"):
@@ -451,6 +473,7 @@ def ai_tools(
             schema_brief=schema_brief,
             category=reg_category,
             hide_from_main=pred_name == "visible_to_capability_only",
+            code_callable=code_callable,
         )
 
         # 根据 category 分类注册工具

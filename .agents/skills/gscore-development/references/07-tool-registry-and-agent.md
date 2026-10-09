@@ -43,6 +43,25 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 > **工具健康度（2026-08）**：包装层对连续 `❌` 开头返回 / 超时记账；达阈值临时冻结执行
 > （schema 仍可见，避免装配抖动）。`⚠️` 软失败**不**记入连败（防业务校验冻死工具）。
 
+## 7.1b `run_code`（Monty）
+
+`buildin_tools/run_code.py` 让模型写一段 Python。Core 进程拥有 1～2 个 Monty
+worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释器里 `exec`。
+没人调用过就不启动；关机钩子关掉 worker。通道核和 `task_basics` 都挂这个名字，
+所以主人格和能力代理每一轮都看得到。
+
+沙箱里能 `await` 的名字必须同时满足：本轮已暴露、`ToolBase.code_callable is True`、
+没被 `blocked_tool_names` 或人格工具范围拿掉。`code_callable` 默认 True，插件只读
+工具不用声明。框架把发消息、写入、委派、改状态、装技能、跑命令标成 `False`。
+插件写工具同样要显式 `code_callable=False`。`run_code` 自己不能被嵌套 await。
+系统提示和本工具 brief/docstring 都写：代码里只查不写，发消息和写入在代码外直调。
+
+宿主调用仍进原工具包装，并记进 session log（`tool_call_id` 前缀 `mc_`）。
+脚本的中间值不进模型上下文；交回的是最后一行表达式，`print` 不交回。
+单次上限约 128 次宿主调用、16MB 堆、沙箱自己的执行时间 3 秒（等待宿主时不计）。
+整段脚本墙钟 230 秒；到点会取消还在跑的宿主回调（搜索 / 抓页的包装函数体一并停）。
+不挂文件系统，不开网络。一个 worker 崩溃只丢掉这一次脚本，池子自己换掉它。
+
 ## 7.2 工具分类（category）与加载方式
 
 | 分类 | 加载方式 | 典型工具 |

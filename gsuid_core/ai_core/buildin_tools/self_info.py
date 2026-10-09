@@ -204,7 +204,7 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
     return "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="自我认知")
+@ai_tools(category="common", capability_domain="自我认知", code_callable=False)
 async def update_self_note(
     ctx: RunContext[ToolContext],
     content: str,

@@ -873,6 +873,7 @@ MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "send_meme",
     "search_cognition",
     "read_handle",
+    "run_code",
     "read_image",
     "dispute_directive",
     "record_meme",

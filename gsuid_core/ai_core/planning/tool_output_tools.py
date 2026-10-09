@@ -92,7 +92,7 @@ def _line(rec: AIToolOutputRecord) -> str:
     return f"- {rec.id} | {label} | {rec.date_str} | {rec.summary[:80]}"
 
 
-@ai_tools(category="buildin", capability_domain="产物")
+@ai_tools(category="buildin", capability_domain="产物", code_callable=True)
 async def read_handle(
     ctx: RunContext[ToolContext],
     handle_id: str,
@@ -188,7 +188,12 @@ async def search_fileos_outputs(
     return "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="产物", visible_when=visible_to_capability_only)
+@ai_tools(
+    category="common",
+    capability_domain="产物",
+    visible_when=visible_to_capability_only,
+    code_callable=True,
+)
 async def list_persisted_outputs(
     ctx: RunContext[ToolContext],
     session_id: str = "",
@@ -218,7 +223,12 @@ async def list_persisted_outputs(
     return "\n".join(lines)
 
 
-@ai_tools(category="common", capability_domain="产物", visible_when=visible_to_capability_only)
+@ai_tools(
+    category="common",
+    capability_domain="产物",
+    visible_when=visible_to_capability_only,
+    code_callable=True,
+)
 async def grep_persisted_outputs(
     ctx: RunContext[ToolContext],
     keyword: str,

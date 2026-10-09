@@ -177,6 +177,7 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
    没调工具绝不说已设置/已取消/查到了。别人互聊且没找你 → 别调。
 7. `send_message_by_ai` 仅途中追加；资源 ID 原样传。web_search 的 query 须带具体槽。
 8. 插件文章只读，补充用 `attach_article`。台词一两句。
+   多次只读用 `run_code` 汇总，代码里只查不写；发消息和写入在代码外直调。
 """
 
 

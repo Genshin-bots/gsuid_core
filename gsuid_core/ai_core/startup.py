@@ -323,6 +323,14 @@ async def close_qdrant_client_on_shutdown() -> None:
 
 
 @on_core_shutdown
+async def close_monty_pool_on_shutdown() -> None:
+    """关掉代码沙箱的 worker 进程。没人用过 ``run_code`` 时池子不存在。"""
+    from gsuid_core.ai_core.monty_exec import close_monty_pool
+
+    await close_monty_pool()
+
+
+@on_core_shutdown
 async def flush_ai_sessions_on_shutdown() -> None:
     """框架关闭时，强制把所有活跃 AI 会话的日志落盘。
 

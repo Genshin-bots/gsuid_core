@@ -21,7 +21,7 @@ from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
 
-@ai_tools(category="self")
+@ai_tools(category="self", code_callable=False)
 async def send_meme(
     ev: Event,
     bot: Bot,
@@ -99,7 +99,7 @@ async def send_meme(
     return f"已发送表情包: {record.description or record.meme_id}"
 
 
-@ai_tools(category="common", capability_domain="表情")
+@ai_tools(category="common", capability_domain="表情", code_callable=False)
 async def collect_meme(
     ev: Event,
     reason: str = "",
@@ -215,7 +215,7 @@ def _get_persona_for_event(ev: Event) -> str:
         return "common"
 
 
-@ai_tools(category="self", capability_domain="群聊黑话")
+@ai_tools(category="self", capability_domain="群聊黑话", code_callable=False)
 async def record_meme(
     ev: Event,
     term: str,

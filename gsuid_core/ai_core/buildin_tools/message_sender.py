@@ -119,7 +119,7 @@ async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
     return None
 
 
-@ai_tools(category="self")
+@ai_tools(category="self", code_callable=False)
 async def send_message_by_ai(
     ctx: RunContext[ToolContext],
     text: str = "",

@@ -23,6 +23,7 @@ from gsuid_core.ai_core.buildin_tools.visibility import visible_to_admin
     capability_domain="技能管理",
     visible_when=visible_to_admin,
     timeout=400.0,
+    code_callable=False,
 )
 async def install_skill(
     ctx: RunContext[ToolContext],

@@ -1,0 +1,17 @@
+# 沙箱汇总。不绑定任何业务域：用户点名 run_code，结果必须来自那次调用。
+# 框架只读工具可被代码 await；本例不需要它们。
+
+k: 1
+
+cases:
+  - id: run_code_sum_1_to_100
+    domain: code_fanout
+    targets: [mint]
+    k: 1
+    why_hard: 模型会心算或口头报数，不把算术放进 run_code
+    message: "调用 run_code，用 Python 计算 sum(range(1, 101))。回复里只给这个数。"
+    expect:
+      must_call: ["run_code"]
+      tools_offered_include: ["run_code"]
+      final_regex: ["5050"]
+      max_latency: 90

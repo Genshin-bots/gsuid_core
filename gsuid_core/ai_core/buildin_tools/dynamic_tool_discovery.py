@@ -282,7 +282,7 @@ def get_capability_gaps(limit: int = 20) -> list[tuple[str, int]]:
 
 # 不声明 capability_domain（会被 L3 按族驻留带进闲聊轮）；category 必须为 meta：
 # 落入 buildin 等保底分类会让渐进式暴露门控失效、加载的工具无人暴露（实测踩坑）。
-@ai_tools(category="meta")
+@ai_tools(category="meta", code_callable=False)
 async def find_tools(
     ctx: RunContext[ToolContext],
     need: str,

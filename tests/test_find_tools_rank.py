@@ -182,6 +182,8 @@ def test_orchestration_prompt_follows_tier_order() -> None:
     assert "优先 create_subagent" not in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "零调用禁止说做不到" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "列表没有对口工具先 `find_tools`" in TOOL_ORCHESTRATION_CONSTRAINTS
+    assert "run_code" in TOOL_ORCHESTRATION_CONSTRAINTS
+    assert "只查不写" in TOOL_ORCHESTRATION_CONSTRAINTS
 
 
 class _FakeTool:

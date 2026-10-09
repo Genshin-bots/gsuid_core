@@ -735,7 +735,7 @@ def _build_card_html(card_type: str, title: str, meta: str, payload: dict[str, A
     raise ValueError(f"未知 card_type: {card_type}，可选: {', '.join(sorted(_CARD_TYPES))}")
 
 
-@ai_tools(category="media", capability_domain="资料出图")
+@ai_tools(category="media", capability_domain="资料出图", code_callable=False)
 async def render_card(
     ctx: RunContext[ToolContext],
     card_type: Literal[
@@ -1036,7 +1036,7 @@ async def _auto_embed_html_images(html: str) -> str:
 
 
 # 与 card/md 同属 media：主人格不保底；由 render_agent 白名单持有
-@ai_tools(category="media", capability_domain="资料出图")
+@ai_tools(category="media", capability_domain="资料出图", code_callable=False)
 async def render_html_to_image(
     ctx: RunContext[ToolContext],
     html_content: str,
@@ -1159,7 +1159,7 @@ async def render_html_to_image(
         )
 
 
-@ai_tools(category="media", capability_domain="资料出图")
+@ai_tools(category="media", capability_domain="资料出图", code_callable=False)
 async def render_markdown_to_image(
     ctx: RunContext[ToolContext],
     title: str,

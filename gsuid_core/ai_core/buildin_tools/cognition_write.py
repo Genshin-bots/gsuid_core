@@ -6,7 +6,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 
 
-@ai_tools(category="buildin", capability_domain="回想")
+@ai_tools(category="buildin", capability_domain="回想", code_callable=False)
 async def attach_article(
     ctx: RunContext[ToolContext],
     node_query: str,

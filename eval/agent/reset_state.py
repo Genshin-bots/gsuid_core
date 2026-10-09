@@ -6,12 +6,16 @@
 from __future__ import annotations
 
 from sqlmodel import col
-from sqlalchemy import or_, delete, update
+from sqlalchemy import delete, update
 from sqlalchemy.engine import CursorResult
 
 from gsuid_core.utils.database import base_models
 from gsuid_core.ai_core.database.models import UserFavorability
 from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
+
+# SQLite LIKE 里 _ 匹配任意一字。评测 id 的下划线要按字面量匹配。
+_EVAL_USER_LIKE = "eval\\_%"
+_EVAL_LIKE_ESCAPE = "\\"
 
 _EVAL_MEM_PREFIXES = (
     "group:eval_grp_",
@@ -27,16 +31,16 @@ async def reset_eval_side_effects() -> dict[str, int]:
         stmt = (
             update(AIScheduledTask)
             .where(
-                or_(
-                    col(AIScheduledTask.status).in_(("pending", "paused")),
-                    col(AIScheduledTask.user_id).like("eval_%"),
-                )
+                col(AIScheduledTask.user_id).like(_EVAL_USER_LIKE, escape=_EVAL_LIKE_ESCAPE),
+                col(AIScheduledTask.status).in_(("pending", "paused")),
             )
             .values(status="cancelled")
         )
         result = await session.execute(stmt)
         n_sched = result.rowcount if isinstance(result, CursorResult) else 0
-        fav_stmt = delete(UserFavorability).where(col(UserFavorability.user_id).like("eval_%"))
+        fav_stmt = delete(UserFavorability).where(
+            col(UserFavorability.user_id).like(_EVAL_USER_LIKE, escape=_EVAL_LIKE_ESCAPE)
+        )
         fav_result = await session.execute(fav_stmt)
         n_fav = fav_result.rowcount if isinstance(fav_result, CursorResult) else 0
         await session.commit()

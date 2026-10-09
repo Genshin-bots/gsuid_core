@@ -37,6 +37,7 @@ _TASK_BASICS_TOOLS: List[str] = [
     "web_search_tool",
     "web_fetch_tool",
     "read_handle",
+    "run_code",
     "list_persisted_outputs",
 ]
 
