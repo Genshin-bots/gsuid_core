@@ -80,6 +80,147 @@ def test_delegation_rejects_other_speakers_history_topic() -> None:
     assert delegation_grounded("compare sample alpha", "please compare sample alpha today")
 
 
+def test_deictic_to_recent_media_uses_upstairs_image(monkeypatch) -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.message_history.manager import HistoryManager
+    from gsuid_core.ai_core.buildin_tools.subagent import (
+        deictic_to_recent_media,
+        delegation_ground_reject,
+    )
+
+    mgr = HistoryManager()
+    image_ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g9001",
+        user_id="u2",
+        WS_BOT_ID="ws1",
+    )
+    note_ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g9001",
+        user_id="u3",
+        WS_BOT_ID="ws1",
+    )
+    ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g9001",
+        user_id="u1",
+        WS_BOT_ID="ws1",
+        msg_id="cur-1",
+    )
+    mgr.add_message(
+        image_ev,
+        "user",
+        "（一张图）",
+        user_name="乙",
+        metadata={"image_id": "img_synth_who_01", "msg_id": "img-1"},
+    )
+    mgr.add_message(note_ev, "user", "你们看", user_name="丙", metadata={"msg_id": "txt-1"})
+    mgr.add_message(ev, "user", "看看这是谁", user_name="甲", metadata={"msg_id": "cur-1"})
+    monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: mgr)
+
+    ev.raw_text = "看看这是谁"
+    assert deictic_to_recent_media(ev)
+    assert delegation_ground_reject(ev, "看图里是谁", follow=False) is None
+    assert delegation_ground_reject(ev, "分析样本丁组并给出方案", follow=False) is not None
+
+    for raw in (
+        "@早柚 看看这是谁",
+        "小明(用户ID:9001)：@早柚 看看这是谁",
+        "小明(用户ID:9001)：看看这是谁",
+    ):
+        ev.raw_text = raw
+        assert deictic_to_recent_media(ev), raw
+        assert delegation_ground_reject(ev, "看图里是谁", follow=False) is None, raw
+
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.persona.config.persona_config_manager.get_persona_for_session",
+        lambda _sid: "早柚",
+    )
+    ev.raw_text = "早柚 看看这是谁"
+    assert deictic_to_recent_media(ev)
+    ev.raw_text = "@早柚看看这是谁"
+    assert deictic_to_recent_media(ev)
+
+    for raw in ("这是谁的错", "这图书馆几点开门", "什么图书馆", "这图纸发我", "看这天气", "这张表怎么看", "锐评一下"):
+        ev.raw_text = raw
+        assert not deictic_to_recent_media(ev), raw
+
+    far = HistoryManager()
+    far.add_message(
+        image_ev,
+        "user",
+        "（一张图）",
+        user_name="乙",
+        metadata={"image_id": "img_synth_who_01", "msg_id": "far-img"},
+    )
+    far.add_message(note_ev, "user", "第一句", user_name="丙", metadata={"msg_id": "far-a"})
+    far.add_message(note_ev, "user", "第二句", user_name="丙", metadata={"msg_id": "far-b"})
+    far.add_message(ev, "user", "看看这是谁", user_name="甲", metadata={"msg_id": "cur-1"})
+    monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: far)
+    ev.raw_text = "看看这是谁"
+    assert not deictic_to_recent_media(ev)
+
+
+def test_deictic_sees_captionless_inbound_image(monkeypatch) -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.handler import _record_inbound_history
+    from gsuid_core.message_history.manager import HistoryManager
+    from gsuid_core.ai_core.buildin_tools.subagent import (
+        deictic_to_recent_media,
+        delegation_ground_reject,
+    )
+
+    mgr = HistoryManager()
+    monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: mgr)
+
+    image_ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g9001",
+        user_id="u2",
+        WS_BOT_ID="ws1",
+        msg_id="img-1",
+    )
+    image_ev.image_id = "img_synth_who_01"
+    image_ev.raw_text = ""
+    _record_inbound_history(image_ev)
+
+    skip_ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g9001",
+        user_id="u3",
+        WS_BOT_ID="ws1",
+        msg_id="skip-1",
+    )
+    skip_ev.raw_text = ""
+    _record_inbound_history(skip_ev)
+    assert mgr.get_history(skip_ev, limit=8)[-1].metadata["image_id"] == "img_synth_who_01"
+
+    ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g9001",
+        user_id="u1",
+        WS_BOT_ID="ws1",
+        msg_id="cur-1",
+    )
+    ev.raw_text = "@早柚 看看这是谁"
+    _record_inbound_history(ev)
+    assert deictic_to_recent_media(ev)
+    assert delegation_ground_reject(ev, "看图里是谁", follow=False) is None
+
+
 def test_correction_pass_repoints_host_tool_calls_to_parent() -> None:
     """纠正成功后宿主指针指回并好的父级列表；失败则拨回，且不并入纠正轮的名字。"""
     import asyncio

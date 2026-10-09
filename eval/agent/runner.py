@@ -2,7 +2,8 @@
 
 复用既有评测底座 `eval/common/http_client.call_chat_with_history` 驱动 `/api/chat_with_history`
 （继承其鉴权头/超时/错误约定，与 BEAM 官方 ladder / longmemeval 一致）。区别在于：记忆评测只看返回的
-**文本** `data`，而 agent 评测要的是**工具轨迹**——只能从 session_log 捞（该端点当前不返回轨迹）。
+**文本** `data`，而 agent 评测要的是**工具轨迹**——优先从 session_log 捞；端点也会返回
+``tool_calls``（仅工具名），扫不到日志时用它填 HTTP-only Trace，避免 ``must_call_any`` 空打。
 
 轨迹关联（自动择优）：
   A. 端点若按 README「3 行增强」返回 `session_id`（并在 run 结束 flush 会话）→ 精确、秒级。
@@ -22,7 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from eval.agent.harness import Trace, parse_session_log, pick_user_visible, trace_awaits_delivery
+from eval.agent.harness import Trace, ToolCall, parse_session_log, pick_user_visible, trace_awaits_delivery
 from eval.common.http_client import call_chat_with_history
 
 # 与 interaction_scaffold 说话人前缀同形，避免 runner 去 import 生产脚手架。
@@ -280,10 +281,9 @@ async def run_once(
     if doc is None:  # B 模式兜底（阻塞轮询放线程池，避免卡事件循环）
         doc = await asyncio.to_thread(_scan_log_by_user, uid, since, wait)
     if doc is None:
-        # 拿不到轨迹但拿到了文本 data：退化成"纯文本 Trace"，让 final_* / judge 类断言仍可判，
-        # 只有工具类断言会因无轨迹而失败（比整条判 error 更能反映真实回复）。
+        # 拿不到日志但拿到了文本：退化成 HTTP-only Trace。端点 tool_calls 是工具名列表。
         if delivered:
-            return Trace(final_text=delivered, returned_text=delivered, latency=latency)
+            return _http_text_trace(resp, delivered, latency)
         return Trace(error="session_log_not_found（建议按 README 让端点返回 session_id/trace）", latency=latency)
     tr = parse_session_log(doc, skip_runs=skip)
     tr.latency = latency
@@ -439,8 +439,7 @@ def _trace_from_fired(f: dict, doc) -> Trace:
     if resp.get("error"):
         return Trace(error=f"api:{resp.get('error')}", latency=f["latency"])
     if delivered:
-        # 拿到交付文本但没扫到轨迹：退化成纯文本 Trace（final_*/judge 可判；工具类断言必失败）
-        return Trace(final_text=delivered, returned_text=delivered, latency=f["latency"])
+        return _http_text_trace(resp, delivered, f["latency"])
     return Trace(error="session_log_not_found", latency=f["latency"])
 
 
@@ -553,11 +552,31 @@ async def run_suite_batch(
     return {cid: [t for _, t in sorted(runs)] for cid, runs in per_case.items()}
 
 
+def _tool_calls_from_http(resp: dict) -> list[ToolCall]:
+    raw = resp.get("tool_calls") if isinstance(resp, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[ToolCall] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.append(ToolCall(name=item.strip(), args={}, raw_args=""))
+    return out
+
+
+def _http_text_trace(resp: dict, delivered: str, latency: float) -> Trace:
+    return Trace(
+        final_text=delivered,
+        returned_text=delivered,
+        latency=latency,
+        tool_calls=_tool_calls_from_http(resp),
+    )
+
+
 def _is_eval_silence_or_ack(tr: Trace) -> bool:
     """短应/沉默：回灌尚未变成终局结论。"""
     text = (tr.content_text or "").strip()
     if not text:
         return True
-    if text in {"<SILENCE>", "[SILENCE]", "SILENCE"}:
+    if text in {"<SILENCE>", "[SILENCE]", "SILENCE", "<沉默>", "[沉默]"}:
         return True
     return len(text) <= 40

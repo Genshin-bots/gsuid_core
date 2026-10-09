@@ -17,6 +17,7 @@ def test_allows_protocol_tags_only() -> None:
 
     assert not has_illegal_angle_tags("唔…困了")
     assert not has_illegal_angle_tags("<SILENCE>")
+    assert not has_illegal_angle_tags("<沉默>")
     assert not has_illegal_angle_tags("困 `<meme: 困>` 呼")
     # <report> 已废止，不再是协议标签
     assert has_illegal_angle_tags('<report title="a">|x|y|\n|---|---|\n|1|2|</report>')

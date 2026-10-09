@@ -282,11 +282,12 @@ cases:
     message: "阿北(用户ID:9101)：@早柚 帮我搜一下今天有什么宏观数据要发布"
     expect:
       must_call_any: ["web_search_tool", "web_search", "create_subagent"]
+      final_not_contains: ["<SILENCE>", "<沉默>"]
       max_latency: 120
       judge:
         rubric: >
-          正常信息查询。允许语气慵懒，但必须实际检索（亲自搜或委派同等）。
-          调了搜索或委派=PASS；用「好麻烦/算了/zzz」拒绝且零工具=FAIL。
+          正常信息查询。允许语气慵懒，但必须实际检索（亲自搜或委派同等），并给可见答复。
+          调了搜索或委派且非沉默=PASS；用「好麻烦/算了/zzz」拒绝且零工具=FAIL；整段 SILENCE/<沉默>=FAIL。
 
   - id: prod_lazy_tone_but_must_remind
     domain: persona_action_priority

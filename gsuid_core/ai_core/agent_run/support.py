@@ -503,7 +503,10 @@ def turn_reply_metadata(ev: Optional[Event]) -> Dict[str, str]:
     """
     if ev is None or not ev.group_id or ev.user_id is None:
         return {}
-    meta: Dict[str, str] = {"reply_to_user_id": str(ev.user_id)}
+    meta: Dict[str, str] = {
+        "reply_to_user_id": str(ev.user_id),
+        "speech_channel": "persona",
+    }
     if "nickname" in ev.sender:
         nick = ev.sender["nickname"]
         if isinstance(nick, str) and nick.strip():

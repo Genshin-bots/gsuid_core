@@ -390,9 +390,15 @@ async def send_message_by_ai(
         # ooc_check=False：入口已 tool_gate_feedback（pre_send_gate）过，此处只做呈现归一化。
         _at_raw = tool_ctx.extra["at_user_id"] if "at_user_id" in tool_ctx.extra else None
         _at_uid = str(_at_raw) if isinstance(_at_raw, str) and _at_raw else None
+        from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+
+        _meta = turn_reply_metadata(ev)
+        if _at_uid:
+            _meta["reply_to_user_id"] = _at_uid
+            if "reply_to_user_name" in _meta:
+                del _meta["reply_to_user_name"]
         if text:
             from gsuid_core.ai_core.utils import send_chat_result
-            from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
             # run 级发送去重（与 gs_agent 主循环共用 extra 里的同一集合）：干净历史重试 /
             # 模型重复调用不再把同一段话发两遍，媒体不受影响（评审修复 F14）
@@ -408,10 +414,6 @@ async def send_message_by_ai(
                         if isinstance(_mk, str) and isinstance(_mv, str) and _mk and _mv:
                             _mentions[_mk] = _mv
                 # 显式 @ 了别人就记给别人，否则记当前说话人；名字对不上目标，必须去掉
-                _meta = turn_reply_metadata(ev)
-                if _at_uid:
-                    _meta["reply_to_user_id"] = _at_uid
-                    _meta.pop("reply_to_user_name", None)
                 await send_chat_result(
                     bot,
                     text,
@@ -438,7 +440,7 @@ async def send_message_by_ai(
             if _at_uid:
                 _out = [MessageSegment.at(_at_uid), *_out]
             try:
-                await bot.send(_out if len(_out) > 1 else _out[0])
+                await bot.send(_out if len(_out) > 1 else _out[0], extra_metadata=_meta)
                 sent = True
             finally:
                 reset_outbound_image_label(_tok)

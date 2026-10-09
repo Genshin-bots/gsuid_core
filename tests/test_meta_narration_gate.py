@@ -254,6 +254,10 @@ def test_prompt_stops_prescribing_a_fixed_failure_phrase() -> None:
     for term in ("、库", "分值"):
         assert term not in SYSTEM_CONSTRAINTS, f"禁词表不该收「{term}」：要么过宽、要么是业务词"
     assert len(SYSTEM_CONSTRAINTS) <= 1600, len(SYSTEM_CONSTRAINTS)
+    assert "禁止记账" in SYSTEM_CONSTRAINTS
+    assert "第几次" in SYSTEM_CONSTRAINTS
+    assert "角色化拒绝" not in SYSTEM_CONSTRAINTS
+    assert "群闲聊≤15字" not in SYSTEM_CONSTRAINTS
 
 
 def test_find_tools_miss_is_capability_shaped_not_data_shaped() -> None:

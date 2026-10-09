@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from typing import Any, Dict, List, Union, Optional
+from typing import List, Union, Mapping, Optional
 
 import pytest
 
@@ -47,7 +47,7 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
         self: Bot,
         message: Union[Message, List[Message], str, bytes, List[str]],
         at_sender: bool = False,
-        extra_metadata: Optional[Dict[str, Any]] = None,
+        extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> None:
         sent.append(_plain_text(message))

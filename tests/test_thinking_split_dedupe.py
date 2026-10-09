@@ -166,8 +166,16 @@ def test_split_protocol_hold_silence_and_visible() -> None:
     assert vis == "" and hold == "<SILEN"
     vis, hold = split_protocol_hold("<SILENCE>", force=False)
     assert vis == "" and hold == ""
+    vis, hold = split_protocol_hold("<沉默>", force=False)
+    assert vis == "" and hold == ""
     vis, hold = split_protocol_hold("你好<SILENCE>世界", force=False)
     assert vis == "你好世界" and hold == ""
+    vis, hold = split_protocol_hold("你好<沉默>世界", force=False)
+    assert vis == "你好世界" and hold == ""
+    vis, hold = split_protocol_hold("沉默", force=False)
+    assert vis == "沉默" and hold == ""
+    vis, hold = split_protocol_hold("沉默是金", force=False)
+    assert vis == "沉默是金" and hold == ""
     vis, hold = split_protocol_hold("hello<SIL", force=True)
     assert vis == "hello" and hold == ""
     vis, hold = split_protocol_hold("plain text", force=False)

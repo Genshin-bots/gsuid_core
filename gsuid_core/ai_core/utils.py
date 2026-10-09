@@ -62,8 +62,8 @@ MEME_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# 模型输出的沉默/控制标记：命中时跳过发送，对话层保持静默
-# 所有需要过滤这些标记的地方都应引用此常量，避免散落多处维护不一致
+# 模型输出的沉默/控制标记：命中时跳过发送。散落多处应引用此常量。
+# 集合只放带括号的 CJK 别名：裸「沉默」做子串会误伤「我选择沉默」。
 SILENCE_MARKERS: frozenset[str] = frozenset(
     {
         "<SILENCE>",
@@ -71,21 +71,24 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
         "SILENCE",
         "<end_turn>",
         "<no_tool_call>",
+        "<沉默>",
+        "[沉默]",
     }
 )
 
 # 协议标签（开/闭/自闭合）。代码块内字面量不剥，避免教学回复被当成沉默。
+# 模型常把 <SILENCE> 写成 CJK「<沉默>」；不认会当正文发出并盖掉本轮已写好的答复。
 _PROTOCOL_TAG_RE = re.compile(
-    r"<\s*/?\s*(?:silence|end_turn|no_tool_call)\s*/?\s*>"
-    r"|\[\s*silence\s*\]",
+    r"<\s*/?\s*(?:silence|end_turn|no_tool_call|沉默)\s*/?\s*>"
+    r"|\[\s*(?:silence|沉默)\s*\]",
     re.IGNORECASE,
 )
 _PROTOCOL_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 _BARE_SILENCE_RE = re.compile(r"^\s*silence\s*$", re.IGNORECASE)
 _PROTOCOL_EMPTYISH_RE = re.compile(r"^[\s\-–—.,，。！？!?、；;：:\u3000·•…]*$")
-# 截断残片：ILENCE> / SILENCE> / <SILENCE（完整标签仍走协议剥离）
+# 截断残片：ILENCE> / SILENCE> / <SILENCE / 沉默> / <沉默。裸「沉默」是可见台词。
 _SILENCE_FRAGMENT_RE = re.compile(
-    r"^\s*(?:ilence>|silence>?|<silence/?)\s*$",
+    r"^\s*(?:ilence>|silence>?|<silence/?|沉默>|<沉默/?)\s*$",
     re.IGNORECASE,
 )
 
@@ -127,10 +130,11 @@ def is_silence_marker(text: str) -> bool:
     return _PROTOCOL_EMPTYISH_RE.match(leftover) is not None
 
 
-_PROTOCOL_TAG_NAMES: tuple[str, ...] = ("silence", "end_turn", "no_tool_call")
+_PROTOCOL_TAG_NAMES: tuple[str, ...] = ("silence", "end_turn", "no_tool_call", "沉默")
 _PROTOCOL_COMPLETE_COMPACT: tuple[str, ...] = (
     *(form for name in _PROTOCOL_TAG_NAMES for form in (f"<{name}>", f"<{name}/>", f"</{name}>", f"</{name}/>")),
     "[silence]",
+    "[沉默]",
 )
 
 
@@ -1350,7 +1354,7 @@ _extract_report_blocks = _extract_legacy_report_blocks
 async def _send_report_images(
     reports: List[Tuple[str, str]],
     bot: Bot,
-    extra_metadata: Optional[Dict[str, Any]] = None,
+    extra_metadata: Optional[Mapping[str, object]] = None,
 ) -> None:
     """制品通道出图：结构化块 / 遗留 report body → markdown 资料图。
 
@@ -1383,7 +1387,7 @@ async def _send_report_images(
 async def _try_render_markdown_image(
     md: str,
     bot: Bot,
-    extra_metadata: Optional[Dict[str, Any]] = None,
+    extra_metadata: Optional[Mapping[str, object]] = None,
 ) -> bool:
     """把整篇 markdown 渲染成一张图片下发。
 
@@ -1503,7 +1507,7 @@ async def send_chat_result(
     bot: Bot,
     text: str,
     ev: Event | None = None,
-    extra_metadata: Optional[Dict[str, Any]] = None,
+    extra_metadata: Optional[Mapping[str, object]] = None,
     ooc_check: bool = True,
     at_user_id: str | None = None,
     mention_names: Optional[Dict[str, str]] = None,
@@ -1520,6 +1524,11 @@ async def send_chat_result(
     """
     if not text:
         return
+
+    meta: dict[str, object] = dict(extra_metadata) if extra_metadata else {}
+    if "speech_channel" not in meta:
+        meta["speech_channel"] = "persona"
+    extra_metadata = meta
 
     # 过滤模型输出的特殊控制标记（如 <end_turn>），避免发送给用户
     _trimmed = text.strip()
@@ -1727,7 +1736,9 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
 
         image_data = await _read_file(file_path)
         img_b64 = await convert_img(image_data)
-        await bot.send(MessageSegment.image(img_b64))
+        from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+
+        await bot.send(MessageSegment.image(img_b64), extra_metadata=turn_reply_metadata(ev))
         await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
         logger.info(i18n_t("log.ai.meme_tag_triggered_mood", p0=record.meme_id, mood=mood))
     except Exception as e:

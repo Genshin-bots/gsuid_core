@@ -82,6 +82,34 @@ def test_ai_config_persona_options_not_hardcoded() -> None:
     assert 'options=["早柚"]' not in src
 
 
+def test_voice_anchor_drops_trigger_clauses() -> None:
+    from gsuid_core.ai_core.persona.resource import _extract_voice_anchor_from_persona
+
+    card = "Style (风格):\n        慵懒短句、语速慢。迷糊、理直气壮偷懒。被叫「狸猫」会炸毛。\n"
+    anchor = _extract_voice_anchor_from_persona(card)
+    assert "慵懒短句" in anchor
+    assert "被叫" not in anchor
+    assert "狸猫" not in anchor
+    assert "炸毛" not in anchor
+
+
+def test_voice_anchor_txt_drops_trigger_and_beats_md(tmp_path, monkeypatch) -> None:
+    from gsuid_core.ai_core import resource as res_mod
+    from gsuid_core.ai_core.persona.resource import get_voice_anchor, invalidate_voice_anchor_cache
+
+    persona = tmp_path / "anchor_fixture"
+    persona.mkdir()
+    (persona / "voice_anchor.txt").write_text("慵懒短句、语速慢。被叫「样例」会炸毛。", encoding="utf-8")
+    (persona / "persona.md").write_text("Style (风格):\n        这段不该被用。\n", encoding="utf-8")
+    monkeypatch.setattr(res_mod, "PERSONA_PATH", tmp_path)
+    invalidate_voice_anchor_cache("anchor_fixture")
+    anchor = get_voice_anchor("anchor_fixture")
+    invalidate_voice_anchor_cache("anchor_fixture")
+    assert "慵懒短句" in anchor
+    assert "被叫" not in anchor
+    assert "这段不该被用" not in anchor
+
+
 def test_tone_markers_come_from_persona_card() -> None:
     from gsuid_core.ai_core.persona.resource import extract_tone_markers, reply_ends_with_tone_marker
 

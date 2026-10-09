@@ -80,6 +80,9 @@ _PRESENCE_TOPIC_RE = re.compile(r"感兴趣的话题\s*[：:][ \t]*([^\n]+)")
 _PRESENCE_EXAMPLE_RE = re.compile(r"主动发言示例\s*[：:][ \t]*([^\n]+)")
 
 # 跳过模板占位符 / 通用说明 / 示例 / 元提示行（这些不是真正的"风格描述"）
+# 口吻锚只要节奏，不要「被叫 X 会 Y」这类触发句（每轮催演会变成人机腔）。
+_TRIGGER_CLAUSE_RE = re.compile(r"被叫|一被|有人叫")
+
 _META_LINE_PREFIXES: Tuple[str, ...] = (
     "举出",
     "举例",
@@ -117,6 +120,14 @@ def _pick_concrete_line(block: str) -> str:
     return max(candidates, key=len) if candidates else ""
 
 
+def _strip_trigger_clauses(text: str) -> str:
+    """丢掉「被叫 / 一被 / 有人叫」触发句，只留风格节奏。"""
+    if not text:
+        return ""
+    kept = [p for p in re.split(r"(?<=[。！？])", text) if p.strip() and not _TRIGGER_CLAUSE_RE.search(p)]
+    return "".join(kept).strip()
+
+
 def _extract_voice_anchor_from_persona(persona_text: str) -> str:
     """从人格文本中正则提取一行作为兜底口吻锚点。
 
@@ -129,14 +140,16 @@ def _extract_voice_anchor_from_persona(persona_text: str) -> str:
     # Style: 块形式优先，回退行内形式
     style_match = _STYLE_BLOCK_RE.search(persona_text)
     if style_match:
-        line = _pick_concrete_line(style_match.group(2))
+        line = _strip_trigger_clauses(_pick_concrete_line(style_match.group(2)))
         if line:
             return line
     style_inline = _STYLE_INLINE_RE.search(persona_text)
     if style_inline:
         line = style_inline.group(1).strip()
         if line and "[SLOT:" not in line:
-            return line
+            line = _strip_trigger_clauses(line)
+            if line:
+                return line
 
     # Tone Markers: 块形式优先，回退行内形式
     tone_match = _TONE_BLOCK_RE.search(persona_text)
@@ -456,7 +469,7 @@ def get_voice_anchor(persona_name: Optional[str]) -> str:
 
     解析优先级：
     1. ``voice_anchor.txt`` 显式手调入口（最高优先级；与 persona 可变配置
-       物理解耦, 不会被 ``StringConfig`` 当成结构化项校验）。
+       物理解耦, 不会被 ``StringConfig`` 当成结构化项校验）。返回前丢掉触发句。
     2. 字段缺失时，从同目录 ``persona.md`` 用正则提取最有用的一行
        （``Style (风格):`` > ``Tone Markers (语气词):`` > ``Identity:``）。
     3. 两者都拿不到 → 返回空串（``handle_ai.py`` 会跳过锚点注入）。
@@ -468,7 +481,7 @@ def get_voice_anchor(persona_name: Optional[str]) -> str:
     if persona_name in _voice_anchor_cache:
         return _voice_anchor_cache[persona_name]
 
-    anchor = _load_voice_anchor_from_disk(persona_name)
+    anchor = _strip_trigger_clauses(_load_voice_anchor_from_disk(persona_name))
     _voice_anchor_cache[persona_name] = anchor
     return anchor
 

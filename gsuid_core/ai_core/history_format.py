@@ -170,6 +170,42 @@ _OTHERS_LIMIT = 6
 _THREAD_HANDLES_KEY = "thread_handles"
 _MAX_NOTED_HANDLES = 4
 _HANDLE_LINE_SUFFIX = "（read_handle；句柄勿念出）"
+_RECEIPT_CHANNELS: frozenset[str] = frozenset({"command", "tool_delivery"})
+
+
+def outbound_history_fields(
+    present_keys: set[str],
+    *,
+    target_type: str,
+    sender_id: str,
+) -> dict[str, str]:
+    """群出站补收件人。调用方已经写过的键不覆盖。"""
+    extra: dict[str, str] = {}
+    if target_type != "direct" and sender_id and "reply_to_user_id" not in present_keys:
+        extra["reply_to_user_id"] = sender_id
+    if "speech_channel" not in present_keys:
+        extra["speech_channel"] = "command"
+    return extra
+
+
+def _speech_channel(record: MessageRecord) -> str:
+    meta = record.metadata or {}
+    raw = meta["speech_channel"] if "speech_channel" in meta else ""
+    if isinstance(raw, str) and raw:
+        return raw
+    return "persona"
+
+
+def _reply_to_uid(record: MessageRecord) -> str:
+    meta = record.metadata or {}
+    raw = meta["reply_to_user_id"] if "reply_to_user_id" in meta else ""
+    return str(raw) if raw else ""
+
+
+def _assistant_belongs_to_speaker(record: MessageRecord, uid: str) -> bool:
+    """没有收件人的出站不进任何人的同人线程。"""
+    reply_to = _reply_to_uid(record)
+    return bool(reply_to) and reply_to == uid
 
 
 def format_history_for_agent(
@@ -283,14 +319,15 @@ def format_history_for_agent(
 
     def _make_speaker(record: MessageRecord) -> str:
         if record.role == "assistant":
+            tag = "AI[回执]" if _speech_channel(record) in _RECEIPT_CHANNELS else "AI"
             reply_to = None
             reply_name = None
             if record.metadata:
                 reply_to = record.metadata.get("reply_to_user_id")
                 reply_name = record.metadata.get("reply_to_user_name")
             if reply_to:
-                return f"AI→{_user_label(str(reply_to), reply_name)}"
-            return "AI"
+                return f"{tag}→{_user_label(str(reply_to), reply_name)}"
+            return tag
         return _user_label(record.user_id, record.user_name)
 
     output: List[str] = []
@@ -413,14 +450,16 @@ def select_speaker_thread(
     *,
     limit: int = SPEAKER_THREAD_LIMIT,
 ) -> List[MessageRecord]:
-    """从新到旧凑满 limit：当前说话人的 user 句（含未点名）与出站。不成对。"""
+    """从新到旧凑满 limit：当前说话人的 user 句，以及收件人是此人的出站。"""
     uid = str(current_user_id)
+    seq = list(records)
     picked: List[MessageRecord] = []
-    for record in reversed(list(records)):
+    for record in reversed(seq):
         if record.role == "user" and str(record.user_id) == uid:
             picked.append(record)
         elif record.role == "assistant" and assistant_visible_body(record) is not None:
-            picked.append(record)
+            if _assistant_belongs_to_speaker(record, uid):
+                picked.append(record)
         if len(picked) >= limit:
             break
     picked.reverse()
@@ -460,12 +499,11 @@ def compose_group_history(
     current_user_id: str,
     current_user_name: Optional[str] = None,
 ) -> str:
-    """同人线程在前（裁预算时先保住句柄），旁人块仍是最近窗里的他人 user 句。"""
+    """同人线程在前。旁人块是他人 user 句，外加没有收件人的出站。"""
     if not records:
         return ""
     uid = str(current_user_id)
-    recent = list(records)[-_OTHERS_WINDOW:]
-    others = [r for r in recent if r.role == "user" and str(r.user_id) != uid][-_OTHERS_LIMIT:]
+    others = _group_timeline(records, uid)
     thread = materialize_speaker_thread(select_speaker_thread(records, uid))
     parts: List[str] = []
     if thread:
@@ -487,6 +525,18 @@ def compose_group_history(
             )
         )
     return "\n\n".join(parts)
+
+
+def _group_timeline(records: Sequence[MessageRecord], uid: str) -> List[MessageRecord]:
+    """没有收件人的出站留在群时间线，不记到最近一个插话者头上。"""
+    recent = list(records)[-_OTHERS_WINDOW:]
+    users = [r for r in recent if r.role == "user" and str(r.user_id) != uid]
+    loose = [
+        r for r in recent if r.role == "assistant" and not _reply_to_uid(r) and assistant_visible_body(r) is not None
+    ]
+    merged = users + materialize_speaker_thread(loose)
+    merged.sort(key=lambda record: record.timestamp)
+    return merged[-_OTHERS_LIMIT:]
 
 
 def _read_handle_list(ctx: ToolContext) -> List[str]:
@@ -561,10 +611,14 @@ def remember_silence_handles(
     kept = [hid for hid in fresh if hid not in recorded]
     if not kept:
         return
+    from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+
+    meta: dict[str, object] = {"outbound_handles": kept}
+    meta.update(turn_reply_metadata(event))
     mgr.add_message(
         event=event,
         role="assistant",
         content=" ".join(kept),
         user_name="AI",
-        metadata={"outbound_handles": kept},
+        metadata=meta,
     )

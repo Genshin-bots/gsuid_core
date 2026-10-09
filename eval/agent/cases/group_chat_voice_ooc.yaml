@@ -1,0 +1,110 @@
+# 群聊语域 / 出戏结构扩集（合成数据）
+#
+# 素材来源：对生产群聊与评测枪做**结构级**观察后抽象的行为模式
+# （检索报告腔、电报体判决、复读记账、点名搜完变沉默、指近图、闲聊翻库）。
+# 本文件**不含**任何真实用户 ID / 昵称 / 原文 / 群号；说话人一律虚构 9xxx。
+#
+# 默认合并进 eval/agent/run.py 与 _chunked_run.py。单独跑：
+#   --extra-cases eval/agent/cases/group_chat_voice_ooc.yaml --only voice_
+
+cases:
+  # ── 点名搜索必须可见交付，不能搜完变沉默 ──────────────
+  - id: voice_at_search_keep_visible
+    domain: persona_action_priority
+    targets: [group-chat, toolsandbox, self-ooc]
+    why_hard: 被点名搜院线后，模型常再吐 CJK「<沉默>」，把已写好的影评盖掉
+    message: "阿北(用户ID:9101)：@早柚 帮我搜下这周末院线在映的片"
+    expect:
+      must_call_any: ["web_search_tool", "web_search", "search_cognition"]
+      final_not_contains: ["<SILENCE>", "<沉默>"]
+      max_latency: 120
+      judge:
+        rubric: >
+          被点名搜这周末院线。必须真搜（亲自搜或委派同等），并用角色口吻给可见答复（一两部即可）。
+          禁止整段 SILENCE / <沉默>。禁止检索报告腔（翻了半天、只有两句、翻不到、如下所示）。
+          真搜且角色化短答=PASS；零工具推脱、或搜完只剩沉默=FAIL。
+
+  # ── 闲聊点名不该翻记忆库 ──────────────────────────────
+  - id: voice_idle_at_not_memory_lookup
+    domain: group_chat
+    targets: [group-chat, self-ooc]
+    why_hard: 仅 @ 闲聊时不该当记忆问答去翻库
+    message: "小红(用户ID:9002)：@早柚 困不困"
+    expect:
+      no_tool_calls: true
+      final_not_contains: ["<SILENCE>", "<沉默>"]
+      max_latency: 40
+      judge:
+        rubric: >
+          被点名闲聊困不困。应角色化短回。禁止整段沉默。禁止去翻记忆、查库、搜网页。
+          短角色化回应且零工具=PASS；沉默、上课、或调查询类工具=FAIL。
+
+  # ── 同一提醒复读禁止记账 ──────────────────────────────
+  - id: voice_no_repeat_ledger
+    domain: persona_consistency
+    targets: [group-chat, toolsandbox]
+    why_hard: 同一人连提同一提醒时，模型会数「第N遍/记下了」
+    history:
+      - role: user
+        content: "小明(用户ID:9001)：@早柚 帮我设个明天九点的提醒：交表"
+      - role: assistant
+        content: "唔…好。"
+      - role: user
+        content: "小明(用户ID:9001)：@早柚 帮我设个明天九点的提醒：交表"
+      - role: assistant
+        content: "设过了。"
+    message: "小明(用户ID:9001)：@早柚 帮我设个明天九点的提醒：交表"
+    expect:
+      final_regex_absent:
+        - "第[一二三四五六七八九十\\d]+遍"
+        - "记下了"
+      max_latency: 90
+      judge:
+        rubric: >
+          同一人第三次提同一条明天九点交表提醒。可以查已有任务、补设、或角色化嫌烦后仍办事。
+          禁止数「第N遍」、禁止「记下了」式记账。出现计数/记账=FAIL；正常办事或查已有且不记账=PASS。
+
+  # ── 点名求评禁止电报体判决 ────────────────────────────
+  - id: voice_no_telegram_verdict
+    domain: group_chat
+    targets: [group-chat, self-ooc]
+    why_hard: 被点名评一句时容易吐电报体冷判决
+    history:
+      - role: user
+        content: "阿北(用户ID:9101)：这事我觉得没必要争"
+      - role: user
+        content: "小鹿(用户ID:9102)：那你倒是说清楚啊"
+    message: "老周(用户ID:9103)：@早柚 你评评这事行不行"
+    expect:
+      final_not_contains: ["<SILENCE>", "<沉默>"]
+      final_regex_absent:
+        - "其他的不评"
+        - "咬人"
+      no_tool_calls: true
+      max_latency: 40
+      judge:
+        rubric: >
+          被点名评一句群里刚吵的事。应角色化短评或糊弄。禁止整段沉默。
+          禁止电报式「其他的不评」、禁止咬人式冷判决、禁止上课解说。
+          角色化短评=PASS；电报体/冷判决/沉默=FAIL。
+
+  # ── 「看看这是谁」应对准近图 ──────────────────────────
+  - id: voice_deictic_look_who
+    domain: multimodal
+    targets: [group-chat, multimodal, toolsandbox]
+    why_hard: 图在上一条群消息里，当前句只说「看看这是谁」
+    history:
+      - role: user
+        content: |
+          阿北(用户ID:9101)：你们看这张
+          --- 用户发送了图片(未展开, 需要查看内容时调用 read_image(图片ID)) ---
+          图片ID: img_synth_who_01
+    message: "小明(用户ID:9001)：@早柚 看看这是谁"
+    expect:
+      must_call_any: ["read_image", "create_subagent"]
+      final_not_contains: ["<SILENCE>", "<沉默>"]
+      max_latency: 90
+      judge:
+        rubric: >
+          被点名看近一条群图里是谁。应读图（read_image 或委派看图）再角色化回应。
+          调了读图/委派=PASS；不看图空口编、或整段沉默=FAIL。

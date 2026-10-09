@@ -98,12 +98,72 @@ def test_ellipsis_inherits_other_speaker_gates_slot() -> None:
 
 
 def test_live_lookup_and_task_request_patterns() -> None:
-    from gsuid_core.ai_core.interaction_scaffold import looks_like_live_lookup, looks_like_task_request
+    from gsuid_core.ai_core.interaction_scaffold import (
+        looks_like_memory_qa,
+        looks_like_live_lookup,
+        looks_like_task_request,
+        looks_like_committed_work,
+    )
 
     assert looks_like_live_lookup("小明(用户ID:1)：看看我椿面板")
     assert looks_like_task_request("帮我设个提醒")
     assert not looks_like_live_lookup("今天好困")
     assert not looks_like_task_request("今天好困")
+    assert looks_like_memory_qa("小明(用户ID:1)：你上次说过什么")
+    assert looks_like_memory_qa("还记得我说过什么吗")
+    assert looks_like_memory_qa("你记得上次那事吗")
+    assert looks_like_memory_qa("记不记得我提过")
+    assert looks_like_memory_qa("you said it last time")
+    assert not looks_like_memory_qa("How many projects have I led?")
+    assert not looks_like_memory_qa("What degree did I graduate with?")
+    assert not looks_like_memory_qa("仓库里有什么")
+    assert not looks_like_memory_qa("帮我设个提醒")
+    assert not looks_like_memory_qa("记得帮我设个提醒")
+    assert not looks_like_memory_qa("你记得帮我设个提醒")
+    assert not looks_like_memory_qa("那天天气不错")
+    assert not looks_like_memory_qa("谁说不行")
+    assert not looks_like_memory_qa("记下什么了")
+    assert looks_like_committed_work("帮我查一下库存")
+    assert looks_like_committed_work("看看我的面板")
+    assert not looks_like_committed_work("看看这个")
+    assert not looks_like_committed_work("看看这是谁")
+
+
+def test_group_look_here_does_not_force_tools() -> None:
+    import asyncio
+
+    from gsuid_core.ai_core.hooks.models import AgentHookContext
+    from gsuid_core.ai_core.hooks.points import AgentHookPoint
+    from gsuid_core.ai_core.kits.scaffold.kit import KIT, ScaffoldKit
+    from gsuid_core.ai_core.interaction_scaffold import TurnGraph
+
+    assert isinstance(KIT, ScaffoldKit)
+    tg = TurnGraph(
+        user_type="group",
+        message_text="看看这个",
+        persona_name="早柚",
+        is_tome=True,
+        primary_speaker="9001",
+    )
+    idle = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        intent="",
+        query="看看这个",
+        turn_graph=tg,
+        persona_name="早柚",
+    )
+    asyncio.run(KIT.inject_style(idle))
+    assert "transaction_priority" not in idle.blocks
+
+    work = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        intent="",
+        query="帮我查一下库存",
+        turn_graph=tg,
+        persona_name="早柚",
+    )
+    asyncio.run(KIT.inject_style(work))
+    assert "transaction_priority" in work.blocks
 
 
 def test_multi_speaker_message():
@@ -148,7 +208,8 @@ def test_turn_graph_and_cheap_gate(monkeypatch):
         primary_speaker="u1",
     )
     assert decide_cheap_gate(tg_dm) is CheapGate.FULL
-    assert MEMORY_QA_HINT in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL, intent="工具")
+    # 私聊「工具」不是记忆问答：不要灌 MEMORY_QA，否则设提醒也会被当成查档案。
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL, intent="工具")
     assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(tg_dm, cheap=CheapGate.FULL, intent="工具")
     assert SPEAKER_RECALL_HINT not in scaffold_hints_from_graph(
         tg_dm, cheap=CheapGate.FULL, speaker_recall=False, intent="工具"
@@ -186,7 +247,7 @@ def test_memory_qa_hint_not_speaker_slot():
         primary_speaker="u1",
     )
     tool_hints = scaffold_hints_from_graph(tg_remind, cheap=CheapGate.FULL, intent="工具")
-    assert MEMORY_QA_HINT in tool_hints
+    assert MEMORY_QA_HINT not in tool_hints
     assert SPEAKER_RECALL_HINT not in tool_hints
 
     qa_hints = scaffold_hints_from_graph(tg_remind, cheap=CheapGate.FULL, intent="问答")
@@ -206,8 +267,17 @@ def test_memory_qa_hint_not_speaker_slot():
     assert SPEAKER_RECALL_HINT not in dated_hints
 
     chat_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="闲聊")
-    assert MEMORY_QA_HINT in chat_hints
+    assert MEMORY_QA_HINT not in chat_hints
     assert SPEAKER_RECALL_HINT not in chat_hints
+    tg_said = build_turn_graph(
+        "你上次说过什么",
+        persona_name="评测助手",
+        is_tome=True,
+        user_type="direct",
+        primary_speaker="u1",
+    )
+    said_chat = scaffold_hints_from_graph(tg_said, cheap=CheapGate.FULL, intent="闲聊")
+    assert MEMORY_QA_HINT in said_chat
 
     empty_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="")
     assert MEMORY_QA_HINT in empty_hints
@@ -280,6 +350,23 @@ def test_turn_graph_group_gates(monkeypatch):
         primary_speaker="9001",
     )
     assert decide_cheap_gate(tg_hi, intent="闲聊") is CheapGate.FULL
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_hi, cheap=CheapGate.FULL, intent="闲聊")
+    tg_remember_task = build_turn_graph(
+        "小明(用户ID:9001)：@早柚 记得帮我设个提醒",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+    )
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_remember_task, cheap=CheapGate.FULL, intent="闲聊")
+    tg_said = build_turn_graph(
+        "小明(用户ID:9001)：@早柚 你上次说过什么",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="group",
+        primary_speaker="9001",
+    )
+    assert MEMORY_QA_HINT in scaffold_hints_from_graph(tg_said, cheap=CheapGate.FULL, intent="闲聊")
     tg_panel = build_turn_graph(
         "小明(用户ID:9001)：@早柚 看看我椿面板",
         persona_name="早柚",

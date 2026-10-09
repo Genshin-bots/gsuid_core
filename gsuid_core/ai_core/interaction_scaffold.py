@@ -80,6 +80,34 @@ def looks_like_task_request(text: str) -> bool:
     return bool(_LIVE_LOOKUP_RE.search(body) or _DO_REQUEST_RE.search(body))
 
 
+# 「看看这」太宽，闲聊「看看这个」不催工具。
+_COMMITTED_LOOKUP_RE = re.compile(r"(看看我|帮我查|帮查|查一下|查下|查询|查查)")
+
+
+def looks_like_committed_work(text: str) -> bool:
+    """办事或查当前数据。单独的「看看这」不算。"""
+    body = extract_message_body(text)
+    if not body:
+        return False
+    return bool(_DO_REQUEST_RE.search(body) or _COMMITTED_LOOKUP_RE.search(body))
+
+
+# 问过往。不收「记得帮我」「你记得帮我」「那天」「谁说」。
+_MEMORY_QA_RE = re.compile(
+    r"(说过|上次|还记得|记得吗|记得么|记不记得|我提过|你提过|"
+    r"i\s+told\s+you|you\s+(?:said|told|mentioned)|last\s+time|remember\s+when)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_memory_qa(text: str) -> bool:
+    """是否在问谁说过 / 上次怎样，而不是当前世界状态。"""
+    body = extract_message_body(text)
+    if not body:
+        return False
+    return bool(_MEMORY_QA_RE.search(body))
+
+
 def recent_history_texts(history: List[ModelMessage], limit: int = 6) -> List[Tuple[str, str]]:
     """从 pydantic_ai 历史中抽出最近 ``limit`` 条 (role, text)，旧→新。"""
     out: List[Tuple[str, str]] = []
@@ -352,6 +380,9 @@ _SELF_ASK_RE = re.compile(r"我.{0,16}(?:来着|是哪|几[个天票月]|多少[
 _NAME_TAIL_OK = frozenset(" \t，,、：:!！?？~～啊呀呢吧嘛哦喔诶喂哈")
 # 粘在中文名后会把名字加长的昵称后缀（名+子 / 小姐姐）。今/记/帮 不是后缀。
 _CJK_DIMINUTIVE = frozenset("子酱君桑哥姐妹宝喵")
+# 正文 @ 必须带空白，避免 @名看看这是谁 把整句吃掉。
+_LEADING_AT_WITH_SPACE_RE = re.compile(r"^@\S+\s+")
+_ADDRESS_PUNCT = " \t，,、：:!！?？~～"
 
 
 def _rest_after_name(body: str, name: str) -> str | None:
@@ -388,6 +419,22 @@ def _at_mentions_name(message_text: str, name: str) -> bool:
     if name.isascii():
         return re.search(rf"@{re.escape(name)}\b", message_text, re.IGNORECASE) is not None
     return False
+
+
+def strip_leading_address(body: str, persona_name: str = "") -> str:
+    """剥句首 @名 / 呼名，剩下纯正文。无空白的 `@名看看这是谁` 只在已知名时剥。"""
+    t = body.strip()
+    if persona_name:
+        rest = _rest_after_name(t, f"@{persona_name}")
+        if rest is not None:
+            return rest.lstrip(_ADDRESS_PUNCT).strip()
+        rest = _rest_after_name(t, persona_name)
+        if rest is not None and _call_boundary_ok(persona_name, rest):
+            return rest.lstrip("".join(_NAME_TAIL_OK)).strip()
+    m = _LEADING_AT_WITH_SPACE_RE.match(t)
+    if m:
+        return t[m.end() :].strip()
+    return t
 
 
 class GroupOpenGate(str, Enum):
@@ -810,7 +857,7 @@ def scaffold_hints_from_graph(
             pass
         elif intent == "工具" and tg.is_group:
             hints.append(SPEAKER_RECALL_HINT)
-        else:
+        elif looks_like_memory_qa(tg.message_text) or (not tg.is_group and intent in ("问答", "")):
             hints.append(MEMORY_QA_HINT)
     return hints
 

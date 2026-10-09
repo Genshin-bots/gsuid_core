@@ -381,6 +381,46 @@ async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
             break
 
 
+def _record_inbound_history(event: Event) -> None:
+    """入站写入 HistoryManager。无配文纯图也记，近图指示才能看见上一张。"""
+    has_text = bool(event.raw_text and event.raw_text.strip())
+    has_image = bool(event.image_id or event.image_id_list)
+    if not (has_text or event.at_list or has_image):
+        return
+
+    user_name = None
+    if event.sender and "nickname" in event.sender:
+        user_name = event.sender["nickname"]
+    user_avatar = None
+    if event.sender and "avatar" in event.sender:
+        user_avatar = event.sender["avatar"]
+
+    metadata: dict[str, object] = {
+        "msg_id": event.msg_id,
+        "bot_id": event.bot_id,
+        "user_type": event.user_type,
+    }
+    if event.image_id_list:
+        metadata["image_id_list"] = event.image_id_list
+    elif event.image_id:
+        metadata["image_id"] = event.image_id
+    if event.at_list:
+        metadata["at_list"] = event.at_list
+    if event.file:
+        metadata["file_id"] = event.file
+
+    from gsuid_core.message_history import get_history_manager
+
+    get_history_manager().add_message(
+        event=event,
+        role="user",
+        content=event.raw_text.strip(),
+        user_name=user_name if isinstance(user_name, str) else None,
+        user_avatar=user_avatar if isinstance(user_avatar, str) else None,
+        metadata=metadata,
+    )
+
+
 async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if not IS_HANDDLE:
         return
@@ -423,57 +463,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             )
             ws._add_bg_task(asyncio.create_task(fire_hooks(AgentHookPoint.ON_INBOUND, inbound_ctx)))
 
-    # A-3 修复：图片观察不能被文本门控包住——纯图片消息（无文字）也要能进图片摄入，
-    # 否则「高价值图片走独立队列异步转述」对纯图片消息形同死代码。图片观察现在在 H00
-    # 套件里按 event 自己判，这里只留历史入库的文本门控。
-    _has_text = bool(event.raw_text and event.raw_text.strip())
-
-    # 纯 @ 消息（at 段无文字）也须入历史：否则 @ 目标从历史里凭空消失，
-    # AI/Heartbeat 会把紧随其后的「醒了吗」误认为在叫自己（生产实测误判）。
-    if _has_text or event.at_list:
-        # 获取用户昵称
-        user_name = None
-        if event.sender and "nickname" in event.sender:
-            user_name = event.sender["nickname"]
-
-        # 获取用户头像URL
-        user_avatar = None
-        if event.sender and "avatar" in event.sender:
-            user_avatar = event.sender["avatar"]
-
-        # 构建元数据
-        from typing import Any, Dict
-
-        metadata: Dict[str, Any] = {
-            "msg_id": event.msg_id,
-            "bot_id": event.bot_id,
-            "user_type": event.user_type,
-        }
-
-        # 添加图片ID列表
-        if event.image_id_list:
-            metadata["image_id_list"] = event.image_id_list
-        elif event.image_id:
-            metadata["image_id"] = event.image_id
-
-        # 添加@列表
-        if event.at_list:
-            metadata["at_list"] = event.at_list
-
-        # 添加文件信息
-        if event.file:
-            metadata["file_id"] = event.file
-
-        from gsuid_core.message_history import get_history_manager
-
-        get_history_manager().add_message(
-            event=event,
-            role="user",
-            content=event.raw_text.strip(),
-            user_name=user_name,
-            user_avatar=user_avatar,
-            metadata=metadata,
-        )
+    # 图片观察在 H00 按 event 自己判。历史入库：正文、纯 @、无配文纯图都记。
+    _record_inbound_history(event)
 
     # 记忆 / 表情 / 图片记忆的入站观察已迁至 H00（``kits/memory``、``kits/meme``）：
     # 关 memory 槽就该不观察，观察与检索不该分处两地各判一次开关。

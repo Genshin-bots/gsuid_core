@@ -107,18 +107,17 @@ def test_zone_voice_never_refuses_service() -> None:
         voice = zone_voice(zone)
         assert "拒绝提供任何有效帮助" not in voice
         assert "拒绝帮助" not in voice
-    assert "履约" in zone_voice(Zone.HOSTILE) or "照做" in zone_voice(Zone.HOSTILE)
+        assert "照做" not in voice
+        assert "该查该办" not in voice
 
 
-def test_low_zone_voice_carries_fulfillment_floor() -> None:
-    """低档口吻**每一档**都要自带履约兜底。
+def test_fulfillment_floor_lives_in_constitution_not_zone_voice() -> None:
+    """履约在宪法，不写进口气，避免闲聊也被逼翻库。"""
+    from gsuid_core.ai_core.persona.prompts import SYSTEM_CONSTRAINTS
 
-    这段文本与人设卡叠加进同一轮，而人设卡常带「潜水 / 低好感只在被 @ 时回应 /
-    回复 3~15 字」。只写「少废话」不写「照做」时，两段叠起来被读成「可以不办」——
-    e2e 群聊基准曾因此回退 6 例（拒答时间、拒查偏好、拒查资料）。
-    """
+    assert "正当请求禁因懒拒做" in SYSTEM_CONSTRAINTS
     for zone in (Zone.HOSTILE, Zone.COLD, Zone.DISTANT, Zone.ACQUAINTANCE):
-        assert "照做" in zone_voice(zone), f"{zone} 缺履约兜底，会被读成可以拒办"
+        assert "照做" not in zone_voice(zone)
 
 
 def test_unscored_view_injects_no_voice() -> None:

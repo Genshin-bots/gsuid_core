@@ -80,7 +80,9 @@ async def send_meme(
     img_base64 = await convert_img(image_data)
     message = MessageSegment.image(img_base64)
 
-    await bot.send(message)
+    from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+
+    await bot.send(message, extra_metadata=turn_reply_metadata(ev))
 
     # 记录使用
     await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")

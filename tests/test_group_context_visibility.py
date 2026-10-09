@@ -125,7 +125,11 @@ def test_turn_reply_metadata_records_group_addressee() -> None:
 
     group_ev = Event(bot_id="b", bot_self_id="s", group_id="g1", user_id="u9", user_type="group")
     group_ev.sender = {"nickname": "甲"}
-    assert turn_reply_metadata(group_ev) == {"reply_to_user_id": "u9", "reply_to_user_name": "甲"}
+    assert turn_reply_metadata(group_ev) == {
+        "reply_to_user_id": "u9",
+        "reply_to_user_name": "甲",
+        "speech_channel": "persona",
+    }
 
     direct_ev = Event(bot_id="b", bot_self_id="s", user_id="u9", user_type="direct")
     assert turn_reply_metadata(direct_ev) == {}
@@ -183,7 +187,7 @@ def test_main_interactive_path_passes_reply_metadata(monkeypatch) -> None:
 
     monkeypatch.setattr(loop_mod, "send_chat_result", _fake_send)
     asyncio.run(phase._commit_streamed_or_send(st, "在", already_streamed=False))
-    assert sent == [{"reply_to_user_id": "u9"}], sent
+    assert sent == [{"reply_to_user_id": "u9", "speech_channel": "persona"}], sent
 
     # 2) 流式：commit 那一路同样要带（HTTP/SSE 路径由 capture_bot 真正实现）
     st.outbound_stream = True
@@ -195,7 +199,7 @@ def test_main_interactive_path_passes_reply_metadata(monkeypatch) -> None:
     assert st.bot is not None
     monkeypatch.setattr(st.bot, "commit_streamed_history", _fake_commit)
     asyncio.run(phase._commit_streamed_or_send(st, "在", already_streamed=True))
-    assert committed == [{"reply_to_user_id": "u9"}], committed
+    assert committed == [{"reply_to_user_id": "u9", "speech_channel": "persona"}], committed
     assert st.main_channel_sends == 2
 
 

@@ -22,7 +22,7 @@ class _SendBot:
         self.fail_times = fail_times
         self.sends = 0
 
-    async def send(self, msg: object) -> None:
+    async def send(self, msg: object, extra_metadata: object = None, **_k: object) -> None:
         if self.fail_times > 0:
             self.fail_times -= 1
             raise RuntimeError("send down")

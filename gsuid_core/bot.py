@@ -365,6 +365,16 @@ class _Bot:
                     # 显式 merge：调用方传入的 extra_metadata 覆盖默认推断的 type/image_count
                     if extra_metadata:
                         metadata.update(extra_metadata)
+                    from gsuid_core.ai_core.history_format import outbound_history_fields
+
+                    sender = sender_id.strip() if isinstance(sender_id, str) else ""
+                    metadata.update(
+                        outbound_history_fields(
+                            set(metadata),
+                            target_type=target_type,
+                            sender_id=sender,
+                        )
+                    )
                     history_manager.add_message(
                         event=ev,
                         role="assistant",

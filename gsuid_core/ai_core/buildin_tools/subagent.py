@@ -25,7 +25,10 @@
 
 import re
 import asyncio
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
+
+if TYPE_CHECKING:
+    from gsuid_core.message_history.manager import MessageRecord
 
 from pydantic_ai import RunContext
 
@@ -38,6 +41,7 @@ from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.delegation import await_delegation, delegation_handle
+from gsuid_core.ai_core.interaction_scaffold import extract_message_body, strip_leading_address
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入
 # 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
@@ -430,13 +434,10 @@ async def _create_subagent_impl(
                     )
                 return "⚠️ 本轮是任务交付回灌。当前人格未启用出图代理，请直接用已有事实作答，不要新开查询。"
         _follow = _extra["turn_followup"] is True if "turn_followup" in _extra else False
-        if pid != "render_agent" and not _follow and ctx.deps.ev is not None:
-            _ground = turn_ground_source(ctx.deps.ev)
-            if _ground and not delegation_grounded(task, _ground):
-                return (
-                    "⚠️ 这个任务对不上本轮说话人的原话。"
-                    "群历史里别人的话题不能派成他的任务；只处理他这一句，或引用里点名的内容。"
-                )
+        if pid != "render_agent" and ctx.deps.ev is not None:
+            _reject = delegation_ground_reject(ctx.deps.ev, task, follow=_follow)
+            if _reject:
+                return _reject
         use_transient = pid in _TRANSIENT_DEFAULT_PROFILES
         if not use_transient and transient and not ctx.deps.allow_user_outbound:
             use_transient = True
@@ -816,6 +817,94 @@ def turn_ground_source(ev: Event) -> str:
     if ev.reply:
         parts.append(ev.reply)
     return "\n".join(parts)
+
+
+# 整句近图指示。后接书/纸/案/层/表，或句子没说完，不算指图。
+_DEICTIC_MEDIA_RE = re.compile(
+    r"^(?:你|请|帮我|帮忙|给我)?(?:看{1,2})?"
+    r"(?:这是谁|那是谁|这谁|那谁|[这那]张图|[这那]图|什么图|哪张图|(?:上面|刚才)那(?:张图|张|谁))"
+    r"(?!书|纸|案|层|表)"
+    r"[啊呀呢吧哦嘛？?！!。.~\s]*$"
+)
+_MEDIA_TASK_RE = re.compile(
+    r"(图片|看图|图里|图中|照片|截图|是谁|read_image|\b(?:image|photo|picture)\b)",
+    re.IGNORECASE,
+)
+
+
+def _record_has_image(meta: object) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    image_id = meta["image_id"] if "image_id" in meta else ""
+    image_list = meta["image_id_list"] if "image_id_list" in meta else None
+    if isinstance(image_id, str) and image_id:
+        return True
+    return isinstance(image_list, list) and any(isinstance(x, str) and x for x in image_list)
+
+
+def _task_asks_media(task: str) -> bool:
+    return _MEDIA_TASK_RE.search(task or "") is not None
+
+
+def _prior_turn_records(ev: Event) -> "list[MessageRecord]":
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.message_history.manager import MessageRecord
+
+    records = get_history_manager().get_history(ev, limit=8)
+    msg_id = ev.msg_id.strip()
+    kept: list[MessageRecord] = []
+    for record in records:
+        meta = record.metadata or {}
+        rid = meta["msg_id"] if "msg_id" in meta else ""
+        if msg_id and isinstance(rid, str) and rid == msg_id:
+            continue
+        kept.append(record)
+    if not msg_id and kept:
+        last = kept[-1]
+        body = extract_message_body(ev.raw_text or ev.text or "")
+        last_body = extract_message_body(last.content)
+        if last.role == "user" and str(last.user_id) == str(ev.user_id) and body and last_body == body:
+            kept = kept[:-1]
+    return kept[-2:]
+
+
+def _deictic_match_body(ev: Event) -> str:
+    """extract_message_body 之后再剥句首 @/呼名。句首呼名会让整句锚对不上。"""
+    body = extract_message_body(ev.raw_text or ev.text or "").strip()
+    persona = ""
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    raw_name = persona_config_manager.get_persona_for_session(ev.session_id)
+    if isinstance(raw_name, str):
+        persona = raw_name.strip()
+    return strip_leading_address(body, persona)
+
+
+def deictic_to_recent_media(ev: Event) -> bool:
+    """整句近图指示，且本句之前 1～2 条里有图。本句自己的入站不算。"""
+    if ev.image_id or ev.image_id_list:
+        return False
+    body = _deictic_match_body(ev)
+    if not body or _DEICTIC_MEDIA_RE.search(body) is None:
+        return False
+    return any(_record_has_image(record.metadata) for record in _prior_turn_records(ev))
+
+
+_DELEGATION_UNGROUNDED = (
+    "⚠️ 这个任务对不上本轮说话人的原话。群历史里别人的话题不能派成他的任务；只处理他这一句，或引用里点名的内容。"
+)
+
+
+def delegation_ground_reject(ev: Event, task: str, *, follow: bool) -> str | None:
+    """委派任务对不上本轮原话时的打回。近图且任务是看图时不打回。"""
+    if follow:
+        return None
+    if deictic_to_recent_media(ev) and _task_asks_media(task):
+        return None
+    ground = turn_ground_source(ev)
+    if not ground or delegation_grounded(task, ground):
+        return None
+    return _DELEGATION_UNGROUNDED
 
 
 async def _dispatch_via_kanban(

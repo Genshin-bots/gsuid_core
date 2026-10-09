@@ -403,8 +403,13 @@ async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> b
     bot = ctx.deps.bot
     if bot is None:
         return False
+    from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+
     try:
-        await bot.send(MessageSegment.image(image_bytes))
+        await bot.send(
+            MessageSegment.image(image_bytes),
+            extra_metadata=turn_reply_metadata(ctx.deps.ev),
+        )
         return True
     except Exception as e:
         logger.debug(t("log.htmlrender.auto_send_fallback", e=e))

@@ -25,7 +25,7 @@ class ScaffoldKit(AgentKit):
         """
         tg = ctx.turn_graph
         is_group = tg is not None and tg.is_group
-        # 私聊建议不是寒暄。群聊闲聊才压短，避免评测/私聊偏好题被 ≤15 字掐死。
+        # 私聊建议不是寒暄。群聊闲聊才压短，长度跟发言形态档。
         if is_group and ctx.intent == "闲聊" and not ctx.prev_turn_used_tools and not ctx.has_actionable:
             last_had_tick = False
             history = ctx.gate_history
@@ -34,6 +34,7 @@ class ScaffoldKit(AgentKit):
 
                 history = get_history_manager().get_history(ctx.ev, limit=8)
             from gsuid_core.ai_core.persona.resource import get_tone_markers, reply_ends_with_tone_marker
+            from gsuid_core.ai_core.persona.chat_style import resolve_chat_style
 
             markers = get_tone_markers(ctx.persona_name)
             for rec in reversed(history):
@@ -43,12 +44,16 @@ class ScaffoldKit(AgentKit):
             quota = "（口癖配额：每3–5条至多1条带语气词结尾；其余条不带。）"
             if last_had_tick:
                 quota += "上一条已带口癖，本条禁带。"
+            style = resolve_chat_style(ctx.persona_name)
             ctx.set_context_block(
                 "chitchat_style",
-                f"（若纯寒暄：≤15字/条，至多2条；若需查数/办事仍调工具。）{quota}",
+                f"（若纯寒暄：建议不超过 {style.soft} 字/条，至多 {style.bubbles} 条；若需查数/办事仍调工具。）{quota}",
             )
-        # 私聊 FULL 一律催工具（分类超时 intent 为空时也要搜）；群聊仅问答/工具。
-        need_tools = (not is_group) or ctx.intent in ("工具", "问答")
+        # 私聊 FULL 一律催工具。群聊问答/工具，或办事/查数；不认单独的「看看这」。
+        from gsuid_core.ai_core.interaction_scaffold import looks_like_committed_work
+
+        q = ctx.query or ""
+        need_tools = (not is_group) or ctx.intent in ("工具", "问答") or looks_like_committed_work(q)
         if need_tools and not ctx.memory_eval:
             ctx.set_context_block(
                 "transaction_priority",

@@ -541,6 +541,12 @@ def test_protocol_silence_variants_are_parsed() -> None:
         "ILENCE>",
         "SILENCE>",
         "<SILENCE",
+        "<沉默>",
+        "[沉默]",
+        "<沉默/>",
+        "</沉默>",
+        "<沉默",
+        "沉默>",
     ):
         assert is_silence_marker(raw), raw
     for raw in (
@@ -549,6 +555,10 @@ def test_protocol_silence_variants_are_parsed() -> None:
         "SILENCE 是什么意思",
         "<bubble/>",
         "哈哈 <SILENCE>",
+        "哈哈 <沉默>",
+        "我选择沉默",
+        "沉默",
+        "沉默是金",
         "...",
         "……",
         "。",
@@ -559,7 +569,9 @@ def test_protocol_silence_variants_are_parsed() -> None:
         assert not is_silence_marker(raw), raw
     assert is_silence_marker("<SILENCE>...")
     assert is_silence_marker("<silence>……</silence>")
+    assert is_silence_marker("<沉默>……")
     assert not is_silence_marker("请输出 `<SILENCE>` 三个字")
+    assert not is_silence_marker("请输出 `<沉默>` 三个字")
 
 
 def test_protocol_legacy_marker_set_still_parses() -> None:

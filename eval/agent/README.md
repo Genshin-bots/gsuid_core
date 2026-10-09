@@ -19,6 +19,7 @@ eval/agent/
   cases/agent_hard_suite.yaml   # 主用例集
   cases/group_chat_expansion.yaml  # 群聊扩展（沉默/多人/渲染等）
   cases/group_chat_prod_patterns.yaml  # 由真实群 session **结构抽象**出的合成群聊用例（无真实 ID/原文）
+  cases/group_chat_voice_ooc.yaml  # 语域/出戏结构扩集（搜完变沉默、检索报告腔、复读记账、指近图）
   cases/cognition_hub_mixed.yaml  # 认知枢纽混源回想
   cases/speaker_slot_recall.yaml  # 询问者槽位回想（空槽直搜 / 唤醒词误路由 / 轻查询不应）
   harness.py                    # 轨迹解析 + verifier 注册表 + pass^k 打分（无 LLM 依赖）

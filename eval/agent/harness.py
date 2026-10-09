@@ -41,7 +41,17 @@ def judge_text_is_transient(text: str) -> bool:
     if not s:
         return True
     low = s.lower()
-    if low in {"<silence>", "[silence]", "silence", "</silence>", "<silence/>"}:
+    if low in {
+        "<silence>",
+        "[silence]",
+        "silence",
+        "</silence>",
+        "<silence/>",
+        "<沉默>",
+        "[沉默]",
+        "</沉默>",
+        "<沉默/>",
+    }:
         return True
     return any(m.lower() in low for m in _JUDGE_TRANSIENT_MARKERS)
 
@@ -193,9 +203,19 @@ def _is_eval_silence(text: str) -> bool:
     if not t:
         return True
     low = t.lower()
-    if low in {"<silence>", "[silence]", "silence", "<end_turn>", "<no_tool_call>"}:
+    if low in {
+        "<silence>",
+        "[silence]",
+        "silence",
+        "<end_turn>",
+        "<no_tool_call>",
+        "<沉默>",
+        "[沉默]",
+        "</沉默>",
+        "<沉默/>",
+    }:
         return True
-    return bool(re.match(r"^(?:ilence>|silence>?|<silence/?>)\s*$", t, re.I))
+    return bool(re.match(r"^(?:ilence>|silence>?|<silence/?|<沉默/?|沉默>)\s*$", t, re.I))
 
 
 def _run_start_indices(entries: list) -> list[int]:
