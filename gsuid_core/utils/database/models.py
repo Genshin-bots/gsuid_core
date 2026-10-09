@@ -118,7 +118,7 @@ class Subscribe(BaseModel, table=True):
         command_start_text: str = "",
         force_direct: bool = False,
         extra_metadata: Optional[Dict[str, Any]] = None,
-    ):
+    ) -> int:
         if force_direct:
             user_type = "direct"
         else:
@@ -156,37 +156,37 @@ class Subscribe(BaseModel, table=True):
                 BOT = gss.active_bot[self.WS_BOT_ID]
                 bot = Bot(BOT, ev)
                 await _dispatch(bot)
-            else:
-                # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
-                found = False
-                for ws_bot_id, _bot in gss.active_bot.items():
-                    if _bot.bot_id == self.bot_id:
-                        logger.info(
-                            t(
-                                "log.database.subscription_ws_bot_id_invalid",
-                                p0=self.WS_BOT_ID,
-                                ws_bot_id=ws_bot_id,
-                            )
+                return 0
+            # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
+            for ws_bot_id, _bot in gss.active_bot.items():
+                if _bot.bot_id == self.bot_id:
+                    logger.info(
+                        t(
+                            "log.database.subscription_ws_bot_id_invalid",
+                            p0=self.WS_BOT_ID,
+                            ws_bot_id=ws_bot_id,
                         )
-                        # 更新数据库中的 WS_BOT_ID
-                        self.WS_BOT_ID = ws_bot_id
-                        await self.update_data(
-                            user_id=self.user_id,
-                            bot_id=self.bot_id,
-                            WS_BOT_ID=ws_bot_id,
-                        )
-                        bot = Bot(_bot, ev)
-                        await _dispatch(bot)
-                        found = True
-                        break
-                if not found:
-                    logger.error(t("log.database.subscription_bot_exist_cannot_send", p0=self.WS_BOT_ID))
-                    return -1
+                    )
+                    # 更新数据库中的 WS_BOT_ID
+                    self.WS_BOT_ID = ws_bot_id
+                    await self.update_data(
+                        user_id=self.user_id,
+                        bot_id=self.bot_id,
+                        WS_BOT_ID=ws_bot_id,
+                    )
+                    bot = Bot(_bot, ev)
+                    await _dispatch(bot)
+                    return 0
+            logger.error(t("log.database.subscription_bot_exist_cannot_send", p0=self.WS_BOT_ID))
+            return -1
         else:
+            if not gss.active_bot:
+                return -1
             for bot_id in gss.active_bot:
                 BOT = gss.active_bot[bot_id]
                 bot = Bot(BOT, ev)
                 await _dispatch(bot)
+            return 0
 
 
 class CoreTag(BaseIDModel, table=True):

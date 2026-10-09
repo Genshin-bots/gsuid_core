@@ -15,7 +15,7 @@ sv_core_config = SV("Core管理", pm=0)
 
 
 @gss.on_bot_connect
-async def check_msg():
+async def check_msg() -> None:
     try:
         await asyncio.sleep(2)
         logger.info(t("log.core.startup_check_checking_leftover_information"))

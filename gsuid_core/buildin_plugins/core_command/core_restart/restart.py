@@ -191,40 +191,61 @@ async def restart_genshinuid(
     _popen_restart_shell(build_restart_shell_command(system, pid, command))
 
 
-async def restart_message():
-    if update_log_path.exists():
-        update_log_path.unlink()
+_RESTART_MSG_LOCK: asyncio.Lock | None = None
+_RESTART_MSG_LOOP: asyncio.AbstractEventLoop | None = None
 
-    datas = await gs_subscribe.get_subscribe(
-        task_name="[早柚核心] Restart",
-    )
-    if datas:
+
+def _restart_msg_lock() -> asyncio.Lock:
+    """锁绑在当前事件循环上。测试里多次 asyncio.run 不能复用上一轮的锁。"""
+    global _RESTART_MSG_LOCK, _RESTART_MSG_LOOP
+    loop = asyncio.get_running_loop()
+    lock = _RESTART_MSG_LOCK
+    if lock is None or _RESTART_MSG_LOOP is not loop:
+        lock = asyncio.Lock()
+        _RESTART_MSG_LOCK = lock
+        _RESTART_MSG_LOOP = loop
+    return lock
+
+
+async def restart_message() -> None:
+    async with _restart_msg_lock():
+        if update_log_path.exists():
+            update_log_path.unlink()
+
+        datas = await gs_subscribe.get_subscribe(
+            task_name="[早柚核心] Restart",
+        )
+        if not datas:
+            return
+
         now_timestamp = time.time()
         now_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_timestamp))
-        data = datas[0]
-        # 推送给主人，按主人的语言偏好（用户自定义 > 全局）
-        lang = await CoreUser.get_user_lang(data.user_id)
-        duration_msg = ""
-        if core_startup_info.duration is not None:
-            duration_msg = t("\n耗时: {p0:.2f}s", lang=lang, p0=core_startup_info.duration)
-            if data.extra_message:
-                try:
-                    shutdown_timestamp = time.mktime(time.strptime(data.extra_message, "%Y-%m-%d %H:%M:%S"))
-                    restart_duration = now_timestamp - shutdown_timestamp
-                    duration_msg += f" / {restart_duration:.1f}s"
-                except ValueError:
-                    pass
-        await data.send(
-            t(
-                "🚀 重启完成!\n关机时间: {extra_message}\n重启时间: {now_time}{duration_msg}\n版本: {version}",
-                lang=lang,
-                extra_message=data.extra_message,
-                now_time=now_time,
-                duration_msg=duration_msg,
-                version=__version__,
-            ),
-            extra_metadata={"skip_ai_history": True},
-        )
-        await Subscribe.delete_row(task_name="[早柚核心] Restart")
-    else:
-        logger.warning(t("log.core.core_restart_subscription_found_start"))
+        for data in datas:
+            # 推送给主人，按主人的语言偏好（用户自定义 > 全局）
+            lang = await CoreUser.get_user_lang(data.user_id)
+            duration_msg = ""
+            if core_startup_info.duration is not None:
+                duration_msg = t("\n耗时: {p0:.2f}s", lang=lang, p0=core_startup_info.duration)
+                if data.extra_message:
+                    try:
+                        shutdown_timestamp = time.mktime(time.strptime(data.extra_message, "%Y-%m-%d %H:%M:%S"))
+                        restart_duration = now_timestamp - shutdown_timestamp
+                        duration_msg += f" / {restart_duration:.1f}s"
+                    except ValueError:
+                        pass
+            send_res = await data.send(
+                t(
+                    "🚀 重启完成!\n关机时间: {extra_message}\n重启时间: {now_time}{duration_msg}\n版本: {version}",
+                    lang=lang,
+                    extra_message=data.extra_message,
+                    now_time=now_time,
+                    duration_msg=duration_msg,
+                    version=__version__,
+                ),
+                extra_metadata={"skip_ai_history": True},
+            )
+            # 发送成功删除该条记录；目标 Bot 尚未连入时保留，等待其连入后再推。
+            if send_res != -1:
+                await Subscribe.delete_row(id=data.id)
+            else:
+                logger.warning(t("log.core.core_restart_subscription_found_start"))
