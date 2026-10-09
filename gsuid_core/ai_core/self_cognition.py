@@ -40,6 +40,7 @@ _FIELDS = ("commitments", "preferences_learned", "recurring_topics", "self_notes
 _ONTOLOGY_FIELD = "self_ontology"
 # 笔记里点名的用户。短数字（日期、版本）不算。
 _PINNED_SPEAKER_RE = re.compile(r"\d{5,}|[0-9A-Fa-f]{16,}")
+_USER_MENTION_RE = re.compile(r"(?:用户ID[:：\s]*|用户[:：\s]*)([a-zA-Z0-9_\-]+)")
 # 主人自述槽，不跟纠错规则抢本轮名额。
 _STANDING_PREF_CONTEXTS = frozenset({"location", "possession"})
 
@@ -51,12 +52,7 @@ def default_self_ontology() -> str:
     aliases = [str(a) for a in raw] if isinstance(raw, list) and raw else ["GsCore", "gsuid_core"]
     names = "、".join(aliases) if aliases else "GsCore、gsuid_core"
     return (
-        f"- 「{names}」是承载我的宿主框架。"
-        "群友讨论这些名字 = 在讨论我的宿主。可以搭话，"
-        "必须用角色卡里的世界观转述，禁止用开发者口吻介绍架构。\n"
-        "- 「插件」是我可调用的能力；「更新/重启」= 我暂时离线。\n"
-        "- 群里的 bot 统计（DAU/消息量/留存）可能是在统计我这类角色。\n"
-        "- 配置里的 masters = 最高信任关系的人（如何称呼以角色卡为准）。"
+        f"- 「{names}」是宿主框架；被提起时用角色口吻转述，禁技术腔介绍架构。\n- 「插件」是能力，masters 为最高信任。"
     )
 
 
@@ -67,10 +63,23 @@ async def ensure_self_ontology(bot_id: str) -> str:
     raw = await state_get_value(_self_scope(bot_id), _SELF_MODEL_KEY)
     if isinstance(raw, dict) and _ONTOLOGY_FIELD in raw:
         val = raw[_ONTOLOGY_FIELD]
+        text_val = ""
         if isinstance(val, str) and val.strip():
-            return val.strip()
-        if isinstance(val, list) and val and isinstance(val[0], str) and val[0].strip():
-            return val[0].strip()
+            text_val = val.strip()
+        elif isinstance(val, list) and val and isinstance(val[0], str) and val[0].strip():
+            text_val = val[0].strip()
+        if text_val:
+            # 旧版冗长模板自动换成紧凑版
+            if "群友讨论这些名字" in text_val or "群里的 bot 统计" in text_val:
+                text_val = default_self_ontology()
+
+                def _mutate_refresh(current: Any) -> Dict[str, object]:
+                    model = _self_model_state(current)
+                    model[_ONTOLOGY_FIELD] = text_val
+                    return model
+
+                await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate_refresh)
+            return text_val
     text = default_self_ontology()
 
     def _mutate(current: Any) -> Dict[str, object]:
@@ -395,6 +404,8 @@ async def build_self_cognition_context(
 def note_applies_to_speaker(note: str, speaker_id: str) -> bool:
     """没点名的笔记人人可见；点了用户 ID 的只给那个人。"""
     pinned = set(_PINNED_SPEAKER_RE.findall(note))
+    for m in _USER_MENTION_RE.finditer(note):
+        pinned.add(m.group(1))
     if not pinned:
         return True
     return speaker_id in pinned
@@ -415,7 +426,7 @@ def collect_speaker_preference_rules(
         body = text.strip()
         if not body or len(out) >= limit:
             return
-        key = body.lower().replace(" ", "")
+        key = body.lower().replace(" ", "").rstrip("。，.,!！")
         if key in seen:
             return
         seen.add(key)

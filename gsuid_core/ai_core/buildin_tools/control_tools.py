@@ -21,6 +21,7 @@ from gsuid_core.ai_core.control.delegation import (
     await_delegation,
     format_delegation,
 )
+from gsuid_core.ai_core.buildin_tools.visibility import visible_when_directive_present
 
 _MAX_WAIT_SEC = 20.0
 
@@ -50,7 +51,12 @@ async def check_delegation(
     return format_delegation(deleg)
 
 
-@ai_tools(category="buildin", capability_domain="产物", code_callable=False)
+@ai_tools(
+    category="buildin",
+    capability_domain="产物",
+    visible_when=visible_when_directive_present,
+    code_callable=False,
+)
 async def dispute_directive(ctx: RunContext[ToolContext], reason: str) -> str:
     """当框架内部校验的观察与事实不符时写入申辩，而**不要**对用户解释。
 

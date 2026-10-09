@@ -72,11 +72,18 @@ PROACTIVE_MESSAGE_USER_TEMPLATE = """[群里最近发生的事]
 - 默认潜水，非必要不现身：如果只是"想说点什么"但没有明确话头，宁可不说。
 """
 
-# §10 新鲜度门：最后一条人类消息距今超过该分钟数，
-STALE_TOPIC_MINUTES_DEFAULT = 15
+# §10 新鲜度门：超 STALE 判冷；3-20 分钟开放话题可接但注入时差感知
+STALE_TOPIC_MINUTES_DEFAULT = 20
+DELAYED_TOPIC_MINUTES = 3
 # 可点名窗口：超过则禁止假设对方在场（阈值不进配置，避免运行期漂移）。
 MASTER_ACTIVE_WINDOW_MIN = 30
 ACTIVE_WINDOW_MIN = 30
+
+DELAYED_TOPIC_NOTE_TEMPLATE = (
+    "\n\n（时间感知：群里最后一条消息是 {minutes} 分钟前发出的。"
+    "如果是开放话题可以搭话，但请自然体现真实群友才看到或刚翻到消息的时间差感，"
+    "如「才看到/刚才在忙/刚睡醒」，禁止表现得像刚刚秒回。）"
+)
 
 STALENESS_NOTE_TEMPLATE = (
     "\n\n（注意：群里最后一条消息已经是 {minutes} 分钟前的了，那个话题早就翻篇。"
@@ -135,10 +142,9 @@ def _hook_span_sources(history: List[MessageRecord], extra_context: str = "") ->
 
 
 def build_staleness_section(history: List[MessageRecord], now_ts: float) -> str:
-    """群内最后一条消息距今超阈值时返回"话题已冷"提示，否则空串（§10）。
+    """群内最后一条消息距今超阈值时返回时差或冷话题提示，否则空串（§10）。
 
-    看所有角色而非只看 user：bot 刚心跳发过新话头时再注入"最后消息是 X 分钟前"
-    既失实又会怂恿连续自说自话（评审修复 E9；阈值固定用模块常量，评审修复 E18）。
+    看全部角色以防自说自话。3-20 分钟注入时差感知，>=20 分钟判定话题已冷。
     """
     last_ts = 0.0
     for record in reversed(history):
@@ -148,8 +154,10 @@ def build_staleness_section(history: List[MessageRecord], now_ts: float) -> str:
     if last_ts <= 0:
         return ""
     elapsed_minutes = int((now_ts - last_ts) / 60)
-    if elapsed_minutes < STALE_TOPIC_MINUTES_DEFAULT:
+    if elapsed_minutes < DELAYED_TOPIC_MINUTES:
         return ""
+    if elapsed_minutes < STALE_TOPIC_MINUTES_DEFAULT:
+        return DELAYED_TOPIC_NOTE_TEMPLATE.format(minutes=elapsed_minutes)
     return STALENESS_NOTE_TEMPLATE.format(minutes=elapsed_minutes)
 
 

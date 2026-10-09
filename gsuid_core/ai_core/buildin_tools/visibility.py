@@ -214,3 +214,14 @@ def context_has_video(ctx: VisibilityScanCtx) -> bool:
         if "vid_" in text or "视频ID" in text:
             return True
     return False
+
+
+def visible_when_directive_present(ctx: VisibilityScanCtx) -> bool:
+    """内部校验/纠偏指令出现时才暴露 dispute_directive。"""
+    deps = ctx.deps
+    if deps is not None and "dispute_extra" in deps.extra:
+        return True
+    for text in _iter_context_texts(ctx):
+        if "系统校验" in text or "[框架·" in text:
+            return True
+    return False

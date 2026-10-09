@@ -256,7 +256,7 @@ async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], boo
                 flush=True,
             )
             if not r["case_pass"] and r["fail_reasons"]:
-                print(f"        ↳ {str(r['fail_reasons'][0])[:160]}", flush=True)
+                print(f"        -> {str(r['fail_reasons'][0])[:160]}", flush=True)
         return row
 
     # gather 保输入序，报告仍按用例表顺序；打印按完成先后

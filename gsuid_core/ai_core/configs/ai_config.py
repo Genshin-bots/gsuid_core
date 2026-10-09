@@ -301,11 +301,11 @@ AI_CONFIG: Dict[str, GSC] = {
         12,
         options=[8, 12, 16, 24],
     ),
-    "capability_roster_max": GsIntConfig(
+    "capability_roster_line_max": GsIntConfig(
         "能力花名册单行字数上限",
         "system 花名册每行 when_to_use 上限；不截断丢节点。详情走 capability_map。修改后下次新建会话生效",
-        120,
-        options=[80, 120, 200, 800, 1800],
+        45,
+        options=[45, 60, 80, 120, 200],
     ),
     "agent_max_run_attempts": GsIntConfig(
         "核心请求重试次数",

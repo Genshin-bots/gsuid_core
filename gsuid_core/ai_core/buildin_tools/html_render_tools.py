@@ -118,15 +118,14 @@ body{{
 }}
 h1{{font-size:26px;font-weight:700;color:#fff;margin:0 0 6px;line-height:1.25;}}
 h2{{
-  font-size:15px;font-weight:630;color:#e9eef7;margin:22px 0 12px;
-  border-left:4px solid #5b9dd9;padding-left:10px;
+  font-size:16px;font-weight:630;color:#e9eef7;margin:22px 0 12px;
 }}
 .meta{{font-size:12px;color:#6b7890;margin-bottom:16px;letter-spacing:0.02em;}}
 .grid,.mgrid{{display:flex;gap:12px;margin:8px 0 4px;}}
 .metric{{
   width:220px;background:linear-gradient(160deg,#1a2740,#131d30);
-  border:1px solid rgba(91,157,217,0.14);border-radius:16px;
-  padding:16px 14px;border-top:3px solid #5b9dd9;
+  border:1px solid rgba(91,157,217,0.18);border-radius:16px;
+  padding:16px 14px;
   box-shadow:0 4px 18px rgba(0,0,0,0.32);
 }}
 .metric .lab,.lab{{font-size:11px;color:#6b7890;font-weight:700;letter-spacing:0.08em;}}
@@ -1107,8 +1106,8 @@ async def render_html_to_image(
         h1{font-size:22px;margin:0 0 12px;color:<title>;font-weight:630;}
         .layout{display:flex;gap:16px;align-items:flex-start;}
         .col-k{width:240px;flex:none;} .col-e{flex:1;}
-        .card{background:<surface>;border-radius:12px;padding:12px;
-          box-shadow:0 1px 4px rgba(0,0,0,0.08);border-top:3px solid <accent>;}
+        .card{background:<surface>;border-radius:12px;padding:14px;
+          border:1px solid rgba(255,255,255,0.08);box-shadow:0 2px 8px rgba(0,0,0,0.12);}
         .badge{display:flex;align-items:center;justify-content:center;
           padding:3px 10px;line-height:1;border-radius:999px;font-weight:520;}
         table{width:100%;} th,td{padding:8px 10px;text-align:left;}
