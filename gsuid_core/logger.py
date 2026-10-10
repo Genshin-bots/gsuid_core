@@ -921,9 +921,7 @@ def colorize_brackets_processor(logger: WrappedLogger, method_name: str, event_d
     return event_dict
 
 
-# =============================================================================
-# 控制台标签：等级 [info] / 来源 {SayuCore|Plugin} / hl_plugin 正文标记
-# =============================================================================
+# --- 控制台标签：等级 [info] / 来源 {SayuCore|Plugin} / hl_plugin 正文标记 ---
 
 _CORE_ORIGIN_LABEL = "SayuCore"
 _CORE_ORIGIN_ALIASES: frozenset = frozenset({"core", "sayucore", "SayuCore", "gscore", "GsCore"})
@@ -1258,12 +1256,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
 
-    # 使用 structlog 获取一个 logger
-    # logger 名称可以自定义，以区分这是未捕獲的异常
-    # log: TraceCapableLogger = structlog.get_logger("unhandled_exception")
-
-    # 使用 .critical() 或 .exception() 记录异常
-    # 将 exc_info 参数设置为异常信息元组，structlog 会自动处理它
+    # 记录未捕获异常信息至日志。
     logger.critical(t("log.logger.unhandled_exception"), exc_info=(exc_type, exc_value, exc_traceback))
 
 
@@ -1296,9 +1289,7 @@ def setup_logging():
     LEVEL: str = log_config.get("level", "INFO").upper()
     logger_list: List[str] = log_config.get("output", ["stdout", "stderr", "file"])
 
-    # 定义所有处理器链共享的基础部分
-    # pathname→plugin 与 emoji 装配放在 shared：不依赖 t()，插件裸日志也会加前缀；
-    # 控制台 / 文件 JSON / SSE 三端一致。
+    # 处理器链共享基础部分：pathname→plugin 与 emoji 统一装配，三端保持一致。
     _callsite_params = {CallsiteParameter.PATHNAME}
     if IS_DEBUG_LOG:
         _callsite_params = {
@@ -1459,9 +1450,7 @@ async def read_log(
     # 按单调序号推进（非 deque 下标）：deque 有界，写满后左侧淘汰会使下标漂移，用下标会
     # 在缓冲写满 2000 条后永久错过新日志。cursor 落后到被淘汰区间时跳到最旧可用一条。
     cursor = log_seq - len(log_history)  # 默认：从当前缓冲最旧一条开始回放
-    # 只认落在**本进程**序号区间内的 id：脏值 / core 重启后 log_seq 归零而浏览器仍揣着上个
-    # 进程的大 id，都退回"从最旧回放"——否则游标被钉死在"只收未来日志"，重启后控制台永远
-    # 刷不出已缓冲的启动日志。断太久、断点已被淘汰的情况由循环里的 oldest 截断兜底。
+    # 仅认本进程序号区间内的 id，脏值或重启后退回从最旧记录开始回放。
     if last_event_id is not None and last_event_id.isdecimal():
         lid = int(last_event_id)  # isdecimal 保证非负且 int() 不会抛
         if lid < log_seq:
@@ -1469,10 +1458,7 @@ async def read_log(
 
     last_sent = time.monotonic()
     while True:
-        # seq/size 必须一起快照后再算下标：本协程会在下面的 yield 处挂起（等客户端收字节），
-        # 挂起期间左侧淘汰会改变 deque 长度而 log_seq 不变（序号必须单调，否则在线读者的
-        # cursor 会永久大于 log_seq 而静默）。快照后 size==0 ⇒ oldest==seq ⇒ cursor 被抬到
-        # seq ⇒ 走等待分支，不会再对空 deque 取下标。
+        # 快照 seq 与 size，避免挂起期间左侧淘汰改变 deque 长度导致下标越界。
         seq = log_seq
         size = len(log_history)
         oldest = seq - size
@@ -1498,9 +1484,7 @@ async def read_log(
             continue
 
         await asyncio.sleep(1)
-        # 心跳按"上次流出字节"计时，而非按空闲轮次：级别过滤下日志可以一直在消费却一条都
-        # 不推（如只订阅 ERROR 而满屏 DEBUG），零字节同样会被反代（nginx 默认 60s）掐断。
-        # 以 ":" 开头的是 SSE 注释行，EventSource 会忽略，不进 onmessage。
+        # 心跳按上次流出字节计时，超时发送 SSE 注释行（: keepalive）防止反代掐断。
         if time.monotonic() - last_sent >= SSE_KEEPALIVE_SEC:
             yield ": keepalive\n\n"
             last_sent = time.monotonic()

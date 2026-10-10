@@ -147,10 +147,7 @@ def format_provider_config_name(provider: str, config_name: str) -> str:
     return f"{provider}{PROVIDER_CONFIG_SEPARATOR}{config_name}"
 
 
-# 配置项 model_effort 字符串 → pydantic_ai ThinkingLevel 的映射。
-# ThinkingLevel = bool | Literal["minimal","low","medium","high","xhigh"]，
-# "enable"/"disable" 必须映射为 True/False，原样透传会在 provider 的
-# REASONING_EFFORT/THINKING_BUDGET 映射表中触发 KeyError。
+# model_effort 配置映射至 pydantic_ai ThinkingLevel，规范化 enable/disable 值为布尔值。
 THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
     "enable": True,
     "disable": False,
@@ -381,10 +378,7 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     )
     provider = OpenAIProvider(openai_client=_client)
 
-    # 思考回传开关(send_back_thinking=off):多轮对话时不把历史 ThinkingPart 以
-    # <think> 标签/厂商字段回发给模型 —— 部分中转网关对回发格式不兼容会 4xx/5xx。
-    # 通过 profile 覆写实现(openai_chat_send_back_thinking_parts=False 是
-    # pydantic_ai 的官方开关);旧配置文件缺该 key 时自动补默认值 "auto"。
+    # send_back_thinking 开关：多轮会话时不回发历史 ThinkingPart，避免中转网关报错。
     send_back_thinking = str(get_openai_config(config_name).get_config("send_back_thinking").data)
     if send_back_thinking == "off":
         from pydantic_ai.profiles.openai import OpenAIModelProfile

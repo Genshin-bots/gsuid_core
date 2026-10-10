@@ -32,9 +32,7 @@ if TYPE_CHECKING:
     from .types import Edge, Entity, Episode, Category
 
 
-# ─────────────────────────────────────────────
-# System-2 检索结果
-# ─────────────────────────────────────────────
+# --- System-2 检索结果 ---
 class LLMNodeSelectionError(Exception):
     """LLM 节点选择失败或超时异常。
 
@@ -54,9 +52,7 @@ class System2Result:
     retrieval_paths: list[list[dict]] = dc_field(default_factory=list)  # 从 Layer N 到 Layer 1 的完整检索路径
 
 
-# ─────────────────────────────────────────────
-# System-2 全局选择
-# ─────────────────────────────────────────────
+# --- System-2 全局选择 ---
 class System2GlobalSelector:
     """System-2：分层图自顶向下全局选择。
 
@@ -381,9 +377,7 @@ class System2GlobalSelector:
         return list(result.scalars().all())
 
 
-# ─────────────────────────────────────────────
-# 顶层便捷函数（保持与原模块的调用兼容）
-# ─────────────────────────────────────────────
+# --- 顶层便捷函数（保持与原模块的调用兼容） ---
 
 
 async def system2_global_selection(

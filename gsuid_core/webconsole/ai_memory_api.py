@@ -536,8 +536,7 @@ async def batch_observe(
                 )
             observed += 1
 
-        # 同步批量写入（SQL 一次提交 + 向量分块 batch embed）：返回时 Episode 已落 DB + Qdrant， 故 flush 语义天然满足。
-        # write_episodes=False 时（§14：对已摄入 Episode 的 scope 只补
+        # 批量写入 Episode 到数据库与向量库。
         if items and req.write_episodes:
             await AIMemEpisode.create_episodes_bulk(scope_key, items)
 

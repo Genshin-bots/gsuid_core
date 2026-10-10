@@ -84,10 +84,7 @@ LIVE_CHAT_IDENTITY_PATH = LIVE_CHAT_DIR / "identity.json"
 LIVE_CHAT_INDEX_PATH = LIVE_CHAT_DIR / "index.json"
 LIVE_CHAT_CONVS_DIR = LIVE_CHAT_DIR / "conversations"
 
-# 品牌配置 / Brand
-# - BRAND_DIR: 用户上传 ICON 的存放目录
-# - BRAND_CONFIG_PATH: 品牌信息（title / subtitle）的 JSON 配置
-# - BRAND_ICON_PATH: 用户上传的自定义 ICON 文件路径（不存在则回退到 CORE_PATH/ICON.png）
+# 品牌配置路径：ICON 存放目录、品牌信息配置与自定义 ICON 路径。
 BRAND_DIR = get_res_path("brand")
 BRAND_CONFIG_PATH = PLUGINS_CONFIGS_PATH / "brand.json"
 BRAND_ICON_PATH = BRAND_DIR / "ICON.png"

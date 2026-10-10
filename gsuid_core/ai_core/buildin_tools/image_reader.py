@@ -40,9 +40,7 @@ from gsuid_core.ai_core.content_guard import wrap_untrusted
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.buildin_tools.visibility import context_has_image
 
-# 单次图片理解的超时（秒）
-# 超时即快速失败并（对首次）重试一次，避免用户干等 5 分钟（§C.1）。
-# 90s：部分供应商（如 MiniMax）多模态转述较慢/偶发排队，45s 会在图还没描述完就超时
+# 单次图片理解超时时间（秒），兼顾多模态供应商转述耗时与快速重试需求。
 _UNDERSTAND_TIMEOUT = 90.0
 
 # 路径/文件名误当 image_id 时的快速拒绝（文本类扩展名）

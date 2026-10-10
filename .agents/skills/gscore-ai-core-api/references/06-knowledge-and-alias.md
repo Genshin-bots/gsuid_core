@@ -51,7 +51,7 @@ ai_entity(KnowledgePoint(
 
 ## 技能说明
 ### 普通攻击 - 源流
-进行五段枪类普通攻击。
+连续发动五段枪术普通攻击。
 
 ### 元素战技 - 奥义·梦想真说
 创造「愿力」储蓄机制，并召唤眼之核心。
@@ -243,7 +243,7 @@ ai_image(ImageEntity(
 
 ### 图片检索使用
 
-注册图片后，AI 可以通过 RAG API 进行语义检索：
+注册图片后，AI 可通过 RAG API 检索语义相关图片：
 
 ```python
 from gsuid_core.ai_core.rag import search_and_load_image

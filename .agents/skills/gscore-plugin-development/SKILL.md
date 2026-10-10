@@ -47,7 +47,7 @@ description: >
 | 十五 | 完整插件示例（MyGameUID 端到端） | [references/15-full-plugin-example.md](./references/15-full-plugin-example.md) |
 | 十六 | 常用工具模块速查（`get_res_path` / `send_msg_to_master` / `error_reply` / 限流 / 缓存 / 字体 / `to_thread` / `cache_data` / 批量播报 / 常用 import） | [references/16-common-utilities.md](./references/16-common-utilities.md) |
 | 十七 | 代码规范红线（禁止 try/except 兜底、cast、type:ignore、getattr/dict.get 兜底、Any、同步阻塞函数） | [references/17-code-redlines.md](./references/17-code-redlines.md) |
-| 十八 | to_ai 批量改造工作流（背景、Step 0~4、完整股票 / 游戏示例、质量检查清单、Q&A） | [references/18-ai-trigger-migration.md](./references/18-ai-trigger-migration.md) |
+| 十八 | to_ai 批量改造工作流（背景、Step 0 到 Step 4、完整股票 / 游戏示例、质量检查清单、Q&A） | [references/18-ai-trigger-migration.md](./references/18-ai-trigger-migration.md) |
 | 十九 | 为插件挂 FastAPI 后端接口（共享 app、鉴权、CRUD、命名规范、反模式） | [references/19-fastapi-plugin-api.md](./references/19-fastapi-plugin-api.md) |
 | 二十 | 嵌入 Provider 注册表（插件扩展 RAG 嵌入后端：懒 import、工厂模式、降级策略） | [references/20-embedding-provider-registry.md](./references/20-embedding-provider-registry.md) |
 | 二十一 | AI 集成：在插件 repo 内管理 AI Skill（`ai_skill` 注册目录式 `SKILL.md` + 脚本/资源） | [references/21-ai-skill-registration.md](./references/21-ai-skill-registration.md) |
@@ -62,7 +62,7 @@ description: >
 5. **加定时推送**：看 [六、定时任务与订阅](./references/06-scheduler-and-subscribe.md) 的 `gs_subscribe` 强制规范。
 6. **加启动逻辑**：在 [七、生命周期钩子](./references/07-lifecycle-hooks.md) 选合适的钩子。
 7. **加帮助 / 状态**：看 [八、帮助系统注册](./references/08-help-system.md)。
-8. **画图**：参考 [九、图片渲染范式](./references/09-image-rendering.md) 的"决策口诀"选 PIL / pytakumi / playwright。
+8. **画图**：参考 [九、图片渲染范式](./references/09-image-rendering.md) 的决策规则选 PIL / pytakumi / playwright。
 9. **想被 AI 调用**：
    - 命令同时也是用户命令 → [十、`to_ai` 与 `ai_return`](./references/10-ai-to-ai-and-ai-return.md) **（优先）**
    - 纯数据 / 内部工具 → [十一、`@ai_tools` 装饰器](./references/11-ai-tools-decorator.md)
@@ -85,7 +85,7 @@ description: >
 - **Plugins vs SV**：插件级 vs 服务模块级；`SV` 自动从调用栈推断归属。详见 [§1.3](./references/01-plugin-basics.md#13-plugins-vs-sv-的层级关系)。
 - **触发器选择**：`on_command`（推荐默认）vs `on_prefix`（强制带参）vs `on_fullmatch`（精确匹配）vs `on_keyword`（污染消息流，慎用）vs `on_regex`（复杂结构）vs `on_file` / `on_message`（特殊）。详见 [§2.2](./references/02-sv-and-triggers.md#22-触发器语义速查)。
 - **监听平台事件用 `on_meta`**：标准元事件**仅三种**——`user_join_group` / `user_exit_group` / `poke`，`data` 字段跨平台统一（适配器侧已归一），可放心监听；其他事件不做适配。触发器内用 `ev.get_meta(key)` 读字段；与命令路径**双向隔离**。详见 [§2.6](./references/02-sv-and-triggers.md#26-on_meta监听平台元事件进群--退群--戳一戳)。
-- **撤回 / 禁言**：`bot.send(..., wait_recall=True)` 返回出站 id 列表（`Optional[List[str]]`），配 `bot.unsend(...)` 撤回；`bot.ban(user_id, group_id, duration)` 禁言（`duration=0` 解禁）。三者 HTTP 模式不支持。详见 [§3.5](./references/03-messaging.md#35-撤回消息wait_recall--unsend与禁言ban)。
+- **撤回 / 禁言**：`bot.send(..., wait_recall=True)` 返回出站 id 列表（`Optional[List[str]]`），配 `bot.unsend(...)` 撤回；`bot.ban(user_id, group_id, duration)` 禁言（`duration=0` 解禁）。HTTP 模式不支持上述三项功能。详见 [§3.5](./references/03-messaging.md#35-撤回消息wait_recall--unsend与禁言ban)。
 - **`to_ai` vs `@ai_tools` 二选一**：同一函数不可同时用。命令也允许用户直接触发 → `to_ai`；纯 AI 内部工具 → `@ai_tools`。详见 [§10](./references/10-ai-to-ai-and-ai-return.md) / [§11](./references/11-ai-tools-decorator.md)。
 - **插件工具要被跨措辞召回**：填 **`covers`（数据域）** + **`aliases`（领域·同义问法）**，勿只靠 docstring。详见 [§11.5](./references/11-ai-tools-decorator.md#115-covers--aliases跨措辞召回2026-08)。
 - **主动推送必须用 `gs_subscribe`**：不要 `for bot in gss.active_bot.items(): await bot.target_send(...)` 硬塞群号。详见 [§6.2](./references/06-scheduler-and-subscribe.md#62-主动推送强制规范)。

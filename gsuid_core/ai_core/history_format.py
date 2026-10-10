@@ -152,9 +152,7 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
         return f"{msg_dt.year}年{msg_dt.month}月{msg_dt.day}日 {time_str}"
 
 
-# 同一用户连发多段消息的合并窗口（秒）：窗口内的相邻同人消息在历史里合并为
-# 一个发言块，让"@某人"+"醒了吗"这类拆条连发对模型呈现为一句完整的话。
-# 窗口值唯一来源是 ai_config `history_merge_window`（可在线调）。
+# 用户连发消息合并窗口（秒）：窗口内同用户的相邻消息在历史中合并为一个发言块。
 def _merge_window() -> float:
     from gsuid_core.ai_core.configs.ai_config import ai_config
 

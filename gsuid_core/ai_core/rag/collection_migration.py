@@ -306,9 +306,7 @@ async def force_recreate_collection(
             if inspect.isawaitable(result):
                 await result
         except Exception as e:
-            # 并发重建竞争：另一路已用相同目标配置建好同名集合（同一维度迁移目标），
-            # 远程 Qdrant 返回 409 "already exists"。集合已存在即视为成功，避免启动因竞态崩溃；
-            # 其它错误照常抛出。
+            # 并发创建竞争：远程 Qdrant 返回 409（集合已存在）时视为成功放行。
             if "already exists" in str(e).lower() and await client.collection_exists(collection_name):
                 logger.warning(
                     t(

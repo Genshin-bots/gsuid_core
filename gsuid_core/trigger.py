@@ -141,9 +141,7 @@ class Trigger:
         self._head = prefix + keyword
         self._flex_gap = _needs_flex_gap(keyword)
         self._probe = prefix[:1] if prefix else (keyword[:1] if self._flex_gap else "")
-        # 注册时编译一次，省掉每条消息都走的 re._cache 查找与分派。
-        # 插件作者写错 pattern 属于外部输入，编译失败退回未编译路径，
-        # 保持"匹配时抛错、由 handler 逐条兜"的原行为，不在这里改变故障时机。
+        # 注册时预编译正则以提升匹配效率，编译失败时保留原始 pattern 延迟报错。
         self._pattern: re.Pattern[str] | None = None
         if type == "regex":
             try:

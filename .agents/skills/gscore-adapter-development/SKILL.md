@@ -33,8 +33,7 @@ description: >
 >   通过 **WebSocket** 把平台收到的消息上报给 core，再把 core 下发的消息翻译成平台 API 调用发出去。
 >   **本 SKILL 只讲适配器。**
 >
-> 一句话：适配器是 core 与聊天平台之间的「翻译官 + 邮差」，它不处理任何业务逻辑，只做
-> **协议转换**和**消息搬运**。
+> 适配器负责协议转换与消息转发，不处理业务逻辑。
 
 > 本 SKILL 按章节拆分为「主入口 + `references/` 子文档」。需要某专题细节时，顺着下文相对路径
 > 按需 `ReadFile` 对应文件，**不要**一次性把所有内容塞进上下文。
@@ -58,69 +57,48 @@ description: >
 
 ## 推荐开发流程（按需跳转）
 
-1. **先建立心智模型**：读 [一、协议总览](./references/01-protocol-overview.md)，搞清「适配器干什么、数据怎么流」。
-2. **背下数据结构**：读 [二、数据结构](./references/02-data-structures.md)，尤其是 **bot_id 的三层语义**——这是最容易搞错的地方。
-3. **先把连接跑起来**：照 [三、连接生命周期](./references/03-connection-lifecycle.md) 的双协程骨架建立 WS 连接，能 ping 通即可。
-4. **打通上报链路**：读 [四、上报消息](./references/04-report-message.md)，让平台的文本消息能传到 core 并触发命令。
-5. **打通下发链路**：读 [五、发送消息](./references/05-send-message.md)，让 core 回复的文本/图片能发回平台。
-6. **补齐富媒体**：图片走 [七、图片与多媒体](./references/07-image-and-media.md)，按钮/MD 走 [六、按钮与 Markdown](./references/06-buttons-and-markdown.md)。
-7. **处理平台怪癖**：双 ID、QQ 时序、回调按钮等看 [八、特殊平台](./references/08-special-platforms.md)。
-8. **接元事件与撤回/禁言**：要上报进群/退群/戳一戳三种标准元事件、或支持插件 `wait_recall`/`unsend`/`ban`，看 [十一、元事件与控制消息](./references/11-meta-and-control.md)。
-9. **升级引用与合并转发**：旧适配器仍把 id 塞进 `reply`、或不报 `node` 时，按 [十二、引用拆分与合并转发](./references/12-reply-and-node.md) 改上报/下发。
-10. **对照完整示例**：随时参考 [九、端到端示例](./references/09-full-adapter-example.md)。
-11. **交付前自查**：逐条过 [十、易错点红线](./references/10-pitfalls.md)、[十一、自查清单](./references/11-meta-and-control.md#116-自查清单) 与 [十二、自查清单](./references/12-reply-and-node.md#129-自查清单)。
+1. **建立概念模型**：阅读 [一、协议总览](./references/01-protocol-overview.md)，明确适配器职责与数据流向。
+2. **掌握数据结构**：阅读 [二、数据结构](./references/02-data-structures.md)，掌握 **bot_id 的三层语义**。
+3. **建立基础连接**：依照 [三、连接生命周期](./references/03-connection-lifecycle.md) 的双协程骨架建立 WS 连接。
+4. **打通上报链路**：阅读 [四、上报消息](./references/04-report-message.md)，将平台文本消息上报至 Core 并触发命令。
+5. **打通下发链路**：阅读 [五、发送消息](./references/05-send-message.md)，将 Core 回复的文本与图片转发至平台。
+6. **接入富媒体**：图片参考 [七、图片与多媒体](./references/07-image-and-media.md)，按钮与 Markdown 参考 [六、按钮与 Markdown](./references/06-buttons-and-markdown.md)。
+7. **处理平台特性**：双 ID、QQ 时序、回调按钮参考 [八、特殊平台](./references/08-special-platforms.md)。
+8. **接入元事件与控制指令**：若需上报进群、退群、戳一戳标准元事件，或支持插件 `wait_recall`、`unsend`、`ban`，参考 [十一、元事件与控制消息](./references/11-meta-and-control.md)。
+9. **升级引用与合并转发**：若旧适配器仍将 ID 传入 `reply` 或未上报 `node`，依照 [十二、引用拆分与合并转发](./references/12-reply-and-node.md) 改造上报与下发。
+10. **对照完整示例**：参考 [九、端到端示例](./references/09-full-adapter-example.md)。
+11. **交付前自查**：逐条核对 [十、易错点红线](./references/10-pitfalls.md)、[十一、自查清单](./references/11-meta-and-control.md#116-自查清单) 与 [十二、自查清单](./references/12-reply-and-node.md#129-自查清单)。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
-- **两条独立链路**：上报（平台→core，发 `MessageReceive`）和下发（core→平台，收 `MessageSend`），
-  在适配器里通常是**两个并行协程**：一个监听平台事件往 core 推，一个监听 core 下发往平台发。详见 [§1.3](./references/01-protocol-overview.md)。
-- **帧是二进制不是文本**：core 用 `websocket.receive_bytes()` 读、`send_bytes()` 写，适配器必须发**二进制帧**
-  （`msgspec.json.encode(...)` 得到 `bytes` 直接 `ws.send(bytes)`）。发文本帧会解析失败。详见 [§1.2](./references/01-protocol-overview.md) 与 [§10 红线 1](./references/10-pitfalls.md)。
-- **bot_id 有三层，别搞混**：① 路由 `/ws/{bot_id}`（连接级，如 `NoneBot2`，对应 `Event.WS_BOT_ID`）；
-  ② 每条消息的 `bot_id`（平台级，如 `onebot` / `qqgroup` / `onebot:red`，**下发时按它路由到对应平台**）；
-  ③ `bot_self_id`（机器人账号 ID）。详见 [§2.2](./references/02-data-structures.md)。
-- **`bot_id` 含 `:` 会被 core 拆分**：core 用 `:` 前的部分做 `event.bot_id`，完整值留在 `real_bot_id`
-  （如 `onebot:red` → `event.bot_id='onebot'`）。这是同一协议多实现共用触发器的机制。详见 [§2.2](./references/02-data-structures.md)。
-- **图片三种形态**：core 下发的 `image` 是 `base64://`、`link://`（开了"自动转链接"）或 `file://`（协议端/本机路径，原样透传）。
-  适配器**三种都必须处理**。详见 [§7.1](./references/07-image-and-media.md) 与 [§10 红线 3](./references/10-pitfalls.md)。
-- **`is_tome` 靠 `at` 段触发**：上报时若把一条 `at` 段的 `data` 填成 `bot_self_id`，core 会判定"@了机器人"
-  （`is_tome=True`）；私聊（`direct`）则 core 自动置 `is_tome=True`。详见 [§4.4](./references/04-report-message.md)。
-- **引用拆成 `reply` + `reply_id`**：上报时 `reply` 填引用**正文**，`reply_id` 填被引用消息 id，引用图
-  **始终**作为 `image` 段一并上报（不要再开关 `is_reply_img`）。下发时 `reply` / `reply_id` 都按
-  **msg_id** 落地成平台引用段。旧适配器迁移见 [§12](./references/12-reply-and-node.md)，
-  字段细节见 [§4.4](./references/04-report-message.md) / [§5.3](./references/05-send-message.md)。
-- **合并转发要上报 `node`**：用户发送或引用转发卡片时，`data` 为扁平 `List[Message]`（与下发同形）。
-  引用转发时 `reply` 以 `[合并转发]` 开头并附带 `node`。不要把节点正文拼进 `text`。
-  展开规则与推荐改法见 [§12.4](./references/12-reply-and-node.md)，字段细节见 [§4.4](./references/04-report-message.md)。
-- **命令前缀处理在两边都有**：core 端会按 `command_start` 削掉前缀；适配器上报前**不要**自作主张删命令前缀
-  （除非平台特性需要，如 QQ 官方把 `/` 当指令）。详见 [§4.5](./references/04-report-message.md)。
-- **`log_{LEVEL}` 是日志回显包**：core 想在适配器侧打日志时，发一条 `bot_id == 路由BOT_ID` 且
-  `content[0].type` 为 `log_INFO/WARNING/ERROR/SUCCESS` 的包，适配器**只需按等级打印 `data`，不要当普通消息发**。详见 [§5.6](./references/05-send-message.md)。
-- **双 ID 平台用 `-` 拼接 group_id**：米游社大别野、黑盒等需要两个 ID 才能定位会话的平台，上报时
-  `group_id = f"{villa_id}-{room_id}"`，下发时再 `split('-')` 拆回。core 还会把 `group` 类型段附在末尾辅助定位。详见 [§8.1](./references/08-special-platforms.md)。
-- **`node` 是合并转发，不能嵌套**：`node` 的 `data` 是 `List[Message]`，多数平台不支持原生合并转发，
-  需要**遍历逐条发送**。详见 [§5.4](./references/05-send-message.md)。
-- **元事件 / 撤回 / 禁言走专门通道**：标准元事件**仅三种**（`user_join_group` / `user_exit_group` / `poke`，
-  `data` 字段跨平台统一，其他事件不做适配），**上报**为单段 `Message("meta-<事件名>", data)`；
-  `MessageSend.echo` 非空时发完消息**必须回执** `recall_message_id`；`excute_delete_message` / `excute_ban_user`
-  是**下行控制包**，按 `bot_id` 调平台撤回/禁言 API、**不当普通消息发**。详见 [§11](./references/11-meta-and-control.md)。
+- **两条独立链路**：上报（平台→Core，发送 `MessageReceive`）和下发（Core→平台，接收 `MessageSend`）。适配器通常维护两个并行协程：一个监听平台事件并推送到 Core，另一个监听 Core 下发并转发至平台。详见 [§1.3](./references/01-protocol-overview.md)。
+- **帧必须为二进制**：Core 使用 `websocket.receive_bytes()` 读取、`send_bytes()` 发送，适配器必须发送二进制帧（使用 `msgspec.json.encode(...)` 获取 `bytes` 后通过 `ws.send(bytes)` 发送）。发送文本帧会导致解析失败。详见 [§1.2](./references/01-protocol-overview.md) 与 [§10 红线 1](./references/10-pitfalls.md)。
+- **bot_id 分为三层语义**：① 路由 `/ws/{bot_id}`（连接级，如 `NoneBot2`，对应 `Event.WS_BOT_ID`）；② 每条消息的 `bot_id`（平台级，如 `onebot` / `qqgroup` / `onebot:red`，下发时据此路由到对应平台）；③ `bot_self_id`（机器人账号 ID）。详见 [§2.2](./references/02-data-structures.md)。
+- **`bot_id` 含冒号会被 Core 拆分**：Core 将冒号前缀作为 `event.bot_id`，完整值保留在 `real_bot_id`（例如 `onebot:red` 解析为 `event.bot_id='onebot'`）。该机制用于多实现共用同一触发器。详见 [§2.2](./references/02-data-structures.md)。
+- **图片三种形态**：Core 下发的 `image` 包含 `base64://`、`link://`（开启自动转链接）或 `file://`（协议端或本机路径，原样透传）。适配器必须同时支持三种形态。详见 [§7.1](./references/07-image-and-media.md) 与 [§10 红线 3](./references/10-pitfalls.md)。
+- **`is_tome` 依赖 `at` 段触发**：上报消息时，若 `at` 段的 `data` 匹配 `bot_self_id`，Core 判定为提及机器人（`is_tome=True`）；私聊消息（`direct`）由 Core 自动设置 `is_tome=True`。详见 [§4.4](./references/04-report-message.md)。
+- **引用拆分为 `reply` 与 `reply_id`**：上报时 `reply` 填入引用正文，`reply_id` 填入被引用消息 ID，引用图片作为 `image` 段一并上报。下发时 `reply` 与 `reply_id` 均作为消息 ID 转换为平台引用段。迁移指引见 [§12](./references/12-reply-and-node.md)，字段细节见 [§4.4](./references/04-report-message.md) 与 [§5.3](./references/05-send-message.md)。
+- **合并转发需上报 `node`**：用户发送或引用转发卡片时，`data` 为扁平 `List[Message]`。引用转发时 `reply` 以 `[合并转发]` 开头并附带 `node`。禁止将节点正文拼入 `text`。展开规则见 [§12.4](./references/12-reply-and-node.md)，字段细节见 [§4.4](./references/04-report-message.md)。
+- **命令前缀处理分工**：Core 会根据 `command_start` 剥离前缀；适配器在上报前禁止删除命令前缀（平台原生指令格式除外）。详见 [§4.5](./references/04-report-message.md)。
+- **`log_{LEVEL}` 为日志回显包**：Core 向适配器输出日志时，发送 `bot_id == 路由BOT_ID` 且 `content[0].type` 为 `log_INFO/WARNING/ERROR/SUCCESS` 的数据包。适配器按对应级别打印 `data` 即可，禁止作为聊天消息发出。详见 [§5.6](./references/05-send-message.md)。
+- **双 ID 平台使用连字符拼接 group_id**：针对需要双 ID 定位会话的平台（如米游社大别野、黑盒），上报时构造 `group_id = f"{villa_id}-{room_id}"`，下发时通过 `split('-')` 拆分还原。详见 [§8.1](./references/08-special-platforms.md)。
+- **`node` 为合并转发且禁止嵌套**：`node` 的 `data` 为 `List[Message]`。若目标平台不支持原生合并转发，需遍历逐条发送。详见 [§5.4](./references/05-send-message.md)。
+- **元事件、撤回与禁言通道**：标准元事件仅支持三种（`user_join_group`、`user_exit_group`、`poke`），上报格式为单段 `Message("meta-<事件名>", data)`；`MessageSend.echo` 非空时，发送完成后必须回执 `recall_message_id`；`excute_delete_message` 与 `excute_ban_user` 为下行控制包，适配器调用平台对应 API 执行操作，禁止作为普通消息发出。详见 [§11](./references/11-meta-and-control.md)。
 
 ## 关联文档（同仓库其他位置）
 
-- 插件开发（core 内部业务逻辑，与适配器互补）：[`.agents/skills/gscore-plugin-development/SKILL.md`](../gscore-plugin-development/SKILL.md)
-- 协议原始描述（精简版，本 SKILL 是其超集）：`GenshinUID-docs/docs/CodeAdapter/Protocol.md`、`Pack.md`
-- core 侧关键源码定位：
+- 插件开发（Core 内部业务逻辑）：[`.agents/skills/gscore-plugin-development/SKILL.md`](../gscore-plugin-development/SKILL.md)
+- 协议原始描述：`GenshinUID-docs/docs/CodeAdapter/Protocol.md`、`Pack.md`
+- Core 侧关键源码定位：
   - WebSocket 入口 / token 鉴权 / `/api/send_msg`：`gsuid_core/core.py`
   - 数据结构定义：`gsuid_core/models.py`、`gsuid_core/message_models.py`
   - 上报内容解析为 `Event`：`gsuid_core/handler.py` 的 `msg_process()` / `get_user_pml()`
-  - 下发消息编码（`base64://`/`link://`/`node`/`image_size`）：`gsuid_core/segment.py`、`gsuid_core/bot.py` 的 `target_send()`
+  - 下发消息编码：`gsuid_core/segment.py`、`gsuid_core/bot.py` 的 `target_send()`
   - 日志回显包：`gsuid_core/gs_logger.py`
-- **官方参考实现**（强烈建议对照阅读）：
-  - 多平台全功能适配器：`GenshinUID/GenshinUID/client.py`（下发 + 撤回回执）+ `__init__.py`（上报）
-  - 元事件多适配器映射拆分：`GenshinUID/GenshinUID/meta_event.py`
-  - 撤回/禁言平台 API 分支：`GenshinUID/GenshinUID/send_utils.py` 的 `del_msg` / `excute_ban_user`
-  - 撤回 / 元事件协议契约：`gsuid_core/RECALL_AND_META_EVENTS.md`
-  - 最小可运行测试客户端：`gsuid_core/client.py`
-  - 引用拆分 + 合并转发上报参考：`astrbot_plugin_gscore_adapter` 的 `main.py` / `send_utils.py`（见 [§12](./references/12-reply-and-node.md)）
-</content>
-</invoke>
+- 参考实现：
+  - 多平台适配器：`GenshinUID/GenshinUID/client.py`（下发 + 撤回回执）+ `__init__.py`（上报）
+  - 元事件映射：`GenshinUID/GenshinUID/meta_event.py`
+  - 撤回与禁言分支：`GenshinUID/GenshinUID/send_utils.py` 的 `del_msg` / `excute_ban_user`
+  - 撤回与元事件协议契约：`gsuid_core/RECALL_AND_META_EVENTS.md`
+  - 最小测试客户端：`gsuid_core/client.py`
+  - 引用拆分与合并转发上报参考：`astrbot_plugin_gscore_adapter` 的 `main.py` / `send_utils.py`（见 [§12](./references/12-reply-and-node.md)）

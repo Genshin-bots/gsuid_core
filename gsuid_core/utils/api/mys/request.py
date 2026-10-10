@@ -57,9 +57,7 @@ from .sign_request import SignMysApi
 
 
 class MysApi(SignMysApi):
-    # ------------------------------------------------------------------
-    # 基础战绩
-    # ------------------------------------------------------------------
+    # --- 基础战绩 ---
 
     @gs_cache(360)
     async def get_info(self, uid, ck: Optional[str] = None) -> Union[IndexData, int]:
@@ -172,12 +170,7 @@ class MysApi(SignMysApi):
             data = cast(PoetryAbyssDatas, data["data"])
         return data
 
-    # ------------------------------------------------------------------
-    # 角色：三套语义
-    #   get_character_list   — 国际服 character/list 原始载荷
-    #   get_character_detail — character/detail 嵌套 Character 列表
-    #   get_character        — 扁平列表（国服 list / 国际服 list 归一化，供面板绘图）
-    # ------------------------------------------------------------------
+    # 角色数据获取：分别提供原始载荷、嵌套详情与绘图扁平列表。
 
     async def _request_character_list(
         self,
@@ -405,9 +398,7 @@ class MysApi(SignMysApi):
             data = cast(GachaLog, data["data"])
         return data
 
-    # ------------------------------------------------------------------
-    # 扩展战绩（自 GenshinUID 上浮）
-    # ------------------------------------------------------------------
+    # --- 扩展战绩（自 GenshinUID 上浮） ---
 
     @gs_cache(3600)
     async def get_season_post_data(self, uid: str) -> Union[SeasonPostData, int]:

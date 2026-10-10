@@ -37,7 +37,7 @@ from gsuid_core.ai_core.session_logger import ProactiveSource
 # 不重复实现"防撞车 + 合并语境"语义。
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
-# 老 dispatcher.register_send 兼容字面量集合（plans/proactive_message_session_unification_20260529.md §3.1）
+# 旧 dispatcher.register_send 兼容字面量集合。
 LegacyDispatcherSource = Literal["heartbeat", "task"]
 
 
@@ -84,9 +84,7 @@ async def _sync_to_main_session(
     session: Optional[GsCoreAIAgent] = registry.get_ai_session(session_id)
 
     if session is None:
-        # 主 session 不在内存——走磁盘回退路径。log_standalone_proactive 用一个
-        # 临时 logger 复用统一的窗口续写 + _build_data 写盘，格式与活跃 session 一致
-        # （取代了旧的手工拼文件的 persist_proactive_emission_to_disk）。
+        # 主 session 不在内存时走磁盘回退路径，使用临时 logger 续写对应窗口日志。
         AISessionLogger.log_standalone_proactive(
             session_id=session_id,
             source=source,
@@ -96,11 +94,8 @@ async def _sync_to_main_session(
         )
         return
 
-    # 链接生成子 agent（决策 / 转译 / 执行体）到主 session 的 linked_agents。
-    # 用日志文件的 stem 作为可读的 agent_session_id——它包含原始 session_id +
-    # session_uuid + 时间戳，唯一且可回溯。session_uuid 字段在 link_agent 里只
-    # 做透传存档，留空即可（webconsole 主要通过 log_file 字段做跳转）。
-    # logger 恒在（GsCoreAIAgent 不再有 Optional logger），直接使用。
+    # 将生成子 Agent（决策/转译/执行体）登记到主 session 的 linked_agents。
+    # 使用日志文件的 stem 作为回溯标识。
     for log_file in generator_log_files:
         session._session_logger.link_agent(
             agent_session_id=Path(log_file).stem,
@@ -117,9 +112,7 @@ async def _sync_to_main_session(
         trigger_reason=trigger_reason,
         generator_log_files=generator_log_files,
     )
-    # 立即持久化：主动消息写入后立刻落盘，避免 session 被空闲清理时
-    # 内存中的 proactive_emission entry 丢失（巡检间隔 30 分钟远大于
-    # IDLE_THRESHOLD 30 分钟，entry 很可能在下次持久化前就被清理掉）。
+    # 主动消息写入后立即落盘，避免会话被空闲清理时丢失。
     session._session_logger._persist_sync()
 
 
@@ -180,11 +173,7 @@ async def emit_proactive_message(
             return False
         bot = Bot(_bot, event)
 
-    # 3) 实际发送（metadata 通过 extra_metadata 透传到 message_history）。
-    #    send_chat_result 的发送侧异常不在这里吞——所有调用 emit_proactive_message
-    #    的入口（inspector / executor / kanban_executor / message_sender 工具）
-    #    都在更外层有错误捕获并能记录 source 上下文。AGENTS.md §1.1 禁止在中间层
-    #    用 try/except 兜底。
+    # 3) 实际发送；外层调用入口已处理异常上下文，此层依 §1.1 不做额外兜底。
     extra_metadata: Dict[str, Any] = {
         "proactive": True,
         "proactive_source": source,
@@ -239,9 +228,7 @@ async def emit_proactive_message(
         generator_log_files=files,
     )
 
-    # 5) C8 网关登记——summary 主要给 task 来源用，作为 Heartbeat 合并语境的素材
-    #    source 字段为兼容老 dispatcher 仍只接受 "heartbeat" / "task" 两种字面量，
-    #    其它来源（kanban / tool）登记成 "task" 走"对 Heartbeat 抑制 + 不进合并语境"。
+    # 5) 网关登记发送记录，用于抑制 Heartbeat 频次及收集合并语境。
     legacy_source: LegacyDispatcherSource = "heartbeat" if source == "heartbeat" else "task"
     summary: str = out_msg if source in ("scheduled_task", "heartbeat") else ""
     dispatcher.register_send(target_key, legacy_source, summary)

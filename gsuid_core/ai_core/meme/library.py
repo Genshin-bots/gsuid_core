@@ -932,9 +932,7 @@ async def _search_qdrant(
 
     from gsuid_core.ai_core.rag.hybrid import hybrid_query
 
-    # status 过滤无条件携带：索引中可能存在非 tagged/manual 的点
-    # （导入路径、历史遗留），不能依赖"只有可用状态才会被 sync"这一不变量
-    # 以 Condition 作为元素类型，对齐 Filter.must 的 List[Condition] 分支
+    # 显式附带 status 过滤，避免检索到未索引或草稿状态的表情包。
     must_conditions: list[Condition] = [
         FieldCondition(
             key="status",
@@ -957,9 +955,7 @@ async def _search_qdrant(
 
         score_threshold = meme_config.get_config("meme_search_threshold").data
 
-    # 混合检索：dense_score_threshold 只下到 dense 分支（RRF 名次分不可再用余弦阈值硬筛，
-    # sparse 词项重合即强相关无需余弦门）；稀疏不可用自动降级纯 dense、结构异常降级空结果，
-    # 均由 hybrid_query 统一处理。
+    # 混合检索：dense_score_threshold 仅下推至 dense 分支，异常时统一由 hybrid_query 降级。
     points = await hybrid_query(
         MEME_COLLECTION_NAME,
         query_dense,

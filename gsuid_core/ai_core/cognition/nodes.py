@@ -26,9 +26,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.cognition.types import CogKind
 from gsuid_core.utils.database.base_models import with_session
 
-# 必须带属主才可见的 kind：它们在联邦里的兄弟后端（FileOS `owner_user_id` 行级过滤、
-# Artifact `search_recent_for_owner`）都是行级 ACL。节点层只按 scope_key 过滤会把这层
-# ACL 悄悄降成 group 级——同群成员就能搜到别人的任务结论与产物摘要。
+# 属主可见类型：严格按 owner_user_id 行级过滤，防止群内跨用户越权查看任务产物。
 OWNER_REQUIRED_KINDS = frozenset({CogKind.TOOL_OUTPUT.value, CogKind.ARTIFACT.value, CogKind.RECORD.value})
 
 

@@ -26,16 +26,9 @@ from gsuid_core.ai_core.memory.database.models import (
 
 from ...utils import extract_json_from_text
 
-# #3 单轮重建预算上限：一次最多归类的未分配实体数。防止 2.5x 比例触发后单轮
-# backlog 数万实体一次性灌爆 LLM；超额留待下一轮（本轮结束自动续调度，backlog 单调收敛）。
+# 单轮最多归类的未分配实体数，超额留待下一轮增量处理。
 MAX_ENTITIES_PER_REBUILD = 800
-# #4 分层图构建的最小实体门槛由 memory_config.hiergraph_min_entities 配置：低于此数的 scope
-# 整体跳过分层图（含轻量摘要）——类目对小数据集的压缩/大纲收益≈0，召回可由 System-1 向量 +
-# edges 覆盖。调大可让更多小群整体跳过, 进一步省 token。
-# #2 向量预分配：新实体与"已归类近邻"的 summary_dense 余弦相似度 ≥ 阈值时，直接并入近邻所在
-# Category 并跳过 LLM。阈值越低 → 越多实体走零 LLM 的预分配路径、越省 token，但误归类风险上升。
-# 阈值由 memory_config.hiergraph_vector_assign_threshold 配置（默认 0.85，宁可漏分不可错分）。
-# 每个待分配实体检索的近邻数，取其中相似度最高且已归类的一个作为归属
+# 相似度达标实体走零 LLM 向量预分配以节约 Token。
 VECTOR_ASSIGN_TOP_K = 5
 
 
@@ -51,9 +44,7 @@ def _ensure_aware_datetime(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
-# ─────────────────────────────────────────────
-# 分层图构建状态追踪
-# ─────────────────────────────────────────────
+# --- 分层图构建状态追踪 ---
 class AIMemHierarchicalGraphMeta(SQLModel, table=True):
     """记录每个 scope_key 的分层图构建状态。"""
 
@@ -113,9 +104,7 @@ class AIMemHierarchicalGraphMeta(SQLModel, table=True):
             (datetime.now(timezone.utc) - last_rebuild).total_seconds() if last_rebuild is not None else float("inf")
         )
 
-        # 最小增量阈值：避免 baseline=0 时 current_count>0 恒成立导致冷启动反复重建，
-        # 也避免 baseline 很小时（例如 5→8）频繁触发。要求至少新增 MIN_DELTA 个实体
-        # 才与 ratio 条件联合生效；时间窗到期仍走兜底分支。
+        # 需新增至少 MIN_DELTA 个实体才触发增量重建，避免冷启动频繁执行。
         baseline = meta.entity_count_at_last_rebuild or 0
         delta = current_count - baseline
         MIN_DELTA = 20
@@ -128,11 +117,7 @@ class AIMemHierarchicalGraphMeta(SQLModel, table=True):
         )
 
 
-# ─────────────────────────────────────────────
-# 分层语义图构建器
-# ─────────────────────────────────────────────
-# 全局重建锁：防止同一 scope_key 的并发重建
-# 使用有界字典避免无限增长（内存泄漏防护）
+# 全局重建锁：使用有界字典维护锁对象，防止同一 scope_key 并发重建。
 _MAX_REBUILD_LOCKS = 1024
 _rebuild_locks: dict[str, asyncio.Lock] = {}
 
@@ -207,9 +192,7 @@ class HierarchicalGraphBuilder:
             await self._update_meta(valid_prev_layer=None)
             return
 
-        # 分层类目树仅被 System-2 检索消费（dual_route 中 enable_system2 门控）。
-        # 非"始终"模式且 System-2 关闭时，整棵树没有任何消费方——跳过 Layer-1/2/3 的
-        # LLM 分类（重建 Token 的大头），仅保留 Heartbeat / 人格语境消费的群摘要。
+        # System-2 未开启时跳过类目树各层 LLM 构建，仅保留群组摘要。
         build_mode = memory_config.hiergraph_build_mode
         need_tree = build_mode == "始终" or (build_mode == "自动" and memory_config.enable_system2)
         if not need_tree:
@@ -268,9 +251,7 @@ class HierarchicalGraphBuilder:
 
             existing_upper = await self._get_categories_by_layer(layer)
 
-            # #1 Layer-2/3 增量化：只把"尚无父类目"的下层节点喂给 LLM。已有父边的节点
-            # 上一轮已归类，无需每次重建都重跑整层——把"按存量收费"降为"按新增收费"，
-            # 这是消除高频复发 token 的关键。
+            # 增量化分类：仅对尚无父类目的下层节点执行 LLM 分类。
             unparented_children = await self._filter_unparented(prev_layer)
             if not unparented_children:
                 # 下层已全部归类 → 本层无新增，跳过 LLM；推进到已存在的上层继续向上检查，
@@ -318,18 +299,14 @@ class HierarchicalGraphBuilder:
                     async with db_write_guard(), async_maker() as session:
                         await self._rollback_new_categories(session, new_upper, layer)
                         await session.commit()
-                # rollback 后 prev_layer 包含已删除的 Category，
-                # valid_prev_layer 保持为上一层有效的 categories，不需要更新
-                # 因为 break 后不会继续更新 valid_prev_layer
+                # 回滚后保留上一层有效类目作为 valid_prev_layer。
                 break
 
             valid_prev_layer = new_upper + existing_upper
             prev_layer = valid_prev_layer
             prev_layer_count = total_this_layer
 
-        # BUG-01 修复：使用 valid_prev_layer 计算 max_layer，而非数据库 MAX() 查询
-        # 因为回滚后数据库中的 max_layer 可能仍包含已删除的 layer，导致 System-2 以错误的顶层出发
-        # 注意：should_regen 必须在 _update_meta 之前判断，否则 baseline/max_layer 已被覆盖
+        # 使用 valid_prev_layer 计算 max_layer，避免回滚脏数据干扰。
         should_regen_summary = await self._should_regen_group_summary(valid_prev_layer)
         await self._update_meta(valid_prev_layer=valid_prev_layer)
         if should_regen_summary:
@@ -378,11 +355,7 @@ class HierarchicalGraphBuilder:
 
         from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
-        # 入口过滤：只把"有价值"的实体喂给 LLM 分类——即 is_speaker（群成员花名册，
-        # 须强制归入 Speaker Category）或至少挂着一条 edge（承载事实）的实体。
-        # 无 edge 的非 speaker 实体不进 prompt、不承载事实，纯属噪声，喂进去只会
-        # 几何级抬高分类 token；过滤掉后它们仍留在表里充当去重锚点，待形成 edge
-        # 后下一轮重建自然纳入。死实体的物理回收由生命周期 Worker 的孤儿 GC 负责。
+        # 过滤未关联关系的非发言人实体，降低分类 Prompt 开销。
         has_edge = exists().where(
             or_(
                 col(AIMemEdge.source_entity_id) == AIMemEntity.id,
@@ -710,9 +683,7 @@ class HierarchicalGraphBuilder:
         except Exception as e:
             logger.warning(t("log.memory.hiergraph_layer_llm_fail", layer=layer, e=e))
 
-        # 兜底：每个未分类节点单独成为一个 Category（论文 Section 2.2 例外规则）
-        # "An exception is made for nodes that cannot be naturally merged with others;
-        #  such nodes are directly promoted to the next layer as standalone categories."
+        # 兜底：每个未分类节点单独成为一个 Category（论文 Section 2.2 例外规则）。
         fallback_assignments = []
         for idx, entity in enumerate(entities, start=1):
             entity_name = entity.name if hasattr(entity, "name") else str(entity)
@@ -985,9 +956,7 @@ class HierarchicalGraphBuilder:
             )
         ).scalar() or 0
 
-        # BUG-01 修复：使用 valid_prev_layer 计算 max_layer，而非数据库 MAX() 查询
-        # 因为回滚后数据库中的 Category 记录可能尚未删除（或已删除但 query cache 未刷新），
-        # 导致 max_layer 计算错误，进而使 System-2 以错误的顶层出发
+        # 使用 valid_prev_layer 计算 max_layer，避免查询缓存脏数据导致顶层错误。
         if valid_prev_layer:
             max_layer = max(c.layer for c in valid_prev_layer) if valid_prev_layer else 0
         else:

@@ -143,9 +143,7 @@ async def execute_scheduled_task(task_id: str) -> None:
             bot_instance = Bot(BOT, ev)
             break  # 只使用第一个
 
-    # 4. 派一个 SubAgent 形态的"执行体"完成任务，结果再通过 emitter 播报。
-    #    与旧路径的区别：**任务 prompt 不再被当作 user_message 喂给真用户主
-    #    session**——主用户 session 不再被伪 user_input"【定时任务执行】..."污染。
+    # 4. 派发 SubAgent 执行体完成任务，避免任务指令作为伪 user_input 污染用户主会话。
     try:
         from gsuid_core.ai_core.utils import (
             NO_RESULT_TEXT,
@@ -196,10 +194,8 @@ async def execute_scheduled_task(task_id: str) -> None:
         sub_agent_logger = sub_agent._session_logger
         sub_agent_log_files: list[str] = []
 
-        # 通过 SubAgent 执行任务（return_mode="return"：拿到结果文本，先不发，
-        # 由 emitter 统一播报；避免 SubAgent 工具池里没有 send_chat_result 也能
-        # 完成"由框架代发"的效果）。run 异常时由外层 try/except 捕获并落库；
-        # finally 保证 SubAgent logger 无论如何都关闭，避免轮询任务堆积。
+        # 通过 SubAgent 执行任务（return_mode="return" 拿到文本），统一交由 emitter 播报。
+        # finally 块确保关闭 SubAgent logger。
         try:
             result: str = await sub_agent.run(
                 user_message=task_message,
@@ -224,9 +220,7 @@ async def execute_scheduled_task(task_id: str) -> None:
             max_exec = task.max_executions or MAX_EXECUTION_LIMIT
 
             if current_exec >= max_exec:
-                # 达到最大执行次数，任务结束
-                # 注意：不在这里移除 APScheduler job，而是通过 shutdown 时统一清理
-                # 这样可以避免因异步操作导致的 job 遗漏清理问题
+                # 达到最大执行次数，任务结束；job 统一在 shutdown 时清理以避免异步残留。
 
                 await AIScheduledTask.update_data_by_data(
                     select_data={"task_id": task_id},
@@ -296,10 +290,7 @@ async def execute_scheduled_task(task_id: str) -> None:
                 },
             )
 
-        # 6. 推送结果给用户：走统一 emitter，由它一并完成
-        #    bot.send / message_history (proactive metadata) / 主 session 同步
-        #    （append_proactive_assistant_turn → pydantic_ai 历史 + proactive_emission
-        #    entry）/ C8 网关 register_send。
+        # 6. 推送结果给用户：由统一 emitter 完成发送、历史登记与主动会话同步。
         result_stripped = str(result).strip() if result else ""
         # 静默闸用包含判定：弱模型常给 <SILENCE> 加附言，整串精确匹配会被穿透（评审修复 E1）
         if result_stripped and (

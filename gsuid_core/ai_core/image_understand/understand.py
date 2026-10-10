@@ -48,14 +48,7 @@ def _get_provider() -> str:
     return ai_config.get_config("image_understand_provider").data
 
 
-# ── 图片理解结果短期缓存（O-C）─────────────────────────────────────────────
-# memory 摄入（ImageUnderstandWorker）与即时回复（_prepare_user_message，模型不支持图时）
-# 会对同一张图各调一次 understand_image——命中缓存即复用，省一次多模态 LLM/MCP 调用，并消除
-# 两路描述不一致(desync)。N-1 说明：键是图片**来源字符串**(http URL 或 base64 DataURI)的 md5、
-# **忽略 prompt**——对 DataURI（base64 直传）平台等价于"内容哈希"；但对返回**每次不同鉴权 URL**
-# 的平台（如部分图床），同一张图跨消息会换 URL 而缓存不命中（仅多一次转述，非正确性问题）。
-# 同一条消息的两路（即时回复 / 异步 memory worker）拿到的是同一 URL 串，复用始终有效——这正是
-# TTL=600s 要覆盖的窗口。先到者写入、后到者复用同一段客观描述。纯进程内存、重启清空。
+# 图片理解短期缓存：基于图片来源哈希缓存转述结果（TTL=600s），复用即时回复与异步摄入。
 _UNDERSTAND_CACHE_TTL = 600.0  # 10 分钟，覆盖即时回复与异步 memory worker 的时间差
 _UNDERSTAND_CACHE_MAX = 512
 _understand_cache: dict[str, tuple[float, str]] = {}

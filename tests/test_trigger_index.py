@@ -110,9 +110,7 @@ def _total_triggers(sv_list: list[SV]) -> int:
     return sum(len(bucket) for sv in sv_list for bucket in sv.TL.values())
 
 
-# --------------------------------------------------------------------------
-# 语料
-# --------------------------------------------------------------------------
+# --- 语料 ---
 
 # 覆盖：前缀↔命令字空格、中英交界空格、必需空格、纯中文段空格不算、
 # 前缀本身是空格开头、兄弟命令共享前缀、超长消息、全角空格、NBSP、空消息
@@ -228,9 +226,7 @@ def _fuzz_corpus(count: int, seed: int) -> list[str]:
     return out
 
 
-# --------------------------------------------------------------------------
-# 核心不变量
-# --------------------------------------------------------------------------
+# --- 核心不变量 ---
 
 
 def test_candidates_superset_linear_for_corpus(svs: list[SV]) -> None:
@@ -270,9 +266,7 @@ def test_candidates_actually_narrower(svs: list[SV]) -> None:
     assert len(_index_candidates(index, cold)) * 4 < total
 
 
-# --------------------------------------------------------------------------
-# 具体语义回归（每条都对应现行 check_command 的一条规则）
-# --------------------------------------------------------------------------
+# --- 具体语义回归（每条都对应现行 check_command 的一条规则） ---
 
 
 def _hits(sv_list: list[SV], text: str) -> set[str]:
@@ -332,9 +326,7 @@ def test_boundary_rules_preserved(svs: list[SV], text: str, forbidden: str) -> N
     assert forbidden not in _indexed(svs, text), f"{text!r} 不该命中 {forbidden}"
 
 
-# --------------------------------------------------------------------------
-# 索引自身
-# --------------------------------------------------------------------------
+# --- 索引自身 ---
 
 
 def test_owner_maps_back_to_sv(svs: list[SV]) -> None:

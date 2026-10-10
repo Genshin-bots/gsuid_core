@@ -30,9 +30,7 @@ from .context_assembly import build_session_system_prompt
 # Persona 文件的 mtime 缓存，用于检测热重载
 _persona_mtime_cache: dict[str, float] = {}
 
-# 主人权限与关系温度**正交**：不再把主人钉在某个分数上。历史实现用进程级缓存拉分，
-# 日衰减能把主人降到下限以下且重启前拉不回，「主人 = 95」本来就不可靠。
-# 权限归 core_config.masters，温度归真实分数（见 ai_core/relationship）。
+# 主人权限与关系温度正交：权限由 masters 决定，温度由真实分数决定。
 
 
 def _get_persona_mtime(persona_name: str) -> float:
@@ -97,7 +95,7 @@ async def get_ai_session_by_id(
     is_group_chat: bool = False,
 ) -> Optional[GsCoreAIAgent]:
     """通过 session_id 获取或创建 AI Session"""
-    # 从 session_id 构造 Event，保留 WS_BOT_ID / bot_id / bot_self_id，避免 HistoryManager 访问时间更新时 key 不一致。
+    # 从 session_id 构造 Event，保留各级 bot_id 避免历史记录 key 不一致。
     from gsuid_core.models import Event
 
     parts = session_id.split(":", 4)

@@ -3213,10 +3213,7 @@ def _pack_without_sweep(
     )
 
     eps = list(episodes)
-    # 逐份材料覆盖先试一次（自带内容守卫：不足两份入库文档、或没有跨文档共享的
-    # 栏目词就返回空）。必须排在 looks_like_sum_query 之前——「每所大学的本科
-    # total number of students」这类问句会被 _SUM_RE 的 "total number of" 命中，
-    # 先走加总就会把按来源算好的覆盖按条数截掉（1M 语料下 34 份只剩 24 份）。
+    # 优先尝试逐份材料覆盖逻辑，排在 looks_like_sum_query 之前以避免跨文档统计被截断。
     covered = cover_document_excerpts(eps, query, char_budget=char_budget)
     if covered:
         return merge_coverage_with_metric_hits(covered, eps, max_chat=8)

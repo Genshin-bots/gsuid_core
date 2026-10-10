@@ -22,9 +22,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT, _is_inside
 
-# ---------------------------------------------------------------------------
-# 内部安全校验
-# ---------------------------------------------------------------------------
+# --- 内部安全校验 ---
 
 
 def _safe_resolve(base: Path, relative: str) -> Optional[Path]:
@@ -52,9 +50,7 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 
-# ---------------------------------------------------------------------------
-# 工具实现
-# ---------------------------------------------------------------------------
+# --- 工具实现 ---
 
 
 @ai_tools(category="default", capability_domain="文件", code_callable=False)

@@ -123,9 +123,7 @@ def recent_history_texts(history: List[ModelMessage], limit: int = 6) -> List[Tu
     return out[-limit:]
 
 
-# ── C-1 跨轮省略式跟进 ──────────────────────────────────────────────
-# 上一轮动作证据：仅 has_recent_tool_call（真实 ToolCallPart），禁止用户正文词表。
-# 当前句仍用闭类跟进形（改/取消/那X呢）+ 长度门——只约束「本句是否省略」，不扫历史话题词。
+# 跨轮省略跟进：依据上一轮真实 ToolCallPart 证据与当前句省略特征判定。
 _FOLLOWUP_VERB_RE = re.compile(
     r"改成|改到|改为|改回|换成|换个|挪到|往[前后]挪|提前|推迟|延后|取消|不要了|不用了|"
     r"去掉|删掉|删了|别删|停了?|停一?下|别提醒|暂停|恢复|再查|再看|重新查"
@@ -862,9 +860,7 @@ def scaffold_hints_from_graph(
     return hints
 
 
-# 群/私同一通道核：发现、回想、委派、发送、一次性/周期提醒入口。
-# 列出/改/删/暂停不钉核（L2 有持久任务或本句检索 / find_tools）。
-# web_search 不钉核，问答/工具轮 extras append。
+# 核心通道工具：发现、记忆、委派与提醒；通用检索与管理类工具不钉核心。
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
     "create_subagent",

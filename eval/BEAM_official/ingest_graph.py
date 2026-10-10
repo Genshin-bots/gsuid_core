@@ -61,9 +61,7 @@ from eval.common.beam_runner import (  # noqa: E402
 DB_PATH = os.path.join(_PROJECT_ROOT, "data", "GsData.db")
 
 
-# ─────────────────────────────────────────────
-# 状态文件（断点续跑）
-# ─────────────────────────────────────────────
+# --- 状态文件（断点续跑） ---
 
 
 def _state_path(output_dir: str, conv: int) -> str:
@@ -92,9 +90,7 @@ def save_state(output_dir: str, conv: int, state: Dict[str, Any]) -> None:
     os.replace(tmp, p)
 
 
-# ─────────────────────────────────────────────
-# DB 计数（只读，WAL 下与服务并发安全）
-# ─────────────────────────────────────────────
+# --- DB 计数（只读，WAL 下与服务并发安全） ---
 
 
 def db_counts(scope_key: str) -> Dict[str, int]:
@@ -123,9 +119,7 @@ def db_counts(scope_key: str) -> Dict[str, int]:
     return out
 
 
-# ─────────────────────────────────────────────
-# 抽取（逐 plan）
-# ─────────────────────────────────────────────
+# --- 抽取（逐 plan） ---
 
 
 def _plan_payload_turns(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -173,9 +167,7 @@ async def ingest_segment_extract(
     )
 
 
-# ─────────────────────────────────────────────
-# rebuild + 轮询收敛
-# ─────────────────────────────────────────────
+# --- rebuild + 轮询收敛 ---
 
 
 async def rebuild_and_wait(base_url: str, scope_key: str, args: argparse.Namespace) -> None:
@@ -207,9 +199,7 @@ async def rebuild_and_wait(base_url: str, scope_key: str, args: argparse.Namespa
         print(f"[rebuild] 最终: {db_counts(scope_key)}")
 
 
-# ─────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────
+# --- CLI ---
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -260,9 +250,7 @@ async def main_async(args: argparse.Namespace) -> int:
             return 2
         row = rows[args.conv]
 
-        # segment 级续跑：把每个 plan 的 turn 切成 ~segment_turns 一段，逐段 checkpoint。
-        # 单 plan ~3.5–4.5h > HTTP 超时/易被环境杀；段级落状态后，中断只丢当前段(~数十min)、
-        # 不必从 plan 头重跑（幂等叠加，见 §7.2.1）。max_windows 验证模式仍走整 plan 不落状态。
+        # 分段续跑：将每个 plan 按 segment_turns 切段并落检查点，中断后仅需重跑当前分段。
         done_segments: Dict[str, List[int]] = state.setdefault("done_segments", {})
         async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout)) as client:
             for pid in plan_ids:

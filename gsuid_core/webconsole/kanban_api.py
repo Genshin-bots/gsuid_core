@@ -30,9 +30,7 @@ from gsuid_core.ai_core.planning.kanban_executor import kick_root
 
 from ._api_tags import KANBAN
 
-# ─────────────────────────────────────────────
-# Request models
-# ─────────────────────────────────────────────
+# --- Request models ---
 
 
 class TaskFailRequest(BaseModel):
@@ -67,9 +65,7 @@ class KanbanCreateRequest(BaseModel):
     subtasks: List[Dict[str, Any]] = []
 
 
-# ─────────────────────────────────────────────
-# Serializers
-# ─────────────────────────────────────────────
+# --- Serializers ---
 
 
 def _task_card(
@@ -121,9 +117,7 @@ def _log_dict(log: AIAgentTaskLog) -> Dict[str, Any]:
     }
 
 
-# ─────────────────────────────────────────────
-# GET /api/ai/kanban/board
-# ─────────────────────────────────────────────
+# --- GET /api/ai/kanban/board ---
 
 
 @app.get("/api/ai/kanban/board", summary="看板（5 列聚合视图）", tags=KANBAN)
@@ -176,9 +170,7 @@ async def get_kanban_board(
     return {"status": 0, "msg": "ok", "data": {"columns": columns, "summary": summary}}
 
 
-# ─────────────────────────────────────────────
-# GET /api/ai/kanban/tasks/{task_id}
-# ─────────────────────────────────────────────
+# --- GET /api/ai/kanban/tasks/{task_id} ---
 
 
 @app.get("/api/ai/kanban/tasks/{task_id}", summary="任务详情", tags=KANBAN)
@@ -260,9 +252,7 @@ def _artifact_card(a: AIAgentArtifact) -> Dict[str, Any]:
     }
 
 
-# ─────────────────────────────────────────────
-# POST /api/ai/kanban/tasks（管理端手动创建）
-# ─────────────────────────────────────────────
+# --- POST /api/ai/kanban/tasks（管理端手动创建） ---
 
 
 @app.post("/api/ai/kanban/tasks", summary="管理端直接创建任务树（绕过 LLM 评估）", tags=KANBAN)
@@ -315,9 +305,7 @@ async def admin_create_kanban_task(
     }
 
 
-# ─────────────────────────────────────────────
-# 状态操作端点
-# ─────────────────────────────────────────────
+# --- 状态操作端点 ---
 
 
 @app.post("/api/ai/kanban/tasks/{task_id}/pause", summary="暂停看板任务", tags=KANBAN)
@@ -539,9 +527,7 @@ async def patch_kanban_subtask(
     return {"status": 0, "msg": "ok", "data": {"task_id": task_id}}
 
 
-# ─────────────────────────────────────────────
-# 能力评估端点（前端按钮）
-# ─────────────────────────────────────────────
+# --- 能力评估端点（前端按钮） ---
 
 
 class EvaluateMeshRequest(BaseModel):

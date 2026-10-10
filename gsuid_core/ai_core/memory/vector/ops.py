@@ -53,9 +53,7 @@ class CandidatePoint(TypedDict):
     scope_key: str
 
 
-# Qdrant 写入互斥锁：仅保护 upsert 写入操作，防止并发破坏向量索引长度同步。
-# 读取操作（_hybrid_search / search_*）不需要此锁，Qdrant 本身支持并发读。
-# 按 Collection 分锁，避免 Episode 写入阻塞 Entity/Edge 写入。
+# Qdrant 写入互斥锁：按集合隔离保护 upsert 操作，防止并发破坏索引长度同步。
 _QDRANT_LOCKS: dict[str, asyncio.Lock] = {
     MEMORY_EPISODES_COLLECTION: asyncio.Lock(),
     MEMORY_ENTITIES_COLLECTION: asyncio.Lock(),
@@ -67,11 +65,7 @@ _QDRANT_LOCKS: dict[str, asyncio.Lock] = {
 # 注意：max_workers=4 仅用于单条文本的 embedding，避免无界线程耗尽资源
 _EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem_embed")
 
-# 批量 Embedding 专用单线程执行器：
-# FastEmbed 底层使用 ONNX Runtime，自带高度优化的多线程池（Rayon），
-# 会自动打满所有 CPU 核心。如果用多线程 Python 线程池包装批量调用，
-# 会导致线程过度订阅（Thread Oversubscription：4 Python 线程 × 16 CPU 核 = 64 竞争线程），
-# 反而比单线程更慢。因此批量调用使用 max_workers=1，确保 ONNX 独占 CPU 资源。
+# 批量 Embedding 执行器：ONNX Runtime 自带多线程，此处单工作线程避免线程争用。
 _EMBED_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem_embed_batch")
 
 # Sparse Embedding 降级计数器，用于监控降级频率
@@ -388,10 +382,7 @@ async def upsert_entity_vector(
         summary_vector = name_vector
     sparse_vector = await _sparse_embed_async(name)
 
-    # 2. 锁内写入 (防止并发破坏索引长度同步)
-    # 构建 named vectors：name_dense + summary_dense + sparse
-    # 值类型标注为 Qdrant 的 Vector（dense=list / sparse=SparseVector 均其成员），
-    # 精确对齐 VectorStruct 的命名向量分支，无需 type: ignore。
+    # 构建 named vectors（dense 与 sparse），在集合锁保护下写入 Qdrant。
     vector_data: dict[str, Vector] = {
         "name_dense": name_vector,
         "summary_dense": summary_vector,
@@ -655,9 +646,8 @@ async def _hybrid_search_edges(
     """搜索 Edge，并批量回填 source_name / target_name"""
     results = await _hybrid_search_impl(MEMORY_EDGES_COLLECTION, query, scope_keys, top_k)
 
-    # Qdrant payload 字段可能因迁移 / 手工 patch 缺失（即便正常路径全字段写入）。
-    # 按 AGENTS.md §1.4 显式用 `in` + isinstance 守卫后直接访问，不使用 .get / getattr 兜底，
-    # 也不使用 `dict[k] if k in d else default` 这类 .get 的同义改写。
+    # Qdrant payload 字段可能因迁移或 patch 缺失。
+    # 依 §1.4 使用 in 与 isinstance 守卫直接访问。
     entity_ids: set[str] = set()
     for r in results:
         if "source_entity_id" in r and isinstance(r["source_entity_id"], str):
@@ -785,10 +775,8 @@ async def _hybrid_search_impl(
                 must.append(raw_must)
             scope_filter = Filter(must=must + extra_conds)
 
-    # 余弦门**只能**下推到 dense 分支（hybrid_query 的 dense_score_threshold）：混合检索时
-    # query_points 返回的是 RRF 名次分（~1/(60+rank)≈0.016），再用余弦阈值后筛会误杀全部命中
-    # （sparse 活跃时记忆召回恒空）。与 knowledge.py 一致——融合分不做余弦硬筛，相关性精排交给
-    # 上层 dual_route 的 Reranker（见 rag/hybrid.py 模块文档）。
+    # 余弦门仅下推至 dense 分支；混合检索 RRF 名次分不能作余弦硬筛。
+    # 融合精排交由上层 dual_route 的 Reranker 处理。
     points = await hybrid_query(
         collection_name,
         query_dense,
@@ -980,10 +968,8 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
     return entities
 
 
-# ─────────────────────────────────────────────
 # RF-Mem 双过程检索：熟悉度探针 + 回忆环用向量操作
 # 设计：plans/rf_mem_dual_process_retrieval_assessment_20260614.md
-# ─────────────────────────────────────────────
 
 
 async def embed_query(text: str) -> list[float]:
@@ -1074,9 +1060,7 @@ async def dense_search_episodes_with_vectors(
         return []
 
     scope_filter = _scope_filter(scope_keys)
-    # 去重：把已见 Episode 作为 must_not HasId 叠加到 scope 过滤上（回忆环 seen 集很小，安全封顶）。
-    # 即便 scope_filter 为 None（未来可能出现"空 scope 全量检索 + 去重"的调用）也保证去重生效，
-    # 不让 must_not 因缺 scope 条件而静默失效。
+    # 将已见 Episode 作为 must_not HasId 叠加到过滤条件，保证空 scope 时依然生效。
     if exclude_ids:
         from qdrant_client.models import HasIdCondition, ExtendedPointId
 
@@ -1125,9 +1109,7 @@ async def dense_search_episodes_with_vectors(
     return out
 
 
-# ─────────────────────────────────────────────
-# 生命周期裁剪 / 对账用向量操作（§3.2①、§2）
-# ─────────────────────────────────────────────
+# --- 生命周期裁剪 / 对账用向量操作（§3.2①、§2） ---
 
 
 async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:

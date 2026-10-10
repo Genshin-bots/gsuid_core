@@ -292,9 +292,7 @@ def thrash_limit_for(tool_name: str) -> int:
     return _THRASH_SAME_TOOL_LIMIT
 
 
-# 同工具空转熔断（形状信号，非业务词）：
-# - **跨轮**计数：同一 ModelResponse 内并行多次同名工具（多 query 检索）只计 1 轮
-# - 阈值 4：连续 ≥4 轮只打同一工具才注入收敛（避免误伤 research 并行 web_search）
+# 同工具空转熔断：跨轮连续 ≥4 轮仅调用同一工具时注入收敛提示，避免死循环。
 _THRASH_SAME_TOOL_LIMIT = 4
 _THRASH_FUSE_NUDGE = (
     "（系统校验：你已跨多轮连续只重复同一工具，仍无新进展。立即停止再连打该工具；"

@@ -458,9 +458,7 @@ class GsServer:
         if module_name in _module_cache:
             return _module_cache[module_name]
 
-        # fix: 已在 sys.modules 中(通常是被其它模块作为依赖传递导入并执行过),
-        # 直接复用, 不重复 exec —— 否则模块级副作用(如 scheduler.add_job)会重复执行,
-        # 重载场景下会导致 ConflictingIdError 等冲突。
+        # 已在 sys.modules 时直接复用，避免重复 exec 导致副作用（如定时任务）重复注册。
         if module_name in sys.modules:
             module = sys.modules[module_name]
             _module_cache[module_name] = module
@@ -599,11 +597,7 @@ class GsServer:
         if bot_id in self.active_bot:
             bot = self.active_bot[bot_id]
             disconnected_at: Optional[float] = bot._disconnected_at
-            # 是否丢弃旧实例，只看「实例已脱手套接字」这一条：bot.bot 非空说明实例仍被
-            # 使用中（重复拨号 / 新旧连接重叠），此时重建会 clear_send_queue() 把在途
-            # 回复全部丢掉。健康实例的 _disconnected_at 同样是 None（重连复用时会重置），
-            # 不能拿它当超时判据，否则每次重连都被误判成「断连超过 5 分钟」。
-            # 仅在实例确实已断开、且断开超 5 分钟或时间戳缺失时，才丢弃以防内存滞留。
+            # 仅在实例已断开（bot.bot 为空）且超时 5 分钟时重建，避免丢弃在途发送队列。
             stale = bot.bot is None and (disconnected_at is None or time.time() - disconnected_at > 300)
             if stale:
                 logger.warning(t("log.server.bot_timeout_recreate", bot_id=bot_id))
@@ -816,10 +810,7 @@ def check_pyproject(pyproject: Path):
             if isinstance(v, dict):
                 v = v.get("version", "*")
 
-            # 3. 简单的 Poetry 语法转换 ( ^ -> ~= )
-            # Poetry 的 ^ 表示 "Next Major Version"，
-            # pip 的 ~= 表示 "Compatible release"
-            # 虽然不完全等价，但在安装依赖场景下，转为 ~= 或 >= 能让 pip 读懂
+            # 3. Poetry 语法转换：将 ^ 转换为 pip 兼容的 ~=。
             if isinstance(v, str):
                 if v.startswith("^"):
                     v = "~=" + v[1:]

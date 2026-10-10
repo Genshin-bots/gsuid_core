@@ -9,24 +9,21 @@
 ## 16.0 通用排查流程
 
 ```sh
-# 1. 看日志（最近 200 行）
+# 查看最新 200 行日志
 tail -200 data/logs/<最新日志文件>
 
-# 或实时跟
+# 实时跟踪日志
 tail -f data/logs/<最新日志文件>
-
-# 2. 把日志级别调成 DEBUG，看更详细的信息
-#    改 data/config.json：
-#    "log": { "level": "DEBUG", ... }
-#    重启 Core
-
-# 3. 看启动日志中的关键行
-#    📀 [数据库] 开始初始化...
-#    [GsCore] 启动WS服务中...
-#    🚀 [GsCore] 启动完成, 耗时: ..., 版本: ...
-#    📦 插件: ... | 🛠️ 服务: ... | ⚡ 触发器: ...
-#    🧠 AI工具: ... | 🔗 Trigger工具: ... | 🎭 人格: ... | 📋 配置文件: ...   ← AI 启用时
 ```
+
+若需详细排查信息，在 `data/config.json` 中配置 `"log": { "level": "DEBUG" }` 并重启。
+
+启动日志关键行特征：
+- `[GsCore] 启动WS服务中...`
+- `🚀 [GsCore] 启动完成`
+- `📦 插件: ... | 🛠️ 服务: ... | ⚡ 触发器: ...`
+- `🧠 AI工具: ... | 🔗 Trigger工具: ...`（启用 AI 时输出）
+
 
 ## 16.1 Core 启动失败
 
@@ -368,19 +365,15 @@ core重启
 ## 16.12 日志位置 & 级别
 
 ```sh
-# 目录
-data/logs/
-
-# 最新日志
+# 查看最新日志
 ls -t data/logs/*.log | head -1
 
-# 实时
-tail -f data/logs/<最新>
-
-# 改级别
-# data/config.json: "log": { "level": "DEBUG", ... }
-# 重启 Core
+# 实时跟踪
+tail -f data/logs/<最新日志文件>
 ```
+
+若需调试日志，在 `data/config.json` 中配置 `"log": { "level": "DEBUG" }` 并重启 Core。
+
 
 ## 16.12b 网页控制台日志不是实时的
 

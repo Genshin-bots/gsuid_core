@@ -49,9 +49,7 @@ def _format_status(status: GitStatusInfo) -> Dict[str, Any]:
     }
 
 
-# ====================
-# Git Update APIs
-# ====================
+# --- Git Update APIs ---
 
 
 @app.get("/api/git-update/status", summary="获取所有插件的 Git 状态", tags=GIT_UPDATE)

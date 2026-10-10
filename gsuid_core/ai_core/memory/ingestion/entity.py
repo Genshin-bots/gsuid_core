@@ -17,14 +17,7 @@ from gsuid_core.utils.database.base_models import async_maker
 
 from ..database.models import AIMemEntity
 
-# 同 scope 并发写入的竞态处理（§14 窗口化抽取）。
-# 背景：实体表有 UNIQUE(scope_key, name)。在线 IngestionWorker 对同一 scope 串行 flush
-# （_flushing 集合保证），永不并发；但 §14 的窗口化抽取会**同一 scope 多窗口并发**，两个窗口
-# 同时 find_existing 未命中→各自 insert 同名实体→commit 撞 UNIQUE → IntegrityError。
-# 早期曾用"按 scope 串行化整个 find+写"的粗锁，但它把昂贵的向量去重（Qdrant 检索）也串行化了，
-# 吞吐骤降 ~10x。改为**乐观重试**：不加锁、保持窗口全并发；commit 撞 IntegrityError 时回滚重试，
-# 下次 find_existing 的 SQL 精确匹配会命中另一窗口刚提交的同名实体、改走更新分支，不再重复插入。
-# 仅在真实碰撞时付重试代价（且重试更便宜：多数名称已可被 SQL 命中，向量检索的残余更少）。
+# 同 scope 并发写入采用乐观重试机制，撞 UNIQUE 约束时回滚重试并走更新分支。
 _ENTITY_UPSERT_MAX_RETRY = 6
 
 

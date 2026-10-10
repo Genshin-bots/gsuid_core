@@ -253,7 +253,7 @@ async def bind_uid(bot: Bot, ev: Event) -> None:
 async def show_uid(bot: Bot, ev: Event) -> None:
     uid_list = await GameBind.get_uid_list(ev.user_id, ev.bot_id)
     if not uid_list:
-        return await bot.send("您还没有绑定 UID，发送 '绑定 您的UID' 进行绑定")
+        return await bot.send("您还没有绑定 UID，发送 '绑定 您的UID' 完成绑定")
     await bot.send("您绑定的 UID：\n" + "\n".join(uid_list))
 ```
 
@@ -293,9 +293,7 @@ class MyUser(BaseModel, table=True):
 # MyPlugin/utils/database/models.py（文件末尾）
 from gsuid_core.utils.database.startup import exec_list
 
-# 添加新列的 SQL 语句
-# 注意：类型必须与 Python 字段类型对应（str -> TEXT, int -> INTEGER）
-# DEFAULT 后面跟的是默认值
+# 添加新列迁移 SQL，类型需与 Python 字段映射（str -> TEXT, int -> INTEGER）
 exec_list.extend(
     [
         'ALTER TABLE MyUser ADD COLUMN platform TEXT DEFAULT ""',
@@ -353,10 +351,7 @@ class MyUser(BaseModel, table=True):
         return result.scalar_one_or_none()
 
 
-# 为已部署用户的数据库自动添加新列
-# 这些 SQL 语句会在 on_core_start_before 阶段执行
-# 对于新用户，表会自动包含所有字段，ALTER TABLE 会静默失败（列已存在）
-# 对于老用户，新列会被自动添加
+# on_core_start_before 阶段自动执行；新表自动包含字段，已有表执行加列
 exec_list.extend(
     [
         'ALTER TABLE MyUser ADD COLUMN platform TEXT DEFAULT ""',

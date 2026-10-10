@@ -274,26 +274,26 @@ class ToolContext:
 
 ## 使用示例
 
-### AI主动发送消息
+### 主动发送消息
 
 ```python
-# AI根据用户状态主动发送提醒
+# 根据用户状态主动发送提醒
 await send_text_message(ctx, "检测到你已经在线很久了，注意休息！")
 ```
 
-### AI检索知识后回复
+### 检索知识后回复
 
 ```python
-# AI检索相关知识后整合到回复中
+# 检索相关知识后整合到回复中
 knowledge = await search_cognition(ctx, query="入门说明")
 if knowledge:
     await send_text_message(ctx, f"根据资料：{knowledge[0]['content'][:100]}...")
 ```
 
-### AI进行Web搜索
+### Web 搜索
 
 ```python
-# AI搜索最新信息
+# 搜索最新信息
 search_results = await web_search("今日新闻")
 if search_results:
     await send_text_message(ctx, f"最新消息：{search_results[0]['title']}")
@@ -301,8 +301,8 @@ if search_results:
 
 ## 注意事项
 
-1. **RAG检索**：需要先在 `ai_core/rag` 模块初始化 Embedding 模型和 Qdrant 向量库
-2. **消息发送**：需要 Bot 对象可用才能发送消息
-3. **命令执行**：高风险操作，已内置安全检测，实际部署建议配合权限验证
-4. **数据库查询**：使用 `gsuid_core.utils.database.SQLA` 查询绑定数据
-5. **好感度管理**：使用 `ai_core.database.AIDAL` 查询和更新AI好感度数据
+1. **RAG 检索**：须先在 `ai_core/rag` 模块初始化 Embedding 模型与 Qdrant 向量库。
+2. **消息发送**：`bot` 对象可用时才可发送消息。
+3. **命令执行**：内置危险命令检测，建议在生产环境配置权限验证。
+4. **数据库查询**：使用 `gsuid_core.utils.database.SQLA` 查询业务数据。
+5. **好感度管理**：使用 `ai_core.database.AIDAL` 查询与更新好感度数据。

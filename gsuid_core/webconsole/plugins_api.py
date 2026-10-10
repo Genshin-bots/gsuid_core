@@ -38,9 +38,7 @@ from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
 
 from ._api_tags import PLUGINS, FRAMEWORK_CONFIG
 
-# ====================
-# 辅助函数
-# ====================
+# --- 辅助函数 ---
 
 
 def _read_plugin_icon(plugin_name: str) -> Optional[str]:
@@ -171,9 +169,7 @@ def _build_config_item(config: GSC, key: str = "") -> Dict[str, Any]:
     return item
 
 
-# ====================
-# Plugin APIs
-# ====================
+# --- Plugin APIs ---
 
 
 @app.get("/api/plugins/list", summary="获取插件列表", tags=PLUGINS)
@@ -426,9 +422,7 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
     }
 
 
-# ====================
-# Framework Config APIs
-# ====================
+# --- Framework Config APIs ---
 
 
 @app.get("/api/framework-config/list", summary="获取框架配置列表", tags=FRAMEWORK_CONFIG)
@@ -981,9 +975,7 @@ async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str,
     return {"status": 0, "msg": result, "data": {"plugin_name": plugin_name, "ok": True}}
 
 
-# ===================
-# Plugin Store APIs
-# ===================
+# --- Plugin Store APIs ---
 
 
 @app.get("/api/plugin-store/list", summary="获取插件商店列表", tags=PLUGINS)

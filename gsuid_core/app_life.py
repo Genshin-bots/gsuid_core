@@ -65,9 +65,7 @@ from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 from gsuid_core.http_trace_middleware import HttpTraceMiddleware  # noqa: E402
 
 app.add_middleware(HttpTraceMiddleware)
-# 后注册的中间件更靠外：动态 gzip 兜底未预压的文本响应；已有 Content-Encoding 的 .br/.gz 不会再压。
-# starlette >= 0.46 起 GZipMiddleware 会跳过 text/event-stream（#2871），SSE 不会被攒批延迟送达；
-# 测试 tests/test_sse_gzip_bypass.py 钉住该行为，锁依赖时若降级会立刻失败。
+# 动态 gzip 中间件兜底未压缩文本，自动跳过 text/event-stream 保证 SSE 实时推流。
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
 from gsuid_core.ai_core.http_agent.register import register_http_agent_routes  # noqa: E402

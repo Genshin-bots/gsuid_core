@@ -133,10 +133,7 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
         _spec(AgentHookPoint.ASSEMBLE_TOOLS, "agent_run.tools:assemble", 2000, _C.MUTATE_TOOLS),
         _spec(AgentHookPoint.AFTER_ASSEMBLE_TOOLS, "agent_run.tools:after_assemble", 200, _C.MUTATE_TOOLS),
         _spec(AgentHookPoint.ON_STABLE_CONTEXT, "context_assembly.build_session_system_prompt", 500, _C.SET_BLOCK),
-        # ── 以下 19 个点位**契约已定、内核尚未开火**（wired=False）──────────────
-        # `anchor` 是将来该点位应该落在哪一行，不是「现在已经在那里了」。
-        # 标 True 会让插件按发布的表去挂钩子、拿到一个永远不执行的回调且无任何告警；
-        # `on_agent_hook` 现在会对未接线点位打 warning。接线时把 wired 改回 True。
+        # 契约已定但内核尚未启用的点位（wired=False），挂载时记录警告。
         _spec(AgentHookPoint.ON_AI_ERROR, "handle_ai.handle_ai_chat:except", 500, wired=False),
         _spec(AgentHookPoint.BEFORE_RUN, "agent_run.prepare:run_once_state", 200, _C.ABORT, wired=False),
         _spec(AgentHookPoint.AFTER_BUDGET, "agent_run.prepare:budget_passed", 200, wired=False),

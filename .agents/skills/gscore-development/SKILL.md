@@ -27,7 +27,7 @@ description: >
   （双路检索 / Scope 隔离 / 摄入 / 分层图 / 偏好记忆 / RF-Mem / 生命周期 / 多模态）、
   RAG 知识库（SQL 真值源 + 对账 + 过滤下推）与嵌入 Provider、统计系统、网页控制台 API
   与认证加密、数据库基类与 AI 表 / 总开关、帮助系统，以及一份**已知坑与开发注意事项**
-  清单（D-1~D-22 历史缺陷 + 续聊/偏好/多进程/事件循环等踩坑点）。
+  清单（D-1 到 D-22 历史缺陷 + 续聊/偏好/多进程/事件循环等踩坑点）。
 ---
 
 # GsCore 框架开发与维护指南（核心入口）
@@ -65,7 +65,7 @@ description: >
 | 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem、**§9.14 认知枢纽/公共域挂文**） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账含 agent、启动挂载公共枢纽、Dense+BM25） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
-| 十二 | 已知坑与开发注意事项（D-1~D-22、统一输出闸、**§12.24 认知枢纽**、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
+| 十二 | 已知坑与开发注意事项（D-1 到 D-22、统一输出闸、**§12.24 认知枢纽**、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |
 
 ## 推荐阅读顺序（按需跳转）
 
@@ -73,11 +73,11 @@ description: >
 2. **改消息处理 / 触发逻辑**：看 [四、事件与触发器流转](./references/04-event-trigger-flow.md)；碰 Bot 发送 / 连接看 [五、Bot 三类](./references/05-bot-classes.md)。
 3. **改 AI 链路**：先 [六、Session 与 Persona](./references/06-ai-session-and-persona.md) → [七、工具注册与 Agent 装配](./references/07-tool-registry-and-agent.md) → 按需 [八、主动发言/编排](./references/08-heartbeat-scheduled-planning.md) / [九、记忆](./references/09-memory-system.md) / [十、RAG](./references/10-rag-knowledge-embedding.md)。
 4. **加配置 / 加启动逻辑 / 加数据库表 / 加帮助**：看 [三、插件加载与配置](./references/03-plugin-loading-and-config.md) 与 [十一、统计/控制台/数据库/帮助](./references/11-statistics-webconsole-database.md)。
-5. **动手前必读**：[十二、已知坑与注意事项](./references/12-developer-pitfalls.md)——这一章是"别人替你踩过的坑"，改框架前过一遍能省大量返工。
+5. **动手前必读**：[十二、已知坑与注意事项](./references/12-developer-pitfalls.md)——这一章是经验总结，改框架前阅读可减少返工。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
-- **单进程事件循环**：Core 是 FastAPI + WebSocket + APScheduler 的**单进程**服务。大量状态（续聊窗口、工具轨迹、认证密钥、Bot 实例、Session 注册表、记忆队列）是**进程内存**，多进程水平扩展会状态不共享。详见 [§12](./references/12-developer-pitfalls.md)。
+- **单进程事件循环**：Core 是 FastAPI + WebSocket + APScheduler 的**单进程**服务。状态数据（续聊窗口、工具轨迹、认证密钥、Bot 实例、Session 注册表、记忆队列）保存在进程内存中，多进程水平扩展会导致状态不共享。详见 [§12](./references/12-developer-pitfalls.md)。
 - **Windows 事件循环**：`core.py` **不设置**事件循环策略，Windows 上跑的是 Python 默认的 **`ProactorEventLoop`**，`asyncio.create_subprocess_exec` **可用**。Proactor 关 socket 的 `InvalidStateError` 改由 `core.py` 顶层 `except` 兜底，不再切 Selector。代码里遗留的「Windows 走同步 `subprocess.run`」分支是历史产物，冗余但无害。**写新代码直接用 asyncio 子进程；要兜底用 `except NotImplementedError` 而不是判平台。**（2026-08-14 更正了此前「切到 SelectorEventLoop 故不支持子进程」的过期描述。）详见 [§12.3](./references/12-developer-pitfalls.md)。
 - **两阶段启动钩子**：`on_core_start_before`（WS 启动**前**阻塞执行，做 DB 迁移/建表/Schema 升级）vs `on_core_start`（WS 启动**后**后台异步，不阻塞连接）。AI 子系统统一收敛到 `ai_core/startup.py::init_ai_core` 一个钩子，按 `_INIT_STEPS` 顺序串行。详见 [§02](./references/02-startup-lifecycle.md)。
 - **AI 总开关贯穿全链路**：`ai_config.get_config("enable").data` 在 `handle_ai` 内**函数级动态读取**（切换无需重启）；每个 `_init_*` 与定时任务执行前都检查总开关；关闭时 `create_core_tables` 跳过建 AI 表。改 AI 模块时**务必保留**这个检查。详见 [§02](./references/02-startup-lifecycle.md)、[§12](./references/12-developer-pitfalls.md)。
@@ -92,10 +92,10 @@ description: >
 - **记忆的 flush 是唯一落库时机，缓冲区在进程内存**：只有"攒满 80 条 / 满 2 小时"两个出口时，一段对话要在内存里躺两小时，core 一重启就永久消失（实测生产真实流量 Episode 数曾为 **0**）。现由 `idle_flush_seconds`（对话静默即落库）兜住。详见 [§9.4](./references/09-memory-system.md)、[§12.22f](./references/12-developer-pitfalls.md)。
 - **私聊的记忆 scope 是 `user_global:` 不是 `group:`**：`observe()`/`dual_route_retrieve()` 按 `GROUP if group_id else USER_GLOBAL` 分支，**私聊必须传 `group_id=None`**。调用点写 `event.group_id or event.user_id` 会让私聊掉进幻影 `group:{user_id}`，偏好记忆（只存 USER_GLOBAL）因此永远为空。详见 [§9.2](./references/09-memory-system.md)。
 - **记忆与发言决策正交**：即使 Persona 纯静默，Observer 仍在后台积累记忆。摄入门控 100% 纯规则零 LLM。`IngestionWorker` 现已回归**主事件循环后台 task**（独立线程双循环曾击穿 Proactor 导致 WS 全断，已废弃）。详见 [§09](./references/09-memory-system.md)、[§12](./references/12-developer-pitfalls.md)。
-- **配置写入即时持久化 + 多数热重载**：`StringConfig.set_config` 改内存后立即 `write_config` 落盘，大多数 AI 配置"下次消息处理即生效"；`inspect_interval` 是例外（需重启该 persona 的巡检 job，代码已自动 stop+start）。详见 [§03](./references/03-plugin-loading-and-config.md)。
+- **配置写入即时持久化 + 多数热重载**：`StringConfig.set_config` 改内存后立即 `write_config` 落盘，多数 AI 配置项下次消息处理即生效；`inspect_interval` 是例外（需重启该 persona 的巡检 job，代码已自动 stop+start）。详见 [§03](./references/03-plugin-loading-and-config.md)。
 - **SQLModel 不写 `__tablename__`**：表名 = 类名全小写。数据库方法写在模型类里、用 `@with_session`（写）/ `@with_read_session`（纯 SELECT）。Schema 变更走 `on_core_start_before` 的 `exec_list`/`trans_adapter`。详见 [§11](./references/11-statistics-webconsole-database.md)。
-- **上下文装配单源 + 交互脚手架（2026-07-12 起）**：system prompt 与每轮动态注入的唯一装配点是 `ai_core/context_assembly.py`（生产 `handle_ai` 与评测端点同源消费，禁止在入口手工拼接）；`ai_core/interaction_scaffold.py` 是 C-1~C-3 交互脚手架（省略跟进/漂移预算/寻址前置门），判据只许结构/语言学范畴、长度类判定必须过 `extract_message_body`。详见 [§06](./references/06-ai-session-and-persona.md) 6.7 与 [§12](./references/12-developer-pitfalls.md) 12.22d。
-- **统一输出闸门（2026-08）**：`pre_send_gate` 顺序 **尖括号 → OOC**；主路径与 `send_message_by_ai` 共用 `GateBag`；`<br>` / `<bubble/>` 非法；呈现层只做 `send_chat_result`。详见 [§7.12](./references/07-tool-registry-and-agent.md)、[§12.22](./references/12-developer-pitfalls.md)、生命周期文档 §10.4–§10.6。
+- **上下文装配单源 + 交互脚手架（2026-07-12 起）**：system prompt 与每轮动态注入的唯一装配点是 `ai_core/context_assembly.py`（生产 `handle_ai` 与评测端点同源消费，禁止在入口手工拼接）；`ai_core/interaction_scaffold.py` 是 C-1 到 C-3 交互脚手架（省略跟进/漂移预算/寻址前置门），判据只许结构/语言学范畴、长度类判定必须过 `extract_message_body`。详见 [§06](./references/06-ai-session-and-persona.md) 6.7 与 [§12](./references/12-developer-pitfalls.md) 12.22d。
+- **统一输出闸门（2026-08）**：`pre_send_gate` 顺序 **尖括号 → OOC**；主路径与 `send_message_by_ai` 共用 `GateBag`；`<br>` / `<bubble/>` 非法；呈现层只做 `send_chat_result`。详见 [§7.12](./references/07-tool-registry-and-agent.md)、[§12.22](./references/12-developer-pitfalls.md)、生命周期文档 §10.4 到 §10.6。
 - **出图主路径 `render_agent`**：`create_subagent(agent_profile="render_agent")`；`render_*` 在 media，主人格 exclusive 剥离。详见 [§7](./references/07-tool-registry-and-agent.md)、[`TAKUMI_HTML_GUIDE.md`](../../../docs/TAKUMI_HTML_GUIDE.md)。
 
 ## 关联文档（同仓库其他位置）

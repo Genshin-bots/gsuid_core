@@ -10,14 +10,15 @@
 ```python
 async def load_plugins(self, dev_mode=False):
     refresh_installed_dependencies()
-    # 把仓库根目录加入 sys.path，让插件能 from gsuid_core ...
-    # 阶段一：发现插件 + 收集缺失依赖（不立即 pip）
-    # 阶段二：flush_pending_installs() —— 合并所有插件缺失依赖，一次安装
-    #         索引为 UV_DEFAULT_INDEX，未设置则官方 PyPI，失败不换源
-    # 阶段三：先 cached_import 基础设施插件（meta）并挂 <目录名>.api 别名，
-    #         再 import 常规插件；模块级 @sv.on_xxx / @ai_tools / ai_entity 在此触发
-    # 阶段四：plugin_config_store.save_all() + core_config.lazy_write_config()
+    # 插件加载分为依赖收集、合并安装、导入注册与配置持久化四阶段
 ```
+
+四阶段流程：
+1. **收集依赖**：扫描插件目录并收集缺失依赖。
+2. **合并安装**：调用 `flush_pending_installs()` 合并执行一次安装。
+3. **分阶段导入**：先 `cached_import` 基础设施插件（meta）并挂载别名，再导入常规插件。
+4. **持久化配置**：调用 `plugin_config_store.save_all()` 与 `lazy_write_config()`。
+
 
 > **关键设计**：依赖**先收集后合并安装**。早期每个插件单独跑一次安装，首次启动很慢；
 > 现在合并成一次。索引只用 `UV_DEFAULT_INDEX`（未设置或空白则官方 PyPI），失败不换源。

@@ -59,29 +59,29 @@ description: >
 3. **首次配置**：[四、配置体系总览](./references/04-config-overview.md) 了解全貌，然后按 [五、`config.json`](./references/05-config-json.md) 把 `HOST / PORT / masters / WS_TOKEN` 改成自己需要的；`core_config.json` 强烈建议先用 [八、WebConsole](./references/08-webconsole.md) 调整。
 4. **链接 Bot**：按 [十、链接 Bot 适配器清单](./references/10-bots.md) 选适配器安装到上游 Bot 端，并在 Core 这边填 `WS_TOKEN`（[七、WebSocket 安全](./references/07-security-ws.md)）。
 5. **登录 WebConsole**：浏览器开 `http://<HOST>:<PORT>/app`，用 `config.json` 里的 `REGISTER_CODE` 注册管理员账号（**只能注册一个**）。
-6. **安装插件**：参考 [九、插件管理体系](./references/09-plugins.md)。命令安装最方便：`core安装插件GenshinUID`；若 GitHub 拉不动，配置 `core_config.json` 的 `ProxyURL` 或在 WebConsole 切换 Git 镜像源。
-7. **数据库**：默认 SQLite 即可，多实例 / 大数据切 MySQL → [十一、数据库配置](./references/11-database.md)。
-8. **要 AI 功能**：看 [十三、AI 核心部署要点](./references/13-ai.md) —— 先把外部服务 Key 准备好。
-9. **升级与迁移**：v3 数据迁移、Core / 插件升级、配置文件 schema 迁移见 [十四、升级与热更新](./references/14-upgrade.md)。
-10. **遇到问题**：直奔 [十六、故障排查清单](./references/16-troubleshooting.md)；找路径看 [十五、数据目录与路径速查](./references/15-data-layout.md)；找命令看 [十七、常用内置命令速查](./references/17-commands.md)。
+6. **安装插件**：参考 [九、插件管理体系](./references/09-plugins.md)。命令安装方式：`core 安装插件 GenshinUID`；若无法直接访问 GitHub，配置 `core_config.json` 中的 `ProxyURL` 或在 WebConsole 切换 Git 镜像源。
+7. **数据库**：默认使用 SQLite；多实例或高并发场景切换 MySQL，参考 [十一、数据库配置](./references/11-database.md)。
+8. **启用 AI 功能**：参考 [十三、AI 核心部署要点](./references/13-ai.md)，配置外部模型与服务密钥。
+9. **升级与迁移**：v3 数据迁移、Core 与插件升级、配置文件 Schema 迁移参考 [十四、升级与热更新](./references/14-upgrade.md)。
+10. **故障排查**：参考 [十六、故障排查清单](./references/16-troubleshooting.md)；目录结构查看 [十五、数据目录与路径速查](./references/15-data-layout.md)；内置命令查看 [十七、常用内置命令速查](./references/17-commands.md)。
 
 ## 关键概念速记（先看这一段再决定读哪一章）
 
-- **Core 与 Bot 是分离的两端**：Bot（NoneBot2 / AstrBot / …）以 WS 客户端身份连 Core。Core 自己是 FastAPI + WebSocket + APScheduler 服务，**不能独立使用**。详见 [三、启动 Core](./references/03-startup.md) 与 [十、链接 Bot](./references/10-bots.md)。
-- **部署方式二选一**：源码裸跑（`uv run core` / `poetry run core` / `pdm run core` / `python -m gsuid_core.core`）或 Docker（挂载模式 / 全量模式 bundle）。详见 [二、源码部署安装](./references/02-install.md) 与 [十二、Docker 部署](./references/12-docker.md)。
-- **四个层级配置文件**：`data/config.json`（Core 全局 + sv 权限矩阵）、`data/core_config.json`（行为开关 / 自动更新 / 风控）、`data/plugins_configs/<plugin>.json`（每个插件独立文件，旧 `config.json["plugins"]` 已自动迁移）、`data/ai_core/*.json`（AI 子系统）。详见 [四、配置体系总览](./references/04-config-overview.md)。
-- **安全三件套**：WS 连接用 `WS_TOKEN`（Core 与 Bot 必须一致）；外网部署必须配 `WS_TOKEN` 或 `TRUSTED_IPS`；WebConsole 走 ECDH+AES-256-GCM 应用层加密握手，登录用 `REGISTER_CODE` 注册；另有 IP 维度滑动窗口限流（Web 端 60s/10 次、5 次连败封禁 900s）。详见 [七、WebSocket 安全](./references/07-security-ws.md) 与 [八、WebConsole](./references/08-webconsole.md)。
-- **插件安装两条路径**：
-  - 命令行（需 master 权限）`core安装插件<名字>` → 走 `https://docs.sayu-bot.com/plugin_list.json` 索引 → 默认从 `cnb.cool` 镜像拉，镜像同步不到时**自动 fallback 到 GitHub**（重要! 这是最近一次 commit 引入的逻辑）。
-  - 手动 `git clone` 到 `gsuid_core/plugins/` 后 `core重启`。
+- **Core 与 Bot 保持解耦**：Bot（NoneBot2、AstrBot 等）作为 WS 客户端连接 Core。Core 为基于 FastAPI + WebSocket + APScheduler 的服务，不能独立作为聊天机器人使用。详见 [三、启动 Core](./references/03-startup.md) 与 [十、链接 Bot](./references/10-bots.md)。
+- **部署方式**：源码运行（`uv run core` / `poetry run core` / `pdm run core` / `python -m gsuid_core.core`）或 Docker 部署（挂载模式 / 全量模式 bundle）。详见 [二、源码部署安装](./references/02-install.md) 与 [十二、Docker 部署](./references/12-docker.md)。
+- **四个层级配置文件**：`data/config.json`（Core 全局与服务权限矩阵）、`data/core_config.json`（行为开关、自动更新与风控）、`data/plugins_configs/<plugin>.json`（每个插件的独立配置文件）、`data/ai_core/*.json`（AI 子系统配置）。详见 [四、配置体系总览](./references/04-config-overview.md)。
+- **安全三件套**：WS 连接使用 `WS_TOKEN`（Core 与 Bot 必须保持一致）；公网部署必须配置 `WS_TOKEN` 或 `TRUSTED_IPS`；WebConsole 采用 ECDH+AES-256-GCM 应用层加密握手，登录使用 `REGISTER_CODE` 注册；系统内置基于 IP 滑动窗口的限流策略。详见 [七、WebSocket 安全](./references/07-security-ws.md) 与 [八、WebConsole](./references/08-webconsole.md)。
+- **插件安装途径**：
+  - 命令行（需 Master 权限）：`core 安装插件 <名字>`，通过插件索引拉取，默认使用 `cnb.cool` 镜像；镜像同步失败时自动回退到 GitHub。
+  - 手动安装：`git clone` 至 `gsuid_core/plugins/` 后执行 `core 重启`。
   - 详见 [九、插件管理体系](./references/09-plugins.md)。
-- **数据库默认 SQLite**：路径 `data/GsData.db`；切换 MySQL 需先 `uv pip install aiomysql` 或 `asyncmy`（按驱动选择），然后 WebConsole 里改数据库类型 / 主机 / 端口 / 用户名 / 密码并重启；PostgreSQL 代码已有但文档标注暂不支持。详见 [十一、数据库配置](./references/11-database.md)。
-- **端口 / 监听地址**：`config.json` 的 `HOST` 支持 `localhost`（默认，仅本机可连）/ `0.0.0.0` / `dual` / `none` / `all`，`PORT` 默认 `8765`；命令行可用 `core --host 0.0.0.0 --port 9527` 临时覆盖（不会写回文件）。详见 [三、启动 Core §3.1](./references/03-startup.md#31-命令行参数)。
-- **自动更新三开关**：`AutoUpdateCore`（默认开，凌晨 3:40 拉）、`AutoUpdatePlugins`（默认开，4:10 拉）、`AutoRestartCore`（默认关，4:40 重启）。仅 Core / 插件自动更新，**不会自动重启**（生产环境强烈建议把 `AutoRestartCore` 打开并配合 systemd / Docker `--restart always`）。详见 [六、`core_config.json` §6.3](./references/06-core-config-json.md#63-自动更新与重启策略)。
-- **AI 核心默认关闭**：`ai_config.json` 的 `enable=false`；启用需先在 WebConsole 填模型 provider（OpenAI 兼容）。网络搜索默认 **Tavily**（`tavily_config.api_key`）；Jina/Exa 可作主用或备用（Jina 搜索需 Key）；网页抓取默认 Jina Reader（Key 可选）+ local 备用。多源策略默认 `error_switch`（异常/空结果换源）。详见 [十三、AI 核心部署要点](./references/13-ai.md)。
-- **WebConsole 默认自动启动**：无需开关，启动后访问 `http://HOST:PORT/app`，注册码在 `config.json` 的 `REGISTER_CODE` 字段（首次启动随机生成，每个实例都不同）；**只能注册一个管理员账号**。详见 [八、WebConsole §8.2](./references/08-webconsole.md#82-地址--注册码)。
-- **v3 → v4 数据迁移**：v3 数据导出成文件夹后拷贝到 `data/<plugin_name>/` 下，删内部 `config.json`，启动后用 master 账号发 `导入v3数据`。详见 [十四、升级与热更新 §14.2](./references/14-upgrade.md#142-v3-到-v4-数据迁移)。
-- **数据持久化三件套（Docker）**：`/gsuid_core/data`（玩家账号 / DB / 插件配置 / AI 配置 / 主题 / 日志）、`/gsuid_core/gsuid_core/plugins`（插件目录，方便在宿主机直接管理）、`/venv`（命名卷持久化 Python 虚拟环境，跨镜像升级后手动安装的包会丢）。详见 [十二、Docker §12.2](./references/12-docker.md#122-挂载点与持久化)。
+- **数据库默认使用 SQLite**：数据库文件位于 `data/GsData.db`；切换 MySQL 需安装对应异步驱动包，并在 WebConsole 中配置连接信息后重启。详见 [十一、数据库配置](./references/11-database.md)。
+- **端口与监听地址**：`config.json` 的 `HOST` 支持 `localhost`（默认仅本机访问）、`0.0.0.0`、`dual`、`none`、`all`；`PORT` 默认 `8765`；命令行可使用 `--host 0.0.0.0 --port 9527` 临时覆盖（不写回文件）。详见 [三、启动 Core §3.1](./references/03-startup.md#31-命令行参数)。
+- **自动更新机制**：`AutoUpdateCore`（默认开启）、`AutoUpdatePlugins`（默认开启）、`AutoRestartCore`（默认关闭）。生产环境建议开启 `AutoRestartCore` 并配合 systemd 或 Docker `--restart always`。详见 [六、`core_config.json` §6.3](./references/06-core-config-json.md#63-自动更新与重启策略)。
+- **AI 核心默认关闭**：`ai_config.json` 中 `enable=false`；启用需在 WebConsole 配置模型 Provider（OpenAI 兼容）。默认网络搜索为 Tavily；网页抓取默认 Jina Reader + 本地备用。多源故障转移策略默认 `error_switch`。详见 [十三、AI 核心部署要点](./references/13-ai.md)。
+- **WebConsole 默认启动**：服务启动后访问 `http://HOST:PORT/app`，注册码位于 `config.json` 的 `REGISTER_CODE` 字段（仅允许注册一个管理员账号）。详见 [八、WebConsole §8.2](./references/08-webconsole.md#82-地址--注册码)。
+- **v3 到 v4 数据迁移**：导出 v3 数据后复制到 `data/<plugin_name>/`，移除内部 `config.json`，启动后由 Master 发送 `导入v3数据`。详见 [十四、升级与热更新 §14.2](./references/14-upgrade.md#142-v3-到-v4-数据迁移)。
+- **Docker 持久化目录**：`/gsuid_core/data`（运行时数据与配置）、`/gsuid_core/gsuid_core/plugins`（插件目录）、`/venv`（Python 虚拟环境）。详见 [十二、Docker §12.2](./references/12-docker.md#122-挂载点与持久化)。
 - **内置命令 vs 命令头**：`masters`（pm=0）/ `superusers`（pm=1）/ `command_start`（命令头，默认空；填了之后所有命令都必须带命令头）；`sv` 字段控制每个服务的 pm / black_list / white_list / area。详见 [五、`config.json`](./references/05-config-json.md) 与 [十七、命令速查](./references/17-commands.md)。
 - **公网部署必须做的两件事**：① Core 这边把 `HOST` 改成 `0.0.0.0`；② 配 `WS_TOKEN` 或 `TRUSTED_IPS`，否则 Core 启动时会「所有外网 WS 连接将被拒绝」。详见 [七、WebSocket 安全 §7.2](./references/07-security-ws.md#72-公网部署)。
 - **资源下载**：首次启动会自动从镜像站 / CDN 拉资源（图片 / wiki / 圣遗物图），慢可挂代理或手动下载资源包覆盖到 `data/<plugin>/resource/`。详见 [十六、故障排查 §16.7](./references/16-troubleshooting.md#167-资源下载过慢或失败)。

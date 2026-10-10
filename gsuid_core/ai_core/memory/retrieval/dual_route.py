@@ -395,8 +395,7 @@ class MemoryContext:
     # C11 矛盾提示：命中边对应的 AIMemConflict 摘要。旧矛盾边已被软删除、检索不可见，
     # 注入摘要让 Agent 知道该事实历史上存在相反陈述（应指出矛盾而非武断单侧结论）。
     conflicts: list[str] = field(default_factory=list)
-    # 程序性/偏好记忆规则（SQL-only，须严格遵守的硬约束，置顶注入）。
-    # 字段契约见 PreferencePrompt（target_context / preference_rule / polarity / is_correction / id）。
+    # 程序性/偏好记忆规则（置顶注入，字段契约见 PreferencePrompt）。
     preferences: list[PreferencePrompt] = field(default_factory=list)
     retrieval_meta: RetrievalMeta = field(
         default_factory=lambda: RetrievalMeta(s1_episodes=0, s2_episodes=0, scope_keys=[])
@@ -534,9 +533,7 @@ class MemoryContext:
                 if ev_lines:
                     parts.append(_speech("【事件线索】\n" + "\n".join(ev_lines)))
 
-        # 程序性/偏好规则（最高优先级，置顶 + 强约束语气）：区别于"核心事实"的背景陈述，
-        # 这是针对 Agent 未来行为的硬约束（如"调 generate_image 用竖图"），必须让工具调用
-        # LLM 当作规则而非背景。占独立小预算，先于核心事实占用。
+        # 程序性与偏好规则置顶强约束注入，优先占用独立预算。
         if self.preferences:
             pref_budget = int(max_chars * memory_config.preference_inject_budget_ratio)
             pref_lines: list[str] = []
@@ -550,9 +547,7 @@ class MemoryContext:
                 pref_lines.append(f"• {tag}{rule}{mark}")
             taken = _take(pref_lines, pref_budget)
             if taken:
-                # §9 仲裁语：旧规则常缺触发条件（"不要提及睡觉"），模型会自行猜测适用面
-                # 并在完全无关场合套用/合理化——显式钉住"按字面最小范围理解"。
-                # 偏好块独立变量而非事后按标题前缀分拣：措辞变更不得静默改变防线归属（评审修复 G2）
+                # 仲裁语按字面最小范围理解，避免模型无条件扩散适用面。
                 pref_block = (
                     "【用户偏好/纠错 - 须严格遵守】"
                     "（各规则按其触发条件适用；未写明条件的按字面最小范围理解，不扩大化）\n" + "\n".join(taken)
@@ -650,9 +645,7 @@ class MemoryContext:
                 if taken:
                     parts.append("【语义类目摘要】\n" + "\n".join(taken))
 
-        # 相关对话片段：吃掉前面区块（偏好/事实/类目）用剩的全部预算——纯 episode-RAG
-        # （无图谱时，如大语料回灌 / 评测）episodes 是唯一召回源，必须给足空间，否则被
-        # 旧的固定 30% + 3 条 × 200 字硬上限饿死（单条事实 200 字截断后召回到也答不出）。
+        # 对话片段（Episode）消耗剩余预算，保证无图谱时召回充分。
         if self.episodes:
             # 预算须扣除偏好块与 untrusted 栅栏开销，否则终装配必超 max_chars、
             # 闭合标签被尾截断切掉（评审修复 F9）
@@ -1121,9 +1114,8 @@ async def dual_route_retrieve(
         except Exception as e:
             logger.debug(i18n_t("log.memory.alias_expansion", e=e))
 
-    # 私聊 / 无群上下文（group_id 为空）：user_global 是该用户记忆的**主** scope（observer 对
-    # 私聊消息即写此处），必须检索，否则私聊与评测（group_id=None）召回恒空。群聊时则仅当
-    # enable_user_global 才把用户跨群画像并入群 scope。
+    # 无群聊上下文时，user_global 为用户主 scope 须执行检索。
+    # 群聊时仅在开启 enable_user_global 时并入跨群画像。
     if user_id and (not group_id or enable_user_global):
         user_scope = make_scope_key(
             ScopeType.USER_GLOBAL,
@@ -1140,17 +1132,12 @@ async def dual_route_retrieve(
         if self_scope not in scope_keys:
             scope_keys.append(self_scope)
 
-    # RF-Mem 熟悉度路由（默认关，零影响）：用一次零 LLM 的向量探针的 s̄/熵 逐查询决定
-    # "检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。路由只在"低熟悉/高
-    # 不确定"时才放行 System-2，且**永远受用户总开关约束**——用户关了 System-2 就永不
-    # 触发 LLM 深检索。关闭路由时 effective_enable_system2 == enable_system2，行为不变。
+    # RF-Mem 熟悉度路由：通过向量探针不确定性动态触发 System-2 深检索。
     effective_enable_system2 = enable_system2
     is_recollection_route = False
     probe_vec: Optional[list[float]] = None
     probe_mean: float | None = None
-    # P1：仅当探针结论会被消费时才发探针——System-2 开（可被熟悉度抑制）或回忆环可用
-    # （enable_recollection_path + remote Qdrant）。两者皆无时探针白跑一次 embedding+dense、
-    # 改变不了任何分支，直接短路省成本。
+    # 仅在 System-2 开启或回忆环可用时发送探针，节省无意义计算开销。
     _probe_can_act = enable_system2 or (
         memory_config.enable_recollection_path and memory_config.qdrant_provider == "remote"
     )
@@ -1297,10 +1284,7 @@ async def dual_route_retrieve(
     all_edges: list[Edge] = _merge_edges(s1.edges if s1 else [], s2_edges)
     all_categories: list[Category] = _merge_categories([], s2_categories)
 
-    # RF-Mem 回忆环（默认关，且仅 remote Qdrant）：当路由判为低熟悉、System-2 未实际触发
-    # 时，用零 LLM 的 KMeans+α-mix 向量回忆补召回，并把召回的 Episode 链**关系投影**成链上
-    # 精准 Edge 事实（与 System-1 独立 Edge 检索取并集、不替代）。本地嵌入式 Qdrant 下回忆
-    # 会成倍放大 O(N) 暴力扫，故强绑 qdrant_provider=remote。
+    # RF-Mem 回忆环（仅限远程 Qdrant）：低熟悉度时通过向量回忆补充 Episode 链。
     if (
         memory_config.enable_familiarity_routing
         and memory_config.enable_recollection_path
@@ -1330,13 +1314,7 @@ async def dual_route_retrieve(
         except Exception as e:
             logger.warning(i18n_t("log.memory.rf_mem_recall_loop_retrieval", e=e))
 
-    # 类型隔离 Rerank（Type Isolation）：
-    # Category 节点完全跳过 Reranker，给予固定最高优先级。
-    # 原因：交叉编码器（Cross-Encoder）的打分强依赖文本字面重合度，
-    # Category 摘要（如"Physical Health: 包含个体的健康状况..."）与用户 query
-    # 字面重合度极低，统一 Rerank 会被"误杀"踢出 top_k。
-    # 保证 LLM 永远能看到大纲（Category），再看细节（Episode/Entity/Edge）。
-    # P-04 优化：三路 Reranker 并行执行，避免串行等待
+    # 类型隔离 Rerank：Category 节点固定最高优先级，其余三路并行 Rerank。
     ranked_episodes, ranked_entities, ranked_edges = await asyncio.gather(
         _rerank_episodes(query, all_episodes, top_k),
         _rerank_entities(query, all_entities, top_k * 2),
@@ -1437,16 +1415,12 @@ async def dual_route_retrieve(
         )
     )
 
-    # C11：把本次命中的 Edge 标记为"刚被检索"，刷新 last_accessed 供衰减 Worker 判定。
-    # 后台 fire-and-forget，不阻塞检索返回。
-    # "id" 是 ranked_edges 的固定字段，仅过滤 falsy 值（空串）以防上游异常数据。
+    # 异步刷新命中边的 last_accessed 时间戳，供衰减机制使用。
     edge_ids = [e["id"] for e in ranked_edges if "id" in e and e["id"]]
     if edge_ids:
         from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
-        # 置信度富集（weight 轴）：从 DB 取每条边的 mention_count / decay_score，折算成
-        # weight=佐证×新鲜度，覆盖构造期占位的 0.0。with_session 失败会吞异常返回 None，
-        # 故 if 守一手；查不到的边保留占位 0.0（默认 min_edge_weight=0.0 时不影响）。
+        # 置信度富集：从数据库读取边的佐证数与新鲜度计算综合权重。
         conf_inputs = await AIMemEdge.get_confidence_inputs(edge_ids)
         if conf_inputs:
             for e in ranked_edges:
@@ -1490,16 +1464,13 @@ async def dual_route_retrieve(
         except Exception as e:
             logger.debug(i18n_t("log.memory.contradiction_prompt_query", e=e))
 
-    # 程序性/偏好记忆（默认开）：SQL-only 取本 user/scope 下的活跃规则，置顶强约束注入。
-    # 选择性注入（意图门 + 能力域过滤）由 inject_preferences / preference_contexts 控制，避免
-    # 每条回复都注入全部规则。命中规则刷新 last_applied_at（生命周期保护依据），后台 fire-and-forget。
+    # 程序性与偏好记忆：查询当前会话活跃规则，按上下文过滤后置顶注入。
     preference_items: list[PreferencePrompt] = []
     if memory_config.enable_preference_memory and scope_keys and inject_preferences:
         try:
             from gsuid_core.ai_core.memory.database.models import AIMemPreference
 
-            # 过滤会先剔除部分行，故按相关能力域过滤时适当多取以免 cap 提前截断（偏好行本就有
-            # per_context 上限，总量小，over-fetch 廉价）；不过滤时按 cap 直接取。
+            # 按能力域过滤时适当放大拉取数量，避免提前截断。
             fetch_limit = (
                 memory_config.preference_max_inject * 3
                 if preference_contexts is not None
@@ -1507,9 +1478,7 @@ async def dual_route_retrieve(
             )
             pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
             if preference_contexts is not None:
-                # 纠错规则与 general 永远保留（高价值、紧扣"刚纠正完的下一轮"场景）；
-                # 其余软偏好仅当 target_context 命中本轮相关能力域时保留。get_active 已按
-                # 纠错→高频→最近排序，过滤后再 cap 保持优先级。
+                # 纠错规则与通用规则恒保留，其余软偏好按能力域过滤保留。
                 ctx_set = set(preference_contexts)
                 pref_rows = [
                     r

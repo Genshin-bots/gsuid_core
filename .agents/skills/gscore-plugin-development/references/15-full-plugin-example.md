@@ -315,29 +315,16 @@ async def get_char_info(bot: Bot, ev: Event) -> None:
 包入口文件的核心职责：
 1. **定义 `Plugins` 类** — 声明插件的全局配置（前缀、权限、别名等）
 2. **导入子模块** — 触发各子模块中 `@sv.on_xxx` 装饰器的注册
+`Plugins` 声明插件全局配置（同名插件单例）：
+- `name`：插件名称，必须与目录名一致。
+- `force_prefix`：强制前缀列表。
+- `allow_empty_prefix`：是否允许无前缀触发。
+- `alias`：插件别名列表。
 
 ```python
 from gsuid_core.sv import Plugins
 
-# ── Plugins 类：声明插件全局配置 ──────────────────────────────────
-# Plugins 是单例模式，同名插件只创建一次。
-# 它定义了插件内所有 SV 实例共享的前缀、权限等配置。
-#
-# 关键参数：
-#   name:             插件名称，必须与目录名一致
-#   force_prefix:     强制前缀列表，用户必须以此开头才能触发命令
-#   allow_empty_prefix: 是否允许无前缀触发（默认根据 prefix/force_prefix 自动推断）
-#   alias:            插件别名列表
-#   pm:               权限等级（0-6，数字越小权限越高）
-#   prefix:           可选前缀列表（与 force_prefix 的区别：force_prefix 强制，prefix 可选）
-#   disable_force_prefix: 是否禁用强制前缀
-#
-# 实际示例（参照 GenshinUID）：
-#   Plugins(name="GenshinUID", force_prefix=["gs"], allow_empty_prefix=False, alias=["gsuid"])
-#
-# 实际示例（参照 SayuStock）：
-#   Plugins(name="SayuStock", force_prefix=["a", "股票"], allow_empty_prefix=True)
-
+# 声明插件全局配置
 Plugins(
     name="MyGameUID",
     force_prefix=["mygame", "游戏"],
@@ -345,9 +332,10 @@ Plugins(
     alias=["mygame"],
 )
 
-# ── 导入子模块，触发 @sv.on_xxx 装饰器注册 ───────────────────────
+# 导入子模块以触发触发器注册
 from MyGameUID import mygameuid_bind  # noqa: F401
 from MyGameUID import mygameuid_roleinfo  # noqa: F401
+
 ```
 
 > **`Plugins` vs `SV` 的关系**：

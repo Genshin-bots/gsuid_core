@@ -545,9 +545,7 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         logger.info(t("log.plugin.plugin_name_github", plugin_name=plugin_name))
     else:
         logger.info(t("log.plugin.plugin_name_2", plugin_name=plugin_name))
-    # 显式安装即视为「需要它」，直接 reload_plugin 真正加载（与网页端安装行为一致）。
-    # reload_plugin 对从未加载过的插件等价于「首次加载」：清理步骤皆为空操作，
-    # 第四步 import 加载、第五步跑其 @on_core_start，并经 gss.load_plugin 完成依赖检查。
+    # 安装完成后直接调用 reload_plugin 完成首次加载并触发启动钩子。
     retcode = reload_plugin(plugin_name)
     if retcode.lstrip().startswith("❌"):
         return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[core重启]:\n{retcode}"

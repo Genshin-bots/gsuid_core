@@ -153,10 +153,7 @@ async def get_sub_num() -> int:
     return len(datas) if datas else 0
 
 
-# 模块导入时立即注册。register_status 是同步函数，参数：
-#   icon:        PIL.Image，插件图标（一般直接 get_ICON()）
-#   plugin_name: 在状态图上显示的插件标题
-#   plugin_status: {显示名: 异步无参函数 -> str/int/float}
+# 模块导入时注册状态卡：register_status(icon, plugin_name, status_dict)
 register_status(
     get_ICON(),
     "MyPlugin",

@@ -374,11 +374,7 @@ def _run_plugin_start_hooks(plugin_name: str) -> None:
 def reload_plugin(plugin_name: str) -> str:
     logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
 
-    # ──────────────────────────────────────────
-    # 第 0 步：先解析磁盘路径（plugins/ 与 buildin_plugins/）
-    # 必须在任何清理之前完成 —— 否则路径解析失败会留下「已卸载、无法恢复」的空壳，
-    # 直到进程重启（core_command 等内置插件此前正中此坑）。
-    # ──────────────────────────────────────────
+    # 第 0 步：解析磁盘路径，必须在清理前完成以避免路径错误导致卸载后无法恢复。
     plugin_path = GsServer.resolve_plugin_path(plugin_name)
     if plugin_path is None:
         return f"❌ 插件{plugin_name}不存在!"
@@ -397,15 +393,11 @@ def reload_plugin(plugin_name: str) -> str:
     if not module_list:
         return f"❌ 插件{plugin_name}无可加载模块!"
 
-    # ──────────────────────────────────────────
-    # 第一步：收集该插件下所有 SV 和 Plugins 对象
-    # ──────────────────────────────────────────
+    # --- 第一步：收集该插件下所有 SV 和 Plugins 对象 ---
     sv_names_to_del = [sv_name for sv_name, sv in SL.lst.items() if sv.self_plugin_name == plugin_name]
     plugins_to_del = {sv.plugins for sv in SL.lst.values() if sv.self_plugin_name == plugin_name}
 
-    # ──────────────────────────────────────────
-    # 第二步：清理 SL 三张表
-    # ──────────────────────────────────────────
+    # --- 第二步：清理 SL 三张表 ---
     for sv_name in sv_names_to_del:
         sv = SL.lst.pop(sv_name)
         # 清除 is_initialized，否则 SV.__init__ 重载时会被跳过
@@ -416,10 +408,8 @@ def reload_plugin(plugin_name: str) -> str:
 
     SL.plugins.pop(plugin_name, None)
 
-    # ──────────────────────────────────────────
     # 第三步：清理 sys.modules 和 _module_cache
     # 必须覆盖所有子模块，不能只清入口
-    # ──────────────────────────────────────────
     if meta_info is not None:
         unregister_meta_plugin(plugin_name)
     stale_modules = [k for k in sys.modules if _belongs_to_plugin(k, plugin_name)]
@@ -438,17 +428,11 @@ def reload_plugin(plugin_name: str) -> str:
         )
     )
 
-    # ──────────────────────────────────────────
-    # 第 3.5 步：清理插件注册到全局单例上的状态（定时任务+监听器 / 生命周期 Hook / web 路由）
-    # 必须在重新 import 之前，否则带固定 id 的定时任务会撞 ConflictingIdError
-    # 路由位置先 snapshot 一下, 第 4.5 步要用来把新路由放回原位
-    # ──────────────────────────────────────────
+    # 第 3.5 步：清理注册到全局单例的定时任务、监听器与路由，避免重载冲突。
     route_anchor = _snapshot_plugin_route_anchor(plugin_name)
     _clean_plugin_global_state(plugin_name)
 
-    # ──────────────────────────────────────────
-    # 第四步：重新加载（使用第 0 步已解析的 Path，避免仅查 plugins/ 漏掉内置插件）
-    # ──────────────────────────────────────────
+    # --- 第四步：重新加载（使用第 0 步已解析的 Path，避免仅查 plugins/ 漏掉内置插件） ---
     import_error: Optional[str] = None
     for module_name, filepath, _type in module_list:
         try:
@@ -464,15 +448,11 @@ def reload_plugin(plugin_name: str) -> str:
     if import_error is not None:
         return import_error
 
-    # ──────────────────────────────────────────
     # 第 4.5 步：把刚 append 到末尾的新路由放回原 anchor 位置
     # 保住与其它插件 (尤其是带 catch-all path 参数的) 的相对顺序
-    # ──────────────────────────────────────────
     _restore_plugin_routes_position(plugin_name, route_anchor)
 
-    # ──────────────────────────────────────────
-    # 第五步：重载完成后，重跑该插件的 @on_core_start hook（补全「插件加载」语义）
-    # ──────────────────────────────────────────
+    # --- 第五步：重载完成后，重跑该插件的 @on_core_start hook（补全「插件加载」语义） ---
     _run_plugin_start_hooks(plugin_name)
 
     logger.success(i18n_t("log.plugin.plugin_name", plugin_name=plugin_name))

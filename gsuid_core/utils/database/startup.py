@@ -123,9 +123,7 @@ exec_list = [
     "ALTER TABLE aiagenttask ADD COLUMN fire_count INTEGER DEFAULT 0;",
     # 子任务级 not_before：支持"等开盘 / 等下班"延后语义（2026-05-24 复盘新增）
     "ALTER TABLE aiagenttask ADD COLUMN not_before TIMESTAMP DEFAULT NULL;",
-    # 派活时的用户权限等级（与 Event.user_pm 对齐）。旧库默认 6=非管理员；主人
-    # （pm=0）派出的子代理重建 Event 后据此判定主人身份，pm 门控工具（plugin_dev）
-    # 才不会拒绝主人本人发起的任务。
+    # 任务派发时的权限等级（对齐 Event.user_pm），供子代理验证权限使用。
     "ALTER TABLE aiagenttask ADD COLUMN user_pm INTEGER DEFAULT 6;",
     # 旧任务（最早 C5 长任务）的 root_task_id 默认空——一次性把 root_task_id=id
     # 写回，让它们退化为"只有根节点的退化树"，统一进 Kanban 渲染。
@@ -165,9 +163,7 @@ exec_list = [
     "ALTER TABLE userfavorability ADD COLUMN daily_loss INTEGER DEFAULT 0;",
     "ALTER TABLE userfavorability ADD COLUMN daily_ymd VARCHAR DEFAULT '';",
     "ALTER TABLE userfavorability ADD COLUMN last_positive_interact_at INTEGER DEFAULT 0;",
-    # 认知节点行级属主：只按 scope_key 过滤会把 owner 级 ACL 降成 group 级
-    # （同群成员能召回别人的任务结论 / 产物摘要）。旧行 owner 为空，
-    # 而 tool_output / artifact 两类在 AICogNode.search 里对空属主 fail-closed。
+    # 认知节点行级属主字段，防止群内成员越权召回他人任务摘要与产物。
     "ALTER TABLE aicognode ADD COLUMN owner_user_id VARCHAR DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS ix_aicognode_owner_user_id ON aicognode (owner_user_id);",
     "ALTER TABLE aicognode ADD COLUMN canon VARCHAR DEFAULT '';",

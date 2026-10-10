@@ -143,10 +143,7 @@ async def write_file_content(
 
         safe_path.write_text(content, encoding="utf-8")
         logger.info(t("log.ai.buildintools_file_write_succeeded_ok", file_path=file_path))
-        # v2 · Kanban：写入完成后立刻把新文件登记为 workspace_file artifact，
-        # 让主人格 artifact_list / 看板工作区视图能立即看到中间代码。否则会回到
-        # 实测会话 a5696b00 的状态：code_agent 写了 .py 文件但主人格只看到 .png，
-        # 以为代理"没生成代码"。详见 §workspace 自动登记完整性章节。
+        # 写入后立即登记为 workspace_file artifact，确保工作区视图同步可见。
         await _register_single_workspace_file(safe_path)
         return f"成功写入文件: {file_path}"
 
@@ -526,9 +523,7 @@ async def list_directory(
         >>> result = await list_directory(ctx, "subfolder")
         >>> result = await list_directory(ctx)  # 列出沙盒根
     """
-    # 空字符串 = "当前沙盒根"。resolve_safe_path 把空串当成非法请求会拒绝，
-    # 这里替成 "." 让它解析到 workspace / FILE_PATH 本身。实测会话里 code_agent
-    # 多次 list_directory() 都被拒，只能改用 execute_shell_command 绕一圈。
+    # 空路径替换为 "." 解析为沙盒根目录，支持 list_directory() 缺省入参。
     safe_path = _get_safe_path(FILE_PATH, dir_path or ".")
     if safe_path is None:
         return f"错误：非法路径访问拒绝: {dir_path}"

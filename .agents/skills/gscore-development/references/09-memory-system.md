@@ -104,7 +104,7 @@ class ObservationRecord:
 > **真实 QQ 流量的 Episode 数为 0**——能持久化的全部来自 webconsole / 评测端点，因为只有
 > `chat_with_history` 与 `batch_observe` 显式调了 `worker.flush_all()`。
 >
-> `idle_flush_seconds` 按**「对话静默」而非固定周期**触发：对话进行中一直有新消息 → 不算静默
+> `idle_flush_seconds` 按**「对话静默」而非固定周期**触发：对话持续产生新消息 → 不算静默
 > → 不 flush，**批量抽取效率不受影响**；对话结束 3 分钟后落库，最长在险时间 2h → 3min。
 > 新增任何"先攒后落"的缓冲时先问一句：**进程被 kill -9 会丢多少？** 攒批是为了省 LLM 调用，
 > 不是为了省磁盘。
@@ -160,7 +160,7 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   v11–v13：96 选 N 与「金标+N 干扰」均不过。评测保持 `eo_pick=v9`。
   100k 官方 EO 曾冻结，见 `docs/MEMORY_EO_LEDGER_20260921.md`。
   **2026-10-03 解冻**：冻结期只证明了「选 N」一族（walk/ground/cluster/two_pass/pack）不成立，
-  并不等于 EO 不可做。EO 0/70 的真实瓶颈可能在答卷路径（要求 5~10 对排序全对齐）而非召回，
+  并不等于 EO 不可做。EO 0/70 的真实瓶颈可能在答卷路径（要求 5 到 10 对排序全对齐）而非召回，
   要动请从**答卷/判分侧**取证，别再重复选 N 试验。
   **2026-10-05 删除账本**：`event_ordering` 0/70、`summarization` 4/70（5.7%）在账本开启下
   依然是全场最差两档，账本这条线被判为无收益而整体移除。注意两点取证前提：① 302/700 本来就是

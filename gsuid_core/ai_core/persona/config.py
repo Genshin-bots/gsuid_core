@@ -487,9 +487,7 @@ class PersonaConfigManager(ConfigSetManager):
         user_id: Optional[str] = None
         is_private_chat = False
 
-        # 解析 session_id 获取 group_id 或 user_id
-        # 格式: {WS_BOT_ID}:{bot_id}:{bot_self_id}:group:{group_id}
-        # 或 {WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}
+        # 解析 session_id 提取群聊 group_id 或私聊 user_id。
         parts = session_id.split(":", 4)
         if len(parts) == 5:
             target_type = parts[3]

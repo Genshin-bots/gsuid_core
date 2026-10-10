@@ -297,9 +297,7 @@ async def run_case(client: httpx.AsyncClient, base_url: str, case: dict, k: int,
     return [await run_once(client, base_url, case, i, wait) for i in range(k)]
 
 
-# ───────────────────────── 批量 B 模式（快得多） ─────────────────────────
-# session_log 空闲≥60s 才落盘；逐条各等一次 ≈1min/run。批量：并发 fire 全部 run
-# → 只等一次 flush → 按唯一 user_id 扫盘。每 run user_id 唯一，session 文件不冲突。
+# 批量执行模式：并发执行全部运行并统一刷新日志，按唯一 user_id 检索会话文件。
 
 
 def _case_group_id(case: dict, run_tag: str = "") -> Optional[str]:
@@ -337,10 +335,8 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
     enable_tools = case["enable_tools"] if "enable_tools" in case else True
     group_id = _case_group_id(case, run_tag=uid)
     async with sem:
-        # setup（可选）：跨轮 modify/cancel 类用例需要**真实的既有任务**才能被"定位并修改"。
-        # 合成 history 里写"已设好"却从未真调工具落库 → 评测里根本无任务可改（假失败）。
-        # 这里先按 setup 里的消息真跑一遍（同 uid，工具落 DB），主消息再借状态池定位到它，
-        # 与生产"先建后改"完全一致。setup 结果不参与打分。
+        # setup：跨轮修改与取消用例预先执行以落库真实任务，供主用例借状态池定位。
+        # 执行结果不参与评分。
         for setup_msg in _setup_messages(case):
             await call_chat_with_history(
                 client,
@@ -369,9 +365,7 @@ async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
             )
         else:
             history = case.get("history", [])
-        # ⚠️ latency 从**拿到并发槽后**起算——端点同步阻塞到 agent 跑完，这段才是单次 agent
-        # 运行的真实耗时（供 max_latency 抓死循环/挂起）。若从 queued 起算会把"等信号量排队"
-        # 的时间算进去（426 run / concurrency 3 时队尾能等几分钟），令 max_latency 全线误判。
+        # 耗时自获取并发槽后开始计算，排除排队时间以准确评估单次 agent 运行延迟。
         call_start = time.time()
         resp = await call_chat_with_history(
             client,

@@ -13,9 +13,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-# ============================================================
-# Helpers
-# ============================================================
+# --- Helpers ---
 def _make_task(
     ordinal: int = 1,
     goal: str = "测试任务",
@@ -56,9 +54,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# ============================================================
-# list_my_kanban_tasks
-# ============================================================
+# --- list_my_kanban_tasks ---
 def test_list_no_ev():
     from gsuid_core.ai_core.planning.kanban_tools import list_my_kanban_tasks
 
@@ -172,9 +168,7 @@ def test_list_empty_after_filter():
     print("[OK] list 过滤后空 → 提示")
 
 
-# ============================================================
-# pause_my_kanban_tree
-# ============================================================
+# --- pause_my_kanban_tree ---
 def test_pause_no_ev():
     from gsuid_core.ai_core.planning.kanban_tools import pause_my_kanban_tree
 
@@ -287,9 +281,7 @@ def test_pause_periodic_disarm_fails():
     print("[OK] pause 周期模板 disarm 失败 → 错误提示")
 
 
-# ============================================================
-# resume_my_kanban_tree
-# ============================================================
+# --- resume_my_kanban_tree ---
 def test_resume_no_ev():
     from gsuid_core.ai_core.planning.kanban_tools import resume_my_kanban_tree
 
@@ -336,9 +328,7 @@ def test_resume_one_shot_kicks_root():
     root = _make_task(ordinal=1, goal="一次性", recurring_trigger=None)
     sub = _make_task(ordinal=1, node_kind="subtask", root_task_id="rt_1")
 
-    # 注意：@ai_tools 装饰器自身用 asyncio.create_task+wait_for 包工具调用，
-    # 不能再全局 patch asyncio.create_task（会把装饰器的 task 换成 MagicMock 导致 await 崩）。
-    # 改为 patch kick_root：resume 内部 asyncio.create_task(kick_root(...)) 调度的是 mock 协程。
+    # patch kick_root 避免直接 mock asyncio.create_task 破坏 @ai_tools 装饰器内部调度。
     with (
         patch(
             "gsuid_core.ai_core.planning.kanban_tools._resolve_subtask",

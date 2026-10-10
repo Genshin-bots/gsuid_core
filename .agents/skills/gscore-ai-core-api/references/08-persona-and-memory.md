@@ -47,11 +47,9 @@ from gsuid_core.ai_core.persona import build_persona_prompt
 # 构建完整的 persona 提示词（真实签名，2026-07-12 起）
 prompt = await build_persona_prompt(
     "my_persona",                    # char_name：角色名
-    mood_key=None,                   # 主聊天链路不传（mood 每轮在 user 侧注入，进 system 会
-                                     # 双写且打掉 provider 前缀缓存）；插件一次性 prompt 可传
-    group_description=None,          # 群聊简介/画像（可选）
-    extra_stable_context=None,       # 慢变稳定前缀（self_model 自述 + 群画像，O-3；
-                                     # 主链路由 context_assembly.build_session_system_prompt 组装）
+    mood_key=None,                   # 角色心情键名（主链路不传，在 user 侧注入）
+    group_description=None,          # 群聊简介与画像（可选）
+    extra_stable_context=None,       # 慢变稳定前缀（self_model 自述 + 群画像）
 )
 ```
 

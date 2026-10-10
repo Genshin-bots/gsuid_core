@@ -468,7 +468,6 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
     # 记忆 / 表情 / 图片记忆的入站观察已迁至 H00（``kits/memory``、``kits/meme``）：
     # 关 memory 槽就该不观察，观察与检索不该分处两地各判一次开关。
-    # ============================================
 
     if event.user_pm == 0:
         _schedule_owner_subscribe(event)
@@ -534,10 +533,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             if event.raw_text.strip().startswith(start):
                 event.raw_text = event.raw_text.replace(start, "", 1)
                 is_start = True
-                # N-3 修复：命中首个前缀即停。原先 for 无 break，多前缀配置下
-                # （如 command_start=["#","/"]）"#/帮助"会被连剥两层前缀（→"帮助"）。
-                # break 后 for...else 的 else 不再执行（仅在无 break 完成时执行），
-                # 故"命中即放行、不返回"的门控语义不变，只是保证最多剥一层前缀。
+                # 命中首个前缀即中断，避免多前缀配置下被连续剥除。
                 break
         else:
             if not is_start:
@@ -689,11 +685,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         keywords = persona_config.get_config("keywords").data
 
         if "提及应答" in ai_mode:
-            # 检查是否应该响应：@机器人 或者 包含关键词
-            # A-4 修复：trigger_type 在此处一次性定型——is_tome（被@/私聊）记为
-            # "mention"，命中关键词记为 "keyword"。原代码在下方无条件重置为
-            # "mention" 才上报，导致所有"关键词触发"在统计里都被记成 mention，
-            # trigger_distribution.keyword 永远趋近 0。
+            # 确定响应与触发类型：is_tome 记为 mention，关键词命中记为 keyword。
             should_respond = event.is_tome
             trigger_type = "mention" if should_respond else ""
             if not should_respond and keywords:
@@ -703,9 +695,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 if should_respond:
                     trigger_type = "keyword"
 
-            # 免唤醒续聊窗口：硬触发（@/关键词/私聊）登记窗口起点；未硬触发时，
-            # 若该用户处于窗口内、且这条是群聊里没 @ 别人的普通发言，则按"软触发"放行。
-            # 软触发消息会在 handle_ai 里先过一道沉默门，与 AI 无关则不打扰（见 §问题三）。
+            # 免唤醒续聊窗口：硬触发登记起点，窗口期内的普通发言作为软触发放行。
             soft_triggered = False
             from gsuid_core.ai_core.followup_window import note_hard_trigger, in_followup_window
             from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg

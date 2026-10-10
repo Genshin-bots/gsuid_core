@@ -220,9 +220,7 @@ def _sanitize_command(command: str) -> str:
     # 移除空字符和控制字符（除了常见的换行、制表符）
     sanitized = "".join(char for char in command if char.isprintable() or char in "\t\n")
 
-    # 移除 Unicode 方向控制字符（用于视觉欺骗攻击）
-    # U+202A to U+202E: LRE, RLE, PDF, LRO, RLO
-    # U+2066 to U+2069: LRI, RLI, FSI, PDI
+    # 移除 Unicode 双向控制字符（U+202A-U+202E, U+2066-U+2069），防止视觉欺骗注入。
     direction_controls = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
     for char in direction_controls:
         sanitized = sanitized.replace(char, "")
@@ -394,13 +392,7 @@ async def execute_shell_command(
     if not cmd_list:
         return "执行失败：命令解析结果为空"
 
-    # 确定工作目录
-    # v2 · Kanban：处于任务执行上下文时，强制以 Artifact Workspace 为 cwd——
-    # 即使 LLM 传了 work_dir，也会被改写为 workspace，避免命令落产物到任意位置。
-    #
-    # 2026-05-23 加固：无任务上下文 + LLM 未传 work_dir 时，**绝不**兜底 Path.cwd()
-    # （会落到项目根目录，等于代理拿到了对主仓库的 shell 通道），统一兜底到 FILE_PATH
-    # （`data/ai_core/file/`）。LLM 主动传 work_dir 也强制要求落在 FILE_PATH 之下。
+    # 确定工作目录：任务上下文中强制使用工作区，无任务时限制在 FILE_PATH 目录下。
     forced_ws = _resolve_workspace_cwd()
     if forced_ws is not None:
         work_path = forced_ws

@@ -14,9 +14,7 @@ import json
 import time
 from typing import Any, Set, Dict, List, Tuple, Optional
 
-# ─────────────────────────────────────────────
-# 基础 IO
-# ─────────────────────────────────────────────
+# --- 基础 IO ---
 
 
 def load_json(path: str) -> Any:
@@ -82,9 +80,7 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
     return records
 
 
-# ─────────────────────────────────────────────
-# 增量更新
-# ─────────────────────────────────────────────
+# --- 增量更新 ---
 
 
 def load_existing_answers(output_dir: str) -> Tuple[List[Dict[str, Any]], Set[str], Optional[str]]:

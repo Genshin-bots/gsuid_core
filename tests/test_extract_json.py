@@ -21,9 +21,7 @@ import pytest
 
 from gsuid_core.ai_core.utils import SILENCE_MARKERS, extract_json_from_text
 
-# ─────────────────────────────────────────────
-# 异常路径：这些输入必须抛 ValueError
-# ─────────────────────────────────────────────
+# --- 异常路径：这些输入必须抛 ValueError ---
 
 
 @pytest.mark.parametrize(
@@ -54,9 +52,7 @@ def test_pure_prose_without_json_raises() -> None:
         extract_json_from_text("好的，我知道了，没有 JSON 内容。")
 
 
-# ─────────────────────────────────────────────
-# 快路径：合法 JSON 直接 json.loads（不经 repair，避免改写合法结构）
-# ─────────────────────────────────────────────
+# --- 快路径：合法 JSON 直接 json.loads（不经 repair，避免改写合法结构） ---
 
 
 def test_plain_object() -> None:
@@ -86,9 +82,7 @@ def test_escaped_quote_inside_string() -> None:
     assert extract_json_from_text(r'{"msg": "a\"b}c"}') == {"msg": 'a"b}c'}
 
 
-# ─────────────────────────────────────────────
-# markdown 围栏剥离
-# ─────────────────────────────────────────────
+# --- markdown 围栏剥离 ---
 
 
 @pytest.mark.parametrize("fence", ["```json\n", "```JSON\n", "```\n", "```Python\n"])
@@ -97,9 +91,7 @@ def test_markdown_fence_with_language(fence: str) -> None:
     assert extract_json_from_text(raw) == {"a": 1}
 
 
-# ─────────────────────────────────────────────
-# 夹带散文：前后寒暄/解释应被剥掉
-# ─────────────────────────────────────────────
+# --- 夹带散文：前后寒暄/解释应被剥掉 ---
 
 
 def test_prose_before_and_after() -> None:
@@ -109,10 +101,7 @@ def test_prose_before_and_after() -> None:
 
 
 def test_json_after_brace_like_prose() -> None:
-    # 配平算法从首个 { 起算：当散文里先出现花括号短语（如"集合 {a}"），span 会落在
-    # 该短语上而非后面的真正 JSON。这是"取首个配平片段"约定的已知边界——属可接受的
-    # 权衡（实际 LLM 输出极少在 JSON 前放裸 {a}；且即便如此，repair_json 仍能产出合法结构，
-    # 不会崩溃）。此处断言"不崩溃 + 返回合法 list/dict"，而非假设能跨模糊散文精确定位。
+    # 花括号短语位于散文前部时的配平边界断言：验证解析不崩溃并返回有效数据结构。
     raw = '分析：集合 {a} 不对，正确的是 {"a": 1}'
     result = extract_json_from_text(raw)
     assert isinstance(result, (dict, list))
@@ -125,9 +114,7 @@ def test_json_after_unambiguous_prose() -> None:
     assert result == {"entities": [{"name": "咖啡"}], "edges": []}
 
 
-# ─────────────────────────────────────────────
-# 慢路径：repair_json 兜底容错
-# ─────────────────────────────────────────────
+# --- 慢路径：repair_json 兜底容错 ---
 
 
 def test_trailing_comma_repaired() -> None:
@@ -149,9 +136,7 @@ def test_truncated_output_repaired() -> None:
     assert result["should_speak"] is True
 
 
-# ─────────────────────────────────────────────
-# 优先级：span（配平切出的首个完整 JSON）优先于整段
-# ─────────────────────────────────────────────
+# --- 优先级：span（配平切出的首个完整 JSON）优先于整段 ---
 
 
 def test_span_takes_first_complete_json_ignoring_trailing_prose() -> None:

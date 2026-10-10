@@ -74,9 +74,7 @@ def _is_transient_judge_failure(status_code: int, judge_text: str) -> bool:
     return any(m in low for m in _TRANSIENT_JUDGE_MARKERS)
 
 
-# ─────────────────────────────────────────────
-# LongMemEval 风格：单一 PASS / FAIL
-# ─────────────────────────────────────────────
+# --- LongMemEval 风格：单一 PASS / FAIL ---
 
 
 async def judge_single_answer(
@@ -227,9 +225,7 @@ def simple_string_match(standard_answer: str | int | float | None, agent_answer:
     return ratio >= 0.8
 
 
-# ─────────────────────────────────────────────
-# BEAM-10M 风格：rubric-based
-# ─────────────────────────────────────────────
+# --- BEAM-10M 风格：rubric-based ---
 
 
 _BEAM_JUDGE_PROMPT = """你是一名长对话记忆评测裁判。基于【类别】【标准答案】和【rubric 检查点】判断 Agent 输出是否达标。

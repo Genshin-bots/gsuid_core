@@ -16,9 +16,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 
-# 受保护的特殊称谓 —— 带有身份/权力含义，只允许 PM=0（主人）注册。
-# 注意：这是「体面性护栏」而非安全边界——权力词无法枚举完（皇帝/陛下/教主…），
-# 真正的权限边界在系统提示（masters 配置 + PM，称呼一律不授权）。此处只挡明显的越权称呼。
+# 受保护称谓：带身份或权力含义的称呼仅允许主人（PM=0）注册。
 PROTECTED_ALIASES = {
     "主人",
     "妈妈",
@@ -94,9 +92,7 @@ async def remember_user_alias(
     if not alias:
         return "操作失败：称呼为空"
 
-    # 权限检查：受保护称谓只允许 PM=0（主人）注册
-    # Event.user_pm 为已声明字段（int，默认 6=最低权限）；ev 缺失时按最低权限处理
-    # 规范化后比对，避免「主　人」「ＡＤＭＩＮ」这类混淆绕过 denylist
+    # 权限检查：受保护称谓仅允许主人（PM=0）注册，文本经全角规范化后比对。
     caller_pm = ev.user_pm if ev is not None else 6
     protected = set(_PROTECTED_NORMALIZED)
     from gsuid_core.ai_core.persona.settings import get_master_title, persona_name_from_event

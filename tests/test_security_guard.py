@@ -11,9 +11,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# ============================================================
-# §D 出戏防火墙 output_firewall.check_ooc
-# ============================================================
+# --- §D 出戏防火墙 output_firewall.check_ooc ---
 def test_firewall_catches_model_identity():
     from gsuid_core.ai_core.output_firewall import check_ooc
 
@@ -104,9 +102,7 @@ def test_ooc_gate_tool_keeps_warning_not_second_release():
     print("[OK] tool_gate_feedback 软出戏持续提醒，不二次放行")
 
 
-# ============================================================
-# §B/§G 内容守卫 content_guard
-# ============================================================
+# --- §B/§G 内容守卫 content_guard ---
 def test_wrap_untrusted():
     from gsuid_core.ai_core.content_guard import wrap_untrusted
 
@@ -161,9 +157,7 @@ def test_annotate_untrusted_message():
     print("[OK] 输入侧标注：仅伪造工具返回降权，其余原样透传")
 
 
-# ============================================================
-# §F 好感度 clamp / 衰减（纯逻辑，mock 配置）
-# ============================================================
+# --- §F 好感度 clamp / 衰减（纯逻辑，mock 配置） ---
 def test_favor_clamp():
     from gsuid_core.ai_core.database import models
 

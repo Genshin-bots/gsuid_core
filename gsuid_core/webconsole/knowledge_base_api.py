@@ -34,9 +34,7 @@ from gsuid_core.ai_core.rag.knowledge import (
 
 from ._api_tags import KNOWLEDGE
 
-# WebConsole 端点捕获的"合法运行时/DB 故障"：转成 status=1 返回前端，**不**包括编程错误
-# （KeyError/AttributeError/TypeError/NameError 等）——后者应冒泡到 FastAPI 500 处理器，
-# 避免被宽 except 吞掉、线上难以定位（见 CODE_REVIEW §4）。
+# 合法运行时与数据库异常转换为 status=1 响应，代码逻辑错误冒泡至 500 处理器。
 _RUNTIME_ERRORS = (SQLAlchemyError, OSError, ValueError)
 
 
@@ -327,10 +325,8 @@ async def delete_knowledge_base(
     }
 
 
-# ─────────────────────────────────────────────
 # 批量导入 / 文档管理 / 备份导出导入
 # 设计见 plans/knowledge_base_bulk_import_assessment_20260614.md §5
-# ─────────────────────────────────────────────
 
 
 @app.post("/api/ai/knowledge/bulk", summary="批量导入（服务端分片，导入长文/数十万字）", tags=KNOWLEDGE)

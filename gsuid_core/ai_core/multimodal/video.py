@@ -124,9 +124,7 @@ async def understand_video(
     provider = _get_video_provider()
 
     if is_mcp_provider(provider):
-        # 方案1: 直接使用 MCP 视频理解工具（如果有的话）。这里用 optional 版本：
-        # 未配置直连工具时返回 ""，落到下方方案2（关键帧提取 + 图片理解）；若用会抛异常
-        # 的 get_mcp_tool_id，未配置时会直接 raise，方案2 永远变成死代码。
+        # 优先使用直连 MCP 视频工具；未配置时回退到关键帧提取与图片理解流程。
         direct_tool_id = get_mcp_tool_id_optional("video_understand_mcp_tool_id")
 
         if direct_tool_id:

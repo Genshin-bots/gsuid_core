@@ -77,9 +77,7 @@ t 包含 "Speaker"。
   "stated":[]
 }"""  # noqa: E501
 
-# 程序性/偏好记忆门控信号（仅 enable_preference_memory 开启时由 worker 追加到 system 末尾）：
-# 让"已经在读这批对话"的实体抽取 LLM 顺手判一个布尔位，替代脆弱的纯正则门控来决定是否
-# 触发第二次（带能力清单/工具轨迹的）偏好蒸馏。判定独立于 entities/edges，不影响其抽取。
+# 偏好记忆门控信号：抽取时由 LLM 同步返回布尔位，用于决定是否触发后续偏好蒸馏。
 PREFERENCE_FLAG_INSTRUCTION = """
 
 **附加判定（程序性偏好信号，独立于上面的实体/关系抽取）**：
@@ -114,10 +112,8 @@ KNOWN_CONTEXT_TEMPLATE = """
 """  # noqa: E501
 
 
-# ─────────────────────────────────────────────
 # 程序性 / 偏好记忆抽取（独立 LLM 调用，create_by=MemPreferenceExtraction）
 # 设计：plans/procedural_preference_memory_design_20260614.md §4
-# ─────────────────────────────────────────────
 PREFERENCE_EXTRACTION_SYSTEM = """你是"用户偏好与纠错规则"蒸馏专家。输入是即时通讯对话片段（每行形如 [user_id]: 内容）和一份【可用能力清单】。
 
 你的唯一任务：找出用户对【助手(你)的行为、工具调用方式、输出格式、参数选择】发出的"纠正 / 偏好 / 规则要求"，蒸馏成助手未来应遵守的程序性规则。

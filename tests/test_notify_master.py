@@ -23,9 +23,7 @@ from gsuid_core.ai_core.utils import (
     notify_master_of_budget_block,
 )
 
-# ─────────────────────────────────────────────
-# 共用 fixture 与辅助
-# ─────────────────────────────────────────────
+# --- 共用 fixture 与辅助 ---
 
 
 @pytest.fixture
@@ -116,9 +114,7 @@ def _make_ev(
     )
 
 
-# ─────────────────────────────────────────────
-# classify_error_type —— 与 sanitize_error_for_user 共用嗅探常量
-# ─────────────────────────────────────────────
+# --- classify_error_type —— 与 sanitize_error_for_user 共用嗅探常量 ---
 
 
 def test_classify_error_type_no_result() -> None:
@@ -142,9 +138,7 @@ def test_classify_error_type_unknown() -> None:
     assert classify_error_type("随便一段正常文本") == "未知"
 
 
-# ─────────────────────────────────────────────
-# notify_master_of_agent_error —— 主路径
-# ─────────────────────────────────────────────
+# --- notify_master_of_agent_error —— 主路径 ---
 
 
 @pytest.mark.anyio
@@ -312,9 +306,7 @@ async def test_notify_master_private_chat_shows_私聊_label(
     assert "私聊" in bot.target_send_calls[0]["message"]
 
 
-# ─────────────────────────────────────────────
-# notify_master_of_budget_block —— 预算路径
-# ─────────────────────────────────────────────
+# --- notify_master_of_budget_block —— 预算路径 ---
 
 
 @pytest.mark.anyio
@@ -389,7 +381,5 @@ async def test_notify_master_budget_block_notifies_even_when_user_notify_false(
     assert "[AI 预算超额拦截]" in bot.target_send_calls[0]["message"]
 
 
-# ─────────────────────────────────────────────
 # 端到端：handle_ai._is_error 分支仍保留固定模板文案给当前会话
 # （src 级检查，避免 sanitize_error_for_user 文本被无意改动）
-# ─────────────────────────────────────────────

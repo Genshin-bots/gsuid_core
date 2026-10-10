@@ -86,9 +86,7 @@ async def list_artifacts(
             e = it.expires_at
             if e is None:
                 return True
-            # DB 驱动返回的 datetime 默认是 offset-naive（无 tzinfo），
-            # 与 offset-aware 的 `now` 直接比较会抛 TypeError。
-            # 统一按 UTC 处理：naive 视为 UTC、aware 保持原 tz。
+            # 统一时区处理：naive 时间转为 UTC 时区，避免与 aware 时间比对报错。
             if e.tzinfo is None:
                 e = e.replace(tzinfo=timezone.utc)
             return e > now

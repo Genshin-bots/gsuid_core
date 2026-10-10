@@ -190,26 +190,17 @@ async def ensure_memory_collections():
             else:
                 for vector_name in _vector_names_for_collection(name):
                     await ensure_vector_on_disk(name, vector_name)
-                # 补齐 KEYWORD payload 索引：旧版/迁移/跨后端复制等场景下集合可能
-                # 缺失 `scope_key` 索引，远程 Qdrant 在 Hybrid 检索的 Filter 中使用
-                # `scope_key` 时会返回 400。ensure_payload_indexes 幂等（已存在则跳过），
-                # 远程失败会抛 RuntimeError 让 Hybrid 检索不陷入反复 400。
+                # 补齐 scope_key 的 KEYWORD 索引，避免远程 Qdrant 在混合检索过滤时报错 400。
                 await ensure_payload_indexes(name, ["scope_key"])
                 logger.debug(t("log.memory.qdrant_collection_exists_configured", name=name))
         except Exception as e:
-            # RuntimeError 多为 ensure_payload_indexes / force_recreate_collection 在远程
-            # Qdrant 上抛出的"运维配置异常"（索引创建失败/权限/网络），属阻塞性问题——
-            # 升级为 critical 让运维在 log 里第一时间看到，但仍继续循环处理其它集合，
-            # 不让单个集合的异常拖垮整个 memory 初始化。运行时侧 _hybrid_search_impl
-            # 已通过 is_vector_structure_error 把"index required"降级为空结果，不会刷 error。
+            # RuntimeError 多为远程 Qdrant 权限或网络异常，记录 critical 并继续处理其余集合。
             if isinstance(e, RuntimeError):
                 logger.critical(t("log.memory.collection_name_invalid_startup", name=name, e=e))
             else:
                 logger.error(t("log.memory.check_rebuild_collection_name", name=name, e=e))
 
-    # §3.2① 冷 Episode 归档集合：独立、轻量地确保存在（不参与上面的 payload 备份/重嵌入迁移）。
-    # 冷向量是从热集合迁移而来的派生数据，真值在 SQL；维度变更时直接重建为空即可，
-    # 后续降级会把新维度向量重新迁入，不影响任何记忆事实（SQL 文本完整保留）。
+    # 冷 Episode 集合确保存在，维度不匹配时重建为空，真值保留在 SQL。
     await _ensure_episode_cold_collection(existing, dimension, vector_config, sparse_config)
 
 

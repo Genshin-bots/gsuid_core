@@ -310,20 +310,14 @@ class HeartbeatInspector:
         if not user_id:
             return
 
-        # 3. 直接查会话的 persona 配置——**不通过 get_ai_session_by_id 创建主
-        #    GsCoreAIAgent**。run_heartbeat 只需要 persona_name，而旧路径会无
-        #    条件创建主 session + AISessionLogger，导致每个心跳触发都会留下一
-        #    个"只有 session_created + system_prompt 的 2-entry 空壳" 日志文件，
-        #    /api/ai/session_logs 看起来像一堆活跃但什么也没做的 session。
+        # 直接读取 persona 配置，避免无条件创建主 GsCoreAIAgent 产生空壳会话日志。
         session_id: str = event.session_id
         session_persona_name: Optional[str] = persona_config_manager.get_persona_for_session(session_id)
         if not session_persona_name:
             logger.debug(t("log.ai.heartbeat_session_event_persona", event=event))
             return
 
-        # 4. 决策阶段 (隐形 Sub-Agent)
-        # C8：从统一主动网关取出近窗口内的定时任务结果摘要，合并进决策语境，
-        # 让 AI 自然提及任务进展而非生硬另起一条播报。
+        # 决策阶段：从网关取近期定时任务摘要合并进决策语境。
         from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()

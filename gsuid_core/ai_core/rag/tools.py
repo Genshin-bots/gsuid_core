@@ -49,13 +49,7 @@ else:
     ToolList = List[Any]
 
 
-# 这些分类的工具**永不通过向量检索暴露给任何 Agent**——主人格、通用子代理、
-# 其它能力代理的补充检索都召回不到它们。它们副作用强、面向"为框架本身改代码并
-# 热加载"（plugin_dev），只允许专职能力代理按 ``profile.tool_names`` 显式装配
-# （``capability_agents.runner._resolve_tools`` 走 ``get_all_tools`` 按名取、不经本函数）。
-# 仅当调用方在 ``search_tools(category=...)`` 里**显式**点名该分类时才返回。
-# 背景：plugin_dev 工具一度被向量检索召回进主人格工具池，导致主人格绕过能力代理
-# "自己把插件写了"（还撞上迭代上限），故在检索层统一拦截。
+# 敏感能力工具不通过向量检索暴露，仅允许专职代理显式按名称装配。
 NON_SEARCHABLE_TOOL_CATEGORIES: frozenset[str] = frozenset({"plugin_dev", "meta"})
 
 # 工具检索接 Reranker 时的"召回池"大小：向量先粗召回这么多候选，再交叉编码精排，
@@ -1033,9 +1027,7 @@ async def search_tools(
                 continue
             all_tools_dict.update(all_tools_cag[cat])
 
-    # 永不可检索分类（plugin_dev 等"仅按名装配给专职能力代理"的工具）：除非调用方
-    # 在 category 里**显式**点名，否则从候选里剔除——任何 Agent 都不该通过向量检索
-    # "捡到"这些工具而绕过委派（见 NON_SEARCHABLE_TOOL_CATEGORIES 注释）。
+    # 非显式点名时剔除非检索分类工具，防止通用 Agent 误召回。
     explicit_cats = category if isinstance(category, list) else [category]
     for hidden_cat in NON_SEARCHABLE_TOOL_CATEGORIES:
         if hidden_cat in explicit_cats or hidden_cat not in all_tools_cag:

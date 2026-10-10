@@ -52,9 +52,7 @@ _TRANSPARENT_1PX_PNG = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
-# Takumi 引擎卫生 CSS：无主题、无业务域；修常见引擎坑
-# 注意：不在此强制 body 背景色（避免盖掉 agent 浅色主题）；透明 PNG 由
-# ``_ensure_opaque_image_bytes`` 在出图后合成实色底。
+# Takumi 引擎基础 CSS，不强制 body 背景色以避免覆盖浅色主题。
 _TAKUMI_ENGINE_HYGIENE_CSS = """
 /* engine hygiene — not a visual theme */
 img{max-width:100%;height:auto;}

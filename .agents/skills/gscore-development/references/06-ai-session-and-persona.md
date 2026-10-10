@@ -134,7 +134,7 @@ RESOURCE_PATH/persona/{persona_name}/
 | `keywords` | List[str] | `[]` | 唤醒关键词 |
 | `speech_len_soft` | int | `60` | 台词软上限（字）。**留默认即跟随 `chat_style` 派生** |
 | `speech_len_hard` | int | `150` | 台词硬上限（字）。同上。注意终局正文**没有长度硬拦**（`speech_policy.py` 显式弃用），只写进 prompt 起偏置作用 |
-| `chat_style` | int | `50` | **说话强度** 0~100：0=惜字如金 / 50=默认 / 100=连珠炮 |
+| `chat_style` | int | `50` | **说话强度** 0 到 100：0=惜字如金 / 50=默认 / 100=连珠炮 |
 | `enabled_tools` | List[str] | `["*"]` | 启用工具（按插件），管辖向量检索池。`*`=全部插件；`!插件名`=排除；只列具体名=仅这些。空列表=一个都不启用 |
 | `tool_names` | List[str] | `[]` | 显式工具白名单（常驻直装，不经向量检索） |
 | `capability_agents` | List[str] | `["*"]` | 可委派能力代理 node_id。`*`=全部；`!render_agent` 禁用出图。空列表=不可委派 |

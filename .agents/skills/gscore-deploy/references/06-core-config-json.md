@@ -124,7 +124,7 @@
 }
 ```
 
-`AutoAddRandomText=true` 后，Core 发送的**每条文字**末尾会随机加 1~2 个
+`AutoAddRandomText=true` 后，Core 发送的**每条文字**末尾会随机加 1 到 2 个
 `RandomText` 里的字符，避免平台风控认为「完全相同的消息」。**仅 QQ 平台有意义**。
 
 ## 6.5 转图与渲染
@@ -187,7 +187,7 @@
 - `AtSenderPos`：`@发送者` 的位置（消息最前 / 消息最后）
 - `SameUserEventCD`：同用户两次触发同一命令的最小间隔秒数（0 不限）
 - `BlackList`：黑名单用户 / 群，所有命令不响应
-- `EnableForwardMessage`：合并转发策略（允许 / 禁止 / 合并为一条消息 / 1~5 / 全部拆成单独消息）
+- `EnableForwardMessage`：合并转发策略（允许 / 禁止 / 合并为一条消息 / 1 到 5 / 全部拆成单独消息）
 
 ## 6.9 日志清理
 

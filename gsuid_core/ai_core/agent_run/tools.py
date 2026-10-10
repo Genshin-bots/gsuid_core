@@ -355,10 +355,8 @@ class ToolsPhase(RunOnceHost):
         else:
             _assemble = self.create_by in _AGENTIC_CREATE_BY and not st.tools
 
-        # tool_assembly 槽为 off（或被用户套件占据）时，内核**不跑**五层自动装配：
-        # 只留调用方传入的工具 + 下方的 exclusive 剥离与委派补全。
-        # 副作用：find_tools 是 meta 分类、由装配层注入，本槽 off 时渐进式工具发现
-        # 一并消失——这是正确行为（用户套件无权声明特权分类）。
+        # 装配套件为 off 时不执行自动装配，仅保留入参工具与委派补全。
+        # 此模式下特权分类 find_tools 一并不注入。
         if _assemble and not _kernel_owns_tool_assembly():
             logger.info(i18n_t("log.agent.tool_assembly_slot_not_kernel"))
             _assemble = False
@@ -746,9 +744,8 @@ class ToolsPhase(RunOnceHost):
         else:
             logger.debug(i18n_t("log.agent.skip_tool_search_searching_tools"))
 
-        # H14 / H15：工具装配套件与第三方钉工具。两点之后**各剥离一次** exclusive——
-        # H14 后防套件直接装上 render_*，H15 后防第三方 ensure 回来。
-        # addr_gated 时两点都不打（C-3 零工具硬约束）。
+        # 工具装配套件与第三方钉工具点后各剥离一次 exclusive，防误装 render_* 工具。
+        # addr_gated 为真时不执行钩子。
         if not st.addr_gated:
             await self._fire_tool_hooks(st)
 
@@ -849,9 +846,7 @@ class ToolsPhase(RunOnceHost):
 
     def _run_once_build_agent_meta(self, st: RunOnceState) -> object:
         """构建 pydantic-ai Agent 与流式统计元数据；返回 Agent 实例。"""
-        # 当 return_model 指定时，使用 st.output_type 让 pydantic_ai 强制结构化输出
-        # st.output_type 默认为 str（返回文本），指定 Pydantic 模型时强制返回结构化 JSON
-        # 非主人在 get_tools 时看不见 run_skill_script；执行期还有 wrap_tool_execute。
+        # 指定 return_model 时通过 st.output_type 强制 pydantic_ai 结构化输出。
         _guarded_skills = skills_toolset.filtered(skill_tool_visible)
         _toolsets = [_guarded_skills] if self.create_by in _SKILLS_CREATE_BY and not st.addr_gated else []
         # 启用渐进式暴露时挂 RetrievableToolset：每个 step 读 dynamic_tool_names 即时暴露命中工具。
@@ -914,9 +909,7 @@ class ToolsPhase(RunOnceHost):
         st.last_event_at = None
         st.model_name = self.model.model_name if self.model else "unknown"
         st.provider = self.model.system if self.model else "unknown"
-        # 流式响应下需手动按完整文本重新拆分内嵌 <think> 标签（见 _split_embedded_thinking）。
-        # thinking_tags 取自模型 profile；缺省与 pydantic_ai DEFAULT_THINKING_TAGS 对齐。
-        # 裸名 ('think','think') 会误伤英文思考里的单词 think，必须先规范化。
+        # 流式响应需按模型 profile 规范化思考标签（默认与 DEFAULT_THINKING_TAGS 对齐）。
         st.thinking_tags = ("<think>", "</think>")
         if self.model is not None:
             _profile_obj = self.model.profile

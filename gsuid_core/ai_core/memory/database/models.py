@@ -165,9 +165,7 @@ async def _scope_rows_uniform(
     return list((await session.execute(stmt)).scalars().all())
 
 
-# ─────────────────────────────────────────────
-# 多对多关联表
-# ─────────────────────────────────────────────
+# --- 多对多关联表 ---
 mem_episode_entity_mentions = Table(
     "mem_episode_entity_mentions",
     SQLModel.metadata,
@@ -185,9 +183,7 @@ mem_category_entity_members = Table(
 )
 
 
-# ─────────────────────────────────────────────
-# Episode：原始对话片段（Base Graph 第一层）
-# ─────────────────────────────────────────────
+# --- Episode：原始对话片段（Base Graph 第一层） ---
 class AIMemEpisode(SQLModel, table=True):
     """存储经聚合的对话片段，是所有记忆的原始素材。"""
 
@@ -205,10 +201,7 @@ class AIMemEpisode(SQLModel, table=True):
     valid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
-    # §3.2① 冷热分集合标记：is_archived=True 表示已降级为"冷"——其向量已迁出热集合
-    # memory_episodes（迁入冷集合 memory_episodes_cold），SQL 文本保留可审计。System-1
-    # 只查热集合，故冷 Episode 退出在线向量暴力扫描、不再抬高交互检索成本（缓解 P0-1/P0-2）。
-    # 旧库无此列，由 utils/database/startup.py 的 ALTER 语句补齐（默认 False）。
+    # 冷热分集合标记：is_archived=True 表示向量已迁入冷集合，降低在线检索开销。
     is_archived: bool = Field(default=False)
     # 时间 gap 切出的 session；旧库由 ALTER + backfill_sessions 补齐。
     session_id: Optional[str] = Field(default=None, max_length=36, index=True)
@@ -1019,9 +1012,7 @@ class AIMemEpisode(SQLModel, table=True):
         logger.info(t("log.memory.session_backfill", scope_key=scope_key, n=written, sessions=len(fresh)))
         return written
 
-    # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────
-    # Episode 是"每条放行消息都写"的无界增长主力（P0-2）。以下方法为生命周期 Worker
-    # 提供"降级（热→冷）"与"每 scope 物理上限"两级裁剪支持，纯规则、零 LLM。
+    # Episode 保留策略与冷热分集合：提供降级（热→冷）及单 scope 物理上限裁剪。
 
     @classmethod
     @with_session
@@ -1512,9 +1503,7 @@ class AIMemThread(SQLModel, table=True):
         )
 
 
-# ─────────────────────────────────────────────
-# Entity：提取出的实体节点（Base Graph 第二层）
-# ─────────────────────────────────────────────
+# --- Entity：提取出的实体节点（Base Graph 第二层） ---
 class AIMemEntity(SQLModel, table=True):
     """从 Episode 中提取的实体，是知识图谱的核心节点。"""
 
@@ -1828,9 +1817,7 @@ class AIMemEntity(SQLModel, table=True):
 
         return name_to_id, vector_payloads, new_entity_count
 
-    # ── 孤儿实体回收（C11 扩展：实体级 GC）──────────
-    # Edge 会被生命周期 Worker 衰减→遗忘物理删除，但其连接的 Entity 没人回收，
-    # 久而久之孤儿实体只增不减，膨胀分层图分类成本。以下两个方法为后台 GC 提供支持。
+    # 孤儿实体回收：清理因 Edge 衰减删除而残留的未关联实体。
 
     @classmethod
     @with_session
@@ -1998,9 +1985,7 @@ class AIMemEntity(SQLModel, table=True):
         return list((await session.execute(stmt)).scalars().all())
 
 
-# ─────────────────────────────────────────────
-# Edge：实体间的关系（Base Graph 第三层）
-# ─────────────────────────────────────────────
+# --- Edge：实体间的关系（Base Graph 第三层） ---
 class EventWriteRow(TypedDict):
     summary: str
     start_at: datetime | None
@@ -2131,9 +2116,7 @@ class AIMemEdge(SQLModel, table=True):
     # C1 跨发言者归并：同一 fact 被不同 source 重复陈述时，命中既有 Edge 只累加此计数，
     # 不再写入 N 条重复 Edge。旧库无此列，由 startup.py 的 ALTER 语句补齐（默认 1）。
     mention_count: int = Field(default=1)
-    # C11 记忆生命周期：时效衰减分。检索排序按 reranker_score × decay_score 加权；
-    # 长期未被检索的 Edge 由衰减 Worker 周期性下调，decay_score < 阈值则被遗忘。
-    # 旧库无此列，由 startup.py 的 ALTER 语句补齐（默认 1.0）。
+    # 时效衰减分：检索时按 decay_score 加权，衰减 Worker 周期下调长期未访问项。
     decay_score: float = Field(default=1.0)
     # C11：最近一次被检索命中的时间，衰减判定的依据。旧库由 ALTER 补齐（默认 NULL）。
     last_accessed: Optional[datetime] = Field(default=None)
@@ -2390,9 +2373,7 @@ class AIMemEdge(SQLModel, table=True):
         return victims
 
 
-# ─────────────────────────────────────────────
-# C11：记忆矛盾记录（Contradiction Engine）
-# ─────────────────────────────────────────────
+# --- C11：记忆矛盾记录（Contradiction Engine） ---
 class AIMemConflict(SQLModel, table=True):
     """记录一对语义冲突的 Edge（同实体/关系但事实相反）。
 
@@ -2484,9 +2465,7 @@ class AIMemConflict(SQLModel, table=True):
         return [row[0] for row in result.all() if row[0]]
 
 
-# ─────────────────────────────────────────────
-# Category ↔ Category 层次关联（链接模型）
-# ─────────────────────────────────────────────
+# --- Category ↔ Category 层次关联（链接模型） ---
 class AIMemCategoryEdge(SQLModel, table=True):
     """记录父 Category → 子 Category 的归属关系，支持多对多。"""
 
@@ -2494,9 +2473,7 @@ class AIMemCategoryEdge(SQLModel, table=True):
     child_category_id: str = Field(foreign_key="aimemcategory.id", primary_key=True, max_length=36)
 
 
-# ─────────────────────────────────────────────
-# Category：分层语义图节点（Hierarchical Graph）
-# ─────────────────────────────────────────────
+# --- Category：分层语义图节点（Hierarchical Graph） ---
 class AIMemCategory(SQLModel, table=True):
     """分层语义图的类目节点。Layer=1 最具体，Layer 越大越抽象。"""
 
@@ -2568,13 +2545,7 @@ class AIMemCategory(SQLModel, table=True):
         return list(result.scalars().all())
 
 
-# ─────────────────────────────────────────────
-# 程序性 / 偏好记忆（Procedural / Preference Memory）
-# 设计：plans/procedural_preference_memory_design_20260614.md §3
-# 与 Episode/Entity/Edge 三层陈述性记忆正交：本表承载"针对 Agent 未来行为的
-# 程序性指令/纠错规程/偏好规则"（如"调 generate_image 用竖图""按用户时区"），
-# SQL-only 结构化真值、不写向量（精确召回比向量更快更准，避免向量模糊性与对账负担）。
-# ─────────────────────────────────────────────
+# 程序性/偏好记忆：承载未来行为规程与偏好规则，结构化存储于 SQL，不写向量。
 class AIMemPreference(SQLModel, table=True):
     """程序性/偏好记忆规则。一条规则 = "在某 target_context 下，该/不该如何做"。
 

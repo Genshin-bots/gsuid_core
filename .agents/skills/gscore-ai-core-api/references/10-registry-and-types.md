@@ -5,15 +5,9 @@
 ```python
 from gsuid_core.ai_core.register import get_registered_tools, get_all_tools
 
-# 获取按分类组织的工具字典
-# 返回: Dict[str, Dict[str, ToolBase]]
+# 获取按分类组织的工具字典，返回: Dict[str, Dict[str, ToolBase]]
 all_by_category = get_registered_tools()
-# {
-#   "self": {"send_message_by_ai": ToolBase(...), ...},
-#   "buildin": {"search_cognition": ToolBase(...), ...},
-#   "buildin": {"get_self_persona_info": ToolBase(...), ...},
-#   "default": {"execute_shell_command": ToolBase(...), ...},
-# }
+# 结构示例: {"self": {"send_message_by_ai": ToolBase(...)}, "buildin": {...}}
 
 # 查看某分类的工具
 self_tools = all_by_category.get("self", {})
@@ -130,9 +124,7 @@ CheckFunc = Callable[..., Union[
     Awaitable[Tuple[bool, str]],
 ]]
 
-# 返回值含义
-# (True, "")        -> 校验通过
-# (False, "原因")   -> 校验失败，"原因" 作为工具返回值告知 AI
+# 返回值: (True, "") 校验通过；(False, "原因") 校验失败并反馈给 AI
 ```
 
 `check_func` 的使用模式（同步/异步、自动注入 `Bot`/`Event`）见 [§2.5 `check_func` 权限校验](./02-ai-tools-decorator.md)。

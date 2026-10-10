@@ -44,13 +44,7 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.session_logger import AISessionLogger
     from gsuid_core.ai_core.session_registry import AISessionRegistry
 
-# ─────────────────────────────────────────────
-# TypedDict 定义
-#
-# 序列化基础结构（SessionLogEntry / LinkedAgentRecord / SessionLogFileData）统一
-# 由 ``gsuid_core.ai_core.models`` 提供，与 AISessionLogger 落盘格式同源；
-# 以下仅定义 webconsole 响应特有的派生类型。
-# ─────────────────────────────────────────────
+# WebConsole 响应特有派生类型定义（基础结构由 models 统一提供）。
 
 
 class LinkedAgentEnriched(LinkedAgentRecord, total=False):
@@ -123,9 +117,7 @@ class SessionLogDetail(SessionLogSummary, total=False):
     entries: List[SessionLogEntry]
 
 
-# ─────────────────────────────────────────────
-# 辅助函数
-# ─────────────────────────────────────────────
+# --- 辅助函数 ---
 
 
 def _build_summary_from_memory(
@@ -185,22 +177,7 @@ def _build_summary_from_memory(
     }
 
 
-# ─────────────────────────────────────────────
-# 文件解析缓存 + 查找索引（消除重复解析与全目录扫描）
-#
-# 此前列表/概览接口每次请求都会：
-#   ① 完整读取并 json 解析全部日志文件（含庞大的 entries 数组）；
-#   ② 对每个 linked_agent 在磁盘上做一次全目录扫描查找目标文件，
-#      复杂度 O(文件数 × linked_agent 数)。文件越多越慢，呈二次增长。
-#   而 linked_agent 记录里的 log_file 是绝对路径，跨机器/迁移后必然失效，
-#   使其总是落到最坏的全目录扫描分支。
-#
-# 优化：
-#   * 按 (mtime, size) 缓存每个文件的“基础摘要”，已结束的日志不再变化，
-#     首次解析后后续请求直接命中缓存，省去重复读取/解析/统计 entries。
-#   * 构建 (session_id, session_uuid) -> 摘要 索引，linked_agent 改为
-#     O(1) 索引查找，彻底消除全目录扫描。
-# ─────────────────────────────────────────────
+# 文件解析缓存与查找索引：基于 (mtime, size) 缓存摘要，并按 (sid, uuid) 构建 O(1) 索引。
 
 
 # 摘要索引加上文件路径：detail / linked_agents 据此只加载目标文件。
@@ -1054,14 +1031,7 @@ def _find_log_by_session_id_and_uuid(
     return resp
 
 
-# ─────────────────────────────────────────────
-# 会话来源（create_by）分类目录
-#
-# 每个 AI 会话在创建 AISessionLogger 时都会带一个 create_by 标识其来源
-# （Chat / MemCategorization / Heartbeat_Decision / Heartbeat_Output ...）。
-# 此目录把原始 create_by 映射为前端可读的展示名、说明与分组，供分类筛选使用。
-# 未在目录中的来源会按前缀规则或回退到 "other" 分组，不会报错。
-# ─────────────────────────────────────────────
+# 会话来源（create_by）分类目录：将原始标识映射为前端展示名、说明与分组。
 
 # create_by -> (前端展示名, 说明, 所属分组)
 _CREATE_BY_CATALOG: Dict[str, Tuple[str, str, str]] = {
@@ -1112,9 +1082,7 @@ def _categorize_create_by(create_by: Optional[str]) -> Dict[str, str]:
     return {"create_by": cb, "label": cb, "description": "未归类的会话来源", "group": "other"}
 
 
-# ─────────────────────────────────────────────
-# 1. 统一日志列表 API（合并内存 + 磁盘，去重）
-# ─────────────────────────────────────────────
+# --- 1. 统一日志列表 API（合并内存 + 磁盘，去重） ---
 
 
 @app.get("/api/ai/session_logs", summary="列出会话日志", tags=AI_SESSION_LOGS)
@@ -1189,9 +1157,7 @@ async def list_session_logs(
         }
 
 
-# ─────────────────────────────────────────────
-# 2. 日志详情 API（按 session_id + session_uuid 查找，优先内存）
-# ─────────────────────────────────────────────
+# --- 2. 日志详情 API（按 session_id + session_uuid 查找，优先内存） ---
 
 
 def _handle_detail_request(
@@ -1323,9 +1289,7 @@ async def get_session_log_detail_catch_all(
     return await run_in_threadpool(_handle_detail_request, session_id, session_uuid)
 
 
-# ─────────────────────────────────────────────
-# 3. 日志文件详情 API（按文件名查找，调试用）
-# ─────────────────────────────────────────────
+# --- 3. 日志文件详情 API（按文件名查找，调试用） ---
 
 
 @app.get("/api/ai/session_logs/file/{file_name}", summary="按文件名获取会话日志", tags=AI_SESSION_LOGS)
@@ -1388,9 +1352,7 @@ def _get_session_log_by_file_sync(file_name: str) -> Dict[str, Any]:
     return {"status": 0, "msg": "ok", "data": resp}
 
 
-# ─────────────────────────────────────────────
-# 4. 查询会话关联 Agent API（支持 agent_mesh 扩展）
-# ─────────────────────────────────────────────
+# --- 4. 查询会话关联 Agent API（支持 agent_mesh 扩展） ---
 
 
 @app.get("/api/ai/session_logs/{session_id}/linked_agents", summary="获取会话关联 Agent", tags=AI_SESSION_LOGS)
@@ -1491,9 +1453,7 @@ def _get_session_linked_agents_sync(session_id: str, agent_type: Optional[str]) 
     }
 
 
-# ─────────────────────────────────────────────
-# 5. 日志统计 API
-# ─────────────────────────────────────────────
+# --- 5. 日志统计 API ---
 
 
 @app.get("/api/ai/session_logs/stats/overview", summary="会话日志统计概览", tags=AI_SESSION_LOGS)
@@ -1569,9 +1529,7 @@ async def get_session_logs_overview(
         }
 
 
-# ─────────────────────────────────────────────
-# 6. 日志分类 API（按会话来源 create_by 聚合）
-# ─────────────────────────────────────────────
+# --- 6. 日志分类 API（按会话来源 create_by 聚合） ---
 
 
 @app.get("/api/ai/session_logs/categories", summary="获取会话日志分类", tags=AI_SESSION_LOGS)

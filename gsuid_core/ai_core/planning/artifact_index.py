@@ -44,9 +44,7 @@ async def ensure_artifact_collection() -> None:
     try:
         dim = get_strict_dimension() or get_dimension()
         exists = await client.collection_exists(ARTIFACT_COLLECTION)
-        # 维度不符必须重建：只按「存在就跳过」会让旧维度集合长期留着，运行时
-        # 每次检索都撞 "expected dim: 512, got 768" 并降级为空。产物向量是
-        # 「SQL 真值 + 磁盘文件」的可再生产物，重建后由索引流程重新写入。
+        # 向量维度不符时重建集合，产物向量可从 SQL 与文件重新索引。
         need_recreate = exists and await collection_vector_mismatched(ARTIFACT_COLLECTION, dim, ARTIFACT_DENSE)
         if need_recreate or not exists:
             if not exists:

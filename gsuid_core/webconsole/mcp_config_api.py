@@ -768,9 +768,7 @@ async def import_mcp_from_json(
     }
 
 
-# ---------------------------------------------------------------------------
-# MCP 工具配置 (mcp_tools_config) — details 参数映射 API
-# ---------------------------------------------------------------------------
+# --- MCP 工具配置 (mcp_tools_config) — details 参数映射 API ---
 
 
 @app.get("/api/ai/mcp-tools-config/list", summary="获取 MCP 工具配置列表", tags=MCP_CONFIG)

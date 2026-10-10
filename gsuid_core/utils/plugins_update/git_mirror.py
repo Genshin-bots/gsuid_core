@@ -420,9 +420,7 @@ async def set_plugin_mirror(
 
             new_url = f"{GITHUB_PREFIX}gscore-mirror/{repo_name}"
     else:
-        # 关键修复：始终使用插件商城的原始 GitHub URL 作为基础
-        # 而不是当前 URL（可能是镜像 URL 或错误的 URL）
-        # 这样确保无论用户之前如何切换，都能正确构建目标 URL
+        # 使用插件原始仓库 URL 构建目标镜像地址，避免重复叠加镜像前缀。
         base_url = original_github if original_github else current_url
         new_url = build_mirror_url(base_url, prefix)
         if not new_url:

@@ -37,17 +37,13 @@ from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
 from gsuid_core.utils.plugins_config.models import GsStrConfig
 from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
 
-# ---------------------------------------------------------------------------
-# 常量
-# ---------------------------------------------------------------------------
+# --- 常量 ---
 
 MCP_PROVIDER = "MCP"
 """MCP 提供方标识符，各业务模块通过 `if provider == MCP_PROVIDER` 判断"""
 
 
-# ---------------------------------------------------------------------------
-# 1. 获取 & 校验 MCP 工具 ID
-# ---------------------------------------------------------------------------
+# --- 1. 获取 & 校验 MCP 工具 ID ---
 
 
 def get_mcp_tool_id(config_key: str, feature_name: str) -> str:
@@ -104,9 +100,7 @@ def get_mcp_tool_id_optional(config_key: str) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
-# 1.1 获取 MCP 工具的 details 参数映射
-# ---------------------------------------------------------------------------
+# --- 1.1 获取 MCP 工具的 details 参数映射 ---
 
 # 映射值前缀，标识从内部参数取值
 _PARAMS_PREFIX = "params - "
@@ -133,9 +127,7 @@ def get_mcp_tool_details(config_key: str) -> Optional[dict[str, Any]]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# 1.2 构建 MCP 工具参数（根据 details 映射）
-# ---------------------------------------------------------------------------
+# --- 1.2 构建 MCP 工具参数（根据 details 映射） ---
 
 
 def build_mcp_arguments(
@@ -198,9 +190,7 @@ def build_mcp_arguments(
     return arguments
 
 
-# ---------------------------------------------------------------------------
-# 2. 调用 MCP 工具 & 自动校验错误
-# ---------------------------------------------------------------------------
+# --- 2. 调用 MCP 工具 & 自动校验错误 ---
 
 
 async def call_mcp_tool_checked(
@@ -240,9 +230,7 @@ async def call_mcp_tool_checked(
     return result
 
 
-# ---------------------------------------------------------------------------
-# 3. 保存二进制数据到临时文件
-# ---------------------------------------------------------------------------
+# --- 3. 保存二进制数据到临时文件 ---
 
 
 async def save_binary_to_tempfile(
@@ -278,9 +266,7 @@ async def save_binary_to_tempfile(
     return temp_path
 
 
-# ---------------------------------------------------------------------------
-# 4. 清理临时文件
-# ---------------------------------------------------------------------------
+# --- 4. 清理临时文件 ---
 
 
 def cleanup_tempfile(path: str, log_prefix: str = "") -> None:
@@ -312,9 +298,7 @@ def cleanup_tempfile(path: str, log_prefix: str = "") -> None:
             logger.warning(t("log.mcp.log_prefix_delete_fail", log_prefix=log_prefix, e=e))
 
 
-# ---------------------------------------------------------------------------
-# 5. 解析 MCP 返回的二进制数据
-# ---------------------------------------------------------------------------
+# --- 5. 解析 MCP 返回的二进制数据 ---
 
 
 async def parse_binary_result(
@@ -364,9 +348,7 @@ async def parse_binary_result(
         _, b64_data = stripped.split(";base64,", 1)
         return base64.b64decode(b64_data)
 
-    # 情况3: 返回的是纯 base64 编码数据
-    # base64 字符集: A-Z, a-z, 0-9, +, /, =（填充符）
-    # 有效 base64 长度必须是 4 的倍数（去除空白后）
+    # 纯 base64 数据解析：去除空白后长度须为 4 的倍数。
     if stripped and len(stripped) % 4 == 0:
         valid_base64_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r ")
         if all(c in valid_base64_chars for c in stripped):
@@ -378,9 +360,7 @@ async def parse_binary_result(
     raise RuntimeError(t("无法解析 MCP 返回结果: {p0}", p0=result_text[:200]))
 
 
-# ---------------------------------------------------------------------------
-# 5.1 DataURI → 临时文件
-# ---------------------------------------------------------------------------
+# --- 5.1 DataURI → 临时文件 ---
 
 # MIME 类型到文件后缀的映射
 _MIME_TO_SUFFIX: dict[str, str] = {
@@ -440,9 +420,7 @@ async def save_data_uri_to_tempfile(
     return await save_binary_to_tempfile(file_bytes, suffix, log_prefix)
 
 
-# ---------------------------------------------------------------------------
-# 5.2 准备 MCP 所需的文件来源（URL / 路径 / DataURI → 文件路径）
-# ---------------------------------------------------------------------------
+# --- 5.2 准备 MCP 所需的文件来源（URL / 路径 / DataURI → 文件路径） ---
 
 
 async def prepare_source_for_mcp(
@@ -489,9 +467,7 @@ async def prepare_source_for_mcp(
     return source
 
 
-# ---------------------------------------------------------------------------
-# 6. 便捷函数：is_mcp_provider
-# ---------------------------------------------------------------------------
+# --- 6. 便捷函数：is_mcp_provider ---
 
 
 def is_mcp_provider(provider: str) -> bool:
@@ -512,13 +488,9 @@ def is_mcp_provider(provider: str) -> bool:
     return provider == MCP_PROVIDER
 
 
-# ---------------------------------------------------------------------------
-# 7. 清洗 MCP 文本返回（回灌给 LLM 之前）
-# ---------------------------------------------------------------------------
+# --- 7. 清洗 MCP 文本返回（回灌给 LLM 之前） ---
 
-# instruction 形状的壳标签：MCP 文本返回里可能夹带 <System>…</System>、<系统>…、
-# <instruction(s)>… 这类“对模型的指令”。这些属于不可信外部内容，原样回灌会被
-# 模型当系统指令遵守，构成间接 prompt injection，必须在交给 LLM 前整段剥掉。
+# 剥离 MCP 返回中的壳指令标签（如 <system>、<instruction>），防止间接提示注入。
 _INSTRUCTION_WRAPPER_RE = re.compile(
     r"<\s*(system|系统|instruction[s]?)\s*>.*?<\s*/\s*\1\s*>",
     re.IGNORECASE | re.DOTALL,

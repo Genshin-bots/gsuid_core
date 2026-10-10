@@ -313,9 +313,7 @@ from gsuid_core.ai_core.buildin_tools.memory_timeline import (
 # 技能安装工具 - 从 git/zip/SKILL.md 直链安装技能到 SKILLS_PATH 并热重载（限主人）
 from gsuid_core.ai_core.buildin_tools.skill_installer import install_skill
 
-# R2（C5 落地后）：移除 agent_mesh 的"假持久化" PersistentAgent 及其 4 个工具。
-# 跨天 / 步骤化长任务改由 ai_core/planning 的真持久化三表 + 定时唤醒承担。
-# 命令执行工具 - 执行系统命令
+# 命令执行工具
 from gsuid_core.ai_core.buildin_tools.command_executor import execute_shell_command
 
 # 插件开发工具 - 让「插件开发代理」在工作区脚手架/自检，审批后热加载一个 GsCore 插件

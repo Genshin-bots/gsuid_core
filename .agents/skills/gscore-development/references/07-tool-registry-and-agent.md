@@ -240,12 +240,10 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 `prepare` 每个 step 对每个工具求值，返回 `None` 即本步对模型隐藏（schema 都不下发）。判定
 抛异常时**默认可见**。
 
-```python
-# 通用谓词集中在 buildin_tools/visibility.py，管理员专属工具共用 visible_to_admin
-# （execute_shell_command / install_skill 等，2026-07 抽出，勿再各自复制实现）：
-# - 后台/能力代理（无 ev）→ True 不隐藏，交 check_func 执行期兜底（避免误伤能力代理）
-# - 交互式用户 → 仅管理员（ev.user_pm == 0）可见
-```
+通用谓词集中在 `buildin_tools/visibility.py`，管理员专属工具共用 `visible_to_admin`（例如 `execute_shell_command`、`install_skill`）：
+- **后台与能力代理（无 ev）**：返回 `True` 不隐藏，由 `check_func` 执行期兜底。
+- **交互式用户**：仅管理员（`ev.user_pm == 0`）可见。
+
 
 | 机制 | 阶段 | 作用 |
 |------|------|------|

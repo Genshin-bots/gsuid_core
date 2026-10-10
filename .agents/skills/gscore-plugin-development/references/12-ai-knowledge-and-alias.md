@@ -57,7 +57,7 @@ ai_entity(KnowledgePoint(
 
 ## 12.2 注册别名（`ai_alias`）
 
-让 AI 在解析用户意图时进行专有名词归一化：
+让 AI 在解析用户意图时完成专有名词归一化：
 
 ```python
 from gsuid_core.ai_core.register import ai_alias

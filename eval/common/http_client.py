@@ -17,9 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-# ─────────────────────────────────────────────
-# 默认值
-# ─────────────────────────────────────────────
+# --- 默认值 ---
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
 DEFAULT_CHAT_API = "/api/chat_with_history"
@@ -49,9 +47,7 @@ def _send_msg_headers() -> Dict[str, str]:
     return headers
 
 
-# ─────────────────────────────────────────────
-# Chat API
-# ─────────────────────────────────────────────
+# --- Chat API ---
 
 
 async def call_chat_with_history(
@@ -179,9 +175,7 @@ async def call_send_msg(
         return {"status_code": -1, "data": None, "error": str(e)}
 
 
-# ─────────────────────────────────────────────
-# Memory API
-# ─────────────────────────────────────────────
+# --- Memory API ---
 
 
 async def call_batch_observe(
@@ -270,9 +264,7 @@ async def call_rebuild_hiergraph(
         return {"status": 1, "msg": f"rebuild_hiergraph 异常: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 响应解析
-# ─────────────────────────────────────────────
+# --- 响应解析 ---
 
 
 def extract_text_from_response(response_data: Any) -> str:

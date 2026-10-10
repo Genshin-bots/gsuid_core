@@ -35,10 +35,10 @@ description: >
 
 # GsCore AI Core 插件开发者 API 速查手册（核心入口）
 
-> 本 SKILL 是 [`docs/ai_core_api_for_plugins.md`](../../../docs/ai_core_api_for_plugins.md) 的拆分版本。
-> 原文件是 2700+ 行的单文档，按章节拆分为「主入口 + `references/` 子文档」的形式。
-> Agent 在需要某专题细节时，顺着下文的相对路径按需 `ReadFile` 加载对应文件，**不要**
-> 一次性把所有内容塞进上下文。
+> 本手册为插件开发者提供 GsCore AI Core 的 API 速查参考。
+> 内容按专题拆分为主入口与 `references/` 子文档。需要接口细节时，
+> 顺着下文相对路径按需查阅对应文件，不要一次性载入全部内容。
+
 
 ## 文档目录索引
 

@@ -2109,9 +2109,7 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
     return removed
 
 
-# §25(5) 工具返回入史上限：本轮模型已消费过完整返回，持久历史里只需可引用的摘要。
-# web_search 等大返回原文滚进历史是 run 内 token 近似 O(N²) 的来源。
-# 入史截断：能力代理轮内看完整返回；入史可略长以免追问丢字段
+# 工具返回存入历史长度上限：轮内消费完整返回，持久化历史保存摘要以节约 token。
 _TOOL_RETURN_HISTORY_MAX = 12_000
 _TOOL_RETURN_HEAD = 9_000
 _TOOL_RETURN_TAIL = 1_500
@@ -2163,7 +2161,7 @@ def _truncate_tool_returns_in_history(messages: List[ModelMessage]) -> int:
         if not isinstance(msg, ModelRequest):
             continue
         for part in msg.parts:
-            # v2.0 新增 ToolSearchReturnPart 等 part 类型， 那些的 content 不容许赋值 str。type(part) is
+            # 仅处理内容为 str 的 ToolReturnPart。
             if type(part) is not ToolReturnPart or not isinstance(part.content, str):
                 continue
             content = part.content

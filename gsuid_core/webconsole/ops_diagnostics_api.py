@@ -98,7 +98,7 @@ async def ops_sessions(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
     registry = get_ai_session_registry()
     hm = get_history_manager()
     sessions = registry.get_all_ai_sessions()
-    # HistoryManager 没有 get_session_meta；用 get_all_sessions_info 按 session_id 查 last_access
+    # 通过 get_all_sessions_info 获取各会话的 last_access。
     try:
         all_session_info = hm.get_all_sessions_info()
     except Exception:

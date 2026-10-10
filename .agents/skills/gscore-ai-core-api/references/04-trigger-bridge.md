@@ -133,4 +133,4 @@ AI 可以：
 
 ## 4.8 端到端改造指南
 
-`to_ai` 的批量改造工作流（背景、Step 0~4、完整股票/游戏示例、质量检查清单、Q&A）见 [`gscore-plugin-development` SKILL §十八、触发器 → AI 工具改造指南](../gscore-plugin-development/references/18-ai-trigger-migration.md)。
+`to_ai` 的批量改造工作流（背景、Step 0 到 Step 4、完整股票/游戏示例、质量检查清单、Q&A）见 [`gscore-plugin-development` SKILL §十八、触发器 → AI 工具改造指南](../gscore-plugin-development/references/18-ai-trigger-migration.md)。

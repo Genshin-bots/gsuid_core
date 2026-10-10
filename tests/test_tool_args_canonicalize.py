@@ -22,9 +22,7 @@ from gsuid_core.ai_core.utils import (
     _canonicalize_tool_call_args_in_parts,
 )
 
-# ─────────────────────────────────────────────
-# _canonicalize_tool_call_args_in_parts
-# ─────────────────────────────────────────────
+# --- _canonicalize_tool_call_args_in_parts ---
 
 
 def test_duplicate_key_degeneration_is_deduped() -> None:
@@ -97,9 +95,7 @@ def test_non_tool_parts_pass_through() -> None:
     assert isinstance(result[1], ToolCallPart)
 
 
-# ─────────────────────────────────────────────
-# _is_retryable_client_error
-# ─────────────────────────────────────────────
+# --- _is_retryable_client_error ---
 
 _INCIDENT_BODY = {
     "type": "bad_request_error",
@@ -135,9 +131,7 @@ def test_non_http_error_not_client_retry() -> None:
     assert _is_retryable_client_error(ValueError("boom")) is False
 
 
-# ─────────────────────────────────────────────
-# sanitize_error_for_user
-# ─────────────────────────────────────────────
+# --- sanitize_error_for_user ---
 
 
 def test_provider_internals_never_reach_user() -> None:

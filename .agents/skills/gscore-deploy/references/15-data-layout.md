@@ -111,9 +111,8 @@ from gsuid_core.data_store import (
 （Docker / systemd）。**确保插件目录对 Core 进程可写**：
 
 ```sh
-# Docker：通常 root，没问题
-# 源码裸跑：自己 = 自己，没问题
-# 跨用户：sudo chown -R <core_user>:<core_group> gsuid_core/plugins/
+# 若存在跨用户运行权限问题，调整插件目录属主：
+sudo chown -R <core_user>:<core_group> gsuid_core/plugins/
 ```
 
 ## 15.5 WebConsole 路由模块清单

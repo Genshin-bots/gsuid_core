@@ -54,9 +54,7 @@ _WRITE_ERRORS = (OSError, TypeError, ValueError)
 _lock = asyncio.Lock()
 
 
-# ============================================================
-# Models
-# ============================================================
+# --- Models ---
 
 
 class LiveChatIdentityModel(BaseModel):
@@ -114,9 +112,7 @@ DEFAULT_INDEX: Dict[str, Any] = {
 }
 
 
-# ============================================================
-# Path / IO helpers（同步实现 + to_thread）
-# ============================================================
+# --- Path / IO helpers（同步实现 + to_thread） ---
 
 
 def _safe_filename(conv_id: str) -> str:
@@ -168,9 +164,7 @@ def _list_conv_json_names() -> List[str]:
     return [p.name for p in LIVE_CHAT_CONVS_DIR.glob("*.json")]
 
 
-# ============================================================
-# Normalize（磁盘脏数据边界：isinstance 后直接访问）
-# ============================================================
+# --- Normalize（磁盘脏数据边界：isinstance 后直接访问） ---
 
 
 def _normalize_identity(raw: Any) -> Dict[str, Any]:
@@ -239,9 +233,7 @@ def _normalize_index(raw: Any) -> Dict[str, Any]:
     return {"activeId": active, "conversations": items}
 
 
-# ============================================================
-# Load / Save（调用方持 _lock）
-# ============================================================
+# --- Load / Save（调用方持 _lock） ---
 
 
 async def load_identity() -> Dict[str, Any]:
@@ -422,9 +414,7 @@ async def save_live_chat_state(state: Dict[str, Any]) -> bool:
         return False
 
 
-# ============================================================
-# Routes
-# ============================================================
+# --- Routes ---
 
 
 @app.get("/api/live-chat/bootstrap", summary="Live Chat 启动信息（masters）", tags=LIVE_CHAT)

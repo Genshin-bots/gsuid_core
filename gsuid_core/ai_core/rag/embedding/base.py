@@ -21,11 +21,8 @@ from gsuid_core.ai_core.rag.embedding.modality import EmbeddingModality
 _EMBED_EXECUTOR: Final = ThreadPoolExecutor(max_workers=4, thread_name_prefix="embed")
 
 
-# 批量 Embedding worker 数。>1 会让并发 N 路嵌入同时喂进共享的 onnxruntime session，
-# 使其 CPU 内存 arena 按 ~N 倍放大且只增不减（峰值即进程内存地板）——这是生产 core 进程
-# 内存最大头（实测 bge-small 8 路并发 ~5.4GB 常驻）。故默认取最低值 1（串行、最省内存）、
-# 不再随核数(旧默认 cpu//4)放大；大机换吞吐再显式调高。
-# 优先级：环境变量 GSUID_EMBED_BATCH_WORKERS > WebConsole 配置 embed_batch_workers > 兜底 1。
+# 批量 Embedding worker 数量：默认取 1 以防止多路 ONNX 内存膨胀。
+# 优先级：环境变量 GSUID_EMBED_BATCH_WORKERS > WebConsole 配置 > 默认值 1。
 _FALLBACK_EMBED_BATCH_WORKERS = 1
 
 

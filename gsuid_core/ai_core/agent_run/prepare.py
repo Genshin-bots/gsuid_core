@@ -186,14 +186,8 @@ class PreparePhase(RunOnceHost):
             st.user_turn_id = _inherited_ut or ""
         # 交互主人格：专属工具从静态池剥离后，同步写入 blocked，堵住 find_tools 回灌
         st.blocked_exclusive = _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
-        # 出站：主人格交互会话；Kanban_Relay 是人格播报专用（非能力代理）。
-        # 能力代理 / 通用 subagent 一律 False——产物只回上游，由主人格或 Relay 发。
-        #
-        # ``TEST``（本地评测端点）与 Chat/Agent 同为**交互主人格**——它已在
-        # ``_INTERACTIVE_CREATE_BY`` 里。此处漏掉它会让评测里的主人格拿到
-        # 「当前为能力代理/子 Agent，禁止直发」的回执：模型据此认为自己没有出站权，
-        # 委派出图后交付不出去，直接吐 ``<SILENCE>``（实测把 data_rendering 整域打成 0/4）。
-        # 评测路径与生产路径的行为必须一致，否则基准测的不是生产。
+        # 出站权限控制：交互主人格与 Kanban_Relay 允许出站，能力代理产物回传上游。
+        # TEST 本地评测端点作为交互主人格放行出站。
         st.allow_outbound = self.create_by == "Kanban_Relay" or (
             self.create_by in ("Chat", "Agent", "TEST") and not self.is_subagent
         )

@@ -31,9 +31,7 @@ from gsuid_core.ai_core.utils import (
 # 与 gs_agent._HISTORY_TRIM_RATIO 保持一致（单测不 import 重依赖 gs_agent）
 _HISTORY_TRIM_RATIO = 0.6
 
-# ─────────────────────────────────────────────
-# compact_session_history / 保头裁中段
-# ─────────────────────────────────────────────
+# --- compact_session_history / 保头裁中段 ---
 
 
 def _turn(i: int) -> list:
@@ -123,9 +121,7 @@ def test_zero_max_history_clears() -> None:
     assert did is True
 
 
-# ─────────────────────────────────────────────
-# _compact_report_blocks_in_history
-# ─────────────────────────────────────────────
+# --- _compact_report_blocks_in_history ---
 
 
 def test_report_body_stripped_title_in_metadata() -> None:
@@ -166,9 +162,7 @@ def test_plain_response_untouched() -> None:
     assert _compact_report_blocks_in_history([msg]) == 0
 
 
-# ─────────────────────────────────────────────
-# 定时任务溯源：群作用域 + 发起用户展示
-# ─────────────────────────────────────────────
+# --- 定时任务溯源：群作用域 + 发起用户展示 ---
 
 
 def _make_ctx(user_id: str, group_id: Optional[str]) -> Any:

@@ -67,11 +67,7 @@ class AiMemeRecord(SQLModel, table=True):
 
     # ── 状态 ──
     status: str = Field(default="pending", index=True, max_length=32)
-    # "pending"         → 已入库，等待 VLM 打标
-    # "tagged"          → VLM 打标完成
-    # "manual"          → 人工在 WebConsole 打标/编辑过
-    # "pending_manual"  → VLM 打标失败，待人工处理
-    # "rejected"        → NSFW 或质量不达标
+    # 状态枚举：pending 待打标、tagged 已打标、manual 人工编辑、pending_manual 待人工、rejected 不达标。
 
     nsfw_score: float = Field(default=0.0)
 

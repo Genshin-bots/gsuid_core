@@ -434,8 +434,7 @@ async def _persona_relay(
         logger.debug(t("log.ai.kanban_persona_rendition_code_fail", e=e))
         return _sanitize_for_user(raw_result), relay_log_files
     finally:
-        # 无论成功 / 异常，关闭转译 SubAgent logger；relay_log_files 在 return 表达式求值后才被 append（list 是引用
-        # append 对返回值同样可见）。
+        # 无论成功或异常，均记录并关闭转译 SubAgent 的 logger。
         if relay_logger is not None:
             relay_log_files.append(str(relay_logger._file_path))
             relay_logger.close()

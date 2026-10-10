@@ -13,15 +13,11 @@ from gsuid_core.bot import Bot
 from gsuid_core.ai_core.register import ai_tools, ai_entity, ai_alias
 from gsuid_core.ai_core.models import ToolContext, KnowledgePoint
 
-# ============================================================
 # 1. 注册别名（插件加载时自动执行）
-# ============================================================
 ai_alias("雷电将军", ["雷神", "将军", "影", "屑"])
 ai_alias("纳西妲", ["草神", "小草神"])
 
-# ============================================================
 # 2. 注册知识库
-# ============================================================
 ai_entity(KnowledgePoint(
     id="myplugin_intro",
     plugin="MyPlugin",
@@ -41,9 +37,7 @@ ai_entity(KnowledgePoint(
     tags=["帮助", "命令", "MyPlugin"],
 ))
 
-# ============================================================
 # 3. 权限校验函数
-# ============================================================
 async def check_bound(ev: Event) -> tuple[bool, str]:
     """检查用户是否已绑定账号"""
     from my_plugin.database import is_user_bound
@@ -58,9 +52,7 @@ async def check_admin(ev: Event) -> tuple[bool, str]:
         return True, ""
     return False, "⚠️ 此工具仅管理员可用"
 
-# ============================================================
 # 4. 注册 AI 工具
-# ============================================================
 
 # 简单工具（无上下文）
 @ai_tools(category="default")
@@ -151,7 +143,7 @@ async def translate_to_english(text: str) -> str:
 # 创建代码审查 Agent
 code_reviewer = create_agent(
     system_prompt="""你是一个严格的代码审查专家。
-请对用户提供的代码进行审查，关注：
+审查用户提供的代码并关注：
 1. 潜在的 Bug
 2. 性能问题
 3. 代码风格
@@ -257,7 +249,7 @@ async def my_tool(ctx: RunContext[ToolContext], param: str) -> str:
 
 ### Q6: RAG 知识库检索的工作方式是什么？
 
-RAG 知识库检索不再作为强制前置流程。`search_cognition` 工具注册为 `buildin` 分类，主Agent会根据对话内容自主决定是否调用该工具进行回想。
+RAG 知识库检索不再作为强制前置流程。`search_cognition` 工具注册为 `buildin` 分类，主 Agent 会根据对话内容自主决定是否调用该工具检索知识。
 
 详见 [§7.2 `search_cognition`](./07-builtin-tools.md)。
 

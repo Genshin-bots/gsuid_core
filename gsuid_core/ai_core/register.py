@@ -81,9 +81,7 @@ def _get_plugin_name_from_module(module_path: str) -> str:
     return "unknown"
 
 
-# --- 全局注册表和客户端 ---
-# 框架特权分类：self/buildin 无条件进保底池、meta 为 gs_agent 门控专用，仅核心代码可用；
-# 插件声明时重定向到 common——仍可被向量检索/语境池召回，但不进保底池、不碰门控。
+# 特权分类（self/buildin/meta）仅供核心使用，插件声明时自动重定向至 common。
 _CORE_ONLY_CATEGORIES = frozenset({"self", "buildin", "meta"})
 
 # 工具注册表: Dict[分类名, Dict[工具名, ToolBase]]
@@ -91,11 +89,7 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
 _ENTITIES: List[Union[KnowledgePoint, KnowledgeBase, ImageEntity]] = []  # 来自插件注册的知识和图片
 _MANUAL_ENTITIES: List[ManualKnowledgeBase] = []  # 手动添加的知识，不会自动同步
 _IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片
-# 别名注册表（C2-d 分 scope 防跨域串味）：
-# 结构为 {scope: {别名: [正式名候选, ...]}}。
-# scope 默认 "global"（插件注册的通用别名）；插件可传自己的业务 scope
-# 隔离同名别名（同一俗称在不同插件指不同对象）。
-# 值为 List 以天然支持一对多 / 多候选映射，供动态实体链接按上下文消歧（C2-e）。
+# 别名注册表 {scope: {别名: [正式名, ...]}}，隔离同名别名并支持一对多映射。
 _ALIASES: Dict[str, Dict[str, List[str]]] = {}
 
 

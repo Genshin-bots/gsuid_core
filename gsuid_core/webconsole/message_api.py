@@ -304,9 +304,7 @@ async def batch_push_targets(
             }
         )
 
-    # bot_self_ids 始终返回全集（仅在显式传 bot_self_id 时收窄），
-    # 避免「选中某平台账号 → bot_id 筛选 → 下拉只剩该平台 → 无法切到其它平台」的死锁。
-    # items 的平台过滤仍由 bot_id 控制。
+    # bot_self_ids 默认返回全量集合，防止平台过滤后下拉框被锁死无法切换。
     bot_self_ids = await _collect_batch_push_bot_self_ids()
     if bot_self_id:
         bot_self_ids = [x for x in bot_self_ids if x["bot_self_id"] == bot_self_id]
@@ -421,9 +419,7 @@ async def batch_push_targets(
     }
 
 
-# ===================
-# 图片文件管理接口
-# ===================
+# --- 图片文件管理接口 ---
 
 
 @app.post("/api/uploadImage/{suffix}/{filename}/{UPLOAD_PATH:path}", summary="通用图片上传", tags=MESSAGE)
@@ -496,9 +492,7 @@ async def get_image(
     )
 
 
-# ===================
-# 图片资源读取及"阅后即焚"接口
-# ===================
+# --- 图片资源读取及"阅后即焚"接口 ---
 
 
 def _unlink_if_exists(path: Path) -> None:

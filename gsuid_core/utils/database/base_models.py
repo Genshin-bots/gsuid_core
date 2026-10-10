@@ -627,9 +627,7 @@ async def get_all_table_ddl(engine: AsyncEngine) -> Dict[str, str]:
         # 2. 遍历表对象，生成 DDL
         # 注意：生成 SQL 字符串的操作可以在异步上下文中安全进行，因为内存里已经有了 metadata
         for table_name, table in metadata.tables.items():
-            # 使用 CreateTable 构造器将 Table 对象编译成 SQL 字符串
-            # compile 即使在 async engine 下也需要传入 engine 或 dialect
-            # 这里我们利用 engine.dialect 进行编译
+            # 使用 CreateTable 配合 dialect 将 Table 对象编译成 SQL 字符串。
             create_sql = str(CreateTable(table).compile(dialect=engine.dialect))
 
             ddl_map[table_name] = create_sql.strip()
@@ -1105,9 +1103,7 @@ class BaseBotIDModel(BaseIDModel):
 class BaseModel(BaseBotIDModel):
     user_id: str = Field(title="账号")
 
-    ################################
-    # 基本的增删改查 #
-    ################################
+    # 基本增删改查
 
     @classmethod
     @with_read_session
@@ -1293,9 +1289,7 @@ class BaseModel(BaseBotIDModel):
 class Bind(BaseModel):
     group_id: Optional[str] = Field(title="群号")
 
-    ################################
-    # 额外的扩展方法 #
-    ################################
+    # 扩展方法
     @classmethod
     async def get_uid_list_by_game(
         cls: Type[T_Bind],
@@ -2013,9 +2007,7 @@ class User(BaseModel):
         if await cls.user_exists(uid, game_name) and await cls.cookie_validate(uid, game_name):
             return await cls.get_user_cookie_by_uid(uid, game_name)
 
-        # 自动刷新缓存
-        # await self.delete_error_cache()
-        # 获得缓存库Ck
+        # 优先使用缓存库 Cookie
         if cache_model is not None:
             cache_data = await cache_model.select_cache_cookie(uid, game_name)
             if cache_data is not None:

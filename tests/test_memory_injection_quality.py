@@ -39,9 +39,7 @@ def _episode(content: str, valid_at: str = "2026-07-15T14:34:00", eid: str = "ep
     return Episode(id=eid, content=content, valid_at=valid_at, scope_key="group:1", embedding=[])
 
 
-# ─────────────────────────────────────────────
-# §6 残句拦截判据
-# ─────────────────────────────────────────────
+# --- §6 残句拦截判据 ---
 
 
 def test_to_prompt_text_facts_include_statement_and_event_time() -> None:
@@ -148,9 +146,7 @@ def test_injection_drops_dangling_facts() -> None:
     assert "紫菜包饭" in text
 
 
-# ─────────────────────────────────────────────
-# §7 第三方隐私拦截
-# ─────────────────────────────────────────────
+# --- §7 第三方隐私拦截 ---
 
 
 def test_third_party_sensitive_fact_dropped() -> None:
@@ -204,9 +200,7 @@ def test_deployer_extra_sensitive_terms(monkeypatch: pytest.MonkeyPatch) -> None
     assert "高考分数" in allowed
 
 
-# ─────────────────────────────────────────────
-# §8 untrusted 包装
-# ─────────────────────────────────────────────
+# --- §8 untrusted 包装 ---
 
 
 def test_recall_wrapped_preferences_not() -> None:
@@ -251,9 +245,7 @@ def test_no_recall_no_wrapper() -> None:
     assert "回复保持简短" in text
 
 
-# ─────────────────────────────────────────────
-# §9 偏好三段式 + 仲裁语
-# ─────────────────────────────────────────────
+# --- §9 偏好三段式 + 仲裁语 ---
 
 
 def test_preference_header_has_arbitration() -> None:
@@ -281,9 +273,7 @@ def test_preference_prompt_teaches_three_part_rule() -> None:
     assert "原话" in PREFERENCE_EXTRACTION_SYSTEM
 
 
-# ─────────────────────────────────────────────
-# §25(4) 条数硬上限
-# ─────────────────────────────────────────────
+# --- §25(4) 条数硬上限 ---
 
 
 def test_fact_lines_hard_cap() -> None:

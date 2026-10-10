@@ -158,9 +158,7 @@ async def add_self_note(
         return False
     content = content[:_MAX_NOTE_CHARS]
 
-    # 写入闸（防注入持久化）：「立持久说话规矩」（"以后每句加xx/结尾带xx/换风格说话"）
-    # 是漂移攻击的典型载荷——存进 bot 级 self_model 会让单轮防住的攻击跨会话、跨用户
-    # 永久生效（实测已发生：uwu 风格要求被记成了"学到的偏好"）。判据复用 C-2 结构判据。
+    # 写入安全闸：拦截修改全局说话规矩的注入攻击，防止持久化污染自我模型。
     from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
 
     if field == "preferences_learned" and is_persistent_style_rule(content):
@@ -377,9 +375,7 @@ async def build_self_cognition_context(
         lines.append(f"我的承诺: {'；'.join(model['commitments'][-5:])}")
     # 学到的偏好按当前说话人放在 user 尾，不进共享 system（换人会打掉前缀缓存）。
 
-    # recurring_topics：先尝试用本 scope 的 group_profile 累计 tag 实时计算
-    # （由 memory.ingestion.worker._ingest_batch 中的 record_entity_tags 维护），
-    # 拿不到再退回静态 self_model.recurring_topics（人工 / 离线写入的兜底）。
+    # recurring_topics：优先使用群画像累计标签，缺失时回退至静态配置。
     live_topics = await _compute_live_recurring_topics(scope_key) if scope_key else []
     # 过滤掉作为"话题"误注入的 schema 类型标签（Person/Game/Product… 不是话题）
     _SCHEMA_TAGS = {"Person", "Game", "Character", "Event", "Product", "Organization", "Location"}

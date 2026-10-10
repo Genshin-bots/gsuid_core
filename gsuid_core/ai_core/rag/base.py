@@ -50,12 +50,7 @@ TOOLS_COLLECTION_NAME: Final[str] = "bot_tools"
 KNOWLEDGE_COLLECTION_NAME: Final[str] = "knowledge"
 IMAGE_COLLECTION_NAME: Final[str] = "image"
 
-# ============== RAG批量参数 ==============
-# 远程 embedding / Qdrant upsert 使用较大批量减少网络和写入开销；
-# 本地 fastembed 也应使用适中批量：ONNX Runtime 对批量推理做了高度优化，逐条(=1)提交会让
-# 每条都付出一次完整的 Python↔执行器往返与算子启动开销，在维度迁移这类需要重嵌入数万~十几万条
-# 的场景下慢得无法接受(60558 实体 ×2 向量 + 118781 边)。批量 64 的短文本推理在 CPU 上仍是
-# 亚秒级，对单条会话同步几乎无感(min(64, n) 会退化为实际条数)，却能让批量重嵌入提速数十倍。
+# 远程接口采用较大批量降低请求频次；本地推理采用适中批量以充分利用算子并行。
 RAG_BATCH_SIZE: Final[int] = 300
 RAG_LOCAL_EMBED_BATCH_SIZE: Final[int] = 64
 RAG_REMOTE_EMBED_BATCH_SIZE: Final[int] = RAG_BATCH_SIZE
@@ -684,10 +679,7 @@ client: "Union[AsyncQdrantClient, None]" = None
 # 全局 Sparse Embedding 模型（懒加载，线程安全）
 _sparse_model = None
 _sparse_model_lock = threading.Lock()
-# Embedding/Qdrant 初始化锁：init_embedding_model 会经 asyncio.to_thread 在多个线程并发触发
-# （RAG init_all、sync_knowledge 懒加载、init_memory_system）。check-then-act 若无锁，
-# 两个线程会同时构造 AsyncQdrantClient，触发本地 Qdrant 文件锁冲突：
-# "Storage folder ... is already accessed by another instance of Qdrant client"。
+# 客户端初始化锁：避免多线程并发构造 AsyncQdrantClient 产生本地文件锁冲突。
 _client_init_lock = threading.Lock()
 
 
@@ -725,9 +717,7 @@ def init_embedding_model():
     if client is not None:
         return
 
-    # 加锁 + 双重检查：本函数可能经 asyncio.to_thread 在多个线程并发触发，
-    # 没有锁时 check-then-act 会让两个线程同时构造 AsyncQdrantClient，导致本地
-    # Qdrant 文件锁冲突。锁内只做一次真正的初始化，保证全局只有一个 client 实例。
+    # 线程锁与双重检查：防止并发调用导致 Qdrant 客户端重复构造。
     with _client_init_lock:
         if client is not None:
             return

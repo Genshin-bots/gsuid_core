@@ -17,9 +17,7 @@ ssl_context = ssl.create_default_context(cafile=certifi.where())
 
 class PassMysApi(BaseMysApi):
     async def _pass(self, gt: str, ch: str, header: Dict) -> Tuple[Optional[str], Optional[str]]:
-        # 警告：使用该服务（例如某RR等）需要注意风险问题
-        # 本项目不以任何形式提供相关接口
-        # 代码来源：GITHUB项目MIT开源
+        # 开源验证接口调用封装，请注意合规与安全边界。
         _pass_api = pass_config.get_config("_pass_API").data
         if _pass_api:
             async with ClientSession(

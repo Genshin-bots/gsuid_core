@@ -181,9 +181,7 @@ class HistoryManager:
         # 估算新消息的 Token 数
         new_tokens = _estimate_tokens(content)
 
-        # 对于群聊，user_id 不参与 session 标识（session_id 中不包含 user_id）
-        # 因此创建用于存储的 key 时，将群聊的 user_id 设为空字符串以保证一致性。
-        # WS_BOT_ID 与 bot_self_id 参与 session 标识，用于区分不同 WS 链接和机器人账号。
+        # 群聊 user_id 不参与会话标识，存储 key 统一置空；通过 WS_BOT_ID 与 bot_self_id 隔离。
         storage_event = self._get_storage_event(event)
 
         with self._lock:

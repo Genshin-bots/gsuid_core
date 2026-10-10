@@ -58,7 +58,7 @@ async def calc_damage(
 
     Args:
         atk: 攻击力
-        crit_rate: 暴击率（0~1，如 0.7 表示 70%）
+        crit_rate: 暴击率（0 到 1，如 0.7 表示 70%）
         crit_dmg: 暴击伤害（如 1.5 表示 150%）
         multiplier: 技能倍率，默认 1.0
     """

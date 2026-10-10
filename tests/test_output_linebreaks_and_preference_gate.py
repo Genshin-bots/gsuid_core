@@ -84,11 +84,8 @@ def test_text_without_br_is_returned_untouched() -> None:
 # ── 二、偏好注入不得被意图门整轮关闭 ───────────────────────────────
 
 
-# ── 三、长 markdown 整篇出图（`_should_render_markdown_image`）────────────
-#
-# send_chat_result 默认按空行拆多条下发——这是人格"连发 2-3 条短消息"的能力，但 agent
-# 的长研报（多标题 + 表格）会被拆成几十条刷屏。命中"结构化长 markdown"才整篇出图，
-# 判定必须**保守**：绝不能把日常连发短句误判成文档去渲染。
+# ── 三、长 markdown 整篇出图（_should_render_markdown_image）
+# 结构化长 markdown 整篇出图，日常短句按换行分发。
 
 
 @pytest.fixture
@@ -201,10 +198,8 @@ def test_disabled_config_never_renders(_md_image_cfg) -> None:
     assert _should_render_markdown_image(report) is False
 
 
-# ── 四、内部资源句柄不许泄漏给用户（`_strip_resource_handles`）────────────
-#
-# create_subagent / kanban 回执带 `res_deb5b2e0d2a4` 这类句柄供主人格发图；弱模型有时把
-# 句柄本身写进正文（"放那里面了 res_xxx 自己看吧"），用户看到一串没意义的内部 ID 又出戏。
+# ── 四、内部资源句柄过滤（_strip_resource_handles）
+# 过滤正文中的内部资源句柄，避免暴露内部 ID。
 
 
 def test_leaked_res_handle_is_stripped() -> None:
@@ -234,10 +229,8 @@ def test_normal_text_untouched_by_handle_strip() -> None:
     assert _strip_resource_handles(txt) == txt
 
 
-# ── 五、句柄泄漏时"补发真实资源"而非留下断链引用（`_resolve_and_deliver_leaked_handles`）──
-#
-# 光删 ID 会把"详细的放那里面了 res_xxx 自己看吧"变成指向空气的破碎引用（图片句柄更糟：
-# 用户啥也没收到）。正确做法：把句柄所指资源补发出去，让"…自己看…"有实物；拿不到才纯抹除。
+# ── 五、句柄泄漏时补发真实资源（_resolve_and_deliver_leaked_handles）
+# 句柄泄漏时补发对应实体资源，无法获取时直接抹除。
 
 
 class _FakeBot:

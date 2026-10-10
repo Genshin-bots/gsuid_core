@@ -261,7 +261,7 @@ Args:
    - 对于不需要参数的触发器（如 `on_fullmatch`），写"无需参数，留空即可"
    - 如果参数有多种格式，用列表逐项说明
 
-4. **长度控制**：建议 5~15 行。太短 AI 无法正确构建参数，太长浪费 Token
+4. **长度控制**：建议 5 到 15 行。太短 AI 无法正确构建参数，太长浪费 Token。
 
 **不同插件类型的描述风格**：
 
@@ -461,9 +461,7 @@ async def fetch_stock_data(code: str) -> dict:
 def _ai_return_xxx(raw_data, ...):
     """从 xxx 数据中提取文本信息，通过 ai_return 返回给 AI 分析"""
     try:
-        # 提取关键字段
-        # 格式化为可读文本
-        # 调用 ai_return(result)
+        # 提取关键字段，格式化为可读文本并调用 ai_return(result)
     except Exception as e:
         logger.warning(f"[插件名] ai_return xxx数据提取失败: {e}")
 ```
@@ -907,7 +905,7 @@ def _ai_return_fortune(result: dict):
 ## 18.8 常见问题
 
 **Q：`to_ai` 里能写多长？**
-A：建议 5~15 行。太短 AI 无法正确构建参数，太长浪费 Token。核心是把 `text` 参数格式说清楚。
+A：建议 5 到 15 行。太短 AI 无法正确构建参数，太长浪费 Token。核心是把 `text` 参数格式说清楚。
 
 **Q：触发器函数本身有前置检查（如用户未绑定 UID），AI 调用时怎么处理？**
 A：不用特殊处理。`bot.send("请先绑定UID")` 会被 MockBot 自动收集，作为工具返回值的一部分告知 AI，AI 会告诉用户"需要先绑定"。

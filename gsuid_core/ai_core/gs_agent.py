@@ -1887,8 +1887,7 @@ async def build_new_persona(query: str) -> str:
     Returns:
         新角色的提示词字符串
     """
-    # 不再传固定的 "build_persona" session_id：让 __init__ 自动派生 auto_BuildPersona_* 的一次性 subagent
-    # 日志（落 subagents/ 子目录
+    # 自动派生一次性 subagent 会话执行角色构建。
     agent = create_agent(
         system_prompt=CHARACTER_BUILDING_TEMPLATE,
         create_by="BuildPersona",

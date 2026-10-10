@@ -30,9 +30,7 @@ from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 from ._api_tags import MEME
 
-# ─────────────────────────────────────────────
-# Pydantic 请求模型
-# ─────────────────────────────────────────────
+# --- Pydantic 请求模型 ---
 
 
 class MemeUpdateRequest(BaseModel):
@@ -57,13 +55,7 @@ _VALID_MEME_STATUSES = ("pending", "tagged", "manual", "pending_manual", "reject
 # 可进入向量索引（可被检索）的状态
 _INDEXABLE_STATUSES = ("tagged", "manual")
 
-# 预保留的 meme_id 名：与 `/api/meme/...` 静态子路径同名
-# （例如 `/api/meme/personas`、`/api/meme/stats`）。用于在所有以 `{meme_id}`
-# 为路径参数的路由（详情/编辑/删除/移动/重打标/图片）中防御性阻断
-# 路由匹配顺序造成的静默吞招。与 mcp_config_api.py 的
-# `MCP_STATIC_ROUTES` 同源。
-# 实际优先依靠路由声明顺序（静态路由必须先于 `{meme_id}` 声明），
-# 本集合作为最后一道防线以防未来版本调整匹配策略。
+# 预保留 meme_id 名：防止路径参数路由覆盖静态子路由（如 /personas、/stats）。
 _RESERVED_MEME_IDS = frozenset(
     {
         "personas",
@@ -142,9 +134,7 @@ MEME_METADATA_FILE = "metadata.json"
 MEME_FILES_DIR = "files"
 
 
-# ─────────────────────────────────────────────
-# 辅助函数
-# ─────────────────────────────────────────────
+# --- 辅助函数 ---
 
 
 def _record_to_dict(record: AiMemeRecord) -> Dict[str, Any]:
@@ -174,9 +164,7 @@ def _record_to_dict(record: AiMemeRecord) -> Dict[str, Any]:
     }
 
 
-# ─────────────────────────────────────────────
-# 1. 列表查询
-# ─────────────────────────────────────────────
+# --- 1. 列表查询 ---
 
 
 @app.get("/api/meme/list", summary="列表查询", tags=MEME)
@@ -261,16 +249,7 @@ async def get_meme_list(
         return {"status": 1, "msg": f"查询失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 1b. 按人格分类列表（前端“按人格分类”入口用）
-# ─────────────────────────────────────────────
-#
-# 【路由顺序重要】本端点必须声明在 `/api/meme/{meme_id}` 之前。
-# Starlette / FastAPI 按声明顺序匹配路由，单段静态路径 `/api/meme/personas`
-# 如果声明在后，会被 `/api/meme/{meme_id}` 吞掉并被当作 `meme_id="personas"`
-# 去查询表情包记录，从而返回“表情包不存在”。同问题在 mcp_config_api.py
-# 中以 `MCP_STATIC_ROUTES` 白名单与路由顺序记录过。
-# （保留在 1b 节仅为可读性，实际位置是控制：声明顺序先于 2）
+# 按人格分类列表：必须在 /api/meme/{meme_id} 之前声明以防静态路由被路径参数匹配吞掉。
 
 
 @app.get("/api/meme/personas", summary="a. 按人格分类列表（前端“按人格分类”入口）", tags=MEME)
@@ -302,9 +281,7 @@ async def get_meme_personas(
         return {"status": 1, "msg": f"获取人格分类失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 2. 获取单条记录详情
-# ─────────────────────────────────────────────
+# --- 2. 获取单条记录详情 ---
 
 
 @app.get("/api/meme/{meme_id}", summary="获取单条记录详情", tags=MEME)
@@ -339,9 +316,7 @@ async def get_meme_detail(
         return {"status": 1, "msg": f"查询失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 3. 获取原始图片文件
-# ─────────────────────────────────────────────
+# --- 3. 获取原始图片文件 ---
 
 
 @app.get("/api/meme/image/{meme_id}", summary="获取原始图片文件", tags=MEME)
@@ -398,9 +373,7 @@ async def get_meme_image(
         )
 
 
-# ─────────────────────────────────────────────
-# 4. 更新标签/描述/归属
-# ─────────────────────────────────────────────
+# --- 4. 更新标签/描述/归属 ---
 
 
 @app.put("/api/meme/{meme_id}", summary="更新标签/描述/归属", tags=MEME)
@@ -479,9 +452,7 @@ async def update_meme(
         return {"status": 1, "msg": f"更新失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 5. 移动表情包到目标文件夹
-# ─────────────────────────────────────────────
+# --- 5. 移动表情包到目标文件夹 ---
 
 
 @app.post("/api/meme/{meme_id}/move", summary="移动表情包到目标文件夹", tags=MEME)
@@ -514,9 +485,7 @@ async def move_meme(
         return {"status": 1, "msg": f"移动失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 6. 删除表情包
-# ─────────────────────────────────────────────
+# --- 6. 删除表情包 ---
 
 
 @app.delete("/api/meme/{meme_id}", summary="删除表情包", tags=MEME)
@@ -547,9 +516,7 @@ async def delete_meme(
         return {"status": 1, "msg": f"删除失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 7. 手动上传表情包
-# ─────────────────────────────────────────────
+# --- 7. 手动上传表情包 ---
 
 
 @app.post("/api/meme/upload", summary="手动上传表情包", tags=MEME)
@@ -621,9 +588,7 @@ async def upload_meme(
         return {"status": 1, "msg": f"上传失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 8. 重新触发 VLM 打标
-# ─────────────────────────────────────────────
+# --- 8. 重新触发 VLM 打标 ---
 
 
 @app.post("/api/meme/{meme_id}/retag", summary="重新触发 VLM 打标", tags=MEME)
@@ -663,9 +628,7 @@ async def retag_meme(
         return {"status": 1, "msg": f"操作失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 9. 统计概览
-# ─────────────────────────────────────────────
+# --- 9. 统计概览 ---
 
 
 @app.get("/api/meme/stats", summary="统计概览", tags=MEME)
@@ -686,9 +649,7 @@ async def get_meme_stats(
         return {"status": 1, "msg": f"获取统计失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 10. 批量删除表情包
-# ─────────────────────────────────────────────
+# --- 10. 批量删除表情包 ---
 
 
 @app.post("/api/meme/batch_delete", summary="批量删除表情包", tags=MEME)
@@ -738,9 +699,7 @@ async def batch_delete_memes(
         }
 
 
-# ─────────────────────────────────────────────
-# 10b. 按条件批量清空表情包（支持全部 / 按状态 / 文件夹 / 人格）
-# ─────────────────────────────────────────────
+# --- 10b. 按条件批量清空表情包（支持全部 / 按状态 / 文件夹 / 人格） ---
 
 
 @app.post("/api/meme/purge", summary="b. 按条件批量清空表情包", tags=MEME)
@@ -825,9 +784,7 @@ async def purge_memes(
         return {"status": 1, "msg": f"清空失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 10b2. 清除所有已拒绝的表情包（兼容旧前端）
-# ─────────────────────────────────────────────
+# --- 10b2. 清除所有已拒绝的表情包（兼容旧前端） ---
 
 
 @app.post("/api/meme/purge_rejected", summary="b2. 清除所有已拒绝的表情包", tags=MEME)
@@ -866,9 +823,7 @@ async def purge_rejected_memes(
         return {"status": 1, "msg": f"清除失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 10c. 批量重新打标（待手动处理状态）
-# ─────────────────────────────────────────────
+# --- 10c. 批量重新打标（待手动处理状态） ---
 
 
 @app.post("/api/meme/batch_retag_pending", summary="c. 批量重新打标（待手动处理状态）", tags=MEME)
@@ -936,9 +891,7 @@ async def batch_retag_pending(
         return {"status": 1, "msg": f"操作失败: {e}", "data": None}
 
 
-# ─────────────────────────────────────────────
-# 11. 批量导出表情包（.meme 格式）
-# ─────────────────────────────────────────────
+# --- 11. 批量导出表情包（.meme 格式） ---
 
 
 def _record_to_export_dict(record: AiMemeRecord) -> Dict[str, Any]:
@@ -1049,9 +1002,7 @@ async def export_memes(
         )
 
 
-# ─────────────────────────────────────────────
-# 12. 导入 .meme 格式表情包
-# ─────────────────────────────────────────────
+# --- 12. 导入 .meme 格式表情包 ---
 
 
 @app.post("/api/meme/import", summary="导入 .meme 格式文件", tags=MEME)
@@ -1133,9 +1084,7 @@ async def import_memes(
 
             metadata_list = json.loads(zf.read(MEME_METADATA_FILE))
 
-            # ── 解析全局 persona_hint：与 `_folder_for_persona` 保持一致
-            # （与 MemeLibrary.move_file 的 folder ↔ persona_hint
-            # 双向一致规则同源）。空字符串 / 缺省一律走 "common"。 ──
+            # 解析全局 persona_hint：保持与 _folder_for_persona 一致，默认回退至 "common"。
             target_persona_hint = (persona_hint or "common").strip() or "common"
             target_folder = _folder_for_persona(target_persona_hint)
 

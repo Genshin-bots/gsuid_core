@@ -121,9 +121,7 @@ def _preflight_verdict(alive_status: int, gate_status: Optional[int]) -> str:
     return f"⚠️ local-test gate 未开 (status={gate_status})；请确认服务进程设了 GSUID_LOCAL_TEST_MODE=1 且 token 一致"
 
 
-# ─────────────────────────────────────────────
-# 常量
-# ─────────────────────────────────────────────
+# --- 常量 ---
 
 DEFAULT_PARQUET_GLOB = "eval/BEAM_official/data/data/10M-*.parquet"
 DEFAULT_OUTPUT_DIR = "eval/BEAM_official/results/10m"
@@ -150,9 +148,7 @@ def _clamp_concurrency(n: int) -> int:
     return max(1, min(12, n))
 
 
-# ─────────────────────────────────────────────
-# 数据加载
-# ─────────────────────────────────────────────
+# --- 数据加载 ---
 
 
 def _iter_parquet_paths(parquet_glob: str) -> List[str]:
@@ -606,9 +602,7 @@ def _retryable(status_code: int, answer: str) -> bool:
     return _provider_overloaded(status_code, answer) or status_code in (-1, 404, 502, 503)
 
 
-# ─────────────────────────────────────────────
-# 子命令实现
-# ─────────────────────────────────────────────
+# --- 子命令实现 ---
 
 
 async def cmd_clear(
@@ -1069,9 +1063,7 @@ async def cmd_judge(
     return judge_file
 
 
-# ─────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────
+# --- CLI ---
 
 
 def _plan_data_id(plan: Dict[str, Any]) -> int | None:

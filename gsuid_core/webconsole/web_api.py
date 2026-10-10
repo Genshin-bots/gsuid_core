@@ -110,9 +110,7 @@ def livechat_ws_authorized(token: str | None) -> bool:
     return verify_token(token=token) is not None
 
 
-# ===================
-# Response Models
-# ===================
+# --- Response Models ---
 
 
 class ApiResponse(BaseModel):

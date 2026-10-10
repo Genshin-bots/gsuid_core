@@ -136,12 +136,7 @@ class ProactiveEmissionPayload(TypedDict):
     generator_log_files: List[str]
 
 
-# linked_agents 中 agent_type 可选枚举值：
-# - "sub_agent"            原有：由本 Agent 创建的子 Agent
-# - "peer_agent"           预留：同级 / 对等 Agent
-# - "parent_agent"         预留：父 Agent
-# - "proactive_generator"  主动消息生成子 Agent（Heartbeat 决策 / 发言、
-#                          Kanban 转译、ScheduledTask 执行体等）
+# linked_agents 的 agent_type 枚举：子 Agent、对等 Agent、父 Agent 或主动消息生成体。
 LinkedAgentType = Literal["sub_agent", "peer_agent", "parent_agent", "proactive_generator"]
 
 # 会话窗口：同一 session_id 的日志在该时间窗口内续写同一文件，
@@ -152,9 +147,7 @@ SESSION_WINDOW_SECONDS: int = 3600  # 1 小时
 # （分段对用户不可见，见 docstring「逻辑会话链」）。2000 兼顾「一文件一会话」与单文件体积可控。
 MAX_ENTRIES_PER_FILE: int = 2000
 
-# 全部合法 entry 类型白名单。新增 entry 类型必须在此登记，
-# 否则 _add_entry 会记 warning（仍按统一结构落盘，不丢数据）。
-# 这是"绝不允许不规范格式"的强制点。
+# 合法 entry 类型白名单；未在此登记的类型在写入时将记录 warning。
 SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
     {
         # 生命周期
@@ -194,11 +187,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
 )
 
 
-# ── base64 图片外置（见模块 docstring "图片外置规则"）──────────────────────
-# 匹配日志字符串里的 DataURI 图片：data:image/<subtype>;base64,<base64>
-# base64 段用 [A-Za-z0-9+/]+={0,2}，遇到引号/空白/中括号等非 base64 字符即停止，
-# 因此对 list 形式 user_message 的 repr（含 ImageUrl(url='data:image/...;base64,...')）
-# 同样适用——不会越界吞掉后面的内容。
+# 匹配日志字符串中的 DataURI 图片，并在遇到引号、空白等非 base64 字符处停止。
 _DATAURI_IMAGE_RE = re.compile(r"data:image/([A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/]+={0,2})")
 
 # MIME subtype → 文件扩展名（识别不出时统一用 .img）
@@ -348,14 +337,7 @@ class AISessionLogger:
         # 关联 Agent 列表（持久化 + 活跃状态），元素结构见 LinkedAgentRecord
         self.linked_agents: List[LinkedAgentRecord] = []
 
-        # ── 磁盘日志回放 / 会话窗口续写（非 subagent） ──
-        # 当主 session 被 AISessionRegistry 空闲清理后，主动消息（Heartbeat /
-        # ScheduledTask）通过 log_standalone_proactive 向磁盘日志文件追加了 entry。
-        # 用户下次搭话时 _get_or_create_ai_session 创建新的 GsCoreAIAgent +
-        # AISessionLogger，若不复用已有文件，就会产生两个独立日志文件（不同
-        # session_uuid），破坏"同一 session 所有日志在同一文件"的语义。因此对非
-        # subagent logger，初始化时按会话窗口（SESSION_WINDOW_SECONDS）检查磁盘上
-        # 是否已有同 session_id 且未超时的日志文件，有则回放续写；超时则滚动新文件。
+        # 磁盘日志回放：非 subagent 初始化时若存在窗口期内的未超时日志，则回放续写。
         resumed: Optional[SessionLogFileData] = None
         resumed_path: Optional[Path] = None
         if not is_subagent:

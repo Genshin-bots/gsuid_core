@@ -17,9 +17,7 @@ import pytest
 
 from gsuid_core.ai_core.utils import _report_footer, _extract_report_blocks
 
-# ─────────────────────────────────────────────
-# _extract_report_blocks
-# ─────────────────────────────────────────────
+# --- _extract_report_blocks ---
 
 
 def test_report_block_separated_from_persona_speech() -> None:
@@ -77,9 +75,7 @@ def test_plain_text_untouched() -> None:
     assert reports == []
 
 
-# ─────────────────────────────────────────────
-# _report_footer（生成来源 + 渲染入口溯源）
-# ─────────────────────────────────────────────
+# --- _report_footer（生成来源 + 渲染入口溯源） ---
 
 
 def test_footer_contains_agent_origin_and_render_fn() -> None:
@@ -92,9 +88,7 @@ def test_footer_contains_agent_origin_and_render_fn() -> None:
     assert "投资" not in footer
 
 
-# ─────────────────────────────────────────────
-# persona prompt 输出契约
-# ─────────────────────────────────────────────
+# --- persona prompt 输出契约 ---
 
 
 def test_system_constraints_teach_report_contract() -> None:
@@ -116,9 +110,7 @@ def test_system_constraints_teach_report_contract() -> None:
     assert "render_agent" in POST_TOOL_OUTPUT_CONTRACT
 
 
-# ─────────────────────────────────────────────
-# execute_scheduled_task：中性执行体 + 静默闸 + 溯源尾注
-# ─────────────────────────────────────────────
+# --- execute_scheduled_task：中性执行体 + 静默闸 + 溯源尾注 ---
 
 
 class _StubLogger:

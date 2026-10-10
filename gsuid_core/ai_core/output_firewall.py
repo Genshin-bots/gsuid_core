@@ -28,9 +28,8 @@ from gsuid_core.ai_core.content_guard import normalize_for_match
 # ── 分类词库 ────────────────────────────────────────────────────────
 # 规范化后匹配（吃掉"M i M o"式规避）。部署者可经 ai_config.output_firewall_extra_terms 补充。
 
-# 模型 / 厂商名（最高危：公开群聊暴露即事故）
-# 规范化后是子串匹配：短码/颜文字/成语/生活词不收（qwq、xai、即梦、混元、可灵、元宝）。
-# 部署者自家供应商走 ai_config.output_firewall_extra_terms，不要往这里硬编码。
+# 模型与厂商词表（子串匹配，过滤常见短码与生活词）。
+# 自定义供应商通过 ai_config.output_firewall_extra_terms 配置。
 _MODEL_TERMS: Tuple[str, ...] = (
     "mimo",
     "minimax",
@@ -79,12 +78,8 @@ _MODEL_TERMS: Tuple[str, ...] = (
     "characterai",
 )
 
-# 系统 / 技术术语（出戏痕迹）——**硬词**：任何角色语境下出现都算泄露，裸子串匹配。
-# 裸 temperature / traceback 不入词库（天气、代码评审高频合法），改由 _SAMPLING_PARAM_RE
-# 与 _TECH_DUMP_RE 按取值形态识别。
-# 训练数据/参数量/上下文窗口/知识截止/采样参数 是 AI 行业闲聊高频词（"7B参数量真能打"），
-# 移到 _CTX_TECH_SELF_RE：仅绑定第一人称（"我的训练数据"）才算；"供应商"删除（电商日常词，
-# 真泄露必伴随其他硬词）。与 C-5"聊行业新闻正常参与"对齐。
+# 系统与技术术语硬词：任何语境下出现均视为泄露（子串匹配）。
+# 行业闲聊高频词移至 _CTX_TECH_SELF_RE，仅在绑定第一人称时拦截。
 _SYSTEM_TERMS: Tuple[str, ...] = (
     "systemprompt",
     "系统提示词",
@@ -150,9 +145,7 @@ _SYSTEM_COPY_LEAK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 工具/子代理回灌的技术堆栈或状态 JSON 被模型当台词复读 → 机器腔熔断
-# 状态码只认 4xx/5xx：2xx 是成功态，"接口 status_code 返回 200" 是运维/代码评审日常，
-# 按 \d{3} 无差别拦会把整条 scrub 成兜底句（与裸 traceback 同类的误杀面）。
+# 机器腔熔断：拦截复读技术堆栈或状态 JSON，状态码仅匹配 4xx/5xx。
 _TECH_DUMP_RE = re.compile(
     r"Traceback \(most recent call last\)"
     r"|File \"[^\"]+\", line \d+"
@@ -164,9 +157,7 @@ _TECH_DUMP_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
-# 语境技术词：与第一人称直接绑定才是自我泄露（第三方讨论一律放行）。
-# api密钥/apikey 也在此档：真实密钥泄露由 _SK_KEY_RE 按形态兜底，裸词"备个API key"
-# 是开发者群日常（实测把 AI 工具消费建议整条 scrub 成兜底句）。
+# 语境技术词：与第一人称绑定时拦截自我泄露，第三方讨论放行。
 _CTX_TECH_SELF_RE = re.compile(
     r"(我|人家|咱们?|本喵|本人)(的|这边的?)?\s*(训练数据|训练语料|参数量|知识截止|上下文窗口|采样参数"
     r"|api\s*密钥|api\s*-?key)",
@@ -175,9 +166,7 @@ _CTX_TECH_SELF_RE = re.compile(
 
 # 独立正则（原文匹配，保留边界 / 结构语义）
 _MODEL_ATTRIB_RE = re.compile(r"由.{0,10}(开发|训练|研发|提供|打造)")
-# AI 自指承认式：补 就是/确实是/是一个/作为 等谓词，避免"我就是个聊天机器人"漏网（曾漏杀）。
-# 间隙排除 帮/给/替（"帮你跑个程序"是动宾非自述）；AI/程序/模型 加复合名词负向断言——
-# "我是个程序员""我是AI绘画群主""我是个高达模型玩家"是人类身份/爱好自述，不是 AI 自指。
+# AI 自指识别：匹配承认式谓词，排除人类身份/爱好自述与助动词。
 _AI_COMPOUND = r"(?![绘画艺工插音视翻领行圈技产应从研专课竞赛员师圈])"
 _AI_SELFREF_RE = re.compile(
     r"我(是|叫|本质上是|其实是|就是|确实是|确实叫|不过是|只是|是一个|是个|作为)(一个|一名|个)?[^，。！？帮给替]{0,8}"
@@ -189,9 +178,7 @@ _AI_ASA_RE = re.compile(
     rf"作为(一个|一名)?.{{0,4}}(ai{_AI_COMPOUND}|人工智能{_AI_COMPOUND}|语言模型|大模型)",
     re.IGNORECASE,
 )
-# 认领式短句（"是AI啦""好吧，确实是机器人"）——多轮软磨下的承认高发形态：无第一人称
-# 主语、句首直接认领（实测漏过 _AI_SELFREF_RE 的第一人称要求）。判据=句首位置 + 认领
-# 填充词 + AI 直指词；否定式（"才不是AI呢""不是AI"）因否定词不在填充词集合里天然放行。
+# 认领式短句（如“是AI啦”）：仅在来话存在身份逼问形态时拦截。
 _AI_ADMIT_RE = re.compile(
     rf"(?:^|[\n。！？!?；;]\s*)(?:唔+[….,，]*\s*|好吧[，,]?\s*|确实[，,]?\s*|其实[，,]?\s*)*"
     rf"就?是\s*(?:一?个)?(ai{_AI_COMPOUND}|人工智能{_AI_COMPOUND}|语言模型|大模型|聊天机器人|机器人)",
@@ -208,20 +195,14 @@ _SK_KEY_RE = re.compile(r"(?<![A-Za-z])sk-[A-Za-z0-9]{8,}")
 _ERR_CODE_RE = re.compile(r"(错误码|报错码|error\s*code)[\s:：]*\d+", re.IGNORECASE)
 # 采样温度泄露按"参数取值形态"识别（temperature≈0.x~2.x），避免误杀天气里的 Temperature: 21°C
 _SAMPLING_PARAM_RE = re.compile(r"temperature.{0,6}[0-2]\.\d", re.IGNORECASE)
-# 裸模型词的"绑定到自己"判据：谈论第三方（"OpenAI 发布了…"新闻/讨论）不是出戏，
-# 只有把模型名与自身绑定（"我用的是/我背后是/内核是"）或对身份追问的超短直答才算泄露。
-# 省主语支须在句首/标点后（中文答句常省主语："用的是GPT-4哦"）——前面紧贴其他字
-# 即是第三方主语（"群主用的是ChatGPT"），不算自指。
-# 我-支间隙排除 吃喝买点说聊讲玩家：模型词撞生活词（豆包=包子、小爱=音箱昵称）时
-# "我早饭吃的是豆包""我家小爱同学"是消费/家居语境，不是把模型绑到自己身上。
+# 裸模型词绑定判据：仅拦截将模型名绑定到自身自指的语境，排除谈论第三方。
 _SELF_BIND_RE = re.compile(
     r"(我|人家|咱|本(喵|人|机|体))[^。！？\n吃喝买点说聊讲玩家]{0,6}(是|用|叫|基于|背后|底层|内核|驱动|跑在|搭载)"
     r"|(?:^|[，。！？!?,\s：:、~～…—])(用的|基于|搭载|采用)的?是"
     r"|(?:^|[，。！？!?,\s：:、~～…—])(模型|底层|内核|后台|本体)[^。！？\n]{0,4}(是|叫|用)",
     re.IGNORECASE,
 )
-# 身份追问形态（来话侧）：短答门与认领式判定只在对方正在追问"你是什么/谁做的"、
-# 或逼你承认身份时启用——与 C-5 原则一致：只在追问你自己身份时收紧，正常 AI 话题闲聊放行。
+# 身份追问形态（来话侧）：仅在对方逼问身份时收紧判定。
 _IDENTITY_PROBE_RE = re.compile(
     r"(什么|哪个|哪家|谁家|啥)[^。！？\n]{0,4}(模型|大模型|llm)"
     r"|谁(开发|研发|训练|做|造|写)的"
@@ -232,14 +213,10 @@ _IDENTITY_PROBE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 自绑定与模型词/归属句式的共现粒度：**小句**（逗号也切）。整段消息里"我用的是安卓"
-# 与"买了豆包当早餐"各自出现不算泄露——曾把跨句组合误杀（豆包/小爱/kimi 均是
-# 中文群聊高频生活词）。省主语支本就锚定句首/标点后，切分后 ^ 锚点语义不变。
+# 自绑定与模型词共现粒度为小句，避免跨句误杀生活用词。
 _CLAUSE_SPLIT_RE = re.compile(r"[。！？!?\n；;，,]")
 
-# §12 资金红线：AI 没有任何支付能力，"声称已完成转账"是欺骗（生产事故：被社工出
-# "明明发过去了…信号不好"圆谎链）。判据同小句共现（精度优先）：金钱语汇 × 完成时转账动词。
-# v\d 加字母/数字边界防匹配版本号（v2ray/v2.1，评审修复 F10 误杀面）。
+# 资金红线：AI 无支付能力，拦截完成时转账声明与虚假承诺。
 _MONEY_TERM_RE = re.compile(
     r"钱|款项|红包|转账|打款|汇款|(?<![a-z0-9])v\d{1,4}(?![\d.a-z])|\d+\s*[块元]|微信支付|支付宝",
     re.IGNORECASE,
@@ -451,9 +428,7 @@ def check_ooc(
     model_hits = [w for w in (*_MODEL_TERMS, *extra) if normalize_for_match(w) and normalize_for_match(w) in norm]
     if _AI_SELFREF_RE.search(text) or _AI_ASA_RE.search(text) or _AI_PEER_RE.search(text):
         return FirewallHit(category="ai_selfref", matched=["AI自指"])
-    # 认领式短句（"是AI啦"）语境门：只在来话正逼问身份时启用——聊扫地机器人/游戏 NPC
-    # 答一句"是机器人哦"是日常，无条件启用曾是误杀面。泄露高发场景（多轮软磨逼承认）
-    # 的来话必然带身份逼问形态，召回不受损。
+    # 认领式短句语境门：仅在来话逼问身份时启用。
     _probing = bool(user_text) and _IDENTITY_PROBE_RE.search(user_text) is not None
     if _probing and _AI_ADMIT_RE.search(text):
         return FirewallHit(category="ai_selfref", matched=["AI自指(认领)"])
@@ -543,9 +518,7 @@ NEVER_RELEASE_CATEGORIES: frozenset[str] = frozenset(
 #: 两次重说都不干净时**原样发送**的类目（人格 / 一致性类）。理由：原样放行的代价只是措辞
 #: 不完美，而吞掉整轮的代价是用户什么都收不到——出戏闸不该吃掉一次正常对话。
 _LAST_RESORT_SEND_ORIGINAL: frozenset[str] = frozenset({"capability_absence", "meta_narration", "stale_present"})
-#: 不在上表里的两个（``fund_claim`` 虚假转账声明 / ``machine_dump`` 技术堆栈）：它们的
-#: **原文本身就是闸门要防的东西**——原样发出去不是「不完美」而是「有害」（社工话术带偏
-#: 的生产事故 / 内部堆栈外泄），故最后一档仍走沉默。模型主动回 ``<SILENCE>`` 同理。
+#: 虚假转账与技术堆栈外泄具有直接风险，重试失败时保持沉默。
 SOFT_JUDGE_CATEGORIES: frozenset[str] = frozenset({"model_identity", "ai_selfref"})
 OOC_JUDGE_MARKER = "（系统校验：刚才要发的内容可能出戏"
 
@@ -601,13 +574,7 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
     )
 
 
-# 这里曾经有 fallback_ooc_text / fallback_machine_text 两个罐头访问器
-# （persona.json 的 fallback_ooc / fallback_machine），现已删除：连续重说仍命中时
-# 没有罐头可退——永不放行类目走「人格再重说一句 → 仍不干净就沉默」
-# （``GsCoreAIAgent._ooc_recover_persona_voice``），无 run 的出口直接丢弃正文。
-# 禁抄任何人格口癖（AGENTS.md §1.9）。
-
-
+# 重说仍命中时永不放行类目保持沉默，禁止使用预设罐头文案（AGENTS.md §1.9）。
 def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Optional[str]:
     """工具路径发送前闸门（转发 ``output_gate.tool_gate_feedback``）。"""
     from gsuid_core.ai_core.output_gate import tool_gate_feedback

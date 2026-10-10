@@ -16,9 +16,7 @@ from datetime import datetime
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
-# 群组画像在 state_store 中的 scope。
-# 用带双下划线的保留命名，与用户/插件的 scope 形式（user:xxx / group:xxx / global）
-# 区分开，避免某个插件恰好用了同名 scope 而覆盖框架内部数据。
+# 群组画像 state_store 内部保留 scope，避免与业务 scope 冲突。
 _PROFILE_SCOPE = "__gscore_group_profile__"
 
 # 词汇映射表与标签的容量上限，防止无限膨胀
@@ -39,12 +37,7 @@ class GroupProfileData(TypedDict):
     scope_key: str
     tag_counts: Dict[str, int]  # {标签: 累计出现频次}
     term_mappings: Dict[str, str]  # {别名: 正式名称}
-    # A-4：{群成员称呼/外号: [用户ID, ...]}（确定性身份库），列表按最近绑定在前。
-    # 同一个称呼可能被指给多个人（群里同名/换人），全部保留，注入时多候选降级为"歧义"交 Agent 消歧。
-    #
-    # 字段版本说明：旧版本曾用 `member_aliases`，值为单个用户ID（str）。本版本起改用全新字段
-    # `member_alias_ids`（值为列表），**老字段一律不再读取、静默废弃**——既不迁移也不解析旧格式，
-    # 因此不会因旧数据形状抛错。老字段原样保留在库里（见下 `member_aliases`），仅为可回滚，不参与逻辑。
+    # 群成员称呼映射 {称呼: [用户ID, ...]}；新版本使用 member_alias_ids 列表字段。
     member_alias_ids: Dict[str, List[str]]
     # 遗留字段：旧版 {称呼: 用户ID(str)}。**永不读取**，仅原样透传保留以便回滚；新逻辑只认上面的字段。
     member_aliases: Any

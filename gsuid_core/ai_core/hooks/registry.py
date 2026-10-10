@@ -44,9 +44,7 @@ def on_agent_hook(
         _ORDER_SEQ += 1
         module = func.__module__ if hasattr(func, "__module__") else ""
         if point not in WIRED_POINTS:
-            # 第一方套件在未接线点位上放的是**占位**（handler 多为空实现），接线时一并生效，
-            # 每次启动刷 warning 只会训练大家忽略它；第三方则必须响一声——它按发布的
-            # 点位表挂了 veto_tool / replace_text，上线后既没效果也没有任何错误信息。
+            # 第三方插件注册未接线点位时告警，第一方占位套件静默放行。
             emit = logger.debug if kit_id else logger.warning
             emit(t("log.agent.hooks_point_not_wired", point=point.name, owner=kit_id or module or "?"))
         reg = HookRegistration(

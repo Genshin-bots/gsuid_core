@@ -241,9 +241,7 @@ def remove_old_backups(days: int = 30) -> int:
         # item.stem 会自动去掉 .zip 后缀
         name_stem = item.stem
 
-        # 尝试提取日期部分
-        # 你的命名格式是: f'{file_id}-{date_str}'，date_str 是 "YYYY-MM-DD" (10个字符)
-        # 所以我们取 stem 的最后 10 位
+        # 从文件名末尾提取 10 位日期字符串 (YYYY-MM-DD)。
         if len(name_stem) < 10:
             continue
 

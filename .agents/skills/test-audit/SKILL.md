@@ -74,7 +74,7 @@ not automatically deletable; the authoring gate still rejects new ones.
 
 Before judging a candidate, read the complete test and production owner, its
 entry point, callers, callees, sibling implementations, overlapping tests, CI
-routing, and relevant history. Read root and scoped `AGENTS.md` files first.
+routing, and commit history. Read root and scoped `AGENTS.md` files first.
 When the test claims dependency-backed behavior, inspect the dependency source
 or types directly.
 
@@ -117,7 +117,7 @@ not ready for deletion:
 - what failure it can actually detect;
 - non-test callers of the covered production or support seam;
 - stronger remaining owner-boundary proof, or why no proof is needed;
-- relevant history and the reason the test or seam exists;
+- commit history and the reason the test or seam exists;
 - production or test-support deletion unlocked;
 - risk and the focused validation command.
 

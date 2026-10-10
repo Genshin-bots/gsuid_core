@@ -301,9 +301,7 @@ async def send_message_by_ai(
             if image_id.startswith("http") or image_id.startswith("base64://"):
                 media_parts.append(MessageSegment.image(image_id))
             elif image_id.startswith("res_"):
-                # Kanban artifact 句柄：从 AIAgentArtifact 解析 → 转 RM → 发送
-                # 这一段是 §3.6 "主人格透明发送能力代理产物"的实现基础——主人格
-                # 不需要知道 RM / artifact 是两套存储，只要拿到 res_xxx 句柄直接发。
+                # 从 AIAgentArtifact 解析句柄并转为资源发送，支持透明分发代理产物。
                 kanban_payload = await _resolve_kanban_artifact(image_id)
                 if kanban_payload is None:
                     # 兜底：仍可能是用户上传时被框架登记成 RM 但前缀写成 res_ 的情况
@@ -477,10 +475,7 @@ async def send_message_by_ai(
             content_desc.append(f"音频({audio_id})")
         logger.info(t("log.ai.buildintools_user_target_id", p0="+".join(content_desc), target_id=target_id))
 
-        # §8.1：工具本质上仍然是"框架在 LLM run 外注入到用户会话"的主动输出
-        # ——若拿得到调用方所在的主 session，把发出去的文本同步追加进该
-        # session 的 pydantic_ai 历史，避免后续轮主人格"对自己刚发的话失忆"。
-        # 仅同步文本（图 / 音 / 视频在 pydantic_ai 历史里没有合适的语义形态）。
+        # 主动发送的文本同步追加至当前主会话历史，保证多轮上下文连续。
         if text and tool_ctx.parent_session_id:
             from gsuid_core.ai_core.session_registry import get_ai_session_registry
 

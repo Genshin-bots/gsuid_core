@@ -632,8 +632,7 @@ async def _dispatch_transient_capability_agent(
 
     logger.info(i18n_t("log.ai.subagent_transient_mode_direct", pid=pid, p0=repr(task[:60])))
     try:
-        # runner._ensure_adhoc_workspace contextmanager 会在无 plan_ctx 时建临时 ad-hoc workspace；
-        # 这里直接调 run_capability_agent，让 runner 自己处理。
+        # 无 plan_ctx 时 runner 自动创建临时 workspace。
         raw_result = await run_capability_agent(
             profile_id=pid,
             task=task,

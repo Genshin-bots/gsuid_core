@@ -576,9 +576,7 @@ async def ingest_domain(
     if cleared.get("status") not in (0, None) and "status" in cleared:
         print(f"[ingest] clear 警告: {cleared.get('msg')}")
     observed = 0
-    # extract=True 走窗口化实体/边抽取（§14.1），复用 worker._extract_and_upsert_from_episode
-    # 下游：实体/边/user_global 属性 → System-2 图谱检索 → 注入。跨文档聚合题靠这条路，
-    # 不靠「把几十份材料压进一段摘录」。参数与 BEAM 官方灌库一致。
+    # extract=True 启用窗口化实体与边抽取，供图谱检索与跨文档聚合使用。
     extra: Dict[str, Any] | None = None
     if extract:
         extra = {

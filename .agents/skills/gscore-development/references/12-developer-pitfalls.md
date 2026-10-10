@@ -231,7 +231,7 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 `heartbeat/decision.py`、`send_chat_result`、`extract_json_from_text` 全部引用解析函数。
 **不要**再散落硬编码列表或只认单枚 token（曾把 `<silence></silence>` 当台词下发）。
 
-## 12.14 记忆系统正确性细节（D-12~D-19）
+## 12.14 记忆系统正确性细节（D-12 到 D-19）
 
 改记忆系统时注意这些已修复的坑：
 
@@ -307,7 +307,7 @@ output 近似平方级膨胀。Moonshot/OpenAI/DeepSeek 官方等标准网关不
 5. 依赖 pydantic_ai（1.77.0）的 `_validate_response` / `_streamed_response_cls` 覆写钩子，
    升级该库需回归验证探测逻辑。
 
-## 12.18 历史缺陷速查表（D-1~D-22，全部已修复）
+## 12.18 历史缺陷速查表（D-1 到 D-22，全部已修复）
 
 | ID | 模块 | 问题 | 详见 |
 |----|------|------|------|
@@ -319,7 +319,7 @@ output 近似平方级膨胀。Moonshot/OpenAI/DeepSeek 官方等标准网关不
 | D-7 | WebConsole | 文件上传缺 MIME 检查 | [§11](./11-statistics-webconsole-database.md) |
 | D-8 | Handler | 用户触发缺并发控制 → Rate Limit | [§04](./04-event-trigger-flow.md) |
 | D-11 | handle_ai | RAG 强制前置检索 | §12.16 / [§10](./10-rag-knowledge-embedding.md) |
-| D-12~D-19 | memory | 去重 key / 计数虚高 / N+1 / 并行化等 | §12.14 / [§09](./09-memory-system.md) |
+| D-12 到 D-19 | memory | 去重 key / 计数虚高 / N+1 / 并行化等 | §12.14 / [§09](./09-memory-system.md) |
 | D-20 | gs_agent | 强制总结偏离用户问题 | §12.8 |
 | D-21 | 全局 | AI 总开关关闭后仍跑 AI 逻辑 | §12.4 / [§02](./02-startup-lifecycle.md) |
 | D-22 | configs/models | 累计语义网关流式 usage 被逐 chunk 累加致统计膨胀数十倍 | §12.17 / [§11](./11-statistics-webconsole-database.md) |
@@ -360,7 +360,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 - **解法（评测/回灌专用，`eval_mode` / 新端点字段闸门保护，线上行为不变）**：
   1. **Episode 粒度**：`AIMemEpisode.create_episodes_bulk` **每 turn 一条 granular Episode**（`_chunk_text`
      按句子边界切 ≤900 字符、同 turn 块共享时间戳），纯嵌入零 LLM、可被 System-1 精确召回。
-  2. **抽取批次粒度**：`batch_observe(extract=true)` → `worker.extract_window` 把**连续若干 turn 拼成
+  2. **抽取批次粒度**：`batch_observe(extract=true)` → `worker.extract_window` 把**连续多轮 turn 拼成
      抽取窗口**（字符/turn 数先到者收口），每窗口一次 LLM 抽取，复用
      `_extract_and_upsert_from_episode` 全下游。**绝不**复活 observer 队列 + 80-turn 聚合。
   3. **窗口宽松超时只跳过不丢整 plan**：`_run_extract_pass` 每窗口 `asyncio.wait_for`，超时/异常只
@@ -625,7 +625,7 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
   丢弃器：启动卡顿 >90s 该 job 被静默扔掉、任务永滞 pending。这类 job 要显式
   `misfire_grace_time=None`。排查"任务没跑"先看有没有 `Run time of job ... was missed` 日志。
 
-## 12.22d 交互脚手架（C-1~C-4，`ai_core/interaction_scaffold.py`，2026-07-12）
+## 12.22d 交互脚手架（C-1 到 C-4，`ai_core/interaction_scaffold.py`，2026-07-12）
 
 评测把问题从"防线误杀"推进到"多步正确性 + 泛化"后，新增了一层**结构化交互脚手架**，
 把过去全靠模型自觉的四件事变成框架层的显式约束/提示。只对**交互式主 Agent**生效
@@ -749,8 +749,8 @@ option）下排 **#1**；英文模型的相似度全挤在 0.058 的窄带里，
 与 `batch_observe` 显式调了 `worker.flush_all()`；真实 WS/QQ 链路从不主动 flush。
 排查时这个分布本身就是最强线索：**"只有走 API 的数据活下来了"= 落库依赖显式 flush**。
 
-现已新增 `idle_flush_seconds`(默认 180)：**按「对话静默」而非固定周期触发**——对话进行中
-一直有新消息 → 不算静默 → 不 flush，抽取仍是整段一次调用，**批量效率不受影响**；
+现已新增 `idle_flush_seconds`(默认 180)：**按「对话静默」而非固定周期触发**——对话持续产生
+新消息 → 不算静默 → 不 flush，抽取仍是整段一次调用，**批量效率不受影响**；
 对话结束 3 分钟后落库，记忆的最长在险时间从 2 小时降到 3 分钟。
 `batch_interval_seconds` 退化为刷屏 scope 的兜底上限。
 
@@ -839,7 +839,7 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
 
 关系温度改造新增了每轮注入的 `（对这个人的口气：…）`。对**从未打过分**的用户，
 `score` 落到 0 → zone `distant` → 注入「公事公办，少废话」。单看这句没问题；但人设卡
-里已经有「回复 3~15 字」「默认潜水」「低好感只在被 @ 时回应」。两段叠起来，模型读出的
+里已经有「回复 3 到 15 字」「默认潜水」「低好感只在被 @ 时回应」。两段叠起来，模型读出的
 结论是**可以拒办**：问时间答「自己看手机…我没表」，查偏好答「记不清了…你再说一遍」。
 
 > 两条规矩：
@@ -881,7 +881,7 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
 3. AI 总开关：新加的 AI 初始化/定时任务/建表/HTTP 面都查了 `enable`。
 4. 状态：新加的进程内存状态知道多实例不共享；没碰 IngestionWorker 的独立线程禁区。
 5. Bot：取 `_Bot` 用 `WS_BOT_ID`；需要 `Bot` 的地方没传裸 `_Bot`。
-6. 历史/记忆：截断保留 ToolCall/ToolReturn 配对；记忆改动没踩 D-12~D-19。
+6. 历史/记忆：截断保留 ToolCall/ToolReturn 配对；记忆改动没踩 D-12 到 D-19。
 7. 注释：`#` 注释 ≤2 行、每行 ≤88 字，精简直白。
 8. 输出链路：新「打回/熔断」挂 `output_gate.pre_send_gate`，呈现变换挂 `send_chat_result`；
    `ooc_check=False` 仅限已过 gate / 重说产物；框架层文本人格中性（§1.9）；词库加词先过规范化
@@ -889,7 +889,7 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
    新分类器词 / 规划提示 / 用户可见兜底不得绑某个角色口癖或某个业务垂直。
 9. 防线改动：注入/出戏/假完成相关的正则或词库改动，坏样本（eval inj_*/adv_*）与好样本
    （良性误杀集）**两个方向都要跑**（§12.22b）；处理用户文本的标注函数保持幂等。
-10. 交互脚手架（§12.22d）：C-1~C-4 只对交互式主 Agent 生效；判据只用结构/语言学范畴、
+10. 交互脚手架（§12.22d）：C-1 到 C-4 只对交互式主 Agent 生效；判据只用结构/语言学范畴、
     绝不塞评测载荷词；改动跑 `tests/test_interaction_scaffold.py` 双向锁。
 11. 文档：改了核心机制，回头同步对应章节（源码是唯一事实源，但导航别让它过期）。
 12. 套件 / 启动顺序（§12.22h）：新套件的 `init_step` 没有和 `_INIT_STEPS` 撞同一个

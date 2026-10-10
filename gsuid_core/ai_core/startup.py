@@ -18,9 +18,7 @@ import time
 import asyncio
 from typing import Optional
 
-# 关系温度表的去重 + 唯一约束迁移。必须在这里 import：它注册的是
-# @on_core_start_before（阻塞阶段），而 core.py 在启动钩子触发前就 import 本模块。
-# 该模块只依赖 server/logger/sqlalchemy.text，不引入重依赖。
+# 必须在此导入关系温度表迁移模块，确保在 @on_core_start_before 阻塞阶段执行。
 import gsuid_core.ai_core.relationship.migration  # noqa: F401
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -188,9 +186,7 @@ async def wait_ai_core_ready(timeout: float = 300.0) -> bool:
         return False
 
 
-# 各 AI 子系统初始化步骤，按依赖顺序排列：
-# RAG 先初始化 Embedding 模型，Memory / Meme 依赖其结果；
-# MCP Server 依赖 MCP 工具先完成注册。
+# AI 各子系统按依赖拓扑顺序初始化（RAG 优先，MCP Server 靠后）。
 _INIT_STEPS = [
     # 套件最先装：只挂 hook，却决定整条 loop 有没有情绪/关系/记忆/工具装配
     ("Agent 套件", _init_agent_kits),
@@ -213,11 +209,8 @@ async def init_ai_core():
     """AI 核心统一初始化（后台执行，不阻塞 WS 启动）。"""
     global _AI_CORE_READY, _AI_CORE_INITIALIZING
 
-    # 防止 on_core_start 多次触发导致并发初始化：两条流水线会让 RAG / Memory 同时
-    # 初始化同一个本地 Qdrant 并并发写入集合，触发文件锁冲突
-    # "Storage folder ... is already accessed by another instance of Qdrant client"。
-    # 下面的状态判断与 _AI_CORE_INITIALIZING 置位之间不存在 await，asyncio 协作式调度下
-    # 是原子的；后到的协程会在首个 await 让出后看到标记并直接退出，从而保证整条初始化串行。
+    # 防并发初始化：状态判断与 _AI_CORE_INITIALIZING 之间无 await，保证原子置位。
+    # 避免双流水线并发写 Qdrant 产生文件锁冲突。
     if _AI_CORE_READY or _AI_CORE_INITIALIZING:
         logger.debug(t("log.ai.ai_core_init_running_skipping_ok"))
         return
@@ -251,9 +244,7 @@ async def init_ai_core():
 
     logger.debug(t("log.ai.ai_core_heavy_dependency_import", p0=time.time() - import_start))
 
-    # 按依赖顺序依次初始化；单步失败不阻断后续。
-    # ready 语义：初始化流水线已结束即可接聊（buildin 工具/人设不依赖 RAG 全量同步）。
-    # 若 RAG/Memory 等失败仅降级能力，禁止整站 AI 永久 not-ready（否则 wait_ai_core_ready 恒失败）。
+    # 按依赖顺序依次初始化，单步失败仅降级不阻断，保证初始化完成后 ready 事件置位。
     init_failed = False
     try:
         for name, step in _INIT_STEPS:

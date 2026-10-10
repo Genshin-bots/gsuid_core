@@ -44,9 +44,7 @@ from ._api_tags import CAPABILITY_AGENTS
 _NODE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
 
-# ─────────────────────────────────────────────
-# Request models
-# ─────────────────────────────────────────────
+# --- Request models ---
 
 
 class CreateNodeRequest(BaseModel):
@@ -83,9 +81,7 @@ class PatchNodeRequest(BaseModel):
     master_only: Optional[bool] = None
 
 
-# ─────────────────────────────────────────────
-# Endpoints
-# ─────────────────────────────────────────────
+# --- Endpoints ---
 
 
 @app.get("/api/ai/capability-agents/list", summary="列表", tags=CAPABILITY_AGENTS)

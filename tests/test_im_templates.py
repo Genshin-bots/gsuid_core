@@ -27,9 +27,7 @@ def anyio_backend(request):
     return request.param
 
 
-# ─────────────────────────────────────────────
-# HTML 生成：结构与内容
-# ─────────────────────────────────────────────
+# --- HTML 生成：结构与内容 ---
 
 
 class TestHtmlGeneration:
@@ -124,9 +122,7 @@ class TestHtmlGeneration:
         assert '"Mono"' in html
 
 
-# ─────────────────────────────────────────────
-# 转义（防注入）
-# ─────────────────────────────────────────────
+# --- 转义（防注入） ---
 
 
 class TestEscaping:
@@ -150,9 +146,7 @@ class TestEscaping:
         assert "&lt;b&gt;bold&lt;/b&gt;" in html
 
 
-# ─────────────────────────────────────────────
-# 对比表着色语义 + 符号归一化
-# ─────────────────────────────────────────────
+# --- 对比表着色语义 + 符号归一化 ---
 
 
 class TestComparisonColoring:
@@ -179,9 +173,7 @@ class TestComparisonColoring:
         assert T._norm_glyphs("✓") == "✓"  # 已支持的不变
 
 
-# ─────────────────────────────────────────────
-# 等宽字体注册
-# ─────────────────────────────────────────────
+# --- 等宽字体注册 ---
 
 
 class TestMonoFont:
@@ -242,9 +234,7 @@ class TestEmojiFont:
         assert chromatic > 80, f"emoji 无彩色墨迹（chroma_pixels={chromatic}），仍是豆腐"
 
 
-# ─────────────────────────────────────────────
-# 真实渲染：8 个异步接口
-# ─────────────────────────────────────────────
+# --- 真实渲染：8 个异步接口 ---
 
 
 class TestRendering:

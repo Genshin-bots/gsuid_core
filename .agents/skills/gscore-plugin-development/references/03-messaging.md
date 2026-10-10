@@ -107,10 +107,7 @@ async def bind_wizard(bot: Bot, ev: Event) -> None:
 
 @sv.on_fullmatch("确认")
 async def confirm_with_callback(bot: Bot, ev: Event) -> None:
-    # 自定义按钮：Button(text, data, click_text)
-    # - text: 按钮显示文字
-    # - data: 点击后**作为下一条消息发送**给机器人（驱动下一轮触发器）
-    # - click_text: 点击后给用户的反馈短语（可选）
+    # Button(text, data, click_text): text 为显示文字，data 为点击回传命令
     await bot.send_option(
         reply="是否确认绑定 UID 12345678？",
         option_list=[

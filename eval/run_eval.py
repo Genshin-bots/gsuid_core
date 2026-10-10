@@ -88,9 +88,7 @@ def _lm_paths(args: argparse.Namespace) -> tuple[str, str]:
     return ans, jdg
 
 
-# ─────────────────────────────────────────────
-# LongMemEval
-# ─────────────────────────────────────────────
+# --- LongMemEval ---
 
 
 def _lm_load(args: argparse.Namespace) -> List[Dict[str, Any]]:
@@ -397,9 +395,7 @@ def _lm_mark_fails(args: argparse.Namespace) -> None:
     print(f"[mark-fails] total infra fails marked {total_fail}")
 
 
-# ─────────────────────────────────────────────
-# BEAM（委托既有脚本，保持状态文件/CLI 兼容）
-# ─────────────────────────────────────────────
+# --- BEAM（委托既有脚本，保持状态文件/CLI 兼容） ---
 
 
 _DELEGATED_SCRIPTS = {
@@ -417,9 +413,7 @@ def delegated_command(argv: list[str]) -> list[str] | None:
     return [sys.executable, script, argv[2], *argv[3:]]
 
 
-# ─────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────
+# --- CLI ---
 
 
 def main() -> int:

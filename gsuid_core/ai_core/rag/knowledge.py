@@ -66,13 +66,7 @@ from gsuid_core.ai_core.rag.collection_migration import (
 from .hybrid import hybrid_query
 from .reranker import rerank_results
 
-# ─────────────────────────────────────────────
-# 混合检索（Dense + BM25 Sparse）基建
-# 知识库集合结构：命名 dense 向量 "dense" + 稀疏向量 "sparse"（BM25, IDF 加权），
-# 与 memory_* 集合一致，检索走 Qdrant 原生 RRF 融合。
-# 设计见 plans/knowledge_base_bulk_import_assessment_20260614.md §5.4 /
-#        rag_multimodal_material_library_assessment_20260612.md §7
-# ─────────────────────────────────────────────
+# 混合检索（Dense + BM25 Sparse）基建：dense 与 sparse 命名向量，走 Qdrant RRF 融合。
 
 # 知识库 dense 命名向量名（旧库为单一无名向量；改名即触发结构迁移，见 init_knowledge_collection）
 KNOWLEDGE_DENSE_VECTOR = "dense"
@@ -80,9 +74,7 @@ KNOWLEDGE_DENSE_VECTOR = "dense"
 # BM25 稀疏嵌入专用单线程执行器：ONNX Runtime 自带多线程，多 Python 线程会过度订阅反而更慢。
 _KNOWLEDGE_SPARSE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kb_sparse")
 
-# 知识库集合初始化串行锁：核心 init_all 与插件 reload_ai_rag 可能并发触发 init_knowledge_collection，
-# 维度迁移时两者会各自走"强制重建"（delete+create 非原子），相互竞争导致 409 "Collection already
-# exists"、重复备份与重复重嵌。用单锁串行化：先到者完成重建后，后到者重检维度已匹配 → 直接跳过。
+# 集合初始化串行锁：避免 init_all 与 reload_ai_rag 并发重建集合导致冲突与重复重嵌。
 _knowledge_collection_init_lock = asyncio.Lock()
 # 插件 on_core_start 与 init_all 会同时进入。先到者未写入时，后到者会把同一批再嵌一遍。
 _knowledge_sync_lock = asyncio.Lock()
@@ -245,10 +237,7 @@ async def _init_knowledge_collection_impl():
     need_recreate = not collection_exists
 
     if collection_exists:
-        # 传 vector_name="dense" 同时覆盖两种迁移触发：
-        # ① 维度变化（换嵌入模型）；② 结构变化（旧库的单一**无名** dense → 命名 "dense"+sparse）。
-        # 旧无名集合取 "dense" 命名向量维度会得到 None ≠ dimension → 判定不匹配 → 走备份/重建/重嵌，
-        # 重嵌后即为命名+稀疏结构，下次启动检查通过、不再重复触发。
+        # 传 vector_name="dense" 覆盖嵌入模型维度变化与旧库无名单向量向双向量的结构迁移。
         if await collection_vector_mismatched(KNOWLEDGE_COLLECTION_NAME, dimension, vector_name=KNOWLEDGE_DENSE_VECTOR):
             payload_backup = await scroll_all_payloads(KNOWLEDGE_COLLECTION_NAME)
             # 上次迁移可能在“已清空集合但未完成重嵌入”时中断（集合为空但维度仍不匹配），
@@ -613,10 +602,8 @@ def build_knowledge_text(kp: KnowledgeBase | ManualKnowledgeBase) -> str:
     return "\n".join(parts)
 
 
-# ─────────────────────────────────────────────
 # 手动知识：SQL 真值源 + Qdrant 向量 的统一写入（分片/批量/备份共用）
 # 设计见 plans/knowledge_base_bulk_import_assessment_20260614.md §5
-# ─────────────────────────────────────────────
 
 
 def _chunk_embed_text(row: AIKnowledgeChunk) -> str:
@@ -1928,9 +1915,7 @@ async def get_manual_knowledge_list(
         count_filter=count_filter,
     )
 
-    # Qdrant local 的 scroll API 不支持 offset-based pagination
-    # 需要迭代获取所有记录然后切片
-    # 使用较大的批次大小减少迭代次数
+    # 本地 Qdrant scroll 不支持 offset 分页，需分批迭代后在内存切片。
     batch_size = 100
     all_records = []
     current_offset = None

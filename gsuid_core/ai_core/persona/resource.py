@@ -25,16 +25,8 @@ _voice_anchor_cache: Dict[str, str] = {}
 # Tone Markers 词表缓存；人格 md 变更时随 voice_anchor 一起清
 _tone_marker_cache: Dict[str, Tuple[str, ...]] = {}
 
-# 兜底正则：从 persona.md 抓取最具描述性的一行作为口吻锚点。
-# 优先级：Style (风格) 块 > Tone Markers (语气词) 块 > Identity 行。
-# 设计参考 ``persona/prompts.py`` 的 ``sayu_persona_prompt`` / CHARACTER_BUILDING_TEMPLATE。
-#
-# 两种书写格式都支持：
-#   - 块形式：``Style (风格):\n        <content>\n        <content>``
-#   - 行内形式：``Style (风格): <content>``（如爱弥斯人格）
-# 块正则用 ``^(\s*)<header>:\n((?:\1[ \t]+...)+)`` 的形式：内容行必须比 header
-# **更深**一级缩进，避免捕到下一个同级 section header（如 ``Style (风格):``
-# 紧跟 ``Tone Markers (语气词):`` 时不串行）。
+# 从 persona.md 提取口吻锚点正则，按 Style 块 > Tone Markers 块 > Identity 行优先级解析。
+# 支持缩进块格式与单行行内格式。
 _STYLE_BLOCK_RE = re.compile(
     r"^([ \t]*)Style\s*\(\s*风格\s*\)\s*:[ \t]*\n((?:\1[ \t]+[^\n]+\n?)+)",
     re.IGNORECASE | re.MULTILINE,
@@ -69,9 +61,7 @@ _TONE_SPLIT_RE = re.compile(r"[、，,/|;；\s]+")
 _TONE_PUNCT_ONLY_RE = re.compile(r"^[\s…。.．!！?？~～、,，'\"“”‘’·\-—]+$")
 _TONE_TRAIL_PUNCT = "…。.．!！?？~～、,， "
 
-# compact persona 抽取：心跳决策只需要"我是谁 / 怎么说话 / 何时开口"四要素，
-# 不需要工具协议、好感度梯度、触发例等执行细节。下列正则与上方块/行版本
-# 配套使用，行匹配优先级 Name / Identity / Interest 顺序。
+# compact persona 抽取正则：提取 Name、Identity 与 Interest，供心跳轻量决策使用。
 _NAME_RE = re.compile(r"Name\s*:[ \t]*([^\n]+)", re.IGNORECASE)
 _INTEREST_RE = re.compile(r"Interest\s*:[ \t]*([^\n]+)", re.IGNORECASE)
 # Presence 块下面常见两行：感兴趣的话题、主动发言示例。这两行最能帮 Heartbeat
@@ -330,10 +320,7 @@ def extract_compact_persona(persona_text: str) -> str:
     return "\n".join(sections)
 
 
-# voice_anchor 显式手调入口的文件名。
-# 不再放进 ``config.json`` —— 后者由 ``StringConfig`` 用严格的 ``Dict[str, GSC]``
-# schema 加载, 任何非结构化字段会直接触发 ``update_config -> repair_config``
-# 死循环 (历史上早柚的 voice_anchor 裸字符串就栽过这个坑)。
+# voice_anchor 显式配置独立存储为文本文件，避免破坏 config.json 结构体校验。
 _VOICE_ANCHOR_FILENAME = "voice_anchor.txt"
 
 

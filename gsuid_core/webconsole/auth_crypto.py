@@ -58,12 +58,7 @@ _DERIVED_KEY_LEN: int = 32
 # 密钥轮换周期（小时）：每隔此时长轮换一次服务端 X25519 密钥对（旧密钥保留一代容忍在途请求）
 KEY_ROTATION_INTERVAL_HOURS: int = 12
 
-# JSON 值的递归类型别名：避免裸 Any，同时精确表达「JSON 标量 / 列表 / 对象」。
-# 直接复用 pydantic 的 ``JsonValue``——它是以 ``TypeAliasType`` 定义的递归别名，
-# pydantic / FastAPI 能原生构建其递归 schema；自定义的 ``X | list["X"]`` 裸联合别名
-# 含无法解析的自引用 ForwardRef，被当作 FastAPI 请求体类型时会触发
-# ``TypeAdapter ... is not fully defined``（class-not-fully-defined）错误。
-# 顶层认证报文字段集合（如 {"email": ..., "password": ..., "ts": ...}）
+# 直接复用 pydantic 的 JsonValue 递归别名，避免 FastAPI 请求体类型解析失败。
 JsonObject = dict[str, JsonValue]
 
 

@@ -44,9 +44,7 @@ async def _ensure_table() -> None:
         from gsuid_core.utils.database.base_models import engine
 
         async with engine.begin() as conn:
-            # sqlmodel.pyi 未在 class 上声明 ``__table__``/``__tablename__`` 时为
-            # InstrumentedAttribute[Unknown]（数据库字段）, 不被 metadata.tables[str] 接收;
-            # 这里显式硬编码 SQL 表名（见 AGENTS.md §3.1.1 全小写表名）绕开 stub。
+            # 依 AGENTS.md §3.1.1 全小写表名规范，显式使用表名索引 metadata.tables。
             await conn.run_sync(
                 AIPersistentState.metadata.create_all,
                 tables=[AIPersistentState.metadata.tables["aipersistentstate"]],

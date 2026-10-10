@@ -36,9 +36,7 @@ from gsuid_core.utils.plugins_update.api import CORE_PATH
 
 from ._api_tags import BRAND
 
-# ============================================================
-# 默认品牌信息
-# ============================================================
+# --- 默认品牌信息 ---
 
 DEFAULT_BRAND: Dict[str, Any] = {
     "icon": "ICON.png",  # 仅作展示用途，默认 ICON 实际由 CORE_PATH/ICON.png 提供
@@ -56,9 +54,7 @@ _TITLE_MAX_LEN = 64
 _SUBTITLE_MAX_LEN = 128
 
 
-# ============================================================
-# Pydantic 模型
-# ============================================================
+# --- Pydantic 模型 ---
 
 
 class BrandUpdateRequest(BaseModel):
@@ -78,9 +74,7 @@ class BrandUpdateRequest(BaseModel):
     )
 
 
-# ============================================================
-# 内部辅助
-# ============================================================
+# --- 内部辅助 ---
 
 
 def _read_brand_config() -> Dict[str, Any]:
@@ -157,9 +151,7 @@ def _resolve_icon_info() -> Dict[str, str]:
     }
 
 
-# ============================================================
-# API 端点
-# ============================================================
+# --- API 端点 ---
 
 
 @app.get("/api/brand", summary="获取品牌信息", tags=BRAND)

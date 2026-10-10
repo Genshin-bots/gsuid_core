@@ -18,8 +18,7 @@ from gsuid_core.ai_core.models import ToolBase, ToolContext
 from gsuid_core.ai_core.mcp.client import MCPClient
 from gsuid_core.ai_core.mcp.config_manager import MCPConfig, mcp_config_manager
 
-# _TOOL_REGISTRY 使用延迟导入以避免循环导入
-# （register -> utils -> image_understand -> minimax_understand -> mcp -> startup -> register）
+# 延迟导入 _TOOL_REGISTRY 避免循环依赖。
 
 
 def _get_tool_registry() -> dict:

@@ -1,101 +1,101 @@
-# ⚙️[GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) Core 0.10.7
+# ⚙️ GenshinUID Core
 
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-7C3AED.svg)](https://github.com/astral-sh/ruff)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/Genshin-bots/gsuid-core/master.svg)](https://results.pre-commit.ci/latest/github/Genshin-bots/gsuid-core/master)
 
-[KimigaiiWuyi/GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) 的核心部分，平台无关，支持 HTTP/WS 形式调用，便于移植到其他平台以及框架。
+GsCore（早柚核心 / `gsuid-core`）是 [GenshinUID](https://github.com/KimigaiiWuyi/GenshinUID) 的跨平台服务框架。服务支持通过 WebSocket 与 HTTP 协议接入 NoneBot2、Koishi、YunzaiBot 等上游聊天机器人框架，实现业务逻辑与聊天平台的解耦。
 
-**💖 一套业务逻辑，多个平台支持！**
+**[官方文档](https://docs.sayu-bot.com)**（[安装指南](https://docs.sayu-bot.com/Started/InstallCore.html) | [适配器列表](https://docs.sayu-bot.com/LinkBots/AdapterList.html) | [插件市场](https://docs.sayu-bot.com/InstallPlugins/PluginsList.html)）
 
-**🎉 [详细文档](https://docs.sayu-bot.com)** ( [快速开始(安装)](https://docs.sayu-bot.com/Started/InstallCore.html) | [链接 Bot](https://docs.sayu-bot.com/LinkBots/AdapterList.html) | [插件市场](https://docs.sayu-bot.com/InstallPlugins/PluginsList.html) )
+## 功能特性
 
-## 优点&特色
-
-- 🔀 **异步优先**：异步处理~~大量~~消息流，不会阻塞任务运行
-- 🔧 **易于开发**：即使完全没有接触过 Python，也能在一小时内迅速上手 👉 [插件编写指南](https://docs.sayu-bot.com/CodePlugins/CookBook.html)
-- ♻ **热重载**：修改插件配置&安装插件&更新插件，无需重启也能直接应用
-- **🌎 [网页控制台](https://docs.sayu-bot.com/Started/WebConsole.html)**：集成网页控制台，可以通过 WEB 直接操作**插件数据库/配置文件/检索日志/权限控制/数据统计/批量发送** 等超多操作
-- 📄 **高度统一**：统一**所有插件**的[插件前缀](https://docs.sayu-bot.com/CodePlugins/PluginsPrefix.html)/[配置管理](https://docs.sayu-bot.com/CodePlugins/PluginsConfig.html)/[帮助图生成](https://docs.sayu-bot.com/CodePlugins/PluginsHelp.html)/权限控制/[数据库写入](https://docs.sayu-bot.com/CodePlugins/PluginsDataBase.html)/[订阅消息](https://docs.sayu-bot.com/CodePlugins/Subscribe.html)，所有插件编写常见方法一应俱全，插件作者可通过简单的**继承重写**实现**高度统一**的逻辑
-- 💻 **多元适配**：借助上游 Bot (NoneBot2 / Koishi / YunzaiBot) 适配，支持 QQ/QQ 频道/微信/Tg/Discord/飞书/KOOK/DODO/OneBot v11(v12)等多个平台，做到**一套业务逻辑，多个平台支持**！
-- 🚀 **作为插件**：该项目**不能独立使用**，作为**上游 Bot (NoneBot2 / Koishi / YunzaiBot)** 的插件使用，无需迁移原本 Bot，保留之前全部的功能，便于充分扩展
-- 🛠 **内置命令**：借助内置命令，轻松完成**重启/状态/安装插件/更新插件/更新依赖**等操作
-- 📝 **帮助系统**：通过统一适配，可按照不同**权限输出**不同帮助，并支持插件的**二级菜单注册**至主帮助目录，并支持在帮助界面使用不同的**自定义前缀**
+- **异步架构**：基于异步事件循环处理消息流与网络请求，不阻塞后台任务。
+- **配置热重载**：修改插件配置、安装或更新插件无需重启服务。
+- **Web 控制台**：内置 [WebConsole](https://docs.sayu-bot.com/Started/WebConsole.html) 管理界面，支持管理插件配置、数据表、日志审计、权限与运行统计。
+- **统一插件规范**：为插件提供统一的[命令前缀](https://docs.sayu-bot.com/CodePlugins/PluginsPrefix.html)、[配置项管理](https://docs.sayu-bot.com/CodePlugins/PluginsConfig.html)、[帮助菜单](https://docs.sayu-bot.com/CodePlugins/PluginsHelp.html)、[数据库访问](https://docs.sayu-bot.com/CodePlugins/PluginsDataBase.html)与[消息订阅](https://docs.sayu-bot.com/CodePlugins/Subscribe.html)。
+- **多平台适配**：通过适配器对接 NoneBot2、Koishi、YunzaiBot、AstrBot 等框架，支持 QQ、微信、Telegram、Discord、飞书、KOOK 等平台。
+- **插件宿主定位**：本项目不直连聊天平台，作为上游 Bot 的后端服务运行。
+- **内置运维命令**：内置服务重启、运行状态查询、插件管理与依赖更新等运维命令。
+- **权限分级帮助**：支持按权限输出对应的帮助信息，并支持将插件二级菜单注册至主目录。
 
 <details><summary>主菜单帮助示例</summary><p>
-<a><img src="https://s2.loli.net/2025/02/07/glxaJyS6325zvbG.jpg"></a>
+<img src="https://s2.loli.net/2025/02/07/glxaJyS6325zvbG.jpg" alt="帮助菜单示例">
 </p></details>
 
-## 感谢
+## 声明与致谢
 
-- 本项目仅供学习使用，请勿用于商业用途
-- [爱发电](https://afdian.com/a/KimigaiiWuyi)
-- [GPL-3.0 License](https://github.com/Genshin-bots/gsuid_core/blob/master/LICENSE) ©[@KimigaiiWuyi](https://github.com/KimigaiiWuyi)
+- 本项目仅供学习使用，请勿用于商业用途。
+- [爱发电赞助](https://afdian.com/a/KimigaiiWuyi)
+- 开源协议：[GPL-3.0 License](https://github.com/Genshin-bots/gsuid_core/blob/master/LICENSE) © [@KimigaiiWuyi](https://github.com/KimigaiiWuyi)
 
 ---
-
-> [!IMPORTANT]
->
-> 以下内容未经验证。
 
 ## 使用 Docker 部署
 
-目前提供两种 Docker 部署模式
+提供两种 Docker 部署模式：
 
-### 模式一：挂载模式 (Mount Mode) - 推荐
+### 模式一：挂载模式（推荐）
 
-**特点**：挂载本地代码到容器，修改即生效。
+挂载本地代码目录到容器，本地修改即时生效。
 
 1. **拉取代码**
 
-```shell
-# 方法一：从 GitHub 拉取
-git clone https://github.com/Genshin-bots/gsuid_core.git
+   从 GitHub 拉取：
 
-# 方法二：从 cnb.cool 拉取（国内镜像更快）
-git clone https://cnb.cool/gscore-mirror/gsuid_core.git
+   ```shell
+   git clone https://github.com/Genshin-bots/gsuid_core.git
+   cd gsuid_core
+   ```
 
-cd gsuid_core
-```
+   或从国内镜像拉取：
 
-2. 创建配置文件（可选）
+   ```shell
+   git clone https://cnb.cool/gscore-mirror/gsuid_core.git
+   cd gsuid_core
+   ```
 
-```shell
-cp .env.example .env
-```
+2. **创建配置文件（可选）**
 
-> 💡 如需自定义配置，请编辑 .env 文件并取消注释相应配置
+   若需自定义配置，可复制环境模板：
+
+   ```shell
+   cp .env.example .env
+   ```
 
 3. **启动服务**
 
-```shell
-docker-compose up -d --build
-```
+   ```shell
+   docker compose up -d --build
+   ```
 
-4. **管理**
-   - 服务运行在端口 `8765`。
-   - 启动后可通过 `localhost:8765/app` 进入核心的后台管理界面
+4. **访问服务**
+
+   服务默认运行在端口 `8765`。启动后访问 `http://localhost:8765/app` 进入后台管理界面。
 
 ---
 
-### 模式二：全量模式 (Bundle Mode)
+### 模式二：全量镜像模式
 
-**特点**：无需下载源码，直接运行全量镜像（包含环境+代码+依赖）。
+直接运行包含运行环境、代码与依赖的镜像，无需下载源码。
 
 1. **获取配置文件**
-   只需下载 [docker-compose.bundle.yml](./docker-compose.bundle.yml) 文件。
 
-2. 创建配置文件（可选）
+   下载 [docker-compose.bundle.yml](./docker-compose.bundle.yml)。
 
-```shell
-cp .env.example .env
-```
+2. **创建配置文件（可选）**
+
+   若需自定义配置，可复制环境模板：
+
+   ```shell
+   cp .env.example .env
+   ```
 
 3. **启动服务**
 
-   **方式 A：Docker Compose (推荐)**
+   **方式 A：Docker Compose**
 
    ```shell
-   docker-compose -f docker-compose.bundle.yml up -d
+   docker compose -f docker-compose.bundle.yml up -d
    ```
 
    **方式 B：Docker Run**
@@ -111,31 +111,31 @@ cp .env.example .env
      docker.cnb.cool/gscore-mirror/gsuid_core:latest
    ```
 
-   _(会自动拉取全量镜像)_
+4. **数据持久化**
 
-4. **数据管理**
-   - 数据持久化在 `/opt/gscore_data` 目录。
-   - 自定义插件可放在 `/opt/gscore_plugins` 目录。
+   - 业务数据保存在 `/opt/gscore_data` 目录。
+   - 自定义插件保存在 `/opt/gscore_plugins` 目录。
 
-5. **管理**
-   - 服务运行在端口 `8765`。
-   - 启动后可通过 `localhost:8765/app` 进入核心的后台管理界面
+5. **访问服务**
 
----
-
-### Playwright 支持 (截图功能)
-
-目前所有 Docker 镜像 **默认均已包含 Playwright 及 Chromium 浏览器环境**，无需额外配置，开箱即用。
+   服务默认运行在端口 `8765`。启动后访问 `http://localhost:8765/app` 进入后台管理界面。
 
 ---
 
-### 高级操作指南
+### Playwright 环境
+
+所有 Docker 镜像均预装 Playwright 与 Chromium 运行环境，无需额外配置。
+
+---
+
+### 高级操作
 
 #### 1. 网络代理配置
 
-_(注意：请确保代理软件开启了 "允许局域网连接/LAN" 模式)_
+配置代理前，须确保代理软件已开启“允许局域网连接”功能。
 
-**容器内的全局代理（不包括 Git 代理）**
+**容器内全局代理（不含 Git 代理）**
+
 在 `.env` 中添加：
 
 ```yaml
@@ -149,34 +149,35 @@ GSCORE_HTTPS_PROXY=http://host.docker.internal:7890
 docker exec -it gsuid_core git config --global http.proxy http://host.docker.internal:7890
 ```
 
-#### 2. 安装额外的 Python 包
+#### 2. 安装 Python 依赖
 
-如果你安装了第三方插件需要额外依赖：
+安装第三方插件所需依赖：
 
 ```shell
 docker exec -it gsuid_core uv pip install <包名>
 ```
 
-#### 3. 环境重置 (解决依赖冲突)
+#### 3. 环境重置
 
-如果更新镜像后报错（如缺少依赖），请执行以下命令**彻底清理**旧环境：
+> [!WARNING]
+> 执行重置操作将删除 `venv-data` 数据卷，所有手动安装的 Python 包均须重新安装。`data` 目录中的业务数据不会丢失。
+
+更新镜像后若发生依赖冲突，可按如下步骤清理旧环境：
 
 **挂载模式：**
 
 ```shell
-docker-compose down -v
-docker-compose up -d --build
+docker compose down -v
+docker compose up -d --build
 ```
 
 **全量模式：**
 
 ```shell
-# docker-compose 模式
-docker-compose -f docker-compose.bundle.yml down -v
-docker-compose -f docker-compose.bundle.yml up -d
+# Docker Compose 模式
+docker compose -f docker-compose.bundle.yml down -v
+docker compose -f docker-compose.bundle.yml up -d
 
-# docker run 模式
+# Docker Run 模式
 docker volume rm gsuid_core_venv
 ```
-
-_(警告：这将删除 `venv-data` 卷，所有手动安装的包需要重新安装，但 `data` 数据不会丢失)_

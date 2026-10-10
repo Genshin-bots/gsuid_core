@@ -270,9 +270,7 @@ async def register_workspace_artifacts(
     return rows
 
 
-# 常见文件后缀 → MIME 速查（供 file_path 登记路径自动推断）。覆盖图片 / 文档 /
-# 数据等代理最常落盘的产物，未命中时退回 "application/octet-stream"——
-# send_message_by_ai 看到不是 image/* 也能按字节发，不会卡住。
+# 文件后缀到 MIME 映射表，用于自动推断产物类型；未匹配时回退为八位字节流。
 _EXT_TO_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",

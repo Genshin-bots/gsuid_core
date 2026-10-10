@@ -12,9 +12,7 @@ from dataclasses import dataclass
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
-# 装配顺序单源。identity / history 归内核填（前者是密封身份锚，后者是消息基础设施）。
-# group_context 在 history 之后、memory 之前（群词汇映射移出 system，见 2C）。
-# plan_hint 在 task 之后（袖珍规划前置，见 6D）。
+# 装配顺序单源定义：内核处理身份与历史，群语境位于记忆之前，规划提示紧跟任务之后。
 CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "mood",
     "relationship",

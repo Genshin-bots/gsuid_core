@@ -19,9 +19,7 @@ from threading import Lock
 from gsuid_core.message_history import get_history_manager
 
 if TYPE_CHECKING:
-    # 仅类型检查期导入，运行时不引入循环依赖（gs_agent 不依赖 session_registry，
-    # 但其它消费者经由 session_registry 反向引用 gs_agent 时会形成循环——
-    # 故运行时延后到 ``if TYPE_CHECKING``，类型上仍保持完全可追踪）。
+    # 仅在类型检查期导入以避免运行时循环引用，保持类型提示完整追踪。
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
 

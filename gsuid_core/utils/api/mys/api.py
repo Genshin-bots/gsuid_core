@@ -35,9 +35,7 @@ class ApiEndpoint:
         return self.cn or self.os
 
 
-# ---------------------------------------------------------------------------
-# Hosts
-# ---------------------------------------------------------------------------
+# --- Hosts ---
 GS_BASE = "https://api-takumi.mihoyo.com"
 ZZZ_BASE = "https://act-nap-api.mihoyo.com"
 RECORD_BASE = "https://api-takumi-record.mihoyo.com"
@@ -59,9 +57,7 @@ ACT_URL_OS = "https://sg-hk4e-api.hoyoverse.com"
 PASSPORT_URL = "https://passport-api.mihoyo.com"
 HK4_SDK_URL = "https://hk4e-sdk.mihoyo.com"
 
-# ---------------------------------------------------------------------------
-# Geetest
-# ---------------------------------------------------------------------------
+# --- Geetest ---
 GT_TEST = "https://api.geetest.com/ajax.php?"
 GT_TEST_V6 = "https://apiv6.geetest.com/ajax.php?"
 GT_QUERY = "gt={}&challenge={}&lang=zh-cn&pt=3&client_type=web_mobile"
@@ -69,9 +65,7 @@ GT_TEST_URL = GT_TEST + GT_QUERY
 GT_TEST_URL_V6 = GT_TEST_V6 + GT_QUERY
 GT_TPYE_URL = "https://api.geetest.com/gettype.php?gt={}"
 
-# ---------------------------------------------------------------------------
-# Account / login
-# ---------------------------------------------------------------------------
+# --- Account / login ---
 HK4E_LOGIN = ApiEndpoint(
     cn=f"{GS_BASE}/common/badge/v1/login/account",
     os=f"{PUBLIC_API_OS}/common/badge/v1/login/account",
@@ -144,9 +138,7 @@ GET_COOKIE_TOKEN_BY_GAME_TOKEN = ApiEndpoint(
     name="GET_COOKIE_TOKEN_BY_GAME_TOKEN",
 )
 
-# ---------------------------------------------------------------------------
-# Sign paths (relative to sign base host)
-# ---------------------------------------------------------------------------
+# --- Sign paths (relative to sign base host) ---
 SIGN_LIST = ApiEndpoint(cn="/event/luna/home", os="/event/sol/home", name="SIGN_LIST")
 SIGN_INFO = ApiEndpoint(cn="/event/luna/info", os="/event/sol/info", name="SIGN_INFO")
 SIGN = ApiEndpoint(cn="/event/luna/sign", os="/event/sol/sign", name="SIGN")
@@ -159,9 +151,7 @@ SIGN_INFO_ZZZ = ApiEndpoint(
     name="SIGN_INFO_ZZZ",
 )
 
-# ---------------------------------------------------------------------------
-# Genshin
-# ---------------------------------------------------------------------------
+# --- Genshin ---
 DAILY_NOTE = ApiEndpoint(
     cn=f"{RECORD_BASE}/game_record/app/genshin/api/dailyNote",
     os=f"{RECORD_BASE_OS}/game_record/genshin/api/dailyNote",
@@ -257,9 +247,7 @@ REG_TIME = ApiEndpoint(
     name="REG_TIME",
 )
 
-# ---------------------------------------------------------------------------
-# BBS
-# ---------------------------------------------------------------------------
+# --- BBS ---
 BBS_TASKS = ApiEndpoint(
     cn=f"{BBS_URL}/apihub/sapi/getUserMissionsState",
     name="BBS_TASKS",
@@ -289,9 +277,7 @@ BBS_LIKE = ApiEndpoint(
     name="BBS_LIKE",
 )
 
-# ---------------------------------------------------------------------------
-# Top-up
-# ---------------------------------------------------------------------------
+# --- Top-up ---
 FETCH_GOODS = ApiEndpoint(
     cn=f"{HK4_SDK_URL}/hk4e_cn/mdk/shopwindow/shopwindow/fetchGoods",
     name="FETCH_GOODS",
@@ -309,9 +295,7 @@ PRICE_TIER = ApiEndpoint(
     name="PRICE_TIER",
 )
 
-# ---------------------------------------------------------------------------
-# Birthday star / device
-# ---------------------------------------------------------------------------
+# --- Birthday star / device ---
 DRAW_BASE = f"{HK4_URL}/event/birthdaystar/account"
 CALENDAR = ApiEndpoint(cn=f"{DRAW_BASE}/calendar", name="CALENDAR")
 RECEIVE = ApiEndpoint(cn=f"{DRAW_BASE}/post_my_draw", name="RECEIVE")

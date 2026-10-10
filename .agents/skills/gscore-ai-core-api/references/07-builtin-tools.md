@@ -358,7 +358,7 @@ async def search_image(
     ctx: RunContext[ToolContext],
     query: str,                      # 自然语言查询
     limit: int = 10,                 # 最大返回数量
-    score_threshold: float = 0.45,   # 相似度阈值（0~1）
+    score_threshold: float = 0.45,   # 相似度阈值（0 到 1）
 ) -> str
 ```
 
@@ -713,7 +713,7 @@ FINANCE_PROMPT = """你是一个严谨的「量化操盘代理」。你没有任
 只对任务结果负责，不做角色扮演、不加语气词。
 
 【工作流】
-1. 规划：先输出 <TODO_LIST>，把任务拆成 2~5 步。
+1. 规划：先输出 <TODO_LIST>，把任务拆成 2 到 5 步。
 2. 执行：优先调用当前工具列表中的金融专业工具：
    - 行情查询：send_stock_info / send_my_stock / search_stock
    - 估值：send_stock_PB_info（PB/PE/PS）

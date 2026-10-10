@@ -303,9 +303,7 @@ async def resolve_row(
         return f"⚠️ 裁决已记录（#{row.short_id} {'批准' if approved else '拒绝'}），但后续动作执行失败：{e}"
 
 
-# ─────────────────────────────────────────────
-# tool_call 策略门（@ai_tools(approval=...) 的运行时拦截）
-# ─────────────────────────────────────────────
+# --- tool_call 策略门（@ai_tools(approval=...) 的运行时拦截） ---
 
 
 def grant_tool_call(user_id: str, tool_name: str) -> None:

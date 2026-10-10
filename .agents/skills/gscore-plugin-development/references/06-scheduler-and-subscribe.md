@@ -120,9 +120,7 @@ async def send_daily_notice():
             option_list=["查看详情", "暂停推送"],
             unsuported_platform=True,
         )
-        # sub.extra_message 拿订阅时存的阈值
-        # sub.uid 拿绑定的游戏 UID
-        # sub.group_id / sub.user_id / sub.user_type 等均可读
+        # 可读属性: sub.extra_message(自定义数据), sub.uid(游戏UID), sub.group_id 等
 ```
 
 > **提示**：`sub.send(force_direct=True)` 可把消息强制走私聊（即便订阅是 group 类型），

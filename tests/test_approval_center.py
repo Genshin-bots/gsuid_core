@@ -31,9 +31,7 @@ def _row(audience: str = "master", operator: str = "u1", status: str = "pending"
     return row
 
 
-# ============================================================
-# _can_resolve 裁决权矩阵
-# ============================================================
+# --- _can_resolve 裁决权矩阵 ---
 def test_can_resolve_webconsole_always_allowed():
     from gsuid_core.ai_core.approval.center import CONSOLE_RESOLVER, _can_resolve
 
@@ -68,9 +66,7 @@ def test_can_resolve_user_audience():
     print("[OK] user 级：本人可裁、他人被拒、主人可代裁")
 
 
-# ============================================================
-# 完全访问豁免
-# ============================================================
+# --- 完全访问豁免 ---
 def test_full_access_toggle_and_resolver():
     from gsuid_core.ai_core.approval import center
 
@@ -131,9 +127,7 @@ def test_submit_full_access_exemption_matrix():
     print("[OK] 豁免矩阵：仅 user 级 × 显式允许 × 已开完全访问 → auto_approved")
 
 
-# ============================================================
-# tool_call 一次性 grant 与策略门去重
-# ============================================================
+# --- tool_call 一次性 grant 与策略门去重 ---
 def test_tool_grant_consume_once_and_expiry():
     from gsuid_core.ai_core.approval import center
 
@@ -165,9 +159,7 @@ def test_tool_call_gate_no_ev_passes():
     print("[OK] 无 ev 的后台链路放行（权限由各自 check_func 承担）")
 
 
-# ============================================================
-# 问答留档（interaction="question"）
-# ============================================================
+# --- 问答留档（interaction="question"） ---
 def test_log_question_ledger_shapes():
     from gsuid_core.ai_core.approval import center
 
@@ -194,9 +186,7 @@ def test_log_question_ledger_shapes():
     print("[OK] 问答留档：回答→approved、超时→expired，账本形状正确")
 
 
-# ============================================================
-# respawn 达上限：必须经统一入口开中心票据
-# ============================================================
+# --- respawn 达上限：必须经统一入口开中心票据 ---
 def test_respawn_limit_opens_center_ticket():
     from gsuid_core.ai_core.planning import kanban
 
@@ -216,9 +206,7 @@ def test_respawn_limit_opens_center_ticket():
     print("[OK] respawn 达上限走 request_subtask_approval（开票+挂起统一入口）")
 
 
-# ============================================================
-# persistence: v1 旧画像 JSON → AgentNode v2 自动迁移
-# ============================================================
+# --- persistence: v1 旧画像 JSON → AgentNode v2 自动迁移 ---
 def test_dto_to_node_migrates_v1():
     from gsuid_core.ai_core.capability_agents.persistence import _dto_to_node
 
