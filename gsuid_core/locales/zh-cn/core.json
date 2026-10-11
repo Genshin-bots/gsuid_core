@@ -33,7 +33,6 @@
   "log.core.gscore_status_start": "开始执行 早柚核心 [状态]",
   "log.core.gscore_status_synced": "[早柚核心] 状态已同步!",
   "log.core.gscore_websocket_connection_reset": "[GsCore] WebSocket 连接被重置: {bot_id}",
-  "log.core.hf_switch": "[GsCore] 切换HF地址，地址: {hf_endpoint}",
   "log.core.illegal_access": "[GsCore] 非法访问拒绝: IP={client_host}, BotID={bot_id}",
   "log.core.leftover_information_check_fail": "遗留信息检查失败!",
   "log.core.leftover_information_check_ok": "遗留信息检查完毕!",

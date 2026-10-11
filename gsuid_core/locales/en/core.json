@@ -33,7 +33,6 @@
   "log.core.gscore_status_start": "Starting execution GsCore [Status]",
   "log.core.gscore_status_synced": "[GsCore] Status has been synced!",
   "log.core.gscore_websocket_connection_reset": "[GsCore] WebSocket connection reset: {bot_id}",
-  "log.core.hf_switch": "[GsCore] Switched HF endpoint to: {hf_endpoint}",
   "log.core.illegal_access": "[GsCore] Illegal access rejected: IP={client_host}, BotID={bot_id}",
   "log.core.leftover_information_check_fail": "Leftover information check failed!",
   "log.core.leftover_information_check_ok": "Leftover information check completed!",

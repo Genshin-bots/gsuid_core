@@ -22,7 +22,6 @@
   "log.rag.embeddingprovider": "EmbeddingProvider 未初始化，无法确定向量维度",
   "log.rag.embeddingprovider_2": "EmbeddingProvider 未初始化，无法预热向量维度",
   "log.rag.file_zip_name_size": "[RAG] {zip_name}.zip 文件大小: {p0}",
-  "log.rag.huggingface_endpoint_set_hf": "[RAG] HuggingFace 端点已设置: HF_ENDPOINT={p0}",
   "log.rag.hybrid_collection_name_local_start": "[Hybrid] 集合 {collection_name} 本地索引崩溃: {e}。建议删除本地存储目录并重启。",
   "log.rag.hybrid_collection_name_vector_fail": "[Hybrid] 集合 {collection_name} 向量结构/维度异常（疑似迁移未完成），本次检索降级为空: {e}",
   "log.rag.imagerag_add_manual_image_fail": "[ImageRAG] 添加手动图片失败: 缺少有效的 id 字段",

@@ -1,4 +1,3 @@
-import os
 import sys
 import signal
 import asyncio
@@ -69,15 +68,7 @@ async def main():
 
     from gsuid_core.i18n import t
     from gsuid_core.logger import logger
-    from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.utils.database.base_models import init_database
-
-    hf_endpoint: str = ai_config.get_config("hf_endpoint").data
-
-    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
-    os.environ["HF_ENDPOINT"] = hf_endpoint
-
-    logger.info(t("log.core.hf_switch", hf_endpoint=hf_endpoint))
 
     await init_database()
 
@@ -279,6 +270,8 @@ async def main():
 
     # AI 核心统计（仅在 AI 功能启用时显示）
     try:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
         if ai_config.get_config("enable").data:
             from gsuid_core.ai_core.register import _TOOL_REGISTRY, get_all_tools
             from gsuid_core.ai_core.persona.resource import list_available_personas

@@ -83,7 +83,6 @@ python -m eval.agent.run --base-url http://127.0.0.1:8765 --token $env:GSUID_LOC
 正常启动会看到类似：
 
 ```
-🧠 [GsCore] 切换HF地址，地址: https://hf-mirror.com
 📀 [数据库] 开始初始化...
 [GsCore] 启动WS服务中...
 .------..------..------..------..------..------..------.

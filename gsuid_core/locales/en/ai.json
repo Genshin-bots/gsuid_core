@@ -190,6 +190,8 @@
   "log.ai.core_init_fail_import_ai_heavy": "[AI Core] AI heavy-dependency import failed, init aborted: {e}",
   "log.ai.core_init_fail_session_ai": "[AI Core] AI core init had failed steps, total {p0:.2f}s; not accepting AI sessions yet",
   "log.ai.core_init_skip_import_ai_master": "[AI Core] AI master switch off; skipping heavy-dependency import and subsystem init",
+  "log.ai.heavy_import_blocked": "[AI Core] AI is off; onnxruntime, fastembed, and playwright stay unloaded at startup",
+  "log.ai.rag_shell_skip": "[AI Core] AI is off; the knowledge base import is skipped",
   "log.ai.create_subagent_delivery_requery_fail": "[create_subagent] delivery re-query failed: {e}",
   "log.ai.create_subagent_incomplete_delivery": "[create_subagent] incomplete delivery from {pid}, re-query for fact package preview={preview}",
   "log.ai.create_subagent_still_incomplete": "[create_subagent] {pid} still incomplete after re-query",

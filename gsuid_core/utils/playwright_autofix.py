@@ -93,6 +93,10 @@ def _install_chromium() -> InstallResult:
 
 async def ensure_chromium() -> None:
     """启动后台任务入口：把 playwright 期望的 chromium 补齐，任何失败都不打断 core。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return
     if not autoinstall_enabled():
         logger.info(t("log.playwright.autoinstall_disabled", env=ENV_AUTOFIX))
         return

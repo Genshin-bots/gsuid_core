@@ -13,8 +13,7 @@ from typing import Final, Union, Callable, Sequence, Awaitable
 from pathlib import Path
 
 import httpx
-from fastembed import SparseTextEmbedding
-from huggingface_hub import constants as hf_constants, snapshot_download
+from huggingface_hub import snapshot_download
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -84,11 +83,6 @@ def is_enable_ai() -> bool:
 
 def is_enable_rerank() -> bool:
     return ai_config.get_config("enable_rerank").data
-
-
-def _get_hf_endpoint() -> str:
-    """获取HuggingFace服务器地址"""
-    return ai_config.get_config("hf_endpoint").data
 
 
 def get_rag_embed_batch_size() -> int:
@@ -577,37 +571,12 @@ async def pre_download_models():
 
     logger.info(t("log.rag.resource_hub_download_falling"))
 
-    hf_endpoint = _get_hf_endpoint()
-    # 设置HF_ENDPOINT环境变量，并同步更新huggingface_hub.constants.ENDPOINT
-    # 因为huggingface_hub在模块导入时就缓存了ENDPOINT值，仅修改os.environ不会生效
-    old_endpoint = os.environ.get("HF_ENDPOINT")
-    old_hf_constant = getattr(hf_constants, "ENDPOINT", None)
-    os.environ["HF_ENDPOINT"] = hf_endpoint
-    hf_constants.ENDPOINT = hf_endpoint.rstrip("/")
-    logger.info(t("log.rag.huggingface_endpoint_set_hf", p0=hf_constants.ENDPOINT))
-
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
     try:
-        # 下载Embedding模型。镜像缺文件时回退官方 Hub。
+        # 下载Embedding模型。已设置的 HF_ENDPOINT 由 huggingface_hub 自己读取。
         embed_repo = _get_embedding_hf_repo(model_name)
         logger.info(t("log.rag.pre_downloading_embedding_hf", EMBEDDING_HF_REPO=embed_repo))
-        endpoints: list[str] = []
-        for ep in (_get_hf_endpoint(), "https://huggingface.co"):
-            body = ep.strip().rstrip("/")
-            if body and body not in endpoints:
-                endpoints.append(body)
-        last_err: OSError | RuntimeError | ValueError | None = None
-        for ep in endpoints:
-            os.environ["HF_ENDPOINT"] = ep
-            hf_constants.ENDPOINT = ep
-            try:
-                await asyncio.to_thread(_prefetch_local_embedding_model, model_name)
-                last_err = None
-                break
-            except (OSError, RuntimeError, ValueError) as e:
-                last_err = e
-                logger.warning(t("log.rag.pre_download_attempt_load", e=e))
-        if last_err is not None:
-            raise last_err
+        await asyncio.to_thread(_prefetch_local_embedding_model, model_name)
         logger.info(t("log.rag.embedding_pre_download"))
 
         # 下载Sparse模型
@@ -629,14 +598,6 @@ async def pre_download_models():
             logger.info(t("log.rag.reranker_pre_download"))
     except Exception as e:
         logger.warning(t("log.rag.pre_download_attempt_load", e=e))
-    finally:
-        # 恢复原来的HF_ENDPOINT和huggingface_hub常量
-        if old_endpoint is not None:
-            os.environ["HF_ENDPOINT"] = old_endpoint
-        elif "HF_ENDPOINT" in os.environ:
-            del os.environ["HF_ENDPOINT"]
-        if old_hf_constant is not None:
-            hf_constants.ENDPOINT = old_hf_constant
 
 
 class _EmbeddingModelWrapper:
@@ -695,6 +656,8 @@ def _get_sparse_model():
             # 双重检查锁定
             if _sparse_model is None:
                 try:
+                    from fastembed import SparseTextEmbedding
+
                     _sparse_model = SparseTextEmbedding(
                         model_name="Qdrant/bm25",
                         cache_dir=str(MODELS_CACHE),

@@ -14,14 +14,13 @@ python -m gsuid_core → asyncio.run(main())
 `main()` 同步阶段（在 `await server.serve()` 之前，全部阻塞顺序执行）：
 
 1. 解析 CLI 参数 `--dev` / `--port` / `--host`
-2. 切换 HuggingFace 镜像源（`os.environ["HF_ENDPOINT"]`）
-3. `await init_database()` —— 建 SQLite + 初始化基础表
-4. `await load_gss(args.dev)` —— 加载所有插件 + 触发模块级 `@sv` / `@ai_tools` 装饰器
-5. `import gsuid_core.ai_core.startup` —— **注册唯一** `init_ai_core` 钩子（仅注册不执行）
-6. 构造 FastAPI app（启动/关闭 hook 在 `app_life.lifespan` 里跑）
-7. 注册 `@app.websocket("/ws/{bot_id}")` + 可选 `@app.post("/api/send_msg")`
-8. 装 SIGINT/SIGTERM 信号处理（Windows 无 `add_signal_handler`，依赖 uvicorn）
-9. `uvicorn.Server(config).serve()` —— 由 lifespan 在内部跑启动 hook
+2. `await init_database()` —— 建 SQLite + 初始化基础表
+3. `await load_gss(args.dev)` —— 加载所有插件 + 触发模块级 `@sv` / `@ai_tools` 装饰器
+4. `import gsuid_core.ai_core.startup` —— **注册唯一** `init_ai_core` 钩子（仅注册不执行）
+5. 构造 FastAPI app（启动/关闭 hook 在 `app_life.lifespan` 里跑）
+6. 注册 `@app.websocket("/ws/{bot_id}")` + 可选 `@app.post("/api/send_msg")`
+7. 装 SIGINT/SIGTERM 信号处理（Windows 无 `add_signal_handler`，依赖 uvicorn）
+8. `uvicorn.Server(config).serve()` —— 由 lifespan 在内部跑启动 hook
 
 > **Windows 事件循环策略**：`core.py` **不设置**任何事件循环策略——它 `asyncio.run(main())`
 > 并在内部 `await server.serve()`，而 uvicorn 的 loop factory 只在 `Server.run()` 里生效。

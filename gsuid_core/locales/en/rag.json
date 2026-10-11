@@ -22,7 +22,6 @@
   "log.rag.embeddingprovider": "EmbeddingProvider 未初始化，无法确定向量维度",
   "log.rag.embeddingprovider_2": "EmbeddingProvider 未初始化，无法预热向量维度",
   "log.rag.file_zip_name_size": "[RAG] {zip_name}.zip file size: {p0}",
-  "log.rag.huggingface_endpoint_set_hf": "[RAG] HuggingFace endpoint set: HF_ENDPOINT={p0}",
   "log.rag.hybrid_collection_name_local_start": "[Hybrid] Collection {collection_name} local index crashed: {e}. Recommend deleting the local storage directory and restarting.",
   "log.rag.hybrid_collection_name_vector_fail": "[Hybrid] Collection {collection_name} vector structure/dimension abnormal (suspected incomplete migration), this retrieval degraded to empty: {e}",
   "log.rag.imagerag_add_manual_image_fail": "[ImageRAG] Failed to add manual image: missing valid id field",

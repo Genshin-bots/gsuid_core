@@ -33,7 +33,6 @@
   "log.core.gscore_status_start": "早柚コア [ステータス] を実行開始",
   "log.core.gscore_status_synced": "[早柚コア] ステータスを同期しました！",
   "log.core.gscore_websocket_connection_reset": "[GsCore] WebSocket 接続がリセットされました: {bot_id}",
-  "log.core.hf_switch": "[GsCore] HF エンドポイントを切り替えました: {hf_endpoint}",
   "log.core.illegal_access": "[GsCore] 不正アクセスを拒否しました: IP={client_host}, BotID={bot_id}",
   "log.core.leftover_information_check_fail": "残留情報のチェックに失敗した！",
   "log.core.leftover_information_check_ok": "残留情報のチェックが完了した！",

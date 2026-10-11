@@ -532,6 +532,9 @@ class GsServer:
     async def load_plugins(self, dev_mode: bool = False):
         logger.info(t("log.server.load_start"))
         _load_start = time.time()
+        from gsuid_core.ai_core.heavy_import_gate import install_ai_off_heavy_gate
+
+        install_ai_off_heavy_gate()
         refresh_installed_dependencies()
         # fix: path append
         root_path = str(Path(__file__).parents[1])

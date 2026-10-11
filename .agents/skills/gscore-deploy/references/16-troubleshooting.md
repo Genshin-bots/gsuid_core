@@ -360,7 +360,7 @@ core重启
 
 - 插件多 → 按需禁用不用的
 - Playwright 首次启动要下载 Chromium（仅源码裸跑；Docker 已预装）
-- AI 嵌入模型下载 → 切 `https://hf-mirror.com`
+- AI 嵌入模型下载 → 在进程环境设置 `HF_ENDPOINT` 后重启
 
 ## 16.12 日志位置 & 级别
 

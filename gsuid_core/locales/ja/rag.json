@@ -22,7 +22,6 @@
   "log.rag.embeddingprovider": "EmbeddingProvider 未初始化，无法确定向量维度",
   "log.rag.embeddingprovider_2": "EmbeddingProvider 未初始化，无法预热向量维度",
   "log.rag.file_zip_name_size": "[RAG] {zip_name}.zip ファイルサイズ: {p0}",
-  "log.rag.huggingface_endpoint_set_hf": "[RAG] HuggingFace エンドポイントが設定されました: HF_ENDPOINT={p0}",
   "log.rag.hybrid_collection_name_local_start": "[Hybrid] コレクション {collection_name} のローカルインデックスがクラッシュ: {e}。ローカルストレージディレクトリを削除して再起動することをお勧めします。",
   "log.rag.hybrid_collection_name_vector_fail": "[Hybrid] コレクション {collection_name} のベクトル構造/次元が異常 (移行未完了の可能性)、今回の検索は空にフォールバック: {e}",
   "log.rag.imagerag_add_manual_image_fail": "[ImageRAG] 手動画像の追加失敗: 有効な id フィールドがありません",

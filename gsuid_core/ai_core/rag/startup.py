@@ -61,7 +61,9 @@ async def init_all():
                 )
                 await asyncio.sleep(delay)
 
-    from . import init_image_collection, init_tools_collection, init_knowledge_collection
+    from gsuid_core.ai_core.rag.tools import init_tools_collection
+    from gsuid_core.ai_core.rag.image_rag import sync_images, init_image_collection
+    from gsuid_core.ai_core.rag.knowledge import sync_knowledge, init_knowledge_collection
 
     await _init_with_retry("init_tools_collection", init_tools_collection)
     await _init_with_retry("init_knowledge_collection", init_knowledge_collection)
@@ -70,8 +72,6 @@ async def init_all():
     all_tools = get_all_tools()
     await sync_tools(all_tools)
     logger.info(t("log.rag.tools_buildin_imported_registry", p0=len(all_tools)))
-
-    from . import sync_images, sync_knowledge
 
     await sync_knowledge()
     await sync_images()
