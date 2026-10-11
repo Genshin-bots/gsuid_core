@@ -71,6 +71,8 @@ CORE_CONFIG: Dict[str, Any] = {
     "REGISTER_CODE": _generate_register_code(),
     # 网页控制台同账号最大并发登录数：1=单点登录（新登录踢掉旧会话），调大可多端同时在线
     "web_max_sessions": 1,
+    # 允许跨域访问 Web API 的控制台源（协议+主机+端口）。空则不回 CORS 头。
+    "web_cors_origins": [],
     "misfire_grace_time": 90,
     "log": {
         "level": SelectOption("INFO", ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -113,7 +115,14 @@ CONFIG_OPTIONS: Dict[str, SelectOption] = _collect_selects(CORE_CONFIG)
 
 STR_CONFIG = Literal["HOST", "PORT", "WS_TOKEN", "REGISTER_CODE", "LANGUAGE"]
 INT_CONFIG = Literal["misfire_grace_time", "web_max_sessions"]
-LIST_CONFIG = Literal["superusers", "masters", "command_start", "TRUSTED_IPS", "framework_aliases"]
+LIST_CONFIG = Literal[
+    "superusers",
+    "masters",
+    "command_start",
+    "TRUSTED_IPS",
+    "framework_aliases",
+    "web_cors_origins",
+]
 DICT_CONFIG = Literal["sv", "log"]
 BOOL_CONFIG = Literal["enable_empty_start", "ENABLE_HTTP"]
 

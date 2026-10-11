@@ -68,6 +68,11 @@ app.add_middleware(HttpTraceMiddleware)
 # 动态 gzip 中间件兜底未压缩文本，自动跳过 text/event-stream 保证 SSE 实时推流。
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
+from gsuid_core.web_cors_middleware import WebCorsMiddleware  # noqa: E402
+
+# 最外层：预检在进 gzip / trace 之前应答。名单为空时请求原样放行。
+app.add_middleware(WebCorsMiddleware)
+
 from gsuid_core.ai_core.http_agent.register import register_http_agent_routes  # noqa: E402
 
 register_http_agent_routes(app)
