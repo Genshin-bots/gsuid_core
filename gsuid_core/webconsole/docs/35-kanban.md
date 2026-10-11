@@ -37,7 +37,9 @@ GET /api/ai/kanban/board
 | `group_id` | 群号 |
 | `owner_user_id` | 任务发起人 |
 | `include_children` | 默认 `true`，是否同时把子任务卡片混入对应列 |
-| `status` | 按原始 `AIAgentTask.status` 二次筛选 |
+| `status` | 只筛根任务的 `AIAgentTask.status`。命中根任务的子任务仍全部进入看板 |
+
+服务端分两次只读查询组装这 5 列：第一次取符合筛选的根任务，第二次取这些根任务的子任务。
 
 **列映射**（设计稿 §3.3）：
 

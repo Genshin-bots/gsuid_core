@@ -1431,18 +1431,19 @@ async def list_root_tasks(
     owner_user_id: Optional[str] = None,
     status: Optional[str] = None,
 ) -> List[AIAgentTask]:
-    stmt = select(AIAgentTask).where(col(AIAgentTask.node_kind) == "root")
-    if scope_key:
-        stmt = stmt.where(col(AIAgentTask.scope_key) == scope_key)
-    if bot_id:
-        stmt = stmt.where(col(AIAgentTask.bot_id) == bot_id)
-    if group_id:
-        stmt = stmt.where(col(AIAgentTask.group_id) == group_id)
-    if owner_user_id:
-        stmt = stmt.where(col(AIAgentTask.owner_user_id) == owner_user_id)
-    if status:
-        stmt = stmt.where(col(AIAgentTask.status) == status)
-    stmt = stmt.order_by(col(AIAgentTask.updated_at).desc())
+    stmt = (
+        select(AIAgentTask)
+        .where(
+            *AIAgentTask.root_filter_clauses(
+                scope_key=scope_key,
+                bot_id=bot_id,
+                group_id=group_id,
+                owner_user_id=owner_user_id,
+                status=status,
+            )
+        )
+        .order_by(col(AIAgentTask.updated_at).desc())
+    )
     async with async_maker() as session:
         result = await session.execute(stmt)
         return list(result.scalars().all())

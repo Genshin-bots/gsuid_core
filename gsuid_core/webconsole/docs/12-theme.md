@@ -11,7 +11,8 @@
 | `color` | string | 是 | `red` | 主题色：`red` / `orchid` / `blue` / `green` / `orange` / `pink` |
 | `icon_color` | string | 是 | `colored` | 图标色：`white` / `black` / `colored` |
 | `background_image` | string \| null | 是 | `null` | 背景图 URL 或 dataURL，`null` 表示无背景 |
-| `blur_intensity` | number | 是 | `12` | 毛玻璃模糊强度（像素，0-24） |
+| `blur_intensity` | number | 是 | `12` | 毛玻璃模糊强度（像素，0-24），作用于卡片 |
+| `background_blur` | number | 是 | `0` | 背景模糊（像素，0–40）。0 为原图。与 `blur_intensity` 分开 |
 | `card_opacity` | number | **是（新增）** | `25` | 卡片不透明度（百分比 0-100），同时作用于纯色/毛玻璃 |
 | `theme_preset` | string | 是 | `default` | 主题预设：`default` / `shadcn` |
 | `language` | string | 是 | `zh-CN` | 前端语言：`zh-CN` / `en-US` / `ja-JP` |
@@ -49,6 +50,7 @@ GET /api/theme/config
         "icon_color": "colored",
         "background_image": null,
         "blur_intensity": 12,
+        "background_blur": 0,
         "card_opacity": 25,
         "theme_preset": "default",
         "language": "zh-CN",
@@ -105,6 +107,7 @@ POST /api/theme/config
 
 **校验规则**：
 - `blur_intensity`：整数，范围 0-24（前端会做夹紧，后端也会在 Pydantic 层校验并二次夹紧）。
+- `background_blur`：整数，范围 0-40，默认 0。旧配置缺失时读取补 0。越界返回 422。
 - `card_opacity`：整数，范围 0-100。越界将返回 422。
 - `background_image`：可为 `null`，或任意字符串（URL / dataURL）。
 - 其余枚举字段未在服务端做枚举校验，由前端表单约束；如传入非法值，存储会原样保留，前端回退到默认值。

@@ -120,6 +120,53 @@ def _log_dict(log: AIAgentTaskLog) -> Dict[str, Any]:
 # --- GET /api/ai/kanban/board ---
 
 
+async def assemble_kanban_board(
+    *,
+    scope_key: Optional[str] = None,
+    bot_id: Optional[str] = None,
+    group_id: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
+    include_children: bool = True,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    """5 列看板。根任务与子任务各一次只读查询，筛选只作用在根任务上。"""
+    roots, children_by_root = await AIAgentTask.load_board_nodes(
+        scope_key=scope_key,
+        bot_id=bot_id,
+        group_id=group_id,
+        owner_user_id=owner_user_id,
+        status=status,
+        include_children=include_children,
+    )
+    columns: Dict[str, List[Dict[str, Any]]] = {
+        "target": [],
+        "progress": [],
+        "Done": [],
+        "Blocked": [],
+        "failed": [],
+    }
+    now = datetime.now()
+    for root in roots:
+        children = children_by_root[root.id] if root.id in children_by_root else []
+        root_card = _task_card(root, children=children, deps_satisfied=True)
+        columns.setdefault(root_card["kanban_column"], []).append(root_card)
+        if not include_children:
+            continue
+        done_ids = {c.id for c in children if c.status in ("completed", "skipped")}
+        for child in children:
+            deps = child.dependency_task_ids if isinstance(child.dependency_task_ids, list) else []
+            deps_ok = all(dep in done_ids for dep in deps)
+            card = _task_card(child, deps_satisfied=deps_ok)
+            columns.setdefault(card["kanban_column"], []).append(card)
+    subtask_total = sum(1 for col_cards in columns.values() for card in col_cards if card.get("kind") == "subtask")
+    summary = {
+        "task_count": len(roots),
+        "subtask_count": subtask_total,
+        "updated_at": now.isoformat(),
+    }
+    return {"columns": columns, "summary": summary}
+
+
 @app.get("/api/ai/kanban/board", summary="看板（5 列聚合视图）", tags=KANBAN)
 async def get_kanban_board(
     _: Dict[str, Any] = Depends(require_auth),
@@ -131,43 +178,15 @@ async def get_kanban_board(
     status: Optional[str] = Query(None, description="按原始状态筛选"),
 ) -> Dict[str, Any]:
     """5 列 Kanban 看板（target / progress / Done / Blocked / failed）。"""
-    roots = await kanban.list_root_tasks(
+    data = await assemble_kanban_board(
         scope_key=scope_key,
         bot_id=bot_id,
         group_id=group_id,
         owner_user_id=owner_user_id,
+        include_children=include_children,
         status=status,
     )
-
-    columns: Dict[str, List[Dict[str, Any]]] = {
-        "target": [],
-        "progress": [],
-        "Done": [],
-        "Blocked": [],
-        "failed": [],
-    }
-    now = datetime.now()
-    for root in roots:
-        children: List[AIAgentTask] = []
-        if include_children:
-            _root_task, children = await kanban.get_task_tree(root.id)
-        root_card = _task_card(root, children=children, deps_satisfied=True)
-        columns.setdefault(root_card["kanban_column"], []).append(root_card)
-        if include_children:
-            done_ids = {c.id for c in children if c.status in ("completed", "skipped")}
-            for c in children:
-                deps = c.dependency_task_ids if isinstance(c.dependency_task_ids, list) else []
-                deps_ok = all(d in done_ids for d in deps)
-                card = _task_card(c, deps_satisfied=deps_ok)
-                columns.setdefault(card["kanban_column"], []).append(card)
-
-    subtask_total = sum(1 for col_cards in columns.values() for card in col_cards if card.get("kind") == "subtask")
-    summary = {
-        "task_count": len(roots),
-        "subtask_count": subtask_total,
-        "updated_at": now.isoformat(),
-    }
-    return {"status": 0, "msg": "ok", "data": {"columns": columns, "summary": summary}}
+    return {"status": 0, "msg": "ok", "data": data}
 
 
 # --- GET /api/ai/kanban/tasks/{task_id} ---

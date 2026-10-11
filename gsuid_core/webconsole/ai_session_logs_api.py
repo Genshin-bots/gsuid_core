@@ -230,10 +230,18 @@ def _load_persist_cache() -> None:
     logger.info(t("log.webconsole.sesslog_log_summaries_persistent_skip", loaded=loaded))
 
 
+_last_persist_save: float = 0.0
+# 摘要 sidecar 可能有几万条。每次打开页面都整文件重写会卡住列表。
+_PERSIST_SAVE_INTERVAL: float = 60.0
+
+
 def _save_persist_cache() -> None:
     """把内存摘要缓存原子写回 sidecar 文件；仅在有增删/刷新（dirty）时才真正写盘。"""
-    global _cache_dirty
+    global _cache_dirty, _last_persist_save
     if not _cache_dirty:
+        return
+    now = time.time()
+    if now - _last_persist_save < _PERSIST_SAVE_INTERVAL:
         return
     with _CACHE_LOCK:
         snapshot = [(k, sig[0], sig[1], summary) for k, (sig, summary) in _BASE_SUMMARY_CACHE.items()]
@@ -244,6 +252,7 @@ def _save_persist_cache() -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, _PERSIST_CACHE_PATH)
+        _last_persist_save = time.time()
     except Exception as e:
         logger.warning(t("log.webconsole.sesslog_persist_log_summary_fail", e=e))
 
@@ -793,7 +802,27 @@ def _group_segments_into_chains(segments: List[SessionLogSummary]) -> List[Sessi
     return cards
 
 
-def _build_unified_list() -> List[SessionLogSummary]:
+def _file_signature(entries: List[Tuple[Path, os.stat_result]]) -> Tuple[Tuple[str, int, int], ...]:
+    """目录签名：(路径, mtime_ns, size)。未变则列表不用重扫文件内容。"""
+    rows = [(str(path), st.st_mtime_ns, st.st_size) for path, st in entries]
+    rows.sort()
+    return tuple(rows)
+
+
+def _memory_signature(sessions: Dict[str, "GsCoreAIAgent"]) -> Tuple[Tuple[str, int, float], ...]:
+    """活跃会话签名。条数或更新时间变了才重算链卡片。"""
+    rows: List[Tuple[str, int, float]] = []
+    for sid, session in sessions.items():
+        logger_obj = session._session_logger
+        rows.append((sid, len(logger_obj.entries), logger_obj.updated_at))
+    rows.sort()
+    return tuple(rows)
+
+
+def _build_unified_list(
+    disk_entries: Optional[List[Tuple[Path, os.stat_result]]] = None,
+    sessions: Optional[Dict[str, "GsCoreAIAgent"]] = None,
+) -> List[SessionLogSummary]:
     """
     构建统一的**逻辑会话链**列表：合并内存活跃会话 + 磁盘持久化分段，按 chain_id 归并。
 
@@ -802,13 +831,15 @@ def _build_unified_list() -> List[SessionLogSummary]:
     消除旧「按条数硬切、一段会话散成多张卡片」的中断感。同一 session_uuid 在内存/磁盘都有时优先内存版。
     """
     registry = get_ai_session_registry()
-    sessions = registry.get_all_ai_sessions()
+    if sessions is None:
+        sessions = registry.get_all_ai_sessions()
     memory_session_ids: set[str] = set(sessions.keys())  # 内存中真正活跃的 session_id 集合
 
     # 1. 解析磁盘文件为「单分段」摘要（mtime 缓存 + sidecar 持久化；scandir 给出 stat，命中缓存
     #    连文件都不开），并构建查找索引供 linked_agent enrich 做 O(1) 命中。
     _load_persist_cache()
-    disk_entries = _iter_log_files_with_stat()
+    if disk_entries is None:
+        disk_entries = _iter_log_files_with_stat()
     disk_items: List[Tuple[Path, SessionLogSummary]] = []
     for path, st in disk_entries:
         base = _parse_log_file_base(path, st)
@@ -856,35 +887,38 @@ def _build_unified_list() -> List[SessionLogSummary]:
     return sorted(chains, key=lambda x: x["created_at"], reverse=True)
 
 
-# 统一列表短期缓存：ai-history 一次加载会并发调用 list/overview/categories，各构建一次
-# 全量列表。极短 TTL 合并为一次构建；活跃会话状态至多滞后数秒，对日志看板可接受。
+class _UnifiedCache(NamedTuple):
+    disk_sig: Tuple[Tuple[str, int, int], ...]
+    mem_sig: Tuple[Tuple[str, int, float], ...]
+    chains: List[SessionLogSummary]
 
-_UNIFIED_CACHE_TTL: float = 3.0
-# (build_time, results)
-_unified_cache: Optional[Tuple[float, List[SessionLogSummary]]] = None
+
+# 目录和活跃会话都没变就复用上次的链列表，不再逐个打开日志。
+_unified_cache: Optional[_UnifiedCache] = None
 # 仅用于"同一时刻多线程并发构建"的去重，避免三个接口各跑一遍全量构建。
 _UNIFIED_BUILD_LOCK = threading.Lock()
 
 
 def _build_unified_list_cached() -> List[SessionLogSummary]:
-    """带极短 TTL 的统一列表构建（供 list/overview/categories 共用）。
+    """供 list / overview / categories 共用的统一列表。
 
-    命中 TTL 内的缓存直接复用；未命中时加锁构建，并发的其他请求在锁内二次检查后
-    复用刚构建好的结果，确保一次页面加载只真正构建一次。返回结果只读共享（调用方
-    只做筛选/统计，不就地修改条目），故多接口复用同一份安全。
+    先比目录签名和活跃会话签名。都没变就返回上次的链卡片，不再逐个打开日志。
+    未命中时加锁构建，并发请求复用刚建好的结果。返回结果只读共享。
     """
     global _unified_cache
-    now = time.time()
+    disk_entries = _iter_log_files_with_stat()
+    disk_sig = _file_signature(disk_entries)
+    sessions = get_ai_session_registry().get_all_ai_sessions()
+    mem_sig = _memory_signature(sessions)
     cache = _unified_cache
-    if cache is not None and (now - cache[0]) < _UNIFIED_CACHE_TTL:
-        return cache[1]
+    if cache is not None and cache.disk_sig == disk_sig and cache.mem_sig == mem_sig:
+        return cache.chains
     with _UNIFIED_BUILD_LOCK:
-        # 二次检查：可能已被并发请求构建好
         cache = _unified_cache
-        if cache is not None and (time.time() - cache[0]) < _UNIFIED_CACHE_TTL:
-            return cache[1]
-        results = _build_unified_list()
-        _unified_cache = (time.time(), results)
+        if cache is not None and cache.disk_sig == disk_sig and cache.mem_sig == mem_sig:
+            return cache.chains
+        results = _build_unified_list(disk_entries, sessions)
+        _unified_cache = _UnifiedCache(disk_sig, mem_sig, results)
         return results
 
 
@@ -1121,8 +1155,7 @@ async def list_session_logs(
         data: 日志列表及分页信息
     """
     try:
-        # 同步阻塞（大量磁盘读取/JSON 解析）放线程池避免冻结事件循环；走极短 TTL 缓存把
-        # 一次页面加载的 list/overview/categories 三接口并发构建合并为一次。
+        # 磁盘扫描放线程池。目录未变时复用上次链列表，三个接口共用这一份。
         unified = await run_in_threadpool(_build_unified_list_cached)
         filtered = _apply_filters(
             unified,
@@ -1559,7 +1592,7 @@ async def get_session_log_categories(
             total: 分类种类数
     """
     try:
-        # 与列表/概览接口一致，走带极短 TTL 的缓存并放线程池执行，避免阻塞事件循环。
+        # 与列表/概览接口一致，目录未变时复用同一份链列表，并放线程池执行。
         unified = await run_in_threadpool(_build_unified_list_cached)
 
         stats: Dict[str, Dict[str, Any]] = {}

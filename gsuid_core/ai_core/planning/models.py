@@ -15,17 +15,18 @@ UUID 主键，不复用 BaseIDModel 的自增 int 主键，因此通过下方 ``
 
 import uuid
 import asyncio
-from typing import List, Optional
+from typing import Dict, List, Optional, Sequence
 from pathlib import Path
 from datetime import datetime
 
 from sqlmodel import Field, SQLModel, col, select, update
 from sqlalchemy import Text, Column
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.postgresql import JSON
 
 from gsuid_core.i18n import t
-from gsuid_core.utils.database.base_models import with_session
+from gsuid_core.utils.database.base_models import with_session, with_read_session
 
 # 任务状态：``waiting_approval`` 用于把"审批挂起"与"主人手动暂停"区分开， 避免同一个 paused 同时表示两种语义
 TASK_STATUSES = (
@@ -249,6 +250,73 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
     async def list_by_status(cls, session: AsyncSession, *statuses: str) -> List["AIAgentTask"]:
         result = await session.execute(select(cls).where(col(cls.status).in_(statuses)))
         return list(result.scalars().all())
+
+    @classmethod
+    def root_filter_clauses(
+        cls,
+        *,
+        scope_key: Optional[str] = None,
+        bot_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[ColumnElement[bool]]:
+        """看板 / 批量删除共用的根任务筛选。空字符串与 None 都不约束该列。"""
+        clauses: List[ColumnElement[bool]] = [col(cls.node_kind) == "root"]
+        if scope_key:
+            clauses.append(col(cls.scope_key) == scope_key)
+        if bot_id:
+            clauses.append(col(cls.bot_id) == bot_id)
+        if group_id:
+            clauses.append(col(cls.group_id) == group_id)
+        if owner_user_id:
+            clauses.append(col(cls.owner_user_id) == owner_user_id)
+        if status:
+            clauses.append(col(cls.status) == status)
+        return clauses
+
+    @classmethod
+    @with_read_session
+    async def load_board_nodes(
+        cls,
+        session: AsyncSession,
+        *,
+        scope_key: Optional[str] = None,
+        bot_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        status: Optional[str] = None,
+        include_children: bool = True,
+    ) -> tuple[Sequence["AIAgentTask"], Dict[str, List["AIAgentTask"]]]:
+        """一次读出看板的根任务和子任务。筛选只作用在根任务上。
+
+        按根循环 ``get_task_tree`` 会逐次占用写闸门，根任务上千时要几十秒。
+        """
+
+        def clauses() -> List[ColumnElement[bool]]:
+            return cls.root_filter_clauses(
+                scope_key=scope_key,
+                bot_id=bot_id,
+                group_id=group_id,
+                owner_user_id=owner_user_id,
+                status=status,
+            )
+
+        root_result = await session.execute(select(cls).where(*clauses()).order_by(col(cls.updated_at).desc()))
+        roots = list(root_result.scalars().all())
+        grouped: Dict[str, List[AIAgentTask]] = {}
+        if not include_children or not roots:
+            return roots, grouped
+        child_stmt = (
+            select(cls)
+            .where(col(cls.node_kind) == "subtask")
+            .where(col(cls.root_task_id).in_(select(cls.id).where(*clauses())))
+            .order_by(col(cls.created_at).asc())
+        )
+        child_result = await session.execute(child_stmt)
+        for child in child_result.scalars().all():
+            grouped.setdefault(child.root_task_id, []).append(child)
+        return roots, grouped
 
 
 class AIAgentTaskLog(_PlanCRUD, SQLModel, table=True):

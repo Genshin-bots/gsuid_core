@@ -31,6 +31,8 @@ DEFAULT_THEME_CONFIG: Dict[str, Any] = {
     "icon_color": "colored",
     "background_image": None,
     "blur_intensity": 12,
+    # 背景图模糊（px，0=原图；与毛玻璃强度 blur_intensity 无关）
+    "background_blur": 0,
     "card_opacity": 25,
     "theme_preset": "default",
     "language": "zh-CN",
@@ -69,6 +71,8 @@ class ThemeConfigRequest(BaseModel):
     icon_color: str = Field(default="colored")
     background_image: Optional[str] = None
     blur_intensity: int = Field(default=12, ge=0, le=24)
+    # 背景图模糊（px）。0 表示不模糊壁纸，与 blur_intensity（卡片毛玻璃）分开。
+    background_blur: int = Field(default=0, ge=0, le=40)
     # ★ 新增：卡片不透明度（百分比 0-100），同时作用于纯色/毛玻璃
     card_opacity: int = Field(default=25, ge=0, le=100)
     theme_preset: str = Field(default="default")
@@ -149,9 +153,12 @@ def _clamp_config_dict(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """对传入字典中的整数字段做二次夹紧，防止 Pydantic 校验被绕过。"""
     if not isinstance(config_dict.get("blur_intensity"), int):
         config_dict["blur_intensity"] = DEFAULT_THEME_CONFIG["blur_intensity"]
+    if not isinstance(config_dict.get("background_blur"), int):
+        config_dict["background_blur"] = DEFAULT_THEME_CONFIG["background_blur"]
     if not isinstance(config_dict.get("card_opacity"), int):
         config_dict["card_opacity"] = DEFAULT_THEME_CONFIG["card_opacity"]
     config_dict["blur_intensity"] = max(0, min(24, config_dict["blur_intensity"]))
+    config_dict["background_blur"] = max(0, min(40, config_dict["background_blur"]))
     config_dict["card_opacity"] = max(0, min(100, config_dict["card_opacity"]))
     # 侧边栏布局白名单校验
     if config_dict.get("sidebar_layout") not in {"floating", "docked", "line"}:
