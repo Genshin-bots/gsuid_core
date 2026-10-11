@@ -9,7 +9,6 @@ from typing import Dict, Optional, FrozenSet
 from dataclasses import dataclass
 
 from pydantic_ai import RunContext
-from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.ai_core.rag import search_images
 from gsuid_core.ai_core.models import ToolContext
@@ -22,6 +21,7 @@ from gsuid_core.ai_core.cognition import (
     resolve_recall_kinds,
     strip_speaker_from_query,
 )
+from gsuid_core.ai_core.rag.qmodels import ScoredPoint
 from gsuid_core.ai_core.cognition.types import CognitiveHit
 from gsuid_core.ai_core.cognition.facade import render_cognition_block
 from gsuid_core.ai_core.buildin_tools.visibility import (

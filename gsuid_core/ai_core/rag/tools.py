@@ -4,17 +4,16 @@ import uuid
 import asyncio
 from typing import TYPE_CHECKING, Any, Set, Dict, List, Tuple, Union, Optional, Protocol, Sequence
 
-from qdrant_client.models import (
+from gsuid_core.i18n import t as i18n_t
+from gsuid_core.logger import logger
+from gsuid_core.ai_core.models import ToolBase, ToolContext
+from gsuid_core.ai_core.register import get_all_tools, get_registered_tools
+from gsuid_core.ai_core.rag.qmodels import (
     Distance,
     PointStruct,
     PointIdsList,
     VectorParams,
 )
-
-from gsuid_core.i18n import t as i18n_t
-from gsuid_core.logger import logger
-from gsuid_core.ai_core.models import ToolBase, ToolContext
-from gsuid_core.ai_core.register import get_all_tools, get_registered_tools
 
 if TYPE_CHECKING:
     from pydantic_ai.tools import Tool

@@ -50,7 +50,7 @@ async def ensure_memory_collections():
         logger.warning(t("log.memory.get_qdrant_collection_list", e=e))
         return
 
-    from qdrant_client.models import (
+    from gsuid_core.ai_core.rag.qmodels import (
         Distance,
         Modifier,
         VectorParams,
@@ -211,9 +211,8 @@ async def _ensure_episode_cold_collection(
     sparse_config,
 ) -> None:
     """确保冷 Episode 集合 memory_episodes_cold 存在且维度匹配（不匹配则重建为空）。"""
-    from qdrant_client.models import PayloadSchemaType
-
     from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
     from gsuid_core.ai_core.rag.collection_migration import (
         get_vector_size,
         ensure_vector_on_disk,

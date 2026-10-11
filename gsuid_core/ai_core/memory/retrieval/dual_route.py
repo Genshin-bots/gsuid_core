@@ -1157,7 +1157,8 @@ async def dual_route_retrieve(
     span_eps: list[Episode] = []
     if (looks_like_order_query(query) or looks_like_summary_query(query)) and user_id and scope_keys:
         from sqlalchemy.exc import SQLAlchemyError
-        from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
+
+        from gsuid_core.ai_core.rag.qhttp import UnexpectedResponse, ResponseHandlingException
 
         from .thread_recall import recall_span_threads
 

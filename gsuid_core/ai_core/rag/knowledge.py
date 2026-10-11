@@ -4,25 +4,8 @@ import json
 import time
 import uuid
 import asyncio
-from typing import Any, Dict, List, Union, Optional, Sequence, NamedTuple, AsyncIterator
+from typing import Any, Dict, List, Union, Mapping, Optional, Sequence, NamedTuple, AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-
-from qdrant_client.models import (
-    Filter,
-    Vector,
-    Distance,
-    MatchAny,
-    Modifier,
-    Condition,
-    MatchValue,
-    PointStruct,
-    PointIdsList,
-    SparseVector,
-    VectorParams,
-    FieldCondition,
-    SparseVectorParams,
-)
-from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -37,6 +20,22 @@ from gsuid_core.ai_core.rag.base import (
     upsert_points_with_backoff,
 )
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.rag.qmodels import (
+    Filter,
+    Vector,
+    Distance,
+    MatchAny,
+    Modifier,
+    Condition,
+    MatchValue,
+    PointStruct,
+    ScoredPoint,
+    PointIdsList,
+    SparseVector,
+    VectorParams,
+    FieldCondition,
+    SparseVectorParams,
+)
 from gsuid_core.ai_core.rag.chunking import (
     DEFAULT_CHUNK_OVERLAP,
     chunker_stamp,
@@ -671,7 +670,7 @@ def _expand_knowledge_row(row: AIKnowledgeChunk) -> list[AIKnowledgeChunk]:
     return expanded
 
 
-def _opt_field(data: Dict[str, Any], key: str) -> Any:
+def _opt_field(data: Mapping[str, object], key: str) -> Any:
     """取外部 dict（Qdrant payload / 导入记录 / API 入参）的字段值，键不存在返回 None。
 
     替代 ``dict.get`` 兜底语法：这些 dict 的键确实可能缺失（外部数据），用显式 ``in`` 判定
@@ -696,7 +695,7 @@ def _chunk_payload(row: AIKnowledgeChunk) -> Dict[str, Any]:
     }
 
 
-def _row_from_payload(payload: Dict[str, Any]) -> AIKnowledgeChunk:
+def _row_from_payload(payload: Mapping[str, object]) -> AIKnowledgeChunk:
     """由 Qdrant payload / 导入记录构造一个 AIKnowledgeChunk（缺失字段给安全默认值）。"""
     pid = str(_opt_field(payload, "id") or "").strip() or str(uuid.uuid4())
     tags = _opt_field(payload, "tags") or []
@@ -1610,7 +1609,9 @@ async def query_knowledge(
             if r.payload is not None:
                 statistics_manager.record_rag_hit(
                     document_id=str(r.id),
-                    document_name=r.payload.get("title", ""),
+                    document_name=(
+                        r.payload["title"] if "title" in r.payload and isinstance(r.payload["title"], str) else ""
+                    ),
                 )
     else:
         statistics_manager.record_rag_miss()
@@ -1959,7 +1960,7 @@ async def get_manual_knowledge_list(
     }
 
 
-async def get_manual_knowledge_detail(entity_id: str) -> Optional[Dict[str, Any]]:
+async def get_manual_knowledge_detail(entity_id: str) -> Mapping[str, object] | None:
     """获取手动添加的知识详情
 
     Args:

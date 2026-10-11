@@ -10,7 +10,11 @@ import asyncio
 from typing import TYPE_CHECKING, Optional, TypedDict, cast
 from concurrent.futures import ThreadPoolExecutor
 
-from qdrant_client.models import (
+from gsuid_core.i18n import t
+from gsuid_core.logger import logger
+from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff
+from gsuid_core.ai_core.rag.hybrid import hybrid_query
+from gsuid_core.ai_core.rag.qmodels import (
     Range,
     Filter,
     Vector,
@@ -21,11 +25,6 @@ from qdrant_client.models import (
     SparseVector,
     FieldCondition,
 )
-
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff
-from gsuid_core.ai_core.rag.hybrid import hybrid_query
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
@@ -769,10 +768,8 @@ async def _hybrid_search_impl(
         else:
             raw_must = scope_filter.must
             must: list[Condition] = []
-            if isinstance(raw_must, list):
-                must.extend(c for c in raw_must if c is not None)
-            elif raw_must is not None:
-                must.append(raw_must)
+            if raw_must is not None:
+                must.extend(raw_must)
             scope_filter = Filter(must=must + extra_conds)
 
     # 余弦门仅下推至 dense 分支；混合检索 RRF 名次分不能作余弦硬筛。
@@ -949,17 +946,20 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         if payload is None:
             continue
         # 过滤不在指定 scope_keys 中的 entity
-        entity_scope_key = payload.get("scope_key", "")
-        if entity_scope_key not in scope_keys:
+        entity_scope_key = payload["scope_key"] if "scope_key" in payload else ""
+        if not isinstance(entity_scope_key, str) or entity_scope_key not in scope_keys:
             continue
 
-        tag = payload.get("tag", [])
+        tag = payload["tag"] if "tag" in payload else []
+        tag_text = ",".join(item for item in tag if isinstance(item, str)) if isinstance(tag, list) else ""
+        name = payload["name"] if "name" in payload else ""
+        summary = payload["summary"] if "summary" in payload else ""
         entities.append(
             {
                 "id": str(r.id),
-                "name": payload.get("name", ""),
-                "summary": payload.get("summary", ""),
-                "entity_type": ",".join(tag) if isinstance(tag, list) else str(tag),
+                "name": name if isinstance(name, str) else "",
+                "summary": summary if isinstance(summary, str) else "",
+                "entity_type": tag_text,
                 "layer": 0,
                 "score": 0.0,  # One-hop 邻居无相关性分数
             }
@@ -1062,7 +1062,7 @@ async def dense_search_episodes_with_vectors(
     scope_filter = _scope_filter(scope_keys)
     # 将已见 Episode 作为 must_not HasId 叠加到过滤条件，保证空 scope 时依然生效。
     if exclude_ids:
-        from qdrant_client.models import HasIdCondition, ExtendedPointId
+        from gsuid_core.ai_core.rag.qmodels import HasIdCondition, ExtendedPointId
 
         # str id 是合法的 ExtendedPointId，但 qdrant stub 中 list 不变性令直传报错；
         # must_not 的输出元素类型(含 tuple)亦宽于其入参所需的 List[Condition]——均用 cast 收口。
@@ -1095,15 +1095,19 @@ async def dense_search_episodes_with_vectors(
         if isinstance(p.vector, dict) and "dense" in p.vector and isinstance(p.vector["dense"], list):
             # dense 恒为一维；过滤出数值元素，排除多向量分支以对齐 list[float]
             vec = [float(x) for x in p.vector["dense"] if isinstance(x, (int, float))]
-        payload = p.payload or {}
+        payload = p.payload if p.payload is not None else {}
+        content = payload["content"] if "content" in payload else ""
+        scope_key = payload["scope_key"] if "scope_key" in payload else ""
+        raw_ts = payload["valid_at_ts"] if "valid_at_ts" in payload else None
+        valid_at = float(raw_ts) if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) else None
         out.append(
             {
                 "id": str(p.id),
                 "vector": vec,
                 "score": p.score,
-                "content": payload["content"] if "content" in payload else "",
-                "valid_at_ts": payload["valid_at_ts"] if "valid_at_ts" in payload else None,
-                "scope_key": payload["scope_key"] if "scope_key" in payload else "",
+                "content": content if isinstance(content, str) else "",
+                "valid_at_ts": valid_at,
+                "scope_key": scope_key if isinstance(scope_key, str) else "",
             }
         )
     return out
@@ -1121,9 +1125,8 @@ async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:
     返回**已成功从热集合删除**的 Episode id 列表——调用方据此回写 SQL is_archived，
     确保"标记为冷"与"已退出热集合"严格一致；删除失败的批次保持热态，下次维护重试。
     """
-    from qdrant_client.http.models import PointIdsList
-
     from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.qmodels import PointIdsList
 
     if client is None or not episode_ids:
         return []
@@ -1198,9 +1201,8 @@ async def scroll_point_ids(collection_name: str, batch_size: int = 500):
 
 async def delete_points_by_ids(collection_name: str, point_ids: list[str]) -> int:
     """按 id 从指定 Collection 删除一批 point。返回请求删除的数量（失败返回 0）。"""
-    from qdrant_client.http.models import PointIdsList
-
     from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.qmodels import PointIdsList
 
     if client is None or not point_ids:
         return 0

@@ -1431,8 +1431,7 @@ def test_search_cognition_expands_alias_glued_inside_a_sentence() -> None:
 
 def test_named_entity_titles_outrank_generic_noun_hits() -> None:
     """专名标题排在只含泛词的条目前；问句没有已登记专名时不改顺序。"""
-    from qdrant_client.http.models.models import ScoredPoint
-
+    from gsuid_core.ai_core.rag.qmodels import ScoredPoint
     from gsuid_core.ai_core.entity_index import clear_entity_index, register_entity_surface
     from gsuid_core.ai_core.rag.knowledge import prefer_named_entity_hits
 

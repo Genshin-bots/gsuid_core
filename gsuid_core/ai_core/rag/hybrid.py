@@ -19,17 +19,16 @@ rerank、统计与 ``payload`` → 领域对象映射；本函数只负责"把�
 
 from typing import List, Union, Optional
 
-from qdrant_client.models import (
+from gsuid_core.i18n import t
+from gsuid_core.logger import logger
+from gsuid_core.ai_core.rag.qmodels import (
     Filter,
     Fusion,
     Prefetch,
     FusionQuery,
+    ScoredPoint,
     SparseVector,
 )
-from qdrant_client.http.models.models import ScoredPoint
-
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
 
 
 async def hybrid_query(

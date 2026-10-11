@@ -1,25 +1,13 @@
-import re
-import sys
-import random
-import asyncio
-import logging
-import threading
-from typing import Any, Dict, Literal, Optional, Protocol, Sequence
-from concurrent.futures import ThreadPoolExecutor
+"""单句意图：闲聊 / 工具 / 问答。
 
-from joblib import dump, load
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.pipeline import Pipeline, FeatureUnion
-from sklearn.linear_model import LogisticRegression
-from sklearn.feature_extraction.text import TfidfVectorizer
+不加载 sklearn 与 jieba。词表只提供通用语言学范畴；插件域词不进这里。
+"""
+
+import re
+from typing import Literal, Protocol, Sequence, TypedDict
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.data_store import get_res_path
-
-AI_PATH = get_res_path("ai_core")
-
-MODEL_PATH = AI_PATH / "intent_classifier_v5.2.joblib"
 
 # 省略式跟进：单句无独立语义，必须靠上文才知道动作（语言学闭类 + 极短回指）
 _ELLIPSIS_FOLLOWUP_RE = re.compile(
@@ -29,16 +17,88 @@ _ELLIPSIS_FOLLOWUP_RE = re.compile(
     re.I,
 )
 
+_NEGATED_ACTION_RE = re.compile(r"(不要|别|不用|禁止).{0,3}(查|看|画|生成|制作|做图|搜|找|提醒|打开|调用|搜索)")
+_CANCEL_RE = re.compile(r"^(取消|不要了|算了|不用了|别了)[\s\W]*$")
+_POLITE_PREFIX_RE = re.compile(r"^(请|麻烦|能不能|可不可以|可以)+")
+_IDENTITY_RE = re.compile(r"(请问|问下|问一下)?你(是|在|用|对|觉得|认为|喜欢|自己|多少|几岁|多大)")
+_VAGUE_POINTER_RE = re.compile(r"^(这|那|它)(是|个)?(什么鬼|什么|啥|鬼)[?？!！]*$")
+_HOW_ABOUT_RE = re.compile(r"怎么回事")
+# 动词须在句首或「帮我」后；「漫画」「画图真不错」不算指令。
+_MEDIA_CMD_RE = re.compile(
+    r"(?:^|[，,。！？\s]|帮我|给我|请|麻烦)"
+    r"(?:生成|制作|合成|来首|来个|来张|来一|来点|画一张|画个|画一|画一下)"
+    r".{0,12}"
+    r"(?:图|图片|照片|图标|视频|语音|歌|歌曲|音乐|音频|壁纸|头像|表情)"
+)
+_MAKE_RE = re.compile(r"(画|生成|制作|合成)(?!了).{0,3}(一张|一个|一首|一段|一套)")
+_EDIT_CMD_RE = re.compile(
+    r"(换背景|换个背景|(?:^|帮我|请).{0,2}把.{0,12}换成(?!了)|去水印|去掉水印|去掉.{0,8}水印|水印去掉|"
+    r"加水印|加个水印|加个字|把字去掉|字去掉|P一下|P图(?!了)|加两个字|写上|修改这张)"
+)
+_WANT_MEDIA_RE = re.compile(r"(我要|想要).{0,4}(一|两|\d+)(张|个|首|段).{0,16}(图|图片|照片|视频|语音|歌|音乐)")
+_REMIND_RE = re.compile(r"(提醒我|通知我|叫我).{0,12}(点|时|开会|起来|起床|一下)")
+# 分享卡和「，直接调用」这类叙述不是指令。整句得从祈使开始。
+_INVOKE_RE = re.compile(r"^(?:你)?(?:直接)?(?:调用|打开|启动|运行)(?:一下|下)?(?!起来|不了|不上).{0,28}$")
+_INVOKE_ASIDE_RE = re.compile(r"你就|不香|开撸")
+_HELP_RE = re.compile(
+    r"(?:帮我|给我|帮忙).{0,8}"
+    r"(?:看一下|看下|看看|查一下|查下|算一下|画一下|画一张|画个|做一张|搜一下|打开|写一下|写一个)"
+)
+_SEARCH_RE = re.compile(r"搜一下|搜索一下")
+_ASSIST_RE = re.compile(
+    r"(?:帮我|给我|请).{0,4}(?:记一下|记下来|翻译一下|总结一下|概括一下|对比一下|比较一下)"
+    r"|^(?:\S{0,3})?(?:翻译一下|总结一下|概括一下|对比一下|比较一下|记一下|记下来)"
+)
+_DELIVER_RE = re.compile(r"(?:给我|帮我).{0,6}(?:报告|原文|截图|文件)")
+_BARE_CHECK_RE = re.compile(r"(?<![排检])查一下(?!就)|(?<![排检])查下")
+_LOOKUP_RE = re.compile(r"(?:今天|现在|当前|明天|当地|这里)?(?:的)?(?:天气|气温)(?:怎么样|如何)")
+_QA_RE = re.compile(
+    r"(怎么用|怎么打|怎么触发|怎么完成|怎么获得|怎么解锁|怎么弄|怎么连接|怎么安装|"
+    r"怎么设置|怎么配置|怎么登录|怎么登陆|怎么部署|怎么下载|怎么导入|怎么导出|"
+    r"怎么绑定|怎么接入|怎么对接|怎么编译|如何|在哪|从哪|哪儿|哪里|是啥|是什么|"
+    r"多少|出自|有什么用|干嘛的|带什么|带啥|配什么|配啥|该不该|(?<!谁)是谁)"
+)
+# 这些是陈述或口头禅，不是在向人要一个答案。
+_NARRATIVE_QA_RE = re.compile(
+    r"多少是多少|没多少|没有多少|不了多少|能省多少|能贷多少|能用多少|不知道多少(?!钱)|"
+    r"看可以充多少|有多少底|什么机制都能|不是什么|什么人都|什么鸟人|用着如何|生意如何|"
+    r"收获如何|串的如何|花生如何|砂锅如何|看人介绍|从哪听来|从哪整来|我哪里|大白天哪里|"
+    r"好不到哪里|不能想去哪|烧不了多少|谁还去买|是啥就是啥|哪里都|多少有些|什么什么|"
+    r"贵多少|沾点金融|连续多少次|成交量也没|亏也没亏|放大了不知道多少|轻不了多少|"
+    r"去哪里都|忘了是什么|哪里赚钱哪里|熟到哪里|多少人说|多少年前|"
+    r"游艇在哪里|还是啥的|怎么用囖|有多少购买力|多少搞了|哪里去了|没东西吃在哪|"
+    r"退多少年|玩的是什么|不是什么经济|买多少的车|交付数量没多少|是什么车|"
+    r"没看到过多少|具体怎么弄|还得看送多少|有的多少|玩起来什么感觉|不知道扣多少|能有多少|"
+    r"是什么心理|是什么时区|不知道具体有多少|想怎么用|不知道用量|降低多少|不知道是多少|"
+    r"可以看做是|哪里经得住|不知道要花|看是谁|都不能断|还是谁之前|能增长多少|没亏多少|"
+    r"哪里差异|备份多少次|不好说多少|断哪儿|想下载多少|哪里拼得过|没重多少|给多少撤|"
+    r"哪里亮了|得多少年|哪里好了|不记得当时多少|多少还有点|我是谁我在那|没哪里收入|"
+    r"哪里哪里|到手多少|不是技术是什么|明写在哪个|碳纳米管|是谁邀请|130线|还是多少$"
+)
+_DRAW_BARE_RE = re.compile(r"^画个\S{1,16}$")
+_YOU_WHERE_RE = re.compile(r"你在哪")
+_QUESTION_RE = re.compile(r"(吗|么|呢)[?？!！]*$|[?？]")
+_CHECK_VERBS = (
+    "看一下",
+    "搜一下",
+    "搜索一下",
+    "分析一下",
+    "计算一下",
+    "显示一下",
+    "获取一下",
+    "看下",
+)
+
 
 def _is_ellipsis_followup(text: str) -> bool:
     """当前句是否为「必须接上文才有动作」的省略跟进。"""
-    t = (text or "").strip()
-    if not t or len(t) > 24:
+    body = (text or "").strip()
+    if not body or len(body) > 24:
         return False
-    if _ELLIPSIS_FOLLOWUP_RE.match(t):
+    if _ELLIPSIS_FOLLOWUP_RE.match(body):
         return True
     # 极短回指：「呢？」「咋样」「怎样了」；不含「是吗/可以吗」（纯确认，非未完成动作）
-    return bool(re.fullmatch(r".{0,4}(呢|咋样|怎样)[？?！!\s]*", t))
+    return bool(re.fullmatch(r".{0,4}(呢|咋样|怎样)[？?！!\s]*", body))
 
 
 class _UserTurnRecord(Protocol):
@@ -69,9 +129,9 @@ def collect_prior_user_turns(
         if "--- 消息 ---" in body:
             body = body.split("--- 消息 ---", 1)[-1]
         # 兼容新旧时间行：【当前时间】xxx / [当前时间：xxx]
-        for _time_sep in ("[当前时间：", "[当前时间:", "【当前时间】"):
-            if _time_sep in body:
-                body = body.split(_time_sep, 1)[0]
+        for time_sep in ("[当前时间：", "[当前时间:", "【当前时间】"):
+            if time_sep in body:
+                body = body.split(time_sep, 1)[0]
                 break
         body = body.strip()
         if body:
@@ -79,99 +139,6 @@ def collect_prior_user_turns(
     return out[-max_turns:]
 
 
-# 0. 环境静默设置 (Jieba)
-jieba_logger = logging.getLogger("jieba")
-jieba_logger.setLevel(logging.CRITICAL)
-jieba_logger.propagate = False
-
-_old_stdout = sys.stdout
-_old_stderr = sys.stderr
-
-
-class DevNull:
-    def write(self, msg):
-        pass
-
-    def flush(self):
-        pass
-
-
-sys.stdout = DevNull()
-sys.stderr = DevNull()
-
-import jieba  # noqa: E402
-import jieba.posseg as pseg  # noqa: E402
-
-sys.stdout = _old_stdout
-sys.stderr = _old_stderr
-
-# 1. 扩充词典定义
-
-# [工具触发] 动作：查询、查看
-CHECK_VERBS = {
-    "查",
-    "看",
-    "找",
-    "搜",
-    "查询",
-    "搜索",
-    "分析",
-    "显示",
-    "列举",
-    "检测",
-    "检查",
-    "获取",
-    "读",
-    "读取",
-    "调取",
-    "调用",
-    "来",
-    "整",
-    "搞",
-}
-
-# [工具触发] 动作：生成、创作
-GENERATE_VERBS = {
-    "生成",
-    "画",
-    "做",
-    "写",
-    "协商",
-    "创作",
-    "绘制",
-    "合成",
-    "制作",
-    "捏",
-    "产出",
-    "弄",
-    "来个",
-    "来一张",
-    "来一段",
-    "来一首",
-    "来一个",
-    "来点",
-}
-
-# [工具触发] 动作：修改、编辑
-EDIT_VERBS = {
-    "修改",
-    "编辑",
-    "改",
-    "加",
-    "添加",
-    "去",
-    "去掉",
-    "消除",
-    "删除",
-    "P",
-    "P一下",
-    "换",
-    "替换",
-    "增加",
-    "附上",
-}
-
-# [工具触发] 对象：功能、数据、面板
 # 纪律：不收录任何业务插件专属域词（由插件工具描述召回，不进框架意图词表）。
 FUNCTIONAL_NOUNS = {
     "面板",
@@ -201,35 +168,6 @@ FUNCTIONAL_NOUNS = {
     "伤害",
 }
 
-# [工具触发] 对象：媒体（图、音、视）
-MEDIA_NOUNS = {
-    "图",
-    "图片",
-    "照片",
-    "壁纸",
-    "插画",
-    "头像",
-    "表情",
-    "表情包",
-    "视频",
-    "录像",
-    "动画",
-    "短视频",
-    "片子",
-    "语音",
-    "声音",
-    "音频",
-    "音乐",
-    "歌",
-    "歌曲",
-    "BGM",
-    "伴奏",
-}
-
-# [工具触发] 对象：具体元素（用于修图等）
-EDIT_OBJ_NOUNS = {"字", "文字", "水印", "背景", "特效", "滤镜", "马赛克", "字幕"}
-
-# [问答触发] 知识类名词
 KNOWLEDGE_NOUNS = {
     "机制",
     "剧情",
@@ -259,10 +197,6 @@ KNOWLEDGE_NOUNS = {
     "血量",
 }
 
-# [闲聊/通用] 否定词
-NEGATION_WORDS = {"不", "没", "无", "非", "莫", "别", "不要", "不用", "休想", "禁止", "别去"}
-
-# [闲聊] 状态/情绪词 (重点扩充，用于抵消工具名词的权重)
 STATE_WORDS = {
     "麻",
     "麻了",
@@ -321,727 +255,255 @@ STATE_WORDS = {
     "鬼",
 }
 
-# [问答] 疑问词
-QUERY_WORDS = {
-    "怎么",
-    "多少",
-    "什么",
-    "谁",
-    "哪里",
-    "几",
-    "吗",
-    "呢",
-    "啥",
-    "咋",
-    "如何",
-    "为什么",
-    "是啥",
-    "在哪",
-    "几点",
-    "多久",
-}
 
-# [闲聊] 自身相关/无意义
-CHAT_ENTITIES = {"你", "我", "他", "她", "它", "咱们", "大家", "你好", "在吗", "早安", "晚安", "抱抱"}
-
-# [闲聊] 观点类（如果是问“你”的看法，是闲聊）
-OPINION_WORDS = {"看法", "觉得", "认为", "评价", "观点", "想"}
+class IntentHit(TypedDict):
+    text: str
+    intent: str
+    conf: float
+    reason: str
 
 
-def init_jieba():
-    # 批量注册词典
-    words_map = [
-        (CHECK_VERBS, "v_check"),
-        (GENERATE_VERBS, "v_gen"),
-        (EDIT_VERBS, "v_edit"),
-        (FUNCTIONAL_NOUNS, "n_func"),
-        (MEDIA_NOUNS, "n_media"),
-        (EDIT_OBJ_NOUNS, "n_edit_obj"),
-        (KNOWLEDGE_NOUNS, "n_know"),
-        (NEGATION_WORDS, "d_neg"),
-        (STATE_WORDS, "a_state"),
-        (QUERY_WORDS, "r_query"),
-        (CHAT_ENTITIES, "r_chat"),
-        (OPINION_WORDS, "v_opinion"),
-    ]
-    for word_set, tag in words_map:
-        for w in word_set:
-            jieba.add_word(w, tag=tag)
+def _hit(text: str, intent: str, conf: float, reason: str) -> IntentHit:
+    return {"text": text, "intent": intent, "conf": conf, "reason": reason}
 
 
-def sync_entities_to_jieba():
-    """动态同步插件实体到Jieba词典"""
-    from ..register import _ENTITIES
-
-    entity_count = 0
-    for entity in _ENTITIES:
-        # 注册实体标题（插件 ai_entity 的 title）
-        title = entity.get("title", "")
-        if title:
-            jieba.add_word(title, tag="n_ent")
-            entity_count += 1
-
-        # 注册类别（插件声明的 category）
-        category = entity.get("category", "")
-        if category and category not in KNOWLEDGE_NOUNS:
-            jieba.add_word(category, tag="n_know")
-
-    if entity_count > 0:
-        logger.info(t("log.ai.synced_entity_entities_jieba", entity_count=entity_count))
+def _has_word(text: str, words: set[str]) -> bool:
+    return any(word in text for word in words)
 
 
-init_jieba()
+def _check_near_functional(text: str) -> bool:
+    for noun in FUNCTIONAL_NOUNS:
+        start = 0
+        while True:
+            idx = text.find(noun, start)
+            if idx < 0:
+                break
+            window = text[max(0, idx - 8) : idx + len(noun) + 6]
+            if any(verb in window for verb in _CHECK_VERBS):
+                return True
+            start = idx + len(noun)
+    return False
 
 
-# 2. 特征工程与数据处理
+def _search_command(text: str) -> bool:
+    if _SEARCH_RE.search(text) is None:
+        return False
+    # 「搜一下……全是」是在讲搜完的结果。
+    return re.search(r"搜一下.{0,16}(全是|都是|还是)", text) is None
 
 
-class ItemSelector(BaseEstimator, TransformerMixin):
-    def __init__(self, key):
-        self.key = key
-
-    def fit(self, x, y=None):
-        return self
-
-    def transform(self, data_dict):
-        return data_dict[self.key]
+def _invoke_command(text: str) -> bool:
+    if len(text) > 40 or _INVOKE_ASIDE_RE.search(text):
+        return False
+    if re.search(r"(打开|启动|运行|调用).{0,16}会", text):
+        return False
+    return _INVOKE_RE.search(text) is not None
 
 
-def smart_abstraction(text: str) -> str:
-    """
-    将句子抽象化为标签序列，保留句子结构特征
-    """
-    if "<CONTENT>" in text:
-        # 临时把标记换成一个 jieba 能识别的特殊词，或者直接保留
-        pass
+def _assist_command(text: str) -> bool:
+    # 长句里顺口提到「翻译一下」多半在讲别的事。
+    if len(text) > 32:
+        return False
+    return _ASSIST_RE.search(text) is not None
 
-    words = pseg.cut(text)
-    clean_tokens = []
 
-    if "<CONTENT>" in text:
-        clean_tokens.append("<HAS_CONTENT>")  # 显式添加一个特征
+def _tool_reason(text: str) -> str:
+    text = _POLITE_PREFIX_RE.sub("", text).strip() or text
+    if _MAKE_RE.search(text) or _DRAW_BARE_RE.search(text):
+        return "media command"
+    if _MEDIA_CMD_RE.search(text) or _WANT_MEDIA_RE.search(text):
+        return "media command"
+    if _EDIT_CMD_RE.search(text):
+        return "edit command"
+    if _REMIND_RE.search(text):
+        return "remind command"
+    if _assist_command(text):
+        return "assist command"
+    if _DELIVER_RE.search(text):
+        return "deliver command"
+    if _invoke_command(text):
+        return "invoke command"
+    if _SEARCH_RE.search(text) and _search_command(text):
+        return "search command"
+    if _HELP_RE.search(text):
+        return "help command"
+    if _check_near_functional(text) or (len(text) <= 48 and _BARE_CHECK_RE.search(text)):
+        return "check data"
+    return ""
 
-    for word, flag in words:
-        w = word.lower()
-        if w in KNOWLEDGE_NOUNS:
-            clean_tokens.append("<KNOW>")
 
-    for word, flag in words:
-        w = word.lower()
-        if flag == "d_neg" or w in NEGATION_WORDS:
-            clean_tokens.append("<NEG>")  # 否定
-        elif flag == "n_func" or w in FUNCTIONAL_NOUNS:
-            clean_tokens.append("<FUNC>")  # 面板/数据
-        elif flag == "n_media" or w in MEDIA_NOUNS:
-            clean_tokens.append("<MEDIA>")  # 图片/视频
-        elif flag == "n_edit_obj" or w in EDIT_OBJ_NOUNS:
-            clean_tokens.append("<E_OBJ>")  # 字/水印
-        elif flag == "n_know" or w in KNOWLEDGE_NOUNS:
-            clean_tokens.append("<KNOW>")  # 知识点
-        elif flag == "a_state" or w in STATE_WORDS:
-            clean_tokens.append("<STATE>")  # 状态
-        elif flag == "v_check" or w in CHECK_VERBS:
-            clean_tokens.append("<CHECK>")  # 查/看
-        elif flag == "v_gen" or w in GENERATE_VERBS:
-            clean_tokens.append("<GEN>")  # 生成/画
-        elif flag == "v_edit" or w in EDIT_VERBS:
-            clean_tokens.append("<EDIT>")  # 修改/加
-        elif flag == "r_query" or w in QUERY_WORDS or "?" in w or "？" in w:
-            clean_tokens.append("<QUERY>")  # 疑问
-        elif flag == "r_chat" or w in CHAT_ENTITIES:
-            clean_tokens.append("<SELF>")  # 人称/问候
-        elif flag == "v_opinion" or w in OPINION_WORDS:
-            clean_tokens.append("<OPINION>")  # 看法
-        else:
-            if flag.startswith("n") or flag.startswith("v") or flag.startswith("x"):
-                clean_tokens.append("<ENT>")
-            elif w.strip():
-                clean_tokens.append(w)
+def _drop_negated_action(text: str) -> str:
+    """否定只吃掉紧挨着的动作。后面没有新指令时返回空串。"""
+    body = text
+    for _ in range(3):
+        match = _NEGATED_ACTION_RE.search(body)
+        if match is None:
+            return body
+        rest = (body[: match.start()] + body[match.end() :]).strip(" ，,。；;、")
+        if rest == "" or (_tool_reason(rest) == "" and not _knowledge_question(rest)):
+            return ""
+        body = rest
+    return body
 
-    return " ".join(clean_tokens)
+
+def _is_question(text: str) -> bool:
+    return _QUESTION_RE.search(text) is not None or "怎么样" in text or "如何" in text
+
+
+def _ma_near_noun(text: str) -> bool:
+    # 「怎么样 / 什么」里的么不是句末疑问。
+    match = re.search(r"[吗么][?？!！]*$", text)
+    if match is None:
+        return False
+    window = text[max(0, match.start() - 6) : match.start()]
+    return _has_word(window, FUNCTIONAL_NOUNS) or _has_word(window, KNOWLEDGE_NOUNS)
+
+
+def _knowledge_question(text: str) -> bool:
+    if _YOU_WHERE_RE.search(text):
+        return False
+    # 带链接或标题壳的长贴是在转发，不是在发问。
+    if len(text) > 40 and ("http" in text or "b23.tv" in text or text.startswith("【")):
+        return False
+    # 长贴后半段才出现的「多少 / 哪里」是叙述，不是在发问。
+    scoped = text[:36] if len(text) > 48 else text
+    # 句末真在问时保留；「用着如何」「还是多少」仍当叙述。
+    narrative = _NARRATIVE_QA_RE.search(text) is not None
+    ends_q = re.search(r"[？?吗]$", text) is not None
+    forced = re.search(r"用着如何|还是多少$", text) is not None
+    if narrative and (forced or not ends_q):
+        return False
+    if _QA_RE.search(scoped):
+        return True
+    if _ma_near_noun(scoped):
+        return True
+    if not _has_word(scoped, KNOWLEDGE_NOUNS):
+        return False
+    if "怎么样" in scoped or _intro_asks(scoped) or re.search(r"(?<!为)什么", scoped):
+        return True
+    return False
+
+
+def _intro_asks(text: str) -> bool:
+    if "介绍一下" not in text and "介绍个" not in text:
+        return False
+    others = KNOWLEDGE_NOUNS - {"介绍"}
+    return _has_word(text, others)
+
+
+def classify_sentence(text: str) -> IntentHit:
+    """把单句分成闲聊、工具或问答。不读模型文件。"""
+    raw = text or ""
+    body = raw.strip()
+    if not body:
+        return _hit(raw, "闲聊", 0.5, "empty")
+    if _CANCEL_RE.match(body):
+        return _hit(raw, "闲聊", 0.96, "negated action")
+    body = _drop_negated_action(body)
+    if not body:
+        return _hit(raw, "闲聊", 0.96, "negated action")
+    ident = _IDENTITY_RE.search(body)
+    if ident is not None and not _knowledge_question(body[: ident.start()]):
+        return _hit(raw, "闲聊", 0.98, "greeting or identity")
+    if _HOW_ABOUT_RE.search(body):
+        return _hit(raw, "闲聊", 0.98, "greeting or identity")
+    if _VAGUE_POINTER_RE.search(body):
+        return _hit(raw, "闲聊", 0.95, "vague pointer")
+    tool = _tool_reason(body)
+    if tool:
+        return _hit(raw, "工具", 0.98, tool)
+    if _LOOKUP_RE.search(body):
+        return _hit(raw, "工具", 0.9, "lookup question")
+    if _has_word(body, FUNCTIONAL_NOUNS) and _has_word(body, STATE_WORDS) and not _is_question(body):
+        return _hit(raw, "闲聊", 0.95, "status plus emotion")
+    if _knowledge_question(body):
+        return _hit(raw, "问答", 0.96, "knowledge question")
+    return _hit(raw, "闲聊", 0.86, "default chat")
 
 
 class IntentService:
-    def __init__(self, model_path=MODEL_PATH, num_threads=4):
-        self.model_path = model_path
-        self.executor = ThreadPoolExecutor(max_workers=num_threads)
-        self.model = None
-        self._entities_synced = False
-        # 模型加载/训练延迟到首次预测时进行，避免在 import 阶段阻塞启动
-        self._model_ready = False
-        self._model_lock = threading.Lock()
-
-    def _ensure_model(self):
-        """首次预测时才加载（或训练）意图模型。
-
-        joblib 反序列化 sklearn pipeline 较慢，放在 import 阶段会阻塞框架启动；
-        而意图模型仅在收到聊天消息时才用得到，因此延迟到首次预测。
-        """
-        if self._model_ready:
-            return
-        with self._model_lock:
-            if self._model_ready:
-                return
-            self._load_or_train()
-            self._model_ready = True
-
-    def _preprocess(self, text: str) -> str:
-        """
-        预处理：将引号内的具体内容替换为 <CONTENT> 标记
-        防止内容（如“我是..”）干扰意图判断
-        """
-        # 匹配中文引号、英文引号，将其内容替换为特殊标记
-        text = re.sub(r'["“‘\'].*?["”’\']', " <CONTENT> ", text)
-        # 匹配冒号后的内容（如果冒号在句尾附近）
-        text = re.sub(r"[:：]\s*.*$", " <CONTENT> ", text)
-        return text
-
-    def _load_or_train(self):
-        need_train = True
-        if self.model_path.exists():
-            try:
-                self.model = load(self.model_path)
-                # 检查是否包含所有需要的分类
-                if len(self.model.classes_) < 3:
-                    logger.warning(t("log.ai.insufficient_categories_retraining"))
-                    need_train = True
-                else:
-                    logger.info(t("log.ai.intent_recognition", p0=self.model_path))
-                    need_train = False
-            except Exception as e:
-                logger.error(t("log.ai.fail_event", e=e))
-                need_train = True
-
-        if need_train:
-            self.train()
-
-    def _generate_enhanced_data(self):
-        """生成大规模增强语料"""
-        task_with_trash_content = [
-            "生成音乐，内容是：<STATE> <STATE>",
-            "生成语音：<STATE> <STATE> <SELF> <STATE>",
-            "画一张图，上面写着：<STATE>",
-            "做一个视频，台词是：<STATE> <STATE>",
-            "生成一段代码，注释要写：<STATE>",
-            "来个语音说 <STATE>",
-            "合成一段音频：<STATE> <STATE>",
-        ]
-
-        content_task_patterns = [
-            "写上 <CONTENT>",
-            "内容是 <CONTENT>",
-            "加个字 <CONTENT>",
-            "把 <CONTENT> 写在图上",
-            "生成 <CONTENT>",
-            "说 <CONTENT>",
-            "语音内容 <CONTENT>",
-            "回复 <CONTENT>",
-            "编辑 <CONTENT>",
-        ]
-
-        X_raw = []
-        y = []
-
-        # 在生成数据时，特意把工具类语料混入大量的“闲聊词”作为内容
-        for _ in range(30):  # 增加这类样本的权重
-            for pat in task_with_trash_content:
-                text = pat
-                text = text.replace("<GEN>", random.choice(list(GENERATE_VERBS)))
-                text = text.replace("<STATE>", random.choice(list(STATE_WORDS)))
-                text = text.replace("<SELF>", random.choice(list(CHAT_ENTITIES)))
-                X_raw.append(text.replace(" ", ""))
-                y.append("工具")
-
-        entities = ["这个", "那张", "上一个", "那个", "甲", "乙"]
-
-        # --- 1. 工具 (Tool) ---
-        check_patterns = [
-            "<CHECK> <ENT>",
-            "<CHECK> <ENT> 的 <FUNC>",
-            "<CHECK> <FUNC>",
-            "帮我 <CHECK> <ENT>",
-            "<CHECK> 一下 <ENT> 的 <FUNC>",
-            "调用 <ENT>",
-            "打开 <ENT>",
-        ]
-
-        gen_patterns = [
-            "<GEN> 一张 <MEDIA>",
-            "<GEN> <ENT> 的 <MEDIA>",
-            "帮我 <GEN> <MEDIA>",
-            "<GEN> 一个 <ENT>",
-            "来个 <MEDIA>",
-            "<GEN> <ENT>",
-        ]
-
-        edit_patterns = [
-            "把 <ENT> <EDIT> 成 <ENT>",
-            "在 <ENT> 上 <EDIT> <E_OBJ>",
-            "给 <ENT> <EDIT> 个 <E_OBJ>",
-            "<EDIT> <ENT>，<EDIT> <E_OBJ>",
-            "帮我 <EDIT> 一下",
-            "<EDIT> <ENT>",
-            "去 <E_OBJ>",
-            "在这张 <MEDIA> 下面 <EDIT> 两个 <E_OBJ>",
-        ]
-
-        # --- 2. 问答 (QA) --- 严格限制：必须是明确的“知识查询”
-        qa_patterns = [
-            "<QUERY> <KNOW> 的 <KNOW> 是 <KNOW>",
-            "带 <KNOW> 的 <KNOW> 有 <QUERY>",
-            "<KNOW> 属性的 <KNOW>",
-            "<ENT> 用的 <KNOW>",
-            "<ENT> <QUERY> <KNOW>",
-            "<ENT> 的 <KNOW> 是 <QUERY>",
-            "<ENT> <KNOW> <QUERY>",
-            "<QUERY> 打 <ENT>",
-            "<ENT> 在 <QUERY>",
-            "<ENT> 的 <KNOW> 介绍",
-            "<KNOW> 推荐",
-            "<ENT> 是 <QUERY>",
-            "<ENT> <QUERY> 获得",
-            "<ENT> <NUM> 级 <KNOW> 倍率",
-            "<ENT> 的 <KNOW> 是多少",
-            "<ENT> <KNOW> 倍率",
-            "查查 <ENT> 的 <KNOW>",
-        ]
-
-        # 3. 闲聊 (Chat)
-        # 重点增强：功能名词 + 负面状态 = 闲聊 (对抗工具误判)
-        chat_patterns = [
-            "<SELF> 是 <QUERY>",  # 你是谁
-            "<SELF> <QUERY> <ENT>",  # 你喜欢甲吗
-            "<SELF> 在 <QUERY>",  # 你在干嘛
-            "<SELF> <STATE>",  # 我好难
-            "<ENT> <STATE>",
-            "<ENT> <NEG> <STATE>",  # 实体不差
-            "<NEG> <CHECK>",  # 别查了
-            "<NEG> <GEN>",  # 不要画
-            "为什么 <STATE>",  # 为什么难过
-            "<STATE>",  # 笑死 / 救命
-            "<FUNC> <STATE>",  # 面板好丑
-            "<FUNC> <NEG> <STATE>",  # 数据不好
-            "<FUNC> <QUERY>",  # 数据咋样（询问状态而非查询，偏闲聊）
-            "<SELF> 的 <OPINION> 是 <QUERY>",  # 你的看法是什么
-            "<QUERY> 是 <OPINION>",  # 什么是看法
-            "这是 <QUERY>",  # 这是什么 (短语视为闲聊)
-            "你好",
-            "早上好",
-            "晚安",
-            "在吗",
-        ]
-
-        def fill_data(patterns, label, count_multiplier=10):
-            for _ in range(count_multiplier):
-                for pat in patterns:
-                    text = pat
-                    if "<CHECK>" in text:
-                        text = text.replace("<CHECK>", random.choice(list(CHECK_VERBS)))
-                    if "<GEN>" in text:
-                        text = text.replace("<GEN>", random.choice(list(GENERATE_VERBS)))
-                    if "<EDIT>" in text:
-                        text = text.replace("<EDIT>", random.choice(list(EDIT_VERBS)))
-                    if "<FUNC>" in text:
-                        text = text.replace("<FUNC>", random.choice(list(FUNCTIONAL_NOUNS)))
-                    if "<MEDIA>" in text:
-                        text = text.replace("<MEDIA>", random.choice(list(MEDIA_NOUNS)))
-                    if "<E_OBJ>" in text:
-                        text = text.replace("<E_OBJ>", random.choice(list(EDIT_OBJ_NOUNS)))
-                    if "<KNOW>" in text:
-                        text = text.replace("<KNOW>", random.choice(list(KNOWLEDGE_NOUNS)))
-                    if "<QUERY>" in text:
-                        text = text.replace("<QUERY>", random.choice(list(QUERY_WORDS)))
-                    if "<SELF>" in text:
-                        text = text.replace("<SELF>", random.choice(list(CHAT_ENTITIES)))
-                    if "<STATE>" in text:
-                        text = text.replace("<STATE>", random.choice(list(STATE_WORDS)))
-                    if "<NEG>" in text:
-                        text = text.replace("<NEG>", random.choice(list(NEGATION_WORDS)))
-                    if "<OPINION>" in text:
-                        text = text.replace("<OPINION>", random.choice(list(OPINION_WORDS)))
-                    if "<ENT>" in text:
-                        text = text.replace("<ENT>", random.choice(entities))
-
-                    clean_text = text.replace(" ", "")
-                    X_raw.append(clean_text)
-                    y.append(label)
-
-        fill_data(check_patterns, "工具", 20)
-        fill_data(gen_patterns, "工具", 20)
-        fill_data(edit_patterns, "工具", 30)
-        fill_data(qa_patterns, "问答", 20)
-        fill_data(chat_patterns, "闲聊", 30)  # 增加闲聊权重
-        fill_data(content_task_patterns, "工具", 40)
-
-        return X_raw, y
-
-    def train(self):
-        logger.info(t("log.ai.train_intent_v5_optimizing"))
-        X_raw, y = self._generate_enhanced_data()
-        X_abstract = [smart_abstraction(text) for text in X_raw]
-        X_train_dict = {"raw": X_raw, "abs": X_abstract}
-
-        pipeline = Pipeline(
-            [
-                (
-                    "union",
-                    FeatureUnion(
-                        transformer_list=[
-                            (
-                                "abs_features",
-                                Pipeline(
-                                    [
-                                        ("selector", ItemSelector(key="abs")),
-                                        (
-                                            "tfidf",
-                                            TfidfVectorizer(token_pattern=r"(?u)\b\w+\b|<\w+>", ngram_range=(1, 4)),
-                                        ),
-                                    ]
-                                ),
-                            ),
-                            (
-                                "raw_features",
-                                Pipeline(
-                                    [
-                                        ("selector", ItemSelector(key="raw")),
-                                        (
-                                            "tfidf",
-                                            TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), max_features=8000),
-                                        ),
-                                    ]
-                                ),
-                            ),
-                        ]
-                    ),
-                ),
-                ("clf", LogisticRegression(C=2.0, solver="lbfgs", class_weight="balanced", max_iter=500)),
-            ]
-        )
-
-        pipeline.fit(X_train_dict, y)
-        dump(pipeline, self.model_path)
-        self.model = pipeline
-        logger.info(t("log.ai.training_saved", p0=self.model_path))
-
-    def _rule_based_check(self, text: str) -> Optional[Dict[str, Any]]:
-        text = text.strip()
-
-        # 规则：显式的生成指令拦截
-        # 只要包含：(生成/画/做/制作/来个) + (音乐/歌/语音/图/视频/画)
-        if re.search(
-            r"^(我|帮我)?(想要|要|求|跪求|来|整|搞)(一|两|三|\d+)?(张|个|首|段|份).{0,10}(图|画|照片|视频|语音|歌|代码|文案)",
-            text,
-        ):
-            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Direct Demand (我要...)"}
-            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Explicit Generation Command"}
-
-        # [新增] 处理带引号的内容指令
-        # 例如：生成语音，内容是：“...”
-        if re.search(r"(内容|说|字|内容为)[:：= \"“]", text) and re.search(r"(生成|画|做|语音|图|音乐)", text):
-            return {"intent": "工具", "conf": 0.98, "reason": "Rule: Task With Content"}
-
-        # --- 保持之前的闲聊拦截规则 ---
-        has_func = re.search(r"(面板|数据|战绩|排行|价格|配置|装备|评分)", text)
-        has_state = re.search(r"(丑|亏|烂|差|崩|难看|垃圾|离谱|恶心|高|低|麻|药丸|贵|便宜)", text)
-        has_check = re.search(r"(查|看|找|搜|分析|计算|显示|获取|调用)", text)
-        if has_func and has_state and not has_check:
-            return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: Noun+Emotion=Chat"}
-
-        if re.search(r"(你|我|大家).*(看法|觉得|认为|评价|观点|想)", text):
-            return {"intent": "闲聊", "conf": 0.96, "reason": "Rule: Subjective Opinion"}
-
-        if re.search(r"(想要|要|准备).{0,4}(生成|制作|画|写|创作)", text):
-            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Want to Generate"}
-
-        # 规则 1.3: 极短的代词指代询问 -> 闲聊
-        # 解决 "这是什么", "那是什么鬼"
-        if re.search(r"^(这|那|它)(是|个)?(什么|啥|鬼)[?？]*$", text):
-            return {"intent": "闲聊", "conf": 0.95, "reason": "Rule: Vague Query"}
-
-        # ================== 2. 强工具指令 (优先级次之) ==================
-
-        if re.search(r"(画|生成|制作|合成|写|搞|整|来).{0,5}(一张|个|份|首|段)?(图|照片|画|视频|语音|歌|代码)", text):
-            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Generate Media"}
-
-        if re.search(r"(修改|编辑|P一下|P图|去水印|加水印|换背景)", text):
-            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Explicit Edit"}
-
-        if re.search(
-            r"(在|把|给).{0,20}(图|照片|上|下|里|面).{0,20}(加|换|改|写|放|P).{0,20}(字|文|水印|背景|内容)", text
-        ):
-            return {"intent": "工具", "conf": 0.99, "reason": "Rule: Complex Edit Command"}
-
-        # 查/看 + 通用数据对象（不含业务插件域词）
-        if re.search(r"(查|看|找|搜|分析|计算|显示).{0,8}(面板|数据|战绩|排行|榜|天气|配置|记录|详情|状态)", text):
-            return {"intent": "工具", "conf": 0.98, "reason": "Rule: Check Data"}
-
-        if re.search(r"^(调用|打开|启动|运行).{1,10}", text):
-            return {"intent": "工具", "conf": 0.98, "reason": "Rule: Invoke App"}
-
-        if re.search(r"^(帮我|给).*(看|查|算).*(一下)?$", text):
-            return {"intent": "工具", "conf": 0.96, "reason": "Rule: Help Check"}
-
-        # ================== 3. 其他规则 ==================
-
-        if re.search(r"^(你|我|他).*(是|喜欢|爱|吃|睡|像).*(什么|谁|哪|猫|狗|人|AI|机器人)", text):
-            return {"intent": "闲聊", "conf": 0.98, "reason": "Rule: Identity Chat"}
-
-        if re.search(r"^(你好|在吗|早|晚安|嘿|哈|哎|卧槽|救命|测试)$", text):
-            return {"intent": "闲聊", "conf": 0.99, "reason": "Rule: Simple Chat"}
-
-        # 问答规则放最后，防止抢占
-        if re.search(r".*(怎么打|在哪里|什么效果|背景故事|是什么).*", text):
-            return {"intent": "问答", "conf": 0.96, "reason": "Rule: Strong QA Pattern"}
-
-        # 实体 + 通用知识点 + 疑问（不含业务插件域词，那些靠插件 covers/实体索引）
-        if re.search(
-            r".{1,8}(的|之)(技能|属性|机制|效果|数值|详情|来源).{0,6}(是什么|怎么|多少|如何)",
-            text,
-        ):
-            return {"intent": "问答", "conf": 0.95, "reason": "Rule: Entity Knowledge Query"}
-
-        return None
-
-    def _sync_predict(self, text: str) -> Dict[str, Any]:
-        # 首次预测时才加载模型（在 executor 线程内执行，不阻塞事件循环）
-        self._ensure_model()
-
-        # 首次调用时同步实体词典
-        if not self._entities_synced:
-            try:
-                sync_entities_to_jieba()
-                self._entities_synced = True
-            except Exception as e:
-                logger.warning(t("log.ai.ai_sync_fail_entity_failed", e=e))
-
-        rule_result = self._rule_based_check(text)
-        if rule_result:
-            return {"text": text, **rule_result}
-
-        masked_text = re.sub(r'[:：]?\s*["“‘\'].*?["”’\']', " <CONTENT> ", text)
-
-        if self.model is None:
-            return {"text": text, "intent": "Error", "conf": 0.0, "reason": "Model Not Loaded"}
-
-        abstracted = smart_abstraction(masked_text)
-        input_data = {"raw": [text], "abs": [abstracted]}
-
-        try:
-            probs = self.model.predict_proba(input_data)[0]
-            intent_idx = probs.argmax()
-            intent = self.model.classes_[intent_idx]
-            confidence = float(probs[intent_idx])
-
-            # 后置修正：如果置信度不高，且含有负面情绪词，倾向于闲聊
-            # 解决 "面板真垃圾" 这类没被正则覆盖到的漏网之鱼
-            if intent == "工具" and confidence < 0.85:
-                for w in STATE_WORDS:
-                    if w in text:
-                        intent = "闲聊"
-                        confidence = 0.8
-                        break
-
-            return {"text": text, "intent": intent, "conf": round(confidence, 4), "reason": "Model"}
-        except Exception as e:
-            return {"text": text, "intent": "Error", "conf": 0.0, "reason": str(e)}
+    def _sync_predict(self, text: str) -> IntentHit:
+        return classify_sentence(text)
 
     async def predict_async(
         self,
         text: str,
         *,
-        prior_user_turns: Optional[list[str]] = None,
+        prior_user_turns: list[str] | None = None,
         prev_turn_used_tools: bool = False,
-    ) -> Dict[str, Any]:
-        """异步预测意图（带同用户上下文 + 向量检索兜底）。
+    ) -> IntentHit:
+        """异步预测意图（带同用户上下文）。
 
-        低成本分类器单句能力有限，**不能只喂当前句**。流程：
-
-        1. 短句 / 省略跟进 + 有同用户上文 → **优先**用「近期用户原文 + 当前句」拼接再判；
-        2. 单句先判为闲聊时，再用拼接兜底一次（ContextJoin）；
-        3. 省略式跟进 +（上轮真用过工具 **或** 上文用户句本身是工具/问答）→ 结构升级为工具。
-
-        装配侧已不再因 intent=闲聊 砍向量预装；本函数仍尽量减少「然后呢」类跟进
-        被标成纯寒暄，以免输出风格被压成极短句、或连续无工具计数被豁免。
+        短句先拼同用户上文再判；省略跟进且上轮用过工具时升为工具。
+        低置信闲聊且带疑问词时，才试一次知识库。
         """
-        loop = asyncio.get_running_loop()
         text_s = (text or "").strip()
+        if _CANCEL_RE.match(text_s):
+            return _hit(text, "闲聊", 0.97, "cancel")
         priors = [p.strip() for p in (prior_user_turns or []) if p and p.strip()]
         is_short = len(text_s) <= 24
         is_ellipsis = _is_ellipsis_followup(text_s)
 
-        def _keep_current_text(r: Dict[str, Any], reason_prefix: str) -> Dict[str, Any]:
-            return {
-                "text": text,
-                "intent": r.get("intent", "闲聊"),
-                "conf": r.get("conf", 0.0),
-                "reason": f"{reason_prefix}:{r.get('reason', 'Model')}",
-            }
+        def keep_current(hit: IntentHit, prefix: str) -> IntentHit:
+            return _hit(text, hit["intent"], hit["conf"], f"{prefix}:{hit['reason']}")
 
-        # ① 短句/省略：先拼同用户上下文再判（主路径，不是事后补丁）
-        result: Dict[str, Any]
         if priors and (is_short or is_ellipsis):
             joined = "\n".join([*priors[-3:], text_s])
-            result = _keep_current_text(
-                await loop.run_in_executor(self.executor, self._sync_predict, joined),
-                "ContextPrimary",
-            )
-            # 拼接仍偏闲聊时，再单判当前句；若单句更像工具/问答则采用（如整段拼接被旧寒暄稀释）
-            if result.get("intent") == "闲聊":
-                solo = await loop.run_in_executor(self.executor, self._sync_predict, text_s)
-                if solo.get("intent") in ("工具", "问答") and float(solo.get("conf") or 0) >= 0.55:
-                    result = {
-                        "text": text,
-                        "intent": solo["intent"],
-                        "conf": solo["conf"],
-                        "reason": f"SoloOverride:{solo.get('reason', 'Model')}",
-                    }
+            result = keep_current(self._sync_predict(joined), "ContextPrimary")
+            if result["intent"] == "闲聊":
+                solo = self._sync_predict(text_s)
+                if solo["intent"] in ("工具", "问答") and solo["conf"] >= 0.55:
+                    result = _hit(text, solo["intent"], solo["conf"], f"SoloOverride:{solo['reason']}")
         else:
-            result = await loop.run_in_executor(self.executor, self._sync_predict, text_s)
+            result = self._sync_predict(text_s)
 
-        # ② 长句先判闲聊时：用「上轮用户句 + 当前句」再跑一遍
-        if result.get("intent") == "闲聊" and priors and not (is_short or is_ellipsis):
+        if result["intent"] == "闲聊" and priors and not (is_short or is_ellipsis):
             joined = "\n".join([*priors[-2:], text_s])
-            result2 = await loop.run_in_executor(self.executor, self._sync_predict, joined)
-            if result2.get("intent") in ("工具", "问答") and float(result2.get("conf") or 0) >= 0.45:
-                result = _keep_current_text(result2, "ContextJoin")
+            result2 = self._sync_predict(joined)
+            if result2["intent"] in ("工具", "问答") and result2["conf"] >= 0.45:
+                result = keep_current(result2, "ContextJoin")
 
-        # ③ 结构：省略跟进 / 上轮刚用过工具时，不得当纯寒暄砍工具链
-        if result.get("intent") == "闲聊":
-            if is_ellipsis and prev_turn_used_tools:
-                result = {
-                    "text": text,
-                    "intent": "工具",
-                    "conf": 0.92,
-                    "reason": "Structural: ellipsis follow-up after tools",
-                }
-            elif prev_turn_used_tools and (is_short or is_ellipsis) and float(result.get("conf") or 0) < 0.9:
-                # 上轮真调了工具 + 本轮短句/低置信闲聊：多半是追问，升为工具
-                result = {
-                    "text": text,
-                    "intent": "工具",
-                    "conf": 0.88,
-                    "reason": "Structural: short/ambiguous after tools",
-                }
+        if result["intent"] == "闲聊":
+            if _CANCEL_RE.match(text_s):
+                result = _hit(text, "闲聊", 0.97, "cancel")
+            elif is_ellipsis and prev_turn_used_tools:
+                result = _hit(text, "工具", 0.92, "Structural: ellipsis follow-up after tools")
+            elif prev_turn_used_tools and (is_short or is_ellipsis) and result["conf"] < 0.9:
+                result = _hit(text, "工具", 0.88, "Structural: short/ambiguous after tools")
             elif is_ellipsis and priors:
                 prior_toolish = False
-                for p in reversed(priors[-3:]):
-                    pr = await loop.run_in_executor(self.executor, self._sync_predict, p)
-                    if pr.get("intent") in ("工具", "问答") and float(pr.get("conf") or 0) >= 0.5:
+                for prior in reversed(priors[-3:]):
+                    pr = self._sync_predict(prior)
+                    if pr["intent"] in ("工具", "问答") and pr["conf"] >= 0.5:
                         prior_toolish = True
                         break
                 if prior_toolish:
-                    result = {
-                        "text": text,
-                        "intent": "工具",
-                        "conf": 0.9,
-                        "reason": "Structural: ellipsis after prior toolish user turns",
-                    }
+                    result = _hit(text, "工具", 0.9, "Structural: ellipsis after prior toolish user turns")
 
-        # 向量优先策略：如果模型判定为闲聊，但置信度不高，且包含疑问词
-        # 则试探性检索向量库，看是否有相关知识
         if result["intent"] == "闲聊" and result["conf"] < 0.8:
-            # 检查是否包含疑问特征
-            has_query = any(
-                q in text
-                for q in [
-                    "什么",
-                    "怎么",
-                    "多少",
-                    "哪",
-                    "谁",
-                    "吗",
-                    "呢",
-                    "？",
-                    "?",
-                ]
-            )
-
-            if has_query:
+            query_marks = ("什么", "怎么", "多少", "哪", "谁", "吗", "呢", "？", "?")
+            if any(mark in text for mark in query_marks):
                 try:
-                    # 动态导入避免循环依赖
-                    from ..rag import query_knowledge
-                    from ..rag.skills_kb import SKILLS_DOC_SOURCE
+                    from gsuid_core.ai_core.rag import query_knowledge
+                    from gsuid_core.ai_core.rag.skills_kb import SKILLS_DOC_SOURCE
 
-                    # 试探性检索（只取Top 1，阈值稍高）。
                     hits = await query_knowledge(
                         query=text,
                         limit=1,
                         exclude_sources=[SKILLS_DOC_SOURCE],
                     )
-
-                    if hits and len(hits) > 0:
-                        # 向量库命中，说明这是个问答
-                        if hits[0].payload is None:
-                            return result
-
-                        logger.info(
-                            t(
-                                "log.ai.vector_fallback_hit_text",
-                                text=text,
-                                p0=hits[0].payload.get("title", "Unknown"),
-                            )
-                        )
-                        return {"text": text, "intent": "问答", "conf": round(hits[0].score, 4), "reason": "VectorHit"}
                 except Exception as e:
                     logger.trace(t("log.ai.vector_fallback_retrieval", e=e))
+                    return result
+                if hits and len(hits) > 0:
+                    payload = hits[0].payload
+                    if not isinstance(payload, dict):
+                        return result
+                    title = payload["title"] if "title" in payload else "Unknown"
+                    logger.info(t("log.ai.vector_fallback_hit_text", text=text, p0=title))
+                    return _hit(text, "问答", round(float(hits[0].score), 4), "VectorHit")
 
         return result
 
 
-# 测试代码 (直接运行此文件可看效果)
-async def benchmark(service: IntentService):
-    test_cases = [
-        # --- 工具类 (新需求) ---
-        "在这张图下面加两个字'可爱'",  # 必须是工具
-        "修改这张图，在下面加两个字",  # 必须是工具
-        "帮我生成一张风景图",  # 工具
-        "画个图标",  # 工具
-        "生成一段介绍视频",  # 工具
-        "来首好听的音乐",  # 工具
-        "把这个背景换成蓝色的",  # 工具
-        "查一下面板",  # 工具
-        "看一下这个的数据",  # 工具
-        "调用计算器",  # 工具
-        "帮我看一下这个",  # 工具
-        # --- 问答类 (知识查询) ---
-        "这个怎么用",  # 问答
-        "材料在哪找",  # 问答
-        "甲是谁",  # 问答
-        "第12关怎么打",  # 问答
-        "护盾机制是啥",  # 问答
-        "这个效果是什么",  # 问答
-        "技能怎么样",  # 问答
-        "倍率多少",  # 问答
-        # --- 闲聊类 ---
-        "你是猫猫吗？",  # 闲聊
-        "在吗",  # 闲聊
-        "你好啊",  # 闲聊
-        "我今天好倒霉",  # 闲聊
-        "这是什么鬼",  # 闲聊
-        "笑死我了",  # 闲聊
-        "这关好难打",  # 闲聊
-        "面板太丑了",  # 闲聊
-        "面板亏麻了",  # 闲聊
-        "卧槽怎么回事",  # 闲聊
-        "这是什么",  # 闲聊
-        "不要查",  # 闲聊
-        "你是使用什么模型？",  # 闲聊
-        "你对抱抱的看法是？",  # 闲聊
-        "生成音乐 可爱的女声，内容为：'嗯嗯 啊啊 欧欧 XX你真的好棒呀'",
-        "我要一张可爱的风格的二次元图片",
-        "我要生成一张可爱的二次元图片",
-        "在图片最下面用白色文字写上：“我是皮卡猫”",
-    ]
-
-    print(f"\n{'Input Text':<30} | {'Intent':<6} | {'Conf':<5} | {'Reason'}")
-    print("-" * 80)
-
-    for text in test_cases:
-        res = await service.predict_async(text)
-        print(f"{res['text']:<30} | {res['intent']:<6} | {res['conf']:<5} | {res['reason']}")
-
-
-classifier_service = IntentService(model_path=MODEL_PATH)
-
-if __name__ == "__main__":
-    asyncio.run(benchmark(classifier_service))
+classifier_service = IntentService()

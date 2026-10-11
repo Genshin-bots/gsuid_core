@@ -10,18 +10,6 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from pathlib import Path
 
-from qdrant_client.models import (
-    Filter,
-    Distance,
-    MatchAny,
-    MatchValue,
-    PointStruct,
-    PointIdsList,
-    VectorParams,
-    FieldCondition,
-)
-from qdrant_client.http.models.models import ScoredPoint
-
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ImageEntity
@@ -34,6 +22,17 @@ from gsuid_core.ai_core.rag.base import (
     upsert_points_with_backoff,
 )
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.rag.qmodels import (
+    Filter,
+    Distance,
+    MatchAny,
+    MatchValue,
+    PointStruct,
+    ScoredPoint,
+    PointIdsList,
+    VectorParams,
+    FieldCondition,
+)
 from gsuid_core.ai_core.rag.chunking import (
     pieces_for_embed,
     chunk_method_hash,
@@ -599,8 +598,10 @@ async def get_image_path_by_query(
         return None
 
     payload = results[0].payload
-    if payload and "path" in payload:
-        return payload["path"]
+    if payload is not None and "path" in payload:
+        path = payload["path"]
+        if isinstance(path, str):
+            return path
 
     return None
 

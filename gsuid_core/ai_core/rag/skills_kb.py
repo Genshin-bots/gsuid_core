@@ -108,9 +108,8 @@ def _content_hash(text: str) -> str:
 
 async def _skill_docs_point_count() -> int:
     """知识库里 ``skill_doc`` 整类的现存向量点数；统计失败返回 -1（按"非空"处理，不触发强制重嵌）。"""
-    from qdrant_client.models import Filter, MatchValue, FieldCondition
-
     from gsuid_core.ai_core.rag.base import KNOWLEDGE_COLLECTION_NAME, client
+    from gsuid_core.ai_core.rag.qmodels import Filter, MatchValue, FieldCondition
 
     if client is None:
         return -1

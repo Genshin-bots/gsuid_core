@@ -104,9 +104,8 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
         return
 
     try:
-        from qdrant_client.models import Filter, MatchAny, FieldCondition
-
         from gsuid_core.ai_core.rag.base import client
+        from gsuid_core.ai_core.rag.qmodels import Filter, MatchAny, FieldCondition
         from gsuid_core.ai_core.memory.vector.collections import (
             MEMORY_EDGES_COLLECTION,
             MEMORY_ENTITIES_COLLECTION,

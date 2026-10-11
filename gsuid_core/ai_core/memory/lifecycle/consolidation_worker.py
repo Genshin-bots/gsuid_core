@@ -85,9 +85,8 @@ async def _forget() -> int:
     try:
         from uuid import UUID
 
-        from qdrant_client.http.models import PointIdsList
-
         from gsuid_core.ai_core.rag.base import client as qdrant_client
+        from gsuid_core.ai_core.rag.qmodels import PointIdsList
         from gsuid_core.ai_core.memory.vector.collections import MEMORY_EDGES_COLLECTION
 
         qdrant_point_ids: list[int | str | UUID] = [point_id for point_id in forgotten_ids]
@@ -132,9 +131,8 @@ async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
         try:
             from uuid import UUID
 
-            from qdrant_client.http.models import PointIdsList
-
             from gsuid_core.ai_core.rag.base import client as qdrant_client
+            from gsuid_core.ai_core.rag.qmodels import PointIdsList
             from gsuid_core.ai_core.memory.vector.collections import MEMORY_ENTITIES_COLLECTION
 
             if qdrant_client is not None:

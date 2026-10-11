@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
-from qdrant_client.models import (
+from gsuid_core.ai_core.rag.qmodels import (
     Filter,
     Distance,
     Modifier,

@@ -6,12 +6,11 @@ import asyncio
 from typing import Protocol, Sequence
 from unittest.mock import patch
 
-from qdrant_client.models import Filter, MatchValue, FieldCondition
-
 from gsuid_core.ai_core.rag import knowledge as knowledge_mod
 from gsuid_core.ai_core.models import KnowledgeBase
 from gsuid_core.ai_core.rag.base import KNOWLEDGE_COLLECTION_NAME, get_point_id, calculate_hash
 from gsuid_core.ai_core.register import _ENTITIES
+from gsuid_core.ai_core.rag.qmodels import Filter, MatchValue, FieldCondition
 from gsuid_core.ai_core.rag.chunking import DEFAULT_CHUNK_OVERLAP, EmbedPiece, pieces_for_embed, chunk_method_hash
 from gsuid_core.ai_core.rag.knowledge import sync_knowledge
 

@@ -17,10 +17,9 @@ import logging
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from qdrant_client.models import SparseVector
-
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.rag.qmodels import SparseVector
 
 # BM25 稀疏嵌入专用单线程执行器
 _SPARSE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sparse_embed")

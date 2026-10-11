@@ -2100,9 +2100,8 @@ async def delete_scope_memory(
 
             # 删除 Qdrant 向量（按 scope_key 过滤）
             try:
-                from qdrant_client.models import Filter, MatchValue, FieldCondition
-
                 from gsuid_core.ai_core.rag.base import client
+                from gsuid_core.ai_core.rag.qmodels import Filter, MatchValue, FieldCondition
                 from gsuid_core.ai_core.memory.vector.collections import (
                     MEMORY_EDGES_COLLECTION,
                     MEMORY_ENTITIES_COLLECTION,

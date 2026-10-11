@@ -19,18 +19,11 @@ from pathlib import Path
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import (
-    Vector,
-    PointStruct,
-    VectorStruct,
-    VectorStructOutput,
-)
-from qdrant_client.local.async_qdrant_local import AsyncQdrantLocal
-
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
+from gsuid_core.ai_core.rag.qhttp import HttpQdrant
+from gsuid_core.ai_core.rag.qmodels import PointStruct, QdrantSession
 from gsuid_core.ai_core.configs.ai_config import ai_config, qdrant_config
 
 PROVIDER_LOCAL = "local"
@@ -126,7 +119,7 @@ def _get_effective_provider(provider: str) -> str:
     return PROVIDER_LOCAL
 
 
-def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
+def build_qdrant_client(provider: str | None = None) -> QdrantSession:
     """按 provider 构造 AsyncQdrantClient。
 
     provider 为 None 时读取当前配置。remote 但未配置 url 时回退到本地嵌入式 Qdrant，
@@ -153,19 +146,27 @@ def build_qdrant_client(provider: str | None = None) -> AsyncQdrantClient:
         url, api_key = get_remote_connection()
         if not url:
             logger.warning(t("log.rag.qdrant_remote_mode_selected_url"))
-            return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))
+            return _open_local()
         logger.info(t("log.rag.qdrant_remote_service_url", url=url))
         # 默认 5s 在启动高负载窗口会对瞬时调用误报 ReadTimeout，
         # 导致 RAG 步骤判失败、进程"暂不接收 AI 会话"；放宽容忍启动尖峰。
         httpx_kw = remote_qdrant_httpx_kwargs(url)
-        disable_env = "trust_env" in httpx_kw and httpx_kw["trust_env"] is False
-        if disable_env:
+        trust_env = True
+        if "trust_env" in httpx_kw:
+            trust_env = httpx_kw["trust_env"]
+        if not trust_env:
             with _temporary_loopback_no_proxy():
-                return AsyncQdrantClient(url=url, api_key=api_key, timeout=30, trust_env=False)
-        return AsyncQdrantClient(url=url, api_key=api_key, timeout=30)
+                return HttpQdrant(url, api_key, timeout=30, trust_env=False)
+        return HttpQdrant(url, api_key, timeout=30, trust_env=True)
 
     logger.info(t("log.rag.qdrant_local_embedded_db", LOCAL_QDRANT_DB_PATH=LOCAL_QDRANT_DB_PATH))
-    return AsyncQdrantClient(path=str(LOCAL_QDRANT_DB_PATH))
+    return _open_local()
+
+
+def _open_local() -> QdrantSession:
+    from gsuid_core.ai_core.rag.qlocal import LocalQdrant
+
+    return LocalQdrant(LOCAL_QDRANT_DB_PATH)
 
 
 # ============== provider 切换状态持久化 ==============
@@ -200,19 +201,7 @@ def get_last_provider() -> str:
 
 
 # ============== provider 切换时的数据迁移 ==============
-def _to_input_vector(vector: VectorStructOutput) -> VectorStruct:
-    """把 scroll 返回的输出向量(VectorStructOutput)适配为 upsert 入参向量(VectorStruct)。
-
-    两者运行时结构一致；仅因 qdrant-client 将输出/输入模型分离、且命名向量 dict 的值类型不变
-    (invariant)，需把 dict[str, VectorOutput] 显式重建为入参的 dict[str, Vector]。
-    """
-    if isinstance(vector, dict):
-        named: dict[str, Vector] = {name: vec for name, vec in vector.items()}
-        return named
-    return vector
-
-
-async def _copy_collection(source: AsyncQdrantClient, target: AsyncQdrantClient, name: str) -> int:
+async def _copy_collection(source: QdrantSession, target: QdrantSession, name: str) -> int:
     """把单个 Collection 从 source 复制到 target（含向量/payload/索引），返回复制点数。
 
     目标已存在该 Collection 时不重建，仅 upsert（按 id 幂等覆盖），从而支持中断后重试。
@@ -261,10 +250,12 @@ async def _copy_collection(source: AsyncQdrantClient, target: AsyncQdrantClient,
         )
         points: list[PointStruct] = []
         for r in records:
-            if r.vector is None:
+            raw_vector = r.vector
+            if raw_vector is None:
                 logger.debug(t("log.rag.qdrant_collection_name_point_skip", name=name, p0=r.id))
                 continue
-            points.append(PointStruct(id=r.id, vector=_to_input_vector(r.vector), payload=r.payload))
+            stored = {key: item for key, item in raw_vector.items()} if isinstance(raw_vector, dict) else raw_vector
+            points.append(PointStruct(id=r.id, vector=stored, payload=r.payload))
         if points:
             await target.upsert(collection_name=name, points=points)
             copied += len(points)
@@ -286,7 +277,7 @@ async def _build_source_with_lock_retry(
     *,
     attempts: int = 3,
     base_delay: float = 2.0,
-) -> AsyncQdrantClient:
+) -> QdrantSession:
     """构造迁移源客户端；本地源被占用(文件锁冲突)时带退避重试。
 
     重启窗口内旧进程可能尚未完全退出释放本地锁，给它时间后再试，避免一次锁冲突
@@ -316,18 +307,12 @@ async def _build_source_with_lock_retry(
     raise last_err
 
 
-def _release_qdrant_client_memory(client: AsyncQdrantClient) -> None:
-    """主动断开本地嵌入式 Qdrant client 载入内存的 collection 引用，便于 GC 回收。
+def _release_qdrant_client_memory(client: QdrantSession) -> None:
+    """清空本地嵌入式客户端已经载入的 collection 引用，便于 GC 回收。
 
-    AsyncQdrantLocal.close() 只释放文件锁与 sqlite 句柄，不会清空其 collections——
-    其中的 numpy 向量/payload(大库可达数百 MB~GB)会一直驻留到 client 对象被回收，
-    且 client 内部存在引用环，仅靠作用域退出的引用计数无法及时释放。这里清空内部容器，
-    配合 gc.collect() 尽快回收内存。远程 client 的内部实现不是 AsyncQdrantLocal，跳过。
+    close() 只放文件锁。远程客户端没有这块缓存。
     """
-    inner = client._client
-    if isinstance(inner, AsyncQdrantLocal):
-        inner.collections.clear()
-        inner.aliases.clear()
+    client.release_embedded_cache()
 
 
 async def migrate_qdrant_if_provider_changed() -> None:

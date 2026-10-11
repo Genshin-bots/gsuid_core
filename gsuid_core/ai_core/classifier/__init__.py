@@ -7,12 +7,11 @@
 - "工具"  → 装配完整保底池 + 向量检索补充；
 - "问答"  → 触发 ``search_cognition`` 优先链路。
 
-分类器是机器学习模型，单例 ``classifier_service`` 在首次调用时懒加载。
-**注意**：这只是一个"加速器"——主人格 prompt 的决策树仍是权威，分类结果
-只是辅助工具池装配的提示，不替代决策树。
+分类器按句式归类，不加载机器学习库。单例是 ``classifier_service``。
+主人格的决策树仍是权威，分类结果只提示工具池怎么装。
 
 模块组成：
-- ``mode_classifier.py`` : 分类器服务 + 模型加载
+- ``mode_classifier.py`` : 句式归类与上文拼接
 """
 
 from gsuid_core.ai_core.classifier.mode_classifier import classifier_service

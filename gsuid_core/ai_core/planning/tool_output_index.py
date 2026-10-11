@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
-from qdrant_client.models import (
+from gsuid_core.ai_core.rag.qmodels import (
     Filter,
     Distance,
     Modifier,
@@ -150,7 +150,7 @@ async def delete_tool_output_index(record_ids: Sequence[str]) -> None:
     if client is None or not ids:
         return
     try:
-        from qdrant_client.models import MatchAny
+        from gsuid_core.ai_core.rag.qmodels import MatchAny
 
         await client.delete(
             collection_name=TOOL_OUTPUT_COLLECTION,

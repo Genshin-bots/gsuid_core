@@ -4,10 +4,10 @@ import asyncio
 from typing import Any, List, Optional, Protocol
 
 import httpx
-from qdrant_client.http.models.models import ScoredPoint
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.rag.qmodels import ScoredPoint
 from gsuid_core.ai_core.configs.ai_config import rerank_model_config
 
 from .base import RERANK_MODELS_CACHE, is_enable_ai, is_enable_rerank
@@ -168,8 +168,12 @@ async def rerank_results(
         for r in results:
             if r.payload is None:
                 continue
-            title = r.payload.get("title", "")
-            content = r.payload.get("content", "")
+            title = r.payload["title"] if "title" in r.payload else ""
+            content = r.payload["content"] if "content" in r.payload else ""
+            if not isinstance(title, str):
+                title = ""
+            if not isinstance(content, str):
+                content = ""
             doc = f"{title}\n{content}" if title else content
             if doc.strip():
                 documents.append(doc)

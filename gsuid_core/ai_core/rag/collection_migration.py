@@ -2,16 +2,20 @@
 
 import json
 import inspect
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, runtime_checkable
 from pathlib import Path
 from datetime import datetime, timezone
-
-from qdrant_client.models import VectorParams, VectorParamsDiff
-from qdrant_client.http.models.models import PayloadSchemaType
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
+from gsuid_core.ai_core.rag.qmodels import VectorParams, VectorParamsDiff, PayloadSchemaType
+
+
+@runtime_checkable
+class _ClosableCollection(Protocol):
+    def close(self) -> None: ...
+
 
 MIGRATION_BACKUP_DIR = AI_CORE_PATH / "migration_backups"
 
@@ -272,57 +276,44 @@ async def force_recreate_collection(
     if sparse_vectors_config is not None:
         kwargs["sparse_vectors_config"] = sparse_vectors_config
 
-    inner = getattr(client, "_client", None)
-    collections = getattr(inner, "collections", None)
-    is_local_client = isinstance(collections, dict)
+    collections = client.local_collection_map()
+    is_local_client = collections is not None
 
     if is_local_client:
         # 关闭目标 Collection 的 sqlite 句柄，确保随后 delete_collection 内部的 rmtree 能
         # 真正删除旧维度存储（尤其是 Windows 文件锁场景），避免新集合复用旧 storage.sqlite。
-        existing_collection = collections.get(collection_name)
-        if existing_collection is not None:
-            close_collection = getattr(existing_collection, "close", None)
-            if callable(close_collection):
-                try:
-                    close_collection()
-                except Exception as e:
-                    logger.warning(
-                        t(
-                            "log.rag.qdrant_close_collection_name_fail",
-                            collection_name=collection_name,
-                            e=e,
-                        )
+        existing_collection = collections[collection_name] if collection_name in collections else None
+        if isinstance(existing_collection, _ClosableCollection):
+            try:
+                existing_collection.close()
+            except Exception as e:
+                logger.warning(
+                    t(
+                        "log.rag.qdrant_close_collection_name_fail",
+                        collection_name=collection_name,
+                        e=e,
                     )
+                )
         if await client.collection_exists(collection_name):
             await client.delete_collection(collection_name=collection_name)
         await client.create_collection(**kwargs)
         logger.info(t("log.rag.qdrant_forced_recreate_local_create", collection_name=collection_name))
         return
 
-    recreate = getattr(client, "recreate_collection", None)
-    if callable(recreate):
-        try:
-            result = recreate(**kwargs)
-            if inspect.isawaitable(result):
-                await result
-        except Exception as e:
-            # 并发创建竞争：远程 Qdrant 返回 409（集合已存在）时视为成功放行。
-            if "already exists" in str(e).lower() and await client.collection_exists(collection_name):
-                logger.warning(
-                    t(
-                        "log.rag.qdrant_collection_name_created_skip",
-                        collection_name=collection_name,
-                    )
+    try:
+        await client.recreate_collection(**kwargs)
+    except Exception as e:
+        # 并发创建竞争：远程 Qdrant 返回 409（集合已存在）时视为成功放行。
+        if "already exists" in str(e).lower() and await client.collection_exists(collection_name):
+            logger.warning(
+                t(
+                    "log.rag.qdrant_collection_name_created_skip",
+                    collection_name=collection_name,
                 )
-                return
-            raise
-        logger.info(t("log.rag.qdrant_forced_recreate_collection_create", collection_name=collection_name))
-        return
-
-    if await client.collection_exists(collection_name):
-        await client.delete_collection(collection_name=collection_name)
-    await client.create_collection(**kwargs)
-    logger.info(t("log.rag.qdrant_collection_deleted_recreated_delete", collection_name=collection_name))
+            )
+            return
+        raise
+    logger.info(t("log.rag.qdrant_forced_recreate_collection_create", collection_name=collection_name))
 
 
 async def ensure_vector_on_disk(collection_name: str, vector_name: Optional[str] = None) -> None:
@@ -360,14 +351,12 @@ async def ensure_payload_indexes(
     索引。远程索引检查/创建失败时必须中断初始化，避免后续查询阶段才抛出 400；本地嵌入式
     Qdrant 不强制要求 payload 索引，因此本地失败仅记录警告。
     """
-    from qdrant_client.local.async_qdrant_local import AsyncQdrantLocal
-
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return
 
-    is_local_client = isinstance(client._client, AsyncQdrantLocal)
+    is_local_client = client.local_collection_map() is not None
 
     try:
         col_info = await client.get_collection(collection_name=collection_name)

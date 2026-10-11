@@ -11,13 +11,12 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from pathlib import Path
 from datetime import datetime, timezone
 
-from qdrant_client.models import Vector, Condition, SparseVector
-
 from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join
+from gsuid_core.ai_core.rag.qmodels import Vector, Condition, SparseVector
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
@@ -597,14 +596,14 @@ MEME_DENSE_VECTOR = "dense"
 
 def _meme_vectors_config(dimension: int) -> dict:
     """表情包 dense 命名向量配置。"""
-    from qdrant_client.models import Distance, VectorParams
+    from gsuid_core.ai_core.rag.qmodels import Distance, VectorParams
 
     return {MEME_DENSE_VECTOR: VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True)}
 
 
 def _meme_sparse_config() -> dict:
     """表情包 BM25 稀疏向量配置（IDF 服务端加权，与知识库一致）。"""
-    from qdrant_client.models import Modifier, SparseVectorParams
+    from gsuid_core.ai_core.rag.qmodels import Modifier, SparseVectorParams
 
     return {"sparse": SparseVectorParams(modifier=Modifier.IDF)}
 
@@ -644,7 +643,7 @@ async def _ensure_meme_collection() -> None:
                 should_reindex = True
             else:
                 # 既有 Collection 补建 payload 索引（幂等），覆盖历史部署缺少 meme_id 索引的情况
-                from qdrant_client.models import PayloadSchemaType
+                from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
 
                 for field_name in ("folder", "status", "meme_id"):
                     try:
@@ -660,7 +659,7 @@ async def _ensure_meme_collection() -> None:
                 return
 
     if MEME_COLLECTION_NAME not in existing or should_reindex:
-        from qdrant_client.models import PayloadSchemaType
+        from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
 
         await force_recreate_collection(
             collection_name=MEME_COLLECTION_NAME,
@@ -789,9 +788,8 @@ async def _embed_text(text: str) -> Optional[List[float]]:
 
 async def _force_recreate_meme_collection() -> None:
     """强制重建表情包 Collection（命名 dense + BM25 稀疏），用于本地 Qdrant 旧维度 ndarray 残留自恢复。"""
-    from qdrant_client.models import PayloadSchemaType
-
     from gsuid_core.ai_core.rag.base import client, get_strict_dimension
+    from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
     from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection
 
     if client is None:
@@ -839,10 +837,9 @@ async def _upsert_to_qdrant(
     旧点，自愈历史版本随机 UUID 留下的重复点。
     """
 
-    from qdrant_client.models import PointStruct
-
     from gsuid_core.ai_core.rag.base import client, get_point_id
     from gsuid_core.ai_core.rag.sparse import sparse_embed_single
+    from gsuid_core.ai_core.rag.qmodels import PointStruct
 
     if client is None:
         return None
@@ -923,14 +920,13 @@ async def _search_qdrant(
     Returns:
         匹配的 meme_id 列表
     """
-    from qdrant_client.models import (
+    from gsuid_core.ai_core.rag.hybrid import hybrid_query
+    from gsuid_core.ai_core.rag.qmodels import (
         Filter,
         MatchAny,
         MatchValue,
         FieldCondition,
     )
-
-    from gsuid_core.ai_core.rag.hybrid import hybrid_query
 
     # 显式附带 status 过滤，避免检索到未索引或草稿状态的表情包。
     must_conditions: list[Condition] = [
@@ -966,14 +962,21 @@ async def _search_qdrant(
         dense_score_threshold=score_threshold,
     )
 
-    return [r.payload["meme_id"] for r in points if r.payload and "meme_id" in r.payload]
+    meme_ids: list[str] = []
+    for point in points:
+        payload = point.payload
+        if payload is None or "meme_id" not in payload:
+            continue
+        meme_id = payload["meme_id"]
+        if isinstance(meme_id, str):
+            meme_ids.append(meme_id)
+    return meme_ids
 
 
 async def _remove_from_qdrant(meme_id: str) -> None:
     """从 Qdrant 中删除指定 meme_id 的向量"""
-    from qdrant_client.models import Filter, MatchValue, FieldCondition
-
     from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.qmodels import Filter, MatchValue, FieldCondition
 
     if client is None:
         return
@@ -1005,7 +1008,7 @@ async def _remove_many_from_qdrant(meme_ids: List[str]) -> None:
         return
 
     try:
-        from qdrant_client.models import Filter, MatchAny, FieldCondition
+        from gsuid_core.ai_core.rag.qmodels import Filter, MatchAny, FieldCondition
 
         await client.delete(
             collection_name=MEME_COLLECTION_NAME,

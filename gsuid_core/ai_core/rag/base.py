@@ -14,12 +14,12 @@ from pathlib import Path
 
 import httpx
 from fastembed import SparseTextEmbedding
-from qdrant_client import AsyncQdrantClient
 from huggingface_hub import constants as hf_constants, snapshot_download
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
+from gsuid_core.ai_core.rag.qmodels import QdrantSession
 from gsuid_core.ai_core.rag.embedding import (
     EmbeddingProvider,
     get_embedding_provider,
@@ -675,7 +675,7 @@ class _EmbeddingModelWrapper:
 
 embedding_model: "Union[_EmbeddingModelWrapper, None]" = None
 embedding_provider: "Union[EmbeddingProvider, None]" = None
-client: "Union[AsyncQdrantClient, None]" = None
+client: QdrantSession | None = None
 # 全局 Sparse Embedding 模型（懒加载，线程安全）
 _sparse_model = None
 _sparse_model_lock = threading.Lock()
