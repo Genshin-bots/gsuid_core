@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -125,3 +126,22 @@ def test_pip_bootstraps_ensurepip_once(monkeypatch: pytest.MonkeyPatch) -> None:
         results=[(1, "/usr/bin/python: No module named pip"), (0, ""), (0, "ok")],
     )
     assert calls == [pip_cmd, [sys.executable, "-m", "ensurepip"], pip_cmd]
+
+
+def test_auto_upgrade_dep_queues_satisfied_versions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "demo"\ngscore_auto_update_dep = ["kept>=1"]\n'
+        'gscore_auto_upgrade_dep = ["latest>=1", "missing"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(server, "auto_install_dep", True)
+    monkeypatch.setattr(server, "installed_dependencies", {"kept": "1.0", "latest": "1.0"})
+    monkeypatch.setattr(server, "_pending_install", [])
+    monkeypatch.setattr(server, "_pending_update", [])
+    server.check_pyproject(pyproject)
+    assert server._pending_install == ["missing"]
+    assert server._pending_update == ["latest>=1"]
