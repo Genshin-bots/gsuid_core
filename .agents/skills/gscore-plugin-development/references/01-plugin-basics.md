@@ -133,6 +133,8 @@ dependencies = [
 启动时自动安装 `dependencies` 中声明的依赖。`python`、`fastapi`、`pydantic`、`gsuid-core`、
 `sqlmodel`、`apscheduler`、`pydantic-ai` 等框架基础依赖**无需重复声明**。
 
+自家 SDK 这类要一直跟最新版的依赖，写进 `[project]` 的 `gscore_auto_upgrade_dep = ["my-sdk>=0.2.0"]`：每次启动都按 `--upgrade` 装到约束内的最新版，已装版本满足约束也照升。`gscore_auto_update_dep` 只在已装版本不满足约束时才更新。两张表都只在「自动安装依赖」或「自动更新依赖」开着时生效。
+
 ## 1.5 资源路径约定（推荐 `utils/resource/RESOURCE_PATH.py`）
 
 把所有运行时数据 / 配置 / 缓存 / 用户数据的绝对路径集中在一个文件，业务代码统一引用，

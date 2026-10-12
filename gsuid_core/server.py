@@ -800,6 +800,11 @@ def check_pyproject(pyproject: Path):
             logger.debug(t("log.server.special_dep_header"))
             logger.debug(sp_dep)
             process_dependencies(sp_dep, update=True)
+        upgrade_dep = toml_data["project"].get("gscore_auto_upgrade_dep", [])
+        if upgrade_dep:
+            logger.debug(t("log.server.special_dep_header"))
+            logger.debug(upgrade_dep)
+            process_dependencies(upgrade_dep, always_upgrade=True)
 
     elif "tool" in toml_data and "poetry" in toml_data["tool"]:
         # 处理 Poetry 格式
@@ -828,7 +833,7 @@ def check_pyproject(pyproject: Path):
         process_dependencies(dependencies, update=auto_update_dep)
 
 
-def process_dependencies(dependency_list: List[str], update: bool = False):
+def process_dependencies(dependency_list: List[str], update: bool = False, always_upgrade: bool = False):
     """检查依赖并收集待安装/待更新项。
 
     实际安装不在此处执行，而是由 load_plugins() 在所有插件检查完毕后
@@ -848,6 +853,11 @@ def process_dependencies(dependency_list: List[str], update: bool = False):
             if req_name not in installed_dependencies:
                 logger.info(t("log.server.dep_missing", req_name=req_name, raw=req.name))
                 _pending_install.append(dep_str)
+                continue
+
+            # 版本已满足也照样 --upgrade，拉到约束内的最新版
+            if always_upgrade:
+                _pending_update.append(dep_str)
                 continue
 
             # 已安装且开启更新 -> 检查版本是否满足
