@@ -706,18 +706,82 @@ class BaseIDModel(SQLModel):
         if not datas:
             return
         rows = list(datas)
-        for start in range(0, len(rows), _UPSERT_CHUNK):
-            await cls._upsert_chunk(rows[start : start + _UPSERT_CHUNK], update_key, index_elements)
+        chunks = [rows[start : start + _UPSERT_CHUNK] for start in range(0, len(rows), _UPSERT_CHUNK)]
+        if _db_type == "sqlite" and len(chunks) > 1:
+            await cls._upsert_chunks_shared_session(chunks, update_key, index_elements)
+            return
+        for chunk in chunks:
+            await cls._upsert_chunk(chunk, update_key, index_elements)
 
     @classmethod
-    @with_session
-    async def _upsert_chunk(
+    async def _upsert_chunks_shared_session(
+        cls,
+        chunks: Sequence[Sequence["BaseIDModel"]],
+        update_key: List[str],
+        index_elements: List[str],
+    ) -> None:
+        """整批共用一个 session，最后提交一次。"""
+
+        async def _run(lease: _SqliteDriverLease) -> None:
+            async with async_maker() as session:
+                token: contextvars.Token[_WriteBinding | None] | None = None
+                try:
+                    current = asyncio.current_task()
+                    if current is not None:
+                        token = _write_session.set(_WriteBinding(session, current))
+                    await _capture_sqlite_driver(session, lease)
+                    for chunk in chunks:
+                        if not chunk:
+                            continue
+                        await cls._apply_upsert(session, chunk, update_key, index_elements)
+                    await session.commit()
+                finally:
+                    if token is not None:
+                        _write_session.reset(token)
+
+        async def _budgeted() -> None:
+            lease = _SqliteDriverLease()
+            task: asyncio.Task[None] = asyncio.create_task(
+                _run(lease),
+                name="db-write:batch_upsert",
+            )
+            try:
+                done, _pending = await asyncio.wait({task}, timeout=_WRITE_BUDGET_S)
+            except asyncio.CancelledError:
+                await _stop_write_task(task, lease)
+                raise
+            if task in done:
+                if task.cancelled():
+                    raise asyncio.CancelledError
+                return task.result()
+            lingered = await _stop_write_task(task, lease)
+            if task.done() and not task.cancelled():
+                return task.result()
+            message = i18n_t(
+                "log.database.write_timeout",
+                budget=_budget_label(_WRITE_BUDGET_S),
+                operation="BaseIDModel.batch_upsert",
+            )
+            logger.error(message)
+            if lingered:
+                logger.error(i18n_t("log.database.write_timeout_linger", operation="BaseIDModel.batch_upsert"))
+            raise DatabaseWriteTimeout(message)
+
+        async def _once() -> None:
+            async with sqlite_write_gate.hold(core=True):
+                await _budgeted()
+
+        await _retry_db(_once)
+
+    @classmethod
+    async def _apply_upsert(
         cls,
         session: AsyncSession,
         datas: Sequence["BaseIDModel"],
         update_key: List[str],
         index_elements: List[str],
     ) -> None:
+        """构造 upsert 语句并执行（不含事务边界）。"""
         if not datas:
             return
 
@@ -748,6 +812,17 @@ class BaseIDModel(SQLModel):
             raise ValueError(i18n_t("[GsCore] [数据库] 不支持 {_db_type} 数据库!", _db_type=_db_type))
 
         await session.execute(update_stmt, values_to_insert)
+
+    @classmethod
+    @with_session
+    async def _upsert_chunk(
+        cls,
+        session: AsyncSession,
+        datas: Sequence["BaseIDModel"],
+        update_key: List[str],
+        index_elements: List[str],
+    ) -> None:
+        await cls._apply_upsert(session, datas, update_key, index_elements)
 
     @classmethod
     @with_session
