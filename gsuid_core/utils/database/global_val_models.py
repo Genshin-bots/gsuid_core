@@ -382,7 +382,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         return result
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_recently_data(
         cls,
         session: AsyncSession,
@@ -425,7 +425,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         return r.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_bots(
         cls,
         session: AsyncSession,
@@ -617,7 +617,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
             )
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_recently_data(
         cls,
         session: AsyncSession,
@@ -630,7 +630,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         return r.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_sp_data(
         cls,
         session: AsyncSession,
@@ -650,7 +650,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         return r.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_daily_command_totals(
         cls,
         session: AsyncSession,
