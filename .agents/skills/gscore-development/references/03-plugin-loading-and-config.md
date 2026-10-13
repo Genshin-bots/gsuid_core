@@ -9,6 +9,7 @@
 
 ```python
 async def load_plugins(self, dev_mode=False):
+    install_ai_off_heavy_gate()
     refresh_installed_dependencies()
     # 插件加载分为依赖收集、合并安装、导入注册与配置持久化四阶段
 ```
@@ -18,6 +19,9 @@ async def load_plugins(self, dev_mode=False):
 2. **合并安装**：调用 `flush_pending_installs()` 合并执行一次安装。
 3. **分阶段导入**：先 `cached_import` 基础设施插件（meta）并挂载别名，再导入常规插件。
 4. **持久化配置**：调用 `plugin_config_store.save_all()` 与 `lazy_write_config()`。
+
+> AI 总开关关闭时，`install_ai_off_heavy_gate()` 拦住 `onnxruntime` / `fastembed`（插件顶上
+> import 得到占位模块，真正调用才报错）。**`playwright` 不进闸**：插件浏览器渲染仍可用。
 
 
 > **关键设计**：依赖**先收集后合并安装**。早期每个插件单独跑一次安装，首次启动很慢；

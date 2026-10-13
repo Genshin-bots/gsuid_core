@@ -138,6 +138,8 @@ AI 关闭时**不该有任何 AI 逻辑在跑**。改 AI 模块时务必保留�
 - `handle_ai` 里 `enable_ai` **函数内动态读取**（不要缓存进模块级常量，否则切开关要重启）。
 - HTTP Agent：`register_http_agent_routes` 总开关关则不 `include_router`（再开需重启）。
   已挂上后关掉仍 404。Admin 建钥不走 Agent 面、不查总开关。
+- 导入闸（`heavy_import_gate`）只拦 `onnxruntime` / `fastembed`。**不要**把 `playwright`
+  放回去：插件命令出图走浏览器渲染，与 AI 总开关无关；拦了会 `HeavyImportBlocked`。
 
 ## 12.5 Bot 类型混淆（D-5）
 

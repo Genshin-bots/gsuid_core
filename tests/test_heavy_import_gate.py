@@ -1,4 +1,4 @@
-"""AI 关闭时，onnxruntime / fastembed / playwright 的导入不得装进真实原生库。"""
+"""AI 关闭时，onnxruntime / fastembed 的导入不得装进真实原生库；playwright 仍可用。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,12 @@ from gsuid_core.ai_core.heavy_import_gate import HeavyImportBlocked, install_ai_
 def test_ai_off_gate_serves_placeholders_until_call() -> None:
     script = textwrap.dedent(
         """
-        import sys
-        from gsuid_core.ai_core.heavy_import_gate import HeavyImportBlocked, _BlockedModule, install_ai_off_heavy_gate
+        from gsuid_core.ai_core.heavy_import_gate import (
+            HeavyImportBlocked,
+            _BlockedCall,
+            _BlockedModule,
+            install_ai_off_heavy_gate,
+        )
 
         assert install_ai_off_heavy_gate(force=True)
         import playwright
@@ -23,15 +27,16 @@ def test_ai_off_gate_serves_placeholders_until_call() -> None:
         import fastembed
         import onnxruntime
 
-        assert isinstance(playwright, _BlockedModule)
+        assert not isinstance(playwright, _BlockedModule)
+        assert not isinstance(async_playwright, _BlockedCall)
         assert isinstance(fastembed, _BlockedModule)
         assert isinstance(onnxruntime, _BlockedModule)
         try:
-            async_playwright()
+            fastembed.TextEmbedding()
         except HeavyImportBlocked:
             pass
         else:
-            raise SystemExit("call should be blocked")
+            raise SystemExit("fastembed call should be blocked")
         print("ok")
         """
     )
@@ -69,10 +74,10 @@ def test_gate_stays_off_when_not_forced(monkeypatch: pytest.MonkeyPatch) -> None
 def test_blocked_call_names_the_symbol() -> None:
     from gsuid_core.ai_core.heavy_import_gate import _BlockedCall
 
-    call = _BlockedCall("playwright.async_api.async_playwright")
+    call = _BlockedCall("onnxruntime.InferenceSession")
     try:
         call()
     except HeavyImportBlocked as exc:
-        assert "async_playwright" in str(exc)
+        assert "InferenceSession" in str(exc)
     else:
         raise AssertionError("expected HeavyImportBlocked")

@@ -131,6 +131,10 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 `create_core_tables` 同样跳过 AI 表创建。**因此关闭 AI 时不会建任何 AI SQLite 表，也不起
 任何 AI 后台任务**。
 
+`load_plugins` 在 import 插件前会装 `heavy_import_gate`：AI 关闭时 `onnxruntime` /
+`fastembed` 变成占位模块（真正调用才报 `HeavyImportBlocked`）。**`playwright` 不进闸**——
+插件命令出图（浏览器渲染）与 AI 总开关无关。
+
 `handle_ai.py` 里 `enable_ai` 改为**函数内动态读取**（`ai_config.get_config("enable").data`），
 不是模块级常量——用户在 WebConsole 切总开关后**无需重启**即生效。
 

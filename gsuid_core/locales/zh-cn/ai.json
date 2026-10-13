@@ -190,7 +190,7 @@
   "log.ai.core_init_fail_import_ai_heavy": "[AI Core] AI 重依赖导入失败, 初始化中止: {e}",
   "log.ai.core_init_fail_session_ai": "[AI Core] AI 核心初始化存在失败步骤，总耗时: {p0:.2f}秒，暂不接收 AI 会话",
   "log.ai.core_init_skip_import_ai_master": "[AI Core] AI总开关已关闭，跳过 AI 重依赖导入与子系统初始化",
-  "log.ai.heavy_import_blocked": "[AI Core] AI 总开关已关闭，启动不加载 onnxruntime、fastembed、playwright",
+  "log.ai.heavy_import_blocked": "[AI Core] AI 总开关已关闭，启动不加载 onnxruntime、fastembed",
   "log.ai.rag_shell_skip": "[AI Core] 未启用 AI，不会实际执行导入知识库",
   "log.ai.create_subagent_delivery_requery_fail": "[create_subagent] 交付补询失败: {e}",
   "log.ai.create_subagent_incomplete_delivery": "[create_subagent] {pid} 交付不完整，补询事实包 preview={preview}",

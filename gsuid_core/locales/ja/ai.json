@@ -190,7 +190,7 @@
   "log.ai.core_init_fail_import_ai_heavy": "[AI Core] AI 重依存のインポートに失敗しました。初期化を中止します: {e}",
   "log.ai.core_init_fail_session_ai": "[AI Core] AI Core の初期化に失敗したステップがあります（合計 {p0:.2f} 秒）。まだ AI セッションを受け付けません。",
   "log.ai.core_init_skip_import_ai_master": "[AI Core] AI のマスタースイッチがオフのため、AI 重依存インポートとサブシステムの初期化をスキップします",
-  "log.ai.heavy_import_blocked": "[AI Core] AI がオフのため、起動時に onnxruntime、fastembed、playwright は読み込みません",
+  "log.ai.heavy_import_blocked": "[AI Core] AI がオフのため、起動時に onnxruntime、fastembed は読み込みません",
   "log.ai.rag_shell_skip": "[AI Core] AI が無効のため、ナレッジベースの実インポートは行いません",
   "log.ai.create_subagent_delivery_requery_fail": "[create_subagent] 交付の再問い合わせに失敗: {e}",
   "log.ai.create_subagent_incomplete_delivery": "[create_subagent] {pid} の交付が不完全、事実パッケージを再問い合わせ preview={preview}",
