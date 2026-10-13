@@ -18,7 +18,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.models import Event
 from gsuid_core.handler import count_data
 from gsuid_core.trigger import Trigger
-from gsuid_core.global_val import PlatformVal, bot_val
+from gsuid_core.global_val import PlatformVal, bot_val, bot_dirty, bot_summary_saved
 from gsuid_core.utils.database.global_val_models import (
     DataType,
     SummaryKey,
@@ -51,15 +51,31 @@ _ROOT = Path(__file__).resolve().parents[1]
 _STARTUP = _ROOT / "gsuid_core" / "utils" / "database" / "startup.py"
 
 
-def _isolate_bot_val() -> dict[str, dict[str, PlatformVal]]:
+def _isolate_bot_val() -> tuple[
+    dict[str, dict[str, PlatformVal]],
+    dict[str, dict[str, set[tuple[DataType, str, str]]]],
+    dict[str, dict[str, tuple[int, int, int, int, int, int]]],
+]:
     snapshot = deepcopy(bot_val)
+    dirty = {bot: {self_id: set(keys) for self_id, keys in bots.items()} for bot, bots in bot_dirty.items()}
+    saved = {bot: dict(bots) for bot, bots in bot_summary_saved.items()}
     bot_val.clear()
-    return snapshot
+    bot_dirty.clear()
+    bot_summary_saved.clear()
+    return snapshot, dirty, saved
 
 
-def _restore_bot_val(snapshot: dict[str, dict[str, PlatformVal]]) -> None:
+def _restore_bot_val(
+    snapshot: dict[str, dict[str, PlatformVal]],
+    dirty: dict[str, dict[str, set[tuple[DataType, str, str]]]],
+    saved: dict[str, dict[str, tuple[int, int, int, int, int, int]]],
+) -> None:
     bot_val.clear()
     bot_val.update(snapshot)
+    bot_dirty.clear()
+    bot_dirty.update(dirty)
+    bot_summary_saved.clear()
+    bot_summary_saved.update(saved)
 
 
 async def _noop(_bot: Bot, _ev: Event) -> None:
@@ -157,7 +173,7 @@ def test_merge_patches_uses_user_sum_not_group() -> None:
 
 
 def test_count_data_skips_on_message() -> None:
-    snapshot = _isolate_bot_val()
+    snapshot, dirty, saved = _isolate_bot_val()
     try:
         ev = _event()
         fake = str(uuid.uuid4())
@@ -170,11 +186,11 @@ def test_count_data_skips_on_message() -> None:
                 assert fake not in local["user"]["u1"]
         assert command == 0
     finally:
-        _restore_bot_val(snapshot)
+        _restore_bot_val(snapshot, dirty, saved)
 
 
 def test_count_data_records_real_command_and_ignores_later_message() -> None:
-    snapshot = _isolate_bot_val()
+    snapshot, dirty, saved = _isolate_bot_val()
     try:
         ev = _event()
         fake = str(uuid.uuid4())
@@ -188,11 +204,11 @@ def test_count_data_records_real_command_and_ignores_later_message() -> None:
         assert local["group"]["g1"]["帮助"] == 1
         assert fake not in local["user"]["u1"]
     finally:
-        _restore_bot_val(snapshot)
+        _restore_bot_val(snapshot, dirty, saved)
 
 
 def test_count_data_still_records_file_trigger() -> None:
-    snapshot = _isolate_bot_val()
+    snapshot, dirty, saved = _isolate_bot_val()
     try:
         ev = _event()
         asyncio.run(count_data(ev, _trigger("file", "png")))
@@ -200,7 +216,7 @@ def test_count_data_still_records_file_trigger() -> None:
         assert local["command"] == 1
         assert local["user"]["u1"]["png"] == 1
     finally:
-        _restore_bot_val(snapshot)
+        _restore_bot_val(snapshot, dirty, saved)
 
 
 def test_purge_hook_runs_after_schema_and_before_load() -> None:

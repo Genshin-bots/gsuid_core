@@ -5,12 +5,13 @@ from datetime import date as ymddate, datetime, timedelta
 from dataclasses import dataclass
 
 from sqlmodel import Field, Index, col, func, delete, select, update
-from sqlalchemy import UniqueConstraint, tuple_, distinct
+from sqlalchemy import UniqueConstraint, insert as sa_insert, tuple_, distinct
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Select
 
-from .base_models import BaseIDModel, with_session, with_read_session
+from . import base_models as _base_models
+from .base_models import BaseIDModel, with_session, with_read_session, with_session_budget
 
 
 class CountVal(TypedDict):
@@ -37,9 +38,27 @@ class BotTraffic(TypedDict):
     max_runtime_func: str
 
 
+class DashboardTypeStats(TypedDict):
+    dau_dag: float
+    new: int
+    mau: int
+    stickiness: float
+    out_rate: float
+
+
 class DataType(enum.Enum):
     GROUP = "group"
     USER = "user"
+
+
+class AnalysisInsertRow(TypedDict):
+    data_type: DataType
+    target_id: str
+    command_name: str
+    command_count: int
+    date: ymddate
+    bot_id: str
+    bot_self_id: str
 
 
 # on_message() 默认 unique_id=uuid4()；落库 command_name 即该串
@@ -50,6 +69,15 @@ _UUID4_COMMAND_RE = re.compile(
 UUID4_COMMAND_LIKE = "________-____-____-____-____________"
 _UUID4_DELETE_ID_CHUNK = 400
 _UUID4_KEY_CHUNK = 100
+_ANALYSIS_SNAPSHOT_BUDGET_S = 60.0
+_ANALYSIS_CONFLICT_COLS = [
+    "date",
+    "data_type",
+    "target_id",
+    "command_name",
+    "bot_id",
+    "bot_self_id",
+]
 
 SummaryKey = Tuple[ymddate, str, str]
 
@@ -438,6 +466,77 @@ class CoreDataAnalysis(BaseIDModel, table=True):
     bot_self_id: str = Field(title="机器人自身ID", index=True, max_length=64)
 
     @classmethod
+    async def replace_day_snapshot(
+        cls,
+        datas: Sequence["CoreDataAnalysis"],
+    ) -> None:
+        """用内存里拼好的当天全量行覆盖对应 (date, bot_id, bot_self_id) 切片。空列表不写库。"""
+        if not datas:
+            return
+        await cls._replace_day_snapshot(datas)
+
+    @classmethod
+    @with_session_budget(_ANALYSIS_SNAPSHOT_BUDGET_S)
+    async def _replace_day_snapshot(
+        cls,
+        session: AsyncSession,
+        datas: Sequence["CoreDataAnalysis"],
+    ) -> None:
+        slices: set[tuple[ymddate, str, str]] = set()
+        payloads: list[AnalysisInsertRow] = []
+        for row in datas:
+            slices.add((row.date, row.bot_id, row.bot_self_id))
+            payloads.append(
+                {
+                    "data_type": row.data_type,
+                    "target_id": row.target_id,
+                    "command_name": row.command_name,
+                    "command_count": row.command_count,
+                    "date": row.date,
+                    "bot_id": row.bot_id,
+                    "bot_self_id": row.bot_self_id,
+                }
+            )
+        for day, bot_id, bot_self_id in slices:
+            await session.execute(
+                delete(cls).where(
+                    col(cls.date) == day,
+                    col(cls.bot_id) == bot_id,
+                    col(cls.bot_self_id) == bot_self_id,
+                )
+            )
+        chunk = _base_models._UPSERT_CHUNK
+        for start in range(0, len(payloads), chunk):
+            await session.execute(sa_insert(cls), payloads[start : start + chunk])
+
+    @classmethod
+    async def upsert_command_counts(
+        cls,
+        datas: Sequence["CoreDataAnalysis"],
+    ) -> None:
+        """按唯一键写入脏格子的 command_count。空列表不写库。"""
+        if not datas:
+            return
+        await cls._upsert_command_counts(datas)
+
+    @classmethod
+    @with_session_budget(_ANALYSIS_SNAPSHOT_BUDGET_S)
+    async def _upsert_command_counts(
+        cls,
+        session: AsyncSession,
+        datas: Sequence["CoreDataAnalysis"],
+    ) -> None:
+        del session
+        rows = list(datas)
+        chunk = _base_models._UPSERT_CHUNK
+        for start in range(0, len(rows), chunk):
+            await cls._upsert_chunk(
+                rows[start : start + chunk],
+                ["command_count"],
+                _ANALYSIS_CONFLICT_COLS,
+            )
+
+    @classmethod
     @with_session
     async def delete_outdate(
         cls,
@@ -689,7 +788,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         return Uuid4CommandPurgeResult(deleted=deleted, summaries_updated=updated)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def _get_stats_for_type(
         cls,
         session: AsyncSession,
@@ -699,9 +798,7 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         seven_days_ago: ymddate,
         bot_id: Optional[str] = None,
         bot_self_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        stats = {}
-
+    ) -> DashboardTypeStats:
         # --- DAU/DAG Calculation (This part was correct) ---
         dau_query = select(
             col(cls.date),
@@ -719,8 +816,8 @@ class CoreDataAnalysis(BaseIDModel, table=True):
 
         daily_active_subquery = dau_query.group_by(col(cls.date)).subquery()
         avg_daily_query = select(func.avg(daily_active_subquery.c.daily_count))
-        avg_result = await session.execute(avg_daily_query)
-        stats["dau_dag"] = avg_result.scalar_one_or_none() or 0.0
+        avg_raw = (await session.execute(avg_daily_query)).scalar_one_or_none()
+        dau_dag = float(avg_raw) if isinstance(avg_raw, (int, float)) and not isinstance(avg_raw, bool) else 0.0
 
         twenty_nine_days_ago = today - timedelta(days=29)
 
@@ -750,8 +847,8 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         if bot_self_id:
             new_targets_query = new_targets_query.where(cls.bot_self_id == bot_self_id)
 
-        new_targets_count_result = await session.execute(new_targets_query)
-        stats["new"] = new_targets_count_result.scalar_one()
+        new_raw = (await session.execute(new_targets_query)).scalar_one()
+        new_count = int(new_raw) if isinstance(new_raw, int) and not isinstance(new_raw, bool) else 0
 
         # --- OU/OG Calculation (Corrected Logic) ---
         recent_active_subquery = (
@@ -781,8 +878,8 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         if bot_self_id:
             out_targets_query = out_targets_query.where(cls.bot_self_id == bot_self_id)
 
-        out_targets_result = await session.execute(out_targets_query)
-        out_targets_count = out_targets_result.scalar_one()
+        out_raw = (await session.execute(out_targets_query)).scalar_one()
+        out_count = int(out_raw) if isinstance(out_raw, int) and not isinstance(out_raw, bool) else 0
 
         # The denominator query for the rate calculation
         total_targets_in_30_days_query = select(func.count(distinct(col(cls.target_id)))).where(
@@ -795,21 +892,18 @@ class CoreDataAnalysis(BaseIDModel, table=True):
         if bot_self_id:
             total_targets_in_30_days_query = total_targets_in_30_days_query.where(cls.bot_self_id == bot_self_id)
 
-        total_targets_result = await session.execute(total_targets_in_30_days_query)
-        total_targets_count = total_targets_result.scalar_one()
+        mau_raw = (await session.execute(total_targets_in_30_days_query)).scalar_one()
+        mau = int(mau_raw) if isinstance(mau_raw, int) and not isinstance(mau_raw, bool) else 0
 
-        stats["mau"] = total_targets_count
-
-        if total_targets_count > 0:
-            stats["stickiness"] = (stats["dau_dag"] / total_targets_count) * 100
-        else:
-            stats["stickiness"] = 0.0
-
-        # Calculate rate
-        out_rate = (out_targets_count / total_targets_count * 100) if total_targets_count > 0 else 0
-        stats["out_rate"] = out_rate
-
-        return stats
+        stickiness = (dau_dag / mau) * 100 if mau > 0 else 0.0
+        out_rate = (out_count / mau * 100) if mau > 0 else 0.0
+        return {
+            "dau_dag": dau_dag,
+            "new": new_count,
+            "mau": mau,
+            "stickiness": stickiness,
+            "out_rate": out_rate,
+        }
 
     @classmethod
     async def calculate_dashboard_metrics(

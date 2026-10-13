@@ -1,10 +1,11 @@
 """core信息 的取数不该占写闸门。
 
-`get_day_trends` / `get_yesterday_data` / `get_distinct_date_data` 都是只读查询，
-曾经挂在 `@with_session` 上，于是 core信息 这条只读命令会抢三次进程级单写者闸门，
+`get_day_trends` / `get_yesterday_data` / `get_distinct_date_data` /
+`calculate_dashboard_metrics` 都是只读查询，曾经挂在 `@with_session` 上，
+于是 core信息 这条只读命令会抢进程级单写者闸门，
 并且在排队超时时有权取消当时正在写的任务。它们现在挂 `@with_read_session`，走独立读槽。
 
-回归锁：拦 `sqlite_write_gate.enter`，断言这三个方法一次都不碰写闸门；
+回归锁：拦 `sqlite_write_gate.enter`，断言这些方法一次都不碰写闸门；
 再让写闸门被别人占满，断言只读查询仍能在超时前返回。
 """
 
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import (
 
 import gsuid_core.utils.database.write_gate as write_gate
 import gsuid_core.utils.database.base_models as base_models
-from gsuid_core.utils.database.global_val_models import CoreDataSummary
+from gsuid_core.utils.database.global_val_models import CoreDataSummary, CoreDataAnalysis
 
 
 def _install_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncEngine:
@@ -132,3 +133,32 @@ async def _summary_read_returns_while_a_writer_holds_the_gate(
         blocker.cancel()
         await asyncio.gather(blocker, return_exceptions=True)
         await engine.dispose()
+
+
+async def _create_analysis_table(engine: AsyncEngine) -> None:
+    table = SQLModel.metadata.tables["coredataanalysis"]
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all, tables=[table])
+
+
+def test_dashboard_metrics_never_take_the_write_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(_dashboard_metrics_never_take_the_write_gate(tmp_path, monkeypatch))
+
+
+async def _dashboard_metrics_never_take_the_write_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _install_db(tmp_path, monkeypatch)
+    await _create_analysis_table(engine)
+
+    entered = _spy_write_gate(monkeypatch)
+    metrics = await CoreDataAnalysis.calculate_dashboard_metrics("onebot", "1")
+    assert isinstance(metrics, dict)
+    assert metrics["DAU"] == "0.00"
+    assert entered == [], f"看板统计不该进写闸门, 实际进了 {len(entered)} 次"
+
+    await engine.dispose()

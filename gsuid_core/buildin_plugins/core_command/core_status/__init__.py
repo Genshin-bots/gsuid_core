@@ -41,7 +41,7 @@ async def _u_clear_and_save_global_val_all():
     """每天凌晨0点执行，清空全局状态"""
 
     await gv.save_all_global_val(1)
-    gv.bot_val = {}
+    gv.clear_runtime_global_val()
 
     await gv.save_bot_max_qps()
 

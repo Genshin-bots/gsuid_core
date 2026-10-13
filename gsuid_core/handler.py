@@ -23,7 +23,7 @@ from gsuid_core.models import (
 )
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger
-from gsuid_core.global_val import get_platform_val
+from gsuid_core.global_val import get_platform_val, mark_command_dirty
 from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
@@ -33,6 +33,7 @@ from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
     log_config,
 )
+from gsuid_core.utils.database.global_val_models import DataType
 
 # 注意：handle_ai / history / memory / statistics 等 AI 重模块改为在
 # handle_event 内按需懒加载，避免 import handler 时同步拉起 AI ML 栈而阻塞启动。
@@ -880,6 +881,14 @@ async def count_data(event: Event, trigger: Trigger):
             local_val["user"][event.user_id][trigger.keyword] += 1
 
         local_val["user_count"] = len(local_val["user"])
+
+    bot_id = event.real_bot_id
+    bot_self_id = event.bot_self_id
+    if bot_id is not None and bot_self_id is not None:
+        if event.group_id:
+            mark_command_dirty(bot_id, bot_self_id, DataType.GROUP, event.group_id, trigger.keyword)
+        if event.user_id:
+            mark_command_dirty(bot_id, bot_self_id, DataType.USER, event.user_id, trigger.keyword)
 
 
 async def _check_command(

@@ -49,6 +49,10 @@ platform_val: PlatformVal = {
 }
 
 bot_val: BotVal = {}
+AnalysisDirtyKey = Tuple[DataType, str, str]
+SummaryFingerprint = Tuple[int, int, int, int, int, int]
+bot_dirty: Dict[str, Dict[str, Set[AnalysisDirtyKey]]] = {}
+bot_summary_saved: Dict[str, Dict[str, SummaryFingerprint]] = {}
 bot_traffic: BotTraffic = {
     "req": 0,
     "max_qps": 0,
@@ -114,6 +118,77 @@ def merge_dict(dict1: PlatformVal, dict2: PlatformVal) -> PlatformVal:
             result[key] = value
 
     return result
+
+
+def mark_command_dirty(
+    bot_id: str,
+    bot_self_id: str,
+    data_type: DataType,
+    target_id: str,
+    command_name: str,
+) -> None:
+    if bot_id not in bot_dirty:
+        bot_dirty[bot_id] = {}
+    if bot_self_id not in bot_dirty[bot_id]:
+        bot_dirty[bot_id][bot_self_id] = set()
+    bot_dirty[bot_id][bot_self_id].add((data_type, target_id, command_name))
+
+
+def clear_runtime_global_val() -> None:
+    bot_val.clear()
+    bot_dirty.clear()
+    bot_summary_saved.clear()
+
+
+def _summary_fingerprint(local_val: PlatformVal) -> SummaryFingerprint:
+    return (
+        local_val["receive"],
+        local_val["send"],
+        local_val["command"],
+        local_val["image"],
+        len(local_val["user"]),
+        len(local_val["group"]),
+    )
+
+
+def _set_summary_saved(bot_id: str, bot_self_id: str, fingerprint: SummaryFingerprint) -> None:
+    if bot_id not in bot_summary_saved:
+        bot_summary_saved[bot_id] = {}
+    bot_summary_saved[bot_id][bot_self_id] = fingerprint
+
+
+def _analysis_rows_from_dirty(
+    local_val: PlatformVal,
+    dirty: Set[AnalysisDirtyKey],
+    bot_id: str,
+    bot_self_id: str,
+    day: datetime.date,
+) -> List[CoreDataAnalysis]:
+    rows: List[CoreDataAnalysis] = []
+    for data_type, target_id, command_name in dirty:
+        if data_type == DataType.USER:
+            bucket = local_val["user"]
+        elif data_type == DataType.GROUP:
+            bucket = local_val["group"]
+        else:
+            continue
+        if target_id not in bucket:
+            continue
+        counts = bucket[target_id]
+        if command_name not in counts:
+            continue
+        rows.append(
+            CoreDataAnalysis(
+                data_type=data_type,
+                target_id=target_id,
+                command_name=command_name,
+                command_count=counts[command_name],
+                date=day,
+                bot_id=bot_id,
+                bot_self_id=bot_self_id,
+            )
+        )
+    return rows
 
 
 def get_platform_val(bot_id: Optional[str], bot_self_id: Optional[str]):
@@ -274,8 +349,11 @@ async def load_all_global_val():
                 bot_self_id=summary.bot_self_id,
             )
             if datas:
-                platform_val = await trans_database_to_val(summary, datas)
-                bot_val[summary.bot_id][summary.bot_self_id] = platform_val
+                loaded = await trans_database_to_val(summary, datas)
+                bot_val[summary.bot_id][summary.bot_self_id] = loaded
+                _set_summary_saved(summary.bot_id, summary.bot_self_id, _summary_fingerprint(loaded))
+                if summary.bot_id in bot_dirty and summary.bot_self_id in bot_dirty[summary.bot_id]:
+                    bot_dirty[summary.bot_id][summary.bot_self_id].clear()
     logger.debug(t("log.global_val.bot_val_debug", bot_val=bot_val))
     logger.success(t("log.global_val.load_done"))
 
@@ -297,9 +375,15 @@ async def trans_database_to_val(summary: CoreDataSummary, datas: Sequence[CoreDa
     pv["send"] = summary.send
     for data in datas:
         if data.data_type == DataType.USER:
-            pv["user"][data.target_id] = {data.command_name: data.command_count}
-        if data.data_type == DataType.GROUP:
-            pv["group"][data.target_id] = {data.command_name: data.command_count}
+            bucket = pv["user"]
+        elif data.data_type == DataType.GROUP:
+            bucket = pv["group"]
+        else:
+            continue
+        target_id = data.target_id
+        if target_id not in bucket:
+            bucket[target_id] = {}
+        bucket[target_id][data.command_name] = data.command_count
     return pv
 
 
@@ -321,70 +405,45 @@ async def _save_global_val_to_database(
     bot_self_id: str,
     today_datetime: datetime.date,
 ):
-    insert_datas = []
-    for _g in local_val["group"]:
-        group_data = local_val["group"][_g]
-        for command_name in group_data:
-            command_count = group_data[command_name]
-            insert_datas.append(
-                CoreDataAnalysis(
-                    data_type=DataType.GROUP,
-                    target_id=_g,
-                    command_name=command_name,
-                    command_count=command_count,
-                    date=today_datetime,
-                    bot_id=bot_id,
-                    bot_self_id=bot_self_id,
-                )
+    if bot_id not in bot_dirty:
+        bot_dirty[bot_id] = {}
+    if bot_self_id not in bot_dirty[bot_id]:
+        bot_dirty[bot_id][bot_self_id] = set()
+    dirty = bot_dirty[bot_id][bot_self_id]
+    snapshot = set(dirty)
+    dirty.clear()
+    fingerprint = _summary_fingerprint(local_val)
+    last = None
+    if bot_id in bot_summary_saved and bot_self_id in bot_summary_saved[bot_id]:
+        last = bot_summary_saved[bot_id][bot_self_id]
+    saved = False
+    try:
+        rows = _analysis_rows_from_dirty(local_val, snapshot, bot_id, bot_self_id, today_datetime)
+        if rows:
+            await CoreDataAnalysis.upsert_command_counts(rows)
+        if last != fingerprint:
+            await CoreDataSummary.batch_insert_data_with_update(
+                [
+                    CoreDataSummary(
+                        receive=local_val["receive"],
+                        send=local_val["send"],
+                        command=local_val["command"],
+                        image=local_val["image"],
+                        user_count=len(local_val["user"]),
+                        group_count=len(local_val["group"]),
+                        date=today_datetime,
+                        bot_id=bot_id,
+                        bot_self_id=bot_self_id,
+                    )
+                ],
+                ["receive", "send", "command", "image", "user_count", "group_count"],
+                ["date", "bot_id", "bot_self_id"],
             )
-    for _u in local_val["user"]:
-        user_data = local_val["user"][_u]
-        for command_name in user_data:
-            command_count = user_data[command_name]
-            insert_datas.append(
-                CoreDataAnalysis(
-                    data_type=DataType.USER,
-                    target_id=_u,
-                    command_name=command_name,
-                    command_count=command_count,
-                    date=today_datetime,
-                    bot_id=bot_id,
-                    bot_self_id=bot_self_id,
-                )
-            )
-
-    await CoreDataAnalysis.batch_insert_data_with_update(
-        insert_datas,
-        ["command_count"],
-        [
-            "data_type",
-            "target_id",
-            "date",
-            "command_name",
-            "bot_id",
-            "bot_self_id",
-        ],
-    )
-
-    insert_summary = []
-    insert_summary.append(
-        CoreDataSummary(
-            receive=local_val["receive"],
-            send=local_val["send"],
-            command=local_val["command"],
-            image=local_val["image"],
-            user_count=len(local_val["user"]),
-            group_count=len(local_val["group"]),
-            date=today_datetime,
-            bot_id=bot_id,
-            bot_self_id=bot_self_id,
-        )
-    )
-    await CoreDataSummary.batch_insert_data_with_update(
-        insert_summary,
-        ["receive", "send", "command", "image", "user_count", "group_count"],
-        ["date", "bot_id", "bot_self_id"],
-    )
+            _set_summary_saved(bot_id, bot_self_id, fingerprint)
+        saved = True
+    finally:
+        if not saved:
+            dirty |= snapshot
 
 
 def prepare_models_from_json(

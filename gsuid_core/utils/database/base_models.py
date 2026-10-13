@@ -505,7 +505,10 @@ def _session_wrapper(
     func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
     *,
     read_only: bool,
+    budget_s: float | None = None,
 ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
+    write_budget = _WRITE_BUDGET_S if budget_s is None else budget_s
+
     @wraps(func)
     async def wrapper(self, *args: P.args, **kwargs: P.kwargs):
         operation = func.__qualname__
@@ -554,7 +557,7 @@ def _session_wrapper(
                 name=f"db-write:{operation}",
             )
             try:
-                done, _pending = await asyncio.wait({task}, timeout=_WRITE_BUDGET_S)
+                done, _pending = await asyncio.wait({task}, timeout=write_budget)
             except asyncio.CancelledError:
                 await _stop_write_task(task, lease)
                 raise
@@ -568,7 +571,7 @@ def _session_wrapper(
                 return task.result()
             message = i18n_t(
                 "log.database.write_timeout",
-                budget=_budget_label(_WRITE_BUDGET_S),
+                budget=_budget_label(write_budget),
                 operation=operation,
             )
             logger.error(message)
@@ -597,6 +600,22 @@ def with_session(
     func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
 ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
     return _session_wrapper(func, read_only=False)
+
+
+def with_session_budget(
+    budget_s: float,
+) -> Callable[
+    [Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]]],
+    Callable[Concatenate[Any, P], Awaitable[R]],
+]:
+    """给已知会写很多行的核心快照加长写预算。默认 10s 仍约束普通 @with_session。"""
+
+    def deco(
+        func: Callable[Concatenate[Any, AsyncSession, P], Awaitable[R]],
+    ) -> Callable[Concatenate[Any, P], Awaitable[R]]:
+        return _session_wrapper(func, read_only=False, budget_s=budget_s)
+
+    return deco
 
 
 def with_read_session(

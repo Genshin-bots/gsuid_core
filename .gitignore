@@ -710,3 +710,7 @@ nul
 .zcode
 .probe
 test_output
+
+# local PR / review git worktrees
+.pr-*-wt/
+.pr-wt-*/
