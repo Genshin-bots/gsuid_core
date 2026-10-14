@@ -229,13 +229,18 @@ async def assemble_dynamic_context(
         text = f"{text}\n\n{tail}" if text else tail
     from gsuid_core.ai_core.entity_index import format_alias_bindings
 
-    # 只扫用户原话和用户历史行。助手自己提过的角色名不算本轮归属。
-    alias_lines = [query]
-    for line in history_context.splitlines():
-        if history_line_is_assistant(line):
-            continue
-        alias_lines.append(line)
-    alias_note = format_alias_bindings("\n".join(alias_lines))
+    # 实体别名绑定：优先当前提问匹配；无命中时仅限紧邻的追问行继承，防止群聊误伤。
+    alias_note = format_alias_bindings(query)
+    if not alias_note and history_context:
+        recent_user_lines: list[str] = []
+        for line in reversed(history_context.splitlines()):
+            if history_line_is_assistant(line) or not line.strip() or line.startswith("[历史对话]"):
+                continue
+            recent_user_lines.append(line)
+            if len(recent_user_lines) >= 2:
+                break
+        if recent_user_lines:
+            alias_note = format_alias_bindings("\n".join(reversed(recent_user_lines)))
     if alias_note:
         text = f"{text}\n\n{alias_note}" if text else alias_note
         logger.debug(t("log.entity_index.alias_binding_injected", note=alias_note))

@@ -711,12 +711,11 @@ class SettlePhase(RunOnceHost):
                 else:
                     self._scrub_fake_done_history(set())
 
-            # 被直接呼叫却整段沉默（引用/寻址门仍允许沉默）
+            # 被直接呼叫却整段沉默（含无可见文本出站；引用/寻址门仍允许沉默）
             elif (
-                result_msg
-                and is_silence_marker(result_msg.strip())
+                (not result_msg or is_silence_marker(result_msg.strip()))
+                and not self._run_sent_texts
                 and not st.fake_done_retry
-                and not st.tool_call_list
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
                 and st.tg is not None

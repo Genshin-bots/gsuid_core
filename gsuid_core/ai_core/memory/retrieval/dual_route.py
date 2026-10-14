@@ -811,7 +811,11 @@ class MemoryContext:
                     skel = format_order_skeleton(stage_eps, query=query)
                     self.skeleton_ids = [e["id"] for e in stage_eps if "id" in e]
                     if skel:
-                        _sk_block = "【事件顺序（按时间）】\n" + "\n".join(skel)
+                        _sk_block = (
+                            "【事件顺序（按时间）】"
+                            "（Chronological event sequence; answer strictly following this order）：\n"
+                            + "\n".join(skel)
+                        )
                         parts.append(_sk_block)
                         other_budget = max(0, other_budget - len(_sk_block) - 2)
                     n = query_only_item_cap(query) or len(skel)

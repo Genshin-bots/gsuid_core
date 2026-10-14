@@ -78,7 +78,12 @@ def _format_results_for_model(results: list[dict], query: str = "") -> str:
 
 
 # 多源 failover 可能串行多次检索，外层包装需覆盖单源超时之和
-@ai_tools(category="buildin", timeout=100.0, code_callable=True)
+@ai_tools(
+    category="buildin",
+    timeout=100.0,
+    code_callable=True,
+    covers=["网页搜索", "网络检索", "天气查询", "新闻资讯", "外网搜索"],
+)
 async def web_search_tool(
     ctx: RunContext[ToolContext],
     query: str,
@@ -87,7 +92,7 @@ async def web_search_tool(
     """
     Web 搜索（外网摘要兜底；可信度通常低于结构化数据工具）。
 
-    适用：新闻/事件脉络、公告背景、开放问答、池中无结构化接口时。
+    适用：天气出行、新闻/事件脉络、公告背景、开放问答、池中无结构化接口时。
     不适用：把摘要数字/状态当「当前实时值」——网页常过时。
     query 须自带可检索的具体槽。槽在说话人身上且当前消息没写时，先
     `search_cognition` 自己组合查询词填槽，禁止空槽直搜。

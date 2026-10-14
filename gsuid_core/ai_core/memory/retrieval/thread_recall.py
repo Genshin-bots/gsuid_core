@@ -331,13 +331,17 @@ async def recall_thread_candidates(
             by_sid[sid].append(ep)
     out = expand_kept_sessions(keep, by_sid, cap_per=per_sess)
     seen = {e["id"] for e in out if "id" in e}
-    for ep in orphans[:8]:
-        eid = ep["id"] if "id" in ep else ""
-        if eid and eid in seen:
-            continue
-        if eid:
-            seen.add(eid)
-        out.append(ep)
+    target = max(top_m, cap_n * 4)
+    if not out and orphans:
+        out = chrono_diverse_episodes(orphans, target)
+    else:
+        for ep in chrono_diverse_episodes(orphans, target):
+            eid = ep["id"] if "id" in ep else ""
+            if eid and eid not in seen:
+                seen.add(eid)
+                out.append(ep)
+            if len(out) >= target:
+                break
     return out
 
 
@@ -353,7 +357,7 @@ async def recall_span_threads(
     sample, cues = await recall_from_threads(query, scope_keys)
     if not sample:
         sample = await recall_thread_candidates(query, scope_keys)
-    if not sample and not order_topic_span(query):
+    if not sample:
         from gsuid_core.ai_core.memory.retrieval.lexical import user_episodes_chrono_sample
 
         sample = await user_episodes_chrono_sample(user_id=user_id, group_id=group_id)

@@ -289,7 +289,7 @@ class CoreDataSummary(BaseIDModel, table=True):
         bot_self_id: Optional[str] = None,
     ) -> Dict[str, List[int]]:
         """
-        获取最近45天的数据趋势。
+        获取最近 46 天（45 天前 ~ 今天）的数据趋势。
 
         返回一个字典，包含：
         - 全平台 6 列 (receive/send/user_count/group_count/image/command)
@@ -320,7 +320,9 @@ class CoreDataSummary(BaseIDModel, table=True):
                 func.coalesce(func.sum(cls.command), 0),
             )
             .where(col(cls.date) >= thirty_days_ago)
-            .where(col(cls.date) < today)
+            # 含今天。46 天窗口若写成 < today，末日恒为 0，仪表盘最新值和趋势图会掉底。
+            # 当日行已由 dirty flush upsert；半天偏低可以留，末日恒 0 不行。
+            .where(col(cls.date) <= today)
             .group_by(col(cls.date), col(cls.bot_id), col(cls.bot_self_id))
             .order_by(col(cls.date))
         )

@@ -842,6 +842,7 @@ LOCAL_EMBEDDING_CONFIG: Dict[str, GSC] = {
         options=[
             "jinaai/jina-embeddings-v2-base-zh",
             "BAAI/bge-small-zh-v1.5",
+            "BAAI/bge-small-en-v1.5",
         ],
     ),
     "embedding_modalities": GsListStrConfig(

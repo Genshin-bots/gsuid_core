@@ -363,6 +363,14 @@ def order_metrics_from_align(align: List[int | None]) -> tuple[float, float | No
     return coverage, kendall_tau_b(list(range(n)), ranks)
 
 
+def partial_tau_from_align(align: List[int | None]) -> float | None:
+    """已对齐项（>=2）之间的相对顺序 Kendall tau-b。"""
+    matched = [item for item in align if item is not None]
+    if len(matched) < 2:
+        return None
+    return kendall_tau_b(list(range(len(matched))), matched)
+
+
 # 项目符号也算清单。只认编号会把整条答卷丢掉，顺序题只能得 0。
 _NUMBERED_ITEM = re.compile(r"^\d+[\.\)）]\s*\S")
 _BULLET_ITEM = re.compile(r"^[-*•–—]\s+\S")
@@ -475,6 +483,7 @@ def attach_order_metrics(parsed: Dict[str, Any], rubric: List[str]) -> Dict[str,
     parsed["coverage"] = coverage
     parsed["tau"] = tau
     parsed["tau_official"] = official_tau_from_align(align)
+    parsed["tau_partial"] = partial_tau_from_align(align)
     raw_scores = parsed["rubric_scores"] if "rubric_scores" in parsed else []
     rubric_all = False
     if isinstance(raw_scores, list) and len(raw_scores) == len(rubric):

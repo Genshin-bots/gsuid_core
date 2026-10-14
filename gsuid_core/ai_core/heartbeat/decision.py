@@ -82,7 +82,7 @@ ACTIVE_WINDOW_MIN = 30
 DELAYED_TOPIC_NOTE_TEMPLATE = (
     "\n\n（时间感知：群里最后一条消息是 {minutes} 分钟前发出的。"
     "如果是开放话题可以搭话，但请自然体现真实群友才看到或刚翻到消息的时间差感，"
-    "如「才看到/刚才在忙/刚睡醒」，禁止表现得像刚刚秒回。）"
+    "如「才看到/刚才没看手机」，禁止表现得像刚刚秒回。）"
 )
 
 STALENESS_NOTE_TEMPLATE = (

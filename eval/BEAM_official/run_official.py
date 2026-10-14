@@ -46,7 +46,7 @@ def _inherit_core_token() -> None:
             cmd = " ".join(proc.info["cmdline"] or [])
         except (psutil.Error, OSError):
             continue
-        if "gsuid_core.core" not in cmd:
+        if "gsuid_core.core" not in cmd and "core.exe" not in cmd:
             continue
         try:
             env = proc.environ()
@@ -468,6 +468,7 @@ def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
     eo_cov: list[float] = []
     eo_tau: list[float] = []
     eo_tau_off: list[float] = []
+    eo_tau_part: list[float] = []
     conv_rows: list[str] = []
     for conv in range(spec.n_conv):
         jp = _judge_path(spec, conv)
@@ -504,6 +505,13 @@ def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
                     tau_off = official_tau_from_align(parse_align_list(j["align"], len(j["align"])))
                 if isinstance(tau_off, (int, float)):
                     eo_tau_off.append(float(tau_off))
+                tau_part = j["tau_partial"] if "tau_partial" in j else None
+                if not isinstance(tau_part, (int, float)) and "align" in j and isinstance(j["align"], list):
+                    from eval.common.judge import parse_align_list, partial_tau_from_align
+
+                    tau_part = partial_tau_from_align(parse_align_list(j["align"], len(j["align"])))
+                if isinstance(tau_part, (int, float)):
+                    eo_tau_part.append(float(tau_part))
         passed_all += ok
         total_all += n
         conv_rows.append(f"| {conv} | {ok}/{n} | |")
@@ -520,6 +528,9 @@ def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
             f"**EO Kendall τ-b（官方口径）：**{sum(eo_tau_off) / len(eo_tau_off):.3f}"
             f"（{len(eo_tau_off)} 题；未全对齐记 0）"
         )
+    if eo_tau_part:
+        tau_part_mean = sum(eo_tau_part) / len(eo_tau_part)
+        lines.append(f"**EO Kendall τ-b（部分对齐）：**{tau_part_mean:.3f}（{len(eo_tau_part)} 题已对齐项相对序）")
     if eo_tau:
         tau_mean = sum(eo_tau) / len(eo_tau)
         lines.append(f"**EO Kendall τ-b（全对齐）：**{tau_mean:.3f}（{len(eo_tau)} 题）")

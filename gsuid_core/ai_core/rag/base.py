@@ -58,12 +58,11 @@ RAG_UPSERT_BATCH_SIZE: Final[int] = RAG_BATCH_SIZE
 
 # ============== 模型HF仓库映射 ==============
 def _get_embedding_hf_repo(model_name: str) -> str:
-    """根据embedding模型名称获取对应的HuggingFace仓库名
-
-    特别处理：只要文件名中包含 bge-small-zh-v1.5，就使用 Qdrant/bge-small-zh-v1.5
-    """
+    """根据embedding模型名称获取对应的HuggingFace仓库名"""
     if "bge-small-zh-v1.5" in model_name:
         return "Qdrant/bge-small-zh-v1.5"
+    if "bge-small-en-v1.5" in model_name:
+        return "qdrant/bge-small-en-v1.5-onnx-q"
     return model_name
 
 
