@@ -998,7 +998,9 @@ def register_builtin_profiles() -> None:
             node_id="render_agent",
             display_name="视觉渲染",
             prompt=_RENDER_PROMPT,
-            when_to_use=("把已有事实包/对比表/指标/清单渲成美观图片；主人格不自写 HTML，多项数据出图一律委派本节点"),
+            when_to_use=(
+                "把已有事实包、对比表、指标或清单渲成 HTML 信息卡或图表。不接二次元插画、人物立绘或 Diffusion 生图。"
+            ),
             match_keywords=[
                 "出图",
                 "渲成图",

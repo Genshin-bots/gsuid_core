@@ -20,11 +20,17 @@ self_model 结构（存于 state_store）::
 """
 
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+from datetime import datetime, timezone
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+from gsuid_core.ai_core.memory.relative_schedule import (
+    preference_written_on,
+    one_off_schedule_expired,
+    looks_like_one_off_relative_schedule,
+)
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.relationship import RelationshipView
@@ -409,7 +415,7 @@ def note_applies_to_speaker(note: str, speaker_id: str) -> bool:
 
 def collect_speaker_preference_rules(
     notes: list[str],
-    scoped_rules: list[tuple[str, str, bool]],
+    scoped_rules: Sequence[tuple[str, str, bool] | tuple[str, str, bool, Optional[datetime]]],
     speaker_id: str,
     *,
     limit: int,
@@ -435,9 +441,21 @@ def collect_speaker_preference_rules(
             item[0],
         ),
     )
-    for ctx, rule, _corr in ranked:
+    now = datetime.now(timezone.utc)
+    for item in ranked:
+        ctx = item[0]
+        rule = item[1]
+        created_at: datetime | None = item[3] if len(item) > 3 else None
         tag = f"{ctx}：" if ctx and ctx != "general" else ""
-        push(f"{tag}{rule}" if tag else rule)
+        date_prefix = f"[{preference_written_on(created_at)}] " if created_at is not None else ""
+        exp_tag = ""
+        if (
+            created_at is not None
+            and looks_like_one_off_relative_schedule(rule)
+            and one_off_schedule_expired(created_at, now=now)
+        ):
+            exp_tag = "（已过期日程）"
+        push(f"{date_prefix}{tag}{rule}{exp_tag}" if (tag or date_prefix or exp_tag) else rule)
     for note in notes:
         if note_applies_to_speaker(note, speaker_id):
             push(note)
@@ -464,7 +482,7 @@ async def load_speaker_preference_tail(bot_id: str, speaker_id: str) -> str:
     from gsuid_core.ai_core.memory.config import memory_config
 
     model = await get_self_model(bot_id)
-    scoped: list[tuple[str, str, bool]] = []
+    scoped: list[tuple[str, str, bool, Optional[datetime]]] = []
     if memory_config.enable_preference_memory:
         from gsuid_core.ai_core.memory.database.models import AIMemPreference
 
@@ -483,7 +501,7 @@ async def load_speaker_preference_tail(bot_id: str, speaker_id: str) -> str:
                 continue
             seen_ids.add(row.id)
             merged.append(row)
-        scoped = [(row.target_context, row.preference_rule, row.is_correction) for row in merged]
+        scoped = [(row.target_context, row.preference_rule, row.is_correction, row.created_at) for row in merged]
     rules = collect_speaker_preference_rules(
         model["preferences_learned"],
         scoped,

@@ -273,11 +273,12 @@ def test_process_meta_and_empty_handoff_gates() -> None:
 def test_wall_clock_pipeline_branch() -> None:
     close = wall_clock_nudge_for(need_render_pipeline=False)
     pipe = wall_clock_nudge_for(need_render_pipeline=True)
-    assert "不要再发起新的工具调用" in close or "不要再发起任何新的工具调用" in close
-    assert "render_agent" in pipe
-    assert "SILENCE" in pipe
-    # 有事实包时必须硬开 render 例外
-    assert ("禁止" in pipe and "停工具" in pipe) or ("硬例外" in pipe)
+    assert "不要再发起新的工具调用" in close
+    assert "render_agent" not in close
+    assert "可以委派 render_agent" in pipe
+    assert "也可以不出图" in pipe
+    assert "硬例外" not in pipe
+    assert "必须立刻" not in pipe
     blocked = wall_clock_nudge_for(need_render_pipeline=True, allow_render=False)
     assert "render_agent" not in blocked
     assert "不要再发起新的工具调用" in blocked
@@ -389,7 +390,8 @@ def test_ack_plus_find_tools_is_not_terminal() -> None:
     assert batch_still_working(["send_message_by_ai", "find_tools"])
     assert batch_still_working(["find_tools"])
     assert not batch_still_working(["send_message_by_ai"])
-    assert not batch_still_working(["send_meme"])
+    assert batch_still_working(["send_meme"])
+    assert not batch_still_working(["send_message_by_ai", "send_meme"])
 
 
 def test_wait_comfort_does_not_mark_delivered() -> None:
@@ -781,3 +783,40 @@ def test_short_title_is_not_a_master_title_hit() -> None:
     assert not title_mentioned("主", "交给主人判断")
     assert not title_mentioned("lord", "landlord said hello")
     assert title_mentioned("主人", "交给主人判断")
+
+
+def test_task_accept_speech_allows_action_and_speech_lines() -> None:
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_task_accept_speech
+
+    two_lines = "（叹气叹到一半，认命地把手按在剑柄上）\n\n……遇上你，我这十年的修行都白修了。……等着，别催。"
+    assert looks_like_task_accept_speech(two_lines)
+
+    three_lines = "第一行动作\n\n第二行发言\n\n第三行补充"
+    assert not looks_like_task_accept_speech(three_lines)
+    two_facts = "北京今天 18 度，有雨。\n\n上海今天 22 度，多云。"
+    assert not looks_like_task_accept_speech(two_facts)
+
+
+def test_meme_only_stays_open_and_message_plus_meme_is_terminal() -> None:
+    from gsuid_core.ai_core.agent_run.speech_policy import batch_is_meme_only
+
+    assert batch_is_meme_only(["send_meme"])
+    assert not batch_is_meme_only(["send_message_by_ai", "send_meme"])
+    assert not batch_is_meme_only(["send_meme", "find_tools"])
+
+
+def test_looks_like_illustration_request() -> None:
+    from gsuid_core.ai_core.buildin_tools.subagent import looks_like_illustration_request
+
+    assert looks_like_illustration_request("画一张角色卡提希娅（小卡）的二次元插画")
+    assert looks_like_illustration_request("画个白丝小卡的立绘")
+    assert looks_like_illustration_request("把我的立绘发出来")
+    assert not looks_like_illustration_request("将本轮已查到的要点做成一张信息图")
+    assert not looks_like_illustration_request("把对比数据表渲成 HTML 卡片")
+    assert not looks_like_illustration_request("画一张对比图")
+    assert not looks_like_illustration_request("画一个流程图")
+    assert not looks_like_illustration_request("帮我画个架构图")
+    assert not looks_like_illustration_request("把用户头像做成资料卡")
+    assert not looks_like_illustration_request("draw a bar chart")
+    assert not looks_like_illustration_request("redraw the metrics")
+    assert not looks_like_illustration_request("withdraw the old chart")

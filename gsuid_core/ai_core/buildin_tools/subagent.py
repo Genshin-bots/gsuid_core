@@ -85,6 +85,31 @@ _ARTIFACT_REGISTERED_RE = re.compile(
     r"(已登记\s*artifact|artifact[_\s-]?put|事实包已登记|登记为\s*\*?`?res_)",
     re.IGNORECASE,
 )
+# 信息卡 / 图表。命中则不是插画，哪怕句子里带「画」或「立绘」。
+_DATA_VISUAL_RE = re.compile(
+    r"(?:HTML|html|事实包|数据表|对比表|对比图|指标卡|信息图|图表|流程图|架构图|资料卡|"
+    r"柱状图|折线图|饼图|思维导图|\bres_|chart|metrics|dashboard)",
+    re.IGNORECASE,
+)
+_ILLUSTRATION_STRONG_RE = re.compile(
+    r"(?:二次元|插画|立绘|全身立图|全身图|动漫图|同人图|同人画|壁纸|素描|生图|anime\s+style|illustration|wallpaper)",
+    re.IGNORECASE,
+)
+# draw / portrait 要整词，避免 withdraw、redraw 误伤。
+_ILLUSTRATION_DRAW_RE = re.compile(
+    r"(?:画一张|画一个|画个|绘图|(?<![A-Za-z])draw(?![A-Za-z])|(?<![A-Za-z])portrait(?![A-Za-z]))",
+    re.IGNORECASE,
+)
+
+
+def looks_like_illustration_request(task: str) -> bool:
+    """是否让 render_agent 画插画/立绘/生图。图表、资料卡、流程图不算。"""
+    body = (task or "").strip()
+    if not body or _DATA_VISUAL_RE.search(body):
+        return False
+    if _ILLUSTRATION_STRONG_RE.search(body):
+        return True
+    return _ILLUSTRATION_DRAW_RE.search(body) is not None
 
 
 def looks_like_incomplete_subagent_delivery(text: str) -> bool:
@@ -435,7 +460,14 @@ async def _create_subagent_impl(
                     )
                 return "⚠️ 本轮是任务交付回灌。当前人格未启用出图代理，请直接用已有事实作答，不要新开查询。"
         _follow = _extra["turn_followup"] is True if "turn_followup" in _extra else False
-        if pid != "render_agent" and ctx.deps.ev is not None:
+        if pid == "render_agent":
+            if looks_like_illustration_request(task):
+                return (
+                    "⚠️ render_agent 只把事实包、表格和对比结论渲成 HTML 信息卡或图表，"
+                    "不画二次元插画、人物立绘或 Diffusion 生图。"
+                    "角色已有的立绘走 self_info；部署了别的生图工具就改调那个工具，不要派给 render_agent。"
+                )
+        elif ctx.deps.ev is not None:
             _reject = delegation_ground_reject(ctx.deps.ev, task, follow=_follow)
             if _reject:
                 return _reject

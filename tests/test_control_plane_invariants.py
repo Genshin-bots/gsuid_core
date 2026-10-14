@@ -353,13 +353,16 @@ def test_voice_retry_sends_deliverable_rewrite_not_silence() -> None:
     assert settle_mod._voice_retry_text("<SILENCE>", disputed=True, blocked=blocked) == blocked
 
 
-def test_blocked_numeric_recitation_requires_render_without_tools() -> None:
-    """念数被拦且本轮零工具：仍要纠正去 render，不能整轮静默。"""
+def test_numeric_recitation_without_fact_pack_does_not_obligate_render() -> None:
+    """没有事实包的念数不武装出图。有事实包才纠正。"""
     from gsuid_core.ai_core.control.corrections import numeric_recitation_directive
 
-    st = _mk_state(tool_call_list=[], saw_structured_return=False)
-    st.presentation_withheld_reasons.append("numeric_recitation")
-    assert settle_mod._needs_render_obligation(st, "<SILENCE>")
+    bare = _mk_state(tool_call_list=[], saw_structured_return=False)
+    bare.presentation_withheld_reasons.append("numeric_recitation")
+    assert not settle_mod._needs_render_obligation(bare, "<SILENCE>")
+    packed = _mk_state(tool_call_list=["web_search_tool"], saw_structured_return=True)
+    packed.presentation_withheld_reasons.append("numeric_recitation")
+    assert settle_mod._needs_render_obligation(packed, "<SILENCE>")
     directive = numeric_recitation_directive()
     assert directive.reason_code == "numeric_recitation"
     assert directive.obligations[0].tool_name == "create_subagent"
@@ -373,7 +376,7 @@ def test_numeric_recitation_skips_render_when_persona_disables_it() -> None:
         numeric_recitation_directive,
     )
 
-    st = _mk_state(tool_call_list=[], saw_structured_return=False)
+    st = _mk_state(tool_call_list=["web_search_tool"], saw_structured_return=True)
     st.presentation_withheld_reasons.append("numeric_recitation")
     assert not settle_mod._needs_render_obligation(st, "<SILENCE>", allow_render=False)
     assert settle_mod._needs_render_obligation(st, "<SILENCE>")

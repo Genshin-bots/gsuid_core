@@ -763,15 +763,38 @@ class AISessionLogger:
         """记录框架补发的接任务应（persona.json 配置句）。"""
         self._add_entry("task_ack", {"content": content, "source": source})
 
-    def log_result(self, output: Any, tool_calls: List[str]) -> None:
+    def log_result(
+        self,
+        output: Any,
+        tool_calls: List[str],
+        *,
+        silence_reason: Optional[str] = None,
+    ) -> None:
         """记录单次 run 的最终结果"""
-        self._add_entry(
-            "result",
-            {
-                "output": str(output),
-                "tool_calls": tool_calls,
-            },
-        )
+        out_str = str(output).strip()
+        from gsuid_core.ai_core.utils import is_silence_marker
+
+        if is_silence_marker(out_str) or not out_str:
+            self._add_entry(
+                "result",
+                {
+                    "output": str(output),
+                    "tool_calls": tool_calls,
+                    "silence_reason": silence_reason or "model_voluntary",
+                },
+            )
+            return
+        if silence_reason is not None:
+            self._add_entry(
+                "result",
+                {
+                    "output": str(output),
+                    "tool_calls": tool_calls,
+                    "silence_reason": silence_reason,
+                },
+            )
+            return
+        self._add_entry("result", {"output": str(output), "tool_calls": tool_calls})
 
     def log_error(self, error_type: str, message: str) -> None:
         """记录错误信息"""

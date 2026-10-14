@@ -91,3 +91,38 @@ def test_dynamic_context_appends_speaker_tail(monkeypatch) -> None:
     assert "location：在广州" in full
     assert full.find(SOFT_TRIGGER_NOTE) < full.find("location：在广州")
     assert full.rstrip().endswith("• location：在广州")
+
+
+def test_speaker_preference_with_timestamp_and_expired_tag() -> None:
+    from datetime import datetime, timezone, timedelta
+
+    from gsuid_core.ai_core.memory.relative_schedule import (
+        one_off_schedule_expired,
+        looks_like_one_off_relative_schedule,
+    )
+
+    past = datetime.now(timezone.utc) - timedelta(days=7)
+    recent = datetime.now(timezone.utc) - timedelta(hours=20)
+    scoped = [
+        ("location", "我在西部", False, past),
+        ("location", "明天要去学校（返校）", False, past),
+        ("general", "凌晨说的明天指当天早上", False, past),
+        ("location", "明天要去学校", False, recent),
+    ]
+    rules = collect_speaker_preference_rules([], scoped, "100000010", limit=5)
+    west = next(rule for rule in rules if "我在西部" in rule)
+    old_trip = next(rule for rule in rules if "明天要去学校（返校）" in rule)
+    gloss = next(rule for rule in rules if "凌晨说的明天指当天早上" in rule)
+    fresh = next(rule for rule in rules if "明天要去学校" in rule and "返校" not in rule)
+    assert past.astimezone().strftime("[%Y.%m.%d]") in west
+    assert "（已过期日程）" not in west
+    assert "（已过期日程）" in old_trip
+    assert "（已过期日程）" not in gloss
+    assert "（已过期日程）" not in fresh
+    assert not looks_like_one_off_relative_schedule("我一般今晚才有空")
+    assert looks_like_one_off_relative_schedule("明天返校")
+    created = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
+    assert not one_off_schedule_expired(created, now=datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc))
+    assert one_off_schedule_expired(created, now=datetime(2026, 10, 15, 1, 0, tzinfo=timezone.utc))
+    naive_utc = datetime(2026, 10, 14, 0, 0)
+    assert not one_off_schedule_expired(naive_utc, now=datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc))

@@ -70,6 +70,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
     non_master_title,
+    batch_is_meme_only,
     batch_still_working,
     is_status_tool_name,
     strip_open_solicitations,
@@ -81,6 +82,7 @@ from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     DELEGATION_INFLIGHT_KEY as _DELEGATION_INFLIGHT_KEY,
     PENDING_DELEGATION_HOLD as _PENDING_DELEGATION_HOLD,
+    POST_MEME_LINE_CONTRACT as _POST_MEME_LINE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
     RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
@@ -297,6 +299,7 @@ class LoopPhase(RunOnceHost):
                 await bot.commit_streamed_history(text, extra_metadata=turn_reply_metadata(st.ev))
             self._run_sent_texts.add(text)
             st.main_channel_sends += 1
+            st.meme_line_pending = False
             return
         _mention_raw = st.run_extra["mention_names"] if "mention_names" in st.run_extra else None
         _mentions: dict[str, str] = {}
@@ -315,6 +318,7 @@ class LoopPhase(RunOnceHost):
         absorb_run_image_delivered(st)
         self._run_sent_texts.add(text)
         st.main_channel_sends += 1
+        st.meme_line_pending = False
 
     async def _send_gated_text(self, st: RunOnceState, text: str, *, at_user_id: str | None) -> None:
         """闸门已通过：流式只补未推后缀，否则 ``send_chat_result``。"""
@@ -724,6 +728,9 @@ class LoopPhase(RunOnceHost):
             ):
                 st.delivered_terminal = True
                 st.speech_policy = "delivered"
+                st.meme_line_pending = False
+            elif batch_is_meme_only(_return_names):
+                st.meme_line_pending = True
             if st.pending_async_delivery:
                 _any_actionable = False
                 if not any(
@@ -753,7 +760,9 @@ class LoopPhase(RunOnceHost):
                         capability_node_id=self.capability_node_id,
                     )
                     _contract = _fail_c if _any_fail else _ok_c
-                    if (
+                    if st.meme_line_pending and not _any_fail:
+                        _contract = _POST_MEME_LINE_CONTRACT
+                    elif (
                         not _any_fail
                         and st.tool_call_list
                         and st.tool_call_list[0] == "web_search_tool"
@@ -780,6 +789,7 @@ class LoopPhase(RunOnceHost):
                             _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
                             _POST_TOOL_OUTPUT_CONTRACT_RENDER,
                             _POST_TOOL_FAIL_CONTRACT_RENDER,
+                            _POST_MEME_LINE_CONTRACT,
                         )
                         for p in node.request.parts
                     ):
@@ -960,6 +970,10 @@ class LoopPhase(RunOnceHost):
                 logger.debug(i18n_t("log.agent.llm_text", _text=_text))
                 self._session_logger.log_text_output(_text)
                 if is_silence_marker(_text):
+                    if st.delivered_terminal:
+                        st.silence_reason = "delivered_terminal"
+                    elif not st.silence_reason:
+                        st.silence_reason = "model_voluntary"
                     # 看过出戏提醒后选静默 = 自主判断不发，收尾旁路不得再送原文
                     if output_gate.ooc_reminder_delivered(_require_context(st).extra):
                         st.ooc_blocked.clear()
@@ -1029,6 +1043,7 @@ class LoopPhase(RunOnceHost):
                         entity_routed=st.entity_routed,
                     )
                     if _blk:
+                        st.last_block_reason = _why
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
                         # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
                         if _why in ("report_speech", "empty_handoff", "persona_length_breach"):
@@ -1069,6 +1084,7 @@ class LoopPhase(RunOnceHost):
                     )
                     if _gr.decision is output_gate.GateDecision.FUSE:
                         st.ab_abort = True
+                        st.last_block_reason = "output_gate_fuse"
                         _ab_attempt_counted_this_response = True
                         logger.warning(
                             i18n_t(

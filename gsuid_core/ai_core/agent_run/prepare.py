@@ -396,17 +396,12 @@ class PreparePhase(RunOnceHost):
             if (
                 not _skip_nudge
                 and self.create_by in ["Chat", "Agent"]
-                and self._consecutive_no_tool_rounds >= 2
+                and self._unmet_tool_promise
                 and st.intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
             ):
                 no_tool_reminder = (
-                    "\n\n【⚠️ 系统检测】你已连续多轮未调用任何工具，"
-                    "当前用户问题可能尚未得到有效回答。"
-                    "若你上一轮的思考里明确提到要调用某个工具（如 register_kanban_task、"
-                    "evaluate_agent_mesh_capability、create_subagent）却没有真正调用——"
-                    "口头答应 ≠ 执行，请本轮立即调用对应工具。否则请立即检查工具列表，"
-                    "选择最合适的工具调用，或明确说明为何确实无工具可用——禁止以角色"
-                    "不懂为由跳过工具。"
+                    "\n\n（系统：上一轮你已经决定调用某个工具，但没有真正调用。"
+                    "本轮去调用它。若其实不必用工具，直接回答，不要为这条提示再找工具。）"
                 )
                 st.final_user_message = _append_user_text(st.final_user_message, no_tool_reminder)
                 logger.debug(i18n_t("log.agent.forced_nudge_consecutive_turns"))

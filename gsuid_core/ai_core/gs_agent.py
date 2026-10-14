@@ -339,8 +339,9 @@ class GsCoreAIAgent(RunOnceMixin):
         # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
         self._budget_scope: Optional[Tuple[str, str, str]] = None
 
-        # 连续无工具调用计数：连续多轮只输出文本、不调用任何工具时， 下一轮注入强制提醒，
+        # 连续无工具轮数只做计数。催工具只在上一轮思考点了已装配工具却没调用时。
         self._consecutive_no_tool_rounds: int = 0
+        self._unmet_tool_promise: bool = False
 
         # L3 会话驻留：最近使用过的能力族 → 剩余可常驻轮数（每轮递减）。
         # 兜底"刚用过某能力、紧接着的追问语义却召不回该工具"的场景。

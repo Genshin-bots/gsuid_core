@@ -180,27 +180,22 @@ STATUS_INQUIRY_HINT = (
 )
 
 _WALL_CLOCK_CLOSE = (
-    "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复；"
-    "除非是为已有事实包委派 render_agent 出图，否则不要再发起新的工具调用；"
+    "（系统提示：本轮处理耗时已超预算。不要再发起新的工具调用。"
+    "立即基于已有信息用角色口吻给出最终回复；一句能说清就直接答。"
     "信息不全就如实说明现状，绝不编造。"
     "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
     "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
 )
-_WALL_CLOCK_CLOSE_NO_RENDER = (
-    "（系统提示：本轮处理耗时已超预算。立即基于已有信息用角色口吻给出最终回复；"
-    "不要再发起新的工具调用；"
-    "信息不全就如实说明现状，绝不编造。"
-    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
-    "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
-)
+_WALL_CLOCK_CLOSE_NO_RENDER = _WALL_CLOCK_CLOSE
 
 _WALL_CLOCK_PIPELINE = (
-    "（系统提示：本轮处理耗时已超预算，但**已有事实包未出图**——"
-    "这是硬例外，**禁止**因预算停工具。"
-    "你必须立刻 "
-    'create_subagent(agent_profile="render_agent", task=本轮事实包或 res_ 句柄) 出图；'
-    "禁止新开检索；禁止长文当台词；禁止说「查完了/资料里有/念不动」却不出图；"
-    "出图完成前其余 <SILENCE>；禁止念内部节点名。）"
+    "（系统提示：本轮处理耗时已超预算。不要再开新的检索。"
+    "用已经拿到的内容给出最终回复；一句能说清就直接答。"
+    "已有多点材料时可以委派 render_agent 出图，也可以不出图。"
+    "不要把出图写成这一步的义务，出图前也不必只输出 <SILENCE>。"
+    "信息不全就如实说明，绝不编造。"
+    "禁止对用户念内部节点名或编排流程；禁止把长信息念成多段台词。"
+    "若仍在等待后台：只输出 <SILENCE>。）"
 )
 
 _RENDER_DELEGATE_NUDGE = (
@@ -449,7 +444,11 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
         return False
     if looks_like_machine_latin(body):
         return False
-    if body.count("\n") >= 2:
+    content_lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if len(content_lines) > 2:
+        return False
+    # 两行只放行「括号动作 + 台词」。两段正文仍是结构垃圾。
+    if len(content_lines) == 2 and not any(_line_is_action_beat(ln) for ln in content_lines):
         return False
     if claims_premature_delivery(body) and not _keeps_working(body):
         return False
@@ -458,6 +457,10 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
     if len(_MD_HEADING_RE.findall(body)) >= 1:
         return False
     return True
+
+
+def _line_is_action_beat(line: str) -> bool:
+    return (line.startswith("（") and line.endswith("）")) or (line.startswith("(") and line.endswith(")"))
 
 
 def looks_like_inflight_quota_speech(text: str) -> bool:
@@ -700,10 +703,14 @@ def should_block_user_visible_text(
     if claims_premature_delivery(body) and not image_sent and not _keeps_working(body):
         return True, "premature_delivery"
 
-    # 多点读数进气泡 = 该走资料图。不要求已有在途任务（首轮对照同样适用）。
-    if not image_sent and looks_like_numeric_recitation(body):
-        if not (pol == "status_ok" and has_status_tool):
-            return True, "numeric_recitation"
+    # 多点读数：只有真有待出图事实包才拦。无事实包的数字句是回答本身。
+    if (
+        fact_pack_pending
+        and not image_sent
+        and looks_like_numeric_recitation(body)
+        and not (pol == "status_ok" and has_status_tool)
+    ):
+        return True, "numeric_recitation"
 
     # 仅当真有待出图材料时：空交付/摆烂才拦截并武装纠正
     if fact_pack_pending and looks_like_empty_handoff(body) and not image_sent:
@@ -808,12 +815,25 @@ def content_is_render_candidate(
     return False
 
 
-_TERMINAL_DELIVERY_TOOLS = frozenset({"send_message_by_ai", "send_meme"})
+_TERMINAL_DELIVERY_TOOLS = frozenset({"send_message_by_ai"})
+
+
+def batch_is_meme_only(tool_names: Sequence[str]) -> bool:
+    """这一步只有表情。轮子先别收，补不补台词由模型定。"""
+    names = [name for name in tool_names if name]
+    if not names or not any(name == "send_meme" for name in names):
+        return False
+    if any(name in _TERMINAL_DELIVERY_TOOLS for name in names):
+        return False
+    return all(name == "send_meme" for name in names)
 
 
 def batch_still_working(tool_names: Sequence[str]) -> bool:
-    """同一步除了发送以外还有工具返回，接话不是终局。"""
-    return any(name and name not in _TERMINAL_DELIVERY_TOOLS for name in tool_names)
+    """同一步还有非发送工具，或只有表情、台词还没发出。"""
+    names = [name for name in tool_names if name]
+    if any(name not in _TERMINAL_DELIVERY_TOOLS and name != "send_meme" for name in names):
+        return True
+    return batch_is_meme_only(names)
 
 
 def should_mark_speech_delivered(*, text: str, has_media: bool) -> bool:

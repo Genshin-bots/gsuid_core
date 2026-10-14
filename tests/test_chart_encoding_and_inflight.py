@@ -184,8 +184,19 @@ def test_inflight_and_active_task_block_numeric_dump() -> None:
         has_status_tool=True,
         tool_calls_so_far=["check_delegation"],
         has_active_task=True,
+        fact_pack_pending=True,
     )
     assert blk2 and why2 == "numeric_recitation"
+    bare, bare_why = should_block_user_visible_text(
+        "free",
+        dump,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=True,
+        tool_calls_so_far=["check_delegation"],
+        has_active_task=True,
+    )
+    assert not bare, bare_why
 
     blk3, _ = should_block_user_visible_text(
         "free",

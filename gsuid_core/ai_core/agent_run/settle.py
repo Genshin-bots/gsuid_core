@@ -220,15 +220,12 @@ def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
 
 
 def _needs_render_obligation(st: RunOnceState, result_msg: str, *, allow_render: bool = True) -> bool:
-    """有出处凭据且台词呈报告体 / 空交付暂扣时才进纠正。mismatch 单独不够。
+    """有出处凭据且台词呈报告体、念数或空交付时才进纠正。
 
-    念数被话术闸拦下时，即使本轮没工具，也要纠正去出图，否则用户什么都看不到。
-    人格关掉 render_agent 时不把委派出图当成义务。
+    没有事实包的念数是回答本身，不武装出图。人格关掉 render_agent 时不把出图当义务。
     """
     if not allow_render:
         return False
-    if "numeric_recitation" in st.presentation_withheld_reasons:
-        return True
     if not st.saw_structured_return or not st.tool_call_list:
         return False
     if _looks_like_report_speech(result_msg or ""):
@@ -505,13 +502,16 @@ class SettlePhase(RunOnceHost):
             if self.create_by in ["Chat", "Agent"] and st.intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
                 if st.tool_call_list:
                     self._consecutive_no_tool_rounds = 0
+                    self._unmet_tool_promise = False
                 else:
                     self._consecutive_no_tool_rounds += 1
-                    # 意图-行为不一致检测（结构化）：thinking 里提到了本轮
-                    # 已装配的工具名却没真正调用——顶到阈值，下轮强制提醒。
+                    # 思考里点了本轮已装配的工具名却没调用。只记这一笔，不因空轮催工具。
                     thinking_blob = "\n".join(st.thinking_segments)
-                    if thinking_blob and st.tool_names and any(tn in thinking_blob for tn in st.tool_names):
-                        self._consecutive_no_tool_rounds = max(self._consecutive_no_tool_rounds, 2)
+                    mentioned = bool(
+                        thinking_blob and st.tool_names and any(tn in thinking_blob for tn in st.tool_names)
+                    )
+                    self._unmet_tool_promise = mentioned
+                    if mentioned:
                         logger.debug(i18n_t("log.agent.intent_action_mismatch_force"))
 
             # 记录 Token 使用量和延迟统计
@@ -917,7 +917,7 @@ class SettlePhase(RunOnceHost):
                 and self.create_by != "CapabilityAgent"
             ):
                 logger.warning(i18n_t("log.agent.render_data_nudge_once"))
-                if "numeric_recitation" in st.presentation_withheld_reasons and not st.saw_structured_return:
+                if "numeric_recitation" in st.presentation_withheld_reasons:
                     _directive = numeric_recitation_directive(allow_render=_allow_render)
                 else:
                     _directive = render_obligation_directive(
@@ -973,26 +973,44 @@ class SettlePhase(RunOnceHost):
                         or looks_like_process_meta(_rs)
                     ):
                         result_msg = "<SILENCE>"
+                        st.silence_reason = (
+                            "orchestration_leak"
+                            if has_orchestration_narration(_rs)
+                            else ("report_speech" if _looks_like_report_speech(_rs) else "process_meta")
+                        )
                     else:
                         _stripped = strip_open_solicitations(_rs)
                         if _stripped != _rs:
                             result_msg = _stripped if _stripped else "<SILENCE>"
+                            if not result_msg or is_silence_marker(result_msg):
+                                st.silence_reason = "open_solicit_stripped"
                         elif len(_rs) > 120:
                             result_msg = "<SILENCE>"
+                            st.silence_reason = "post_image_too_long"
                 elif (st.pending_async_delivery or st.delegated_render) and not is_silence_marker(_rs):
                     # 在途默认静默；极短等待安慰可保留一次
                     if looks_like_wait_comfort(_rs) and not st.wait_comfort_sent:
                         result_msg = _rs
                     else:
                         result_msg = "<SILENCE>"
+                        st.silence_reason = "silence_only_or_async"
                 elif has_orchestration_narration(_rs) or looks_like_process_meta(_rs):
                     result_msg = "<SILENCE>"
+                    st.silence_reason = "orchestration_leak" if has_orchestration_narration(_rs) else "process_meta"
                 elif claims_premature_delivery(_rs) and not st.image_sent_this_run:
                     result_msg = "<SILENCE>"
+                    st.silence_reason = "premature_delivery"
                 elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
                     result_msg = "<SILENCE>"
-                elif not st.image_sent_this_run and looks_like_numeric_recitation(_rs) and st.intent != "问答":
+                    st.silence_reason = "empty_handoff"
+                elif (
+                    st.saw_structured_return
+                    and st.tool_call_list
+                    and not st.image_sent_this_run
+                    and looks_like_numeric_recitation(_rs)
+                ):
                     result_msg = "<SILENCE>"
+                    st.silence_reason = "numeric_recitation"
                 elif (
                     _render_obligation
                     and not _skip_report_exit
@@ -1001,10 +1019,13 @@ class SettlePhase(RunOnceHost):
                 ):
                     # 有真事实包却念表 → 静默（该走 render）；无事实包的长正文放行
                     result_msg = "<SILENCE>"
+                    st.silence_reason = "report_speech"
                 else:
                     _stripped = strip_open_solicitations(_rs)
                     if _stripped != _rs:
                         result_msg = _stripped if _stripped else "<SILENCE>"
+                        if not result_msg or is_silence_marker(result_msg):
+                            st.silence_reason = "open_solicit_stripped"
 
             # INV-4：暂扣原文在纠正未兑现（或根本没进纠正）且没有替代品时必须发出。
             if _should_deliver_withheld(
@@ -1014,8 +1035,8 @@ class SettlePhase(RunOnceHost):
             ):
                 await _deliver_withheld(st, self._run_sent_texts)
 
-            self._session_logger.log_result(result_msg, st.tool_call_list)
             if st.return_mode in ["by_bot"] and st.bot and st.ev:
+                self._log_run_result(st, result_msg)
                 return ""
             # 对用户可见出口才做 roleplay OOC；子代理/能力代理 return 必须保留 res_ 句柄
             if result_msg and output_firewall.is_enabled() and self.create_by not in ("EvalJudge", "TEST"):
@@ -1039,13 +1060,22 @@ class SettlePhase(RunOnceHost):
                                 p0=_hit.category,
                             )
                         )
-                        result_msg = await self._ooc_recover_persona_voice(_hit, result_msg, st.ev) or "<SILENCE>"
+                        recovered = await self._ooc_recover_persona_voice(_hit, result_msg, st.ev) or "<SILENCE>"
+                        had_body = bool(result_msg.strip()) and not is_silence_marker(result_msg.strip())
+                        if had_body and (not recovered.strip() or is_silence_marker(recovered.strip())):
+                            st.silence_reason = "ooc_recover"
+                        result_msg = recovered
             if isinstance(result_msg, str) and not (
                 self.is_subagent or self.create_by in ("CapabilityAgent", "AutoPlanner")
             ):
-                result_msg = strip_framework_user_leaks(result_msg)
+                leaked = strip_framework_user_leaks(result_msg)
+                had_body = bool(result_msg.strip()) and not is_silence_marker(result_msg.strip())
+                result_msg = leaked
                 if not result_msg.strip():
+                    if had_body:
+                        st.silence_reason = "framework_leak_stripped"
                     result_msg = "<SILENCE>"
+            self._log_run_result(st, result_msg)
             if isinstance(result_msg, str):
                 self._remember_outbound_on_silence(st, result_msg)
             return result_msg
@@ -1075,6 +1105,8 @@ class SettlePhase(RunOnceHost):
 
         if st.delegated_render and not st.image_sent_this_run:
             self._remember_outbound_on_silence(st, "<SILENCE>")
+            st.silence_reason = st.silence_reason or "delegated_render_unfinished"
+            self._log_run_result(st, "<SILENCE>")
             return "<SILENCE>"
 
         # 「思考链过长…」是框架内部状态，原样发进群等于人格当场破功（生产日志出现过
@@ -1102,6 +1134,8 @@ class SettlePhase(RunOnceHost):
                 return await self._deliver_no_material_reply(st, user_question)
             logger.debug(i18n_t("log.agent.chain_too_long_no_context_silence"))
             self._remember_outbound_on_silence(st, "<SILENCE>")
+            st.silence_reason = st.silence_reason or "usage_limit_no_material"
+            self._log_run_result(st, "<SILENCE>")
             return "<SILENCE>"
 
         final_message = (
@@ -1140,6 +1174,11 @@ class SettlePhase(RunOnceHost):
         fallback_text = str(fallback_result.output)
         if not fallback_text.strip() or is_silence_marker(fallback_text.strip()):
             self._remember_outbound_on_silence(st, "<SILENCE>")
+            self._session_logger.log_result(
+                "<SILENCE>",
+                st.tool_call_list,
+                silence_reason=st.silence_reason or "usage_limit_fallback_silence",
+            )
             return "<SILENCE>"
         self._session_logger.log_text_output(fallback_text)
         self._session_logger.log_result(fallback_text, st.tool_call_list)
@@ -1192,6 +1231,11 @@ class SettlePhase(RunOnceHost):
         text = str(result.output)
         if not text.strip() or is_silence_marker(text.strip()):
             self._remember_outbound_on_silence(st, "<SILENCE>")
+            self._session_logger.log_result(
+                "<SILENCE>",
+                st.tool_call_list,
+                silence_reason=st.silence_reason or "no_material_reply_silence",
+            )
             return "<SILENCE>"
         self._session_logger.log_text_output(text)
         self._session_logger.log_result(text, st.tool_call_list)
@@ -1199,6 +1243,18 @@ class SettlePhase(RunOnceHost):
             await send_chat_result(st.bot, text, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
             absorb_run_image_delivered(st)
         return ""
+
+    def _log_run_result(self, st: RunOnceState, result_msg: str) -> None:
+        """沉默或空输出时把原因写进 result。有正文则不带 silence_reason。"""
+        reason: str | None = None
+        text = str(result_msg).strip()
+        if is_silence_marker(text) or not text:
+            reason = (
+                st.silence_reason
+                or st.last_block_reason
+                or ("delivered_terminal" if st.delivered_terminal else "model_voluntary")
+            )
+        self._session_logger.log_result(result_msg, st.tool_call_list, silence_reason=reason)
 
     def _remember_outbound_on_silence(self, st: RunOnceState, result_msg: str) -> None:
         """静默不进 A 轨；把本轮出站句柄补上，追问才能 read_handle。"""

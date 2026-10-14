@@ -30,6 +30,7 @@ from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.ingestion.edge import extract_and_upsert_edges
 from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 from gsuid_core.ai_core.memory.ingestion.entity import extract_and_upsert_entities
+from gsuid_core.ai_core.memory.relative_schedule import looks_like_one_off_relative_schedule
 from gsuid_core.ai_core.memory.ingestion.hiergraph import increment_entity_count, check_and_trigger_hierarchical_update
 
 from ...utils import extract_json_from_text
@@ -850,6 +851,8 @@ async def _extract_and_upsert_from_episode(
         extracted["stated"] if "stated" in extracted else [],
         speaker_ids=speaker_ids,
         episode_id=episode_id,
+        scope_key=scope_key,
+        fallback_at=stmt_ts,
     )
     if memory_config.enable_preference_memory and pref_signal:
         try:
@@ -1376,19 +1379,22 @@ async def _write_master_stated_facts(
     *,
     speaker_ids: list[str],
     episode_id: str,
+    scope_key: str,
+    fallback_at: datetime | None,
 ) -> None:
     """主人自我陈述硬写偏好，不经置信度门。旁人陈述忽略。"""
     if not stated:
         return
     from gsuid_core.config import core_config
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.database.models import AIMemEvent, EventWriteRow, AIMemPreference
 
     raw_masters = core_config.get_config("masters")
     masters = {str(x) for x in raw_masters} if isinstance(raw_masters, list) else set()
     if not masters:
         return
     valid = set(speaker_ids)
+    pending_events: list[EventWriteRow] = []
     for item in stated:
         uid = item["u"]
         kind = item["k"]
@@ -1397,6 +1403,18 @@ async def _write_master_stated_facts(
             continue
         body = value.strip()
         if not body:
+            continue
+        # 一次性行程进事件；习惯和「明天指哪一天」仍进偏好。
+        if looks_like_one_off_relative_schedule(body):
+            pending_events.append(
+                {
+                    "summary": body[:200],
+                    "start_at": fallback_at,
+                    "end_at": None,
+                    "entities": [],
+                    "aliases": [],
+                }
+            )
             continue
         slot = kind.strip() if kind.strip() in ("location", "possession", "preference") else "preference"
         await AIMemPreference.upsert(
@@ -1407,6 +1425,13 @@ async def _write_master_stated_facts(
             polarity="do",
             is_correction=False,
             source_episode_id=episode_id,
+        )
+    if pending_events:
+        await AIMemEvent.upsert_events_bulk(
+            scope_key,
+            pending_events,
+            episode_id=episode_id,
+            fallback_at=fallback_at,
         )
 
 

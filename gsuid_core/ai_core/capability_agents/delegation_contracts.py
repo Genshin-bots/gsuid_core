@@ -62,6 +62,9 @@ POST_DELIVERY_SILENCE_CONTRACT = (
     "无需追加发言」这类状态汇报；那是系统日志，不是角色台词。）"
 )
 
+# 只发了表情。补不补台词由模型定，这一步不要收成终局沉默。
+POST_MEME_LINE_CONTRACT = "（系统：表情已发出。要补一句就补，不想说就 <SILENCE>。不要汇报「已发送」。）"
+
 # 申辩成功：控制面结束，与 DELIVERED 对称。
 POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
 

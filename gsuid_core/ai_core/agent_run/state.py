@@ -91,6 +91,10 @@ class RunOnceState:
     # 终局 SILENCE 指令是否已注入过 ModelRequest（每 run 至多一次）
     delivered_nudged: bool = False
     has_status_tool_call: bool = False
+    last_block_reason: str = ""
+    silence_reason: str = ""
+    # 本步只有表情。用来换「可说可不说」契约，不强迫补台词。
+    meme_line_pending: bool = False
     # 排版失配：台词呈长结构被拦。**纯呈现问题**，不得据此强制工具或销毁内容
     # （用户可能就是要长文本）。与 saw_structured_return 正交，见 INV-1/INV-3。
     presentation_mismatch: bool = False
