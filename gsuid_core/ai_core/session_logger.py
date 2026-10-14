@@ -760,7 +760,7 @@ class AISessionLogger:
         self._add_entry("text_output", {"content": content})
 
     def log_task_ack(self, content: str, *, source: str) -> None:
-        """记录框架补发的接任务应（persona.json 配置句）。"""
+        """记录 create_subagent 代发的开场句（模型自己写的台词，框架不代写）。"""
         self._add_entry("task_ack", {"content": content, "source": source})
 
     def log_result(

@@ -28,38 +28,6 @@ def test_defaults_are_persona_neutral() -> None:
         assert "早柚" not in s
         assert "唔…" not in s
         assert "本貉" not in s
-    assert default_phrase("task_ack") == ""
-    from gsuid_core.ai_core.agent_run.loop import task_ack_phrase
-
-    assert task_ack_phrase(None) == ""
-    assert "早柚" not in task_ack_phrase(None)
-    assert "唔" not in task_ack_phrase(None)
-
-
-def test_empty_task_ack_does_not_use_tone_markers(tmp_path, monkeypatch) -> None:
-    import gsuid_core.ai_core.resource as core_res
-    from gsuid_core.ai_core.persona import resource as pres, settings as settings_mod
-    from gsuid_core.ai_core.agent_run.loop import task_ack_phrase
-
-    monkeypatch.setattr(core_res, "PERSONA_PATH", tmp_path)
-    monkeypatch.setattr(settings_mod, "PERSONA_PATH", tmp_path)
-    settings_mod.persona_settings_manager._base_path = tmp_path
-    settings_mod.persona_settings_manager._cache.clear()
-    pres._tone_marker_cache.clear()
-    name = "设定测试丙"
-    (tmp_path / name).mkdir()
-    (tmp_path / name / "persona.md").write_text(
-        "Tone Markers (语气词):\n        唔…\n        呼\n",
-        encoding="utf-8",
-    )
-    phrase = task_ack_phrase(name)
-    assert phrase == ""
-    assert "唔" not in phrase
-    assert "收到" not in phrase
-    cfg = settings_mod.persona_settings_manager.get_config(name)
-    assert cfg.set_config("task_ack", "行，去翻。")
-    settings_mod.persona_settings_manager._cache.clear()
-    assert task_ack_phrase(name) == "行，去翻。"
 
 
 def test_get_persona_setting_without_persona_uses_template() -> None:
@@ -69,14 +37,14 @@ def test_get_persona_setting_without_persona_uses_template() -> None:
 
 
 def test_canned_interception_fallbacks_are_gone() -> None:
-    """出戏拦截不再有罐头文案：命中由当前人格重说一句，重说不出来就沉默。
+    """出戏拦截和长任务开场都没有罐头文案：由当前人格自己说，说不出来就沉默。
 
     留下的只有供应商侧失败短句（超时 / 套餐 / 审核）——那不是「角色在说话」。
     """
     from gsuid_core.ai_core import output_firewall
     from gsuid_core.ai_core.persona import settings as settings_mod
 
-    for key in ("fallback_ooc", "fallback_machine"):
+    for key in ("fallback_ooc", "fallback_machine", "task_ack"):
         assert key not in settings_mod.DEFAULT_PERSONA_SETTINGS, f"{key} 配置项没删干净"
         assert settings_mod.default_phrase(key) == ""
         assert get_persona_setting(None, key) == ""

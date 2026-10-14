@@ -219,6 +219,8 @@ RESOURCE_PATH/persona/{persona_name}/
 > 人格/一致性类**原样发送**、`fund_claim` / `machine_dump` 与模型主动沉默才丢弃；没有 run 的
 > 出口（主动播报 / `send_chat_result` 末端）直接丢弃正文。
 > 剩下的 `error_*` 全是**供应商侧**失败（超时 / 套餐打满 / 内容审核），那不是「角色在说话」。
+> 长任务开场句同理（2026-10）：`task_ack` 键已删除。开场句由模型在委派的同一次回复里写，
+> `create_subagent` 派发成功后代发；没写就由回执允许当前人格补一句（见 07 §「委派开场句」）。
 
 ### Persona 配置热重载特殊处理
 

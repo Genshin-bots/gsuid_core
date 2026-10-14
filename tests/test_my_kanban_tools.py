@@ -428,7 +428,13 @@ def test_has_actionable_task_scoped_by_group() -> None:
     async def fake_list_for_owner(user_id: str, only_active: bool = True, root_only: bool = True) -> list:
         return [_FakeKanbanTask(1, "任务", "group_A")]
 
-    with patch.object(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner):
+    async def fake_child_status_counts(root_ids: list[str]) -> dict[str, dict[str, int]]:
+        return {rid: {"running": 1} for rid in root_ids}
+
+    with (
+        patch.object(ctx_mod.AIAgentTask, "list_for_owner", fake_list_for_owner),
+        patch.object(ctx_mod.AIAgentTask, "child_status_counts", fake_child_status_counts),
+    ):
         assert _run(ctx_mod.has_actionable_task("u1")) is True
         assert _run(ctx_mod.has_actionable_task("u1", current_group_id="group_A")) is True
         assert _run(ctx_mod.has_actionable_task("u1", current_group_id="group_B")) is False

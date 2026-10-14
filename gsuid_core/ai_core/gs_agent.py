@@ -1637,8 +1637,8 @@ class GsCoreAIAgent(RunOnceMixin):
                 时超额直接早退、绝不花费 Token；交互被动路径已在 handle_ai 提前闸门，按默认
                 False 只记账不二次拦截。无论是否拦截，可归属 scope 的 Token 都会记账。
             suppress_intermediate_text: True 时，本轮中**只要出现过函数 ToolCallPart**，其前后
-                伴随的规划/内心 OS 默认不发送。例外：主人格尚未出站过的一句接任务应仍发送
-                一次（不按 12 字；结构垃圾仍压）。无工具的最终回复照常发送。
+                伴随的文字都不由主循环发送。委派时同一次回复里的开场句由 create_subagent
+                派发成功后代发一次（过同一套话术闸）。无工具的最终回复照常发送。
             turn_graph: 入口构建的 TurnGraph（可选）；缺省时在装配层现场构建。
             cheap_gate: CheapGate 成本档（可选）；驱动群聊瘦保底。
             outbound_stream: True=可见文本按 delta 出站；False=等完整 TextPart。

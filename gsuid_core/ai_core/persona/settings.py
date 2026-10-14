@@ -54,11 +54,6 @@ DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
         "命中模型内容安全策略时发给用户的短句。",
         DEFAULT_ERROR_CONTENT_POLICY,
     ),
-    "task_ack": GsStrConfig(
-        "接任务应",
-        "点名办事且本轮要调重工具、模型没写短应时发这句。空则不代说，由模型用当前人格自己写。",
-        "",
-    ),
 }
 
 

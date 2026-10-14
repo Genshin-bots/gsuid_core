@@ -23,6 +23,13 @@ PENDING_DELEGATION_HOLD = (
     "（系统：已有子任务在后台，这不是终局结果。对用户只输出 <SILENCE>。" + DELEGATION_FANOUT_RULE + "）"
 )
 
+# 委派已派出、本轮还没对用户说过话：允许当前人格补一句开场，之后同样只等回灌。
+PENDING_DELEGATION_OPENING = (
+    "（系统：已有子任务在后台，这不是终局结果。本轮你还没对用户开口："
+    "用当前人格短说一句，让对方知道你接下了、要等一会儿，怎么说由你定。"
+    "禁止过程动词、任务编号、句柄、编排词。" + DELEGATION_FANOUT_RULE + "）"
+)
+
 
 def delegation_is_inflight(extra: Mapping[str, object]) -> bool:
     """本 run 已有 deferred 委派。并列派发窗口已关。"""
@@ -30,11 +37,29 @@ def delegation_is_inflight(extra: Mapping[str, object]) -> bool:
     return flagged is True
 
 
-def format_deferred_subagent_ack(*, ordinal: int, pid: str, handle: str) -> str:
-    """生产路径立刻回灌时的回执。告诉模型不要把 ack 当成下一轮派发信号。"""
+def _deferred_ack_speech_rule(spoken: str, opening_missed: bool) -> str:
+    if spoken:
+        return f"你的开场句已经发给用户：「{spoken}」。对用户只输出 <SILENCE>，不要再说一遍"
+    if opening_missed:
+        return "本轮你还没对用户开口：用当前人格短说一句接下了、要等一会儿"
+    return "对用户默认 <SILENCE>"
+
+
+def format_deferred_subagent_ack(
+    *,
+    ordinal: int,
+    pid: str,
+    handle: str,
+    spoken: str = "",
+    opening_missed: bool = False,
+) -> str:
+    """生产路径立刻回灌时的回执。告诉模型不要把 ack 当成下一轮派发信号。
+
+    spoken = 工具已代发的开场句；opening_missed = 该开口但没说出去，允许补一句。
+    """
     return (
         f"⏳ 子任务后台执行中（将自动回灌）。task#{ordinal} / {pid} / 句柄 {handle}\n"
-        "本 tool_return 不是终局结论。对用户默认 <SILENCE>"
+        f"本 tool_return 不是终局结论。{_deferred_ack_speech_rule(spoken, opening_missed)}"
         "（禁止过程动词、任务编号、句柄、编排词、叙述第二个执行者）。"
         f"{DELEGATION_FANOUT_RULE}\n"
         "完成后自动回灌。用户之后追问进度时，用 find_tools 召回 check_delegation"

@@ -106,23 +106,41 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
     return "\n".join(lines)
 
 
+_LIVE_CHILD_STATUSES = ("running", "waiting_approval")
+
+
+def _root_has_live_work(root: AIAgentTask, child_counts: dict[str, int]) -> bool:
+    """根任务此刻是否真有活在跑或在等审批。
+
+    周期托管根两轮之间一直是 running，子节点却只有待启动 / 已完成，
+    不算在途；没有子节点的叶子根自己就是执行体，running 即在跑。
+    """
+    if root.status == "waiting_approval":
+        return True
+    if root.status != "running":
+        return False
+    if not child_counts:
+        return True
+    return any(s in child_counts for s in _LIVE_CHILD_STATUSES)
+
+
 async def has_actionable_task(user_id: str, current_group_id: Optional[str] = None) -> bool:
     """判断用户是否有需要主人格即时介入的 Kanban 任务。
 
-    与 ``build_task_context`` 的"只要活跃就注入"不同，本函数只关心
-    ``running`` / ``waiting_approval`` 状态——这两种状态意味着主人格
-    随时可能需要 fail_task_tree / respond_approval。
-    ``pending`` / ``paused``（如十几天后的周期模板）不触发，避免闲聊
-    时无谓挂载 15 个 planning 工具。
+    与 ``build_task_context`` 的"只要活跃就注入"不同，本函数只关心此刻
+    真有子步骤 ``running`` / ``waiting_approval`` 的根——这时主人格随时
+    可能需要 fail_task_tree / respond_approval。
+    ``pending`` / ``paused``（如十几天后的周期模板）和两轮之间空转的周期托管根
+    不触发，避免闲聊时无谓挂载 planning 工具、把每一轮都当成任务轮。
 
     传入 ``current_group_id`` 时只统计当前群的任务：他群/私聊任务不在本群
     触发 kanban 工具族挂载，防经工具通道旁路 §24 脱敏（评审修复 E15）。
     """
     try:
         tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
+        if current_group_id is not None:
+            tasks = [t for t in tasks if str(t.group_id or "") == str(current_group_id)]
+        counts = await AIAgentTask.child_status_counts([t.id for t in tasks if t.status == "running"])
     except Exception:
         return False
-    if current_group_id is not None:
-        tasks = [t for t in tasks if str(t.group_id or "") == str(current_group_id)]
-    actionable_statuses = {"running", "waiting_approval"}
-    return any(t.status in actionable_statuses for t in tasks)
+    return any(_root_has_live_work(t, counts[t.id] if t.id in counts else {}) for t in tasks)

@@ -241,7 +241,7 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "main_channel_visible_limit": GsIntConfig(
         "主通道单轮出站上限",
-        "本项管模型单轮能发几段 TextPart（接任务应 + 终局各占一格）。"
+        "本项管模型单轮能发几段 TextPart（委派开场句 + 终局各占一格）。"
         "一段拆几条由人格「说话强度」决定，两闸相乘。修改后即时生效",
         2,
         options=[1, 2, 3, 4, 5, 6],

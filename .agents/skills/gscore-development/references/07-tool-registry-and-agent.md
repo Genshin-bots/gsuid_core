@@ -440,22 +440,30 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 
 **出图在途（2026-08-16）**：`create_subagent` 的 `agent_profile` 解析到 `render_agent` 时
 （只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途默认
-`<SILENCE>`。开场接任务应一句必须出站（**不按 12 字**，对齐人格 `speech_len_hard`；
-编排词/过程动词/长结构仍拦）；之后默认静默。清单/念白/第二执行者不占额度。
+`<SILENCE>`。开场句一句（**不按 12 字**，对齐人格 `speech_len_hard`；编排词/过程动词/
+长结构仍拦）由 `create_subagent` 代发，见下文「委派开场句」；之后默认静默。
+清单/念白/第二执行者不占额度。
 群聊折叠卡无 `inline_head`，长委派回执同样折成卡。
-**出站槽（2026-08-26）**：按本 run 是否含**函数** ToolCall 分槽。委派/出图等重工具首次至多一条
-TextPart（接任务应，仍过 `pre_send_gate` / `should_block`；**过不了闸不得占槽**）。点名/跟进/
-私聊/HTTP 且本响应含重工具：模型没写合格短应则发 `persona.json` 的 `task_ack`（空则不补）。
-轻工具同包若已是合格接任务应可出站。零工具/未点名不补。
-其后切工具静默，无 ToolCall 终局开口。hosted 搜索不当函数工具。
-交互主人格 `create_subagent(..., transient=true)` 会被忽略（lookup 白名单除外），改走看板后台。
+**一轮只说一句（2026-10-15）**：带**函数** ToolCall 的回复里，文字一律不由主循环发送，
+记 unsent，从 `new_messages` 尾部剥掉。工具结果回来后，无 ToolCall 的回复才开口。
+hosted 搜索不当函数工具。闲聊可以先 `search_cognition` 再答，用户只看到结果后的那一句。
+**委派开场句**：重任务例外，开工前先应一声。loop 在 CallToolsNode 用
+`agent_run/opening_line.arm_opening_line` 暂存同一次回复里的第一段文字（只在真人发起的
+交互主人格轮、本轮还没开口时）。`create_subagent` 派发成功、`kick_root` 之后调
+`release_opening_line`：过 `should_block`（silence_only 首句额度）与 `tool_gate_feedback`，
+通过才经 `send_chat_result` 发出，记进 `run_sent_texts`。槽被第一个调用取走，并列的第二个
+`create_subagent` 拿不到；校验被拒的派发不开口。回执 `format_deferred_subagent_ack` 写明
+「开场句已发：……，只输出 <SILENCE>」；没写或被闸拦时改为允许当前人格补一句，
+`PENDING_DELEGATION_HOLD` 换成 `PENDING_DELEGATION_OPENING`。下一次 ModelRequestNode 由
+`_absorb_opening_line` 记账（`main_channel_sends` / `wait_comfort_sent`）。
+框架不代写开场句：`persona.json` 的 `task_ack` 与 `ModelRetry` 打回重写都已删除。
+return 模式（网页对话 / 评测）只记账不经 bot 发送。轻工具（回想 / 网页检索）不开口。
+交互主人格 `create_subagent(..., transient=true)` 会被忽略（lookup 白名单除外），改走看板后台；
+transient 同步路径不发开场句。
 **委派并列（2026-09-25）**：同一次模型回复里的多个 `create_subagent` 由运行时一起开工。
 框架不会把一条任务自动拆成多次调用；模型没在这一次里并列发出的，deferred 回执之后
 同 run 再补会被挡住，等回灌再决定自己答还是 `render_agent`。
-**接任务应**：委派前若模型没写短句，且人格配置了 `task_ack`，发那一句再执行工具。
-空则不代说，把本批工具打回，由模型用当前人格写一句再调。
-HTTP SSE 的 `: ping` 不是接任务应。只有图、模型没写字时直接出 attachment，不补固定台词。
-unsent 从 `new_messages` 尾部剥掉。
+HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 attachment，不补固定台词。
 
 **状态**：仅 `ToolContext.extra["output_gate"]` → 类型化 `GateBag`（会话重启即丢，无旧键）。
 

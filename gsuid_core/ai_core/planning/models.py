@@ -20,7 +20,7 @@ from pathlib import Path
 from datetime import datetime
 
 from sqlmodel import Field, SQLModel, col, select, update
-from sqlalchemy import Text, Column
+from sqlalchemy import Text, Column, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.postgresql import JSON
@@ -250,6 +250,29 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
     async def list_by_status(cls, session: AsyncSession, *statuses: str) -> List["AIAgentTask"]:
         result = await session.execute(select(cls).where(col(cls.status).in_(statuses)))
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def child_status_counts(
+        cls,
+        session: AsyncSession,
+        root_ids: Sequence[str],
+    ) -> Dict[str, Dict[str, int]]:
+        """各根任务下子节点按状态计数。没有子节点的根不出现在结果里。"""
+        if not root_ids:
+            return {}
+        stmt = (
+            select(col(cls.root_task_id), col(cls.status), func.count())
+            .where(col(cls.root_task_id).in_(list(root_ids)), col(cls.node_kind) != "root")
+            .group_by(col(cls.root_task_id), col(cls.status))
+        )
+        result = await session.execute(stmt)
+        counts: Dict[str, Dict[str, int]] = {}
+        for root_id, status, n in result.all():
+            bucket = counts[root_id] if root_id in counts else {}
+            bucket[status] = n
+            counts[root_id] = bucket
+        return counts
 
     @classmethod
     def root_filter_clauses(

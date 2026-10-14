@@ -314,7 +314,7 @@ async def create_subagent(
     - 检索综合：目标 + 范围；交付须含条目/数字/**来源**/**时点**。
     - 出图：粘贴完整事实包（或 res_ 句柄）+ 可选版式偏好；写明**禁止再检索**。
     - 禁止把「漂亮出图」派给 research；禁止主人格自己写 HTML 调 render_*。
-    - 接任务应走主通道 TextPart（或框架兜底）；本工具回执不对用户播报过程。
+    - 开场句和本工具写在同一次回复里，派发成功后框架替你发出；没写就看回执再说。
     - 多个互不依赖的对象：同一次回复并列多次调用，各写各的 task；不要等上一个回执再派下一个。
     - 下一步要看本次结果才能选（自己答 / render_agent）：只派当前这步，等回灌。
       不要提前派 render，也不要在等待时逐个补派。
@@ -1056,17 +1056,29 @@ async def _dispatch_via_kanban(
     mark_deferred_main_delivery(root.id)
     asyncio.create_task(kick_root(root.id))
 
+    from gsuid_core.ai_core.agent_run.opening_line import release_opening_line
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        format_deferred_subagent_ack,
+    )
+
+    # 派发成功之后才开口：校验被拒时用户什么也听不到，模型重派也不会说两遍
+    opening = await release_opening_line(ctx.deps) if ctx.deps is not None else None
+    spoken = opening.text if opening is not None else ""
+    opening_missed = opening is not None and not opening.text
+
     extra = ctx.deps.extra if ctx.deps is not None else {}
     _raw_cb = extra["parent_create_by"] if "parent_create_by" in extra else ""
     parent_cb = _raw_cb if isinstance(_raw_cb, str) else ""
     wait_sec = _kanban_wait_sec(parent_cb)
     handle = delegation_handle(root.id)
     if wait_sec <= 0:
-        from gsuid_core.ai_core.capability_agents.delegation_contracts import (
-            format_deferred_subagent_ack,
+        return format_deferred_subagent_ack(
+            ordinal=root.ordinal,
+            pid=pid,
+            handle=handle,
+            spoken=spoken,
+            opening_missed=opening_missed,
         )
-
-        return format_deferred_subagent_ack(ordinal=root.ordinal, pid=pid, handle=handle)
     deleg = await await_delegation(handle, wait_sec=wait_sec)
     if deleg is None:
         return f"⚠️ Kanban 任务记录消失（task_id={root.id}）；可能被并发删除，请到 webconsole 看任务列表。"
@@ -1086,11 +1098,13 @@ async def _dispatch_via_kanban(
                 return verdict
             final = fresh_after
         else:
-            from gsuid_core.ai_core.capability_agents.delegation_contracts import (
-                format_deferred_subagent_ack,
+            return format_deferred_subagent_ack(
+                ordinal=root.ordinal,
+                pid=pid,
+                handle=handle,
+                spoken=spoken,
+                opening_missed=opening_missed,
             )
-
-            return format_deferred_subagent_ack(ordinal=root.ordinal, pid=pid, handle=handle)
 
     # 终态与超时边界都要认领；已经认领过就不要再调，否则第二次失败会把全文丢掉。
     # 留下 interactive：执行体见到「interactive 在、deferred 不在」就不再唤醒。

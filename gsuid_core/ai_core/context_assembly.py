@@ -227,10 +227,13 @@ async def assemble_dynamic_context(
     tail = await load_speaker_preference_tail(bot_id, user_id)
     if tail:
         text = f"{text}\n\n{tail}" if text else tail
-    from gsuid_core.ai_core.entity_index import format_alias_bindings
+    from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
+    from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
     # 实体别名绑定：优先当前提问匹配；无命中时仅限紧邻的追问行继承，防止群聊误伤。
-    alias_note = format_alias_bindings(query)
+    # 叫人格名是在叫你，不是在问同名实体：先剥掉人格名和唤醒词再查别名表。
+    persona_surfaces = collect_persona_surfaces(persona_name)
+    alias_note = format_alias_bindings(strip_surfaces(query, persona_surfaces))
     if not alias_note and history_context:
         recent_user_lines: list[str] = []
         for line in reversed(history_context.splitlines()):
@@ -240,7 +243,7 @@ async def assemble_dynamic_context(
             if len(recent_user_lines) >= 2:
                 break
         if recent_user_lines:
-            alias_note = format_alias_bindings("\n".join(reversed(recent_user_lines)))
+            alias_note = format_alias_bindings(strip_surfaces("\n".join(reversed(recent_user_lines)), persona_surfaces))
     if alias_note:
         text = f"{text}\n\n{alias_note}" if text else alias_note
         logger.debug(t("log.entity_index.alias_binding_injected", note=alias_note))

@@ -176,6 +176,38 @@ def test_directed_assistant_line_is_not_a_user_alias_source() -> None:
     assert not history_line_is_assistant("[历史对话] 旧→新")
 
 
+def test_alias_note_ignores_the_persona_name() -> None:
+    """叫人格名是在找你：同名实体不得写进别名表，否则闲聊会被当成插件查询。"""
+    from gsuid_core.ai_core.entity_index import clear_entity_index, register_entity_surface
+    from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+
+    def _assemble(query: str, history: str) -> str:
+        full, _ = asyncio.run(
+            assemble_dynamic_context(
+                query=query,
+                user_id="test_u",
+                bot_id="TEST",
+                persona_name="北辰星",
+                mood_key="test_u",
+                history_context=history,
+            )
+        )
+        return full
+
+    _load_kits_once()
+    clear_entity_index()
+    register_entity_surface("北辰星", "北辰星", "SomePlugin")
+    register_entity_surface("长离", "长离", "OtherPlugin")
+    try:
+        assert "别名表命中" not in _assemble("北辰星早上好", "")
+        assert "别名表命中" not in _assemble("早上好", "[历史对话] 旧→新\n小明: 北辰星在吗")
+        mixed = _assemble("北辰星，长离用什么武器", "")
+        assert "长离→OtherPlugin" in mixed
+        assert "北辰星→" not in mixed
+    finally:
+        clear_entity_index()
+
+
 if __name__ == "__main__":
     test_both_entries_consume_shared_assembly()
     test_dynamic_context_ordering_contract()

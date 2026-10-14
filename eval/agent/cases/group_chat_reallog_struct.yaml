@@ -7,10 +7,10 @@
 # 量尺已变，不可与 opt5 / reallog_k3_loop1/2 逐例对齐。
 
 cases:
-  - id: struct_task_ack_before_tools
+  - id: struct_light_tool_single_reply
     domain: group_presence
     targets: [group-chat, toolsandbox]
-    why_hard: 点名办事且本 run 有函数工具时，工具结果前须有可见短应
+    why_hard: 点名办轻事且本 run 有函数工具时，用户只该看到工具结果之后的一句
     message: "阿青(用户ID:9501)：@早柚 半小时后提醒我喝水"
     expect:
       must_call_any: ["add_once_task", "find_tools"]
@@ -18,8 +18,9 @@ cases:
       judge:
         rubric: >
           被点名设一次性提醒，本 run 会调函数工具。
-          工具回执或发图之前，用户侧已有一句可见短应（角色口吻或中性「收到。」）=PASS。
-          全程无可见气泡、只在结束才出图/@ =FAIL。旁观式 <SILENCE> 整段=FAIL。
+          工具回执之后，用户侧恰好一句角色口吻的可见回复，内容与提醒结果一致=PASS。
+          工具前先发一句「收到 / 这就去设」、结果回来又发一句（两条气泡）=FAIL。
+          全程无可见回复=FAIL。旁观式 <SILENCE> 整段=FAIL。
 
   - id: struct_ambient_no_ack
     domain: silence_judgment

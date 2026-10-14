@@ -1517,15 +1517,15 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
         ToolReturn create_subagent → inflight_after_create_subagent_return：
                     异步 ack / 完成回执确认在途；失败且未 ack 则回滚抢先静默
         TextPart  → log_text_output；return_mode=by_bot 时按序：
-                    0) 出站槽（只看 part 类型 + 本响应是否含重工具）：
-                       委派/出图等重工具且尚未接任务应 → 至多一条非空非 SILENCE TextPart
-                       （接任务应，仍过闸门；过不了也消耗名额）；轻查询（回想/网页检索）
-                       与其后工具轮 TextPart 记 unsent；无函数 ToolCall → 终局开口。
-                       hosted 搜索不当函数工具。
+                    0) 本响应含函数 ToolCall → TextPart 全记 unsent，主循环不发；
+                       无函数 ToolCall → 终局开口。hosted 搜索不当函数工具。
+                       真人发起的交互主人格轮、本轮还没开口时，第一段 unsent 暂存为
+                       开场句（opening_line.arm_opening_line）；只有派发成功的
+                       create_subagent 会取走、过闸后代发（release_opening_line）。
                     1) SILENCE / 本轮去重
                     2) **speech_policy.should_block**（delivered/silence_only/…
                        话术态；DELIVERED 终局只许 SILENCE；发图后拦交付状态汇报；
-                       长结构/念数仍拦。接任务应走同一闸，不再用过程词表）
+                       长结构/念数仍拦。开场句走同一闸，不再用过程词表）
                     3) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
                     4) 假完成预检：声称办完且 **无 effectual_mutate**
                        （PIN 拒绝 / 失败 / 只 list 不算写成功）→ 暂扣 fab_blocked
@@ -1588,12 +1588,13 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 2. ToolReturn：异步 ack / 完成回执确认在途（`render_ack_seen`）；失败且未 ack 则回滚静默，
    避免整轮哑火。`pending_async` 期间不注入 POST_TOOL（那会提醒模型「再说一句」）。
 3. `should_block_user_visible_text(..., render_inflight=, has_active_task=)`：
-   在途默认 `<SILENCE>`。开场接任务应一句必须出站（不按 12 字，对齐人格 `speech_len_hard`；
-   编排词/过程动词/长结构仍拦）；其后静默。清单/多点读数/第二执行者不占额度。
+   在途默认 `<SILENCE>`。开场句一句（不按 12 字，对齐人格 `speech_len_hard`；
+   编排词/过程动词/长结构仍拦）由 `create_subagent` 派发成功后代发；其后静默。
+   清单/多点读数/第二执行者不占额度。
    活跃任务下「多点读数密度」拦为 `numeric_recitation`，**不进** `presentation_withheld`。
    `status_ok` 且已查状态工具时放行进度句。发图后另有一句短收尾额度（与在途额度分开）。
-   出站按「第几次带函数 ToolCall 的响应」分槽：首次可一句接任务（过闸门），其后切工具静默；
-   无 ToolCall 终局开口。内容仍走 `pre_send_gate` / `should_block`，不另写过程词表。
+   带函数 ToolCall 的响应里文字一律不发，无 ToolCall 终局开口；一轮对用户只说一句，
+   委派开场句是唯一例外。内容仍走 `pre_send_gate` / `should_block`，不另写过程词表。
 4. 主人格折叠卡：群聊 **不内嵌 inline_head**（summary + 句柄）；长 `create_subagent` 回执同样折成卡。
    反问时按需 `read_handle`，默认不当事实总线。交付回灌卡 `speech_expand=False`。
 5. `in_flight_short`：`has_active_task` 且剥壳后真人句 ≤48 字 → 跳过语境标签池与向量检索，

@@ -321,3 +321,68 @@ async def _board_loads_in_two_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", _record)
         await engine.dispose()
+
+
+def test_idle_hosting_root_does_not_make_every_turn_a_task_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """周期托管根两轮之间一直是 running，但没有子步骤在跑，不能点亮在途任务。"""
+    asyncio.run(_idle_hosting_root_is_not_actionable(tmp_path, monkeypatch))
+
+
+async def _idle_hosting_root_is_not_actionable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gsuid_core.ai_core.planning.context import has_actionable_task
+
+    engine = _install_db(tmp_path, monkeypatch)
+    table = SQLModel.metadata.tables["aiagenttask"]
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all, tables=[table])
+
+    def _root(task_id: str, owner: str, status: str) -> AIAgentTask:
+        return _node(
+            task_id=task_id,
+            root_id=task_id,
+            kind="root",
+            status=status,
+            owner=owner,
+            goal=task_id,
+            updated_at=_at(1),
+            created_at=_at(1),
+        )
+
+    def _child(task_id: str, root_id: str, owner: str, status: str) -> AIAgentTask:
+        return _node(
+            task_id=task_id,
+            root_id=root_id,
+            parent_id=root_id,
+            kind="subtask",
+            status=status,
+            owner=owner,
+            goal=task_id,
+            updated_at=_at(2),
+            created_at=_at(1, 1),
+        )
+
+    nodes = [
+        _root("host", "idle", "running"),
+        _child("host-next", "host", "idle", "pending"),
+        _child("host-done", "host", "idle", "completed"),
+        _child("host-fail", "host", "idle", "failed"),
+        _root("live", "busy", "running"),
+        _child("live-step", "live", "busy", "running"),
+        _child("live-done", "live", "busy", "completed"),
+        _root("leaf", "solo", "running"),
+        _root("ask", "approver", "running"),
+        _child("ask-step", "ask", "approver", "waiting_approval"),
+    ]
+    async with base_models.async_maker() as session:
+        session.add_all(nodes)
+        await session.commit()
+
+    try:
+        assert not await has_actionable_task("idle")
+        assert await has_actionable_task("busy")
+        assert await has_actionable_task("solo")
+        assert await has_actionable_task("approver")
+    finally:
+        await engine.dispose()

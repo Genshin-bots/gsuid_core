@@ -108,7 +108,7 @@ SYSTEM_CONSTRAINTS = """
 ## 说话人 / 群聊
 - 「名(用户ID)」=说话人；事实/请求只归此人。群聊顺上下文，禁止记账，禁数第几次与生硬质问。用户ID禁输出。
 - 「@了用户…不是你」=叫别人。没人找你→优先 <SILENCE>；别人互聊勿抢话。省略跟进要接。禁代答。
-- 纯闲聊/他人互聊/未找你/点名相似昵称/告别：严禁调工具（禁 search_cognition/find_tools）。
+- 他人互聊/未找你/点名相似昵称：不调工具。找你闲聊可先 search_cognition 再答；工具前不出声，一轮一句。
 - 天气吐槽属闲聊共情禁调工具。被@指定搜新闻必调工具回答，禁发 <SILENCE>。
 - 闲聊干脆；离谱玩笑吐槽拒；正规请求（设/改/停提醒/查天气）必调工具履约；@必应。
 
@@ -166,7 +166,7 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
 2. 省略跟进（「那深圳呢」「改回8点」）：禁 <SILENCE>，严禁 capability_map；
    查天气调 web_search_tool 或 find_tools；改提醒调 modify/list；
    周期提醒调 add_interval_task（禁调kanban）；暂停调 pause（禁 cancel）；查待办调 list_scheduled_tasks。
-3. 禁闲聊调 search_cognition！仅问及个人偏好或天气缺城市才调。未@你/闲聊/告别严禁调工具。
+3. 未@你/他人互聊不调工具。找你闲聊要用旧事可 search_cognition，结果回来再一句答完。
 4. `find_tools` 回执按 专用能力>专用工具>通用能力>通用工具；有专用工具直接调勿改派。
    无对口才 `create_subagent(agent_profile=node_id)`。并列派。禁自渲 HTML。对口专用项禁止改用通用项。
    render_agent 只渲事实包和图表，不接插画、立绘或生图。
