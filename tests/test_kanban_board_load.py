@@ -270,9 +270,9 @@ async def _board_loads_in_two_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     gate = base_models.sqlite_write_gate
     original_enter = gate.enter
 
-    async def _spy(core: bool) -> None:
+    async def _spy(core: bool, label: str = "") -> None:
         entered.append(core)
-        await original_enter(core)
+        await original_enter(core, label)
 
     monkeypatch.setattr(gate, "enter", _spy)
     try:

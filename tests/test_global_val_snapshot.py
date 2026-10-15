@@ -94,9 +94,9 @@ def _spy_write_gate(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     gate = base_models.sqlite_write_gate
     original_enter = gate.enter
 
-    async def spy(core: bool) -> None:
+    async def spy(core: bool, label: str = "") -> None:
         entered.append(core)
-        await original_enter(core)
+        await original_enter(core, label)
 
     monkeypatch.setattr(gate, "enter", spy)
     return entered

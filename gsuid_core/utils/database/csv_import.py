@@ -643,7 +643,7 @@ async def _commit_import(
     mode: ImportMode,
 ) -> ImportCounts:
     if _db_type == "sqlite":
-        async with sqlite_write_gate.hold(core=True):
+        async with sqlite_write_gate.hold(core=True, label="csv_import.commit"):
             return await _commit_in_session(model_class, fields, prepared, mode)
     # 非 SQLite 引擎默认 AUTOCOMMIT，覆盖导入的删除和插入要进同一事务。
     server = _server_engine()

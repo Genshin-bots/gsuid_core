@@ -141,12 +141,12 @@ def _writer_is_core(func: Callable[..., object]) -> bool:
 
 
 @contextlib.asynccontextmanager
-async def sqlite_gated_write() -> AsyncIterator[None]:
+async def sqlite_gated_write(label: str = "sqlite_gated_write") -> AsyncIterator[None]:
     """SQLite 占住单写者闸门。其它后端不加这把锁。"""
     if _db_type != "sqlite":
         yield
         return
-    async with sqlite_write_gate.hold(core=True):
+    async with sqlite_write_gate.hold(core=True, label=label):
         yield
 
 
@@ -587,7 +587,7 @@ def _session_wrapper(
                         return await _run_in_session(None)
                 return await _run_in_session(None)
             if _db_type == "sqlite":
-                async with sqlite_write_gate.hold(core=_writer_is_core(func)):
+                async with sqlite_write_gate.hold(core=_writer_is_core(func), label=operation):
                     return await _budgeted_write()
             return await _run_in_session(None)
 

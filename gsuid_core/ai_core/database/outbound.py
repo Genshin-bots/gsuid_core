@@ -210,7 +210,7 @@ class DeliveryLedger(BaseIDModel, table=True):
             if existing is not None:
                 return DeliveryHit(ts=int(existing.ts), session_id=existing.session_id or "")
             # 已存在只读。插入才占写闸门，冲突靠唯一约束收回。
-            async with sqlite_gated_write():
+            async with sqlite_gated_write("DeliveryLedger.check_and_claim"):
                 session.add(
                     cls(
                         group_id=gid[:80],

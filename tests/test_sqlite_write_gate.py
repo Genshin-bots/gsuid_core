@@ -167,6 +167,101 @@ async def _cancelled_waiter_does_not_stick() -> None:
         return
 
 
+def test_hold_log_names_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_hold_log_names_the_owner(monkeypatch))
+
+
+async def _hold_log_names_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.utils.database.write_gate as write_gate
+
+    messages: list[str] = []
+    monkeypatch.setattr(write_gate, "HOLD_LOG_S", 0.05)
+    monkeypatch.setattr(write_gate, "_warn", messages.append)
+    gate = write_gate.SqliteWriteGate()
+    async with gate.hold(core=False, label="CanvasSnapshot.upsert"):
+        await asyncio.sleep(0.12)
+    assert any("写闸门仍占用" in line and "CanvasSnapshot.upsert" in line for line in messages)
+
+
+def test_waiter_log_names_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_waiter_log_names_the_owner(monkeypatch))
+
+
+async def _waiter_log_names_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.utils.database.write_gate as write_gate
+
+    messages: list[str] = []
+    monkeypatch.setattr(write_gate, "GATE_WAIT_S", 0.2)
+    monkeypatch.setattr(write_gate, "HOLD_LOG_S", 0.05)
+    monkeypatch.setattr(write_gate, "_warn", messages.append)
+    gate = write_gate.SqliteWriteGate()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocker() -> None:
+        async with gate.hold(core=False, label="holder.op"):
+            started.set()
+            await release.wait()
+
+    blocked = asyncio.create_task(blocker())
+    await asyncio.wait_for(started.wait(), 2)
+    t0 = time.monotonic()
+    with pytest.raises(write_gate.WriteGateTimeout):
+        async with gate.hold(core=True, label="waiter.op"):
+            pass
+    assert time.monotonic() - t0 < 1
+    release.set()
+    await asyncio.gather(blocked, return_exceptions=True)
+    assert any("写闸门排队" in line and "waiter.op" in line and "holder.op" in line for line in messages)
+    assert any("准备取消" in line and "holder.op" in line for line in messages)
+
+
+def test_reentry_keeps_the_outer_label() -> None:
+    asyncio.run(_reentry_keeps_the_outer_label())
+
+
+async def _reentry_keeps_the_outer_label() -> None:
+    gate = SqliteWriteGate()
+    async with gate.hold(core=False, label="outer.op"):
+        async with gate.hold(core=True, label="inner.op"):
+            assert gate._label == "outer.op"
+    assert gate._label == ""
+
+
+def test_handoff_stops_the_previous_hold_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(_handoff_stops_the_previous_hold_log(monkeypatch))
+
+
+async def _handoff_stops_the_previous_hold_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.utils.database.write_gate as write_gate
+
+    messages: list[str] = []
+    monkeypatch.setattr(write_gate, "HOLD_LOG_S", 0.05)
+    monkeypatch.setattr(write_gate, "_warn", messages.append)
+    gate = write_gate.SqliteWriteGate()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def first() -> None:
+        async with gate.hold(core=False, label="first.op"):
+            started.set()
+            await release.wait()
+
+    async def second() -> None:
+        async with gate.hold(core=False, label="second.op"):
+            await asyncio.sleep(0.12)
+
+    held = asyncio.create_task(first())
+    await asyncio.wait_for(started.wait(), 2)
+    nxt = asyncio.create_task(second())
+    await asyncio.sleep(0.02)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(held, nxt), 2)
+    still = [line for line in messages if "写闸门仍占用" in line]
+    assert any("second.op" in line for line in still)
+    assert all("first.op" not in line for line in still)
+
+
 def test_writer_module_classifies_framework_code() -> None:
     assert base_models._writer_is_core(base_models.BaseIDModel._add_chunk)
     assert not base_models._writer_is_core(test_writer_module_classifies_framework_code)
@@ -318,9 +413,9 @@ async def _child_task_does_not_share_the_write_session(
     gate = base_models.sqlite_write_gate
     original_enter = gate.enter
 
-    async def spy(core: bool) -> None:
+    async def spy(core: bool, label: str = "") -> None:
         entered.append(core)
-        await original_enter(core)
+        await original_enter(core, label)
 
     monkeypatch.setattr(gate, "enter", spy)
     try:
