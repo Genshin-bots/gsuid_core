@@ -145,6 +145,13 @@ exec_list = [
     "ALTER TABLE aitokenusagebytype ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
+    # 延迟样本数：区间平均延迟要按样本数加权（每日样本量实测能差两个数量级），
+    # 没有它就只能拿每日均值取算术平均。老库这一列是 0，即不参与加权。
+    "ALTER TABLE aidailystatistics ADD COLUMN latency_sample_count INTEGER DEFAULT 0;",
+    # 统计模块两张按日聚合表的 date 索引：它们是本模块唯一没有唯一约束、也就没有
+    # 附带索引的按日表，BETWEEN + ORDER BY date 原来要全表扫再排一次。
+    "CREATE INDEX IF NOT EXISTS idx_aidailystatistics_date ON aidailystatistics (date);",
+    "CREATE INDEX IF NOT EXISTS idx_airagmissstatistics_date ON airagmissstatistics (date);",
     # 小时级性能统计表 aihourlyperformance 为全新表，由 SQLModel create_all 全量
     # 建表，无需逐列 ALTER；以下仅补齐"运行过开发期中间版本（缺均值采样列）"的库
     "ALTER TABLE aihourlyperformance ADD COLUMN ttft_sum_ms FLOAT DEFAULT 0.0;",

@@ -642,6 +642,8 @@ class StatisticsManager:
                 total_cache_write_tokens=s.total_tokens["cache_write"],
                 avg_latency=s.latencies.avg,
                 p95_latency=s.latencies.p95,
+                # 样本数一起落库：区间平均延迟按它加权，否则只能拿每日均值取算术平均
+                latency_sample_count=len(s.latencies.latencies),
                 intent_chat_count=s.intents["chat"],
                 intent_tool_count=s.intents["tool"],
                 intent_qa_count=s.intents["qa"],
@@ -978,13 +980,27 @@ class StatisticsManager:
     ) -> Dict[str, Any]:
         """获取指定时间段（闭区间）的 Token 消耗统计。
 
-        逐日聚合 [start_date, end_date] 内的 Token 消耗, 返回:
+        返回:
         - total: 整个时间段的四类 Token 总量及总和
         - daily: 按天的 Token 趋势(用于折线/柱状图)
-        - by_model: 跨天聚合的按模型 Token 分布(用于占比图)
+        - by_model: 跨天聚合的按模型 Token 分布
+        - by_type: 跨天聚合的按类型 Token 分布
+        - latency: 区间平均延迟(按样本数加权)与区间内 P95 峰值
+        - errors: 区间内六类错误计数及合计
 
         今日数据优先取内存实时值, 历史数据从数据库读取; 区间内无数据的日期
         以 0 补齐, 保证 daily 序列连续。start_date > end_date 时自动交换。
+
+        Why 一次性扫区间: 旧实现是「逐日 get_daily_stats + get_daily_data」,
+        区间 N 天就要发 2N 次往返 —— 看板每切一次时间档位都得等这 2N 次跑完,
+        90 天档直接卡住。现在三张表各发一次 BETWEEN(走 date 索引), 回程行在
+        Python 侧按日期分组, 往返数恒为 3, 与区间长度无关。
+
+        Why 延迟和错误也走这里而不是只留在 summary: summary 只按「选中日」返回,
+        看板切到 7/30 天档时 Token 变了、错误率却还停在某一天, 两块读数口径打架。
+        延迟的 avg 用 latency_sample_count 加权(每日样本量实测 439 vs 3339, 直接取
+        算术平均会被小样本日拉偏); p95 无法跨日合并, 给的是区间内各日最大值,
+        前端据此标注成「峰值」而不是区间 P95。
 
         Args:
             start_date: 开始日期, 格式 "YYYY-MM-DD"
@@ -1002,9 +1018,29 @@ class StatisticsManager:
         if (end - start).days + 1 > max_days:
             start = end - timedelta(days=max_days - 1)
 
+        start_str = start.strftime("%Y-%m-%d")
+        end_str = end.strftime("%Y-%m-%d")
+
+        # 三次查询并发发出, 互不依赖
+        daily_stats_rows, model_rows, type_rows = await asyncio.gather(
+            AIDailyStatistics.get_stats_between(start_str, end_str),
+            AITokenUsageByModel.get_data_between(start_str, end_str),
+            AITokenUsageByType.get_data_between(start_str, end_str),
+        )
+
+        # 回程行按 date 建索引, 下面的循环 O(1) 取当天, 不再碰 DB
+        stats_by_date = {row.date: row for row in daily_stats_rows}
+        model_by_date: Dict[str, List[AITokenUsageByModel]] = defaultdict(list)
+        for row in model_rows:
+            model_by_date[row.date].append(row)
+        type_by_date: Dict[str, List[AITokenUsageByType]] = defaultdict(list)
+        for row in type_rows:
+            type_by_date[row.date].append(row)
+
         daily: List[Dict[str, Any]] = []
-        # 按模型聚合: model -> TokenUsage
+        # 按模型 / 按类型跨天聚合: name -> TokenUsage
         model_acc: Dict[str, TokenUsage] = defaultdict(TokenUsage)
+        type_acc: Dict[str, TokenUsage] = defaultdict(TokenUsage)
         total = TokenUsage()
         # 效率区间累加
         sum_user_turns = 0
@@ -1012,6 +1048,24 @@ class StatisticsManager:
         sum_ut_agent_runs = 0
         sum_ut_in = 0
         sum_ut_out = 0
+        # 延迟/错误区间累加。avg 按样本数加权（lat_weight_sum / lat_weight_n），
+        # p95 取区间内各日最大值 —— 逐日 P95 无法再合并成一个真 P95，
+        # 所以前端把它标成「区间内峰值」而不是区间 P95。
+        lat_weight_sum = 0.0
+        lat_weight_n = 0
+        lat_peak = 0.0
+        # 迁移前的历史行 latency_sample_count 是 0, 整段区间可能一个加权样本都没有。
+        # 那时退回「各日均值的算术平均」——不如加权准, 但远好过读成 0.00s。
+        lat_day_avg_sum = 0.0
+        lat_day_count = 0
+        err_acc: Dict[str, int] = {
+            "timeout": 0,
+            "rate_limit": 0,
+            "network_error": 0,
+            "usage_limit": 0,
+            "agent_error": 0,
+            "api_529_error": 0,
+        }
 
         cur = start
         while cur <= end:
@@ -1030,13 +1084,29 @@ class StatisticsManager:
                 d_ut_ar = int(b.user_turn_agent_run_count or 0)
                 d_ut_in = int(b.user_turn_tokens.input_tokens or 0)
                 d_ut_out = int(b.user_turn_tokens.output_tokens or 0)
-                model_rows = [
+                day_models = [
                     (m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
                     for m, u in b.token_by_model.items()
                 ]
+                day_types = [
+                    (t, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+                    for t, u in b.token_by_type.items()
+                ]
+                # 延迟样本列表本身就是内存里的实时来源，len() 即今日样本数
+                d_lat_avg = b.latencies.avg
+                d_lat_p95 = b.latencies.p95
+                d_lat_n = len(b.latencies.latencies)
+                day_errors = {
+                    "timeout": b.errors["timeout"],
+                    "rate_limit": b.errors["rate_limit"],
+                    "network_error": b.errors["network_error"],
+                    "usage_limit": b.errors["usage_limit"],
+                    "agent_error": b.errors["agent_error"],
+                    "api_529_error": b.errors["api_529_error"],
+                }
             else:
-                # 历史: 数据库。总量取 AIDailyStatistics, 按模型取 AITokenUsageByModel
-                stats = await AIDailyStatistics.get_daily_stats(date_str)
+                # 历史: 数据库。总量取 AIDailyStatistics, 分布取两张 Token 明细表
+                stats = stats_by_date.get(date_str)
                 d_in = (stats.total_input_tokens or 0) if stats else 0
                 d_out = (stats.total_output_tokens or 0) if stats else 0
                 d_cr = (stats.total_cache_read_tokens or 0) if stats else 0
@@ -1046,16 +1116,43 @@ class StatisticsManager:
                 d_ut_ar = int(stats.user_turn_agent_run_count or 0) if stats else 0
                 d_ut_in = int(stats.user_turn_input_tokens or 0) if stats else 0
                 d_ut_out = int(stats.user_turn_output_tokens or 0) if stats else 0
-                model_rows = [
+                day_models = [
                     (
-                        t.model_name,
-                        t.input_tokens or 0,
-                        t.output_tokens or 0,
-                        t.cache_read_tokens or 0,
-                        t.cache_write_tokens or 0,
+                        row.model_name,
+                        row.input_tokens or 0,
+                        row.output_tokens or 0,
+                        row.cache_read_tokens or 0,
+                        row.cache_write_tokens or 0,
                     )
-                    for t in await AITokenUsageByModel.get_daily_data(date_str)
+                    for row in model_by_date.get(date_str, [])
                 ]
+                day_types = [
+                    (
+                        row.chat_type,
+                        row.input_tokens or 0,
+                        row.output_tokens or 0,
+                        row.cache_read_tokens or 0,
+                        row.cache_write_tokens or 0,
+                    )
+                    for row in type_by_date.get(date_str, [])
+                ]
+                # 老库这一列是 0（迁移前落的历史行）：拿它当权重等于不参与，
+                # 只影响升级后第一段区间的加权精度，不影响任何一天的读数
+                d_lat_avg = (stats.avg_latency or 0.0) if stats else 0.0
+                d_lat_p95 = (stats.p95_latency or 0.0) if stats else 0.0
+                d_lat_n = int(stats.latency_sample_count or 0) if stats else 0
+                day_errors = (
+                    {
+                        "timeout": stats.api_timeout_count or 0,
+                        "rate_limit": stats.api_rate_limit_count or 0,
+                        "network_error": stats.api_network_error_count or 0,
+                        "usage_limit": stats.api_usage_limit_count or 0,
+                        "agent_error": stats.api_agent_error_count or 0,
+                        "api_529_error": stats.api_529_count or 0,
+                    }
+                    if stats
+                    else dict.fromkeys(err_acc, 0)
+                )
 
             daily.append(
                 {
@@ -1079,8 +1176,19 @@ class StatisticsManager:
             sum_ut_agent_runs += d_ut_ar
             sum_ut_in += d_ut_in
             sum_ut_out += d_ut_out
-            for model_name, m_in, m_out, m_cr, m_cw in model_rows:
+            if d_lat_n > 0:
+                lat_weight_sum += d_lat_avg * d_lat_n
+                lat_weight_n += d_lat_n
+            if d_lat_avg > 0:
+                lat_day_avg_sum += d_lat_avg
+                lat_day_count += 1
+            lat_peak = max(lat_peak, d_lat_p95)
+            for _k, _v in day_errors.items():
+                err_acc[_k] += _v
+            for model_name, m_in, m_out, m_cr, m_cw in day_models:
                 model_acc[model_name].add(m_in, m_out, m_cr, m_cw)
+            for type_name, t_in, t_out, t_cr, t_cw in day_types:
+                type_acc[type_name].add(t_in, t_out, t_cr, t_cw)
 
         by_model = sorted(
             [
@@ -1093,6 +1201,21 @@ class StatisticsManager:
                     "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
                 }
                 for model_name, u in model_acc.items()
+            ],
+            key=lambda x: x["total_tokens"],
+            reverse=True,
+        )
+        by_type = sorted(
+            [
+                {
+                    "type": type_name,
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_read_tokens": u.cache_read_tokens,
+                    "cache_write_tokens": u.cache_write_tokens,
+                    "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
+                }
+                for type_name, u in type_acc.items()
             ],
             key=lambda x: x["total_tokens"],
             reverse=True,
@@ -1121,6 +1244,20 @@ class StatisticsManager:
             },
             "daily": daily,
             "by_model": by_model,
+            "by_type": by_type,
+            # 延迟 / 错误跟 Token 同一段时间，避免看板出现「Token 看的是这 30 天、
+            # 错误率却是某一天」这种口径打架。avg 按样本数加权，p95 是区间内峰值。
+            "latency": {
+                "avg": (
+                    self._safe_avg(lat_weight_sum, lat_weight_n)
+                    if lat_weight_n > 0
+                    else self._safe_avg(lat_day_avg_sum, lat_day_count)
+                ),
+                "p95": lat_peak,
+                # 0 = 区间内全是迁移前的历史行, avg 是按日均估算的
+                "samples": lat_weight_n,
+            },
+            "errors": {**err_acc, "total": sum(err_acc.values())},
         }
 
     async def get_efficiency(self, date: Optional[str] = None) -> Optional[Dict[str, Any]]:

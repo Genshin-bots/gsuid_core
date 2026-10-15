@@ -292,8 +292,35 @@ GET /api/ai/statistics/token-by-range
   `avg_agent_runs_per_user_turn`
 - `efficiency`: 区间汇总的效率（回合数/运行数累加，均值按区间合计重算）
 - `by_model`: 跨天聚合的按模型 Token 分布，按 `total_tokens` **降序**排列，用于占比图
+- `by_type`: 跨天聚合的按 `chat_type` Token 分布，同样按 `total_tokens` 降序。与 `by_model`
+  同区间同口径，前端的「各模型 / 各类型」两张构成卡直接吃这份，一次请求即可
+- `latency`: 区间延迟（秒）。`avg` 由各日 `avg_latency` 按当日 `latency_sample_count`
+  **加权**得出 —— 每日样本量实测能差两个数量级（439 vs 3339），直接取算术平均会被小样本日拉偏；
+  `p95` 是区间内各日 P95 的**最大值**，逐日 P95 无法合并成一个真 P95，前端据此标注成「峰值」；
+  `samples` 为区间样本数合计，**为 0 表示区间全是加 `latency_sample_count` 这一列之前落的历史行**，
+  此时 `avg` 退化为「各日均值的算术平均」的估算值（比读成 0 可用，但精度较低）
+- `errors`: 区间内六类错误计数与 `total` 合计，字段与 `summary.errors` 一致（`timeout` /
+  `rate_limit` / `network_error` / `usage_limit` / `agent_error` / `api_529_error`）
 - `days`: `daily` 数组长度（实际聚合天数）
 - 四类 Token 互不重叠：`input_tokens` 为非缓存输入，`cache_read_tokens` / `cache_write_tokens` 为提示词缓存读写，因此可直接相加
+
+**Why 延迟和错误也在这份里**: 两者原先只存在于 `summary` 的「选中日」口径，前端切到 7/30 天档时
+会出现「Token 已经是这 30 天的、错误率却还停在某一天」，同一屏两段时间互相打架。放进来之后
+Token / 延迟 / 错误共享同一个区间，错误率的分母可以直接取 `hourly-range` 那份请求数，
+两个读数还能互相验算。
+
+**性能**: 三张表（`aidailystatistics` / `aitokenusagebymodel` / `aitokenusagebytype`）各发**一次**
+`BETWEEN` 区间查询，回程行在 Python 侧按日期分组，往返数与区间长度无关。实测 30 天档
+从「逐日 2×30 = 60 次往返」降到 3 次，裸 sqlite 耗时 1.21ms → 0.39ms；走真实 ORM 时
+每次往返都带一次 session 获取，差距比这更大。
+
+**索引**: 三张表都在 `date` 上有索引。`aitokenusagebytype` / `aitokenusagebymodel` 由
+`(date, X)` 唯一约束自带；`aidailystatistics` / `airagmissstatistics` 是统计模块里唯二没有
+唯一约束、也就没有附带索引的按日表，原先 `BETWEEN + ORDER BY date` 走 `SCAN` 再排一次，
+已在 `models.py` 用 `Index(...)` 声明并由 `startup.exec_list` 补建。769MB 真实库副本实测：
+建索引 12.7ms、无重建无丢行，`EXPLAIN` 由 `SCAN + USE TEMP B-TREE` 变为
+`SEARCH ... USING INDEX`，60 天区间 0.628ms → 0.305ms。`latency_sample_count` 列同样由
+`exec_list` 补，老行默认为 0。
 
 **响应**:
 ```json
@@ -346,7 +373,21 @@ GET /api/ai/statistics/token-by-range
                 "cache_write_tokens": 5000,
                 "total_tokens": 325000
             }
-        ]
+        ],
+        "latency": {
+            "avg": 1.42,
+            "p95": 5.8,
+            "samples": 2140
+        },
+        "errors": {
+            "timeout": 12,
+            "rate_limit": 7,
+            "network_error": 3,
+            "usage_limit": 1,
+            "agent_error": 5,
+            "api_529_error": 9,
+            "total": 37
+        }
     }
 }
 ```
@@ -369,6 +410,26 @@ interface TokenRangeByModel extends TokenBucket {
   model: string;
 }
 
+interface TokenRangeByType extends TokenBucket {
+  type: string;
+}
+
+interface TokenRangeLatency {
+  avg: number;    // 秒，按样本数加权；samples 为 0 时是日均估算
+  p95: number;    // 秒，区间内各日 P95 的最大值
+  samples: number;
+}
+
+interface TokenRangeErrors {
+  timeout: number;
+  rate_limit: number;
+  network_error: number;
+  usage_limit: number;
+  agent_error: number;
+  api_529_error: number;
+  total: number;
+}
+
 interface TokenRangeData {
   start_date: string;
   end_date: string;
@@ -376,6 +437,9 @@ interface TokenRangeData {
   total: TokenBucket;
   daily: TokenRangeDaily[];
   by_model: TokenRangeByModel[];
+  by_type: TokenRangeByType[];
+  latency?: TokenRangeLatency;
+  errors?: TokenRangeErrors;
 }
 
 interface ApiResp<T> {
@@ -407,9 +471,16 @@ const trend = data.daily.map((d) => ({ x: d.date, y: d.total_tokens }));
 
 // 饼图数据：模型 Token 占比（by_model 已按 total_tokens 降序）
 const pie = data.by_model.map((m) => ({ name: m.model, value: m.total_tokens }));
+
+// 延迟 / 错误率：与 Token 同一区间。分母取 hourly-range 那份请求数，
+// 不要退回 summary（那是「选中日」口径，和这里的区间不是同一段时间）。
+const errorRate = data.errors && requests > 0 ? (data.errors.total / requests) * 100 : null;
+
+// 类型分布同口径：区间内跨天按 chat_type 聚合
+const byType = data.by_type.map((t) => ({ name: t.type, value: t.total_tokens }));
 ```
 
-> 与 `token-by-model`（单日、按模型）的区别：本接口是**跨天时间段**聚合，同时给出按天趋势与跨天模型分布，一次请求即可支撑时间段维度的看板；单日明细仍用 `summary` / `token-by-model`。
+> 与 `token-by-model`（单日、按模型）的区别：本接口是**跨天时间段**聚合，同时给出按天趋势、跨天模型分布与跨天类型分布，一次请求即可支撑时间段维度的看板；单日明细仍用 `summary` / `token-by-model`。
 
 ---
 

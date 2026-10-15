@@ -146,8 +146,16 @@ async def get_token_usage_by_range(
     获取指定时间段的 Token 消耗统计
 
     对 [start_date, end_date] 闭区间逐日聚合，返回时间段总量、按天趋势
-    以及跨天的按模型分布。今日数据取内存实时值，历史数据从数据库读取，
+    以及跨天的按模型 / 按类型分布。今日数据取内存实时值，历史数据从数据库读取，
     区间内无数据的日期以 0 补齐，保证 daily 序列连续。
+
+    三张表各发一次区间查询（BETWEEN 走 date 索引），回程行在 Python 侧按日期分组，
+    往返数与区间长度无关 —— 旧实现逐日查库，90 天档要 180 次往返。
+
+    延迟与错误也在同一份区间里返回：它们原先只存在于 /summary 的「选中日」口径，
+    看板切到 7/30 天档时会出现 Token 变了、错误率还停在某一天。latency.avg 按
+    latency_sample_count 加权，latency.p95 是区间内各日 P95 的最大值（跨日无法
+    合并成真 P95，前端按「区间内峰值」标注）。
 
     Args:
         start_date: 开始日期，格式为 "YYYY-MM-DD"，默认为 6 天前（即默认近 7 天）
@@ -155,7 +163,8 @@ async def get_token_usage_by_range(
 
     Returns:
         status: 0成功，1失败
-        data: 包含 total（总量）、daily（按天趋势）、by_model（按模型分布）的统计
+        data: 包含 total（总量）、daily（按天趋势）、by_model（按模型分布）、
+              by_type（按类型分布）、latency（区间延迟）、errors（区间错误计数）
     """
     try:
         now = datetime.now()

@@ -20,7 +20,7 @@ from typing import Any, List, Optional
 from datetime import datetime
 
 from sqlmodel import Field, col, and_, select
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.i18n import t
@@ -42,6 +42,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
         user_turn_*_tokens: 挂在用户回合树内的 token（含同步嵌套）
         avg_latency: 平均响应延迟 (秒)
         p95_latency: P95 响应延迟 (秒)
+        latency_sample_count: 当日延迟样本数（区间平均延迟按它加权，见 get_stats_between）
         intent_chat_count: 闲聊意图次数
         intent_tool_count: 工具意图次数
         intent_qa_count: 问答意图次数
@@ -64,7 +65,12 @@ class AIDailyStatistics(BaseIDModel, table=True):
         memory_episodes_created: 新建 Episode 总数
     """
 
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        # 概览、延迟/错误率、RAG 命中率都按 date 取当天或 BETWEEN 一段。SQLModel
+        # create_all 只建新表，老库要靠 startup.exec_list 补同名索引。
+        Index("idx_aidailystatistics_date", "date"),
+        {"extend_existing": True},
+    )
 
     date: str = Field(default="", title="统计日期")
     total_input_tokens: int = Field(default=0, title="总输入Token")
@@ -83,6 +89,7 @@ class AIDailyStatistics(BaseIDModel, table=True):
     user_turn_cache_write_tokens: int = Field(default=0, title="用户回合缓存写入Token")
     avg_latency: float = Field(default=0.0, title="平均延迟(秒)")
     p95_latency: float = Field(default=0.0, title="P95延迟(秒)")
+    latency_sample_count: int = Field(default=0, title="延迟样本数")
     intent_chat_count: int = Field(default=0, title="闲聊次数")
     intent_tool_count: int = Field(default=0, title="工具次数")
     intent_qa_count: int = Field(default=0, title="问答次数")
@@ -135,7 +142,15 @@ class AIDailyStatistics(BaseIDModel, table=True):
         start_date: str,
         end_date: str,
     ) -> List["AIDailyStatistics"]:
-        """闭区间 [start_date, end_date] 内全部日聚合行（按 date 升序）。"""
+        """闭区间 [start_date, end_date] 内全部日聚合行（按 date 升序）。
+
+        Why 这次 BETWEEN 值一个 date 索引: 除了看板要把整段拉出来做跨天聚合，
+        延迟也要按 `latency_sample_count` 加权算区间平均 —— 没有样本数列就只能拿
+        每日均值再取算术平均，而每天的样本量能差两个数量级（实测 439 vs 3339），
+        那样算出来的数会被小样本日拉偏。索引让 BETWEEN + ORDER BY 都不再排序。
+
+        老库的索引和列由 `startup.exec_list` 补（create_all 只建新表）。
+        """
         stmt = select(cls).where(and_(cls.date >= start_date, cls.date <= end_date)).order_by(col(cls.date))
         result = await session.execute(stmt)
         return list(result.scalars().all())
@@ -217,6 +232,25 @@ class AITokenUsageByType(BaseIDModel, table=True):
         return result.scalars().first()
 
     @classmethod
+    @with_read_session
+    async def get_data_between(
+        cls,
+        session: AsyncSession,
+        start_date: str,
+        end_date: str,
+    ) -> List["AITokenUsageByType"]:
+        """闭区间 [start_date, end_date] 内全部按类型聚合行（按 date、chat_type 升序）。
+
+        Why: 区间看板要在一次请求里同时拿到「按类型」和「按模型」两份分布。
+        逐日调 get_daily_data 是 N 次往返，90 天就是 90 次 —— 这里一次查完，
+        由调用方按 date 分组。date 上有 (date, chat_type) 唯一约束（自带索引），
+        字符串日期的字典序即时间序，BETWEEN 直接走索引。
+        """
+        stmt = select(cls).where(and_(cls.date >= start_date, cls.date <= end_date)).order_by(col(cls.date))
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
     @with_session
     async def upsert_token_usage(
         cls,
@@ -284,6 +318,22 @@ class AITokenUsageByModel(BaseIDModel, table=True):
         stmt = select(cls).where(and_(cls.date == date))
         result = await session.execute(stmt)
         return list(result.scalars().all()) or []
+
+    @classmethod
+    @with_read_session
+    async def get_data_between(
+        cls,
+        session: AsyncSession,
+        start_date: str,
+        end_date: str,
+    ) -> List["AITokenUsageByModel"]:
+        """闭区间 [start_date, end_date] 内全部按模型聚合行（按 date、model_name 升序）。
+
+        Why: 同 AITokenUsageByType.get_data_between —— 区间看板一次查完，调用方按 date 分组。
+        """
+        stmt = select(cls).where(and_(cls.date >= start_date, cls.date <= end_date)).order_by(col(cls.date))
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
 
     @classmethod
     @with_session
@@ -512,7 +562,11 @@ class AIRAGMissStatistics(BaseIDModel, table=True):
     RAG 未命中统计（简单计数）
     """
 
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        # RAG 命中率的区间查询按 date BETWEEN；与 AIDailyStatistics 同理走 date 索引。
+        Index("idx_airagmissstatistics_date", "date"),
+        {"extend_existing": True},
+    )
 
     date: str = Field(default="", title="统计日期")
     hit_count: int = Field(default=0, title="命中次数")
