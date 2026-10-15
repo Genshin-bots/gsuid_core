@@ -67,115 +67,10 @@ def test_post_tool_contracts_split_persona_vs_capability() -> None:
     assert "render_html_to_image" not in fail_c or "禁止" in fail_c
 
 
-def test_delegation_rejects_other_speakers_history_topic() -> None:
-    from gsuid_core.ai_core.buildin_tools.subagent import delegation_grounded
-
-    said = "帮忙比较一下样本甲组、样本乙组和样本丙组"
-    assert delegation_grounded("对比样本甲组、样本乙组、样本丙组的要点", said)
-    assert not delegation_grounded("分析样本丁组并给出方案", said)
-    assert not delegation_grounded("深度分析样本戊组", said)
-    assert delegation_grounded("甲组配置里，成员乙已经带了丙类部件", "甲组配置，成员乙已经带了丙类部件，成员丁带什么")
-    assert not delegation_grounded("随便查点别的", "救我")
-    assert not delegation_grounded("analyze the market", "help me with the report")
-    assert delegation_grounded("compare sample alpha", "please compare sample alpha today")
-
-
-def test_deictic_to_recent_media_uses_upstairs_image(monkeypatch) -> None:
-    from gsuid_core.models import Event
-    from gsuid_core.message_history.manager import HistoryManager
-    from gsuid_core.ai_core.buildin_tools.subagent import (
-        deictic_to_recent_media,
-        delegation_ground_reject,
-    )
-
-    mgr = HistoryManager()
-    image_ev = Event(
-        bot_id="onebot",
-        bot_self_id="self1",
-        user_type="group",
-        group_id="g9001",
-        user_id="u2",
-        WS_BOT_ID="ws1",
-    )
-    note_ev = Event(
-        bot_id="onebot",
-        bot_self_id="self1",
-        user_type="group",
-        group_id="g9001",
-        user_id="u3",
-        WS_BOT_ID="ws1",
-    )
-    ev = Event(
-        bot_id="onebot",
-        bot_self_id="self1",
-        user_type="group",
-        group_id="g9001",
-        user_id="u1",
-        WS_BOT_ID="ws1",
-        msg_id="cur-1",
-    )
-    mgr.add_message(
-        image_ev,
-        "user",
-        "（一张图）",
-        user_name="乙",
-        metadata={"image_id": "img_synth_who_01", "msg_id": "img-1"},
-    )
-    mgr.add_message(note_ev, "user", "你们看", user_name="丙", metadata={"msg_id": "txt-1"})
-    mgr.add_message(ev, "user", "看看这是谁", user_name="甲", metadata={"msg_id": "cur-1"})
-    monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: mgr)
-
-    ev.raw_text = "看看这是谁"
-    assert deictic_to_recent_media(ev)
-    assert delegation_ground_reject(ev, "看图里是谁", follow=False) is None
-    assert delegation_ground_reject(ev, "分析样本丁组并给出方案", follow=False) is not None
-
-    for raw in (
-        "@早柚 看看这是谁",
-        "小明(用户ID:9001)：@早柚 看看这是谁",
-        "小明(用户ID:9001)：看看这是谁",
-    ):
-        ev.raw_text = raw
-        assert deictic_to_recent_media(ev), raw
-        assert delegation_ground_reject(ev, "看图里是谁", follow=False) is None, raw
-
-    monkeypatch.setattr(
-        "gsuid_core.ai_core.persona.config.persona_config_manager.get_persona_for_session",
-        lambda _sid: "早柚",
-    )
-    ev.raw_text = "早柚 看看这是谁"
-    assert deictic_to_recent_media(ev)
-    ev.raw_text = "@早柚看看这是谁"
-    assert deictic_to_recent_media(ev)
-
-    for raw in ("这是谁的错", "这图书馆几点开门", "什么图书馆", "这图纸发我", "看这天气", "这张表怎么看", "锐评一下"):
-        ev.raw_text = raw
-        assert not deictic_to_recent_media(ev), raw
-
-    far = HistoryManager()
-    far.add_message(
-        image_ev,
-        "user",
-        "（一张图）",
-        user_name="乙",
-        metadata={"image_id": "img_synth_who_01", "msg_id": "far-img"},
-    )
-    far.add_message(note_ev, "user", "第一句", user_name="丙", metadata={"msg_id": "far-a"})
-    far.add_message(note_ev, "user", "第二句", user_name="丙", metadata={"msg_id": "far-b"})
-    far.add_message(ev, "user", "看看这是谁", user_name="甲", metadata={"msg_id": "cur-1"})
-    monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: far)
-    ev.raw_text = "看看这是谁"
-    assert not deictic_to_recent_media(ev)
-
-
-def test_deictic_sees_captionless_inbound_image(monkeypatch) -> None:
+def test_captionless_inbound_image_is_recorded(monkeypatch) -> None:
     from gsuid_core.models import Event
     from gsuid_core.handler import _record_inbound_history
     from gsuid_core.message_history.manager import HistoryManager
-    from gsuid_core.ai_core.buildin_tools.subagent import (
-        deictic_to_recent_media,
-        delegation_ground_reject,
-    )
 
     mgr = HistoryManager()
     monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: mgr)
@@ -205,20 +100,6 @@ def test_deictic_sees_captionless_inbound_image(monkeypatch) -> None:
     skip_ev.raw_text = ""
     _record_inbound_history(skip_ev)
     assert mgr.get_history(skip_ev, limit=8)[-1].metadata["image_id"] == "img_synth_who_01"
-
-    ev = Event(
-        bot_id="onebot",
-        bot_self_id="self1",
-        user_type="group",
-        group_id="g9001",
-        user_id="u1",
-        WS_BOT_ID="ws1",
-        msg_id="cur-1",
-    )
-    ev.raw_text = "@早柚 看看这是谁"
-    _record_inbound_history(ev)
-    assert deictic_to_recent_media(ev)
-    assert delegation_ground_reject(ev, "看图里是谁", follow=False) is None
 
 
 def test_correction_pass_repoints_host_tool_calls_to_parent() -> None:

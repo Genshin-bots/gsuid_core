@@ -87,31 +87,6 @@ def l2_state_driven_wanted(
     return call_to_self or followup_detected
 
 
-def group_idle_request_limit(
-    default_limit: int,
-    *,
-    is_group: bool,
-    followup_detected: bool,
-    has_active_task: bool,
-    idle_cap: int,
-    call_to_self: bool = False,
-) -> int:
-    """纯旁观群聊轮收窄 request_limit；点名与省略续聊不收。
-
-    收窄只针对「无人寻址 + 无跟进 + 无在途任务」这一类——它们本不该干活，
-    放开到 multi_agent_lenth 就是零工具空转的烧钱口子。省略续聊轮
-    （``followup_detected`` = ellipsis_followup / task_management）要跑得完
-    find_tools → 真正查询的两跳链路，早期的收窄误伤了它们，见 §12.8。
-    """
-    if default_limit < 1 or idle_cap < 1:
-        return default_limit
-    if call_to_self:
-        return default_limit
-    if is_group and not followup_detected and not has_active_task:
-        return min(default_limit, idle_cap)
-    return default_limit
-
-
 def snapshot_tool_allowed(
     name: str,
     *,

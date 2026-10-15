@@ -383,7 +383,7 @@ async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
 
 
 def _record_inbound_history(event: Event) -> None:
-    """入站写入 HistoryManager。无配文纯图也记，近图指示才能看见上一张。"""
+    """入站写入 HistoryManager。无配文纯图也记，后面的轮次才能看见上一张。"""
     has_text = bool(event.raw_text and event.raw_text.strip())
     has_image = bool(event.image_id or event.image_id_list)
     if not (has_text or event.at_list or has_image):

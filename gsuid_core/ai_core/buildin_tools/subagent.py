@@ -25,23 +25,18 @@
 
 import re
 import asyncio
-from typing import TYPE_CHECKING, Callable, Optional
-
-if TYPE_CHECKING:
-    from gsuid_core.message_history.manager import MessageRecord
+from typing import Callable, Optional
 
 from pydantic_ai import RunContext
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.delegation import await_delegation, delegation_handle
-from gsuid_core.ai_core.interaction_scaffold import extract_message_body, strip_leading_address
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入
 # 避免 buildin_tools → subagent → gs_agent → persona → buildin_tools 的循环导入。
@@ -459,18 +454,12 @@ async def _create_subagent_impl(
                         "或 send_message_by_ai 发送已有的图。不要新开查询。"
                     )
                 return "⚠️ 本轮是任务交付回灌。当前人格未启用出图代理，请直接用已有事实作答，不要新开查询。"
-        _follow = _extra["turn_followup"] is True if "turn_followup" in _extra else False
-        if pid == "render_agent":
-            if looks_like_illustration_request(task):
-                return (
-                    "⚠️ render_agent 只把事实包、表格和对比结论渲成 HTML 信息卡或图表，"
-                    "不画二次元插画、人物立绘或 Diffusion 生图。"
-                    "角色已有的立绘走 self_info；部署了别的生图工具就改调那个工具，不要派给 render_agent。"
-                )
-        elif ctx.deps.ev is not None:
-            _reject = delegation_ground_reject(ctx.deps.ev, task, follow=_follow)
-            if _reject:
-                return _reject
+        if pid == "render_agent" and looks_like_illustration_request(task):
+            return (
+                "⚠️ render_agent 只把事实包、表格和对比结论渲成 HTML 信息卡或图表，"
+                "不画二次元插画、人物立绘或 Diffusion 生图。"
+                "角色已有的立绘走 self_info；部署了别的生图工具就改调那个工具，不要派给 render_agent。"
+            )
         use_transient = pid in _TRANSIENT_DEFAULT_PROFILES
         if not use_transient and transient and not ctx.deps.allow_user_outbound:
             use_transient = True
@@ -722,221 +711,6 @@ async def _dispatch_transient_capability_agent(
         )
     note = _factpack_freshness_note(raw_result or "") if pid == "research_agent" else ""
     return f"{prefix_note}\n\n{raw_result}{note}"
-
-
-_TURN_GLUE = frozenset(
-    {
-        "帮我",
-        "帮忙",
-        "一下",
-        "看看",
-        "看下",
-        "分析",
-        "比较",
-        "对比",
-        "怎么",
-        "什么",
-        "还是",
-        "可以",
-        "这个",
-        "那个",
-        "现在",
-        "今天",
-        "麻烦",
-        "给我",
-    }
-)
-_CONTENT_CHUNK_RE = re.compile(r"[0-9A-Za-z]{3,}|[\u4e00-\u9fff]+")
-_ASCII_ANCHOR_STOP = frozenset(
-    {
-        "the",
-        "and",
-        "with",
-        "this",
-        "that",
-        "from",
-        "have",
-        "been",
-        "your",
-        "what",
-        "when",
-        "where",
-        "which",
-        "would",
-        "could",
-        "should",
-        "about",
-        "there",
-        "their",
-        "them",
-        "then",
-        "than",
-        "into",
-        "over",
-        "also",
-        "just",
-        "some",
-        "more",
-        "help",
-        "please",
-        "today",
-    }
-)
-
-
-def _glue_span(span: str) -> bool:
-    if span in _TURN_GLUE:
-        return True
-    if len(span) < 4:
-        return False
-    return all(span[i : i + 2] in _TURN_GLUE for i in range(len(span) - 1))
-
-
-def turn_content_anchors(text: str) -> list[str]:
-    """原话里能锚定任务的片段。英文至少 4 字且不是功能词；中文滑窗至少 4 字。"""
-    seen: set[str] = set()
-    anchors: list[str] = []
-    for chunk in _CONTENT_CHUNK_RE.findall(text or ""):
-        if chunk.isascii():
-            token = chunk.lower()
-            if len(token) < 4 or token in _ASCII_ANCHOR_STOP or token in seen:
-                continue
-            seen.add(token)
-            anchors.append(token)
-            continue
-        n = len(chunk)
-        if 2 <= n <= 3 and chunk not in _TURN_GLUE and chunk not in seen:
-            seen.add(chunk)
-            anchors.append(chunk)
-        for size in range(min(8, n), 3, -1):
-            for i in range(0, n - size + 1):
-                span = chunk[i : i + size]
-                if span in seen or _glue_span(span):
-                    continue
-                seen.add(span)
-                anchors.append(span)
-                if len(anchors) >= 40:
-                    return anchors
-    return anchors
-
-
-def delegation_grounded(task: str, ground: str) -> bool:
-    """任务要含原话里的一个长锚，或两个标点切开的短锚。对不上就拒绝。"""
-    anchors = turn_content_anchors(ground)
-    if not anchors:
-        return False
-    hay = task or ""
-    hay_low = hay.lower()
-    short_hits = 0
-    for span in anchors:
-        found = span in hay_low if span.isascii() else span in hay
-        if not found:
-            continue
-        if len(span) >= 4:
-            return True
-        short_hits += 1
-        if short_hits >= 2:
-            return True
-    return False
-
-
-def turn_ground_source(ev: Event) -> str:
-    parts: list[str] = []
-    if ev.raw_text:
-        parts.append(ev.raw_text)
-    elif ev.text:
-        parts.append(ev.text)
-    if ev.reply:
-        parts.append(ev.reply)
-    return "\n".join(parts)
-
-
-# 整句近图指示。后接书/纸/案/层/表，或句子没说完，不算指图。
-_DEICTIC_MEDIA_RE = re.compile(
-    r"^(?:你|请|帮我|帮忙|给我)?(?:看{1,2})?"
-    r"(?:这是谁|那是谁|这谁|那谁|[这那]张图|[这那]图|什么图|哪张图|(?:上面|刚才)那(?:张图|张|谁))"
-    r"(?!书|纸|案|层|表)"
-    r"[啊呀呢吧哦嘛？?！!。.~\s]*$"
-)
-_MEDIA_TASK_RE = re.compile(
-    r"(图片|看图|图里|图中|照片|截图|是谁|read_image|\b(?:image|photo|picture)\b)",
-    re.IGNORECASE,
-)
-
-
-def _record_has_image(meta: object) -> bool:
-    if not isinstance(meta, dict):
-        return False
-    image_id = meta["image_id"] if "image_id" in meta else ""
-    image_list = meta["image_id_list"] if "image_id_list" in meta else None
-    if isinstance(image_id, str) and image_id:
-        return True
-    return isinstance(image_list, list) and any(isinstance(x, str) and x for x in image_list)
-
-
-def _task_asks_media(task: str) -> bool:
-    return _MEDIA_TASK_RE.search(task or "") is not None
-
-
-def _prior_turn_records(ev: Event) -> "list[MessageRecord]":
-    from gsuid_core.message_history import get_history_manager
-    from gsuid_core.message_history.manager import MessageRecord
-
-    records = get_history_manager().get_history(ev, limit=8)
-    msg_id = ev.msg_id.strip()
-    kept: list[MessageRecord] = []
-    for record in records:
-        meta = record.metadata or {}
-        rid = meta["msg_id"] if "msg_id" in meta else ""
-        if msg_id and isinstance(rid, str) and rid == msg_id:
-            continue
-        kept.append(record)
-    if not msg_id and kept:
-        last = kept[-1]
-        body = extract_message_body(ev.raw_text or ev.text or "")
-        last_body = extract_message_body(last.content)
-        if last.role == "user" and str(last.user_id) == str(ev.user_id) and body and last_body == body:
-            kept = kept[:-1]
-    return kept[-2:]
-
-
-def _deictic_match_body(ev: Event) -> str:
-    """extract_message_body 之后再剥句首 @/呼名。句首呼名会让整句锚对不上。"""
-    body = extract_message_body(ev.raw_text or ev.text or "").strip()
-    persona = ""
-    from gsuid_core.ai_core.persona.config import persona_config_manager
-
-    raw_name = persona_config_manager.get_persona_for_session(ev.session_id)
-    if isinstance(raw_name, str):
-        persona = raw_name.strip()
-    return strip_leading_address(body, persona)
-
-
-def deictic_to_recent_media(ev: Event) -> bool:
-    """整句近图指示，且本句之前 1～2 条里有图。本句自己的入站不算。"""
-    if ev.image_id or ev.image_id_list:
-        return False
-    body = _deictic_match_body(ev)
-    if not body or _DEICTIC_MEDIA_RE.search(body) is None:
-        return False
-    return any(_record_has_image(record.metadata) for record in _prior_turn_records(ev))
-
-
-_DELEGATION_UNGROUNDED = (
-    "⚠️ 这个任务对不上本轮说话人的原话。群历史里别人的话题不能派成他的任务；只处理他这一句，或引用里点名的内容。"
-)
-
-
-def delegation_ground_reject(ev: Event, task: str, *, follow: bool) -> str | None:
-    """委派任务对不上本轮原话时的打回。近图且任务是看图时不打回。"""
-    if follow:
-        return None
-    if deictic_to_recent_media(ev) and _task_asks_media(task):
-        return None
-    ground = turn_ground_source(ev)
-    if not ground or delegation_grounded(task, ground):
-        return None
-    return _DELEGATION_UNGROUNDED
 
 
 async def _dispatch_via_kanban(

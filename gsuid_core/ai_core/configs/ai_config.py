@@ -232,13 +232,6 @@ AI_CONFIG: Dict[str, GSC] = {
         20,
         options=[12, 16, 20, 24, 32],
     ),
-    "group_idle_max_iterations": GsIntConfig(
-        "群聊旁观轮最大思考轮数",
-        "群聊无人寻址且无跟进、无在途任务时的 request_limit 上限, 防止零工具空转。"
-        "点名与省略续聊轮不收窄。修改后即时生效",
-        2,
-        options=[2, 3, 4, 6, 9],
-    ),
     "main_channel_visible_limit": GsIntConfig(
         "主通道单轮出站上限",
         "本项管模型单轮能发几段 TextPart（委派开场句 + 终局各占一格）。"
