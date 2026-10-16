@@ -39,7 +39,6 @@ from pydantic_ai.models.openai import (
 )
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from gsuid_core.i18n import t
@@ -50,6 +49,7 @@ from gsuid_core.ai_core.multimodal.openai_files import OpenAIChatModelWithVideo
 from .ai_config import ai_config
 from .gemini_config import get_gemini_config, get_gemini_config_dict
 from .openai_config import get_openai_config, get_openai_config_dict
+from .anthropic_wire import RecoveringAnthropicModel, anthropic_profile_for_model
 from .anthropic_config import get_anthropic_config, get_anthropic_config_dict
 
 if TYPE_CHECKING:
@@ -439,39 +439,6 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     )
 
 
-def _is_claude_haiku_5(model_name: str) -> bool:
-    # claude-haiku-4-5 不含这段，仍走 budget_tokens。
-    return "claude-haiku-5" in model_name.lower()
-
-
-def anthropic_profile_for_model(model_name: str) -> Callable[[ModelProfile], ModelProfile]:
-    """补 pydantic-ai 2.54 画像里没有的 Haiku 5。
-
-    上游已经标了 adaptive 时原样返回，避免盖掉以后补上的细项。
-    """
-
-    def _overlay(default: ModelProfile) -> ModelProfile:
-        if not _is_claude_haiku_5(model_name):
-            return default
-        if "anthropic_supports_adaptive_thinking" in default and default["anthropic_supports_adaptive_thinking"]:
-            return default
-        # 2.54 会把思考发成 type=enabled，Haiku 5.5 对此直接 400。
-        return merge_profile(
-            default,
-            AnthropicModelProfile(
-                anthropic_supports_adaptive_thinking=True,
-                anthropic_supports_effort=True,
-                anthropic_supports_xhigh_effort=True,
-                anthropic_disallows_budget_thinking=True,
-                anthropic_disallows_sampling_settings=True,
-                anthropic_disallows_top_effort_when_thinking_disabled=True,
-                thinking_enabled_by_default=True,
-            ),
-        )
-
-    return _overlay
-
-
 def make_anthropic_model(
     model_name: str,
     model_effort: ThinkingLevel | None,
@@ -480,7 +447,7 @@ def make_anthropic_model(
     base_url: str,
     http_client: httpx2.AsyncClient,
 ) -> AnthropicModel:
-    """按模型名套上思考画像，再交给 Anthropic Messages API。"""
+    """构造 Anthropic 模型。思考形状用本进程从 400 正文里学到的事实。"""
     from anthropic import AsyncAnthropic
 
     client = AsyncAnthropic(
@@ -490,7 +457,7 @@ def make_anthropic_model(
         max_retries=1,
         http_client=http_client,
     )
-    return AnthropicModel(
+    return RecoveringAnthropicModel(
         model_name=model_name,
         provider=AnthropicProvider(anthropic_client=client),
         profile=anthropic_profile_for_model(model_name),

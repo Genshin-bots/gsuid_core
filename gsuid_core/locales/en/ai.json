@@ -227,6 +227,7 @@
   "log.ai.gscore_ai_tool_mode": "[GsCore][AI] Tool mode",
   "log.ai.gscore_anthropic_config_name_url": "[GsCore] Loading Anthropic config: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
   "log.ai.gscore_anthropic_name_url_base": "[GsCore] Loading Anthropic model: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+  "log.ai.gscore_anthropic_wire_retry": "[GsCore] Retrying the Anthropic request from the error text: model={model_name}, reason={reason}",
   "log.ai.gscore_budget_check_db": "[GsCore][AI] Budget check DB error; allowing this message to pass: {e}",
   "log.ai.gscore_budget_check_fail": "[GsCore][AI] Budget check unknown error; allowing this message to pass: {e}",
   "log.ai.gscore_budget_exceeded_intercepted": "[GsCore][AI] Budget exceeded; intercepted ({p0}): {p1}",

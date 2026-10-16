@@ -227,6 +227,7 @@
   "log.ai.gscore_ai_tool_mode": "[GsCore][AI] 工具模式",
   "log.ai.gscore_anthropic_config_name_url": "[GsCore] 加载 Anthropic 配置: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
   "log.ai.gscore_anthropic_name_url_base": "[GsCore] 加载 Anthropic 模型: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+  "log.ai.gscore_anthropic_wire_retry": "[GsCore] Anthropic 按错误正文重试: model={model_name}, reason={reason}",
   "log.ai.gscore_budget_check_db": "[GsCore][AI] 预算校验 DB 异常，放行本次消息: {e}",
   "log.ai.gscore_budget_check_fail": "[GsCore][AI] 预算校验未知异常，放行本次消息: {e}",
   "log.ai.gscore_budget_exceeded_intercepted": "[GsCore][AI] 预算超额拦截 ({p0}): {p1}",

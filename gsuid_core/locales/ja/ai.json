@@ -227,6 +227,7 @@
   "log.ai.gscore_ai_tool_mode": "[GsCore][AI] ツールモード",
   "log.ai.gscore_anthropic_config_name_url": "[GsCore] Anthropic 設定を読み込み中: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
   "log.ai.gscore_anthropic_name_url_base": "[GsCore] Anthropic モデルを読み込み中: Name: {model_name}, URL: {base_url}, Key: ...{p0}",
+  "log.ai.gscore_anthropic_wire_retry": "[GsCore] Anthropic の要求をエラー本文に合わせて再送します: model={model_name}, reason={reason}",
   "log.ai.gscore_budget_check_db": "[GsCore][AI] 予算チェックの DB 例外。今回のメッセージは通過させます: {e}",
   "log.ai.gscore_budget_check_fail": "[GsCore][AI] 予算チェックで未知の例外。今回のメッセージは通過させます: {e}",
   "log.ai.gscore_budget_exceeded_intercepted": "[GsCore][AI] 予算超過のためブロックしました ({p0}): {p1}",
