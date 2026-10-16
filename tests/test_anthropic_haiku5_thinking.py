@@ -15,7 +15,14 @@ import httpx2
 import pytest
 from anthropic import Omit, APIStatusError
 from pydantic_ai.models import ModelRequestParameters
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.messages import (
+    TextPart,
+    ModelMessage,
+    ModelRequest,
+    ThinkingPart,
+    ModelResponse,
+    UserPromptPart,
+)
 from pydantic_ai.settings import ModelSettings, ThinkingLevel
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.anthropic import (
@@ -301,7 +308,13 @@ def test_adaptive_effort_omits_thinking_level() -> None:
     assert to_thinking_level("high") == "high"
 
 
-def _posts(model_name: str, first_body: dict[str, object], *, stream: bool) -> list[_Posted]:
+def _posts(
+    model_name: str,
+    first_body: dict[str, object],
+    *,
+    stream: bool,
+    messages: list[ModelMessage] | None = None,
+) -> list[_Posted]:
     posted: list[_Posted] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -324,12 +337,14 @@ def _posts(model_name: str, first_body: dict[str, object], *, stream: bool) -> l
     )
 
     async def _run() -> None:
-        messages: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content="hi")])]
+        sent: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content="hi")])]
+        if messages is not None:
+            sent = messages
         try:
             if stream:
-                async with model.request_stream(messages, None, ModelRequestParameters()):
+                async with model.request_stream(sent, None, ModelRequestParameters()):
                     return
-            await model.request(messages, None, ModelRequestParameters())
+            await model.request(sent, None, ModelRequestParameters())
         except ModelHTTPError:
             return
         finally:
@@ -338,6 +353,10 @@ def _posts(model_name: str, first_body: dict[str, object], *, stream: bool) -> l
 
     asyncio.run(_run())
     return posted
+
+
+def _payload_text(payload: dict[str, object]) -> str:
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _thinking_type(posted: _Posted) -> str | None:
@@ -354,6 +373,44 @@ def test_enabled_400_is_retried_as_adaptive(stream: bool) -> None:
     assert len(posted) == 2
     assert _thinking_type(posted[0]) == "enabled"
     assert _thinking_type(posted[1]) == "adaptive"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_signature_retry_drops_replayed_thinking_block(stream: bool) -> None:
+    signature = "sig-bound-to-turn-one"
+    history: list[ModelMessage] = [
+        ModelRequest(parts=[UserPromptPart(content="hi")]),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content="internal", signature=signature, provider_name="anthropic"),
+                TextPart(content="answer"),
+            ]
+        ),
+        ModelRequest(parts=[UserPromptPart(content="next")]),
+    ]
+    posted = _posts("claude-haiku-5-5", _proxy_body(_SIGNATURE_MESSAGE), stream=stream, messages=history)
+    assert len(posted) == 2
+    assert signature in _payload_text(posted[0].payload)
+    second = _payload_text(posted[1].payload)
+    assert signature not in second
+    assert "answer" in second
+
+    later_signature = "sig-bound-to-turn-two"
+    later: list[ModelMessage] = [
+        ModelRequest(parts=[UserPromptPart(content="hi")]),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content="internal", signature=later_signature, provider_name="anthropic"),
+                TextPart(content="answer"),
+            ]
+        ),
+        ModelRequest(parts=[UserPromptPart(content="third")]),
+    ]
+    followed = _posts("claude-haiku-5-5", _proxy_body(_SIGNATURE_MESSAGE), stream=stream, messages=later)
+    assert len(followed) == 1
+    followed_text = _payload_text(followed[0].payload)
+    assert later_signature not in followed_text
+    assert "answer" in followed_text
 
 
 def test_signature_400_is_retried_with_drop_block_and_beta() -> None:

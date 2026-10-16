@@ -13,7 +13,7 @@ from typing_extensions import override
 
 from pydantic_ai import RunContext
 from pydantic_ai.models import StreamedResponse, ModelRequestParameters
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import ModelMessage, ThinkingPart, ModelResponse
 from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.exceptions import ModelHTTPError
@@ -121,6 +121,21 @@ def revise_anthropic_attempt(
     return revised
 
 
+def _replay_drops_thinking(model_name: str) -> bool:
+    facts = _FACTS.get(anthropic_wire_key(model_name))
+    return facts is not None and facts.binds_blocks
+
+
+def _forget_thinking_signatures(messages: list[ModelMessage], provider_name: str) -> None:
+    """拿掉这个提供商已经作废的思考签名，下一次请求不再回放思考块。"""
+    for message in messages:
+        if not isinstance(message, ModelResponse):
+            continue
+        for part in message.parts:
+            if isinstance(part, ThinkingPart) and part.provider_name == provider_name and part.signature:
+                part.signature = None
+
+
 def _added_reasons(previous: AnthropicWireFacts, updated: AnthropicWireFacts) -> list[str]:
     added: list[str] = []
     if updated.adaptive and not previous.adaptive:
@@ -172,6 +187,9 @@ class RecoveringAnthropicModel(AnthropicModel):
     ) -> ModelResponse:
         settings = model_settings
         while True:
+            # 中转经常丢掉 drop_block。签名还在历史里，下一次仍会 400。
+            if _replay_drops_thinking(self.model_name):
+                _forget_thinking_signatures(messages, self.system)
             try:
                 return await super().request(messages, settings, model_request_parameters)
             except ModelHTTPError as error:
@@ -191,6 +209,9 @@ class RecoveringAnthropicModel(AnthropicModel):
     ) -> AsyncIterator[StreamedResponse]:
         settings = model_settings
         while True:
+            # 中转经常丢掉 drop_block。签名还在历史里，下一次仍会 400。
+            if _replay_drops_thinking(self.model_name):
+                _forget_thinking_signatures(messages, self.system)
             # 父类签名是 RunContext。这里只转发真正的 RunContext，避免把 object 传进去。
             context = run_context if isinstance(run_context, RunContext) else None
             stream_cm = super().request_stream(messages, settings, model_request_parameters, context)
