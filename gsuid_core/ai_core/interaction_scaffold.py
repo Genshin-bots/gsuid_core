@@ -215,10 +215,15 @@ def _history_has_any_speaker_id(recent: List[Tuple[str, str]]) -> bool:
     return any(extract_speaker_id(txt) for r, txt in recent if r == "user")
 
 
+_INTERPERSONAL_REWRITE_RE = re.compile(r"把[他她你我它]们?的.{1,6}(?:改成|改为|换成)")
+
+
 def is_manage_ellipsis_form(current_text: str, *, max_len: int = FOLLOWUP_MAXLEN_DEFAULT) -> bool:
     """本句是否短省略管理形（闭类改/取消/那X呢 + 长度）。不要求 history 有 ToolCall。"""
     t = extract_message_body(current_text)
     if not t or len(t) > max_len:
+        return False
+    if _INTERPERSONAL_REWRITE_RE.search(t) and not _TASK_NOUN_RE.search(t):
         return False
     return bool(_FOLLOWUP_VERB_RE.search(t) or _FOLLOWUP_THAT_RE.match(t))
 

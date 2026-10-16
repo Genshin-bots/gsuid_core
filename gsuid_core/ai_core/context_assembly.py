@@ -230,16 +230,26 @@ async def assemble_dynamic_context(
     from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
     from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
-    # 实体别名绑定：优先当前提问匹配；无命中时仅限紧邻的追问行继承，防止群聊误伤。
+    # 实体别名绑定：优先当前提问匹配；无命中时仅限紧邻的同说话人追问行继承，防旁人闲聊串味。
     # 叫人格名是在叫你，不是在问同名实体：先剥掉人格名和唤醒词再查别名表。
     persona_surfaces = collect_persona_surfaces(persona_name)
     alias_note = format_alias_bindings(strip_surfaces(query, persona_surfaces))
-    if not alias_note and history_context:
+    if not alias_note and history_context and intent != "闲聊":
+        history_scope = (
+            history_context.split("[历史对话]", 1)[0] if "[与你的对话]" in history_context else history_context
+        )
         recent_user_lines: list[str] = []
-        for line in reversed(history_context.splitlines()):
-            if history_line_is_assistant(line) or not line.strip() or line.startswith("[历史对话]"):
+        for line in reversed(history_scope.splitlines()):
+            stripped_line = line.strip()
+            if (
+                history_line_is_assistant(stripped_line)
+                or not stripped_line
+                or stripped_line.startswith(("[历史对话]", "[与你的对话]"))
+            ):
                 continue
-            recent_user_lines.append(line)
+            if "用户ID:" in stripped_line and user_id and f"用户ID:{user_id}" not in stripped_line:
+                continue
+            recent_user_lines.append(stripped_line)
             if len(recent_user_lines) >= 2:
                 break
         if recent_user_lines:

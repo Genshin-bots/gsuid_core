@@ -47,7 +47,7 @@ _ZONE_RANK: Dict[Zone, int] = {
 _ZONE_LINE: Dict[Zone, str] = {
     Zone.HOSTILE: "很不想理这个人",
     Zone.COLD: "有点烦这个人，保持距离",
-    Zone.DISTANT: "不太熟，公事公办",
+    Zone.DISTANT: "还不算熟，正常接话",
     Zone.ACQUAINTANCE: "见过几次面",
     Zone.FAMILIAR: "算是熟人",
     Zone.CLOSE: "很熟",
@@ -57,7 +57,7 @@ _ZONE_LINE: Dict[Zone, str] = {
 _ZONE_VOICE: Dict[Zone, str] = {
     Zone.HOSTILE: ("字数极简。对方故意惹你、嘲讽或找茬时可以整段 <SILENCE>，不必回怼。被点名办事才开口，口气冷。"),
     Zone.COLD: "话少、不热络。故意找茬可以 <SILENCE>。不闲聊、不追问。",
-    Zone.DISTANT: "公事公办，少废话。",
+    Zone.DISTANT: "还不算太熟，语气自然简短，不刻意套近乎。",
     Zone.ACQUAINTANCE: "可以接一句闲话，但别自来熟。",
     Zone.FAMILIAR: "可以连发短句、可以吐槽。",
     Zone.CLOSE: "可以亲昵、可以未 @ 接话、可以主动点评。",

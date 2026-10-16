@@ -559,11 +559,10 @@ async def search_images(
         return []
 
     # 生成查询向量
-    _vectors = list(await embedding_model.aembed([query]))
-    if not _vectors:
+    query_vector = await embedding_model.aembed_query(query)
+    if not query_vector:
         logger.warning(i18n_t("log.rag.imagerag_embedding_empty_result"))
         return []
-    query_vector = _vectors[0]
 
     search_filter = _image_plugin_filter(plugin_filter, exclude_plugins)
 

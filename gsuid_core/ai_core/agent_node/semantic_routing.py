@@ -74,6 +74,14 @@ async def _embed_texts(texts: List[str]) -> List[List[float] | None]:
     return list(await embedding_model.aembed(texts))
 
 
+async def _embed_query(text: str) -> List[float] | None:
+    from gsuid_core.ai_core.rag.base import embedding_model
+
+    if embedding_model is None:
+        return None
+    return await embedding_model.aembed_query(text)
+
+
 async def sync_agent_nodes() -> int:
     """重算全部可路由节点的嵌入缓存；返回本次（重）嵌入的节点数。
 
@@ -143,8 +151,7 @@ async def semantic_match_nodes(hint: str, limit: int = 3) -> List[Tuple[str, flo
     if not _NODE_VECTORS:
         return []
 
-    hint_vecs = await _embed_texts([h])
-    hint_vec = hint_vecs[0] if hint_vecs else None
+    hint_vec = await _embed_query(h)
     if hint_vec is None:
         return []
 

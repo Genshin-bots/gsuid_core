@@ -172,15 +172,18 @@ async def settle_turn(
         view = await _read_view(user_id, bot_id, is_master)
         return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, signals, wrote=False)
 
-    record = await UserFavorability.get_or_create_user_favorability(user_id, bot_id, user_name)
-    score_before = record.favorability
+    existing = await UserFavorability.get_user_favorability(user_id, bot_id)
+    score_before = existing.favorability if existing is not None else 0
     now_ts = int(time.time())
     today = _today()
 
     # 换日：清空日预算
-    day_rolled = record.daily_ymd != today
-    daily_gain = 0 if day_rolled else record.daily_gain
-    daily_loss = 0 if day_rolled else record.daily_loss
+    if existing is None or existing.daily_ymd != today:
+        daily_gain = 0
+        daily_loss = 0
+    else:
+        daily_gain = existing.daily_gain
+        daily_loss = existing.daily_loss
 
     # 「当日首次有内容」= 今天还没涨过分。一天一次，不看具体是哪条正信号先命中。
     first_meaningful_today = daily_gain == 0
@@ -188,8 +191,9 @@ async def settle_turn(
     # 会话窗节流：距最近一次正向互动不足窗口且当日已吃满窗口配额 → 普通正信号不再加
     window_seconds = _cfg_int("favor_session_window_minutes") * 60
     session_gain_used = (
-        record.last_positive_interact_at > 0
-        and now_ts - record.last_positive_interact_at < window_seconds
+        existing is not None
+        and existing.last_positive_interact_at > 0
+        and now_ts - existing.last_positive_interact_at < window_seconds
         and daily_gain >= _cfg_int("favor_session_gain_cap")
     )
 
@@ -205,6 +209,12 @@ async def settle_turn(
     delta = clip_to_budget(raw_delta, daily_gain=daily_gain, daily_loss=daily_loss)
     if raw_delta != 0 and delta == 0:
         reason = REASON_BUDGET
+
+    # 未打分用户若本轮无分值变化且无负向信号，不落库空 0 分，保持 unscored（打过照面的群友）
+    if existing is None and delta == 0 and not signals.has_negative:
+        logger.debug(t("log.ai.relationship_settle_noop", user=user_id, reason=reason))
+        view = view_from_score(None, is_master)
+        return SettleOutcome(0, reason, 0, 0, view, signals, wrote=False)
 
     new_score = _clamp(score_before + delta)
     applied = new_score - score_before

@@ -47,6 +47,8 @@ _IDENTITY_RE = re.compile(r"Identity\s*:[ \t]*([^\n]+)", re.IGNORECASE)
 
 _TONE_SKIP_LINE_PREFIXES: Tuple[str, ...] = (
     "配额",
+    "禁忌",
+    "表达禁忌",
     "[SLOT:",
     "如：",
     "如:",

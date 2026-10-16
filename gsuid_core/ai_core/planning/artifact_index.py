@@ -125,8 +125,7 @@ async def search_artifacts_hybrid(
 
     if client is None or embedding_model is None or not query.strip() or not owner_user_id:
         return []
-    dense_list = list(await embedding_model.aembed([query]))
-    dense = dense_list[0]
+    dense = await embedding_model.aembed_query(query)
     sparse = await sparse_embed_single(query)
     must_conditions: list[Condition] = [
         FieldCondition(key="owner_user_id", match=MatchValue(value=owner_user_id)),

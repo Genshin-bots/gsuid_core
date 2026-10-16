@@ -465,6 +465,21 @@ class GsCoreAIAgent(RunOnceMixin):
         # 保证下次 _agent.iter(message_history=self.history) 入参自洽。
         self.extract_history()
 
+    def _ensure_system_prompt_in_history(self) -> None:
+        """非空 history 缺 SystemPromptPart 时补齐（防 proactive 首轮或外部装入历史丢失 system_prompt）。"""
+        if not self.history or not self.system_prompt:
+            return
+        from pydantic_ai.messages import SystemPromptPart
+
+        for msg in self.history:
+            if isinstance(msg, ModelRequest) and any(isinstance(p, SystemPromptPart) for p in msg.parts):
+                return
+        for msg in self.history:
+            if isinstance(msg, ModelRequest):
+                msg.parts = [SystemPromptPart(content=self.system_prompt), *msg.parts]
+                return
+        self.history.insert(0, ModelRequest(parts=[SystemPromptPart(content=self.system_prompt)]))
+
     def extract_history(self):
         """裁剪 message_history：超水位时**保头裁中段**，绝不改写 system_prompt。
 
@@ -482,6 +497,7 @@ class GsCoreAIAgent(RunOnceMixin):
             self.max_history,
             trim_ratio=_HISTORY_TRIM_RATIO,
         )
+        self._ensure_system_prompt_in_history()
         after: int = len(self.history)
         # 仅「因超长主动裁剪且确有条目被丢弃」才打 auto_compact（供 webconsole 画独立色块）
         if did_truncate and after < before:

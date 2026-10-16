@@ -41,7 +41,7 @@ class ScaffoldKit(AgentKit):
                 if rec.role == "assistant":
                     last_had_tick = reply_ends_with_tone_marker(rec.content or "", markers)
                     break
-            quota = "（口癖配额：每3–5条至多1条带语气词结尾；其余条不带。）"
+            quota = "（口癖配额：每3–5条至多1条带角色专属口癖词；日常口语助词如啦/呀/呢/吧/嘛自然使用。）"
             if last_had_tick:
                 quota += "上一条已带口癖，本条禁带。"
             style = resolve_chat_style(ctx.persona_name)
@@ -57,7 +57,7 @@ class ScaffoldKit(AgentKit):
         if need_tools and not ctx.memory_eval:
             ctx.set_context_block(
                 "transaction_priority",
-                "（本轮有实际事务，优先调工具完成；困/懒/麻烦不是跳过理由。）",
+                "（本轮有实际事务，优先调工具完成；人设口吻不是跳过理由。）",
             )
         if ctx.recent_report_titles:
             titles = "、".join(ctx.recent_report_titles[-3:])

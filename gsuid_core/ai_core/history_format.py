@@ -194,6 +194,11 @@ def _speech_channel(record: MessageRecord) -> str:
     return "persona"
 
 
+def is_persona_speech(record: MessageRecord) -> bool:
+    """人格自己说的话；指令回执与工具交付不算。"""
+    return record.role == "assistant" and _speech_channel(record) not in _RECEIPT_CHANNELS
+
+
 def _reply_to_uid(record: MessageRecord) -> str:
     meta = record.metadata or {}
     raw = meta["reply_to_user_id"] if "reply_to_user_id" in meta else ""

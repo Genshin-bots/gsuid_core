@@ -258,21 +258,36 @@ async def chatWithHistory(
 
 
 def _load_request_history(agent: "GsCoreAIAgent", history: List[ChatHistoryTurn], guard_on: bool) -> None:
-    from pydantic_ai.messages import TextPart, ModelRequest, ModelResponse, UserPromptPart
+    from pydantic_ai.messages import (
+        TextPart,
+        ModelRequest,
+        ModelResponse,
+        UserPromptPart,
+        ModelRequestPart,
+        SystemPromptPart,
+    )
 
     from gsuid_core.ai_core.content_guard import annotate_untrusted_message
 
-    model_messages = []
+    model_messages: list[ModelRequest | ModelResponse] = []
+    sys_injected = False
     for turn in history:
         if not turn.content:
             continue
         if turn.role == "user":
             content = annotate_untrusted_message(turn.content) if guard_on else turn.content
-            model_messages.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+            parts: list[ModelRequestPart] = []
+            if not sys_injected and agent.system_prompt:
+                parts.append(SystemPromptPart(content=agent.system_prompt))
+                sys_injected = True
+            parts.append(UserPromptPart(content=content))
+            model_messages.append(ModelRequest(parts=parts))
         elif turn.role == "assistant":
             model_messages.append(ModelResponse(parts=[TextPart(content=turn.content)]))
     if model_messages:
-        agent.history = model_messages
+        if not sys_injected and agent.system_prompt:
+            model_messages.insert(0, ModelRequest(parts=[SystemPromptPart(content=agent.system_prompt)]))
+        agent.history = list(model_messages)
         agent.extract_history()
 
 

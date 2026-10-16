@@ -35,7 +35,8 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
 BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "mood": 80,
     "relationship": 100,
-    "voice_anchor": 180,
+    # 口吻 86 + 敌对档口气 60 + 复读提示 60 左右
+    "voice_anchor": 240,
     "identity": 80,
     # 同人线程 14 条 + 旁人 6 条；600 会从尾部截掉最新出站句柄。
     "history": 4000,

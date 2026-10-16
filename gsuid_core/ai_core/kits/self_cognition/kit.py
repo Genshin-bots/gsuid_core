@@ -9,7 +9,7 @@ from gsuid_core.ai_core.kits.base import AgentKit
 from gsuid_core.ai_core.kits.registry import register_agent_kit
 
 # 口吻锚点太长会挤占注意力；system 已有完整约束，这里只钉一下防长会话漂移。
-# 拼上「口气」后仍须落在 BLOCK_CHAR_BUDGET.voice_anchor（180）内。
+# 拼上「口气」与复读提示后仍须落在 BLOCK_CHAR_BUDGET.voice_anchor 内。
 _VOICE_ANCHOR_MAX = 80
 
 
@@ -37,7 +37,7 @@ class SelfCognitionKit(AgentKit):
             ctx.set_context_block("self_model", text)
 
     async def voice_anchor(self, ctx: AgentHookContext) -> None:
-        """口吻锚点 + 当前关系档位的一句口气（只改语气，不改该不该办事）。"""
+        """口吻锚点 + 当前关系档位的一句口气（只改语气，不改该不该办事）+ 复读提示。"""
         from gsuid_core.ai_core.persona import get_voice_anchor
 
         if not ctx.persona_name:
@@ -50,8 +50,26 @@ class SelfCognitionKit(AgentKit):
         # voice 在「未打分」时为空串：没依据就不注入口气，别凭空编一个冷淡立场
         if ctx.relationship is not None and ctx.relationship.voice:
             parts.append(f"（对这个人的口气：{ctx.relationship.voice}）")
-        if parts:
-            ctx.set_context_block("voice_anchor", "".join(parts))
+        lines = [self._repetition_hint(ctx), "".join(parts)]
+        block = "\n".join(s for s in lines if s)
+        if block:
+            ctx.set_context_block("voice_anchor", block)
+
+    @staticmethod
+    def _repetition_hint(ctx: AgentHookContext) -> str:
+        # 独占首行：入史按行剥「（系统：」，同行拼上的口吻/身份会被一起剥掉
+        if ctx.ev is None:
+            return ""
+        from gsuid_core.message_history import get_history_manager
+        from gsuid_core.ai_core.self_repetition import self_repetition_hint
+        from gsuid_core.ai_core.persona.settings import get_master_title
+        from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+        return self_repetition_hint(
+            get_history_manager().get_history(ctx.ev),
+            query=ctx.query,
+            exempt_terms=(*collect_persona_surfaces(ctx.persona_name), get_master_title(ctx.persona_name)),
+        )
 
 
 KIT = register_agent_kit(

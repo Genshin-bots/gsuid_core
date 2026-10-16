@@ -125,7 +125,7 @@ def test_shared_system_prompt_is_compact() -> None:
     src = build_persona_prompt.__code__.co_names
     assert "format_capability_family_overview" not in src
     markers = extract_tone_markers(sayu_persona_prompt)
-    assert "唔" in markers and "zzz" in markers
+    assert "唔" in markers and "哼" in markers
 
 
 def test_sanitized_error_texts_survive_persona_cleanup() -> None:

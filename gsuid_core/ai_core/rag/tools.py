@@ -936,11 +936,10 @@ async def search_tools(
             debug=debug,
         )
     )
-    vectors = list(await embedding_model.aembed([query]))
-    if not vectors:
+    query_vec = await embedding_model.aembed_query(query)
+    if not query_vec:
         logger.warning(i18n_t("log.rag.tools_embedding_empty_result_skip"))
         return []
-    query_vec = vectors[0]
 
     async def _query_tools():
         # 如果启用 debug，使用大 limit 获取所有工具以便查看分数

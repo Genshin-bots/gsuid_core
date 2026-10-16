@@ -211,8 +211,10 @@ async def _run_live(active: list[dict], k: int, args, judge: Callable[[str], boo
     force_k = args.k is not None
     if args.reset_state:
         from eval.agent.reset_state import reset_eval_side_effects
+        from gsuid_core.ai_core.interaction_scaffold import list_speaker_ids
 
-        stats = await reset_eval_side_effects()
+        speakers = {sid for c in active for sid in list_speaker_ids(json.dumps(c, ensure_ascii=False, default=str))}
+        stats = await reset_eval_side_effects(sorted(speakers))
         print(f"[reset] {stats}", flush=True)
     async with httpx.AsyncClient() as client:
         # 回答阶段：fire 全部 run（并发=args.concurrency）→ 只等一次 flush → 一趟扫盘

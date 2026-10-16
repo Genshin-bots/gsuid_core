@@ -1558,11 +1558,10 @@ async def query_knowledge(
         return []
 
     # 生成查询向量（dense 必有，sparse 可选）
-    _vectors = list(await embedding_model.aembed([query]))
-    if not _vectors:
+    query_dense = await embedding_model.aembed_query(query)
+    if not query_dense:
         logger.warning(i18n_t("log.rag.kb_embedding_empty_result_unable"))
         return []
-    query_dense = _vectors[0]
     query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
     # 构建过滤条件（服务端下推）：plugin 任一命中 + category 精确匹配 + exclude_plugins 排除
@@ -2012,10 +2011,9 @@ async def search_manual_knowledge(
         return []
 
     # 生成查询向量（dense + 可选 sparse）
-    _vectors = list(await embedding_model.aembed([query]))
-    if not _vectors:
+    query_dense = await embedding_model.aembed_query(query)
+    if not query_dense:
         return []
-    query_dense = _vectors[0]
     query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
     must_conditions: List[Condition] = []

@@ -114,8 +114,7 @@ async def search_tool_outputs(
     # fail-closed：无 owner 不扫全局向量
     if not owner_user_id:
         return []
-    dense_list = list(await embedding_model.aembed([query]))
-    dense = dense_list[0]
+    dense = await embedding_model.aembed_query(query)
     sparse = await sparse_embed_single(query)
     must_conditions: list = [
         FieldCondition(key="owner_user_id", match=MatchValue(value=owner_user_id)),

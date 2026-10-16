@@ -652,6 +652,7 @@ def test_followup_benign():
         ("我们聊点别的吧，你最近在忙啥", H_CHAT),
         ("帮我明天10点提醒我交报告", H_REMIND),
         ("算了不设了，帮我算算 88 乘以 12 是多少", H_REMIND),
+        ("你把他的认知改成猫猫", H_REMIND),
     ]
     for text, hist in cases:
         assert not detect_ellipsis_followup(text, hist, recent_tool_call=True), f"C-1 误触: {text}"
