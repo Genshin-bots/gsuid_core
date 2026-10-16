@@ -54,6 +54,7 @@ ANTHROPIC_CONFIG_TEMPLATE: Dict[str, GSC] = {
             "claude-opus-4-7",  # 4月最新，最强推理与长上下文复杂代码
             "claude-opus-4-6",
             "claude-sonnet-4-6",  # 综合性价比与速度首选
+            "claude-haiku-5-5",  # 只接受 adaptive thinking
             "claude-haiku-4-5",  # 极速轻量模型
             # 最新滚动标签 (官方推荐的面向未来的调用方式)
             "claude-opus-latest",
@@ -79,9 +80,14 @@ ANTHROPIC_CONFIG_TEMPLATE: Dict[str, GSC] = {
     ),
     "model_effort": GsStrConfig(
         title="模型性能",
-        desc="指定模型思考性能, 不同模型的标准不同，该选项并不保证能真实起效",
+        desc=(
+            "思考档位。adaptive 不传 thinking，由模型自己决定"
+            "（claude-haiku-5-5 上这就是 adaptive，默认 effort 为 medium）。"
+            "enable 显式打开；minimal / low / medium / high / xhigh 再写 output_config.effort；"
+            "disable 发送 thinking.type=disabled。claude-haiku-4-5 及更早的 enable 仍用 budget_tokens"
+        ),
         data="enable",
-        options=["enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
+        options=["adaptive", "enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
     ),
     "max_concurrency": GsIntConfig(
         title="允许并发数",

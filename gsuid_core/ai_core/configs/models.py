@@ -39,6 +39,7 @@ from pydantic_ai.models.openai import (
 )
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.profiles.anthropic import AnthropicModelProfile
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from gsuid_core.i18n import t
@@ -148,6 +149,7 @@ def format_provider_config_name(provider: str, config_name: str) -> str:
 
 
 # model_effort 配置映射至 pydantic_ai ThinkingLevel，规范化 enable/disable 值为布尔值。
+# adaptive 不在此表：不写 thinking，让模型用自己的默认。
 THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
     "enable": True,
     "disable": False,
@@ -158,13 +160,28 @@ THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
     "xhigh": "xhigh",
 }
 
+# 已保存的「自动」/ auto 仍省略 thinking，避免落到未知值后被当成 enable。
+_OMIT_EFFORT = frozenset({"adaptive", "自动", "auto"})
 
-def to_thinking_level(value: str) -> ThinkingLevel:
-    """将配置中的 model_effort 字符串转换为 pydantic_ai 的 ThinkingLevel"""
+
+def to_thinking_level(value: str) -> ThinkingLevel | None:
+    """将配置中的 model_effort 字符串转换为 pydantic_ai 的 ThinkingLevel。
+
+    adaptive 返回 None，调用方不要把 thinking 写进请求。
+    """
+    if value in _OMIT_EFFORT:
+        return None
     if value not in THINKING_LEVEL_MAP:
         logger.warning(t("log.ai.gscore_effort_config_value_fell", value=repr(value)))
         return True
     return THINKING_LEVEL_MAP[value]
+
+
+def _with_thinking(settings: ModelSettings, model_effort: ThinkingLevel | None) -> ModelSettings:
+    if model_effort is None:
+        return settings
+    settings["thinking"] = model_effort
+    return settings
 
 
 def to_request_method(value: str) -> RequestMethod:
@@ -309,7 +326,9 @@ class AutoUsageOpenAIChatModel(OpenAIChatModelWithVideo):
         return _AutoUsageStreamedResponse
 
 
-def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel, RequestMethod, bool, str]:
+def get_openai_config_by_name(
+    config_name: str,
+) -> tuple[str, str, str, ThinkingLevel | None, RequestMethod, bool, str]:
     oconfig = get_openai_config(config_name)
     base_url, api_key, model_name, model_effort, request_method = (
         oconfig.get_config("base_url").data,
@@ -334,7 +353,7 @@ def get_openai_config_by_name(config_name: str) -> tuple[str, str, str, Thinking
     return base_url, api_key, model_name, model_effort, request_method, continuous_usage, usage_stats_mode
 
 
-def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
+def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel | None]:
     aconfig = get_anthropic_config(config_name)
     base_url, api_key, model_name, model_effort = (
         aconfig.get_config("base_url").data,
@@ -397,7 +416,7 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
         return OpenAIResponsesModel(
             model_name=model_name,
             provider=provider,
-            settings=ModelSettings(thinking=model_effort),
+            settings=_with_thinking(ModelSettings(), model_effort),
         )
 
     # cumulative 语义网关须取「最后累计值」而非逐 chunk 累加, 否则统计膨胀数十倍;
@@ -411,10 +430,71 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
         profile=profile_spec,
         # 请求参数 stream_options.continuous_usage_stats 仅在部署者显式声明
         # cumulative 时发送; auto 的白名单/探测只作用于响应侧, 不改请求体
-        settings=OpenAIChatModelSettings(
-            thinking=model_effort,
-            openai_continuous_usage_stats=usage_stats_mode == "cumulative",
+        settings=_with_thinking(
+            OpenAIChatModelSettings(
+                openai_continuous_usage_stats=usage_stats_mode == "cumulative",
+            ),
+            model_effort,
         ),
+    )
+
+
+def _is_claude_haiku_5(model_name: str) -> bool:
+    # claude-haiku-4-5 不含这段，仍走 budget_tokens。
+    return "claude-haiku-5" in model_name.lower()
+
+
+def anthropic_profile_for_model(model_name: str) -> Callable[[ModelProfile], ModelProfile]:
+    """补 pydantic-ai 2.54 画像里没有的 Haiku 5。
+
+    上游已经标了 adaptive 时原样返回，避免盖掉以后补上的细项。
+    """
+
+    def _overlay(default: ModelProfile) -> ModelProfile:
+        if not _is_claude_haiku_5(model_name):
+            return default
+        if "anthropic_supports_adaptive_thinking" in default and default["anthropic_supports_adaptive_thinking"]:
+            return default
+        # 2.54 会把思考发成 type=enabled，Haiku 5.5 对此直接 400。
+        return merge_profile(
+            default,
+            AnthropicModelProfile(
+                anthropic_supports_adaptive_thinking=True,
+                anthropic_supports_effort=True,
+                anthropic_supports_xhigh_effort=True,
+                anthropic_disallows_budget_thinking=True,
+                anthropic_disallows_sampling_settings=True,
+                anthropic_disallows_top_effort_when_thinking_disabled=True,
+                thinking_enabled_by_default=True,
+            ),
+        )
+
+    return _overlay
+
+
+def make_anthropic_model(
+    model_name: str,
+    model_effort: ThinkingLevel | None,
+    *,
+    api_key: str,
+    base_url: str,
+    http_client: httpx2.AsyncClient,
+) -> AnthropicModel:
+    """按模型名套上思考画像，再交给 Anthropic Messages API。"""
+    from anthropic import AsyncAnthropic
+
+    client = AsyncAnthropic(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
+        max_retries=1,
+        http_client=http_client,
+    )
+    return AnthropicModel(
+        model_name=model_name,
+        provider=AnthropicProvider(anthropic_client=client),
+        profile=anthropic_profile_for_model(model_name),
+        settings=_with_thinking(ModelSettings(), model_effort),
     )
 
 
@@ -435,19 +515,12 @@ def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
     )
 
     # §23 墙钟 + 共享连接池：与 openai 工厂同一套超时/重试策略（评审修复 F8/E13）
-    from anthropic import AsyncAnthropic
-
-    _client = AsyncAnthropic(
+    return make_anthropic_model(
+        model_name,
+        model_effort,
         api_key=api_key,
         base_url=base_url,
-        timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
-        max_retries=1,
         http_client=_shared_model_httpx2_client("anthropic"),
-    )
-    return AnthropicModel(
-        model_name=model_name,
-        provider=AnthropicProvider(anthropic_client=_client),
-        settings=ModelSettings(thinking=model_effort),
     )
 
 
@@ -463,7 +536,7 @@ def normalize_gemini_base_url(base_url: str) -> str:
     return base_url.strip()
 
 
-def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel]:
+def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel | None]:
     gconfig = get_gemini_config(config_name)
     api_keys = gconfig.get_config("api_key").data
     if not api_keys or not str(api_keys[0]).strip():
@@ -522,7 +595,7 @@ def get_gemini_model_by_name(config_name: str) -> "GoogleModel":
     return GoogleModel(
         model_name=model_name,
         provider=provider,
-        settings=ModelSettings(thinking=model_effort),
+        settings=_with_thinking(ModelSettings(), model_effort),
     )
 
 

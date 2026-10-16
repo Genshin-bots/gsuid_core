@@ -64,9 +64,13 @@ GEMINI_CONFIG_TEMPLATE: Dict[str, GSC] = {
     ),
     "model_effort": GsStrConfig(
         title="模型性能",
-        desc="指定模型思考性能, 不同模型的标准不同，该选项并不保证能真实起效",
+        desc=(
+            "思考档位。adaptive 不传思考参数，沿用模型默认；"
+            "enable / disable 打开或关闭；minimal / low / medium / high / xhigh 为力度。"
+            "不同模型是否接受该参数并不相同"
+        ),
         data="enable",
-        options=["enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
+        options=["adaptive", "enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
     ),
     "max_concurrency": GsIntConfig(
         title="允许并发数",
