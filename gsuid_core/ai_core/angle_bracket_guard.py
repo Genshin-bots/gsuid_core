@@ -15,11 +15,10 @@ from __future__ import annotations
 import re
 from typing import List, Sequence
 
+from gsuid_core.ai_core.control.lines import ANGLE_NUDGE_MARKER as NUDGE_MARKER
+
 # 同一 agent.run / 同 turn 内最多打回次数（第 3 次仍失败 → 熔断）
 MAX_RETRIES = 3
-
-# 注入到 ModelRequest / 工具 return 的锚点串，便于历史裁剪精确识别
-NUDGE_MARKER = "（系统校验：发送内容含非法尖括号标签"
 
 # 协议标签：检测前剥掉；``<br>`` / ``<report>`` 不在此列
 _MEME_TAG_RE = re.compile(r"`*<meme[：:]\s*[^>]+>`*", re.IGNORECASE)

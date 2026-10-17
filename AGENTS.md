@@ -61,6 +61,7 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 | `register.py` | `@ai_tools` / 工具注册表 / `ai_alias` / `ai_entity` / `ai_skill` |
 | `output_gate.py` | `pre_send_gate`（尖括号 → OOC） |
 | `context_assembly.py` | system prompt + 每轮注入的唯一装配点 |
+| `control/lines.py` | 当轮 user 侧控制句只在这里定义（§1.11） |
 | `memory/` `rag/` `persona/` `heartbeat/` `planning/` | 记忆 / 知识库 / 人设 / 巡检 / 长任务 |
 
 更细的模块图与消息总链路：`.agents/skills/gscore-development/references/01-architecture-and-modules.md`。
@@ -270,7 +271,7 @@ async def handle(msg): ...
 
 改 `ai_core` 会话 / Agent loop / history 时**绝对禁止**破坏 provider 前缀缓存：
 
-1. **禁止中途改写 `system_prompt` 字符串**（会话内默认 TTL=inf）。需要系统提醒 → 只向**当前 request 追加 `UserPromptPart`**，落盘前 `_relean` 剥掉（`（系统：` / `（系统校验：` 等）。
+1. **禁止中途改写 `system_prompt` 字符串**（会话内默认 TTL=inf）。需要系统提醒 → 只向**当前 request 追加 `UserPromptPart`**，落盘前 `_relean` 剥掉（`（系统：` / `（系统校验：` 等）。句子正文只在 `control/lines.py` 写一次（§1.11）。
 2. **禁止砍 history 头部**（`history[-n:]` 式 compact）。须用 `compact_session_history` / 保头裁中段；禁止把锚点消息插回头部。
 3. **动态 per-turn 内容**（mood / 关系 / 记忆 / 精确时间）进 **user 侧**，不进 system。
 
@@ -355,6 +356,31 @@ rewritten = await self._ooc_recover_persona_voice(hit, original, ev)  # 空串 =
 
 改完必须把「交付闸」跑绿（ruff / format / `pytest tests` / basedpyright，以及 CI 的 i18n）。
 缺项或失败不许说做完。`i18n_t()` / `t()` 的 key 必须是静态字符串，禁止三元表达式。
+
+### 1.11 当轮控制句只定义一次（`control/lines.py`）
+
+仍插进**当前 request 的 user 侧**、落盘前剥掉的句子，正文只写在
+`gsuid_core/ai_core/control/lines.py`。调用处 `import` 这个名字。
+程序靠开头对上历史、或用 `is` 认出同一句时，用的就是这份对象。再抄一份字面量，对不上。
+
+写在这个文件里：
+
+- 前缀是 `（系统：` / `（系统提示：` / `（系统校验：` / `⛔` 的当轮提醒。闸门打回的开头收在 `GATE_NUDGE_MARKERS`，全文和开头是同一份常量。
+- 程序用来切正文或判定寻址的记号：`--- 消息 ---`、`（直接找你说的）`、`（@的是这位用户，不是你）`、引用记号。
+- 要填运行时槽位的，写成同文件里的函数：`capability_hit_line`、`master_title_ban_line`、`repetition_line`、`alias_binding_line`、`quote_object_line`、`ownership_line`、`delivery_wake_line`。
+
+留在原处：
+
+- 提示词组默认正文（跟进、记忆问答、寻址说明）留在 `interaction_scaffold.py`，目录在 `prompt_group/catalog.py`。用户改的是提示词组；改句子改不了「这条什么时候插入」。
+- 绑在某条义务上的观察留在 `control/corrections.py`，和 `Obligation` 放一起。
+- 只用来从旧历史里认出并剥掉、当前不再插入的句子，留在认出它的文件：`agent_run/support.py` 的假完成 / 零工具，`agent_run/speech_policy.py` 里三句旧打回。这两处不再加新的当轮句子。
+- `<control>` 信封，以及子 Agent / 评测器 / 识图自己的 system 提示，留在各自的渲染处。
+
+`lines.py` 是叶子：不 import `agent_run`、`utils`、`output_gate`、`interaction_scaffold`。
+这些句子仍走 §1.7：只追加到当前 request，不改 `system_prompt`，入史前剥掉。
+不放进提示词组字段，也不放进插件配置。
+
+详见 `gscore-development` §6.7.3。
 
 ---
 
@@ -628,6 +654,7 @@ AI 核心模块，位于 `gsuid_core/ai_core/`，包含：
 | `rag/` | RAG 知识库系统 |
 | `scheduled_task/` | 定时任务系统 |
 | `persona/` | 人设系统 |
+| `control/` | 控制面 `Directive`；当轮 user 侧句子只在 `lines.py`（§1.11） |
 | `history/` | 对话历史管理 |
 | `web_search/` | 统一网页搜索（Tavily/Jina/Exa/AnySearch/Firecrawl/MCP + 多源策略） |
 | `web_fetch/` | 网页抓取转 Markdown（Jina Reader / local + 多源策略） |
@@ -798,5 +825,6 @@ bot = Bot(_bot, mock_ev)
 7. **注释精简 → `#` 注释最多两行、每行 ≤88 字，只写「为什么/坑/边界」，不复述代码**
 8. **交付闸 → ruff / format / pytest / basedpyright（及 CI 的 i18n）全绿才允许说做完**
 9. **用户可见文字 → 写前查 `changelogs/`，写后按 human-talk 判断要不要记更新日志（小修小补不记）**
+10. **当轮控制句 → 只在 `control/lines.py` 写一次，调用处 import（§1.11）**
 
 专题细节按 Skills 表按需加载，不要把整本 `references/` 一次读完。

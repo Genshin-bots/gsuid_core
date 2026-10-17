@@ -16,6 +16,13 @@ from datetime import datetime
 
 from gsuid_core.ai_core.utils import is_silence_marker
 from gsuid_core.ai_core.content_guard import is_observation_untrusted
+from gsuid_core.ai_core.control.lines import (
+    MSG_SECTION_MARK,
+    WALL_CLOCK_CLOSE as _WALL_CLOCK_CLOSE,
+    STATUS_INQUIRY_HINT as STATUS_INQUIRY_HINT,
+    WALL_CLOCK_PIPELINE as _WALL_CLOCK_PIPELINE,
+    WALL_CLOCK_CLOSE_NO_RENDER as _WALL_CLOCK_CLOSE_NO_RENDER,
+)
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     is_timeless_aggregate as _is_timeless_aggregate,
     fact_pack_is_multi_point as _fact_lines_multi_point,
@@ -129,7 +136,7 @@ def looks_like_delivery_status_narration(text: str) -> bool:
 
 # 在途极短安慰额度（委派后的第二句起）。不定死话术；过程动词/第二执行者/清单仍拦。
 IN_FLIGHT_SPEECH_MAX = 12
-# 开场接任务应：不按 12 字卡。默认对齐人格 speech_len_hard；结构垃圾才拦。
+# 开场接任务应：不按 12 字卡。长度用档位上限；结构垃圾才拦。
 FIRST_ACK_SPEECH_MAX = 150
 # 仍算等待句（测试/旧会话），但不是唯一合法出口。
 IN_FLIGHT_WAIT_TEMPLATES: tuple[str, ...] = ("马上好。", "嗯，在弄了。")
@@ -172,32 +179,6 @@ _OPEN_SOLICIT_RE = re.compile(
 # 主人格台词里的「长结构体」：多标题/多段/表 → 应走 render 而非刷屏
 _MD_HEADING_RE = re.compile(r"(?m)^#{1,3}\s+\S|^\*{0,2}\*\*[^*\n]{2,48}\*\*")
 
-STATUS_INQUIRY_HINT = (
-    "\n\n（进行中任务·用户在问进度：先 list_my_kanban_tasks / artifact_get_recent 查状态；"
-    "再以「我」的口吻短句告知还在弄/弄好了/翻砸了。"
-    "禁止空口编进度；禁止念节点名/任务号/句柄/代理；"
-    "已有图则 send_message_by_ai 发出再说话。）"
-)
-
-_WALL_CLOCK_CLOSE = (
-    "（系统提示：本轮处理耗时已超预算。不要再发起新的工具调用。"
-    "立即基于已有信息用角色口吻给出最终回复；一句能说清就直接答。"
-    "信息不全就如实说明现状，绝不编造。"
-    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
-    "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
-)
-_WALL_CLOCK_CLOSE_NO_RENDER = _WALL_CLOCK_CLOSE
-
-_WALL_CLOCK_PIPELINE = (
-    "（系统提示：本轮处理耗时已超预算。不要再开新的检索。"
-    "用已经拿到的内容给出最终回复；一句能说清就直接答。"
-    "已有多点材料时可以委派 render_agent 出图，也可以不出图。"
-    "不要把出图写成这一步的义务，出图前也不必只输出 <SILENCE>。"
-    "信息不全就如实说明，绝不编造。"
-    "禁止对用户念内部节点名或编排流程；禁止把长信息念成多段台词。"
-    "若仍在等待后台：只输出 <SILENCE>。）"
-)
-
 _RENDER_DELEGATE_NUDGE = (
     "（系统校验·内部轮：不对用户闲聊）"
     "本轮已有检索/工具材料或长结构内容且未出图 → **必须** "
@@ -227,9 +208,9 @@ def spoken_user_body(text: str) -> str:
     body = (text or "").strip()
     if not body:
         return ""
-    had_envelope = "--- 消息 ---" in body
+    had_envelope = MSG_SECTION_MARK in body
     if had_envelope:
-        body = body.split("--- 消息 ---", 1)[-1]
+        body = body.split(MSG_SECTION_MARK, 1)[-1]
     if "[当前时间" in body:
         body = body.split("[当前时间", 1)[0]
     body = body.strip()

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
 from dataclasses import dataclass
 
 from gsuid_core.utils.plugins_config.models import GsIntConfig
@@ -17,6 +18,10 @@ from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 #: ``chat_style`` 未配置 / 人格缺失时的缺省档。
 DEFAULT_CHAT_STYLE = 50
+CHAT_STYLE_MIN = 0
+CHAT_STYLE_MAX = 100
+SPEECH_LEN_MIN = 5
+SPEECH_LEN_MAX = 400
 
 #: 完整度契约恒定渲染：形态档管形状，这里管答得够不够。
 ANSWER_CONTRACT = (
@@ -35,7 +40,7 @@ class ChatStyle:
     bubbles: int
     #: 建议台词长度，进 system 稳定前缀
     soft: int
-    #: 硬上限，进 system 稳定前缀
+    #: 开场接任务应的长度上限。不进系统提示，控制台也不能改。
     hard: int
     #: 分段契约句，进 system 稳定前缀；只讲结构、不讲文风
     segment_hint: str
@@ -75,12 +80,54 @@ _DEFAULT_TIER = ChatStyle(
 )
 
 
+class SpeechTierSpec(TypedDict):
+    floor: int
+    bubbles: int
+    soft: int
+    segment_hint: str
+
+
+class SpeechShapeSpec(TypedDict):
+    chat_style_min: int
+    chat_style_max: int
+    soft_default: int
+    len_min: int
+    len_max: int
+    tiers: list[SpeechTierSpec]
+
+
+def speech_shape_spec() -> SpeechShapeSpec:
+    """控制台用的分档表。字数等于模板默认时，发送仍走 ``resolve_chat_style``。"""
+    tiers: list[SpeechTierSpec] = [
+        {
+            "floor": floor,
+            "bubbles": bubbles,
+            "soft": soft,
+            "segment_hint": hint,
+        }
+        for floor, bubbles, soft, _, hint in _TIERS
+    ]
+    return {
+        "chat_style_min": CHAT_STYLE_MIN,
+        "chat_style_max": CHAT_STYLE_MAX,
+        "soft_default": _template_default("speech_len_soft"),
+        "len_min": SPEECH_LEN_MIN,
+        "len_max": SPEECH_LEN_MAX,
+        "tiers": tiers,
+    }
+
+
 def _int_value(cfg: StringConfig, key: str, fallback: int) -> int:
     """``StringConfig.get_config`` 静态返回 ``Any``；在此边界收窄成 int。"""
     item = cfg.get_config(key)
-    if isinstance(item, GsIntConfig):
-        return int(item.data)
+    if isinstance(item, GsIntConfig) and isinstance(item.data, int) and not isinstance(item.data, bool):
+        return item.data
     return fallback
+
+
+def stored_int(cfg: StringConfig, key: str, fallback: int) -> int:
+    """读人格 config.json 里的整数。缺键或类型不对时用 fallback。"""
+    return _int_value(cfg, key, fallback)
 
 
 def _template_default(key: str) -> int:
@@ -95,8 +142,8 @@ def _template_default(key: str) -> int:
 def resolve_chat_style(persona_name: str | None) -> ChatStyle:
     """``chat_style`` → 形态档。
 
-    ``speech_len_soft`` / ``speech_len_hard`` 被显式改过（≠ 模板默认）时以显式值为准，
-    保留旧人格的精确控制；未改动则跟随本档派生。
+    ``speech_len_soft`` 被显式改过（≠ 模板默认）时以显式值为准；未改动则跟随本档派生。
+    ``hard`` 只给定开场接任务应的长度，不写进系统提示。
     """
     if not persona_name:
         return _DEFAULT_TIER
@@ -112,7 +159,7 @@ def _style_from(cfg: StringConfig) -> ChatStyle:
     return ChatStyle(
         bubbles=bubbles,
         soft=_explicit_or(cfg, "speech_len_soft", soft),
-        hard=_explicit_or(cfg, "speech_len_hard", hard),
+        hard=hard,
         segment_hint=hint,
     )
 

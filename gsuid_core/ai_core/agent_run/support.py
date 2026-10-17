@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
+from gsuid_core.ai_core.control.lines import THRASH_FUSE_NUDGE as _THRASH_FUSE_NUDGE  # noqa: F401
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
@@ -294,10 +295,6 @@ def thrash_limit_for(tool_name: str) -> int:
 
 # 同工具空转熔断：跨轮连续 ≥4 轮仅调用同一工具时注入收敛提示，避免死循环。
 _THRASH_SAME_TOOL_LIMIT = 4
-_THRASH_FUSE_NUDGE = (
-    "（系统校验：你已跨多轮连续只重复同一工具，仍无新进展。立即停止再连打该工具；"
-    "换另一路径（如 find_tools / 其它工具）或基于已有结果交付结论，禁止空转。）"
-)
 
 
 def _update_thrash_streak_for_response(

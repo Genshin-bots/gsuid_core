@@ -792,17 +792,18 @@ def test_followup_structural_tool_signal():
 
 
 def test_at_marker_single_source():
-    """@ 标注文案唯一定义在 interaction_scaffold：渲染方（utils/history_format）只准
-    import 常量，字面量重复会让 C-3 寻址门静默失效（源码级锁）。"""
+    """寻址记号只在 control/lines.py 写一次。渲染方 import 同一对象。
+    再抄一份字面量，C-3 寻址门对不上，静默失效。"""
     import inspect
 
-    from gsuid_core.ai_core import interaction_scaffold
+    from gsuid_core.ai_core import utils, history_format, interaction_scaffold
+    from gsuid_core.ai_core.control import lines
 
-    assert interaction_scaffold.AT_OTHER_MARKER == "（@的是这位用户，不是你）"
-    assert interaction_scaffold.DIRECT_MARKER == "（直接找你说的）"
-    from gsuid_core.ai_core import utils, history_format
-
-    for mod in (utils, history_format):
+    assert lines.AT_OTHER_MARKER == "（@的是这位用户，不是你）"
+    assert lines.DIRECT_MARKER == "（直接找你说的）"
+    assert interaction_scaffold.AT_OTHER_MARKER is lines.AT_OTHER_MARKER
+    assert interaction_scaffold.DIRECT_MARKER is lines.DIRECT_MARKER
+    for mod in (interaction_scaffold, utils, history_format):
         src = inspect.getsource(mod)
         assert "@的是这位用户，不是你" not in src, f"{mod.__name__} 重复了 @ 标注字面量"
-    assert "直接找你说的" not in inspect.getsource(utils), "utils 重复了直答标注字面量"
+        assert "直接找你说的" not in src, f"{mod.__name__} 重复了直答标注字面量"

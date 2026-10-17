@@ -20,6 +20,11 @@ async def init_default_personas():
     之前完成 (那一步会用严格 ``Dict[str, GSC]`` schema 加载所有 persona
     ``config.json``, 旁路字段会触发死循环)。
     """
+    from gsuid_core.ai_core.prompt_group.store import sync_default_group
+
+    if sync_default_group():
+        logger.info(t("log.persona.default_prompt_group_synced"))
+
     if not ai_config.get_config("enable").data:
         logger.info(t("log.persona.init_skip_ai_master_switch_off"))
         return

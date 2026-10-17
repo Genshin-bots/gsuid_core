@@ -294,6 +294,8 @@ class GsCoreAIAgent(RunOnceMixin):
         # 稳定前缀构建时刻：ai_router 按 TTL 原地刷新 system_prompt（O-3 慢变上下文防僵化）
         self.system_prompt_built_at: float = time.time()
         self.persona_name = persona_name  # 用于热重载检查
+        # 本会话建提示词时看到的人格/提示词组 mtime。按会话记，避免只重载一路。
+        self.persona_source_mtime: float = 0.0
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
         # A: 同 Session 新消息抢答时 set，当前 generation 在节点间隙 abort

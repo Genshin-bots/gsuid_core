@@ -41,6 +41,14 @@ from gsuid_core.utils.plugins_config.models import GsDivider
 
 from ._api_tags import PERSONA
 
+
+def _is_builtin_persona(name: str) -> bool:
+    """程序自带的默认人格。启动会用种子覆盖它的正文。"""
+    from gsuid_core.ai_core.prompt_group.catalog import BUILTIN_PERSONA_NAME
+
+    return name == BUILTIN_PERSONA_NAME
+
+
 # 音频MIME类型映射
 AUDIO_MIME_TYPES = {
     ".mp3": "audio/mpeg",
@@ -72,6 +80,21 @@ async def get_persona_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[st
         "msg": "ok",
         "data": personas_data,
     }
+
+
+@app.get(
+    "/api/persona/config/placeholder-preview",
+    summary="已激活人格的标签填入值",
+    tags=PERSONA,
+)
+async def get_placeholder_preview(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+    """提示词组页只读展示。开关打开、且人格目录还在的才列出。
+
+    不放在 /api/persona/{name}：那个路由先注册，两段路径会被它接走。
+    """
+    from gsuid_core.ai_core.persona.placeholder_preview import active_placeholder_preview
+
+    return {"status": 0, "msg": "ok", "data": active_placeholder_preview()}
 
 
 @app.get("/api/persona/{persona_name}", summary="获取角色详情", tags=PERSONA)
@@ -137,6 +160,13 @@ async def update_persona_content(
         return {
             "status": 1,
             "msg": "请提供内容",
+            "data": None,
+        }
+
+    if _is_builtin_persona(persona_name):
+        return {
+            "status": 1,
+            "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能在这里修改。请先复制一份。",
             "data": None,
         }
 
@@ -492,6 +522,13 @@ async def create_persona(
     name = data.get("name", "").strip()
     query = data.get("query", "").strip()
 
+    if _is_builtin_persona(name):
+        return {
+            "status": 1,
+            "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能在这里修改。请先复制一份。",
+            "data": None,
+        }
+
     if not name:
         return {
             "status": 1,
@@ -545,6 +582,13 @@ async def add_persona(
     """
     name = data.get("name", "").strip()
     content = data.get("content", "").strip()
+
+    if _is_builtin_persona(name):
+        return {
+            "status": 1,
+            "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能在这里修改。请先复制一份。",
+            "data": None,
+        }
 
     if not name:
         return {
@@ -634,6 +678,12 @@ async def remove_persona(
     Returns:
         status: 0成功，1失败
     """
+    if _is_builtin_persona(persona_name):
+        return {
+            "status": 1,
+            "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能删除。",
+            "data": None,
+        }
     deleted = delete_persona(persona_name)
     if deleted:
         return {
@@ -866,6 +916,41 @@ async def update_persona_config(
                 "data": None,
             }
         results.append(f"capability_agents: {capability_agents}")
+
+    if "prompt_group" in data:
+        prompt_group = data["prompt_group"]
+        if not isinstance(prompt_group, str):
+            return {
+                "status": 1,
+                "msg": "prompt_group 必须是字符串",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_prompt_group(persona_name, prompt_group)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"prompt_group: {prompt_group}")
+
+    if "chat_style" in data:
+        chat_style = data["chat_style"]
+        if isinstance(chat_style, bool) or not isinstance(chat_style, int):
+            return {"status": 1, "msg": "chat_style 必须是整数", "data": None}
+        success, msg = persona_config_manager.set_chat_style(persona_name, chat_style)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append(f"chat_style: {chat_style}")
+
+    if "speech_len_soft" in data:
+        speech_len_soft = data["speech_len_soft"]
+        if isinstance(speech_len_soft, bool) or not isinstance(speech_len_soft, int):
+            return {"status": 1, "msg": "speech_len_soft 必须是整数", "data": None}
+        success, msg = persona_config_manager.set_speech_len_soft(persona_name, speech_len_soft)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append(f"speech_len_soft: {speech_len_soft}")
 
     # 返回更新后的配置
     updated_config = persona_config_manager.get_persona_config_dict(persona_name)

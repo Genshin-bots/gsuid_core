@@ -40,6 +40,7 @@ from gsuid_core.ai_core.utils import (
     _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
 )
+from gsuid_core.ai_core.control.lines import capability_hit_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.agent_run.state import (
@@ -692,10 +693,7 @@ class LoopPhase(RunOnceHost):
                         _nid = match_capability_node(st.last_user_question)
                         if _nid:
                             st.web_search_delegate_nudged = True
-                            _contract = (
-                                f"（系统：当前问题已命中能力节点 `{_nid}`，"
-                                f'请 create_subagent(agent_profile="{_nid}", task=...) 委派，不要继续网页检索。）'
-                            )
+                            _contract = capability_hit_line(_nid)
                     # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
                     # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
                     if not any(

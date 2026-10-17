@@ -93,19 +93,16 @@ class AISessionRegistry:
 历史缺陷 D-3：Session 一旦创建 `system_prompt` 就固定，管理员改了人设老用户不生效。修复：
 
 ```python
-_persona_mtime_cache: dict[str, float] = {}
-
 def _check_persona_changed(session, persona_name) -> bool:
     if session.persona_name != persona_name:
         return True
     current = _get_persona_mtime(persona_name)
-    if current > _persona_mtime_cache.get(persona_name, 0.0):
-        _persona_mtime_cache[persona_name] = current
-        return True
-    return False
+    # 记在这一路会话上。按人格记一份，先开口的那路会把时间写新，其余群不再重载。
+    return current > session.persona_source_mtime
 ```
 
-检测到 persona 文件 mtime 变化 → 移除旧 Session 并重建。`GsCoreAIAgent` 有 `persona_name`
+检测到 persona 文件或该人格所用提示词组的 mtime 变化 → 移除这一路 Session 并重建。
+同一人格的每一路会话各自记住建提示词时的 mtime。`GsCoreAIAgent` 有 `persona_name`
 属性追踪，`create_agent()` 支持 `persona_name` 参数。
 
 ## 6.6 Persona 配置系统（`persona/config.py`）
@@ -132,8 +129,7 @@ RESOURCE_PATH/persona/{persona_name}/
 | `target_groups` | List[str] | `[]` | 目标群聊 |
 | `inspect_interval` | int | `60` | 巡检间隔（分钟） |
 | `keywords` | List[str] | `[]` | 唤醒关键词 |
-| `speech_len_soft` | int | `60` | 台词软上限（字）。**留默认即跟随 `chat_style` 派生** |
-| `speech_len_hard` | int | `150` | 台词硬上限（字）。同上。注意终局正文**没有长度硬拦**（`speech_policy.py` 显式弃用），只写进 prompt 起偏置作用 |
+| `speech_len_soft` | int | `60` | 建议字数。**留默认即跟随 `chat_style` 派生**。系统提示只写这一条，没有硬上限 |
 | `chat_style` | int | `50` | **说话强度** 0 到 100：0=惜字如金 / 50=默认 / 100=连珠炮 |
 | `enabled_tools` | List[str] | `["*"]` | 启用工具（按插件），管辖向量检索池。`*`=全部插件；`!插件名`=排除；只列具体名=仅这些。空列表=一个都不启用 |
 | `tool_names` | List[str] | `[]` | 显式工具白名单（常驻直装，不经向量检索） |
@@ -145,15 +141,18 @@ RESOURCE_PATH/persona/{persona_name}/
 `chat_style` 管「发成什么形状」（几条 / 多长 / 怎么分段）。刻意不合并——`zones` 要求同一语义
 只有一处定义，**欲望不在 persona 配置里开第二把尺**。
 
-| `chat_style` | 气泡数 | soft / hard | 分段契约 |
+| `chat_style` | 气泡数 | 建议字数 | 分段契约 |
 |---|---|---|---|
-| 0–24 | 1 | 30 / 80 | 一次只说一件事，说完即止，不分段 |
-| 25–74（默认 50） | 2 | 60 / 150 | 默认一整段；层次确实不同才用空行分两条 |
-| 75–100 | 4 | 90 / 200 | 可连发多条：**每条之间用一个空行分隔**，每条独立完整 |
+| 0–24 | 1 | 30 | 一次只说一件事，说完即止，不分段 |
+| 25–74（默认 50） | 2 | 60 | 默认一整段；层次确实不同才用空行分两条 |
+| 75–100 | 4 | 90 | 可连发多条：**每条之间用一个空行分隔**，每条独立完整 |
+
+档位另有开场接任务应的长度上限（80 / 150 / 200）。它不写进系统提示，控制台也不能改。
+终局正文没有按字数硬拦。
 
 - 契约句只讲**结构**，不含业务垂直词与角色口癖，框架层人格中性（AGENTS.md §1.9）。
 - 建 session 时经 `processor.build_persona_prompt` 进 **system 稳定前缀**，会话内不改串
-  （§1.7）；改配置需**新会话**才生效。
+  （§1.7）。改说话强度、建议字数或提示词组后，用这张人格的每一路会话都会重建。
 - 气泡数与 `ai_config.main_channel_visible_limit` 是**两把相乘的闸**，只调一把没反应。
 - ⚠️ 边界对齐 `options=[0, 25, 50, 75, 100]`，**默认 50 必须落在「默认」档**——
   改分档时别让默认值掉进 terse，否则升级即静默把「最多 2 条」降成 1 条。
@@ -259,6 +258,7 @@ TTL，须接受画像刷新会改串打掉前缀。
 
 - 改这条链路时别把 per-user 数据塞进稳定前缀——群聊 session 整群共享。
 - **mood 不进 session system prompt**（每轮 user 侧注入）。
+- 这些 user 侧句子的正文只在 `control/lines.py` 写一次，见 §6.7.3。
 
 ### 6.7.2 历史渲染的两条新语义（`history_format.py`，2026-07-12 起）
 
@@ -269,3 +269,27 @@ TTL，须接受画像刷新会改串打掉前缀。
   发言块；窗口**锚定组内首条**而非相邻两条——链式相邻比较会让长独白无限合并成只有首条
   时间戳的巨块，heartbeat 的时效判断（"你刚刚才说过话"）会被带偏。改合并逻辑时保持
   "块跨度有上限"这个不变式。
+
+### 6.7.3 当轮控制句只定义一次（`control/lines.py`）
+
+仍插进**当前 request 的 user 侧**、落盘前由 `_relean` 剥掉的句子，正文只写在
+`gsuid_core/ai_core/control/lines.py`。调用处 `import` 这个名字。
+`prepare.py` 用 `is` 认出 `DRIFT_REMINDER`：必须是同一个对象，再赋一份相同的字符串会对不上。
+闸门打回的开头收在 `GATE_NUDGE_MARKERS`；`--- 消息 ---` 用 `MSG_SECTION_MARK` / `MSG_SECTION_HEAD`。
+要填运行时槽位的写成同文件函数（能力节点命中、主人称呼、重复句、别名、引用对象、归属、看板交付回灌）。
+
+`lines.py` 不 import `agent_run` / `utils` / `output_gate` / `interaction_scaffold`，避免环。
+
+留在原处，调用处也不再抄一份：
+
+| 内容 | 留在 |
+|------|------|
+| 提示词组默认正文（跟进、记忆问答、寻址说明） | `interaction_scaffold.py`；目录在 `prompt_group/catalog.py` |
+| 绑在义务上的观察 | `control/corrections.py`（和 `Obligation` 放一起） |
+| 旧历史里的假完成 / 零工具，当前不再插入 | `agent_run/support.py` |
+| 三句旧打回，当前不再插入 | `agent_run/speech_policy.py` |
+| `<control>` 信封 | `control/directive.py` |
+| 子 Agent / 评测器 / 识图的 system 提示 | 各自的渲染处 |
+
+用户能改的是提示词组。控制句什么时候插入由代码决定，不做成提示词组字段，也不做成插件配置。
+这些句子仍走 §6.7.1：不进 `system_prompt`。红线见 [`AGENTS.md` §1.11](../../../../AGENTS.md)。

@@ -3,6 +3,8 @@ from gsuid_core.data_store import AI_CORE_PATH, get_res_path
 local_embedding_images = get_res_path(AI_CORE_PATH / "local_embedding_images")
 # 角色存储路径 - 所有角色资料文件夹存放的目录
 PERSONA_PATH = get_res_path(AI_CORE_PATH / "persona")
+# 系统提示词组。默认组每次启动从代码写回，用户组放在同级目录。
+PROMPT_GROUP_PATH = get_res_path(AI_CORE_PATH / "prompt_groups")
 # AI技能存储路径 - 所有技能文件夹存放的目录
 SKILLS_PATH = get_res_path(AI_CORE_PATH / "skills")
 # 读写执行文件路径

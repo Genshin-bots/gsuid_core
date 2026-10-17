@@ -18,10 +18,11 @@ class IdentityKit(AgentKit):
             return
         if ctx.ev is None or ctx.ev.group_id:
             return
+        from gsuid_core.ai_core.prompt_group.store import render_prompt
+
         ctx.set_context_block(
             "identity",
-            f"（身份：你是「{ctx.persona_name}」。自我指称只按角色卡；"
-            "他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）",
+            render_prompt(ctx.persona_name, "identity", char_name=ctx.persona_name),
         )
 
 

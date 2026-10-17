@@ -12,9 +12,9 @@ from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+from gsuid_core.ai_core.control.lines import MSG_SECTION_MARK
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.history_format import format_history_for_agent
-from gsuid_core.ai_core.persona.prompts import ROLE_PLAYING_START
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.utils.database.base_models import async_maker
@@ -387,8 +387,11 @@ async def run_heartbeat(
     # compact 提取失败则回退完整原文
     compact_persona = extract_compact_persona(persona_content)
     decision_persona = compact_persona or persona_content
-    persona_text = f"{ROLE_PLAYING_START}\n{persona_content}"
-    decision_persona_text = f"{ROLE_PLAYING_START}\n{decision_persona}"
+    from gsuid_core.ai_core.prompt_group.store import render_prompt
+
+    role = render_prompt(persona_name, "role_playing_start")
+    persona_text = f"{role}\n{persona_content}"
+    decision_persona_text = f"{role}\n{decision_persona}"
 
     # 两个阶段共用同一份上下文，只格式化一次
     history_context = format_history_for_agent(history=history)
@@ -425,7 +428,9 @@ async def run_heartbeat(
     # 阶段一：决策 B-1：persona 进 system_prompt，逐轮变化的群况 + 决策指令进 user_message
     staleness_section = build_staleness_section(history, time.time())
 
-    decision_user = DECISION_USER_TEMPLATE.format(
+    decision_user = render_prompt(
+        persona_name,
+        "heartbeat_decision",
         current_time=current_time,
         history_context=history_context,
         group_summary_section=group_summary,
@@ -528,7 +533,9 @@ async def run_heartbeat(
     # 阶段二：生成发言 B-1：发言阶段同样把人格放 system_prompt（用完整原文 persona_text）
     from gsuid_core.ai_core.persona.settings import get_master_title
 
-    message_user = PROACTIVE_MESSAGE_USER_TEMPLATE.format(
+    message_user = render_prompt(
+        persona_name,
+        "heartbeat_speak",
         history_context=history_context,
         mood=mood,
         proactive_merge_section=proactive_merge_section,
@@ -597,8 +604,8 @@ def _reactive_gate_rule_prefilter(raw_text: str, persona_name: str = "") -> Opti
     if "不是你" in text and "@" in text:
         return False
     body = text
-    if "--- 消息 ---" in text:
-        body = text.split("--- 消息 ---", 1)[-1].strip()
+    if MSG_SECTION_MARK in text:
+        body = text.split(MSG_SECTION_MARK, 1)[-1].strip()
     for _time_sep in ("[当前时间：", "[当前时间:", "【当前时间】"):
         if _time_sep in body:
             body = body.split(_time_sep, 1)[0]
@@ -647,7 +654,10 @@ async def run_reactive_gate(
         if not persona_content:
             return True
         compact = extract_compact_persona(persona_content) or persona_content
-        persona_text = f"{ROLE_PLAYING_START}\n{compact}"
+        from gsuid_core.ai_core.prompt_group.store import render_prompt
+
+        role = render_prompt(persona_name, "role_playing_start")
+        persona_text = f"{role}\n{compact}"
 
         history_context = format_history_for_agent(history=history)
         nickname: Optional[str] = None
@@ -656,7 +666,9 @@ async def run_reactive_gate(
             nickname = raw_nick if isinstance(raw_nick, str) else None
         speaker_desc = f"{nickname}(用户ID:{event.user_id})" if nickname else f"用户ID:{event.user_id}"
 
-        user_prompt = REACTIVE_GATE_TEMPLATE.format(
+        user_prompt = render_prompt(
+            persona_name,
+            "reactive_gate",
             speaker_desc=speaker_desc,
             history_context=history_context,
         )

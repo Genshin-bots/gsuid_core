@@ -107,16 +107,10 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         60,
         options=[30, 45, 60, 80, 90, 100],
     ),
-    "speech_len_hard": GsIntConfig(
-        "台词硬上限（字）",
-        "超过且用户未要求详细时进纠正轮，默认 150。留默认即跟随「说话强度」派生",
-        150,
-        options=[80, 120, 150, 200, 300],
-    ),
     "chat_style": GsIntConfig(
         "说话强度",
         "控制发言形态：0=惜字如金（1条/30字）、50=默认（2条/60字）、100=连珠炮（4条/90字）。"
-        "与关系温度正交：关系管态度语气，本项管发几条/多长/怎么分段。改后需新会话生效",
+        "与关系温度正交：关系管态度语气，本项管发几条/多长/怎么分段。保存后，用这张人格的各会话会换上新字数。",
         50,
         options=[0, 25, 50, 75, 100],
     ),
@@ -144,7 +138,20 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         ["*"],
         options=["*"],
     ),
+    "prompt_group": GsStrConfig(
+        "系统提示词组",
+        "该人格使用的系统提示词组。默认组每次启动从程序写回，不能改其正文。",
+        "默认",
+        options=[],
+    ),
 }
+
+
+def _effective_prompt_group(persona_name: str) -> str:
+    """配置里的组已删除时，接口返回实际发送用的默认组。"""
+    from gsuid_core.ai_core.prompt_group.store import group_name_for_persona
+
+    return group_name_for_persona(persona_name)
 
 
 class PersonaConfigManager(ConfigSetManager):
@@ -371,6 +378,40 @@ class PersonaConfigManager(ConfigSetManager):
         else:
             return False, "配置写入失败"
 
+    def set_chat_style(self, persona_name: str, chat_style: int) -> tuple[bool, str]:
+        """设置说话强度。0 到 100。新会话才用新的档。"""
+        from gsuid_core.ai_core.persona.chat_style import CHAT_STYLE_MAX, CHAT_STYLE_MIN
+
+        if isinstance(chat_style, bool) or not isinstance(chat_style, int):
+            return False, "说话强度必须是整数"
+        if chat_style < CHAT_STYLE_MIN or chat_style > CHAT_STYLE_MAX:
+            return False, f"说话强度必须在 {CHAT_STYLE_MIN} 到 {CHAT_STYLE_MAX} 之间"
+        config = self.get_config(persona_name)
+        if not config.set_config("chat_style", chat_style):
+            return False, "配置写入失败"
+        logger.info(
+            t(
+                "log.persona.chat_style_set",
+                persona_name=persona_name,
+                chat_style=chat_style,
+            )
+        )
+        return True, "ok"
+
+    def set_speech_len_soft(self, persona_name: str, count: int) -> tuple[bool, str]:
+        """设置建议字数。等于模板默认时，发送仍跟随说话强度。"""
+        from gsuid_core.ai_core.persona.chat_style import SPEECH_LEN_MAX, SPEECH_LEN_MIN
+
+        if isinstance(count, bool) or not isinstance(count, int):
+            return False, "字数必须是整数"
+        if count < SPEECH_LEN_MIN or count > SPEECH_LEN_MAX:
+            return False, f"字数必须在 {SPEECH_LEN_MIN} 到 {SPEECH_LEN_MAX} 之间"
+        config = self.get_config(persona_name)
+        if not config.set_config("speech_len_soft", count):
+            return False, "配置写入失败"
+        logger.info(t("log.persona.speech_len_soft_set", persona_name=persona_name, count=count))
+        return True, "ok"
+
     def set_keywords(self, persona_name: str, keywords: List[str]) -> tuple[bool, str]:
         """
         设置 Persona 的唤醒关键词
@@ -463,6 +504,20 @@ class PersonaConfigManager(ConfigSetManager):
             return True, "ok"
         return False, "配置写入失败"
 
+    def set_prompt_group(self, persona_name: str, group_name: str) -> tuple[bool, str]:
+        """绑定该人格使用的系统提示词组。组必须已存在。"""
+        from gsuid_core.ai_core.prompt_group.store import group_exists
+
+        name = group_name.strip()
+        if not group_exists(name):
+            return False, "系统提示词组不存在"
+        config = self.get_config(persona_name)
+        success = config.set_config("prompt_group", name)
+        if success:
+            logger.info(t("log.persona.prompt_group_bound", persona_name=persona_name, group=name))
+            return True, "ok"
+        return False, "配置写入失败"
+
     def get_persona_for_session(self, session_id: str) -> Optional[str]:
         """
         根据 Session ID 获取应该使用的 Persona
@@ -539,6 +594,13 @@ class PersonaConfigManager(ConfigSetManager):
             return None
 
         config = self.get_config(persona_name)
+        from gsuid_core.ai_core.persona.chat_style import (
+            DEFAULT_CHAT_STYLE,
+            stored_int,
+            speech_shape_spec,
+        )
+
+        shape = speech_shape_spec()
         return {
             "ai_mode": config.get_config("ai_mode").data,
             "scope": config.get_config("scope").data,
@@ -548,6 +610,10 @@ class PersonaConfigManager(ConfigSetManager):
             "enabled_tools": config.get_config("enabled_tools").data,
             "tool_names": config.get_config("tool_names").data,
             "capability_agents": config.get_config("capability_agents").data,
+            "prompt_group": _effective_prompt_group(persona_name),
+            "chat_style": stored_int(config, "chat_style", DEFAULT_CHAT_STYLE),
+            "speech_len_soft": stored_int(config, "speech_len_soft", shape["soft_default"]),
+            "speech_shape": shape,
         }
 
     def delete_persona_config(self, persona_name: str) -> bool:

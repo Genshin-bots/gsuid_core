@@ -378,7 +378,9 @@ def master_title_turn_hint(ctx: "AgentHookContext") -> str:
     title = get_master_title(ctx.persona_name)
     if not title:
         return ""
-    return f"（系统：本轮说话人不是主人，禁止称「{title}」。）"
+    from gsuid_core.ai_core.control.lines import master_title_ban_line
+
+    return master_title_ban_line(title)
 
 
 def _inject_master_title_hint(ctx: "AgentHookContext") -> None:

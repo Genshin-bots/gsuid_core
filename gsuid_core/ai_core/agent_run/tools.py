@@ -34,6 +34,7 @@ from gsuid_core.ai_core.rag.tools import (
 )
 from gsuid_core.ai_core.tool_risk import skill_tool_visible
 from gsuid_core.ai_core.tool_safety import build_tool_safety_capability
+from gsuid_core.ai_core.control.lines import STATE_PERSISTED_FAMILY_HINT
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
@@ -202,11 +203,6 @@ def complete_kernel_family_names(core_names: Sequence[str], *, exclusive: set[st
         for tb in get_tools_by_capability_domain(domain):
             _add(tb.name)
     return out
-
-
-STATE_PERSISTED_FAMILY_HINT = (
-    "\n\n（系统提示：当前会话已有持久条目。变更已有条目请用对应能力族的查询/修改/取消工具，不要再创建一条来代替。）"
-)
 
 
 def stabilize_session_tool_names(

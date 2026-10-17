@@ -126,6 +126,7 @@ def _import_webconsole_apis() -> None:
         mcp_config_api,
         agent_debug_api,
         state_store_api,
+        prompt_group_api,
         tool_outputs_api,
         ai_statistics_api,
         ai_memory_eval_api,

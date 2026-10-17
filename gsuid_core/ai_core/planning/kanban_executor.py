@@ -726,7 +726,9 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
             title = get_master_title(task.persona_name or "")
             if title:
                 title_ban = f"发起人不是主人，禁止称「{title}」。"
-    frame_text = f"[框架·任务完成]\n{delivery}\n（系统：一句收尾；有图就发出；要出图委派 render。{at_hint}{title_ban}）"
+    from gsuid_core.ai_core.control.lines import delivery_wake_line
+
+    frame_text = delivery_wake_line(delivery, at_hint, title_ban)
     record_delivery_wake(session_id, root_id)
     root_token = bind_delivery_root(root_id)
     try:

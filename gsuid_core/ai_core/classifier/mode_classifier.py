@@ -8,6 +8,7 @@ from typing import Literal, Protocol, Sequence, TypedDict
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.control.lines import MSG_SECTION_MARK
 
 # 省略式跟进：单句无独立语义，必须靠上文才知道动作（语言学闭类 + 极短回指）
 _ELLIPSIS_FOLLOWUP_RE = re.compile(
@@ -126,8 +127,8 @@ def collect_prior_user_turns(
             continue
         # 去掉过长 payload 头，只取消息体
         body = content
-        if "--- 消息 ---" in body:
-            body = body.split("--- 消息 ---", 1)[-1]
+        if MSG_SECTION_MARK in body:
+            body = body.split(MSG_SECTION_MARK, 1)[-1]
         # 兼容新旧时间行：【当前时间】xxx / [当前时间：xxx]
         for time_sep in ("[当前时间：", "[当前时间:", "【当前时间】"):
             if time_sep in body:

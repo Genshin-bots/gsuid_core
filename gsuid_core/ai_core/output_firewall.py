@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.content_guard import normalize_for_match
+from gsuid_core.ai_core.control.lines import OOC_JUDGE_MARKER, FUND_CLAIM_PREFIX, TOOL_NAME_LEAK_NUDGE
 
 # ── 分类词库 ────────────────────────────────────────────────────────
 # 规范化后匹配（吃掉"M i M o"式规避）。部署者可经 ai_config.output_firewall_extra_terms 补充。
@@ -520,14 +521,13 @@ NEVER_RELEASE_CATEGORIES: frozenset[str] = frozenset(
 _LAST_RESORT_SEND_ORIGINAL: frozenset[str] = frozenset({"capability_absence", "meta_narration", "stale_present"})
 #: 虚假转账与技术堆栈外泄具有直接风险，重试失败时保持沉默。
 SOFT_JUDGE_CATEGORIES: frozenset[str] = frozenset({"model_identity", "ai_selfref"})
-OOC_JUDGE_MARKER = "（系统校验：刚才要发的内容可能出戏"
 
 
 def build_rewrite_warning(hit: FirewallHit) -> str:
     """给模型的系统提醒（工具 return / 反馈注入共用）。软出戏只请模型自判，不强制改写。"""
     if hit.category == "fund_claim":
         return (
-            f"⛔ 你要发送的内容命中资金红线【命中：{'、'.join(hit.matched[:4])}】。"
+            f"{FUND_CLAIM_PREFIX}资金红线【命中：{'、'.join(hit.matched[:4])}】。"
             "你没有任何支付能力：重写时**不得声称已转账 / 已付款 / 已发红包**，"
             "也不得代任何人答应出钱或向第三方要钱——用角色口吻明确拒绝或岔开话题，"
             "直接输出重写后的内容。"
@@ -561,11 +561,7 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
             "不要解释缺失的来源，禁止编造时点。直接输出重写后的正文。"
         )
     if any("框架泄漏" in m or "系统文案" in m for m in hit.matched):
-        return (
-            "（系统校验：内容可能含内部工具名 / 句柄 / 编排文案。"
-            "请判断后用角色口吻只说结论；不要对用户念工具、句柄或内部提示。"
-            "直接输出你决定发给用户的正文，不要再调用发送工具重复同一句。）"
-        )
+        return TOOL_NAME_LEAK_NUDGE
     return (
         f"{OOC_JUDGE_MARKER}【类别：{hit.category}，命中：{'、'.join(hit.matched[:4])}】。"
         "请你自己判断：介绍/对比第三方模型、聊行业新闻可以保持原意；"

@@ -21,6 +21,8 @@
 6. **禁止人格锁定 / 能力锁定** ——框架不得写死某个角色的口癖/自称，也不得把游戏/股票等垂直词表写进分类器或路由（见 `AGENTS.md` §1.9）。
 7. **完全类型提示** ——所有函数参数/返回值都有注解，且注解不是 `Any`。
 8. **全异步** ——可能阻塞的都 `async def`；同步 CPU 用 `@to_thread`/专用线程池。
+9. **当轮控制句只定义一次** ——仍插进当前 request user 侧、入史前剥掉的句子只写在
+   `ai_core/control/lines.py`，调用处 import 同一对象（见 `AGENTS.md` §1.11、[§6.7.3](./06-ai-session-and-persona.md)）。
 
 > 注释规范：`#` 注释**不超过两行、每行 ≤88 字**，精简直白，用最精确的注释给指导，而不是长篇
 > 大论。详见 `AGENTS.md`。
@@ -166,7 +168,8 @@ Session ID 群聊**不含 user_id**（`…:group:{group_id}`），群内共享 S
 - 禁止再实现「`history[-n:]` 砍头」式 compact；
 - 禁止 compact 后把角色锚点 **插回头部**（平移前缀 = 整段 cache 失效）；
 - 框架契约 / 纠正 nudge 只 **append** 到本 run request，落盘前 `_relean` 剥掉
-  （`（系统：` / `（系统校验：` / thrash / 墙钟 等）。
+  （`（系统：` / `（系统校验：` / thrash / 墙钟 等）。这些句子的正文只在
+  `control/lines.py` 定义一次，调用处 import，不要在闸门旁边再抄一份（[§6.7.3](./06-ai-session-and-persona.md)）。
 
 旧 API `_truncate_history_with_tool_safety` 仍为「保尾」语义，**主会话勿用**。
 
@@ -648,9 +651,9 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
 - **C-3 寻址前置门**（`addressed_to_someone_else`）：当前消息带「@的是这位用户，不是你」标注、
   未同时点名自己、非 is_tome 时，**装配层直接把 `tools` 清空**（含 send_message_by_ai / find_tools
   / skills_toolset），把"不冲你来=零工具"从模型自觉变成硬约束。根治隐性指代域的 over-tooling。
-  **@ 标注文案唯一定义在 `interaction_scaffold.AT_OTHER_MARKER`/`DIRECT_MARKER`**——
-  utils/history_format 渲染只准 import 常量，字面量重复会让门静默失效
-  （`test_at_marker_single_source` 源码级锁）。
+  **寻址记号唯一定义在 `control/lines.py` 的 `AT_OTHER_MARKER` / `DIRECT_MARKER`**。
+  `interaction_scaffold` 再导出同一对象；utils / history_format 只 import，不抄字面量。
+  再抄一份，C-3 寻址门对不上，静默失效（`test_at_marker_single_source`）。
 - **C-4 墙钟软预算**（`gs_agent` ModelRequestNode 前）：交互式 run 墙钟超预算后，请求前注入一次
   "停止发起新工具轮、用已有信息收敛作答"，治多步任务的延迟长尾。与 token 预算正交。
   nudge 挂在 run 中途的后续 ModelRequest 上，**由 `_relean_user_turn(strip_hint_texts=…)` 从
@@ -901,6 +904,8 @@ memory / statistics / planning / meme / favor_decay 每次启动都初始化两�
     调语气的档位都带履约地板；没有依据（未打分 / 无数据）时不注入。
 14. 单测全绿不等于没回归：碰了装配 / 闸门 / 每轮注入 / 启动顺序的改动，跑一轮
     `eval/agent` 群聊基准并与上一份报告逐例对比（`--concurrency 1` 排除争用）。
+15. 新的当轮 user 侧句子写在 `control/lines.py` 再 import。不在闸门旁边再抄一份，
+    也不把「什么时候插入」做成提示词组字段（§1.11 / §6.7.3）。
 
 ## 12.25 HTTP 流式 Agent API（2026-08-26）
 

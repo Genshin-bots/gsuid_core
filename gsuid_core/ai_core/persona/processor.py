@@ -6,19 +6,19 @@
 """
 
 from .mood import get_mood_description
-from .prompts import ROLE_PLAYING_START, SYSTEM_CONSTRAINTS, TOOL_ORCHESTRATION_CONSTRAINTS
 from .resource import load_persona
 from .settings import get_master_title
 from ..buildin_tools import get_current_date
 
 
 def _render_system_constraints(char_name: str) -> str:
-    """把主人 ID 列表与口头称呼填进 SYSTEM_CONSTRAINTS。会话创建时调用一次。"""
+    """把主人 ID 列表与口头称呼填进宪法。会话创建时调用一次。"""
     from gsuid_core.config import core_config
+    from gsuid_core.ai_core.prompt_group.store import render_prompt
 
     masters = ", ".join(str(m) for m in (core_config.get_config("masters") or []))
     title = get_master_title(char_name)
-    return SYSTEM_CONSTRAINTS.replace("__MASTERS__", masters).replace("__MASTER_TITLE__", title)
+    return render_prompt(char_name, "system_constraints", masters=masters, master_title=title)
 
 
 async def build_persona_prompt(
@@ -54,26 +54,39 @@ async def build_persona_prompt(
     from gsuid_core.ai_core.persona.appearance import load_appearance_line
 
     appearance = load_appearance_line(char_name)
+    from gsuid_core.ai_core.prompt_group.store import render_prompt
+    from gsuid_core.ai_core.prompt_group.render import join_around_card, join_prompt_parts, prefix_closing_rule
+
     if appearance:
-        persona_content += f"\n我的样子：{appearance}\n图中角色与此一致才是你；不要人称混乱。"
-    from .chat_style import ANSWER_CONTRACT, resolve_chat_style
+        line = render_prompt(char_name, "appearance_line", appearance=appearance)
+        persona_content += f"\n{line}"
+
+    from .chat_style import resolve_chat_style
 
     style = resolve_chat_style(char_name)
-    persona_content += (
-        f"\n台词长度：建议不超过 {style.soft} 字，硬上限 {style.hard} 字"
-        "（用户明确要求详细时除外）。\n"
-        f"发言形态：{style.segment_hint}\n"
-        f"{ANSWER_CONTRACT}"
+    speech = render_prompt(
+        char_name,
+        "speech_block",
+        soft=str(style.soft),
+        segment_hint=style.segment_hint,
     )
-    # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定，跨会话 / resume
-    # 都能命中 provider 前缀缓存（§优化 O-2）。精确到分的当前时间已由 user_message 侧
+    answer = render_prompt(char_name, "answer_contract")
+    speech_and_answer = join_prompt_parts(speech, answer)
+    if speech_and_answer:
+        persona_content += f"\n{speech_and_answer}"
+    # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定。
+    # 精确到分的当前时间已由 user_message 侧补上。
     current_date = clock_date if clock_date else await get_current_date(format="%Y年%m月%d日")
 
-    # 稳定前缀：人设 + 合规 + 工具编排（全部可跨轮缓存，不再每轮注入 user 侧）
+    # 稳定前缀：人设 + 合规 + 工具编排。正文来自该人格绑定的提示词组。
+    role = render_prompt(char_name, "role_playing_start")
     constraints = _render_system_constraints(char_name)
-    prompt = (
-        f"{ROLE_PLAYING_START}\n{persona_content}\n{constraints}\n"
-        f"{TOOL_ORCHESTRATION_CONSTRAINTS}\n当前日期：{current_date}"
+    tools = render_prompt(char_name, "tool_orchestration")
+    date_line = render_prompt(char_name, "date_line", date=current_date)
+    prompt = join_around_card(
+        join_prompt_parts(role),
+        persona_content,
+        join_prompt_parts(constraints, tools, date_line),
     )
 
     # 能力代理花名册：进 system 可缓存，避免每轮塞进 user 侧
@@ -84,14 +97,22 @@ async def build_persona_prompt(
 
     roster = format_capability_roster(char_name)
     if roster:
-        prompt += f"\n\n## 可委派能力代理\n{roster}"
+        heading = render_prompt(char_name, "capability_heading")
+        prompt += f"\n\n{heading}\n{roster}"
 
-    # 近因锚点：一句钉人格 + 履约（细则在 SYSTEM/TOOL，不复读半页）
-    closing = "口吻是角色；该查就调工具；"
-    if persona_allows_capability_agent(char_name, "render_agent"):
-        closing += "多项数据出图；"
-    closing += "未点名优先 <SILENCE>。"
-    prompt += f"\n\n---\n你首先是「{char_name}」：{closing}"
+    from gsuid_core.ai_core.prompt_group.catalog import RENDER_CLAUSE_WHEN_ALLOWED
+
+    render_clause = RENDER_CLAUSE_WHEN_ALLOWED if persona_allows_capability_agent(char_name, "render_agent") else ""
+    closing = prefix_closing_rule(
+        render_prompt(
+            char_name,
+            "closing",
+            char_name=char_name,
+            render_clause=render_clause,
+        )
+    )
+    if closing:
+        prompt += f"\n\n{closing}"
 
     # 注入情绪状态（群聊和私聊都支持）
     if mood_key:

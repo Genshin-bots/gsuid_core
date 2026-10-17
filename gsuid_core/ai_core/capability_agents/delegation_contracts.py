@@ -10,25 +10,44 @@ import json
 from typing import Any
 from collections.abc import Mapping
 
+from gsuid_core.ai_core.control.lines import (
+    DELEGATION_FANOUT_RULE,
+    PENDING_DELEGATION_HOLD,
+    POST_MEME_LINE_CONTRACT,
+    POST_TOOL_FAIL_CONTRACT,
+    POST_TOOL_OUTPUT_CONTRACT,
+    TIMELESS_AGGREGATE_CAVEAT,
+    WEB_ONLY_STALENESS_CAVEAT,
+    PENDING_DELEGATION_OPENING,
+    POST_DISPUTE_SILENCE_CONTRACT,
+    POST_DELIVERY_SILENCE_CONTRACT,
+    POST_TOOL_FAIL_CONTRACT_RENDER,
+    POST_TOOL_OUTPUT_CONTRACT_RENDER,
+    POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+    POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
+)
+
+__all__ = (
+    "DELEGATION_FANOUT_RULE",
+    "PENDING_DELEGATION_HOLD",
+    "PENDING_DELEGATION_OPENING",
+    "POST_DELIVERY_SILENCE_CONTRACT",
+    "POST_DISPUTE_SILENCE_CONTRACT",
+    "POST_MEME_LINE_CONTRACT",
+    "POST_TOOL_FAIL_CONTRACT",
+    "POST_TOOL_FAIL_CONTRACT_CAPABILITY",
+    "POST_TOOL_FAIL_CONTRACT_RENDER",
+    "POST_TOOL_OUTPUT_CONTRACT",
+    "POST_TOOL_OUTPUT_CONTRACT_CAPABILITY",
+    "POST_TOOL_OUTPUT_CONTRACT_RENDER",
+    "POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED",
+    "TIMELESS_AGGREGATE_CAVEAT",
+    "WEB_ONLY_STALENESS_CAVEAT",
+)
+
 # 同一次 run 里 deferred 回执已发出。之后再 create_subagent 只会串行补派。
 DELEGATION_INFLIGHT_KEY = "delegation_inflight"
-
-# 并列必须发生在看到回执之前；回执之后只许等，不许逐个补。
-DELEGATION_FANOUT_RULE = (
-    "互不依赖的调查必须在同一次回复里并列 create_subagent，不要等回执再逐个补派。"
-    "下一步要看结果才能决定自己答还是 render_agent 时，等自动回灌，现在不要再派。"
-)
-
-PENDING_DELEGATION_HOLD = (
-    "（系统：已有子任务在后台，这不是终局结果。对用户只输出 <SILENCE>。" + DELEGATION_FANOUT_RULE + "）"
-)
-
-# 委派已派出、本轮还没对用户说过话：允许当前人格补一句开场，之后同样只等回灌。
-PENDING_DELEGATION_OPENING = (
-    "（系统：已有子任务在后台，这不是终局结果。本轮你还没对用户开口："
-    "用当前人格短说一句，让对方知道你接下了、要等一会儿，怎么说由你定。"
-    "禁止过程动词、任务编号、句柄、编排词。" + DELEGATION_FANOUT_RULE + "）"
-)
 
 
 def delegation_is_inflight(extra: Mapping[str, object]) -> bool:
@@ -67,35 +86,6 @@ def format_deferred_subagent_ack(
     )
 
 
-# 出图、再搜、短答由模型自己选，不指定下一步。
-POST_TOOL_OUTPUT_CONTRACT = (
-    "（系统：本轮已有工具返回。"
-    "长对照/多日清单适合委派 render_agent 出图；一两句能说清就直接答。"
-    "结果不对或不够新，换更具体的词再查，或交给对口的能力节点。"
-    "不要自写 HTML / 直调 render_* / 输出 <report>；"
-    "委派出图时不必对用户说话；不要把整表当台词念。）"
-)
-
-# 旧名保留给引用方；语义与基础契约相同，不再把出图写成「唯一合法下一步」。
-POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = POST_TOOL_OUTPUT_CONTRACT
-
-# 交付已完成（send_message_by_ai 带台词成功回执）→ 终局：只许 SILENCE。
-# 取代 POST_TOOL_OUTPUT_CONTRACT——避免交付成功后契约反而提醒模型「再说一句」。
-POST_DELIVERY_SILENCE_CONTRACT = (
-    "（系统：你已通过发送工具完成交付，本轮任务到此终结。"
-    "只输出 <SILENCE>。禁止再输出任何文字——包括「任务已完成 / 图已发送 / "
-    "无需追加发言」这类状态汇报；那是系统日志，不是角色台词。）"
-)
-
-# 只发了表情。补不补台词由模型定，这一步不要收成终局沉默。
-POST_MEME_LINE_CONTRACT = "（系统：表情已发出。要补一句就补，不想说就 <SILENCE>。不要汇报「已发送」。）"
-
-# 申辩成功：控制面结束，与 DELIVERED 对称。
-POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
-
-# 时效提醒文案保留给测试/调用方；主路径不再往请求里追加（避免和出图提示打架）。
-TIMELESS_AGGREGATE_CAVEAT = "（系统：返回体看起来没有当前时点。别说成「现在/此刻」；不够可以换路再查，短答也可以。）"
-
 # send_message_by_ai 成功回执唯一形态（工具协议的一部分，属结构信号非业务词）。
 # loop 侧经 tool_return_is_delivery_success() 消费：交付终局置位 + 终局契约分发。
 DELIVERY_SUCCESS_MARK = "消息已发送给用户"
@@ -106,12 +96,6 @@ FRESH_DATA_MARK = "[as_of="
 WEB_SOURCE_MARK = "[source=web"
 # 兼容两种时点声明形态：行首标签 [as_of=…] 与 JSON 字段 "as_of": …
 _FRESH_MARK_RE = re.compile(r"\[as_of=|\"as_of\"\s*:")
-
-WEB_ONLY_STALENESS_CAVEAT = (
-    "（系统：本轮只有网页来源，可能滞后。"
-    "报数时带上出处；不够新就换工具或换 query 再查，取不到就如实说。"
-    "结构化数据工具（find_tools / 能力代理）往往更靠谱。）"
-)
 
 # 路由/装配元返回：有结构信号但不是「实质业务数据」。
 # find_tools 的 🔎/🔒/✅ 若被当成 non_web，会污染时效账本，挡住 WEB_ONLY caveat。
@@ -197,55 +181,6 @@ def fact_pack_is_multi_point(content: str, *, threshold: int = 3) -> bool:
     """事实包是否多点（≥threshold 条目）——单点结论不该武装出图纠正。"""
     return _count_fact_items((content or "").strip()) >= threshold
 
-
-# 能力代理（非 render）：只交 Markdown/JSON 事实包；出图归 render_agent
-POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
-    "（系统：本轮已有工具返回。你是能力代理——必须把结果整理成 **Markdown 或 JSON 事实包** "
-    "交付主人格（条目/日期/数字/来源/时点/依据），或 artifact_put 持久化。"
-    "有搜索/查询结果时**禁止**只回过程句（如「下面再搜」「停止重复」「然后渲染」）。"
-    "**禁止** create_subagent / render_html_to_image / render_card / "
-    "render_markdown_to_image / 插件终局直发出图工具"
-    "（出图由主人格再委派 render_agent）。）"
-)
-
-POST_TOOL_OUTPUT_CONTRACT_RENDER = (
-    "（系统：本轮已有工具返回。你是 render_agent——"
-    "若尚未成功出图：事实包**尽量全文上图**（数字/表/论据/风险/时点勿删），"
-    "写成**一份**高密度 HTML（竖/横按内容），只调用一次 render_html_to_image；"
-    "html/body 须不透明实色底；**先抽四配方之一**（双栏简报/时间轴脊/对比棚/纸感档案），"
-    "禁止连续任务抄同一暗色编号竖卡；"
-    "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
-    "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
-    "禁止把身份拍扁进单柱 label，禁止用升/降色区分系列；"
-    "字重 330–700（勿写 800/900）；"
-    "逻辑宽≤1000，正文≥16px、badge≥13px；"
-    "事实包有 https 配图则用 <img src=该URL>（系统自动下载嵌图），禁止纯文字墙顶替已有图；"
-    "暗底须浅字、浅底须深字；长文禁止压成少字海报。"
-    "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
-    "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
-    "禁止为好看删硬信息；禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
-)
-
-POST_TOOL_FAIL_CONTRACT = (
-    "（系统：本轮工具返回失败或空结果。禁止用角色懒惰结束本轮。"
-    "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
-    "仅当结果已是长结构化内容时再 create_subagent(render_agent) 出图。"
-    "只有换路后仍无果才可角色化短句说明。"
-    "向用户提及失败时禁止使用开发者词汇（工具/配置/服务/接口/报错），"
-    "用角色卡里的世界观转述办不了，不要示范或套用任何固定口癖。"
-    "配置缺失类失败不要解释原因，只说办不了。"
-    "若本轮用网页查清了一个梗，请用 record_meme 固化。）"
-)
-
-POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
-    "（系统：本轮工具返回失败或空结果。禁止只回过程句结束。"
-    "立刻换路：换 query / 换工具再取数；仍无果则在事实包里明确写「无检索结果：原因=…」。"
-    "禁止 create_subagent / render_html_* / 插件终局直发出图（出图归 render_agent）。）"
-)
-
-POST_TOOL_FAIL_CONTRACT_RENDER = (
-    "（系统：渲染失败或空结果。精简 HTML 后重试 render_*；仍失败则短摘要说明原因，禁止把长 HTML/数据当交付正文。）"
-)
 
 # 与 subagent._main_persona_receipt_hint(image_likely=True) 对齐（仅真实图片 artifact）
 RENDER_DONE_RECEIPT_MARK = "有真实图片产物时用发送工具把图发出（参数里用句柄，勿写入台词）"

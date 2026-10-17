@@ -29,6 +29,11 @@ from dataclasses import field, dataclass
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.control.lines import (
+    INNER_OS_NUDGE,
+    FUND_CLAIM_PREFIX,
+    GATE_NUDGE_MARKERS as GATE_NUDGE_MARKERS,
+)
 
 # ── 结果类型 ────────────────────────────────────────────────────────
 
@@ -292,7 +297,7 @@ def ooc_reminder_delivered(extra: Dict[str, Any]) -> bool:
 def is_ooc_judge_feedback(text: str) -> bool:
     from gsuid_core.ai_core import output_firewall as of
 
-    return bool(text) and (of.OOC_JUDGE_MARKER in text or text.startswith("⛔ 你要发送的内容命中"))
+    return bool(text) and (of.OOC_JUDGE_MARKER in text or text.startswith(FUND_CLAIM_PREFIX))
 
 
 def _eval_ooc(
@@ -595,14 +600,7 @@ def tool_gate_feedback(
     return r.feedback or None
 
 
-# 历史裁剪 / _relean_user_turn 识别系统打回前缀
-GATE_NUDGE_MARKERS: tuple[str, ...] = (
-    "（系统校验：发送内容含非法尖括号标签",
-    "⛔ 你要发送的内容命中",
-    "（系统校验：刚才要发的内容可能出戏",
-    "（系统校验：内容可能含内部工具名",
-    "（系统校验：删除（心想：",
-)
+# 历史裁剪认打回前缀。全文在 control/lines.py 的 GATE_NUDGE_MARKERS。
 
 # 通道泄漏：长「心想」段（可在句中）。短舞台指示不含该开场。
 _INNER_OS_RE = re.compile(r"（心想[:：].{20,}?）", re.DOTALL)
@@ -651,6 +649,6 @@ def _eval_inner_os(
     return GateResult(
         decision=GateDecision.REWRITE,
         policy="inner_os",
-        feedback="（系统校验：删除（心想：…）段落，只保留角色台词）",
+        feedback=INNER_OS_NUDGE,
         detail="inner_os",
     )

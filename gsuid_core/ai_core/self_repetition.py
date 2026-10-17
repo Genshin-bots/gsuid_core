@@ -107,5 +107,7 @@ def self_repetition_hint(
     fragments = _repeated_fragments([records[i].content for i in window], heard)
     if not fragments:
         return ""
+    from gsuid_core.ai_core.control.lines import repetition_line
+
     quoted = "".join(f"「{f}」" for f in fragments)
-    return f"（系统：你最近几条反复说{quoted}，这条若开口别再用。）"
+    return repetition_line(quoted)

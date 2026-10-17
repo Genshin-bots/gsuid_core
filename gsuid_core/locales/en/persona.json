@@ -27,5 +27,10 @@
   "log.persona.read_txt_path": "[Persona] Failed to read {txt_path}: {e}",
   "log.persona.voice_anchor_migration_fail": "[Persona] '{p0}' voice_anchor migration exception, skipping: {e}",
   "log.persona.write_path": "[Persona] Failed to write back {path}: {e}",
-  "log.persona.write_txt_path_keeping": "[Persona] Failed to write {txt_path}, keeping old field: {e}"
+  "log.persona.write_txt_path_keeping": "[Persona] Failed to write {txt_path}, keeping old field: {e}",
+  "log.persona.default_prompt_group_synced": "[Persona] Wrote the bundled default system-prompt group into the data directory",
+  "log.persona.prompt_group_bound": "[Persona] Set the system-prompt group of '{persona_name}' to '{group}'",
+  "log.persona.chat_style_set": "[PersonaConfig] Set the speech intensity of '{persona_name}' to {chat_style}",
+  "log.persona.speech_len_soft_set": "[PersonaConfig] Set the suggested length of '{persona_name}' to {count}",
+  "log.persona.prompt_group_unreadable": "[Persona] Cannot read system-prompt group '{name}'; this turn uses the bundled default text: {e}"
 }

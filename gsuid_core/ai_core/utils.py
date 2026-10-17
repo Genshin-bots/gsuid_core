@@ -853,11 +853,11 @@ async def prepare_content_payload(
     relationship_desc = _build_relationship_description(nickname, str(ev.user_id))
     current_turn_header = f"{relationship_desc}\n"
 
-    # @状态：只在被@时才注入（潜在-01: 修正 is_at_me → is_tome）。
-    # 标注文案唯一定义在 interaction_scaffold（C-3 寻址门按字面匹配它，别在此写字面量）
-    from gsuid_core.ai_core.interaction_scaffold import (
+    # 寻址记号和「--- 消息 ---」的定义在 control/lines.py。
+    from gsuid_core.ai_core.control.lines import (
         DIRECT_MARKER,
         AT_OTHER_MARKER,
+        MSG_SECTION_HEAD,
         QUOTE_TOME_MARKER,
     )
 
@@ -866,7 +866,7 @@ async def prepare_content_payload(
         # 引用 bot 仍是 is_tome，但不要写成「直接找你」逼模型必回。
         current_turn_header += f"{QUOTE_TOME_MARKER if quoted_tome else DIRECT_MARKER}\n"
 
-    current_turn_header += "--- 消息 ---\n"
+    current_turn_header += MSG_SECTION_HEAD
 
     text = current_turn_header
     guard_flags = GuardFlags()

@@ -55,9 +55,11 @@ class ScaffoldKit(AgentKit):
         q = ctx.query or ""
         need_tools = (not is_group) or ctx.intent in ("工具", "问答") or looks_like_committed_work(q)
         if need_tools and not ctx.memory_eval:
+            from gsuid_core.ai_core.prompt_group.store import render_prompt
+
             ctx.set_context_block(
                 "transaction_priority",
-                "（本轮有实际事务，优先调工具完成；人设口吻不是跳过理由。）",
+                render_prompt(ctx.persona_name, "transaction_priority"),
             )
         if ctx.recent_report_titles:
             titles = "、".join(ctx.recent_report_titles[-3:])

@@ -27,9 +27,6 @@ from .gs_agent import GsCoreAIAgent, create_agent
 from .resource import PERSONA_PATH
 from .context_assembly import build_session_system_prompt
 
-# Persona 文件的 mtime 缓存，用于检测热重载
-_persona_mtime_cache: dict[str, float] = {}
-
 # 主人权限与关系温度正交：权限由 masters 决定，温度由真实分数决定。
 
 
@@ -43,7 +40,9 @@ def _get_persona_mtime(persona_name: str) -> float:
     for f in persona_dir.rglob("*"):
         if f.is_file():
             newest_mtime = max(newest_mtime, f.stat().st_mtime)
-    return newest_mtime
+    from gsuid_core.ai_core.prompt_group.store import group_file_mtime
+
+    return max(newest_mtime, group_file_mtime(persona_name))
 
 
 # system_prompt 会话期内永不 TTL 刷新：最大化 provider 前缀缓存命中率。
@@ -67,16 +66,12 @@ async def _maybe_refresh_stable_prompt(session: GsCoreAIAgent, event: Event, per
 
 
 def _check_persona_changed(session: GsCoreAIAgent, persona_name: str) -> bool:
-    """检查 Persona 是否已修改，需要热重载"""
+    """检查这一路会话建提示词之后，人格或提示词组有没有变。"""
     if session.persona_name != persona_name:
         return True
 
     current_mtime = _get_persona_mtime(persona_name)
-    cached_mtime = _persona_mtime_cache.get(persona_name, 0.0)
-
-    if current_mtime > cached_mtime:
-        # Persona 文件已修改，更新缓存
-        _persona_mtime_cache[persona_name] = current_mtime
+    if current_mtime > session.persona_source_mtime:
         logger.info(t("log.ai.ai_router_persona_name_modified_load", persona_name=persona_name))
         return True
 
@@ -172,7 +167,7 @@ async def _get_or_create_ai_session(
     # O-3：persona + 群简介 + 慢变稳定前缀（self_model/群画像）→ system_prompt，
     # 装配统一走 context_assembly（评测端点同源）；活跃会话由 _maybe_refresh_stable_prompt 按 TTL 刷新。
     base_persona = await build_session_system_prompt(event, persona_name)
-    _persona_mtime_cache[persona_name] = _get_persona_mtime(persona_name)
+    source_mtime = _get_persona_mtime(persona_name)
 
     session = create_agent(
         system_prompt=base_persona,
@@ -181,6 +176,7 @@ async def _get_or_create_ai_session(
         task_level="high",
         session_id=session_id,
     )
+    session.persona_source_mtime = source_mtime
 
     registry.set_ai_session(session_id, session)
     # B-3 修复：函数入口（_get_or_create_ai_session 顶部）已调过一次

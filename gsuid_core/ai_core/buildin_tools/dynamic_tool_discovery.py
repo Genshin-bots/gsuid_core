@@ -15,6 +15,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools, search_tools_by_domain
+from gsuid_core.ai_core.control.lines import FIND_TOOLS_GAP_NOTE
 from gsuid_core.ai_core.buildin_tools.visibility import (
     check_sched_create,
     check_sched_mutate,
@@ -31,10 +32,6 @@ from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
 )
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
-FIND_TOOLS_GAP_NOTE = (
-    "（系统：连续检索未暴露新工具。下一动：改 need 再检索，或委派通用调研。"
-    "禁止对用户讲检索过程、禁止念工具名、禁止说成「你要的东西不存在」。）"
-)
 
 
 def _record_find_tools_round(extra: dict[str, Any], loaded: list[str]) -> bool:

@@ -227,7 +227,9 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
     topic = hit.topic or "图片"
     handle = (hit.image_handles or "").split(",", 1)[0].strip()
     extra = f"，句柄 {handle}" if handle else ""
-    line = f"（系统：引用对象：你于 {_fmt_hm(hit.ts)} 发给{who}的「{topic}」{extra}）"
+    from gsuid_core.ai_core.control.lines import quote_object_line
+
+    line = quote_object_line(_fmt_hm(hit.ts), who, topic, extra)
     return QuoteResolve(line=line, topic=topic, handle=handle, target=who)
 
 
@@ -263,7 +265,9 @@ async def ownership_hint(ev: Event) -> str:
         return ""
     who = last.target_name or last.target_user
     topic = last.topic or "图片"
-    return f"（系统：{_fmt_ago(age)}你把「{topic}」发给了{who}。）"
+    from gsuid_core.ai_core.control.lines import ownership_line
+
+    return ownership_line(_fmt_ago(age), topic, who)
 
 
 @dataclass(frozen=True)

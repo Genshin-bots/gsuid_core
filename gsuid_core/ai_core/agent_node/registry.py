@@ -229,13 +229,9 @@ def format_capability_roster(persona_name: str | None = None) -> str:
         lines.append(line)
     if not lines:
         return ""
-    return (
-        "（可用能力代理——须 "
-        '`create_subagent(agent_profile="<node_id>", task=...)` 委派，'
-        "agent_profile 只填下列 node_id，禁止自造名字：\n"
-        + "\n".join(lines)
-        + "\n提醒的增删改查在主会话；禁止声称没有对应工具。）"
-    )
+    from gsuid_core.ai_core.prompt_group.store import render_prompt
+
+    return render_prompt(persona_name, "roster_wrap", lines="\n".join(lines))
 
 
 def owning_nodes_of_tools(tool_names: List[str]) -> Dict[str, List[str]]:

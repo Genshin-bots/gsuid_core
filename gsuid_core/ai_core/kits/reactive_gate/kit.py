@@ -31,10 +31,10 @@ class ReactiveGateKit(AgentKit):
         return None
 
     async def inject_note(self, ctx: AgentHookContext) -> None:
-        from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE
-
         if ctx.soft_triggered:
-            ctx.set_context_block("soft_trigger", SOFT_TRIGGER_NOTE)
+            from gsuid_core.ai_core.prompt_group.store import render_prompt
+
+            ctx.set_context_block("soft_trigger", render_prompt(ctx.persona_name, "soft_trigger"))
 
 
 KIT = register_agent_kit(

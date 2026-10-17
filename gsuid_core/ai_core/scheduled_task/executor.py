@@ -184,8 +184,10 @@ async def execute_scheduled_task(task_id: str) -> None:
         # 见 plans/prod_session_review §4）。session_id 独立于真用户 session。
         exec_session_id = f"sched_task_{task.task_id}_{int(time.time())}"
 
+        from gsuid_core.ai_core.prompt_group.store import render_prompt
+
         sub_agent: GsCoreAIAgent = create_agent(
-            system_prompt=SCHEDULED_TASK_EXECUTOR_PROMPT,
+            system_prompt=render_prompt(task.persona_name, "scheduled_executor"),
             persona_name=None,
             create_by="ScheduledTask_Exec",
             session_id=exec_session_id,

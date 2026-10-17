@@ -23,6 +23,7 @@ from gsuid_core.ai_core.utils import (
     notify_master_of_budget_block,
 )
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.control.lines import UNMET_TOOL_REMINDER
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
     BUDGET_GATE_PASS,
@@ -360,6 +361,7 @@ class PreparePhase(RunOnceHost):
                 cheap=st.cheap,
                 speaker_recall=self.dynamic_tools is not False,
                 intent=str(st.intent or ""),
+                persona_name=self.persona_name,
             )
             # C-2：≥2 且比上轮增加才保留漂移提醒（hints 里可能已有，按计数裁）
             _pushes = st.tg.style_push_count
@@ -382,11 +384,7 @@ class PreparePhase(RunOnceHost):
                 and self._unmet_tool_promise
                 and st.intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS
             ):
-                no_tool_reminder = (
-                    "\n\n（系统：上一轮你已经决定调用某个工具，但没有真正调用。"
-                    "本轮去调用它。若其实不必用工具，直接回答，不要为这条提示再找工具。）"
-                )
-                st.final_user_message = _append_user_text(st.final_user_message, no_tool_reminder)
+                st.final_user_message = _append_user_text(st.final_user_message, UNMET_TOOL_REMINDER)
                 logger.debug(i18n_t("log.agent.forced_nudge_consecutive_turns"))
 
         # 用户追问进行中任务：再判一次（用 last_user_question 剥壳后）并注入进度契约

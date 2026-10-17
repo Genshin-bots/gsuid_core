@@ -184,6 +184,12 @@ class PersonaFiles:
         return "audio/mpeg"
 
 
+def _builtin_persona_name() -> str:
+    from gsuid_core.ai_core.prompt_group.catalog import BUILTIN_PERSONA_NAME
+
+    return BUILTIN_PERSONA_NAME
+
+
 @dataclass
 class PersonaMetadata:
     """
@@ -204,4 +210,5 @@ class PersonaMetadata:
             "has_avatar": self.has_avatar,
             "has_image": self.has_image,
             "has_audio": self.has_audio,
+            "builtin": self.name == _builtin_persona_name(),
         }

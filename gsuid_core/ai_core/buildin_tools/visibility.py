@@ -163,7 +163,9 @@ def visibility_user_hint(
     if not addressed:
         return ""
     if not create_ok:
-        return "（系统：本轮是管理已有条目：不要新建，用查询/修改/取消。）"
+        from gsuid_core.ai_core.control.lines import VISIBILITY_MANAGE_EXISTING
+
+        return VISIBILITY_MANAGE_EXISTING
     return ""
 
 

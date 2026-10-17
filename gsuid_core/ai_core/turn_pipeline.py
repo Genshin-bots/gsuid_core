@@ -32,6 +32,7 @@ from gsuid_core.ai_core.utils import (
 )
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.quota_guard import quota_breaker
+from gsuid_core.ai_core.control.lines import MSG_SECTION_HEAD
 from gsuid_core.ai_core.history_format import compose_group_history
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
@@ -130,7 +131,7 @@ async def apply_summary_guard(event: Event, user_messages: Sequence[UserContent]
     summarized = await summarize_long_input(event.raw_text, max_tokens=18000)
     if not isinstance(user_messages, list) or not user_messages or not isinstance(user_messages[0], str):
         return
-    marker = "--- 消息 ---\n"
+    marker = MSG_SECTION_HEAD
     header_end = user_messages[0].find(marker)
     if header_end != -1:
         header = user_messages[0][: header_end + len(marker)]
