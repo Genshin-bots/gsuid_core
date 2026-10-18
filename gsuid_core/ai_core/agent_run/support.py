@@ -75,7 +75,7 @@ def _tool_return_is_effectual_write(name: str, content: str, *, failed: bool) ->
 
 
 # 须与 capability_agents.runner.CAPABILITY_AGENT_ERROR_PREFIX 同前缀，供看板认失败。
-_MAX_ITER_INTERNAL = "⚠️ 能力代理执行失败: 已达最大思考轮数，未能在限定步数内完成本任务。中间产物已留在工作区。"
+_MAX_ITER_INTERNAL = "⚠️ 能力代理执行失败: 已达最大思考轮数，未能在限定步数内完成本任务。已收集的材料不够收成交付。"
 _MAX_ITER_VISIBLE = (
     "⚠️ 已达最大思考轮数，未能在限定步数内完成本任务。"
     "中间产物（如已写入的文件 / artifact）已留在工作区，未回传以避免刷屏。"
@@ -208,6 +208,8 @@ def _ensure_inner_os_on_first_user(
 
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）
 _INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST", "CapabilityAgent")
+# 思考轮数收口只给要交交付物的代理。主人格走强制总结，不插这句。
+_ITER_WRAP_CREATE_BY = frozenset({"CapabilityAgent", "AutoPlanner"})
 # 主会话才折叠 JSON；CapabilityAgent 必须看完整工具返回
 _MAIN_PERSONA_CREATE_BY = frozenset({"Chat", "Agent", "Plan"})
 
@@ -523,6 +525,42 @@ def collect_run_thinking(segments: Sequence[str]) -> str:
     if len(body) <= RUN_THINKING_BUDGET:
         return body
     return "…[前略]" + body[-RUN_THINKING_BUDGET:]
+
+
+def iter_wrap_due(
+    *,
+    requests_started: int,
+    request_limit: int | None,
+    return_mode: str,
+    create_by: str,
+    already_nudged: bool,
+) -> bool:
+    """倒数第二次模型请求才收口：这一轮落盘，下一轮写句柄。"""
+    if already_nudged or return_mode != "return":
+        return False
+    if create_by not in _ITER_WRAP_CREATE_BY:
+        return False
+    if request_limit is None or request_limit < 4:
+        return False
+    return requests_started == request_limit - 1
+
+
+def add_response_usage(
+    st: RunOnceState,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+    response_model: str | None,
+) -> None:
+    """按单次模型响应累加。超轮数没有 result.usage，会话日志靠这份合计。"""
+    st.usage_input_tokens += input_tokens
+    st.usage_output_tokens += output_tokens
+    st.usage_cache_read_tokens += cache_read_tokens
+    st.usage_cache_write_tokens += cache_write_tokens
+    if response_model and st.model_name in ("", "unknown"):
+        st.model_name = response_model
 
 
 def record_run_tool_output(outputs: List[str], tool_name: str, content: Optional[str]) -> None:

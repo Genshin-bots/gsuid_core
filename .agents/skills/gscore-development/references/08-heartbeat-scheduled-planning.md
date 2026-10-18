@@ -153,7 +153,10 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 2. 建树：covered=true 时 register_kanban_task 创建根 + N 子任务，立刻 kick_root 一次
 3. 并发派活：kanban_executor.execute_ready_tasks 扫树拿可跑节点，asyncio.gather 并发 run_capability_agent
 4. 状态推进：节点完/败 → 子任务落终态 + refresh_root_status 汇总根 → 递归 _schedule_continuation（最多 4 层）
-5. 追问溯源：每个能力代理 artifact_put 登记产出（没登记则执行器用 raw_result 兜底写 output artifact）
+5. 追问溯源：每个能力代理 artifact_put 登记产出（没登记则执行器用 raw_result 兜底写 output artifact）。
+   能力代理撞上 `task_max_iterations` 时，倒数第二次模型请求注入收口提示（停止新检索，用已有材料交付）。
+   仍撞上限则把按请求累加的 token 写入 `token_usage`（这条路径没有 `result.usage`）。
+   已有落盘检索或本轮回执时，无工具收成一份交付交回看板，不以失败前缀开头；评测和零材料仍回可识别失败。
 6. 失败处理：默认 notify_persona 策略，重派达 3 次自动转 waiting_approval
 7. 崩溃恢复：启动期 recover_zombie_subtasks 复活心跳过期的 running 子任务 + 统一 kick_root
 ```

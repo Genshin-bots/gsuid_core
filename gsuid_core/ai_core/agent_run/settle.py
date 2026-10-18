@@ -96,6 +96,21 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
 )
 from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
 
+# 收口交付的第一行。不以能力代理失败前缀开头，看板才会把这一步标完成。
+_USAGE_LIMIT_SALVAGE_BANNER = "⚠ 思考轮数已到上限。下面是根据已收集材料收口的交付，未继续补查。"
+_SALVAGE_SKIP_TOOLS = frozenset(
+    {
+        "read_handle",
+        "list_skills",
+        "artifact_get",
+        "artifact_get_recent",
+        "artifact_list",
+    }
+)
+_SALVAGE_ITEM_CAP = 2000
+_SALVAGE_TOTAL_CAP = 12000
+_SALVAGE_ROW_LIMIT = 10
+
 
 async def _deliver_withheld(st: RunOnceState, sent: set[str]) -> None:
     """把排版闸暂扣的原文真正发给用户（INV-4 兜底，只发第一段防刷屏）。"""
@@ -351,6 +366,50 @@ def _corrected_or_original(corrected: object, *, original: str) -> str:
     if not isinstance(corrected, str) or not _correction_is_deliverable(corrected):
         return original
     return strip_open_solicitations(corrected.strip()) or original
+
+
+async def load_session_salvage_material(session_id: str) -> str:
+    """本会话最近落盘的检索原文，新的在前。库失败时返回空串，改用本轮摘录。"""
+    if not session_id:
+        return ""
+    try:
+        return await _read_session_salvage_material(session_id)
+    except Exception as exc:
+        logger.warning(i18n_t("log.agent.usage_limit_salvage_sources_fail", e=exc))
+        return ""
+
+
+async def _read_session_salvage_material(session_id: str) -> str:
+    import asyncio
+
+    from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
+    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+
+    rows = await AIToolOutputRecord.list_recent(session_id=session_id, limit=_SALVAGE_ROW_LIMIT)
+    chunks: list[str] = []
+    used = 0
+    for rec in rows:
+        if rec.tool_name in _SALVAGE_SKIP_TOOLS:
+            continue
+        text, _err = await asyncio.to_thread(
+            load_payload_text,
+            payload_inline=rec.payload_inline,
+            payload_path=rec.payload_path,
+        )
+        body = text.strip()
+        if not body:
+            continue
+        block = f"[{rec.tool_name}] {body[:_SALVAGE_ITEM_CAP]}"
+        if used + len(block) > _SALVAGE_TOTAL_CAP:
+            remain = _SALVAGE_TOTAL_CAP - used
+            if remain < 200:
+                break
+            block = block[:remain]
+        chunks.append(block)
+        used += len(block)
+        if used >= _SALVAGE_TOTAL_CAP:
+            break
+    return "\n\n".join(chunks)
 
 
 class SettlePhase(RunOnceHost):
@@ -1083,6 +1142,149 @@ class SettlePhase(RunOnceHost):
         # result 为空时的默认返回值（常量：handle_ai 好感度门等消费端按它识别准失败轮）
         return NO_RESULT_TEXT
 
+    async def _note_truncated_usage(
+        self,
+        st: RunOnceState,
+        statistics_manager: Any,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        count_run: bool,
+        close_chat: bool,
+    ) -> None:
+        """把一段用量写入统计和会话日志。close_chat 只在整轮合计时用一次。"""
+        model = st.model_name or "unknown"
+        chat_type = st.stats_chat_type if st.stats_chat_type else self.create_by
+        if count_run:
+            nested = bool(self.is_subagent) or (bool(st.user_turn_id) and not st.owns_user_turn)
+            statistics_manager.record_agent_run(
+                owns_user_turn=bool(st.owns_user_turn),
+                under_user_turn=bool(st.user_turn_id),
+                is_nested=nested,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            )
+        if input_tokens > 0 or output_tokens > 0:
+            statistics_manager.record_token_usage(
+                model_name=model,
+                chat_type=chat_type,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            )
+            if st.budget_scope is not None:
+                # 记账失败不挡住收口，否则调研白跑一趟还交不出交付
+                try:
+                    from gsuid_core.ai_core.budget import budget_manager
+
+                    await budget_manager.record_usage_scope(
+                        st.budget_scope[0],
+                        st.budget_scope[1],
+                        st.budget_scope[2],
+                        self.session_id,
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                    )
+                except Exception as exc:
+                    logger.warning(i18n_t("log.agent.budget_fail", _be=exc))
+        if close_chat:
+            # 超轮数没有 End。不收起对话的话，合计用量会粘在最后一轮上。
+            self._session_logger.log_node_transition("End")
+        has_usage = input_tokens > 0 or output_tokens > 0 or cache_read_tokens > 0 or cache_write_tokens > 0
+        if has_usage or (model and model != "unknown"):
+            self._session_logger.log_token_usage(
+                input_tokens,
+                output_tokens,
+                model,
+                cache_read_tokens,
+                cache_write_tokens,
+            )
+
+    async def _salvage_capability_delivery(self, st: RunOnceState, statistics_manager: Any) -> str | None:
+        """有材料时收成交付交回调用方。返回 None 表示仍走可识别失败。"""
+        if st.return_mode != "return":
+            return None
+        if st.delegated_render and not st.image_sent_this_run:
+            return None
+        if self.create_by not in ("CapabilityAgent", "AutoPlanner"):
+            return None
+        material = await self._capability_salvage_material(st)
+        if not material.strip():
+            return None
+        question = (st.last_user_question or "完成任务描述里的交付")[:2000]
+        prompt = (
+            f"【任务】\n{question}\n\n{material}\n\n"
+            "思考轮数已用尽，禁止调用工具。只根据上面的材料写出本任务的交付。"
+            "材料里没有的事实写进缺口，禁止编造。"
+            "用条目列出结论、依据和时点。"
+            f"第一行必须是：{_USAGE_LIMIT_SALVAGE_BANNER}"
+        )
+        _fb_settings: ModelSettings | None = None
+        if self.max_tokens is not None:
+            _fb_settings = ModelSettings(max_tokens=int(self.max_tokens))
+        _fallback_agent = Agent(
+            model=self.model,
+            system_prompt=self.system_prompt or "你是一个智能助手。",
+            model_settings=_fb_settings,
+            tools=[],
+            toolsets=[],
+            retries=0,
+            output_type=str,
+        )
+        result = await _fallback_agent.run(
+            prompt,
+            message_history=list(self.history),
+            usage_limits=UsageLimits(request_limit=1),
+        )
+        from pydantic_ai.run import AgentRunResult
+
+        if isinstance(result, AgentRunResult):
+            usage = result.usage
+            await self._note_truncated_usage(
+                st,
+                statistics_manager,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+                count_run=False,
+                close_chat=False,
+            )
+        text = str(result.output).strip()
+        if not text or is_silence_marker(text):
+            return None
+        if not text.startswith("⚠"):
+            text = f"{_USAGE_LIMIT_SALVAGE_BANNER}\n\n{text}"
+        from gsuid_core.ai_core.buildin_tools.subagent import (
+            looks_like_incomplete_subagent_delivery,
+        )
+
+        if looks_like_incomplete_subagent_delivery(text):
+            return None
+        logger.info(i18n_t("log.agent.usage_limit_salvage"))
+        return text
+
+    async def _capability_salvage_material(self, st: RunOnceState) -> str:
+        """优先用本会话已落盘的检索原文（按新到旧）。没有再退回本轮摘录。"""
+        persisted = await load_session_salvage_material(self.session_id or "")
+        thinking = collect_run_thinking(st.thinking_segments)
+        if persisted:
+            body = f"【已落盘的检索原文】\n{persisted}"
+        else:
+            tool_outputs = "\n".join(st.run_tool_outputs)
+            body = f"【本轮已查到的内容】\n{tool_outputs}" if tool_outputs else ""
+        if thinking:
+            clue = f"【本轮的推理线索】\n{thinking}"
+            body = f"{body}\n\n{clue}" if body else clue
+        return body
+
     async def _run_once_usage_limit_fallback(
         self,
         st: RunOnceState,
@@ -1094,8 +1296,27 @@ class SettlePhase(RunOnceHost):
         statistics_manager.record_error(error_type="usage_limit")
         self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {_require_limits(st).request_limit}")
 
-        # 子代理 return：不对用户说话、不把中间产物回灌。评测静音；能力代理要可识别失败。
+        # 先记下主循环用量。收口模型若再失败，这批 token 也还在日志里。
+        await self._note_truncated_usage(
+            st,
+            statistics_manager,
+            input_tokens=st.usage_input_tokens,
+            output_tokens=st.usage_output_tokens,
+            cache_read_tokens=st.usage_cache_read_tokens,
+            cache_write_tokens=st.usage_cache_write_tokens,
+            count_run=True,
+            close_chat=True,
+        )
+
+        # return 不对用户说话。能力代理有材料就收成交付；评测和零材料仍是可识别失败。
         if st.return_mode == "return":
+            salvaged = await self._salvage_capability_delivery(st, statistics_manager)
+            if salvaged:
+                self._session_logger.log_text_output(salvaged)
+                self._session_logger.log_result(salvaged, st.tool_call_list)
+                self._session_logger.log_run_end()
+                return salvaged
+            self._session_logger.log_run_end()
             return usage_limit_return_payload(
                 create_by=self.create_by,
                 is_subagent=self.is_subagent,

@@ -40,7 +40,7 @@ from gsuid_core.ai_core.utils import (
     _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
 )
-from gsuid_core.ai_core.control.lines import capability_hit_line
+from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE, capability_hit_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.agent_run.state import (
@@ -52,8 +52,10 @@ from gsuid_core.ai_core.agent_run.support import (
     _THRASH_FUSE_NUDGE,
     _INTERACTIVE_CREATE_BY,
     _MAIN_PERSONA_CREATE_BY,
+    iter_wrap_due,
     thrash_limit_for,
     _claims_fake_done,
+    add_response_usage,
     turn_reply_metadata,
     _wall_clock_nudge_for,
     record_run_tool_output,
@@ -330,6 +332,24 @@ class LoopPhase(RunOnceHost):
         ):
             st.saw_structured_return = True
 
+    def _maybe_inject_iter_wrap(self, st: RunOnceState, node: Any) -> None:
+        """还剩两轮时让能力代理停检索、交交付。墙钟 420s 往往晚于 30 轮。"""
+        st.model_requests += 1
+        limit = st.limits.request_limit if st.limits is not None else None
+        if not iter_wrap_due(
+            requests_started=st.model_requests,
+            request_limit=limit,
+            return_mode=st.return_mode,
+            create_by=self.create_by,
+            already_nudged=st.iter_nudged,
+        ):
+            return
+        if limit is None:
+            return
+        node.request.parts = [*node.request.parts, UserPromptPart(content=ITER_WRAP_NUDGE)]
+        st.iter_nudged = True
+        logger.info(i18n_t("log.agent.iter_wrap_nudge", p0=st.model_requests, p1=limit))
+
     async def _run_once_on_model_request(
         self,
         st: RunOnceState,
@@ -340,6 +360,7 @@ class LoopPhase(RunOnceHost):
         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
         self._session_logger.log_node_transition("ModelRequestNode")
+        self._maybe_inject_iter_wrap(st, node)
         if st.saw_final_response:
             st.post_final_requests += 1
             if st.post_final_requests > 1:
@@ -1126,6 +1147,15 @@ class LoopPhase(RunOnceHost):
         _ttft_ms: float = 0.0
         _tps: float = 0.0
         _req_usage = node.model_response.usage
+        _resp_model = node.model_response.model_name
+        add_response_usage(
+            st,
+            input_tokens=_req_usage.input_tokens,
+            output_tokens=_req_usage.output_tokens,
+            cache_read_tokens=_req_usage.cache_read_tokens,
+            cache_write_tokens=_req_usage.cache_write_tokens,
+            response_model=_resp_model if isinstance(_resp_model, str) else None,
+        )
         if st.first_event_at is not None and st.last_event_at is not None:
             _ttft_ms = round((st.first_event_at - st.req_start) * 1000, 2)
             _generation_time = st.last_event_at - st.first_event_at
