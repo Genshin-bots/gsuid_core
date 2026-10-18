@@ -265,9 +265,12 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
     write_file_content,
 )
 
-# HTML渲染工具 - 将HTML/Markdown/结构化卡片渲染为图片
+# HTML渲染与图片检索工具 - 将HTML/Markdown/结构化卡片渲染为图片 / 搜索网络配图
 # （外链/icon/资源图在 render_html_to_image 内自动嵌 data URI，无独立嵌图工具）
-from gsuid_core.ai_core.buildin_tools.image_finder import find_images
+from gsuid_core.ai_core.buildin_tools.image_finder import (
+    find_images,
+    search_web_images,
+)
 
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
@@ -456,8 +459,9 @@ __all__ = [
     "record_update",
     "record_delete",
     "record_summary",
-    # HTML渲染工具
+    # HTML渲染与图片检索工具
     "find_images",
+    "search_web_images",
     "render_card",
     "render_chart_spec",
     "render_html_to_image",

@@ -486,6 +486,52 @@ def format_found(results: list[tuple[str, list[FoundImage]]]) -> str:
     return "\n".join(lines)
 
 
+async def search_and_verify_images(
+    queries: list[str],
+    per_query: int = 2,
+) -> tuple[list[tuple[str, list[FoundImage]]], str]:
+    """统一搜图并下载校验：按配置源查询并登记 RM 句柄。返回 (结果列表, 错误信息)。"""
+    cleaned = list(dict.fromkeys(q.strip() for q in queries if q.strip()))[:_MAX_QUERIES]
+    if not cleaned:
+        return [], "⚠️ queries 不能为空：每个主要对象传一个具体的搜索词。"
+    sources = _configured_sources()
+    if not sources:
+        return [], "配图来源已在配置里关闭（render_image_sources 为空）。"
+    need = min(max(per_query, 1), _MAX_PER_QUERY)
+    async with httpx.AsyncClient(
+        timeout=_DOWNLOAD_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": _BROWSER_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6"},
+    ) as client:
+        verifier = _Verifier(client)
+        found_lists = await asyncio.gather(*(_find_for_query(q, need, sources, client, verifier) for q in cleaned))
+    return list(zip(cleaned, found_lists)), ""
+
+
+def format_found_for_chat(results: list[tuple[str, list[FoundImage]]]) -> str:
+    lines = ["【网络图片搜索结果】（图片已下载并校验有效，格式为可发送的资源ID）："]
+    has_any = False
+    all_rids: list[str] = []
+    for query, found in results:
+        if not found:
+            lines.append(f"【{query}】未搜到可用图片。建议更换关键词再试。")
+            continue
+        has_any = True
+        lines.append(f"【{query}】")
+        for img in found:
+            all_rids.append(img.resource_id)
+            caption = f" 「{img.title}」" if img.title else ""
+            lines.append(f"- 资源ID: `{img.resource_id}` ({_orientation(img)}, {img.width}×{img.height}){caption}")
+    if not has_any:
+        return "本次未能搜到可用的网络图片。可尝试更换搜索关键词，或如实告知用户暂未找到相关图片。"
+    lines.append("")
+    lines.append("下一步指引：")
+    sample_ids = [f'"{r}"' for r in all_rids[:3]]
+    lines.append(f"1. 如需发送到群/私聊：调用 `send_message_by_ai(image_ids=[{', '.join(sample_ids)}])` 一次发出。")
+    lines.append(f'2. 如需先确认图片内容：调用 `read_image(image_id="{all_rids[0]}")` 查看。')
+    return "\n".join(lines)
+
+
 @ai_tools(category="media", capability_domain="资料出图", code_callable=False)
 async def find_images(
     ctx: RunContext[ToolContext],
@@ -512,23 +558,64 @@ async def find_images(
 
     if not render_embed_images_enabled():
         return "配图已关闭。不要再调 find_images。页头用 gs-hero plain，对象用图标，不要留空图框。"
-    cleaned = list(dict.fromkeys(q.strip() for q in queries if q.strip()))[:_MAX_QUERIES]
-    if not cleaned:
-        return "⚠️ queries 不能为空：每个主要对象传一个具体的搜索词。"
-    sources = _configured_sources()
-    if not sources:
-        return "配图来源已在配置里关闭（render_image_sources 为空）。这次用 icon: 图标和渐变头图排版。"
-    need = min(max(per_query, 1), _MAX_PER_QUERY)
-    async with httpx.AsyncClient(
-        timeout=_DOWNLOAD_TIMEOUT,
-        follow_redirects=True,
-        headers={"User-Agent": _BROWSER_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6"},
-    ) as client:
-        verifier = _Verifier(client)
-        found_lists = await asyncio.gather(*(_find_for_query(q, need, sources, client, verifier) for q in cleaned))
-    paired = list(zip(cleaned, found_lists))
+    paired, err = await search_and_verify_images(queries, per_query)
+    if err:
+        if "render_image_sources 为空" in err:
+            return "配图来源已在配置里关闭（render_image_sources 为空）。这次用 icon: 图标和渐变头图排版。"
+        return err
     deps = ctx.deps
     if isinstance(deps, ToolContext):
         deps.extra["find_images_ran"] = True
         deps.extra["find_images_found"] = any(found for _query, found in paired)
     return format_found(paired)
+
+
+@ai_tools(
+    category="common",
+    code_callable=True,
+    covers=[
+        "网络搜图",
+        "查找网络图片",
+        "搜索coser图片",
+        "coser图片",
+        "表情包",
+        "搜表情包",
+        "表情包图片",
+        "长什么样",
+        "查找角色长什么样",
+        "网上找图",
+        "图片搜索",
+        "搜图",
+    ],
+)
+async def search_web_images(
+    ctx: RunContext[ToolContext],
+    queries: list[str],
+    per_query: int = 2,
+) -> str:
+    """在网络上搜索图片，下载校验后返回可直接发送的 ``img_`` 资源ID。
+
+    适用场景：用户要求在网上找图、搜网图、找表情包、找人物或角色照片、
+    询问某人/某物长什么样并需要配图时。
+    每个对象一个具体词（如「原神 云璃」「可爱小猫 表情包」「cosplay 芙宁娜」）。
+    返回已在本机下载并校验尺寸的资源ID。
+    获取到资源ID后，调用 `send_message_by_ai(image_ids=[...])` 发送给用户。
+
+    与相关工具的边界：
+    1. 表情包：常用日常表情优先调用 `send_meme`；指定在网络搜索时使用本工具。
+    2. AI绘画：找现实存在的人物/网络图集时用本工具；要求创作/画全新画面时委派 `rh_aigc_agent`。
+    3. 本工具仅用于获取图片资源并发送/查看，不作为数值或事实论据来源。
+
+    Args:
+        ctx: 工具执行上下文
+        queries: 搜索关键词列表，每个对象一个词，最多 10 个
+        per_query: 每个关键词期望获取的图片张数，默认 2，上限 4
+
+    Returns:
+        包含可用图片资源ID、尺寸及下一步调用指引的描述文本
+    """
+    _ = ctx
+    paired, err = await search_and_verify_images(queries, per_query)
+    if err:
+        return err
+    return format_found_for_chat(paired)

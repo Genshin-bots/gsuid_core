@@ -405,8 +405,134 @@ def test_has_model_visible_content_covers_modalities() -> None:
     assert has_model_visible_content(_ev(video_id_list=["vid_1"])) is True
 
 
+def test_send_message_by_ai_multiple_image_ids_success() -> None:
+    """多图批量发送：单次调用打包为一个消息发出。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="multi_s", user_id="u1")
+    ms.clear_turn_send_throttle("multi_s", "turn_multi")
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.outbound.record_outbound", new=AsyncMock()),
+        patch("gsuid_core.ai_core.outbound.write_decision_memo", new=AsyncMock()),
+    ):
+        ctx = _make_ctx(ev, "turn_multi", bot)
+        result = _run(
+            ms.send_message_by_ai(
+                ctx,
+                text="看这三张图",
+                image_ids=[
+                    "http://example.com/1.png",
+                    "http://example.com/2.png",
+                    "http://example.com/3.png",
+                ],
+            )
+        )
+
+    assert "消息已发送" in result
+    assert bot.send.await_count == 1
+    sent_msg = bot.send.await_args.args[0]
+    assert isinstance(sent_msg, list)
+    image_segs = [s for s in sent_msg if s.type == "image"]
+    assert len(image_segs) == 3
+
+
+def test_send_message_by_ai_partial_image_failure() -> None:
+    """多图部分失败：有效的正常发出，失败的记在回执中。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="part_s", user_id="u1")
+    ms.clear_turn_send_throttle("part_s", "turn_part")
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.outbound.record_outbound", new=AsyncMock()),
+        patch("gsuid_core.ai_core.outbound.write_decision_memo", new=AsyncMock()),
+        patch(
+            "gsuid_core.utils.resource_manager.RM.get",
+            new=AsyncMock(side_effect=ValueError("找不到资源")),
+        ),
+    ):
+        ctx = _make_ctx(ev, "turn_part", bot)
+        result = _run(
+            ms.send_message_by_ai(
+                ctx,
+                image_ids=[
+                    "http://example.com/ok.png",
+                    "img_not_exist",
+                ],
+            )
+        )
+
+    assert "消息已发送" in result
+    assert "部分图片未发送" in result
+    assert "img_not_exist" in result
+    assert bot.send.await_count == 1
+    sent_msg = bot.send.await_args.args[0]
+    # 只有 1 张成功，可能是单个 Segment 或列表
+    segs = sent_msg if isinstance(sent_msg, list) else [sent_msg]
+    image_segs = [s for s in segs if s.type == "image"]
+    assert len(image_segs) == 1
+
+
+def test_send_message_by_ai_string_and_list_robustness() -> None:
+    """测试模型传参容错：image_ids 传单字符串、image_id 传列表、JSON数组字符串等形态。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    ev = _make_ev(session_id="s_robust", user_id="user-a")
+    bot = MagicMock()
+    bot.send = AsyncMock(return_value={"status": "ok"})
+
+    ctx = _make_ctx(ev, "turn_rob1", bot)
+    # 1. image_ids 传单个字符串
+    res1 = _run(ms.send_message_by_ai(ctx, image_ids="http://example.com/str.png"))
+    assert "消息已发送" in res1
+    assert bot.send.await_count == 1
+
+    # 2. image_id 传列表
+    ctx2 = _make_ctx(ev, "turn_rob2", bot)
+    res2 = _run(
+        ms.send_message_by_ai(
+            ctx2,
+            image_id=["http://example.com/a.png", "http://example.com/b.png"],
+        )
+    )
+    assert "消息已发送" in res2
+
+    # 3. image_ids 传 JSON 数组字符串
+    ctx3 = _make_ctx(ev, "turn_rob3", bot)
+    res3 = _run(
+        ms.send_message_by_ai(
+            ctx3,
+            image_ids='["http://example.com/j1.png", "http://example.com/j2.png"]',
+        )
+    )
+    assert "消息已发送" in res3
+
+    # 4. 同时传 image_ids 和 image_id
+    ctx4 = _make_ctx(ev, "turn_rob4", bot)
+    res4 = _run(
+        ms.send_message_by_ai(
+            ctx4,
+            image_ids=["http://example.com/both1.png"],
+            image_id="http://example.com/both2.png",
+        )
+    )
+    assert "消息已发送" in res4
+
+
 if __name__ == "__main__":
     test_text_routes_through_send_chat_result_and_not_raw_send()
     test_per_turn_throttle_rejects_third_call()
     test_throttle_resets_on_new_turn_and_after_clear()
+    test_send_message_by_ai_multiple_image_ids_success()
+    test_send_message_by_ai_partial_image_failure()
+    test_send_message_by_ai_string_and_list_robustness()
     print("ALL PASS")

@@ -307,7 +307,7 @@ def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> 
         id_list = ", ".join(image_ids)
         parts.append(
             f"[已生成 {len(image_ids)} 张图片，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 image_id。]"
+            "如需发送给用户，请调用 send_message_by_ai 传入 image_ids。]"
         )
     if audio_ids:
         id_list = ", ".join(audio_ids)
@@ -481,7 +481,7 @@ def _register_trigger_as_ai_tool(
                 id_list = ", ".join(image_ids)
                 parts.append(
                     f"[已生成 {image_count} 张图片，资源ID: {id_list}。"
-                    f"请调用 send_message_by_ai 工具传入 image_id 将图片发送给用户，"
+                    f"请调用 send_message_by_ai 工具传入 image_ids 将图片发送给用户，"
                     f"或根据用户意图决定是否发送。]"
                 )
             if audio_ids:
