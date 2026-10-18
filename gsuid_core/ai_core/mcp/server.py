@@ -71,6 +71,8 @@ _DEFAULT_MCP_PATH = "/api/mcp"
 # 与 Event.user_pm 字段默认一致：6=最低权限；升权须 claims 显式给出
 _DEFAULT_USER_PM = 6
 
+_SYSTEM_MCP_USER_IDS: frozenset[str] = frozenset({"", "mcp_client", "mcp_service", "mcp_anonymous"})
+
 # 插件注册的 Bearer 校验器：成功返回 claims（须含 user_id），失败返回 None。
 McpTokenVerifier = Callable[[str], Awaitable[Optional[Dict[str, Any]]]]
 _mcp_token_verifiers: List[McpTokenVerifier] = []
@@ -333,6 +335,7 @@ def _http_session_overrides() -> Dict[str, str]:
     支持头（均可选）:
     - ``X-MCP-Group-Id`` → Event.group_id（插件侧会话键）
     - ``X-MCP-Bot-Id`` → Event.bot_id（一般**不必传**；默认见 _build_run_context）
+    - ``X-MCP-User-Id`` → Event.user_id（可信网关或开放模式下指定调用方用户 ID）
     """
     out: Dict[str, str] = {}
     from fastmcp.server.dependencies import get_http_request
@@ -349,6 +352,8 @@ def _http_session_overrides() -> Dict[str, str]:
         out["group_id"] = str(headers["x-mcp-group-id"])
     if "x-mcp-bot-id" in headers:
         out["bot_id"] = str(headers["x-mcp-bot-id"])
+    if "x-mcp-user-id" in headers:
+        out["user_id"] = str(headers["x-mcp-user-id"])
     return out
 
 
@@ -616,33 +621,66 @@ def _create_mock_bot(ev: Event, extra: Optional[Dict[str, object]] = None) -> Bo
     return Bot(_bot, ev)
 
 
-def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
-    """构造 RunContext：claims + 可选 HTTP 会话头。"""
-    ident = _identity_from_access_token()
-    sess = _http_session_overrides()
-    if "user_id" in ident:
-        user_id = str(ident["user_id"])
-    else:
-        user_id = "mcp_client"
-    if "user_pm" in ident:
+def _resolve_delegated_user_pm(user_id: str) -> int:
+    from gsuid_core.config import core_config
+
+    masters = {str(m).strip() for m in core_config.get_config("masters")}
+    superusers = {str(s).strip() for s in core_config.get_config("superusers")}
+
+    if user_id in masters:
+        return 0
+    if user_id in superusers:
+        return 1
+    return _DEFAULT_USER_PM
+
+
+def _clean_delegated_user_id(raw: str) -> str:
+    val = raw.strip()
+    return "" if val in _SYSTEM_MCP_USER_IDS else val
+
+
+def _ident_str(ident: Dict[str, object], key: str, default: str = "") -> str:
+    if key in ident and ident[key] is not None:
+        return str(ident[key]).strip()
+    return default
+
+
+def _pick_session_field(key: str, sess: Dict[str, str], ident: Dict[str, object]) -> str:
+    if key in sess and sess[key].strip():
+        return sess[key].strip()
+    return _ident_str(ident, key)
+
+
+def _resolve_mcp_identity(
+    ident: Dict[str, object],
+    sess: Dict[str, str],
+) -> tuple[str, int, str, str]:
+    auth_mode = _ident_str(ident, "auth", "unknown")
+    user_id = _ident_str(ident, "user_id", "mcp_client")
+
+    sess_uid = _clean_delegated_user_id(sess["user_id"]) if "user_id" in sess else ""
+    if auth_mode in ("api_key", "anonymous", "none") and sess_uid:
+        user_id = sess_uid
+
+    if auth_mode == "api_key" and sess_uid:
+        user_pm = _resolve_delegated_user_pm(sess_uid)
+    elif "user_pm" in ident:
         user_pm = _parse_user_pm(ident["user_pm"])
     else:
         user_pm = _DEFAULT_USER_PM
 
-    # bot_id / group_id 只认 Header 与 claims；空则交给插件 enricher。
-    if "bot_id" in sess:
-        bot_id = sess["bot_id"]
-    elif "bot_id" in ident:
-        bot_id = str(ident["bot_id"])
-    else:
-        bot_id = ""
+    explicit_bot_id = _pick_session_field("bot_id", sess, ident)
+    group_id = _pick_session_field("group_id", sess, ident)
+    return (user_id, user_pm, explicit_bot_id, group_id)
 
-    if "group_id" in sess:
-        group_id = sess["group_id"]
-    elif "group_id" in ident:
-        group_id = str(ident["group_id"])
-    else:
-        group_id = ""
+
+def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
+    """构造 RunContext：claims + 可选 HTTP 会话头（不盲猜平台，未传则为 ""）。"""
+    ident = _identity_from_access_token()
+    sess = _http_session_overrides()
+    user_id, user_pm, explicit_bot_id, group_id = _resolve_mcp_identity(ident, sess)
+
+    bot_id = explicit_bot_id.split(":")[0] if explicit_bot_id else ""
 
     fake_ev = _create_mock_event(
         command=tool_name,
@@ -651,16 +689,26 @@ def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
         bot_id=bot_id,
         group_id=group_id,
     )
+    if explicit_bot_id:
+        fake_ev.real_bot_id = explicit_bot_id
     for enrich in _mcp_event_enrichers:
         enrich(fake_ev)
+
     # 框架键盖在 claims 之后，校验器同名键不能改 source / 出图桶
+    passthrough_sess = {k: v for k, v in sess.items() if k not in ("user_id", "bot_id", "group_id")}
     extra: Dict[str, object] = {
         **ident,
-        **sess,
+        **passthrough_sess,
+        "user_id": user_id,
+        "user_pm": user_pm,
         "source": "mcp_server",
         "mcp_image_ids": [],
         "mcp_texts": [],
     }
+    if bot_id:
+        extra["bot_id"] = bot_id
+    if group_id:
+        extra["group_id"] = group_id
     mock_bot = _create_mock_bot(fake_ev, extra)
     deps = ToolContext(bot=mock_bot, ev=fake_ev, extra=extra)
     return RunContext(

@@ -659,3 +659,188 @@ def test_trigger_output_splits_mcp_notes_from_chat_prompt(monkeypatch: pytest.Mo
     assert "send_message_by_ai" in chat_text
     assert "资源ID" in chat_text
     assert "mcp_image_ids" not in chat_extra
+
+
+# ── 用户身份传递与 bot_id 对齐 ────────────────────────────────
+
+
+def test_plugin_token_auth_prevents_user_id_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_identity_from_access_token",
+        lambda: {"auth": "plugin", "user_id": "u_trusted", "user_pm": 5, "bot_id": "onebot", "group_id": "g_1"},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_http_session_overrides",
+        lambda: {"user_id": "other", "bot_id": "", "group_id": ""},
+    )
+    ctx = mcp_server._build_run_context("probe_auth_plugin")
+    assert ctx.deps.ev is not None
+    assert ctx.deps.ev.user_id == "u_trusted"
+    assert ctx.deps.extra["user_id"] == "u_trusted"
+    assert ctx.deps.ev.user_pm == 5
+    assert ctx.deps.extra["user_pm"] == 5
+    assert ctx.deps.ev.bot_id == "onebot"
+    assert ctx.deps.extra["bot_id"] == "onebot"
+    assert ctx.deps.ev.group_id == "g_1"
+    assert ctx.deps.extra["group_id"] == "g_1"
+
+
+def test_plugin_claims_with_int_ids_are_coerced_to_str(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_identity_from_access_token",
+        lambda: {"auth": "plugin", "user_id": 12345, "user_pm": 3, "bot_id": 678, "group_id": 999},
+    )
+    monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {})
+    ctx = mcp_server._build_run_context("probe_int_claims")
+    assert ctx.deps.ev is not None
+    assert ctx.deps.ev.user_id == "12345"
+    assert ctx.deps.extra["user_id"] == "12345"
+    assert ctx.deps.ev.user_pm == 3
+    assert ctx.deps.ev.bot_id == "678"
+    assert ctx.deps.ev.group_id == "999"
+
+
+def test_api_key_auth_allows_user_id_delegation_and_blocks_escalation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_identity_from_access_token",
+        lambda: {"auth": "api_key", "user_id": "mcp_service", "user_pm": 0},
+    )
+
+    from gsuid_core.config import core_config
+
+    monkeypatch.setattr(
+        core_config,
+        "get_config",
+        lambda key: [123456789, "master_uid"] if key == "masters" else [987654321] if key == "superusers" else [],
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_http_session_overrides",
+        lambda: {"user_id": "454307903"},
+    )
+    ctx_normal = mcp_server._build_run_context("probe_auth_api_key")
+    assert ctx_normal.deps.ev is not None
+    assert ctx_normal.deps.ev.user_id == "454307903"
+    assert ctx_normal.deps.extra["user_id"] == "454307903"
+    assert ctx_normal.deps.ev.user_pm == 6
+    assert ctx_normal.deps.extra["user_pm"] == 6
+
+    for uid, expected_pm in (("master_uid", 0), (" 123456789 ", 0), ("987654321", 1)):
+        monkeypatch.setattr(
+            mcp_server,
+            "_http_session_overrides",
+            lambda u=uid: {"user_id": u},
+        )
+        ctx_priv = mcp_server._build_run_context("probe_auth_api_key")
+        assert ctx_priv.deps.ev is not None
+        assert ctx_priv.deps.ev.user_id == uid.strip()
+        assert ctx_priv.deps.extra["user_id"] == uid.strip()
+        assert ctx_priv.deps.ev.user_pm == expected_pm
+        assert ctx_priv.deps.extra["user_pm"] == expected_pm
+
+    monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {})
+    ctx_default = mcp_server._build_run_context("probe_default")
+    assert ctx_default.deps.ev is not None
+    assert ctx_default.deps.ev.user_id == "mcp_service"
+    assert ctx_default.deps.ev.user_pm == 0
+
+    # 哨兵 ID 或空白视为未指定委托用户，回退服务自身凭证
+    monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"user_id": "mcp_client"})
+    ctx_sentinel_hdr = mcp_server._build_run_context("probe_sentinel_hdr")
+    assert ctx_sentinel_hdr.deps.ev is not None
+    assert ctx_sentinel_hdr.deps.ev.user_id == "mcp_service"
+    assert ctx_sentinel_hdr.deps.ev.user_pm == 0
+
+    monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"user_id": "   "})
+    ctx_blank_hdr = mcp_server._build_run_context("probe_blank_hdr")
+    assert ctx_blank_hdr.deps.ev is not None
+    assert ctx_blank_hdr.deps.ev.user_id == "mcp_service"
+    assert ctx_blank_hdr.deps.ev.user_pm == 0
+
+
+def test_explicit_bot_id_is_used_without_guessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_identity_from_access_token",
+        lambda: {"auth": "api_key", "user_id": "mcp_client", "user_pm": 6},
+    )
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_http_session_overrides",
+        lambda: {"user_id": "454307903", "bot_id": "onebot:self1"},
+    )
+    ctx = mcp_server._build_run_context("probe_rbi")
+    assert ctx.deps.ev is not None
+    assert ctx.deps.ev.user_id == "454307903"
+    assert ctx.deps.ev.real_bot_id == "onebot:self1"
+    assert ctx.deps.ev.bot_id == "onebot"
+    assert ctx.deps.extra["bot_id"] == "onebot"
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_http_session_overrides",
+        lambda: {"user_id": "454307903"},
+    )
+    ctx_no_bot = mcp_server._build_run_context("probe_no_bot")
+    assert ctx_no_bot.deps.ev is not None
+    assert ctx_no_bot.deps.ev.user_id == "454307903"
+    assert ctx_no_bot.deps.ev.bot_id == "Bot"
+    assert ctx_no_bot.deps.ev.real_bot_id == ""
+
+    def enrich(ev: Event) -> None:
+        ev.bot_id = "enriched_bot"
+
+    monkeypatch.setattr(mcp_server, "_mcp_event_enrichers", [enrich])
+    ctx_enriched = mcp_server._build_run_context("probe_enrich")
+    assert ctx_enriched.deps.ev is not None
+    assert ctx_enriched.deps.ev.bot_id == "enriched_bot"
+
+
+def test_mcp_handler_passes_delegated_user_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        captured: List[tuple[str, Union[str, None]]] = []
+
+        async def _tool_fn(
+            ctx: RunContext[ToolContext],
+            text: str,
+            target_user_id: Union[str, None] = None,
+        ) -> str:
+            assert ctx.deps.ev is not None
+            captured.append((ctx.deps.ev.user_id, target_user_id))
+            return f"ok:{text}"
+
+        base = ToolBase.__new__(ToolBase)
+        base.name = "sample_tool"
+        base.description = "查询面板"
+        base.plugin = "test"
+        base.tool = AiTool(_tool_fn, takes_ctx=True, name="sample_tool", description="查询面板")
+        handler = mcp_server._build_ai_tool_handler(base, "by_trigger")
+
+        monkeypatch.setattr(
+            mcp_server,
+            "_identity_from_access_token",
+            lambda: {"auth": "api_key", "user_id": "mcp_service", "user_pm": 0},
+        )
+
+        monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"user_id": "454307903"})
+        res = await handler(text="心月狐", target_user_id="target_other")
+        assert res == "ok:心月狐"
+        assert captured[-1] == ("454307903", "target_other")
+
+        monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {})
+        await handler(text="心月狐", target_user_id="target_other_2")
+        assert captured[-1] == ("mcp_service", "target_other_2")
+
+    asyncio.run(_run())
