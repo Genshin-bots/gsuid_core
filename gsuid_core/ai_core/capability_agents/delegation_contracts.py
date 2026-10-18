@@ -25,6 +25,7 @@ from gsuid_core.ai_core.control.lines import (
     POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
     POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
 )
 
@@ -291,6 +292,10 @@ def post_tool_contracts_for(
             capability_node_id=capability_node_id,
             session_id=session_id,
         ):
-            return POST_TOOL_OUTPUT_CONTRACT_RENDER, POST_TOOL_FAIL_CONTRACT_RENDER
+            from gsuid_core.ai_core.configs.ai_config import render_embed_images_enabled
+
+            if render_embed_images_enabled():
+                return POST_TOOL_OUTPUT_CONTRACT_RENDER, POST_TOOL_FAIL_CONTRACT_RENDER
+            return POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED, POST_TOOL_FAIL_CONTRACT_RENDER
         return POST_TOOL_OUTPUT_CONTRACT_CAPABILITY, POST_TOOL_FAIL_CONTRACT_CAPABILITY
     return POST_TOOL_OUTPUT_CONTRACT, POST_TOOL_FAIL_CONTRACT

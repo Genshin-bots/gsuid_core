@@ -122,6 +122,20 @@ AI_CONFIG: Dict[str, GSC] = {
         ["local"],
         options=["Jina", "local"],
     ),
+    "render_image_sources": GsListStrConfig(
+        "出图配图来源",
+        "render_agent 出图前调 find_images 找配图，按此顺序尝试，前一个来源凑够张数就停。"
+        "插件图库：插件用 ai_image 登记的图片（需开启知识库）。"
+        "免费源在前：Firecrawl 没填 Key 时走免费档，360 是公开接口、不需要 Key。"
+        "Tavily 需要 Key，排在免费源后面。留空则不找配图",
+        ["插件图库", "Firecrawl", "360", "Tavily"],
+        options=["插件图库", "Firecrawl", "360", "Tavily"],
+    ),
+    "render_embed_images": GsBoolConfig(
+        "允许嵌入配图",
+        "开启后，出图前会按「出图配图来源」搜图并嵌进长图。关闭后不再搜图，页头和对象改用图标。",
+        True,
+    ),
     "image_understand_provider": GsStrConfig(
         "图片理解服务提供方",
         "指定图片理解服务提供方，当LLM模型不支持图片时，使用该服务将图片转述为文本",
@@ -1228,6 +1242,13 @@ ai_config = StringConfig(
     get_res_path("ai_core") / "ai_config.json",
     AI_CONFIG,
 )
+
+
+def render_embed_images_enabled() -> bool:
+    """出图是否允许搜图并嵌进长图。缺这个配置项时当作开启。"""
+    raw = ai_config.get_config("render_embed_images", True).data
+    return raw is True
+
 
 local_embedding_config = StringConfig(
     "GsCore AI 嵌入模型配置",

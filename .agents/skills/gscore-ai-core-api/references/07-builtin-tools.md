@@ -487,12 +487,40 @@ async def render_html_to_image(
     ctx: RunContext[ToolContext],
     html_content: str,
     image_format: Literal["png", "jpeg"] = "png",
-    max_width: int = 800,
+    max_width: int = 840,
 ) -> str | bytes
 ```
 
 - 默认自由 HTML；原生 `<table>` → `table_rewrite` flex 网格；自动嵌 `https`/`icon:`/`img_`/`res_`。
+- 默认逻辑宽 840，2 倍像素比出图；嵌入的位图最长边保留 1280px。全宽大图最多 3 处，整图高宽比大约 2.2～3.8。`render_embed_images` 默认开启，关闭后不再搜图。
+- HTML 用到 `gs-` 类时，渲染前自动注入移动端组件库（`buildin_tools/render_kit.py`）：
+  外层 `<div class="gs-page theme-xxx">`，主题有 paper / ocean / forest / sunset / sakura /
+  violet / slate / ink。agent 自写的 `<style>` 排在组件库之后，可以覆盖。
+- 图标可带颜色：`icon:mdi/map-marker?color=1d6fb8`（Iconify 出图时着色）。
 - 约束见工具 docstring、[`TAKUMI_HTML_GUIDE.md`](../../../../docs/TAKUMI_HTML_GUIDE.md)。
+
+### `find_images` — 按搜索词找配图
+
+```python
+@ai_tools(category="media", capability_domain="资料出图", code_callable=False)
+async def find_images(
+    ctx: RunContext[ToolContext],
+    queries: list[str],    # 最多 10 个，每个对象一个词，「范围词 对象名」
+    per_query: int = 2,    # 最多 4
+) -> str
+```
+
+- 只在 `render_agent` 白名单里；其他能力代理的工具回填会剔除它。
+- 来源按 `ai_config.render_image_sources` 的顺序尝试，前一个凑够张数就停：
+  - `插件图库`：插件用 `ai_image` 登记的图。向量召回后还要求查询里第一个词之后的词
+    都出现在图片描述、标签、插件名或文件名里，避免召回同插件的其他对象。
+  - `Firecrawl`：官方 `sources: images`。没填 Key 时用 v2 同步客户端走免费档，排在 Tavily 前面
+    （`Firecrawl()` / `AsyncFirecrawl()` 在 4.49.3 会先建 v1，没 Key 直接抛错）。
+  - `360`：360 图片搜索的公开接口，不需要 Key，和 Firecrawl 同属免费源。
+  - `Tavily`：配了 Tavily Key 时用 `include_images`，排在免费源后面。
+- 每张图都会下载、解码、校验尺寸（短边 ≥240、长边 ≥400、宽高比 0.4～2.8），
+  按原始字节去重，缩到最长边 1280 后登记成 `img_` 句柄（30 分钟有效）。
+- 返回每个词对应的句柄、横 / 竖 / 方、尺寸和图注；没找到时提示换词或改用图标。
 
 ### `render_chart_spec` — 声明式图表 → 内联 SVG（2026-08，2026-08-16 编码补强）
 
@@ -692,7 +720,7 @@ Persona 与能力代理**同构为一个 `AgentNode` 定义**（`gsuid_core.ai_c
 `capability_evaluator` 仅服务评估，插件勿覆盖。业务节点（如 `stock_agent` /
 `stock_report_agent`）由插件注册。
 
-**`render_agent`**：`tool_packs=[]` + 渲染白名单（含 **`render_chart_spec`**）；
+**`render_agent`**：`tool_packs=[]` + 渲染白名单（含 **`render_chart_spec`** / **`find_images`**）；
 runner **禁止** task 向量回填（防 web）。主人格多项数据出图委派它，勿自写 HTML。
 
 ### 7.8.1 插件创建并注册业务节点

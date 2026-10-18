@@ -201,6 +201,8 @@
   "log.ai.dropping_orphan_toolreturnpart_call": "[GsCoreAIAgent] 孤立した ToolReturnPart を破棄します: tool_call_id={p0}",
   "log.ai.embed_image_for_html_shrink_skip": "[embed_image_for_html] 縮小スキップ: {e}",
   "log.ai.fail_event": "[AI] モデルの読み込みに失敗: {e}",
+  "log.ai.find_images_query_done": "[find_images] 「{query}」で使える画像 {p0}/{p1} 枚",
+  "log.ai.find_images_source_fail": "[find_images] ソース {source} で「{query}」の検索に失敗、次のソースへ: {e}",
   "log.ai.find_tools_dynamically_requirement_load": "[find_tools] 要件「{p0}」に対して {p1} 個のツールを動的ロード: {loaded_names}",
   "log.ai.find_tools_event": "[find_tools] ツールロードに失敗: {e}",
   "log.ai.find_tools_feature_enabled": "[find_tools] AI 機能が無効です: {e}",

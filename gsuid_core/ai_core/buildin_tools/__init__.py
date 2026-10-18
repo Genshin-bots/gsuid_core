@@ -107,8 +107,9 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 | ``render_html_to_image`` | ``html_render_tools.py`` | 自写 HTML 出图（多数据点主路径） |
 | ``render_card`` | ``html_render_tools.py`` | 结构化 JSON 固定布局 → 图片 |
 | ``render_markdown_to_image`` | ``html_render_tools.py`` | Markdown → 图片 |
+| ``find_images`` | ``image_finder.py`` | 按搜索词找配图，下载校验后返回 ``img_`` 句柄 |
 
-> 三者同属 ``capability_domain="资料出图"``，由能力代理 ``render_agent`` 白名单持有；
+> 以上同属 ``capability_domain="资料出图"``，由能力代理 ``render_agent`` 白名单持有；
 > 主人格经 exclusive 剥离后**不应**直调，应
 > ``create_subagent(agent_profile="render_agent", task=事实包)``。
 
@@ -264,6 +265,10 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
     write_file_content,
 )
 
+# HTML渲染工具 - 将HTML/Markdown/结构化卡片渲染为图片
+# （外链/icon/资源图在 render_html_to_image 内自动嵌 data URI，无独立嵌图工具）
+from gsuid_core.ai_core.buildin_tools.image_finder import find_images
+
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 
@@ -328,9 +333,6 @@ from gsuid_core.ai_core.buildin_tools.plugin_developer import (
     pull_installed_plugin,
     read_plugin_dev_guide,
 )
-
-# HTML渲染工具 - 将HTML/Markdown/结构化卡片渲染为图片
-# （外链/icon/资源图在 render_html_to_image 内自动嵌 data URI，无独立嵌图工具）
 from gsuid_core.ai_core.buildin_tools.html_render_tools import (
     render_card,
     render_html_to_image,
@@ -455,6 +457,7 @@ __all__ = [
     "record_delete",
     "record_summary",
     # HTML渲染工具
+    "find_images",
     "render_card",
     "render_chart_spec",
     "render_html_to_image",

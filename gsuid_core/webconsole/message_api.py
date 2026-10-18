@@ -69,6 +69,67 @@ def _append_send_target(
         bucket[platform_bot_id][bot_self_id].append(target_id)
 
 
+def _append_push_visible_text(node: Any, parts: List[str]) -> None:
+    """收集 <p> 的可见文本。跳过 <img>（src 另成图片段），<br> 记为换行。"""
+    from bs4.element import Tag, Comment, NavigableString
+
+    for child in getattr(node, "children", ()):
+        if isinstance(child, Tag):
+            name = child.name or ""
+            if name == "img":
+                continue
+            if name == "br":
+                parts.append("\n")
+                continue
+            _append_push_visible_text(child, parts)
+            continue
+        # Comment 不是可见正文；src 在属性上，不会出现在 NavigableString 里。
+        if isinstance(child, NavigableString) and not isinstance(child, Comment):
+            parts.append(str(child))
+
+
+def _html_to_push_messages(send_msg: str) -> List[Message]:
+    """把 BatchPush HTML 拆成 text / image / image_size。
+
+    不能用 ``str(p)[3:-4]`` 抽段落：<img> 嵌在 <p> 里时，序列化结果含完整
+    data URL，base64 会再进 text 段，和后面的 image 段重复。QQ 官方 Bot
+    会因正文过大而画不出图（issue #293）。这里只走可见文本，原树留给后面的
+    ``find_all("img")``，不能先 decompose。
+    """
+    from bs4 import Tag, BeautifulSoup
+
+    soup = BeautifulSoup(send_msg, "lxml")
+    base_msg: List[Message] = []
+
+    for node in soup.find_all("p"):
+        if not isinstance(node, Tag):
+            continue
+        parts: List[str] = []
+        _append_push_visible_text(node, parts)
+        plain = "".join(parts)
+        if not plain.strip():
+            continue
+        if not plain.endswith("\n"):
+            plain += "\n"
+        base_msg.append(MessageSegment.text(plain))
+
+    for img in soup.find_all("img"):
+        if not isinstance(img, Tag):
+            continue
+        src = img.get("src")
+        width = img.get("width")
+        height = img.get("height")
+        # bs4 属性取值为 str | list[str] | None，非 str（缺失/多值）直接跳过该图
+        if not (isinstance(src, str) and isinstance(width, str) and isinstance(height, str)):
+            continue
+
+        base64_data = "base64://" + src.split(",")[-1]
+        base_msg.append(MessageSegment.image(base64_data))
+        base_msg.append(MessageSegment.image_size((int(width), int(height))))
+
+    return base_msg
+
+
 # kind, target_id, platform_bot_id, bot_self_id(None=回落全局)
 _TargetToken = Tuple[str, str, str, Optional[str]]
 
@@ -103,7 +164,7 @@ def _parse_target_token(token: str) -> Optional[_TargetToken]:
 async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] = Depends(require_admin)):
     """
     批量消息推送接口
-    支持解析 HTML（提取 <p> 和 <img>），并向特定 Bot 下的
+    支持解析 HTML（<p> 的可见文本，以及全部 <img>；段落内图片不进入 text 段），并向特定 Bot 下的
     "所有用户(ALLUSER)"、"所有群(ALLGROUP)"或指定的群/用户循环发送群发消息。
 
     请求字段：
@@ -117,31 +178,7 @@ async def batch_push(request: Request, data: Dict[str, Any], _: Dict[str, Any] =
       当 push_tag 某条目未写第三段时，会按此列表展开（多值则每个 self_id 各发一遍）。
       空则传空串给适配器（兼容旧行为）。
     """
-    from bs4 import Tag, BeautifulSoup  # 仅本接口用，+约5MB，按需导入
-
-    send_msg = data["push_text"]
-    soup = BeautifulSoup(send_msg, "lxml")
-
-    base_msg: List[Message] = []
-    text_list = list(soup.find_all("p"))
-    for text in text_list:
-        base_msg.append(MessageSegment.text(str(text)[3:-4] + "\n"))
-
-    img_tag = list(soup.find_all("img"))
-    for img in img_tag:
-        if not isinstance(img, Tag):
-            continue
-        src = img.get("src")
-        width = img.get("width")
-        height = img.get("height")
-        # bs4 属性取值为 str | list[str] | None，非 str（缺失/多值）直接跳过该图
-        if not (isinstance(src, str) and isinstance(width, str) and isinstance(height, str)):
-            continue
-
-        base64_data = "base64://" + src.split(",")[-1]
-
-        base_msg.append(MessageSegment.image(base64_data))
-        base_msg.append(MessageSegment.image_size((int(width), int(height))))
+    base_msg = _html_to_push_messages(data["push_text"])
 
     send_target: List[str] = [x.strip() for x in str(data.get("push_tag", "")).split(",") if x.strip()]
     push_bots = _parse_push_bot_list(data.get("push_bot", ""))

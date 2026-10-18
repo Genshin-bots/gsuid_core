@@ -44,6 +44,7 @@ POST /api/BatchPush
 
 **实现要点**（`message_api.batch_push`）：
 
+- `<p>` 只取可见文本（`<br>` 转为换行）。嵌在 `<p>` 里的 `<img>` 只进 image 段，`src` 里的 base64 不会再写进 text。
 - 每条消息独立拷贝 `base_msg`，避免往共享 list 追加 `group` 段污染后续发送。
 - 目标聚合维度：`platform_bot_id → bot_self_id → [target_id, ...]`。
 - 空 `push_bot` = 遍历全部 `gss.active_bot`。

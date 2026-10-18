@@ -204,7 +204,7 @@ safe = html.escape(user_text, quote=True)
 | `border-bottom` 等单边边框 | ✅ |
 | `border-style:dashed` | ✅ |
 | `border-radius` | ✅ |
-| `overflow:hidden` | ✅，可配合圆角裁剪 |
+| `overflow:hidden` | ⚠️ 容器有 `border-radius`（≥1px）时才裁切；没有圆角，子元素会画到容器外 |
 
 ### 5.4 背景与视觉效果
 
@@ -241,6 +241,8 @@ safe = html.escape(user_text, quote=True)
 | 能力 | 状态 |
 |---|---:|
 | `<img src="data:image/png;base64,...">` | ✅ |
+| `object-fit:cover` | ✅，居中裁切；`object-position` 不支持 |
+| `aspect-ratio` | ✅ |
 | `<br>` | ✅ |
 | `<hr>` | ✅ |
 | `<style>` 标签 | ✅ |
@@ -455,6 +457,25 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 例如 `rewrite_tables_for_takumi` 可能只存在于 pytakumi 源码仓库，不一定存在于已安装的 `pytakumi==0.1.0`。
 
 代码中如使用可选功能，必须做能力探测或 try/except 降级。
+
+### 8.3.1 照片要放进带圆角的容器，并让 img 绝对铺满
+
+下面三条在 Takumi 里都会出问题：
+
+- `background-image` 放照片：即使容器有圆角和 `overflow:hidden`，图也会画出容器外。
+- 裸 `<img>` 写 `margin` 或固定 `height`：margin 被忽略，或留下空白。
+- 容器里有绝对定位的兄弟元素（遮罩、角标）时，文档流里 img 的 `height:100%` 不生效，
+  图按原始比例排版，下方露出底色。
+
+照片槽位写法：
+
+```css
+.cover{position:relative;height:250px;overflow:hidden;border-radius:12px;}
+.cover img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;}
+```
+
+`render_html_to_image` 用到 `gs-` 类时注入的组件库（`render_kit.py`）已经按这个写法处理。
+flex 行里 `flex:1` 的文字列要写 `min-width:0`，否则图片的原始宽度会把这一列撑出卡片。
 
 ### 8.4 IM 场景不要写太小的字
 

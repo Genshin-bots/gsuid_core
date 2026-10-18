@@ -201,6 +201,8 @@
   "log.ai.dropping_orphan_toolreturnpart_call": "[GsCoreAIAgent] Dropping orphan ToolReturnPart: tool_call_id={p0}",
   "log.ai.embed_image_for_html_shrink_skip": "[embed_image_for_html] shrink skip: {e}",
   "log.ai.fail_event": "[AI] Model loading failed: {e}",
+  "log.ai.find_images_query_done": "[find_images] '{query}': {p0}/{p1} usable images",
+  "log.ai.find_images_source_fail": "[find_images] source {source} failed for '{query}', trying next source: {e}",
   "log.ai.find_tools_dynamically_requirement_load": "[find_tools] Dynamically loaded {p1} tools for requirement '{p0}': {loaded_names}",
   "log.ai.find_tools_event": "[find_tools] Tool loading failed: {e}",
   "log.ai.find_tools_feature_enabled": "[find_tools] AI feature not enabled: {e}",

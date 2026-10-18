@@ -98,6 +98,7 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY as _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+    POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED as _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
     is_timeless_aggregate as _is_timeless_aggregate,
     post_tool_contracts_for as _post_tool_contracts_for,
     tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
@@ -705,6 +706,7 @@ class LoopPhase(RunOnceHost):
                             _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
                             _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
                             _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+                            _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
                             _POST_TOOL_FAIL_CONTRACT_RENDER,
                             _POST_MEME_LINE_CONTRACT,
                         )

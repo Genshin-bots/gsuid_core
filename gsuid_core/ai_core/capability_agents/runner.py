@@ -53,6 +53,7 @@ _NON_RENDER_CAP_DENY_TOOLS = frozenset(
         "render_html_to_image",
         "render_card",
         "render_markdown_to_image",
+        "find_images",
     }
 )
 
@@ -70,7 +71,11 @@ def _resolve_tools(node: AgentNode) -> ToolList:
 def _strip_non_render_cap_deny(tools: ToolList, *, node_id: str) -> ToolList:
     """render_agent 保留渲染白名单；其它能力代理剥离嵌套委派与 render_*。"""
     if node_id == "render_agent":
-        return tools
+        from gsuid_core.ai_core.configs.ai_config import render_embed_images_enabled
+
+        if render_embed_images_enabled():
+            return tools
+        return [t for t in tools if t.name != "find_images"]
     kept = [t for t in tools if t.name not in _NON_RENDER_CAP_DENY_TOOLS]
     if len(kept) != len(tools):
         stripped = sorted({t.name for t in tools} - {t.name for t in kept})

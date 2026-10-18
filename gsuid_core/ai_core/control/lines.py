@@ -145,20 +145,32 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "（系统：本轮已有工具返回。你是 render_agent——"
-    "若尚未成功出图：事实包**尽量全文上图**（数字/表/论据/风险/时点勿删），"
-    "写成**一份**高密度 HTML（竖/横按内容），只调用一次 render_html_to_image；"
-    "html/body 须不透明实色底；**先抽四配方之一**（双栏简报/时间轴脊/对比棚/纸感档案），"
-    "禁止连续任务抄同一暗色编号竖卡；"
+    "若尚未成功出图：还没配图就先调一次 find_images（主题图 + 每个主要对象一个词）；"
+    "task 写图源缺失或拉不到官方图也必须搜，并把返回的 img_ 写进 HTML，禁止跳过拉图；"
+    "再用 gs-page + theme-* 组件写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
+    "页头用 gs-hero short 放主题横图（没图用 gs-hero plain）；全宽大图最多 3 处，其余用两列或左图右文；"
+    "整图高宽比大约 2.2～3.8；没图的对象用图标，禁止空图框；"
+    "数字/价格/时间/地址/风险/时点勿删，但每张卡只写 1～2 句短说明，短事实做成 chip / kv；"
     "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
     "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
     "禁止把身份拍扁进单柱 label，禁止用升/降色区分系列；"
-    "字重 330–700（勿写 800/900）；"
-    "逻辑宽≤1000，正文≥16px、badge≥13px；"
-    "事实包有 https 配图则用 <img src=该URL>（系统自动下载嵌图），禁止纯文字墙顶替已有图；"
-    "暗底须浅字、浅底须深字；长文禁止压成少字海报。"
     "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
     "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
-    "禁止为好看删硬信息；禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
+    "禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
+)
+
+POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED = (
+    "（系统：本轮已有工具返回。你是 render_agent——嵌入配图已关闭，禁止调用 find_images。"
+    "若尚未成功出图：用 gs-page + theme-* 写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
+    "页头用 gs-hero plain，对象用图标，禁止空图框，禁止搜图；"
+    "全宽色块不要叠成细长条，整图高宽比大约 2.2～3.8；"
+    "数字/价格/时间/地址/风险/时点勿删，但每张卡只写 1～2 句短说明，短事实做成 chip / kv；"
+    "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
+    "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
+    "禁止把身份拍扁进单柱 label，禁止用升/降色区分系列；"
+    "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
+    "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
+    "禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
 )
 
 POST_TOOL_FAIL_CONTRACT = (
@@ -179,7 +191,8 @@ POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
 )
 
 POST_TOOL_FAIL_CONTRACT_RENDER = (
-    "（系统：渲染失败或空结果。精简 HTML 后重试 render_*；仍失败则短摘要说明原因，禁止把长 HTML/数据当交付正文。）"
+    "（系统：渲染失败或空结果。find_images 没找到图不算失败：没图的对象改用图标，继续出图。"
+    "渲染失败就精简 HTML 后重试 render_*；仍失败则短摘要说明原因，禁止把长 HTML/数据当交付正文。）"
 )
 
 
