@@ -1046,6 +1046,9 @@ class Bot:
         extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
+        from gsuid_core.ai_core.command_aside.capture import note_outbound
+
+        note_outbound(message)
         return await self.bot.target_send(
             message,
             self.ev.user_type,
@@ -1134,6 +1137,9 @@ class Bot:
         send_source_group: Optional[str] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
+        from gsuid_core.ai_core.command_aside.capture import note_outbound
+
+        note_outbound(message)
         return await self.bot.target_send(
             message,
             target_type,

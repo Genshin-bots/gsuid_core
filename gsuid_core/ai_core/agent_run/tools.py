@@ -304,6 +304,19 @@ class ToolsPhase(RunOnceHost):
 
     async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
+        from gsuid_core.ai_core.command_aside.policy import aside_blocks_tools
+
+        if aside_blocks_tools():
+            st.tools = []
+            st.tool_names = []
+            st.exposed_tool_names = []
+            self._last_assembled_domains = set()
+            blocked_ctx = _require_context(st)
+            from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+
+            blocked_ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = []
+            self._session_logger.log_tools_list([])
+            return
         # 渐进式工具暴露是否在本轮生效（仅自动装配 + 非闲聊轮）。决定是否挂 RetrievableToolset。
         st.expose_dynamic = False
         # 媒体句柄（event 字段或正文 img_/图片ID 标注）——通道信号，非话题词
@@ -723,6 +736,10 @@ class ToolsPhase(RunOnceHost):
         logger.debug(i18n_t("log.agent.tool_list", p0=[tool.name for tool in st.tools]))
 
         # 最终去重（兼容外部直接传入 st.tools 的情况）
+        from gsuid_core.ai_core.command_aside.policy import aside_extra_tools
+
+        for extra_tool in aside_extra_tools():
+            st.tools.append(extra_tool)
         st.tools = list({obj.name: obj for obj in st.tools}.values())
         st.tool_names = [t.name for t in st.tools]
         st.exposed_tool_names = list(st.tool_names)

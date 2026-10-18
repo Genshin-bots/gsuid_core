@@ -19,6 +19,8 @@ from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsIntConfig,
     GsStrConfig,
+    GsBoolConfig,
+    GsFloatConfig,
     GsListStrConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetManager
@@ -33,6 +35,27 @@ PERSONA_SCOPE_VALUES = (
     "global_private",
 )
 GLOBAL_LIKE_SCOPES = frozenset({"global", "global_group", "global_private"})
+
+# 命令回复发出后，按概率用人设再补一句。默认不在 ai_mode 里，所以关闭。
+ASIDE_MODE = "命令补充"
+# 改名前写进人格配置的名字。读到时仍算开启。
+ASIDE_MODE_ALIASES = frozenset({"余韵点评", "命令补充"})
+AI_MODE_OPTIONS = [
+    "提及应答",
+    "定时巡检",
+    ASIDE_MODE,
+    "困境救场(暂不可用)",
+]
+
+
+def normalize_ai_modes(modes: list[str]) -> list[str]:
+    """把改名前的模式名收成现在的名字，并去掉重复。"""
+    out: list[str] = []
+    for mode in modes:
+        item = ASIDE_MODE if mode in ASIDE_MODE_ALIASES else mode
+        if item not in out:
+            out.append(item)
+    return out
 
 
 def global_channels_for_scope(scope: str) -> FrozenSet[str]:
@@ -72,7 +95,33 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         "AI行动模式",
         "指定AI的行动模式, AI只会在预定条件完成时才会执行操作",
         ["提及应答"],
-        options=["提及应答", "定时巡检", "趣向捕捉(暂不可用)", "困境救场(暂不可用)"],
+        options=list(AI_MODE_OPTIONS),
+    ),
+    "aside_image_probability": GsFloatConfig(
+        "命令补充·只发图片",
+        "命令补充开启后，命令回复只有图片时补一句的概率，0 到 1。未抽中也会把这次命令和回复写入当前会话。",
+        0.2,
+        min_value=0,
+        max_value=1,
+    ),
+    "aside_text_probability": GsFloatConfig(
+        "命令补充·只发文字",
+        "命令补充开启后，命令回复只有文字时补一句的概率，0 到 1。失败说明和用法提示算文字。",
+        0.35,
+        min_value=0,
+        max_value=1,
+    ),
+    "aside_mixed_probability": GsFloatConfig(
+        "命令补充·图文混合",
+        "命令补充开启后，命令回复同时有图和文字时补一句的概率，0 到 1。",
+        0.25,
+        min_value=0,
+        max_value=1,
+    ),
+    "aside_allow_tools": GsBoolConfig(
+        "命令补充允许工具",
+        "为真时，点评可以调用当前人格的工具，并阅读这条命令所属插件目录里的源码。默认关闭。",
+        False,
     ),
     "scope": GsStrConfig(
         "启用范围",
@@ -331,7 +380,8 @@ class PersonaConfigManager(ConfigSetManager):
         config = self.get_config(persona_name)
 
         # 验证选项有效性
-        valid_options = ["提及应答", "定时巡检", "趣向捕捉(暂不可用)", "困境救场(暂不可用)"]
+        ai_mode = normalize_ai_modes(ai_mode)
+        valid_options = list(AI_MODE_OPTIONS)
         for mode in ai_mode:
             if mode not in valid_options:
                 return False, f"无效的 AI 行动模式: {mode}"
@@ -348,6 +398,52 @@ class PersonaConfigManager(ConfigSetManager):
             return True, "ok"
         else:
             return False, "配置写入失败"
+
+    def set_aside_probability(self, persona_name: str, field: str, value: float) -> tuple[bool, str]:
+        """命令补充的三种触发概率。field 是配置键，value 必须在 0 到 1。"""
+        allowed = {
+            "aside_image_probability",
+            "aside_text_probability",
+            "aside_mixed_probability",
+        }
+        if field not in allowed:
+            return False, "未知的命令补充概率项"
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False, "命令补充概率必须是 0 到 1 的数字"
+        number = float(value)
+        if number < 0 or number > 1:
+            return False, "命令补充概率必须在 0 到 1 之间"
+        config = self.get_config(persona_name)
+        success = config.set_config(field, number)
+        if not success:
+            return False, "配置写入失败"
+        logger.info(
+            t(
+                "log.persona.personaconfig_updated_aside",
+                persona_name=persona_name,
+                field=field,
+                value=number,
+            )
+        )
+        return True, "ok"
+
+    def set_aside_allow_tools(self, persona_name: str, allow_tools: bool) -> tuple[bool, str]:
+        """命令补充能不能使用工具。"""
+        if not isinstance(allow_tools, bool):
+            return False, "命令补充允许工具必须是布尔值"
+        config = self.get_config(persona_name)
+        success = config.set_config("aside_allow_tools", allow_tools)
+        if not success:
+            return False, "配置写入失败"
+        logger.info(
+            t(
+                "log.persona.personaconfig_updated_aside",
+                persona_name=persona_name,
+                field="aside_allow_tools",
+                value=allow_tools,
+            )
+        )
+        return True, "ok"
 
     def set_inspect_interval(self, persona_name: str, inspect_interval: int) -> tuple[bool, str]:
         """
@@ -602,11 +698,15 @@ class PersonaConfigManager(ConfigSetManager):
 
         shape = speech_shape_spec()
         return {
-            "ai_mode": config.get_config("ai_mode").data,
+            "ai_mode": normalize_ai_modes(list(config.get_config("ai_mode").data)),
             "scope": config.get_config("scope").data,
             "target_groups": config.get_config("target_groups").data,
             "inspect_interval": config.get_config("inspect_interval").data,
             "keywords": config.get_config("keywords").data,
+            "aside_image_probability": config.get_config("aside_image_probability").data,
+            "aside_text_probability": config.get_config("aside_text_probability").data,
+            "aside_mixed_probability": config.get_config("aside_mixed_probability").data,
+            "aside_allow_tools": config.get_config("aside_allow_tools").data,
             "enabled_tools": config.get_config("enabled_tools").data,
             "tool_names": config.get_config("tool_names").data,
             "capability_agents": config.get_config("capability_agents").data,

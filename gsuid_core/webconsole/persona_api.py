@@ -864,6 +864,51 @@ async def update_persona_config(
             }
         results.append(f"keywords: {keywords}")
 
+    aside_fields = (
+        "aside_image_probability",
+        "aside_text_probability",
+        "aside_mixed_probability",
+    )
+    for aside_field in aside_fields:
+        if aside_field not in data:
+            continue
+        raw_probability = data[aside_field]
+        if isinstance(raw_probability, bool) or not isinstance(raw_probability, (int, float)):
+            return {
+                "status": 1,
+                "msg": f"{aside_field} 必须是 0 到 1 的数字",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_aside_probability(
+            persona_name,
+            aside_field,
+            float(raw_probability),
+        )
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"{aside_field}: {raw_probability}")
+
+    if "aside_allow_tools" in data:
+        allow_tools = data["aside_allow_tools"]
+        if not isinstance(allow_tools, bool):
+            return {
+                "status": 1,
+                "msg": "aside_allow_tools 必须是布尔值",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_aside_allow_tools(persona_name, allow_tools)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"aside_allow_tools: {allow_tools}")
+
     # 更新 enabled_tools（如果提供）
     if "enabled_tools" in data:
         enabled_tools = data["enabled_tools"]

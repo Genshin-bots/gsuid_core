@@ -398,7 +398,7 @@ class StringConfig:
             else:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
-    def set_config(self, key: str, value: Union[str, List, bool, Dict, int]) -> bool:
+    def set_config(self, key: str, value: Union[str, List, bool, Dict, int, float]) -> bool:
         if key in self.config_list:
             item = self.config[key]
             temp = item.data

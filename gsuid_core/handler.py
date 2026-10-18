@@ -618,7 +618,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             )
             logger.info(t("log.handler.cmd_triggered"), command=message)
 
-            coro = trigger.func(bot, message)
+            from gsuid_core.ai_core.command_aside.runner import command_with_aside
+
+            coro = command_with_aside(trigger.func(bot, message), bot, _event, trigger)
             func_name = getattr(coro, "__qualname__", str(coro))
             trace_ctx = TraceContext(
                 trace_id=_event.task_id,

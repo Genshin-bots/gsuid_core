@@ -636,5 +636,9 @@
   "log.ai.tool_risk_refused_tool": "[ToolRisk] 非マスターの高リスクツールを拒否 user={user_id}",
   "log.ai.tool_risk_master_exec_file": "[ToolRisk] マスターがファイルを実行 user={user_id} path={path}",
   "log.ai.tool_risk_stripped": "[ToolRisk] 非マスター代理から高リスクツールを除去 user={user_id} names={names}",
-  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] 使用量制限の持続失敗により、重複したフォールバック文言を抑制"
+  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] 使用量制限の持続失敗により、重複したフォールバック文言を抑制",
+  "log.ai.command_aside_recorded": "[命令补充] セッション {session_id} に書いた。形態={shape}、点评={commented}",
+  "log.ai.command_aside_skip": "[命令补充] スキップ：{reason} session={session_id}",
+  "log.ai.command_aside_source_read": "[命令补充] ソースを読んだ session={session_id} plugin={plugin} files={files}",
+  "log.ai.command_aside_memory_hit": "[命令补充] 記憶が当たった session={session_id} plugin={plugin}"
 }

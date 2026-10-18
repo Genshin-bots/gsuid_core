@@ -467,6 +467,72 @@ class GsCoreAIAgent(RunOnceMixin):
         # 保证下次 _agent.iter(message_history=self.history) 入参自洽。
         self.extract_history()
 
+    async def locked_append_then_run(
+        self,
+        user_content: str | Sequence[UserContent],
+        assistant_text: str,
+        followup: str | Sequence[UserContent] | None,
+        bot: Bot | None,
+        ev: Event | None,
+        *,
+        is_framework_injection: bool,
+        budget_gate: bool,
+        stats_chat_type: str,
+    ) -> str | None:
+        """先写入命令回执，再在同一把锁里决定要不要点评。
+
+        锁要盖住两步：提及应答不能读到只写了一半的 history。
+        没有点评时返回 None；点评跑过则返回模型正文，沉默时是空串。
+        """
+        async with self._run_lock:
+            prev_stream = self._outbound_stream
+            prev_stats = self._stats_chat_type
+            self._cancel_generation = asyncio.Event()
+            self._running_framework = bool(is_framework_injection)
+            self._outbound_stream = False
+            self._stats_chat_type = stats_chat_type
+            try:
+                self.append_command_receipt(user_content, assistant_text)
+                if followup is None:
+                    return None
+                result = await self._run_under_lock(
+                    user_message=followup,
+                    bot=bot,
+                    ev=ev,
+                    rag_context=None,
+                    tools=None,
+                    # return 先交回正文。点评落盘后再发，避免下一位在落盘前又去读源码。
+                    return_mode="return",
+                    output_type=None,
+                    enqueue_ts=None,
+                    intent=None,
+                    has_active_task=False,
+                    budget_gate=budget_gate,
+                    suppress_intermediate_text=False,
+                    turn_graph=None,
+                    cheap_gate=None,
+                    is_framework_injection=is_framework_injection,
+                )
+                if isinstance(result, str):
+                    return result
+                return ""
+            finally:
+                self._running_framework = False
+                self._outbound_stream = prev_stream
+                self._stats_chat_type = prev_stats
+
+    def append_command_receipt(
+        self,
+        user_content: str | Sequence[UserContent],
+        assistant_text: str,
+    ) -> None:
+        """把命令原话和已发出的回执追加到 history 尾部。不改 system_prompt。"""
+        if not assistant_text:
+            return
+        self.history.append(ModelRequest(parts=[UserPromptPart(content=user_content)]))
+        self.history.append(ModelResponse(parts=[TextPart(content=assistant_text)]))
+        self.extract_history()
+
     def _ensure_system_prompt_in_history(self) -> None:
         """非空 history 缺 SystemPromptPart 时补齐（防 proactive 首轮或外部装入历史丢失 system_prompt）。"""
         if not self.history or not self.system_prompt:

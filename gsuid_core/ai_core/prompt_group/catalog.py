@@ -196,6 +196,14 @@ SPECS: tuple[PromptSpec, ...] = (
         "替换人格。条件不满足时要保持只输出沉默标记。",
         (),
     ),
+    PromptSpec(
+        "aside_comment",
+        "命令补充",
+        "命令补充",
+        "命令回执发出后、决定补一句时使用。程序会填入插件、源码摘录、已有记忆和工具约束。"
+        "默认组每次启动从程序写回；要改这段，请复制一个提示词组再改。",
+        ("plugin_label", "source_section", "memory_section", "tool_clause"),
+    ),
 )
 
 _SPEC_BY_KEY: dict[str, PromptSpec] = {spec.key: spec for spec in SPECS}
@@ -239,6 +247,10 @@ def default_body(key: str) -> str:
         return format_template_to_mustache(REACTIVE_GATE_TEMPLATE)
     if key == "scheduled_executor":
         return SCHEDULED_TASK_EXECUTOR_PROMPT
+    if key == "aside_comment":
+        from gsuid_core.ai_core.command_aside.prompt import ASIDE_COMMENT_BODY
+
+        return ASIDE_COMMENT_BODY
     if key == "soft_trigger":
         from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE
 

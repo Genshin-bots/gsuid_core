@@ -636,5 +636,9 @@
   "log.ai.tool_risk_refused_tool": "[ToolRisk] 拒绝非主人执行高危工具 user={user_id}",
   "log.ai.tool_risk_master_exec_file": "[ToolRisk] 主人执行文件 user={user_id} path={path}",
   "log.ai.tool_risk_stripped": "[ToolRisk] 已从非主人代理剥离高危工具 user={user_id} names={names}",
-  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] 配额熔断期内重复失败，已抑制重复兜底文案"
+  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] 配额熔断期内重复失败，已抑制重复兜底文案",
+  "log.ai.command_aside_recorded": "[命令补充] 已写入会话 {session_id}，形态={shape}，点评={commented}",
+  "log.ai.command_aside_skip": "[命令补充] 跳过：{reason} session={session_id}",
+  "log.ai.command_aside_source_read": "[命令补充] 已读源码 session={session_id} plugin={plugin} files={files}",
+  "log.ai.command_aside_memory_hit": "[命令补充] 命中记忆 session={session_id} plugin={plugin}"
 }

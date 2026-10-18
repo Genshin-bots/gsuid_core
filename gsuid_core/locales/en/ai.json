@@ -636,5 +636,9 @@
   "log.ai.tool_risk_refused_tool": "[ToolRisk] refused non-master high-risk tool user={user_id}",
   "log.ai.tool_risk_master_exec_file": "[ToolRisk] master executed file user={user_id} path={path}",
   "log.ai.tool_risk_stripped": "[ToolRisk] stripped high-risk tools from non-master agent user={user_id} names={names}",
-  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] Repeated failure during quota breaker, duplicate fallback suppressed"
+  "log.ai.gscore_fallback_suppressed_repeat": "[GsCore][AI] Repeated failure during quota breaker, duplicate fallback suppressed",
+  "log.ai.command_aside_recorded": "[命令补充] Wrote session {session_id}, shape={shape}, commented={commented}",
+  "log.ai.command_aside_skip": "[命令补充] Skipped: {reason} session={session_id}",
+  "log.ai.command_aside_source_read": "[命令补充] Read source session={session_id} plugin={plugin} files={files}",
+  "log.ai.command_aside_memory_hit": "[命令补充] Memory hit session={session_id} plugin={plugin}"
 }

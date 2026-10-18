@@ -98,8 +98,25 @@ if "提及应答" in ai_mode:
         return
 ```
 
-其他模式：`定时巡检`（见 [§08](./08-heartbeat-scheduled-planning.md)）；`趣向捕捉` / `困境救场`
+其他模式：`定时巡检`（见 [§08](./08-heartbeat-scheduled-planning.md)）；`命令补充`
+（命令已经把回复发出去之后，按概率再补一句，见下）；`困境救场`
 暂不可用。
+
+### 命令补充
+
+人格 `ai_mode` 含 `命令补充` 时才启用，默认不含。它不替代命令，也不把命令改成提及应答。
+
+命令协程返回后：
+
+1. 记下这次 `bot.send` 交出的文字和图片。没有可见回执则停止。
+2. 当前 AI 会话尾部写入用户原话和这次回执。概率没抽中也写。之后的提及应答读的是这份 history。
+3. 只发图片、只发文字、图文混合分别用 `aside_image_probability`、`aside_text_probability`、
+   `aside_mixed_probability`（0 到 1）决定要不要再跑一轮点评。
+4. `aside_allow_tools` 为真时，这一轮可以使用当前人格的工具，并多一个只读工具
+   `read_command_plugin_file`，范围是这条命令所属插件目录。为假时这一轮没有工具。
+
+点评那一句插在 user 侧，以 `（系统：` 开头，入史前整段剥掉。留下的是回执和点评正文。
+回执追加在 history 尾部，不改 `system_prompt`。
 
 ## 4.3b HTTP Agent 面（不是 `handle_event`）
 
@@ -190,4 +207,5 @@ if len(event.raw_text) > MAX_SUMMARY_LENGTH:
 | `keyword` | 关键词触发 | `handler.py` |
 | `followup` | 免唤醒续聊软触发 | `followup_window` / `handle_ai` |
 | `heartbeat` | 定时巡检主动发言 | `heartbeat/inspector.py` |
+| `aside` | 命令补充（命令回执之后） | `command_aside/runner.py` |
 | `scheduled` | 定时/循环任务 | `scheduled_task/executor.py` |
