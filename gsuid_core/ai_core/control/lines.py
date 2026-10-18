@@ -10,7 +10,10 @@ MSG_SECTION_MARK = "--- 消息 ---"
 MSG_SECTION_HEAD = MSG_SECTION_MARK + "\n"
 DIRECT_MARKER = "（直接找你说的）"
 AT_OTHER_MARKER = "（@的是这位用户，不是你）"
-QUOTE_TOME_MARKER = "（引用了你的上一条。先判断对方是不是在找你：追问或吩咐你才回；跟别人说话或故意惹你则 <SILENCE>。）"
+QUOTE_TOME_MARKER = (
+    "（引用了你的消息。先看被引用内容原本是发给谁的：明确追问或吩咐你才回；"
+    "旁人围观感叹、跟别人说话或故意惹你则 <SILENCE>。）"
+)
 
 # 入史时用来认出闸门打回。开头必须和下面全文一致。
 ANGLE_NUDGE_MARKER = "（系统校验：发送内容含非法尖括号标签"

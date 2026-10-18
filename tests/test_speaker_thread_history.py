@@ -100,7 +100,7 @@ def test_other_users_persona_line_stays_out_of_speaker_thread() -> None:
         _rec(
             "bot",
             "AI",
-            "港股那边翻不到",
+            "港股那边翻不到 [图片·珠海行程方案·res_36de5e7e129f]",
             t0 + 5,
             role="assistant",
             extra={"reply_to_user_id": "u2", "reply_to_user_name": "乙", "speech_channel": "persona"},
@@ -108,9 +108,14 @@ def test_other_users_persona_line_stays_out_of_speaker_thread() -> None:
         _rec("u1", "甲", "你还在吗", t0 + 10),
     ]
     block = compose_group_history(records, current_user_id="u1", current_user_name="甲")
-    thread = block.split("[历史对话]")[0]
+    thread, _, timeline = block.partition("\n\n[历史对话]")
     assert "我先说一句" in thread
     assert "港股那边翻不到" not in thread
+    assert "AI→乙(用户ID:u2)" in timeline
+    assert "港股那边翻不到" in timeline
+    assert "[图片·珠海行程方案]" in timeline
+    assert "res_36de5e7e129f（read_handle；句柄勿念出）" in timeline
+    assert "[图片·珠海行程方案·res_36de5e7e129f]" not in timeline
 
 
 def test_command_receipt_keeps_body_and_uses_receipt_tag() -> None:

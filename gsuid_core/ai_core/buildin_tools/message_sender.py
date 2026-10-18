@@ -393,8 +393,9 @@ async def send_message_by_ai(
         _meta = turn_reply_metadata(ev)
         if _at_uid:
             _meta["reply_to_user_id"] = _at_uid
-            if "reply_to_user_name" in _meta:
-                del _meta["reply_to_user_name"]
+            if ev is None or _at_uid != str(ev.user_id):
+                if "reply_to_user_name" in _meta:
+                    del _meta["reply_to_user_name"]
         if text:
             from gsuid_core.ai_core.utils import send_chat_result
 
@@ -430,8 +431,10 @@ async def send_message_by_ai(
                 set_outbound_image_label,
                 reset_outbound_image_label,
                 format_outbound_image_placeholder,
+                ensure_outbound_topic_from_artifact,
             )
 
+            await ensure_outbound_topic_from_artifact(tool_ctx.extra, image_id)
             _label = format_outbound_image_placeholder(topic_from_extra(tool_ctx.extra), image_id)
             _tok = set_outbound_image_label(_label)
             _out = list(media_parts)

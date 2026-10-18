@@ -73,17 +73,49 @@ def reset_run_image_delivered() -> None:
     _run_image_delivered.set(False)
 
 
+# 与 send 路径的 @数字 对齐，并收带数字的平台 ID。纯单词 @the 不是接收人。
+_AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
+_DELIVERY_TASK_TITLE_RE = re.compile(r"任务#\d+「([^」]+)」")
+
+
+def _clean_topic_head(raw: str, max_len: int = 12) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    m = _DELIVERY_TASK_TITLE_RE.search(s)
+    if m is not None:
+        s = m.group(1).strip()
+    s = _AT_ID_RE.sub("", s).strip()
+    head = s.split("\n", 1)[0].strip()
+    return head[:max_len]
+
+
 def topic_from_extra(extra: dict[str, object]) -> str:
     raw = extra["outbound_topic"] if "outbound_topic" in extra else ""
     if isinstance(raw, str) and raw.strip():
-        return raw.strip()[:12]
+        return _clean_topic_head(raw, 12)
     return ""
 
 
 def remember_outbound_topic(extra: dict[str, object], task_head: str) -> None:
-    head = (task_head or "").strip().split("\n", 1)[0].strip()[:12]
+    head = _clean_topic_head(task_head, 12)
     if head:
         extra["outbound_topic"] = head
+
+
+async def ensure_outbound_topic_from_artifact(extra: dict[str, object], image_id: str) -> None:
+    if not image_id.startswith("res_") or topic_from_extra(extra) or not _db_ready():
+        return
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+    try:
+        art = await AIAgentArtifact.get_by_id(image_id)
+    except (OperationalError, ProgrammingError):
+        return
+    if art is not None and art.summary:
+        remember_outbound_topic(extra, art.summary)
 
 
 @dataclass(frozen=True)
@@ -109,10 +141,6 @@ def _fmt_ago(age_seconds: float) -> str:
         return ""
     minutes = int(age_seconds // 60)
     return f"{minutes} 分钟前"
-
-
-# 与 send 路径的 @数字 对齐，并收带数字的平台 ID。纯单词 @the 不是接收人。
-_AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
 
 
 def proactive_directed_target(event: Event, message: str) -> str:
@@ -156,12 +184,21 @@ async def record_outbound(
     sid = session_id or (ev.session_id if ev is not None else "")
     owner = str(ev.user_id) if ev is not None and ev.user_id else target_user
     handles = (image_id or "").strip()
-    topic_s = (topic or "").strip()[:12]
+    topic_s = _clean_topic_head(topic, 12)
+    if not topic_s and handles.startswith("res_"):
+        from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+        try:
+            art = await AIAgentArtifact.get_by_id(handles)
+        except (OperationalError, ProgrammingError):
+            art = None
+        if art is not None and art.summary:
+            topic_s = _clean_topic_head(art.summary, 12)
     if not topic_s:
         from gsuid_core.ai_core.configs.ai_config import ai_config
 
         n = int(ai_config.get_config("outbound_topic_n").data)
-        topic_s = (text or "").strip().replace("\n", " ")[:n]
+        topic_s = _clean_topic_head((text or "").replace("\n", " "), n)
     try:
         await OutboundAudit.record(
             session_id=sid,
@@ -207,7 +244,10 @@ async def record_outbound(
 
 async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
     raw = (ev.reply or "").strip()
-    if not raw:
+    is_image_quote = bool(
+        (ev.reply_id or ev.is_tome) and (not raw or raw.startswith("[图片")) and (ev.image_id_list or ev.image)
+    )
+    if not raw and not is_image_quote:
         return None
     from sqlalchemy.exc import OperationalError, ProgrammingError
 
@@ -216,15 +256,19 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
     if not _db_ready():
         return None
     gid = ledger_group_key(ev)
+    hit: Optional[OutboundAudit] = None
     try:
-        hit = await OutboundAudit.match_by_text(group_id=gid, text=raw)
+        if raw and not raw.startswith("[图片"):
+            hit = await OutboundAudit.match_by_text(group_id=gid, text=raw)
+        if hit is None and is_image_quote:
+            hit = await OutboundAudit.recent_image_for_group(group_id=gid)
     except (OperationalError, ProgrammingError) as e:
         logger.debug(i18n_t("log.ai.outbound_read_skip", e=e))
         return None
     if hit is None:
         return None
     who = hit.target_name or hit.target_user or "对方"
-    topic = hit.topic or "图片"
+    topic = _clean_topic_head(hit.topic or hit.text, 12) or "图片"
     handle = (hit.image_handles or "").split(",", 1)[0].strip()
     extra = f"，句柄 {handle}" if handle else ""
     from gsuid_core.ai_core.control.lines import quote_object_line
@@ -264,7 +308,7 @@ async def ownership_hint(ev: Event) -> str:
     if age > OWNERSHIP_HINT_TTL_SECONDS:
         return ""
     who = last.target_name or last.target_user
-    topic = last.topic or "图片"
+    topic = _clean_topic_head(last.topic or last.text, 12) or "图片"
     from gsuid_core.ai_core.control.lines import ownership_line
 
     return ownership_line(_fmt_ago(age), topic, who)

@@ -386,6 +386,10 @@ async def run_interactive_turn(
     )
 
     result_text, is_silence, is_error = classify_run_result(chat_result)
+    if turn_graph.quoted_tome and is_silence and not session.last_run_sent_visible_reply and event.user_id:
+        from gsuid_core.ai_core.followup_window import revoke_fresh_hard_trigger
+
+        revoke_fresh_hard_trigger(event.session_id, str(event.user_id))
     if deliver:
         await deliver_run_result(
             bot,

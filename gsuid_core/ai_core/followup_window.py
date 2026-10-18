@@ -136,3 +136,11 @@ def in_followup_window(session_id: str, user_id: str, window_seconds: int, max_t
     if (now - st.burst_start) > max_total_seconds:
         return False
     return (now - st.last_hard_ts) <= window_seconds
+
+
+def revoke_fresh_hard_trigger(session_id: str, user_id: str) -> None:
+    """仅当本次硬触发是全新开启的 burst 时撤销窗口（引用旁观被判沉默后不留续聊窗）。"""
+    k = _key(session_id, user_id)
+    st = _states[k] if k in _states else None
+    if st is not None and st.burst_start == st.last_hard_ts:
+        del _states[k]

@@ -882,8 +882,10 @@ async def prepare_content_payload(
             body, guard_flags = annotate_untrusted_message_ex(body)
         text += body
 
-    if ev.reply:
-        text += f"\n--- 引用消息 ---\n{ev.reply}\n"
+    is_pure_image_quote = bool((ev.reply_id or quoted_tome) and not ev.reply and ev.image_id_list)
+    if ev.reply or is_pure_image_quote:
+        reply_body = ev.reply if ev.reply else "[引用图片消息]"
+        text += f"\n--- 引用消息 ---\n{reply_body}\n"
         from gsuid_core.ai_core.outbound import resolve_quote
 
         hit = await resolve_quote(ev)
@@ -893,6 +895,8 @@ async def prepare_content_payload(
 
     own = await ownership_hint(ev)
     if own:
+        if not text.endswith("\n"):
+            text += "\n"
         text += f"{own}\n"
 
     if ev.node is not None:
@@ -906,14 +910,20 @@ async def prepare_content_payload(
     # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
     if ev.image_id_list:
         if lazy_image_read:
-            # 惰性模式：只给图片ID + 一行调用指引，图片本体留在 RM，需要看时再 read_image
-            text += "\n--- 用户发送了图片(未展开, 需要查看内容时调用 read_image(图片ID)) ---"
+            if is_pure_image_quote:
+                text += "\n--- 被引用消息中的图片(未展开, 仅在需要查看原图细节时调用 read_image(图片ID)) ---"
+            else:
+                # 惰性模式：只给图片ID + 一行调用指引，图片本体留在 RM，需要看时再 read_image
+                text += "\n--- 用户发送了图片(未展开, 需要查看内容时调用 read_image(图片ID)) ---"
             for i in ev.image_id_list:
                 text += f"\n图片ID: {i}"
             text += "\n"
         else:
             for i in ev.image_id_list:
-                text += f"\n--- 用户上传图片ID: {i} ---\n"
+                if is_pure_image_quote:
+                    text += f"\n--- 被引用消息图片ID: {i} ---\n"
+                else:
+                    text += f"\n--- 用户上传图片ID: {i} ---\n"
 
     if hasattr(ev, "audio_id") and ev.audio_id:
         text += f"\n--- 用户上传音频ID: {ev.audio_id} ---\n"

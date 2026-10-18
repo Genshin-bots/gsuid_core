@@ -352,8 +352,9 @@ def count_style_pushes(current_text: str, recent: List[Tuple[str, str]], speaker
 
 # 寻址记号的定义在 control/lines.py。引用 bot 仍是 is_tome，但不能写成「直接找你」。
 QUOTE_TOME_HINT = (
-    "\n\n（系统提示：对方引用了你的上一条，不等于在找你。"
-    "是追问/反驳/吩咐你才开口；在跟群里别人说话或故意惹你，输出 <SILENCE>。）"
+    "\n\n（系统提示：对方引用了你的消息，不等于在找你。"
+    "若被引用内容原本是交付给别的群友，而当前说话人只是围观感叹/随口评价、没有向你提出具体问题或请求，"
+    "或是在跟群里别人说话、故意惹你，输出 <SILENCE>；仅在向你追问/反驳/吩咐时才开口。）"
 )
 # 引用同时带第二人称祈使：按直接找你，不用 quoted_tome。
 _QUOTE_DIRECTED_RE = re.compile(

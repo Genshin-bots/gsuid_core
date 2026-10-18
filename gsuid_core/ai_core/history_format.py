@@ -411,9 +411,16 @@ def _handle_line(handles: Sequence[str]) -> str:
     return f"{' '.join(shown)}{_HANDLE_LINE_SUFFIX}"
 
 
+def _strip_handle_from_image_tags(text: str) -> str:
+    """剥掉图片标签里的句柄后保留 `[图片·<topic>]`，空 `[图片·]` 则移除。"""
+    cleaned = _THREAD_HANDLE_RE.sub("", text)
+    cleaned = re.sub(r"\[图片·([^\]·]+?)·?\]", r"[图片·\1]", cleaned)
+    return re.sub(r"\[图片·?\]", "", cleaned)
+
+
 def _speech_residue(content: str) -> str:
     text = _THREAD_HANDLE_RE.sub("", content)
-    text = re.sub(r"\[图片[^\]]*\]", "", text)
+    text = re.sub(r"\[图片·?([^\]·]*?)·?\]", r"\1", text)
     text = text.replace(_HANDLE_LINE_SUFFIX, "")
     return re.sub(r"[\s|（）()：:，,。…·]+", "", text)
 
@@ -438,8 +445,7 @@ def assistant_visible_body(record: MessageRecord) -> Optional[str]:
     if handles and len(_speech_residue(content)) < 4:
         return _handle_line(handles)
     if handles:
-        speech = _THREAD_HANDLE_RE.sub("", content)
-        speech = re.sub(r"\[图片[^\]]*\]", "", speech)
+        speech = _strip_handle_from_image_tags(content)
         speech = re.sub(r"\s+", " ", speech).strip(" |")
         if speech:
             return f"{speech} | {_handle_line(handles)}"
@@ -502,7 +508,7 @@ def compose_group_history(
     current_user_id: str,
     current_user_name: Optional[str] = None,
 ) -> str:
-    """同人线程在前。旁人块是他人 user 句，外加没有收件人的出站。"""
+    """同人线程在前。旁人块是他人 user 句，外加发给他人或无收件人的出站。"""
     if not records:
         return ""
     uid = str(current_user_id)
@@ -531,11 +537,13 @@ def compose_group_history(
 
 
 def _group_timeline(records: Sequence[MessageRecord], uid: str) -> List[MessageRecord]:
-    """没有收件人的出站留在群时间线，不记到最近一个插话者头上。"""
+    """发给别人的出站与无收件人出站留在群时间线，发给当前说话人的归同人线程。"""
     recent = list(records)[-_OTHERS_WINDOW:]
     users = [r for r in recent if r.role == "user" and str(r.user_id) != uid]
     loose = [
-        r for r in recent if r.role == "assistant" and not _reply_to_uid(r) and assistant_visible_body(r) is not None
+        r
+        for r in recent
+        if r.role == "assistant" and not _assistant_belongs_to_speaker(r, uid) and assistant_visible_body(r) is not None
     ]
     merged = users + materialize_speaker_thread(loose)
     merged.sort(key=lambda record: record.timestamp)

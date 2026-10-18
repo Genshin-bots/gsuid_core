@@ -176,11 +176,12 @@ _RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_
 
 
 def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
-    """本条是否带未读附件（图/音频/文件/可读视频）。只看 Event 结构字段。"""
+    """本条是否带未读附件（图/音频/文件/可读视频）。引用纯图消息不计为用户新附件。"""
     ev = st.ev
     if ev is None:
         return False
-    if ev.image_id_list or ev.image_id:
+    quoted_pure_image = bool((ev.reply_id or (st.tg is not None and st.tg.quoted_tome)) and not ev.reply)
+    if (ev.image_id_list or ev.image_id) and not quoted_pure_image:
         return True
     if ev.audio_id_list or ev.audio_id:
         return True
