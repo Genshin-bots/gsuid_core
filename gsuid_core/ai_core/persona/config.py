@@ -39,7 +39,7 @@ GLOBAL_LIKE_SCOPES = frozenset({"global", "global_group", "global_private"})
 # 命令回复发出后，按概率用人设再补一句。默认不在 ai_mode 里，所以关闭。
 ASIDE_MODE = "命令补充"
 # 改名前写进人格配置的名字。读到时仍算开启。
-ASIDE_MODE_ALIASES = frozenset({"余韵点评", "命令补充"})
+ASIDE_MODE_ALIASES = frozenset({"余韵点评", "命令接话"})
 AI_MODE_OPTIONS = [
     "提及应答",
     "定时巡检",

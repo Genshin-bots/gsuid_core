@@ -51,7 +51,7 @@ def test_default_mode_is_off_and_probabilities_are_bounded(tmp_path: Path) -> No
 
 
 def test_old_aside_name_normalizes_to_current() -> None:
-    assert normalize_ai_modes(["提及应答", "余韵点评", "命令接话"]) == ["提及应答", ASIDE_MODE]
+    assert normalize_ai_modes(["提及应答", "余韵点评", "命令补充"]) == ["提及应答", ASIDE_MODE]
 
 
 def test_aside_settings_round_trip(tmp_path: Path) -> None:

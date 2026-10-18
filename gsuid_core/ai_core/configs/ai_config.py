@@ -88,7 +88,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定网络搜索的主用提供方。未配置或主用无 Key 时走 AnySearch 匿名额度。"
         "多源策略非「无」时，失败会按备用顺序切换到其它已配置源",
         "AnySearch",
-        options=["AnySearch", "Firecrawl", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP"],
     ),
     "websearch_lb_strategy": GsStrConfig(
         "网络搜索多源策略",
@@ -99,16 +99,16 @@ AI_CONFIG: Dict[str, GSC] = {
     "websearch_fallback_order": GsListStrConfig(
         "网络搜索备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用源）。留空则自动收集已配置源"
-        "（顺序：AnySearch → Firecrawl → Tavily → Exa → Jina → MCP）",
+        "（顺序：AnySearch → Firecrawl → DeepSeek → Tavily → Exa → Jina → MCP）",
         [],
-        options=["AnySearch", "Firecrawl", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP"],
     ),
     "webfetch_provider": GsStrConfig(
         "网页抓取服务提供方（主用）",
-        "Jina：经 r.jina.ai 读取（API Key 可选）；local：本机直连抓取并转 Markdown。"
-        "多源策略非「无」时，失败会按备用顺序切换",
+        "Jina：经 r.jina.ai 读取（API Key 可选）；DeepSeek：经 DeepSeek Fetch API 抓取；"
+        "local：本机直连抓取并转 Markdown。多源策略非「无」时，失败会按备用顺序切换",
         "Jina",
-        options=["Jina", "local"],
+        options=["Jina", "DeepSeek", "local"],
     ),
     "webfetch_lb_strategy": GsStrConfig(
         "网页抓取多源策略",
@@ -120,7 +120,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "网页抓取备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用）。默认 local",
         ["local"],
-        options=["Jina", "local"],
+        options=["Jina", "DeepSeek", "local"],
     ),
     "render_image_sources": GsListStrConfig(
         "出图配图来源",
@@ -756,6 +756,45 @@ MINIMAX_CONFIG: Dict[str, GSC] = {
     ),
 }
 
+# DeepSeek：搜索与抓取共用 API Key 与超时设置
+DEEPSEEK_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "DeepSeek API密钥",
+        "前往 https://platform.deepseek.com 获取。支持配置多个 Key 自动轮询与故障重试",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "DeepSeek 每次搜索的最大返回结果数量(1-50)",
+        10,
+        options=[5, 10, 15, 20, 30, 50],
+    ),
+    "timeout": GsIntConfig(
+        "请求超时(秒)",
+        "调用 DeepSeek 搜索/抓取 API 的超时时间",
+        30,
+        options=[10, 15, 20, 30, 45, 60],
+    ),
+    "search_base_url": GsStrConfig(
+        "搜索 API 地址",
+        "DeepSeek 网页搜索接口地址，默认 https://api.deepseek.com/v1/tools/search",
+        "https://api.deepseek.com/v1/tools/search",
+        options=["https://api.deepseek.com/v1/tools/search"],
+    ),
+    "fetch_base_url": GsStrConfig(
+        "抓取 API 地址",
+        "DeepSeek 网页抓取接口地址，默认 https://api.deepseek.com/v1/tools/fetch",
+        "https://api.deepseek.com/v1/tools/fetch",
+        options=["https://api.deepseek.com/v1/tools/fetch"],
+    ),
+    "need_content": GsBoolConfig(
+        "是否获取全文内容",
+        "DeepSeek 搜索是否在结果中返回网页全文 content（默认否，使用 summary 摘要）",
+        False,
+    ),
+}
+
 # Jina Reader 全家桶：s.jina.ai（搜索）+ r.jina.ai（抓取）共用 API Key
 JINA_CONFIG: Dict[str, GSC] = {
     "api_key": GsListStrConfig(
@@ -1290,6 +1329,12 @@ jina_config = StringConfig(
     "GsCore AI Jina搜索抓取配置",
     get_res_path("ai_core") / "jina_config.json",
     JINA_CONFIG,
+)
+
+deepseek_config = StringConfig(
+    "GsCore AI DeepSeek搜索抓取配置",
+    get_res_path("ai_core") / "deepseek_config.json",
+    DEEPSEEK_CONFIG,
 )
 
 web_fetch_config = StringConfig(

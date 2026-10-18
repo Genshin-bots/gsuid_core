@@ -39,6 +39,7 @@ from .tavily_search import (
     tavily_search,
     tavily_search_with_context,
 )
+from .deepseek_search import deepseek_search, deepseek_search_configured
 from .anysearch_search import anysearch_search, anysearch_search_configured
 from .firecrawl_search import firecrawl_search, firecrawl_search_configured
 
@@ -50,7 +51,7 @@ _balance_counter = itertools.count()
 
 # 默认候选顺序（主用源会插到队首）。AnySearch / Firecrawl 可匿名，未配置 Key 时仍可用。
 _DEFAULT_PROVIDER = "AnySearch"
-_DEFAULT_PROVIDER_ORDER = ("AnySearch", "Firecrawl", "Tavily", "Exa", "Jina", "MCP")
+_DEFAULT_PROVIDER_ORDER = ("AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Exa", "Jina", "MCP")
 
 
 class ProviderEmptyResultError(RuntimeError):
@@ -105,6 +106,8 @@ def _provider_configured(provider: str) -> bool:
         return anysearch_search_configured()
     if name == "Firecrawl":
         return firecrawl_search_configured()
+    if name == "DeepSeek":
+        return deepseek_search_configured()
     if is_mcp_provider(name) or name.upper() == "MCP":
         return bool(get_mcp_tool_id_optional("websearch_mcp_tool_id"))
     return False
@@ -251,6 +254,10 @@ async def _invoke_provider(
 
     if name == "Firecrawl":
         results = await firecrawl_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None} if with_context else results
+
+    if name == "DeepSeek":
+        results = await deepseek_search(query=query, max_results=max_results)
         return {"results": results, "answer": None} if with_context else results
 
     if is_mcp_provider(name) or name.upper() == "MCP":
