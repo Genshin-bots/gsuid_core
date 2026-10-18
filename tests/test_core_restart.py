@@ -31,11 +31,13 @@ def test_sanitize_restart_env_drops_uv_recursion_keys() -> None:
         "UV_PYTHON": "3.12",
         "UV_RUN_RECURSION_DEPTH": "101",
         "UV_INTERNAL__RECURSION_DEPTH": "7",
+        "GSUID_CORE_SUPERVISED": "1",
         "SYSTEMROOT": r"C:\Windows",
     }
     cleaned = sanitize_restart_env(source)
     assert "UV_RUN_RECURSION_DEPTH" not in cleaned
     assert "UV_INTERNAL__RECURSION_DEPTH" not in cleaned
+    assert "GSUID_CORE_SUPERVISED" not in cleaned
     assert cleaned["PATH"] == "/usr/bin"
     assert cleaned["VIRTUAL_ENV"] == "/venv"
     assert cleaned["UV_PROJECT"] == "/proj"
@@ -131,6 +133,7 @@ def test_restart_popen_uses_sanitized_env_on_each_os(
 
     monkeypatch.setattr(restart_mod.subprocess, "Popen", capture.fake_popen)
     monkeypatch.setattr(restart_mod, "core_shutdown_execute", fake_shutdown)
+    monkeypatch.setattr(restart_mod, "is_supervised", lambda: False)
     monkeypatch.setattr(restart_mod, "get_restart_command", lambda: "uv run core")
     monkeypatch.setattr(restart_mod, "restart_sh_path", tmp_path / "gs_restart.sh")
     monkeypatch.setattr(restart_mod, "restart_guard_path", lambda: tmp_path / "guard.json")
@@ -165,6 +168,72 @@ def test_restart_popen_uses_sanitized_env_on_each_os(
         assert env["VIRTUAL_ENV"] == "/venv"
         assert env["SYSTEMROOT"] == r"C:\Windows"
         assert env["PATH"] == "/usr/bin"
+
+
+class _RestartPathProbe:
+    def __init__(self) -> None:
+        self.shutdown_calls = 0
+        self.exit_scheduled = 0
+
+    async def fake_shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+    def fake_schedule_exit(self) -> None:
+        self.exit_scheduled += 1
+
+
+def _patch_restart_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    supervised: bool,
+    custom_command: bool,
+) -> tuple[_PopenCapture, _RestartPathProbe]:
+    capture = _PopenCapture()
+    probe = _RestartPathProbe()
+    monkeypatch.setattr(restart_mod.subprocess, "Popen", capture.fake_popen)
+    monkeypatch.setattr(restart_mod, "core_shutdown_execute", probe.fake_shutdown)
+    monkeypatch.setattr(restart_mod, "_schedule_restart_exit", probe.fake_schedule_exit)
+    monkeypatch.setattr(restart_mod, "is_supervised", lambda: supervised)
+    monkeypatch.setattr(restart_mod, "is_custom_restart_enabled", lambda: custom_command)
+    monkeypatch.setattr(restart_mod, "get_restart_command", lambda: "pm2 restart gscore")
+    monkeypatch.setattr(restart_mod, "restart_sh_path", tmp_path / "gs_restart.sh")
+    monkeypatch.setattr(restart_mod, "restart_guard_path", lambda: tmp_path / "guard.json")
+    return capture, probe
+
+
+def test_restart_under_supervisor_exits_instead_of_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture, probe = _patch_restart_path(monkeypatch, tmp_path, supervised=True, custom_command=False)
+    asyncio.run(restart_genshinuid(event=None, is_send=False))
+    assert probe.shutdown_calls == 1
+    assert probe.exit_scheduled == 1
+    assert capture.called is False
+    assert not (tmp_path / "gs_restart.sh").exists()
+
+
+def test_restart_custom_command_keeps_kill_and_spawn_under_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture, probe = _patch_restart_path(monkeypatch, tmp_path, supervised=True, custom_command=True)
+    asyncio.run(restart_genshinuid(event=None, is_send=False))
+    assert probe.shutdown_calls == 1
+    assert probe.exit_scheduled == 0
+    assert capture.called is True
+    assert capture.cmd.endswith("pm2 restart gscore")
+
+
+def test_restart_without_supervisor_keeps_kill_and_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture, probe = _patch_restart_path(monkeypatch, tmp_path, supervised=False, custom_command=False)
+    asyncio.run(restart_genshinuid(event=None, is_send=False))
+    assert probe.exit_scheduled == 0
+    assert capture.called is True
 
 
 def test_restart_throttled_does_not_spawn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -12,6 +12,7 @@
   "log.core.core_auto_task_restart": "[Core Auto Task] Starting execution [Auto Restart]",
   "log.core.core_auto_task_update_gscore": "[Core Auto Task] Starting update [GsCore]",
   "log.core.core_auto_task_update_plugin_directory_start": "[Core Auto Task] Starting update [Plugin Directory]",
+  "log.core.core_restart_by_supervisor": "[Core Restart] Shutdown hooks done, handing over to the supervisor to relaunch",
   "log.core.core_restart_custom_command_start": "[Core Restart] Using custom restart command: {restart_command}",
   "log.core.core_restart_default_command_start": "[Core Restart] Using default restart command: {command}",
   "log.core.core_restart_subscription_found_start": "[Core Restart] No [Core Restart] subscription found, no push messages!",

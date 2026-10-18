@@ -62,13 +62,11 @@
 
 ### 6.2.1 `restart_command`
 
-`core重启` 实际执行的 shell 命令。默认 `uv run python`：
+只在 `is_use_custom_restart_command` 打开时生效：`core重启` 先杀掉当前 core，再执行这条
+shell 命令。不打开时，守护父进程用启动时的参数重新拉起 core，不读这一项。
 
-- 若用 poetry：`poetry run python`
-- 若用 pdm：`pdm run python`
-- 若 Docker：通常**不用这个字段**，因为 Docker 镜像默认 `CMD ["uv", "run",
-  "--python", "/venv/bin/python", "core", "--host", "0.0.0.0"]`，重启走
-  `docker restart gsuid_core`。
+- 用 pm2 / systemd 托管、想让托管程序接手重启时填，例如 `pm2 restart gscore`。
+- Docker 和直接 `uv run core` / `poetry run core` / `pdm run core` 都**不需要**这个字段。
 
 源码：[`gsuid_core/buildin_plugins/core_command/core_restart/restart.py`](../../../gsuid_core/buildin_plugins/core_command/core_restart/restart.py)
 

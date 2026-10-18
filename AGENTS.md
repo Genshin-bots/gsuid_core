@@ -31,6 +31,7 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 ├── docs/                     # 专题设计 / 历史评审（非入门）
 ├── gsuid_core/               # 框架包
 │   ├── core.py               # 进程入口
+│   ├── supervisor.py         # 守护父进程：拉起 core 子进程，子进程以 51 退出时原地重拉
 │   ├── app_life.py           # FastAPI lifespan / 两阶段钩子
 │   ├── server.py / gss.py    # 插件加载、连接、钩子注册表
 │   ├── meta_plugins.py       # 基础设施插件先加载，并把 <包>.api 挂到 sys.modules

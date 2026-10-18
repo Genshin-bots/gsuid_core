@@ -44,9 +44,9 @@ def main() -> None:
     try:
         import asyncio
 
-        from gsuid_core.core import main as core_main
+        from gsuid_core.core import serve
 
-        asyncio.run(core_main())
+        asyncio.run(serve())
     finally:
         prof.disable()
         stop.set()
