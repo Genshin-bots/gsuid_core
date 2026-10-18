@@ -1,6 +1,5 @@
 import inspect
 from typing import TYPE_CHECKING, Any, List, Literal, Callable, Optional, Annotated
-from concurrent.futures import ThreadPoolExecutor
 
 from msgspec import Meta
 from apscheduler.job import Job
@@ -18,13 +17,7 @@ if TYPE_CHECKING:
 
 misfire_grace_time = core_config.get_config("misfire_grace_time")
 
-executor = ThreadPoolExecutor(max_workers=10)
 job_defaults = {"misfire_grace_time": misfire_grace_time, "coalesce": True}
-options = {
-    "executor": executor,
-    "job_defaults": job_defaults,
-    "timezone": "Asia/Shanghai",
-}
 
 
 class _GsScheduler(AsyncIOScheduler):
@@ -34,7 +27,7 @@ class _GsScheduler(AsyncIOScheduler):
 
 
 scheduler = _GsScheduler()
-scheduler.configure(options)
+scheduler.configure(job_defaults=job_defaults, timezone="Asia/Shanghai")
 
 
 async def start_scheduler():
