@@ -654,16 +654,24 @@ def _pick_session_field(key: str, sess: Dict[str, str], ident: Dict[str, object]
 def _resolve_mcp_identity(
     ident: Dict[str, object],
     sess: Dict[str, str],
+    arg_user_id: str = "",
 ) -> tuple[str, int, str, str]:
     auth_mode = _ident_str(ident, "auth", "unknown")
     user_id = _ident_str(ident, "user_id", "mcp_client")
 
-    sess_uid = _clean_delegated_user_id(sess["user_id"]) if "user_id" in sess else ""
-    if auth_mode in ("api_key", "anonymous", "none") and sess_uid:
-        user_id = sess_uid
+    arg_uid = _clean_delegated_user_id(arg_user_id)
+    header_uid = _clean_delegated_user_id(sess["user_id"]) if "user_id" in sess else ""
+    delegated_uid = arg_uid or header_uid
 
-    if auth_mode == "api_key" and sess_uid:
-        user_pm = _resolve_delegated_user_pm(sess_uid)
+    if auth_mode in ("api_key", "anonymous", "none") and delegated_uid:
+        user_id = delegated_uid
+
+    # 工具入参 arg_uid 由 LLM 填写，固定降为普通用户权限，仅请求头可查 masters
+    if auth_mode == "api_key" and delegated_uid:
+        if arg_uid and arg_uid != header_uid:
+            user_pm = _DEFAULT_USER_PM
+        else:
+            user_pm = _resolve_delegated_user_pm(delegated_uid)
     elif "user_pm" in ident:
         user_pm = _parse_user_pm(ident["user_pm"])
     else:
@@ -674,11 +682,11 @@ def _resolve_mcp_identity(
     return (user_id, user_pm, explicit_bot_id, group_id)
 
 
-def _build_run_context(tool_name: str) -> RunContext[ToolContext]:
-    """构造 RunContext：claims + 可选 HTTP 会话头（不盲猜平台，未传则为 ""）。"""
+def _build_run_context(tool_name: str, arg_user_id: str = "") -> RunContext[ToolContext]:
+    """构造 RunContext：claims + 可选 HTTP 会话头 / 工具参数（不盲猜平台，未传则为 ""）。"""
     ident = _identity_from_access_token()
     sess = _http_session_overrides()
-    user_id, user_pm, explicit_bot_id, group_id = _resolve_mcp_identity(ident, sess)
+    user_id, user_pm, explicit_bot_id, group_id = _resolve_mcp_identity(ident, sess, arg_user_id=arg_user_id)
 
     bot_id = explicit_bot_id.split(":")[0] if explicit_bot_id else ""
 
@@ -857,7 +865,33 @@ async def _build_tool_result(
     return ToolResult(content=contents, structured_content={"result": final_text})
 
 
-def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
+def _docstring_declares_user_id(doc: str) -> bool:
+    """判断 docstring 的 Args 块是否声明了 user_id 参数。"""
+    in_args = False
+    args_indent = 0
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if not in_args:
+            if stripped in ("Args:", "Arguments:", "Parameters:"):
+                in_args = True
+                args_indent = indent
+            continue
+        if indent <= args_indent and stripped.endswith(":"):
+            in_args = False
+            continue
+        head, sep, _ = stripped.partition(":")
+        if sep == ":" and head.split("(")[0].strip() == "user_id":
+            return True
+    return False
+
+
+def _build_ai_tool_handler(
+    tool_base: ToolBase,
+    category: str,
+) -> Callable[..., Awaitable[ToolResult | str]]:
     """按 ToolBase 的 function_schema 动态生成 MCP handler（签名对客户端可见）。"""
     tool = tool_base.tool
     tool_name = tool_base.name
@@ -909,9 +943,25 @@ def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
                 )
             )
 
+    inject_user_id = "user_id" not in properties and _docstring_declares_user_id(description)
+    if inject_user_id:
+        annotations["user_id"] = Optional[str]
+        params.append(
+            inspect.Parameter(
+                "user_id",
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=Optional[str],
+                default=None,
+            )
+        )
+
     async def handler(**kwargs: Any) -> ToolResult | str:
-        # 原样透传；None / 默认值语义交由工具自身与 pydantic 处理
         call_args = dict(kwargs)
+        arg_user_id = ""
+        if inject_user_id:
+            raw_uid = call_args.pop("user_id", None)
+            if isinstance(raw_uid, str):
+                arg_user_id = raw_uid
         logger.info(
             t(
                 "log.mcp.mcp_server_calling_ai_tool",
@@ -920,7 +970,7 @@ def _build_ai_tool_handler(tool_base: ToolBase, category: str) -> Any:
                 call_args=repr(call_args)[:500],
             )
         )
-        run_ctx = _build_run_context(tool_name)
+        run_ctx = _build_run_context(tool_name, arg_user_id=arg_user_id)
         try:
             raw = await tool.function(run_ctx, **call_args)
         except Exception as e:

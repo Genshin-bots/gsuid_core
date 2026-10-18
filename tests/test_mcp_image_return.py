@@ -810,7 +810,7 @@ def test_mcp_handler_passes_delegated_user_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _run() -> None:
-        captured: List[tuple[str, Union[str, None]]] = []
+        captured: List[tuple[str, int, Union[str, None]]] = []
 
         async def _tool_fn(
             ctx: RunContext[ToolContext],
@@ -818,29 +818,88 @@ def test_mcp_handler_passes_delegated_user_context(
             target_user_id: Union[str, None] = None,
         ) -> str:
             assert ctx.deps.ev is not None
-            captured.append((ctx.deps.ev.user_id, target_user_id))
+            captured.append((ctx.deps.ev.user_id, ctx.deps.ev.user_pm, target_user_id))
             return f"ok:{text}"
 
+        doc_with_uid = """查询面板。
+
+Args:
+    text: 角色名。
+    target_user_id: 目标用户。
+    user_id: 调用方用户 ID（如 QQ 号），MCP 跨平台调用时传入以定位当前用户绑定。
+"""
         base = ToolBase.__new__(ToolBase)
         base.name = "sample_tool"
-        base.description = "查询面板"
+        base.description = doc_with_uid
         base.plugin = "test"
-        base.tool = AiTool(_tool_fn, takes_ctx=True, name="sample_tool", description="查询面板")
+        base.tool = AiTool(_tool_fn, takes_ctx=True, name="sample_tool", description=doc_with_uid)
         handler = mcp_server._build_ai_tool_handler(base, "by_trigger")
+
+        mcp_tool = Tool.from_function(handler, name="sample_tool", description=doc_with_uid)
+        props = mcp_tool.parameters["properties"]
+        assert "user_id" in props
+        assert "调用方用户 ID" in props["user_id"]["description"]
+
+        doc_without_uid = "查询图鉴。\n\nArgs:\n    text: 角色名。\n"
+        base_no_uid = ToolBase.__new__(ToolBase)
+        base_no_uid.name = "plain_tool"
+        base_no_uid.description = doc_without_uid
+        base_no_uid.plugin = "test"
+        base_no_uid.tool = AiTool(_tool_fn, takes_ctx=True, name="plain_tool", description=doc_without_uid)
+        handler_no_uid = mcp_server._build_ai_tool_handler(base_no_uid, "common")
+        mcp_tool_no_uid = Tool.from_function(handler_no_uid, name="plain_tool", description=doc_without_uid)
+        assert "user_id" not in mcp_tool_no_uid.parameters["properties"]
 
         monkeypatch.setattr(
             mcp_server,
             "_identity_from_access_token",
             lambda: {"auth": "api_key", "user_id": "mcp_service", "user_pm": 0},
         )
+        from gsuid_core.config import core_config
 
-        monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"user_id": "454307903"})
-        res = await handler(text="心月狐", target_user_id="target_other")
+        orig_get_config = core_config.get_config
+        monkeypatch.setattr(
+            core_config,
+            "get_config",
+            lambda key: ["master_999"] if key == "masters" else orig_get_config(key),
+        )
+
+        # args["user_id"] 优先于请求头，但即使填入 master ID 也只给普通权限 6
+        monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"user_id": "header_uid"})
+        res = await handler(text="心月狐", target_user_id="target_other", user_id="master_999")
         assert res == "ok:心月狐"
-        assert captured[-1] == ("454307903", "target_other")
+        assert captured[-1] == ("master_999", 6, "target_other")
 
+        # 未传 args["user_id"] 时回退读取 X-MCP-User-Id 请求头，请求头可匹配 master 权限 0
+        monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {"user_id": "master_999"})
+        await handler(text="心月狐", target_user_id="target_other")
+        assert captured[-1] == ("master_999", 0, "target_other")
+
+        # 两者均未传时回退服务自身凭证
         monkeypatch.setattr(mcp_server, "_http_session_overrides", lambda: {})
         await handler(text="心月狐", target_user_id="target_other_2")
-        assert captured[-1] == ("mcp_service", "target_other_2")
+        assert captured[-1] == ("mcp_service", 0, "target_other_2")
+
+        # 工具自身形参含 user_id 时视为查询目标，不覆写调用者身份与权限
+        native_captured: List[tuple[str, int, str]] = []
+
+        async def _native_uid_fn(ctx: RunContext[ToolContext], user_id: str) -> str:
+            assert ctx.deps.ev is not None
+            native_captured.append((ctx.deps.ev.user_id, ctx.deps.ev.user_pm, user_id))
+            return f"queried:{user_id}"
+
+        base_native = ToolBase.__new__(ToolBase)
+        base_native.name = "native_uid_tool"
+        base_native.description = doc_with_uid
+        base_native.plugin = "test"
+        base_native.tool = AiTool(
+            _native_uid_fn,
+            takes_ctx=True,
+            name="native_uid_tool",
+            description=doc_with_uid,
+        )
+        handler_native = mcp_server._build_ai_tool_handler(base_native, "common")
+        await handler_native(user_id="target_user_999")
+        assert native_captured[-1] == ("mcp_service", 0, "target_user_999")
 
     asyncio.run(_run())
