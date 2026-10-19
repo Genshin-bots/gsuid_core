@@ -513,13 +513,14 @@ HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 
 > ⚠️ 这是**兜底网**；根因（`create_subagent` 双份播报 + 回执诱导偷懒）已在 §8 从源头修（回执改成
 > "请你转述给用户"、executor 对交互式派发静默），修好后本网极少触发。
 
-> 🖼️ **长 markdown 整篇出图**（2026-07-15 新增，配置 `render_long_markdown_as_image`，默认开）。
+> 🖼️ **长 markdown 整篇出图**（2026-07-15 新增，配置 `render_long_markdown_as_image`，默认关）。
 > 空行拆条本是人格"连发 2-3 条短消息"的能力，但 agent 的长研报 / 报告（多标题 + 表格 +
 > 分隔线）会被拆成**几十条刷屏**，且 IM 不渲染 markdown、满屏字面 `**` / `|` 极难看。
-> `send_chat_result` 在拆条前先判定：命中"结构化长 markdown"就用 `render_md_to_bytes` 把
-> **整篇**（用未剥 markdown 的 `md_source`，不是被 `_strip_persona_markdown` 毁过的 `clean_text`）
-> 渲染成一张图片下发，替代拆条；渲染失败**优雅降级**回拆条。判定**刻意保守**（`_should_render_markdown_image`）：
-> 须够长（`markdown_image_min_chars`，默认 210）+ 拆分后 ≥3 段 + 含明确结构信号——**表格 / ≥2 个
+> `send_chat_result` 在拆条前先判定：命中"结构化长 markdown"且当前人格启用了 `render_agent`
+> 时，把未剥 markdown 的 `md_source` 交给 `render_agent` 出一张信息卡；没启用、或没交出图片，
+> 才用 `render_md_to_bytes`。兜底图样式在 `markdown_dark.css`：近黑底、奶油色标题、金色小节，
+> 列表用横线分隔，不画左侧色条。两路都失败则**优雅降级**回拆条。判定**刻意保守**（`_should_render_markdown_image`）：
+> 须够长（`markdown_image_min_chars`，默认 400）+ 拆分后 ≥3 段 + 含明确结构信号——**表格 / ≥2 个
 > ATX 标题 / ≥2 个整行粗体小标题（`**一、xxx**`）/ 编号列表 ≥2 项 / 无序列表 ≥3 项 / 水平线且 ≥1 标题**。
 > （agent 研报常用 `**粗体小标题** + 编号建议` 而非 markdown 表格 / `#` 标题，故一并纳入——否则像
 > session ...644256 药明康德那条会被拆成 ~8 段。）**纯口语连发短句、单段短文、代码块**都不命中

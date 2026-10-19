@@ -448,8 +448,9 @@ AI_CONFIG: Dict[str, GSC] = {
     "render_long_markdown_as_image": GsBoolConfig(
         "长markdown整篇出图(呈现层兜底)",
         "仅作**兜底**：主路径应委派 render_agent 出设计图。"
-        "开启后, 仍漏网的结构化长 markdown 会整篇渲成资料图防刷屏；"
-        "默认关闭，避免主人格浅分析被渲成丑图双发。判定刻意保守。",
+        "开启后, 仍漏网的结构化长 markdown 先交给 render_agent 出图；"
+        "未启用出图或没交出图片时，才用 render_md_to_bytes。"
+        "默认关闭，避免主人格浅分析被渲成丑图。判定刻意保守。",
         False,
     ),
     "markdown_image_min_chars": GsIntConfig(

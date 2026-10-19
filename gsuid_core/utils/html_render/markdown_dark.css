@@ -1,51 +1,53 @@
-/* GsCore Markdown 深色卡片 — 高对比，适配 pytakumi（非浏览器） */
+/* GsCore Markdown 深色卡片。色板对齐 core更新记录：近黑底、奶油标题、金色小节。 */
 
 .markdown-body {
-  background: linear-gradient(180deg, #0c1220 0%, #121a2c 55%, #0f1626 100%);
+  background-color: #07070c;
+  background-image: linear-gradient(180deg, #161218 0%, #07070c 240px);
   font-family: "MiSans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  color: #f2f6fc;
-  padding: 36px 40px 32px;
-  line-height: 1.7;
+  color: #f0f0f2;
+  padding: 28px 28px 24px;
+  line-height: 1.6;
   font-size: 16px;
 }
 
-.markdown-body::before {
-  content: "";
-  display: block;
-  width: 100%;
-  height: 5px;
-  background: linear-gradient(90deg, #5b9dd9 0%, #3ec9a7 55%, #e8b45a 100%);
-  border-radius: 3px;
-  margin-bottom: 26px;
-}
-
 .markdown-body h1 {
-  font-size: 30px;
-  font-weight: 800;
-  color: #ffffff;
+  font-size: 32px;
+  font-weight: 600;
+  color: #efe3cd;
   margin: 0 0 12px 0;
-  padding-bottom: 14px;
-  border-bottom: 2px solid #2f3d56;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2a2a32;
+  letter-spacing: 0.4px;
   line-height: 1.25;
 }
 
 .markdown-body h2 {
-  font-size: 20px;
-  font-weight: 800;
-  color: #7ec2ff;
-  margin: 28px 0 14px 0;
-  padding: 10px 14px;
-  background: #1a2740;
-  border-left: 5px solid #5b9dd9;
-  border-radius: 0 10px 10px 0;
-  line-height: 1.35;
+  font-size: 17px;
+  font-weight: 700;
+  color: #e0ae4c;
+  margin: 22px 0 8px 0;
+  padding: 16px 0 0 0;
+  background: transparent;
+  border: none;
+  border-top: 1px solid #2a2a32;
+  border-radius: 0;
+  line-height: 1.4;
+}
+
+.markdown-body h1 + h2,
+.markdown-body h2:first-child {
+  margin-top: 16px;
+  padding-top: 0;
+  border-top: none;
 }
 
 .markdown-body h3 {
-  font-size: 17px;
-  font-weight: 800;
-  color: #4fe0b8;
-  margin: 22px 0 10px 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f08a3c;
+  font-style: italic;
+  margin: 16px 0 6px 0;
+  line-height: 1.4;
 }
 
 .markdown-body h4,
@@ -53,98 +55,120 @@
 .markdown-body h6 {
   font-size: 15px;
   font-weight: 700;
-  color: #b7c4d9;
-  margin: 16px 0 8px 0;
+  color: #efe3cd;
+  margin: 14px 0 6px 0;
 }
 
 .markdown-body p {
-  margin: 10px 0;
-  color: #d5deec;
+  margin: 8px 0;
+  color: #c8c8d2;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.markdown-body h1 + p {
+  color: #f4f4f6;
 }
 
 .markdown-body strong {
-  color: #ffffff;
-  font-weight: 800;
+  color: #efe3cd;
+  font-weight: 700;
 }
 
 .markdown-body em {
-  color: #b7c4d9;
+  color: #b9b9c4;
   font-style: italic;
 }
 
 .markdown-body a {
-  color: #7ec2ff;
+  color: #5b8def;
   text-decoration: none;
 }
 
-/* 列表：避免 absolute 伪元素叠层问题 */
+/* 条目之间用横线隔开。不画左侧竖线，也不铺圆角底。 */
 .markdown-body ul,
 .markdown-body ol {
-  margin: 12px 0;
-  padding-left: 8px;
+  margin: 10px 0 4px 0;
+  padding: 0;
   list-style: none;
 }
 
+.markdown-body ol {
+  list-style: decimal;
+  padding-left: 1.5em;
+}
+
 .markdown-body li {
-  margin: 10px 0;
-  padding: 12px 14px 12px 16px;
-  color: #e8eef8;
+  margin: 0;
+  padding: 10px 0;
+  color: #e8e8ec;
   line-height: 1.6;
+  font-size: 16px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-top: 1px solid #2a2a32;
+}
+
+.markdown-body li:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.markdown-body li ul,
+.markdown-body li ol {
+  margin: 4px 0 0 0;
+}
+
+.markdown-body li li {
   font-size: 15px;
-  background: #1a2538;
-  border: 1px solid #2f3d56;
-  border-radius: 12px;
-  border-left: 4px solid #5b9dd9;
+  border-top-color: #1e1e26;
 }
 
-.markdown-body ol li {
-  border-left-color: #3ec9a7;
-}
-
-/* 代码 */
 .markdown-body code {
   font-family: "Mono", "JetBrains Mono", Consolas, Menlo, monospace;
-  background: #0d1524;
-  color: #4fe0b8;
-  padding: 2px 8px;
-  border-radius: 6px;
+  background: #1a2436;
+  color: #7fb0ff;
+  padding: 1px 5px;
+  border-radius: 3px;
   font-size: 14px;
+  font-weight: 600;
 }
 
 .markdown-body pre {
-  background: #0d1524;
-  border: 1px solid #2f3d56;
-  border-radius: 12px;
-  padding: 18px 20px;
-  margin: 16px 0;
+  background: #121218;
+  border: 1px solid #2a2a32;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 14px 0;
 }
 
 .markdown-body pre code {
-  background: none;
+  background: transparent;
   padding: 0;
-  color: #d5deec;
+  color: #d4d4dc;
   font-size: 14px;
+  font-weight: 500;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
 }
 
 /*
- * 表格：pytakumi 将 GFM/HTML <table> rewrite 为 .md-table flex 行
- * （见 pytakumi.markdown.rewrite_tables_for_takumi）。必须写 .md-table*，
- * 只写原生 table/tr/td 选择器会在改写后失效，表格塌成一行字。
+ * pytakumi 把 GFM 表改写成 .md-table。只写 table/td 会在改写后失效。
+ * background 上的 !important 会被丢掉，表头就停在浅色。这里不要加。
  */
 .markdown-body table,
 .markdown-body .md-table {
   display: flex;
   flex-direction: column;
   width: 100%;
-  margin: 18px 0;
-  border: 1px solid #2f3d56 !important;
-  border-radius: 12px;
+  margin: 16px 0;
+  border: 1px solid #2a2a32;
+  border-radius: 10px;
   overflow: hidden;
-  background: transparent !important;
-  gap: 0;
+  background: #07070c;
 }
 
 .markdown-body .md-table-row {
@@ -152,8 +176,8 @@
   flex-direction: row;
   align-items: stretch;
   width: 100%;
-  border-top: 1px solid #2f3d56;
-  background: #1a2538 !important;
+  border-top: 1px solid #2a2a32;
+  background: #07070c;
 }
 
 .markdown-body .md-table-row:first-child {
@@ -161,56 +185,46 @@
 }
 
 .markdown-body .md-table-header {
-  background: #5b9dd9 !important;
-  font-weight: 800;
+  background: #2a2418;
+  font-weight: 700;
 }
 
 .markdown-body .md-table-row-alt {
-  background: #202c42 !important;
+  background: #121218;
 }
 
 .markdown-body .md-table-cell {
   flex: 1 1 0;
   min-width: 0;
-  padding: 13px 16px;
+  padding: 11px 14px;
   font-size: 15px;
-  color: #f2f6fc !important;
-  font-weight: 600;
-  border: none !important;
-  background: transparent !important;
+  color: #e8e8ec;
+  font-weight: 500;
+  border: none;
+  background: transparent;
 }
 
 .markdown-body .md-table-th {
-  color: #061018 !important;
-  font-weight: 800;
+  color: #efe3cd;
+  font-weight: 700;
   font-size: 14px;
-  background: transparent !important;
+  background: transparent;
 }
 
 .markdown-body .md-table-cell-border {
-  border-right: 1px solid #2f3d56 !important;
-}
-
-.markdown-body .md-table-header .md-table-cell-border {
-  border-right-color: rgba(6, 16, 24, 0.2) !important;
+  border-right: 1px solid #2a2a32;
 }
 
 .markdown-body .md-table-cell-left { text-align: left; }
 .markdown-body .md-table-cell-right { text-align: right; }
 .markdown-body .md-table-cell-center { text-align: center; }
 
-.markdown-body .md-table-row:not(.md-table-header) .md-table-cell:first-child {
-  color: #7ec2ff !important;
-  font-weight: 800;
-}
-
-/* 兜底：未改写的原生 table（旧路径） */
 .markdown-body thead,
 .markdown-body tbody {
   display: flex;
   flex-direction: column;
   width: 100%;
-  background: transparent !important;
+  background: transparent;
 }
 
 .markdown-body tr {
@@ -218,67 +232,59 @@
   flex-direction: row;
   align-items: center;
   width: 100%;
-  border: none !important;
+  border: none;
+  background: #07070c;
 }
 
 .markdown-body th,
 .markdown-body thead th {
   flex: 1;
-  padding: 14px 16px;
+  padding: 11px 14px;
   font-size: 14px;
-  font-weight: 800;
-  color: #061018 !important;
+  font-weight: 700;
+  color: #efe3cd;
   text-align: left;
-  border: none !important;
-  background: #5b9dd9 !important;
+  border: none;
+  background: #2a2418;
 }
 
 .markdown-body td,
 .markdown-body tbody td {
   flex: 1;
-  padding: 13px 16px;
+  padding: 11px 14px;
   font-size: 15px;
-  color: #f2f6fc !important;
-  border: none !important;
-  font-weight: 600;
-  background: transparent !important;
-}
-
-.markdown-body tbody tr {
-  background: #1a2538 !important;
-  border: 1px solid #2f3d56 !important;
+  color: #e8e8ec;
+  border: none;
+  font-weight: 500;
+  background: transparent;
 }
 
 .markdown-body tbody tr:nth-child(even) {
-  background: #202c42 !important;
+  background: #121218;
 }
 
-.markdown-body tbody td:first-child {
-  color: #7ec2ff !important;
-  font-weight: 800;
-}
-
-/* 引用 */
 .markdown-body blockquote {
-  margin: 16px 0;
-  padding: 16px 20px;
-  background: #1a2538;
-  border-left: 5px solid #e8b45a;
-  border-radius: 0 12px 12px 0;
-  color: #c8d2e0;
-  font-size: 15px;
+  margin: 16px 0 0 0;
+  padding: 12px 14px;
+  background: #101016;
+  border: 1px solid #2a2a32;
+  border-left: 1px solid #2a2a32;
+  border-radius: 10px;
+  color: #8e8e9a;
+  font-size: 13px;
 }
 
 .markdown-body blockquote p {
   margin: 4px 0;
-  color: #c8d2e0;
+  color: #8e8e9a;
+  font-size: 13px;
 }
 
 .markdown-body hr {
   border: none;
   height: 1px;
-  background: #2f3d56;
-  margin: 24px 0;
+  background: #2a2a32;
+  margin: 18px 0;
 }
 
 .markdown-body img {

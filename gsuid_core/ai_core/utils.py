@@ -3,6 +3,7 @@ import re
 import json
 import base64
 import asyncio
+import contextvars
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1360,13 +1361,126 @@ def _extract_legacy_report_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]
 # 旧名别名（测试 / 外部若仍 import）
 _extract_report_blocks = _extract_legacy_report_blocks
 
+# 呈现层正在跑 render_agent 时再进来会套娃，退回 markdown 图。
+_PRESENT_RENDER_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("present_render_depth", default=0)
+
+
+def _present_render_task(md: str) -> str:
+    return (
+        "把下面这份已经写好的正文排成一张手机竖屏信息卡。\n"
+        "事实只许来自正文：禁止改数字、专名、剂量、结论和警示句，禁止补写正文里没有的内容。\n"
+        "禁止调用 render_markdown_to_image。只用 gs-page 写一份 HTML，只调用一次 render_html_to_image。\n"
+        "出图后的返回值必须带上图片 res_ 句柄，摘要最多一句。\n\n"
+        f"正文：\n{md}"
+    )
+
+
+def _persona_allows_render_agent(ev: Event | None) -> bool:
+    if ev is None:
+        return False
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
+    from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+    return persona_allows_capability_agent(persona_name_from_event(ev), "render_agent")
+
+
+async def _send_registered_image(
+    handle: str,
+    bot: Bot,
+    ev: Event,
+    extra_metadata: Optional[Mapping[str, object]],
+) -> bool:
+    """把本轮 render_agent 刚登记的图片发出去。临时任务没有发起人记录，不走跨用户归属校验。"""
+    from gsuid_core.ai_core.outbound import (
+        release_image_delivery,
+        note_run_image_delivered,
+        try_claim_image_delivery,
+    )
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+    art = await AIAgentArtifact.get_by_id(handle)
+    if art is None or not art.payload_path or not art.mime.startswith("image/"):
+        return False
+    image_data = await asyncio.to_thread(_read_image_artifact_bytes, art.payload_path)
+    if image_data is None:
+        return False
+    sid = str(ev.session_id) if ev.session_id else ""
+    claim = await try_claim_image_delivery(ev, handle, session_id=sid)
+    if claim.refuse is not None:
+        return True
+    try:
+        await bot.send(MessageSegment.image(image_data), extra_metadata=extra_metadata)
+    except Exception as send_err:
+        # 平台发送失败：释放占位，让下一次还能发这张图。
+        logger.warning(i18n_t("log.ai.send_chat_result_render_agent_fail", e=send_err))
+        if claim.occupied:
+            await release_image_delivery(ev, handle)
+        return False
+    note_run_image_delivered()
+    logger.info(i18n_t("log.ai.send_chat_result_render_agent_image", p0=len(image_data)))
+    return True
+
+
+async def _try_present_via_render_agent(
+    md: str,
+    bot: Bot,
+    ev: Event | None,
+    extra_metadata: Optional[Mapping[str, object]] = None,
+) -> bool:
+    """长正文先交给 render_agent。成功发出图片返回 True。"""
+    if ev is None or _PRESENT_RENDER_DEPTH.get() > 0 or not _persona_allows_render_agent(ev):
+        return False
+    import time
+    import hashlib
+
+    from gsuid_core.ai_core.capability_agents.runner import (
+        CAPABILITY_AGENT_ERROR_PREFIX,
+        run_capability_agent,
+    )
+
+    token = _PRESENT_RENDER_DEPTH.set(_PRESENT_RENDER_DEPTH.get() + 1)
+    raw = ""
+    # 外部模型失败不能吞掉这条消息，调用方再走 markdown 图。
+    try:
+        suffix = hashlib.md5(f"{time.time_ns()}:{len(md)}".encode()).hexdigest()[:10]
+        raw = await run_capability_agent(
+            profile_id="render_agent",
+            task=_present_render_task(md),
+            ev=ev,
+            bot=bot,
+            session_id_suffix=f"present_{suffix}",
+        )
+    except Exception as e:
+        logger.warning(i18n_t("log.ai.send_chat_result_render_agent_fail", e=e))
+        raw = ""
+    finally:
+        _PRESENT_RENDER_DEPTH.reset(token)
+    if not raw:
+        return False
+    if raw.startswith(CAPABILITY_AGENT_ERROR_PREFIX):
+        logger.warning(i18n_t("log.ai.send_chat_result_render_agent_fail", e=raw[:180]))
+        return False
+    sent = False
+    seen: list[str] = []
+    for match in _RESOURCE_HANDLE_RE.finditer(raw):
+        handle = match.group(0).strip("`")
+        if not handle.startswith("res_") or handle in seen:
+            continue
+        seen.append(handle)
+        if await _send_registered_image(handle, bot, ev, extra_metadata):
+            sent = True
+    if not sent:
+        logger.info(i18n_t("log.ai.send_chat_result_render_agent_miss"))
+    return sent
+
 
 async def _send_report_images(
     reports: List[Tuple[str, str]],
     bot: Bot,
     extra_metadata: Optional[Mapping[str, object]] = None,
+    ev: Event | None = None,
 ) -> None:
-    """制品通道出图：结构化块 / 遗留 report body → markdown 资料图。
+    """制品通道出图：结构化块 / 遗留 report body → 信息卡，失败再退 markdown 图。
 
     主路径应已由 ``render_agent`` 出图；此处是呈现层兜底。
     """
@@ -1377,6 +1491,8 @@ async def _send_report_images(
     css_path = await asyncio.to_thread(_markdown_dark_css_path)
     for title, body in reports:
         md = f"# {title}\n\n{body}" if title else body
+        if await _try_present_via_render_agent(md, bot, ev, extra_metadata):
+            continue
         md = f"{md}{_report_footer()}"
         try:
             image_bytes = await render_md_to_bytes(
@@ -1651,7 +1767,7 @@ async def send_chat_result(
     async def _send_trailing_artifacts() -> None:
         # 所有出口共用的尾声：先补发资料图，再发表情包——新增返回路径不得绕过（评审修复 G5）
         if report_blocks:
-            await _send_report_images(report_blocks, bot, extra_metadata)
+            await _send_report_images(report_blocks, bot, extra_metadata, ev)
         if meme_tags and ev is not None:
             await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
 
@@ -1663,9 +1779,12 @@ async def send_chat_result(
         await _send_trailing_artifacts()
         return
 
-    # 长 markdown 整篇出图（防拆条刷屏，2026-07-15）：用未剥离的 md_source 渲染，失败降级回拆条。
-    # OOC 兜底命中时（clean_text 已换成短兜底文本）不出图。判据/开关见 _should_render_markdown_image。
+    # 长 markdown 整篇出图：先 render_agent，没图再 render_md_to_bytes，仍失败则拆条。
+    # OOC 兜底命中时不出图。判据/开关见 _should_render_markdown_image。
     if not _ooc_replaced and _should_render_markdown_image(md_source):
+        if await _try_present_via_render_agent(md_source, bot, ev, extra_metadata):
+            await _send_trailing_artifacts()
+            return
         if await _try_render_markdown_image(md_source, bot, extra_metadata):
             await _send_trailing_artifacts()
             return
