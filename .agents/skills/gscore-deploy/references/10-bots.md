@@ -101,8 +101,8 @@ ws://{HOST}:{PORT}/{BOT_ID}?token={WS_TOKEN}
 
 Bot 和 Core 都在同一台机器：
 
-- Core 的 `WS_TOKEN` 可以留空（仅信任 `127.0.0.1`）
-- `TRUSTED_IPS` 默认包含 `localhost / ::1 / 127.0.0.1`，够用
+- Core 的 `WS_TOKEN` 可以留空。对端是 `127.0.0.1`、`::1` 或 `::ffff:127.0.0.1` 时，默认列表会放行
+- 默认 `TRUSTED_IPS` 里的 `localhost` 不是 IP，不参与匹配。同机放行靠 `127.0.0.1` 和 `::1`
 
 ```json
 {

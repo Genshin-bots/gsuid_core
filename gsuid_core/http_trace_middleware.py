@@ -13,6 +13,7 @@ from starlette.types import Send, Scope, ASGIApp, Message, Receive
 
 import gsuid_core.logger as _gslog
 from gsuid_core.models import HttpTraceContext
+from gsuid_core.security_manager import resolve_client_ip
 from gsuid_core.utils.secret_mask import mask_mapping, is_secret_key_name
 
 _PATH_MAX = 2048
@@ -201,18 +202,28 @@ def _client_request_id(scope: Scope) -> Optional[str]:
     return text
 
 
+def _scope_header_text(scope: Scope, name: bytes) -> str:
+    raw = _header_value(scope, name)
+    if raw is None:
+        return ""
+    return raw.decode("latin-1")
+
+
 def _client_ip(scope: Scope) -> str:
-    if "client" not in scope or scope["client"] is None:
-        return ""
-    client = scope["client"]
-    if not isinstance(client, (tuple, list)) or len(client) < 1:
-        return ""
-    host = client[0]
-    if not isinstance(host, str):
-        return ""
-    if len(host) > _IP_MAX:
-        return host[:_IP_MAX]
-    return host
+    peer = ""
+    if "client" in scope and scope["client"] is not None:
+        client = scope["client"]
+        if isinstance(client, (tuple, list)) and len(client) >= 1 and isinstance(client[0], str):
+            peer = client[0]
+    forwarded = ""
+    real_ip = ""
+    if "headers" in scope:
+        forwarded = _scope_header_text(scope, b"x-forwarded-for")
+        real_ip = _scope_header_text(scope, b"x-real-ip")
+    ip = resolve_client_ip(peer, forwarded, real_ip)
+    if len(ip) > _IP_MAX:
+        return ip[:_IP_MAX]
+    return ip
 
 
 def _user_from_scope(scope: Scope) -> tuple[Optional[str], Optional[str]]:

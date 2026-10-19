@@ -1,31 +1,99 @@
 import time
-from typing import Any, List, Deque, Tuple, DefaultDict
+import ipaddress
+from typing import Deque, Tuple, Protocol, DefaultDict
 from collections import deque, defaultdict
 from dataclasses import dataclass
 
+from starlette.datastructures import Address, Headers
+
 from gsuid_core.config import core_config
 
-TRUSTED_IPS: List[str] = core_config.get_config("TRUSTED_IPS")
+
+def normalize_ip(raw: str) -> str:
+    """收成单一合法 IP。IPv4-mapped IPv6 收成 IPv4。非法地址返回空串。"""
+    text = raw.strip()
+    if not text:
+        return ""
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    if isinstance(parsed, ipaddress.IPv6Address):
+        mapped = parsed.ipv4_mapped
+        if mapped is not None:
+            return str(mapped)
+    return str(parsed)
 
 
-def get_client_ip(request: Any) -> str:
-    """提取客户端真实 IP（用于限流 / 审计）。
+def trusted_proxy_ips() -> set[str]:
+    """当前配置里的 TRUSTED_IPS，归一化后的合法地址。"""
+    raw = core_config.get_config("TRUSTED_IPS")
+    found: set[str] = set()
+    if not isinstance(raw, list):
+        return found
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        normalized = normalize_ip(item)
+        if normalized:
+            found.add(normalized)
+    return found
 
-    仅当直连来源位于 TRUSTED_IPS（受信任的反向代理 / 本机）时，才信任
-    ``X-Forwarded-For`` / ``X-Real-IP`` 请求头，避免攻击者伪造请求头绕过限流。
-    """
-    client = getattr(request, "client", None)
-    client_host = getattr(client, "host", None) or "unknown"
 
-    if client_host in TRUSTED_IPS:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            # 取最左侧（最初发起请求的客户端）地址
-            return forwarded.split(",")[0].strip() or client_host
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip.strip() or client_host
-    return client_host
+def _header_text(headers: Headers, name: str) -> str:
+    if name not in headers:
+        return ""
+    return headers[name]
+
+
+def _untrusted_from_right(header: str, trusted: set[str], peer: str) -> str:
+    hops: list[str] = []
+    for part in header.split(","):
+        ip = normalize_ip(part)
+        if ip:
+            hops.append(ip)
+    if peer:
+        hops.append(peer)
+    for hop in reversed(hops):
+        if hop not in trusted:
+            return hop
+    return ""
+
+
+def resolve_client_ip(peer: str, forwarded_for: str, real_ip: str) -> str:
+    """直连不在信任列表时用直连地址。在列表中时从右向左找站外地址。"""
+    peer_ip = normalize_ip(peer)
+    if not peer_ip:
+        peer_ip = "unknown"
+    trusted = trusted_proxy_ips()
+    if peer_ip not in trusted:
+        return peer_ip
+    chosen = _untrusted_from_right(forwarded_for, trusted, peer_ip)
+    if chosen:
+        return chosen
+    chosen = _untrusted_from_right(real_ip, trusted, "")
+    if chosen:
+        return chosen
+    return peer_ip
+
+
+class _PeerConnection(Protocol):
+    @property
+    def client(self) -> Address | None: ...
+
+    @property
+    def headers(self) -> Headers: ...
+
+
+def get_client_ip(connection: _PeerConnection) -> str:
+    """网页控制台限流、登录审计、访问日志和协同连接共用的客户端 IP。"""
+    client = connection.client
+    peer = client.host if client is not None else ""
+    return resolve_client_ip(
+        peer,
+        _header_text(connection.headers, "x-forwarded-for"),
+        _header_text(connection.headers, "x-real-ip"),
+    )
 
 
 @dataclass
@@ -42,8 +110,11 @@ class SecurityManager:
         self.BAN_DURATION = 900
 
     def is_trusted(self, ip: str) -> bool:
-        """判断是否为信任地址"""
-        return ip in TRUSTED_IPS
+        """与 ``get_client_ip`` 共用当前 ``TRUSTED_IPS``。"""
+        normalized = normalize_ip(ip)
+        if not normalized:
+            return False
+        return normalized in trusted_proxy_ips()
 
     def is_banned(self, ip: str) -> bool:
         """检查 IP 是否处于封禁期"""

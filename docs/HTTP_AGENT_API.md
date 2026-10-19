@@ -65,7 +65,7 @@ Authorization: Bearer gsk_<8位key_id>_<secret>
   `{"code":"unauthorized","message":"invalid api key"}`
 - 连续失败会封禁（默认 10 次 / 900 秒）；成功一次清零。直连公网 IP 按 IP 封。
   反代后的 loopback/私网不按该 IP 封（否则会掐掉整条代理）；此时按提交的 Bearer 哈希计数。
-  nginx 应设 `X-Real-IP` / `X-Forwarded-For`，并保证 Core `TRUSTED_IPS` 含反代地址。
+  nginx 应设 `X-Forwarded-For` 与 `X-Real-IP`，并保证 Core `TRUSTED_IPS` 含反代地址。直连受信任时先从 `X-Forwarded-For` 右端取站外地址，没有再看 `X-Real-IP`。
 - **禁止**把钥放 query：`?token=` 会被忽略，结果仍是 401。
 - 身份绑定在钥上（`user_id` / `bot_id` / 可选人格约束）。请求体里再写 `user_id` **无效**（`extra=ignore`）。
 
@@ -495,7 +495,7 @@ location /api/v1/agent/ {
 }
 ```
 
-`TRUSTED_IPS` 默认含 `127.0.0.1` / `localhost` / `::1`，才会认上面两个转发头。不要把公网网段写进信任列表。
+`TRUSTED_IPS` 默认含 `127.0.0.1` / `::1` 时才会认上面两个转发头。`localhost` 不是 IP，不参与匹配。不要把公网网段写进信任列表。反代必须覆盖客户端自己的 `X-Forwarded-For`。Core 只读这一头的第一行；带端口或方括号的片段会丢掉。
 
 Core 是 **单进程内存** 状态（限流槽、幂等、进行中的 run）。前面不要无粘滞的多 worker 打同一面。
 
