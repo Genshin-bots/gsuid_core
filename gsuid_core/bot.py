@@ -27,6 +27,7 @@ from gsuid_core.load_template import (
 )
 from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.ai_core.wall_clock import pause_wall_clock
+from gsuid_core.utils.image.image_tools import normalize_image_for_history
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     bm_config,
@@ -314,12 +315,20 @@ class _Bot:
                 # 处理消息列表
                 text_parts = []
                 image_count = 0
+                out_images = []
                 for msg in message:
                     if isinstance(msg, Message):
                         if msg.type == "text":
                             text_parts.append(str(msg.data))
                         elif msg.type == "image":
                             image_count += 1
+                            if msg.data:
+                                try:
+                                    norm = normalize_image_for_history(msg.data)
+                                    if norm:
+                                        out_images.append(norm)
+                                except Exception:
+                                    pass
                         elif msg.type == "at":
                             text_parts.append(f"@{msg.data}")
                         else:
@@ -327,6 +336,8 @@ class _Bot:
                     elif isinstance(msg, str):
                         text_parts.append(msg)
                 content = " ".join(text_parts)
+                if out_images:
+                    metadata["images"] = out_images
                 if image_count > 0:
                     metadata["image_count"] = image_count
                     from gsuid_core.ai_core.outbound import get_outbound_image_label
@@ -344,6 +355,13 @@ class _Bot:
 
                     content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "image"
+                    if message.data:
+                        try:
+                            norm = normalize_image_for_history(message.data)
+                            if norm:
+                                metadata["images"] = [norm]
+                        except Exception:
+                            pass
                 else:
                     content = f"[{message.type}]"
 

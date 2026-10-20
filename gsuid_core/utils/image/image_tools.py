@@ -5,7 +5,7 @@ import random
 import asyncio
 import mimetypes
 from io import BytesIO
-from typing import List, Tuple, Union, Optional, overload
+from typing import Any, List, Tuple, Union, Optional, overload
 from pathlib import Path
 
 import httpx
@@ -101,6 +101,43 @@ def image_to_base64(image: ImageInput) -> str:
     except Exception as e:
         logger.error(t("log.image.base64_process_fail", error=e))
         return ""
+
+
+def normalize_image_for_history(image: Any, resource_id: Optional[str] = None) -> str:
+    """提取历史消息中的图片标识：直链返回 URL，非直链返回资源接口路由。"""
+    if not image:
+        return ""
+    if isinstance(image, str):
+        trimmed = image.strip()
+        if trimmed.startswith(("http://", "https://")):
+            return trimmed
+    if resource_id:
+        return f"/api/history/resource/{resource_id}"
+    return ""
+
+
+def normalize_image_to_url_or_data(image: Any) -> str:
+    """将图片输入转换为 URL 或 DataURI 字符串。"""
+    if not image:
+        return ""
+    if isinstance(image, str):
+        trimmed = image.strip()
+        if trimmed.startswith(("http://", "https://", "data:image/")):
+            return trimmed
+        if trimmed.startswith("base64://"):
+            return f"data:image/png;base64,{trimmed[9:]}"
+        # 仅对较短且切实存在的本地路径尝试读取，避免对裸 base64 进行文件系统查找
+        if len(trimmed) <= 4096:
+            try:
+                p = Path(trimmed)
+                if p.is_file():
+                    return image_to_base64(p)
+            except Exception:
+                pass
+        return f"data:image/png;base64,{trimmed}"
+    if isinstance(image, (bytes, io.BytesIO, Image.Image, Path)):
+        return image_to_base64(image)
+    return str(image)
 
 
 @overload

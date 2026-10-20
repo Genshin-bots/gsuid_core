@@ -28,6 +28,7 @@ from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.utils.image.image_tools import normalize_image_for_history
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
@@ -405,6 +406,30 @@ def _record_inbound_history(event: Event) -> None:
         metadata["image_id_list"] = event.image_id_list
     elif event.image_id:
         metadata["image_id"] = event.image_id
+
+    # 提取图片直链或资源接口路由
+    inbound_images: list[str] = []
+    if event.image_list:
+        for idx, img in enumerate(event.image_list):
+            if img:
+                try:
+                    res_id = event.image_id_list[idx] if idx < len(event.image_id_list) else event.image_id
+                    norm = normalize_image_for_history(img, res_id)
+                    if norm:
+                        inbound_images.append(norm)
+                except Exception:
+                    pass
+    elif event.image:
+        try:
+            norm = normalize_image_for_history(event.image, event.image_id)
+            if norm:
+                inbound_images.append(norm)
+        except Exception:
+            pass
+
+    if inbound_images:
+        metadata["images"] = inbound_images
+
     if event.at_list:
         metadata["at_list"] = event.at_list
     if event.file:
