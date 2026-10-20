@@ -5,5 +5,6 @@
   "log.htmlrender.renderer_initialized": "[HTMLRender] renderer initialized, fonts: {fonts}",
   "log.htmlrender.font_register_failed": "[HTMLRender] font registration failed: {e}",
   "log.htmlrender.auto_send_fallback": "Auto-send of rendered image failed; falling back to resource registration: {e}",
-  "log.htmlrender.opaque_flatten_skip": "[HTMLRender] opaque flatten skip: {e}"
+  "log.htmlrender.opaque_flatten_skip": "[HTMLRender] opaque flatten skip: {e}",
+  "log.htmlrender.mermaid_unavailable": "[HTMLRender] Mermaid block replaced with a terminal notice: {e}"
 }

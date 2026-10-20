@@ -217,6 +217,10 @@ def _force_fluid_svg(svg: str, w: float, h: float) -> str:
 
 
 def _rewrite_one_svg(svg: str) -> str:
+    end = svg.find(">")
+    # mermaid 已按 viewBox 1:1 嵌字；再拉成 100% 会把字留在原字号
+    if end != -1 and "data-gs-mermaid" in svg[: end + 1]:
+        return svg
     w, h = _svg_size(svg)
     texts = list(_SVG_TEXT_RE.finditer(svg))
     if not texts:

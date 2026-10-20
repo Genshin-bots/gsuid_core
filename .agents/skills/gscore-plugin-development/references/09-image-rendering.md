@@ -17,6 +17,10 @@ GsCore 中**首选 PIL 直接绘图**——可控、轻量、无外部依赖、�
 > - 只有"非 JS 引擎渲染不出来"的图（K线、云图、3D Plotly）才上 playwright，并显式声明
 >   `playwright>=1.49.0` 依赖、写明用户需手动 `playwright install`。
 
+`render_html_to_bytes` / `render_md_to_bytes` 会先把 Mermaid（`class="mermaid"`、
+`language-mermaid`、Markdown mermaid 代码块）换成 mermaid.ink 的 SVG。服务连不上时，
+这一块变成黑底红字提示，其余 HTML 照常出图。页面里不要再引 mermaid.js。
+
 ## 9.2 PIL 范式（首选）
 
 利用 `gsuid_core.utils.image.image_tools` 提供的**复用度极高**的工具函数：
