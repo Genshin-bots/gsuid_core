@@ -177,11 +177,51 @@ def to_thinking_level(value: str) -> ThinkingLevel | None:
     return THINKING_LEVEL_MAP[value]
 
 
+# 统一 ThinkingLevel 没有 max。OpenAI 协议用 openai_reasoning_effort 原样带上。
+OpenAIConfiguredEffort = ThinkingLevel | Literal["max"]
+
+
+def to_openai_effort(value: str) -> OpenAIConfiguredEffort | None:
+    """OpenAI 兼容配置的档位。max 不进统一 thinking。"""
+    if value == "max":
+        return "max"
+    return to_thinking_level(value)
+
+
 def _with_thinking(settings: ModelSettings, model_effort: ThinkingLevel | None) -> ModelSettings:
     if model_effort is None:
         return settings
     settings["thinking"] = model_effort
     return settings
+
+
+def _with_openai_effort(
+    settings: OpenAIChatModelSettings,
+    model_effort: OpenAIConfiguredEffort | None,
+) -> OpenAIChatModelSettings:
+    # prepare_request 只剥统一 thinking。max 留在协议字段里。
+    if model_effort == "max":
+        settings["openai_reasoning_effort"] = "max"
+        return settings
+    if model_effort is not None:
+        settings["thinking"] = model_effort
+    return settings
+
+
+def user_thinking_profile(
+    model_effort: ThinkingLevel | None,
+) -> Callable[[ModelProfile], ModelProfile]:
+    """用户选了档位时让画像承认思考，否则 prepare_request 会丢掉 settings['thinking']。"""
+
+    def _overlay(default: ModelProfile) -> ModelProfile:
+        # adaptive 不传。画像已承认思考时不动，保留「不能关闭」的结论。
+        if model_effort is None:
+            return default
+        if default.get("supports_thinking", False) or default.get("thinking_always_enabled", False):
+            return default
+        return merge_profile(default, ModelProfile(supports_thinking=True))
+
+    return _overlay
 
 
 def to_request_method(value: str) -> RequestMethod:
@@ -328,13 +368,13 @@ class AutoUsageOpenAIChatModel(OpenAIChatModelWithVideo):
 
 def get_openai_config_by_name(
     config_name: str,
-) -> tuple[str, str, str, ThinkingLevel | None, RequestMethod, bool, str]:
+) -> tuple[str, str, str, OpenAIConfiguredEffort | None, RequestMethod, bool, str]:
     oconfig = get_openai_config(config_name)
     base_url, api_key, model_name, model_effort, request_method = (
         oconfig.get_config("base_url").data,
         oconfig.get_config("api_key").data[0],
         oconfig.get_config("model_name").data,
-        to_thinking_level(oconfig.get_config("model_effort").data),
+        to_openai_effort(oconfig.get_config("model_effort").data),
         to_request_method(oconfig.get_config("request_method").data),
     )
     # 旧配置文件缺该 key 时 get_config 会自动从模板补默认值 "auto", 不会抛异常
@@ -399,24 +439,24 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
 
     # send_back_thinking 开关：多轮会话时不回发历史 ThinkingPart，避免中转网关报错。
     send_back_thinking = str(get_openai_config(config_name).get_config("send_back_thinking").data)
-    if send_back_thinking == "off":
+    # max 不写统一 thinking，画像不用为它改 supports_thinking。
+    keep_effort = user_thinking_profile(None if model_effort == "max" else model_effort)
+
+    def _chat_profile(default: ModelProfile) -> ModelProfile:
+        profile = keep_effort(default)
+        if send_back_thinking != "off":
+            return profile
         from pydantic_ai.profiles.openai import OpenAIModelProfile
 
-        def _overlay_send_back_off(default: ModelProfile) -> ModelProfile:
-            # v2: profile 已是 TypedDict, 直接用 merge_profile 叠加 OpenAI 专属字段
-            return merge_profile(default, OpenAIModelProfile(openai_chat_send_back_thinking_parts=False))
-
-        profile_spec = _overlay_send_back_off
-    else:
-        # 默认走 identity: 不叠加任何字段, 行为与 send_back_thinking=auto/on 一致
-        profile_spec: Callable[[ModelProfile], ModelProfile] = lambda default: default  # noqa: E731
+        return merge_profile(profile, OpenAIModelProfile(openai_chat_send_back_thinking_parts=False))
 
     if request_method == "responses":
         # 视频走 /v1/files UploadedFile，不覆写 pydantic_ai 父类静态 mapper
         return OpenAIResponsesModel(
             model_name=model_name,
             provider=provider,
-            settings=_with_thinking(ModelSettings(), model_effort),
+            profile=keep_effort,
+            settings=_with_openai_effort(OpenAIChatModelSettings(), model_effort),
         )
 
     # cumulative 语义网关须取「最后累计值」而非逐 chunk 累加, 否则统计膨胀数十倍;
@@ -427,10 +467,10 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     return model_cls(
         model_name=model_name,
         provider=provider,
-        profile=profile_spec,
+        profile=_chat_profile,
         # 请求参数 stream_options.continuous_usage_stats 仅在部署者显式声明
         # cumulative 时发送; auto 的白名单/探测只作用于响应侧, 不改请求体
-        settings=_with_thinking(
+        settings=_with_openai_effort(
             OpenAIChatModelSettings(
                 openai_continuous_usage_stats=usage_stats_mode == "cumulative",
             ),
@@ -457,10 +497,16 @@ def make_anthropic_model(
         max_retries=1,
         http_client=http_client,
     )
+    learned = anthropic_profile_for_model(model_name)
+    keep_effort = user_thinking_profile(model_effort)
+
+    def _profile(default: ModelProfile) -> ModelProfile:
+        return keep_effort(learned(default))
+
     return RecoveringAnthropicModel(
         model_name=model_name,
         provider=AnthropicProvider(anthropic_client=client),
-        profile=anthropic_profile_for_model(model_name),
+        profile=_profile,
         settings=_with_thinking(ModelSettings(), model_effort),
     )
 
@@ -562,6 +608,7 @@ def get_gemini_model_by_name(config_name: str) -> "GoogleModel":
     return GoogleModel(
         model_name=model_name,
         provider=provider,
+        profile=user_thinking_profile(model_effort),
         settings=_with_thinking(ModelSettings(), model_effort),
     )
 
