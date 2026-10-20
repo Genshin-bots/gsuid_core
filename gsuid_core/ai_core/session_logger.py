@@ -163,6 +163,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "system_injection",
         # 模型产出
         "thinking",
+        "thinking_effort",
         "text_output",
         # 工具
         "tool_call",
@@ -712,6 +713,12 @@ class AISessionLogger:
             ):
                 return
         self._add_entry("thinking", {"content": content})
+
+    def log_request_thinking_effort(self, effort: str | None) -> None:
+        """记录这次请求 JSON 里的思考档位。没有该字段时 effort 为 None。"""
+        shown = "null" if effort is None else effort
+        logger.info(t("log.ai.gscore_request_thinking_effort", effort=shown))
+        self._add_entry("thinking_effort", {"effort": effort})
 
     def log_tool_call(self, tool_name: str, args: Any, tool_call_id: str) -> None:
         """记录工具调用请求。

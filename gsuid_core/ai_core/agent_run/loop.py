@@ -42,6 +42,7 @@ from gsuid_core.ai_core.utils import (
 )
 from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE, capability_hit_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
+from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
@@ -751,25 +752,37 @@ class LoopPhase(RunOnceHost):
         _text_starts: set[int] = set()
         _tags = st.thinking_tags if st.thinking_tags else ("<think>", "</think>")
         splitter = ThinkTagSplitter(_tags[0], _tags[1])
-        async with node.stream(agent_run.ctx) as request_stream:
+        # 档位取自发出的 JSON。进入流失败时请求可能已经写出。
+        with effort_capture() as effort_slot:
             try:
-                async for _event in request_stream:
-                    if st.cancel_ev is not None and st.cancel_ev.is_set():
-                        st.generation_cancelled = True
-                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
-                        break
-                    st.last_event_at = time.perf_counter()
-                    if st.first_event_at is None:
-                        st.first_event_at = st.last_event_at
-                    await self._emit_stream_events(st, _event, text_starts=_text_starts, splitter=splitter)
+                async with node.stream(agent_run.ctx) as request_stream:
+                    self._log_captured_thinking_effort(effort_slot)
+                    try:
+                        async for _event in request_stream:
+                            if st.cancel_ev is not None and st.cancel_ev.is_set():
+                                st.generation_cancelled = True
+                                logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                                break
+                            st.last_event_at = time.perf_counter()
+                            if st.first_event_at is None:
+                                st.first_event_at = st.last_event_at
+                            await self._emit_stream_events(st, _event, text_starts=_text_starts, splitter=splitter)
+                    finally:
+                        vis, th = splitter.flush()
+                        if th:
+                            st.thinking_streamed = True
+                            self._emit_trace("thinking_delta", th)
+                        if vis:
+                            await self._enqueue_text_delta(st, vis, None)
+                        await self._flush_bot_text_delta(st)
             finally:
-                vis, th = splitter.flush()
-                if th:
-                    st.thinking_streamed = True
-                    self._emit_trace("thinking_delta", th)
-                if vis:
-                    await self._enqueue_text_delta(st, vis, None)
-                await self._flush_bot_text_delta(st)
+                self._log_captured_thinking_effort(effort_slot)
+
+    def _log_captured_thinking_effort(self, slot: EffortCapture) -> None:
+        seen, effort = take_request_effort(slot)
+        if not seen:
+            return
+        self._session_logger.log_request_thinking_effort(effort)
 
     async def _run_once_on_call_tools(
         self,

@@ -237,6 +237,7 @@
   "log.ai.gscore_check_core_init": "[GsCore][AI] AI Core の初期化状態の確認に失敗しました。降格処理で継続します: {e}",
   "log.ai.gscore_core_initialization_wait": "[GsCore][AI] AI Core の初期化待機がタイムアウトしました。移行未完了のベクトルストアへのアクセスを避けるため、このメッセージをスキップします",
   "log.ai.gscore_effort_config_value_fell": "[GsCore] 不明な model_effort 設定: {value}、enable にフォールバック",
+  "log.ai.gscore_request_thinking_effort": "[GsCore] モデル要求に載った思考強度: {effort}",
   "log.ai.gscore_empty_content_visible": "[GsCore][AI] 空内容のメッセージ（モデル可視コンテンツがなく、@ もされていません）。先行で静かにスキップします",
   "log.ai.gscore_exceeded_absolute_limit": "[GsCore][AI] テキストが絶対上限を超えました（{raw_text_len} > {ABSOLUTE_MAX_LENGTH}）。ハードトランケートを実行します",
   "log.ai.gscore_gemini_config_name_api": "[GsCore] Gemini 配置 {config_name} 未填写 api_key, 请前往网页控制台填写",

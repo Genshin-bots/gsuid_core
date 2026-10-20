@@ -589,6 +589,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `run_end` | 单次 run 结束（纯标记） | （空，最终输出见 result） |
 | `user_input` | 用户输入（唯一记录处） | content（含图片时见下方"图片外置"说明） |
 | `thinking` | 模型思考过程 | content |
+| `thinking_effort` | 这次请求 JSON 里的思考档位。没有该字段时 `effort` 为 `null` | effort |
 | `tool_call` | 工具调用请求 | tool_name, args, tool_call_id |
 | `tool_return` | 工具执行返回 | tool_name, content, tool_call_id |
 | `tools_list` | 传给 AI 的工具列表 | tools |

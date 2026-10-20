@@ -43,6 +43,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.request_effort import capture_model_request_effort
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 from gsuid_core.ai_core.multimodal.openai_files import OpenAIChatModelWithVideo
 
@@ -86,13 +87,21 @@ def _shared_model_http_client(provider: str) -> httpx.AsyncClient:
     每次建模型都 new 私有客户端会累积不被关闭的连接池、且丢失跨请求连接复用
     （评审修复 F8）；provider 工厂统一从这里取池、统一吃 §23 墙钟超时。
     """
-    return httpx.AsyncClient(timeout=MODEL_REQUEST_TIMEOUT)
+    # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
+    return httpx.AsyncClient(
+        timeout=MODEL_REQUEST_TIMEOUT,
+        event_hooks={"request": [capture_model_request_effort]},
+    )
 
 
 @lru_cache(maxsize=None)
 def _shared_model_httpx2_client(provider: str) -> httpx2.AsyncClient:
     """已迁到 httpx2 的 SDK（openai 3.x / anthropic 1.x）用的共享池，语义同上。"""
-    return httpx2.AsyncClient(timeout=MODEL_REQUEST_TIMEOUT_HTTPX2)
+    # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
+    return httpx2.AsyncClient(
+        timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
+        event_hooks={"request": [capture_model_request_effort]},
+    )
 
 
 def parse_provider_config_name(full_name: str) -> tuple[str, str]:
