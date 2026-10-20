@@ -648,11 +648,17 @@ class AISessionLogger:
         tools_hash: str = "",
         system_hash: str = "",
         tools_diff: dict[str, list[str]] | None = None,
+        break_pos: int | None = None,
+        approx_tokens_before: int | None = None,
     ) -> None:
-        """记录本 run 相对上一 run 的前缀失配类别。"""
+        """记录本 run 相对上一 run 的前缀失配类别及中段失配位置。"""
         data: dict[str, object] = {"reason": reason, "tools_hash": tools_hash, "system_hash": system_hash}
         if tools_diff is not None:
             data["tools_diff"] = tools_diff
+        if break_pos is not None:
+            data["break_pos"] = break_pos
+        if approx_tokens_before is not None:
+            data["approx_tokens_before"] = approx_tokens_before
         self._add_entry("prefix_break", data)
 
     def log_outbound_audit(

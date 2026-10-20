@@ -1161,7 +1161,7 @@ class StatisticsManager:
                     "output_tokens": d_out,
                     "cache_read_tokens": d_cr,
                     "cache_write_tokens": d_cw,
-                    "total_tokens": d_in + d_out + d_cr + d_cw,
+                    "total_tokens": d_in + d_out,
                     "user_turn_count": d_ut,
                     "agent_run_count": d_ar,
                     "user_turn_agent_run_count": d_ut_ar,
@@ -1198,7 +1198,7 @@ class StatisticsManager:
                     "output_tokens": u.output_tokens,
                     "cache_read_tokens": u.cache_read_tokens,
                     "cache_write_tokens": u.cache_write_tokens,
-                    "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
+                    "total_tokens": u.input_tokens + u.output_tokens,
                 }
                 for model_name, u in model_acc.items()
             ],
@@ -1213,7 +1213,7 @@ class StatisticsManager:
                     "output_tokens": u.output_tokens,
                     "cache_read_tokens": u.cache_read_tokens,
                     "cache_write_tokens": u.cache_write_tokens,
-                    "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
+                    "total_tokens": u.input_tokens + u.output_tokens,
                 }
                 for type_name, u in type_acc.items()
             ],
@@ -1230,9 +1230,7 @@ class StatisticsManager:
                 "output_tokens": total.output_tokens,
                 "cache_read_tokens": total.cache_read_tokens,
                 "cache_write_tokens": total.cache_write_tokens,
-                "total_tokens": (
-                    total.input_tokens + total.output_tokens + total.cache_read_tokens + total.cache_write_tokens
-                ),
+                "total_tokens": total.input_tokens + total.output_tokens,
             },
             "efficiency": {
                 "user_turn_count": sum_user_turns,

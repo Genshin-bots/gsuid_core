@@ -528,6 +528,7 @@ class LoopPhase(RunOnceHost):
                                 task_id=_tid,
                                 root_task_id=_rid,
                                 is_group=_is_group,
+                                create_by=self.create_by,
                             )
                         except Exception as _fileos_e:
                             logger.debug(i18n_t("log.ai.tool_output_fold_skip", e=_fileos_e))

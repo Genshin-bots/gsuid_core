@@ -295,6 +295,7 @@
   "log.ai.heartbeat_remaining_silent_mood": "[Heartbeat] 🤫 保持沉默: {mood} ({event})",
   "log.ai.heartbeat_session_event_generated_send": "[Heartbeat] 会话 {event} 文本生成为空，放弃发送",
   "log.ai.heartbeat_session_event_persona": "[Heartbeat] 会话 {event} 没有配置 persona",
+  "log.ai.heartbeat_session_history_unchanged_skip": "[Heartbeat] 会话 {target_key} 群聊记录自上次决策无变化，跳过决策",
   "log.ai.heartbeat_session_muted_skipping": "[Heartbeat] 会话 {p0} 处于 AI 禁言状态，跳过巡检",
   "log.ai.heartbeat_skipping_session_key_skip": "[Heartbeat] 跳过 {session_key}: {skip_reason}",
   "log.ai.heartbeat_start_inspector_persona_fail": "[Heartbeat] {persona_name} 启动巡检器失败: {e}",

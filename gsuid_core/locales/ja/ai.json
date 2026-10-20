@@ -295,6 +295,7 @@
   "log.ai.heartbeat_remaining_silent_mood": "[Heartbeat] 🤫 沈黙を維持する: {mood}（{event}）",
   "log.ai.heartbeat_session_event_generated_send": "[Heartbeat] セッション {event} の生成テキストが空のため、送信を中止する",
   "log.ai.heartbeat_session_event_persona": "[Heartbeat] セッション {event} に persona が設定されていない",
+  "log.ai.heartbeat_session_history_unchanged_skip": "[Heartbeat] セッション {target_key} のチャット履歴は前回の判断から変更がないため、スキップします",
   "log.ai.heartbeat_session_muted_skipping": "[Heartbeat] セッション {p0} は AI ミュート状態のため、巡回をスキップする",
   "log.ai.heartbeat_skipping_session_key_skip": "[Heartbeat] {session_key} をスキップする: {skip_reason}",
   "log.ai.heartbeat_start_inspector_persona_fail": "[Heartbeat] {persona_name} の巡回処理の起動に失敗した: {e}",

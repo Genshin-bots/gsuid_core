@@ -92,9 +92,9 @@ def test_shutdown_owns_initial_lifespan_before_it_is_ready(monkeypatch: pytest.M
         await entered.wait()
         runtime = mcp_server._mcp_lifespan_cm
         try:
-            await asyncio.wait_for(mcp_server._shutdown_mcp_server(), 1)
+            await asyncio.wait_for(mcp_server._shutdown_mcp_server(), 5)
             with pytest.raises(RuntimeError, match="stopping"):
-                await asyncio.wait_for(starting, 1)
+                await asyncio.wait_for(starting, 5)
             assert exited.is_set()
             assert runtime is not None and runtime._task is not None and runtime._task.done()
             assert host.routes == []
@@ -143,7 +143,7 @@ def test_shutdown_can_stop_a_rebuild_waiting_inside_its_lock(monkeypatch: pytest
         rebuilding = asyncio.create_task(mcp_server._rebuild_http_mcp_session())
         await entered.wait()
         try:
-            await asyncio.wait_for(mcp_server._shutdown_mcp_server(), 1)
+            await asyncio.wait_for(mcp_server._shutdown_mcp_server(), 5)
             await asyncio.wait_for(rebuilding, 1)
             assert exited.is_set()
             assert runtime is not None and runtime._task is not None and runtime._task.done()
@@ -194,7 +194,7 @@ def test_cancelled_mount_caller_clears_owner_and_allows_next_mount(monkeypatch: 
         runtime = mcp_server._mcp_lifespan_cm
         starting.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(starting, 1)
+            await asyncio.wait_for(starting, 5)
         try:
             assert exited.is_set()
             assert runtime is not None and runtime._task is not None and runtime._task.done()

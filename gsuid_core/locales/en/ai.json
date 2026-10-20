@@ -295,6 +295,7 @@
   "log.ai.heartbeat_remaining_silent_mood": "[Heartbeat] 🤫 Remaining silent: {mood} ({event})",
   "log.ai.heartbeat_session_event_generated_send": "[Heartbeat] Session {event} generated empty text; canceling send",
   "log.ai.heartbeat_session_event_persona": "[Heartbeat] Session {event} has no persona configured",
+  "log.ai.heartbeat_session_history_unchanged_skip": "[Heartbeat] Session {target_key} chat history unchanged since last decision, skipping",
   "log.ai.heartbeat_session_muted_skipping": "[Heartbeat] Session {p0} has AI muted; skipping inspection",
   "log.ai.heartbeat_skipping_session_key_skip": "[Heartbeat] Skipping {session_key}: {skip_reason}",
   "log.ai.heartbeat_start_inspector_persona_fail": "[Heartbeat] Failed to start inspector for {persona_name}: {e}",

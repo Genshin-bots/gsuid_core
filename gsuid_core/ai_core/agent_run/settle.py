@@ -466,15 +466,15 @@ class SettlePhase(RunOnceHost):
             history_payloads,
             hash_system_prompt,
             record_prefix_break,
-            classify_prefix_break,
             hash_history_messages,
+            classify_prefix_break_with_pos,
         )
 
         tools_hash = hash_tool_names(st.tool_names)
         system_hash = hash_system_prompt(self.system_prompt or "")
         hist_hashes = hash_history_messages(self.history)
         prev = self._prefix_snapshot
-        reason = classify_prefix_break(
+        reason, break_pos, approx_tokens_before = classify_prefix_break_with_pos(
             prev,
             history_hashes=hist_hashes,
             tools_hash=tools_hash,
@@ -489,7 +489,14 @@ class SettlePhase(RunOnceHost):
             if removed:
                 logger.warning(i18n_t("log.agent.prefix_tools_removed", names=removed[:12]))
         record_prefix_break(reason)
-        self._session_logger.log_prefix_break(reason, tools_hash=tools_hash, system_hash=system_hash, tools_diff=diff)
+        self._session_logger.log_prefix_break(
+            reason,
+            tools_hash=tools_hash,
+            system_hash=system_hash,
+            tools_diff=diff,
+            break_pos=break_pos,
+            approx_tokens_before=approx_tokens_before,
+        )
         combined = list(self.history) + list(new_msgs)
         self._prefix_snapshot = PrefixSnapshot(
             history_hashes=hash_history_messages(combined),
@@ -1248,16 +1255,10 @@ class SettlePhase(RunOnceHost):
 
         if isinstance(result, AgentRunResult):
             usage = result.usage
-            await self._note_truncated_usage(
-                st,
-                statistics_manager,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                cache_read_tokens=usage.cache_read_tokens,
-                cache_write_tokens=usage.cache_write_tokens,
-                count_run=False,
-                close_chat=False,
-            )
+            st.usage_input_tokens += usage.input_tokens
+            st.usage_output_tokens += usage.output_tokens
+            st.usage_cache_read_tokens += usage.cache_read_tokens
+            st.usage_cache_write_tokens += usage.cache_write_tokens
         text = str(result.output).strip()
         if not text or is_silence_marker(text):
             return None
@@ -1297,7 +1298,11 @@ class SettlePhase(RunOnceHost):
         statistics_manager.record_error(error_type="usage_limit")
         self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {_require_limits(st).request_limit}")
 
-        # 先记下主循环用量。收口模型若再失败，这批 token 也还在日志里。
+        salvaged = None
+        if st.return_mode == "return":
+            salvaged = await self._salvage_capability_delivery(st, statistics_manager)
+
+        # 主循环与收口 run 的合计用量统一记账与落盘，确保日志完整且不被覆盖
         await self._note_truncated_usage(
             st,
             statistics_manager,
@@ -1309,9 +1314,7 @@ class SettlePhase(RunOnceHost):
             close_chat=True,
         )
 
-        # return 不对用户说话。能力代理有材料就收成交付；评测和零材料仍是可识别失败。
         if st.return_mode == "return":
-            salvaged = await self._salvage_capability_delivery(st, statistics_manager)
             if salvaged:
                 self._session_logger.log_text_output(salvaged)
                 self._session_logger.log_result(salvaged, st.tool_call_list)

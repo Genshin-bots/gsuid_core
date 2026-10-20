@@ -92,35 +92,101 @@ def _line(rec: AIToolOutputRecord) -> str:
     return f"- {rec.id} | {label} | {rec.date_str} | {rec.summary[:80]}"
 
 
+def _extract_query_snippets(text: str, query: str, window: int = 300, max_snippets: int = 5) -> str:
+    """在文本中检索 query，提取其前后各 window 字符的上下文段落窗口。"""
+    if not query.strip():
+        return text
+    q_low = query.lower()
+    t_low = text.lower()
+    indices: list[int] = []
+    start = 0
+    while len(indices) < max_snippets:
+        pos = t_low.find(q_low, start)
+        if pos == -1:
+            break
+        indices.append(pos)
+        start = pos + max(1, len(q_low))
+    if not indices:
+        return f"（未在内容中检索到关键词「{query}」，全文共 {len(text)} 字符）"
+    snippets: list[str] = []
+    for i, pos in enumerate(indices, 1):
+        s = max(0, pos - window)
+        e = min(len(text), pos + len(query) + window)
+        prefix = "…" if s > 0 else ""
+        suffix = "…" if e < len(text) else ""
+        snippet = text[s:e].strip()
+        snippets.append(f"【片段 {i} (字符 {s}-{e})】\n{prefix}{snippet}{suffix}")
+    return "\n\n".join(snippets)
+
+
+async def _read_single_handle(
+    ctx: RunContext[ToolContext],
+    hid: str,
+    offset: int,
+    limit: int,
+    query: str = "",
+) -> str:
+    if is_delegation_handle(hid):
+        deleg = await load_delegation(hid)
+        if deleg is None:
+            return f"⚠️ 委派句柄不存在: {hid}"
+        formatted = format_delegation(deleg)
+        if query:
+            return _extract_query_snippets(formatted, query)
+        return formatted
+    resolved = await resolve_handle(hid)
+    if resolved is None:
+        return f"⚠️ 句柄不存在: {hid}"
+    if not await _handle_access_allowed(resolved, ctx):
+        return "⚠️ 无权限读取该句柄。"
+    if query:
+        text, err = load_payload_text(
+            payload_inline=resolved.payload_inline,
+            payload_path=resolved.payload_path,
+        )
+        if err:
+            return f"handle {resolved.id} | ⚠️ {err}"
+        if not text:
+            return f"handle {resolved.id} | （无内容）"
+        snippets = _extract_query_snippets(text, query)
+        return f"handle {resolved.id} | query: {query}\n\n{snippets}"
+    lim = max(1, min(int(limit), 32000))
+    off = max(0, int(offset))
+    return format_resolved(resolved, offset=off, limit=lim)
+
+
 @ai_tools(category="buildin", capability_domain="产物", code_callable=True)
 async def read_handle(
     ctx: RunContext[ToolContext],
-    handle_id: str,
+    handle_id: str = "",
     offset: int = 0,
     limit: int = 8000,
+    handle_ids: list[str] | None = None,
+    query: str = "",
 ) -> str:
-    """统一读句柄：to_/sa_/res_/img_/dlg_/kb_plugin/kb_kbdoc 均可；图片只返回发送提示。
+    """统一读句柄：to_/sa_/res_/img_/dlg_/kb_plugin/kb_kbdoc 均可；支持单句柄、多句柄与关键词窗口提取。
 
     长文按 **字符** offset/limit 分页（见返回文首【读窗口】）。
-    续读请把 offset 设为上一页提示的 next（如 got 段末），勿重复 offset=0。
+    支持多句柄批量读：传入 handle_ids 一次获取多个句柄内容，避免多次往返。
+    支持关键词过滤提取：传入 query 只返回包含关键词的前后上下文段落窗口。
     ``dlg_`` 是委派句柄，返回该子任务的实时状态与产物（等价 check_delegation）。
     ``kb_plugin`` / ``kb_kbdoc`` 是公共知识全文，无属主校验。
     框架保底工具：折叠后的检索/产物必须用本工具取全文，禁止空口说「只有句柄」。
     """
-    if is_delegation_handle(handle_id):
-        deleg = await load_delegation(handle_id)
-        if deleg is None:
-            return f"⚠️ 委派句柄不存在: {handle_id}"
-        return format_delegation(deleg)
-    resolved = await resolve_handle(handle_id)
-    if resolved is None:
-        return f"⚠️ 句柄不存在: {handle_id}"
-    if not await _handle_access_allowed(resolved, ctx):
-        return "⚠️ 无权限读取该句柄。"
-    # 单次读窗上限；全文靠 offset 续读
-    lim = max(1, min(int(limit), 32000))
-    off = max(0, int(offset))
-    return format_resolved(resolved, offset=off, limit=lim)
+    targets: list[str] = []
+    if handle_ids:
+        targets.extend(h.strip() for h in handle_ids if h and h.strip())
+    if handle_id and handle_id.strip() and handle_id.strip() not in targets:
+        targets.insert(0, handle_id.strip())
+    if not targets:
+        return "⚠️ 请提供 handle_id 或 handle_ids。"
+    if len(targets) == 1:
+        return await _read_single_handle(ctx, targets[0], offset, limit, query)
+    results: list[str] = []
+    for hid in targets[:16]:
+        res = await _read_single_handle(ctx, hid, offset, limit, query)
+        results.append(f"=== {hid} ===\n{res}")
+    return "\n\n".join(results)
 
 
 async def search_fileos_outputs(

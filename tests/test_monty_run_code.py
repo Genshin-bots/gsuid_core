@@ -60,12 +60,29 @@ def teardown_module() -> None:
     asyncio.run(close_monty_pool())
 
 
-def test_print_is_not_the_result() -> None:
+def test_print_output_captured_with_value() -> None:
     printed = _run(execute_script(_ctx([]), "print(5050)"))
-    assert "5050" not in printed
-    assert "没有返回值" in printed
+    assert "stdout:\n5050" in printed
     kept = _run(execute_script(_ctx([]), "print('noise')\n7"))
-    assert kept == "7"
+    assert "stdout:\nnoise" in kept
+    assert "value:\n7" in kept
+
+
+def test_native_dict_and_list_can_be_accessed() -> None:
+    async def monty_probe_read_data(ctx: RunContext[ToolContext]) -> dict[str, object]:
+        _ = ctx
+        return {"code": 200, "items": [{"name": "item1", "val": 10}, {"name": "item2", "val": 20}]}
+
+    _install("monty_probe_read_data", monty_probe_read_data, code_callable=True)
+    code = "data = await monty_probe_read_data()\nsum(it['val'] for it in data['items'])"
+    res = _run(execute_script(_ctx(["monty_probe_read_data"]), code))
+    assert res == "30"
+
+
+def test_name_error_returns_available_tools_hint() -> None:
+    res = _run(execute_script(_ctx(["monty_probe_read"]), "await nonexistent_tool()"))
+    assert "NameError" in res
+    assert "当前可用工具函数：" in res
 
 
 def test_pure_expression_returns_the_number() -> None:

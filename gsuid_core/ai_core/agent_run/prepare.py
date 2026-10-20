@@ -186,7 +186,9 @@ class PreparePhase(RunOnceHost):
             _inherited_ut = get_user_turn_id()
             st.user_turn_id = _inherited_ut or ""
         # 交互主人格：专属工具从静态池剥离后，同步写入 blocked，堵住 find_tools 回灌
-        st.blocked_exclusive = _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
+        st.blocked_exclusive = (
+            _capability_exclusive_tool_names() if self.create_by in ("Chat", "Agent", "TEST") else set()
+        )
         # 出站权限控制：交互主人格与 Kanban_Relay 允许出站，能力代理产物回传上游。
         # TEST 本地评测端点作为交互主人格放行出站。
         st.allow_outbound = self.create_by == "Kanban_Relay" or (
