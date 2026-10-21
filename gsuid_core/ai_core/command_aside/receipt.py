@@ -31,6 +31,9 @@ def receipt_parts(
             continue
         if piece.kind != "image":
             continue
+        if piece.omitted:
+            skipped_images += 1
+            continue
         if len(images) >= MAX_IMAGES:
             skipped_images += 1
             continue
@@ -40,8 +43,6 @@ def receipt_parts(
         if piece.image_url:
             images.append(ImageUrl(url=piece.image_url))
             continue
-        if piece.text.strip():
-            texts.append(piece.text.strip())
 
     body = "\n".join(texts)
     if len(body) > _TEXT_CAP:

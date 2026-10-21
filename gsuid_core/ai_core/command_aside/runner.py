@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 import random
 from typing import Literal, Protocol, Sequence
 from pathlib import Path
@@ -11,15 +12,27 @@ from collections.abc import Awaitable
 from pydantic_ai.tools import Tool
 from pydantic_ai.messages import UserContent
 
+from gsuid_core.sv import SL
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
+from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.trigger import Trigger
+from gsuid_core.ai_core.utils import is_silence_marker
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.startup import is_ai_core_ready
+from gsuid_core.message_history import get_history_manager
+from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+from gsuid_core.ai_core.ai_router import get_ai_session
+from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import ASIDE_MODE, normalize_ai_modes, persona_config_manager
+from gsuid_core.ai_core.self_repetition import self_repetition_hint
+from gsuid_core.ai_core.persona.settings import get_master_title
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
+from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
 
 from .policy import bind_tool_policy, restore_tool_policy
 from .recall import save_advice, lookup_advice
@@ -30,6 +43,59 @@ from .source_lookup import command_stems, find_receipt_excerpts
 
 ReplyShape = Literal["image", "text", "mixed"]
 
+_last_aside_comment_ts: dict[str, float] = {}
+_ASIDE_COOLDOWN_SECONDS = 120.0
+
+_FAILURE_USAGE_MARKERS = (
+    "失败",
+    "错误",
+    "暂无",
+    "不存在",
+    "未找到",
+    "找不到",
+    "重试",
+    "请发送",
+    "请使用",
+    "可发送",
+    "用法",
+    "格式错误",
+    "参数错误",
+    "未绑定",
+    "绑定后",
+    "登录",
+    "登陆",
+    "未开启",
+    "缺少",
+    "指令错误",
+    "无效",
+    "异常",
+    "超时",
+    "拒绝",
+    "请先",
+    "参考命令",
+)
+_FAILURE_USAGE_MARKERS_EN = (
+    "not found",
+    "failed",
+    "invalid",
+    "usage",
+    "timed out",
+    "exception",
+)
+
+
+def _is_failure_or_usage_receipt(receipt: str) -> bool:
+    text = receipt.strip()
+    if any(marker in text for marker in _FAILURE_USAGE_MARKERS):
+        return True
+    folded = text.casefold()
+    return any(marker in folded for marker in _FAILURE_USAGE_MARKERS_EN)
+
+
+def _all_images_omitted(pieces: list[SentPiece]) -> bool:
+    images = [p for p in pieces if p.kind == "image"]
+    return bool(images) and all(p.omitted for p in images)
+
 
 class AsideSettings:
     def __init__(
@@ -38,11 +104,13 @@ class AsideSettings:
         text_probability: float,
         mixed_probability: float,
         allow_tools: bool,
+        cooldown_seconds: float = 0.0,
     ) -> None:
         self.image_probability = image_probability
         self.text_probability = text_probability
         self.mixed_probability = mixed_probability
         self.allow_tools = allow_tools
+        self.cooldown_seconds = cooldown_seconds
 
     def probability(self, shape: ReplyShape) -> float:
         if shape == "image":
@@ -81,11 +149,15 @@ def load_aside_settings(persona_name: str) -> AsideSettings | None:
     modes = normalize_ai_modes(list(config.get_config("ai_mode").data))
     if ASIDE_MODE not in modes:
         return None
+    cooldown = _ASIDE_COOLDOWN_SECONDS
+    if "aside_cooldown_seconds" in config.config:
+        cooldown = float(config.get_config("aside_cooldown_seconds").data)
     return AsideSettings(
         image_probability=float(config.get_config("aside_image_probability").data),
         text_probability=float(config.get_config("aside_text_probability").data),
         mixed_probability=float(config.get_config("aside_mixed_probability").data),
         allow_tools=bool(config.get_config("aside_allow_tools").data),
+        cooldown_seconds=cooldown,
     )
 
 
@@ -93,10 +165,46 @@ def raw_receipt_text(pieces: list[SentPiece]) -> str:
     return "\n".join(piece.text.strip() for piece in pieces if piece.kind == "text" and piece.text.strip())
 
 
-def receipt_commands(receipt: str, excerpts: list[tuple[str, str]] | None = None) -> str:
-    """回执方括号里的命令，以及摘录里紧接着的另一步。都嵌进同一句。"""
+def _get_plugin_commands(plugin_name: str) -> set[str]:
+    if not plugin_name:
+        return set()
+    prefixes: list[str] = []
+    cfg_prefixes = core_config.get_config("command_start")
+    if isinstance(cfg_prefixes, list):
+        prefixes = [str(p) for p in cfg_prefixes if p]
+    if not prefixes:
+        prefixes = [""]
+
+    commands: set[str] = set()
+    for sv in SL.lst.values():
+        if sv.self_plugin_name != plugin_name:
+            continue
+        for type_dict in sv.TL.values():
+            for trig in type_dict.values():
+                kw = str(trig.keyword)
+                commands.add(kw)
+                for p in prefixes:
+                    commands.add(f"{p}{kw}")
+    return commands
+
+
+def receipt_commands(
+    receipt: str,
+    excerpts: list[tuple[str, str]] | None = None,
+    plugin: str = "",
+) -> str:
+    """回执方括号里的真实命令，排除插件名与占位标签。"""
+    plugin_cmds = _get_plugin_commands(plugin)
     found: list[str] = []
-    for item in re.findall(r"\[([^\[\]\n]{2,80})\]", receipt):
+    for raw in re.finditer(r"(?:^|[\s\S])\[([^\[\]\n]{2,80})\]", receipt):
+        item = raw.group(1).strip()
+        if plugin and (item == plugin or item in plugin or plugin in item):
+            continue
+        if any(bad in item for bad in ("成功", "失败", "图片", "文件", "会话", "未放入", "过大")):
+            continue
+        if plugin_cmds:
+            if not any(item == cmd or item.endswith(cmd) or cmd in item for cmd in plugin_cmds):
+                continue
         if item not in found:
             found.append(item)
     extras = _excerpt_steps(excerpts or [], found)
@@ -104,9 +212,11 @@ def receipt_commands(receipt: str, excerpts: list[tuple[str, str]] | None = None
         return ""
     lines: list[str] = []
     if found:
-        lines.append(f"回执里的命令原文：{'、'.join(found[:3])}。原样嵌进你这一句，前缀不要改、不要漏。")
+        lines.append(
+            f"回执里的相关命令：{'、'.join(found[:3])}。如果要给对方提下一步，可以用这里的原文，前缀不要改、不要漏。"
+        )
     if extras:
-        lines.append(f"摘录里紧接着还有：{'、'.join(extras)}。也嵌进同一句。")
+        lines.append(f"摘录里紧接着还有：{'、'.join(extras)}。也可用作参考。")
     lines.append("不要另起一段写用法。")
     return "\n".join(lines)
 
@@ -141,15 +251,16 @@ def _comment_line(
     allow_tools: bool,
     mount_reader: bool,
     command_spell: str,
+    event: Event | None = None,
 ) -> str:
     if memory:
-        tool_clause = "已有记忆。禁止再读源码。记忆里出现过的命令原文都留在这一句里，句子用你自己的人设写。"
-        memory_section = f"已有记忆：{memory}"
+        tool_clause = "已有对此类回执的参考建议。可参考，不必照抄，句子用你自己的人设写。"
+        memory_section = f"参考建议：{memory}"
     elif allow_tools and mount_reader:
         tool_clause = (
             "还没有这条回执的记忆。上面的源码摘录就是刚读到的。"
-            "用你自己的口吻说下一句，对方要能照做。需要再看别的文件时用 read_command_plugin_file。"
-            "有摘录或能读源码时，禁止只输出 <SILENCE>。"
+            "需要提醒对方下一步且明确时，用你自己的口吻说下一句，对方要能照做。"
+            "需要再看别的文件时用 read_command_plugin_file。没有确切建议时输出 <SILENCE>。"
         )
         memory_section = ""
     elif allow_tools:
@@ -169,14 +280,18 @@ def _comment_line(
     ).strip()
     if command_spell:
         body = f"{body}\n{command_spell}"
+    if event is not None:
+        records = get_history_manager().get_history(event)
+        exempt = (*collect_persona_surfaces(persona_name), get_master_title(persona_name))
+        rep = self_repetition_hint(records, query="", exempt_terms=exempt)
+        if rep:
+            body = f"{body}\n{rep}"
     if body.startswith("（系统："):
         return body if body.endswith("）") else f"{body}）"
     return f"（系统：{body}）"
 
 
 def _note_session(session: AsideSession, content: str, source: str) -> None:
-    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-
     if isinstance(session, GsCoreAIAgent):
         session._session_logger.log_system_injection(content, source=source)
 
@@ -193,7 +308,7 @@ async def apply_aside(
     persona_name: str,
     entry_rel: str = "",
 ) -> bool:
-    """写入回执。抽中时再跑一轮点评。返回是否发起了点评。"""
+    """写入回执。抽中且未在冷却期时发起点评。返回是否发起了点评。"""
     shape = reply_shape(pieces)
     if shape == "empty":
         return False
@@ -204,8 +319,14 @@ async def apply_aside(
     extra: tuple[Tool[ToolContext], ...] = ()
     memory = ""
     excerpts: list[tuple[str, str]] = []
-    if comment_this_time(shape, settings, roll):
-        memory = lookup_advice(plugin, receipt) if plugin else ""
+
+    now = time.time()
+    last_comment_ts = _last_aside_comment_ts[event.session_id] if event.session_id in _last_aside_comment_ts else 0.0
+    in_cooldown = settings.cooldown_seconds > 0 and (now - last_comment_ts) < settings.cooldown_seconds
+    all_omitted = shape == "image" and _all_images_omitted(pieces)
+
+    if not in_cooldown and not all_omitted and comment_this_time(shape, settings, roll):
+        memory = lookup_advice(plugin, receipt, trigger_id=entry_rel) if plugin else ""
         mount_reader = settings.allow_tools and plugin_root is not None and not memory
         if memory:
             _note_session(session, memory, "aside_memory")
@@ -236,7 +357,8 @@ async def apply_aside(
             memory=memory,
             allow_tools=settings.allow_tools,
             mount_reader=mount_reader,
-            command_spell=receipt_commands(receipt, excerpts),
+            command_spell=receipt_commands(receipt, excerpts, plugin=plugin),
+            event=event,
         )
         if mount_reader and plugin_root is not None:
             extra = (make_plugin_source_tool(plugin_root),)
@@ -258,21 +380,27 @@ async def apply_aside(
     ran = spoken is not None
     advice = ""
     if ran and spoken and spoken.strip():
-        from gsuid_core.ai_core.utils import is_silence_marker
-
         if not is_silence_marker(spoken):
             advice = spoken.strip()
-    # 先落盘再发送。发送会让出事件循环，下一位不能赶在写入前又去读源码。
-    if advice and not memory and plugin:
-        save_advice(plugin, receipt, advice)
+    # 仅在回执像失败或用法说明时存入建议记忆，成功回执不存
+    if advice and not memory and plugin and _is_failure_or_usage_receipt(receipt):
+        save_advice(plugin, receipt, advice, trigger_id=entry_rel)
     if advice and bot is not None:
         await bot.send(advice)
+    if advice:
+        _last_aside_comment_ts[event.session_id] = time.time()
+
+    omitted_count = sum(1 for p in pieces if p.kind == "image" and p.omitted)
     logger.info(
         t(
             "log.ai.command_aside_recorded",
             session_id=event.session_id,
             shape=shape,
             commented="yes" if ran else "no",
+            plugin=plugin or "-",
+            entry=entry_rel or "-",
+            silence="yes" if not advice else "no",
+            omitted_images=omitted_count,
         )
     )
     return ran
@@ -301,10 +429,10 @@ async def command_with_aside(
 async def _settle(bot: Bot, event: Event, trigger: Trigger, pieces: list[SentPiece]) -> None:
     if reply_shape(pieces) == "empty":
         return
+    if not trigger.aside:
+        return
     if not bool(ai_config.get_config("enable").data):
         return
-    from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
-
     if is_scope_banned(event.session_id):
         return
     if not _list_allows(event):
@@ -312,19 +440,25 @@ async def _settle(bot: Bot, event: Event, trigger: Trigger, pieces: list[SentPie
     persona_name = persona_config_manager.get_persona_for_session(event.session_id)
     if persona_name is None:
         return
-    settings = load_aside_settings(persona_name)
-    if settings is None:
-        return
-    from gsuid_core.ai_core.startup import is_ai_core_ready
-
-    if not is_ai_core_ready():
-        logger.info(t("log.ai.command_aside_skip", reason="not_ready", session_id=event.session_id))
-        return
-    from gsuid_core.ai_core.ai_router import get_ai_session
-    from gsuid_core.ai_core.statistics import statistics_manager
+    persona_cfg = persona_config_manager.get_config(persona_name)
+    raw_skips = (
+        persona_cfg.get_config("aside_skip_plugins").data
+        if "aside_skip_plugins" in persona_cfg.config
+        else ["core_command"]
+    )
+    skip_plugins = [str(x) for x in raw_skips] if isinstance(raw_skips, list) else ["core_command"]
 
     anchor = plugin_anchor(trigger.func)
     plugin_root = anchor[0] if anchor is not None else None
+    if plugin_root is not None and plugin_root.name in skip_plugins:
+        return
+
+    settings = load_aside_settings(persona_name)
+    if settings is None:
+        return
+    if not is_ai_core_ready():
+        logger.info(t("log.ai.command_aside_skip", reason="not_ready", session_id=event.session_id))
+        return
     plugin_label = ""
     if anchor is not None:
         plugin_label = f"插件 {anchor[0].name}，入口文件 {anchor[1]}"

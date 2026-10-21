@@ -193,6 +193,20 @@ AI_CONFIG: Dict[str, GSC] = {
         300,
         options=[120, 300, 600, 900],
     ),
+    "follow_up_max_replies": GsIntConfig(
+        "免唤醒续聊回复次数上限",
+        "一个续聊窗口内允许软触发成功回复的最大次数。达到上限后不再软触发，"
+        "直到该用户再次 @、关键词或私聊。设为 0 表示不限制。默认 2 次。",
+        2,
+        options=[1, 2, 3, 5],
+    ),
+    "follow_up_debounce_seconds": GsFloatConfig(
+        "免唤醒续聊防抖合并缓冲(秒)",
+        "群聊中同一用户在续聊窗口内连发短消息时，等待合并的缓冲时间（秒）。硬触发不进缓冲。设为0关闭合并。",
+        3.0,
+        min_value=0.0,
+        max_value=10.0,
+    ),
     "spMode": GsDivider(
         "Agent 特殊模式",
         "Agent 特殊模式",

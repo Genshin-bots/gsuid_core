@@ -25,6 +25,7 @@ from gsuid_core.ai_core.utils import (
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.control.lines import UNMET_TOOL_REMINDER
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
+from gsuid_core.ai_core.persona.config import ASIDE_MODE
 from gsuid_core.ai_core.agent_run.state import (
     BUDGET_GATE_PASS,
     RunOnceState,
@@ -298,7 +299,7 @@ class PreparePhase(RunOnceHost):
         st.followup_detected = False
         st.tg = st.turn_graph
         st.cheap = st.cheap_gate
-        if self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg:
+        if self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg and st.stats_chat_type != ASIDE_MODE:
             _cur_text = st.last_user_question
             _probe = st.ev.raw_text if st.ev is not None and st.ev.raw_text else st.last_user_question
             _is_tome = bool(st.ev.is_tome) if st.ev is not None else False

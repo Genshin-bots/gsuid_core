@@ -123,6 +123,18 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         "为真时，点评可以调用当前人格的工具，并阅读这条命令所属插件目录里的源码。默认关闭。",
         False,
     ),
+    "aside_skip_plugins": GsListStrConfig(
+        "命令补充跳过插件",
+        "这些插件发出的回执永远不进入命令补充/点评，默认包含 core_command",
+        ["core_command"],
+        options=[],
+    ),
+    "aside_cooldown_seconds": GsFloatConfig(
+        "命令补充冷却时间(秒)",
+        "同一会话两次命令点评的最小间隔时间（秒）。默认120秒。",
+        120.0,
+        min_value=0.0,
+    ),
     "scope": GsStrConfig(
         "启用范围",
         "指定该人格的启用范围: disabled(不启用), "
@@ -707,6 +719,14 @@ class PersonaConfigManager(ConfigSetManager):
             "aside_text_probability": config.get_config("aside_text_probability").data,
             "aside_mixed_probability": config.get_config("aside_mixed_probability").data,
             "aside_allow_tools": config.get_config("aside_allow_tools").data,
+            "aside_skip_plugins": (
+                config.get_config("aside_skip_plugins").data
+                if "aside_skip_plugins" in config.config
+                else ["core_command"]
+            ),
+            "aside_cooldown_seconds": (
+                config.get_config("aside_cooldown_seconds").data if "aside_cooldown_seconds" in config.config else 120.0
+            ),
             "enabled_tools": config.get_config("enabled_tools").data,
             "tool_names": config.get_config("tool_names").data,
             "capability_agents": config.get_config("capability_agents").data,

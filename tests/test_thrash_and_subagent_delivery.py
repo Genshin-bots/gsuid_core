@@ -74,6 +74,7 @@ def test_captionless_inbound_image_is_recorded(monkeypatch) -> None:
 
     mgr = HistoryManager()
     monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: mgr)
+    monkeypatch.setattr("gsuid_core.handler.get_history_manager", lambda: mgr)
 
     image_ev = Event(
         bot_id="onebot",

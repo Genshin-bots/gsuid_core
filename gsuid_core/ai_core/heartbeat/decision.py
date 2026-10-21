@@ -4,6 +4,8 @@ import time
 from typing import List, Optional, Sequence
 from datetime import datetime
 
+from sqlmodel import select
+
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
@@ -12,13 +14,28 @@ from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+from gsuid_core.ai_core.relationship import Zone, zone_of, zone_level_name
 from gsuid_core.ai_core.control.lines import MSG_SECTION_MARK
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.history_format import format_history_for_agent
+from gsuid_core.ai_core.database.models import UserFavorability
+from gsuid_core.ai_core.followup_window import record_gate_outcome
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
+from gsuid_core.ai_core.persona.settings import get_master_title
+from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.database.base_models import async_maker
+from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
+from gsuid_core.ai_core.interaction_scaffold import extract_message_body
 from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
+
+
+def _render_prompt(persona_name: str | None, key: str, **values: str) -> str:
+    # catalog 在模块顶 import 本文件的模板常量，这里再在模块顶 import 会成环。
+    from gsuid_core.ai_core.prompt_group.store import render_prompt
+
+    return render_prompt(persona_name, key, **values)
+
 
 # B-1 修复：人格放 system_prompt（稳定前缀），逐轮变化的"群里发生的事 + 决策指令"
 # 放 user_message。原实现把整段 `{persona_text}+history+指令` 同时作为 create_agent
@@ -93,8 +110,6 @@ STALENESS_NOTE_TEMPLATE = (
 
 
 def _recent_human_bodies(history: List[MessageRecord], *, limit: int = 12) -> list[str]:
-    from gsuid_core.ai_core.interaction_scaffold import extract_message_body
-
     bodies: list[str] = []
     for rec in reversed(history):
         if rec.role != "user":
@@ -128,8 +143,6 @@ def hook_cites_human_span(hook: str, bodies: Sequence[str]) -> bool:
 
 
 def _hook_must_cite_human() -> bool:
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
     return bool(ai_config.get_config("heartbeat_hook_require_human_span").data)
 
 
@@ -205,8 +218,6 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
         return ""
 
     try:
-        from sqlmodel import select
-
         scope_key = make_scope_key(ScopeType.GROUP, group_id)
         async with async_maker() as session:
             result = await session.execute(
@@ -301,9 +312,6 @@ async def _build_zone_section(
     """
     if not history:
         return ""
-    from gsuid_core.ai_core.relationship import Zone, zone_of, zone_level_name
-    from gsuid_core.ai_core.database.models import UserFavorability
-
     last_seen = _last_user_seen(history)
     names = _pick_recent_speaker_names(last_seen, limit=8)
     if not names:
@@ -387,9 +395,7 @@ async def run_heartbeat(
     # compact 提取失败则回退完整原文
     compact_persona = extract_compact_persona(persona_content)
     decision_persona = compact_persona or persona_content
-    from gsuid_core.ai_core.prompt_group.store import render_prompt
-
-    role = render_prompt(persona_name, "role_playing_start")
+    role = _render_prompt(persona_name, "role_playing_start")
     persona_text = f"{role}\n{persona_content}"
     decision_persona_text = f"{role}\n{decision_persona}"
 
@@ -413,8 +419,6 @@ async def run_heartbeat(
         proactive_merge_section = f"\n\n[你刚完成的事（可自然提及，不必生硬播报）]\n{extra_context}"
 
     # C-5：把"近 1 小时我已主动发言 N 次"喂给决策 LLM，促其自我克制（与 C-3 硬上限互补）
-    from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
-
     # 与 emitter / inspector 共用 make_target_key 口径，否则计数查不到、C-5 形同虚设。
     target_key = make_target_key(event.group_id, event.user_id)
     recent_n = get_dispatcher().get_recent_heartbeat_count(target_key)
@@ -428,7 +432,7 @@ async def run_heartbeat(
     # 阶段一：决策 B-1：persona 进 system_prompt，逐轮变化的群况 + 决策指令进 user_message
     staleness_section = build_staleness_section(history, time.time())
 
-    decision_user = render_prompt(
+    decision_user = _render_prompt(
         persona_name,
         "heartbeat_decision",
         current_time=current_time,
@@ -531,9 +535,7 @@ async def run_heartbeat(
     logger.info(t("log.ai.heartbeat_decided_interject_mood", mood=mood, event=event))
 
     # 阶段二：生成发言 B-1：发言阶段同样把人格放 system_prompt（用完整原文 persona_text）
-    from gsuid_core.ai_core.persona.settings import get_master_title
-
-    message_user = render_prompt(
+    message_user = _render_prompt(
         persona_name,
         "heartbeat_speak",
         history_context=history_context,
@@ -585,11 +587,110 @@ _REACTIVE_SILENCE_RE = re.compile(
     r"|^[哈呵嘿嗯啊哦喔噢呜]+[~～。.!！?？…\s]*$"  # 纯语气叠词
     r"|^[。.!！?？…~～]+$"
 )
-# 明显接续：短句里带第二人称/闭类跟进——可零 LLM 放行。角色名由调用方传入，不写死。
+# 明显接续：仅保留确切的疑问与修改词，排除群聊高频模糊词（你/那个/然后/还有等）。
 _REACTIVE_PASS_RE = re.compile(
-    r"(你|那[个么]|然后|接着|还有|改成|取消|多少|怎么样|为什么|为啥|啥意思)",
+    r"(改成|取消|多少|怎么样|为什么|为啥|啥意思)",
     re.I,
 )
+
+
+def _find_recent_ai_turn_index(history: List[MessageRecord]) -> int:
+    for idx in range(len(history) - 1, -1, -1):
+        if history[idx].role == "assistant":
+            return idx
+    return -1
+
+
+def _meta_text(rec: MessageRecord, key: str) -> str:
+    if key not in rec.metadata:
+        return ""
+    raw = rec.metadata[key]
+    if isinstance(raw, str):
+        return raw
+    return ""
+
+
+def _at_targets(rec: MessageRecord) -> list[str]:
+    if "at_list" not in rec.metadata:
+        return []
+    raw = rec.metadata["at_list"]
+    if not isinstance(raw, list):
+        return []
+    targets: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item:
+            targets.append(item)
+        elif isinstance(item, int) and not isinstance(item, bool):
+            targets.append(str(item))
+    return targets
+
+
+def _quote_targets_other_user(event: Event, history: List[MessageRecord]) -> bool:
+    # 只有对上某条用户消息才算。引用机器人、或历史里对不上，都不靠这条沉默。
+    if event.is_tome or not (event.reply or event.reply_id):
+        return False
+    reply_id = event.reply_id or ""
+    if reply_id:
+        for rec in history:
+            if _meta_text(rec, "msg_id") != reply_id:
+                continue
+            return rec.role == "user"
+    reply = (event.reply or "").strip()
+    if len(reply) < 4:
+        return False
+    hit_user = False
+    hit_assistant = False
+    for rec in history:
+        body = (rec.content or "").strip()
+        if len(body) < 4:
+            continue
+        if reply not in body and body not in reply:
+            continue
+        if rec.role == "assistant":
+            hit_assistant = True
+        elif rec.role == "user":
+            hit_user = True
+    return hit_user and not hit_assistant
+
+
+def _check_structural_negative_signals(
+    event: Event,
+    history: List[MessageRecord],
+    persona_name: str,
+) -> tuple[bool, str]:
+    if _quote_targets_other_user(event, history):
+        return True, "quoted_non_bot_user"
+
+    ai_idx = _find_recent_ai_turn_index(history)
+    if ai_idx >= 0:
+        subsequent = history[ai_idx + 1 :]
+        current_uid = str(event.user_id) if event.user_id else ""
+        current_nick = ""
+        if isinstance(event.sender, dict) and "nickname" in event.sender:
+            raw_nick = event.sender["nickname"]
+            if isinstance(raw_nick, str):
+                current_nick = raw_nick
+
+        for rec in subsequent:
+            if rec.role != "user" or not rec.user_id or rec.user_id == current_uid:
+                continue
+            at_current = current_uid in _at_targets(rec)
+            rec_text = rec.content or ""
+            if not at_current and current_uid and f"@{current_uid}" in rec_text:
+                at_current = True
+            if not at_current and current_nick and f"@{current_nick}" in rec_text:
+                at_current = True
+            if at_current:
+                return True, "other_user_at_speaker"
+
+        other_turns = [r for r in subsequent if r.role == "user" and r.user_id and r.user_id != current_uid]
+        raw = event.raw_text if event.raw_text else (event.text or "")
+        name = persona_name.strip()
+        called_self = bool(name and name in raw)
+        if len(other_turns) >= 2 and not called_self:
+            return True, "non_adjacent_dialogue"
+
+    return False, ""
 
 
 def _reactive_gate_rule_prefilter(raw_text: str, persona_name: str = "") -> Optional[bool]:
@@ -629,34 +730,37 @@ async def run_reactive_gate(
 ) -> bool:
     """免唤醒续聊·软触发沉默门。
 
-    判断"刚找过 AI 的人"这条**不带 @** 的群聊消息是否仍在跟 AI 说话。复用 Heartbeat
-    决策门的轻量结构（压缩人格 + 无工具 subagent + 纯 JSON 解析，无重试），与 AI 无关则
-    返回 ``False``，让 ``handle_ai`` 直接沉默、不进主 Agent，省下主链路（记忆检索 + 工具
-    装配 + 多轮）的开销。
-
-    放行策略**默认偏沉默**：模型给了输出却拿不到合法 ``should_speak``（非 str / JSON 解析失败 /
-    缺字段）一律按 **沉默（返回 False）** 处理——续聊场景"判不出明确指向你"就不该硬接。仅
-    **真异常**（无历史 / 无人格 / LLM 调用崩溃 / 人格加载失败）才 **放行（返回 True）**，避免因
-    基础设施故障误吞用户真实的追问。
-
-    先过规则预筛（零 LLM），仅模糊句才打轻量模型。
+    放行策略默认偏沉默：结构负信号或预筛命中直接沉默；LLM 门判定失败或异常一律沉默。
     """
     if not history or not persona_name:
-        return True
-    # 规则预筛：纯感叹/空话直接沉默；明显接续短句直接放行
+        record_gate_outcome("rule_silence")
+        logger.info(t("log.ai.reactive_gate_outcome", outcome="rule_silence", reason="no_history_or_persona"))
+        return False
+
+    # 1. 结构负信号预筛（零 LLM）
+    neg, neg_reason = _check_structural_negative_signals(event, history, persona_name or "")
+    if neg:
+        record_gate_outcome("rule_silence")
+        logger.info(t("log.ai.reactive_gate_outcome", outcome="rule_silence", reason=neg_reason))
+        return False
+
+    # 2. 文本规则预筛（零 LLM）
     raw = event.raw_text if event.raw_text else (event.text or "")
     pre = _reactive_gate_rule_prefilter(raw, persona_name or "")
     if pre is not None:
-        logger.debug(t("log.ai.reactivegate_pre_rule_filter", pre=pre))
+        outcome = "rule_pass" if pre else "rule_silence"
+        record_gate_outcome(outcome)
+        logger.info(t("log.ai.reactive_gate_outcome", outcome=outcome, reason="rule_prefilter"))
         return pre
+
     try:
         persona_content = await load_persona(persona_name)
         if not persona_content:
-            return True
+            record_gate_outcome("error_silence")
+            logger.info(t("log.ai.reactive_gate_outcome", outcome="error_silence", reason="empty_persona"))
+            return False
         compact = extract_compact_persona(persona_content) or persona_content
-        from gsuid_core.ai_core.prompt_group.store import render_prompt
-
-        role = render_prompt(persona_name, "role_playing_start")
+        role = _render_prompt(persona_name, "role_playing_start")
         persona_text = f"{role}\n{compact}"
 
         history_context = format_history_for_agent(history=history)
@@ -666,7 +770,7 @@ async def run_reactive_gate(
             nickname = raw_nick if isinstance(raw_nick, str) else None
         speaker_desc = f"{nickname}(用户ID:{event.user_id})" if nickname else f"用户ID:{event.user_id}"
 
-        user_prompt = render_prompt(
+        user_prompt = _render_prompt(
             persona_name,
             "reactive_gate",
             speaker_desc=speaker_desc,
@@ -682,8 +786,6 @@ async def run_reactive_gate(
             session_id=sid,
             is_subagent=True,
         )
-        # 续聊软门是 handle_ai 主链路前的轻量预过滤，主 Agent 自身已受闸门约束；这里只
-        # 绑定 scope 把它这点 Token 也记上，不再二次拦截（budget_gate 默认 False）。
         agent.bind_budget_scope(event)
         gate_logger = agent._session_logger
         try:
@@ -692,28 +794,34 @@ async def run_reactive_gate(
             if gate_logger is not None:
                 gate_logger.close()
 
-        # agent.run 默认返回 str，但签名是 Union[str, Any]（output_type 时返模型实例）；
-        # 本门未指定 output_type，用 isinstance 守卫而非依赖隐式 AttributeError 兜底。
         if not isinstance(result, str):
-            logger.debug(t("log.ai.reactivegate_non_str_defaulting", p0=type(result).__name__))
+            record_gate_outcome("llm_silence")
+            logger.info(t("log.ai.reactive_gate_outcome", outcome="llm_silence", reason="non_str_result"))
             return False
         if not result or is_silence_marker(result.strip()):
+            record_gate_outcome("llm_silence")
+            logger.info(t("log.ai.reactive_gate_outcome", outcome="llm_silence", reason="silence_marker"))
             return False
-        # 捕获具体异常而非宽 except：模型吐了内容但不是合法 JSON（常因角色扮演"出戏"成台词），
         try:
             decision = extract_json_from_text(result)
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.debug(t("log.ai.reactivegate_parse_decision_json_fail", e=e, p0=repr(result[:80])))
+        except (json.JSONDecodeError, ValueError):
+            record_gate_outcome("llm_silence")
+            logger.info(t("log.ai.reactive_gate_outcome", outcome="llm_silence", reason="json_parse_fail"))
             return False
         if isinstance(decision, list):
             decision = next((item for item in decision if isinstance(item, dict)), None)
         if not isinstance(decision, dict) or "should_speak" not in decision:
-            logger.debug(t("log.heartbeat.reactive_decision_missing"))
+            record_gate_outcome("llm_silence")
+            logger.info(t("log.ai.reactive_gate_outcome", outcome="llm_silence", reason="decision_missing"))
             return False
         should = bool(decision["should_speak"])
-        reason = decision["reason"] if "reason" in decision else None
-        logger.debug(t("log.heartbeat.reactive_decision", should=should, reason=reason))
+        raw_reason = decision["reason"] if "reason" in decision else "llm_decision"
+        reason = str(raw_reason) if raw_reason is not None else "llm_decision"
+        outcome = "llm_speak" if should else "llm_silence"
+        record_gate_outcome(outcome)
+        logger.info(t("log.ai.reactive_gate_outcome", outcome=outcome, reason=reason))
         return should
     except Exception as e:
-        logger.debug(t("log.heartbeat.reactive_gate_error", e=e))
-        return True
+        record_gate_outcome("error_silence")
+        logger.info(t("log.ai.reactive_gate_outcome", outcome="error_silence", reason=str(e)))
+        return False

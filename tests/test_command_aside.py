@@ -66,6 +66,7 @@ def test_aside_settings_round_trip(tmp_path: Path) -> None:
     assert data is not None
     assert data["aside_allow_tools"] is True
     assert data["aside_text_probability"] == 1.0
+    assert data["aside_cooldown_seconds"] == 120.0
 
 
 def test_reply_shape_and_probability() -> None:
@@ -281,9 +282,9 @@ def test_second_hit_uses_memory_and_skips_source(tmp_path: Path, monkeypatch: py
     assert ran is True
     second_line = second.followups[0]
     assert second_line is not None
-    assert "已有记忆" in second_line
+    assert "参考建议" in second_line
     assert "gs绑定uid123456" in second_line
-    assert "禁止再读源码" in second_line
+    assert "可参考，不必照抄" in second_line
     assert "hint.py" not in second_line
     assert second.extra_count == [0]
     assert second.blocked == [True]
@@ -336,3 +337,289 @@ def test_command_exception_is_captured_then_reraised(monkeypatch: pytest.MonkeyP
         asyncio.run(command_with_aside(_boom(bot, Event()), bot, Event(), trigger))
     assert seen
     assert any("RuntimeError" in piece.text for piece in seen[0])
+
+
+def test_receipt_commands_excludes_plugin_label_and_status() -> None:
+    from gsuid_core.ai_core.command_aside.runner import receipt_commands
+
+    receipt = "✅[SayuStock] 添加自选成功! 可发送[我的自选]查看"
+    spell = receipt_commands(receipt, plugin="SayuStock")
+    assert "我的自选" in spell
+    assert "SayuStock" not in spell
+    assert "添加自选成功" not in spell
+    icon_spell = receipt_commands("❌ [绑定uid] 参数错误")
+    assert "绑定uid" in icon_spell
+
+
+def test_image_omitted_no_placeholder_pollution() -> None:
+    from gsuid_core.ai_core.command_aside.capture import SentPiece
+    from gsuid_core.ai_core.command_aside.receipt import receipt_parts
+
+    pieces = [
+        SentPiece(kind="text", text="操作已完成"),
+        SentPiece(kind="image", omitted=True),
+    ]
+    user, assistant = receipt_parts("查看详情", pieces, "插件 Demo")
+    # 不应出现假文本占位符污染
+    assert "[图片过大，未放入会话]" not in assistant
+    assert "[图片]" not in assistant
+    head = user[0]
+    assert isinstance(head, str)
+    assert "另有 1 张图片没有放入会话" in head
+
+
+def test_followup_window_burst_limits_and_consecutive_silence() -> None:
+    from gsuid_core.ai_core.followup_window import (
+        note_hard_trigger,
+        record_soft_reply,
+        in_followup_window,
+        record_gate_silence,
+    )
+
+    s_id = "test_session_123"
+    u_id = "user_456"
+    note_hard_trigger(s_id, u_id, window_seconds=60, max_total_seconds=300)
+
+    # 初始状态允许
+    assert in_followup_window(s_id, u_id, window_seconds=60, max_total_seconds=300, max_replies=2) is True
+    record_soft_reply(s_id, u_id)
+    assert in_followup_window(s_id, u_id, window_seconds=60, max_total_seconds=300, max_replies=2) is True
+    record_soft_reply(s_id, u_id)
+    # 达到上限 2 次，不再允许
+    assert in_followup_window(s_id, u_id, window_seconds=60, max_total_seconds=300, max_replies=2) is False
+
+    # 连续沉默 2 次自动关窗
+    s_id_2 = "test_session_789"
+    note_hard_trigger(s_id_2, u_id, window_seconds=60, max_total_seconds=300)
+    record_gate_silence(s_id_2, u_id)
+    assert in_followup_window(s_id_2, u_id, window_seconds=60, max_total_seconds=300) is True
+    record_gate_silence(s_id_2, u_id)
+    assert in_followup_window(s_id_2, u_id, window_seconds=60, max_total_seconds=300) is False
+
+    s_id_3 = "test_session_reset"
+    note_hard_trigger(s_id_3, u_id, window_seconds=60, max_total_seconds=300)
+    record_soft_reply(s_id_3, u_id)
+    record_soft_reply(s_id_3, u_id)
+    assert in_followup_window(s_id_3, u_id, window_seconds=60, max_total_seconds=300, max_replies=2) is False
+    note_hard_trigger(s_id_3, u_id, window_seconds=60, max_total_seconds=300)
+    assert in_followup_window(s_id_3, u_id, window_seconds=60, max_total_seconds=300, max_replies=2) is True
+
+
+def test_structural_negative_signals_intercept() -> None:
+    from gsuid_core.message_history.manager import MessageRecord
+    from gsuid_core.ai_core.heartbeat.decision import _check_structural_negative_signals
+    from gsuid_core.ai_core.interaction_scaffold import GroupOpenGate, build_turn_graph
+
+    ev = Event()
+    ev.reply_id = "m-user"
+    ev.is_tome = False
+    user_row = MessageRecord(role="user", content="你看这个", user_id="u2", metadata={"msg_id": "m-user"})
+    hit, reason = _check_structural_negative_signals(ev, [user_row], "早柚")
+    assert hit is True
+    assert reason == "quoted_non_bot_user"
+
+    # 历史里对不上的引用，不靠这条规则沉默（可能是在引用机器人）
+    ev.reply_id = "m-missing"
+    ev.reply = ""
+    hit, _ = _check_structural_negative_signals(ev, [user_row], "早柚")
+    assert hit is False
+
+    quoted_bot = Event()
+    quoted_bot.reply = "刚才那张图已经发出去了"
+    quoted_bot.is_tome = False
+    bot_row = MessageRecord(role="assistant", content="刚才那张图已经发出去了", user_id="u1")
+    hit, _ = _check_structural_negative_signals(quoted_bot, [bot_row], "早柚")
+    assert hit is False
+
+    at_ev = Event()
+    at_ev.user_id = "u1"
+    at_ev.raw_text = "在吗"
+    history = [
+        MessageRecord(role="assistant", content="好", user_id="bot"),
+        MessageRecord(role="user", content="喂", user_id="u2", metadata={"at_list": ["u1"]}),
+    ]
+    hit, reason = _check_structural_negative_signals(at_ev, history, "早柚")
+    assert hit is True
+    assert reason == "other_user_at_speaker"
+
+    tg = build_turn_graph(
+        "你好呀今天天气真不错",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        has_reply=True,
+        soft_triggered=True,
+    )
+    assert tg.open_gate is GroupOpenGate.SPEAK
+
+
+def test_aside_permission_and_inheritance_hierarchy() -> None:
+    from gsuid_core.sv import SL, SV
+    from gsuid_core.trigger import Trigger
+
+    names = [
+        "test_admin_aside_perm",
+        "test_user_aside_perm",
+        "test_sv_batch_no_aside",
+        "test_sv_batch_force_aside",
+    ]
+    admin_sv = SV("test_admin_aside_perm", pm=1)
+
+    @admin_sv.on_command("admin_cmd")
+    async def _adm(bot: Bot, ev: Event):
+        pass
+
+    adm_trig = admin_sv.TL["command"]["admin_cmd"]
+    assert adm_trig.aside is False
+
+    user_sv = SV("test_user_aside_perm", pm=6)
+
+    @user_sv.on_command("user_cmd")
+    async def _usr(bot: Bot, ev: Event):
+        pass
+
+    usr_trig = user_sv.TL["command"]["user_cmd"]
+    assert usr_trig.aside is True
+
+    no_aside_sv = SV("test_sv_batch_no_aside", pm=6, aside=False)
+
+    @no_aside_sv.on_command("batch_cmd")
+    async def _batch(bot: Bot, ev: Event):
+        pass
+
+    batch_trig = no_aside_sv.TL["command"]["batch_cmd"]
+    assert batch_trig.aside is False
+
+    force_aside_sv = SV("test_sv_batch_force_aside", pm=1, aside=True)
+
+    @force_aside_sv.on_command("force_cmd")
+    async def _force(bot: Bot, ev: Event):
+        pass
+
+    force_trig = force_aside_sv.TL["command"]["force_cmd"]
+    assert force_trig.aside is True
+
+    @admin_sv.on_command("admin_special", aside=True)
+    async def _adm_special(bot: Bot, ev: Event):
+        pass
+
+    adm_special_trig = admin_sv.TL["command"]["admin_special"]
+    assert adm_special_trig.aside is True
+
+    @user_sv.on_command("user_silent", aside=False)
+    async def _usr_silent(bot: Bot, ev: Event):
+        pass
+
+    usr_silent_trig = user_sv.TL["command"]["user_silent"]
+    assert usr_silent_trig.aside is False
+
+    standalone = Trigger("command", "raw", _usr)
+    assert standalone.aside is True
+
+    @user_sv.on_meta("poke", aside=False)
+    async def _poke(bot: Bot, ev: Event):
+        pass
+
+    assert user_sv.TL["meta"]["poke"].aside is False
+    for name in names:
+        SL.lst.pop(name, None)
+
+
+def test_non_image_outbound_keeps_a_label() -> None:
+    token = begin_capture()
+    note_outbound(Message(type="file", data="readme|abc"))
+    pieces = end_capture(token)
+    assert pieces
+    assert pieces[0].text == "[文件]"
+    assert reply_shape(pieces) == "text"
+
+
+def test_legacy_recall_key_and_placeholder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import json
+    import time
+
+    from gsuid_core.ai_core.command_aside.recall import save_advice, lookup_advice
+
+    path = tmp_path / "aside_recall.json"
+    monkeypatch.setattr("gsuid_core.ai_core.command_aside.recall._path", lambda: path)
+    receipt = "uid 12345 不存在"
+    legacy = " ".join(receipt.split())[:800]
+    path.write_text(
+        json.dumps(
+            {
+                "items": {
+                    f"Demo\n{legacy}": {
+                        "plugin": "Demo",
+                        "receipt": legacy,
+                        "advice": "去绑定",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert lookup_advice("Demo", receipt, trigger_id="hint.py") == "去绑定"
+
+    old = time.time() - 8 * 86400
+    os.utime(path, (old, old))
+    assert lookup_advice("Demo", receipt, trigger_id="hint.py") == ""
+
+    save_advice("Demo", "图片过大，未放入会话", "别当文字")
+    assert lookup_advice("Demo", "图片过大，未放入会话") == ""
+    save_advice("Demo", "打开 https://example.com 重试失败", "打开链接")
+    assert lookup_advice("Demo", "打开 https://example.com 重试失败") == "打开链接"
+
+
+def test_followup_burst_keeps_image_only_message() -> None:
+    from gsuid_core.ai_core.followup_window import merge_followup_burst
+
+    first = Event()
+    first.raw_text = "看这张"
+    first.text = "看这张"
+    first.image_list = ["img-a"]
+    first.image_id_list = ["id-a"]
+    second = Event()
+    second.image_list = ["img-b"]
+    second.image_id_list = ["id-b"]
+    merged = merge_followup_burst([first, second])
+    assert merged is not None
+    assert merged.raw_text == "看这张"
+    assert merged.image_id_list == ["id-b", "id-a"]
+    assert "img-a" in merged.image_list and "img-b" in merged.image_list
+
+    blank = Event()
+    assert merge_followup_burst([blank]) is None
+
+
+def test_silence_does_not_start_aside_cooldown() -> None:
+    class _Quiet:
+        async def locked_append_then_run(
+            self,
+            user_content: str | Sequence[UserContent],
+            assistant_text: str,
+            followup: str | Sequence[UserContent] | None,
+            bot: Bot | None,
+            ev: Event | None,
+            *,
+            is_framework_injection: bool,
+            budget_gate: bool,
+            stats_chat_type: str,
+        ) -> str | None:
+            del user_content, assistant_text, bot, ev, is_framework_injection, budget_gate, stats_chat_type
+            if followup is None:
+                return None
+            return "<SILENCE>"
+
+    ev = Event()
+    ev.group_id = "aside-cooldown-silence"
+    pieces = [SentPiece(kind="text", text="查询失败，请重试")]
+    settings = AsideSettings(1.0, 1.0, 1.0, False, cooldown_seconds=120.0)
+    aside_runner._last_aside_comment_ts.pop(ev.session_id, None)
+    first = _Quiet()
+    asyncio.run(apply_aside(first, None, ev, pieces, settings, None, "", 0.0, ""))
+    second = _Session()
+    asyncio.run(apply_aside(second, None, ev, pieces, settings, None, "", 0.0, ""))
+    assert second.followups
+    assert second.followups[0] is not None
+    aside_runner._last_aside_comment_ts.pop(ev.session_id, None)

@@ -143,6 +143,7 @@ class Plugins:
 
 class SV:
     is_initialized = False
+    aside: bool | None = None
 
     def __new__(cls, *args, **kwargs):
         # 判断sv是否已经被初始化
@@ -155,7 +156,10 @@ class SV:
             raise ValueError("SV.name is None!")
 
         if name in SL.lst:
-            return SL.lst[name]
+            _sv = SL.lst[name]
+            if "aside" in kwargs and kwargs["aside"] is not None:
+                _sv.aside = kwargs["aside"]
+            return _sv
         else:
             _sv = super().__new__(cls)
             SL.lst[name] = _sv
@@ -170,6 +174,7 @@ class SV:
         area: Literal["GROUP", "DIRECT", "ALL"] = "ALL",
         black_list: List = [],
         white_list: List = [],
+        aside: bool | None = None,
     ):
         if not self.is_initialized:
             logger.trace(t("log.sv.name_module_initializing", name=name))
@@ -177,6 +182,7 @@ class SV:
             self.name: str = name
             # sv内包含的触发器
             self.TL: Dict[str, Dict[str, Trigger]] = {}
+            self.aside = aside
             self.is_initialized = True
             stack = traceback.extract_stack()
             file = stack[-2].filename
@@ -184,9 +190,12 @@ class SV:
             parts = path.parts
             if "plugins" in parts:
                 i = parts.index("plugins")
-            else:
+                self.self_plugin_name = plugins_name = parts[i + 1]
+            elif "buildin_plugins" in parts:
                 i = parts.index("buildin_plugins")
-            self.self_plugin_name = plugins_name = parts[i + 1]
+                self.self_plugin_name = plugins_name = parts[i + 1]
+            else:
+                self.self_plugin_name = plugins_name = parts[-1].removesuffix(".py")
 
             # 初始化
             plugins = None
@@ -294,6 +303,8 @@ class SV:
             if name == "测试开关":
                 self.pm = 6
                 self.enabled = False
+        elif aside is not None:
+            self.aside = aside
 
     def set(self, is_lazy: bool = True, **kwargs):
         plugin_sv_config = config_plugins[self.self_plugin_name]["sv"]
@@ -333,6 +344,7 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ):
         def deco(func: Callable) -> Callable:
             if isinstance(keyword, str):
@@ -369,6 +381,8 @@ class SV:
                                 _p,
                                 block,
                                 to_me,
+                                aside=aside,
+                                sv=self,
                             )
                             logger.trace(t("log.sv.type_trigger_pk_load", type=type, _pk=_pk))
                     else:
@@ -379,6 +393,8 @@ class SV:
                             "",
                             block,
                             to_me,
+                            aside=aside,
+                            sv=self,
                         )
                         logger.trace(t("log.sv.type_trigger_k_load", type=type, _k=_k))
 
@@ -422,8 +438,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("fullmatch", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "fullmatch", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_prefix(
         self,
@@ -434,8 +453,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("prefix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "prefix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_suffix(
         self,
@@ -446,8 +468,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("suffix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "suffix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_keyword(
         self,
@@ -458,8 +483,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("keyword", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "keyword", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_command(
         self,
@@ -470,8 +498,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("command", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "command", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_file(
         self,
@@ -482,8 +513,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("file", file_type, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "file", file_type, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_regex(
         self,
@@ -494,8 +528,11 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
-        return self._on("regex", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "regex", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_message(
         self,
@@ -506,15 +543,19 @@ class SV:
         to_ai: str = "",
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
+        aside: bool | None = None,
     ) -> Callable:
         if unique_id is None:
             unique_id = str(uuid.uuid4())
-        return self._on("message", unique_id, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases)
+        return self._on(
+            "message", unique_id, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+        )
 
     def on_meta(
         self,
         event_name: Union[str, Tuple[str, ...]],
         block: bool = False,
+        aside: bool | None = None,
     ) -> Callable:
         """注册 Meta 事件触发器（进群/退群/戳一戳等平台通知类事件）。
 
@@ -524,7 +565,7 @@ class SV:
         :param block: 命中后是否阻断同事件的后续（低优先级）触发器。
         """
         # prefix=False：meta 事件名不参与命令前缀展开；to_me=False：meta 无 @ 语义
-        return self._on("meta", event_name, block=block, to_me=False, prefix=False)
+        return self._on("meta", event_name, block=block, to_me=False, prefix=False, aside=aside)
 
 
 def get_plugin_prefixs(plugin_name: str) -> List[str]:

@@ -624,6 +624,7 @@ class TurnGraph:
     ellipsis_followup: bool = False
     task_management: bool = False
     soft_continue: bool = False
+    soft_triggered: bool = False
     style_push_count: int = 0
     open_gate: GroupOpenGate = GroupOpenGate.SPEAK
     recent: List[Tuple[str, str]] = field(default_factory=list)
@@ -746,6 +747,7 @@ def build_turn_graph(
         ellipsis_followup=ellipsis,
         task_management=task_mgmt,
         soft_continue=soft_c,
+        soft_triggered=soft_triggered,
         style_push_count=pushes,
         open_gate=open_g,
         recent=recent_list,
@@ -849,8 +851,8 @@ def scaffold_hints_from_graph(
         hints.append(_turn("quote_tome"))
     if tg.ellipsis_followup:
         hints.append(_turn("followup"))
-    elif tg.soft_continue:
-        # 省略跟进优先；否则同人软续聊单独提示（勿与 FOLLOWUP 叠两段）
+    elif tg.soft_continue and not tg.soft_triggered:
+        # 省略跟进优先；软触发轮不叠 soft_continue（只留 SOFT_TRIGGER_NOTE）
         hints.append(_turn("soft_continue"))
     if tg.multi_speaker and tg.call_to_self:
         hints.append(_turn("multi_speaker"))
