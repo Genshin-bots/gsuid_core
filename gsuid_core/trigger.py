@@ -174,6 +174,10 @@ class Trigger:
     def aside(self, value: bool | None) -> None:
         self._aside = value
 
+    @property
+    def head(self) -> str:
+        return self._head
+
     def trie_head(self) -> str:
         """进前缀树用的匹配串。与 check_command 的快速路径同源。"""
         return self._head

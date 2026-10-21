@@ -637,9 +637,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.warning(t("log.handler.at_bot_shield"))
                     return
 
+        # 最长匹配优先（同优先级下长命令字优先于短别名，避免子集命令截胡）
         sorted_event = sorted(
             command_triggers.items(),
-            key=lambda x: (not x[0].prefix, x[1]),
+            key=lambda x: (not x[0].prefix, x[1], -len(x[0].head)),
         )
 
         for trigger, _ in sorted_event:
