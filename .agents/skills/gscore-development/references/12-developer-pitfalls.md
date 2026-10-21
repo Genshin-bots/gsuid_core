@@ -95,7 +95,7 @@ InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归�
 > ⚠️ **本节此前写的是「`core.py` 切到 `WindowsSelectorEventLoopPolicy`，所以 Windows 不支持
 > 子进程」。该描述已过期，写新代码不要按它决策。**
 
-**现状**：`core.py` **不设置任何事件循环策略**。它 `asyncio.run(main())` 并在其中
+**现状**：`core.py` **不设置任何事件循环策略**。它 `asyncio.run(serve())` 并在其中
 `await server.serve()`；uvicorn 的 loop factory 只在 `Server.run()` 里生效，走 `serve()`
 不会被套用。因此 Windows 上跑的是 **Python 默认的 `WindowsProactorEventLoopPolicy` →
 `ProactorEventLoop`**（实测 Python 3.12.4 + uvicorn 0.42）。
@@ -105,10 +105,9 @@ InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归�
 那么 Proactor 关 socket 的 `InvalidStateError` 怎么办？改成**顶层兜底吞掉**，不再换策略：
 
 ```python
-# core.py:288-297
-if multiprocessing.current_process().name == "MainProcess":
+# core.py::main()（被守护的子进程分支）
     try:
-        asyncio.run(main())
+        asyncio.run(serve())
     except (ConnectionResetError, ConnectionAbortedError):
         # Windows ProactorEventLoop: 客户端异常断开时可能逃逸到顶层
         pass
