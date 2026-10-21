@@ -303,3 +303,52 @@ def test_format_resolved_uses_mime() -> None:
     text = format_resolved(r)
     assert "text/markdown" in text
     assert "# hi" in text
+
+
+def test_read_handle_batch_and_query() -> None:
+    r1 = ResolvedHandle(
+        id="to_doc1",
+        source="tool_output",
+        mime="text/plain",
+        summary="s1",
+        owner_user_id="ownerA",
+        scope_key="",
+        payload_inline="这是骨密度检测报告前文...患者腰椎骨密度T值为-2.6，诊断为骨质疏松...后续建议补钙。",
+        payload_path="",
+        size_bytes=100,
+    )
+    r2 = ResolvedHandle(
+        id="to_doc2",
+        source="tool_output",
+        mime="text/plain",
+        summary="s2",
+        owner_user_id="ownerA",
+        scope_key="",
+        payload_inline="这是血常规报告：白细胞计数正常，红细胞正常。",
+        payload_path="",
+        size_bytes=50,
+    )
+
+    async def fake_resolve(hid: str):
+        if hid == "to_doc1":
+            return r1
+        if hid == "to_doc2":
+            return r2
+        return None
+
+    with (
+        _patch_tool_result(),
+        patch("gsuid_core.ai_core.planning.tool_output_tools.resolve_handle", new=fake_resolve),
+    ):
+        # 批量读
+        batch_res = _run(read_handle(_ctx("ownerA"), handle_ids=["to_doc1", "to_doc2"]))
+        assert "=== to_doc1 ===" in batch_res
+        assert "=== to_doc2 ===" in batch_res
+        assert "骨质疏松" in batch_res
+        assert "白细胞" in batch_res
+
+        # 关键词查询摘录
+        query_res = _run(read_handle(_ctx("ownerA"), handle_id="to_doc1", query="骨密度"))
+        assert "query: 骨密度" in query_res
+        assert "片段 1" in query_res
+        assert "腰椎骨密度T值" in query_res

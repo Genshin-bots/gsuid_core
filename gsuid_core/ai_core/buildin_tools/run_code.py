@@ -10,7 +10,7 @@ _BRIEF = (
     "用户点名本工具，或要对多次只读结果做筛选、对齐、算术时，写一段 Python，不要心算。"
     "代码里尽量只查：只能 await 本轮已暴露且 code_callable 的查询/读取工具。"
     "发消息、写入、委派、改状态、装技能、跑命令不要写进代码，在代码外按普通工具调用。"
-    "最后一行表达式是返回值；print 不是返回值。"
+    "最后一行表达式是返回值，也可通过 print 输出中间日志。工具返回原生 dict/list。注意沙箱无 statistics 等外部三方库。"
 )
 
 
@@ -32,7 +32,8 @@ async def run_code(ctx: RunContext[ToolContext], code: str) -> str:
     工具是异步函数：``await web_search_tool(query=...)``，多页用 ``asyncio.gather`` 并行。
     整段脚本墙钟 230 秒，盖住一轮搜索再加一轮抓页；更长的串行会被停掉。
     发消息、写入、委派、改状态、装技能、跑命令在装饰器上关了 ``code_callable``，
-    名字不存在；那些动作在代码外按普通工具调用。``print`` 不是返回值。
+    名字不存在；那些动作在代码外按普通工具调用。最后一行表达式与 ``print`` 内容均会返回。
+    工具返回原生 dict/list，方便直接下标或属性访问。注意沙箱无 statistics 等标准库。
 
     Args:
         ctx: 工具执行上下文。

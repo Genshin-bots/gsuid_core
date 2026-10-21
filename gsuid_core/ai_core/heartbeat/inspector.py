@@ -41,6 +41,7 @@ class HeartbeatInspector:
         self._history_manager = get_history_manager()
         self._scheduled_jobs: dict[str, str] = {}  # persona_name -> job_id
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM_CALLS)
+        self._last_decision_human_sig: dict[str, str] = {}
 
     @property
     def is_running(self) -> bool:
@@ -323,6 +324,26 @@ class HeartbeatInspector:
         dispatcher = get_dispatcher()
         target_key = self._target_key(event, history)
         merge_ctx = dispatcher.peek_merge_context(target_key)
+
+        # 确定性前置：若无新人类发言且无待合并事件，跳过 LLM 决策
+        last_human = next((r for r in reversed(history) if r.role == "user"), None)
+        if last_human is None:
+            statistics_manager.record_heartbeat_decision(
+                group_id=group_id or "",
+                should_speak=False,
+            )
+            return
+
+        human_sig = f"{last_human.timestamp}:{last_human.user_id}:{len(history)}"
+        if self._last_decision_human_sig.get(target_key) == human_sig and not merge_ctx:
+            logger.debug(t("log.ai.heartbeat_session_history_unchanged_skip", target_key=target_key))
+            statistics_manager.record_heartbeat_decision(
+                group_id=group_id or "",
+                should_speak=False,
+            )
+            return
+        self._last_decision_human_sig[target_key] = human_sig
+
         meta = await run_heartbeat(
             event,
             history,

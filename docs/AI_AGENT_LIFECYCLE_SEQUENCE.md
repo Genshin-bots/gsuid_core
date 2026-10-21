@@ -1703,7 +1703,7 @@ API 错误字面量 → 角色短句替换
 
 session_log entries（磁盘，可稍后刷）：
 
-`run_start` → `user_input` → `tools_list` → `thinking`* → (`tool_call`/`tool_return`)* → `text_output`* → `result` → `token_usage` → `run_end`
+`run_start` → `user_input` → `tools_list` → `thinking_effort` → `thinking`* → (`tool_call`/`tool_return`)* → `text_output`* → `result` → `token_usage` → `run_end`
 
 > 注：`text_output` 记录的是模型**原始**台词（可含后被 gate 拦下的 `<bubble/>` 等）；是否真正出站看 gate + `send_chat_result`。熔断/scrub 改的是 **B 轨 `self.history`**，不一定回写 session_log 已落条目。
 

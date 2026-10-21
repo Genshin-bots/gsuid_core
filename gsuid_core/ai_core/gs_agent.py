@@ -26,6 +26,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     UserPromptPart,
 )
+from pydantic_ai.settings import ThinkingLevel
 from pydantic_ai.exceptions import ModelHTTPError
 
 from gsuid_core.bot import Bot
@@ -280,6 +281,7 @@ class GsCoreAIAgent(RunOnceMixin):
         wall_clock_budget: Optional[float] = None,
         on_trace: Optional[Callable[[TraceKind, str], None]] = None,
         capability_node_id: Optional[str] = None,
+        thinking: Optional[ThinkingLevel] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -321,6 +323,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self._stats_chat_type: str = ""
         # 能力代理 node_id（仅 CapabilityAgent）；契约/日志用，勿靠 session 子串猜
         self.capability_node_id: str = (capability_node_id or "").strip()
+        # 思考配置覆写：None=沿用全局/默认；False/True/ThinkingLevel 显式指定
+        self.thinking: Optional[ThinkingLevel] = thinking
         # 未显式给 session_id 的来源（能力评估 / meme 打标 / 记忆摄入·检索等后台 LLM
         # 调用）自动派生一个一次性 subagent id——这样"所有调用来源都写 session log"
         if session_id is None:
@@ -1832,7 +1836,7 @@ class GsCoreAIAgent(RunOnceMixin):
             )
         )
         for _attempt in range(2):
-            async with provider_router.slot(self.task_level) as routed_name:
+            async with provider_router.slot(self.task_level, session_id=self.session_id) as routed_name:
                 logger.debug(
                     i18n_t(
                         "log.agent.attempt_routed_config_name",
@@ -1911,6 +1915,7 @@ def create_agent(
     wall_clock_budget: Optional[float] = None,
     on_trace: Optional[Callable[[TraceKind, str], None]] = None,
     capability_node_id: Optional[str] = None,
+    thinking: Optional[ThinkingLevel] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -1957,6 +1962,7 @@ def create_agent(
         wall_clock_budget=wall_clock_budget,
         on_trace=on_trace,
         capability_node_id=capability_node_id,
+        thinking=thinking,
     )
 
 

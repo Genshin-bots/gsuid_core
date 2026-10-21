@@ -115,12 +115,14 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
     "model_effort": GsStrConfig(
         title="模型性能",
         desc=(
-            "思考档位。adaptive 不传思考参数，沿用模型默认；"
-            "enable / disable 打开或关闭；minimal / low / medium / high / xhigh 为力度。"
-            "不同模型是否接受该参数并不相同"
+            "思考档位。adaptive 不传 reasoning_effort。"
+            "enable 发送 medium，disable 发送 none。"
+            "minimal / low / medium / high / xhigh 按原值发送。"
+            "max 发送 reasoning_effort=max。"
+            "模型名不在思考名单里也发送。上游拒绝时，错误原样返回"
         ),
         data="enable",
-        options=["adaptive", "enable", "disable", "minimal", "low", "medium", "high", "xhigh"],
+        options=["adaptive", "enable", "disable", "minimal", "low", "medium", "high", "xhigh", "max"],
     ),
     "max_concurrency": GsIntConfig(
         title="允许并发数",

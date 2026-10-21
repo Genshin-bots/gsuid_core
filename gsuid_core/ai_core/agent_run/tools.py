@@ -43,6 +43,7 @@ from gsuid_core.ai_core.agent_run.state import (
 from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.agent_run.support import (
     _INTERACTIVE_CREATE_BY,
+    _MAIN_PERSONA_CREATE_BY,
     _append_user_text,
     _pool_overlaps_capability_agent,
     _capability_exclusive_tool_names,
@@ -748,6 +749,16 @@ class ToolsPhase(RunOnceHost):
 
         _ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = list(st.tool_names)
 
+        # 主会话工具集在会话内只增不减：把本轮实际暴露的非 exclusive 工具沉淀进表
+        if self.create_by in _MAIN_PERSONA_CREATE_BY:
+            _exclusive = _capability_exclusive_tool_names()
+            for _tname in st.tool_names:
+                if _tname not in _exclusive:
+                    if self._session_toolset_frozen is not None and _tname not in self._session_toolset_frozen:
+                        self._session_toolset_frozen.append(_tname)
+                    if _tname not in self._session_appended_tools:
+                        self._session_appended_tools.append(_tname)
+
         # 回填本轮装配工具的能力域，供 handle_ai 偏好注入精确过滤（"装配后回传"）： 把工具名映射回 capability_domain
         # handle_ai 据此只注入本轮可用工具相关的软偏好。
         assembled_domains: set[str] = set()
@@ -852,6 +863,17 @@ class ToolsPhase(RunOnceHost):
         if self.model:
             # 必须拷贝：self.model.settings 是模型对象的共享状态，就地改会污染后续所有 run
             _base_settings: ModelSettings = self.model.settings.copy() if self.model.settings else ModelSettings()
+            thinking_override = self.thinking
+            if thinking_override is not None:
+                _base_settings["thinking"] = thinking_override
+            elif self.create_by in (
+                "MemEntityExtraction",
+                "MemPreferenceDistill",
+                "MemSummary",
+                "MemProfileExtraction",
+                "MemClusterNaming",
+            ):
+                _base_settings["thinking"] = False
             if memory_config.eval_mode:
                 _base_settings["temperature"] = 0.0
             # 归属透传（默认关闭）：把本次 run 的调用方标识按配置带给上游网关

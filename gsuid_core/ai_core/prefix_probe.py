@@ -112,6 +112,46 @@ def _looks_like_lean_vs_full(prev_payload: str, curr_payload: str) -> bool:
     )
 
 
+def classify_prefix_break_with_pos(
+    prev: Optional[PrefixSnapshot],
+    *,
+    history_hashes: Sequence[str],
+    tools_hash: str,
+    system_hash: str,
+    prev_payloads: Sequence[str] = (),
+    curr_payloads: Sequence[str] = (),
+) -> tuple[PrefixBreakReason, Optional[int], Optional[int]]:
+    """对比上一 run，返回失配原因、首个失配消息索引 break_pos 及失配前的近似 token 数。"""
+    if prev is None:
+        return "session_new", None, None
+    sys_changed = prev.system_hash != system_hash
+    tools_changed = prev.tools_hash != tools_hash
+    if sys_changed and tools_changed:
+        return "system+tools", 0, 0
+    if sys_changed:
+        return "system", 0, 0
+    if tools_changed:
+        return "tools", 0, 0
+    n = min(len(prev.history_hashes), len(history_hashes))
+    for i in range(n):
+        if prev.history_hashes[i] == history_hashes[i]:
+            continue
+        chars_before = sum(len(p) for p in prev_payloads[:i])
+        tokens_before = max(0, chars_before // 4)
+        if i < len(prev_payloads) and i < len(curr_payloads):
+            if _looks_like_lean_vs_full(prev_payloads[i], curr_payloads[i]):
+                return "user_lean", i, tokens_before
+            if prev_payloads[i].startswith("tool_return:") or curr_payloads[i].startswith("tool_return:"):
+                return "tool_return", i, tokens_before
+        return "history_mid", i, tokens_before
+    if len(prev.history_hashes) != len(history_hashes):
+        break_idx = n
+        chars_before = sum(len(p) for p in prev_payloads[:break_idx])
+        tokens_before = max(0, chars_before // 4)
+        return "history_mid", break_idx, tokens_before
+    return "none", None, None
+
+
 def classify_prefix_break(
     prev: Optional[PrefixSnapshot],
     *,
@@ -121,29 +161,15 @@ def classify_prefix_break(
     prev_payloads: Sequence[str] = (),
     curr_payloads: Sequence[str] = (),
 ) -> PrefixBreakReason:
-    if prev is None:
-        return "session_new"
-    sys_changed = prev.system_hash != system_hash
-    tools_changed = prev.tools_hash != tools_hash
-    if sys_changed and tools_changed:
-        return "system+tools"
-    if sys_changed:
-        return "system"
-    if tools_changed:
-        return "tools"
-    n = min(len(prev.history_hashes), len(history_hashes))
-    for i in range(n):
-        if prev.history_hashes[i] == history_hashes[i]:
-            continue
-        if i < len(prev_payloads) and i < len(curr_payloads):
-            if _looks_like_lean_vs_full(prev_payloads[i], curr_payloads[i]):
-                return "user_lean"
-            if prev_payloads[i].startswith("tool_return:") or curr_payloads[i].startswith("tool_return:"):
-                return "tool_return"
-        return "history_mid"
-    if len(prev.history_hashes) != len(history_hashes):
-        return "history_mid"
-    return "none"
+    reason, _, _ = classify_prefix_break_with_pos(
+        prev,
+        history_hashes=history_hashes,
+        tools_hash=tools_hash,
+        system_hash=system_hash,
+        prev_payloads=prev_payloads,
+        curr_payloads=curr_payloads,
+    )
+    return reason
 
 
 def record_prefix_break(reason: PrefixBreakReason) -> None:

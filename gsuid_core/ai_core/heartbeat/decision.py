@@ -24,11 +24,11 @@ from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraph
 # 放 user_message。原实现把整段 `{persona_text}+history+指令` 同时作为 create_agent
 DECISION_USER_TEMPLATE = """现在你独自看着群里的聊天记录，思考自己要不要说点什么。
 
-[当前时间：{current_time}]
-
 [群里最近发生的事]
 {history_context}
 {group_summary_section}{proactive_merge_section}{masters_section}{recent_speak_section}{staleness_section}
+
+[当前时间：{current_time}]
 
 ---
 

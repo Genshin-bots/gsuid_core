@@ -5,5 +5,6 @@
   "log.htmlrender.renderer_initialized": "[HTMLRender] レンダラー初期化成功、フォント: {fonts}",
   "log.htmlrender.font_register_failed": "[HTMLRender] フォント登録に失敗: {e}",
   "log.htmlrender.auto_send_fallback": "レンダリング画像の自動送信に失敗、リソース登録へフォールバック: {e}",
-  "log.htmlrender.opaque_flatten_skip": "[HTMLRender] 不透明フラット化をスキップ: {e}"
+  "log.htmlrender.opaque_flatten_skip": "[HTMLRender] 不透明フラット化をスキップ: {e}",
+  "log.htmlrender.mermaid_unavailable": "[HTMLRender] Mermaid ブロックを端末風の警告に置き換えました: {e}"
 }

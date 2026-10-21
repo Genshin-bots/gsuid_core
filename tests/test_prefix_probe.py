@@ -80,3 +80,25 @@ def test_prefix_probe_session_new_and_multi_label() -> None:
         )
         == "system+tools"
     )
+
+
+def test_prefix_probe_break_pos_and_tokens() -> None:
+    from gsuid_core.ai_core.prefix_probe import classify_prefix_break_with_pos
+
+    prev = PrefixSnapshot(
+        history_hashes=["h0", "h1", "h2"],
+        tools_hash=hash_text("t"),
+        system_hash=hash_text("s"),
+        payloads=["user:hello world", "resp:answer 1", "user:second question"],
+    )
+    reason, pos, tokens = classify_prefix_break_with_pos(
+        prev,
+        history_hashes=["h0", "h1", "h_different"],
+        tools_hash=hash_text("t"),
+        system_hash=hash_text("s"),
+        prev_payloads=prev.payloads,
+        curr_payloads=["user:hello world", "resp:answer 1", "user:changed"],
+    )
+    assert reason == "history_mid"
+    assert pos == 2
+    assert tokens is not None and tokens > 0

@@ -1105,6 +1105,8 @@ async def render_html_to_image(
     - 整页不透明底；明暗 token 自洽（暗底浅字 / 浅底深字），定义 background 必须同级写 color。
     - 字重 MiSans VF 轴 150–700：正文 400，小节 520，标题 630，大数字 700；800/900 无效。
     - 无 JS / float / 列表符号 / 伪元素排版；布局用 flex 或基础 grid。
+    - Mermaid 用 class="mermaid" 或 language-mermaid。服务向 mermaid.ink 取 SVG 再出图，
+      不要在页面里引 mermaid.js。服务不可用时只有该块变成黑底红字，整页仍出图。
     - ``<table>`` 会被改写成 flex 行：禁 rowspan/colspan、禁 ``td.xxx`` 选择器；价格与涨跌拆两列。
     - ≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；多实体传 ``series`` + 图例。
 
@@ -1177,6 +1179,7 @@ async def render_markdown_to_image(
 
     需要自定义布局、指标卡、时间线时优先 ``render_html_to_image``（``render_agent``）。
     ≥3 条数据点时必须出图；角色台词只留一两句引导。
+    mermaid 代码块会向 mermaid.ink 取 SVG 再出图。服务不可用时该块变成黑底红字，其余照常出图。
 
     Args:
         ctx: 工具执行上下文

@@ -43,9 +43,26 @@ class _Slot:
         self.unavailable_until: float = 0.0
 
 
+def _sticky_key(session_id: str | None) -> str:
+    """提取会话的粘性路由键，使同群/同任务/同能力的请求保持在同一 provider。"""
+    if not session_id:
+        return ""
+    if session_id.startswith("heartbeat_"):
+        parts = session_id.split("_")
+        return f"heartbeat_{parts[2]}_{parts[3]}" if len(parts) >= 4 else parts[0]
+    if session_id.startswith("capagent_"):
+        parts = session_id.split("_")
+        return "_".join(parts[:5]) if len(parts) >= 5 else session_id
+    if session_id.startswith("auto_"):
+        parts = session_id.split("_")
+        return f"{parts[1]}_{parts[2]}" if len(parts) >= 4 else (parts[1] if len(parts) >= 2 else session_id)
+    return session_id
+
+
 class ProviderRouter:
     def __init__(self) -> None:
         self._slots: Dict[str, _Slot] = {}
+        self._session_sticky: Dict[str, str] = {}
 
     def _slot(self, full_name: str) -> _Slot:
         if full_name not in self._slots:
@@ -76,8 +93,15 @@ class ProviderRouter:
         if full_name in self._slots:
             self._slots[full_name].unavailable_until = 0.0
 
-    def _pick(self, primary: str, secondary: str) -> str:
-        """按 可用性 → 剩余容量 选路；都满返回空串（调用方轮询等待）。"""
+    def _pick(self, primary: str, secondary: str, session_id: str | None = None) -> str:
+        """按 粘性/可用性 → 剩余容量 选路；都满返回空串（调用方轮询等待）。"""
+        key = _sticky_key(session_id)
+        if key and key in self._session_sticky:
+            preferred = self._session_sticky[key]
+            if preferred in (primary, secondary):
+                if self.is_available(preferred) and self.has_capacity(preferred):
+                    return preferred
+
         p_ok = self.is_available(primary)
         s_ok = bool(secondary) and self.is_available(secondary)
         if p_ok and self.has_capacity(primary):
@@ -90,22 +114,32 @@ class ProviderRouter:
             return primary if self.has_capacity(primary) else ""
         return ""
 
-    async def acquire(self, task_level: Literal["high", "low"], timeout: float = 300.0) -> str:
+    async def acquire(
+        self,
+        task_level: Literal["high", "low"],
+        session_id: str | None = None,
+        timeout: float = 300.0,
+    ) -> str:
         """为一次 LLM 请求选路并占用一个并发槽位，返回选中的配置全名。
 
-        主配置可用且有并发余量 → 主；否则备用配置可用且有余量 → 备用；
-        都满则轮询等待（上限 ``timeout`` 秒，超时强制走主配置，避免死等）。
+        优先粘性复用同会话 provider；主配置可用且有余量 → 主；
+        否则备用配置可用且有余量 → 备用；都满则轮询等待。
         """
         primary = get_config_name_for_task(task_level)
         secondary = get_2nd_config_name_for_task(task_level)
         if not primary:
             return primary  # 未配置模型，交由上层报错
         deadline = time.time() + timeout
+        sticky_k = _sticky_key(session_id)
         while True:
-            chosen = self._pick(primary, secondary)
+            chosen = self._pick(primary, secondary, session_id=session_id)
             if chosen:
                 slot = self._slot(chosen)
                 slot.in_flight += 1
+                if sticky_k:
+                    if len(self._session_sticky) >= 2000:
+                        self._session_sticky.clear()
+                    self._session_sticky[sticky_k] = chosen
                 if chosen != primary:
                     logger.info(
                         t(
@@ -119,6 +153,8 @@ class ProviderRouter:
             if time.time() >= deadline:
                 slot = self._slot(primary)
                 slot.in_flight += 1
+                if sticky_k:
+                    self._session_sticky[sticky_k] = primary
                 logger.warning(t("log.ai.providerrouter_wait_slot_timeout_fail", primary=primary))
                 return primary
             await asyncio.sleep(_POLL_INTERVAL)
@@ -128,9 +164,9 @@ class ProviderRouter:
             self._slots[full_name].in_flight -= 1
 
     @asynccontextmanager
-    async def slot(self, task_level: Literal["high", "low"]):
-        """异步上下文管理器：``async with provider_router.slot("low") as full_name:``"""
-        full_name = await self.acquire(task_level)
+    async def slot(self, task_level: Literal["high", "low"], session_id: str | None = None):
+        """异步上下文管理器：``async with provider_router.slot("low", session_id=sid) as full_name:``"""
+        full_name = await self.acquire(task_level, session_id=session_id)
         try:
             yield full_name
         finally:

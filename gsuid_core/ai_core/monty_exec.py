@@ -149,8 +149,8 @@ def _bind_host(
     name: str,
     tb: ToolBase,
     in_flight: set[asyncio.Task[object]],
-) -> Callable[..., Awaitable[str]]:
-    async def call(*args: object, **kwargs: object) -> str:
+) -> Callable[..., Awaitable[object]]:
+    async def call(*args: object, **kwargs: object) -> object:
         task = asyncio.current_task()
         if task is not None:
             in_flight.add(task)
@@ -159,15 +159,20 @@ def _bind_host(
             called: object = tb.tool.function(ctx, *args, **kwargs)
             if inspect.isawaitable(called):
                 called = await called
-            text = _as_text(called)
+            if isinstance(called, ToolReturn):
+                res: object = "⚠️ 该工具返回了非文本，代码里读不到正文。"
+            elif isinstance(called, (dict, list, int, float, bool, str)) or called is None:
+                res = called
+            else:
+                res = _as_text(called)
         except Exception as exc:
             _log_host(ctx, name, args_text, f"⚠️ {type(exc).__name__}: {exc}")
             raise
         finally:
             if task is not None:
                 in_flight.discard(task)
-        _log_host(ctx, name, args_text, text)
-        return text
+        _log_host(ctx, name, args_text, _as_text(res))
+        return res
 
     call.__name__ = name
     return call
@@ -176,10 +181,10 @@ def _bind_host(
 def _lookup(
     ctx: RunContext[ToolContext],
     in_flight: set[asyncio.Task[object]],
-) -> dict[str, Callable[..., Awaitable[str]]]:
+) -> dict[str, Callable[..., Awaitable[object]]]:
     from gsuid_core.ai_core.register import find_tool_base
 
-    bound: dict[str, Callable[..., Awaitable[str]]] = {}
+    bound: dict[str, Callable[..., Awaitable[object]]] = {}
     for name in _exposed_names(ctx):
         tb = find_tool_base(name)
         if tb is None or not _host_allowed(ctx, name, tb):
@@ -188,14 +193,21 @@ def _lookup(
     return bound
 
 
-def _public_result(value: object) -> str:
-    body = _as_text(value)
-    full = len(body)
+def _public_result(value: object, stdout: str = "") -> str:
+    body = _as_text(value) if value is not None else ""
+    stdout_clean = stdout.strip()
+    if stdout_clean and body:
+        combined = f"stdout:\n{stdout_clean}\n\nvalue:\n{body}"
+    elif stdout_clean:
+        combined = f"stdout:\n{stdout_clean}"
+    elif body:
+        combined = body
+    else:
+        return "（代码跑完了，没有返回值。把要交回的结果写在最后一行表达式上。）"
+    full = len(combined)
     if full > _MAX_RESULT_CHARS:
-        body = body[:_MAX_RESULT_CHARS] + f"\n…[截断, 共{full}字符]"
-    if body:
-        return body
-    return "（代码跑完了，没有返回值。把要交回的结果写在最后一行表达式上。）"
+        combined = combined[:_MAX_RESULT_CHARS] + f"\n…[截断, 共{full}字符]"
+    return combined
 
 
 async def execute_script(ctx: RunContext[ToolContext], code: str) -> str:
@@ -224,11 +236,15 @@ async def execute_script(ctx: RunContext[ToolContext], code: str) -> str:
             return "⚠️ 这段代码的运行器进程退出了，请缩短后重试。"
         except MontyError as exc:
             logger.warning(t("log.monty.script_fail", reason=str(exc)[:300]))
+            err_msg = str(exc)
+            if "NameError" in err_msg:
+                avail = ", ".join(sorted(lookup.keys())) if lookup else "无"
+                return f"⚠️ 代码没跑完：{err_msg}。当前可用工具函数：[{avail}]"[:1500]
             return f"⚠️ 代码没跑完：{exc}"[:1500]
         except Exception as exc:
             logger.warning(t("log.monty.script_fail", reason=f"{type(exc).__name__}: {exc}"[:300]))
             return f"⚠️ 代码运行器不可用：{type(exc).__name__}: {exc}"[:1500]
-        return _public_result(value)
+        return _public_result(value, prints.output)
 
     try:
         return await asyncio.wait_for(_run(), timeout=RUN_CODE_WALL_S)

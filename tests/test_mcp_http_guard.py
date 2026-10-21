@@ -1,21 +1,18 @@
-"""McpHttpGuard：MCP HTTP 子应用护栏（隔离上层取消 + 无响应自愈）。
+"""McpHttpGuard：MCP HTTP 子应用护栏（隔离上层取消 + 未写出响应时同请求重试）。
 
 回归的是线上事故：stateless Streamable HTTP 的终身 task group 被子任务取消毒化后，
-子应用不写响应就返回 → 上层 middleware 抛 "No response returned." → 永久 500。
+子应用只写出响应头就返回。状态码还没到客户端时，护栏应重建并重放这一次请求。
 """
 
 from __future__ import annotations
 
 import json
 import asyncio
-import contextlib
 from typing import List
-from collections.abc import AsyncIterator
 
 import anyio
 import pytest
-from starlette.types import Send, Scope, ASGIApp, Message, Receive
-from starlette.routing import Mount
+from starlette.types import Send, Scope, Message, Receive
 
 from gsuid_core.ai_core.mcp import server as mcp_server
 
@@ -49,6 +46,16 @@ def _collector() -> tuple[List[Message], Send]:
     return sent, send
 
 
+class _ReplayOwner:
+    """测试替身：只提供 current_app()，护栏重放走生产替换路径。"""
+
+    def __init__(self, app: object | None = None) -> None:
+        self.app = app
+
+    def current_app(self) -> object | None:
+        return self.app
+
+
 def _stub_rebuild(monkeypatch: pytest.MonkeyPatch) -> List[int]:
     calls: List[int] = []
 
@@ -56,6 +63,8 @@ def _stub_rebuild(monkeypatch: pytest.MonkeyPatch) -> List[int]:
         calls.append(1)
 
     monkeypatch.setattr(mcp_server, "_rebuild_http_mcp_session", fake)
+    # 不留下别的测试换上的常驻任务，否则未提交失败会被误重放
+    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", None)
     return calls
 
 
@@ -65,18 +74,20 @@ def _start_messages(sent: List[Message]) -> List[Message]:
 
 def test_guard_forwards_normal_response(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub_rebuild(monkeypatch)
+    sent, send = _collector()
 
     async def inner(scope: Scope, receive: Receive, send: Send) -> None:
         await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
+        await send({"type": "http.response.body", "body": b"a", "more_body": True})
+        assert [message["type"] for message in sent] == ["http.response.start", "http.response.body"]
+        await send({"type": "http.response.body", "body": b"b"})
 
-    async def run() -> List[Message]:
-        sent, send = _collector()
-        await mcp_server.McpHttpGuard(inner)(_scope(), _receive, send)
-        return sent
-
-    sent = asyncio.run(run())
-    assert [message["type"] for message in sent] == ["http.response.start", "http.response.body"]
+    asyncio.run(mcp_server.McpHttpGuard(inner)(_scope(), _receive, send))
+    assert [message["type"] for message in sent] == [
+        "http.response.start",
+        "http.response.body",
+        "http.response.body",
+    ]
     assert calls == []
 
 
@@ -127,106 +138,41 @@ def test_guard_shields_inner_app_from_outer_cancellation() -> None:
     assert finished is True
 
 
-class _FakeHttpApp:
-    """fastmcp http_app() 的替身：记录 lifespan 进出次数。"""
-
-    def __init__(self, fail_enter: bool = False) -> None:
-        self.entered = 0
-        self.exited = 0
-        self.fail_enter = fail_enter
-
-    @contextlib.asynccontextmanager
-    async def _cm(self) -> AsyncIterator[None]:
-        if self.fail_enter:
-            raise RuntimeError("lifespan boom")
-        self.entered += 1
-        try:
-            yield
-        finally:
-            self.exited += 1
-
-    def lifespan(self, app: _FakeHttpApp) -> contextlib.AbstractAsyncContextManager[None]:
-        return self._cm()
-
-
-class _FakeMcpServer:
-    def __init__(self) -> None:
-        self.apps: List[_FakeHttpApp] = []
-        self.fail = False
-        self.fail_enter = False
-
-    def http_app(self, path: str, transport: str, stateless_http: bool) -> _FakeHttpApp:
-        if self.fail:
-            raise RuntimeError("http_app boom")
-        app = _FakeHttpApp(fail_enter=self.fail_enter)
-        self.apps.append(app)
-        return app
-
-
-class _FakeRouter:
-    def __init__(self) -> None:
-        self.routes: List[Mount] = []
-
-
-class _FakeMainApp:
-    def __init__(self) -> None:
-        self.router = _FakeRouter()
-
-    def mount(self, path: str, app: ASGIApp) -> None:
-        self.router.routes.append(Mount(path, app))
-
-
-def _patch_rebuild_env(
+def test_child_cancellation_returns_503_without_swallowing_requester_stop(
     monkeypatch: pytest.MonkeyPatch,
-    server: _FakeMcpServer,
-    main_app: _FakeMainApp,
 ) -> None:
-    monkeypatch.setattr(mcp_server, "_mcp_server", server)
-    monkeypatch.setattr(mcp_server, "_mcp_mount_path", "/api/mcp")
-    monkeypatch.setattr(mcp_server, "_http_mounted", True)
-    monkeypatch.setattr(mcp_server, "_mcp_last_rebuild", 0.0)
-    monkeypatch.setattr("gsuid_core.app_life.app", main_app)
+    """子应用自己抛出的取消要回 503。调用方取消任务时，护栏把取消继续抛出。"""
+    rebuilds: List[int] = []
 
+    async def rebuild() -> None:
+        rebuilds.append(1)
 
-def test_rebuild_swaps_mount_and_resets_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_server = _FakeMcpServer()
-    fake_main = _FakeMainApp()
-    old_app = _FakeHttpApp()
-    _patch_rebuild_env(monkeypatch, fake_server, fake_main)
+    async def child_cancel(scope: Scope, receive: Receive, send: Send) -> None:
+        raise asyncio.CancelledError("synthetic child cancellation")
+
+    monkeypatch.setattr(mcp_server, "_rebuild_http_mcp_session", rebuild)
+    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", None)
 
     async def run() -> None:
-        old_cm = old_app.lifespan(old_app)
-        await old_cm.__aenter__()
-        monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", old_cm)
-        await mcp_server._rebuild_http_mcp_session()
-        # 冷却内的第二次调用不应再建
-        await mcp_server._rebuild_http_mcp_session()
+        sent, send = _collector()
+        await mcp_server.McpHttpGuard(child_cancel)(_scope(), _receive, send)
+        assert [message["status"] for message in _start_messages(sent)] == [503]
+        assert rebuilds == [1]
+        rebuilds.clear()
+        started = asyncio.Event()
+
+        async def waiting(scope: Scope, receive: Receive, send: Send) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(mcp_server.McpHttpGuard(waiting)(_scope(), _receive, send))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert rebuilds == []
 
     asyncio.run(run())
-
-    assert len(fake_server.apps) == 1
-    assert fake_server.apps[0].entered == 1
-    mounts = [route for route in fake_main.router.routes if isinstance(route, Mount)]
-    assert len(mounts) == 1
-    assert mounts[0].path == "/api/mcp"
-    assert isinstance(mounts[0].app, mcp_server.McpHttpGuard)
-    assert old_app.exited == 1
-    assert mcp_server._mcp_lifespan_cm is not None
-
-
-def test_rebuild_failure_keeps_old_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_server = _FakeMcpServer()
-    fake_server.fail = True
-    fake_main = _FakeMainApp()
-    old_app = _FakeHttpApp()
-    _patch_rebuild_env(monkeypatch, fake_server, fake_main)
-    old_cm = old_app.lifespan(old_app)
-    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", old_cm)
-
-    asyncio.run(mcp_server._rebuild_http_mcp_session())
-
-    assert fake_main.router.routes == []
-    assert mcp_server._mcp_lifespan_cm is old_cm
 
 
 def test_guard_is_transparent_for_non_http_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,6 +190,29 @@ def test_guard_is_transparent_for_non_http_scope(monkeypatch: pytest.MonkeyPatch
     asyncio.run(run())
     assert seen == ["lifespan"]
     assert calls == []
+
+
+def test_guard_closes_body_and_rebuilds_when_stream_never_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """线上：SSE 分支吞掉 BrokenResourceError，start 已写、body 没有结束。"""
+    calls = _stub_rebuild(monkeypatch)
+
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"data:", "more_body": True})
+
+    async def run() -> List[Message]:
+        sent, send = _collector()
+        await mcp_server.McpHttpGuard(inner)(_scope(), _receive, send)
+        return sent
+
+    sent = asyncio.run(run())
+    starts = _start_messages(sent)
+    assert len(starts) == 1
+    assert starts[0]["status"] == 200
+    bodies = [message for message in sent if message["type"] == "http.response.body"]
+    assert bodies[-1]["body"] == b""
+    assert bodies[-1]["more_body"] is False
+    assert calls == [1]
 
 
 def test_guard_replies_503_when_inner_raises_closed_resource(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,7 +254,8 @@ def test_guard_rebuilds_when_inner_raises_after_start(monkeypatch: pytest.Monkey
     assert calls == [1]
 
 
-def test_guard_swallows_send_errors_and_rebuilds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_guard_swallows_send_errors_without_rebuilding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """写出失败且子应用正常返回时，会话还在，不重建。"""
     calls = _stub_rebuild(monkeypatch)
 
     async def inner(scope: Scope, receive: Receive, send: Send) -> None:
@@ -299,31 +269,126 @@ def test_guard_swallows_send_errors_and_rebuilds(monkeypatch: pytest.MonkeyPatch
         await mcp_server.McpHttpGuard(inner)(_scope(), _receive, boom_send)
 
     asyncio.run(run())
-    assert calls == [1]
+    assert calls == []
 
 
-def test_rebuild_skips_when_unmounted(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_server = _FakeMcpServer()
-    fake_main = _FakeMainApp()
-    _patch_rebuild_env(monkeypatch, fake_server, fake_main)
-    monkeypatch.setattr(mcp_server, "_http_mounted", False)
+def _one_shot_body(body: bytes) -> tuple[List[int], Receive]:
+    """第一次返回 body；再读原通道就失败。重放必须用记录，不能再调原 receive。"""
+    calls: List[int] = []
 
-    asyncio.run(mcp_server._rebuild_http_mcp_session())
+    async def receive() -> Message:
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("original receive called after the body was consumed")
+        return {"type": "http.request", "body": body, "more_body": False}
 
-    assert fake_server.apps == []
-    assert fake_main.router.routes == []
+    return calls, receive
 
 
-def test_rebuild_enter_failure_keeps_old_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_server = _FakeMcpServer()
-    fake_server.fail_enter = True
-    fake_main = _FakeMainApp()
-    old_app = _FakeHttpApp()
-    _patch_rebuild_env(monkeypatch, fake_server, fake_main)
-    old_cm = old_app.lifespan(old_app)
-    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", old_cm)
+def test_guard_retries_same_request_after_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    """线上 500：只写出 start 就返回。状态码还没到客户端，应重放并只交付第二次结果。"""
+    body = b'{"jsonrpc":"2.0","id":1,"method":"tools/call"}'
+    reads, receive = _one_shot_body(body)
+    rebuilds: List[int] = []
+    seen: List[bytes] = []
+    owner = _ReplayOwner()
+    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", owner)
 
-    asyncio.run(mcp_server._rebuild_http_mcp_session())
+    async def healed(scope: Scope, receive: Receive, send: Send) -> None:
+        message = await receive()
+        raw = message["body"]
+        assert isinstance(raw, bytes)
+        seen.append(raw)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
 
-    assert fake_main.router.routes == []
-    assert mcp_server._mcp_lifespan_cm is old_cm
+    async def poisoned(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    async def fake() -> None:
+        rebuilds.append(1)
+        owner.app = healed
+
+    monkeypatch.setattr(mcp_server, "_rebuild_http_mcp_session", fake)
+
+    async def run() -> List[Message]:
+        sent, send = _collector()
+        await mcp_server.McpHttpGuard(poisoned)(_scope(), receive, send)
+        return sent
+
+    sent = asyncio.run(run())
+    starts = _start_messages(sent)
+    assert len(starts) == 1
+    assert starts[0]["status"] == 200
+    bodies = [message["body"] for message in sent if message["type"] == "http.response.body"]
+    assert bodies == [b"ok"]
+    assert seen == [body]
+    assert reads == [1]
+    assert rebuilds == [1]
+
+
+def test_guard_retries_when_another_request_already_rebuilt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """冷却期内重建是空操作，但新子应用已经换上时，这次请求仍要重放。"""
+    reads, receive = _one_shot_body(b"{}")
+    rebuilds: List[int] = []
+
+    async def healed(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def poisoned(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    async def fake() -> None:
+        rebuilds.append(1)
+
+    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", _ReplayOwner(healed))
+    monkeypatch.setattr(mcp_server, "_rebuild_http_mcp_session", fake)
+
+    async def run() -> List[Message]:
+        sent, send = _collector()
+        await mcp_server.McpHttpGuard(poisoned)(_scope(), receive, send)
+        return sent
+
+    sent = asyncio.run(run())
+    bodies = [message["body"] for message in sent if message["type"] == "http.response.body"]
+    assert bodies == [b"ok"]
+    assert len(_start_messages(sent)) == 1
+    assert reads == [1]
+    assert rebuilds == [1]
+
+
+def test_guard_replies_503_when_replay_also_stays_uncommitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """重放仍只写出 start 时回 503，并且只重建一次。"""
+    rebuilds: List[int] = []
+    replayed: List[int] = []
+    owner = _ReplayOwner()
+    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", owner)
+
+    async def still_bad(scope: Scope, receive: Receive, send: Send) -> None:
+        replayed.append(1)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    async def poisoned(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    async def fake() -> None:
+        rebuilds.append(1)
+        owner.app = still_bad
+
+    monkeypatch.setattr(mcp_server, "_rebuild_http_mcp_session", fake)
+
+    async def run() -> List[Message]:
+        sent, send = _collector()
+        await mcp_server.McpHttpGuard(poisoned)(_scope(), _receive, send)
+        return sent
+
+    sent = asyncio.run(run())
+    starts = _start_messages(sent)
+    assert len(starts) == 1
+    assert starts[0]["status"] == 503
+    assert replayed == [1]
+    assert rebuilds == [1]
