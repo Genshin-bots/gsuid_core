@@ -1295,7 +1295,10 @@ class SettlePhase(RunOnceHost):
         """UsageLimitExceeded 专属兜底总结。"""
         # 达到限制后的处理逻辑
         logger.warning(i18n_t("log.agent.pydanticai_reached_maximum_thinking", p0=_require_limits(st).request_limit))
-        statistics_manager.record_error(error_type="usage_limit")
+        statistics_manager.record_error(
+            error_type="usage_limit",
+            message=f"达到最高思考轮数限制 {_require_limits(st).request_limit}",
+        )
         self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {_require_limits(st).request_limit}")
 
         salvaged = None

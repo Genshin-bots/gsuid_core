@@ -391,6 +391,47 @@ Authorization: Bearer <token>
 
 ---
 
+## 24.8.1 复制配置
+
+```
+POST /api/provider_config/config/{provider}/{config_name}/copy
+```
+
+把源配置的 JSON 文件原样复制成新文件。密钥不经过读取接口（读取时会打码），所以复制必须走这个接口，不能用「读详情再创建」。当前正在被高级/低级任务使用的配置也可以复制。目标名称已存在时失败，不会覆盖。
+
+**请求头**：
+```
+Authorization: Bearer <token>
+```
+
+**路径参数**：
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| provider | string | provider 类型（openai/anthropic/gemini） |
+| config_name | string | 源配置文件名（不含扩展名） |
+
+**请求体**：
+```json
+{ "new_name": "MiniMAX 副本" }
+```
+
+`new_name` 不能为空、不能与源名称相同、不能包含 `+`（`+` 是 `provider++config_name` 的分隔符）。
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "name": "openai++MiniMAX 副本",
+        "provider": "openai",
+        "config_name": "MiniMAX 副本"
+    }
+}
+```
+
+---
+
 ## 24.9 删除配置
 
 ```

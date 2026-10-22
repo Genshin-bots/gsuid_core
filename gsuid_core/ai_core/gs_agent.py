@@ -1130,7 +1130,7 @@ class GsCoreAIAgent(RunOnceMixin):
             # 闸开着别再打上游；套餐打满重试必复现。
             _qkey = self._quota_breaker_key()
             if quota_breaker.is_open(_qkey):
-                statistics_manager.record_error(error_type="quota_breaker_open")
+                statistics_manager.record_error(error_type="quota_breaker_open", message="breaker_open")
                 self._session_logger.log_error("quota_breaker_open", "breaker_open")
                 return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
             try:
@@ -1168,7 +1168,7 @@ class GsCoreAIAgent(RunOnceMixin):
                 quota_breaker.note_hit(_qkey, _qkind)
                 if _qkind == "quota":
                     logger.warning(i18n_t("log.agent.pydanticai_quota_exhausted", e=e))
-                    statistics_manager.record_error(error_type="quota_exhausted")
+                    statistics_manager.record_error(error_type="quota_exhausted", message=err_str)
                     self._session_logger.log_error("quota_exhausted", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
 
@@ -1221,7 +1221,7 @@ class GsCoreAIAgent(RunOnceMixin):
                                 err_str=err_str,
                             )
                         )
-                        statistics_manager.record_error(error_type="content_rejected")
+                        statistics_manager.record_error(error_type="content_rejected", message=err_str)
                         self._session_logger.log_error("content_rejected", err_str)
                         return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
                     logger.warning(
@@ -1231,34 +1231,34 @@ class GsCoreAIAgent(RunOnceMixin):
                             err_str=err_str,
                         )
                     )
-                    statistics_manager.record_error(error_type="client_error")
+                    statistics_manager.record_error(error_type="client_error", message=err_str)
                     self._session_logger.log_error("client_error", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                 # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
                 if isinstance(e, httpx.TimeoutException):
                     logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
-                    statistics_manager.record_error(error_type="timeout")
+                    statistics_manager.record_error(error_type="timeout", message=err_str)
                     self._session_logger.log_error("timeout", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
                 if isinstance(e, httpx.HTTPError):
                     low = err_str.lower()
                     if "rate" in low or "429" in low or "limit" in low:
                         logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
-                        statistics_manager.record_error(error_type="rate_limit")
+                        statistics_manager.record_error(error_type="rate_limit", message=err_str)
                         self._session_logger.log_error("rate_limit", err_str)
                     else:
                         logger.warning(i18n_t("log.agent.pydanticai_run_fail_network", e=e))
-                        statistics_manager.record_error(error_type="network_error")
+                        statistics_manager.record_error(error_type="network_error", message=err_str)
                         self._session_logger.log_error("network_error", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                 logger.error(i18n_t("log.agent.pydanticai_run_fail", e=e))
                 logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
                 if "529" in err_str:
-                    statistics_manager.record_error(error_type="api_529_error")
+                    statistics_manager.record_error(error_type="api_529_error", message=err_str)
                 else:
-                    statistics_manager.record_error(error_type="agent_error")
+                    statistics_manager.record_error(error_type="agent_error", message=err_str)
                 self._session_logger.log_error("agent_error", err_str)
                 return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 

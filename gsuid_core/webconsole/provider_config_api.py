@@ -638,6 +638,47 @@ async def create_default_config(
         }
 
 
+@app.post(
+    "/api/provider_config/config/{provider}/{config_name}/copy",
+    summary="复制配置",
+    tags=PROVIDER_CONFIG,
+)
+async def copy_config(
+    provider: str,
+    config_name: str,
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_admin),
+) -> Dict[str, Any]:
+    """
+    复制一份已有配置文件。密钥留在服务端文件里，不经过打码后的读取接口。
+
+    Body: {"new_name": "新名称"}
+    """
+    if provider not in SUPPORTED_PROVIDERS:
+        return _unsupported_provider_error(provider)
+
+    new_name = str(data.get("new_name", "") if isinstance(data, dict) else "").strip()
+    plus_error = _validate_config_name_no_plus(new_name)
+    if plus_error is not None:
+        return plus_error
+
+    manager, _ = _get_manager_and_config(provider)
+    error = manager.copy(config_name, new_name)
+    if error is not None:
+        return {"status": 1, "msg": error, "data": None}
+
+    full_name = format_provider_config_name(provider, new_name)
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "name": full_name,
+            "provider": provider,
+            "config_name": new_name,
+        },
+    }
+
+
 @app.delete("/api/provider_config/config/{provider}/{config_name}", summary="删除配置", tags=PROVIDER_CONFIG)
 async def delete_config(
     provider: str,

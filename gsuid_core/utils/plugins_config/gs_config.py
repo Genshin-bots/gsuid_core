@@ -739,6 +739,37 @@ class ConfigSetManager(ABC):
         """
         return self._get_config_path(config_name).exists()
 
+    def copy(self, source_name: str, new_name: str) -> str | None:
+        """
+        把已有配置文件原样复制成新文件。
+
+        必须直接拷贝磁盘上的 JSON，不能走 ``get_config``：后者在文件不存在时
+        会写出一份空模板，密钥也会在读取接口里被打码。
+
+        Returns:
+            None 表示成功；否则是给调用方展示的错误文案。
+        """
+        source_name = (source_name or "").strip()
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return "名称不能为空"
+        if "+" in new_name:
+            return "配置文件名称不允许包含 '+' 字符"
+        if not source_name or source_name == new_name:
+            return "新名称与原配置相同"
+        src = self._get_config_path(source_name)
+        if not src.is_file():
+            return f"配置文件 '{source_name}' 不存在"
+        dst = self._get_config_path(new_name)
+        if dst.exists():
+            return f"配置文件 '{new_name}' 已存在"
+        import shutil
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        self._cache.pop(new_name, None)
+        return None
+
     def create_default(self, config_name: str) -> bool:
         """
         创建默认配置

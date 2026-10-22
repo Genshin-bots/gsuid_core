@@ -34,7 +34,7 @@ class _Stats:
         self.errors: List[str] = []
         self.agent_runs = 0
 
-    def record_error(self, error_type: str = "") -> None:
+    def record_error(self, error_type: str = "", message: str = "") -> None:
         self.errors.append(error_type)
 
     def record_agent_run(

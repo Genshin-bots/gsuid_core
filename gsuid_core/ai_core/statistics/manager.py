@@ -281,9 +281,15 @@ class StatisticsManager:
         mapped_intent = self.INTENT_MAP.get(intent, intent)
         self._bot_state.intents[mapped_intent] += 1
 
-    def record_error(self, error_type: str):
-        """记录错误"""
+    def record_error(self, error_type: str, message: str = ""):
+        """记录错误。message 只进按日事件文件，计数器仍只按类型累加。"""
         self._bot_state.errors[error_type] += 1
+        try:
+            from gsuid_core.ai_core.statistics.error_events import append_error_event
+
+            append_error_event(self._today, error_type, message)
+        except Exception:
+            logger.exception("append ai error event failed")
 
     def record_trigger(self, trigger_type: str):
         """记录触发方式"""

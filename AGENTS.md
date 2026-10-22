@@ -28,7 +28,8 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 ├── ruff.toml                 # line-length=120，lint E/F/I/W
 ├── pyrightconfig.json        # basic；排除 plugins / data
 ├── .agents/skills/           # 开发文档 Skill（给 Agent 按任务加载）
-├── docs/                     # 专题设计 / 历史评审（非入门）
+├── docs/                     # 已落地的专题说明（生命周期 / Takumi 等）
+├── plans/                    # 方案设计文档。新方案写这里，不进 git
 ├── gsuid_core/               # 框架包
 │   ├── core.py               # 进程入口
 │   ├── supervisor.py         # 守护父进程：拉起 core 子进程，子进程以 51 退出时原地重拉
@@ -82,7 +83,9 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 | 部署 / Docker / WebConsole / WS_TOKEN | [gscore-deploy](.agents/skills/gscore-deploy/SKILL.md) |
 | 写用户可见文字（更新日志 / 文档 / 报错 / 注释） | [human-talk](.agents/skills/human-talk/SKILL.md) |
 
-`docs/` 里还有生命周期、记忆系统、Takumi 出图等专题（见各 Skill「关联文档」）。改核心机制后同步对应章节。
+`docs/` 里还有生命周期、记忆系统、Takumi 出图等已经落地的专题（见各 Skill「关联文档」）。改这些机制后，同步 `docs/` 里对应的章节。
+
+新的方案设计文档应写在 `plans/`，不应再写入 `docs/`。一次设计一份文件。`plans/` 在 `.gitignore` 里，不提交。已经在 `docs/` 里的专题说明仍留在原地，不为同一份说明再在 `plans/` 复制一份。
 
 ## Setup commands
 
@@ -827,5 +830,6 @@ bot = Bot(_bot, mock_ev)
 8. **交付闸 → ruff / format / pytest / basedpyright（及 CI 的 i18n）全绿才允许说做完**
 9. **用户可见文字 → 写前查 `changelogs/`，写后按 human-talk 判断要不要记更新日志（小修小补不记）**
 10. **当轮控制句 → 只在 `control/lines.py` 写一次，调用处 import（§1.11）**
+11. **方案设计文档 → 新方案写 `plans/`，不写 `docs/`。`docs/` 只改已经落地的专题说明**
 
 专题细节按 Skills 表按需加载，不要把整本 `references/` 一次读完。

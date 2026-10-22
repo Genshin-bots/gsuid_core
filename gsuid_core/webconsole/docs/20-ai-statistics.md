@@ -588,6 +588,16 @@ GET /api/ai/statistics/errors
 
 ---
 
+## 20.7.1 获取错误事件
+
+```
+GET /api/ai/statistics/error-events?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+```
+
+返回这段闭区间里每一次错误的日期、时间、类型和消息。不包含堆栈。这个接口上线之前的历史错误只有计数，事件列表为空。
+
+---
+
 ## 20.8 获取 Heartbeat 巡检统计
 
 ```

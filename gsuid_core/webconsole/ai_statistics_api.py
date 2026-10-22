@@ -324,6 +324,27 @@ async def get_error_stats(
         return {"status": 1, "msg": f"获取错误统计失败: {str(e)}", "data": None}
 
 
+@app.get("/api/ai/statistics/error-events", summary="获取错误事件", tags=AI_STATS)
+async def get_error_events(
+    start_date: str,
+    end_date: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """闭区间内的逐次错误。只有类型和消息，没有堆栈。"""
+    try:
+        from gsuid_core.ai_core.statistics.error_events import read_error_events
+
+        if not start_date or not end_date or start_date > end_date:
+            return {"status": 1, "msg": "日期范围无效", "data": []}
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": read_error_events(start_date, end_date),
+        }
+    except Exception as e:
+        return {"status": 1, "msg": f"获取错误事件失败: {str(e)}", "data": []}
+
+
 @app.get("/api/ai/statistics/heartbeat", summary="获取 Heartbeat 巡检统计", tags=AI_STATS)
 async def get_heartbeat_stats(
     date: Optional[str] = None,
