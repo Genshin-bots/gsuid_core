@@ -51,7 +51,9 @@ active-users / trigger-distribution / intent-distribution / errors / heartbeat /
 
 ## 11.2 网页控制台（`gsuid_core/webconsole/`）
 
-Hub 静态资源由 `webconsole/static_serve.py::build_frontend_router` 挂在 `/app/`：
+Hub 静态资源由 `webconsole/static_serve.py::build_frontend_router` 挂在 `/app/`。
+`setup_frontend_b` 把 dist 放在 `FrontendDist` 上，每次请求再读路径：资源站 zip 覆盖
+`data/dist` 之后只改这个路径，不重挂路由。`index.html` 是 `no-cache`，刷新后拿到新 hash。
 
 - 带 hash 的 `assets/**`：`Cache-Control: public, max-age=31536000, immutable`
 - `index.html` / `version.json`：`no-cache`（禁止长期缓存 HTML，否则升级后会请求已删除的旧 hash）

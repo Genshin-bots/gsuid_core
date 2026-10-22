@@ -1,65 +1,9 @@
-import json
 import asyncio
-from typing import TypedDict
 from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.data_store import DIST_PATH, DIST_EX_PATH
-
-
-class FrontendVersionFile(TypedDict):
-    version: str
-
-
-def _read_version_json(path: Path) -> FrontendVersionFile | None:
-    """解析失败或没有 version 字符串时按无版本处理。"""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            loaded: object = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(loaded, dict) or "version" not in loaded:
-        return None
-    version = loaded["version"]
-    if not isinstance(version, str):
-        return None
-    return {"version": version}
-
-
-def parse_version(version_str: str) -> tuple[int, ...]:
-    """解析版本号字符串为元组，支持0.0.0格式"""
-    try:
-        return tuple(int(x) for x in version_str.split("."))
-    except (ValueError, AttributeError):
-        return (0, 0, 0)
-
-
-def compare_versions(v1: FrontendVersionFile | None, v2: FrontendVersionFile | None) -> int:
-    """
-    比较两个version.json的版本
-    返回: 1表示v1更新, -1表示v2更新, 0表示相同或无效
-    """
-    if v1 is None and v2 is None:
-        return 0
-    if v1 is None:
-        return -1
-    if v2 is None:
-        return 1
-
-    v1_tuple = parse_version(v1["version"])
-    v2_tuple = parse_version(v2["version"])
-
-    # 补齐长度
-    max_len = max(len(v1_tuple), len(v2_tuple))
-    v1_tuple = v1_tuple + (0,) * (max_len - len(v1_tuple))
-    v2_tuple = v2_tuple + (0,) * (max_len - len(v2_tuple))
-
-    if v1_tuple > v2_tuple:
-        return 1
-    elif v1_tuple < v2_tuple:
-        return -1
-    return 0
 
 
 def _import_webconsole_apis() -> None:
@@ -144,10 +88,32 @@ def _import_webconsole_apis() -> None:
     )
 
 
-async def setup_frontend_b() -> None:
-    """Setup frontend static files and API routes"""
+def _announce_frontend(dist_path: Path) -> None:
+    from gsuid_core.config import core_config
 
-    """确保核心数据库表存在"""
+    host = core_config.get_config("HOST")
+    port = core_config.get_config("PORT")
+    logger.info(t("log.webconsole.app_dist_path", dist_path=dist_path))
+    logger.info(t("log.webconsole.apirouter_app"))
+    logger.info(t("log.webconsole.webconsole"))
+    if host == "localhost" or host == "127.0.0.1":
+        shown_host = "localhost"
+        logger.warning(t("log.webconsole.webconsole_data_config_json_host"))
+    else:
+        shown_host = host
+    logger.success(t("log.webconsole.webconsole_http_host_port_app_ok", _host=shown_host, PORT=port))
+
+
+async def setup_frontend_b() -> None:
+    """先挂本地较新的 dist，再在后台把资源站最高版本 zip 覆盖到 data/dist。"""
+    from gsuid_core.webconsole.dist_sync import (
+        version_label,
+        probe_local_dists,
+        select_frontend_dist,
+        sync_remote_webconsole,
+    )
+    from gsuid_core.webconsole.static_serve import FrontendDist
+
     try:
         from gsuid_core.utils.database.startup import ensure_core_database_tables
 
@@ -155,100 +121,55 @@ async def setup_frontend_b() -> None:
     except Exception as e:
         logger.warning(t("log.webconsole.create_fail", e=e))
 
-    # 导入 app 对象
-    from gsuid_core.webconsole.app_app import app
-
-    # 导入所有 webconsole API 模块以注册路由。
     try:
         _import_webconsole_apis()
     except Exception as e:
         logger.exception(t("log.webconsole.api_import_fail", e=e))
 
-    dvj = DIST_PATH / "version.json"
-    devj = DIST_EX_PATH / "version.json"
-
-    dvj_version: FrontendVersionFile | None = None
-    devj_version: FrontendVersionFile | None = None
-
-    def get_version_str(v: FrontendVersionFile | None) -> str:
-        """安全获取版本字符串"""
-        if v is None:
-            return "unknown"
-        return v["version"]
-
-    # 读取 version.json 文件
-    if dvj.exists():
-        dvj_version = await asyncio.to_thread(_read_version_json, dvj)
-
-    if devj.exists():
-        devj_version = await asyncio.to_thread(_read_version_json, devj)
-
-    # 根据版本号比较选择使用哪个dist目录
-    dist_ex_exists = DIST_EX_PATH.exists() and list(DIST_EX_PATH.iterdir())
-    dist_exists = DIST_PATH.exists() and list(DIST_PATH.iterdir())
-
-    # 默认使用 DIST_PATH
-    dist_path = DIST_PATH
-
-    if dist_ex_exists and dist_exists:
-        # 两个目录都存在且非空，根据版本号选择
-        cmp_result = compare_versions(devj_version, dvj_version)
-        if cmp_result > 0:
-            dist_path = DIST_EX_PATH
-        elif cmp_result < 0:
-            dist_path = DIST_PATH
-        else:
-            # 版本相同，优先使用 DIST_EX_PATH
-            dist_path = DIST_PATH
-    elif dist_ex_exists:
-        # 只有 DIST_EX_PATH 存在
-        dist_path = DIST_EX_PATH
-    elif dist_exists:
-        # 只有 DIST_PATH 存在
-        dist_path = DIST_PATH
-    else:
-        # 两个目录都不存在或为空
+    local = await asyncio.to_thread(probe_local_dists, DIST_PATH, DIST_EX_PATH)
+    if not local["bundled_ready"] and not local["extra_ready"]:
         logger.warning(t("log.webconsole.dist_path_ex"))
-        dist_path = DIST_PATH
 
-    last_version = get_version_str(devj_version if dist_path == DIST_EX_PATH else dvj_version)
-    # 最终结果日志
+    dist_path = select_frontend_dist(DIST_PATH, DIST_EX_PATH, local)
+    chosen = local["extra_version"] if dist_path == DIST_EX_PATH else local["bundled_version"]
     logger.info(
         t(
             "log.webconsole.dist_path_last_version",
             dist_path=dist_path,
-            last_version=last_version,
+            last_version=version_label(chosen),
         )
     )
 
-    # Mount static files if dist folder exists
+    # 路由闭包读这个对象。下载完成后再改 path，不用重挂 /app。
+    holder = FrontendDist(dist_path)
+    from gsuid_core.webconsole.app_app import app
+    from gsuid_core.webconsole.static_serve import (
+        build_frontend_router,
+        build_console_fonts_router,
+    )
+
+    mounted = False
     if dist_path.exists():
-        # 获取 HOST 和 PORT 配置
-        from gsuid_core.config import core_config
-
-        HOST = core_config.get_config("HOST")
-        PORT = core_config.get_config("PORT")
-
-        logger.info(t("log.webconsole.app_dist_path", dist_path=dist_path))
-
-        from gsuid_core.webconsole.static_serve import (
-            build_frontend_router,
-            build_console_fonts_router,
-        )
-
         app.include_router(build_console_fonts_router())
-        app.include_router(build_frontend_router(dist_path), prefix="/app")
-
-        logger.info(t("log.webconsole.apirouter_app"))
-
-        logger.info(t("log.webconsole.webconsole"))
-
-        if HOST == "localhost" or HOST == "127.0.0.1":
-            _host = "localhost"
-            logger.warning(t("log.webconsole.webconsole_data_config_json_host"))
-        else:
-            _host = HOST
-
-        logger.success(t("log.webconsole.webconsole_http_host_port_app_ok", _host=_host, PORT=PORT))
+        app.include_router(build_frontend_router(holder), prefix="/app")
+        _announce_frontend(dist_path)
+        mounted = True
     else:
-        logger.warning(t("log.webconsole.dist_path", DIST_PATH=DIST_PATH))
+        logger.warning(t("log.webconsole.dist_path", DIST_PATH=dist_path))
+
+    before = holder.path
+    replaced = await sync_remote_webconsole(holder)
+    if not mounted and holder.path.exists():
+        app.include_router(build_console_fonts_router())
+        app.include_router(build_frontend_router(holder), prefix="/app")
+        _announce_frontend(holder.path)
+    elif replaced and holder.path != before:
+        fresh = await asyncio.to_thread(probe_local_dists, DIST_PATH, DIST_EX_PATH)
+        current = fresh["extra_version"] if holder.path == DIST_EX_PATH else fresh["bundled_version"]
+        logger.info(
+            t(
+                "log.webconsole.dist_switched",
+                dist_path=holder.path,
+                last_version=version_label(current),
+            )
+        )

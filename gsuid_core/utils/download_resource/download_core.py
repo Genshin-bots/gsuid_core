@@ -125,6 +125,35 @@ async def check_speed() -> tuple[str, str]:
             _SPEED_TEST_EVENT.set()
 
 
+def parse_autoindex_names(page: bytes) -> list[str]:
+    """Nginx 目录页 `<pre>` 里的文件名。不是目录索引时返回空列表。"""
+    from bs4 import Tag
+
+    soup = BeautifulSoup(page, "lxml")
+    pres = soup.find_all("pre")
+    if not pres:
+        return []
+    pre = pres[0]
+    if not isinstance(pre, Tag):
+        return []
+
+    names: list[str] = []
+    for node in pre.find_all("a"):
+        if not isinstance(node, Tag) or "href" not in node.attrs:
+            continue
+        href = node.attrs["href"]
+        if not isinstance(href, str):
+            continue
+        href = href.split("?", 1)[0].split("#", 1)[0]
+        if href.endswith("/") or href in ("../", ".."):
+            continue
+        name = unquote(href.rsplit("/", 1)[-1])
+        if not name or name in (".", ".."):
+            continue
+        names.append(name)
+    return names
+
+
 async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
     try:
         response = await client.get(url)

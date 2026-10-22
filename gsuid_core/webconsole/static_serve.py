@@ -166,15 +166,25 @@ def build_console_fonts_router(fonts_dir: Optional[Path] = None) -> APIRouter:
     return router
 
 
-def build_frontend_router(dist_path: Path) -> APIRouter:
+class FrontendDist:
+    """/app 当前读取的 dist。启动后把 path 指到更新的目录即可，不必重挂路由。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+
+def build_frontend_router(dist_path: Path | FrontendDist) -> APIRouter:
+    holder = dist_path if isinstance(dist_path, FrontendDist) else FrontendDist(dist_path)
     router = APIRouter()
 
     @router.get("/", response_model=None)
     @router.get("/{path:path}", response_model=None)
     async def serve_frontend(request: Request, path: str = "") -> Response:
+        # 每次请求再读，下载完成前的请求仍用挂载时的目录。
+        root = holder.path
         accept_encoding = request.headers.get("accept-encoding")
         if not path or path == "/":
-            index_path = dist_path / "index.html"
+            index_path = root / "index.html"
             if index_path.exists():
                 return static_file_response(
                     index_path,
@@ -185,7 +195,7 @@ def build_frontend_router(dist_path: Path) -> APIRouter:
             return HTMLResponse("Not Found", status_code=404)
 
         try:
-            file_path = safe_join(dist_path, path)
+            file_path = safe_join(root, path)
         except PathEscapeError:
             return HTMLResponse("Not Found", status_code=404)
 
@@ -199,7 +209,7 @@ def build_frontend_router(dist_path: Path) -> APIRouter:
         if not should_spa_fallback(path):
             return HTMLResponse("Not Found", status_code=404)
 
-        index_path = dist_path / "index.html"
+        index_path = root / "index.html"
         if index_path.exists():
             return static_file_response(
                 index_path,

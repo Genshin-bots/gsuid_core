@@ -183,7 +183,11 @@ HTTP Agent 路由在 `app_life` 构造 app 时按总开关决定是否 `include_
 2. `asyncio.create_task(check_speed())` —— 后台测速选镜像源
 3. `asyncio.create_task(core_start_execute())` —— **后台异步**跑全部 `@on_core_start`
    （`_start_rm_cleanup` + `init_ai_core`）
-4. `asyncio.create_task(_bgsetup_frontend_b())` —— 后台准备网页控制台前端
+4. `asyncio.create_task(_bgsetup_frontend_b())` —— 后台准备网页控制台前端。
+   先按 `version.json` 挂载 `data/dist` 与 `gsuid_core/webconsole/dist` 里较新的一份
+   （版本相同用包内 dist）。挂上之后再读资源站 `WebConsole/`，只下载文件名版本最高的
+   zip（如 `v0.4.1.zip`）。云端版本高于 `data/dist` 时解压覆盖该目录，随后的 `/app`
+   请求改读两份里较新的那份。下载失败时继续用已挂上的本地目录。
 5. `await start_scheduler()` —— 启动 APScheduler
 6. `asyncio.create_task(clean_trace_collector())` —— 后台回收僵死追踪
    （旧的 `clean_log()` 已废除：日志缓冲改由条数 + 字符数上限在 append 时淘汰，
