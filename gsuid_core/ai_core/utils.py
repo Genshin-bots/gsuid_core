@@ -63,6 +63,20 @@ MEME_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 表情没有字数，按 7 个字计，间隔是 1 秒。
+MEME_PAUSE_CHARS = 7
+
+
+def bubble_pause(char_count: int) -> float:
+    """两条出站消息的间隔。字数 / 7 秒，最短 0.5，最长 3。"""
+    return min(max(char_count / 7, 0.5), 3.0)
+
+
+async def pause_before_meme() -> None:
+    """表情包发出前等待，和文字气泡用同一条间隔。"""
+    await asyncio.sleep(bubble_pause(MEME_PAUSE_CHARS))
+
+
 # 模型输出的沉默/控制标记：命中时跳过发送。散落多处应引用此常量。
 # 集合只放带括号的 CJK 别名：裸「沉默」做子串会误伤「我选择沉默」。
 SILENCE_MARKERS: frozenset[str] = frozenset(
@@ -1823,9 +1837,7 @@ async def send_chat_result(
         # 计算纯文本长度
         plain_text = re.sub(r"@\d+", "", block)
 
-        # 模拟打字延迟
-        delay = min(max(len(plain_text) / 7, 0.5), 3.0)
-        await asyncio.sleep(delay)
+        await asyncio.sleep(bubble_pause(len(plain_text)))
 
         await bot.send(segments, extra_metadata=extra_metadata)
         if _audit is not None:
@@ -1837,18 +1849,18 @@ async def send_chat_result(
 
 async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
     """解析 meme 标记并发送对应表情包"""
-    from gsuid_core.ai_core.meme.config import meme_config
+    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+    from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
 
-    if not meme_config.get_config("meme_enable").data:
+    persona = _get_persona_for_event(ev)
+    if not persona_allows_meme_reply(persona):
         return
 
     try:
         from gsuid_core.ai_core.meme.library import _read_file, get_memes_base_path
         from gsuid_core.ai_core.meme.selector import pick
         from gsuid_core.ai_core.meme.database_model import AiMemeRecord
-        from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
 
-        persona = _get_persona_for_event(ev)
         record, _reason = await pick(
             mood=mood,
             scene="",
@@ -1867,6 +1879,7 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
         img_b64 = await convert_img(image_data)
         from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
+        await pause_before_meme()
         await bot.send(MessageSegment.image(img_b64), extra_metadata=turn_reply_metadata(ev))
         await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
         logger.info(i18n_t("log.ai.meme_tag_triggered_mood", p0=record.meme_id, mood=mood))

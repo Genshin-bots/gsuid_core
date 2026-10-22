@@ -104,6 +104,8 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
             # MiniMax
             "MiniMax-M2.7",
             "MiniMax-M2.7-highspeed",
+            "MiniMax-M3",
+            "MiniMax-M3.1-Flash",
         ],
     ),
     "model_support": GsListStrConfig(

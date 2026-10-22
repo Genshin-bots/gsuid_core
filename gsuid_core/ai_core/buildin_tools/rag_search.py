@@ -332,11 +332,19 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
     clock = None
     if "turn_clock" in extra and isinstance(extra["turn_clock"], str):
         clock = parse_clock_at(extra["turn_clock"])
+    persona_name = ""
+    if ev is not None:
+        from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
+
+        resolved = _get_persona_for_event(ev)
+        if resolved:
+            persona_name = resolved
     return CogScope(
         user_id=str(ev.user_id) if ev is not None and ev.user_id else "",
         bot_id=bot.bot_id if bot is not None else "",
         bot_self_id=self_id,
         group_id=str(ev.group_id) if ev is not None and ev.group_id else None,
+        persona_name=persona_name,
         include_skill_doc=include_skill_doc,
         # 语义性开关在唯一的配置层给默认值，不在函数签名里给
         enable_system2=memory_config.enable_system2,

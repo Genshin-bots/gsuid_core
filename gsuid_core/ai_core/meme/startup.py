@@ -14,15 +14,10 @@ from gsuid_core.ai_core.meme.library import get_memes_base_path
 
 async def init_meme_module():
     """初始化表情包模块"""
-    from gsuid_core.ai_core.meme.config import meme_config
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     enable_ai: bool = ai_config.get_config("enable").data
     if not enable_ai:
-        return
-
-    if not meme_config.get_config("meme_enable").data:
-        logger.info(t("log.meme.module_enabled_skipping"))
         return
 
     logger.info(t("log.meme.module_initialization"))
@@ -33,7 +28,14 @@ async def init_meme_module():
         (base / folder).mkdir(parents=True, exist_ok=True)
     logger.info(t("log.meme.directory_structure_initialization"))
 
-    # 2. 确保 Qdrant Collection 存在
+    from gsuid_core.ai_core.meme.pack_migrate import migrate_pack_sql, finish_pack_payload
+
+    await migrate_pack_sql()
+    from gsuid_core.ai_core.meme.library import MemeLibrary
+
+    await MemeLibrary.drop_missing_files()
+
+    # 2. 确保 Qdrant Collection 存在，然后再回填 pack_ids
     try:
         from gsuid_core.ai_core.meme.library import _ensure_meme_collection
 
@@ -41,6 +43,7 @@ async def init_meme_module():
         logger.info(t("log.meme.qdrant_collection_initialization"))
     except Exception as e:
         logger.warning(t("log.meme.qdrant_collection_initialization_non", e=e))
+    await finish_pack_payload()
 
     # 3. 启动后台打标 worker
     try:
@@ -53,6 +56,8 @@ async def init_meme_module():
 
     # 4. 处理 inbox 中遗留的待打标图片（仅在 VLM 打标启用时；关闭时由 worker/scanner
     #    在网页控制台开启 meme_vlm_enable 后自动补回 pending 记录）
+    from gsuid_core.ai_core.meme.config import meme_config
+
     if meme_config.get_config("meme_vlm_enable").data:
         try:
             from gsuid_core.ai_core.meme.tagger import enqueue_tag

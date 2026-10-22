@@ -213,7 +213,11 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
     ) -> None:
         sent.append(extra_metadata or {})
 
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
     monkeypatch.setattr(bot, "send", _capture)
+    monkeypatch.setattr("gsuid_core.ai_core.utils.asyncio.sleep", _no_sleep)
 
     png = tmp_path / "x.png"
     png.write_bytes(b"img")
@@ -231,12 +235,16 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
     async def _convert(_data: object) -> str:
         return "base64://YQ=="
 
-    monkeypatch.setattr("gsuid_core.ai_core.meme.config.meme_config.get_config", lambda _k: SimpleNamespace(data=True))
+    monkeypatch.setattr("gsuid_core.ai_core.persona.config.persona_allows_meme_reply", lambda _name: True)
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.buildin_tools.meme_tools._get_persona_for_event",
+        lambda _ev: "早柚",
+    )
     monkeypatch.setattr("gsuid_core.ai_core.meme.selector.pick", _pick)
     monkeypatch.setattr("gsuid_core.ai_core.meme.library._read_file", _read)
     monkeypatch.setattr("gsuid_core.ai_core.meme.library.get_memes_base_path", lambda: tmp_path)
     monkeypatch.setattr("gsuid_core.ai_core.meme.database_model.AiMemeRecord.record_usage", _usage)
-    monkeypatch.setattr("gsuid_core.utils.image.convert.convert_img", _convert)
+    monkeypatch.setattr("gsuid_core.ai_core.utils.convert_img", _convert)
 
     asyncio.run(_send_meme_from_tag("开心", bot, ev))
     assert sent[-1] == want

@@ -884,11 +884,12 @@ class GsCoreAIAgent(RunOnceMixin):
                 text_parts.append(item)
 
         if "image" in model_support:
-            # 模型支持图片，保留原始内容；
+            # 模型支持图片，保留原始内容；动图先收成静图序列。
             from gsuid_core.ai_core.persona.appearance import (
                 bytes_from_image_ref,
                 format_look_identity_note,
             )
+            from gsuid_core.ai_core.multimodal.animated_frames import render_animation_sheets
 
             result: list[UserContent] = []
             notes: list[str] = []
@@ -903,7 +904,15 @@ class GsCoreAIAgent(RunOnceMixin):
                     if url.startswith(("http://", "https://")):
                         logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
                         continue
-                    result.append(ImageUrl(url=url))
+                    raw = bytes_from_image_ref(url)
+                    sheets = await asyncio.to_thread(render_animation_sheets, raw) if raw else None
+                    if sheets is not None:
+                        result.append(sheets.note)
+                        for blob in sheets.images:
+                            encoded = base64.b64encode(blob).decode("ascii")
+                            result.append(ImageUrl(url=f"data:image/jpeg;base64,{encoded}"))
+                    else:
+                        result.append(ImageUrl(url=url))
                     if self.persona_name:
                         note = format_look_identity_note(self.persona_name, bytes_from_image_ref(url))
                         if note and note not in seen_notes:

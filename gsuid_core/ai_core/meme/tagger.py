@@ -9,19 +9,17 @@ MemeTagEngine 负责后台消费打标队列，调用 AI Agent 理解图片内�
 - 模型不支持图片时通过 understand_image 转述为文字
 """
 
-import io
 import base64
 import asyncio
 from typing import Optional
 
-from PIL import Image
 from pydantic_ai.messages import ImageUrl
 
 from gsuid_core.i18n import t
-from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import extract_json_from_text
 from gsuid_core.ai_core.gs_agent import create_agent
+from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words
 from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary, _read_file, get_memes_base_path
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
@@ -43,11 +41,9 @@ _TAG_PAUSE_POLL_SEC: int = 5
 def is_tagging_enabled() -> bool:
     """是否允许执行 VLM 打标
 
-    实时读取配置：总开关 meme_enable 与 VLM 打标开关 meme_vlm_enable 任一关闭即停止。
+    实时读取 meme_vlm_enable。关闭后停止打标队列。
     配置由网页控制台 set_config 即时写入内存，因此无需重启即可实时启停打标队列。
     """
-    if not meme_config.get_config("meme_enable").data:
-        return False
     if not meme_config.get_config("meme_vlm_enable").data:
         return False
     return True
@@ -77,12 +73,16 @@ TAG_PROMPT = """你是一个图片分析助手。请分析这张图片并返回 
   · meme 格式的图片（如对比图、反应图等）
   仅当图片为纯粹的风景照、证件照、产品图、截图、普通写真、技术图表等完全不具备表情包属性的内容时才填 false
 - description: 图片内容的简短描述
-- emotion_tags: 情绪标签列表，如 "开心", "无语", "搞笑", "可爱", "愤怒", "悲伤", "惊讶", "尴尬", "得意", "委屈"
-- scene_tags: 场景标签列表，如 "日常", "吐槽", "卖萌", "怼人", "安慰", "庆祝", "晚安", "早安"
+- emotion_tags: 只能从这些词里选 1 到 3 个，不要自造，也不要照抄文件名：__EMOTION_WORDS__
+- scene_tags: 只能从这些词里选 1 到 3 个，不要自造：__SCENE_WORDS__
 - persona_hint: 建议的 persona 归属，如果不确定填 "common"
 - nsfw_score: NSFW 分数（0.0~1.0），0 表示完全安全，1 表示完全不安全
 
 只返回 JSON，不要有其他文字。"""
+
+TAG_PROMPT = TAG_PROMPT.replace("__EMOTION_WORDS__", join_words(EMOTION_WORDS)).replace(
+    "__SCENE_WORDS__", join_words(SCENE_WORDS)
+)
 
 
 # 定期扫描任务引用
@@ -149,7 +149,7 @@ async def enqueue_tag(meme_id: str) -> None:
 async def _tag_worker_loop() -> None:
     """打标 worker 主循环
 
-    每次循环实时检查打标开关（meme_enable / meme_vlm_enable），任一关闭时暂停消费队列，
+    每次循环实时检查 meme_vlm_enable，关闭时暂停消费队列，
     实现通过网页控制台对打标队列的实时启停（无需重启）。
     """
     was_enabled: Optional[bool] = None
@@ -235,58 +235,12 @@ async def _pending_scanner_loop() -> None:
             await asyncio.sleep(60)
 
 
-@to_thread
-def _extract_gif_second_frame_sync(image_data: bytes) -> Optional[bytes]:
-    """从GIF中提取第二帧（同步版本）
-
-    大多数VLM模型不支持GIF格式，如果是GIF则提取第二帧（索引1）
-    进行识别。如果GIF只有一帧或提取失败，返回None。
-
-    Args:
-        image_data: GIF文件二进制数据
-
-    Returns:
-        第二帧的PNG格式数据，失败返回None
-    """
-    try:
-        img = Image.open(io.BytesIO(image_data))
-        if img.format != "GIF":
-            return None
-        # GIF帧数
-        n_frames: int = getattr(img, "n_frames", 1)
-
-        if n_frames <= 1:
-            return None
-
-        # 跳到第二帧（索引1）
-        img.seek(1)
-
-        # 转换为RGB（去掉透明通道）并保存为PNG
-        # P 模式先转 RGBA：直接拿调色板索引通道当 mask 会导致怪色
-        if img.mode == "P":
-            img = img.convert("RGBA")
-        if img.mode == "RGBA":
-            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-            rgb_img.paste(img, mask=img.split()[-1])
-            img = rgb_img
-        elif img.mode != "RGB":
-            img = img.convert("RGB")
-
-        output = io.BytesIO()
-        img.save(output, format="PNG")
-        return output.getvalue()
-    except Exception as e:
-        logger.warning(t("log.meme.extract_second_frame_gif", e=e))
-        return None
-
-
 async def _tag_single(meme_id: str) -> None:
     """对单个表情包进行 VLM 打标
 
     图片处理由 GsCoreAIAgent._execute_run 自动完成：
-    - 模型支持图片时直接传图
+    - 模型支持图片时直接传图；GIF / 动态 WebP 会先收成静图序列
     - 模型不支持图片时通过 understand_image 转述为文字
-    - GIF格式会提取第二帧进行识别（大多数VLM不支持GIF）
 
     Args:
         meme_id: 表情包 ID
@@ -302,29 +256,13 @@ async def _tag_single(meme_id: str) -> None:
 
     # 读取图片文件
     file_path = get_memes_base_path() / record.file_path
-    if not file_path.exists():
-        logger.warning(t("log.meme.image_file_exist_path", file_path=file_path))
-        await MemeLibrary.mark_tag_failed(meme_id)
+    if not file_path.is_file():
+        await MemeLibrary.delete_meme(meme_id)
         return
 
     image_data = await _read_file(file_path)
-
-    # GIF格式处理：提取第二帧
-    is_gif = record.file_mime == "image/gif"
-    if is_gif:
-        gif_frame_data = await _extract_gif_second_frame_sync(image_data)
-        if gif_frame_data is not None:
-            image_data = gif_frame_data
-            image_b64 = base64.b64encode(image_data).decode("utf-8")
-            # GIF提取后转为PNG格式
-            effective_mime = "image/png"
-        else:
-            # 提取失败，使用原图（某些VLM可能支持GIF）
-            image_b64 = base64.b64encode(image_data).decode("utf-8")
-            effective_mime = record.file_mime
-    else:
-        image_b64 = base64.b64encode(image_data).decode("utf-8")
-        effective_mime = record.file_mime
+    image_b64 = base64.b64encode(image_data).decode("utf-8")
+    effective_mime = record.file_mime
 
     # 调用 Agent 进行打标（直接传 ImageUrl，由 _execute_run 自动处理图片能力判断）
     tag_result = await _call_tag_agent(image_b64, effective_mime)
@@ -360,24 +298,11 @@ async def _tag_single(meme_id: str) -> None:
         await MemeLibrary.mark_rejected(meme_id, 0.0)
         return
 
-    # 更新标签
     persona_hint = tag_result["persona_hint"]
-
-    # 确定目标文件夹：仅 inbox 的图由 VLM persona_hint 决定归属；
-    # 已人工放置的图保留现有文件夹，避免打标静默覆盖用户的目录选择
+    target_folder = record.folder
     if record.folder == "inbox":
         target_folder = "common"
-        if persona_hint and persona_hint != "common":
-            target_folder = f"persona_{persona_hint}"
-    else:
-        target_folder = record.folder
-        if record.persona_hint:
-            persona_hint = record.persona_hint
-
-    # 先移动文件，成功后再置 tagged，避免出现"已 tagged 但滞留 inbox"
-    # 的不可检索状态（folder=inbox 的点任何 persona/common 过滤都搜不到）
-    if record.folder != target_folder:
-        moved = await MemeLibrary.move_file(meme_id, target_folder)
+        moved = await MemeLibrary.move_file(meme_id, "common", rewrite_persona_hint=False)
         if not moved:
             await MemeLibrary.update_tags(
                 meme_id=meme_id,
@@ -398,8 +323,10 @@ async def _tag_single(meme_id: str) -> None:
         persona_hint=persona_hint,
         status="tagged",
     )
+    from gsuid_core.ai_core.meme.pack_model import PackStore
 
-    # 同步到 Qdrant
+    await PackStore.apply_successful_tag(meme_id)
+
     record = await AiMemeRecord.get_by_meme_id(meme_id)
     if record is not None:
         await MemeLibrary.sync_to_qdrant(record)

@@ -39,6 +39,7 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.content_guard import wrap_untrusted
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.buildin_tools.visibility import context_has_image
+from gsuid_core.ai_core.multimodal.animated_frames import AnimationSheets, render_animation_sheets
 
 # 单次图片理解超时时间（秒），兼顾多模态供应商转述耗时与快速重试需求。
 _UNDERSTAND_TIMEOUT = 90.0
@@ -345,6 +346,19 @@ def wants_self_visual(question: str | None) -> bool:
     return _SELF_LOOK_RE.search(question) is not None
 
 
+async def _animation_sheets(image_url: str) -> AnimationSheets | None:
+    """动图收成静图。单帧或读不出时返回 None。"""
+    from gsuid_core.ai_core.utils import materialize_image_url
+    from gsuid_core.ai_core.persona.appearance import bytes_from_image_ref
+
+    url = await materialize_image_url(image_url)
+    raw = bytes_from_image_ref(url)
+    if not raw:
+        return None
+    sheets: AnimationSheets | None = await asyncio.to_thread(render_animation_sheets, raw)
+    return sheets
+
+
 def _self_visual_note(ctx: RunContext[ToolContext], image_url: str, question: str | None) -> str:
     """主人格看图时附视觉身份；能力代理不演戏。不打破惰性。"""
     if not ctx.deps.allow_user_outbound:
@@ -407,6 +421,13 @@ async def read_image(
             logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
             shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
             note = _self_visual_note(ctx, image_url, question)
+            sheets = await _animation_sheets(image_url)
+            if sheets is not None:
+                shown = f"{sheets.note}\n{shown}"
+                injected = [
+                    ImageUrl(url=f"data:image/jpeg;base64,{base64.b64encode(blob).decode('ascii')}")
+                    for blob in sheets.images
+                ]
             return ToolReturn(
                 return_value=f"{note}\n{shown}" if note else shown,
                 content=injected,

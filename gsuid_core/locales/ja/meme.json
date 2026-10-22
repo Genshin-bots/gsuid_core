@@ -87,5 +87,11 @@
   "log.meme.vlm_tagging_disabled_pausing": "[Meme] VLM タグ付けが無効、タグ付けキューを一時停止",
   "log.meme.vlm_tagging_enabled": "[Meme] VLM タグ付けが無効 (meme_vlm_enable=false)、レガシー画像のタグ付けをスキップ、Web コンソールでリアルタイムに有効化可能",
   "log.meme.vlm_tagging_enabled_consume": "[Meme] VLM タグ付けが有効、タグ付けキューの消費を開始",
-  "log.meme.vlm_tagging_id": "[Meme] VLM タグ付け失敗: {meme_id}"
+  "log.meme.vlm_tagging_id": "[Meme] VLM タグ付け失敗: {meme_id}",
+  "log.meme.pack_and_folder": "[Meme] 検索にフォルダとパックを同時に渡したため、空リストを返しました",
+  "log.meme.pack_payload_fail": "[Meme] パック payload の書き戻しに失敗: {meme_id}: {e}",
+  "log.meme.pack_payload_backfill": "[Meme] パック payload 書き戻し: {points} 点、{groups} グループ、{calls} 回、{ms} ms",
+  "log.meme.pack_migrate_sql": "[Meme] パック移行: スナップショット {snapshot} 件、移行中の新規 {inserted} 件",
+  "log.meme.persona_resolve_fail": "[Meme] 現在のペルソナを解決できません: {e}",
+  "log.meme.drop_missing_files": "[Meme] ファイルが無い表情を {count} 件削除した"
 }

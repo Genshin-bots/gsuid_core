@@ -1,5 +1,7 @@
 """复制人格：新名称追加数字，整目录复制，scope 强制 disabled。"""
 
+import asyncio
+
 from gsuid_core.ai_core.persona.resource import copy_persona, allocate_copy_name
 
 
@@ -30,7 +32,12 @@ def test_copy_persona_creates_numbered_dir(tmp_path, monkeypatch) -> None:
     (src / "persona.md").write_text("# 早柚\nhello", encoding="utf-8")
     (src / "avatar.png").write_bytes(b"png")
 
-    dest = copy_persona("早柚")
+    async def _noop(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr("gsuid_core.ai_core.meme.pack_model.mount_default_pack", _noop)
+
+    dest = asyncio.run(copy_persona("早柚"))
     assert dest == "早柚2"
     copied = tmp_path / "早柚2"
     assert copied.is_dir()
@@ -38,6 +45,6 @@ def test_copy_persona_creates_numbered_dir(tmp_path, monkeypatch) -> None:
     assert (copied / "avatar.png").read_bytes() == b"png"
     assert persona_config_manager.get_config(dest).get_config("scope").data == "disabled"
 
-    dest2 = copy_persona("早柚")
+    dest2 = asyncio.run(copy_persona("早柚"))
     assert dest2 == "早柚3"
     assert (tmp_path / "早柚3" / "persona.md").is_file()

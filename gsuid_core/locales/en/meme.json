@@ -87,5 +87,11 @@
   "log.meme.vlm_tagging_disabled_pausing": "[Meme] VLM tagging disabled, pausing tagging queue",
   "log.meme.vlm_tagging_enabled": "[Meme] VLM tagging not enabled (meme_vlm_enable=false), skipping legacy image tagging, can be enabled in real time on web console",
   "log.meme.vlm_tagging_enabled_consume": "[Meme] VLM tagging enabled, starting to consume tagging queue",
-  "log.meme.vlm_tagging_id": "[Meme] VLM tagging failed: {meme_id}"
+  "log.meme.vlm_tagging_id": "[Meme] VLM tagging failed: {meme_id}",
+  "log.meme.pack_and_folder": "[Meme] Search received both a folder and pack ids, returning an empty list",
+  "log.meme.pack_payload_fail": "[Meme] Pack payload backfill failed: {meme_id}: {e}",
+  "log.meme.pack_payload_backfill": "[Meme] Pack payload backfill: {points} points, {groups} groups, {calls} calls, {ms} ms",
+  "log.meme.pack_migrate_sql": "[Meme] Meme pack migration: snapshot {snapshot}, inserted during migration {inserted}",
+  "log.meme.persona_resolve_fail": "[Meme] Failed to resolve the current persona: {e}",
+  "log.meme.drop_missing_files": "[Meme] Removed {count} memes whose files are gone"
 }

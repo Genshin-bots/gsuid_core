@@ -499,9 +499,13 @@ async def save_persona(char_name: str, profile_content: str) -> None:
         profile_content: 角色资料内容（Markdown格式）
     """
     persona = Persona(char_name)
+    existed = persona.exists()
     await persona.save_content(profile_content)
-    # persona.md 变更后，可能改变正则兜底出的口吻锚点，清缓存让下次重读
     invalidate_voice_anchor_cache(char_name)
+    if not existed:
+        from gsuid_core.ai_core.meme.pack_model import mount_default_pack
+
+        await mount_default_pack(char_name)
 
 
 async def load_persona(char_name: str) -> str:
@@ -597,7 +601,7 @@ def allocate_copy_name(source_name: str, occupied: set[str]) -> str | None:
     return None
 
 
-def copy_persona(source_name: str) -> str:
+async def copy_persona(source_name: str) -> str:
     """复制整个人格目录（含 md / 媒体 / config.json / persona.json）。
 
     新目录名为 ``{源名}2`` 起的第一个空位。副本 ``scope`` 强制 ``disabled``，
@@ -633,11 +637,14 @@ def copy_persona(source_name: str) -> str:
     cfg = persona_config_manager.get_config(dest_name)
     if not cfg.set_config("scope", "disabled"):
         logger.warning(t("log.persona.persona_copy_scope_fail", persona_name=dest_name))
+    from gsuid_core.ai_core.meme.pack_model import mount_default_pack
+
+    await mount_default_pack(dest_name)
     logger.info(t("log.persona.persona_copied", source=source_name, dest=dest_name))
     return dest_name
 
 
-def delete_persona(char_name: str) -> bool:
+async def delete_persona(char_name: str) -> bool:
     """
     删除角色资料和相关文件
 
@@ -663,9 +670,13 @@ def delete_persona(char_name: str) -> bool:
     except (ValueError, PathEscapeError):
         return False
     deleted = persona.delete()
-    if deleted:
-        invalidate_voice_anchor_cache(char_name)
-    return deleted
+    if not deleted:
+        return False
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+
+    await PackStore.delete_binds_for_persona(char_name)
+    invalidate_voice_anchor_cache(char_name)
+    return True
 
 
 def get_persona_metadata(char_name: str) -> dict:

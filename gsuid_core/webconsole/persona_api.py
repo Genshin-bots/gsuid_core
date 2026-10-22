@@ -10,6 +10,7 @@ from typing import Any, Dict
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
 
+import gsuid_core.webconsole.persona_bundle_api  # noqa: F401
 from gsuid_core.ai_core.persona import (
     Persona,
     copy_persona,
@@ -645,7 +646,7 @@ async def copy_persona_endpoint(
             "data": None,
         }
     try:
-        new_name = copy_persona(persona_name)
+        new_name = await copy_persona(persona_name)
     except ValueError as e:
         return {
             "status": 1,
@@ -684,7 +685,7 @@ async def remove_persona(
             "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能删除。",
             "data": None,
         }
-    deleted = delete_persona(persona_name)
+    deleted = await delete_persona(persona_name)
     if deleted:
         return {
             "status": 0,
@@ -908,6 +909,15 @@ async def update_persona_config(
                 "data": None,
             }
         results.append(f"aside_allow_tools: {allow_tools}")
+
+    if "allow_meme_reply" in data:
+        allow_meme = data["allow_meme_reply"]
+        if not isinstance(allow_meme, bool):
+            return {"status": 1, "msg": "allow_meme_reply 必须是布尔值", "data": None}
+        success, msg = persona_config_manager.set_allow_meme_reply(persona_name, allow_meme)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append(f"allow_meme_reply: {allow_meme}")
 
     # 更新 enabled_tools（如果提供）
     if "enabled_tools" in data:

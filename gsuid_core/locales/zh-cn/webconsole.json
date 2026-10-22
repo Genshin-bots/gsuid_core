@@ -92,6 +92,7 @@
   "log.webconsole.live_chat_read_conv_fail": "[live-chat] 读取会话 {conv_id} 失败: {e}",
   "log.webconsole.live_chat_read_identity_fail": "[live-chat] 读取身份失败: {e}",
   "log.webconsole.live_chat_read_index_fail": "[live-chat] 读取索引失败: {e}",
+  "log.webconsole.live_chat_reencode_utf8": "[live-chat] 把 {name} 从系统编码改写成 UTF-8",
   "log.webconsole.live_chat_save_conv_fail": "[live-chat] 保存会话失败: {e}",
   "log.webconsole.live_chat_save_identity_fail": "[live-chat] 保存身份失败: {e}",
   "log.webconsole.live_chat_save_index_fail": "[live-chat] 保存索引失败: {e}",

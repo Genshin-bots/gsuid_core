@@ -205,8 +205,6 @@ class MemeFilter:
         record = await MemeLibrary.save_raw(
             image_data=image_data,
             file_mime=file_mime,
-            width=width,
-            height=height,
             source_group=source_group,
             source_user=source_user,
             source_url=source_url,

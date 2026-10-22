@@ -87,5 +87,11 @@
   "log.meme.vlm_tagging_disabled_pausing": "[Meme] VLM 打标已关闭，暂停打标队列",
   "log.meme.vlm_tagging_enabled": "[Meme] VLM 打标未启用 (meme_vlm_enable=false)，跳过遗留图片打标，可在网页控制台实时开启",
   "log.meme.vlm_tagging_enabled_consume": "[Meme] VLM 打标已启用，开始消费打标队列",
-  "log.meme.vlm_tagging_id": "[Meme] VLM 打标失败: {meme_id}"
+  "log.meme.vlm_tagging_id": "[Meme] VLM 打标失败: {meme_id}",
+  "log.meme.pack_and_folder": "[Meme] 检索同时传入了目录和表情包，已返回空列表",
+  "log.meme.pack_payload_fail": "[Meme] 回填表情包 payload 失败: {meme_id}: {e}",
+  "log.meme.pack_payload_backfill": "[Meme] 回填表情包 payload：{points} 个点，{groups} 组，{calls} 次，{ms} 毫秒",
+  "log.meme.pack_migrate_sql": "[Meme] 表情包迁移：快照 {snapshot} 张，期间新插入 {inserted} 张",
+  "log.meme.persona_resolve_fail": "[Meme] 解析当前人格失败: {e}",
+  "log.meme.drop_missing_files": "[Meme] 删掉 {count} 条文件已经不在的表情"
 }

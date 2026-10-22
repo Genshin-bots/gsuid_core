@@ -116,9 +116,6 @@ async def observe_message_for_memes(
     Args:
         ev: 事件对象
     """
-    # 总开关检查
-    if not meme_config.get_config("meme_enable").data:
-        return
     if not meme_config.get_config("meme_auto_collect").data:
         return
 

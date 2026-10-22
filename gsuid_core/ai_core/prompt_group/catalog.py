@@ -62,6 +62,13 @@ SPECS: tuple[PromptSpec, ...] = (
         (),
     ),
     PromptSpec(
+        "meme_protocol",
+        "会话·系统提示",
+        "表情协议",
+        "人格打开「允许表情回复」时写入系统提示。情绪词和场景词由程序填入。",
+        ("emotion_words", "scene_words"),
+    ),
+    PromptSpec(
         "closing",
         "会话·系统提示",
         "收束句",
@@ -231,6 +238,13 @@ def default_body(key: str) -> str:
         return SYSTEM_CONSTRAINTS.replace("__MASTERS__", "{{masters}}").replace("__MASTER_TITLE__", "{{master_title}}")
     if key == "tool_orchestration":
         return TOOL_ORCHESTRATION_CONSTRAINTS
+    if key == "meme_protocol":
+        return (
+            "想用表情时，单独写一行 `<meme:情绪>`，或 `<meme:情绪 场景>`。\n"
+            "情绪只能是：{{emotion_words}}。\n"
+            "场景可以不写，只能是：{{scene_words}}。\n"
+            "按这句话的意思选。不要每句都发。可以只写这一行，也可以这一行后面再写一句台词。"
+        )
     if key == "date_line":
         return _DATE_LINE
     if key == "capability_heading":

@@ -205,6 +205,11 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         "默认",
         options=[],
     ),
+    "allow_meme_reply": GsBoolConfig(
+        "允许表情回复",
+        "打开后，系统提示里写入表情协议，回复可以用 <meme:情绪>。关掉后不写这段，也不发送表情。",
+        True,
+    ),
 }
 
 
@@ -455,6 +460,17 @@ class PersonaConfigManager(ConfigSetManager):
                 value=allow_tools,
             )
         )
+        return True, "ok"
+
+    def set_allow_meme_reply(self, persona_name: str, allow: bool) -> tuple[bool, str]:
+        """这个人格能不能在回复里发表情。"""
+        if not isinstance(allow, bool):
+            return False, "允许表情回复必须是布尔值"
+        config = self.get_config(persona_name)
+        success = config.set_config("allow_meme_reply", allow)
+        if not success:
+            return False, "配置写入失败"
+        logger.info(t("log.persona.allow_meme_reply", persona_name=persona_name, value=allow))
         return True, "ok"
 
     def set_inspect_interval(self, persona_name: str, inspect_interval: int) -> tuple[bool, str]:
@@ -731,6 +747,7 @@ class PersonaConfigManager(ConfigSetManager):
             "tool_names": config.get_config("tool_names").data,
             "capability_agents": config.get_config("capability_agents").data,
             "prompt_group": _effective_prompt_group(persona_name),
+            "allow_meme_reply": bool(config.get_config("allow_meme_reply").data),
             "chat_style": stored_int(config, "chat_style", DEFAULT_CHAT_STYLE),
             "speech_len_soft": stored_int(config, "speech_len_soft", shape["soft_default"]),
             "speech_shape": shape,
@@ -763,3 +780,14 @@ class PersonaConfigManager(ConfigSetManager):
 
 # 全局实例
 persona_config_manager = PersonaConfigManager()
+
+
+def persona_allows_meme_reply(persona_name: str | None) -> bool:
+    """人格配置「允许表情回复」。没有人格名时视为关闭。"""
+    if not persona_name:
+        return False
+    try:
+        config = persona_config_manager.get_config(persona_name)
+        return bool(config.get_config("allow_meme_reply").data)
+    except (ValueError, OSError, KeyError):
+        return True

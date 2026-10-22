@@ -33,6 +33,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.memory.database.models",
     "gsuid_core.ai_core.memory.ingestion.hiergraph",
     "gsuid_core.ai_core.meme.database_model",
+    "gsuid_core.ai_core.meme.pack_model",
     "gsuid_core.ai_core.cognition.nodes",
     "gsuid_core.ai_core.memory.ingestion.tool_trace",
 )
@@ -178,6 +179,8 @@ exec_list = [
     # 知识分片：chunk 0 留原文，换切法才能重切。create_all 不给旧表补列。
     "ALTER TABLE aiknowledgechunk ADD COLUMN origin TEXT DEFAULT '';",
     "ALTER TABLE aiknowledgechunk ADD COLUMN chunker_id VARCHAR(32) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN pending_pack_id VARCHAR(36) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN assign_default_pack BOOLEAN DEFAULT 0;",
 ]
 
 

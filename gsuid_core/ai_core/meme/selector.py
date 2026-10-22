@@ -21,7 +21,9 @@ _send_cooldowns: Dict[str, float] = {}
 # pick() 的失败原因，供调用方向 LLM 返回可区分的反馈
 PICK_OK = "ok"
 PICK_COOLDOWN = "cooldown"  # 会话冷却中，现在不能发
-PICK_NO_MATCH = "no_match"  # 库里没有匹配的表情包
+PICK_NO_PERSONA = "no_persona"  # 没有解析到人格
+PICK_NO_BIND = "no_bind"  # 这个人格没有绑定行
+PICK_NO_MATCH = "no_match"  # 已绑定的包里没有可发的匹配
 PICK_EXHAUSTED = "exhausted"  # 有匹配但最近都发过，被排除
 
 
@@ -63,94 +65,60 @@ def _pick_from(
 async def pick(
     mood: str,
     scene: str,
-    persona: str,
+    persona: str | None,
     session_id: str,
 ) -> Tuple[Optional[AiMemeRecord], str]:
-    """根据情境选择一张表情包
-
-    检索策略：
-    1. 用 mood + scene 做标签精确匹配 + 向量语义检索（带相似度阈值过滤）
-    2. 依次检索 folder 为 persona_{persona} 与 common（persona 为 common 时只查一轮）
-    3. 候选池内按使用次数倒数加权随机采样，排除最近 N 条已发
-    4. 仅当无查询文本时，降级为随机/最久未使用选取
-    5. 若无匹配图片，返回 (None, 原因)（不会强行发不相关的图）
-
-    Args:
-        mood: 情绪描述（如 "开心", "无语"）
-        scene: 场景描述（如 "吐槽", "安慰"）
-        persona: 当前 persona 名称
-        session_id: 会话 ID
-
-    Returns:
-        (选中的 AiMemeRecord 或 None, 失败原因常量 PICK_*)
-    """
-    # 冷却检查
+    """从该人格已绑定的包里选一张。没有绑定行则不发。"""
     if _is_on_cooldown(session_id):
         logger.debug(t("log.meme.session_id_cooling_skipping", session_id=session_id))
         return None, PICK_COOLDOWN
 
-    # 排除最近已发的图片
+    if persona is None or persona == "":
+        return None, PICK_NO_PERSONA
+
     from gsuid_core.ai_core.meme.config import (
         MEME_PICK_CANDIDATE_COUNT,
         MEME_RECENT_EXCLUDE_COUNT,
     )
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+
+    pack_ids = await PackStore.pack_ids_for_persona(persona)
+    if not pack_ids:
+        return None, PICK_NO_BIND
 
     exclude_ids = _get_recent_sent(session_id, MEME_RECENT_EXCLUDE_COUNT)
-
     query_text = f"{mood} {scene}".strip()
 
-    # persona 为 common 时无独立专属文件夹，避免一次必然为空的查询
-    folders = ["common"] if persona == "common" else [f"persona_{persona}", "common"]
-
-    had_candidates = False
-    for folder in folders:
-        if query_text:
-            # 标签 + 向量混合检索（带相似度阈值，低于阈值的结果会被过滤）
-            results = await MemeLibrary.search_by_text(
-                query_text=query_text,
-                folder=folder,
-                top_k=MEME_PICK_CANDIDATE_COUNT,
-            )
-            if results:
-                had_candidates = True
-            record = _pick_from(results, exclude_ids)
-            if record:
-                _record_send(session_id)
-                _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
-                return record, PICK_OK
-            # 检索无可用结果 → 不降级到随机，继续检查下一个 folder
-            logger.debug(
-                t(
-                    "log.meme.available_search_results_folder",
-                    folder=folder,
-                    query_text=repr(query_text),
-                )
-            )
-            continue
-
-        # 仅当无查询文本时才降级：随机选取
-        record = await AiMemeRecord.random_pick(folder, exclude_ids)
-        if record:
-            _record_send(session_id)
-            _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
-            return record, PICK_OK
-
-        # 再降级：最久未使用
-        record = await AiMemeRecord.least_used_pick(folder, exclude_ids)
-        if record:
-            _record_send(session_id)
-            _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
-            return record, PICK_OK
-
-    logger.debug(
-        t(
-            "log.meme.matching_found_mood",
-            mood=mood,
-            scene=scene,
-            persona=persona,
+    if query_text:
+        results = await MemeLibrary.search_by_text(
+            query_text=query_text,
+            pack_ids=pack_ids,
+            top_k=MEME_PICK_CANDIDATE_COUNT,
         )
-    )
-    return None, PICK_EXHAUSTED if had_candidates else PICK_NO_MATCH
+        confirmed = await AiMemeRecord.confirm_sendable([row.meme_id for row in results], pack_ids)
+        record = _pick_from(confirmed, exclude_ids)
+        if record:
+            _record_send(session_id)
+            _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
+            return record, PICK_OK
+        logger.debug(
+            t(
+                "log.meme.matching_found_mood",
+                mood=mood,
+                scene=scene,
+                persona=persona,
+            )
+        )
+        return None, PICK_EXHAUSTED if confirmed else PICK_NO_MATCH
+
+    record = await AiMemeRecord.random_pick_in_packs(pack_ids, exclude_ids)
+    if record is None:
+        record = await AiMemeRecord.least_used_pick_in_packs(pack_ids, exclude_ids)
+    if record is None:
+        return None, PICK_NO_MATCH
+    _record_send(session_id)
+    _add_recent_sent(session_id, record.meme_id, MEME_RECENT_EXCLUDE_COUNT)
+    return record, PICK_OK
 
 
 # ── 最近发送记录管理 ──

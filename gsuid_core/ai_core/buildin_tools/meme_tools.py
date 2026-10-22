@@ -16,7 +16,13 @@ from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary, _read_file, get_memes_base_path
-from gsuid_core.ai_core.meme.selector import PICK_COOLDOWN, PICK_EXHAUSTED, pick
+from gsuid_core.ai_core.meme.selector import (
+    PICK_NO_BIND,
+    PICK_COOLDOWN,
+    PICK_EXHAUSTED,
+    PICK_NO_PERSONA,
+    pick,
+)
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
@@ -29,14 +35,18 @@ async def send_meme(
     scene: str = "",
 ) -> str:
     """
-    发送一张表情包到当前群聊
+    从当前人格已挂载的表情包里发一张。
+    mood 只能是：开心、无语、搞笑、可爱、愤怒、悲伤、惊讶、尴尬、得意、委屈、
+    难过、生气、害羞、疑惑、害怕、嫌弃、发呆、微笑、大笑、大哭、暴怒、饿、
+    好的、不要、谢谢、抱歉、加油、挥手、比心、不知道、点头。
+    scene 可空，只能是：日常、吐槽、卖萌、怼人、安慰、庆祝、晚安、早安。
+    按这句话的意思选词，不要用文件名。
 
-    根据情绪和场景描述，从表情包库中选择最合适的图片发送。
-    会自动排除最近已发送的图片，并遵守冷却时间限制。
+    会排除最近已发送的图片，并遵守冷却时间。
 
     Args:
-        mood: 当前情绪或心情，如 "开心", "无语", "搞笑", "可爱", "愤怒"
-        scene: 场景描述（可选），如 "吐槽", "安慰", "庆祝", "怼人"
+        mood: 情绪词，必须来自上面的情绪词表
+        scene: 场景词，必须来自上面的场景词表，可以空着
 
     Returns:
         发送结果描述
@@ -45,11 +55,12 @@ async def send_meme(
         >>> await send_meme(mood="开心", scene="庆祝")
         >>> await send_meme(mood="无语")
     """
-    if not meme_config.get_config("meme_enable").data:
-        return "表情包模块未启用"
-
     session_id = ev.session_id
     persona_name = _get_persona_for_event(ev)
+    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+
+    if not persona_allows_meme_reply(persona_name):
+        return "这个人格没有打开表情回复，不要再发。"
 
     # 选择表情包
     record, reason = await pick(
@@ -65,7 +76,11 @@ async def send_meme(
             return "表情包发送冷却中（库中可能有匹配的图），本次跳过即可，不要重试"
         if reason == PICK_EXHAUSTED:
             return "匹配的表情包最近都已发送过，本次跳过以避免重复，不要重试"
-        return "库中没有与该情绪/场景匹配的表情包"
+        if reason == PICK_NO_PERSONA:
+            return "没有解析到当前人格，这次不发表情，不要改发别的图。"
+        if reason == PICK_NO_BIND:
+            return "这个人格没有挂载表情包，不要改去 common 目录，也不要改发其他人格的图。"
+        return "已挂载的包里没有匹配的表情，不要改发别的图，不要重试。"
 
     # 发送图片
     file_path = get_memes_base_path() / record.file_path
@@ -75,6 +90,7 @@ async def send_meme(
 
     image_data = await _read_file(file_path)
 
+    from gsuid_core.ai_core.utils import pause_before_meme
     from gsuid_core.utils.image.convert import convert_img
 
     img_base64 = await convert_img(image_data)
@@ -82,6 +98,7 @@ async def send_meme(
 
     from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
+    await pause_before_meme()
     await bot.send(message, extra_metadata=turn_reply_metadata(ev))
 
     # 记录使用
@@ -118,14 +135,7 @@ async def collect_meme(
     Example:
         >>> await collect_meme(reason="这张图很搞笑")
     """
-    if not meme_config.get_config("meme_enable").data:
-        return "表情包模块未启用"
-
-    from gsuid_core.ai_core.meme.observer import (
-        _download_image,
-        _extract_image_urls,
-        _get_image_dimensions,
-    )
+    from gsuid_core.ai_core.meme.observer import _download_image, _extract_image_urls
 
     image_urls = _extract_image_urls(ev)
     if not image_urls:
@@ -139,13 +149,10 @@ async def collect_meme(
             continue
 
         image_data, file_mime = download_result
-        width, height = await _get_image_dimensions(image_data)
 
         record = await MemeLibrary.save_raw(
             image_data=image_data,
             file_mime=file_mime,
-            width=width,
-            height=height,
             source_group=ev.group_id or "",
             source_user=ev.user_id or "",
             source_url=url,
@@ -164,6 +171,7 @@ async def collect_meme(
 
 @ai_tools(category="common", capability_domain="表情", visible_when=visible_to_capability_only)
 async def search_meme(
+    ev: Event,
     query: str,
 ) -> str:
     """
@@ -181,13 +189,21 @@ async def search_meme(
         >>> await search_meme(query="搞笑猫咪")
         >>> await search_meme(query="无语的表情")
     """
-    if not meme_config.get_config("meme_enable").data:
-        return "表情包模块未启用"
+    persona_name = _get_persona_for_event(ev)
+    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
 
+    if not persona_allows_meme_reply(persona_name):
+        return "这个人格没有打开表情回复。"
+    pack_ids: list[str] = []
+    if persona_name:
+        from gsuid_core.ai_core.meme.pack_model import PackStore
+
+        pack_ids = await PackStore.pack_ids_for_persona(persona_name)
     records: Sequence[AiMemeRecord] = await MemeLibrary.search_by_text(
         query_text=query,
         top_k=5,
         score_threshold=meme_config.get_config("meme_search_threshold").data,
+        pack_ids=pack_ids,
     )
 
     if not records:
@@ -203,16 +219,19 @@ async def search_meme(
     return "\n".join(result_lines)
 
 
-def _get_persona_for_event(ev: Event) -> str:
-    """从事件中获取当前 persona 名称"""
+def _get_persona_for_event(ev: Event) -> str | None:
+    """从事件中获取当前 persona 名称。解析失败返回 None。"""
     try:
         from gsuid_core.ai_core.persona.config import persona_config_manager
 
         session_id = ev.session_id
         persona_name = persona_config_manager.get_persona_for_session(session_id)
-        return persona_name or "common"
-    except Exception:
-        return "common"
+        if persona_name:
+            return persona_name
+        return None
+    except Exception as e:
+        logger.warning(t("log.meme.persona_resolve_fail", e=e))
+        return None
 
 
 @ai_tools(category="self", capability_domain="群聊黑话", code_callable=False)

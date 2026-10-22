@@ -19,6 +19,7 @@
 | GET | `/api/meme/personas` | 按人格分类列表（用于“按人格分类”入口） |
 | GET | `/api/meme/{meme_id}` | 获取单条记录详情 |
 | GET | `/api/meme/image/{meme_id}` | 获取原始图片文件 |
+| GET | `/api/meme/thumb/{meme_id}` | 获取长边 160 像素的预览 JPEG |
 | PUT | `/api/meme/{meme_id}` | 更新标签/描述/归属 |
 | POST | `/api/meme/{meme_id}/move` | 移动表情包到目标文件夹 |
 | DELETE | `/api/meme/{meme_id}` | 删除表情包（文件+记录） |
@@ -31,6 +32,12 @@
 | POST | `/api/meme/batch_retag_pending` | 批量重新打标（待手动处理状态） |
 | POST | `/api/meme/export` | 批量导出为 .meme 格式 |
 | POST | `/api/meme/import` | 导入 .meme 格式文件 |
+| GET | `/api/meme/packs` | 列出表情包 |
+| POST | `/api/meme/packs` | 创建空表情包 |
+| GET | `/api/persona/{persona_name}/meme_packs` | 读取人格挂载的表情包 |
+| PUT | `/api/persona/{persona_name}/meme_packs` | 替换人格挂载的表情包 |
+| POST | `/api/persona/bundle/import` | 导入人格整包 |
+| POST | `/api/persona/{persona_name}/bundle/export` | 导出人格整包 |
 
 ---
 

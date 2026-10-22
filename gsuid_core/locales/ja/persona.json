@@ -22,6 +22,7 @@
   "log.persona.personaconfig_updated_name_target": "[PersonaConfig] '{persona_name}' の対象グループを更新した: {target_groups}",
   "log.persona.personaconfig_updated_name_wake": "[PersonaConfig] '{persona_name}' のウェイクキーワードを更新した: {keywords}",
   "log.persona.personaconfig_updated_aside": "[PersonaConfig] '{persona_name}' の命令补充 {field}={value} を更新した",
+  "log.persona.allow_meme_reply": "[PersonaConfig] '{persona_name}' の表情返信許可を更新した: {value}",
   "log.persona.personasettings_read_fail": "[PersonaSettings] '{persona_name}' の persona.json の読み込みに失敗: {e}",
   "log.persona.read_cfg_path_skipping": "[Persona] {cfg_path} の読み込みに失敗、voice_anchor の移行をスキップ: {e}",
   "log.persona.read_md_path": "[Persona] {md_path} の読み込みに失敗: {e}",

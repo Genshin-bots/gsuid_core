@@ -84,6 +84,8 @@ class CogScope:
     memory_eval: bool = False
     # 评测 HTTP clock_at。None=检索用墙上时钟；禁止从用户原文解析。
     clock_at: Optional[datetime] = None
+    # 当前说话的人格。空字符串表示这次检索不按包过滤出图（调用方应传空序列，而不是 None）。
+    persona_name: str = ""
 
     @property
     def is_private(self) -> bool:

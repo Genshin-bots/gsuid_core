@@ -83,10 +83,21 @@ async def build_persona_prompt(
     constraints = _render_system_constraints(char_name)
     tools = render_prompt(char_name, "tool_orchestration")
     date_line = render_prompt(char_name, "date_line", date=current_date)
+    from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words
+    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+
+    meme_protocol = ""
+    if persona_allows_meme_reply(char_name):
+        meme_protocol = render_prompt(
+            char_name,
+            "meme_protocol",
+            emotion_words=join_words(EMOTION_WORDS),
+            scene_words=join_words(SCENE_WORDS),
+        )
     prompt = join_around_card(
         join_prompt_parts(role),
         persona_content,
-        join_prompt_parts(constraints, tools, date_line),
+        join_prompt_parts(constraints, tools, meme_protocol, date_line),
     )
 
     # 能力代理花名册：进 system 可缓存，避免每轮塞进 user 侧
