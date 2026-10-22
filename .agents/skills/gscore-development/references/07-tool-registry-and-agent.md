@@ -71,7 +71,7 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 | `common` | 向量检索按需 | `create_subagent`、`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
-| `mcp` | 启动注册 + 向量检索按需 | 用户配置的 MCP 服务器工具 |
+| `mcp` | 启动按已保存清单注册，不连接；注册、注销、重载后用完整注册表同步向量。`find_tools` 的 `need` 等于工具名或插件名时直接挂上 | `mcp_{server}_{tool}`，插件名 `mcp_{server}` |
 | `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
 | `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`（见 §7.5） |
 
@@ -199,6 +199,10 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
    0. **始终检索**，禁止因「列表已有专用工具」提前 return。已暴露且 covers/retrieval
       真正命中的专用工具并入分档回执（提醒直调），短 cover（不足 3 字）不算命中。
       **禁止**同域立刻 return（`n in hay or hay in n` 已删）；中文另用 ≥4 字窗口。
+      `need` 等于已注册工具名或插件名时，从注册表直接挂上，并跳过词面过滤。
+      工具名前缀只在全部命中属于同一插件、且 `need` 以该插件名开头时挂上。
+      含空白的句子不按标识符挂。短前缀打到多个插件时不挂。
+      向量检索报未启用时，已经按名字挂上的工具仍进入分档。
    1. 向量召族 + 节点匹配，代码分层后一组回执。exclusive 工具折叠成所属专用能力，不回灌主人格。
       折叠所属节点同样过对口检查。
    2. 通用节点（research / memory_curator / internal_reporter / scheduler）不得压过插件专用工具。
@@ -326,16 +330,20 @@ AI 调用时：
 
 ## 7.9 MCP 工具集成（`ai_core/mcp/`）
 
-启动时（`mcp/startup.py`）读 `data/ai_core/mcp_configs/*.json` 中 `enabled=true` 的配置 → 连
-MCP 服务器（fastmcp，stdio）→ `list_tools()` → 为每个工具动态建包装函数（解析 input_schema
-生成签名、注入 `RunContext[ToolContext]`）→ 注册到 `_TOOL_REGISTRY["mcp"]`（仅当
-`register_as_ai_tools=true`）。工具命名 `mcp_{server}_{tool}` 避免冲突。
+RAG 的 `sync_tools` 在 MCP 注册之前跑完。启动时 `register_all_mcp_tools` 读
+`enabled=true` 且已保存工具清单的配置，不调用 `list_tools`、不连接服务器，注册到
+`_TOOL_REGISTRY["mcp"]` 之后，用 `get_all_tools()` 的完整结果再同步一次向量库。
+控制台单独注册先摘掉该服务器的旧工具，再连接并 `list_tools`，最后在 `finally` 里同步一次。
+禁用、删除、注销走 `unregister_mcp_server`，摘掉后再同步一次。重新加载先清空 `mcp` 分类，
+再调用 `register_all_mcp_tools`；启用列表为空也同步，否则卸掉的 MCP 点会留到下次启动。
+工具名是 `mcp_{server}_{tool}`，插件名是 `mcp_{server}`。`find_tools` 的 `need` 等于工具名
+或该插件名时，向量库没有这个点也从注册表挂上。只把 MCP 工具传给 `sync_tools` 会删掉其它工具的向量。
 
 - **MCP 工具 ID 格式**：`{mcp_id} - {tool_name}`（如 `minimax - web_search`），用
   `parse_mcp_tool_id` / `format_mcp_tool_id` 解析组装。
 - **通用调用**：`mcp_tool_caller.call_mcp_tool(mcp_tool_id, arguments)` 不需注册为 AI 工具即可
   调；Web Search / Image Understand 走它。
-- **热重载**：`POST /api/ai/mcp/reload` 清掉已注册 MCP 工具、重读配置、重连重注册，无需重启。
+- **热重载**：`POST /api/ai/mcp/reload` 清掉已注册 MCP 工具、重读配置、按已保存清单重注册并同步向量库。不连接服务器。
 - **MCP Server**（`mcp/server.py`）：反向把 **`_TOOL_REGISTRY` 启动快照**对外暴露；默认挂载
   主服务 **`/api/mcp`**（Streamable HTTP，与 8765 同端口），或 stdio。鉴权：
   静态 key 与/或插件钩子（**框架不 import 任何插件**；二者均空时为开发用开放模式）。
