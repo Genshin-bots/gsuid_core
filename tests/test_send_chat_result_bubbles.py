@@ -181,11 +181,15 @@ def test_answer_contract_covers_both_directions_and_is_persona_neutral() -> None
     assert not any(word in ANSWER_CONTRACT for word in banned), f"契约句泄漏人设/业务词: {ANSWER_CONTRACT}"
 
 
-def test_answer_contract_is_rendered_into_persona_prompt() -> None:
+def test_answer_contract_is_rendered_into_persona_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     """契约须真正进 system 稳定前缀，否则改了等于没改。"""
     from gsuid_core.ai_core.persona.processor import build_persona_prompt
     from gsuid_core.ai_core.persona.chat_style import ANSWER_CONTRACT
 
+    async def _fake_load_persona(_name: str) -> str:
+        return "你是测试角色。"
+
+    monkeypatch.setattr("gsuid_core.ai_core.persona.processor.load_persona", _fake_load_persona)
     prompt = asyncio.run(build_persona_prompt("评测助手"))
     assert ANSWER_CONTRACT in prompt, "作答完整度契约未注入人格 prompt"
 
