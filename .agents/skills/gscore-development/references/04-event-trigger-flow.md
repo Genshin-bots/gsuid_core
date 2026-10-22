@@ -49,7 +49,9 @@ for sv in SL.lst:
 ```
 
 `_check_command` 内部会校验：SV/插件 `enabled`、用户权限 `user_pm <= sv.pm`、触发器文本匹配。
-有匹配则按 priority 排序执行 `trigger.func(bot, event)`。
+有匹配则按 `dispatch_sort_key` 排序后执行 `trigger.func(bot, event)`：先比「是否带插件前缀」、再比 SV `priority`，然后按类型
+`fullmatch` > `command` > `prefix` / `suffix` > `regex` > `keyword`，同一类型再按命令字从长到短。
+`regex` / `keyword` 的 `keyword` 是 pattern 或子串，不参与长度比较，避免正则源码长度压过精确命令。
 
 命中后按类型分轨：`type == "message"`（`on_message`）另轨入队——**不挡 AI、不进 Trace、
 不调用 `count_data`**（keyword 常为 uuid4，计入命令会污染看板 / `core信息`）。其余触发器才记

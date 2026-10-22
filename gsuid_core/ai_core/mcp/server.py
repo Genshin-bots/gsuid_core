@@ -6,6 +6,7 @@ MCP Server 模块 — 将框架 `_TOOL_REGISTRY`（@ai_tools 整库）对外暴�
 传输模式:
 - ``http``（默认）: 挂载到主 FastAPI（默认端口 8765）的 ``/api/mcp``，
   Streamable HTTP；与主服务 API 同端口、不同 endpoint。
+  ``/api/mcp`` 与 ``/api/mcp/`` 都直接进入，不发 307。
 - ``stdio``: 进程 stdin/stdout 跑 MCP JSON-RPC（本地子进程场景）。
 
 鉴权（框架 **不 import 任何插件**）:
@@ -52,7 +53,7 @@ from fastmcp import FastMCP
 from pydantic_ai import RunContext, ToolReturn
 from starlette.types import Send, Scope, ASGIApp, Message, Receive
 from pydantic_ai.usage import RunUsage
-from starlette.routing import Mount
+from starlette.routing import Match, Mount
 from fastmcp.tools.base import ToolResult
 from fastmcp.server.auth import AccessToken, AuthProvider
 from fastmcp.server.http import StarletteWithLifespan
@@ -1460,6 +1461,70 @@ async def _rebuild_http_mcp_session() -> None:
         logger.warning(t("log.mcp.mcp_server_http_rebuilt"))
 
 
+def _request_route_path(scope: Scope) -> str:
+    """Starlette 的 get_route_path 不在公开导出里，这里按同样规则取路由路径。"""
+    path = scope["path"]
+    if not isinstance(path, str):
+        return ""
+    root_path = scope["root_path"] if "root_path" in scope else ""
+    if not isinstance(root_path, str) or not root_path:
+        return path
+    if not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path) :]
+    return path
+
+
+def _directory_form(scope: Scope, mount_path: str) -> str:
+    """把挂载前缀补成目录形式，保留已有 root_path。"""
+    root = scope["root_path"] if "root_path" in scope else ""
+    if not isinstance(root, str):
+        root = ""
+    return root + mount_path + "/"
+
+
+def _raw_path_with_directory_slash(raw_path: bytes, old_path: str, new_path: str) -> bytes:
+    """raw_path 在 ``?`` 前补斜杠；对不上原 path 时保持原样。"""
+    if not old_path.isascii() or not new_path.isascii():
+        return raw_path
+    old = old_path.encode("ascii")
+    new = new_path.encode("ascii")
+    if raw_path == old:
+        return new
+    if raw_path.startswith(old + b"?"):
+        return new + raw_path[len(old) :]
+    return raw_path
+
+
+class _McpSlashMount(Mount):
+    """同一挂载同时接住无斜杠路径，不发 307。
+
+    客户端跟随 307 会丢掉 Authorization，MCP 初始化变成 401。
+    """
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        # 父路由对未匹配路径发 307。匹配前补斜杠，请求不离开原 URL。
+        if scope["type"] not in ("http", "websocket") or _request_route_path(scope) != self.path:
+            return super().matches(scope)
+        old_path = scope["path"]
+        if not isinstance(old_path, str):
+            return super().matches(scope)
+        new_path = _directory_form(scope, self.path)
+        old_raw = scope["raw_path"] if "raw_path" in scope else None
+        scope["path"] = new_path
+        if isinstance(old_raw, (bytes, bytearray)):
+            scope["raw_path"] = _raw_path_with_directory_slash(bytes(old_raw), old_path, new_path)
+        match, child = super().matches(scope)
+        if match == Match.NONE:
+            scope["path"] = old_path
+            if isinstance(old_raw, (bytes, bytearray)):
+                scope["raw_path"] = bytes(old_raw)
+        return match, child
+
+
 def _remove_mounted_path(main_app: Any, path: str) -> None:
     """从主 FastAPI 路由表移除指定 mount path。"""
     kept: List[Any] = []
@@ -1503,7 +1568,8 @@ async def _mount_http_mcp(server: FastMCP, path: str) -> None:
                 if _mcp_lifespan_cm is runtime:
                     _mcp_lifespan_cm = None
 
-    main_app.mount(path, McpHttpGuard(runtime))
+    # 不用 app.mount：它的正则要求前缀后带斜杠，裸路径会被 307。
+    main_app.router.routes.append(_McpSlashMount(path, app=McpHttpGuard(runtime)))
     _mcp_lifespan_cm = runtime
     _mcp_mount_path = path
     _http_mounted = True

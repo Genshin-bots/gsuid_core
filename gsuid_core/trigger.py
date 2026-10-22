@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Literal, Callable, Awaitable
+from typing import TYPE_CHECKING, Any, Final, Literal, Callable, Awaitable
 
 if TYPE_CHECKING:
     from gsuid_core.sv import SV
@@ -389,3 +389,25 @@ class Trigger:
             text_list = re.split(self.keyword, msg.raw_text)
             msg.text = "|".join([i if i is not None else "" for i in text_list])
         return msg
+
+
+# regex / keyword 的 keyword 是 pattern 或子串，不能当命令字长度。
+_DISPATCH_TYPE_RANK: Final[dict[str, int]] = {
+    "fullmatch": 0,
+    "command": 1,
+    "prefix": 2,
+    "suffix": 2,
+    "regex": 3,
+    "keyword": 4,
+    "file": 5,
+    "meta": 5,
+    "message": 5,
+}
+_DISPATCH_LENGTH_TYPES: Final[frozenset[str]] = frozenset({"fullmatch", "command", "prefix", "suffix"})
+
+
+def dispatch_sort_key(trigger: Trigger, priority: int) -> tuple[bool, int, int, int]:
+    """命令分发排序键。同优先级先比类型，同类型再比命令字长度。"""
+    rank = _DISPATCH_TYPE_RANK[trigger.type]
+    length = len(trigger.keyword) if trigger.type in _DISPATCH_LENGTH_TYPES else 0
+    return (not trigger.prefix, priority, rank, -length)

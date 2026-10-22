@@ -81,6 +81,7 @@ add_sv = SV(name="查询帮助信息", pm=6, area="ALL") # 一般只需要定义
 **`block=True` 使用建议**：
 - 高优先级"短路"触发器（如插件级帮助、错误提示）应 `block=True`，避免兜底触发器再次响应。
 - 一般业务命令保持 `block=False`，由 `priority` 控制顺序。
+- 同优先级时框架按类型排序：`fullmatch` > `command` > `prefix` / `suffix` > `regex` > `keyword`，同一类型再按命令字从长到短。`yh刷新面板` 这类精确命令应写成 `on_fullmatch`，不要指望注册顺序压过角色名正则。
 
 ## 2.4 触发器注册示例
 

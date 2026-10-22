@@ -23,7 +23,7 @@ from gsuid_core.models import (
     normalize_node_items,
 )
 from gsuid_core.server import on_core_shutdown
-from gsuid_core.trigger import Trigger
+from gsuid_core.trigger import Trigger, dispatch_sort_key
 from gsuid_core.global_val import get_platform_val, mark_command_dirty
 from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
 from gsuid_core.trigger_index import get_trigger_index
@@ -637,10 +637,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.warning(t("log.handler.at_bot_shield"))
                     return
 
-        # 最长匹配优先（同优先级下长命令字优先于短别名，避免子集命令截胡）
+        # 同优先级：类型更具体的先跑，同类型再按命令字从长到短
         sorted_event = sorted(
             command_triggers.items(),
-            key=lambda x: (not x[0].prefix, x[1], -len(x[0].head)),
+            key=lambda x: dispatch_sort_key(x[0], x[1]),
         )
 
         for trigger, _ in sorted_event:
