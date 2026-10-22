@@ -528,6 +528,7 @@
   "log.ai.state_set": "[StateStore] state_set failed: {e}",
   "log.ai.state_table_check_use_existing": "[StateStore] Table check failed (will use existing table): {e}",
   "log.ai.state_wrote_scope_key": "[StateStore] Wrote: {scope} / {state_key} (v{new_version})",
+  "log.ai.statisticsmanager_append_error_event_fail": "[StatisticsManager] Failed to append the error event: {e}",
   "log.ai.statisticsmanager_daily_reset_date": "[StatisticsManager] Daily reset completed; new date: {p0}",
   "log.ai.statisticsmanager_date_changed_performing": "[StatisticsManager] Date changed; performing daily reset",
   "log.ai.statisticsmanager_day_rollover_skipping_ok": "[StatisticsManager] Loading had not completed at the day rollover; skipping persistence for the day",

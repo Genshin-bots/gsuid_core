@@ -288,8 +288,8 @@ class StatisticsManager:
             from gsuid_core.ai_core.statistics.error_events import append_error_event
 
             append_error_event(self._today, error_type, message)
-        except Exception:
-            logger.exception("append ai error event failed")
+        except Exception as e:
+            logger.exception(i18n_t("log.ai.statisticsmanager_append_error_event_fail", e=e))
 
     def record_trigger(self, trigger_type: str):
         """记录触发方式"""

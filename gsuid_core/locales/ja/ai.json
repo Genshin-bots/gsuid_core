@@ -528,6 +528,7 @@
   "log.ai.state_set": "[StateStore] state_set に失敗: {e}",
   "log.ai.state_table_check_use_existing": "[StateStore] テーブル作成チェックに失敗（既存テーブルを引き続き使用）: {e}",
   "log.ai.state_wrote_scope_key": "[StateStore] 書き込み: {scope} / {state_key} (v{new_version})",
+  "log.ai.statisticsmanager_append_error_event_fail": "[StatisticsManager] エラーイベントの追加に失敗した: {e}",
   "log.ai.statisticsmanager_daily_reset_date": "[StatisticsManager] 日次リセットが完了した。新しい日付: {p0}",
   "log.ai.statisticsmanager_date_changed_performing": "[StatisticsManager] 日付が変更されたため、日次リセットを実行する",
   "log.ai.statisticsmanager_day_rollover_skipping_ok": "[StatisticsManager] 日付切り替え時点で読み込みが完了していなかったため、当日分の永続化をスキップする",

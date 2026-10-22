@@ -528,6 +528,7 @@
   "log.ai.state_set": "[StateStore] state_set 失败: {e}",
   "log.ai.state_table_check_use_existing": "[StateStore] 建表检查失败（将沿用既有表）: {e}",
   "log.ai.state_wrote_scope_key": "[StateStore] 写入: {scope} / {state_key} (v{new_version})",
+  "log.ai.statisticsmanager_append_error_event_fail": "[StatisticsManager] 追加错误事件失败: {e}",
   "log.ai.statisticsmanager_daily_reset_date": "[StatisticsManager] 每日重置完成，新日期: {p0}",
   "log.ai.statisticsmanager_date_changed_performing": "[StatisticsManager] 日期变更, 执行每日重置",
   "log.ai.statisticsmanager_day_rollover_skipping_ok": "[StatisticsManager] 日切时尚未完成加载, 跳过当日持久化",
