@@ -500,7 +500,7 @@ data/logs/
   http_traces/YYYY-MM-DD/{ab}.jsonl   # 详情；ab = trace_id 去横线后前 2 位 hex
 ```
 
-`DailyNamedFileHandler.backupCount=0`：不自动删。HTTP 按日目录切，不自动删。不要每个请求一个文件（一天百万级小文件在 NTFS 上更差）。
+`DailyNamedFileHandler.backupCount=0`：按日滚动的 `*.log` 不靠 handler 自己删，走 `clean_log`。HTTP 与命令追踪的日目录也由 `clean_log` 按 `ScheduledCleanLogDay` 删除，只删日期早于「今天减去该天数」的目录和旧单日 jsonl；配置为 `0` 时不删。不要每个请求一个文件（一天百万级小文件在 NTFS 上更差）。
 
 #### JSONL
 

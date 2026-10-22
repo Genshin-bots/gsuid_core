@@ -18,5 +18,6 @@
   "log.logger.trace_jsonl_queue_full": "トレース JSONL キューが満杯のため {n} 行を破棄しました",
   "log.logger.trace_jsonl_drain_queue_full": "トレース JSONL のシャットダウン排出時にキューが満杯のため join をスキップします",
   "log.logger.trace_jsonl_missing_index": "トレースディレクトリに index.jsonl がないため shard を走査します（低速）: {path}",
+  "log.logger.trace_jsonl_purge_fail": "期限切れトレース {path} の削除に失敗: {e}",
   "log.logger.unhandled_exception": "未処理の例外"
 }

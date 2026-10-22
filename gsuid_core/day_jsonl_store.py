@@ -19,9 +19,11 @@ import json
 import time
 import queue
 import atexit
+import shutil
 import threading
 from typing import Dict, Iterator, Optional
 from pathlib import Path
+from datetime import date, timedelta
 from dataclasses import dataclass
 
 from gsuid_core.i18n import t
@@ -656,6 +658,63 @@ def _write_count_sidecar(path: Path, n: int, stamp: tuple[int, int, int]) -> Non
                 tmp.unlink()
             except OSError:
                 pass
+
+
+def _calendar_day(name: str) -> date | None:
+    if len(name) != 10 or name[4] != "-" or name[7] != "-":
+        return None
+    if not (name[:4].isdigit() and name[5:7].isdigit() and name[8:10].isdigit()):
+        return None
+    try:
+        return date.fromisoformat(name)
+    except ValueError:
+        return None
+
+
+def _trace_day(child: Path) -> date | None:
+    name = child.name
+    if child.is_symlink():
+        stem = name[: -len(".jsonl")] if name.endswith(".jsonl") else name
+        return _calendar_day(stem)
+    if child.is_dir():
+        return _calendar_day(name)
+    if child.is_file() and name.endswith(".jsonl"):
+        return _calendar_day(name[: -len(".jsonl")])
+    return None
+
+
+def _delete_trace_day(child: Path) -> None:
+    if child.is_symlink() or child.is_file():
+        child.unlink()
+        return
+    shutil.rmtree(child)
+
+
+def purge_expired_days(root: Path, *, keep_days: int) -> int:
+    """删除早于「今天减去 keep_days」的日期目录和旧单日 jsonl。
+
+    keep_days <= 0 或 root 不存在时不删。名字解析不成 ``YYYY-MM-DD`` 的留下。
+    返回删掉的条目数。
+    """
+    if keep_days <= 0 or not root.is_dir():
+        return 0
+    # 与 *.log 的 mtime < now-N 天对齐：边界那天留下。
+    cutoff = date.today() - timedelta(days=keep_days)
+    removed = 0
+    children = list(root.iterdir())
+    for child in children:
+        day = _trace_day(child)
+        if day is None or day >= cutoff:
+            continue
+        try:
+            _delete_trace_day(child)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.warning(t("log.logger.trace_jsonl_purge_fail", path=str(child), e=e))
+            continue
+        removed += 1
+    return removed
 
 
 def count_day_records(root: Path, date_str: str, *, flush: bool = True) -> int:

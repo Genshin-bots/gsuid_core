@@ -42,8 +42,11 @@ def _log_path() -> Path:
     return LOG_PATH
 
 
+HTTP_TRACES_DIRNAME = "http_traces"
+
+
 def _traces_root() -> Path:
-    return _log_path() / "http_traces"
+    return _log_path() / HTTP_TRACES_DIRNAME
 
 
 def write_http_trace_meta(

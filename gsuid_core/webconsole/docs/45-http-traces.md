@@ -3,6 +3,7 @@
 > 后端：`gsuid_core/webconsole/http_trace_api.py`
 > 存储：`data/logs/http_traces/YYYY-MM-DD/index.jsonl`（列表，无 preview）+ `{trace_id 前 2 位 hex}.jsonl`（详情）+ `count`（非今天的去重条数旁路）+ `data/logs/YYYY-MM-DD.log`（字段 `http_trace_id`）。有 index 后旧的单日 `YYYY-MM-DD.jsonl` **不再读**（可删）。无 index 时 leftover 仍可读，超过 64MB 只读文件尾。与命令追踪共用 **一条** 写线程（`day_jsonl_store`）和 **一条** HTTP 读线程，不是各开一条。
 > 与 [07-logs.md](./07-logs.md) §7.8 **命令追踪**相互独立，禁止写入 `logs/traces/`。
+> 每日 00:03，`clean_log` 按 `ScheduledCleanLogDay` 删除日期早于「今天减去该天数」的日目录和旧单日 `YYYY-MM-DD.jsonl`。配置为 `0` 时不删。`logs/traces/` 用同一规则。
 
 按一次 `/api` HTTP 请求查看该 **ASGI 请求任务**内的官方 `gsuid_core.logger` 行。插件挂在共享 `app` 上且使用官方 logger 时无需额外代码。
 
