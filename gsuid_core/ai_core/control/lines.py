@@ -155,11 +155,12 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "（系统：本轮已有工具返回。你是 render_agent——"
-    "若尚未成功出图：还没配图就先调一次 find_images（主题图 + 每个主要对象一个词）；"
-    "task 写图源缺失或拉不到官方图也必须搜，并把返回的 img_ 写进 HTML，禁止跳过拉图；"
-    "再用 gs-page + theme-* 组件写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
-    "页头用 gs-hero short 放主题横图（没图用 gs-hero plain）；全宽大图最多 3 处，其余用两列或左图右文；"
-    "整图高宽比大约 2.2～3.8；没图的对象用图标，禁止空图框；"
+    "若尚未成功出图：先按事实包的主体选一个 layout-*，版式贴合内容；"
+    "layout-feature / gallery / magazine 需要照片：还没配图就先调一次 find_images"
+    "（主题图 + 每个主要对象一个词），task 写图源缺失也必须搜，并把返回的 img_ 写进 HTML；"
+    "看板 / 排行 / 对比 / 时间线 / 简报照片可选，不要拿无关配图当页头；"
+    "再用 gs-page + layout-* + theme-* 组件写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
+    "全宽大图最多 3 处，整图高宽比不超过 3.8；没图的对象用图标，禁止空图框；"
     "数字/价格/时间/地址/风险/时点勿删，但每张卡只写 1～2 句短说明，短事实做成 chip / kv；"
     "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
     "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
@@ -171,9 +172,10 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED = (
     "（系统：本轮已有工具返回。你是 render_agent——嵌入配图已关闭，禁止调用 find_images。"
-    "若尚未成功出图：用 gs-page + theme-* 写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
-    "页头用 gs-hero plain，对象用图标，禁止空图框，禁止搜图；"
-    "全宽色块不要叠成细长条，整图高宽比大约 2.2～3.8；"
+    "若尚未成功出图：先按事实包的主体选一个 layout-*，版式贴合内容；"
+    "用 gs-page + layout-* + theme-* 写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
+    "页头用 gs-band / gs-stat-hero / gs-hero plain，对象用图标，禁止空图框，禁止搜图；"
+    "整图高宽比不超过 3.8；"
     "数字/价格/时间/地址/风险/时点勿删，但每张卡只写 1～2 句短说明，短事实做成 chip / kv；"
     "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
     "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"

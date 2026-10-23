@@ -557,7 +557,10 @@ async def find_images(
     from gsuid_core.ai_core.configs.ai_config import render_embed_images_enabled
 
     if not render_embed_images_enabled():
-        return "配图已关闭。不要再调 find_images。页头用 gs-hero plain，对象用图标，不要留空图框。"
+        return (
+            "配图已关闭。不要再调 find_images。按内容选版式，页头用 gs-band / gs-stat-hero / gs-hero plain，"
+            "对象用图标，不要留空图框。"
+        )
     paired, err = await search_and_verify_images(queries, per_query)
     if err:
         if "render_image_sources 为空" in err:

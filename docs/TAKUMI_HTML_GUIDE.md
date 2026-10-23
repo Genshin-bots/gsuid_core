@@ -474,7 +474,9 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 .cover img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;}
 ```
 
-`render_html_to_image` 用到 `gs-` 类时注入的组件库（`render_kit.py`）已经按这个写法处理。
+`render_html_to_image` 用到 `gs-` 类时注入的组件库（`render_kit.py`）已经按这个写法处理，
+包括 `gs-split-media`、`gs-thumb sm`、`gs-avatar lg` 这些照片槽位。
+离线检查 8 种版式的效果：`uv run python eval/manual/render_layout_gallery.py`。
 flex 行里 `flex:1` 的文字列要写 `min-width:0`，否则图片的原始宽度会把这一列撑出卡片。
 
 ### 8.4 IM 场景不要写太小的字

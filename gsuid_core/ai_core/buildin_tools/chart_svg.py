@@ -23,10 +23,11 @@ _MAX_LABEL = 18
 
 # 系列身份色：刻意避开升/降语义的绿/红，避免「颜色=涨跌」和「颜色=系列」打架。
 _SERIES_COLORS = ["#38bdf8", "#f59e0b", "#a78bfa", "#22d3ee", "#fb923c", "#c084fc", "#94a3b8", "#e879f9"]
-_POS_DARK = "#34d399"
-_NEG_DARK = "#f87171"
-_POS_LIGHT = "#059669"
-_NEG_LIGHT = "#dc2626"
+# 涨跌色与 render_kit 的 --gs-up / --gs-down 同值（浅色取默认，暗色取 theme-ink）
+_POS_DARK = "#f87171"
+_NEG_DARK = "#34d399"
+_POS_LIGHT = "#d92d20"
+_NEG_LIGHT = "#079455"
 
 
 def _esc(text: str) -> str:

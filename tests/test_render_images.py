@@ -89,22 +89,60 @@ def test_remote_image_candidate_skips_known_bad_size() -> None:
     assert remote_image_candidate("not-a-url", "x", 800, 600, SOURCE_FIRECRAWL) is None
 
 
-def test_embed_switch_blocks_render_without_photos() -> None:
+def _page(classes: str, body: str = "<div class='gs-band'></div>") -> str:
+    return f"<div class='{classes}'>{body}</div>"
+
+
+@pytest.mark.parametrize(
+    ("html", "embed_on", "searched", "found", "expect"),
+    [
+        (_page("gs-page layout-feature"), False, False, False, None),
+        (_page("gs-page layout-feature", '<img src="img_abc123">'), True, True, True, None),
+        (_page("gs-page layout-dashboard theme-slate"), True, False, False, None),
+        (_page("theme-ink layout-ranking gs-page"), True, True, True, None),
+        (_page("gs-page layout-feature"), True, False, False, "find_images"),
+        (_page("gs-page layout-gallery"), True, True, True, "句柄"),
+        (_page("gs-page layout-magazine"), True, True, False, None),
+        (_page("gs-page theme-ocean"), True, False, False, "layout-"),
+        (_page("gs-page layout-poster"), True, False, False, "layout-"),
+    ],
+    ids=[
+        "embed-off",
+        "has-photo",
+        "data-layout-needs-no-photo",
+        "class-order-free",
+        "photo-layout-not-searched",
+        "photo-layout-unused-handles",
+        "photo-layout-nothing-found",
+        "undeclared-acts-as-photo",
+        "unknown-layout-acts-as-undeclared",
+    ],
+)
+def test_photo_gate_follows_layout(html: str, embed_on: bool, searched: bool, found: bool, expect: str | None) -> None:
     from gsuid_core.ai_core.buildin_tools.html_render_tools import embed_photo_block_reason
 
-    plain = "<div class='gs-hero plain'></div>"
-    with_photo = '<img src="img_abc123">'
-    assert embed_photo_block_reason(plain, embed_on=False, searched=False, found=False) is None
-    assert embed_photo_block_reason(with_photo, embed_on=True, searched=True, found=True) is None
-    assert "find_images" in (embed_photo_block_reason(plain, embed_on=True, searched=False, found=False) or "")
-    assert embed_photo_block_reason(plain, embed_on=True, searched=True, found=False) is None
-    assert "句柄" in (embed_photo_block_reason(plain, embed_on=True, searched=True, found=True) or "")
+    got = embed_photo_block_reason(html, embed_on=embed_on, searched=searched, found=found)
+    if expect is None:
+        assert got is None
+    else:
+        assert got is not None and expect in got
+
+
+def test_embed_images_default_on() -> None:
     from gsuid_core.ai_core.configs.ai_config import render_embed_images_enabled
+
+    assert render_embed_images_enabled() is True
+
+
+def test_render_prompt_teaches_only_known_layouts_and_classes() -> None:
+    from gsuid_core.ai_core.buildin_tools.render_kit import RENDER_KIT_CSS, RENDER_LAYOUTS
     from gsuid_core.ai_core.capability_agents.profiles import _RENDER_PROMPT
 
-    assert "840" in _RENDER_PROMPT
-    assert "2.2" in _RENDER_PROMPT
-    assert render_embed_images_enabled() is True
+    taught = set(re.findall(r"\blayout-([a-z]+)\b", _RENDER_PROMPT)) - {"xxx"}
+    assert taught == set(RENDER_LAYOUTS)
+    defined = set(re.findall(r"\.(gs-[a-z0-9-]+)", RENDER_KIT_CSS))
+    used = set(re.findall(r"(?<![\w-])(gs-[a-z][a-z0-9-]*)", _RENDER_PROMPT))
+    assert used - defined == set()
 
 
 def test_plugin_image_must_name_the_queried_object() -> None:

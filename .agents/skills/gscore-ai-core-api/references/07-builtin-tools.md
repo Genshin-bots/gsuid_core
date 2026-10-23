@@ -492,10 +492,17 @@ async def render_html_to_image(
 ```
 
 - 默认自由 HTML；原生 `<table>` → `table_rewrite` flex 网格；自动嵌 `https`/`icon:`/`img_`/`res_`。
-- 默认逻辑宽 840，2 倍像素比出图；嵌入的位图最长边保留 1280px。全宽大图最多 3 处，整图高宽比大约 2.2～3.8。`render_embed_images` 默认开启，关闭后不再搜图。
+- 默认逻辑宽 840，2 倍像素比出图；嵌入的位图最长边保留 1280px。全宽大图最多 3 处，整图高宽比不超过 3.8。`render_embed_images` 默认开启，关闭后不再搜图。
 - HTML 用到 `gs-` 类时，渲染前自动注入移动端组件库（`buildin_tools/render_kit.py`）：
-  外层 `<div class="gs-page theme-xxx">`，主题有 paper / ocean / forest / sunset / sakura /
+  外层 `<div class="gs-page layout-xxx theme-xxx">`，主题有 paper / ocean / forest / sunset / sakura /
   violet / slate / ink。agent 自写的 `<style>` 排在组件库之后，可以覆盖。
+- 版式（`RENDER_LAYOUTS`）按内容形态选：`feature` 图文专题、`gallery` 图鉴、`magazine` 专题解读、
+  `dashboard` 数据看板、`ranking` 排行、`compare` 对比、`timeline` 时间线、`brief` 简报。
+  页头组件有 `gs-hero`（照片，`short` / `tall` / `plain`）、`gs-band`（色带）、`gs-split`（左文右图）、
+  `gs-stat-hero`（大数字）；主体另有 `gs-rank`、`gs-compare-*`、`gs-quote`、`gs-steps`、`gs-grid cols-3`。
+- 照片闸门：嵌图开启时，只有 `PHOTO_LAYOUTS`（feature / gallery / magazine）或没声明版式的 HTML
+  必须先 `find_images` 并写进 `img_`，否则拒绝渲染。其余版式照片可选。
+- 涨跌色：组件库 `--gs-up` 红、`--gs-down` 绿（`theme-ink` 用亮一档的同色相），`render_chart_spec(signed=True)` 用同一套值。
 - 图标可带颜色：`icon:mdi/map-marker?color=1d6fb8`（Iconify 出图时着色）。
 - 约束见工具 docstring、[`TAKUMI_HTML_GUIDE.md`](../../../../docs/TAKUMI_HTML_GUIDE.md)。
 
@@ -548,7 +555,7 @@ async def render_chart_spec(
 编码硬规则（防信息误解）：
 
 - 多实体 × 多指标：**必须** `series`（每实体一个 `name`）+ 图例。禁止把身份拍扁进单柱 label。
-- `signed` 只表达正负；系列身份不用升/降色。有负值走零轴。
+- `signed` 只表达正负（正红负绿，与组件库 `--gs-up` / `--gs-down` 同值）；系列身份不用升/降色。有负值走零轴。
 - 缺测点断线，禁止补 0。一个字段一个值，禁止把分歧来源画成未标注的两根柱。
 - 类目标签保留约 18 字。身份色避开升/降红绿。
 
