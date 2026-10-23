@@ -7,7 +7,7 @@
 
 from typing import Any, Dict, Optional
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from fastapi import Query, Depends
 from sqlmodel import col
@@ -51,6 +51,7 @@ async def list_artifacts(
     task_id: Optional[str] = Query(None),
     scope: Optional[str] = Query(None, description="传 `all` 走全局浏览分支"),
     limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     include_expired: bool = Query(False),
 ) -> Dict[str, Any]:
     """列出 Artifact。三种调用方式：
@@ -58,45 +59,43 @@ async def list_artifacts(
     - `?root_task_id=<root_id>`：列出某 root 树下的所有 artifacts
     - `?scope=all`：全局按时间倒序浏览（`/ai-artifacts` 页用）
     其余无参调用保持原契约：返回 status=1 要求提供过滤条件。
-    `include_expired=False`：仅列未过期；`=True`：列全部。
+    `limit` / `offset` 分页。`include_expired=False`：仅列未过期；`=True`：列全部。
+    同时带 task_id 与 root_task_id 时只按 task_id。
     """
     if task_id:
-        items = await AIAgentArtifact.list_for_task(task_id)
-        items = items[:limit]
+        items, total = await AIAgentArtifact.list_page(
+            task_id=task_id,
+            include_expired=include_expired,
+            limit=limit,
+            offset=offset,
+        )
     elif root_task_id:
-        items = await AIAgentArtifact.list_for_root(root_task_id)
-        items = items[:limit]
+        items, total = await AIAgentArtifact.list_page(
+            root_task_id=root_task_id,
+            include_expired=include_expired,
+            limit=limit,
+            offset=offset,
+        )
     elif scope == "all":
-        # 全局浏览分支：按 created_at 倒序拉最近 N 条
-        from sqlmodel import select
-
-        from gsuid_core.utils.database.base_models import async_maker
-
-        async with async_maker() as session:
-            stmt = select(AIAgentArtifact).order_by(col(AIAgentArtifact.created_at).desc()).limit(limit)
-            rows = (await session.execute(stmt)).scalars().all()
-        items = list(rows)
+        items, total = await AIAgentArtifact.list_page(
+            include_expired=include_expired,
+            limit=limit,
+            offset=offset,
+        )
     else:
         return {"status": 1, "msg": t("msg.webconsole.artifact.require_filter"), "data": None}
-
-    if not include_expired:
-        now = datetime.now(timezone.utc)
-
-        def _is_fresh(it: AIAgentArtifact) -> bool:
-            e = it.expires_at
-            if e is None:
-                return True
-            # 统一时区处理：naive 时间转为 UTC 时区，避免与 aware 时间比对报错。
-            if e.tzinfo is None:
-                e = e.replace(tzinfo=timezone.utc)
-            return e > now
-
-        items = [it for it in items if _is_fresh(it)]
 
     return {
         "status": 0,
         "msg": "ok",
-        "data": {"items": [_artifact_dict(a) for a in items], "count": len(items)},
+        "data": {
+            "items": [_artifact_dict(a) for a in items],
+            "count": len(items),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
+        },
     }
 
 
