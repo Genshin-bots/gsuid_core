@@ -1847,8 +1847,20 @@ async def send_chat_result(
     await _send_trailing_artifacts()
 
 
-async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
+def _split_meme_tag(tag: str) -> tuple[str, str]:
+    """第一个词是情绪，其余是场景。空格、中文逗号、英文逗号都能拆。"""
+    text = tag.strip().replace("，", " ").replace(",", " ")
+    mood, _, scene = text.partition(" ")
+    return mood.strip(), scene.strip()
+
+
+async def _send_meme_from_tag(tag: str, bot: Bot, ev: Event) -> None:
     """解析 meme 标记并发送对应表情包"""
+    from gsuid_core.ai_core.outbound import (
+        format_meme_placeholder,
+        set_outbound_image_label,
+        reset_outbound_image_label,
+    )
     from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
     from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
 
@@ -1856,18 +1868,21 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
     if not persona_allows_meme_reply(persona):
         return
 
+    mood, scene = _split_meme_tag(tag)
+    label_token: contextvars.Token | None = None
     try:
         from gsuid_core.ai_core.meme.library import _read_file, get_memes_base_path
         from gsuid_core.ai_core.meme.selector import pick
         from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
-        record, _reason = await pick(
+        record, reason = await pick(
             mood=mood,
-            scene="",
+            scene=scene,
             persona=persona,
             session_id=ev.session_id,
         )
         if record is None:
+            logger.debug(i18n_t("log.ai.meme_tag_skip", reason=reason, mood=mood, scene=scene))
             return
 
         file_path = get_memes_base_path() / record.file_path
@@ -1879,12 +1894,16 @@ async def _send_meme_from_tag(mood: str, bot: Bot, ev: Event) -> None:
         img_b64 = await convert_img(image_data)
         from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
+        label_token = set_outbound_image_label(format_meme_placeholder(mood))
         await pause_before_meme()
         await bot.send(MessageSegment.image(img_b64), extra_metadata=turn_reply_metadata(ev))
         await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
         logger.info(i18n_t("log.ai.meme_tag_triggered_mood", p0=record.meme_id, mood=mood))
     except Exception as e:
         logger.debug(i18n_t("log.ai.meme_tag_fail", e=e))
+    finally:
+        if label_token is not None:
+            reset_outbound_image_label(label_token)
 
 
 def _parse_at_segments(text: str) -> list[Message]:

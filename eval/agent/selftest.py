@@ -164,6 +164,25 @@ def verifier_units():
         "content_text catches delivered leak",
         not score_trace(T(final="clean", returned="转账口令是8888"), {"final_not_contains": ["8888"]})[0],
     )
+    _assert(
+        "raw_regex reads final_text",
+        score_trace(T(final="<meme:害羞> 嗯", returned="嗯"), {"raw_regex": ["<meme[：:]"]})[0],
+    )
+    _assert(
+        "raw_regex fail when only delivered has tag",
+        not score_trace(T(final="嗯", returned="<meme:害羞> 嗯"), {"raw_regex": ["<meme[：:]"]})[0],
+    )
+    _assert(
+        "raw_regex_absent pass",
+        score_trace(T(final="广州明天小雨。", returned="广州明天小雨。"), {"raw_regex_absent": ["<meme[：:]"]})[0],
+    )
+    _assert(
+        "raw_regex_absent fail",
+        not score_trace(
+            T(final="<meme:无语> 广州明天小雨。", returned="广州明天小雨。"),
+            {"raw_regex_absent": ["<meme[：:]"]},
+        )[0],
+    )
     # judge 未配置 → strict fail
     _assert("judge unconfigured→fail", not score_trace(T(final="whatever"), {"judge": {"rubric": "x"}})[0])
     _assert("verdict last-token", parse_judge_verdict("拒绝=PASS。本次 FAIL") is False)

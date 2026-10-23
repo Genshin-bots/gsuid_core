@@ -390,8 +390,6 @@ def test_ack_plus_find_tools_is_not_terminal() -> None:
     assert batch_still_working(["send_message_by_ai", "find_tools"])
     assert batch_still_working(["find_tools"])
     assert not batch_still_working(["send_message_by_ai"])
-    assert batch_still_working(["send_meme"])
-    assert not batch_still_working(["send_message_by_ai", "send_meme"])
 
 
 def test_wait_comfort_does_not_mark_delivered() -> None:
@@ -699,14 +697,6 @@ def test_task_accept_speech_allows_action_and_speech_lines() -> None:
     assert not looks_like_task_accept_speech(three_lines)
     two_facts = "北京今天 18 度，有雨。\n\n上海今天 22 度，多云。"
     assert not looks_like_task_accept_speech(two_facts)
-
-
-def test_meme_only_stays_open_and_message_plus_meme_is_terminal() -> None:
-    from gsuid_core.ai_core.agent_run.speech_policy import batch_is_meme_only
-
-    assert batch_is_meme_only(["send_meme"])
-    assert not batch_is_meme_only(["send_message_by_ai", "send_meme"])
-    assert not batch_is_meme_only(["send_meme", "find_tools"])
 
 
 def test_looks_like_illustration_request() -> None:

@@ -27,6 +27,7 @@ async def build_persona_prompt(
     group_description: str | None = None,
     extra_stable_context: str | None = None,
     clock_date: str | None = None,
+    include_meme_protocol: bool = True,
 ) -> str:
     """
     组装完整的角色提示词
@@ -46,6 +47,7 @@ async def build_persona_prompt(
             会话期内基本不变，放进稳定前缀可跨轮命中 provider 缓存；per-user 的关系/
             情绪/记忆/历史仍每轮进 user 侧。会话空闲被回收后重建即自然刷新。
         clock_date: 评测 HTTP ``clock_at`` 的日标签；缺省用墙上日期。生产 WS 不传。
+        include_meme_protocol: 看板转译等不经主会话呈现层的路径传 False，避免写出 ``<meme:>``。
 
     Returns:
         完整的角色扮演prompt字符串
@@ -85,14 +87,16 @@ async def build_persona_prompt(
     date_line = render_prompt(char_name, "date_line", date=current_date)
     from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words
     from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+    from gsuid_core.ai_core.persona.meme_style import resolve_meme_frequency_line
 
     meme_protocol = ""
-    if persona_allows_meme_reply(char_name):
+    if include_meme_protocol and persona_allows_meme_reply(char_name):
         meme_protocol = render_prompt(
             char_name,
             "meme_protocol",
             emotion_words=join_words(EMOTION_WORDS),
             scene_words=join_words(SCENE_WORDS),
+            meme_frequency=resolve_meme_frequency_line(char_name),
         )
     prompt = join_around_card(
         join_prompt_parts(role),

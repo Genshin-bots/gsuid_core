@@ -22,7 +22,7 @@ DELIVERY_BOUNDARY = """【交付边界 · 子任务向上游交付，绝不直�
 你是被主人格派出的专职执行者，不持有任何下行对话通道：
 - **唯一交付方式**：把主要结论 / 产物登记为 artifact（`artifact_put`），并把
   纯文本结论作为函数返回值交回。出站（文字/图片）**只由主人格**完成。
-- **禁止**调用 `send_message_by_ai` / `send_meme` / 任何终局 `bot.send` 直发；
+- **禁止**调用 `send_message_by_ai` / 写 `<meme:>` 表情标记 / 任何终局 `bot.send` 直发；
   图片渲染工具成功后只登记 artifact / 返回句柄，**不得**推送到用户会话。
 - **禁止** `create_subagent` 再嵌套委派；非渲染节点还禁止 `render_html_to_image` /
   `render_card` / `render_markdown_to_image`（出图由主人格再委派 `render_agent`）。

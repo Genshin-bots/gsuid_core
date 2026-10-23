@@ -346,6 +346,7 @@ def main() -> int:
         extra_paths.append(cases_dir / "cognition_hub_mixed.yaml")
         extra_paths.append(cases_dir / "speaker_slot_recall.yaml")
         extra_paths.append(cases_dir / "run_code_fanout.yaml")
+        extra_paths.append(cases_dir / "group_chat_meme.yaml")
     if args.extra_cases:
         for p in args.extra_cases.split(","):
             p = p.strip()

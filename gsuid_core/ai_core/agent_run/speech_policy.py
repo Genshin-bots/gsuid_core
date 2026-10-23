@@ -799,22 +799,10 @@ def content_is_render_candidate(
 _TERMINAL_DELIVERY_TOOLS = frozenset({"send_message_by_ai"})
 
 
-def batch_is_meme_only(tool_names: Sequence[str]) -> bool:
-    """这一步只有表情。轮子先别收，补不补台词由模型定。"""
-    names = [name for name in tool_names if name]
-    if not names or not any(name == "send_meme" for name in names):
-        return False
-    if any(name in _TERMINAL_DELIVERY_TOOLS for name in names):
-        return False
-    return all(name == "send_meme" for name in names)
-
-
 def batch_still_working(tool_names: Sequence[str]) -> bool:
-    """同一步还有非发送工具，或只有表情、台词还没发出。"""
+    """同一步还有非终局发送工具。"""
     names = [name for name in tool_names if name]
-    if any(name not in _TERMINAL_DELIVERY_TOOLS and name != "send_meme" for name in names):
-        return True
-    return batch_is_meme_only(names)
+    return any(name not in _TERMINAL_DELIVERY_TOOLS for name in names)
 
 
 def should_mark_speech_delivered(*, text: str, has_media: bool) -> bool:

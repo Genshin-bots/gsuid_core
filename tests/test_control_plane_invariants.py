@@ -449,13 +449,14 @@ def test_status_obligation_met_by_check_delegation() -> None:
 
 def test_slim_group_pool_carries_control_tools() -> None:
     """生产事故就在群聊：group_slim 下这两个工具缺席则申辩/查委派根本调不到。"""
-    from gsuid_core.ai_core.interaction_scaffold import SLIM_GROUP_CORE_TOOLS
+    from gsuid_core.ai_core.interaction_scaffold import MAIN_AGENT_CORE_TOOLS, SLIM_GROUP_CORE_TOOLS
 
     assert "dispute_directive" in SLIM_GROUP_CORE_TOOLS
     assert "check_delegation" not in SLIM_GROUP_CORE_TOOLS
     assert "find_tools" in SLIM_GROUP_CORE_TOOLS
     assert "create_subagent" in SLIM_GROUP_CORE_TOOLS
-    assert "send_meme" in SLIM_GROUP_CORE_TOOLS
+    assert "send_meme" not in SLIM_GROUP_CORE_TOOLS
+    assert "send_meme" not in MAIN_AGENT_CORE_TOOLS
     assert "capability_map" in SLIM_GROUP_CORE_TOOLS
     assert "web_search_tool" not in SLIM_GROUP_CORE_TOOLS
     assert "add_once_task" in SLIM_GROUP_CORE_TOOLS

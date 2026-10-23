@@ -210,6 +210,12 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         "打开后，系统提示里写入表情协议，回复可以用 <meme:情绪>。关掉后不写这段，也不发送表情。",
         True,
     ),
+    "meme_frequency": GsIntConfig(
+        "表情频率",
+        "只改系统提示里的频率说明：0=少用，50=适中，100=常用。不限流，也不影响选图。",
+        50,
+        options=[0, 25, 50, 75, 100],
+    ),
 }
 
 
@@ -473,6 +479,20 @@ class PersonaConfigManager(ConfigSetManager):
         logger.info(t("log.persona.allow_meme_reply", persona_name=persona_name, value=allow))
         return True, "ok"
 
+    def set_meme_frequency(self, persona_name: str, value: object) -> tuple[bool, str]:
+        """设置表情频率。0 到 100。只改系统提示里的一句说明。"""
+        from gsuid_core.ai_core.persona.meme_style import MEME_FREQUENCY_MAX, MEME_FREQUENCY_MIN
+
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False, "表情频率必须是整数"
+        if value < MEME_FREQUENCY_MIN or value > MEME_FREQUENCY_MAX:
+            return False, f"表情频率必须在 {MEME_FREQUENCY_MIN} 到 {MEME_FREQUENCY_MAX} 之间"
+        config = self.get_config(persona_name)
+        if not config.set_config("meme_frequency", value):
+            return False, "配置写入失败"
+        logger.info(t("log.persona.meme_frequency_set", persona_name=persona_name, value=value))
+        return True, "ok"
+
     def set_inspect_interval(self, persona_name: str, inspect_interval: int) -> tuple[bool, str]:
         """
         设置 Persona 的定时巡检间隔
@@ -723,6 +743,7 @@ class PersonaConfigManager(ConfigSetManager):
             stored_int,
             speech_shape_spec,
         )
+        from gsuid_core.ai_core.persona.meme_style import DEFAULT_MEME_FREQUENCY
 
         shape = speech_shape_spec()
         return {
@@ -748,6 +769,7 @@ class PersonaConfigManager(ConfigSetManager):
             "capability_agents": config.get_config("capability_agents").data,
             "prompt_group": _effective_prompt_group(persona_name),
             "allow_meme_reply": bool(config.get_config("allow_meme_reply").data),
+            "meme_frequency": stored_int(config, "meme_frequency", DEFAULT_MEME_FREQUENCY),
             "chat_style": stored_int(config, "chat_style", DEFAULT_CHAT_STYLE),
             "speech_len_soft": stored_int(config, "speech_len_soft", shape["soft_default"]),
             "speech_shape": shape,

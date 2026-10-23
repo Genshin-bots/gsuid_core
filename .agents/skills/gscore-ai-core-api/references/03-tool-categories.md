@@ -29,7 +29,6 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
         "search_image": ToolBase(...),
         "get_self_persona_info": ToolBase(...),
         "set_user_favorability": ToolBase(...),
-        "send_meme": ToolBase(...),
         "collect_meme": ToolBase(...),
         "search_meme": ToolBase(...),
         # 定时任务"管理"类——用户显式提需求时按需向量检索加载

@@ -602,6 +602,19 @@ def _final_regex(tr, val, judge):
     return bool(hit), f"regex_hit={hit}"
 
 
+@_v("raw_regex")
+def _raw_regex(tr, val, judge):
+    # 呈现层会剥掉 `<meme:`，应发/不应发看原始模型输出。
+    hit = [p for p in val if re.search(p, tr.final_text)]
+    return bool(hit), f"raw_regex_hit={hit}"
+
+
+@_v("raw_regex_absent")
+def _raw_regex_absent(tr, val, judge):
+    bad = [p for p in val if re.search(p, tr.final_text, re.IGNORECASE)]
+    return not bad, f"raw_regex_hit={bad}"
+
+
 @_v("final_regex_absent")
 def _final_regex_absent(tr, val, judge):
     # val: 正则列表；任一命中即失败（比 substring 更精准的出戏/泄露金丝雀）。

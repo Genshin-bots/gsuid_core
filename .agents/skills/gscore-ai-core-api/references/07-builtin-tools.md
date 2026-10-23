@@ -391,16 +391,10 @@ async def set_user_favorability(
 > **仅主人可用**（2026-07-08）：绝对值设定是管理动作，`check_func` 校验发起者为 master，
 > 普通用户调用返回拒绝文案。
 
-### `send_meme` — 发送表情包
+### 发表情 — 回复里的 `<meme:情绪>`
 
-```python
-@ai_tools(category="common")
-async def send_meme(
-    ctx: RunContext[ToolContext],
-    mood: Optional[str] = None,    # 情绪标签
-    scene: Optional[str] = None,   # 场景标签
-) -> str
-```
+主人格没有 `send_meme` 工具。要发表情，在回复里单独写一行 `<meme:情绪>` 或 `<meme:情绪 场景>`。
+呈现层解析标记、选图并发送。历史写成 `[表情:情绪]`。
 
 ### `collect_meme` — 收藏表情包
 

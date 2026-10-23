@@ -1,119 +1,20 @@
 """表情包 AI 工具注册
 
-注册 send_meme、collect_meme、search_meme 三个 AI 工具，
-供主 Agent 在群聊中自主决策发送表情包。
+注册 collect_meme、search_meme。主人格发表情只走回复里的 ``<meme:情绪>``。
 
 使用 @ai_tools 装饰器注册，Event 和 Bot 参数由装饰器自动注入。
 """
 
 from typing import Sequence
 
-from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.meme.config import meme_config
-from gsuid_core.ai_core.meme.library import MemeLibrary, _read_file, get_memes_base_path
-from gsuid_core.ai_core.meme.selector import (
-    PICK_NO_BIND,
-    PICK_COOLDOWN,
-    PICK_EXHAUSTED,
-    PICK_NO_PERSONA,
-    pick,
-)
+from gsuid_core.ai_core.meme.library import MemeLibrary
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
-
-
-@ai_tools(category="self", code_callable=False)
-async def send_meme(
-    ev: Event,
-    bot: Bot,
-    mood: str,
-    scene: str = "",
-) -> str:
-    """
-    从当前人格已挂载的表情包里发一张。
-    mood 只能是：开心、无语、搞笑、可爱、愤怒、悲伤、惊讶、尴尬、得意、委屈、
-    难过、生气、害羞、疑惑、害怕、嫌弃、发呆、微笑、大笑、大哭、暴怒、饿、
-    好的、不要、谢谢、抱歉、加油、挥手、比心、不知道、点头。
-    scene 可空，只能是：日常、吐槽、卖萌、怼人、安慰、庆祝、晚安、早安。
-    按这句话的意思选词，不要用文件名。
-
-    会排除最近已发送的图片，并遵守冷却时间。
-
-    Args:
-        mood: 情绪词，必须来自上面的情绪词表
-        scene: 场景词，必须来自上面的场景词表，可以空着
-
-    Returns:
-        发送结果描述
-
-    Example:
-        >>> await send_meme(mood="开心", scene="庆祝")
-        >>> await send_meme(mood="无语")
-    """
-    session_id = ev.session_id
-    persona_name = _get_persona_for_event(ev)
-    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
-
-    if not persona_allows_meme_reply(persona_name):
-        return "这个人格没有打开表情回复，不要再发。"
-
-    # 选择表情包
-    record, reason = await pick(
-        mood=mood,
-        scene=scene,
-        persona=persona_name,
-        session_id=session_id,
-    )
-
-    if record is None:
-        # 区分"现在不能发"和"库里没有"，避免 LLM 误判后无意义重试或向用户致歉
-        if reason == PICK_COOLDOWN:
-            return "表情包发送冷却中（库中可能有匹配的图），本次跳过即可，不要重试"
-        if reason == PICK_EXHAUSTED:
-            return "匹配的表情包最近都已发送过，本次跳过以避免重复，不要重试"
-        if reason == PICK_NO_PERSONA:
-            return "没有解析到当前人格，这次不发表情，不要改发别的图。"
-        if reason == PICK_NO_BIND:
-            return "这个人格没有挂载表情包，不要改去 common 目录，也不要改发其他人格的图。"
-        return "已挂载的包里没有匹配的表情，不要改发别的图，不要重试。"
-
-    # 发送图片
-    file_path = get_memes_base_path() / record.file_path
-    if not file_path.exists():
-        logger.warning(t("log.ai.meme_file_path", file_path=file_path))
-        return "表情包文件不存在"
-
-    image_data = await _read_file(file_path)
-
-    from gsuid_core.ai_core.utils import pause_before_meme
-    from gsuid_core.utils.image.convert import convert_img
-
-    img_base64 = await convert_img(image_data)
-    message = MessageSegment.image(img_base64)
-
-    from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
-
-    await pause_before_meme()
-    await bot.send(message, extra_metadata=turn_reply_metadata(ev))
-
-    # 记录使用
-    await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
-
-    logger.info(
-        t(
-            "log.ai.meme_mood_scene_persona",
-            p0=record.meme_id,
-            mood=mood,
-            scene=scene,
-            persona_name=persona_name,
-        )
-    )
-    return f"已发送表情包: {record.description or record.meme_id}"
 
 
 @ai_tools(category="common", capability_domain="表情", code_callable=False)

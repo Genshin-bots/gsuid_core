@@ -187,9 +187,11 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
 
     from gsuid_core.bot import Bot, _Bot
     from gsuid_core.ai_core.utils import _send_meme_from_tag
-    from gsuid_core.ai_core.buildin_tools import meme_tools, html_render_tools
+    from gsuid_core.ai_core.buildin_tools import html_render_tools
 
     sent: list[dict[str, str]] = []
+    picked: dict[str, object] = {}
+    labels_at_send: list[str] = []
     ev = Event(
         bot_id="onebot",
         bot_self_id="self1",
@@ -211,6 +213,9 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
         extra_metadata: dict[str, str] | None = None,
         **_k: object,
     ) -> None:
+        from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+        labels_at_send.append(get_outbound_image_label())
         sent.append(extra_metadata or {})
 
     async def _no_sleep(_seconds: float) -> None:
@@ -224,6 +229,7 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
     rec = SimpleNamespace(file_path="x.png", meme_id="m1", description="d")
 
     async def _pick(**_k: object) -> tuple[object, str]:
+        picked.update(_k)
         return rec, ""
 
     async def _read(_p: object) -> bytes:
@@ -246,11 +252,16 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
     monkeypatch.setattr("gsuid_core.ai_core.meme.database_model.AiMemeRecord.record_usage", _usage)
     monkeypatch.setattr("gsuid_core.ai_core.utils.convert_img", _convert)
 
-    asyncio.run(_send_meme_from_tag("开心", bot, ev))
+    from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+    asyncio.run(_send_meme_from_tag("害羞 卖萌", bot, ev))
     assert sent[-1] == want
+    assert picked["mood"] == "害羞"
+    assert picked["scene"] == "卖萌"
+    assert labels_at_send[-1] == "[表情:害羞]"
+    assert get_outbound_image_label() == ""
 
     owners = {
-        meme_tools.send_meme.__name__: inspect.getsource(meme_tools),
         "_try_send_image": inspect.getsource(html_render_tools),
         _send_meme_from_tag.__name__: inspect.getsource(_send_meme_from_tag),
     }

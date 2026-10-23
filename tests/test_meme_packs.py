@@ -98,16 +98,22 @@ def test_meme_protocol_uses_the_same_word_list() -> None:
 
 
 def test_send_and_tag_share_one_word_list() -> None:
-    import inspect
-
-    from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS
+    from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words
     from gsuid_core.ai_core.meme.tagger import TAG_PROMPT
-    from gsuid_core.ai_core.buildin_tools.meme_tools import send_meme
+    from gsuid_core.ai_core.prompt_group.render import render_text
+    from gsuid_core.ai_core.prompt_group.catalog import default_body
 
-    doc = inspect.getdoc(send_meme) or ""
+    rendered = render_text(
+        default_body("meme_protocol"),
+        {
+            "emotion_words": join_words(EMOTION_WORDS),
+            "scene_words": join_words(SCENE_WORDS),
+            "meme_frequency": "频率：闲聊时大约每五到八次回复用一次。",
+        },
+    )
     for word in EMOTION_WORDS + SCENE_WORDS:
         assert word in TAG_PROMPT
-        assert word in doc
+        assert word in rendered
 
 
 def test_empty_pack_ids_do_not_embed() -> None:

@@ -919,6 +919,15 @@ async def update_persona_config(
             return {"status": 1, "msg": msg, "data": None}
         results.append(f"allow_meme_reply: {allow_meme}")
 
+    if "meme_frequency" in data:
+        meme_frequency = data["meme_frequency"]
+        if isinstance(meme_frequency, bool) or not isinstance(meme_frequency, int):
+            return {"status": 1, "msg": "meme_frequency 必须是整数", "data": None}
+        success, msg = persona_config_manager.set_meme_frequency(persona_name, meme_frequency)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append(f"meme_frequency: {meme_frequency}")
+
     # 更新 enabled_tools（如果提供）
     if "enabled_tools" in data:
         enabled_tools = data["enabled_tools"]

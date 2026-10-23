@@ -33,6 +33,7 @@
   "log.persona.default_prompt_group_synced": "[Persona] Wrote the bundled default system-prompt group into the data directory",
   "log.persona.prompt_group_bound": "[Persona] Set the system-prompt group of '{persona_name}' to '{group}'",
   "log.persona.chat_style_set": "[PersonaConfig] Set the speech intensity of '{persona_name}' to {chat_style}",
+  "log.persona.meme_frequency_set": "[PersonaConfig] Set the meme frequency of '{persona_name}' to {value}",
   "log.persona.speech_len_soft_set": "[PersonaConfig] Set the suggested length of '{persona_name}' to {count}",
   "log.persona.prompt_group_unreadable": "[Persona] Cannot read system-prompt group '{name}'; this turn uses the bundled default text: {e}"
 }

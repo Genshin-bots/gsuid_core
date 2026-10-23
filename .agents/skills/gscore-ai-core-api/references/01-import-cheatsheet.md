@@ -166,7 +166,7 @@ from gsuid_core.ai_core.buildin_tools import (
 
     # --- Common 工具 (category="common") --- 向量检索按需
     search_image, get_self_persona_info, set_user_favorability, create_subagent,
-    send_meme, collect_meme, search_meme,
+    collect_meme, search_meme,
     list_scheduled_tasks, query_scheduled_task, modify_scheduled_task,
     cancel_scheduled_task, pause_scheduled_task, resume_scheduled_task,
     create_persistent_agent_tool, send_agent_task_tool, list_agents_tool, stop_agent_tool,

@@ -11,7 +11,6 @@ _KERNEL_REQUIRED = (
     "search_cognition",
     "create_subagent",
     "capability_map",
-    "send_meme",
     "send_message_by_ai",
     "read_handle",
     "dispute_directive",
@@ -113,3 +112,5 @@ def test_kernel_family_close_skips_attach_article() -> None:
     assert "add_once_task" in names
     assert "attach_article" not in names
     assert "list_scheduled_tasks" not in names
+    assert "send_meme" not in MAIN_AGENT_CORE_TOOLS
+    assert "send_meme" not in names

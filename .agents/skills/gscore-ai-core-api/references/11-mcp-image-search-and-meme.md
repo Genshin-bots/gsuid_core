@@ -374,9 +374,10 @@ md = await fetch_webpage_as_markdown("https://example.com")
 
 | 工具 | category | 说明 |
 |------|----------|------|
-| `send_meme` | `buildin` | 根据情绪/场景智能选取并发送表情包 |
-| `collect_meme` | `buildin` | 手动收集表情包入库 |
-| `search_meme` | `buildin` | 搜索表情包库 |
+| `collect_meme` | `common` | 手动收集表情包入库 |
+| `search_meme` | `common` | 搜索表情包库；主人格隐藏，回想走 `search_cognition` |
+
+主人格发表情只写回复里的 `<meme:情绪>` 或 `<meme:情绪 场景>`，没有 `send_meme` 工具。
 
 三个工具的完整签名见 [§7.3 Common 工具](./07-builtin-tools.md)。
 

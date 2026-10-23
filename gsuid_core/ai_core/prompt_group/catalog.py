@@ -65,8 +65,8 @@ SPECS: tuple[PromptSpec, ...] = (
         "meme_protocol",
         "会话·系统提示",
         "表情协议",
-        "人格打开「允许表情回复」时写入系统提示。情绪词和场景词由程序填入。",
-        ("emotion_words", "scene_words"),
+        "人格打开「允许表情回复」时写入系统提示。情绪词和场景词由程序填入。{{meme_frequency}} 由人格的表情频率决定。",
+        ("emotion_words", "scene_words", "meme_frequency"),
     ),
     PromptSpec(
         "closing",
@@ -240,10 +240,15 @@ def default_body(key: str) -> str:
         return TOOL_ORCHESTRATION_CONSTRAINTS
     if key == "meme_protocol":
         return (
-            "想用表情时，单独写一行 `<meme:情绪>`，或 `<meme:情绪 场景>`。\n"
+            "发表情只有一种写法：单独写一行 `<meme:情绪>`，或 `<meme:情绪 场景>`。\n"
             "情绪只能是：{{emotion_words}}。\n"
             "场景可以不写，只能是：{{scene_words}}。\n"
-            "按这句话的意思选。不要每句都发。可以只写这一行，也可以这一行后面再写一句台词。"
+            "适合发：被夸、被逗、被调侃；对方先发了表情或图；打招呼、早安、晚安、道谢、道歉；"
+            "只想表达情绪、不需要给信息的回应；安慰人、缓和尴尬。\n"
+            "不发：查资料、交付结果、讲正事、回答要准确的问题；拒绝不当请求；对方认真求助时。\n"
+            "{{meme_frequency}}\n"
+            "一条回复最多一个表情。表情不算台词字数，也不是括号动作。"
+            "可以只写这一行，也可以这一行后面再写一句台词。"
         )
     if key == "date_line":
         return _DATE_LINE

@@ -616,7 +616,7 @@ _SCHEDULER_PROMPT = """你只做**自然语言时间 → AIScheduledTask** 的�
 _PLUGIN_DEV_DELIVERY_BOUNDARY = """【交付边界 · 向主人格交付，绝不直接发用户】
 - 你是被主人格派出的执行者，不持有「和主人对话」的下行通道：把最终结论（插件名 /
   命令清单 / 文件清单 / 加载结果）作为函数返回值交回，主人格会用自己的口吻转告主人。
-- **禁止**调用 `send_message_by_ai` / `send_meme` 这类直接下发的工具。
+- **禁止**调用 `send_message_by_ai` 或写 `<meme:>` 表情标记这类直接下发的路径。
 - 你的可写目标是**工作区**（scaffold_plugin 起骨架 + write_file_content 写代码）；
   只有 copy_to_plugin_dir 在主人审批通过后才把插件落进 plugins/，别去改其它框架文件。"""
 

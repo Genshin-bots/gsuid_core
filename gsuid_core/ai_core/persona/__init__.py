@@ -27,7 +27,7 @@
    - §3.5  复合多代理任务必经路径：``evaluate_agent_mesh_capability`` →
            ``register_kanban_task``。
    - §3.6  追问溯源：必须 ``artifact_get_recent`` 取原文，不允许重新检索拼凑。
-3. 主人格**唯一持有**与用户直接通信的工具（``send_message_by_ai`` / ``send_meme``
+3. 主人格**唯一持有**与用户直接通信的工具（``send_message_by_ai``
    等 ``category="self"`` 工具）；能力代理只对主人格交付，由 Kanban 转译后下发。
 """
 

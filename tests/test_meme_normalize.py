@@ -129,3 +129,53 @@ def test_meme_tag_waits_one_second_before_send(monkeypatch: MonkeyPatch, tmp_pat
 
     asyncio.run(_send_meme_from_tag("开心", bot, ev))
     assert order == ["sleep:1.0", "send"]
+
+
+def test_meme_tag_splits_mood_and_scene(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    from gsuid_core.ai_core.utils import _send_meme_from_tag
+
+    picked: dict[str, object] = {}
+
+    async def _sleep(_seconds: float) -> None:
+        return None
+
+    async def _send(_msg: object, extra_metadata: object = None, **_k: object) -> None:
+        return None
+
+    async def _pick(**kwargs: object) -> tuple[object, str]:
+        picked.update(kwargs)
+        return SimpleNamespace(file_path="x.png", meme_id="m1", description="d"), ""
+
+    async def _read(_p: object) -> bytes:
+        return b"img"
+
+    async def _usage(_mid: object, _gid: object) -> None:
+        return None
+
+    async def _convert(_data: object) -> str:
+        return "base64://YQ=="
+
+    png = tmp_path / "x.png"
+    png.write_bytes(b"img")
+    ev = _ev()
+    bot = Bot(_Bot("meme-test"), ev)
+    monkeypatch.setattr(bot, "send", _send)
+    monkeypatch.setattr("gsuid_core.ai_core.utils.asyncio.sleep", _sleep)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.config.persona_allows_meme_reply", lambda _name: True)
+    monkeypatch.setattr("gsuid_core.ai_core.meme.selector.pick", _pick)
+    monkeypatch.setattr("gsuid_core.ai_core.meme.library._read_file", _read)
+    monkeypatch.setattr("gsuid_core.ai_core.meme.library.get_memes_base_path", lambda: tmp_path)
+    monkeypatch.setattr("gsuid_core.ai_core.meme.database_model.AiMemeRecord.record_usage", _usage)
+    monkeypatch.setattr("gsuid_core.ai_core.utils.convert_img", _convert)
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.buildin_tools.meme_tools._get_persona_for_event",
+        lambda _ev: "早柚",
+    )
+
+    asyncio.run(_send_meme_from_tag("害羞，卖萌", bot, ev))
+    assert picked["mood"] == "害羞"
+    assert picked["scene"] == "卖萌"
+    picked.clear()
+    asyncio.run(_send_meme_from_tag("害羞,卖萌", bot, ev))
+    assert picked["mood"] == "害羞"
+    assert picked["scene"] == "卖萌"

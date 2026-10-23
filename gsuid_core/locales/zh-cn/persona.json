@@ -33,6 +33,7 @@
   "log.persona.default_prompt_group_synced": "[Persona] 已将代码中的默认系统提示词组写回数据目录",
   "log.persona.prompt_group_bound": "[Persona] 已将 '{persona_name}' 的系统提示词组设为 '{group}'",
   "log.persona.chat_style_set": "[PersonaConfig] 已将 '{persona_name}' 的说话强度设为 {chat_style}",
+  "log.persona.meme_frequency_set": "[PersonaConfig] 已将 '{persona_name}' 的表情频率设为 {value}",
   "log.persona.speech_len_soft_set": "[PersonaConfig] 已将 '{persona_name}' 的建议字数设为 {count}",
   "log.persona.prompt_group_unreadable": "[Persona] 系统提示词组 '{name}' 读不出来，这一轮改用代码里的默认正文: {e}"
 }

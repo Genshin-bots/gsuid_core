@@ -403,6 +403,7 @@
   "log.ai.meme_mood_scene_persona": "[Meme] Send meme: {p0} (mood={mood}, scene={scene}, persona={persona_name})",
   "log.ai.meme_parsed_tags_cleaned": "[Meme] Parsed tags: {meme_tags}; cleaned text: {clean_text}",
   "log.ai.meme_tag_fail": "[Meme] Failed to send tag: {e}",
+  "log.ai.meme_tag_skip": "[Meme] Tag skipped: reason={reason} mood={mood} scene={scene}",
   "log.ai.meme_tag_triggered_mood": "[Meme] Tag triggered meme: {p0} (mood={mood})",
   "log.ai.meme_text_raw_output": "[Meme] Raw output: {text}",
   "log.ai.memory_compute_preference_related_fail": "[Memory] Failed to compute preference-related capability domains; degraded to correction+general only: {e}",

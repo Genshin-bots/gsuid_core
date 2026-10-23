@@ -403,6 +403,7 @@
   "log.ai.meme_mood_scene_persona": "[Meme] ミーム送信: {p0} (mood={mood}, scene={scene}, persona={persona_name})",
   "log.ai.meme_parsed_tags_cleaned": "[Meme] 解析タグ: {meme_tags}、クリーンアップ後のテキスト: {clean_text}",
   "log.ai.meme_tag_fail": "[Meme] タグの送信に失敗しました: {e}",
+  "log.ai.meme_tag_skip": "[Meme] タグをスキップ: reason={reason} mood={mood} scene={scene}",
   "log.ai.meme_tag_triggered_mood": "[Meme] タグがミームをトリガーしました: {p0} (mood={mood})",
   "log.ai.meme_text_raw_output": "[Meme] 元の出力: {text}",
   "log.ai.memory_compute_preference_related_fail": "[Memory] 好み関連能力領域の計算に失敗しました。訂正 + general のみにフォールバックします: {e}",

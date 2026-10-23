@@ -181,12 +181,32 @@ def test_answer_contract_covers_both_directions_and_is_persona_neutral() -> None
     assert not any(word in ANSWER_CONTRACT for word in banned), f"契约句泄漏人设/业务词: {ANSWER_CONTRACT}"
 
 
-def test_answer_contract_is_rendered_into_persona_prompt() -> None:
+def test_answer_contract_is_rendered_into_persona_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     """契约须真正进 system 稳定前缀，否则改了等于没改。"""
-    from gsuid_core.ai_core.persona.processor import build_persona_prompt
-    from gsuid_core.ai_core.persona.chat_style import ANSWER_CONTRACT
+    from gsuid_core.ai_core.persona import processor
+    from gsuid_core.ai_core.persona.chat_style import ANSWER_CONTRACT, ChatStyle
 
-    prompt = asyncio.run(build_persona_prompt("评测助手"))
+    async def fake_load(_name: str) -> str:
+        return "测"
+
+    async def fake_date(format: str = "") -> str:
+        return "2026年10月23日"
+
+    monkeypatch.setattr(processor, "load_persona", fake_load)
+    monkeypatch.setattr(processor, "get_current_date", fake_date)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.appearance.load_appearance_line", lambda _name: "")
+    monkeypatch.setattr("gsuid_core.ai_core.persona.settings.get_master_title", lambda _name: "")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.persona.chat_style.resolve_chat_style",
+        lambda _name: ChatStyle(bubbles=2, soft=60, hard=150, segment_hint="一段"),
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.agent_node.registry.format_capability_roster", lambda _name: "")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.agent_node.registry.persona_allows_capability_agent",
+        lambda _name, _node: False,
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.persona.config.persona_allows_meme_reply", lambda _name: False)
+    prompt = asyncio.run(processor.build_persona_prompt("测"))
     assert ANSWER_CONTRACT in prompt, "作答完整度契约未注入人格 prompt"
 
 

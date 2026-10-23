@@ -33,6 +33,7 @@
   "log.persona.default_prompt_group_synced": "[Persona] コード上の既定システムプロンプト組をデータディレクトリへ書き戻した",
   "log.persona.prompt_group_bound": "[Persona] '{persona_name}' のシステムプロンプト組を '{group}' にした",
   "log.persona.chat_style_set": "[PersonaConfig] '{persona_name}' の話し方の強さを {chat_style} にした",
+  "log.persona.meme_frequency_set": "[PersonaConfig] '{persona_name}' の表情頻度を {value} にした",
   "log.persona.speech_len_soft_set": "[PersonaConfig] '{persona_name}' の目安字数を {count} にした",
   "log.persona.prompt_group_unreadable": "[Persona] システムプロンプト組 '{name}' を読めない。この回はコード上の既定本文を使う: {e}"
 }

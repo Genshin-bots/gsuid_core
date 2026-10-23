@@ -383,7 +383,7 @@ async def _persona_relay(
                 "「交给谁发」、流程说明。"
             )
 
-        base: str = await build_persona_prompt(task.persona_name)
+        base: str = await build_persona_prompt(task.persona_name, include_meme_protocol=False)
         # 启用 SubAgent 日志：转译过程要进 generator_log_files，由 emitter
         # 挂到主 session 的 linked_agents 上做事后审计。
         relay_session_id: str = f"kanban_relay_{task.id[:8]}_{int(time.time())}"

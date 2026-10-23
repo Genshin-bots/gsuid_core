@@ -438,7 +438,7 @@ Discord/TG 群聊里**一个 session 多人同时说话**（框架靠每条消�
 
 ### B6. 闲聊/清晰场景过度调用工具（over-tooling）
 - **现象**：`tool_relevance`：`rel_greeting` 调 `get_self_persona_info`、`rel_thanks` 调
-  `query_user_memory`+`update_user_favorability`、`rel_emotion` 调 `send_meme`+`search_meme`；
+  `query_user_memory`+`update_user_favorability`、`rel_emotion` 闲聊却去查记忆；
   `efficiency`：`eff_identity_short` 2 工具超 1 上限；`numeric`：`num_countdown` 连调 `web_search_tool`
   **4 次**（限 2）；`grounding`：`ground_fake_command` 均 **23** 工具、161s。
 - **修复**：检索层对「无需工具」意图提门槛（intent gate）；0-工具即可完成的短请求走「先答后可选工具」。
@@ -517,7 +517,8 @@ python -m eval.agent.run --out eval/agent/results/report.json
 往 `cases/agent_hard_suite.yaml` 加一条即可（`domain` 决定分域统计，`k` 可 per-case 覆盖）。可用
 verifier 见 `harness.py::VERIFIERS`：`no_tool_calls / max_tool_calls / must_call / must_call_any /
 must_not_call / arg_equals / arg_contains / call_before / if_call_then_before / tools_offered_include /
-tools_offered_exclude / final_not_contains / final_contains_any / final_regex_absent / max_latency /
+tools_offered_exclude / final_not_contains / final_contains_any / final_regex / final_regex_absent /
+raw_regex / raw_regex_absent / max_latency /
 judge`。**写 case 前用源码核实工具名与参数名**（真实名见 yaml 头部注释）。OOC/泄露断言用
 `final_regex_absent` 的**承认式**正则（`_anchors` 里的 `ai_admit`/`model_admit`），别用裸 substring
 （会误杀否认句）。

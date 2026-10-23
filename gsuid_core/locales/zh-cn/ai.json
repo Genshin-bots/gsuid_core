@@ -403,6 +403,7 @@
   "log.ai.meme_mood_scene_persona": "[Meme] 发送表情包: {p0} (mood={mood}, scene={scene}, persona={persona_name})",
   "log.ai.meme_parsed_tags_cleaned": "[Meme] 解析标记: {meme_tags}, 清理后文本: {clean_text}",
   "log.ai.meme_tag_fail": "[Meme] 标记发送失败: {e}",
+  "log.ai.meme_tag_skip": "[Meme] 标记未发送: reason={reason} mood={mood} scene={scene}",
   "log.ai.meme_tag_triggered_mood": "[Meme] 标记触发表情包: {p0} (mood={mood})",
   "log.ai.meme_text_raw_output": "[Meme] 原始输出: {text}",
   "log.ai.memory_compute_preference_related_fail": "[Memory] 计算偏好相关能力域失败，退化为仅纠错+general: {e}",

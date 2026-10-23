@@ -34,7 +34,6 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 | 工具 | 来源 | 说明 |
 |---|---|---|
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
-| ``send_meme`` | ``meme_tools.py`` | 按情绪从库里发一张表情包 |
 | ``add_once_task`` | ``scheduler.py`` | 一次性定时任务（通道核入口） |
 | ``add_interval_task`` | ``scheduler.py`` | 周期定时任务（通道核入口） |
 
@@ -236,9 +235,8 @@ from gsuid_core.ai_core.buildin_tools.self_info import (
 # 网页抓取工具 - 抓取网页内容并转换为Markdown
 from gsuid_core.ai_core.buildin_tools.web_fetch import web_fetch_tool
 
-# 表情包工具 - 发送/收藏/搜索表情包
+# 表情包工具 - 收藏/搜索表情包
 from gsuid_core.ai_core.buildin_tools.meme_tools import (
-    send_meme,
     search_meme,
     collect_meme,
 )
@@ -397,7 +395,6 @@ __all__ = [
     # 群成员称呼 / 身份
     "remember_user_alias",
     # 表情包工具
-    "send_meme",
     "collect_meme",
     "search_meme",
     # AI日期工具

@@ -600,6 +600,8 @@ Authorization: Bearer <token>
 | aside_text_probability | number | 命令补充：回复只有文字时补一句的概率，0 到 1。默认 0.35 |
 | aside_mixed_probability | number | 命令补充：图文都有时补一句的概率，0 到 1。默认 0.25 |
 | aside_allow_tools | boolean | 命令补充能否使用工具（含阅读这条命令所属插件目录）。默认 false |
+| allow_meme_reply | boolean | 是否允许表情回复。打开后系统提示写入 `<meme:情绪>` 协议；关掉后不写这段，也不发送表情。默认 true |
+| meme_frequency | integer | 表情频率，0 到 100，默认 50。只改系统提示里的频率说明：0–24 少用，25–74 适中，75–100 常用。不限流，也不影响选图 |
 
 > 历史字段 `pre_tool_expressions`（工具前摇台词）已废弃：框架不再播报固定台词，
 > 耗时工具前的告知改由 Agent 按系统约束用角色口吻自行组织。已有配置中的该字段会被忽略。
@@ -655,6 +657,8 @@ Content-Type: application/json
 | aside_text_probability | number | 否 | 命令补充只发文字时的概率，0 到 1 |
 | aside_mixed_probability | number | 否 | 命令补充图文混合时的概率，0 到 1 |
 | aside_allow_tools | boolean | 否 | 命令补充是否允许使用工具 |
+| allow_meme_reply | boolean | 否 | 是否允许表情回复 |
+| meme_frequency | integer | 否 | 表情频率，0 到 100。只改系统提示里的频率说明 |
 
 **响应**：
 ```json

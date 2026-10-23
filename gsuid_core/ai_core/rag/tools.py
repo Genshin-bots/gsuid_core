@@ -342,7 +342,6 @@ GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
 # 插件滥用 category="self" 的不进核；检索按「本轮未暴露」召回，不再按分类一刀切。
 _SELF_CATEGORY_WHITELIST: Set[str] = {
     "send_message_by_ai",
-    "send_meme",
     "record_meme",
     "add_once_task",
     "add_interval_task",

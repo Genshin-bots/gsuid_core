@@ -10,7 +10,7 @@ description: >
   "MCP Server 怎么鉴权 / 过滤导出工具 / 补 Event 会话字段"、
   "ToolContext / ToolBase / KnowledgePoint / ImageEntity 是什么类型"、
   "buildin 都有哪些内置工具"、"get_registered_tools / get_all_tools 怎么查"、
-  "send_meme / collect_meme / understand_image / web_search 怎么用"时触发此 SKILL。
+  "collect_meme / understand_image / web_search 怎么用"时触发此 SKILL。
   对所有「插件作者要对接 AI Core 提供的 API」的任务都应优先读取此 SKILL。
 
   GsCore（早柚核心 / gsuid-core）`gsuid_core/ai_core/` 模块的完整 API 速查手册。
