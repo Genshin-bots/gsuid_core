@@ -74,15 +74,20 @@ async def _do_tavily_search(
         include_answer=True,
         include_raw_content=False,
         include_images=True,
+        include_published_date=True,
     )
 
     results = []
     for item in response.get("results", []):
+        published = ""
+        if "published_date" in item and item["published_date"] is not None:
+            published = str(item["published_date"]).strip()
         results.append(
             {
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
                 "content": item.get("content", ""),
+                "published_date": published,
                 "score": item.get("score", 0.0),
             }
         )
@@ -102,6 +107,7 @@ async def _do_tavily_search(
                 "title": "(配图)",
                 "url": u,
                 "content": "",
+                "published_date": "",
                 "score": 0.0,
                 "image_url": u,
                 "kind": "image",
@@ -136,15 +142,20 @@ async def _do_tavily_search_with_context(
         include_answer=True,
         include_raw_content=False,
         include_images=True,
+        include_published_date=True,
     )
 
     results = []
     for item in response.get("results", []):
+        published = ""
+        if "published_date" in item and item["published_date"] is not None:
+            published = str(item["published_date"]).strip()
         results.append(
             {
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
                 "content": item.get("content", ""),
+                "published_date": published,
                 "score": item.get("score", 0.0),
             }
         )
@@ -163,6 +174,7 @@ async def _do_tavily_search_with_context(
                 "title": "(配图)",
                 "url": u,
                 "content": "",
+                "published_date": "",
                 "score": 0.0,
                 "image_url": u,
                 "kind": "image",

@@ -140,7 +140,16 @@ def _normalize_results(data: object, max_results: int, need_content: bool) -> li
         if not title and not url and not content:
             continue
         score = _parse_score(item)
-        out.append({"title": title, "url": url, "content": content, "score": score})
+        published = _first_str(item, "date")
+        out.append(
+            {
+                "title": title,
+                "url": url,
+                "content": content,
+                "published_date": published,
+                "score": score,
+            }
+        )
         if len(out) >= max_results:
             break
     return out

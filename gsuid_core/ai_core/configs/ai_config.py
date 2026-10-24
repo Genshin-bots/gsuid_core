@@ -106,9 +106,10 @@ AI_CONFIG: Dict[str, GSC] = {
     "webfetch_provider": GsStrConfig(
         "网页抓取服务提供方（主用）",
         "Jina：经 r.jina.ai 读取（API Key 可选）；DeepSeek：经 DeepSeek Fetch API 抓取；"
+        "Exa：经 Exa Contents 读取这个 URL 的正文（用 exa_config 的 Key）；"
         "local：本机直连抓取并转 Markdown。多源策略非「无」时，失败会按备用顺序切换",
         "Jina",
-        options=["Jina", "DeepSeek", "local"],
+        options=["Jina", "DeepSeek", "Exa", "local"],
     ),
     "webfetch_lb_strategy": GsStrConfig(
         "网页抓取多源策略",
@@ -120,7 +121,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "网页抓取备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用）。默认 local",
         ["local"],
-        options=["Jina", "DeepSeek", "local"],
+        options=["Jina", "DeepSeek", "Exa", "local"],
     ),
     "render_image_sources": GsListStrConfig(
         "出图配图来源",
@@ -683,12 +684,6 @@ EXA_CONFIG: Dict[str, GSC] = {
         "指定每次搜索的最大返回结果数量",
         10,
         options=[5, 10, 15, 20],
-    ),
-    "search_type": GsStrConfig(
-        "搜索类型",
-        "指定搜索类型，neural 为语义搜索（更智能），keyword 为关键词搜索（更精确）",
-        "neural",
-        options=["neural", "keyword"],
     ),
 }
 

@@ -274,7 +274,7 @@ async def web_fetch_tool(
 ) -> str
 ```
 
-> 默认 **Jina Reader**（`r.jina.ai`，Key 可选）+ 备用 **local** 本机直连；
+> 默认 **Jina Reader**（`r.jina.ai`，Key 可选）。可选 DeepSeek、Exa Contents、**local** 本机直连；
 > 字段 `webfetch_provider` / `webfetch_lb_strategy` / `webfetch_fallback_order` 与搜索同构。
 > 空正文或抛错会触发换源；外层 `timeout=100`。详见 [§11.3b](./11-mcp-image-search-and-meme.md)。
 > 成功返回同样前缀 `[source=web|staleness_risk=high]\n…`（时效契约同源）。

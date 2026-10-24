@@ -139,7 +139,7 @@ from gsuid_core.ai_core.web_search.search import (
 )
 
 from gsuid_core.ai_core.web_fetch import (
-    fetch_webpage_as_markdown,  # 统一抓取（Jina 默认 + local 备用）
+    fetch_webpage_as_markdown,  # 统一抓取（Jina 默认；可选 DeepSeek / Exa / local）
 )
 ```
 

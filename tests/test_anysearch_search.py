@@ -101,6 +101,7 @@ def test_normalize_official_rest_envelope() -> None:
     assert isinstance(url, str)
     assert url.startswith("https://")
     assert hits[0]["content"] == "Cleaned-up body"
+    assert hits[0]["published_date"] == ""
     assert hits[0]["score"] == 0.0
 
 

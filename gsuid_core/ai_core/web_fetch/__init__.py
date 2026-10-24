@@ -1,9 +1,14 @@
 """
 Web Fetch 模块
 
-提供网页内容抓取并转换为 Markdown 格式的功能。
-使用 aiohttp 进行异步 HTTP 请求，使用 BeautifulSoup 清理 HTML，
-使用 markdownify 将 HTML 转换为 Markdown。
+提供网页内容抓取并转换为文本格式的功能。
+支持 Jina、DeepSeek、Exa Contents 与本机 aiohttp 等多源提供方。
+
+注意：不同提供方返回的文本格式有所差异：
+- Jina Reader 与 local 模式返回结构化的 Markdown 文本；
+- Exa Contents 或 DeepSeek 抓取返回经过服务端清洗提取的网页正文文本（纯文本），
+  并不一定包含 Markdown 标记（如二级标题、超链接等）。
+调用方应按网页文本处理，勿强假设其包含 Markdown 语法结构。
 
 运行时参数（proxy / timeout / UA 等）来自 ``web_fetch_config``
 （``data/ai_core/web_fetch_config.json``，控制台「AI 基本配置 → 网页抓取」可改）。
@@ -18,6 +23,7 @@ import itertools
 import threading
 from typing import Any, Dict, List, Tuple, Optional
 
+import httpx
 import aiohttp
 from bs4 import Comment, BeautifulSoup
 from markdownify import markdownify as md
@@ -30,6 +36,7 @@ from gsuid_core.ai_core.configs.ai_config import (
     deepseek_config,
     web_fetch_config,
 )
+from gsuid_core.ai_core.web_search.exa_search import exa_fetch_markdown
 
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -132,11 +139,13 @@ def _normalize_fetch_provider(raw: Any) -> str:
         return "DeepSeek"
     if lowered in ("local", "direct", "aiohttp") or s == "local":
         return "local"
+    if lowered == "exa" or s == "Exa":
+        return "Exa"
     return "Jina"
 
 
 def _webfetch_provider() -> str:
-    """主用源：local | Jina | DeepSeek；控制台热改，无需重启。默认 Jina。"""
+    """主用源：local | Jina | DeepSeek | Exa；控制台热改，无需重启。默认 Jina。"""
     raw = ai_config.get_config("webfetch_provider", "Jina").data
     return _normalize_fetch_provider(raw)
 
@@ -540,6 +549,8 @@ async def _invoke_fetch_provider(
         return await _fetch_via_jina(url, max_md)
     if provider == "DeepSeek":
         return await _fetch_via_deepseek(url, max_md)
+    if provider == "Exa":
+        return await exa_fetch_markdown(url, max_md)
     return await _fetch_via_local(url, timeout=timeout, max_length=max_length)
 
 
@@ -549,18 +560,22 @@ async def fetch_webpage_as_markdown(
     max_length: Optional[int] = None,
 ) -> str:
     """
-    抓取指定 URL 的网页内容并转换为 Markdown 格式。
+    抓取指定 URL 的网页内容并转换为文本格式。
 
-    按 ``webfetch_provider`` + ``webfetch_lb_strategy`` 在 Jina / DeepSeek / local 间切换或分流。
+    按 ``webfetch_provider`` + ``webfetch_lb_strategy`` 在 Jina / DeepSeek / Exa / local 间切换或分流。
     配置热读，控制台修改后无需重启。
+
+    注意：
+        Jina 与 local 模式输出 Markdown 格式；Exa Contents 与 DeepSeek 等提供方返回清洗后的
+        网页正文纯文本，并不保证带有 Markdown 标记。返回内容均适于模型阅读与提炼。
 
     Args:
         url: 要抓取的网页 URL
         timeout: 请求超时（秒）；``None`` 时读配置（默认 20）
-        max_length: 返回 Markdown 最大字符数；``None`` 时读配置
+        max_length: 返回文本最大字符数；``None`` 时读配置
 
     Returns:
-        转换后的 Markdown 文本内容
+        网页正文文本内容（通常为 Markdown 或清洗后的纯文本）
 
     Raises:
         ValueError: URL 无效、响应异常、网络/超时失败
@@ -591,7 +606,7 @@ async def fetch_webpage_as_markdown(
                     )
                 )
             return result
-        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, OSError, httpx.HTTPError) as e:
             errors.append(f"{provider}: {e}")
             logger.warning(
                 t(

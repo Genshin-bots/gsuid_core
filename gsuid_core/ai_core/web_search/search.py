@@ -17,6 +17,8 @@ import itertools
 import threading
 from typing import Any
 
+import httpx
+
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.mcp.utils import (
@@ -33,6 +35,7 @@ from gsuid_core.ai_core.configs.ai_config import (
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
+from .date_utils import normalize_published_date
 from .exa_search import exa_search
 from .jina_search import jina_search, jina_search_configured
 from .tavily_search import (
@@ -56,6 +59,17 @@ _DEFAULT_PROVIDER_ORDER = ("AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Exa"
 
 class ProviderEmptyResultError(RuntimeError):
     """提供方返回空结果，供多源策略切换下一源。"""
+
+
+# httpx.HTTPError 覆盖连接失败和超时。Exa SDK 不把它们收成 ValueError。
+_FAILOVER_ERRORS = (
+    RuntimeError,
+    ProviderEmptyResultError,
+    TypeError,
+    ValueError,
+    OSError,
+    httpx.HTTPError,
+)
 
 
 def _get_provider() -> str:
@@ -180,6 +194,7 @@ def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> l
                 "title": "",
                 "url": "",
                 "content": sanitize_mcp_text(raw_text, max_chars=_MAX_MCP_RAW_CHARS),
+                "published_date": "",
                 "score": 0.0,
             }
         ]
@@ -217,16 +232,24 @@ def _parse_mcp_search_result(raw_text: str, max_results: int | None = None) -> l
             else:
                 content = ""
             score = item["score"] if "score" in item else 0.0
+            published = ""
+            for key in ("published_date", "publishedDate", "date"):
+                if key in item and item[key] is not None:
+                    published = normalize_published_date(item[key])
+                    if published:
+                        break
+                    published = ""
             normalized.append(
                 {
                     "title": title,
                     "url": url,
                     "content": content,
+                    "published_date": published,
                     "score": score,
                 }
             )
         else:
-            normalized.append({"title": str(item), "url": "", "content": "", "score": 0.0})
+            normalized.append({"title": str(item), "url": "", "content": "", "published_date": "", "score": 0.0})
 
     return normalized
 
@@ -323,7 +346,7 @@ async def web_search(
                     )
                 )
             return results
-        except (RuntimeError, ProviderEmptyResultError, TypeError, ValueError, OSError) as e:
+        except _FAILOVER_ERRORS as e:
             errors.append(f"{provider}: {e}")
             logger.warning(
                 t(
@@ -378,7 +401,7 @@ async def web_search_with_context(
                     )
                 )
             return result
-        except (RuntimeError, ProviderEmptyResultError, TypeError, ValueError, OSError) as e:
+        except _FAILOVER_ERRORS as e:
             errors.append(f"{provider}: {e}")
             logger.warning(
                 t(

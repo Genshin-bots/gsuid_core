@@ -104,6 +104,7 @@ def test_normalize_deepseek_search_results() -> None:
                 "snippet": "News snippet",
                 "summary": "",
                 "content": "",
+                "date": "2026-06-01T00:00:00+00:00",
             },
             {"title": "", "url": "", "snippet": "", "summary": "", "content": ""},
         ]
@@ -116,7 +117,9 @@ def test_normalize_deepseek_search_results() -> None:
     assert hits_no_content[0]["url"] == "https://api-docs.deepseek.com"
     assert hits_no_content[0]["content"] == "Long model-readable summary for LLM"
     assert hits_no_content[0]["score"] == 2.85
+    assert hits_no_content[0]["published_date"] == ""
     assert hits_no_content[1]["content"] == "News snippet"
+    assert hits_no_content[1]["published_date"] == "2026-06-01T00:00:00+00:00"
     assert hits_no_content[1]["score"] == 1.5
 
     # 当 need_content=True 时，优先使用 content 全文
