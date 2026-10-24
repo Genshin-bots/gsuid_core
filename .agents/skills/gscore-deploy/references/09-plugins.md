@@ -151,7 +151,7 @@ credential / username / could not read / terminal prompts disabled
 > 自动更新**仅同步代码**，依赖变更（`pyproject.toml` 加了新包）需要手动
 > `uv sync`，否则 ImportError。
 >
-> 启动加载插件时，缺失依赖按 `UV_DEFAULT_INDEX` 装进当前环境（见
+> 启动加载插件时，缺失依赖按 `UV_DEFAULT_INDEX` 装进当前环境；未设置时用 uv / pip 自身配置的索引（见
 > [十二、§12.3](./12-docker.md#123-env-配置详解)）。Git 镜像源不参与这一步。
 
 ## 9.8 插件加载流程
