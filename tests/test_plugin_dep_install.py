@@ -1,4 +1,4 @@
-"""插件补依赖与 uv 共用 UV_DEFAULT_INDEX，失败不换源。"""
+"""插件补依赖与 uv 共用 UV_DEFAULT_INDEX，失败不换源；未设置时交给 uv / pip 自身配置。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 
 from gsuid_core import server
 
-_OFFICIAL = "https://pypi.org/simple"
 _MIRROR = "https://mirror.example/simple/"
 _UV = "C:/tools/uv.exe"
 _OLD_HOSTS = (
@@ -49,16 +48,20 @@ def _run(
     return calls
 
 
-def _uv_argv(index: str, packages: list[str], upgrade: bool) -> list[str]:
-    argv = [_UV, "pip", "install", "--python", sys.executable, "--default-index", index]
+def _uv_argv(index: str | None, packages: list[str], upgrade: bool) -> list[str]:
+    argv = [_UV, "pip", "install", "--python", sys.executable]
+    if index is not None:
+        argv.extend(["--default-index", index])
     if upgrade:
         argv.append("--upgrade")
     argv.extend(packages)
     return argv
 
 
-def _pip_argv(index: str, packages: list[str], upgrade: bool) -> list[str]:
-    argv = [sys.executable, "-m", "pip", "install", "--index-url", index]
+def _pip_argv(index: str | None, packages: list[str], upgrade: bool) -> list[str]:
+    argv = [sys.executable, "-m", "pip", "install"]
+    if index is not None:
+        argv.extend(["--index-url", index])
     if upgrade:
         argv.append("--upgrade")
     argv.extend(packages)
@@ -68,16 +71,16 @@ def _pip_argv(index: str, packages: list[str], upgrade: bool) -> list[str]:
 @pytest.mark.parametrize(
     ("index", "expected"),
     [
-        (None, _OFFICIAL),
-        ("", _OFFICIAL),
-        ("   ", _OFFICIAL),
+        (None, None),
+        ("", None),
+        ("   ", None),
         (_MIRROR, _MIRROR),
     ],
 )
 def test_uv_install_uses_one_index(
     monkeypatch: pytest.MonkeyPatch,
     index: str | None,
-    expected: str,
+    expected: str | None,
 ) -> None:
     packages = ["demo-pkg>=1", "other"]
     calls = _run(monkeypatch, uv=_UV, index=index, packages=packages, upgrade=True)
@@ -117,7 +120,7 @@ def test_pip_network_failure_does_not_change_index(monkeypatch: pytest.MonkeyPat
 
 def test_pip_bootstraps_ensurepip_once(monkeypatch: pytest.MonkeyPatch) -> None:
     packages = ["demo-pkg"]
-    pip_cmd = _pip_argv(_OFFICIAL, packages, False)
+    pip_cmd = _pip_argv(None, packages, False)
     calls = _run(
         monkeypatch,
         uv=None,
