@@ -11,10 +11,11 @@
 新表加在自身子模块即可，无需改本文件。
 """
 
-from gsuid_core.ai_core.database.models import UserFavorability
+from gsuid_core.ai_core.database.models import UserFavorability, AIAutonomyActivity
 from gsuid_core.ai_core.database.outbound import OutboundAudit, DeliveryLedger
 
 __all__ = [
+    "AIAutonomyActivity",
     "UserFavorability",
     "OutboundAudit",
     "DeliveryLedger",

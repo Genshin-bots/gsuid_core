@@ -75,6 +75,11 @@ MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
 _ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
 
 
+def interactive_llm_in_use() -> bool:
+    # Semaphore 没有公开的占用数。_value 是剩余许可，小于上限说明聊天还占着槽。
+    return _ai_semaphore._value < MAX_CONCURRENT_AI_CALLS
+
+
 @dataclass
 class InteractiveTurnResult:
     """``run_interactive_turn`` 的一轮结果。评测入口据此组 HTTP，生产入口据此出站。"""
@@ -384,6 +389,12 @@ async def run_interactive_turn(
         _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
 
+    from gsuid_core.ai_core.autonomy.dispatch import ack_autonomy_merge, peek_autonomy_merge
+
+    merge_line = peek_autonomy_merge(event)
+    if merge_line:
+        user_messages = [*user_messages, merge_line]
+
     chat_result = await session.run(
         user_message=user_messages,
         bot=bot,
@@ -400,6 +411,8 @@ async def run_interactive_turn(
     )
 
     result_text, is_silence, is_error = classify_run_result(chat_result)
+    if merge_line and not is_silence and not is_error:
+        ack_autonomy_merge(event)
     if turn_graph.quoted_tome and is_silence and not session.last_run_sent_visible_reply and event.user_id:
         revoke_fresh_hard_trigger(event.session_id, str(event.user_id))
     if is_silence and soft_triggered and event.user_id:

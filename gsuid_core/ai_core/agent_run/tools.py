@@ -741,6 +741,11 @@ class ToolsPhase(RunOnceHost):
 
         for extra_tool in aside_extra_tools():
             st.tools.append(extra_tool)
+        if self.create_by == "Autonomy":
+            from gsuid_core.ai_core.autonomy.tools import autonomy_tool_allowed
+
+            # 钩子不能把发送或高危工具塞回自主行动。
+            st.tools = [tool for tool in st.tools if autonomy_tool_allowed(tool.name)]
         st.tools = list({obj.name: obj for obj in st.tools}.values())
         st.tool_names = [t.name for t in st.tools]
         st.exposed_tool_names = list(st.tool_names)

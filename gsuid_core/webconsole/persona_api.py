@@ -819,6 +819,10 @@ async def update_persona_config(
             from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
 
             start_heartbeat_inspector()
+        if "自主行动" in ai_mode:
+            from gsuid_core.ai_core.autonomy.scheduler import autonomy_scheduler
+
+            await autonomy_scheduler.start()
 
     # 更新 inspect_interval（如果提供）
     if "inspect_interval" in data:
@@ -864,6 +868,26 @@ async def update_persona_config(
                 "data": None,
             }
         results.append(f"keywords: {keywords}")
+
+    from gsuid_core.ai_core.persona.config import autonomy_settings_from_mapping
+
+    autonomy_payload: dict[str, object] = {}
+    for autonomy_key in (
+        "active_hours",
+        "timezone",
+        "autonomy_interval_minutes",
+        "autonomy_care_min_zone",
+    ):
+        if autonomy_key in data:
+            autonomy_payload[autonomy_key] = data[autonomy_key]
+    autonomy_settings, autonomy_error = autonomy_settings_from_mapping(autonomy_payload)
+    if autonomy_error:
+        return {"status": 1, "msg": autonomy_error, "data": None}
+    if autonomy_settings is not None:
+        success, msg = persona_config_manager.set_autonomy_settings(persona_name, autonomy_settings)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append("autonomy")
 
     aside_fields = (
         "aside_image_probability",

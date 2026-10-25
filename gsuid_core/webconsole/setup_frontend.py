@@ -57,6 +57,7 @@ def _import_webconsole_apis() -> None:
         kanban_api,
         persona_api,
         ai_tools_api,
+        autonomy_api,
         ai_memory_api,
         ai_skills_api,
         ai_wizard_api,

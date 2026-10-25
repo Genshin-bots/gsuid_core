@@ -1081,6 +1081,7 @@ _CREATE_BY_CATALOG: Dict[str, Tuple[str, str, str]] = {
     "BuildPersona": ("人格构建", "构建 / 更新 AI 人格设定", "persona"),
     "Heartbeat_Decision": ("心跳决策", "心跳机制判断是否主动发言", "heartbeat"),
     "Heartbeat_Output": ("心跳输出", "心跳机制生成主动发言内容", "heartbeat"),
+    "Autonomy": ("自主行动", "人格在作息内自己查一点东西或关心某人", "proactive"),
     "Reactive_Gate": ("续聊沉默门", "判断是否继续搭话还是保持沉默的软闸门", "heartbeat"),
     "MemeTagger": ("表情包打标", "为表情包生成描述与标签", "meme"),
     "MemCategorization": ("记忆分类", "对记忆进行分层图谱分类", "memory"),

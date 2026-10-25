@@ -177,7 +177,10 @@ RESOURCE_PATH/persona/{persona_name}/
 > 按 persona.md / config.json 的 mtime 自动刷新；写路径仍是本节的 PersonaConfigManager。
 > 详见 [`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../../docs/AGENT_NODE_UNIFICATION_20260707.md)。
 
-- **ai_mode**：`提及应答` / `定时巡检` / `命令补充` / `困境救场(暂不可用)`
+- **ai_mode**：`提及应答` / `定时巡检` / `命令补充` / `自主行动`
+- **自主行动**（默认关）：`active_hours` 与 `timezone` 同时挡住定时巡检。
+  间隔、步数、模型、关心温区、兴趣和每小时/每天主动上限只给自主行动用。
+  见 [§8.4](./08-heartbeat-scheduled-planning.md)。
 - **命令补充**（默认关）：命令回复发出后写入当前会话；`aside_image_probability` /
   `aside_text_probability` / `aside_mixed_probability` 为 0 到 1 的点评概率；
   `aside_allow_tools` 控制点评能不能用工具。概率未中也保留回执。见 [§04](./04-event-trigger-flow.md)。

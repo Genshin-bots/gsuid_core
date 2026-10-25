@@ -219,6 +219,13 @@ SPECS: tuple[PromptSpec, ...] = (
         "默认组每次启动从程序写回；要改这段，请复制一个提示词组再改。",
         ("plugin_label", "source_section", "memory_section", "tool_clause"),
     ),
+    PromptSpec(
+        "autonomy_system_guide",
+        "自主行动",
+        "自主行动",
+        "人格空闲时自己观察和行动使用。正文不含当天时间和具体业务词。",
+        (),
+    ),
 )
 
 _SPEC_BY_KEY: dict[str, PromptSpec] = {spec.key: spec for spec in SPECS}
@@ -280,6 +287,10 @@ def default_body(key: str) -> str:
         from gsuid_core.ai_core.command_aside.prompt import ASIDE_COMMENT_BODY
 
         return ASIDE_COMMENT_BODY
+    if key == "autonomy_system_guide":
+        from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
+
+        return AUTONOMY_SYSTEM_GUIDE
     if key == "soft_trigger":
         from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE
 

@@ -659,5 +659,13 @@
   "log.ai.command_aside_skip": "[命令补充] スキップ：{reason} session={session_id}",
   "log.ai.command_aside_source_read": "[命令补充] ソースを読んだ session={session_id} plugin={plugin} files={files}",
   "log.ai.command_aside_memory_hit": "[命令补充] 記憶が当たった session={session_id} plugin={plugin}",
-  "log.ai.reactive_gate_outcome": "[続聊沈黙門] 判定結果: {outcome}, 理由: {reason}"
+  "log.ai.reactive_gate_outcome": "[続聊沈黙門] 判定結果: {outcome}, 理由: {reason}",
+  "log.ai.active_hours_skip": "[自主行動] {persona_name} は活動時間外のため {kind} をスキップ",
+  "log.ai.autonomy_tick_skip": "[自主行動] {persona_name} をスキップ：{reason}",
+  "log.ai.autonomy_run_start": "[自主行動] {persona_name} を開始",
+  "log.ai.autonomy_run_done": "[自主行動] {persona_name} 動力={drive} 交付={delivery}",
+  "log.ai.autonomy_run_fail": "[自主行動] {persona_name} 失敗: {e}",
+  "log.ai.autonomy_scheduler_start": "[自主行動] スケジューラを起動した",
+  "log.ai.autonomy_scheduler_stop": "[自主行動] スケジューラを停止した",
+  "log.ai.autonomy_bind_skip": "[自主行動] バインド表 {plugin} の読取に失敗: {e}"
 }

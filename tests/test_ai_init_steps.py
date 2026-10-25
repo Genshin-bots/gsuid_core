@@ -28,6 +28,7 @@ def test_init_steps_order_is_stable() -> None:
         "MCP 工具",
         "Meme",
         "统计",
+        "自主行动",
         "MCP Server",
         "命令执行",
     ]

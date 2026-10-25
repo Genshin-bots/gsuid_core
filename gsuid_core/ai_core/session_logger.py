@@ -116,7 +116,7 @@ if TYPE_CHECKING:
     )
 
 # 主动消息来源枚举，供 webconsole 与前端复用
-ProactiveSource = Literal["heartbeat", "scheduled_task", "kanban", "tool"]
+ProactiveSource = Literal["heartbeat", "scheduled_task", "kanban", "tool", "autonomy"]
 
 # history_reset entry 的 data.reason（供前端区分色块），各 reason 语义见 log_history_reset：
 # user_clear=用户清空、persona_switch=人格热切换、auto_compact=Agent 自动裁剪超长历史。

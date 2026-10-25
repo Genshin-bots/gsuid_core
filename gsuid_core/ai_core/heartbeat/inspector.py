@@ -22,7 +22,12 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.persona.config import persona_config_manager, persona_should_inspect_session
+from gsuid_core.ai_core.persona.config import (
+    read_autonomy_runtime,
+    is_within_active_hours,
+    persona_config_manager,
+    persona_should_inspect_session,
+)
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
 
 # 并发控制：最多同时进行 5 个 LLM 调用
@@ -141,10 +146,15 @@ class HeartbeatInspector:
 
     async def _inspect_all_sessions_for_persona(self, persona_name: str) -> None:
         """巡检所有与指定 persona 相关的会话"""
+        config = persona_config_manager.get_config(persona_name)
+        runtime = read_autonomy_runtime(config)
+        if not is_within_active_hours(list(runtime.active_hours), runtime.timezone):
+            logger.info(t("log.ai.active_hours_skip", persona_name=persona_name, kind="定时巡检"))
+            return
+
         logger.info(t("log.ai.heartbeat_persona_name_periodic_start_2", persona_name=persona_name))
 
         # 获取该 persona 配置的 target_groups
-        config = persona_config_manager.get_config(persona_name)
         scope = config.get_config("scope").data
         target_groups = config.get_config("target_groups").data
 

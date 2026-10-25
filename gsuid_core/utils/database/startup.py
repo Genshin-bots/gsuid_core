@@ -181,6 +181,8 @@ exec_list = [
     "ALTER TABLE aiknowledgechunk ADD COLUMN chunker_id VARCHAR(32) DEFAULT '';",
     "ALTER TABLE aimemerecord ADD COLUMN pending_pack_id VARCHAR(36) DEFAULT '';",
     "ALTER TABLE aimemerecord ADD COLUMN assign_default_pack BOOLEAN DEFAULT 0;",
+    # 旧库的自主行动审计没有会话号。create_all 不给已有表补列。
+    "ALTER TABLE aiautonomyactivity ADD COLUMN session_id VARCHAR(256) DEFAULT '';",
 ]
 
 

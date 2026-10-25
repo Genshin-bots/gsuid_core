@@ -11,14 +11,14 @@ from typing import Any, Set, Dict, List, Optional
 from collections.abc import Sequence
 
 from sqlmodel import Field, SQLModel, col, or_, and_, case, delete, select, update
-from sqlalchemy import Text, Column, UniqueConstraint, func
+from sqlalchemy import Text, Index, Column, UniqueConstraint, func, tuple_
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.base_models import BaseModel, with_session, with_read_session
+from gsuid_core.utils.database.base_models import BaseModel, BaseIDModel, with_session, with_read_session
 
 
 def _clamp_favor(value: int) -> int:
@@ -180,6 +180,25 @@ class UserFavorability(BaseModel, table=True):
         )
         rows = (await session.execute(list_stmt)).scalars().all()
         return list(rows), total
+
+    @classmethod
+    @with_read_session
+    async def list_at_least(
+        cls,
+        session: AsyncSession,
+        min_score: int,
+        *,
+        limit: int = 50,
+    ) -> List["UserFavorability"]:
+        """分数不低于 ``min_score`` 的行，高分在前。自主行动用它圈关心对象。"""
+        page_limit = limit if 1 <= limit <= 200 else 50
+        stmt = (
+            select(cls)
+            .where(col(cls.favorability) >= min_score)
+            .order_by(col(cls.favorability).desc(), col(cls.last_interaction_time).desc(), col(cls.id).desc())
+            .limit(page_limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
     @with_session
@@ -653,3 +672,220 @@ class AIKnowledgeChunk(SQLModel, table=True):
             # delete().where 只收 ColumnElement，裸比较在这里是 bool。
             await session.execute(delete(cls).where(col(cls.doc_id) == doc_id))
         return qids
+
+
+class AIAutonomyActivity(BaseIDModel, table=True):
+    """自主行动审计。表名 ``aiautonomyactivity``。
+
+    一行是一次实际跑过的行动（含休息和失败）。作息外跳过不写行。
+    """
+
+    __table_args__ = (
+        Index("ix_aiautonomyactivity_persona_created", "persona_name", "created_at"),
+        Index(
+            "ix_aiautonomyactivity_care",
+            "persona_name",
+            "drive_kind",
+            "target_user_id",
+            "created_at",
+        ),
+    )
+
+    persona_name: str = Field(default="", index=True, max_length=128)
+    bot_id: str = Field(default="", max_length=64)
+    bot_self_id: str = Field(default="", max_length=64)
+    drive_kind: str = Field(default="rest", max_length=32)
+    target_user_id: str = Field(default="", max_length=64)
+    target_session_key: str = Field(default="", max_length=256)
+    plugins_used_json: str = Field(default="[]", sa_column=Column(Text, nullable=False))
+    steps_json: str = Field(default="[]", sa_column=Column(Text, nullable=False))
+    fact_pack_json: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+    summary: str = Field(default="", sa_column=Column(Text, nullable=False))
+    open_trails_json: str = Field(default="[]", sa_column=Column(Text, nullable=False))
+    delivery_mode: str = Field(default="silent_only", max_length=32)
+    step_count: int = Field(default=0)
+    duration_ms: int = Field(default=0)
+    # 空串表示没有可跳转的会话日志（休息，或这条记录更早）。
+    session_id: str = Field(default="", max_length=256)
+    created_at: float = Field(default=0.0, index=True)
+
+    @classmethod
+    @with_session
+    async def insert_activity(
+        cls,
+        session: AsyncSession,
+        *,
+        persona_name: str,
+        bot_id: str,
+        bot_self_id: str,
+        drive_kind: str,
+        target_user_id: str,
+        target_session_key: str,
+        plugins_used_json: str,
+        steps_json: str,
+        fact_pack_json: str,
+        summary: str,
+        open_trails_json: str,
+        delivery_mode: str,
+        step_count: int,
+        duration_ms: int,
+        session_id: str,
+        created_at: float,
+    ) -> int:
+        row = cls(
+            persona_name=persona_name[:128],
+            bot_id=bot_id[:64],
+            bot_self_id=bot_self_id[:64],
+            drive_kind=drive_kind[:32],
+            target_user_id=target_user_id[:64],
+            target_session_key=target_session_key[:256],
+            plugins_used_json=plugins_used_json,
+            steps_json=steps_json,
+            fact_pack_json=fact_pack_json,
+            summary=summary[:2000],
+            open_trails_json=open_trails_json,
+            delivery_mode=delivery_mode[:32],
+            step_count=step_count,
+            duration_ms=duration_ms,
+            session_id=session_id[:256],
+            created_at=created_at,
+        )
+        session.add(row)
+        await session.flush()
+        row_id = row.id
+        return row_id if isinstance(row_id, int) else 0
+
+    @classmethod
+    @with_read_session
+    async def list_recent_by_persona(
+        cls,
+        session: AsyncSession,
+        persona_name: str,
+        *,
+        limit: int = 20,
+    ) -> List["AIAutonomyActivity"]:
+        page = limit if 1 <= limit <= 100 else 20
+        stmt = (
+            select(cls)
+            .where(col(cls.persona_name) == persona_name)
+            .order_by(col(cls.created_at).desc(), col(cls.id).desc())
+            .limit(page)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def user_ids_cared_since(
+        cls,
+        session: AsyncSession,
+        persona_name: str,
+        since: float,
+    ) -> List[str]:
+        stmt = (
+            select(col(cls.target_user_id))
+            .where(
+                col(cls.persona_name) == persona_name,
+                col(cls.drive_kind) == "care_user",
+                col(cls.created_at) >= since,
+            )
+            .distinct()
+        )
+        found: List[str] = []
+        for raw in (await session.execute(stmt)).scalars().all():
+            if isinstance(raw, str) and raw.strip():
+                found.append(raw.strip())
+        return found
+
+    @classmethod
+    @with_read_session
+    async def latest_created_at(
+        cls,
+        session: AsyncSession,
+        persona_name: str,
+    ) -> Optional[float]:
+        stmt = select(func.max(col(cls.created_at))).where(col(cls.persona_name) == persona_name)
+        value = (await session.execute(stmt)).scalar_one_or_none()
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    @classmethod
+    @with_read_session
+    async def read_feed(
+        cls,
+        session: AsyncSession,
+        *,
+        persona_name: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[Sequence["AIAutonomyActivity"], int, Sequence["AIAutonomyActivity"], List[str]]:
+        """跨人格的最近行动。``latest`` 每人一行；``names`` 不受筛选影响。"""
+        page = limit if 1 <= limit <= 100 else 30
+        skip = offset if offset > 0 else 0
+        name = persona_name.strip()
+        conds: List[ColumnElement[bool]] = []
+        if name:
+            conds.append(col(cls.persona_name) == name)
+        count_stmt = select(func.count()).select_from(cls)
+        list_stmt = select(cls)
+        if conds:
+            filt = and_(*conds)
+            count_stmt = count_stmt.where(filt)
+            list_stmt = list_stmt.where(filt)
+        raw_total = (await session.execute(count_stmt)).scalar_one()
+        total = raw_total if isinstance(raw_total, int) else 0
+        list_stmt = list_stmt.order_by(col(cls.created_at).desc(), col(cls.id).desc()).offset(skip).limit(page)
+        items = list((await session.execute(list_stmt)).scalars().all())
+        latest = await _latest_activity_rows(session, name)
+        names = await _activity_persona_names(session)
+        return items, total, latest, names
+
+
+def first_row_per_persona(rows: Sequence[AIAutonomyActivity]) -> List[AIAutonomyActivity]:
+    """同一人格只留第一行。调用方须已按时间、id 倒序。"""
+    seen: Set[str] = set()
+    found: List[AIAutonomyActivity] = []
+    for row in rows:
+        if row.persona_name in seen:
+            continue
+        seen.add(row.persona_name)
+        found.append(row)
+    return found
+
+
+async def _activity_persona_names(session: AsyncSession) -> List[str]:
+    stmt = select(col(AIAutonomyActivity.persona_name)).distinct().order_by(col(AIAutonomyActivity.persona_name))
+    found: List[str] = []
+    for raw in (await session.execute(stmt)).scalars().all():
+        if isinstance(raw, str) and raw.strip():
+            found.append(raw.strip())
+    return found
+
+
+async def _latest_activity_rows(session: AsyncSession, persona_name: str) -> List[AIAutonomyActivity]:
+    # 同一秒可能有两行。倒序后 first_row_per_persona 只留 id 更大的那行。
+    if persona_name:
+        stmt = (
+            select(AIAutonomyActivity)
+            .where(col(AIAutonomyActivity.persona_name) == persona_name)
+            .order_by(col(AIAutonomyActivity.created_at).desc(), col(AIAutonomyActivity.id).desc())
+            .limit(1)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+    pair_stmt = select(col(AIAutonomyActivity.persona_name), func.max(col(AIAutonomyActivity.created_at))).group_by(
+        col(AIAutonomyActivity.persona_name)
+    )
+    pairs: List[tuple[str, float]] = []
+    for raw in (await session.execute(pair_stmt)).all():
+        persona = raw[0]
+        stamp = raw[1]
+        if isinstance(persona, str) and persona and isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+            pairs.append((persona, float(stamp)))
+    if not pairs:
+        return []
+    matched = (
+        select(AIAutonomyActivity)
+        .where(tuple_(col(AIAutonomyActivity.persona_name), col(AIAutonomyActivity.created_at)).in_(pairs))
+        .order_by(col(AIAutonomyActivity.created_at).desc(), col(AIAutonomyActivity.id).desc())
+    )
+    return first_row_per_persona(list((await session.execute(matched)).scalars().all()))

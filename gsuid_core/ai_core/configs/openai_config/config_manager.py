@@ -205,8 +205,8 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
             "OpenAI 兼容接口的视频输入格式: file(兼容 LiteLLM / Gemini 中转) 或 "
             "video_url(适配 MiMo / 阿里百炼 / OpenRouter 等全模态模型, 仅 chat_completions 生效)"
         ),
-        data="file",
-        options=["file", "video_url"],
+        data="video_url",
+        options=["video_url", "file"],
     ),
     "video_fps": GsFloatConfig(
         title="视频采样帧率",

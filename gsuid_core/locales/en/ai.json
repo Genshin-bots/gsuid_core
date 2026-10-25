@@ -659,5 +659,13 @@
   "log.ai.command_aside_skip": "[命令补充] Skipped: {reason} session={session_id}",
   "log.ai.command_aside_source_read": "[命令补充] Read source session={session_id} plugin={plugin} files={files}",
   "log.ai.command_aside_memory_hit": "[命令补充] Memory hit session={session_id} plugin={plugin}",
-  "log.ai.reactive_gate_outcome": "[Reactive Gate] Outcome: {outcome}, reason: {reason}"
+  "log.ai.reactive_gate_outcome": "[Reactive Gate] Outcome: {outcome}, reason: {reason}",
+  "log.ai.active_hours_skip": "[Autonomy] {persona_name} is outside active hours, skip {kind}",
+  "log.ai.autonomy_tick_skip": "[Autonomy] Skip {persona_name}: {reason}",
+  "log.ai.autonomy_run_start": "[Autonomy] Start {persona_name}",
+  "log.ai.autonomy_run_done": "[Autonomy] {persona_name} drive={drive} delivery={delivery}",
+  "log.ai.autonomy_run_fail": "[Autonomy] {persona_name} failed: {e}",
+  "log.ai.autonomy_scheduler_start": "[Autonomy] Scheduler started",
+  "log.ai.autonomy_scheduler_stop": "[Autonomy] Scheduler stopped",
+  "log.ai.autonomy_bind_skip": "[Autonomy] Bind table {plugin} failed: {e}"
 }

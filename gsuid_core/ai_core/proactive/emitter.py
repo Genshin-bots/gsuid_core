@@ -38,7 +38,7 @@ from gsuid_core.ai_core.session_logger import ProactiveSource
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
 # 旧 dispatcher.register_send 兼容字面量集合。
-LegacyDispatcherSource = Literal["heartbeat", "task"]
+LegacyDispatcherSource = Literal["heartbeat", "task", "autonomy"]
 
 
 def _resolve_active_bot(event: Event) -> Optional["_Bot"]:
@@ -229,8 +229,13 @@ async def emit_proactive_message(
     )
 
     # 5) 网关登记发送记录，用于抑制 Heartbeat 频次及收集合并语境。
-    legacy_source: LegacyDispatcherSource = "heartbeat" if source == "heartbeat" else "task"
-    summary: str = out_msg if source in ("scheduled_task", "heartbeat") else ""
+    if source == "heartbeat":
+        legacy_source: LegacyDispatcherSource = "heartbeat"
+    elif source == "autonomy":
+        legacy_source = "autonomy"
+    else:
+        legacy_source = "task"
+    summary: str = out_msg if source in ("scheduled_task", "heartbeat", "autonomy") else ""
     dispatcher.register_send(target_key, legacy_source, summary)
 
     logger.info(

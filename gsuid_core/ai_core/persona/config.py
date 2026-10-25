@@ -10,8 +10,13 @@ Persona 配置管理模块
 群聊+私聊都要覆盖时用 ``global``，不要拆成两个专属全局人格。
 """
 
+import re
 from typing import Dict, List, Optional, FrozenSet
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from dataclasses import dataclass
+from collections.abc import Mapping
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -40,22 +45,75 @@ GLOBAL_LIKE_SCOPES = frozenset({"global", "global_group", "global_private"})
 ASIDE_MODE = "命令补充"
 # 改名前写进人格配置的名字。读到时仍算开启。
 ASIDE_MODE_ALIASES = frozenset({"余韵点评", "命令接话"})
+AUTONOMY_MODE = "自主行动"
+AUTONOMY_MODE_ALIASES = frozenset({"自由活动"})
+RETIRED_AI_MODES = frozenset({"困境救场(暂不可用)", "困境救场"})
 AI_MODE_OPTIONS = [
     "提及应答",
     "定时巡检",
     ASIDE_MODE,
-    "困境救场(暂不可用)",
+    AUTONOMY_MODE,
 ]
+_ACTIVE_WINDOW = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
 
 
 def normalize_ai_modes(modes: list[str]) -> list[str]:
-    """把改名前的模式名收成现在的名字，并去掉重复。"""
+    """把改名前的模式名收成现在的名字，并去掉已经下线的项。"""
     out: list[str] = []
     for mode in modes:
-        item = ASIDE_MODE if mode in ASIDE_MODE_ALIASES else mode
+        if mode in RETIRED_AI_MODES:
+            continue
+        if mode in ASIDE_MODE_ALIASES:
+            item = ASIDE_MODE
+        elif mode in AUTONOMY_MODE_ALIASES:
+            item = AUTONOMY_MODE
+        else:
+            item = mode
         if item not in out:
             out.append(item)
     return out
+
+
+def parse_active_window(text: str) -> tuple[int, int] | None:
+    """返回开始、结束的当天分钟数。格式不对则返回 None。"""
+    matched = _ACTIVE_WINDOW.fullmatch(text.strip())
+    if matched is None:
+        return None
+    start = int(matched.group(1)) * 60 + int(matched.group(2))
+    end = int(matched.group(3)) * 60 + int(matched.group(4))
+    return start, end
+
+
+def is_within_active_hours(
+    active_hours: list[str],
+    tz_name: str,
+    now: datetime | None = None,
+) -> bool:
+    """作息闭区间。跨午夜用「晚于开始或早于结束」。全非法或时区无效则视为不在作息内。"""
+    zone_name = tz_name.strip()
+    if not active_hours or not zone_name:
+        return False
+    try:
+        zone = ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        return False
+    clock = datetime.now(zone) if now is None else now
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=zone)
+    else:
+        clock = clock.astimezone(zone)
+    minute = clock.hour * 60 + clock.minute
+    for raw in active_hours:
+        parsed = parse_active_window(raw) if isinstance(raw, str) else None
+        if parsed is None:
+            continue
+        start, end = parsed
+        if start <= end:
+            if start <= minute <= end:
+                return True
+        elif minute >= start or minute <= end:
+            return True
+    return False
 
 
 def global_channels_for_scope(scope: str) -> FrozenSet[str]:
@@ -162,6 +220,29 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         [],
         options=[],
     ),
+    "active_hours": GsListStrConfig(
+        "作息时段",
+        "HH:MM-HH:MM，可多段，可跨午夜。时段外不巡检，也不自主行动。",
+        ["08:00-23:30"],
+        options=[],
+    ),
+    "timezone": GsStrConfig(
+        "作息时区",
+        "IANA 时区名，例如 Asia/Shanghai。",
+        "Asia/Shanghai",
+    ),
+    "autonomy_interval_minutes": GsIntConfig(
+        "自主行动间隔（分钟）",
+        "两次自主行动的最短间隔。实际触发会在此基础上上下浮动两成。",
+        45,
+        max_value=720,
+    ),
+    "autonomy_care_min_zone": GsStrConfig(
+        "自主关心的最低温区",
+        "familiar 为熟络及以上，close 为仅亲密。主人始终包含。",
+        "familiar",
+        options=["familiar", "close"],
+    ),
     "speech_len_soft": GsIntConfig(
         "台词软上限（字）",
         "角色卡渲染的建议台词长度，默认 60。留默认即跟随「说话强度」派生",
@@ -224,6 +305,151 @@ def _effective_prompt_group(persona_name: str) -> str:
     from gsuid_core.ai_core.prompt_group.store import group_name_for_persona
 
     return group_name_for_persona(persona_name)
+
+
+@dataclass(frozen=True, slots=True)
+class AutonomyRuntime:
+    """读出来的自主行动配置。缺字段时用默认，坏掉的作息留空以便外面判为不在时段内。"""
+
+    active_hours: tuple[str, ...]
+    timezone: str
+    interval_minutes: int
+    care_min_zone: str
+
+
+@dataclass(frozen=True, slots=True)
+class AutonomySettings:
+    """只填要改的项。None 表示不动。"""
+
+    active_hours: list[str] | None = None
+    timezone: str | None = None
+    interval_minutes: int | None = None
+    care_min_zone: str | None = None
+
+
+def read_autonomy_runtime(config: StringConfig) -> AutonomyRuntime:
+    hours_raw = config.get_config("active_hours").data
+    hours: list[str] = []
+    if isinstance(hours_raw, list):
+        for item in hours_raw:
+            if isinstance(item, str) and parse_active_window(item) is not None:
+                hours.append(item.strip())
+    zone = _stored_str(config, "timezone", "Asia/Shanghai")
+    care = _stored_str(config, "autonomy_care_min_zone", "familiar")
+    if care not in {"familiar", "close"}:
+        care = "close"
+    return AutonomyRuntime(
+        active_hours=tuple(hours),
+        timezone=zone,
+        interval_minutes=_stored_int(config, "autonomy_interval_minutes", 45, 15, 720),
+        care_min_zone=care,
+    )
+
+
+def autonomy_settings_from_mapping(payload: Mapping[str, object]) -> tuple[AutonomySettings | None, str]:
+    """从控制台请求里取出要改的自主行动字段。没有这些键时返回 None。"""
+    if not any(key in payload for key in _AUTONOMY_PAYLOAD_KEYS):
+        return None, ""
+    hours, hours_error = _read_str_list(payload, "active_hours")
+    timezone, timezone_error = _read_str(payload, "timezone")
+    care, care_error = _read_str(payload, "autonomy_care_min_zone")
+    interval, interval_error = _read_int(payload, "autonomy_interval_minutes")
+    for error in (hours_error, timezone_error, care_error, interval_error):
+        if error:
+            return None, error
+    settings = AutonomySettings(
+        active_hours=hours,
+        timezone=timezone,
+        interval_minutes=interval,
+        care_min_zone=care,
+    )
+    return settings, autonomy_settings_error(settings)
+
+
+def autonomy_settings_error(settings: AutonomySettings) -> str:
+    if settings.active_hours is not None:
+        if not settings.active_hours:
+            return "作息至少要有一段"
+        for item in settings.active_hours:
+            if parse_active_window(item) is None:
+                return "作息时段要写成 HH:MM-HH:MM"
+    if settings.timezone is not None and not _zone_ok(settings.timezone):
+        return "时区名称无效"
+    if settings.interval_minutes is not None and not _in_int(settings.interval_minutes, 15, 720):
+        return "自主行动间隔要在 15 到 720 分钟"
+    if settings.care_min_zone is not None and settings.care_min_zone not in {"familiar", "close"}:
+        return "关心温区只能是 familiar 或 close"
+    return ""
+
+
+_AUTONOMY_PAYLOAD_KEYS = (
+    "active_hours",
+    "timezone",
+    "autonomy_interval_minutes",
+    "autonomy_care_min_zone",
+)
+
+
+def _read_str(payload: Mapping[str, object], key: str) -> tuple[str | None, str]:
+    if key not in payload:
+        return None, ""
+    value = payload[key]
+    if not isinstance(value, str):
+        return None, f"字段 {key} 必须是字符串"
+    return value, ""
+
+
+def _read_int(payload: Mapping[str, object], key: str) -> tuple[int | None, str]:
+    if key not in payload:
+        return None, ""
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, f"字段 {key} 必须是整数"
+    return value, ""
+
+
+def _read_str_list(payload: Mapping[str, object], key: str) -> tuple[list[str] | None, str]:
+    if key not in payload:
+        return None, ""
+    value = payload[key]
+    if not isinstance(value, list):
+        return None, f"字段 {key} 必须是字符串列表"
+    found: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return None, f"字段 {key} 必须是字符串列表"
+        found.append(item)
+    return found, ""
+
+
+def _zone_ok(name: str) -> bool:
+    try:
+        ZoneInfo(name.strip())
+    except ZoneInfoNotFoundError:
+        return False
+    return bool(name.strip())
+
+
+def _in_int(value: int, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _stored_str(config: StringConfig, key: str, default: str) -> str:
+    if key not in config.config:
+        return default
+    raw = config.get_config(key).data
+    return raw if isinstance(raw, str) else default
+
+
+def _stored_int(config: StringConfig, key: str, default: int, low: int, high: int) -> int:
+    if key not in config.config:
+        return default
+    raw = config.get_config(key).data
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return default
+    if raw < low or raw > high:
+        return default
+    return raw
 
 
 class PersonaConfigManager(ConfigSetManager):
@@ -421,6 +647,28 @@ class PersonaConfigManager(ConfigSetManager):
             return True, "ok"
         else:
             return False, "配置写入失败"
+
+    def set_autonomy_settings(self, persona_name: str, settings: AutonomySettings) -> tuple[bool, str]:
+        """保存自主行动和作息。任一字段不合法就整单不写。"""
+        error = autonomy_settings_error(settings)
+        if error:
+            return False, error
+        config = self.get_config(persona_name)
+        writes: list[tuple[str, str | int | list[str]]] = []
+        if settings.active_hours is not None:
+            writes.append(("active_hours", [item.strip() for item in settings.active_hours]))
+        if settings.timezone is not None:
+            writes.append(("timezone", settings.timezone.strip()))
+        if settings.interval_minutes is not None:
+            writes.append(("autonomy_interval_minutes", settings.interval_minutes))
+        if settings.care_min_zone is not None:
+            writes.append(("autonomy_care_min_zone", settings.care_min_zone))
+        for key, value in writes:
+            if not config.set_config(key, value):
+                return False, "配置写入失败"
+        if writes:
+            logger.info(t("log.persona.autonomy_config_updated", persona_name=persona_name))
+        return True, "ok"
 
     def set_aside_probability(self, persona_name: str, field: str, value: float) -> tuple[bool, str]:
         """命令补充的三种触发概率。field 是配置键，value 必须在 0 到 1。"""
@@ -746,12 +994,17 @@ class PersonaConfigManager(ConfigSetManager):
         from gsuid_core.ai_core.persona.meme_style import DEFAULT_MEME_FREQUENCY
 
         shape = speech_shape_spec()
+        autonomy = read_autonomy_runtime(config)
         return {
             "ai_mode": normalize_ai_modes(list(config.get_config("ai_mode").data)),
             "scope": config.get_config("scope").data,
             "target_groups": config.get_config("target_groups").data,
             "inspect_interval": config.get_config("inspect_interval").data,
             "keywords": config.get_config("keywords").data,
+            "active_hours": list(autonomy.active_hours),
+            "timezone": autonomy.timezone,
+            "autonomy_interval_minutes": autonomy.interval_minutes,
+            "autonomy_care_min_zone": autonomy.care_min_zone,
             "aside_image_probability": config.get_config("aside_image_probability").data,
             "aside_text_probability": config.get_config("aside_text_probability").data,
             "aside_mixed_probability": config.get_config("aside_mixed_probability").data,

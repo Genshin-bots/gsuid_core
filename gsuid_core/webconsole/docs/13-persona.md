@@ -591,7 +591,11 @@ Authorization: Bearer <token>
 **响应字段说明**：
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| ai_mode | array | AI行动模式列表，可选值："提及应答", "定时巡检", "命令补充", "困境救场(暂不可用)" |
+| ai_mode | array | AI行动模式列表，可选值："提及应答", "定时巡检", "命令补充", "自主行动" |
+| active_hours | array | 作息，如 `["08:00-23:30"]`。时段外不定时巡检，也不自主行动 |
+| timezone | string | IANA 时区，默认 `Asia/Shanghai` |
+| autonomy_interval_minutes | int | 自主行动冷却，15–720，默认 45 |
+| autonomy_care_min_zone | string | `familiar` 或 `close`。主人始终在关心名单里 |
 | scope | string | 启用范围：`disabled` / `global`（全部群+私聊） / `global_group`（仅全部群聊） / `global_private`（仅全部私聊） / `specific`（仅指定群聊/用户） |
 | target_groups | array | 当 scope 为 "specific" 时，指定该人格对哪些群聊/角色启用 |
 | inspect_interval | integer | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时有效，可选值：5, 10, 15, 30, 60 |

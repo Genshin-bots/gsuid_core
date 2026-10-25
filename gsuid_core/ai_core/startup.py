@@ -90,6 +90,12 @@ async def _init_statistics():
     await init_ai_core_statistics()
 
 
+async def _init_autonomy() -> None:
+    from gsuid_core.ai_core.autonomy.startup import init_autonomy
+
+    await init_autonomy()
+
+
 async def _init_mcp_server():
     from gsuid_core.ai_core.mcp.server import init_mcp_server
 
@@ -199,6 +205,7 @@ _INIT_STEPS = [
     ("MCP 工具", _init_mcp_tools),
     ("Meme", _init_meme),
     ("统计", _init_statistics),
+    ("自主行动", _init_autonomy),
     ("MCP Server", _init_mcp_server),
     ("命令执行", _init_command_exec),
 ]

@@ -659,5 +659,13 @@
   "log.ai.command_aside_skip": "[命令补充] 跳过：{reason} session={session_id}",
   "log.ai.command_aside_source_read": "[命令补充] 已读源码 session={session_id} plugin={plugin} files={files}",
   "log.ai.command_aside_memory_hit": "[命令补充] 命中记忆 session={session_id} plugin={plugin}",
-  "log.ai.reactive_gate_outcome": "[续聊沉默门] 判定结局: {outcome}, 原因: {reason}"
+  "log.ai.reactive_gate_outcome": "[续聊沉默门] 判定结局: {outcome}, 原因: {reason}",
+  "log.ai.active_hours_skip": "[自主行动] {persona_name} 不在作息内，跳过{kind}",
+  "log.ai.autonomy_tick_skip": "[自主行动] 跳过 {persona_name}：{reason}",
+  "log.ai.autonomy_run_start": "[自主行动] 开始 {persona_name}",
+  "log.ai.autonomy_run_done": "[自主行动] {persona_name} 动力={drive} 交付={delivery}",
+  "log.ai.autonomy_run_fail": "[自主行动] {persona_name} 失败: {e}",
+  "log.ai.autonomy_scheduler_start": "[自主行动] 调度已启动",
+  "log.ai.autonomy_scheduler_stop": "[自主行动] 调度已停止",
+  "log.ai.autonomy_bind_skip": "[自主行动] 读取绑定表 {plugin} 失败: {e}"
 }

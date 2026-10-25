@@ -552,6 +552,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `BuildPersona` | 人格构建 | persona |
 | `Heartbeat_Decision` | 心跳决策 | heartbeat |
 | `Heartbeat_Output` | 心跳输出 | heartbeat |
+| `Autonomy` | 自主行动 | proactive |
 | `MemeTagger` | 表情包打标 | meme |
 | `MemCategorization` | 记忆分类 | memory |
 | `MemGroupSummary` | 群记忆摘要 | memory |

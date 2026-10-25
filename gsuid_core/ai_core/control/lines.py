@@ -247,3 +247,25 @@ def ownership_line(ago: str, topic: str, who: str) -> str:
 def delivery_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
     """看板交付回灌。at_hint / title_ban 可为空。"""
     return f"[框架·任务完成]\n{delivery}\n（系统：一句收尾；有图就发出；要出图委派 render。{at_hint}{title_ban}）"
+
+
+AUTONOMY_MERGE_PREFIX = "（系统：你在空闲自主行动时完成了以下探索或关心行动："
+AUTONOMY_PROACTIVE_FACT_PREFIX = "（系统校验：以下是你本次自主行动真实执行成功的工具记录与返回结果："
+
+
+def autonomy_merge_line(fact_summary: str) -> str:
+    """路径 B 被下一句唤醒时，注入当轮 user 侧。"""
+    return (
+        f"{AUTONOMY_MERGE_PREFIX}{fact_summary}。"
+        "如果与当前对话气氛合适，可以在回复对方后自然地顺嘴提一句；若当前话题严肃或不相关，则不必强行提起。）"
+    )
+
+
+def autonomy_proactive_fact_line(facts: list[str], resources: list[str]) -> str:
+    """路径 A 只许复述这些已经核验过的结果。"""
+    joined_facts = "；".join(facts) if facts else "无"
+    res_hint = f"；可用图片资源 ID：{', '.join(resources)}" if resources else ""
+    return (
+        f"{AUTONOMY_PROACTIVE_FACT_PREFIX}{joined_facts}{res_hint}。"
+        "你只能基于上述已核验的事实向对方分享或关心，严禁声称完成了上述列表之外的任何操作。）"
+    )
