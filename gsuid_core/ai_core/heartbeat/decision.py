@@ -13,6 +13,7 @@ from gsuid_core.ai_core.utils import is_silence_marker, extract_json_from_text
 from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
+from gsuid_core.ai_core.base_prompts import join_framework_constraints
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.relationship import Zone, zone_of, zone_level_name
 from gsuid_core.ai_core.control.lines import MSG_SECTION_MARK
@@ -546,8 +547,9 @@ async def run_heartbeat(
         master_title=get_master_title(persona_name),
     )
 
+    speak_system_prompt = join_framework_constraints(persona_name, persona_text)
     output_agent: GsCoreAIAgent = create_agent(
-        persona_text,
+        speak_system_prompt,
         create_by="Heartbeat_Output",
         persona_name=persona_name,
         session_id=output_session_id,

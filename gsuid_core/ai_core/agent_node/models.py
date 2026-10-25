@@ -13,6 +13,8 @@ Persona 与能力代理（原 ``CapabilityAgentProfile``）在框架内同构为
 from typing import List, Literal
 from dataclasses import field, dataclass
 
+from ..base_prompts import join_framework_constraints
+
 PromptStyle = Literal["roleplay", "plain"]
 NodeSource = Literal["builtin", "plugin", "user", "persona"]
 
@@ -32,13 +34,10 @@ DELIVERY_BOUNDARY = """【交付边界 · 子任务向上游交付，绝不直�
 - Kanban 子任务的唯一可写目录是 Artifact Workspace；越界写入会被框架拒绝并
   累计违规，达上限直接判子任务 fail。"""
 
-# plain 风格入口节点（session-mode）的 lite 约束集：只保留安全底线，
+# plain 入口的会话约束。安全底线由 join_framework_constraints 附上。
 # 不注入 roleplay 向的人格 / 主人名单 / 群聊感知段落。
-PLAIN_SESSION_CONSTRAINTS = """【系统约束】
-- 用户ID仅供内部识别，绝不对外输出；@用户时使用 `@用户ID` 语法由框架解析。
-- 不虚构工具结果；工具失败时如实说明，不编造成功。
-- 多次只读用 `run_code` 汇总，代码里只查不写。
-- 输出面向用户，保持简洁；不要输出内部推理过程、工具调用参数或原始数据转储。"""
+PLAIN_SESSION_CONSTRAINTS = """【会话约束】
+- 多次只读用 `run_code` 汇总，代码里只查不写。"""
 
 
 @dataclass
@@ -85,10 +84,12 @@ def compose_task_prompt(node: AgentNode) -> str:
     return f"{node.prompt.rstrip()}\n\n{boundary}"
 
 
-def compose_plain_session_prompt(node: AgentNode) -> str:
+def compose_plain_session_prompt(node: AgentNode, persona_name: str | None = None) -> str:
     """plain 风格入口节点的 session-mode 系统提示词（lite 约束集）。
 
     roleplay 节点的 session 提示词仍由 ``persona.processor.build_persona_prompt``
     组装（含情绪 / 群语境 / 完整 SYSTEM_CONSTRAINTS），不经本函数。
+    框架底线读该人格的提示词组；不传人格时用默认组。
     """
-    return f"{node.prompt.rstrip()}\n\n{PLAIN_SESSION_CONSTRAINTS}"
+    body = f"{node.prompt.rstrip()}\n\n{PLAIN_SESSION_CONSTRAINTS}"
+    return join_framework_constraints(persona_name, body)

@@ -1719,6 +1719,9 @@ async def send_chat_result(
 
     # <br> 漏网已在 sanitize 落成换行；再统一其它 HTML 换行写法
     text = _normalize_html_linebreaks(text)
+    from gsuid_core.ai_core.outbound import rewrite_cq_at
+
+    text = rewrite_cq_at(text)
     _names = mention_names_from_event(ev)
     if mention_names:
         _names.update(mention_names)
@@ -1916,6 +1919,9 @@ def _parse_at_segments(text: str) -> list[Message]:
     - 示例输入："好哦 @100000001 你来看"
     - 示例输出：[Text("好哦 "), At(100000001), Text(" 你来看")]
     """
+    from gsuid_core.ai_core.outbound import rewrite_cq_at
+
+    text = rewrite_cq_at(text)
     # 匹配 @数字，前后允许空格（空格属于分隔符，不计入文本内容）
     pattern = re.compile(r"\s*@(\d+)\s*")
     segments: list[Message] = []
@@ -1927,9 +1933,7 @@ def _parse_at_segments(text: str) -> list[Message]:
         if before:
             segments.append(MessageSegment.text(before))
 
-        # @ 片段
-        user_id = match.group(1)
-        segments.append(MessageSegment.at(user_id))
+        segments.append(MessageSegment.at(match.group(1)))
 
         last_end = match.end()
 

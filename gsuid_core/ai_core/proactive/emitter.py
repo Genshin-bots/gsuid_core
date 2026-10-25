@@ -179,11 +179,12 @@ async def emit_proactive_message(
         "proactive_source": source,
         "trigger_reason": trigger_reason,
     }
+    from gsuid_core.ai_core.outbound import rewrite_cq_at, record_outbound, proactive_directed_target
     from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
     from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
     pname = persona_name_from_event(event)
-    out_msg = message
+    out_msg = rewrite_cq_at(message)
     if out_msg:
         _bag: Dict[str, object] = {}
         if pname:
@@ -207,7 +208,6 @@ async def emit_proactive_message(
             if not out_msg:
                 return False
     await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
-    from gsuid_core.ai_core.outbound import record_outbound, proactive_directed_target
 
     await record_outbound(
         ev=event,

@@ -8,6 +8,7 @@
 from .mood import get_mood_description
 from .resource import load_persona
 from .settings import get_master_title
+from ..base_prompts import join_framework_constraints
 from ..buildin_tools import get_current_date
 
 
@@ -82,7 +83,7 @@ async def build_persona_prompt(
 
     # 稳定前缀：人设 + 合规 + 工具编排。正文来自该人格绑定的提示词组。
     role = render_prompt(char_name, "role_playing_start")
-    constraints = _render_system_constraints(char_name)
+    constraints = join_framework_constraints(char_name, _render_system_constraints(char_name))
     tools = render_prompt(char_name, "tool_orchestration")
     date_line = render_prompt(char_name, "date_line", date=current_date)
     from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words

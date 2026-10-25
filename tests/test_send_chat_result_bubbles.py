@@ -39,9 +39,14 @@ def _plain_text(message: Union[Message, List[Message], str, bytes, List[str]]) -
     return out
 
 
-def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] = None) -> List[str]:
-    """跑一次 ``send_chat_result``，返回实际下发的气泡文本列表。"""
-    sent: List[str] = []
+def _drive(
+    text: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    bubbles: Optional[int] = None,
+) -> List[Union[Message, List[Message], str, bytes, List[str]]]:
+    """跑一次 ``send_chat_result``，返回每次 ``Bot.send`` 收到的原文。"""
+    sent: List[Union[Message, List[Message], str, bytes, List[str]]] = []
 
     async def _fake_send(
         self: Bot,
@@ -50,7 +55,7 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
         extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> None:
-        sent.append(_plain_text(message))
+        sent.append(message)
 
     monkeypatch.setattr(ai_utils.asyncio, "sleep", _no_sleep)
     monkeypatch.setattr("gsuid_core.ai_core.output_firewall.is_enabled", lambda: False)
@@ -59,6 +64,11 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
         monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda ev: bubbles)
     asyncio.run(ai_utils.send_chat_result(Bot.__new__(Bot), text, ev=None, ooc_check=False))
     return sent
+
+
+def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] = None) -> List[str]:
+    """跑一次 ``send_chat_result``，返回实际下发的气泡文本列表。"""
+    return [_plain_text(message) for message in _drive(text, monkeypatch, bubbles=bubbles)]
 
 
 # ── 一、空行必须活到拆条点（P0 根因的直接回归锁）────────────────────────────
@@ -116,6 +126,45 @@ def test_send_chat_result_clamps_to_persona_bubble_cap(monkeypatch: pytest.Monke
 def test_send_chat_result_single_block_sends_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """无空行的一整段只发 1 条。"""
     assert len(_run("就一句话。", monkeypatch)) == 1
+
+
+def _at_pairs(message: Union[Message, List[Message], str, bytes, List[str]]) -> list[tuple[str, str]]:
+    assert isinstance(message, list)
+    pairs: list[tuple[str, str]] = []
+    for seg in message:
+        assert isinstance(seg, Message)
+        assert isinstance(seg.type, str)
+        assert isinstance(seg.data, str)
+        pairs.append((seg.type, seg.data))
+    return pairs
+
+
+def test_send_chat_result_turns_cq_at_into_at_segment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """数字 QQ 的 CQ 码经出站整段变成 at，id 不留在正文。"""
+    sent = _drive("[CQ:at,qq=169629556,name=foo] 到时间啦", monkeypatch)
+    assert len(sent) == 1
+    assert _at_pairs(sent[0]) == [("at", "169629556"), ("text", "到时间啦")]
+
+
+def test_send_chat_result_two_cq_ats_become_two_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一条里两个数字 CQ at 都变成 at 段。"""
+    sent = _drive("[CQ:at,qq=10001] 和 [CQ:at,qq=10002] 都来", monkeypatch)
+    assert len(sent) == 1
+    assert _at_pairs(sent[0]) == [
+        ("at", "10001"),
+        ("text", "和"),
+        ("at", "10002"),
+        ("text", "都来"),
+    ]
+
+
+def test_send_chat_result_cq_at_all_stays_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """qq=all 不是数字 QQ，保持正文，不当成 at。"""
+    sent = _drive("[CQ:at,qq=all] 到时间啦", monkeypatch)
+    assert len(sent) == 1
+    pairs = _at_pairs(sent[0])
+    assert all(kind != "at" for kind, _data in pairs)
+    assert "CQ:at" not in _plain_text(sent[0])
 
 
 # ── 三、气泡上限随人格「说话强度」变化 ───────────────────────────────────────

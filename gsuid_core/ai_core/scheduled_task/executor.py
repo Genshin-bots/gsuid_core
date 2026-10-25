@@ -29,6 +29,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
 from .models import AIScheduledTask
+from ..base_prompts import join_framework_constraints
 
 TZ_SHANGHAI = timezone("Asia/Shanghai")
 
@@ -65,8 +66,7 @@ SCHEDULED_TASK_EXECUTOR_PROMPT = (
     "1. 任务指令中的发送条件/静默条款是硬约束：条件不满足时只输出 <SILENCE>，"
     "不输出任何其他内容。\n"
     "2. 需要发送时，你的输出就是将直接发给用户的消息本体：中性、简洁、信息完整，"
-    "不扮演角色、不加语气词。\n"
-    "3. 不要输出解释、执行过程或任务状态说明。"
+    "不扮演角色、不加语气词。"
 )
 
 
@@ -186,8 +186,13 @@ async def execute_scheduled_task(task_id: str) -> None:
 
         from gsuid_core.ai_core.prompt_group.store import render_prompt
 
+        exec_prompt = join_framework_constraints(
+            task.persona_name,
+            render_prompt(task.persona_name, "scheduled_executor"),
+        )
+
         sub_agent: GsCoreAIAgent = create_agent(
-            system_prompt=render_prompt(task.persona_name, "scheduled_executor"),
+            system_prompt=exec_prompt,
             persona_name=None,
             create_by="ScheduledTask_Exec",
             session_id=exec_session_id,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from gsuid_core.ai_core.base_prompts import FRAMEWORK_CORE_CONSTRAINTS
 from gsuid_core.ai_core.persona.prompts import (
     ROLE_PLAYING_START,
     SYSTEM_CONSTRAINTS,
@@ -47,6 +48,13 @@ class PromptSpec:
 
 # 入戏、外貌包装、日期行、能力代理标题和花名册包装是程序固定句，不进编辑页。
 SPECS: tuple[PromptSpec, ...] = (
+    PromptSpec(
+        "framework_core",
+        "会话·系统提示",
+        "框架底线",
+        "主人格、定时任务执行体和巡检发言会附上这一段。留空则不附。默认组每次启动从程序写回。",
+        (),
+    ),
     PromptSpec(
         "system_constraints",
         "会话·系统提示",
@@ -226,6 +234,8 @@ def spec_of(key: str) -> PromptSpec:
 
 def default_body(key: str) -> str:
     """代码里的默认正文。默认组运行时读这里，不读磁盘上被人改过的副本。"""
+    if key == "framework_core":
+        return FRAMEWORK_CORE_CONSTRAINTS
     if key == "role_playing_start":
         return ROLE_PLAYING_START
     if key == "appearance_line":

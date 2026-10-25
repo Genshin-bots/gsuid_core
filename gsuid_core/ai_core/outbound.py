@@ -81,7 +81,15 @@ def reset_run_image_delivered() -> None:
 
 # 与 send 路径的 @数字 对齐，并收带数字的平台 ID。纯单词 @the 不是接收人。
 _AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
+_CQ_AT_RE = re.compile(r"\[CQ:at\s*,\s*qq=([^,\]\s]+)(?:,[^\]]*)?\]")
 _DELIVERY_TASK_TITLE_RE = re.compile(r"任务#\d+「([^」]+)」")
+
+
+def rewrite_cq_at(text: str) -> str:
+    """把 [CQ:at,qq=ID] 收成 @ID。出站解析、主动消息历史、话题标题共用。"""
+    if not text:
+        return text
+    return _CQ_AT_RE.sub(r"@\1 ", text)
 
 
 def _clean_topic_head(raw: str, max_len: int = 12) -> str:
@@ -91,7 +99,7 @@ def _clean_topic_head(raw: str, max_len: int = 12) -> str:
     m = _DELIVERY_TASK_TITLE_RE.search(s)
     if m is not None:
         s = m.group(1).strip()
-    s = _AT_ID_RE.sub("", s).strip()
+    s = _AT_ID_RE.sub("", rewrite_cq_at(s)).strip()
     head = s.split("\n", 1)[0].strip()
     return head[:max_len]
 
@@ -155,7 +163,7 @@ def proactive_directed_target(event: Event, message: str) -> str:
     没有点名时不要把 Event.user_id 写成接收人，否则下一条别人的话会被记成发给这个人。
     """
     if event.group_id:
-        matched = _AT_ID_RE.search(message or "")
+        matched = _AT_ID_RE.search(rewrite_cq_at(message or ""))
         if matched is None:
             return ""
         token = matched.group(1)
