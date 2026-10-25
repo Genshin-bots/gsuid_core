@@ -111,15 +111,14 @@ def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
 
 
 def framework_idle_deliver_directive() -> Directive:
-    """交付回灌零工具却对用户报进度。纠正去出图/发图，进度句不放行。"""
+    """交付回灌零工具却对用户报进度或念大表格。纠正去出图/发图，进度句不放行。"""
     return Directive(
         kind="correction",
         reason_code="framework_idle_deliver",
         observation=(
-            "这是任务交付回灌，不是用户在催进度。上一条进度话用户看不到。"
-            "有图就 send_message_by_ai 发给发起人；长事实包只可 "
-            'create_subagent(agent_profile="render_agent")。'
-            "不要新开查询。对用户只输出 <SILENCE>。"
+            "这是任务交付回灌。简短事实（如版本号、轻量状态）可以直接用角色口吻概括交付给用户；"
+            '只有复杂长表格/大对照表才必须 create_subagent(agent_profile="render_agent") 出图。'
+            "有图就 send_message_by_ai 发出。切勿只输出「在查/别催」等废话进度句。"
         ),
         obligations=(
             Obligation(
@@ -127,7 +126,7 @@ def framework_idle_deliver_directive() -> Directive:
                 satisfied_by=("any_tool_called",),
             ),
         ),
-        evidence=Evidence(tool_calls=0, detail="交付回灌零工具"),
+        evidence=Evidence(tool_calls=0, detail="交付回灌未完成出图或交付"),
     )
 
 

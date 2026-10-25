@@ -263,10 +263,19 @@ def looks_like_numeric_recitation(text: str) -> bool:
     return len(nums) >= 4 and len(body) >= 140
 
 
-def claims_premature_delivery(text: str) -> bool:
+def claims_premature_delivery(
+    text: str,
+    *,
+    has_fact_pack: bool = False,
+    tool_called_this_run: bool = False,
+    is_delivery_wake: bool = False,
+) -> bool:
     """是否在宣称交付物已就绪（完成态口吻）。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
+        return False
+    # 有事实包/交付回灌/本轮调过工具时，完成态台词属实情陈述而非吹牛
+    if has_fact_pack or tool_called_this_run or is_delivery_wake:
         return False
     return bool(_PREMATURE_DELIVERY_RE.search(body))
 
@@ -681,7 +690,17 @@ def should_block_user_visible_text(
     if looks_like_process_meta(body):
         return True, "process_meta"
 
-    if claims_premature_delivery(body) and not image_sent and not _keeps_working(body):
+    _wake = pol == "framework_deliver"
+    if (
+        claims_premature_delivery(
+            body,
+            has_fact_pack=fact_pack_pending,
+            tool_called_this_run=bool(tool_calls_so_far),
+            is_delivery_wake=_wake,
+        )
+        and not image_sent
+        and not _keeps_working(body)
+    ):
         return True, "premature_delivery"
 
     # 多点读数：只有真有待出图事实包才拦。无事实包的数字句是回答本身。
@@ -707,9 +726,12 @@ def should_block_user_visible_text(
         return True, "entity_without_tool"
 
     if pol == "framework_deliver":
-        # 进度句和长文不出站。没有图时仍允许一句短收尾。
-        if not image_sent and (looks_like_deliver_progress(body) or len(body) > 40):
-            return True, "deliver_before_send"
+        # 进度句不出站；复杂大表格念表不出站。轻量短事实允许直接交付。
+        if not image_sent:
+            if looks_like_deliver_progress(body):
+                return True, "deliver_before_send"
+            if (looks_like_report_speech(body) and len(body) >= 160) or (body.count("|") >= 6 and "\n" in body):
+                return True, "deliver_before_send"
         return False, "ok"
 
     if pol == "status_ok":

@@ -280,14 +280,14 @@ def _forbid_title(st: RunOnceState, persona_name: str | None) -> str:
     return non_master_title(uid, persona_name)
 
 
-def _correction_is_deliverable(text: str) -> bool:
+def _correction_is_deliverable(text: str, *, is_delivery_wake: bool = False) -> bool:
     """纠正产出是否可直接交付（非沉默、非编排/元叙述脏输出）。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
         return False
     return not (
         has_orchestration_narration(body)
-        or claims_premature_delivery(body)
+        or claims_premature_delivery(body, is_delivery_wake=is_delivery_wake)
         or _looks_like_report_speech(body)
         or looks_like_process_meta(body)
     )
@@ -812,7 +812,7 @@ class SettlePhase(RunOnceHost):
                 result_msg = _corrected_or_original(_sc, original=result_msg)
                 self._scrub_fake_done_history(set())
 
-            # 交付回灌的进度句或长文：补一次出图/发图。短收尾留给用户。
+            # 交付回灌的进度句或大报表：补一次出图/发图。短事实直接交付用户。
             elif (
                 st.fw_msg
                 and ("delivery_wake" in st.run_extra and st.run_extra["delivery_wake"] is True)
@@ -821,13 +821,33 @@ class SettlePhase(RunOnceHost):
                 and not st.image_sent_this_run
                 and result_msg
                 and not is_silence_marker(result_msg.strip())
-                and (looks_like_deliver_progress(result_msg) or len(result_msg.strip()) > 40)
                 and self.create_by in ("Chat", "Agent")
             ):
-                _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.delivery_idle_correction"))
-                await self._try_correction_pass(st, (framework_idle_deliver_directive(),))
-                result_msg = "<SILENCE>"
+                _is_dense_report = (_looks_like_report_speech(result_msg) and len(result_msg.strip()) >= 160) or (
+                    result_msg.count("|") >= 6 and "\n" in result_msg
+                )
+                _is_progress_meta = looks_like_deliver_progress(result_msg)
+                if _is_progress_meta or _is_dense_report:
+                    _settle_correction_ran = True
+                    logger.warning(i18n_t("log.agent.delivery_idle_correction"))
+                    _prior = result_msg.strip()
+                    _disputes_before = len(self._run_disputes)
+                    _dc = await self._try_correction_pass(
+                        st,
+                        (framework_idle_deliver_directive(),),
+                        suppress_intermediate_text=True,
+                        return_mode="return",
+                    )
+                    _disputed = len(self._run_disputes) > _disputes_before
+                    if _disputed:
+                        result_msg = _prior
+                    elif isinstance(_dc, str) and _correction_is_deliverable(_dc, is_delivery_wake=True):
+                        result_msg = strip_open_solicitations(_dc.strip()) or "<SILENCE>"
+                    else:
+                        result_msg = "<SILENCE>"
+                else:
+                    # 简短事实交付（如版本查询、轻量状态），直接放行
+                    pass
 
             # 实体已装上查询工具却空口作答：先拦住，纠正轮拿回文本再发。
             elif (
@@ -1064,7 +1084,15 @@ class SettlePhase(RunOnceHost):
                 elif has_orchestration_narration(_rs) or looks_like_process_meta(_rs):
                     result_msg = "<SILENCE>"
                     st.silence_reason = "orchestration_leak" if has_orchestration_narration(_rs) else "process_meta"
-                elif claims_premature_delivery(_rs) and not st.image_sent_this_run:
+                elif (
+                    claims_premature_delivery(
+                        _rs,
+                        has_fact_pack=st.saw_structured_return,
+                        tool_called_this_run=bool(st.tool_call_list),
+                        is_delivery_wake=bool(st.fw_msg and st.run_extra.get("delivery_wake") is True),
+                    )
+                    and not st.image_sent_this_run
+                ):
                     result_msg = "<SILENCE>"
                     st.silence_reason = "premature_delivery"
                 elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
