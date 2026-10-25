@@ -79,6 +79,10 @@ class ResourceManager:
         data, _created_at = self._store[resource_id]
         return data
 
+    def get_raw(self, resource_id: str) -> Union[str, bytes]:
+        """peek 的别名：取回登记时的原始值，不下载、不解码。"""
+        return self.peek(resource_id)
+
     async def get(self, resource_id: str) -> bytes:
         """根据 ID 取回数据
 

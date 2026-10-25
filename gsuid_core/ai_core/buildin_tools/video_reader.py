@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pydantic_ai import RunContext, ToolReturn
-from pydantic_ai.messages import UserContent, BinaryContent
+from pydantic_ai.messages import VideoUrl, UserContent, BinaryContent
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -78,6 +78,37 @@ async def load_video_for_agent(
     agent: GsCoreAIAgent,
 ) -> tuple[str, list[UserContent] | None]:
     """取回视频并按当前 Agent 模型转换成可注入内容。"""
+    _fmt, _max_mb, passthrough = agent._routed_openai_video_settings()
+    if passthrough == "on":
+        raw_url: str | None = None
+        trimmed = video_id.strip()
+        if trimmed.startswith(("http://", "https://")):
+            raw_url = trimmed
+        else:
+            try:
+                peeked = RM.peek(trimmed)
+                if isinstance(peeked, str) and peeked.startswith(("http://", "https://")):
+                    raw_url = peeked
+            except ValueError:
+                raw_url = None
+        if raw_url is not None:
+            video_url_item = VideoUrl(url=raw_url)
+            out = await agent._prepare_video_content([video_url_item], ["text", "image", "video"])
+            pt_texts: list[str] = []
+            pt_media: list[UserContent] = []
+            for item in out:
+                if isinstance(item, str):
+                    pt_texts.append(item)
+                else:
+                    pt_media.append(item)
+            if not pt_media:
+                note = "\n".join(pt_texts).strip() if pt_texts else _UNREADABLE
+                return note, None
+            shown = f"🎬 视频[{video_id}]已直接呈现给你，请直接查看后作答。"
+            if pt_texts:
+                shown = "\n".join(pt_texts) + "\n" + shown
+            return shown, pt_media
+
     data, err = await resolve_video_bytes(video_id)
     if err:
         return err, None

@@ -14,6 +14,7 @@ from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsIntConfig,
     GsStrConfig,
+    GsFloatConfig,
     GsListStrConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import ConfigSetManager
@@ -30,6 +31,7 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
             "https://api.bltcy.ai/v1",
             "https://api.minimaxi.com/v1",
             # 2026 国内主流大模型厂商官方接口
+            "https://api.xiaomimimo.com/v1",  # 小米 MiMo
             "https://dashscope.aliyuncs.com/compatible-mode/v1",  # 阿里通义千问 (DashScope)
             "https://api.deepseek.com",  # DeepSeek 深度求索
             "https://open.bigmodel.cn/api/paas/v4",  # 智谱AI (GLM)
@@ -59,6 +61,8 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         desc="指定OpenAI API的模型, 该模型将会用于处理大部分任务",
         data="gpt-4o-mini",
         options=[
+            # 小米 (MiMo)
+            "mimo-v2.6-pro",
             # OpenAI (2026 最新主推)
             "gpt-5.5",
             "gpt-5",
@@ -194,6 +198,42 @@ OPENAI_CONFIG_TEMPLATE: Dict[str, GSC] = {
         ),
         data="auto",
         options=["auto", "off"],
+    ),
+    "video_input_format": GsStrConfig(
+        title="视频输入格式",
+        desc=(
+            "OpenAI 兼容接口的视频输入格式: file(兼容 LiteLLM / Gemini 中转) 或 "
+            "video_url(适配 MiMo / 阿里百炼 / OpenRouter 等全模态模型, 仅 chat_completions 生效)"
+        ),
+        data="file",
+        options=["file", "video_url"],
+    ),
+    "video_fps": GsFloatConfig(
+        title="视频采样帧率",
+        desc="video_url 模式下的抽样帧率 (FPS)。大于 0 时写入同级 fps 字段 (如 2 或 0.5), 0 表示不发送",
+        data=0.0,
+    ),
+    "video_part_extra": GsStrConfig(
+        title="视频块额外参数 (JSON)",
+        desc=(
+            'video_url 模式下合并进视频块的 JSON 对象。同级合并如 {"media_resolution":"default"}; '
+            "若含 video_url 键且为对象则合并至内部 video_url"
+        ),
+        data="",
+    ),
+    "video_inline_max_mb": GsIntConfig(
+        title="视频内联大小上限 (MB)",
+        desc="video_url 模式下转为 DataURI 发送的视频原始大小上限 (MB)。超过时自动降级为抽帧或占位",
+        data=12,
+    ),
+    "video_url_passthrough": GsStrConfig(
+        title="视频公网URL直通",
+        desc=(
+            "是否将原始 http(s) URL 直接填入 video_url.url: off=先下载转 DataURI(默认, "
+            "避免临时链接过期导致会话卡死); on=直接透传 URL"
+        ),
+        data="off",
+        options=["off", "on"],
     ),
 }
 

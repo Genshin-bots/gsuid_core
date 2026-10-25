@@ -20,6 +20,7 @@ from typing import Literal, Protocol, TypedDict
 from typing_extensions import override
 
 from openai import AsyncOpenAI, APIStatusError
+from pydantic import JsonValue, TypeAdapter
 from openai.types.chat import ChatCompletionContentPartParam
 from pydantic_ai.messages import (
     AudioUrl,
@@ -27,12 +28,16 @@ from pydantic_ai.messages import (
     VideoUrl,
     CachePoint,
     DocumentUrl,
+    UserContent,
     UploadedFile,
     BinaryContent,
 )
+from pydantic_ai.profiles import ModelProfileSpec
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.exceptions import UserError
 from openai.types.file_purpose import FilePurpose
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from openai.types.chat.chat_completion_content_part_param import File
 
 from gsuid_core.i18n import t
@@ -54,7 +59,8 @@ _VIDEO_EXT: dict[str, str] = {
     "3gpp": "3gp",
 }
 
-VideoDeliveryMode = Literal["gemini", "openai_file", "frames", "unavailable"]
+VideoDeliveryMode = Literal["gemini", "openai_file", "openai_video_url", "frames", "unavailable"]
+OpenAIVideoInputFormat = Literal["file", "video_url"]
 OpenAIVideoHow = Literal["inline", "uploaded", "files_missing"]
 
 
@@ -68,6 +74,57 @@ class OpenAIChatVideoFileBody(TypedDict, total=False):
 class OpenAIChatVideoFilePart(TypedDict):
     type: Literal["file"]
     file: OpenAIChatVideoFileBody
+
+
+class OpenAIChatVideoUrlBody(TypedDict, total=False):
+    url: str
+
+
+class OpenAIChatVideoUrlPart(TypedDict, total=False):
+    type: Literal["video_url"]
+    video_url: dict[str, JsonValue]
+    fps: float
+
+
+_EXTRA_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
+
+
+def parse_video_part_extra(raw: str) -> dict[str, JsonValue]:
+    """解析部署者填写的视频块额外 JSON 参数；解析失败打 warning 并返回空字典。"""
+    cleaned = raw.strip()
+    if not cleaned:
+        return {}
+    try:
+        return _EXTRA_ADAPTER.validate_json(cleaned)
+    except Exception as e:
+        logger.warning(t("log.ai.openaifiles_invalid_extra_json", e=e))
+        return {}
+
+
+def openai_chat_video_url_part(
+    url: str,
+    *,
+    fps: float = 0.0,
+    extra: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    """生成 OpenAI 兼容接口的 video_url 块。
+
+    支持同级合并 extra 键值，以及当 extra['video_url'] 为 dict 时递归合并入内部 video_url。
+    """
+    video_url_obj: dict[str, JsonValue] = {"url": url}
+    part: dict[str, JsonValue] = {
+        "type": "video_url",
+        "video_url": video_url_obj,
+    }
+    if fps > 0:
+        part["fps"] = fps
+    if extra:
+        for k, v in extra.items():
+            if k == "video_url" and isinstance(v, dict):
+                video_url_obj.update(v)
+            else:
+                part[k] = v
+    return part
 
 
 class OpenAIFileCreated(Protocol):
@@ -93,16 +150,17 @@ def video_delivery_mode(
     supports_video: bool,
     supports_image: bool,
     provider: str,
+    openai_format: str = "file",
 ) -> VideoDeliveryMode:
     """按 model_support 与 provider 决定视频投喂方式。
 
-    声明了 video：gemini 走官方 Files API，openai 走兼容 file 块。
+    声明了 video：gemini 走官方 Files API，openai 走兼容 file 块或 video_url。
     未声明 video：能看图才抽帧；否则占位。
     """
     if supports_video and provider == "gemini":
         return "gemini"
     if supports_video and provider == "openai":
-        return "openai_file"
+        return "openai_video_url" if openai_format == "video_url" else "openai_file"
     if supports_image:
         return "frames"
     return "unavailable"
@@ -232,7 +290,54 @@ async def video_bytes_to_openai_content(
 
 
 class OpenAIChatModelWithVideo(OpenAIChatModel):
-    """Chat Completions：video 走 type=file（LiteLLM / Gemini 中转）。"""
+    """Chat Completions：video 走 type=file（LiteLLM / Gemini 中转）或 video_url。"""
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        provider: OpenAIProvider,
+        profile: ModelProfileSpec | None = None,
+        settings: ModelSettings | None = None,
+        video_input_format: OpenAIVideoInputFormat = "file",
+        video_fps: float = 0.0,
+        video_part_extra: dict[str, JsonValue] | None = None,
+        video_inline_max_mb: int = 12,
+        video_url_passthrough: str = "off",
+    ) -> None:
+        super().__init__(model_name, provider=provider, profile=profile, settings=settings)
+        self.video_input_format: OpenAIVideoInputFormat = video_input_format
+        self.video_fps: float = video_fps
+        self.video_part_extra: dict[str, JsonValue] = video_part_extra or {}
+        self.video_inline_max_mb: int = video_inline_max_mb
+        self.video_url_passthrough: str = video_url_passthrough
+
+    @override
+    async def _map_user_prompt_content_item(
+        self,
+        item: UserContent,
+        content: list[ChatCompletionContentPartParam],
+    ) -> None:
+        if self.video_input_format == "video_url":
+            if isinstance(item, BinaryContent) and item.is_video:
+                part = openai_chat_video_url_part(
+                    item.data_uri,
+                    fps=self.video_fps,
+                    extra=self.video_part_extra,
+                )
+                # SDK ChatCompletionContentPartParam 联合类型不含厂商扩展块 video_url (见 §1.3)
+                content.append(part)  # type: ignore[arg-type]
+                return
+            if isinstance(item, VideoUrl):
+                part = openai_chat_video_url_part(
+                    item.url,
+                    fps=self.video_fps,
+                    extra=self.video_part_extra,
+                )
+                # SDK ChatCompletionContentPartParam 联合类型不含厂商扩展块 video_url (见 §1.3)
+                content.append(part)  # type: ignore[arg-type]
+                return
+        await super()._map_user_prompt_content_item(item, content)
 
     @override
     async def _map_content_item(
@@ -266,12 +371,16 @@ __all__ = [
     "INLINE_VIDEO_MAX_BYTES",
     "OpenAIChatModelWithVideo",
     "OpenAIChatVideoFilePart",
+    "OpenAIChatVideoUrlPart",
     "OpenAIFilesClient",
     "OpenAIVideoHow",
+    "OpenAIVideoInputFormat",
     "VideoDeliveryMode",
     "openai_chat_inline_video_part",
     "openai_chat_uploaded_video_part",
+    "openai_chat_video_url_part",
     "openai_files_client_from_model",
+    "parse_video_part_extra",
     "upload_openai_video_file",
     "video_bytes_to_openai_content",
     "video_delivery_mode",

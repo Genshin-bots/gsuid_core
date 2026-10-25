@@ -634,3 +634,49 @@ Provider 代表 AI 服务提供方的格式类型：
     "data": null
 }
 ```
+
+---
+
+## 24.10 OpenAI 兼容接口视频输入配置（全模态模型适配）
+
+针对小米 MiMo、阿里百炼 DashScope 兼容模式、OpenRouter 等全模态模型，OpenAI 配置模板支持配置线协议视频块格式与附加参数：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `video_input_format` | string | `file` | `file`：兼容 LiteLLM / Gemini 中转的 `type=file`；`video_url`：生成 `type=video_url` 块（仅 `chat_completions` 生效） |
+| `video_fps` | float | `0.0` | `video_url` 模式下视频抽样帧率（FPS）。大于 0 时写入同级 `fps` 字段（如 `2.0`），0 表示不发送 |
+| `video_part_extra` | string | `""` | `video_url` 模式下合并进视频块的 JSON 字典。同级合并如 `{"media_resolution":"default"}`；若包含 `video_url` 键且为对象则合并至内部 |
+| `video_inline_max_mb` | int | `12` | `video_url` 模式下转为 DataURI 发送的视频原始体积上限（MB）。超过时自动降级为抽帧或占位 |
+| `video_url_passthrough` | string | `off` | 是否将原始 http(s) URL 直接填入 `video_url.url`。`off`：先下载转 DataURI（避免临时链接过期导致多轮会话 400 卡死）；`on`：透传 URL |
+
+### 典型场景配置示例
+
+#### 1. 小米 MiMo (mimo-v2.6-pro)
+```json
+{
+    "base_url": "https://api.xiaomimimo.com/v1",
+    "model_name": "mimo-v2.6-pro",
+    "request_method": "chat_completions",
+    "model_support": ["text", "image", "video"],
+    "video_input_format": "video_url",
+    "video_fps": 2.0,
+    "video_part_extra": "{\"media_resolution\":\"default\"}",
+    "video_inline_max_mb": 12,
+    "video_url_passthrough": "off"
+}
+```
+
+#### 2. OpenRouter 全模态模型（带内部 processing 参数）
+```json
+{
+    "base_url": "https://openrouter.ai/api/v1",
+    "model_name": "...",
+    "request_method": "chat_completions",
+    "model_support": ["text", "image", "video"],
+    "video_input_format": "video_url",
+    "video_fps": 2.0,
+    "video_part_extra": "{\"video_url\":{\"processing\":\"static\"}}",
+    "video_inline_max_mb": 12,
+    "video_url_passthrough": "off"
+}
+```

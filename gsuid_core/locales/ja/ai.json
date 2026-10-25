@@ -216,6 +216,7 @@
   "log.ai.gemini_old_name_new": "Gemini 設定ファイルを '{old_name}' から '{new_name}' にリネームした",
   "log.ai.geminifiles_uploaded_size_mb_load": "[GeminiFiles] {size:.1f}MB ({mime}) をアップロード → {name}、処理待機中...",
   "log.ai.geminifiles_uri_file_ready": "[GeminiFiles] ファイル準備完了: {uri}",
+  "log.ai.openaifiles_invalid_extra_json": "[OpenAIFiles] video_part_extra は有効な JSON オブジェクトではありません。無視されました: {e}",
   "log.ai.openaifiles_upload_http_fail": "[OpenAIFiles] アップロード失敗 HTTP {status}: {e}",
   "log.ai.openaifiles_upload_missing_id": "[OpenAIFiles] アップロードは成功したが file id がありません",
   "log.ai.openaifiles_uploaded_file_id": "[OpenAIFiles] {size:.1f}MB ({mime}) をアップロード → {file_id}",

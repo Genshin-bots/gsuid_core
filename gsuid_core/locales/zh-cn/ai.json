@@ -216,6 +216,7 @@
   "log.ai.gemini_old_name_new": "已将 Gemini 配置文件从 '{old_name}' 重命名为 '{new_name}'",
   "log.ai.geminifiles_uploaded_size_mb_load": "[GeminiFiles] 已上传 {size:.1f}MB ({mime}) → {name}, 等待处理...",
   "log.ai.geminifiles_uri_file_ready": "[GeminiFiles] 文件就绪: {uri}",
+  "log.ai.openaifiles_invalid_extra_json": "[OpenAIFiles] video_part_extra 不是合法 JSON 对象，已忽略: {e}",
   "log.ai.openaifiles_upload_http_fail": "[OpenAIFiles] 上传失败 HTTP {status}: {e}",
   "log.ai.openaifiles_upload_missing_id": "[OpenAIFiles] 上传成功但响应无 file id",
   "log.ai.openaifiles_uploaded_file_id": "[OpenAIFiles] 已上传 {size:.1f}MB ({mime}) → {file_id}",

@@ -647,7 +647,9 @@ class GsCoreAIAgent(RunOnceMixin):
 
     @staticmethod
     def _is_native_video_part(item: UserContent) -> bool:
-        """已转成可直投模型的视频 file（不含图片 BinaryContent）。"""
+        """已转成可直投模型的视频 file/url（不含图片 BinaryContent）。"""
+        if isinstance(item, VideoUrl):
+            return True
         if isinstance(item, BinaryContent):
             return str(item.media_type or "").startswith("video/")
         if isinstance(item, UploadedFile):
@@ -705,6 +707,42 @@ class GsCoreAIAgent(RunOnceMixin):
             return True
         return "video" in self._routed_model_support("")
 
+    def _routed_openai_video_settings(
+        self,
+    ) -> tuple[str, int, str]:
+        """本轮 OpenAI 视频设置: (video_input_format, video_inline_max_mb, video_url_passthrough)。"""
+        from pydantic_ai.models.openai import OpenAIResponsesModel
+
+        from gsuid_core.ai_core.multimodal.openai_files import OpenAIChatModelWithVideo
+
+        if isinstance(self.model, OpenAIResponsesModel):
+            return "file", 12, "off"
+        if isinstance(self.model, OpenAIChatModelWithVideo):
+            return (
+                self.model.video_input_format,
+                self.model.video_inline_max_mb,
+                self.model.video_url_passthrough,
+            )
+        name = self._active_config_name or self.model_config_name
+        if name:
+            from gsuid_core.ai_core.configs.models import (
+                parse_provider_config_name,
+                get_model_config_by_full_name,
+            )
+
+            if parse_provider_config_name(name)[0] == "openai":
+                cfg = get_model_config_by_full_name(name)
+                fmt = str(cfg.get_config("video_input_format").data)
+                max_mb = cfg.get_config("video_inline_max_mb").data
+                pt = str(cfg.get_config("video_url_passthrough").data)
+                format_val = "video_url" if fmt == "video_url" else "file"
+                return (
+                    format_val,
+                    int(max_mb) if isinstance(max_mb, int) else 12,
+                    pt,
+                )
+        return "file", 12, "off"
+
     async def _video_item_to_bytes(self, item: UserContent) -> tuple[bytes, str]:
         """视频内容项 → (字节, mime)。"""
         if isinstance(item, BinaryContent):
@@ -753,6 +791,7 @@ class GsCoreAIAgent(RunOnceMixin):
             upload_media_for_task,
         )
         from gsuid_core.ai_core.multimodal.openai_files import (
+            video_filename,
             video_delivery_mode,
             video_bytes_to_openai_content,
             openai_files_client_from_model,
@@ -762,10 +801,15 @@ class GsCoreAIAgent(RunOnceMixin):
         provider = self._routed_provider()
         supports_video = "video" in model_support
         supports_image = "image" in model_support
+        openai_format, video_inline_max_mb, video_url_passthrough = self._routed_openai_video_settings()
+        if isinstance(self.model, OpenAIResponsesModel) and openai_format == "video_url":
+            logger.warning(i18n_t("log.agent.video_openai_responses_fallback"))
+            openai_format = "file"
         mode = video_delivery_mode(
             supports_video=supports_video,
             supports_image=supports_image,
             provider=provider,
+            openai_format=openai_format,
         )
 
         result: list[UserContent] = []
@@ -837,6 +881,55 @@ class GsCoreAIAgent(RunOnceMixin):
                                 size=size_mb,
                             )
                         )
+                    continue
+
+                if mode == "openai_video_url":
+                    if video_url_passthrough == "on":
+                        raw_url: str | None = None
+                        if isinstance(item, VideoUrl) and item.url.startswith(("http://", "https://")):
+                            raw_url = item.url
+                        elif (
+                            isinstance(item, BinaryContent)
+                            and item.identifier
+                            and item.identifier.startswith(("http://", "https://"))
+                        ):
+                            raw_url = item.identifier
+                        if raw_url is not None:
+                            result.append(VideoUrl(url=raw_url))
+                            logger.info(
+                                i18n_t(
+                                    "log.agent.video_openai_url_passthrough",
+                                    p0=video_idx,
+                                    url=raw_url,
+                                )
+                            )
+                            continue
+
+                    data, mime = await self._video_item_to_bytes(item)
+                    size_mb = len(data) / 1024 / 1024
+                    if size_mb <= video_inline_max_mb:
+                        filename = video_filename(mime)
+                        result.append(BinaryContent(data=data, media_type=mime, identifier=filename))
+                        logger.info(
+                            i18n_t(
+                                "log.agent.video_openai_url_inline",
+                                p0=video_idx,
+                                size=size_mb,
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.video_openai_url_oversize",
+                                p0=video_idx,
+                                size=size_mb,
+                                limit=video_inline_max_mb,
+                            )
+                        )
+                        if supports_image:
+                            result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
+                        else:
+                            result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
                     continue
 
                 data, mime = await self._video_item_to_bytes(item)

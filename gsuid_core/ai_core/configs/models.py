@@ -45,7 +45,11 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.request_effort import capture_model_request_effort
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
-from gsuid_core.ai_core.multimodal.openai_files import OpenAIChatModelWithVideo
+from gsuid_core.ai_core.multimodal.openai_files import (
+    OpenAIVideoInputFormat,
+    OpenAIChatModelWithVideo,
+    parse_video_part_extra,
+)
 
 from .ai_config import ai_config
 from .gemini_config import get_gemini_config, get_gemini_config_dict
@@ -446,8 +450,17 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     )
     provider = OpenAIProvider(openai_client=_client)
 
-    # send_back_thinking 开关：多轮会话时不回发历史 ThinkingPart，避免中转网关报错。
-    send_back_thinking = str(get_openai_config(config_name).get_config("send_back_thinking").data)
+    oconfig = get_openai_config(config_name)
+    send_back_thinking = str(oconfig.get_config("send_back_thinking").data)
+    video_input_format_val = str(oconfig.get_config("video_input_format").data)
+    video_input_format: OpenAIVideoInputFormat = "video_url" if video_input_format_val == "video_url" else "file"
+    video_fps_raw = oconfig.get_config("video_fps").data
+    video_fps = float(video_fps_raw) if isinstance(video_fps_raw, (int, float)) else 0.0
+    video_part_extra_raw = str(oconfig.get_config("video_part_extra").data).strip()
+    video_part_extra = parse_video_part_extra(video_part_extra_raw) if video_part_extra_raw else {}
+    video_inline_max_mb_raw = oconfig.get_config("video_inline_max_mb").data
+    video_inline_max_mb = int(video_inline_max_mb_raw) if isinstance(video_inline_max_mb_raw, int) else 12
+    video_url_passthrough = str(oconfig.get_config("video_url_passthrough").data)
     # max 不写统一 thinking，画像不用为它改 supports_thinking。
     keep_effort = user_thinking_profile(None if model_effort == "max" else model_effort)
 
@@ -485,6 +498,11 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
             ),
             model_effort,
         ),
+        video_input_format=video_input_format,
+        video_fps=video_fps,
+        video_part_extra=video_part_extra,
+        video_inline_max_mb=video_inline_max_mb,
+        video_url_passthrough=video_url_passthrough,
     )
 
 
