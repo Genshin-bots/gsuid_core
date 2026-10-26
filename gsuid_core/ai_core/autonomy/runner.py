@@ -110,6 +110,7 @@ async def run_autonomy_agent(
         )
     finally:
         reset_guard(token)
+        agent._session_logger.close()
     text = result if isinstance(result, str) else ""
     duration_ms = int((time.perf_counter() - started) * 1000)
     return AutonomyReport(text, collector.steps, duration_ms, session_id)

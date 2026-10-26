@@ -11,6 +11,12 @@ GET /api/ai/skills/list
 Authorization: Bearer <token>
 ```
 
+**Query 参数**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| limit | integer | 否 | 单页条数（1–2000）；**不传则返回全量** |
+| offset | integer | 否 | 偏移量，默认 0 |
+
 **响应**：
 ```json
 {
@@ -33,7 +39,11 @@ Authorization: Bearer <token>
                 "editable": true
             }
         ],
-        "count": 1
+        "count": 1,
+        "total": 1,
+        "limit": 50,
+        "offset": 0,
+        "has_more": false
     }
 }
 ```
@@ -43,7 +53,11 @@ Authorization: Bearer <token>
 |------|------|------|
 | status | integer | 状态码，0表示成功 |
 | msg | string | 状态信息 |
-| data.skills | array | 技能列表 |
+| data.skills | array | **当前页**技能列表 |
+| data.count | integer | 技能总数（**不是本页条数**） |
+| data.total | integer | 同 count，显式别名 |
+| data.limit / data.offset | integer / null | 本次请求的分页参数；`limit` 为 null 表示未分页 |
+| data.has_more | boolean | 是否还有下一页 |
 | data.skills[].name | string | 技能名称 |
 | data.skills[].description | string | 技能描述 |
 | data.skills[].content | string | 技能内容（markdown格式） |

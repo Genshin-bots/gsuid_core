@@ -12,7 +12,7 @@ import asyncio
 from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 
-from fastapi import Depends, Request, HTTPException
+from fastapi import Query, Depends, Request, HTTPException
 from pydantic import Field, BaseModel
 
 from gsuid_core.i18n import t
@@ -449,12 +449,17 @@ async def save_theme_config_endpoint(
 @app.get("/api/theme/presets", summary="获取主题预设列表", tags=THEME)
 async def get_theme_presets(
     request: Request,
+    limit: Optional[int] = Query(None, ge=1, le=200, description="单页条数；不传=全量"),
+    offset: int = Query(0, ge=0, description="偏移量"),
 ):
     """获取已保存的主题预设列表（公开接口）。
 
     加载主题设置面板时即调用，未登录用户也应可读。
+    `limit` / `offset` 分页；不传 `limit` 时返回全量（旧契约）。
     """
     presets = list_theme_presets()
+    total = len(presets)
+    page = presets[offset:] if limit is None else presets[offset : offset + limit]
     return {
         "status": 0,
         "msg": "ok",
@@ -462,7 +467,14 @@ async def get_theme_presets(
             # 只回目录名，避免登录页接口泄露本机绝对路径
             "user_presets_path": THEME_CONFIGS_PATH.name,
             "builtin_presets_path": BUILTIN_THEMES_DIR_NAME,
-            "presets": presets,
+            "presets": page,
+            # 全部预设名：前端判定「同名已存在」要用，不能只看当前页
+            "names": [preset["name"] for preset in presets],
+            "count": total,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(page) < total,
         },
     }
 

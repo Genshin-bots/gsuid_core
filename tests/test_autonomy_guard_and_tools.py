@@ -1,6 +1,9 @@
 """命令代跑的权限、名单和工具表白名单。"""
 
 from pathlib import Path
+from collections.abc import Sequence
+
+from sqlmodel import Field
 
 from gsuid_core.models import Event
 from gsuid_core.ai_core.tool_risk import HIGH_RISK_TOOL_NAMES
@@ -147,6 +150,9 @@ def test_unmapped_bind_subclass_is_skipped_and_explicit_class_is_read() -> None:
     class PlainBind(Bind):
         pass
 
+    class QuotaBind(Bind):
+        free_quota: int = Field(default=3)
+
     class ToyBind(Bind):
         @classmethod
         async def get_uid_by_game(
@@ -160,12 +166,35 @@ def test_unmapped_bind_subclass_is_skipped_and_explicit_class_is_read() -> None:
                 return "UID1"
             return None
 
+    class RowBind(Bind):
+        uid: str | None = Field(default=None)
+        sr_uid: str | None = Field(default=None)
+
+        @classmethod
+        async def select_data_list(
+            cls,
+            user_id: str,
+            bot_id: str | None = None,
+        ) -> Sequence["RowBind"] | None:
+            del bot_id
+            if user_id != "u1":
+                return None
+            return [
+                cls(user_id="u1", bot_id="other", group_id=None, uid="10001_10002", sr_uid="80001"),
+                cls(user_id="u1", bot_id="onebot", group_id=None, uid="20001", sr_uid=None),
+            ]
+
     assert PlainBind not in iter_bind_tables()
+    assert QuotaBind not in iter_bind_tables()
     assert ToyBind not in iter_bind_tables()
 
     import asyncio
 
-    found = asyncio.run(collect_bound_uids("u1", "bind-test", classes=[ToyBind]))
+    found = asyncio.run(collect_bound_uids("u1", "bind-test", classes=[QuotaBind, ToyBind]))
     assert found == {"ToyBind": "UID1"}
-    empty = asyncio.run(collect_bound_uids("u1", "onebot", classes=[ToyBind]))
+    empty = asyncio.run(collect_bound_uids("u1", "onebot", classes=[QuotaBind, ToyBind]))
     assert empty == {}
+    by_user = asyncio.run(collect_bound_uids("u1", "", classes=[RowBind]))
+    assert by_user == {"RowBind": "10001", "RowBind.sr": "80001"}
+    prefer_bot = asyncio.run(collect_bound_uids("u1", "onebot", classes=[RowBind]))
+    assert prefer_bot == {"RowBind": "20001", "RowBind.sr": "80001"}

@@ -75,9 +75,6 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     binds: dict[str, dict[str, str]] = {}
     for uid in user_ids:
         bot_id = favor_bot[uid] if uid in favor_bot and favor_bot[uid] else _bot_for(lines, uid)
-        if not bot_id:
-            binds[uid] = {}
-            continue
         binds[uid] = await collect_bound_uids(uid, bot_id)
     care = assemble_care_targets(
         user_ids,
