@@ -1,5 +1,7 @@
 """观察名单怎么圈人、会话怎么选、底片怎么写给模型。"""
 
+from typing import Literal
+
 from gsuid_core.ai_core.autonomy.models import SpokenLine, ObservationDigest
 from gsuid_core.ai_core.autonomy.select import (
     render_digest,
@@ -18,16 +20,18 @@ def _line(
     ts: float,
     *,
     group_id: str | None,
+    role: Literal["user", "assistant"] = "user",
 ) -> SpokenLine:
     return SpokenLine(
         user_id=user_id,
-        user_name=user_id,
+        user_name="[你]" if role == "assistant" else user_id,
         text=text,
         ts=ts,
         group_id=group_id,
         bot_id="onebot",
         bot_self_id="bot",
         ws_bot_id="ws",
+        role=role,
     )
 
 
@@ -71,7 +75,10 @@ def test_empty_signal_users_sort_after_people_who_spoke_and_cap_at_ten() -> None
     now = 1_000_000.0
     ids = [f"u{i}" for i in range(12)]
     scores = {uid: 90 - index for index, uid in enumerate(ids)}
-    lines = [_line("u0", "刚说过话", now - 20, group_id=None)]
+    lines = [
+        _line("u0", "刚说过话", now - 20, group_id="g1"),
+        _line("bot", "慢慢看，看完再跟你说", now - 10, group_id="g1", role="assistant"),
+    ]
     targets = assemble_care_targets(
         ids,
         scores,
@@ -86,7 +93,10 @@ def test_empty_signal_users_sort_after_people_who_spoke_and_cap_at_ten() -> None
     assert len(targets) == 10
     assert targets[0].user_id == "u0"
     assert targets[0].bound_uids == {}
-    assert "刚说过话" in targets[0].recent_lines[0]
+    assert targets[0].last_human_ts == now - 20
+    assert targets[0].last_assistant_ts == now - 10
+    assert "[你] 慢慢看，看完再跟你说" in targets[0].recent_lines[0]
+    assert "刚说过话" in targets[0].recent_lines[1]
 
 
 def test_empty_digest_skips_the_model_and_render_points_at_the_persona() -> None:
@@ -96,3 +106,19 @@ def test_empty_digest_skips_the_model_and_render_points_at_the_persona() -> None
     assert "人格自述" in text
     assert "DRIVE:" in text
     assert "早柚" not in text
+    with_task = ObservationDigest(
+        "p",
+        "",
+        "",
+        "",
+        0.0,
+        [],
+        [],
+        [],
+        [],
+        [],
+        in_flight_tasks=["[running] 渲染对比图 (群 914411529)"],
+    )
+    rendered_with_task = render_digest(with_task, now=1_000_000.0)
+    assert "正在推进的后台任务" in rendered_with_task
+    assert "渲染对比图" in rendered_with_task

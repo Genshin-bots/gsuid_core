@@ -14,6 +14,7 @@ CARE_COOLDOWN_SECONDS = 12 * 3600
 PRIVATE_LOOKBACK_SECONDS = 24 * 3600
 GROUP_LOOKBACK_SECONDS = 24 * 3600
 BUSY_SECONDS = 60
+ASSISTANT_RECENT_SECONDS = 10 * 60
 GROUP_FRESH_SECONDS = 30 * 60
 CARE_CAP = 10
 GROUP_CAP = 5
@@ -73,7 +74,7 @@ def preferred_line(
     allow_private: bool,
 ) -> SpokenLine | None:
     """24 小时内的私聊优先，否则用最后一条仍在范围内的群消息。"""
-    mine = [line for line in lines if line.user_id == user_id]
+    mine = [line for line in lines if line.role == "user" and line.user_id == user_id]
     private = [
         line
         for line in mine
@@ -106,7 +107,7 @@ def assemble_care_targets(
     """有发言或有绑定的排前面。没有痕迹的仍保留，但排在后面，最多 10 人。"""
 
     def rank(uid: str) -> tuple[int, int, str]:
-        talked = any(line.user_id == uid and line.text.strip() for line in lines)
+        talked = any(line.role == "user" and line.user_id == uid and line.text.strip() for line in lines)
         bound = bool(binds[uid]) if uid in binds else False
         signal = 0 if talked or bound else 1
         return (signal, -scores[uid] if uid in scores else 0, uid)
@@ -123,12 +124,13 @@ def assemble_care_targets(
             allowed_groups=allowed_groups,
             allow_private=allow_private,
         )
-        recent = _recent_texts(lines, uid, now=now, limit=5)
         group_id = chosen.group_id if chosen is not None else None
+        recent = _recent_texts(lines, uid, group_id=group_id, now=now, limit=6)
         bot_id = chosen.bot_id if chosen is not None else ""
         bot_self_id = chosen.bot_self_id if chosen is not None else ""
         ws_bot_id = chosen.ws_bot_id if chosen is not None else ""
         last_ts = chosen.ts if chosen is not None else 0.0
+        last_ai_ts = _latest_assistant_ts(lines, group_id=group_id, user_id=uid)
         bound = dict(binds[uid]) if uid in binds else {}
         targets.append(
             CareTargetSnapshot(
@@ -145,6 +147,7 @@ def assemble_care_targets(
                 ws_bot_id=ws_bot_id,
                 session_key=_session_key(group_id, uid),
                 last_human_ts=last_ts,
+                last_assistant_ts=last_ai_ts,
             )
         )
     return targets
@@ -165,9 +168,14 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
         "TRAILS: 用 | 分开的未完线索，没有就留空",
         "不能自己指定收件群。run_bot_command 只能传观察名单里的用户 ID。",
         "find_tools 这一轮不会装上新工具。查网页用已挂的搜索和抓取，看图用已挂的读图。",
+        "已经带「[你]」回复过、或已在后台任务里推进的事项，不要重复查。",
         f"当前情绪强度约 {digest.mood_score:.2f}。",
         "想自己查什么，以你的人格自述为准。",
     ]
+    if digest.in_flight_tasks:
+        lines.append("正在推进的后台任务（请勿重复处理）：")
+        for task_line in digest.in_flight_tasks[:8]:
+            lines.append(f"- {task_line}")
     if digest.care_targets:
         lines.append("关心对象：")
         for target in digest.care_targets:
@@ -212,6 +220,7 @@ def pins_from_digest(digest: ObservationDigest) -> tuple[list[DeliveryPin], list
             ws_bot_id=item.ws_bot_id,
             session_key=item.session_key,
             last_human_ts=item.last_human_ts,
+            last_assistant_ts=item.last_assistant_ts,
         )
         for item in digest.care_targets
     ]
@@ -226,24 +235,51 @@ def pins_from_digest(digest: ObservationDigest) -> tuple[list[DeliveryPin], list
             ws_bot_id=item.ws_bot_id,
             session_key=item.session_key,
             last_human_ts=item.last_human_ts,
+            last_assistant_ts=item.last_assistant_ts,
         )
         for item in digest.group_digests
     ]
     return care, groups
 
 
-def _recent_texts(lines: Sequence[SpokenLine], user_id: str, *, now: float, limit: int) -> list[str]:
+def _recent_texts(
+    lines: Sequence[SpokenLine],
+    user_id: str,
+    *,
+    group_id: str | None,
+    now: float,
+    limit: int,
+) -> list[str]:
     found: list[str] = []
     for line in sorted(lines, key=lambda item: item.ts, reverse=True):
-        if line.user_id != user_id:
-            continue
+        if line.role == "user":
+            if line.user_id != user_id:
+                continue
+            prefix = ""
+        else:
+            if group_id is not None:
+                if line.group_id != group_id:
+                    continue
+            elif line.group_id is not None or line.user_id != user_id:
+                continue
+            prefix = "[你] "
         text = line.text.strip()
         if not text:
             continue
-        found.append(f"{_age_label(line.ts, now)} {text[:80]}")
+        found.append(f"{_age_label(line.ts, now)} {prefix}{text[:80]}")
         if len(found) >= limit:
             break
     return found
+
+
+def _latest_assistant_ts(lines: Sequence[SpokenLine], *, group_id: str | None, user_id: str) -> float:
+    matched = [
+        line.ts
+        for line in lines
+        if line.role == "assistant"
+        and ((group_id is not None and line.group_id == group_id) or (group_id is None and line.user_id == user_id))
+    ]
+    return max(matched) if matched else 0.0
 
 
 def _age_label(ts: float, now: float) -> str:

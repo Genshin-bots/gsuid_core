@@ -95,10 +95,11 @@ class AutonomyScheduler:
             return await self.run_persona(persona_name, force=True)
 
     async def pick_persona(self) -> str | None:
-        """单次只挑最早到期的一个。聊天占着模型槽时整轮让路。"""
+        """单次只挑最早到期的一个。聊天或子任务回灌占着时整轮让路。"""
         from gsuid_core.ai_core.handle_ai import interactive_llm_in_use
+        from gsuid_core.ai_core.planning.kanban_executor import has_pending_interactive_deliveries
 
-        if interactive_llm_in_use():
+        if interactive_llm_in_use() or has_pending_interactive_deliveries():
             return None
         ranked: list[tuple[float, str]] = []
         for name in persona_config_manager.get_all_configs():
@@ -188,7 +189,8 @@ class AutonomyScheduler:
         mode = decision.mode
         pin = decision.pin
         if mode == "immediate_push" and pin is not None:
-            sent = await _emit(pin, decision.summary[:400], persona_name)
+            spoken = (parsed.spoken_text or decision.summary)[:400]
+            sent = await _emit(pin, spoken, persona_name)
             if not sent:
                 mode = "staged_merge"
         if mode == "staged_merge" and pin is not None:
@@ -233,6 +235,7 @@ class AutonomyScheduler:
 
     async def _blocked(self, persona_name: str, *, force: bool) -> str:
         from gsuid_core.ai_core.handle_ai import interactive_llm_in_use
+        from gsuid_core.ai_core.planning.kanban_executor import has_pending_interactive_deliveries
 
         config = persona_config_manager.get_config(persona_name)
         runtime = read_autonomy_runtime(config)
@@ -249,7 +252,7 @@ class AutonomyScheduler:
             mode_on=AUTONOMY_MODE in mode_list,
             scope_enabled=scope != "disabled",
             within_hours=within,
-            chat_busy=interactive_llm_in_use(),
+            chat_busy=interactive_llm_in_use() or has_pending_interactive_deliveries(),
             due=due,
             budget_ok=await _budget_ok(persona_name),
             force=force,
@@ -332,8 +335,10 @@ async def _emit(pin: DeliveryPin, message: str, persona_name: str) -> bool:
 
     if not message.strip():
         return False
+    bot_id = pin.bot_id or "Bot"
     event = Event(
-        bot_id=pin.bot_id or "Bot",
+        bot_id=bot_id,
+        real_bot_id=bot_id,
         bot_self_id=pin.bot_self_id,
         user_id=pin.user_id,
         user_pm=6,

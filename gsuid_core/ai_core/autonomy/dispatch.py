@@ -10,7 +10,11 @@ from gsuid_core.ai_core.autonomy.models import (
     DeliveryPlan,
     DeliveryDecision,
 )
-from gsuid_core.ai_core.autonomy.select import BUSY_SECONDS, GROUP_FRESH_SECONDS
+from gsuid_core.ai_core.autonomy.select import (
+    BUSY_SECONDS,
+    GROUP_FRESH_SECONDS,
+    ASSISTANT_RECENT_SECONDS,
+)
 from gsuid_core.ai_core.autonomy.verifier import fact_summary
 from gsuid_core.ai_core.relationship.zones import Zone
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
@@ -99,11 +103,12 @@ def _pick_pin(drive: DriveKind, target: str, plan: DeliveryPlan) -> DeliveryPin 
 def _mode_for(drive: DriveKind, pin: DeliveryPin, plan: DeliveryPlan) -> DeliveryMode:
     key = make_target_key(pin.group_id, pin.user_id)
     busy = pin.last_human_ts > 0 and plan.now - pin.last_human_ts < BUSY_SECONDS
+    ai_recent = pin.last_assistant_ts > 0 and plan.now - pin.last_assistant_ts < ASSISTANT_RECENT_SECONDS
     hours_ok = plan.within_hours or plan.hours_waived
     quota_ok = hours_ok and key in plan.quota_ok_keys and key not in plan.gap_blocked_keys
     if drive == "self_explore":
         return "staged_merge"
-    if busy:
+    if busy or ai_recent:
         return "staged_merge"
     if drive == "group_topic":
         fresh = pin.last_human_ts > 0 and plan.now - pin.last_human_ts < GROUP_FRESH_SECONDS

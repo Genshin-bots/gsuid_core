@@ -21,6 +21,7 @@ def _pin(
     is_master: bool = False,
     zone_value: str = "close",
     last_human_ts: float = 0.0,
+    last_assistant_ts: float = 0.0,
 ) -> DeliveryPin:
     return DeliveryPin(
         user_id=user_id,
@@ -32,6 +33,7 @@ def _pin(
         ws_bot_id="ws",
         session_key=f"group:{group_id}" if group_id else f"private:{user_id}",
         last_human_ts=last_human_ts,
+        last_assistant_ts=last_assistant_ts,
     )
 
 
@@ -95,6 +97,10 @@ def test_close_user_pushes_familiar_stages_and_a_live_chat_downgrades() -> None:
     assert familiar.mode == "staged_merge"
     busy = route_delivery(_plan("care_user", "u1", care=[_pin(last_human_ts=9_980.0)], now=10_000.0))
     assert busy.mode == "staged_merge"
+    recent_ai = route_delivery(
+        _plan("care_user", "u1", care=[_pin(last_human_ts=9_000.0, last_assistant_ts=9_700.0)], now=10_000.0)
+    )
+    assert recent_ai.mode == "staged_merge"
     no_summary = route_delivery(_plan("care_user", "u1", summary="  "))
     assert no_summary.mode == "staged_merge"
 
@@ -134,10 +140,12 @@ def test_group_topic_expires_self_explore_never_pushes_and_fake_groups_are_ignor
 def test_footer_parse_and_merge_line_is_stripped_before_history() -> None:
     parsed = parse_footer("思考了一下\nDRIVE: nope\nTARGET: 1\nSUMMARY: 好了\nTRAILS: a|b")
     assert parsed.drive == "rest"
-    parsed_ok = parse_footer("DRIVE：care_user\nTARGET：u1\nSUMMARY：看过了\nTRAILS：下一步")
+    assert parsed.spoken_text == "思考了一下"
+    parsed_ok = parse_footer("帮你查到啦，都在卡片里。\nDRIVE：care_user\nTARGET：u1\nSUMMARY：看过了\nTRAILS：下一步")
     assert parsed_ok.drive == "care_user"
     assert parsed_ok.summary == "看过了"
     assert parsed_ok.trails == ["下一步"]
+    assert parsed_ok.spoken_text == "帮你查到啦，都在卡片里。"
     line = autonomy_merge_line("查到一条结果")
     fact = autonomy_proactive_fact_line(["查到一条结果"], ["res_abc"])
     assert _is_framework_prompt_content(line)

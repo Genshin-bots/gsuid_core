@@ -12,7 +12,7 @@ DELIVERY_MODES: tuple[DeliveryMode, ...] = ("immediate_push", "staged_merge", "s
 
 @dataclass(slots=True)
 class SpokenLine:
-    """一条已发生的用户发言，用来选会话和判断忙闲。"""
+    """一条已发生的会话发言，用来选会话和判断忙闲。"""
 
     user_id: str
     user_name: str
@@ -22,6 +22,7 @@ class SpokenLine:
     bot_id: str
     bot_self_id: str
     ws_bot_id: str
+    role: Literal["user", "assistant"] = "user"
 
 
 @dataclass(slots=True)
@@ -41,6 +42,7 @@ class CareTargetSnapshot:
     ws_bot_id: str
     session_key: str
     last_human_ts: float
+    last_assistant_ts: float = 0.0
 
 
 @dataclass(slots=True)
@@ -55,6 +57,7 @@ class GroupObservation:
     bot_self_id: str
     ws_bot_id: str
     session_key: str
+    last_assistant_ts: float = 0.0
 
 
 @dataclass(slots=True)
@@ -71,6 +74,7 @@ class ObservationDigest:
     open_trails: list[str]
     available_plugins_summary: list[str]
     recently_used_tools: list[str]
+    in_flight_tasks: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -104,6 +108,7 @@ class ParsedRun:
     target: str
     summary: str
     trails: list[str]
+    spoken_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +124,7 @@ class DeliveryPin:
     ws_bot_id: str
     session_key: str
     last_human_ts: float
+    last_assistant_ts: float = 0.0
 
 
 @dataclass(slots=True)

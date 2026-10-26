@@ -53,6 +53,7 @@ def extract_facts(steps: list[AutonomyStepTrace]) -> FactPack:
 def parse_footer(text: str) -> ParsedRun:
     """自由文本。缺行或动力对不上，一律休息，避免把草稿当结论。"""
     found: dict[str, str] = {}
+    body_lines: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip().lstrip("-").strip()
         if "：" in line:
@@ -60,18 +61,24 @@ def parse_footer(text: str) -> ParsedRun:
         elif ":" in line:
             key, _, value = line.partition(":")
         else:
+            body_lines.append(raw_line)
             continue
         name = key.strip().upper()
-        if name in _FOOTER and _FOOTER[name] not in found:
-            found[_FOOTER[name]] = value.strip()
+        if name in _FOOTER:
+            if _FOOTER[name] not in found:
+                found[_FOOTER[name]] = value.strip()
+            continue
+        body_lines.append(raw_line)
     drive_raw = found["drive"] if "drive" in found else ""
     trails_raw = found["trails"] if "trails" in found else ""
     trails = [item.strip() for item in trails_raw.split("|") if item.strip()]
+    spoken = "\n".join(body_lines).strip()
     return ParsedRun(
         drive=_drive_of(drive_raw),
         target=found["target"] if "target" in found else "",
         summary=found["summary"] if "summary" in found else "",
         trails=trails[:8],
+        spoken_text=spoken,
     )
 
 

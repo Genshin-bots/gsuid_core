@@ -498,6 +498,11 @@ _INTERACTIVE_RELAY_ROOTS: set[str] = set()
 _DEFERRED_MAIN_DELIVERY_ROOTS: set[str] = set()
 
 
+def has_pending_interactive_deliveries() -> bool:
+    """进程内是否仍有等待回灌给主人格的交互式子任务。"""
+    return bool(_DEFERRED_MAIN_DELIVERY_ROOTS or _delivery_pending or _delivery_flush_tasks)
+
+
 def mark_interactive_relay_root(root_id: str) -> None:
     """登记「主人格转述、执行体静默」的交互式叶子根。"""
     _INTERACTIVE_RELAY_ROOTS.add(root_id)
