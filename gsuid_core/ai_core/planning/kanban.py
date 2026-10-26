@@ -755,6 +755,8 @@ async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = ""
     await AIAgentTask.update_data_by_data(select_data={"id": task.id}, update_data=update_data)
     await AIAgentTaskLog.add_log(task.id, "step_done", f"子任务完成 | output_artifact={output_artifact_id or '-'}")
     _drop_not_before_job(task.id)
+    if task.root_task_id:
+        await refresh_root_status(task.root_task_id)
 
 
 async def mark_subtask_failed(task: AIAgentTask, reason: str) -> None:
@@ -769,6 +771,8 @@ async def mark_subtask_failed(task: AIAgentTask, reason: str) -> None:
     )
     await AIAgentTaskLog.add_log(task.id, "step_failed", f"子任务失败：{reason[:400]}")
     _drop_not_before_job(task.id)
+    if task.root_task_id:
+        await refresh_root_status(task.root_task_id)
 
 
 def _drop_not_before_job(subtask_id: str) -> None:
@@ -1073,17 +1077,6 @@ async def request_subtask_approval(
         )
     else:
         approval_center.note_submit_reused(existing.request_id)
-    if not caller.startswith("capagent_"):
-        from gsuid_core.ai_core.approval.notify import WAITING_GROUP_TEXT, notify_parent_group
-
-        pending = existing
-        if pending is None and dedupe_key:
-            pending = await approval_center.AIApprovalRequest.get_pending_by_dedupe(dedupe_key)
-        if pending is None:
-            rows = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task.id)
-            pending = rows[0] if rows else None
-        if pending is not None:
-            await notify_parent_group(pending, WAITING_GROUP_TEXT)
     if task.root_task_id:
         await refresh_root_status(task.root_task_id)
 
@@ -1099,6 +1092,8 @@ async def approve_subtask(task: AIAgentTask, approved: bool, note: str = "") -> 
             update_data={"status": "pending", "updated_at": now},
         )
         await AIAgentTaskLog.add_log(task.id, "approval", f"主人批准：{note}")
+        if task.root_task_id:
+            await refresh_root_status(task.root_task_id)
         return True, "已批准，子任务进入 pending 等待调度"
     await AIAgentTask.update_data_by_data(
         select_data={"id": task.id},
@@ -1109,6 +1104,8 @@ async def approve_subtask(task: AIAgentTask, approved: bool, note: str = "") -> 
         },
     )
     await AIAgentTaskLog.add_log(task.id, "approval", f"主人拒绝：{note}")
+    if task.root_task_id:
+        await refresh_root_status(task.root_task_id)
     return True, "已拒绝，子任务标记 failed"
 
 

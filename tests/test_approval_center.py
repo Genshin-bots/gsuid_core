@@ -542,27 +542,41 @@ def test_confirm_window_follows_ttl():
 
 
 def test_confirm_dm_only_reaches_listed_masters():
-    from gsuid_core.ai_core.approval.notify import _dm_via_subscribe
+    from gsuid_core.gss import gss
+    from gsuid_core.ai_core.approval.notify import _dm_master
 
     sent: list[str] = []
 
-    class _Sub:
-        def __init__(self, uid: str) -> None:
-            self.user_id = uid
-            self.bot_id = "b"
+    class _FakeBot:
+        bot_id = "onebot"
 
-        async def send(self, text: str, force_direct: bool = False) -> None:
-            sent.append(self.user_id)
+        async def target_send(
+            self,
+            text: str,
+            target_type: str,
+            target_id: str,
+            bot_id: str,
+            bot_self_id: str,
+        ) -> None:
+            if target_type == "direct":
+                sent.append(target_id)
 
-    subs = [_Sub("m1"), _Sub("other"), _Sub("m1")]
+    row = _row()
+    row.payload_json = '{"ws_bot_id": "test_bot"}'
+
+    def _cfg(k: str, default: object = None) -> object:
+        if k == "masters":
+            return ["m1", "m2"]
+        return default
+
     with (
-        patch("gsuid_core.ai_core.approval.notify.core_config.get_config", return_value=["m1"]),
-        patch("gsuid_core.ai_core.approval.notify.gs_subscribe.get_subscribe", new=AsyncMock(return_value=subs)),
+        patch("gsuid_core.ai_core.approval.notify.core_config.get_config", side_effect=_cfg),
+        patch.object(gss, "active_bot", {"test_bot": _FakeBot()}),
     ):
-        n = _run(_dm_via_subscribe("确认码"))
-    assert n == 1
-    assert sent == ["m1"]
-    print("[OK] 确认码只发给名单里的主人，重复订阅只发一次")
+        ok = _run(_dm_master(row, "确认码"))
+    assert ok is True
+    assert sent == ["m1", "m2"]
+    print("[OK] 确认码直发给名单里的主人")
 
 
 def test_command_submit_uses_configured_ttl():

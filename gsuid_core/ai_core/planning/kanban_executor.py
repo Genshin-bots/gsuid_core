@@ -888,10 +888,6 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         # 4) 挂起不留档、不叫醒主人格。批准后的回灌另走调用会话。
         latest = await AIAgentTask.get_by_id(fresh.id)
         if latest is not None and latest.status == "waiting_approval":
-            if bot is not None and fresh.user_type != "direct":
-                from gsuid_core.ai_core.approval.notify import WAITING_GROUP_TEXT
-
-                await bot.send(WAITING_GROUP_TEXT)
             return
         output_id = latest.output_artifact_id if latest and latest.output_artifact_id else ""
         if not output_id and raw_result:
