@@ -69,6 +69,12 @@ class ApprovalPayload(TypedDict, total=False):
     agent_profile: str
     plugin_name: str
     plugin_action: str
+    # 领域扩展字段（如画布业务审批）
+    canvas_id: str
+    node_ids: list[str]
+    account_id: int
+    chat_session: str
+    point_cost: int
 
 
 @dataclass

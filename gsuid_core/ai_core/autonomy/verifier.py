@@ -36,7 +36,8 @@ def extract_facts(steps: list[AutonomyStepTrace]) -> FactPack:
         if step.is_error or output_is_failed(step.output_text):
             continue
         verified.append(step.tool_name)
-        observations.append(step.output_text.strip()[:600])
+        if step.tool_name not in META_TOOLS:
+            observations.append(step.output_text.strip()[:600])
         resources.extend(step.resource_ids)
         for match in _RESOURCE.findall(step.output_text):
             if match not in resources:

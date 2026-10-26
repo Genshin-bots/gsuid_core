@@ -42,8 +42,13 @@ def route_delivery(plan: DeliveryPlan) -> DeliveryDecision:
     return DeliveryDecision(drive, mode, pin, summary)
 
 
-def stage_text(pack: FactPack) -> str:
-    return fact_summary(pack)
+def stage_text(summary_or_pack: str | FactPack, pack: FactPack | None = None) -> str:
+    if isinstance(summary_or_pack, str):
+        body = summary_or_pack.strip()
+        if body:
+            return body
+        return fact_summary(pack) if pack is not None else ""
+    return fact_summary(summary_or_pack)
 
 
 def peek_autonomy_merge(event: Event) -> str:
@@ -89,10 +94,13 @@ def _pick_pin(drive: DriveKind, target: str, plan: DeliveryPlan) -> DeliveryPin 
         return None
     if drive == "self_explore":
         for pin in plan.care:
-            if pin.is_master and (pin.group_id or pin.user_id):
+            if pin.is_master and pin.group_id:
                 return pin
         for pin in plan.groups:
             if pin.group_id:
+                return pin
+        for pin in plan.care:
+            if pin.is_master and (pin.group_id or pin.user_id):
                 return pin
         for pin in plan.care:
             if pin.user_id:

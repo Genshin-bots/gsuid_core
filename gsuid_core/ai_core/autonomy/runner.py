@@ -5,7 +5,12 @@ import uuid
 
 from gsuid_core.models import Event
 from gsuid_core.ai_core.autonomy.tools import GuardState, bind_guard, reset_guard, build_autonomy_tools
-from gsuid_core.ai_core.autonomy.models import AutonomyStepTrace, ObservationDigest
+from gsuid_core.ai_core.autonomy.models import (
+    GroupObservation,
+    AutonomyStepTrace,
+    ObservationDigest,
+    CareTargetSnapshot,
+)
 from gsuid_core.ai_core.agent_run.support import TraceKind
 from gsuid_core.ai_core.autonomy.verifier import output_is_failed
 
@@ -118,8 +123,11 @@ async def run_autonomy_agent(
 
 def _guard(digest: ObservationDigest) -> GuardState:
     sessions: dict[str, tuple[str | None, str, str, str]] = {}
+    allowed_users: dict[str, CareTargetSnapshot] = {}
     for target in digest.care_targets:
         sessions[target.user_id] = (target.group_id, target.bot_id, target.bot_self_id, target.ws_bot_id)
+        allowed_users[target.user_id] = target
+    allowed_groups: dict[str, GroupObservation] = {g.group_id: g for g in digest.group_digests}
     return GuardState(
         persona_name=digest.persona_name,
         whitelist=frozenset(target.user_id for target in digest.care_targets),
@@ -127,6 +135,8 @@ def _guard(digest: ObservationDigest) -> GuardState:
         bot_id=digest.bot_id,
         bot_self_id=digest.bot_self_id,
         ws_bot_id=digest.ws_bot_id,
+        allowed_groups=allowed_groups,
+        allowed_users=allowed_users,
     )
 
 

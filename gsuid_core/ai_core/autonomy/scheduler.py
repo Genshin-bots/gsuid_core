@@ -36,7 +36,7 @@ from gsuid_core.ai_core.database.models import AIAutonomyActivity
 from gsuid_core.ai_core.persona.persona import Persona
 from gsuid_core.ai_core.autonomy.dispatch import STAGE_TTL_SECONDS, stage_text, route_delivery
 from gsuid_core.ai_core.autonomy.observer import build_observation
-from gsuid_core.ai_core.autonomy.verifier import fact_summary, parse_footer, extract_facts
+from gsuid_core.ai_core.autonomy.verifier import fact_summary, parse_footer, extract_facts, output_is_failed
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
@@ -188,13 +188,19 @@ class AutonomyScheduler:
         )
         mode = decision.mode
         pin = decision.pin
-        if mode == "immediate_push" and pin is not None:
+        tool_sent = any(
+            step.tool_name == "send_message_by_ai" and not step.is_error and not output_is_failed(step.output_text)
+            for step in report.steps
+        )
+        if tool_sent:
+            mode = "immediate_push"
+        elif mode == "immediate_push" and pin is not None:
             spoken = (parsed.spoken_text or decision.summary)[:400]
             sent = await _emit(pin, spoken, persona_name)
             if not sent:
                 mode = "staged_merge"
-        if mode == "staged_merge" and pin is not None:
-            text = stage_text(facts)
+        if not tool_sent and mode == "staged_merge" and pin is not None:
+            text = stage_text(decision.summary, facts)
             if text:
                 get_dispatcher().stage_merge_context(
                     make_target_key(pin.group_id, pin.user_id or None),
@@ -221,7 +227,7 @@ class AutonomyScheduler:
             created_at=time.time(),
         )
         if facts.has_substantive_outcome and decision.drive != "rest":
-            await _remember(persona_name, digest, pin, facts, activity_id)
+            await _remember(persona_name, digest, pin, decision.summary, facts, activity_id)
         self._advance(persona_name)
         logger.info(
             t(
@@ -359,6 +365,7 @@ async def _remember(
     persona_name: str,
     digest: ObservationDigest,
     pin: DeliveryPin | None,
+    decision_summary: str,
     facts: FactPack,
     activity_id: int,
 ) -> None:
@@ -369,7 +376,11 @@ async def _remember(
     bot_self = pin.bot_self_id if pin is not None and pin.bot_self_id else digest.bot_self_id
     if not bot_self:
         bot_self = "core"
-    summary = fact_summary(facts)[:500]
+    obs = fact_summary(facts)
+    if decision_summary.strip():
+        summary = f"{decision_summary.strip()}；{obs}"[:500] if obs else decision_summary.strip()[:500]
+    else:
+        summary = obs[:500]
     if not summary:
         return
     ref = f"autonomy:{activity_id}" if activity_id else f"autonomy:{persona_name}:{int(time.time())}"

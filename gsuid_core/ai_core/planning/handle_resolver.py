@@ -42,6 +42,7 @@ _PREFIX_KINDS: tuple[tuple[str, HandleKind], ...] = (
     ("res_", "artifact"),
     ("img_", "image"),
     ("dlg_", "delegation"),
+    ("note:", "artifact"),
 )
 
 
@@ -183,6 +184,28 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
         if text is None:
             return None
         return _from_knowledge(hid, text)
+    if hid.startswith("note:"):
+        _, _, rest = hid.partition(":")
+        pname, _, title = rest.partition(":")
+        if pname and title:
+            from gsuid_core.ai_core.autonomy.tools import artifact_dir, safe_filename
+
+            filename = safe_filename(title)
+            file_path = artifact_dir(pname) / filename
+            if file_path.exists():
+                text = file_path.read_text(encoding="utf-8")
+                return ResolvedHandle(
+                    id=hid,
+                    source="artifact",
+                    mime="text/plain",
+                    summary=f"{pname} 的笔记：{title}",
+                    owner_user_id="",
+                    scope_key="",
+                    payload_inline=text,
+                    payload_path=str(file_path),
+                    size_bytes=len(text.encode("utf-8")),
+                )
+        return None
     # FileOS
     if hid.startswith("to_") or hid.startswith("sa_"):
         rec = await AIToolOutputRecord.get_by_id(hid)

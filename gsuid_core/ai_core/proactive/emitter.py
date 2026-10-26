@@ -84,7 +84,15 @@ async def _sync_to_main_session(
     session: Optional[GsCoreAIAgent] = registry.get_ai_session(session_id)
 
     if session is None:
-        # 主 session 不在内存时走磁盘回退路径，使用临时 logger 续写对应窗口日志。
+        try:
+            from gsuid_core.ai_core.ai_router import get_ai_session
+
+            session = await get_ai_session(event)
+        except Exception:
+            session = None
+
+    if session is None:
+        # 主 session 无法创建时走磁盘回退路径，使用临时 logger 续写对应窗口日志。
         AISessionLogger.log_standalone_proactive(
             session_id=session_id,
             source=source,

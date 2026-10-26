@@ -344,3 +344,46 @@ def test_emit_proactive_stores_rewritten_at_not_cq(monkeypatch: pytest.MonkeyPat
     assert "@100000001" in captured["record"]
     assert captured["sync"] == captured["record"]
     assert captured["target"] == "100000001"
+
+
+def test_sync_to_main_session_activates_session_when_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.proactive.emitter import _sync_to_main_session
+
+    ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g1",
+        user_id="100000002",
+        WS_BOT_ID="ws1",
+    )
+    mock_agent = MagicMock()
+    mock_agent.append_proactive_assistant_turn = MagicMock()
+    mock_agent._session_logger = MagicMock()
+
+    class _FakeRegistry:
+        def get_ai_session(self, _sid: str) -> None:
+            return None
+
+    monkeypatch.setattr("gsuid_core.ai_core.session_registry.get_ai_session_registry", lambda: _FakeRegistry())
+    monkeypatch.setattr("gsuid_core.ai_core.ai_router.get_ai_session", AsyncMock(return_value=mock_agent))
+
+    asyncio.run(
+        _sync_to_main_session(
+            event=ev,
+            message="这是自主发送测试内容",
+            source="autonomy",
+            trigger_reason="test",
+            generator_log_files=[],
+        )
+    )
+    mock_agent.append_proactive_assistant_turn.assert_called_once_with(
+        content="这是自主发送测试内容",
+        source="autonomy",
+        trigger_reason="test",
+        generator_log_files=[],
+    )

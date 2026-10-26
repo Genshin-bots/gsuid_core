@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from contextvars import Token, ContextVar
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 from collections.abc import Callable, Sequence, Awaitable
 
 from pydantic_ai import RunContext
@@ -14,6 +14,7 @@ from gsuid_core.models import Event
 from gsuid_core.data_store import get_res_path
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_risk import HIGH_RISK_TOOL_NAMES
+from gsuid_core.ai_core.autonomy.models import GroupObservation, CareTargetSnapshot
 
 USER_PM = 6
 ARTIFACT_LIMIT_BYTES = 32 * 1024
@@ -27,6 +28,7 @@ AUTONOMY_TOOL_ALLOWLIST = frozenset(
         "list_plugin_commands",
         "run_bot_command",
         "artifact_put",
+        "send_message_by_ai",
     }
 )
 _EXECUTABLE = frozenset({"command", "prefix", "fullmatch", "keyword", "suffix"})
@@ -63,6 +65,10 @@ class GuardState:
     bot_id: str
     bot_self_id: str
     ws_bot_id: str
+    allowed_groups: dict[str, GroupObservation] = field(default_factory=dict)
+    allowed_users: dict[str, CareTargetSnapshot] = field(default_factory=dict)
+    sent_count: int = 0
+    sent_targets: list[str] = field(default_factory=list)
 
 
 CommandExecutor = Callable[[CommandHit, Event], Awaitable[str]]
@@ -313,6 +319,57 @@ async def run_bot_command(
     )
 
 
+async def index_note_node(
+    persona_name: str,
+    title: str,
+    body: str,
+    handle: str,
+    *,
+    bot_self_id: str = "",
+) -> None:
+    """把自主行动产物登记到认知节点表，供 search_cognition 和 read_handle 回想。"""
+    from datetime import datetime
+
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
+
+    ref = f"autonomy_note:{persona_name}:{title}"
+    summary = body.replace("\n", " ").strip()[:300]
+    await remember(
+        MemoryWrite(
+            kind=CogKind.SELF_NOTE,
+            ref=ref,
+            scope_key=make_scope_key(ScopeType.SELF, bot_self_id) if bot_self_id else "",
+            title=title,
+            summary=summary,
+            as_of=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            source="autonomy",
+            handle=handle,
+        )
+    )
+
+
+async def sync_persona_artifacts(persona_name: str, bot_self_id: str = "") -> int:
+    """把已有磁盘笔记同步进认知节点表，用于重启时补全索引。"""
+    folder = artifact_dir(persona_name)
+    if not folder.exists():
+        return 0
+    count = 0
+    for path_item in folder.glob("*.txt"):
+        stem = path_item.stem
+        if not stem:
+            continue
+        try:
+            content = path_item.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        handle = f"note:{persona_name}:{stem}"
+        await index_note_node(persona_name, stem, content, handle, bot_self_id=bot_self_id)
+        count += 1
+    return count
+
+
 async def artifact_put(ctx: RunContext[ToolContext], title: str, body: str) -> str:
     """把这次探索写成一份本地笔记，不发给任何人。
 
@@ -324,17 +381,135 @@ async def artifact_put(ctx: RunContext[ToolContext], title: str, body: str) -> s
     del ctx
     state = _GUARD.get()
     persona_name = state.persona_name if state is not None else "autonomy"
-    return write_artifact(title, body, persona_name=persona_name)
+    res = write_artifact(title, body, persona_name=persona_name)
+    if res.startswith("已写入"):
+        stem = safe_filename(title).removesuffix(".txt")
+        handle = f"note:{persona_name}:{stem}"
+        bot_self_id = state.bot_self_id if state is not None else ""
+        await index_note_node(persona_name, stem, body, handle, bot_self_id=bot_self_id)
+        return f"已写入笔记《{stem}》（句柄: {handle}）"
+    return res
+
+
+async def send_message_by_ai(
+    ctx: RunContext[ToolContext],
+    text: str,
+    target_id: str = "",
+    target_type: str = "group",
+    group_id: str = "",
+    user_id: str = "",
+) -> str:
+    """主动向观察底片中的群或关心对象发送一条消息。
+
+    单次自主行动只允许成功发送 1 条消息。发送前框架会自动进行防打扰与频次风控。
+
+    Args:
+        ctx: 工具上下文。
+        text: 要发送的消息内容（以你的人格口吻自然表达）。
+        target_id: 目标 ID，可以是群号（如 "123456"）或用户 ID（如 "10001"），必须来自底片。
+        target_type: 目标类型，"group"（群聊）或 "user"（私聊），默认为 "group"。
+        group_id: 可选，群号（若传入则优先作为群聊目标）。
+        user_id: 可选，用户 ID（若传入且无群号则作为私聊目标）。
+    """
+    del ctx
+    state = _GUARD.get()
+    if state is None:
+        return "拒绝：当前不在自主行动里"
+    if state.sent_count >= 1:
+        return "⚠️ 本次自主行动已经发送过消息了，请勿单轮重复刷屏。"
+
+    body = text.strip()
+    if not body:
+        return "拒绝发送：消息内容不能为空"
+
+    dest_group_id: str | None = None
+    dest_user_id: str = ""
+    bot_id = state.bot_id
+    bot_self_id = state.bot_self_id
+    ws_bot_id = state.ws_bot_id
+
+    if group_id.strip():
+        dest_group_id = group_id.strip()
+    elif user_id.strip():
+        dest_user_id = user_id.strip()
+    elif target_id.strip():
+        tid = target_id.strip()
+        ttype = target_type.strip().lower()
+        if ttype == "group":
+            dest_group_id = tid
+        elif ttype == "user":
+            dest_user_id = tid
+        elif tid in state.allowed_groups:
+            dest_group_id = tid
+        elif tid in state.allowed_users:
+            dest_user_id = tid
+        else:
+            dest_group_id = tid
+    else:
+        if len(state.allowed_groups) == 1 and not state.allowed_users:
+            dest_group_id = next(iter(state.allowed_groups.keys()))
+        elif len(state.allowed_users) == 1 and not state.allowed_groups:
+            dest_user_id = next(iter(state.allowed_users.keys()))
+        else:
+            avail_g = list(state.allowed_groups.keys())
+            avail_u = list(state.allowed_users.keys())
+            return f"拒绝发送：必须指定发送目标 target_id。底片可选群：{avail_g}，关心用户：{avail_u}"
+
+    if dest_group_id:
+        if dest_group_id not in state.allowed_groups:
+            avail_g = list(state.allowed_groups.keys())
+            return f"拒绝发送：群 {dest_group_id} 不在本次观察底片中。只能发送给底片内的群：{avail_g}"
+        g_obs = state.allowed_groups[dest_group_id]
+        bot_id = g_obs.bot_id or bot_id
+        bot_self_id = g_obs.bot_self_id or bot_self_id
+        ws_bot_id = g_obs.ws_bot_id or ws_bot_id
+    elif dest_user_id:
+        if dest_user_id not in state.allowed_users:
+            avail_u = list(state.allowed_users.keys())
+            return f"拒绝发送：用户 {dest_user_id} 不在本次关心名单中。只能发送给名单内的用户：{avail_u}"
+        u_snap = state.allowed_users[dest_user_id]
+        dest_group_id = u_snap.group_id
+        bot_id = u_snap.bot_id or bot_id
+        bot_self_id = u_snap.bot_self_id or bot_self_id
+        ws_bot_id = u_snap.ws_bot_id or ws_bot_id
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
+
+    event = Event(
+        bot_id=bot_id or "Bot",
+        real_bot_id=bot_id or "Bot",
+        bot_self_id=bot_self_id,
+        user_id=dest_user_id or "",
+        user_pm=6,
+        user_type="group" if dest_group_id else "direct",
+        group_id=dest_group_id,
+        WS_BOT_ID=ws_bot_id or None,
+    )
+    sent = await emit_proactive_message(
+        event,
+        body[:400],
+        source="autonomy",
+        trigger_reason=f"{state.persona_name} 自主发信",
+        suppress_when_heartbeat_recent=False,
+    )
+    if sent:
+        state.sent_count += 1
+        target_desc = f"群 {dest_group_id}" if dest_group_id else f"用户 {dest_user_id}"
+        state.sent_targets.append(target_desc)
+        return f"已成功向 {target_desc} 发送消息：{body[:100]}"
+    return "发送失败：当前处于冷却、频次限额或网络离线，消息未发出。"
 
 
 def build_autonomy_tools() -> list[Tool[ToolContext]]:
-    """已注册的搜索 / 读图工具，加上本文件的三个命令。缺一个就跳过，不改去装发送工具。"""
+    """已注册的搜索 / 读图工具，加上本文件的四个命令。缺一个就跳过。"""
     from gsuid_core.ai_core.register import find_tool_base
 
     mounted: list[Tool[ToolContext]] = [
         Tool(list_plugin_commands),
         Tool(run_bot_command),
         Tool(artifact_put),
+        Tool(send_message_by_ai),
     ]
     for name in ("find_tools", "web_search_tool", "web_fetch_tool", "read_image", "search_cognition"):
         base = find_tool_base(name)

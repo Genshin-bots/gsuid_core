@@ -166,7 +166,7 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
         "TARGET: 关心对象的用户 ID，或群 ID；休息时留空",
         "SUMMARY: 一句话，只写工具真正返回的内容",
         "TRAILS: 用 | 分开的未完线索，没有就留空",
-        "不能自己指定收件群。run_bot_command 只能传观察名单里的用户 ID。",
+        "发消息调用 send_message_by_ai 并指定底片内的群号或用户 ID。run_bot_command 只能传观察名单里的用户 ID。",
         "find_tools 这一轮不会装上新工具。查网页用已挂的搜索和抓取，看图用已挂的读图。",
         "已经带「[你]」回复过、或已在后台任务里推进的事项，不要重复查。",
         f"当前情绪强度约 {digest.mood_score:.2f}。",

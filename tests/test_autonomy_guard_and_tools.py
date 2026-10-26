@@ -1,6 +1,7 @@
 """命令代跑的权限、名单和工具表白名单。"""
 
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from collections.abc import Sequence
 
 from sqlmodel import Field
@@ -11,11 +12,16 @@ from gsuid_core.ai_core.autonomy.binds import iter_bind_tables, collect_bound_ui
 from gsuid_core.ai_core.autonomy.tools import (
     USER_PM,
     CommandHit,
+    GuardState,
+    bind_guard,
+    reset_guard,
     write_artifact,
+    send_message_by_ai,
     run_guarded_command,
     build_autonomy_tools,
     autonomy_tool_allowed,
 )
+from gsuid_core.ai_core.autonomy.models import GroupObservation
 from gsuid_core.utils.database.base_models import Bind
 
 
@@ -117,14 +123,14 @@ def test_unknown_user_and_regex_never_execute() -> None:
     assert "没有匹配" in asyncio.run(_regex())
 
 
-def test_autonomy_tools_exclude_send_and_high_risk() -> None:
+def test_autonomy_tools_allow_send_and_exclude_high_risk() -> None:
     assert autonomy_tool_allowed("run_bot_command")
-    assert not autonomy_tool_allowed("send_message_by_ai")
+    assert autonomy_tool_allowed("send_message_by_ai")
     for name in HIGH_RISK_TOOL_NAMES:
         assert not autonomy_tool_allowed(name)
     mounted = {tool.name for tool in build_autonomy_tools()}
     assert "run_bot_command" in mounted
-    assert "send_message_by_ai" not in mounted
+    assert "send_message_by_ai" in mounted
     assert mounted <= {
         "find_tools",
         "web_search_tool",
@@ -134,7 +140,71 @@ def test_autonomy_tools_exclude_send_and_high_risk() -> None:
         "list_plugin_commands",
         "run_bot_command",
         "artifact_put",
+        "send_message_by_ai",
     }
+
+
+def test_autonomy_send_message_by_ai_success_to_group() -> None:
+    import asyncio
+    from unittest.mock import MagicMock
+
+    group_obs = GroupObservation(
+        group_id="test_group_1",
+        summary="测试群近况",
+        recent_lines=[],
+        last_human_ts=100.0,
+        bot_id="mock_bot",
+        bot_self_id="mock_bot_self",
+        ws_bot_id="mock_ws",
+        session_key="group:test_group_1",
+    )
+    state = GuardState(
+        persona_name="test_persona",
+        whitelist=frozenset(),
+        sessions={},
+        bot_id="mock_bot",
+        bot_self_id="mock_bot_self",
+        ws_bot_id="mock_ws",
+        allowed_groups={"test_group_1": group_obs},
+        allowed_users={},
+    )
+
+    token = bind_guard(state)
+    try:
+        with patch("gsuid_core.ai_core.proactive.emitter.emit_proactive_message", new=AsyncMock(return_value=True)):
+            ctx = MagicMock()
+            result = asyncio.run(send_message_by_ai(ctx, text="测试问候语", group_id="test_group_1"))
+            assert "已成功向 群 test_group_1 发送消息" in result
+            assert state.sent_count == 1
+            # 再次调用触发单轮限额熔断
+            second_result = asyncio.run(send_message_by_ai(ctx, text="再次问候", group_id="test_group_1"))
+            assert "已经发送过消息了" in second_result
+    finally:
+        reset_guard(token)
+
+
+def test_autonomy_send_message_by_ai_rejects_unlisted_target() -> None:
+    import asyncio
+    from unittest.mock import MagicMock
+
+    state = GuardState(
+        persona_name="test_persona",
+        whitelist=frozenset(),
+        sessions={},
+        bot_id="mock_bot",
+        bot_self_id="mock_bot_self",
+        ws_bot_id="mock_ws",
+        allowed_groups={},
+        allowed_users={},
+    )
+    token = bind_guard(state)
+    try:
+        ctx = MagicMock()
+        result = asyncio.run(send_message_by_ai(ctx, text="你好", group_id="unknown_group"))
+        assert "不在本次观察底片中" in result
+        assert state.sent_count == 0
+    finally:
+        reset_guard(token)
 
 
 def test_artifact_rejects_empty_and_oversized_notes(tmp_path: Path) -> None:
