@@ -39,6 +39,7 @@ from gsuid_core.ai_core.utils import (
     remainder_after_protocol_tags,
     _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
+    normalize_escaped_control_tags_in_parts,
 )
 from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE, capability_hit_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
@@ -785,6 +786,8 @@ class LoopPhase(RunOnceHost):
 
         self._session_logger.log_node_transition("CallToolsNode")
 
+        # 先还原转义控制标签（如 &lt;SILENCE&gt; / &lt;think&gt;），再拆思考与清洗
+        node.model_response.parts = normalize_escaped_control_tags_in_parts(node.model_response.parts)
         # 流式请求下 pydantic_ai 未必能拆出内嵌 <think> 标签（仅当标签作为 独立 SSE chunk
         node.model_response.parts = _split_embedded_thinking(node.model_response.parts, st.thinking_tags)
         # 紧接着清除文本里泄漏的工具调用标记残留（弱模型 / 兼容网关常把工具

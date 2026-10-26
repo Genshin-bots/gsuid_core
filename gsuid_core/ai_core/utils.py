@@ -88,14 +88,18 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
         "<no_tool_call>",
         "<沉默>",
         "[沉默]",
+        "&lt;SILENCE&gt;",
+        "&lt;沉默&gt;",
+        "＜SILENCE＞",
+        "＜沉默＞",
     }
 )
 
 # 协议标签（开/闭/自闭合）。代码块内字面量不剥，避免教学回复被当成沉默。
-# 模型常把 <SILENCE> 写成 CJK「<沉默>」；不认会当正文发出并盖掉本轮已写好的答复。
+# 模型常把 <SILENCE> 写成 CJK「<沉默>」或转义为 &lt;SILENCE&gt;。
 _PROTOCOL_TAG_RE = re.compile(
-    r"<\s*/?\s*(?:silence|end_turn|no_tool_call|沉默)\s*/?\s*>"
-    r"|\[\s*(?:silence|沉默)\s*\]",
+    r"(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*/?\s*(?:silence|end_turn|no_tool_call|沉默)\s*/?\s*(?:>|&gt;|&#62;|&#x3e;|＞|\\>)"
+    r"|(?:(?:\[|\\\[)\s*(?:silence|沉默)\s*(?:\]|\\\]))",
     re.IGNORECASE,
 )
 _PROTOCOL_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
@@ -103,9 +107,39 @@ _BARE_SILENCE_RE = re.compile(r"^\s*silence\s*$", re.IGNORECASE)
 _PROTOCOL_EMPTYISH_RE = re.compile(r"^[\s\-–—.,，。！？!?、；;：:\u3000·•…]*$")
 # 截断残片：ILENCE> / SILENCE> / <SILENCE / 沉默> / <沉默。裸「沉默」是可见台词。
 _SILENCE_FRAGMENT_RE = re.compile(
-    r"^\s*(?:ilence>|silence>?|<silence/?|沉默>|<沉默/?)\s*$",
+    r"^\s*(?:ilence>|silence>?|<silence/?|沉默>|<沉默/?|"
+    r"&lt;silence/?|silence&gt;|＜silence/?|silence＞)\s*$",
     re.IGNORECASE,
 )
+
+# 框架控制/协议标签白名单名（转义还原仅匹配此类，避免误伤业务代码）
+_CONTROL_TAG_NAMES_PATTERN = r"(?:/?\s*(?:silence|end_turn|no_tool_call|沉默|think|tool_calls?)\s*/?|meme[：:].*?)"
+_ESCAPED_CONTROL_TAG_RE = re.compile(
+    r"(?:&lt;|&#60;|&#x3c;|＜|\\<)\s*(" + _CONTROL_TAG_NAMES_PATTERN + r")\s*(?:&gt;|&#62;|&#x3e;|＞|\\>)",
+    re.IGNORECASE,
+)
+_ESCAPED_TAG_HINTS: tuple[str, ...] = ("&lt;", "&#60;", "&#x3c;", "＜", "\\<")
+_CONTROL_WORD_HINTS: tuple[str, ...] = ("silence", "沉默", "think", "tool_call", "no_tool_call", "end_turn", "meme")
+
+
+def normalize_escaped_control_tags(text: str) -> str:
+    """还原模型输出的转义特殊控制标签，反引号代码块受保护保留。"""
+    if not text or not any(h in text for h in _ESCAPED_TAG_HINTS):
+        return text
+    lower = text.lower()
+    if not any(k in lower for k in _CONTROL_WORD_HINTS):
+        return text
+    held: list[str] = []
+
+    def _hold(m: re.Match[str]) -> str:
+        held.append(m.group(0))
+        return f"\x00{len(held) - 1}\x00"
+
+    protected = _PROTOCOL_CODE_SPAN_RE.sub(_hold, text)
+    normalized = _ESCAPED_CONTROL_TAG_RE.sub(r"<\1>", protected)
+    for i, chunk in enumerate(held):
+        normalized = normalized.replace(f"\x00{i}\x00", chunk)
+    return normalized
 
 
 def remainder_after_protocol_tags(text: str) -> str:
@@ -133,6 +167,7 @@ def is_silence_marker(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
         return False
+    raw = normalize_escaped_control_tags(raw)
     if _BARE_SILENCE_RE.match(raw) is not None:
         return True
     if _SILENCE_FRAGMENT_RE.match(raw) is not None:
@@ -307,6 +342,7 @@ def _strip_tool_call_artifacts(text: str) -> str:
     """
     if "tool_call" not in text.lower():
         return text
+    text = normalize_escaped_control_tags(text)
     cleaned = _TOOL_CALL_BLOCK_PATTERN.sub("", text)
     cleaned = _strip_unclosed_tool_call_json(cleaned)
     cleaned = _TOOL_CALL_TAG_PATTERN.sub("", cleaned)
@@ -2996,3 +3032,21 @@ def _sanitize_tool_call_artifacts_in_parts(
     if not kept:
         return [TextPart(content="")]
     return kept
+
+
+def normalize_escaped_control_tags_in_parts(
+    parts: Sequence[ModelResponsePart],
+) -> List[ModelResponsePart]:
+    """规范化 TextPart 内泄漏的转义控制标签（如 &lt;SILENCE&gt; / &lt;think&gt;）。"""
+    result: List[ModelResponsePart] = []
+    for part in parts:
+        if not isinstance(part, TextPart):
+            result.append(part)
+            continue
+        normalized = normalize_escaped_control_tags(part.content)
+        if normalized == part.content:
+            result.append(part)
+        else:
+            part.content = normalized
+            result.append(part)
+    return result
