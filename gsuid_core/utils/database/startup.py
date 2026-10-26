@@ -183,6 +183,15 @@ exec_list = [
     "ALTER TABLE aimemerecord ADD COLUMN assign_default_pack BOOLEAN DEFAULT 0;",
     # 旧库的自主行动审计没有会话号。create_all 不给已有表补列。
     "ALTER TABLE aiautonomyactivity ADD COLUMN session_id VARCHAR(256) DEFAULT '';",
+    # 确认码审批。create_all 不给已有表补列。空哈希的旧行保持原行为。
+    "ALTER TABLE aiapprovalrequest ADD COLUMN confirm_code_hash VARCHAR(64) DEFAULT '';",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN dedupe_key VARCHAR(512) DEFAULT '';",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN effect TEXT DEFAULT '';",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN expires_at INTEGER DEFAULT 0;",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN operator_user_pm INTEGER DEFAULT 6;",
+    "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_dedupe_key ON aiapprovalrequest (dedupe_key);",
+    "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_expires_at ON aiapprovalrequest (expires_at);",
+    "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_confirm_code_hash ON aiapprovalrequest (confirm_code_hash);",
 ]
 
 

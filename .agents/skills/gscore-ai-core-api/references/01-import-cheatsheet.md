@@ -308,6 +308,6 @@ from gsuid_core.ai_core.approval import (
 ```
 
 LLM 侧配套工具（`buildin_tools/approval_tools.py`，随框架注册）：
-`respond_approval` / `list_pending_approvals`（统一转达 / 列表）、
+`check_approval` / `list_pending_approvals`（查状态 / 列表；不批准）、
 `ask_user` / `request_user_approval` / `request_master_approval`（审批交互能力族）。
 工具强制审批用 `@ai_tools(approval="user"|"master")` 声明，见 [§2](./02-ai-tools-decorator.md)。

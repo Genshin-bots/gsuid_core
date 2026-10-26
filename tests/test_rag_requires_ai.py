@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 import subprocess
@@ -27,11 +28,17 @@ def test_knowledge_import_is_a_shell_when_ai_disabled() -> None:
         print("ok")
         """
     )
+    env = os.environ.copy()
+    # 子进程固定 UTF-8，否则中文警告在 GBK 控制台下无法按 utf-8 读回。
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(
         [sys.executable, "-c", script],
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env=env,
     )
     assert completed.returncode == 0, completed.stderr
     assert "ok" in completed.stdout

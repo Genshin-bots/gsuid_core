@@ -127,11 +127,17 @@ async def init_planning() -> None:
     logger.info(t("log.ai.kanban_task_orchestration_layer_ok"))
 
 
-def _register_kanban_approval_category() -> None:
-    """kanban_subtask 审批领域：批准 → 子任务回 pending + kick_root；拒绝 → failed。
+def _drop_kept_capability_session(session_id: str) -> None:
+    """旧票改走执行器时，关掉挂起时留下的能力代理会话。"""
+    if not session_id.startswith("capagent_"):
+        return
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-    TTL 设 7 天：插件安装等审批可能隔夜才被主人处理，不能按命令级 30 分钟过期。
-    """
+    get_ai_session_registry().remove_ai_session(session_id)
+
+
+def _register_kanban_approval_category() -> None:
+    """kanban_subtask。ttl 只给 expires_at 为空的旧票；新票写 600 秒。"""
     import asyncio
 
     from gsuid_core.ai_core.approval import AIApprovalRequest, register_approval_category
@@ -139,26 +145,45 @@ def _register_kanban_approval_category() -> None:
     from . import kanban
     from .models import AIAgentTask
 
+    def _payload_str(raw: str, key: str) -> str:
+        import json
+
+        data = json.loads(raw or "{}")
+        if not isinstance(data, dict) or key not in data:
+            return ""
+        val = data[key]
+        if isinstance(val, str):
+            return val
+        return ""
+
     async def _on_resolve(req: AIApprovalRequest, approved: bool, note: str) -> str:
         task = await AIAgentTask.get_by_id(req.ref_key)
         if task is None:
-            return f"⚠️ 请求 #{req.short_id} 对应的子任务已不存在（可能已被清理）。"
-        ok, msg = await kanban.approve_subtask(task, approved, note)
-        if not ok:
-            return f"⚠️ {msg}"
-        if approved:
-            from .kanban_executor import kick_root
+            return f"请求 #{req.short_id} 对应的子任务已不存在。"
+        if not req.confirm_code_hash:
+            ok, msg = await kanban.approve_subtask(task, approved, note)
+            if not ok:
+                return msg
+            if approved:
+                from .kanban_executor import kick_root
 
-            asyncio.create_task(kick_root(task.root_task_id or task.id))
-            # 批准 ≠ 完成：拦住人格在这一步就宣布"已搞定"（实测会话 fa7eef 踩坑）
-            return (
-                "✅ 已转达批准，专职助手已被重新调度、正在**继续执行剩余步骤**"
-                "（如插件的实际安装 → 热加载 → 功能自测，现在都还没完成）。\n"
-                "⚠️ 现在请只简短回主人「好的，正在装 / 正在继续」之类的话，**切勿**说"
-                "「已安装好 / 已搞定 / 现在能用了 / 测试通过」——这些都还没发生。等它真正"
-                "完成后框架会另发一条完成播报，到那时再如实转达。"
-            )
-        return f"🚫 已转达拒绝：子任务已标记 failed。{msg}"
+                _drop_kept_capability_session(req.origin_session_id)
+                asyncio.create_task(kick_root(task.root_task_id or task.id))
+                return "已转达批准，专职助手已被重新调度。"
+            return f"已转达拒绝：子任务已标记 failed。{msg}"
+        if not approved:
+            await kanban.approve_subtask(task, False, note)
+            return f"已拒绝 #{req.short_id}。"
+        action = _payload_str(req.payload_json, "plugin_action")
+        plugin_name = _payload_str(req.payload_json, "plugin_name")
+        if action and plugin_name:
+            from gsuid_core.ai_core.buildin_tools.plugin_developer import perform_approved_install
+
+            return await perform_approved_install(task, plugin_name, action)
+        from .models import AIAgentTaskLog
+
+        await AIAgentTaskLog.add_log(task.id, "approval", f"主人批准：{note}"[:400])
+        return f"已批准 #{req.short_id}。按原任务继续，不要重做刚批准的那一步。"
 
     register_approval_category("kanban_subtask", _on_resolve, ttl_seconds=7 * 86400)
 

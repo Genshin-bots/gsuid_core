@@ -25,7 +25,7 @@ ad-hoc artifact **不属于任何 Kanban 树**，仅供 webconsole / artifacts A
 
 import time
 import hashlib
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 from contextlib import asynccontextmanager
 
 from gsuid_core.bot import Bot
@@ -40,6 +40,9 @@ from gsuid_core.ai_core.agent_node import (
     compose_task_prompt,
     resolve_pack_tool_names,
 )
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
 # 能力代理失败时返回字符串的统一前缀；调用方（kanban_executor）据此识别
 # "代理跑挂了"。任何修改都应同时检查所有引用点。
@@ -87,6 +90,43 @@ def _strip_non_render_cap_deny(tools: ToolList, *, node_id: str) -> ToolList:
             )
         )
     return kept
+
+
+def capability_tools(profile_id: str, ev: Optional[Event]) -> ToolList:
+    """节点白名单。续作不再做一次任务向量回填，避免换一套工具名。"""
+    node = get_node(profile_id)
+    if node is None:
+        return []
+    tools = _strip_non_render_cap_deny(_resolve_tools(node), node_id=node.node_id)
+    from gsuid_core.ai_core.tool_risk import strip_high_risk_tools
+
+    return strip_high_risk_tools(tools, ev)
+
+
+async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional[Event]) -> Optional["GsCoreAIAgent"]:
+    """进程重启后用同一个 session_id 拉起。不发送原来的任务书。"""
+    node = get_node(profile_id)
+    if node is None:
+        return None
+    from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    agent = create_agent(
+        system_prompt=compose_task_prompt(node),
+        max_tokens=ai_config.get_config("task_max_tokens").data,
+        max_iterations=ai_config.get_config("task_max_iterations").data,
+        create_by="CapabilityAgent",
+        task_level="high",
+        session_id=session_id,
+        is_subagent=True,
+        dynamic_tools=True if has_dynamic_pack(node.tool_packs) else None,
+        wall_clock_budget=420.0,
+        capability_node_id=node.node_id,
+    )
+    get_ai_session_registry().set_ai_session(session_id, agent)
+    _link_capability_loggers(ev, agent, session_id)
+    return agent
 
 
 @asynccontextmanager
@@ -301,6 +341,17 @@ async def run_capability_agent(
             logger.error(i18n_t("log.ai.cap_agent_fail_execution_failed", p0=node.node_id, e=e))
             return f"{CAPABILITY_AGENT_ERROR_PREFIX}: {e}"
         finally:
-            session_logger = agent._session_logger
-            if session_logger is not None:
-                session_logger.close()
+            from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+            plan_ctx = get_plan_context()
+            keep = False
+            if plan_ctx is not None and plan_ctx.task_id:
+                from gsuid_core.ai_core.planning.models import AIAgentTask
+
+                held = await AIAgentTask.get_by_id(plan_ctx.task_id)
+                keep = held is not None and held.status == "waiting_approval"
+            # 挂起后还要 session.run 续作，日志和注册表都留着。
+            if not keep:
+                session_logger = agent._session_logger
+                if session_logger is not None:
+                    session_logger.close()

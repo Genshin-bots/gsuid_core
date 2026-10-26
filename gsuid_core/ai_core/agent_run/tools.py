@@ -294,6 +294,10 @@ class ToolsPhase(RunOnceHost):
             exclusive=exclusive,
             ceiling=_session_tool_ceiling(),
         )
+        from gsuid_core.ai_core.approval.session_ctx import session_has_pending
+
+        if session_has_pending(self.session_id or "") and "check_approval" not in names:
+            names = [*names, "check_approval"]
         self._session_toolset_frozen = names
         self._session_toolset_tags = tags
         out: ToolList = []

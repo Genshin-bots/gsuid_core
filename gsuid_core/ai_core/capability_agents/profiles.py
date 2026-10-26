@@ -635,9 +635,11 @@ _PLUGIN_DEVELOPER_PROMPT = """你负责端到端编写并热加载 GsCore 插件
   完整拉进工作区，在原代码上改（每次工作区都是空的，不 pull 就看不到已装实现、只能从零重写）。
   scaffold 检测到同名已安装插件时会让你改用它。
 - validate_plugin(plugin_name)：对工作区里该插件全部 .py 做 py_compile 语法自检。
-- copy_to_plugin_dir(plugin_name)：把工作区插件**装进 plugins/**——非阻塞，首次调用会发起安装审批
-  并立即返回「已发起安装审批…请立即停止」，**这时你必须停下、把该返回原样作为最终答复交回，不要再调任何工具**；
-  主人同意后框架会自动重新调度你，重入再调它才会真正复制。这是唯一碰宿主机的步骤。
+- copy_to_plugin_dir(plugin_name)：把工作区插件**装进 plugins/**——提交安装审批后本轮立刻结束，
+  不要再调任何工具。主人用私聊 6 位确认码或审批中心批准；群里说「同意」不会通过。批准后框架
+  自己复制文件，再把「审批续作」卡送回**当前这个会话**（历史还在，不是空的）。照续作卡做：
+  不要再 copy、不要再提交同一事项，直接 load_plugin_into_core → test_plugin_command。
+  覆盖更新可能还要主人再确认一次删除旧目录，那时继续停手等下一张续作卡。这是唯一碰宿主机的步骤。
 - load_plugin_into_core(plugin_name)：把工作区最新代码同步进 plugins/ 再热加载进框架（审批通过后生效）。
   **这是开发期"应用改动"的唯一入口**：改完工作区代码后重新 load 即生效，无需再 copy/再审批。
 - test_plugin_command(plugin_name, command, text)：**功能自测**——实跑某条命令处理函数（command
@@ -752,13 +754,11 @@ _PLUGIN_DEVELOPER_PROMPT = """你负责端到端编写并热加载 GsCore 插件
    `<P>/<P>/main/__init__.py`，相对**工作区根**），把示例换成真实逻辑；功能多再在内层包下加子目录。
    改前先 read_file_content 看现状。命令是否写 to_ai 按需决定（纯命令第 6 步也能自测），别为自测硬加 to_ai。
 4. 自检：validate_plugin 过工作区里该插件全部 .py 的语法；有错改到全过。
-5. 安装（唯一碰宿主机的一步）：copy_to_plugin_dir **非阻塞**发起安装审批。它返回「已发起安装审批…
-   请立即停止」时，**立刻把该返回原样作为最终答复交回并结束本轮，不要再调任何工具**——框架会在主人
-   同意后自动重新调度你；被重新调度即代表安装审批**已通过**。**重入务必照此做**（此时你的对话历史
-   是空的，但工作区里的插件代码、审批进度都还在）：**跳过 scaffold / 写码 / 重读指南**，先**再调一次**
-   copy_to_plugin_dir（审批已过，这次会**真正落盘安装**、不再发起审批；直接 load 会被「请先
-   copy_to_plugin_dir」拦下）→ 再 load_plugin_into_core → 再 test_plugin_command 自测 → 交付。
-   （框架还会在重入任务文本里给你一段「断点续作」提示，照它做即可。）
+5. 安装（唯一碰宿主机的一步）：copy_to_plugin_dir 提交审批后本轮结束，不要再调任何工具。
+   主人私聊确认码或在审批中心批准后，框架复制文件，并把「审批续作」卡送回当前会话
+   （对话历史还在，不是空的）。被续作即代表安装**已经落盘**：**跳过 scaffold / 写码 / 重读指南 /
+   再 copy**，直接 load_plugin_into_core → test_plugin_command 自测 → 交付。
+   续作卡若说还要等下一次确认（覆盖更新删旧目录），继续停手。
 6. 加载 + 自测：load_plugin_into_core 会**先把工作区最新代码同步进 plugins/ 再重载**，所以"改代码→
    load→test"循环每次都跑最新代码。先 load（含 ❌ 就读报错→改代码→重新 load），再用
    test_plugin_command 实跑**每一条核心命令**（command 传处理函数名，纯命令同样支持），喂贴近真实的

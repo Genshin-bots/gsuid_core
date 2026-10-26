@@ -249,6 +249,35 @@ def delivery_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
     return f"[框架·任务完成]\n{delivery}\n（系统：一句收尾；有图就发出；要出图委派 render。{at_hint}{title_ban}）"
 
 
+def approval_resume_line(
+    *,
+    task_id: str,
+    ordinal: int,
+    display_name: str,
+    goal_line: str,
+    short_id: str,
+    effect: str,
+    happened: str,
+    phase: str,
+    next_step: str,
+    handle_line: str,
+) -> str:
+    """审批通过后的续作卡。不要用交付帧开头，否则入史会被收成一行。"""
+    goal = " ".join(goal_line.split())[:180]
+    done = " ".join(happened.split())[:1500]
+    return (
+        "审批续作。\n"
+        f"任务：{task_id} #{ordinal} {display_name}\n"
+        f"目标：{goal}\n"
+        f"审批 #{short_id}。批准后：{effect}\n"
+        f"刚刚：{done}\n"
+        f"账本：{phase}\n"
+        f"句柄：{handle_line}\n"
+        f"下一步：{next_step}\n"
+        "不要再 scaffold，不要再提交同一事项的审批。"
+    )
+
+
 AUTONOMY_MERGE_PREFIX = "（系统：你在空闲自主行动时完成了以下探索或关心行动："
 AUTONOMY_PROACTIVE_FACT_PREFIX = "（系统校验：以下是你本次自主行动真实执行成功的工具记录与返回结果："
 

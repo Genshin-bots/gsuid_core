@@ -78,6 +78,8 @@ class RunOnceState:
     #: 本 ModelRequest 流式已见函数 ToolCall；中间 OS 不再入出站流
     stream_saw_fn_tool: bool = False
     generation_cancelled: bool = False
+    # 工具返回以 APPROVAL_HALT_MARK 开头：不再向模型要下一轮。
+    approval_halted: bool = False
     cancel_ev: Any | None = None
     # 出站话术：free / silence_only / status_ok / framework_nudge /
     # framework_deliver / delivered（终局沉默，见 speech_policy）

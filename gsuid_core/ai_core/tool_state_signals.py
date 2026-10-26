@@ -93,7 +93,7 @@ async def get_state_driven_families(ev: Optional[Event], has_active_task: bool =
 
     判定依据是"用户名下确实存在的持久实体"，而非当前这句话的语义：
     - 有活跃(running/waiting_approval) Kanban 任务 → 长期任务编排 + 产物 两族
-      （主人格随时可能 fail_task_tree / respond_approval / 追问产物原文，
+      （主人格随时可能 fail_task_tree / 追问产物原文，
       即 A-1 要求"随时可调"的 artifact_get_recent）；
     - 有近 6h 内刚完成的根任务 → 至少挂 产物 族（追问溯源）；
     - 有未完成(pending/paused)的定时任务 → 定时任务 族（改时间 / 取消 / 暂停…）；

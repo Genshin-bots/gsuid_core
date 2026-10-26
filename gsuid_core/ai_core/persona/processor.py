@@ -5,11 +5,13 @@
 支持注入情绪状态和群聊上下文。
 """
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from .mood import get_mood_description
 from .resource import load_persona
 from .settings import get_master_title
 from ..base_prompts import join_framework_constraints
-from ..buildin_tools import get_current_date
 
 
 def _render_system_constraints(char_name: str) -> str:
@@ -78,8 +80,8 @@ async def build_persona_prompt(
     if speech_and_answer:
         persona_content += f"\n{speech_and_answer}"
     # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定。
-    # 精确到分的当前时间已由 user_message 侧补上。
-    current_date = clock_date if clock_date else await get_current_date(format="%Y年%m月%d日")
+    # 精确到分的当前时间已由 user_message 侧补上。不经 buildin_tools，避免拼装人设时注册整库工具。
+    current_date = clock_date or datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y年%m月%d日")
 
     # 稳定前缀：人设 + 合规 + 工具编排。正文来自该人格绑定的提示词组。
     role = render_prompt(char_name, "role_playing_start")

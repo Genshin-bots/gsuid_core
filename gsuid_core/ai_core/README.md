@@ -172,9 +172,9 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 ### `approval/` — 统一审批中心（2026-07-07）
 
 一张 `AIApprovalRequest` 表 + `submit`/`resolve` 两个动词 + category 领域回调
-（`command_exec` / `kanban_subtask` / `tool_call` / `agent_request`）。三个裁决
-入口（对话工具 `respond_approval`、`/api/ai/approvals`、Kanban 看板兼容端点）
-全部落到本模块；`@ai_tools(approval=...)` 是它的工具策略门。
+（`command_exec` / `kanban_subtask` / `tool_call` / `agent_request`）。裁决入口是
+私聊 6 位确认码和 `/api/ai/approvals`（Kanban 看板兼容端点同样落到本模块）。
+群里说「同意」不会通过。`@ai_tools(approval=...)` 是它的工具策略门。
 
 ### `capability_agents/` — 能力代理（AgentNode task-mode 实例化）
 

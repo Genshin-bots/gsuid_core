@@ -431,6 +431,12 @@ async def _create_subagent_impl(
             ids = [n.node_id for n in list_persona_capability_nodes(_pn)][:8]
             listed = "、".join(ids) if ids else "（无）"
             return f"当前人格未启用能力代理 `{pid}`。可用 node_id：{listed}"
+        if pid == "plugin_developer_agent":
+            from gsuid_core.ai_core.approval import plugin_install_block_reason
+
+            blocked_install = await plugin_install_block_reason()
+            if blocked_install:
+                return blocked_install
         from gsuid_core.ai_core.tool_risk import refuse_master_only_node
         from gsuid_core.ai_core.agent_node import get_node
 

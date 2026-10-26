@@ -25,12 +25,10 @@ from gsuid_core.models import (
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.trigger import Trigger, dispatch_sort_key
 from gsuid_core.global_val import get_platform_val, mark_command_dirty
-from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
 from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
-from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.followup_window import (
     note_hard_trigger,
@@ -44,7 +42,6 @@ from gsuid_core.utils.plugins_config.gs_config import (
     log_config,
 )
 from gsuid_core.utils.database.global_val_models import DataType
-from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
 
 
 @dataclass
@@ -59,8 +56,8 @@ class _SoftDebounceItem:
 
 _soft_debounce_map: dict[str, _SoftDebounceItem] = {}
 
-# handle_ai、command_aside.runner、statistics、startup 仍在函数内导入。
-# 它们会拉起 Agent 运行时；提到这里会让 import handler 在启动前加载这套栈。
+# hooks / persona.config / approval / handle_ai / startup 都在 enable_ai 分支内导入。
+# 提到模块顶层会让 import handler 在关 AI 时仍拉起工具注册与审批栈。
 
 # 读循环不 await 这条。预算要长于写闸门排队，好让超时先变成失败而不是取消到一半。
 _INBOUND_BUDGET_S = 30.0
@@ -491,11 +488,17 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if show_receive:
         logger.info(t("log.handler.event_received"), event_payload=event)
 
-    ai_scope_banned = is_scope_banned(event.session_id)
+    ai_scope_banned = False
+    if enable_ai:
+        from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
+
+        ai_scope_banned = is_scope_banned(event.session_id)
 
     # ====== H00 入站观察扇出（记忆 / 表情 / 图片记忆）======
     # 只观察，**不挡**命令/AI 分流；要拦 AI 走 H01。失败 fail-open。
     if enable_ai and not ai_scope_banned:
+        from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
+
         if should_fire(AgentHookPoint.ON_INBOUND):
             inbound_ctx = AgentHookContext(
                 point=AgentHookPoint.ON_INBOUND,
@@ -542,6 +545,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         temp_gid = uid
 
     session_id = f"{bid}%%%{temp_gid}%%%{uid}"
+
+    # 确认码先于问答等待器。AI 关闭时不导入审批模块、不查 AI 表。
+    if enable_ai and event.user_type == "direct" and event.raw_text:
+        from gsuid_core.ai_core.approval import match_confirm_message
+
+        if await match_confirm_message(event):
+            return
 
     instances = Bot.get_instances()
     mutiply_instances = Bot.get_mutiply_instances()
@@ -713,6 +723,8 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         group_in_white_list = event.group_id is not None and event.group_id in ai_white_list
         if ai_white_list and not (user_in_white_list or group_in_white_list):
             return
+
+        from gsuid_core.ai_core.persona.config import persona_config_manager
 
         # 使用 Event.session_id 属性获取标准格式的 session_id
         session_id = event.session_id

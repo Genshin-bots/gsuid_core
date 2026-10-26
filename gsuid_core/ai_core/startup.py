@@ -54,10 +54,23 @@ async def _init_scheduled_task():
 
 
 async def _init_approval():
-    from gsuid_core.ai_core.approval import prime_pending, register_builtin_categories
+    from gsuid_core.aps import scheduler
+    from gsuid_core.ai_core.approval import expire_due, prime_pending, register_builtin_categories
 
     register_builtin_categories()
     await prime_pending()
+
+    async def _expire_job() -> None:
+        await expire_due()
+
+    scheduler.add_job(
+        func=_expire_job,
+        trigger="interval",
+        seconds=30,
+        id="approval_expire_due",
+        name="审批确认码过期",
+        replace_existing=True,
+    )
 
 
 async def _init_planning():

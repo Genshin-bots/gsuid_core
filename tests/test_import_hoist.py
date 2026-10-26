@@ -59,10 +59,35 @@ banned = (
     "gsuid_core.ai_core.command_aside.runner",
     "gsuid_core.ai_core.statistics",
     "gsuid_core.ai_core.startup",
+    "gsuid_core.ai_core.buildin_tools",
+    "gsuid_core.ai_core.approval",
+    "gsuid_core.ai_core.persona.config",
+    "gsuid_core.ai_core.persona.processor",
+    "gsuid_core.ai_core.hooks",
+    "gsuid_core.ai_core.memory",
 )
 loaded = [name for name in banned if name in sys.modules]
 if loaded:
     raise SystemExit("loaded " + ",".join(loaded))
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_persona_config_import_does_not_load_tools() -> None:
+    script = """
+import sys
+from gsuid_core.ai_core.persona.config import persona_config_manager
+banned = (
+    "gsuid_core.ai_core.buildin_tools",
+    "gsuid_core.ai_core.approval",
+    "gsuid_core.ai_core.persona.processor",
+)
+loaded = [name for name in banned if name in sys.modules]
+if loaded:
+    raise SystemExit("loaded " + ",".join(loaded))
+if persona_config_manager is None:
+    raise SystemExit("manager missing")
 """
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr or result.stdout

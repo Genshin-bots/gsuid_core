@@ -31,6 +31,8 @@
    等 ``category="self"`` 工具）；能力代理只对主人格交付，由 Kanban 转译后下发。
 """
 
+from typing import TYPE_CHECKING
+
 from gsuid_core.ai_core.persona.config import (
     DEFAULT_PERSONA_CONFIG,
     PersonaConfigManager,
@@ -71,7 +73,19 @@ from gsuid_core.ai_core.persona.settings import (
     persona_name_from_event,
     persona_settings_manager,
 )
-from gsuid_core.ai_core.persona.processor import build_persona_prompt
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.persona.processor import build_persona_prompt as build_persona_prompt
+
+
+def __getattr__(name: str) -> object:
+    # processor 曾顶层 import buildin_tools；读 config 也会先跑本文件。
+    if name == "build_persona_prompt":
+        from gsuid_core.ai_core.persona.processor import build_persona_prompt as fn
+
+        return fn
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Persona 核心类

@@ -1852,6 +1852,9 @@ class GsCoreAIAgent(RunOnceMixin):
             # 本 generation 独立 cancel 事件；上轮 set 过的不得污染本轮
             self._cancel_generation = asyncio.Event()
             self._running_framework = bool(is_framework_injection)
+            from gsuid_core.ai_core.approval.session_ctx import bind_caller_session, reset_caller_session
+
+            caller_token = bind_caller_session(self.session_id)
             try:
                 return await self._run_under_lock(
                     user_message=user_message,
@@ -1871,6 +1874,7 @@ class GsCoreAIAgent(RunOnceMixin):
                     is_framework_injection=is_framework_injection,
                 )
             finally:
+                reset_caller_session(caller_token)
                 self._running_framework = False
 
     async def _run_under_lock(

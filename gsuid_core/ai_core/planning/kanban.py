@@ -975,7 +975,7 @@ async def respawn_child_task(
         return False, f"子任务当前状态 {task.status} 不可重派（仅 failed / waiting_approval）"
 
     if task.respawn_count >= respawn_limit:
-        # 走统一入口挂审批：开中心票据（幂等），否则对话侧 respond_approval 找不到该请求
+        # 达上限后开中心票据。确认只认私聊确认码或审批中心。
         await request_subtask_approval(
             task,
             f"重派次数达上限 {respawn_limit}，需主人裁决是否继续重试。"
@@ -1009,11 +1009,18 @@ async def respawn_child_task(
     return True, f"已重派子任务（第 {task.respawn_count + 1} 次）"
 
 
-async def request_subtask_approval(task: AIAgentTask, approval_prompt: str) -> None:
+async def request_subtask_approval(
+    task: AIAgentTask,
+    approval_prompt: str,
+    *,
+    dedupe_key: str = "",
+    effect: str = "",
+    plugin_name: str = "",
+    plugin_action: str = "",
+) -> None:
     """把子任务挂为 waiting_approval，并向统一审批中心提交一条 master 级请求。
 
-    ``waiting_approval`` 状态从此是**派生视图**（看板 Blocked 列渲染用）；
-    审批账本 / 裁决入口 / 过期统一在 ``ai_core.approval``。
+    调用会话记当前 agent（capagent_…），群会话放进 payload，只给停机通知用。
     """
     now = datetime.now()
     await AIAgentTask.update_data_by_data(
@@ -1026,19 +1033,57 @@ async def request_subtask_approval(task: AIAgentTask, approval_prompt: str) -> N
     )
     await AIAgentTaskLog.add_log(task.id, "approval", f"请求审批：{approval_prompt[:400]}")
     from gsuid_core.ai_core import approval as approval_center
+    from gsuid_core.ai_core.approval.center import ApprovalPayload
+    from gsuid_core.ai_core.approval.session_ctx import current_caller_session_id
 
-    # 同一子任务重复挂起（重派再达上限等）不重复开票，复用现有 pending
-    existing = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task.id)
-    if not existing:
+    caller = current_caller_session_id()
+    payload: ApprovalPayload = {
+        "task_id": task.id,
+        "root_task_id": task.root_task_id or "",
+        "agent_profile": task.agent_profile or "",
+        "ws_bot_id": task.WS_BOT_ID or "",
+    }
+    if plugin_name:
+        payload["plugin_name"] = plugin_name
+    if plugin_action:
+        payload["plugin_action"] = plugin_action
+    existing = None
+    if dedupe_key:
+        existing = await approval_center.AIApprovalRequest.get_pending_by_dedupe(dedupe_key)
+    if existing is None:
+        existing_rows = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task.id)
+        existing = existing_rows[0] if existing_rows else None
+    if existing is None:
         await approval_center.submit(
             category="kanban_subtask",
             title=f"任务#{task.ordinal}｜{task.display_name}：{approval_prompt[:400]}",
             audience="master",
             ref_key=task.id,
             operator_user_id=task.owner_user_id,
-            origin_session_id=task.session_id or "",
-            payload={"task_id": task.id, "root_task_id": task.root_task_id or ""},
+            operator_user_pm=task.user_pm,
+            origin_session_id=caller,
+            parent_session_id=task.session_id or "",
+            dedupe_key=dedupe_key,
+            effect=effect or approval_prompt[:200],
+            payload=payload,
+            bot_id=task.bot_id,
+            bot_self_id=task.bot_self_id,
+            user_type=task.user_type,
+            group_id=task.group_id,
         )
+    else:
+        approval_center.note_submit_reused(existing.request_id)
+    if not caller.startswith("capagent_"):
+        from gsuid_core.ai_core.approval.notify import WAITING_GROUP_TEXT, notify_parent_group
+
+        pending = existing
+        if pending is None and dedupe_key:
+            pending = await approval_center.AIApprovalRequest.get_pending_by_dedupe(dedupe_key)
+        if pending is None:
+            rows = await approval_center.AIApprovalRequest.list_pending(category="kanban_subtask", ref_key=task.id)
+            pending = rows[0] if rows else None
+        if pending is not None:
+            await notify_parent_group(pending, WAITING_GROUP_TEXT)
     if task.root_task_id:
         await refresh_root_status(task.root_task_id)
 

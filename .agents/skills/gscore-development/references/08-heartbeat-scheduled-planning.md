@@ -211,22 +211,23 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 > 现为**冗余兜底**（timeout 仍转 `asyncio.TimeoutError` 保持上层契约），不必删除，
 > 但**新工具不要再照抄这个平台分支**。
 
-### HITL 人工审批（已收编进统一审批中心，2026-07-07）
+### HITL 人工审批（确认码，2026-10-26）
 
-子任务连续重派达 3 次（`DEFAULT_RESPAWN_LIMIT`）→ 自动 `waiting_approval`，同时
-`kanban.request_subtask_approval` 向 **统一审批中心**（`ai_core/approval/`，
-category=`kanban_subtask`）提交票据；`waiting_approval` 状态从此是**派生视图**
-（看板 Blocked 列渲染用），账本 / 裁决 / 过期全在审批中心。三条审批通路殊途同归：
+需要主人批准时，框架向主人名单里、且订阅了「主人用户」的人私聊一枚 6 位确认码，
+并把当前 agent 轮次立刻结束。未单独指定时限的票 10 分钟失效；命令执行沿用命令配置
+里的审批有效期。主人只回复这一枚码，或在审批中心点批准 / 拒绝。群里说「同意」不会
+通过。模型没有转达工具。
 
-1. **对话回复**：主人说"同意/拒绝"，主人格调统一转达工具
-   `respond_approval(approved, request_ref, note)`（含"主人亲口表态"证据闸门）。
-2. **webconsole 通用**：`POST /api/ai/approvals/{request_id}/resolve`。
-3. **Kanban 看板兼容**：`POST /api/ai/kanban/subtasks/{id}/approve`（内部转中心）。
+同一事项已有待审批时不再开新票、不再发第二条私聊。`check_approval` 只报告状态，
+不返回确认码。`create_subagent(plugin_developer_agent)` 在插件安装还挂着时直接拒绝。
 
-批准→领域回调把子任务退回 `pending` 并 `kick_root`；拒绝→`failed`，主人格再决定
-`fail_task_tree`。插件安装审批（plugin_developer 多步状态机）同属此 category，
-断点续作链路不变。详见
-[`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../../docs/AGENT_NODE_UNIFICATION_20260707.md)。
+带确认码的新票：批准后领域回调做副作用（复制插件 / 执行冻住的命令或工具体），
+再把续作卡回灌进**提交时的那个会话**（能力代理是 `capagent_…`，不是群会话），
+权限沿用提交时的 `user_pm`。拒绝或超时发关闭通知。副作用失败、续作没有做成，
+或原来的会话已经不在时，关联任务标失败，不回灌。没有确认码哈希的旧票仍走
+原来的 `kick_root`，不私聊、不回灌。
+
+控制台：`POST /api/ai/approvals/{request_id}/resolve`。看板兼容端点内部转同一函数。
 
 ### 追问溯源（决策树强制路径）
 

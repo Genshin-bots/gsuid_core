@@ -20,9 +20,17 @@ from gsuid_core.ai_core.command_exec.analyzer import CommandPlan, SimpleCommand,
 CATEGORY = "command_exec"
 
 
+def _approval_ttl_seconds() -> int:
+    raw = cfg_get("approval_ttl_seconds")
+    if isinstance(raw, int) and raw > 0:
+        return raw
+    return 600
+
+
 async def submit(ev: Optional[Event], plan: "CommandPlan", reason: str, request_id: str) -> AIApprovalRequest:
     """把 analyze 后的 argv 快照提交进审批中心（pending）。执行的永远是这份快照。"""
     argv = plan.commands[0].argv if plan.commands else []
+    frozen = json.dumps(argv, ensure_ascii=False)
     return await approval_center.submit(
         category=CATEGORY,
         title=f"`{plan.raw}`（{reason}）",
@@ -30,6 +38,9 @@ async def submit(ev: Optional[Event], plan: "CommandPlan", reason: str, request_
         audience="master",
         ref_key=request_id,
         payload={"raw": plan.raw, "argv": argv, "risk": plan.risk, "reason": reason},
+        dedupe_key=f"command:{frozen}",
+        effect=f"执行命令：{plan.raw}",
+        ttl_seconds=_approval_ttl_seconds(),
     )
 
 
@@ -90,5 +101,5 @@ async def _on_resolve(req: AIApprovalRequest, approved: bool, note: str) -> str:
 
 
 def register_command_approval_category() -> None:
-    """注册 command_exec 审批领域（TTL 用命令执行器自己的 approval_ttl_seconds）。"""
-    approval_center.register_approval_category(CATEGORY, _on_resolve, ttl_seconds=int(cfg_get("approval_ttl_seconds")))
+    """注册 command_exec。新票和旧票都用命令配置里的审批有效期。"""
+    approval_center.register_approval_category(CATEGORY, _on_resolve, ttl_seconds=_approval_ttl_seconds())

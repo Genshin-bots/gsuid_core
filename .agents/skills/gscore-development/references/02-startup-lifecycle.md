@@ -150,6 +150,10 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 `handle_ai.py` 里 `enable_ai` 改为**函数内动态读取**（`ai_config.get_config("enable").data`），
 不是模块级常量——用户在 WebConsole 切总开关后**无需重启**即生效。
 
+`handler.py` 顶层只读 `ai_config` 与轻量 `followup_window`。`persona.config` / `hooks` /
+`approval` 都在 `enable_ai` 为真之后再导入，避免关 AI 时 `import handler` 间接加载
+`buildin_tools`。`persona` 包初始化同样不得 import `processor`。
+
 HTTP Agent 路由在 `app_life` 构造 app 时按总开关决定是否 `include_router`（关则不挂；
 再开需重启）。已挂上后关掉总开关，请求仍 404。Admin 建钥走 webconsole 核心篮，不查总开关。
 

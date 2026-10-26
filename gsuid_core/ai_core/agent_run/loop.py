@@ -9,6 +9,7 @@ from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
     TextPart,
+    ModelMessage,
     ThinkingPart,
     ToolCallPart,
     TextPartDelta,
@@ -1212,6 +1213,11 @@ class LoopPhase(RunOnceHost):
                         break
                     # 1. 发起大模型请求前的处理
                     if isinstance(node, ModelRequestNode):
+                        if _model_request_is_approval_halt(node):
+                            agent_run.ctx.state.message_history.append(node.request)
+                            st.approval_halted = True
+                            logger.info(i18n_t("log.ai.approval_halt_stop"))
+                            break
                         await self._run_once_on_model_request(st, node, agent_run)
                         if st.generation_cancelled:
                             break
@@ -1233,7 +1239,32 @@ class LoopPhase(RunOnceHost):
                 logger.info(i18n_t("log.agent.generation_aborted_no_history"))
                 return "" if st.output_type is None else None
 
+            if st.approval_halted:
+                _commit_approval_halt_history(self.history, agent_run.all_messages())
+                return "" if st.output_type is None else None
+
             # 遍历完成后收尾
             return await self._run_once_settle_result(st, agent_run, statistics_manager)
         finally:
             self._history_iter_active = False
+
+
+def _model_request_is_approval_halt(node: ModelRequestNode) -> bool:
+    from gsuid_core.ai_core.approval.halt import text_is_approval_halt
+
+    for part in node.request.parts:
+        if type(part) is not ToolReturnPart:
+            continue
+        content = part.content if isinstance(part.content, str) else ""
+        if text_is_approval_halt(content):
+            return True
+    return False
+
+
+def _commit_approval_halt_history(history: list[ModelMessage], messages: list[ModelMessage]) -> None:
+    """把已完成的工具往返写进 history，避免下一次 run 留下没有回执的工具调用。"""
+    if messages is history:
+        return
+    start = len(history)
+    if len(messages) > start:
+        history.extend(messages[start:])

@@ -238,11 +238,7 @@ def test_answer_contract_is_rendered_into_persona_prompt(monkeypatch: pytest.Mon
     async def fake_load(_name: str) -> str:
         return "测"
 
-    async def fake_date(format: str = "") -> str:
-        return "2026年10月23日"
-
     monkeypatch.setattr(processor, "load_persona", fake_load)
-    monkeypatch.setattr(processor, "get_current_date", fake_date)
     monkeypatch.setattr("gsuid_core.ai_core.persona.appearance.load_appearance_line", lambda _name: "")
     monkeypatch.setattr("gsuid_core.ai_core.persona.settings.get_master_title", lambda _name: "")
     monkeypatch.setattr(
@@ -255,7 +251,7 @@ def test_answer_contract_is_rendered_into_persona_prompt(monkeypatch: pytest.Mon
         lambda _name, _node: False,
     )
     monkeypatch.setattr("gsuid_core.ai_core.persona.config.persona_allows_meme_reply", lambda _name: False)
-    prompt = asyncio.run(processor.build_persona_prompt("测"))
+    prompt = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))
     assert ANSWER_CONTRACT in prompt, "作答完整度契约未注入人格 prompt"
 
 

@@ -13,7 +13,6 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.hooks.models import HookFn, HookDecision, AgentHookResult, AgentHookContext, HookCapabilityError
 from gsuid_core.ai_core.hooks.points import HOOK_POINT_SPECS, STABLE_CONTEXT_ONLY, AgentHookPoint
-from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.hooks.registry import hooks_for, is_async_hook, hooks_registered
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -58,6 +57,9 @@ async def fire_hooks(
         ctx.current_kit_id = reg.kit_id
         timeout_ms = reg.timeout_ms
         if point is AgentHookPoint.RETRIEVE_CONTEXT:
+            # memory.config 会先跑 memory 包初始化（双路检索 / RAG）。只在真正 fire 时再导入。
+            from gsuid_core.ai_core.memory.config import memory_config
+
             timeout_ms = memory_config.retrieve_hook_timeout_ms
         result = await _invoke(reg.func, ctx, timeout_ms, reg.label, point)
         if result is not None and result.decision is not HookDecision.CONTINUE:
