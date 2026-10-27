@@ -230,21 +230,28 @@ def test_send_message_by_ai_blocked_when_ai_speaks_too_frequently() -> None:
 
 
 def test_at_space_normalization() -> None:
-    """测试 @xxx 后面跟文本时自动补充空格，防止平台渲染粘连。"""
-    # 紧贴文本情况
-    segments1 = _parse_at_segments("@123456你好呀")
+    """测试 <@用户ID> 后面跟文本时自动补充空格，防止平台渲染粘连。"""
+    segments1 = _parse_at_segments("<@123456>你好呀")
     assert len(segments1) == 2
     assert segments1[0].type == "at"
     assert segments1[0].data == "123456"
     assert segments1[1].type == "text"
     assert segments1[1].data == " 你好呀"
 
-    # 原本带空格情况
-    segments2 = _parse_at_segments("@123456 你好呀")
+    segments2 = _parse_at_segments("<@123456> 你好呀")
     assert len(segments2) == 2
     assert segments2[0].type == "at"
     assert segments2[1].type == "text"
     assert segments2[1].data == " 你好呀"
+
+    segments3 = _parse_at_segments("< @ 123456 >你好呀")
+    assert len(segments3) == 2
+    assert segments3[0].type == "at"
+    assert segments3[0].data == "123456"
+    assert segments3[1].data == " 你好呀"
+
+    bare = _parse_at_segments("@123456你好呀")
+    assert all(s.type != "at" for s in bare)
 
     # _ensure_at_trailing_space 单独生效
     raw = [MessageSegment.at("10001"), MessageSegment.text("收到了")]

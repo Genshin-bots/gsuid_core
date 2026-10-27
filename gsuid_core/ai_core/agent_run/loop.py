@@ -59,6 +59,7 @@ from gsuid_core.ai_core.agent_run.support import (
     thrash_limit_for,
     _claims_fake_done,
     add_response_usage,
+    record_output_block,
     turn_reply_metadata,
     _wall_clock_nudge_for,
     record_run_tool_output,
@@ -81,9 +82,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
     non_master_title,
-    batch_still_working,
     is_status_tool_name,
-    strip_open_solicitations,
     content_is_render_candidate,
     should_block_user_visible_text,
 )
@@ -96,7 +95,6 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
     PENDING_DELEGATION_OPENING as _PENDING_DELEGATION_OPENING,
     POST_DISPUTE_SILENCE_CONTRACT as _POST_DISPUTE_SILENCE_CONTRACT,
-    POST_DELIVERY_SILENCE_CONTRACT as _POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
@@ -188,7 +186,7 @@ class LoopPhase(RunOnceHost):
         if not visible:
             return
         # 终局静默 / 已见函数工具的中间 OS 不要打到流式出站
-        if st.speech_policy in ("silence_only", "delivered"):
+        if st.speech_policy == "silence_only":
             return
         if st.suppress_intermediate_text and st.stream_saw_fn_tool:
             return
@@ -644,26 +642,14 @@ class LoopPhase(RunOnceHost):
         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
             _any_fail = False
             _any_actionable = False
-            _return_names: list[str] = []
             for _p in node.request.parts:
                 if type(_p) is not ToolReturnPart:
                     continue
                 if _tool_return_is_async_pending(_p):
                     continue
                 _any_actionable = True
-                _return_names.append(_p.tool_name or "")
                 if _tool_return_looks_failed(_p):
                     _any_fail = True
-            # 交付终局：本步只有发送。同一步还有 find_tools 等，接话不算做完。
-            _extra_ref = _require_context(st).extra
-            if (
-                "delivered_with_speech" in _extra_ref
-                and bool(_extra_ref["delivered_with_speech"])
-                and not st.delivered_terminal
-                and not batch_still_working(_return_names)
-            ):
-                st.delivered_terminal = True
-                st.speech_policy = "delivered"
             if st.pending_async_delivery:
                 _any_actionable = False
                 _hold = _PENDING_DELEGATION_HOLD
@@ -679,57 +665,44 @@ class LoopPhase(RunOnceHost):
                         UserPromptPart(content=_hold),
                     ]
             if _any_actionable:
-                if st.delivered_terminal:
-                    # 交付已完成：不再注入 POST_TOOL 契约（那会提醒模型「再说一句」），
-                    # 只注入一次终局 SILENCE 指令（4.3）
-                    if not st.delivered_nudged and not any(
-                        isinstance(p, UserPromptPart) and p.content == _POST_DELIVERY_SILENCE_CONTRACT
-                        for p in node.request.parts
-                    ):
-                        node.request.parts = [
-                            *node.request.parts,
-                            UserPromptPart(content=_POST_DELIVERY_SILENCE_CONTRACT),
-                        ]
-                        st.delivered_nudged = True
-                else:
-                    _ok_c, _fail_c = _post_tool_contracts_for(
-                        self.create_by,
-                        session_id=self.session_id or "",
-                        capability_node_id=self.capability_node_id,
-                    )
-                    _contract = _fail_c if _any_fail else _ok_c
-                    if (
-                        not _any_fail
-                        and st.tool_call_list
-                        and st.tool_call_list[0] == "web_search_tool"
-                        and not st.web_search_delegate_nudged
-                    ):
-                        from gsuid_core.ai_core.agent_node.registry import match_capability_node
+                _ok_c, _fail_c = _post_tool_contracts_for(
+                    self.create_by,
+                    session_id=self.session_id or "",
+                    capability_node_id=self.capability_node_id,
+                )
+                _contract = _fail_c if _any_fail else _ok_c
+                if (
+                    not _any_fail
+                    and st.tool_call_list
+                    and st.tool_call_list[0] == "web_search_tool"
+                    and not st.web_search_delegate_nudged
+                ):
+                    from gsuid_core.ai_core.agent_node.registry import match_capability_node
 
-                        _nid = match_capability_node(st.last_user_question)
-                        if _nid:
-                            st.web_search_delegate_nudged = True
-                            _contract = capability_hit_line(_nid)
-                    # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
-                    # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
-                    if not any(
-                        isinstance(p, UserPromptPart)
-                        and p.content
-                        in (
-                            _POST_TOOL_OUTPUT_CONTRACT,
-                            _POST_TOOL_FAIL_CONTRACT,
-                            _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
-                            _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
-                            _POST_TOOL_OUTPUT_CONTRACT_RENDER,
-                            _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
-                            _POST_TOOL_FAIL_CONTRACT_RENDER,
-                        )
-                        for p in node.request.parts
-                    ):
-                        node.request.parts = [
-                            *node.request.parts,
-                            UserPromptPart(content=_contract),
-                        ]
+                    _nid = match_capability_node(st.last_user_question)
+                    if _nid:
+                        st.web_search_delegate_nudged = True
+                        _contract = capability_hit_line(_nid)
+                # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
+                # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
+                if not any(
+                    isinstance(p, UserPromptPart)
+                    and p.content
+                    in (
+                        _POST_TOOL_OUTPUT_CONTRACT,
+                        _POST_TOOL_FAIL_CONTRACT,
+                        _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+                        _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+                        _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+                        _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
+                        _POST_TOOL_FAIL_CONTRACT_RENDER,
+                    )
+                    for p in node.request.parts
+                ):
+                    node.request.parts = [
+                        *node.request.parts,
+                        UserPromptPart(content=_contract),
+                    ]
 
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
@@ -840,8 +813,7 @@ class LoopPhase(RunOnceHost):
                 if _tool_call_targets_render_agent(_p):
                     st.delegated_render = True
                     st.pending_async_delivery = True
-                    if st.speech_policy != "delivered":
-                        st.speech_policy = "silence_only"
+                    st.speech_policy = "silence_only"
                     break
 
         # 带函数工具的回复里的字一律先不发。hosted 搜索不当函数工具。
@@ -871,8 +843,7 @@ class LoopPhase(RunOnceHost):
                     st.delegated_render = True
                     # 出图委派当下即在途：后续 TextPart 不得把事实包念进群聊。
                     st.pending_async_delivery = True
-                    if st.speech_policy != "delivered":
-                        st.speech_policy = "silence_only"
+                    st.speech_policy = "silence_only"
                 if is_status_tool_name(part.tool_name):
                     st.has_status_tool_call = True
                     _require_context(st).extra["has_status_tool"] = True
@@ -910,9 +881,7 @@ class LoopPhase(RunOnceHost):
                 logger.debug(i18n_t("log.agent.llm_text", _text=_text))
                 self._session_logger.log_text_output(_text)
                 if is_silence_marker(_text):
-                    if st.delivered_terminal:
-                        st.silence_reason = "delivered_terminal"
-                    elif not st.silence_reason:
+                    if not st.silence_reason:
                         st.silence_reason = "model_voluntary"
                     # 看过出戏提醒后选静默 = 自主判断不发，收尾旁路不得再送原文
                     if output_gate.ooc_reminder_delivered(_require_context(st).extra):
@@ -971,6 +940,7 @@ class LoopPhase(RunOnceHost):
                     )
                     if _blk:
                         st.last_block_reason = _why
+                        record_output_block(st, self._session_logger, _why, _text)
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
                         # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
                         if _why in ("report_speech", "empty_handoff", "persona_length_breach"):
@@ -991,11 +961,6 @@ class LoopPhase(RunOnceHost):
                         )
                         self._discard_stream_preview(st, _text)
                         continue
-                    # 砍掉「要不要我再查」类助理收尾，保留事实句
-                    _text = strip_open_solicitations(_text)
-                    if not _text.strip():
-                        self._discard_stream_preview(st)
-                        continue
                 if st.bot and _text and st.return_mode in ["always", "by_bot"]:
                     # 统一输出闸门；同 response 尖括号只计一次 attempt
                     _user_raw = st.ev.raw_text if st.ev is not None and st.ev.raw_text else ""
@@ -1010,6 +975,7 @@ class LoopPhase(RunOnceHost):
                     if _gr.decision is output_gate.GateDecision.FUSE:
                         st.ab_abort = True
                         st.last_block_reason = "output_gate_fuse"
+                        record_output_block(st, self._session_logger, "output_gate_fuse", _text)
                         _ab_attempt_counted_this_response = True
                         logger.warning(
                             i18n_t(
@@ -1021,6 +987,13 @@ class LoopPhase(RunOnceHost):
                         self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.REWRITE:
+                        _gate_why = (
+                            f"output_gate_{_gr.policy}"
+                            if _gr.policy in ("angle_bracket", "ooc", "inner_os")
+                            else "output_gate_rewrite"
+                        )
+                        st.last_block_reason = _gate_why
+                        record_output_block(st, self._session_logger, _gate_why, _text)
                         if _gr.policy == "ooc" and _gr.ooc_hit is not None:
                             logger.warning(
                                 i18n_t(
@@ -1043,6 +1016,9 @@ class LoopPhase(RunOnceHost):
                         self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
+                        if _gr.send_text.strip() != _text.strip():
+                            st.last_block_reason = "output_gate_fallback"
+                            record_output_block(st, self._session_logger, "output_gate_fallback", _text)
                         self._discard_stream_preview(st, _text)
                         # send_text 才是正文（angle 净化 / inner_os 剥离）。空 = 无可发内容，
                         # 不用罐头代答：一个字符都不发。
@@ -1070,6 +1046,8 @@ class LoopPhase(RunOnceHost):
                     _fab_gate_on = not st.fake_done_retry and not st.effectual_mutate and bool(st.tool_names)
                     if _fab_gate_on and _claims_fake_done(_text):
                         logger.warning(i18n_t("log.agent.fakedone_zero_claim_pending_ok", p0=repr(_text[:40])))
+                        st.last_block_reason = "fake_done_withheld"
+                        record_output_block(st, self._session_logger, "fake_done_withheld", _text)
                         st.fab_blocked.append(_text)
                         self._discard_stream_preview(st, _text)
                         continue
@@ -1078,6 +1056,8 @@ class LoopPhase(RunOnceHost):
                     if _cap < 1:
                         _cap = MAIN_CHANNEL_VISIBLE_LIMIT
                     if st.main_channel_sends >= _cap:
+                        st.last_block_reason = "main_channel_cap"
+                        record_output_block(st, self._session_logger, "main_channel_cap", _text)
                         logger.info(
                             i18n_t(
                                 "log.agent.silent_skipping_text",
@@ -1117,7 +1097,6 @@ class LoopPhase(RunOnceHost):
             _saw_tool_call_this_turn
             and st.main_channel_sends == 0
             and not st.wait_comfort_sent
-            and st.speech_policy != "delivered"
             and not send_message_call_has_visible_text(node.model_response.parts)
             and turn_expects_opening(
                 create_by=self.create_by,

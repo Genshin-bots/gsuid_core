@@ -74,9 +74,12 @@ def test_group_broadcast_is_not_directed_at_event_user() -> None:
     )
     fill = "群通知：记录已完成"
     assert proactive_directed_target(ev, fill) == ""
-    assert proactive_directed_target(ev, "@100000001 图给你了") == "100000001"
+    assert proactive_directed_target(ev, "<@100000001> 图给你了") == "100000001"
     assert proactive_directed_target(ev, "[CQ:at,qq=100000001] 图给你了") == "100000001"
-    assert proactive_directed_target(ev, "@user-42 图给你了") == "user-42"
+    assert proactive_directed_target(ev, "< @ user-42 > 图给你了") == "user-42"
+    assert proactive_directed_target(ev, "@100000001 图给你了") == ""
+    assert proactive_directed_target(ev, "@user-42 图给你了") == ""
+    assert proactive_directed_target(ev, "<@the> 图给你了") == ""
     assert proactive_directed_target(ev, "@the 图给你了") == ""
     private = Event(
         bot_id="onebot",
@@ -266,7 +269,7 @@ def test_image_placeholder_keeps_topic_and_handle(monkeypatch) -> None:
 
 
 def test_emit_proactive_stores_rewritten_at_not_cq(monkeypatch: pytest.MonkeyPatch) -> None:
-    """主动消息写入审计和会话的是 @用户ID，不是 CQ 码。"""
+    """主动消息写入审计和会话的是 <@用户ID>，不是 CQ 码。"""
     from gsuid_core.bot import Bot
     from gsuid_core.models import Event
     from gsuid_core.ai_core.output_gate import GateResult, GateDecision
@@ -341,7 +344,7 @@ def test_emit_proactive_stores_rewritten_at_not_cq(monkeypatch: pytest.MonkeyPat
     )
     assert ok is True
     assert "CQ:at" not in captured["record"]
-    assert "@100000001" in captured["record"]
+    assert "<@100000001>" in captured["record"]
     assert captured["sync"] == captured["record"]
     assert captured["target"] == "100000001"
 

@@ -126,12 +126,6 @@ POST_TOOL_OUTPUT_CONTRACT = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = POST_TOOL_OUTPUT_CONTRACT
 
-POST_DELIVERY_SILENCE_CONTRACT = (
-    "（系统：你已通过发送工具完成交付，本轮任务到此终结。"
-    "只输出 <SILENCE>。禁止再输出任何文字——包括「任务已完成 / 图已发送 / "
-    "无需追加发言」这类状态汇报；那是系统日志，不是角色台词。）"
-)
-
 POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
 
 TIMELESS_AGGREGATE_CAVEAT = "（系统：返回体看起来没有当前时点。别说成「现在/此刻」；不够可以换路再查，短答也可以。）"

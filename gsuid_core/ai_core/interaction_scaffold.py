@@ -869,7 +869,7 @@ def scaffold_hints_from_graph(
     return hints
 
 
-# 核心通道工具：发现、记忆、委派与提醒；通用检索与管理类工具不钉核心。
+# 通道核：发现、回想、委派、发送、提醒，以及有媒体才露的读图/读视频。
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
     "create_subagent",
@@ -879,6 +879,7 @@ MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "read_handle",
     "run_code",
     "read_image",
+    "read_video",
     "dispute_directive",
     "record_meme",
     "add_once_task",

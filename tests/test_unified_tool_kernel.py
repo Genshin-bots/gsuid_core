@@ -104,6 +104,21 @@ def test_search_query_default_is_current_only() -> None:
     assert "改成后天" in q2 and "明早八点" in q2
 
 
+def test_main_agent_kernel_mounts_read_video() -> None:
+    import asyncio
+
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.rag.tools import get_main_agent_tools
+    from gsuid_core.ai_core.buildin_tools.find_tools_rank import need_matches_tool_text
+
+    tools = asyncio.run(get_main_agent_tools())
+    assert "read_video" in {tool.name for tool in tools}
+    base = find_tool_base("read_video")
+    assert base is not None
+    assert need_matches_tool_text("查看视频", base.retrieval_text, list(base.covers))
+
+
 def test_kernel_family_close_skips_attach_article() -> None:
     import gsuid_core.ai_core.buildin_tools  # noqa: F401
 

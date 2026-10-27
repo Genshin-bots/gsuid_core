@@ -319,6 +319,60 @@ def test_inv4_empty_handoff_enters_render_obligation() -> None:
     assert settle_mod._needs_render_obligation(st, "懒得念，细节都在里面了")
 
 
+def test_blocked_speech_asks_for_a_rewrite() -> None:
+    """编排、长报告、完成态、在途第一句要重说。纠正轮里的再拦和第二次在途句不再重说。"""
+    voice = settle_mod._rewrite_directive_for_block(
+        "orchestration_leak",
+        allow_render=True,
+        tool_calls=0,
+        recited_report=False,
+        forbid_title="",
+        wait_already_sent=False,
+    )
+    assert voice is not None and voice.reason_code == "blocked_voice"
+    report = settle_mod._rewrite_directive_for_block(
+        "report_speech",
+        allow_render=True,
+        tool_calls=1,
+        recited_report=True,
+        forbid_title="",
+        wait_already_sent=False,
+    )
+    assert report is not None and report.reason_code == "report_speech"
+    first_wait = settle_mod._rewrite_directive_for_block(
+        "silence_only_or_async",
+        allow_render=True,
+        tool_calls=0,
+        recited_report=False,
+        forbid_title="",
+        wait_already_sent=False,
+    )
+    assert first_wait is not None and first_wait.reason_code == "silence_only_or_async"
+    assert "一句等待" in first_wait.observation
+    assert (
+        settle_mod._rewrite_directive_for_block(
+            "silence_only_or_async",
+            allow_render=True,
+            tool_calls=0,
+            recited_report=False,
+            forbid_title="",
+            wait_already_sent=True,
+        )
+        is None
+    )
+    assert (
+        settle_mod._rewrite_directive_for_block(
+            "framework_nudge_no_speech",
+            allow_render=True,
+            tool_calls=0,
+            recited_report=False,
+            forbid_title="",
+            wait_already_sent=False,
+        )
+        is None
+    )
+
+
 def test_zero_output_voice_block_asks_rewrite_not_render() -> None:
     """完成态或过程词拦成零输出：回灌改口，不委派出图。在途不叫醒。"""
     from gsuid_core.ai_core.control.corrections import blocked_voice_directive, premature_claim_directive

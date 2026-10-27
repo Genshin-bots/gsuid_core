@@ -45,6 +45,8 @@ class RunOnceState:
     turn_graph: Any | None
     cheap_gate: Any | None
     is_framework_injection: bool
+    #: 纠正轮的 reason_code。只进会话日志，不写进给模型的信封。
+    injection_reason: str = ""
     #: 出站是否按 delta 推。与 pydantic-ai node.stream（TTFT/TPS）正交。
     outbound_stream: bool = False
     #: Token 用量分类；空则 settle 用 create_by。HTTP 入口写 Http_Chat。
@@ -81,20 +83,16 @@ class RunOnceState:
     # 工具返回以 APPROVAL_HALT_MARK 开头：不再向模型要下一轮。
     approval_halted: bool = False
     cancel_ev: Any | None = None
-    # 出站话术：free / silence_only / status_ok / framework_nudge /
-    # framework_deliver / delivered（终局沉默，见 speech_policy）
+    # 出站话术：free / silence_only / status_ok / framework_nudge / framework_deliver
     speech_policy: str = "free"
     status_inquiry: bool = False
     pending_async_delivery: bool = False
     image_sent_this_run: bool = False
-    # 交付终局：send_message_by_ai 已带台词成功交付 → 本 run 对用户只许 SILENCE。
-    # 由工具回执确认后置位（非工具调用时），防失败回执误入终局。
-    delivered_terminal: bool = False
-    # 终局 SILENCE 指令是否已注入过 ModelRequest（每 run 至多一次）
-    delivered_nudged: bool = False
     has_status_tool_call: bool = False
     last_block_reason: str = ""
     silence_reason: str = ""
+    # 本 run 已写入会话日志的拦截（原因, 原文），避免闸与收尾各记一次。
+    output_block_seen: set[tuple[str, str]] = field(default_factory=set)
     # 排版失配：台词呈长结构被拦。**纯呈现问题**，不得据此强制工具或销毁内容
     # （用户可能就是要长文本）。与 saw_structured_return 正交，见 INV-1/INV-3。
     presentation_mismatch: bool = False

@@ -210,6 +210,24 @@ def premature_claim_directive() -> Directive:
     )
 
 
+def inflight_wait_directive() -> Directive:
+    """在途多说被拦、用户没看到。还没放过等待时，改成一句等待。"""
+    return Directive(
+        kind="correction",
+        reason_code="silence_only_or_async",
+        observation=(
+            "任务还在进行，你上一段没有发出。改成一句等待，不要讲进度、结果或内部步骤。不要只输出 <SILENCE>。"
+        ),
+        obligations=(
+            Obligation(
+                must="deliver",
+                satisfied_by=("user_visible_sent",),
+            ),
+        ),
+        evidence=Evidence(tool_calls=0, detail="在途台词被拦，还没有放过等待"),
+    )
+
+
 def blocked_voice_directive() -> Directive:
     """过程词或编排词被拦，用户没看到。纠正成角色短句，不出图。"""
     return Directive(

@@ -19,7 +19,6 @@ from gsuid_core.ai_core.control.lines import (
     WEB_ONLY_STALENESS_CAVEAT,
     PENDING_DELEGATION_OPENING,
     POST_DISPUTE_SILENCE_CONTRACT,
-    POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY,
@@ -32,7 +31,6 @@ __all__ = (
     "DELEGATION_FANOUT_RULE",
     "PENDING_DELEGATION_HOLD",
     "PENDING_DELEGATION_OPENING",
-    "POST_DELIVERY_SILENCE_CONTRACT",
     "POST_DISPUTE_SILENCE_CONTRACT",
     "POST_TOOL_FAIL_CONTRACT",
     "POST_TOOL_FAIL_CONTRACT_CAPABILITY",
@@ -273,8 +271,7 @@ def inflight_after_create_subagent_return(
     if render_done:
         return pending_async, True, speech_policy, True
     if async_ack:
-        policy = speech_policy if speech_policy == "delivered" else "silence_only"
-        return True, delegated_render, policy, True
+        return True, delegated_render, "silence_only", True
     return pending_async, delegated_render, speech_policy, ack_seen
 
 

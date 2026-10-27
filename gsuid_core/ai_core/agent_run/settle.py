@@ -51,6 +51,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _INTERACTIVE_CREATE_BY,
     _WALL_CLOCK_CLOSE_NO_RENDER,
     _claims_fake_done,
+    record_output_block,
     turn_reply_metadata,
     collect_run_thinking,
     _claims_deferred_work,
@@ -69,6 +70,7 @@ from gsuid_core.ai_core.control.corrections import (
     fake_done_directive,
     master_title_directive,
     blocked_voice_directive,
+    inflight_wait_directive,
     premature_claim_directive,
     entity_zero_tool_directive,
     status_zero_tool_directive,
@@ -88,11 +90,11 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     looks_like_process_meta,
     looks_like_wait_comfort,
     looks_like_empty_handoff,
-    strip_open_solicitations,
     claims_premature_delivery,
     has_orchestration_narration,
     looks_like_deliver_progress,
     looks_like_numeric_recitation,
+    looks_like_delivery_status_narration,
 )
 from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
 
@@ -293,6 +295,41 @@ def _correction_is_deliverable(text: str, *, is_delivery_wake: bool = False) -> 
     )
 
 
+def _rewrite_directive_for_block(
+    reason: str,
+    *,
+    allow_render: bool,
+    tool_calls: int,
+    recited_report: bool,
+    forbid_title: str,
+    wait_already_sent: bool,
+) -> Directive | None:
+    """拦住后可以重说的原因。纠正轮里的再拦、以及已经放过等待的在途句，不再重说。"""
+    if reason in ("orchestration_leak", "delivery_narration", "process_meta"):
+        return blocked_voice_directive()
+    if reason == "premature_delivery":
+        return premature_claim_directive()
+    if reason == "numeric_recitation":
+        return numeric_recitation_directive(allow_render=allow_render)
+    if reason in ("report_speech", "empty_handoff"):
+        return render_obligation_directive(
+            recited_report=recited_report or reason == "report_speech",
+            tool_calls=tool_calls,
+            allow_render=allow_render,
+        )
+    if reason == "master_title" and forbid_title:
+        return master_title_directive(forbid_title)
+    if reason == "entity_without_tool":
+        return entity_zero_tool_directive()
+    if reason == "status_without_tool":
+        return status_zero_tool_directive()
+    if reason == "deliver_before_send":
+        return framework_idle_deliver_directive()
+    if reason == "silence_only_or_async" and not wait_already_sent:
+        return inflight_wait_directive()
+    return None
+
+
 def _voice_retry_text(corrected: object, *, disputed: bool, blocked: str) -> str:
     """话术闸拦下后交回一次：申辩则交还原文，否则只收可交付改写。"""
     if disputed:
@@ -366,7 +403,7 @@ def _corrected_or_original(corrected: object, *, original: str) -> str:
     """
     if not isinstance(corrected, str) or not _correction_is_deliverable(corrected):
         return original
-    return strip_open_solicitations(corrected.strip()) or original
+    return corrected.strip()
 
 
 async def load_session_salvage_material(session_id: str) -> str:
@@ -440,6 +477,7 @@ class SettlePhase(RunOnceHost):
                 suppress_intermediate_text=_suppress,
                 fake_done_retry=True,
                 is_framework_injection=True,
+                injection_reason=",".join(d.reason_code for d in directives if d.reason_code),
             )
         except Exception as _fe:
             logger.warning(i18n_t("log.agent.fakedone_correction_run_keeping_fail", _fe=_fe))
@@ -456,6 +494,26 @@ class SettlePhase(RunOnceHost):
         )
         self._last_attempt_tool_calls = st.tool_call_list
         return corrected
+
+    async def _emit_unsent_reply(self, st: RunOnceState, text: str) -> None:
+        """纠正拿回的句子由本层发出。return 模式不会在内层再过话术闸。"""
+        body = text.strip()
+        if not body or is_silence_marker(body) or body in self._run_sent_texts:
+            return
+        if st.bot is None or st.return_mode not in ("always", "by_bot"):
+            return
+        raw_at = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
+        await send_chat_result(
+            st.bot,
+            body,
+            ev=st.ev,
+            at_user_id=str(raw_at) if isinstance(raw_at, str) and raw_at else None,
+            extra_metadata=turn_reply_metadata(st.ev),
+        )
+        absorb_run_image_delivered(st)
+        self._run_sent_texts.add(body)
+        if st.main_channel_sends == 0:
+            st.main_channel_sends = 1
 
     def _record_prefix_break_probe(self, st: RunOnceState, new_msgs: List[ModelMessage]) -> None:
         """对比上一 run 发送快照与当前 history 头，记 prefix_break_reason。"""
@@ -714,6 +772,8 @@ class SettlePhase(RunOnceHost):
                 corrected = await self._try_correction_pass(
                     st,
                     (fake_done_directive(tool_pool_size=len(st.tool_names)),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
                 )
                 if corrected is None and st.fab_blocked and st.bot and st.return_mode in ["always", "by_bot"]:
                     await _resend_fab_blocked()
@@ -723,7 +783,8 @@ class SettlePhase(RunOnceHost):
                 if _claims_fake_done(result_msg):
                     _fabricated.add(result_msg.strip())
                 if isinstance(corrected, str) and _correction_is_deliverable(corrected):
-                    result_msg = strip_open_solicitations(corrected.strip()) or "<SILENCE>"
+                    result_msg = corrected.strip()
+                    await self._emit_unsent_reply(st, result_msg)
                 else:
                     result_msg = "<SILENCE>"
                 self._scrub_fake_done_history(_fabricated)
@@ -745,11 +806,14 @@ class SettlePhase(RunOnceHost):
                 corrected = await self._try_correction_pass(
                     st,
                     (structural_zero_tool_directive(tool_pool_size=len(st.tool_names)),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
                 )
                 # 自洽出口（INV-3）：纠正沉默 → 原答案生效；只有真产出才替换并剥旧答
                 _prior = result_msg.strip()
                 result_msg = _corrected_or_original(corrected, original=result_msg)
                 if result_msg.strip() != _prior:
+                    await self._emit_unsent_reply(st, result_msg)
                     self._scrub_fake_done_history({_prior} if _prior else set())
                 else:
                     self._scrub_fake_done_history(set())
@@ -770,10 +834,13 @@ class SettlePhase(RunOnceHost):
                 corrected = await self._try_correction_pass(
                     st,
                     (missing_offered_tool_directive(tool_pool_size=len(st.tool_names)),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
                 )
                 _prior = result_msg.strip()
                 result_msg = _corrected_or_original(corrected, original=result_msg)
                 if result_msg.strip() != _prior:
+                    await self._emit_unsent_reply(st, result_msg)
                     self._scrub_fake_done_history({_prior} if _prior else set())
                 else:
                     self._scrub_fake_done_history(set())
@@ -792,8 +859,16 @@ class SettlePhase(RunOnceHost):
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                _sc = await self._try_correction_pass(st, (addressed_silence_directive(),))
+                _prior = result_msg.strip()
+                _sc = await self._try_correction_pass(
+                    st,
+                    (addressed_silence_directive(),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
+                )
                 result_msg = _corrected_or_original(_sc, original=result_msg)
+                if result_msg.strip() != _prior:
+                    await self._emit_unsent_reply(st, result_msg)
                 self._scrub_fake_done_history(set())
 
             # 进度追问却零工具：纠正重跑去查 kanban/artifact
@@ -808,8 +883,16 @@ class SettlePhase(RunOnceHost):
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                _sc = await self._try_correction_pass(st, (status_zero_tool_directive(),))
+                _prior = result_msg.strip()
+                _sc = await self._try_correction_pass(
+                    st,
+                    (status_zero_tool_directive(),),
+                    suppress_intermediate_text=True,
+                    return_mode="return",
+                )
                 result_msg = _corrected_or_original(_sc, original=result_msg)
+                if result_msg.strip() != _prior:
+                    await self._emit_unsent_reply(st, result_msg)
                 self._scrub_fake_done_history(set())
 
             # 交付回灌的进度句或大报表：补一次出图/发图。短事实直接交付用户。
@@ -842,7 +925,7 @@ class SettlePhase(RunOnceHost):
                     if _disputed:
                         result_msg = _prior
                     elif isinstance(_dc, str) and _correction_is_deliverable(_dc, is_delivery_wake=True):
-                        result_msg = strip_open_solicitations(_dc.strip()) or "<SILENCE>"
+                        result_msg = _dc.strip()
                     else:
                         result_msg = "<SILENCE>"
                 else:
@@ -881,7 +964,7 @@ class SettlePhase(RunOnceHost):
                 if _disputed and not _cover_hit:
                     result_msg = _prior
                 elif _called and isinstance(_ec, str) and _correction_is_deliverable(_ec):
-                    result_msg = strip_open_solicitations(_ec.strip()) or "<SILENCE>"
+                    result_msg = _ec.strip()
                 else:
                     result_msg = "<SILENCE>"
                 if title_mentioned(_forbid_title(st, self.persona_name), result_msg):
@@ -922,7 +1005,7 @@ class SettlePhase(RunOnceHost):
                     return_mode="return",
                 )
                 if isinstance(_tc, str) and _correction_is_deliverable(_tc) and not title_mentioned(_ban, _tc):
-                    result_msg = strip_open_solicitations(_tc.strip()) or "<SILENCE>"
+                    result_msg = _tc.strip()
                 else:
                     result_msg = "<SILENCE>"
                 if (
@@ -1014,10 +1097,12 @@ class SettlePhase(RunOnceHost):
                     )
                 _disputes_before = len(self._run_disputes)
                 _sent_before_correction = set(self._run_sent_texts)
+                _settle_correction_ran = True
                 _rc = await self._try_correction_pass(
                     st,
                     (_directive,),
                     suppress_intermediate_text=True,
+                    return_mode="return",
                 )
                 # 纠正轮的工具事实已由 _try_correction_pass 就地并回父级并指回，
                 # 所以下面判义务时读到的 st.tool_call_list 已含嵌套 create_subagent。
@@ -1045,82 +1130,117 @@ class SettlePhase(RunOnceHost):
                     for t in (self._run_sent_texts - _sent_before_correction)
                 )
                 _replacement_visible = _adopted or _nested_visible
+                if _disputed or result_msg.strip() != _orig_before.strip():
+                    await self._emit_unsent_reply(st, result_msg)
 
-            # 出口消毒：异步在途 / 编排泄漏 / 长结构 / 引导追问 → 对外 SILENCE 或短句
+            # 出口：还能重说的先重说一次。重说仍不合格，才改成沉默。
+            _gate_reason = ""
+            _gate_body = ""
             if self.create_by in ("Chat", "Agent") and result_msg and st.return_mode != "return":
                 _rs = result_msg.strip()
                 # 本轮已发出的句子不再改写成沉默（话术纠正/申辩的补发）。
                 if _rs in self._run_sent_texts:
                     pass
                 elif st.image_sent_this_run:
-                    # 步骤 7：发图后允许短收尾；仍砍编排/长结构/过程元话语/引导追问
-                    if (
-                        has_orchestration_narration(_rs)
-                        or _looks_like_report_speech(_rs)
-                        or looks_like_process_meta(_rs)
-                    ):
+                    # 发图后编排、交付播报、长结构、过程词先重说。追问和较长收尾留下。
+                    if has_orchestration_narration(_rs):
+                        _gate_reason = "orchestration_leak"
+                    elif looks_like_delivery_status_narration(_rs):
+                        _gate_reason = "delivery_narration"
+                    elif _looks_like_report_speech(_rs):
+                        _gate_reason = "report_speech"
+                    elif looks_like_process_meta(_rs):
+                        _gate_reason = "process_meta"
+                    if _gate_reason:
+                        _gate_body = _rs
                         result_msg = "<SILENCE>"
-                        st.silence_reason = (
-                            "orchestration_leak"
-                            if has_orchestration_narration(_rs)
-                            else ("report_speech" if _looks_like_report_speech(_rs) else "process_meta")
-                        )
-                    else:
-                        _stripped = strip_open_solicitations(_rs)
-                        if _stripped != _rs:
-                            result_msg = _stripped if _stripped else "<SILENCE>"
-                            if not result_msg or is_silence_marker(result_msg):
-                                st.silence_reason = "open_solicit_stripped"
-                        elif len(_rs) > 120:
-                            result_msg = "<SILENCE>"
-                            st.silence_reason = "post_image_too_long"
                 elif (st.pending_async_delivery or st.delegated_render) and not is_silence_marker(_rs):
-                    # 在途默认静默；极短等待安慰可保留一次
+                    # 在途还没放过等待：留给下面的重说。已经等过一次就沉默。
                     if looks_like_wait_comfort(_rs) and not st.wait_comfort_sent:
                         result_msg = _rs
                     else:
+                        _gate_reason = "silence_only_or_async"
+                        _gate_body = _rs
                         result_msg = "<SILENCE>"
-                        st.silence_reason = "silence_only_or_async"
-                elif has_orchestration_narration(_rs) or looks_like_process_meta(_rs):
+                elif has_orchestration_narration(_rs):
+                    _gate_reason = "orchestration_leak"
+                    _gate_body = _rs
                     result_msg = "<SILENCE>"
-                    st.silence_reason = "orchestration_leak" if has_orchestration_narration(_rs) else "process_meta"
+                elif looks_like_delivery_status_narration(_rs):
+                    _gate_reason = "delivery_narration"
+                    _gate_body = _rs
+                    result_msg = "<SILENCE>"
+                elif looks_like_process_meta(_rs):
+                    _gate_reason = "process_meta"
+                    _gate_body = _rs
+                    result_msg = "<SILENCE>"
                 elif (
                     claims_premature_delivery(
                         _rs,
                         has_fact_pack=st.saw_structured_return,
                         tool_called_this_run=bool(st.tool_call_list),
-                        is_delivery_wake=bool(st.fw_msg and st.run_extra.get("delivery_wake") is True),
+                        is_delivery_wake=bool(
+                            st.fw_msg and "delivery_wake" in st.run_extra and st.run_extra["delivery_wake"] is True
+                        ),
                     )
                     and not st.image_sent_this_run
                 ):
+                    _gate_reason = "premature_delivery"
+                    _gate_body = _rs
                     result_msg = "<SILENCE>"
-                    st.silence_reason = "premature_delivery"
                 elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
+                    _gate_reason = "empty_handoff"
+                    _gate_body = _rs
                     result_msg = "<SILENCE>"
-                    st.silence_reason = "empty_handoff"
                 elif (
                     st.saw_structured_return
                     and st.tool_call_list
                     and not st.image_sent_this_run
                     and looks_like_numeric_recitation(_rs)
                 ):
+                    _gate_reason = "numeric_recitation"
+                    _gate_body = _rs
                     result_msg = "<SILENCE>"
-                    st.silence_reason = "numeric_recitation"
                 elif (
                     _render_obligation
                     and not _skip_report_exit
                     and not st.image_sent_this_run
                     and _looks_like_report_speech(_rs)
                 ):
-                    # 有真事实包却念表 → 静默（该走 render）；无事实包的长正文放行
+                    # 有真事实包却念表。无事实包的长正文放行。
+                    _gate_reason = "report_speech"
+                    _gate_body = _rs
                     result_msg = "<SILENCE>"
-                    st.silence_reason = "report_speech"
-                else:
-                    _stripped = strip_open_solicitations(_rs)
-                    if _stripped != _rs:
-                        result_msg = _stripped if _stripped else "<SILENCE>"
-                        if not result_msg or is_silence_marker(result_msg):
-                            st.silence_reason = "open_solicit_stripped"
+                if (
+                    _gate_reason
+                    and _gate_body
+                    and not _settle_correction_ran
+                    and not st.fake_done_retry
+                    and self.create_by in _INTERACTIVE_CREATE_BY
+                    and self.create_by != "CapabilityAgent"
+                ):
+                    _rewrite = _rewrite_directive_for_block(
+                        _gate_reason,
+                        allow_render=_allow_render,
+                        tool_calls=len(st.tool_call_list),
+                        recited_report=_looks_like_report_speech(_gate_body),
+                        forbid_title=_forbid_title(st, self.persona_name),
+                        wait_already_sent=st.wait_comfort_sent,
+                    )
+                    if _rewrite is not None:
+                        _rewritten = await self._try_correction_pass(
+                            st,
+                            (_rewrite,),
+                            suppress_intermediate_text=True,
+                            return_mode="return",
+                        )
+                        if isinstance(_rewritten, str) and _correction_is_deliverable(_rewritten):
+                            result_msg = _rewritten.strip()
+                            await self._emit_unsent_reply(st, result_msg)
+                            _gate_reason = ""
+                if _gate_reason:
+                    st.silence_reason = _gate_reason
+                    record_output_block(st, self._session_logger, _gate_reason, _gate_body)
 
             # INV-4：暂扣原文在纠正未兑现（或根本没进纠正）且没有替代品时必须发出。
             if _should_deliver_withheld(
@@ -1155,20 +1275,24 @@ class SettlePhase(RunOnceHost):
                                 p0=_hit.category,
                             )
                         )
+                        _ooc_original = result_msg
                         recovered = await self._ooc_recover_persona_voice(_hit, result_msg, st.ev) or "<SILENCE>"
-                        had_body = bool(result_msg.strip()) and not is_silence_marker(result_msg.strip())
+                        had_body = bool(_ooc_original.strip()) and not is_silence_marker(_ooc_original.strip())
                         if had_body and (not recovered.strip() or is_silence_marker(recovered.strip())):
                             st.silence_reason = "ooc_recover"
+                            record_output_block(st, self._session_logger, "ooc_recover", _ooc_original)
                         result_msg = recovered
             if isinstance(result_msg, str) and not (
                 self.is_subagent or self.create_by in ("CapabilityAgent", "AutoPlanner")
             ):
+                _leak_original = result_msg
                 leaked = strip_framework_user_leaks(result_msg)
-                had_body = bool(result_msg.strip()) and not is_silence_marker(result_msg.strip())
+                had_body = bool(_leak_original.strip()) and not is_silence_marker(_leak_original.strip())
                 result_msg = leaked
                 if not result_msg.strip():
                     if had_body:
                         st.silence_reason = "framework_leak_stripped"
+                        record_output_block(st, self._session_logger, "framework_leak_stripped", _leak_original)
                     result_msg = "<SILENCE>"
             self._log_run_result(st, result_msg)
             if isinstance(result_msg, str):
@@ -1505,11 +1629,7 @@ class SettlePhase(RunOnceHost):
         reason: str | None = None
         text = str(result_msg).strip()
         if is_silence_marker(text) or not text:
-            reason = (
-                st.silence_reason
-                or st.last_block_reason
-                or ("delivered_terminal" if st.delivered_terminal else "model_voluntary")
-            )
+            reason = st.silence_reason or st.last_block_reason or "model_voluntary"
         self._session_logger.log_result(result_msg, st.tool_call_list, silence_reason=reason)
 
     def _remember_outbound_on_silence(self, st: RunOnceState, result_msg: str) -> None:

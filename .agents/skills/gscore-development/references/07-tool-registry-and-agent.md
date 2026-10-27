@@ -67,7 +67,7 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
 | `self` | 仅主 Agent 可执行；**不一定进通道核** | `send_message_by_ai`；`add_once_task`/`add_interval_task` 钉核，列出/改/删走 L2 或检索（白名单拦插件滥用 `self`） |
-| `buildin` | 可检索；核内只留通道能力 | 核：`search_cognition`、`read_handle`。`web_search_tool` / `get_self_info` / `state_*` 按需 |
+| `buildin` | 可检索；核内只留通道能力 | 核：`search_cognition`、`read_handle`、`read_image`、`read_video`（有对应媒体才下发；视频默认还要本轮模型声明 video。未声明时 `find_tools` 仍能召回，召回后本轮可见）。`web_search_tool` / `get_self_info` / `state_*` 按需 |
 | `common` | 向量检索按需 | `create_subagent`、`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
@@ -75,7 +75,7 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 | `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
 | `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`（见 §7.5） |
 
-> **通道核是固定名单**（`MAIN_AGENT_CORE_TOOLS`，群/私同一份）：发现、回想、委派、发送、一次性/周期提醒入口。
+> **通道核是固定名单**（`MAIN_AGENT_CORE_TOOLS`，群/私同一份）：发现、回想、委派、发送、一次性/周期提醒入口，以及 `read_image` / `read_video`。后两个靠 `visible_when` 隐藏：没图不发 `read_image`；没视频，或本轮模型未声明 video，默认不发 `read_video`。模型没声明 video 时，`find_tools` 仍能按名字或「查看/读取视频」召回它，召回后本轮 schema 打开。
 > `get_main_agent_tools()` 按该名单装配，不再把整个 `self`+`buildin` 分类铺进 schema。
 > 定时任务仍注册为 `self`（仅主人格可执行）；创建入口钉核，列出/改/删经状态信号 / `find_tools` / 本句检索进入附加池。
 >
@@ -274,7 +274,7 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 轮不下发其 schema，把保底实下发从 14 压到 ~12。两谓词都**连 `ctx.messages` 一起扫**（不只看
 `ev` 文本）——`web_fetch` 的 URL 常来自 `web_search_tool` 的**工具结果**，只看 `ev` 会在
 "search→fetch"时误隐藏（且 `visible_when` 同样作用于 `find_tools` 动态暴露，隐藏后现拉也救不回）。
-谓词一律**偏可见**。详见 [`docs/AI_CORE_TOOL_RETRIEVAL_UPGRADE_20260619.md`](../../../AI_CORE_TOOL_RETRIEVAL_UPGRADE_20260619.md) §11。
+谓词一律**偏可见**。`read_video` 用 `context_has_video`：默认要有视频句柄且模型声明了 video。`find_tools` 召回后同一轮不再藏。详见 [`docs/AI_CORE_TOOL_RETRIEVAL_UPGRADE_20260619.md`](../../../AI_CORE_TOOL_RETRIEVAL_UPGRADE_20260619.md) §11。
 
 > ⚠️ **约束**：`prepare` 每 step 对每个工具求值，`visible_when` 谓词**必须廉价、内存判定**，
 > 切忌每步查库/发网络。贵的前置条件走 L2 状态驱动（加载时判一次）。
@@ -438,13 +438,10 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
      `machine_dump` / **`delivery_narration`** / **`capability_absence`**（工具/接口+没挂没装，
      或另一个机器人+管/干，never-release）/ **`stale_present`**（同句把过期年月日说成今天/现在的读数）。
 
-**DELIVERED 交付终局态（2026-08-10，P0 OOC 根治）**：在 `pre_send_gate` **之前**还有一道
-`speech_policy.should_block_user_visible_text` 话术闸（`agent_run/speech_policy.py`）。
-`send_message_by_ai` **带台词**成功交付后，本 run 置 `speech_policy="delivered"`，对用户只许
-`<SILENCE>`——杜绝「任务已完成，图已发送给…」这类交付后状态汇报 OOC。media-only 与
-**等待安慰句**不置位，避免「先应一声再干活」被当成终局。状态字段在 `RunOnceState`
-（`delivered_terminal`），信号来自工具侧 `extra["delivered_with_speech"]`（结构信号）。
-`send_message_by_ai` 的 `text=` 与 TextPart 共用 `should_block`（配图被拦则丢掉台词仍发图）。不是第二条说话人。
+**发送之后可以继续说**：`send_message_by_ai` 带台词交付、以及发图之后，模型可以自己接着说，
+包括追问和较长收尾。话术闸不再因交付终局、引导追问或发图过长把台词改成沉默。
+编排词、交付状态汇报、长结构报告体、完成态和在途多说仍然拦截。拦住后先让模型重说一次，重说仍不合格才沉默。已经说过一句等待的在途句，以及纠正轮里再次被拦的话，不再重说。`text=` 与 TextPart 共用 `should_block`
+（配图被拦则丢掉台词仍发图）。不是第二条说话人。
 
 **出图在途（2026-08-16）**：`create_subagent` 的 `agent_profile` 解析到 `render_agent` 时
 （只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途默认

@@ -51,8 +51,9 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
-- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（``visible_when`` 有图才露）
-- ``read_video``（``video_reader.py``）：按视频ID取回；有视频且模型声明 video 才露
+- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（通道核；``visible_when`` 有图才露）
+- ``read_video``（``video_reader.py``）：按视频ID取回。通道核默认在有视频且模型声明
+  video 时露出；未声明时 ``find_tools`` 仍能召回
 - ``state_get`` / ``state_set``（``state_store/tools.py``）：高频持久键值
   （``state_list`` / ``state_delete`` / ``state_append`` 在 common，按能力族召回）
 
@@ -273,7 +274,7 @@ from gsuid_core.ai_core.buildin_tools.image_finder import (
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 
-# 视频读取工具 - 按视频ID惰性取回（保底，有视频才露）
+# 视频读取工具 - 通道核；有视频且模型声明 video 才露
 from gsuid_core.ai_core.buildin_tools.video_reader import read_video
 
 # 控制面工具 - 查在途委派 / 对框架校验申辩（非用户可见通道）

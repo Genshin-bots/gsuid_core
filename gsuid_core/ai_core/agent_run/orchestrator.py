@@ -41,6 +41,7 @@ class OrchestratorPhase(RunOnceHost):
         turn_graph: Optional[TurnGraph] = None,
         cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
+        injection_reason: str = "",
     ) -> object:
         """
         实际执行 Agent 运行的内部方法（单次尝试）
@@ -83,6 +84,7 @@ class OrchestratorPhase(RunOnceHost):
             turn_graph=turn_graph,
             cheap_gate=cheap_gate,
             is_framework_injection=is_framework_injection,
+            injection_reason=injection_reason,
             outbound_stream=self._outbound_stream,
             stats_chat_type=self._stats_chat_type if self._stats_chat_type else self.create_by,
         )

@@ -1586,7 +1586,6 @@ async def _try_render_markdown_image(
     return True
 
 
-_NICK_AT_RE = re.compile(r"@(?!\d)([^\s@，。！？、,.!?]{1,16})")
 _MENTION_LABEL_RE = re.compile(r"([^\s()（）\n]{1,16})\(用户ID:([^)]+)\)")
 
 
@@ -1620,18 +1619,23 @@ def rewrite_nickname_mentions(
     *,
     already_at: str | None = None,
 ) -> str:
-    """@昵称 收成 @用户ID。已经在 @ 的人去掉重复；对不上的 @昵称 删掉。"""
+    """<@昵称> 收成 <@用户ID>。已经在提醒的人去掉重复；对不上的括号删掉。裸 @ 保留。"""
+    from gsuid_core.ai_core.outbound import sub_mentions, is_mention_id, normalize_mention_token
 
     def _repl(match: re.Match[str]) -> str:
-        name = match.group(1)
-        uid = names[name] if name in names else ""
-        if not uid:
+        token = normalize_mention_token(match.group(1))
+        if not token:
             return ""
-        if already_at and uid == already_at:
-            return ""
-        return f"@{uid} "
+        uid = names[token] if token in names else ""
+        if uid:
+            if already_at and uid == already_at:
+                return ""
+            return f"<@{uid}>"
+        if is_mention_id(token):
+            return f"<@{token}>"
+        return ""
 
-    return _NICK_AT_RE.sub(_repl, text)
+    return sub_mentions(text, _repl)
 
 
 def _persona_max_bubbles(ev: Event | None) -> int:
@@ -1685,7 +1689,7 @@ async def send_chat_result(
     """
     解析并发送聊天结果，支持：
     - 按换行分割多条消息
-    - @用户ID 语法 → MessageSegment.at(user_id)
+    - <@用户ID> 或 <@昵称> → MessageSegment.at。裸 @ 不解析
     - at_user_id：框架强制前置 @（任务交付回灌等，不依赖模型自觉）
     - <meme: 情绪> 标记（可带反引号；尖括号和冒号旁边的空格也认）→ 触发表情包发送（需传入 ev）
     - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``，最终落到
@@ -1749,7 +1753,7 @@ async def send_chat_result(
 
     # <br> 漏网已在 sanitize 落成换行；再统一其它 HTML 换行写法
     text = _normalize_html_linebreaks(text)
-    from gsuid_core.ai_core.outbound import rewrite_cq_at
+    from gsuid_core.ai_core.outbound import rewrite_cq_at, strip_mention_tags
 
     text = rewrite_cq_at(text)
     _names = mention_names_from_event(ev)
@@ -1868,8 +1872,8 @@ async def send_chat_result(
             segments = kept
         segments = _ensure_at_trailing_space(segments)
 
-        # 计算纯文本长度
-        plain_text = re.sub(r"@\d+", "", block)
+        # 停顿按台词算，括号提醒不计入
+        plain_text = strip_mention_tags(block)
 
         await asyncio.sleep(bubble_pause(len(plain_text)))
 
@@ -1952,30 +1956,27 @@ def _ensure_at_trailing_space(segments: list[Message]) -> list[Message]:
 
 
 def _parse_at_segments(text: str) -> list[Message]:
-    """
-    将含有 @用户ID 的文本解析为 MessageSegment 列表。
-
-    规则：
-    - @后跟纯数字（QQ号格式）才会被解析为 at segment
-    - 其余文本保持为 text segment
-    - 示例输入："好哦 @100000001 你来看"
-    - 示例输出：[Text("好哦 "), At(100000001), Text(" 你来看")]
-    """
-    from gsuid_core.ai_core.outbound import rewrite_cq_at
+    """把 <@用户ID> 解析成 at 段。认转义尖括号和多余空格。裸 @ 留在文本里。"""
+    from gsuid_core.ai_core.outbound import (
+        is_mention_id,
+        iter_mentions,
+        rewrite_cq_at,
+        normalize_mention_token,
+    )
 
     text = rewrite_cq_at(text)
-    # 匹配 @数字，前后允许空格（空格属于分隔符，不计入文本内容）
-    pattern = re.compile(r"\s*@(\d+)\s*")
     segments: list[Message] = []
     last_end = 0
 
-    for match in pattern.finditer(text):
-        # 匹配前的普通文本
+    for match in iter_mentions(text):
+        token = normalize_mention_token(match.group(1))
+        if not is_mention_id(token):
+            continue
         before = text[last_end : match.start()]
         if before:
             segments.append(MessageSegment.text(before))
 
-        segments.append(MessageSegment.at(match.group(1)))
+        segments.append(MessageSegment.at(token))
 
         last_end = match.end()
 

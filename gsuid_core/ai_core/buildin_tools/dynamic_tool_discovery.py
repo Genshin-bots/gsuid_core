@@ -20,6 +20,7 @@ from gsuid_core.ai_core.control.lines import FIND_TOOLS_GAP_NOTE
 from gsuid_core.ai_core.buildin_tools.visibility import (
     check_sched_create,
     check_sched_mutate,
+    mark_find_tools_recalled,
 )
 from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
     RankedHit,
@@ -58,6 +59,35 @@ def _registry_identity_names(need: str, rows: Sequence[tuple[str, str]]) -> list
     if not needle.startswith(plugin):
         return []
     return grouped[plugin]
+
+
+def _read_video_requested(need: str) -> bool:
+    """是否在找读视频。不看模型有没有声明 video。"""
+    n = (need or "").strip()
+    if not n:
+        return False
+    low = n.lower()
+    if "read_video" in low or "vid_" in low:
+        return True
+    from gsuid_core.ai_core.register import find_tool_base
+
+    tb = find_tool_base("read_video")
+    if tb is not None and need_matches_tool_text(n, tb.retrieval_text, list(tb.covers)):
+        return True
+    if "视频" not in n:
+        return False
+    return any(mark in n for mark in ("看", "读", "播", "内容", "什么", "描述", "分析", "讲"))
+
+
+def _read_video_tool(need: str) -> Tool[ToolContext] | None:
+    if not _read_video_requested(need):
+        return None
+    from gsuid_core.ai_core.register import find_tool_base
+
+    tb = find_tool_base("read_video")
+    if tb is None:
+        return None
+    return tb.tool
 
 
 def _identity_tools(need: str) -> list[Tool[ToolContext]]:
@@ -372,6 +402,11 @@ async def find_tools(
         pinned = _identity_tools(need)
         if _scope is not None and not _scope.is_open:
             pinned = [tool for tool in pinned if _scope.tool_enabled(tool.name)]
+        video_tool = _read_video_tool(need)
+        if video_tool is not None:
+            # 未声明 video 时通道核里的 schema 是藏着的，召回后本轮要真正可调。
+            mark_find_tools_recalled(ctx.deps, "read_video")
+            pinned = _prepend_tools([video_tool], pinned)
         identity_names = {tool.name for tool in pinned}
 
         try:
@@ -452,6 +487,10 @@ async def find_tools(
                 label=tool_brief(covers=covers, description=tb.description),
                 score=score,
             )
+            # 已在通道核但被 visible_when 藏住时，仍要写进回执；通用档会被专用项丢掉。
+            if tool.name == "read_video":
+                dedicated_tools.append(hit)
+                continue
             if tier == "dedicated":
                 dedicated_tools.append(hit)
             elif tool.name not in offered_set:

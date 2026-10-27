@@ -139,7 +139,12 @@ async def load_video_for_agent(
     return shown, media
 
 
-@ai_tools(category="buildin", visible_when=context_has_video, timeout=320.0)
+@ai_tools(
+    category="buildin",
+    covers=["查看视频", "读取视频"],
+    visible_when=context_has_video,
+    timeout=320.0,
+)
 async def read_video(
     ctx: RunContext[ToolContext],
     video_id: str,
@@ -150,7 +155,8 @@ async def read_video(
     用户发来的视频不会直接进入你的视野，只会以「视频ID」(形如 ``vid_xxxxxxxx``)
     的形式出现在消息里。需要看清视频里有什么时，调用本工具把它读出来。
 
-    本工具仅在当前模型声明支持 video 时才会出现。能原生吃视频时把视频塞回会话；
+    模型声明支持 video 且本轮有视频时直接出现。未声明 video 时用 find_tools
+    描述查看视频即可召回。能原生吃视频时把视频塞回会话；
     ``/v1/files`` 不可用且能看图时抽帧。不要对用户编造视频内容。
 
     Args:

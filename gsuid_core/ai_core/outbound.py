@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Optional, NamedTuple
+from typing import Match, Callable, Iterator, Optional, NamedTuple
 from datetime import datetime
 from contextvars import Token, ContextVar
 from dataclasses import dataclass
@@ -79,17 +79,56 @@ def reset_run_image_delivered() -> None:
     _run_image_delivered.set(False)
 
 
-# 与 send 路径的 @数字 对齐，并收带数字的平台 ID。纯单词 @the 不是接收人。
+# 话题标题里去掉裸 @平台ID。聊天强提醒不走这条。
 _AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
+_PLATFORM_ID_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z_\-]{2,64}")
+# 转义括号放在裸尖括号前，避免 \<@id\> 只吃掉中间的 <。
+_MENTION_OPEN = r"(?:\\<|&lt;|&#60;|＜|<)"
+_MENTION_CLOSE = r"(?:\\>|&gt;|&#62;|＞|>)"
+_MENTION_RE = re.compile(
+    _MENTION_OPEN + r"\s*@\s*([^<>]{1,64}?)\s*" + _MENTION_CLOSE,
+    re.IGNORECASE,
+)
 _CQ_AT_RE = re.compile(r"\[CQ:at\s*,\s*qq=([^,\]\s]+)(?:,[^\]]*)?\]")
 _DELIVERY_TASK_TITLE_RE = re.compile(r"任务#\d+「([^」]+)」")
 
 
-def rewrite_cq_at(text: str) -> str:
-    """把 [CQ:at,qq=ID] 收成 @ID。出站解析、主动消息历史、话题标题共用。"""
+def normalize_mention_token(raw: str) -> str:
+    """括号内的空格去掉。名称和用户 ID 都不靠空格区分。"""
+    return re.sub(r"\s+", "", raw)
+
+
+def is_mention_id(token: str) -> bool:
+    """纯数字，或带数字的平台 ID。纯单词不是接收人。"""
+    if not token:
+        return False
+    if token.isdigit():
+        return True
+    return _PLATFORM_ID_RE.fullmatch(token) is not None and any(ch.isdigit() for ch in token)
+
+
+def iter_mentions(text: str) -> Iterator[Match[str]]:
+    """扫描 <@用户ID> / <@名称>。认转义尖括号和括号内外的空格。"""
+    return _MENTION_RE.finditer(text or "")
+
+
+def sub_mentions(text: str, repl: Callable[[Match[str]], str]) -> str:
     if not text:
         return text
-    return _CQ_AT_RE.sub(r"@\1 ", text)
+    return _MENTION_RE.sub(repl, text)
+
+
+def strip_mention_tags(text: str) -> str:
+    if not text:
+        return text
+    return _MENTION_RE.sub("", text)
+
+
+def rewrite_cq_at(text: str) -> str:
+    """把 [CQ:at,qq=ID] 收成 <@ID>。出站解析、主动消息历史、话题标题共用。"""
+    if not text:
+        return text
+    return _CQ_AT_RE.sub(r"<@\1>", text)
 
 
 def _clean_topic_head(raw: str, max_len: int = 12) -> str:
@@ -99,7 +138,7 @@ def _clean_topic_head(raw: str, max_len: int = 12) -> str:
     m = _DELIVERY_TASK_TITLE_RE.search(s)
     if m is not None:
         s = m.group(1).strip()
-    s = _AT_ID_RE.sub("", rewrite_cq_at(s)).strip()
+    s = _AT_ID_RE.sub("", strip_mention_tags(rewrite_cq_at(s))).strip()
     head = s.split("\n", 1)[0].strip()
     return head[:max_len]
 
@@ -158,17 +197,16 @@ def _fmt_ago(age_seconds: float) -> str:
 
 
 def proactive_directed_target(event: Event, message: str) -> str:
-    """群播报只有正文里的 @用户ID 才算定向。
+    """群播报只有正文里的 <@用户ID> 才算定向。裸 @ 不算。
 
     没有点名时不要把 Event.user_id 写成接收人，否则下一条别人的话会被记成发给这个人。
     """
     if event.group_id:
-        matched = _AT_ID_RE.search(rewrite_cq_at(message or ""))
-        if matched is None:
-            return ""
-        token = matched.group(1)
-        if any(ch.isdigit() for ch in token):
-            return token
+        rewritten = rewrite_cq_at(message or "")
+        for match in iter_mentions(rewritten):
+            token = normalize_mention_token(match.group(1))
+            if is_mention_id(token):
+                return token
         return ""
     return str(event.user_id) if event.user_id else ""
 

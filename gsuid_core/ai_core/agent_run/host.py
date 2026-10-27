@@ -169,5 +169,6 @@ class RunOnceHost:
         turn_graph: Optional[TurnGraph] = None,
         cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
+        injection_reason: str = "",
     ) -> object:
         raise NotImplementedError

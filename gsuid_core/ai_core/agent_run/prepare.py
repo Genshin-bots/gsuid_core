@@ -424,7 +424,11 @@ class PreparePhase(RunOnceHost):
         # session logger：框架注入单独记账，不计入 user_input
         self._session_logger.log_run_start()
         if st.fw_msg and isinstance(st.final_user_message, str):
-            self._session_logger.log_system_injection(st.final_user_message, source="framework")
+            self._session_logger.log_system_injection(
+                st.final_user_message,
+                source="framework",
+                reason=st.injection_reason,
+            )
         else:
             self._session_logger.log_user_input(st.final_user_message)
 

@@ -155,6 +155,16 @@ def _normalize_image_ids(val: Optional[Union[List[str], str]]) -> List[str]:
     return []
 
 
+def _note_send_block(tool_ctx: ToolContext, reason: str, content: str) -> None:
+    """主动发送被闸拦住时，把原文和原因码写入当前会话日志。"""
+    from gsuid_core.ai_core.agent_run.support import log_output_block_on_session
+
+    sid = tool_ctx.parent_session_id or ""
+    if not sid and tool_ctx.ev is not None and tool_ctx.ev.session_id:
+        sid = str(tool_ctx.ev.session_id)
+    log_output_block_on_session(sid, reason, content)
+
+
 @ai_tools(category="self", code_callable=False)
 async def send_message_by_ai(
     ctx: RunContext[ToolContext],
@@ -235,12 +245,8 @@ async def send_message_by_ai(
     # 统一输出闸门（尖括号 + OOC …）：打回则 return feedback，放行继续发
     if text:
         from gsuid_core.ai_core.output_gate import tool_gate_feedback
-        from gsuid_core.ai_core.agent_run.speech_policy import (
-            strip_open_solicitations,
-            should_block_user_visible_text,
-        )
+        from gsuid_core.ai_core.agent_run.speech_policy import should_block_user_visible_text
 
-        text = strip_open_solicitations(text)
         _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
         if text:
             from gsuid_core.ai_core.angle_bracket_guard import (
@@ -255,6 +261,7 @@ async def send_message_by_ai(
         if text:
             _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
             if _gate_fb is not None:
+                _note_send_block(tool_ctx, "output_gate_tool", text)
                 if has_media:
                     text = ""
                 else:
@@ -269,11 +276,12 @@ async def send_message_by_ai(
                 tool_calls_so_far=["send_message_by_ai"],
             )
             if _blk:
+                _note_send_block(tool_ctx, _why, text)
                 if has_media:
                     # 图仍发；被拦的台词不出站（与 TextPart 同一套 should_block）
                     text = ""
                 else:
-                    return "⚠️ 台词被话术闸拦住。改成角色短句，或只发媒体、不要邀约再问。"
+                    return "⚠️ 台词被话术闸拦住。改掉编排或进度汇报后再发，或只发媒体、不附这句台词。"
 
     # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev
@@ -289,6 +297,7 @@ async def send_message_by_ai(
 
         _ban = non_master_title(target_id, persona_name_from_event(ev))
         if title_mentioned(_ban, text):
+            _note_send_block(tool_ctx, "master_title", text)
             return f"⚠️ 接收人不是主人，台词不能出现「{_ban}」。改写后再发，不要用这个称呼。"
     session_id = str(ev.session_id) if ev is not None else (tool_ctx.parent_session_id or "")
 
@@ -522,11 +531,6 @@ async def send_message_by_ai(
 
         if throttle_key is not None:
             _PER_TURN_SEND_MESSAGE_COUNT[throttle_key] = _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) + 1
-
-        from gsuid_core.ai_core.agent_run.speech_policy import should_mark_speech_delivered
-
-        if should_mark_speech_delivered(text=text, has_media=has_media):
-            extra["delivered_with_speech"] = True
 
         content_desc = []
         if text:

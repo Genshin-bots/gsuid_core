@@ -139,7 +139,7 @@ if "提及应答" in ai_mode:
 7. 历史上下文：format_history_for_agent() 近 30 条 → rag_context = "【历史对话】..."
    注意：RAG 知识库检索不再前置强制，由主 Agent 的 search_cognition 工具按需调用
 8. 调 Agent：chat_result = await session.run(user_message, bot, ev, rag_context)
-9. 发送回复：send_chat_result(bot, chat_result)（支持 @用户ID 解析 + 打字延迟）
+9. 发送回复：send_chat_result(bot, chat_result)（支持 `<@用户ID>` / `<@昵称>` 解析 + 打字延迟）
 10. 记忆观察：observe() 把 AI 回复入队记忆系统
 ```
 

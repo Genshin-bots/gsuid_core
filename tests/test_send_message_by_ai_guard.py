@@ -87,8 +87,8 @@ def test_per_turn_throttle_rejects_third_call():
     print("[OK] 第 3 条被单轮硬限流拒发")
 
 
-def test_cs_caption_dropped_but_image_still_sent() -> None:
-    """客服收尾配图：台词丢掉，图片仍发。"""
+def test_cs_caption_kept_with_image() -> None:
+    """配图时追问和较长说明随图发出。"""
     from gsuid_core.ai_core.buildin_tools import message_sender as ms
 
     bot = MagicMock()
@@ -106,12 +106,12 @@ def test_cs_caption_dropped_but_image_still_sent() -> None:
 
     assert "消息已发送" in result
     assert bot.send.await_count == 1
-    if scr.await_count:
-        assert scr.await_args is not None
-        sent_text = scr.await_args.args[1]
-        assert "请告诉" not in sent_text
-        assert "如果还需要" not in sent_text
-    print("[OK] 引导追问被剥，图片仍发出")
+    assert scr.await_count == 1
+    assert scr.await_args is not None
+    sent_text = scr.await_args.args[1]
+    assert isinstance(sent_text, str)
+    assert "请告诉" in sent_text
+    assert "如果还需要" in sent_text
 
 
 def test_throttle_resets_on_new_turn_and_after_clear():
@@ -144,7 +144,7 @@ def test_throttle_resets_on_new_turn_and_after_clear():
         assert "消息已发送" in ok_after_clear
 
 
-def test_wait_text_does_not_set_delivered() -> None:
+def test_send_does_not_mark_turn_terminal() -> None:
     from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.buildin_tools import message_sender as ms
 
@@ -159,7 +159,7 @@ def test_wait_text_does_not_set_delivered() -> None:
         patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
         patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
     ):
-        result = _run(ms.send_message_by_ai(ctx, text="马上好。"))
+        result = _run(ms.send_message_by_ai(ctx, text="查到了，出门带伞。"))
     assert "消息已发送" in result
     assert "delivered_with_speech" not in extra
 
@@ -185,14 +185,28 @@ def test_nickname_at_becomes_user_id_or_drops() -> None:
     from gsuid_core.ai_core.utils import rewrite_nickname_mentions
 
     names = {"小明": "10001", "小红": "10002"}
-    dropped = rewrite_nickname_mentions("图好了。@小明", names, already_at="10001")
-    assert "@小明" not in dropped
+    dropped = rewrite_nickname_mentions("图好了。<@小明>", names, already_at="10001")
+    assert "@" not in dropped
     assert "图好了" in dropped
-    rewritten = rewrite_nickname_mentions("看这个 @小明", names)
-    assert "@10001" in rewritten
-    assert "@小明" not in rewritten
-    unknown = rewrite_nickname_mentions("嗨 @不存在的人", names)
+    rewritten = rewrite_nickname_mentions("看这个 <@小明>", names)
+    assert "<@10001>" in rewritten
+    assert "小明" not in rewritten
+    spaced = rewrite_nickname_mentions("看这个 < @  小明  >", names)
+    assert "<@10001>" in spaced
+    escaped = rewrite_nickname_mentions("看这个 &lt;@小明&gt;", names)
+    assert "<@10001>" in escaped
+    fullwidth = rewrite_nickname_mentions("看这个 ＜@小明＞", names)
+    assert "<@10001>" in fullwidth
+    slashed = rewrite_nickname_mentions("看这个 \\<@小明\\>", names)
+    assert "<@10001>" in slashed
+    entity = rewrite_nickname_mentions("看这个 &#60;@小明&#62;", names)
+    assert "<@10001>" in entity
+    unknown = rewrite_nickname_mentions("嗨 <@不存在的人>，在吗", names)
     assert "@" not in unknown
+    assert "，在吗" in unknown
+    bare = "@了别人就去找他要嘛，你这不是拿我寻开心"
+    assert rewrite_nickname_mentions(bare, names) == bare
+    assert rewrite_nickname_mentions("看这个 @小明", names) == "看这个 @小明"
 
 
 def test_delivery_wake_ignores_model_user_id() -> None:
@@ -377,7 +391,7 @@ def test_speaker_can_send_own_res_image() -> None:
 def test_at_digits_become_at_segment() -> None:
     from gsuid_core.ai_core.utils import _parse_at_segments
 
-    segments = _parse_at_segments("好哦 @100000001 你来看")
+    segments = _parse_at_segments("好哦 <@100000001> 你来看")
     types = [s.type for s in segments]
     assert "at" in types
     at_seg = segments[types.index("at")]
@@ -385,6 +399,20 @@ def test_at_digits_become_at_segment() -> None:
     for s in segments:
         if s.type == "text":
             assert "100000001" not in str(s.data)
+
+    bare = _parse_at_segments("好哦 @100000001 你来看")
+    assert all(s.type != "at" for s in bare)
+    assert any("100000001" in str(s.data) for s in bare if s.type == "text")
+
+    escaped = _parse_at_segments("好哦 &lt; @ 100000001 &gt; 你来看")
+    esc_types = [s.type for s in escaped]
+    assert "at" in esc_types
+    assert escaped[esc_types.index("at")].data == "100000001"
+
+    cq = _parse_at_segments("好哦 [CQ:at,qq=100000001] 你来看")
+    cq_types = [s.type for s in cq]
+    assert "at" in cq_types
+    assert cq[cq_types.index("at")].data == "100000001"
 
 
 def test_has_model_visible_content_covers_modalities() -> None:

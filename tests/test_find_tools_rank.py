@@ -797,6 +797,71 @@ def test_find_tools_does_not_pin_ambiguous_prefix_or_sentence() -> None:
         assert names == set()
 
 
+def test_find_tools_recalls_read_video_without_model_support() -> None:
+    """未声明 video、向量为空、名字已在通道核里时，find_tools 仍要召回并可调用。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.buildin_tools.visibility import (
+        MODEL_DECLARES_VIDEO_KEY,
+        context_has_video,
+    )
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    class _Scan:
+        def __init__(self, deps: ToolContext) -> None:
+            self.deps: ToolContext | None = deps
+            self.messages: tuple[object, ...] = ()
+
+    async def _empty(**_kwargs: object) -> list[object]:
+        return []
+
+    async def _no_nodes(_need: str, *, limit: int = 5) -> list[str]:
+        _ = limit
+        return []
+
+    async def _ask(need: str) -> tuple[str, ToolContext]:
+        deps = ToolContext(
+            ev=Event(user_id="u1", raw_text="你好"),
+            extra={
+                MODEL_DECLARES_VIDEO_KEY: False,
+                EXPOSED_TOOLS_EXTRA_KEY: ["read_video", "find_tools"],
+            },
+        )
+        ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                _empty,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                _no_nodes,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _n: [],
+            ),
+        ):
+            text = await find_tools(ctx, need)
+        return text, deps
+
+    for need in ("read_video", "查看视频", "看看这个视频"):
+        text, deps = asyncio.run(_ask(need))
+        assert "read_video" in text
+        assert "read_video" in deps.dynamic_tool_names
+        assert context_has_video(_Scan(deps)) is True
+
+    text, deps = asyncio.run(_ask("查询广州天气"))
+    assert "read_video" not in text
+    assert "read_video" not in deps.dynamic_tool_names
+    assert context_has_video(_Scan(deps)) is False
+
+
 def test_find_tools_gap_note_does_not_tell_model_to_give_up() -> None:
     from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import FIND_TOOLS_GAP_NOTE
 

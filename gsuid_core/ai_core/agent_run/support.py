@@ -21,6 +21,7 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
 from gsuid_core.ai_core.control.lines import THRASH_FUSE_NUDGE as _THRASH_FUSE_NUDGE  # noqa: F401
+from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
@@ -561,6 +562,34 @@ def add_response_usage(
     st.usage_cache_write_tokens += cache_write_tokens
     if response_model and st.model_name in ("", "unknown"):
         st.model_name = response_model
+
+
+def log_output_block_on_session(session_id: str, reason: str, content: str, *, policy: str = "") -> None:
+    """工具路径没有 RunOnceState 时，按 session 记下被吞的台词。"""
+    sid = session_id.strip()
+    why = reason.strip()
+    body = content.strip()
+    if not sid or not why or not body:
+        return
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    sess = get_ai_session_registry().get_ai_session(sid)
+    if sess is None or sess._session_logger is None:
+        return
+    sess._session_logger.log_output_block(why, body, policy=policy)
+
+
+def record_output_block(st: RunOnceState, logger: AISessionLogger, reason: str, content: str) -> None:
+    """拦截当时把原因码和原文写入会话日志。同一 run 相同原因与原文只记一次。"""
+    body = (content or "").strip()
+    why = (reason or "").strip()
+    if not body or not why:
+        return
+    key = (why, body)
+    if key in st.output_block_seen:
+        return
+    st.output_block_seen.add(key)
+    logger.log_output_block(why, body, policy=st.speech_policy)
 
 
 def record_run_tool_output(outputs: List[str], tool_name: str, content: Optional[str]) -> None:

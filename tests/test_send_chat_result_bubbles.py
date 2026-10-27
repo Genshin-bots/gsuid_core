@@ -153,7 +153,7 @@ def test_send_chat_result_two_cq_ats_become_two_segments(monkeypatch: pytest.Mon
     assert len(sent) == 1
     assert _at_pairs(sent[0]) == [
         ("at", "10001"),
-        ("text", " 和"),
+        ("text", " 和 "),
         ("at", "10002"),
         ("text", " 都来"),
     ]
