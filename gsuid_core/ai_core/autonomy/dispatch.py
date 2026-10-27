@@ -69,6 +69,9 @@ def _clamp_drive(drive: DriveKind, target: str, plan: DeliveryPlan) -> tuple[Dri
     if drive == "care_user":
         known = {pin.user_id for pin in plan.care}
         if target not in known or target in plan.served_user_ids:
+            matched_pins = [p for p in plan.care if p.group_id == target and p.user_id not in plan.served_user_ids]
+            if len(matched_pins) == 1:
+                return drive, matched_pins[0].user_id
             return "self_explore", ""
         return drive, target
     if drive == "group_topic":

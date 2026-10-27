@@ -15,6 +15,7 @@ from gsuid_core.data_store import get_res_path
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_risk import HIGH_RISK_TOOL_NAMES
 from gsuid_core.ai_core.autonomy.models import GroupObservation, CareTargetSnapshot
+from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
 USER_PM = 6
 ARTIFACT_LIMIT_BYTES = 32 * 1024
@@ -69,6 +70,11 @@ class GuardState:
     allowed_users: dict[str, CareTargetSnapshot] = field(default_factory=dict)
     sent_count: int = 0
     sent_targets: list[str] = field(default_factory=list)
+    now: float = 0.0
+    hour_cap: int = 2
+    day_cap: int = 8
+    last_sent_user_id: str = ""
+    last_sent_group_id: str = ""
 
 
 CommandExecutor = Callable[[CommandHit, Event], Awaitable[str]]
@@ -473,6 +479,21 @@ async def send_message_by_ai(
         bot_self_id = u_snap.bot_self_id or bot_self_id
         ws_bot_id = u_snap.ws_bot_id or ws_bot_id
 
+    target_key = make_target_key(dest_group_id, dest_user_id or None)
+    dispatcher = get_dispatcher()
+    clock = state.now
+    if dispatcher.should_suppress_by_rate(target_key, max_per_hour=state.hour_cap, max_per_day=state.day_cap):
+        return (
+            "发送被拦截：目标近期主动发言配额已达上限（防打扰）。请勿继续发信，可将成果用 artifact_put 存为个人笔记。"
+        )
+    if dispatcher.should_suppress_heartbeat(target_key):
+        return "发送被拦截：目标当前处于防打扰冷静期。请勿连续打扰，建议转为自我探索并记入笔记。"
+
+    if clock > 0 and dest_group_id and dest_group_id in state.allowed_groups:
+        g_obs = state.allowed_groups[dest_group_id]
+        if g_obs.last_assistant_ts > 0 and (clock - g_obs.last_assistant_ts < 60):
+            return "发送被拦截：AI 刚刚（60秒内）在群内已有发言。为了防刷屏，请勿连续发信。"
+
     from gsuid_core.models import Event
     from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
 
@@ -491,11 +512,19 @@ async def send_message_by_ai(
         body[:400],
         source="autonomy",
         trigger_reason=f"{state.persona_name} 自主发信",
-        suppress_when_heartbeat_recent=False,
+        suppress_when_heartbeat_recent=True,
+        at_user_id=dest_user_id if (dest_group_id and dest_user_id) else None,
     )
     if sent:
         state.sent_count += 1
-        target_desc = f"群 {dest_group_id}" if dest_group_id else f"用户 {dest_user_id}"
+        state.last_sent_user_id = dest_user_id
+        state.last_sent_group_id = dest_group_id or ""
+        if dest_group_id and dest_user_id:
+            target_desc = f"群 {dest_group_id}（已前置 @{dest_user_id}）"
+        elif dest_group_id:
+            target_desc = f"群 {dest_group_id}"
+        else:
+            target_desc = f"用户 {dest_user_id}"
         state.sent_targets.append(target_desc)
         return f"已成功向 {target_desc} 发送消息：{body[:100]}"
     return "发送失败：当前处于冷却、频次限额或网络离线，消息未发出。"
@@ -511,7 +540,14 @@ def build_autonomy_tools() -> list[Tool[ToolContext]]:
         Tool(artifact_put),
         Tool(send_message_by_ai),
     ]
-    for name in ("find_tools", "web_search_tool", "web_fetch_tool", "read_image", "search_cognition"):
+    for name in (
+        "find_tools",
+        "web_search_tool",
+        "web_fetch_tool",
+        "read_image",
+        "search_cognition",
+        "read_chat_history",
+    ):
         base = find_tool_base(name)
         if base is not None and autonomy_tool_allowed(base.name):
             mounted.append(base.tool)

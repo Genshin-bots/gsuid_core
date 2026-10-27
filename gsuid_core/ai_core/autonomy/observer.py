@@ -20,6 +20,7 @@ from gsuid_core.ai_core.autonomy.select import (
     GROUP_CAP,
     CARE_COOLDOWN_SECONDS,
     GROUP_LOOKBACK_SECONDS,
+    _age_label,
     care_floor,
     eligible_user_ids,
     minimum_score_for,
@@ -28,6 +29,26 @@ from gsuid_core.ai_core.autonomy.select import (
 from gsuid_core.ai_core.database.models import UserFavorability, AIAutonomyActivity
 from gsuid_core.message_history.manager import get_history_manager
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+
+
+async def _user_preferences(user_ids: list[str]) -> dict[str, list[str]]:
+    """批量查询关心对象的全局偏好画像规则。fail-open，遇错返回空字典。"""
+    if not user_ids:
+        return {}
+    try:
+        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+        from gsuid_core.ai_core.memory.database.models import AIMemPreference
+
+        result: dict[str, list[str]] = {}
+        for uid in user_ids:
+            scope_key = make_scope_key(ScopeType.USER_GLOBAL, uid)
+            prefs = await AIMemPreference.get_active([scope_key], limit=2)
+            rules = [p.preference_rule.strip() for p in prefs if p.preference_rule.strip()]
+            if rules:
+                result[uid] = rules
+        return result
+    except Exception:
+        return {}
 
 
 async def build_observation(persona_name: str, *, now: float | None = None) -> ObservationDigest:
@@ -78,6 +99,7 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     for uid in user_ids:
         bot_id = favor_bot[uid] if uid in favor_bot and favor_bot[uid] else _bot_for(lines, uid)
         binds[uid] = await collect_bound_uids(uid, bot_id)
+    user_prefs = await _user_preferences(user_ids)
     care = assemble_care_targets(
         user_ids,
         scores,
@@ -88,10 +110,12 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         now=clock,
         allowed_groups=allowed,
         allow_private=allow_private,
+        preferences=user_prefs,
     )
     groups = await _groups(lines, scope, targets, excluded_groups=active_groups)
     trails, recent_tools = await _previous(persona_name, clock)
     bot_id, bot_self_id, ws_bot_id = _identity(lines, groups)
+    proactive_records = await _recent_proactive_records(persona_name, clock)
     return ObservationDigest(
         persona_name=persona_name,
         bot_id=bot_id,
@@ -104,6 +128,7 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         available_plugins_summary=_plugin_names(),
         recently_used_tools=recent_tools,
         in_flight_tasks=in_flight,
+        recent_proactive_records=proactive_records,
     )
 
 
@@ -182,11 +207,10 @@ async def _groups(
     for line in ordered:
         if line.group_id is None:
             continue
+        group_lines = [item for item in sorted(lines, key=lambda item: item.ts) if item.group_id == line.group_id][-15:]
         recent = [
-            f"{'[你]' if item.role == 'assistant' else item.user_name}: {item.text[:80]}"
-            for item in sorted(lines, key=lambda item: item.ts, reverse=True)
-            if item.group_id == line.group_id
-        ][:10]
+            f"{'[你]' if item.role == 'assistant' else item.user_name}: {item.text[:160]}" for item in group_lines
+        ]
         found.append(
             GroupObservation(
                 group_id=line.group_id,
@@ -244,6 +268,22 @@ async def _group_summary(group_id: str) -> str:
     if meta is None or not isinstance(meta.group_summary_cache, str):
         return ""
     return meta.group_summary_cache.strip()[:400]
+
+
+async def _recent_proactive_records(persona_name: str, now: float) -> list[str]:
+    rows = await AIAutonomyActivity.list_recent_by_persona(persona_name, limit=6)
+    found: list[str] = []
+    for row in rows:
+        if now - row.created_at > CARE_COOLDOWN_SECONDS:
+            continue
+        if row.delivery_mode != "immediate_push" and "send_message_by_ai" not in row.plugins_used_json:
+            continue
+        age = _age_label(row.created_at, now)
+        target = row.target_user_id or row.target_session_key or "群聊"
+        summary = row.summary.strip()[:60]
+        if summary:
+            found.append(f"{age}向 {target} 发信：{summary}")
+    return found
 
 
 async def _previous(persona_name: str, now: float) -> tuple[list[str], list[str]]:
@@ -329,6 +369,7 @@ def _empty(persona_name: str) -> ObservationDigest:
         available_plugins_summary=[],
         recently_used_tools=[],
         in_flight_tasks=[],
+        recent_proactive_records=[],
     )
 
 

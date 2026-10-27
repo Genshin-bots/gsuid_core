@@ -133,6 +133,7 @@ async def emit_proactive_message(
     generator_log_files: Optional[List[str]] = None,
     bot: Optional[Bot] = None,
     suppress_when_heartbeat_recent: bool = True,
+    at_user_id: Optional[str] = None,
 ) -> bool:
     """统一主动消息出口。
 
@@ -215,7 +216,13 @@ async def emit_proactive_message(
             out_msg = _gr.send_text
             if not out_msg:
                 return False
-    await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
+    await send_chat_result(
+        bot,
+        out_msg,
+        ev=event,
+        extra_metadata=extra_metadata,
+        at_user_id=at_user_id,
+    )
 
     await record_outbound(
         ev=event,
@@ -223,7 +230,7 @@ async def emit_proactive_message(
         text=out_msg,
         image_id="",
         topic="",
-        target_user=proactive_directed_target(event, out_msg),
+        target_user=at_user_id or proactive_directed_target(event, out_msg),
         target_name="",
     )
 

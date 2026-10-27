@@ -95,8 +95,8 @@ def test_empty_signal_users_sort_after_people_who_spoke_and_cap_at_ten() -> None
     assert targets[0].bound_uids == {}
     assert targets[0].last_human_ts == now - 20
     assert targets[0].last_assistant_ts == now - 10
-    assert "[你] 慢慢看，看完再跟你说" in targets[0].recent_lines[0]
-    assert "刚说过话" in targets[0].recent_lines[1]
+    assert "刚说过话" in targets[0].recent_lines[0]
+    assert "[你]" in targets[0].recent_lines[1] and "慢慢看" in targets[0].recent_lines[1]
 
 
 def test_empty_digest_skips_the_model_and_render_points_at_the_persona() -> None:

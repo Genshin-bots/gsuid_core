@@ -52,16 +52,10 @@ from gsuid_core.ai_core.const import (
 )
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.content_guard import GuardFlags
-
-# 表情包标记正则：兼容全角/半角冒号，以及前后任意数量的反引号包裹
-# 例如：<meme: 困>  `<meme：困>`  ``<meme: 开心>``
-MEME_TAG_PATTERN = re.compile(
-    r"`*<meme[：:]\s*([^>]+?)>`*",
-    re.IGNORECASE,
-)
 
 # 表情没有字数，按 7 个字计，间隔是 1 秒。
 MEME_PAUSE_CHARS = 7
@@ -1693,7 +1687,7 @@ async def send_chat_result(
     - 按换行分割多条消息
     - @用户ID 语法 → MessageSegment.at(user_id)
     - at_user_id：框架强制前置 @（任务交付回灌等，不依赖模型自觉）
-    - <meme: 情绪> 标记（可带反引号）→ 触发表情包发送（需传入 ev）
+    - <meme: 情绪> 标记（可带反引号；尖括号和冒号旁边的空格也认）→ 触发表情包发送（需传入 ev）
     - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``，最终落到
       ``message_history`` 记录上（如主动消息的 ``proactive=True / source / reason``）
     - ooc_check：出戏防火墙开关。gs_agent 自判产物已走过系统提醒，传 False 放行
@@ -1872,6 +1866,7 @@ async def send_chat_result(
             if not kept:
                 continue
             segments = kept
+        segments = _ensure_at_trailing_space(segments)
 
         # 计算纯文本长度
         plain_text = re.sub(r"@\d+", "", block)
@@ -1945,6 +1940,17 @@ async def _send_meme_from_tag(tag: str, bot: Bot, ev: Event) -> None:
             reset_outbound_image_label(label_token)
 
 
+def _ensure_at_trailing_space(segments: list[Message]) -> list[Message]:
+    """确保 at 消息段后紧跟的 text 消息段以空格开头，防止各平台粘连。"""
+    result = list(segments)
+    for i in range(len(result) - 1):
+        if result[i].type == "at" and result[i + 1].type == "text":
+            txt = str(result[i + 1].data or "")
+            if txt and not txt.startswith((" ", "\t", "\n")):
+                result[i + 1] = MessageSegment.text(" " + txt)
+    return result
+
+
 def _parse_at_segments(text: str) -> list[Message]:
     """
     将含有 @用户ID 的文本解析为 MessageSegment 列表。
@@ -1982,7 +1988,7 @@ def _parse_at_segments(text: str) -> list[Message]:
     if not segments:
         return [MessageSegment.text(text)]
 
-    return segments
+    return _ensure_at_trailing_space(segments)
 
 
 # GsCoreAIAgent 运行期的无状态消息/历史工具

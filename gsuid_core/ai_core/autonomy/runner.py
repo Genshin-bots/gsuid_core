@@ -26,11 +26,15 @@ class AutonomyReport:
         steps: list[AutonomyStepTrace],
         duration_ms: int,
         session_id: str = "",
+        last_sent_user_id: str = "",
+        last_sent_group_id: str = "",
     ) -> None:
         self.text = text
         self.steps = steps
         self.duration_ms = duration_ms
         self.session_id = session_id
+        self.last_sent_user_id = last_sent_user_id
+        self.last_sent_group_id = last_sent_group_id
 
 
 class TraceCollector:
@@ -102,7 +106,8 @@ async def run_autonomy_agent(
         text=user_prompt[:200],
         raw_text=user_prompt[:200],
     )
-    token = bind_guard(_guard(digest))
+    guard = _guard(digest, now=time.time())
+    token = bind_guard(guard)
     started = time.perf_counter()
     try:
         result = await agent.run(
@@ -118,10 +123,17 @@ async def run_autonomy_agent(
         agent._session_logger.close()
     text = result if isinstance(result, str) else ""
     duration_ms = int((time.perf_counter() - started) * 1000)
-    return AutonomyReport(text, collector.steps, duration_ms, session_id)
+    return AutonomyReport(
+        text,
+        collector.steps,
+        duration_ms,
+        session_id,
+        last_sent_user_id=guard.last_sent_user_id,
+        last_sent_group_id=guard.last_sent_group_id,
+    )
 
 
-def _guard(digest: ObservationDigest) -> GuardState:
+def _guard(digest: ObservationDigest, now: float = 0.0) -> GuardState:
     sessions: dict[str, tuple[str | None, str, str, str]] = {}
     allowed_users: dict[str, CareTargetSnapshot] = {}
     for target in digest.care_targets:
@@ -137,6 +149,7 @@ def _guard(digest: ObservationDigest) -> GuardState:
         ws_bot_id=digest.ws_bot_id,
         allowed_groups=allowed_groups,
         allowed_users=allowed_users,
+        now=now,
     )
 
 

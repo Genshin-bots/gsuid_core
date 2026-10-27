@@ -43,6 +43,7 @@ class CareTargetSnapshot:
     session_key: str
     last_human_ts: float
     last_assistant_ts: float = 0.0
+    preferences: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -75,6 +76,7 @@ class ObservationDigest:
     available_plugins_summary: list[str]
     recently_used_tools: list[str]
     in_flight_tasks: list[str] = field(default_factory=list)
+    recent_proactive_records: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -125,6 +127,7 @@ class DeliveryPin:
     session_key: str
     last_human_ts: float
     last_assistant_ts: float = 0.0
+    preferences: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

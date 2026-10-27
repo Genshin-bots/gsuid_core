@@ -1,5 +1,6 @@
 """观察和交付共用的纯规则。没有数据库，也没有模型。"""
 
+import re
 from collections.abc import Sequence
 
 from gsuid_core.ai_core.autonomy.models import (
@@ -103,6 +104,7 @@ def assemble_care_targets(
     now: float,
     allowed_groups: set[str] | None,
     allow_private: bool,
+    preferences: dict[str, list[str]] | None = None,
 ) -> list[CareTargetSnapshot]:
     """有发言或有绑定的排前面。没有痕迹的仍保留，但排在后面，最多 10 人。"""
 
@@ -148,6 +150,7 @@ def assemble_care_targets(
                 session_key=_session_key(group_id, uid),
                 last_human_ts=last_ts,
                 last_assistant_ts=last_ai_ts,
+                preferences=preferences.get(uid, []) if preferences is not None else [],
             )
         )
     return targets
@@ -159,8 +162,11 @@ def digest_is_empty(digest: ObservationDigest) -> bool:
 
 def render_digest(digest: ObservationDigest, *, now: float) -> str:
     """只描述观察底片。不写角色口癖，也不写具体业务名词。"""
+    from datetime import datetime
+
+    dt_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M")
     lines: list[str] = [
-        "下面是你空闲时能看到的底片。先决定本轮动力，再调用已经挂上的工具。",
+        f"【当前时间：{dt_str}】下面是你空闲时能看到的底片。先决定本轮动力，再调用已经挂上的工具。",
         "文末必须单独四行，且各占一行：",
         "DRIVE: care_user 或 group_topic 或 self_explore 或 rest",
         "TARGET: 关心对象的用户 ID，或群 ID；休息时留空",
@@ -176,6 +182,10 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
         lines.append("正在推进的后台任务（请勿重复处理）：")
         for task_line in digest.in_flight_tasks[:8]:
             lines.append(f"- {task_line}")
+    if digest.recent_proactive_records:
+        lines.append("最近已主动发信记录（请勿就相同话题再次打扰或张冠李戴）：")
+        for rec in digest.recent_proactive_records[:4]:
+            lines.append(f"- {rec}")
     if digest.care_targets:
         lines.append("关心对象：")
         for target in digest.care_targets:
@@ -183,7 +193,15 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
             role = "主人" if target.is_master else zone
             binds = target.bound_uids if target.bound_uids else {}
             bind_text = "，".join(f"{name}={uid}" for name, uid in binds.items()) or "无"
-            lines.append(f"- {target.user_name}（ID {target.user_id}，{role}，好感 {target.score}，绑定 {bind_text}）")
+            time_hint = ""
+            if target.last_human_ts > 0:
+                age = _age_label(target.last_human_ts, now)
+                time_hint = f"（最后发言在{age}）"
+            pref_text = f"，偏好画像：{'；'.join(target.preferences)}" if target.preferences else ""
+            desc = (
+                f"- {target.user_name}（ID {target.user_id}，{role}，好感 {target.score}，绑定 {bind_text}{pref_text}）"
+            )
+            lines.append(f"{desc}{time_hint}")
             for text in target.recent_lines:
                 lines.append(f"  {text}")
     else:
@@ -200,7 +218,7 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
     else:
         lines.append("群近况：无")
     if digest.open_trails:
-        lines.append("上次没做完：" + "、".join(digest.open_trails[:8]))
+        lines.append("上次思考规划与线索（鼓励推进或跟进探索）：" + "、".join(digest.open_trails[:4]))
     if digest.recently_used_tools:
         lines.append("最近用过的工具：" + "、".join(digest.recently_used_tools[:8]))
     if digest.available_plugins_summary:
@@ -242,34 +260,76 @@ def pins_from_digest(digest: ObservationDigest) -> tuple[list[DeliveryPin], list
     return care, groups
 
 
+def _is_broadcast_or_other_directed(text: str, user_id: str = "") -> bool:
+    if text.startswith("【") and any(k in text for k in ("7x24", "快讯", "自动签到")):
+        return True
+    if "自动签到已完成" in text:
+        return True
+    if user_id:
+        ats = [m.group(1) for m in re.finditer(r"@(\d+)", text)]
+        if ats and user_id not in ats:
+            return True
+    return False
+
+
 def _recent_texts(
     lines: Sequence[SpokenLine],
     user_id: str,
     *,
     group_id: str | None,
     now: float,
-    limit: int,
+    limit: int = 8,
 ) -> list[str]:
-    found: list[str] = []
-    for line in sorted(lines, key=lambda item: item.ts, reverse=True):
-        if line.role == "user":
-            if line.user_id != user_id:
-                continue
-            prefix = ""
+    """提取关心对象发言，包含群聊交叉语境并按时间从早到晚升序排列。"""
+    if group_id is not None:
+        glines = [
+            item
+            for item in lines
+            if item.group_id == group_id and not _is_broadcast_or_other_directed(item.text, user_id)
+        ]
+        glines.sort(key=lambda item: item.ts)
+        user_indexes = [i for i, item in enumerate(glines) if item.role == "user" and item.user_id == user_id]
+        if not user_indexes:
+            selected_lines = glines[-limit:]
         else:
-            if group_id is not None:
-                if line.group_id != group_id:
-                    continue
-            elif line.group_id is not None or line.user_id != user_id:
+            chosen: set[int] = set()
+            for idx in user_indexes[-3:]:
+                for offset in (-1, 0, 1):
+                    cand = idx + offset
+                    if 0 <= cand < len(glines):
+                        chosen.add(cand)
+            picked = [glines[i] for i in sorted(chosen)]
+            selected_lines = picked[-limit:]
+        found: list[str] = []
+        for item in selected_lines:
+            text = item.text.strip()
+            if not text:
                 continue
-            prefix = "[你] "
-        text = line.text.strip()
+            age = _age_label(item.ts, now)
+            if item.role == "assistant":
+                prefix = "[你]"
+            elif item.user_id == user_id:
+                prefix = f"[目标] {item.user_name}"
+            else:
+                prefix = item.user_name
+            found.append(f"{age} {prefix}: {text[:160]}")
+        return found
+    user_lines = [item for item in lines if item.group_id is None and item.role == "user" and item.user_id == user_id]
+    ai_lines = [
+        item for item in lines if item.group_id is None and item.role == "assistant" and item.user_id == user_id
+    ]
+    combined = user_lines + ai_lines
+    combined.sort(key=lambda item: item.ts)
+    selected_lines = combined[-limit:]
+    found_p = []
+    for item in selected_lines:
+        text = item.text.strip()
         if not text:
             continue
-        found.append(f"{_age_label(line.ts, now)} {prefix}{text[:80]}")
-        if len(found) >= limit:
-            break
-    return found
+        age = _age_label(item.ts, now)
+        prefix = "[你] " if item.role == "assistant" else ""
+        found_p.append(f"{age} {prefix}{text[:160]}")
+    return found_p
 
 
 def _latest_assistant_ts(lines: Sequence[SpokenLine], *, group_id: str | None, user_id: str) -> float:

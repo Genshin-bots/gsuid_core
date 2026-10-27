@@ -27,6 +27,7 @@ from gsuid_core.ai_core.autonomy.models import (
     DriveKind,
     DeliveryPin,
     DeliveryPlan,
+    DeliveryDecision,
     AutonomyStepTrace,
     ObservationDigest,
 )
@@ -194,10 +195,14 @@ class AutonomyScheduler:
         )
         if tool_sent:
             mode = "immediate_push"
-        elif mode == "immediate_push" and pin is not None:
-            spoken = (parsed.spoken_text or decision.summary)[:400]
-            sent = await _emit(pin, spoken, persona_name)
-            if not sent:
+            if report.last_sent_user_id:
+                for target_pin in pins_from_digest(digest)[0]:
+                    if target_pin.user_id == report.last_sent_user_id:
+                        pin = target_pin
+                        decision = DeliveryDecision("care_user", "immediate_push", pin, decision.summary)
+                        break
+        else:
+            if mode == "immediate_push":
                 mode = "staged_merge"
         if not tool_sent and mode == "staged_merge" and pin is not None:
             text = stage_text(decision.summary, facts)
@@ -358,6 +363,7 @@ async def _emit(pin: DeliveryPin, message: str, persona_name: str) -> bool:
         source="autonomy",
         trigger_reason=f"{persona_name} 自主行动",
         suppress_when_heartbeat_recent=True,
+        at_user_id=pin.user_id if (pin.group_id and pin.user_id) else None,
     )
 
 
