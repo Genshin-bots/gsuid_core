@@ -12,12 +12,21 @@ from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.utils.path_safety import is_safe_filename
 
 from .models import AgentNode
 from .tool_packs import DYNAMIC_PACK
 
 # persona_name -> (md_mtime, cfg_mtime, node)
 _PROJECTION_CACHE: Dict[str, Tuple[float, float, AgentNode]] = {}
+# Linux NAME_MAX。超长时 stat 抛 ENAMETOOLONG，pathlib 不把这个 errno 当成「不存在」。
+_PERSONA_NAME_MAX_BYTES = 255
+
+
+def _persona_dirname_ok(name: str) -> bool:
+    if len(name.encode("utf-8")) > _PERSONA_NAME_MAX_BYTES:
+        return False
+    return is_safe_filename(name)
 
 
 def _persona_root() -> Path:
@@ -66,6 +75,8 @@ def _project(persona_name: str) -> Optional[AgentNode]:
 
 def get_persona_node(persona_name: str) -> Optional[AgentNode]:
     """取某 persona 的投影节点（mtime 变化自动重投影）。"""
+    if not _persona_dirname_ok(persona_name):
+        return None
     persona_dir = _persona_root() / persona_name
     if not persona_dir.is_dir():
         _PROJECTION_CACHE.pop(persona_name, None)

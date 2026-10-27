@@ -42,7 +42,7 @@ from gsuid_core.ai_core.utils import (
     _sanitize_tool_call_artifacts_in_parts,
     normalize_escaped_control_tags_in_parts,
 )
-from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE, capability_hit_line
+from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
 from gsuid_core.utils.resource_manager import RM
@@ -103,6 +103,7 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED as _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
     is_timeless_aggregate as _is_timeless_aggregate,
     post_tool_contracts_for as _post_tool_contracts_for,
+    web_search_delegate_line as _web_search_delegate_line,
     tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
     tool_return_is_non_web_data as _tool_return_is_non_web_data,
     tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
@@ -676,18 +677,17 @@ class LoopPhase(RunOnceHost):
                     capability_node_id=self.capability_node_id,
                 )
                 _contract = _fail_c if _any_fail else _ok_c
-                if (
-                    not _any_fail
-                    and st.tool_call_list
-                    and st.tool_call_list[0] == "web_search_tool"
-                    and not st.web_search_delegate_nudged
-                ):
-                    from gsuid_core.ai_core.agent_node.registry import match_capability_node
-
-                    _nid = match_capability_node(st.last_user_question)
-                    if _nid:
-                        st.web_search_delegate_nudged = True
-                        _contract = capability_hit_line(_nid)
+                _delegate = _web_search_delegate_line(
+                    create_by=self.create_by,
+                    capability_node_id=self.capability_node_id,
+                    question=st.last_user_question,
+                    first_tool=st.tool_call_list[0] if st.tool_call_list else "",
+                    already_nudged=st.web_search_delegate_nudged,
+                    any_fail=_any_fail,
+                )
+                if _delegate:
+                    st.web_search_delegate_nudged = True
+                    _contract = _delegate
                 # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
                 # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
                 if not any(

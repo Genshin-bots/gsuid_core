@@ -69,6 +69,47 @@ def test_post_tool_contracts_split_persona_vs_capability() -> None:
     assert "render_html_to_image" not in fail_c or "禁止" in fail_c
 
 
+def test_capability_agent_keeps_search_instead_of_redelegating() -> None:
+    """执行体的任务书含「搜索/汇总」时，不能改口要求它再去委派。"""
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import web_search_delegate_line
+
+    register_builtin_profiles()
+    task = "【Kanban 单步任务】请搜索并汇总近一周的公开资料。\n" + ("说明" * 300)
+    assert (
+        web_search_delegate_line(
+            create_by="CapabilityAgent",
+            capability_node_id="research_agent",
+            question=task,
+            first_tool="web_search_tool",
+            already_nudged=False,
+            any_fail=False,
+        )
+        == ""
+    )
+    chat = web_search_delegate_line(
+        create_by="Chat",
+        capability_node_id="",
+        question="请搜索并汇总近一周的公开资料",
+        first_tool="web_search_tool",
+        already_nudged=False,
+        any_fail=False,
+    )
+    assert "research_agent" in chat
+    assert "create_subagent" in chat
+    assert (
+        web_search_delegate_line(
+            create_by="Chat",
+            capability_node_id="",
+            question="请搜索并汇总近一周的公开资料",
+            first_tool="web_fetch_tool",
+            already_nudged=False,
+            any_fail=False,
+        )
+        == ""
+    )
+
+
 def test_captionless_inbound_image_is_recorded(monkeypatch) -> None:
     from gsuid_core.models import Event
     from gsuid_core.handler import _record_inbound_history
@@ -367,8 +408,9 @@ def test_delegator_persona_ref_is_an_id_not_the_card() -> None:
     assert format_delegator_persona_ref("  ") == ""
 
 
-@pytest.mark.asyncio
-async def test_read_persona_card_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_persona_card_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
     class _Persona:
         def __init__(self, name: str) -> None:
             self.name = name
@@ -382,6 +424,6 @@ async def test_read_persona_card_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("gsuid_core.ai_core.buildin_tools.self_info.Persona", _Persona)
     from gsuid_core.ai_core.buildin_tools.self_info import read_persona_card
 
-    assert await read_persona_card("早柚") == "Identity: 小忍者。"
-    missing = await read_persona_card("没有这个人")
+    assert asyncio.run(read_persona_card("早柚")) == "Identity: 小忍者。"
+    missing = asyncio.run(read_persona_card("没有这个人"))
     assert "不存在" in missing

@@ -43,6 +43,42 @@ def test_match_capability_node_empty_without_hit() -> None:
     assert match_capability_node("出图做对比表") == "render_agent"
 
 
+def test_long_text_is_not_a_persona_dirname(monkeypatch: pytest.MonkeyPatch) -> None:
+    """整段用户话 / 任务书不能拿去 stat 人格目录。关键字匹配仍要生效。"""
+    import errno
+    from pathlib import Path
+
+    from gsuid_core.ai_core.agent_node.registry import match_capability_node
+    from gsuid_core.ai_core.agent_node.persona_proj import get_persona_node
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+
+    probed: list[str] = []
+
+    def _stat(self: Path) -> bool:
+        probed.append(self.name)
+        raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+    monkeypatch.setattr(Path, "is_dir", _stat)
+    task = "【Kanban 单步任务】请搜索并汇总近一周的公开资料。\n" + ("说明" * 300)
+    assert get_persona_node(task) is None
+    assert get_persona_node("晚晚，你来整理\n10.1.1.1") is None
+    assert get_persona_node("../persona") is None
+    assert probed == []
+
+    register_builtin_profiles()
+    assert match_capability_node(task) == "research_agent"
+    assert match_capability_node("完全无关的闲聊你好呀" + ("啊" * 300)) == ""
+    assert probed == []
+
+    def _miss(self: Path) -> bool:
+        probed.append(self.name)
+        return False
+
+    monkeypatch.setattr(Path, "is_dir", _miss)
+    assert get_persona_node("sayu") is None
+    assert probed == ["sayu"]
+
+
 def test_tool_context_default_allows_outbound() -> None:
     from gsuid_core.ai_core.models import ToolContext
 
