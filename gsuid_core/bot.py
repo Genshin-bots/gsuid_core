@@ -95,6 +95,39 @@ def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
     return obj
 
 
+_DIRECT_AT_DEPTH = 8
+
+
+def _without_direct_at(messages: list[Message], depth: int = 0) -> tuple[list[Message], int]:
+    """去掉 at 段。私聊协议不接受 at，嵌在合并转发里的也去掉。"""
+    kept: list[Message] = []
+    dropped = 0
+    for msg in messages:
+        if msg.type == "at":
+            dropped += 1
+            continue
+        raw_items = msg.data
+        if msg.type != "node" or not isinstance(raw_items, list) or depth >= _DIRECT_AT_DEPTH:
+            kept.append(msg)
+            continue
+        inner: list[Message] = []
+        opaque = False
+        for item in raw_items:
+            if not isinstance(item, Message):
+                opaque = True
+                break
+            inner.append(item)
+        if opaque:
+            kept.append(msg)
+            continue
+        cleaned, nested_dropped = _without_direct_at(inner, depth + 1)
+        dropped += nested_dropped
+        if not cleaned:
+            continue
+        kept.append(Message(type="node", data=cleaned) if nested_dropped else msg)
+    return kept, dropped
+
+
 def message_list_to_str(messages: list[Message]) -> str:
     """将 Message 列表转为字符串"""
     s: list[str] = []
@@ -482,6 +515,14 @@ class _Bot:
 
                 if group_id:
                     mr.append(Message("group", group_id))
+
+                # QQ 私聊收到 at 段会整包解析失败，合并转发内部的 at 一并去掉
+                if target_type == "direct":
+                    mr, dropped_at = _without_direct_at(mr)
+                    if dropped_at:
+                        logger.debug(t("log.bot.drop_direct_at", count=dropped_at))
+                    if not any(seg.type != "group" for seg in mr):
+                        continue
 
                 # 本帧 echo：每帧各一，发前登记，避免回执先于登记到达的竞态
                 _echo: Optional[str] = None

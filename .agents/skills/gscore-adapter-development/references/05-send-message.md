@@ -96,7 +96,8 @@ else:  # "base64://"
 data == "用户ID"
 # 群聊里在消息前/后插入 @：MessageSegment.at(data) / mention_user(data)
 ```
-- 通常**仅群聊**有意义，私聊忽略。注意 `at_list` 可能有多个。
+- 群聊在消息前或消息后插入 @。`at_list` 可能有多个。
+- 私聊（`target_type == "direct"`）core 在下发前去掉全部 `at` 段，适配器收不到。不要把 `at` 原样交给私聊发送接口：NapCat 会把整包判为无法解析。
 
 ### `reply` / `reply_id`（下发 ≠ 上报）
 

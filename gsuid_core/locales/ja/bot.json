@@ -2,6 +2,7 @@
   "log.bot.about_to_send": "[GsCore][送信予定]",
   "log.bot.ban_http_unsupported": "[ban] HTTP モードでは禁止操作はサポートされていません、無視されました",
   "log.bot.banuserto_id_target_type": "[ユーザー禁止] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}",
+  "log.bot.drop_direct_at": "[送信] ダイレクトメッセージから at を {count} 個外しました",
   "log.bot.exec_fail": "[コア実行エラー] 関数 {func_name} の実行中に未捕捉の例外が発生しました",
   "log.bot.exec_start": "[コア実行] 関数 {func_name} の実行を開始しました",
   "log.bot.mute_check_fail": "[Core AI 制御] ミュート状態の確認に失敗しました、送信を続行します: {error}",

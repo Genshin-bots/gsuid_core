@@ -2,6 +2,7 @@
   "log.bot.about_to_send": "[GsCore][即将发送消息]",
   "log.bot.ban_http_unsupported": "[ban] HTTP 模式不支持禁言操作，已忽略",
   "log.bot.banuserto_id_target_type": "[禁言用户to] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}",
+  "log.bot.drop_direct_at": "[发送消息] 私聊去掉 {count} 个 at 段",
   "log.bot.exec_fail": "[核心执行异常] 函数 {func_name} 执行发生未捕获异常",
   "log.bot.exec_start": "[核心执行] 函数 {func_name} 开始执行",
   "log.bot.mute_check_fail": "[Core AI控制] 禁言状态检查失败，继续发送: {error}",
