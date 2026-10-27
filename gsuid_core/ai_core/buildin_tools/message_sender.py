@@ -155,14 +155,21 @@ def _normalize_image_ids(val: Optional[Union[List[str], str]]) -> List[str]:
     return []
 
 
-def _note_send_block(tool_ctx: ToolContext, reason: str, content: str) -> None:
-    """主动发送被闸拦住时，把原文和原因码写入当前会话日志。"""
+def _note_send_block(tool_ctx: ToolContext, reason: str, content: str, *, tool_call_id: str) -> None:
+    """主动发送被拒时，把原文和原因码记到这次工具调用上。"""
     from gsuid_core.ai_core.agent_run.support import log_output_block_on_session
 
     sid = tool_ctx.parent_session_id or ""
     if not sid and tool_ctx.ev is not None and tool_ctx.ev.session_id:
         sid = str(tool_ctx.ev.session_id)
-    log_output_block_on_session(sid, reason, content)
+    log_output_block_on_session(sid, reason, content, tool_call_id=tool_call_id)
+
+
+def _refuse_outbound(reason: str) -> str:
+    """把拒发原因退回给模型，让它改写后再发。图和字都还没出去。"""
+    from gsuid_core.ai_core.control.reason_text import reason_text
+
+    return f"未发送。{reason_text(reason)}改写后再发。这次的图和字都没有出去。"
 
 
 @ai_tools(category="self", code_callable=False)
@@ -239,6 +246,7 @@ async def send_message_by_ai(
     pol = extra["speech_policy"] if "speech_policy" in extra and isinstance(extra["speech_policy"], str) else ""
     has_st = extra["has_status_tool"] is True if "has_status_tool" in extra else False
     has_media = bool(target_image_ids or video_id or audio_id)
+    call_id = ctx.tool_call_id or ""
     if pol == "status_ok" and not has_st and not has_media:
         return "⚠️ 用户在追问进度：先 list_my_kanban_tasks / artifact_get_recent 查状态，再发。禁止空口报完成。"
 
@@ -261,11 +269,8 @@ async def send_message_by_ai(
         if text:
             _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
             if _gate_fb is not None:
-                _note_send_block(tool_ctx, "output_gate_tool", text)
-                if has_media:
-                    text = ""
-                else:
-                    return _gate_fb
+                _note_send_block(tool_ctx, "output_gate_tool", text, tool_call_id=call_id)
+                return _gate_fb
         if text:
             _blk, _why = should_block_user_visible_text(
                 pol or "free",
@@ -276,12 +281,8 @@ async def send_message_by_ai(
                 tool_calls_so_far=["send_message_by_ai"],
             )
             if _blk:
-                _note_send_block(tool_ctx, _why, text)
-                if has_media:
-                    # 图仍发；被拦的台词不出站（与 TextPart 同一套 should_block）
-                    text = ""
-                else:
-                    return "⚠️ 台词被话术闸拦住。改掉编排或进度汇报后再发，或只发媒体、不附这句台词。"
+                _note_send_block(tool_ctx, _why, text, tool_call_id=call_id)
+                return _refuse_outbound(_why)
 
     # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev
@@ -297,7 +298,7 @@ async def send_message_by_ai(
 
         _ban = non_master_title(target_id, persona_name_from_event(ev))
         if title_mentioned(_ban, text):
-            _note_send_block(tool_ctx, "master_title", text)
+            _note_send_block(tool_ctx, "master_title", text, tool_call_id=call_id)
             return f"⚠️ 接收人不是主人，台词不能出现「{_ban}」。改写后再发，不要用这个称呼。"
     session_id = str(ev.session_id) if ev is not None else (tool_ctx.parent_session_id or "")
 
@@ -493,6 +494,9 @@ async def send_message_by_ai(
                 )
                 if isinstance(_sent_registry, set):
                     _sent_registry.add(text.strip())
+                # 发给当前对话者之后，主通道不再复述同一轮。
+                if ev is not None and ev.user_id and target_id == str(ev.user_id):
+                    tool_ctx.extra["direct_user_sent"] = True
                 _at_uid = None
 
         if media_parts:

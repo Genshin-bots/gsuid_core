@@ -29,7 +29,7 @@ def create_agent(
 |------|------|--------|------|
 | `system_prompt` | `str` | `None` | 系统提示词 |
 | `max_tokens` | `int` | `None` | 最大输出 token 数；`None` 时用全局配置 `agent_max_tokens`（能力代理路径由 runner 统一传 `task_max_tokens`） |
-| `max_iterations` | `int` | `None` | 最大迭代次数；`None` 时用全局配置（能力代理路径由 runner 统一传 `task_max_iterations`） |
+| `max_iterations` | `int` | `None` | 已忽略。思考轮按 `create_by` 分档：自主行动、定时任务、看板转译、能力代理、通用规划用 `task_max_iterations`；识图、打标、评估、判分、`btw` 固定 5；没点名的来源用 `multi_agent_lenth` |
 | `persona_name` | `str` | `None` | 绑定的 Persona 名称（热重载检测；装配层也据此并入该 persona 节点的 `tool_names` 白名单） |
 | `create_by` | `str` | `"LLM"` | 创建者标识，影响工具加载策略与日志归类 |
 | `max_history` | `int` | `None` | 最大历史消息数；`None` 时用全局配置 `agent_max_history` |

@@ -27,10 +27,12 @@ from gsuid_core.utils.plugins_config.models import (
     GsColorConfig,
     GsFloatConfig,
     GsImageConfig,
+    GsButtonConfig,
     GsListStrConfig,
     GsFileUploadConfig,
     GsFilesUploadConfig,
     GsRepeatGroupConfig,
+    button_state_view,
 )
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_plugin_commit, get_local_plugins_list
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
@@ -68,7 +70,7 @@ def _read_plugin_icon(plugin_name: str) -> Optional[str]:
 
 
 def _is_secret_gsc(config: GSC) -> bool:
-    if isinstance(config, (GsDivider, GsColorConfig)):
+    if isinstance(config, (GsDivider, GsColorConfig, GsButtonConfig)):
         return False
     return bool(config.secret)
 
@@ -89,6 +91,8 @@ def _group_item_values(item: Dict[str, GSC]) -> Dict[str, Any]:
             out[key] = [_group_item_values(sub) for sub in field.data]
         elif isinstance(field, GsDivider):
             continue
+        elif isinstance(field, GsButtonConfig):
+            out[key] = button_state_view(field.data)
         else:
             out[key] = field.data
     return out
@@ -107,6 +111,23 @@ def _build_config_item(config: GSC, key: str = "") -> Dict[str, Any]:
             "value": [_group_item_values(row) for row in config.data],
             "default": [],
             "template": {k: _build_config_item(v, k) for k, v in config.template.items()},
+        }
+
+    if isinstance(config, GsButtonConfig):
+        state = button_state_view(config.data)
+        return {
+            "type": config_type,
+            "title": config.title,
+            "desc": config.desc,
+            "value": state,
+            "default": state,
+            "endpoint": config.endpoint,
+            "label": config.label,
+            "level": config.level,
+            "confirm": config.confirm,
+            "status_fields": [{"key": row.key, "label": row.label} for row in config.status_fields],
+            "show_progress": config.show_progress,
+            "poll_ms": config.poll_ms,
         }
 
     # GsDivider 作为前端分割线，data 为可选标题

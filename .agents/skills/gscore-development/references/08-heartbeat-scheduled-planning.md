@@ -172,8 +172,8 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 
 ### 能力代理（执行/表达分离）`ai_core/capability_agents/`
 
-调度器派活时**绕过主人格会话**——人格若被设定为"懒惰、回避分析"会让严肃执行抵制空转、人格
-漂移。`run_capability_agent` 按子任务 `agent_profile` 唤醒**无人格能力代理**（不拒绝、不漂移），
+调度器派活时**绕过主人格会话**，不把主会话的框架约束抄进执行体。系统提示词只附
+委派人的人格 ID。需要替这个人做选择或答题时，再读取 persona.md。
 结果经 `_persona_relay` 用人格口吻转译后通知主人。
 
 > 🔁 **交互式 `create_subagent` 不许双份播报**（2026-07-15 修；2026-10 群聊改为派完即走）。
@@ -251,7 +251,7 @@ APScheduler 任务 `ai_autonomy_tick`，每 5 分钟最多挑一个到期人格�
 表是空的时，首次延迟 10–20 分钟。这些门没过不写审计行。底片是空的则写一行休息，不打模型。
 
 一轮四段：观察底片（好感达到 `autonomy_care_min_zone` 的用户，主人始终留下；群摘要）
-→ 一次性 Agent（`create_by="Autonomy"`，工具表关闭，思考轮数用全局 `multi_agent_lenth`）
+→ 一次性 Agent（`create_by="Autonomy"`，工具表关闭，思考轮数用 `task_max_iterations`）
 → 只认成功工具的事实 → 交付。没做成事、或动力是休息，只记审计。
 
 交付三条：亲近或主人且对方没在说话，立刻把摘要发出去；熟人、配额满或对方正忙，挂到下次开口

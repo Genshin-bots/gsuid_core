@@ -496,7 +496,7 @@ def test_post_image_closing_speech_allowed() -> None:
         has_status_tool=False,
         tool_calls_so_far=["send_message_by_ai"],
     )[0]
-    # 发图后仍拦长结构刷屏
+    # 配图说明可以是多段。长结构只在还没出图、且真有事实包时才拦。
     long_report = (
         "**第一节**\n" + "细节很多。\n\n" + "**第二节**\n" + "还有一堆。\n\n" + "**第三节**\n" + "继续写。" * 20
     )
@@ -508,7 +508,7 @@ def test_post_image_closing_speech_allowed() -> None:
         has_status_tool=False,
         tool_calls_so_far=["send_message_by_ai"],
     )
-    assert blk and why == "report_speech"
+    assert not blk, why
 
 
 def test_async_blocks_non_wait_until_image() -> None:
@@ -662,6 +662,17 @@ def test_task_accept_speech_allows_action_and_speech_lines() -> None:
     assert not looks_like_task_accept_speech(three_lines)
     two_facts = "北京今天 18 度，有雨。\n\n上海今天 22 度，多云。"
     assert not looks_like_task_accept_speech(two_facts)
+    meme_ack = "好啦，我去看看那个题…等我一会儿呀。\n\n<meme:发呆 日常>"
+    assert looks_like_task_accept_speech(meme_ack)
+    blocked, why = should_block_user_visible_text(
+        "silence_only",
+        meme_ack,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+    )
+    assert not blocked and why == "wait_comfort"
 
 
 def test_looks_like_illustration_request() -> None:

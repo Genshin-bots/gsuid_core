@@ -179,7 +179,6 @@ async def chatWithHistory(
         persona_name=persona_name,
         create_by=_create_by,
         max_history=0 if req.as_judge else req.max_history,
-        max_iterations=None,
         task_level="low" if req.as_judge else "high",
         session_id=(f"judge_{user_id}" if req.as_judge else f"test_{user_id}_{uuid.uuid4().hex[:8]}"),
         dynamic_tools=http_dynamic_tools(as_judge=req.as_judge, enable_tools=req.enable_tools),

@@ -1294,6 +1294,7 @@ class SettlePhase(RunOnceHost):
                         st.silence_reason = "framework_leak_stripped"
                         record_output_block(st, self._session_logger, "framework_leak_stripped", _leak_original)
                     result_msg = "<SILENCE>"
+            result_msg = self._attach_unfinished_tool_return(st, result_msg)
             self._log_run_result(st, result_msg)
             if isinstance(result_msg, str):
                 self._remember_outbound_on_silence(st, result_msg)
@@ -1624,12 +1625,34 @@ class SettlePhase(RunOnceHost):
             absorb_run_image_delivered(st)
         return ""
 
+    def _attach_unfinished_tool_return(self, st: RunOnceState, result_msg: str) -> str:
+        """能力代理没写成结论时，把最后一次工具返回交回调用方。"""
+        from gsuid_core.ai_core.agent_run.support import _UNFINISHED_CAPABILITY_BANNER
+
+        text = str(result_msg).strip()
+        if self.create_by != "CapabilityAgent" or st.return_mode != "return":
+            return result_msg
+        if text and not is_silence_marker(text):
+            return result_msg
+        last = ""
+        for chunk in reversed(st.run_tool_outputs):
+            piece = chunk.strip()
+            if piece:
+                last = piece
+                break
+        if not last:
+            return result_msg
+        return f"{_UNFINISHED_CAPABILITY_BANNER}\n{last[:12000]}"
+
     def _log_run_result(self, st: RunOnceState, result_msg: str) -> None:
         """沉默或空输出时把原因写进 result。有正文则不带 silence_reason。"""
-        reason: str | None = None
-        text = str(result_msg).strip()
-        if is_silence_marker(text) or not text:
-            reason = st.silence_reason or st.last_block_reason or "model_voluntary"
+        from gsuid_core.ai_core.agent_run.support import result_silence_reason
+
+        reason = result_silence_reason(
+            str(result_msg),
+            existing=st.silence_reason,
+            blocked=st.last_block_reason,
+        )
         self._session_logger.log_result(result_msg, st.tool_call_list, silence_reason=reason)
 
     def _remember_outbound_on_silence(self, st: RunOnceState, result_msg: str) -> None:

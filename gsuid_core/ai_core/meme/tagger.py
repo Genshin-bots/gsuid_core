@@ -357,7 +357,6 @@ async def _call_tag_agent(
     agent = create_agent(
         system_prompt=TAG_PROMPT,
         max_tokens=21000,
-        max_iterations=1,
         create_by="MemeTagger",
         task_level="low",
     )

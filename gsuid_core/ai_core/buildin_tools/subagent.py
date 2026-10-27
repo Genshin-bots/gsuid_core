@@ -290,7 +290,6 @@ async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
     max_tokens: int = 35000,
-    max_iterations: int = 15,  # 规划+执行通常需要较多轮次
     agent_profile: str = "",
     transient: bool = False,
 ) -> str:
@@ -341,7 +340,6 @@ async def create_subagent(
             ctx,
             task=task,
             max_tokens=max_tokens,
-            max_iterations=max_iterations,
             agent_profile=agent_profile,
             transient=transient,
         )
@@ -394,7 +392,6 @@ async def summarize_long_input(text: str, *, max_tokens: int = 18000) -> str:
             None,
             task=f"请总结以下用户输入，保留关键信息：\n\n{text}",
             max_tokens=max_tokens,
-            max_iterations=int(ai_config.get_config("task_max_iterations").data),
             agent_profile="",
             transient=True,
         )
@@ -405,7 +402,6 @@ async def _create_subagent_impl(
     *,
     task: str,
     max_tokens: int,
-    max_iterations: int,
     agent_profile: str,
     transient: bool,
 ) -> str:
@@ -532,7 +528,6 @@ async def _create_subagent_impl(
         agent = create_agent(
             system_prompt=system_prompt,
             max_tokens=max_tokens,
-            max_iterations=max_iterations,
             create_by="AutoPlanner",
             task_level="high",
             session_id=subagent_session_id,

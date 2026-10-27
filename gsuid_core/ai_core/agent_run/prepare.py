@@ -41,6 +41,7 @@ from gsuid_core.ai_core.agent_run.support import (
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, is_control_envelope
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
+from gsuid_core.ai_core.agent_run.request_limit import request_limit_for
 from gsuid_core.ai_core.agent_run.speech_policy import (
     spoken_user_body_len,
     resolve_speech_policy,
@@ -134,7 +135,7 @@ class PreparePhase(RunOnceHost):
         st.saw_structured_return = False
         # 本轮是否已委派 render_agent（勿把 research 的 create_subagent 当成已出图）
         st.delegated_render = False
-        # 同工具空转计数：连续同名工具调用次数；达阈值后注入 thrash fuse（每 run 一次）
+        # 同一调用（工具名 + 参数）连续次数；达阈值后注入 thrash fuse（每 run 一次）
         st.same_tool_streak = 0
         st.same_tool_name = ""
         st.thrash_fused = False
@@ -158,12 +159,8 @@ class PreparePhase(RunOnceHost):
         st.in_flight_short = False
         st.render_ack_seen = False
 
-        # 使用自定义迭代次数限制（如果有），否则使用配置默认值。
-        if self.max_iterations is not None:
-            st.limits = UsageLimits(request_limit=self.max_iterations)
-        else:
-            multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
-            st.limits = UsageLimits(request_limit=multi_agent_lenth)
+        # 思考轮只看 create_by。max_iterations 参数不再改这一限。
+        st.limits = UsageLimits(request_limit=request_limit_for(self.create_by))
 
         # 记录开始时间用于延迟统计
         st.start_time = time.time()

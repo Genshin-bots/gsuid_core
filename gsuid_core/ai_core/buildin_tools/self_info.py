@@ -19,6 +19,17 @@ from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.persona.persona import Persona
 
 
+async def read_persona_card(persona_name: str) -> str:
+    """按人格 ID 读 persona.md。资料不存在时返回说明，不抛异常。"""
+    persona = Persona(persona_name)
+    if persona_name != "智能助手" and not persona.exists():
+        return f"⚠️ 角色卡不存在: {persona_name}"
+    card = (await persona.load_content()).strip()
+    if not card:
+        return f"⚠️ 角色卡是空的: {persona_name}"
+    return card
+
+
 def _read_text(path: Path) -> str:
     """同步读文本；必须经 asyncio.to_thread 调用，否则阻塞事件循环。"""
     with path.open("r", encoding="utf-8") as f:
@@ -28,7 +39,7 @@ def _read_text(path: Path) -> str:
 @ai_tools(category="buildin")
 async def get_self_persona_info(
     ctx: RunContext[ToolContext],
-    info_type: Literal["config", "image", "avatar", "audio"],
+    info_type: Literal["config", "image", "avatar", "audio", "card"],
     persona_name: str,
 ) -> str:
     """
@@ -36,6 +47,7 @@ async def get_self_persona_info(
 
     根据info_type参数返回不同类型的Persona资源信息。
     此工具用于让AI了解自身的基本信息和可用的资源。
+    ``card`` 返回 persona.md 全文。能力代理只在要替这个人做选择、填表或答题时读取。
 
     Args:
         ctx: 工具执行上下文（包含bot和ev对象）
@@ -44,6 +56,7 @@ async def get_self_persona_info(
             - "image": 读取立绘图片并注册到资源管理器，返回可直接用于 edit_image 的资源ID
             - "avatar": 读取头像图片并注册到资源管理器，返回可直接用于 edit_image 的资源ID
             - "audio": 读取音频并注册到资源管理器，返回资源ID
+            - "card": 返回 persona.md 全文
         persona_name: Persona名称，用于指定要查询的 persona
 
     Returns:
@@ -109,8 +122,11 @@ async def get_self_persona_info(
             logger.error(t("log.ai.selfinfo_register_audio_rm", e=e))
             return f"⚠️ 音频读取失败: {e}"
 
+    elif info_type == "card":
+        return await read_persona_card(persona_name)
+
     else:
-        return f"⚠️ 不支持的信息类型: {info_type}，可选值: config, image, avatar, audio"
+        return f"⚠️ 不支持的信息类型: {info_type}，可选值: config, image, avatar, audio, card"
 
 
 @ai_tools(category="buildin")

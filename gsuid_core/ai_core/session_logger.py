@@ -801,12 +801,15 @@ class AISessionLogger:
         """记录模型直接输出的文本"""
         self._add_entry("text_output", {"content": content})
 
-    def log_output_block(self, reason: str, content: str, *, policy: str = "") -> None:
+    def log_output_block(self, reason: str, content: str, *, policy: str = "", tool_call_id: str = "") -> None:
         """记下被拦住的台词、原因码和当时的中文说明。"""
         preview = content.strip()
         if len(preview) > 500:
             preview = preview[:500] + "…"
         data: dict[str, str] = {"reason": reason, "content": preview, "policy": policy}
+        if tool_call_id:
+            # 挂到这次工具调用上，瀑布才不会把拒发画进上一轮对话。
+            data["tool_call_id"] = tool_call_id
         _attach_reason_text(data, reason)
         self._add_entry("output_block", data)
 

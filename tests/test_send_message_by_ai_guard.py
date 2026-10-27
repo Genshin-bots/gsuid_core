@@ -114,6 +114,69 @@ def test_cs_caption_kept_with_image() -> None:
     assert "如果还需要" in sent_text
 
 
+def test_caption_with_image_is_sent() -> None:
+    """多段结果说明和图一起发出，不再当成报告体丢掉字、只发图。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_report_speech
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="cap_s", user_id="uuu")
+    ms.clear_turn_send_throttle("cap_s", "turn_cap")
+    caption = (
+        "做完啦…结果页原文是酱紫的：\n\n"
+        "灵魂角色：影山茂夫（Mob）《灵能百分百》，灵魂重合度 93%。\n\n"
+        "十维坐标：理性 0／秩序 1／依恋 21／向阳 45／利他 93。\n\n"
+        "也很像的几位：碇真嗣 91%、夏目贵志 90%、阿尔敏 89%。\n\n"
+        "唔…利他 93 分呢。图给你放在上面啦。"
+    )
+    assert looks_like_report_speech(caption)
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        ctx = _make_ctx(ev, "turn_cap", bot)
+        ctx.tool_call_id = "call_caption"
+        result = _run(ms.send_message_by_ai(ctx, text=caption, image_id="http://example.test/card.png"))
+
+    assert "消息已发送" in result
+    assert "未发送" not in result
+    assert scr.await_count == 1
+    assert scr.await_args is not None
+    assert scr.await_args.args[1] == caption
+    assert bot.send.await_count == 1
+
+
+def test_speech_refusal_returns_reason_and_sends_nothing() -> None:
+    """话术不合格时整次不发，把原因退回，让模型改写。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="ref_s", user_id="uuu")
+    ms.clear_turn_send_throttle("ref_s", "turn_ref")
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        ctx = _make_ctx(ev, "turn_ref", bot)
+        ctx.tool_call_id = "call_refuse"
+        result = _run(
+            ms.send_message_by_ai(
+                ctx,
+                text="让 render_agent 去出这张卡",
+                image_id="http://example.test/card.png",
+            )
+        )
+
+    assert result.startswith("未发送。")
+    assert "内部委派" in result
+    assert scr.await_count == 0
+    assert bot.send.await_count == 0
+
+
 def test_throttle_resets_on_new_turn_and_after_clear():
     from gsuid_core.ai_core.buildin_tools import message_sender as ms
 

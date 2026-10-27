@@ -66,9 +66,10 @@ def test_system_injection_reason_only_when_present() -> None:
         assert rows[1]["reason_text"] == "有人直接点名，回复却是沉默。"
         assert rows[1]["content"] == "<control>重说</control>"
         assert rows[1]["source"] == "framework"
-        slog.log_output_block("not_a_real_code", "原文")
+        slog.log_output_block("not_a_real_code", "原文", tool_call_id="call_abc")
         unknown = _blocks(slog)[-1]
         assert unknown["reason_text"] == "未登记原因：not_a_real_code"
+        assert unknown["tool_call_id"] == "call_abc"
         slog.log_system_injection("两条", source="framework", reason="addressed_silence,master_title")
         joined = [e["data"] for e in slog.entries if e["type"] == "system_injection"][-1]
         assert joined["reason_text"] == "有人直接点名，回复却是沉默。；接收人不是主人，台词里出现了主人称呼。"

@@ -82,11 +82,10 @@ async def run_autonomy_agent(
     def _on_trace(kind: TraceKind, text: str) -> None:
         collector.observe(kind, text)
 
-    # 不传 max_iterations：走全局「最多允许AI思考轮数」。
+    # 思考轮走任务档 task_max_iterations（create_by=Autonomy）。
     session_id = f"autonomy:{digest.persona_name}:{uuid.uuid4()}"
     agent = GsCoreAIAgent(
         system_prompt=system_prompt,
-        max_iterations=None,
         persona_name=digest.persona_name,
         max_history=1,
         create_by="Autonomy",

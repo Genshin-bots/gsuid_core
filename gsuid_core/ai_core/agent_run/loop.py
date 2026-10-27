@@ -59,6 +59,7 @@ from gsuid_core.ai_core.agent_run.support import (
     thrash_limit_for,
     _claims_fake_done,
     add_response_usage,
+    canonical_tool_call,
     record_output_block,
     turn_reply_metadata,
     _wall_clock_nudge_for,
@@ -355,7 +356,6 @@ class LoopPhase(RunOnceHost):
         """ModelRequestNode：墙钟/闸门/ thrash 注入 + ToolReturn 折叠 + 流式请求。"""
         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
-        self._session_logger.log_node_transition("ModelRequestNode")
         self._maybe_inject_iter_wrap(st, node)
         if st.saw_final_response:
             st.post_final_requests += 1
@@ -461,9 +461,14 @@ class LoopPhase(RunOnceHost):
                     UserPromptPart(content=_POST_DISPUTE_SILENCE_CONTRACT),
                 ]
 
-        # 同工具空转熔断：连续同名工具 ≥ 阈值后，下一轮模型请求前注入一次收敛提示
+        # 工具名和参数都相同，并且已经超过阈值，才算空转。换参数不累计。
         _thrash_limit = thrash_limit_for(st.same_tool_name)
-        if not st.thrash_fused and st.same_tool_streak >= _thrash_limit and self.create_by in _INTERACTIVE_CREATE_BY:
+        if (
+            not st.thrash_fused
+            and st.same_tool_name
+            and st.same_tool_streak > _thrash_limit
+            and self.create_by in _INTERACTIVE_CREATE_BY
+        ):
             node.request.parts = [*node.request.parts, UserPromptPart(content=_THRASH_FUSE_NUDGE)]
             st.thrash_fused = True
             logger.warning(
@@ -705,6 +710,8 @@ class LoopPhase(RunOnceHost):
                     ]
 
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
+        # 工具回执先落盘，再标下一轮对话。否则瀑布把回执画进后一轮。
+        self._session_logger.log_node_transition("ModelRequestNode")
         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
         st.req_start = time.perf_counter()
         st.first_event_at = None
@@ -791,12 +798,13 @@ class LoopPhase(RunOnceHost):
                 _kept.append(_p)
             node.model_response.parts = _kept
 
-        # thrash fuse 后：若仍连打同一工具，直接从本响应剥掉，逼模型换路或收束
+        # 已熔断：只剥掉工具名和参数都相同的调用。换参数的调用留下。
         if st.thrash_fused and st.same_tool_name and self.create_by in _INTERACTIVE_CREATE_BY:
+            _fused_call = st.same_tool_name
             _stripped = [
                 _p
                 for _p in node.model_response.parts
-                if not (isinstance(_p, ToolCallPart) and _p.tool_name == st.same_tool_name)
+                if not (isinstance(_p, ToolCallPart) and canonical_tool_call(_p.tool_name, _p.args) == _fused_call)
             ]
             if len(_stripped) < len(node.model_response.parts):
                 logger.warning(
@@ -824,8 +832,8 @@ class LoopPhase(RunOnceHost):
         # 同 ModelResponse 多 TextPart：尖括号 attempt 只计 1 次
         output_gate.begin_response_batch(_require_context(st).extra)
         _ab_attempt_counted_this_response = False
-        # thrash：同响应内工具名列表，结束本响应后一次性按「轮」更新 streak
-        _resp_tool_names: list[str] = []
+        # thrash：同响应内「工具名 + 参数」列表，结束本响应后按轮更新 streak
+        _resp_tool_calls: list[str] = []
         for part in node.model_response.parts:
             # 拦截到模型即将调用工具
             if isinstance(part, ToolCallPart):
@@ -838,7 +846,7 @@ class LoopPhase(RunOnceHost):
                     )
                 )
                 st.tool_call_list.append(part.tool_name)
-                _resp_tool_names.append(part.tool_name)
+                _resp_tool_calls.append(canonical_tool_call(part.tool_name, part.args))
                 if part.tool_name == "create_subagent" and _tool_call_targets_render_agent(part):
                     st.delegated_render = True
                     # 出图委派当下即在途：后续 TextPart 不得把事实包念进群聊。
@@ -897,6 +905,17 @@ class LoopPhase(RunOnceHost):
                         continue
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
+                    self._discard_stream_preview(st, _text)
+                    continue
+                # 发送工具已经把这轮的话交给用户。后面的复述不再走主通道。
+                if (
+                    "direct_user_sent" in st.run_extra
+                    and st.run_extra["direct_user_sent"] is True
+                    and self.create_by in _MAIN_PERSONA_CREATE_BY
+                    and st.return_mode != "return"
+                ):
+                    st.last_block_reason = "already_sent_by_tool"
+                    record_output_block(st, self._session_logger, "already_sent_by_tool", _text)
                     self._discard_stream_preview(st, _text)
                     continue
                 # 同响应的字写在工具结果之前，先不发。委派的开场句由 create_subagent 派发成功后代发。
@@ -1122,10 +1141,10 @@ class LoopPhase(RunOnceHost):
                 _kept_parts.append(_p)
             node.model_response.parts = _kept_parts
 
-        # thrash：本响应只按「轮」计 1 次（并行多 query 不累加）
+        # 本响应只按「轮」计 1 次。同响应里参数相同的并行调用不累加。
         st.same_tool_name, st.same_tool_streak = _update_thrash_streak_for_response(
-            _resp_tool_names,
-            prev_name=st.same_tool_name,
+            _resp_tool_calls,
+            prev_signature=st.same_tool_name,
             prev_streak=st.same_tool_streak,
         )
 

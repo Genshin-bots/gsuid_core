@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_thrash_same_response_parallel_counts_one_turn() -> None:
     from gsuid_core.ai_core.gs_agent import _update_thrash_streak_for_response
@@ -9,7 +11,7 @@ def test_thrash_same_response_parallel_counts_one_turn() -> None:
     # 同响应 4 次 web_search → 只 +1 轮
     name, streak = _update_thrash_streak_for_response(
         ["web_search_tool"] * 4,
-        prev_name="",
+        prev_signature="",
         prev_streak=0,
     )
     assert name == "web_search_tool"
@@ -17,7 +19,7 @@ def test_thrash_same_response_parallel_counts_one_turn() -> None:
 
     name2, streak2 = _update_thrash_streak_for_response(
         ["web_search_tool"] * 3,
-        prev_name=name,
+        prev_signature=name,
         prev_streak=streak,
     )
     assert name2 == "web_search_tool"
@@ -29,7 +31,7 @@ def test_thrash_mixed_tools_resets() -> None:
 
     name, streak = _update_thrash_streak_for_response(
         ["web_search_tool", "web_fetch_tool"],
-        prev_name="web_search_tool",
+        prev_signature="web_search_tool",
         prev_streak=3,
     )
     assert name == ""
@@ -41,7 +43,7 @@ def test_thrash_empty_response_keeps_streak() -> None:
 
     name, streak = _update_thrash_streak_for_response(
         [],
-        prev_name="web_search_tool",
+        prev_signature="web_search_tool",
         prev_streak=2,
     )
     assert name == "web_search_tool"
@@ -300,3 +302,86 @@ def test_followup_task_mentions_no_render() -> None:
     assert "事实包" in t
     assert "render_" in t
     assert "整理近一周" in t
+
+
+def test_same_tool_different_args_is_not_the_same_call() -> None:
+    """逐题点击参数不同，不累计成同一次调用。完全相同要超过 10 次。"""
+    from gsuid_core.ai_core.gs_agent import _update_thrash_streak_for_response
+    from gsuid_core.ai_core.agent_run.support import (
+        _THRASH_SAME_TOOL_LIMIT,
+        canonical_tool_call,
+    )
+
+    click_e5 = canonical_tool_call("browser_click", {"target": "e5"})
+    click_e2 = canonical_tool_call("browser_click", {"target": "e2"})
+    assert click_e5 != click_e2
+    assert click_e5 == canonical_tool_call("browser_click", '{"target": "e5"}')
+    reordered = canonical_tool_call("browser_click", {"target": "e5", "button": "A"})
+    assert reordered == canonical_tool_call("browser_click", {"button": "A", "target": "e5"})
+
+    signature = ""
+    streak = 0
+    for target in ("e5", "e2", "e3", "e4", "e1"):
+        call = canonical_tool_call("browser_click", {"target": target})
+        signature, streak = _update_thrash_streak_for_response(
+            [call],
+            prev_signature=signature,
+            prev_streak=streak,
+        )
+        assert streak == 1
+
+    signature = ""
+    streak = 0
+    for _ in range(_THRASH_SAME_TOOL_LIMIT):
+        signature, streak = _update_thrash_streak_for_response(
+            [click_e5, click_e5],
+            prev_signature=signature,
+            prev_streak=streak,
+        )
+    assert streak == _THRASH_SAME_TOOL_LIMIT
+    assert not streak > _THRASH_SAME_TOOL_LIMIT
+    signature, streak = _update_thrash_streak_for_response(
+        [click_e5],
+        prev_signature=signature,
+        prev_streak=streak,
+    )
+    assert streak > _THRASH_SAME_TOOL_LIMIT
+
+
+def test_empty_output_is_not_voluntary_silence() -> None:
+    from gsuid_core.ai_core.agent_run.support import result_silence_reason
+
+    assert result_silence_reason("", existing="", blocked="") == "empty_output"
+    assert result_silence_reason("<SILENCE>", existing="", blocked="") == "model_voluntary"
+    assert result_silence_reason("结论在这里。", existing="", blocked="") is None
+
+
+def test_delegator_persona_ref_is_an_id_not_the_card() -> None:
+    from gsuid_core.ai_core.capability_agents.runner import format_delegator_persona_ref
+
+    block = format_delegator_persona_ref("早柚")
+    assert "人格 ID：早柚" in block
+    assert 'info_type="card"' in block
+    assert "persona.md" in block
+    assert "Identity" not in block
+    assert format_delegator_persona_ref("  ") == ""
+
+
+@pytest.mark.asyncio
+async def test_read_persona_card_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Persona:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def exists(self) -> bool:
+            return self.name == "早柚"
+
+        async def load_content(self) -> str:
+            return "Identity: 小忍者。"
+
+    monkeypatch.setattr("gsuid_core.ai_core.buildin_tools.self_info.Persona", _Persona)
+    from gsuid_core.ai_core.buildin_tools.self_info import read_persona_card
+
+    assert await read_persona_card("早柚") == "Identity: 小忍者。"
+    missing = await read_persona_card("没有这个人")
+    assert "不存在" in missing

@@ -15,5 +15,6 @@
   "log.config.name_type_mismatch": "[設定][{config_name}] 設定項目 {key} の型が一致しない ({p0} -> {p1})、デフォルト値にリセット",
   "log.config.removed_bypass_field_conform": "[設定][{p0}] GSC 構造に準拠しないバイパスフィールド '{k}' を削除（型: {p1}）",
   "log.config.target_configuration_file_exists_skip": "[設定][{p0}] 対象の設定ファイルがすでに存在するため、{old_path} からの移行をスキップ",
-  "log.config.write_fail": "設定ファイルの書き込みに失敗！"
+  "log.config.write_fail": "設定ファイルの書き込みに失敗！",
+  "log.config.button_callback_failed": "[設定ボタン][{endpoint}] コールバック失敗: {e}"
 }

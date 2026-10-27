@@ -596,7 +596,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `tool_return` | 工具执行返回 | tool_name, content, tool_call_id |
 | `tools_list` | 传给 AI 的工具列表 | tools |
 | `text_output` | 模型直接输出文本 | content |
-| `output_block` | 话术闸、出站闸或收尾拦住、没有发出的台词 | reason（拦住当时的原因码）, reason_text（当时的中文说明）, content（原文，最长 500 字）, policy（当时的话术策略，可空） |
+| `output_block` | 话术闸、出站闸或收尾拦住、没有发出的台词 | reason（拦住当时的原因码）, reason_text（当时的中文说明）, content（原文，最长 500 字）, policy（当时的话术策略，可空）, tool_call_id（可空；有则挂在这次工具调用下） |
 | `result` | 单次 run 最终结果 | output, tool_calls。沉默或空输出时另有 silence_reason，以及写下时的中文 reason_text。没有这些字段的旧日志仍是一条结果 |
 | `token_usage` | Token 使用量 | input_tokens, output_tokens, model_name |
 | `error` | 错误信息 | error_type, message |

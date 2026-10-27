@@ -394,7 +394,9 @@ Persona 与能力代理画像统一为 **AgentNode**（`ai_core/agent_node/`）�
 `gs_agent.dynamic_tools`（None=旧门 / True=装配并合并 / False=永不）；persona 节点
 `tool_names`（config.json 新键）在装配分支被并入保底池。预算不在节点上——统一读
 `ai_config` 的 `task_max_iterations` / `task_max_tokens`。task-mode 系统提示词 =
-节点身份核 + 交付边界叠加（`compose_task_prompt`，节点可 `boundary_override`）。
+节点身份核 + 交付边界叠加（`compose_task_prompt`，节点可 `boundary_override`），
+再附上委派人的人格 ID。需要替这个人做选择或答题时，用
+`get_self_persona_info(info_type="card")` 读 persona.md。不抄主会话的框架约束。
 
 另：`@ai_tools(approval="user"|"master")` 是统一审批中心的**工具策略门**——声明后
 每次调用强制过 `approval.tool_call_gate`（完全访问豁免仅 user 级 / 一次性放行
@@ -440,8 +442,8 @@ grant / 自动提交审批），不依赖 LLM 自觉。详见
 
 **发送之后可以继续说**：`send_message_by_ai` 带台词交付、以及发图之后，模型可以自己接着说，
 包括追问和较长收尾。话术闸不再因交付终局、引导追问或发图过长把台词改成沉默。
-编排词、交付状态汇报、长结构报告体、完成态和在途多说仍然拦截。拦住后先让模型重说一次，重说仍不合格才沉默。已经说过一句等待的在途句，以及纠正轮里再次被拦的话，不再重说。`text=` 与 TextPart 共用 `should_block`
-（配图被拦则丢掉台词仍发图）。不是第二条说话人。
+编排词、交付状态汇报、长结构报告体、完成态和在途多说仍然拦截。拦住后先让模型重说一次，重说仍不合格才沉默。已经说过一句等待的在途句，以及纠正轮里再次被拦的话，不再重说。`text=` 与 TextPart 共用 `should_block`。
+配图发送不再把多段说明判成 `report_speech`。`send_message_by_ai` 话术不合格时整次不发，把原因退回给模型改写。不是第二条说话人。
 
 **出图在途（2026-08-16）**：`create_subagent` 的 `agent_profile` 解析到 `render_agent` 时
 （只看 profile 字段），ToolCall 当下即 `silence_only`。失败且未 ack 则回滚。在途默认

@@ -422,7 +422,7 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
         return False
     if looks_like_machine_latin(body):
         return False
-    content_lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    content_lines = _accept_lines(body)
     if len(content_lines) > 2:
         return False
     # 两行只放行「括号动作 + 台词」。两段正文仍是结构垃圾。
@@ -435,6 +435,21 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
     if len(_MD_HEADING_RE.findall(body)) >= 1:
         return False
     return True
+
+
+def _accept_lines(body: str) -> list[str]:
+    """接话行数。单独一行的表情标记不是第二段正文。"""
+    from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
+
+    lines: list[str] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not MEME_TAG_PATTERN.sub("", line).strip():
+            continue
+        lines.append(line)
+    return lines
 
 
 def _line_is_action_beat(line: str) -> bool:
@@ -600,14 +615,12 @@ def should_block_user_visible_text(
     if title_mentioned(forbid_title, body):
         return True, "master_title"
 
-    # 图已发出：编排词、交付汇报、长结构仍拦。追问和较长收尾由模型自己说。
+    # 图已在这次发送里：编排词和交付汇报仍拒。多段说明随图发出。
     if image_sent:
         if has_orchestration_narration(body):
             return True, "orchestration_leak"
         if looks_like_delivery_status_narration(body):
             return True, "delivery_narration"
-        if looks_like_report_speech(body):
-            return True, "report_speech"
         return False, "post_image_ok"
 
     # 异步在途：开场接任务应一句（不按 12 字）；其后默认静默。清单/念白/完成腔不占额度。

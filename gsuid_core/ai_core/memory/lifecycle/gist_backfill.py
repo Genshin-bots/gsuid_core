@@ -110,7 +110,7 @@ async def backfill_llm_session(session_id: str, *, force: bool = False) -> int:
         return 0
     prompt = GIST_EXTRACTION_USER.format(turns="\n".join(turns))
     try:
-        agent = create_agent(task_level="low")
+        agent = create_agent(task_level="low", create_by="MemGistBackfill")
         raw_out = await agent.run(GIST_EXTRACTION_SYSTEM + "\n" + prompt)
     except (TimeoutError, OSError, RuntimeError) as e:
         logger.debug(i18n_t("log.memory.gist_backfill_fail", scope_key=sess.scope_key, e=e))

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Dict, List, Tuple, Union, Literal, Optional, Sequence
 
 from pydantic_ai.messages import (
@@ -279,48 +280,82 @@ def _correction_nudge_markers() -> tuple[str, ...]:
 
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})
-# find_tools 连打 2 轮即空转。search_cognition 换槽位词会召回不同片段，不能按同名 2 轮熔断。
-_FIND_TOOLS_THRASH_LIMIT = 2
-_SEARCH_COGNITION_THRASH_LIMIT = 8
-_READONLY_RETRIEVAL_TOOLS = frozenset({"find_tools"})
 # 搜索/拉取类返回「够长+多行」即视为可出图材料（不靠业务词）
 _SEARCHISH_TOOL_HINTS = ("search", "web_", "fetch", "knowledge")
+# 工具名和参数都相同，连续超过此次数才算空转。换参数（如逐题点击）不累计。
+_THRASH_SAME_TOOL_LIMIT = 10
 
 
 def thrash_limit_for(tool_name: str) -> int:
-    """该工具的同名连打熔断阈值。find_tools 更严（2 轮），search_cognition 8 轮，其余 4 轮。"""
-    if tool_name == "search_cognition":
-        return _SEARCH_COGNITION_THRASH_LIMIT
-    if tool_name in _READONLY_RETRIEVAL_TOOLS:
-        return _FIND_TOOLS_THRASH_LIMIT
+    """同一调用连续超过这个次数才熔断。不看工具名本身。"""
+    _ = tool_name
     return _THRASH_SAME_TOOL_LIMIT
 
 
-# 同工具空转熔断：跨轮连续 ≥4 轮仅调用同一工具时注入收敛提示，避免死循环。
-_THRASH_SAME_TOOL_LIMIT = 4
+def canonical_tool_call(tool_name: str, args: object) -> str:
+    """工具名加规范化参数。键顺序和空白不同仍算同一次调用。"""
+    name = (tool_name or "").strip()
+    return f"{name}\n{_canonical_tool_args(args)}"
+
+
+def _canonical_tool_args(args: object) -> str:
+    if isinstance(args, str):
+        text = args.strip()
+        if text[:1] in "{[":
+            try:
+                parsed: object = json.loads(text)
+            except json.JSONDecodeError:
+                return text
+            if isinstance(parsed, (dict, list, str, int, float, bool)) or parsed is None:
+                return _canonical_tool_args(parsed)
+            return text
+        return text
+    if isinstance(args, dict):
+        parts: list[str] = []
+        for key in sorted(k for k in args if isinstance(k, str)):
+            parts.append(json.dumps(key, ensure_ascii=False) + ":" + _canonical_tool_args(args[key]))
+        return "{" + ",".join(parts) + "}"
+    if isinstance(args, list):
+        return "[" + ",".join(_canonical_tool_args(item) for item in args) + "]"
+    if args is None or isinstance(args, (str, int, float, bool)):
+        return json.dumps(args, ensure_ascii=False)
+    return json.dumps(str(args), ensure_ascii=False)
+
+
+_UNFINISHED_CAPABILITY_BANNER = "【未写成结论】执行体停在中途。下面是最后一次工具返回，不是最终结果。"
+
+
+def result_silence_reason(text: str, *, existing: str, blocked: str) -> str | None:
+    """空正文和沉默标签分开记。模型没打沉默标签时，不写成自己选择沉默。"""
+    from gsuid_core.ai_core.utils import is_silence_marker
+
+    body = text.strip()
+    if is_silence_marker(body):
+        return existing or "model_voluntary"
+    if not body:
+        return existing or blocked or "empty_output"
+    return None
 
 
 def _update_thrash_streak_for_response(
-    tool_names: Sequence[str],
+    calls: Sequence[str],
     *,
-    prev_name: str,
+    prev_signature: str,
     prev_streak: int,
 ) -> tuple[str, int]:
-    """根据本 ModelResponse 的工具名列表更新 thrash 状态。
+    """按「工具名 + 参数」更新空转计数。纯文本轮不重置。
 
-    - 无工具调用：保持原 streak（纯文本轮不重置、也不累加）
-    - 本响应混用多种工具：重置
-    - 本响应仅一种工具（含并行多 call）：同名则 +1 轮，换名则 streak=1
+    本响应只有一种调用（含并行多次相同参数）才 +1。参数不同或混用多种工具则重置。
     """
-    if not tool_names:
-        return prev_name, prev_streak
-    unique = {n for n in tool_names if n}
+    if not calls:
+        return prev_signature, prev_streak
+    unique = {call for call in calls if call}
     if len(unique) != 1:
         return "", 0
-    name = next(iter(unique))
-    if name == prev_name:
-        return name, prev_streak + 1
-    return name, 1
+    signature = next(iter(unique))
+    if signature == prev_signature:
+        return signature, prev_streak + 1
+    return signature, 1
 
 
 def _matched_delegation_only_profile(query: str) -> str:
@@ -564,7 +599,14 @@ def add_response_usage(
         st.model_name = response_model
 
 
-def log_output_block_on_session(session_id: str, reason: str, content: str, *, policy: str = "") -> None:
+def log_output_block_on_session(
+    session_id: str,
+    reason: str,
+    content: str,
+    *,
+    policy: str = "",
+    tool_call_id: str = "",
+) -> None:
     """工具路径没有 RunOnceState 时，按 session 记下被吞的台词。"""
     sid = session_id.strip()
     why = reason.strip()
@@ -576,7 +618,7 @@ def log_output_block_on_session(session_id: str, reason: str, content: str, *, p
     sess = get_ai_session_registry().get_ai_session(sid)
     if sess is None or sess._session_logger is None:
         return
-    sess._session_logger.log_output_block(why, body, policy=policy)
+    sess._session_logger.log_output_block(why, body, policy=policy, tool_call_id=tool_call_id)
 
 
 def record_output_block(st: RunOnceState, logger: AISessionLogger, reason: str, content: str) -> None:

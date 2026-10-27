@@ -41,10 +41,12 @@ _REASON_TEXT: dict[str, str] = {
     "blocked_voice": "上一句是编排、过程旁白或交付播报。",
     "render_pending": "材料还没出图。",
     "model_voluntary": "模型自己选择沉默。",
+    "empty_output": "这一轮没有产出正文。",
     "delegated_render_unfinished": "出图还没完成。",
     "usage_limit_no_material": "用量到顶，且没有可交代的材料。",
     "usage_limit_fallback_silence": "用量到顶后的补答不可发。",
     "no_material_reply_silence": "没有材料可答。",
+    "already_sent_by_tool": "发送工具已经把话发给用户了，这句复述不再发。",
 }
 
 

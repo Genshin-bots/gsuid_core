@@ -50,7 +50,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``web_search_tool``（``web_search.py``）：统一 web 搜索（Tavily / Jina / Exa / AnySearch / Firecrawl / MCP）
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
-- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
+- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置/角色卡）
 - ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（通道核；``visible_when`` 有图才露）
 - ``read_video``（``video_reader.py``）：按视频ID取回。通道核默认在有视频且模型声明
   video 时露出；未声明时 ``find_tools`` 仍能召回

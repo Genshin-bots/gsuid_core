@@ -1,8 +1,8 @@
 """能力代理运行器（AgentNode task-mode 实例化）。
 
 ``run_capability_agent()``：按节点装配工具集（tool_packs + tool_names），跑一个
-**无人格**的 Plan-and-Solve Agent，返回其交付结果（纯文本）。系统提示词 =
-节点身份核 + 交付边界叠加层（``compose_task_prompt``，节点可 boundary_override）。
+Plan-and-Solve Agent，返回其交付结果（纯文本）。系统提示词 = 节点身份核 +
+交付边界，再附上委派人的人格 ID。需要时再读 persona.md。不抄主会话的框架约束。
 
 预算：max_iterations / max_tokens 统一读全局配置 ``task_max_iterations`` /
 ``task_max_tokens``；Token 消耗经 gs_agent 预算 scope（ev 派生 / contextvar 继承）
@@ -67,6 +67,8 @@ def _resolve_tools(node: AgentNode) -> ToolList:
 
     all_tools = get_all_tools()  # Dict[name, ToolBase]
     names: List[str] = list(dict.fromkeys(resolve_pack_tool_names(node.tool_packs) + node.tool_names))
+    if "get_self_persona_info" not in names:
+        names.append("get_self_persona_info")
     tools: ToolList = [all_tools[n].tool for n in names if n in all_tools]
     return tools
 
@@ -103,6 +105,62 @@ def capability_tools(profile_id: str, ev: Optional[Event]) -> ToolList:
     return strip_high_risk_tools(tools, ev)
 
 
+def format_delegator_persona_ref(persona_name: str) -> str:
+    """系统提示词只放人格 ID。角色卡由工具按需读取。"""
+    name = persona_name.strip()
+    if not name:
+        return ""
+    return (
+        "【委派你的人格】\n"
+        f"人格 ID：{name}\n"
+        "大多数任务不要读角色卡。只有要替这个人做选择、填表、答题时，"
+        f'调用 get_self_persona_info(info_type="card", persona_name="{name}") 读取 persona.md。\n'
+        "读到的性格只用于这些选择。工具和交付仍按本提示词前面的说明。不要用角色卡对用户说话。"
+    )
+
+
+def delegator_persona_ref(persona_name: str) -> str:
+    """人格资料不存在时不写 ID。"""
+    name = persona_name.strip()
+    if not name:
+        return ""
+    from gsuid_core.ai_core.persona.persona import Persona
+
+    if name != "智能助手" and not Persona(name).exists():
+        return ""
+    return format_delegator_persona_ref(name)
+
+
+def delegator_persona_name(ev: Optional[Event], explicit: str = "") -> str:
+    """显式名优先，否则从父会话或会话路由取当前人格。"""
+    name = explicit.strip()
+    if name:
+        return name
+    if ev is None or not ev.session_id:
+        return ""
+    sid = str(ev.session_id)
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    parent = get_ai_session_registry().get_ai_session(sid)
+    if parent is not None and isinstance(parent.persona_name, str) and parent.persona_name.strip():
+        return parent.persona_name.strip()
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    found = persona_config_manager.get_persona_for_session(sid)
+    if isinstance(found, str) and found.strip():
+        return found.strip()
+    return ""
+
+
+async def task_system_prompt(node: AgentNode, ev: Optional[Event], persona_name: str = "") -> str:
+    """任务说明后面只附人格 ID。没有人格时只留任务说明。"""
+    base = compose_task_prompt(node)
+    block = delegator_persona_ref(delegator_persona_name(ev, persona_name))
+    if not block:
+        return base
+    return f"{base.rstrip()}\n\n{block}"
+
+
 async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional[Event]) -> Optional["GsCoreAIAgent"]:
     """进程重启后用同一个 session_id 拉起。不发送原来的任务书。"""
     node = get_node(profile_id)
@@ -113,9 +171,8 @@ async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     agent = create_agent(
-        system_prompt=compose_task_prompt(node),
+        system_prompt=await task_system_prompt(node, ev),
         max_tokens=ai_config.get_config("task_max_tokens").data,
-        max_iterations=ai_config.get_config("task_max_iterations").data,
         create_by="CapabilityAgent",
         task_level="high",
         session_id=session_id,
@@ -230,10 +287,11 @@ async def run_capability_agent(
     ev: Optional[Event],
     bot: Optional[Bot] = None,
     session_id_suffix: str = "",
+    persona_name: str = "",
 ) -> str:
     """按 node_id 实例化一个 task-mode 节点并同步运行，返回其交付结果（纯文本）。
 
-    - 系统提示词 = 节点身份核 + 交付边界叠加层（persona_name=None，无人格）。
+    - 系统提示词 = 节点身份核 + 交付边界 + 委派人人格 ID。不抄主会话框架约束。
     - 工具：packs + 白名单为保底；**始终**再按 task（及可选 tool_query）向量检索
       增补专业工具并做能力族展开。节点声明 ``dynamic`` 族时 gs_agent 逐轮
       五层装配并与显式工具合并。
@@ -303,9 +361,8 @@ async def run_capability_agent(
     async with _ensure_adhoc_workspace(node.node_id, ev) as plan_ctx:
         ws_label = plan_ctx.artifact_workspace if plan_ctx else "FILE_PATH-fallback"
         agent = create_agent(
-            system_prompt=compose_task_prompt(node),
+            system_prompt=await task_system_prompt(node, ev, persona_name),
             max_tokens=ai_config.get_config("task_max_tokens").data,
-            max_iterations=ai_config.get_config("task_max_iterations").data,
             create_by="CapabilityAgent",  # 不在工具自动装配白名单，配合显式 tools
             task_level="high",
             session_id=session_id,

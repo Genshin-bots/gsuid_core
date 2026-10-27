@@ -864,6 +864,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                 ev=ev,
                 bot=bot,
                 session_id_suffix=f"kanban_{root.id[:6]}_{fresh.id[:6]}",
+                persona_name=fresh.persona_name or root.persona_name or "",
             )
         except Exception as e:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
