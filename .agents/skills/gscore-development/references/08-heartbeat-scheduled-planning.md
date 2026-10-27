@@ -258,6 +258,9 @@ APScheduler 任务 `ai_autonomy_tick`，每 5 分钟最多挑一个到期人格�
 （4 小时，和定时任务的 300 秒合并槽分开）；自我探索只挂槽，不立刻发。模型点名的群或用户不在
 底片里，改成自我探索，不发到那个群。
 
+`send_message_by_ai` 的 `target_type=user` 发私聊。回群用这句发言上标出的群号。
+关心对象最近待过的另一个群不会拿来代替。同时传入 `user_id` 时，群消息才 @ 对方。
+
 代跑命令固定 `user_pm = 6`，对象必须在本轮观察名单。发送工具和高危执行不挂。
 审计表只有 `aiautonomyactivity`。问过模型的一轮把 `session_id` 写进行里，会话日志来源是
 `Autonomy`；只记休息的行没有会话号。登录用户 `GET /api/autonomy/feed` 看各人格最近一行

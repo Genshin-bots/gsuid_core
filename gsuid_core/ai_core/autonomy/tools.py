@@ -397,6 +397,42 @@ async def artifact_put(ctx: RunContext[ToolContext], title: str, body: str) -> s
     return res
 
 
+def _resolve_send_target(
+    state: GuardState,
+    *,
+    target_id: str,
+    target_type: str,
+    group_id: str,
+    user_id: str,
+) -> tuple[str | None, str]:
+    """解析调用方写出的目的地。用户目标不会改写成快照里的群。"""
+    named_group = group_id.strip()
+    named_user = user_id.strip()
+    tid = target_id.strip()
+    ttype = target_type.strip().lower()
+    dest_group_id: str | None = named_group or None
+    dest_user_id = named_user
+    if tid:
+        if ttype == "user":
+            if not dest_user_id:
+                dest_user_id = tid
+        elif ttype == "group":
+            if dest_group_id is None:
+                dest_group_id = tid
+        elif tid in state.allowed_groups and dest_group_id is None:
+            dest_group_id = tid
+        elif tid in state.allowed_users and not dest_user_id:
+            dest_user_id = tid
+        elif dest_group_id is None:
+            dest_group_id = tid
+    if dest_group_id is None and not dest_user_id:
+        if len(state.allowed_groups) == 1 and not state.allowed_users:
+            dest_group_id = next(iter(state.allowed_groups.keys()))
+        elif len(state.allowed_users) == 1 and not state.allowed_groups:
+            dest_user_id = next(iter(state.allowed_users.keys()))
+    return dest_group_id, dest_user_id
+
+
 async def send_message_by_ai(
     ctx: RunContext[ToolContext],
     text: str,
@@ -408,14 +444,15 @@ async def send_message_by_ai(
     """主动向观察底片中的群或关心对象发送一条消息。
 
     单次自主行动只允许成功发送 1 条消息。发送前框架会自动进行防打扰与频次风控。
+    私聊保持私聊。回群只用调用里写出的群号，不用关心对象最近待过的另一个群。
 
     Args:
         ctx: 工具上下文。
         text: 要发送的消息内容（以你的人格口吻自然表达）。
         target_id: 目标 ID，可以是群号（如 "123456"）或用户 ID（如 "10001"），必须来自底片。
         target_type: 目标类型，"group"（群聊）或 "user"（私聊），默认为 "group"。
-        group_id: 可选，群号（若传入则优先作为群聊目标）。
-        user_id: 可选，用户 ID（若传入且无群号则作为私聊目标）。
+        group_id: 可选，群号。传入后发到这个群。
+        user_id: 可选，用户 ID。只传用户 ID 时发私聊；和群号一起传时在该群 @ 此人。
     """
     del ctx
     state = _GUARD.get()
@@ -428,39 +465,24 @@ async def send_message_by_ai(
     if not body:
         return "拒绝发送：消息内容不能为空"
 
-    dest_group_id: str | None = None
-    dest_user_id: str = ""
+    dest_group_id, dest_user_id = _resolve_send_target(
+        state,
+        target_id=target_id,
+        target_type=target_type,
+        group_id=group_id,
+        user_id=user_id,
+    )
+    if dest_group_id is None and not dest_user_id:
+        avail_g = list(state.allowed_groups.keys())
+        avail_u = list(state.allowed_users.keys())
+        return f"拒绝发送：必须指定发送目标 target_id。底片可选群：{avail_g}，关心用户：{avail_u}"
+
     bot_id = state.bot_id
     bot_self_id = state.bot_self_id
     ws_bot_id = state.ws_bot_id
-
-    if group_id.strip():
-        dest_group_id = group_id.strip()
-    elif user_id.strip():
-        dest_user_id = user_id.strip()
-    elif target_id.strip():
-        tid = target_id.strip()
-        ttype = target_type.strip().lower()
-        if ttype == "group":
-            dest_group_id = tid
-        elif ttype == "user":
-            dest_user_id = tid
-        elif tid in state.allowed_groups:
-            dest_group_id = tid
-        elif tid in state.allowed_users:
-            dest_user_id = tid
-        else:
-            dest_group_id = tid
-    else:
-        if len(state.allowed_groups) == 1 and not state.allowed_users:
-            dest_group_id = next(iter(state.allowed_groups.keys()))
-        elif len(state.allowed_users) == 1 and not state.allowed_groups:
-            dest_user_id = next(iter(state.allowed_users.keys()))
-        else:
-            avail_g = list(state.allowed_groups.keys())
-            avail_u = list(state.allowed_users.keys())
-            return f"拒绝发送：必须指定发送目标 target_id。底片可选群：{avail_g}，关心用户：{avail_u}"
-
+    if dest_user_id and dest_user_id not in state.allowed_users:
+        avail_u = list(state.allowed_users.keys())
+        return f"拒绝发送：用户 {dest_user_id} 不在本次关心名单中。只能发送给名单内的用户：{avail_u}"
     if dest_group_id:
         if dest_group_id not in state.allowed_groups:
             avail_g = list(state.allowed_groups.keys())
@@ -470,11 +492,8 @@ async def send_message_by_ai(
         bot_self_id = g_obs.bot_self_id or bot_self_id
         ws_bot_id = g_obs.ws_bot_id or ws_bot_id
     elif dest_user_id:
-        if dest_user_id not in state.allowed_users:
-            avail_u = list(state.allowed_users.keys())
-            return f"拒绝发送：用户 {dest_user_id} 不在本次关心名单中。只能发送给名单内的用户：{avail_u}"
+        # 快照上的群是这个人最近待过的地方，不是这条私聊的目的地。
         u_snap = state.allowed_users[dest_user_id]
-        dest_group_id = u_snap.group_id
         bot_id = u_snap.bot_id or bot_id
         bot_self_id = u_snap.bot_self_id or bot_self_id
         ws_bot_id = u_snap.ws_bot_id or ws_bot_id

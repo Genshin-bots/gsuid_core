@@ -195,12 +195,10 @@ class AutonomyScheduler:
         )
         if tool_sent:
             mode = "immediate_push"
-            if report.last_sent_user_id:
-                for target_pin in pins_from_digest(digest)[0]:
-                    if target_pin.user_id == report.last_sent_user_id:
-                        pin = target_pin
-                        decision = DeliveryDecision("care_user", "immediate_push", pin, decision.summary)
-                        break
+            sent_pin = _pin_for_tool_send(digest, report.last_sent_user_id, report.last_sent_group_id)
+            if sent_pin is not None:
+                pin = sent_pin
+                decision = DeliveryDecision(decision.drive, "immediate_push", pin, decision.summary)
         else:
             if mode == "immediate_push":
                 mode = "staged_merge"
@@ -338,6 +336,46 @@ async def _budget_ok(persona_name: str) -> bool:
 
     decision = await budget_manager.check_scope("", f"autonomy:{persona_name}", "core", f"autonomy:{persona_name}")
     return decision.allowed
+
+
+def _pin_for_tool_send(digest: ObservationDigest, user_id: str, group_id: str) -> DeliveryPin | None:
+    """审计钉记实际发出的会话。私聊不沿用关心对象最近待过的群。"""
+    care, groups = pins_from_digest(digest)
+    user_pin = next((item for item in care if item.user_id == user_id), None) if user_id else None
+    group_pin = next((item for item in groups if item.group_id == group_id), None) if group_id else None
+    if group_id:
+        if group_pin is None:
+            return None
+        if user_pin is None:
+            return group_pin
+        return DeliveryPin(
+            user_id=user_pin.user_id,
+            group_id=group_id,
+            is_master=user_pin.is_master,
+            zone_value=user_pin.zone_value,
+            bot_id=group_pin.bot_id or user_pin.bot_id,
+            bot_self_id=group_pin.bot_self_id or user_pin.bot_self_id,
+            ws_bot_id=group_pin.ws_bot_id or user_pin.ws_bot_id,
+            session_key=f"group:{group_id}",
+            last_human_ts=group_pin.last_human_ts,
+            last_assistant_ts=group_pin.last_assistant_ts,
+            preferences=user_pin.preferences,
+        )
+    if user_pin is None:
+        return None
+    return DeliveryPin(
+        user_id=user_pin.user_id,
+        group_id=None,
+        is_master=user_pin.is_master,
+        zone_value=user_pin.zone_value,
+        bot_id=user_pin.bot_id,
+        bot_self_id=user_pin.bot_self_id,
+        ws_bot_id=user_pin.ws_bot_id,
+        session_key=f"private:{user_pin.user_id}",
+        last_human_ts=user_pin.last_human_ts,
+        last_assistant_ts=user_pin.last_assistant_ts,
+        preferences=user_pin.preferences,
+    )
 
 
 async def _emit(pin: DeliveryPin, message: str, persona_name: str) -> bool:

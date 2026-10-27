@@ -65,6 +65,31 @@ def test_private_chat_beats_a_later_group_message() -> None:
     assert group_only.group_id == "g1"
 
 
+def test_care_lines_label_each_session_and_keep_the_other_group() -> None:
+    now = 1_000_000.0
+    lines = [
+        _line("u", "甲群里的问题", now - 1000, group_id="g-home"),
+        _line("u", "乙群后说的", now - 100, group_id="g-other"),
+        _line("u", "私聊补了一句", now - 50, group_id=None),
+    ]
+    targets = assemble_care_targets(
+        ["u"],
+        {"u": 90},
+        {"u"},
+        lines,
+        {"u": {}},
+        {},
+        now=now,
+        allowed_groups={"g-home", "g-other"},
+        allow_private=True,
+    )
+    blob = "\n".join(targets[0].recent_lines)
+    assert "群 g-home" in blob and "甲群里的问题" in blob
+    assert "群 g-other" in blob and "乙群后说的" in blob
+    assert "私聊" in blob and "私聊补了一句" in blob
+    assert targets[0].group_id is None
+
+
 def test_group_outside_the_persona_scope_is_not_preferred() -> None:
     now = 1_000_000.0
     lines = [_line("u", "别的群", now - 5, group_id="other")]

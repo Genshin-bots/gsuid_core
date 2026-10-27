@@ -55,8 +55,8 @@ def test_proactive_emitter_at_user_forwarding() -> None:
                     assert kwargs.get("at_user_id") == "mock_user_101"
 
 
-def test_send_message_by_ai_directed_in_group_attaches_at() -> None:
-    """在群内对关心对象发信时应自动携带 at_user_id 并更新目标描述。"""
+def test_send_message_by_ai_private_stays_private_and_named_group_is_kept() -> None:
+    """私聊不改写到快照群；回群只用调用里的群号，并在该群 @ 对方。"""
     get_dispatcher()._last_send.clear()
     now = 1_000_000.0
     target = CareTargetSnapshot(
@@ -75,6 +75,28 @@ def test_send_message_by_ai_directed_in_group_attaches_at() -> None:
         last_human_ts=now - 300,
         last_assistant_ts=now - 1200,
     )
+    home = GroupObservation(
+        group_id="mock_group_home",
+        bot_id="mock_bot",
+        bot_self_id="mock_self",
+        ws_bot_id="mock_ws",
+        session_key="group:mock_group_home",
+        last_human_ts=now - 400,
+        last_assistant_ts=now - 1200,
+        summary="",
+        recent_lines=[],
+    )
+    borrowed = GroupObservation(
+        group_id="mock_group_202",
+        bot_id="mock_bot",
+        bot_self_id="mock_self",
+        ws_bot_id="mock_ws",
+        session_key="group:mock_group_202",
+        last_human_ts=now - 300,
+        last_assistant_ts=now - 1200,
+        summary="",
+        recent_lines=[],
+    )
     state = GuardState(
         persona_name="mock_persona",
         whitelist=frozenset({"mock_user_102"}),
@@ -82,7 +104,7 @@ def test_send_message_by_ai_directed_in_group_attaches_at() -> None:
         bot_id="mock_bot",
         bot_self_id="mock_self",
         ws_bot_id="mock_ws",
-        allowed_groups={},
+        allowed_groups={"mock_group_home": home, "mock_group_202": borrowed},
         allowed_users={"mock_user_102": target},
         now=now,
     )
@@ -92,15 +114,33 @@ def test_send_message_by_ai_directed_in_group_attaches_at() -> None:
             "gsuid_core.ai_core.proactive.emitter.emit_proactive_message", new=AsyncMock(return_value=True)
         ) as mock_emit:
             ctx = MagicMock()
-            result = asyncio.run(
+            private = asyncio.run(
                 send_message_by_ai(ctx, text="今天多喝温水", target_id="mock_user_102", target_type="user")
             )
-            assert "群 mock_group_202（已前置 @mock_user_102）" in result
-            assert state.sent_count == 1
-            assert state.last_sent_user_id == "mock_user_102"
-            assert state.last_sent_group_id == "mock_group_202"
-            _, kwargs = mock_emit.call_args
-            assert kwargs.get("at_user_id") == "mock_user_102"
+            assert "用户 mock_user_102" in private
+            assert "群 mock_group_202" not in private
+            assert state.last_sent_group_id == ""
+            private_event = mock_emit.call_args.args[0]
+            assert private_event.user_type == "direct"
+            assert private_event.group_id is None
+            assert mock_emit.call_args.kwargs.get("at_user_id") is None
+
+            state.sent_count = 0
+            grouped = asyncio.run(
+                send_message_by_ai(
+                    ctx,
+                    text="这句回到原群",
+                    target_id="mock_group_home",
+                    target_type="group",
+                    user_id="mock_user_102",
+                )
+            )
+            assert "群 mock_group_home（已前置 @mock_user_102）" in grouped
+            assert "mock_group_202" not in grouped
+            group_event = mock_emit.call_args.args[0]
+            assert group_event.user_type == "group"
+            assert group_event.group_id == "mock_group_home"
+            assert mock_emit.call_args.kwargs.get("at_user_id") == "mock_user_102"
     finally:
         reset_guard(token)
 
@@ -145,7 +185,7 @@ def test_send_message_by_ai_allowed_when_user_inactive_for_long_time() -> None:
                     ctx, text="刚才看到你在聊那个话题，感觉很有趣", target_id="mock_user_103", target_type="user"
                 )
             )
-            assert "已成功向 群 mock_group_203（已前置 @mock_user_103） 发送消息" in result
+            assert "已成功向 用户 mock_user_103 发送消息" in result
             assert state.sent_count == 1
     finally:
         reset_guard(token)

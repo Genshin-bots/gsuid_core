@@ -127,7 +127,13 @@ def assemble_care_targets(
             allow_private=allow_private,
         )
         group_id = chosen.group_id if chosen is not None else None
-        recent = _recent_texts(lines, uid, group_id=group_id, now=now, limit=6)
+        recent = _care_recent_lines(
+            lines,
+            uid,
+            now=now,
+            allowed_groups=allowed_groups,
+            allow_private=allow_private,
+        )
         bot_id = chosen.bot_id if chosen is not None else ""
         bot_self_id = chosen.bot_self_id if chosen is not None else ""
         ws_bot_id = chosen.ws_bot_id if chosen is not None else ""
@@ -172,7 +178,9 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
         "TARGET: 关心对象的用户 ID，或群 ID；休息时留空",
         "SUMMARY: 一句话，只写工具真正返回的内容",
         "TRAILS: 用 | 分开的未完线索，没有就留空",
-        "发消息调用 send_message_by_ai 并指定底片内的群号或用户 ID。run_bot_command 只能传观察名单里的用户 ID。",
+        "发消息调用 send_message_by_ai。私聊把 target_type 设为 user，target_id 用用户 ID。",
+        "回群把 target_type 设为 group，target_id 用这句前面标出的群号。要点名再传 user_id。",
+        "run_bot_command 只能传观察名单里的用户 ID。",
         "find_tools 这一轮不会装上新工具。查网页用已挂的搜索和抓取，看图用已挂的读图。",
         "已经带「[你]」回复过、或已在后台任务里推进的事项，不要重复查。",
         f"当前情绪强度约 {digest.mood_score:.2f}。",
@@ -281,6 +289,72 @@ def _recent_texts(
     limit: int = 8,
 ) -> list[str]:
     """提取关心对象发言，包含群聊交叉语境并按时间从早到晚升序排列。"""
+    return [text for _, text, _is_target in _recent_rows(lines, user_id, group_id=group_id, now=now, limit=limit)]
+
+
+def _care_recent_lines(
+    lines: Sequence[SpokenLine],
+    user_id: str,
+    *,
+    now: float,
+    allowed_groups: set[str] | None,
+    allow_private: bool,
+) -> list[str]:
+    """每个会话单独成段，句首标出私聊或群号。回群时用这个群号。"""
+    found: list[tuple[float, str]] = []
+    for session_group in _speaking_sessions(
+        lines,
+        user_id,
+        now=now,
+        allowed_groups=allowed_groups,
+        allow_private=allow_private,
+    ):
+        place = "私聊" if session_group is None else f"群 {session_group}"
+        for ts, text, _is_target in _recent_rows(lines, user_id, group_id=session_group, now=now, limit=4):
+            found.append((ts, f"{place} {text}"))
+    found.sort(key=lambda item: item[0])
+    return [text for _, text in found]
+
+
+def _speaking_sessions(
+    lines: Sequence[SpokenLine],
+    user_id: str,
+    *,
+    now: float,
+    allowed_groups: set[str] | None,
+    allow_private: bool,
+) -> list[str | None]:
+    latest: dict[str, float] = {}
+    private_ts: float | None = None
+    for line in lines:
+        if line.role != "user" or line.user_id != user_id or not line.text.strip() or now < line.ts:
+            continue
+        if line.group_id:
+            if now - line.ts > GROUP_LOOKBACK_SECONDS:
+                continue
+            if allowed_groups is not None and line.group_id not in allowed_groups:
+                continue
+            prev = latest[line.group_id] if line.group_id in latest else None
+            if prev is None or line.ts > prev:
+                latest[line.group_id] = line.ts
+        elif allow_private and now - line.ts <= PRIVATE_LOOKBACK_SECONDS:
+            if private_ts is None or line.ts > private_ts:
+                private_ts = line.ts
+    ranked: list[tuple[float, str | None]] = [(ts, gid) for gid, ts in latest.items()]
+    if private_ts is not None:
+        ranked.append((private_ts, None))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [gid for _, gid in ranked[:3]]
+
+
+def _recent_rows(
+    lines: Sequence[SpokenLine],
+    user_id: str,
+    *,
+    group_id: str | None,
+    now: float,
+    limit: int,
+) -> list[tuple[float, str, bool]]:
     if group_id is not None:
         glines = [
             item
@@ -300,19 +374,20 @@ def _recent_texts(
                         chosen.add(cand)
             picked = [glines[i] for i in sorted(chosen)]
             selected_lines = picked[-limit:]
-        found: list[str] = []
+        found: list[tuple[float, str, bool]] = []
         for item in selected_lines:
             text = item.text.strip()
             if not text:
                 continue
             age = _age_label(item.ts, now)
+            is_target = item.role == "user" and item.user_id == user_id
             if item.role == "assistant":
                 prefix = "[你]"
-            elif item.user_id == user_id:
+            elif is_target:
                 prefix = f"[目标] {item.user_name}"
             else:
                 prefix = item.user_name
-            found.append(f"{age} {prefix}: {text[:160]}")
+            found.append((item.ts, f"{age} {prefix}: {text[:160]}", is_target))
         return found
     user_lines = [item for item in lines if item.group_id is None and item.role == "user" and item.user_id == user_id]
     ai_lines = [
@@ -321,14 +396,15 @@ def _recent_texts(
     combined = user_lines + ai_lines
     combined.sort(key=lambda item: item.ts)
     selected_lines = combined[-limit:]
-    found_p = []
+    found_p: list[tuple[float, str, bool]] = []
     for item in selected_lines:
         text = item.text.strip()
         if not text:
             continue
         age = _age_label(item.ts, now)
+        is_target = item.role == "user"
         prefix = "[你] " if item.role == "assistant" else ""
-        found_p.append(f"{age} {prefix}{text[:160]}")
+        found_p.append((item.ts, f"{age} {prefix}{text[:160]}", is_target))
     return found_p
 
 

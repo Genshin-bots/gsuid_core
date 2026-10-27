@@ -193,5 +193,6 @@ def looks_like_provider_failure(err_text: str) -> bool:
             "502",
             "503",
             "unavailable",
+            "quota",
         )
-    ) or ("用量上限" in err_text or "额度" in err_text)
+    ) or any(k in err_text for k in ("用量上限", "用量已达上限", "额度", "配额", "超时"))
