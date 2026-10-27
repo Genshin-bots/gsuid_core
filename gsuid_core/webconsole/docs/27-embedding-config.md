@@ -107,6 +107,7 @@ Authorization: Bearer <token>
             "title": "指定嵌入模型名称",
             "desc": "指定启用的嵌入模型名称",
             "data": "BAAI/bge-small-zh-v1.5",
+            "type": "gsstr",
             "options": ["BAAI/bge-small-zh-v1.5"]
         }
     }
@@ -141,6 +142,8 @@ Authorization: Bearer <token>
     "data": null
 }
 ```
+
+整数字段传 JSON 数字。类型不对时 `status` 为 1，`msg` 列出失败的键，已通过的键仍会写入。字段对象上的 `type`（`gsint` / `gsfloat` / `gsstr`）与框架配置相同。
 
 ---
 
@@ -233,6 +236,8 @@ Authorization: Bearer <token>
     "data": null
 }
 ```
+
+`dimension` 是 `gsint`，传 JSON 数字。类型不对时 `status` 为 1，规则与本地嵌入保存相同。
 
 ---
 
