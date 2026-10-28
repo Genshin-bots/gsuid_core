@@ -8,8 +8,18 @@ from typing import Optional
 
 from genai_prices import Usage, calc_price
 
-_CLEAN_SUFFIX_RE = re.compile(r"-(fast|latest|preview|exp|turbo)$", re.IGNORECASE)
+_CLEAN_SUFFIX_RE = re.compile(r"-(fast|latest|preview|exp|turbo|flash|chat)$", re.IGNORECASE)
 _VERSION_RE = re.compile(r"([a-z]+)(\d+)\.\d+", re.IGNORECASE)
+
+# 补充未及时被上游 genai-prices 录入的主流模型定价 (单价为每 1M Token 的美元 USD)
+# 元组: (input_per_1m, output_per_1m, cache_read_per_1m, cache_write_per_1m)
+SUPPLEMENTAL_MODEL_PRICES: dict[str, tuple[float, float, float, float]] = {
+    # MiniMax M3.1 Flash: 输入 $0.15/1M, 输出 $0.60/1M, 缓存读 $0.015/1M
+    "minimax-m3.1-flash": (0.15, 0.60, 0.015, 0.0),
+    "minimax-m3.1-flash-preview": (0.15, 0.60, 0.015, 0.0),
+    "minimax/minimax-m3.1-flash": (0.15, 0.60, 0.015, 0.0),
+    "minimax/minimax-m3.1-flash-preview": (0.15, 0.60, 0.015, 0.0),
+}
 
 
 def _generate_model_candidates(model_name: str) -> list[tuple[str, Optional[str]]]:
@@ -26,13 +36,22 @@ def _generate_model_candidates(model_name: str) -> list[tuple[str, Optional[str]
         sub_model = parts[1].strip()
 
     model_variants: list[str] = [sub_model]
-    cleaned = _CLEAN_SUFFIX_RE.sub("", sub_model)
-    if cleaned != sub_model and cleaned not in model_variants:
-        model_variants.append(cleaned)
 
-    v_clean = _VERSION_RE.sub(r"\1\2", cleaned)
-    if v_clean not in model_variants:
-        model_variants.append(v_clean)
+    # 逐级剥离修饰后缀 (如 -preview, -fast, -flash)
+    curr = sub_model
+    while True:
+        next_curr = _CLEAN_SUFFIX_RE.sub("", curr)
+        if next_curr == curr:
+            break
+        if next_curr not in model_variants:
+            model_variants.append(next_curr)
+        curr = next_curr
+
+    # 对剥离后的各变体尝试版本降级 (如 m3.1 -> m3, v4.1 -> v4)
+    for v in list(model_variants):
+        v_clean = _VERSION_RE.sub(r"\1\2", v)
+        if v_clean not in model_variants:
+            model_variants.append(v_clean)
 
     candidates: list[tuple[str, Optional[str]]] = []
     # 优先原样查询
@@ -57,7 +76,7 @@ def calculate_model_cost(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
 ) -> float:
-    """使用 genai-prices 估算模型调用 Token 费用 (美元 USD)
+    """使用 genai-prices 及补充价格表估算模型调用 Token 费用 (美元 USD)
 
     找不到对应模型价格或 Token 全为 0 时返回 0.0。
     """
@@ -72,8 +91,20 @@ def calculate_model_cost(
     )
 
     for cand_model, cand_provider in _generate_model_candidates(model_name):
+        # 1. 优先匹配补充价格表
+        key = cand_model.lower()
+        if key in SUPPLEMENTAL_MODEL_PRICES:
+            inp_p, out_p, cr_p, cw_p = SUPPLEMENTAL_MODEL_PRICES[key]
+            cost = (
+                (input_tokens * inp_p)
+                + (output_tokens * out_p)
+                + (cache_read_tokens * cr_p)
+                + (cache_write_tokens * cw_p)
+            ) / 1_000_000.0
+            return round(cost, 6)
+
+        # 2. 尝试 genai_prices 库匹配
         try:
-            # genai_prices 找不到模型时抛出 LookupError 或 ValueError，按序尝试候选
             res = (
                 calc_price(usage, cand_model, provider_id=cand_provider)
                 if cand_provider

@@ -27,6 +27,12 @@ def test_calculate_model_cost_known_models():
     cost_deepseek = calculate_model_cost("deepseek-chat", 1000, 500)
     assert cost_deepseek > 0.0
 
+    cost_minimax = calculate_model_cost("minimax-m3.1-flash", 1000, 500)
+    assert cost_minimax > 0.0
+
+    cost_minimax_preview = calculate_model_cost("minimax-m3.1-flash-preview", 1000, 500)
+    assert cost_minimax_preview > 0.0
+
 
 def test_calculate_model_cost_with_provider_prefix():
     cost_openrouter = calculate_model_cost("openai/gpt-4o", 1000, 500)
@@ -80,3 +86,9 @@ async def test_statistics_manager_summary_and_range_cost(monkeypatch):
     assert len(range_data["by_model"]) > 0
     assert "cost" in range_data["by_model"][0]
     assert range_data["by_model"][0]["cost"] > 0.0
+
+    daily_counts = await statistics_manager.get_daily_token_counts(days=7)
+    assert len(daily_counts) == 7
+    today_count = daily_counts[-1]
+    assert "total_cost" in today_count
+    assert today_count["total_cost"] > 0.0

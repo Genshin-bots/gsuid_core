@@ -850,9 +850,13 @@ class StatisticsManager:
         end_s = today.strftime("%Y-%m-%d")
 
         by_date: Dict[str, Dict[str, Any]] = {}
+        cost_by_date: Dict[str, float] = defaultdict(float)
         try:
-            rows = await AIDailyStatistics.get_stats_between(start_s, end_s)
-            for row in rows:
+            daily_rows, model_rows = await asyncio.gather(
+                AIDailyStatistics.get_stats_between(start_s, end_s),
+                AITokenUsageByModel.get_data_between(start_s, end_s),
+            )
+            for row in daily_rows:
                 key = str(row.date)[:10]
                 by_date[key] = {
                     "input_tokens": int(row.total_input_tokens or 0),
@@ -863,6 +867,15 @@ class StatisticsManager:
                     "user_turn_input_tokens": int(row.user_turn_input_tokens or 0),
                     "user_turn_output_tokens": int(row.user_turn_output_tokens or 0),
                 }
+            for m_row in model_rows:
+                m_key = str(m_row.date)[:10]
+                cost_by_date[m_key] += calculate_model_cost(
+                    m_row.model_name,
+                    m_row.input_tokens or 0,
+                    m_row.output_tokens or 0,
+                    m_row.cache_read_tokens or 0,
+                    m_row.cache_write_tokens or 0,
+                )
         except Exception:
             # DB 不可用时仍返回连续 0 序列
             pass
@@ -880,6 +893,10 @@ class StatisticsManager:
                 "user_turn_input_tokens": int(b.user_turn_tokens.input_tokens or 0),
                 "user_turn_output_tokens": int(b.user_turn_tokens.output_tokens or 0),
             }
+            cost_by_date[today_s] = sum(
+                calculate_model_cost(m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+                for m, u in b.token_by_model.items()
+            )
 
         result: List[Dict[str, Any]] = []
         for offset in range(days - 1, -1, -1):
@@ -893,12 +910,14 @@ class StatisticsManager:
             ut_ar = int(bucket.get("user_turn_agent_run_count", 0) or 0)
             ut_in = int(bucket.get("user_turn_input_tokens", 0) or 0)
             ut_out = int(bucket.get("user_turn_output_tokens", 0) or 0)
+            day_cost = round(cost_by_date.get(key, 0.0), 6)
             result.append(
                 {
                     "date": key,
                     "input_tokens": inp,
                     "output_tokens": out,
                     "total_tokens": inp + out,
+                    "total_cost": day_cost,
                     "user_turn_count": ut,
                     "agent_run_count": ar,
                     "user_turn_agent_run_count": ut_ar,
