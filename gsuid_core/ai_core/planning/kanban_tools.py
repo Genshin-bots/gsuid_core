@@ -883,6 +883,8 @@ async def artifact_put(
     )
     if art is None:
         if file_path_obj is not None:
+            if file_path_obj.exists():
+                return f"⚠️ 登记 artifact 失败：文件 `{file_path}` 超出允许的沙盒工作区，且不属于受信任的产物输出目录。"
             return (
                 f"⚠️ 登记 artifact 失败：找不到文件 `{file_path}`（相对路径默认相对"
                 f" workspace）。请先确认 `list_directory` 能看到这个文件再登记。"

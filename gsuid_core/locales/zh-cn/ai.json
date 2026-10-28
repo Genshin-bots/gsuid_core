@@ -325,6 +325,7 @@
   "log.ai.kanban_armed_subtask_id_root": "[Kanban] not_before 已挂载 subtask={subtask_id} root={root_task_id} fire_at={p0}",
   "log.ai.kanban_arming_recurring_subtask_fail": "[Kanban] 周期子任务 arm 抛出异常 subtask={p0} root={p1}: {e}",
   "log.ai.kanban_artifact_put_payload_file": "[Kanban] artifact_put 同时收到 payload 和 file_path，按 file_path 模式登记真实文件，payload 会被丢弃。",
+  "log.ai.kanban_artifact_put_auto_copied": "[Kanban] artifact_put 自动将受信任外部文件拷贝入工作区: {src} -> {dst}",
   "log.ai.kanban_artifact_put_refused_register": "[Kanban] artifact_put 拒绝登记越界文件: {src} 不在 workspace 内",
   "log.ai.kanban_artifact_ttl_cleanup_delete": "[Kanban] Artifact TTL 清理: 删除 {p0} 条过期记录",
   "log.ai.kanban_artifact_ttl_cleanup_job": "[Kanban] Artifact TTL 清理 job 已注册（每日 04:00）",

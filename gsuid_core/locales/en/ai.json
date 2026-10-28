@@ -325,6 +325,7 @@
   "log.ai.kanban_armed_subtask_id_root": "[Kanban] not_before armed subtask={subtask_id} root={root_task_id} fire_at={p0}",
   "log.ai.kanban_arming_recurring_subtask_fail": "[Kanban] Exception while arming recurring subtask subtask={p0} root={p1}: {e}",
   "log.ai.kanban_artifact_put_payload_file": "[Kanban] artifact_put 同时收到 payload 和 file_path，按 file_path 模式登记真实文件，payload 会被丢弃。",
+  "log.ai.kanban_artifact_put_auto_copied": "[Kanban] artifact_put auto-copied trusted external file to workspace: {src} -> {dst}",
   "log.ai.kanban_artifact_put_refused_register": "[Kanban] artifact_put refused to register out-of-bounds file: {src} is not within workspace",
   "log.ai.kanban_artifact_ttl_cleanup_delete": "[Kanban] Artifact TTL cleanup: deleted {p0} expired records",
   "log.ai.kanban_artifact_ttl_cleanup_job": "[Kanban] Artifact TTL cleanup job registered (daily at 04:00)",

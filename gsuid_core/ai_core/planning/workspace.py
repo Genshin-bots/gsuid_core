@@ -15,6 +15,8 @@ Artifact Workspace 内**。仅靠提示词不够，必须工具层强制：
 """
 
 import os
+import shutil
+import tempfile
 from typing import List, Tuple, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -23,11 +25,35 @@ from sqlmodel import col, func, select
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.data_store import AI_CORE_PATH, get_res_path
+from gsuid_core.data_store import AI_CORE_PATH, get_res_path, gs_data_path
 from gsuid_core.utils.database.base_models import async_maker
 
 from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact
 from .runtime import PlanRunContext, get_plan_context
+
+# 禁止作为产物登记的敏感文件后缀
+_BLOCKED_ARTIFACT_EXTS = {
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".key",
+    ".pem",
+    ".env",
+    ".token",
+    ".secret",
+    ".pfx",
+    ".cer",
+    ".crt",
+}
+
+# 即使在 data/ 内也禁止拷贝的敏感子目录
+_SENSITIVE_DATA_SUBDIRS = {
+    "session_logs",
+    "logs",
+    "memory",
+    "http_traces",
+    "traces",
+}
 
 # data/ai_core/artifacts/{root_task_id}/{task_id}/workspace/...
 ARTIFACT_ROOT: Path = get_res_path(AI_CORE_PATH / "artifacts")
@@ -86,6 +112,39 @@ def _is_inside(path: Path, root: Path) -> bool:
     rp_s = str(rp)
     rr_s = str(rr).rstrip(os.sep) + os.sep
     return rp_s == str(rr).rstrip(os.sep) or rp_s.startswith(rr_s)
+
+
+def _can_auto_import_file(src: Path, plan_ctx: PlanRunContext) -> bool:
+    """判断工作区外文件是否属于受信任外部产物源，允许自动安全拷贝进 workspace。"""
+    try:
+        r_src = src.resolve()
+    except OSError:
+        return False
+
+    if r_src.suffix.lower() in _BLOCKED_ARTIFACT_EXTS:
+        return False
+
+    for root in plan_ctx.allowed_write_roots:
+        if _is_inside(r_src, root):
+            return True
+
+    temp_dir = Path(tempfile.gettempdir()).resolve()
+    if _is_inside(r_src, temp_dir):
+        return True
+
+    data_root = gs_data_path.resolve()
+    if _is_inside(r_src, data_root):
+        if r_src.parent == data_root:
+            return False
+        try:
+            rel = r_src.relative_to(data_root)
+            if any(p in _SENSITIVE_DATA_SUBDIRS for p in rel.parts):
+                return False
+        except ValueError:
+            return False
+        return True
+
+    return False
 
 
 def resolve_safe_path(
@@ -340,8 +399,19 @@ async def put_artifact(
             return None
         # 安全闸刀：登记的文件必须落在 workspace 内（避免登记越界路径，绕过沙盒）
         if not _is_inside(src, workspace):
-            logger.warning(t("log.ai.kanban_artifact_put_refused_register", src=src))
-            return None
+            if _can_auto_import_file(src, plan_ctx):
+                workspace.mkdir(parents=True, exist_ok=True)
+                target = workspace / src.name
+                if target.resolve() != src.resolve():
+                    if target.exists():
+                        stamp = int(datetime.now().timestamp())
+                        target = workspace / f"{src.stem}_{stamp}{src.suffix}"
+                    shutil.copy2(src, target)
+                    logger.info(t("log.ai.kanban_artifact_put_auto_copied", src=src, dst=target))
+                    src = target
+            if not _is_inside(src, workspace):
+                logger.warning(t("log.ai.kanban_artifact_put_refused_register", src=src))
+                return None
         suffix = src.suffix.lower()
         resolved_mime = mime or _EXT_TO_MIME.get(suffix, "application/octet-stream")
         art = AIAgentArtifact(
