@@ -57,7 +57,7 @@ def test_delivery_frame_includes_owner() -> None:
 
 
 def test_same_owner_distinct_roots_each_reflow(monkeypatch: pytest.MonkeyPatch) -> None:
-    """同一发起人的两条任务各自回灌；同一条根的第二次才禁止再委派。"""
+    """同一发起人的两条任务各自回灌；同一条根达到上限（第 4 次）才禁止再委派。"""
     import asyncio
     from unittest.mock import AsyncMock
 
@@ -116,12 +116,14 @@ def test_same_owner_distinct_roots_each_reflow(monkeypatch: pytest.MonkeyPatch) 
         await _ke._wake_main_agent_for_delivery_now(_make_task(root_a, "甲"), "done-a")
         await _ke._wake_main_agent_for_delivery_now(_make_task(root_b, "乙"), "done-b")
         await _ke._wake_main_agent_for_delivery_now(_make_task(root_a, "甲"), "done-a2")
+        await _ke._wake_main_agent_for_delivery_now(_make_task(root_a, "甲"), "done-a3")
+        await _ke._wake_main_agent_for_delivery_now(_make_task(root_a, "甲"), "done-a4")
 
     keys = (f"{sid}|{root_a}", f"{sid}|{root_b}", f"{sid}|{owner}")
     try:
         asyncio.run(_go())
-        assert seen_roots == [root_a, root_b, root_a]
-        assert seen_blocked == [False, False, True]
+        assert seen_roots == [root_a, root_b, root_a, root_a, root_a]
+        assert seen_blocked == [False, False, False, False, True]
         assert _ke.should_block_nested_delegate(sid, owner) is False
         assert _ke.should_block_nested_delegate(sid, root_b) is False
         assert _ke.should_block_nested_delegate(sid, root_a) is True

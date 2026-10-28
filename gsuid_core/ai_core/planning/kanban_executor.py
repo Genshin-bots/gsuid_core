@@ -594,7 +594,7 @@ _delivery_pending: dict[str, tuple[AIAgentTask, str]] = {}
 _delivery_flush_tasks: dict[str, asyncio.Task] = {}
 _DELIVERY_COALESCE_SEC = 0.45
 _DELIVERY_WAKE_WINDOW_SEC = 180.0
-_DELIVERY_WAKE_MAX = 2
+_DELIVERY_WAKE_MAX = 4
 _delivery_wake_hits: dict[str, list[float]] = {}
 
 
