@@ -240,7 +240,11 @@ def ownership_line(ago: str, topic: str, who: str) -> str:
 
 def delivery_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
     """看板交付回灌。at_hint / title_ban 可为空。"""
-    return f"[框架·任务完成]\n{delivery}\n（系统：一句收尾；有图就发出；要出图委派 render。{at_hint}{title_ban}）"
+    return (
+        f"[框架·任务完成]\n{delivery}\n"
+        f"（系统：一句收尾；有图就发出；配文严禁脱离产物摘要臆造细节，未知结论只引导看图；"
+        f"要出图委派 render。{at_hint}{title_ban}）"
+    )
 
 
 def approval_resume_line(

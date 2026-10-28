@@ -435,8 +435,9 @@ def clip_render_summary(goal: str, *, default: str = "render output") -> str:
 
 
 async def _summary_for_render(default: str) -> str:
-    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
     from gsuid_core.ai_core.planning.runtime import get_plan_context
+    from gsuid_core.ai_core.planning.kanban_tools import extract_res_ids
 
     plan = get_plan_context()
     if plan is None or not plan.task_id:
@@ -444,6 +445,28 @@ async def _summary_for_render(default: str) -> str:
     task = await AIAgentTask.get_by_id(plan.task_id)
     if task is None:
         return default
+
+    # 优先抽取上游依赖产物摘要，保证可视化产物具备数据依据
+    res_ids: list[str] = []
+    if isinstance(task.input_artifact_ids, list):
+        for rid in task.input_artifact_ids:
+            if isinstance(rid, str) and rid.startswith("res_") and rid not in res_ids:
+                res_ids.append(rid)
+    for rid in extract_res_ids(task.goal):
+        if rid not in res_ids:
+            res_ids.append(rid)
+
+    source_summaries: list[str] = []
+    for rid in res_ids[:3]:
+        uart = await AIAgentArtifact.get_by_id(rid)
+        if uart and uart.summary and uart.summary.strip():
+            source_summaries.append(uart.summary.strip())
+
+    if source_summaries:
+        combined = "；".join(source_summaries)
+        display = task.display_name.strip() if task.display_name else "可视化图表"
+        return clip_render_summary(f"{display}（依据：{combined}）", default=default)
+
     return clip_render_summary(task.goal, default=default)
 
 

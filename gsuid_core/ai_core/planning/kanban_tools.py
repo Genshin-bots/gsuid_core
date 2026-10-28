@@ -1030,7 +1030,20 @@ async def _artifact_access_allowed(
         source = await AIAgentTask.get_by_id(art.root_task_id)
         if source is None or not source.owner_user_id:
             return True
-        return str(ev.user_id) == str(source.owner_user_id)
+        if ev.user_id and str(ev.user_id) == str(source.owner_user_id):
+            return True
+        from gsuid_core.ai_core.utils import _is_master_user
+
+        if ev.user_id and (_is_master_user(str(ev.user_id)) or (ev.user_pm is not None and ev.user_pm <= 1)):
+            return True
+        if ev.group_id:
+            if source.group_id and str(ev.group_id) == str(source.group_id):
+                return True
+            if source.scope_key and str(ev.group_id) in source.scope_key:
+                return True
+        if ev.session_id and source.session_id and ev.session_id == source.session_id:
+            return True
+        return False
 
     # —— 同树 ——
     if art.root_task_id == plan_ctx.root_task_id:

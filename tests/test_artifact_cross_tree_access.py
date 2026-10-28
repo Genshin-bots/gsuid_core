@@ -57,8 +57,21 @@ def _task(
     )
 
 
-def _ctx(user_id: str | None = None) -> RunContext[Any]:
-    ev = SimpleNamespace(user_id=user_id) if user_id is not None else None
+def _ctx(
+    user_id: str | None = None,
+    group_id: str | None = None,
+    session_id: str | None = None,
+    user_pm: int | None = None,
+) -> RunContext[Any]:
+    if user_id is not None or group_id is not None or session_id is not None or user_pm is not None:
+        ev = SimpleNamespace(
+            user_id=user_id,
+            group_id=group_id,
+            session_id=session_id,
+            user_pm=user_pm,
+        )
+    else:
+        ev = None
     return cast(RunContext[Any], SimpleNamespace(deps=SimpleNamespace(ev=ev)))
 
 
@@ -161,3 +174,54 @@ def test_main_persona_owner_check() -> None:
 
     assert _run(_go_ok()) is True
     assert _run(_go_bad()) is False
+
+
+def test_main_persona_group_scope_allowed() -> None:
+    art = _art(root="root_src")
+    source = _task(task_id="root_src", owner="u1", scope="group:g_100")
+    source.group_id = "g_100"
+
+    async def _go_same_group() -> bool:
+        with patch(
+            "gsuid_core.ai_core.planning.kanban_tools.AIAgentTask.get_by_id",
+            new=AsyncMock(return_value=source),
+        ):
+            return await _artifact_access_allowed(art=art, plan_ctx=None, ctx=_ctx("u2", group_id="g_100"))
+
+    async def _go_diff_group() -> bool:
+        with patch(
+            "gsuid_core.ai_core.planning.kanban_tools.AIAgentTask.get_by_id",
+            new=AsyncMock(return_value=source),
+        ):
+            return await _artifact_access_allowed(art=art, plan_ctx=None, ctx=_ctx("u2", group_id="g_200"))
+
+    assert _run(_go_same_group()) is True
+    assert _run(_go_diff_group()) is False
+
+
+def test_main_persona_master_allowed() -> None:
+    art = _art(root="root_src")
+    source = _task(task_id="root_src", owner="u1")
+
+    async def _go_master_pm() -> bool:
+        with patch(
+            "gsuid_core.ai_core.planning.kanban_tools.AIAgentTask.get_by_id",
+            new=AsyncMock(return_value=source),
+        ):
+            return await _artifact_access_allowed(art=art, plan_ctx=None, ctx=_ctx("u_admin", user_pm=0))
+
+    assert _run(_go_master_pm()) is True
+
+
+def test_main_persona_same_session_allowed() -> None:
+    art = _art(root="root_src")
+    source = _task(task_id="root_src", owner="u1", session="sess_common_01")
+
+    async def _go_same_sess() -> bool:
+        with patch(
+            "gsuid_core.ai_core.planning.kanban_tools.AIAgentTask.get_by_id",
+            new=AsyncMock(return_value=source),
+        ):
+            return await _artifact_access_allowed(art=art, plan_ctx=None, ctx=_ctx("u2", session_id="sess_common_01"))
+
+    assert _run(_go_same_sess()) is True
