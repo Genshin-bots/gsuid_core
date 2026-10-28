@@ -15,7 +15,8 @@ GET /api/ai/statistics/summary
 - `total_input_tokens` / `total_output_tokens`: 当日输入 / 输出 Token 总量
 - `total_cache_read_tokens`: 命中提示词缓存、按缓存价计费的读取 Token 总量（Anthropic / OpenAI 等的 prompt caching）
 - `total_cache_write_tokens`: 写入提示词缓存所产生的 Token 总量
-- `by_model` / `by_type`: 按模型名 / 会话类型（group / private）拆分，每项均含上述四类 Token（`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`）
+- `total_cost`: 基于 `genai-prices` 估算的预估总费用（美元 USD）
+- `by_model` / `by_type`: 按模型名 / 会话类型（group / private）拆分，每项均含上述四类 Token（`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`）；`by_model` 额外返回该模型的预估费用 `cost`（美元 USD）
 
 > 缓存 Token 字段对今日实时（内存）与历史（数据库）数据均返回；旧版本写入的历史行无缓存数据时按 `0` 返回。
 
@@ -286,8 +287,8 @@ GET /api/ai/statistics/token-by-range
 - 日期格式非法时返回 `status: 1`，`msg` 为「日期格式错误，应为 YYYY-MM-DD」
 
 **字段说明**:
-- `total`: 整个时间段四类 Token 的总量，`total_tokens` = `input + output + cache_read + cache_write`
-- `daily`: 按天的 Token 明细数组（升序），每项含四类 Token、当日 `total_tokens`，以及效率字段
+- `total`: 整个时间段四类 Token 的总量与预估总费用，`total_tokens` = `input + output + cache_read + cache_write`，`total_cost` 为该周期的预估总费用（美元 USD）
+- `daily`: 按天的 Token 明细数组（升序），每项含四类 Token、当日 `total_tokens`、当日预估费用 `total_cost`，以及效率字段
   `user_turn_count` / `agent_run_count` / `avg_tokens_per_user_turn` / `avg_tokens_per_agent_run` /
   `avg_agent_runs_per_user_turn`
 - `efficiency`: 区间汇总的效率（回合数/运行数累加，均值按区间合计重算）
