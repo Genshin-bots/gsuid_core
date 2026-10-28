@@ -115,6 +115,7 @@ _413_TEXT_MARKERS: tuple[str, ...] = (
     "request body too large",
     "context length",
     "too many tokens",
+    "larger than allowed",
 )
 
 

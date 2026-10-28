@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Optional, TypedDict, cast
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff
+from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff, upsert_points_with_backoff
 from gsuid_core.ai_core.rag.hybrid import hybrid_query
 from gsuid_core.ai_core.rag.qmodels import (
     Range,
@@ -70,6 +71,24 @@ _EMBED_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="me
 # Sparse Embedding 降级计数器，用于监控降级频率
 _sparse_degrade_count = 0
 _sparse_degrade_last_log = 0.0
+
+
+async def _upsert_locked(collection_name: str, points: list[PointStruct]) -> None:
+    """分批 upsert；体积超限时走 413 退避。wait=True，避免静默丢点。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not points:
+        return
+
+    async def _do_upsert(batch: Sequence[PointStruct]) -> None:
+        c = client
+        if c is None:
+            raise RuntimeError(t("log.meme.qdrant_client"))
+        await c.upsert(collection_name=collection_name, points=list(batch), wait=True)
+
+    written = await upsert_points_with_backoff(points, _do_upsert, log_tag=collection_name)
+    if written != len(points):
+        raise RuntimeError(f"{written}/{len(points)}")
 
 
 def _embed(text: str) -> list[float]:
@@ -306,13 +325,7 @@ async def upsert_episode_vectors_batch(episodes_data: list[dict]):
 
     async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
         try:
-            # wait=True：同步等待写入落盘+索引后才返回（§5 教训：异步 upsert 在突发高并发写
-            # 下会静默丢向量，SQL 与 Qdrant 计数对不上）。略慢但杜绝"无报错丢一半"。
-            await client.upsert(
-                collection_name=MEMORY_EPISODES_COLLECTION,
-                points=points,
-                wait=True,
-            )
+            await _upsert_locked(MEMORY_EPISODES_COLLECTION, points)
         except Exception as e:
             logger.error(t("log.memory.qdrant_batch_write_episode", e=e))
             raise
@@ -496,15 +509,9 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
             )
         )
 
-    # 3. 锁内：一次性批量写入
     async with _QDRANT_LOCKS[MEMORY_ENTITIES_COLLECTION]:
         try:
-            # wait=True：同步确认写入，杜绝 §5 的"突发高并发静默丢向量"（SQL/Qdrant 计数失配）。
-            await client.upsert(
-                collection_name=MEMORY_ENTITIES_COLLECTION,
-                points=points,
-                wait=True,
-            )
+            await _upsert_locked(MEMORY_ENTITIES_COLLECTION, points)
         except Exception as e:
             logger.error(t("log.memory.qdrant_batch_write_entity", e=e))
             raise
@@ -553,15 +560,9 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
             )
         )
 
-    # 3. 锁内：一次性批量写入
     async with _QDRANT_LOCKS[MEMORY_EDGES_COLLECTION]:
         try:
-            # wait=True：同步确认写入，杜绝 §5 的"突发高并发静默丢向量"（SQL/Qdrant 计数失配）。
-            await client.upsert(
-                collection_name=MEMORY_EDGES_COLLECTION,
-                points=points,
-                wait=True,
-            )
+            await _upsert_locked(MEMORY_EDGES_COLLECTION, points)
         except Exception as e:
             logger.error(t("log.memory.qdrant_batch_write_edge", e=e))
             raise
