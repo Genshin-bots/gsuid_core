@@ -11,6 +11,7 @@ def test_empty_and_pure_particles_silence() -> None:
 
 
 def test_short_followup_passes() -> None:
+    # 包含确切疑问/动作词（怎么样/改成）直接放行
     assert _reactive_gate_rule_prefilter("你说的那个怎么样了") is True
     assert _reactive_gate_rule_prefilter("改成明天八点") is True
     assert _reactive_gate_rule_prefilter("角色甲还在吗", persona_name="角色甲") is True
@@ -18,4 +19,7 @@ def test_short_followup_passes() -> None:
 
 
 def test_ambiguous_goes_to_llm() -> None:
+    # P0-7: 剔除纯高频词（你/那个/然后），没有确切跟进动作时不走规则直通，交给 LLM 门
+    assert _reactive_gate_rule_prefilter("你刚才发的那个") is None
+    assert _reactive_gate_rule_prefilter("然后还有呢") is None
     assert _reactive_gate_rule_prefilter("今天群里好热闹啊感觉大家都挺有精神的") is None

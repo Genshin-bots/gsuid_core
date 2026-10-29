@@ -20,7 +20,8 @@ C8（plans/agent_design_review.md 建议二）：Heartbeat 定时巡检与定时
 
 import re
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Literal, Optional
+from dataclasses import dataclass
 
 # 防撞车最小间隔：窗口内有任意主动输出则抑制 Heartbeat 发言
 MIN_GAP_SECONDS = 120
@@ -67,6 +68,16 @@ def make_target_key(group_id: Optional[str], user_id: Optional[str]) -> str:
     return ""
 
 
+@dataclass(slots=True)
+class StagedContext:
+    """挂到下一次开口的事实。定时任务仍走原来的 300 秒槽，互不覆盖。"""
+
+    content: str
+    created_at: float
+    ttl_seconds: float = 300.0
+    source: Literal["heartbeat", "autonomy", "task"] = "heartbeat"
+
+
 class UnifiedProactiveDispatcher:
     """主动消息协调网关（单进程内存单例）。"""
 
@@ -79,6 +90,8 @@ class UnifiedProactiveDispatcher:
         self._heartbeat_history: Dict[str, List[float]] = {}
         # target_key -> 最近主动正文（语义去重）
         self._recent_texts: Dict[str, List[str]] = {}
+        # target_key -> 自主行动等长 TTL 合并槽
+        self._staged: Dict[str, StagedContext] = {}
 
     def register_send(self, target_key: str, source: str, summary: str = "") -> None:
         """登记一次主动发送。
@@ -94,8 +107,8 @@ class UnifiedProactiveDispatcher:
         self._last_send[target_key] = (now, source)
         if source == "task" and summary:
             self._pending_merge[target_key] = summary.strip()[:500]
-        # 仅记录 Heartbeat 主动闲聊到频率历史，并顺手裁掉 1 天前的旧记录
-        if source == "heartbeat":
+        # 自主行动和巡检共用同一条频率账，避免两边各说各的。
+        if source in ("heartbeat", "autonomy"):
             hist = [t for t in self._heartbeat_history[target_key]] if target_key in self._heartbeat_history else []
             hist = [t for t in hist if now - t < _DAY_SECONDS]
             hist.append(now)
@@ -117,13 +130,23 @@ class UnifiedProactiveDispatcher:
         now = time.time()
         return sum(1 for t in self._heartbeat_history[target_key] if now - t < window_seconds)
 
-    def should_suppress_by_rate(self, target_key: str) -> bool:
-        """C-3 频率硬上限：超过每小时 / 每天主动发言次数则抑制本次 Heartbeat。"""
+    def should_suppress_by_rate(
+        self,
+        target_key: str,
+        *,
+        max_per_hour: Optional[int] = None,
+        max_per_day: Optional[int] = None,
+    ) -> bool:
+        """超过每小时 / 每天主动发言次数则抑制。不传上限时仍用巡检的全局值。"""
         if not target_key:
             return False
-        if self.get_recent_heartbeat_count(target_key, _HOUR_SECONDS) >= MAX_PROACTIVE_PER_HOUR:
+        hour_cap = MAX_PROACTIVE_PER_HOUR if max_per_hour is None else max_per_hour
+        day_cap = MAX_PROACTIVE_PER_DAY if max_per_day is None else max_per_day
+        if hour_cap <= 0 or day_cap <= 0:
             return True
-        if self.get_recent_heartbeat_count(target_key, _DAY_SECONDS) >= MAX_PROACTIVE_PER_DAY:
+        if self.get_recent_heartbeat_count(target_key, _HOUR_SECONDS) >= hour_cap:
+            return True
+        if self.get_recent_heartbeat_count(target_key, _DAY_SECONDS) >= day_cap:
             return True
         return False
 
@@ -184,6 +207,64 @@ class UnifiedProactiveDispatcher:
         if (time.time() - ts) < MERGE_WINDOW_SECONDS:
             return summary
         return ""
+
+    def stage_merge_context(
+        self,
+        target_key: str,
+        content: str,
+        *,
+        ttl_seconds: float = 300.0,
+        source: Literal["heartbeat", "autonomy", "task"] = "heartbeat",
+        now: Optional[float] = None,
+    ) -> None:
+        """挂一条下次开口再用的事实。空内容不占槽。"""
+        body = content.strip()
+        if not target_key or not body:
+            return
+        ttl = ttl_seconds if ttl_seconds > 0 else 300.0
+        stamp = time.time() if now is None else now
+        self._staged[target_key] = StagedContext(body[:2000], stamp, ttl, source)
+
+    def peek_staged(
+        self,
+        target_key: str,
+        *,
+        source: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> str:
+        item = self._fresh_staged(target_key, source=source, now=now)
+        return item.content if item is not None else ""
+
+    def consume_staged(
+        self,
+        target_key: str,
+        *,
+        source: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> str:
+        item = self._fresh_staged(target_key, source=source, now=now)
+        if item is None:
+            return ""
+        del self._staged[target_key]
+        return item.content
+
+    def _fresh_staged(
+        self,
+        target_key: str,
+        *,
+        source: Optional[str],
+        now: Optional[float],
+    ) -> Optional[StagedContext]:
+        if not target_key or target_key not in self._staged:
+            return None
+        item = self._staged[target_key]
+        stamp = time.time() if now is None else now
+        if stamp - item.created_at >= item.ttl_seconds:
+            del self._staged[target_key]
+            return None
+        if source is not None and item.source != source:
+            return None
+        return item
 
 
 _dispatcher = UnifiedProactiveDispatcher()

@@ -2,6 +2,7 @@
   "log.bot.about_to_send": "[GsCore][About To Send]",
   "log.bot.ban_http_unsupported": "[ban] Ban is not supported in HTTP mode; ignored",
   "log.bot.banuserto_id_target_type": "[BanUserTo] {bot_id} - {target_type} - {target_id} - group={group_id} user={user_id} duration={duration}",
+  "log.bot.drop_direct_at": "[Send] Removed {count} at segment(s) from a private message",
   "log.bot.exec_fail": "[CoreExecError] Uncaught exception while running function {func_name}",
   "log.bot.exec_start": "[CoreExec] Function {func_name} started",
   "log.bot.mute_check_fail": "[Core AI Control] Mute-state check failed; sending anyway: {error}",

@@ -25,7 +25,7 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.html_render import im_templates, render_md_to_bytes, render_html_to_bytes
 from gsuid_core.utils.resource_manager import RM
-from gsuid_core.ai_core.buildin_tools.render_kit import inject_render_kit
+from gsuid_core.ai_core.buildin_tools.render_kit import PHOTO_LAYOUTS, page_layout, inject_render_kit
 
 # 嵌图上限：防 agent 把数 MB 原图塞进 HTML 撑爆上下文
 _EMBED_MAX_BYTES = 450_000
@@ -435,8 +435,9 @@ def clip_render_summary(goal: str, *, default: str = "render output") -> str:
 
 
 async def _summary_for_render(default: str) -> str:
-    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
     from gsuid_core.ai_core.planning.runtime import get_plan_context
+    from gsuid_core.ai_core.planning.kanban_tools import extract_res_ids
 
     plan = get_plan_context()
     if plan is None or not plan.task_id:
@@ -444,6 +445,28 @@ async def _summary_for_render(default: str) -> str:
     task = await AIAgentTask.get_by_id(plan.task_id)
     if task is None:
         return default
+
+    # 优先抽取上游依赖产物摘要，保证可视化产物具备数据依据
+    res_ids: list[str] = []
+    if isinstance(task.input_artifact_ids, list):
+        for rid in task.input_artifact_ids:
+            if isinstance(rid, str) and rid.startswith("res_") and rid not in res_ids:
+                res_ids.append(rid)
+    for rid in extract_res_ids(task.goal):
+        if rid not in res_ids:
+            res_ids.append(rid)
+
+    source_summaries: list[str] = []
+    for rid in res_ids[:3]:
+        uart = await AIAgentArtifact.get_by_id(rid)
+        if uart and uart.summary and uart.summary.strip():
+            source_summaries.append(uart.summary.strip())
+
+    if source_summaries:
+        combined = "；".join(source_summaries)
+        display = task.display_name.strip() if task.display_name else "可视化图表"
+        return clip_render_summary(f"{display}（依据：{combined}）", default=default)
+
     return clip_render_summary(task.goal, default=default)
 
 
@@ -1057,17 +1080,31 @@ _PHOTO_HANDLE_RE = re.compile(r"""src\s*=\s*["']img_""", re.IGNORECASE)
 
 
 def embed_photo_block_reason(html: str, *, embed_on: bool, searched: bool, found: bool) -> str | None:
-    """嵌入配图开启时，没搜过或搜到了却没写进 HTML，就拒绝渲染。"""
+    """嵌入配图开启且版式需要照片时，没搜过或搜到了却没写进 HTML，就拒绝渲染。
+
+    没声明 ``layout-*`` 按需要照片处理。
+    """
     if not embed_on or _PHOTO_HANDLE_RE.search(html):
         return None
+    layout = page_layout(html)
+    if layout is not None and layout not in PHOTO_LAYOUTS:
+        return None
+    undeclared = (
+        "gs-page 上没有声明 layout-*：先按内容选一个版式。数据看板 / 排行 / 对比 / 时间线 / 简报不强制照片。"
+        if layout is None
+        else ""
+    )
     if not searched:
         return (
-            "还没有拉图。先调一次 find_images（主题图 + 每个主要对象一个词），"
-            "把返回的 img_ 句柄写进 HTML 再渲染。"
-            "task 里写图源缺失、官方图拉不到、纯文字版，一律忽略，仍然要搜。"
+            f"{undeclared}layout-{layout or 'feature'} 需要照片，还没有拉图。"
+            "先调一次 find_images（主题图 + 每个主要对象一个词），把返回的 img_ 句柄写进 HTML 再渲染。"
+            "task 里写图源缺失、官方图拉不到，仍然要搜。"
         )
     if found:
-        return "find_images 已经返回了 img_ 句柄，HTML 里一张都没用。把句柄写进 gs-hero / gs-cover / gs-grid 后再渲染。"
+        return (
+            f"{undeclared}find_images 已经返回了 img_ 句柄，HTML 里一张都没用。"
+            "把句柄写进照片槽位（gs-hero / gs-split-media / gs-cover / gs-thumb）后再渲染。"
+        )
     return None
 
 
@@ -1085,26 +1122,32 @@ async def render_html_to_image(
     整份事实包只渲**一张**：多区块写在同一 HTML 里，不要连调本工具。
 
     ## 组件库（推荐）
-    外层写 ``<div class="gs-page theme-xxx">``，用 ``gs-`` 组件拼版（hero / section / card /
-    cover / media / grid / tile / chips / kpis / timeline / kv / tip / footer）；
+    外层写 ``<div class="gs-page layout-xxx theme-xxx">``，版式按内容形态选：
+    feature / gallery / magazine（需要照片）、dashboard / ranking / compare / timeline / brief
+    （照片可选）。用 ``gs-`` 组件拼版（hero / band / split / stat-hero / section / card / cover /
+    media / grid / tile / rank / compare / quote / steps / kpis / timeline / kv / tip / footer）；
     用到 ``gs-`` 类时系统自动注入组件 CSS，自写 ``<style>`` 可覆盖。
     主题：paper / ocean / forest / sunset / sakura / violet / slate / ink（ink 为暗色）。
 
-    ## 图片（必须图文并茂）
-    - 嵌入配图开启时，必须先 ``find_images``，再把返回的 ``img_`` 写进 HTML。没写 ``img_`` 会拒绝渲染。
-      task 写图源缺失也要搜。搜过且一张都没有，才允许改用图标。
+    ## 图片
+    - 嵌入配图开启且版式需要照片（feature / gallery / magazine，或没声明版式）时，必须先
+      ``find_images``，再把返回的 ``img_`` 写进 HTML，否则拒绝渲染。搜过且一张都没有，才允许改用图标。
+    - 其余版式照片可选：数据看板的主图是图表，排行 / 对比可放 logo 或缩略图。
     - 嵌入配图关闭时不要调 ``find_images``。
-    - 照片必须放进带圆角的容器（``gs-hero`` / ``gs-cover`` / ``gs-thumb`` / ``gs-avatar``），
+    - 照片必须放进带圆角的容器（``gs-hero`` / ``gs-split-media`` / ``gs-cover`` / ``gs-thumb`` /
+      ``gs-avatar``），
       img 是容器第一个子元素。Takumi 只在容器有 border-radius 时裁切；
       **禁止**用 ``background-image`` 放照片，**禁止**给裸 ``<img>`` 写 margin / 固定高度。
     - 图标：``<img src="icon:mdi/map-marker?color=1d6fb8">``（Iconify，颜色要写在 src 里）。
 
     ## 硬约束
-    - 逻辑宽默认 840。全宽大图不要叠太多，整图高宽比大约 2.2～3.8；上限 1000。高度随内容。
+    - 逻辑宽默认 840，上限 1000。高度随内容，整图高宽比不超过 3.8。
     - 字号：正文 18–20px，辅助 ≥15px，标题 ≥36px；禁止 14px 以下的正文。
     - 整页不透明底；明暗 token 自洽（暗底浅字 / 浅底深字），定义 background 必须同级写 color。
     - 字重 MiSans VF 轴 150–700：正文 400，小节 520，标题 630，大数字 700；800/900 无效。
     - 无 JS / float / 列表符号 / 伪元素排版；布局用 flex 或基础 grid。
+    - Mermaid 用 class="mermaid" 或 language-mermaid。服务向 mermaid.ink 取 SVG 再出图，
+      不要在页面里引 mermaid.js。服务不可用时只有该块变成黑底红字，整页仍出图。
     - ``<table>`` 会被改写成 flex 行：禁 rowspan/colspan、禁 ``td.xxx`` 选择器；价格与涨跌拆两列。
     - ≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；多实体传 ``series`` + 图例。
 
@@ -1177,6 +1220,7 @@ async def render_markdown_to_image(
 
     需要自定义布局、指标卡、时间线时优先 ``render_html_to_image``（``render_agent``）。
     ≥3 条数据点时必须出图；角色台词只留一两句引导。
+    mermaid 代码块会向 mermaid.ink 取 SVG 再出图。服务不可用时该块变成黑底红字，其余照常出图。
 
     Args:
         ctx: 工具执行上下文

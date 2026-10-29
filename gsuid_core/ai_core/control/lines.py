@@ -10,7 +10,10 @@ MSG_SECTION_MARK = "--- 消息 ---"
 MSG_SECTION_HEAD = MSG_SECTION_MARK + "\n"
 DIRECT_MARKER = "（直接找你说的）"
 AT_OTHER_MARKER = "（@的是这位用户，不是你）"
-QUOTE_TOME_MARKER = "（引用了你的上一条。先判断对方是不是在找你：追问或吩咐你才回；跟别人说话或故意惹你则 <SILENCE>。）"
+QUOTE_TOME_MARKER = (
+    "（引用了你的消息。先看被引用内容原本是发给谁的：明确追问或吩咐你才回；"
+    "旁人围观感叹、跟别人说话或故意惹你则 <SILENCE>。）"
+)
 
 # 入史时用来认出闸门打回。开头必须和下面全文一致。
 ANGLE_NUDGE_MARKER = "（系统校验：发送内容含非法尖括号标签"
@@ -69,9 +72,16 @@ STATUS_INQUIRY_HINT = (
     "已有图则 send_message_by_ai 发出再说话。）"
 )
 
+# 能力代理还剩两轮请求时插入。入史前按「（系统提示：」剥掉。
+ITER_WRAP_NUDGE = (
+    "（系统提示：思考轮数只剩最后两轮。禁止再检索、抓取或翻页。"
+    "用已经拿到的材料完成本任务的交付：该落盘的落盘，该渲染的渲染。"
+    "正文给出产物句柄。材料里没有的写进缺口，禁止编造。）"
+)
+
 THRASH_FUSE_NUDGE = (
-    "（系统校验：你已跨多轮连续只重复同一工具，仍无新进展。立即停止再连打该工具；"
-    "换另一路径（如 find_tools / 其它工具）或基于已有结果交付结论，禁止空转。）"
+    "（系统校验：同一工具、同一参数已连续调用超过 10 次。"
+    "停止再发这一次完全相同的调用。可以改参数，或基于已有结果交付结论。）"
 )
 
 UNMET_TOOL_REMINDER = (
@@ -116,14 +126,6 @@ POST_TOOL_OUTPUT_CONTRACT = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = POST_TOOL_OUTPUT_CONTRACT
 
-POST_DELIVERY_SILENCE_CONTRACT = (
-    "（系统：你已通过发送工具完成交付，本轮任务到此终结。"
-    "只输出 <SILENCE>。禁止再输出任何文字——包括「任务已完成 / 图已发送 / "
-    "无需追加发言」这类状态汇报；那是系统日志，不是角色台词。）"
-)
-
-POST_MEME_LINE_CONTRACT = "（系统：表情已发出。要补一句就补，不想说就 <SILENCE>。不要汇报「已发送」。）"
-
 POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
 
 TIMELESS_AGGREGATE_CAVEAT = "（系统：返回体看起来没有当前时点。别说成「现在/此刻」；不够可以换路再查，短答也可以。）"
@@ -145,11 +147,12 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "（系统：本轮已有工具返回。你是 render_agent——"
-    "若尚未成功出图：还没配图就先调一次 find_images（主题图 + 每个主要对象一个词）；"
-    "task 写图源缺失或拉不到官方图也必须搜，并把返回的 img_ 写进 HTML，禁止跳过拉图；"
-    "再用 gs-page + theme-* 组件写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
-    "页头用 gs-hero short 放主题横图（没图用 gs-hero plain）；全宽大图最多 3 处，其余用两列或左图右文；"
-    "整图高宽比大约 2.2～3.8；没图的对象用图标，禁止空图框；"
+    "若尚未成功出图：先按事实包的主体选一个 layout-*，版式贴合内容；"
+    "layout-feature / gallery / magazine 需要照片：还没配图就先调一次 find_images"
+    "（主题图 + 每个主要对象一个词），task 写图源缺失也必须搜，并把返回的 img_ 写进 HTML；"
+    "看板 / 排行 / 对比 / 时间线 / 简报照片可选，不要拿无关配图当页头；"
+    "再用 gs-page + layout-* + theme-* 组件写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
+    "全宽大图最多 3 处，整图高宽比不超过 3.8；没图的对象用图标，禁止空图框；"
     "数字/价格/时间/地址/风险/时点勿删，但每张卡只写 1～2 句短说明，短事实做成 chip / kv；"
     "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
     "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
@@ -161,9 +164,10 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER = (
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED = (
     "（系统：本轮已有工具返回。你是 render_agent——嵌入配图已关闭，禁止调用 find_images。"
-    "若尚未成功出图：用 gs-page + theme-* 写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
-    "页头用 gs-hero plain，对象用图标，禁止空图框，禁止搜图；"
-    "全宽色块不要叠成细长条，整图高宽比大约 2.2～3.8；"
+    "若尚未成功出图：先按事实包的主体选一个 layout-*，版式贴合内容；"
+    "用 gs-page + layout-* + theme-* 写**一份** HTML，只调用一次 render_html_to_image（max_width 840）；"
+    "页头用 gs-band / gs-stat-hero / gs-hero plain，对象用图标，禁止空图框，禁止搜图；"
+    "整图高宽比不超过 3.8；"
     "数字/价格/时间/地址/风险/时点勿删，但每张卡只写 1～2 句短说明，短事实做成 chip / kv；"
     "≥3 个可比数值须先 render_chart_spec 嵌 SVG；"
     "多实体对比必须 series（每实体一个 name）+ 图例；有正负含义才 signed；"
@@ -236,4 +240,59 @@ def ownership_line(ago: str, topic: str, who: str) -> str:
 
 def delivery_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
     """看板交付回灌。at_hint / title_ban 可为空。"""
-    return f"[框架·任务完成]\n{delivery}\n（系统：一句收尾；有图就发出；要出图委派 render。{at_hint}{title_ban}）"
+    return (
+        f"[框架·任务完成]\n{delivery}\n"
+        f"（系统：一句收尾；有图就发出；配文严禁脱离产物摘要臆造细节，未知结论只引导看图；"
+        f"要出图委派 render。{at_hint}{title_ban}）"
+    )
+
+
+def approval_resume_line(
+    *,
+    task_id: str,
+    ordinal: int,
+    display_name: str,
+    goal_line: str,
+    short_id: str,
+    effect: str,
+    happened: str,
+    phase: str,
+    next_step: str,
+    handle_line: str,
+) -> str:
+    """审批通过后的续作卡。不要用交付帧开头，否则入史会被收成一行。"""
+    goal = " ".join(goal_line.split())[:180]
+    done = " ".join(happened.split())[:1500]
+    return (
+        "审批续作。\n"
+        f"任务：{task_id} #{ordinal} {display_name}\n"
+        f"目标：{goal}\n"
+        f"审批 #{short_id}。批准后：{effect}\n"
+        f"刚刚：{done}\n"
+        f"账本：{phase}\n"
+        f"句柄：{handle_line}\n"
+        f"下一步：{next_step}\n"
+        "不要再 scaffold，不要再提交同一事项的审批。"
+    )
+
+
+AUTONOMY_MERGE_PREFIX = "（系统：你在空闲自主行动时完成了以下探索或关心行动："
+AUTONOMY_PROACTIVE_FACT_PREFIX = "（系统校验：以下是你本次自主行动真实执行成功的工具记录与返回结果："
+
+
+def autonomy_merge_line(fact_summary: str) -> str:
+    """路径 B 被下一句唤醒时，注入当轮 user 侧。"""
+    return (
+        f"{AUTONOMY_MERGE_PREFIX}{fact_summary}。"
+        "如果与当前对话气氛合适，可以在回复对方后自然地顺嘴提一句；若当前话题严肃或不相关，则不必强行提起。）"
+    )
+
+
+def autonomy_proactive_fact_line(facts: list[str], resources: list[str]) -> str:
+    """路径 A 只许复述这些已经核验过的结果。"""
+    joined_facts = "；".join(facts) if facts else "无"
+    res_hint = f"；可用图片资源 ID：{', '.join(resources)}" if resources else ""
+    return (
+        f"{AUTONOMY_PROACTIVE_FACT_PREFIX}{joined_facts}{res_hint}。"
+        "你只能基于上述已核验的事实向对方分享或关心，严禁声称完成了上述列表之外的任何操作。）"
+    )

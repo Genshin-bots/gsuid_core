@@ -49,7 +49,9 @@ for sv in SL.lst:
 ```
 
 `_check_command` 内部会校验：SV/插件 `enabled`、用户权限 `user_pm <= sv.pm`、触发器文本匹配。
-有匹配则按 priority 排序执行 `trigger.func(bot, event)`。
+有匹配则按 `dispatch_sort_key` 排序后执行 `trigger.func(bot, event)`：先比「是否带插件前缀」、再比 SV `priority`，然后按类型
+`fullmatch` > `command` > `prefix` / `suffix` > `regex` > `keyword`，同一类型再按命令字从长到短。
+`regex` / `keyword` 的 `keyword` 是 pattern 或子串，不参与长度比较，避免正则源码长度压过精确命令。
 
 命中后按类型分轨：`type == "message"`（`on_message`）另轨入队——**不挡 AI、不进 Trace、
 不调用 `count_data`**（keyword 常为 uuid4，计入命令会污染看板 / `core信息`）。其余触发器才记
@@ -98,8 +100,25 @@ if "提及应答" in ai_mode:
         return
 ```
 
-其他模式：`定时巡检`（见 [§08](./08-heartbeat-scheduled-planning.md)）；`趣向捕捉` / `困境救场`
-暂不可用。
+其他模式：`定时巡检`（见 [§08](./08-heartbeat-scheduled-planning.md)）；`命令补充`
+（命令已经把回复发出去之后，按概率再补一句，见下）；`自主行动`
+（作息内自己看一眼，见 [§8.4](./08-heartbeat-scheduled-planning.md)）。
+
+### 命令补充
+
+人格 `ai_mode` 含 `命令补充` 时才启用，默认不含。它不替代命令，也不把命令改成提及应答。
+
+命令协程返回后：
+
+1. 记下这次 `bot.send` 交出的文字和图片。没有可见回执则停止。
+2. 当前 AI 会话尾部写入用户原话和这次回执。概率没抽中也写。之后的提及应答读的是这份 history。
+3. 只发图片、只发文字、图文混合分别用 `aside_image_probability`、`aside_text_probability`、
+   `aside_mixed_probability`（0 到 1）决定要不要再跑一轮点评。
+4. `aside_allow_tools` 为真时，这一轮可以使用当前人格的工具，并多一个只读工具
+   `read_command_plugin_file`，范围是这条命令所属插件目录。为假时这一轮没有工具。
+
+点评那一句插在 user 侧，以 `（系统：` 开头，入史前整段剥掉。留下的是回执和点评正文。
+回执追加在 history 尾部，不改 `system_prompt`。
 
 ## 4.3b HTTP Agent 面（不是 `handle_event`）
 
@@ -120,7 +139,7 @@ if "提及应答" in ai_mode:
 7. 历史上下文：format_history_for_agent() 近 30 条 → rag_context = "【历史对话】..."
    注意：RAG 知识库检索不再前置强制，由主 Agent 的 search_cognition 工具按需调用
 8. 调 Agent：chat_result = await session.run(user_message, bot, ev, rag_context)
-9. 发送回复：send_chat_result(bot, chat_result)（支持 @用户ID 解析 + 打字延迟）
+9. 发送回复：send_chat_result(bot, chat_result)（支持 `<@用户ID>` / `<@昵称>` 解析 + 打字延迟）
 10. 记忆观察：observe() 把 AI 回复入队记忆系统
 ```
 
@@ -157,32 +176,39 @@ if len(event.raw_text) > MAX_SUMMARY_LENGTH:
 
 `ai_core/followup_window.py`（纯进程内存 + TTL 惰性清理）。
 
-- **登记**：`handler.py` 在硬触发（@/关键词/私聊）时登记窗口起点。
-- **放行**：未硬触发时，若用户处于窗口内、且是群聊里未 @ 别人的普通发言，按"软触发"放行
-  （`trigger_type="followup"`）。
-- **沉默门**：软触发消息在 `handle_ai` 先过 `run_reactive_gate`，**默认偏沉默**——仅当明确接续
-  你们刚才的话题才放行，判不出明确指向你（含模型输出非 str / JSON 解析失败 / 缺 `should_speak`）
-  一律沉默；只有**真异常**（无历史 / 无人格 / LLM 调用崩溃）才放行交主 Agent 兜底。
-- **三条硬规则**：① 窗口从硬触发起算；② 续聊**不续费**（说话不会延长窗口）；③ 有硬天花板。
+- **登记**：`handler.py` 在硬触发（@/关键词/私聊）时登记窗口起点。硬触发直接打断抢占并清空旧的软触发防抖缓冲。
+- **防抖合并**：短消息在入队前缓冲（`follow_up_debounce_seconds`，默认 3.0s），同一说话人的连续短句合并为一条提交。
+- **放行与上限**：未硬触发时，若用户处于窗口内、且是群聊里未 @ 别人的普通发言，按"软触发"放行（`trigger_type="followup"`）。单次窗口内软触发成功回复达到上限（`follow_up_max_replies`，默认 2 次，0 表示不限制）后不再软触发。同一次 burst 里再次硬触发会把次数清零，不重置硬天花板。
+- **沉默门**：软触发消息在 `handle_ai` 先过 `run_reactive_gate`，**默认偏沉默**：
+  - **结构负信号预筛**：引用能对上某条用户消息、AI 上次回话后他人刚 @ 说话人（看历史 `at_list`）、AI 上次回话后已插入 ≥2 条他人发言且未呼名，直接判定沉默。引用机器人或对不上的引用不靠这条规则沉默。
+  - **规则预筛**：剔除高频模糊词，仅确切跟进动作或呼名直通，其余交由轻量 LLM 门。
+  - **超时即沉默**：钩子点位 `REACTIVE_GATE` 默认判定为沉默，超时（6000ms）或异常一律沉默，不再放行。
+  - **连续沉默关窗**：连续 2 次被门判定沉默，自动提前关闭该用户的续聊窗口。
+- **主会话免干扰**：软触发轮的主 Agent 不再注入 `SOFT_CONTINUE_HINT`，仅保留旁观沉默出口。
+- **硬规则**：① 窗口从硬触发起算；② 续聊**不续费**（说话不会延长窗口）；③ 有硬天花板与次数上限。
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
 | `follow_up_window` | 30s | 续聊窗口长度 |
 | `follow_up_max_total` | 300s | 硬天花板 |
+| `follow_up_max_replies` | 2 | 单个窗口内软触发成功回复上限 |
+| `follow_up_debounce_seconds` | 3.0s | 短消息合并防抖等待时间 |
 
 `statistics` 触发分布新增 `followup` 维度。
 
-> ⚠️ **成本**：默认 30s 内每条群消息触发一次沉默门 LLM 判定，群活跃时有额外开销；沉默门默认偏
-> 沉默（仅模型明确判定"接续/指向你"才放行，模型输出无法解析时也按沉默处理），仅真异常放行交主
-> Agent 兜底。窗口/天花板按群活跃度观察调整。进程内存状态多实例不共享。
-> 详见 [§12](./12-developer-pitfalls.md)。
+> ⚠️ **成本**：默认 30s 内每条群消息触发一次沉默门判定；沉默门默认偏沉默且超时/异常一律沉默，大幅避免活跃群被打扰。运维诊断可在 `/api/ops/followup` 查看明细与 `gate_stats`。
 
-> 🧱 **三道沉默关卡（叠加）**：续聊要落地输出须穿过 ① `run_reactive_gate` 沉默门（默认偏沉默）
-> → ② `handle_ai` 给主 Agent 追加的"续聊软触发默认按路过处理"提示 → ③ 主 Agent 系统提示词
-> `## 沉默规则` 的"续聊场景"条款。三者口径已对齐为"判不出明确指向你就 `<SILENCE>`"，避免历史上
-> 门放水 + 主 Agent 把续聊当"直接找你必须回应"导致几乎不沉默。改其一时务必同步另外两处。
+## 4.7 命令补充（`aside`）
 
-## 4.7 触发方式统计维度
+`ai_core/command_aside/`（命令执行后的回执归档与概率点评）。
+
+- **回执入会话**：命令执行完毕发出回复后，将回执写入当前 AI 会话。图片超过 1.5MB 自动等比缩放并降质，若仍超限标记省略并记录在 user 提示中，杜绝伪文本占位符。
+- **默认沉默**：点评提示词默认输出 `<SILENCE>`，仅在有明确报错、新高或难点时简短建议，禁止复述图内数字。
+- **隔离与复读抑制**：点评 run 跳过交互脚手架提示，不注入续聊追加提示，并接入历史自身复读抑制。
+- **建议记忆**：仅对失败或用法说明抽取骨架存入记忆，脱敏数字与变量，设置 7 天 TTL 与 200 条上限。
+- **结构排除与层级推导**：`pm <= 2`（主人、超管、群主；不含群管理员 `pm=3`）的服务自动免除 Aside；`SV(aside=...)` 支持服务级批量继承；触发器 `aside: bool | None` 作为底层逃生舱，元事件 `on_meta(aside=...)` 同样生效；人格配置支持 `aside_skip_plugins`（默认 `["core_command"]`）与 `aside_cooldown_seconds` 冷却。冷却只在点评真的发出去之后开始计。
+
+## 4.8 触发方式统计维度
 
 | 触发方式 | 说明 | 记录位置 |
 |---------|------|----------|
@@ -190,4 +216,5 @@ if len(event.raw_text) > MAX_SUMMARY_LENGTH:
 | `keyword` | 关键词触发 | `handler.py` |
 | `followup` | 免唤醒续聊软触发 | `followup_window` / `handle_ai` |
 | `heartbeat` | 定时巡检主动发言 | `heartbeat/inspector.py` |
+| `aside` | 命令补充（命令回执之后） | `command_aside/runner.py` |
 | `scheduled` | 定时/循环任务 | `scheduled_task/executor.py` |

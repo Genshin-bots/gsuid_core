@@ -34,6 +34,53 @@ def test_format_empty() -> None:
     assert "没有搜到" in _format_results_for_model([])
 
 
+def test_format_prints_page_date_when_present() -> None:
+    text = _format_results_for_model(
+        [
+            {
+                "title": "T",
+                "url": "https://e.com",
+                "content": "body",
+                "score": 0.1,
+                "published_date": "2026-03-01",
+            },
+            {
+                "title": "U",
+                "url": "https://u.com",
+                "content": "b",
+                "score": 0.1,
+                "published_date": "",
+            },
+        ]
+    )
+    assert "published: 2026-03-01" in text
+    assert text.count("published:") == 1
+
+
+def test_format_normalizes_iso_and_drops_dirty_date() -> None:
+    text = _format_results_for_model(
+        [
+            {
+                "title": "T",
+                "url": "https://e.com",
+                "content": "body",
+                "score": 0.1,
+                "published_date": "2026-06-01T00:00:00+00:00",
+            },
+            {
+                "title": "U",
+                "url": "https://u.com",
+                "content": "b",
+                "score": 0.1,
+                "published_date": "unknown",
+            },
+        ]
+    )
+    assert "published: 2026-06-01" in text
+    assert "unknown" not in text
+    assert text.count("published:") == 1
+
+
 def test_format_disclaimer_is_generic() -> None:
     text = _format_results_for_model([{"title": "T", "url": "https://e.com", "content": "body", "score": 0.1}])
     assert "时效存疑" not in text

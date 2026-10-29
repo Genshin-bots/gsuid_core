@@ -1,5 +1,5 @@
 import datetime
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple, Union, Optional, TypedDict
 from typing_extensions import deprecated
 
 import msgspec
@@ -142,6 +142,56 @@ class GsColorConfig(GsConfig, tag=True):
     data: str
 
 
+class ButtonStatusField(msgspec.Struct):
+    """按钮旁展示的一行状态。key 由回调写入，label 是界面文案。"""
+
+    key: str
+    label: str
+
+
+class ButtonState(msgspec.Struct):
+    """按钮最近一次执行结果。写进配置文件，下次打开页面直接显示。"""
+
+    phase: str = "idle"
+    progress: int = 0
+    message: str = ""
+    fields: Dict[str, str] = msgspec.field(default_factory=dict)
+
+
+class ButtonStateView(TypedDict):
+    phase: str
+    progress: int
+    message: str
+    fields: Dict[str, str]
+
+
+def button_state_view(state: ButtonState) -> ButtonStateView:
+    return {
+        "phase": state.phase,
+        "progress": state.progress,
+        "message": state.message,
+        "fields": dict(state.fields),
+    }
+
+
+class GsButtonConfig(GsConfig, tag=True):
+    """按钮回调。
+
+    endpoint 是插件声明的 API 路径，必须以 /api/ 开头。
+    框架把 POST/GET 挂到这条路径上，并且只允许管理员调用。
+    data 是最近一次进度和结果，不是给用户在表单里编辑的值。
+    """
+
+    data: ButtonState
+    endpoint: str
+    label: str
+    level: str = "primary"
+    confirm: str = ""
+    status_fields: List[ButtonStatusField] = msgspec.field(default_factory=list)
+    show_progress: bool = True
+    poll_ms: int = 800
+
+
 class GsRepeatGroupConfig(GsConfig, tag=True):
     """可重复配置组：data 每项是一组子配置(Dict[str, GSC], 与整份插件配置同构),
     template 是新增一项的原型/默认。可再嵌套本类型。前端复用逐项渲染器递归渲染。
@@ -177,6 +227,7 @@ GSC = Union[
     GsDateConfig,
     GsTimeRangeConfig,
     GsColorConfig,
+    GsButtonConfig,
     GsRepeatGroupConfig,
     GsTimeConfig,
 ]

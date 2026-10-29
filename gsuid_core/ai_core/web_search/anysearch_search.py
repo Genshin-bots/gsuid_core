@@ -125,7 +125,15 @@ def _normalize_results(data: object, max_results: int) -> list[dict[str, str | f
         content = _first_str(item, "content", "snippet")
         if not title and not url and not content:
             continue
-        out.append({"title": title, "url": url, "content": content, "score": 0.0})
+        out.append(
+            {
+                "title": title,
+                "url": url,
+                "content": content,
+                "published_date": "",
+                "score": 0.0,
+            }
+        )
         if len(out) >= max_results:
             break
     return out

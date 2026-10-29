@@ -28,7 +28,14 @@
 GET /api/plugin-store/list
 ```
 
-**请求参数**：无
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| tab | string | 否 | 页签筛选：`all` / `installed` / `updates` / `fun` / `tool` |
+| search | string | 否 | 按插件 ID / 描述 / 标签模糊匹配 |
+| limit | integer | 否 | 单页条数（1–200）；**不传则返回全量** |
+| offset | integer | 否 | 偏移量，默认 0 |
 
 **响应**（成功）：
 ```json
@@ -60,7 +67,13 @@ GET /api/plugin-store/list
             }
         ],
         "fun_plugins": [],
-        "tool_plugins": []
+        "tool_plugins": [],
+        "count": 64,
+        "total_count": 64,
+        "counts": {"all": 64, "installed": 12, "updates": 0, "fun": 3, "tool": 5},
+        "limit": 32,
+        "offset": 0,
+        "has_more": true
     }
 }
 ```
@@ -69,7 +82,7 @@ GET /api/plugin-store/list
 
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
-| `data.plugins` | `array` | 插件商店中的插件列表 |
+| `data.plugins` | `array` | **当前页**插件列表（不传 `limit` 时是全量） |
 | `data.plugins[].id` | `string` | 插件 ID，对应安装 / 卸载接口的 `plugin_id` |
 | `data.plugins[].name` | `string` | 插件显示名 |
 | `data.plugins[].link` | `string` | 插件仓库 URL（GitHub 等） |
@@ -78,6 +91,14 @@ GET /api/plugin-store/list
 | `data.plugins[].status` | `string` | `installed` / `not_installed` |
 | `data.fun_plugins` | `array` | 娱乐插件分类 |
 | `data.tool_plugins` | `array` | 工具插件分类 |
+| `data.count` | `integer` | 命中筛选的插件总数（**不是本页条数**） |
+| `data.total_count` | `integer` | 全量插件数 |
+| `data.counts` | `object` | 各页签计数（`all`/`installed`/`updates`/`fun`/`tool`），对全量统计，**不随翻页或搜索变化** |
+| `data.limit` / `data.offset` | `integer` / `null` | 本次请求的分页参数；`limit` 为 null 表示未分页 |
+| `data.has_more` | `boolean` | 是否还有下一页 |
+
+> 停止维护的插件（`type=danger` 且 `content=停止维护`）排在最后——排序在分页之前完成，
+> 否则它们会夹在正常插件中间。
 
 **错误响应**：
 ```json

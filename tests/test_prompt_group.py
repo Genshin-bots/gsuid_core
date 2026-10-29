@@ -142,6 +142,85 @@ def test_json_output_tail_stays_fixed(tmp_path, monkeypatch: pytest.MonkeyPatch)
     assert '{"should_speak": false}' not in sent
 
 
+def test_default_meme_protocol_has_frequency_placeholder() -> None:
+    from gsuid_core.ai_core.prompt_group.catalog import spec_of
+
+    body = default_body("meme_protocol")
+    assert "{{meme_frequency}}" in body
+    assert "{{emotion_words}}" in body
+    assert "{{scene_words}}" in body
+    assert "meme_frequency" in spec_of("meme_protocol").placeholders
+
+
+def test_build_persona_prompt_meme_protocol_follows_allow_flag(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from gsuid_core.ai_core.persona import processor
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.chat_style import ChatStyle
+    from gsuid_core.ai_core.persona.meme_style import meme_frequency_line_for
+
+    async def fake_load(_name: str) -> str:
+        return "测"
+
+    monkeypatch.setattr(processor, "load_persona", fake_load)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.appearance.load_appearance_line", lambda _name: "")
+    monkeypatch.setattr("gsuid_core.ai_core.persona.settings.get_master_title", lambda _name: "")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.persona.chat_style.resolve_chat_style",
+        lambda _name: ChatStyle(bubbles=2, soft=60, hard=150, segment_hint="一段"),
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.agent_node.registry.format_capability_roster", lambda _name: "")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.agent_node.registry.persona_allows_capability_agent",
+        lambda _name, _node: False,
+    )
+    old_base = persona_config_manager._base_path
+    persona_config_manager._base_path = tmp_path
+    persona_config_manager._cache.clear()
+    rare = "频率：少用。只在对方先发表情，或一个表情就能回完时才发。"
+    mid = "频率：闲聊时大约每五到八次回复用一次。"
+    often = "频率：闲聊时大约每两到三次回复用一次。"
+
+    def _freq_norm(text: str) -> str:
+        return text.replace(rare, "FREQ").replace(mid, "FREQ").replace(often, "FREQ")
+
+    try:
+        (tmp_path / "测").mkdir()
+        assert persona_config_manager.set_allow_meme_reply("测", True)[0] is True
+        assert persona_config_manager.set_meme_frequency("测", 0)[0] is True
+        p0 = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))
+        assert persona_config_manager.set_meme_frequency("测", 50)[0] is True
+        p50 = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))
+        assert persona_config_manager.set_meme_frequency("测", 100)[0] is True
+        p100 = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))
+        assert "<meme:情绪>" in p50
+        assert "{{" not in p0
+        assert "send_meme" not in p50
+        assert "适合发" in p50
+        assert "早柚" not in p50
+        assert "唔…" not in p50 and "本貉" not in p50
+        assert rare in p0 and mid not in p0 and often not in p0
+        assert mid in p50 and rare not in p50 and often not in p50
+        assert often in p100 and rare not in p100 and mid not in p100
+        assert _freq_norm(p0) == _freq_norm(p50) == _freq_norm(p100)
+
+        skipped = asyncio.run(
+            processor.build_persona_prompt("测", include_meme_protocol=False, clock_date="2026年10月23日")
+        )
+        assert "<meme:情绪>" not in skipped
+        assert rare not in skipped and mid not in skipped and often not in skipped
+
+        assert persona_config_manager.set_allow_meme_reply("测", False)[0] is True
+        denied = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))
+        assert "<meme:情绪>" not in denied
+        assert meme_frequency_line_for(50) not in denied
+        assert "{{meme_frequency}}" not in denied
+    finally:
+        persona_config_manager._cache.clear()
+        persona_config_manager._base_path = old_base
+
+
 def test_speech_block_keeps_answer_contract_in_its_own_field(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from gsuid_core.ai_core.prompt_group.catalog import spec_of
 
@@ -268,11 +347,7 @@ def test_persona_card_indent_stays_in_system_prompt(monkeypatch: pytest.MonkeyPa
     async def fake_load(_name: str) -> str:
         return "### 卡\n    Name: 测"
 
-    async def fake_date(format: str = "") -> str:
-        return "2026年10月18日"
-
     monkeypatch.setattr(processor, "load_persona", fake_load)
-    monkeypatch.setattr(processor, "get_current_date", fake_date)
     monkeypatch.setattr("gsuid_core.ai_core.persona.appearance.load_appearance_line", lambda _name: "")
     monkeypatch.setattr("gsuid_core.ai_core.persona.settings.get_master_title", lambda _name: "")
     monkeypatch.setattr(
@@ -293,7 +368,7 @@ def test_persona_card_indent_stays_in_system_prompt(monkeypatch: pytest.MonkeyPa
         return key
 
     monkeypatch.setattr("gsuid_core.ai_core.prompt_group.store.render_prompt", fake_render)
-    prompt = asyncio.run(processor.build_persona_prompt("测"))
+    prompt = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月18日"))
     assert "    Name: 测" in prompt
     assert "建议不超过 60 字" in prompt
 

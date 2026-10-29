@@ -21,6 +21,8 @@
   "log.persona.personaconfig_updated_name_inspection": "[PersonaConfig] Updated '{persona_name}' inspection interval: {inspect_interval} minutes",
   "log.persona.personaconfig_updated_name_target": "[PersonaConfig] Updated '{persona_name}' target groups: {target_groups}",
   "log.persona.personaconfig_updated_name_wake": "[PersonaConfig] Updated '{persona_name}' wake keywords: {keywords}",
+  "log.persona.personaconfig_updated_aside": "[PersonaConfig] Updated aside setting {field} of '{persona_name}' to {value}",
+  "log.persona.allow_meme_reply": "[PersonaConfig] Updated allow meme reply for '{persona_name}': {value}",
   "log.persona.personasettings_read_fail": "[PersonaSettings] Failed to read persona.json for '{persona_name}': {e}",
   "log.persona.read_cfg_path_skipping": "[Persona] Failed to read {cfg_path}, skipping voice_anchor migration: {e}",
   "log.persona.read_md_path": "[Persona] Failed to read {md_path}: {e}",
@@ -31,6 +33,8 @@
   "log.persona.default_prompt_group_synced": "[Persona] Wrote the bundled default system-prompt group into the data directory",
   "log.persona.prompt_group_bound": "[Persona] Set the system-prompt group of '{persona_name}' to '{group}'",
   "log.persona.chat_style_set": "[PersonaConfig] Set the speech intensity of '{persona_name}' to {chat_style}",
+  "log.persona.meme_frequency_set": "[PersonaConfig] Set the meme frequency of '{persona_name}' to {value}",
   "log.persona.speech_len_soft_set": "[PersonaConfig] Set the suggested length of '{persona_name}' to {count}",
-  "log.persona.prompt_group_unreadable": "[Persona] Cannot read system-prompt group '{name}'; this turn uses the bundled default text: {e}"
+  "log.persona.prompt_group_unreadable": "[Persona] Cannot read system-prompt group '{name}'; this turn uses the bundled default text: {e}",
+  "log.persona.autonomy_config_updated": "[PersonaConfig] Updated autonomy settings for '{persona_name}'"
 }

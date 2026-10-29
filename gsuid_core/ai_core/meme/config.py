@@ -46,11 +46,6 @@ MEME_MIN_HEIGHT: int = 60
 # ── 可配置项 ──
 
 CONFIG_DEFAULT: Dict[str, GSC] = {
-    "meme_enable": GsBoolConfig(
-        title="启用表情包模块",
-        desc="总开关，关闭后停止所有表情包采集和发送功能",
-        data=True,
-    ),
     "meme_vlm_enable": GsBoolConfig(
         title="启用 VLM 打标",
         desc="总开关，关闭后停止所有 VLM 打标功能",

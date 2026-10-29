@@ -12,6 +12,7 @@
   "log.core.core_auto_task_restart": "[Core自动任务] 开始执行 [自动重启]",
   "log.core.core_auto_task_update_gscore": "[Core自动任务] 开始更新 [早柚核心]",
   "log.core.core_auto_task_update_plugin_directory_start": "[Core自动任务] 开始更新 [插件目录]",
+  "log.core.core_restart_by_supervisor": "[Core重启] 关机钩子已执行，交给守护进程重新拉起",
   "log.core.core_restart_custom_command_start": "[Core重启] 使用自定义重启命令: {restart_command}",
   "log.core.core_restart_default_command_start": "[Core重启] 使用默认重启命令: {command}",
   "log.core.core_restart_subscription_found_start": "[Core重启] 没有找到[Core重启]的订阅, 无推送消息！",

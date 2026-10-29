@@ -88,6 +88,27 @@ def visible_to_capability_only(ctx: RunContext[ToolContext]) -> bool:
 SCHED_CREATE_OK_KEY = "sched_create_ok"
 SCHED_MUTATE_OK_KEY = "sched_mutate_ok"
 MODEL_DECLARES_VIDEO_KEY = "model_declares_video"
+FIND_TOOLS_RECALLED_KEY = "find_tools_recalled"
+
+
+def mark_find_tools_recalled(deps: ToolContext, name: str) -> None:
+    """find_tools 点名召回后，本轮不再被 visible_when 藏住。"""
+    extra = deps.extra
+    raw = extra[FIND_TOOLS_RECALLED_KEY] if FIND_TOOLS_RECALLED_KEY in extra else None
+    names: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str) and item not in names:
+                names.append(item)
+    if name not in names:
+        names.append(name)
+    extra[FIND_TOOLS_RECALLED_KEY] = names
+
+
+def find_tools_recalled(deps: ToolContext, name: str) -> bool:
+    extra = deps.extra
+    raw = extra[FIND_TOOLS_RECALLED_KEY] if FIND_TOOLS_RECALLED_KEY in extra else None
+    return isinstance(raw, list) and name in raw
 
 
 def sched_tool_visibility(
@@ -200,9 +221,11 @@ def context_has_image(ctx: VisibilityScanCtx) -> bool:
 
 
 def context_has_video(ctx: VisibilityScanCtx) -> bool:
-    """``read_video``：有视频句柄且当前模型声明 video 才暴露。"""
+    """有视频且模型声明 video 才默认暴露。find_tools 召回后本轮保持可见。"""
     deps = ctx.deps
     if deps is None:
+        return True
+    if find_tools_recalled(deps, "read_video"):
         return True
     extra = deps.extra
     if MODEL_DECLARES_VIDEO_KEY in extra and extra[MODEL_DECLARES_VIDEO_KEY] is False:

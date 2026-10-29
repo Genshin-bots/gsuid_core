@@ -123,7 +123,6 @@ async def _llm_summaries(batch: List[_Pending]) -> List[str]:
         agent = create_agent(
             system_prompt="你是记忆管家，只蒸馏决策结论。禁止角色扮演。",
             max_tokens=600,
-            max_iterations=1,
             create_by="DecisionDistill",
             task_level="low",
             is_subagent=True,

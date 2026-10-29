@@ -49,11 +49,11 @@ async def get_ai_session(event: Event) -> GsCoreAIAgent:
 ```
 
 > **身份不变量（system_prompt 内，`persona/prompts.py::SYSTEM_CONSTRAINTS`）**：
-> **用户ID 仅供内部认人、绝不对外输出**。群聊靠 ID 区分发言人——历史经
+> **用户ID 仅供内部认人**。对外只放在 `<@用户ID>` 或 `<@昵称>` 里。群聊靠 ID 区分发言人——历史经
 > `format_history_for_agent` 渲染成 `id(昵称)`、当前轮经 `_build_relationship_description`
 > 也带 `用户名(用户ID:…)`——但**回复对外只用昵称或已记的别名**（【群成员称呼】），
-> 既无昵称也无别名时用角色化泛称带过。ID 唯一允许出现在输出的场合是 `@用户ID` 语法
-> （由 `send_chat_result` 解析成真正的 @，见 [§04](./04-event-trigger-flow.md)）。原
+> 既无昵称也无别名时用角色化泛称带过。ID 唯一允许出现在输出的场合是 `<@用户ID>` 或 `<@昵称>`
+> （由 `send_chat_result` 解析成真正的 @，裸 `@` 不解析，见 [§04](./04-event-trigger-flow.md)）。原
 > 「说话者感知 / 人际关系感知」两段重复内容已合并为一段「当前状态感知」去重。
 
 ## 6.3 消息历史与 AI 会话已解耦（两个独立模块）
@@ -177,7 +177,13 @@ RESOURCE_PATH/persona/{persona_name}/
 > 按 persona.md / config.json 的 mtime 自动刷新；写路径仍是本节的 PersonaConfigManager。
 > 详见 [`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../../docs/AGENT_NODE_UNIFICATION_20260707.md)。
 
-- **ai_mode**：`提及应答` / `定时巡检` / `趣向捕捉(暂不可用)` / `困境救场(暂不可用)`
+- **ai_mode**：`提及应答` / `定时巡检` / `命令补充` / `自主行动`
+- **自主行动**（默认关）：`active_hours` 与 `timezone` 同时挡住定时巡检。
+  间隔、步数、模型、关心温区、兴趣和每小时/每天主动上限只给自主行动用。
+  见 [§8.4](./08-heartbeat-scheduled-planning.md)。
+- **命令补充**（默认关）：命令回复发出后写入当前会话；`aside_image_probability` /
+  `aside_text_probability` / `aside_mixed_probability` 为 0 到 1 的点评概率；
+  `aside_allow_tools` 控制点评能不能用工具。概率未中也保留回执。见 [§04](./04-event-trigger-flow.md)。
 - **scope**：`disabled`（不启用）/ `global`（全部群聊+私聊）/ `global_group`（仅全部群聊）/
   `global_private`（仅全部私聊）/ `specific`（仅 `target_groups`）
 

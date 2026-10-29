@@ -6,7 +6,7 @@
 - ``register_kanban_task``        ：注册任务树（强校验最近一次评估 covered=true）
 - ``respawn_subtask``             ：复活 failed 子任务（最多 N 次后强制审批）
 - ``fail_task_tree``              ：明确终结整树
-- 子任务审批转达已统一到 ``respond_approval``（buildin_tools/approval_tools.py）
+- 子任务审批只认私聊确认码或审批中心，模型不转达
 - ``artifact_put`` / ``artifact_get`` / ``artifact_list``：Artifact Hub 工具
 - ``artifact_get_recent``         ：取根任务最近一份 artifact 原文（追问溯源）
 
@@ -744,8 +744,8 @@ async def respawn_subtask(
         new_params: 修正后的参数（覆盖 params_override）。
         new_agent_profile: 改派给其它 profile（必须已注册）。
 
-    超过 3 次重派会强制转 waiting_approval，请改用 webconsole 走主人审批，
-    或让主人在对话中明示同意 / 拒绝后调用 respond_approval。
+    超过 3 次重派会强制转 waiting_approval。主人用私聊确认码或审批中心批准。
+    群里说「同意」不会通过。
     """
     ev = ctx.deps.ev
     if ev is None:
@@ -813,8 +813,7 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
     return f"✅ 已终结整树【任务#{root.ordinal}｜{root.display_name}】：{reason}"
 
 
-# 子任务审批的转达已统一到 buildin_tools/approval_tools.py::respond_approval
-# （统一审批中心 kanban_subtask 领域），本模块不再注册专用转达工具。
+# 子任务审批由审批中心裁决（私聊确认码或控制台），本模块不注册转达工具。
 
 
 # Artifact Hub 工具
@@ -884,6 +883,8 @@ async def artifact_put(
     )
     if art is None:
         if file_path_obj is not None:
+            if file_path_obj.exists():
+                return f"⚠️ 登记 artifact 失败：文件 `{file_path}` 超出允许的沙盒工作区，且不属于受信任的产物输出目录。"
             return (
                 f"⚠️ 登记 artifact 失败：找不到文件 `{file_path}`（相对路径默认相对"
                 f" workspace）。请先确认 `list_directory` 能看到这个文件再登记。"
@@ -1029,7 +1030,20 @@ async def _artifact_access_allowed(
         source = await AIAgentTask.get_by_id(art.root_task_id)
         if source is None or not source.owner_user_id:
             return True
-        return str(ev.user_id) == str(source.owner_user_id)
+        if ev.user_id and str(ev.user_id) == str(source.owner_user_id):
+            return True
+        from gsuid_core.ai_core.utils import _is_master_user
+
+        if ev.user_id and (_is_master_user(str(ev.user_id)) or (ev.user_pm is not None and ev.user_pm <= 1)):
+            return True
+        if ev.group_id:
+            if source.group_id and str(ev.group_id) == str(source.group_id):
+                return True
+            if source.scope_key and str(ev.group_id) in source.scope_key:
+                return True
+        if ev.session_id and source.session_id and ev.session_id == source.session_id:
+            return True
+        return False
 
     # —— 同树 ——
     if art.root_task_id == plan_ctx.root_task_id:

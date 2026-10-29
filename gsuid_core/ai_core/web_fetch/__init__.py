@@ -1,9 +1,14 @@
 """
 Web Fetch 模块
 
-提供网页内容抓取并转换为 Markdown 格式的功能。
-使用 aiohttp 进行异步 HTTP 请求，使用 BeautifulSoup 清理 HTML，
-使用 markdownify 将 HTML 转换为 Markdown。
+提供网页内容抓取并转换为文本格式的功能。
+支持 Jina、DeepSeek、Exa Contents 与本机 aiohttp 等多源提供方。
+
+注意：不同提供方返回的文本格式有所差异：
+- Jina Reader 与 local 模式返回结构化的 Markdown 文本；
+- Exa Contents 或 DeepSeek 抓取返回经过服务端清洗提取的网页正文文本（纯文本），
+  并不一定包含 Markdown 标记（如二级标题、超链接等）。
+调用方应按网页文本处理，勿强假设其包含 Markdown 语法结构。
 
 运行时参数（proxy / timeout / UA 等）来自 ``web_fetch_config``
 （``data/ai_core/web_fetch_config.json``，控制台「AI 基本配置 → 网页抓取」可改）。
@@ -11,19 +16,27 @@ Web Fetch 模块
 
 from __future__ import annotations
 
+import json
 import random
 import asyncio
 import itertools
 import threading
 from typing import Any, Dict, List, Tuple, Optional
 
+import httpx
 import aiohttp
 from bs4 import Comment, BeautifulSoup
 from markdownify import markdownify as md
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.configs.ai_config import ai_config, jina_config, web_fetch_config
+from gsuid_core.ai_core.configs.ai_config import (
+    ai_config,
+    jina_config,
+    deepseek_config,
+    web_fetch_config,
+)
+from gsuid_core.ai_core.web_search.exa_search import exa_fetch_markdown
 
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -122,13 +135,17 @@ def _normalize_fetch_provider(raw: Any) -> str:
     lowered = s.lower()
     if lowered in ("jina", "r.jina.ai", "reader") or s == "Jina":
         return "Jina"
+    if lowered in ("deepseek", "deepseek-ai") or s == "DeepSeek":
+        return "DeepSeek"
     if lowered in ("local", "direct", "aiohttp") or s == "local":
         return "local"
+    if lowered == "exa" or s == "Exa":
+        return "Exa"
     return "Jina"
 
 
 def _webfetch_provider() -> str:
-    """主用源：local | Jina；控制台热改，无需重启。默认 Jina。"""
+    """主用源：local | Jina | DeepSeek | Exa；控制台热改，无需重启。默认 Jina。"""
     raw = ai_config.get_config("webfetch_provider", "Jina").data
     return _normalize_fetch_provider(raw)
 
@@ -267,6 +284,105 @@ async def _fetch_via_jina(url: str, max_md: int) -> str:
     if last_err is not None:
         raise ValueError(t("Jina 抓取失败: {e}", e=last_err)) from last_err
     raise ValueError(t("Jina 抓取失败: empty response"))
+
+
+def _deepseek_api_keys() -> list[str]:
+    raw_keys = deepseek_config.get_config("api_key").data
+    if isinstance(raw_keys, list):
+        return [k for k in raw_keys if isinstance(k, str) and k]
+    if isinstance(raw_keys, str) and raw_keys:
+        return [raw_keys]
+    return []
+
+
+async def _fetch_via_deepseek(url: str, max_md: int) -> str:
+    """经 DeepSeek 官方 Fetch 接口抓取并返回 Markdown。"""
+    raw_base = deepseek_config.get_config("fetch_base_url").data
+    base = str(raw_base or "https://api.deepseek.com/v1/tools/fetch").strip()
+    if not base:
+        base = "https://api.deepseek.com/v1/tools/fetch"
+    try:
+        timeout_sec = max(5, min(180, _as_int(deepseek_config.get_config("timeout").data, 30)))
+    except (TypeError, ValueError):
+        timeout_sec = 30
+
+    api_keys = _deepseek_api_keys()
+    if not api_keys:
+        raise ValueError(t("DeepSeek 抓取失败: {e}", e="API Key 未配置"))
+
+    keys_to_try = list(api_keys)
+    if len(keys_to_try) > 1:
+        random.shuffle(keys_to_try)
+
+    logger.info(
+        t(
+            "log.ai.webfetch_start",
+            provider="DeepSeek",
+            url=url,
+            detail=f"endpoint={base} auth=with_api_key",
+        )
+    )
+
+    last_err: Optional[Exception] = None
+    for api_key in keys_to_try:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "gsuid-core-deepseek-fetch/1.0",
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {"url": url}
+        try:
+            client_timeout = aiohttp.ClientTimeout(total=timeout_sec)
+            async with aiohttp.ClientSession(timeout=client_timeout) as session:
+                async with session.post(base, json=payload, headers=headers) as resp:
+                    body = await resp.text()
+                    if resp.status == 429:
+                        last_err = ValueError(f"DeepSeek rate limit 429: {body[:200]}")
+                        continue
+                    if resp.status in (401, 403):
+                        last_err = ValueError(f"DeepSeek auth {resp.status}: {body[:200]}")
+                        continue
+                    if resp.status >= 400:
+                        raise ValueError(
+                            t(
+                                "DeepSeek 抓取失败，状态码: {p0}，URL: {url}",
+                                p0=resp.status,
+                                url=url,
+                            )
+                        )
+                    try:
+                        data = json.loads(body) if body else {}
+                    except json.JSONDecodeError as err:
+                        raise ValueError(t("DeepSeek 抓取失败: {e}", e="invalid JSON")) from err
+
+                    result = ""
+                    if isinstance(data, dict):
+                        content_val = data.get("content")
+                        if isinstance(content_val, str) and content_val.strip():
+                            result = content_val.strip()
+                        elif "title" in data:
+                            title_val = data.get("title")
+                            if isinstance(title_val, str) and title_val.strip():
+                                result = f"# {title_val.strip()}"
+
+                    if not result:
+                        last_err = ValueError(t("抓取结果为空，切换下一源"))
+                        continue
+                    if len(result) > max_md:
+                        result = result[:max_md] + "\n\n...(内容已截断)"
+                    logger.info(t("log.ai.webfetch_deepseek_ok", url=url, p0=len(result)))
+                    return result
+        except ValueError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            last_err = e
+            logger.warning(t("log.ai.webfetch_deepseek_try_fail", url=url, e=e))
+            continue
+
+    if last_err is not None:
+        raise ValueError(t("DeepSeek 抓取失败: {e}", e=last_err)) from last_err
+    raise ValueError(t("DeepSeek 抓取失败: empty response"))
 
 
 def _html_to_markdown(html_content: str, url: str) -> str:
@@ -431,6 +547,10 @@ async def _invoke_fetch_provider(
 ) -> str:
     if provider == "Jina":
         return await _fetch_via_jina(url, max_md)
+    if provider == "DeepSeek":
+        return await _fetch_via_deepseek(url, max_md)
+    if provider == "Exa":
+        return await exa_fetch_markdown(url, max_md)
     return await _fetch_via_local(url, timeout=timeout, max_length=max_length)
 
 
@@ -440,18 +560,22 @@ async def fetch_webpage_as_markdown(
     max_length: Optional[int] = None,
 ) -> str:
     """
-    抓取指定 URL 的网页内容并转换为 Markdown 格式。
+    抓取指定 URL 的网页内容并转换为文本格式。
 
-    按 ``webfetch_provider`` + ``webfetch_lb_strategy`` 在 Jina / local 间切换或分流。
+    按 ``webfetch_provider`` + ``webfetch_lb_strategy`` 在 Jina / DeepSeek / Exa / local 间切换或分流。
     配置热读，控制台修改后无需重启。
+
+    注意：
+        Jina 与 local 模式输出 Markdown 格式；Exa Contents 与 DeepSeek 等提供方返回清洗后的
+        网页正文纯文本，并不保证带有 Markdown 标记。返回内容均适于模型阅读与提炼。
 
     Args:
         url: 要抓取的网页 URL
         timeout: 请求超时（秒）；``None`` 时读配置（默认 20）
-        max_length: 返回 Markdown 最大字符数；``None`` 时读配置
+        max_length: 返回文本最大字符数；``None`` 时读配置
 
     Returns:
-        转换后的 Markdown 文本内容
+        网页正文文本内容（通常为 Markdown 或清洗后的纯文本）
 
     Raises:
         ValueError: URL 无效、响应异常、网络/超时失败
@@ -482,7 +606,7 @@ async def fetch_webpage_as_markdown(
                     )
                 )
             return result
-        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, OSError, httpx.HTTPError) as e:
             errors.append(f"{provider}: {e}")
             logger.warning(
                 t(

@@ -57,29 +57,41 @@ def test_normalize_search_data_web() -> None:
     assert isinstance(url, str)
     assert url.startswith("https://")
     assert hits[0]["content"] == "Web data API"
+    assert hits[0]["published_date"] == ""
     assert hits[0]["score"] == 0.0
 
 
 def test_normalize_document_and_dict_envelope() -> None:
     doc = Document(
         markdown="# Hello",
-        metadata=DocumentMetadata(title="Example", url="https://example.com"),
+        metadata=DocumentMetadata(
+            title="Example",
+            url="https://example.com",
+            published_time="2024-05-01T00:00:00Z",
+        ),
     )
     payload = SearchData(web=[doc])
     hits = firecrawl_mod._normalize_results(payload, max_results=10)
     assert hits[0]["title"] == "Example"
     assert hits[0]["url"] == "https://example.com"
     assert hits[0]["content"] == "# Hello"
+    assert hits[0]["published_date"] == "2024-05-01T00:00:00Z"
 
     raw = {
         "web": [
-            {"title": "A", "url": "https://a.example", "description": "d"},
+            {
+                "title": "A",
+                "url": "https://a.example",
+                "description": "d",
+                "metadata": {"dc_date": "2020-01-02"},
+            },
             {"title": "", "url": "", "description": ""},
         ]
     }
     hits2 = firecrawl_mod._normalize_results(raw, max_results=10)
     assert len(hits2) == 1
     assert hits2[0]["content"] == "d"
+    assert hits2[0]["published_date"] == "2020-01-02"
 
 
 def test_normalize_images_capped() -> None:

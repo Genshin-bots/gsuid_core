@@ -6,6 +6,7 @@ MCP Server 模块 — 将框架 `_TOOL_REGISTRY`（@ai_tools 整库）对外暴�
 传输模式:
 - ``http``（默认）: 挂载到主 FastAPI（默认端口 8765）的 ``/api/mcp``，
   Streamable HTTP；与主服务 API 同端口、不同 endpoint。
+  ``/api/mcp`` 与 ``/api/mcp/`` 都直接进入，不发 307。
 - ``stdio``: 进程 stdin/stdout 跑 MCP JSON-RPC（本地子进程场景）。
 
 鉴权（框架 **不 import 任何插件**）:
@@ -29,7 +30,20 @@ import base64
 import asyncio
 import inspect
 import contextlib
-from typing import Any, Dict, List, Literal, Callable, Optional, Awaitable, TypedDict, TypeGuard
+import contextvars
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    Callable,
+    Optional,
+    Protocol,
+    Awaitable,
+    TypedDict,
+    TypeGuard,
+    runtime_checkable,
+)
 from urllib.parse import urljoin
 
 import anyio
@@ -39,9 +53,10 @@ from fastmcp import FastMCP
 from pydantic_ai import RunContext, ToolReturn
 from starlette.types import Send, Scope, ASGIApp, Message, Receive
 from pydantic_ai.usage import RunUsage
-from starlette.routing import Mount
+from starlette.routing import Match, Mount
 from fastmcp.tools.base import ToolResult
 from fastmcp.server.auth import AccessToken, AuthProvider
+from fastmcp.server.http import StarletteWithLifespan
 from starlette.responses import JSONResponse
 from pydantic_ai.messages import BinaryContent
 from fastmcp.utilities.types import Image as FastMcpImage
@@ -288,9 +303,8 @@ _mcp_server: Optional[FastMCP] = None
 _server_task: Optional[asyncio.Task[None]] = None
 _exported_tool_count: int = 0
 _http_mounted: bool = False
-_mcp_http_app: Any = None
-# 只调用 __aexit__ 关掉子应用 lifespan；yield 出的值（Mapping|None）不读，故用 object
-_mcp_lifespan_cm: Optional[contextlib.AbstractAsyncContextManager[object]] = None
+# 常驻任务进出每一代 lifespan。请求任务不得调用 __aexit__
+_mcp_lifespan_cm: _McpHttpRuntime | None = None
 _mcp_mount_path: Optional[str] = None
 
 
@@ -1108,7 +1122,7 @@ def _normalize_mcp_path(raw: str) -> str:
     return path
 
 
-# ─── HTTP 子应用护栏：隔离取消 + 无响应自愈 ─────────────────────────────────
+# ─── HTTP 子应用护栏：隔离取消 + 未写出响应时同请求重试 ─────────────────────
 
 #: 重建冷却（秒）：毒化后每个失败请求都想重建，串行 + 冷却避免抖动
 _MCP_REBUILD_COOLDOWN = 5.0
@@ -1128,13 +1142,288 @@ class _JsonRpcErrorBody(TypedDict):
     error: _JsonRpcError
 
 
-class McpHttpGuard:
-    """MCP HTTP 子应用护栏：隔离上层取消 + 无响应自愈。
+def _body_more(message: Message) -> bool:
+    """``http.response.body`` / ``http.request`` 是否还有后续块。缺省表示本块结束。"""
+    if "more_body" not in message:
+        return False
+    return message["more_body"] is True
 
-    线上 500：``writer.send`` ClosedResourceError → SDK 记 SSE response error 后
-    不写 HTTP 响应 → Starlette BaseHTTPMiddleware ``No response returned.``。
-    shield 挡住上层取消；HTTP send 失败不回灌 SDK；没写成响应或子应用抛错时
-    回 503 并重建 session manager。
+
+@runtime_checkable
+class _ASGICallable(Protocol):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None: ...
+
+
+def _is_fresh_asgi(app: object) -> TypeGuard[_ASGICallable]:
+    return isinstance(app, _ASGICallable)
+
+
+def _snapshot_inner(app: ASGIApp) -> object:
+    """这一次请求开始时的内层应用。护栏包着 runtime 时，重放不能再打护栏。"""
+    if isinstance(app, _McpHttpRuntime):
+        return app.current_app()
+    return app
+
+
+def _replacement_mcp_app(used_inner: object) -> _ASGICallable | None:
+    """重建之后的内层应用。仍是这一次用的那个，或还不是 ASGI，则不能重放。"""
+    runtime = _mcp_lifespan_cm
+    if runtime is None:
+        return None
+    fresh: object = runtime.current_app()
+    if fresh is None or fresh is used_inner or not _is_fresh_asgi(fresh):
+        return None
+    return fresh
+
+
+def _release_task_cancellation() -> None:
+    """anyio 取消宿主任务后，不把取消计数留到下一次 await。"""
+    task = asyncio.current_task()
+    if task is None:
+        return
+    while task.cancelling():
+        task.uncancel()
+
+
+class _McpHttpRuntime:
+    """由常驻任务按顺序进入和退出每代 HTTP lifespan。"""
+
+    def __init__(self, server: FastMCP) -> None:
+        self._server = server
+        self._app: StarletteWithLifespan | None = None
+        self._pending_app: StarletteWithLifespan | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._changed = asyncio.Event()
+        self._ready = asyncio.Event()
+        self._error: Exception | None = None
+        self._stopping = False
+
+    def current_app(self) -> StarletteWithLifespan | None:
+        return self._app
+
+    async def start(self) -> None:
+        await self.restart()
+
+    def _spawn(self) -> asyncio.Task[None]:
+        # 不继承触发这次恢复的请求上下文。
+        return asyncio.create_task(
+            self._run(),
+            name="mcp-http-lifespan",
+            context=contextvars.Context(),
+        )
+
+    def _drain_task(self) -> None:
+        """取走已结束任务的异常，避免 CancelledError 漏给这次请求。"""
+        task = self._task
+        if task is None or not task.done():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as error:
+            logger.debug(t("log.mcp.mcp_server_http_owner_task_fail", e=error))
+
+    async def restart(self) -> None:
+        if self._stopping:
+            raise RuntimeError("MCP HTTP runtime is stopping")
+        app = self._server.http_app(path="/", transport="streamable-http", stateless_http=True)
+        self._pending_app = app
+        self._ready.clear()
+        if self._task is None or self._task.done():
+            self._drain_task()
+            self._task = self._spawn()
+        else:
+            self._changed.set()
+        await self._ready.wait()
+        if self._stopping:
+            raise RuntimeError("MCP HTTP runtime is stopping")
+        # 旧一代把宿主任务打死时，同一次 restart 再拉起，不把取消抛给请求。
+        if self._task is not None and self._task.done() and self._app is None and self._error is None:
+            self._drain_task()
+            self._ready.clear()
+            self._task = self._spawn()
+            await self._ready.wait()
+        if self._stopping:
+            raise RuntimeError("MCP HTTP runtime is stopping")
+        if self._error is not None:
+            raise self._error
+        if self._task is not None and self._task.done():
+            self._drain_task()
+        if self._app is None:
+            raise RuntimeError("MCP HTTP lifespan did not initialize")
+
+    async def close(self) -> None:
+        self._stopping = True
+        self._changed.set()
+        if self._task is not None:
+            if self._app is None and not self._ready.is_set():
+                self._task.cancel()
+            self._ready.set()
+            try:
+                await asyncio.shield(self._task)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is None or task.cancelling():
+                    raise
+
+    async def _park_until_next(self, error: BaseException | None, *, entered: bool) -> None:
+        """进入失败告诉 restart。已进入的一代退出失败时，不挡住待进入的新会话。"""
+        self._app = None
+        if not entered:
+            if isinstance(error, Exception):
+                self._error = error
+            else:
+                self._error = RuntimeError("MCP HTTP lifespan did not initialize")
+            self._ready.set()
+            self._changed.clear()
+            if self._stopping:
+                return
+            try:
+                await self._changed.wait()
+            except asyncio.CancelledError:
+                _release_task_cancellation()
+                if not self._stopping:
+                    raise
+            return
+        self._error = None
+        self._ready.clear()
+        if self._pending_app is not None or self._stopping:
+            return
+        try:
+            await self._changed.wait()
+        except asyncio.CancelledError:
+            _release_task_cancellation()
+            if not self._stopping:
+                raise
+
+    async def _run(self) -> None:
+        try:
+            while not self._stopping:
+                self._ready.clear()
+                self._changed.clear()
+                entered = False
+                scope_cancelled = False
+                try:
+                    app = self._pending_app
+                    self._pending_app = None
+                    if app is None:
+                        app = self._server.http_app(
+                            path="/",
+                            transport="streamable-http",
+                            stateless_http=True,
+                        )
+                    async with app.lifespan(app):
+                        self._app = app
+                        self._error = None
+                        entered = True
+                        self._ready.set()
+                        try:
+                            await self._changed.wait()
+                        except asyncio.CancelledError:
+                            # task group 取消会打到宿主。先清计数，退出回调才能跑完。
+                            if self._stopping:
+                                raise
+                            _release_task_cancellation()
+                            scope_cancelled = True
+                        finally:
+                            self._app = None
+                except asyncio.CancelledError:
+                    _release_task_cancellation()
+                    if self._stopping:
+                        raise
+                    await self._park_until_next(None, entered=entered)
+                except BaseExceptionGroup as error:
+                    _release_task_cancellation()
+                    if self._stopping:
+                        break
+                    await self._park_until_next(error, entered=entered)
+                except Exception as error:
+                    if self._stopping:
+                        break
+                    await self._park_until_next(error, entered=entered)
+                else:
+                    # 退出没抛错时也不能自己再开一代，要等这次重建交来的新会话。
+                    if scope_cancelled:
+                        await self._park_until_next(None, entered=True)
+        finally:
+            self._app = None
+            self._ready.set()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        app = self._app
+        if app is None:
+            return
+        await app(scope, receive, send)
+
+
+class _HttpExchange:
+    """一次请求上的收发：扣住未提交的状态码，并记下已读走的请求体。"""
+
+    def __init__(self, receive: Receive, send: Send) -> None:
+        self._receive = receive
+        self._send = send
+        self._recorded: list[Message] = []
+        self._replay_at = 0
+        self._replaying = False
+        self._pending_start: Message | None = None
+        self.committed = False
+        self.finished = False
+        self.client_gone = False
+
+    async def receive(self) -> Message:
+        if self._replaying and self._replay_at < len(self._recorded):
+            message = self._recorded[self._replay_at]
+            self._replay_at += 1
+            return message
+        # 记录用尽后走原 receive。SSE 要在这里等断开，不能合成 disconnect
+        message = await self._receive()
+        if not self._replaying:
+            self._recorded.append(message)
+        return message
+
+    def begin_replay(self) -> None:
+        self._replaying = True
+        self._replay_at = 0
+        self._pending_start = None
+        self.committed = False
+        self.finished = False
+
+    async def send(self, message: Message) -> None:
+        if self.client_gone:
+            return
+        kind = message["type"]
+        if kind == "http.response.start" and not self.committed:
+            # 状态码先扣住。毒化请求往往只有 start，还没到客户端就能丢掉并重试。
+            self._pending_start = message
+            return
+        if not self.committed:
+            self.committed = True
+            start = self._pending_start
+            self._pending_start = None
+            if start is not None:
+                await self._emit(start)
+            if self.client_gone:
+                return
+        await self._emit(message)
+        if kind == "http.response.body" and not _body_more(message) and not self.client_gone:
+            self.finished = True
+
+    async def _emit(self, message: Message) -> None:
+        # 客户端断开时 send 失败不得进 SDK，否则会毒化终身 task group
+        try:
+            await self._send(message)
+        except Exception:
+            self.client_gone = True
+
+
+class McpHttpGuard:
+    """MCP HTTP 子应用护栏：隔离上层取消，未写出的响应在本次请求内重试。
+
+    终身 task group 被取消时，常驻任务还停在这一代 lifespan 里，anyio 会取消它。
+    它退出这一代并进入下一代。状态码先扣住，没写到客户端就结束时，同一次请求交给
+    新的内层应用。正文已经发出但没有结束块时，补一个空结束块；这一代会重建，
+    重放后仍不完整则只补结束块。只是写出响应失败、子应用正常返回时，不重建。
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -1145,29 +1434,86 @@ class McpHttpGuard:
             await self._app(scope, receive, send)
             return
 
-        responded = False
+        exchange = _HttpExchange(receive, send)
+        inner_before = _snapshot_inner(self._app)
 
-        async def guard_send(message: Message) -> None:
-            nonlocal responded
-            # 客户端断开时 send 失败不得进 SDK，否则会毒化终身 task group
-            try:
-                await send(message)
-            except Exception:
-                return
-            if message["type"] == "http.response.start":
-                responded = True
+        async def run_used() -> None:
+            await self._app(scope, exchange.receive, exchange.send)
 
         with anyio.CancelScope(shield=True):
+            failed = await _capture_mcp_failure(run_used)
+            if exchange.client_gone:
+                # 写出失败已吞掉。子应用正常返回时会话还在，不重建。
+                if failed:
+                    await _rebuild_http_mcp_session()
+                return
+            if exchange.finished and not failed:
+                return
+            if exchange.finished:
+                await _rebuild_http_mcp_session()
+                return
+            if exchange.committed:
+                logger.warning(t("log.mcp.mcp_server_http_incomplete"))
+                await _finish_open_http_response(send)
+                await _rebuild_http_mcp_session()
+                return
+
+            await _rebuild_http_mcp_session()
+            fresh = _replacement_mcp_app(inner_before)
+            if fresh is not None:
+                logger.warning(t("log.mcp.mcp_server_http_retry"))
+                exchange.begin_replay()
+
+                async def run_fresh() -> None:
+                    await fresh(scope, exchange.receive, exchange.send)
+
+                failed = await _capture_mcp_failure(run_fresh)
+                if exchange.client_gone or exchange.finished:
+                    return
+                if exchange.committed:
+                    logger.warning(t("log.mcp.mcp_server_http_retry_incomplete"))
+                    await _finish_open_http_response(send)
+                    return
+
+            if not failed:
+                logger.warning(t("log.mcp.mcp_server_http_no_response"))
             try:
-                await self._app(scope, receive, guard_send)
+                await _respond_mcp_unavailable(scope, receive, send)
             except Exception as e:
-                logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=e))
-                await _recover_poisoned_mcp_http(scope, receive, send, responded=responded)
-                return
-            if responded:
-                return
-            logger.warning(t("log.mcp.mcp_server_http_no_response"))
-            await _recover_poisoned_mcp_http(scope, receive, send, responded=False)
+                logger.debug(t("log.mcp.mcp_server_http_503_fail", e=e))
+
+
+async def _capture_mcp_failure(run: Callable[[], Awaitable[None]]) -> bool:
+    """跑一轮子应用。子应用抛错时返回 True，不在这里改响应。
+
+    调用方自己的取消继续抛出。子应用里外来的取消按这一轮失败交给护栏。
+    """
+    try:
+        await run()
+    except anyio.get_cancelled_exc_class() as error:
+        task = asyncio.current_task()
+        if task is None or task.cancelling():
+            raise
+        logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=error))
+        return True
+    except BaseExceptionGroup as error:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=error))
+        return True
+    except Exception as e:
+        logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=e))
+        return True
+    return False
+
+
+async def _finish_open_http_response(send: Send) -> None:
+    """start 已写出时补一个空 body，让外层 middleware 能结束这次响应。"""
+    try:
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+    except Exception as e:
+        logger.debug(t("log.mcp.mcp_server_http_503_fail", e=e))
 
 
 async def _respond_mcp_unavailable(scope: Scope, receive: Receive, send: Send) -> None:
@@ -1181,70 +1527,100 @@ async def _respond_mcp_unavailable(scope: Scope, receive: Receive, send: Send) -
     await response(scope, receive, send)
 
 
-async def _recover_poisoned_mcp_http(
-    scope: Scope,
-    receive: Receive,
-    send: Send,
-    *,
-    responded: bool,
-) -> None:
-    """没写成响应则回 503；无论是否已 start 都重建（start 后抛错仍可能已毒化）。"""
-    if not responded:
-        try:
-            await _respond_mcp_unavailable(scope, receive, send)
-        except Exception as e:
-            logger.debug(t("log.mcp.mcp_server_http_503_fail", e=e))
-    await _rebuild_http_mcp_session()
-
-
-async def _close_lifespan_cm(cm: contextlib.AbstractAsyncContextManager[object] | None) -> None:
-    """退出子应用 lifespan；失败只记日志（靠后续重建 / 重启恢复）。"""
-    if cm is None:
+async def _close_lifespan_cm(runtime: _McpHttpRuntime | None) -> None:
+    """让 lifespan 的所属任务完成退出。"""
+    if runtime is None:
         return
     try:
-        await cm.__aexit__(None, None, None)
-    except Exception as e:
-        logger.debug(t("log.mcp.mcp_server_lifespan_exit_fail", e=e))
+        await runtime.close()
+    except Exception as error:
+        logger.debug(t("log.mcp.mcp_server_lifespan_exit_fail", e=error))
 
 
 async def _rebuild_http_mcp_session() -> None:
-    """重建 HTTP 子应用与 StreamableHTTPSessionManager（保留 FastMCP 与工具注册）。
-
-    fastmcp 在子应用 lifespan 里新建 session manager，所以重进一次 lifespan 即得到
-    全新 task group；先建好新的再换 mount，失败时旧挂载不动，避免 404 窗口。
-    """
-    global _mcp_http_app, _mcp_lifespan_cm, _mcp_last_rebuild
+    """保留挂载与工具，由所属任务顺序关闭旧会话并启动新会话。"""
+    global _mcp_last_rebuild
 
     async with _mcp_rebuild_lock:
-        server = _mcp_server
-        path = _mcp_mount_path
-        if server is None or path is None or not _http_mounted:
+        runtime = _mcp_lifespan_cm
+        if runtime is None or not _http_mounted:
             return
         now = time.monotonic()
         if now - _mcp_last_rebuild < _MCP_REBUILD_COOLDOWN:
             return
-
-        new_cm: contextlib.AbstractAsyncContextManager[object] | None = None
+        _mcp_last_rebuild = now
         try:
-            new_app = server.http_app(path="/", transport="streamable-http", stateless_http=True)
-            new_cm = new_app.lifespan(new_app)
-            await new_cm.__aenter__()
-        except Exception as e:
-            logger.error(t("log.mcp.mcp_server_http_rebuild_fail", e=e))
-            await _close_lifespan_cm(new_cm)
-            _mcp_last_rebuild = time.monotonic()
+            await runtime.restart()
+        except Exception as error:
+            # 停机已经把挂载标掉时，restart 的停止错误不必再记成重建失败。
+            if _http_mounted:
+                logger.error(t("log.mcp.mcp_server_http_rebuild_fail", e=error))
             return
-
-        from gsuid_core.app_life import app as main_app
-
-        old_cm = _mcp_lifespan_cm
-        _remove_mounted_path(main_app, path)
-        main_app.mount(path, McpHttpGuard(new_app))
-        _mcp_http_app = new_app
-        _mcp_lifespan_cm = new_cm
-        _mcp_last_rebuild = time.monotonic()
         logger.warning(t("log.mcp.mcp_server_http_rebuilt"))
-        await _close_lifespan_cm(old_cm)
+
+
+def _request_route_path(scope: Scope) -> str:
+    """Starlette 的 get_route_path 不在公开导出里，这里按同样规则取路由路径。"""
+    path = scope["path"]
+    if not isinstance(path, str):
+        return ""
+    root_path = scope["root_path"] if "root_path" in scope else ""
+    if not isinstance(root_path, str) or not root_path:
+        return path
+    if not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    if path[len(root_path)] == "/":
+        return path[len(root_path) :]
+    return path
+
+
+def _directory_form(scope: Scope, mount_path: str) -> str:
+    """把挂载前缀补成目录形式，保留已有 root_path。"""
+    root = scope["root_path"] if "root_path" in scope else ""
+    if not isinstance(root, str):
+        root = ""
+    return root + mount_path + "/"
+
+
+def _raw_path_with_directory_slash(raw_path: bytes, old_path: str, new_path: str) -> bytes:
+    """raw_path 在 ``?`` 前补斜杠；对不上原 path 时保持原样。"""
+    if not old_path.isascii() or not new_path.isascii():
+        return raw_path
+    old = old_path.encode("ascii")
+    new = new_path.encode("ascii")
+    if raw_path == old:
+        return new
+    if raw_path.startswith(old + b"?"):
+        return new + raw_path[len(old) :]
+    return raw_path
+
+
+class _McpSlashMount(Mount):
+    """同一挂载同时接住无斜杠路径，不发 307。
+
+    客户端跟随 307 会丢掉 Authorization，MCP 初始化变成 401。
+    """
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        # 父路由对未匹配路径发 307。匹配前补斜杠，请求不离开原 URL。
+        if scope["type"] not in ("http", "websocket") or _request_route_path(scope) != self.path:
+            return super().matches(scope)
+        old_path = scope["path"]
+        if not isinstance(old_path, str):
+            return super().matches(scope)
+        new_path = _directory_form(scope, self.path)
+        old_raw = scope["raw_path"] if "raw_path" in scope else None
+        scope["path"] = new_path
+        if isinstance(old_raw, (bytes, bytearray)):
+            scope["raw_path"] = _raw_path_with_directory_slash(bytes(old_raw), old_path, new_path)
+        match, child = super().matches(scope)
+        if match == Match.NONE:
+            scope["path"] = old_path
+            if isinstance(old_raw, (bytes, bytearray)):
+                scope["raw_path"] = bytes(old_raw)
+        return match, child
 
 
 def _remove_mounted_path(main_app: Any, path: str) -> None:
@@ -1258,44 +1634,42 @@ def _remove_mounted_path(main_app: Any, path: str) -> None:
 
 
 async def _mount_http_mcp(server: FastMCP, path: str) -> None:
-    """把 Streamable HTTP MCP 挂到主 FastAPI（默认 8765），不另开端口。
+    """就绪后挂载。lifespan 的进入、恢复和退出由同一任务负责。
 
-    必须：
-    1. ``mount`` 完整 ASGI 子应用（含 AuthenticationMiddleware）
-    2. 手动进入子应用 ``lifespan``（主 app 已在跑，晚挂载不会自动跑子 lifespan）
-       否则 StreamableHTTPSessionManager task group 未初始化 → 500
+    主 FastAPI 的 lifespan 早已 yield，晚挂载不会自己跑子 lifespan。子应用内部路由
+    挂在 ``/``，对外路径由 mount 前缀构成（如 ``/api/mcp``）。
     """
-    global _http_mounted, _mcp_http_app, _mcp_lifespan_cm, _mcp_mount_path
+    global _http_mounted, _mcp_lifespan_cm, _mcp_mount_path
 
-    if _http_mounted:
+    if _http_mounted or _mcp_lifespan_cm is not None:
         logger.warning(t("log.mcp.mcp_server_http_already_mounted"))
         return
 
     from gsuid_core.app_life import app as main_app
 
-    # 子应用内部路由挂在 "/"，对外由 mount 前缀构成完整 path（如 /api/mcp）
-    mcp_app = server.http_app(
-        path="/",
-        transport="streamable-http",
-        stateless_http=True,
-    )
-    # 外层护栏：见 McpHttpGuard（隔离取消 / 无响应自愈）
-    main_app.mount(path, McpHttpGuard(mcp_app))
-    _mcp_http_app = mcp_app
-    _mcp_mount_path = path
-
-    # 主 FastAPI 的 lifespan 早已 yield；晚挂载必须手动 aenter 子 lifespan
+    runtime = _McpHttpRuntime(server)
+    # 入口可能等待。先登记，关闭钩子才能停它。
+    _mcp_lifespan_cm = runtime
+    ready = False
     try:
-        _mcp_lifespan_cm = mcp_app.lifespan(mcp_app)
-        await _mcp_lifespan_cm.__aenter__()
-    except Exception as e:
-        logger.error(t("log.mcp.mcp_server_lifespan_enter_fail", e=e))
-        _remove_mounted_path(main_app, path)
-        _mcp_http_app = None
-        _mcp_lifespan_cm = None
-        _mcp_mount_path = None
+        await runtime.start()
+        ready = True
+    except Exception as error:
+        logger.error(t("log.mcp.mcp_server_lifespan_enter_fail", e=error))
         raise
+    finally:
+        if not ready:
+            try:
+                with anyio.CancelScope(shield=True):
+                    await runtime.close()
+            finally:
+                if _mcp_lifespan_cm is runtime:
+                    _mcp_lifespan_cm = None
 
+    # 不用 app.mount：它的正则要求前缀后带斜杠，裸路径会被 307。
+    main_app.router.routes.append(_McpSlashMount(path, app=McpHttpGuard(runtime)))
+    _mcp_lifespan_cm = runtime
+    _mcp_mount_path = path
     _http_mounted = True
     logger.info(t("log.mcp.mcp_server_http_mounted", path=path))
 
@@ -1368,21 +1742,20 @@ async def _start_mcp_server() -> None:
 async def _shutdown_mcp_server() -> None:
     """关闭 MCP Server，并卸下 HTTP 挂载。"""
     global _mcp_server, _server_task, _exported_tool_count, _http_mounted
-    global _mcp_http_app, _mcp_lifespan_cm, _mcp_mount_path
+    global _mcp_lifespan_cm, _mcp_mount_path
+
+    # 先停所属任务。重建可能正持锁，等新一代入口就绪。
+    _http_mounted = False
+    cm, _mcp_lifespan_cm = _mcp_lifespan_cm, None
+    await _close_lifespan_cm(cm)
 
     async with _mcp_rebuild_lock:
-        _http_mounted = False
-        cm, _mcp_lifespan_cm = _mcp_lifespan_cm, None
-        await _close_lifespan_cm(cm)
-
         if _mcp_mount_path is not None:
             from gsuid_core.app_life import app as main_app
 
             _remove_mounted_path(main_app, _mcp_mount_path)
             logger.info(t("log.mcp.mcp_server_http_unmounted", path=_mcp_mount_path))
             _mcp_mount_path = None
-
-        _mcp_http_app = None
 
     if _server_task is not None and not _server_task.done():
         _server_task.cancel()
@@ -1428,7 +1801,7 @@ async def init_mcp_server() -> None:
         return
 
     global _server_task
-    # http 挂载是同步轻量；stdio 才需要常驻 task
+    # stdio 用 _server_task。HTTP 的常驻任务在 _McpHttpRuntime 里。
     from gsuid_core.ai_core.configs.ai_config import mcp_server_config
 
     transport = _normalize_transport(str(mcp_server_config.get_config("mcp_server_transport").data))

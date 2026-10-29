@@ -4,7 +4,7 @@
 
 期望阶段（长信息任务）：
 1 委派派发成功后代发同一次回复里的开场句（opening_line）→ 2 检索/委派不发言
-→ 3 委派后默认 SILENCE → 4/5/6 子任务静默 → 7 发图后一句收尾。
+→ 3 委派后默认 SILENCE → 4/5/6 子任务静默 → 7 发图后由模型自己收尾。
 轻查询不先应，干完再开口：一轮对用户只说一句。
 """
 
@@ -44,7 +44,6 @@ SpeechPolicy = Literal[
     "status_ok",
     "framework_nudge",
     "framework_deliver",
-    "delivered",
 ]
 
 # 单轮主通道可见台词上限默认（配置 main_channel_visible_limit 覆盖）
@@ -165,17 +164,6 @@ _ORCHESTRATION_NARRATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 引导性收尾（助理腔）：主动邀约用户继续/再查——角色应表达完即停
-_OPEN_SOLICIT_RE = re.compile(
-    r"(要不要我|要不要|需不需要|还要我|要我再|要我继续|要我换|要我帮|"
-    r"要不要继续|还想知道|还有(什么|哪)|有什么想|需要我|"
-    r"我再(帮|查|搜|找)|我可以再|"
-    r"如果还需要|若还需要|如还需|接下来如果|"
-    r"请告诉|有其他(需要|问题|想问)|随时(问|叫|找|吩咐)|"
-    r"欢迎继续|需要的话)",
-    re.IGNORECASE,
-)
-
 # 主人格台词里的「长结构体」：多标题/多段/表 → 应走 render 而非刷屏
 _MD_HEADING_RE = re.compile(r"(?m)^#{1,3}\s+\S|^\*{0,2}\*\*[^*\n]{2,48}\*\*")
 
@@ -193,7 +181,7 @@ _REPORT_SPEECH_NUDGE = (
     "（系统校验·内部轮）你刚才用多段标题/列表把长信息念成了台词，这不允许。"
     '立即 create_subagent(agent_profile="render_agent", '
     "task=将本轮已查到的要点做成一张信息图)；"
-    "本轮对用户只可 <SILENCE> 或发图后一句角色短句；禁止再念表、禁止要不要再查。"
+    "禁止再把这张表念成台词。出图之后怎么收尾由你定。"
 )
 
 _STATUS_ZERO_TOOL_NUDGE = (
@@ -263,10 +251,19 @@ def looks_like_numeric_recitation(text: str) -> bool:
     return len(nums) >= 4 and len(body) >= 140
 
 
-def claims_premature_delivery(text: str) -> bool:
+def claims_premature_delivery(
+    text: str,
+    *,
+    has_fact_pack: bool = False,
+    tool_called_this_run: bool = False,
+    is_delivery_wake: bool = False,
+) -> bool:
     """是否在宣称交付物已就绪（完成态口吻）。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
+        return False
+    # 有事实包/交付回灌/本轮调过工具时，完成态台词属实情陈述而非吹牛
+    if has_fact_pack or tool_called_this_run or is_delivery_wake:
         return False
     return bool(_PREMATURE_DELIVERY_RE.search(body))
 
@@ -425,7 +422,7 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
         return False
     if looks_like_machine_latin(body):
         return False
-    content_lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    content_lines = _accept_lines(body)
     if len(content_lines) > 2:
         return False
     # 两行只放行「括号动作 + 台词」。两段正文仍是结构垃圾。
@@ -438,6 +435,21 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
     if len(_MD_HEADING_RE.findall(body)) >= 1:
         return False
     return True
+
+
+def _accept_lines(body: str) -> list[str]:
+    """接话行数。单独一行的表情标记不是第二段正文。"""
+    from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
+
+    lines: list[str] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not MEME_TAG_PATTERN.sub("", line).strip():
+            continue
+        lines.append(line)
+    return lines
 
 
 def _line_is_action_beat(line: str) -> bool:
@@ -485,44 +497,6 @@ def looks_like_report_speech(text: str) -> bool:
     if looks_like_numeric_recitation(body):
         return True
     return False
-
-
-def has_open_solicitation(text: str) -> bool:
-    """是否含引导用户继续的收尾邀约（助理腔）。"""
-    body = (text or "").strip()
-    if not body:
-        return False
-    # 全文扫描：邀约常夹在中后段，不只在最后一句
-    return bool(_OPEN_SOLICIT_RE.search(body))
-
-
-def strip_open_solicitations(text: str) -> str:
-    """去掉引导性追问段，保留事实句。"""
-    body = (text or "").strip()
-    if not body:
-        return body
-    parts = re.split(r"(\n\s*\n)", body)
-    chunks = [parts[i] for i in range(0, len(parts), 2)]
-    out_chunks: list[str] = []
-    for ch in chunks:
-        c = ch.strip()
-        if not c:
-            continue
-        # 整段是邀约，或段尾以邀约收束 → 丢掉邀约句
-        if _OPEN_SOLICIT_RE.search(c) and (
-            len(c) < 80 or c.rstrip("…。.！!？?zZ \t").endswith(("吗", "呢", "？", "?")) or "要不要" in c
-        ):
-            # 若段内前半仍有事实，只砍含邀约的句子
-            sents = re.split(r"(?<=[。！？!?\n])", c)
-            kept_s = [s for s in sents if s.strip() and not _OPEN_SOLICIT_RE.search(s)]
-            c2 = "".join(kept_s).strip()
-            if c2:
-                out_chunks.append(c2)
-            continue
-        out_chunks.append(c)
-    if not out_chunks:
-        return ""
-    return "\n\n".join(out_chunks)
 
 
 def resolve_speech_policy(
@@ -632,32 +606,21 @@ def should_block_user_visible_text(
             "status_ok",
             "framework_nudge",
             "framework_deliver",
-            "delivered",
         )
         else "free"
     )
     inflight = bool(pending_async or render_inflight)
 
-    # 交付终局：本 run 已经由发送工具交付完毕，对用户只许 <SILENCE>。
-    if pol == "delivered":
-        return True, "delivered_terminal"
-
     # 接收人不是主人时，称呼出现在配图收尾里也要拦（image_sent 会提前放行短句）。
     if title_mentioned(forbid_title, body):
         return True, "master_title"
 
-    # 图已发出：放行极短角色收尾；仍拦长结构 / 编排词 / 引导追问
+    # 图已在这次发送里：编排词和交付汇报仍拒。多段说明随图发出。
     if image_sent:
         if has_orchestration_narration(body):
             return True, "orchestration_leak"
         if looks_like_delivery_status_narration(body):
             return True, "delivery_narration"
-        if looks_like_report_speech(body):
-            return True, "report_speech"
-        if has_open_solicitation(body) and len(body) > 40:
-            return True, "open_solicit"
-        if len(body) > 120 and not looks_like_wait_comfort(body):
-            return True, "post_image_too_long"
         return False, "post_image_ok"
 
     # 异步在途：开场接任务应一句（不按 12 字）；其后默认静默。清单/念白/完成腔不占额度。
@@ -681,7 +644,17 @@ def should_block_user_visible_text(
     if looks_like_process_meta(body):
         return True, "process_meta"
 
-    if claims_premature_delivery(body) and not image_sent and not _keeps_working(body):
+    _wake = pol == "framework_deliver"
+    if (
+        claims_premature_delivery(
+            body,
+            has_fact_pack=fact_pack_pending,
+            tool_called_this_run=bool(tool_calls_so_far),
+            is_delivery_wake=_wake,
+        )
+        and not image_sent
+        and not _keeps_working(body)
+    ):
         return True, "premature_delivery"
 
     # 多点读数：只有真有待出图事实包才拦。无事实包的数字句是回答本身。
@@ -707,9 +680,12 @@ def should_block_user_visible_text(
         return True, "entity_without_tool"
 
     if pol == "framework_deliver":
-        # 进度句和长文不出站。没有图时仍允许一句短收尾。
-        if not image_sent and (looks_like_deliver_progress(body) or len(body) > 40):
-            return True, "deliver_before_send"
+        # 进度句不出站；复杂大表格念表不出站。轻量短事实允许直接交付。
+        if not image_sent:
+            if looks_like_deliver_progress(body):
+                return True, "deliver_before_send"
+            if (looks_like_report_speech(body) and len(body) >= 160) or (body.count("|") >= 6 and "\n" in body):
+                return True, "deliver_before_send"
         return False, "ok"
 
     if pol == "status_ok":
@@ -794,47 +770,6 @@ def content_is_render_candidate(
             return True
         return False
     return False
-
-
-_TERMINAL_DELIVERY_TOOLS = frozenset({"send_message_by_ai"})
-
-
-def batch_is_meme_only(tool_names: Sequence[str]) -> bool:
-    """这一步只有表情。轮子先别收，补不补台词由模型定。"""
-    names = [name for name in tool_names if name]
-    if not names or not any(name == "send_meme" for name in names):
-        return False
-    if any(name in _TERMINAL_DELIVERY_TOOLS for name in names):
-        return False
-    return all(name == "send_meme" for name in names)
-
-
-def batch_still_working(tool_names: Sequence[str]) -> bool:
-    """同一步还有非发送工具，或只有表情、台词还没发出。"""
-    names = [name for name in tool_names if name]
-    if any(name not in _TERMINAL_DELIVERY_TOOLS and name != "send_meme" for name in names):
-        return True
-    return batch_is_meme_only(names)
-
-
-def should_mark_speech_delivered(*, text: str, has_media: bool) -> bool:
-    """send_message 是否置交付终局：媒体配台词，或非等待的纯文本。"""
-    body = (text or "").strip()
-    if has_media:
-        return bool(body)
-    if not body:
-        return False
-    if looks_like_wait_comfort(body):
-        return False
-    # 「等我去翻」常超过 12 字，仍是接任务，不是终局交付。
-    if (
-        len(body) <= FIRST_ACK_SPEECH_MAX
-        and _WAIT_COMFORT_RE.search(body)
-        and not claims_premature_delivery(body)
-        and not has_orchestration_narration(body)
-    ):
-        return False
-    return True
 
 
 def is_status_tool_name(name: str) -> bool:

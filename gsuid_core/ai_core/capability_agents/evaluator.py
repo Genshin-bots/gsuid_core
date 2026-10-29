@@ -513,7 +513,6 @@ async def _run_evaluator_once(
     agent = create_agent(
         system_prompt=system_prompt,
         max_tokens=8000,
-        max_iterations=4,
         create_by="CapabilityEvaluator",
         task_level="low",
         session_id=f"capeval_{owner_user_id}_{int(time.time() * 1000) % 10_000_000}",

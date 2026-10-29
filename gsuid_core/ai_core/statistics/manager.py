@@ -25,6 +25,7 @@ from gsuid_core.ai_core.statistics.models import (
     AIGroupUserActivityStats,
 )
 
+from .price import calculate_model_cost
 from .dataclass_models import BotState, TokenUsage, LatencyStats, HourlyPerformanceEntry
 
 # 小时级性能统计的内存缓冲 key: (date, hour, provider, model_name)
@@ -281,9 +282,15 @@ class StatisticsManager:
         mapped_intent = self.INTENT_MAP.get(intent, intent)
         self._bot_state.intents[mapped_intent] += 1
 
-    def record_error(self, error_type: str):
-        """记录错误"""
+    def record_error(self, error_type: str, message: str = ""):
+        """记录错误。message 只进按日事件文件，计数器仍只按类型累加。"""
         self._bot_state.errors[error_type] += 1
+        try:
+            from gsuid_core.ai_core.statistics.error_events import append_error_event
+
+            append_error_event(self._today, error_type, message)
+        except Exception as e:
+            logger.exception(i18n_t("log.ai.statisticsmanager_append_error_event_fail", e=e))
 
     def record_trigger(self, trigger_type: str):
         """记录触发方式"""
@@ -387,6 +394,21 @@ class StatisticsManager:
             reverse=True,
         )[:20]
 
+        by_model = [
+            {
+                "model": m,
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cache_read_tokens": u.cache_read_tokens,
+                "cache_write_tokens": u.cache_write_tokens,
+                "cost": calculate_model_cost(
+                    m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
+                ),
+            }
+            for m, u in b.token_by_model.items()
+        ]
+        total_cost = round(sum(item["cost"] for item in by_model), 6)
+
         return {
             "date": self._today,
             "token_usage": {
@@ -394,16 +416,8 @@ class StatisticsManager:
                 "total_output_tokens": agg_tokens["output"],
                 "total_cache_read_tokens": agg_tokens["cache_read"],
                 "total_cache_write_tokens": agg_tokens["cache_write"],
-                "by_model": [
-                    {
-                        "model": m,
-                        "input_tokens": u.input_tokens,
-                        "output_tokens": u.output_tokens,
-                        "cache_read_tokens": u.cache_read_tokens,
-                        "cache_write_tokens": u.cache_write_tokens,
-                    }
-                    for m, u in b.token_by_model.items()
-                ],
+                "total_cost": total_cost,
+                "by_model": by_model,
                 "by_type": [
                     {
                         "type": t,
@@ -836,9 +850,13 @@ class StatisticsManager:
         end_s = today.strftime("%Y-%m-%d")
 
         by_date: Dict[str, Dict[str, Any]] = {}
+        cost_by_date: Dict[str, float] = defaultdict(float)
         try:
-            rows = await AIDailyStatistics.get_stats_between(start_s, end_s)
-            for row in rows:
+            daily_rows, model_rows = await asyncio.gather(
+                AIDailyStatistics.get_stats_between(start_s, end_s),
+                AITokenUsageByModel.get_data_between(start_s, end_s),
+            )
+            for row in daily_rows:
                 key = str(row.date)[:10]
                 by_date[key] = {
                     "input_tokens": int(row.total_input_tokens or 0),
@@ -849,6 +867,15 @@ class StatisticsManager:
                     "user_turn_input_tokens": int(row.user_turn_input_tokens or 0),
                     "user_turn_output_tokens": int(row.user_turn_output_tokens or 0),
                 }
+            for m_row in model_rows:
+                m_key = str(m_row.date)[:10]
+                cost_by_date[m_key] += calculate_model_cost(
+                    m_row.model_name,
+                    m_row.input_tokens or 0,
+                    m_row.output_tokens or 0,
+                    m_row.cache_read_tokens or 0,
+                    m_row.cache_write_tokens or 0,
+                )
         except Exception:
             # DB 不可用时仍返回连续 0 序列
             pass
@@ -866,6 +893,10 @@ class StatisticsManager:
                 "user_turn_input_tokens": int(b.user_turn_tokens.input_tokens or 0),
                 "user_turn_output_tokens": int(b.user_turn_tokens.output_tokens or 0),
             }
+            cost_by_date[today_s] = sum(
+                calculate_model_cost(m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+                for m, u in b.token_by_model.items()
+            )
 
         result: List[Dict[str, Any]] = []
         for offset in range(days - 1, -1, -1):
@@ -879,12 +910,14 @@ class StatisticsManager:
             ut_ar = int(bucket.get("user_turn_agent_run_count", 0) or 0)
             ut_in = int(bucket.get("user_turn_input_tokens", 0) or 0)
             ut_out = int(bucket.get("user_turn_output_tokens", 0) or 0)
+            day_cost = round(cost_by_date.get(key, 0.0), 6)
             result.append(
                 {
                     "date": key,
                     "input_tokens": inp,
                     "output_tokens": out,
                     "total_tokens": inp + out,
+                    "total_cost": day_cost,
                     "user_turn_count": ut,
                     "agent_run_count": ar,
                     "user_turn_agent_run_count": ut_ar,
@@ -918,6 +951,13 @@ class StatisticsManager:
                     "output_tokens": t.output_tokens,
                     "cache_read_tokens": t.cache_read_tokens or 0,
                     "cache_write_tokens": t.cache_write_tokens or 0,
+                    "cost": calculate_model_cost(
+                        t.model_name,
+                        t.input_tokens,
+                        t.output_tokens,
+                        t.cache_read_tokens or 0,
+                        t.cache_write_tokens or 0,
+                    ),
                 }
                 for t in token_by_model_data
             ]
@@ -1154,6 +1194,10 @@ class StatisticsManager:
                     else dict.fromkeys(err_acc, 0)
                 )
 
+            d_cost = round(
+                sum(calculate_model_cost(m, inp, outp, cr, cw) for m, inp, outp, cr, cw in day_models),
+                6,
+            )
             daily.append(
                 {
                     "date": date_str,
@@ -1161,7 +1205,8 @@ class StatisticsManager:
                     "output_tokens": d_out,
                     "cache_read_tokens": d_cr,
                     "cache_write_tokens": d_cw,
-                    "total_tokens": d_in + d_out + d_cr + d_cw,
+                    "total_tokens": d_in + d_out,
+                    "total_cost": d_cost,
                     "user_turn_count": d_ut,
                     "agent_run_count": d_ar,
                     "user_turn_agent_run_count": d_ut_ar,
@@ -1198,7 +1243,10 @@ class StatisticsManager:
                     "output_tokens": u.output_tokens,
                     "cache_read_tokens": u.cache_read_tokens,
                     "cache_write_tokens": u.cache_write_tokens,
-                    "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
+                    "total_tokens": u.input_tokens + u.output_tokens,
+                    "cost": calculate_model_cost(
+                        model_name, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
+                    ),
                 }
                 for model_name, u in model_acc.items()
             ],
@@ -1213,7 +1261,7 @@ class StatisticsManager:
                     "output_tokens": u.output_tokens,
                     "cache_read_tokens": u.cache_read_tokens,
                     "cache_write_tokens": u.cache_write_tokens,
-                    "total_tokens": (u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens),
+                    "total_tokens": u.input_tokens + u.output_tokens,
                 }
                 for type_name, u in type_acc.items()
             ],
@@ -1230,9 +1278,8 @@ class StatisticsManager:
                 "output_tokens": total.output_tokens,
                 "cache_read_tokens": total.cache_read_tokens,
                 "cache_write_tokens": total.cache_write_tokens,
-                "total_tokens": (
-                    total.input_tokens + total.output_tokens + total.cache_read_tokens + total.cache_write_tokens
-                ),
+                "total_tokens": total.input_tokens + total.output_tokens,
+                "total_cost": round(sum(item["cost"] for item in by_model), 6),
             },
             "efficiency": {
                 "user_turn_count": sum_user_turns,
@@ -1292,6 +1339,7 @@ class StatisticsManager:
                 "total_output_tokens": stats.total_output_tokens or 0,
                 "total_cache_read_tokens": stats.total_cache_read_tokens or 0,
                 "total_cache_write_tokens": stats.total_cache_write_tokens or 0,
+                "total_cost": round(sum(item.get("cost", 0.0) for item in (by_model or [])), 6),
                 "by_model": by_model or [],
                 "by_type": by_type or [],
             },

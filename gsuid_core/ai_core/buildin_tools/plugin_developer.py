@@ -29,7 +29,7 @@ import shutil
 import asyncio
 import functools
 import py_compile
-from typing import Dict, List, Tuple, Optional
+from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
 from pathlib import Path
 
 from pydantic_ai import RunContext
@@ -39,6 +39,9 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.check_func import check_pm
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.planning.models import AIAgentTask
 
 # 插件名长度上限（防滥造超长目录名）
 _PLUGIN_NAME_MAX_LEN: int = 64
@@ -573,6 +576,8 @@ def _install_state(logs: list, plugin_name: str) -> Tuple[str, Optional[str]]:
                 staged_name = kind[len("staged|") :] or None
             elif kind == "installed":
                 phase, pending = "installed", None
+            elif kind == "reset":
+                phase, pending, staged_name = "none", None, None
         elif lg.event_type == "approval":
             if c.startswith("主人批准") and pending is not None:
                 phase = {"install": "do_install", "stage": "do_stage", "delete": "do_finalize"}[pending]
@@ -580,6 +585,127 @@ def _install_state(logs: list, plugin_name: str) -> Tuple[str, Optional[str]]:
             elif c.startswith("主人拒绝"):
                 pending = None
     return phase, staged_name
+
+
+async def _halt_for_dedupe(dedupe: str) -> str:
+    from gsuid_core.ai_core import approval as approval_center
+    from gsuid_core.ai_core.approval.halt import halt_line
+
+    row = await approval_center.AIApprovalRequest.get_pending_by_dedupe(dedupe)
+    if row is None:
+        return halt_line("----", delivered=False, reused=False)
+    delivered, reused = approval_center.submit_meta(row.request_id)
+    return halt_line(row.short_id, delivered=delivered, reused=reused)
+
+
+async def perform_approved_install(task: "AIAgentTask", plugin_name: str, action: str) -> str:
+    """批准回调里复制文件。计划上下文在这里绑上，因为执行器当时已经退出。"""
+    from gsuid_core.ai_core.approval.halt import APPROVAL_HOLD_MARK
+    from gsuid_core.ai_core.planning.runtime import PlanRunContext, bind_plan_context, reset_plan_context
+    from gsuid_core.ai_core.planning.workspace import ensure_workspace
+
+    root_id = task.root_task_id or task.id
+    workspace = ensure_workspace(root_id, task.id, agent_profile=task.agent_profile or "")
+    ctx = PlanRunContext(
+        task_id=task.id,
+        root_task_id=root_id,
+        artifact_workspace=workspace,
+        allowed_write_roots=[workspace],
+        agent_profile=task.agent_profile or "",
+    )
+    token = bind_plan_context(ctx)
+    try:
+        if action == "delete":
+            return await _perform_delete(task, plugin_name)
+        if action == "stage":
+            text = await _perform_stage(task, plugin_name)
+            if text.startswith("安装失败"):
+                return text
+            return APPROVAL_HOLD_MARK + text
+        return await _perform_install_new(plugin_name)
+    finally:
+        reset_plan_context(token)
+
+
+async def _perform_install_new(plugin_name: str) -> str:
+    src, err = _resolve_in_workspace(plugin_name, "")
+    if src is None:
+        await _record(_mark(plugin_name, "reset"))
+        return f"安装失败：{err}"
+    dest = (_plugin_root() / plugin_name).resolve()
+    if dest.exists():
+        from gsuid_core.ai_core.approval.halt import APPROVAL_HOLD_MARK
+
+        text = await _perform_stage_body(plugin_name)
+        if text.startswith("安装失败"):
+            return text
+        return APPROVAL_HOLD_MARK + text
+    install_err = await _physical_install_async(src, dest)
+    if install_err:
+        await _record(_mark(plugin_name, "reset"))
+        return f"安装失败：{install_err}"
+    await _record(_mark(plugin_name, "installed"))
+    return f"✅ 「{plugin_name}」已安装到 plugins/{plugin_name}/。"
+
+
+async def _perform_stage(task, plugin_name: str) -> str:
+    del task
+    return await _perform_stage_body(plugin_name)
+
+
+async def _perform_stage_body(plugin_name: str) -> str:
+    from gsuid_core.ai_core.planning.kanban import request_subtask_approval
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+    src, err = _resolve_in_workspace(plugin_name, "")
+    if src is None:
+        await _record(_mark(plugin_name, "reset"))
+        return f"安装失败：{err}"
+    staging_name = _pick_staging_name(plugin_name)
+    if staging_name is None:
+        await _record(_mark(plugin_name, "reset"))
+        return f"安装失败：找不到可用的临时目录名（{plugin_name}_new*）。"
+    staging_dest = (_plugin_root() / staging_name).resolve()
+    install_err = await _physical_install_async(src, staging_dest)
+    if install_err:
+        await asyncio.to_thread(functools.partial(shutil.rmtree, staging_dest, ignore_errors=True))
+        await _record(_mark(plugin_name, "reset"))
+        return f"安装失败：{install_err}"
+    await _record(_mark(plugin_name, f"staged|{staging_name}"))
+    await _record(_mark(plugin_name, "req-delete"))
+    plan_ctx = get_plan_context()
+    task = await AIAgentTask.get_by_id(plan_ctx.task_id) if plan_ctx is not None and plan_ctx.task_id else None
+    if task is None:
+        return f"安装失败：暂存已写入 plugins/{staging_name}/，但任务不见了，无法发起删除确认。"
+    effect = f"删除旧目录 plugins/{plugin_name}/，并把 {staging_name} 改回正式名"
+    await request_subtask_approval(
+        task,
+        _delete_approval_prompt(plugin_name, staging_name),
+        dedupe_key=f"plugin_install:{plugin_name}:delete",
+        effect=effect,
+        plugin_name=plugin_name,
+        plugin_action="delete",
+    )
+    return f"新代码已暂存于 plugins/{staging_name}/。删除旧目录需要另一次确认。"
+
+
+async def _perform_delete(task, plugin_name: str) -> str:
+    from gsuid_core.ai_core.planning.models import AIAgentTaskLog
+
+    logs = await AIAgentTaskLog.get_for_task(task.id)
+    _phase, staged_name = _install_state(logs, plugin_name)
+    if not staged_name:
+        return "安装失败：账本没有暂存目录，无法收尾。"
+    dest = (_plugin_root() / plugin_name).resolve()
+    staged = (_plugin_root() / staged_name).resolve()
+    if not staged.is_dir():
+        return f"安装失败：暂存目录 plugins/{staged_name}/ 不存在。"
+    fin_err = _finalize_update(dest, staged)
+    if fin_err:
+        return f"安装失败：{fin_err}"
+    await _record(_mark(plugin_name, "installed"))
+    return f"✅ 「{plugin_name}」已安装到 plugins/{plugin_name}/（旧目录已删除）。"
 
 
 def _ledger_plugin_names(logs: list) -> list:
@@ -594,17 +720,10 @@ def _ledger_plugin_names(logs: list) -> list:
 
 
 async def install_resume_hint_for_task(task_id: str) -> str:
-    """重新调度插件开发代理时的「断点续作」提示；无进行中的安装流程时返回空串。
+    """kick_root 重派时给插件开发代理的续作提示；无进行中的安装则空串。
 
-    安装是跨『审批挂起 → 主人批准 → 重新调度』的多步流程。重新调度时开发代理的对话
-    history 是空的——它并不知道自己上一轮已经 scaffold + 写码 + 发起并通过了安装审批，
-    于是从头重读指南、重新 scaffold（实测会话 fa7eef：批准后又把整套流程重跑一遍）。
-    本函数读任务账本判断安装推进到了哪一步，给重新调度的代理一段**明确的续作指引**，
-    让它直接接着 copy(实际落盘)/load/test，而不是从头再来。
-
-    注意：新建插件审批通过后 phase=do_install，此时**必须再调一次 copy_to_plugin_dir**
-    才会真正落盘并写下 installed 标记（直接 load 会被「请先 copy_to_plugin_dir」拦下），
-    故提示里明确要求再 copy 一次（这次不再发起审批）。
+    带确认码的新票批准时已经复制，走回灌，用不到这段。无哈希的旧票仍 kick_root，
+    history 可能是空的：phase=do_* 要再 copy 一次才落盘；phase=installed 只要 load/test。
     """
     from gsuid_core.ai_core.planning.models import AIAgentTaskLog
 
@@ -644,14 +763,6 @@ def _delete_approval_prompt(plugin_name: str, staging_name: str) -> str:
     )
 
 
-def _delete_waiting_reply(plugin_name: str, staging_name: str) -> str:
-    """发起删旧目录审批后回给开发代理的提示。"""
-    return (
-        f"已发起第二步审批：删除旧目录 plugins/{plugin_name}/（新代码已暂存于 {staging_name}，旧目录未动）。"
-        "请立即停止后续操作；主人同意后框架会自动重新调度你完成收尾与自测。"
-    )
-
-
 async def _request_overwrite_stage(task, plugin_name: str) -> str:
     """覆盖更新第一步：挑临时名 → 记 req-stage → 发起"以临时名安装"审批，返回等待提示。"""
     from gsuid_core.ai_core.planning.kanban import request_subtask_approval
@@ -660,10 +771,14 @@ async def _request_overwrite_stage(task, plugin_name: str) -> str:
     if staging_name is None:
         return f"错误：找不到可用的临时安装目录名（{plugin_name}_new* 均被占用）。"
     await _record(_mark(plugin_name, "req-stage"))
+    effect = f"先把新代码装到临时目录，不动 plugins/{plugin_name}/"
     await request_subtask_approval(
         task,
-        f"插件「{plugin_name}」在 plugins/ 已有同名目录。将**先以临时名** plugins/{staging_name}/ 安装"
-        f"新代码（不动旧目录），安装成功后再单独请求删除旧目录。请求批准这一步安装。",
+        f"插件「{plugin_name}」在 plugins/ 已有同名目录。将先以临时名安装新代码，成功后再单独请求删除旧目录。",
+        dedupe_key=f"plugin_install:{plugin_name}",
+        effect=effect,
+        plugin_name=plugin_name,
+        plugin_action="stage",
     )
     logger.info(
         t(
@@ -672,18 +787,15 @@ async def _request_overwrite_stage(task, plugin_name: str) -> str:
             staging_name=staging_name,
         )
     )
-    return (
-        f"已发起第一步审批：以临时名 {staging_name} 安装插件「{plugin_name}」新代码（暂不动旧目录）。"
-        "请立即停止后续操作；主人同意后框架会自动重新调度你继续。"
-    )
+    return await _halt_for_dedupe(f"plugin_install:{plugin_name}")
 
 
 @ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)
 async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> str:
     """把工作区里开发好的插件装到 plugins/——**安装前必须经主人审批**，且绝不直接删同名旧目录。
 
-    非阻塞：把当前 Kanban 任务挂为 waiting_approval 后立即返回（不等用户）；主人用
-    ``respond_approval`` 同意后框架重新调度本任务，重入时推进到下一步。
+    非阻塞：提交审批后立刻返回。主人私聊确认码或在审批中心点批准后，框架复制文件，
+    再把结果回灌进当前这个会话。群里说「同意」不会通过。
 
     安装策略（防误删，按 plugins/ 是否已有同名目录分流）：
     - **新建插件**（无同名目录）：一次审批通过后直接复制进 plugins/<name>。
@@ -768,7 +880,14 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
             return install_err
         await _record(_mark(plugin_name, f"staged|{staging_name}"))  # 只记录成功的移动
         await _record(_mark(plugin_name, "req-delete"))
-        await request_subtask_approval(task, _delete_approval_prompt(plugin_name, staging_name))
+        await request_subtask_approval(
+            task,
+            _delete_approval_prompt(plugin_name, staging_name),
+            dedupe_key=f"plugin_install:{plugin_name}:delete",
+            effect=f"删除旧目录 plugins/{plugin_name}/，并把 {staging_name} 改回正式名",
+            plugin_name=plugin_name,
+            plugin_action="delete",
+        )
         logger.info(
             t(
                 "log.ai.plugindev_plugin_name_staged_ok",
@@ -776,7 +895,7 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
                 staging_name=staging_name,
             )
         )
-        return _delete_waiting_reply(plugin_name, staging_name)
+        return await _halt_for_dedupe(f"plugin_install:{plugin_name}:delete")
 
     # C) 新建插件：安装审批已过 → 直接复制进 plugins/<name>
     if phase == "do_install":
@@ -801,19 +920,23 @@ async def copy_to_plugin_dir(ctx: RunContext[ToolContext], plugin_name: str) -> 
 
     # D) 等待中各态（任务已是 waiting_approval，开发代理理应已停手）：原样提醒，别重复发起
     if phase == "await_delete":
-        return _delete_waiting_reply(plugin_name, staged_name or "（临时目录）")
+        return await _halt_for_dedupe(f"plugin_install:{plugin_name}:delete")
     if phase in ("await_install", "await_stage"):
-        return f"插件「{plugin_name}」正在等待主人审批，请立即停止后续操作；主人同意后框架会自动重新调度你继续。"
+        return await _halt_for_dedupe(f"plugin_install:{plugin_name}")
 
     # E) phase == "none"：首次调用 → 按"新建 / 覆盖更新"分流，发起第一步审批
     if not dest.exists():
         await _record(_mark(plugin_name, "req-install"))
-        await request_subtask_approval(task, f"插件「{plugin_name}」（新建插件）已在工作区开发完成，请求安装到框架。")
-        logger.info(t("log.ai.plugindev_plugin_name_initiated", plugin_name=plugin_name))
-        return (
-            f"已发起安装审批：插件「{plugin_name}」（新建插件）正在等待主人同意，请立即停止后续操作；"
-            "主人同意后框架会自动重新调度你完成安装与自测。"
+        await request_subtask_approval(
+            task,
+            f"插件「{plugin_name}」（新建插件）已在工作区开发完成，请求安装到框架。",
+            dedupe_key=f"plugin_install:{plugin_name}",
+            effect=f"把工作区插件 {plugin_name} 复制到 plugins/{plugin_name}/",
+            plugin_name=plugin_name,
+            plugin_action="install",
         )
+        logger.info(t("log.ai.plugindev_plugin_name_initiated", plugin_name=plugin_name))
+        return await _halt_for_dedupe(f"plugin_install:{plugin_name}")
 
     return await _request_overwrite_stage(task, plugin_name)
 

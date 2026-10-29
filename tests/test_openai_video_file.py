@@ -16,7 +16,9 @@ from gsuid_core.ai_core.multimodal.openai_files import (
     OpenAIChatModelWithVideo,
     video_filename,
     video_delivery_mode,
+    parse_video_part_extra,
     upload_openai_video_file,
+    openai_chat_video_url_part,
     openai_chat_inline_video_part,
     video_bytes_to_openai_content,
     openai_chat_uploaded_video_part,
@@ -592,3 +594,244 @@ def test_unread_attachment_counts_video_only_when_readable() -> None:
     )
     assert _has_unread_attachment(st, video_readable=True) is True
     assert _has_unread_attachment(st, video_readable=False) is False
+
+
+def test_openai_chat_video_url_part_shape() -> None:
+    part = openai_chat_video_url_part(
+        "http://example.com/v.mp4",
+        fps=2.0,
+        extra={"media_resolution": "default", "video_url": {"processing": "static"}},
+    )
+    assert part["type"] == "video_url"
+    assert part["fps"] == 2.0
+    assert part["media_resolution"] == "default"
+    assert isinstance(part["video_url"], dict)
+    assert part["video_url"]["url"] == "http://example.com/v.mp4"
+    assert part["video_url"]["processing"] == "static"
+
+
+def test_parse_video_part_extra() -> None:
+    assert parse_video_part_extra("") == {}
+    assert parse_video_part_extra("   ") == {}
+    assert parse_video_part_extra('{"fps": 2, "media_resolution": "default"}') == {
+        "fps": 2,
+        "media_resolution": "default",
+    }
+    # 非法 JSON 降级为空字典，不抛异常
+    assert parse_video_part_extra("not-json") == {}
+
+
+def test_video_delivery_mode_with_openai_format() -> None:
+    assert (
+        video_delivery_mode(
+            supports_video=True,
+            supports_image=False,
+            provider="openai",
+            openai_format="video_url",
+        )
+        == "openai_video_url"
+    )
+    assert (
+        video_delivery_mode(
+            supports_video=True,
+            supports_image=False,
+            provider="openai",
+            openai_format="file",
+        )
+        == "openai_file"
+    )
+
+
+@pytest.mark.anyio
+async def test_chat_model_maps_video_binary_to_video_url_part() -> None:
+    from openai import AsyncOpenAI
+    from openai.types.chat import ChatCompletionContentPartParam
+    from pydantic_ai.messages import VideoUrl
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    model = OpenAIChatModelWithVideo(
+        "mimo-v2.6-pro",
+        provider=OpenAIProvider(
+            openai_client=AsyncOpenAI(api_key="sk-test", base_url="http://127.0.0.1:9/v1"),
+        ),
+        video_input_format="video_url",
+        video_fps=2.0,
+        video_part_extra={"media_resolution": "default"},
+    )
+    item = BinaryContent(data=b"test-video", media_type="video/mp4")
+    content: list[ChatCompletionContentPartParam] = []
+    await model._map_user_prompt_content_item(item, content)
+    assert len(content) == 1
+    part = content[0]
+    assert isinstance(part, dict)
+    assert part["type"] == "video_url"
+    assert part["fps"] == 2.0
+    assert part["media_resolution"] == "default"
+    video_url_field = part["video_url"]
+    assert isinstance(video_url_field, dict)
+    assert str(video_url_field["url"]).startswith("data:video/mp4;base64,")
+
+    content_url: list[ChatCompletionContentPartParam] = []
+    await model._map_user_prompt_content_item(VideoUrl(url="https://example.com/a.mp4"), content_url)
+    assert len(content_url) == 1
+    part_url = content_url[0]
+    assert isinstance(part_url, dict)
+    assert part_url["type"] == "video_url"
+    assert part_url["fps"] == 2.0
+    assert isinstance(part_url["video_url"], dict)
+    assert part_url["video_url"]["url"] == "https://example.com/a.mp4"
+
+
+@pytest.mark.anyio
+async def test_prepare_video_video_url_mode_inline_and_oversize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openai import AsyncOpenAI
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.ai_core.multimodal import frame_extract
+
+    async def _fake_frames(
+        video_data: bytes,
+        video_format: str = "mp4",
+        interval_seconds: float = 2.0,
+        max_frames: int = 0,
+    ) -> list[bytes]:
+        return [b"jpeg-frame"]
+
+    monkeypatch.setattr(frame_extract, "extract_frames_ffmpeg", _fake_frames)
+    model = OpenAIChatModelWithVideo(
+        "mimo-v2.6-pro",
+        provider=OpenAIProvider(
+            openai_client=AsyncOpenAI(api_key="sk-test", base_url="http://127.0.0.1:9/v1"),
+        ),
+        video_input_format="video_url",
+        video_inline_max_mb=12,
+    )
+    agent = GsCoreAIAgent(
+        openai_chat_model=model,
+        session_id="ut_video_url_mode",
+        create_by="TEST",
+        max_history=8,
+        max_tokens=64,
+        system_prompt="x",
+    )
+    small = BinaryContent(data=b"small-video", media_type="video/mp4")
+    out_small = await agent._prepare_video_content([small], "text,image,video")
+    assert len(out_small) == 1
+    assert isinstance(out_small[0], BinaryContent)
+
+    big = BinaryContent(data=b"x" * (12 * 1024 * 1024 + 10), media_type="video/mp4")
+    out_big = await agent._prepare_video_content([big], "text,image,video")
+    big_images = [item for item in out_big if isinstance(item, ImageUrl)]
+    assert len(big_images) == 1
+
+
+@pytest.mark.anyio
+async def test_prepare_video_passthrough_on_http_url() -> None:
+    from openai import AsyncOpenAI
+    from pydantic_ai.messages import VideoUrl
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    model = OpenAIChatModelWithVideo(
+        "mimo-v2.6-pro",
+        provider=OpenAIProvider(
+            openai_client=AsyncOpenAI(api_key="sk-test", base_url="http://127.0.0.1:9/v1"),
+        ),
+        video_input_format="video_url",
+        video_url_passthrough="on",
+    )
+    agent = GsCoreAIAgent(
+        openai_chat_model=model,
+        session_id="ut_video_passthrough",
+        create_by="TEST",
+        max_history=8,
+        max_tokens=64,
+        system_prompt="x",
+    )
+    video_item = VideoUrl(url="https://example.com/persisted.mp4")
+    out = await agent._prepare_video_content([video_item], "text,image,video")
+    assert len(out) == 1
+    assert isinstance(out[0], VideoUrl)
+    assert out[0].url == "https://example.com/persisted.mp4"
+
+
+@pytest.mark.anyio
+async def test_prepare_video_responses_fallback_to_openai_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openai import AsyncOpenAI
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.ai_core.multimodal import openai_files as openai_files_mod
+
+    seen: dict[str, bool] = {}
+
+    async def _capture(
+        data: bytes,
+        mime_type: str,
+        client: OpenAIFilesClient | None,
+        *,
+        allow_inline: bool = True,
+    ) -> tuple[BinaryContent, OpenAIVideoHow]:
+        seen["allow_inline"] = allow_inline
+        return BinaryContent(data=data, media_type=mime_type), "inline"
+
+    monkeypatch.setattr(openai_files_mod, "video_bytes_to_openai_content", _capture)
+    model = OpenAIResponsesModel(
+        "gpt-4o",
+        provider=OpenAIProvider(
+            openai_client=AsyncOpenAI(api_key="sk-test", base_url="http://127.0.0.1:9/v1"),
+        ),
+    )
+    agent = GsCoreAIAgent(
+        openai_chat_model=model,
+        session_id="ut_video_responses_fallback",
+        create_by="TEST",
+        max_history=8,
+        max_tokens=64,
+        system_prompt="x",
+    )
+    monkeypatch.setattr(
+        agent,
+        "_routed_openai_video_settings",
+        lambda: ("video_url", 12, "off"),
+    )
+    video = BinaryContent(data=b"abc", media_type="video/mp4")
+    await agent._prepare_video_content([video], "text,image,video")
+    assert seen["allow_inline"] is False
+
+
+@pytest.mark.anyio
+async def test_load_video_for_agent_passthrough_url() -> None:
+    from openai import AsyncOpenAI
+    from pydantic_ai.messages import VideoUrl
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.utils.resource_manager import RM
+    from gsuid_core.ai_core.buildin_tools.video_reader import load_video_for_agent
+
+    model = OpenAIChatModelWithVideo(
+        "mimo-v2.6-pro",
+        provider=OpenAIProvider(
+            openai_client=AsyncOpenAI(api_key="sk-test", base_url="http://127.0.0.1:9/v1"),
+        ),
+        video_input_format="video_url",
+        video_url_passthrough="on",
+    )
+    agent = GsCoreAIAgent(
+        openai_chat_model=model,
+        session_id="ut_load_video_passthrough",
+        create_by="TEST",
+        max_history=8,
+        max_tokens=64,
+        system_prompt="x",
+    )
+    vid = RM.register_video("https://example.com/video.mp4")
+    note, media = await load_video_for_agent(vid, agent)
+    assert media is not None
+    assert len(media) == 1
+    assert isinstance(media[0], VideoUrl)
+    assert media[0].url == "https://example.com/video.mp4"
+    assert "视频" in note

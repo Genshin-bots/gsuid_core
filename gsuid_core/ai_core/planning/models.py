@@ -20,7 +20,7 @@ from pathlib import Path
 from datetime import datetime
 
 from sqlmodel import Field, SQLModel, col, select, update
-from sqlalchemy import Text, Column, func
+from sqlalchemy import Text, Column, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.postgresql import JSON
@@ -438,6 +438,41 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
             select(cls).where(col(cls.task_id) == task_id).order_by(col(cls.created_at).asc())
         )
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_page(
+        cls,
+        session: AsyncSession,
+        *,
+        task_id: str | None = None,
+        root_task_id: str | None = None,
+        include_expired: bool = False,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> tuple[list["AIAgentArtifact"], int]:
+        """控制台列表。按 created_at 倒序分页，返回 (本页, 匹配总数)。"""
+        # 过期条件放进 SQL。先截断再丢行会让页长和 total 对不上。
+        now = datetime.now()
+        filters: list[ColumnElement[bool]] = []
+        if task_id:
+            filters.append(col(cls.task_id) == task_id)
+        elif root_task_id:
+            filters.append(col(cls.root_task_id) == root_task_id)
+        if not include_expired:
+            filters.append(or_(col(cls.expires_at).is_(None), col(cls.expires_at) >= now))
+
+        count_stmt = select(func.count()).select_from(cls)
+        list_stmt = select(cls)
+        for cond in filters:
+            count_stmt = count_stmt.where(cond)
+            list_stmt = list_stmt.where(cond)
+        total = int((await session.execute(count_stmt)).scalar_one() or 0)
+        list_stmt = (
+            list_stmt.order_by(col(cls.created_at).desc(), col(cls.id).desc()).offset(max(0, offset)).limit(limit)
+        )
+        result = await session.execute(list_stmt)
+        return list(result.scalars().all()), total
 
     @classmethod
     @with_session

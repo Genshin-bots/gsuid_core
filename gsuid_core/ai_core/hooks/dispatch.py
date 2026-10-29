@@ -12,14 +12,13 @@ from typing import Optional, Awaitable
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.hooks.models import HookFn, HookDecision, AgentHookResult, AgentHookContext, HookCapabilityError
-from gsuid_core.ai_core.hooks.points import STABLE_CONTEXT_ONLY, AgentHookPoint
+from gsuid_core.ai_core.hooks.points import HOOK_POINT_SPECS, STABLE_CONTEXT_ONLY, AgentHookPoint
 from gsuid_core.ai_core.hooks.registry import hooks_for, is_async_hook, hooks_registered
+from gsuid_core.ai_core.configs.ai_config import ai_config
 
 
 def hooks_enabled() -> bool:
     """总闸 ``agent_hooks_enable``；AI 总开关关闭时总线整条不跑（D-21）。"""
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
     if not ai_config.get_config("enable").data:
         return False
     return bool(ai_config.get_config("agent_hooks_enable").data)
@@ -58,6 +57,7 @@ async def fire_hooks(
         ctx.current_kit_id = reg.kit_id
         timeout_ms = reg.timeout_ms
         if point is AgentHookPoint.RETRIEVE_CONTEXT:
+            # memory.config 会先跑 memory 包初始化（双路检索 / RAG）。只在真正 fire 时再导入。
             from gsuid_core.ai_core.memory.config import memory_config
 
             timeout_ms = memory_config.retrieve_hook_timeout_ms
@@ -100,6 +100,8 @@ async def _invoke(
             raw = await asyncio.wait_for(asyncio.to_thread(func, ctx), timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(t("log.agent.hooks_timeout", point=point.name, owner=label, ms=timeout_ms))
+        if point in HOOK_POINT_SPECS and HOOK_POINT_SPECS[point].on_timeout_decision is HookDecision.SILENCE:
+            return AgentHookResult(HookDecision.SILENCE, reason="timeout")
         return None
     except HookCapabilityError as e:
         logger.warning(t("log.agent.hooks_capability_denied", point=point.name, owner=label, e=e))

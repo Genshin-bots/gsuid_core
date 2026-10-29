@@ -522,8 +522,10 @@ class HttpQdrant:
             body["filter"] = _filter_rest(query_filter)
         if score_threshold is not None:
             body["score_threshold"] = score_threshold
-        if with_payload is not None:
-            body["with_payload"] = with_payload
+        # 缺省也要回 payload，与 qlocal.query_points（以及 qdrant-client 的缺省）保持一致。
+        # HTTP 模式下不回 payload 时，靠 payload 过滤候选的调用方（如 rag/tools.py 的
+        # search_tools 依赖 payload["name"]）会把所有命中全部丢弃，检索结果恒为空。
+        body["with_payload"] = True if with_payload is None else with_payload
         if with_vectors is not None:
             body["with_vector"] = with_vectors
         if prefetch is not None:

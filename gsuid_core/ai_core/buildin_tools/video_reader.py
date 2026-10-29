@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pydantic_ai import RunContext, ToolReturn
-from pydantic_ai.messages import UserContent, BinaryContent
+from pydantic_ai.messages import VideoUrl, UserContent, BinaryContent
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -78,6 +78,37 @@ async def load_video_for_agent(
     agent: GsCoreAIAgent,
 ) -> tuple[str, list[UserContent] | None]:
     """取回视频并按当前 Agent 模型转换成可注入内容。"""
+    _fmt, _max_mb, passthrough = agent._routed_openai_video_settings()
+    if passthrough == "on":
+        raw_url: str | None = None
+        trimmed = video_id.strip()
+        if trimmed.startswith(("http://", "https://")):
+            raw_url = trimmed
+        else:
+            try:
+                peeked = RM.peek(trimmed)
+                if isinstance(peeked, str) and peeked.startswith(("http://", "https://")):
+                    raw_url = peeked
+            except ValueError:
+                raw_url = None
+        if raw_url is not None:
+            video_url_item = VideoUrl(url=raw_url)
+            out = await agent._prepare_video_content([video_url_item], ["text", "image", "video"])
+            pt_texts: list[str] = []
+            pt_media: list[UserContent] = []
+            for item in out:
+                if isinstance(item, str):
+                    pt_texts.append(item)
+                else:
+                    pt_media.append(item)
+            if not pt_media:
+                note = "\n".join(pt_texts).strip() if pt_texts else _UNREADABLE
+                return note, None
+            shown = f"🎬 视频[{video_id}]已直接呈现给你，请直接查看后作答。"
+            if pt_texts:
+                shown = "\n".join(pt_texts) + "\n" + shown
+            return shown, pt_media
+
     data, err = await resolve_video_bytes(video_id)
     if err:
         return err, None
@@ -108,7 +139,12 @@ async def load_video_for_agent(
     return shown, media
 
 
-@ai_tools(category="buildin", visible_when=context_has_video, timeout=320.0)
+@ai_tools(
+    category="buildin",
+    covers=["查看视频", "读取视频"],
+    visible_when=context_has_video,
+    timeout=320.0,
+)
 async def read_video(
     ctx: RunContext[ToolContext],
     video_id: str,
@@ -119,7 +155,8 @@ async def read_video(
     用户发来的视频不会直接进入你的视野，只会以「视频ID」(形如 ``vid_xxxxxxxx``)
     的形式出现在消息里。需要看清视频里有什么时，调用本工具把它读出来。
 
-    本工具仅在当前模型声明支持 video 时才会出现。能原生吃视频时把视频塞回会话；
+    模型声明支持 video 且本轮有视频时直接出现。未声明 video 时用 find_tools
+    描述查看视频即可召回。能原生吃视频时把视频塞回会话；
     ``/v1/files`` 不可用且能看图时抽帧。不要对用户编造视频内容。
 
     Args:

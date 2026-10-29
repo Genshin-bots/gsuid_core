@@ -30,12 +30,15 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.hooks import HookDecision, AgentHookPoint, AgentHookContext, fire_hooks
 from gsuid_core.ai_core.utils import prepare_content_payload, has_model_visible_content
+from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
+from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL, GsCoreAIAgent
 from gsuid_core.ai_core.ai_router import get_ai_session
 from gsuid_core.ai_core.relationship import RelationshipView, fetch_relationship, collect_priority_speakers
-from gsuid_core.ai_core.content_guard import GuardFlags
+from gsuid_core.ai_core.content_guard import GuardFlags, annotate_untrusted_message_ex
 from gsuid_core.ai_core.turn_pipeline import (
     stale_request,
+    evaluate_budget,
     check_budget_gate,
     deliver_run_result,
     stamp_current_time,
@@ -49,14 +52,32 @@ from gsuid_core.ai_core.turn_pipeline import (
     prior_turns_from_agent_history,
 )
 from gsuid_core.ai_core.trigger_bridge import MockBot
+from gsuid_core.ai_core.followup_window import (
+    record_soft_reply,
+    record_gate_outcome,
+    record_gate_silence,
+    revoke_fresh_hard_trigger,
+)
 from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.relationship.engine import settle_turn
-from gsuid_core.ai_core.interaction_scaffold import CheapGate, GroupOpenGate
+from gsuid_core.ai_core.interaction_scaffold import (
+    CheapGate,
+    GroupOpenGate,
+    build_turn_graph,
+    decide_cheap_gate,
+    has_recent_tool_call,
+    recent_history_texts,
+)
 
 # AI并发控制配置
 MAX_CONCURRENT_AI_CALLS = 10  # 全局最大并发AI调用数
 _ai_semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)  # AI并发信号量
+
+
+def interactive_llm_in_use() -> bool:
+    # Semaphore 没有公开的占用数。_value 是剩余许可，小于上限说明聊天还占着槽。
+    return _ai_semaphore._value < MAX_CONCURRENT_AI_CALLS
 
 
 @dataclass
@@ -84,8 +105,6 @@ class PassiveChatResult:
 async def _wait_core_ready() -> bool:
     """AI 核心未就绪时等待迁移完成，避免迁移期间处理聊天触发旧向量查询。"""
     try:
-        from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
-
         if is_ai_core_ready():
             return True
         logger.info(t("log.ai.gscore_init_done_migrate_msg_ai"))
@@ -128,8 +147,6 @@ async def run_passive_interactive_chat(
         if not await check_budget_gate(bot, event):
             return PassiveChatResult("budget")
     elif budget_mode == "decision":
-        from gsuid_core.ai_core.turn_pipeline import evaluate_budget
-
         decision = await evaluate_budget(event)
         if decision is not None and not decision.allowed:
             return PassiveChatResult("budget")
@@ -236,12 +253,11 @@ async def run_interactive_turn(
     调用方只负责建 Event / Session / hook_ctx。分类、检索、CheapGate、结算
     必须走这里，否则评测会变成第三套语义。
     """
-    from gsuid_core.ai_core.interaction_scaffold import (
-        build_turn_graph,
-        decide_cheap_gate,
-        has_recent_tool_call,
-        recent_history_texts,
-    )
+
+    def _count_soft_silence() -> None:
+        if not soft_triggered or not event.user_id:
+            return
+        record_gate_silence(event.session_id, str(event.user_id))
 
     bot_id = bot.bot_id if bot is not None else ""
     hook_ctx.persona_name = session.persona_name
@@ -266,6 +282,7 @@ async def run_interactive_turn(
     # 只拦开口门 / 寻址门。lurk / 低好感区要 rel，不能在 AFTER_SESSION 前判。
     if turn_graph.open_gate is GroupOpenGate.SILENCE or turn_graph.address_gated:
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
+        _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, "", True, hook_ctx, hook_ctx.relationship)
 
     await fire_hooks(AgentHookPoint.AFTER_SESSION, hook_ctx)
@@ -298,16 +315,17 @@ async def run_interactive_turn(
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         if settle:
             await _settle_silent_turn(event, bot_id, query, intent, rel)
+        _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
     logger.info(t("log.ai.gscore_ai_intent_mode", intent=intent or "-"))
 
     if soft_triggered:
-        from gsuid_core.message_history import get_history_manager
-
         hook_ctx.gate_history = get_history_manager().get_history(event, limit=15)
-        if await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx) is not HookDecision.CONTINUE:
-            return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
-        if not hook_ctx.should_speak:
+        decision = await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx)
+        if decision is not HookDecision.CONTINUE or not hook_ctx.should_speak:
+            record_gate_silence(event.session_id, str(event.user_id))
+            if decision is HookDecision.SILENCE and hook_ctx.decision_reason == "timeout":
+                record_gate_outcome("timeout_silence")
             return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
         if enqueue_ts is not None:
             enqueue_ts = time.time()
@@ -368,7 +386,14 @@ async def run_interactive_turn(
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         if settle:
             await _settle_silent_turn(event, bot_id, query, intent, rel)
+        _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
+
+    from gsuid_core.ai_core.autonomy.dispatch import ack_autonomy_merge, peek_autonomy_merge
+
+    merge_line = peek_autonomy_merge(event)
+    if merge_line:
+        user_messages = [*user_messages, merge_line]
 
     chat_result = await session.run(
         user_message=user_messages,
@@ -386,6 +411,14 @@ async def run_interactive_turn(
     )
 
     result_text, is_silence, is_error = classify_run_result(chat_result)
+    if merge_line and not is_silence and not is_error:
+        ack_autonomy_merge(event)
+    if turn_graph.quoted_tome and is_silence and not session.last_run_sent_visible_reply and event.user_id:
+        revoke_fresh_hard_trigger(event.session_id, str(event.user_id))
+    if is_silence and soft_triggered and event.user_id:
+        record_gate_silence(event.session_id, str(event.user_id))
+    elif soft_triggered and not is_error and not is_silence and event.user_id:
+        record_soft_reply(event.session_id, str(event.user_id))
     if deliver:
         await deliver_run_result(
             bot,
@@ -484,8 +517,6 @@ async def _settle_silent_turn(
     不补这一次结算就会出现吸收态：**用户越界 → zone 掉到 cold → 以后未 @ 的越界发言
     全部走早退 → 再也扣不到分**。闸门应该过滤（只过滤正信号），不该整轮跳过。
     """
-    from gsuid_core.ai_core.content_guard import GuardFlags, annotate_untrusted_message_ex
-
     guard = GuardFlags()
     if ai_config.get_config("content_guard_enable").data and event.text:
         _, guard = annotate_untrusted_message_ex(event.text.strip())

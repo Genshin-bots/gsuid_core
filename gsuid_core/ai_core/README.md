@@ -172,9 +172,9 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 ### `approval/` — 统一审批中心（2026-07-07）
 
 一张 `AIApprovalRequest` 表 + `submit`/`resolve` 两个动词 + category 领域回调
-（`command_exec` / `kanban_subtask` / `tool_call` / `agent_request`）。三个裁决
-入口（对话工具 `respond_approval`、`/api/ai/approvals`、Kanban 看板兼容端点）
-全部落到本模块；`@ai_tools(approval=...)` 是它的工具策略门。
+（`command_exec` / `kanban_subtask` / `tool_call` / `agent_request`）。裁决入口是
+私聊 6 位确认码和 `/api/ai/approvals`（Kanban 看板兼容端点同样落到本模块）。
+群里说「同意」不会通过。`@ai_tools(approval=...)` 是它的工具策略门。
 
 ### `capability_agents/` — 能力代理（AgentNode task-mode 实例化）
 
@@ -347,10 +347,10 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `web_search/search.py` | 顶层调度：主用 + 多源策略（`none` / `error_switch` / `auto_balance`）。默认主用 **AnySearch**（可匿名）；异常**或空结果**换源。 |
 | `web_search/tavily_search.py` | Tavily（需 Key；失败抛错）。 |
 | `web_search/jina_search.py` | Jina 搜索 `s.jina.ai`（需 API Key）。 |
-| `web_search/exa_search.py` | Exa；Key 失败抛错以便切换。 |
+| `web_search/exa_search.py` | Exa 搜索，结果正文是摘录；同一 Key 池供 `web_fetch` 的 Contents。网络错误换 Key。 |
 | `web_search/anysearch_search.py` | AnySearch `POST /v1/search`（Key 可选，匿名有每日免费额度）。 |
 | `web_search/firecrawl_search.py` | Firecrawl 官方 SDK `AsyncFirecrawl.search`（Key 可选，keyless 免费档按 IP 限流）。 |
-| `web_fetch/__init__.py` | URL 抓取：默认 **Jina** `r.jina.ai`（Key 可选）+ 备用 **local** 直连；空正文/错误换源。 |
+| `web_fetch/__init__.py` | URL 抓取：默认 **Jina** `r.jina.ai`（Key 可选）。可选 DeepSeek、Exa Contents、**local** 直连。空正文或错误换源。 |
 
 配置：`ai_config` 的 `websearch_*` / `webfetch_*`；`tavily_config.json` / `jina_config.json` / `exa_config.json` / `anysearch_config.json` / `firecrawl_config.json` / `web_fetch_config.json`。**热读，改配置无需重启。**
 内置工具：`web_search_tool` / `web_fetch_tool` 外层 `timeout=100`。控制台：`/ai-config` → 网络搜索服务 / 网页抓取服务。

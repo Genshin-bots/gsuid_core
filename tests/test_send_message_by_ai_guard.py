@@ -87,8 +87,8 @@ def test_per_turn_throttle_rejects_third_call():
     print("[OK] 第 3 条被单轮硬限流拒发")
 
 
-def test_cs_caption_dropped_but_image_still_sent() -> None:
-    """客服收尾配图：台词丢掉，图片仍发。"""
+def test_cs_caption_kept_with_image() -> None:
+    """配图时追问和较长说明随图发出。"""
     from gsuid_core.ai_core.buildin_tools import message_sender as ms
 
     bot = MagicMock()
@@ -106,12 +106,75 @@ def test_cs_caption_dropped_but_image_still_sent() -> None:
 
     assert "消息已发送" in result
     assert bot.send.await_count == 1
-    if scr.await_count:
-        assert scr.await_args is not None
-        sent_text = scr.await_args.args[1]
-        assert "请告诉" not in sent_text
-        assert "如果还需要" not in sent_text
-    print("[OK] 引导追问被剥，图片仍发出")
+    assert scr.await_count == 1
+    assert scr.await_args is not None
+    sent_text = scr.await_args.args[1]
+    assert isinstance(sent_text, str)
+    assert "请告诉" in sent_text
+    assert "如果还需要" in sent_text
+
+
+def test_caption_with_image_is_sent() -> None:
+    """多段结果说明和图一起发出，不再当成报告体丢掉字、只发图。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_report_speech
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="cap_s", user_id="uuu")
+    ms.clear_turn_send_throttle("cap_s", "turn_cap")
+    caption = (
+        "做完啦…结果页原文是酱紫的：\n\n"
+        "灵魂角色：影山茂夫（Mob）《灵能百分百》，灵魂重合度 93%。\n\n"
+        "十维坐标：理性 0／秩序 1／依恋 21／向阳 45／利他 93。\n\n"
+        "也很像的几位：碇真嗣 91%、夏目贵志 90%、阿尔敏 89%。\n\n"
+        "唔…利他 93 分呢。图给你放在上面啦。"
+    )
+    assert looks_like_report_speech(caption)
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        ctx = _make_ctx(ev, "turn_cap", bot)
+        ctx.tool_call_id = "call_caption"
+        result = _run(ms.send_message_by_ai(ctx, text=caption, image_id="http://example.test/card.png"))
+
+    assert "消息已发送" in result
+    assert "未发送" not in result
+    assert scr.await_count == 1
+    assert scr.await_args is not None
+    assert scr.await_args.args[1] == caption
+    assert bot.send.await_count == 1
+
+
+def test_speech_refusal_returns_reason_and_sends_nothing() -> None:
+    """话术不合格时整次不发，把原因退回，让模型改写。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="ref_s", user_id="uuu")
+    ms.clear_turn_send_throttle("ref_s", "turn_ref")
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()) as scr,
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+    ):
+        ctx = _make_ctx(ev, "turn_ref", bot)
+        ctx.tool_call_id = "call_refuse"
+        result = _run(
+            ms.send_message_by_ai(
+                ctx,
+                text="让 render_agent 去出这张卡",
+                image_id="http://example.test/card.png",
+            )
+        )
+
+    assert result.startswith("未发送。")
+    assert "内部委派" in result
+    assert scr.await_count == 0
+    assert bot.send.await_count == 0
 
 
 def test_throttle_resets_on_new_turn_and_after_clear():
@@ -144,7 +207,7 @@ def test_throttle_resets_on_new_turn_and_after_clear():
         assert "消息已发送" in ok_after_clear
 
 
-def test_wait_text_does_not_set_delivered() -> None:
+def test_send_does_not_mark_turn_terminal() -> None:
     from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.buildin_tools import message_sender as ms
 
@@ -159,7 +222,7 @@ def test_wait_text_does_not_set_delivered() -> None:
         patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
         patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
     ):
-        result = _run(ms.send_message_by_ai(ctx, text="马上好。"))
+        result = _run(ms.send_message_by_ai(ctx, text="查到了，出门带伞。"))
     assert "消息已发送" in result
     assert "delivered_with_speech" not in extra
 
@@ -185,14 +248,28 @@ def test_nickname_at_becomes_user_id_or_drops() -> None:
     from gsuid_core.ai_core.utils import rewrite_nickname_mentions
 
     names = {"小明": "10001", "小红": "10002"}
-    dropped = rewrite_nickname_mentions("图好了。@小明", names, already_at="10001")
-    assert "@小明" not in dropped
+    dropped = rewrite_nickname_mentions("图好了。<@小明>", names, already_at="10001")
+    assert "@" not in dropped
     assert "图好了" in dropped
-    rewritten = rewrite_nickname_mentions("看这个 @小明", names)
-    assert "@10001" in rewritten
-    assert "@小明" not in rewritten
-    unknown = rewrite_nickname_mentions("嗨 @不存在的人", names)
+    rewritten = rewrite_nickname_mentions("看这个 <@小明>", names)
+    assert "<@10001>" in rewritten
+    assert "小明" not in rewritten
+    spaced = rewrite_nickname_mentions("看这个 < @  小明  >", names)
+    assert "<@10001>" in spaced
+    escaped = rewrite_nickname_mentions("看这个 &lt;@小明&gt;", names)
+    assert "<@10001>" in escaped
+    fullwidth = rewrite_nickname_mentions("看这个 ＜@小明＞", names)
+    assert "<@10001>" in fullwidth
+    slashed = rewrite_nickname_mentions("看这个 \\<@小明\\>", names)
+    assert "<@10001>" in slashed
+    entity = rewrite_nickname_mentions("看这个 &#60;@小明&#62;", names)
+    assert "<@10001>" in entity
+    unknown = rewrite_nickname_mentions("嗨 <@不存在的人>，在吗", names)
     assert "@" not in unknown
+    assert "，在吗" in unknown
+    bare = "@了别人就去找他要嘛，你这不是拿我寻开心"
+    assert rewrite_nickname_mentions(bare, names) == bare
+    assert rewrite_nickname_mentions("看这个 @小明", names) == "看这个 @小明"
 
 
 def test_delivery_wake_ignores_model_user_id() -> None:
@@ -377,7 +454,7 @@ def test_speaker_can_send_own_res_image() -> None:
 def test_at_digits_become_at_segment() -> None:
     from gsuid_core.ai_core.utils import _parse_at_segments
 
-    segments = _parse_at_segments("好哦 @100000001 你来看")
+    segments = _parse_at_segments("好哦 <@100000001> 你来看")
     types = [s.type for s in segments]
     assert "at" in types
     at_seg = segments[types.index("at")]
@@ -385,6 +462,20 @@ def test_at_digits_become_at_segment() -> None:
     for s in segments:
         if s.type == "text":
             assert "100000001" not in str(s.data)
+
+    bare = _parse_at_segments("好哦 @100000001 你来看")
+    assert all(s.type != "at" for s in bare)
+    assert any("100000001" in str(s.data) for s in bare if s.type == "text")
+
+    escaped = _parse_at_segments("好哦 &lt; @ 100000001 &gt; 你来看")
+    esc_types = [s.type for s in escaped]
+    assert "at" in esc_types
+    assert escaped[esc_types.index("at")].data == "100000001"
+
+    cq = _parse_at_segments("好哦 [CQ:at,qq=100000001] 你来看")
+    cq_types = [s.type for s in cq]
+    assert "at" in cq_types
+    assert cq[cq_types.index("at")].data == "100000001"
 
 
 def test_has_model_visible_content_covers_modalities() -> None:
@@ -405,8 +496,134 @@ def test_has_model_visible_content_covers_modalities() -> None:
     assert has_model_visible_content(_ev(video_id_list=["vid_1"])) is True
 
 
+def test_send_message_by_ai_multiple_image_ids_success() -> None:
+    """多图批量发送：单次调用打包为一个消息发出。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="multi_s", user_id="u1")
+    ms.clear_turn_send_throttle("multi_s", "turn_multi")
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.outbound.record_outbound", new=AsyncMock()),
+        patch("gsuid_core.ai_core.outbound.write_decision_memo", new=AsyncMock()),
+    ):
+        ctx = _make_ctx(ev, "turn_multi", bot)
+        result = _run(
+            ms.send_message_by_ai(
+                ctx,
+                text="看这三张图",
+                image_ids=[
+                    "http://example.com/1.png",
+                    "http://example.com/2.png",
+                    "http://example.com/3.png",
+                ],
+            )
+        )
+
+    assert "消息已发送" in result
+    assert bot.send.await_count == 1
+    sent_msg = bot.send.await_args.args[0]
+    assert isinstance(sent_msg, list)
+    image_segs = [s for s in sent_msg if s.type == "image"]
+    assert len(image_segs) == 3
+
+
+def test_send_message_by_ai_partial_image_failure() -> None:
+    """多图部分失败：有效的正常发出，失败的记在回执中。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    bot = MagicMock()
+    bot.send = AsyncMock()
+    ev = _make_ev(session_id="part_s", user_id="u1")
+    ms.clear_turn_send_throttle("part_s", "turn_part")
+
+    with (
+        patch("gsuid_core.ai_core.utils.send_chat_result", new=AsyncMock()),
+        patch("gsuid_core.ai_core.output_firewall.is_enabled", return_value=False),
+        patch("gsuid_core.ai_core.outbound.record_outbound", new=AsyncMock()),
+        patch("gsuid_core.ai_core.outbound.write_decision_memo", new=AsyncMock()),
+        patch(
+            "gsuid_core.utils.resource_manager.RM.get",
+            new=AsyncMock(side_effect=ValueError("找不到资源")),
+        ),
+    ):
+        ctx = _make_ctx(ev, "turn_part", bot)
+        result = _run(
+            ms.send_message_by_ai(
+                ctx,
+                image_ids=[
+                    "http://example.com/ok.png",
+                    "img_not_exist",
+                ],
+            )
+        )
+
+    assert "消息已发送" in result
+    assert "部分图片未发送" in result
+    assert "img_not_exist" in result
+    assert bot.send.await_count == 1
+    sent_msg = bot.send.await_args.args[0]
+    # 只有 1 张成功，可能是单个 Segment 或列表
+    segs = sent_msg if isinstance(sent_msg, list) else [sent_msg]
+    image_segs = [s for s in segs if s.type == "image"]
+    assert len(image_segs) == 1
+
+
+def test_send_message_by_ai_string_and_list_robustness() -> None:
+    """测试模型传参容错：image_ids 传单字符串、image_id 传列表、JSON数组字符串等形态。"""
+    from gsuid_core.ai_core.buildin_tools import message_sender as ms
+
+    ev = _make_ev(session_id="s_robust", user_id="user-a")
+    bot = MagicMock()
+    bot.send = AsyncMock(return_value={"status": "ok"})
+
+    ctx = _make_ctx(ev, "turn_rob1", bot)
+    # 1. image_ids 传单个字符串
+    res1 = _run(ms.send_message_by_ai(ctx, image_ids="http://example.com/str.png"))
+    assert "消息已发送" in res1
+    assert bot.send.await_count == 1
+
+    # 2. image_id 传列表
+    ctx2 = _make_ctx(ev, "turn_rob2", bot)
+    res2 = _run(
+        ms.send_message_by_ai(
+            ctx2,
+            image_id=["http://example.com/a.png", "http://example.com/b.png"],
+        )
+    )
+    assert "消息已发送" in res2
+
+    # 3. image_ids 传 JSON 数组字符串
+    ctx3 = _make_ctx(ev, "turn_rob3", bot)
+    res3 = _run(
+        ms.send_message_by_ai(
+            ctx3,
+            image_ids='["http://example.com/j1.png", "http://example.com/j2.png"]',
+        )
+    )
+    assert "消息已发送" in res3
+
+    # 4. 同时传 image_ids 和 image_id
+    ctx4 = _make_ctx(ev, "turn_rob4", bot)
+    res4 = _run(
+        ms.send_message_by_ai(
+            ctx4,
+            image_ids=["http://example.com/both1.png"],
+            image_id="http://example.com/both2.png",
+        )
+    )
+    assert "消息已发送" in res4
+
+
 if __name__ == "__main__":
     test_text_routes_through_send_chat_result_and_not_raw_send()
     test_per_turn_throttle_rejects_third_call()
     test_throttle_resets_on_new_turn_and_after_clear()
+    test_send_message_by_ai_multiple_image_ids_success()
+    test_send_message_by_ai_partial_image_failure()
+    test_send_message_by_ai_string_and_list_robustness()
     print("ALL PASS")

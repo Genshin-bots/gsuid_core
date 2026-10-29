@@ -12,10 +12,12 @@ from gsuid_core.message_history.manager import (
     MessageRecord,
     HistoryManager,
     get_history_manager,
+    node_items_to_history,
 )
 
 __all__ = [
     "HistoryManager",
     "MessageRecord",
     "get_history_manager",
+    "node_items_to_history",
 ]

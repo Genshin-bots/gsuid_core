@@ -54,10 +54,17 @@ def test_template_default_follows_tier_and_other_numbers_pin(tmp_path, monkeypat
         assert pinned_preview["values"]["soft"] == "45"
         assert pinned_preview["soft_follows"] is False
 
+        assert persona_config_manager.set_meme_frequency("测", True)[0] is False
+        assert persona_config_manager.set_meme_frequency("测", -1)[0] is False
+        assert persona_config_manager.set_meme_frequency("测", 101)[0] is False
+        assert persona_config_manager.set_meme_frequency("测", "50")[0] is False
+        assert persona_config_manager.set_meme_frequency("测", 75)[0] is True
+
         saved = persona_config_manager.get_persona_config_dict("测")
         assert saved is not None
         assert saved["chat_style"] == 0
         assert saved["speech_len_soft"] == 45
+        assert saved["meme_frequency"] == 75
         assert "speech_len_hard" not in saved
         assert saved["speech_shape"]["soft_default"] == 60
     finally:

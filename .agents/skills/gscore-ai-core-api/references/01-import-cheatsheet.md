@@ -139,7 +139,7 @@ from gsuid_core.ai_core.web_search.search import (
 )
 
 from gsuid_core.ai_core.web_fetch import (
-    fetch_webpage_as_markdown,  # 统一抓取（Jina 默认 + local 备用）
+    fetch_webpage_as_markdown,  # 统一抓取（Jina 默认；可选 DeepSeek / Exa / local）
 )
 ```
 
@@ -166,7 +166,7 @@ from gsuid_core.ai_core.buildin_tools import (
 
     # --- Common 工具 (category="common") --- 向量检索按需
     search_image, get_self_persona_info, set_user_favorability, create_subagent,
-    send_meme, collect_meme, search_meme,
+    collect_meme, search_meme,
     list_scheduled_tasks, query_scheduled_task, modify_scheduled_task,
     cancel_scheduled_task, pause_scheduled_task, resume_scheduled_task,
     create_persistent_agent_tool, send_agent_task_tool, list_agents_tool, stop_agent_tool,
@@ -308,6 +308,6 @@ from gsuid_core.ai_core.approval import (
 ```
 
 LLM 侧配套工具（`buildin_tools/approval_tools.py`，随框架注册）：
-`respond_approval` / `list_pending_approvals`（统一转达 / 列表）、
+`check_approval` / `list_pending_approvals`（查状态 / 列表；不批准）、
 `ask_user` / `request_user_approval` / `request_master_approval`（审批交互能力族）。
 工具强制审批用 `@ai_tools(approval="user"|"master")` 声明，见 [§2](./02-ai-tools-decorator.md)。

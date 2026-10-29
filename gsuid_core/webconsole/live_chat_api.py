@@ -130,20 +130,30 @@ def _ensure_dirs() -> None:
     LIVE_CHAT_CONVS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _write_utf8(path: Path, payload: bytes) -> None:
+    # boltons 的 text_mode 按系统编码写。中文 Windows 上是 GBK。
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_save(str(path), text_mode=False, file_perms=None, overwrite=True, overwrite_part=True) as handle:
+        if handle is None:
+            raise RuntimeError(f"atomic_save returned None for {path}")
+        handle.write(payload)
+
+
 @to_thread
 def _atomic_write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_save(str(path), text_mode=True, file_perms=None, overwrite=True, overwrite_part=True) as f:
-        # boltons.atomic_save 注解可能为 Optional；None 时不可 dump
-        if f is None:
-            raise RuntimeError(f"atomic_save returned None for {path}")
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _write_utf8(path, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
 @to_thread
 def _read_json(path: Path) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk")
+        _write_utf8(path, text.encode("utf-8"))
+        logger.info(t("log.webconsole.live_chat_reencode_utf8", name=path.name))
+    return json.loads(text)
 
 
 @to_thread

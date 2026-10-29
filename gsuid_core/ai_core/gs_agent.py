@@ -26,6 +26,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     UserPromptPart,
 )
+from pydantic_ai.settings import ThinkingLevel
 from pydantic_ai.exceptions import ModelHTTPError
 
 from gsuid_core.bot import Bot
@@ -116,7 +117,6 @@ from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
     _MAIN_PERSONA_CREATE_BY,
     _THRASH_SAME_TOOL_LIMIT,
     _FAKE_DONE_THIRD_SUBJ_RE,
-    _FIND_TOOLS_THRASH_LIMIT,
     _STRUCTURAL_ZERO_TOOL_NUDGE,
     TraceKind,
     _append_user_text,
@@ -150,7 +150,6 @@ _ = (
     _FAKE_DONE_RE,
     _FAKE_DONE_TASK_NOUN_RE,
     _FAKE_DONE_THIRD_SUBJ_RE,
-    _FIND_TOOLS_THRASH_LIMIT,
     _INTERACTIVE_CREATE_BY,
     _MAIN_PERSONA_CREATE_BY,
     _RENDER_DELEGATE_NUDGE,
@@ -280,6 +279,7 @@ class GsCoreAIAgent(RunOnceMixin):
         wall_clock_budget: Optional[float] = None,
         on_trace: Optional[Callable[[TraceKind, str], None]] = None,
         capability_node_id: Optional[str] = None,
+        thinking: Optional[ThinkingLevel] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -306,7 +306,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self._history_iter_active: bool = False
         # 4.7 supersede 交接语已删：在途根任务由 build_task_context 每轮从库注入。
         self.max_tokens = _max_tokens
-        self.max_iterations = max_iterations  # 自定义迭代次数限制，None时使用配置默认值
+        # 思考轮由 request_limit_for(create_by) 决定，此参数不再生效。
+        self.max_iterations = max_iterations
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
         # 长流程入口（编排 / 多轮工具 + 等人确认）必须放宽，否则永远跑不到终态。
         self.wall_clock_budget = wall_clock_budget
@@ -321,6 +322,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self._stats_chat_type: str = ""
         # 能力代理 node_id（仅 CapabilityAgent）；契约/日志用，勿靠 session 子串猜
         self.capability_node_id: str = (capability_node_id or "").strip()
+        # 思考配置覆写：None=沿用全局/默认；False/True/ThinkingLevel 显式指定
+        self.thinking: Optional[ThinkingLevel] = thinking
         # 未显式给 session_id 的来源（能力评估 / meme 打标 / 记忆摄入·检索等后台 LLM
         # 调用）自动派生一个一次性 subagent id——这样"所有调用来源都写 session log"
         if session_id is None:
@@ -467,6 +470,72 @@ class GsCoreAIAgent(RunOnceMixin):
         # 保证下次 _agent.iter(message_history=self.history) 入参自洽。
         self.extract_history()
 
+    async def locked_append_then_run(
+        self,
+        user_content: str | Sequence[UserContent],
+        assistant_text: str,
+        followup: str | Sequence[UserContent] | None,
+        bot: Bot | None,
+        ev: Event | None,
+        *,
+        is_framework_injection: bool,
+        budget_gate: bool,
+        stats_chat_type: str,
+    ) -> str | None:
+        """先写入命令回执，再在同一把锁里决定要不要点评。
+
+        锁要盖住两步：提及应答不能读到只写了一半的 history。
+        没有点评时返回 None；点评跑过则返回模型正文，沉默时是空串。
+        """
+        async with self._run_lock:
+            prev_stream = self._outbound_stream
+            prev_stats = self._stats_chat_type
+            self._cancel_generation = asyncio.Event()
+            self._running_framework = bool(is_framework_injection)
+            self._outbound_stream = False
+            self._stats_chat_type = stats_chat_type
+            try:
+                self.append_command_receipt(user_content, assistant_text)
+                if followup is None:
+                    return None
+                result = await self._run_under_lock(
+                    user_message=followup,
+                    bot=bot,
+                    ev=ev,
+                    rag_context=None,
+                    tools=None,
+                    # return 先交回正文。点评落盘后再发，避免下一位在落盘前又去读源码。
+                    return_mode="return",
+                    output_type=None,
+                    enqueue_ts=None,
+                    intent=None,
+                    has_active_task=False,
+                    budget_gate=budget_gate,
+                    suppress_intermediate_text=False,
+                    turn_graph=None,
+                    cheap_gate=None,
+                    is_framework_injection=is_framework_injection,
+                )
+                if isinstance(result, str):
+                    return result
+                return ""
+            finally:
+                self._running_framework = False
+                self._outbound_stream = prev_stream
+                self._stats_chat_type = prev_stats
+
+    def append_command_receipt(
+        self,
+        user_content: str | Sequence[UserContent],
+        assistant_text: str,
+    ) -> None:
+        """把命令原话和已发出的回执追加到 history 尾部。不改 system_prompt。"""
+        if not assistant_text:
+            return
+        self.history.append(ModelRequest(parts=[UserPromptPart(content=user_content)]))
+        self.history.append(ModelResponse(parts=[TextPart(content=assistant_text)]))
+        self.extract_history()
+
     def _ensure_system_prompt_in_history(self) -> None:
         """非空 history 缺 SystemPromptPart 时补齐（防 proactive 首轮或外部装入历史丢失 system_prompt）。"""
         if not self.history or not self.system_prompt:
@@ -577,7 +646,9 @@ class GsCoreAIAgent(RunOnceMixin):
 
     @staticmethod
     def _is_native_video_part(item: UserContent) -> bool:
-        """已转成可直投模型的视频 file（不含图片 BinaryContent）。"""
+        """已转成可直投模型的视频 file/url（不含图片 BinaryContent）。"""
+        if isinstance(item, VideoUrl):
+            return True
         if isinstance(item, BinaryContent):
             return str(item.media_type or "").startswith("video/")
         if isinstance(item, UploadedFile):
@@ -635,6 +706,42 @@ class GsCoreAIAgent(RunOnceMixin):
             return True
         return "video" in self._routed_model_support("")
 
+    def _routed_openai_video_settings(
+        self,
+    ) -> tuple[str, int, str]:
+        """本轮 OpenAI 视频设置: (video_input_format, video_inline_max_mb, video_url_passthrough)。"""
+        from pydantic_ai.models.openai import OpenAIResponsesModel
+
+        from gsuid_core.ai_core.multimodal.openai_files import OpenAIChatModelWithVideo
+
+        if isinstance(self.model, OpenAIResponsesModel):
+            return "file", 12, "off"
+        if isinstance(self.model, OpenAIChatModelWithVideo):
+            return (
+                self.model.video_input_format,
+                self.model.video_inline_max_mb,
+                self.model.video_url_passthrough,
+            )
+        name = self._active_config_name or self.model_config_name
+        if name:
+            from gsuid_core.ai_core.configs.models import (
+                parse_provider_config_name,
+                get_model_config_by_full_name,
+            )
+
+            if parse_provider_config_name(name)[0] == "openai":
+                cfg = get_model_config_by_full_name(name)
+                fmt = str(cfg.get_config("video_input_format").data)
+                max_mb = cfg.get_config("video_inline_max_mb").data
+                pt = str(cfg.get_config("video_url_passthrough").data)
+                format_val = "video_url" if fmt == "video_url" else "file"
+                return (
+                    format_val,
+                    int(max_mb) if isinstance(max_mb, int) else 12,
+                    pt,
+                )
+        return "file", 12, "off"
+
     async def _video_item_to_bytes(self, item: UserContent) -> tuple[bytes, str]:
         """视频内容项 → (字节, mime)。"""
         if isinstance(item, BinaryContent):
@@ -683,6 +790,7 @@ class GsCoreAIAgent(RunOnceMixin):
             upload_media_for_task,
         )
         from gsuid_core.ai_core.multimodal.openai_files import (
+            video_filename,
             video_delivery_mode,
             video_bytes_to_openai_content,
             openai_files_client_from_model,
@@ -692,10 +800,15 @@ class GsCoreAIAgent(RunOnceMixin):
         provider = self._routed_provider()
         supports_video = "video" in model_support
         supports_image = "image" in model_support
+        openai_format, video_inline_max_mb, video_url_passthrough = self._routed_openai_video_settings()
+        if isinstance(self.model, OpenAIResponsesModel) and openai_format == "video_url":
+            logger.warning(i18n_t("log.agent.video_openai_responses_fallback"))
+            openai_format = "file"
         mode = video_delivery_mode(
             supports_video=supports_video,
             supports_image=supports_image,
             provider=provider,
+            openai_format=openai_format,
         )
 
         result: list[UserContent] = []
@@ -769,6 +882,55 @@ class GsCoreAIAgent(RunOnceMixin):
                         )
                     continue
 
+                if mode == "openai_video_url":
+                    if video_url_passthrough == "on":
+                        raw_url: str | None = None
+                        if isinstance(item, VideoUrl) and item.url.startswith(("http://", "https://")):
+                            raw_url = item.url
+                        elif (
+                            isinstance(item, BinaryContent)
+                            and item.identifier
+                            and item.identifier.startswith(("http://", "https://"))
+                        ):
+                            raw_url = item.identifier
+                        if raw_url is not None:
+                            result.append(VideoUrl(url=raw_url))
+                            logger.info(
+                                i18n_t(
+                                    "log.agent.video_openai_url_passthrough",
+                                    p0=video_idx,
+                                    url=raw_url,
+                                )
+                            )
+                            continue
+
+                    data, mime = await self._video_item_to_bytes(item)
+                    size_mb = len(data) / 1024 / 1024
+                    if size_mb <= video_inline_max_mb:
+                        filename = video_filename(mime)
+                        result.append(BinaryContent(data=data, media_type=mime, identifier=filename))
+                        logger.info(
+                            i18n_t(
+                                "log.agent.video_openai_url_inline",
+                                p0=video_idx,
+                                size=size_mb,
+                            )
+                        )
+                    else:
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.video_openai_url_oversize",
+                                p0=video_idx,
+                                size=size_mb,
+                                limit=video_inline_max_mb,
+                            )
+                        )
+                        if supports_image:
+                            result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
+                        else:
+                            result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
+                    continue
+
                 data, mime = await self._video_item_to_bytes(item)
                 result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
             except Exception as e:
@@ -814,11 +976,12 @@ class GsCoreAIAgent(RunOnceMixin):
                 text_parts.append(item)
 
         if "image" in model_support:
-            # 模型支持图片，保留原始内容；
+            # 模型支持图片，保留原始内容；动图先收成静图序列。
             from gsuid_core.ai_core.persona.appearance import (
                 bytes_from_image_ref,
                 format_look_identity_note,
             )
+            from gsuid_core.ai_core.multimodal.animated_frames import render_animation_sheets
 
             result: list[UserContent] = []
             notes: list[str] = []
@@ -833,7 +996,15 @@ class GsCoreAIAgent(RunOnceMixin):
                     if url.startswith(("http://", "https://")):
                         logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
                         continue
-                    result.append(ImageUrl(url=url))
+                    raw = bytes_from_image_ref(url)
+                    sheets = await asyncio.to_thread(render_animation_sheets, raw) if raw else None
+                    if sheets is not None:
+                        result.append(sheets.note)
+                        for blob in sheets.images:
+                            encoded = base64.b64encode(blob).decode("ascii")
+                            result.append(ImageUrl(url=f"data:image/jpeg;base64,{encoded}"))
+                    else:
+                        result.append(ImageUrl(url=url))
                     if self.persona_name:
                         note = format_look_identity_note(self.persona_name, bytes_from_image_ref(url))
                         if note and note not in seen_notes:
@@ -924,7 +1095,6 @@ class GsCoreAIAgent(RunOnceMixin):
             summary_agent = create_agent(
                 system_prompt="你是一个图片信息提炼助手，只输出精简摘要，不输出多余解释。",
                 max_tokens=500,
-                max_iterations=1,
                 create_by="ImageDescSummary",
                 task_level="low",
                 is_subagent=True,
@@ -1060,7 +1230,7 @@ class GsCoreAIAgent(RunOnceMixin):
             # 闸开着别再打上游；套餐打满重试必复现。
             _qkey = self._quota_breaker_key()
             if quota_breaker.is_open(_qkey):
-                statistics_manager.record_error(error_type="quota_breaker_open")
+                statistics_manager.record_error(error_type="quota_breaker_open", message="breaker_open")
                 self._session_logger.log_error("quota_breaker_open", "breaker_open")
                 return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
             try:
@@ -1098,7 +1268,7 @@ class GsCoreAIAgent(RunOnceMixin):
                 quota_breaker.note_hit(_qkey, _qkind)
                 if _qkind == "quota":
                     logger.warning(i18n_t("log.agent.pydanticai_quota_exhausted", e=e))
-                    statistics_manager.record_error(error_type="quota_exhausted")
+                    statistics_manager.record_error(error_type="quota_exhausted", message=err_str)
                     self._session_logger.log_error("quota_exhausted", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
 
@@ -1151,7 +1321,7 @@ class GsCoreAIAgent(RunOnceMixin):
                                 err_str=err_str,
                             )
                         )
-                        statistics_manager.record_error(error_type="content_rejected")
+                        statistics_manager.record_error(error_type="content_rejected", message=err_str)
                         self._session_logger.log_error("content_rejected", err_str)
                         return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
                     logger.warning(
@@ -1161,34 +1331,34 @@ class GsCoreAIAgent(RunOnceMixin):
                             err_str=err_str,
                         )
                     )
-                    statistics_manager.record_error(error_type="client_error")
+                    statistics_manager.record_error(error_type="client_error", message=err_str)
                     self._session_logger.log_error("client_error", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                 # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
                 if isinstance(e, httpx.TimeoutException):
                     logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
-                    statistics_manager.record_error(error_type="timeout")
+                    statistics_manager.record_error(error_type="timeout", message=err_str)
                     self._session_logger.log_error("timeout", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
                 if isinstance(e, httpx.HTTPError):
                     low = err_str.lower()
                     if "rate" in low or "429" in low or "limit" in low:
                         logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
-                        statistics_manager.record_error(error_type="rate_limit")
+                        statistics_manager.record_error(error_type="rate_limit", message=err_str)
                         self._session_logger.log_error("rate_limit", err_str)
                     else:
                         logger.warning(i18n_t("log.agent.pydanticai_run_fail_network", e=e))
-                        statistics_manager.record_error(error_type="network_error")
+                        statistics_manager.record_error(error_type="network_error", message=err_str)
                         self._session_logger.log_error("network_error", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                 logger.error(i18n_t("log.agent.pydanticai_run_fail", e=e))
                 logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
                 if "529" in err_str:
-                    statistics_manager.record_error(error_type="api_529_error")
+                    statistics_manager.record_error(error_type="api_529_error", message=err_str)
                 else:
-                    statistics_manager.record_error(error_type="agent_error")
+                    statistics_manager.record_error(error_type="agent_error", message=err_str)
                 self._session_logger.log_error("agent_error", err_str)
                 return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
@@ -1680,6 +1850,9 @@ class GsCoreAIAgent(RunOnceMixin):
             # 本 generation 独立 cancel 事件；上轮 set 过的不得污染本轮
             self._cancel_generation = asyncio.Event()
             self._running_framework = bool(is_framework_injection)
+            from gsuid_core.ai_core.approval.session_ctx import bind_caller_session, reset_caller_session
+
+            caller_token = bind_caller_session(self.session_id)
             try:
                 return await self._run_under_lock(
                     user_message=user_message,
@@ -1699,6 +1872,7 @@ class GsCoreAIAgent(RunOnceMixin):
                     is_framework_injection=is_framework_injection,
                 )
             finally:
+                reset_caller_session(caller_token)
                 self._running_framework = False
 
     async def _run_under_lock(
@@ -1766,7 +1940,7 @@ class GsCoreAIAgent(RunOnceMixin):
             )
         )
         for _attempt in range(2):
-            async with provider_router.slot(self.task_level) as routed_name:
+            async with provider_router.slot(self.task_level, session_id=self.session_id) as routed_name:
                 logger.debug(
                     i18n_t(
                         "log.agent.attempt_routed_config_name",
@@ -1845,6 +2019,7 @@ def create_agent(
     wall_clock_budget: Optional[float] = None,
     on_trace: Optional[Callable[[TraceKind, str], None]] = None,
     capability_node_id: Optional[str] = None,
+    thinking: Optional[ThinkingLevel] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -1853,7 +2028,7 @@ def create_agent(
         model_name: 模型名称
         system_prompt: 系统提示词
         max_tokens: 最大输出 token 数，None 时使用全局配置默认值
-        max_iterations: 最大迭代次数限制，None 时使用配置默认值
+        max_iterations: 已忽略。思考轮按 create_by 分档，见 request_limit_for。
         persona_name: Persona 名称（用于热重载检测）
         task_level: 任务级别，"high"表示高级任务，"low"表示低级任务
         session_id: 会话 ID，用于关联 session 日志
@@ -1891,6 +2066,7 @@ def create_agent(
         wall_clock_budget=wall_clock_budget,
         on_trace=on_trace,
         capability_node_id=capability_node_id,
+        thinking=thinking,
     )
 
 

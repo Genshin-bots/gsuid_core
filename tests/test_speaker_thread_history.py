@@ -100,7 +100,7 @@ def test_other_users_persona_line_stays_out_of_speaker_thread() -> None:
         _rec(
             "bot",
             "AI",
-            "港股那边翻不到",
+            "港股那边翻不到 [图片·珠海行程方案·res_36de5e7e129f]",
             t0 + 5,
             role="assistant",
             extra={"reply_to_user_id": "u2", "reply_to_user_name": "乙", "speech_channel": "persona"},
@@ -108,9 +108,14 @@ def test_other_users_persona_line_stays_out_of_speaker_thread() -> None:
         _rec("u1", "甲", "你还在吗", t0 + 10),
     ]
     block = compose_group_history(records, current_user_id="u1", current_user_name="甲")
-    thread = block.split("[历史对话]")[0]
+    thread, _, timeline = block.partition("\n\n[历史对话]")
     assert "我先说一句" in thread
     assert "港股那边翻不到" not in thread
+    assert "AI→乙(用户ID:u2)" in timeline
+    assert "港股那边翻不到" in timeline
+    assert "[图片·珠海行程方案]" in timeline
+    assert "res_36de5e7e129f（read_handle；句柄勿念出）" in timeline
+    assert "[图片·珠海行程方案·res_36de5e7e129f]" not in timeline
 
 
 def test_command_receipt_keeps_body_and_uses_receipt_tag() -> None:
@@ -182,9 +187,11 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
 
     from gsuid_core.bot import Bot, _Bot
     from gsuid_core.ai_core.utils import _send_meme_from_tag
-    from gsuid_core.ai_core.buildin_tools import meme_tools, html_render_tools
+    from gsuid_core.ai_core.buildin_tools import html_render_tools
 
     sent: list[dict[str, str]] = []
+    picked: dict[str, object] = {}
+    labels_at_send: list[str] = []
     ev = Event(
         bot_id="onebot",
         bot_self_id="self1",
@@ -206,15 +213,23 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
         extra_metadata: dict[str, str] | None = None,
         **_k: object,
     ) -> None:
+        from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+        labels_at_send.append(get_outbound_image_label())
         sent.append(extra_metadata or {})
 
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
     monkeypatch.setattr(bot, "send", _capture)
+    monkeypatch.setattr("gsuid_core.ai_core.utils.asyncio.sleep", _no_sleep)
 
     png = tmp_path / "x.png"
     png.write_bytes(b"img")
     rec = SimpleNamespace(file_path="x.png", meme_id="m1", description="d")
 
     async def _pick(**_k: object) -> tuple[object, str]:
+        picked.update(_k)
         return rec, ""
 
     async def _read(_p: object) -> bytes:
@@ -226,18 +241,27 @@ def test_persona_image_sends_stamp_persona_channel(monkeypatch: MonkeyPatch, tmp
     async def _convert(_data: object) -> str:
         return "base64://YQ=="
 
-    monkeypatch.setattr("gsuid_core.ai_core.meme.config.meme_config.get_config", lambda _k: SimpleNamespace(data=True))
+    monkeypatch.setattr("gsuid_core.ai_core.persona.config.persona_allows_meme_reply", lambda _name: True)
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.buildin_tools.meme_tools._get_persona_for_event",
+        lambda _ev: "早柚",
+    )
     monkeypatch.setattr("gsuid_core.ai_core.meme.selector.pick", _pick)
     monkeypatch.setattr("gsuid_core.ai_core.meme.library._read_file", _read)
     monkeypatch.setattr("gsuid_core.ai_core.meme.library.get_memes_base_path", lambda: tmp_path)
     monkeypatch.setattr("gsuid_core.ai_core.meme.database_model.AiMemeRecord.record_usage", _usage)
-    monkeypatch.setattr("gsuid_core.utils.image.convert.convert_img", _convert)
+    monkeypatch.setattr("gsuid_core.ai_core.utils.convert_img", _convert)
 
-    asyncio.run(_send_meme_from_tag("开心", bot, ev))
+    from gsuid_core.ai_core.outbound import get_outbound_image_label
+
+    asyncio.run(_send_meme_from_tag("害羞 卖萌", bot, ev))
     assert sent[-1] == want
+    assert picked["mood"] == "害羞"
+    assert picked["scene"] == "卖萌"
+    assert labels_at_send[-1] == "[表情:害羞]"
+    assert get_outbound_image_label() == ""
 
     owners = {
-        meme_tools.send_meme.__name__: inspect.getsource(meme_tools),
         "_try_send_image": inspect.getsource(html_render_tools),
         _send_meme_from_tag.__name__: inspect.getsource(_send_meme_from_tag),
     }

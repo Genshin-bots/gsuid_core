@@ -19,6 +19,51 @@ _PROGRESSIVE_TOOLS_SKIP_INTENTS = ("闲聊",)
 # 工具自动装配白名单：列表内的 create_by 未显式传参时执行向量装配。
 _AGENTIC_CREATE_BY = ("SubAgent", "Chat", "Agent", "AutoPlanner", "ScheduledTask_Exec")
 
+# 主对话档（multi_agent_lenth）。未列入任务档和短调用档的也走这项。
+MAIN_TURN_CREATE_BY = frozenset(
+    {
+        "Chat",
+        "Agent",
+        "TEST",
+        "Heartbeat_Decision",
+        "Heartbeat_Output",
+        "Reactive_Gate",
+        "MemEntityExtraction",
+        "MemPreferenceExtraction",
+        "MemNodeSelection",
+        "MemCategorization",
+        "MemGroupSummary",
+        "MemGistBackfill",
+        "BuildPersona",
+    }
+)
+
+# 任务档思考轮（task_max_iterations）。长任务执行体，不跟主对话共用。
+TASK_TURN_CREATE_BY = frozenset(
+    {
+        "Autonomy",
+        "ScheduledTask_Exec",
+        "Kanban_Relay",
+        "CapabilityAgent",
+        "AutoPlanner",
+    }
+)
+
+# 点名的短调用。不在这张表里的 create_by 不走 5 轮。
+SHORT_RUN_CREATE_BY = frozenset(
+    {
+        "ImageUnderstand",
+        "ImageDescSummary",
+        "MemeTagger",
+        "DecisionDistill",
+        "CapabilityEvaluator",
+        "EvalJudge",
+        "CoreAIControlBTW",
+    }
+)
+
+SHORT_RUN_MAX_ITERATIONS = 5
+
 # skills_toolset 挂载白名单：agentic + CapabilityAgent
 # （需 list_skills/run_skill_script）；名单外后台调用不挂，避免白送 token。
 _SKILLS_CREATE_BY = (*_AGENTIC_CREATE_BY, "CapabilityAgent")

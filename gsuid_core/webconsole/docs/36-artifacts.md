@@ -27,17 +27,32 @@
 
 ## 1. 列表
 
+`GET /api/ai/artifacts` 按 `created_at` 从新到旧返回一页。调用必须带下面三种过滤之一。同时带 `task_id` 和 `root_task_id` 时，Core 只按 `task_id` 过滤。
+
 ```
-GET /api/ai/artifacts?root_task_id=task_xxx
-GET /api/ai/artifacts?task_id=task_yyy
+GET /api/ai/artifacts?root_task_id=task_xxx&limit=50&offset=0
+GET /api/ai/artifacts?task_id=task_yyy&limit=50&offset=0
+GET /api/ai/artifacts?scope=all&limit=50&offset=0
 ```
 
-二选一。
+- `task_id`：该任务自己的产出物。
+- `root_task_id`：该任务树下的产出物。
+- `scope=all`：全部产出物。网页 `/ai-artifacts` 用这个。
+
+分页参数：
+
+- `limit`：本页条数。默认 500，最小 1，最大 2000。看板不传 `limit` 时仍一次取最多 500 条。
+- `offset`：跳过的条数。默认 0。
+- `include_expired`：默认 `false`。`false` 时不返回已过期行。`expires_at` 为空的行保留。
 
 ```jsonc
 {
   "data": {
-    "count": 12,
+    "count": 50,
+    "total": 120,
+    "limit": 50,
+    "offset": 0,
+    "has_more": true,
     "items": [
       {
         "id": "res_a1b2c3d4e5f6",

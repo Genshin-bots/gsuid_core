@@ -17,7 +17,6 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.output_gate import tool_gate_feedback
 from gsuid_core.ai_core.agent_run.speech_policy import (
     non_master_title,
-    strip_open_solicitations,
     should_block_user_visible_text,
 )
 
@@ -106,11 +105,21 @@ def _mention_names(extra: MutableMapping[str, object]) -> dict[str, str]:
     return names
 
 
+def _opening_session_id(tool_ctx: ToolContext) -> str:
+    if tool_ctx.parent_session_id:
+        return tool_ctx.parent_session_id
+    ev = tool_ctx.ev
+    if ev is not None and ev.session_id:
+        return str(ev.session_id)
+    return ""
+
+
 def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
     """过主通道同一套话术闸和出站闸。不合格返回空串，不替模型改写成别的话。"""
+    from gsuid_core.ai_core.agent_run.support import log_output_block_on_session
     from gsuid_core.ai_core.persona.chat_style import resolve_chat_style
 
-    body = strip_open_solicitations(text.strip()).strip()
+    body = text.strip()
     if not body:
         return ""
     extra = tool_ctx.extra
@@ -133,10 +142,12 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
         forbid_title=non_master_title(addr, persona or None),
     )
     if blocked:
+        log_output_block_on_session(_opening_session_id(tool_ctx), why, body, policy="silence_only")
         logger.info(i18n_t("log.agent.silent_skipping_text", _text=f"[opening/{why}] {body[:60]}"))
         return ""
     user_text = ev.raw_text if ev is not None and ev.raw_text else ""
     if tool_gate_feedback(body, extra, user_text=user_text) is not None:
+        log_output_block_on_session(_opening_session_id(tool_ctx), "output_gate_tool", body, policy="silence_only")
         return ""
     return body
 

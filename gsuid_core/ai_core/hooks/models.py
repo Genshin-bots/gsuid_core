@@ -5,14 +5,13 @@
 第一方套件与第三方插件走同一套票，否则替换套件时两边 API 对不齐。
 """
 
-from enum import Enum
 from typing import TYPE_CHECKING, Set, Dict, List, Tuple, Union, Callable, Optional, Awaitable
 from datetime import datetime
 from dataclasses import field, dataclass
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
-from gsuid_core.ai_core.hooks.points import HookPointSpec, AgentHookPoint, HookCapability, spec_for
+from gsuid_core.ai_core.hooks.points import HookDecision, HookPointSpec, AgentHookPoint, HookCapability, spec_for
 from gsuid_core.ai_core.hooks.markers import format_hint
 
 if TYPE_CHECKING:
@@ -25,15 +24,6 @@ if TYPE_CHECKING:
 
 class HookCapabilityError(RuntimeError):
     """套件/插件在无该能力票的点位上调用了受控写操作。dispatcher fail-open 记 warning。"""
-
-
-class HookDecision(str, Enum):
-    """控制码。只认显式返回值，异常一律不升级为 ABORT_RUN。"""
-
-    CONTINUE = "continue"
-    ABORT_RUN = "abort_run"
-    SILENCE = "silence"
-    VETO_TOOL = "veto_tool"
 
 
 @dataclass

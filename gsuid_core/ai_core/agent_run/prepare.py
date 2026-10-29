@@ -25,6 +25,7 @@ from gsuid_core.ai_core.utils import (
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.control.lines import UNMET_TOOL_REMINDER
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
+from gsuid_core.ai_core.persona.config import ASIDE_MODE
 from gsuid_core.ai_core.agent_run.state import (
     BUDGET_GATE_PASS,
     RunOnceState,
@@ -40,6 +41,7 @@ from gsuid_core.ai_core.agent_run.support import (
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, is_control_envelope
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
+from gsuid_core.ai_core.agent_run.request_limit import request_limit_for
 from gsuid_core.ai_core.agent_run.speech_policy import (
     spoken_user_body_len,
     resolve_speech_policy,
@@ -133,7 +135,7 @@ class PreparePhase(RunOnceHost):
         st.saw_structured_return = False
         # 本轮是否已委派 render_agent（勿把 research 的 create_subagent 当成已出图）
         st.delegated_render = False
-        # 同工具空转计数：连续同名工具调用次数；达阈值后注入 thrash fuse（每 run 一次）
+        # 同一调用（工具名 + 参数）连续次数；达阈值后注入 thrash fuse（每 run 一次）
         st.same_tool_streak = 0
         st.same_tool_name = ""
         st.thrash_fused = False
@@ -157,12 +159,8 @@ class PreparePhase(RunOnceHost):
         st.in_flight_short = False
         st.render_ack_seen = False
 
-        # 使用自定义迭代次数限制（如果有），否则使用配置默认值。
-        if self.max_iterations is not None:
-            st.limits = UsageLimits(request_limit=self.max_iterations)
-        else:
-            multi_agent_lenth: int = ai_config.get_config("multi_agent_lenth").data
-            st.limits = UsageLimits(request_limit=multi_agent_lenth)
+        # 思考轮只看 create_by。max_iterations 参数不再改这一限。
+        st.limits = UsageLimits(request_limit=request_limit_for(self.create_by))
 
         # 记录开始时间用于延迟统计
         st.start_time = time.time()
@@ -186,7 +184,9 @@ class PreparePhase(RunOnceHost):
             _inherited_ut = get_user_turn_id()
             st.user_turn_id = _inherited_ut or ""
         # 交互主人格：专属工具从静态池剥离后，同步写入 blocked，堵住 find_tools 回灌
-        st.blocked_exclusive = _capability_exclusive_tool_names() if self.create_by in _INTERACTIVE_CREATE_BY else set()
+        st.blocked_exclusive = (
+            _capability_exclusive_tool_names() if self.create_by in ("Chat", "Agent", "TEST") else set()
+        )
         # 出站权限控制：交互主人格与 Kanban_Relay 允许出站，能力代理产物回传上游。
         # TEST 本地评测端点作为交互主人格放行出站。
         st.allow_outbound = self.create_by == "Kanban_Relay" or (
@@ -237,7 +237,10 @@ class PreparePhase(RunOnceHost):
         )
         # 只锁框架回灌。真人消息里出现这四个字不算交付轮。
         if st.speech_policy == "framework_deliver" or (st.fw_msg and "交付回灌" in _probe_for_policy):
+            from gsuid_core.ai_core.outbound import remember_outbound_topic
+
             st.run_extra["delivery_wake"] = True
+            remember_outbound_topic(st.run_extra, _probe_for_policy)
             if "主图：`" in _probe_for_policy:
                 st.run_extra["delivery_has_image"] = True
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
@@ -293,7 +296,7 @@ class PreparePhase(RunOnceHost):
         st.followup_detected = False
         st.tg = st.turn_graph
         st.cheap = st.cheap_gate
-        if self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg:
+        if self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg and st.stats_chat_type != ASIDE_MODE:
             _cur_text = st.last_user_question
             _probe = st.ev.raw_text if st.ev is not None and st.ev.raw_text else st.last_user_question
             _is_tome = bool(st.ev.is_tome) if st.ev is not None else False
@@ -418,7 +421,11 @@ class PreparePhase(RunOnceHost):
         # session logger：框架注入单独记账，不计入 user_input
         self._session_logger.log_run_start()
         if st.fw_msg and isinstance(st.final_user_message, str):
-            self._session_logger.log_system_injection(st.final_user_message, source="framework")
+            self._session_logger.log_system_injection(
+                st.final_user_message,
+                source="framework",
+                reason=st.injection_reason,
+            )
         else:
             self._session_logger.log_user_input(st.final_user_message)
 

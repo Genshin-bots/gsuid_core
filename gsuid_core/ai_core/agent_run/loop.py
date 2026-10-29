@@ -9,6 +9,7 @@ from pydantic_graph import End
 from pydantic_ai.agent import CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
     TextPart,
+    ModelMessage,
     ThinkingPart,
     ToolCallPart,
     TextPartDelta,
@@ -39,9 +40,11 @@ from gsuid_core.ai_core.utils import (
     remainder_after_protocol_tags,
     _canonicalize_tool_call_args_in_parts,
     _sanitize_tool_call_artifacts_in_parts,
+    normalize_escaped_control_tags_in_parts,
 )
-from gsuid_core.ai_core.control.lines import capability_hit_line
+from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
+from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
@@ -52,8 +55,12 @@ from gsuid_core.ai_core.agent_run.support import (
     _THRASH_FUSE_NUDGE,
     _INTERACTIVE_CREATE_BY,
     _MAIN_PERSONA_CREATE_BY,
+    iter_wrap_due,
     thrash_limit_for,
     _claims_fake_done,
+    add_response_usage,
+    canonical_tool_call,
+    record_output_block,
     turn_reply_metadata,
     _wall_clock_nudge_for,
     record_run_tool_output,
@@ -76,10 +83,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
     non_master_title,
-    batch_is_meme_only,
-    batch_still_working,
     is_status_tool_name,
-    strip_open_solicitations,
     content_is_render_candidate,
     should_block_user_visible_text,
 )
@@ -87,13 +91,11 @@ from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     DELEGATION_INFLIGHT_KEY as _DELEGATION_INFLIGHT_KEY,
     PENDING_DELEGATION_HOLD as _PENDING_DELEGATION_HOLD,
-    POST_MEME_LINE_CONTRACT as _POST_MEME_LINE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
     RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
     PENDING_DELEGATION_OPENING as _PENDING_DELEGATION_OPENING,
     POST_DISPUTE_SILENCE_CONTRACT as _POST_DISPUTE_SILENCE_CONTRACT,
-    POST_DELIVERY_SILENCE_CONTRACT as _POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER as _POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
@@ -101,6 +103,7 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED as _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
     is_timeless_aggregate as _is_timeless_aggregate,
     post_tool_contracts_for as _post_tool_contracts_for,
+    web_search_delegate_line as _web_search_delegate_line,
     tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
     tool_return_is_non_web_data as _tool_return_is_non_web_data,
     tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
@@ -185,7 +188,7 @@ class LoopPhase(RunOnceHost):
         if not visible:
             return
         # 终局静默 / 已见函数工具的中间 OS 不要打到流式出站
-        if st.speech_policy in ("silence_only", "delivered"):
+        if st.speech_policy == "silence_only":
             return
         if st.suppress_intermediate_text and st.stream_saw_fn_tool:
             return
@@ -227,7 +230,6 @@ class LoopPhase(RunOnceHost):
                 await bot.commit_streamed_history(text, extra_metadata=turn_reply_metadata(st.ev))
             self._run_sent_texts.add(text)
             st.main_channel_sends += 1
-            st.meme_line_pending = False
             return
         _mention_raw = st.run_extra["mention_names"] if "mention_names" in st.run_extra else None
         _mentions: dict[str, str] = {}
@@ -246,7 +248,6 @@ class LoopPhase(RunOnceHost):
         absorb_run_image_delivered(st)
         self._run_sent_texts.add(text)
         st.main_channel_sends += 1
-        st.meme_line_pending = False
 
     async def _send_gated_text(self, st: RunOnceState, text: str, *, at_user_id: str | None) -> None:
         """闸门已通过：流式只补未推后缀，否则 ``send_chat_result``。"""
@@ -284,7 +285,6 @@ class LoopPhase(RunOnceHost):
         if result.delivered:
             st.main_channel_sends += 1
         st.wait_comfort_sent = True
-        st.meme_line_pending = False
         st.ooc_blocked.clear()
         self._session_logger.log_task_ack(result.text, source="create_subagent")
 
@@ -330,6 +330,24 @@ class LoopPhase(RunOnceHost):
         ):
             st.saw_structured_return = True
 
+    def _maybe_inject_iter_wrap(self, st: RunOnceState, node: Any) -> None:
+        """还剩两轮时让能力代理停检索、交交付。墙钟 420s 往往晚于 30 轮。"""
+        st.model_requests += 1
+        limit = st.limits.request_limit if st.limits is not None else None
+        if not iter_wrap_due(
+            requests_started=st.model_requests,
+            request_limit=limit,
+            return_mode=st.return_mode,
+            create_by=self.create_by,
+            already_nudged=st.iter_nudged,
+        ):
+            return
+        if limit is None:
+            return
+        node.request.parts = [*node.request.parts, UserPromptPart(content=ITER_WRAP_NUDGE)]
+        st.iter_nudged = True
+        logger.info(i18n_t("log.agent.iter_wrap_nudge", p0=st.model_requests, p1=limit))
+
     async def _run_once_on_model_request(
         self,
         st: RunOnceState,
@@ -339,7 +357,7 @@ class LoopPhase(RunOnceHost):
         """ModelRequestNode：墙钟/闸门/ thrash 注入 + ToolReturn 折叠 + 流式请求。"""
         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
-        self._session_logger.log_node_transition("ModelRequestNode")
+        self._maybe_inject_iter_wrap(st, node)
         if st.saw_final_response:
             st.post_final_requests += 1
             if st.post_final_requests > 1:
@@ -444,9 +462,14 @@ class LoopPhase(RunOnceHost):
                     UserPromptPart(content=_POST_DISPUTE_SILENCE_CONTRACT),
                 ]
 
-        # 同工具空转熔断：连续同名工具 ≥ 阈值后，下一轮模型请求前注入一次收敛提示
+        # 工具名和参数都相同，并且已经超过阈值，才算空转。换参数不累计。
         _thrash_limit = thrash_limit_for(st.same_tool_name)
-        if not st.thrash_fused and st.same_tool_streak >= _thrash_limit and self.create_by in _INTERACTIVE_CREATE_BY:
+        if (
+            not st.thrash_fused
+            and st.same_tool_name
+            and st.same_tool_streak > _thrash_limit
+            and self.create_by in _INTERACTIVE_CREATE_BY
+        ):
             node.request.parts = [*node.request.parts, UserPromptPart(content=_THRASH_FUSE_NUDGE)]
             st.thrash_fused = True
             logger.warning(
@@ -506,6 +529,7 @@ class LoopPhase(RunOnceHost):
                                 task_id=_tid,
                                 root_task_id=_rid,
                                 is_group=_is_group,
+                                create_by=self.create_by,
                             )
                         except Exception as _fileos_e:
                             logger.debug(i18n_t("log.ai.tool_output_fold_skip", e=_fileos_e))
@@ -624,29 +648,14 @@ class LoopPhase(RunOnceHost):
         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
             _any_fail = False
             _any_actionable = False
-            _return_names: list[str] = []
             for _p in node.request.parts:
                 if type(_p) is not ToolReturnPart:
                     continue
                 if _tool_return_is_async_pending(_p):
                     continue
                 _any_actionable = True
-                _return_names.append(_p.tool_name or "")
                 if _tool_return_looks_failed(_p):
                     _any_fail = True
-            # 交付终局：本步只有发送。同一步还有 find_tools 等，接话不算做完。
-            _extra_ref = _require_context(st).extra
-            if (
-                "delivered_with_speech" in _extra_ref
-                and bool(_extra_ref["delivered_with_speech"])
-                and not st.delivered_terminal
-                and not batch_still_working(_return_names)
-            ):
-                st.delivered_terminal = True
-                st.speech_policy = "delivered"
-                st.meme_line_pending = False
-            elif batch_is_meme_only(_return_names):
-                st.meme_line_pending = True
             if st.pending_async_delivery:
                 _any_actionable = False
                 _hold = _PENDING_DELEGATION_HOLD
@@ -662,62 +671,47 @@ class LoopPhase(RunOnceHost):
                         UserPromptPart(content=_hold),
                     ]
             if _any_actionable:
-                if st.delivered_terminal:
-                    # 交付已完成：不再注入 POST_TOOL 契约（那会提醒模型「再说一句」），
-                    # 只注入一次终局 SILENCE 指令（4.3）
-                    if not st.delivered_nudged and not any(
-                        isinstance(p, UserPromptPart) and p.content == _POST_DELIVERY_SILENCE_CONTRACT
-                        for p in node.request.parts
-                    ):
-                        node.request.parts = [
-                            *node.request.parts,
-                            UserPromptPart(content=_POST_DELIVERY_SILENCE_CONTRACT),
-                        ]
-                        st.delivered_nudged = True
-                else:
-                    _ok_c, _fail_c = _post_tool_contracts_for(
-                        self.create_by,
-                        session_id=self.session_id or "",
-                        capability_node_id=self.capability_node_id,
+                _ok_c, _fail_c = _post_tool_contracts_for(
+                    self.create_by,
+                    session_id=self.session_id or "",
+                    capability_node_id=self.capability_node_id,
+                )
+                _contract = _fail_c if _any_fail else _ok_c
+                _delegate = _web_search_delegate_line(
+                    create_by=self.create_by,
+                    capability_node_id=self.capability_node_id,
+                    question=st.last_user_question,
+                    first_tool=st.tool_call_list[0] if st.tool_call_list else "",
+                    already_nudged=st.web_search_delegate_nudged,
+                    any_fail=_any_fail,
+                )
+                if _delegate:
+                    st.web_search_delegate_nudged = True
+                    _contract = _delegate
+                # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
+                # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
+                if not any(
+                    isinstance(p, UserPromptPart)
+                    and p.content
+                    in (
+                        _POST_TOOL_OUTPUT_CONTRACT,
+                        _POST_TOOL_FAIL_CONTRACT,
+                        _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
+                        _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
+                        _POST_TOOL_OUTPUT_CONTRACT_RENDER,
+                        _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
+                        _POST_TOOL_FAIL_CONTRACT_RENDER,
                     )
-                    _contract = _fail_c if _any_fail else _ok_c
-                    if st.meme_line_pending and not _any_fail:
-                        _contract = _POST_MEME_LINE_CONTRACT
-                    elif (
-                        not _any_fail
-                        and st.tool_call_list
-                        and st.tool_call_list[0] == "web_search_tool"
-                        and not st.web_search_delegate_nudged
-                    ):
-                        from gsuid_core.ai_core.agent_node.registry import match_capability_node
-
-                        _nid = match_capability_node(st.last_user_question)
-                        if _nid:
-                            st.web_search_delegate_nudged = True
-                            _contract = capability_hit_line(_nid)
-                    # 不再把多点结构升级成「唯一合法下一步 = 出图」，也不再叠
-                    # 气候/仅 web 禁令。工具返回上的 [source=web] / [as_of=] 够模型自己判断。
-                    if not any(
-                        isinstance(p, UserPromptPart)
-                        and p.content
-                        in (
-                            _POST_TOOL_OUTPUT_CONTRACT,
-                            _POST_TOOL_FAIL_CONTRACT,
-                            _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
-                            _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
-                            _POST_TOOL_OUTPUT_CONTRACT_RENDER,
-                            _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
-                            _POST_TOOL_FAIL_CONTRACT_RENDER,
-                            _POST_MEME_LINE_CONTRACT,
-                        )
-                        for p in node.request.parts
-                    ):
-                        node.request.parts = [
-                            *node.request.parts,
-                            UserPromptPart(content=_contract),
-                        ]
+                    for p in node.request.parts
+                ):
+                    node.request.parts = [
+                        *node.request.parts,
+                        UserPromptPart(content=_contract),
+                    ]
 
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
+        # 工具回执先落盘，再标下一轮对话。否则瀑布把回执画进后一轮。
+        self._session_logger.log_node_transition("ModelRequestNode")
         # 以流式方式发起本轮模型请求并逐 event 打点： 普通的节点迭代走非流式请求，
         st.req_start = time.perf_counter()
         st.first_event_at = None
@@ -730,25 +724,37 @@ class LoopPhase(RunOnceHost):
         _text_starts: set[int] = set()
         _tags = st.thinking_tags if st.thinking_tags else ("<think>", "</think>")
         splitter = ThinkTagSplitter(_tags[0], _tags[1])
-        async with node.stream(agent_run.ctx) as request_stream:
+        # 档位取自发出的 JSON。进入流失败时请求可能已经写出。
+        with effort_capture() as effort_slot:
             try:
-                async for _event in request_stream:
-                    if st.cancel_ev is not None and st.cancel_ev.is_set():
-                        st.generation_cancelled = True
-                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
-                        break
-                    st.last_event_at = time.perf_counter()
-                    if st.first_event_at is None:
-                        st.first_event_at = st.last_event_at
-                    await self._emit_stream_events(st, _event, text_starts=_text_starts, splitter=splitter)
+                async with node.stream(agent_run.ctx) as request_stream:
+                    self._log_captured_thinking_effort(effort_slot)
+                    try:
+                        async for _event in request_stream:
+                            if st.cancel_ev is not None and st.cancel_ev.is_set():
+                                st.generation_cancelled = True
+                                logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                                break
+                            st.last_event_at = time.perf_counter()
+                            if st.first_event_at is None:
+                                st.first_event_at = st.last_event_at
+                            await self._emit_stream_events(st, _event, text_starts=_text_starts, splitter=splitter)
+                    finally:
+                        vis, th = splitter.flush()
+                        if th:
+                            st.thinking_streamed = True
+                            self._emit_trace("thinking_delta", th)
+                        if vis:
+                            await self._enqueue_text_delta(st, vis, None)
+                        await self._flush_bot_text_delta(st)
             finally:
-                vis, th = splitter.flush()
-                if th:
-                    st.thinking_streamed = True
-                    self._emit_trace("thinking_delta", th)
-                if vis:
-                    await self._enqueue_text_delta(st, vis, None)
-                await self._flush_bot_text_delta(st)
+                self._log_captured_thinking_effort(effort_slot)
+
+    def _log_captured_thinking_effort(self, slot: EffortCapture) -> None:
+        seen, effort = take_request_effort(slot)
+        if not seen:
+            return
+        self._session_logger.log_request_thinking_effort(effort)
 
     async def _run_once_on_call_tools(
         self,
@@ -761,6 +767,8 @@ class LoopPhase(RunOnceHost):
 
         self._session_logger.log_node_transition("CallToolsNode")
 
+        # 先还原转义控制标签（如 &lt;SILENCE&gt; / &lt;think&gt;），再拆思考与清洗
+        node.model_response.parts = normalize_escaped_control_tags_in_parts(node.model_response.parts)
         # 流式请求下 pydantic_ai 未必能拆出内嵌 <think> 标签（仅当标签作为 独立 SSE chunk
         node.model_response.parts = _split_embedded_thinking(node.model_response.parts, st.thinking_tags)
         # 紧接着清除文本里泄漏的工具调用标记残留（弱模型 / 兼容网关常把工具
@@ -790,12 +798,13 @@ class LoopPhase(RunOnceHost):
                 _kept.append(_p)
             node.model_response.parts = _kept
 
-        # thrash fuse 后：若仍连打同一工具，直接从本响应剥掉，逼模型换路或收束
+        # 已熔断：只剥掉工具名和参数都相同的调用。换参数的调用留下。
         if st.thrash_fused and st.same_tool_name and self.create_by in _INTERACTIVE_CREATE_BY:
+            _fused_call = st.same_tool_name
             _stripped = [
                 _p
                 for _p in node.model_response.parts
-                if not (isinstance(_p, ToolCallPart) and _p.tool_name == st.same_tool_name)
+                if not (isinstance(_p, ToolCallPart) and canonical_tool_call(_p.tool_name, _p.args) == _fused_call)
             ]
             if len(_stripped) < len(node.model_response.parts):
                 logger.warning(
@@ -812,8 +821,7 @@ class LoopPhase(RunOnceHost):
                 if _tool_call_targets_render_agent(_p):
                     st.delegated_render = True
                     st.pending_async_delivery = True
-                    if st.speech_policy != "delivered":
-                        st.speech_policy = "silence_only"
+                    st.speech_policy = "silence_only"
                     break
 
         # 带函数工具的回复里的字一律先不发。hosted 搜索不当函数工具。
@@ -824,8 +832,8 @@ class LoopPhase(RunOnceHost):
         # 同 ModelResponse 多 TextPart：尖括号 attempt 只计 1 次
         output_gate.begin_response_batch(_require_context(st).extra)
         _ab_attempt_counted_this_response = False
-        # thrash：同响应内工具名列表，结束本响应后一次性按「轮」更新 streak
-        _resp_tool_names: list[str] = []
+        # thrash：同响应内「工具名 + 参数」列表，结束本响应后按轮更新 streak
+        _resp_tool_calls: list[str] = []
         for part in node.model_response.parts:
             # 拦截到模型即将调用工具
             if isinstance(part, ToolCallPart):
@@ -838,13 +846,12 @@ class LoopPhase(RunOnceHost):
                     )
                 )
                 st.tool_call_list.append(part.tool_name)
-                _resp_tool_names.append(part.tool_name)
+                _resp_tool_calls.append(canonical_tool_call(part.tool_name, part.args))
                 if part.tool_name == "create_subagent" and _tool_call_targets_render_agent(part):
                     st.delegated_render = True
                     # 出图委派当下即在途：后续 TextPart 不得把事实包念进群聊。
                     st.pending_async_delivery = True
-                    if st.speech_policy != "delivered":
-                        st.speech_policy = "silence_only"
+                    st.speech_policy = "silence_only"
                 if is_status_tool_name(part.tool_name):
                     st.has_status_tool_call = True
                     _require_context(st).extra["has_status_tool"] = True
@@ -882,9 +889,7 @@ class LoopPhase(RunOnceHost):
                 logger.debug(i18n_t("log.agent.llm_text", _text=_text))
                 self._session_logger.log_text_output(_text)
                 if is_silence_marker(_text):
-                    if st.delivered_terminal:
-                        st.silence_reason = "delivered_terminal"
-                    elif not st.silence_reason:
+                    if not st.silence_reason:
                         st.silence_reason = "model_voluntary"
                     # 看过出戏提醒后选静默 = 自主判断不发，收尾旁路不得再送原文
                     if output_gate.ooc_reminder_delivered(_require_context(st).extra):
@@ -900,6 +905,17 @@ class LoopPhase(RunOnceHost):
                         continue
                 if _text in self._run_sent_texts:
                     logger.debug(i18n_t("log.agent.skipping_duplicate", p0=repr(_text[:40])))
+                    self._discard_stream_preview(st, _text)
+                    continue
+                # 发送工具已经把这轮的话交给用户。后面的复述不再走主通道。
+                if (
+                    "direct_user_sent" in st.run_extra
+                    and st.run_extra["direct_user_sent"] is True
+                    and self.create_by in _MAIN_PERSONA_CREATE_BY
+                    and st.return_mode != "return"
+                ):
+                    st.last_block_reason = "already_sent_by_tool"
+                    record_output_block(st, self._session_logger, "already_sent_by_tool", _text)
                     self._discard_stream_preview(st, _text)
                     continue
                 # 同响应的字写在工具结果之前，先不发。委派的开场句由 create_subagent 派发成功后代发。
@@ -943,6 +959,7 @@ class LoopPhase(RunOnceHost):
                     )
                     if _blk:
                         st.last_block_reason = _why
+                        record_output_block(st, self._session_logger, _why, _text)
                         # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
                         # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
                         if _why in ("report_speech", "empty_handoff", "persona_length_breach"):
@@ -963,11 +980,6 @@ class LoopPhase(RunOnceHost):
                         )
                         self._discard_stream_preview(st, _text)
                         continue
-                    # 砍掉「要不要我再查」类助理收尾，保留事实句
-                    _text = strip_open_solicitations(_text)
-                    if not _text.strip():
-                        self._discard_stream_preview(st)
-                        continue
                 if st.bot and _text and st.return_mode in ["always", "by_bot"]:
                     # 统一输出闸门；同 response 尖括号只计一次 attempt
                     _user_raw = st.ev.raw_text if st.ev is not None and st.ev.raw_text else ""
@@ -982,6 +994,7 @@ class LoopPhase(RunOnceHost):
                     if _gr.decision is output_gate.GateDecision.FUSE:
                         st.ab_abort = True
                         st.last_block_reason = "output_gate_fuse"
+                        record_output_block(st, self._session_logger, "output_gate_fuse", _text)
                         _ab_attempt_counted_this_response = True
                         logger.warning(
                             i18n_t(
@@ -993,6 +1006,13 @@ class LoopPhase(RunOnceHost):
                         self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.REWRITE:
+                        _gate_why = (
+                            f"output_gate_{_gr.policy}"
+                            if _gr.policy in ("angle_bracket", "ooc", "inner_os")
+                            else "output_gate_rewrite"
+                        )
+                        st.last_block_reason = _gate_why
+                        record_output_block(st, self._session_logger, _gate_why, _text)
                         if _gr.policy == "ooc" and _gr.ooc_hit is not None:
                             logger.warning(
                                 i18n_t(
@@ -1015,6 +1035,9 @@ class LoopPhase(RunOnceHost):
                         self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.FALLBACK:
+                        if _gr.send_text.strip() != _text.strip():
+                            st.last_block_reason = "output_gate_fallback"
+                            record_output_block(st, self._session_logger, "output_gate_fallback", _text)
                         self._discard_stream_preview(st, _text)
                         # send_text 才是正文（angle 净化 / inner_os 剥离）。空 = 无可发内容，
                         # 不用罐头代答：一个字符都不发。
@@ -1042,6 +1065,8 @@ class LoopPhase(RunOnceHost):
                     _fab_gate_on = not st.fake_done_retry and not st.effectual_mutate and bool(st.tool_names)
                     if _fab_gate_on and _claims_fake_done(_text):
                         logger.warning(i18n_t("log.agent.fakedone_zero_claim_pending_ok", p0=repr(_text[:40])))
+                        st.last_block_reason = "fake_done_withheld"
+                        record_output_block(st, self._session_logger, "fake_done_withheld", _text)
                         st.fab_blocked.append(_text)
                         self._discard_stream_preview(st, _text)
                         continue
@@ -1050,6 +1075,8 @@ class LoopPhase(RunOnceHost):
                     if _cap < 1:
                         _cap = MAIN_CHANNEL_VISIBLE_LIMIT
                     if st.main_channel_sends >= _cap:
+                        st.last_block_reason = "main_channel_cap"
+                        record_output_block(st, self._session_logger, "main_channel_cap", _text)
                         logger.info(
                             i18n_t(
                                 "log.agent.silent_skipping_text",
@@ -1089,7 +1116,6 @@ class LoopPhase(RunOnceHost):
             _saw_tool_call_this_turn
             and st.main_channel_sends == 0
             and not st.wait_comfort_sent
-            and st.speech_policy != "delivered"
             and not send_message_call_has_visible_text(node.model_response.parts)
             and turn_expects_opening(
                 create_by=self.create_by,
@@ -1115,10 +1141,10 @@ class LoopPhase(RunOnceHost):
                 _kept_parts.append(_p)
             node.model_response.parts = _kept_parts
 
-        # thrash：本响应只按「轮」计 1 次（并行多 query 不累加）
+        # 本响应只按「轮」计 1 次。同响应里参数相同的并行调用不累加。
         st.same_tool_name, st.same_tool_streak = _update_thrash_streak_for_response(
-            _resp_tool_names,
-            prev_name=st.same_tool_name,
+            _resp_tool_calls,
+            prev_signature=st.same_tool_name,
             prev_streak=st.same_tool_streak,
         )
 
@@ -1126,6 +1152,15 @@ class LoopPhase(RunOnceHost):
         _ttft_ms: float = 0.0
         _tps: float = 0.0
         _req_usage = node.model_response.usage
+        _resp_model = node.model_response.model_name
+        add_response_usage(
+            st,
+            input_tokens=_req_usage.input_tokens,
+            output_tokens=_req_usage.output_tokens,
+            cache_read_tokens=_req_usage.cache_read_tokens,
+            cache_write_tokens=_req_usage.cache_write_tokens,
+            response_model=_resp_model if isinstance(_resp_model, str) else None,
+        )
         if st.first_event_at is not None and st.last_event_at is not None:
             _ttft_ms = round((st.first_event_at - st.req_start) * 1000, 2)
             _generation_time = st.last_event_at - st.first_event_at
@@ -1176,6 +1211,11 @@ class LoopPhase(RunOnceHost):
                         break
                     # 1. 发起大模型请求前的处理
                     if isinstance(node, ModelRequestNode):
+                        if _model_request_is_approval_halt(node):
+                            agent_run.ctx.state.message_history.append(node.request)
+                            st.approval_halted = True
+                            logger.info(i18n_t("log.ai.approval_halt_stop"))
+                            break
                         await self._run_once_on_model_request(st, node, agent_run)
                         if st.generation_cancelled:
                             break
@@ -1197,7 +1237,32 @@ class LoopPhase(RunOnceHost):
                 logger.info(i18n_t("log.agent.generation_aborted_no_history"))
                 return "" if st.output_type is None else None
 
+            if st.approval_halted:
+                _commit_approval_halt_history(self.history, agent_run.all_messages())
+                return "" if st.output_type is None else None
+
             # 遍历完成后收尾
             return await self._run_once_settle_result(st, agent_run, statistics_manager)
         finally:
             self._history_iter_active = False
+
+
+def _model_request_is_approval_halt(node: ModelRequestNode) -> bool:
+    from gsuid_core.ai_core.approval.halt import text_is_approval_halt
+
+    for part in node.request.parts:
+        if type(part) is not ToolReturnPart:
+            continue
+        content = part.content if isinstance(part.content, str) else ""
+        if text_is_approval_halt(content):
+            return True
+    return False
+
+
+def _commit_approval_halt_history(history: list[ModelMessage], messages: list[ModelMessage]) -> None:
+    """把已完成的工具往返写进 history，避免下一次 run 留下没有回执的工具调用。"""
+    if messages is history:
+        return
+    start = len(history)
+    if len(messages) > start:
+        history.extend(messages[start:])

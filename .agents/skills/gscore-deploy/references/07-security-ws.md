@@ -79,11 +79,12 @@ server {
         proxy_read_timeout 600s;
     }
 
-    # WebConsole
+    # WebConsole / HTTP API。必须覆盖客户端自己的 X-Forwarded-For。
     location / {
         proxy_pass http://127.0.0.1:8765;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
 ```
@@ -111,25 +112,13 @@ Bot 端 URL 填 `wss://core.example.com/<bot_id>?token=<WS_TOKEN>`。
 
 ## 7.4 反向代理下的真实 IP
 
-[`security_manager.py:get_client_ip()`](../../../gsuid_core/security_manager.py) 的逻辑：
+[`security_manager.py:get_client_ip()`](../../../gsuid_core/security_manager.py) 与 WebSocket 的 `is_trusted()` 共用当前内存里的 `TRUSTED_IPS`。地址先用 `ipaddress` 收成合法 IP，IPv4-mapped IPv6 收成 IPv4。`localhost` 不是 IP，写进列表也不参与匹配。
 
-```python
-def get_client_ip(request):
-    client_host = request.client.host
-    if client_host in TRUSTED_IPS:
-        # 仅当直连来源（反向代理本身）在 TRUSTED_IPS 时，
-        # 才信任 X-Forwarded-For / X-Real-IP
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip.strip()
-    return client_host
-```
+- 直连地址不在这份列表里：忽略 `X-Forwarded-For` 和 `X-Real-IP`，限流按直连地址算。
+- 直连地址在列表里：Core 只读第一行 `X-Forwarded-For`。反代用 `proxy_set_header` 覆盖客户端自己的这一行，逗号链路写在这一行里。Core 从右往左取第一个合法且不在列表里的地址，直连地址算最右一跳。
+- 这一行没有可用结果时，用同样的规则看第一行 `X-Real-IP`。带端口、带方括号或其它非法片段丢掉。
 
-**部署提示**：Core 套反代时，要把**反代自己的出口 IP**（通常是 `127.0.0.1`）
-加到 `TRUSTED_IPS`，否则 `X-Forwarded-For` 头会被忽略，限流按反代 IP 算（错的）。
+**部署提示**：Core 套反代时，把反代自己的出口 IP（通常是 `127.0.0.1`）留在 `TRUSTED_IPS`。上面的 `location /` 和 `/ws/` 都要写 `X-Forwarded-For $proxy_add_x_forwarded_for`。只写 `X-Real-IP` 时，客户端自己的 `X-Forwarded-For` 仍会传进来，并盖过 `X-Real-IP`。多级代理还要把每一跳的地址写进同一列表，否则限流停在最靠近 Core 的那一跳。不要把公网网段写进信任列表。
 
 ## 7.5 WS 端 vs WebConsole 端的限流器
 
@@ -161,8 +150,8 @@ def get_client_ip(request):
 
 ## 7.7 配置文件改完必须重启
 
-`WS_TOKEN` / `TRUSTED_IPS` / `HOST` / `PORT` 都**不会热更**（在 `core.py:99-107`
-里只在启动时读一次）。改了必须：
+`WS_TOKEN` / `HOST` / `PORT` 在 `core.py` 启动时读一次，改完必须重启。
+`TRUSTED_IPS` 在每次 HTTP 取客户端 IP 和每次 WebSocket 判断信任时读取当前内存配置；控制台保存后下一次请求或连接生效。手改 `config.json` 文件仍要重启：
 
 ```sh
 core重启    # Bot 内 master 命令

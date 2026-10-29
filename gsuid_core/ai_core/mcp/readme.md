@@ -156,8 +156,12 @@ result = await client.call_tool("search", {"query": "RAG"})
 **使用示例:**
 ```python
 from gsuid_core.ai_core.mcp.utils import (
-    is_mcp_provider, get_mcp_tool_id, build_mcp_arguments,
-    call_mcp_tool_checked, save_binary_to_tempfile, cleanup_tempfile,
+    is_mcp_provider,
+    get_mcp_tool_id,
+    build_mcp_arguments,
+    call_mcp_tool_checked,
+    save_binary_to_tempfile,
+    cleanup_tempfile,
 )
 
 # ASR 模块重构前:
@@ -173,8 +177,10 @@ if provider == "MCP":
         return result.text
     finally:
         if os.path.exists(audio_path):
-            try: os.unlink(audio_path)
-            except Exception as e: logger.warning(...)
+            try:
+                os.unlink(audio_path)
+            except Exception as e:
+                logger.warning(...)
 
 # ASR 模块重构后:
 if is_mcp_provider(provider):
@@ -305,16 +311,27 @@ if is_mcp_provider(provider):
 - **`stdio`**：进程 stdin/stdout（本地子进程）。
 - 旧配置 `sse` 视为 `http`。
 
-**HTTP 健壮性（`McpHttpGuard`）:**
-- 挂载点外包一层护栏：子应用跑在 `anyio.CancelScope(shield=True)` 内；HTTP `send`
-  失败（客户端断开）不回灌 SDK
-- 子应用未写 `http.response.start` 就返回，或抛 `ClosedResourceError` /
-  `ExceptionGroup` 时：护栏回 **503 + JSON-RPC error**（已写 start 则不再写 503），
-  并重建 HTTP 子应用与 `StreamableHTTPSessionManager`（冷却 5s；建失败则保留旧挂载）
-- 线上形态（2026-09-18）：`writer.send` → `ClosedResourceError` → SDK 记
-  `SSE response error` 后吞掉、不写响应 → Starlette `No response returned.` →
-  `POST /api/mcp/` 永久 500。`stateless_http` 把每请求任务 spawn 进终身 task group，
-  毒化后不会自愈，必须换 lifespan 拿新的 session manager
+**HTTP 健壮性（`McpHttpGuard` 与常驻生命周期任务）:**
+- 挂载点是 `McpHttpGuard`，内层应用由常驻任务持有。子应用跑在
+  `anyio.CancelScope(shield=True)` 内。HTTP `send` 失败（客户端断开）不回灌 SDK，
+  本次请求不重放。子应用正常返回时不重建会话
+- 每一代 lifespan 由同一个常驻任务进入和退出。重建不更换挂载点。关闭时先停这个任务，
+  再拿重建锁并卸挂载。该任务使用空的 `contextvars.Context()`，不继承当前请求的上下文
+- 状态码还没写给客户端时（没写 start，或 start 仍被护栏扣住），子应用就返回或抛错：
+  护栏让常驻任务重建会话，并把同一次请求直接交给新的内层应用。重放写出完整响应时，
+  客户端只看到这次结果。重放仍没有完整响应时回 **503 + JSON-RPC error**。冷却 5 秒。
+  `http_app()` 失败时旧会话仍在。新会话进入失败时，旧会话已由同一任务退出，挂载还在，
+  本次回 503
+- 正文已经写给客户端、但没有 `more_body=false` 就返回时：状态码不能改。护栏补一个空结束块并重建，本次不重放
+- 线上形态：`stateless_http` 把每请求任务 spawn 进终身 task group。任一子任务以
+  非 `CancelledError` 退出时，anyio 取消这个 group。若进入 lifespan 的任务已经返回，
+  取消到不了那个任务，lifespan 就停在 `yield`，group 保持 entered。之后 `start()`
+  仍能成功；`started()` 把新任务挂进已取消的 scope，下一检查点就被取消，`connect()`
+  关掉读流。`writer.send` → `BrokenResourceError` → SDK 记 `SSE response error` 后吞掉，
+  常常已写 start。外层 `BaseHTTPMiddleware` 等不到结束块，抛 `No response returned.`，
+  访问日志为 `POST /api/mcp/` 500。2026-10-20 的日志里该状态从 00:00 持续到 08:22。
+  常驻任务停在 lifespan 里。scope 取消会打到它；它清掉取消计数并退出这一代，
+  同一次重建由这个任务进入新会话。状态码还没写给客户端的请求会重放
 
 **鉴权（框架零插件依赖；方向永远是插件 → 框架）:**
 - `Authorization: Bearer <token>`

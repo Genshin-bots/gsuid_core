@@ -25,7 +25,8 @@ async def load_plugins(self, dev_mode=False):
 
 
 > **关键设计**：依赖**先收集后合并安装**。早期每个插件单独跑一次安装，首次启动很慢；
-> 现在合并成一次。索引只用 `UV_DEFAULT_INDEX`（未设置或空白则官方 PyPI），失败不换源。
+> 现在合并成一次。索引只用 `UV_DEFAULT_INDEX`（未设置或空白则交给 uv / pip 自身配置，默认官方 PyPI），
+> 失败不换源。
 >
 > `core_start_def` 集合**不在** `load_plugins()` 内触发，而是由 `app_life.lifespan` 在 WS
 > 启动后 `asyncio.create_task(core_start_execute())` 跑（见 [§02](./02-startup-lifecycle.md)）。
@@ -79,9 +80,9 @@ gsuid_core/
 
 依赖安装流程：`normalize_name()` 规范化（小写、`-_.` 互换）→ 在 `ignore_dep` 列表则跳过 →
 未安装则入队 → 已装但版本不符则检查更新 → `install_packages()` 按 `UV_DEFAULT_INDEX` 安装一次。
-未设置或空白时用 `https://pypi.org/simple`。PATH 上有 `uv` 时执行
-`uv pip install --python <当前解释器> --default-index <索引>`，否则执行
-`python -m pip install --index-url <索引>`。失败不换源。
+PATH 上有 `uv` 时执行 `uv pip install --python <当前解释器> --default-index <索引>`，否则执行
+`python -m pip install --index-url <索引>`。未设置或空白时不传索引参数，由 uv / pip 读自己的配置
+（`uv.toml`、`UV_INDEX_URL`、`pip.conf` 等），都没有配置时就是官方 PyPI。失败不换源。
 
 ```python
 ignore_dep = {"python", "fastapi", "pydantic", "gsuid-core", "toml", "packaging"}

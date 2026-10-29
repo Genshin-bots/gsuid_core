@@ -135,7 +135,6 @@ async def _understand_image_native(
             "用「看起来像/可能是」表述，不要给出笃定的断言；文字内容按原样转录。"
         ),
         max_tokens=1024,
-        max_iterations=1,
         create_by="ImageUnderstand",
         task_level=task_level,
         is_subagent=True,

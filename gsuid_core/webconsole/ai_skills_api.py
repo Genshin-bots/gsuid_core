@@ -7,7 +7,7 @@ AI Skills APIs
 import asyncio
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends
+from fastapi import Query, Depends
 from pydantic import BaseModel
 
 from gsuid_core.webconsole.app_app import app
@@ -41,13 +41,19 @@ class UpdateMarkdownRequest(BaseModel):
 
 
 @app.get("/api/ai/skills/list", summary="获取 AI 技能列表", tags=AI_SKILLS)
-async def get_ai_skills_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
+async def get_ai_skills_list(
+    _: Dict[str, Any] = Depends(require_auth),
+    limit: Optional[int] = Query(None, ge=1, le=2000, description="单页条数；不传=全量"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+) -> Dict[str, Any]:
     """
     获取所有已注册的 AI 技能列表
 
+    `limit` / `offset` 分页；不传 `limit` 时返回全量（旧契约）。
+
     Returns:
         status: 0成功，1失败
-        data: 包含 skills 列表和总 count
+        data: 包含 skills 列表、总 count 与分页信息
     """
     skills_list: List[Dict[str, Any]] = []
     for name, skill in skills.items():
@@ -72,13 +78,18 @@ async def get_ai_skills_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[
     skills_list.sort(key=lambda x: x["name"])
 
     total_count = len(skills_list)
+    page = skills_list[offset:] if limit is None else skills_list[offset : offset + limit]
 
     return {
         "status": 0,
         "msg": "ok",
         "data": {
-            "skills": skills_list,
+            "skills": page,
             "count": total_count,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(page) < total_count,
         },
     }
 

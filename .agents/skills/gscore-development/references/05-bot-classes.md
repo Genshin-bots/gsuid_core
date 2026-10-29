@@ -57,6 +57,10 @@ async def target_send(self, ...):
 > WebSocket。不串行化会帧乱序 / 连接不稳。改发送逻辑时**不要**绕过 `_send_queue` 直接
 > `ws.send_bytes`。
 
+私聊（`target_type == "direct"`）在组 `MessageSend` 之前去掉全部 `at` 段，合并转发内部的
+`at` 一并去掉。去掉后这一帧没有正文（只剩定位用的 `group` 段也算没有）时，这一帧不发出。
+群聊和频道的 `at` 原样下发。QQ 私聊收到 `at` 段会把整包判为无法解析。
+
 ## 5.3 `Bot` —— 高层业务包装器
 
 供插件和触发器使用，封装 `_Bot` + `Event`，提供面向业务的 `send()` 等 API。

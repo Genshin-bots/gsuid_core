@@ -101,6 +101,9 @@
   "log.agent.pydanticai_core_request_attempt_fail": "[PydanticAI] 中核リクエスト {attempt}/{max_attempts} 回目失敗。{retry_delay} 秒後にリトライします: {e}",
   "log.agent.pydanticai_exception_error_details": "[PydanticAI] 異常の詳細:",
   "log.agent.pydanticai_reached_maximum_thinking": "[PydanticAI] Agent が最大思考ターン数 {p0} に達しました",
+  "log.agent.iter_wrap_nudge": "[GsCoreAIAgent] 思考ターンが残りわずかです。締めのヒントを注入します（{p0}/{p1}）",
+  "log.agent.usage_limit_salvage": "[GsCoreAIAgent] 思考ターン上限に達したため、収集済みの材料で成果物をまとめました",
+  "log.agent.usage_limit_salvage_sources_fail": "[GsCoreAIAgent] 保存済みツール結果の読み取りに失敗。締めは今ターンの抜粋を使います: {e}",
   "log.agent.chain_too_long_forced_summary": "[PydanticAI] 最大思考ターン数 {p0} に達したため強制要約で配信（グループへのシステム通知は出さない）",
   "log.agent.chain_too_long_no_context_silence": "[PydanticAI] 最大思考ターン数に到達しツール成果も無いため沈黙配信",
   "log.agent.pydanticai_refused_process_input": "[PydanticAI] モデルがこの入力を処理しませんでした（コンテンツモデレーション {p0}）: {err_str}",
@@ -148,7 +151,12 @@
   "log.agent.video_openai_file_inline": "[GsCoreAIAgent] 動画 {p0} を OpenAI file(base64) としてメッセージに含めました（{size:.1f}MB）",
   "log.agent.video_openai_file_uploaded": "[GsCoreAIAgent] 動画 {p0} を /v1/files にアップロード → {file_id}",
   "log.agent.video_openai_files_missing": "[GsCoreAIAgent] /v1/files が使えないため、動画 {p0}（{size:.1f}MB）は無制限 base64 にせず、フレーム抽出またはプレースホルダにします",
+  "log.agent.video_openai_responses_fallback": "[GsCoreAIAgent] 現在のリクエスト方式は responses です。video_url モードは無効なため、/v1/files にフォールバックします",
+  "log.agent.video_openai_url_inline": "[GsCoreAIAgent] 動画{p0} は OpenAI video_url(base64) としてメッセージに追加されました（{size:.1f}MB）",
+  "log.agent.video_openai_url_oversize": "[GsCoreAIAgent] 動画{p0} のサイズ（{size:.1f}MB）がインライン上限（{limit}MB）を超過したため、フレーム抽出またはプレースホルダーにフォールバックします",
+  "log.agent.video_openai_url_passthrough": "[GsCoreAIAgent] 動画{p0} は OpenAI video_url パススルー URL としてメッセージに追加されました: {url}",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 壁時計のソフト予算を超過しました（{p0:.0f} 秒）。収束ヒントを注入します",
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}",
-  "log.agent.pydanticai_quota_exhausted": "[PydanticAI] モデルの利用上限に達しました。再試行せず終了します: {e}"
+  "log.agent.pydanticai_quota_exhausted": "[PydanticAI] モデルの利用上限に達しました。再試行せず終了します: {e}",
+  "log.agent.usage_limit_salvage_fail": "[GsCoreAIAgent] 成果物のまとめに失敗しました: {e}"
 }

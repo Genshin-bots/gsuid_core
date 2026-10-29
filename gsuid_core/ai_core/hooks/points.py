@@ -58,6 +58,15 @@ class AgentHookPoint(str, Enum):
     ON_STABLE_CONTEXT = "H29"
 
 
+class HookDecision(str, Enum):
+    """控制码。只认显式返回值，异常一律不升级为 ABORT_RUN。"""
+
+    CONTINUE = "continue"
+    ABORT_RUN = "abort_run"
+    SILENCE = "silence"
+    VETO_TOOL = "veto_tool"
+
+
 class HookCapability(str, Enum):
     """能力票：点位声明允许哪些受控写操作，未授权调用抛 HookCapabilityError。"""
 
@@ -77,13 +86,14 @@ class HookCapability(str, Enum):
 
 @dataclass(frozen=True)
 class HookPointSpec:
-    """点位契约：内核锚点、能力票、默认超时、是否已接线。"""
+    """点位契约：内核锚点、能力票、默认超时、是否已接线、超时决断。"""
 
     point: AgentHookPoint
     anchor: str
     capabilities: FrozenSet[HookCapability]
     default_timeout_ms: int
     wired: bool
+    on_timeout_decision: HookDecision = HookDecision.CONTINUE
 
 
 def _spec(
@@ -92,8 +102,9 @@ def _spec(
     timeout_ms: int,
     *caps: HookCapability,
     wired: bool = True,
+    on_timeout_decision: HookDecision = HookDecision.CONTINUE,
 ) -> HookPointSpec:
-    return HookPointSpec(point, anchor, frozenset(caps), timeout_ms, wired)
+    return HookPointSpec(point, anchor, frozenset(caps), timeout_ms, wired, on_timeout_decision)
 
 
 _C = HookCapability
@@ -116,9 +127,10 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
         _spec(
             AgentHookPoint.REACTIVE_GATE,
             "handle_ai.handle_ai_chat:soft_gate",
-            2000,
+            6000,
             _C.SET_SHOULD_SPEAK,
             _C.SILENCE,
+            on_timeout_decision=HookDecision.SILENCE,
         ),
         _spec(AgentHookPoint.RETRIEVE_CONTEXT, "handle_ai.handle_ai_chat:retrieve", 15000, _C.SET_BLOCK),
         _spec(

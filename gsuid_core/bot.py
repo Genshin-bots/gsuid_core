@@ -7,9 +7,18 @@ from fastapi import WebSocket
 from msgspec import json as msgjson
 from starlette.websockets import WebSocketState
 
+import gsuid_core.i18n as i18n
 from gsuid_core.i18n import t
-from gsuid_core.logger import logger
-from gsuid_core.models import Event, Message, MessageSend, TaskContext, MessageReceive
+from gsuid_core.logger import logger, trace_collector, bind_trace_context, clear_trace_context
+from gsuid_core.models import (
+    Event,
+    Message,
+    MessageSend,
+    TaskContext,
+    MessageReceive,
+    format_node_preview,
+    normalize_node_items,
+)
 from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
@@ -26,8 +35,12 @@ from gsuid_core.load_template import (
     button_templates,
 )
 from gsuid_core.message_models import Button, ButtonType
+from gsuid_core.message_history import get_history_manager, node_items_to_history
+from gsuid_core.ai_core.outbound import get_outbound_image_label
 from gsuid_core.ai_core.wall_clock import pause_wall_clock
+from gsuid_core.utils.image.image_tools import normalize_image_for_history
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.command_aside.capture import capture_outbound
 from gsuid_core.utils.plugins_config.gs_config import (
     bm_config,
     sp_config,
@@ -88,6 +101,39 @@ def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
         return {"type": obj.type, "data": _truncate_for_log(obj.data, max_str_len)}
 
     return obj
+
+
+_DIRECT_AT_DEPTH = 8
+
+
+def _without_direct_at(messages: list[Message], depth: int = 0) -> tuple[list[Message], int]:
+    """去掉 at 段。私聊协议不接受 at，嵌在合并转发里的也去掉。"""
+    kept: list[Message] = []
+    dropped = 0
+    for msg in messages:
+        if msg.type == "at":
+            dropped += 1
+            continue
+        raw_items = msg.data
+        if msg.type != "node" or not isinstance(raw_items, list) or depth >= _DIRECT_AT_DEPTH:
+            kept.append(msg)
+            continue
+        inner: list[Message] = []
+        opaque = False
+        for item in raw_items:
+            if not isinstance(item, Message):
+                opaque = True
+                break
+            inner.append(item)
+        if opaque:
+            kept.append(msg)
+            continue
+        cleaned, nested_dropped = _without_direct_at(inner, depth + 1)
+        dropped += nested_dropped
+        if not cleaned:
+            continue
+        kept.append(Message(type="node", data=cleaned) if nested_dropped else msg)
+    return kept, dropped
 
 
 def message_list_to_str(messages: list[Message]) -> str:
@@ -261,6 +307,7 @@ class _Bot:
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
         try:
+            # core_command 包初始化会 import SV，SV 再 import Bot。
             from gsuid_core.buildin_plugins.core_command.core_ai_control.state import (
                 is_scope_banned,
                 get_target_scope_key,
@@ -281,8 +328,6 @@ class _Bot:
 
         # 记录 bot 回复到历史记录
         try:
-            from gsuid_core.message_history import get_history_manager
-
             history_manager = get_history_manager()
 
             # 确定 group_id 和 user_id
@@ -301,8 +346,6 @@ class _Bot:
             if isinstance(message, str):
                 # 检查是否是 base64 图片
                 if message.startswith("base64://"):
-                    from gsuid_core.ai_core.outbound import get_outbound_image_label
-
                     content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "base64_image"
                 else:
@@ -314,12 +357,25 @@ class _Bot:
                 # 处理消息列表
                 text_parts = []
                 image_count = 0
+                out_images = []
+                node_items: List[Dict[str, Any]] = []
                 for msg in message:
                     if isinstance(msg, Message):
                         if msg.type == "text":
                             text_parts.append(str(msg.data))
+                        elif msg.type == "node":
+                            # 合并转发：子项进 metadata 供控制台展开，正文落摘要而不是 [node]
+                            node_items.extend(node_items_to_history(normalize_node_items(msg.data)))
+                            text_parts.append(format_node_preview(normalize_node_items(msg.data)))
                         elif msg.type == "image":
                             image_count += 1
+                            if msg.data:
+                                try:
+                                    norm = normalize_image_for_history(msg.data)
+                                    if norm:
+                                        out_images.append(norm)
+                                except Exception:
+                                    pass
                         elif msg.type == "at":
                             text_parts.append(f"@{msg.data}")
                         else:
@@ -327,10 +383,12 @@ class _Bot:
                     elif isinstance(msg, str):
                         text_parts.append(msg)
                 content = " ".join(text_parts)
+                if node_items:
+                    metadata["node"] = node_items
+                if out_images:
+                    metadata["images"] = out_images
                 if image_count > 0:
                     metadata["image_count"] = image_count
-                    from gsuid_core.ai_core.outbound import get_outbound_image_label
-
                     label = get_outbound_image_label()
                     if label:
                         content = f"{content} {label}".strip() if content else label
@@ -339,16 +397,26 @@ class _Bot:
             elif isinstance(message, Message):
                 if message.type == "text":
                     content = str(message.data)
+                elif message.type == "node":
+                    # 合并转发：子项进 metadata，正文落摘要
+                    metadata["node"] = node_items_to_history(normalize_node_items(message.data))
+                    content = format_node_preview(normalize_node_items(message.data))
                 elif message.type == "image":
-                    from gsuid_core.ai_core.outbound import get_outbound_image_label
-
                     content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "image"
+                    if message.data:
+                        try:
+                            norm = normalize_image_for_history(message.data)
+                            if norm:
+                                metadata["images"] = [norm]
+                        except Exception:
+                            pass
                 else:
                     content = f"[{message.type}]"
 
             # 构造 Event 对象用于记录历史（WS_BOT_ID 即 self.bot_id）
             if content and _hist_user_id:
+                # utils 顶层 import Bot，提到模块顶会和本文件成环。
                 from gsuid_core.ai_core.utils import is_silence_marker
 
                 if not is_silence_marker(content):
@@ -363,6 +431,7 @@ class _Bot:
                     # 显式 merge：调用方传入的 extra_metadata 覆盖默认推断的 type/image_count
                     if extra_metadata:
                         metadata.update(extra_metadata)
+                    # history_format -> ai_core.models 顶层 import Bot，不能提到模块顶。
                     from gsuid_core.ai_core.history_format import outbound_history_fields
 
                     sender = sender_id.strip() if isinstance(sender_id, str) else ""
@@ -466,6 +535,14 @@ class _Bot:
                 if group_id:
                     mr.append(Message("group", group_id))
 
+                # QQ 私聊收到 at 段会整包解析失败，合并转发内部的 at 一并去掉
+                if target_type == "direct":
+                    mr, dropped_at = _without_direct_at(mr)
+                    if dropped_at:
+                        logger.debug(t("log.bot.drop_direct_at", count=dropped_at))
+                    if not any(seg.type != "group" for seg in mr):
+                        continue
+
                 # 本帧 echo：每帧各一，发前登记，避免回执先于登记到达的竞态
                 _echo: Optional[str] = None
                 if _use_recall:
@@ -490,12 +567,14 @@ class _Bot:
 
                 local_val["send"] += 1
 
+                # memory 包的 __init__ 会 import server，server 再 import Bot。
                 from gsuid_core.ai_core.memory.config import memory_config
 
                 enable_ai: bool = ai_config.get_config("enable").data
                 is_enable_memory: bool = ai_config.get_config("enable_memory").data
                 memory_mode: list[str] = memory_config.memory_mode
                 if enable_ai and is_enable_memory and "主动会话" in memory_mode:
+                    # memory 包会拉起记忆启动链，且可能再回到 Bot。
                     from gsuid_core.ai_core.memory import observe
 
                     try:
@@ -691,12 +770,6 @@ class _Bot:
         # ── 启动追踪并绑定上下文 ──
         trace_ctx = getattr(ctx, "trace_context", None)
         if trace_ctx is not None:
-            from gsuid_core.logger import (
-                trace_collector,
-                bind_trace_context,
-                clear_trace_context,
-            )
-
             trace_collector.start_trace(trace_ctx)
             bind_trace_context(trace_ctx)
 
@@ -806,6 +879,7 @@ class Bot:
     async def get_lang(self) -> str:
         """当前用户语言：用户自定义 > 全局 LANGUAGE；结果缓存到本 Bot 实例。"""
         if self._lang is None:
+            # database.models 顶层 import Bot，提到模块顶会成环。
             from gsuid_core.utils.database.models import CoreUser
 
             self._lang = await CoreUser.get_user_lang(self.ev.user_id)
@@ -813,9 +887,7 @@ class Bot:
 
     async def t(self, key: str, /, **params: Any) -> str:
         """按当前用户语言翻译「发给用户看」的文案（用户自定义 > 全局 LANGUAGE）。"""
-        from gsuid_core.i18n import t as _t
-
-        return _t(key, lang=await self.get_lang(), **params)
+        return i18n.t(key, lang=await self.get_lang(), **params)
 
     @classmethod
     def get_instances(cls):
@@ -1046,6 +1118,7 @@ class Bot:
         extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
+        await capture_outbound(message)
         return await self.bot.target_send(
             message,
             self.ev.user_type,
@@ -1134,6 +1207,7 @@ class Bot:
         send_source_group: Optional[str] = None,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
+        await capture_outbound(message)
         return await self.bot.target_send(
             message,
             target_type,

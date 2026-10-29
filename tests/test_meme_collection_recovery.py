@@ -75,4 +75,4 @@ def test_missing_collection_embeds_sql_records() -> None:
     asyncio.run(_run())
     assert created == 1
     assert synced == ["m1"]
-    assert client.indexes == ["folder", "status", "meme_id"]
+    assert client.indexes == ["folder", "status", "meme_id", "pack_ids"]

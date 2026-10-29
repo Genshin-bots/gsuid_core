@@ -2,12 +2,29 @@
 
 HTML 用到 ``gs-`` 类时由 ``_prepare_free_html`` 注入到文档最前，
 agent 自写的 ``<style>`` 排在后面，同优先级时可直接覆盖。
-主题只换色板（``theme-*`` 类），版式由组件拼装。
+主题只换色板（``theme-*`` 类）；版式由 ``gs-page`` 上的 ``layout-*`` 声明，组件拼装。
 """
 
 import re
 
 RENDER_KIT_MARK = "gs render kit"
+
+RENDER_LAYOUTS: tuple[str, ...] = (
+    "feature",
+    "gallery",
+    "magazine",
+    "dashboard",
+    "ranking",
+    "compare",
+    "timeline",
+    "brief",
+)
+
+# 嵌图开启时，只有这些版式必须写进照片
+PHOTO_LAYOUTS: frozenset[str] = frozenset({"feature", "gallery", "magazine"})
+
+_CLASS_ATTR_RE = re.compile(r"""class\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+_LAYOUT_CLASS_RE = re.compile(r"\blayout-([a-z]+)\b")
 
 RENDER_KIT_THEMES: tuple[str, ...] = (
     "paper",
@@ -51,7 +68,8 @@ html,body{margin:0;padding:0;}
   --gs-accent-soft:#e4ecfb;--gs-accent-ink:#1c46aa;--gs-hero-from:#28354a;--gs-hero-to:#111827;}
 .gs-page.theme-ink{--gs-bg:#101418;--gs-surface:#1a2027;--gs-text:#dfe5ec;--gs-title:#f5f7fa;
   --gs-muted:#94a0ad;--gs-line:#2a323c;--gs-accent:#f0b429;--gs-accent-soft:#33291a;
-  --gs-accent-ink:#f7cd6b;--gs-hero-from:#2b3440;--gs-hero-to:#0b0e12;}
+  --gs-accent-ink:#f7cd6b;--gs-hero-from:#2b3440;--gs-hero-to:#0b0e12;
+  --gs-up:#f87171;--gs-down:#34d399;}
 
 .gs-hero{position:relative;width:100%;height:320px;overflow:hidden;border-radius:0 0 28px 28px;
   background:var(--gs-hero-to);}
@@ -69,6 +87,27 @@ html,body{margin:0;padding:0;}
 .gs-subtitle{font-size:18px;line-height:1.55;color:rgba(255,255,255,0.92);}
 .gs-hero .gs-chips{margin-top:6px;}
 .gs-hero .gs-chip{background:rgba(255,255,255,0.2);color:#ffffff;}
+.gs-hero.tall{height:520px;}
+
+.gs-band,.gs-stat-hero{display:flex;flex-direction:column;gap:10px;padding:44px 28px 30px;
+  border-radius:0 0 28px 28px;background:linear-gradient(140deg,var(--gs-hero-from) 0%,var(--gs-hero-to) 100%);}
+.gs-band-row{display:flex;align-items:center;gap:16px;}
+.gs-band .gs-chip,.gs-stat-hero .gs-chip{background:rgba(255,255,255,0.2);color:#ffffff;}
+.gs-band .gs-chips,.gs-stat-hero .gs-chips{margin-top:6px;}
+.gs-stat-row{display:flex;align-items:flex-end;flex-wrap:wrap;gap:18px;}
+.gs-stat-val{font-size:64px;font-weight:700;line-height:1.05;color:#ffffff;}
+.gs-stat-delta{font-size:26px;font-weight:630;line-height:1.3;padding-bottom:6px;color:#ffffff;}
+.gs-stat-hero .gs-up{color:#ff8a80;}
+.gs-stat-hero .gs-down{color:#6ee7b7;}
+
+.gs-split{display:flex;align-items:stretch;gap:20px;padding:30px 24px 6px;}
+.gs-split-body{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:10px;}
+.gs-split-media{position:relative;width:300px;height:300px;flex:none;border-radius:24px;overflow:hidden;
+  background:var(--gs-accent-soft);}
+.gs-split-media img{position:absolute;left:0;top:0;width:100%;height:100%;max-width:none;object-fit:cover;}
+.gs-split .gs-eyebrow{color:var(--gs-accent);}
+.gs-split .gs-title{color:var(--gs-title);}
+.gs-split .gs-subtitle{color:var(--gs-muted);}
 
 .gs-section{display:flex;flex-direction:column;gap:12px;padding:0 24px;margin-top:22px;}
 .gs-section.tight{margin-top:20px;}
@@ -99,8 +138,13 @@ html,body{margin:0;padding:0;}
 .gs-media-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;}
 .gs-avatar{position:relative;width:64px;height:64px;flex:none;border-radius:32px;overflow:hidden;
   background:var(--gs-accent-soft);}
+.gs-avatar.lg{width:96px;height:96px;border-radius:48px;}
+.gs-thumb.sm{width:64px;height:64px;border-radius:12px;}
 
 .gs-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.gs-grid.cols-3{grid-template-columns:1fr 1fr 1fr;gap:10px;}
+.gs-grid.cols-3 .gs-cover{height:120px;}
+.gs-grid.cols-3 .gs-tile-title{font-size:17px;}
 .gs-tile{display:flex;flex-direction:column;min-width:0;background:var(--gs-surface);border-radius:16px;
   overflow:hidden;border:1px solid var(--gs-line);}
 .gs-tile .gs-cover{height:140px;}
@@ -143,7 +187,47 @@ html,body{margin:0;padding:0;}
 .gs-ico img{width:100%;height:100%;}
 .gs-tip .gs-ico{margin-top:1px;}
 
+.gs-rank{display:flex;flex-direction:column;background:var(--gs-surface);border-radius:20px;
+  border:1px solid var(--gs-line);overflow:hidden;}
+.gs-rank-row{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--gs-line);}
+.gs-rank-row.top{background:var(--gs-accent-soft);}
+.gs-rank-no{display:flex;align-items:center;justify-content:center;width:40px;height:40px;flex:none;
+  border-radius:12px;background:var(--gs-bg);color:var(--gs-muted);font-size:19px;font-weight:700;}
+.gs-rank-row.top .gs-rank-no{background:var(--gs-accent);color:#ffffff;}
+.gs-rank-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.gs-rank-name{font-size:19px;font-weight:630;line-height:1.35;color:var(--gs-title);}
+.gs-rank-val{flex:none;font-size:22px;font-weight:700;line-height:1.2;color:var(--gs-title);text-align:right;}
+
+.gs-compare-head{display:flex;align-items:center;gap:12px;margin-top:8px;}
+.gs-compare-side{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:8px;
+  padding:16px 12px;border-radius:20px;background:rgba(255,255,255,0.14);}
+.gs-compare-name{font-size:22px;font-weight:700;line-height:1.3;color:#ffffff;text-align:center;}
+.gs-compare-side .gs-meta{color:rgba(255,255,255,0.8);text-align:center;}
+.gs-compare-vs{flex:none;font-size:24px;font-weight:700;color:#ffffff;}
+.gs-compare-table{display:flex;flex-direction:column;background:var(--gs-surface);border-radius:20px;
+  border:1px solid var(--gs-line);overflow:hidden;}
+.gs-compare-row{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--gs-line);
+  font-size:18px;line-height:1.45;}
+.gs-compare-a,.gs-compare-b{flex:1;min-width:0;color:var(--gs-text);}
+.gs-compare-a{text-align:right;}
+.gs-compare-b{text-align:left;}
+.gs-compare-k{width:140px;flex:none;text-align:center;font-size:15px;color:var(--gs-muted);}
+.gs-compare-a.win,.gs-compare-b.win{font-weight:700;color:var(--gs-accent);}
+
+.gs-quote{display:flex;flex-direction:column;gap:10px;padding:22px 24px;border-radius:20px;
+  background:var(--gs-accent-soft);}
+.gs-quote-text{font-size:24px;font-weight:630;line-height:1.55;color:var(--gs-accent-ink);}
+.gs-quote-by{font-size:15px;line-height:1.5;color:var(--gs-muted);text-align:right;}
+
+.gs-steps{display:flex;flex-direction:column;gap:12px;}
+.gs-step{display:flex;gap:14px;align-items:flex-start;padding:16px 18px;border-radius:18px;
+  background:var(--gs-surface);border:1px solid var(--gs-line);}
+.gs-step-no{display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;
+  border-radius:18px;background:var(--gs-accent);color:#ffffff;font-size:17px;font-weight:700;}
+.gs-step-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;}
+
 .gs-row{display:flex;gap:12px;align-items:center;}
+.gs-row.top{align-items:flex-start;}
 .gs-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;}
 .gs-accent{color:var(--gs-accent);}
 .gs-b{font-weight:630;color:var(--gs-title);}
@@ -156,6 +240,19 @@ html,body{margin:0;padding:0;}
 
 def uses_render_kit(html: str) -> bool:
     return _KIT_CLASS_RE.search(html) is not None
+
+
+def page_layout(html: str) -> str | None:
+    """``gs-page`` 上声明的版式名；没声明或不在目录里返回 None。"""
+    for match in _CLASS_ATTR_RE.finditer(html):
+        classes = match.group(1).split()
+        if "gs-page" not in classes:
+            continue
+        found = _LAYOUT_CLASS_RE.search(" ".join(classes))
+        if found is not None and found.group(1) in RENDER_LAYOUTS:
+            return found.group(1)
+        return None
+    return None
 
 
 def inject_render_kit(html: str) -> str:

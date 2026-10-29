@@ -88,7 +88,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定网络搜索的主用提供方。未配置或主用无 Key 时走 AnySearch 匿名额度。"
         "多源策略非「无」时，失败会按备用顺序切换到其它已配置源",
         "AnySearch",
-        options=["AnySearch", "Firecrawl", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP"],
     ),
     "websearch_lb_strategy": GsStrConfig(
         "网络搜索多源策略",
@@ -99,16 +99,17 @@ AI_CONFIG: Dict[str, GSC] = {
     "websearch_fallback_order": GsListStrConfig(
         "网络搜索备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用源）。留空则自动收集已配置源"
-        "（顺序：AnySearch → Firecrawl → Tavily → Exa → Jina → MCP）",
+        "（顺序：AnySearch → Firecrawl → DeepSeek → Tavily → Exa → Jina → MCP）",
         [],
-        options=["AnySearch", "Firecrawl", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP"],
     ),
     "webfetch_provider": GsStrConfig(
         "网页抓取服务提供方（主用）",
-        "Jina：经 r.jina.ai 读取（API Key 可选）；local：本机直连抓取并转 Markdown。"
-        "多源策略非「无」时，失败会按备用顺序切换",
+        "Jina：经 r.jina.ai 读取（API Key 可选）；DeepSeek：经 DeepSeek Fetch API 抓取；"
+        "Exa：经 Exa Contents 读取这个 URL 的正文（用 exa_config 的 Key）；"
+        "local：本机直连抓取并转 Markdown。多源策略非「无」时，失败会按备用顺序切换",
         "Jina",
-        options=["Jina", "local"],
+        options=["Jina", "DeepSeek", "Exa", "local"],
     ),
     "webfetch_lb_strategy": GsStrConfig(
         "网页抓取多源策略",
@@ -120,7 +121,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "网页抓取备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用）。默认 local",
         ["local"],
-        options=["Jina", "local"],
+        options=["Jina", "DeepSeek", "Exa", "local"],
     ),
     "render_image_sources": GsListStrConfig(
         "出图配图来源",
@@ -193,6 +194,20 @@ AI_CONFIG: Dict[str, GSC] = {
         300,
         options=[120, 300, 600, 900],
     ),
+    "follow_up_max_replies": GsIntConfig(
+        "免唤醒续聊回复次数上限",
+        "一个续聊窗口内允许软触发成功回复的最大次数。达到上限后不再软触发，"
+        "直到该用户再次 @、关键词或私聊。设为 0 表示不限制。默认 2 次。",
+        2,
+        options=[1, 2, 3, 5],
+    ),
+    "follow_up_debounce_seconds": GsFloatConfig(
+        "免唤醒续聊防抖合并缓冲(秒)",
+        "群聊中同一用户在续聊窗口内连发短消息时，等待合并的缓冲时间（秒）。硬触发不进缓冲。设为0关闭合并。",
+        3.0,
+        min_value=0.0,
+        max_value=10.0,
+    ),
     "spMode": GsDivider(
         "Agent 特殊模式",
         "Agent 特殊模式",
@@ -209,8 +224,8 @@ AI_CONFIG: Dict[str, GSC] = {
         "Agent 运行调参",
     ),
     "multi_agent_lenth": GsIntConfig(
-        "最多允许AI思考轮数",
-        "指定多轮思考调用工具的最大递归深度, 注意: 多轮对话会占用更多的token, 请根据实际情况调整",
+        "主Agent最多思考轮数",
+        "主对话每一轮允许的最大思考次数。子 Agent 与能力代理不读这项。多轮会占用更多 token。",
         20,
         options=[9, 12, 20, 30],
     ),
@@ -326,10 +341,10 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     # 任务档预算（AgentNode 统一后节点不再携带预算, 所有能力代理统一走这两项）
     "task_max_iterations": GsIntConfig(
-        "任务代理最大思考轮数",
-        "能力代理(task-mode 节点)单次任务的最大工具调用轮数; 插件开发等重型任务不够用时全局调大",
-        30,
-        options=[12, 20, 30, 40, 60],
+        "子Agent最大思考轮数",
+        "能力代理与子 Agent 单次任务的最大思考轮数，与主对话分开。重型任务不够用时调大。",
+        56,
+        options=[20, 30, 40, 56, 80],
     ),
     "task_max_tokens": GsIntConfig(
         "任务代理单次输出Token上限",
@@ -448,8 +463,9 @@ AI_CONFIG: Dict[str, GSC] = {
     "render_long_markdown_as_image": GsBoolConfig(
         "长markdown整篇出图(呈现层兜底)",
         "仅作**兜底**：主路径应委派 render_agent 出设计图。"
-        "开启后, 仍漏网的结构化长 markdown 会整篇渲成资料图防刷屏；"
-        "默认关闭，避免主人格浅分析被渲成丑图双发。判定刻意保守。",
+        "开启后, 仍漏网的结构化长 markdown 先交给 render_agent 出图；"
+        "未启用出图或没交出图片时，才用 render_md_to_bytes。"
+        "默认关闭，避免主人格浅分析被渲成丑图。判定刻意保守。",
         False,
     ),
     "markdown_image_min_chars": GsIntConfig(
@@ -669,12 +685,6 @@ EXA_CONFIG: Dict[str, GSC] = {
         10,
         options=[5, 10, 15, 20],
     ),
-    "search_type": GsStrConfig(
-        "搜索类型",
-        "指定搜索类型，neural 为语义搜索（更智能），keyword 为关键词搜索（更精确）",
-        "neural",
-        options=["neural", "keyword"],
-    ),
 }
 
 ANYSEARCH_CONFIG: Dict[str, GSC] = {
@@ -753,6 +763,45 @@ MINIMAX_CONFIG: Dict[str, GSC] = {
         "指定资源提供方式，url 为返回 URL 链接，local 为返回本地文件路径",
         "url",
         options=["url", "local"],
+    ),
+}
+
+# DeepSeek：搜索与抓取共用 API Key 与超时设置
+DEEPSEEK_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "DeepSeek API密钥",
+        "前往 https://platform.deepseek.com 获取。支持配置多个 Key 自动轮询与故障重试",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "DeepSeek 每次搜索的最大返回结果数量(1-50)",
+        10,
+        options=[5, 10, 15, 20, 30, 50],
+    ),
+    "timeout": GsIntConfig(
+        "请求超时(秒)",
+        "调用 DeepSeek 搜索/抓取 API 的超时时间",
+        30,
+        options=[10, 15, 20, 30, 45, 60],
+    ),
+    "search_base_url": GsStrConfig(
+        "搜索 API 地址",
+        "DeepSeek 网页搜索接口地址，默认 https://api.deepseek.com/v1/tools/search",
+        "https://api.deepseek.com/v1/tools/search",
+        options=["https://api.deepseek.com/v1/tools/search"],
+    ),
+    "fetch_base_url": GsStrConfig(
+        "抓取 API 地址",
+        "DeepSeek 网页抓取接口地址，默认 https://api.deepseek.com/v1/tools/fetch",
+        "https://api.deepseek.com/v1/tools/fetch",
+        options=["https://api.deepseek.com/v1/tools/fetch"],
+    ),
+    "need_content": GsBoolConfig(
+        "是否获取全文内容",
+        "DeepSeek 搜索是否在结果中返回网页全文 content（默认否，使用 summary 摘要）",
+        False,
     ),
 }
 
@@ -1290,6 +1339,12 @@ jina_config = StringConfig(
     "GsCore AI Jina搜索抓取配置",
     get_res_path("ai_core") / "jina_config.json",
     JINA_CONFIG,
+)
+
+deepseek_config = StringConfig(
+    "GsCore AI DeepSeek搜索抓取配置",
+    get_res_path("ai_core") / "deepseek_config.json",
+    DEEPSEEK_CONFIG,
 )
 
 web_fetch_config = StringConfig(

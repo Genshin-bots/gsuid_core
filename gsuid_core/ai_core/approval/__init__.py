@@ -1,13 +1,7 @@
 """统一审批中心：一张表（AIApprovalRequest）+ 两个动词（submit / resolve）。
 
-三个裁决入口（对话工具 respond_approval / webconsole /api/ai/approvals / Kanban
-看板兼容端点）+ 一个统一转达工具，全部经本模块；领域动作由 category 回调承担：
-
-- ``command_exec``   : 执行入库 argv 快照（command_exec/approval.py 注册）
-- ``kanban_subtask`` : 子任务回 pending + kick_root（planning/startup.py 注册，
-                       插件安装审批也走这条——它就是 Kanban 子任务审批）
-- ``tool_call``      : @ai_tools(approval=...) 策略门的一次性放行 grant（内置）
-- ``agent_request``  : Agent 主动请求（request_user/master_approval，内置）
+裁决入口是私聊确认码和 webconsole（含 Kanban 兼容端点）。带确认码的新票
+批准后回灌调用会话；没有哈希的旧票仍走原来的领域回调。
 """
 
 from .center import (
@@ -16,8 +10,10 @@ from .center import (
     submit,
     resolve,
     is_master,
+    expire_due,
     has_pending,
     resolve_row,
+    submit_meta,
     expire_stale,
     log_question,
     prime_pending,
@@ -26,9 +22,12 @@ from .center import (
     grant_tool_call,
     set_full_access,
     consume_tool_grant,
+    note_submit_reused,
+    match_confirm_message,
     set_full_access_resolver,
     list_pending_for_resolver,
     register_approval_category,
+    plugin_install_block_reason,
     register_builtin_categories,
 )
 from .models import AIApprovalRequest
@@ -42,16 +41,21 @@ __all__ = [
     "locate",
     "list_pending_for_resolver",
     "expire_stale",
+    "expire_due",
     "log_question",
     "prime_pending",
     "has_pending",
     "is_master",
+    "submit_meta",
+    "note_submit_reused",
     "set_full_access",
     "set_full_access_resolver",
     "is_full_access",
     "tool_call_gate",
     "grant_tool_call",
     "consume_tool_grant",
+    "match_confirm_message",
+    "plugin_install_block_reason",
     "register_approval_category",
     "register_builtin_categories",
 ]

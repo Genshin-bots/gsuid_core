@@ -332,11 +332,19 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
     clock = None
     if "turn_clock" in extra and isinstance(extra["turn_clock"], str):
         clock = parse_clock_at(extra["turn_clock"])
+    persona_name = ""
+    if ev is not None:
+        from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
+
+        resolved = _get_persona_for_event(ev)
+        if resolved:
+            persona_name = resolved
     return CogScope(
         user_id=str(ev.user_id) if ev is not None and ev.user_id else "",
         bot_id=bot.bot_id if bot is not None else "",
         bot_self_id=self_id,
         group_id=str(ev.group_id) if ev is not None and ev.group_id else None,
+        persona_name=persona_name,
         include_skill_doc=include_skill_doc,
         # 语义性开关在唯一的配置层给默认值，不在函数签名里给
         enable_system2=memory_config.enable_system2,
@@ -389,7 +397,7 @@ async def search_cognition(
         ctx: 工具执行上下文
         query: 自然语言查询。问已有记忆时带上专名与约束；办眼前的事填槽时
             写「说话人ID + 要填的槽」，不要把外部题目的词拼进去。
-        kinds: 可选，逗号分隔的类型过滤。留空=记忆+知识+落盘；
+        kinds: 可选，逗号分隔的类型过滤。留空=记忆+知识+落盘+自我笔记；
             query 含当前说话人 ID 时查 episode/entity/fact/preference（不含近窗/知识库）。
             图片/表情/出站/业务记录须显式打开。
         limit: 不决定页宽。它只决定候选池深度——给得越大池子越宽（上限 48）。

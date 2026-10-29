@@ -15,7 +15,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session
+from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
 
 
 def _escape_like(text: str) -> str:
@@ -58,6 +58,10 @@ class AiMemeRecord(SQLModel, table=True):
     # ── 分类信息 ──
     folder: str = Field(default="inbox", index=True, max_length=64)
     persona_hint: str = Field(default="common", index=True, max_length=64)
+    # 打标成功后要加入的包。空字符串表示这次没有指定包。
+    pending_pack_id: str = Field(default="", max_length=36)
+    # 为真时，第一次成功且当时没有成员，才加入「通用表情包」。
+    assign_default_pack: bool = Field(default=False)
 
     # ── 标签（JSON 字段） ──
     emotion_tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
@@ -586,6 +590,7 @@ class AiMemeRecord(SQLModel, table=True):
         tags: List[str],
         folder: Optional[str] = None,
         limit: int = 5,
+        pack_ids: Optional[Sequence[str]] = None,
     ) -> List["AiMemeRecord"]:
         """根据标签 / 描述精确匹配搜索表情包
 
@@ -606,12 +611,19 @@ class AiMemeRecord(SQLModel, table=True):
         """
         if not tags:
             return []
+        if pack_ids is not None and len(pack_ids) == 0:
+            return []
 
         tag_set = set(tags)
 
         stmt = select(cls).where(col(cls.status).in_(["tagged", "manual"]))
         if folder:
             stmt = stmt.where(cls.folder == folder)
+        if pack_ids is not None:
+            from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+            member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id).in_(list(pack_ids)))
+            stmt = stmt.where(col(cls.meme_id).in_(member_ids))
 
         # SQL 端 LIKE 粗过滤：description 直接匹配原文；
         # JSON 标签列匹配原文与 \uXXXX 转义两种存储形态
@@ -640,6 +652,114 @@ class AiMemeRecord(SQLModel, table=True):
         # 按使用次数降序排序
         matched.sort(key=lambda r: r.use_count, reverse=True)
         return matched[:limit]
+
+    @classmethod
+    @with_read_session
+    async def confirm_sendable(
+        cls,
+        session: AsyncSession,
+        meme_ids: Sequence[str],
+        pack_ids: Sequence[str],
+    ) -> List["AiMemeRecord"]:
+        """按传入顺序留下属于这些包、且状态可发的行。丢掉的名额不补。"""
+        if not meme_ids or not pack_ids:
+            return []
+        from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+        member_ids = select(AiMemePackItem.meme_id).where(
+            col(AiMemePackItem.pack_id).in_(list(pack_ids)),
+            col(AiMemePackItem.meme_id).in_(list(meme_ids)),
+        )
+        result = await session.execute(
+            select(cls).where(
+                col(cls.meme_id).in_(member_ids),
+                col(cls.status).in_(["tagged", "manual"]),
+            )
+        )
+        by_id = {row.meme_id: row for row in result.scalars().all()}
+        ordered: List[AiMemeRecord] = []
+        for meme_id in meme_ids:
+            if meme_id in by_id:
+                ordered.append(by_id[meme_id])
+        return ordered
+
+    @classmethod
+    def _pack_member_stmt(cls, pack_ids: Sequence[str], exclude_ids: Optional[List[str]]):
+        from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+        member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id).in_(list(pack_ids)))
+        stmt = select(cls).where(
+            col(cls.meme_id).in_(member_ids),
+            col(cls.status).in_(["tagged", "manual"]),
+        )
+        if exclude_ids:
+            stmt = stmt.where(col(cls.meme_id).not_in(exclude_ids))
+        return stmt
+
+    @classmethod
+    @with_read_session
+    async def random_pick_in_packs(
+        cls,
+        session: AsyncSession,
+        pack_ids: Sequence[str],
+        exclude_ids: Optional[List[str]] = None,
+    ) -> Optional["AiMemeRecord"]:
+        if not pack_ids:
+            return None
+        stmt = cls._pack_member_stmt(pack_ids, exclude_ids).order_by(func.random()).limit(1)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_read_session
+    async def least_used_pick_in_packs(
+        cls,
+        session: AsyncSession,
+        pack_ids: Sequence[str],
+        exclude_ids: Optional[List[str]] = None,
+    ) -> Optional["AiMemeRecord"]:
+        if not pack_ids:
+            return None
+        stmt = (
+            cls._pack_member_stmt(pack_ids, exclude_ids)
+            .order_by(
+                col(cls.last_used_at).asc().nullsfirst(),
+                col(cls.use_count).asc(),
+            )
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_read_session
+    async def list_pack_members(
+        cls,
+        session: AsyncSession,
+        pack_id: str,
+        status: Optional[str] = None,
+        sort: str = "created_at_desc",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[Sequence["AiMemeRecord"], int]:
+        from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+        member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id) == pack_id)
+        filters: List[ColumnElement[bool]] = [col(cls.meme_id).in_(member_ids)]
+        if status:
+            filters.append(col(cls.status) == status)
+        count_stmt = select(func.count()).select_from(cls).where(*filters)
+        total = (await session.execute(count_stmt)).scalar() or 0
+        stmt = select(cls).where(*filters)
+        if sort == "use_count_desc":
+            stmt = stmt.order_by(col(cls.use_count).desc())
+        elif sort == "use_count_asc":
+            stmt = stmt.order_by(col(cls.use_count).asc())
+        else:
+            stmt = stmt.order_by(col(cls.created_at).desc())
+        offset = (page - 1) * page_size
+        result = await session.execute(stmt.offset(offset).limit(page_size))
+        return result.scalars().all(), total
 
 
 class AiMemeKnowledge(BaseBotIDModel, table=True):

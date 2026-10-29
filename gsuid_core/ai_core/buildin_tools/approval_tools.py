@@ -1,8 +1,7 @@
 """统一审批交互工具（审批中心的 LLM 侧薄封装）。
 
-「三个入口一个工具」中的**一个工具**：``respond_approval`` 是全框架唯一的审批
-转达工具——命令执行、Kanban 子任务、插件安装、工具策略门、Agent 主动请求全部
-经它裁决（另两个入口是 webconsole ``/api/ai/approvals`` 与 Kanban 看板兼容端点）。
+裁决不经过模型。主人用私聊确认码，或在审批中心点批准 / 拒绝。
+``check_approval`` 只报告本会话的状态，不批准，也不返回确认码。
 
 审批能力族（capability_domain="审批交互"）：
 - ``ask_user``                : question × user —— 单个澄清提问（选项 + 超时默认；
@@ -11,8 +10,10 @@
                                 任意顺序作答、收齐才返回；基于 mutiply 缓冲收集）
 - ``request_user_approval``   : approval × user —— 花用户自己的资源前请求授权
 - ``request_master_approval`` : approval × master —— 敏感权限请求主人
+- ``check_approval``          : 本会话有待审批时才可见
 """
 
+import time
 import asyncio
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -25,55 +26,9 @@ from gsuid_core.ai_core import approval as approval_center
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.wall_clock import pause_wall_clock
-
-# 「主人亲口表态」证据校验关键词（原 kanban_tools 同款）。审批是人在环的信任闸门，
-# 转达工具绝不允许代理替人拍板；拒绝词优先匹配（"不同意"含子串"同意"）。
-_APPROVE_WORDS = (
-    "同意",
-    "批准",
-    "可以",
-    "答应",
-    "准了",
-    "通过",
-    "去吧",
-    "装吧",
-    "安装吧",
-    "去装",
-    "可装",
-    "好的",
-    "好啊",
-    "好呀",
-    "行吧",
-    "没问题",
-    "允许",
-    "认可",
-    "ok",
-    "okay",
-    "yes",
-    "approve",
-    "go ahead",
-    "agree",
-)
-_REJECT_WORDS = (
-    "不同意",
-    "不批准",
-    "不可以",
-    "不行",
-    "不要",
-    "不用",
-    "别装",
-    "别安装",
-    "先别",
-    "拒绝",
-    "取消",
-    "算了",
-    "驳回",
-    "否决",
-    "不准",
-    "no",
-    "deny",
-    "reject",
-)
+from gsuid_core.ai_core.approval.halt import APPROVAL_HALT_MARK, halt_line
+from gsuid_core.ai_core.approval.models import AIApprovalRequest
+from gsuid_core.ai_core.approval.session_ctx import session_has_pending, current_caller_session_id
 
 
 def _has_pending(ctx: "RunContext[ToolContext]") -> bool:
@@ -83,63 +38,71 @@ def _has_pending(ctx: "RunContext[ToolContext]") -> bool:
     return approval_center.has_pending(str(ev.user_id))
 
 
+def _this_session_pending(ctx: "RunContext[ToolContext]") -> bool:
+    """只在当前这个 agent 会话挂着审批时露出 check_approval。"""
+    deps = ctx.deps
+    if deps is None:
+        return False
+    parent = deps.parent_session_id or ""
+    if session_has_pending(parent) or session_has_pending(current_caller_session_id()):
+        return True
+    ev = deps.ev
+    return ev is not None and session_has_pending(ev.session_id or "")
+
+
+def _agent_dedupe(summary: str) -> str:
+    return "agent:" + " ".join(summary.split()).casefold()[:180]
+
+
+def _status_text(row: AIApprovalRequest) -> str:
+    if row.expires_at:
+        left = max(0, int(row.expires_at) - int(time.time()))
+        clock = f"剩余 {left} 秒。"
+    else:
+        clock = "沿用旧时限。"
+    body = f"#{row.short_id} 状态 {row.status}。{clock}\n事项：{row.title[:120]}\n批准后：{row.effect[:200]}"
+    if row.status != "pending":
+        return body
+    return f"{APPROVAL_HALT_MARK}\n{body}\n已在等主人。不要再安装，不要再派开发任务。"
+
+
 @ai_tools(
     category="buildin",
     capability_domain="审批交互",
-    visible_when=_has_pending,
+    visible_when=_this_session_pending,
     code_callable=False,
 )
-async def respond_approval(
-    ctx: RunContext[ToolContext],
-    approved: bool,
-    request_ref: str = "",
-    note: str = "",
-) -> str:
-    """写入用户 / 主人对某条待审批请求的同意 / 拒绝（全框架唯一审批转达入口）。
+async def check_approval(ctx: RunContext[ToolContext], request_ref: str = "") -> str:
+    """查看本会话某条审批的状态、剩余时间和批准后会发生什么。
 
-    覆盖所有待审批类型：命令执行、Kanban 子任务（含插件安装）、工具调用授权、
-    Agent 主动请求。多条待决时用 request_ref 指明编号（如 "#ab12"）。
-
-    ⚠️ **人在环审批闸门**：本工具只用于【转达用户/主人**亲口**说的同意 / 拒绝】，
-    你绝不能替人拍板——只有当前这一轮消息里有明确表态（"同意/可以/批准" 或
-    "拒绝/不要/取消"）才调用，且 approved 必须与话里的意思一致；框架会校验，
-    伪造会被拒绝。没表态时请转告"请求正在等待审批"并请其回复。
+    不批准，也不返回确认码。还在等的时候，本轮应结束，不要再安装或再派开发任务。
 
     Args:
-        approved: True=同意，False=拒绝。
-        request_ref: 待审批请求编号（多条时必填，形如 "ab12" 或 "#ab12"）。
-        note: 用户 / 主人的附加说明。
+        request_ref: 短号（如 ab12）或去重键。留空则看本会话全部待审批。
     """
-    ev = ctx.deps.ev
-    if ev is None:
+    deps = ctx.deps
+    if deps is None:
         return "⚠️ 无会话信息。"
-
-    # 防"代理替人伪造审批"：当前这条用户消息必须有与 approved 一致的明确表态
-    # （实测会话 2df150：人格曾自行 approved=True 放行自己发起的安装请求）。
-    user_msg = (ev.raw_text or ev.text or "").strip().lower()
-    said_reject = any(w in user_msg for w in _REJECT_WORDS)
-    said_approve = (not said_reject) and any(w in user_msg for w in _APPROVE_WORDS)
-    if approved and not said_approve:
-        return (
-            "⛔ 拒绝执行：不能替用户/主人做审批决定。当前这条用户消息里没有"
-            "「同意 / 可以 / 批准」之类的明确批准表达"
-            f"（原文：{user_msg[:60]!r}）。请先把「请求正在等待审批」转告对方并请其"
-            "明确回复；等对方**这一轮亲口**说了同意，再调用本工具。"
-        )
-    if (not approved) and not said_reject:
-        return (
-            "⛔ 拒绝执行：不能替用户/主人做拒绝决定。当前这条用户消息里没有"
-            f"「拒绝 / 不要 / 取消」之类的明确拒绝表达（原文：{user_msg[:60]!r}）。"
-            "等对方亲口表态再转达。"
-        )
-
-    return await approval_center.resolve(
-        request_ref=request_ref,
-        approved=approved,
-        resolver_user_id=str(ev.user_id),
-        note=note,
-        via="chat",
-    )
+    sid = deps.parent_session_id or current_caller_session_id()
+    ref = request_ref.strip().lstrip("#")
+    if ref:
+        row = await AIApprovalRequest.get_pending_by_short_id(ref)
+        if row is None:
+            row = await AIApprovalRequest.get_by_short_id(ref)
+        if row is None:
+            row = await AIApprovalRequest.get_pending_by_dedupe(ref)
+        if row is None or (sid and row.origin_session_id and row.origin_session_id != sid):
+            return "没有找到这条审批。"
+        return _status_text(row)
+    if not sid:
+        return "本会话没有待审批。"
+    rows = await AIApprovalRequest.list_pending_for_origin(sid)
+    if not rows:
+        return "本会话没有待审批。"
+    if len(rows) == 1:
+        return _status_text(rows[0])
+    lines = [_status_text(row) for row in rows[:5]]
+    return f"{APPROVAL_HALT_MARK}\n" + "\n".join(lines) + "\n已在等主人。不要再安装，不要再派开发任务。"
 
 
 @ai_tools(category="buildin", capability_domain="审批交互", visible_when=_has_pending)
@@ -396,8 +359,8 @@ async def ask_user_form(
 async def request_user_approval(ctx: RunContext[ToolContext], summary: str) -> str:
     """向当前用户发出授权请求，询问一项会消耗其资源 / 积分的操作（approval × user）。
 
-    用户配置了「完全访问」时自动放行（照常留审计记录）；否则提交审批请求，
-    用户回复同意后经 respond_approval 裁决。
+    用户配置了「完全访问」时自动放行（照常留审计记录）。否则提交审批并结束本轮。
+    用户在私聊回复确认码，或在审批中心点批准。群里说「同意」不会通过。
 
     Args:
         summary: 要授权的操作说明（做什么、消耗什么、影响什么，一句话）。
@@ -411,15 +374,20 @@ async def request_user_approval(ctx: RunContext[ToolContext], summary: str) -> s
         ev=ev,
         audience="user",
         allow_full_access_exempt=True,
+        dedupe_key=_agent_dedupe(summary),
+        effect=summary,
     )
     if row.status == "auto_approved":
         return f"✅ 用户已配置完全访问，操作自动放行（已留记录 #{row.short_id}）。"
-    return f"⏳ 已向用户发起授权请求 #{row.short_id}：{summary[:80]}。请转告用户并请其回复同意 / 拒绝。"
+    delivered, reused = approval_center.submit_meta(row.request_id)
+    return halt_line(row.short_id, delivered=delivered, reused=reused)
 
 
 @ai_tools(category="common", capability_domain="审批交互", code_callable=False)
 async def request_master_approval(ctx: RunContext[ToolContext], summary: str) -> str:
     """向主人发出授权请求，询问一项敏感操作（approval × master，永不可被完全访问豁免）。
+
+    提交后本轮结束。主人用私聊确认码或审批中心批准。
 
     Args:
         summary: 要授权的操作说明（做什么、为什么需要主人点头，一句话）。
@@ -432,5 +400,8 @@ async def request_master_approval(ctx: RunContext[ToolContext], summary: str) ->
         title=summary,
         ev=ev,
         audience="master",
+        dedupe_key=_agent_dedupe(summary),
+        effect=summary,
     )
-    return f"⏳ 已向主人发起授权请求 #{row.short_id}：{summary[:80]}。请转告主人并请其回复同意 / 拒绝。"
+    delivered, reused = approval_center.submit_meta(row.request_id)
+    return halt_line(row.short_id, delivered=delivered, reused=reused)

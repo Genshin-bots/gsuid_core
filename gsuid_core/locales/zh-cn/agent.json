@@ -101,6 +101,9 @@
   "log.agent.pydanticai_core_request_attempt_fail": "[PydanticAI] 核心请求第 {attempt}/{max_attempts} 次失败，{retry_delay}s 后重试: {e}",
   "log.agent.pydanticai_exception_error_details": "[PydanticAI] 异常详情:",
   "log.agent.pydanticai_reached_maximum_thinking": "[PydanticAI] Agent 达到最高思考轮数限制 {p0}",
+  "log.agent.iter_wrap_nudge": "[GsCoreAIAgent] 思考轮数剩余不足，注入收口提示（{p0}/{p1}）",
+  "log.agent.usage_limit_salvage": "[GsCoreAIAgent] 思考轮数已到上限，已用已收集材料收口交付",
+  "log.agent.usage_limit_salvage_sources_fail": "[GsCoreAIAgent] 读取已落盘工具结果失败，收口改用本轮摘录: {e}",
   "log.agent.chain_too_long_forced_summary": "[PydanticAI] 达到最高思考轮数限制 {p0}，改用强制总结交付（不再往群里发系统通知）",
   "log.agent.chain_too_long_no_context_silence": "[PydanticAI] 达到最高思考轮数限制且本轮无工具产出，改为沉默交付",
   "log.agent.pydanticai_refused_process_input": "[PydanticAI] 模型拒绝处理本次输入（内容审核 {p0}）: {err_str}",
@@ -148,7 +151,12 @@
   "log.agent.video_openai_file_inline": "[GsCoreAIAgent] 视频{p0} 已按 OpenAI file(base64) 进入消息（{size:.1f}MB）",
   "log.agent.video_openai_file_uploaded": "[GsCoreAIAgent] 视频{p0} 已上传 /v1/files → {file_id}",
   "log.agent.video_openai_files_missing": "[GsCoreAIAgent] /v1/files 不可用，视频{p0}（{size:.1f}MB）不走无界 base64，改抽帧或占位",
+  "log.agent.video_openai_responses_fallback": "[GsCoreAIAgent] 当前为 responses 请求方式，video_url 模式不生效，退回 /v1/files 投喂",
+  "log.agent.video_openai_url_inline": "[GsCoreAIAgent] 视频{p0} 已按 OpenAI video_url(base64) 进入消息（{size:.1f}MB）",
+  "log.agent.video_openai_url_oversize": "[GsCoreAIAgent] 视频{p0} 体积（{size:.1f}MB）超过内联上限（{limit}MB），改走抽帧或占位",
+  "log.agent.video_openai_url_passthrough": "[GsCoreAIAgent] 视频{p0} 已按 OpenAI video_url 直通 URL 进入消息: {url}",
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 墙钟软预算已超（{p0:.0f}s），注入收敛提示",
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] 写入 token 用量日志失败: {_le}",
-  "log.agent.pydanticai_quota_exhausted": "[PydanticAI] 模型套餐用量已达上限，本轮不再重试: {e}"
+  "log.agent.pydanticai_quota_exhausted": "[PydanticAI] 模型套餐用量已达上限，本轮不再重试: {e}",
+  "log.agent.usage_limit_salvage_fail": "[GsCoreAIAgent] 兜底收口交付失败: {e}"
 }

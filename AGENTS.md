@@ -28,9 +28,11 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 ├── ruff.toml                 # line-length=120，lint E/F/I/W
 ├── pyrightconfig.json        # basic；排除 plugins / data
 ├── .agents/skills/           # 开发文档 Skill（给 Agent 按任务加载）
-├── docs/                     # 专题设计 / 历史评审（非入门）
+├── docs/                     # 已落地的专题说明（生命周期 / Takumi 等）
+├── plans/                    # 方案设计文档。新方案写这里，不进 git
 ├── gsuid_core/               # 框架包
 │   ├── core.py               # 进程入口
+│   ├── supervisor.py         # 守护父进程：拉起 core 子进程，子进程以 51 退出时原地重拉
 │   ├── app_life.py           # FastAPI lifespan / 两阶段钩子
 │   ├── server.py / gss.py    # 插件加载、连接、钩子注册表
 │   ├── meta_plugins.py       # 基础设施插件先加载，并把 <包>.api 挂到 sys.modules
@@ -81,7 +83,9 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 | 部署 / Docker / WebConsole / WS_TOKEN | [gscore-deploy](.agents/skills/gscore-deploy/SKILL.md) |
 | 写用户可见文字（更新日志 / 文档 / 报错 / 注释） | [human-talk](.agents/skills/human-talk/SKILL.md) |
 
-`docs/` 里还有生命周期、记忆系统、Takumi 出图等专题（见各 Skill「关联文档」）。改核心机制后同步对应章节。
+`docs/` 里还有生命周期、记忆系统、Takumi 出图等已经落地的专题（见各 Skill「关联文档」）。改这些机制后，同步 `docs/` 里对应的章节。
+
+新的方案设计文档应写在 `plans/`，不应再写入 `docs/`。一次设计一份文件。`plans/` 在 `.gitignore` 里，不提交。已经在 `docs/` 里的专题说明仍留在原地，不为同一份说明再在 `plans/` 复制一份。
 
 ## Setup commands
 
@@ -143,14 +147,16 @@ poetry（2.1.4）读不出 `[dependency-groups]`，会把 dev 组（pytest / ruf
 
 | 要记 | 不用记 |
 |------|--------|
-| 新增能力、新增命令 / 工具 / 配置项 | 修错字、改文案、调格式 |
-| 对外行为变化（默认值、返回结构、调用方式） | 纯内部重构（外部行为不变） |
+| 新增能力、新增命令 / 工具 / 配置项 | 修错字、改文案、调格式、调边距 |
+| 对外行为变化（默认值、返回结构、调用方式） | 纯内部重构、类型守卫收窄（isinstance 等） |
 | 破坏性变更、依赖 / 部署要求变化 | 补测试、注释、docstring |
-| 可量化的性能变化 | 日志文案微调 |
+| 可量化的性能变化 | 日志文案微调、未发布特性的中间临时修补 |
 
 > **小修小补不进更新日志。** 上面右列的改动不用写条目——写满了反而没人看。拿不准就问自己「使用者能感知到这个变化吗」，感知不到就不写。
 
+- **特性聚合（就近合并，禁止线性堆叠）** 同一功能在当前版本的多次修改或后续完善，**必须就近合并进已有条目**，只在条目末尾追加 commit 短号（如 `[sha1](https://github.com/Genshin-bots/gsuid_core/commit/sha1) [sha2](https://github.com/Genshin-bots/gsuid_core/commit/sha2)`），禁止按提交流水账追加新条目。单次任务 / 单个 commit **最多只允许新增或修改 1~2 条**。
 - **写了怎么写** 按 [human-talk](.agents/skills/human-talk/SKILL.md) 的受控中文：一句话一件事、写清执行者、不用「优化 / 完善 / 若干 / 显著」这类空词（要写就写具体对象或数字）、数字必须带条件。
+- **字数与细节限制** 每条正文（不计链接）**控制在 80 字以内**，严禁超过 120 字。只讲影响与用法，**禁止在日志里罗列代码实现细节**（不抄全量词表、算法步长、切帧参数、内部数据结构字段）。
 - **链接格式** ``[`短号`](https://github.com/Genshin-bots/gsuid_core/commit/短号)``，链接要能打开。
 - **链接可以先欠着** 改完就写条目，别等提交。commit 短号拿到之前，条目末尾可以不挂链接——先落地比先提交更常见。
 - **每次动 `changelogs/` 都要回填** 把目标 `<版本>.md` 里**所有没有链接的条目**逐条查一遍（`grep '^- ' changelogs/<版本>.md | grep -v 'commit/'`）：对应改动**已经提交**的，用 `git log --oneline -S'<改动关键词>'` 找到短号补上；**还没提交**的原样留着，别编链接。条目先落地、链接滚动补齐。
@@ -826,5 +832,6 @@ bot = Bot(_bot, mock_ev)
 8. **交付闸 → ruff / format / pytest / basedpyright（及 CI 的 i18n）全绿才允许说做完**
 9. **用户可见文字 → 写前查 `changelogs/`，写后按 human-talk 判断要不要记更新日志（小修小补不记）**
 10. **当轮控制句 → 只在 `control/lines.py` 写一次，调用处 import（§1.11）**
+11. **方案设计文档 → 新方案写 `plans/`，不写 `docs/`。`docs/` 只改已经落地的专题说明**
 
 专题细节按 Skills 表按需加载，不要把整本 `references/` 一次读完。

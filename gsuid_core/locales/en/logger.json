@@ -18,5 +18,6 @@
   "log.logger.trace_jsonl_queue_full": "trace JSONL queue full, dropped {n} lines",
   "log.logger.trace_jsonl_drain_queue_full": "trace JSONL drain: queue full, skip join",
   "log.logger.trace_jsonl_missing_index": "trace dir has no index.jsonl, listing will scan shards (slow): {path}",
+  "log.logger.trace_jsonl_purge_fail": "Failed to delete expired trace {path}: {e}",
   "log.logger.unhandled_exception": "Unhandled exception"
 }

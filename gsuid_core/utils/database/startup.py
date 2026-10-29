@@ -33,6 +33,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.memory.database.models",
     "gsuid_core.ai_core.memory.ingestion.hiergraph",
     "gsuid_core.ai_core.meme.database_model",
+    "gsuid_core.ai_core.meme.pack_model",
     "gsuid_core.ai_core.cognition.nodes",
     "gsuid_core.ai_core.memory.ingestion.tool_trace",
 )
@@ -178,6 +179,19 @@ exec_list = [
     # 知识分片：chunk 0 留原文，换切法才能重切。create_all 不给旧表补列。
     "ALTER TABLE aiknowledgechunk ADD COLUMN origin TEXT DEFAULT '';",
     "ALTER TABLE aiknowledgechunk ADD COLUMN chunker_id VARCHAR(32) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN pending_pack_id VARCHAR(36) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN assign_default_pack BOOLEAN DEFAULT 0;",
+    # 旧库的自主行动审计没有会话号。create_all 不给已有表补列。
+    "ALTER TABLE aiautonomyactivity ADD COLUMN session_id VARCHAR(256) DEFAULT '';",
+    # 确认码审批。create_all 不给已有表补列。空哈希的旧行保持原行为。
+    "ALTER TABLE aiapprovalrequest ADD COLUMN confirm_code_hash VARCHAR(64) DEFAULT '';",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN dedupe_key VARCHAR(512) DEFAULT '';",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN effect TEXT DEFAULT '';",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN expires_at INTEGER DEFAULT 0;",
+    "ALTER TABLE aiapprovalrequest ADD COLUMN operator_user_pm INTEGER DEFAULT 6;",
+    "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_dedupe_key ON aiapprovalrequest (dedupe_key);",
+    "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_expires_at ON aiapprovalrequest (expires_at);",
+    "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_confirm_code_hash ON aiapprovalrequest (confirm_code_hash);",
 ]
 
 

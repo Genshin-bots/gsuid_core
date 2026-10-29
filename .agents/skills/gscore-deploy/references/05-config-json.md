@@ -88,19 +88,15 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 ```json
 {
-  "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1", "192.168.1.0/24"]
+  "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1"]
 }
 ```
 
-支持 IPv4 / IPv6 / CIDR。`SecurityManager.is_trusted()` 仅做**精确匹配**（CIDR
-解析需要自己扩 `security_manager.py`，一般建议用反代层做 IP 段控制）。
+支持 IPv4 / IPv6。`SecurityManager.is_trusted()` 把地址收成合法 IP 后做精确匹配。CIDR（如 `192.168.1.0/24`）不会展开，网段控制放在反代上。`localhost` 不是 IP，留在列表里也不会被当成信任地址。
 
 **反向代理场景**：
 
-如果 Core 跑在 Nginx / Caddy 后面，且想让 Core 通过 `X-Forwarded-For` 拿到真实
-客户端 IP，需把**反向代理自己的 IP**加到 `TRUSTED_IPS`。`security_manager.py`
-里的 `get_client_ip()` 仅在 `client_host in TRUSTED_IPS` 时才信任 `X-Forwarded-For`。
-否则 `X-Forwarded-For` 会被忽略，用直连 IP 做限流。
+Core 跑在 Nginx / Caddy 后面时，把反代自己的 IP 留在 `TRUSTED_IPS`。直连地址在这份列表里时，`get_client_ip()` 只读第一行 `X-Forwarded-For`，从右端取第一个不在列表里的合法地址；这一行没有可用结果时才看第一行 `X-Real-IP`。反代必须覆盖客户端自己的 `X-Forwarded-For`，把逗号链路写在这一行里。带端口或方括号的片段会丢掉。直连地址不在列表里时，转发头被忽略，限流按直连 IP 算。多级代理要把每一跳反代的地址都写进列表。
 
 ### 5.2.6 `masters` — 主人账号列表（pm=0）
 
@@ -228,7 +224,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
   "PORT": "8765",
   "ENABLE_HTTP": false,
   "WS_TOKEN": "你自己生成的32位secret",
-  "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1", "192.168.1.0/24"],
+  "TRUSTED_IPS": ["localhost", "::1", "127.0.0.1"],
   "masters": ["你的QQ号"],
   "superusers": [],
   "REGISTER_CODE": "首次启动后自动生成",

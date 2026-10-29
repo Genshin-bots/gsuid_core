@@ -474,7 +474,9 @@ from gsuid_core.utils.html_render import render_html_to_bytes
 .cover img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;}
 ```
 
-`render_html_to_image` 用到 `gs-` 类时注入的组件库（`render_kit.py`）已经按这个写法处理。
+`render_html_to_image` 用到 `gs-` 类时注入的组件库（`render_kit.py`）已经按这个写法处理，
+包括 `gs-split-media`、`gs-thumb sm`、`gs-avatar lg` 这些照片槽位。
+离线检查 8 种版式的效果：`uv run python eval/manual/render_layout_gallery.py`。
 flex 行里 `flex:1` 的文字列要写 `min-width:0`，否则图片的原始宽度会把这一列撑出卡片。
 
 ### 8.4 IM 场景不要写太小的字
@@ -519,6 +521,17 @@ svg = await render_chart_spec(
 - 类目名由工具保留（约 18 字），不要在 HTML 里再截成 8 字。
 
 回归：`tests/test_chart_encoding_and_inflight.py`、`tests/test_svg_chart_rewrite.py`。
+
+### 8.5.1 Mermaid
+
+`render_html_to_bytes` 和 `render_md_to_bytes` 在交给 pytakumi 之前，把
+`class="mermaid"`、`language-mermaid` 和 Markdown 的 mermaid 代码块换成 mermaid.ink 返回的 SVG。
+pytakumi 不跑页面里的 mermaid.js。
+
+mermaid.ink 连不上、超时或返回 5xx 时，这一块变成黑底红字「服务不可用」。同一页的其他内容照常出图。
+语法不被接受时，红字是「这张图无法渲染」。
+
+回归：`tests/test_mermaid_ink_render.py`。
 
 ### 8.6 修饰色被基类盖掉（class 优先级）
 

@@ -89,7 +89,8 @@ notepad data\config.json
 
 | 类型 | 是否需要重启 |
 |------|--------------|
-| `HOST` / `PORT` / `WS_TOKEN` / `masters` / `TRUSTED_IPS` | ✅ 必须重启 |
+| `HOST` / `PORT` / `WS_TOKEN` / `masters` | ✅ 必须重启 |
+| `TRUSTED_IPS` | 🔁 控制台保存后，下一次 HTTP 请求和 WebSocket 连接生效；手改文件仍要重启 |
 | `command_start` | ✅ 必须重启 |
 | `sv.<name>.enabled` / `pm` / `black_list` 等 | 🔁 大多可热更 |
 | `log.level` | ✅ 必须重启 |

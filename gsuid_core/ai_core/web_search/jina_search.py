@@ -83,6 +83,7 @@ def _normalize_items(data: Any, max_results: int) -> list[dict]:
         title = _first_str(item, "title", "name")
         url = _first_str(item, "url", "link", "href")
         content = _first_str(item, "content", "description", "snippet", "text")
+        published = _first_str(item, "publishedTime").strip()
         score_raw = item["score"] if "score" in item else 0.0
         try:
             score = float(score_raw) if score_raw is not None else 0.0
@@ -90,7 +91,15 @@ def _normalize_items(data: Any, max_results: int) -> list[dict]:
             score = 0.0
         if not title and not url and not content:
             continue
-        out.append({"title": title, "url": url, "content": content, "score": score})
+        out.append(
+            {
+                "title": title,
+                "url": url,
+                "content": content,
+                "published_date": published,
+                "score": score,
+            }
+        )
         if len(out) >= max_results:
             break
     return out
@@ -129,6 +138,7 @@ async def _do_jina_search(query: str, max_results: int, api_key: str) -> list[di
                         "title": "",
                         "url": "",
                         "content": text[:8000],
+                        "published_date": "",
                         "score": 0.0,
                     }
                 ]

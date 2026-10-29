@@ -718,9 +718,6 @@ async def update_from_git_async(
     if repo_like is None:
         repo_path = CORE_PATH
         plugin_name = "早柚核心"
-        if is_install_dep:
-            # uv sync / pip install 是长耗时子进程，必须挪出事件循环，否则整轮 core 无响应
-            await asyncio.to_thread(run_install, CORE_PATH)
     elif isinstance(repo_like, Path):
         repo_path = repo_like
         plugin_name = repo_like.name
@@ -796,6 +793,12 @@ async def update_from_git_async(
                     break
     else:
         log_list.append(f"✅插件 {plugin_name} 本次无更新内容！")
+
+    if repo_like is None and is_install_dep:
+        # pull 成功后才装依赖，否则 uv sync 读到的是旧 lock。
+        # 安装是长耗时子进程，挪出事件循环，避免整轮 core 无响应。
+        retcode = await asyncio.to_thread(run_install, CORE_PATH)
+        log_list.append(check_retcode(retcode))
 
     # 仅在「确实有新提交」或「强制更新(reset --hard 可能改动工作区, 且为显式操作)」时才重载,
     # 避免无更新的插件被无谓重载 —— 尤其凌晨自动更新会遍历全部插件。

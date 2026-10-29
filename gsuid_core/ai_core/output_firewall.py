@@ -111,7 +111,7 @@ _FRAMEWORK_LEAK_RE = re.compile(
     r"|\brender_agent\b"
     r"|\bresearch_agent\b"
     r"|\bagent_profile\s*="
-    r"|\bimage_id\s*="
+    r"|\bimage_ids?\s*="
     r"|\bres_[0-9a-fA-F]{6,}\b"
     r"|\bimg_[0-9a-fA-F]{6,}\b"
     r"|\bto_[0-9a-fA-F]{6,}\b"

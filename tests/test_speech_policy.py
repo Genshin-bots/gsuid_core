@@ -13,7 +13,6 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     looks_like_status_inquiry,
     content_is_render_candidate,
     has_orchestration_narration,
-    should_mark_speech_delivered,
     looks_like_capability_absence,
     looks_like_stale_present_tense,
     should_block_user_visible_text,
@@ -284,12 +283,8 @@ def test_wall_clock_pipeline_branch() -> None:
     assert "不要再发起新的工具调用" in blocked
 
 
-def test_report_speech_and_solicitation() -> None:
-    from gsuid_core.ai_core.agent_run.speech_policy import (
-        has_open_solicitation,
-        looks_like_report_speech,
-        strip_open_solicitations,
-    )
+def test_report_speech_needs_fact_pack() -> None:
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_report_speech
 
     typhoon = (
         "呼…大概弄清楚了…\n\n"
@@ -300,10 +295,6 @@ def test_report_speech_and_solicitation() -> None:
         "再多说一句：命名表2000年起启用…"
     )
     assert looks_like_report_speech(typhoon)
-    assert has_open_solicitation(typhoon)
-    cleaned = strip_open_solicitations(typhoon)
-    assert "要不要" not in cleaned
-    assert "命名" in cleaned or "140" in cleaned or "白海豚" in cleaned
 
     # 报告体只在**真有待出图事实包**时才拦（出处凭据）；
     # 无事实包的长正文是用户点名要的（作文/代码/翻译），见控制面 INV-1。
@@ -382,25 +373,6 @@ def test_empty_handoff_and_wait_comfort() -> None:
         tool_calls_so_far=[],
         wait_comfort_sent=True,
     )[0]
-
-
-def test_ack_plus_find_tools_is_not_terminal() -> None:
-    from gsuid_core.ai_core.agent_run.speech_policy import batch_still_working
-
-    assert batch_still_working(["send_message_by_ai", "find_tools"])
-    assert batch_still_working(["find_tools"])
-    assert not batch_still_working(["send_message_by_ai"])
-    assert batch_still_working(["send_meme"])
-    assert not batch_still_working(["send_message_by_ai", "send_meme"])
-
-
-def test_wait_comfort_does_not_mark_delivered() -> None:
-    assert not should_mark_speech_delivered(text="唔…深塔啊…等我去翻卷轴…zzz", has_media=False)
-    assert not should_mark_speech_delivered(text="马上好。", has_media=False)
-    assert not should_mark_speech_delivered(text="这就去办", has_media=False)
-    assert should_mark_speech_delivered(text="查到了，出门带伞。", has_media=False)
-    assert should_mark_speech_delivered(text="出门带伞", has_media=True)
-    assert not should_mark_speech_delivered(text="", has_media=True)
 
 
 def test_wait_templates_are_legal_inflight_exit() -> None:
@@ -493,31 +465,22 @@ def test_long_task_wait_announce_allowed() -> None:
     )[0]
 
 
-def test_post_image_caption_blocks_open_solicit() -> None:
-    """发图配引导追问：与 TextPart 同一套 open_solicit 闸；角色短句仍放行。"""
-    from gsuid_core.ai_core.agent_run.speech_policy import has_open_solicitation
-
+def test_post_image_keeps_solicit_and_long_closer() -> None:
+    """发图后的追问和较长收尾由模型自己说。编排和长报告仍拦。"""
     wrap = "弄好了你自己看吧，细节都在图上。接下来如果还需要其他分析或别的对照，请告诉我一声就行。"
+    long_close = "图在上面。" + "这一段是角色自己的收尾，想说就说。" * 8
     assert len(wrap) > 40
-    assert has_open_solicitation(wrap)
-    blk, why = should_block_user_visible_text(
-        "framework_deliver",
-        wrap,
-        pending_async=False,
-        image_sent=True,
-        has_status_tool=False,
-        tool_calls_so_far=["send_message_by_ai"],
-    )
-    assert blk and why == "open_solicit"
-    close = "呼…弄好了…你看…"
-    assert not should_block_user_visible_text(
-        "silence_only",
-        close,
-        pending_async=False,
-        image_sent=True,
-        has_status_tool=False,
-        tool_calls_so_far=["send_message_by_ai"],
-    )[0]
+    assert len(long_close) > 120
+    for text in (wrap, long_close):
+        blk, why = should_block_user_visible_text(
+            "free",
+            text,
+            pending_async=False,
+            image_sent=True,
+            has_status_tool=False,
+            tool_calls_so_far=["send_message_by_ai"],
+        )
+        assert not blk, why
 
 
 def test_post_image_closing_speech_allowed() -> None:
@@ -533,7 +496,7 @@ def test_post_image_closing_speech_allowed() -> None:
         has_status_tool=False,
         tool_calls_so_far=["send_message_by_ai"],
     )[0]
-    # 发图后仍拦长结构刷屏
+    # 配图说明可以是多段。长结构只在还没出图、且真有事实包时才拦。
     long_report = (
         "**第一节**\n" + "细节很多。\n\n" + "**第二节**\n" + "还有一堆。\n\n" + "**第三节**\n" + "继续写。" * 20
     )
@@ -545,7 +508,7 @@ def test_post_image_closing_speech_allowed() -> None:
         has_status_tool=False,
         tool_calls_so_far=["send_message_by_ai"],
     )
-    assert blk and why in ("report_speech", "post_image_too_long")
+    assert not blk, why
 
 
 def test_async_blocks_non_wait_until_image() -> None:
@@ -699,14 +662,17 @@ def test_task_accept_speech_allows_action_and_speech_lines() -> None:
     assert not looks_like_task_accept_speech(three_lines)
     two_facts = "北京今天 18 度，有雨。\n\n上海今天 22 度，多云。"
     assert not looks_like_task_accept_speech(two_facts)
-
-
-def test_meme_only_stays_open_and_message_plus_meme_is_terminal() -> None:
-    from gsuid_core.ai_core.agent_run.speech_policy import batch_is_meme_only
-
-    assert batch_is_meme_only(["send_meme"])
-    assert not batch_is_meme_only(["send_message_by_ai", "send_meme"])
-    assert not batch_is_meme_only(["send_meme", "find_tools"])
+    meme_ack = "好啦，我去看看那个题…等我一会儿呀。\n\n<meme:发呆 日常>"
+    assert looks_like_task_accept_speech(meme_ack)
+    blocked, why = should_block_user_visible_text(
+        "silence_only",
+        meme_ack,
+        pending_async=True,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=["create_subagent"],
+    )
+    assert not blocked and why == "wait_comfort"
 
 
 def test_looks_like_illustration_request() -> None:

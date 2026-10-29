@@ -18,5 +18,6 @@
   "log.logger.trace_jsonl_queue_full": "追踪 JSONL 队列已满，丢弃 {n} 行",
   "log.logger.trace_jsonl_drain_queue_full": "追踪 JSONL 关机排空时队列已满，跳过等待",
   "log.logger.trace_jsonl_missing_index": "追踪目录缺少 index.jsonl，列表将扫 shard（更慢）: {path}",
+  "log.logger.trace_jsonl_purge_fail": "删除过期追踪 {path} 失败: {e}",
   "log.logger.unhandled_exception": "未处理的异常"
 }

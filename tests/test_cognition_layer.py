@@ -1447,18 +1447,15 @@ def test_named_entity_titles_outrank_generic_noun_hits() -> None:
     clear_entity_index()
 
 
-def test_readonly_retrieval_tools_have_a_stricter_thrash_limit() -> None:
-    """find_tools 连打 2 轮即空转；search_cognition 换槽会召回不同片段，阈值更宽。"""
-    from gsuid_core.ai_core.agent_run.support import (
-        _THRASH_SAME_TOOL_LIMIT,
-        _SEARCH_COGNITION_THRASH_LIMIT,
-        thrash_limit_for,
-    )
+def test_thrash_limit_does_not_depend_on_tool_name() -> None:
+    """空转不看工具名。任何工具都是同一调用连续超过 10 次才熔断。"""
+    from gsuid_core.ai_core.agent_run.support import _THRASH_SAME_TOOL_LIMIT, thrash_limit_for
 
-    assert thrash_limit_for("find_tools") == 2
-    assert thrash_limit_for("search_cognition") == _SEARCH_COGNITION_THRASH_LIMIT
-    assert thrash_limit_for("web_search_tool") == _THRASH_SAME_TOOL_LIMIT
-    assert thrash_limit_for("create_subagent") == _THRASH_SAME_TOOL_LIMIT
+    assert _THRASH_SAME_TOOL_LIMIT == 10
+    assert thrash_limit_for("find_tools") == 10
+    assert thrash_limit_for("search_cognition") == 10
+    assert thrash_limit_for("browser_click") == 10
+    assert thrash_limit_for("web_search_tool") == 10
 
 
 def test_cognition_tool_docstring_steers_away_from_realtime_data() -> None:

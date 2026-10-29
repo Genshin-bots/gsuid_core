@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import re
-from typing import Any, Literal, Callable, Awaitable
+from typing import TYPE_CHECKING, Any, Final, Literal, Callable, Awaitable
+
+if TYPE_CHECKING:
+    from gsuid_core.sv import SV
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
@@ -130,6 +135,8 @@ class Trigger:
         prefix: str = "",
         block: bool = False,
         to_me: bool = False,
+        aside: bool | None = None,
+        sv: SV | None = None,
     ):
         self.type = type
         self.prefix = prefix
@@ -137,10 +144,13 @@ class Trigger:
         self.func: Callable[[Bot, Event], Awaitable[Any]] = func
         self.block = block
         self.to_me = to_me
+        self._aside = aside
+        self.sv = sv
         # head 注册时拼好。探针是前缀首字；对不上就直接失败，不扫整句。
         self._head = prefix + keyword
         self._flex_gap = _needs_flex_gap(keyword)
         self._probe = prefix[:1] if prefix else (keyword[:1] if self._flex_gap else "")
+
         # 注册时预编译正则以提升匹配效率，编译失败时保留原始 pattern 延迟报错。
         self._pattern: re.Pattern[str] | None = None
         if type == "regex":
@@ -148,6 +158,25 @@ class Trigger:
                 self._pattern = re.compile(keyword)
             except re.error:
                 self._pattern = None
+
+    @property
+    def aside(self) -> bool:
+        # 触发器级优先；次取 SV 级；pm<=2（主人、超管、群主）免除；其余默认开启
+        if self._aside is not None:
+            return self._aside
+        if self.sv is not None:
+            if self.sv.aside is not None:
+                return self.sv.aside
+            return self.sv.pm > 2
+        return True
+
+    @aside.setter
+    def aside(self, value: bool | None) -> None:
+        self._aside = value
+
+    @property
+    def head(self) -> str:
+        return self._head
 
     def trie_head(self) -> str:
         """进前缀树用的匹配串。与 check_command 的快速路径同源。"""
@@ -360,3 +389,25 @@ class Trigger:
             text_list = re.split(self.keyword, msg.raw_text)
             msg.text = "|".join([i if i is not None else "" for i in text_list])
         return msg
+
+
+# regex / keyword 的 keyword 是 pattern 或子串，不能当命令字长度。
+_DISPATCH_TYPE_RANK: Final[dict[str, int]] = {
+    "fullmatch": 0,
+    "command": 1,
+    "prefix": 2,
+    "suffix": 2,
+    "regex": 3,
+    "keyword": 4,
+    "file": 5,
+    "meta": 5,
+    "message": 5,
+}
+_DISPATCH_LENGTH_TYPES: Final[frozenset[str]] = frozenset({"fullmatch", "command", "prefix", "suffix"})
+
+
+def dispatch_sort_key(trigger: Trigger, priority: int) -> tuple[bool, int, int, int]:
+    """命令分发排序键。同优先级先比类型，同类型再比命令字长度。"""
+    rank = _DISPATCH_TYPE_RANK[trigger.type]
+    length = len(trigger.keyword) if trigger.type in _DISPATCH_LENGTH_TYPES else 0
+    return (not trigger.prefix, priority, rank, -length)

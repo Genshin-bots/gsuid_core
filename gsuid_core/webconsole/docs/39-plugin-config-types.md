@@ -170,6 +170,7 @@ POST /api/plugins/{plugin_name}/config/{config_name}/{item_name}
 | `GsDateConfig` | `gsdate` | 日期配置 |
 | `GsTimeRangeConfig` | `gstimerange` | 时间范围配置 |
 | `GsColorConfig` | `gscolor` | 颜色配置 |
+| `GsButtonConfig` | `gsbutton` | 按钮回调（管理员鉴权的 endpoint，带进度和持久状态） |
 | `GsTimeConfig` | `gstime` | 已废弃，请使用 GsTimeRConfig |
 
 ---
@@ -711,7 +712,7 @@ class GsTimeConfig(GsConfig, tag=True):
 
 ## 39.5 secret 字段说明
 
-除 `GsDivider` 和 `GsColorConfig` 外，所有配置类型均支持 `secret: bool = False` 字段。当某配置项 `secret=True` 时：
+除 `GsDivider`、`GsColorConfig` 和 `GsButtonConfig` 外，所有配置类型均支持 `secret: bool = False` 字段。当某配置项 `secret=True` 时：
 
 - **API 响应**会额外返回 `"secret": true` 字段（非敏感项及 `GsDivider` / `GsColorConfig` 不返回该字段），前端应据此将该项渲染为密码输入框（`type="password"`）
 - 聊天命令中查看配置时，该项的值会被脱敏显示为 `<已隐藏>`
@@ -737,4 +738,5 @@ class GsTimeConfig(GsConfig, tag=True):
 | `gsdate` | 日期选择器 | YYYY-MM-DD 格式 |
 | `gstimerange` | 时间范围选择器 | 两个时间选择器组合 |
 | `gscolor` | 颜色选择器 | 支持 HEX 和 RGBA |
+| `gsbutton` | 按钮 + 进度 + 状态行 | `endpoint` 由框架挂成管理员接口；`value` 是上次执行结果；`status_fields` 决定展示哪些状态 |
 | `gstime` | 文本输入框 | 已废弃，建议迁移提示 |

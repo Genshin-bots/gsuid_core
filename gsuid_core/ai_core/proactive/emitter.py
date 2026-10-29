@@ -38,7 +38,7 @@ from gsuid_core.ai_core.session_logger import ProactiveSource
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
 # 旧 dispatcher.register_send 兼容字面量集合。
-LegacyDispatcherSource = Literal["heartbeat", "task"]
+LegacyDispatcherSource = Literal["heartbeat", "task", "autonomy"]
 
 
 def _resolve_active_bot(event: Event) -> Optional["_Bot"]:
@@ -84,7 +84,15 @@ async def _sync_to_main_session(
     session: Optional[GsCoreAIAgent] = registry.get_ai_session(session_id)
 
     if session is None:
-        # 主 session 不在内存时走磁盘回退路径，使用临时 logger 续写对应窗口日志。
+        try:
+            from gsuid_core.ai_core.ai_router import get_ai_session
+
+            session = await get_ai_session(event)
+        except Exception:
+            session = None
+
+    if session is None:
+        # 主 session 无法创建时走磁盘回退路径，使用临时 logger 续写对应窗口日志。
         AISessionLogger.log_standalone_proactive(
             session_id=session_id,
             source=source,
@@ -125,6 +133,7 @@ async def emit_proactive_message(
     generator_log_files: Optional[List[str]] = None,
     bot: Optional[Bot] = None,
     suppress_when_heartbeat_recent: bool = True,
+    at_user_id: Optional[str] = None,
 ) -> bool:
     """统一主动消息出口。
 
@@ -179,11 +188,12 @@ async def emit_proactive_message(
         "proactive_source": source,
         "trigger_reason": trigger_reason,
     }
+    from gsuid_core.ai_core.outbound import rewrite_cq_at, record_outbound, proactive_directed_target
     from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
     from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
     pname = persona_name_from_event(event)
-    out_msg = message
+    out_msg = rewrite_cq_at(message)
     if out_msg:
         _bag: Dict[str, object] = {}
         if pname:
@@ -206,8 +216,13 @@ async def emit_proactive_message(
             out_msg = _gr.send_text
             if not out_msg:
                 return False
-    await send_chat_result(bot, out_msg, ev=event, extra_metadata=extra_metadata)
-    from gsuid_core.ai_core.outbound import record_outbound, proactive_directed_target
+    await send_chat_result(
+        bot,
+        out_msg,
+        ev=event,
+        extra_metadata=extra_metadata,
+        at_user_id=at_user_id,
+    )
 
     await record_outbound(
         ev=event,
@@ -215,7 +230,7 @@ async def emit_proactive_message(
         text=out_msg,
         image_id="",
         topic="",
-        target_user=proactive_directed_target(event, out_msg),
+        target_user=at_user_id or proactive_directed_target(event, out_msg),
         target_name="",
     )
 
@@ -229,8 +244,13 @@ async def emit_proactive_message(
     )
 
     # 5) 网关登记发送记录，用于抑制 Heartbeat 频次及收集合并语境。
-    legacy_source: LegacyDispatcherSource = "heartbeat" if source == "heartbeat" else "task"
-    summary: str = out_msg if source in ("scheduled_task", "heartbeat") else ""
+    if source == "heartbeat":
+        legacy_source: LegacyDispatcherSource = "heartbeat"
+    elif source == "autonomy":
+        legacy_source = "autonomy"
+    else:
+        legacy_source = "task"
+    summary: str = out_msg if source in ("scheduled_task", "heartbeat", "autonomy") else ""
     dispatcher.register_send(target_key, legacy_source, summary)
 
     logger.info(

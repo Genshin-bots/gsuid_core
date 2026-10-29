@@ -10,6 +10,7 @@ from typing import Any, Dict
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
 
+import gsuid_core.webconsole.persona_bundle_api  # noqa: F401
 from gsuid_core.ai_core.persona import (
     Persona,
     copy_persona,
@@ -645,7 +646,7 @@ async def copy_persona_endpoint(
             "data": None,
         }
     try:
-        new_name = copy_persona(persona_name)
+        new_name = await copy_persona(persona_name)
     except ValueError as e:
         return {
             "status": 1,
@@ -684,7 +685,7 @@ async def remove_persona(
             "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能删除。",
             "data": None,
         }
-    deleted = delete_persona(persona_name)
+    deleted = await delete_persona(persona_name)
     if deleted:
         return {
             "status": 0,
@@ -818,6 +819,10 @@ async def update_persona_config(
             from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
 
             start_heartbeat_inspector()
+        if "自主行动" in ai_mode:
+            from gsuid_core.ai_core.autonomy.scheduler import autonomy_scheduler
+
+            await autonomy_scheduler.start()
 
     # 更新 inspect_interval（如果提供）
     if "inspect_interval" in data:
@@ -863,6 +868,89 @@ async def update_persona_config(
                 "data": None,
             }
         results.append(f"keywords: {keywords}")
+
+    from gsuid_core.ai_core.persona.config import autonomy_settings_from_mapping
+
+    autonomy_payload: dict[str, object] = {}
+    for autonomy_key in (
+        "active_hours",
+        "timezone",
+        "autonomy_interval_minutes",
+        "autonomy_care_min_zone",
+    ):
+        if autonomy_key in data:
+            autonomy_payload[autonomy_key] = data[autonomy_key]
+    autonomy_settings, autonomy_error = autonomy_settings_from_mapping(autonomy_payload)
+    if autonomy_error:
+        return {"status": 1, "msg": autonomy_error, "data": None}
+    if autonomy_settings is not None:
+        success, msg = persona_config_manager.set_autonomy_settings(persona_name, autonomy_settings)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append("autonomy")
+
+    aside_fields = (
+        "aside_image_probability",
+        "aside_text_probability",
+        "aside_mixed_probability",
+    )
+    for aside_field in aside_fields:
+        if aside_field not in data:
+            continue
+        raw_probability = data[aside_field]
+        if isinstance(raw_probability, bool) or not isinstance(raw_probability, (int, float)):
+            return {
+                "status": 1,
+                "msg": f"{aside_field} 必须是 0 到 1 的数字",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_aside_probability(
+            persona_name,
+            aside_field,
+            float(raw_probability),
+        )
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"{aside_field}: {raw_probability}")
+
+    if "aside_allow_tools" in data:
+        allow_tools = data["aside_allow_tools"]
+        if not isinstance(allow_tools, bool):
+            return {
+                "status": 1,
+                "msg": "aside_allow_tools 必须是布尔值",
+                "data": None,
+            }
+        success, msg = persona_config_manager.set_aside_allow_tools(persona_name, allow_tools)
+        if not success:
+            return {
+                "status": 1,
+                "msg": msg,
+                "data": None,
+            }
+        results.append(f"aside_allow_tools: {allow_tools}")
+
+    if "allow_meme_reply" in data:
+        allow_meme = data["allow_meme_reply"]
+        if not isinstance(allow_meme, bool):
+            return {"status": 1, "msg": "allow_meme_reply 必须是布尔值", "data": None}
+        success, msg = persona_config_manager.set_allow_meme_reply(persona_name, allow_meme)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append(f"allow_meme_reply: {allow_meme}")
+
+    if "meme_frequency" in data:
+        meme_frequency = data["meme_frequency"]
+        if isinstance(meme_frequency, bool) or not isinstance(meme_frequency, int):
+            return {"status": 1, "msg": "meme_frequency 必须是整数", "data": None}
+        success, msg = persona_config_manager.set_meme_frequency(persona_name, meme_frequency)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        results.append(f"meme_frequency: {meme_frequency}")
 
     # 更新 enabled_tools（如果提供）
     if "enabled_tools" in data:

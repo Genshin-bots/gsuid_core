@@ -34,6 +34,7 @@ _TTL_DAYS = 30
 # 自适应折叠：私聊 / 群聊 / 能力代理
 _FOLD_PRIVATE = 1200
 _FOLD_GROUP = 900
+_FOLD_CAPABILITY = 12000
 # 折叠卡内嵌要点上限（仅私聊；群聊主人格只留 summary，不当事实总线）
 _INLINE_HEAD_PRIVATE = 1400
 # 只读/回读类：内容已在 artifact/FileOS 真身里，禁止再落一份 tool_output
@@ -65,7 +66,9 @@ def content_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def fold_threshold(*, is_group: bool = False) -> int:
+def fold_threshold(*, is_group: bool = False, is_capability: bool = False) -> int:
+    if is_capability:
+        return _FOLD_CAPABILITY
     return _FOLD_GROUP if is_group else _FOLD_PRIVATE
 
 
@@ -96,15 +99,16 @@ def should_fold_for_model(
     *,
     tool_name: str = "",
     is_group: bool = False,
+    is_capability: bool = False,
 ) -> bool:
-    """主人格折叠门：句柄卡 / 只读工具 / 过短不折。长委派回执同样折成卡。"""
+    """折叠门：句柄卡 / 只读工具 / run_code / 过短不折。"""
     tn = (tool_name or "").strip()
-    if tn in _SKIP_PERSIST_TOOLS:
+    if tn in _SKIP_PERSIST_TOOLS or tn == "run_code":
         return False
     body = (content or "").strip()
     if looks_like_handle_card(body):
         return False
-    return len(body) >= fold_threshold(is_group=is_group)
+    return len(body) >= fold_threshold(is_group=is_group, is_capability=is_capability)
 
 
 def _scope_from_ev(ev: Optional[Event]) -> tuple[str, str, str]:
@@ -281,13 +285,17 @@ async def persist_and_fold_tool_return(
     root_task_id: str = "",
     *,
     is_group: bool = False,
+    create_by: str = "",
 ) -> Optional[str]:
-    """过阈值落盘并返回句柄卡；群聊不内嵌要点。主人格与能力代理共用。"""
+    """过阈值落盘并返回句柄卡；能力代理大阈值且总带 inline_head。"""
     tn = tool_name or ""
+    if tn == "run_code":
+        return None
+    is_cap = create_by == "CapabilityAgent"
     if not should_persist_tool_return(tn, content):
         await _remember_short_tool_fact(tn, content, ev, session_id)
         return None
-    if not should_fold_for_model(content, tool_name=tn, is_group=is_group):
+    if not should_fold_for_model(content, tool_name=tn, is_group=is_group, is_capability=is_cap):
         if is_searchish_tool(tn):
             await persist_tool_return(
                 tool_name=tn,
@@ -318,7 +326,8 @@ async def persist_and_fold_tool_return(
     if card is None:
         return None
     fileos_metrics.inc_fold()
-    return fold_card_for_main_prompt(card, content=content, is_group=is_group).format()
+    effective_is_group = False if is_cap else is_group
+    return fold_card_for_main_prompt(card, content=content, is_group=effective_is_group).format()
 
 
 async def _write_record(

@@ -34,7 +34,6 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 | 工具 | 来源 | 说明 |
 |---|---|---|
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
-| ``send_meme`` | ``meme_tools.py`` | 按情绪从库里发一张表情包 |
 | ``add_once_task`` | ``scheduler.py`` | 一次性定时任务（通道核入口） |
 | ``add_interval_task`` | ``scheduler.py`` | 周期定时任务（通道核入口） |
 
@@ -51,9 +50,10 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``web_search_tool``（``web_search.py``）：统一 web 搜索（Tavily / Jina / Exa / AnySearch / Firecrawl / MCP）
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
-- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置）
-- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（``visible_when`` 有图才露）
-- ``read_video``（``video_reader.py``）：按视频ID取回；有视频且模型声明 video 才露
+- ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置/角色卡）
+- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（通道核；``visible_when`` 有图才露）
+- ``read_video``（``video_reader.py``）：按视频ID取回。通道核默认在有视频且模型声明
+  video 时露出；未声明时 ``find_tools`` 仍能召回
 - ``state_get`` / ``state_set``（``state_store/tools.py``）：高频持久键值
   （``state_list`` / ``state_delete`` / ``state_append`` 在 common，按能力族召回）
 
@@ -64,8 +64,8 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 - ``register_kanban_task`` / ``respawn_subtask`` / ``fail_task_tree``
   （``planning/kanban_tools.py``，``capability_domain="长期任务编排"``）：
-  存在活跃(running/waiting_approval) Kanban 任务时随状态带出；审批转达统一走
-  ``respond_approval``（``approval_tools.py``，全框架唯一审批转达入口）
+  存在活跃(running/waiting_approval) Kanban 任务时随状态带出；审批只认私聊确认码
+  或审批中心，``check_approval`` 只在本会话挂着审批时可见
 - ``artifact_put`` / ``artifact_get`` / ``artifact_list`` / ``artifact_get_recent``
   （``planning/kanban_tools.py``，``capability_domain="产物"``）：同上随活跃任务带出
   （兜底 A-1「追问产物原文必须能调 ``artifact_get_recent``」）
@@ -236,9 +236,8 @@ from gsuid_core.ai_core.buildin_tools.self_info import (
 # 网页抓取工具 - 抓取网页内容并转换为Markdown
 from gsuid_core.ai_core.buildin_tools.web_fetch import web_fetch_tool
 
-# 表情包工具 - 发送/收藏/搜索表情包
+# 表情包工具 - 收藏/搜索表情包
 from gsuid_core.ai_core.buildin_tools.meme_tools import (
-    send_meme,
     search_meme,
     collect_meme,
 )
@@ -265,14 +264,17 @@ from gsuid_core.ai_core.buildin_tools.file_manager import (
     write_file_content,
 )
 
-# HTML渲染工具 - 将HTML/Markdown/结构化卡片渲染为图片
+# HTML渲染与图片检索工具 - 将HTML/Markdown/结构化卡片渲染为图片 / 搜索网络配图
 # （外链/icon/资源图在 render_html_to_image 内自动嵌 data URI，无独立嵌图工具）
-from gsuid_core.ai_core.buildin_tools.image_finder import find_images
+from gsuid_core.ai_core.buildin_tools.image_finder import (
+    find_images,
+    search_web_images,
+)
 
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 
-# 视频读取工具 - 按视频ID惰性取回（保底，有视频才露）
+# 视频读取工具 - 通道核；有视频且模型声明 video 才露
 from gsuid_core.ai_core.buildin_tools.video_reader import read_video
 
 # 控制面工具 - 查在途委派 / 对框架校验申辩（非用户可见通道）
@@ -281,11 +283,11 @@ from gsuid_core.ai_core.buildin_tools.control_tools import (
     dispute_directive,
 )
 
-# 统一审批交互工具 - 全框架唯一的审批转达入口 + 审批能力族
+# 统一审批交互工具。裁决走私聊确认码或审批中心。
 from gsuid_core.ai_core.buildin_tools.approval_tools import (
     ask_user,
     ask_user_form,
-    respond_approval,
+    check_approval,
     request_user_approval,
     list_pending_approvals,
     request_master_approval,
@@ -383,7 +385,7 @@ __all__ = [
     "run_command",
     "check_command_available",
     # 统一审批交互（审批中心 LLM 侧）
-    "respond_approval",
+    "check_approval",
     "list_pending_approvals",
     "ask_user",
     "ask_user_form",
@@ -394,7 +396,6 @@ __all__ = [
     # 群成员称呼 / 身份
     "remember_user_alias",
     # 表情包工具
-    "send_meme",
     "collect_meme",
     "search_meme",
     # AI日期工具
@@ -456,8 +457,9 @@ __all__ = [
     "record_update",
     "record_delete",
     "record_summary",
-    # HTML渲染工具
+    # HTML渲染与图片检索工具
     "find_images",
+    "search_web_images",
     "render_card",
     "render_chart_spec",
     "render_html_to_image",

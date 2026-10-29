@@ -30,7 +30,8 @@ class CommandTraceDayCount(TypedDict):
     count: int
 
 
-TRACE_JSONL_PATH = LOG_PATH / "traces"
+COMMAND_TRACES_DIRNAME = "traces"
+TRACE_JSONL_PATH = LOG_PATH / COMMAND_TRACES_DIRNAME
 
 
 def _root() -> Path:

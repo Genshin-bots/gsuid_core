@@ -9,6 +9,7 @@ from typing import Any, Optional, Sequence
 from dataclasses import replace
 
 from pydantic_ai import RunContext
+from pydantic_ai.tools import Tool
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -19,6 +20,7 @@ from gsuid_core.ai_core.control.lines import FIND_TOOLS_GAP_NOTE
 from gsuid_core.ai_core.buildin_tools.visibility import (
     check_sched_create,
     check_sched_mutate,
+    mark_find_tools_recalled,
 )
 from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
     RankedHit,
@@ -32,6 +34,86 @@ from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
 )
 
 FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
+
+
+def _registry_identity_names(need: str, rows: Sequence[tuple[str, str]]) -> list[str]:
+    """need 是工具名、插件名，或同一插件下的工具名前缀时，返回这些工具名。
+
+    含空白的句子不是标识符。短前缀打到多个插件时不挂。
+    """
+    needle = need.strip()
+    if not needle or any(ch.isspace() for ch in needle):
+        return []
+    if any(name == needle for name, _plugin in rows):
+        return [needle]
+    plugin_hits = [name for name, plugin in rows if plugin == needle]
+    if plugin_hits:
+        return plugin_hits
+    grouped: dict[str, list[str]] = {}
+    for name, plugin in rows:
+        if plugin and name.startswith(needle):
+            grouped.setdefault(plugin, []).append(name)
+    if len(grouped) != 1:
+        return []
+    plugin = next(iter(grouped))
+    if not needle.startswith(plugin):
+        return []
+    return grouped[plugin]
+
+
+def _read_video_requested(need: str) -> bool:
+    """是否在找读视频。不看模型有没有声明 video。"""
+    n = (need or "").strip()
+    if not n:
+        return False
+    low = n.lower()
+    if "read_video" in low or "vid_" in low:
+        return True
+    from gsuid_core.ai_core.register import find_tool_base
+
+    tb = find_tool_base("read_video")
+    if tb is not None and need_matches_tool_text(n, tb.retrieval_text, list(tb.covers)):
+        return True
+    if "视频" not in n:
+        return False
+    return any(mark in n for mark in ("看", "读", "播", "内容", "什么", "描述", "分析", "讲"))
+
+
+def _read_video_tool(need: str) -> Tool[ToolContext] | None:
+    if not _read_video_requested(need):
+        return None
+    from gsuid_core.ai_core.register import find_tool_base
+
+    tb = find_tool_base("read_video")
+    if tb is None:
+        return None
+    return tb.tool
+
+
+def _identity_tools(need: str) -> list[Tool[ToolContext]]:
+    # capability_map 已把名字交给模型。向量库缺这个点时，按名字仍要挂上。
+    from gsuid_core.ai_core.register import get_all_tools
+
+    tools = get_all_tools()
+    rows = [(tb.name, tb.plugin) for tb in tools.values()]
+    out: list[Tool[ToolContext]] = []
+    for name in _registry_identity_names(need, rows):
+        out.append(tools[name].tool)
+    return out
+
+
+def _prepend_tools(
+    pinned: Sequence[Tool[ToolContext]],
+    found: Sequence[Tool[ToolContext]],
+) -> list[Tool[ToolContext]]:
+    seen = {tool.name for tool in pinned}
+    out: list[Tool[ToolContext]] = list(pinned)
+    for tool in found:
+        if tool.name in seen:
+            continue
+        seen.add(tool.name)
+        out.append(tool)
+    return out
 
 
 def _record_find_tools_round(extra: dict[str, Any], loaded: list[str]) -> bool:
@@ -287,6 +369,7 @@ async def find_tools(
     """列表没有的能力必须先调：用一句话描述所缺能力。未调用前禁止说做不到/没装。
 
     每次都会检索，不因列表里已有工具而跳过。已暴露且真正对口的专用工具并入回执。
+    need 等于已注册工具名，或等于插件名（工具名前缀）时，直接挂上该工具。
     一次返回专用能力 / 专用工具 / 通用能力 / 通用工具；有专用项时禁止改用通用项。
     专用工具下一步可直接调；专用能力用 create_subagent(agent_profile=node_id)。
 
@@ -316,13 +399,29 @@ async def find_tools(
         visible_offered_set = set(visible_offered)
         offered_hits = [h for h in offered_hits if h.name in visible_offered_set]
 
-        family_tools = await search_tools_by_domain(
-            query=need,
-            domain_limit=3,
-            per_domain_limit=6,
-            exclude_names=offered_set,
-            scope=ctx.deps.tool_scope,
-        )
+        pinned = _identity_tools(need)
+        if _scope is not None and not _scope.is_open:
+            pinned = [tool for tool in pinned if _scope.tool_enabled(tool.name)]
+        video_tool = _read_video_tool(need)
+        if video_tool is not None:
+            # 未声明 video 时通道核里的 schema 是藏着的，召回后本轮要真正可调。
+            mark_find_tools_recalled(ctx.deps, "read_video")
+            pinned = _prepend_tools([video_tool], pinned)
+        identity_names = {tool.name for tool in pinned}
+
+        try:
+            family_tools = await search_tools_by_domain(
+                query=need,
+                domain_limit=3,
+                per_domain_limit=6,
+                exclude_names=offered_set,
+                scope=ctx.deps.tool_scope,
+            )
+        except RuntimeError as e:
+            if not pinned:
+                logger.warning(t("log.ai.find_tools_feature_enabled", e=e))
+                return "⚠️ 工具检索功能未启用，无法动态加载工具。"
+            family_tools = []
         from gsuid_core.ai_core.rag.tools import align_seeds_to_context_plugin
         from gsuid_core.ai_core.entity_index import ALIAS_ROUTE_TEXT_KEY, ALIAS_PLUGIN_EXTRA_KEY
 
@@ -336,10 +435,12 @@ async def find_tools(
             _raw_route = ctx.deps.extra[ALIAS_ROUTE_TEXT_KEY]
             if isinstance(_raw_route, str) and _raw_route.strip():
                 _route = _raw_route.strip()
+        merged = _prepend_tools(pinned, family_tools)
         if _alias_plugin:
-            family_tools = await align_seeds_to_context_plugin(family_tools, _alias_plugin, _route, ctx.deps.tool_scope)
+            merged = await align_seeds_to_context_plugin(merged, _alias_plugin, _route, ctx.deps.tool_scope)
         if _scope is not None and not _scope.is_open:
-            family_tools = [t for t in family_tools if _scope.tool_enabled(t.name)]
+            merged = [tool for tool in merged if _scope.tool_enabled(tool.name)]
+        family_tools = merged
         dedicated_tools: list[RankedHit] = list(offered_hits)
         generic_tools: list[RankedHit] = []
         fold_names: list[str] = []
@@ -362,7 +463,7 @@ async def find_tools(
                 # 向量已召回；词面过滤会丢掉「对比表出成图」这类 exclusive
                 fold_names.append(tool.name)
                 continue
-            if not need_matches_tool_text(need, retrieval, covers):
+            if tool.name not in identity_names and not need_matches_tool_text(need, retrieval, covers):
                 continue
             try:
                 run_ctx = replace(
@@ -386,6 +487,10 @@ async def find_tools(
                 label=tool_brief(covers=covers, description=tb.description),
                 score=score,
             )
+            # 已在通道核但被 visible_when 藏住时，仍要写进回执；通用档会被专用项丢掉。
+            if tool.name == "read_video":
+                dedicated_tools.append(hit)
+                continue
             if tier == "dedicated":
                 dedicated_tools.append(hit)
             elif tool.name not in offered_set:

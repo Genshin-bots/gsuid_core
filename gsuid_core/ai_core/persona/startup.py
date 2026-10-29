@@ -38,6 +38,9 @@ async def init_default_personas():
             logger.info(t("log.persona.default_card_synced_from_code"))
     else:
         await persona.save_content(sayu_persona_prompt)
+        from gsuid_core.ai_core.meme.pack_model import mount_default_pack
+
+        await mount_default_pack(persona.name)
 
     # 一次性迁移：扫描所有 persona 目录, 把残留的 voice_anchor 字段搬出 config.json。
     # 幂等: 已迁移过的 persona 不会重复处理 (新位置不存在 / 字段已不在 JSON 中)。

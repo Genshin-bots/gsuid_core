@@ -22,6 +22,7 @@ from gsuid_core.ai_core.rag.embedding_registry import (
     list_external_providers,
     list_embedding_providers,
 )
+from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 from ._api_tags import EMBEDDING_CONFIG
 
@@ -32,6 +33,8 @@ def _string_config_to_dict(config: Any) -> Dict[str, Any]:
         "title": config.title,
         "desc": config.desc,
         "data": config.data,
+        # 缺 type 时，下拉提交的数字字符串过不了整型校验
+        "type": type(config).__name__.replace("Config", "").lower(),
     }
     if isinstance(config, (GsStrConfig, GsListStrConfig, GsIntConfig)):
         out["options"] = config.options
@@ -56,6 +59,21 @@ def _build_extra_providers() -> Dict[str, Any]:
             "config": config_dict,
         }
     return extra
+
+
+def _save_embedding_fields(config: StringConfig, data: Dict[str, Any], saved_msg: str) -> Dict[str, Any]:
+    """逐键写入。类型被拒绝的键留在失败列表里，接口不再报成功。"""
+    failed: list[str] = []
+    for key, value in data.items():
+        if key not in config.config:
+            continue
+        old = config.get_config(key).data
+        if not config.set_config(key, unmask_against(value, old)):
+            failed.append(key)
+    if failed:
+        names = "、".join(failed)
+        return {"status": 1, "msg": f"配置项写入失败: {names}", "data": None}
+    return {"status": 0, "msg": saved_msg, "data": None}
 
 
 # ==================== 嵌入模型配置 ====================
@@ -148,17 +166,7 @@ async def set_local_embedding_config(
     Returns:
         status: 0成功
     """
-    for key, value in data.items():
-        if key not in local_embedding_config.config:
-            continue
-        old = local_embedding_config.get_config(key).data
-        local_embedding_config.set_config(key, unmask_against(value, old))
-
-    return {
-        "status": 0,
-        "msg": "本地嵌入模型配置已保存，重启后生效",
-        "data": None,
-    }
+    return _save_embedding_fields(local_embedding_config, data, "本地嵌入模型配置已保存，重启后生效")
 
 
 @app.get("/api/embedding_config/openai", summary="获取 OpenAI 嵌入模型配置", tags=EMBEDDING_CONFIG)
@@ -194,17 +202,7 @@ async def set_openai_embedding_config(
     Returns:
         status: 0成功
     """
-    for key, value in data.items():
-        if key not in openai_embedding_config.config:
-            continue
-        old = openai_embedding_config.get_config(key).data
-        openai_embedding_config.set_config(key, unmask_against(value, old))
-
-    return {
-        "status": 0,
-        "msg": "OpenAI 嵌入模型配置已保存，重启后生效",
-        "data": None,
-    }
+    return _save_embedding_fields(openai_embedding_config, data, "OpenAI 嵌入模型配置已保存，重启后生效")
 
 
 @app.get("/api/embedding_config/summary", summary="获取嵌入模型配置摘要", tags=EMBEDDING_CONFIG)

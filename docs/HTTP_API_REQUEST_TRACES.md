@@ -283,7 +283,7 @@ class HttpTraceContext:
     short_id: str
     method: str
     path: str                 # _norm_path 结果
-    client_ip: str            # 直连 peer，截断至 64 字符；无则 ""
+    client_ip: str            # 见 D.12；截断至 64 字符。无直连地址时为 "unknown"
     user_id: str | None
     user_name: str | None
     start_time: float         # perf_counter
@@ -409,7 +409,7 @@ endpoint **自己** `asyncio.create_task` / FastAPI `BackgroundTasks` 会复制 
 
 **用户：** `verify_token`（同步内存，不读 body）。isinstance 取 `user["id"]` / `user["name"]`。失败则 `None`。不要为填用户去记 API Key。
 
-**`client_ip`：** 仅 `scope["client"][0]`（直连 peer）。v1 **不**读 `X-Forwarded-For`（反代后列表常见 `127.0.0.1`，接受）。截断 64 字符。
+**`client_ip`：** 与 `security_manager.resolve_client_ip` 相同。直连地址在 `TRUSTED_IPS` 里时，Core 只读第一行 `X-Forwarded-For`，从右端取第一个不在信任列表里的合法地址；这一行没有可用结果时才看第一行 `X-Real-IP`。直连不受信任时只记直连地址。没有直连地址时记 `unknown`。截断 64 字符。
 
 HTTP 追踪能列出 **admin-only 路径名**（`/api/database/...`、装插件等），这是命令追踪没有的信息面；信任边界仍是「能登录控制台」。
 
@@ -500,7 +500,7 @@ data/logs/
   http_traces/YYYY-MM-DD/{ab}.jsonl   # 详情；ab = trace_id 去横线后前 2 位 hex
 ```
 
-`DailyNamedFileHandler.backupCount=0`：不自动删。HTTP 按日目录切，不自动删。不要每个请求一个文件（一天百万级小文件在 NTFS 上更差）。
+`DailyNamedFileHandler.backupCount=0`：按日滚动的 `*.log` 不靠 handler 自己删，走 `clean_log`。HTTP 与命令追踪的日目录也由 `clean_log` 按 `ScheduledCleanLogDay` 删除，只删日期早于「今天减去该天数」的目录和旧单日 jsonl；配置为 `0` 时不删。不要每个请求一个文件（一天百万级小文件在 NTFS 上更差）。
 
 #### JSONL
 

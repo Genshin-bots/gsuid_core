@@ -126,6 +126,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsDateConfig,         # 日期配置 (YYYY-MM-DD)
     GsTimeRangeConfig,    # 时间范围配置 (如 08:00-20:00)
     GsColorConfig,        # 颜色配置 (HEX 如 #FFFFFF 或 RGBA)
+    GsButtonConfig,       # 按钮回调 (endpoint 由框架挂成管理员接口, 带进度和持久状态)
     GsRepeatGroupConfig,  # 可重复配置组 (data 为记录列表, 需指定 template 原型)
 )
 # 联合类型 GSC = Union[上述所有类型]
@@ -153,9 +154,10 @@ from gsuid_core.utils.plugins_config.models import (
 | `GsDateConfig` | 日期 | `datetime.date` | `secret` |
 | `GsTimeRangeConfig` | 时间范围 | `Tuple[Tuple[int,int], Tuple[int,int]]` | `secret` |
 | `GsColorConfig` | 颜色 | `str` | — |
+| `GsButtonConfig` | 按钮回调 | `ButtonState` | `endpoint`, `label`, `status_fields`, `show_progress`, `poll_ms` |
 | `GsRepeatGroupConfig` | 可重复配置组 | `List[Dict[str, GSC]]` | `template: Dict[str, GSC]`, `secret` |
 
-> 所有配置类型继承自 `GsConfig(msgspec.Struct)`，必须包含 `title`、`desc` 字段。除 `GsDivider` 和 `GsColorConfig` 外，均支持 `secret: bool` 字段用于敏感信息脱敏。
+> 所有配置类型继承自 `GsConfig(msgspec.Struct)`，必须包含 `title`、`desc` 字段。除 `GsDivider`、`GsColorConfig` 和 `GsButtonConfig` 外，均支持 `secret: bool` 字段用于敏感信息脱敏。按钮回调用 `register_config_button(endpoint, handler)`，框架会给这个地址加上管理员鉴权。
 
 ## 4.6 可重复配置组 `GsRepeatGroupConfig`
 

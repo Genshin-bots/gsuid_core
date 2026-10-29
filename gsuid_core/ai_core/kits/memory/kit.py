@@ -324,6 +324,7 @@ def cog_scope_from_ctx(ctx: AgentHookContext) -> "CogScope":
         bot_id=ctx.bot_id,
         bot_self_id=ctx.bot_self_id,
         group_id=ctx.group_id,
+        persona_name=ctx.persona_name or "",
         enable_system2=enable_system2,
         enable_user_global=memory_config.enable_user_global_memory,
         memory_eval=ctx.memory_eval,

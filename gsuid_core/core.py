@@ -3,19 +3,12 @@ import signal
 import asyncio
 import secrets
 import argparse
-import multiprocessing
 from typing import Dict
 from asyncio import CancelledError
 from pathlib import Path
 from dataclasses import dataclass
 
-import uvicorn
-from fastapi import Header, WebSocket, HTTPException, WebSocketDisconnect
-from msgspec import json as msgjson, to_builtins
-
-from gsuid_core.version import __version__
-from gsuid_core.shutdown import shutdown_event
-from gsuid_core.startup_info import core_startup_info
+from gsuid_core.supervisor import is_supervised, run_supervisor
 
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -39,7 +32,16 @@ class IPStatus:
     ban_until: float = 0
 
 
-async def main():
+async def serve():
+    # 重依赖放到这里导入：守护父进程也会 import 本模块，但它不需要这些
+    import uvicorn
+    from fastapi import Header, WebSocket, HTTPException, WebSocketDisconnect
+    from msgspec import json as msgjson, to_builtins
+
+    from gsuid_core.version import __version__
+    from gsuid_core.shutdown import shutdown_event
+    from gsuid_core.startup_info import core_startup_info
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -301,10 +303,12 @@ async def main():
     await server.serve()
 
 
-# 仅主进程启动服务(spawn 子进程重 import 本模块时跳过)
-if multiprocessing.current_process().name == "MainProcess":
+def main() -> int:
+    """`core` 命令入口：没被守护时自己当守护父进程，被守护的子进程才真正起服务。"""
+    if not is_supervised():
+        return run_supervisor(sys.argv[1:])
     try:
-        asyncio.run(main())
+        asyncio.run(serve())
     except (ConnectionResetError, ConnectionAbortedError):
         # Windows ProactorEventLoop: 客户端异常断开时可能逃逸到顶层
         pass
@@ -312,3 +316,12 @@ if multiprocessing.current_process().name == "MainProcess":
         # Windows ProactorEventLoop 已知问题: 连接重置时 set_exception
         # 可能被调用在已终态的 Future 上，导致 InvalidStateError 逃逸
         pass
+    except KeyboardInterrupt:
+        # uvicorn 关完服务会把捕获的 SIGINT 重新抛出，这里收掉免得刷一屏 traceback
+        return 130
+    return 0
+
+
+# spawn 出来的子进程会以 __mp_main__ 重新 import 本模块，不能在 import 时启动服务
+if __name__ == "__main__":
+    sys.exit(main())

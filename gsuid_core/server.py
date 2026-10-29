@@ -25,8 +25,11 @@ except ImportError:
     print("正在安装必要依赖 'packaging'...")
     subprocess.check_call([sys.executable, "-m", "ensurepip"])
     # 与 package_index_url() 同一规则；此处还不能调用它（import 尚未结束）。
-    _bootstrap_index = os.environ.get("UV_DEFAULT_INDEX", "").strip() or "https://pypi.org/simple"
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--index-url", _bootstrap_index, "packaging"])
+    _bootstrap_index = os.environ.get("UV_DEFAULT_INDEX", "").strip()
+    _bootstrap_cmd = [sys.executable, "-m", "pip", "install"]
+    if _bootstrap_index:
+        _bootstrap_cmd.extend(["--index-url", _bootstrap_index])
+    subprocess.check_call([*_bootstrap_cmd, "packaging"])
     from packaging.requirements import Requirement
 
 
@@ -906,32 +909,26 @@ def flush_pending_installs():
         install_packages(update_list, upgrade=True)
 
 
-# 与 Core 的 uv 共用 UV_DEFAULT_INDEX；未设置或空白则走官方 PyPI，失败不换源。
-OFFICIAL_PYPI_INDEX = "https://pypi.org/simple"
-
-
-def package_index_url() -> str:
+# 与 Core 的 uv 共用 UV_DEFAULT_INDEX，失败不换源。未设置时不传索引参数，
+# 交给 uv.toml / UV_INDEX_URL / pip.conf 等自身配置，都没配就是官方 PyPI。
+def package_index_url() -> str | None:
     configured = os.environ.get("UV_DEFAULT_INDEX", "").strip()
     if configured:
         return configured
-    return OFFICIAL_PYPI_INDEX
+    return None
 
 
-def build_dep_install_cmd(packages: list[str], upgrade: bool, index_url: str) -> tuple[list[str], bool]:
+def build_dep_install_cmd(packages: list[str], upgrade: bool, index_url: str | None) -> tuple[list[str], bool]:
     uv_bin = shutil.which("uv")
     if uv_bin is not None:
-        cmd = [
-            uv_bin,
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--default-index",
-            index_url,
-        ]
+        cmd = [uv_bin, "pip", "install", "--python", sys.executable]
+        if index_url is not None:
+            cmd.extend(["--default-index", index_url])
         uses_pip = False
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "--index-url", index_url]
+        cmd = [sys.executable, "-m", "pip", "install"]
+        if index_url is not None:
+            cmd.extend(["--index-url", index_url])
         uses_pip = True
     if upgrade:
         cmd.append("--upgrade")
@@ -945,7 +942,10 @@ def install_packages(packages: List[str], upgrade: bool = False):
 
     index_url = package_index_url()
     logger.info(t("log.server.install_start", packages=packages))
-    logger.info(t("log.server.install_using_index", index_url=index_url))
+    if index_url is None:
+        logger.info(t("log.server.install_using_tool_index"))
+    else:
+        logger.info(t("log.server.install_using_index", index_url=index_url))
 
     cmd, uses_pip = build_dep_install_cmd(packages, upgrade, index_url)
     retcode, output = execute_cmd(cmd)
@@ -953,7 +953,12 @@ def install_packages(packages: List[str], upgrade: bool = False):
         execute_cmd([sys.executable, "-m", "ensurepip"])
         retcode, output = execute_cmd(cmd)
 
-    if retcode == 0:
+    if index_url is None:
+        if retcode == 0:
+            logger.info(t("log.server.install_tool_index_ok"))
+        else:
+            logger.error(t("log.server.install_tool_index_fail"))
+    elif retcode == 0:
         logger.info(t("log.server.install_index_ok", index_url=index_url))
     else:
         logger.error(t("log.server.install_index_fail", index_url=index_url))

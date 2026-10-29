@@ -16,6 +16,8 @@ from gsuid_core.data_store import RES, CONFIGS_PATH
 from .models import (
     GSC,
     GsDivider,
+    ButtonState,
+    GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
     GsDateConfig,
@@ -23,6 +25,7 @@ from .models import (
     GsColorConfig,
     GsFloatConfig,
     GsTimeRConfig,
+    GsButtonConfig,
     GsListStrConfig,
     GsTimeRangeConfig,
     GsRepeatGroupConfig,
@@ -66,14 +69,26 @@ def reconcile_config(
             )
             result[key] = deepcopy(dft)
             continue
-        # 同类型: 刷新代码侧元数据, 保留用户 data
-        if isinstance(cur, (GsStrConfig, GsListStrConfig)) and isinstance(dft, (GsStrConfig, GsListStrConfig)):
+        # 同类型: 刷新代码侧元数据, 保留用户 data。整数下拉也跟代码走，否则改 options 后旧文件仍是旧档。
+        if isinstance(cur, GsIntConfig) and isinstance(dft, GsIntConfig):
+            cur.options = list(dft.options)
+        elif isinstance(cur, (GsStrConfig, GsListStrConfig)) and isinstance(dft, (GsStrConfig, GsListStrConfig)):
             cur.options = dft.options
         cur.title = dft.title
         cur.desc = dft.desc
-        # secret 字段并非所有类型都有 (GsDivider / GsColorConfig 无), 条件访问防 AttributeError
-        if not isinstance(cur, (GsDivider, GsColorConfig)) and not isinstance(dft, (GsDivider, GsColorConfig)):
+        # secret 字段并非所有类型都有 (GsDivider / GsColorConfig / GsButtonConfig 无)
+        if not isinstance(cur, (GsDivider, GsColorConfig, GsButtonConfig)) and not isinstance(
+            dft, (GsDivider, GsColorConfig, GsButtonConfig)
+        ):
             cur.secret = dft.secret
+        if isinstance(cur, GsButtonConfig) and isinstance(dft, GsButtonConfig):
+            cur.endpoint = dft.endpoint
+            cur.label = dft.label
+            cur.level = dft.level
+            cur.confirm = dft.confirm
+            cur.status_fields = deepcopy(dft.status_fields)
+            cur.show_progress = dft.show_progress
+            cur.poll_ms = dft.poll_ms
         # 递归分支: 组模板由代码所有(覆盖), data 每项对 template 再调和
         if isinstance(cur, GsRepeatGroupConfig) and isinstance(dft, GsRepeatGroupConfig):
             cur.template = deepcopy(dft.template)
@@ -398,10 +413,13 @@ class StringConfig:
             else:
                 return GsBoolConfig("缺省值", "获取错误的配置项", False)
 
-    def set_config(self, key: str, value: Union[str, List, bool, Dict, int]) -> bool:
+    def set_config(self, key: str, value: Union[str, List, bool, Dict, int, float]) -> bool:
         if key in self.config_list:
             item = self.config[key]
             temp = item.data
+            # 按钮状态只由回调写入。表单保存把整包配置回传时，跳过这项，避免冲掉进度。
+            if isinstance(item, GsButtonConfig):
+                return True
             # 组配置: 前端回传 List[{字段->值}], 用 template 重建成 List[Dict[str, GSC]]。
             # 必须先于下方通用 list==list 分支, 否则会把裸值直接塞进 data 破坏结构。
             if isinstance(item, GsRepeatGroupConfig) and isinstance(value, list):
@@ -462,6 +480,17 @@ class StringConfig:
                 return False
         else:
             return False
+
+    def set_button_state(self, key: str, state: ButtonState) -> bool:
+        """写入按钮回调的进度和结果，并落盘。"""
+        if key not in self.config:
+            return False
+        item = self.config[key]
+        if not isinstance(item, GsButtonConfig):
+            return False
+        item.data = state
+        self.write_config()
+        return True
 
     def migrate_from(self, old_configs: Union["StringConfig", List["StringConfig"]]):
         """
@@ -738,6 +767,37 @@ class ConfigSetManager(ABC):
             是否存在
         """
         return self._get_config_path(config_name).exists()
+
+    def copy(self, source_name: str, new_name: str) -> str | None:
+        """
+        把已有配置文件原样复制成新文件。
+
+        必须直接拷贝磁盘上的 JSON，不能走 ``get_config``：后者在文件不存在时
+        会写出一份空模板，密钥也会在读取接口里被打码。
+
+        Returns:
+            None 表示成功；否则是给调用方展示的错误文案。
+        """
+        source_name = (source_name or "").strip()
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return "名称不能为空"
+        if "+" in new_name:
+            return "配置文件名称不允许包含 '+' 字符"
+        if not source_name or source_name == new_name:
+            return "新名称与原配置相同"
+        src = self._get_config_path(source_name)
+        if not src.is_file():
+            return f"配置文件 '{source_name}' 不存在"
+        dst = self._get_config_path(new_name)
+        if dst.exists():
+            return f"配置文件 '{new_name}' 已存在"
+        import shutil
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        self._cache.pop(new_name, None)
+        return None
 
     def create_default(self, config_name: str) -> bool:
         """

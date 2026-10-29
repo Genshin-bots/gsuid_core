@@ -129,7 +129,7 @@ async def has_actionable_task(user_id: str, current_group_id: Optional[str] = No
 
     与 ``build_task_context`` 的"只要活跃就注入"不同，本函数只关心此刻
     真有子步骤 ``running`` / ``waiting_approval`` 的根——这时主人格随时
-    可能需要 fail_task_tree / respond_approval。
+    可能需要 fail_task_tree。审批不由模型转达。
     ``pending`` / ``paused``（如十几天后的周期模板）和两轮之间空转的周期托管根
     不触发，避免闲聊时无谓挂载 planning 工具、把每一轮都当成任务轮。
 

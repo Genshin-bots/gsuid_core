@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Optional, NamedTuple
+from typing import Match, Callable, Iterator, Optional, NamedTuple
 from datetime import datetime
 from contextvars import Token, ContextVar
 from dataclasses import dataclass
@@ -34,6 +34,12 @@ def ledger_group_key(ev: Event | None, *, group_id: str = "", user_id: str = "")
         return group_id
     uid = str(ev.user_id) if ev is not None and ev.user_id else user_id
     return f"direct:{uid}" if uid else ""
+
+
+def format_meme_placeholder(mood: str) -> str:
+    """群聊历史里的表情占位。只放情绪词，方便记忆摄入当文字表情跳过。"""
+    word = (mood or "").strip()
+    return f"[表情:{word}]" if word else "[表情]"
 
 
 def format_outbound_image_placeholder(topic: str, res_id: str) -> str:
@@ -73,17 +79,96 @@ def reset_run_image_delivered() -> None:
     _run_image_delivered.set(False)
 
 
+# 话题标题里去掉裸 @平台ID。聊天强提醒不走这条。
+_AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
+_PLATFORM_ID_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z_\-]{2,64}")
+# 转义括号放在裸尖括号前，避免 \<@id\> 只吃掉中间的 <。
+_MENTION_OPEN = r"(?:\\<|&lt;|&#60;|＜|<)"
+_MENTION_CLOSE = r"(?:\\>|&gt;|&#62;|＞|>)"
+_MENTION_RE = re.compile(
+    _MENTION_OPEN + r"\s*@\s*([^<>]{1,64}?)\s*" + _MENTION_CLOSE,
+    re.IGNORECASE,
+)
+_CQ_AT_RE = re.compile(r"\[CQ:at\s*,\s*qq=([^,\]\s]+)(?:,[^\]]*)?\]")
+_DELIVERY_TASK_TITLE_RE = re.compile(r"任务#\d+「([^」]+)」")
+
+
+def normalize_mention_token(raw: str) -> str:
+    """括号内的空格去掉。名称和用户 ID 都不靠空格区分。"""
+    return re.sub(r"\s+", "", raw)
+
+
+def is_mention_id(token: str) -> bool:
+    """纯数字，或带数字的平台 ID。纯单词不是接收人。"""
+    if not token:
+        return False
+    if token.isdigit():
+        return True
+    return _PLATFORM_ID_RE.fullmatch(token) is not None and any(ch.isdigit() for ch in token)
+
+
+def iter_mentions(text: str) -> Iterator[Match[str]]:
+    """扫描 <@用户ID> / <@名称>。认转义尖括号和括号内外的空格。"""
+    return _MENTION_RE.finditer(text or "")
+
+
+def sub_mentions(text: str, repl: Callable[[Match[str]], str]) -> str:
+    if not text:
+        return text
+    return _MENTION_RE.sub(repl, text)
+
+
+def strip_mention_tags(text: str) -> str:
+    if not text:
+        return text
+    return _MENTION_RE.sub("", text)
+
+
+def rewrite_cq_at(text: str) -> str:
+    """把 [CQ:at,qq=ID] 收成 <@ID>。出站解析、主动消息历史、话题标题共用。"""
+    if not text:
+        return text
+    return _CQ_AT_RE.sub(r"<@\1>", text)
+
+
+def _clean_topic_head(raw: str, max_len: int = 12) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    m = _DELIVERY_TASK_TITLE_RE.search(s)
+    if m is not None:
+        s = m.group(1).strip()
+    s = _AT_ID_RE.sub("", strip_mention_tags(rewrite_cq_at(s))).strip()
+    head = s.split("\n", 1)[0].strip()
+    return head[:max_len]
+
+
 def topic_from_extra(extra: dict[str, object]) -> str:
     raw = extra["outbound_topic"] if "outbound_topic" in extra else ""
     if isinstance(raw, str) and raw.strip():
-        return raw.strip()[:12]
+        return _clean_topic_head(raw, 12)
     return ""
 
 
 def remember_outbound_topic(extra: dict[str, object], task_head: str) -> None:
-    head = (task_head or "").strip().split("\n", 1)[0].strip()[:12]
+    head = _clean_topic_head(task_head, 12)
     if head:
         extra["outbound_topic"] = head
+
+
+async def ensure_outbound_topic_from_artifact(extra: dict[str, object], image_id: str) -> None:
+    if not image_id.startswith("res_") or topic_from_extra(extra) or not _db_ready():
+        return
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+    try:
+        art = await AIAgentArtifact.get_by_id(image_id)
+    except (OperationalError, ProgrammingError):
+        return
+    if art is not None and art.summary:
+        remember_outbound_topic(extra, art.summary)
 
 
 @dataclass(frozen=True)
@@ -111,22 +196,17 @@ def _fmt_ago(age_seconds: float) -> str:
     return f"{minutes} 分钟前"
 
 
-# 与 send 路径的 @数字 对齐，并收带数字的平台 ID。纯单词 @the 不是接收人。
-_AT_ID_RE = re.compile(r"@([0-9A-Za-z][0-9A-Za-z_\-]{2,64})")
-
-
 def proactive_directed_target(event: Event, message: str) -> str:
-    """群播报只有正文里的 @用户ID 才算定向。
+    """群播报只有正文里的 <@用户ID> 才算定向。裸 @ 不算。
 
     没有点名时不要把 Event.user_id 写成接收人，否则下一条别人的话会被记成发给这个人。
     """
     if event.group_id:
-        matched = _AT_ID_RE.search(message or "")
-        if matched is None:
-            return ""
-        token = matched.group(1)
-        if any(ch.isdigit() for ch in token):
-            return token
+        rewritten = rewrite_cq_at(message or "")
+        for match in iter_mentions(rewritten):
+            token = normalize_mention_token(match.group(1))
+            if is_mention_id(token):
+                return token
         return ""
     return str(event.user_id) if event.user_id else ""
 
@@ -156,12 +236,21 @@ async def record_outbound(
     sid = session_id or (ev.session_id if ev is not None else "")
     owner = str(ev.user_id) if ev is not None and ev.user_id else target_user
     handles = (image_id or "").strip()
-    topic_s = (topic or "").strip()[:12]
+    topic_s = _clean_topic_head(topic, 12)
+    if not topic_s and handles.startswith("res_"):
+        from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+        try:
+            art = await AIAgentArtifact.get_by_id(handles)
+        except (OperationalError, ProgrammingError):
+            art = None
+        if art is not None and art.summary:
+            topic_s = _clean_topic_head(art.summary, 12)
     if not topic_s:
         from gsuid_core.ai_core.configs.ai_config import ai_config
 
         n = int(ai_config.get_config("outbound_topic_n").data)
-        topic_s = (text or "").strip().replace("\n", " ")[:n]
+        topic_s = _clean_topic_head((text or "").replace("\n", " "), n)
     try:
         await OutboundAudit.record(
             session_id=sid,
@@ -207,7 +296,10 @@ async def record_outbound(
 
 async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
     raw = (ev.reply or "").strip()
-    if not raw:
+    is_image_quote = bool(
+        (ev.reply_id or ev.is_tome) and (not raw or raw.startswith("[图片")) and (ev.image_id_list or ev.image)
+    )
+    if not raw and not is_image_quote:
         return None
     from sqlalchemy.exc import OperationalError, ProgrammingError
 
@@ -216,15 +308,19 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
     if not _db_ready():
         return None
     gid = ledger_group_key(ev)
+    hit: Optional[OutboundAudit] = None
     try:
-        hit = await OutboundAudit.match_by_text(group_id=gid, text=raw)
+        if raw and not raw.startswith("[图片"):
+            hit = await OutboundAudit.match_by_text(group_id=gid, text=raw)
+        if hit is None and is_image_quote:
+            hit = await OutboundAudit.recent_image_for_group(group_id=gid)
     except (OperationalError, ProgrammingError) as e:
         logger.debug(i18n_t("log.ai.outbound_read_skip", e=e))
         return None
     if hit is None:
         return None
     who = hit.target_name or hit.target_user or "对方"
-    topic = hit.topic or "图片"
+    topic = _clean_topic_head(hit.topic or hit.text, 12) or "图片"
     handle = (hit.image_handles or "").split(",", 1)[0].strip()
     extra = f"，句柄 {handle}" if handle else ""
     from gsuid_core.ai_core.control.lines import quote_object_line
@@ -264,7 +360,7 @@ async def ownership_hint(ev: Event) -> str:
     if age > OWNERSHIP_HINT_TTL_SECONDS:
         return ""
     who = last.target_name or last.target_user
-    topic = last.topic or "图片"
+    topic = _clean_topic_head(last.topic or last.text, 12) or "图片"
     from gsuid_core.ai_core.control.lines import ownership_line
 
     return ownership_line(_fmt_ago(age), topic, who)

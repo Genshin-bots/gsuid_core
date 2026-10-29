@@ -87,6 +87,13 @@ class TestIs413Error:
     def test_text_too_many_tokens(self):
         assert _is_413_error(Exception("too many tokens"))
 
+    def test_text_qdrant_json_payload_limit(self):
+        msg = (
+            "{'status':{'error':'JSON payload (72261869 bytes) is larger than allowed "
+            "(limit: 33554432 bytes).'},'time':0.0}"
+        )
+        assert _is_413_error(Exception(msg))
+
     def test_non_413_error(self):
         assert not _is_413_error(Exception("connection timeout"))
         assert not _is_413_error(Exception("500 Internal Server Error"))

@@ -298,9 +298,11 @@ def _sync_render_html(
     fmt = _resolve_format(image_format)
     quality = int(jpeg_quality) if fmt == "jpeg" else None
 
+    from gsuid_core.utils.html_render.mermaid_ink import expand_mermaid_in_html
     from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
 
-    html = rewrite_svg_charts_for_takumi(html)
+    # 先改图表 SVG，再嵌入 mermaid，避免 1:1 的 mermaid 被拉成通栏
+    html = expand_mermaid_in_html(rewrite_svg_charts_for_takumi(html))
     return html_to_pic(
         html,
         width=width,
@@ -366,9 +368,10 @@ def _sync_render_md(
             lang="zh",
         )
 
+    from gsuid_core.utils.html_render.mermaid_ink import expand_mermaid_in_html
     from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
 
-    body_html = rewrite_svg_charts_for_takumi(rewrite_tables_for_takumi(markdown_to_html(md)))
+    body_html = expand_mermaid_in_html(rewrite_svg_charts_for_takumi(rewrite_tables_for_takumi(markdown_to_html(md))))
     html = wrap_markdown_html(body_html)
     gh_css = load_template("github-markdown-dark.css" if dark else "github-markdown.css")
     sheets: list[str] = [gh_css]

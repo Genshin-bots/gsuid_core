@@ -15,8 +15,8 @@
 
 失败处理：默认 ``notify_persona`` 策略——子任务失败时不级联整树失败，而是用人格
 口吻把 ``failure_reason`` 转告主人格，由主人格调 ``respawn_subtask`` /
-``fail_task_tree`` 二选一；超过重派上限会自动挂为 ``waiting_approval``，由主人通过
-webconsole 或对话回复审批（统一转达工具 ``respond_approval``）。
+``fail_task_tree`` 二选一；超过重派上限会自动挂为 ``waiting_approval``。主人用
+私聊确认码或审批中心批准。群里说「同意」不会通过。
 """
 
 import re
@@ -308,8 +308,7 @@ async def _persona_relay(
 ) -> Tuple[str, List[str]]:
     """人格转译：能力代理结果再过一遍主人格口吻。
 
-    ``is_approval_request=True`` 时按"请求主人审批"口吻转译（请主人回复同意/拒绝），
-    而非"任务已完成"的进展播报。
+    ``is_approval_request=True`` 时只说明在等私聊确认，不说任务已完成。
 
     把本子任务登记的 ``workspace_file`` / ``output`` artifact 显式列在转译 prompt
     里——否则主人格转译时看不到 ``res_xxx`` 句柄，主人事后追问"刚才那张图呢"
@@ -383,7 +382,7 @@ async def _persona_relay(
                 "「交给谁发」、流程说明。"
             )
 
-        base: str = await build_persona_prompt(task.persona_name)
+        base: str = await build_persona_prompt(task.persona_name, include_meme_protocol=False)
         # 启用 SubAgent 日志：转译过程要进 generator_log_files，由 emitter
         # 挂到主 session 的 linked_agents 上做事后审计。
         relay_session_id: str = f"kanban_relay_{task.id[:8]}_{int(time.time())}"
@@ -498,6 +497,11 @@ _INTERACTIVE_RELAY_ROOTS: set[str] = set()
 _DEFERRED_MAIN_DELIVERY_ROOTS: set[str] = set()
 
 
+def has_pending_interactive_deliveries() -> bool:
+    """进程内是否仍有等待回灌给主人格的交互式子任务。"""
+    return bool(_DEFERRED_MAIN_DELIVERY_ROOTS or _delivery_pending or _delivery_flush_tasks)
+
+
 def mark_interactive_relay_root(root_id: str) -> None:
     """登记「主人格转述、执行体静默」的交互式叶子根。"""
     _INTERACTIVE_RELAY_ROOTS.add(root_id)
@@ -590,7 +594,7 @@ _delivery_pending: dict[str, tuple[AIAgentTask, str]] = {}
 _delivery_flush_tasks: dict[str, asyncio.Task] = {}
 _DELIVERY_COALESCE_SEC = 0.45
 _DELIVERY_WAKE_WINDOW_SEC = 180.0
-_DELIVERY_WAKE_MAX = 2
+_DELIVERY_WAKE_MAX = 4
 _delivery_wake_hits: dict[str, list[float]] = {}
 
 
@@ -860,6 +864,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                 ev=ev,
                 bot=bot,
                 session_id_suffix=f"kanban_{root.id[:6]}_{fresh.id[:6]}",
+                persona_name=fresh.persona_name or root.persona_name or "",
             )
         except Exception as e:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
@@ -881,8 +886,10 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             # 纯标记输出也要留档，下游依赖本节点 artifact 时不至于拿到空上游
             raw_result = "（本轮无值得播报的进展）"
 
-        # 4) 没产出 artifact 时用 raw_result 兜底写一份 text
+        # 4) 挂起不留档、不叫醒主人格。批准后的回灌另走调用会话。
         latest = await AIAgentTask.get_by_id(fresh.id)
+        if latest is not None and latest.status == "waiting_approval":
+            return
         output_id = latest.output_artifact_id if latest and latest.output_artifact_id else ""
         if not output_id and raw_result:
             art = await put_artifact(
@@ -912,18 +919,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             CAPABILITY_AGENT_ERROR_PREFIX,
         )
 
-        # 交互 / 有主 session → 回灌主人格；绝不 Kanban_Relay
-        if latest is not None and latest.status == "waiting_approval":
-            body = latest.failure_reason or raw_result
-            await _finish_capability_delivery(
-                root=root,
-                child=fresh,
-                raw_result=body,
-                bot=bot,
-                no_broadcast=no_broadcast,
-                is_approval=True,
-            )
-        elif (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
+        if (raw_result or "").startswith(CAPABILITY_AGENT_ERROR_PREFIX):
             await kanban.mark_subtask_failed(fresh, raw_result[:1000])
             await _finish_capability_delivery(
                 root=root,

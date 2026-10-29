@@ -33,4 +33,6 @@ GET /api/core/config
 POST /api/core/config
 ```
 
-**请求体**：核心配置键值对
+**请求体**：核心配置键值对。
+
+保存写入当前进程内存，并写回 `data/config.json`。`HOST`、`PORT`、`WS_TOKEN` 仍在启动时读一次，改完要重启。`TRUSTED_IPS` 在下一次 HTTP 请求和下一次 WebSocket 连接读取这份内存。响应 `msg` 固定为「配置已保存，重启后生效」。网页控制台的成功提示用前端自己的文案，不读这句 `msg`。

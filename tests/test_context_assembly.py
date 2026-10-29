@@ -168,6 +168,23 @@ def test_addressed_suffix_keeps_voice_anchor_outside_product_cap() -> None:
     assert "task" not in idle_ctx.blocks
     assert "memory" not in idle_ctx.blocks
 
+    soft_ctx = AgentHookContext(
+        point=AgentHookPoint.COMPOSE_CONTEXT,
+        turn_graph=idle,
+        cheap_gate="full",
+        soft_triggered=True,
+    )
+    assert suffix_allowed_blocks(soft_ctx) == frozenset({"voice_anchor", "history", "soft_trigger"})
+    soft_ctx.blocks = {
+        "voice_anchor": voice,
+        "history": "H" * 100,
+        "soft_trigger": "（系统提示：免唤醒续聊）",
+        "memory": "M" * 80,
+    }
+    _apply_suffix_block_policy(soft_ctx)
+    assert "soft_trigger" in soft_ctx.blocks
+    assert "memory" not in soft_ctx.blocks
+
 
 def test_directed_assistant_line_is_not_a_user_alias_source() -> None:
     from gsuid_core.ai_core.context_assembly import history_line_is_assistant

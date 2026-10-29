@@ -164,8 +164,8 @@ def ai_tools(
             需长时间等待的工具（如 ask_user / 长命令 / 子代理）应显式声明更大值或 None。
         approval: 可选的强制审批级别（"user" / "master"）。声明后每次调用先过
             统一审批中心策略门：user 级可被「完全访问」豁免（照常留审计记录）、
-            master 级永不可豁免；无有效放行 grant 时拦截并自动提交审批请求，
-            批准后重新调用即执行（不依赖 LLM 自觉，防幻觉绕过）。
+            master 级永不可豁免。无放行时提交审批并结束本轮；批准后执行这一次
+            冻住的函数体并回灌。进程重启后函数体丢失，才改为一次性放行。
         code_callable: 为 True 时，本轮已经暴露的该工具可被 ``run_code`` 里的
             Python ``await``。默认 True，插件只读工具不必声明。发消息、写入、
             委派必须显式 ``False``。
@@ -242,15 +242,6 @@ def ai_tools(
                 if not is_passed:
                     return message
 
-            # 审批策略门：声明了 approval 级别的工具在执行前强制过审批中心
-            # （check_func 之后——权限不通过的调用不该触发审批请求）。
-            if approval in ("user", "master"):
-                from gsuid_core.ai_core.approval import tool_call_gate
-
-                gate_msg = await tool_call_gate(ctx.deps.ev, fn.__name__, approval, str(kwargs)[:2000])
-                if gate_msg is not None:
-                    return gate_msg
-
             # 复制一份 kwargs 以防修改原始引用
             call_kwargs = dict(kwargs)
             for param_name, inject_type in injected_params.items():
@@ -276,6 +267,14 @@ def ai_tools(
                 if ctx.deps.ev is not None:
                     need = ctx.deps.ev.raw_text or ""
                 return await frozen_tool_reply(fn.__name__, ctx.deps.extra, need)
+
+            # 审批在函数体闭包之后：通过时回调跑的是这一份，不会再次进门。
+            if approval in ("user", "master"):
+                from gsuid_core.ai_core.approval import tool_call_gate
+
+                gate_msg = await tool_call_gate(ctx.deps.ev, fn.__name__, approval, str(kwargs)[:2000], _call)
+                if gate_msg is not None:
+                    return gate_msg
 
             # create_task+wait_for：区分工具内部 TimeoutError 与外层包装取消
             # （直接 wait_for(coro) 会把内部超时误记成包装默认秒数）

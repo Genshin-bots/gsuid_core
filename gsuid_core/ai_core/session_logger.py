@@ -116,7 +116,7 @@ if TYPE_CHECKING:
     )
 
 # 主动消息来源枚举，供 webconsole 与前端复用
-ProactiveSource = Literal["heartbeat", "scheduled_task", "kanban", "tool"]
+ProactiveSource = Literal["heartbeat", "scheduled_task", "kanban", "tool", "autonomy"]
 
 # history_reset entry 的 data.reason（供前端区分色块），各 reason 语义见 log_history_reset：
 # user_clear=用户清空、persona_switch=人格热切换、auto_compact=Agent 自动裁剪超长历史。
@@ -163,6 +163,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "system_injection",
         # 模型产出
         "thinking",
+        "thinking_effort",
         "text_output",
         # 工具
         "tool_call",
@@ -183,6 +184,8 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "prefix_break",
         "outbound_audit",
         "task_ack",
+        # 话术闸 / 收尾拦住的台词。reason 是拦住当时的原因码，不随后续改判定而变。
+        "output_block",
     }
 )
 
@@ -292,6 +295,29 @@ def normalize_user_message_to_text(user_message: Any) -> str:
     else:
         text = str(user_message)
     return externalize_base64_images(text)
+
+
+def _attach_reason_text(data: dict[str, str], reason: str) -> None:
+    """有原因码才写入当时的中文。没有中文的旧日志不补这个字段。"""
+    from gsuid_core.ai_core.control.reason_text import reason_text
+
+    text = reason_text(reason)
+    if text:
+        data["reason_text"] = text
+
+
+def _silence_result_data(output: str, tool_calls: list[str], silence_reason: str) -> dict[str, str | list[str]]:
+    from gsuid_core.ai_core.control.reason_text import reason_text
+
+    data: dict[str, str | list[str]] = {
+        "output": output,
+        "tool_calls": tool_calls,
+        "silence_reason": silence_reason,
+    }
+    text = reason_text(silence_reason)
+    if text:
+        data["reason_text"] = text
+    return data
 
 
 class AISessionLogger:
@@ -647,11 +673,17 @@ class AISessionLogger:
         tools_hash: str = "",
         system_hash: str = "",
         tools_diff: dict[str, list[str]] | None = None,
+        break_pos: int | None = None,
+        approx_tokens_before: int | None = None,
     ) -> None:
-        """记录本 run 相对上一 run 的前缀失配类别。"""
+        """记录本 run 相对上一 run 的前缀失配类别及中段失配位置。"""
         data: dict[str, object] = {"reason": reason, "tools_hash": tools_hash, "system_hash": system_hash}
         if tools_diff is not None:
             data["tools_diff"] = tools_diff
+        if break_pos is not None:
+            data["break_pos"] = break_pos
+        if approx_tokens_before is not None:
+            data["approx_tokens_before"] = approx_tokens_before
         self._add_entry("prefix_break", data)
 
     def log_outbound_audit(
@@ -692,10 +724,14 @@ class AISessionLogger:
         """
         self._add_entry("user_input", {"content": normalize_user_message_to_text(user_message)})
 
-    def log_system_injection(self, content: str, source: str = "kanban_delivery") -> None:
-        """记录框架注入（Kanban 回灌等），不计入 user_input，避免被误认为真人发言。"""
+    def log_system_injection(self, content: str, source: str = "kanban_delivery", *, reason: str = "") -> None:
+        """记录框架注入（Kanban 回灌、纠正轮）。reason 只在纠正轮写入。"""
         norm = normalize_user_message_to_text(content)
-        self._add_entry("system_injection", {"content": norm, "source": source})
+        data: dict[str, str] = {"content": norm, "source": source}
+        if reason:
+            data["reason"] = reason
+            _attach_reason_text(data, reason)
+        self._add_entry("system_injection", data)
 
     def log_thinking(self, content: str) -> None:
         """记录模型思考过程。
@@ -712,6 +748,12 @@ class AISessionLogger:
             ):
                 return
         self._add_entry("thinking", {"content": content})
+
+    def log_request_thinking_effort(self, effort: str | None) -> None:
+        """记录这次请求 JSON 里的思考档位。没有该字段时 effort 为 None。"""
+        shown = "null" if effort is None else effort
+        logger.info(t("log.ai.gscore_request_thinking_effort", effort=shown))
+        self._add_entry("thinking_effort", {"effort": effort})
 
     def log_tool_call(self, tool_name: str, args: Any, tool_call_id: str) -> None:
         """记录工具调用请求。
@@ -759,6 +801,18 @@ class AISessionLogger:
         """记录模型直接输出的文本"""
         self._add_entry("text_output", {"content": content})
 
+    def log_output_block(self, reason: str, content: str, *, policy: str = "", tool_call_id: str = "") -> None:
+        """记下被拦住的台词、原因码和当时的中文说明。"""
+        preview = content.strip()
+        if len(preview) > 500:
+            preview = preview[:500] + "…"
+        data: dict[str, str] = {"reason": reason, "content": preview, "policy": policy}
+        if tool_call_id:
+            # 挂到这次工具调用上，瀑布才不会把拒发画进上一轮对话。
+            data["tool_call_id"] = tool_call_id
+        _attach_reason_text(data, reason)
+        self._add_entry("output_block", data)
+
     def log_task_ack(self, content: str, *, source: str) -> None:
         """记录 create_subagent 代发的开场句（模型自己写的台词，框架不代写）。"""
         self._add_entry("task_ack", {"content": content, "source": source})
@@ -775,24 +829,11 @@ class AISessionLogger:
         from gsuid_core.ai_core.utils import is_silence_marker
 
         if is_silence_marker(out_str) or not out_str:
-            self._add_entry(
-                "result",
-                {
-                    "output": str(output),
-                    "tool_calls": tool_calls,
-                    "silence_reason": silence_reason or "model_voluntary",
-                },
-            )
+            why = silence_reason or "model_voluntary"
+            self._add_entry("result", _silence_result_data(str(output), tool_calls, why))
             return
         if silence_reason is not None:
-            self._add_entry(
-                "result",
-                {
-                    "output": str(output),
-                    "tool_calls": tool_calls,
-                    "silence_reason": silence_reason,
-                },
-            )
+            self._add_entry("result", _silence_result_data(str(output), tool_calls, silence_reason))
             return
         self._add_entry("result", {"output": str(output), "tool_calls": tool_calls})
 

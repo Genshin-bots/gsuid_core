@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_thrash_same_response_parallel_counts_one_turn() -> None:
     from gsuid_core.ai_core.gs_agent import _update_thrash_streak_for_response
@@ -9,7 +11,7 @@ def test_thrash_same_response_parallel_counts_one_turn() -> None:
     # 同响应 4 次 web_search → 只 +1 轮
     name, streak = _update_thrash_streak_for_response(
         ["web_search_tool"] * 4,
-        prev_name="",
+        prev_signature="",
         prev_streak=0,
     )
     assert name == "web_search_tool"
@@ -17,7 +19,7 @@ def test_thrash_same_response_parallel_counts_one_turn() -> None:
 
     name2, streak2 = _update_thrash_streak_for_response(
         ["web_search_tool"] * 3,
-        prev_name=name,
+        prev_signature=name,
         prev_streak=streak,
     )
     assert name2 == "web_search_tool"
@@ -29,7 +31,7 @@ def test_thrash_mixed_tools_resets() -> None:
 
     name, streak = _update_thrash_streak_for_response(
         ["web_search_tool", "web_fetch_tool"],
-        prev_name="web_search_tool",
+        prev_signature="web_search_tool",
         prev_streak=3,
     )
     assert name == ""
@@ -41,7 +43,7 @@ def test_thrash_empty_response_keeps_streak() -> None:
 
     name, streak = _update_thrash_streak_for_response(
         [],
-        prev_name="web_search_tool",
+        prev_signature="web_search_tool",
         prev_streak=2,
     )
     assert name == "web_search_tool"
@@ -67,6 +69,47 @@ def test_post_tool_contracts_split_persona_vs_capability() -> None:
     assert "render_html_to_image" not in fail_c or "禁止" in fail_c
 
 
+def test_capability_agent_keeps_search_instead_of_redelegating() -> None:
+    """执行体的任务书含「搜索/汇总」时，不能改口要求它再去委派。"""
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import web_search_delegate_line
+
+    register_builtin_profiles()
+    task = "【Kanban 单步任务】请搜索并汇总近一周的公开资料。\n" + ("说明" * 300)
+    assert (
+        web_search_delegate_line(
+            create_by="CapabilityAgent",
+            capability_node_id="research_agent",
+            question=task,
+            first_tool="web_search_tool",
+            already_nudged=False,
+            any_fail=False,
+        )
+        == ""
+    )
+    chat = web_search_delegate_line(
+        create_by="Chat",
+        capability_node_id="",
+        question="请搜索并汇总近一周的公开资料",
+        first_tool="web_search_tool",
+        already_nudged=False,
+        any_fail=False,
+    )
+    assert "research_agent" in chat
+    assert "create_subagent" in chat
+    assert (
+        web_search_delegate_line(
+            create_by="Chat",
+            capability_node_id="",
+            question="请搜索并汇总近一周的公开资料",
+            first_tool="web_fetch_tool",
+            already_nudged=False,
+            any_fail=False,
+        )
+        == ""
+    )
+
+
 def test_captionless_inbound_image_is_recorded(monkeypatch) -> None:
     from gsuid_core.models import Event
     from gsuid_core.handler import _record_inbound_history
@@ -74,6 +117,7 @@ def test_captionless_inbound_image_is_recorded(monkeypatch) -> None:
 
     mgr = HistoryManager()
     monkeypatch.setattr("gsuid_core.message_history.get_history_manager", lambda: mgr)
+    monkeypatch.setattr("gsuid_core.handler.get_history_manager", lambda: mgr)
 
     image_ev = Event(
         bot_id="onebot",
@@ -299,3 +343,87 @@ def test_followup_task_mentions_no_render() -> None:
     assert "事实包" in t
     assert "render_" in t
     assert "整理近一周" in t
+
+
+def test_same_tool_different_args_is_not_the_same_call() -> None:
+    """逐题点击参数不同，不累计成同一次调用。完全相同要超过 10 次。"""
+    from gsuid_core.ai_core.gs_agent import _update_thrash_streak_for_response
+    from gsuid_core.ai_core.agent_run.support import (
+        _THRASH_SAME_TOOL_LIMIT,
+        canonical_tool_call,
+    )
+
+    click_e5 = canonical_tool_call("browser_click", {"target": "e5"})
+    click_e2 = canonical_tool_call("browser_click", {"target": "e2"})
+    assert click_e5 != click_e2
+    assert click_e5 == canonical_tool_call("browser_click", '{"target": "e5"}')
+    reordered = canonical_tool_call("browser_click", {"target": "e5", "button": "A"})
+    assert reordered == canonical_tool_call("browser_click", {"button": "A", "target": "e5"})
+
+    signature = ""
+    streak = 0
+    for target in ("e5", "e2", "e3", "e4", "e1"):
+        call = canonical_tool_call("browser_click", {"target": target})
+        signature, streak = _update_thrash_streak_for_response(
+            [call],
+            prev_signature=signature,
+            prev_streak=streak,
+        )
+        assert streak == 1
+
+    signature = ""
+    streak = 0
+    for _ in range(_THRASH_SAME_TOOL_LIMIT):
+        signature, streak = _update_thrash_streak_for_response(
+            [click_e5, click_e5],
+            prev_signature=signature,
+            prev_streak=streak,
+        )
+    assert streak == _THRASH_SAME_TOOL_LIMIT
+    assert not streak > _THRASH_SAME_TOOL_LIMIT
+    signature, streak = _update_thrash_streak_for_response(
+        [click_e5],
+        prev_signature=signature,
+        prev_streak=streak,
+    )
+    assert streak > _THRASH_SAME_TOOL_LIMIT
+
+
+def test_empty_output_is_not_voluntary_silence() -> None:
+    from gsuid_core.ai_core.agent_run.support import result_silence_reason
+
+    assert result_silence_reason("", existing="", blocked="") == "empty_output"
+    assert result_silence_reason("<SILENCE>", existing="", blocked="") == "model_voluntary"
+    assert result_silence_reason("结论在这里。", existing="", blocked="") is None
+
+
+def test_delegator_persona_ref_is_an_id_not_the_card() -> None:
+    from gsuid_core.ai_core.capability_agents.runner import format_delegator_persona_ref
+
+    block = format_delegator_persona_ref("早柚")
+    assert "人格 ID：早柚" in block
+    assert 'info_type="card"' in block
+    assert "persona.md" in block
+    assert "Identity" not in block
+    assert format_delegator_persona_ref("  ") == ""
+
+
+def test_read_persona_card_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    class _Persona:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def exists(self) -> bool:
+            return self.name == "早柚"
+
+        async def load_content(self) -> str:
+            return "Identity: 小忍者。"
+
+    monkeypatch.setattr("gsuid_core.ai_core.buildin_tools.self_info.Persona", _Persona)
+    from gsuid_core.ai_core.buildin_tools.self_info import read_persona_card
+
+    assert asyncio.run(read_persona_card("早柚")) == "Identity: 小忍者。"
+    missing = asyncio.run(read_persona_card("没有这个人"))
+    assert "不存在" in missing

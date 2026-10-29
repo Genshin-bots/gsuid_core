@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import asyncio
@@ -15,6 +16,7 @@ from gsuid_core.server import core_shutdown_execute
 from gsuid_core.version import __version__
 from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.data_store import get_res_path
+from gsuid_core.supervisor import RESTART_EXIT_CODE, SUPERVISED_ENV_KEY, is_supervised
 from gsuid_core.startup_info import core_startup_info
 from gsuid_core.utils.database.models import CoreUser, Subscribe
 from gsuid_core.utils.plugins_update.utils import check_start_tool
@@ -35,10 +37,13 @@ _UV_RECURSION_ENV_KEYS = (
 )
 RESTART_GUARD_WINDOW_SECONDS = 60.0
 RESTART_GUARD_MAX_IN_WINDOW = 8
+# 留时间把 /api/system/restart 的响应写回去
+RESTART_EXIT_DELAY_SECONDS = 0.5
 
 
 def sanitize_restart_env(source_env: Mapping[str, str]) -> dict[str, str]:
-    drop = {key.upper() for key in _UV_RECURSION_ENV_KEYS}
+    # 守护标记也剥掉：自定义命令拉起的 core 要自己当父进程，不然下次重启就没人接
+    drop = {key.upper() for key in (*_UV_RECURSION_ENV_KEYS, SUPERVISED_ENV_KEY)}
     return {key: value for key, value in source_env.items() if key.upper() not in drop}
 
 
@@ -118,9 +123,23 @@ def _popen_restart_shell(cmdline: str) -> None:
     )
 
 
+def is_custom_restart_enabled() -> bool:
+    return bool(core_plugins_config.get_config("is_use_custom_restart_command").data)
+
+
+def _exit_for_restart() -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # 关机钩子已经跑完，这里直接退出，和旧版被 taskkill / kill -9 等价
+    os._exit(RESTART_EXIT_CODE)
+
+
+def _schedule_restart_exit() -> None:
+    asyncio.get_running_loop().call_later(RESTART_EXIT_DELAY_SECONDS, _exit_for_restart)
+
+
 def get_restart_command() -> str:
-    is_use_custom_restart_command = core_plugins_config.get_config("is_use_custom_restart_command").data
-    if is_use_custom_restart_command:
+    if is_custom_restart_enabled():
         restart_command = core_plugins_config.get_config("restart_command").data
         logger.info(t("log.core.core_restart_custom_command_start", restart_command=restart_command))
         return restart_command
@@ -165,14 +184,12 @@ async def restart_genshinuid(
         )
         return
 
+    # 自定义重启命令（pm2 / systemctl 之类）由用户自己接管，仍走旧的杀进程再拉起
+    by_supervisor = is_supervised() and not is_custom_restart_enabled()
     pid = os.getpid()
-    restart_sh = await get_restart_sh()
-    await asyncio.to_thread(_write_restart_sh, restart_sh_path, restart_sh)
-
-    if platform.system() == "Linux":
-        # os.system(f'chmod +x {str(restart_sh_path)}')
-        # os.system(f'chmod +x {str(bot_start)}')
-        pass
+    if not by_supervisor:
+        restart_sh = await get_restart_sh()
+        await asyncio.to_thread(_write_restart_sh, restart_sh_path, restart_sh)
 
     now_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 
@@ -185,6 +202,11 @@ async def restart_genshinuid(
         )
 
     await core_shutdown_execute()
+
+    if by_supervisor:
+        logger.info(t("log.core.core_restart_by_supervisor"))
+        _schedule_restart_exit()
+        return
 
     command = get_restart_command()
     system = platform.system()

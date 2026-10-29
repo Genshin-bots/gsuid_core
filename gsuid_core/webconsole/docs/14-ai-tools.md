@@ -45,6 +45,10 @@ Authorization: Bearer <token>
 |------|------|------|------|
 | category | string | 否 | 按分类筛选，如 'self', 'buildin', 'default', 'common' |
 | plugin | string | 否 | 按插件名称筛选，如 'core', 'GenshinUID' |
+| search | string | 否 | 按工具名或描述模糊匹配（不区分大小写） |
+| diagnostic | string | 否 | 诊断筛选：`all`（默认）/ `issues`（空描述或空名，或 meta 分类）/ `empty_description`（仅空描述） |
+| limit | integer | 否 | 单页条数（1–2000）；**不传则返回全量** |
+| offset | integer | 否 | 偏移量，默认 0 |
 
 **响应**：
 ```json
@@ -79,7 +83,13 @@ Authorization: Bearer <token>
         "categories": ["self", "buildin", "default", "common"],
         "plugins": ["core", "GenshinUID", "_RH_ComfyUI"],
         "count": 10,
-        "total_count": 15
+        "total_count": 15,
+        "category_counts": {"self": 3, "buildin": 5, "default": 2},
+        "plugin_counts": {"core": 8, "GenshinUID": 2},
+        "diagnostic_counts": {"total": 15, "empty_description": 1, "meta": 2, "ok": 12},
+        "limit": 2,
+        "offset": 0,
+        "has_more": true
     }
 }
 ```
@@ -89,19 +99,25 @@ Authorization: Bearer <token>
 |------|------|------|
 | status | integer | 状态码，0表示成功 |
 | msg | string | 状态信息 |
-| data.tools | array | 工具列表（筛选后），每个工具包含 name, description, plugin, category |
-| data.by_category | object | 按分类分组的工具字典 |
-| data.by_plugin | object | 按插件分组的工具字典 |
+| data.tools | array | **当前页**工具列表，每个工具包含 name, description, plugin, category |
+| data.by_category | object | 按分类分组的工具字典（未筛选） |
+| data.by_plugin | object | 按插件分组的工具字典（未筛选） |
 | data.categories | array | 所有可用的分类列表 |
 | data.plugins | array | 所有可用的插件列表 |
-| data.count | integer | 筛选后的工具数量 |
+| data.count | integer | 命中筛选的工具总数（**不是本页条数**） |
 | data.total_count | integer | 工具总数（筛选前） |
+| data.category_counts | object | 按分类分组的**总数**，与分页无关 |
+| data.plugin_counts | object | 按插件分组的**总数**，与分页无关 |
+| data.diagnostic_counts | object | 全量工具的诊断概览（不受筛选影响） |
+| data.limit / data.offset | integer / null | 本次请求的分页参数；`limit` 为 null 表示未分页 |
+| data.has_more | boolean | 是否还有下一页 |
 
 **前端使用建议**：
-1. 首次加载时调用 `/api/ai/tools/list` 获取完整的 `by_category` 和 `by_plugin` 结构
-2. 使用 `categories` 和 `plugins` 列表构建筛选器
-3. 根据用户选择的筛选条件，通过 `category` 或 `plugin` 参数进行筛选
-4. 每个工具的 `category` 和 `plugin` 字段可用于同时按两个维度筛选
+1. 首次加载时调用 `/api/ai/tools/list` 获取 `categories` / `plugins` 构建筛选器
+2. 筛选与分页一起提交（`category` / `plugin` / `search` / `diagnostic` + `limit` / `offset`），**先筛后切**，翻页不会漏条目
+3. 翻页时复用上次提交的 query，不要只带 `page`；对 `data.tools` 再过滤一遍会让第二页变空
+4. 下拉里的数量用 `category_counts` / `plugin_counts`（总数），不要用本页条数
+5. 每个工具的 `category` 和 `plugin` 字段可用于同时按两个维度筛选
 
 ---
 

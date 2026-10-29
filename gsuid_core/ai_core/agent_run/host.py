@@ -7,6 +7,7 @@ from asyncio import Event as AsyncEvent
 from datetime import datetime
 
 from pydantic_ai.messages import UserContent, ModelMessage
+from pydantic_ai.settings import ThinkingLevel
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
@@ -43,6 +44,7 @@ class RunOnceHost:
     dynamic_tools: bool | None
     wall_clock_budget: float | None
     capability_node_id: str
+    thinking: ThinkingLevel | None
     turn_clock: datetime | None
     _session_logger: AISessionLogger
     _run_sent_texts: set[str]
@@ -167,5 +169,6 @@ class RunOnceHost:
         turn_graph: Optional[TurnGraph] = None,
         cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
+        injection_reason: str = "",
     ) -> object:
         raise NotImplementedError

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 import subprocess
@@ -40,11 +41,17 @@ def test_ai_off_gate_serves_placeholders_until_call() -> None:
         print("ok")
         """
     )
+    env = os.environ.copy()
+    # 子进程固定 UTF-8，避免关闭 AI 时的中文日志把 stderr 读坏。
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     completed = subprocess.run(
         [sys.executable, "-c", script],
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env=env,
     )
     assert completed.returncode == 0, completed.stderr
     assert "ok" in completed.stdout

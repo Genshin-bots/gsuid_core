@@ -54,10 +54,23 @@ async def _init_scheduled_task():
 
 
 async def _init_approval():
-    from gsuid_core.ai_core.approval import prime_pending, register_builtin_categories
+    from gsuid_core.aps import scheduler
+    from gsuid_core.ai_core.approval import expire_due, prime_pending, register_builtin_categories
 
     register_builtin_categories()
     await prime_pending()
+
+    async def _expire_job() -> None:
+        await expire_due()
+
+    scheduler.add_job(
+        func=_expire_job,
+        trigger="interval",
+        seconds=30,
+        id="approval_expire_due",
+        name="审批确认码过期",
+        replace_existing=True,
+    )
 
 
 async def _init_planning():
@@ -88,6 +101,12 @@ async def _init_statistics():
     from gsuid_core.ai_core.statistics.startup import init_ai_core_statistics
 
     await init_ai_core_statistics()
+
+
+async def _init_autonomy() -> None:
+    from gsuid_core.ai_core.autonomy.startup import init_autonomy
+
+    await init_autonomy()
 
 
 async def _init_mcp_server():
@@ -199,6 +218,7 @@ _INIT_STEPS = [
     ("MCP 工具", _init_mcp_tools),
     ("Meme", _init_meme),
     ("统计", _init_statistics),
+    ("自主行动", _init_autonomy),
     ("MCP Server", _init_mcp_server),
     ("命令执行", _init_command_exec),
 ]

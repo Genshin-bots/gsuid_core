@@ -15,5 +15,6 @@
   "log.config.name_type_mismatch": "[Config][{config_name}] Type mismatch for configuration item {key} ({p0} -> {p1}); reset to default",
   "log.config.removed_bypass_field_conform": "[Config][{p0}] Removed bypass field '{k}' that does not conform to the GSC structure (type: {p1})",
   "log.config.target_configuration_file_exists_skip": "[Config][{p0}] Target configuration file already exists; skipping migration from {old_path}",
-  "log.config.write_fail": "Failed to write configuration file!"
+  "log.config.write_fail": "Failed to write configuration file!",
+  "log.config.button_callback_failed": "[Config Button][{endpoint}] Callback failed: {e}"
 }

@@ -591,11 +591,21 @@ Authorization: Bearer <token>
 **响应字段说明**：
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| ai_mode | array | AI行动模式列表，可选值："提及应答", "定时巡检", "趣向捕捉(暂不可用)", "困境救场(暂不可用)" |
+| ai_mode | array | AI行动模式列表，可选值："提及应答", "定时巡检", "命令补充", "自主行动" |
+| active_hours | array | 作息，如 `["08:00-23:30"]`。时段外不定时巡检，也不自主行动 |
+| timezone | string | IANA 时区，默认 `Asia/Shanghai` |
+| autonomy_interval_minutes | int | 自主行动冷却，15–720，默认 45 |
+| autonomy_care_min_zone | string | `familiar` 或 `close`。主人始终在关心名单里 |
 | scope | string | 启用范围：`disabled` / `global`（全部群+私聊） / `global_group`（仅全部群聊） / `global_private`（仅全部私聊） / `specific`（仅指定群聊/用户） |
 | target_groups | array | 当 scope 为 "specific" 时，指定该人格对哪些群聊/角色启用 |
 | inspect_interval | integer | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时有效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 唤醒关键词列表，当 ai_mode 包含"提及应答"时有效，消息包含这些关键词也会触发AI响应 |
+| aside_image_probability | number | 命令补充：回复只有图片时补一句的概率，0 到 1。默认 0.2 |
+| aside_text_probability | number | 命令补充：回复只有文字时补一句的概率，0 到 1。默认 0.35 |
+| aside_mixed_probability | number | 命令补充：图文都有时补一句的概率，0 到 1。默认 0.25 |
+| aside_allow_tools | boolean | 命令补充能否使用工具（含阅读这条命令所属插件目录）。默认 false |
+| allow_meme_reply | boolean | 是否允许表情回复。打开后系统提示写入 `<meme:情绪>` 协议；关掉后不写这段，也不发送表情。默认 true |
+| meme_frequency | integer | 表情频率，0 到 100，默认 50。只改系统提示里的频率说明：0–24 少用，25–74 适中，75–100 常用。不限流，也不影响选图 |
 
 > 历史字段 `pre_tool_expressions`（工具前摇台词）已废弃：框架不再播报固定台词，
 > 耗时工具前的告知改由 Agent 按系统约束用角色口吻自行组织。已有配置中的该字段会被忽略。
@@ -647,6 +657,12 @@ Content-Type: application/json
 | target_groups | array | 否 | 目标群聊/角色列表，当 scope 为 "specific" 时生效 |
 | inspect_interval | integer | 否 | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时生效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 否 | 唤醒关键词列表，当 ai_mode 包含"提及应答"时生效，消息包含这些关键词也会触发AI响应 |
+| aside_image_probability | number | 否 | 命令补充只发图片时的概率，0 到 1 |
+| aside_text_probability | number | 否 | 命令补充只发文字时的概率，0 到 1 |
+| aside_mixed_probability | number | 否 | 命令补充图文混合时的概率，0 到 1 |
+| aside_allow_tools | boolean | 否 | 命令补充是否允许使用工具 |
+| allow_meme_reply | boolean | 否 | 是否允许表情回复 |
+| meme_frequency | integer | 否 | 表情频率，0 到 100。只改系统提示里的频率说明 |
 
 **响应**：
 ```json

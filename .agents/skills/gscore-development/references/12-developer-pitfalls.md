@@ -95,7 +95,7 @@ InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归�
 > ⚠️ **本节此前写的是「`core.py` 切到 `WindowsSelectorEventLoopPolicy`，所以 Windows 不支持
 > 子进程」。该描述已过期，写新代码不要按它决策。**
 
-**现状**：`core.py` **不设置任何事件循环策略**。它 `asyncio.run(main())` 并在其中
+**现状**：`core.py` **不设置任何事件循环策略**。它 `asyncio.run(serve())` 并在其中
 `await server.serve()`；uvicorn 的 loop factory 只在 `Server.run()` 里生效，走 `serve()`
 不会被套用。因此 Windows 上跑的是 **Python 默认的 `WindowsProactorEventLoopPolicy` →
 `ProactorEventLoop`**（实测 Python 3.12.4 + uvicorn 0.42）。
@@ -105,10 +105,9 @@ InvalidStateError → 主循环崩溃 → **WS 全线断连**）。现已回归�
 那么 Proactor 关 socket 的 `InvalidStateError` 怎么办？改成**顶层兜底吞掉**，不再换策略：
 
 ```python
-# core.py:288-297
-if multiprocessing.current_process().name == "MainProcess":
+# core.py::main()（被守护的子进程分支）
     try:
-        asyncio.run(main())
+        asyncio.run(serve())
     except (ConnectionResetError, ConnectionAbortedError):
         # Windows ProactorEventLoop: 客户端异常断开时可能逃逸到顶层
         pass
@@ -138,6 +137,9 @@ AI 关闭时**不该有任何 AI 逻辑在跑**。改 AI 模块时务必保留�
 - `scheduled_task/executor.py`、`heartbeat/inspector.py` 执行前查总开关。
 - `create_core_tables` 跳过 AI 表创建。
 - `handle_ai` 里 `enable_ai` **函数内动态读取**（不要缓存进模块级常量，否则切开关要重启）。
+- `handler.py` 顶层只读 `ai_config` 与轻量 `followup_window`。`persona.config` / `hooks` /
+  `approval` / `handle_ai` 都在 `enable_ai` 为真之后再导入。`persona` 包初始化也不得
+  import `processor`（它会间接拉 `buildin_tools`）。
 - HTTP Agent：`register_http_agent_routes` 总开关关则不 `include_router`（再开需重启）。
   已挂上后关掉仍 404。Admin 建钥不走 Agent 面、不查总开关。
 - 导入闸（`heavy_import_gate`）只拦 `onnxruntime` / `fastembed`。**不要**把 `playwright`

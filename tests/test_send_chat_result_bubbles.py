@@ -17,6 +17,7 @@ from typing import List, Union, Mapping, Optional
 import pytest
 
 from gsuid_core.bot import Bot
+from gsuid_core.models import Event
 from gsuid_core.ai_core import utils as ai_utils
 from gsuid_core.segment import Message
 from gsuid_core.ai_core.persona.chat_style import DEFAULT_CHAT_STYLE, _tier_for, resolve_chat_style
@@ -39,9 +40,14 @@ def _plain_text(message: Union[Message, List[Message], str, bytes, List[str]]) -
     return out
 
 
-def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] = None) -> List[str]:
-    """跑一次 ``send_chat_result``，返回实际下发的气泡文本列表。"""
-    sent: List[str] = []
+def _drive(
+    text: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    bubbles: Optional[int] = None,
+) -> List[Union[Message, List[Message], str, bytes, List[str]]]:
+    """跑一次 ``send_chat_result``，返回每次 ``Bot.send`` 收到的原文。"""
+    sent: List[Union[Message, List[Message], str, bytes, List[str]]] = []
 
     async def _fake_send(
         self: Bot,
@@ -50,7 +56,7 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
         extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> None:
-        sent.append(_plain_text(message))
+        sent.append(message)
 
     monkeypatch.setattr(ai_utils.asyncio, "sleep", _no_sleep)
     monkeypatch.setattr("gsuid_core.ai_core.output_firewall.is_enabled", lambda: False)
@@ -59,6 +65,11 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
         monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda ev: bubbles)
     asyncio.run(ai_utils.send_chat_result(Bot.__new__(Bot), text, ev=None, ooc_check=False))
     return sent
+
+
+def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] = None) -> List[str]:
+    """跑一次 ``send_chat_result``，返回实际下发的气泡文本列表。"""
+    return [_plain_text(message) for message in _drive(text, monkeypatch, bubbles=bubbles)]
 
 
 # ── 一、空行必须活到拆条点（P0 根因的直接回归锁）────────────────────────────
@@ -116,6 +127,45 @@ def test_send_chat_result_clamps_to_persona_bubble_cap(monkeypatch: pytest.Monke
 def test_send_chat_result_single_block_sends_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """无空行的一整段只发 1 条。"""
     assert len(_run("就一句话。", monkeypatch)) == 1
+
+
+def _at_pairs(message: Union[Message, List[Message], str, bytes, List[str]]) -> list[tuple[str, str]]:
+    assert isinstance(message, list)
+    pairs: list[tuple[str, str]] = []
+    for seg in message:
+        assert isinstance(seg, Message)
+        assert isinstance(seg.type, str)
+        assert isinstance(seg.data, str)
+        pairs.append((seg.type, seg.data))
+    return pairs
+
+
+def test_send_chat_result_turns_cq_at_into_at_segment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """数字 QQ 的 CQ 码经出站整段变成 at，id 不留在正文。"""
+    sent = _drive("[CQ:at,qq=169629556,name=foo] 到时间啦", monkeypatch)
+    assert len(sent) == 1
+    assert _at_pairs(sent[0]) == [("at", "169629556"), ("text", " 到时间啦")]
+
+
+def test_send_chat_result_two_cq_ats_become_two_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一条里两个数字 CQ at 都变成 at 段。"""
+    sent = _drive("[CQ:at,qq=10001] 和 [CQ:at,qq=10002] 都来", monkeypatch)
+    assert len(sent) == 1
+    assert _at_pairs(sent[0]) == [
+        ("at", "10001"),
+        ("text", " 和 "),
+        ("at", "10002"),
+        ("text", " 都来"),
+    ]
+
+
+def test_send_chat_result_cq_at_all_stays_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """qq=all 不是数字 QQ，保持正文，不当成 at。"""
+    sent = _drive("[CQ:at,qq=all] 到时间啦", monkeypatch)
+    assert len(sent) == 1
+    pairs = _at_pairs(sent[0])
+    assert all(kind != "at" for kind, _data in pairs)
+    assert "CQ:at" not in _plain_text(sent[0])
 
 
 # ── 三、气泡上限随人格「说话强度」变化 ───────────────────────────────────────
@@ -183,15 +233,96 @@ def test_answer_contract_covers_both_directions_and_is_persona_neutral() -> None
 
 def test_answer_contract_is_rendered_into_persona_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     """契约须真正进 system 稳定前缀，否则改了等于没改。"""
-    from gsuid_core.ai_core.persona.processor import build_persona_prompt
-    from gsuid_core.ai_core.persona.chat_style import ANSWER_CONTRACT
+    from gsuid_core.ai_core.persona import processor
+    from gsuid_core.ai_core.persona.chat_style import ANSWER_CONTRACT, ChatStyle
 
-    async def _fake_load_persona(_name: str) -> str:
-        return "你是测试角色。"
+    async def fake_load(_name: str) -> str:
+        return "测"
 
-    monkeypatch.setattr("gsuid_core.ai_core.persona.processor.load_persona", _fake_load_persona)
-    prompt = asyncio.run(build_persona_prompt("评测助手"))
+    monkeypatch.setattr(processor, "load_persona", fake_load)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.appearance.load_appearance_line", lambda _name: "")
+    monkeypatch.setattr("gsuid_core.ai_core.persona.settings.get_master_title", lambda _name: "")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.persona.chat_style.resolve_chat_style",
+        lambda _name: ChatStyle(bubbles=2, soft=60, hard=150, segment_hint="一段"),
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.agent_node.registry.format_capability_roster", lambda _name: "")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.agent_node.registry.persona_allows_capability_agent",
+        lambda _name, _node: False,
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.persona.config.persona_allows_meme_reply", lambda _name: False)
+    prompt = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))
     assert ANSWER_CONTRACT in prompt, "作答完整度契约未注入人格 prompt"
+
+
+def _send_with_meme(monkeypatch: pytest.MonkeyPatch, raw: str) -> tuple[list[str], list[str]]:
+    """跑 ``send_chat_result``，返回（表情标记正文, 实际文字气泡）。"""
+    captured: list[str] = []
+    sent: list[str] = []
+
+    async def _fake_send(
+        self: Bot,
+        message: Union[Message, List[Message], str, bytes, List[str]],
+        at_sender: bool = False,
+        extra_metadata: Optional[Mapping[str, object]] = None,
+        wait_recall: bool = False,
+    ) -> None:
+        sent.append(_plain_text(message))
+
+    async def _fake_meme(tag: str, bot: Bot, ev: Event) -> None:
+        captured.append(tag)
+
+    monkeypatch.setattr(ai_utils.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("gsuid_core.ai_core.output_firewall.is_enabled", lambda: False)
+    monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda ev: 4)
+    monkeypatch.setattr(ai_utils, "_send_meme_from_tag", _fake_meme)
+    monkeypatch.setattr(Bot, "send", _fake_send)
+    ev = Event(bot_id="onebot", user_id="u1", user_type="direct")
+    asyncio.run(ai_utils.send_chat_result(Bot.__new__(Bot), raw, ev=ev, ooc_check=False))
+    return captured, sent
+
+
+@pytest.mark.parametrize(
+    ("raw", "tag", "speech"),
+    [
+        (
+            "< meme:愤怒 怼人>\n\n再说一遍试试？我剑刚擦完，正找人开刃呢\n\n骂人机可以，骂凑人机不行",
+            "愤怒 怼人",
+            "再说一遍试试？我剑刚擦完，正找人开刃呢\n骂人机可以，骂凑人机不行",
+        ),
+        ("<meme:生气 吐槽>\n\n表情在这儿", "生气 吐槽", "表情在这儿"),
+        ("双份\n\n< meme:微笑 日常>", "微笑 日常", "双份"),
+        ("<meme :开心>\n\n在呢", "开心", "在呢"),
+        ("<meme:开心 >\n\n在", "开心", "在"),
+        ("＜meme：害羞＞\n\n嗯", "害羞", "嗯"),
+        ("&lt;meme:无语&gt;\n\n行吧", "无语", "行吧"),
+        ("`< meme:困>`\n\n睡了", "困", "睡了"),
+        ("< meme:愤怒>", "愤怒", ""),
+    ],
+)
+def test_loose_meme_tag_is_sent_as_meme_not_text(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+    tag: str,
+    speech: str,
+) -> None:
+    """尖括号或冒号旁边的空格仍发表情，标记原文不能出现在台词里。"""
+    captured, sent = _send_with_meme(monkeypatch, raw)
+    joined = "\n".join(sent)
+    assert captured == [tag]
+    assert "meme" not in joined.lower()
+    assert "<" not in joined
+    if speech:
+        assert speech in joined
+    else:
+        assert joined.strip() == ""
+
+
+def test_comparison_is_not_a_meme_tag(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured, sent = _send_with_meme(monkeypatch, "1 < 2，今天不发表情")
+    assert captured == []
+    assert "今天不发表情" in "\n".join(sent)
 
 
 if __name__ == "__main__":

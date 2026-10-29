@@ -43,6 +43,7 @@ from gsuid_core.ai_core.agent_run.state import (
 from gsuid_core.ai_core.dynamic_toolset import RetrievableToolset
 from gsuid_core.ai_core.agent_run.support import (
     _INTERACTIVE_CREATE_BY,
+    _MAIN_PERSONA_CREATE_BY,
     _append_user_text,
     _pool_overlaps_capability_agent,
     _capability_exclusive_tool_names,
@@ -293,6 +294,10 @@ class ToolsPhase(RunOnceHost):
             exclusive=exclusive,
             ceiling=_session_tool_ceiling(),
         )
+        from gsuid_core.ai_core.approval.session_ctx import session_has_pending
+
+        if session_has_pending(self.session_id or "") and "check_approval" not in names:
+            names = [*names, "check_approval"]
         self._session_toolset_frozen = names
         self._session_toolset_tags = tags
         out: ToolList = []
@@ -304,6 +309,19 @@ class ToolsPhase(RunOnceHost):
 
     async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
+        from gsuid_core.ai_core.command_aside.policy import aside_blocks_tools
+
+        if aside_blocks_tools():
+            st.tools = []
+            st.tool_names = []
+            st.exposed_tool_names = []
+            self._last_assembled_domains = set()
+            blocked_ctx = _require_context(st)
+            from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+
+            blocked_ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = []
+            self._session_logger.log_tools_list([])
+            return
         # 渐进式工具暴露是否在本轮生效（仅自动装配 + 非闲聊轮）。决定是否挂 RetrievableToolset。
         st.expose_dynamic = False
         # 媒体句柄（event 字段或正文 img_/图片ID 标注）——通道信号，非话题词
@@ -723,6 +741,15 @@ class ToolsPhase(RunOnceHost):
         logger.debug(i18n_t("log.agent.tool_list", p0=[tool.name for tool in st.tools]))
 
         # 最终去重（兼容外部直接传入 st.tools 的情况）
+        from gsuid_core.ai_core.command_aside.policy import aside_extra_tools
+
+        for extra_tool in aside_extra_tools():
+            st.tools.append(extra_tool)
+        if self.create_by == "Autonomy":
+            from gsuid_core.ai_core.autonomy.tools import autonomy_tool_allowed
+
+            # 钩子不能把发送或高危工具塞回自主行动。
+            st.tools = [tool for tool in st.tools if autonomy_tool_allowed(tool.name)]
         st.tools = list({obj.name: obj for obj in st.tools}.values())
         st.tool_names = [t.name for t in st.tools]
         st.exposed_tool_names = list(st.tool_names)
@@ -730,6 +757,16 @@ class ToolsPhase(RunOnceHost):
         from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
 
         _ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = list(st.tool_names)
+
+        # 主会话工具集在会话内只增不减：把本轮实际暴露的非 exclusive 工具沉淀进表
+        if self.create_by in _MAIN_PERSONA_CREATE_BY:
+            _exclusive = _capability_exclusive_tool_names()
+            for _tname in st.tool_names:
+                if _tname not in _exclusive:
+                    if self._session_toolset_frozen is not None and _tname not in self._session_toolset_frozen:
+                        self._session_toolset_frozen.append(_tname)
+                    if _tname not in self._session_appended_tools:
+                        self._session_appended_tools.append(_tname)
 
         # 回填本轮装配工具的能力域，供 handle_ai 偏好注入精确过滤（"装配后回传"）： 把工具名映射回 capability_domain
         # handle_ai 据此只注入本轮可用工具相关的软偏好。
@@ -835,6 +872,17 @@ class ToolsPhase(RunOnceHost):
         if self.model:
             # 必须拷贝：self.model.settings 是模型对象的共享状态，就地改会污染后续所有 run
             _base_settings: ModelSettings = self.model.settings.copy() if self.model.settings else ModelSettings()
+            thinking_override = self.thinking
+            if thinking_override is not None:
+                _base_settings["thinking"] = thinking_override
+            elif self.create_by in (
+                "MemEntityExtraction",
+                "MemPreferenceDistill",
+                "MemSummary",
+                "MemProfileExtraction",
+                "MemClusterNaming",
+            ):
+                _base_settings["thinking"] = False
             if memory_config.eval_mode:
                 _base_settings["temperature"] = 0.0
             # 归属透传（默认关闭）：把本次 run 的调用方标识按配置带给上游网关

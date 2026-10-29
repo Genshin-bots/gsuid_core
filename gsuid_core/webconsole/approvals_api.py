@@ -7,6 +7,7 @@ Kanban 看板的 ``/api/ai/kanban/subtasks/{id}/approve`` 是本中心的领域�
 内部同样转 ``resolve_row``。
 """
 
+import time
 from typing import Any, Dict, List
 
 from fastapi import Query, Depends
@@ -43,6 +44,9 @@ def _row_to_dict(r: "approval_center.AIApprovalRequest") -> Dict[str, Any]:
         "resolved_via": r.resolved_via,
         "created_at": r.created_at,
         "resolved_at": r.resolved_at,
+        "effect": r.effect,
+        "expires_at": r.expires_at,
+        "seconds_left": (max(0, int(r.expires_at) - int(time.time())) if r.status == "pending" and r.expires_at else 0),
     }
 
 

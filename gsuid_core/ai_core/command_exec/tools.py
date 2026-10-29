@@ -1,8 +1,7 @@
 """命令执行器 @ai_tools 注册入口（category="buildin",主人专属）。
 
-run_command（主入口）/ check_command_available。审批的转达 / 列表已统一到
-``buildin_tools/approval_tools.py`` 的 ``respond_approval`` / ``list_pending_approvals``
-（全框架一个转达工具）。靠 visible_when 对非主人隐藏 schema、check_func 执行期兜底。
+run_command（主入口）/ check_command_available。需要审批时本轮结束，主人用私聊
+确认码或审批中心批准。靠 visible_when 对非主人隐藏 schema、check_func 执行期兜底。
 """
 
 import uuid
@@ -90,8 +89,8 @@ async def run_command(
 
     可执行 npm / curl / git / python 等 CLI。**只支持单条简单命令**(不支持管道 |、
     重定向 >、命令链 && ;、后台 &、命令替换 $());如需分步请多次调用。
-    联网 / 安装类命令通常需要主人审批;主人在对话里回复'同意'后,再调用
-    respond_approval 转达即可执行。**无交互环境**:命令必须带非交互标志
+    联网 / 安装类命令通常需要主人审批：提交后本轮结束，主人用私聊确认码或审批中心
+    批准后才会执行。**无交互环境**:命令必须带非交互标志
     (npm install -y / pip --no-input / curl -sS 等),否则会等不到输入而失败或超时。
 
     Args:
@@ -111,10 +110,11 @@ async def run_command(
         request_id = uuid.uuid4().hex
         req = await approval.submit(ev, plan, why, request_id)
         await audit.log(ev, plan, decision, why, request_id=request_id)
-        return (
-            f"⏳ 已提交审批 #{req.short_id}：`{command}`（{why}）。"
-            f"请主人回复'同意'或'拒绝'后,我再调用 respond_approval 转达。"
-        )
+        from gsuid_core.ai_core.approval import submit_meta
+        from gsuid_core.ai_core.approval.halt import halt_line
+
+        delivered, reused = submit_meta(req.request_id)
+        return halt_line(req.short_id, delivered=delivered, reused=reused)
 
     return await _execute_and_report(ev, plan, timeout, work_dir)
 

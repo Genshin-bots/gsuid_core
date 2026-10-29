@@ -19,6 +19,8 @@ def test_allows_protocol_tags_only() -> None:
     assert not has_illegal_angle_tags("<SILENCE>")
     assert not has_illegal_angle_tags("<沉默>")
     assert not has_illegal_angle_tags("困 `<meme: 困>` 呼")
+    assert not has_illegal_angle_tags("叫 <@100000001> 过来")
+    assert not has_illegal_angle_tags("叫 < @ 小明 > 过来")
     # <report> 已废止，不再是协议标签
     assert has_illegal_angle_tags('<report title="a">|x|y|\n|---|---|\n|1|2|</report>')
 
@@ -109,6 +111,37 @@ def test_code_span_and_fence_exempt() -> None:
     san = sanitize_illegal_angle_tags("外<br>内 `<br>` 尾")
     assert "br" not in san.split("`")[0].lower()
     assert "`<br>`" in san or "<br>" in san
+
+
+def test_loose_meme_tags_stay_protocol() -> None:
+    """尖括号或冒号旁边的空格仍是表情协议，不能当成非法标签打回。"""
+    from gsuid_core.ai_core.angle_bracket_guard import (
+        strip_protocol_tags,
+        has_illegal_angle_tags,
+        find_illegal_angle_tags,
+        sanitize_illegal_angle_tags,
+    )
+
+    samples = [
+        "< meme:愤怒 怼人>",
+        "<meme :愤怒>",
+        "< meme：微笑 日常 >",
+        "＜meme:开心＞",
+        "&lt;meme:开心&gt;",
+        "`< meme:开心>`",
+    ]
+    for sample in samples:
+        assert not has_illegal_angle_tags(sample), sample
+        assert "meme" not in strip_protocol_tags(sample).lower()
+
+    mixed = find_illegal_angle_tags("< meme:愤怒 怼人>\n<bubble/>")
+    assert any("bubble" in tag.lower() for tag in mixed)
+    assert not any("meme" in tag.lower() for tag in mixed)
+
+    kept = sanitize_illegal_angle_tags("<meme :愤怒><br>下句")
+    assert "meme" in kept.lower()
+    assert "br" not in kept.lower()
+    assert "下句" in kept
 
 
 def test_sanitize_removes_illegal_keeps_meme() -> None:

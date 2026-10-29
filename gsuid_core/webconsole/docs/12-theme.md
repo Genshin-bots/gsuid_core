@@ -147,6 +147,12 @@ GET /api/theme/presets
 
 **认证**：无需（公开接口，主题面板加载时调用）。
 
+**Query 参数**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| limit | integer | 否 | 单页条数（1–200）；**不传则返回全量** |
+| offset | integer | 否 | 偏移量，默认 0 |
+
 **响应**：
 ```json
 {
@@ -198,12 +204,23 @@ GET /api/theme/presets
           "language": "zh-CN"
         }
       }
-    ]
+    ],
+    "names": ["黑夜街道", "暗夜玻璃"],
+    "count": 2,
+    "total": 2,
+    "limit": 12,
+    "offset": 0,
+    "has_more": false
   }
 }
 ```
 
 字段说明：
+- `presets`：**当前页**预设（`limit` 不传时是全量）。
+- `names`：**全部**预设名。前端判定「同名已存在」要用它——分页后当前页只是一部分，只看当前页会把重名预设当成新名字。
+- `count` / `total`：预设总数（**不是本页条数**）。
+- `limit` / `offset`：本次请求的分页参数；`limit` 为 null 表示未分页。
+- `has_more`：是否还有下一页。
 - `presets[].source`：来源标记，`"builtin"` 或 `"user"`。前端应据此区分展示样式（内置主题禁用删除/编辑按钮）。
 - `presets[].is_builtin`：与 `source` 同步的布尔标记，方便不支持枚举比对的前端按位使用。
 - `presets[].is_active`：与当前活动主题配置（合并默认值后）逐字段相等则为 `true`。

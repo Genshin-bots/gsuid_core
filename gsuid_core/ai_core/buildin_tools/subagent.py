@@ -31,6 +31,7 @@ from pydantic_ai import RunContext
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
@@ -266,6 +267,22 @@ _TRANSIENT_DEFAULT_PROFILES = frozenset(
 )
 
 
+def _delivery_wake_delegate_block(extra: dict[str, object], ev: Optional[Event]) -> Optional[str]:
+    """回灌帧委派守卫：有待交付图片先发图；嵌套超限禁止委派。"""
+    if extra.get("delivery_wake") is not True:
+        return None
+    from gsuid_core.ai_core.planning.kanban_executor import delivery_wake_blocks_new_delegate
+
+    sid = str(ev.session_id) if ev is not None and ev.session_id else ""
+    has_img = extra.get("delivery_has_image") is True
+    img_sent = extra.get("image_sent_this_run") is True
+    if has_img and not img_sent:
+        return "⚠️ 本帧有待交付的图片产物，请先用 send_message_by_ai 发送给发起人，禁止直接再委派。"
+    if delivery_wake_blocks_new_delegate(sid):
+        return "⚠️ 本帧已达到连续嵌套委派上限，请直接向发起人汇报当前进展，禁止再委派。"
+    return None
+
+
 def _caller_persona_name(ctx: RunContext[ToolContext] | None) -> str:
     """主人格名：从父 session 的 Agent 读，评测强制 persona 也走这里。"""
     if ctx is None or ctx.deps is None:
@@ -290,7 +307,6 @@ async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
     max_tokens: int = 35000,
-    max_iterations: int = 15,  # 规划+执行通常需要较多轮次
     agent_profile: str = "",
     transient: bool = False,
 ) -> str:
@@ -341,7 +357,6 @@ async def create_subagent(
             ctx,
             task=task,
             max_tokens=max_tokens,
-            max_iterations=max_iterations,
             agent_profile=agent_profile,
             transient=transient,
         )
@@ -394,7 +409,6 @@ async def summarize_long_input(text: str, *, max_tokens: int = 18000) -> str:
             None,
             task=f"请总结以下用户输入，保留关键信息：\n\n{text}",
             max_tokens=max_tokens,
-            max_iterations=int(ai_config.get_config("task_max_iterations").data),
             agent_profile="",
             transient=True,
         )
@@ -405,7 +419,6 @@ async def _create_subagent_impl(
     *,
     task: str,
     max_tokens: int,
-    max_iterations: int,
     agent_profile: str,
     transient: bool,
 ) -> str:
@@ -431,29 +444,21 @@ async def _create_subagent_impl(
             ids = [n.node_id for n in list_persona_capability_nodes(_pn)][:8]
             listed = "、".join(ids) if ids else "（无）"
             return f"当前人格未启用能力代理 `{pid}`。可用 node_id：{listed}"
+        if pid == "plugin_developer_agent":
+            from gsuid_core.ai_core.approval import plugin_install_block_reason
+
+            blocked_install = await plugin_install_block_reason()
+            if blocked_install:
+                return blocked_install
         from gsuid_core.ai_core.tool_risk import refuse_master_only_node
         from gsuid_core.ai_core.agent_node import get_node
 
         blocked = refuse_master_only_node(ctx.deps.ev, get_node(pid))
         if blocked:
             return blocked
-        _extra = ctx.deps.extra
-        _wake = _extra["delivery_wake"] if "delivery_wake" in _extra else False
-        if _wake is True:
-            from gsuid_core.ai_core.planning.kanban_executor import delivery_wake_blocks_new_delegate
-
-            _ev = ctx.deps.ev
-            _sid = str(_ev.session_id) if _ev is not None and _ev.session_id else ""
-            _has_img = _extra["delivery_has_image"] is True if "delivery_has_image" in _extra else False
-            if _has_img or delivery_wake_blocks_new_delegate(_sid):
-                return "⚠️ 本帧只许 send_message_by_ai 发给发起人，禁止再委派。"
-            if pid != "render_agent":
-                if persona_allows_capability_agent(_pn, "render_agent"):
-                    return (
-                        '⚠️ 本轮是任务交付回灌，只可 create_subagent(agent_profile="render_agent") 出图，'
-                        "或 send_message_by_ai 发送已有的图。不要新开查询。"
-                    )
-                return "⚠️ 本轮是任务交付回灌。当前人格未启用出图代理，请直接用已有事实作答，不要新开查询。"
+        _wake_block = _delivery_wake_delegate_block(ctx.deps.extra, ctx.deps.ev)
+        if _wake_block is not None:
+            return _wake_block
         if pid == "render_agent" and looks_like_illustration_request(task):
             return (
                 "⚠️ render_agent 只把事实包、表格和对比结论渲成 HTML 信息卡或图表，"
@@ -526,7 +531,6 @@ async def _create_subagent_impl(
         agent = create_agent(
             system_prompt=system_prompt,
             max_tokens=max_tokens,
-            max_iterations=max_iterations,
             create_by="AutoPlanner",
             task_level="high",
             session_id=subagent_session_id,
@@ -729,20 +733,9 @@ async def _dispatch_via_kanban(
     from gsuid_core.ai_core.agent_node import get_node, resolve_node
 
     pid = resolve_node(agent_profile)
-    _extra = ctx.deps.extra
-    _wake = _extra["delivery_wake"] if "delivery_wake" in _extra else False
-    if _wake is True:
-        from gsuid_core.ai_core.planning.kanban_executor import delivery_wake_blocks_new_delegate
-
-        sid = str(ev.session_id) if ev.session_id else ""
-        _has_img = _extra["delivery_has_image"] is True if "delivery_has_image" in _extra else False
-        if _has_img or delivery_wake_blocks_new_delegate(sid):
-            return "⚠️ 本帧只许 send_message_by_ai 发给发起人，禁止再委派。"
-        if pid != "render_agent":
-            return (
-                '⚠️ 本轮是任务交付回灌，只可 create_subagent(agent_profile="render_agent") 出图，'
-                "或 send_message_by_ai 发送已有的图。不要新开查询。"
-            )
+    _wake_block = _delivery_wake_delegate_block(ctx.deps.extra, ev)
+    if _wake_block is not None:
+        return _wake_block
     profile = get_node(pid)
     if profile is None:
         from gsuid_core.ai_core.agent_node import list_nodes

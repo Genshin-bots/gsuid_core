@@ -352,8 +352,9 @@ def count_style_pushes(current_text: str, recent: List[Tuple[str, str]], speaker
 
 # 寻址记号的定义在 control/lines.py。引用 bot 仍是 is_tome，但不能写成「直接找你」。
 QUOTE_TOME_HINT = (
-    "\n\n（系统提示：对方引用了你的上一条，不等于在找你。"
-    "是追问/反驳/吩咐你才开口；在跟群里别人说话或故意惹你，输出 <SILENCE>。）"
+    "\n\n（系统提示：对方引用了你的消息，不等于在找你。"
+    "若被引用内容原本是交付给别的群友，而当前说话人只是围观感叹/随口评价、没有向你提出具体问题或请求，"
+    "或是在跟群里别人说话、故意惹你，输出 <SILENCE>；仅在向你追问/反驳/吩咐时才开口。）"
 )
 # 引用同时带第二人称祈使：按直接找你，不用 quoted_tome。
 _QUOTE_DIRECTED_RE = re.compile(
@@ -623,6 +624,7 @@ class TurnGraph:
     ellipsis_followup: bool = False
     task_management: bool = False
     soft_continue: bool = False
+    soft_triggered: bool = False
     style_push_count: int = 0
     open_gate: GroupOpenGate = GroupOpenGate.SPEAK
     recent: List[Tuple[str, str]] = field(default_factory=list)
@@ -745,6 +747,7 @@ def build_turn_graph(
         ellipsis_followup=ellipsis,
         task_management=task_mgmt,
         soft_continue=soft_c,
+        soft_triggered=soft_triggered,
         style_push_count=pushes,
         open_gate=open_g,
         recent=recent_list,
@@ -848,8 +851,8 @@ def scaffold_hints_from_graph(
         hints.append(_turn("quote_tome"))
     if tg.ellipsis_followup:
         hints.append(_turn("followup"))
-    elif tg.soft_continue:
-        # 省略跟进优先；否则同人软续聊单独提示（勿与 FOLLOWUP 叠两段）
+    elif tg.soft_continue and not tg.soft_triggered:
+        # 省略跟进优先；软触发轮不叠 soft_continue（只留 SOFT_TRIGGER_NOTE）
         hints.append(_turn("soft_continue"))
     if tg.multi_speaker and tg.call_to_self:
         hints.append(_turn("multi_speaker"))
@@ -866,17 +869,17 @@ def scaffold_hints_from_graph(
     return hints
 
 
-# 核心通道工具：发现、记忆、委派与提醒；通用检索与管理类工具不钉核心。
+# 通道核：发现、回想、委派、发送、提醒，以及有媒体才露的读图/读视频。
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
     "create_subagent",
     "capability_map",
     "send_message_by_ai",
-    "send_meme",
     "search_cognition",
     "read_handle",
     "run_code",
     "read_image",
+    "read_video",
     "dispute_directive",
     "record_meme",
     "add_once_task",

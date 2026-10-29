@@ -409,6 +409,8 @@ PUT /api/logs/config
 | daily log | 每条 JSON 带 `trace_id` 字段 | 完整日志持久化，供扫描提取 |
 
 > 已完成追踪不再驻留内存：查询其详情时从 JSONL（元数据）+ daily log（完整日志，按 `trace_id` 扫描重建）读取。异常退出导致未正常结束的 running 追踪，由后台任务按 `stale_running_sec`（默认 1h）兜底回收。
+>
+> 每日 00:03，`clean_log` 按 `ScheduledCleanLogDay` 删除日期早于「今天减去该天数」的日目录和旧单日 jsonl。`0` 不删。HTTP 追踪目录用同一规则。
 
 ### 7.8.1 获取追踪列表（统一入口）
 ```

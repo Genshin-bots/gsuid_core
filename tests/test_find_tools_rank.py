@@ -696,6 +696,172 @@ def test_find_tools_unrelated_exclusive_fold_keeps_generic() -> None:
     assert "有专用项时禁止选通用项" not in out
 
 
+def _mcp_row(name: str, plugin: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        category="mcp",
+        plugin=plugin,
+        hide_from_main=False,
+        covers=[],
+        description="[MCP:amp-weather] 查询中国城市天气",
+        retrieval_text=f"{name} [MCP:amp-weather] 查询中国城市天气",
+        tool=_FakeTool(name),
+    )
+
+
+def _ask_find_tools(
+    need: str,
+    registry: dict[str, SimpleNamespace],
+    *,
+    search_error: bool = False,
+) -> tuple[str, set[str]]:
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    async def fake_search(**_kwargs: object) -> list[_FakeTool]:
+        if search_error:
+            raise RuntimeError("rag off")
+        return []
+
+    async def fake_matched(_need: str, *, limit: int = 5) -> list[str]:
+        return ["research_agent"]
+
+    def fake_find(name: str) -> SimpleNamespace | None:
+        if name in registry:
+            return registry[name]
+        return None
+
+    def fake_node_hit(node_id: str, score: float) -> RankedHit | None:
+        if node_id == "research_agent":
+            return RankedHit(name="research_agent", label="多步外部资料收集", score=score)
+        return None
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={EXPOSED_TOOLS_EXTRA_KEY: []}, blocked_tool_names=set())
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.register.get_all_tools", lambda: registry),
+            patch("gsuid_core.ai_core.register.find_tool_base", fake_find),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                fake_matched,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _n: [],
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._node_hit",
+                fake_node_hit,
+            ),
+        ):
+            return await find_tools(ctx, need)
+
+    out = asyncio.run(_run())
+    names = ctx.deps.dynamic_tool_names
+    assert isinstance(names, set)
+    return out, names
+
+
+def test_find_tools_pins_mcp_name_when_vector_is_empty() -> None:
+    weather = _mcp_row("mcp_amp-weather_weather", "mcp_amp-weather")
+    registry = {weather.name: weather}
+    for need in ("mcp_amp-weather_weather", "mcp_amp-weather"):
+        out, names = _ask_find_tools(need, registry)
+        assert "mcp_amp-weather_weather" in out
+        assert "【专用工具】" in out
+        assert "research_agent" not in out
+        assert names == {"mcp_amp-weather_weather"}
+
+    out, names = _ask_find_tools("mcp_amp-weather_weather", registry, search_error=True)
+    assert "工具检索功能未启用" not in out
+    assert "mcp_amp-weather_weather" in out
+    assert "research_agent" not in out
+    assert names == {"mcp_amp-weather_weather"}
+
+
+def test_find_tools_does_not_pin_ambiguous_prefix_or_sentence() -> None:
+    weather = _mcp_row("mcp_amp-weather_weather", "mcp_amp-weather")
+    other = _mcp_row("mcp_other_ping", "mcp_other")
+    registry = {weather.name: weather, other.name: other}
+    for need in ("mcp", "查询广州最近天气的工具"):
+        out, names = _ask_find_tools(need, registry)
+        assert "mcp_amp-weather_weather" not in out
+        assert "mcp_other_ping" not in out
+        assert "research_agent" in out
+        assert "【专用工具】" not in out
+        assert names == set()
+
+
+def test_find_tools_recalls_read_video_without_model_support() -> None:
+    """未声明 video、向量为空、名字已在通道核里时，find_tools 仍要召回并可调用。"""
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.buildin_tools.visibility import (
+        MODEL_DECLARES_VIDEO_KEY,
+        context_has_video,
+    )
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    class _Scan:
+        def __init__(self, deps: ToolContext) -> None:
+            self.deps: ToolContext | None = deps
+            self.messages: tuple[object, ...] = ()
+
+    async def _empty(**_kwargs: object) -> list[object]:
+        return []
+
+    async def _no_nodes(_need: str, *, limit: int = 5) -> list[str]:
+        _ = limit
+        return []
+
+    async def _ask(need: str) -> tuple[str, ToolContext]:
+        deps = ToolContext(
+            ev=Event(user_id="u1", raw_text="你好"),
+            extra={
+                MODEL_DECLARES_VIDEO_KEY: False,
+                EXPOSED_TOOLS_EXTRA_KEY: ["read_video", "find_tools"],
+            },
+        )
+        ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                _empty,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                _no_nodes,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _n: [],
+            ),
+        ):
+            text = await find_tools(ctx, need)
+        return text, deps
+
+    for need in ("read_video", "查看视频", "看看这个视频"):
+        text, deps = asyncio.run(_ask(need))
+        assert "read_video" in text
+        assert "read_video" in deps.dynamic_tool_names
+        assert context_has_video(_Scan(deps)) is True
+
+    text, deps = asyncio.run(_ask("查询广州天气"))
+    assert "read_video" not in text
+    assert "read_video" not in deps.dynamic_tool_names
+    assert context_has_video(_Scan(deps)) is False
+
+
 def test_find_tools_gap_note_does_not_tell_model_to_give_up() -> None:
     from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import FIND_TOOLS_GAP_NOTE
 

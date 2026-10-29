@@ -76,10 +76,12 @@ add_sv = SV(name="查询帮助信息", pm=6, area="ALL") # 一般只需要定义
 | `to_ai` | `str` | `""` | 非空时自动把本触发器注册为 AI 工具（详见第十章）。⚠️ 与 `@ai_tools` 冲突，不可同时使用 |
 | `covers` | `list[str] \| None` | `None` | 数据/能力覆盖面，进向量检索与 `find_tools` 单向命中（仅 `to_ai` 非空时生效） |
 | `aliases` | `list[str] \| None` | `None` | 带领域前缀的同义问法，如 `["天气·查城市天气"]`（仅 `to_ai` 非空时生效） |
+| `aside` | `bool \| None` | `None` | 命令执行后是否允许 AI「命令补充」点评。默认无需配置：`pm <= 2`（主人、超管、群主）的服务自动免除，群管理员 `pm=3` 不免除；`SV(aside=...)` 可批量设定；此处显式设为 `True`/`False` 作为最高优先级逃生舱。`on_meta` 同样接受这个参数 |
 
 **`block=True` 使用建议**：
 - 高优先级"短路"触发器（如插件级帮助、错误提示）应 `block=True`，避免兜底触发器再次响应。
 - 一般业务命令保持 `block=False`，由 `priority` 控制顺序。
+- 同优先级时框架按类型排序：`fullmatch` > `command` > `prefix` / `suffix` > `regex` > `keyword`，同一类型再按命令字从长到短。`yh刷新面板` 这类精确命令应写成 `on_fullmatch`，不要指望注册顺序压过角色名正则。
 
 ## 2.4 触发器注册示例
 

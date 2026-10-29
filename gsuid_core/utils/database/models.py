@@ -121,14 +121,16 @@ class Subscribe(BaseModel, table=True):
     ) -> int:
         if force_direct:
             user_type = "direct"
+            group_id = None
         else:
             user_type = self.user_type
+            group_id = self.group_id
         ev = Event(
             bot_id=self.bot_id,
             user_id=self.user_id,
             bot_self_id=self.bot_self_id,
             user_type=user_type,  # type: ignore
-            group_id=self.group_id,
+            group_id=group_id,
             real_bot_id=self.bot_id,
             msg_id=self.msg_id if self.msg_id else "",
         )

@@ -28,13 +28,47 @@ from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 
 
 class _Stats:
-    """``statistics_manager`` 在这条路径上只需要 ``record_error``。"""
+    """``statistics_manager`` 在这条路径上要记账，测试只收调用、不落库。"""
 
     def __init__(self) -> None:
         self.errors: List[str] = []
+        self.agent_runs = 0
 
-    def record_error(self, error_type: str = "") -> None:
+    def record_error(self, error_type: str = "", message: str = "") -> None:
         self.errors.append(error_type)
+
+    def record_agent_run(
+        self,
+        *,
+        owns_user_turn: bool,
+        under_user_turn: bool,
+        is_nested: bool,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> None:
+        self.agent_runs += 1
+        _ = (
+            owns_user_turn,
+            under_user_turn,
+            is_nested,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+
+    def record_token_usage(
+        self,
+        model_name: str,
+        chat_type: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> None:
+        _ = (model_name, chat_type, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
 
 class _CapturingAgent:
@@ -263,6 +297,236 @@ def test_run_thinking_is_capped_like_tool_outputs(monkeypatch) -> None:
         assert "起" * (RUN_THINKING_BUDGET + 100) not in _CapturingAgent.sent
     finally:
         slog.close()
+
+
+_FACT_PACK = (
+    "⚠ 思考轮数已到上限。下面是根据已收集材料收口的交付，未继续补查。\n"
+    "结论\n"
+    "- 台州 12 月日均高温 14℃，日均低温 7℃。依据：天气网历年统计。时点：历年。\n"
+    "- 12 月雨日约 4.8 天。依据：weatherspark。时点：气候统计。\n"
+    "- 广州南到台州西有高铁，具体车次未在材料里核完。\n"
+    "缺口\n"
+    "- 直达车次与票价未查完，不得当成确定时刻。\n"
+    "- 紫阳街小吃只看到店名线索，没有营业时间。\n"
+)
+
+
+class _PackResult:
+    output = _FACT_PACK
+
+
+class _PackAgent:
+    def __init__(self, **_kwargs: object) -> None:
+        return
+
+    async def run(self, final_message: str, **_kwargs: object) -> _PackResult:
+        _CapturingAgent.sent = final_message
+        return _PackResult()
+
+
+class _ShortAgent:
+    def __init__(self, **_kwargs: object) -> None:
+        return
+
+    async def run(self, final_message: str, **_kwargs: object) -> "_Result":
+        _CapturingAgent.sent = final_message
+        short = _Result()
+        short.output = "正在搜索"
+        return short
+
+
+def _cap_phase(slog: AISessionLogger, monkeypatch: pytest.MonkeyPatch) -> SettlePhase:
+    phase = _phase(slog, monkeypatch)
+    phase.create_by = "CapabilityAgent"
+    phase.is_subagent = True
+    phase.session_id = ""
+    return phase
+
+
+def test_capability_usage_limit_logs_model_and_salvages_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """撞上限的能力代理要把模型和 token 写入会话，并把已查到的材料收成交付。"""
+    monkeypatch.setattr(settle_mod, "Agent", _PackAgent)
+    slog = AISessionLogger("test:usage_limit:salvage", is_subagent=True)
+    try:
+        st = _state(
+            ev=_group_ev(),
+            tool_call_list=["web_search_tool"],
+            run_tool_outputs=["[web_search_tool] 台州12月日均高温 14℃"],
+        )
+        st.return_mode = "return"
+        st.model_name = "deepseek/deepseek-v4.1-flash-fast"
+        st.usage_input_tokens = 73056
+        st.usage_output_tokens = 7232
+        st.last_user_question = "制定 2026 年 12 月台州旅游计划"
+        out = asyncio.run(SettlePhase._run_once_usage_limit_fallback(_cap_phase(slog, monkeypatch), st, _Stats()))
+        assert isinstance(out, str)
+        assert out.startswith("⚠ 思考轮数已到上限")
+        assert not out.startswith("⚠️ 能力代理执行失败")
+        assert "14℃" in out
+        assert "14℃" in _CapturingAgent.sent
+        types = [e["type"] for e in slog.entries]
+        assert types.index("token_usage") < types.index("run_end")
+        usage = next(e["data"] for e in slog.entries if e["type"] == "token_usage")
+        assert usage["model_name"] == "deepseek/deepseek-v4.1-flash-fast"
+        assert usage["input_tokens"] == 73056
+        assert usage["output_tokens"] == 7232
+    finally:
+        slog.close()
+
+
+def test_capability_salvage_prefers_persisted_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """落盘原文优先于本轮摘录。摘录只留最前面几条，后面的检索会丢。"""
+
+    async def _load(_session_id: str) -> str:
+        return "[web_fetch_tool] 台州12月雨日 4.8 天，来源 weatherspark"
+
+    monkeypatch.setattr(settle_mod, "load_session_salvage_material", _load)
+    monkeypatch.setattr(settle_mod, "Agent", _PackAgent)
+    slog = AISessionLogger("test:usage_limit:persisted", is_subagent=True)
+    try:
+        phase = _cap_phase(slog, monkeypatch)
+        phase.session_id = "capagent_research"
+        st = _state(run_tool_outputs=["[web_search_tool] HEAD_ONLY_MARKER"])
+        st.return_mode = "return"
+        st.model_name = "m"
+        st.usage_input_tokens = 10
+        st.usage_output_tokens = 2
+        asyncio.run(SettlePhase._run_once_usage_limit_fallback(phase, st, _Stats()))
+        assert "4.8" in _CapturingAgent.sent
+        assert "HEAD_ONLY_MARKER" not in _CapturingAgent.sent
+    finally:
+        slog.close()
+
+
+def test_capability_without_material_stays_a_visible_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """没有材料就不编一份交付，看板仍能认出失败。模型和 token 照样落日志。"""
+    monkeypatch.setattr(settle_mod, "Agent", _PackAgent)
+    slog = AISessionLogger("test:usage_limit:empty_cap", is_subagent=True)
+    try:
+        st = _state()
+        st.return_mode = "return"
+        st.model_name = "deepseek/deepseek-v4.1-flash-fast"
+        st.usage_input_tokens = 100
+        st.usage_output_tokens = 20
+        out = asyncio.run(SettlePhase._run_once_usage_limit_fallback(_cap_phase(slog, monkeypatch), st, _Stats()))
+        assert isinstance(out, str)
+        assert out.startswith("⚠️ 能力代理执行失败")
+        assert "不够收成交付" in out
+        assert _CapturingAgent.sent == ""
+        usage = next(e["data"] for e in slog.entries if e["type"] == "token_usage")
+        assert usage["model_name"] == "deepseek/deepseek-v4.1-flash-fast"
+        assert usage["input_tokens"] == 100
+    finally:
+        slog.close()
+
+
+def test_short_salvage_does_not_replace_the_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """收口只回过程句时，不把这一步标成完成。"""
+    monkeypatch.setattr(settle_mod, "Agent", _ShortAgent)
+    slog = AISessionLogger("test:usage_limit:short", is_subagent=True)
+    try:
+        st = _state(run_tool_outputs=["[web_search_tool] 台州 12 月有资料"])
+        st.return_mode = "return"
+        st.model_name = "m"
+        st.usage_input_tokens = 8
+        st.usage_output_tokens = 1
+        out = asyncio.run(SettlePhase._run_once_usage_limit_fallback(_cap_phase(slog, monkeypatch), st, _Stats()))
+        assert isinstance(out, str)
+        assert out.startswith("⚠️ 能力代理执行失败")
+        assert "正在搜索" not in out
+    finally:
+        slog.close()
+
+
+def test_eval_usage_limit_stays_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """评测撞上限仍静音，不拿材料再生成一份交付。"""
+    monkeypatch.setattr(settle_mod, "Agent", _PackAgent)
+    slog = AISessionLogger("test:usage_limit:eval", is_subagent=True)
+    try:
+        phase = _phase(slog, monkeypatch)
+        phase.create_by = "TEST"
+        phase.is_subagent = True
+        st = _state(run_tool_outputs=["[web_search_tool] 有材料"])
+        st.return_mode = "return"
+        st.model_name = "m"
+        st.usage_input_tokens = 3
+        st.usage_output_tokens = 1
+        out = asyncio.run(SettlePhase._run_once_usage_limit_fallback(phase, st, _Stats()))
+        assert out == "<SILENCE>"
+        assert _CapturingAgent.sent == ""
+    finally:
+        slog.close()
+
+
+def test_iter_wrap_lands_on_the_penultimate_request() -> None:
+    """倒数第二次请求才收口：这一轮落盘，下一轮写句柄。"""
+    from pydantic_ai.messages import UserPromptPart
+
+    from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE
+    from gsuid_core.ai_core.agent_run.loop import LoopPhase
+
+    class _Req:
+        def __init__(self) -> None:
+            self.parts: list[object] = []
+
+    class _Node:
+        def __init__(self) -> None:
+            self.request = _Req()
+
+    phase = LoopPhase.__new__(LoopPhase)
+    phase.create_by = "CapabilityAgent"
+    st = _state()
+    st.return_mode = "return"
+    st.limits = UsageLimits(request_limit=30)
+    node = _Node()
+    for _ in range(28):
+        phase._maybe_inject_iter_wrap(st, node)
+    assert node.request.parts == []
+    phase._maybe_inject_iter_wrap(st, node)
+    assert len(node.request.parts) == 1
+    part = node.request.parts[0]
+    assert isinstance(part, UserPromptPart)
+    assert part.content == ITER_WRAP_NUDGE
+    phase._maybe_inject_iter_wrap(st, node)
+    assert len(node.request.parts) == 1
+
+    chat = LoopPhase.__new__(LoopPhase)
+    chat.create_by = "Chat"
+    chat_st = _state()
+    chat_node = _Node()
+    for _ in range(30):
+        chat._maybe_inject_iter_wrap(chat_st, chat_node)
+    assert chat_node.request.parts == []
+
+
+def test_add_response_usage_sums_requests() -> None:
+    from gsuid_core.ai_core.agent_run.support import add_response_usage
+
+    st = _state()
+    add_response_usage(
+        st,
+        input_tokens=10,
+        output_tokens=2,
+        cache_read_tokens=4,
+        cache_write_tokens=0,
+        response_model="deepseek/x",
+    )
+    add_response_usage(
+        st,
+        input_tokens=3,
+        output_tokens=1,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        response_model="other",
+    )
+    assert st.usage_input_tokens == 13
+    assert st.usage_output_tokens == 3
+    assert st.usage_cache_read_tokens == 4
+    assert st.model_name == "deepseek/x"
+
+
+def test_load_session_salvage_material_skips_empty_session() -> None:
+    assert asyncio.run(settle_mod.load_session_salvage_material("")) == ""
 
 
 def test_fallback_no_longer_swallows_transient_failures() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from gsuid_core.ai_core.base_prompts import FRAMEWORK_CORE_CONSTRAINTS
 from gsuid_core.ai_core.persona.prompts import (
     ROLE_PLAYING_START,
     SYSTEM_CONSTRAINTS,
@@ -48,6 +49,13 @@ class PromptSpec:
 # 入戏、外貌包装、日期行、能力代理标题和花名册包装是程序固定句，不进编辑页。
 SPECS: tuple[PromptSpec, ...] = (
     PromptSpec(
+        "framework_core",
+        "会话·系统提示",
+        "框架底线",
+        "主人格、定时任务执行体和巡检发言会附上这一段。留空则不附。默认组每次启动从程序写回。",
+        (),
+    ),
+    PromptSpec(
         "system_constraints",
         "会话·系统提示",
         "基本规矩",
@@ -60,6 +68,13 @@ SPECS: tuple[PromptSpec, ...] = (
         "工具决策",
         "主会话 system 里的工具规程。",
         (),
+    ),
+    PromptSpec(
+        "meme_protocol",
+        "会话·系统提示",
+        "表情协议",
+        "人格打开「允许表情回复」时写入系统提示。情绪词和场景词由程序填入。{{meme_frequency}} 由人格的表情频率决定。",
+        ("emotion_words", "scene_words", "meme_frequency"),
     ),
     PromptSpec(
         "closing",
@@ -196,6 +211,21 @@ SPECS: tuple[PromptSpec, ...] = (
         "替换人格。条件不满足时要保持只输出沉默标记。",
         (),
     ),
+    PromptSpec(
+        "aside_comment",
+        "命令补充",
+        "命令补充",
+        "命令回执发出后、决定补一句时使用。程序会填入插件、源码摘录、已有记忆和工具约束。"
+        "默认组每次启动从程序写回；要改这段，请复制一个提示词组再改。",
+        ("plugin_label", "source_section", "memory_section", "tool_clause"),
+    ),
+    PromptSpec(
+        "autonomy_system_guide",
+        "自主行动",
+        "自主行动",
+        "人格空闲时自己观察和行动使用。正文不含当天时间和具体业务词。",
+        (),
+    ),
 )
 
 _SPEC_BY_KEY: dict[str, PromptSpec] = {spec.key: spec for spec in SPECS}
@@ -211,6 +241,8 @@ def spec_of(key: str) -> PromptSpec:
 
 def default_body(key: str) -> str:
     """代码里的默认正文。默认组运行时读这里，不读磁盘上被人改过的副本。"""
+    if key == "framework_core":
+        return FRAMEWORK_CORE_CONSTRAINTS
     if key == "role_playing_start":
         return ROLE_PLAYING_START
     if key == "appearance_line":
@@ -223,6 +255,18 @@ def default_body(key: str) -> str:
         return SYSTEM_CONSTRAINTS.replace("__MASTERS__", "{{masters}}").replace("__MASTER_TITLE__", "{{master_title}}")
     if key == "tool_orchestration":
         return TOOL_ORCHESTRATION_CONSTRAINTS
+    if key == "meme_protocol":
+        return (
+            "发表情只有一种写法：单独写一行 `<meme:情绪>`，或 `<meme:情绪 场景>`。\n"
+            "情绪只能是：{{emotion_words}}。\n"
+            "场景可以不写，只能是：{{scene_words}}。\n"
+            "适合发：被夸、被逗、被调侃；对方先发了表情或图；打招呼、早安、晚安、道谢、道歉；"
+            "只想表达情绪、不需要给信息的回应；安慰人、缓和尴尬。\n"
+            "不发：查资料、交付结果、讲正事、回答要准确的问题；拒绝不当请求；对方认真求助时。\n"
+            "{{meme_frequency}}\n"
+            "一条回复最多一个表情。表情不算台词字数，也不是括号动作。"
+            "可以只写这一行，也可以这一行后面再写一句台词。"
+        )
     if key == "date_line":
         return _DATE_LINE
     if key == "capability_heading":
@@ -239,6 +283,14 @@ def default_body(key: str) -> str:
         return format_template_to_mustache(REACTIVE_GATE_TEMPLATE)
     if key == "scheduled_executor":
         return SCHEDULED_TASK_EXECUTOR_PROMPT
+    if key == "aside_comment":
+        from gsuid_core.ai_core.command_aside.prompt import ASIDE_COMMENT_BODY
+
+        return ASIDE_COMMENT_BODY
+    if key == "autonomy_system_guide":
+        from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
+
+        return AUTONOMY_SYSTEM_GUIDE
     if key == "soft_trigger":
         from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE
 

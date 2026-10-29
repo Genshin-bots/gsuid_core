@@ -439,26 +439,16 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> int:
     return registered_count
 
 
-async def unregister_mcp_server(config_id: str) -> int:
-    """
-    注销单个 MCP 服务器的所有已注册工具。
-
-    Args:
-        config_id: 配置 ID
-
-    Returns:
-        移除的工具数量
-    """
+def _forget_mcp_server(config_id: str) -> int:
+    """从注册表摘掉该服务器的工具。不写向量库。"""
     tool_registry = _get_tool_registry()
     if MCP_CATEGORY not in tool_registry:
         return 0
 
-    # 找到该服务器注册的所有工具（通过 plugin 前缀匹配）
     config = mcp_config_manager.get_config(config_id)
     if config is None:
-        # 配置已删除，尝试从 _mcp_clients 获取名称
-        client = _mcp_clients.get(config_id)
-        server_name = client.name if client else config_id
+        client = _mcp_clients[config_id] if config_id in _mcp_clients else None
+        server_name = client.name if client is not None else config_id
     else:
         server_name = config.name
 
@@ -469,18 +459,40 @@ async def unregister_mcp_server(config_id: str) -> int:
         del tool_registry[MCP_CATEGORY][tool_name]
         logger.info(t("log.mcp.unregister_name_tool", tool_name=tool_name))
 
-    # 清理客户端引用
     if config_id in _mcp_clients:
         del _mcp_clients[config_id]
 
     return len(tools_to_remove)
 
 
+async def _sync_tool_index() -> None:
+    # RAG 的 sync_tools 早于 MCP 注册。这里不再同步，向量检索就看不到这些工具。
+    from gsuid_core.ai_core.register import get_all_tools
+    from gsuid_core.ai_core.rag.tools import sync_tools
+
+    await sync_tools(get_all_tools())
+
+
+async def unregister_mcp_server(config_id: str) -> int:
+    """
+    注销单个 MCP 服务器的所有已注册工具，并按当前注册表同步向量库。
+
+    Args:
+        config_id: 配置 ID
+
+    Returns:
+        移除的工具数量
+    """
+    removed = _forget_mcp_server(config_id)
+    await _sync_tool_index()
+    return removed
+
+
 async def register_single_mcp_server(config_id: str) -> tuple[int, str]:
     """
     注册单个 MCP 服务器的工具（用于 API 实时注册）。
 
-    先注销该服务器的旧工具，再重新注册。
+    先注销该服务器的旧工具，再重新注册，然后同步向量库。
 
     Args:
         config_id: 配置 ID
@@ -493,15 +505,15 @@ async def register_single_mcp_server(config_id: str) -> tuple[int, str]:
         return 0, f"配置 '{config_id}' 不存在"
 
     if not config.enabled:
-        # 如果配置被禁用，只注销旧工具
         removed = await unregister_mcp_server(config_id)
         return 0, f"配置 '{config.name}' 已禁用，移除了 {removed} 个旧工具"
 
-    # 先注销旧工具
-    await unregister_mcp_server(config_id)
-
-    # 重新注册
-    count = await _register_mcp_server(config_id, config)
+    _forget_mcp_server(config_id)
+    count = 0
+    try:
+        count = await _register_mcp_server(config_id, config)
+    finally:
+        await _sync_tool_index()
     return count, f"注册完成，共 {count} 个工具"
 
 
@@ -510,26 +522,28 @@ async def register_all_mcp_tools() -> None:
 
     由 ai_core/startup.py 的 init_ai_core() 在框架启动后台阶段调用。
     清单为空的服务器跳过，等控制台单独注册时再连接。
+    注册表稳定后同步一次工具向量库。
     """
     enabled_configs = mcp_config_manager.get_enabled_configs()
 
     if not enabled_configs:
         logger.info(t("log.mcp.enabled_configurations_skipping"))
-        return
+    else:
+        logger.info(t("log.mcp.found_enabled_configurations", p0=len(enabled_configs)))
 
-    logger.info(t("log.mcp.found_enabled_configurations", p0=len(enabled_configs)))
+        total_registered = 0
+        for config_id, config in enabled_configs:
+            logger.info(t("log.mcp.registering_server_config", p0=config.name, config_id=config_id))
+            if not config.tools:
+                logger.info(t("log.mcp.catalog_empty_defer_connect", p0=config.name, config_id=config_id))
+                continue
+            count = _register_catalog(config_id, config)
+            total_registered += count
+            logger.info(t("log.mcp.registration_tools_total", p0=config.name, count=count))
 
-    total_registered = 0
-    for config_id, config in enabled_configs:
-        logger.info(t("log.mcp.registering_server_config", p0=config.name, config_id=config_id))
-        if not config.tools:
-            logger.info(t("log.mcp.catalog_empty_defer_connect", p0=config.name, config_id=config_id))
-            continue
-        count = _register_catalog(config_id, config)
-        total_registered += count
-        logger.info(t("log.mcp.registration_tools_total", p0=config.name, count=count))
+        logger.info(t("log.mcp.tools_registered_total", total_registered=total_registered))
 
-    logger.info(t("log.mcp.tools_registered_total", total_registered=total_registered))
+    await _sync_tool_index()
 
 
 async def shutdown_mcp_clients() -> None:

@@ -13,29 +13,26 @@ from collections.abc import Mapping
 from gsuid_core.ai_core.control.lines import (
     DELEGATION_FANOUT_RULE,
     PENDING_DELEGATION_HOLD,
-    POST_MEME_LINE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT,
     POST_TOOL_OUTPUT_CONTRACT,
     TIMELESS_AGGREGATE_CAVEAT,
     WEB_ONLY_STALENESS_CAVEAT,
     PENDING_DELEGATION_OPENING,
     POST_DISPUTE_SILENCE_CONTRACT,
-    POST_DELIVERY_SILENCE_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER,
     POST_TOOL_OUTPUT_CONTRACT_RENDER,
     POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
     POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
+    capability_hit_line,
 )
 
 __all__ = (
     "DELEGATION_FANOUT_RULE",
     "PENDING_DELEGATION_HOLD",
     "PENDING_DELEGATION_OPENING",
-    "POST_DELIVERY_SILENCE_CONTRACT",
     "POST_DISPUTE_SILENCE_CONTRACT",
-    "POST_MEME_LINE_CONTRACT",
     "POST_TOOL_FAIL_CONTRACT",
     "POST_TOOL_FAIL_CONTRACT_CAPABILITY",
     "POST_TOOL_FAIL_CONTRACT_RENDER",
@@ -275,8 +272,7 @@ def inflight_after_create_subagent_return(
     if render_done:
         return pending_async, True, speech_policy, True
     if async_ack:
-        policy = speech_policy if speech_policy == "delivered" else "silence_only"
-        return True, delegated_render, policy, True
+        return True, delegated_render, "silence_only", True
     return pending_async, delegated_render, speech_policy, ack_seen
 
 
@@ -299,3 +295,26 @@ def post_tool_contracts_for(
             return POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED, POST_TOOL_FAIL_CONTRACT_RENDER
         return POST_TOOL_OUTPUT_CONTRACT_CAPABILITY, POST_TOOL_FAIL_CONTRACT_CAPABILITY
     return POST_TOOL_OUTPUT_CONTRACT, POST_TOOL_FAIL_CONTRACT
+
+
+def web_search_delegate_line(
+    *,
+    create_by: str,
+    capability_node_id: str,
+    question: str,
+    first_tool: str,
+    already_nudged: bool,
+    any_fail: bool,
+) -> str:
+    """主人格第一步网页检索命中能力节点时，返回改口委派句。执行体返回空串。"""
+    if any_fail or already_nudged or first_tool != "web_search_tool":
+        return ""
+    # 能力代理的用户消息是整段任务书，关键词很容易命中；它也不能再 create_subagent。
+    if create_by == "CapabilityAgent" or (capability_node_id or "").strip():
+        return ""
+    from gsuid_core.ai_core.agent_node.registry import match_capability_node
+
+    nid = match_capability_node(question)
+    if not nid:
+        return ""
+    return capability_hit_line(nid)

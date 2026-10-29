@@ -5,10 +5,13 @@
 支持注入情绪状态和群聊上下文。
 """
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from .mood import get_mood_description
 from .resource import load_persona
 from .settings import get_master_title
-from ..buildin_tools import get_current_date
+from ..base_prompts import join_framework_constraints
 
 
 def _render_system_constraints(char_name: str) -> str:
@@ -27,6 +30,7 @@ async def build_persona_prompt(
     group_description: str | None = None,
     extra_stable_context: str | None = None,
     clock_date: str | None = None,
+    include_meme_protocol: bool = True,
 ) -> str:
     """
     组装完整的角色提示词
@@ -46,6 +50,7 @@ async def build_persona_prompt(
             会话期内基本不变，放进稳定前缀可跨轮命中 provider 缓存；per-user 的关系/
             情绪/记忆/历史仍每轮进 user 侧。会话空闲被回收后重建即自然刷新。
         clock_date: 评测 HTTP ``clock_at`` 的日标签；缺省用墙上日期。生产 WS 不传。
+        include_meme_protocol: 看板转译等不经主会话呈现层的路径传 False，避免写出 ``<meme:>``。
 
     Returns:
         完整的角色扮演prompt字符串
@@ -75,18 +80,31 @@ async def build_persona_prompt(
     if speech_and_answer:
         persona_content += f"\n{speech_and_answer}"
     # 只放到「日」级（不含时分秒）：让 system_prompt 在同一天内逐字节稳定。
-    # 精确到分的当前时间已由 user_message 侧补上。
-    current_date = clock_date if clock_date else await get_current_date(format="%Y年%m月%d日")
+    # 精确到分的当前时间已由 user_message 侧补上。不经 buildin_tools，避免拼装人设时注册整库工具。
+    current_date = clock_date or datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y年%m月%d日")
 
     # 稳定前缀：人设 + 合规 + 工具编排。正文来自该人格绑定的提示词组。
     role = render_prompt(char_name, "role_playing_start")
-    constraints = _render_system_constraints(char_name)
+    constraints = join_framework_constraints(char_name, _render_system_constraints(char_name))
     tools = render_prompt(char_name, "tool_orchestration")
     date_line = render_prompt(char_name, "date_line", date=current_date)
+    from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words
+    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+    from gsuid_core.ai_core.persona.meme_style import resolve_meme_frequency_line
+
+    meme_protocol = ""
+    if include_meme_protocol and persona_allows_meme_reply(char_name):
+        meme_protocol = render_prompt(
+            char_name,
+            "meme_protocol",
+            emotion_words=join_words(EMOTION_WORDS),
+            scene_words=join_words(SCENE_WORDS),
+            meme_frequency=resolve_meme_frequency_line(char_name),
+        )
     prompt = join_around_card(
         join_prompt_parts(role),
         persona_content,
-        join_prompt_parts(constraints, tools, date_line),
+        join_prompt_parts(constraints, tools, meme_protocol, date_line),
     )
 
     # 能力代理花名册：进 system 可缓存，避免每轮塞进 user 侧

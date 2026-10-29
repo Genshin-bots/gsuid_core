@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 from uuid import uuid4
 from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
 
 from msgspec import DecodeError, ValidationError, json as msgjson
 
@@ -22,12 +23,19 @@ from gsuid_core.models import (
     normalize_node_items,
 )
 from gsuid_core.server import on_core_shutdown
-from gsuid_core.trigger import Trigger
+from gsuid_core.trigger import Trigger, dispatch_sort_key
 from gsuid_core.global_val import get_platform_val, mark_command_dirty
 from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
+from gsuid_core.message_history import get_history_manager, node_items_to_history
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.followup_window import (
+    note_hard_trigger,
+    in_followup_window,
+    merge_followup_burst,
+)
+from gsuid_core.utils.image.image_tools import normalize_image_for_history
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
     sp_config,
@@ -35,8 +43,21 @@ from gsuid_core.utils.plugins_config.gs_config import (
 )
 from gsuid_core.utils.database.global_val_models import DataType
 
-# 注意：handle_ai / history / memory / statistics 等 AI 重模块改为在
-# handle_event 内按需懒加载，避免 import handler 时同步拉起 AI ML 栈而阻塞启动。
+
+@dataclass
+class _SoftDebounceItem:
+    ws: _Bot
+    event: Event
+    events: list[Event]
+    enqueue_ts: float
+    trigger_type: str
+    task: asyncio.Task[None] | None = None
+
+
+_soft_debounce_map: dict[str, _SoftDebounceItem] = {}
+
+# hooks / persona.config / approval / handle_ai / startup 都在 enable_ai 分支内导入。
+# 提到模块顶层会让 import handler 在关 AI 时仍拉起工具注册与审批栈。
 
 # 读循环不 await 这条。预算要长于写闸门排队，好让超时先变成失败而不是取消到一半。
 _INBOUND_BUDGET_S = 30.0
@@ -386,7 +407,8 @@ def _record_inbound_history(event: Event) -> None:
     """入站写入 HistoryManager。无配文纯图也记，后面的轮次才能看见上一张。"""
     has_text = bool(event.raw_text and event.raw_text.strip())
     has_image = bool(event.image_id or event.image_id_list)
-    if not (has_text or event.at_list or has_image):
+    has_node = event.node is not None
+    if not (has_text or event.at_list or has_image or has_node):
         return
 
     user_name = None
@@ -405,17 +427,46 @@ def _record_inbound_history(event: Event) -> None:
         metadata["image_id_list"] = event.image_id_list
     elif event.image_id:
         metadata["image_id"] = event.image_id
+
+    # 提取图片直链或资源接口路由
+    inbound_images: list[str] = []
+    if event.image_list:
+        for idx, img in enumerate(event.image_list):
+            if img:
+                try:
+                    res_id = event.image_id_list[idx] if idx < len(event.image_id_list) else event.image_id
+                    norm = normalize_image_for_history(img, res_id)
+                    if norm:
+                        inbound_images.append(norm)
+                except Exception:
+                    pass
+    elif event.image:
+        try:
+            norm = normalize_image_for_history(event.image, event.image_id)
+            if norm:
+                inbound_images.append(norm)
+        except Exception:
+            pass
+
+    if inbound_images:
+        metadata["images"] = inbound_images
+
     if event.at_list:
         metadata["at_list"] = event.at_list
     if event.file:
         metadata["file_id"] = event.file
 
-    from gsuid_core.message_history import get_history_manager
+    content = event.raw_text.strip()
+    if has_node:
+        metadata["node"] = node_items_to_history(event.node or [])
+        # 纯转发消息没有 raw_text，用摘要兜底，文本视图和 AI 上下文才不会是空串
+        if not content:
+            content = format_node_preview(event.node or [])
 
     get_history_manager().add_message(
         event=event,
         role="user",
-        content=event.raw_text.strip(),
+        content=content,
         user_name=user_name if isinstance(user_name, str) else None,
         user_avatar=user_avatar if isinstance(user_avatar, str) else None,
         metadata=metadata,
@@ -445,9 +496,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     if show_receive:
         logger.info(t("log.handler.event_received"), event_payload=event)
 
-    from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
+    ai_scope_banned = False
+    if enable_ai:
+        from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
 
-    ai_scope_banned = is_scope_banned(event.session_id)
+        ai_scope_banned = is_scope_banned(event.session_id)
 
     # ====== H00 入站观察扇出（记忆 / 表情 / 图片记忆）======
     # 只观察，**不挡**命令/AI 分流；要拦 AI 走 H01。失败 fail-open。
@@ -500,6 +553,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         temp_gid = uid
 
     session_id = f"{bid}%%%{temp_gid}%%%{uid}"
+
+    # 确认码先于问答等待器。AI 关闭时不导入审批模块、不查 AI 表。
+    if enable_ai and event.user_type == "direct" and event.raw_text:
+        from gsuid_core.ai_core.approval import match_confirm_message
+
+        if await match_confirm_message(event):
+            return
 
     instances = Bot.get_instances()
     mutiply_instances = Bot.get_mutiply_instances()
@@ -595,9 +655,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.warning(t("log.handler.at_bot_shield"))
                     return
 
+        # 同优先级：类型更具体的先跑，同类型再按命令字从长到短
         sorted_event = sorted(
             command_triggers.items(),
-            key=lambda x: (not x[0].prefix, x[1]),
+            key=lambda x: dispatch_sort_key(x[0], x[1]),
         )
 
         for trigger, _ in sorted_event:
@@ -618,7 +679,9 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             )
             logger.info(t("log.handler.cmd_triggered"), command=message)
 
-            coro = trigger.func(bot, message)
+            from gsuid_core.ai_core.command_aside.runner import command_with_aside
+
+            coro = command_with_aside(trigger.func(bot, message), bot, _event, trigger)
             func_name = getattr(coro, "__qualname__", str(coro))
             trace_ctx = TraceContext(
                 trace_id=_event.task_id,
@@ -669,7 +732,6 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         if ai_white_list and not (user_in_white_list or group_in_white_list):
             return
 
-        # 根据当前 session 获取对应的 persona 配置
         from gsuid_core.ai_core.persona.config import persona_config_manager
 
         # 使用 Event.session_id 属性获取标准格式的 session_id
@@ -698,22 +760,24 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
             # 免唤醒续聊窗口：硬触发登记起点，窗口期内的普通发言作为软触发放行。
             soft_triggered = False
-            from gsuid_core.ai_core.followup_window import note_hard_trigger, in_followup_window
-            from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg
-
-            _fw = _ai_cfg.get_config("follow_up_window").data
-            _fmax = _ai_cfg.get_config("follow_up_max_total").data
+            _fw = ai_config.get_config("follow_up_window").data
+            _fmax = ai_config.get_config("follow_up_max_total").data
+            _fmax_rep = (
+                ai_config.get_config("follow_up_max_replies").data if "follow_up_max_replies" in ai_config.config else 2
+            )
             if should_respond:
+                k = f"{session_id}::{event.user_id}"
+                pending = _soft_debounce_map.pop(k, None)
+                if pending is not None and pending.task is not None and not pending.task.done():
+                    pending.task.cancel()
                 note_hard_trigger(session_id, event.user_id, _fw, _fmax)
             elif _fw and event.group_id and not event.at_list:
-                if in_followup_window(session_id, event.user_id, _fw, _fmax):
+                if in_followup_window(session_id, event.user_id, _fw, _fmax, max_replies=_fmax_rep):
                     should_respond = True
                     soft_triggered = True
                     trigger_type = "followup"
 
             if not should_respond:
-                from gsuid_core.config import core_config
-
                 msg_text = event.raw_text or ""
                 aliases = core_config.get_config("framework_aliases")
                 alias_list = [str(a) for a in aliases] if isinstance(aliases, list) else []
@@ -734,6 +798,56 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.info(t("log.handler.ai_initializing"))
                 else:
                     logger.warning(t("log.handler.ai_init_incomplete"))
+                return
+
+            _debounce = (
+                float(ai_config.get_config("follow_up_debounce_seconds").data)
+                if "follow_up_debounce_seconds" in ai_config.config
+                else 0.0
+            )
+            if soft_triggered and _debounce > 0:
+                k = f"{session_id}::{event.user_id}"
+                existing = _soft_debounce_map[k] if k in _soft_debounce_map else None
+                if existing is not None:
+                    if existing.task is not None and not existing.task.done():
+                        existing.task.cancel()
+                    existing.events.append(event)
+                    existing.event = event
+                else:
+                    existing = _SoftDebounceItem(
+                        ws=ws,
+                        event=event,
+                        events=[event],
+                        enqueue_ts=time.time(),
+                        trigger_type=trigger_type,
+                    )
+                    _soft_debounce_map[k] = existing
+
+                async def _flush_debounce(debounce_key: str, wait_s: float) -> None:
+                    try:
+                        await asyncio.sleep(wait_s)
+                    except asyncio.CancelledError:
+                        return
+                    item = _soft_debounce_map.pop(debounce_key, None)
+                    if item is None:
+                        return
+                    merged = merge_followup_burst(item.events)
+                    if merged is None:
+                        return
+                    statistics_manager.record_trigger(trigger_type=item.trigger_type or "followup")
+                    task_ctx = TaskContext(
+                        coro=handle_ai_chat(
+                            Bot(item.ws, merged),
+                            merged,
+                            enqueue_ts=item.enqueue_ts,
+                            soft_triggered=True,
+                        ),
+                        name="handle_ai_chat",
+                        priority=merged.user_pm,
+                    )
+                    item.ws.queue.put_nowait(task_ctx)
+
+                existing.task = asyncio.create_task(_flush_debounce(k, _debounce))
                 return
 
             # 记录触发方式统计（trigger_type 已在上方按 mention/keyword 定型，

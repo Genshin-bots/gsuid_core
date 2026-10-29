@@ -148,19 +148,24 @@ async def search_images_backend(query: str, *, scope: CogScope, limit: int) -> _
 
 
 async def search_memes_backend(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    _ = scope
     try:
         from gsuid_core.ai_core.meme.config import meme_config
         from gsuid_core.ai_core.meme.library import MemeLibrary
+        from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+        from gsuid_core.ai_core.meme.pack_model import PackStore
 
-        if not bool(meme_config.get_config("meme_enable").data):
+        if scope.persona_name and not persona_allows_meme_reply(scope.persona_name):
             return _EMPTY
         raw_th = meme_config.get_config("meme_search_threshold").data
         threshold = float(raw_th) if isinstance(raw_th, (int, float)) else None
+        pack_ids: list[str] = []
+        if scope.persona_name:
+            pack_ids = await PackStore.pack_ids_for_persona(scope.persona_name)
         records = await MemeLibrary.search_by_text(
             query_text=query,
             top_k=limit,
             score_threshold=threshold,
+            pack_ids=pack_ids,
         )
     except Exception as e:
         logger.debug(t("log.ai.cognition_backend_fail", backend="meme", e=e))

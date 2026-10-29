@@ -6,6 +6,9 @@ from pathlib import Path
 from gsuid_core.i18n import t
 from gsuid_core.logger import LOG_PATH, logger
 from gsuid_core.data_store import error_mark_path
+from gsuid_core.trace_archive import COMMAND_TRACES_DIRNAME
+from gsuid_core.day_jsonl_store import purge_expired_days
+from gsuid_core.http_trace_archive import HTTP_TRACES_DIRNAME
 from gsuid_core.utils.database.base_models import is_live_sqlite, sqlite_consistent_snapshot
 from gsuid_core.utils.plugins_config.gs_config import log_config
 
@@ -20,10 +23,10 @@ def _retention_days() -> int:
 
 
 def clean_log():
-    """Delete daily ``*.log`` and ``error_reports/*.json`` older than retention days.
+    """Delete daily logs, error reports, and trace days older than retention.
 
-    Error reports (one JSON per error/critical/exception) live in a subdirectory
-    and were previously never cleaned, so they piled up without bound.
+    Error reports live under ``error_reports/``. HTTP and command traces live
+    under ``http_traces/`` and ``traces/``. ``ScheduledCleanLogDay`` <= 0 skips all.
     """
     day = _retention_days()
     if day <= 0:
@@ -39,27 +42,31 @@ def clean_log():
         except FileNotFoundError:
             pass
 
-    if not error_mark_path.exists():
-        return
-
-    removed_reports = 0
-    for i in error_mark_path.glob("error_report_*.json"):
-        try:
-            if i.is_file() and i.stat().st_mtime < cutoff:
-                i.unlink()
-                removed_reports += 1
-        except FileNotFoundError:
-            continue
-        except OSError as e:
-            logger.warning(t("log.backup.delete_fail_2", p0=i.name, e=e))
-    if removed_reports:
-        logger.info(
-            t(
-                "log.backup.cleaned_error_reports_delete",
-                removed=removed_reports,
-                days=day,
+    if error_mark_path.exists():
+        removed_reports = 0
+        for i in error_mark_path.glob("error_report_*.json"):
+            try:
+                if i.is_file() and i.stat().st_mtime < cutoff:
+                    i.unlink()
+                    removed_reports += 1
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                logger.warning(t("log.backup.delete_fail_2", p0=i.name, e=e))
+        if removed_reports:
+            logger.info(
+                t(
+                    "log.backup.cleaned_error_reports_delete",
+                    removed=removed_reports,
+                    days=day,
+                )
             )
-        )
+
+    # 按日目录名清理：重写 count 会刷新 mtime，不能跟 *.log 一样看修改时间。
+    removed_traces = purge_expired_days(LOG_PATH / HTTP_TRACES_DIRNAME, keep_days=day)
+    removed_traces += purge_expired_days(LOG_PATH / COMMAND_TRACES_DIRNAME, keep_days=day)
+    if removed_traces:
+        logger.info(t("log.backup.cleaned_trace_days_delete", removed=removed_traces, days=day))
 
 
 def _get_filename(file_path: Path, date: str):

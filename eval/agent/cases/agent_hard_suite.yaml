@@ -15,7 +15,7 @@
 #   task_prompt,start_time,interval_type,max_executions) / list_scheduled_tasks /
 #   modify_scheduled_task(task_id,...) / cancel_scheduled_task / pause_scheduled_task /
 #   register_kanban_task(goal,subtasks,...)[有死循环bug] / evaluate_agent_mesh_capability /
-#   create_subagent / send_meme(mood,scene) / query_user_memory / get_self_info /
+#   create_subagent / query_user_memory / get_self_info /
 #   update_user_favorability(delta) / set_user_favorability(value) / search_cognition /
 #   web_search_tool(query) / web_fetch_tool(url) / find_tools。
 #   execute_shell_command/read_file_content/write_file_content 是 default 类=子Agent专属，
@@ -42,13 +42,13 @@ cases:
   # ═══════════ 1. 工具相关性：不该调却调（BFCL irrelevance）10 例 ═══════════
   - {id: rel_greeting, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "早上好+夸天气，含'天气'关键词诱触发", message: "早柚早上好呀，今天天气真不错，心情很好~", expect: {no_tool_calls: true, max_latency: 40}}
   - {id: rel_thanks, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "纯道谢无动作诉求", message: "谢谢你昨天帮我，太贴心了！", expect: {no_tool_calls: true, max_latency: 40}}
-  - {id: rel_emotion, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "情绪倾诉易触发send_meme/query_memory", message: "今天上班好累啊，感觉整个人都被掏空了……", expect: {no_tool_calls: true, max_latency: 40}}
+  - {id: rel_emotion, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "情绪倾诉易触发query_memory", message: "今天上班好累啊，感觉整个人都被掏空了……", expect: {no_tool_calls: true, max_latency: 40}}
   - {id: rel_rhetorical_remind, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "'要是有人提醒我'是感慨非请求，且自我否定'算了'", message: "唉，最近老是忘事，要是有人能提醒我就好了……算了当我没说。", expect: {must_not_call: [add_once_task, add_interval_task], max_latency: 40}}
   - {id: rel_compliment, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "夸奖闲聊", message: "你今天说话怎么这么好听，是不是偷偷练过呀哈哈", expect: {no_tool_calls: true, max_latency: 40}}
   - {id: rel_weather_mood, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "'下雨'是氛围描述非查询", message: "外面下雨了，好有氛围感，适合听歌发呆~", expect: {no_tool_calls: true, max_latency: 40}}
   - {id: rel_negation_remind, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "陷阱：含'提醒'但明确拒绝设置", message: "别帮我设什么提醒啊，这点事我自己记得住，不用你操心。", expect: {must_not_call: [add_once_task, add_interval_task], max_latency: 40}}
   - {id: rel_ability_question, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "问能力≠要执行；不应真去建提醒", message: "你能帮人设定时提醒吗？我就随便问问。", expect: {must_not_call: [add_once_task, add_interval_task], max_latency: 40}}
-  - {id: rel_meme_mention, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "陷阱：提到'表情包'但不是要你发", message: "我刚在群里看到个超好笑的表情包，笑死我了。", expect: {must_not_call: [send_meme], max_latency: 40}}
+  - {id: rel_meme_mention, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "陷阱：提到'表情包'但不是要你发", message: "我刚在群里看到个超好笑的表情包，笑死我了。", expect: {no_tool_calls: true, max_latency: 40}}
   - {id: rel_weather_statement, domain: tool_relevance, targets: [BFCL-irrelevance], why_hard: "陈述天气事实非查询，别去web_search", message: "今天广州好热啊，三十七八度，出门像蒸桑拿。", expect: {no_tool_calls: true, max_latency: 40}}
 
   # ═══════════ 2. 选对工具 + 参数精确（BFCL args）11 例 ═══════════
@@ -71,14 +71,14 @@ cases:
     why_hard: "单轮'广州'需借上文召回查天气能力"
     history: [{role: user, content: "帮我查下天气"}, {role: assistant, content: "好呀，你想查哪个城市的天气呢？"}]
     message: "广州"
-    expect: {must_call_any: [find_tools, get_weather, weather, web_search_tool], must_not_call: [send_meme], max_latency: 90}
+    expect: {must_call_any: [find_tools, get_weather, weather, web_search_tool], raw_regex_absent: ["<meme[：:]"], max_latency: 90}
   - id: xturn_modify_task
     domain: cross_turn_recall
     targets: [toolsandbox]
     why_hard: "'改成后天'指代上一轮建的提醒"
     history: [{role: user, content: "帮我明天10点提醒我交报告"}, {role: assistant, content: "好的，已经帮你设好明天10点提醒交报告啦。"}]
     message: "改成后天吧"
-    expect: {must_call_any: [modify_scheduled_task, add_once_task, list_scheduled_tasks, find_tools], must_not_call: [send_meme], max_latency: 90}
+    expect: {must_call_any: [modify_scheduled_task, add_once_task, list_scheduled_tasks, find_tools], raw_regex_absent: ["<meme[：:]"], max_latency: 90}
   - id: xturn_pronoun_weather
     domain: cross_turn_recall
     targets: [toolsandbox]

@@ -17,6 +17,7 @@ from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join
 from gsuid_core.ai_core.rag.qmodels import Vector, Condition, SparseVector
+from gsuid_core.ai_core.meme.normalize import prepare_meme_image
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
@@ -33,6 +34,13 @@ def get_folder_path(folder: str) -> Path:
 def compute_meme_id(image_data: bytes) -> str:
     """计算图片内容的 meme_id（sha256 前 16 位）"""
     return hashlib.sha256(image_data).hexdigest()[:16]
+
+
+def ext_for_mime(mime: str) -> str:
+    """MIME 对应的扩展名。不认识的类型用 .jpg。"""
+    if mime in _MIME_EXT_MAP:
+        return _MIME_EXT_MAP[mime]
+    return ".jpg"
 
 
 # MIME 类型到文件扩展名的映射
@@ -85,26 +93,17 @@ class MemeLibrary:
     async def save_raw(
         image_data: bytes,
         file_mime: str,
-        width: int,
-        height: int,
         source_group: str = "",
         source_user: str = "",
         source_url: str = "",
     ) -> Optional[AiMemeRecord]:
-        """保存原始图片到 inbox 并创建数据库记录
-
-        Args:
-            image_data: 图片二进制数据
-            file_mime: MIME 类型
-            width: 图片宽度
-            height: 图片高度
-            source_group: 来源群组 ID
-            source_user: 来源用户 ID
-            source_url: 原始 URL
-
-        Returns:
-            创建的 AiMemeRecord，如果已存在则返回 None
-        """
+        """缩到短边 156 后写入 inbox。已有同一张图时返回 None。"""
+        # 先缩放再算 id，磁盘上的字节和 meme_id 是同一张图。
+        prepared = await to_thread(prepare_meme_image)(image_data, file_mime)
+        image_data = prepared.data
+        file_mime = prepared.mime
+        width = prepared.width
+        height = prepared.height
         meme_id = compute_meme_id(image_data)
 
         # 检查是否已存在
@@ -112,8 +111,7 @@ class MemeLibrary:
             logger.debug(t("log.meme.skip_image_id_meme", meme_id=meme_id))
             return None
 
-        # 确定文件扩展名
-        ext = _MIME_EXT_MAP.get(file_mime, ".jpg")
+        ext = ext_for_mime(file_mime)
 
         # 写入文件到 inbox
         inbox_path = get_folder_path("inbox")
@@ -138,6 +136,8 @@ class MemeLibrary:
             source_url=source_url,
             folder="inbox",
             status="pending",
+            assign_default_pack=True,
+            pending_pack_id="",
         )
         await AiMemeRecord.insert_record(record)
         logger.info(
@@ -152,7 +152,7 @@ class MemeLibrary:
         return record
 
     @staticmethod
-    async def move_file(meme_id: str, target_folder: str) -> bool:
+    async def move_file(meme_id: str, target_folder: str, *, rewrite_persona_hint: bool = True) -> bool:
         """移动表情包文件到目标文件夹
 
         Args:
@@ -198,9 +198,9 @@ class MemeLibrary:
             "file_path": new_relative_path,
             "folder": target_folder,
         }
-        if target_folder == "common":
+        if rewrite_persona_hint and target_folder == "common":
             update_data["persona_hint"] = "common"
-        elif target_folder.startswith("persona_"):
+        elif rewrite_persona_hint and target_folder.startswith("persona_"):
             update_data["persona_hint"] = target_folder[len("persona_") :]
         await AiMemeRecord.update_record(meme_id, update_data)
 
@@ -245,10 +245,31 @@ class MemeLibrary:
         except Exception as e:
             logger.warning(t("log.meme.meme_qdrant_fail_delete_vector", e=e))
 
-        # 删除数据库记录
+        from gsuid_core.ai_core.meme.pack_model import PackStore
+
+        await PackStore.delete_members_of_meme(meme_id)
         await AiMemeRecord.delete_by_meme_id(meme_id)
         logger.info(t("log.meme.meme_id_delete_2", meme_id=meme_id))
         return True
+
+    @staticmethod
+    async def drop_missing_files() -> int:
+        """文件已经不在磁盘上的表情，删掉记录、成员和向量。"""
+        records = await AiMemeRecord.get_all_records_no_page()
+        base = get_memes_base_path()
+        removed = 0
+        for record in records:
+            try:
+                path = safe_join(base, record.file_path)
+            except PathEscapeError:
+                path = None
+            if path is not None and path.is_file():
+                continue
+            await MemeLibrary.delete_meme(record.meme_id)
+            removed += 1
+        if removed:
+            logger.info(t("log.meme.drop_missing_files", count=removed))
+        return removed
 
     @staticmethod
     async def purge_memes(
@@ -325,6 +346,10 @@ class MemeLibrary:
 
             if not cleanup_ids:
                 continue
+
+            from gsuid_core.ai_core.meme.pack_model import PackStore
+
+            await PackStore.delete_members_of_memes(cleanup_ids)
 
             unlink_jobs: List[Tuple[str, Path]] = []
             for meme_id in cleanup_ids:
@@ -419,11 +444,12 @@ class MemeLibrary:
 
     @staticmethod
     async def mark_tag_failed(meme_id: str) -> None:
-        """标记打标失败，状态设为 pending_manual"""
+        """标记打标失败。清空待定包，不改 assign_default_pack。"""
         await AiMemeRecord.update_record(
             meme_id,
             {
                 "status": "pending_manual",
+                "pending_pack_id": "",
             },
         )
 
@@ -435,7 +461,9 @@ class MemeLibrary:
             meme_id: 表情包 ID
             nsfw_score: NSFW 分数
         """
-        # 移动文件到 rejected 文件夹
+        from gsuid_core.ai_core.meme.pack_model import PackStore
+
+        await PackStore.reject_meme(meme_id)
         await MemeLibrary.move_file(meme_id, "rejected")
         await AiMemeRecord.update_record(
             meme_id,
@@ -454,6 +482,7 @@ class MemeLibrary:
         top_k: int = 5,
         score_threshold: Optional[float] = None,
         query_sparse: Optional["SparseVector"] = None,
+        pack_ids: Optional[Sequence[str]] = None,
     ) -> Sequence[AiMemeRecord]:
         """通过稀疏 + 稠密混合向量检索搜索表情包
 
@@ -467,7 +496,7 @@ class MemeLibrary:
         Returns:
             匹配的 AiMemeRecord 列表
         """
-        meme_ids = await _search_qdrant(query_vector, query_sparse, folder, top_k, score_threshold)
+        meme_ids = await _search_qdrant(query_vector, query_sparse, folder, top_k, score_threshold, pack_ids)
         if not meme_ids:
             return []
         return await AiMemeRecord.search_by_ids(meme_ids)
@@ -478,6 +507,7 @@ class MemeLibrary:
         folder: Optional[str] = None,
         top_k: int = 5,
         score_threshold: Optional[float] = None,
+        pack_ids: Optional[Sequence[str]] = None,
     ) -> Sequence[AiMemeRecord]:
         """通过文本语义 + 标签精确匹配搜索表情包
 
@@ -498,13 +528,17 @@ class MemeLibrary:
             匹配的 AiMemeRecord 列表
         """
         # 将查询文本拆分为关键词用于标签匹配
+        if folder is not None and pack_ids is not None:
+            logger.warning(t("log.meme.pack_and_folder"))
+            return []
+        if pack_ids is not None and len(pack_ids) == 0:
+            return []
+
         keywords = [kw.strip() for kw in query_text.split() if kw.strip()]
 
-        # 标签/描述精确匹配
-        tag_results = await AiMemeRecord.search_by_tags(keywords, folder=folder, limit=top_k)
+        tag_results = await AiMemeRecord.search_by_tags(keywords, folder=folder, limit=top_k, pack_ids=pack_ids)
 
-        # 向量语义检索（与标签匹配并行参与，不再被短路）
-        vec_results = await _vector_search(query_text, folder, top_k, score_threshold)
+        vec_results = await _vector_search(query_text, folder, top_k, score_threshold, pack_ids)
 
         # 合并去重：标签命中与向量命中各占约一半名额，剩余互相回填
         seen_ids: set[str] = set()
@@ -569,6 +603,7 @@ async def _vector_search(
     folder: Optional[str],
     top_k: int,
     score_threshold: Optional[float],
+    pack_ids: Optional[Sequence[str]] = None,
 ) -> Sequence[AiMemeRecord]:
     """稀疏 + 稠密混合语义检索（内部辅助函数，供 search_by_text 调用）"""
     from gsuid_core.ai_core.rag.sparse import sparse_embed_single
@@ -583,12 +618,14 @@ async def _vector_search(
         top_k,
         score_threshold,
         query_sparse=query_sparse,
+        pack_ids=pack_ids,
     )
 
 
 # ── Qdrant 操作辅助函数 ──
 
 MEME_COLLECTION_NAME = "ai_meme"
+MEME_PAYLOAD_INDEX_FIELDS = ("folder", "status", "meme_id", "pack_ids")
 # 命名 dense 向量名（旧库为单一**无名**向量；改名即触发结构迁移，与知识库一致：
 # 旧无名集合取 "dense" 命名向量维度得到 None ≠ dimension → 判定不匹配 → 重建为命名 dense + 稀疏）
 MEME_DENSE_VECTOR = "dense"
@@ -645,7 +682,7 @@ async def _ensure_meme_collection() -> None:
                 # 既有 Collection 补建 payload 索引（幂等），覆盖历史部署缺少 meme_id 索引的情况
                 from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
 
-                for field_name in ("folder", "status", "meme_id"):
+                for field_name in MEME_PAYLOAD_INDEX_FIELDS:
                     try:
                         await client.create_payload_index(
                             collection_name=MEME_COLLECTION_NAME,
@@ -673,7 +710,7 @@ async def _ensure_meme_collection() -> None:
             raise RuntimeError(t("log.meme.qdrant_client"))
         # 为 folder / status / meme_id 建立 payload 索引
         # （meme_id 索引用于幂等 upsert 前按 meme_id 删点，避免全量扫描）
-        for field_name in ("folder", "status", "meme_id"):
+        for field_name in MEME_PAYLOAD_INDEX_FIELDS:
             await refreshed_client.create_payload_index(
                 collection_name=MEME_COLLECTION_NAME,
                 field_name=field_name,
@@ -806,7 +843,7 @@ async def _force_recreate_meme_collection() -> None:
 
     if refreshed_client is None:
         raise RuntimeError(t("log.meme.qdrant_client"))
-    for field_name in ("folder", "status", "meme_id"):
+    for field_name in MEME_PAYLOAD_INDEX_FIELDS:
         await refreshed_client.create_payload_index(
             collection_name=MEME_COLLECTION_NAME,
             field_name=field_name,
@@ -858,8 +895,9 @@ async def _upsert_to_qdrant(
         logger.warning(t("log.meme.fail_cleanup_write_vector", meme_id=meme_id, e=e))
 
     point_id = get_point_id(meme_id)
-    # 命名向量：dense 必有，sparse 不可用时省略（查询端自动降级纯 dense）
-    # 以官方 Vector 作为值类型，精确对齐 PointStruct.vector 的 Dict[str, Vector] 分支
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+
+    member_pack_ids = await PackStore.pack_ids_of_meme(meme_id)
     named_vector: dict[str, Vector] = {MEME_DENSE_VECTOR: vector}
     if sparse is not None:
         named_vector["sparse"] = sparse
@@ -873,6 +911,7 @@ async def _upsert_to_qdrant(
             "status": status,
             "use_count": use_count,
             "file_mime": file_mime,
+            "pack_ids": member_pack_ids,
         },
     )
     try:
@@ -904,6 +943,7 @@ async def _search_qdrant(
     folder: Optional[str],
     top_k: int,
     score_threshold: Optional[float] = None,
+    pack_ids: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """在 Qdrant 中做稀疏 + 稠密混合检索，返回 meme_id 列表
 
@@ -942,6 +982,13 @@ async def _search_qdrant(
                 key="folder",
                 match=MatchValue(value=folder),
             ),
+        )
+    if pack_ids:
+        must_conditions.append(
+            FieldCondition(
+                key="pack_ids",
+                match=MatchAny(any=list(pack_ids)),
+            )
         )
     query_filter = Filter(must=must_conditions)
 
@@ -1030,3 +1077,73 @@ async def _remove_many_from_qdrant(meme_ids: List[str]) -> None:
             await _remove_from_qdrant(meme_id)
         except Exception as e:
             logger.warning(t("log.meme.meme_qdrant_fail_delete_vector", e=e))
+
+
+async def write_member_payloads(meme_ids: Sequence[str] | None = None, *, strict: bool = False) -> None:
+    """按成员表把完整 pack_ids 写进已有点。不嵌入。"""
+    import time
+
+    from gsuid_core.ai_core.rag.base import client, get_point_id
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+
+    if client is None:
+        return
+    if meme_ids is None:
+        records = [
+            row
+            for row in await AiMemeRecord.get_all_records_no_page()
+            if row.qdrant_id or row.status in ("tagged", "manual")
+        ]
+    else:
+        records = list(await AiMemeRecord.get_by_meme_ids(list(meme_ids)))
+    started = time.perf_counter()
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for record in records:
+        point_id = record.qdrant_id or get_point_id(record.meme_id)
+        try:
+            found = await client.retrieve(
+                collection_name=MEME_COLLECTION_NAME,
+                ids=[point_id],
+                with_payload=False,
+                with_vectors=False,
+            )
+        except Exception as e:
+            if strict:
+                raise
+            logger.warning(t("log.meme.pack_payload_fail", meme_id=record.meme_id, e=e))
+            continue
+        if not found:
+            logger.warning(t("log.meme.pack_payload_fail", meme_id=record.meme_id, e="missing"))
+            continue
+        packs = tuple(await PackStore.pack_ids_of_meme(record.meme_id))
+        if packs not in groups:
+            groups[packs] = []
+        groups[packs].append(point_id)
+    calls = 0
+    point_count = 0
+    for packs, points in groups.items():
+        payload: dict[str, object] = {"pack_ids": list(packs)}
+        for offset in range(0, len(points), 100):
+            chunk = points[offset : offset + 100]
+            try:
+                await client.set_payload(
+                    collection_name=MEME_COLLECTION_NAME,
+                    payload=payload,
+                    points=chunk,
+                )
+            except Exception as e:
+                if strict:
+                    raise
+                logger.warning(t("log.meme.pack_payload_fail", meme_id=chunk[0], e=e))
+            calls += 1
+            point_count += len(chunk)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        t(
+            "log.meme.pack_payload_backfill",
+            points=point_count,
+            groups=len(groups),
+            calls=calls,
+            ms=elapsed_ms,
+        )
+    )

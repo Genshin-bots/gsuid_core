@@ -94,7 +94,7 @@ def _hit_from_web(item: SearchResultWeb) -> dict[str, str | float] | None:
     content = item.description if item.description else ""
     if not title and not url and not content:
         return None
-    return {"title": title, "url": url, "content": content, "score": 0.0}
+    return {"title": title, "url": url, "content": content, "published_date": "", "score": 0.0}
 
 
 def _hit_from_document(item: Document) -> dict[str, str | float] | None:
@@ -119,9 +119,15 @@ def _hit_from_document(item: Document) -> dict[str, str | float] | None:
         content = item.markdown
     elif item.summary and not content:
         content = item.summary
+    published = ""
+    if meta is not None:
+        if meta.published_time:
+            published = meta.published_time
+        elif meta.dc_date:
+            published = meta.dc_date
     if not title and not url and not content:
         return None
-    return {"title": title, "url": url, "content": content, "score": 0.0}
+    return {"title": title, "url": url, "content": content, "published_date": published, "score": 0.0}
 
 
 def _as_str_map(item: object) -> dict[str, object]:
@@ -134,13 +140,31 @@ def _as_str_map(item: object) -> dict[str, object]:
     return out
 
 
+def _published_from_mapping(item: dict[str, object]) -> str:
+    direct = _first_str(item, "published_time").strip()
+    if direct:
+        return direct
+    raw_meta = item["metadata"] if "metadata" in item else None
+    if not isinstance(raw_meta, dict):
+        return ""
+    meta: dict[str, object] = {}
+    for key, value in raw_meta.items():
+        if isinstance(key, str):
+            meta[key] = value
+    published = _first_str(meta, "published_time").strip()
+    if published:
+        return published
+    return _first_str(meta, "dc_date").strip()
+
+
 def _hit_from_mapping(item: dict[str, object]) -> dict[str, str | float] | None:
     title = _first_str(item, "title")
     url = _first_str(item, "url", "source_url")
     content = _first_str(item, "description", "markdown", "content", "snippet")
+    published = _published_from_mapping(item)
     if not title and not url and not content:
         return None
-    return {"title": title, "url": url, "content": content, "score": 0.0}
+    return {"title": title, "url": url, "content": content, "published_date": published, "score": 0.0}
 
 
 def _hit_from_image(item: SearchResultImages) -> dict[str, str | float] | None:
@@ -154,6 +178,7 @@ def _hit_from_image(item: SearchResultImages) -> dict[str, str | float] | None:
         "title": title,
         "url": url,
         "content": "",
+        "published_date": "",
         "score": 0.0,
         "image_url": url,
         "kind": "image",
@@ -216,6 +241,7 @@ def _normalize_results(payload: object, max_results: int) -> list[dict[str, str 
                 "title": title,
                 "url": img_url,
                 "content": "",
+                "published_date": "",
                 "score": 0.0,
                 "image_url": img_url,
                 "kind": "image",

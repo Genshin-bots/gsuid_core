@@ -112,7 +112,7 @@ async def main() -> None:
     if meme is not None:
         from gsuid_core.ai_core.meme.config import meme_config
 
-        print(f"  meme_enable          = {meme_config.get_config('meme_enable').data}")
+        print(f"  meme_vlm_enable      = {meme_config.get_config('meme_vlm_enable').data}")
         print(f"  meme_auto_collect    = {meme_config.get_config('meme_auto_collect').data}")
         print(f"  消息里图片数          = {len(ev.image_list or [])}")
 
