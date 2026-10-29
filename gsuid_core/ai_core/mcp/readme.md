@@ -340,6 +340,9 @@ if is_mcp_provider(provider):
 - **key 或校验器任一存在即强制鉴权**；均不存在时为开发用开放模式
 - claims 须含 ``user_id``；缺 ``user_pm`` 时按最低权限 ``6`` 写入 Event
 - 静态 key 成功时服务身份 ``user_pm=0``
+- `api_key` / 开放模式下可委托调用方 ``user_id``（见文末「外部客户端 → 框架 MCP Server」）；
+  插件校验器 claims 中的 ``auth`` 是保留字段，取值 ``api_key``/``none``/``anonymous``
+  会启用委托语义，不要占用
 
 **配置项（`MCP_SERVER_CONFIG` → `data/ai_core/mcp_server_config.json`）:**
 - `enable_mcp_server` — 默认 False
@@ -414,7 +417,30 @@ http_headers = { Authorization = "Bearer <token>" }
 ```
 
 用户态身份（JWT 等）由**插件**通过 `register_mcp_token_verifier` 注入；
-可选会话头：`X-MCP-Group-Id` / `X-MCP-Bot-Id`（写入 Event，无业务语义）。
+可选会话头：`X-MCP-Group-Id` / `X-MCP-Bot-Id` / `X-MCP-User-Id`（写入 Event，无业务语义）。
+
+**调用方 `user_id` 委托（共享连接报谁在说）:**
+
+共享身份凭证（静态 `api_key`、开放模式）下一条连接被多人共用，
+框架按以下顺序确定 `Event.user_id`：
+
+```
+工具参数 user_id > X-MCP-User-Id 请求头 > token 自身 claims
+```
+
+- `X-MCP-User-Id` 只应由**可信网关**（Bot 适配器）断言，**不能转发终端用户自报的值**：
+  网关断言的 user_id 会查 `config.json` 的 `masters` / `superusers`，映射 `0 / 1 / 6` 权限
+- 工具参数 `user_id` 由外部大模型填写、可被提示词诱导，与请求头不一致时固定 `user_pm=6`，不查表
+- 插件专属 token（`plugin` 模式）始终锁定 claims 中的 `user_id`，两个通道都不生效
+- 开放模式无鉴权：任何能访问端点的客户端都可自称任意 `user_id` 读取 `pm<=6` 的用户数据，
+  不要把 `/api/mcp` 直接暴露给不可信网络
+
+**工具侧 opt-in（docstring 声明）:**
+
+只有工具 docstring（或 `to_ai` 桥接的触发器文档）的 `Args:` 块里写了 `user_id:` 一行，
+MCP 导出 Schema 才会注入可选 `user_id` 参数；该行的文字即参数描述。
+调用前框架把它从参数中弹出写入 `ev.user_id`，不透传给插件函数。
+函数签名本身带 `user_id` 形参的工具视为查询目标参数，原样透传，不当作调用者身份。
 
 ## 扩展指南
 
