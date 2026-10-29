@@ -168,6 +168,16 @@ data == "按钮模板 ID 字符串"
 # → MessageSegment.keyboard(MessageKeyboard(id=template_buttons))
 ```
 
+### `card`（**仅 QQ 官方**）
+
+```python
+data == {"type": "tuwen", "content": {"title": "...", "description": "...", "url": "https://...", "pic_url": "https://..."}}
+```
+- 卡片消息，QQ 官方发消息接口用 `msg_type=8` + `card` 字段落地，`data` 原样塞进去即可。
+- `type` 卡片类型：`url` / `pic_url` 必须是 https，`title` 1–50 字符，`description` 1–200 字符，两个链接各自 ≤ 1024 字符。以
+- 与 `markdown` 互斥，`content` 字段不要一起传。
+- **卡片不能带按钮**：`msg_type=8` 的帧不要附 `keyboard`，`MessageSegment.card()` 也没有 buttons 参数。
+
 ## 6.5 `image_size`：配合 MD 渲染图片尺寸
 
 ```python
