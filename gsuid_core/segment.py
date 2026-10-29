@@ -4,7 +4,7 @@ import base64
 from io import BytesIO
 from venv import logger
 from base64 import b64decode, b64encode
-from typing import Dict, List, Tuple, Union, Literal, Optional, cast
+from typing import Any, Dict, List, Tuple, Union, Literal, Optional, cast
 from pathlib import Path
 
 import msgspec
@@ -168,6 +168,10 @@ class MessageSegment:
             data.append(MessageSegment.buttons(buttons))
 
         return data
+
+    @staticmethod
+    def card(content: Dict[str, Any], card_type: str = "tuwen") -> List[Message]:
+        return [Message(type="card", data={"type": card_type, "content": content})]
 
     @staticmethod
     def image_size(size: Tuple[int, int]) -> Message:

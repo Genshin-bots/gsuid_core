@@ -56,6 +56,18 @@ await bot.send([
     MessageSegment.buttons([[Button("确认"), Button("取消")]])
 ])
 
+# ----- 卡片消息（仅部分平台支持）-----
+# card_type 可自定义
+await bot.send(MessageSegment.card(
+    {
+        "title": "标题",
+        "description": "描述",
+        "url": "https://example.com/news",
+        "pic_url": "https://example.com/cover.jpg",
+    },
+    card_type="tuwen",
+))
+
 # ----- @某人 -----
 await bot.send([MessageSegment.text("提醒："), MessageSegment.at("123456")])
 
