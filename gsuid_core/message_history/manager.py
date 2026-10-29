@@ -20,7 +20,48 @@ from threading import Lock
 from collections import deque
 from dataclasses import field, dataclass
 
-from gsuid_core.models import Event
+from gsuid_core.models import Event, Message
+
+
+def node_items_to_history(items: List[Message], *, register_media: bool = True) -> List[Dict[str, Any]]:
+    """node 子项序列化为可 JSON 化的 [{type, data}]，供 metadata 存回放。
+
+    媒体段（image/record/video）：直链原样保留，其余登记 RM 换成
+    /api/history/resource/{id}；拿不到可展示形态时降级为类型占位文本。
+    """
+    from PIL import Image
+
+    from gsuid_core.utils.resource_manager import RM
+    from gsuid_core.utils.image.image_tools import normalize_image_for_history
+
+    result: List[Dict[str, Any]] = []
+    for item in items:
+        msg_type = item.type or "unknown"
+        data = item.data
+        if msg_type in ("image", "record", "video"):
+            normalized = normalize_image_for_history(data) if isinstance(data, str) else ""
+            if not normalized and register_media and data is not None:
+                resource_id = ""
+                if msg_type == "record" and isinstance(data, (str, bytes)):
+                    resource_id = RM.register_audio(data)
+                elif msg_type == "video" and isinstance(data, (str, bytes)):
+                    resource_id = RM.register_video(data)
+                elif msg_type == "image" and isinstance(data, (str, bytes, Image.Image)):
+                    resource_id = RM.register(data)
+                if resource_id:
+                    normalized = f"/api/history/resource/{resource_id}"
+            # 无直链且 RM 不支持的数据（如 dict）落成占位文本，前端当普通行渲染
+            if normalized:
+                result.append({"type": msg_type, "data": normalized})
+            else:
+                label = {"image": "[图片]", "record": "[语音]", "video": "[视频]"}.get(msg_type, f"[{msg_type}]")
+                result.append({"type": "text", "data": label})
+        elif msg_type == "node":
+            # normalize_node_items 已把内层 node 展开，残留的只剩超深占位
+            continue
+        else:
+            result.append({"type": msg_type, "data": "" if data is None else str(data)})
+    return result
 
 
 def _estimate_tokens(text: str) -> int:

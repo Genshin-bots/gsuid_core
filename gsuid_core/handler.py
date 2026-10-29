@@ -27,7 +27,7 @@ from gsuid_core.trigger import Trigger, dispatch_sort_key
 from gsuid_core.global_val import get_platform_val, mark_command_dirty
 from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
-from gsuid_core.message_history import get_history_manager
+from gsuid_core.message_history import get_history_manager, node_items_to_history
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.followup_window import (
@@ -407,7 +407,8 @@ def _record_inbound_history(event: Event) -> None:
     """入站写入 HistoryManager。无配文纯图也记，后面的轮次才能看见上一张。"""
     has_text = bool(event.raw_text and event.raw_text.strip())
     has_image = bool(event.image_id or event.image_id_list)
-    if not (has_text or event.at_list or has_image):
+    has_node = event.node is not None
+    if not (has_text or event.at_list or has_image or has_node):
         return
 
     user_name = None
@@ -455,10 +456,17 @@ def _record_inbound_history(event: Event) -> None:
     if event.file:
         metadata["file_id"] = event.file
 
+    content = event.raw_text.strip()
+    if has_node:
+        metadata["node"] = node_items_to_history(event.node or [])
+        # 纯转发消息没有 raw_text，用摘要兜底，文本视图和 AI 上下文才不会是空串
+        if not content:
+            content = format_node_preview(event.node or [])
+
     get_history_manager().add_message(
         event=event,
         role="user",
-        content=event.raw_text.strip(),
+        content=content,
         user_name=user_name if isinstance(user_name, str) else None,
         user_avatar=user_avatar if isinstance(user_avatar, str) else None,
         metadata=metadata,

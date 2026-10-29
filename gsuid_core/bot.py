@@ -10,7 +10,15 @@ from starlette.websockets import WebSocketState
 import gsuid_core.i18n as i18n
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger, trace_collector, bind_trace_context, clear_trace_context
-from gsuid_core.models import Event, Message, MessageSend, TaskContext, MessageReceive
+from gsuid_core.models import (
+    Event,
+    Message,
+    MessageSend,
+    TaskContext,
+    MessageReceive,
+    format_node_preview,
+    normalize_node_items,
+)
 from gsuid_core.segment import (
     MessageSegment,
     to_markdown,
@@ -27,7 +35,7 @@ from gsuid_core.load_template import (
     button_templates,
 )
 from gsuid_core.message_models import Button, ButtonType
-from gsuid_core.message_history import get_history_manager
+from gsuid_core.message_history import get_history_manager, node_items_to_history
 from gsuid_core.ai_core.outbound import get_outbound_image_label
 from gsuid_core.ai_core.wall_clock import pause_wall_clock
 from gsuid_core.utils.image.image_tools import normalize_image_for_history
@@ -350,10 +358,15 @@ class _Bot:
                 text_parts = []
                 image_count = 0
                 out_images = []
+                node_items: List[Dict[str, Any]] = []
                 for msg in message:
                     if isinstance(msg, Message):
                         if msg.type == "text":
                             text_parts.append(str(msg.data))
+                        elif msg.type == "node":
+                            # 合并转发：子项进 metadata 供控制台展开，正文落摘要而不是 [node]
+                            node_items.extend(node_items_to_history(normalize_node_items(msg.data)))
+                            text_parts.append(format_node_preview(normalize_node_items(msg.data)))
                         elif msg.type == "image":
                             image_count += 1
                             if msg.data:
@@ -370,6 +383,8 @@ class _Bot:
                     elif isinstance(msg, str):
                         text_parts.append(msg)
                 content = " ".join(text_parts)
+                if node_items:
+                    metadata["node"] = node_items
                 if out_images:
                     metadata["images"] = out_images
                 if image_count > 0:
@@ -382,6 +397,10 @@ class _Bot:
             elif isinstance(message, Message):
                 if message.type == "text":
                     content = str(message.data)
+                elif message.type == "node":
+                    # 合并转发：子项进 metadata，正文落摘要
+                    metadata["node"] = node_items_to_history(normalize_node_items(message.data))
+                    content = format_node_preview(normalize_node_items(message.data))
                 elif message.type == "image":
                     content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "image"
