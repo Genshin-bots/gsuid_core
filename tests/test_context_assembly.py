@@ -10,6 +10,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -229,12 +231,17 @@ def test_alias_note_ignores_the_persona_name() -> None:
         clear_entity_index()
 
 
-def test_non_empty_history_preserves_system_prompt_part() -> None:
+def test_non_empty_history_preserves_system_prompt_part(monkeypatch: pytest.MonkeyPatch) -> None:
     """非空 history（HTTP 历史装入或首条 proactive 发言）须保留 SystemPromptPart，防 pydantic_ai 漏注 system_prompt。"""
     from pydantic_ai.messages import ModelRequest, SystemPromptPart
+    from pydantic_ai.models.test import TestModel
 
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.webconsole.chat_with_history_api import ChatHistoryTurn, _load_request_history
+
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _level: TestModel())
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_config_name_for_task", lambda _level: "test:m")
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_fingerprint_for_task", lambda _level: "fp")
 
     agent = create_agent(system_prompt="你是测试角色。", persona_name="早柚", create_by="Chat")
     _load_request_history(
