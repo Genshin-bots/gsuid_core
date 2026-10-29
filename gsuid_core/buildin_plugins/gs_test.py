@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 from async_timeout import timeout
 
@@ -11,6 +12,8 @@ from gsuid_core.subscribe import gs_subscribe
 from gsuid_core.message_models import Button
 
 sv_switch = SV("测试开关")
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @sv_switch.on_prefix(("关闭", "开启"))
@@ -117,6 +120,31 @@ async def send_temp_md_msg(bot: Bot, ev: Event):
             MessageSegment.text("大柴郡!"),
         ],
         ["测试"],
+    )
+
+
+@sv_switch.on_fullmatch("文件测试")
+async def send_temp_file_msg(bot: Bot, ev: Event):
+    path = Path.cwd() / "README.md"
+    if not path.exists():
+        path = _REPO_ROOT / "README.md"
+    if not path.exists():
+        await bot.send(await bot.t("未找到 README.md"))
+        return
+    await bot.send(MessageSegment.file(path, "README.md"))
+
+
+@sv_switch.on_fullmatch("图文卡片")
+async def send_temp_card_msg(bot: Bot, ev: Event):
+    await bot.send(
+        MessageSegment.card(
+            {
+                "title": "图文卡片测试",
+                "description": "这是一条图文卡片消息，点开可以跳转到仓库主页。",
+                "url": "https://github.com/Genshin-bots/gsuid_core",
+                "pic_url": "https://pub.idqqimg.com/pc/misc/files/20190820/2f4e70ae3355ece23d161cf5334d4fc1jzjfmtep.png",
+            }
+        )
     )
 
 
