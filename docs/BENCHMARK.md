@@ -272,7 +272,7 @@ uv run python eval/run_eval.py loft all --task rag --dataset nq --length 128k
 | 装配 / 闸门 / 每轮注入 | 单测绿不够，还要对照 `eval/agent` 群聊基准 |
 
 ```powershell
-uv run pytest tests/test_memory_injection_quality.py tests/test_memory_set_recall.py tests/test_context_assembly.py tests/test_interaction_scaffold.py tests/test_eval_judge_parse.py tests/test_agent_kits_slots.py -q
+uv run --dev pytest tests/test_memory_injection_quality.py tests/test_memory_set_recall.py tests/test_context_assembly.py tests/test_interaction_scaffold.py tests/test_eval_judge_parse.py tests/test_agent_kits_slots.py -q
 ```
 
 单测全绿不能代替实机评测。交付闸仍按 `AGENTS.md`：`ruff` / `format` / `pytest tests` / `basedpyright`。

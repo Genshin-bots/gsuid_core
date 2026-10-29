@@ -74,7 +74,9 @@ AI 调用触发器时，包装函数使用 `MockBot` 代理真实 Bot：
 |------|------|
 | `send(str)` | 纯文字存入 `bot_messages`；`base64://`/`http://` 等图片字符串通过 `RM.register()` 注册，返回资源 ID |
 | `send(bytes)` | 通过 `RM.register()` 注册，返回资源 ID |
-| `send(Message(type="image"))` | 提取图片数据通过 `RM.register()` 注册，返回资源 ID |
+| `send(Message(type="image"/"record"/"video"))` | 逐段提取媒体数据经 `RM.register*()` 注册，返回资源 ID |
+| `send(Message(type="file"))` | `RM.register_file()` 登记 `"名|payload"`，返回 `fil_` 资源 ID（>10MB 或空载荷不登记，改记提示文字） |
+| `send([多段混合列表])` | **逐段处理**：每类段按上表各自登记/收集，文字段拼成一条返回给 AI（图片不再吞掉同列表的文字） |
 | `reply()` | 同 `send()` |
 | `send_option(reply, buttons)` | reply 走 `send()` 拦截，buttons 忽略 |
 | `receive_resp(reply, ...)` | reply 走 `send()` 拦截，返回 `None`（AI 不支持交互式等待） |
@@ -106,6 +108,10 @@ AI 可以：
 - 不调用 → 图片保留在 RM 中（用户只收到 AI 的文字回复）
 
 资源 ID 通过 `RM.register()` 生成，格式为 `img_xxxxxxxx`，在 RM 中持久存储，支持跨轮次使用。
+
+**文件**：`send(Message(type="file"))` 产出 `fil_xxxxxxxx` 句柄（`RM.register_file`，≤10MB），
+AI 用 `send_message_by_ai(file_ids=[...])` 发出；`file_ids` 也接受 Kanban `res_` 落盘文件
+artifact。每个文件单独一条 `bot.send(Message(type="file"))` 发出，历史里显示 `[文件 名字]`。
 
 ## 4.6 交互流程对比
 

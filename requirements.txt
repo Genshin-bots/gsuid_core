@@ -235,9 +235,6 @@ backports-tarfile==1.2.0 ; python_full_version < '3.12' \
     --hash=sha256:77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34 \
     --hash=sha256:d75e02c268746e1b8144c278978b6e98e85de6ad16f8e4b0844a154557eca991
     # via jaraco-context
-basedpyright==1.39.7 \
-    --hash=sha256:688d913a19c417870c164c630ed9cdd83a8d8b484b30ab8e99f5dec4ae9604a6 \
-    --hash=sha256:81266deb6044c9be98fb4555e4b7b1a521d8aee06b66e80858d183b0e3991140
 bcrypt==4.3.0 \
     --hash=sha256:0042b2e342e9ae3d2ed22727c1262f76cc4f345683b5c1715f0250cf4277294f \
     --hash=sha256:0142b2cb84a009f8452c8c5a33ace5e3dfec4159e7735f5afe9a4d50a8ea722d \
@@ -453,10 +450,6 @@ cffi==2.1.1 ; platform_python_implementation != 'PyPy' \
     --hash=sha256:fb92203a88b3d3053034db775110081c49d28be6551923805e039924093761e4 \
     --hash=sha256:fcd22650c908d7b7da162bbfaab594a1227a15d1643a98c68b122ac642fa2264
     # via cryptography
-cfgv==3.5.0 \
-    --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0 \
-    --hash=sha256:d5b1034354820651caa73ede66a6294d6e95c1b00acc5e9b098e917404669132
-    # via pre-commit
 charset-normalizer==3.5.2 \
     --hash=sha256:01077390b03f7988f11d700a2194e69b119741a86b1a638b1db88891e3eced8e \
     --hash=sha256:01b0c0d2262a9e28e8484a278c7e1b5d650e3ac8cf2683d2967e25899f208bdf \
@@ -615,7 +608,6 @@ colorama==0.4.6 \
     # via
     #   gsuid-core
     #   loguru
-    #   pytest
     #   qrcode
     #   tqdm
 cryptography==50.0.2 \
@@ -689,10 +681,6 @@ cyclopts==5.2.0 \
     --hash=sha256:5da2a5d65164e03008621fc4795946b88a722b881398b5dfa58afa6218342cff \
     --hash=sha256:b63c1b1beaadf3ead19214385a0f90b990f152c4107c174e1724c45dc71e9541
     # via fastmcp-slim
-distlib==0.4.3 \
-    --hash=sha256:4b0ce306c966eb73bc3a7b6abad017c556dadd92c44701562cd528ac7fde4d5b \
-    --hash=sha256:f152097224a0ae24be5a0f6bae1b9359af82133bce63f98a95f86cae1aede9ed
-    # via virtualenv
 distro==1.9.0 \
     --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
@@ -738,10 +726,7 @@ fastmcp-slim==3.4.8 \
 filelock==4.0.12 \
     --hash=sha256:5f17ee83ecee8a6f3e389c75822fb70a1c2f0506b99438a6dffa1d56793588c8 \
     --hash=sha256:cf42711a7ac791818b299fab0332a088c65aeeefa36290de98db92c434303b0c
-    # via
-    #   huggingface-hub
-    #   python-discovery
-    #   virtualenv
+    # via huggingface-hub
 firecrawl-py==4.49.3 \
     --hash=sha256:5839d1d2124b46368d17ac12af51d9168666295542f498839675d60bbcd46580 \
     --hash=sha256:a5d1ee1b6ff226bfd8da18c6dc194b43b4ffb7c1cd1621f7bfcfea13a7f7ccf6
@@ -1087,10 +1072,6 @@ hyperframe==6.1.0 \
     --hash=sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5 \
     --hash=sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08
     # via h2
-identify==2.6.20 \
-    --hash=sha256:6a16b69b93187244e0548cbfd25b3e4a6f9a7a2ad784625c3bec2b8d27b81aaa \
-    --hash=sha256:ad729860a923858d26917c2f4fb0a1d83d27a75b1e090c06440c573f048f3285
-    # via pre-commit
 idna==3.20 \
     --hash=sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44 \
     --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
@@ -1105,10 +1086,6 @@ importlib-metadata==9.0.1 ; python_full_version < '3.12' \
     --hash=sha256:ab830580bc0ef3db61ce8fae716389e5462b67e033018bab6d8f80ef17172f99 \
     --hash=sha256:bba5600596a7e21f3eef53281cf28d6a5195634d2f2b78ff9501a3272c6eaab0
     # via keyring
-iniconfig==2.3.1 \
-    --hash=sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960 \
-    --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
-    # via pytest
 jaraco-classes==3.4.0 \
     --hash=sha256:47a024b51d0239c0dd8c8540c6c7f484be3b8fcf0b2d85c13825780d3b3f3acd \
     --hash=sha256:f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790
@@ -1947,21 +1924,6 @@ nest-asyncio==1.6.0 \
     --hash=sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe \
     --hash=sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c
     # via firecrawl-py
-nodeenv==1.11.0 \
-    --hash=sha256:3ce8fe5b71d16e8af7039ca65257354100bc772965d6bc549070649e53b1b146 \
-    --hash=sha256:edaa16e6c14d7cf395d75d4bbd5a26390f4dc06501a33b4e76282b02cc688a25
-    # via pre-commit
-nodejs-wheel-binaries==24.19.0 \
-    --hash=sha256:1c890adf4b7e6556ccc1ca66c866bb81884b6c9a581dee4e530dc7f78fb9d514 \
-    --hash=sha256:28d078b2ced9e2069516e652dc4b1380e7a1a7f2d3934eccd1611586d283ba4c \
-    --hash=sha256:352e048ab4dd35e7de5f338d1cc4fcbf77a0e93da30bf7336a8217ee246b31d7 \
-    --hash=sha256:4196a947bcc883f2003ab101762d729f3e99b5e86b75bd09151563403e2eceb8 \
-    --hash=sha256:4e029dadfae1295876063c96b236f673487e8c27379fe146c1e2250283520227 \
-    --hash=sha256:67e3abeb9c3830cae8c8487ae8a2af7cc27dfa75af06145cee5ca7d1857c81bd \
-    --hash=sha256:d9074c665ea68b04e183d82482c86dc907d3a9bd15eb6cf85542cb785266bb36 \
-    --hash=sha256:db217eef8cab8551667863379b08db4d9067403f6cbbe87481eb40edceb8aa9b \
-    --hash=sha256:e12cbfd69089504e42fb14194ce734a9dcf3eb38c820ca63dd511d36fb964e9c
-    # via basedpyright
 numpy==2.4.6 ; python_full_version < '3.12' \
     --hash=sha256:001fbb8e08d942dd57599e781f2472269ee7f2755fae407b4f67b2f0b17da3f1 \
     --hash=sha256:0280e0356c0829a18d9de1cb7eee50ec22ca639878d7240307ca0943d73cd2c4 \
@@ -2168,8 +2130,6 @@ packaging==26.3 \
     #   gsuid-core
     #   huggingface-hub
     #   onnxruntime
-    #   pytest
-    #   virtualenv
 pathable==0.6.0 \
     --hash=sha256:6404b8b82aef5ff0fd478934137128b99b12212ba35afdde5525ca4f8388ea58 \
     --hash=sha256:82c4ca6c98c502ad12e0d4e9779b6210afee93c38990988c8c5d1b49bdcdf566
@@ -2260,9 +2220,7 @@ pillow==12.3.0 \
 platformdirs==4.12.4 \
     --hash=sha256:63743c02414e755de4e31b8f68125c1407495b86c5a006e203c01ff8b9924250 \
     --hash=sha256:78bfb9db2a8471ed7eebe3c3c932da413911042994e699b384fbb4493fa872d7
-    # via
-    #   fastmcp-slim
-    #   virtualenv
+    # via fastmcp-slim
 playwright==1.63.0 \
     --hash=sha256:1e4a3a838ce22fb68ad17193fcd142a19610d9d70fb9966d2239f5dddc0cc05b \
     --hash=sha256:2f9a707a6c6c91157ed77bff2b8caeb04b3c8d46e70d585fc134298cbe4b5cc6 \
@@ -2273,17 +2231,10 @@ playwright==1.63.0 \
     --hash=sha256:c89fc4736502a1f0fac2c8ca5d10c0cbc1c669f1f4774a2d8507a43140e4d53f \
     --hash=sha256:fd1aa00631d44d55e56e0975bf3f3f285fac4a9fd2813183f0c12a488f1a1b24
     # via gsuid-core
-pluggy==1.6.0 \
-    --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
-    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
-    # via pytest
 portalocker==3.2.0 \
     --hash=sha256:1f3002956a54a8c3730586c5c77bf18fae4149e07eaf1c29fc3faf4d5a3f89ac \
     --hash=sha256:3cdc5f565312224bc570c49337bd21428bba0ef363bbcf58b9ef4a9f11779968
     # via qdrant-client
-pre-commit==4.6.2 \
-    --hash=sha256:8f5d7bfb021ecdbcd9d49d89847082dd24172ccde534390081a679ad046e2441 \
-    --hash=sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e
 propcache==0.5.4 \
     --hash=sha256:004e685b315646c410771836e72a44f143bbe624f29653a42687815069a303d5 \
     --hash=sha256:02c0a34f16889cf800f10f0247a564d8ce6eeab6ffcd7c87198f769067eb8432 \
@@ -2755,7 +2706,6 @@ pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
     --hash=sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c
     # via
-    #   pytest
     #   rich
     #   rich-rst
 pyjwt==2.15.1 \
@@ -2813,17 +2763,10 @@ pytakumi==0.1.5 \
     --hash=sha256:fa2fda98334250ff8b1aa286663be1073dd950be87bda45447ece918a77acb63 \
     --hash=sha256:faaaf95b15e3f621363d546bebc2e9c2eb1e39f2b686c1f67ea964f57cf70e1a
     # via gsuid-core
-pytest==9.1.1 \
-    --hash=sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313 \
-    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
     # via botocore
-python-discovery==1.6.1 \
-    --hash=sha256:cf87d3627dfb4412437fdd5b13eae402607722998d21567993aedbc59b23c15e \
-    --hash=sha256:d43fcdef879fe795352bd13ccf8d185ba5a9f86f36cfcd00529f596e737442b3
-    # via virtualenv
 python-dotenv==1.2.4 \
     --hash=sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc \
     --hash=sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0
@@ -2919,7 +2862,6 @@ pyyaml==6.0.3 \
     #   fastmcp-slim
     #   huggingface-hub
     #   jsonschema-path
-    #   pre-commit
     #   pydantic-ai-skills
 qdrant-client==1.19.1 \
     --hash=sha256:8f1d851a8463ce8cc11cf39ed8a9c9fb4b5f9de60e9a096ff56da42d1f074907 \
@@ -3206,25 +3148,6 @@ rpds-py==2026.9.1 \
     # via
     #   jsonschema
     #   referencing
-ruff==0.16.6 \
-    --hash=sha256:0700580ed5303723cb3c11c2f1d2a8913ce77b7ea86646dddb887f5417a9ba70 \
-    --hash=sha256:0b87d9d16fcb63e8018423ca1d50b7260f15cb2da33e30db4baad4183a948c25 \
-    --hash=sha256:10d21c51c3495d8eaea7b703a16592117ea6eb1d649e36335aa965ff1173eb39 \
-    --hash=sha256:15f1d0b6e165a6e56567befb6629f8209271311d990bae0f37e6d065035ef5f3 \
-    --hash=sha256:31b36f1e5ad85e0737f09d2be4e512e2e283583c14015da3b9dc07359ac0fc88 \
-    --hash=sha256:56a67065e22efa6bc4d498299d3bb06c0c90aace8fac2068b5a12f9dc4d8d51d \
-    --hash=sha256:61029b4ab4aa723fd3064fab96b1d814492596bf0c792679fffcbde1e1679953 \
-    --hash=sha256:61c368c26bf8e973e5ab14a2772de587bc068ea3f9a277f673380749b4898fb8 \
-    --hash=sha256:65a006baa18f33324325814c864daef03541d51564b98c517610ea756ab7003e \
-    --hash=sha256:7a976c79b958f94e50a022a19f0f8c87387448020935ec14fc74331bd0a7f2c5 \
-    --hash=sha256:7fbf89013f2bb3f6835a6038ff658dc8a1b38c98dc8e724b964168ad4e881876 \
-    --hash=sha256:99b62ea33baf130f50368798d841f0d95527b6d817bf31817b65dd058f1d314c \
-    --hash=sha256:9ac8998457832c2061709d900856b7ad271dace0cb41f346588d540162bfa718 \
-    --hash=sha256:cd02a7bf1a21a8735228a3e8c95a9dc5cf86bd2a52194f4aaae2a5755b4de0f4 \
-    --hash=sha256:d72c591a96986ee4268860e2b7235082129ca5e4cb9cbba653a4b57c11893757 \
-    --hash=sha256:dcf8a73d2ff77e99dde91244b4da16feba7f14e6beeb4015dee7c5a909e99050 \
-    --hash=sha256:e25cc89174874b176a157e4428d66761c2c0c006654419bf384f967f361ff1b1 \
-    --hash=sha256:ecf4f068e2e123e43a26e9db4e19524cc56563912404e83bbfca375757e45a32
 s3transfer==0.10.4 \
     --hash=sha256:244a76a24355363a68164241438de1b72f8781664920260c48465896b712a41e \
     --hash=sha256:29edc09801743c21eb5ecbc617a152df41d3c287f67b615f73e5f750583666a7
@@ -3651,10 +3574,6 @@ uvicorn==0.54.0 \
     #   fastmcp-slim
     #   gsuid-core
     #   mcp
-virtualenv==21.14.5 \
-    --hash=sha256:b0651e0174982bba17cc6f0aaa2ef496730cb85a3f35eb5d1119d1c904f7d1da \
-    --hash=sha256:c4cb6c13e46b57225a999c7e22a09b163393878facc7ac4c059a57f46faa1647
-    # via pre-commit
 watchfiles==1.3.0 \
     --hash=sha256:000b9688fc8133037a8b075c8ebf98f32844ff8964dda61e85c1db547dafc441 \
     --hash=sha256:025b108f2d5cc2799cb941f79380df3e8b22bfb589c218e801767fe78d598c95 \

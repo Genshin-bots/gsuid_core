@@ -128,6 +128,7 @@
   "log.ai.buildintools_rm_get_succeeded_ok_2": "[BuildinTools] RM.get 成功, img_data type={p0}",
   "log.ai.buildintools_rm_get_succeeded_ok_3": "[BuildinTools] RM.get 成功, video_data type={p0}",
   "log.ai.buildintools_rm_get_video_id": "[BuildinTools] RM.get({video_id}) 抛出 ValueError: {e}",
+"log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) 抛出 ValueError: {e}",
   "log.ai.buildintools_skipping_duplicate_run_skip": "[BuildinTools] 相同文本本轮已发送过，跳过重复发送（run 级去重）",
   "log.ai.buildintools_user_target_id": "[BuildinTools] 发送 {p0} 给用户 {target_id}",
   "log.ai.buildintools_workspace_change_registration": "[BuildinTools] workspace 变更登记失败: {e}",

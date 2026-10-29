@@ -160,7 +160,7 @@ def _merge_window() -> float:
 
 
 # 出站产物句柄。不含 to_/sa_：那些是检索落盘，不是对这个人发出去的内容。
-_THREAD_HANDLE_RE = re.compile(r"\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b|\bdlg_[0-9a-fA-F-]{8,}\b")
+_THREAD_HANDLE_RE = re.compile(r"\b(?:res|img|aud|vid|fil)_[0-9a-fA-F]{6,}\b|\bdlg_[0-9a-fA-F-]{8,}\b")
 SPEAKER_THREAD_LIMIT = 14
 SPEAKER_THREAD_HEADER = "[与你的对话] 旧→新"
 _OTHERS_WINDOW = 20

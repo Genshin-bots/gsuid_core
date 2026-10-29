@@ -240,7 +240,8 @@ def _format_subtask_prompt(
         "\n- 真实文件落地产物（PNG / PDF / CSV / 二进制等）必须用"
         ' `artifact_put(file_path="workspace 内文件名", summary=...)` 登记；'
         '**不要**用 `artifact_put(payload=\'{"file": "..."}\')` 这种 JSON 元数据冒充文件——'
-        "只有真实文件 artifact 才能被上游作为图片/文件发出。"
+        "只有真实文件 artifact 才能被主人格经 `send_message_by_ai` 作为图片/文件发出"
+        "（图片用 image_ids，文件用 file_ids，单文件 ≤10MB）。"
         '\n- 纯文本结论 / 报告正文：`artifact_put(payload="...", summary="...")`。'
         "\n- 持久化业务数据（签到名单、流水、任务条目等）：用 `record_put` / "
         "`record_append` / `record_update` 写入框架统一的 `record:<集合名>` 集合，"

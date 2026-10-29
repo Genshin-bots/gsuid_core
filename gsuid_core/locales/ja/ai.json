@@ -128,6 +128,7 @@
   "log.ai.buildintools_rm_get_succeeded_ok_2": "[BuildinTools] RM.get 成功、img_data type={p0}",
   "log.ai.buildintools_rm_get_succeeded_ok_3": "[BuildinTools] RM.get 成功、video_data type={p0}",
   "log.ai.buildintools_rm_get_video_id": "[BuildinTools] RM.get({video_id}) が ValueError を送出: {e}",
+"log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) が ValueError を送出: {e}",
   "log.ai.buildintools_skipping_duplicate_run_skip": "[BuildinTools] 同じテキストはこのラウンドで送信済みのため、重複送信をスキップ（run レベル重複排除）",
   "log.ai.buildintools_user_target_id": "[BuildinTools] ユーザー {target_id} に {p0} を送信中",
   "log.ai.buildintools_workspace_change_registration": "[BuildinTools] workspace 変更登録に失敗: {e}",

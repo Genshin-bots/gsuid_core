@@ -54,10 +54,13 @@ async def create_subagent(
 @ai_tools(category="self")
 async def send_message_by_ai(
     ctx: RunContext[ToolContext],
-    message_type: Literal["text", "image"],  # 消息类型
-    text: Optional[str] = None,              # 文本内容
-    image_id: Optional[str] = None,          # 图片资源ID
+    text: str = "",                          # 文本内容
+    image_ids: Optional[Union[List[str], str]] = None,  # 图片资源ID/URL（最多 9 张）
+    video_id: str = "",                      # 视频资源ID
+    audio_id: str = "",                      # 音频资源ID
     user_id: Optional[str] = None,           # 目标用户ID，默认当前对话者（§E.3）
+    image_id: Optional[Union[List[str], str]] = None,   # 兼容旧参数，等同 image_ids
+    file_ids: Optional[Union[List[str], str]] = None,   # 文件句柄（fil_/res_，最多 3 个，单文件 ≤10MB）
 ) -> str
 ```
 

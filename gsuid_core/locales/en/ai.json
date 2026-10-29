@@ -128,6 +128,7 @@
   "log.ai.buildintools_rm_get_succeeded_ok_2": "[BuildinTools] RM.get succeeded, img_data type={p0}",
   "log.ai.buildintools_rm_get_succeeded_ok_3": "[BuildinTools] RM.get succeeded, video_data type={p0}",
   "log.ai.buildintools_rm_get_video_id": "[BuildinTools] RM.get({video_id}) raised ValueError: {e}",
+"log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) raised ValueError: {e}",
   "log.ai.buildintools_skipping_duplicate_run_skip": "[BuildinTools] Same text already sent this round, skipping duplicate send (run-level dedup)",
   "log.ai.buildintools_user_target_id": "[BuildinTools] Sending {p0} to user {target_id}",
   "log.ai.buildintools_workspace_change_registration": "[BuildinTools] Workspace change registration failed: {e}",

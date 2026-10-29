@@ -149,7 +149,8 @@ def message_list_to_str(messages: list[Message]) -> str:
         elif m.type == "video":
             s.append("[视频]")
         elif m.type == "file":
-            s.append("[文件]")
+            fname = m.data.split("|", 1)[0] if isinstance(m.data, str) else ""
+            s.append(f"[文件 {fname}]" if fname else "[文件]")
         elif m.type == "node":
             s.append("[合并转发]")
     return "\n".join(s)
@@ -378,6 +379,9 @@ class _Bot:
                                     pass
                         elif msg.type == "at":
                             text_parts.append(f"@{msg.data}")
+                        elif msg.type == "file":
+                            fname = msg.data.split("|", 1)[0] if isinstance(msg.data, str) else ""
+                            text_parts.append(f"[文件 {fname}]" if fname else "[文件]")
                         else:
                             text_parts.append(f"[{msg.type}]")
                     elif isinstance(msg, str):
@@ -411,6 +415,10 @@ class _Bot:
                                 metadata["images"] = [norm]
                         except Exception:
                             pass
+                elif message.type == "file":
+                    fname = message.data.split("|", 1)[0] if isinstance(message.data, str) else ""
+                    content = f"[文件 {fname}]" if fname else "[文件]"
+                    metadata["type"] = "file"
                 else:
                     content = f"[{message.type}]"
 

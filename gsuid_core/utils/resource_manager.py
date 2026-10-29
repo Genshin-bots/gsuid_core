@@ -10,6 +10,9 @@ from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 
+# 单个文件产物的上限；适配器侧上传体积再各自有平台限制
+MAX_FILE_BYTES = 10 * 1024 * 1024
+
 
 class ResourceManager:
     """资源管理器
@@ -69,6 +72,31 @@ class ResourceManager:
             资源 ID（格式: vid_xxxxxxxx）
         """
         resource_id = f"vid_{uuid.uuid4().hex[:8]}"
+        self._store[resource_id] = (data, time.time())
+        return resource_id
+
+    def register_file(self, data: str) -> Optional[str]:
+        """登记 ``文件名|payload`` 形态的文件数据，原样存储，返回一个 ID。
+
+        payload 为 ``link://`` 或 http(s) 时不校验大小；其余按 base64 解码后
+        长度估算（去掉可选的 ``base64://`` 前缀），超过 ``MAX_FILE_BYTES``
+        或载荷为空时不登记并返回 None。
+
+        Args:
+            data: ``"文件名|<裸base64|base64://…|link://…|http(s)://…>"``
+
+        Returns:
+            资源 ID（格式: fil_xxxxxxxx），失败返回 None
+        """
+        payload = data.split("|", 1)[1] if "|" in data else ""
+        if not payload:
+            return None
+        if not payload.startswith(("link://", "http://", "https://")):
+            b64 = payload[len("base64://") :] if payload.startswith("base64://") else payload
+            size = len(b64) * 3 // 4 - (len(b64) - len(b64.rstrip("=")))
+            if size > MAX_FILE_BYTES:
+                return None
+        resource_id = f"fil_{uuid.uuid4().hex[:8]}"
         self._store[resource_id] = (data, time.time())
         return resource_id
 

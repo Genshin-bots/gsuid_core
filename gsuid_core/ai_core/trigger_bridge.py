@@ -76,8 +76,8 @@ class MockBot:
     AI 调用触发器时使用的代理 Bot。
 
     - **文本/消息 (str)**: 拦截并存入上下文，最终作为工具返回值返回给 AI（不发送给用户）
-    - **图片/资源 (bytes, Message(type="image"))**: 暂存到上下文，不传给 AI 也不发送给用户；
-      AI 收到文本描述后决定是否调用 ``send_trigger_images`` 真正发送
+    - **图片/音视频/文件 (bytes, Message(type="image"/"record"/"video"/"file"))**: 逐段登记
+      到 RM 并返回资源 ID；AI 收到文本描述后决定是否调用 ``send_message_by_ai`` 真正发送
     - **其他属性**: 代理到真实 Bot，保证触发器内部对 ``bot.bot_self_id`` 等属性的访问正常
 
     普通用户触发时不会使用此类，触发器直接拿到真实 Bot。
@@ -94,42 +94,48 @@ class MockBot:
         at_sender: bool = False,
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
-        """拦截 send：文本存入上下文返回给 AI，图片/音频/视频通过 RM 注册并返回资源 ID。
+        """拦截 send：文本存入上下文返回给 AI，图片/音频/视频/文件通过 RM 注册并返回资源 ID。
 
         AI 上下文下不真正发送消息，故 wait_recall 被忽略、恒返回 None（无真实出站消息）。
         """
         ctx = object.__getattribute__(self, "_ctx")
+        texts: List[str] = []
+        self._collect(ctx, message, texts)
+        merged = " ".join(part for part in texts if part)
+        if merged:
+            ctx["bot_messages"].append(merged)
+        return None
+
+    def _collect(self, ctx: Dict[str, Any], message: object, texts: List[str]) -> None:
+        """逐段收集：媒体段登记 RM，文字片段进 texts 待拼成一条。"""
         if isinstance(message, bytes):
-            # bytes 通常是图片数据，注册到 RM 并记录资源 ID
-            resource_id = RM.register(message)
-            ctx["image_ids"].append(resource_id)
+            ctx["image_ids"].append(RM.register(message))
         elif isinstance(message, str):
             if _is_image_string(message):
-                # base64://... 或 data:image/... 字符串，注册到 RM 并记录资源 ID
-                resource_id = RM.register(message)
-                ctx["image_ids"].append(resource_id)
+                ctx["image_ids"].append(RM.register(message))
             else:
-                ctx["bot_messages"].append(message)
-        else:
-            # Message / List[Message] — 提取图片、音频或视频数据注册到 RM
-            image_data = _extract_image_data(message)
-            if image_data is not None:
-                resource_id = RM.register(image_data)
-                ctx["image_ids"].append(resource_id)
-            else:
-                audio_data = _extract_audio_data(message)
-                if audio_data is not None:
-                    resource_id = RM.register_audio(audio_data)
-                    ctx["audio_ids"].append(resource_id)
+                texts.append(message)
+        elif isinstance(message, Message):
+            data = message.data
+            if message.type == "image" and isinstance(data, (str, bytes)):
+                ctx["image_ids"].append(RM.register(data))
+            elif message.type == "record" and isinstance(data, (str, bytes)):
+                ctx["audio_ids"].append(RM.register_audio(data))
+            elif message.type == "video" and isinstance(data, (str, bytes)):
+                ctx["video_ids"].append(RM.register_video(data))
+            elif message.type == "file" and isinstance(data, str):
+                file_id = RM.register_file(data)
+                if file_id is None:
+                    texts.append(f"[文件 {data.split('|', 1)[0][:64]} 超过10MB或为空，未登记]")
                 else:
-                    video_data = _extract_video_data(message)
-                    if video_data is not None:
-                        resource_id = RM.register_video(video_data)
-                        ctx["video_ids"].append(resource_id)
-                    else:
-                        # 纯文字 Message，转为字符串存入返回值
-                        ctx["bot_messages"].append(_message_to_text(message))
-        return None
+                    ctx["file_ids"].append(file_id)
+            else:
+                texts.append(_message_to_text(message))
+        elif isinstance(message, (list, tuple)):
+            for item in message:
+                self._collect(ctx, item, texts)
+        else:
+            texts.append(_message_to_text(message))
 
     async def reply(
         self,
@@ -181,65 +187,6 @@ def _is_image_string(s: str) -> bool:
     )
 
 
-def _extract_image_data(message: Any) -> Union[str, bytes, None]:
-    """从消息对象中提取图片数据，用于 RM.register()。返回 None 表示非图片消息。"""
-    if isinstance(message, bytes):
-        return message
-    if isinstance(message, str):
-        if _is_image_string(message):
-            return message
-        return None
-    if isinstance(message, Message):
-        if message.type == "image" and message.data is not None:
-            data = message.data
-            if isinstance(data, (str, bytes)):
-                return data
-        return None
-    if isinstance(message, (list, tuple)):
-        for m in message:
-            result = _extract_image_data(m)
-            if result is not None:
-                return result
-    return None
-
-
-def _extract_video_data(message: Any) -> Union[str, bytes, None]:
-    """从消息对象中提取视频数据，用于 RM.register_video()。返回 None 表示非视频消息。"""
-    if isinstance(message, Message):
-        if message.type == "video" and message.data is not None:
-            data = message.data
-            if isinstance(data, (str, bytes)):
-                return data
-        return None
-    if isinstance(message, (list, tuple)):
-        for m in message:
-            result = _extract_video_data(m)
-            if result is not None:
-                return result
-    return None
-
-
-def _extract_audio_data(message: Any) -> Union[str, bytes, None]:
-    """从消息对象中提取音频数据，用于 RM.register_audio()。返回 None 表示非音频消息。"""
-    if isinstance(message, Message):
-        if message.type == "record" and message.data is not None:
-            data = message.data
-            if isinstance(data, (str, bytes)):
-                return data
-        return None
-    if isinstance(message, (list, tuple)):
-        for m in message:
-            result = _extract_audio_data(m)
-            if result is not None:
-                return result
-    return None
-
-
-def _message_contains_image(message: Any) -> bool:
-    """检查消息对象是否包含图片段（image segment）。"""
-    return _extract_image_data(message) is not None
-
-
 def _message_to_text(message: Any) -> str:
     """将纯文字 Message 对象转为字符串，避免将图片数据序列化。"""
     if isinstance(message, str):
@@ -284,11 +231,13 @@ def _remember_mcp_image_ids(extra: Dict[str, object], image_ids: List[str]) -> N
             bucket.append(iid)
 
 
-def _append_mcp_av_notes(parts: List[str], audio_ids: List[str], video_ids: List[str]) -> None:
+def _append_mcp_av_notes(parts: List[str], audio_ids: List[str], video_ids: List[str], file_ids: List[str]) -> None:
     if audio_ids:
         parts.append(f"[已生成 {len(audio_ids)} 个音频，MCP 结果未附带音频字节。]")
     if video_ids:
         parts.append(f"[已生成 {len(video_ids)} 个视频，MCP 结果未附带视频字节。]")
+    if file_ids:
+        parts.append(f"[已生成 {len(file_ids)} 个文件，MCP 结果未附带文件字节。]")
 
 
 def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> str:
@@ -299,9 +248,10 @@ def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> 
     image_ids = _ctx_str_list(call_ctx, "image_ids")
     audio_ids = _ctx_str_list(call_ctx, "audio_ids")
     video_ids = _ctx_str_list(call_ctx, "video_ids")
+    file_ids = _ctx_str_list(call_ctx, "file_ids")
     if _is_mcp_extra(extra):
         _remember_mcp_image_ids(extra, image_ids)
-        _append_mcp_av_notes(parts, audio_ids, video_ids)
+        _append_mcp_av_notes(parts, audio_ids, video_ids, file_ids)
         return "\n".join(parts)
     if image_ids:
         id_list = ", ".join(image_ids)
@@ -320,6 +270,12 @@ def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> 
         parts.append(
             f"[已生成 {len(video_ids)} 个视频，资源ID: {id_list}。"
             "如需发送给用户，请调用 send_message_by_ai 传入 video_id。]"
+        )
+    if file_ids:
+        id_list = ", ".join(file_ids)
+        parts.append(
+            f"[已生成 {len(file_ids)} 个文件，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 file_ids。]"
         )
     return "\n".join(parts)
 
@@ -341,6 +297,7 @@ async def run_trigger_via_mockbot(real_bot: Bot, fake_ev: Event, func: Any, extr
         "image_ids": [],
         "audio_ids": [],
         "video_ids": [],
+        "file_ids": [],
         "bot_messages": [],
     }
     token = _AI_CALL_CONTEXT.set(call_ctx)
@@ -449,6 +406,7 @@ def _register_trigger_as_ai_tool(
             "image_ids": [],  # bot.send 拦截到的图片，通过 RM 注册后的资源 ID
             "audio_ids": [],  # bot.send 拦截到的音频，通过 RM 注册后的资源 ID
             "video_ids": [],  # bot.send 拦截到的视频，通过 RM 注册后的资源 ID
+            "file_ids": [],  # bot.send 拦截到的文件，通过 RM.register_file 登记的资源 ID
             "bot_messages": [],  # bot.send(str/Message(text)) 拦截到的文字
         }
 
@@ -471,10 +429,11 @@ def _register_trigger_as_ai_tool(
         image_ids = _ctx_str_list(call_ctx, "image_ids")
         audio_ids = _ctx_str_list(call_ctx, "audio_ids")
         video_ids = _ctx_str_list(call_ctx, "video_ids")
+        file_ids = _ctx_str_list(call_ctx, "file_ids")
         if _is_mcp_extra(ctx.deps.extra):
             # 是否真的附上要等字节校验。这里先不说「已附带」，避免外链失败时模型不再去取图。
             _remember_mcp_image_ids(ctx.deps.extra, image_ids)
-            _append_mcp_av_notes(parts, audio_ids, video_ids)
+            _append_mcp_av_notes(parts, audio_ids, video_ids, file_ids)
         else:
             if image_ids:
                 image_count = len(image_ids)
@@ -498,6 +457,13 @@ def _register_trigger_as_ai_tool(
                 parts.append(
                     f"[已生成 {video_count} 个视频，资源ID: {id_list}。"
                     f"请调用 send_message_by_ai 工具传入 video_id 将视频发送给用户，"
+                    f"或根据用户意图决定是否发送。]"
+                )
+            if file_ids:
+                id_list = ", ".join(file_ids)
+                parts.append(
+                    f"[已生成 {len(file_ids)} 个文件，资源ID: {id_list}。"
+                    f"请调用 send_message_by_ai 工具传入 file_ids 将文件发送给用户，"
                     f"或根据用户意图决定是否发送。]"
                 )
 

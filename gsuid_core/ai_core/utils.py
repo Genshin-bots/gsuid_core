@@ -377,17 +377,17 @@ def _strip_special_control_tokens(text: str) -> str:
 # 内部资源句柄（纯内部寻址 ID，绝不该进正文；
 # hex）、models.py 出 res_（12 位 hex）。
 _RESOURCE_HANDLE_RE = re.compile(
-    r"`*\b(?:res|img|aud|vid)_[0-9a-fA-F]{6,}\b`*"
+    r"`*\b(?:res|img|aud|vid|fil)_[0-9a-fA-F]{6,}\b`*"
     r"|`*\bdlg_[0-9a-fA-F-]{8,}\b`*"
 )
-_RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_", "dlg_")
+_RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_", "fil_", "dlg_")
 
 
 def _strip_resource_handles(text: str) -> str:
     """剥离泄漏进用户可见文本里的内部资源句柄（``res_xxx`` / ``img_xxx`` 等）。
 
     ``create_subagent`` / kanban 完成回执会带 ``res_deb5b2e0d2a4`` 这类句柄，供主人格用
-    ``send_message_by_ai(image_id=res_xxx)`` 发图 / 发文件。弱模型有时不发内容、反而把
+    ``send_message_by_ai(image_ids=res_xxx)`` 发图 / ``file_ids=res_xxx`` 发文件。弱模型有时不发内容、反而把
     **句柄本身**写进正文（"详细的放那里面了 res_xxx 自己看吧"）——用户看到一串没意义的
     内部 ID，既无用又出戏。这些句柄是纯内部寻址、用户永远不该看到，命中即抹掉。
 

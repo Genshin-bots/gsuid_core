@@ -92,9 +92,9 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 一律在仓库根目录（含 `pyproject.toml`）执行。推荐 **uv**。
 
 ```sh
-# 安装
+# 安装（开发者必须带 --dev，否则不装 ruff / basedpyright / pytest）
 uv python install 3.12
-uv sync --python 3.12
+uv sync --python 3.12 --dev
 uv run python -m ensurepip
 
 # 启动（等价：poetry run core / pdm run core / python -m gsuid_core.core）
@@ -103,8 +103,9 @@ uv run core --dev                          # 只加载目录名以 -dev 结尾�
 uv run core --host 0.0.0.0 --port 9527     # CLI 覆盖不写回文件
 ```
 
-`dev` 组是 uv 的默认组（`pyproject.toml` 的 `default-groups`），所以 `uv sync` 会连
-ruff / basedpyright / pytest 一起装，交付闸才开箱可跑。**生产镜像与部署环境用
+`dev` 组**不是**默认组（`pyproject.toml` 的 `default-groups = []`）：用户 `uv sync` /
+`uv run core` 不装 ruff / basedpyright / pytest 等测试工具。开发者跑交付闸必须显式
+`uv sync --dev`，或给单条命令加 `uv run --dev`。**生产镜像与部署环境用
 `uv sync --no-dev`**（`Dockerfile` 已如此），别把测试工具打进线上 venv。
 
 ```sh
@@ -171,10 +172,10 @@ poetry（2.1.4）读不出 `[dependency-groups]`，会把 dev 组（pytest / ruf
 **每次改动在向用户宣告完成之前**，必须在仓库根目录把下面全部跑绿。缺一项、失败一项都不许交付：
 
 ```sh
-uv run ruff check gsuid_core tests eval
-uv run ruff format --check gsuid_core tests eval
-uv run pytest tests -q
-uv run basedpyright
+uv run --dev ruff check gsuid_core tests eval
+uv run --dev ruff format --check gsuid_core tests eval
+uv run --dev pytest tests -q
+uv run --dev basedpyright
 ```
 
 - **CI**：当前仓库 CI 含 i18n 守门（`tests/test_logger_i18n.py`）。`pytest tests` 已覆盖；若只改了触及面，至少跑触及测试 **加上** `tests/test_logger_i18n.py`。

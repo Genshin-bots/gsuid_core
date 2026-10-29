@@ -838,8 +838,9 @@ async def artifact_put(
        传 ``file_path``（相对路径默认相对 workspace，也可以传 workspace 内绝对
        路径）。框架**直接登记 workspace 内的原文件路径**（不再复制副本，所有
        中间代码 + 最终产物都在同一个 workspace 文件夹里方便用户查看），并按后缀
-       自动推断 mime，主人格之后可以直接 `send_message_by_ai(image_id="res_xxx")`
-       把这张图 / 这份文件原样发给主人。文件必须在 workspace 内，越界路径会被拒绝。
+       自动推断 mime，主人格之后可以直接 `send_message_by_ai` 把这张图 / 这份文件
+       原样发给主人（图片用 `image_ids="res_xxx"`，文件用 `file_ids="res_xxx"`，
+       单文件 ≤10MB）。文件必须在 workspace 内，越界路径会被拒绝。
        ✅ 正确：`artifact_put(file_path="love_heart.png", summary="渐变彩色爱心")`
        ❌ 错误：`artifact_put(payload='{"file": "x.png", "size": 17842}')` ← 这只是
           一段 JSON 元数据，**不是图片**；主人格 `send_message_by_ai` 时拿到的不是

@@ -510,7 +510,7 @@ HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 
 
 > 🧹 **内部资源句柄不许泄漏给用户——且要"补发"而非"留断链"**（`_resolve_and_deliver_leaked_handles`，
 > 2026-07-15）。`create_subagent` / kanban 回执带 `res_deb5b2e0d2a4` 这类句柄，供主人格
-> `send_message_by_ai(image_id=res_xxx)` 发图 / 发文件。弱模型有时**不发内容、反而把句柄本身写进
+> `send_message_by_ai(image_ids=res_xxx)` 发图 / `file_ids=res_xxx` 发文件（≤10MB）。弱模型有时**不发内容、反而把句柄本身写进
 > 正文**（"详细的放那里面了 res_xxx 自己看吧"）。**光删 ID 反而更怪**——剩下"放那里面了…自己看"
 > 指向空气；图片句柄更糟：模型压根没发图，删了 ID 用户啥也没有。故：**当正文除句柄外只剩一句短
 > 指路（<120 字，说明模型没真正交付内容）时，把句柄所指资源补发出去**——图片 artifact（`res_` 落盘

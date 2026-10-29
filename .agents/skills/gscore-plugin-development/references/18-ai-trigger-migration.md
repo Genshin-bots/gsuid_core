@@ -104,7 +104,8 @@ return "运势结果已生成"
 - `bot.send(MessageSegment.image(...))` → 返回的 `Message(type="image")` 被检测为图片，通过 `RM.register()` 注册
 - `bot.send("base64://...")` / `bot.send("https://...")` → 以这些前缀开头的字符串被识别为图片，通过 `RM.register()` 注册
 - `bot.send(str)` 纯文字 → 文字被收集，作为工具返回值传回给 AI
-- `bot.send([text_msg, image_msg])` 混合列表 → **只要包含图片段，整个列表归为图片**，文字部分不返回给 AI
+- `bot.send(MessageSegment.file(...))` → `RM.register_file()` 登记，返回 `fil_` 资源 ID（≤10MB），AI 用 `send_message_by_ai(file_ids=[...])` 发出
+- `bot.send([text_msg, image_msg])` 混合列表 → **逐段处理**：图片登记 `img_` ID，文字也一并收集返回给 AI
 - AI 收到工具返回值（含资源 ID）后，决定是否调用 `send_message_by_ai(image_id=...)` 发出图片
 - 资源 ID 在 RM 中持久存储，AI 可在后续轮次中再次发送
 - 用户直接触发时，`bot` 是真实 `Bot`，`bot.send` 立即发送，行为不变
@@ -119,9 +120,10 @@ return "运势结果已生成"
 | `base64://` 字符串 | `await bot.send("base64://iVBOR...")` | ✅ 检测为图片字符串，`RM.register()` 注册 |
 | `http(s)://` URL | `await bot.send("https://example.com/img.png")` | ✅ 检测为图片 URL，`RM.register()` 注册 |
 | 纯文字字符串 | `await bot.send("查询成功")` | ✅ 检测为文字，返回给 AI |
-| `[text, image]` 混合列表 | `await bot.send([MessageSegment.text("结果"), MessageSegment.image(img)])` | ⚠️ 整体归为图片，`RM.register()` 注册，文字丢失 |
+| `MessageSegment.file()` | `await bot.send(MessageSegment.file(path, "报告.pdf"))` | ✅ `RM.register_file()` 登记 `fil_` ID（>10MB 不登记，改记提示文字） |
+| `[text, image]` 混合列表 | `await bot.send([MessageSegment.text("结果"), MessageSegment.image(img)])` | ✅ 逐段处理：图片登记 `img_` ID，文字段也返回给 AI |
 
-**⚠️ 混合列表的注意事项**：当 `bot.send()` 传入的列表中同时包含文字和图片 Message 时，MockBot 会将整个列表归类为图片。这意味着列表中的文字部分**不会**被返回给 AI。如果需要让 AI 同时获得文字信息，应在 `bot.send()` 之前单独调用 `ai_return()` 注入文字摘要。
+**⚠️ 混合列表**：`bot.send()` 传入的多段列表逐段处理——媒体段各自登记资源 ID，文字段拼成一条返回给 AI，不再出现"只发图、丢文字"。
 
 ---
 

@@ -17,10 +17,12 @@
 
 **`MockBot`**：AI 调用触发器时，`bot` 对象被替换为 `MockBot`：
 - `bot.send(bytes)` / `bot.send(Message(type="image"))` / `bot.send("base64://...")` → 通过 `RM.register()` 注册图片，返回资源 ID（如 `img_a1b2c3d4`），不传给 AI 也不发送给用户
+- `bot.send(Message(type="file"))` → 通过 `RM.register_file()` 登记文件（`"名|payload"`，≤10MB），返回 `fil_` 资源 ID
 - `bot.send(str)` / `bot.send(纯文字 Message)` → 文字被收集，作为工具返回值传回给 AI
+- `bot.send([多段混合列表])` → 逐段处理：媒体段登记资源 ID，文字段拼成一条返回给 AI
 - `bot.send_option(reply, buttons)` → reply 走 `send()` 拦截，buttons 忽略
 - `bot.receive_resp(reply, ...)` → reply 走 `send()` 拦截，返回 `None`（AI 不支持交互式等待）
-- AI 收到工具返回值（含资源 ID）后，决定是否调用 `send_message_by_ai(image_id=...)` 发送图片
+- AI 收到工具返回值（含资源 ID）后，决定是否调用 `send_message_by_ai(image_id=...)` 发送图片、`file_ids=[...]` 发送文件
 
 **权限检查**：AI 调用触发器工具时，系统会自动检查 `plugins.pm` 和 `sv.pm` 权限，与用户直接触发一致。低权限用户通过 AI 调用高权限命令会收到 "❌ 权限不足" 错误。配置通过 webconsole 修改后实时生效。
 
