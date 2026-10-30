@@ -165,6 +165,10 @@ class RunOnceState:
     # 工具
     expose_dynamic: bool = False
     tool_names: list[str] = field(default_factory=list)
+    #: 渐进暴露下只提示不挂载的本轮种子（find_tools 可按名装回）
+    hinted_seed_names: list[str] = field(default_factory=list)
+    #: 本 run 已记入 tools_change 的 find_tools 挂载名
+    find_tools_logged: set[str] = field(default_factory=set)
 
     # 流式统计 / 模型
     req_start: float = 0.0

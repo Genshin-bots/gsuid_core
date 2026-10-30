@@ -296,3 +296,12 @@ def autonomy_proactive_fact_line(facts: list[str], resources: list[str]) -> str:
         f"{AUTONOMY_PROACTIVE_FACT_PREFIX}{joined_facts}{res_hint}。"
         "你只能基于上述已核验的事实向对方分享或关心，严禁声称完成了上述列表之外的任何操作。）"
     )
+
+
+def turn_seed_hint_line(items: str) -> str:
+    """items 是「`名`：简介」用分号接好的串。必须单行，入史前按前缀剥掉。"""
+    return (
+        "\n\n（系统提示：本轮检索到可能对口、但还没挂载的工具："
+        + items
+        + '。要用时先调 find_tools(need="工具名") 挂上，下一步再调用；用不上就忽略，禁止对用户念工具名。）'
+    )

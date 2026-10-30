@@ -289,6 +289,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self._session_toolset_frozen: Optional[List[str]] = None
         self._session_toolset_tags: Optional[frozenset[str]] = None
         self._session_appended_tools: List[str] = []
+        self._last_logged_tool_names: Optional[List[str]] = None
+        self._last_run_find_tools_names: List[str] = []
         self.max_history = _max_history
         self.system_prompt = system_prompt
         # 稳定前缀构建时刻：ai_router 按 TTL 原地刷新 system_prompt（O-3 慢变上下文防僵化）

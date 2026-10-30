@@ -405,29 +405,45 @@ async def align_seeds_to_context_plugin(
     plugin: str,
     query: str,
     scope: Optional["ToolScope"] = None,
+    *,
+    hard: bool = True,
 ) -> ToolList:
-    """锁定插件时丢掉其它插件的工具，并补到至多 4 个该插件工具。
+    """锁定插件时按 hard 收敛种子，并补到至多 4 个该插件工具。
 
+    hard=True（当前句点名）：丢掉其它插件的工具，撤阈值深召回补齐。
+    hard=False（背景猜测）：保留全部种子，深召回仍按正常阈值只补对口工具。
     人格作用域关掉该插件时不补。无插件工具保留。
     """
     if not plugin:
         return found
     if scope is not None and not scope.plugin_enabled(plugin):
         return [tool for tool in found if scope.tool_enabled(tool.name)]
-    kept = [tool for tool in found if _tool_plugin(tool.name) in _NEUTRAL_PLUGINS | {plugin}]
+    if hard:
+        kept = [tool for tool in found if _tool_plugin(tool.name) in _NEUTRAL_PLUGINS | {plugin}]
+    else:
+        kept = list(found)
     if scope is not None and not scope.is_open:
         kept = [tool for tool in kept if scope.tool_enabled(tool.name)]
     have = {tool.name for tool in kept}
     plugin_count = sum(1 for tool in kept if _tool_plugin(tool.name) == plugin)
     if plugin_count >= _LOCKED_PLUGIN_FILL:
         return kept
-    deep = await search_tools(
-        query=query,
-        limit=_ENTITY_ROUTE_DEEP_RECALL,
-        threshold=0.0,
-        exclude_names=have,
-        scope=scope,
-    )
+    if hard:
+        deep = await search_tools(
+            query=query,
+            limit=_ENTITY_ROUTE_DEEP_RECALL,
+            threshold=0.0,
+            exclude_names=have,
+            scope=scope,
+        )
+    else:
+        # 背景猜测只是先验：不撤阈值，只把语义对口的插件工具补进来。
+        deep = await search_tools(
+            query=query,
+            limit=_ENTITY_ROUTE_DEEP_RECALL,
+            exclude_names=have,
+            scope=scope,
+        )
     for tool in deep:
         if _tool_plugin(tool.name) != plugin or tool.name in have:
             continue

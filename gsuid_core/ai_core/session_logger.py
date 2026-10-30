@@ -169,6 +169,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "tool_call",
         "tool_return",
         "tools_list",
+        "tools_change",
         # 统计 / 节点 / 错误
         "token_usage",
         "node_transition",
@@ -935,6 +936,30 @@ class AISessionLogger:
     def log_tools_list(self, tools: List[str]) -> None:
         """记录本次传给 AI 的工具列表（去重后）"""
         self._add_entry("tools_list", {"tools": tools})
+
+    def log_tools_change(
+        self,
+        *,
+        source: Literal["assembly", "find_tools"],
+        added: List[str],
+        removed: List[str],
+        hinted: List[str],
+        total: int,
+        from_find_tools: List[str],
+        tool_call_id: str = "",
+    ) -> None:
+        """本轮工具列表变化：装配 diff 或 find_tools 挂载。"""
+        data: Dict[str, Any] = {
+            "source": source,
+            "added": added,
+            "removed": removed,
+            "hinted": hinted,
+            "total": total,
+            "from_find_tools": from_find_tools,
+        }
+        if tool_call_id:
+            data["tool_call_id"] = tool_call_id
+        self._add_entry("tools_change", data)
 
     def log_node_transition(self, node_type: str, details: Optional[Dict[str, Any]] = None) -> None:
         """记录 Agent 节点状态转换（如 ModelRequestNode / CallToolsNode / End）"""

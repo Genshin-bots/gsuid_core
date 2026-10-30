@@ -423,13 +423,22 @@ async def find_tools(
                 return "⚠️ 工具检索功能未启用，无法动态加载工具。"
             family_tools = []
         from gsuid_core.ai_core.rag.tools import align_seeds_to_context_plugin
-        from gsuid_core.ai_core.entity_index import ALIAS_ROUTE_TEXT_KEY, ALIAS_PLUGIN_EXTRA_KEY
+        from gsuid_core.ai_core.entity_index import (
+            ALIAS_ROUTE_TEXT_KEY,
+            ALIAS_PLUGIN_EXTRA_KEY,
+            ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY,
+        )
 
         _alias_plugin = ""
         if ALIAS_PLUGIN_EXTRA_KEY in ctx.deps.extra:
             _raw_plugin = ctx.deps.extra[ALIAS_PLUGIN_EXTRA_KEY]
             if isinstance(_raw_plugin, str):
                 _alias_plugin = _raw_plugin
+        _alias_hard = False
+        if ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY in ctx.deps.extra:
+            _raw_explicit = ctx.deps.extra[ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY]
+            if isinstance(_raw_explicit, bool):
+                _alias_hard = _raw_explicit
         _route = need
         if ALIAS_ROUTE_TEXT_KEY in ctx.deps.extra:
             _raw_route = ctx.deps.extra[ALIAS_ROUTE_TEXT_KEY]
@@ -437,7 +446,9 @@ async def find_tools(
                 _route = _raw_route.strip()
         merged = _prepend_tools(pinned, family_tools)
         if _alias_plugin:
-            merged = await align_seeds_to_context_plugin(merged, _alias_plugin, _route, ctx.deps.tool_scope)
+            merged = await align_seeds_to_context_plugin(
+                merged, _alias_plugin, _route, ctx.deps.tool_scope, hard=_alias_hard
+            )
         if _scope is not None and not _scope.is_open:
             merged = [tool for tool in merged if _scope.tool_enabled(tool.name)]
         family_tools = merged
@@ -519,7 +530,7 @@ async def find_tools(
                 continue
             if not _node_on_topic(need, node_id):
                 continue
-            if _alias_plugin and not _node_plugin_ok(node_id, _alias_plugin):
+            if _alias_hard and _alias_plugin and not _node_plugin_ok(node_id, _alias_plugin):
                 continue
             hit = _node_hit(node_id, float(2000 - idx))
             if hit is not None:
@@ -530,7 +541,7 @@ async def find_tools(
                 continue
             if not _node_on_topic(need, node_id):
                 continue
-            if _alias_plugin and not _node_plugin_ok(node_id, _alias_plugin):
+            if _alias_hard and _alias_plugin and not _node_plugin_ok(node_id, _alias_plugin):
                 continue
             hit = _node_hit(node_id, float(1500 - idx))
             if hit is not None:

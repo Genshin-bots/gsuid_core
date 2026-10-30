@@ -600,6 +600,7 @@ class SettlePhase(RunOnceHost):
             self.history.extend(_new_msgs)
             _ctx_dyn = st.context
             if _ctx_dyn is not None:
+                self._last_run_find_tools_names = sorted(_ctx_dyn.dynamic_tool_names)
                 for _dn in _ctx_dyn.dynamic_tool_names:
                     if _dn and _dn not in self._session_appended_tools:
                         self._session_appended_tools.append(_dn)

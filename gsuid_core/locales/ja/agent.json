@@ -146,6 +146,7 @@
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ トリガーノード: CallToolsNode",
   "log.agent.trigger_node_modelrequestnode": "[GsCoreAIAgent] ⚡ トリガーノード: ModelRequestNode",
   "log.agent.turn_seed_exposed": "[GsCoreAIAgent] 今ターンのシード {n} 件（スナップショット外）: {names}",
+  "log.agent.turn_seed_hinted": "[GsCoreAIAgent] 今ターンのシード {n} 件（ヒントのみ、find_tools でマウント）: {names}",
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] ユーザーメッセージ: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 動画 {p0} を {p1} 枚のフレームに抽出しました（model_support に video がありません）",
   "log.agent.video_openai_file_inline": "[GsCoreAIAgent] 動画 {p0} を OpenAI file(base64) としてメッセージに含めました（{size:.1f}MB）",

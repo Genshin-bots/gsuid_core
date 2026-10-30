@@ -259,7 +259,11 @@ def test_find_tools_matrix_need_loads_plugin_not_research() -> None:
 
 def test_find_tools_alias_lock_rejects_other_plugin_and_unlocks_folded_tool() -> None:
     """need 写成别的游戏时，锁定插件的 exclusive 工具仍可调用，对方代理不出现。"""
-    from gsuid_core.ai_core.entity_index import ALIAS_ROUTE_TEXT_KEY, ALIAS_PLUGIN_EXTRA_KEY
+    from gsuid_core.ai_core.entity_index import (
+        ALIAS_ROUTE_TEXT_KEY,
+        ALIAS_PLUGIN_EXTRA_KEY,
+        ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY,
+    )
     from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
 
     waves = _FakeTool("send_waves_wiki")
@@ -268,8 +272,16 @@ def test_find_tools_alias_lock_rejects_other_plugin_and_unlocks_folded_tool() ->
     async def fake_search(**_kwargs: object) -> list[_FakeTool]:
         return [waves]
 
-    async def fake_align(found: list[_FakeTool], plugin: str, query: str, scope: object = None) -> list[_FakeTool]:
+    async def fake_align(
+        found: list[_FakeTool],
+        plugin: str,
+        query: str,
+        scope: object = None,
+        *,
+        hard: bool = False,
+    ) -> list[_FakeTool]:
         assert plugin == "GenshinUID"
+        assert hard is True
         assert "风仙" in query
         assert found == [waves]
         return [kb]
@@ -308,6 +320,7 @@ def test_find_tools_alias_lock_rejects_other_plugin_and_unlocks_folded_tool() ->
         extra={
             EXPOSED_TOOLS_EXTRA_KEY: ["find_tools"],
             ALIAS_PLUGIN_EXTRA_KEY: "GenshinUID",
+            ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY: True,
             ALIAS_ROUTE_TEXT_KEY: "风仙和沃雅妮莎都用什么武器比较好啊",
         },
         blocked_tool_names={"search_genshin_kb"},
@@ -350,6 +363,77 @@ def test_find_tools_alias_lock_rejects_other_plugin_and_unlocks_folded_tool() ->
     assert "wuwa_agent" not in out
     assert "search_genshin_kb" in ctx.deps.dynamic_tool_names
     assert "search_genshin_kb" in ctx.deps.alias_callable_tools
+
+
+def test_find_tools_soft_alias_lock_keeps_other_plugin_tool() -> None:
+    """锁来自背景猜测（无 explicit 标记）时，别家对口工具不被丢出回执。"""
+    from gsuid_core.ai_core.entity_index import ALIAS_PLUGIN_EXTRA_KEY
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    serp = _FakeTool("serpapi_reverse_image_search")
+
+    async def fake_search(**_kwargs: object) -> list[_FakeTool]:
+        return [serp]
+
+    async def fake_align(
+        found: list[_FakeTool],
+        plugin: str,
+        query: str,
+        scope: object = None,
+        *,
+        hard: bool = True,
+    ) -> list[_FakeTool]:
+        assert plugin == "GenshinUID"
+        assert hard is False
+        return found
+
+    def fake_find(name: str) -> SimpleNamespace | None:
+        if name == "serpapi_reverse_image_search":
+            return SimpleNamespace(
+                name=name,
+                category="common",
+                plugin="SerpApi",
+                hide_from_main=False,
+                covers=["以图搜图"],
+                description="反查图片来源",
+                retrieval_text="serpapi_reverse_image_search 以图搜图 反查图片来源",
+            )
+        return None
+
+    async def _empty_nodes(_need: str, *, limit: int = 5) -> list[str]:
+        return []
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(
+        extra={
+            EXPOSED_TOOLS_EXTRA_KEY: ["find_tools"],
+            ALIAS_PLUGIN_EXTRA_KEY: "GenshinUID",
+        },
+        blocked_tool_names=set(),
+    )
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.rag.tools.align_seeds_to_context_plugin", fake_align),
+            patch("gsuid_core.ai_core.register.find_tool_base", fake_find),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                _empty_nodes,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _need: [],
+            ),
+        ):
+            return await find_tools(ctx, "以图搜图，反查图片来源")
+
+    out = asyncio.run(_run())
+    assert "serpapi_reverse_image_search" in out
+    assert "serpapi_reverse_image_search" in ctx.deps.dynamic_tool_names
 
 
 def _countdown_tb() -> SimpleNamespace:

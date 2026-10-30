@@ -146,6 +146,7 @@
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ Trigger node: CallToolsNode",
   "log.agent.trigger_node_modelrequestnode": "[GsCoreAIAgent] ⚡ Trigger node: ModelRequestNode",
   "log.agent.turn_seed_exposed": "[GsCoreAIAgent] Turn seeds {n} (not frozen): {names}",
+  "log.agent.turn_seed_hinted": "[GsCoreAIAgent] Turn seeds {n} (hinted only, mount via find_tools): {names}",
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] User message: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] Video {p0} has been frame-sampled into {p1} images (model_support does not declare video)",
   "log.agent.video_openai_file_inline": "[GsCoreAIAgent] Video {p0} attached as OpenAI file(base64) ({size:.1f}MB)",

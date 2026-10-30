@@ -629,6 +629,23 @@ class LoopPhase(RunOnceHost):
                     )
                 )
                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
+                if (part.tool_name or "") == "find_tools":
+                    _new_mounted = [
+                        _n
+                        for _n in sorted(_require_context(st).dynamic_tool_names)
+                        if _n not in st.tool_names and _n not in st.find_tools_logged
+                    ]
+                    if _new_mounted:
+                        self._session_logger.log_tools_change(
+                            source="find_tools",
+                            added=_new_mounted,
+                            removed=[],
+                            hinted=[],
+                            total=len(st.tool_names) + len(st.find_tools_logged) + len(_new_mounted),
+                            from_find_tools=[],
+                            tool_call_id=part.tool_call_id,
+                        )
+                        st.find_tools_logged.update(_new_mounted)
                 _trace_out = part.content if isinstance(part.content, str) else str(part.content or "")
                 if _trace_out.startswith("base64://") or isinstance(part.content, bytes):
                     _trace_out = "[binary]"

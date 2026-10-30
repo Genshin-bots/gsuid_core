@@ -34,7 +34,7 @@ from gsuid_core.ai_core.rag.tools import (
 )
 from gsuid_core.ai_core.tool_risk import skill_tool_visible
 from gsuid_core.ai_core.tool_safety import build_tool_safety_capability
-from gsuid_core.ai_core.control.lines import STATE_PERSISTED_FAMILY_HINT
+from gsuid_core.ai_core.control.lines import STATE_PERSISTED_FAMILY_HINT, turn_seed_hint_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
@@ -151,6 +151,27 @@ class _NamedTool(Protocol):
 _SeedT = TypeVar("_SeedT", bound=_NamedTool)
 
 
+def pick_turn_seed_names(
+    tools: Sequence[_NamedTool],
+    seeds: Sequence[_NamedTool],
+    *,
+    exclusive: set[str],
+    cap: int = _TURN_SEED_CAP,
+) -> list[str]:
+    """append_turn_seeds 的同款挑选，只算不装：跳过已装/空名/exclusive，至多 cap 个。"""
+    seen = {tool.name for tool in tools}
+    picked: list[str] = []
+    for tool in seeds:
+        if len(picked) >= cap:
+            break
+        name = tool.name
+        if not name or name in seen or name in exclusive:
+            continue
+        seen.add(name)
+        picked.append(name)
+    return picked
+
+
 def append_turn_seeds(
     tools: list[_SeedT],
     seeds: Sequence[_SeedT],
@@ -159,18 +180,14 @@ def append_turn_seeds(
     cap: int = _TURN_SEED_CAP,
 ) -> list[str]:
     """把本轮种子接到 schema 末尾。调用方不得把这些名字写入会话快照。"""
-    seen = {tool.name for tool in tools}
-    added: list[str] = []
+    picked = pick_turn_seed_names(tools, seeds, exclusive=exclusive, cap=cap)
+    by_name: dict[str, _SeedT] = {}
     for tool in seeds:
-        if len(added) >= cap:
-            break
-        name = tool.name
-        if not name or name in seen or name in exclusive:
-            continue
-        tools.append(tool)
-        seen.add(name)
-        added.append(name)
-    return added
+        if tool.name not in by_name:
+            by_name[tool.name] = tool
+    for name in picked:
+        tools.append(by_name[name])
+    return picked
 
 
 # 回想核内只有 search_cognition；attach_article 走 find_tools，避免每轮写工具进 schema。
@@ -556,6 +573,7 @@ class ToolsPhase(RunOnceHost):
                     from gsuid_core.ai_core.entity_index import (
                         ALIAS_ROUTE_TEXT_KEY,
                         ALIAS_PLUGIN_EXTRA_KEY,
+                        ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY,
                         lock_plugin,
                         strip_surfaces,
                         plugins_in_text,
@@ -576,12 +594,15 @@ class ToolsPhase(RunOnceHost):
                         from gsuid_core.ai_core.turn_pipeline import build_group_history_block
 
                         _bg = build_group_history_block(st.ev)
-                    _ctx_plugin = lock_plugin(_scan, _bg)
-                    if _ctx_plugin:
-                        st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _ctx_plugin
+                    _lock = lock_plugin(_scan, _bg)
+                    if _lock.plugin:
+                        st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _lock.plugin
+                        st.run_extra[ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY] = _lock.explicit
                         if _scan:
                             st.run_extra[ALIAS_ROUTE_TEXT_KEY] = _scan
-                        turn_seeds = await align_seeds_to_context_plugin(turn_seeds, _ctx_plugin, _scan or qy, _scope)
+                        turn_seeds = await align_seeds_to_context_plugin(
+                            turn_seeds, _lock.plugin, _scan or qy, _scope, hard=_lock.explicit
+                        )
                     if _call_self:
                         _routed = plugins_in_text(_scan)
                         # 向量检索命中不算。要实体路由真正装上该插件的工具。
@@ -664,19 +685,67 @@ class ToolsPhase(RunOnceHost):
                                 )
                             )
 
-                _added_seeds = append_turn_seeds(
-                    st.tools,
-                    turn_seeds,
-                    exclusive=_capability_exclusive_tool_names(),
-                )
-                if _added_seeds:
-                    logger.debug(
-                        i18n_t(
-                            "log.agent.turn_seed_exposed",
-                            n=len(_added_seeds),
-                            names=_added_seeds,
-                        )
+                # 渐进式工具暴露：PIN 恒在 schema，是否调用交给模型。
+                if ENABLE_PROGRESSIVE_TOOLS:
+                    if any(t.name == "find_tools" for t in st.tools):
+                        st.expose_dynamic = True
+                    else:
+                        ft = find_tool_base("find_tools")
+                        if ft is not None:
+                            st.tools.append(ft.tool)
+                            st.expose_dynamic = True
+                    if st.expose_dynamic:
+                        logger.debug(i18n_t("log.agent.find_tools_progressive_exposure"))
+
+                if st.expose_dynamic:
+                    # 种子不进 schema：工具数组每轮变动会让前缀缓存从工具段起失效。
+                    # 改成当轮 user 侧一行提示，要哪个用 find_tools(need="确切名") 挂。
+                    _hint_picked = pick_turn_seed_names(
+                        st.tools,
+                        turn_seeds,
+                        exclusive=_capability_exclusive_tool_names(),
                     )
+                    if _hint_picked:
+                        from gsuid_core.ai_core.buildin_tools.find_tools_rank import tool_brief
+
+                        _hint_items: list[str] = []
+                        _hint_names: list[str] = []
+                        for _sn in _hint_picked:
+                            _stb = find_tool_base(_sn)
+                            if _stb is None:
+                                continue
+                            _brief = " ".join(
+                                tool_brief(covers=list(_stb.covers), description=_stb.description).split()
+                            )[:40]
+                            _hint_items.append(f"`{_sn}`：{_brief}")
+                            _hint_names.append(_sn)
+                        if _hint_items:
+                            st.hinted_seed_names = _hint_names
+                            st.final_user_message = _append_user_text(
+                                st.final_user_message,
+                                turn_seed_hint_line("；".join(_hint_items)),
+                            )
+                            logger.debug(
+                                i18n_t(
+                                    "log.agent.turn_seed_hinted",
+                                    n=len(_hint_names),
+                                    names=_hint_names,
+                                )
+                            )
+                else:
+                    _added_seeds = append_turn_seeds(
+                        st.tools,
+                        turn_seeds,
+                        exclusive=_capability_exclusive_tool_names(),
+                    )
+                    if _added_seeds:
+                        logger.debug(
+                            i18n_t(
+                                "log.agent.turn_seed_exposed",
+                                n=len(_added_seeds),
+                                names=_added_seeds,
+                            )
+                        )
 
                 _need_subagent = _did_strip_exclusive
                 deleg_pid = ""
@@ -685,7 +754,7 @@ class ToolsPhase(RunOnceHost):
                     if deleg_pid:
                         _need_subagent = True
                     elif not _need_subagent:
-                        _pool_names = {t.name for t in st.tools}
+                        _pool_names = {t.name for t in st.tools} | set(st.hinted_seed_names)
                         _domain_pid = _pool_overlaps_capability_agent(_pool_names)
                         if _domain_pid:
                             _need_subagent = True
@@ -700,18 +769,6 @@ class ToolsPhase(RunOnceHost):
                                 deleg_pid=deleg_pid or "exclusive_strip",
                             )
                         )
-
-                # 渐进式工具暴露：PIN 恒在 schema，是否调用交给模型。
-                if ENABLE_PROGRESSIVE_TOOLS:
-                    if any(t.name == "find_tools" for t in st.tools):
-                        st.expose_dynamic = True
-                    else:
-                        ft = find_tool_base("find_tools")
-                        if ft is not None:
-                            st.tools.append(ft.tool)
-                            st.expose_dynamic = True
-                    if st.expose_dynamic:
-                        logger.debug(i18n_t("log.agent.find_tools_progressive_exposure"))
 
                 logger.debug(
                     i18n_t(
@@ -781,6 +838,27 @@ class ToolsPhase(RunOnceHost):
 
         # 记录本次传给 AI 的工具列表
         self._session_logger.log_tools_list(st.tool_names)
+        # tools_change：与上一轮装配名单对比，只记有增删或有提示种子的轮次。
+        # 首轮无基线只记提示；aside 早退路径不动基线。
+        from gsuid_core.ai_core.prefix_probe import tools_diff
+
+        _prev_tool_names = self._last_logged_tool_names
+        _tc_added: list[str] = []
+        _tc_removed: list[str] = []
+        if _prev_tool_names is not None:
+            _tc_diff = tools_diff(_prev_tool_names, st.tool_names)
+            _tc_added = _tc_diff["added"]
+            _tc_removed = _tc_diff["removed"]
+        if _tc_added or _tc_removed or st.hinted_seed_names:
+            self._session_logger.log_tools_change(
+                source="assembly",
+                added=_tc_added,
+                removed=_tc_removed,
+                hinted=list(st.hinted_seed_names),
+                total=len(st.tool_names),
+                from_find_tools=[n for n in _tc_added if n in self._last_run_find_tools_names],
+            )
+        self._last_logged_tool_names = list(st.tool_names)
 
     async def _fire_tool_hooks(self, st: RunOnceState) -> None:
         """开火 H14（装配套件）与 H15（第三方钉/砍工具），每点之后收口一次。

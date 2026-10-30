@@ -595,6 +595,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `tool_call` | 工具调用请求 | tool_name, args, tool_call_id |
 | `tool_return` | 工具执行返回 | tool_name, content, tool_call_id |
 | `tools_list` | 传给 AI 的工具列表 | tools |
+| `tools_change` | 本轮工具列表变化 | source（`assembly` 装配 diff / `find_tools` 挂载）, added, removed, hinted（只提示未挂载的种子）, total, from_find_tools（added 中来自上一轮 find_tools 的名）, tool_call_id（仅 find_tools 来源） |
 | `text_output` | 模型直接输出文本 | content |
 | `output_block` | 话术闸、出站闸或收尾拦住、没有发出的台词 | reason（拦住当时的原因码）, reason_text（当时的中文说明）, content（原文，最长 500 字）, policy（当时的话术策略，可空）, tool_call_id（可空；有则挂在这次工具调用下） |
 | `result` | 单次 run 最终结果 | output, tool_calls。沉默或空输出时另有 silence_reason，以及写下时的中文 reason_text。没有这些字段的旧日志仍是一条结果 |
@@ -698,6 +699,7 @@ const url = `/api/ai/session_logs/detail?session_id=${encodeURIComponent(agent.s
 - **tool_call**: 工具调用卡片（显示工具名和参数）
 - **tool_return**: 工具返回卡片（显示结果摘要）
 - **tools_list**: 工具列表卡片（可折叠）
+- **tools_change**: 工具变化行（按 source 区分装配/挂载；展开按 added/removed/hinted 分组列出）
 - **text_output**: AI 文本气泡（左侧）
 - **system_injection**: 框架注入。有 `reason` 时是纠正轮原因码；没有该字段就只显示正文
 - **output_block**: 被拦住没发出的台词（展示 `reason` 与原文；原因码是拦住当时写下的，不随后续改判定而变）

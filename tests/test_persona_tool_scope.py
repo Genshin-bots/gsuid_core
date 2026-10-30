@@ -201,3 +201,37 @@ def test_align_seeds_replaces_foreign_plugin_with_locked_one(registry, monkeypat
     )
     assert [t.name for t in out] == ["genshin_kb"]
     assert queries == ["风仙和沃雅妮莎都用什么武器"]
+
+
+def test_align_seeds_background_guess_keeps_foreign_tools(registry, monkeypatch: pytest.MonkeyPatch) -> None:
+    """背景只猜到一个插件（软锁）：别家高分种子保留，深召回不撤阈值、只补对口工具。"""
+    reg = registry({"bar_a": ("Bar", ""), "foo_deep": ("Foo", "")})
+    calls: list[dict[str, object]] = []
+
+    async def fake_search_tools(**kwargs: object) -> list[FakeTool]:
+        calls.append(kwargs)
+        return [reg.by_name["foo_deep"].tool]
+
+    monkeypatch.setattr(rag_tools, "search_tools", fake_search_tools)
+    out = asyncio.run(
+        rag_tools.align_seeds_to_context_plugin(
+            [reg.by_name["bar_a"].tool],
+            "Foo",
+            "以图搜图",
+            None,
+            hard=False,
+        )
+    )
+    assert [t.name for t in out] == ["bar_a", "foo_deep"]
+    assert calls and ("threshold" not in calls[0] or calls[0]["threshold"] != 0.0)
+
+    denied = asyncio.run(
+        rag_tools.align_seeds_to_context_plugin(
+            [reg.by_name["bar_a"].tool],
+            "Foo",
+            "以图搜图",
+            ToolScope.from_spec(["*", "!Foo"]),
+            hard=False,
+        )
+    )
+    assert [t.name for t in denied] == ["bar_a"]

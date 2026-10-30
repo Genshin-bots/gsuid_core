@@ -9,6 +9,7 @@
 import pytest
 
 from gsuid_core.ai_core.entity_index import (
+    PluginLock,
     lock_plugin,
     lookup_surface,
     strip_surfaces,
@@ -147,14 +148,14 @@ def test_alias_binding_keeps_spoken_surface() -> None:
 
 
 def test_lock_plugin_prefers_names_in_the_current_sentence() -> None:
-    """当前句已经点名时，不继承上一句的另一个插件。两个插件同时出现则不锁。"""
+    """当前句点名是硬锁；只从最近对白继承的是软锁。两个插件同时出现则不锁。"""
     register_entity_surface("风仙", "薇斯纳", "GenshinUID")
     register_entity_surface("沃雅妮莎", "沃雅妮莎", "GenshinUID")
     register_entity_surface("维里奈", "维里奈", "XutheringWavesUID")
     utter = "风仙和沃雅妮莎都用什么武器比较好啊"
-    assert lock_plugin(utter, "维里奈深塔怎么打") == "GenshinUID"
-    assert lock_plugin("设个提醒", "维里奈深塔怎么打") == "XutheringWavesUID"
-    assert lock_plugin("风仙和维里奈用什么武器", "") == ""
+    assert lock_plugin(utter, "维里奈深塔怎么打") == PluginLock("GenshinUID", True)
+    assert lock_plugin("设个提醒", "维里奈深塔怎么打") == PluginLock("XutheringWavesUID", False)
+    assert lock_plugin("风仙和维里奈用什么武器", "") == PluginLock("", False)
 
 
 def test_strip_surfaces_drops_wake_word_not_inner_ascii() -> None:

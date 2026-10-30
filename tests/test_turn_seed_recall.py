@@ -6,7 +6,11 @@ import pytest
 
 from gsuid_core.ai_core import register as ai_register
 from gsuid_core.ai_core.rag import tools as rag_tools
-from gsuid_core.ai_core.agent_run.tools import append_turn_seeds, stabilize_session_tool_names
+from gsuid_core.ai_core.agent_run.tools import (
+    append_turn_seeds,
+    pick_turn_seed_names,
+    stabilize_session_tool_names,
+)
 
 
 @dataclass
@@ -167,6 +171,29 @@ def test_append_turn_seeds_keeps_send_and_skips_exclusive() -> None:
     )
     assert added == ["send_abyss_info"]
     assert [tool.name for tool in tools] == ["find_tools", "send_abyss_info"]
+
+
+def test_pick_turn_seed_names_selects_without_mounting() -> None:
+    """渐进暴露下种子只挑不装：同一规则（exclusive/已在池/空名/上限），tools 不变。"""
+    tools = _seeds("find_tools")
+    picked = pick_turn_seed_names(
+        tools,
+        _seeds("send_abyss_info", "render_html_to_image", "find_tools", "", "m5", "m6", "m7", "m8"),
+        exclusive={"render_html_to_image"},
+    )
+    assert picked == ["send_abyss_info", "m5", "m6", "m7"]
+    assert [tool.name for tool in tools] == ["find_tools"]
+
+
+def test_turn_seed_hint_line_is_single_line_and_peeled() -> None:
+    """提示行入史前必须能被剥掉；剥完只留下用户原话。"""
+    from gsuid_core.ai_core.utils import _peel_ephemeral_system_lines
+    from gsuid_core.ai_core.control.lines import turn_seed_hint_line
+
+    line = turn_seed_hint_line("`a`：简介；`b`：另一句")
+    assert line.startswith("\n\n（系统提示：")
+    assert line.count("\n") == 2
+    assert _peel_ephemeral_system_lines("hello" + line) == "hello"
 
 
 def test_snapshot_ignores_names_that_were_not_incoming() -> None:

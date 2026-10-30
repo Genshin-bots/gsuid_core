@@ -146,6 +146,7 @@
   "log.agent.trigger_node_calltoolsnode": "[GsCoreAIAgent] ⚡ 触发节点: CallToolsNode",
   "log.agent.trigger_node_modelrequestnode": "[GsCoreAIAgent] ⚡ 触发节点: ModelRequestNode",
   "log.agent.turn_seed_exposed": "[GsCoreAIAgent] 本轮种子 {n} 个（不进快照）: {names}",
+  "log.agent.turn_seed_hinted": "[GsCoreAIAgent] 本轮种子 {n} 个（仅提示，find_tools 挂载）: {names}",
   "log.agent.user_truncated_msg": "[GsCoreAIAgent] 用户消息: {truncated_msg}",
   "log.agent.video_frame_sampled_images": "[GsCoreAIAgent] 视频{p0} 已抽帧为 {p1} 张图片进入消息（model_support 未声明 video）",
   "log.agent.video_openai_file_inline": "[GsCoreAIAgent] 视频{p0} 已按 OpenAI file(base64) 进入消息（{size:.1f}MB）",
