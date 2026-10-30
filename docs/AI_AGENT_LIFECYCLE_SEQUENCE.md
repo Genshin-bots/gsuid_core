@@ -1702,13 +1702,17 @@ API 错误字面量 → 角色短句替换
 
 session_log entries（磁盘，可稍后刷）：
 
-`run_start` → `user_input` → `tools_list` → `tools_change`? → `thinking_effort` → `thinking`* → (`tool_call`/`tool_return`/`tools_change`)* → `text_output`* → `result` → `token_usage` → `run_end`
+`run_start` → `user_input` → `tools_list` → `tools_change`? → `thinking_effort` → `thinking`* → (`tool_call`/`tool_return`/`tools_change`)* → `step_usage`* → `text_output`* → `result` → `token_usage` → `run_end`
 
 > `tools_change` 只在有变化时落：装配处记与上一轮名单的 added/removed 差分和 hinted
 > （本轮只提示未挂载的种子）；`find_tools` 返回处记本次新挂载名（`source=find_tools`，
 > 带 tool_call_id）。渐进式暴露开启时本轮种子不再进 schema——以 hinted 形式写进
 > 当轮 user 提示，由模型 `find_tools(need="确切工具名")` 挂载，保证工具列表稳定
 > （前缀缓存不失效、快照不超顶）。
+>
+> `step_usage` 在每个 CallToolsNode 响应结算处（TTFT/TPS 算完、`first_event_at`
+> 复位前）落一条：该次模型请求的 input/output/cache_read/cache_write、model_name、
+> ttft_ms、tps、tool_calls。`token_usage` 仍是整 run 的权威总量，两者并存。
 
 > 注：`text_output` 记录的是模型**原始**台词（可含后被 gate 拦下的 `<bubble/>` 等）；是否真正出站看 gate + `send_chat_result`。熔断/scrub 改的是 **B 轨 `self.history`**，不一定回写 session_log 已落条目。
 

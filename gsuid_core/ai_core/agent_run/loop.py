@@ -1184,6 +1184,7 @@ class LoopPhase(RunOnceHost):
             if _req_usage.output_tokens > 0 and _generation_time > 0:
                 _tps = round(_req_usage.output_tokens / _generation_time, 2)
             logger.debug(i18n_t("log.ai_agent.ttft_ms_tps_tokens_ok", ttft_ms=_ttft_ms, tps=_tps))
+        _req_tool_calls = sum(1 for p in node.model_response.parts if isinstance(p, ToolCallPart))
         statistics_manager.record_hourly_performance(
             provider=st.provider,
             model_name=st.model_name,
@@ -1193,7 +1194,17 @@ class LoopPhase(RunOnceHost):
             output_tokens=_req_usage.output_tokens,
             cache_read_tokens=_req_usage.cache_read_tokens,
             cache_write_tokens=_req_usage.cache_write_tokens,
-            tool_call_count=sum(1 for p in node.model_response.parts if isinstance(p, ToolCallPart)),
+            tool_call_count=_req_tool_calls,
+        )
+        self._session_logger.log_step_usage(
+            input_tokens=_req_usage.input_tokens,
+            output_tokens=_req_usage.output_tokens,
+            cache_read_tokens=_req_usage.cache_read_tokens,
+            cache_write_tokens=_req_usage.cache_write_tokens,
+            model_name=_resp_model if isinstance(_resp_model, str) else st.model_name,
+            ttft_ms=_ttft_ms,
+            tps=_tps,
+            tool_calls=_req_tool_calls,
         )
         # 复位打点，避免异常路径下两轮请求的数据串台
         st.first_event_at = None

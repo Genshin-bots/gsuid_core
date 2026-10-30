@@ -172,6 +172,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "tools_change",
         # 统计 / 节点 / 错误
         "token_usage",
+        "step_usage",
         "node_transition",
         "error",
         # 关联 / 主动消息
@@ -960,6 +961,33 @@ class AISessionLogger:
         if tool_call_id:
             data["tool_call_id"] = tool_call_id
         self._add_entry("tools_change", data)
+
+    def log_step_usage(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        model_name: str,
+        ttft_ms: float,
+        tps: float,
+        tool_calls: int,
+    ) -> None:
+        """单次模型请求的用量（每 CallToolsNode 响应一条）；run 总量见 token_usage。"""
+        self._add_entry(
+            "step_usage",
+            {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
+                "model_name": model_name,
+                "ttft_ms": ttft_ms,
+                "tps": tps,
+                "tool_calls": tool_calls,
+            },
+        )
 
     def log_node_transition(self, node_type: str, details: Optional[Dict[str, Any]] = None) -> None:
         """记录 Agent 节点状态转换（如 ModelRequestNode / CallToolsNode / End）"""

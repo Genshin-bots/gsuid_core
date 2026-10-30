@@ -600,6 +600,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | `output_block` | 话术闸、出站闸或收尾拦住、没有发出的台词 | reason（拦住当时的原因码）, reason_text（当时的中文说明）, content（原文，最长 500 字）, policy（当时的话术策略，可空）, tool_call_id（可空；有则挂在这次工具调用下） |
 | `result` | 单次 run 最终结果 | output, tool_calls。沉默或空输出时另有 silence_reason，以及写下时的中文 reason_text。没有这些字段的旧日志仍是一条结果 |
 | `token_usage` | Token 使用量 | input_tokens, output_tokens, model_name |
+| `step_usage` | 单次模型请求的用量（每个 CallToolsNode 响应一条；run 总量见 token_usage） | input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, model_name, ttft_ms, tps, tool_calls |
 | `error` | 错误信息 | error_type, message |
 | `node_transition` | Agent 节点状态转换 | node_type (ModelRequestNode/CallToolsNode/End), details |
 | `agent_linked` | 关联 Agent 事件 | agent_type, session_id, session_uuid, persona_name, create_by, log_file, linked_at |
