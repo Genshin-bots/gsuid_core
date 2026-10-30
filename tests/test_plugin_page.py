@@ -185,3 +185,37 @@ def test_resolve_hub_sdk_path_picks_newer_dist(tmp_path: Path):
     picked = resolve_hub_sdk_path(bundled=bundled, extra=extra)
     assert picked is not None
     assert picked.read_text(encoding="utf-8") == "bundled"
+
+
+def test_plugin_page_files_served_no_cache(tmp_path: Path):
+    """插件页文件一律 no-cache:文件名不带内容指纹,
+    max-age=3600 会把 js/css 缓存一小时,出「html 新、资源旧」混合态。"""
+    import asyncio
+
+    from fastapi import Request
+
+    from gsuid_core.webconsole import plugin_page as mod
+    from gsuid_core.webconsole.plugin_page_api import serve_plugin_page_file
+
+    root = tmp_path / "web"
+    root.mkdir()
+    (root / "index.html").write_text("<html></html>", encoding="utf-8")
+    (root / "app.js").write_text("console.log(1)", encoding="utf-8")
+    mod._PAGES[("testplug_nc", "dash")] = PluginPageSpec(
+        plugin="testplug_nc",
+        plugin_id="testplug_nc",
+        page_id="dash",
+        static_dir=root,
+        index="index.html",
+        title={},
+        description={},
+        confirm_message={},
+        icon="",
+        locales_dir=None,
+    )
+
+    scope = {"type": "http", "method": "GET", "headers": [], "path": "/", "query_string": b""}
+    resp = asyncio.run(serve_plugin_page_file("testplug_nc", "dash", "app.js", Request(scope)))
+    assert resp.headers["cache-control"] == "no-cache"
+    resp_idx = asyncio.run(serve_plugin_page_file("testplug_nc", "dash", "", Request(scope)))
+    assert resp_idx.headers["cache-control"] == "no-cache"

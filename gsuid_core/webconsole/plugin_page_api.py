@@ -17,7 +17,7 @@ from gsuid_core.webconsole.plugin_page import (
     list_plugin_pages,
     resolve_page_file,
 )
-from gsuid_core.webconsole.static_serve import static_file_response
+from gsuid_core.webconsole.static_serve import CACHE_NO_CACHE, static_file_response
 
 from ._api_tags import PLUGIN_PAGES
 
@@ -136,9 +136,13 @@ async def serve_plugin_page_file(
     if path is None:
         return JSONResponse({"status": 1, "msg": "file not found", "data": None}, status_code=404)
     rel = rest or path.name
-    return static_file_response(
+    resp = static_file_response(
         path,
         rel_path=rel,
         accept_encoding=request.headers.get("accept-encoding"),
         media_type=_mime(path),
     )
+    # 插件页文件名不带内容指纹,默认 max-age=3600 会把 js/css 缓存一小时,
+    # 出现「html 新、资源旧」的混合态;回源验证,未变走 304
+    resp.headers["Cache-Control"] = CACHE_NO_CACHE
+    return resp
