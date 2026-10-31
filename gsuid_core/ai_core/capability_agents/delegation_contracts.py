@@ -151,6 +151,25 @@ def tool_return_is_delivery_success(content: Any) -> bool:
     return isinstance(content, str) and DELIVERY_SUCCESS_MARK in content
 
 
+# create_subagent 派发前拒绝的统一前缀（对齐工具层软失败文案口径）。
+# 在途 HOLD 以「（系统：」开头，不在此列——那时真有子任务在跑。
+_DELEGATION_REFUSED_PREFIXES: tuple[str, ...] = ("⚠️", "❌", "🚫")
+_DELEGATION_ORIGIN_PREFIX = "（委派原问："
+
+
+def tool_return_is_delegation_refusal(content: Any) -> bool:
+    """create_subagent 未起派的软拒绝：节点未启用/未匹配、风控、嵌套上限、派发失败。
+
+    「委派原问」导语会先剥掉再判前缀；同步交付的事实包不以拒绝前缀开头。
+    """
+    if not isinstance(content, str):
+        return False
+    body = content.lstrip()
+    if body.startswith(_DELEGATION_ORIGIN_PREFIX):
+        body = body.split("\n", 1)[1].lstrip() if "\n" in body else ""
+    return body.startswith(_DELEGATION_REFUSED_PREFIXES)
+
+
 def is_timeless_aggregate(content: str) -> bool:
     """返回体是否呈「无当前时点的均值/气候聚合」形态（逐日序列除外）。"""
     body = (content or "").strip()
@@ -252,6 +271,7 @@ def tool_call_targets_render_agent(
 def inflight_after_create_subagent_return(
     *,
     failed: bool,
+    refused: bool = False,
     async_ack: bool,
     render_done: bool,
     ack_seen: bool,
@@ -262,9 +282,9 @@ def inflight_after_create_subagent_return(
 ) -> tuple[bool, bool, str, bool]:
     """ToolReturn 后的在途静默。(pending, delegated, policy, ack_seen)。
 
-    ToolCall 可能已抢先静默；失败且尚未 ack 则回滚，避免整轮哑火。
+    ToolCall 可能已抢先静默；失败/派发前软拒绝且尚未 ack 则回滚，避免整轮哑火。
     """
-    if failed and not ack_seen:
+    if (failed or refused) and not ack_seen:
         policy = speech_policy
         if speech_policy == "silence_only":
             policy = "framework_deliver" if is_framework else "free"

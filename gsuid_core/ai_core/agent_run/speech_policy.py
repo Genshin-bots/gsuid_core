@@ -26,6 +26,7 @@ from gsuid_core.ai_core.control.lines import (
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     is_timeless_aggregate as _is_timeless_aggregate,
     fact_pack_is_multi_point as _fact_lines_multi_point,
+    tool_return_is_delegation_refusal as _tool_return_is_delegation_refusal,
 )
 
 # 整轮因此零输出时要回灌改口，不走出图。在途静默不在此列。
@@ -724,6 +725,9 @@ def content_is_render_candidate(
 
     tn = (tool_name or "").lower()
     if tn == "create_subagent":
+        # 「委派原问」导语会挡住 ⚠️ 前缀：软拒绝不是事实包
+        if _tool_return_is_delegation_refusal(body):
+            return False
         # 完成交付：足够长且非过程口癖
         if "事实包" in body or "artifact" in body.lower() or re.search(r"\bres_[0-9a-fA-F]{6,}\b", body):
             return len(body) >= 80

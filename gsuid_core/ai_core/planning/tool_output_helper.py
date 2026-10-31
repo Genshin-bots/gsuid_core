@@ -147,11 +147,25 @@ def _searchish_tool(name: str) -> bool:
     return is_searchish_tool(name)
 
 
+def _persona_name_for_session(session_id: str) -> str:
+    """折叠卡读者的人格名；查不到返回空串（按默认全开口径）。"""
+    sid = (session_id or "").strip()
+    if not sid:
+        return ""
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    sess = get_ai_session_registry().get_ai_session(sid)
+    if sess is None:
+        return ""
+    return str(sess.persona_name or "")
+
+
 def fold_card_for_main_prompt(
     card: PersistedHandleCard,
     *,
     content: str,
     is_group: bool,
+    render_allowed: bool = True,
 ) -> PersistedHandleCard:
     """群聊：summary + 句柄，无 inline。私聊：可带要点供当面问答。"""
     if is_group:
@@ -165,6 +179,7 @@ def fold_card_for_main_prompt(
             long_structured=card.long_structured,
             inline_head="",
             speech_expand=False,
+            render_allowed=render_allowed,
         )
     return PersistedHandleCard(
         id=card.id,
@@ -176,6 +191,7 @@ def fold_card_for_main_prompt(
         long_structured=card.long_structured,
         inline_head=extract_inline_head(content, max_chars=_INLINE_HEAD_PRIVATE),
         speech_expand=True,
+        render_allowed=render_allowed,
     )
 
 
@@ -327,7 +343,18 @@ async def persist_and_fold_tool_return(
         return None
     fileos_metrics.inc_fold()
     effective_is_group = False if is_cap else is_group
-    return fold_card_for_main_prompt(card, content=content, is_group=effective_is_group).format()
+    # 能力代理本无 create_subagent，花名册口径只对主人格生效
+    render_allowed = True
+    if not is_cap:
+        from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+        render_allowed = persona_allows_capability_agent(_persona_name_for_session(session_id), "render_agent")
+    return fold_card_for_main_prompt(
+        card,
+        content=content,
+        is_group=effective_is_group,
+        render_allowed=render_allowed,
+    ).format()
 
 
 async def _write_record(

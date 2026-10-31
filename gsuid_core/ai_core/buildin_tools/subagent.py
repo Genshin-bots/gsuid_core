@@ -434,7 +434,7 @@ async def _create_subagent_impl(
             _pn = _caller_persona_name(ctx)
             ids = [n.node_id for n in list_persona_capability_nodes(_pn)][:8]
             listed = "、".join(ids) if ids else "（花名册为空）"
-            return f"未匹配到能力节点 `{agent_profile.strip()}`。可用 node_id：{listed}"
+            return f"⚠️ 未匹配到能力节点 `{agent_profile.strip()}`。可用 node_id：{listed}"
         from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
         _pn = _caller_persona_name(ctx)
@@ -443,13 +443,13 @@ async def _create_subagent_impl(
 
             ids = [n.node_id for n in list_persona_capability_nodes(_pn)][:8]
             listed = "、".join(ids) if ids else "（无）"
-            return f"当前人格未启用能力代理 `{pid}`。可用 node_id：{listed}"
+            return f"⚠️ 当前人格未启用能力代理 `{pid}`。可用 node_id：{listed}"
         if pid == "plugin_developer_agent":
             from gsuid_core.ai_core.approval import plugin_install_block_reason
 
             blocked_install = await plugin_install_block_reason()
             if blocked_install:
-                return blocked_install
+                return f"⚠️ {blocked_install}"
         from gsuid_core.ai_core.tool_risk import refuse_master_only_node
         from gsuid_core.ai_core.agent_node import get_node
 
@@ -477,7 +477,7 @@ async def _create_subagent_impl(
 
         ids = [n.node_id for n in list_persona_capability_nodes(_caller_persona_name(ctx))][:8]
         listed = "、".join(ids) if ids else "（花名册为空）"
-        return f"未指定 agent_profile。请从花名册填写 node_id：{listed}"
+        return f"⚠️ 未指定 agent_profile。请从花名册填写 node_id：{listed}"
 
     logger.info(i18n_t("log.ai.subagent_general_planning_executor_start", p0=task[:50]))
 

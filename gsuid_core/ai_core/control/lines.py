@@ -238,12 +238,15 @@ def ownership_line(ago: str, topic: str, who: str) -> str:
     return f"（系统：{ago}你把「{topic}」发给了{who}。）"
 
 
-def delivery_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
+def delivery_wake_line(delivery: str, at_hint: str, title_ban: str, allow_render: bool = True) -> str:
     """看板交付回灌。at_hint / title_ban 可为空。"""
+    render_hint = (
+        "要出图委派 render。" if allow_render else "未启用出图委派，长结果用一两句概括交付，禁止委派 render_agent。"
+    )
     return (
         f"[框架·任务完成]\n{delivery}\n"
         f"（系统：一句收尾；有图就发出；配文严禁脱离产物摘要臆造细节，未知结论只引导看图；"
-        f"要出图委派 render。{at_hint}{title_ban}）"
+        f"{render_hint}{at_hint}{title_ban}）"
     )
 
 

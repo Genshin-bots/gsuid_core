@@ -393,6 +393,36 @@ def test_zero_output_voice_block_asks_rewrite_not_render() -> None:
     assert voice.obligations[0].satisfied_by == ("user_visible_sent",)
 
 
+def test_delivery_wake_line_respects_render_availability() -> None:
+    """人格未启用 render_agent：回灌收尾句不诱导委派，改口头概括。"""
+    from gsuid_core.ai_core.control.lines import delivery_wake_line
+
+    text = delivery_wake_line("【子任务交付】任务#1 已完成。", "", "")
+    assert "要出图委派 render" in text
+    no_render = delivery_wake_line("【子任务交付】任务#1 已完成。", "", "", allow_render=False)
+    assert "禁止委派 render_agent" in no_render
+    assert "要出图委派 render" not in no_render
+
+
+def test_idle_deliver_directive_respects_render_availability() -> None:
+    from gsuid_core.ai_core.control.corrections import framework_idle_deliver_directive
+
+    d = framework_idle_deliver_directive()
+    assert "render_agent" in d.observation
+    d2 = framework_idle_deliver_directive(allow_render=False)
+    assert "禁止委派 render_agent" in d2.observation
+    assert 'create_subagent(agent_profile="render_agent")' not in d2.observation
+
+
+def test_rewrite_path_honors_dispute_and_releases_blocked_text() -> None:
+    """silence_only_or_async 等重说路必须和其它纠正一样：申辩则放原文。"""
+    from inspect import getsource
+
+    src = getsource(settle_mod.SettlePhase._run_once_settle_result)
+    assert "_disputes_before = len(self._run_disputes)" in src
+    assert "_voice_retry_text(_rewritten, disputed=_disputed, blocked=_gate_body)" in src
+
+
 def test_voice_retry_sends_deliverable_rewrite_not_silence() -> None:
     """过程词被拦后，Agent 改成可交付短句必须留下，不能退回沉默。"""
     from gsuid_core.ai_core.agent_run.speech_policy import looks_like_process_meta

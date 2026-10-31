@@ -190,6 +190,133 @@ def test_inflight_rolls_back_on_failed_return() -> None:
     assert policy2 == "silence_only"
 
 
+def test_tool_return_is_delegation_refusal() -> None:
+    """派发前软拒绝剥掉「委派原问」导语后仍按前缀判；在途 HOLD 与 ack 不算。"""
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        PENDING_DELEGATION_HOLD,
+        format_deferred_subagent_ack,
+        tool_return_is_delegation_refusal,
+    )
+
+    assert tool_return_is_delegation_refusal(
+        "（委派原问：出图）\n⚠️ 当前人格未启用能力代理 `render_agent`。可用 node_id：research_agent"
+    )
+    assert tool_return_is_delegation_refusal("⚠️ 未匹配到能力节点 `x`。可用 node_id：research_agent")
+    assert tool_return_is_delegation_refusal("🚫 该能力代理仅主人可触发。（`code_agent`）")
+    assert not tool_return_is_delegation_refusal(f"（委派原问：查）\n{PENDING_DELEGATION_HOLD}")
+    assert not tool_return_is_delegation_refusal(
+        f"（委派原问：查）\n{format_deferred_subagent_ack(ordinal=1, pid='render_agent', handle='dlg_x')}"
+    )
+    assert not tool_return_is_delegation_refusal("（委派原问：查）\n事实包已登记为 res_0123456789ab")
+    assert not tool_return_is_delegation_refusal("正常的完成回执文本")
+    assert not tool_return_is_delegation_refusal(None)
+
+
+def test_inflight_rolls_back_on_refused_delegation() -> None:
+    """未启用能力代理的软拒绝与硬失败同样回滚抢先静默；已有 ack 则不回滚。"""
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+        inflight_after_create_subagent_return,
+    )
+
+    pending, delegated, policy, ack = inflight_after_create_subagent_return(
+        failed=False,
+        refused=True,
+        async_ack=False,
+        render_done=False,
+        ack_seen=False,
+        pending_async=True,
+        delegated_render=True,
+        speech_policy="silence_only",
+        is_framework=True,
+    )
+    assert pending is False and delegated is False and ack is False
+    assert policy == "framework_deliver"
+
+    pending2, delegated2, policy2, ack2 = inflight_after_create_subagent_return(
+        failed=False,
+        refused=True,
+        async_ack=False,
+        render_done=False,
+        ack_seen=True,
+        pending_async=True,
+        delegated_render=True,
+        speech_policy="silence_only",
+        is_framework=True,
+    )
+    assert pending2 is True and delegated2 is True and ack2 is True
+    assert policy2 == "silence_only"
+
+
+def test_apply_create_subagent_return_rolls_back_on_refusal() -> None:
+    """loop 侧回滚：拒绝回执把抢先置位的三个标志拨回可交付态。"""
+    from pydantic_ai.messages import ToolReturnPart
+
+    from gsuid_core.ai_core.agent_run.loop import LoopPhase
+    from gsuid_core.ai_core.agent_run.state import RunOnceState
+
+    st = RunOnceState(
+        user_message="",
+        bot=None,
+        ev=None,
+        rag_context=None,
+        tools=[],
+        return_mode="by_bot",
+        output_type=None,
+        intent=None,
+        has_active_task=False,
+        budget_gate=False,
+        suppress_intermediate_text=False,
+        fake_done_retry=False,
+        turn_graph=None,
+        cheap_gate=None,
+        is_framework_injection=True,
+    )
+    st.delegated_render = True
+    st.pending_async_delivery = True
+    st.speech_policy = "silence_only"
+    st.fw_msg = True
+    phase = LoopPhase.__new__(LoopPhase)
+    body = "（委派原问：出图）\n⚠️ 当前人格未启用能力代理 `render_agent`。可用 node_id：research_agent"
+    part = ToolReturnPart(tool_name="create_subagent", content=body, tool_call_id="t1")
+    phase._apply_create_subagent_return(st, part, body)
+    assert st.pending_async_delivery is False
+    assert st.delegated_render is False
+    assert st.speech_policy == "framework_deliver"
+    assert st.saw_structured_return is False
+
+    # deferred ack：保持静默在途
+    st2 = RunOnceState(
+        user_message="",
+        bot=None,
+        ev=None,
+        rag_context=None,
+        tools=[],
+        return_mode="by_bot",
+        output_type=None,
+        intent=None,
+        has_active_task=False,
+        budget_gate=False,
+        suppress_intermediate_text=False,
+        fake_done_retry=False,
+        turn_graph=None,
+        cheap_gate=None,
+        is_framework_injection=False,
+    )
+    st2.delegated_render = True
+    st2.pending_async_delivery = True
+    st2.speech_policy = "silence_only"
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.capability_agents.delegation_contracts import format_deferred_subagent_ack
+
+    st2.context = ToolContext()
+    ack_body = f"（委派原问：出图）\n{format_deferred_subagent_ack(ordinal=7, pid='render_agent', handle='dlg_ab')}"
+    part2 = ToolReturnPart(tool_name="create_subagent", content=ack_body, tool_call_id="t2")
+    phase._apply_create_subagent_return(st2, part2, ack_body)
+    assert st2.pending_async_delivery is True
+    assert st2.speech_policy == "silence_only"
+    assert st2.render_ack_seen is True
+
+
 def test_receipt_image_likely_not_any_artifact() -> None:
     """非图 artifact 不得触发「可发图」口吻。"""
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (

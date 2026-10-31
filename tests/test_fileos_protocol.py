@@ -69,6 +69,25 @@ def test_group_fold_card_has_no_inline_head() -> None:
     assert priv.speech_expand is True
 
 
+def test_handle_card_no_render_variant_when_persona_disables_it() -> None:
+    """人格花名册无 render_agent：长结构卡改口头交付指引，不诱导委派。"""
+    card = PersistedHandleCard(
+        id="to_norender",
+        kind="tool_output",
+        mime="text/plain",
+        summary="对照要点摘要",
+        size_bytes=9999,
+        long_structured=True,
+        inline_head="[1] 标题A\n要点正文",
+        render_allowed=False,
+    )
+    text = card.format()
+    assert "long_structured=true" in text
+    assert "禁止委派 render_agent" in text
+    assert "必须 create_subagent" not in text
+    assert "委派 render 出图" not in text
+
+
 def test_image_card_send_hint() -> None:
     card = PersistedHandleCard(
         id="res_img1",

@@ -180,6 +180,8 @@ class PersistedHandleCard:
     inline_head: str = ""
     # False：主人格交付卡，禁止把「去展开全文」写成可执行下一步
     speech_expand: bool = True
+    # False：当前人格花名册没有 render_agent，长结构改口头交付
+    render_allowed: bool = True
 
     def format(self) -> str:
         how = f"read_handle(handle_id={self.id!r}, offset=0, limit=8000)"
@@ -192,17 +194,24 @@ class PersistedHandleCard:
         else:
             lines.append(f"read_tool={self.read_tool}  # 专职节点读全文；主人格只用 summary，禁止展开念台词")
         if self.long_structured:
-            lines.append(
-                "long_structured=true → 必须 create_subagent("
-                'agent_profile="render_agent", task=本id或版式要求) 出图；'
-                "台词一两句，禁止把对照表念进气泡"
-            )
+            if self.render_allowed:
+                lines.append(
+                    "long_structured=true → 必须 create_subagent("
+                    'agent_profile="render_agent", task=本id或版式要求) 出图；'
+                    "台词一两句，禁止把对照表念进气泡"
+                )
+            else:
+                lines.append(
+                    "long_structured=true → 当前人格未启用出图委派：禁止委派 render_agent，"
+                    "用一两句概括 summary 交付给用户，禁止把对照表整段念进气泡"
+                )
         if self.mime.startswith("image/"):
             lines.append("image=true → send_message_by_ai(image_id=本id) 直发，勿 read_handle 当文本")
         head = (self.inline_head or "").strip()
         if head:
             if self.long_structured:
-                lines.append("inline_head:  # 对照要点，禁止念成台词；委派 render 出图")
+                hint = "委派 render 出图" if self.render_allowed else "按 summary 口头交付"
+                lines.append(f"inline_head:  # 对照要点，禁止念成台词；{hint}")
             else:
                 lines.append("inline_head:  # 已含要点；需全文再 read_handle")
             lines.append(head)

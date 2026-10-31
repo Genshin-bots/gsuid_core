@@ -110,14 +110,19 @@ def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
     )
 
 
-def framework_idle_deliver_directive() -> Directive:
+def framework_idle_deliver_directive(*, allow_render: bool = True) -> Directive:
     """交付回灌零工具却对用户报进度或念大表格。纠正去出图/发图，进度句不放行。"""
+    render_hint = (
+        '只有复杂长表格/大对照表才必须 create_subagent(agent_profile="render_agent") 出图。'
+        if allow_render
+        else "当前人格未启用出图委派：长结果直接用角色口吻概括交付给用户，禁止委派 render_agent。"
+    )
     return Directive(
         kind="correction",
         reason_code="framework_idle_deliver",
         observation=(
             "这是任务交付回灌。简短事实（如版本号、轻量状态）可以直接用角色口吻概括交付给用户；"
-            '只有复杂长表格/大对照表才必须 create_subagent(agent_profile="render_agent") 出图。'
+            f"{render_hint}"
             "有图就 send_message_by_ai 发出。切勿只输出「在查/别催」等废话进度句。"
         ),
         obligations=(

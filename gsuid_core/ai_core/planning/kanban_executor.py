@@ -544,7 +544,13 @@ def _consume_deferred_main_delivery(root_id: str) -> bool:
     return False
 
 
-def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: List[AIAgentArtifact]) -> str:
+def _format_delivery_for_main_agent(
+    task: AIAgentTask,
+    raw_result: str,
+    arts: List[AIAgentArtifact],
+    *,
+    allow_render: bool = True,
+) -> str:
     """拼给主人格的交付包：与 PersistedHandleCard 同形，禁止全文塞 prompt。"""
     _ = raw_result
     from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard
@@ -565,6 +571,7 @@ def _format_delivery_for_main_agent(task: AIAgentTask, raw_result: str, arts: Li
             read_tool="read_handle",
             long_structured=not is_img,
             speech_expand=False,
+            render_allowed=allow_render,
         )
         cards.append(card.format())
         if is_img and not primary:
@@ -687,7 +694,10 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
 async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) -> None:
     """实际唤醒主人格（合并后单次）。"""
     arts = await AIAgentArtifact.list_for_task(task.id)
-    delivery = _format_delivery_for_main_agent(task, raw_result, arts)
+    from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+    allow_render = persona_allows_capability_agent(task.persona_name, "render_agent")
+    delivery = _format_delivery_for_main_agent(task, raw_result, arts, allow_render=allow_render)
     ev = _build_event(task)
     bot = _get_bot(task, ev)
 
@@ -733,7 +743,7 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
                 title_ban = f"发起人不是主人，禁止称「{title}」。"
     from gsuid_core.ai_core.control.lines import delivery_wake_line
 
-    frame_text = delivery_wake_line(delivery, at_hint, title_ban)
+    frame_text = delivery_wake_line(delivery, at_hint, title_ban, allow_render=allow_render)
     record_delivery_wake(session_id, root_id)
     root_token = bind_delivery_root(root_id)
     try:

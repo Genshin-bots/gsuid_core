@@ -324,7 +324,7 @@ def _rewrite_directive_for_block(
     if reason == "status_without_tool":
         return status_zero_tool_directive()
     if reason == "deliver_before_send":
-        return framework_idle_deliver_directive()
+        return framework_idle_deliver_directive(allow_render=allow_render)
     if reason == "silence_only_or_async" and not wait_already_sent:
         return inflight_wait_directive()
     return None
@@ -741,6 +741,11 @@ class SettlePhase(RunOnceHost):
             # 假完成结算（结构判据收口）。同轮至多一次纠正重跑，防 status+render 双触发。
             _settle_correction_ran = False
 
+            # 人格花名册无 render_agent 时，出图义务/文案整体降级为口头交付
+            from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+            _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
+
             async def _resend_fab_blocked() -> None:
                 for _bt in st.fab_blocked:
                     if _bt in self._run_sent_texts:
@@ -918,7 +923,7 @@ class SettlePhase(RunOnceHost):
                     _disputes_before = len(self._run_disputes)
                     _dc = await self._try_correction_pass(
                         st,
-                        (framework_idle_deliver_directive(),),
+                        (framework_idle_deliver_directive(allow_render=_allow_render),),
                         suppress_intermediate_text=True,
                         return_mode="return",
                     )
@@ -1071,9 +1076,6 @@ class SettlePhase(RunOnceHost):
             _skip_report_exit = False
             _replacement_visible = False
             # 出处凭据 + 尚未出图。排版失配只决定要不要进纠正，不单独构成义务。
-            from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
-
-            _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
             _chart_like = _needs_render_obligation(st, result_msg)
             _render_obligation = _chart_like and _allow_render
             if (
@@ -1229,16 +1231,23 @@ class SettlePhase(RunOnceHost):
                         wait_already_sent=st.wait_comfort_sent,
                     )
                     if _rewrite is not None:
+                        _disputes_before = len(self._run_disputes)
                         _rewritten = await self._try_correction_pass(
                             st,
                             (_rewrite,),
                             suppress_intermediate_text=True,
                             return_mode="return",
                         )
-                        if isinstance(_rewritten, str) and _correction_is_deliverable(_rewritten):
-                            result_msg = _rewritten.strip()
+                        _disputed = len(self._run_disputes) > _disputes_before
+                        if _disputed:
+                            logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
+                        # 申辩成立 → 观察不成立，被拦原文照原样交付（与 _voice_retry_text 同语义）
+                        _next = _voice_retry_text(_rewritten, disputed=_disputed, blocked=_gate_body)
+                        if not is_silence_marker(_next):
+                            result_msg = _next
                             await self._emit_unsent_reply(st, result_msg)
                             _gate_reason = ""
+                            _replacement_visible = True
                 if _gate_reason:
                     st.silence_reason = _gate_reason
                     record_output_block(st, self._session_logger, _gate_reason, _gate_body)

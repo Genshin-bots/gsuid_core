@@ -107,6 +107,7 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
     tool_return_is_non_web_data as _tool_return_is_non_web_data,
     tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
+    tool_return_is_delegation_refusal as _tool_return_is_delegation_refusal,
     inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
 
@@ -301,8 +302,10 @@ class LoopPhase(RunOnceHost):
     def _apply_create_subagent_return(self, st: RunOnceState, part: ToolReturnPart, body: str) -> None:
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
         async_ack = bool(_tool_return_is_async_pending(part) or ("后台执行" in body) or ("自动回灌" in body))
+        _refused = _tool_return_is_delegation_refusal(body)
         pending, delegated, policy, ack = _inflight_after_create_subagent_return(
             failed=_tool_return_looks_failed(part),
+            refused=_refused,
             async_ack=async_ack,
             render_done=_RENDER_DONE_RECEIPT_MARK in body,
             ack_seen=st.render_ack_seen,
@@ -320,6 +323,7 @@ class LoopPhase(RunOnceHost):
             _require_context(st).extra[_DELEGATION_INFLIGHT_KEY] = True
         if (
             not _tool_return_looks_failed(part)
+            and not _refused
             and not async_ack
             and _RENDER_DONE_RECEIPT_MARK not in body
             and content_is_render_candidate(
@@ -394,6 +398,7 @@ class LoopPhase(RunOnceHost):
                 _pb
                 and not _tool_return_is_async_pending(_pre)
                 and not _tool_return_looks_failed(_pre)
+                and not _tool_return_is_delegation_refusal(_pb)
                 and _tool_return_is_non_web_data(_pb)
             ):
                 st.saw_non_web_data = True
