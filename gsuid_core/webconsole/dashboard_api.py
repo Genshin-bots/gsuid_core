@@ -159,60 +159,6 @@ def _daily_failed_response() -> _DailyChartResponse:
     return {"status": 1, "msg": t("msg.webconsole.daily_stats_failed"), "data": []}
 
 
-def simplify_regex_command(command: str) -> str:
-    """
-    简化正则表达式命令，提取关键信息便于显示
-    """
-    # 如果不是正则表达式，直接返回
-    if not command.startswith("^") and "(?P<" not in command and "(?:" not in command:
-        return command
-
-    # 使用堆栈来匹配括号，找到第一个包含 | 的捕获组
-    stack = []
-    i = 0
-    while i < len(command):
-        if command[i : i + 4] == "(?P<":
-            # 命名捕获组开始
-            gt_pos = command.find(">", i)
-            if gt_pos != -1:
-                stack.append(("named", i, gt_pos))
-                i = gt_pos + 1
-                continue
-        elif command[i : i + 3] == "(?:":
-            # 非捕获组开始
-            stack.append(("non_capture", i))
-            i += 3
-            continue
-        elif command[i] == "(":
-            stack.append(("capture", i))
-            i += 1
-            continue
-        elif command[i] == ")":
-            # 结束一个组
-            if stack:
-                group_type, start, *extra = stack.pop()
-                if group_type == "named":
-                    gt_pos = extra[0]
-                    # 提取 > 后面的内容
-                    inner = command[gt_pos + 1 : i]
-                    if "|" in inner:
-                        return inner.split("|")[0]
-                elif group_type == "non_capture":
-                    # 提取 (?: 后面的内容
-                    inner = command[start + 3 : i]
-                    if "|" in inner:
-                        return inner.split("|")[0]
-                elif group_type == "capture":
-                    inner = command[start + 1 : i]
-                    if "|" in inner:
-                        return inner.split("|")[0]
-            i += 1
-            continue
-        i += 1
-
-    return command
-
-
 @app.get("/api/dashboard/metrics", summary="获取关键指标", tags=DASHBOARD)
 async def get_dashboard_metrics(request: Request, bot_id: str = "all", _user: Dict[str, Any] = Depends(require_auth)):
     """
@@ -493,7 +439,8 @@ async def get_daily_commands(
 
         payload: DailyCountCache = {"c_data": c_data, "g_data": g_data, "u_data": u_data}
         sorted_items = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-        result = [{"command": simplify_regex_command(k), "count": v} for k, v in sorted_items]
+        # 键保持原始关键字，显示名交给前端统一简化（与插件配置页同一套规则）
+        result = [{"command": k, "count": v} for k, v in sorted_items]
         await publish_daily_round(cache_key, version, payload)
         return {
             "status": 0,
@@ -547,12 +494,9 @@ async def get_daily_group_triggers(
         top_groups = sorted(group_total.items(), key=lambda x: x[1], reverse=True)[:20]
         g_data = {gid: g_data[gid] for gid, _ in top_groups}
 
-        # 获取前8个命令，其他合并为"其他命令"
+        # 取前8个命令，其余合并成「其他命令」；键保持原始关键字，显示名由前端统一简化
         sorted_commands = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-        # 创建原始命令到简化命令的映射
-        cmd_mapping = {k: simplify_regex_command(k) for k, v in sorted_commands[:8]}
-        # 获取简化的命令名称列表
-        top_commands = list(cmd_mapping.values()) + ["其他命令"]
+        top_commands = [k for k, _ in sorted_commands[:8]] + ["其他命令"]
 
         # 构建结果
         result: list[dict[str, str | int]] = []
@@ -560,9 +504,8 @@ async def get_daily_group_triggers(
             group_data: dict[str, str | int] = {"group": group_id}
             others = 0
             for cmd, count in cmds.items():
-                simplified_cmd = cmd_mapping.get(cmd)
-                if simplified_cmd and simplified_cmd in top_commands:
-                    group_data[simplified_cmd] = count
+                if cmd in top_commands:
+                    group_data[cmd] = count
                 else:
                     others += count
             # 补全所有top命令，没有的设为0
@@ -623,12 +566,9 @@ async def get_daily_personal_triggers(
         top_users = sorted(user_total.items(), key=lambda x: x[1], reverse=True)[:20]
         u_data = {uid: u_data[uid] for uid, _ in top_users}
 
-        # 获取前8个命令，其他合并为"其他命令"
+        # 取前8个命令，其余合并成「其他命令」；键保持原始关键字，显示名由前端统一简化
         sorted_commands = sorted(c_data.items(), key=lambda x: x[1], reverse=True)
-        # 创建原始命令到简化命令的映射
-        cmd_mapping = {k: simplify_regex_command(k) for k, v in sorted_commands[:8]}
-        # 获取简化的命令名称列表
-        top_commands = list(cmd_mapping.values()) + ["其他命令"]
+        top_commands = [k for k, _ in sorted_commands[:8]] + ["其他命令"]
 
         # 构建结果
         result: list[dict[str, str | int]] = []
@@ -636,9 +576,8 @@ async def get_daily_personal_triggers(
             user_data: dict[str, str | int] = {"user": user_id}
             others = 0
             for cmd, count in cmds.items():
-                simplified_cmd = cmd_mapping.get(cmd)
-                if simplified_cmd and simplified_cmd in top_commands:
-                    user_data[simplified_cmd] = count
+                if cmd in top_commands:
+                    user_data[cmd] = count
                 else:
                     others += count
             # 补全所有top命令，没有的设为0
