@@ -25,6 +25,7 @@
   "log.webconsole.brand_write_json": "[Brand] Failed to write brand.json: {e}",
   "log.webconsole.cap_created_user_node": "[CapabilityAgent] webconsole created user node: {p0} ({p1})",
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
+  "log.webconsole.chat_prefs_save_fail": "[WebConsole] Failed to save chat preferences: {error}",
   "log.webconsole.chat_received_user": "[chat_with_history] received user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' does not exist; falling back to the general assistant prompt",
   "log.webconsole.config_name_item_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {item_name}",

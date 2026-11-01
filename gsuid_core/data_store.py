@@ -76,6 +76,8 @@ DIST_PATH = WEBCONSOLE_PATH / "dist"
 DIST_EX_PATH = gs_data_path / "dist"
 # 网页控制台登录会话持久化文件（只存令牌摘要，重启后会话仍有效）
 WEB_SESSIONS_PATH = gs_data_path / "webconsole_sessions.json"
+# 会话管理页的会话偏好：置顶 / 拉黑 / 群备注，纯面板状态，与适配器无关
+CHAT_PREFS_PATH = gs_data_path / "webconsole_chat_prefs.json"
 
 # Live Chat（控制台实时聊天）多文件目录：
 #   identity.json / index.json / conversations/{id}.json

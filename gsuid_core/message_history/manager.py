@@ -26,12 +26,9 @@ from gsuid_core.models import Event, Message
 def node_items_to_history(items: List[Message], *, register_media: bool = True) -> List[Dict[str, Any]]:
     """node 子项序列化为可 JSON 化的 [{type, data}]，供 metadata 存回放。
 
-    媒体段（image/record/video）：直链原样保留，其余登记 RM 换成
-    /api/history/resource/{id}；拿不到可展示形态时降级为类型占位文本。
+    只留 http(s) 直链：图片的本地路径原样留着，前端直接显示路径文本；base64 降级为
+    类型占位
     """
-    from PIL import Image
-
-    from gsuid_core.utils.resource_manager import RM
     from gsuid_core.utils.image.image_tools import normalize_image_for_history
 
     result: List[Dict[str, Any]] = []
@@ -39,20 +36,14 @@ def node_items_to_history(items: List[Message], *, register_media: bool = True) 
         msg_type = item.type or "unknown"
         data = item.data
         if msg_type in ("image", "record", "video"):
-            normalized = normalize_image_for_history(data) if isinstance(data, str) else ""
-            if not normalized and register_media and data is not None:
-                resource_id = ""
-                if msg_type == "record" and isinstance(data, (str, bytes)):
-                    resource_id = RM.register_audio(data)
-                elif msg_type == "video" and isinstance(data, (str, bytes)):
-                    resource_id = RM.register_video(data)
-                elif msg_type == "image" and isinstance(data, (str, bytes, Image.Image)):
-                    resource_id = RM.register(data)
-                if resource_id:
-                    normalized = f"/api/history/resource/{resource_id}"
-            # 无直链且 RM 不支持的数据（如 dict）落成占位文本，前端当普通行渲染
-            if normalized:
-                result.append({"type": msg_type, "data": normalized})
+            raw = data.strip() if isinstance(data, str) else ""
+            if raw.startswith("link://"):
+                raw = raw[len("link://") :]
+            url = normalize_image_for_history(raw)
+            if url:
+                result.append({"type": msg_type, "data": url})
+            elif msg_type == "image" and raw and not raw.startswith("base64://"):
+                result.append({"type": "image", "data": raw})
             else:
                 label = {"image": "[图片]", "record": "[语音]", "video": "[视频]"}.get(msg_type, f"[{msg_type}]")
                 result.append({"type": "text", "data": label})
@@ -183,6 +174,7 @@ class HistoryManager:
         user_name: Optional[str] = None,
         user_avatar: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        segments: Optional[List[Dict[str, Any]]] = None,
     ) -> MessageRecord:
         """
         添加一条消息到历史记录
@@ -196,6 +188,8 @@ class HistoryManager:
             user_name: 发送者昵称（可选）
             user_avatar: 发送者头像URL（可选）
             metadata: 可选的元数据
+            segments: 消息段数组。**不进内存**，只随广播和缓存落库，
+                控制台要还原按钮 / 卡片靠它
 
         Returns:
             创建的消息记录
@@ -255,6 +249,32 @@ class HistoryManager:
             else:
                 self._session_metadata[storage_event]["last_access"] = now
                 self._session_metadata[storage_event]["history_length"] = len(history)
+
+        # 控制台会话页靠这条实时推送增量，不用轮询
+        try:
+            from gsuid_core.message_history.hub import get_history_hub
+            from gsuid_core.message_history.segments import segments_preview, chat_message_from_record
+
+            message = chat_message_from_record(record, segments)
+            # 列表里那行摘要由后端算，前端不用再写一份（两边口径容易走偏）
+            message["preview"] = segments_preview(message.get("segments") or [])
+            get_history_hub().publish(
+                {
+                    "type": "message",
+                    "session_id": storage_event.session_id,
+                    "message": message,
+                }
+            )
+        except Exception:
+            pass
+
+        # 开了「消息缓存」才落库，只是投递，不阻塞这里
+        try:
+            from gsuid_core.message_history.cache import enqueue, payload_from_record
+
+            enqueue(payload_from_record(storage_event, record, segments))
+        except Exception:
+            pass
 
         return record
 
@@ -386,7 +406,9 @@ class HistoryManager:
         with self._lock:
             if storage_event in self._histories:
                 self._histories[storage_event].clear()
-            return storage_event in self._histories
+            existed = storage_event in self._histories
+        self._publish_session_event("cleared", storage_event.session_id)
+        return existed
 
     def delete_session(self, event: "Event") -> bool:
         """删除整个session的历史记录（释放内存）
@@ -404,7 +426,18 @@ class HistoryManager:
             if storage_event in self._session_tokens:
                 del self._session_tokens[storage_event]
 
-            return deleted
+        if deleted:
+            self._publish_session_event("deleted", storage_event.session_id)
+        return deleted
+
+    def _publish_session_event(self, kind: str, session_id: str) -> None:
+        """会话级变化（清空 / 删除）也推给控制台，省得它自己轮询。"""
+        try:
+            from gsuid_core.message_history.hub import get_history_hub
+
+            get_history_hub().publish({"type": kind, "session_id": session_id})
+        except Exception:
+            pass
 
     def list_sessions(self) -> List["Event"]:
         """列出所有活跃的session（返回 Event 列表）"""
@@ -429,6 +462,7 @@ class HistoryManager:
 
             target_history = self._histories.setdefault(target_key, deque())
             merged_records = list(target_history) + list(source_history)
+            merged_records.sort(key=lambda rec: rec.timestamp)
             target_history.clear()
             target_history.extend(merged_records)
             self._session_tokens.pop(source_key, None)

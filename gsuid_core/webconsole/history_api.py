@@ -522,6 +522,43 @@ async def get_history_stats(_: Dict[str, Any] = Depends(require_auth)) -> Dict[s
         }
 
 
+# 别让浏览器把 octet-stream 猜成 HTML —— 这条路由吐的是用户消息里的原始字节
+_NO_SNIFF = {"X-Content-Type-Options": "nosniff"}
+
+
+def _sniff_media_type(data: bytes) -> str:
+    """按文件头判断 MIME。"""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    if data[:4] == b"RIFF":
+        sub = data[8:12]
+        if sub == b"WEBP":
+            return "image/webp"
+        if sub == b"WAVE":
+            return "audio/wav"
+        if sub == b"AVI ":
+            return "video/x-msvideo"
+    if data.startswith(b"#!AMR"):
+        return "audio/amr"
+    if data.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+        return "audio/mpeg"
+    if data.startswith(b"OggS"):
+        return "audio/ogg"
+    if data[4:8] == b"ftyp":
+        return "video/mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    if data.startswith(b"FLV"):
+        return "video/x-flv"
+    return "application/octet-stream"
+
+
 @app.get("/api/history/resource/{resource_id}", summary="获取历史消息引用的图片资源", tags=HISTORY)
 async def get_history_resource(resource_id: str):
     """根据 resource_id 获取图片，直链 302 重定向，二进制按流返回。"""
@@ -561,25 +598,31 @@ async def get_history_resource(resource_id: str):
 
     # 2. 如果是 base64 / dataURI
     if isinstance(data, str):
-        media_type = "image/png"
+        media_type = ""
         raw_b64 = data
         if raw_b64.startswith("data:"):
             header, _, body = raw_b64.partition(",")
             raw_b64 = body
             if ";" in header:
-                media_type = header.split(";")[0].removeprefix("data:")
+                declared = header.split(";")[0].removeprefix("data:").strip().lower()
+                if declared.startswith(("image/", "audio/", "video/")):
+                    media_type = declared
         elif raw_b64.startswith("base64://"):
             raw_b64 = raw_b64.removeprefix("base64://")
 
         try:
             img_bytes = base64.b64decode(raw_b64)
-            return Response(content=img_bytes, media_type=media_type)
+            return Response(
+                content=img_bytes,
+                media_type=media_type or _sniff_media_type(img_bytes),
+                headers=_NO_SNIFF,
+            )
         except Exception:
             return Response(status_code=500)
 
     # 3. 如果是 bytes
     if isinstance(data, bytes):
-        return Response(content=data, media_type="image/png")
+        return Response(content=data, media_type=_sniff_media_type(data), headers=_NO_SNIFF)
 
     return Response(status_code=404)
 

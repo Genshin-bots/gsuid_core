@@ -1,5 +1,10 @@
 {
+  "log.cache.cleaned_expired": "[MessageCache] Cleaned up {removed} expired cache items (retained {hours} hours)",
   "log.cache.entering_event": "{p0} Entering cache...",
+  "log.cache.flush_failed": "[MessageCache] Write failed, dropped {count} items: {e}",
   "log.cache.hit_value": "{p0} Cache hit: {_value}",
+  "log.cache.purge_failed": "[MessageCache] Failed to cleanup expired data: {e}",
+  "log.cache.queue_full": "[MessageCache] Queue full, dropped a message to cache",
+  "log.cache.read_failed": "[MessageCache] Failed to read session cache: {e}",
   "log.cache.start_event": "{p0} Starting cache..."
 }

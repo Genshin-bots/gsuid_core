@@ -1,5 +1,10 @@
 {
+  "log.cache.cleaned_expired": "[MessageCache] 已清理 {removed} 条过期缓存（保留 {hours} 小时）",
   "log.cache.entering_event": "{p0} 进入缓存...",
+  "log.cache.flush_failed": "[MessageCache] 写入失败，丢弃 {count} 条: {e}",
   "log.cache.hit_value": "{p0} 命中缓存 {_value}",
+  "log.cache.purge_failed": "[MessageCache] 清理过期数据失败: {e}",
+  "log.cache.queue_full": "[MessageCache] 队列已满，丢弃一条待缓存消息",
+  "log.cache.read_failed": "[MessageCache] 读取会话缓存失败: {e}",
   "log.cache.start_event": "{p0} 开始缓存..."
 }

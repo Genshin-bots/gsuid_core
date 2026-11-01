@@ -1,7 +1,7 @@
 import time
 import asyncio
 import inspect
-from typing import Any, Dict, List, Union, Literal, Mapping, Optional, Coroutine
+from typing import Any, Dict, List, Tuple, Union, Literal, Mapping, Optional, Coroutine
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -328,9 +328,9 @@ class _Bot:
             logger.debug(t("log.bot.mute_check_fail", error=e))
 
         # 记录 bot 回复到历史记录
+        # 真正的 add_message 挪到转换之后：控制台要看的是最终发出去的那条
+        _hist_pending: Optional[Tuple[Event, str, Dict[str, Any]]] = None
         try:
-            history_manager = get_history_manager()
-
             # 确定 group_id 和 user_id
             if target_type == "direct":
                 _hist_group_id = None
@@ -450,13 +450,7 @@ class _Bot:
                             sender_id=sender,
                         )
                     )
-                    history_manager.add_message(
-                        event=ev,
-                        role="assistant",
-                        content=content,
-                        user_name="AI",
-                        metadata=metadata,
-                    )
+                    _hist_pending = (ev, content, metadata)
         except Exception as e:
             logger.debug(t("log.bot.record_history_fail", error=e))
 
@@ -472,6 +466,30 @@ class _Bot:
                 None,
                 bot_id,
             )
+
+        # 控制台「会话管理」要还原的是**最终发出去的那条**：转换、markdown 之后，
+        # 连 text2pic、node 拆帧都算完的形态。所以入库与广播都放在这里。
+        if _hist_pending is not None:
+            try:
+                from gsuid_core.message_history import segments_from_messages
+
+                _hist_ev, _hist_content, _hist_meta = _hist_pending
+                # add_message 存的是 event.user_id（提问的人），机器人自己发的那条
+                # 得单独记一份身份，控制台才显示得出头像和昵称
+                _hist_meta["sender"] = {
+                    "user_id": bot_self_id or bot_id,
+                    "nickname": bot_self_id or bot_id or "机器人",
+                }
+                get_history_manager().add_message(
+                    event=_hist_ev,
+                    role="assistant",
+                    content=_hist_content,
+                    user_name="AI",
+                    metadata=_hist_meta,
+                    segments=segments_from_messages(_message),
+                )
+            except Exception as e:
+                logger.debug(t("log.bot.record_history_fail", error=e))
 
         _message_result = []
         message_result: List[List[Message]] = []

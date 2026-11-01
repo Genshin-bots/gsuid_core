@@ -25,6 +25,7 @@
   "log.webconsole.brand_write_json": "[Brand] brand.json の書き込みに失敗: {e}",
   "log.webconsole.cap_created_user_node": "[CapabilityAgent] webconsole がユーザーノードを作成した: {p0}（{p1}）",
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
+  "log.webconsole.chat_prefs_save_fail": "[WebConsole] 会話設定の保存に失敗しました: {error}",
   "log.webconsole.chat_received_user": "[chat_with_history] user_id={user_id} を受信しました",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' が存在しないため、汎用アシスタントのプロンプトにフォールバックする",
   "log.webconsole.config_name_item_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {item_name} の書き込みに失敗",

@@ -27,7 +27,12 @@ from gsuid_core.trigger import Trigger, dispatch_sort_key
 from gsuid_core.global_val import get_platform_val, mark_command_dirty
 from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
-from gsuid_core.message_history import get_history_manager, node_items_to_history
+from gsuid_core.message_history import (
+    segments_preview,
+    get_history_manager,
+    segments_from_event,
+    node_items_to_history,
+)
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.followup_window import (
@@ -410,12 +415,49 @@ async def handle_meta_event(ws: _Bot, msg: MessageReceive) -> None:
             break
 
 
+def _sender_snapshot(event: Event) -> Dict[str, str]:
+    """入站发送者的最小快照，控制台拿它渲染昵称 / 头像 / 群身份。"""
+    sender = event.sender or {}
+    snapshot: Dict[str, str] = {"user_id": event.user_id or ""}
+    for src, dst in (
+        ("nickname", "nickname"),
+        ("card", "card"),
+        ("avatar", "avatar"),
+        ("role", "role"),
+        ("title", "title"),
+        ("openid", "openid"),
+        ("unionid", "unionid"),
+        ("group_name", "group_name"),
+        ("group_icon", "group_icon"),
+    ):
+        value = sender.get(src)
+        if isinstance(value, str) and value:
+            snapshot[dst] = value
+    return snapshot
+
+
+_RICH_SEGMENT_TYPES = frozenset(
+    {
+        "card",
+        "ark",
+        "buttons",
+        "template_buttons",
+        "markdown",
+        "template_markdown",
+        "record",
+        "video",
+        "file",
+    }
+)
+
+
 def _record_inbound_history(event: Event) -> None:
     """入站写入 HistoryManager。无配文纯图也记，后面的轮次才能看见上一张。"""
     has_text = bool(event.raw_text and event.raw_text.strip())
     has_image = bool(event.image_id or event.image_id_list)
     has_node = event.node is not None
-    if not (has_text or event.at_list or has_image or has_node):
+    has_rich = any(isinstance(item, Message) and item.type in _RICH_SEGMENT_TYPES for item in (event.content or []))
+    if not (has_text or event.at_list or has_image or has_node or has_rich):
         return
 
     user_name = None
@@ -425,10 +467,12 @@ def _record_inbound_history(event: Event) -> None:
     if event.sender and "avatar" in event.sender:
         user_avatar = event.sender["avatar"]
 
+    segments = segments_from_event(event)
     metadata: dict[str, object] = {
         "msg_id": event.msg_id,
         "bot_id": event.bot_id,
         "user_type": event.user_type,
+        "sender": _sender_snapshot(event),
     }
     if event.image_id_list:
         metadata["image_id_list"] = event.image_id_list
@@ -469,6 +513,8 @@ def _record_inbound_history(event: Event) -> None:
         # 纯转发消息没有 raw_text，用摘要兜底，文本视图和 AI 上下文才不会是空串
         if not content:
             content = format_node_preview(event.node or [])
+    elif has_rich and not content:
+        content = segments_preview(segments)
 
     get_history_manager().add_message(
         event=event,
@@ -477,6 +523,7 @@ def _record_inbound_history(event: Event) -> None:
         user_name=user_name if isinstance(user_name, str) else None,
         user_avatar=user_avatar if isinstance(user_avatar, str) else None,
         metadata=metadata,
+        segments=segments,
     )
 
 

@@ -1,5 +1,10 @@
 {
-  "log.cache.entering_event": "{p0} キャッシュに入る...",
-  "log.cache.hit_value": "{p0} キャッシュヒット {_value}",
-  "log.cache.start_event": "{p0} キャッシュを開始..."
+  "log.cache.cleaned_expired": "[MessageCache] 期限切れキャッシュ{removed}件をクリーンアップしました（保持期間: {hours}時間）",
+  "log.cache.entering_event": "{p0} Entering cache...",
+  "log.cache.flush_failed": "[MessageCache] 書き込みに失敗したため、{count}件を破棄しました: {e}",
+  "log.cache.hit_value": "{p0} Cache hit: {_value}",
+  "log.cache.purge_failed": "[MessageCache] 期限切れデータのクリーンアップに失敗しました: {e}",
+  "log.cache.queue_full": "[MessageCache] キューが満杯のため、キャッシュ待ちメッセージを1件破棄しました",
+  "log.cache.read_failed": "[MessageCache] セッションキャッシュの読み込みに失敗しました: {e}",
+  "log.cache.start_event": "{p0} Starting cache..."
 }

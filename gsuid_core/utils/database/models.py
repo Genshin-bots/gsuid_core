@@ -318,6 +318,29 @@ class CoreUser(BaseBotIDModel, table=True):
 
     @classmethod
     @with_read_session
+    async def get_names_by_ids(
+        cls,
+        session: AsyncSession,
+        user_ids: List[str],
+        bot_id: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """一批 user_id → 昵称。"""
+        if not user_ids:
+            return {}
+
+        statement = select(cls.user_id, cls.user_name).where(col(cls.user_id).in_(user_ids))
+        if bot_id:
+            statement = statement.where(col(cls.bot_id) == bot_id)
+
+        names: Dict[str, str] = {}
+        for user_id, user_name in (await session.execute(statement)).all():
+            text = str(user_name or "").strip()
+            if text and text != "1":
+                names.setdefault(str(user_id), text)
+        return names
+
+    @classmethod
+    @with_read_session
     async def get_all_user(
         cls,
         session: AsyncSession,

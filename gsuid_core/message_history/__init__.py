@@ -14,10 +14,18 @@ from gsuid_core.message_history.manager import (
     get_history_manager,
     node_items_to_history,
 )
+from gsuid_core.message_history.segments import (
+    segments_preview,
+    segments_from_event,
+    segments_from_messages,
+)
 
 __all__ = [
     "HistoryManager",
     "MessageRecord",
     "get_history_manager",
     "node_items_to_history",
+    "segments_from_event",
+    "segments_from_messages",
+    "segments_preview",
 ]

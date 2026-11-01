@@ -40,6 +40,7 @@ from .pic_gen_config import PIC_GEN_CONIFG
 from .database_config import DATABASE_CONIFG
 from .send_pic_config import SEND_PIC_CONIFG
 from .pic_server_config import PIC_UPLOAD_CONIFG
+from .message_cache_config import MESSAGE_CACHE_CONIFG
 from .buttons_and_markdown_config import BM_CONIFG_DEFAULT
 
 
@@ -597,6 +598,15 @@ database_config = StringConfig(
         CONFIGS_PATH / "database_config.json",
     ],
     DATABASE_CONIFG,
+)
+
+message_cache_config = StringConfig(
+    "GsCore消息缓存",
+    [
+        RES / "message_cache_config.json",
+        CONFIGS_PATH / "message_cache_config.json",
+    ],
+    MESSAGE_CACHE_CONIFG,
 )
 
 status_config = StringConfig(

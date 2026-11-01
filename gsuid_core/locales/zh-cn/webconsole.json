@@ -25,6 +25,7 @@
   "log.webconsole.brand_write_json": "[Brand] 写入 brand.json 失败: {e}",
   "log.webconsole.cap_created_user_node": "[CapabilityAgent] webconsole 新建用户节点: {p0}（{p1}）",
   "log.webconsole.chat_dual_route_retrieve": "[dual_route_retrieve] user_id={user_id}",
+  "log.webconsole.chat_prefs_save_fail": "[网页控制台] 保存会话偏好失败: {error}",
   "log.webconsole.chat_received_user": "[chat_with_history] 收到 user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词",
   "log.webconsole.config_name_item_write_fail": "[框架配置][{config_name}] 配置项 {item_name} 写入失败",

@@ -20,6 +20,14 @@ async def lifespan(app: FastAPI):
     # 先执行启动前钩子（数据库迁移、全局变量加载等），阻塞式
     await core_start_before_execute()
 
+    # 会话页的实时推送要把消息从任意线程投回主循环，先把循环交给 hub
+    from gsuid_core.message_history.hub import get_history_hub
+    from gsuid_core.message_history.cache import bind_loop as bind_cache_loop
+
+    get_history_hub().bind_loop(asyncio.get_running_loop())
+    # 消息缓存的后台写入协程也要挂在这个循环上（未开启缓存时它只是空转）
+    bind_cache_loop(asyncio.get_running_loop())
+
     asyncio.create_task(check_speed())
     asyncio.create_task(core_start_execute())
 

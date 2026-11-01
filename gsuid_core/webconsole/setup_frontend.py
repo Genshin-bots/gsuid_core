@@ -39,6 +39,8 @@ def _import_webconsole_apis() -> None:
         core_config_api,
         plugin_icon_api,
         plugin_page_api,
+        # 会话管理（消息记录）：段渲染 / 实时推送 / 置顶备注拉黑
+        session_chat_api,
         http_agent_keys_api,
     )
 

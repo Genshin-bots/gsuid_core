@@ -17,6 +17,7 @@ CORE_DATABASE_MODEL_MODULES = (
     "gsuid_core.utils.database.models",
     "gsuid_core.utils.database.auth_models",
     "gsuid_core.utils.database.global_val_models",
+    "gsuid_core.message_history.cache",
 )
 
 AI_DATABASE_MODEL_MODULES = (
