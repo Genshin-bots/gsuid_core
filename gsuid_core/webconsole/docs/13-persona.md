@@ -605,7 +605,8 @@ Authorization: Bearer <token>
 | aside_mixed_probability | number | 命令补充：图文都有时补一句的概率，0 到 1。默认 0.25 |
 | aside_allow_tools | boolean | 命令补充能否使用工具（含阅读这条命令所属插件目录）。默认 false |
 | allow_meme_reply | boolean | 是否允许表情回复。打开后系统提示写入 `<meme:情绪>` 协议；关掉后不写这段，也不发送表情。默认 true |
-| meme_frequency | integer | 表情频率，0 到 100，默认 50。只改系统提示里的频率说明：0–24 少用，25–74 适中，75–100 常用。不限流，也不影响选图 |
+| meme_frequency | integer | 表情发送频率，0 到 100，默认 50。控制系统提示里的触发契约：0=禁用表情，1-19=极少回敬，20-39=低频点缀，40-64=自然适中，65-84=高频活跃，85-100=极高频必配。同时联动未显式指定时的发图冷却 |
+| meme_send_cooldown_sec | integer | 同会话表情发送最小间隔（秒），0 到 3600，默认 0。0 表示跟随表情频率档位自适应联动（如适中60s、极高频15s），大于0时以此固定秒数为准 |
 
 > 历史字段 `pre_tool_expressions`（工具前摇台词）已废弃：框架不再播报固定台词，
 > 耗时工具前的告知改由 Agent 按系统约束用角色口吻自行组织。已有配置中的该字段会被忽略。
@@ -662,7 +663,8 @@ Content-Type: application/json
 | aside_mixed_probability | number | 否 | 命令补充图文混合时的概率，0 到 1 |
 | aside_allow_tools | boolean | 否 | 命令补充是否允许使用工具 |
 | allow_meme_reply | boolean | 否 | 是否允许表情回复 |
-| meme_frequency | integer | 否 | 表情频率，0 到 100。只改系统提示里的频率说明 |
+| meme_frequency | integer | 否 | 表情发送频率，0 到 100。控制触发倾向契约并联动派生冷却 |
+| meme_send_cooldown_sec | integer | 否 | 表情发送冷却（秒，0 到 3600）。0 为跟随档位自适应 |
 
 **响应**：
 ```json
@@ -851,4 +853,4 @@ Content-Type: application/json
 
 **响应**：与 13.17 相同结构的完整设定字典。
 
-**错误**：角色不存在 / 非字符串值 / 写入失败时 `status=1`。
+**错误**：角色不存在 / 类型不匹配 / 范围越界 / 写入失败时 `status=1`。

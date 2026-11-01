@@ -41,5 +41,6 @@
   "log.persona.store_remote_set_fail": "[PersonaStore] {repo} remote URL 改回 GitHub 失败",
   "log.persona.store_installed": "[PersonaStore] 已导入人格 {persona} (repo={repo}, packs={packs}, 新表情 {imported})",
   "log.persona.store_updated": "[PersonaStore] 已同步人格 {persona} → {commit} (新表情 {imported})",
-  "log.persona.store_fetch_fail": "[PersonaStore] 拉取人格市场目录失败: {e}"
+  "log.persona.store_fetch_fail": "[PersonaStore] 拉取人格市场目录失败: {e}",
+  "log.persona.meme_cooldown_set": "[PersonaConfig] 已将 '{persona_name}' 的表情发送冷却设为 {value} 秒"
 }

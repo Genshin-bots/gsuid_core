@@ -41,5 +41,6 @@
   "log.persona.store_remote_set_fail": "[PersonaStore] {repo} の remote URL を GitHub に戻せませんでした",
   "log.persona.store_installed": "[PersonaStore] 人格 {persona} をインポート (repo={repo}, packs={packs}, 新規表情 {imported})",
   "log.persona.store_updated": "[PersonaStore] 人格 {persona} を同期 -> {commit} (新規表情 {imported})",
-  "log.persona.store_fetch_fail": "[PersonaStore] 人格マーケットのカタログ取得に失敗: {e}"
+  "log.persona.store_fetch_fail": "[PersonaStore] 人格マーケットのカタログ取得に失敗: {e}",
+  "log.persona.meme_cooldown_set": "[PersonaConfig] '{persona_name}' の表情送信クールダウンを {value} 秒にした"
 }

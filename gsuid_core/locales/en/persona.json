@@ -41,5 +41,6 @@
   "log.persona.store_remote_set_fail": "[PersonaStore] Failed to reset {repo} remote URL to GitHub",
   "log.persona.store_installed": "[PersonaStore] Imported persona {persona} (repo={repo}, packs={packs}, new memes {imported})",
   "log.persona.store_updated": "[PersonaStore] Synced persona {persona} -> {commit} (new memes {imported})",
-  "log.persona.store_fetch_fail": "[PersonaStore] Failed to fetch persona market catalog: {e}"
+  "log.persona.store_fetch_fail": "[PersonaStore] Failed to fetch persona market catalog: {e}",
+  "log.persona.meme_cooldown_set": "[PersonaConfig] Set the meme send cooldown of '{persona_name}' to {value} seconds"
 }

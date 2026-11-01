@@ -987,6 +987,7 @@ async def update_persona_config(
             }
         results.append(f"aside_allow_tools: {allow_tools}")
 
+    # 表情三键同时镜像进 persona.json，保证整包导出时两文件一致
     if "allow_meme_reply" in data:
         allow_meme = data["allow_meme_reply"]
         if not isinstance(allow_meme, bool):
@@ -994,6 +995,7 @@ async def update_persona_config(
         success, msg = persona_config_manager.set_allow_meme_reply(persona_name, allow_meme)
         if not success:
             return {"status": 1, "msg": msg, "data": None}
+        persona_settings_manager.get_config(persona_name).set_config("allow_meme_reply", allow_meme)
         results.append(f"allow_meme_reply: {allow_meme}")
 
     if "meme_frequency" in data:
@@ -1003,7 +1005,18 @@ async def update_persona_config(
         success, msg = persona_config_manager.set_meme_frequency(persona_name, meme_frequency)
         if not success:
             return {"status": 1, "msg": msg, "data": None}
+        persona_settings_manager.get_config(persona_name).set_config("meme_frequency", meme_frequency)
         results.append(f"meme_frequency: {meme_frequency}")
+
+    if "meme_send_cooldown_sec" in data:
+        meme_cooldown = data["meme_send_cooldown_sec"]
+        if isinstance(meme_cooldown, bool) or not isinstance(meme_cooldown, int):
+            return {"status": 1, "msg": "meme_send_cooldown_sec 必须是整数", "data": None}
+        success, msg = persona_config_manager.set_meme_send_cooldown_sec(persona_name, meme_cooldown)
+        if not success:
+            return {"status": 1, "msg": msg, "data": None}
+        persona_settings_manager.get_config(persona_name).set_config("meme_send_cooldown_sec", meme_cooldown)
+        results.append(f"meme_send_cooldown_sec: {meme_cooldown}")
 
     # 更新 enabled_tools（如果提供）
     if "enabled_tools" in data:
@@ -1143,11 +1156,24 @@ async def get_persona_tool_catalog(
 
 
 def _persona_settings_web_dict(persona_name: str) -> Dict[str, Any]:
-    """把 persona.json 序列化成插件配置同构的 ``PluginConfigItem`` 字典。"""
+    """把 persona.json 序列化成插件配置同构的 ``PluginConfigItem`` 字典。
+
+    表情三键以 config.json 为真值源，展示口径与运行时（``resolve_meme_style``）一致。
+    """
+    from gsuid_core.ai_core.persona.chat_style import stored_int
+    from gsuid_core.ai_core.persona.meme_style import DEFAULT_MEME_FREQUENCY
+
     cfg = persona_settings_manager.get_config(persona_name)
+    p_cfg = persona_config_manager.get_config(persona_name)
     data: Dict[str, Any] = {}
     for key in DEFAULT_PERSONA_SETTINGS:
-        data[key] = _build_config_item(cfg.get_config(key), key)
+        item_dict = _build_config_item(cfg.get_config(key), key)
+        if key == "allow_meme_reply" and key in p_cfg.config:
+            item_dict["value"] = bool(p_cfg.get_config(key).data)
+        elif key in ("meme_frequency", "meme_send_cooldown_sec") and key in p_cfg.config:
+            fallback = DEFAULT_MEME_FREQUENCY if key == "meme_frequency" else 0
+            item_dict["value"] = stored_int(p_cfg, key, fallback)
+        data[key] = item_dict
     return data
 
 
@@ -1177,7 +1203,7 @@ async def update_persona_settings(
     data: Dict[str, Any],
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """按 key 写入字符串值。未知键 / 分割线跳过。也可传完整 PluginConfigItem（取 value）。"""
+    """按 key 写入对应配置值。未知键 / 分割线跳过。也可传完整 PluginConfigItem（取 value）。"""
     blocked = _managed_block(persona_name)
     if blocked is not None:
         return blocked
@@ -1194,6 +1220,8 @@ async def update_persona_settings(
             "msg": "请求体必须是对象",
             "data": None,
         }
+    from gsuid_core.utils.plugins_config.models import GsIntConfig, GsStrConfig, GsBoolConfig
+
     cfg = persona_settings_manager.get_config(persona_name)
     updated: list[str] = []
     for key, value in data.items():
@@ -1205,13 +1233,35 @@ async def update_persona_settings(
         raw: object = value
         if isinstance(value, dict) and "value" in value and "type" in value:
             raw = value["value"]
-        if not isinstance(raw, str):
-            return {
-                "status": 1,
-                "msg": f"{key} 必须是字符串",
-                "data": None,
-            }
-        if not cfg.set_config(key, raw):
+        val_to_set: object
+        if isinstance(template, GsBoolConfig):
+            if not isinstance(raw, bool):
+                return {"status": 1, "msg": f"{key} 必须是布尔值", "data": None}
+            val_to_set = raw
+        elif isinstance(template, GsIntConfig):
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return {"status": 1, "msg": f"{key} 必须是整数", "data": None}
+            val_to_set = raw
+        elif isinstance(template, GsStrConfig):
+            if not isinstance(raw, str):
+                return {"status": 1, "msg": f"{key} 必须是字符串", "data": None}
+            val_to_set = raw
+        else:
+            continue
+        if key == "allow_meme_reply":
+            ok, msg = persona_config_manager.set_allow_meme_reply(persona_name, bool(val_to_set))
+            if not ok:
+                return {"status": 1, "msg": msg, "data": None}
+        elif key == "meme_frequency":
+            ok, msg = persona_config_manager.set_meme_frequency(persona_name, int(val_to_set))
+            if not ok:
+                return {"status": 1, "msg": msg, "data": None}
+        elif key == "meme_send_cooldown_sec":
+            ok, msg = persona_config_manager.set_meme_send_cooldown_sec(persona_name, int(val_to_set))
+            if not ok:
+                return {"status": 1, "msg": msg, "data": None}
+
+        if not cfg.set_config(key, val_to_set):
             return {
                 "status": 1,
                 "msg": f"写入失败: {key}",

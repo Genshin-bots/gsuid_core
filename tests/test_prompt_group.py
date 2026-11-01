@@ -178,12 +178,12 @@ def test_build_persona_prompt_meme_protocol_follows_allow_flag(tmp_path, monkeyp
     old_base = persona_config_manager._base_path
     persona_config_manager._base_path = tmp_path
     persona_config_manager._cache.clear()
-    rare = "频率：少用。只在对方先发表情，或一个表情就能回完时才发。"
-    mid = "频率：闲聊时大约每五到八次回复用一次。"
-    often = "频率：闲聊时大约每两到三次回复用一次。"
+    f0 = meme_frequency_line_for(0)
+    f50 = meme_frequency_line_for(50)
+    f100 = meme_frequency_line_for(100)
 
     def _freq_norm(text: str) -> str:
-        return text.replace(rare, "FREQ").replace(mid, "FREQ").replace(often, "FREQ")
+        return text.replace(f0, "FREQ").replace(f50, "FREQ").replace(f100, "FREQ")
 
     try:
         (tmp_path / "测").mkdir()
@@ -197,19 +197,19 @@ def test_build_persona_prompt_meme_protocol_follows_allow_flag(tmp_path, monkeyp
         assert "<meme:情绪>" in p50
         assert "{{" not in p0
         assert "send_meme" not in p50
-        assert "适合发" in p50
+        assert "不发：" in p50
         assert "早柚" not in p50
         assert "唔…" not in p50 and "本貉" not in p50
-        assert rare in p0 and mid not in p0 and often not in p0
-        assert mid in p50 and rare not in p50 and often not in p50
-        assert often in p100 and rare not in p100 and mid not in p100
+        assert f0 in p0 and f50 not in p0 and f100 not in p0
+        assert f50 in p50 and f0 not in p50 and f100 not in p50
+        assert f100 in p100 and f0 not in p100 and f50 not in p100
         assert _freq_norm(p0) == _freq_norm(p50) == _freq_norm(p100)
 
         skipped = asyncio.run(
             processor.build_persona_prompt("测", include_meme_protocol=False, clock_date="2026年10月23日")
         )
         assert "<meme:情绪>" not in skipped
-        assert rare not in skipped and mid not in skipped and often not in skipped
+        assert f0 not in skipped and f50 not in skipped and f100 not in skipped
 
         assert persona_config_manager.set_allow_meme_reply("测", False)[0] is True
         denied = asyncio.run(processor.build_persona_prompt("测", clock_date="2026年10月23日"))

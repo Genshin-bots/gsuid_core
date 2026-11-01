@@ -11,7 +11,6 @@ from typing import Dict, List, Tuple, Optional, Sequence
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
@@ -21,15 +20,17 @@ _send_cooldowns: Dict[str, float] = {}
 # pick() 的失败原因，供调用方向 LLM 返回可区分的反馈
 PICK_OK = "ok"
 PICK_COOLDOWN = "cooldown"  # 会话冷却中，现在不能发
+PICK_DISABLED = "disabled"  # 人格未开启表情回复或频率为0
 PICK_NO_PERSONA = "no_persona"  # 没有解析到人格
 PICK_NO_BIND = "no_bind"  # 这个人格没有绑定行
 PICK_NO_MATCH = "no_match"  # 已绑定的包里没有可发的匹配
 PICK_EXHAUSTED = "exhausted"  # 有匹配但最近都发过，被排除
 
 
-def _is_on_cooldown(session_id: str) -> bool:
-    """检查会话是否在冷却中"""
-    cooldown_sec: int = meme_config.get_config("meme_send_cooldown_sec").data
+def _is_on_cooldown(session_id: str, cooldown_sec: int) -> bool:
+    """检查会话是否在冷却中。"""
+    if cooldown_sec <= 0:
+        return False
     last_send = _send_cooldowns.get(session_id, 0.0)
     return (time.time() - last_send) < cooldown_sec
 
@@ -69,12 +70,18 @@ async def pick(
     session_id: str,
 ) -> Tuple[Optional[AiMemeRecord], str]:
     """从该人格已绑定的包里选一张。没有绑定行则不发。"""
-    if _is_on_cooldown(session_id):
-        logger.debug(t("log.meme.session_id_cooling_skipping", session_id=session_id))
-        return None, PICK_COOLDOWN
-
     if persona is None or persona == "":
         return None, PICK_NO_PERSONA
+
+    from gsuid_core.ai_core.persona.meme_style import resolve_meme_style
+
+    style = resolve_meme_style(persona)
+    if not style.enabled:
+        return None, PICK_DISABLED
+
+    if _is_on_cooldown(session_id, style.cooldown_sec):
+        logger.debug(t("log.meme.session_id_cooling_skipping", session_id=session_id))
+        return None, PICK_COOLDOWN
 
     from gsuid_core.ai_core.meme.config import (
         MEME_PICK_CANDIDATE_COUNT,

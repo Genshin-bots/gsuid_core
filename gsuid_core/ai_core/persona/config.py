@@ -349,9 +349,15 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
     ),
     "meme_frequency": GsIntConfig(
         "表情频率",
-        "只改系统提示里的频率说明：0=少用，50=适中，100=常用。不限流，也不影响选图。",
+        "控制系统提示里的表情触发倾向：0=禁用表情，1-19=极少回敬，20-39=低频点缀，40-64=自然适中，65-84=高频活跃，85-100=极高频必配。同时联动未显式指定时的发图冷却。",
         50,
         options=[0, 25, 50, 75, 100],
+    ),
+    "meme_send_cooldown_sec": GsIntConfig(
+        "表情发送冷却",
+        "同会话表情发送最小间隔（秒）。0 表示跟随表情频率档位自动联动，也可设定大于 0 的具体秒数固定冷却。",
+        0,
+        options=[0, 15, 30, 60, 120, 300],
     ),
 }
 
@@ -784,7 +790,7 @@ class PersonaConfigManager(ConfigSetManager):
         return True, "ok"
 
     def set_meme_frequency(self, persona_name: str, value: object) -> tuple[bool, str]:
-        """设置表情频率。0 到 100。只改系统提示里的一句说明。"""
+        """设置表情频率（0 到 100）。0 禁用表情发送；其余档位同时派生默认发图冷却。"""
         from gsuid_core.ai_core.persona.meme_style import MEME_FREQUENCY_MAX, MEME_FREQUENCY_MIN
 
         if isinstance(value, bool) or not isinstance(value, int):
@@ -795,6 +801,18 @@ class PersonaConfigManager(ConfigSetManager):
         if not config.set_config("meme_frequency", value):
             return False, "配置写入失败"
         logger.info(t("log.persona.meme_frequency_set", persona_name=persona_name, value=value))
+        return True, "ok"
+
+    def set_meme_send_cooldown_sec(self, persona_name: str, value: object) -> tuple[bool, str]:
+        """设置表情发送冷却（秒）。0 表示跟随档位自适应，>0 为固定秒数。"""
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False, "表情发送冷却必须是整数"
+        if value < 0 or value > 3600:
+            return False, "表情发送冷却必须在 0 到 3600 秒之间"
+        config = self.get_config(persona_name)
+        if not config.set_config("meme_send_cooldown_sec", value):
+            return False, "配置写入失败"
+        logger.info(t("log.persona.meme_cooldown_set", persona_name=persona_name, value=value))
         return True, "ok"
 
     def set_inspect_interval(self, persona_name: str, inspect_interval: int) -> tuple[bool, str]:
@@ -1093,6 +1111,7 @@ class PersonaConfigManager(ConfigSetManager):
             "prompt_group": _effective_prompt_group(persona_name),
             "allow_meme_reply": bool(config.get_config("allow_meme_reply").data),
             "meme_frequency": stored_int(config, "meme_frequency", DEFAULT_MEME_FREQUENCY),
+            "meme_send_cooldown_sec": stored_int(config, "meme_send_cooldown_sec", 0),
             "chat_style": stored_int(config, "chat_style", DEFAULT_CHAT_STYLE),
             "speech_len_soft": stored_int(config, "speech_len_soft", shape["soft_default"]),
             "speech_shape": shape,

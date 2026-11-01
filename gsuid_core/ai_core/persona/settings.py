@@ -1,6 +1,6 @@
-"""每个人格目录下的 ``persona.json``：称呼与用户可见短句。
+"""每个人格目录下的 ``persona.json``：称呼、用户可见短句与表情回复镜像。
 
-与 ``config.json``（启用范围 / 巡检 / 工具装配）分开：这边只放「这个人格怎么叫主人、
+与 ``config.json``（启用范围 / 巡检 / 工具装配）分开：这边放「这个人格怎么叫主人、
 失败时说什么」。模板是 ``Dict[str, GSC]``，控制台按插件配置同构渲染，加项不用改前端。
 """
 
@@ -10,7 +10,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.utils.path_safety import PathEscapeError, is_safe_filename
-from gsuid_core.utils.plugins_config.models import GSC, GsDivider, GsStrConfig
+from gsuid_core.utils.plugins_config.models import GSC, GsDivider, GsIntConfig, GsStrConfig, GsBoolConfig
 from gsuid_core.utils.plugins_config.gs_config import ConfigSetManager
 
 from ..resource import PERSONA_PATH
@@ -27,6 +27,30 @@ DEFAULT_PERSONA_SETTINGS: dict[str, GSC] = {
         "对主人的称呼",
         "对配置里 masters 用户的口头称呼。提示词、巡检台词都会用这个词，不要用这个称呼叫其他人。",
         DEFAULT_MASTER_TITLE,
+    ),
+    # 表情三键是 config.json 的展示镜像：真值以 persona_config_manager 为准，
+    # 控制台读写在 persona_api 里双端同步。
+    "_MemeDivider": GsDivider(
+        "表情回复",
+        "控制该角色在会话中是否发送表情包、发送频率偏好以及发送冷却间隔。",
+        "表情回复",
+    ),
+    "allow_meme_reply": GsBoolConfig(
+        "允许表情回复",
+        "打开后，系统提示里写入表情协议，回复可以用 <meme:情绪>。关掉后不写这段，也不发送表情。",
+        True,
+    ),
+    "meme_frequency": GsIntConfig(
+        "表情频率",
+        "控制系统提示里的表情触发倾向：0=禁用表情，1-19=极少回敬，20-39=低频点缀，40-64=自然适中，65-84=高频活跃，85-100=极高频必配。同时联动未显式指定时的发图冷却。",
+        50,
+        options=[0, 25, 50, 75, 100],
+    ),
+    "meme_send_cooldown_sec": GsIntConfig(
+        "表情发送冷却",
+        "同会话表情发送最小间隔（秒）。0 表示跟随表情频率档位自动联动，也可设定大于 0 的具体秒数固定冷却。",
+        0,
+        options=[0, 15, 30, 60, 120, 300],
     ),
     "_ErrorDivider": GsDivider(
         "失败与拦截",
