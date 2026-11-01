@@ -79,3 +79,47 @@ def test_unauthorized_command_does_not_match(gated_sv: SV) -> None:
                 if trigger.check_command(ev_ok):
                     matched_ok.append(trigger)
     assert len(matched_ok) >= 1
+
+
+def test_sv_bot_white_and_black_list(gated_sv: SV) -> None:
+    ev_bot1 = _ev(pm=1)
+    ev_bot1.bot_self_id = "bot1"
+    ev_bot2 = _ev(pm=1)
+    ev_bot2.bot_self_id = "bot2"
+    ev_default = _ev(pm=1)
+    ev_default.bot_self_id = ""
+
+    # 1. 默认空名单：全部放行
+    gated_sv.plugins.bot_white_list = []
+    gated_sv.plugins.bot_black_list = []
+    assert _sv_authorized(gated_sv, ev_bot1, 1) is True
+    assert _sv_authorized(gated_sv, ev_default, 1) is True
+
+    # 2. 白名单含空串 [""]：不误拦全盘，依然全部放行
+    gated_sv.plugins.bot_white_list = [""]
+    assert _sv_authorized(gated_sv, ev_bot1, 1) is True
+    assert _sv_authorized(gated_sv, ev_default, 1) is True
+
+    # 3. 有效白名单：只放行名单内的 Bot
+    gated_sv.plugins.bot_white_list = ["bot1"]
+    assert _sv_authorized(gated_sv, ev_bot1, 1) is True
+    assert _sv_authorized(gated_sv, ev_bot2, 1) is False
+    assert _sv_authorized(gated_sv, ev_default, 1) is False
+
+    # 4. 黑名单含空串 [""]：不误杀缺省账号
+    gated_sv.plugins.bot_white_list = []
+    gated_sv.plugins.bot_black_list = [""]
+    assert _sv_authorized(gated_sv, ev_default, 1) is True
+    assert _sv_authorized(gated_sv, ev_bot1, 1) is True
+
+    # 5. 有效黑名单：拦截名单内的 Bot，不影响缺省账号
+    gated_sv.plugins.bot_black_list = ["bot1"]
+    assert _sv_authorized(gated_sv, ev_bot1, 1) is False
+    assert _sv_authorized(gated_sv, ev_bot2, 1) is True
+    assert _sv_authorized(gated_sv, ev_default, 1) is True
+
+    # 6. 同时配置黑白名单：黑名单优先
+    gated_sv.plugins.bot_white_list = ["bot1", "bot2"]
+    gated_sv.plugins.bot_black_list = ["bot1"]
+    assert _sv_authorized(gated_sv, ev_bot1, 1) is False
+    assert _sv_authorized(gated_sv, ev_bot2, 1) is True

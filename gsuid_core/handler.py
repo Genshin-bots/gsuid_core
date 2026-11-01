@@ -311,11 +311,12 @@ def _sv_authorized(_sv: SV, event: Event, user_pm: int) -> bool:
     if _plugins.white_list and _plugins.white_list != [""]:
         if event.user_id not in _plugins.white_list and event.group_id not in _plugins.white_list:
             return False
-    # 插件级 Bot 白名单：非空时只让名单里的机器人账号响应（空 = 全部 Bot 都响应）
-    if _plugins.bot_white_list and event.bot_self_id not in _plugins.bot_white_list:
+    # 插件级 Bot 账号过滤：空项不生效，两个名单都填时黑名单优先
+    bot_black = [b for b in _plugins.bot_black_list if b]
+    if bot_black and event.bot_self_id in bot_black:
         return False
-    # 插件级 Bot 黑名单：名单里的机器人账号一律不响应
-    if event.bot_self_id in _plugins.bot_black_list:
+    bot_white = [b for b in _plugins.bot_white_list if b]
+    if bot_white and event.bot_self_id not in bot_white:
         return False
     if not _sv.enabled:
         return False
