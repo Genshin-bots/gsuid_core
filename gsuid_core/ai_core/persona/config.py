@@ -74,6 +74,38 @@ def normalize_ai_modes(modes: list[str]) -> list[str]:
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class DriveTraits:
+    """人格驱动四参数（读自 config，坏值回退默认）。"""
+
+    social_initiative: int = 50
+    energy_endurance: int = 50
+    curiosity_focus: str = "balanced"
+    arc_persistence: int = 2
+
+
+_CURIOSITY_VALUES = frozenset({"balanced", "people", "analytical", "whimsical"})
+
+
+def _clamped_int(raw: object, default: int, low: int, high: int) -> int:
+    return min(high, max(low, int(raw))) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else default
+
+
+def read_drive_traits(config: StringConfig) -> DriveTraits:
+    """从人格配置读四参数；老 config.json 缺键或类型不对时全用默认。"""
+    initiative = _clamped_int(config.get_config("social_initiative").data, 50, 0, 100)
+    endurance = _clamped_int(config.get_config("energy_endurance").data, 50, 0, 100)
+    focus_raw = config.get_config("curiosity_focus").data
+    focus = focus_raw if isinstance(focus_raw, str) and focus_raw in _CURIOSITY_VALUES else "balanced"
+    persistence = _clamped_int(config.get_config("arc_persistence").data, 2, 1, 3)
+    return DriveTraits(
+        social_initiative=initiative,
+        energy_endurance=endurance,
+        curiosity_focus=focus,
+        arc_persistence=persistence,
+    )
+
+
 def parse_active_window(text: str) -> tuple[int, int] | None:
     """返回开始、结束的当天分钟数。格式不对则返回 None。"""
     matched = _ACTIVE_WINDOW.fullmatch(text.strip())
@@ -207,6 +239,30 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         "当启用范围为 'specific' 时，指定该人格对哪些群聊/角色启用",
         [],
         options=[],
+    ),
+    "social_initiative": GsIntConfig(
+        "社交主动度",
+        "0-100，越高越想主动找人搭话",
+        50,
+        options=[],
+    ),
+    "energy_endurance": GsIntConfig(
+        "社交耐力",
+        "0-100，越高连续互动越不容易倦",
+        50,
+        options=[],
+    ),
+    "curiosity_focus": GsStrConfig(
+        "闲时关注点",
+        "自主行动先看人还是先查群聊话题",
+        "balanced",
+        options=["balanced", "people", "analytical", "whimsical"],
+    ),
+    "arc_persistence": GsIntConfig(
+        "单话题跟进轮数",
+        "1-3，自主行动同一话题最多跟进几轮",
+        2,
+        options=[1, 2, 3],
     ),
     "inspect_interval": GsIntConfig(
         "定时巡检间隔",
@@ -495,7 +551,7 @@ class PersonaConfigManager(ConfigSetManager):
         if not self._base_path.exists():
             return configs
 
-        for persona_dir in self._base_path.iterdir():
+        for persona_dir in sorted(self._base_path.iterdir(), key=lambda p: p.name):
             if persona_dir.is_dir():
                 persona_name = persona_dir.name
                 configs[persona_name] = self.get_config(persona_name)
@@ -959,7 +1015,20 @@ class PersonaConfigManager(ConfigSetManager):
         except Exception:
             pass
 
-        for persona_name, config in self.get_all_configs().items():
+        all_configs = self.get_all_configs()
+
+        # 私聊租约优先：主动私聊签约的人格承接后续私聊回复（回复黑洞修复）
+        if is_private_chat and user_id:
+            from gsuid_core.ai_core.proactive.dm_lease import get_active_dm_lease
+
+            bot_id = parts[1] if len(parts) > 1 else ""
+            lease = get_active_dm_lease(user_id, bot_id)
+            if lease is not None and lease.persona_name in all_configs:
+                lease_cfg = all_configs[lease.persona_name]
+                if lease_cfg.get_config("scope").data != "disabled":
+                    return lease.persona_name
+
+        for persona_name, config in all_configs.items():
             scope = config.get_config("scope").data
             target_groups = config.get_config("target_groups").data
 
@@ -968,14 +1037,6 @@ class PersonaConfigManager(ConfigSetManager):
                     return persona_name
                 if user_id and user_id in target_groups:
                     return persona_name
-
-        if is_private_chat and user_id:
-            from gsuid_core.ai_core.proactive.dm_lease import get_active_dm_lease
-
-            bot_id = parts[1] if len(parts) > 1 else ""
-            lease = get_active_dm_lease(user_id, bot_id)
-            if lease is not None and lease.persona_name in self.get_all_configs():
-                return lease.persona_name
 
         return self.get_fallback_persona(is_private=is_private_chat)
 
@@ -1003,6 +1064,7 @@ class PersonaConfigManager(ConfigSetManager):
 
         shape = speech_shape_spec()
         autonomy = read_autonomy_runtime(config)
+        traits = read_drive_traits(config)
         return {
             "ai_mode": normalize_ai_modes(list(config.get_config("ai_mode").data)),
             "scope": config.get_config("scope").data,
@@ -1034,6 +1096,10 @@ class PersonaConfigManager(ConfigSetManager):
             "chat_style": stored_int(config, "chat_style", DEFAULT_CHAT_STYLE),
             "speech_len_soft": stored_int(config, "speech_len_soft", shape["soft_default"]),
             "speech_shape": shape,
+            "social_initiative": traits.social_initiative,
+            "energy_endurance": traits.energy_endurance,
+            "curiosity_focus": traits.curiosity_focus,
+            "arc_persistence": traits.arc_persistence,
         }
 
     def delete_persona_config(self, persona_name: str) -> bool:

@@ -172,32 +172,49 @@ async def run_passive_interactive_chat(
         return PassiveChatResult("silence")
 
     if not event.group_id and event.user_id:
-        from gsuid_core.ai_core.proactive.dm_lease import renew_dm_lease
+        from gsuid_core.ai_core.persona.settings import persona_name_from_event
+        from gsuid_core.ai_core.proactive.dm_lease import renew_dm_lease, maybe_switch_dm_lease
 
+        # 私聊开头显式点名其他启用人格 → 租约平滑切换（在 renew 与建 session 之前）
+        maybe_switch_dm_lease(
+            event.user_id, event.bot_id or "", event.raw_text or "", persona_name_from_event(event) or ""
+        )
         renew_dm_lease(user_id=event.user_id, bot_id=event.bot_id or "")
 
     session = await get_ai_session(event)
 
-    if wall_clock_budget is not None and event.session_id.startswith("HTTP_AGENT:"):
-        session.wall_clock_budget = wall_clock_budget
-    hook_ctx.persona_name = session.persona_name
-    turn = await run_interactive_turn(
-        bot=bot,
-        event=event,
-        session=session,
-        query=query,
-        hook_ctx=hook_ctx,
-        soft_triggered=soft_triggered,
-        enqueue_ts=enqueue_ts,
-        return_mode=return_mode,
-        deliver=deliver,
-        settle=settle,
-        outbound_stream=outbound_stream,
-        stats_chat_type=stats_chat_type,
-    )
-    if turn.is_silence:
-        return PassiveChatResult("silence", turn=turn)
-    return PassiveChatResult("ok", turn=turn)
+    from gsuid_core.ai_core.persona.speaking_ctx import set_speaking_persona, reset_speaking_persona
+
+    _speaking_token = set_speaking_persona(session.persona_name or "")
+    try:
+        # 用户回了私聊 → 清零该人格的未回连击（互惠退避解除）
+        if not event.group_id and event.user_id and session.persona_name:
+            from gsuid_core.ai_core.database.models import UserFavorability
+
+            await UserFavorability.reset_dm_unanswered(event.user_id, bot.bot_id, session.persona_name)
+
+        if wall_clock_budget is not None and event.session_id.startswith("HTTP_AGENT:"):
+            session.wall_clock_budget = wall_clock_budget
+        hook_ctx.persona_name = session.persona_name
+        turn = await run_interactive_turn(
+            bot=bot,
+            event=event,
+            session=session,
+            query=query,
+            hook_ctx=hook_ctx,
+            soft_triggered=soft_triggered,
+            enqueue_ts=enqueue_ts,
+            return_mode=return_mode,
+            deliver=deliver,
+            settle=settle,
+            outbound_stream=outbound_stream,
+            stats_chat_type=stats_chat_type,
+        )
+        if turn.is_silence:
+            return PassiveChatResult("silence", turn=turn)
+        return PassiveChatResult("ok", turn=turn)
+    finally:
+        reset_speaking_persona(_speaking_token)
 
 
 async def handle_ai_chat(
@@ -294,7 +311,7 @@ async def run_interactive_turn(
     await fire_hooks(AgentHookPoint.AFTER_SESSION, hook_ctx)
     rel = hook_ctx.relationship
     if rel is None:
-        rel = await fetch_relationship(str(event.user_id), bot_id)
+        rel = await fetch_relationship(str(event.user_id), bot_id, session.persona_name or "")
         hook_ctx.relationship = rel
 
     prior_turns, hist_records = prior_user_turns_for_intent(event, query)
@@ -320,7 +337,7 @@ async def run_interactive_turn(
     if cheap is CheapGate.SILENCE:
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         if settle:
-            await _settle_silent_turn(event, bot_id, query, intent, rel)
+            await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
         _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
     logger.info(t("log.ai.gscore_ai_intent_mode", intent=intent or "-"))
@@ -391,13 +408,13 @@ async def run_interactive_turn(
     if cheap is CheapGate.SILENCE:
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         if settle:
-            await _settle_silent_turn(event, bot_id, query, intent, rel)
+            await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
         _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
 
     from gsuid_core.ai_core.autonomy.dispatch import ack_autonomy_merge, peek_autonomy_merge
 
-    merge_line = peek_autonomy_merge(event)
+    merge_line = peek_autonomy_merge(event, session.persona_name or "")
     if merge_line:
         user_messages = [*user_messages, merge_line]
 
@@ -418,7 +435,14 @@ async def run_interactive_turn(
 
     result_text, is_silence, is_error = classify_run_result(chat_result)
     if merge_line and not is_silence and not is_error:
-        ack_autonomy_merge(event)
+        ack_autonomy_merge(event, session.persona_name or "")
+        from gsuid_core.ai_core.autonomy.micro_arc import load_micro_arcs, save_micro_arcs, consolidate_for_target
+
+        _pn = session.persona_name or ""
+        if _pn:
+            _arcs = await load_micro_arcs(_pn)
+            consolidate_for_target(_arcs, event.group_id or "", event.user_id or "")
+            await save_micro_arcs(_pn, _arcs)
     if turn_graph.quoted_tome and is_silence and not session.last_run_sent_visible_reply and event.user_id:
         revoke_fresh_hard_trigger(event.session_id, str(event.user_id))
     if is_silence and soft_triggered and event.user_id:
@@ -455,6 +479,7 @@ async def run_interactive_turn(
             effective=not is_error and (session.last_run_sent_visible_reply or (bool(result_text) and not is_silence)),
             is_silence=is_silence,
             is_error=is_error,
+            persona_name=session.persona_name or "",
         )
     return InteractiveTurnResult(chat_result, result_text, is_silence, is_error, intent, False, hook_ctx, rel)
 
@@ -473,6 +498,7 @@ async def _settle_and_fire_after_run(
     effective: bool,
     is_silence: bool,
     is_error: bool,
+    persona_name: str = "",
 ) -> None:
     """⑩ 关系温度结算 + H08 收尾套件（mood 更新 / 统计上报共用同一份信号扫描）。"""
     outcome = await settle_turn(
@@ -486,7 +512,19 @@ async def _settle_and_fire_after_run(
         reached_model=True,
         is_master=rel.is_master,
         guard_flags=guard_flags,
+        persona_name=persona_name,
     )
+    if persona_name:
+        from gsuid_core.ai_core.relationship.dyadic_distill import maybe_schedule_dyadic_distill
+
+        await maybe_schedule_dyadic_distill(
+            event=event,
+            bot=bot,
+            user_id=event.user_id,
+            bot_id=bot_id,
+            persona_name=persona_name,
+            score_after=outcome.score_after,
+        )
     hook_ctx.point = AgentHookPoint.AFTER_RUN
     hook_ctx.signals = outcome.signals
     hook_ctx.settle_outcome = outcome
@@ -517,6 +555,7 @@ async def _settle_silent_turn(
     query: str,
     intent: str,
     rel: RelationshipView,
+    persona_name: str = "",
 ) -> None:
     """CheapGate 静音早退路径的结算（``reached_model=False``：只放行负信号）。
 
@@ -537,6 +576,7 @@ async def _settle_silent_turn(
         reached_model=False,
         is_master=rel.is_master,
         guard_flags=guard,
+        persona_name=persona_name,
     )
 
 

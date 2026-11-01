@@ -15,6 +15,7 @@ from gsuid_core.logger import logger
 # 装配顺序单源定义：内核处理身份与历史，群语境位于记忆之前，规划提示紧跟任务之后。
 CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "mood",
+    "presence",
     "relationship",
     "voice_anchor",
     "identity",
@@ -34,7 +35,8 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
 # 它的帽只能来自 inject_memory_cap，表里再写一个 8000 会让配置形同虚设。
 BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "mood": 80,
-    "relationship": 100,
+    "presence": 120,
+    "relationship": 220,
     # 口吻 86 + 敌对档口气 60 + 复读提示 60 左右
     "voice_anchor": 240,
     "identity": 80,

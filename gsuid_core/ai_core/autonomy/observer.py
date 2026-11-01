@@ -8,8 +8,9 @@ from gsuid_core.config import core_config
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.persona.mood import get_all_mood_states
 from gsuid_core.ai_core.autonomy.binds import collect_bound_uids
-from gsuid_core.ai_core.autonomy.codec import load_steps, load_str_list
+from gsuid_core.ai_core.autonomy.codec import load_steps
 from gsuid_core.ai_core.persona.config import (
+    read_drive_traits,
     scope_covers_session,
     read_autonomy_runtime,
     persona_config_manager,
@@ -63,7 +64,7 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     allow_private = scope_covers_session(scope, is_private=True) or scope == "specific"
     masters = _master_ids()
     floor = care_floor(runtime.care_min_zone)
-    favor_rows = await UserFavorability.list_at_least(minimum_score_for(floor), limit=50)
+    favor_rows = await UserFavorability.list_at_least(minimum_score_for(floor), persona_name=persona_name, limit=50)
     scores: dict[str, int] = {}
     names: dict[str, str] = {}
     favor_bot: dict[str, str] = {}
@@ -86,7 +87,7 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     for uid in user_ids:
         if uid in scores:
             continue
-        extra = await UserFavorability.get_any_favorability(uid)
+        extra = await UserFavorability.get_any_favorability(uid, persona_name)
         if extra is None:
             scores[uid] = 0
             continue
@@ -100,6 +101,16 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         bot_id = favor_bot[uid] if uid in favor_bot and favor_bot[uid] else _bot_for(lines, uid)
         binds[uid] = await collect_bound_uids(uid, bot_id)
     user_prefs = await _user_preferences(user_ids)
+    streaks = await UserFavorability.get_dm_unanswered_streaks(user_ids, persona_name)
+    dm_paused = {uid for uid, streak in streaks.items() if streak >= 2}
+    traits = read_drive_traits(config)
+    from gsuid_core.ai_core.persona.presence import refresh_persona_state
+    from gsuid_core.ai_core.autonomy.micro_arc import active_arc, load_micro_arcs
+    from gsuid_core.ai_core.persona.homeostasis import cooled_topics
+
+    _homeo_state, _ribbon = await refresh_persona_state(persona_name, clock)
+    cooled = cooled_topics(_homeo_state)
+    _arcs = await load_micro_arcs(persona_name)
     care = assemble_care_targets(
         user_ids,
         scores,
@@ -111,9 +122,10 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         allowed_groups=allowed,
         allow_private=allow_private,
         preferences=user_prefs,
+        dm_paused=dm_paused,
     )
     groups = await _groups(lines, scope, targets, excluded_groups=active_groups)
-    trails, recent_tools = await _previous(persona_name, clock)
+    recent_tools = await _previous(persona_name, clock)
     bot_id, bot_self_id, ws_bot_id = _identity(lines, groups)
     proactive_records = await _recent_proactive_records(persona_name, clock)
     return ObservationDigest(
@@ -122,9 +134,12 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         bot_self_id=bot_self_id,
         ws_bot_id=ws_bot_id,
         mood_score=_mood(persona_name),
+        curiosity_focus=traits.curiosity_focus,
+        cooled_topics=cooled,
+        active_arc=active_arc(_arcs),
+        arc_max_hops=traits.arc_persistence,
         care_targets=care,
         group_digests=groups,
-        open_trails=trails,
         available_plugins_summary=_plugin_names(),
         recently_used_tools=recent_tools,
         in_flight_tasks=in_flight,
@@ -286,19 +301,20 @@ async def _recent_proactive_records(persona_name: str, now: float) -> list[str]:
     return found
 
 
-async def _previous(persona_name: str, now: float) -> tuple[list[str], list[str]]:
+async def _previous(persona_name: str, now: float) -> list[str]:
+    """上一次自主行动用过的工具名（线索连续性由 micro_arc 承担，trails 不再回填底片）。"""
     rows = await AIAutonomyActivity.list_recent_by_persona(persona_name, limit=1)
     if not rows:
-        return [], []
+        return []
     row = rows[0]
     if now - row.created_at > GROUP_LOOKBACK_SECONDS:
-        return [], []
+        return []
     tools: list[str] = []
     for step in load_steps(row.steps_json):
         name = step["tool_name"]
         if name and name not in tools:
             tools.append(name)
-    return load_str_list(row.open_trails_json), tools
+    return tools
 
 
 def _mood(persona_name: str) -> float:
@@ -365,7 +381,6 @@ def _empty(persona_name: str) -> ObservationDigest:
         mood_score=0.0,
         care_targets=[],
         group_digests=[],
-        open_trails=[],
         available_plugins_summary=[],
         recently_used_tools=[],
         in_flight_tasks=[],

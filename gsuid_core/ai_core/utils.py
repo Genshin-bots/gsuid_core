@@ -238,6 +238,14 @@ def split_protocol_hold(buf: str, *, force: bool = False) -> tuple[str, str]:
 # 同一组常量做前缀/子串判断，文案微调不再让嗅探点静默失效（评审修复 E11）。
 ERROR_RESULT_PREFIX = "执行出错"
 ERROR_CONTENT_REJECTED = "内容被模型安全策略拒绝"
+
+
+def is_agent_error_text(text: str) -> bool:
+    """上游 agent 的错误回执（``执行出错: …``）或网关超时回显，不得当正常产出消费。"""
+    stripped = (text or "").strip()
+    return stripped.startswith(ERROR_RESULT_PREFIX) or "Request timed out" in stripped
+
+
 ERROR_TIMEOUT_TEXT = "请求超时"
 NO_RESULT_TEXT = "Agent 执行完成，但未返回有效结果"
 

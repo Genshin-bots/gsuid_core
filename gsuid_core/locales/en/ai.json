@@ -128,7 +128,7 @@
   "log.ai.buildintools_rm_get_succeeded_ok_2": "[BuildinTools] RM.get succeeded, img_data type={p0}",
   "log.ai.buildintools_rm_get_succeeded_ok_3": "[BuildinTools] RM.get succeeded, video_data type={p0}",
   "log.ai.buildintools_rm_get_video_id": "[BuildinTools] RM.get({video_id}) raised ValueError: {e}",
-"log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) raised ValueError: {e}",
+  "log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) raised ValueError: {e}",
   "log.ai.buildintools_skipping_duplicate_run_skip": "[BuildinTools] Same text already sent this round, skipping duplicate send (run-level dedup)",
   "log.ai.buildintools_user_target_id": "[BuildinTools] Sending {p0} to user {target_id}",
   "log.ai.buildintools_workspace_change_registration": "[BuildinTools] Workspace change registration failed: {e}",
@@ -173,8 +173,9 @@
   "log.ai.cognition_hub_unresolved": "[Cognition] cannot resolve canonical name, skip hub title={title}",
   "log.ai.cognition_link_entity_fail": "[Cognition] failed to link env entity to world hub name={name}: {e}",
   "log.ai.cognition_mount_disabled": "[Cognition] mount disabled (cognition_mount_enable=false)",
-  "log.ai.cognition_mount_done": "[Cognition] mount done hubs={hubs} attachments={attachments} linked_env={linked_env} skipped_ambiguous={skipped_ambiguous} skipped_unresolved={skipped_unresolved}",
+  "log.ai.cognition_mount_done": "[Cognition] mount done hubs={hubs} attachments={attachments} linked_env={linked_env} skipped_ambiguous={skipped_ambiguous} skipped_unresolved={skipped_unresolved} failed={failed_items}",
   "log.ai.cognition_mount_fail": "[Cognition] background mount failed (chat still available): {e}",
+  "log.ai.cognition_mount_item_fail": "[Cognition] mount item failed (skipped) name={name}: {e}",
   "log.ai.cognition_mount_start": "[Cognition] starting background public-hub mount",
   "log.ai.cognition_node_owner_required": "[Cognition] {kind} node has no owner, skipping ref={ref}",
   "log.ai.cognition_node_sync_fail": "[Cognition] node sync failed kind={kind} ref={ref} (node dropped only; source store unaffected): {e}",
@@ -480,6 +481,9 @@
   "log.ai.recordstore_record_put": "[RecordStore] record_put failed: {e}",
   "log.ai.recordstore_record_update": "[RecordStore] record_update failed: {e}",
   "log.ai.relationship_admin_set": "[Relationship] admin set user={user} {before} -> {after}",
+  "log.ai.migrations_persona_scope_skip": "[Migrations] No enabled persona, skipping legacy persona-scope migration (retry next startup)",
+  "log.ai.migrations_persona_scope_done": "[Migrations] Legacy data attributed to persona {persona_name}: favor {favor} renamed/{favor_dropped} merged, self_model {self_models}, aside {aside}",
+  "log.ai.migrations_persona_scope_fail": "[Migrations] userfavorability persona migration failed: {e}",
   "log.ai.relationship_dedupe_done": "[Relationship] Merged {n} duplicate (user_id,bot_id) rows, keeping the largest magnitude score",
   "log.ai.relationship_dedupe_fail": "[Relationship] Row de-duplication failed; unique constraint not created: {e}",
   "log.ai.relationship_fetch_degraded": "[Relationship] Failed to read relationship temperature; falling back to unscored: {e}",
@@ -676,5 +680,7 @@
   "log.ai.autonomy_run_fail": "[Autonomy] {persona_name} failed: {e}",
   "log.ai.autonomy_scheduler_start": "[Autonomy] Scheduler started",
   "log.ai.autonomy_scheduler_stop": "[Autonomy] Scheduler stopped",
-  "log.ai.autonomy_bind_skip": "[Autonomy] Bind table {plugin} failed: {e}"
+  "log.ai.autonomy_bind_skip": "[Autonomy] Bind table {plugin} failed: {e}",
+  "log.ai.heartbeat_homeostasis_skip": "Homeostasis gate: skip heartbeat speech for persona {persona_name}",
+  "log.ai.dyadic_distill_fail": "Dyadic distill task failed: {e}"
 }

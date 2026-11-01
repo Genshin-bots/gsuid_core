@@ -56,9 +56,11 @@ def _legacy_whitespace_key(plugin: str, receipt: str) -> str:
 
 
 def _is_polluted(receipt: str, advice: str) -> bool:
+    from gsuid_core.ai_core.utils import is_agent_error_text
+
     if _LEGACY_PLACEHOLDER in receipt or _LEGACY_PLACEHOLDER in advice:
         return True
-    if advice.startswith("执行出错") or "Request timed out" in advice or "执行出错" in advice:
+    if is_agent_error_text(advice) or "执行出错" in advice:
         return True
     return False
 
@@ -132,28 +134,24 @@ def _find_item(
     trigger_id: str,
     persona_name: str = "",
 ) -> RecallItem | None:
-    candidates: list[str] = []
+    # 严格人格隔离：有人格只查人格前缀键，无人格只查旧三段式键
     if persona_name:
-        candidates.extend(
-            [
-                _key(plugin, trigger_id, receipt, persona_name),
-                _key(plugin, "", receipt, persona_name),
-                f"{persona_name}::{plugin}\n{skeleton_receipt(receipt)}",
-            ]
-        )
-    candidates.extend(
-        [
+        candidates = [
+            _key(plugin, trigger_id, receipt, persona_name),
+            _key(plugin, "", receipt, persona_name),
+            f"{persona_name}::{plugin}\n{skeleton_receipt(receipt)}",
+        ]
+    else:
+        candidates = [
             _key(plugin, trigger_id, receipt),
             _key(plugin, "", receipt),
             _legacy_whitespace_key(plugin, receipt),
             f"{plugin}\n{skeleton_receipt(receipt)}",
         ]
-    )
     for key in candidates:
         if key in items:
             item = items[key]
-            item_persona = item["persona_name"]
-            if not item_persona or not persona_name or item_persona == persona_name:
+            if item["persona_name"] == persona_name:
                 return item
     return None
 
@@ -192,3 +190,34 @@ def save_advice(
             "persona_name": persona_name,
         }
         _save(items)
+
+
+def migrate_legacy_items(default_persona: str) -> int:
+    """启动迁移：把无人格条目归入默认人格。返回改键条目数。
+
+    ``_load()`` 已在读取时剔除污染条目，这里只对人格为空的存量条目改键，
+    键名带上 ``{persona}::`` 前缀并写入 persona_name 字段。
+    """
+    if not default_persona:
+        return 0
+    with _LOCK:
+        items = _load()
+        moved: dict[str, RecallItem] = {}
+        count = 0
+        for key, item in items.items():
+            if item["persona_name"]:
+                moved[key] = item
+                continue
+            new_key = _key(item["plugin"], item["trigger_id"], item["receipt"], default_persona)
+            moved[new_key] = {
+                "plugin": item["plugin"],
+                "trigger_id": item["trigger_id"],
+                "receipt": item["receipt"],
+                "advice": item["advice"],
+                "updated_at": item["updated_at"],
+                "persona_name": default_persona,
+            }
+            count += 1
+        if count:
+            _save(moved)
+    return count

@@ -392,6 +392,13 @@ class CaptureBot(Bot):
         if extra_metadata:
             metadata.update(extra_metadata)
         if content and not is_silence_marker(content):
+            from gsuid_core.ai_core.persona.settings import persona_name_from_event
+            from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
+
+            # 多人格：给 assistant 历史打上「谁在说」，dyadic/回放按人格归因
+            _speaker = get_speaking_persona() or persona_name_from_event(self.ev) or ""
+            if _speaker:
+                metadata["persona_name"] = _speaker
             get_history_manager().add_message(
                 event=self.ev,
                 role="assistant",
@@ -427,6 +434,8 @@ class CaptureBot(Bot):
             body = message_list_to_str(msgs) if msgs else ""
         if not body.strip():
             return
+        from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
+
         try:
             task = asyncio.create_task(
                 observe(
@@ -437,6 +446,7 @@ class CaptureBot(Bot):
                     observer_blacklist=memory_config.observer_blacklist,
                     message_type="group_msg" if self.ev.group_id else "private_msg",
                     bot_id=self.ev.bot_id,
+                    persona_name=get_speaking_persona(),
                 )
             )
             self.bot._add_bg_task(task)

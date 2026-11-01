@@ -34,6 +34,7 @@ from .store import (
     state_set_value,
     state_append_item,
     state_delete_value,
+    state_list_scopes_with_key,
 )
 from .tools import (
     state_get,
@@ -60,6 +61,7 @@ __all__ = [
     "state_set_value",
     "state_delete_value",
     "state_list_keys",
+    "state_list_scopes_with_key",
     "state_append_item",
     "state_get",
     "state_set",

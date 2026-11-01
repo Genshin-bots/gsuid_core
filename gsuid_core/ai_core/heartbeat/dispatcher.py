@@ -54,6 +54,11 @@ def texts_too_similar(a: str, b: str, *, threshold: float = 0.45) -> bool:
     return ngram_jaccard(a, b) >= threshold
 
 
+def _persona_key(persona_name: str, target_key: str) -> str:
+    """人格维度的复合键：人格非空时 {persona}\\x1f{target}，否则保持原 target。"""
+    return f"{persona_name}\x1f{target_key}" if persona_name else target_key
+
+
 def make_target_key(group_id: Optional[str], user_id: Optional[str]) -> str:
     """主动消息网关的统一目标键：群聊用 group_id，私聊用 user_id。
 
@@ -93,7 +98,7 @@ class UnifiedProactiveDispatcher:
         # target_key -> 自主行动等长 TTL 合并槽
         self._staged: Dict[str, StagedContext] = {}
 
-    def register_send(self, target_key: str, source: str, summary: str = "") -> None:
+    def register_send(self, target_key: str, source: str, summary: str = "", *, persona_name: str = "") -> None:
         """登记一次主动发送。
 
         Args:
@@ -109,12 +114,13 @@ class UnifiedProactiveDispatcher:
             self._pending_merge[target_key] = summary.strip()[:500]
         # 自主行动和巡检共用同一条频率账，避免两边各说各的。
         if source in ("heartbeat", "autonomy"):
-            hist = [t for t in self._heartbeat_history[target_key]] if target_key in self._heartbeat_history else []
+            hkey = _persona_key(persona_name, target_key)
+            hist = [t for t in self._heartbeat_history[hkey]] if hkey in self._heartbeat_history else []
             hist = [t for t in hist if now - t < _DAY_SECONDS]
             hist.append(now)
-            self._heartbeat_history[target_key] = hist
+            self._heartbeat_history[hkey] = hist
             if summary.strip():
-                self.remember_heartbeat_text(target_key, summary)
+                self.remember_heartbeat_text(target_key, summary, persona_name=persona_name)
 
     def should_suppress_heartbeat(self, target_key: str) -> bool:
         """同一目标在 MIN_GAP_SECONDS 内刚有主动输出时，抑制本次 Heartbeat 发言。"""
@@ -123,12 +129,19 @@ class UnifiedProactiveDispatcher:
         ts, _source = self._last_send[target_key]
         return (time.time() - ts) < MIN_GAP_SECONDS
 
-    def get_recent_heartbeat_count(self, target_key: str, window_seconds: float = _HOUR_SECONDS) -> int:
-        """统计 target_key 在最近 window_seconds 内的 Heartbeat 主动发言次数（C-5 供决策注入）。"""
-        if not target_key or target_key not in self._heartbeat_history:
+    def get_recent_heartbeat_count(
+        self,
+        target_key: str,
+        window_seconds: float = _HOUR_SECONDS,
+        *,
+        persona_name: str = "",
+    ) -> int:
+        """统计 (persona, target_key) 在最近 window_seconds 内的主动发言次数（C-5 供决策注入）。"""
+        hkey = _persona_key(persona_name, target_key)
+        if not hkey or hkey not in self._heartbeat_history:
             return 0
         now = time.time()
-        return sum(1 for t in self._heartbeat_history[target_key] if now - t < window_seconds)
+        return sum(1 for t in self._heartbeat_history[hkey] if now - t < window_seconds)
 
     def should_suppress_by_rate(
         self,
@@ -136,6 +149,7 @@ class UnifiedProactiveDispatcher:
         *,
         max_per_hour: Optional[int] = None,
         max_per_day: Optional[int] = None,
+        persona_name: str = "",
     ) -> bool:
         """超过每小时 / 每天主动发言次数则抑制。不传上限时仍用巡检的全局值。"""
         if not target_key:
@@ -144,9 +158,9 @@ class UnifiedProactiveDispatcher:
         day_cap = MAX_PROACTIVE_PER_DAY if max_per_day is None else max_per_day
         if hour_cap <= 0 or day_cap <= 0:
             return True
-        if self.get_recent_heartbeat_count(target_key, _HOUR_SECONDS) >= hour_cap:
+        if self.get_recent_heartbeat_count(target_key, _HOUR_SECONDS, persona_name=persona_name) >= hour_cap:
             return True
-        if self.get_recent_heartbeat_count(target_key, _DAY_SECONDS) >= day_cap:
+        if self.get_recent_heartbeat_count(target_key, _DAY_SECONDS, persona_name=persona_name) >= day_cap:
             return True
         return False
 
@@ -158,22 +172,38 @@ class UnifiedProactiveDispatcher:
         n = int(ai_config.get_config("heartbeat_repeat_window").data)
         return n if n > 0 else 8
 
-    def remember_heartbeat_text(self, target_key: str, text: str, *, window: Optional[int] = None) -> None:
+    def remember_heartbeat_text(
+        self,
+        target_key: str,
+        text: str,
+        *,
+        window: Optional[int] = None,
+        persona_name: str = "",
+    ) -> None:
         if not target_key:
             return
         body = text.strip()
         if not body:
             return
+        rkey = _persona_key(persona_name, target_key)
         cap = self._repeat_window(window)
-        hist = list(self._recent_texts[target_key]) if target_key in self._recent_texts else []
+        hist = list(self._recent_texts[rkey]) if rkey in self._recent_texts else []
         hist.append(body)
-        self._recent_texts[target_key] = hist[-max(1, cap) :]
+        self._recent_texts[rkey] = hist[-max(1, cap) :]
 
-    def would_repeat_heartbeat(self, target_key: str, text: str, *, window: Optional[int] = None) -> bool:
+    def would_repeat_heartbeat(
+        self,
+        target_key: str,
+        text: str,
+        *,
+        window: Optional[int] = None,
+        persona_name: str = "",
+    ) -> bool:
         if not target_key or not text.strip():
             return False
+        rkey = _persona_key(persona_name, target_key)
         cap = self._repeat_window(window)
-        hist = self._recent_texts[target_key] if target_key in self._recent_texts else []
+        hist = self._recent_texts[rkey] if rkey in self._recent_texts else []
         recent = hist[-max(1, cap) :]
         for prev in recent:
             if texts_too_similar(prev, text):
@@ -216,6 +246,7 @@ class UnifiedProactiveDispatcher:
         ttl_seconds: float = 300.0,
         source: Literal["heartbeat", "autonomy", "task"] = "heartbeat",
         now: Optional[float] = None,
+        persona_name: str = "",
     ) -> None:
         """挂一条下次开口再用的事实。空内容不占槽。"""
         body = content.strip()
@@ -223,7 +254,7 @@ class UnifiedProactiveDispatcher:
             return
         ttl = ttl_seconds if ttl_seconds > 0 else 300.0
         stamp = time.time() if now is None else now
-        self._staged[target_key] = StagedContext(body[:2000], stamp, ttl, source)
+        self._staged[_persona_key(persona_name, target_key)] = StagedContext(body[:2000], stamp, ttl, source)
 
     def peek_staged(
         self,
@@ -231,8 +262,9 @@ class UnifiedProactiveDispatcher:
         *,
         source: Optional[str] = None,
         now: Optional[float] = None,
+        persona_name: str = "",
     ) -> str:
-        item = self._fresh_staged(target_key, source=source, now=now)
+        item = self._fresh_staged(target_key, source=source, now=now, persona_name=persona_name)
         return item.content if item is not None else ""
 
     def consume_staged(
@@ -241,11 +273,12 @@ class UnifiedProactiveDispatcher:
         *,
         source: Optional[str] = None,
         now: Optional[float] = None,
+        persona_name: str = "",
     ) -> str:
-        item = self._fresh_staged(target_key, source=source, now=now)
+        item = self._fresh_staged(target_key, source=source, now=now, persona_name=persona_name)
         if item is None:
             return ""
-        del self._staged[target_key]
+        del self._staged[_persona_key(persona_name, target_key)]
         return item.content
 
     def _fresh_staged(
@@ -254,13 +287,15 @@ class UnifiedProactiveDispatcher:
         *,
         source: Optional[str],
         now: Optional[float],
+        persona_name: str = "",
     ) -> Optional[StagedContext]:
-        if not target_key or target_key not in self._staged:
+        skey = _persona_key(persona_name, target_key)
+        if not skey or skey not in self._staged:
             return None
-        item = self._staged[target_key]
+        item = self._staged[skey]
         stamp = time.time() if now is None else now
         if stamp - item.created_at >= item.ttl_seconds:
-            del self._staged[target_key]
+            del self._staged[skey]
             return None
         if source is not None and item.source != source:
             return None

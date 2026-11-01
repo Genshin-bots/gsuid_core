@@ -45,8 +45,9 @@ def test_weather_question_still_keeps_location_rule() -> None:
 def test_stable_self_model_omits_learned_preferences(monkeypatch) -> None:
     from gsuid_core.ai_core import self_cognition as mod
 
-    async def fake_model(bot_id: str) -> dict[str, list[str]]:
+    async def fake_model(bot_id: str, persona_name: str) -> dict[str, list[str]]:
         _ = bot_id
+        _ = persona_name
         return {
             "commitments": ["保持短句"],
             "preferences_learned": ["用户 100000010 所在城市为广州"],
@@ -54,13 +55,14 @@ def test_stable_self_model_omits_learned_preferences(monkeypatch) -> None:
             "self_notes": [],
         }
 
-    async def fake_onto(bot_id: str) -> str:
+    async def fake_onto(bot_id: str, persona_name: str) -> str:
         _ = bot_id
+        _ = persona_name
         return ""
 
     monkeypatch.setattr(mod, "get_self_model", fake_model)
     monkeypatch.setattr(mod, "ensure_self_ontology", fake_onto)
-    text = asyncio.run(mod.build_self_cognition_context("bot", include_relationship=False))
+    text = asyncio.run(mod.build_self_cognition_context("bot", "p1", include_relationship=False))
     assert "保持短句" in text
     assert "广州" not in text
     assert "我学到的偏好" not in text
@@ -70,8 +72,9 @@ def test_dynamic_context_appends_speaker_tail(monkeypatch) -> None:
     from gsuid_core.ai_core import self_cognition as mod
     from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE, assemble_dynamic_context
 
-    async def fake_tail(bot_id: str, speaker_id: str) -> str:
+    async def fake_tail(bot_id: str, persona_name: str, speaker_id: str) -> str:
         _ = bot_id
+        _ = persona_name
         assert speaker_id == "100000010"
         return "【当前说话人的偏好】\n• location：在广州"
 

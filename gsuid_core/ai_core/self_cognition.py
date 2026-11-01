@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key, self_scope_read_keys
 from gsuid_core.ai_core.memory.relative_schedule import (
     preference_written_on,
     one_off_schedule_expired,
@@ -62,11 +62,11 @@ def default_self_ontology() -> str:
     )
 
 
-async def ensure_self_ontology(bot_id: str) -> str:
+async def ensure_self_ontology(bot_id: str, persona_name: str) -> str:
     """框架写入本体知识；空则填默认模板。"""
     from gsuid_core.ai_core.state_store import state_mutate, state_get_value
 
-    raw = await state_get_value(_self_scope(bot_id), _SELF_MODEL_KEY)
+    raw = await state_get_value(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY)
     if isinstance(raw, dict) and _ONTOLOGY_FIELD in raw:
         val = raw[_ONTOLOGY_FIELD]
         text_val = ""
@@ -84,7 +84,7 @@ async def ensure_self_ontology(bot_id: str) -> str:
                     model[_ONTOLOGY_FIELD] = text_val
                     return model
 
-                await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate_refresh)
+                await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate_refresh)
             return text_val
     text = default_self_ontology()
 
@@ -93,13 +93,13 @@ async def ensure_self_ontology(bot_id: str) -> str:
         model[_ONTOLOGY_FIELD] = text
         return model
 
-    await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
+    await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate)
     return text
 
 
-def _self_scope(bot_id: str) -> str:
-    """构造 Bot 自身的 state_store scope（与记忆 SELF scope 同形）。"""
-    return make_scope_key(ScopeType.SELF, bot_id or "default")
+def _self_scope(bot_id: str, persona_name: str) -> str:
+    """构造 Bot 自身的 state_store scope（与记忆 SELF scope 同形，按人格隔离）。"""
+    return self_scope_key(bot_id or "default", persona_name)
 
 
 def _normalize_self_model(raw: Any) -> Dict[str, List[str]]:
@@ -127,16 +127,17 @@ def _self_model_state(current: Any) -> Dict[str, object]:
     return model
 
 
-async def get_self_model(bot_id: str) -> Dict[str, List[str]]:
+async def get_self_model(bot_id: str, persona_name: str) -> Dict[str, List[str]]:
     """读取 Bot 的演化层自我模型，不存在时返回空结构。"""
     from gsuid_core.ai_core.state_store import state_get_value
 
-    raw = await state_get_value(_self_scope(bot_id), _SELF_MODEL_KEY)
+    raw = await state_get_value(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY)
     return _normalize_self_model(raw)
 
 
 async def add_self_note(
     bot_id: str,
+    persona_name: str,
     content: str,
     field: str = "self_notes",
 ) -> bool:
@@ -183,12 +184,12 @@ async def add_self_note(
         model[field] = items
         return model
 
-    await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
+    await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate)
     # 同步认知节点：让「我记过什么」能被 search_cognition 命中，而不是只能等
     # 下一轮稳定前缀。称呼/禁忌这类**规则**优先落 AIMemPreference，此处只留非规则反思。
     from gsuid_core.ai_core.cognition.distill import distill_self_note
 
-    await distill_self_note(note=content, note_type=field, bot_id=bot_id)
+    await distill_self_note(note=content, note_type=field, bot_id=bot_id, persona_name=persona_name)
     logger.debug(
         i18n_t(
             "log.ai.selfcog_bot_id_self_model_field",
@@ -202,6 +203,7 @@ async def add_self_note(
 
 async def overwrite_self_model_field(
     bot_id: str,
+    persona_name: str,
     field: str,
     items: List[str],
 ) -> bool:
@@ -235,7 +237,7 @@ async def overwrite_self_model_field(
         model[field] = cleaned
         return model
 
-    await state_mutate(_self_scope(bot_id), _SELF_MODEL_KEY, _mutate)
+    await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate)
     logger.info(
         i18n_t(
             "log.ai.selfcog_bot_id_self_field",
@@ -247,7 +249,7 @@ async def overwrite_self_model_field(
     return True
 
 
-async def retrieve_self_episodes(bot_id: str, limit: int = 3) -> str:
+async def retrieve_self_episodes(bot_id: str, persona_name: str, limit: int = 3) -> str:
     """检索 Bot 自身的情景记忆（"我之前说过/做过什么"），返回可注入文本（C3-c）。
 
     取 SELF scope 下最近的 Episode。仅在用户消息含回指词（"你之前/你不是说/
@@ -265,12 +267,12 @@ async def retrieve_self_episodes(bot_id: str, limit: int = 3) -> str:
     from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
-    scope_key = make_scope_key(ScopeType.SELF, bot_id or "default")
+    scope_keys = self_scope_read_keys(bot_id or "default", persona_name)
     try:
         async with async_maker() as session:
             result = await session.execute(
                 select(AIMemEpisode)
-                .where(col(AIMemEpisode.scope_key) == scope_key)
+                .where(col(AIMemEpisode.scope_key).in_(scope_keys))
                 .order_by(col(AIMemEpisode.valid_at).desc())
                 .limit(limit)
             )
@@ -346,6 +348,7 @@ async def _compute_live_recurring_topics(
 
 async def build_self_cognition_context(
     bot_id: str,
+    persona_name: str,
     rel: Optional["RelationshipView"] = None,
     scope_key: Optional[str] = None,
     include_relationship: bool = True,
@@ -370,9 +373,9 @@ async def build_self_cognition_context(
     Returns:
         可直接注入的文本块；无任何可注入内容时返回空串。
     """
-    model = await get_self_model(bot_id)
+    model = await get_self_model(bot_id, persona_name)
     lines: List[str] = ["【关于我自己（仅供参考）】"]
-    ontology = await ensure_self_ontology(bot_id)
+    ontology = await ensure_self_ontology(bot_id, persona_name)
     if ontology:
         lines.append("【我是什么】")
         lines.append(ontology)
@@ -470,7 +473,7 @@ def render_speaker_preference_tail(rules: list[str]) -> str:
     return "【当前说话人的偏好】只约束这一轮的说话人。问句里没写到这些词也要遵守；别的群友不适用。\n" + "\n".join(lines)
 
 
-async def load_speaker_preference_tail(bot_id: str, speaker_id: str) -> str:
+async def load_speaker_preference_tail(bot_id: str, persona_name: str, speaker_id: str) -> str:
     """读这个人的 USER_GLOBAL 偏好和他名下的自我笔记。库未建则空。"""
     speaker = speaker_id.strip()
     if not speaker:
@@ -481,7 +484,7 @@ async def load_speaker_preference_tail(bot_id: str, speaker_id: str) -> str:
         return ""
     from gsuid_core.ai_core.memory.config import memory_config
 
-    model = await get_self_model(bot_id)
+    model = await get_self_model(bot_id, persona_name)
     scoped: list[tuple[str, str, bool, Optional[datetime]]] = []
     if memory_config.enable_preference_memory:
         from gsuid_core.ai_core.memory.database.models import AIMemPreference
@@ -518,4 +521,9 @@ def build_relationship_context(rel: "RelationshipView") -> str:
     群聊共享 session 下必须每轮按当前对话者单独给出——括号包裹暗示是背景感知。
     文案不再自划档：唯一来源是 ``relationship.zones``（见 ``RelationshipView.line``）。
     """
-    return f"（{rel.line}）"
+    body = f"（{rel.line}）"
+    if rel.vibe:
+        body += f"（你们平时：{rel.vibe}）"
+    if rel.callbacks:
+        body += f"（你们的老梗：{'；'.join(rel.callbacks)}）"
+    return body

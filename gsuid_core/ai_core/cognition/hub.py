@@ -89,6 +89,7 @@ class MountStats:
     skipped_short: int = 0
     skipped_skill_doc: int = 0
     skipped_image: int = 0
+    failed_items: int = 0
     last_error: str = ""
 
 
@@ -831,7 +832,13 @@ async def mount_plugin_and_manual() -> MountStats:
     stats = MountStats()
     for index, item in enumerate(_ENTITIES, start=1):
         if isinstance(item, dict):
-            await _mount_plugin_item(item, stats)
+            try:
+                await _mount_plugin_item(item, stats)
+            except Exception as e:
+                stats.failed_items += 1
+                stats.last_error = str(e)
+                name = _mapping_str(item, "title")[:40]
+                logger.debug(i18n_t("log.ai.cognition_mount_item_fail", name=name, e=e))
         if index % MOUNT_YIELD_EVERY == 0:
             await asyncio.sleep(0)
 
@@ -845,7 +852,12 @@ async def mount_plugin_and_manual() -> MountStats:
                 by_doc[key] = []
             by_doc[key].append(row)
         for index, (doc_id, chunks) in enumerate(by_doc.items(), start=1):
-            await _mount_manual_doc(doc_id, chunks, stats)
+            try:
+                await _mount_manual_doc(doc_id, chunks, stats)
+            except Exception as e:
+                stats.failed_items += 1
+                stats.last_error = str(e)
+                logger.debug(i18n_t("log.ai.cognition_mount_item_fail", name=str(doc_id)[:40], e=e))
             if index % MOUNT_YIELD_EVERY == 0:
                 await asyncio.sleep(0)
 
@@ -934,12 +946,18 @@ async def scan_entities_to_world(stats: MountStats) -> None:
             for ent in page:
                 if ent.is_speaker:
                     continue
-                ok = await maybe_link_entity_to_world(
-                    entity_id=ent.id,
-                    entity_name=ent.name,
-                    scope_key=ent.scope_key,
-                    is_speaker=ent.is_speaker,
-                )
+                try:
+                    ok = await maybe_link_entity_to_world(
+                        entity_id=ent.id,
+                        entity_name=ent.name,
+                        scope_key=ent.scope_key,
+                        is_speaker=ent.is_speaker,
+                    )
+                except Exception as e:
+                    stats.failed_items += 1
+                    stats.last_error = str(e)
+                    logger.debug(i18n_t("log.ai.cognition_mount_item_fail", name=ent.name[:40], e=e))
+                    continue
                 if ok:
                     stats.linked_env += 1
             offset += ENTITY_PAGE_SIZE
@@ -970,6 +988,7 @@ async def _run_cognition_mount_body() -> MountStats:
                 linked_env=stats.linked_env,
                 skipped_ambiguous=stats.skipped_ambiguous,
                 skipped_unresolved=stats.skipped_unresolved,
+                failed_items=stats.failed_items,
             )
         )
     except Exception as e:

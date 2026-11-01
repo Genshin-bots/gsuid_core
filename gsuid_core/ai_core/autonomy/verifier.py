@@ -1,4 +1,4 @@
-"""从工具轨迹里抽出能对外说的事实，并读模型文末的四行。"""
+"""从工具轨迹里抽出能对外说的事实，并读模型文末的六行。"""
 
 import re
 
@@ -16,6 +16,10 @@ _RESOURCE = re.compile(r"res_[A-Za-z0-9_-]+")
 _FOOTER = {
     "DRIVE": "drive",
     "TARGET": "target",
+    "TOPIC": "topic",
+    "OUTCOME": "outcome",
+    "FACT": "fact",
+    "TAKE": "take",
     "SUMMARY": "summary",
     "TRAILS": "trails",
 }
@@ -71,14 +75,23 @@ def parse_footer(text: str) -> ParsedRun:
             continue
         body_lines.append(raw_line)
     drive_raw = found["drive"] if "drive" in found else ""
-    trails_raw = found["trails"] if "trails" in found else ""
-    trails = [item.strip() for item in trails_raw.split("|") if item.strip()]
+    topic = found["topic"] if "topic" in found else ""
+    fact = found["fact"] if "fact" in found else (found["summary"] if "summary" in found else "")
+    take = found["take"] if "take" in found else ""
+    outcome = found["outcome"] if "outcome" in found else "pending"
     spoken = "\n".join(body_lines).strip()
+    from gsuid_core.ai_core.autonomy.micro_arc import normalize_topic_key
+
+    topic_key = normalize_topic_key(topic)
     return ParsedRun(
         drive=_drive_of(drive_raw),
         target=found["target"] if "target" in found else "",
-        summary=found["summary"] if "summary" in found else "",
-        trails=trails[:8],
+        summary=fact,
+        trails=[topic_key] if topic_key else [],
+        topic=topic,
+        outcome=outcome if outcome in ("found", "confused", "distracted", "wrong_guess", "pending") else "pending",
+        fact=fact,
+        take=take,
         spoken_text=spoken,
     )
 
@@ -96,3 +109,12 @@ def _drive_of(raw: str) -> DriveKind:
 def fact_summary(pack: FactPack) -> str:
     parts = [item[:200] for item in pack.factual_observations[:6]]
     return "；".join(parts)
+
+
+def take_is_grounded(parsed: ParsedRun, steps: list[AutonomyStepTrace]) -> bool:
+    """TAKE 要有真凭据：confused 至少跑过一个非元工具；其余结局要有实质产出。"""
+    if parsed.outcome == "confused":
+        return any(step.tool_name not in META_TOOLS for step in steps)
+    if parsed.outcome in ("found", "distracted", "wrong_guess"):
+        return extract_facts(steps).has_substantive_outcome
+    return False

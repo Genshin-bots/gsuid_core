@@ -25,6 +25,7 @@ class RelationshipListItem(TypedDict):
     user_id: str
     user_name: str
     bot_id: str
+    persona_name: str
     is_master: bool
     scored: bool
     score: int
@@ -63,6 +64,7 @@ def _relationship_list_item(record: "UserFavorability", *, is_master: bool) -> R
         "user_id": record.user_id,
         "user_name": name,
         "bot_id": record.bot_id,
+        "persona_name": record.persona_name,
         "is_master": is_master,
         "scored": True,
         "score": record.favorability,
@@ -156,6 +158,7 @@ async def agentKitHooks(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
 async def relationshipView(
     user_id: str = Query(..., description="用户 ID"),
     bot_id: str = Query("", description="Bot ID，留空取任一条"),
+    persona_name: str = Query("", description="人格名，留空取任一条"),
     _user: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
     """只读：当前 zone / 分数 / 上次变更原因与时间。
@@ -167,12 +170,14 @@ async def relationshipView(
     from gsuid_core.ai_core.relationship import view_from_score, zone_level_name
     from gsuid_core.ai_core.database.models import UserFavorability
 
+    # 直调（测试）时 FastAPI 不注入默认值，raw Query 对象须归一为空串
+    pname = persona_name if isinstance(persona_name, str) else ""
     is_master = _is_master_user(str(user_id))
     record: Optional[UserFavorability] = None
-    if bot_id:
-        record = await UserFavorability.get_user_favorability(user_id=user_id, bot_id=bot_id)
+    if bot_id and pname:
+        record = await UserFavorability.get_user_favorability(user_id=user_id, bot_id=bot_id, persona_name=pname)
     else:
-        record = await UserFavorability.get_any_favorability(user_id)
+        record = await UserFavorability.get_any_favorability(user_id, pname, bot_id=bot_id)
     if record is None:
         view = view_from_score(None, is_master)
         return {
@@ -191,6 +196,7 @@ async def relationshipView(
         "data": {
             "user_id": user_id,
             "bot_id": record.bot_id,
+            "persona_name": record.persona_name,
             "scored": True,
             "score": record.favorability,
             "zone": view.zone.value,
@@ -211,6 +217,7 @@ async def relationshipView(
 @app.get("/api/relationship/list", summary="全部角色的关系温度", tags=RELATIONSHIP)
 async def relationshipList(
     bot_id: str = Query("", max_length=64, description="Bot ID，留空列出全部 bot"),
+    persona_name: str = Query("", max_length=64, description="人格名，留空列出全部人格"),
     keyword: str = Query("", max_length=64, description="按 user_id 或用户名包含匹配"),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=200),
@@ -223,8 +230,10 @@ async def relationshipList(
     from gsuid_core.ai_core.utils import _is_master_user
     from gsuid_core.ai_core.database.models import UserFavorability
 
+    pname = persona_name if isinstance(persona_name, str) else ""
     rows, total = await UserFavorability.list_favorability(
         bot_id=bot_id,
+        persona_name=pname,
         keyword=keyword,
         offset=offset,
         limit=limit,

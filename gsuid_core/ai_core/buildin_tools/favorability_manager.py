@@ -54,9 +54,16 @@ async def set_user_favorability(
         return "操作失败：无法确定目标用户"
 
     bot_id = _bot_id(ctx)
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
     from gsuid_core.ai_core.relationship.engine import apply_admin_set
 
-    outcome = await apply_admin_set(user_id=target_id, bot_id=bot_id, value=value, user_name=target_id)
+    outcome = await apply_admin_set(
+        user_id=target_id,
+        bot_id=bot_id,
+        value=value,
+        user_name=target_id,
+        persona_name=persona_name_from_event(ev) or "",
+    )
     result = f"已将用户 {target_id} 的好感度设置为 {outcome.score_after}（已按上下限钳制）"
     logger.info(i18n_t("log.buildin.favor_set", target_id=target_id, value=value))
     return result

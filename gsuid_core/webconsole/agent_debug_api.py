@@ -249,12 +249,14 @@ async def abort_agent_task(
 @app.get("/api/agent_debug/self_model", summary="获取自我模型", tags=AGENT_DEBUG)
 async def get_self_model_api(
     bot_id: str = Query("default"),
+    persona_name: str = Query(""),
     _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """查看 self_model 演化层（承诺 / 偏好 / 反思）。"""
     from gsuid_core.ai_core.self_cognition import get_self_model
+    from gsuid_core.ai_core.migrations.persona_scope_v1 import get_legacy_owner_persona
 
-    model = await get_self_model(bot_id)
+    model = await get_self_model(bot_id, persona_name or get_legacy_owner_persona())
     return _ok(model)
 
 
@@ -262,6 +264,7 @@ class SelfModelEditRequest(BaseModel):
     bot_id: str = "default"
     field: str
     items: List[str]
+    persona_name: str = ""
 
 
 @app.post("/api/agent_debug/self_model", summary="设置自我模型", tags=AGENT_DEBUG)
@@ -274,5 +277,9 @@ async def set_self_model_api(
 
     if body.field not in _FIELDS:
         return _err(f"非法字段，须为 {_FIELDS} 之一")
-    await overwrite_self_model_field(body.bot_id, body.field, body.items)
+    from gsuid_core.ai_core.migrations.persona_scope_v1 import get_legacy_owner_persona
+
+    await overwrite_self_model_field(
+        body.bot_id, body.persona_name or get_legacy_owner_persona(), body.field, body.items
+    )
     return _ok({"field": body.field, "count": len(body.items)})

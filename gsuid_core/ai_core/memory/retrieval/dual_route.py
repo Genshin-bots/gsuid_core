@@ -1067,6 +1067,7 @@ async def dual_route_retrieve(
     bot_id: str = "",
     bot_self_id: str = "",
     include_self: bool = True,
+    persona_name: str = "",
 ) -> MemoryContext:
     """双路检索主入口。在 handle_ai.py 中，AI 准备回复前调用此函数。
 
@@ -1129,12 +1130,14 @@ async def dual_route_retrieve(
     else:
         user_scope = None
 
-    # SELF 只开读：key 必须是账号 ID（observer C6 写 self:{bot_self_id}）。
+    # SELF 只开读：key 必须是账号 ID（observer C6 写 self:{bot_self_id}:{persona}）。
     self_key = bot_self_id.strip()
     if include_self and self_key:
-        self_scope = make_scope_key(ScopeType.SELF, self_key)
-        if self_scope not in scope_keys:
-            scope_keys.append(self_scope)
+        from gsuid_core.ai_core.memory.scope import self_scope_read_keys
+
+        for self_scope in self_scope_read_keys(self_key, persona_name):
+            if self_scope not in scope_keys:
+                scope_keys.append(self_scope)
 
     # RF-Mem 熟悉度路由：通过向量探针不确定性动态触发 System-2 深检索。
     effective_enable_system2 = enable_system2

@@ -36,22 +36,25 @@ def _escape_like(text: str) -> str:
 
 
 class UserFavorability(BaseModel, table=True):
-    """用户关系温度表（每用户 × 每 bot，**不含 group_id**——关系是对人的，不是对房间的）。
+    """用户关系温度表（每用户 × 每 bot × 每人格，**不含 group_id**——关系是对人的，不是对房间的）。
 
     唯一写入口是 ``relationship.engine.settle_turn``（管理覆盖走 ``apply_admin_set``）。
 
-    ``UniqueConstraint(user_id, bot_id)``：物理主键是自增 id，历史上没有唯一约束，
-    并发首次互动能插出两行同 (user_id,bot_id)，症状是「好感度偶尔回退」。
-    引入 daily_* 日预算后重复行会让配额翻倍失效，所以必须补约束 + 一次去重。
+    ``UniqueConstraint(user_id, bot_id, persona_name)``：物理主键是自增 id；
+    历史上只有 (user_id,bot_id) 唯一约束，多人格共用一行会互相串味。
+    ``persona_name=""`` 是迁移前的存量行，启动迁移归入默认人格（见
+    ``ai_core/migrations/persona_scope_v1.py``）。
 
     ``tags`` / ``memory_count`` 为 **deprecated**：代码已停写停读，为兼容多后端不删列。
     """
 
     __table_args__ = (
-        UniqueConstraint("user_id", "bot_id", name="ux_userfavorability_user_bot"),
+        UniqueConstraint("user_id", "bot_id", "persona_name", name="ux_userfavorability_user_bot_persona"),
+        Index("ix_userfavorability_persona_score", "persona_name", "favorability"),
         {"extend_existing": True},
     )
 
+    persona_name: str = Field(default="", max_length=64, title="人格名称")
     user_name: Optional[str] = Field(default="", title="用户名")
     favorability: int = Field(default=0, title="好感度")
     interaction_count: int = Field(default=0, title="有效互动次数")
@@ -66,6 +69,12 @@ class UserFavorability(BaseModel, table=True):
     daily_loss: int = Field(default=0, title="当日已扣(绝对值)")
     daily_ymd: str = Field(default="", max_length=10, title="当日日期(YYYY-MM-DD)")
     last_positive_interact_at: int = Field(default=0, title="最近一次正向互动时间戳")
+    # ── 双边相处契约与私聊互惠追踪 ──
+    interaction_vibe: str = Field(default="", max_length=160, title="双边相处印象")
+    shared_callbacks: str = Field(default="[]", sa_column=Column(Text, default="[]"))
+    last_vibe_distill_count: int = Field(default=0, title="上次提炼相处印象时的互动次数")
+    last_proactive_dm_at: int = Field(default=0, title="上次主动私聊时间戳")
+    dm_unanswered_streak: int = Field(default=0, title="连续未获回复的主动私聊次数")
 
     @property
     def relationship_level(self) -> str:
@@ -84,6 +93,7 @@ class UserFavorability(BaseModel, table=True):
         session: AsyncSession,
         user_id: str,
         bot_id: str,
+        persona_name: str,
     ) -> Optional["UserFavorability"]:
         """
         获取用户好感度信息
@@ -96,7 +106,7 @@ class UserFavorability(BaseModel, table=True):
         Returns:
             UserFavorability 对象，如果不存在则返回 None
         """
-        stmt = select(cls).where(and_(cls.user_id == user_id, cls.bot_id == bot_id))
+        stmt = select(cls).where(and_(cls.user_id == user_id, cls.bot_id == bot_id, cls.persona_name == persona_name))
         result = await session.execute(stmt)
         return result.scalars().first()
 
@@ -106,8 +116,12 @@ class UserFavorability(BaseModel, table=True):
         cls,
         session: AsyncSession,
         user_id: str,
+        persona_name: str = "",
+        bot_id: str = "",
     ) -> Optional["UserFavorability"]:
         """跨 bot 取该用户**最近有活动**的那行（控制台「bot_id 留空」入口）。
+
+        ``persona_name`` 空串表示不筛人格（控制台场景）；非空则只看该人格的行。
 
         写侧以 (user_id, bot_id) 为键，同一个人会有多行。留空**不是**要取 ``bot_id=''``
         那行：实盘真实 bot_id 是 onebot / HTTP / web，按空串查必然落空。
@@ -118,14 +132,15 @@ class UserFavorability(BaseModel, table=True):
         ``last_interaction_time`` 才是「谁在真的被结算」的旁证，三级并列才用 id 收口，
         保证同一查询重复调用返回同一行。
         """
-        stmt = (
-            select(cls)
-            .where(col(cls.user_id) == user_id)
-            .order_by(
-                col(cls.last_eval_at).desc(),
-                col(cls.last_interaction_time).desc(),
-                col(cls.id).desc(),
-            )
+        stmt = select(cls).where(col(cls.user_id) == user_id)
+        if persona_name:
+            stmt = stmt.where(col(cls.persona_name) == persona_name)
+        if bot_id:
+            stmt = stmt.where(col(cls.bot_id) == bot_id)
+        stmt = stmt.order_by(
+            col(cls.last_eval_at).desc(),
+            col(cls.last_interaction_time).desc(),
+            col(cls.id).desc(),
         )
         result = await session.execute(stmt)
         return result.scalars().first()
@@ -137,6 +152,7 @@ class UserFavorability(BaseModel, table=True):
         session: AsyncSession,
         *,
         bot_id: str = "",
+        persona_name: str = "",
         keyword: str = "",
         offset: int = 0,
         limit: int = 100,
@@ -152,6 +168,9 @@ class UserFavorability(BaseModel, table=True):
         bot = bot_id.strip()
         if bot:
             conds.append(col(cls.bot_id) == bot)
+        pname = persona_name.strip()
+        if pname:
+            conds.append(col(cls.persona_name) == pname)
         kw = keyword.strip()
         if kw:
             pattern = f"%{_escape_like(kw)}%"
@@ -188,13 +207,14 @@ class UserFavorability(BaseModel, table=True):
         session: AsyncSession,
         min_score: int,
         *,
+        persona_name: str,
         limit: int = 50,
     ) -> List["UserFavorability"]:
         """分数不低于 ``min_score`` 的行，高分在前。自主行动用它圈关心对象。"""
         page_limit = limit if 1 <= limit <= 200 else 50
         stmt = (
             select(cls)
-            .where(col(cls.favorability) >= min_score)
+            .where(and_(col(cls.favorability) >= min_score, col(cls.persona_name) == persona_name))
             .order_by(col(cls.favorability).desc(), col(cls.last_interaction_time).desc(), col(cls.id).desc())
             .limit(page_limit)
         )
@@ -207,6 +227,7 @@ class UserFavorability(BaseModel, table=True):
         session: AsyncSession,
         user_id: str,
         bot_id: str,
+        persona_name: str,
         user_name: str = "",
     ) -> int:
         """
@@ -226,6 +247,7 @@ class UserFavorability(BaseModel, table=True):
                 cls(
                     user_id=user_id,
                     bot_id=bot_id,
+                    persona_name=persona_name,
                     user_name=user_name or user_id,
                     favorability=0,
                     interaction_count=0,
@@ -244,6 +266,7 @@ class UserFavorability(BaseModel, table=True):
         cls,
         user_id: str,
         bot_id: str,
+        persona_name: str,
         user_name: str = "",
     ) -> "UserFavorability":
         """
@@ -257,13 +280,13 @@ class UserFavorability(BaseModel, table=True):
         Returns:
             UserFavorability 对象
         """
-        existing = await cls.get_user_favorability(user_id, bot_id)
+        existing = await cls.get_user_favorability(user_id, bot_id, persona_name)
         if existing:
             return existing
 
         # 创建新记录
-        await cls.create_user_favorability(user_id, bot_id, user_name)
-        result = await cls.get_user_favorability(user_id, bot_id)
+        await cls.create_user_favorability(user_id, bot_id, persona_name, user_name)
+        result = await cls.get_user_favorability(user_id, bot_id, persona_name)
         if result is None:
             raise ValueError(f"Failed to create user favorability record for {user_id}")
         return result
@@ -275,6 +298,7 @@ class UserFavorability(BaseModel, table=True):
         session: AsyncSession,
         user_ids: List[str],
         bot_id: str,
+        persona_name: str,
     ) -> Dict[str, int]:
         """批量取一组用户的分数（``user_id -> favorability``）。
 
@@ -283,7 +307,13 @@ class UserFavorability(BaseModel, table=True):
         """
         if not user_ids:
             return {}
-        stmt = select(cls).where(and_(col(cls.user_id).in_(list(set(user_ids))), cls.bot_id == bot_id))
+        stmt = select(cls).where(
+            and_(
+                col(cls.user_id).in_(list(set(user_ids))),
+                col(cls.bot_id) == bot_id,
+                col(cls.persona_name) == persona_name,
+            )
+        )
         rows = (await session.execute(stmt)).scalars().all()
         # 同 (user_id,bot_id) 若存在历史重复行，取分数绝对值最大的那条（与去重迁移同口径）
         best: Dict[str, int] = {}
@@ -299,6 +329,7 @@ class UserFavorability(BaseModel, table=True):
         cls,
         session: AsyncSession,
         bot_id: str,
+        persona_name: str,
     ) -> List["UserFavorability"]:
         """
         获取所有用户的好感度信息
@@ -311,7 +342,7 @@ class UserFavorability(BaseModel, table=True):
             用户好感度列表
         """
         try:
-            stmt = select(cls).where(cls.bot_id == bot_id)
+            stmt = select(cls).where(and_(cls.bot_id == bot_id, cls.persona_name == persona_name))
             result = await session.execute(stmt)
             records = result.scalars().all()
             return list(records)
@@ -325,6 +356,7 @@ class UserFavorability(BaseModel, table=True):
         cls,
         session: AsyncSession,
         bot_id: str,
+        persona_name: str,
         limit: int = 10,
     ) -> List["UserFavorability"]:
         """
@@ -339,7 +371,12 @@ class UserFavorability(BaseModel, table=True):
             好感度最高的用户列表
         """
         try:
-            stmt = select(cls).where(cls.bot_id == bot_id).order_by(col(cls.favorability).desc()).limit(limit)
+            stmt = (
+                select(cls)
+                .where(and_(cls.bot_id == bot_id, cls.persona_name == persona_name))
+                .order_by(col(cls.favorability).desc())
+                .limit(limit)
+            )
             result = await session.execute(stmt)
             records = result.scalars().all()
             return list(records)
@@ -394,19 +431,66 @@ class UserFavorability(BaseModel, table=True):
         n2 = r2.rowcount if isinstance(r2, CursorResult) else 0
         return n1 + n2
 
+    @property
+    def shared_callbacks_list(self) -> List[str]:
+        """``shared_callbacks`` 的 JSON 解析（坏 JSON 按空处理）。"""
+        import json
+
+        if not self.shared_callbacks:
+            return []
+        try:
+            parsed = json.loads(self.shared_callbacks)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [str(x) for x in parsed] if isinstance(parsed, list) else []
+
+    @classmethod
+    @with_session
+    async def update_dyadic_contract(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        bot_id: str,
+        persona_name: str,
+        *,
+        vibe: Optional[str],
+        callbacks: Optional[List[str]],
+        distill_count: int,
+    ) -> None:
+        """蒸馏计数必写；vibe/callbacks 为 None 时保留原值。"""
+        import json
+
+        values: Dict[str, object] = {"last_vibe_distill_count": distill_count}
+        if vibe is not None:
+            values["interaction_vibe"] = vibe
+        if callbacks is not None:
+            values["shared_callbacks"] = json.dumps(callbacks, ensure_ascii=False)
+        stmt = (
+            update(cls)
+            .where(
+                and_(
+                    col(cls.user_id) == user_id,
+                    col(cls.bot_id) == bot_id,
+                    col(cls.persona_name) == persona_name,
+                )
+            )
+            .values(**values)
+        )
+        await session.execute(stmt)
+
     @classmethod
     @with_session
     async def dedupe_user_bot_rows(cls, session: AsyncSession) -> int:
-        """合并同 ``(user_id, bot_id)`` 的历史重复行，返回删除的行数。
+        """合并同 ``(user_id, bot_id, persona_name)`` 的历史重复行，返回删除的行数。
 
         保留策略：分数**绝对值最大**的那行（保住已积累的关系强度），
         其余删除。唯一约束创建前必须先跑，否则建索引会失败。
         """
         rows = (await session.execute(select(cls))).scalars().all()
-        keep: Dict[tuple[str, str], "UserFavorability"] = {}
+        keep: Dict[tuple[str, str, str], "UserFavorability"] = {}
         victims: List[int] = []
         for row in rows:
-            key = (str(row.user_id), str(row.bot_id))
+            key = (str(row.user_id), str(row.bot_id), str(row.persona_name))
             if key not in keep:
                 keep[key] = row
                 continue
@@ -428,6 +512,7 @@ class UserFavorability(BaseModel, table=True):
         session: AsyncSession,
         user_id: str,
         bot_id: str,
+        persona_name: str,
         *,
         new_score: int,
         delta: int,
@@ -445,7 +530,7 @@ class UserFavorability(BaseModel, table=True):
         ``interaction_count`` 只在**有效互动**时 +1：管理侧 set 不再冒充互动，
         否则「衰减 / 管理设定」和「聊了一句」在计数上分不清。
         """
-        record = await cls.get_or_create_user_favorability(user_id, bot_id, user_name)
+        record = await cls.get_or_create_user_favorability(user_id, bot_id, persona_name, user_name)
         values: Dict[str, Any] = {
             "favorability": new_score,
             "last_delta": delta,
@@ -460,9 +545,143 @@ class UserFavorability(BaseModel, table=True):
             values["last_interaction_time"] = now_ts
         if refresh_positive:
             values["last_positive_interact_at"] = now_ts
-        stmt = update(cls).where(and_(col(cls.user_id) == user_id, col(cls.bot_id) == bot_id)).values(**values)
+        stmt = (
+            update(cls)
+            .where(
+                and_(
+                    col(cls.user_id) == user_id,
+                    col(cls.bot_id) == bot_id,
+                    col(cls.persona_name) == persona_name,
+                )
+            )
+            .values(**values)
+        )
         await session.execute(stmt)
         await session.commit()
+
+    @classmethod
+    @with_session
+    async def record_proactive_dm_sent(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        bot_id: str,
+        persona_name: str,
+        now_ts: int,
+    ) -> bool:
+        """登记一次主动私聊发出：刷新时间戳并把未回连击 +1。
+
+        只 UPDATE 既有行、绝不建行——建行会把未打分用户翻成「已打分 0 分」，
+        语义从「没有依据」变成「陌生人」。
+        """
+        stmt = (
+            update(cls)
+            .where(
+                and_(
+                    col(cls.user_id) == user_id,
+                    col(cls.bot_id) == bot_id,
+                    col(cls.persona_name) == persona_name,
+                )
+            )
+            .values(
+                last_proactive_dm_at=now_ts,
+                dm_unanswered_streak=col(cls.dm_unanswered_streak) + 1,
+            )
+        )
+        result = await session.execute(stmt)
+        return bool(isinstance(result, CursorResult) and result.rowcount > 0)
+
+    @classmethod
+    @with_session
+    async def reset_dm_unanswered(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        bot_id: str,
+        persona_name: str,
+    ) -> None:
+        """用户回了私聊 → 清零未回连击（互惠退避解除）。"""
+        stmt = (
+            update(cls)
+            .where(
+                and_(
+                    col(cls.user_id) == user_id,
+                    col(cls.bot_id) == bot_id,
+                    col(cls.persona_name) == persona_name,
+                    col(cls.dm_unanswered_streak) > 0,
+                )
+            )
+            .values(dm_unanswered_streak=0)
+        )
+        await session.execute(stmt)
+
+    @classmethod
+    @with_read_session
+    async def get_dm_unanswered_streaks(
+        cls,
+        session: AsyncSession,
+        user_ids: List[str],
+        persona_name: str,
+    ) -> Dict[str, int]:
+        """一组用户在该人格下的未回连击（跨 bot_id 取最大值）。"""
+        if not user_ids:
+            return {}
+        stmt = (
+            select(col(cls.user_id), func.max(col(cls.dm_unanswered_streak)))
+            .where(
+                and_(
+                    col(cls.user_id).in_(list(set(user_ids))),
+                    col(cls.persona_name) == persona_name,
+                )
+            )
+            .group_by(col(cls.user_id))
+        )
+        result = await session.execute(stmt)
+        out: Dict[str, int] = {}
+        for row in result.all():
+            uid = str(row[0])
+            streak = int(row[1]) if row[1] is not None else 0
+            out[uid] = streak
+        return out
+
+    @classmethod
+    @with_session
+    async def reassign_legacy_persona(cls, session: AsyncSession, default_persona: str) -> tuple[int, int]:
+        """把 ``persona_name=""`` 的存量行归入默认人格。返回 ``(改名数, 冲突删除数)``。
+
+        目标 (user_id, bot_id, default) 已有行时保留 ``|favorability|`` 大的一方：
+        存量行更大则删已有行后把存量行改名，否则直接删存量行。
+        """
+        legacy = list((await session.execute(select(cls).where(col(cls.persona_name) == ""))).scalars().all())
+        if not legacy:
+            return 0, 0
+        owned_rows = list(
+            (await session.execute(select(cls).where(col(cls.persona_name) == default_persona))).scalars().all()
+        )
+        owned = {(str(r.user_id), str(r.bot_id)): r for r in owned_rows}
+        updated = 0
+        deleted = 0
+        for row in legacy:
+            key = (str(row.user_id), str(row.bot_id))
+            existing = owned.get(key)
+            if existing is None:
+                row.persona_name = default_persona
+                session.add(row)
+                owned[key] = row
+                updated += 1
+                continue
+            if abs(row.favorability) > abs(existing.favorability):
+                if existing.id is not None:
+                    await session.execute(delete(cls).where(col(cls.id) == existing.id))
+                row.persona_name = default_persona
+                session.add(row)
+                owned[key] = row
+            else:
+                if row.id is not None:
+                    await session.execute(delete(cls).where(col(cls.id) == row.id))
+            deleted += 1
+        await session.commit()
+        return updated, deleted
 
 
 # 进程级建表标记：与全局 create_all 的启动时序解耦（RAG 初始化在后台线程，

@@ -20,6 +20,7 @@ class _Pending:
     tools: List[str]
     result: str
     bot_self_id: str
+    persona_name: str
 
 
 _BUFFER: List[_Pending] = []
@@ -41,6 +42,7 @@ class DecisionDistillKit(AgentKit):
                 tools=list(ctx.tool_names_called),
                 result=(ctx.result_text or "")[:200],
                 bot_self_id=ctx.bot_self_id,
+                persona_name=ctx.persona_name or "",
             )
         )
         if len(_BUFFER) >= _FLUSH_EVERY:
@@ -58,11 +60,11 @@ async def flush_decision_buffer() -> None:
         decision = distilled[i] if i < len(distilled) and distilled[i] else _rule_summary(item)
         if not decision:
             continue
-        await _persist_decision(item.bot_self_id, decision)
+        await _persist_decision(item.bot_self_id, item.persona_name, decision)
 
 
-async def _persist_decision(bot_self_id: str, decision: str) -> None:
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+async def _persist_decision(bot_self_id: str, persona_name: str, decision: str) -> None:
+    from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.memory.observer import observe
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
@@ -73,7 +75,7 @@ async def _persist_decision(bot_self_id: str, decision: str) -> None:
             MemoryWrite(
                 kind=CogKind.EPISODE,
                 ref=f"decision_{bid}_{hash(decision) & 0xFFFFFFFF:x}",
-                scope_key=make_scope_key(ScopeType.SELF, bid),
+                scope_key=self_scope_key(bid, persona_name),
                 owner_user_id="",
                 title="决策结论",
                 summary=decision,
@@ -88,6 +90,7 @@ async def _persist_decision(bot_self_id: str, decision: str) -> None:
             speaker_id=f"__assistant_{bid}__",
             group_id=None,
             bot_self_id=bid,
+            persona_name=persona_name,
             observer_blacklist=[],
             message_type="private_msg",
         )

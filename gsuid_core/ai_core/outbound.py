@@ -476,12 +476,13 @@ async def write_decision_memo(
     ref: str = "",
     handle: str = "",
     owner_user_id: str = "",
+    persona_name: str = "",
 ) -> None:
     """决策点即写。零 LLM，memo ≤60 字，7 天 TTL。"""
     body = " ".join((text or "").split())[:60]
     if not body:
         return
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.nodes import AICogNode
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
@@ -497,7 +498,7 @@ async def write_decision_memo(
             MemoryWrite(
                 kind=CogKind.SELF_NOTE,
                 ref=key,
-                scope_key=make_scope_key(ScopeType.SELF, bid),
+                scope_key=self_scope_key(bid, persona_name),
                 owner_user_id=owner_user_id,
                 title="决策备忘",
                 summary=body,

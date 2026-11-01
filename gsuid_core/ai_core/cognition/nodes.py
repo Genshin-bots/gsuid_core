@@ -24,7 +24,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.cognition.types import CogKind
-from gsuid_core.utils.database.base_models import with_session
+from gsuid_core.utils.database.base_models import with_session, with_read_session
 
 # 属主可见类型：严格按 owner_user_id 行级过滤，防止群内跨用户越权查看任务产物。
 OWNER_REQUIRED_KINDS = frozenset({CogKind.TOOL_OUTPUT.value, CogKind.ARTIFACT.value, CogKind.RECORD.value})
@@ -125,13 +125,13 @@ class AICogNode(SQLModel, table=True):
         return existing.id
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get(cls, session: AsyncSession, kind: CogKind, ref: str) -> Optional["AICogNode"]:
         stmt = select(cls).where(and_(col(cls.kind) == kind.value, col(cls.ref) == ref))
         return (await session.execute(stmt)).scalars().first()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def search(
         cls,
         session: AsyncSession,
@@ -191,13 +191,13 @@ class AICogNode(SQLModel, table=True):
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_id(cls, session: AsyncSession, node_id: int) -> Optional["AICogNode"]:
         stmt = select(cls).where(col(cls.id) == node_id)
         return (await session.execute(stmt)).scalars().first()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_world_hubs_by_title(cls, session: AsyncSession, title: str) -> List["AICogNode"]:
         """公共世界枢纽：``scope_key=""`` 且 ``ref`` 以 ``world:`` 开头，title 归一化相等。"""
         from gsuid_core.ai_core.entity_index import _normalize_surface
@@ -219,7 +219,7 @@ class AICogNode(SQLModel, table=True):
         return [n for n in rows if _normalize_surface(n.title) == norm]
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_env_nodes_by_canon(
         cls,
         session: AsyncSession,
@@ -239,7 +239,7 @@ class AICogNode(SQLModel, table=True):
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_world_canons_in_scope(cls, session: AsyncSession, scope_key: str) -> List[str]:
         """本 scope 环境实体已连上的世界枢纽 ref。必须带本轮 scope_key。"""
         if not scope_key:
@@ -263,7 +263,7 @@ class AICogNode(SQLModel, table=True):
         return out
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_by_ref_prefixes(cls, session: AsyncSession, prefixes: List[str]) -> List["AICogNode"]:
         if not prefixes:
             return []
@@ -377,13 +377,13 @@ class AICogAttachment(SQLModel, table=True):
         return existing.id
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_for_node(cls, session: AsyncSession, node_id: int) -> List["AICogAttachment"]:
         stmt = select(cls).where(col(cls.node_id) == node_id).order_by(col(cls.slot), col(cls.title))
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_for_nodes(cls, session: AsyncSession, node_ids: List[int]) -> List["AICogAttachment"]:
         if not node_ids:
             return []
@@ -393,7 +393,7 @@ class AICogAttachment(SQLModel, table=True):
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def find_by_refs(cls, session: AsyncSession, refs: List[str]) -> List["AICogAttachment"]:
         if not refs:
             return []
@@ -401,7 +401,7 @@ class AICogAttachment(SQLModel, table=True):
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def find_writable_by_title(
         cls,
         session: AsyncSession,
@@ -419,7 +419,7 @@ class AICogAttachment(SQLModel, table=True):
         return (await session.execute(stmt)).scalars().first()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def find_by_node_and_title(
         cls,
         session: AsyncSession,
@@ -451,7 +451,7 @@ class AICogAttachment(SQLModel, table=True):
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_plugin_refs(cls, session: AsyncSession) -> List["AICogAttachment"]:
         stmt = select(cls).where(col(cls.source) == "plugin")
         return list((await session.execute(stmt)).scalars().all())
@@ -499,7 +499,7 @@ class AICogEdge(SQLModel, table=True):
         return True
 
     @classmethod
-    @with_session
+    @with_read_session
     async def neighbors(
         cls,
         session: AsyncSession,

@@ -1,7 +1,10 @@
 """自主行动的纯数据结构。不碰数据库，也不碰模型。"""
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from dataclasses import field, dataclass
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.autonomy.micro_arc import MicroArcDict
 
 DriveKind = Literal["care_user", "group_topic", "self_explore", "rest"]
 DeliveryMode = Literal["immediate_push", "staged_merge", "silent_only"]
@@ -44,6 +47,8 @@ class CareTargetSnapshot:
     last_human_ts: float
     last_assistant_ts: float = 0.0
     preferences: list[str] = field(default_factory=list)
+    # 互惠退避：连续两次主动私聊未获回复时置 False，禁止继续主动私聊
+    allow_private_push: bool = True
 
 
 @dataclass(slots=True)
@@ -72,11 +77,14 @@ class ObservationDigest:
     mood_score: float
     care_targets: list[CareTargetSnapshot]
     group_digests: list[GroupObservation]
-    open_trails: list[str]
-    available_plugins_summary: list[str]
-    recently_used_tools: list[str]
+    available_plugins_summary: list[str] = field(default_factory=list)
+    recently_used_tools: list[str] = field(default_factory=list)
     in_flight_tasks: list[str] = field(default_factory=list)
     recent_proactive_records: list[str] = field(default_factory=list)
+    active_arc: "MicroArcDict | None" = None
+    arc_max_hops: int = 2
+    curiosity_focus: str = "balanced"
+    cooled_topics: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -104,12 +112,16 @@ class FactPack:
 
 @dataclass(slots=True)
 class ParsedRun:
-    """模型文末四行。对不上就当成休息。"""
+    """模型文末六行。对不上就当成休息。"""
 
     drive: DriveKind
     target: str
     summary: str
     trails: list[str]
+    topic: str = ""
+    outcome: str = "pending"
+    fact: str = ""
+    take: str = ""
     spoken_text: str = ""
 
 
@@ -128,6 +140,7 @@ class DeliveryPin:
     last_human_ts: float
     last_assistant_ts: float = 0.0
     preferences: list[str] = field(default_factory=list)
+    allow_private_push: bool = True
 
 
 @dataclass(slots=True)

@@ -217,7 +217,13 @@ _LOW_TIER_MAX_LEN = 10
 _PENDING_EPISODE_CAP = 8
 
 
-def _schedule_meme_knowledge_write(bot_id: str, group_id: str | None, term: str, meaning: str) -> None:
+def _schedule_meme_knowledge_write(
+    bot_id: str,
+    group_id: str | None,
+    term: str,
+    meaning: str,
+    persona_name: str = "",
+) -> None:
     """群友解释写入梗词典（后台，不挡 observe）。``bot_id`` 是平台 ID，与检索侧一致。"""
     if not bot_id:
         return
@@ -229,7 +235,7 @@ def _schedule_meme_knowledge_write(bot_id: str, group_id: str | None, term: str,
         return
 
     async def _write() -> None:
-        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key
         from gsuid_core.ai_core.cognition.types import CogKind
         from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
         from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
@@ -249,7 +255,7 @@ def _schedule_meme_knowledge_write(bot_id: str, group_id: str | None, term: str,
             MemoryWrite(
                 kind=CogKind.MEME_KNOWLEDGE,
                 ref=str(row.id),
-                scope_key=scope_key or f"self:{bot_id}",
+                scope_key=scope_key or self_scope_key(bot_id, persona_name),
                 owner_user_id="",
                 title=term,
                 summary=meaning[:120],
@@ -391,6 +397,7 @@ async def observe(
     *,
     force_scope_key: Optional[str] = None,
     bot_id: str = "",
+    persona_name: str = "",
 ) -> None:
     """向观察队列投递一条消息记录。
 
@@ -409,7 +416,7 @@ async def observe(
     SELF 轻量路由——回放语料里的 assistant 是对话内容而非"本机 Bot 戏言"，半数事实
     不应被丢进 ``self:`` 跳过抽取（否则探针召回不到 assistant 侧事实）。
     """
-    from .scope import ScopeType, make_scope_key
+    from .scope import ScopeType, make_scope_key, self_scope_key
 
     # force_scope_key 给定即视为评测回放：assistant 也当普通会话摄入，跳过 C6 SELF 路由
     is_self_speech = force_scope_key is None and speaker_id.startswith(_ASSISTANT_PREFIX)
@@ -420,7 +427,7 @@ async def observe(
         stripped = content.strip()
         if not stripped:
             return
-        scope_key = make_scope_key(ScopeType.SELF, bot_self_id)
+        scope_key = self_scope_key(bot_self_id, persona_name)
         value_tier = "LOW"
     else:
         # 普通用户消息：先按 GROUP / USER_GLOBAL 计算 scope（force_scope_key 优先），再过门控
@@ -444,7 +451,7 @@ async def observe(
             value_tier = "HIGH"
             parsed = parse_meme_explain(content)
             if parsed is not None:
-                _schedule_meme_knowledge_write(bot_id, group_id, parsed[0], parsed[1])
+                _schedule_meme_knowledge_write(bot_id, group_id, parsed[0], parsed[1], persona_name)
         elif value_tier == "HIGH":
             from gsuid_core.ai_core.memory.lifecycle.predict_calibrate import should_downgrade_high
 

@@ -128,7 +128,7 @@
   "log.ai.buildintools_rm_get_succeeded_ok_2": "[BuildinTools] RM.get 成功, img_data type={p0}",
   "log.ai.buildintools_rm_get_succeeded_ok_3": "[BuildinTools] RM.get 成功, video_data type={p0}",
   "log.ai.buildintools_rm_get_video_id": "[BuildinTools] RM.get({video_id}) 抛出 ValueError: {e}",
-"log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) 抛出 ValueError: {e}",
+  "log.ai.buildintools_rm_peek_file_id": "[BuildinTools] RM.peek({file_id}) 抛出 ValueError: {e}",
   "log.ai.buildintools_skipping_duplicate_run_skip": "[BuildinTools] 相同文本本轮已发送过，跳过重复发送（run 级去重）",
   "log.ai.buildintools_user_target_id": "[BuildinTools] 发送 {p0} 给用户 {target_id}",
   "log.ai.buildintools_workspace_change_registration": "[BuildinTools] workspace 变更登记失败: {e}",
@@ -173,8 +173,9 @@
   "log.ai.cognition_hub_unresolved": "[Cognition] 无法解析正式名, 不建枢纽 title={title}",
   "log.ai.cognition_link_entity_fail": "[Cognition] 环境实体连世界枢纽失败 name={name}: {e}",
   "log.ai.cognition_mount_disabled": "[Cognition] 挂载已关闭 (cognition_mount_enable=false)",
-  "log.ai.cognition_mount_done": "[Cognition] 挂载完成 hubs={hubs} attachments={attachments} linked_env={linked_env} skipped_ambiguous={skipped_ambiguous} skipped_unresolved={skipped_unresolved}",
+  "log.ai.cognition_mount_done": "[Cognition] 挂载完成 hubs={hubs} attachments={attachments} linked_env={linked_env} skipped_ambiguous={skipped_ambiguous} skipped_unresolved={skipped_unresolved} failed={failed_items}",
   "log.ai.cognition_mount_fail": "[Cognition] 后台挂载失败(聊天仍可用): {e}",
+  "log.ai.cognition_mount_item_fail": "[Cognition] 挂载单项失败(仅跳过该项) name={name}: {e}",
   "log.ai.cognition_mount_start": "[Cognition] 开始后台挂载公共枢纽",
   "log.ai.cognition_node_owner_required": "[Cognition] {kind} 节点缺属主, 跳过登记 ref={ref}",
   "log.ai.cognition_node_sync_fail": "[Cognition] 节点同步失败 kind={kind} ref={ref}(只丢节点, 原库不受影响): {e}",
@@ -480,6 +481,9 @@
   "log.ai.recordstore_record_put": "[RecordStore] record_put 失败: {e}",
   "log.ai.recordstore_record_update": "[RecordStore] record_update 失败: {e}",
   "log.ai.relationship_admin_set": "[Relationship] 管理设定 user={user} {before} -> {after}",
+  "log.ai.migrations_persona_scope_skip": "[Migrations] 无启用人格，跳过多人格存量数据迁移（下次启动重试）",
+  "log.ai.migrations_persona_scope_done": "[Migrations] 多人格存量数据已归入人格 {persona_name}：好感 {favor} 行改名/{favor_dropped} 行合并、self_model {self_models} 条、aside {aside} 条",
+  "log.ai.migrations_persona_scope_fail": "[Migrations] userfavorability 人格迁移失败: {e}",
   "log.ai.relationship_dedupe_done": "[Relationship] 已合并 (user_id,bot_id) 重复行 {n} 条(保留分数绝对值最大者)",
   "log.ai.relationship_dedupe_fail": "[Relationship] 重复行去重失败, 唯一约束未建立: {e}",
   "log.ai.relationship_fetch_degraded": "[Relationship] 关系温度读取失败, 降级为未打分: {e}",
@@ -676,5 +680,7 @@
   "log.ai.autonomy_run_fail": "[自主行动] {persona_name} 失败: {e}",
   "log.ai.autonomy_scheduler_start": "[自主行动] 调度已启动",
   "log.ai.autonomy_scheduler_stop": "[自主行动] 调度已停止",
-  "log.ai.autonomy_bind_skip": "[自主行动] 读取绑定表 {plugin} 失败: {e}"
+  "log.ai.autonomy_bind_skip": "[自主行动] 读取绑定表 {plugin} 失败: {e}",
+  "log.ai.heartbeat_homeostasis_skip": "动态平衡判定本轮跳过巡检发言（人格 {persona_name}）",
+  "log.ai.dyadic_distill_fail": "双人相处蒸馏任务异常: {e}"
 }

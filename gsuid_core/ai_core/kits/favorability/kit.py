@@ -31,7 +31,7 @@ class FavorabilityKit(AgentKit):
 
         if ctx.relationship is not None or not ctx.user_id:
             return
-        ctx.relationship = await fetch_relationship(ctx.user_id, ctx.bot_id)
+        ctx.relationship = await fetch_relationship(ctx.user_id, ctx.bot_id, ctx.persona_name or "")
 
     async def inject(self, ctx: AgentHookContext) -> None:
         from gsuid_core.ai_core.self_cognition import build_relationship_context

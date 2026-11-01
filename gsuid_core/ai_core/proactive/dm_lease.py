@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import json
 import time
 from typing import TypedDict
@@ -223,3 +224,37 @@ def revoke_dm_lease(user_id: str, bot_id: str = "") -> bool:
         if revoked:
             _save_locked(leases)
         return revoked
+
+
+_PERSONA_NAME_MIN_LEN = 2
+_LEADING_STRIP_RE = re.compile(r"^[\s\W_]+")
+_ASCII_WORD_TAIL = re.compile(r"[A-Za-z0-9_]")
+
+
+def maybe_switch_dm_lease(user_id: str, bot_id: str, text: str, current_persona: str | None) -> str | None:
+    """私聊开头显式点名其他启用人格时切换租约。返回切换后的人格名，否则 None。
+
+    只对**消息开头**（剥掉前导空白/标点后）的人格目录名（长度 >= 2）生效；
+    命中者必须已启用（scope != "disabled"）且不是当前人格。
+    名字后紧跟 ASCII 字母/数字/下划线视为同词延续（Beta2 ≠ Beta）；
+    中文不受此限——「早柚在吗」这种不带标点的称呼是常态用法。
+    """
+    body = _LEADING_STRIP_RE.sub("", text or "")
+    if not body:
+        return None
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    for name in sorted(persona_config_manager.get_all_configs(), key=lambda n: (-len(n), n)):
+        if name == current_persona or len(name) < _PERSONA_NAME_MIN_LEN:
+            continue
+        if not body.startswith(name):
+            continue
+        tail = body[len(name) :]
+        if tail and _ASCII_WORD_TAIL.match(tail[0]):
+            continue
+        config = persona_config_manager.get_config(name)
+        if config.get_config("scope").data == "disabled":
+            continue
+        grant_dm_lease(user_id=user_id, persona_name=name, bot_id=bot_id)
+        return name
+    return None

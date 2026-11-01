@@ -56,7 +56,9 @@ async def build_stable_context(event: Event, persona_name: str = "") -> str:
         from gsuid_core.ai_core.self_cognition import build_self_cognition_context
 
         # include_relationship=False：关系是 per-user，群 session 共享稳定前缀
-        return await build_self_cognition_context(bot_id=event.bot_id, scope_key=scope_key, include_relationship=False)
+        return await build_self_cognition_context(
+            bot_id=event.bot_id, persona_name=persona_name, scope_key=scope_key, include_relationship=False
+        )
 
     async def _group_profile_block() -> str:
         if not event.group_id:
@@ -224,7 +226,7 @@ async def assemble_dynamic_context(
     )
     from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
 
-    tail = await load_speaker_preference_tail(bot_id, user_id)
+    tail = await load_speaker_preference_tail(bot_id, persona_name or "", user_id)
     if tail:
         text = f"{text}\n\n{tail}" if text else tail
     from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
@@ -285,6 +287,7 @@ _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
     {
         "voice_anchor",
         "mood",
+        "presence",
         "relationship",
         "task",
         "plan_hint",
@@ -302,6 +305,7 @@ _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
     "plan_hint",
     "relationship",
     "mood",
+    "presence",
     "memory",
     "soft_trigger",
     "plugin_hints",

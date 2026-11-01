@@ -318,7 +318,7 @@ def test_emit_proactive_stores_rewritten_at_not_cq(monkeypatch: pytest.MonkeyPat
         def should_suppress_heartbeat(self, _key: str) -> bool:
             return False
 
-        def register_send(self, _key: str, _source: str, _summary: str) -> None:
+        def register_send(self, _key: str, _source: str, _summary: str, **_kw: object) -> None:
             return None
 
     async def fake_send(_bot: Bot, _message: str, **_kwargs: str | Event | dict[str, str] | None) -> None:
@@ -383,6 +383,98 @@ def test_emit_proactive_stores_rewritten_at_not_cq(monkeypatch: pytest.MonkeyPat
     assert "<@100000001>" in captured["record"]
     assert captured["sync"] == captured["record"]
     assert captured["target"] == "100000001"
+
+
+def test_emit_proactive_echo_only_for_social_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """定时任务 / Kanban 播报是通知不是搭话：不记 echo、不吃冷肩；heartbeat/autonomy 才记。"""
+    from gsuid_core.bot import Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.output_gate import GateResult, GateDecision
+    from gsuid_core.ai_core.persona.config import DriveTraits, persona_config_manager
+    from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
+
+    class _Disp:
+        def should_suppress_heartbeat(self, _key: str) -> bool:
+            return False
+
+        def register_send(self, *_a: object, **_kw: object) -> None:
+            return None
+
+    echoes: list[tuple] = []
+
+    async def fake_echo(pname: str, tkey: str, is_priv: bool, summary: str, _now: float) -> None:
+        echoes.append((pname, tkey, is_priv, summary))
+
+    async def _noop(*_a: object, **_kw: object) -> None:
+        return None
+
+    monkeypatch.setattr("gsuid_core.ai_core.proactive.emitter.send_chat_result", _noop)
+    monkeypatch.setattr("gsuid_core.ai_core.outbound.record_outbound", _noop)
+    monkeypatch.setattr("gsuid_core.ai_core.proactive.emitter._sync_to_main_session", _noop)
+    monkeypatch.setattr("gsuid_core.ai_core.proactive.emitter.get_dispatcher", lambda: _Disp())
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.output_gate.pre_send_gate",
+        lambda *_a, **_k: GateResult(decision=GateDecision.ALLOW),
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.persona.presence.record_echo", fake_echo)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.homeostasis.load_homeostasis", lambda _p: _noop())
+    monkeypatch.setattr("gsuid_core.ai_core.persona.homeostasis.save_homeostasis", _noop)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.homeostasis.apply_turn_shock", lambda *_a: None)
+    monkeypatch.setattr("gsuid_core.ai_core.persona.config.read_drive_traits", lambda _c: DriveTraits())
+    monkeypatch.setattr(persona_config_manager, "get_config", lambda _n: None)
+
+    ev = Event(
+        bot_id="onebot",
+        bot_self_id="self1",
+        user_type="group",
+        group_id="g1",
+        user_id="100000002",
+        WS_BOT_ID="ws1",
+    )
+
+    # scheduled_task：通知型播报不记 echo，但耗能记账照跑
+    ok = asyncio.run(
+        emit_proactive_message(
+            ev,
+            "每日任务完成",
+            source="scheduled_task",
+            trigger_reason="test",
+            bot=Bot.__new__(Bot),
+            suppress_when_heartbeat_recent=False,
+            persona_name="p1",
+        )
+    )
+    assert ok is True
+    assert echoes == []
+
+    # heartbeat：社交尝试要记 echo，且摘要取最终出站文本（CQ 已重写为 <@id>）
+    ok = asyncio.run(
+        emit_proactive_message(
+            ev,
+            "[CQ:at,qq=100000001] 来搭话",
+            source="heartbeat",
+            trigger_reason="test",
+            bot=Bot.__new__(Bot),
+            suppress_when_heartbeat_recent=False,
+            persona_name="p1",
+        )
+    )
+    assert ok is True
+    assert echoes == [("p1", "g1", False, "<@100000001> 来搭话")]
+
+    # autonomy 同样算社交尝试
+    asyncio.run(
+        emit_proactive_message(
+            ev,
+            "自主说一句",
+            source="autonomy",
+            trigger_reason="test",
+            bot=Bot.__new__(Bot),
+            suppress_when_heartbeat_recent=False,
+            persona_name="p1",
+        )
+    )
+    assert echoes[-1] == ("p1", "g1", False, "自主说一句")
 
 
 def test_sync_to_main_session_activates_session_when_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:

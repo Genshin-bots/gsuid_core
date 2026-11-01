@@ -47,6 +47,12 @@ async def _init_persona():
     await init_default_personas()
 
 
+async def _init_persona_scope_migration():
+    from gsuid_core.ai_core.migrations.persona_scope_v1 import migrate_legacy_persona_scopes
+
+    await migrate_legacy_persona_scopes()
+
+
 async def _init_scheduled_task():
     from gsuid_core.ai_core.scheduled_task.startup import init_scheduled_tasks
 
@@ -211,6 +217,7 @@ _INIT_STEPS = [
     ("Agent 套件", _init_agent_kits),
     ("RAG", _init_rag),
     ("Persona", _init_persona),
+    ("多人格隔离迁移", _init_persona_scope_migration),
     ("审批中心", _init_approval),
     ("定时任务", _init_scheduled_task),
     ("长任务编排", _init_planning),

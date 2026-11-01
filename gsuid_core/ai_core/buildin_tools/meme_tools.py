@@ -153,8 +153,9 @@ async def record_meme(
         origin: 出处（可选）。
         usage: 接法范式（可选）。
     """
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
     from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
 
@@ -177,7 +178,7 @@ async def record_meme(
         MemoryWrite(
             kind=CogKind.MEME_KNOWLEDGE,
             ref=str(row.id),
-            scope_key=scope_key or f"self:{ev.bot_id}",
+            scope_key=scope_key or self_scope_key(ev.bot_id, persona_name_from_event(ev) or ""),
             owner_user_id=ev.user_id,
             title=name,
             summary=gloss[:120],

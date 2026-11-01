@@ -36,7 +36,11 @@ def test_proactive_emitter_at_user_forwarding() -> None:
         user_type="group",
         group_id="mock_group_201",
     )
-    with patch("gsuid_core.ai_core.proactive.emitter.send_chat_result", new=AsyncMock()) as mock_send:
+    with (
+        patch("gsuid_core.ai_core.proactive.emitter.send_chat_result", new=AsyncMock()) as mock_send,
+        patch("gsuid_core.ai_core.state_store.state_get_value", new=AsyncMock(return_value=None)),
+        patch("gsuid_core.ai_core.state_store.state_set_value", new=AsyncMock()),
+    ):
         with patch("gsuid_core.ai_core.outbound.record_outbound", new=AsyncMock()):
             with patch("gsuid_core.ai_core.proactive.emitter._sync_to_main_session", new=AsyncMock()):
                 with patch("gsuid_core.ai_core.proactive.emitter._resolve_active_bot", return_value=MagicMock()):
@@ -303,7 +307,6 @@ def test_scheduler_never_pushes_spoken_text_without_tool() -> None:
         mood_score=0.5,
         care_targets=[],
         group_digests=[],
-        open_trails=[],
         available_plugins_summary=[],
         recently_used_tools=[],
         in_flight_tasks=[],
@@ -329,7 +332,14 @@ def test_scheduler_never_pushes_spoken_text_without_tool() -> None:
                                 "gsuid_core.ai_core.autonomy.scheduler.AIAutonomyActivity.insert_activity",
                                 new=AsyncMock(),
                             ) as mock_store:
-                                with patch("gsuid_core.ai_core.autonomy.scheduler.get_dispatcher") as mock_disp_getter:
+                                with (
+                                    patch("gsuid_core.ai_core.autonomy.scheduler.get_dispatcher") as mock_disp_getter,
+                                    patch(
+                                        "gsuid_core.ai_core.state_store.state_get_value",
+                                        new=AsyncMock(return_value=None),
+                                    ),
+                                    patch("gsuid_core.ai_core.state_store.state_set_value", new=AsyncMock()),
+                                ):
                                     mock_disp = MagicMock()
                                     mock_disp_getter.return_value = mock_disp
                                     mode = asyncio.run(scheduler.run_persona("mock_persona", force=True))
@@ -434,7 +444,23 @@ def test_render_digest_anti_repetition_and_softened_trails() -> None:
         mood_score=0.2,
         care_targets=[target],
         group_digests=[],
-        open_trails=["探讨长高技巧"],
+        active_arc={
+            "arc_id": "a1",
+            "topic_key": "探讨长高技巧",
+            "stage": "attempt",
+            "origin": "self_explore",
+            "intent": "",
+            "hop_count": 1,
+            "outcome": "pending",
+            "fact": "",
+            "take": "",
+            "target_group_id": "",
+            "target_user_id": "",
+            "created_at": now,
+            "updated_at": now,
+            "expires_at": 0.0,
+        },
+        arc_max_hops=3,
         available_plugins_summary=[],
         recently_used_tools=[],
         in_flight_tasks=[],
@@ -446,7 +472,7 @@ def test_render_digest_anti_repetition_and_softened_trails() -> None:
     assert "偏好画像：习惯晚睡；喜欢喝茶" in rendered
     assert "最近已主动发信记录（请勿就相同话题再次打扰或张冠李戴）：" in rendered
     assert "1小时前向 mock_group_201 发信：注意防寒保暖" in rendered
-    assert "上次思考规划与线索（鼓励推进或跟进探索）：探讨长高技巧" in rendered
+    assert "你上次在琢磨「探讨长高技巧」，已经跟了 1/3 轮。" in rendered
     assert "最后发言在4小时前" in rendered
     assert "上次没做完：" not in rendered
     assert "已较久未发言，非即时需求请勿在群内突兀打扰" not in rendered

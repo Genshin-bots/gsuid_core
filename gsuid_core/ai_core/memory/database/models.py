@@ -1960,13 +1960,13 @@ class AIMemEntity(SQLModel, table=True):
         return {row[0]: row[1] for row in result.all()}
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_distinct_scope_keys(cls, session: AsyncSession) -> List[str]:
         result = await session.execute(select(col(cls.scope_key)).distinct())
         return [row[0] for row in result.all() if row[0]]
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_page_by_scope(
         cls,
         session: AsyncSession,

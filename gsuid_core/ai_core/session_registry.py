@@ -255,7 +255,7 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
     from gsuid_core.i18n import t
     from gsuid_core.logger import logger
     from gsuid_core.ai_core.utils import _extractive_middle_summary
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.memory.observer import observe
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
@@ -268,7 +268,7 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
     bot_self_id, _kind, _sid = parse_session_scope(session.session_id)
     bid = bot_self_id or "default"
     # 只写 SELF：助手摘要进群 scope 会绕开 C6，污染群记忆。
-    scope_key = make_scope_key(ScopeType.SELF, bid)
+    scope_key = self_scope_key(bid, session.persona_name or "")
     try:
         await remember(
             MemoryWrite(
@@ -290,6 +290,7 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
             speaker_id=f"__assistant_{bid}__",
             group_id=None,
             bot_self_id=bid,
+            persona_name=session.persona_name or "",
             observer_blacklist=[],
             message_type="private_msg",
         )

@@ -28,6 +28,8 @@ class RelationshipView:
     is_master: bool
     # None 表示该 (user, bot) 从未被打过分；score 此时为 0 但语义是「未知」而非「陌生」
     scored: bool = True
+    vibe: str = ""
+    callbacks: tuple[str, ...] = ()
 
     @property
     def voice(self) -> str:
@@ -53,7 +55,9 @@ class RelationshipView:
         return self.zone in (Zone.HOSTILE, Zone.COLD)
 
 
-def view_from_score(score: Optional[int], is_master: bool) -> RelationshipView:
+def view_from_score(
+    score: Optional[int], is_master: bool, *, vibe: str = "", callbacks: tuple[str, ...] = ()
+) -> RelationshipView:
     """纯函数：分数 + 主人身份 → View。评测夹具直接用它注入，不必写 SQL。"""
     effective = 0 if score is None else score
     return RelationshipView(
@@ -62,6 +66,8 @@ def view_from_score(score: Optional[int], is_master: bool) -> RelationshipView:
         line=render_relationship_line(score, is_master),
         is_master=is_master,
         scored=score is not None,
+        vibe=vibe,
+        callbacks=callbacks,
     )
 
 
@@ -135,7 +141,7 @@ async def collect_priority_speakers(
     from gsuid_core.ai_core.database.models import UserFavorability
 
     try:
-        scores = await UserFavorability.get_scores_for(list(names), bot_id)
+        scores = await UserFavorability.get_scores_for(list(names), bot_id, persona_name or "")
     except Exception as e:
         logger.debug(t("log.ai.relationship_priority_speakers_degraded", e=e))
         return priority
@@ -153,7 +159,7 @@ async def collect_priority_speakers(
     return priority
 
 
-async def fetch_relationship(user_id: str, bot_id: str) -> RelationshipView:
+async def fetch_relationship(user_id: str, bot_id: str, persona_name: str = "") -> RelationshipView:
     """读关系温度（外部存储，非模型推断）。失败降级为「未打分」View，不抛。
 
     替代历史的 ``fetch_favorability() -> Optional[int]``：那个返回值让每个消费点
@@ -166,9 +172,15 @@ async def fetch_relationship(user_id: str, bot_id: str) -> RelationshipView:
     try:
         from gsuid_core.ai_core.database.models import UserFavorability
 
-        record = await UserFavorability.get_user_favorability(user_id=user_id, bot_id=bot_id)
+        record = await UserFavorability.get_user_favorability(user_id=user_id, bot_id=bot_id, persona_name=persona_name)
         if record is not None:
             score = record.favorability
+            return view_from_score(
+                score,
+                is_master,
+                vibe=record.interaction_vibe or "",
+                callbacks=tuple(record.shared_callbacks_list),
+            )
     except Exception as e:
         logger.debug(t("log.ai.relationship_fetch_degraded", e=e))
     return view_from_score(score, is_master)

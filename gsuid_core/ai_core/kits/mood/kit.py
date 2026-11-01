@@ -25,6 +25,7 @@ class MoodKit(AgentKit):
         if desc:
             # 括号包裹：暗示内心状态而非指令
             ctx.set_context_block("mood", f"（{desc}。）")
+        await self._presence(ctx)
 
     async def update(self, ctx: AgentHookContext) -> None:
         """按 H08 传入的信号更新情绪。信号由 ``settle_turn`` 一次扫描两用。"""
@@ -45,6 +46,43 @@ class MoodKit(AgentKit):
             signals.mood_intensity,
             signals.mood_reason,
         )
+        await self._turn_shock(ctx)
+
+    async def _presence(self, ctx: AgentHookContext) -> None:
+        """动态平衡 + 存在感丝带：同一人格一份，随每轮注入。"""
+        if ctx.ev is None or not ctx.persona_name:
+            return
+        import time
+
+        from gsuid_core.ai_core.persona.presence import render_presence, refresh_persona_state
+        from gsuid_core.ai_core.persona.homeostasis import homeostasis_hint
+
+        now = time.time()
+        state, ribbon = await refresh_persona_state(ctx.persona_name, now)
+        is_private = ctx.ev.user_type == "direct"
+        target_key = f"private:{ctx.ev.user_id}" if is_private else str(ctx.ev.group_id or "")
+        text = render_presence(ribbon, homeostasis_hint(state), target_key=target_key, is_private=is_private, now=now)
+        if text:
+            ctx.set_context_block("presence", text)
+
+    async def _turn_shock(self, ctx: AgentHookContext) -> None:
+        """只在本轮真的产生了可见回复时耗能——沉默/出错不扣。"""
+        if not ctx.persona_name:
+            return
+        import time
+
+        from gsuid_core.ai_core.utils import is_silence_marker, is_agent_error_text
+
+        text = ctx.result_text
+        if not text or is_silence_marker(text) or is_agent_error_text(text):
+            return
+        from gsuid_core.ai_core.persona.config import read_drive_traits, persona_config_manager
+        from gsuid_core.ai_core.persona.homeostasis import apply_turn_shock, load_homeostasis, save_homeostasis
+
+        traits = read_drive_traits(persona_config_manager.get_config(ctx.persona_name))
+        state = await load_homeostasis(ctx.persona_name)
+        apply_turn_shock(state, traits, time.time())
+        await save_homeostasis(ctx.persona_name, state)
 
 
 KIT = register_agent_kit(MoodKit(kit_id="gscore.mood", slot="mood", display_name="人格情绪"))

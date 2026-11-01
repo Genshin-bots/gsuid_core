@@ -94,7 +94,7 @@
 | `GROUP`            | `group:{群号}`                | 群组级记忆（群 A 对群 B 不可见）       | `handler.py` 被动感知                |
 | `USER_GLOBAL`      | `user_global:{用户ID}`        | 用户**跨群**全局画像                   | `dual_route_retrieve` 联合检索        |
 | `USER_IN_GROUP`    | `user_in_group:{用户ID}@{群号}` | 用户在特定群的局部档案（可选）         | `webconsole/ai_memory_api` 按需清空 |
-| `SELF`             | `self:{bot_self_id}`          | Bot 自身情景记忆（"我说过/做过什么"）   | `bot.py` 主动会话                     |
+| `SELF`             | `self:{bot_id}:{persona_name}` | Bot 自身情景记忆（"我说过/做过什么"），按人格分桶；旧数据留在 `self:{bot_id}`，仅默认人格可读 | `bot.py` 主动会话 / 各人格 SELF 写入 |
 
 隔离由 SQL `WHERE scope_key=?` 与 Qdrant `scope_key` payload filter 共同保证。检索时可联合查询多个 scope（群组 + 用户全局）。
 
@@ -208,7 +208,7 @@ HNSW 默认 `m=16 / ef_construct=100`、`indexing_threshold=10000`；**所有 sc
 
 `observe()` 先按发言人分流，再过门控 `_gate()`：
 
-- **Bot 自身发言**（`__assistant_` 前缀）→ 路由到 `SELF` scope（`self:{bot_self_id}`），强制 `value_tier=LOW`，**仅写 Episode、不进群组事实图谱**（C6：杜绝 Bot 戏言污染群记忆）。
+- **Bot 自身发言**（`__assistant_` 前缀）→ 路由到 `SELF` scope（`self:{bot_self_id}:{persona_name}`；observe 拿不到人格时回落 `self:{bot_self_id}` 旧键），强制 `value_tier=LOW`，**仅写 Episode、不进群组事实图谱**（C6：杜绝 Bot 戏言污染群记忆）。
 - **普通用户消息** → 计算 GROUP / USER_GLOBAL scope，过 `_gate()`：
   - **丢弃**：自身数字 ID 消息、黑名单群、空消息、纯图片短消息、命令回显（`_COMMAND_ECHO_RE`）、用户命令 / typo 命令（`_USER_COMMAND_RE`，按 `command_start` 配置精确匹配 + 1~2 个命令式标点 + 短文本启发式兜底）、prompt 注入文本（`_INJECTION_RE`）、复读（同 scope 最近 12 条重复，`_REPEAT_WINDOW=12`）。
   - **分级 `_classify_value_tier`**（受 `extraction_value_gate` 档位控制）：

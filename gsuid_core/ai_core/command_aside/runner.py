@@ -19,7 +19,7 @@ from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.trigger import Trigger
-from gsuid_core.ai_core.utils import is_silence_marker
+from gsuid_core.ai_core.utils import is_silence_marker, is_agent_error_text
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.startup import is_ai_core_ready
 from gsuid_core.message_history import get_history_manager
@@ -381,11 +381,7 @@ async def apply_aside(
     advice = ""
     if ran and spoken and spoken.strip():
         stripped = spoken.strip()
-        if (
-            not is_silence_marker(stripped)
-            and not stripped.startswith("执行出错")
-            and "Request timed out" not in stripped
-        ):
+        if not is_silence_marker(stripped) and not is_agent_error_text(stripped):
             advice = stripped
     # 仅在回执像失败或用法说明时存入建议记忆，成功回执不存
     if advice and not memory and plugin and _is_failure_or_usage_receipt(receipt):

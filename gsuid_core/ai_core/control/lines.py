@@ -308,3 +308,25 @@ def turn_seed_hint_line(items: str) -> str:
         + items
         + '。要用时先调 find_tools(need="工具名") 挂上，下一步再调用；用不上就忽略，禁止对用户念工具名。）'
     )
+
+
+# ── 动态平衡 / 存在感（§多人格 Phase 3）──
+HOMEO_TIRED_LINE = "（你刚连着说了不少话，或者快到休息的点了，现在有点倦，回应简短随性些。）"
+HOMEO_EAGER_LINE = "（你歇了好一阵，正想找人搭话，兴致不错。）"
+OFFSCREEN_CARE_GENERIC = "顺手帮熟人翻了点资料"
+
+
+def presence_offscreen_line(ago: str, doing: str) -> str:
+    return f"（{ago}你闲着时{doing}。）"
+
+
+def presence_echo_line(ago: str, summary: str, answered: bool | None) -> str:
+    tail = "当时有人接了话" if answered is True else ("当时没人接茬" if answered is False else "")
+    return f"（{ago}你在这里主动说过「{summary}」{('，' + tail) if tail else ''}。）"
+
+
+def heartbeat_arc_section(content: str) -> str:
+    return (
+        f"\n\n[你前阵子自己琢磨过的一件小事]\n{content}\n"
+        "只有群里刚好聊到沾边的话题、或者气氛合适能顺嘴带出时才提；话题完全不搭就继续留着，别硬扯。"
+    )

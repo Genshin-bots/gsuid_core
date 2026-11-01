@@ -174,6 +174,20 @@ class AutonomyScheduler:
         )
         parsed = parse_footer(report.text)
         facts = extract_facts(report.steps)
+        from gsuid_core.ai_core.persona.config import read_drive_traits
+        from gsuid_core.ai_core.persona.presence import record_offscreen
+        from gsuid_core.ai_core.autonomy.verifier import take_is_grounded
+        from gsuid_core.ai_core.autonomy.micro_arc import (
+            prune_arcs,
+            advance_arc,
+            strip_markup,
+            load_micro_arcs,
+            save_micro_arcs,
+            normalize_topic_key,
+        )
+        from gsuid_core.ai_core.persona.homeostasis import touch_topic, load_homeostasis, save_homeostasis
+        from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
+
         decision = route_delivery(
             _plan(
                 digest,
@@ -210,10 +224,51 @@ class AutonomyScheduler:
                     text,
                     ttl_seconds=STAGE_TTL_SECONDS,
                     source="autonomy",
+                    persona_name=persona_name,
                 )
             else:
                 mode = "silent_only"
                 pin = None
+        traits = read_drive_traits(persona_config_manager.get_config(persona_name))
+        topic_key = normalize_topic_key(parsed.topic)
+        if topic_key:
+            _hs = await load_homeostasis(persona_name)
+            touch_topic(_hs, topic_key, now)
+            await save_homeostasis(persona_name, _hs)
+        arcs = await load_micro_arcs(persona_name)
+        take = parsed.take if not is_persistent_style_rule(parsed.take) else ""
+        arcs, arc = advance_arc(
+            arcs,
+            topic_key=parsed.topic,
+            intent=parsed.summary,
+            origin=parsed.drive,
+            outcome=parsed.outcome,
+            fact=parsed.fact,
+            take=take,
+            target_group_id=pin.group_id if pin and pin.group_id else "",
+            target_user_id=pin.user_id if pin and pin.user_id else "",
+            max_hops=traits.arc_persistence,
+            now=now,
+            arc_id=report.session_id[-12:],
+        )
+        arcs = prune_arcs(arcs, now)
+        await save_micro_arcs(persona_name, arcs)
+        _arc_ready = arc is not None and arc["stage"] == "ready_to_share" and take_is_grounded(parsed, report.steps)
+        if _arc_ready:
+            if parsed.drive == "care_user":
+                from gsuid_core.ai_core.control.lines import OFFSCREEN_CARE_GENERIC
+
+                await record_offscreen(persona_name, OFFSCREEN_CARE_GENERIC, now)
+            elif take or parsed.fact:
+                await record_offscreen(persona_name, (take or parsed.fact)[:45], now)
+            if mode == "staged_merge" and pin is not None and (parsed.fact or take):
+                get_dispatcher().stage_merge_context(
+                    make_target_key(pin.group_id, pin.user_id or None),
+                    strip_markup(f"{parsed.fact}；{take}"),
+                    ttl_seconds=STAGE_TTL_SECONDS,
+                    source="autonomy",
+                    persona_name=persona_name,
+                )
         plugins = [step.tool_name for step in report.steps if step.tool_name]
         activity_id = await _store(
             digest,
@@ -230,7 +285,8 @@ class AutonomyScheduler:
             created_at=time.time(),
         )
         if facts.has_substantive_outcome and decision.drive != "rest":
-            await _remember(persona_name, digest, pin, decision.summary, facts, activity_id)
+            memo = f"{take}（{parsed.fact[:120]}）" if (_arc_ready and take) else decision.summary
+            await _remember(persona_name, digest, pin, memo, facts, activity_id)
         self._advance(persona_name)
         logger.info(
             t(
@@ -300,7 +356,9 @@ def _plan(
     quota: set[str] = set()
     gap: set[str] = set()
     for key in _keys(care, groups):
-        if not dispatcher.should_suppress_by_rate(key, max_per_hour=hour_cap, max_per_day=day_cap):
+        if not dispatcher.should_suppress_by_rate(
+            key, max_per_hour=hour_cap, max_per_day=day_cap, persona_name=digest.persona_name
+        ):
             quota.add(key)
         if dispatcher.should_suppress_heartbeat(key):
             gap.add(key)
@@ -378,7 +436,7 @@ def _pin_for_tool_send(digest: ObservationDigest, user_id: str, group_id: str) -
     )
 
 
-async def _emit(pin: DeliveryPin, message: str, persona_name: str) -> bool:
+async def _emit(pin: DeliveryPin, message: str, persona_name: str, source_group_id: str = "") -> bool:
     from gsuid_core.models import Event
     from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
 
@@ -402,6 +460,8 @@ async def _emit(pin: DeliveryPin, message: str, persona_name: str) -> bool:
         trigger_reason=f"{persona_name} 自主行动",
         suppress_when_heartbeat_recent=True,
         at_user_id=pin.user_id if (pin.group_id and pin.user_id) else None,
+        persona_name=persona_name,
+        source_group_id=source_group_id or pin.group_id or "",
     )
 
 
@@ -413,7 +473,7 @@ async def _remember(
     facts: FactPack,
     activity_id: int,
 ) -> None:
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
@@ -432,7 +492,7 @@ async def _remember(
         MemoryWrite(
             kind=CogKind.SELF_NOTE,
             ref=ref,
-            scope_key=make_scope_key(ScopeType.SELF, bot_self),
+            scope_key=self_scope_key(bot_self, persona_name),
             title=f"{persona_name} 自主行动",
             summary=summary,
             source="autonomy",

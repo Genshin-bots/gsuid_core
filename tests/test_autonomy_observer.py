@@ -125,7 +125,7 @@ def test_empty_signal_users_sort_after_people_who_spoke_and_cap_at_ten() -> None
 
 
 def test_empty_digest_skips_the_model_and_render_points_at_the_persona() -> None:
-    empty = ObservationDigest("p", "", "", "", 0.0, [], [], [], [], [])
+    empty = ObservationDigest("p", "", "", "", 0.0, [], [])
     assert digest_is_empty(empty)
     text = render_digest(empty, now=1_000_000.0)
     assert "人格自述" in text
@@ -137,9 +137,6 @@ def test_empty_digest_skips_the_model_and_render_points_at_the_persona() -> None
         "",
         "",
         0.0,
-        [],
-        [],
-        [],
         [],
         [],
         in_flight_tasks=["[running] 渲染对比图 (群 914411529)"],

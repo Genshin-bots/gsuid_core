@@ -390,6 +390,7 @@ class MemoryKit(AgentKit):
                 observer_blacklist=memory_config.observer_blacklist,
                 message_type="group_msg" if ctx.group_id else "private_msg",
                 bot_id=str(ev.bot_id),
+                persona_name=ctx.persona_name or "",
             )
         # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆，
         # 避免后台对每张群图都发起一次视觉模型调用（Token + 日志噪声）。
@@ -425,6 +426,7 @@ class MemoryKit(AgentKit):
             observer_blacklist=memory_config.observer_blacklist,
             message_type="group_msg" if ctx.group_id else "private_msg",
             bot_id=str(ev.bot_id),
+            persona_name=ctx.persona_name or "",
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
@@ -463,6 +465,7 @@ class MemoryKit(AgentKit):
             bot_id=scope.bot_id,
             bot_self_id=scope.bot_self_id,
             include_self=True,
+            persona_name=scope.persona_name,
         )
         from gsuid_core.ai_core.memory.retrieval.types import Episode
         from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall

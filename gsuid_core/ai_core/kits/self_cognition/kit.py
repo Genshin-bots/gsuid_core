@@ -30,6 +30,7 @@ class SelfCognitionKit(AgentKit):
         scope_key = scope_key_for_conversation(ctx.ev.group_id, ctx.user_id)
         text = await build_self_cognition_context(
             bot_id=ctx.bot_id,
+            persona_name=ctx.persona_name or "",
             scope_key=scope_key,
             include_relationship=False,
         )

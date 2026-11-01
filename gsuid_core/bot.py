@@ -480,6 +480,12 @@ class _Bot:
                     "user_id": bot_self_id or bot_id,
                     "nickname": bot_self_id or bot_id or "机器人",
                 }
+                from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
+
+                # 多人格：给 assistant 历史打上「谁在说」，dyadic/回放按人格归因
+                _speaking = get_speaking_persona()
+                if _speaking:
+                    _hist_meta["persona_name"] = _speaking
                 get_history_manager().add_message(
                     event=_hist_ev,
                     role="assistant",
@@ -602,6 +608,7 @@ class _Bot:
                 if enable_ai and is_enable_memory and "主动会话" in memory_mode:
                     # memory 包会拉起记忆启动链，且可能再回到 Bot。
                     from gsuid_core.ai_core.memory import observe
+                    from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
 
                     try:
                         task = asyncio.create_task(
@@ -612,6 +619,7 @@ class _Bot:
                                 bot_self_id=bot_self_id,
                                 observer_blacklist=memory_config.observer_blacklist,
                                 message_type="group_msg" if target_type == "group" else "private_msg",
+                                persona_name=get_speaking_persona(),
                             )
                         )
                         self._add_bg_task(task)

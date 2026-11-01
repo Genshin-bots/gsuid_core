@@ -21,6 +21,7 @@ def test_init_steps_order_is_stable() -> None:
         "Agent 套件",
         "RAG",
         "Persona",
+        "多人格隔离迁移",
         "审批中心",
         "定时任务",
         "长任务编排",

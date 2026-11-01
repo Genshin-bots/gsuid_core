@@ -312,6 +312,7 @@ async def _ingest_request_history(
             observer_blacklist=memory_config.observer_blacklist,
             message_type=msg_type,
             timestamp=parse_iso_or_unix_timestamp(turn.timestamp),
+            persona_name=req.persona_name or "",
         )
     worker = get_ingestion_worker()
     if worker is not None:

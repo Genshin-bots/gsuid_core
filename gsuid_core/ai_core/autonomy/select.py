@@ -105,6 +105,7 @@ def assemble_care_targets(
     allowed_groups: set[str] | None,
     allow_private: bool,
     preferences: dict[str, list[str]] | None = None,
+    dm_paused: set[str] | None = None,
 ) -> list[CareTargetSnapshot]:
     """有发言或有绑定的排前面。没有痕迹的仍保留，但排在后面，最多 10 人。"""
 
@@ -157,13 +158,14 @@ def assemble_care_targets(
                 last_human_ts=last_ts,
                 last_assistant_ts=last_ai_ts,
                 preferences=preferences.get(uid, []) if preferences is not None else [],
+                allow_private_push=not (dm_paused and uid in dm_paused),
             )
         )
     return targets
 
 
 def digest_is_empty(digest: ObservationDigest) -> bool:
-    return not (digest.care_targets or digest.group_digests or digest.open_trails)
+    return not (digest.care_targets or digest.group_digests or digest.active_arc)
 
 
 def render_digest(digest: ObservationDigest, *, now: float) -> str:
@@ -173,11 +175,13 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
     dt_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M")
     lines: list[str] = [
         f"【当前时间：{dt_str}】下面是你空闲时能看到的底片。先决定本轮动力，再调用已经挂上的工具。",
-        "文末必须单独四行，且各占一行：",
+        "文末必须单独六行，且各占一行：",
         "DRIVE: care_user 或 group_topic 或 self_explore 或 rest",
         "TARGET: 关心对象的用户 ID，或群 ID；休息时留空",
-        "SUMMARY: 一句话，只写工具真正返回的内容",
-        "TRAILS: 用 | 分开的未完线索，没有就留空",
+        "TOPIC: 这一轮琢磨的话题，几个字；休息时留空",
+        "OUTCOME: found 或 confused 或 distracted 或 wrong_guess 或 pending（还想下一轮接着查）",
+        "FACT: 一句话，只写工具真正返回的内容",
+        "TAKE: 一句第一人称的感受或吐槽，80 字以内，按你的人格说",
         "发消息调用 send_message_by_ai。私聊把 target_type 设为 user，target_id 用用户 ID。",
         "回群把 target_type 设为 group，target_id 用这句前面标出的群号。要点名再传 user_id。",
         "run_bot_command 只能传观察名单里的用户 ID。",
@@ -206,10 +210,11 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
                 age = _age_label(target.last_human_ts, now)
                 time_hint = f"（最后发言在{age}）"
             pref_text = f"，偏好画像：{'；'.join(target.preferences)}" if target.preferences else ""
+            dm_note = "" if target.allow_private_push else "（私聊暂停：连续两次主动私聊未获回复）"
             desc = (
                 f"- {target.user_name}（ID {target.user_id}，{role}，好感 {target.score}，绑定 {bind_text}{pref_text}）"
             )
-            lines.append(f"{desc}{time_hint}")
+            lines.append(f"{desc}{time_hint}{dm_note}")
             for text in target.recent_lines:
                 lines.append(f"  {text}")
     else:
@@ -225,8 +230,16 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
                 lines.append(f"  {text}")
     else:
         lines.append("群近况：无")
-    if digest.open_trails:
-        lines.append("上次思考规划与线索（鼓励推进或跟进探索）：" + "、".join(digest.open_trails[:4]))
+    if digest.active_arc is not None:
+        arc = digest.active_arc
+        line = f"你上次在琢磨「{arc['topic_key']}」，已经跟了 {arc['hop_count']}/{digest.arc_max_hops} 轮。"
+        if int(arc["hop_count"]) >= digest.arc_max_hops - 1:
+            line += "这一轮要收尾。"
+        lines.append(line)
+    if digest.cooled_topics:
+        lines.append("这些话题最近琢磨得太多了，这轮别再选：" + "、".join(digest.cooled_topics[:8]))
+    if digest.curiosity_focus == "whimsical":
+        lines.append("这轮更想按兴趣随便逛逛，先看看人格自述里写过的兴趣。")
     if digest.recently_used_tools:
         lines.append("最近用过的工具：" + "、".join(digest.recently_used_tools[:8]))
     if digest.available_plugins_summary:
@@ -247,6 +260,7 @@ def pins_from_digest(digest: ObservationDigest) -> tuple[list[DeliveryPin], list
             session_key=item.session_key,
             last_human_ts=item.last_human_ts,
             last_assistant_ts=item.last_assistant_ts,
+            allow_private_push=item.allow_private_push,
         )
         for item in digest.care_targets
     ]

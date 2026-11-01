@@ -141,7 +141,7 @@ def test_footer_parse_and_merge_line_is_stripped_before_history() -> None:
     parsed = parse_footer("思考了一下\nDRIVE: nope\nTARGET: 1\nSUMMARY: 好了\nTRAILS: a|b")
     assert parsed.drive == "rest"
     assert parsed.spoken_text == "思考了一下"
-    parsed_ok = parse_footer("帮你查到啦，都在卡片里。\nDRIVE：care_user\nTARGET：u1\nSUMMARY：看过了\nTRAILS：下一步")
+    parsed_ok = parse_footer("帮你查到啦，都在卡片里。\nDRIVE：care_user\nTARGET：u1\nTOPIC：下一步\nSUMMARY：看过了")
     assert parsed_ok.drive == "care_user"
     assert parsed_ok.summary == "看过了"
     assert parsed_ok.trails == ["下一步"]

@@ -338,7 +338,7 @@ async def index_note_node(
     """把自主行动产物登记到认知节点表，供 search_cognition 和 read_handle 回想。"""
     from datetime import datetime
 
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
@@ -348,7 +348,7 @@ async def index_note_node(
         MemoryWrite(
             kind=CogKind.SELF_NOTE,
             ref=ref,
-            scope_key=make_scope_key(ScopeType.SELF, bot_self_id) if bot_self_id else "",
+            scope_key=self_scope_key(bot_self_id, persona_name) if bot_self_id else "",
             title=title,
             summary=summary,
             as_of=datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -496,6 +496,8 @@ async def send_message_by_ai(
     elif dest_user_id:
         # 快照上的群是这个人最近待过的地方，不是这条私聊的目的地。
         u_snap = state.allowed_users[dest_user_id]
+        if not u_snap.allow_private_push:
+            return "拒绝：对方连续两次未回复你的主动私聊，私聊推送已暂停。请改用笔记或等对方先开口。"
         bot_id = u_snap.bot_id or bot_id
         bot_self_id = u_snap.bot_self_id or bot_self_id
         ws_bot_id = u_snap.ws_bot_id or ws_bot_id
@@ -535,6 +537,8 @@ async def send_message_by_ai(
         trigger_reason=f"{state.persona_name} 自主发信",
         suppress_when_heartbeat_recent=True,
         at_user_id=dest_user_id if (dest_group_id and dest_user_id) else None,
+        persona_name=state.persona_name,
+        source_group_id=(dest_group_id or state.allowed_users[dest_user_id].group_id or "") if dest_user_id else "",
     )
     if sent:
         state.sent_count += 1

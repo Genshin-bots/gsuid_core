@@ -824,6 +824,13 @@ async def update_persona_config(
 
             await autonomy_scheduler.start()
 
+    # 驱动四参数（如果提供）
+    for _trait_key in ("social_initiative", "energy_endurance", "curiosity_focus", "arc_persistence"):
+        if _trait_key in data:
+            if not persona_config_manager.get_config(persona_name).set_config(_trait_key, data[_trait_key]):
+                return {"status": 1, "msg": f"{_trait_key} 写入失败", "data": None}
+            results.append(f"{_trait_key}: {data[_trait_key]}")
+
     # 更新 inspect_interval（如果提供）
     if "inspect_interval" in data:
         inspect_interval = data["inspect_interval"]

@@ -9,7 +9,7 @@ from sqlmodel import select
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import is_silence_marker, extract_json_from_text
+from gsuid_core.ai_core.utils import is_silence_marker, is_agent_error_text, extract_json_from_text
 from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
@@ -303,6 +303,7 @@ def _build_masters_section(history: List[MessageRecord], now_ts: float | None = 
 async def _build_zone_section(
     history: List[MessageRecord],
     bot_id: str,
+    persona_name: str,
     now_ts: float | None = None,
 ) -> str:
     """在场发言者的关系温度摘要（决策上下文，不进 system）。
@@ -318,7 +319,7 @@ async def _build_zone_section(
     if not names:
         return ""
     try:
-        scores = await UserFavorability.get_scores_for(list(names), bot_id)
+        scores = await UserFavorability.get_scores_for(list(names), bot_id, persona_name)
     except Exception as e:
         logger.debug(t("log.ai.heartbeat_zone_summary_degraded", e=e))
         return ""
@@ -383,6 +384,7 @@ async def run_heartbeat(
     history: List[MessageRecord],
     persona_name: str,
     extra_context: str = "",
+    staged_arc: str = "",
 ) -> Optional[tuple[str, str, List[str]]]:
     """
     Heartbeat 主入口：决策 + 生成，合并为一次完整流程。
@@ -435,18 +437,22 @@ async def run_heartbeat(
     # 关系温度摘要紧随其后：主人是权限、档位是温度，两者正交
     now_ts = time.time()
     masters_section = _build_masters_section(history, now_ts) + await _build_zone_section(
-        history, event.bot_id or "", now_ts
+        history, event.bot_id or "", persona_name, now_ts
     )
 
     # C8：统一主动网关合并进来的语境（刚完成的定时任务结果等）
     proactive_merge_section = ""
+    if staged_arc:
+        from gsuid_core.ai_core.control.lines import heartbeat_arc_section
+
+        proactive_merge_section += heartbeat_arc_section(staged_arc)
     if extra_context:
         proactive_merge_section = f"\n\n[你刚完成的事（可自然提及，不必生硬播报）]\n{extra_context}"
 
     # C-5：把"近 1 小时我已主动发言 N 次"喂给决策 LLM，促其自我克制（与 C-3 硬上限互补）
     # 与 emitter / inspector 共用 make_target_key 口径，否则计数查不到、C-5 形同虚设。
     target_key = make_target_key(event.group_id, event.user_id)
-    recent_n = get_dispatcher().get_recent_heartbeat_count(target_key)
+    recent_n = get_dispatcher().get_recent_heartbeat_count(target_key, persona_name=persona_name)
     recent_speak_section = ""
     if recent_n > 0:
         recent_speak_section = (
@@ -502,6 +508,10 @@ async def run_heartbeat(
         decision_logger.close()
 
     if not result:
+        logger.debug(t("log.ai.heartbeat_decision_stage_nothing_skip"))
+        return None
+
+    if is_agent_error_text(result):
         logger.debug(t("log.ai.heartbeat_decision_stage_nothing_skip"))
         return None
 
@@ -597,8 +607,12 @@ async def run_heartbeat(
         logger.debug(t("log.ai.heartbeat_generation_stage_nothing"))
         return None
 
+    if is_agent_error_text(result):
+        logger.debug(t("log.ai.heartbeat_generation_stage_nothing"))
+        return None
+
     message: str = _strip_message_quotes(result)
-    if get_dispatcher().would_repeat_heartbeat(target_key, message):
+    if get_dispatcher().would_repeat_heartbeat(target_key, message, persona_name=persona_name):
         logger.debug(t("log.heartbeat.repeat_suppressed", mood=mood))
         return None
     logger.info(t("log.ai.heartbeat_message_proactive", message=repr(message)))

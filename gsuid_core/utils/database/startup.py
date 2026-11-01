@@ -172,6 +172,14 @@ exec_list = [
     "ALTER TABLE userfavorability ADD COLUMN daily_loss INTEGER DEFAULT 0;",
     "ALTER TABLE userfavorability ADD COLUMN daily_ymd VARCHAR DEFAULT '';",
     "ALTER TABLE userfavorability ADD COLUMN last_positive_interact_at INTEGER DEFAULT 0;",
+    # 多人格隔离：关系温度按 (user,bot,persona) 分桶 + 双边契约与私聊互惠列
+    "ALTER TABLE userfavorability ADD COLUMN persona_name VARCHAR(64) DEFAULT '';",
+    "ALTER TABLE userfavorability ADD COLUMN interaction_vibe VARCHAR(160) DEFAULT '';",
+    "ALTER TABLE userfavorability ADD COLUMN shared_callbacks TEXT DEFAULT '[]';",
+    "ALTER TABLE userfavorability ADD COLUMN last_vibe_distill_count INTEGER DEFAULT 0;",
+    "ALTER TABLE userfavorability ADD COLUMN last_proactive_dm_at INTEGER DEFAULT 0;",
+    "ALTER TABLE userfavorability ADD COLUMN dm_unanswered_streak INTEGER DEFAULT 0;",
+    "CREATE INDEX IF NOT EXISTS ix_userfavorability_persona_score ON userfavorability (persona_name, favorability);",
     # 认知节点行级属主字段，防止群内成员越权召回他人任务摘要与产物。
     "ALTER TABLE aicognode ADD COLUMN owner_user_id VARCHAR DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS ix_aicognode_owner_user_id ON aicognode (owner_user_id);",

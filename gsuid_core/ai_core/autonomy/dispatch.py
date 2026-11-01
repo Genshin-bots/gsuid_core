@@ -19,7 +19,7 @@ from gsuid_core.ai_core.autonomy.verifier import fact_summary
 from gsuid_core.ai_core.relationship.zones import Zone
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
-STAGE_TTL_SECONDS = 14400.0
+STAGE_TTL_SECONDS = 86400.0
 
 
 def route_delivery(plan: DeliveryPlan) -> DeliveryDecision:
@@ -51,18 +51,18 @@ def stage_text(summary_or_pack: str | FactPack, pack: FactPack | None = None) ->
     return fact_summary(summary_or_pack)
 
 
-def peek_autonomy_merge(event: Event) -> str:
+def peek_autonomy_merge(event: Event, persona_name: str = "") -> str:
     """看一眼合并槽。开口成功后再确认消费，沉默不吃掉。"""
     key = make_target_key(event.group_id, event.user_id)
-    content = get_dispatcher().peek_staged(key, source="autonomy")
+    content = get_dispatcher().peek_staged(key, source="autonomy", persona_name=persona_name)
     if not content:
         return ""
     return autonomy_merge_line(content)
 
 
-def ack_autonomy_merge(event: Event) -> None:
+def ack_autonomy_merge(event: Event, persona_name: str = "") -> None:
     key = make_target_key(event.group_id, event.user_id)
-    get_dispatcher().consume_staged(key, source="autonomy")
+    get_dispatcher().consume_staged(key, source="autonomy", persona_name=persona_name)
 
 
 def _clamp_drive(drive: DriveKind, target: str, plan: DeliveryPlan) -> tuple[DriveKind, str]:
@@ -125,6 +125,9 @@ def _mode_for(drive: DriveKind, pin: DeliveryPin, plan: DeliveryPlan) -> Deliver
         fresh = pin.last_human_ts > 0 and plan.now - pin.last_human_ts < GROUP_FRESH_SECONDS
         if fresh and quota_ok:
             return "immediate_push"
+        return "staged_merge"
+    if pin.group_id is None and not pin.allow_private_push:
+        # 互惠退避：连续两次主动私聊未获回复，不再发主动私聊
         return "staged_merge"
     close = pin.is_master or _is_close(pin.zone_value)
     if close and quota_ok:

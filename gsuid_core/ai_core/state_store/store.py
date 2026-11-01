@@ -214,6 +214,22 @@ async def state_list_keys(scope: str, prefix: str = "") -> List[str]:
     return keys
 
 
+async def state_list_scopes_with_key(state_key: str, scope_prefix: str = "") -> List[str]:
+    """列出所有含 ``state_key`` 的 scope（可按前缀过滤），跳过已过期行。启动迁移用。"""
+    from gsuid_core.utils.database.base_models import async_maker
+
+    await _ensure_table()
+
+    async with async_maker() as session:
+        stmt = select(AIPersistentState).where(AIPersistentState.state_key == state_key)
+        if scope_prefix:
+            stmt = stmt.where(col(AIPersistentState.scope).startswith(scope_prefix))
+        records = (await session.execute(stmt)).scalars().all()
+
+    now = _now()
+    return [record.scope for record in records if record.expire_at is None or record.expire_at >= now]
+
+
 async def state_mutate(
     scope: str,
     state_key: str,

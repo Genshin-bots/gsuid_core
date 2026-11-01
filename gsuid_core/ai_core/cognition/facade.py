@@ -442,6 +442,7 @@ async def _search_memory(
         bot_id=scope.bot_id,
         bot_self_id=scope.bot_self_id,
         include_self=True,
+        persona_name=scope.persona_name,
     )
     seed_ep_ids: set[str] = set()
     neighbor_ep_ids: set[str] = set()
@@ -875,7 +876,7 @@ async def _search_nodes(
     scope: CogScope,
     limit: int,
 ) -> _BackendResult:
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_read_keys
     from gsuid_core.ai_core.cognition.nodes import AICogNode
 
     scope_keys: List[str] = []
@@ -883,9 +884,11 @@ async def _search_nodes(
         scope_keys.append(make_scope_key(ScopeType.GROUP, scope.group_id))
     if scope.user_id:
         scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, scope.user_id))
-    # self_note / 自身发言写在 self:{bot_self_id}；漏这项则写入后永远召不回
+    # self_note / 自身发言写在 self:{bot_self_id}:{persona}；漏这项则写入后永远召不回
     if scope.bot_self_id:
-        scope_keys.append(make_scope_key(ScopeType.SELF, scope.bot_self_id))
+        for key in self_scope_read_keys(scope.bot_self_id, scope.persona_name):
+            if key not in scope_keys:
+                scope_keys.append(key)
     search_q = await _knowledge_query_for_scope(query, scope)
     rows = await AICogNode.search(
         search_q,
@@ -1021,6 +1024,7 @@ async def inject_memory_slice(
         bot_id=scope.bot_id,
         bot_self_id=scope.bot_self_id,
         include_self=True,
+        persona_name=scope.persona_name,
     )
     cap = inject_memory_cap(query, covered=ctx.covered)
     memory_text = ctx.to_prompt_text(

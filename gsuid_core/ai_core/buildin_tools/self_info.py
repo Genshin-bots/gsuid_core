@@ -245,6 +245,7 @@ async def update_self_note(
         记录结果说明
     """
     from gsuid_core.ai_core.self_cognition import add_self_note
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
     field_map = {
         "preference": "preferences_learned",
@@ -254,7 +255,7 @@ async def update_self_note(
     # Bot.bot_id 是已声明字段；deps.bot 为 None 时退化为空串走 default scope
     bot_id = ctx.deps.bot.bot_id if ctx.deps.bot is not None else ""
 
-    ok = await add_self_note(bot_id, content, field_map[note_type])
+    ok = await add_self_note(bot_id, persona_name_from_event(ctx.deps.ev) or "", content, field_map[note_type])
     return "✅ 已记入我的自我认知" if ok else "⚠️ 自我认知记录失败"
 
 
@@ -281,6 +282,7 @@ async def query_self_episodes(
         你最近的言行记录；无记录时会说明。
     """
     from gsuid_core.ai_core.self_cognition import retrieve_self_episodes
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
     ev = ctx.deps.ev
     bot_self_id = ""
@@ -288,7 +290,7 @@ async def query_self_episodes(
         bot_self_id = str(ev.bot_self_id)
     elif ctx.deps.bot is not None:
         bot_self_id = str(ctx.deps.bot.bot_self_id or "")
-    text = await retrieve_self_episodes(bot_self_id, limit=max(1, min(limit, 10)))
+    text = await retrieve_self_episodes(bot_self_id, persona_name_from_event(ev) or "", limit=max(1, min(limit, 10)))
     if not text:
         return "（没有找到我之前的言行记录——可能是还没沉淀，或者确实没说过。）"
     return text
