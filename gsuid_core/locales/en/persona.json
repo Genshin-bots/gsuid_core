@@ -36,5 +36,10 @@
   "log.persona.meme_frequency_set": "[PersonaConfig] Set the meme frequency of '{persona_name}' to {value}",
   "log.persona.speech_len_soft_set": "[PersonaConfig] Set the suggested length of '{persona_name}' to {count}",
   "log.persona.prompt_group_unreadable": "[Persona] Cannot read system-prompt group '{name}'; this turn uses the bundled default text: {e}",
-  "log.persona.autonomy_config_updated": "[PersonaConfig] Updated autonomy settings for '{persona_name}'"
+  "log.persona.autonomy_config_updated": "[PersonaConfig] Updated autonomy settings for '{persona_name}'",
+  "log.persona.store_mirror_fallback": "[PersonaStore] Mirror has not synced {url}, falling back to GitHub: {e}",
+  "log.persona.store_remote_set_fail": "[PersonaStore] Failed to reset {repo} remote URL to GitHub",
+  "log.persona.store_installed": "[PersonaStore] Imported persona {persona} (repo={repo}, packs={packs}, new memes {imported})",
+  "log.persona.store_updated": "[PersonaStore] Synced persona {persona} -> {commit} (new memes {imported})",
+  "log.persona.store_fetch_fail": "[PersonaStore] Failed to fetch persona market catalog: {e}"
 }

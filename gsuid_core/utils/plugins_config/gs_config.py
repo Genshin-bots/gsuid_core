@@ -857,6 +857,10 @@ class ConfigSetManager(ABC):
             logger.error(t("log.config.config_name_delete_fail", config_name=config_name, e=e))
             return False
 
+    def drop_cache(self, config_name: str) -> None:
+        """丢弃单个配置的缓存实例，下次 get_config 时从磁盘重读。"""
+        self._cache.pop(config_name, None)
+
     def clear_cache(self) -> None:
         """清除配置缓存"""
         self._cache.clear()

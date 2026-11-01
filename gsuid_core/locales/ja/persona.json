@@ -36,5 +36,10 @@
   "log.persona.meme_frequency_set": "[PersonaConfig] '{persona_name}' の表情頻度を {value} にした",
   "log.persona.speech_len_soft_set": "[PersonaConfig] '{persona_name}' の目安字数を {count} にした",
   "log.persona.prompt_group_unreadable": "[Persona] システムプロンプト組 '{name}' を読めない。この回はコード上の既定本文を使う: {e}",
-  "log.persona.autonomy_config_updated": "[PersonaConfig] '{persona_name}' の自主行動設定を更新した"
+  "log.persona.autonomy_config_updated": "[PersonaConfig] '{persona_name}' の自主行動設定を更新した",
+  "log.persona.store_mirror_fallback": "[PersonaStore] ミラーが {url} を未同期のため GitHub にフォールバック: {e}",
+  "log.persona.store_remote_set_fail": "[PersonaStore] {repo} の remote URL を GitHub に戻せませんでした",
+  "log.persona.store_installed": "[PersonaStore] 人格 {persona} をインポート (repo={repo}, packs={packs}, 新規表情 {imported})",
+  "log.persona.store_updated": "[PersonaStore] 人格 {persona} を同期 -> {commit} (新規表情 {imported})",
+  "log.persona.store_fetch_fail": "[PersonaStore] 人格マーケットのカタログ取得に失敗: {e}"
 }

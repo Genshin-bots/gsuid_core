@@ -634,12 +634,23 @@ async def copy_persona(source_name: str) -> str:
         logger.warning(t("log.persona.persona_copy_fail", persona_name=source_name, e=e))
         raise ValueError(f"复制角色失败: {e}") from e
 
+    # 副本脱离 git 来源：摘除市场标记后可自由编辑，不再被同步覆盖
+    from .store import drop_source
+
+    drop_source(dest_name)
+    from gsuid_core.ai_core.meme.pack_model import MAX_PACKS_PER_PERSONA, PackStore, mount_default_pack
+
+    added = 0
+    for pack_id in (await PackStore.pack_ids_for_persona(source_name))[:MAX_PACKS_PER_PERSONA]:
+        if await PackStore.add_bind_if_missing(dest_name, pack_id):
+            added += 1
+
     cfg = persona_config_manager.get_config(dest_name)
     if not cfg.set_config("scope", "disabled"):
         logger.warning(t("log.persona.persona_copy_scope_fail", persona_name=dest_name))
-    from gsuid_core.ai_core.meme.pack_model import mount_default_pack
-
-    await mount_default_pack(dest_name)
+    # 绑定数到顶时跳过默认包，避免副本突破单人格挂载上限
+    if added < MAX_PACKS_PER_PERSONA:
+        await mount_default_pack(dest_name)
     logger.info(t("log.persona.persona_copied", source=source_name, dest=dest_name))
     return dest_name
 
@@ -694,4 +705,17 @@ def get_persona_metadata(char_name: str) -> dict:
         - has_audio: 是否有音频
     """
     persona = Persona(char_name)
-    return persona.get_metadata().to_dict()
+    data = persona.get_metadata().to_dict()
+    # 函数级 import 避开环：store → bundle → resource
+    from .store import read_source
+
+    src = read_source(char_name)
+    data["managed"] = src is not None
+    if src is not None:
+        data["source"] = {
+            "repo_url": src["repo_url"],
+            "repo_name": src["repo_name"],
+            "branch": src["branch"],
+            "commit": src["commit"],
+        }
+    return data

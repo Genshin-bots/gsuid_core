@@ -31,6 +31,19 @@ def _pack_name_ok(name: str) -> bool:
     return 1 <= len(name) <= 64 and is_safe_filename(name)
 
 
+def _repo_pack_block(pack_name: str) -> dict[str, object] | None:
+    """仓库拥有的包名：内容随仓库同步，手动改会在下次同步时被还原或产生重复包。"""
+    from gsuid_core.ai_core.persona.store import is_repo_pack
+
+    if is_repo_pack(pack_name):
+        return {
+            "status": 1,
+            "msg": f"表情包「{pack_name}」由人格市场仓库管理，随仓库同步，不允许手动修改",
+            "data": None,
+        }
+    return None
+
+
 @app.get("/api/meme/packs", summary="列出表情包", tags=MEME)
 async def list_meme_packs(_user: SessionRecord = Depends(require_auth)) -> dict[str, object]:
     rows = await PackStore.list_summaries()
@@ -53,6 +66,9 @@ async def create_meme_pack(body: PackNameBody, _user: SessionRecord = Depends(re
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
     if await PackStore.get_by_name(body.name) is not None:
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
+    blocked = _repo_pack_block(body.name)
+    if blocked is not None:
+        return blocked
     created = await PackStore.create_pack(body.name)
     return {"status": 0, "msg": "ok", "data": {"pack_id": created.pack_id, "name": created.name}}
 
@@ -69,21 +85,32 @@ async def rename_meme_pack(
     body: PackNameBody,
     _user: SessionRecord = Depends(require_auth),
 ) -> dict[str, object]:
-    if await PackStore.get_pack(pack_id) is None:
+    pack = await PackStore.get_pack(pack_id)
+    if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
+    blocked = _repo_pack_block(pack.name)
+    if blocked is not None:
+        return blocked
     if not _pack_name_ok(body.name):
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
     occupied = await PackStore.get_by_name(body.name)
     if occupied is not None and occupied.pack_id != pack_id:
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
+    blocked = _repo_pack_block(body.name)
+    if blocked is not None:
+        return blocked
     await PackStore.rename_pack(pack_id, body.name)
     return {"status": 0, "msg": "ok", "data": {"pack_id": pack_id, "name": body.name}}
 
 
 @app.delete("/api/meme/packs/{pack_id}", summary="删除表情包", tags=MEME)
 async def delete_meme_pack(pack_id: str, _user: SessionRecord = Depends(require_auth)) -> dict[str, object]:
-    if await PackStore.get_pack(pack_id) is None:
+    pack = await PackStore.get_pack(pack_id)
+    if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
+    blocked = _repo_pack_block(pack.name)
+    if blocked is not None:
+        return blocked
     result = await PackStore.delete_pack(pack_id)
     await write_member_payloads(result.meme_ids, strict=False)
     if result.lost_personas:
@@ -152,8 +179,12 @@ async def add_pack_members(
     body: MemberIdsBody,
     _user: SessionRecord = Depends(require_auth),
 ) -> dict[str, object]:
-    if await PackStore.get_pack(pack_id) is None:
+    pack = await PackStore.get_pack(pack_id)
+    if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
+    blocked = _repo_pack_block(pack.name)
+    if blocked is not None:
+        return blocked
     added: list[str] = []
     for meme_id in body.meme_ids:
         if await AiMemeRecord.get_by_meme_id(meme_id) is None:
@@ -170,8 +201,12 @@ async def remove_pack_members(
     body: MemberIdsBody,
     _user: SessionRecord = Depends(require_auth),
 ) -> dict[str, object]:
-    if await PackStore.get_pack(pack_id) is None:
+    pack = await PackStore.get_pack(pack_id)
+    if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
+    blocked = _repo_pack_block(pack.name)
+    if blocked is not None:
+        return blocked
     removed = await PackStore.remove_members(pack_id, body.meme_ids)
     await write_member_payloads(body.meme_ids, strict=False)
     return {"status": 0, "msg": "ok", "data": {"removed": removed}}
@@ -200,6 +235,10 @@ async def put_persona_meme_packs(
         return {"status": 1, "msg": "人格名无效", "data": None}
     if not Persona(persona_name).exists():
         return {"status": 1, "msg": "人格不存在", "data": None}
+    from gsuid_core.ai_core.persona.store import is_git_managed
+
+    if is_git_managed(persona_name):
+        return {"status": 1, "msg": "该人格由人格市场管理，表情包挂载随仓库同步，不允许手动修改", "data": None}
     if len(body.pack_ids) != len(set(body.pack_ids)):
         return {"status": 1, "msg": "表情包重复", "data": None}
     if len(body.pack_ids) > MAX_PACKS_PER_PERSONA:

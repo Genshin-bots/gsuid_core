@@ -11,8 +11,10 @@ import zipfile
 from pathlib import Path
 from dataclasses import field, dataclass
 
+from gsuid_core.i18n import t
+from gsuid_core.logger import logger
 from gsuid_core.utils.path_safety import is_safe_filename
-from gsuid_core.ai_core.meme.library import ext_for_mime, compute_meme_id, get_folder_path
+from gsuid_core.ai_core.meme.library import MemeLibrary, ext_for_mime, compute_meme_id, get_folder_path
 from gsuid_core.ai_core.meme.normalize import prepare_meme_image
 from gsuid_core.ai_core.persona.models import SUPPORTED_AUDIO_FORMATS, SUPPORTED_IMAGE_FORMATS
 from gsuid_core.ai_core.meme.pack_model import MAX_PACKS_PER_PERSONA, PackStore
@@ -203,6 +205,11 @@ async def import_bundle_dir(root: Path) -> BundleImportResult:
                 )
                 await AiMemeRecord.insert_record(record)
                 imported.append(meme_id)
+                # 导入即可检索：向量补写失败留待启动回填兜底
+                try:
+                    await MemeLibrary.sync_to_qdrant(record)
+                except Exception as e:
+                    logger.warning(t("log.meme.bundle_vector_sync_fail", meme_id=meme_id, e=e))
             if await PackStore.add_member(pack.pack_id, meme_id):
                 linked.append(meme_id)
         await PackStore.add_bind_if_missing(persona_name, pack.pack_id)

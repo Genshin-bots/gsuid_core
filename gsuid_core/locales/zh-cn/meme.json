@@ -93,5 +93,6 @@
   "log.meme.pack_payload_backfill": "[Meme] 回填表情包 payload：{points} 个点，{groups} 组，{calls} 次，{ms} 毫秒",
   "log.meme.pack_migrate_sql": "[Meme] 表情包迁移：快照 {snapshot} 张，期间新插入 {inserted} 张",
   "log.meme.persona_resolve_fail": "[Meme] 解析当前人格失败: {e}",
-  "log.meme.drop_missing_files": "[Meme] 删掉 {count} 条文件已经不在的表情"
+  "log.meme.drop_missing_files": "[Meme] 删掉 {count} 条文件已经不在的表情",
+  "log.meme.bundle_vector_sync_fail": "[Meme] 整包导入表情 {meme_id} 向量补写失败: {e}"
 }

@@ -93,5 +93,6 @@
   "log.meme.pack_payload_backfill": "[Meme] Pack payload backfill: {points} points, {groups} groups, {calls} calls, {ms} ms",
   "log.meme.pack_migrate_sql": "[Meme] Meme pack migration: snapshot {snapshot}, inserted during migration {inserted}",
   "log.meme.persona_resolve_fail": "[Meme] Failed to resolve the current persona: {e}",
-  "log.meme.drop_missing_files": "[Meme] Removed {count} memes whose files are gone"
+  "log.meme.drop_missing_files": "[Meme] Removed {count} memes whose files are gone",
+  "log.meme.bundle_vector_sync_fail": "[Meme] Failed to write vector for bundle-imported meme {meme_id}: {e}"
 }

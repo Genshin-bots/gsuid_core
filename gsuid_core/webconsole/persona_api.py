@@ -10,13 +10,13 @@ from typing import Any, Dict
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
 
+import gsuid_core.webconsole.persona_store_api  # noqa: F401
 import gsuid_core.webconsole.persona_bundle_api  # noqa: F401
 from gsuid_core.ai_core.persona import (
     Persona,
     copy_persona,
     load_persona,
     save_persona,
-    delete_persona,
     get_persona_metadata,
     get_persona_audio_path,
     get_persona_image_path,
@@ -48,6 +48,19 @@ def _is_builtin_persona(name: str) -> bool:
     from gsuid_core.ai_core.prompt_group.catalog import BUILTIN_PERSONA_NAME
 
     return name == BUILTIN_PERSONA_NAME
+
+
+def _managed_block(persona_name: str) -> Dict[str, Any] | None:
+    """git 人格内容由仓库拥有，只许改启用范围；其余写操作在这里拦下。"""
+    from gsuid_core.ai_core.persona.store import is_git_managed
+
+    if is_git_managed(persona_name):
+        return {
+            "status": 1,
+            "msg": "该人格由人格市场管理，不允许直接修改；可复制一份后编辑副本。",
+            "data": None,
+        }
+    return None
 
 
 # 音频MIME类型映射
@@ -155,6 +168,9 @@ async def update_persona_content(
         status: 0成功，1失败
         data: 包含 name 和 content 的对象
     """
+    blocked = _managed_block(persona_name)
+    if blocked is not None:
+        return blocked
     content = data.get("content", "")
 
     if not content:
@@ -280,6 +296,9 @@ async def upload_persona_avatar(
         status: 0成功，1失败
         data.path: 头像文件路径
     """
+    blocked = _managed_block(persona_name)
+    if blocked is not None:
+        return blocked
     image_base64 = data.get("image", "")
     if not image_base64:
         return {
@@ -357,6 +376,9 @@ async def upload_persona_image(
         status: 0成功，1失败
         data.path: 立绘文件路径
     """
+    blocked = _managed_block(persona_name)
+    if blocked is not None:
+        return blocked
     image_base64 = data.get("image", "")
     if not image_base64:
         return {
@@ -435,6 +457,9 @@ async def upload_persona_audio(
         status: 0成功，1失败
         data.path: 音频文件路径
     """
+    blocked = _managed_block(persona_name)
+    if blocked is not None:
+        return blocked
     audio_base64 = data.get("audio", "")
     if not audio_base64:
         return {
@@ -522,6 +547,10 @@ async def create_persona(
     """
     name = data.get("name", "").strip()
     query = data.get("query", "").strip()
+
+    blocked = _managed_block(name)
+    if blocked is not None:
+        return blocked
 
     if _is_builtin_persona(name):
         return {
@@ -685,7 +714,10 @@ async def remove_persona(
             "msg": "默认人格「早柚」的人格卡每次启动从程序写回，不能删除。",
             "data": None,
         }
-    deleted = await delete_persona(persona_name)
+    # git 导入的人格删除时连同克隆仓库一起清掉
+    from gsuid_core.ai_core.persona.store import uninstall_git_persona
+
+    deleted, msg = await uninstall_git_persona(persona_name)
     if deleted:
         return {
             "status": 0,
@@ -695,7 +727,7 @@ async def remove_persona(
     else:
         return {
             "status": 1,
-            "msg": f"角色 '{persona_name}' 不存在",
+            "msg": msg or f"角色 '{persona_name}' 不存在",
             "data": None,
         }
 
@@ -763,6 +795,20 @@ async def update_persona_config(
             "msg": f"角色 '{persona_name}' 不存在",
             "data": None,
         }
+
+    # git 人格的行为配置由仓库拥有；启用范围是部署状态，仍然可改
+    from gsuid_core.ai_core.persona.store import LOCAL_OVERRIDE_KEYS, is_git_managed
+
+    if is_git_managed(persona_name):
+        blocked_keys = [k for k in data if k not in LOCAL_OVERRIDE_KEYS]
+        if blocked_keys:
+            allowed = ", ".join(LOCAL_OVERRIDE_KEYS)
+            rejected = ", ".join(sorted(blocked_keys))
+            return {
+                "status": 1,
+                "msg": f"该人格由人格市场管理，仅允许修改 {allowed}；被拒绝的字段: {rejected}",
+                "data": None,
+            }
 
     results = []
 
@@ -1132,6 +1178,9 @@ async def update_persona_settings(
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """按 key 写入字符串值。未知键 / 分割线跳过。也可传完整 PluginConfigItem（取 value）。"""
+    blocked = _managed_block(persona_name)
+    if blocked is not None:
+        return blocked
     persona = Persona(persona_name)
     if not persona.exists():
         return {

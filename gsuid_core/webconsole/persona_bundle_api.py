@@ -1,6 +1,7 @@
 """人格整包的导入与导出。"""
 
 import io
+import json
 
 from fastapi import File, Depends, UploadFile
 from fastapi.responses import StreamingResponse
@@ -46,6 +47,19 @@ async def import_persona_bundle_api(
         root = Path(folder)
         try:
             write_zip_to_dir(data, root)
+            # git 人格由仓库拥有，不允许 zip 覆盖导入
+            from gsuid_core.ai_core.persona.store import is_git_managed, find_bundle_root
+
+            bundle_root = find_bundle_root(root)
+            manifest = json.loads((bundle_root / "manifest.json").read_text(encoding="utf-8"))
+            if isinstance(manifest, dict):
+                name = manifest.get("persona_name")
+                if isinstance(name, str) and is_git_managed(name.strip()):
+                    return {
+                        "status": 1,
+                        "msg": f"人格「{name.strip()}」由人格市场管理，不允许覆盖导入；请走人格市场同步",
+                        "data": None,
+                    }
             result = await import_bundle_dir(root)
         except (BundleError, OSError, ValueError) as exc:
             message = exc.message if isinstance(exc, BundleError) else "人格整包无法导入"

@@ -93,5 +93,6 @@
   "log.meme.pack_payload_backfill": "[Meme] パック payload 書き戻し: {points} 点、{groups} グループ、{calls} 回、{ms} ms",
   "log.meme.pack_migrate_sql": "[Meme] パック移行: スナップショット {snapshot} 件、移行中の新規 {inserted} 件",
   "log.meme.persona_resolve_fail": "[Meme] 現在のペルソナを解決できません: {e}",
-  "log.meme.drop_missing_files": "[Meme] ファイルが無い表情を {count} 件削除した"
+  "log.meme.drop_missing_files": "[Meme] ファイルが無い表情を {count} 件削除した",
+  "log.meme.bundle_vector_sync_fail": "[Meme] バンドルインポート表情 {meme_id} のベクトル書き込みに失敗: {e}"
 }
