@@ -288,7 +288,7 @@ async def _flush_user_buffer_on_shutdown():
 
 
 def _sv_authorized(_sv: SV, event: Event, user_pm: int) -> bool:
-    """复刻命令循环中的 Plugins/SV 级联鉴权（pm / 黑白名单 / area / enabled）。
+    """复刻命令循环中的 Plugins/SV 级联鉴权（pm / 黑白名单 / Bot 白名单 / area / enabled）。
 
     全局 BlackList 由调用方在循环外统一判断，这里只做 plugin/sv 级。
     命令路径与 meta 路径共用，保证两处鉴权口径一致、不漂移。
@@ -311,6 +311,12 @@ def _sv_authorized(_sv: SV, event: Event, user_pm: int) -> bool:
     if _plugins.white_list and _plugins.white_list != [""]:
         if event.user_id not in _plugins.white_list and event.group_id not in _plugins.white_list:
             return False
+    # 插件级 Bot 白名单：非空时只让名单里的机器人账号响应（空 = 全部 Bot 都响应）
+    if _plugins.bot_white_list and event.bot_self_id not in _plugins.bot_white_list:
+        return False
+    # 插件级 Bot 黑名单：名单里的机器人账号一律不响应
+    if event.bot_self_id in _plugins.bot_black_list:
+        return False
     if not _sv.enabled:
         return False
     if user_pm > _sv.pm:

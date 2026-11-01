@@ -97,6 +97,8 @@ class Plugins:
         area: Literal["GROUP", "DIRECT", "ALL", "SV"] = "SV",
         black_list: List = [],
         white_list: List = [],
+        bot_white_list: List = [],
+        bot_black_list: List = [],
         sv: Dict = {},
         prefix: Union[List[str], str] = [],
         force_prefix: List[str] = [],
@@ -123,6 +125,8 @@ class Plugins:
         self.black_list = black_list
         self.area = area
         self.white_list = white_list
+        self.bot_white_list = bot_white_list
+        self.bot_black_list = bot_black_list
         self.sv = {}
         self.prefix = prefix
         self.allow_empty_prefix = allow_empty_prefix
@@ -235,6 +239,20 @@ class SV:
 
                 if "disable_force_prefix" not in config_plugins[plugins_name]:
                     config_plugins[plugins_name]["disable_force_prefix"] = False
+
+                # 老配置没有这个字段，补上空名单（空 = 全部 Bot 都响应）
+                if "bot_white_list" not in config_plugins[plugins_name]:
+                    if plugins_name in SL.plugins:
+                        config_plugins[plugins_name]["bot_white_list"] = SL.plugins[plugins_name].bot_white_list
+                    else:
+                        config_plugins[plugins_name]["bot_white_list"] = []
+
+                # 空 = 不排除任何 Bot
+                if "bot_black_list" not in config_plugins[plugins_name]:
+                    if plugins_name in SL.plugins:
+                        config_plugins[plugins_name]["bot_black_list"] = SL.plugins[plugins_name].bot_black_list
+                    else:
+                        config_plugins[plugins_name]["bot_black_list"] = []
 
                 if plugins_name in SL.plugins:
                     config_plugins[plugins_name]["force_prefix"] = SL.plugins[plugins_name].force_prefix

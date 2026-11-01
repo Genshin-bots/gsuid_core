@@ -135,6 +135,8 @@ plugins_sample = {
     "area": "SV",
     "black_list": [],
     "white_list": [],
+    "bot_white_list": [],
+    "bot_black_list": [],
     "prefix": [],
     "force_prefix": [],
     "disable_force_prefix": False,
