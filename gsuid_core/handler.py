@@ -447,6 +447,7 @@ _RICH_SEGMENT_TYPES = frozenset(
         "record",
         "video",
         "file",
+        "face",
     }
 )
 
@@ -513,7 +514,9 @@ def _record_inbound_history(event: Event) -> None:
         # 纯转发消息没有 raw_text，用摘要兜底，文本视图和 AI 上下文才不会是空串
         if not content:
             content = format_node_preview(event.node or [])
-    elif has_rich and not content:
+    elif not content:
+        # 纯图 / 纯 at / 纯表情也没有 raw_text，不兜底摘要的话内存里 record.content
+        # 是空串，控制台从内存还原时只能显示「空消息」
         content = segments_preview(segments)
 
     get_history_manager().add_message(

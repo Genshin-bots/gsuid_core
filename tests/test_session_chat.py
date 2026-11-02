@@ -398,6 +398,36 @@ def test_rich_only_message_falls_back_to_preview():
     assert get_history_manager().get_history(mixed)[-1].content == "看这个"
 
 
+def test_image_and_face_only_messages_fall_back_to_preview():
+    """纯图 / 纯表情同样没有配文，也要兜底成摘要 —— 否则 content 是空串，
+    控制台从内存还原消息时只能显示（空消息）。"""
+    from gsuid_core.handler import _record_inbound_history
+    from gsuid_core.message_history import get_history_manager
+
+    def _event(content):
+        return Event(
+            bot_id="onebot",
+            real_bot_id="onebot",
+            bot_self_id="10000",
+            user_id="20000",
+            group_id="30001",
+            user_type="group",
+            content=content,
+            raw_text="",
+            sender={"nickname": "测试"},
+        )
+
+    image_ev = _event([Message("image", "link://https://example.com/a.png")])
+    image_ev.image = "link://https://example.com/a.png"
+    image_ev.image_id = "rid-img-1"
+    _record_inbound_history(image_ev)
+    assert get_history_manager().get_history(image_ev)[-1].content == "[图片]"
+
+    face_ev = _event([Message("face", "1")])
+    _record_inbound_history(face_ev)
+    assert get_history_manager().get_history(face_ev)[-1].content == "[表情]"
+
+
 def test_segments_stay_out_of_memory():
     """段数组是原始数据：只随广播和缓存落库，不进内存里的 MessageRecord。"""
     from gsuid_core.message_history import get_history_manager
