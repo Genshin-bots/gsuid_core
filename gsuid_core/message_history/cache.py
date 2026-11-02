@@ -471,7 +471,7 @@ async def purge_expired() -> int:
     if removed:
         try:
             await CoreMessageCacheSession.rebuild(affected)
-        except Exception as e: 
+        except Exception as e:
             logger.debug(t("log.cache.purge_failed", e=e))
         logger.info(t("log.cache.cleaned_expired", removed=removed, hours=hours))
     return removed
