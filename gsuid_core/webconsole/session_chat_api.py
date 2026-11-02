@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import asyncio
 from typing import Any, Set, Dict, List, Tuple, Optional, Sequence
+from collections import Counter
 
 from fastapi import Body, File, Form, Depends, WebSocket, UploadFile, WebSocketDisconnect
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.models import Event
 from gsuid_core.message_history import segments_preview, get_history_manager
@@ -31,7 +33,8 @@ from gsuid_core.message_history.cache import (
     cache_enabled,
     purge_expired,
     query_messages,
-    query_sessions,
+    fetch_latest_rows,
+    query_session_stats,
 )
 from gsuid_core.webconsole.chat_prefs import (
     set_note,
@@ -40,6 +43,7 @@ from gsuid_core.webconsole.chat_prefs import (
 )
 from gsuid_core.webconsole.history_api import _parse_session_id
 from gsuid_core.message_history.segments import RecordLike, chat_message_from_record
+from gsuid_core.utils.database.base_models import with_read_session
 
 from ._api_tags import SESSION_CHAT
 
@@ -47,6 +51,12 @@ from ._api_tags import SESSION_CHAT
 _WS_PING_SECONDS = 25.0
 # 一次最多回多少条历史，够翻完 12 小时窗口
 _MESSAGE_LIMIT_MAX = 500
+# 首屏只给一页：会话 30 个、每个会话 20 条，滚到底 / 划到顶再往后拉
+_SESSION_PAGE_DEFAULT = 30
+_SESSION_LIMIT_MAX = 200
+_MESSAGE_PAGE_DEFAULT = 20
+# 列表项要的「最后一条 + 发送者快照」只在尾部这段里找，不整份读历史
+_SENDER_SCAN = 50
 
 
 def _fail(msg: str) -> Dict[str, Any]:
@@ -112,7 +122,10 @@ async def _group_meta(group_id: str) -> Dict[str, Any]:
         return {}
     if row is None:
         return {}
+    return _pick_group_meta(row)
 
+
+def _pick_group_meta(row: Any) -> Dict[str, Any]:
     def _pick(value: Any) -> str:
         text = str(value or "").strip()
         return "" if text in ("", "1") else text
@@ -127,6 +140,39 @@ async def _group_meta(group_id: str) -> Dict[str, Any]:
         "group_icon": _pick(row.group_icon),
         "group_count": count,
     }
+
+
+@with_read_session
+async def _select_group_rows(_self: Any, session: AsyncSession, group_ids: List[str]) -> List[Any]:
+    """一次取回这一页用到的群。会话列表别再按会话逐个点查。
+
+    第一个参数是 ``with_read_session`` 要求的「self」占位（它按 ``func(self, session, *args)``
+    调用），模块级函数用不上，传 None 即可。
+    """
+    from sqlmodel import col as _col, select as _select
+
+    from gsuid_core.utils.database.models import CoreGroup
+
+    statement = _select(CoreGroup).where(_col(CoreGroup.group_id).in_(group_ids)).order_by(_col(CoreGroup.id))
+    return list((await session.execute(statement)).scalars().all())
+
+
+async def _group_metas(group_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """批量版 ``_group_meta``：一页会话只查一次库，不是每个会话查一次。"""
+    wanted = [gid for gid in dict.fromkeys(str(item or "") for item in group_ids) if gid]
+    if not wanted:
+        return {}
+    try:
+        rows = await _select_group_rows(None, wanted)
+    except Exception:
+        return {}
+    result: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        gid = str(row.group_id or "")
+        # 同一群号可能有多行（历史遗留），取 id 最小的那条，和 base_select_data 的顺序一致
+        if gid and gid not in result:
+            result[gid] = _pick_group_meta(row)
+    return result
 
 
 async def _user_meta(user_id: str, bot_id: str) -> Dict[str, str]:
@@ -166,6 +212,25 @@ def _last_sender(records: Sequence[RecordLike], user_id: str = "", need: str = "
             continue
         return {str(k): str(v) for k, v in sender.items()}
     return {}
+
+
+def _session_sender(records: Sequence[RecordLike], user_id: str = "") -> Tuple[Dict[str, str], Dict[str, str]]:
+    """一次倒扫同时拿两样：这个人最近的 sender 快照、任意带群名的快照。"""
+    sender: Dict[str, str] = {}
+    named: Dict[str, str] = {}
+    for record in reversed(records):
+        meta = record.metadata if isinstance(record.metadata, dict) else {}
+        snapshot = meta.get("sender")
+        if not isinstance(snapshot, dict):
+            continue
+        plain = {str(k): str(v) for k, v in snapshot.items()}
+        if not sender and (not user_id or str(snapshot.get("user_id") or "") == str(user_id)):
+            sender = plain
+        if not named and snapshot.get("group_name"):
+            named = plain
+        if sender and named:
+            break
+    return sender, named
 
 
 async def _cached_sender(session_id: str, user_id: str = "") -> Dict[str, str]:
@@ -273,6 +338,7 @@ async def _title_avatar(
     group_id: Any,
     user_id: Any,
     sender: Dict[str, str],
+    group_meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str]:
     """会话标题与头像。"""
     if is_group:
@@ -280,7 +346,7 @@ async def _title_avatar(
         icon = str(sender.get("group_icon") or "")
         if name:
             return name, icon
-        meta = await _group_meta(str(group_id))
+        meta = group_meta if group_meta is not None else await _group_meta(str(group_id))
         return meta.get("group_name", "") or str(group_id), icon or meta.get("group_icon", "")
 
     return (
@@ -303,12 +369,12 @@ async def _session_item(
     sender: Dict[str, str],
     prefs: Dict[str, Any],
     blacklist: Set[str],
-    from_cache: bool = False,
+    group_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """拼一条会话列表项。内存与缓存两条来源共用，避免两份字段各写一遍。"""
     ws_bot_id, bot_id, bot_self_id, group_id, user_id = parsed
     is_group = bool(group_id)
-    title, avatar = await _title_avatar(is_group, group_id, user_id, sender)
+    title, avatar = await _title_avatar(is_group, group_id, user_id, sender, group_meta)
     item: Dict[str, Any] = {
         "session_id": session_id,
         "type": "group" if is_group else "private",
@@ -329,92 +395,213 @@ async def _session_item(
         "blacklisted": (str(group_id) if is_group else str(user_id)) in blacklist,
         "note": prefs["notes"].get(session_id, ""),
     }
-    if from_cache:
-        item["from_cache"] = True
     return item
 
 
-@app.get("/api/history/chat/sessions", summary="会话列表（带置顶 / 备注 / 最后一条）", tags=SESSION_CHAT)
-async def list_chat_sessions(_: Dict[str, Any] = Depends(require_auth)) -> Dict[str, Any]:
-    """会话管理页左侧列表。"""
+async def _session_headers(
+    prefs: Dict[str, Any],
+    only: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """排序与分页只需要元数据：会话号、最后时间、条数。
+
+    ``only`` 给了就只构造这几个会话（``/sessions?ids=`` 用），内存和缓存两侧
+    都只碰这些，不会为了一项去扫全表。
+    """
+    headers: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for session_id, info in get_history_manager().get_all_sessions_info().items():
+        if only is not None and session_id not in only:
+            continue
+        seen.add(session_id)
+        headers.append(
+            {
+                "session_id": session_id,
+                "pinned": session_id in prefs["pins"],
+                "parsed": (
+                    str(info.get("WS_BOT_ID") or ""),
+                    str(info.get("bot_id") or ""),
+                    str(info.get("bot_self_id") or ""),
+                    info.get("group_id"),
+                    str(info.get("user_id") or ""),
+                ),
+                "message_count": int(info.get("history_length") or 0),
+                "last_time": float(info.get("last_access") or info.get("created_at") or 0.0),
+                "last_access": info.get("last_access"),
+                "created_at": info.get("created_at"),
+                "cached": False,
+            }
+        )
+
+    if cache_enabled():
+        for session_id, stats in (await query_session_stats(only)).items():
+            if session_id in seen:
+                continue
+            parsed = _parse_session_id(session_id)
+            if parsed is None:
+                continue
+            timestamp = float(stats["last_time"] or 0.0)
+            headers.append(
+                {
+                    "session_id": session_id,
+                    "pinned": session_id in prefs["pins"],
+                    "parsed": parsed,
+                    "message_count": int(stats["count"] or 0),
+                    "last_time": timestamp,
+                    "last_access": timestamp,
+                    "created_at": timestamp,
+                    "cached": True,
+                }
+            )
+
+    # 置顶优先，其次按最后一条消息时间倒序；会话号兜底，让游标比较是全序
+    headers.sort(key=_session_sort_key, reverse=True)
+    return headers
+
+
+def _session_sort_key(header: Dict[str, Any]) -> Tuple[int, float, str]:
+    """列表排序键，同时也是游标比较的依据。"""
+    return (1 if header["pinned"] else 0, header["last_time"], header["session_id"])
+
+
+def _decode_cursor(cursor: str) -> Optional[Tuple[int, float, str]]:
+    """``{pinned}:{last_time}:{session_id}`` → 排序键。session_id 自带冒号，只切两刀。"""
+    if not cursor:
+        return None
     try:
-        manager = get_history_manager()
+        pinned, last_time, session_id = cursor.split(":", 2)
+        return (int(pinned), float(last_time), session_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _encode_cursor(header: Dict[str, Any]) -> str:
+    pinned, last_time, session_id = _session_sort_key(header)
+    # 用 repr 而不是 :.6f —— 时间戳有 17 位有效数字，截断后解码会变小，
+    # 游标那条自己就会「排在游标之后」，被下一页重复返回
+    return f"{pinned}:{last_time!r}:{session_id}"
+
+
+async def _session_from_header(
+    header: Dict[str, Any],
+    prefs: Dict[str, Any],
+    blacklist: Set[str],
+    latest_row: Any = None,
+    group_meta: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """把一行表头补成完整列表项。
+
+    内存会话只读尾部一小段；缓存来的会话用库里那条自带的段数组与 sender 快照，
+    整行由调用方按页取（见 ``list_chat_sessions``），这里不碰数据库。
+    """
+    session_id: str = header["session_id"]
+    parsed = header["parsed"]
+    group_id, user_id = parsed[3], parsed[4]
+
+    if header["cached"]:
+        if latest_row is None:
+            # 统计之后那一行刚好被清理掉了，这一项跳过
+            return None
+        message = latest_row.to_chat_message()
+        timestamp = float(message.get("timestamp") or 0.0)
+        return await _session_item(
+            session_id,
+            parsed,
+            message_count=header["message_count"],
+            last_segments=message.get("segments") or [],
+            last_role=message.get("role", ""),
+            last_time=timestamp,
+            last_access=timestamp,
+            created_at=timestamp,
+            sender=message.get("sender") or {},
+            prefs=prefs,
+            blacklist=blacklist,
+            group_meta=group_meta,
+        )
+
+    records = get_history_manager().get_tail(_event_of(*parsed), _SENDER_SCAN)
+    last = records[-1] if records else None
+    sender, named = _session_sender(records, "" if group_id else user_id)
+    if group_id and not sender.get("group_name") and named:
+        sender = {**sender, "group_name": named["group_name"]}
+
+    return await _session_item(
+        session_id,
+        parsed,
+        message_count=header["message_count"] or len(records),
+        last_segments=[],
+        last_content=str(last.content or "") if last is not None else "",
+        last_role=last.role if last is not None else "",
+        last_time=last.timestamp if last is not None else float(header["last_time"] or 0.0),
+        last_access=header["last_access"],
+        created_at=header["created_at"],
+        sender=sender,
+        prefs=prefs,
+        blacklist=blacklist,
+        group_meta=group_meta,
+    )
+
+
+@app.get("/api/history/chat/sessions", summary="会话列表（带置顶 / 备注 / 最后一条）", tags=SESSION_CHAT)
+async def list_chat_sessions(
+    limit: int = _SESSION_PAGE_DEFAULT,
+    cursor: str = "",
+    ids: str = "",
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """会话管理页左侧列表，置顶优先、其余按最后消息时间倒序。
+
+    ``limit`` 默认 30；``cursor`` 传上一页返回的 ``next_cursor``，不传就是第一页。
+    游标按「置顶 + 最后时间 + 会话号」比较，新消息插进来也不会漏项。
+
+    ``ids`` 是逗号分隔的会话号：只回这几个会话、不分页。给前端「新会话第一句话」
+    用 —— 那时只需要往列表里插一项，不必把已经翻过的页整份重拉。
+    """
+    try:
+        capped = max(1, min(int(limit or _SESSION_PAGE_DEFAULT), _SESSION_LIMIT_MAX))
+        after = _decode_cursor(cursor)
         prefs = snapshot()
         # 全局黑名单一次取全，别在循环里反复读配置
         blacklist = set(_blacklist_ids())
-        all_sessions = manager.get_all_sessions_info()
-
-        sessions: List[Dict[str, Any]] = []
-        for session_id, info in all_sessions.items():
-            group_id = info.get("group_id")
-            user_id = info.get("user_id") or ""
-            parsed = (
-                str(info.get("WS_BOT_ID") or ""),
-                str(info.get("bot_id") or ""),
-                str(info.get("bot_self_id") or ""),
-                group_id,
-                user_id,
-            )
-            ev = _event_of(parsed[0], parsed[1], parsed[2], group_id, user_id)
-            records = manager.get_history(ev)
-            last = records[-1] if records else None
-            last_content = str(last.content or "") if last is not None else ""
-            sender = _last_sender(records, "" if group_id else user_id)
-            if group_id and not sender.get("group_name"):
-                named = _last_sender(records, "", "group_name")
-                if named:
-                    sender = {**sender, "group_name": named["group_name"]}
-
-            sessions.append(
-                await _session_item(
-                    session_id,
-                    parsed,
-                    message_count=len(records),
-                    last_segments=[],
-                    last_content=last_content,
-                    last_role=last.role if last is not None else "",
-                    last_time=last.timestamp if last is not None else 0.0,
-                    last_access=info.get("last_access"),
-                    created_at=info.get("created_at"),
-                    sender=sender,
-                    prefs=prefs,
-                    blacklist=blacklist,
+        wanted = {item for item in ids.split(",") if item}
+        # 只构造这几个会话，别为了一项去扫全表；空集合传 None 表示「不筛」
+        headers = await _session_headers(prefs, wanted or None)
+        if wanted:
+            capped = len(headers)
+        total = len(headers)
+        if after is not None:
+            # 只留严格排在游标之后的，避免同一条被两页都返回
+            headers = [item for item in headers if _session_sort_key(item) < after]
+        page = headers[:capped]
+        # 缓存来的会话只给这一页取整行，别为整张表拉 segments / sender
+        cached_ids = [item["session_id"] for item in page if item["cached"]]
+        latest_rows = await fetch_latest_rows(cached_ids)
+        # 群名 / 群头像一页只查一次库，别按会话逐个点查。
+        # 查不到的群传 {} 而不是 None：None 表示「没查过、你自己去查」，
+        # 那会让没进 coregroup 表的群每个都多一次注定查不到的点查
+        page_groups = await _group_metas([str(item["parsed"][3]) for item in page if item["parsed"][3]])
+        sessions = [
+            item
+            for item in [
+                await _session_from_header(
+                    header,
+                    prefs,
+                    blacklist,
+                    latest_rows.get(header["session_id"]),
+                    page_groups.get(str(header["parsed"][3] or ""), {}),
                 )
-            )
-
-        if cache_enabled():
-            cached_sessions = await query_sessions()
-            known = {item["session_id"] for item in sessions}
-            for session_id, cached in cached_sessions.items():
-                if session_id in known:
-                    continue
-                parsed = _parse_session_id(session_id)
-                if parsed is None:
-                    continue
-                message = cached["row"].to_chat_message()
-                timestamp = message.get("timestamp", 0.0)
-                sessions.append(
-                    await _session_item(
-                        session_id,
-                        parsed,
-                        message_count=cached["count"],
-                        last_segments=message.get("segments") or [],
-                        last_role=message.get("role", ""),
-                        last_time=timestamp,
-                        last_access=timestamp,
-                        created_at=timestamp,
-                        sender=message.get("sender") or {},
-                        prefs=prefs,
-                        blacklist=blacklist,
-                        from_cache=True,
-                    )
-                )
-
-        sessions.sort(
-            key=lambda item: (1 if item["pinned"] else 0, item["last_time"] or 0.0),
-            reverse=True,
+                for header in page
+            ]
+            if item is not None
+        ]
+        return _ok(
+            {
+                "sessions": sessions,
+                "count": len(sessions),
+                "total": total,
+                "has_more": len(headers) > capped,
+                "next_cursor": _encode_cursor(page[-1]) if page and len(headers) > capped else "",
+            }
         )
-        return _ok({"sessions": sessions, "count": len(sessions)})
     except Exception as e:
         return _fail(f"获取会话列表失败: {e}")
 
@@ -427,32 +614,48 @@ async def list_chat_sessions(_: Dict[str, Any] = Depends(require_auth)) -> Dict[
 @app.get("/api/history/chat/{session_id}/messages", summary="会话消息（按段返回）", tags=SESSION_CHAT)
 async def get_chat_messages(
     session_id: str,
-    limit: int = _MESSAGE_LIMIT_MAX,
+    limit: int = _MESSAGE_PAGE_DEFAULT,
+    before: float = 0.0,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """返回会话内最近的 N 条消息，每条带可渲染的 ``segments``。"""
+    """返回会话里**最新的一页**消息，每条带可渲染的 ``segments``。"""
     ev = _resolve(session_id)
     if ev is None:
         return _fail("无效的 session_id 格式")
     try:
-        capped = max(1, min(int(limit or _MESSAGE_LIMIT_MAX), _MESSAGE_LIMIT_MAX))
-        records = get_history_manager().get_history(ev)
+        capped = max(1, min(int(limit or _MESSAGE_PAGE_DEFAULT), _MESSAGE_LIMIT_MAX))
+        cursor = float(before or 0.0)
+        # 多取一条用来判断「还有没有更早的」，返回前再截掉
+        want = capped + 1
+        # 从队尾倒扫，够这一页就停，不复制整份历史
+        records = get_history_manager().get_before(ev, cursor, want)
         # 内存里没有段数组（原始数据只落库），所以只能按纯文本还原
-        messages: List[Dict[str, Any]] = [chat_message_from_record(record) for record in records[-capped:]]
+        messages: List[Dict[str, Any]] = [chat_message_from_record(record) for record in records]
 
         # 缓存开着就以库为准：库里是完整段数组，内存那份只补还没落库的
-        from_cache = 0
         if cache_enabled():
-            cached = await query_messages(session_id, capped)
+            cached = await query_messages(session_id, want, cursor or None)
             if cached:
-                seen = {(item["role"], round(item["timestamp"], 3), item["content"]) for item in cached}
-                extra = [
-                    item
-                    for item in messages
-                    if (item["role"], round(item["timestamp"], 3), item["content"]) not in seen
-                ]
-                from_cache = len(cached)
-                messages = sorted(cached + extra, key=lambda item: item["timestamp"])[-capped:]
+                # 按条数扣减，不能只用一个 set：库里 1 条、内存 2 条同内容时，
+                # set 会把内存那两条都当重复丢掉，只剩一条
+                cached_left = Counter((item["role"], round(item["timestamp"], 3), item["content"]) for item in cached)
+                extra: List[Dict[str, Any]] = []
+                for item in messages:
+                    fingerprint = (item["role"], round(item["timestamp"], 3), item["content"])
+                    if cached_left[fingerprint] > 0:
+                        cached_left[fingerprint] -= 1
+                        continue
+                    extra.append(item)
+                messages = sorted(cached + extra, key=lambda item: item["timestamp"])
+
+        has_more = len(messages) > capped
+        if has_more:
+            # 截到一页时别把同一时间戳的一批切开，否则下一页会跳过它们
+            cut = len(messages) - capped
+            boundary = messages[cut]["timestamp"]
+            while cut > 0 and messages[cut - 1]["timestamp"] == boundary:
+                cut -= 1
+            messages = messages[cut:]
 
         # 官机的 at 只有 openid，用 coreuser 里的昵称补上（查不到就留空，前端显示 id）
         await _fill_at_names(messages, str(ev.bot_id or ""))
@@ -464,7 +667,7 @@ async def get_chat_messages(
                 "session_id": session_id,
                 "messages": messages,
                 "count": len(messages),
-                "from_cache": from_cache,
+                "has_more": has_more,
             }
         )
     except Exception as e:

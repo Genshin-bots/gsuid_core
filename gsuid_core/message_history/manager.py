@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Any, Dict, List, Literal, Optional
+from itertools import islice
 from threading import Lock
 from collections import deque
 from dataclasses import field, dataclass
@@ -317,6 +318,45 @@ class HistoryManager:
 
         return records
 
+    def get_tail(self, event: "Event", limit: int) -> List[MessageRecord]:
+        """只取最近 N 条，不复制整份 deque。"""
+        if limit <= 0:
+            return []
+        storage_event = self._get_storage_event(event)
+        with self._lock:
+            history = self._histories.get(storage_event)
+            if not history:
+                return []
+            total = len(history)
+            start = max(0, total - limit)
+            return list(islice(history, start, total))
+
+    def get_before(self, event: "Event", before: float, limit: int) -> List[MessageRecord]:
+        """取比 ``before`` 更早的最近 ``limit`` 条（时间正序）。
+
+        控制台往上翻页用：从队尾倒着扫，扫够就停，不用把整份历史复制出来再过滤。
+        ``before <= 0`` 表示不限，等价于 ``get_tail``。
+
+        **同一时间戳的一批必须整批返回**：游标只带时间戳，切开的话下一页用
+        ``timestamp < 游标`` 会把剩下的那几条直接跳过（机器人连发时时间戳会相同）。
+        """
+        if limit <= 0:
+            return []
+        storage_event = self._get_storage_event(event)
+        with self._lock:
+            history = self._histories.get(storage_event)
+            if not history:
+                return []
+            picked: List[MessageRecord] = []
+            for record in reversed(history):
+                if before > 0 and record.timestamp >= before:
+                    continue
+                if len(picked) >= limit and record.timestamp != picked[-1].timestamp:
+                    break
+                picked.append(record)
+        picked.reverse()
+        return picked
+
     def search_recent_for_cognition(
         self,
         *,
@@ -494,25 +534,6 @@ class HistoryManager:
             del self._histories[source_key]
             return True
 
-    def get_session_info(self, event: "Event") -> Optional[Dict[str, Any]]:
-        """获取指定session的信息"""
-        with self._lock:
-            metadata = self._session_metadata.get(event)
-            if metadata:
-                return {
-                    "session_id": event.session_id,
-                    "created_at": metadata.get("created_at"),
-                    "last_access": metadata.get("last_access"),
-                    "history_length": metadata.get("history_length", 0),
-                    "user_id": event.user_id,
-                    "group_id": event.group_id,
-                    "bot_id": event.bot_id,
-                    "bot_self_id": event.bot_self_id,
-                    "WS_BOT_ID": event.WS_BOT_ID,
-                    "user_type": event.user_type,
-                }
-            return None
-
     def get_all_sessions_info(self) -> Dict[str, Dict[str, Any]]:
         """获取所有session的信息"""
         result = {}
@@ -538,68 +559,6 @@ class HistoryManager:
         with self._lock:
             if storage_event in self._session_metadata:
                 self._session_metadata[storage_event]["last_access"] = time.time()
-
-    def get_all_histories(self) -> Dict[str, List[MessageRecord]]:
-        """
-        获取所有session的历史记录（用于持久化）
-
-        Returns:
-            {session_id_str: [MessageRecord, ...]}
-        """
-        with self._lock:
-            result = {}
-            for ev, history in self._histories.items():
-                result[ev.session_id] = list(history)
-            return result
-
-    def load_histories(
-        self,
-        data: Dict[str, List[Dict[str, Any]]],
-    ) -> None:
-        """
-        批量加载历史记录（用于从持久化恢复）
-
-        Args:
-            data: {session_id_str: [message_dict, ...]}
-            格式: {WS_BOT_ID}:{bot_id}:{bot_self_id}:group:{group_id}
-            或 {WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}
-        """
-        with self._lock:
-            for key_str, messages in data.items():
-                parts = key_str.split(":", 4)
-                if len(parts) != 5:
-                    continue
-
-                ws_bot_id, bot_id, bot_self_id, target_type, target_id = parts
-                if not ws_bot_id or not bot_id or not bot_self_id or not target_id:
-                    continue
-
-                if target_type == "group":
-                    group_id = target_id
-                    user_id = ""
-                    user_type: Literal["group", "direct", "channel", "sub_channel"] = "group"
-                elif target_type == "private":
-                    group_id = None
-                    user_id = target_id
-                    user_type = "direct"
-                else:
-                    continue
-
-                event_key = Event(
-                    bot_id=bot_id,
-                    bot_self_id=bot_self_id,
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_type=user_type,
-                    WS_BOT_ID=ws_bot_id,
-                )
-                history = deque()
-                for msg_data in messages:
-                    record = MessageRecord.from_dict(msg_data)
-                    history.append(record)
-                self._histories[event_key] = history
-                self._session_tokens[event_key] = sum(_estimate_tokens(rec.content) for rec in history)
-                self._retain_rolling(event_key)
 
     def get_stats(self) -> Dict[str, Any]:
         """

@@ -47,17 +47,27 @@
 ## 47.3 会话列表
 
 ```
-GET /api/history/chat/sessions
+GET /api/history/chat/sessions?limit=30&cursor=<上一页的 next_cursor>
 ```
 
-返回 `{sessions: [...], count}`，每项含 `session_id`、`type`、`title`（群名 / 昵称，取不到退回 id）、
+返回 `{sessions: [...], count, total, has_more, next_cursor}`，每项含 `session_id`、`type`、`title`（群名 / 昵称，取不到退回 id）、
 `avatar`、`message_count`、`last_preview`、`last_time`，以及 `pinned` / `note` / `blacklisted`。
 排序规则：置顶优先，其次按最后一条消息时间倒序。开启消息缓存时，仅在数据库中存在的历史会话也会被还原到列表中。
+
+首屏只回一页（`limit` 默认 30，上限 200）：排序与分页先只用会话元数据，
+切出这一页之后才给这些会话补标题、头像与最后一条，所以不会再为每个会话整份读一遍历史。
+
+分页用**游标**而不是 `offset`：`cursor` 是上一页返回的 `next_cursor`（内部是「置顶 + 最后时间 + 会话号」），
+下一页只取严格排在它之后的项。这样翻页途中某个会话来了新消息跳到最前，也不会让后面的页错位漏项。
+`next_cursor` 为空串表示到底了。
+
+要单独取某几个会话（例如新群第一次说话，前端只需往列表里插一项）时传 `ids=a,b,c`：
+只回这几个会话、不分页，`has_more` 恒为 false。
 
 ## 47.4 会话消息
 
 ```
-GET /api/history/chat/{session_id}/messages?limit=500
+GET /api/history/chat/{session_id}/messages?limit=20&before=1760000000.0
 ```
 
 时间正序返回，每条形如：
@@ -77,7 +87,10 @@ GET /api/history/chat/{session_id}/messages?limit=500
 ```
 
 `self=true` 表示机器人自己发的。`msg_id` 是平台消息 ID，引用回复要用它。
-开启消息缓存时，返回结构中附带 `from_cache` 表示从持久化缓存中补充的历史消息条数。
+
+默认只回最新一页（`limit` 默认 20，上限 500）。往上翻时把当前最早一条的 `timestamp` 传进 `before`，
+拿到的就是它之前的一页；`has_more` 为 false 表示没有更早的消息了。游标按时间走，
+新消息插进来也不会让翻页错位。
 
 ## 47.5 发送消息
 
@@ -152,5 +165,10 @@ POST /api/history/chat/cache/clear    → {removed}
   批量 200 条 / 最多等 2 秒，队列满（2000）就丢，绝不反压消息链路；
 - 清理每 10 分钟一次，删掉 `created_at` 超出保留窗口的行；改小保留时长会立刻清一次；
 - 关掉缓存**不会**删存量数据，要清就调 `cache/clear` 或面板上的「清空缓存」；
-- 读的时候内存优先：`/messages` 把库里内存没有的补上（按 `角色 + 时间 + 内容` 去重），
-  响应里的 `from_cache` 是这次从库里补的条数；`/sessions` 也会把只在库里存在的会话列出来。
+- 读的时候内存优先：`/messages` 把库里内存没有的补上（按 `角色 + 时间 + 内容` 去重）；
+  `/sessions` 也会把只在库里存在的会话列出来。
+- `/sessions` 不碰消息表：每个会话的「条数 + 最后一条时间」物化在
+  `coremessagecachesession`（写入时同事务累加，清理时按受影响会话重算），
+  列表排序分页只读这张汇总表，翻多少页都是会话数级别的点查；
+  切出当前页之后，才按会话号取这一页每条最新整行（`where session_id in (...)`），
+  不会为整张表拉 `segments` / `sender`。

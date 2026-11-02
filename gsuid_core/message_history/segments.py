@@ -326,7 +326,9 @@ def chat_message_from_record(record: RecordLike, segments: Optional[List[Dict[st
     # 机器人自己发的那条，record.user_id 存的是提问的人，换回 bot 自己
     if role == "assistant" and sender_dict.get("user_id"):
         user_id = str(sender_dict["user_id"])
+    # 内存记录没有库主键，key 留空，由调用方按内容指纹兜底
     return {
+        "key": "",
         "role": role,
         "user_id": user_id,
         "user_name": record.user_name,

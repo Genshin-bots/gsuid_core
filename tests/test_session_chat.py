@@ -540,3 +540,137 @@ def test_merge_session_sorts_by_timestamp():
     assert len(records) == 2
     assert [r.content for r in records] == ["第一条", "第二条"]
     assert records[0].timestamp < records[1].timestamp
+
+
+def test_get_tail_keeps_only_recent():
+    """会话列表只读尾部一小段：get_tail 给最后 N 条，不动历史本身。"""
+    from gsuid_core.message_history import get_history_manager
+
+    manager = get_history_manager()
+    event = Event(bot_id="onebot", WS_BOT_ID="ws2", bot_self_id="bot1", group_id="456", user_type="group")
+    manager.delete_session(event)
+    for index in range(50):
+        manager.add_message(event, role="user", content=f"m{index}")
+
+    tail = manager.get_tail(event, 10)
+    assert [record.content for record in tail] == [f"m{index}" for index in range(40, 50)]
+    # 只读，不裁剪
+    assert manager.get_history_count(event) == 50
+
+
+def test_get_before_stops_at_cursor():
+    """往上翻页：只要比游标更早的，凑够一页就停。"""
+    import time
+
+    from gsuid_core.message_history import get_history_manager
+
+    manager = get_history_manager()
+    event = Event(bot_id="onebot", WS_BOT_ID="ws3", bot_self_id="bot1", group_id="789", user_type="group")
+    manager.delete_session(event)
+    # 时间戳必须落在 12 小时窗口内，否则 add_message 的滚动裁剪会当场把旧记录丢掉
+    base = time.time()
+    for index in range(50):
+        record = manager.add_message(event, role="user", content=f"m{index}")
+        record.timestamp = base + index
+
+    older = manager.get_before(event, base + 20, 5)
+    assert [record.content for record in older] == [f"m{index}" for index in range(15, 20)]
+    # 游标之前没有更早的了
+    assert manager.get_before(event, base, 5) == []
+    # before=0 等于取最新一页
+    assert [record.content for record in manager.get_before(event, 0, 3)] == ["m47", "m48", "m49"]
+
+
+def test_get_before_keeps_same_timestamp_batch():
+    """同一时间戳的一批不能被游标切开，否则下一页会跳过剩下的几条。"""
+    import time
+
+    from gsuid_core.message_history import get_history_manager
+
+    manager = get_history_manager()
+    event = Event(bot_id="onebot", WS_BOT_ID="ws4", bot_self_id="bot1", group_id="901", user_type="group")
+    manager.delete_session(event)
+    base = time.time()
+    for index in range(2):
+        record = manager.add_message(event, role="user", content=f"早{index}")
+        record.timestamp = base - 10 + index
+    # 机器人连发，时间戳完全一样
+    for index in range(3):
+        record = manager.add_message(event, role="assistant", content=f"连发{index}")
+        record.timestamp = base
+
+    # limit=2，但同一时间戳有 3 条，必须整批返回，否则游标一翻就丢
+    batch = manager.get_before(event, 0, 2)
+    assert [record.content for record in batch] == ["连发0", "连发1", "连发2"]
+    older = manager.get_before(event, batch[0].timestamp, 5)
+    assert [record.content for record in older] == ["早0", "早1"]
+
+
+def test_session_cursor_roundtrips_exactly():
+    """游标必须精确往返：时间戳被截断哪怕一位，上一页最后一条就会重复返回。"""
+    from gsuid_core.webconsole import session_chat_api as api
+
+    header = {
+        "session_id": "ws1:qq:10000:group:20000",
+        "pinned": True,
+        "last_time": 1762000000.1234567,
+    }
+    cursor = api._encode_cursor(header)
+    assert api._decode_cursor(cursor) == api._session_sort_key(header)
+    assert api._decode_cursor("") is None
+    assert api._decode_cursor("这不是游标") is None
+
+
+def test_session_ids_returns_only_asked(monkeypatch):
+    """``ids`` 只回指定的会话、不分页：新会话插队时用，不重拉已经翻过的页。"""
+    import asyncio
+
+    from gsuid_core.webconsole import session_chat_api as api
+
+    headers = [
+        {
+            "session_id": f"s{index}",
+            "pinned": False,
+            "parsed": ("ws", "qq", "bot", None, str(index)),
+            "message_count": 1,
+            "last_time": 1000.0 - index,
+            "last_access": 1000.0 - index,
+            "created_at": 1000.0 - index,
+            "cached": False,
+        }
+        for index in range(5)
+    ]
+
+    async def fake_headers(_prefs, _only=None):
+        items = [dict(item) for item in headers]
+        if _only is not None:
+            items = [item for item in items if item["session_id"] in _only]
+        return items
+
+    async def fake_item(header, _prefs, _blacklist, _latest_row=None, _group_meta=None):
+        return {"session_id": header["session_id"], "last_time": header["last_time"]}
+
+    async def fake_rows(_ids):
+        return {}
+
+    async def fake_group_metas(_ids):
+        return {}
+
+    monkeypatch.setattr(api, "_session_headers", fake_headers)
+    monkeypatch.setattr(api, "_session_from_header", fake_item)
+    monkeypatch.setattr(api, "fetch_latest_rows", fake_rows)
+    monkeypatch.setattr(api, "_group_metas", fake_group_metas)
+    monkeypatch.setattr(api, "snapshot", lambda: {"pins": set(), "notes": {}})
+    monkeypatch.setattr(api, "_blacklist_ids", lambda: [])
+
+    # limit 故意给 2：ids 模式不按 limit 切，要的两个都给回来
+    data = asyncio.run(api.list_chat_sessions(limit=2, cursor="", ids="s3,s1", _={}))["data"]
+    assert [item["session_id"] for item in data["sessions"]] == ["s1", "s3"]
+    assert data["has_more"] is False
+    assert data["next_cursor"] == ""
+
+    # 没给 ids 时照旧分页
+    paged = asyncio.run(api.list_chat_sessions(limit=2, cursor="", ids="", _={}))["data"]
+    assert [item["session_id"] for item in paged["sessions"]] == ["s0", "s1"]
+    assert paged["has_more"] is True
+    assert paged["next_cursor"]

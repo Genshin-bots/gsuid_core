@@ -16,7 +16,7 @@ import json
 import time
 import asyncio
 import threading
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Iterable, Optional, Sequence
 
 from sqlmodel import Field, Index, SQLModel, col, func, delete, select
 from sqlalchemy.engine import CursorResult
@@ -37,6 +37,8 @@ _FLUSH_INTERVAL = 2.0
 # 清理间隔：超期数据晚几分钟删掉无所谓，别每条消息都扫一遍
 _CLEANUP_INTERVAL = 600.0
 _CONTENT_MAX = 20000
+# 重算汇总时一条 IN 里最多塞多少个会话号
+_REBUILD_CHUNK = 500
 
 
 class CoreMessageCache(SQLModel, table=True):
@@ -76,6 +78,7 @@ class CoreMessageCache(SQLModel, table=True):
         for row in rows:
             session.add(CoreMessageCache(**row))
         await session.flush()
+        await CoreMessageCacheSession.bump(session, rows)
 
     @classmethod
     @with_read_session
@@ -84,26 +87,57 @@ class CoreMessageCache(SQLModel, table=True):
         session: AsyncSession,
         session_id: str,
         limit: int,
+        before: Optional[float] = None,
     ) -> Sequence["CoreMessageCache"]:
-        statement = (
-            select(cls)
-            .where(cls.session_id == session_id)
-            .order_by(col(cls.timestamp).desc(), col(cls.id).desc())
-            .limit(limit)
-        )
+        """取最近 limit 条；给了 before 就只取比它更早的（控制台往上翻页）。
+
+        取满 limit 条时会把**同一时间戳的更早行**一起带上：游标只带时间戳，
+        切开的话下一页 ``timestamp < 游标`` 会把剩下的直接跳过。
+        """
+        statement = select(cls).where(cls.session_id == session_id)
+        if before:
+            statement = statement.where(col(cls.timestamp) < before)
+        statement = statement.order_by(col(cls.timestamp).desc(), col(cls.id).desc()).limit(limit)
         rows = list((await session.execute(statement)).scalars().all())
+        if len(rows) >= limit and rows:
+            earliest = rows[-1].timestamp
+            extra_stmt = select(cls).where(
+                col(cls.session_id) == session_id,
+                col(cls.timestamp) == earliest,
+                col(cls.id) < (rows[-1].id or 0),
+            )
+            if before:
+                extra_stmt = extra_stmt.where(col(cls.timestamp) < before)
+            extra = list((await session.execute(extra_stmt)).scalars().all())
+            extra.sort(key=lambda row: row.id or 0)
+            rows.reverse()
+            return extra + rows
         rows.reverse()
         return rows
 
     @classmethod
     @with_read_session
-    async def select_latest_rows(cls, session: AsyncSession) -> Sequence["CoreMessageCache"]:
-        """每个会话只取最新一条，用来还原会话列表。"""
+    async def select_expired_sessions(cls, session: AsyncSession, cutoff_ms: int) -> List[str]:
+        """写入时间早于 cutoff 的会话号，去重。"""
+        statement = select(col(cls.session_id)).where(col(cls.created_at) < cutoff_ms).distinct()
+        return [str(session_id) for session_id in (await session.execute(statement)).scalars().all()]
+
+    @classmethod
+    @with_read_session
+    async def select_latest_by_ids(
+        cls,
+        session: AsyncSession,
+        session_ids: Sequence[str],
+    ) -> Dict[str, "CoreMessageCache"]:
+        """按会话号取每个会话最新一条，一次查完。"""
+        if not session_ids:
+            return {}
         subq = (
             select(
                 col(cls.session_id).label("sub_session_id"),
                 func.max(cls.timestamp).label("max_ts"),
             )
+            .where(col(cls.session_id).in_(list(session_ids)))
             .group_by(col(cls.session_id))
             .subquery()
         )
@@ -111,19 +145,12 @@ class CoreMessageCache(SQLModel, table=True):
             subq,
             (col(cls.session_id) == subq.c.sub_session_id) & (col(cls.timestamp) == subq.c.max_ts),
         )
-        rows = (await session.execute(statement)).scalars().all()
-        best: Dict[str, "CoreMessageCache"] = {}
-        for row in rows:
-            current = best.get(row.session_id)
+        result: Dict[str, "CoreMessageCache"] = {}
+        for row in (await session.execute(statement)).scalars().all():
+            current = result.get(row.session_id)
             if current is None or (row.id or 0) > (current.id or 0):
-                best[row.session_id] = row
-        return list(best.values())
-
-    @classmethod
-    @with_read_session
-    async def select_counts(cls, session: AsyncSession) -> Dict[str, int]:
-        statement = select(col(cls.session_id), func.count()).group_by(col(cls.session_id))
-        return {str(key): int(count) for key, count in (await session.execute(statement)).all()}
+                result[row.session_id] = row
+        return result
 
     @classmethod
     @with_read_session
@@ -140,18 +167,24 @@ class CoreMessageCache(SQLModel, table=True):
     @with_session
     async def clear_all(cls, session: AsyncSession) -> int:
         result = await session.execute(delete(cls))
+        await session.execute(delete(CoreMessageCacheSession))
         return int(result.rowcount if isinstance(result, CursorResult) else 0)
 
     # 输出
 
     def to_chat_message(self) -> Dict[str, Any]:
-        """还原成前端 `ChatMsg` 的结构，字段与 `chat_message_from_record` 对齐。"""
+        """还原成前端 `ChatMsg` 的结构，字段与 `chat_message_from_record` 对齐。
+
+        ``key`` 用自增主键：`msg_id` 只有入站消息才有（出站记录在发送前构造，
+        平台还没返回 ID），所以机器人连发两条同样的话时，前端只能靠这个主键区分。
+        """
         sender = _loads(self.sender, {})
         user_id = self.user_id
         # 机器人自己发的那条，record.user_id 存的是提问的人，跟内存路径一样换回 bot
         if self.role == "assistant" and sender.get("user_id"):
             user_id = str(sender["user_id"])
         return {
+            "key": f"c{self.id}" if self.id is not None else "",
             "role": self.role,
             "user_id": user_id,
             "user_name": sender.get("card") or sender.get("nickname") or None,
@@ -162,6 +195,117 @@ class CoreMessageCache(SQLModel, table=True):
             "sender": sender,
             "msg_id": self.msg_id,
         }
+
+
+class CoreMessageCacheSession(SQLModel, table=True):
+    """每个会话的缓存汇总：条数与最后一条时间。
+
+    会话列表要按「最后一条消息时间」排序分页。如果每翻一页都对消息表做一次
+    ``group by session_id``，翻页次数就是全表聚合次数（排序键本身就是聚合结果，
+    所以 SQL 层 LIMIT 也躲不开）。把聚合结果物化到这张表，列表查询就退化成
+    按 ``last_time`` 的索引扫描，与消息总量无关。
+
+    由 `CoreMessageCache.batch_insert` 在同一个事务里累加维护，
+    清理 / 清空时同步修正。
+    """
+
+    __table_args__ = (
+        Index("ix_coremessagecache_session_last_time", "last_time"),
+        {"extend_existing": True},
+    )
+
+    session_id: str = Field(primary_key=True, title="会话ID")
+    message_count: int = Field(default=0, title="缓存条数")
+    last_time: float = Field(default=0.0, title="最后一条消息时间")
+
+    @classmethod
+    async def bump(cls, session: AsyncSession, rows: List[Dict[str, Any]]) -> None:
+        """一批消息落库后，按会话把条数与最后时间累加上去。"""
+        grouped: Dict[str, List[Any]] = {}
+        for row in rows:
+            session_id = str(row.get("session_id") or "")
+            if not session_id:
+                continue
+            timestamp = float(row.get("timestamp") or 0.0)
+            count, latest = grouped.get(session_id, [0, 0.0])
+            grouped[session_id] = [int(count) + 1, max(float(latest), timestamp)]
+        if not grouped:
+            return
+        statement = select(cls).where(col(cls.session_id).in_(list(grouped)))
+        existing = {str(row.session_id): row for row in (await session.execute(statement)).scalars().all()}
+        for session_id, (count, latest) in grouped.items():
+            row = existing.get(session_id)
+            if row is None:
+                session.add(cls(session_id=session_id, message_count=count, last_time=latest))
+            else:
+                row.message_count = int(row.message_count or 0) + count
+                row.last_time = max(float(row.last_time or 0.0), latest)
+        await session.flush()
+
+    @classmethod
+    @with_read_session
+    async def select_stats(
+        cls,
+        session: AsyncSession,
+        only: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """会话号 → ``{count, last_time}``。只读汇总表，不回消息表。"""
+        statement = select(col(cls.session_id), col(cls.message_count), col(cls.last_time))
+        if only:
+            statement = statement.where(col(cls.session_id).in_(list(only)))
+        return {
+            str(session_id): {"count": int(count or 0), "last_time": float(last_time or 0.0)}
+            for session_id, count, last_time in (await session.execute(statement)).all()
+        }
+
+    @classmethod
+    @with_session
+    async def rebuild(
+        cls,
+        session: AsyncSession,
+        session_ids: Optional[Sequence[str]] = None,
+    ) -> None:
+        """按消息表重算汇总。"""
+        wanted = [str(item) for item in session_ids] if session_ids is not None else None
+        if wanted is not None and not wanted:
+            return
+        if wanted is not None and len(wanted) > _REBUILD_CHUNK:
+            for start in range(0, len(wanted), _REBUILD_CHUNK):
+                await cls._rebuild_chunk(session, wanted[start : start + _REBUILD_CHUNK])
+            return
+        await cls._rebuild_chunk(session, wanted)
+
+    @classmethod
+    async def _rebuild_chunk(cls, session: AsyncSession, wanted: Optional[List[str]]) -> None:
+        """`rebuild` 的一批：``wanted`` 为 None 表示全量。"""
+        statement = select(
+            col(CoreMessageCache.session_id),
+            func.count(),
+            func.max(col(CoreMessageCache.timestamp)),
+        )
+        if wanted is not None:
+            statement = statement.where(col(CoreMessageCache.session_id).in_(wanted))
+        statement = statement.group_by(col(CoreMessageCache.session_id))
+        fresh = {
+            str(session_id): (int(count or 0), float(latest or 0.0))
+            for session_id, count, latest in (await session.execute(statement)).all()
+        }
+
+        existing_stmt = select(cls)
+        if wanted is not None:
+            existing_stmt = existing_stmt.where(col(cls.session_id).in_(wanted))
+        existing = {str(row.session_id): row for row in (await session.execute(existing_stmt)).scalars().all()}
+
+        for session_id, (count, latest) in fresh.items():
+            row = existing.pop(session_id, None)
+            if row is None:
+                session.add(cls(session_id=session_id, message_count=count, last_time=latest))
+            else:
+                row.message_count = count
+                row.last_time = latest
+        for row in existing.values():
+            await session.delete(row)
+        await session.flush()
 
 
 def _loads(text: str, fallback: Any) -> Any:
@@ -319,11 +463,16 @@ async def purge_expired() -> int:
         return 0
     cutoff_ms = int((time.time() - hours * 3600) * 1000)
     try:
+        affected = await CoreMessageCache.select_expired_sessions(cutoff_ms)
         removed = await CoreMessageCache.purge_before(cutoff_ms)
     except Exception as e:
         logger.debug(t("log.cache.purge_failed", e=e))
         return 0
     if removed:
+        try:
+            await CoreMessageCacheSession.rebuild(affected)
+        except Exception as e:
+            logger.debug(t("log.cache.purge_failed", e=e))
         logger.info(t("log.cache.cleaned_expired", removed=removed, hours=hours))
     return removed
 
@@ -333,31 +482,40 @@ async def purge_expired() -> int:
 # -----------
 
 
-async def query_messages(session_id: str, limit: int) -> List[Dict[str, Any]]:
+async def query_messages(
+    session_id: str,
+    limit: int,
+    before: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     try:
-        rows = await CoreMessageCache.select_recent(session_id, limit)
+        rows = await CoreMessageCache.select_recent(session_id, limit, before)
     except Exception as e:
         logger.debug(t("log.cache.read_failed", e=e))
         return []
     return [row.to_chat_message() for row in rows]
 
 
-async def query_sessions() -> Dict[str, Dict[str, Any]]:
-    """会话号 → {最后一条, 条数}，用来补内存里已经没有的会话。"""
+async def query_session_stats(only: Optional[Iterable[str]] = None) -> Dict[str, Dict[str, Any]]:
+    """会话号 → {count, last_time}。排序分页只要这两个数，不取整行。
+
+    读的是 `CoreMessageCacheSession` 汇总表（索引点查），不再对消息表 group by。
+    ``only`` 给了就只取这几个会话（``/sessions?ids=`` 用）。"""
     try:
-        latest = await CoreMessageCache.select_latest_rows()
-        counts = await CoreMessageCache.select_counts()
+        return await CoreMessageCacheSession.select_stats(only)
     except Exception as e:
         logger.debug(t("log.cache.read_failed", e=e))
         return {}
 
-    result: Dict[str, Dict[str, Any]] = {}
-    for row in latest:
-        result[row.session_id] = {
-            "row": row,
-            "count": counts.get(row.session_id, 0),
-        }
-    return result
+
+async def fetch_latest_rows(session_ids: Sequence[str]) -> Dict[str, CoreMessageCache]:
+    """当前页的会话 → 库里最新一条整行。一次查完，不按会话逐个点查。"""
+    if not session_ids:
+        return {}
+    try:
+        return await CoreMessageCache.select_latest_by_ids(session_ids)
+    except Exception as e:
+        logger.debug(t("log.cache.read_failed", e=e))
+        return {}
 
 
 async def cache_size() -> int:

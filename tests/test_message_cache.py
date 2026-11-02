@@ -14,8 +14,9 @@ from gsuid_core.models import Event
 from gsuid_core.message_history.cache import (
     CoreMessageCache,
     query_messages,
-    query_sessions,
+    fetch_latest_rows,
     payload_from_record,
+    query_session_stats,
 )
 from gsuid_core.message_history.manager import MessageRecord
 
@@ -109,13 +110,18 @@ def test_insert_query_and_purge(monkeypatch: pytest.MonkeyPatch) -> None:
         # 时间正序返回，前端直接追加
         assert [row.content for row in rows] == ["旧的", "你好"]
 
+        # 往上翻页：before 只要比它更早的
+        older = await CoreMessageCache.select_recent("s1", 10, before=1000.0)
+        assert [row.content for row in older] == ["旧的"]
+        assert await query_messages("s1", 10, before=900.0) == []
+
         messages = await query_messages("s1", 10)
         assert messages[-1]["content"] == "你好"
         assert messages[-1]["segments"] == []
 
-        sessions = await query_sessions()
-        assert sessions["s1"]["count"] == 2
-        assert sessions["s1"]["row"].content == "你好"
+        stats = await query_session_stats()
+        assert stats["s1"]["count"] == 2
+        assert (await fetch_latest_rows(["s1"]))["s1"].content == "你好"
 
         # 只清 24 小时之前的
         removed = await CoreMessageCache.purge_before(now_ms - 24 * 3600 * 1000)
@@ -127,6 +133,185 @@ def test_insert_query_and_purge(monkeypatch: pytest.MonkeyPatch) -> None:
         assert await CoreMessageCache.select_recent("s1", 10) == []
 
     asyncio.run(scenario())
+
+
+def test_session_stats_then_fetch_page_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """会话列表先只拿「条数 + 最后时间」排序分页，整行只给当前页的会话取。"""
+
+    async def scenario() -> None:
+        await _bind_mem_db(monkeypatch)
+        now_ms = int(time.time() * 1000)
+        for session_id, contents in (("s1", ["a", "b", "c"]), ("s2", ["x"])):
+            rows = [
+                _row(
+                    MessageRecord(role="user", content=text, user_id="1", timestamp=100.0 * (i + 1)),
+                    session_id,
+                    now_ms,
+                )
+                for i, text in enumerate(contents)
+            ]
+            await CoreMessageCache.batch_insert(rows)
+
+        stats = await query_session_stats()
+        assert stats["s1"] == {"count": 3, "last_time": 300.0}
+        assert stats["s2"] == {"count": 1, "last_time": 100.0}
+
+        # 只给这一页要显示的会话取整行
+        page = await fetch_latest_rows(["s1"])
+        assert list(page) == ["s1"]
+        assert page["s1"].content == "c"
+        # 一页多个会话一次查完，别按会话逐个点查
+        both = await fetch_latest_rows(["s1", "s2"])
+        assert {key: row.content for key, row in both.items()} == {"s1": "c", "s2": "x"}
+        # 空列表不该查库
+        assert await fetch_latest_rows([]) == {}
+
+    asyncio.run(scenario())
+
+
+def test_session_stats_maintained_by_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """会话汇总跟着写入累加，不是每次读的时候现算。"""
+
+    async def scenario() -> None:
+        await _bind_mem_db(monkeypatch)
+        now_ms = int(time.time() * 1000)
+        for text, timestamp in (("a", 100.0), ("b", 200.0)):
+            await CoreMessageCache.batch_insert(
+                [_row(MessageRecord(role="user", content=text, user_id="1", timestamp=timestamp), "s1", now_ms)]
+            )
+        assert await query_session_stats() == {"s1": {"count": 2, "last_time": 200.0}}
+
+        # 分批写入要累加，不能覆盖
+        await CoreMessageCache.batch_insert(
+            [_row(MessageRecord(role="user", content="c", user_id="1", timestamp=300.0), "s1", now_ms)]
+        )
+        assert (await query_session_stats())["s1"] == {"count": 3, "last_time": 300.0}
+
+        # 只取指定会话时不碰其他会话
+        assert await query_session_stats(["s1"]) == {"s1": {"count": 3, "last_time": 300.0}}
+        assert await query_session_stats(["nope"]) == {}
+
+    asyncio.run(scenario())
+
+
+def test_purge_keeps_session_stats_in_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清理删掉的可能就是某个会话的最后一条，汇总必须跟着回退；会话删空就整行消失。"""
+
+    async def scenario() -> None:
+        import gsuid_core.message_history.cache as cache_module
+
+        await _bind_mem_db(monkeypatch)
+        now_ms = int(time.time() * 1000)
+        old_ms = now_ms - 48 * 3600 * 1000
+        # s1：一条过期、一条新的；s2：只有一条过期的
+        await CoreMessageCache.batch_insert(
+            [
+                _row(MessageRecord(role="user", content="老", user_id="1", timestamp=100.0), "s1", old_ms),
+                _row(MessageRecord(role="user", content="新", user_id="1", timestamp=200.0), "s1", now_ms),
+            ]
+        )
+        await CoreMessageCache.batch_insert(
+            [_row(MessageRecord(role="user", content="过期", user_id="1", timestamp=50.0), "s2", old_ms)]
+        )
+        assert (await query_session_stats())["s2"]["count"] == 1
+
+        monkeypatch.setattr(cache_module, "cache_hours", lambda: 24)
+        assert await cache_module.purge_expired() == 2
+
+        stats = await query_session_stats()
+        assert stats == {"s1": {"count": 1, "last_time": 200.0}}
+
+        # 清空缓存连汇总一起清，否则列表里会留下一堆空会话
+        assert await CoreMessageCache.clear_all() == 1
+        assert await query_session_stats() == {}
+
+    asyncio.run(scenario())
+
+
+def test_legacy_rows_do_not_need_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """升级前写入的消息没有汇总行 —— 不迁移，等保留窗口到期自然清掉。
+
+    升级后老会话要等它再说一句话（`bump` 建行）或旧消息过期后才进列表，
+    这是有意的取舍：不为了几天内的老数据跑一次全表补齐。
+    """
+
+    async def scenario() -> None:
+        import gsuid_core.utils.database.base_models as base_models
+
+        await _bind_mem_db(monkeypatch)
+        now_ms = int(time.time() * 1000)
+        async with base_models.async_maker() as session:
+            session.add(
+                CoreMessageCache(
+                    **_row(MessageRecord(role="user", content="x", user_id="1", timestamp=10.0), "s9", now_ms)
+                )
+            )
+            await session.commit()
+
+        # 老数据没有汇总行，读统计不会为它做任何补偿
+        assert await query_session_stats() == {}
+        # 一旦它再说一句话，汇总行由写入路径建出来，条数从这一刻开始算
+        await CoreMessageCache.batch_insert(
+            [_row(MessageRecord(role="user", content="y", user_id="1", timestamp=20.0), "s9", now_ms)]
+        )
+        assert (await query_session_stats())["s9"] == {"count": 1, "last_time": 20.0}
+
+    asyncio.run(scenario())
+
+
+def test_session_stats_read_does_not_scan_message_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """列表分页读汇总表就够。
+
+    排序键就是聚合结果，如果每页都去消息表 ``group by session_id``，翻页次数就是
+    全表聚合次数。这条守住「读统计不碰消息表」。
+    """
+
+    async def scenario() -> None:
+        from sqlalchemy import event
+
+        engine = await _bind_mem_db(monkeypatch)
+        now_ms = int(time.time() * 1000)
+        await CoreMessageCache.batch_insert(
+            [
+                _row(MessageRecord(role="user", content="a", user_id="1", timestamp=100.0), "s1", now_ms),
+                _row(MessageRecord(role="user", content="b", user_id="1", timestamp=200.0), "s2", now_ms),
+            ]
+        )
+
+        statements: list[str] = []
+
+        def _capture(*args: object) -> None:
+            statements.append(str(args[2]).lower())
+
+        event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+        try:
+            assert (await query_session_stats())["s1"] == {"count": 1, "last_time": 100.0}
+            assert (await query_session_stats(["s2"]))["s2"] == {"count": 1, "last_time": 200.0}
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+
+        selects = [item for item in statements if item.startswith("select")]
+        assert selects, "应该真的查了库"
+        assert all("coremessagecachesession" in item for item in selects), selects
+
+    asyncio.run(scenario())
+
+
+def test_cached_message_key_is_primary_key() -> None:
+    """机器人连发两条一模一样的话：msg_id 都是空，只有主键能把它们分开。
+
+    出站记录是在 send 之前构造的，平台还没返回消息 ID，所以 assistant 的
+    ``msg_id`` 永远是空串 —— 前端拿它当 React key 会直接撞。
+    """
+    rows = [
+        CoreMessageCache(id=7, session_id="s1", role="assistant", content="在的", msg_id=""),
+        CoreMessageCache(id=8, session_id="s1", role="assistant", content="在的", msg_id=""),
+    ]
+    keys = [row.to_chat_message()["key"] for row in rows]
+    assert keys == ["c7", "c8"]
+    assert len(set(keys)) == 2
+    # 还没落库（没有主键）的记录留空，交给前端兜底
+    assert CoreMessageCache(session_id="s1", role="assistant").to_chat_message()["key"] == ""
 
 
 def test_cached_assistant_uses_bot_identity() -> None:
