@@ -175,6 +175,46 @@ async def _group_metas(group_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+@with_read_session
+async def _select_user_rows(_self: Any, session: AsyncSession, user_ids: List[str]) -> List[Any]:
+    """一次取回这一页用到的用户，顺序按 id，和 ``base_select_data`` 取第一条一致。"""
+    from sqlmodel import col as _col, select as _select
+
+    from gsuid_core.utils.database.models import CoreUser
+
+    statement = _select(CoreUser).where(_col(CoreUser.user_id).in_(user_ids))
+    return list((await session.execute(statement.order_by(_col(CoreUser.id)))).scalars().all())
+
+
+async def _user_metas(pairs: Sequence[Tuple[str, str]]) -> Dict[Tuple[str, str], Dict[str, str]]:
+    """批量版 ``_user_meta``：一页会话只查一次库，不是每个会话查一次。
+
+    入参是 ``(bot_id, user_id)``。返回的键同时有 ``(bot_id, user_id)`` 和 ``("", user_id)``，
+    后者给平台对不上的情况兜底（同一用户在不同平台的头像本来就一样）。
+    """
+    wanted = [(str(b or ""), str(u or "")) for b, u in pairs]
+    user_ids = list(dict.fromkeys(uid for _, uid in dict.fromkeys(wanted) if uid))
+    if not user_ids:
+        return {}
+    try:
+        rows = await _select_user_rows(None, user_ids)
+    except Exception:
+        return {}
+
+    def _pick(value: Any) -> str:
+        text = str(value or "").strip()
+        return "" if text in ("", "1") else text
+
+    result: Dict[Tuple[str, str], Dict[str, str]] = {}
+    for row in rows:
+        meta = {"user_name": _pick(row.user_name), "user_icon": _pick(row.user_icon)}
+        if not meta["user_name"] and not meta["user_icon"]:
+            continue
+        result.setdefault((str(row.bot_id or ""), str(row.user_id or "")), meta)
+        result.setdefault(("", str(row.user_id or "")), meta)
+    return result
+
+
 async def _user_meta(user_id: str, bot_id: str) -> Dict[str, str]:
     """早柚用户库里的昵称 / 头像。给 @ 补昵称、会话列表补标题读的都是这一份。"""
     query: Dict[str, str] = {"user_id": user_id}
@@ -339,6 +379,7 @@ async def _title_avatar(
     user_id: Any,
     sender: Dict[str, str],
     group_meta: Optional[Dict[str, Any]] = None,
+    user_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, str]:
     """会话标题与头像。"""
     if is_group:
@@ -351,7 +392,7 @@ async def _title_avatar(
 
     return (
         str(sender.get("card") or sender.get("nickname") or user_id or "未知"),
-        str(sender.get("avatar") or ""),
+        str(sender.get("avatar") or (user_meta or {}).get("user_icon") or ""),
     )
 
 
@@ -370,11 +411,12 @@ async def _session_item(
     prefs: Dict[str, Any],
     blacklist: Set[str],
     group_meta: Optional[Dict[str, Any]] = None,
+    user_meta: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """拼一条会话列表项。内存与缓存两条来源共用，避免两份字段各写一遍。"""
     ws_bot_id, bot_id, bot_self_id, group_id, user_id = parsed
     is_group = bool(group_id)
-    title, avatar = await _title_avatar(is_group, group_id, user_id, sender, group_meta)
+    title, avatar = await _title_avatar(is_group, group_id, user_id, sender, group_meta, user_meta)
     item: Dict[str, Any] = {
         "session_id": session_id,
         "type": "group" if is_group else "private",
@@ -487,6 +529,7 @@ async def _session_from_header(
     blacklist: Set[str],
     latest_row: Any = None,
     group_meta: Optional[Dict[str, Any]] = None,
+    user_meta: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """把一行表头补成完整列表项。
 
@@ -516,6 +559,7 @@ async def _session_from_header(
             prefs=prefs,
             blacklist=blacklist,
             group_meta=group_meta,
+            user_meta=user_meta,
         )
 
     records = get_history_manager().get_tail(_event_of(*parsed), _SENDER_SCAN)
@@ -538,6 +582,7 @@ async def _session_from_header(
         prefs=prefs,
         blacklist=blacklist,
         group_meta=group_meta,
+        user_meta=user_meta,
     )
 
 
@@ -579,6 +624,10 @@ async def list_chat_sessions(
         # 查不到的群传 {} 而不是 None：None 表示「没查过、你自己去查」，
         # 那会让没进 coregroup 表的群每个都多一次注定查不到的点查
         page_groups = await _group_metas([str(item["parsed"][3]) for item in page if item["parsed"][3]])
+        # 私聊头像同理：sender 里没带就去用户库补，一页只查一次
+        page_users = await _user_metas(
+            [(str(item["parsed"][1]), str(item["parsed"][4])) for item in page if not item["parsed"][3]]
+        )
         sessions = [
             item
             for item in [
@@ -588,6 +637,8 @@ async def list_chat_sessions(
                     blacklist,
                     latest_rows.get(header["session_id"]),
                     page_groups.get(str(header["parsed"][3] or ""), {}),
+                    page_users.get((str(header["parsed"][1]), str(header["parsed"][4])))
+                    or page_users.get(("", str(header["parsed"][4])), {}),
                 )
                 for header in page
             ]
@@ -1038,7 +1089,10 @@ async def chat_ws(websocket: WebSocket) -> None:
     async def _watch() -> None:
         # 客户端不会主动发东西，这里只为尽早发现断开
         while True:
-            await websocket.receive_text()
+            try:
+                await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
 
     pump_task = asyncio.create_task(_pump())
     watch_task = asyncio.create_task(_watch())

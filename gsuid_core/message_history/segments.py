@@ -262,6 +262,8 @@ def segments_from_messages(messages: Optional[List[Message]], *, depth: int = 0)
         elif msg_type == "image_size":
             # 只影响出图排版，不该占一条可见消息
             continue
+        elif msg_type == "reply_id":
+            continue
         elif msg_type == "group":
             # 出站帧尾的目标群号，纯协议用
             continue
