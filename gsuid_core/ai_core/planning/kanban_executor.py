@@ -731,7 +731,10 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
 
     root_id = (task.root_task_id or task.id).strip()
     owner = (task.owner_user_id or "").strip()
-    at_hint = f"收尾时 @发起人 `@{owner}`。" if owner else ""
+    # 私聊（direct）里消息只会发给发起人本人，@ 没有提醒意义、反而污染台词；
+    # 只在群聊/频道场景注入 @提示（user_type 口径与 _build_event 一致）。
+    _user_type = task.user_type if task.user_type in _VALID_USER_TYPES else "direct"
+    at_hint = f"收尾时 @发起人 `@{owner}`。" if owner and _user_type != "direct" else ""
     title_ban = ""
     if owner:
         from gsuid_core.ai_core.utils import _is_master_user
