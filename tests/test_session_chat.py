@@ -530,6 +530,47 @@ def test_group_title_reads_sender_before_database(monkeypatch):
     assert calls == ["575663150"]
 
 
+def test_reply_id_segment_is_not_rendered():
+    """reply_id 只是给 handler 填 event.reply_id 的协议段，别当成一条可见内容。"""
+    segments = segments_from_messages(
+        [Message("reply_id", "123456"), Message("reply", "被引用的话"), Message("text", "回复")]
+    )
+    assert segments == [
+        {"type": "reply", "id": "被引用的话"},
+        {"type": "text", "text": "回复"},
+    ]
+
+
+def test_private_title_falls_back_to_user_icon():
+    """适配器只给了昵称、没带头像时，列表要退回用户库那份，否则只剩一个空圈。"""
+    from gsuid_core.webconsole import session_chat_api as api
+
+    got = asyncio.run(
+        api._title_avatar(
+            False,
+            None,
+            "1A790910",
+            {"nickname": "雪狐狸"},
+            None,
+            {"user_name": "库里的昵称", "user_icon": "https://db/i.png"},
+        )
+    )
+    assert got == ("雪狐狸", "https://db/i.png")
+
+    # sender 自己带了头像就用它，别被库里的盖掉
+    got = asyncio.run(
+        api._title_avatar(
+            False,
+            None,
+            "1A790910",
+            {"nickname": "雪狐狸", "avatar": "https://x/y.png"},
+            None,
+            {"user_icon": "https://db/i.png"},
+        )
+    )
+    assert got == ("雪狐狸", "https://x/y.png")
+
+
 def test_send_result_reads_adapter_error_code():
     """适配器把失败编码成 __send_error__:原因，控制台要认出来，不能一律报成功。"""
     from types import SimpleNamespace
@@ -677,7 +718,7 @@ def test_session_ids_returns_only_asked(monkeypatch):
             items = [item for item in items if item["session_id"] in _only]
         return items
 
-    async def fake_item(header, _prefs, _blacklist, _latest_row=None, _group_meta=None):
+    async def fake_item(header, _prefs, _blacklist, _latest_row=None, _group_meta=None, _user_meta=None):
         return {"session_id": header["session_id"], "last_time": header["last_time"]}
 
     async def fake_rows(_ids):
