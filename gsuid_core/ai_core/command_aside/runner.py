@@ -19,7 +19,7 @@ from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.trigger import Trigger
-from gsuid_core.ai_core.utils import is_silence_marker, is_agent_error_text
+from gsuid_core.ai_core.utils import send_chat_result, is_silence_marker, is_agent_error_text
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.startup import is_ai_core_ready
 from gsuid_core.message_history import get_history_manager
@@ -29,6 +29,7 @@ from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import ASIDE_MODE, normalize_ai_modes, persona_config_manager
 from gsuid_core.ai_core.self_repetition import self_repetition_hint
 from gsuid_core.ai_core.persona.settings import get_master_title
+from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
 from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
@@ -387,7 +388,8 @@ async def apply_aside(
     if advice and not memory and plugin and _is_failure_or_usage_receipt(receipt):
         save_advice(plugin, receipt, advice, trigger_id=entry_rel, persona_name=persona_name)
     if advice and bot is not None:
-        await bot.send(advice)
+        # 走呈现层：bot.send 裸发会把 <meme:> 协议标签原样漏给用户
+        await send_chat_result(bot, advice, ev=event, extra_metadata=turn_reply_metadata(event))
     if advice:
         _last_aside_comment_ts[event.session_id] = time.time()
 
