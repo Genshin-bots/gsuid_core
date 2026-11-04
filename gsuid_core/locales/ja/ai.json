@@ -214,6 +214,7 @@
   "log.ai.find_images_source_fail": "[find_images] ソース {source} で「{query}」の検索に失敗、次のソースへ: {e}",
   "log.ai.find_tools_dynamically_requirement_load": "[find_tools] 要件「{p0}」に対して {p1} 個のツールを動的ロード: {loaded_names}",
   "log.ai.find_tools_event": "[find_tools] ツールロードに失敗: {e}",
+  "log.ai.find_tools_fallback_fail": "[find_tools] 検索フォールバック失敗（名簿/ペルソナ解決）: {e}",
   "log.ai.find_tools_feature_enabled": "[find_tools] AI 機能が無効です: {e}",
   "log.ai.find_tools_matched_excluded": "[find_tools] visible_when を満たさないため {p0} 件のヒットツールを除外: {hidden_names}",
   "log.ai.find_tools_prepare_treated_unavailable_fail": "[find_tools] ツール {p0} の prepare に失敗したため利用不可として処理: {e}",

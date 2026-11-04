@@ -214,6 +214,7 @@
   "log.ai.find_images_source_fail": "[find_images] 来源 {source} 搜「{query}」失败，换下一个来源: {e}",
   "log.ai.find_tools_dynamically_requirement_load": "[find_tools] 为需求「{p0}」动态加载 {p1} 个工具: {loaded_names}",
   "log.ai.find_tools_event": "[find_tools] 工具加载失败: {e}",
+  "log.ai.find_tools_fallback_fail": "[find_tools] 检索兜底失败（花名册/人格定位）: {e}",
   "log.ai.find_tools_feature_enabled": "[find_tools] AI功能未启用: {e}",
   "log.ai.find_tools_matched_excluded": "[find_tools] {p0} 个命中工具因 visible_when 不满足被剔除: {hidden_names}",
   "log.ai.find_tools_prepare_treated_unavailable_fail": "[find_tools] 工具 {p0} prepare 失败，按不可用处理: {e}",

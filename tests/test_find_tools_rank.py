@@ -952,3 +952,90 @@ def test_find_tools_gap_note_does_not_tell_model_to_give_up() -> None:
     assert "做不到" not in FIND_TOOLS_GAP_NOTE
     assert "capability_map" not in FIND_TOOLS_GAP_NOTE
     assert "禁止对用户讲检索过程" in FIND_TOOLS_GAP_NOTE
+
+
+def test_find_tools_falls_back_to_capability_roster_when_nothing_matches() -> None:
+    """检索空手而归时补能力代理花名册。
+
+    节点 ``match_keywords`` 是枚举式短语（「刷抖音」「抖音推荐」），用户把它说成
+    「抖音登录检查、浏览推荐、发表评论」时一个都点不到；此时只回「没有这项能力」
+    会让模型放弃，而 node 其实可以直接 create_subagent 委派。
+    """
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    async def fake_search(**_kwargs: object) -> list[object]:
+        return []
+
+    async def fake_matched(_need: str, *, limit: int = 5) -> list[str]:
+        _ = limit
+        return []
+
+    roster = (
+        '（可用能力代理——须 `create_subagent(agent_profile="<node_id>", task=...)` 委派：\n'
+        "- `douyin_browse`：刷抖音推荐\n"
+        "提醒的增删改查在主会话；禁止声称没有对应工具。）"
+    )
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={EXPOSED_TOOLS_EXTRA_KEY: []}, blocked_tool_names=set())
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.register.get_all_tools", lambda: {}),
+            patch("gsuid_core.ai_core.register.find_tool_base", lambda _n: None),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                fake_matched,
+            ),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.nodes_with_keyword_hit",
+                lambda _n: [],
+            ),
+            patch(
+                "gsuid_core.ai_core.agent_node.registry.format_capability_roster",
+                lambda _p=None: roster,
+            ),
+        ):
+            return await find_tools(ctx, "抖音登录检查、浏览推荐、发表评论的工具")
+
+    out = asyncio.run(_run())
+    assert "没有对口的专用能力" in out
+    assert "douyin_browse" in out
+
+
+def test_capability_map_lists_delegable_agents() -> None:
+    """能力代理持有的专属工具已被剥离，capability_map 必须能查到它们的 node_id。"""
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import capability_map
+
+    douyin = SimpleNamespace(
+        node_id="douyin_browse",
+        display_name="抖音观察员",
+        when_to_use="刷抖音推荐、看抖音热门、给抖音视频发评论时",
+    )
+    blog = SimpleNamespace(
+        node_id="blog_writer",
+        display_name="博客小编",
+        when_to_use="发博客文章；先查站点已有篇目",
+    )
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={}, blocked_tool_names=set())
+
+    with (
+        patch("gsuid_core.ai_core.register.get_all_tools", lambda: {}),
+        patch(
+            "gsuid_core.ai_core.agent_node.registry.list_persona_capability_nodes",
+            lambda _p=None: [douyin, blog],
+        ),
+    ):
+        hit = asyncio.run(capability_map(ctx, "all", "douyin"))
+        assert "douyin_browse" in hit
+        assert "blog_writer" not in hit
+        assert "目录为空" not in hit
+
+        full = asyncio.run(capability_map(ctx, "all", ""))
+        assert "可委派代理" in full
+        assert "2 项" in full

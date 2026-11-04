@@ -214,6 +214,7 @@
   "log.ai.find_images_source_fail": "[find_images] source {source} failed for '{query}', trying next source: {e}",
   "log.ai.find_tools_dynamically_requirement_load": "[find_tools] Dynamically loaded {p1} tools for requirement '{p0}': {loaded_names}",
   "log.ai.find_tools_event": "[find_tools] Tool loading failed: {e}",
+  "log.ai.find_tools_fallback_fail": "[find_tools] Retrieval fallback failed (roster/persona lookup): {e}",
   "log.ai.find_tools_feature_enabled": "[find_tools] AI feature not enabled: {e}",
   "log.ai.find_tools_matched_excluded": "[find_tools] {p0} matched tools excluded because visible_when not satisfied: {hidden_names}",
   "log.ai.find_tools_prepare_treated_unavailable_fail": "[find_tools] Tool {p0} prepare failed, treated as unavailable: {e}",
