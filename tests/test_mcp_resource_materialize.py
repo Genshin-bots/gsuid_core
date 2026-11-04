@@ -126,3 +126,25 @@ async def test_call_tool_materializes_only_for_stdio():
         # 验证发送给 client.call_tool 的参数依然是原始句柄
         call_args = mock_instance.call_tool.call_args[1]
         assert call_args["arguments"]["image"] == rid
+
+
+def test_prepare_source_for_mcp_with_handle():
+    """验证 prepare_source_for_mcp 支持将 img_ 句柄落地为真实临时文件。"""
+    import asyncio
+    from pathlib import Path
+
+    from gsuid_core.ai_core.mcp.utils import cleanup_tempfile, prepare_source_for_mcp
+
+    rid = RM.register(PNG_BYTES)
+    path = asyncio.run(prepare_source_for_mcp(f"{rid}.png", "🖼️ [Test]"))
+    try:
+        p = Path(path)
+        assert p.is_file()
+        assert path.endswith(".png")
+        assert p.read_bytes() == PNG_BYTES
+    finally:
+        cleanup_tempfile(path, "🖼️ [Test]")
+
+    non_existent = "img_9999999999999999"
+    unresolved = asyncio.run(prepare_source_for_mcp(non_existent))
+    assert unresolved == non_existent

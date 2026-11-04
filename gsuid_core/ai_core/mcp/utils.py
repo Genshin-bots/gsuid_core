@@ -32,7 +32,7 @@ import aiofiles
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.mcp.client import MCPToolResult
+from gsuid_core.ai_core.mcp.client import MCPToolResult, _materialize_resource_handle
 from gsuid_core.ai_core.mcp.mcp_tool_caller import call_mcp_tool
 from gsuid_core.utils.plugins_config.models import GsStrConfig
 from gsuid_core.ai_core.mcp.mcp_tools_config import mcp_tools_config
@@ -430,13 +430,14 @@ async def prepare_source_for_mcp(
     """准备 MCP 工具所需的文件来源路径。
 
     很多 MCP 工具期望文件路径而非 URL 或 base64 数据。此函数统一处理：
-    1. **HTTP/HTTPS URL** → 原样返回（部分 MCP 工具支持 URL）
-    2. **本地文件路径**（文件存在）→ 原样返回
-    3. **DataURI**（``data:xxx;base64,...``）→ 解码并保存为临时文件
-    4. **其他** → 原样返回
+    1. **GsCore 内部资源句柄**（``img_`` / ``res_``）→ 解析并保存为临时文件
+    2. **HTTP/HTTPS URL** → 原样返回（部分 MCP 工具支持 URL）
+    3. **本地文件路径**（文件存在）→ 原样返回
+    4. **DataURI**（``data:xxx;base64,...``）→ 解码并保存为临时文件
+    5. **其他** → 原样返回
 
     Args:
-        source: 图片/音频/视频来源，支持 HTTP URL、文件路径或 DataURI
+        source: 图片/音频/视频来源，支持 GsCore 句柄、HTTP URL、文件路径或 DataURI
         log_prefix: 日志前缀
 
     Returns:
@@ -451,6 +452,9 @@ async def prepare_source_for_mcp(
         >>> # HTTP URL → 原样返回
         >>> url = await prepare_source_for_mcp("https://example.com/img.png")
     """
+    # GsCore 资源句柄先物化为 Data URI，再落入后续保存临时文件逻辑
+    source = await _materialize_resource_handle(source)
+
     # HTTP/HTTPS URL 直接返回
     if source.startswith("http://") or source.startswith("https://"):
         return source
