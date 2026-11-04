@@ -74,6 +74,7 @@
   "log.mcp.registered_skipping_name": "[MCP] 工具已注册，跳过: {registered_name}",
   "log.mcp.registering_server_config": "[MCP] 正在注册 MCP 服务器: {p0} ({config_id})",
   "log.mcp.registration_tools_total": "[MCP] {p0} 注册完成，共 {count} 个工具",
+  "log.mcp.resource_handle_unresolved": "[MCP] 资源句柄 {handle} 解析失败，按原值透传: {e}",
   "log.mcp.sse_transport_url": "[MCP][{p0}] 使用 SSE 传输，URL: {p1}",
   "log.mcp.streamable_http_transport_url": "[MCP][{p0}] 使用 Streamable HTTP 传输，URL: {p1}",
   "log.mcp.unknown_transport_fallback_stdio": "[MCP][{p0}] 未知传输方式 '{p1}'，回退为 stdio",

@@ -11,6 +11,7 @@ MCP 客户端核心模块
 - 完全异步，兼容项目的 async 架构
 """
 
+import re
 from typing import Any, Union
 from dataclasses import field, dataclass
 
@@ -26,6 +27,52 @@ from gsuid_core.ai_core.mcp.transport import (
     MCP_TRANSPORT_STREAMABLE_HTTP,
     resolve_mcp_transport,
 )
+
+# GsCore 内部资源句柄：img_ = RM 内存图片（16 位 hex），res_ = Kanban artifact（12 位 hex）。
+# 两者都只存在于主进程（RM 是内存 dict，artifact 落在主进程的 DB / 磁盘），stdio 的
+# MCP 子进程取不到——直接透传会被当成文件路径去找，必然回一句「图片文件不存在」。
+_RESOURCE_HANDLE_RE = re.compile(r"^(?:img_[0-9a-f]{16}|res_[0-9a-f]{12})(?:\.(?:png|jpe?g|webp|gif))?$")
+
+
+async def _materialize_resource_handle(value: str) -> str:
+    """把 GsCore 资源句柄解析成 data URI，供 stdio 的 MCP 子进程直接消费。
+
+    ``img_``（RM 内存图片）与 ``res_``（Kanban artifact）都只存在于主进程，子进程
+    取不到；原样透传会被当成文件路径去找，下游只会回一句「图片文件不存在」。
+
+    Args:
+        value: 单个参数值
+
+    Returns:
+        解析后的 data URI；不是资源句柄、或句柄取不出来时原样返回
+    """
+    if not _RESOURCE_HANDLE_RE.match(value):
+        return value
+    # Agent 会给句柄补图片扩展名，RM / artifact 里存的是裸句柄
+    handle = re.sub(r"\.(?:png|jpe?g|webp|gif)$", "", value)
+
+    # 延迟导入：image_reader 依赖 register / content_guard，模块级引入会形成导入环
+    from gsuid_core.ai_core.buildin_tools.image_reader import _resolve_image_to_url
+
+    uri, err = await _resolve_image_to_url(handle)
+    if uri is None:
+        # 取不到就原样放行：句柄也可能是外部系统的同形态 ID，改抛错会打断原本能用的调用。
+        # 错误文案可能多行（如非图片 artifact 的处置建议），压成单行并截断再进日志。
+        brief = " ".join((err or "未知原因").split())[:200]
+        logger.warning(t("log.mcp.resource_handle_unresolved", handle=handle, e=brief))
+        return value
+    return uri
+
+
+async def _materialize_resource_args(value: Any) -> Any:
+    """递归把参数里的 GsCore 资源句柄换成 data URI（list / dict 里的同样处理）。"""
+    if isinstance(value, str):
+        return await _materialize_resource_handle(value)
+    if isinstance(value, list):
+        return [await _materialize_resource_args(item) for item in value]
+    if isinstance(value, dict):
+        return {key: await _materialize_resource_args(item) for key, item in value.items()}
+    return value
 
 
 @dataclass
@@ -230,6 +277,12 @@ class MCPClient:
                 truncated_args=truncated_args,
             )
         )
+
+        # img_ / res_ 只在本进程可达，stdio 子进程拿不到 → 发送前物化成 data URI。
+        # 远程传输（sse / streamable_http）对面可能就是 GsCore 自己的 MCP Server，
+        # 它认句柄（server.py 用 RM.peek 取），提前物化反而会打断，故只处理 stdio。
+        if isinstance(transport, StdioTransport):
+            arguments = await _materialize_resource_args(arguments)
 
         async with client:
             # FastMCP 3 默认 raise_on_error=True，会把工具错误直接抛成 ToolError；
