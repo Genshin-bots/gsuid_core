@@ -282,7 +282,7 @@ def match_capability_node(hint: str) -> str:
                 best_id = node.node_id
         # 弱匹配：when_to_use / display_name / node_id 出现在 hint 中（低于关键词分）
         weak_blob = f"{node.node_id} {node.display_name} {node.when_to_use}".lower()
-        for token in h.replace("，", " ").replace(",", " ").split():
+        for token in re.split(r"[\s,，、；;。！？!?/|]+", h):
             if len(token) < 2:
                 continue
             if token in weak_blob:

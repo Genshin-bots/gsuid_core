@@ -195,8 +195,9 @@ def _node_on_topic(need: str, node_id: str) -> bool:
 
 
 def nodes_with_keyword_hit(need: str) -> list[str]:
-    """match_keywords 出现在 need 里的节点（不含 persona / 评估器）。"""
+    """match_keywords 或节点自描述特征出现在 need 里的节点（不含 persona / 评估器）。"""
     from gsuid_core.ai_core.agent_node import list_nodes
+    from gsuid_core.ai_core.buildin_tools.find_tools_rank import common_keyword_stems
 
     blob = (need or "").strip().lower()
     if not blob:
@@ -205,11 +206,26 @@ def nodes_with_keyword_hit(need: str) -> list[str]:
     for node in list_nodes():
         if node.source == "persona" or node.node_id == "capability_evaluator":
             continue
+        matched = False
         for kw in node.match_keywords:
             k = (kw or "").strip().lower()
             if k and k in blob:
                 hits.append(node.node_id)
+                matched = True
                 break
+        if matched:
+            continue
+        dn = (node.display_name or "").strip().lower()
+        if len(dn) >= 2 and dn in blob:
+            hits.append(node.node_id)
+            continue
+        stems = common_keyword_stems(node.match_keywords)
+        if any(stem in blob for stem in stems):
+            hits.append(node.node_id)
+            continue
+        nid_stem = node.node_id.split("_")[0].lower()
+        if len(nid_stem) >= 3 and nid_stem in blob:
+            hits.append(node.node_id)
     return hits
 
 
@@ -357,40 +373,6 @@ def _record_capability_gap(need: str) -> None:
 def get_capability_gaps(limit: int = 20) -> list[tuple[str, int]]:
     """按次数降序返回 top-N 能力缺口（need, count），供 webconsole 展示。"""
     return sorted(_CAPABILITY_GAP_COUNTS.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-
-
-def _persona_name_from_ctx(ctx: RunContext[ToolContext]) -> str:
-    """当前会话的人格名；取不到返回空串（花名册退回全部可委派节点）。"""
-    parent = ctx.deps.parent_session_id
-    if not parent:
-        return ""
-    try:
-        from gsuid_core.ai_core.session_registry import get_ai_session_registry
-
-        sess = get_ai_session_registry().get_ai_session(parent)
-    except Exception as e:  # noqa: BLE001 - 定位失败不该打断检索兜底
-        logger.debug(t("log.ai.find_tools_fallback_fail", e=e))
-        return ""
-    name = getattr(sess, "persona_name", None) if sess is not None else None
-    return name.strip() if isinstance(name, str) and name.strip() else ""
-
-
-def _delegable_roster_hint(ctx: RunContext[ToolContext]) -> str:
-    """检索空手而归时补一张能力代理花名册。
-
-    节点的 ``match_keywords`` 是枚举式短语（「刷抖音」「抖音推荐」），用户把它说成
-    「抖音登录检查、浏览推荐、发表评论」时一个都点不到，于是回了「没有这项能力」——
-    可节点就在那儿，``create_subagent`` 直接能用。空手时附上花名册，比让模型反复
-    换措辞试错省事，也免得它把「检索不到」讲成「这个能力不存在」。
-    """
-    from gsuid_core.ai_core.agent_node.registry import format_capability_roster
-
-    try:
-        roster = format_capability_roster(_persona_name_from_ctx(ctx) or None)
-    except Exception as e:  # noqa: BLE001 - 兜底失败只影响提示，不影响主流程
-        logger.debug(t("log.ai.find_tools_fallback_fail", e=e))
-        return ""
-    return roster if roster.strip() else ""
 
 
 # 不声明 capability_domain（会被 L3 按族驻留带进闲聊轮）；category 必须为 meta：
@@ -628,9 +610,8 @@ async def find_tools(
             stale_empty = _record_find_tools_round(ctx.deps.extra, [])
             miss = f"⚠️ 本次没有对口的专用能力（{need}）。可换更具体的能力描述重试，或委派通用调研。"
             if stale_empty:
-                miss = f"{miss}\n{FIND_TOOLS_GAP_NOTE}"
-            roster = _delegable_roster_hint(ctx)
-            return f"{miss}\n\n{roster}" if roster else miss
+                return f"{miss}\n{FIND_TOOLS_GAP_NOTE}"
+            return miss
 
         loaded_names = plan.loadable_tool_names()
         ctx.deps.dynamic_tool_names.update(loaded_names)
@@ -675,7 +656,9 @@ async def capability_map(
         filter: 按能力域、插件名、工具名或能力代理（node_id / 名称 / 用途）过滤。
     """
     from gsuid_core.ai_core.register import get_all_tools, main_persona_roster_ok
+    from gsuid_core.ai_core.agent_node.models import AgentNode
     from gsuid_core.ai_core.agent_node.registry import list_persona_capability_nodes
+    from gsuid_core.ai_core.buildin_tools.subagent import _caller_persona_name
 
     needle = (filter or "").strip().lower()
     tools = get_all_tools()
@@ -700,8 +683,11 @@ async def capability_map(
             cover = tb.description.split("\n", 1)[0][:40]
         grouped.setdefault(domain, []).append(f"{tb.name}：{cover}")
     agents: list[str] = []
-    for node in list_persona_capability_nodes(_persona_name_from_ctx(ctx) or None):
-        if needle and needle not in f"{node.node_id} {node.display_name} {node.when_to_use}".lower():
+    caller_persona = _caller_persona_name(ctx)
+    for node in list_persona_capability_nodes(caller_persona or None):
+        tools_part = " ".join(node.tool_names) if isinstance(node, AgentNode) else ""
+        node_hay = f"{node.node_id} {node.display_name} {node.when_to_use} {tools_part}".lower()
+        if needle and needle not in node_hay:
             continue
         when = (node.when_to_use or "").strip() or node.display_name
         for sep in ("；", ";", "（", "(", "。"):
