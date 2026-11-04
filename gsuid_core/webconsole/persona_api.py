@@ -999,8 +999,12 @@ async def update_persona_config(
         results.append(f"allow_meme_reply: {allow_meme}")
 
     if "meme_frequency" in data:
-        meme_frequency = data["meme_frequency"]
-        if isinstance(meme_frequency, bool) or not isinstance(meme_frequency, int):
+        raw_freq = data["meme_frequency"]
+        if isinstance(raw_freq, bool):
+            return {"status": 1, "msg": "meme_frequency 必须是整数", "data": None}
+        try:
+            meme_frequency = int(raw_freq)
+        except (ValueError, TypeError):
             return {"status": 1, "msg": "meme_frequency 必须是整数", "data": None}
         success, msg = persona_config_manager.set_meme_frequency(persona_name, meme_frequency)
         if not success:
@@ -1009,8 +1013,12 @@ async def update_persona_config(
         results.append(f"meme_frequency: {meme_frequency}")
 
     if "meme_send_cooldown_sec" in data:
-        meme_cooldown = data["meme_send_cooldown_sec"]
-        if isinstance(meme_cooldown, bool) or not isinstance(meme_cooldown, int):
+        raw_cd = data["meme_send_cooldown_sec"]
+        if isinstance(raw_cd, bool):
+            return {"status": 1, "msg": "meme_send_cooldown_sec 必须是整数", "data": None}
+        try:
+            meme_cooldown = int(raw_cd)
+        except (ValueError, TypeError):
             return {"status": 1, "msg": "meme_send_cooldown_sec 必须是整数", "data": None}
         success, msg = persona_config_manager.set_meme_send_cooldown_sec(persona_name, meme_cooldown)
         if not success:
@@ -1239,9 +1247,12 @@ async def update_persona_settings(
                 return {"status": 1, "msg": f"{key} 必须是布尔值", "data": None}
             val_to_set = raw
         elif isinstance(template, GsIntConfig):
-            if isinstance(raw, bool) or not isinstance(raw, int):
+            if isinstance(raw, bool):
                 return {"status": 1, "msg": f"{key} 必须是整数", "data": None}
-            val_to_set = raw
+            try:
+                val_to_set = int(raw)  # type: ignore[arg-type]
+            except (ValueError, TypeError):
+                return {"status": 1, "msg": f"{key} 必须是整数", "data": None}
         elif isinstance(template, GsStrConfig):
             if not isinstance(raw, str):
                 return {"status": 1, "msg": f"{key} 必须是字符串", "data": None}
