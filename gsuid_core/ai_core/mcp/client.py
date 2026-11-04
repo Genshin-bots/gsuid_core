@@ -11,6 +11,7 @@ MCP 客户端核心模块
 - 完全异步，兼容项目的 async 架构
 """
 
+import re
 from typing import Any, Union
 from dataclasses import field, dataclass
 
@@ -26,6 +27,52 @@ from gsuid_core.ai_core.mcp.transport import (
     MCP_TRANSPORT_STREAMABLE_HTTP,
     resolve_mcp_transport,
 )
+
+# 资源句柄仅存于主进程，stdio 子进程无法访问需在入参前物化为 data URI
+_RESOURCE_HANDLE_RE = re.compile(
+    r"^(?:img_[0-9a-f]{16}|res_[0-9a-f]{12})(?:\.(?:png|jpe?g|webp|gif))?$",
+    re.IGNORECASE,
+)
+
+
+async def _materialize_resource_handle(value: str) -> str:
+    """把 GsCore 资源句柄解析成 data URI，供 stdio 的 MCP 子进程直接消费。
+
+    ``img_``（RM 内存图片）与 ``res_``（Kanban artifact）都只存在于主进程，子进程
+    取不到；原样透传会被当成文件路径去找，下游只会回一句「图片文件不存在」。
+
+    Args:
+        value: 单个参数值
+
+    Returns:
+        解析后的 data URI；不是资源句柄、或句柄取不出来时原样返回
+    """
+    if not _RESOURCE_HANDLE_RE.match(value):
+        return value
+    # Agent 会给句柄补图片扩展名，RM / artifact 里存的是裸句柄
+    handle = re.sub(r"\.(?:png|jpe?g|webp|gif)$", "", value, flags=re.IGNORECASE)
+
+    # 延迟导入：image_reader 依赖 register / content_guard，模块级引入会形成导入环
+    from gsuid_core.ai_core.buildin_tools.image_reader import _resolve_image_to_url
+
+    uri, err = await _resolve_image_to_url(handle)
+    if uri is None:
+        # 解析失败原样放行避免误伤外部同形态 ID；多行错误压成单行截断入日志
+        brief = " ".join((err or "未知原因").split())[:200]
+        logger.warning(t("log.mcp.resource_handle_unresolved", handle=handle, e=brief))
+        return value
+    return uri
+
+
+async def _materialize_resource_args(value: object) -> object:
+    """递归把参数里的 GsCore 资源句柄换成 data URI（list / dict 里的同样处理）。"""
+    if isinstance(value, str):
+        return await _materialize_resource_handle(value)
+    if isinstance(value, list):
+        return [await _materialize_resource_args(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): await _materialize_resource_args(item) for key, item in value.items()}
+    return value
 
 
 @dataclass
@@ -230,6 +277,12 @@ class MCPClient:
                 truncated_args=truncated_args,
             )
         )
+
+        # stdio 子进程无法访问主进程资源句柄需物化；远程传输原生认句柄故跳过
+        if isinstance(transport, StdioTransport) and arguments:
+            materialized = await _materialize_resource_args(arguments)
+            if isinstance(materialized, dict):
+                arguments = materialized
 
         async with client:
             # FastMCP 3 默认 raise_on_error=True，会把工具错误直接抛成 ToolError；

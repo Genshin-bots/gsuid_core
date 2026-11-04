@@ -74,6 +74,7 @@
   "log.mcp.registered_skipping_name": "[MCP] ツール登録済み、スキップ: {registered_name}",
   "log.mcp.registering_server_config": "[MCP] MCP サーバーを登録中: {p0} ({config_id})",
   "log.mcp.registration_tools_total": "[MCP] {p0} 登録完了、合計 {count} 個のツール",
+  "log.mcp.resource_handle_unresolved": "[MCP] リソースハンドル {handle} の解決に失敗、元の値をそのまま渡します: {e}",
   "log.mcp.sse_transport_url": "[MCP][{p0}] SSE トランスポートを使用、URL: {p1}",
   "log.mcp.streamable_http_transport_url": "[MCP][{p0}] Streamable HTTP トランスポートを使用、URL: {p1}",
   "log.mcp.unknown_transport_fallback_stdio": "[MCP][{p0}] 未知の転送方式 '{p1}'、stdio にフォールバック",
