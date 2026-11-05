@@ -4,6 +4,7 @@
 exclusive 工具不出现在可调用名单，折叠成所属专用能力。
 """
 
+import re
 from typing import Literal, Sequence
 from dataclasses import dataclass
 
@@ -111,6 +112,31 @@ def _hay_has_cjk_window(need: str, hay: str, min_len: int = _CJK_MIN_WINDOW) -> 
     return False
 
 
+def common_keyword_stems(keywords: Sequence[str], min_len: int = 2) -> list[str]:
+    """从节点自描述关键词中提取多词共享的公共词素（零外部词表）。"""
+    kws = [k.strip().lower() for k in keywords if k and len(k.strip()) >= min_len]
+    if len(kws) < 2:
+        return []
+    substr_counts: dict[str, int] = {}
+    for kw in kws:
+        seen_in_kw: set[str] = set()
+        n = len(kw)
+        for w in range(min_len, n + 1):
+            for i in range(n - w + 1):
+                sub = kw[i : i + w]
+                if sub not in seen_in_kw:
+                    seen_in_kw.add(sub)
+                    substr_counts[sub] = substr_counts.get(sub, 0) + 1
+    shared = [sub for sub, cnt in substr_counts.items() if cnt >= 2]
+    # 频次优先，同频取长；仅当频次未增加时才被包含它的长词素抑制
+    shared.sort(key=lambda s: (substr_counts[s], len(s)), reverse=True)
+    filtered: list[str] = []
+    for s in shared:
+        if not any(s in longer and substr_counts[s] <= substr_counts[longer] for longer in filtered):
+            filtered.append(s)
+    return filtered
+
+
 def need_matches_node_text(
     need: str,
     *,
@@ -119,7 +145,7 @@ def need_matches_node_text(
     keywords: Sequence[str],
     covers: Sequence[str],
 ) -> bool:
-    """节点是否对口：when_to_use / 名 / 关键词 / covers 与 need 过同一套单向命中。"""
+    """节点是否对口：when_to_use / 名 / 关键词 / covers 与 need 过单向命中。"""
     cover_list = [c for c in covers if c]
     hay = " ".join(
         p
@@ -131,7 +157,23 @@ def need_matches_node_text(
         )
         if p and p.strip()
     )
-    return need_matches_tool_text(need, hay, cover_list)
+    if need_matches_tool_text(need, hay, cover_list):
+        return True
+    need_low = (need or "").strip().lower()
+    if not need_low:
+        return False
+    # 自适应自描述对口：节点关键词高频公共词素命中 + 行为意图词素重叠
+    stems = common_keyword_stems(keywords)
+    for stem in stems:
+        if stem in need_low:
+            kw_blob = " ".join(keywords)
+            intent_text = f"{when_to_use} {kw_blob}".lower()
+            intent_tokens = [w for w in re.split(r"[\s,，、；;。！？!?/|]+", intent_text) if len(w) >= 2]
+            for it in intent_tokens:
+                it_clean = it.replace(stem, "").strip()
+                if len(it_clean) >= 2 and it_clean in need_low:
+                    return True
+    return False
 
 
 def need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) -> bool:
@@ -148,7 +190,7 @@ def need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) ->
             return True
     if _hay_has_cjk_window(n, hay):
         return True
-    tokens = [t for t in n.replace("，", " ").replace(",", " ").split() if len(t) >= 2]
+    tokens = [t for t in re.split(r"[\s,，、；;。！？!?/|]+", n) if len(t) >= 2]
     if not tokens or not hay:
         return False
     hits = sum(1 for t in tokens if t in hay)

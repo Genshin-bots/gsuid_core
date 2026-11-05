@@ -10,6 +10,7 @@ from gsuid_core.ai_core.persona.prompts import TOOL_ORCHESTRATION_CONSTRAINTS
 from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
     RankedHit,
     agent_is_dedicated,
+    common_keyword_stems,
     build_find_tools_plan,
     classify_callable_tool,
     format_find_tools_plan,
@@ -952,3 +953,172 @@ def test_find_tools_gap_note_does_not_tell_model_to_give_up() -> None:
     assert "做不到" not in FIND_TOOLS_GAP_NOTE
     assert "capability_map" not in FIND_TOOLS_GAP_NOTE
     assert "禁止对用户讲检索过程" in FIND_TOOLS_GAP_NOTE
+
+
+def test_common_keyword_stems_extracts_shared_subtokens() -> None:
+    """自适应提取关键词集共享的领域词素，零预置外部词表。"""
+    stems = common_keyword_stems(["刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音评论"])
+    assert "抖音" in stems
+    assert common_keyword_stems(["单关键词"]) == []
+    assert common_keyword_stems(["天气查询", "今日天气", "城市天气"]) == ["天气"]
+
+
+def test_common_keyword_stems_frequency_precedence() -> None:
+    """高频核心词素优先保留，不被局部复合长词素抑制。"""
+    kws = ["刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音直播A", "抖音直播B"]
+    stems = common_keyword_stems(kws)
+    assert "抖音" in stems
+    assert "抖音直播" in stems
+
+
+def test_need_matches_node_text_segmented_punctuation() -> None:
+    """顿号、分号分隔的长句能依据节点主体与功能词对口命中。"""
+    assert need_matches_node_text(
+        "抖音登录检查、浏览推荐、发表评论",
+        when_to_use="刷抖音推荐、看抖音热门、给抖音视频发评论时",
+        display_name="抖音观察员",
+        keywords=("刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音评论", "抖音看什么"),
+        covers=(),
+    )
+    assert not need_matches_node_text(
+        "抖音登录检查、浏览推荐、发表评论",
+        when_to_use="发博客文章；先查站点已有篇目",
+        display_name="博客小编",
+        keywords=("博客", "写文章"),
+        covers=(),
+    )
+
+
+def test_find_tools_recalls_dedicated_agent_for_segmented_need() -> None:
+    """顿号分隔的复合需求精准召回专用能力，不落空、不全量 dump。"""
+    from gsuid_core.ai_core.agent_node.models import AgentNode
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    douyin_node = AgentNode(
+        node_id="douyin_browse",
+        display_name="抖音观察员",
+        prompt="抖音浏览测试",
+        when_to_use="刷抖音推荐、看抖音热门、给抖音视频发评论时",
+        match_keywords=["刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音评论"],
+    )
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={EXPOSED_TOOLS_EXTRA_KEY: []}, blocked_tool_names=set())
+
+    async def fake_search(**_kwargs: object) -> list[object]:
+        return []
+
+    async def fake_matched(_need: str, *, limit: int = 5) -> list[str]:
+        _ = limit
+        return []
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.register.get_all_tools", lambda: {}),
+            patch("gsuid_core.ai_core.register.find_tool_base", lambda _n: None),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                fake_matched,
+            ),
+            patch(
+                "gsuid_core.ai_core.agent_node.list_nodes",
+                lambda: [douyin_node],
+            ),
+            patch(
+                "gsuid_core.ai_core.agent_node.get_node",
+                lambda nid: douyin_node if nid == "douyin_browse" else None,
+            ),
+            patch(
+                "gsuid_core.ai_core.agent_node.semantic_routing.aggregate_node_covers",
+                lambda _n: [],
+            ),
+        ):
+            return await find_tools(ctx, "抖音登录检查、浏览推荐、发表评论")
+
+    out = asyncio.run(_run())
+    assert "专用能力" in out
+    assert "douyin_browse" in out
+    assert "没有对口的专用能力" not in out
+
+
+def test_find_tools_reports_gap_without_roster_dump() -> None:
+    """无对口能力时正常报告缺口，不无脑 dump 全量花名册。"""
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import find_tools
+
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={EXPOSED_TOOLS_EXTRA_KEY: []}, blocked_tool_names=set())
+
+    async def fake_search(**_kwargs: object) -> list[object]:
+        return []
+
+    async def fake_matched(_need: str, *, limit: int = 5) -> list[str]:
+        _ = limit
+        return []
+
+    async def _run() -> str:
+        with (
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery.search_tools_by_domain",
+                fake_search,
+            ),
+            patch("gsuid_core.ai_core.register.get_all_tools", lambda: {}),
+            patch("gsuid_core.ai_core.register.find_tool_base", lambda _n: None),
+            patch(
+                "gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery._matched_capability_node_ids",
+                fake_matched,
+            ),
+            patch(
+                "gsuid_core.ai_core.agent_node.list_nodes",
+                lambda: [],
+            ),
+        ):
+            return await find_tools(ctx, "查询火星实时地表气温")
+
+    out = asyncio.run(_run())
+    assert "没有对口的专用能力" in out
+    assert "douyin_browse" not in out
+
+
+def test_capability_map_lists_delegable_agents() -> None:
+    """能力代理持有的专属工具已被剥离，capability_map 必须能查到它们的 node_id。"""
+    from gsuid_core.ai_core.agent_node.models import AgentNode
+    from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import capability_map
+
+    douyin = AgentNode(
+        node_id="douyin_browse",
+        display_name="抖音观察员",
+        prompt="",
+        when_to_use="刷抖音推荐、看抖音热门、给抖音视频发评论时",
+        tool_names=["douyin_feed"],
+    )
+    blog = AgentNode(
+        node_id="blog_writer",
+        display_name="博客小编",
+        prompt="",
+        when_to_use="发博客文章；先查站点已有篇目",
+    )
+    ctx = MagicMock()
+    ctx.deps = ToolContext(extra={}, blocked_tool_names=set())
+
+    with (
+        patch("gsuid_core.ai_core.register.get_all_tools", lambda: {}),
+        patch(
+            "gsuid_core.ai_core.agent_node.registry.list_persona_capability_nodes",
+            lambda _p=None: [douyin, blog],
+        ),
+    ):
+        hit = asyncio.run(capability_map(ctx, "all", "douyin"))
+        assert "douyin_browse" in hit
+        assert "blog_writer" not in hit
+        assert "目录为空" not in hit
+
+        tool_hit = asyncio.run(capability_map(ctx, "all", "douyin_feed"))
+        assert "douyin_browse" in tool_hit
+
+        full = asyncio.run(capability_map(ctx, "all", ""))
+        assert "可委派代理" in full
+        assert "2 项" in full

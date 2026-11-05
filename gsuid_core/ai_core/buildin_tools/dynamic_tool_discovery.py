@@ -195,8 +195,9 @@ def _node_on_topic(need: str, node_id: str) -> bool:
 
 
 def nodes_with_keyword_hit(need: str) -> list[str]:
-    """match_keywords 出现在 need 里的节点（不含 persona / 评估器）。"""
+    """match_keywords 或节点自描述特征出现在 need 里的节点（不含 persona / 评估器）。"""
     from gsuid_core.ai_core.agent_node import list_nodes
+    from gsuid_core.ai_core.buildin_tools.find_tools_rank import common_keyword_stems
 
     blob = (need or "").strip().lower()
     if not blob:
@@ -205,11 +206,26 @@ def nodes_with_keyword_hit(need: str) -> list[str]:
     for node in list_nodes():
         if node.source == "persona" or node.node_id == "capability_evaluator":
             continue
+        matched = False
         for kw in node.match_keywords:
             k = (kw or "").strip().lower()
             if k and k in blob:
                 hits.append(node.node_id)
+                matched = True
                 break
+        if matched:
+            continue
+        dn = (node.display_name or "").strip().lower()
+        if len(dn) >= 2 and dn in blob:
+            hits.append(node.node_id)
+            continue
+        stems = common_keyword_stems(node.match_keywords)
+        if any(stem in blob for stem in stems):
+            hits.append(node.node_id)
+            continue
+        nid_stem = node.node_id.split("_")[0].lower()
+        if len(nid_stem) >= 3 and nid_stem in blob:
+            hits.append(node.node_id)
     return hits
 
 
@@ -593,7 +609,9 @@ async def find_tools(
             _record_capability_gap(need)
             stale_empty = _record_find_tools_round(ctx.deps.extra, [])
             miss = f"⚠️ 本次没有对口的专用能力（{need}）。可换更具体的能力描述重试，或委派通用调研。"
-            return f"{miss}\n{FIND_TOOLS_GAP_NOTE}" if stale_empty else miss
+            if stale_empty:
+                return f"{miss}\n{FIND_TOOLS_GAP_NOTE}"
+            return miss
 
         loaded_names = plan.loadable_tool_names()
         ctx.deps.dynamic_tool_names.update(loaded_names)
@@ -628,19 +646,23 @@ async def capability_map(
     """列出我（及可委派代理）的全部能力目录（不含参数细节）。
 
     每行：工具名 — 覆盖场景一句话，按能力域分组。需要细节再用 find_tools 查具体工具。
+    「可委派代理」段列出能力代理节点——它们持有的专属工具不在工具表里（已被剥离），
+    只能用 create_subagent(agent_profile=node_id) 调用，所以必须能在这里查到。
     单次最多 60 行；超出请按 domain/plugin 过滤再查。
 
     Args:
         ctx: 工具执行上下文。
         scope: all / domain / plugin。
-        filter: 按能力域或插件名过滤。
+        filter: 按能力域、插件名、工具名或能力代理（node_id / 名称 / 用途）过滤。
     """
-    _ = ctx
     from gsuid_core.ai_core.register import get_all_tools, main_persona_roster_ok
+    from gsuid_core.ai_core.agent_node.models import AgentNode
+    from gsuid_core.ai_core.agent_node.registry import list_persona_capability_nodes
+    from gsuid_core.ai_core.buildin_tools.subagent import _caller_persona_name
 
+    needle = (filter or "").strip().lower()
     tools = get_all_tools()
     grouped: dict[str, list[str]] = {}
-    needle = (filter or "").strip().lower()
     for _name, tb in tools.items():
         if tb is None or not main_persona_roster_ok(tb):
             continue
@@ -660,20 +682,35 @@ async def capability_map(
         elif tb.description:
             cover = tb.description.split("\n", 1)[0][:40]
         grouped.setdefault(domain, []).append(f"{tb.name}：{cover}")
-    if not grouped:
+    agents: list[str] = []
+    caller_persona = _caller_persona_name(ctx)
+    for node in list_persona_capability_nodes(caller_persona or None):
+        tools_part = " ".join(node.tool_names) if isinstance(node, AgentNode) else ""
+        node_hay = f"{node.node_id} {node.display_name} {node.when_to_use} {tools_part}".lower()
+        if needle and needle not in node_hay:
+            continue
+        when = (node.when_to_use or "").strip() or node.display_name
+        for sep in ("；", ";", "（", "(", "。"):
+            when = when.split(sep, 1)[0]
+        agents.append(f"- `{node.node_id}`：{when.strip() or node.display_name}")
+    if not grouped and not agents:
         return "目录为空。换 filter 或 scope 再查。"
-    if scope == "all":
+    if scope == "all" and not needle:
         lines = [f"【{domain}】 {len(rows)} 项" for domain, rows in sorted(grouped.items())]
+        if agents:
+            lines.append(f"【可委派代理】 {len(agents)} 项")
         lines.append("展开用 scope=domain 加 filter。")
         return "\n".join(lines)
     lines: list[str] = []
+    if agents:
+        lines.append("【可委派代理】用 create_subagent(agent_profile=node_id) 调用")
+        lines.extend(agents)
     for domain in sorted(grouped):
         lines.append(f"【{domain}】")
         lines.extend(f"- {row}" for row in grouped[domain])
-        if len(lines) >= 60:
-            lines = lines[:60]
-            lines.append("（超出 60 行，请用 scope=domain/plugin 加 filter 再查）")
-            break
+    if len(lines) > 60:
+        lines = lines[:60]
+        lines.append("（超出 60 行，请用 scope=domain/plugin 加 filter 再查）")
     return "\n".join(lines)
 
 
