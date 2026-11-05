@@ -68,4 +68,16 @@ DATABASE_CONIFG: Dict[str, GSC] = {
         1500,
         options=[1500, 3600, 7200, 14400, 28800],
     ),
+    "sqlite_cache_size": GsIntConfig(
+        "SQLite页面缓存大小(KiB)",
+        "设置SQLite每个连接的页面缓存大小(负数表示KiB，默认-64000表示64MB)",
+        -16000,
+        options=[-2000, -16000, -32000, -64000, -128000, -256000],
+    ),
+    "sqlite_synchronous": GsStrConfig(
+        "SQLite同步模式",
+        "WAL模式下推荐NORMAL(兼顾安全性与性能)，也可选FULL",
+        "NORMAL",
+        ["NORMAL", "FULL", "OFF"],
+    ),
 }

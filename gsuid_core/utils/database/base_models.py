@@ -66,6 +66,12 @@ db_type: str = database_config.get_config("db_type").data
 
 db_driver: str = database_config.get_config("db_driver").data
 
+_sqlite_cache_size_cfg = database_config.get_config("sqlite_cache_size")
+sqlite_cache_size: int = _sqlite_cache_size_cfg.data if _sqlite_cache_size_cfg is not None else -64000
+
+_sqlite_sync_cfg = database_config.get_config("sqlite_synchronous")
+sqlite_synchronous: str = _sqlite_sync_cfg.data if _sqlite_sync_cfg is not None else "NORMAL"
+
 _db_type = db_type.lower()
 db_config = {
     "pool_recycle": db_pool_recycle,
@@ -169,7 +175,8 @@ def _enable_sqlite_wal(db_path: str) -> None:
     try:
         conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_MS}")
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(f"PRAGMA synchronous={sqlite_synchronous}")
+        conn.execute(f"PRAGMA cache_size={sqlite_cache_size}")
         conn.commit()
     finally:
         conn.close()
@@ -250,7 +257,8 @@ def sqlite_consistent_snapshot(src: Path, dest: Path) -> None:
 def _set_sqlite_connect_pragmas(dbapi_connection: sqlite3.Connection, _connection_record: object) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_MS}")
-    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute(f"PRAGMA synchronous={sqlite_synchronous}")
+    cursor.execute(f"PRAGMA cache_size={sqlite_cache_size}")
     cursor.close()
 
 
