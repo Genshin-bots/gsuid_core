@@ -489,21 +489,40 @@ async def to_markdown(
     buttons: Optional[Union[List[Button], List[List[Button]]]] = None,
     bot_id: str = "onebot",
 ) -> List[Message]:
-    _markdown_list = []
+    _markdown_list: List[str] = []
     _message: List[Message] = []
-    url = None
-    size = None
     send_type = send_pic_config.get_config(bot_id, "base64").data
 
     if buttons is None and not force_send_md:
         return message
 
-    for m in message:
-        if m.type == "image_size":
-            size = m.data
-
-    for m in message:
+    image_sizes: dict[int, tuple[int, int]] = {}
+    image_index: int | None = None
+    all_sizes: list[tuple[int, int]] = []
+    image_count = 0
+    for index, m in enumerate(message):
         if m.type == "image":
+            image_count += 1
+            image_index = index
+        elif m.type == "image_size":
+            if (
+                isinstance(m.data, (tuple, list))
+                and len(m.data) == 2
+                and isinstance(m.data[0], int)
+                and isinstance(m.data[1], int)
+            ):
+                size_tuple = (m.data[0], m.data[1])
+                all_sizes.append(size_tuple)
+                if image_index is not None:
+                    image_sizes[image_index] = size_tuple
+                    image_index = None
+
+    for index, m in enumerate(message):
+        if m.type == "image":
+            url = None
+            size = image_sizes[index] if index in image_sizes else None
+            if size is None and image_count == 1 and len(all_sizes) == 1:
+                size = all_sizes[0]
             if isinstance(m.data, str):
                 if m.data.startswith("file://"):
                     _message.append(m)
