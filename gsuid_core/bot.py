@@ -1,7 +1,21 @@
 import time
 import asyncio
 import inspect
-from typing import Any, Dict, List, Tuple, Union, Literal, Mapping, Optional, Coroutine
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Tuple,
+    Union,
+    Literal,
+    Mapping,
+    Optional,
+    Coroutine,
+)
+
+if TYPE_CHECKING:
+    from gsuid_core.message_history import MessageRecord
 
 from fastapi import WebSocket
 from msgspec import json as msgjson
@@ -181,6 +195,14 @@ class _Bot:
         self._supports_recall: Optional[bool] = None
         # 连续「整次调用零回执」计数，达到阈值后将 _supports_recall 置 False
         self._recall_timeout_streak: int = 0
+        # echo -> MessageRecord 出站消息记录关联表（用于回执异步回写平台 msg_id）
+        self._echo_records: Dict[str, "MessageRecord"] = {}
+
+    def _register_echo_record(self, echo: str, record: "MessageRecord") -> None:
+        if len(self._echo_records) >= 1000:
+            for k in list(self._echo_records.keys())[:200]:
+                self._echo_records.pop(k, None)
+        self._echo_records[echo] = record
 
     def _add_bg_task(self, task: asyncio.Task) -> None:
         """将后台任务加入 bg_tasks，并注册完成时自动移除的回调。
@@ -262,10 +284,20 @@ class _Bot:
             return False
         data = seg.data
         if isinstance(data, dict) and "echo" in data and data["echo"] is not None:
-            fut = self._recall_waiters.pop(str(data["echo"]), None)
+            echo_key = str(data["echo"])
+            fut = self._recall_waiters.pop(echo_key, None)
+            rec = self._echo_records.pop(echo_key, None)
+            _mid = data["id"] if "id" in data else None
+            if rec is not None and rec.metadata is not None and _mid is not None:
+                new_id = str(_mid[0]) if isinstance(_mid, list) else str(_mid)
+                rec.metadata["msg_id"] = new_id
+                if "msg_id_list" not in rec.metadata:
+                    rec.metadata["msg_id_list"] = []
+                m_list = rec.metadata["msg_id_list"]
+                if isinstance(m_list, list) and new_id not in m_list:
+                    m_list.append(new_id)
             if fut is not None and not fut.done():
                 # 消息 ID 统一规范化为 str，多条发送返回的 list 在外层扁平化处理。
-                _mid = data["id"] if "id" in data else None
                 if _mid is None:
                     fut.set_result(None)
                 elif isinstance(_mid, list):
@@ -329,6 +361,7 @@ class _Bot:
 
         # 记录 bot 回复到历史记录
         # 真正的 add_message 挪到转换之后：控制台要看的是最终发出去的那条
+        _record: Optional["MessageRecord"] = None
         _hist_pending: Optional[Tuple[Event, str, Dict[str, Any]]] = None
         try:
             # 确定 group_id 和 user_id
@@ -486,7 +519,7 @@ class _Bot:
                 _speaking = get_speaking_persona()
                 if _speaking:
                     _hist_meta["persona_name"] = _speaking
-                get_history_manager().add_message(
+                _record = get_history_manager().add_message(
                     event=_hist_ev,
                     role="assistant",
                     content=_hist_content,
@@ -551,6 +584,10 @@ class _Bot:
         _recall_requested: bool = wait_recall and task_event is None
         # _use_recall：在请求基础上，还要确有可发送帧 + 该连接未被判定为不支持，才真正登记 future。
         _use_recall: bool = _recall_requested and bool(message_result) and self._supports_recall is not False
+        # 是否跟踪 echo 关联以回写出站 msg_id（有历史记录待回写且连接未被判定为不支持）
+        _track_echo: bool = (
+            (_record is not None or _use_recall) and bool(message_result) and self._supports_recall is not False
+        )
         # 按帧登记，保持帧序（用于最终按序收集）
         _recall_echos: List[str] = []
         _recall_futs: List[asyncio.Future] = []
@@ -577,13 +614,16 @@ class _Bot:
 
                 # 本帧 echo：每帧各一，发前登记，避免回执先于登记到达的竞态
                 _echo: Optional[str] = None
-                if _use_recall:
+                if _track_echo:
                     self._echo_seq += 1
                     _echo = str(self._echo_seq)
-                    _fut: asyncio.Future = asyncio.get_running_loop().create_future()
-                    self._recall_waiters[_echo] = _fut
-                    _recall_echos.append(_echo)
-                    _recall_futs.append(_fut)
+                    if _use_recall:
+                        _fut: asyncio.Future = asyncio.get_running_loop().create_future()
+                        self._recall_waiters[_echo] = _fut
+                        _recall_echos.append(_echo)
+                        _recall_futs.append(_fut)
+                    if _record is not None:
+                        self._register_echo_record(_echo, _record)
 
                 send = MessageSend(
                     content=mr,
@@ -676,6 +716,8 @@ class _Bot:
 
             # 能力探测：拿到任意真实 id 才算"支持回执"。断连会 set_result(None)，
             # 不能据此误判为支持——否则 _supports_recall 永远停在 True，无法再 latch 为不支持。
+            if _record is not None and ids and _record.metadata is not None:
+                _record.metadata["msg_id"] = str(ids[0])
             if ids:
                 self._supports_recall = True
                 self._recall_timeout_streak = 0

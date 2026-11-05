@@ -359,6 +359,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._recent_user_texts: List[str] = []
         # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时 故障重试重发，
         self._run_sent_texts: set[str] = set()
+        self.read_image_ids: set[str] = set()
         # 本用户轮内模型对框架校验的申辩理由（dispute_directive 写，settle 读）。
         # 与 _run_sent_texts 同样同引用透传进纠正轮，使外层能看到内层的申辩。
         self._run_disputes: List[str] = []

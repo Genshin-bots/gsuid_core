@@ -620,6 +620,8 @@ class TurnGraph:
     multi_speaker: bool = False
     call_to_self: bool = False
     quoted_tome: bool = False
+    is_bystander_quote: bool = False
+    is_stale_quote: bool = False
     address_gated: bool = False
     ellipsis_followup: bool = False
     task_management: bool = False
@@ -677,6 +679,10 @@ def build_turn_graph(
     followup_max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
     ambient_max_len: int = AMBIENT_MAXLEN_DEFAULT,
     has_reply: bool = False,
+    at_bot: bool = False,
+    is_reply_to_bot: Optional[bool] = None,
+    is_bystander_quote: bool = False,
+    is_stale_quote: bool = False,
 ) -> TurnGraph:
     """从本轮消息 + 近历史构建 TurnGraph（唯一权威结构源）。"""
     recent_list = list(recent) if recent is not None else []
@@ -688,10 +694,21 @@ def build_turn_graph(
         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 
         extra = collect_persona_surfaces(persona_name)
-    # 引用 bot 仍是 is_tome；quoted_tome 只换注入，CheapGate 不因此静默。
+    # 显式点名（在文本中打出角色名）不是借楼
     textual = is_addressed_to_self(text, persona_name, False, extra_names=extra)
-    quoted_tome = bool(is_tome) and has_reply and not textual
-    if quoted_tome:
+    if is_reply_to_bot is True:
+        # 旁人借楼或翻旧账：即便 C 端自动补了 @Bot，仍属于借楼（quoted_tome=True），
+        # 除非既非旁人借楼也非翻旧账时，textual 显式点名才算直接交互。
+        quoted_tome = is_bystander_quote or is_stale_quote or not textual
+    elif is_reply_to_bot is False:
+        # 引用的是自己或群友的消息：C 端客户端自动 @ 的是原作者，绝不可能自动 @Bot。
+        # 消息中若有 at_bot，100% 是用户主动手动输入的，绝非借楼！
+        quoted_tome = False
+    else:
+        # 未能在历史查到被引用者身份时的保守兜底：若有引用且未显式直呼角色名，保守置为 quoted_tome
+        quoted_tome = bool(at_bot or is_tome) and has_reply and not textual
+
+    if quoted_tome and not is_bystander_quote:
         body = extract_message_body(text)
         if references_task_management(body) or _QUOTE_DIRECTED_RE.match(body):
             quoted_tome = False
@@ -743,6 +760,8 @@ def build_turn_graph(
         multi_speaker=multi,
         call_to_self=call,
         quoted_tome=quoted_tome,
+        is_bystander_quote=is_bystander_quote,
+        is_stale_quote=is_stale_quote,
         address_gated=addr,
         ellipsis_followup=ellipsis,
         task_management=task_mgmt,

@@ -330,3 +330,38 @@ def heartbeat_arc_section(content: str) -> str:
         f"\n\n[你前阵子自己琢磨过的一件小事]\n{content}\n"
         "只有群里刚好聊到沾边的话题、或者气氛合适能顺嘴带出时才提；话题完全不搭就继续留着，别硬扯。"
     )
+
+
+def quote_self_line(time_str: str) -> str:
+    """当前说话人引用了自己刚发的消息/图片。"""
+    return f"（被引用内容是当前说话人在 {time_str} 发出的发言/图片，不是你发的）"
+
+
+def quote_other_line(speaker_name: str, time_str: str) -> str:
+    """说话人引用了其他群友的发言。"""
+    return f"（被引用内容是群友 {speaker_name} 在 {time_str} 发出的发言）"
+
+
+def quote_command_card_line(time_str: str) -> str:
+    """说话人引用了群内刚生成的命令回执卡片。"""
+    return f"（被引用内容是群内于 {time_str} 执行命令生成的输出结果/卡片，非你口头发言）"
+
+
+def pending_unread_image_guide_line(img_id: str) -> str:
+    """当前说话人刚发出的挂起未读图片提权引导。"""
+    return f'（对方正在追问上面刚发出的待讨论图片，请先调用 read_image("{img_id}") 查看原图，严禁凭旧话题猜测图内内容）'
+
+
+def quote_bystander_line(time_str: str, target_desc: str) -> str:
+    """他人引用了你回复别人的发言（旁观借楼）。"""
+    return f"（被引用的是你于 {time_str} 回复 {target_desc} 的发言；当前说话人属于旁观借楼）"
+
+
+def quote_stale_line(time_str: str, minutes: int) -> str:
+    """说话人引用了你较早前的发言（翻旧账借楼）。"""
+    return f"（被引用的是你于 {time_str} 发送的较早发言（距今已超 {minutes} 分钟））"
+
+
+def quote_bot_line(time_str: str) -> str:
+    """原受件人正常追问你刚刚发出的发言。"""
+    return f"（被引用的是你于 {time_str} 发出的发言）"

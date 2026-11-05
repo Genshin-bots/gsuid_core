@@ -10,6 +10,13 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.agent_node.tool_scope import ToolScope
 
 
+@dataclass(frozen=True)
+class PendingImage:
+    img_id: str
+    text: str
+    time_str: str
+
+
 @dataclass
 class ToolContext:
     """工具执行上下文

@@ -458,7 +458,7 @@ def _record_inbound_history(event: Event) -> None:
     has_image = bool(event.image_id or event.image_id_list)
     has_node = event.node is not None
     has_rich = any(isinstance(item, Message) and item.type in _RICH_SEGMENT_TYPES for item in (event.content or []))
-    if not (has_text or event.at_list or has_image or has_node or has_rich):
+    if not (has_text or event.at_list or has_image or has_node or has_rich or event.is_tome):
         return
 
     user_name = None
@@ -505,8 +505,25 @@ def _record_inbound_history(event: Event) -> None:
 
     if event.at_list:
         metadata["at_list"] = event.at_list
+    if event.at_bot:
+        metadata["at_bot"] = True
+    if event.reply_id:
+        metadata["reply_id"] = event.reply_id
+    if event.reply:
+        metadata["reply_preview"] = str(event.reply)[:120]
+    if event.audio_id_list:
+        metadata["audio_id_list"] = event.audio_id_list
+    elif event.audio_id:
+        metadata["audio_id_list"] = [event.audio_id]
+    if event.video_id_list:
+        metadata["video_id_list"] = event.video_id_list
+    elif event.video_id:
+        metadata["video_id_list"] = [event.video_id]
     if event.file:
-        metadata["file_id"] = event.file
+        file_desc = str(event.file)
+        if "|" in file_desc:
+            file_desc = file_desc.split("|", 1)[0]
+        metadata["file_id"] = file_desc
 
     content = event.raw_text.strip()
     if has_node:
@@ -975,6 +992,7 @@ async def msg_process(msg: MessageReceive) -> Event:
             # 下游"@的不是你"标注（history_format/utils）就会反向压制真正的 @Bot 消息
             if str(_msg.data) == str(event.bot_self_id):
                 event.is_tome = True
+                event.at_bot = True
                 continue
             else:
                 event.at = str(_msg.data)

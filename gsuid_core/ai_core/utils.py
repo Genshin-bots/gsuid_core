@@ -50,6 +50,7 @@ from gsuid_core.ai_core.const import (
     _CONTENT_REJECT_HINTS,
     ERROR_QUOTA_EXHAUSTED,
 )
+from gsuid_core.ai_core.models import PendingImage
 from gsuid_core.utils.image.convert import convert_img
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
@@ -869,6 +870,7 @@ async def prepare_content_payload(
     task_level: Literal["high", "low"] = "high",
     *,
     quoted_tome: bool = False,
+    pending_unread_images: Optional[Sequence[PendingImage]] = None,
 ) -> Tuple[Sequence[UserContent], "GuardFlags"]:
     """
     准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
@@ -936,8 +938,9 @@ async def prepare_content_payload(
         text += body
 
     is_pure_image_quote = bool((ev.reply_id or quoted_tome) and not ev.reply and ev.image_id_list)
-    if ev.reply or is_pure_image_quote:
-        reply_body = ev.reply if ev.reply else "[引用图片消息]"
+    has_quote = bool(ev.reply or ev.reply_id or quoted_tome)
+    if has_quote:
+        reply_body = ev.reply if ev.reply else ("[引用图片消息]" if is_pure_image_quote else "[引用消息]")
         text += f"\n--- 引用消息 ---\n{reply_body}\n"
         from gsuid_core.ai_core.outbound import resolve_quote
 
@@ -964,10 +967,9 @@ async def prepare_content_payload(
     if ev.image_id_list:
         if lazy_image_read:
             if is_pure_image_quote:
-                text += "\n--- 被引用消息中的图片(未展开, 仅在需要查看原图细节时调用 read_image(图片ID)) ---"
+                text += "\n--- 被引用消息中的图片(未展开, 需要分析或评价图内内容时请调用 read_image(图片ID)) ---"
             else:
-                # 惰性模式：只给图片ID + 一行调用指引，图片本体留在 RM，需要看时再 read_image
-                text += "\n--- 用户发送了图片(未展开, 需要查看内容时调用 read_image(图片ID)) ---"
+                text += "\n--- 用户发送了图片(未展开, 需要查看内容时请调用 read_image(图片ID)) ---"
             for i in ev.image_id_list:
                 text += f"\n图片ID: {i}"
             text += "\n"
@@ -977,6 +979,14 @@ async def prepare_content_payload(
                     text += f"\n--- 被引用消息图片ID: {i} ---\n"
                 else:
                     text += f"\n--- 用户上传图片ID: {i} ---\n"
+
+    if pending_unread_images and not (ev.image_id_list or ev.image_id):
+        from gsuid_core.ai_core.control.lines import pending_unread_image_guide_line
+
+        text += "\n--- 当前说话人刚发出的待讨论图片（尚未读取） ---\n"
+        for p_img in pending_unread_images:
+            text += f"- [{p_img.time_str}] 配文：「{p_img.text}」 | 待读图片ID: {p_img.img_id}\n"
+            text += f"{pending_unread_image_guide_line(p_img.img_id)}\n"
 
     if hasattr(ev, "audio_id") and ev.audio_id:
         text += f"\n--- 用户上传音频ID: {ev.audio_id} ---\n"
@@ -2062,9 +2072,9 @@ def _collect_tool_call_return_ids(messages: Sequence[ModelMessage]) -> tuple[Set
 
 
 def _has_orphan_tool_returns(messages: Sequence[ModelMessage]) -> bool:
-    """保留集里是否存在「有 return 无 call」的断裂配对。"""
+    """保留集里是否存在断裂的工具调用或返回配对。"""
     call_ids, return_ids = _collect_tool_call_return_ids(messages)
-    return bool(return_ids - call_ids)
+    return bool((return_ids - call_ids) or (call_ids - return_ids))
 
 
 def _truncate_history_keep_prefix(
@@ -2073,16 +2083,7 @@ def _truncate_history_keep_prefix(
     *,
     prefix_ratio: float = 0.35,
 ) -> List[ModelMessage]:
-    """前缀稳定截断：永不丢头部，只裁中段，保留近期尾部。
-
-    Provider 前缀缓存依赖 message_history **从左起**字节不变。旧策略
-    ``history[-n:]`` 每轮砍头 → 整段前缀失效。本函数保证
-    ``history[:prefix_n]`` 在历次 compact 间对象序列不变，只丢掉
-    ``prefix_n .. tail_start`` 的中段。
-
-    工具配对：若尾部有孤立 ToolReturn，向左吞并中段直至配对完整；
-    仍无法配对则放弃裁剪、原样返回（安全阀）。
-    """
+    """前缀稳定截断：永不丢头部，只裁中段，保留近期尾部。"""
     if len(history) <= max_keep:
         return history
     if max_keep <= 1:
@@ -2090,10 +2091,16 @@ def _truncate_history_keep_prefix(
 
     prefix_n = max(2, int(max_keep * prefix_ratio))
     prefix_n = min(prefix_n, max_keep - 1)
+    # 若 prefix_n 切在未闭合 tool call，向前收缩至完整轮次（防悬空 call 引发 400）
+    while prefix_n > 1:
+        p_calls, p_rets = _collect_tool_call_return_ids(history[:prefix_n])
+        if not (p_calls - p_rets):
+            break
+        prefix_n -= 1
+
     tail_budget = max_keep - prefix_n
     tail_start = len(history) - tail_budget
 
-    # 尾段向左扩展以补齐工具 call/return；绝不侵入 prefix（保头）
     while tail_start > prefix_n:
         retained = history[:prefix_n] + history[tail_start:]
         if not _has_orphan_tool_returns(retained):
@@ -2108,7 +2115,6 @@ def _truncate_history_keep_prefix(
             return retained
         tail_start -= 1
 
-    # tail 已顶到 prefix：无法在保头前提下安全裁中段
     if not _has_orphan_tool_returns(history):
         logger.warning(i18n_t("log.ai.cannot_safely_truncate_history", p0=len(history)))
     return history
@@ -2294,12 +2300,11 @@ def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]
 
 
 def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
-    """把历史里残留的「远程图片 URL」剥离成文字占位，返回剥离处数量。
+    """剥离 history 中已过期的远程图片 URL（http/https）。
 
-    推理端报「Failed to download image」基本都是早先入历史的远程图片 URL
-    （如 QQ 带 rkey 的临时链接）已过期。不清掉的话，后续每一轮把它重发给
-    推理端都会 500，整个会话被永久卡死。这里把过期的远程 ``ImageUrl`` 替换为
-    文字占位，让下一轮自动恢复。base64 DataURI 不会过期，保留不动。
+    远程图片在若干小时后其临时 URL 会失效，导致 provider 重试下载抛 500。
+    发现该错误时就地将 http/https ImageUrl 替换为纯文本占位符，避免卡死后续全部请求。
+    base64 DataURI 与 BinaryContent 不依赖外部下载，保留不动。
     """
     removed = 0
     for msg in history:

@@ -282,15 +282,32 @@ def format_history_for_agent(
                 at_key = str(at_id)
                 at_label = _user_label(at_key, name_map[at_key] if at_key in name_map else None)
                 bits.append(f"@{at_label}{AT_OTHER_MARKER}")
-        image_id = metadata.get("image_id")
-        if image_id:
-            bits.append(f"图:{image_id}")
-        for img_id in metadata.get("image_id_list", []):
-            bits.append(f"图:{img_id}")
-        audio_id = metadata.get("audio_id")
-        if audio_id:
-            bits.append(f"音频:{audio_id}")
-        file_id = metadata.get("file_id")
+        if "reply_preview" in metadata and metadata["reply_preview"]:
+            bits.append(f"↩[引用: {metadata['reply_preview']}]")
+        imgs: List[str] = []
+        if "image_id_list" in metadata and isinstance(metadata["image_id_list"], list):
+            imgs.extend(str(x) for x in metadata["image_id_list"] if x)
+        elif "image_id" in metadata and metadata["image_id"]:
+            imgs.append(str(metadata["image_id"]))
+        for img_id in imgs:
+            tag = f"[图片ID: {img_id}]"
+            if tag not in bits:
+                bits.append(tag)
+        auds: List[str] = []
+        if "audio_id_list" in metadata and isinstance(metadata["audio_id_list"], list):
+            auds.extend(str(x) for x in metadata["audio_id_list"] if x)
+        elif "audio_id" in metadata and metadata["audio_id"]:
+            auds.append(str(metadata["audio_id"]))
+        for aid in auds:
+            bits.append(f"[音频ID: {aid}]")
+        vids: List[str] = []
+        if "video_id_list" in metadata and isinstance(metadata["video_id_list"], list):
+            vids.extend(str(x) for x in metadata["video_id_list"] if x)
+        elif "video_id" in metadata and metadata["video_id"]:
+            vids.append(str(metadata["video_id"]))
+        for vid in vids:
+            bits.append(f"[视频ID: {vid}]")
+        file_id = metadata["file_id"] if "file_id" in metadata else None
         if file_id:
             bits.append(f"文件:{file_id}")
         return (" | " + " ".join(bits)) if bits else ""
@@ -500,6 +517,17 @@ def materialize_speaker_thread(records: Sequence[MessageRecord]) -> List[Message
             )
         )
     return out
+
+
+def format_private_recent_history(records: Sequence[MessageRecord]) -> str:
+    """私聊冷启动时格式化最近历史记录。"""
+    if not records:
+        return ""
+    return format_history_for_agent(
+        list(records),
+        block_header="[近期私聊记录] 旧→新",
+        content_limit=200,
+    )
 
 
 def compose_group_history(

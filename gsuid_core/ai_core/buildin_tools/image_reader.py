@@ -373,6 +373,23 @@ def _self_visual_note(ctx: RunContext[ToolContext], image_url: str, question: st
     return format_look_identity_note(persona, bytes_from_image_ref(image_url))
 
 
+def _mark_image_id_read(ctx: RunContext[ToolContext], image_id: str) -> None:
+    if ctx.deps.extra and "read_image_ids" in ctx.deps.extra:
+        read_set = ctx.deps.extra["read_image_ids"]
+        if isinstance(read_set, set):
+            read_set.add(image_id)
+            order = ctx.deps.extra["_read_image_ids_order"] if "_read_image_ids_order" in ctx.deps.extra else None
+            if not isinstance(order, list):
+                order = []
+                ctx.deps.extra["_read_image_ids_order"] = order
+            if image_id not in order:
+                order.append(image_id)
+            if len(read_set) > 200:
+                while len(read_set) > 200 and order:
+                    oldest = order.pop(0)
+                    read_set.discard(oldest)
+
+
 @ai_tools(category="buildin", visible_when=context_has_image, timeout=120.0)
 async def read_image(
     ctx: RunContext[ToolContext],
@@ -418,6 +435,7 @@ async def read_image(
         if inject_err:
             return inject_err
         if injected is not None:
+            _mark_image_id_read(ctx, image_id)
             logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
             shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
             note = _self_visual_note(ctx, image_url, question)
@@ -468,6 +486,7 @@ async def read_image(
     if not description:
         return f"⚠️ 图片 {image_id} 已读取，但未能解析出有效内容。"
     logger.info(t("log.ai.buildintools_read_image_id", image_id=image_id, p0=len(description)))
+    _mark_image_id_read(ctx, image_id)
     reads = _bump_read_count(ctx.deps.extra, image_id)
     body = f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)
     note = _self_visual_note(ctx, image_url, question)

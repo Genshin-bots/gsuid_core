@@ -30,6 +30,7 @@ from gsuid_core.ai_core.utils import (
     notify_master_of_agent_error,
     notify_master_of_budget_block,
 )
+from gsuid_core.ai_core.models import PendingImage
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.quota_guard import quota_breaker
 from gsuid_core.ai_core.control.lines import MSG_SECTION_HEAD
@@ -194,17 +195,69 @@ def stamp_current_time(user_messages: Sequence[UserContent], now: datetime | Non
         user_messages[0] += f"\n{current_time_line(now)}"
 
 
-def build_group_history_block(event: Event) -> str:
-    """群聊 IM 历史块。私聊返回空串。
+def extract_pending_unread_images(
+    event: Event,
+    read_image_ids: set[str],
+    *,
+    window_seconds: float = 180.0,
+    max_images: int = 3,
+) -> list[PendingImage]:
+    """提取同说话人在上次 AI 回复之后（<=180s）发出的挂起未读图片。"""
+    if not event.user_id:
+        return []
+    records = get_history_manager().get_history(event, limit=20)
+    if not records:
+        return []
+    now_ts = time.time()
+    pending: list[PendingImage] = []
+    search_records = records[:-1] if len(records) > 1 else []
+    for rec in reversed(search_records):
+        if rec.role == "assistant":
+            break
+        if now_ts - rec.timestamp > window_seconds:
+            break
+        if rec.role == "user" and str(rec.user_id) == str(event.user_id):
+            img_ids: list[str] = []
+            if rec.metadata and "image_id_list" in rec.metadata:
+                val = rec.metadata["image_id_list"]
+                if isinstance(val, list):
+                    img_ids.extend(str(x) for x in val if x)
+            elif rec.metadata and "image_id" in rec.metadata:
+                val = rec.metadata["image_id"]
+                if val:
+                    img_ids.append(str(val))
+            for iid in img_ids:
+                if iid and iid not in read_image_ids and not any(p.img_id == iid for p in pending):
+                    t_str = datetime.fromtimestamp(rec.timestamp).strftime("%H:%M:%S")
+                    desc = (rec.content or "").strip()[:80] or "图片"
+                    pending.append(PendingImage(img_id=iid, text=desc, time_str=t_str))
+                    if len(pending) >= max_images:
+                        break
+        if len(pending) >= max_images:
+            break
+    pending.reverse()
+    return pending
 
-    **不可套件化**：HistoryManager 是消息基础设施，不是 AI 产品。私聊时
-    pydantic_ai 的 session.history 已覆盖对话，再注入 IM 历史既冗余又破坏缓存前缀。
-    同人线程走 A 轨全文，避免 B 轨 compact 把出站句柄裁掉。
-    """
-    if not event.group_id:
+
+def build_private_history_block(event: Event, *, is_cold_session: bool = False) -> str:
+    """私聊在冷启动时按需回灌近 8 条私聊记录。"""
+    if event.group_id or not is_cold_session:
         return ""
     raw = get_history_manager().get_history(event)
-    # 本轮已在 [用户发言]，再留会双写。
+    records = raw[:-1] if raw else []
+    if not records:
+        return ""
+    from gsuid_core.ai_core.history_format import format_private_recent_history
+
+    return format_private_recent_history(records[-8:])
+
+
+def build_group_history_block(event: Event, *, is_cold_session: bool = False) -> str:
+    """群聊 IM 历史块；私聊在冷启动时按需回灌近 8 条私聊记录。"""
+    if not event.group_id:
+        return build_private_history_block(event, is_cold_session=is_cold_session)
+
+    raw = get_history_manager().get_history(event)
     records = raw[:-1] if raw else []
     if not records:
         return ""
@@ -302,18 +355,45 @@ def recent_report_titles(history: Sequence[ModelMessage]) -> Tuple[str, ...]:
     return ()
 
 
-def prev_turn_used_tools(history: Sequence[ModelMessage], *, max_assistant_turns: int = 6) -> bool:
-    """近几轮是否真的用过工具（勿只看当前句）。
+def prev_turn_used_tools(
+    history: Sequence[ModelMessage],
+    *,
+    max_assistant_turns: int = 6,
+    current_user_id: str = "",
+) -> bool:
+    """近几轮是否真的用过工具。若指定 current_user_id，仅当该说话人自己在近几轮发起过工具调用时才返回 True。"""
+    from pydantic_ai.messages import ModelRequest, ToolCallPart, ModelResponse, UserPromptPart
 
-    intent 分类与「是否压短闲聊」都要它：上轮在办事的会话不该被压成寒暄短句。
-    """
-    from pydantic_ai.messages import ToolCallPart, ModelResponse
+    from gsuid_core.ai_core.interaction_scaffold import extract_speaker_id
 
     seen = 0
-    for msg in reversed(list(history)):
+    history_list = list(history)
+    for idx in range(len(history_list) - 1, -1, -1):
+        msg = history_list[idx]
         if not isinstance(msg, ModelResponse):
             continue
-        if any(isinstance(p, ToolCallPart) for p in msg.parts):
+        has_tools = any(isinstance(p, ToolCallPart) for p in msg.parts)
+        if has_tools:
+            if not current_user_id:
+                return True
+            speaker_found: str | None = None
+            for req_idx in range(idx - 1, -1, -1):
+                prev_msg = history_list[req_idx]
+                if isinstance(prev_msg, ModelRequest):
+                    for part in prev_msg.parts:
+                        if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                            spk = extract_speaker_id(part.content)
+                            if spk:
+                                speaker_found = spk
+                                break
+                    if speaker_found is not None:
+                        break
+                elif isinstance(prev_msg, ModelResponse):
+                    # 同一轮多迭代里的中间响应仍带 ToolCallPart；遇纯文本响应则跨轮退出
+                    if not any(isinstance(p, ToolCallPart) for p in prev_msg.parts):
+                        break
+            if speaker_found is not None:
+                return speaker_found == current_user_id
             return True
         seen += 1
         if seen >= max_assistant_turns:

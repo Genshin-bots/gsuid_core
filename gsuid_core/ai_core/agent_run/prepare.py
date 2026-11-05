@@ -198,6 +198,7 @@ class PreparePhase(RunOnceHost):
             "turn_id": st.turn_id,
             "agent_run_id": st.turn_id,
             "run_sent_texts": self._run_sent_texts,
+            "read_image_ids": self.read_image_ids,
             # 同引用透传：纠正轮里 dispute_directive 的申辩要能被外层 settle 读到
             DISPUTE_EXTRA_KEY: self._run_disputes,
             "speech_policy": "free",
@@ -205,6 +206,12 @@ class PreparePhase(RunOnceHost):
             "parent_create_by": self.create_by,
             MODEL_DECLARES_VIDEO_KEY: self._model_declares_video(),
         }
+        if st.ev is not None and not (st.ev.image_id_list or st.ev.image_id):
+            from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
+
+            _pending = extract_pending_unread_images(st.ev, self.read_image_ids)
+            if _pending:
+                st.run_extra["pending_unread_images"] = _pending
         if self.persona_name:
             st.run_extra["persona_name"] = self.persona_name
         if st.user_turn_id:
@@ -308,6 +315,11 @@ class PreparePhase(RunOnceHost):
                 if st.ev is not None:
                     _ut = str(st.ev.user_type or ("group" if st.ev.group_id else "direct"))
                 _has_reply = bool(st.ev.reply or st.ev.reply_id) if st.ev is not None else False
+                from gsuid_core.ai_core.outbound import inspect_quote_relation
+
+                is_rep_bot, is_bystander_q, is_stale_q = (
+                    inspect_quote_relation(st.ev) if st.ev is not None else (None, False, False)
+                )
                 st.tg = interaction_scaffold.build_turn_graph(
                     _probe or _cur_text,
                     persona_name=self.persona_name or "",
@@ -319,6 +331,10 @@ class PreparePhase(RunOnceHost):
                     followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
                     ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
                     has_reply=_has_reply,
+                    at_bot=bool(st.ev.at_bot) if st.ev is not None else False,
+                    is_reply_to_bot=is_rep_bot,
+                    is_bystander_quote=is_bystander_q,
+                    is_stale_quote=is_stale_q,
                 )
             if st.cheap is None:
                 st.cheap = interaction_scaffold.decide_cheap_gate(

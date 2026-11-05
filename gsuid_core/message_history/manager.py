@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Tuple, Literal, Optional
 from itertools import islice
 from threading import Lock
 from collections import deque
@@ -147,6 +147,7 @@ class HistoryManager:
         self._session_metadata: Dict["Event", Dict[str, Any]] = {}
         # Token 计数: {Event: int} 每个 session 的当前 Token 总量
         self._session_tokens: Dict["Event", int] = {}
+        self._msg_id_cache: Dict[Tuple["Event", str], Optional[MessageRecord]] = {}
         self._lock = Lock()
 
     def _get_storage_event(self, event: "Event") -> "Event":
@@ -413,6 +414,42 @@ class HistoryManager:
             history = self._histories.get(storage_event, deque())
             return len(history)
 
+    def find_by_msg_id(self, event: "Event", msg_id: str) -> Optional[MessageRecord]:
+        """按平台消息 ID 在当前会话滑动窗口中倒序反查单条消息。"""
+        if not msg_id:
+            return None
+        storage_event = self._get_storage_event(event)
+        target_id = str(msg_id).strip()
+        with self._lock:
+            cache_key = (storage_event, target_id)
+            if cache_key in self._msg_id_cache:
+                return self._msg_id_cache[cache_key]
+            history = self._histories.get(storage_event)
+            if not history:
+                return None
+            for record in reversed(history):
+                if record.metadata:
+                    matched = False
+                    if "msg_id" in record.metadata:
+                        val = record.metadata["msg_id"]
+                        if val is not None and str(val).strip() == target_id:
+                            matched = True
+                    if not matched and "msg_id_list" in record.metadata:
+                        m_list = record.metadata["msg_id_list"]
+                        if isinstance(m_list, list) and target_id in m_list:
+                            matched = True
+                    if matched:
+                        if len(self._msg_id_cache) >= 1000:
+                            for k in list(self._msg_id_cache.keys())[:200]:
+                                self._msg_id_cache.pop(k, None)
+                        self._msg_id_cache[cache_key] = record
+                        return record
+            if len(self._msg_id_cache) >= 1000:
+                for k in list(self._msg_id_cache.keys())[:200]:
+                    self._msg_id_cache.pop(k, None)
+            self._msg_id_cache[cache_key] = None
+        return None
+
     def get_last_user_message(self, event: "Event") -> Optional[Dict[str, Any]]:
         """获取指定session中最后一条用户消息
 
@@ -446,6 +483,9 @@ class HistoryManager:
         with self._lock:
             if storage_event in self._histories:
                 self._histories[storage_event].clear()
+            keys_to_del = [k for k in self._msg_id_cache if k[0] == storage_event]
+            for k in keys_to_del:
+                del self._msg_id_cache[k]
             existed = storage_event in self._histories
         self._publish_session_event("cleared", storage_event.session_id)
         return existed

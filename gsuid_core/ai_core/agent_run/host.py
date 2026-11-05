@@ -48,6 +48,7 @@ class RunOnceHost:
     turn_clock: datetime | None
     _session_logger: AISessionLogger
     _run_sent_texts: set[str]
+    read_image_ids: set[str]
     _run_disputes: list[str]
     _last_attempt_tool_calls: list[str]
     _last_attempt_delegated_render: bool

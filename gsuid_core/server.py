@@ -738,6 +738,7 @@ class GsServer:
             if not _fut.done():
                 _fut.set_result(None)
         bot._recall_waiters.clear()
+        bot._echo_records.clear()
         bot._recall_timeout_streak = 0
 
         session_ids_to_remove = [sid for sid, b in Bot.instances.items() if b.bot_id == bot_id]

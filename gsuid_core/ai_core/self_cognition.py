@@ -469,8 +469,41 @@ def render_speaker_preference_tail(rules: list[str]) -> str:
     """当前说话人的偏好。拼在本轮 user 尾，入史前不留。"""
     if not rules:
         return ""
-    lines = [f"• {rule}" for rule in rules]
-    return "【当前说话人的偏好】只约束这一轮的说话人。问句里没写到这些词也要遵守；别的群友不适用。\n" + "\n".join(lines)
+    behavioral_keywords = (
+        "不要",
+        "别",
+        "禁止",
+        "纯文本",
+        "代码",
+        "格式",
+        "必须",
+        "称呼",
+        "叫我",
+        "不发",
+        "短一点",
+        "少说",
+        "简短",
+    )
+    behavioral: list[str] = []
+    trivia: list[str] = []
+    for r in rules:
+        if any(kw in r for kw in behavioral_keywords):
+            behavioral.append(r)
+        else:
+            trivia.append(r)
+
+    parts: list[str] = []
+    header = "【当前说话人的偏好】只约束这一轮的说话人。问句里没写到这些词也要遵守；别的群友不适用。"
+    if behavioral:
+        lines = [f"• [要求/习惯] {rule}" for rule in behavioral]
+        parts.append(f"{header}\n" + "\n".join(lines))
+    if trivia:
+        lines = [f"• [背景信息(未问及无需主动提及)] {rule}" for rule in trivia]
+        if not behavioral:
+            parts.append(f"{header}\n" + "\n".join(lines))
+        else:
+            parts.append("【当前说话人背景】未被问及时无需刻意复述：\n" + "\n".join(lines))
+    return "\n\n".join(parts)
 
 
 async def load_speaker_preference_tail(bot_id: str, persona_name: str, speaker_id: str) -> str:

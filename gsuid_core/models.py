@@ -222,6 +222,7 @@ class Event(MessageReceive):
     at: Optional[str] = None
     at_list: List[Any] = []
     is_tome: bool = False
+    at_bot: bool = False
     reply: Optional[str] = None
     reply_id: Optional[str] = None
     node: Optional[List[Message]] = None
@@ -297,4 +298,4 @@ class MessageSend(Struct):
     target_type: Optional[str] = None
     target_id: Optional[str] = None
     content: Optional[List[Message]] = None
-    echo: Optional[str] = None  # 回执关联令牌；仅在请求 recall_message_id 时下发
+    echo: Optional[str] = None  # 回执关联令牌；请求 recall 或出站历史需关联平台消息 ID 时下发

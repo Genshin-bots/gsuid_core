@@ -48,7 +48,9 @@ from gsuid_core.ai_core.turn_pipeline import (
     recent_report_titles,
     build_group_history_block,
     apply_absolute_length_guard,
+    build_private_history_block,
     prior_user_turns_for_intent,
+    extract_pending_unread_images,
     prior_turns_from_agent_history,
 )
 from gsuid_core.ai_core.trigger_bridge import MockBot
@@ -288,6 +290,10 @@ async def run_interactive_turn(
     hook_ctx.query = query
     hook_ctx.soft_triggered = soft_triggered
 
+    from gsuid_core.ai_core.outbound import inspect_quote_relation
+
+    is_rep_bot, is_bystander_q, is_stale_q = inspect_quote_relation(event)
+
     turn_graph = build_turn_graph(
         query,
         persona_name=session.persona_name or "",
@@ -300,6 +306,10 @@ async def run_interactive_turn(
         followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
         ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
         has_reply=bool(event.reply or event.reply_id),
+        at_bot=bool(event.at_bot),
+        is_reply_to_bot=is_rep_bot,
+        is_bystander_quote=is_bystander_q,
+        is_stale_quote=is_stale_q,
     )
     hook_ctx.turn_graph = turn_graph
     # 只拦开口门 / 寻址门。lurk / 低好感区要 rel，不能在 AFTER_SESSION 前判。
@@ -319,7 +329,7 @@ async def run_interactive_turn(
         prior_turns = prior_turns_from_agent_history(session.history, query)
     if not hook_ctx.prior_user_turns:
         hook_ctx.prior_user_turns = prior_turns
-    hook_ctx.prev_turn_used_tools = prev_turn_used_tools(session.history)
+    hook_ctx.prev_turn_used_tools = prev_turn_used_tools(session.history, current_user_id=str(event.user_id or ""))
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
 
@@ -353,7 +363,15 @@ async def run_interactive_turn(
         if enqueue_ts is not None:
             enqueue_ts = time.time()
 
-    user_messages, guard_flags = await prepare_content_payload(event, quoted_tome=turn_graph.quoted_tome)
+    pending_images = []
+    if not (event.image_id_list or event.image_id):
+        pending_images = extract_pending_unread_images(event, session.read_image_ids)
+
+    user_messages, guard_flags = await prepare_content_payload(
+        event,
+        quoted_tome=turn_graph.quoted_tome,
+        pending_unread_images=pending_images,
+    )
     await apply_summary_guard(event, user_messages)
     stamp_current_time(user_messages, now=hook_ctx.clock_at)
 
@@ -381,6 +399,10 @@ async def run_interactive_turn(
         # 群转录是群聊轮的**必备输入**，不是"被寻址时的加分项"。寻址门只决定能不能答，
         # 不决定看不看得见群：软触发轮砍掉它，模型只能靠语义猜指代，会安到别人头上。
         hist_block = build_group_history_block(event)
+    else:
+        # 私聊在会话冷启动时（历史为空或首轮），回灌近 8 条近期私聊记录
+        is_cold = len(session.history) <= 1
+        hist_block = build_private_history_block(event, is_cold_session=is_cold)
     full_context, has_actionable = await assemble_dynamic_context(
         query=query,
         user_id=str(event.user_id),

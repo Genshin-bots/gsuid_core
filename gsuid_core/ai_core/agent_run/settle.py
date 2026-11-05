@@ -180,6 +180,8 @@ _RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_
 def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
     """本条是否带未读附件（图/音频/文件/可读视频）。引用纯图消息不计为用户新附件。"""
     ev = st.ev
+    if "pending_unread_images" in st.run_extra and bool(st.run_extra["pending_unread_images"]):
+        return True
     if ev is None:
         return False
     quoted_pure_image = bool((ev.reply_id or (st.tg is not None and st.tg.quoted_tome)) and not ev.reply)

@@ -196,9 +196,9 @@ class PersistedHandleCard:
         if self.long_structured:
             if self.render_allowed:
                 lines.append(
-                    "long_structured=true → 必须 create_subagent("
+                    "long_structured=true → 若用户未要求纯文本，优先 create_subagent("
                     'agent_profile="render_agent", task=本id或版式要求) 出图；'
-                    "台词一两句，禁止把对照表念进气泡"
+                    "若用户明确要求纯文本则用文本概括；台词一两句，禁止把对照表念进气泡"
                 )
             else:
                 lines.append(
