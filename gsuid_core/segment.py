@@ -498,22 +498,31 @@ async def to_markdown(
 
     image_sizes: dict[int, tuple[int, int]] = {}
     image_index: int | None = None
+    all_sizes: list[tuple[int, int]] = []
+    image_count = 0
     for index, m in enumerate(message):
         if m.type == "image":
+            image_count += 1
             image_index = index
-        elif m.type == "image_size" and image_index is not None:
+        elif m.type == "image_size":
             if (
                 isinstance(m.data, (tuple, list))
                 and len(m.data) == 2
                 and isinstance(m.data[0], int)
                 and isinstance(m.data[1], int)
             ):
-                image_sizes[image_index] = (m.data[0], m.data[1])
+                size_tuple = (m.data[0], m.data[1])
+                all_sizes.append(size_tuple)
+                if image_index is not None:
+                    image_sizes[image_index] = size_tuple
+                    image_index = None
 
     for index, m in enumerate(message):
         if m.type == "image":
             url = None
             size = image_sizes[index] if index in image_sizes else None
+            if size is None and image_count == 1 and len(all_sizes) == 1:
+                size = all_sizes[0]
             if isinstance(m.data, str):
                 if m.data.startswith("file://"):
                     _message.append(m)
