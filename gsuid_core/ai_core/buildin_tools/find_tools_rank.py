@@ -128,10 +128,11 @@ def common_keyword_stems(keywords: Sequence[str], min_len: int = 2) -> list[str]
                     seen_in_kw.add(sub)
                     substr_counts[sub] = substr_counts.get(sub, 0) + 1
     shared = [sub for sub, cnt in substr_counts.items() if cnt >= 2]
-    shared.sort(key=lambda s: (len(s), substr_counts[s]), reverse=True)
+    # 频次优先，同频取长；仅当频次未增加时才被包含它的长词素抑制
+    shared.sort(key=lambda s: (substr_counts[s], len(s)), reverse=True)
     filtered: list[str] = []
     for s in shared:
-        if not any(s in longer for longer in filtered):
+        if not any(s in longer and substr_counts[s] <= substr_counts[longer] for longer in filtered):
             filtered.append(s)
     return filtered
 

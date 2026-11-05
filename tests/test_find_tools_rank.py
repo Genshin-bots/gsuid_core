@@ -963,6 +963,14 @@ def test_common_keyword_stems_extracts_shared_subtokens() -> None:
     assert common_keyword_stems(["天气查询", "今日天气", "城市天气"]) == ["天气"]
 
 
+def test_common_keyword_stems_frequency_precedence() -> None:
+    """高频核心词素优先保留，不被局部复合长词素抑制。"""
+    kws = ["刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音直播A", "抖音直播B"]
+    stems = common_keyword_stems(kws)
+    assert "抖音" in stems
+    assert "抖音直播" in stems
+
+
 def test_need_matches_node_text_segmented_punctuation() -> None:
     """顿号、分号分隔的长句能依据节点主体与功能词对口命中。"""
     assert need_matches_node_text(
