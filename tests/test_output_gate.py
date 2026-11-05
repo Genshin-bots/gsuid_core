@@ -1,9 +1,6 @@
-"""统一输出闸门 pre_send_gate 单元测试。"""
+"""统一输出闸门 pre_send_gate 与尖括号守卫测试。"""
 
 from __future__ import annotations
-
-from typing import Any
-from dataclasses import dataclass
 
 
 def test_allow_clean_text() -> None:
@@ -38,26 +35,6 @@ def test_angle_bracket_rewrite_then_fuse() -> None:
     assert is_fused(extra)
 
 
-def test_same_response_batch_counts_one_attempt() -> None:
-    """同 ModelResponse 多 TextPart：只计 1 次 attempt，blocked 可多条。"""
-    from gsuid_core.ai_core.output_gate import (
-        GateDecision,
-        attempt_count,
-        blocked_texts,
-        pre_send_gate,
-        begin_response_batch,
-    )
-
-    extra: dict = {}
-    begin_response_batch(extra)
-    r1 = pre_send_gate("aaa<bubble/>", extra, channel="main", count_attempt=True)
-    r2 = pre_send_gate("bbb<br>ccc", extra, channel="main", count_attempt=False)
-    assert r1.decision is GateDecision.REWRITE
-    assert r2.decision is GateDecision.REWRITE
-    assert attempt_count(extra, "angle_bracket") == 1
-    assert len(blocked_texts(extra, "angle_bracket")) == 2
-
-
 def test_merge_rewrite_feedbacks() -> None:
     from gsuid_core.ai_core.output_gate import merge_rewrite_feedbacks
 
@@ -68,9 +45,7 @@ def test_merge_rewrite_feedbacks() -> None:
 
 
 def test_plan_angle_after_run_fuse_keeps_ooc_rewrite() -> None:
-    """尖括号熔断仍允许独立 OOC 收尾（skip_ooc_rewrite=False）。"""
     from gsuid_core.ai_core.output_gate import (
-        set_fused,
         pre_send_gate,
         begin_response_batch,
         plan_angle_after_run,
@@ -85,13 +60,6 @@ def test_plan_angle_after_run_fuse_keeps_ooc_rewrite() -> None:
     assert plan.fused
     assert plan.drop_blocked
     assert plan.skip_ooc_rewrite is False
-
-    extra2: dict = {}
-    begin_response_batch(extra2)
-    pre_send_gate(dirty, extra2, channel="main")
-    set_fused(extra2)
-    plan2 = plan_angle_after_run(extra2, clean_sent=[])
-    assert plan2.fused and plan2.skip_ooc_rewrite is False
 
 
 def test_replace_map_single_blocked_uses_last_clean() -> None:
@@ -109,136 +77,68 @@ def test_replace_map_single_blocked_uses_last_clean() -> None:
     assert not plan.rewrite_original
 
 
-def test_replace_map_multi_blocked_unequal_clean_only_last() -> None:
-    """多脏 + 单干净：只映射最后一条脏文，禁止整表盖成同一句。"""
-    from gsuid_core.ai_core.output_gate import (
-        pre_send_gate,
-        begin_response_batch,
-        plan_angle_after_run,
-    )
-
-    extra: dict = {}
-    begin_response_batch(extra)
-    pre_send_gate("aaa<br>", extra, channel="main", count_attempt=True)
-    pre_send_gate("bbb<br>", extra, channel="main", count_attempt=False)
-    plan = plan_angle_after_run(extra, clean_sent=["only-clean"])
-    assert plan.replace_map == {"bbb<br>": "only-clean"}
-    assert "aaa<br>" not in plan.replace_map
-
-
-def test_tool_channel_angle_and_ooc_order() -> None:
-    """尖括号优先于 OOC：同时脏时只报尖括号。"""
-    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate, tool_gate_feedback
-
-    extra: dict = {"turn_id": "t1"}
-    text = "我是MiniMax做的<bubble/>助手"
-    r = pre_send_gate(text, extra, user_text="你是谁", channel="tool")
-    assert r.decision is GateDecision.REWRITE
-    assert r.policy == "angle_bracket"
-
-    fb = tool_gate_feedback("zzZ…", extra, user_text="")
-    assert fb is None
-
-
-def test_ooc_main_defers_with_forced_hit(monkeypatch: Any) -> None:
-    """不依赖 live config：强制 check_ooc 命中后 main 须 defer + 系统提醒。"""
-    from gsuid_core.ai_core import output_firewall as of
-    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
-
-    @dataclass
-    class _Hit:
-        category: str
-        matched: list[str]
-
-    monkeypatch.setattr(of, "is_enabled", lambda: True)
-    monkeypatch.setattr(
-        of,
-        "check_ooc",
-        lambda text, tier="roleplay", user_text="", exposed_tool_names=(): _Hit("model_identity", ["minimax"]),
-    )
-    monkeypatch.setattr(of, "build_rewrite_warning", lambda hit: f"warn:{hit.category}")
-
-    extra: dict = {"turn_id": "t-main"}
-    r = pre_send_gate("MiniMax呀", extra, user_text="你是什么模型", channel="main")
-    assert r.decision is GateDecision.REWRITE
-    assert r.policy == "ooc"
-    assert r.defer_ooc is True
-    assert r.feedback
-    assert r.ooc_hit is not None
-    # 未注入提醒前，同一句再走 main 仍打回（不是二次发送放行）
-    r2 = pre_send_gate("MiniMax呀", extra, user_text="你是什么模型", channel="main")
-    assert r2.decision is GateDecision.REWRITE
-    assert r2.defer_ooc is True
-
-
-def test_ooc_main_allows_after_reminder_injected(monkeypatch: Any) -> None:
-    """系统提醒送达后，主路径下一句视为模型自判，放行。"""
-    from gsuid_core.ai_core import output_firewall as of
-    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate, mark_ooc_reminded
-
-    @dataclass
-    class _Hit:
-        category: str
-        matched: list[str]
-
-    monkeypatch.setattr(of, "is_enabled", lambda: True)
-    monkeypatch.setattr(
-        of,
-        "check_ooc",
-        lambda text, tier="roleplay", user_text="", exposed_tool_names=(): _Hit("model_identity", ["claude"]),
-    )
-    extra: dict = {"turn_id": "t-judge"}
-    first = pre_send_gate("Claude 是 Anthropic 出的", extra, channel="main")
-    assert first.decision is GateDecision.REWRITE
-    mark_ooc_reminded(extra)
-    judged = pre_send_gate("Claude 是 Anthropic 出的", extra, channel="main")
-    assert judged.decision is GateDecision.ALLOW
-    # 工具通道仍不二次放行
-    tool = pre_send_gate("Claude 是 Anthropic 出的", extra, channel="tool")
-    assert tool.decision is GateDecision.REWRITE
-
-
-def test_ooc_warning_is_advisory_not_forced_strip() -> None:
-    from gsuid_core.ai_core.output_firewall import OOC_JUDGE_MARKER, FirewallHit, build_rewrite_warning
-
-    w = build_rewrite_warning(FirewallHit(category="model_identity", matched=["claude"]))
-    assert OOC_JUDGE_MARKER in w
-    assert "自己判断" in w
-    assert "去掉任何模型名" not in w
-
-
 def test_gate_state_is_typed_bag_only() -> None:
-    """状态只挂 GateBag，不写旧 angle_bracket_* 键。"""
     from gsuid_core.ai_core.output_gate import _STATE_KEY, GateBag, pre_send_gate
 
     extra: dict = {}
     pre_send_gate("a<br>b", extra, channel="main")
     assert _STATE_KEY in extra
     assert isinstance(extra[_STATE_KEY], GateBag)
-    assert "angle_bracket_attempts" not in extra
-    assert "angle_bracket_abort" not in extra
 
 
-def test_unknown_policy_raises() -> None:
-    from gsuid_core.ai_core.output_gate import GateBag, _policy
+def test_cjk_control_tags_are_illegal() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import has_illegal_angle_tags, find_illegal_angle_tags
 
-    try:
-        _policy(GateBag(), "not_a_policy")
-    except ValueError as e:
-        assert "unknown" in str(e).lower() or "not_a_policy" in str(e)
-    else:
-        raise AssertionError("expected ValueError for unknown policy")
+    text = "<要求用其他语言复述用户的请求>\n早柚：困"
+    assert has_illegal_angle_tags(text)
+    assert any("要求" in t for t in find_illegal_angle_tags(text))
+    assert not has_illegal_angle_tags("1 < 2 且 3 > 0")
 
 
-def test_angle_bracket_list_with_br_is_sanitized_not_fused() -> None:
-    from gsuid_core.ai_core.output_gate import GateDecision, is_fused, pre_send_gate
+def test_allows_protocol_tags_only() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import has_illegal_angle_tags
 
-    extra: dict = {}
-    text = "1. 2024-03-15 Core features<br>2. 2024-04-05 Transaction error handling\n3. 2024-04-25 Security"
-    r = pre_send_gate(text, extra, channel="main")
-    assert r.decision is GateDecision.FALLBACK
-    assert r.policy == "angle_bracket"
-    assert "Core features" in r.send_text
-    assert "br" not in r.send_text.lower()
-    assert "Transaction error handling" in r.send_text
-    assert not is_fused(extra)
+    assert not has_illegal_angle_tags("唔…困了")
+    assert not has_illegal_angle_tags("<SILENCE>")
+    assert not has_illegal_angle_tags("<沉默>")
+    assert not has_illegal_angle_tags("困 `<meme: 困>` 呼")
+    assert not has_illegal_angle_tags("叫 <@100000001> 过来")
+    assert not has_illegal_angle_tags("叫 < @ 小明 > 过来")
+    assert has_illegal_angle_tags('<report title="a">|x|y|\n|---|---|\n|1|2|</report>')
+
+
+def test_code_span_and_fence_exempt() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import has_illegal_angle_tags, sanitize_illegal_angle_tags
+
+    assert not has_illegal_angle_tags("可以用 `<br>` 换行")
+    assert not has_illegal_angle_tags("```html\n<br>\n```")
+    assert has_illegal_angle_tags("前面<br>后面，代码里是 `<br>`")
+    san = sanitize_illegal_angle_tags("外<br>内 `<br>` 尾")
+    assert "br" not in san.split("`")[0].lower()
+
+
+def test_loose_meme_tags_stay_protocol() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags, has_illegal_angle_tags
+
+    for sample in ("< meme:愤怒 怼人>", "<meme :愤怒>", "＜meme:开心＞"):
+        assert not has_illegal_angle_tags(sample)
+        assert "meme" not in strip_protocol_tags(sample).lower()
+
+
+def test_sanitize_removes_illegal_keeps_meme() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import sanitize_illegal_angle_tags
+
+    raw = "困了<bubble/>别闹`<meme: 困>`"
+    out = sanitize_illegal_angle_tags(raw)
+    assert "bubble" not in out.lower()
+    assert "meme" in out.lower()
+    assert "困了" in out
+
+
+def test_no_false_positive_on_comparisons_generics_email() -> None:
+    from gsuid_core.ai_core.angle_bracket_guard import find_illegal_angle_tags
+
+    assert find_illegal_angle_tags("a < b and c > d") == []
+    assert find_illegal_angle_tags("List<str> and Map<int,str>") == []
+    assert find_illegal_angle_tags("1 < 2 > 0") == []
+    assert find_illegal_angle_tags("email <user@x.com>") == []

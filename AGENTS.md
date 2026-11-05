@@ -132,6 +132,10 @@ poetry（2.1.4）读不出 `[dependency-groups]`，会把 dev 组（pytest / ruf
 ## Testing
 
 - 测试在 `tests/`，`pytest`，文件 `test_*.py`。默认收集面必须离线、无 LLM。
+- **单测规模与增删标准**：
+  - `tests/` 总收集用例数**严格控制在 200 个以内**，只保留和补充保护核心架构契约与关键边界的高价值单测。
+  - **一次性验证用后即删**：为单次 bug 修复、特定 issue 验证或本地排查编写的临时单测脚本，在本地执行验证通过后**必须删除**，禁止作为 `test_issueXXX.py` 或碎片文件提交并堆积进仓库。
+  - **关键防线就近合并**：若修复涉及核心协议或重要防线，只允许将断言**就近合并或参数化追加至现有的对应核心测试模块**中，禁止随意新增单测文件。
 - 需要已启动 core 的 WS/HTTP 脚本放 `eval/manual/`（不要 `test_` 前缀）或 `eval/agent/`；禁止再往 `tests/` 加。
 - 类型：basedpyright / pyright，`typeCheckingMode=basic`；`gsuid_core/plugins` 与 `data` 已排除。
 - 行宽 120（ruff）；`#` 注释更严，见 §1.6。

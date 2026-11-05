@@ -1,0 +1,211 @@
+"""WebConsole 安全路径校验、身份鉴权与加密通信测试。"""
+
+from __future__ import annotations
+
+import os
+import json
+import time
+import base64
+from typing import Any, Dict
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey, X25519PrivateKey
+
+from gsuid_core.utils.path_safety import (
+    PathEscapeError,
+    safe_join,
+    confine_to_root,
+    is_safe_relpath,
+    is_safe_filename,
+)
+from gsuid_core.webconsole.auth_crypto import (
+    PROTOCOL_ID,
+    AuthCryptoError,
+    auth_keystore,
+    maybe_decrypt_auth_body,
+)
+
+
+@pytest.fixture(autouse=True)
+def _force_zh_cn_language():
+    with patch("gsuid_core.i18n.get_lang", return_value="zh-cn"):
+        yield
+
+
+def _frontend_encrypt(
+    fields: Dict[str, Any],
+    *,
+    ts: float | None = None,
+    tamper_ct: bool = False,
+) -> Dict[str, Any]:
+    info = auth_keystore.public_info()
+    pad = "=" * (-len(info["pubkey"]) % 4)
+    server_pub = base64.urlsafe_b64decode(info["pubkey"] + pad)
+
+    client_priv = X25519PrivateKey.generate()
+    client_pub_bytes = client_priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    shared = client_priv.exchange(X25519PublicKey.from_public_bytes(server_pub))
+    key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=PROTOCOL_ID.encode("ascii"),
+    ).derive(shared)
+
+    iv = os.urandom(12)
+    payload = dict(fields)
+    payload["ts"] = time.time() if ts is None else ts
+    ct = bytearray(AESGCM(key).encrypt(iv, json.dumps(payload).encode("utf-8"), None))
+
+    if tamper_ct:
+        ct[-1] ^= 0xFF
+
+    def _b64(b: bytes) -> str:
+        return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+    return {
+        "enc": True,
+        "key_id": info["key_id"],
+        "client_pub": _b64(client_pub_bytes),
+        "iv": _b64(iv),
+        "ct": _b64(bytes(ct)),
+    }
+
+
+def test_safe_join_blocks_dotdot(tmp_path: Path):
+    root = tmp_path / "dist"
+    root.mkdir()
+    (root / "index.html").write_text("ok", encoding="utf-8")
+    with pytest.raises(PathEscapeError):
+        safe_join(root, "../../../config.json")
+    with pytest.raises(PathEscapeError):
+        safe_join(root, "..", "..", "config.json")
+    inside = safe_join(root, "index.html")
+    assert inside.is_file()
+    assert inside.read_text(encoding="utf-8") == "ok"
+
+
+def test_safe_join_blocks_absolute_and_drive(tmp_path: Path):
+    root = tmp_path / "dist"
+    root.mkdir()
+    with pytest.raises(PathEscapeError):
+        safe_join(root, "C:/Windows/win.ini")
+    with pytest.raises(PathEscapeError):
+        safe_join(root, "/etc/passwd")
+
+
+def test_safe_join_allows_nested_and_unicode(tmp_path: Path):
+    root = tmp_path / "dist"
+    nested = root / "assets" / "js"
+    nested.mkdir(parents=True)
+    target = nested / "index.js"
+    target.write_text("1", encoding="utf-8")
+    cn = root / "下载.jpg"
+    cn.write_bytes(b"x")
+
+    assert safe_join(root, "assets/js/index.js") == target.resolve()
+    assert safe_join(root, "下载.jpg") == cn.resolve()
+
+
+def test_confine_to_root_allows_inside_absolute(tmp_path: Path):
+    root = tmp_path / "data"
+    root.mkdir()
+    f = root / "a.png"
+    f.write_bytes(b"1")
+    assert confine_to_root(str(f), root) == f.resolve()
+    with pytest.raises(PathEscapeError):
+        confine_to_root(str(tmp_path / "outside.txt"), root)
+
+
+def test_is_safe_filename_rejects_separators():
+    assert is_safe_filename("avatar.png")
+    assert not is_safe_filename("../config.json")
+    assert not is_safe_filename("a/b.png")
+    assert not is_safe_relpath("assets/../../../data/config.json")
+
+
+def test_password_bcrypt_and_legacy_upgrade():
+    from gsuid_core.webconsole.auth_api import (
+        _PASSWORD_PREFIX_BCRYPT,
+        hash_password,
+        verify_password,
+        _legacy_sha256_hash,
+    )
+
+    new_hash = hash_password("s3cret!")
+    assert new_hash.startswith(_PASSWORD_PREFIX_BCRYPT)
+    assert verify_password("s3cret!", new_hash)
+    assert not verify_password("wrong", new_hash)
+
+    legacy = _legacy_sha256_hash("oldpass", "aabbccdd")
+    assert not legacy.startswith(_PASSWORD_PREFIX_BCRYPT)
+    assert verify_password("oldpass", legacy)
+    assert not verify_password("nope", legacy)
+
+
+def test_require_admin_role():
+    from fastapi import HTTPException
+
+    from gsuid_core.webconsole.web_api import session_role, require_admin
+    from gsuid_core.webconsole.session_store import SessionRecord
+
+    def _rec(role: str) -> SessionRecord:
+        return {
+            "user": {"id": "1", "email": "a@b.c", "name": "n", "role": role, "avatar": None},
+            "email": "a@b.c",
+            "created": "t",
+            "expires": "t",
+        }
+
+    admin = _rec("admin")
+    user = _rec("user")
+    assert session_role(admin) == "admin"
+    assert session_role(user) == "user"
+    assert require_admin(admin) is admin
+    with pytest.raises(HTTPException) as ei:
+        require_admin(user)
+    assert ei.value.status_code == 403
+
+
+def test_require_admin_header_rejects_missing_bearer():
+    from fastapi import HTTPException
+
+    from gsuid_core.webconsole.web_api import require_auth_header, require_admin_header
+
+    with pytest.raises(HTTPException) as missing_auth:
+        require_auth_header(None)
+    assert missing_auth.value.status_code == 401
+
+    with pytest.raises(HTTPException) as missing_admin:
+        require_admin_header(None)
+    assert missing_admin.value.status_code == 401
+
+
+def test_public_info_alg_is_locked() -> None:
+    info = auth_keystore.public_info()
+    assert info["alg"] == "x25519-aes256gcm"
+    assert {"key_id", "alg", "pubkey", "fingerprint"} <= set(info.keys())
+
+
+def test_roundtrip_login_fields() -> None:
+    body = _frontend_encrypt({"email": "a@b.com", "password": "hunter2"})
+    result = maybe_decrypt_auth_body(body)
+    assert result["email"] == "a@b.com"
+    assert result["password"] == "hunter2"
+    assert "ts" in result
+
+
+def test_plaintext_rejected() -> None:
+    with pytest.raises(AuthCryptoError):
+        maybe_decrypt_auth_body({"email": "x", "password": "y"})
+
+
+def test_tampered_ciphertext_rejected() -> None:
+    body = _frontend_encrypt({"email": "x", "password": "y"}, tamper_ct=True)
+    with pytest.raises(AuthCryptoError):
+        maybe_decrypt_auth_body(body)

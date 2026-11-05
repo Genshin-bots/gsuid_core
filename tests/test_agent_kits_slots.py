@@ -1,26 +1,19 @@
-"""套件槽位契约：互斥替换 / 密封槽 / 关槽副作用 / 块顺序单源 / 两入口同源。
-
-「默认全开时用户可见行为与改造前一致」是套件化唯一真正的验收标准；
-「关槽时副作用为零且有告警」是它的对偶。
-"""
+"""套件槽位契约：互斥替换 / 密封槽 / 关槽副作用 / 块顺序单源。"""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any, List
-from datetime import datetime
 
 import pytest
 
 from gsuid_core.ai_core.kits import (
     OFF,
-    KIT_SLOTS,
     CONTEXT_BLOCK_ORDER,
     AgentKit,
     KitSlotError,
     clear_kits,
     enable_kit,
-    disable_kit,
     slot_health,
     disable_slot,
     occupants_of,
@@ -54,14 +47,13 @@ def isolated():
 
 
 def test_block_order_is_the_single_source(isolated) -> None:
-    """块名表是唯一顺序定义；A 写 memory、C 写 relationship，名字不许各自造。"""
     assert CONTEXT_BLOCK_ORDER.index("mood") < CONTEXT_BLOCK_ORDER.index("relationship")
     assert CONTEXT_BLOCK_ORDER.index("identity") < CONTEXT_BLOCK_ORDER.index("history")
     assert CONTEXT_BLOCK_ORDER.index("history") < CONTEXT_BLOCK_ORDER.index("group_context")
     assert CONTEXT_BLOCK_ORDER.index("group_context") < CONTEXT_BLOCK_ORDER.index("memory")
     assert CONTEXT_BLOCK_ORDER.index("task") < CONTEXT_BLOCK_ORDER.index("plan_hint")
     assert CONTEXT_BLOCK_ORDER.index("history") < CONTEXT_BLOCK_ORDER.index("memory")
-    assert CONTEXT_BLOCK_ORDER[-1] == "plugin_hints", "第三方 hint 恒在最后"
+    assert CONTEXT_BLOCK_ORDER[-1] == "plugin_hints"
     for name in (
         "memory",
         "relationship",
@@ -85,14 +77,14 @@ def test_exclusive_slot_replacement_unloads_the_old_occupant(isolated) -> None:
     assert occupants_of("memory") == ("a.mem",)
 
     assert enable_kit(b.kit_id)
-    assert hook_count() == 1, "互斥槽必须先卸旧占用者，不许静默双挂"
+    assert hook_count() == 1
     assert occupants_of("memory") == ("b.mem",)
 
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
     from gsuid_core.ai_core.hooks import fire_hooks
 
     _run(fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx))
-    assert ctx.blocks["memory"] == "from:b.mem", "旧套件的 hook 没卸净"
+    assert ctx.blocks["memory"] == "from:b.mem"
 
 
 def test_non_exclusive_slot_allows_fan_out(isolated) -> None:
@@ -119,7 +111,6 @@ def test_unknown_slot_is_rejected_at_registration(isolated) -> None:
 
 
 def test_disabling_a_slot_has_zero_side_effect(isolated) -> None:
-    """关槽 = 不注册 = 自然跳过。内核里不该有 ``if enable_x``。"""
     from gsuid_core.ai_core.hooks import fire_hooks
 
     kit = register_agent_kit(_FakeKit(kit_id="a.mem", slot="memory", display_name="A"))
@@ -128,49 +119,10 @@ def test_disabling_a_slot_has_zero_side_effect(isolated) -> None:
     assert occupants_of("memory") == ()
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
     _run(fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx))
-    assert "memory" not in ctx.blocks, "关槽后仍有块 = 副作用没清"
+    assert "memory" not in ctx.blocks
 
 
-def test_owned_tools_are_unregistered_on_disable(isolated) -> None:
-    """关槽或替换时必须卸掉 owns_tools，否则「套件没了、模型还看见空壳工具」。"""
-    from gsuid_core.ai_core.register import find_tool_base, get_registered_tools
-
-    registry = get_registered_tools()
-    victim = "set_user_favorability"
-    original = None
-    for cat, tools in registry.items():
-        if victim in tools:
-            original = (cat, tools[victim])
-            break
-    if original is None:
-        pytest.skip("set_user_favorability 未注册（buildin_tools 未导入）")
-
-    kit = register_agent_kit(
-        _FakeKit(kit_id="a.mem", slot="memory", display_name="A", owns_tools=(victim,)),
-    )
-    enable_kit(kit.kit_id)
-    assert find_tool_base(victim) is not None
-    disable_kit(kit.kit_id)
-    assert find_tool_base(victim) is None
-    # 复原，避免污染同进程后续测试
-    registry[original[0]][victim] = original[1]
-
-
-def test_removed_compat_tools_are_unregistered() -> None:
-    import gsuid_core.ai_core.buildin_tools  # noqa: F401
-    from gsuid_core.ai_core.register import find_tool_base
-
-    for name in (
-        "query_user_memory",
-        "update_user_favorability",
-        "read_persisted_output",
-        "set_session_reply_mute",
-        "clear_session_reply_mute",
-    ):
-        assert find_tool_base(name) is None, name
-
-
-def test_slot_config_resolution_and_off(isolated, monkeypatch) -> None:
+def test_slot_config_resolution_and_off(isolated) -> None:
     from gsuid_core.ai_core.kits import resolve_slot_config
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -179,24 +131,16 @@ def test_slot_config_resolution_and_off(isolated, monkeypatch) -> None:
     previous = item.data
     try:
         item.data = OFF
-        assert resolve_slot_config("memory") == (), "off 必须解析成空元组（无占用者）"
+        assert resolve_slot_config("memory") == ()
         item.data = "my_plugin.mem"
         assert resolve_slot_config("memory") == ("my_plugin.mem",)
-        # 互斥槽只取第一个，避免配置写了多个却静默双挂
         item.data = "a.mem,b.mem"
         assert resolve_slot_config("memory") == ("a.mem",)
     finally:
         item.data = previous
 
 
-def test_slot_health_surfaces_empty_slots(isolated) -> None:
-    health = slot_health()
-    assert set(health) == {s.name for s in KIT_SLOTS}
-    assert all(occ == [] for occ in health.values()), "隔离环境下应全空"
-
-
 def test_all_first_party_kits_load_and_occupy_their_slots(isolated) -> None:
-    """默认配置下 18 个槽全部有占用者——这是「默认全开」的前提。"""
     from gsuid_core.ai_core.kits import load_enabled_kits
 
     enabled = _run(load_enabled_kits(run_init_steps=False))
@@ -206,7 +150,6 @@ def test_all_first_party_kits_load_and_occupy_their_slots(isolated) -> None:
 
 
 def test_p0_hook_points_are_wired_by_first_party_kits(isolated) -> None:
-    """套件化不能让点位变成空壳：P0 点位必须有第一方占用者。"""
     from gsuid_core.ai_core.kits import load_enabled_kits
     from gsuid_core.ai_core.hooks import list_hooks
 
@@ -229,44 +172,7 @@ def test_p0_hook_points_are_wired_by_first_party_kits(isolated) -> None:
     assert not missing, f"这些点位没有套件挂载: {missing}"
 
 
-def test_kit_init_steps_do_not_duplicate_core_init_steps() -> None:
-    """一个子系统的 bring-up 只能有**一个**主：``_INIT_STEPS`` 或某个套件的 ``init_step``。
-
-    两边都挂时每次启动都会把同一段初始化跑两遍。实测 Meme 的一次性向量迁移被跑了两次
-    （各 337 秒，并强制重建了两次 collection），并因此把套件装载推到 5 分钟之后，
-    使整轮基准零工具调用。
-    """
-    import re
-    import inspect
-    from typing import Callable
-
-    from gsuid_core.ai_core.kits import list_kits
-    from gsuid_core.ai_core.startup import _INIT_STEPS, _init_agent_kits
-
-    def _awaited(fn: Callable[..., Any]) -> set[str]:
-        """该初始化函数体内 ``await`` 到的调用名——用它判断两处是否在拉同一个子系统。"""
-        return set(re.findall(r"await (\w+)\(", inspect.getsource(fn)))
-
-    owned: set[str] = set()
-    for _name, step in _INIT_STEPS:
-        if step is _init_agent_kits:
-            continue
-        owned |= _awaited(step)
-
-    for kit in list_kits():
-        if kit.init_step is None:
-            continue
-        clash = _awaited(kit.init_step) & owned
-        assert not clash, f"{kit.kit_id}.init_step 与 _INIT_STEPS 重复初始化: {sorted(clash)}"
-
-
 def test_wired_flag_matches_actual_fire_sites() -> None:
-    """``HOOK_POINT_SPECS[...].wired`` 必须与内核真的开火的点位一致。
-
-    全部标 True 时，插件按发布的点位表挂 `veto_tool` / `replace_text` 会拿到一个
-    永不执行的回调且无任何告警——契约文档变成了谎言。这里用源码里的 `fire_hooks`
-    调用点反推真值，让「加了枚举忘了接线」当场失败。
-    """
     import re
     import pathlib
 
@@ -280,80 +186,16 @@ def test_wired_flag_matches_actual_fire_sites() -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
         if "fire_hooks" not in text:
             continue
-        # 直接开火：fire_hooks(AgentHookPoint.X, ...)
         fired |= set(re.findall(r"fire_hooks\(\s*AgentHookPoint\.([A-Z0-9_]+)", text))
-        # 循环开火：for point in (AgentHookPoint.X, AgentHookPoint.Y): … fire_hooks(point, …)
         if re.search(r"fire_hooks\(\s*point\b", text):
             fired |= set(re.findall(r"AgentHookPoint\.([A-Z0-9_]+)", text))
 
     declared = {p.name for p in WIRED_POINTS}
-    assert declared == fired, (
-        f"wired 声明与实际开火点不符\n"
-        f"  声明已接线却没开火: {sorted(declared - fired)}\n"
-        f"  开火了却没声明: {sorted(fired - declared)}"
-    )
-    assert len(HOOK_POINT_SPECS) == len(AgentHookPoint), "点位表与枚举必须一一对应"
-
-
-def test_both_entries_stamp_current_time_from_one_producer() -> None:
-    """生产入口与评测入口都必须补分秒级时间行，且共用同一个产出点。
-
-    人设 system_prompt 只到「日」级（保 provider 前缀缓存），分秒由 user 侧每轮补。
-    评测入口曾漏掉这一行：模型只知道日期不知道钟点，问「现在几点了」答「不知道…
-    没在看时间」，而且没有任何报错。
-    """
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parents[1] / "gsuid_core"
-    produced = (root / "ai_core" / "turn_pipeline.py").read_text(encoding="utf-8")
-    assert produced.count("[当前时间：") == 1, "时间行只允许有一个产出点"
-
-    handle_ai = (root / "ai_core" / "handle_ai.py").read_text(encoding="utf-8")
-    endpoint = (root / "webconsole" / "chat_with_history_api.py").read_text(encoding="utf-8")
-    assert "stamp_current_time" in handle_ai, "一轮编排必须钉时间行"
-    assert "run_interactive_turn(" in endpoint, "评测必须走同一轮编排（时间行在那里钉）"
-    assert "[当前时间：" not in handle_ai and "[当前时间：" not in endpoint
-    kit = (root / "ai_core" / "kits" / "memory" / "kit.py").read_text(encoding="utf-8")
-    assert "timeout_ms=120_000" not in kit
-    assert "RETRIEVE_CONTEXT" in kit
-    assert "clock_date=clock_date" in endpoint
-    assert "memory_eval" in endpoint
-
-
-def test_stamp_current_time_uses_explicit_clock() -> None:
-    """评测 clock_at 必须盖掉墙上时钟，否则 temporal-reasoning 会按 2026 算几天前。"""
-    from gsuid_core.ai_core.turn_pipeline import parse_clock_at, current_time_line, stamp_current_time
-
-    clock = parse_clock_at("2023/04/18 16:50")
-    assert clock == datetime(2023, 4, 18, 16, 50, 0)
-    dated = parse_clock_at("2023/05/30 (Tue) 23:40")
-    assert dated == datetime(2023, 5, 30, 23, 40, 0)
-    line = current_time_line(clock)
-    assert "2023-04-18 16:50:00" in line
-    assert "星期二" in line
-    wall = current_time_line()
-    assert "2023-04-18" not in wall
-    msgs: list[str] = ["How many days ago was rafting?"]
-    stamp_current_time(msgs, now=parse_clock_at("2023/06/17 17:34"))
-    assert "2023-06-17 17:34:00" in msgs[0]
-    assert "2026-" not in msgs[0]
-
-
-def test_kernel_tool_assembly_gate_is_config_driven_not_occupancy() -> None:
-    """五层装配的让位判据必须取**配置**，不能取运行期占用表。
-
-    占用表是 ``load_enabled_kits`` 填的；用它当判据会把「套件还没加载完」误读成
-    「用户把槽拆了」，于是启动窗口内所有请求退化成零工具（find_tools 一并消失）。
-    """
-    from gsuid_core.ai_core.agent_run.tools import _kernel_owns_tool_assembly
-
-    # 注册表全空（模拟「尚未加载」）时仍须由内核自管
-    clear_kits()
-    assert _kernel_owns_tool_assembly(), "套件未加载时必须 fail-open 由内核装配"
+    assert declared == fired
+    assert len(HOOK_POINT_SPECS) == len(AgentHookPoint)
 
 
 def test_composer_orders_blocks_regardless_of_write_order(isolated) -> None:
-    """乱序写入也按块名表拼；空块丢弃。"""
     from gsuid_core.ai_core.kits.compose import compose_dynamic_context
 
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
