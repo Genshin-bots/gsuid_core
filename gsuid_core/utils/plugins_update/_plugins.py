@@ -395,7 +395,7 @@ async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
 
 async def refresh_list() -> List[str]:
     refresh_list = []
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         logger.trace(t("log.plugin.plugins_lib", plugins_lib=plugins_lib))
         async with session.get(plugins_lib) as resp:
             _plugins_list: Dict[str, Dict[str, Dict[str, str]]] = await resp.json()
