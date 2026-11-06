@@ -878,3 +878,7 @@ PUT /api/ai/mcp-tools-config/{item_key}
 9. **发现工具**：在保存配置前，调用 `POST /api/ai/mcp/tools/discover` 预览服务器提供的工具
 10. **导入配置**：调用 `POST /api/ai/mcp/tools/import` 从 MCP 官方 JSON 配置导入
 11. **配置参数映射**：调用 `GET /api/ai/mcp-tools-config/list` 查看各业务模块的 MCP 工具映射，`PUT /api/ai/mcp-tools-config/{item_key}` 更新工具 ID 和参数映射
+12. **服务广场**：`GET /api/ai/mcp/market/entries` 列表（`search`/`page`/`page_size`；上游不可达时 `degraded=true` 且回落本地预置卡片），`GET /api/ai/mcp/market/entries/{qualified_name}` 详情（含 `variants` 传输变体与 `default_variant`），`POST /api/ai/mcp/market/install-preview` 按变体生成安装草稿（`env_required`/`name_conflict`/`market_meta`，不落盘），确认后用 `POST /api/ai/mcp` 完成创建
+13. **Logo 代理**：`GET /api/ai/mcp/market/logo?u=<上游 URL>` 把服务 logo 缓存在 `data/ai_core/mcp_market/logo/`；前端 `<img>` 直接用，404 自行兜底，拉取失败不影响主流程
+14. **中文介绍**：`POST /api/ai/mcp/{config_id}/generate-profile` 触发后台 LLM 高档位补全（`generated_profile`），`POST /api/ai/mcp/{config_id}/adopt-profile` 把生成介绍采纳为用户 `description`
+15. **能力节点**：启用 + `register_as_ai_tools` 的服务自动生成 `source="mcp"` 能力节点（`in_roster=False`，不进主人格花名册）；`PATCH /api/ai/capability-agents/{node_id}` 的改动以覆盖层落盘，`DELETE` 清除覆盖层恢复自动生成

@@ -99,6 +99,7 @@
   "log.memory.observer_command_echo_filter": "[Observer] コマンドエコーフィルターに一致したため破棄する: {p0}",
   "log.memory.observer_injection_signature_filter_inject": "[Observer] インジェクション特徴フィルターに一致したため破棄する: {p0}",
   "log.memory.observer_repetition_filter_matched": "[Observer] 反復フィルターに一致したため破棄する: {p0}",
+  "log.memory.observer_credential_filtered": "[Observer] 資格情報コマンド/形式のメッセージを破棄",
   "log.memory.observer_user_command_typo": "[Observer] ユーザーコマンド/typo フィルターに一致したため破棄する: {p0}",
   "log.memory.pre_shutdown_ingestionworker_flush": "[Memory] IngestionWorker 終了前の flush に失敗した: {e}",
   "log.memory.preference_distillation_output_json": "[Memory] プリファレンス蒸留の出力が JSON オブジェクトではないため、スキップする: {p0}",

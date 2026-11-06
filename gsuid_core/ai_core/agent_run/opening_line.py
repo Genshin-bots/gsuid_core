@@ -146,7 +146,9 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
         logger.info(i18n_t("log.agent.silent_skipping_text", _text=f"[opening/{why}] {body[:60]}"))
         return ""
     user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-    if tool_gate_feedback(body, extra, user_text=user_text) is not None:
+    _is_group = bool(ev is not None and ev.group_id)
+    _gate_fb, body = tool_gate_feedback(body, extra, user_text=user_text, is_group=_is_group)
+    if _gate_fb is not None:
         log_output_block_on_session(_opening_session_id(tool_ctx), "output_gate_tool", body, policy="silence_only")
         return ""
     return body

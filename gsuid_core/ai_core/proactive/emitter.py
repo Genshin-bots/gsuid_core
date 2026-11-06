@@ -201,7 +201,13 @@ async def emit_proactive_message(
         _bag: Dict[str, object] = {}
         if pname:
             _bag["persona_name"] = pname
-        _gr = pre_send_gate(out_msg, _bag, user_text="", channel="main")
+        _gr = pre_send_gate(
+            out_msg,
+            _bag,
+            user_text="",
+            channel="main",
+            is_group=bool(event.group_id),
+        )
         if _gr.decision is GateDecision.FUSE:
             logger.warning(t("log.ai.firewall_result_hit_ooc_red", p0="fuse", p1="proactive"))
             return False
@@ -219,6 +225,8 @@ async def emit_proactive_message(
             out_msg = _gr.send_text
             if not out_msg:
                 return False
+        elif _gr.send_text:
+            out_msg = _gr.send_text
     from gsuid_core.ai_core.persona.speaking_ctx import set_speaking_persona, reset_speaking_persona
 
     _speaking_token = set_speaking_persona(pname or "")

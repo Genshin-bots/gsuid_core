@@ -256,7 +256,9 @@ async def _recover_zombies_and_kick() -> None:
     from .models import AIAgentTask
     from .kanban_executor import kick_root
 
-    recovered = await recover_zombie_subtasks()
+    # 启动点上还没有任何存活执行体：一切 running 都是上进程残留，
+    # 按默认 15 分钟心跳阈值会漏掉"崩溃前刚启动"的任务（如被重启打断的叶子根）。
+    recovered = await recover_zombie_subtasks(stale_minutes=0)
     # 无论是否复活过僵尸都无条件接力 kick 所有 running/pending 根任务（否则优雅重启后 无僵尸时 pending
     # 双跑由 mark_subtask_running 的条件 SQL 拦住
     logger.info(t("log.ai.kanban_recovered_zombie_tasks_start", recovered=recovered))

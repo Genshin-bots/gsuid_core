@@ -99,6 +99,7 @@
   "log.memory.observer_command_echo_filter": "[Observer] 命中命令回显过滤，丢弃: {p0}",
   "log.memory.observer_injection_signature_filter_inject": "[Observer] 命中注入特征过滤，丢弃: {p0}",
   "log.memory.observer_repetition_filter_matched": "[Observer] 命中复读过滤，丢弃: {p0}",
+  "log.memory.observer_credential_filtered": "[Observer] 凭据命令/凭据形态消息，整条丢弃不进记忆",
   "log.memory.observer_user_command_typo": "[Observer] 命中用户命令/typo 过滤，丢弃: {p0}",
   "log.memory.pre_shutdown_ingestionworker_flush": "[Memory] IngestionWorker 关闭前 flush 失败: {e}",
   "log.memory.preference_distillation_output_json": "[Memory] 偏好蒸馏输出非 JSON 对象，跳过: {p0}",

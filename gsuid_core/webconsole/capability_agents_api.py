@@ -141,6 +141,8 @@ async def create_capability_agent(
             "msg": "node_id 必须以字母开头，仅含英数下划线，长度 1~64",
             "data": None,
         }
+    if body.node_id.startswith("mcp_"):
+        return {"status": 1, "msg": "node_id 以 mcp_ 开头为 MCP 服务保留前缀", "data": None}
     if get_node(body.node_id) is not None:
         return {"status": 1, "msg": f"节点 {body.node_id} 已存在，请改用 PATCH 编辑", "data": None}
 
@@ -192,10 +194,13 @@ async def patch_capability_agent(
     body: PatchNodeRequest,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """编辑一个**用户自建**节点。builtin / plugin / persona 节点拒绝修改。"""
+    """编辑一个**用户自建**节点。builtin / plugin / persona 节点拒绝修改；
+    mcp 节点走覆盖层合并（只存与自动生成值的差量）。"""
     source = get_profile_source(node_id)
     if source == "missing":
         return {"status": 1, "msg": f"节点 {node_id} 不存在", "data": None}
+    if source == "mcp":
+        return _patch_mcp_node(node_id, body)
     if source != "user":
         return {
             "status": 1,
@@ -229,15 +234,49 @@ async def patch_capability_agent(
     return {"status": 0, "msg": "ok", "data": get_profile_as_dto(node_id)}
 
 
+def _patch_mcp_node(node_id: str, body: PatchNodeRequest) -> Dict[str, Any]:
+    """MCP 节点编辑：字段与自动生成基线做差存覆盖层，节点本体不落盘。"""
+    from gsuid_core.ai_core.mcp.node_profile import (
+        MCP_NODE_PREFIX,
+        build_mcp_node,
+        build_mcp_node_base,
+        compute_mcp_overlay,
+    )
+    from gsuid_core.ai_core.mcp.config_manager import mcp_config_manager
+    from gsuid_core.ai_core.capability_agents.persistence import (
+        load_mcp_overlay,
+        save_mcp_overlay,
+    )
+
+    config_id = node_id[len(MCP_NODE_PREFIX) :] if node_id.startswith(MCP_NODE_PREFIX) else node_id
+    config = mcp_config_manager.get_config(config_id)
+    existing = get_node(node_id)
+    if config is None or existing is None:
+        return {"status": 1, "msg": f"MCP 配置 {config_id} 不存在", "data": None}
+
+    base = build_mcp_node_base(config_id, config, list(existing.tool_names))
+    provided = body.model_dump(exclude_unset=True)
+    # tool_names 永远取注册表真值，忽略请求里的改动。
+    provided.pop("tool_names", None)
+    provided.pop("tool_query", None)
+    overlay = compute_mcp_overlay(load_mcp_overlay(node_id), base, provided)
+    save_mcp_overlay(node_id, overlay)
+    register_agent_node(build_mcp_node(config_id, config, list(existing.tool_names)))
+    return {"status": 0, "msg": "ok", "data": get_profile_as_dto(node_id)}
+
+
 @app.delete("/api/ai/capability-agents/{node_id}", summary="删除", tags=CAPABILITY_AGENTS)
 async def delete_capability_agent(
     node_id: str,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """删除一个**用户自建**节点（同时清磁盘文件 + 统一注册表）。"""
+    """删除一个**用户自建**节点（同时清磁盘文件 + 统一注册表）。
+    对 mcp 节点而言"删除"= 清除用户覆盖层、恢复自动生成。"""
     source = get_profile_source(node_id)
     if source == "missing":
         return {"status": 1, "msg": f"节点 {node_id} 不存在", "data": None}
+    if source == "mcp":
+        return _restore_mcp_node(node_id)
     if source != "user":
         return {
             "status": 1,
@@ -248,6 +287,22 @@ async def delete_capability_agent(
     if not ok:
         return {"status": 1, "msg": "删除失败（非用户节点）", "data": None}
     return {"status": 0, "msg": "ok", "data": {"node_id": node_id}}
+
+
+def _restore_mcp_node(node_id: str) -> Dict[str, Any]:
+    """清掉 MCP 节点覆盖层并重建自动生成节点。"""
+    from gsuid_core.ai_core.mcp.node_profile import MCP_NODE_PREFIX, build_mcp_node
+    from gsuid_core.ai_core.mcp.config_manager import mcp_config_manager
+    from gsuid_core.ai_core.capability_agents.persistence import delete_mcp_overlay
+
+    config_id = node_id[len(MCP_NODE_PREFIX) :] if node_id.startswith(MCP_NODE_PREFIX) else node_id
+    config = mcp_config_manager.get_config(config_id)
+    existing = get_node(node_id)
+    if config is None or existing is None:
+        return {"status": 1, "msg": f"MCP 配置 {config_id} 不存在", "data": None}
+    delete_mcp_overlay(node_id)
+    register_agent_node(build_mcp_node(config_id, config, list(existing.tool_names)))
+    return {"status": 0, "msg": "ok", "data": get_profile_as_dto(node_id)}
 
 
 @app.get("/api/ai/capability-agents/_tools/available", summary="可挂载工具枚举", tags=CAPABILITY_AGENTS)

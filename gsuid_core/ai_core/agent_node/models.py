@@ -16,7 +16,7 @@ from dataclasses import field, dataclass
 from ..base_prompts import join_framework_constraints
 
 PromptStyle = Literal["roleplay", "plain"]
-NodeSource = Literal["builtin", "plugin", "user", "persona"]
+NodeSource = Literal["builtin", "plugin", "user", "persona", "mcp"]
 
 # task-mode 交付边界叠加层（框架默认）。原先手工拼进每个画像 prompt 尾部，
 # 现由 compose_task_prompt 在任务实例化时统一叠加；节点可用 boundary_override 覆写。
@@ -73,9 +73,11 @@ class AgentNode:
     keywords: List[str] = field(default_factory=list)
     # ── meta ──
     source: NodeSource = "plugin"
-    # 注册来源插件目录名：builtin→"core"；plugin→plugins/<Name>；user/persona→""
+    # 注册来源插件目录名：builtin→"core"；plugin→plugins/<Name>；user/persona/mcp→""
     plugin: str = ""
     version: int = 2
+    # 是否进人格花名册文案。MCP 节点恒为 False：只走语义路由 / 直调，不占花名册名额。
+    in_roster: bool = True
 
 
 def compose_task_prompt(node: AgentNode) -> str:

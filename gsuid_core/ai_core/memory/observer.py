@@ -378,6 +378,12 @@ def _gate(
     if _INJECTION_RE.search(stripped):
         logger.trace(t("log.memory.observer_injection_signature_filter_inject", p0=stripped[:30]))
         return None
+    # 凭据命令 / 凭据形态整条丢弃：token 绝不进记忆抽取管道
+    from gsuid_core.ai_core.mcp.pii import has_credential_form, is_credential_command
+
+    if is_credential_command(stripped) or has_credential_form(stripped):
+        logger.trace(t("log.memory.observer_credential_filtered"))
+        return None
     # 复读 / 刷屏检测
     if _is_repeat(scope_key, stripped):
         logger.trace(t("log.memory.observer_repetition_filter_matched", p0=stripped[:30]))
@@ -442,6 +448,12 @@ async def observe(
         if tier is None:
             return
         value_tier = tier
+        # 群 scope 摄入前打码：群记忆全员可召回，PII 不落群记忆（私聊不掩——
+        # 用户私有记忆记手机号/地址是合法能力）。
+        if group_id:
+            from gsuid_core.ai_core.mcp.pii import mask_pii
+
+            content = mask_pii(content)
         # 程序性记忆门控（默认开）：命中纠错/偏好意图 → 强制 HIGH（确保进 high_records
         # 被偏好蒸馏消费）+ 标记 is_correction。纯规则、零 LLM，符合不变量 #1。
         if memory_config.enable_preference_memory and detect_correction_intent(content):

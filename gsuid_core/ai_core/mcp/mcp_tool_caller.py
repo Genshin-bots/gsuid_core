@@ -42,14 +42,22 @@ async def call_mcp_tool(
     if not config:
         raise RuntimeError(t("MCP 配置 '{mcp_id}' 不存在，请检查配置", mcp_id=mcp_id))
 
+    # 源码检出型：调用前确保源码已克隆（失败不拦截，由连接错误兜底反馈）
+    from gsuid_core.ai_core.mcp.client import ensure_checkout_for_config
+    from gsuid_core.ai_core.mcp.credential_store import render_client_kwargs
+
+    await ensure_checkout_for_config(config)
+
+    kwargs = render_client_kwargs(config, None)
     client = MCPClient(
         name=config.name,
         transport=config.get_transport(),
-        command=config.command,
-        args=config.args,
-        env=config.env,
-        url=config.url,
-        headers=config.headers,
+        command=kwargs["command"],
+        args=kwargs["args"],
+        env=kwargs["env"],
+        url=kwargs["url"],
+        headers=kwargs["headers"],
+        cwd=config.cwd,
     )
 
     # 记录调用参数（截断过长的值）

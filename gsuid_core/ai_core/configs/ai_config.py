@@ -320,6 +320,17 @@ AI_CONFIG: Dict[str, GSC] = {
         45,
         options=[45, 60, 80, 120, 200],
     ),
+    "mcp_profile_llm_enable": GsBoolConfig(
+        "MCP 中文介绍 LLM 补全",
+        "注册 MCP 服务后若缺中文描述, 后台调用高级模型生成中文能力说明供路由使用; 关闭则只用拼接文案",
+        True,
+    ),
+    "mcp_profile_llm_timeout_sec": GsIntConfig(
+        "MCP 介绍生成超时(秒)",
+        "MCP 中文介绍单次 LLM 调用超时时间, 超时只影响生成质量, 不影响工具注册",
+        60,
+        options=[30, 60, 90, 120],
+    ),
     "agent_max_run_attempts": GsIntConfig(
         "核心请求重试次数",
         "网络抖动/超时/5xx 等瞬时失败时核心回复请求的最大尝试次数(含首次)。内容审核等永久错误不重试",

@@ -205,7 +205,8 @@ def list_persona_capability_nodes(persona_name: str | None) -> list[AgentNode]:
 
 def format_capability_roster(persona_name: str | None = None) -> str:
     """可委派短花名册：每节点一行 node_id + when_to_use。covers 不进 system。"""
-    nodes: list[AgentNode] = list_persona_capability_nodes(persona_name)
+    # in_roster=False（如 MCP 节点）仍可被路由/委派，只是不写进花名册文案。
+    nodes: list[AgentNode] = [n for n in list_persona_capability_nodes(persona_name) if n.in_roster]
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     cap = int(ai_config.get_config("capability_roster_line_max").data)

@@ -1,3 +1,4 @@
+import sys
 import asyncio
 from pathlib import Path
 
@@ -71,6 +72,8 @@ def _import_webconsole_apis() -> None:
         # Agent 套件槽位 / Hook 总线 / 关系温度的只读治理
         agent_kits_api,
         mcp_config_api,
+        # MCP 广场（ModelScope 市场 + logo 本地代理）
+        mcp_market_api,
         agent_debug_api,
         state_store_api,
         prompt_group_api,
@@ -128,6 +131,11 @@ async def setup_frontend_b() -> None:
         _import_webconsole_apis()
     except Exception as e:
         logger.exception(t("log.webconsole.api_import_fail", e=e))
+
+    # MCP 广场详情判定后台预热：AI 未开时模块未导入则跳过
+    _market_mod = sys.modules.get("gsuid_core.webconsole.mcp_market_api")
+    if _market_mod is not None:
+        asyncio.create_task(_market_mod.warm_market_caches())
 
     local = await asyncio.to_thread(probe_local_dists, DIST_PATH, DIST_EX_PATH)
     if not local["bundled_ready"] and not local["extra_ready"]:

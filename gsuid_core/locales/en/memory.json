@@ -99,6 +99,7 @@
   "log.memory.observer_command_echo_filter": "[Observer] Command echo filter matched; discarding: {p0}",
   "log.memory.observer_injection_signature_filter_inject": "[Observer] Injection signature filter matched; discarding: {p0}",
   "log.memory.observer_repetition_filter_matched": "[Observer] Repetition filter matched; discarding: {p0}",
+  "log.memory.observer_credential_filtered": "[Observer] credential command/form message dropped from memory",
   "log.memory.observer_user_command_typo": "[Observer] User command/typo filter matched; discarding: {p0}",
   "log.memory.pre_shutdown_ingestionworker_flush": "[Memory] Pre-shutdown IngestionWorker flush failed: {e}",
   "log.memory.preference_distillation_output_json": "[Memory] Preference distillation output is not a JSON object; skipping: {p0}",
