@@ -338,6 +338,36 @@ def _build_mcp_check_func(
     return _mcp_check_func
 
 
+MCP_FALLBACK_DOMAIN_PREFIX = "MCP:"
+
+
+def _mcp_capability_domain(client: Any, config: "MCPConfig | None") -> str:
+    """MCP 工具的能力域：配置声明优先，缺省 `MCP:<服务名>`，供 find_tools 分族检索分槽。"""
+    declared = ""
+    if config is not None:
+        declared = str(getattr(config, "capability_domain", "") or "").strip()
+    return declared or f"{MCP_FALLBACK_DOMAIN_PREFIX}{client.name}"
+
+
+def _mcp_tool_covers(client: Any, config: "MCPConfig | None", tool_name: str) -> list[str]:
+    """MCP 工具的召回覆盖词：配置声明 + 工具名 + 服务名，供向量检索与词面匹配。"""
+    raw: list[str] = []
+    if config is not None:
+        for item in getattr(config, "covers", None) or []:
+            text = str(item).strip()
+            if text:
+                raw.append(text)
+    raw.extend([tool_name, client.name])
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for text in raw:
+        key = text.lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(text)
+    return uniq[:8]
+
+
 def _register_mcp_tool(
     client: MCPClient,
     tool_name: str,
@@ -391,6 +421,8 @@ def _register_mcp_tool(
         tool=tool_obj,
         check_func=check_func,
         category=MCP_CATEGORY,
+        capability_domain=_mcp_capability_domain(client, config),
+        covers=_mcp_tool_covers(client, config, tool_name),
     )
 
     if MCP_CATEGORY not in tool_registry:
