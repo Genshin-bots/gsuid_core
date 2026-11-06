@@ -140,6 +140,9 @@ class MCPConfig:
     register_as_ai_tools: bool = False  # 是否将该 MCP 服务器的工具注册为 AI Tools
     tools: list[MCPToolDefinition] = field(default_factory=list)  # 工具列表
     tool_permissions: dict[str, int] = field(default_factory=dict)
+    # 新增：能力域与召回覆盖词（供 find_tools 分族检索 / 词面匹配），均可在 JSON 里省略
+    capability_domain: str = ""
+    covers: list[str] = field(default_factory=list)
 
     def get_transport(self) -> str:
         """获取有效的传输方式（规范化 + 必要时按 url / command 推断）。"""
@@ -181,6 +184,10 @@ class MCPConfig:
                 result["headers"] = self.headers
         if self.tool_permissions:
             result["tool_permissions"] = self.tool_permissions
+        if self.capability_domain:
+            result["capability_domain"] = self.capability_domain
+        if self.covers:
+            result["covers"] = list(self.covers)
         return result
 
     @classmethod
@@ -206,6 +213,8 @@ class MCPConfig:
             register_as_ai_tools=data.get("register_as_ai_tools", False),
             tools=tools,
             tool_permissions=data.get("tool_permissions", {}),
+            capability_domain=str(data.get("capability_domain", "") or ""),
+            covers=[str(x) for x in (data.get("covers") or [])],
         )
 
     def get_tool_required_pm(self, tool_name: str) -> int:

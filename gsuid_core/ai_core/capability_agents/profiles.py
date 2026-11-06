@@ -1003,6 +1003,8 @@ def register_builtin_profiles() -> None:
             display_name="插件开发代理",
             prompt=_PLUGIN_DEVELOPER_PROMPT,
             when_to_use=(
+                "边界：需求=给 AI 增加一个可被调用的能力 → 改用 mcp_admin 的 mcp_create；"
+                "本画像只做真正的插件（命令/界面/适配器）。"
                 "需要为 GsCore 框架本身编写一个新插件并自助加载使用的任务："
                 "脚手架 → 写业务代码 → 语法自检 → 热加载进运行中的框架。仅主人可用。"
             ),
@@ -1025,6 +1027,11 @@ def register_builtin_profiles() -> None:
                 "copy_to_plugin_dir",
                 "load_plugin_into_core",
                 "test_plugin_command",
+                "mcp_mcp_admin_mcp_list",
+                "mcp_mcp_admin_mcp_read",
+                "mcp_mcp_admin_mcp_create",
+                "mcp_mcp_admin_mcp_update",
+                "mcp_mcp_admin_mcp_reload",
                 "search_skill_docs",
                 "read_plugin_dev_guide",
             ],

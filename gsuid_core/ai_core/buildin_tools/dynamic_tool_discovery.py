@@ -306,7 +306,7 @@ def _offered_dedicated_hits(
             continue
         covers = list(tb.covers)
         retrieval = tb.retrieval_text
-        if not need_matches_tool_text(need, retrieval, covers):
+        if tb.category != "mcp" and not need_matches_tool_text(need, retrieval, covers):
             continue
         if (
             classify_callable_tool(
@@ -490,7 +490,11 @@ async def find_tools(
                 # 向量已召回；词面过滤会丢掉「对比表出成图」这类 exclusive
                 fold_names.append(tool.name)
                 continue
-            if tool.name not in identity_names and not need_matches_tool_text(need, retrieval, covers):
+            if (
+                tb.category != "mcp"
+                and tool.name not in identity_names
+                and not need_matches_tool_text(need, retrieval, covers)
+            ):
                 continue
             try:
                 run_ctx = replace(
