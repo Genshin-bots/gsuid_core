@@ -12,8 +12,10 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import gsuid_core.supervisor as supervisor_mod
 import gsuid_core.utils.database.base_models as base_models
 import gsuid_core.buildin_plugins.core_command.core_restart.restart as restart_mod
+from gsuid_core.supervisor import RESTART_EXIT_CODE, Supervisor, dependency_sync_command
 from gsuid_core.utils.database.write_gate import SqliteWriteGate
 from gsuid_core.utils.database.base_models import with_session, with_read_session
 from gsuid_core.buildin_plugins.core_command.core_restart.restart import (
@@ -46,6 +48,38 @@ class _RestartPathProbe:
 
     def fake_schedule_exit(self) -> None:
         self.exit_scheduled += 1
+
+
+class _FakeChild:
+    def __init__(self, code: int) -> None:
+        self.code = code
+        self.returncode: int | None = None
+
+    def wait(self) -> int:
+        self.returncode = self.code
+        return self.code
+
+    def send_signal(self, signum: int) -> None:
+        return None
+
+
+class _PopenScript:
+    """按顺序给每次 Popen 一个退出码，并记下拉起过的命令。"""
+
+    def __init__(self, codes: list[int]) -> None:
+        self.codes = codes
+        self.commands: list[list[str]] = []
+
+    def fake_popen(self, command: list[str], *, env: dict[str, str]) -> _FakeChild:
+        self.commands.append(command)
+        return _FakeChild(self.codes[len(self.commands) - 1])
+
+
+def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, codes: list[int]) -> _PopenScript:
+    script = _PopenScript(codes)
+    monkeypatch.setattr(supervisor_mod.subprocess, "Popen", script.fake_popen)
+    monkeypatch.setattr(supervisor_mod.time, "sleep", lambda _seconds: None)
+    return script
 
 
 def _patch_restart_path(
@@ -247,3 +281,23 @@ def test_restart_under_supervisor_exits_instead_of_spawning(
     assert probe.shutdown_calls == 1
     assert probe.exit_scheduled == 1
     assert capture.called is False
+
+
+def test_dependency_sync_command_only_under_uv_run(tmp_path: Path) -> None:
+    uv = tmp_path / "uv.exe"
+    assert dependency_sync_command({}) is None
+    assert dependency_sync_command({"UV": str(uv)}) is None
+    uv.write_bytes(b"")
+    assert dependency_sync_command({"UV": str(uv)}) == [str(uv), "sync", "--inexact", "--no-install-project"]
+
+
+def test_supervisor_syncs_deps_before_respawn_even_if_sync_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _patch_supervisor(monkeypatch, [RESTART_EXIT_CODE, 1, 0])
+    assert Supervisor(["core"], {}, ["uv", "sync"]).run() == 0
+    assert script.commands == [["core"], ["uv", "sync"], ["core"]]
+
+
+def test_supervisor_without_uv_respawns_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _patch_supervisor(monkeypatch, [RESTART_EXIT_CODE, 3])
+    assert Supervisor(["core"], {}).run() == 3
+    assert script.commands == [["core"], ["core"]]

@@ -333,7 +333,8 @@ def run_install(path: Optional[Path] = None) -> int:
     env["PYTHONIOENCODING"] = "utf8"
 
     if tools == "uv":
-        CMD = "uv sync --inexact"
+        # 运行中 core.exe 被占用，重装项目本身会 os error 5，连新依赖一起装不上
+        CMD = "uv sync --inexact --no-install-project"
     else:
         CMD = f"{tools} install"
 
