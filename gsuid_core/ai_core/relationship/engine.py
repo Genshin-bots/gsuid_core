@@ -24,6 +24,7 @@ from gsuid_core.ai_core.relationship.signals import (
     REASON_BUDGET,
     REASON_ADMIN_SET,
     REASON_NO_SIGNAL,
+    NegSignal,
     PosSignal,
     TurnSignals,
     scan_signals,
@@ -122,6 +123,9 @@ def plan_delta(
     return raw, primary, hits
 
 
+_DAILY_LOSS_CAP: int = 20
+
+
 def clip_to_budget(
     raw_delta: int,
     *,
@@ -133,7 +137,7 @@ def clip_to_budget(
         remaining = _cfg_int("favor_daily_gain_cap") - daily_gain
         return max(0, min(raw_delta, remaining))
     if raw_delta < 0:
-        remaining = _cfg_int("favor_daily_loss_cap") - daily_loss
+        remaining = _DAILY_LOSS_CAP - daily_loss
         return -max(0, min(-raw_delta, remaining))
     return 0
 
@@ -383,5 +387,97 @@ async def apply_admin_set(
             callbacks=tuple(record.shared_callbacks_list),
         ),
         None,
+        wrote=True,
+    )
+
+
+async def settle_semantic(
+    *,
+    user_id: str,
+    bot_id: str,
+    persona_name: str,
+    signal: NegSignal,
+    evidence: str,
+    user_name: str = "",
+) -> SettleOutcome:
+    """语义负信号异步结算（复用抽取调用产出，零额外 LLM 请求）。
+
+    规则：
+    - 主人（masters）不扣分；
+    - 走与 settle_turn 相同的 clip_to_budget 和 apply_settlement；
+    - 仅负信号扣分，teasing/friendly/neutral 不加分；
+    - evidence 记入 last_reason。
+    """
+    from gsuid_core.config import core_config
+    from gsuid_core.ai_core.database.models import UserFavorability
+
+    clean_uid = user_id.strip()
+    clean_bot = bot_id.strip()
+    clean_persona = persona_name.strip()
+    if not clean_uid or not clean_bot or not clean_persona or not engine_enabled():
+        view = await _read_view(clean_uid, clean_bot, clean_persona, False)
+        return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, None, wrote=False)
+
+    raw_masters = core_config.get_config("masters")
+    masters = (
+        {str(m).strip() for m in raw_masters if isinstance(m, (str, int)) and not isinstance(m, bool)}
+        if isinstance(raw_masters, list)
+        else set()
+    )
+    is_master = clean_uid in masters
+    if is_master:
+        view = await _read_view(clean_uid, clean_bot, clean_persona, True)
+        return SettleOutcome(0, "master_exempt", view.score, view.score, view, None, wrote=False)
+
+    if signal not in (NegSignal.PROVOKE, NegSignal.HOSTILE):
+        view = await _read_view(clean_uid, clean_bot, clean_persona, False)
+        return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, None, wrote=False)
+
+    raw_delta = NEG_WEIGHTS[signal]
+
+    existing = await UserFavorability.get_or_create_user_favorability(clean_uid, clean_bot, clean_persona, user_name)
+    score_before = existing.favorability
+    now_ts = int(time.time())
+    today = _today()
+    day_rolled = existing.daily_ymd != today
+    daily_gain = 0 if day_rolled else existing.daily_gain
+    daily_loss = 0 if day_rolled else existing.daily_loss
+
+    delta = clip_to_budget(raw_delta, daily_gain=daily_gain, daily_loss=daily_loss)
+    if delta == 0:
+        view = view_from_score(score_before, is_master=False)
+        return SettleOutcome(0, REASON_BUDGET, score_before, score_before, view, None, wrote=False)
+
+    new_score = score_before + delta
+    reason_str = f"{signal.value}:{evidence[:60]}" if evidence else signal.value
+    await UserFavorability.apply_settlement(
+        clean_uid,
+        clean_bot,
+        clean_persona,
+        new_score=new_score,
+        delta=delta,
+        reason=reason_str,
+        now_ts=now_ts,
+        daily_ymd=today,
+        daily_gain=daily_gain,
+        daily_loss=daily_loss + abs(delta),
+        bump_interaction=False,
+        refresh_positive=False,
+        user_name=user_name,
+    )
+
+    view_after = view_from_score(
+        new_score,
+        is_master=False,
+        vibe=(existing.interaction_vibe or "") if existing is not None else "",
+        callbacks=tuple(existing.shared_callbacks_list) if existing is not None else (),
+    )
+    return SettleOutcome(
+        delta=delta,
+        reason=signal.value,
+        score_before=score_before,
+        score_after=new_score,
+        view=view_after,
+        signals=None,
         wrote=True,
     )

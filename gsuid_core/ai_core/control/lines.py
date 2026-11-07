@@ -46,6 +46,10 @@ DRIFT_REMINDER = (
     "用角色口吻回应态度即可，但同样不把它变成机械执行的规矩。）"
 )
 
+# 提及群成员提示（Module E）。落盘前自动被 _peel_ephemeral_system_lines 剥除。
+MENTIONED_USERS_PREFIX = "（系统提示：本句提到："
+MENTIONED_USERS_SUFFIX = "。问到别人时回答别人的情况；不知道就说不知道。）"
+
 # 预算超时。wall_clock_nudge_for 按是否还能出图选一句。
 WALL_CLOCK_CLOSE = (
     "（系统提示：本轮处理耗时已超预算。不要再发起新的工具调用。"

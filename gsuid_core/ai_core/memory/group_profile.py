@@ -28,6 +28,14 @@ _MAX_MEMBER_ALIASES = 60
 _MAX_IDS_PER_ALIAS = 5
 
 
+class PendingTerm(TypedDict):
+    """待定别名映射：满 2 个不同批次出现才转正为正式 term_mapping。"""
+
+    formal: str
+    hits: int
+    last_batch_id: str
+
+
 class GroupProfileData(TypedDict):
     """群组画像的结构化数据。
 
@@ -37,6 +45,7 @@ class GroupProfileData(TypedDict):
     scope_key: str
     tag_counts: Dict[str, int]  # {标签: 累计出现频次}
     term_mappings: Dict[str, str]  # {别名: 正式名称}
+    pending_terms: Dict[str, PendingTerm]  # {别名: 待定映射}
     # 群成员称呼映射 {称呼: [用户ID, ...]}；新版本使用 member_alias_ids 列表字段。
     member_alias_ids: Dict[str, List[str]]
     # 遗留字段：旧版 {称呼: 用户ID(str)}。**永不读取**，仅原样透传保留以便回滚；新逻辑只认上面的字段。
@@ -73,6 +82,24 @@ def _coerce_member_alias_ids(raw: Any) -> Dict[str, List[str]]:
     return out
 
 
+def _coerce_pending_terms(raw: Any) -> Dict[str, PendingTerm]:
+    """规整 pending_terms 字段。"""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, PendingTerm] = {}
+    for alias, val in raw.items():
+        if not isinstance(alias, str) or not alias:
+            continue
+        if not isinstance(val, dict):
+            continue
+        formal = val["formal"] if "formal" in val and isinstance(val["formal"], str) else ""
+        hits = val["hits"] if "hits" in val and isinstance(val["hits"], int) else 1
+        last_batch = val["last_batch_id"] if "last_batch_id" in val and isinstance(val["last_batch_id"], str) else ""
+        if formal:
+            out[alias] = PendingTerm(formal=formal, hits=hits, last_batch_id=last_batch)
+    return out
+
+
 def _normalize(raw: Any, scope_key: str) -> GroupProfileData:
     """将 state_store 读出的原始值规整为 GroupProfileData。
 
@@ -84,12 +111,14 @@ def _normalize(raw: Any, scope_key: str) -> GroupProfileData:
             scope_key=scope_key,
             tag_counts={},
             term_mappings={},
+            pending_terms={},
             member_alias_ids={},
             member_aliases={},
             last_updated="",
         )
     raw_tags = raw["tag_counts"] if "tag_counts" in raw else None
     raw_terms = raw["term_mappings"] if "term_mappings" in raw else None
+    raw_pending = raw["pending_terms"] if "pending_terms" in raw else None
     raw_alias_ids = raw["member_alias_ids"] if "member_alias_ids" in raw else None
     # 旧字段原样透传：永不读取/解析，仅保留以便回滚（见 GroupProfileData.member_aliases 说明）
     legacy_aliases = raw["member_aliases"] if "member_aliases" in raw else {}
@@ -98,6 +127,7 @@ def _normalize(raw: Any, scope_key: str) -> GroupProfileData:
         scope_key=scope_key,
         tag_counts=raw_tags if isinstance(raw_tags, dict) else {},
         term_mappings=raw_terms if isinstance(raw_terms, dict) else {},
+        pending_terms=_coerce_pending_terms(raw_pending),
         member_alias_ids=_coerce_member_alias_ids(raw_alias_ids),
         member_aliases=legacy_aliases,
         last_updated=raw_updated if isinstance(raw_updated, str) else "",
@@ -119,7 +149,7 @@ def _as_profile(current: Any, scope_key: str) -> GroupProfileData:
     return profile
 
 
-async def record_term_mappings(scope_key: str, mappings: Dict[str, str]) -> None:
+async def record_term_mappings(scope_key: str, mappings: Dict[str, str], batch_id: str = "") -> None:
     """记录一批别名 → 正式名称的映射到群组画像。
 
     通过 state_store 的 state_mutate 乐观锁完成读-改-写，避免并发摄入时
@@ -136,13 +166,31 @@ async def record_term_mappings(scope_key: str, mappings: Dict[str, str]) -> None
     def _mutate(current: Any) -> GroupProfileData:
         profile = _as_profile(current, scope_key)
         term_mappings: Dict[str, str] = dict(profile["term_mappings"])
+        pending_terms: Dict[str, PendingTerm] = dict(profile["pending_terms"])
         for alias, formal in mappings.items():
-            if alias and formal:
-                term_mappings[alias] = formal
+            if not alias or not formal:
+                continue
+            if alias in term_mappings and term_mappings[alias] == formal:
+                continue
+            if alias in pending_terms and pending_terms[alias]["formal"] == formal:
+                pending = pending_terms[alias]
+                if batch_id and pending["last_batch_id"] != batch_id:
+                    pending["hits"] += 1
+                    pending["last_batch_id"] = batch_id
+                elif not batch_id:
+                    pending["hits"] += 1
+                if pending["hits"] >= 2:
+                    term_mappings[alias] = formal
+                    pending_terms.pop(alias, None)
+            else:
+                pending_terms[alias] = PendingTerm(formal=formal, hits=1, last_batch_id=batch_id)
         # 容量控制：超限时丢弃最早写入的映射
         if len(term_mappings) > _MAX_TERM_MAPPINGS:
             term_mappings = dict(list(term_mappings.items())[-_MAX_TERM_MAPPINGS:])
+        if len(pending_terms) > _MAX_TERM_MAPPINGS:
+            pending_terms = dict(list(pending_terms.items())[-_MAX_TERM_MAPPINGS:])
         profile["term_mappings"] = term_mappings
+        profile["pending_terms"] = pending_terms
         return profile
 
     await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)

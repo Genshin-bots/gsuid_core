@@ -4,7 +4,7 @@
 替代手动 re 解析 + json.loads 的脆弱模式。
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, BaseModel
 
@@ -20,6 +20,7 @@ class ExtractedEntity(BaseModel):
     is_speaker: bool = Field(default=False, description="是否为发言者实体")
     user_id: Optional[str] = Field(default=None, description="发言者的 user_id")
     scope_hint: Optional[str] = Field(default=None, description="Scope 提示，如 user_global")
+    alias_of: Optional[str] = Field(default=None, description="别名指向的正式名称（如有）")
 
 
 class ExtractedEdge(BaseModel):
@@ -42,12 +43,30 @@ class ExtractedEvent(BaseModel):
     aliases: list[str] = Field(default_factory=list, description="同义说法/近义词，最多3个")
 
 
+class SpeakerAttitude(BaseModel):
+    """单发言者在当前窗口对 Bot 的态度判定（负信号供关系引擎扣分）。"""
+
+    user_id: str = Field(description="发言者 user_id")
+    attitude: Literal["friendly", "neutral", "teasing", "provoke", "hostile"] = Field(
+        description="对 Bot 的态度：友好/中性/善意调侃/挑衅阴阳/直接敌意"
+    )
+    evidence: str = Field(default="", description="判据引用片段（无挑衅敌意留空）")
+
+
 class ExtractionOutput(BaseModel):
     """Entity & Edge 提取的完整输出"""
 
     entities: list[ExtractedEntity] = Field(default_factory=list, description="提取的实体列表")
     edges: list[ExtractedEdge] = Field(default_factory=list, description="提取的关系列表")
     events: list[ExtractedEvent] = Field(default_factory=list, description="时间事件列表（含日期的事件/决定/里程碑）")
+    window_kind: Literal["discard", "group_lore", "speaker_fact", "mixed"] = Field(
+        default="mixed",
+        description="对话窗口属性：discard=段子/无意义废话，group_lore=群梗设定，speaker_fact=具体人物事实，mixed=混合",
+    )
+    attitudes: list[SpeakerAttitude] = Field(
+        default_factory=list,
+        description="本窗口发言者对 Bot 的态度判定列表",
+    )
 
 
 # ====== Category 分类输出模型 ======

@@ -2264,7 +2264,8 @@ class AIMemEdge(SQLModel, table=True):
         cls,
         stale_days: int = 14,
         decay_factor: float = 0.85,
-        protect_mention_count: int = 3,
+        protect_mention_count: int = 2,
+        scope_prefix: Optional[str] = None,
     ) -> int:
         """时效衰减（C11）：超过 stale_days 未被检索、且非高频提及的有效 Edge，
         ``decay_score *= decay_factor``。返回受影响行数。
@@ -2278,6 +2279,7 @@ class AIMemEdge(SQLModel, table=True):
                 stale_days=stale_days,
                 decay_factor=decay_factor,
                 protect_mention_count=protect_mention_count,
+                scope_prefix=scope_prefix,
             )
         )
 
@@ -2288,28 +2290,39 @@ class AIMemEdge(SQLModel, table=True):
         session: AsyncSession,
         stale_days: int = 14,
         decay_factor: float = 0.85,
-        protect_mention_count: int = 3,
+        protect_mention_count: int = 2,
+        scope_prefix: Optional[str] = None,
     ) -> int:
         from sqlalchemy import update as _update
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+        conditions = [
+            col(cls.invalid_at).is_(None),
+            col(cls.mention_count) < protect_mention_count,
+            or_(col(cls.last_accessed).is_(None), col(cls.last_accessed) < cutoff),
+        ]
+        if scope_prefix:
+            conditions.append(col(cls.scope_key).startswith(scope_prefix))
+
         result = await session.execute(
-            _update(cls)
-            .where(
-                col(cls.invalid_at).is_(None),
-                col(cls.mention_count) < protect_mention_count,
-                or_(col(cls.last_accessed).is_(None), col(cls.last_accessed) < cutoff),
-            )
-            .values(decay_score=func.coalesce(col(cls.decay_score), 1.0) * decay_factor)
+            _update(cls).where(*conditions).values(decay_score=func.coalesce(col(cls.decay_score), 1.0) * decay_factor)
         )
         # AGENTS.md §3.5.2: rowcount 仅对 CursorResult 暴露, 用 isinstance 守门
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_session
-    async def collect_forgotten(cls, session: AsyncSession, threshold: float = 0.1) -> list[str]:
+    async def collect_forgotten(
+        cls,
+        session: AsyncSession,
+        threshold: float = 0.1,
+        scope_prefix: Optional[str] = None,
+    ) -> list[str]:
         """收集 decay_score 已低于阈值、应被遗忘（物理删除）的 Edge ID 列表（C11）。"""
-        result = await session.execute(select(cls.id, cls.qdrant_id).where(col(cls.decay_score) < threshold))
+        conditions = [col(cls.decay_score) < threshold]
+        if scope_prefix:
+            conditions.append(col(cls.scope_key).startswith(scope_prefix))
+        result = await session.execute(select(cls.id, cls.qdrant_id).where(*conditions))
         return [row[1] or row[0] for row in result.all()]
 
     @classmethod

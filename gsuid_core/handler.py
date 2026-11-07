@@ -708,6 +708,14 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     command_triggers = {t: p for t, p in valid_event.items() if t.type != "message"}
     message_triggers = {t: p for t, p in valid_event.items() if t.type == "message"}
 
+    # 仅真·命令形态（command/fullmatch/prefix 或整句匹配）记为命令调用，避免 keyword 误伤闲聊
+    is_feature_invocation = any(
+        t.type in ("command", "fullmatch", "prefix") or (bool(event.text) and event.text.strip() in (t.head, t.keyword))
+        for t in command_triggers
+    )
+    if is_feature_invocation:
+        get_history_manager().mark_command_hit(event, str(event.msg_id) if event.msg_id else None)
+
     for trigger in message_triggers:
         _event = deepcopy(event)
         message = await trigger.get_command(_event)

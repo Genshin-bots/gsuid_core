@@ -17,16 +17,26 @@
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 
-# 衰减判定：超过此天数未被检索则衰减
+# 衰减判定与分层参数（§6.2）
+# group: 域（群 lore/闲聊）
+DECAY_STALE_DAYS_GROUP = 7
+DECAY_FACTOR_GROUP = 0.8
+FORGET_THRESHOLD_GROUP = 0.2
+
+# user_global: 域（用户自述/属性）
+DECAY_STALE_DAYS_USER = 14
+DECAY_FACTOR_USER = 0.85
+FORGET_THRESHOLD_USER = 0.1
+
+# 兼容默认
 DECAY_STALE_DAYS = 14
-# 单次衰减系数
 DECAY_FACTOR = 0.85
-# 高频提及保护阈值：mention_count ≥ 此值的 Edge 不被衰减
-PROTECT_MENTION_COUNT = 3
-# 遗忘阈值：decay_score 低于此值的 Edge 物理删除
 FORGET_THRESHOLD = 0.1
-# 孤儿实体回收 TTL：非 speaker、无 edge、超过此天数未更新的实体被物理删除
-ORPHAN_ENTITY_TTL_DAYS = 10
+
+# 高频提及保护阈值：mention_count ≥ 此值的 Edge 不被衰减（≥2 巩固保护）
+PROTECT_MENTION_COUNT = 2
+# 孤儿实体回收 TTL：非 speaker、无 edge、超过此天数未更新的实体被物理删除（TTL 10 -> 3 天）
+ORPHAN_ENTITY_TTL_DAYS = 3
 
 # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────────────────
 # 最近 EPISODE_HOT_DAYS 天内的 Episode 始终保留为热（不降级）
@@ -71,13 +81,12 @@ async def _consolidate() -> int:
     return count
 
 
-async def _forget() -> int:
-    """遗忘：物理删除 decay_score 低于阈值的 Edge（SQL + Qdrant 向量）。"""
-    from gsuid_core.ai_core.memory.database.models import AIMemEdge
-
-    forgotten_ids = await AIMemEdge.collect_forgotten(threshold=FORGET_THRESHOLD)
+async def _forget_ids(forgotten_ids: list[str]) -> int:
+    """遗忘：物理删除指定的 Edge（SQL + Qdrant 向量）。"""
     if not forgotten_ids:
         return 0
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
     await AIMemEdge.purge_by_ids(forgotten_ids)
 
@@ -98,6 +107,17 @@ async def _forget() -> int:
     except Exception as e:
         logger.warning(i18n_t("log.memory.lifecycle_delete_qdrant_edge_fail", e=e))
     return len(forgotten_ids)
+
+
+async def _forget() -> int:
+    """遗忘：按分层规则物理删除 decay_score 低于阈值的 Edge（SQL + Qdrant 向量）。"""
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+    # 分层收集：群闲聊域阈值 0.2，其余通用域阈值 0.1（两步查询覆盖全表）
+    group_ids = await AIMemEdge.collect_forgotten(threshold=FORGET_THRESHOLD_GROUP, scope_prefix="group:")
+    base_ids = await AIMemEdge.collect_forgotten(threshold=FORGET_THRESHOLD)
+    all_forgotten = list(set(group_ids + base_ids))
+    return await _forget_ids(all_forgotten)
 
 
 async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
@@ -353,11 +373,26 @@ async def run_lifecycle_maintenance() -> None:
         slept = await run_sleep_extract_tick()
         logger.info(i18n_t("log.memory.lifecycle_sleep_extract", n=slept))
         consolidated = await _consolidate()
-        decayed = await AIMemEdge.apply_decay(
-            stale_days=DECAY_STALE_DAYS,
-            decay_factor=DECAY_FACTOR,
+        # 分层衰减（§6.2）：群 lore 7天/0.8；用户自报 14天/0.85
+        decayed_group = await AIMemEdge.apply_decay(
+            stale_days=DECAY_STALE_DAYS_GROUP,
+            decay_factor=DECAY_FACTOR_GROUP,
             protect_mention_count=PROTECT_MENTION_COUNT,
+            scope_prefix="group:",
         )
+        decayed_user = await AIMemEdge.apply_decay(
+            stale_days=DECAY_STALE_DAYS_USER,
+            decay_factor=DECAY_FACTOR_USER,
+            protect_mention_count=PROTECT_MENTION_COUNT,
+            scope_prefix="user_global:",
+        )
+        decayed_user_in_group = await AIMemEdge.apply_decay(
+            stale_days=DECAY_STALE_DAYS_USER,
+            decay_factor=DECAY_FACTOR_USER,
+            protect_mention_count=PROTECT_MENTION_COUNT,
+            scope_prefix="user_in_group:",
+        )
+        decayed = decayed_group + decayed_user + decayed_user_in_group
         forgotten = await _forget()
         # §3.2③ Edge 容量裁剪放在遗忘之后：先按 decay 遗忘弱边，再对仍超软上限的 scope 削长尾
         edge_trimmed = await _trim_edge_capacity()

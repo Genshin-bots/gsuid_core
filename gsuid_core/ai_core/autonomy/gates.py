@@ -58,3 +58,11 @@ def gate_reason(
 def should_skip_model(digest: ObservationDigest) -> bool:
     """底片是空的就不要为了休息再打一次模型。"""
     return digest_is_empty(digest)
+
+
+def dm_allowed(*, target_is_master: bool, has_prior_dm: bool, explicit_request: bool) -> bool:
+    """自主行动私聊门控（纯函数）。
+
+    仅在目标为主人、存在既有私聊历史、或底片中存在显式 @/请求时放行。
+    """
+    return target_is_master or has_prior_dm or explicit_request

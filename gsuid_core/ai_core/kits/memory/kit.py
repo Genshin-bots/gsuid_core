@@ -391,6 +391,7 @@ class MemoryKit(AgentKit):
                 message_type="group_msg" if ctx.group_id else "private_msg",
                 bot_id=str(ev.bot_id),
                 persona_name=ctx.persona_name or "",
+                message_id=str(ev.msg_id) if ev.msg_id else None,
             )
         # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆，
         # 避免后台对每张群图都发起一次视觉模型调用（Token + 日志噪声）。
@@ -427,6 +428,7 @@ class MemoryKit(AgentKit):
             message_type="group_msg" if ctx.group_id else "private_msg",
             bot_id=str(ev.bot_id),
             persona_name=ctx.persona_name or "",
+            message_id=str(ev.msg_id) if ev.msg_id else None,
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:

@@ -432,12 +432,6 @@ AI_CONFIG: Dict[str, GSC] = {
         3,
         options=[1, 2, 3, 5],
     ),
-    "favor_daily_loss_cap": GsIntConfig(
-        "每日扣分上限(绝对值)",
-        "同一用户单日最多扣多少好感, 防止单日螺旋下坠",
-        8,
-        options=[4, 8, 12, 20],
-    ),
     "favor_session_gain_cap": GsIntConfig(
         "会话窗增益上限",
         "同一用户在'会话窗分钟数'内普通正信号最多涨多少",

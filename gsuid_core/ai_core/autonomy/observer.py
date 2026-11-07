@@ -164,7 +164,10 @@ def _spoken_lines(scope: str, target_groups: list[str], now: float) -> list[Spok
                 continue
             if now - record.timestamp > GROUP_LOOKBACK_SECONDS:
                 continue
-            text = extract_message_body(record.content).strip()
+            if record.metadata and record.metadata.get("command_hit"):
+                text = "[用户调用了 bot 功能]"
+            else:
+                text = extract_message_body(record.content).strip()
             if not text:
                 continue
             if record.role == "assistant":

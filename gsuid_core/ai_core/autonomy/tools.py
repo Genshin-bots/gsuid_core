@@ -498,6 +498,32 @@ async def send_message_by_ai(
         u_snap = state.allowed_users[dest_user_id]
         if not u_snap.allow_private_push:
             return "拒绝：对方连续两次未回复你的主动私聊，私聊推送已暂停。请改用笔记或等对方先开口。"
+
+        from gsuid_core.ai_core.autonomy.gates import dm_allowed
+
+        # 检查该用户是否有私聊历史
+        has_prior_dm = False
+        from gsuid_core.message_history import get_history_manager
+
+        _hm = get_history_manager()
+        for ev in _hm.list_sessions():
+            if ev.user_type == "direct" and ev.user_id == dest_user_id:
+                if _hm.get_history(ev, limit=1):
+                    has_prior_dm = True
+                    break
+
+        # 检查底片内该用户是否有显式私聊诉求（剥离裸 @ 防止群友互 @ 误判）
+        explicit_request = any(
+            ("私聊" in line or "私信" in line or "发我" in line or "找我" in line) for line in u_snap.recent_lines
+        )
+
+        if not dm_allowed(
+            target_is_master=bool(u_snap.is_master),
+            has_prior_dm=has_prior_dm,
+            explicit_request=explicit_request,
+        ):
+            return "拒绝私聊发送：该用户既非主人，也无既有私聊历史或显式请求。请改在群内发言或转为笔记。"
+
         bot_id = u_snap.bot_id or bot_id
         bot_self_id = u_snap.bot_self_id or bot_self_id
         ws_bot_id = u_snap.ws_bot_id or ws_bot_id
