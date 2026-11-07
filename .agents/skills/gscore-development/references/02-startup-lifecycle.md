@@ -16,6 +16,8 @@ uv run core / python -m gsuid_core.core → core.main()
 **两个进程**：父进程只用标准库，不加载 uvicorn 和插件。它一直是终端的前台任务，所以
 Ctrl+C 能同时送到父子两个进程。重启时，`restart_genshinuid` 先跑完关机钩子，
 再让子进程以 `RESTART_EXIT_CODE`（51）退出。父进程等 1 秒后用同样的参数再拉起一个子进程。
+环境里有 `UV`（即 `uv run` 启动）时，拉起前先跑 `uv sync --inexact --no-install-project`
+补上新版 core 加的依赖；失败照常拉起。不重装项目本身：Windows 上 `core.exe` 被启动链占用。
 其他退出码由父进程原样透传，父进程随后退出。开了「使用自定义重启命令」时，
 `restart_genshinuid` 仍走旧路径：杀掉当前进程，再执行 `restart_command`。
 
