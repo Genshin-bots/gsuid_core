@@ -13,7 +13,6 @@ Chat With History API
 """
 
 import uuid
-import asyncio
 from typing import TYPE_CHECKING, List, Union, Optional
 
 from fastapi import Depends
@@ -23,10 +22,8 @@ from gsuid_core.bot import _Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
-from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.observer import parse_iso_or_unix_timestamp
 from gsuid_core.webconsole._local_test_gate import LOCAL_TEST_MODE, require_local_test
-from gsuid_core.ai_core.memory.ingestion.hiergraph import rebuild_task
 
 from ._api_tags import CHAT
 
@@ -95,6 +92,8 @@ _MEMORY_EVAL_GUIDE = (
     "do not substitute a nearby fact.\n"
     "10) Relative phrases (how many days/weeks ago, last Friday) are relative to "
     "the injected clock_at / [当前时间] stamp, not the real-world calendar.\n"
+    "11) If the injected fragments do not answer the question, call search_cognition "
+    "with a focused query before concluding that no record exists.\n"
 )
 
 
@@ -318,9 +317,5 @@ async def _ingest_request_history(
     if worker is not None:
         await worker.flush_all()
     if memory_config.eval_mode or req.trigger_rebuild:
-        scope_key = make_scope_key(
-            ScopeType.USER_GLOBAL if not group_id else ScopeType.GROUP,
-            str(group_id) if group_id else str(user_id),
-        )
-        logger.info(t("log.webconsole.memory_manually_triggered_hierarchical", scope_key=scope_key))
-        asyncio.create_task(rebuild_task(scope_key))
+        # schema_v2：向量/FTS 已随 Episode 同步写入，无需再触发分层图重建。
+        logger.debug(t("log.webconsole.memory_manually_triggered_hierarchical", scope_key="schema_v2"))

@@ -4,8 +4,6 @@ import time
 from typing import List, Optional, Sequence
 from datetime import datetime
 
-from sqlmodel import select
-
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
@@ -25,10 +23,8 @@ from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.ai_core.persona.settings import get_master_title
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
-from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
 
 
 def _render_prompt(persona_name: str | None, key: str, **values: str) -> str:
@@ -219,21 +215,17 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
         return ""
 
     try:
+        from gsuid_core.ai_core.memory.group_profile import get_scope_summary
+
         scope_key = make_scope_key(ScopeType.GROUP, group_id)
-        async with async_maker() as session:
-            result = await session.execute(
-                select(AIMemHierarchicalGraphMeta.group_summary_cache).where(
-                    AIMemHierarchicalGraphMeta.scope_key == scope_key
-                )
+        summary = await get_scope_summary(scope_key)
+        if summary:
+            return (
+                f"\n\n[群组历史摘要]\n{summary}\n"
+                "（以上摘要来自群友发言的压缩，每条都是有人说过的话，"
+                "可能是玩笑/文案/反讽，引用前先判断真实性，不要把文案当真实事件。）"
             )
-            row = result.scalar_one_or_none()
-            if row:
-                return (
-                    f"\n\n[群组历史摘要]\n{row}\n"
-                    "（以上摘要来自群友发言的压缩，每条都是有人说过的话，"
-                    "可能是玩笑/文案/反讽，引用前先判断真实性，不要把文案当真实事件。）"
-                )
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.debug(t("log.ai.heartbeat_get_group_summary", e=e))
 
     return ""

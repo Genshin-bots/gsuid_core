@@ -114,10 +114,40 @@ def test_rebuild_skips_when_unmounted(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_rag_base_calculate_hash() -> None:
+    from gsuid_core.ai_core.rag.tool_lexical import (
+        has_cjk,
+        rrf_fuse,
+        ensure_index,
+        lexical_scores,
+    )
+
     h1 = calculate_hash({"a": 1, "b": "test"})
     h2 = calculate_hash({"b": "test", "a": 1})
     assert h1 == h2
     assert len(h1) == 32
+
+    class _Tool:
+        capability_domain: str | None
+
+        def __init__(self, name: str, description: str, domain: str | None, covers: list[str], aliases: list[str]):
+            self.name = name
+            self.description = description
+            self.capability_domain = domain
+            self.covers = covers
+            self.aliases = aliases
+
+    tools = {
+        "get_weather": _Tool(
+            "get_weather", "查询城市实时天气与气温预报", "天气", ["北京上海等城市气温"], ["天气·气温查询"]
+        ),
+        "generate_image": _Tool("generate_image", "生成图片与海报", "绘图", ["文生图"], ["绘图·生成图片"]),
+        "add_reminder": _Tool("add_reminder", "设置提醒与定时任务", "定时任务", ["提醒"], ["定时任务·提醒"]),
+    }
+    ensure_index(tools)
+    assert has_cjk("帮我查明天北京的气温")
+    scores = lexical_scores("帮我查明天北京的气温")
+    assert scores["get_weather"] > 0
+    assert rrf_fuse([], scores)[0] == "get_weather"
 
 
 def test_chunk_method_hash_changes_with_tokens() -> None:

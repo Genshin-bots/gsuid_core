@@ -29,8 +29,8 @@ class CogKind(str, Enum):
     OUTBOUND = "outbound"
 
 
-# 工具回执里单条片段正文上限。专名要留下，邻条闲聊不要整段摊开。
-EPISODE_BODY_BUDGET = 240
+# 工具回执里单条片段正文上限。专名和句末补充常在第 300+ 字符，不能按 240 截断。
+EPISODE_BODY_BUDGET = 1200
 
 # 面向模型的中文标签（进 prompt 的那一份）
 KIND_LABEL: Dict[CogKind, str] = {

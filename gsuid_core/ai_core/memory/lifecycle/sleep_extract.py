@@ -1,4 +1,4 @@
-"""睡眠 tick 补 session / thread。检索路径不写这些表。"""
+"""睡眠 tick：把尚未挂 Thread 的 session 聚成故事线。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.base_models import DatabaseWriteTimeout
 
 _THREAD_COSINE = 0.92
 _SLEEP_BATCH = 8
@@ -64,34 +63,32 @@ def _title_key(title: str) -> str:
 
 
 async def ensure_scope_threads(scope_key: str) -> int:
-    """未挂 thread 的 session 聚成线程。先补空 session_id，零 LLM。"""
+    """未挂 thread 的 session 聚成线程。零 LLM。"""
     if not scope_key:
         return 0
     from gsuid_core.utils.database.base_models import async_maker
-    from gsuid_core.ai_core.memory.database.models import AIMemEvent, AIMemThread, AIMemEpisode, AIMemSession
+    from gsuid_core.ai_core.memory.database.models import AIMemThread, AIMemEpisode
 
-    await AIMemEpisode.ensure_sessions(scope_key)
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
-
-    pending = await AIMemSession.untitled_for_scope(scope_key, limit=80)
+    pending = await AIMemEpisode.list_threadless_sessions(scope_key, limit=80)
     if not pending:
         return 0
-    openers = await AIMemSession.openers_for([s.id for s in pending])
-    opener_by_id = {ep.id: ep for ep in openers}
     rows: list[_OpenerRow] = []
-    for sess in pending:
-        ep = opener_by_id[sess.opener_episode_id] if sess.opener_episode_id in opener_by_id else None
-        title = _title_from_opener(ep.content if ep is not None else "")
+    opener_ids = [opener_id for _sid, _at, opener_id in pending]
+    openers = {}
+    for eid in opener_ids:
+        row = await AIMemEpisode.get_one(eid)
+        if row is not None:
+            openers[eid] = row
+    for sid, start_at, opener_id in pending:
+        op = openers[opener_id] if opener_id in openers else None
         rows.append(
             {
-                "session_id": sess.id,
-                "opener_id": sess.opener_episode_id,
-                "start_at": sess.start_at,
-                "title": title,
+                "session_id": sid,
+                "opener_id": opener_id,
+                "start_at": start_at,
+                "title": _title_from_opener(op.content if op is not None else ""),
             }
         )
-    if not rows:
-        return 0
 
     existing = await AIMemThread.list_by_scope(scope_key, limit=120)
     title_to_tid = {_title_key(th.title): th.id for th in existing if th.title}
@@ -111,9 +108,8 @@ async def ensure_scope_threads(scope_key: str) -> int:
 
     thread_rep: dict[str, list[float]] = {}
     for th in existing:
-        oid = th.qdrant_id
-        if oid and oid in vecs:
-            thread_rep[th.id] = vecs[oid]
+        if th.qdrant_id and th.qdrant_id in vecs:
+            thread_rep[th.id] = vecs[th.qdrant_id]
 
     assigned: dict[str, str] = {}
     created: list[tuple[str, _OpenerRow]] = []
@@ -139,8 +135,9 @@ async def ensure_scope_threads(scope_key: str) -> int:
                 thread_rep[tid] = vec
         assigned[row["session_id"]] = tid
 
-    written = 0
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
+    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+
     async with db_write_guard(), async_maker() as session:
         for tid, row in created:
             session.add(
@@ -149,111 +146,60 @@ async def ensure_scope_threads(scope_key: str) -> int:
                     scope_key=scope_key,
                     title=row["title"],
                     aliases=[],
+                    summary="",
+                    status="active",
                     first_at=row["start_at"],
                     last_at=row["start_at"],
                     n_sessions=0,
+                    milestone_count=0,
                     qdrant_id=row["opener_id"],
                     mention_count=1,
                     last_mentioned_at=now,
                     title_source="opener",
                 )
             )
-        from sqlmodel import col
-        from sqlalchemy import update as _update
-
-        for row in rows:
-            tid = assigned[row["session_id"]]
-            await session.execute(
-                _update(AIMemSession)
-                .where(col(AIMemSession.id) == row["session_id"])
-                .values(title=row["title"], thread_id=tid)
-            )
-            session.add(
-                AIMemEvent(
-                    scope_key=scope_key,
-                    episode_id=row["opener_id"],
-                    summary=row["title"],
-                    start_at=row["start_at"],
-                    stated_at=row["start_at"],
-                    event_at=None,
-                    thread_id=tid,
-                    turn_episode_id=row["opener_id"],
-                    mention_count=1,
-                    last_mentioned_at=now,
-                    qdrant_id=row["opener_id"],
-                    entities=[],
-                    aliases=[],
-                )
-            )
-            written += 1
-        counts: dict[str, int] = {}
-        last_at: dict[str, datetime] = {}
-        for row in rows:
-            tid = assigned[row["session_id"]]
-            counts[tid] = (counts[tid] if tid in counts else 0) + 1
-            prev = last_at[tid] if tid in last_at else row["start_at"]
-            last_at[tid] = row["start_at"] if row["start_at"] > prev else prev
-        for tid, n in counts.items():
-            await session.execute(
-                _update(AIMemThread)
-                .where(col(AIMemThread.id) == tid)
-                .values(n_sessions=col(AIMemThread.n_sessions) + n, last_at=last_at[tid], last_mentioned_at=now)
-            )
         await session.commit()
-    logger.info(i18n_t("log.memory.sleep_extract", scope_key=scope_key, n=written))
-    return written
+    for sid, tid in assigned.items():
+        await AIMemEpisode.assign_session_thread(sid, tid)
+    logger.info(i18n_t("log.memory.sleep_extract", scope_key=scope_key, n=len(assigned)))
+    return len(assigned)
 
 
 async def extract_aspects_for_scope(scope_key: str, limit: int = 8) -> int:
-    """评测入口。正数 limit 是本轮 episode 上限，丢掉它会扫完全部默认窗口。"""
-    if not scope_key or limit <= 0:
-        return 0
-    from gsuid_core.ai_core.memory.lifecycle.gist_backfill import backfill_rule_scope
-
-    return await backfill_rule_scope(scope_key, limit=limit)
+    """兼容评测入口：schema_v2 无独立 gist 抽取，返回 0 表示无需处理。"""
+    del scope_key, limit
+    return 0
 
 
 async def run_sleep_extract_tick(limit: int = _SLEEP_BATCH) -> int:
-    """浅睡：先消化 backlog，再扫未挂 thread 的 session。永不阻塞热路径。"""
-    from gsuid_core.ai_core.memory.database.models import AIMemSession
+    """先消化 backlog，再扫未挂 thread 的 session。永不阻塞热路径。"""
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
     done = 0
     seen_scope: set[str] = set()
     while done < limit and _backlog:
         sid = _backlog.popleft()
         _seen.discard(sid)
-        sess = await AIMemSession.get_by_ids([sid])
-        if not sess:
+        rows = await AIMemEpisode.get_session(sid)
+        if not rows:
             continue
-        seen_scope.add(sess[0].scope_key)
+        seen_scope.add(rows[0].scope_key)
         try:
-            done += await ensure_scope_threads(sess[0].scope_key)
+            done += await ensure_scope_threads(rows[0].scope_key)
         except (OSError, SQLAlchemyError) as e:
-            logger.debug(i18n_t("log.memory.sleep_extract_fail", scope_key=sess[0].scope_key, e=e))
+            logger.debug(i18n_t("log.memory.sleep_extract_fail", scope_key=rows[0].scope_key, e=e))
     if done >= limit:
         return done
-    leftover = await AIMemSession.list_untitled(limit=limit - done)
-    for sess in leftover:
-        if sess.scope_key in seen_scope:
+    from gsuid_core.ai_core.memory.database.models import AIMemEntity
+
+    for scope_key in await AIMemEntity.list_distinct_scope_keys():
+        if scope_key in seen_scope:
             continue
-        seen_scope.add(sess.scope_key)
-        try:
-            done += await ensure_scope_threads(sess.scope_key)
-        except (OSError, SQLAlchemyError) as e:
-            logger.debug(i18n_t("log.memory.sleep_extract_fail", scope_key=sess.scope_key, e=e))
+        if await AIMemEpisode.list_threadless_sessions(scope_key, limit=1):
+            try:
+                done += await ensure_scope_threads(scope_key)
+            except (OSError, SQLAlchemyError) as e:
+                logger.debug(i18n_t("log.memory.sleep_extract_fail", scope_key=scope_key, e=e))
         if done >= limit:
             break
-    if done >= limit:
-        return done
-    from gsuid_core.ai_core.memory.config import memory_config
-
-    if memory_config.eval_mode:
-        return done
-    if done < limit:
-        from gsuid_core.ai_core.memory.lifecycle.gist_backfill import run_gist_backfill_tick
-
-        try:
-            done += await run_gist_backfill_tick(limit=limit - done)
-        except (OSError, SQLAlchemyError, DatabaseWriteTimeout) as e:
-            logger.debug(i18n_t("log.memory.gist_backfill_fail", scope_key="tick", e=e))
     return done

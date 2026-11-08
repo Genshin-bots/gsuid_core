@@ -218,6 +218,17 @@ def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool, resul
     return bool(st.tg is not None and st.tg.call_to_self and _claims_deferred_work(result_msg))
 
 
+def _turn_user_text(st: RunOnceState) -> str:
+    """提取当轮提问文本，用于区分英文正常作答与机器独白。"""
+    if st.ev is not None and st.ev.raw_text:
+        return st.ev.raw_text
+    if st.last_user_question:
+        return st.last_user_question
+    if isinstance(st.user_message, str):
+        return st.user_message
+    return ""
+
+
 def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
     """整轮零输出时，该改口的拦截原因。在途或已出图不叫醒。"""
     if st.main_channel_sends > 0 or st.image_sent_this_run:
@@ -234,7 +245,7 @@ def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
         return ""
     if claims_premature_delivery(body):
         return "premature_delivery"
-    if has_orchestration_narration(body) or looks_like_process_meta(body):
+    if has_orchestration_narration(body) or looks_like_process_meta(body, user_text=_turn_user_text(st)):
         return "process_meta"
     return ""
 
@@ -284,7 +295,7 @@ def _forbid_title(st: RunOnceState, persona_name: str | None) -> str:
     return non_master_title(uid, persona_name)
 
 
-def _correction_is_deliverable(text: str, *, is_delivery_wake: bool = False) -> bool:
+def _correction_is_deliverable(text: str, *, is_delivery_wake: bool = False, user_text: str = "") -> bool:
     """纠正产出是否可直接交付（非沉默、非编排/元叙述脏输出）。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
@@ -293,7 +304,7 @@ def _correction_is_deliverable(text: str, *, is_delivery_wake: bool = False) -> 
         has_orchestration_narration(body)
         or claims_premature_delivery(body, is_delivery_wake=is_delivery_wake)
         or _looks_like_report_speech(body)
-        or looks_like_process_meta(body)
+        or looks_like_process_meta(body, user_text=user_text)
     )
 
 
@@ -332,14 +343,14 @@ def _rewrite_directive_for_block(
     return None
 
 
-def _voice_retry_text(corrected: object, *, disputed: bool, blocked: str) -> str:
+def _voice_retry_text(corrected: object, *, disputed: bool, blocked: str, user_text: str = "") -> str:
     """话术闸拦下后交回一次：申辩则交还原文，否则只收可交付改写。"""
     if disputed:
         body = blocked.strip()
         if body and not is_silence_marker(body):
             return body
         return "<SILENCE>"
-    return _corrected_or_original(corrected, original="<SILENCE>")
+    return _corrected_or_original(corrected, original="<SILENCE>", user_text=user_text)
 
 
 _DLG_ROOT_RE = re.compile(r"dlg_([0-9a-fA-F-]{8,})")
@@ -397,13 +408,13 @@ def _drop_unsent_text_from_tail(messages: List[ModelMessage], unsent: Sequence[s
     return out
 
 
-def _corrected_or_original(corrected: object, *, original: str) -> str:
+def _corrected_or_original(corrected: object, *, original: str, user_text: str = "") -> str:
     """纠正轮结果收敛（INV-3）。
 
     纠正**只有**产出可交付内容才有权替换原答案；沉默或脏输出一律保留原答案，
     否则「纠正判据误报 → 模型沉默 → 原答案被销毁」会让整轮对用户零输出。
     """
-    if not isinstance(corrected, str) or not _correction_is_deliverable(corrected):
+    if not isinstance(corrected, str) or not _correction_is_deliverable(corrected, user_text=user_text):
         return original
     return corrected.strip()
 
@@ -791,7 +802,7 @@ class SettlePhase(RunOnceHost):
                 _fabricated = {t.strip() for t in st.fab_blocked}
                 if _claims_fake_done(result_msg):
                     _fabricated.add(result_msg.strip())
-                if isinstance(corrected, str) and _correction_is_deliverable(corrected):
+                if isinstance(corrected, str) and _correction_is_deliverable(corrected, user_text=_turn_user_text(st)):
                     result_msg = corrected.strip()
                     await self._emit_unsent_reply(st, result_msg)
                 else:
@@ -820,7 +831,7 @@ class SettlePhase(RunOnceHost):
                 )
                 # 自洽出口（INV-3）：纠正沉默 → 原答案生效；只有真产出才替换并剥旧答
                 _prior = result_msg.strip()
-                result_msg = _corrected_or_original(corrected, original=result_msg)
+                result_msg = _corrected_or_original(corrected, original=result_msg, user_text=_turn_user_text(st))
                 if result_msg.strip() != _prior:
                     await self._emit_unsent_reply(st, result_msg)
                     self._scrub_fake_done_history({_prior} if _prior else set())
@@ -847,7 +858,7 @@ class SettlePhase(RunOnceHost):
                     return_mode="return",
                 )
                 _prior = result_msg.strip()
-                result_msg = _corrected_or_original(corrected, original=result_msg)
+                result_msg = _corrected_or_original(corrected, original=result_msg, user_text=_turn_user_text(st))
                 if result_msg.strip() != _prior:
                     await self._emit_unsent_reply(st, result_msg)
                     self._scrub_fake_done_history({_prior} if _prior else set())
@@ -875,7 +886,7 @@ class SettlePhase(RunOnceHost):
                     suppress_intermediate_text=True,
                     return_mode="return",
                 )
-                result_msg = _corrected_or_original(_sc, original=result_msg)
+                result_msg = _corrected_or_original(_sc, original=result_msg, user_text=_turn_user_text(st))
                 if result_msg.strip() != _prior:
                     await self._emit_unsent_reply(st, result_msg)
                 self._scrub_fake_done_history(set())
@@ -899,7 +910,7 @@ class SettlePhase(RunOnceHost):
                     suppress_intermediate_text=True,
                     return_mode="return",
                 )
-                result_msg = _corrected_or_original(_sc, original=result_msg)
+                result_msg = _corrected_or_original(_sc, original=result_msg, user_text=_turn_user_text(st))
                 if result_msg.strip() != _prior:
                     await self._emit_unsent_reply(st, result_msg)
                 self._scrub_fake_done_history(set())
@@ -933,7 +944,9 @@ class SettlePhase(RunOnceHost):
                     _disputed = len(self._run_disputes) > _disputes_before
                     if _disputed:
                         result_msg = _prior
-                    elif isinstance(_dc, str) and _correction_is_deliverable(_dc, is_delivery_wake=True):
+                    elif isinstance(_dc, str) and _correction_is_deliverable(
+                        _dc, is_delivery_wake=True, user_text=_turn_user_text(st)
+                    ):
                         result_msg = _dc.strip()
                     else:
                         result_msg = "<SILENCE>"
@@ -972,9 +985,16 @@ class SettlePhase(RunOnceHost):
                 # 命中 cover 的空口建议不能靠申辩留住。
                 if _disputed and not _cover_hit:
                     result_msg = _prior
-                elif _called and isinstance(_ec, str) and _correction_is_deliverable(_ec):
+                elif (
+                    _called and isinstance(_ec, str) and _correction_is_deliverable(_ec, user_text=_turn_user_text(st))
+                ):
                     result_msg = _ec.strip()
-                elif (not _called) and isinstance(_ec, str) and _correction_is_deliverable(_ec) and not _cover_hit:
+                elif (
+                    (not _called)
+                    and isinstance(_ec, str)
+                    and _correction_is_deliverable(_ec, user_text=_turn_user_text(st))
+                    and not _cover_hit
+                ):
                     result_msg = _ec.strip()
                 else:
                     result_msg = "<SILENCE>"
@@ -1015,7 +1035,11 @@ class SettlePhase(RunOnceHost):
                     suppress_intermediate_text=True,
                     return_mode="return",
                 )
-                if isinstance(_tc, str) and _correction_is_deliverable(_tc) and not title_mentioned(_ban, _tc):
+                if (
+                    isinstance(_tc, str)
+                    and _correction_is_deliverable(_tc, user_text=_turn_user_text(st))
+                    and not title_mentioned(_ban, _tc)
+                ):
                     result_msg = _tc.strip()
                 else:
                     result_msg = "<SILENCE>"
@@ -1063,7 +1087,7 @@ class SettlePhase(RunOnceHost):
                 _disputed = len(self._run_disputes) > _disputes_before
                 if _disputed:
                     logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
-                result_msg = _voice_retry_text(_vc, disputed=_disputed, blocked=_blocked)
+                result_msg = _voice_retry_text(_vc, disputed=_disputed, blocked=_blocked, user_text=_turn_user_text(st))
                 if (
                     result_msg.strip()
                     and not is_silence_marker(result_msg.strip())
@@ -1122,7 +1146,7 @@ class SettlePhase(RunOnceHost):
                     self._scrub_fake_done_history(set())
                 else:
                     # INV-3：纠正未产出可交付内容 → 原答案生效，绝不因纠正沉默吞掉本轮
-                    result_msg = _corrected_or_original(_rc, original=result_msg)
+                    result_msg = _corrected_or_original(_rc, original=result_msg, user_text=_turn_user_text(st))
                     _drop_texts: set[str] = set()
                     if result_msg.strip() != _orig_before.strip():
                         _drop_texts.add(_orig_before.strip())
@@ -1157,7 +1181,7 @@ class SettlePhase(RunOnceHost):
                         _gate_reason = "delivery_narration"
                     elif _looks_like_report_speech(_rs):
                         _gate_reason = "report_speech"
-                    elif looks_like_process_meta(_rs):
+                    elif looks_like_process_meta(_rs, user_text=_turn_user_text(st)):
                         _gate_reason = "process_meta"
                     if _gate_reason:
                         _gate_body = _rs
@@ -1178,7 +1202,7 @@ class SettlePhase(RunOnceHost):
                     _gate_reason = "delivery_narration"
                     _gate_body = _rs
                     result_msg = "<SILENCE>"
-                elif looks_like_process_meta(_rs):
+                elif looks_like_process_meta(_rs, user_text=_turn_user_text(st)):
                     _gate_reason = "process_meta"
                     _gate_body = _rs
                     result_msg = "<SILENCE>"
@@ -1247,7 +1271,9 @@ class SettlePhase(RunOnceHost):
                         if _disputed:
                             logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
                         # 申辩成立 → 观察不成立，被拦原文照原样交付（与 _voice_retry_text 同语义）
-                        _next = _voice_retry_text(_rewritten, disputed=_disputed, blocked=_gate_body)
+                        _next = _voice_retry_text(
+                            _rewritten, disputed=_disputed, blocked=_gate_body, user_text=_turn_user_text(st)
+                        )
                         if not is_silence_marker(_next):
                             result_msg = _next
                             await self._emit_unsent_reply(st, result_msg)

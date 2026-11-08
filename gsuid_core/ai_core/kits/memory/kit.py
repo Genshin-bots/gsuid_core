@@ -11,12 +11,11 @@
 记忆子系统的 bring-up 归 ``startup._INIT_STEPS``（它要排在 RAG 之后拿 Embedding），
 本套件不带 ``init_step``（否则同一个初始化每次启动跑两遍）。
 
-LongMem 证据转储不在本文件：见 ``eval_protocol.py``，仅 ``memory_eval`` 时懒加载。
+评测与生产统一走 dual_route + to_prompt_text，不走旁路转储。
 评测 ``create_by`` 必须是 Chat；TEST 会改装配/闸门，不能当评测入口。
 """
 
-import re
-from typing import TYPE_CHECKING, Set, List
+from typing import TYPE_CHECKING, Set, List, TypedDict
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -27,38 +26,10 @@ from gsuid_core.ai_core.kits.registry import register_agent_kit
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.cognition import CogScope
+    from gsuid_core.ai_core.classifier.turn_router import MemoryIntent
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
-# C4 寒暄门控：回指 / 实体 / 任务引用词，命中则强制检索
-_FORCE_RETRIEVE_RE = re.compile(
-    r"(之前|上次|上回|那个|那次|昨天|前几天|你说过|你不是说|记不记得|还记得|提到过|任务|计划|进度)"
-)
-# C4 / C3-c：明显情绪词，命中则强制检索（避免错过用户昨日事件背景）
-_EMOTION_RETRIEVE_RE = re.compile(r"(难过|崩溃|沉船|破防|开心死|伤心|焦虑|想哭|绝望|委屈|孤独)")
-# 可能含实体的特征（英文词 / 引号内容 / 长串中文）
-_ENTITY_HINT_RE = re.compile(r"([A-Za-z]{3,}|[「『\"“].+|[一-鿿]{6,})")
-# 「短寒暄」的长度上限，与关系温度的 meaningful 判据同源
-_CHITCHAT_SHORT_LEN = 12
-_FIRST_PERSON_RE = re.compile(
-    r"\b(?:I(?:'ve|'d|'m|'ll)?|my|me|mine|we|our|ours)\b|我(?:们)?",
-    re.IGNORECASE,
-)
-_HOWTO_RE = re.compile(
-    r"\bhow\s+(?:do|can|should|would|to)\s+I\b|\bhow\s+to\b|怎么(?:用|做|才能)|如何",
-    re.IGNORECASE,
-)
-_MEMORY_CUE_RE = re.compile(
-    r"\b(?:have|did|was|were)\s+I\b|"
-    r"\b(?:ever|previously|previous|before|remember|recollect|"
-    r"conversation|session|discussed|mentioned|told me|last time)\b|"
-    r"曾经|以前|上次|还记得|说过|讨论过",
-    re.IGNORECASE,
-)
-_MY_SLOT_RE = re.compile(
-    r"\b(?:what(?:'s| is)|where(?:'s| is)|which)\s+my\b|"
-    r"\bmy\s+(?:current|last|previous|first|old|new)\b",
-    re.IGNORECASE,
-)
+# 记忆检索强度全部由前置路由的 memory_intent 决定；本模块不再扫文本猜语义。
 
 
 def _format_memory_catalog(mem: "MemoryContext", _query: str = "") -> str:
@@ -135,156 +106,67 @@ def retrieve_query_for_search(query: str) -> str:
     return body or query.strip()
 
 
-def looks_like_timeline_query(query: str) -> bool:
-    """排序/全历程/显式日期窗：要整段时间线，不是点查。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
-    from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_span_query
+def memory_intent_from_ctx(ctx: AgentHookContext) -> "MemoryIntent":
+    """读取前置路由结论；缺失时按点查处理（不是按闲聊跳过）。"""
 
-    return looks_like_span_query(strip_clock_lines(query or ""))
-
-
-def looks_like_self_history_query(query: str) -> bool:
-    """第一人称过往/槽位/时间线。方法步骤问句不算。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
-    from gsuid_core.ai_core.memory.retrieval.event_time import query_explicit_time_range
-
-    q = strip_clock_lines(query or "")
-    if not q:
-        return False
-    if query_explicit_time_range(q) is not None:
-        return True
-    memory = bool(_MEMORY_CUE_RE.search(q) or _MY_SLOT_RE.search(q))
-    if _HOWTO_RE.search(q) and not memory:
-        return False
-    return bool(_FIRST_PERSON_RE.search(q) and memory)
+    decision = ctx.route_decision
+    if decision is None:
+        return "point_latest"
+    if ctx.memory_eval and decision.memory_intent == "none":
+        return "point_latest"
+    return decision.memory_intent
 
 
-def looks_like_count_query(query: str) -> bool:
-    from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_count_query as _count
-
-    return _count(query)
-
-
-def refine_retrieved_memory(mem: "MemoryContext", query: str) -> None:
-    """非时间线才跨会话取样；用户正反说并存时写入 conflicts。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        diversify_episodes,
-        looks_like_latest_slot_query,
-        collect_user_stance_conflicts,
-        wants_parallel_document_coverage,
-    )
-    from gsuid_core.ai_core.memory.retrieval.event_time import (
-        looks_like_span_query,
-        looks_like_order_query,
-        looks_like_summary_query,
-        looks_like_duration_query,
-    )
-
-    if mem.temporal_mode or mem.time_range is not None or looks_like_timeline_query(query):
-        pass
-    elif looks_like_count_query(query) or looks_like_duration_query(query):
-        pass
-    elif looks_like_span_query(query) or looks_like_order_query(query) or looks_like_summary_query(query):
-        # 跨会话题型由 pack（里程碑/首次出现）自己收口，48 条裁剪会把周覆盖砍到几天。
-        pass
-    elif mem.covered or wants_parallel_document_coverage(query):
-        # 同一天灌入的平行材料会被收成一簇，再截前 48 条就把后面的来源丢掉。
-        pass
-    elif len(mem.episodes) > 8:
-        mem.episodes = diversify_episodes(mem.episodes, cap=48)
-    if looks_like_latest_slot_query(query) or looks_like_duration_query(query) or looks_like_span_query(query):
-        return
-    # 平行材料覆盖时，不同来源不是同一属性的正反说；stance 会把它们打成【陈述不一致】。
-    if mem.covered or wants_parallel_document_coverage(query):
-        return
-    extra = collect_user_stance_conflicts(mem.episodes, query)
-    if not extra:
-        return
-    seen = set(mem.conflicts)
-    mem.conflicts = extra + [c for c in mem.conflicts if c not in seen]
+def refine_retrieved_memory(mem: "MemoryContext", intent: "MemoryIntent", query: str = "") -> None:
+    """保留检索和重排得到的真实相关度排序，不盲目稀释。"""
+    del mem, intent, query
 
 
 def wants_evidence_injection(ctx: AgentHookContext) -> bool:
-    """长问句/问答注入 dual_route 正文；短闲聊仍目录卡。"""
+    """有历史依赖或问答/工具意图就注入正文；纯寒暄只给目录卡。"""
     if ctx.memory_eval:
         return True
-    body = retrieve_query_for_search(ctx.query)
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        looks_like_attribute_query,
-        looks_like_assistant_quote_query,
-    )
-
-    # 短闲聊里只有第一人称取值和复述才注入全文。泛泛的「推荐」仍走目录。
-    personal = bool(_FIRST_PERSON_RE.search(body))
-    if (
-        looks_like_self_history_query(body)
-        or looks_like_assistant_quote_query(body)
-        or (looks_like_attribute_query(body) and personal)
-    ):
+    decision = ctx.route_decision
+    if decision is None:
         return True
-    intent = ctx.intent or ""
-    if intent == "闲聊" and len(body) < 40:
+    if decision.is_live_lookup:
         return False
-    return len(body) >= 40 or intent in ("问答", "工具")
+    if decision.memory_intent != "none":
+        return True
+    return ctx.intent in ("问答", "工具") or bool(decision.needs_committed_work)
 
 
 def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
-    """Chat 短闲聊目录卡；问答/长问句与 ``memory_eval`` 同一套 ``to_prompt_text``。"""
+    """Chat 短闲聊目录卡；问答/长问句走统一的 ``to_prompt_text``。"""
     ctx.memory_covered = mem.covered
     q = retrieve_query_for_search(ctx.query)
-    if ctx.memory_eval:
-        from gsuid_core.ai_core.kits.memory.eval_protocol import format_eval_memory
-
-        return format_eval_memory(mem, q)
     if not wants_evidence_injection(ctx):
         return _format_memory_catalog(mem, q)
     from gsuid_core.ai_core.kits.base import inject_memory_cap
 
-    cap = inject_memory_cap(q, covered=mem.covered)
+    intent = memory_intent_from_ctx(ctx)
+    cap = inject_memory_cap(q, covered=mem.covered, memory_intent=intent)
     speakers = ctx.priority_speakers if ctx.priority_speakers else None
     current = {ctx.user_id} if ctx.user_id else None
     return mem.to_prompt_text(
-        max_chars=cap,
+        max_chars=max(512, cap - 240),
         query=q,
         priority_speakers=speakers,
         current_speaker_ids=current,
         now=ctx.clock_at,
+        memory_intent=intent,
     )
 
 
 def should_prefetch_memory(ctx: AgentHookContext) -> bool:
-    """闲聊/旁观/实时查数不预灌。点名办事才给目录卡。"""
-    from gsuid_core.ai_core.interaction_scaffold import looks_like_live_lookup
-
-    if looks_like_live_lookup(ctx.query):
+    """实时查数跳过个人历史预灌；其余交给 memory_intent 决定检索深度。"""
+    decision = ctx.route_decision
+    if decision is not None and decision.is_live_lookup:
         return False
     tg = ctx.turn_graph
     if tg is None or not tg.is_group:
         return True
-    if not tg.call_to_self and not tg.needs_task_tools:
-        return False
-    if (ctx.intent or "") == "闲聊" and not tg.needs_task_tools:
-        return False
-    return True
-
-
-def should_retrieve(query: str, intent: str, user_id: str) -> bool:
-    """C4 寒暄门控（纯规则，无 LLM）：本轮值不值得开贵检索窗。
-
-    只有"短 + 闲聊 + 无实体 + 无情绪 + 无回指 + 非任务引用"同时满足才跳过；
-    主人 / 回指 / 情绪 / 实体一律强制检索，避免漏掉重要背景。
-
-    门控在**套件内部**而不是内核：内核写 ``if enable_memory`` 会变成「整条链路跳过」，
-    而闸门只该降级检索强度。关槽 = 不注册 = 自然跳过。
-    """
-    from gsuid_core.ai_core.utils import _is_master_user
-
-    q = query.strip()
-    if _is_master_user(str(user_id)):
-        return True
-    if _FORCE_RETRIEVE_RE.search(q) or _EMOTION_RETRIEVE_RE.search(q):
-        return True
-    if intent == "闲聊" and len(q) < _CHITCHAT_SHORT_LEN and not _ENTITY_HINT_RE.search(q):
+    if not tg.call_to_self and not tg.needs_task_tools and not tg.soft_triggered:
         return False
     return True
 
@@ -344,6 +226,34 @@ def _in_observe_scope(session_id: str, memory_session: str) -> bool:
     return persona_config_manager.get_persona_for_session(session_id) is not None
 
 
+def _speaker_name(ev: Event, fallback: str) -> str:
+    sender = ev.sender if isinstance(ev.sender, dict) else {}
+    for key in ("card", "nickname", "name"):
+        value = sender[key] if key in sender else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+class ObserveMeta(TypedDict):
+    speaker_name: str
+    reply_to_msg_id: str
+    reply_preview: str
+    at_targets: tuple[str, ...]
+
+
+def _observe_meta(ev: Event) -> ObserveMeta:
+    reply_id = str(ev.reply_id).strip() if ev.reply_id else ""
+    reply_preview = (ev.reply or "").strip()[:120]
+    at_targets = tuple(str(item) for item in (ev.at_list or []) if str(item).strip())
+    return {
+        "speaker_name": _speaker_name(ev, str(ev.user_id or "")),
+        "reply_to_msg_id": reply_id,
+        "reply_preview": reply_preview,
+        "at_targets": at_targets,
+    }
+
+
 def _image_urls(ev: Event) -> List[str]:
     """本条消息的图片 URL（去重）。``ev.image`` 通常已是 image_list 末项。"""
     candidates = [ev.image] + list(ev.image_list or [])
@@ -392,6 +302,7 @@ class MemoryKit(AgentKit):
                 bot_id=str(ev.bot_id),
                 persona_name=ctx.persona_name or "",
                 message_id=str(ev.msg_id) if ev.msg_id else None,
+                **_observe_meta(ev),
             )
         # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆，
         # 避免后台对每张群图都发起一次视觉模型调用（Token + 日志噪声）。
@@ -429,10 +340,11 @@ class MemoryKit(AgentKit):
             bot_id=str(ev.bot_id),
             persona_name=ctx.persona_name or "",
             message_id=str(ev.msg_id) if ev.msg_id else None,
+            **_observe_meta(ev),
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
-        """H05：旁观不预灌；Chat 给目录卡；仅 memory_eval 灌证据会话。"""
+        """H05：旁观不预灌；Chat 短闲聊给目录卡；问答/长记忆检索全量证据。"""
         from gsuid_core.ai_core.memory.config import memory_config
         from gsuid_core.ai_core.configs.ai_config import ai_config
         from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
@@ -444,9 +356,7 @@ class MemoryKit(AgentKit):
         if not should_prefetch_memory(ctx):
             return
         search_q = retrieve_query_for_search(ctx.query)
-        if not should_retrieve(search_q, ctx.intent or "", ctx.user_id):
-            logger.debug(t("log.ai.memory_skip_hit_small_talk_gate"))
-            return
+        memory_intent = memory_intent_from_ctx(ctx)
 
         pref_contexts: List[str] = []
         if ctx.intent != "闲聊":
@@ -468,14 +378,14 @@ class MemoryKit(AgentKit):
             bot_self_id=scope.bot_self_id,
             include_self=True,
             persona_name=scope.persona_name,
+            memory_intent=memory_intent,
+            clock_at=ctx.clock_at,
         )
         from gsuid_core.ai_core.memory.retrieval.types import Episode
         from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
 
         reserved_turns: list[Episode] = []
-        if mem.covered:
-            # 逐份材料覆盖已按来源把每份需要的栏目行都算好了；词面补齐只会往里
-            # 灌闲聊/邻条，把覆盖按预算挤掉（25 份曾被挤到 17 份）。
+        if mem.covered or memory_intent == "none":
             mem.reserved_episodes = reserved_turns
         else:
             mem.episodes = await expand_lexical_recall(
@@ -485,40 +395,21 @@ class MemoryKit(AgentKit):
                 group_id=ctx.group_id,
                 clock=ctx.clock_at,
                 reserved=reserved_turns,
+                memory_intent=memory_intent,
             )
             mem.reserved_episodes = reserved_turns
         if wants_evidence_injection(ctx):
-            # 时间线邻条会把同日练习题灌满，冲掉主题演进；只给计数题补会话。
-            if looks_like_count_query(search_q) and not mem.temporal_mode:
-                from gsuid_core.ai_core.memory.retrieval.lexical import expand_episode_neighbors
-
-                mem.episodes = await expand_episode_neighbors(mem.episodes)
-            else:
-                from gsuid_core.ai_core.memory.retrieval.lexical import (
-                    expand_topic_session_turns,
-                    looks_like_personal_upkeep_query,
-                )
-
-                if looks_like_personal_upkeep_query(search_q) and not mem.temporal_mode:
-                    mem.episodes = await expand_topic_session_turns(mem.episodes, search_q)
-            refine_retrieved_memory(mem, search_q)
-        if ctx.memory_eval:
-            from gsuid_core.ai_core.kits.memory.eval_protocol import (
-                boost_retrieved_memory,
-                _eval_full_scope_enabled,
+            from gsuid_core.ai_core.memory.retrieval.lexical import (
+                expand_episode_neighbors,
+                expand_topic_session_turns,
+                looks_like_personal_upkeep_query,
             )
 
-            if _eval_full_scope_enabled():
-                import asyncio
-
-                mem.seed_ids = [e["id"] for e in mem.episodes[:12]]
-                try:
-                    await asyncio.wait_for(
-                        boost_retrieved_memory(mem, search_q, ctx.user_id, ctx.group_id),
-                        timeout=25.0,
-                    )
-                except TimeoutError as e:
-                    logger.warning(t("log.ai.memory_compute_preference_related_fail", e=e))
+            if memory_intent != "none":
+                mem.episodes = await expand_episode_neighbors(mem.episodes)
+            if looks_like_personal_upkeep_query(search_q):
+                mem.episodes = await expand_topic_session_turns(mem.episodes, search_q)
+            refine_retrieved_memory(mem, memory_intent, search_q)
         text = format_retrieved_memory(ctx, mem)
         if text:
             ctx.stash_retrieved("memory", text)
@@ -544,9 +435,9 @@ class MemoryKit(AgentKit):
         if not ai_config.get_config("cognition_prefetch_enable").data:
             return
         intent = ctx.intent or ""
-        anaphora = bool(_FORCE_RETRIEVE_RE.search(ctx.query))
-        if intent not in ("问答", "工具") and not anaphora:
-            logger.debug(t("log.ai.cognition_prefetch_skip", reason=f"intent={intent or '-'} 且无回指"))
+        memory_dependent = ctx.route_decision is not None and ctx.route_decision.memory_intent != "none"
+        if intent not in ("问答", "工具") and not memory_dependent:
+            logger.debug(t("log.ai.cognition_prefetch_skip", reason=f"intent={intent or '-'} 且无历史依赖"))
             return
 
         from gsuid_core.ai_core.cognition import ALL_KINDS, search_cognition
@@ -557,6 +448,7 @@ class MemoryKit(AgentKit):
             kinds=ALL_KINDS,
             scope=cog_scope_from_ctx(ctx),
             limit=8,
+            memory_intent=memory_intent_from_ctx(ctx),
         )
         if not hits:
             return
@@ -569,15 +461,10 @@ class MemoryKit(AgentKit):
         parts: List[str] = []
         text = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
         if text:
-            if ctx.memory_eval:
-                from gsuid_core.ai_core.kits.memory.eval_protocol import inject_eval_memory_parts
-
-                parts.extend(inject_eval_memory_parts(text, ctx.memory_guide or ""))
-            else:
-                parts.append(f"[长期记忆]\n{text}")
-                guide = ctx.memory_guide or ""
-                if guide:
-                    parts.append(guide)
+            parts.append(f"[长期记忆]\n{text}")
+            guide = ctx.memory_guide or ""
+            if guide:
+                parts.append(guide)
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:
             parts.append(prefetch)
@@ -586,8 +473,7 @@ class MemoryKit(AgentKit):
             parts.append(meme_block)
         if not parts:
             return
-        if not ctx.memory_eval:
-            parts.append("（需要更多细节请调 search_cognition / read_handle）")
+        parts.append("（需要更多细节请调 search_cognition / read_handle）")
         ctx.set_context_block("memory", "\n".join(parts))
 
     async def _meme_preinject(self, ctx: AgentHookContext) -> str:

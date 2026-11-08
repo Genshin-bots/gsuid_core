@@ -28,13 +28,13 @@ from gsuid_core.ai_core.buildin_tools.visibility import (
     visible_to_capability_only,
 )
 
-# 片段多而重复，一页两条够用。其它记忆/落盘再留两条。知识走目录，不占这两条。
-EPISODE_PAGE = 2
+# 每次工具调用给足 6 条片段；其它记忆/落盘再留两条。知识走目录，不占这两条。
+EPISODE_PAGE = 12
 OTHER_PAGE = 2
 KNOWLEDGE_CATALOG = 8
 PREVIEW_LINES = 3
 PREVIEW_LINE_CHARS = 80
-POOL_LIMIT = 24
+POOL_LIMIT = 96
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)(?:（续\d+）)?\s*$")
 _CHUNK_SEG_RE = re.compile(r" - 第\d+段$")
 
@@ -260,16 +260,29 @@ def _append_alias_canonicals(query: str) -> str:
     return f"{query} {' '.join(extras)}"
 
 
-def _query_key(query: str, kinds: FrozenSet[CogKind]) -> str:
-    """归一化后的 query + kinds 切片作为去重键（空白与大小写差异不算新 query）。"""
+def _deps_memory_intent(ctx: RunContext[ToolContext]) -> str:
+    extra = ctx.deps.extra
+    if "memory_intent" not in extra:
+        return "point_latest"
+    value = extra["memory_intent"]
+    return value if isinstance(value, str) and value else "point_latest"
+
+
+def _query_key(query: str, kinds: FrozenSet[CogKind], memory_intent: str = "point_latest") -> str:
+    """归一化后的 query + kinds + 记忆模态作为去重键。"""
     normalized = "".join(query.split()).lower()
-    return f"{normalized}|{','.join(sorted(k.value for k in kinds))}"
+    return f"{normalized}|{','.join(sorted(k.value for k in kinds))}|{memory_intent}"
 
 
-def _page_key(query: str, kinds: FrozenSet[CogKind], offset: int) -> str:
+def _page_key(
+    query: str,
+    kinds: FrozenSet[CogKind],
+    offset: int,
+    memory_intent: str = "point_latest",
+) -> str:
     """同一问法的不同页不是同一次调用。同一页重调才短路。"""
     start = offset if offset > 0 else 0
-    return f"{_query_key(query, kinds)}@{start}"
+    return f"{_query_key(query, kinds, memory_intent)}@{start}"
 
 
 def _cached_pool(extra: object, pool_key: str) -> list[CognitiveHit] | None:
@@ -362,8 +375,9 @@ async def search_cognition(
     ctx: RunContext[ToolContext],
     query: str,
     kinds: Optional[str] = None,
-    limit: int = 24,
+    limit: int = 64,
     offset: int = 0,
+    intent: Optional[str] = None,
 ) -> str:
     """回想**我已经知道的事**：长期记忆、用户偏好、知识库、以前查过的材料、任务产物。
 
@@ -402,6 +416,8 @@ async def search_cognition(
             图片/表情/出站/业务记录须显式打开。
         limit: 不决定页宽。它只决定候选池深度——给得越大池子越宽（上限 48）。
         offset: 跳过前若干条非知识命中。下一批用上一页回执里的 offset。
+        intent: 可选记忆模态：point_latest / version_diff / timeline_order / broad_summary。
+            问旧值变化填 version_diff；问先后顺序填 timeline_order；问整体总结填 broad_summary。
 
     Returns:
         路径卡（仅第一页）+ 知识目录（仅第一页）+ 最多 2 条片段和 2 条其它命中。
@@ -416,7 +432,8 @@ async def search_cognition(
     # 同一页重搜必然同结果。不挡的话主会话会把同一页连打到熔断。
     seen = _seen_queries(ctx)
     start = offset if offset > 0 else 0
-    key = _page_key(query, selected, start)
+    page_intent = intent or _deps_memory_intent(ctx)
+    key = _page_key(query, selected, start, page_intent)
     if key in seen:
         prev = seen[key]
         same = f"结果同上：{prev}" if prev != _NO_MATERIAL else "仍无可用材料"
@@ -436,16 +453,17 @@ async def search_cognition(
     search_q = strip_trigger_words(search_q, persona_name or None)
     search_q = _append_alias_canonicals(search_q)
 
-    pool_key = _query_key(search_q, selected)
+    pool_key = _query_key(search_q, selected, page_intent)
     hits = _cached_pool(ctx.deps.extra, pool_key)
     if hits is None:
         # limit 不再决定页宽。池子只为后面的 offset 留高命中，不整页交出去。
-        lim = POOL_LIMIT if limit <= POOL_LIMIT else min(limit, 48)
+        lim = POOL_LIMIT if limit <= POOL_LIMIT else min(limit, 96)
         hits = await federated_search(
             search_q,
             kinds=selected,
             scope=scope,
             limit=lim,
+            memory_intent=page_intent,
         )
         _store_pool(ctx.deps.extra, pool_key, hits)
     page, next_offset = page_at(line_pages(hits), start)

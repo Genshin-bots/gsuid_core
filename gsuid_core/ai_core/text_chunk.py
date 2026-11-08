@@ -49,11 +49,11 @@ def chunk_text(text: str, target: int = INGEST_CHUNK_CHARS) -> list[str]:
     html_header = ""
     for piece in pieces:
         if piece == "":
-            md_header = ""
-            html_header = ""
-            if cur:
+            if (md_header or html_header) and cur:
                 chunks.append(cur)
                 cur = ""
+            md_header = ""
+            html_header = ""
             continue
         if _is_md_table_row(piece):
             compact = piece.replace(" ", "")

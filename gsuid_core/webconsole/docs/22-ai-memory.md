@@ -1,6 +1,10 @@
 # 22. AI Memory API - /api/ai/memory
 
-提供 AI 记忆系统（Mnemis 双路检索）的完整管理接口，包括记忆检索、Episode/Entity/Edge 浏览、分层语义图查看、配置管理、统计信息等。
+> **schema_v2（2026-11-08 起）**：System-2 分层图、`AIMemCategory*` 与 `AIMemHierarchicalGraphMeta` 已删除。
+> 分类接口改为四大原语 + 故事线的虚拟投影，`/hiergraph/rebuild` 只做 FTS5 与 Qdrant 对账。
+> 现行架构以 [`docs/MEMORY_SYSTEM.md`](../../../docs/MEMORY_SYSTEM.md) 为准；本文下方旧 System-2 描述仅作历史参考。
+
+提供 AI 记忆系统的管理接口，包括记忆检索、Episode/Entity/Edge 浏览、虚拟分类投影、故事线、配置与统计信息等。
 
 ## 系统概述
 

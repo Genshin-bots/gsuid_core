@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Episode
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
-# 评测禁工具，不能再调 search_cognition；预算由 inject_memory_cap 与生产同一档。
+# 评测证据优先；显式启用工具时允许 search_cognition 补证。预算与生产同一档。
 # LME 会话内 turn 间隔 1s；>45s 视为下一条 haystack 会话。
 _EVAL_SESSION_GAP_SEC = 45
 _EVAL_EMBED_SESSIONS = 48
@@ -36,8 +36,8 @@ EVAL_MUST = (
     "问当时推荐/列出/说过什么时以助手原句为准；问用户自身事实时以用户原句为准。"
     "同一属性在不同时间戳上的多个值是更新不是矛盾，只答最晚一条。"
     "问几天前/上周时，以注入的 clock_at / [当前时间] 为今天，禁止用墙上日期。"
-    "问题约束在注入里找不到时答未提及，禁止用相近事实顶替。"
-    "禁止调用任何工具。）"
+    "问题约束在注入里找不到时先调 search_cognition 补证，仍找不到才答未提及，"
+    "禁止用相近事实顶替。）"
 )
 
 
@@ -290,7 +290,8 @@ async def _expand_episode_neighbors(mem: "MemoryContext", user_id: str, group_id
         dt = _parse_episode_valid_at(ep["valid_at"] if "valid_at" in ep else "")
         if dt is None:
             continue
-        rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=12, after=12)
+        ep_id = str(ep["id"]) if "id" in ep else None
+        rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=12, after=12, episode_id=ep_id)
         for row in rows:
             if row.id in seen:
                 continue
@@ -435,7 +436,8 @@ def format_eval_memory(mem: "MemoryContext", query: str) -> str:
     """评测注入：与生产同一套 ``to_prompt_text``（事实边 + 片段）、同一顶总帽。"""
     from gsuid_core.ai_core.kits.base import inject_memory_cap
 
-    return mem.to_prompt_text(max_chars=inject_memory_cap(query, covered=mem.covered), query=query)
+    cap = inject_memory_cap(query, covered=mem.covered, memory_intent=mem.memory_intent)
+    return mem.to_prompt_text(max_chars=max(512, cap - 520), query=query, memory_intent=mem.memory_intent)
 
 
 def inject_eval_memory_parts(text: str, guide: str) -> list[str]:

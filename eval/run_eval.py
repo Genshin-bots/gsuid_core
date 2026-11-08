@@ -124,11 +124,11 @@ async def _lm_probe(args: argparse.Namespace) -> None:
         f"concurrency={args.concurrency} -> {os.path.basename(answers_file)}"
     )
     items = _lm_load(args)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), trust_env=False) as client:
 
         async def one(q: Dict[str, Any]) -> Dict[str, Any]:
             qid = q["question_id"]
-            user_id = f"eval_{qid}"
+            user_id = f"{args.user_prefix}{qid}"
             if not skip_ingest:
                 turns = flatten_haystack_with_dates(q.get("haystack_sessions", []), q.get("haystack_dates", []))
                 # 清库再灌，避免历史遗留 / 部分 scope 污染检索（评测态每题独立 scope）
@@ -186,12 +186,67 @@ async def _lm_probe(args: argparse.Namespace) -> None:
         )
 
 
+async def _lm_ingest(args: argparse.Namespace) -> None:
+    """只灌库、不作答；随后用 probe --skip-ingest 并发跑 LLM。"""
+    from eval.longmemeval.run_longmem_eval import flatten_haystack_with_dates
+
+    answers_file, _ = _lm_paths(args)
+    done: set[str] = set()
+    try:
+        existing = await asyncio.to_thread(load_json, answers_file)
+        done = {
+            str(r["question_id"])
+            for r in existing
+            if isinstance(r, dict) and r.get("status_code") == 200 and r.get("question_id")
+        }
+    except (OSError, ValueError) as e:
+        print(f"[lm-ingest] 读取已完成答卷失败，按全量灌库: {e}")
+
+    items = [q for q in _lm_load(args) if str(q.get("question_id")) not in done]
+    conc = max(args.ingest_concurrency, 1)
+    extra_payload = {"extract": True, "extract_concurrency": 10} if args.extract else None
+    print(
+        f"[lm-ingest] 待灌 {len(items)} 题，已完成 {len(done)} 题，并发 {conc}，clear_first={args.clear_first}",
+        flush=True,
+    )
+    sem = asyncio.Semaphore(conc)
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), trust_env=False) as client:
+
+        async def one(q: Dict[str, Any]) -> None:
+            qid = q["question_id"]
+            user_id = f"{args.user_prefix}{qid}"
+            async with sem:
+                turns = flatten_haystack_with_dates(q.get("haystack_sessions", []), q.get("haystack_dates", []))
+                if args.clear_first:
+                    await call_clear_user_global(client, args.base_url, user_id, timeout=args.timeout)
+                obs = await call_batch_observe(
+                    client=client,
+                    base_url=args.base_url,
+                    user_id=user_id,
+                    turns=turns,
+                    flush=True,
+                    timeout=args.timeout,
+                    extra_payload=extra_payload,
+                )
+                if obs.get("status") != 0:
+                    raise RuntimeError(f"batch_observe: {obs.get('msg')}")
+                print(f"[lm-ingest] {qid} done", flush=True)
+
+        results = await asyncio.gather(*[one(q) for q in items], return_exceptions=True)
+        failed = [(q["question_id"], r) for q, r in zip(items, results) if isinstance(r, Exception)]
+        for qid, err in failed:
+            print(f"[lm-ingest] {qid} 失败: {err}", flush=True)
+        if failed:
+            raise SystemExit(1)
+
+
 async def _lm_judge(args: argparse.Namespace) -> None:
     answers_file, judge_file = _lm_paths(args)
     answers = load_json(answers_file)
     ok = [a for a in answers if a.get("status_code") == 200]
     print(f"[lm-judge] 有效答卷 {len(ok)}/{len(answers)} <- {os.path.basename(answers_file)}")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), trust_env=False) as client:
 
         async def one(a: Dict[str, Any]) -> Dict[str, Any]:
             j = await judge_single_answer(
@@ -451,6 +506,12 @@ def main() -> int:
         help="probe: 跳过 clear/batch_observe，复用库里已摄入记忆只重作答",
     )
     p.add_argument(
+        "--ingest-concurrency",
+        type=int,
+        default=1,
+        help="ingest: 并发灌库数；本地 CPU 嵌入建议 1，>1 只会分走 ONNX 线程",
+    )
+    p.add_argument(
         "--persona-name",
         default="评测助手",
         help="probe: 作答人格（默认评测助手：必须作答、禁止静音）",
@@ -466,6 +527,11 @@ def main() -> int:
         help="probe: 不灌评测证据块，走生产目录卡 + 模型自己 search_cognition",
     )
     p.add_argument("--tag", default=None, help="run-domains/mark-fails: 答卷文件后缀，如 prod7")
+    p.add_argument(
+        "--user-prefix",
+        default="eval_",
+        help="probe: 每题 user_global scope 前缀，默认 eval_；并行评测用独立前缀避免清库写锁",
+    )
     args, _extra = p.parse_known_args()
 
     if args.benchmark in _DELEGATED_SCRIPTS:
@@ -473,6 +539,8 @@ def main() -> int:
         return 2
     if args.stage == "probe":
         asyncio.run(_lm_probe(args))
+    elif args.stage == "ingest":
+        asyncio.run(_lm_ingest(args))
     elif args.stage == "judge":
         asyncio.run(_lm_judge(args))
     elif args.stage == "report":

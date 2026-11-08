@@ -35,6 +35,7 @@ from gsuid_core.ai_core.control.lines import (
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.relationship import RelationshipView
+    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
 
 # ── 通用：说话人前缀剥离（群聊/评测消息形如「昵称(用户ID:123)：正文」）──
 _SPEAKER_PREFIX_RE = re.compile(r"^[^：:（()）\n]{1,16}\(用户ID:[^)]{1,24}\)[：:]\s*")
@@ -66,52 +67,6 @@ def extract_message_body(text: str) -> str:
             t = t[: m.start()]
     t = _TIME_LINE_RE.sub("", t)
     return _strip_speaker_prefix(t)
-
-
-# 祈使/查询闭类（非业务域）。「看看我/查查」= 实时查数；帮我/设个/提醒 = 办事。
-_LIVE_LOOKUP_RE = re.compile(r"(看看我|看看这|帮我查|帮查|查一下|查下|查询|查查)")
-_DO_REQUEST_RE = re.compile(r"(帮我|给我|设个|设一下|提醒我)")
-
-
-def looks_like_live_lookup(text: str) -> bool:
-    """是否在查当前数据（面板/战绩等），不是翻已有记忆。"""
-    return bool(_LIVE_LOOKUP_RE.search(extract_message_body(text)))
-
-
-def looks_like_task_request(text: str) -> bool:
-    """点名句是否带办事/查询结构。"""
-    body = extract_message_body(text)
-    if not body:
-        return False
-    return bool(_LIVE_LOOKUP_RE.search(body) or _DO_REQUEST_RE.search(body))
-
-
-# 「看看这」太宽，闲聊「看看这个」不催工具。
-_COMMITTED_LOOKUP_RE = re.compile(r"(看看我|帮我查|帮查|查一下|查下|查询|查查)")
-
-
-def looks_like_committed_work(text: str) -> bool:
-    """办事或查当前数据。单独的「看看这」不算。"""
-    body = extract_message_body(text)
-    if not body:
-        return False
-    return bool(_DO_REQUEST_RE.search(body) or _COMMITTED_LOOKUP_RE.search(body))
-
-
-# 问过往。不收「记得帮我」「你记得帮我」「那天」「谁说」。
-_MEMORY_QA_RE = re.compile(
-    r"(说过|上次|还记得|记得吗|记得么|记不记得|我提过|你提过|"
-    r"i\s+told\s+you|you\s+(?:said|told|mentioned)|last\s+time|remember\s+when)",
-    re.IGNORECASE,
-)
-
-
-def looks_like_memory_qa(text: str) -> bool:
-    """是否在问谁说过 / 上次怎样，而不是当前世界状态。"""
-    body = extract_message_body(text)
-    if not body:
-        return False
-    return bool(_MEMORY_QA_RE.search(body))
 
 
 def recent_history_texts(history: List[ModelMessage], limit: int = 6) -> List[Tuple[str, str]]:
@@ -170,7 +125,7 @@ MEMORY_QA_HINT = (
     "问现在如何而原话会过期时，没有本轮工具结果就只转述说过的话。"
     "片段不够再 search_cognition，query 写说话人ID + 问题里的专名/主题。"
     "目录卡不是全文。作答点名命中里的专名原话。"
-    "点查过往记录且片段对不上就说没有，不要用相近事实顶替；"
+    "点查过往记录且片段确实对不上才说没有，不要用相近事实顶替；"
     "问方法/步骤/举例则按问句本身作答，不因记忆不全拒答。）"
 )
 
@@ -854,8 +809,9 @@ def scaffold_hints_from_graph(
     speaker_recall: bool = True,
     intent: str = "",
     persona_name: str | None = None,
+    route_decision: "TurnRouteDecision | None" = None,
 ) -> List[str]:
-    """由 TurnGraph 生成注入 user 侧的脚手架提示（单一出口）。"""
+    """由 TurnGraph + 前置路由结论生成 user 侧脚手架提示（单一出口）。"""
     from gsuid_core.ai_core.prompt_group.store import render_prompt
 
     def _turn(key: str) -> str:
@@ -878,12 +834,19 @@ def scaffold_hints_from_graph(
     if tg.style_push_count >= 2:
         hints.append(DRIFT_REMINDER)
     if cheap is CheapGate.FULL and (not tg.is_group or tg.call_to_self) and speaker_recall:
+        if route_decision is None:
+            # 未接前置路由（第三方替换 classifier 槽）：只按既有 intent 结构分流。
+            if intent == "工具" and tg.is_group:
+                hints.append(_turn("speaker_recall"))
+            elif not tg.is_group and intent in ("问答", ""):
+                hints.append(_turn("memory_qa"))
+            return hints
         # 实时查数不要催 search_cognition，否则会占满思考轮。
-        if looks_like_live_lookup(tg.message_text):
+        if route_decision.is_live_lookup:
             pass
-        elif intent == "工具" and tg.is_group:
+        elif (intent == "工具" or route_decision.needs_committed_work) and tg.is_group:
             hints.append(_turn("speaker_recall"))
-        elif looks_like_memory_qa(tg.message_text) or (not tg.is_group and intent in ("问答", "")):
+        elif route_decision.memory_intent != "none":
             hints.append(_turn("memory_qa"))
     return hints
 

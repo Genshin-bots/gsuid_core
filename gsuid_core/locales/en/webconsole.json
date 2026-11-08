@@ -102,6 +102,7 @@
   "log.webconsole.memory_manually_triggered_hierarchical": "[Memory] Manually triggered hierarchical graph rebuild scope_key={scope_key}",
   "log.webconsole.memory_scope_key_window_fail": "[Memory] scope={scope_key} Window extraction failed (skipping this window): {e}",
   "log.webconsole.memory_scope_key_window_fail_2": "[Memory] scope={scope_key} Window extraction timed out ({p0}s); skipping this window",
+  "log.webconsole.memory_reconcile_vectors_fail": "[Memory] Index reconciliation vector repair failed: {e}",
   "log.webconsole.mime_type_file_path": "[WebConsole] MIME type of file {file_path} is {mime_type}",
   "log.webconsole.plugin_store_fail": "Failed to fetch plugin store list: {error}",
   "log.webconsole.received_request_app_path": "[WebConsole] Received request: /app/{path}",

@@ -579,9 +579,16 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
     # ====== H00 入站观察扇出（记忆 / 表情 / 图片记忆）======
     # 只观察，**不挡**命令/AI 分流；要拦 AI 走 H01。失败 fail-open。
     if enable_ai and not ai_scope_banned:
+        from gsuid_core.ai_core.memory.config import memory_config as _mem_cfg
+
+        # 群黑名单在入口先拦一层：observer._gate 也拦，双保险防被动感知漏网。
+        if event.group_id and str(event.group_id) in _mem_cfg.observer_blacklist:
+            inbound_allowed = False
+        else:
+            inbound_allowed = True
         from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, fire_hooks, should_fire
 
-        if should_fire(AgentHookPoint.ON_INBOUND):
+        if inbound_allowed and should_fire(AgentHookPoint.ON_INBOUND):
             inbound_ctx = AgentHookContext(
                 point=AgentHookPoint.ON_INBOUND,
                 ev=event,

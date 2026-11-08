@@ -109,7 +109,8 @@ async def eval_retrieve(
         bot_self_id="ai",
         include_self=True,
     )
-    prompt = ctx.to_prompt_text(max_chars=inject_memory_cap(req.query, covered=ctx.covered), query=req.query)
+    cap = inject_memory_cap(req.query, covered=ctx.covered, memory_intent=ctx.memory_intent)
+    prompt = ctx.to_prompt_text(max_chars=cap, query=req.query, memory_intent=ctx.memory_intent)
     return EvalRetrieveOut(
         pool_ids=list(ctx.pool_ids),
         inject_ids=list(ctx.inject_ids),
@@ -217,17 +218,6 @@ async def eval_gist_backfill(
     req: EvalGistRequest,
     _gate: None = Depends(require_local_test),
 ) -> EvalExtractOut:
-    from gsuid_core.ai_core.memory.database.models import AIMemSession
-    from gsuid_core.ai_core.memory.lifecycle.gist_backfill import backfill_rule_scope, backfill_llm_session
-
+    """schema_v2 已移除 gist 侧表，保留端点返回 0 供旧脚本兼容。"""
     scope_key = make_scope_key(ScopeType.USER_GLOBAL, req.user_id)
-    if req.source == "rule":
-        written = await backfill_rule_scope(scope_key, limit=req.limit)
-        return EvalExtractOut(written=written, scope_key=scope_key)
-    written = 0
-    sessions = await AIMemSession.list_by_scope(scope_key, limit=200)
-    for sess in sessions:
-        written += await backfill_llm_session(sess.id, force=True)
-        if written >= req.limit:
-            break
-    return EvalExtractOut(written=written, scope_key=scope_key)
+    return EvalExtractOut(written=0, scope_key=scope_key)

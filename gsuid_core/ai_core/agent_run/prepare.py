@@ -251,6 +251,8 @@ class PreparePhase(RunOnceHost):
             if "主图：`" in _probe_for_policy:
                 st.run_extra["delivery_has_image"] = True
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
+        if self.route_decision is not None:
+            st.run_extra["memory_intent"] = self.route_decision.memory_intent
         st.context = ToolContext(
             bot=st.bot,
             ev=st.ev,
@@ -381,6 +383,7 @@ class PreparePhase(RunOnceHost):
                 speaker_recall=self.dynamic_tools is not False,
                 intent=str(st.intent or ""),
                 persona_name=self.persona_name,
+                route_decision=self.route_decision,
             )
             # C-2：≥2 且比上轮增加才保留漂移提醒（hints 里可能已有，按计数裁）
             _pushes = st.tg.style_push_count

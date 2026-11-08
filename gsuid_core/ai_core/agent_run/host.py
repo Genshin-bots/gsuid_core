@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Union, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Union, Literal, Optional, Sequence
 from asyncio import Event as AsyncEvent
 from datetime import datetime
 
@@ -19,6 +19,9 @@ from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.agent_run.support import TraceKind
 from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
 
 ReturnMode = Literal["always", "return", "by_bot"]
 
@@ -46,6 +49,7 @@ class RunOnceHost:
     capability_node_id: str
     thinking: ThinkingLevel | None
     turn_clock: datetime | None
+    route_decision: "TurnRouteDecision | None"
     _session_logger: AISessionLogger
     _run_sent_texts: set[str]
     read_image_ids: set[str]

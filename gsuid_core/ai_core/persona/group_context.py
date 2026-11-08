@@ -7,7 +7,7 @@
 
 群聊上下文通过以下方式获取：
 1. 群聊名称（从数据库获取）
-2. 群聊画像记忆摘要（从记忆系统的 AIMemHierarchicalGraphMeta.group_summary_cache 获取）
+2. 群聊画像记忆摘要（从记忆系统的活跃线程与里程碑事实获取）
 
 使用方式:
     from gsuid_core.ai_core.persona.group_context import get_group_context
@@ -92,10 +92,8 @@ async def _get_group_name(group_id: str) -> Optional[str]:
 
 
 async def _get_group_summary_from_memory(group_id: str) -> Optional[str]:
-    """从记忆系统的分层图元数据中获取群聊画像摘要
+    """从记忆系统的活跃线程与里程碑事实获取群聊画像摘要
 
-    记忆系统在分层图重建时会自动生成群聊摘要，存储在
-    AIMemHierarchicalGraphMeta.group_summary_cache 中。
     scope_key 格式为 "group:{group_id}"。
 
     Args:
@@ -106,15 +104,14 @@ async def _get_group_summary_from_memory(group_id: str) -> Optional[str]:
     """
     try:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-        from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
+        from gsuid_core.ai_core.memory.group_profile import get_scope_summary
 
         scope_key = make_scope_key(ScopeType.GROUP, group_id)
-        meta = await AIMemHierarchicalGraphMeta.get_or_none(scope_key=scope_key)
+        summary = await get_scope_summary(scope_key)
+        if summary:
+            return summary
 
-        if meta is not None and meta.group_summary_cache:
-            return str(meta.group_summary_cache)
-
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.debug(t("log.persona.groupcontext_get_group_profile_fail", e=e))
 
     return None

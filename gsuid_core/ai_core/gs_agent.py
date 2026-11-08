@@ -8,7 +8,7 @@ import time
 import uuid
 import base64
 import asyncio
-from typing import Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
+from typing import TYPE_CHECKING, Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
 from datetime import datetime
 
 import httpx
@@ -249,6 +249,9 @@ def _scope_id_segment(scope_key: Optional[str]) -> str:
 
 from gsuid_core.ai_core.agent_run import RunOnceMixin  # noqa: E402
 
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
+
 
 class GsCoreAIAgent(RunOnceMixin):
     """
@@ -342,6 +345,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self.dynamic_tools: Optional[bool] = dynamic_tools
         # 本轮显式时钟（评测 HTTP clock_at）。生产 WS 为 None，检索回落墙上时钟。
         self.turn_clock: Optional[datetime] = None
+        # 前置路由结论（handle_ai 在 run 前写入）。内环脚手架只读，不重新扫文本。
+        self.route_decision: Optional["TurnRouteDecision"] = None
         # 预算归属 scope：(group_id, user_id, bot_id)。ev 缺失的自主入口经 bind_budget_scope
         # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
         self._budget_scope: Optional[Tuple[str, str, str]] = None

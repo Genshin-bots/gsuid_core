@@ -195,13 +195,13 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 子目录 / 文件 | 用途 |
 |---|---|
-| `observer.py` | 群消息观察器：把流量喂给短期 / 长期记忆通道。 |
-| `ingestion/` | 入库链路：`hiergraph.py`（分层图谱 + 群组摘要缓存）、`entity.py`（实体抽取）、`episode.py`（情节切片）。 |
-| `retrieval/` | 召回链路（按 scope_key + 实体 + 时间窗口）。 |
-| `vector/` | 向量索引（`collections.py` 集成 Qdrant 本地实例，落 `data/ai_core/local_qdrant_db`）。 |
-| `database/` | 记忆表 ORM。 |
-| `prompts/` | 入库 / 召回 / 摘要的 prompt 模板（`summary.py / selection.py / output_models.py`）。 |
-| `lifecycle/` | 短期 → 长期的搬运、过期清理。 |
+| `observer.py` | 群消息观察器：协议清洗 + 昵称/引用/@ 富元数据 + scope 环形窗口。 |
+| `ingestion/` | `window_router.py`（Pass 1 话题分诊）、`algebra.py`（Pass 2 四态代数）、`worker.py`（窗口编排）。 |
+| `retrieval/` | 五模态意图检索（Dense + FTS5 + Thread 时间轴）。 |
+| `vector/` | 四个 Qdrant 记忆集合（episodes / entities / edges / threads）。 |
+| `database/` | schema_v2 四表 + 偏好 ORM、FTS5、净室迁移。 |
+| `prompts/` | 两阶段摄入 prompt（`extraction.py`）。 |
+| `lifecycle/` | 线程补挂、衰减、遗忘与容量维护。 |
 | `scope.py` | `ScopeType.GROUP / USER / GLOBAL` + `make_scope_key`，所有记忆都按 scope_key 隔离。 |
 | `group_profile.py` | 群组画像（语境标签 / 性格摘要）。 |
 | `config.py` | 记忆模块的开关（`enable_heartbeat_memory` 等）。 |

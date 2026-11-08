@@ -222,6 +222,7 @@ async def assemble_dynamic_context(
             ctx.query,
             covered=ctx.memory_covered,
             n_doc_sources=count_document_sources(memory_text),
+            memory_intent=ctx.route_decision.memory_intent if ctx.route_decision is not None else "point_latest",
         ),
     )
     from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
@@ -292,7 +293,7 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
         ctx.blocks["relationship"] = build_relationship_context(ctx.relationship)
     mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
     if mem and "memory" not in ctx.blocks:
-        hint = "" if ctx.memory_eval else "\n（需要更多细节请调 search_cognition）"
+        hint = "\n（需要更多细节请调 search_cognition）"
         ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}{hint}"
 
 

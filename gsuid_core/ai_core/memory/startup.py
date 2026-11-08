@@ -49,7 +49,17 @@ async def init_memory_system():
 
     logger.info(t("log.memory.memory_start_initializing_system"))
 
-    # 1. 确保 Qdrant Collection 存在
+    # 1. schema_v2 净室迁移（必须在集合初始化之前，避免旧备份幽灵回灌）
+    try:
+        from .database.migration_v2 import ensure_memory_schema_v2
+
+        await ensure_memory_schema_v2()
+    except Exception as e:
+        logger.error(t("log.memory.schema_v2_migrating"), exc_info=True)
+        logger.error(str(e))
+        return
+
+    # 2. 确保 Qdrant Collection 存在
     try:
         from .vector.startup import ensure_memory_collections
 

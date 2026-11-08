@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.relationship.engine import SettleOutcome
     from gsuid_core.ai_core.interaction_scaffold import TurnGraph
     from gsuid_core.ai_core.relationship.signals import TurnSignals
+    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
 
 
 class HookCapabilityError(RuntimeError):
@@ -74,6 +75,8 @@ class AgentHookContext:
     cheap_gate: str = ""
     prior_user_turns: List[str] = field(default_factory=list)
     gate_history: List["MessageRecord"] = field(default_factory=list)
+    # CLASSIFY 点位唯一写入：下游 Gate / Memory / Scaffold 只读，不再各自扫文本。
+    route_decision: Optional["TurnRouteDecision"] = None
     assembled_domains: List[str] = field(default_factory=list)
     priority_speakers: Set[str] = field(default_factory=set)
     turn_graph: Optional["TurnGraph"] = None

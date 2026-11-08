@@ -191,19 +191,12 @@ def visibility_user_hint(
 
 
 def visible_when_timeline_query(ctx: VisibilityScanCtx) -> bool:
-    """排序/摘要/时间线问句才暴露 search_turns / read_session / timeline。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
-    from gsuid_core.ai_core.memory.retrieval.event_time import (
-        looks_like_span_query,
-        looks_like_order_query,
-        looks_like_summary_query,
-    )
-
-    for text in _iter_context_texts(ctx):
-        body = strip_clock_lines(text or "")
-        if looks_like_order_query(body) or looks_like_span_query(body) or looks_like_summary_query(body):
-            return True
-    return False
+    """排序/摘要/版本对比问句才暴露 search_turns / read_session / timeline。"""
+    deps = ctx.deps
+    if deps is None or "memory_intent" not in deps.extra:
+        return False
+    memory_intent = deps.extra["memory_intent"]
+    return isinstance(memory_intent, str) and memory_intent in ("version_diff", "timeline_order", "broad_summary")
 
 
 def context_has_image(ctx: VisibilityScanCtx) -> bool:

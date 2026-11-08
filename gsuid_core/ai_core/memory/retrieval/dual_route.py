@@ -1,13 +1,15 @@
-"""双路检索引擎（Dual-Route Retrieval）
+"""双路检索引擎（Dual-Route Retrieval - schema_v2）。
 
-并行执行 System-1（向量相似度）和 System-2（分层图遍历），
-合并去重后经 Reranker 重排序，输出最终的 MemoryContext。
+意图感知与混合检索（System-1 稠密检索 + FTS5 精确检索 + RRF 融合），
+结合 schema_v2 四态记忆代数与多模态 Episode 上下文组装。
 """
+
+from __future__ import annotations
 
 import re
 import time
 import asyncio
-from typing import TypeVar, Optional, Sequence, TypedDict
+from typing import Optional, Sequence, TypedDict
 from datetime import datetime
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -17,69 +19,62 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.rag.reranker import RerankerProvider, get_reranker
 from gsuid_core.ai_core.content_guard import wrap_untrusted
+from gsuid_core.ai_core.control.lines import (
+    MEMORY_STAGING_NOTE,
+    MEMORY_CONFLICT_NOTE,
+    MEMORY_TIMELINE_ORDER_NOTE,
+)
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.ai_core.memory.ingestion.algebra import _DANGLING_FACT_RE
 
-# §6 残句拦截判据定义在摄入侧，注入侧兜底复用同一常量（"用户X提到"悬空谓语垃圾）
-from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
-
-from .types import Edge, Entity, Episode, Category, RetrievalMeta, MemoryEventCue
+from .types import (
+    Edge,
+    Entity,
+    Episode,
+    Category,
+    RetrievalMeta,
+    ThreadSummary,
+    MemoryEventCue,
+)
 from .system1 import System1Result, system1_search
-from .system2 import System2Result, system2_global_selection
 from .event_time import (
+    query_time_window,
     event_at_from_text,
     looks_like_span_query,
+    has_relative_time_span,
     looks_like_order_query,
     looks_like_summary_query,
+    query_explicit_time_range,
 )
 
-# untrusted 栅栏自身的字符开销：episodes 预算与终装配截断都要预留它，
-# 否则 </untrusted> 闭合标签会被尾截断切掉（评审修复 F9）
+MemoryIntent = str
 _UNTRUSTED_WRAP_OVERHEAD = len(wrap_untrusted("memory_recall", ""))
-
-# 点查题的片段预算：先到先得取前几条，别让长片段把答案行挤出视野。
 _POINT_LOOKUP_EP_BUDGET = 8000
+_TS_MAX = 4_102_444_800.0
+
+_RERANK_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="reranker")
+_TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到|讨论|说起|谈到)")
+_IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
+
+_SENSITIVE_FACT_RE = re.compile(
+    r"催婚|相亲|离婚|分手|出轨|怀孕|堕胎|"
+    r"工资|薪资|月薪|年薪|收入|欠钱|欠款|负债|贷款|房贷|房租|"
+    r"抑郁|焦虑症|生病|住院|确诊|病历|"
+    r"住址|家庭地址|身份证|手机号|电话号|银行卡"
+)
 
 
 class PreferencePrompt(TypedDict):
-    """注入 Prompt 的单条偏好规则（``MemoryContext.preferences`` 的元素）。
+    """注入 Prompt 的单条偏好规则。"""
 
-    抽成 TypedDict 替代裸 dict，让 ``to_prompt_text`` / 检索侧构造 / WebConsole 序列化
-    三处的字段访问自文档化，统一键名契约。
-    """
-
+    id: Optional[str]
     target_context: str
     preference_rule: str
-    polarity: str  # "do" / "dont"
+    polarity: str
     is_correction: bool
-    # 仅供 WebConsole search 接口透传（注入渲染不用）；检索侧构造时带，历史 dict 兼容缺省。
-    id: Optional[str]
-
-
-T = TypeVar("T", bound=dict)
-
-# OPT-01: Reranker 是 CPU/GPU 密集型，使用线程池避免阻塞事件循环
-_RERANK_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="reranker")
-
-# A-5 降噪：事件型 trivia（"X提及/提到/在唱/演唱/询问…"这类一次性提及）信息密度低，
-# 注入核心事实时下沉到末尾，把预算优先留给实体/关系型高价值事实。
-_TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到|讨论|说起|谈到)")
-
-# A-3：身份等价类 fact 的特征词。这类 fact 主语极易抽错（"谈论小C"会被固化成
-# "<说话人>本人是小C"），故①禁止用 source_name 强补主语 ②注入时统一标"待证"。
-_IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
-
-# §7 第三方隐私拦截：婚恋/财务/健康/联络四**类目**的敏感事实仅当事人在场才注入；
-# 词表按类目组织（非个案关键词），部署者可经 memory_sensitive_extra_terms 扩展。
-_SENSITIVE_FACT_RE = re.compile(
-    r"催婚|相亲|离婚|分手|出轨|怀孕|堕胎|"  # 婚恋
-    r"工资|薪资|月薪|年薪|收入|欠钱|欠款|负债|贷款|房贷|房租|"  # 财务
-    r"抑郁|焦虑症|生病|住院|确诊|病历|"  # 健康
-    r"住址|家庭地址|身份证|手机号|电话号|银行卡"  # 联络/证件
-)
 
 
 def _get_sensitive_extra_terms() -> list[str]:
-    """部署者扩展敏感词（memory_sensitive_extra_terms）。入口取一次供整轮复用（评审修复 E17）。"""
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     extra = ai_config.get_config("memory_sensitive_extra_terms").data
@@ -89,10 +84,6 @@ def _get_sensitive_extra_terms() -> list[str]:
 
 
 def _sensitive_fact_hit(fact: str, extra_terms: Sequence[str] = ()) -> bool:
-    """内置敏感类目词表 + 部署者扩展词表任一命中。
-
-    匹配前过 normalize_for_match（与 output_firewall 同款防拆字/零宽规避，评审修复 F5-reuse）。
-    """
     from gsuid_core.ai_core.content_guard import normalize_for_match
 
     normalized = normalize_for_match(fact)
@@ -101,11 +92,7 @@ def _sensitive_fact_hit(fact: str, extra_terms: Sequence[str] = ()) -> bool:
     return any(w in fact or w in normalized for w in extra_terms)
 
 
-def _fact_mentions_speaker(edge: "Edge", speaker_ids: set) -> bool:
-    """该 edge 是否以当前说话人为主语/当事人（source_name 或 fact 文本含其标识）。
-
-    数字 ID 按整串边界匹配：短 QQ 号是别人长号的子串时不得误判在场（评审修复 E6）。
-    """
+def _fact_mentions_speaker(edge: Edge, speaker_ids: set) -> bool:
     blob = f"{edge['source_name'] or ''}|{edge['fact'] or ''}"
     for sid in speaker_ids:
         s = str(sid).strip()
@@ -119,7 +106,13 @@ def _fact_mentions_speaker(edge: "Edge", speaker_ids: set) -> bool:
     return False
 
 
-_TS_MAX = 4_102_444_800.0
+def coalesce_ts(edge: Edge) -> float:
+    if "event_at_ts" in edge:
+        event_ts = edge["event_at_ts"]
+        if isinstance(event_ts, (int, float)) and event_ts > 0:
+            return float(event_ts)
+    valid = edge["valid_at_ts"]
+    return float(valid) if valid else 0.0
 
 
 def _ts_to_dt(ts: float | int | None) -> datetime | None:
@@ -128,8 +121,7 @@ def _ts_to_dt(ts: float | int | None) -> datetime | None:
     return datetime.fromtimestamp(float(ts))
 
 
-def _edge_date_prefix(e: "Edge") -> str:
-    """陈述日必带；原文相对语另标发生日。无 valid_at_ts 返回空串。"""
+def _edge_date_prefix(e: Edge) -> str:
     said = _ts_to_dt(e["valid_at_ts"] if "valid_at_ts" in e else None)
     if said is None:
         return ""
@@ -140,114 +132,10 @@ def _edge_date_prefix(e: "Edge") -> str:
     return stamp
 
 
-def _extract_time_range(query: str) -> Optional[tuple[datetime, datetime]]:
-    """只有问句里的显式日期窗才当 temporal_mode。全程合成窗只给分桶补召回。"""
-    from .event_time import query_explicit_time_range
-
-    return query_explicit_time_range(query)
-
-
-def _span_search_window(query: str) -> Optional[tuple[datetime, datetime]]:
-    """span 无日期时用 2000–2100 做 temporal arm，不写进 MemoryContext.time_range。"""
-    from .event_time import looks_like_span_query, query_explicit_time_range
-
-    explicit = query_explicit_time_range(query)
-    if explicit is not None:
-        return explicit
-    if looks_like_span_query(query):
-        return datetime(2000, 1, 1), datetime(2100, 1, 1)
-    return None
-
-
-async def _fetch_temporal_episodes(
-    query: str,
-    scope_keys: list[str],
-    start: datetime,
-    end: datetime,
-    buckets: int = 6,
-    per_bucket: int = 8,
-) -> list[Episode]:
-    """时间分桶语义检索：把时间窗切成 buckets 段，每段内做带 valid_at_ts 过滤的
-    语义检索取 top per_bucket，合并去重后按时间升序返回。
-
-    大语料下时间窗内可能有上万条 Episode，均匀采样命中率≈0；纯语义检索则整窗
-    集中在少数高相似片段、漏掉时段中后段进展。分桶语义检索同时保证"相关"与
-    "整段时间线覆盖"。
-    """
-    from gsuid_core.ai_core.memory.vector.ops import search_episodes_in_range
-
-    from .event_time import temporal_search_query
-
-    topic = temporal_search_query(query)
-    if len(topic) < 8:
-        return []
-    start_ts = start.timestamp()
-    end_ts = end.timestamp()
-    span = (end_ts - start_ts) / max(buckets, 1)
-
-    async def _one_bucket(i: int) -> list[Episode]:
-        try:
-            return await search_episodes_in_range(
-                topic,
-                scope_keys,
-                start_ts + i * span,
-                start_ts + (i + 1) * span,
-                top_k=per_bucket,
-            )
-        except Exception as e:
-            logger.debug(i18n_t("log.memory.time_bucket_retrieval", i=i, e=e))
-            return []
-
-    results = await asyncio.gather(*[_one_bucket(i) for i in range(buckets)])
-    seen: dict[str, Episode] = {}
-    for eps in results:
-        for ep in eps:
-            seen[ep["id"]] = ep
-    merged = list(seen.values())
-    merged.sort(key=lambda ep: ep["valid_at"] or "")
-    return merged
-
-
-def _on_pref_task_done(t: "asyncio.Task") -> None:
-    """偏好 last_applied 刷新后台任务的回调：吞掉取消、记录异常，避免未捕获告警。"""
-    if t.cancelled():
-        return
-    exc = t.exception()
-    if exc is not None:
-        logger.warning(i18n_t("log.memory.background_task_refreshing_preference", exc=exc))
-
-
-async def _run_sync_rerank(
-    reranker: RerankerProvider,
-    query: str,
-    texts: list[str],
-) -> list[float]:
-    """在线程池里运行同步 reranker，包括完整的 generator 迭代。
-
-    关键：reranker.rerank() 是 generator function，run_in_executor 只把
-    创建 generator 对象的调用放进线程，ONNX 推理发生在迭代时（list()）。
-    必须用 lambda 把 list() 也包进去，否则推理仍在事件循环线程执行。
-    """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        _RERANK_EXECUTOR,
-        lambda: list(reranker.rerank(query, texts)),  # list() 也在线程里执行
-    )
-
-
 def _complete_fact_subject(fact: str, source_name: str) -> str:
-    """给缺少主语的 fact 补全主语。
-
-    历史数据中部分 fact 是"建议关注中证白酒指数"这类缺主语的短语，
-    这里用边的 source_name 补成"用户xxx建议关注…"的完整句子。
-    纯数字名称视为用户 ID，补成"用户{id}"。
-    source_name 由检索阶段直接填充到 Edge.source_name，不再依赖运行时查找。
-    """
     fact = fact.strip()
     if not fact:
         return ""
-    # 身份等价类 fact 禁止用 source_name 强补主语——否则"谈论小C"会被固化成
-    # "<说话人>本人是小C"，引发身份级联错乱。
     _identity = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
     if source_name and source_name not in fact and not _identity:
         subject = f"用户{source_name}" if source_name.isdigit() else source_name
@@ -257,15 +145,6 @@ def _complete_fact_subject(fact: str, source_name: str) -> str:
 
 
 def compute_edge_confidence(mention_count: Optional[int], decay_score: Optional[float]) -> float:
-    """由"佐证次数 × 新鲜度"折算事实置信度 weight ∈ (0, 1]（置信度轴，与相关性正交）。
-
-    - ``mention_count``（C1 跨发言者归并计数）：同一事实被独立复述越多越可信，
-      用 ``1 - 0.5**mc`` 饱和映射（1→0.5、2→0.75、3→0.875…），单次提及给 0.5 基线；
-    - ``decay_score``（C11 时效衰减分，新鲜=1.0、久未命中→下降）：作为新鲜度系数夹到 [0,1]。
-
-    此值只衡量"这条事实有多可信"，与当前 query 无关——相关性由 reranker score 负责。
-    旧库 ALTER 补列前个别行可能为 None，故按 None→默认值兜住（mc→1、decay→1.0）。
-    """
     mc = mention_count if (mention_count and mention_count > 0) else 1
     corroboration = 1.0 - 0.5**mc
     decay = decay_score if decay_score is not None else 1.0
@@ -273,157 +152,41 @@ def compute_edge_confidence(mention_count: Optional[int], decay_score: Optional[
     return round(corroboration * decay, 4)
 
 
-def _episode_from_stored(
-    row_id: str,
-    content: str | None,
-    valid_at: datetime | None,
-    scope_key: str,
-) -> Episode:
-    return Episode(
-        id=row_id,
-        content=content or "",
-        valid_at=valid_at.strftime("%Y-%m-%d %H:%M:%S") if valid_at else "",
-        scope_key=scope_key,
-        embedding=[],
-    )
-
-
-async def _parallel_document_sources(scope_keys: list[str]) -> int:
-    """至少两份不同标题才值得扫正文。数据库失败记日志并当作没有。"""
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import episode_source_key, is_ingested_document_episode
-
-    seen: set[str] = set()
-    for sk in scope_keys:
-        try:
-            heads = await AIMemEpisode.list_ingested_document_heads(sk, limit=4000)
-        except (OSError, RuntimeError, SQLAlchemyError) as exc:
-            logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
-            return 0
-        for snippet in heads:
-            if not is_ingested_document_episode(snippet):
-                continue
-            key = episode_source_key(snippet)
-            if key:
-                seen.add(key)
-            if len(seen) >= 2:
-                return len(seen)
-    return len(seen)
-
-
-async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Episode]:
-    """比较题按 scope 把每份入库文档的重叠段摘出来。失败则退回原检索。"""
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        DOC_COVER_EXTRACT_BUDGET,
-        cover_document_excerpts,
-        has_document_coverage_tokens,
-    )
-
-    if await _parallel_document_sources(scope_keys) < 2:
-        return []
-    if not has_document_coverage_tokens(query):
-        return []
-    pool: list[Episode] = []
-    for sk in scope_keys:
-        try:
-            rows = await AIMemEpisode.list_ingested_documents(sk, limit=12000)
-        except (OSError, RuntimeError, SQLAlchemyError) as exc:
-            logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
-            return []
-        for row in rows:
-            pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
-    if not pool:
-        return []
-    return cover_document_excerpts(pool, query, char_budget=DOC_COVER_EXTRACT_BUDGET)
-
-
-async def _expand_document_siblings(hits: list[Episode], scope_keys: list[str]) -> list[Episode]:
-    """向量命中某篇入库文档后，按标题把同文档其余块拉回来。"""
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        episode_source_key,
-        is_ingested_document_episode,
-        merge_document_sibling_episodes,
-    )
-
-    titles: list[str] = []
-    seen_titles: set[str] = set()
-    for ep in hits:
-        raw = ep["content"] or ""
-        if not is_ingested_document_episode(raw):
-            continue
-        key = episode_source_key(raw)
-        if not key or key in seen_titles:
-            continue
-        seen_titles.add(key)
-        titles.append(key)
-        if len(titles) >= 8:
-            break
-    if not titles or not scope_keys:
-        return hits
-    pool: list[Episode] = []
-    for sk in scope_keys:
-        for title in titles:
-            try:
-                rows = await AIMemEpisode.list_document_chunks(sk, title, limit=40)
-            except (OSError, RuntimeError, SQLAlchemyError) as exc:
-                logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
-                return hits
-            for row in rows:
-                pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
-    if not pool:
-        return hits
-    return merge_document_sibling_episodes(hits, pool)
+def _edge_stamp(edge: Edge) -> str:
+    stamp = coalesce_ts(edge)
+    if stamp <= 0 or stamp > _TS_MAX:
+        return ""
+    return f" · {datetime.fromtimestamp(stamp).strftime('%Y-%m-%d')}"
 
 
 @dataclass
 class MemoryContext:
-    """双路检索的最终输出，直接注入 Prompt"""
-
     episodes: list[Episode] = field(default_factory=list)
     entities: list[Entity] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     events: list[MemoryEventCue] = field(default_factory=list)
     categories: list[Category] = field(default_factory=list)
-    # C11 矛盾提示：命中边对应的 AIMemConflict 摘要。旧矛盾边已被软删除、检索不可见，
-    # 注入摘要让 Agent 知道该事实历史上存在相反陈述（应指出矛盾而非武断单侧结论）。
     conflicts: list[str] = field(default_factory=list)
-    # 程序性/偏好记忆规则（置顶注入，字段契约见 PreferencePrompt）。
     preferences: list[PreferencePrompt] = field(default_factory=list)
     retrieval_meta: RetrievalMeta = field(
         default_factory=lambda: RetrievalMeta(s1_episodes=0, s2_episodes=0, scope_keys=[])
     )
-    retrieval_paths: list[list[dict]] = field(default_factory=list)  # System-2 检索路径
-    # 时间范围检索命中标记：query 含显式日期范围时置 True。此时问题是枚举/时序型，
-    # 时间线证据在 episodes 里，注入预算向片段倾斜（事实占比 55% → 30%）。
+    retrieval_paths: list[list[dict[str, object]]] = field(default_factory=list)
+    threads: list[ThreadSummary] = field(default_factory=list)
     temporal_mode: bool = False
     time_range: Optional[tuple[datetime, datetime]] = None
-    # 评测：dual_route 向量序的前若干条 id，会话排序时压过泛词 LIKE。
     seed_ids: list[str] = field(default_factory=list)
-    # 评测：会话级向量分（episode id → cosine），主证据会话用这个排，不靠 seed 条数。
     session_scores: dict[str, float] = field(default_factory=dict)
     low_evidence: bool = False
-    # C2：主题 rerank 后的 N 条阶段；A2 分段指标用。
     order_stages: list[Episode] = field(default_factory=list)
     pool_ids: list[str] = field(default_factory=list)
     inject_ids: list[str] = field(default_factory=list)
     skeleton_ids: list[str] = field(default_factory=list)
-    # 本轮真的打出了逐份材料覆盖摘录（每份入库文档各留一行）。预算按这个事实放宽，
-    # 不按问句措辞判断——问句没点名「报告/文档」时措辞门会漏，而摘录已经算出来了。
     covered: bool = False
-    # cover 产出的 episode id；注入时与 S1 指标命中分预算，避免均分把栏目摘录削没。
     cover_ids: frozenset[str] = field(default_factory=frozenset)
-    # 群聊钉本人的后一次赋值；私聊留空，scope 已经是这个用户。
     asker_id: str = ""
-    # 问句话题上带数字/日期的原句。单独占预算，邻近片段不能把它截掉。
     reserved_episodes: list[Episode] = field(default_factory=list)
+    memory_intent: MemoryIntent = "point_latest"
 
     def to_prompt_text(
         self,
@@ -433,26 +196,11 @@ class MemoryContext:
         query: str = "",
         wrap_recall: bool = True,
         now: datetime | None = None,
+        memory_intent: str | None = None,
     ) -> str:
-        """格式化为可注入 System Prompt 的记忆上下文文本。
-
-        总帽由调用方经 ``inject_memory_cap`` 定好（无默认值：写过默认值就等于第二个总帽）。
-        帽内按"信息密度"分配：偏好独立占 ``preference_inject_budget_ratio``，核心事实
-        时间线模式 15%、否则 55%，陈述不一致 12%，语义类目 15%，对话片段吃掉用剩的全部。
-
-        每个区块在自己的预算内逐条累加，超预算即停止，避免低价值内容挤占空间。
-
-        Args:
-            max_chars: 注入预算字符数
-            priority_speakers: C4 预算优先级——这些发言者（如主人）相关的 edge
-                会被稳定上浮到核心事实区块最前，优先占用预算。
-            current_speaker_ids: 当前说话人的标识集合（user_id/昵称）。§7 第三方隐私
-                拦截为**默认拒绝**：不传（后台/工具路径）时敏感类目一律不注入，
-                只有敏感事实主语含说话人标识才放行（评审修复 F7）。
-        """
+        intent = memory_intent or self.memory_intent
 
         def _take(items: list[str], budget: int) -> list[str]:
-            """在字符预算内尽量多地累加条目。"""
             out: list[str] = []
             used = 0
             for line in items:
@@ -463,7 +211,6 @@ class MemoryContext:
             return out
 
         def _take_even(items: list[str], budget: int) -> list[str]:
-            """逐份材料都要出场时用：先均分额度再削长行，避免先到先得把后面来源挤掉。"""
             if not items:
                 return []
             if sum(len(x) for x in items) <= budget:
@@ -480,7 +227,6 @@ class MemoryContext:
             return out
 
         def _take_head_tail(items: list[str], budget: int) -> list[str]:
-            """全历程注入：头尾交替占预算，避免只留下开头几天。"""
             n = len(items)
             if n == 0:
                 return []
@@ -521,19 +267,24 @@ class MemoryContext:
 
         if self.low_evidence:
             parts.append("【检索提示】记忆中没有与该问题直接相关的证据。")
+
         if self.events:
-            if looks_like_order_query(query) or looks_like_summary_query(query) or looks_like_span_query(query):
+            if (
+                intent in ("timeline_order", "broad_summary")
+                or looks_like_order_query(query)
+                or looks_like_summary_query(query)
+                or looks_like_span_query(query)
+            ):
                 ev_lines: list[str] = []
                 for ev in self.events[:16]:
                     src = ev["source"] if "source" in ev else ""
-                    if src != "llm":
+                    if src not in ("llm", "milestone"):
                         continue
                     stamp = (ev["stated_at"] or ev["event_at"] or "")[:10]
                     ev_lines.append(f"{len(ev_lines) + 1}. {stamp} · {ev['summary']}")
                 if ev_lines:
                     parts.append(_speech("【事件线索】\n" + "\n".join(ev_lines)))
 
-        # 程序性与偏好规则置顶强约束注入，优先占用独立预算。
         if self.preferences:
             pref_budget = int(max_chars * memory_config.preference_inject_budget_ratio)
             pref_lines: list[str] = []
@@ -547,60 +298,50 @@ class MemoryContext:
                 pref_lines.append(f"• {tag}{rule}{mark}")
             taken = _take(pref_lines, pref_budget)
             if taken:
-                # 仲裁语按字面最小范围理解，避免模型无条件扩散适用面。
                 pref_block = (
                     "【用户偏好/纠错 - 须严格遵守】"
                     "（各规则按其触发条件适用；未写明条件的按字面最小范围理解，不扩大化）\n" + "\n".join(taken)
                 )
 
-        # 时间线压到 15%，把预算留给按日用户开场。
         if self.edges:
-            fact_budget = int(max_chars * (0.15 if self.temporal_mode else 0.55))
-            edges = self.edges[: memory_config.search_edge_count]
+            fact_budget = int(max_chars * (0.15 if intent == "timeline_order" else 0.55))
+            edges = list(self.edges[: memory_config.search_edge_count])
 
-            # C4 预算优先级：主人 edge 稳定上浮；A-5 降噪：事件型 trivia 下沉，
-            # 让高价值实体/关系事实优先占用注入预算（stable sort 不打乱 rerank 内部序）。
-            def _edge_rank(e: Edge) -> tuple[int, int]:
+            def _edge_rank(e: Edge) -> tuple[int, int, float]:
                 is_priority = 0 if (priority_speakers and e["source_name"] in priority_speakers) else 1
                 is_trivia = 1 if _TRIVIA_FACT_RE.search(e["fact"] or "") else 0
-                return (is_priority, is_trivia)
+                return (is_priority, is_trivia, -coalesce_ts(e))
 
-            edges = sorted(edges, key=_edge_rank)
+            if intent == "timeline_order":
+                edges.sort(key=coalesce_ts)
+            elif intent == "version_diff":
+                edges.sort(key=lambda e: e["valid_at_ts"] or 0.0)
+            else:
+                edges.sort(key=_edge_rank)
 
-            # C11 注入期矛盾兜底：同 (src,tgt) 命中边极性相反时双方标 ⚠️，
-            # 补摄入期矛盾引擎对共存矛盾边（旧数据/跨窗口）的漏检。
-            from gsuid_core.ai_core.memory.ingestion.edge import _fact_polarity
+            conflict = any(("resolution_state" in e and e["resolution_state"] == "contradicted") for e in edges)
+            staging = any(("resolution_state" in e and e["resolution_state"] == "staging") for e in edges)
 
-            _pair_pol: dict[tuple, set] = {}
-            for e in edges:
-                key = (e["source_id"], e["target_id"])
-                _pair_pol.setdefault(key, set()).add(_fact_polarity(e["fact"] or ""))
-            conflicted_pairs = {k for k, v in _pair_pol.items() if len(v) > 1}
-
-            # C11 后置拦截器：按 fact 归一化签名去重，避免近义重复事实挤占注入预算
-            fact_lines: list[str] = []
-            seen_facts: set = set()
-            now_ts = time.time()
-            _extra_sensitive = _get_sensitive_extra_terms()
             from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_latest_slot_query
             from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_revision_query
 
-            keep_versions = looks_like_revision_query(query) or looks_like_latest_slot_query(query)
-            for e in edges:
-                # 默认过滤已失效边；KU/CR 保留全版本。
+            keep_versions = (
+                intent == "version_diff" or looks_like_revision_query(query) or looks_like_latest_slot_query(query)
+            )
+            now_ts = time.time()
+            _extra_sensitive = _get_sensitive_extra_terms()
+            fact_lines: list[str] = []
+            seen_facts: set[str] = set()
+
+            for i, e in enumerate(edges, start=1):
                 invalid_at = e["invalid_at_ts"]
                 if invalid_at and invalid_at < now_ts and not keep_versions:
                     continue
                 if e["weight"] < memory_config.min_edge_weight:
                     continue
                 fact = _complete_fact_subject(e["fact"], e["source_name"])
-                if not fact:
+                if not fact or _DANGLING_FACT_RE.search(fact):
                     continue
-                # §6 残句拦截：悬空谓语结尾（"用户X提到"）零信息量，不进注入预算
-                if _DANGLING_FACT_RE.search(fact):
-                    continue
-                # §7 第三方隐私默认拒绝：敏感事实仅当事人在场才注入；未传 speaker
-                # 的路径（后台/工具）一律拦截，防调用点遗漏成为旁路（评审修复 F7）
                 if _sensitive_fact_hit(fact, _extra_sensitive) and not (
                     current_speaker_ids and _fact_mentions_speaker(e, current_speaker_ids)
                 ):
@@ -609,34 +350,42 @@ class MemoryContext:
                 if sig in seen_facts:
                     continue
                 seen_facts.add(sig)
-                # 身份/称呼类事实极易抽错，加"待证"标注，避免被当成铁证盲信
+
+                state = e["resolution_state"] if "resolution_state" in e else "active"
+                mark = ""
+                if state == "contradicted":
+                    mark = "⚠️[存在未消解矛盾] "
+                elif state == "staging":
+                    mark = "[待证实传闻] "
+                elif state == "superseded" and intent == "version_diff":
+                    mark = "[已于后续更新] "
+
                 _id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
-                # 带上事实的记录日期：同一属性多次更新时取最新值，
-                # 没有时间戳时多值冲突的 edge 无从排序。
                 _dt = _edge_date_prefix(e)
-                _cf = "⚠️[与其他陈述矛盾] " if (e["source_id"], e["target_id"]) in conflicted_pairs else ""
-                fact_lines.append(f"• {_dt}{_cf}{'（记忆·待证）' if _id else ''}{fact}")
-                # §25(4) 条数硬上限（可配 fact_max_inject，与字符预算双限取严）：
-                # 够数即停，剩余 edge 不再白做加工（评审修复 E17/F7-cfg）
+                id_tag = "（记忆·待证）" if _id else ""
+                fact_lines.append(f"• [记录 #{i}{_edge_stamp(e)}] {_dt}{mark}{id_tag}{fact}")
                 if len(fact_lines) >= memory_config.fact_max_inject:
                     break
+
             taken = _take(fact_lines, fact_budget)
             if taken:
-                parts.append(_speech("【核心事实 - 与当前问题相关】\n" + "\n".join(taken)))
+                header = "【核心事实 - 与当前问题相关】"
+                if intent == "timeline_order":
+                    header += MEMORY_TIMELINE_ORDER_NOTE
+                if conflict:
+                    header += MEMORY_CONFLICT_NOTE
+                if staging:
+                    header += MEMORY_STAGING_NOTE
+                parts.append(_speech(header + "\n" + "\n".join(taken)))
 
-        # C11 矛盾提示：紧跟核心事实。历史上有过相反陈述的事实，Agent 应指出矛盾
-        # 并请用户澄清，而不是把（可能是误抽的）单侧最新值当作定论。
         if self.conflicts:
             conf_lines = [f"• {s[:300]}" for s in self.conflicts[:6]]
             taken = _take(conf_lines, int(max_chars * 0.12))
             if taken:
                 parts.append("【陈述不一致】\n" + "\n".join(taken))
 
-        # 语义类目摘要（话题大纲）
         if self.categories:
-            cats = self.categories
-            if query:
-                cats = [c for c in cats if c["name"] and c["name"] in query]
+            cats = [c for c in self.categories if (not query or (c["name"] and c["name"] in query))]
             if cats:
                 cat_budget = int(max_chars * 0.15)
                 sorted_cats = sorted(cats, key=lambda c: c["layer"], reverse=True)
@@ -645,10 +394,7 @@ class MemoryContext:
                 if taken:
                     parts.append("【语义类目摘要】\n" + "\n".join(taken))
 
-        # 对话片段（Episode）消耗剩余预算，保证无图谱时召回充分。
         if self.episodes:
-            # 预算须扣除偏好块与 untrusted 栅栏开销，否则终装配必超 max_chars、
-            # 闭合标签被尾截断切掉（评审修复 F9）
             _pref_used = (len(pref_block) + 2) if pref_block else 0
             used = sum(len(p) for p in parts) + 2 * len(parts) + _pref_used + _UNTRUSTED_WRAP_OVERHEAD
             ep_budget = max_chars - used
@@ -661,6 +407,7 @@ class MemoryContext:
                     looks_like_sum_query,
                     looks_like_count_query,
                     apply_query_episode_pack,
+                    looks_like_compare_query,
                     collapse_document_episodes,
                     looks_like_attribute_query,
                     is_ingested_document_episode,
@@ -672,14 +419,19 @@ class MemoryContext:
                     looks_like_duration_query,
                 )
 
-                # 全历程题（排序/摘要/时间线）本就不注入 SELF / 近期续聊，预算全给历史片段。
                 cross_session = (
-                    looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query)
+                    intent in ("timeline_order", "broad_summary")
+                    or looks_like_order_query(query)
+                    or looks_like_span_query(query)
+                    or looks_like_summary_query(query)
+                    or looks_like_count_query(query)
+                    or looks_like_sum_query(query)
+                    or looks_like_compare_query(query)
                 )
-                eps = self.episodes
+                eps = list(self.episodes)
                 self_eps = [e for e in eps if (e["scope_key"] or "").startswith("self:")]
                 other_eps = [e for e in eps if not (e["scope_key"] or "").startswith("self:")]
-                # SELF 配额 ≤10%。近 2h 用本轮时钟；缺省才是墙钟。未来时间不算近期。
+
                 clock = now if now is not None else datetime.now()
                 recent_self: list[Episode] = []
                 old_self: list[Episode] = []
@@ -687,26 +439,23 @@ class MemoryContext:
                     ts_raw = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
                     recent = False
                     if ts_raw:
-                        try:
-                            ts = datetime.strptime(ts_raw, "%Y-%m-%d %H:%M:%S")
-                        except ValueError:
+                        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
                             try:
-                                ts = datetime.strptime(ts_raw, "%Y-%m-%d %H:%M")
+                                ts = datetime.strptime(ts_raw, fmt)
+                                recent = 0 <= (clock - ts).total_seconds() <= 2 * 3600
+                                break
                             except ValueError:
-                                ts = None
-                        if ts is not None:
-                            delta = (clock - ts).total_seconds()
-                            recent = 0 <= delta <= 2 * 3600
+                                pass
                     if recent:
                         recent_self.append(ep)
                     else:
                         old_self.append(ep)
+
                 self_budget = 0 if cross_session else min(int(max_chars * 0.10), max(0, ep_budget // 5))
                 recent_budget = 0 if cross_session else min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
-                ep_cap = 480 if self.temporal_mode else 1000
+                ep_cap = 480 if (self.temporal_mode or intent == "timeline_order") else 1000
                 parallel_q = wants_parallel_document_coverage(query) or self.covered
-                # 覆盖是逐份材料按行摘的：不给单条再设帽，总帽本来就装不下第二条。
                 doc_cap = max_chars if parallel_q else (12000 if looks_like_set_query(query) else max(ep_cap, 2400))
 
                 def _assistant_turn(raw: str) -> bool:
@@ -730,7 +479,6 @@ class MemoryContext:
                         prefix = "[我此前说过] " if self_mark else ""
                         shown = raw[:ep_cap]
                         if is_ingested_document_episode(raw):
-                            # 入库时刻不是报告期，标上去会把多份材料当成同一条的更新。
                             undated.append(f"{prefix}{raw[:doc_cap]}")
                             continue
                         if is_session_read(ep):
@@ -746,10 +494,10 @@ class MemoryContext:
                             shown = excerpt_around_ordinal(raw, query, max(ep_cap, 900))
                             if not shown:
                                 shown = excerpt_keep_numbers(raw, ep_cap)
-                        if looks_like_summary_query(query):
+                        if (looks_like_summary_query(query) or intent == "broad_summary") and _assistant_turn(raw):
                             from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_around_tokens
 
-                            shown = excerpt_around_tokens(raw, query, 480)
+                            shown = excerpt_around_tokens(raw, query, 480) or shown
                         ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
                         if ts:
                             stamp = f"[{ts}] "
@@ -772,19 +520,19 @@ class MemoryContext:
                         dt = parse_episode_valid_at(ep["valid_at"] or "")
                         return dt is not None and _t0 <= dt < _t1
 
-                    other_eps = [e for e in other_eps if _in_win(e)]
+                    # 窗内优先前置，窗外后置保底，避免时间窗预估偏差导致证据硬丢失
+                    other_eps = [e for e in other_eps if _in_win(e)] + [e for e in other_eps if not _in_win(e)]
+
                 if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
-                    ep_cap = 240
+                    ep_cap = max(ep_cap, 4800)
                 haystack = list(other_eps)
+
                 if self.covered:
-                    # 检索侧已 cover；再 pack 会重切摘录并被均分额度削短。
                     packed = list(haystack)
                     cover_first = [ep for ep in packed if "id" in ep and str(ep["id"]) in self.cover_ids]
                     rest_pack = [ep for ep in packed if "id" not in ep or str(ep["id"]) not in self.cover_ids]
-                    # 来源清单无【文档】头，不能按 ingested 过滤，否则清单沉底被挤掉。
                     packed = cover_first + rest_pack
                 else:
-                    # 宽档（跨会话 / 集合题 / 逐份覆盖）不额外再压一次：总帽已经收过。
                     wide_pack = cross_session or looks_like_set_query(query) or parallel_q
                     pack_cap = max_chars if wide_pack else _POINT_LOOKUP_EP_BUDGET
                     packed = apply_query_episode_pack(
@@ -794,14 +542,17 @@ class MemoryContext:
                         time_range=self.time_range,
                         char_budget=min(other_budget, pack_cap),
                         asker_id=self.asker_id,
+                        memory_intent=intent,
                     )
+
                 if looks_like_set_query(query):
                     packed = collapse_document_episodes(packed)
                 if cross_session:
                     packed = packed[:60]
-                if looks_like_order_query(query) or looks_like_summary_query(query):
-                    packed = sorted(packed, key=lambda e: e["valid_at"] if "valid_at" in e else "")
-                if looks_like_order_query(query):
+                if looks_like_order_query(query) or looks_like_summary_query(query) or intent == "timeline_order":
+                    packed = sorted(packed, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+
+                if looks_like_order_query(query) or intent == "timeline_order":
                     from gsuid_core.ai_core.memory.retrieval.lexical import (
                         pack_order_dialogue,
                         format_order_skeleton,
@@ -825,10 +576,13 @@ class MemoryContext:
                     if lead:
                         packed = lead + [ep for ep in packed if not is_fact_sheet(ep)]
                     self.inject_ids = [e["id"] for e in packed if "id" in e]
+
                 if not self.inject_ids:
                     self.inject_ids = [e["id"] for e in packed if "id" in e]
+
                 user_eps = [e for e in packed if not _assistant_turn(e["content"] or "")]
                 asst_eps = [e for e in packed if _assistant_turn(e["content"] or "")]
+
                 if (
                     self.reserved_episodes
                     and looks_like_attribute_query(query)
@@ -845,16 +599,36 @@ class MemoryContext:
                         other_budget = max(0, other_budget - len(reserved_block) - 2)
                         reserved_ids = {ep["id"] for ep in self.reserved_episodes if "id" in ep}
                         user_eps = [ep for ep in user_eps if "id" not in ep or ep["id"] not in reserved_ids]
+
                 timeline_q = (
                     looks_like_span_query(query) or looks_like_duration_query(query) or looks_like_summary_query(query)
                 )
-                if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
+
+                if (
+                    intent == "timeline_order"
+                    or looks_like_order_query(query)
+                    or looks_like_span_query(query)
+                    or looks_like_summary_query(query)
+                ):
                     taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), other_budget)
                 elif self.temporal_mode:
                     taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
-                elif not self.covered and (looks_like_count_query(query) or looks_like_latest_slot_query(query)):
-                    # 覆盖均分时不能走点查帽：latest_slot 命中后 _take 先到先得，只留前几份。
-                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET))
+                elif not self.covered and (
+                    looks_like_count_query(query)
+                    or looks_like_sum_query(query)
+                    or looks_like_compare_query(query)
+                    or looks_like_latest_slot_query(query)
+                ):
+                    count_budget = (
+                        other_budget
+                        if (
+                            looks_like_count_query(query)
+                            or looks_like_sum_query(query)
+                            or looks_like_compare_query(query)
+                        )
+                        else min(other_budget, _POINT_LOOKUP_EP_BUDGET)
+                    )
+                    taken = _take(_ep_lines(user_eps, self_mark=False), count_budget)
                 elif looks_like_duration_query(query) and not self.covered:
                     taken = _take_head_tail(
                         _ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET)
@@ -864,7 +638,6 @@ class MemoryContext:
                 else:
                     _ep_taken = _ep_lines(user_eps, self_mark=False)
                     if self.covered and self.cover_ids:
-                        # cover 先均分出场；吃不完的预算全给 S1 指标命中，尽量把证据塞满。
                         cover_eps = [ep for ep in user_eps if "id" in ep and str(ep["id"]) in self.cover_ids]
                         rest_eps = [ep for ep in user_eps if "id" not in ep or str(ep["id"]) not in self.cover_ids]
                         if cover_eps:
@@ -874,7 +647,6 @@ class MemoryContext:
                         else:
                             taken_other = _take_even(_ep_taken, other_budget)
                     else:
-                        # 逐份材料覆盖：均分预算让每份都出场，别让长文档吃掉后面的来源。
                         _picker = _take_even if self.covered else _take
                         taken_other = _picker(_ep_taken, other_budget)
                     rest = other_budget - sum(len(x) for x in taken_other)
@@ -883,64 +655,44 @@ class MemoryContext:
                     taken_recent = _take(_ep_lines(recent_self, self_mark=True), recent_budget)
                     taken_self = _take(_ep_lines(old_self, self_mark=True), min(self_budget, 400))
                     taken = taken_other + taken_recent + taken_self
-                if taken:
-                    parts.append(_speech("【相关对话片段】\n" + "\n".join(taken)))
 
-        # §8 注入防线对齐：偏好保持裸注入可执行（写入端有闸）；其余召回统一 untrusted
-        # 栅栏——复用 content_guard.wrap_untrusted，栅栏格式全通道唯一定义（评审修复 F9）。
+                if taken:
+                    ep_header = "【相关对话片段】"
+                    if intent == "timeline_order":
+                        ep_header += MEMORY_TIMELINE_ORDER_NOTE
+                    parts.append(_speech(ep_header + "\n" + "\n".join(taken)))
+
         blocks: list[str] = [pref_block] if pref_block else []
         if parts:
             recall_text = "\n\n".join(parts)
-            # 截断在包装**之前**并预留栅栏开销：</untrusted> 永不被尾截断切掉——
-            # 不闭合的栅栏会把其后的正常上下文拖进"不可信"语义区（评审修复 F9）
-            _marker = "\n...[记忆已截断]"
-            _budget = max_chars - ((len(pref_block) + 2) if pref_block else 0) - _UNTRUSTED_WRAP_OVERHEAD
-            if _budget <= len(_marker):
+            marker = "\n...[记忆已截断]"
+            budget = max_chars - (len(pref_block) + 2 if pref_block else 0) - _UNTRUSTED_WRAP_OVERHEAD
+            if budget <= len(marker):
                 recall_text = ""
-            elif len(recall_text) > _budget:
-                recall_text = recall_text[: _budget - len(_marker)] + _marker
+            elif len(recall_text) > budget:
+                recall_text = recall_text[: budget - len(marker)] + marker
             if recall_text:
-                if wrap_recall:
-                    blocks.append(wrap_untrusted("memory_recall", recall_text))
-                else:
-                    blocks.append(recall_text)
+                blocks.append(wrap_untrusted("memory_recall", recall_text) if wrap_recall else recall_text)
         return "\n\n".join(blocks)
 
 
-def _merge_episodes(list_a: Sequence[Episode], list_b: Sequence[Episode]) -> list[Episode]:
-    """合并两个 Episode 列表，按 id 去重。"""
-    seen: dict[str, Episode] = {}
-    for item in list(list_a) + list(list_b):
-        seen[item["id"]] = item
-    return list(seen.values())
+def _on_pref_task_done(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(i18n_t("log.memory.background_task_refreshing_preference", exc=exc))
 
 
-def _merge_entities(list_a: Sequence[Entity], list_b: Sequence[Entity]) -> list[Entity]:
-    """合并两个 Entity 列表，按 id 去重。"""
-    seen: dict[str, Entity] = {}
-    for item in list(list_a) + list(list_b):
-        seen[item["id"]] = item
-    return list(seen.values())
-
-
-def _merge_edges(list_a: Sequence[Edge], list_b: Sequence[Edge]) -> list[Edge]:
-    """合并两个 Edge 列表，按 id 去重。"""
-    seen: dict[str, Edge] = {}
-    for item in list(list_a) + list(list_b):
-        seen[item["id"]] = item
-    return list(seen.values())
-
-
-def _merge_categories(list_a: Sequence[Category], list_b: Sequence[Category]) -> list[Category]:
-    """合并两个 Category 列表，按 id 去重。"""
-    seen: dict[str, Category] = {}
-    for item in list(list_a) + list(list_b):
-        seen[item["id"]] = item
-    return list(seen.values())
+async def _run_sync_rerank(reranker: RerankerProvider, query: str, texts: list[str]) -> list[float]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _RERANK_EXECUTOR,
+        lambda: list(reranker.rerank(query, texts)),
+    )
 
 
 async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list[Episode]:
-    """对 Episode 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
     if not items:
         return []
     reranker = get_reranker()
@@ -949,14 +701,386 @@ async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list
     texts = [item["content"] for item in items]
     scores = list(await _run_sync_rerank(reranker, query, texts))
     if len(scores) != len(items):
-        logger.warning(i18n_t("log.memory.reranker_scores_length_mismatch"))
         return items[:top_k]
     ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:top_k]]
 
 
+async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[Entity]:
+    if not items:
+        return []
+    reranker = get_reranker()
+    if reranker is None:
+        return items[:top_k]
+    texts = [item["summary"] for item in items]
+    scores = list(await _run_sync_rerank(reranker, query, texts))
+    if len(scores) != len(items):
+        return items[:top_k]
+    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
+    return [item for _, item in ranked[:top_k]]
+
+
+async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]:
+    if not items:
+        return []
+    reranker = get_reranker()
+    if reranker is None:
+        return items[:top_k]
+    texts = [item["fact"] for item in items]
+    scores = list(await _run_sync_rerank(reranker, query, texts))
+    if len(scores) != len(items):
+        return items[:top_k]
+    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
+    kept: list[Edge] = []
+    for score, item in ranked[:top_k]:
+        item["score"] = score
+        if score < memory_config.min_edge_rerank_score:
+            continue
+        kept.append(item)
+    return kept
+
+
+def _merge_episodes(*lists: Sequence[Episode]) -> list[Episode]:
+    seen: dict[str, Episode] = {}
+    for items in lists:
+        for item in items:
+            seen[item["id"]] = item
+    return list(seen.values())
+
+
+def _merge_edges(*lists: Sequence[Edge]) -> list[Edge]:
+    seen: dict[str, Edge] = {}
+    for items in lists:
+        for item in items:
+            seen[item["id"]] = item
+    return list(seen.values())
+
+
+async def _fts_episodes(query: str, scope_keys: list[str], limit: int) -> list[Episode]:
+    from gsuid_core.ai_core.memory.database.fts import match_episode_ids
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+
+    ids = await match_episode_ids(scope_keys, query_tokens(query), limit)
+    if not ids:
+        return []
+    out: list[Episode] = []
+    for eid in ids:
+        row = await AIMemEpisode.get_one(eid)
+        if row is None:
+            continue
+        out.append(
+            {
+                "id": row.id,
+                "content": row.content,
+                "valid_at": str(row.valid_at),
+                "scope_key": row.scope_key,
+                "embedding": [],
+                "session_id": row.session_id or "",
+                "thread_id": row.thread_id or "",
+                "turn_index": row.turn_index,
+            }
+        )
+    return out
+
+
+def _edge_to_typed(row: object, names: dict[str, str]) -> Edge | None:
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+    if not isinstance(row, AIMemEdge):
+        return None
+    return {
+        "id": row.id,
+        "source_id": row.source_entity_id,
+        "target_id": row.target_entity_id,
+        "source_name": names[row.source_entity_id] if row.source_entity_id in names else "",
+        "target_name": names[row.target_entity_id] if row.target_entity_id in names else "",
+        "fact": row.fact,
+        "weight": 1.0,
+        "score": 0.0,
+        "valid_at_ts": row.valid_at.timestamp() if row.valid_at else None,
+        "invalid_at_ts": row.invalid_at.timestamp() if row.invalid_at else None,
+        "expired_at_ts": row.expired_at.timestamp() if row.expired_at else None,
+        "edge_kind": row.edge_kind,
+        "slot_key": row.slot_key,
+        "resolution_state": row.resolution_state,
+        "superseded_by_id": row.superseded_by_id,
+        "contradicts_edge_id": row.contradicts_edge_id,
+        "provenance_tier": "transcribed" if row.resolution_state == "staging" else "self",
+        "event_at_ts": row.event_at.timestamp() if row.event_at else None,
+    }
+
+
+async def _refresh_edges_from_db(edges: list[Edge], scope_keys: list[str]) -> list[Edge]:
+    from sqlmodel import col, select
+
+    from gsuid_core.utils.database.base_models import async_maker
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity
+
+    if not edges:
+        return edges
+    ids = [e["id"] for e in edges if e["id"]]
+    async with async_maker() as session:
+        result = await session.execute(select(AIMemEdge).where(col(AIMemEdge.id).in_(ids)))
+        rows = list(result.scalars().all())
+    names = await AIMemEntity.get_names_by_ids(
+        list({r.source_entity_id for r in rows} | {r.target_entity_id for r in rows})
+    )
+    by_id: dict[str, Edge] = {}
+    for row in rows:
+        typed = _edge_to_typed(row, names)
+        if typed is not None:
+            by_id[row.id] = typed
+    refreshed = [by_id[e["id"]] if e["id"] in by_id else e for e in edges]
+
+    source_ids = list({e["source_id"] for e in refreshed if e["source_id"]})
+    extra: list[Edge] = []
+    have = {e["id"] for e in refreshed}
+    for sk in scope_keys:
+        for row in await AIMemEdge.get_for_entities(source_ids, sk, limit=60):
+            if row.id in have:
+                continue
+            typed = _edge_to_typed(row, names)
+            if typed is not None:
+                extra.append(typed)
+    return extra + refreshed
+
+
+async def _apply_intent_edges(
+    intent: str,
+    ranked_edges: list[Edge],
+    scope_keys: list[str],
+    *,
+    clock_at: datetime | None,
+) -> list[Edge]:
+    del clock_at
+    if not scope_keys:
+        return ranked_edges
+    ranked_edges = await _refresh_edges_from_db(ranked_edges, scope_keys)
+    if intent == "point_latest":
+        filtered = [
+            e
+            for e in ranked_edges
+            if ("resolution_state" not in e or e["resolution_state"] in ("active", "contradicted"))
+        ]
+        blocking: set[tuple[str, str]] = set()
+        for e in filtered:
+            state = e["resolution_state"] if "resolution_state" in e else "active"
+            slot = e["slot_key"] if "slot_key" in e else ""
+            if state == "active" and slot:
+                blocking.add((e["source_id"], slot))
+        return [
+            e
+            for e in filtered
+            if not (
+                ("resolution_state" in e and e["resolution_state"] == "staging")
+                and ("slot_key" in e and e["slot_key"])
+                and (e["source_id"], e["slot_key"]) in blocking
+            )
+        ]
+
+    if intent == "broad_summary":
+        return [e for e in ranked_edges if ("edge_kind" not in e or e["edge_kind"] in ("attribute", "relation"))]
+
+    if intent == "version_diff":
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        pairs = [(e["source_id"], e["target_id"]) for e in ranked_edges[:12]]
+        have = {e["id"] for e in ranked_edges}
+        edge_names: dict[str, str] = {}
+        for e in ranked_edges:
+            edge_names[e["source_id"]] = e["source_name"]
+            edge_names[e["target_id"]] = e["target_name"]
+        extra: list[Edge] = []
+        for sk in scope_keys:
+            for row in await AIMemEdge.list_pair_versions(sk, pairs, limit=60):
+                if row.id in have:
+                    continue
+                typed = _edge_to_typed(row, edge_names)
+                if typed is None:
+                    continue
+                extra.append(typed)
+                have.add(row.id)
+        return extra + ranked_edges
+
+    if intent == "timeline_order":
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
+
+        threads: list[tuple[str, str]] = []
+        for sk in scope_keys:
+            for th in await AIMemThread.list_active(sk, limit=20):
+                threads.append((sk, th.id))
+        extra_edges: list[Edge] = []
+        milestone_names: dict[str, str] = {}
+        for sk, thread_id in threads:
+            rows = await AIMemEdge.list_thread_milestones(sk, thread_id, limit=80, ascending=True)
+            entity_ids = list({r.source_entity_id for r in rows})
+            milestone_names.update(await AIMemEntity.get_names_by_ids(entity_ids))
+            have = {e["id"] for e in ranked_edges}
+            for row in rows:
+                if row.id in have:
+                    continue
+                typed = _edge_to_typed(row, milestone_names)
+                if typed is not None:
+                    extra_edges.append(typed)
+        merged = _merge_edges(extra_edges, ranked_edges)
+        merged.sort(key=coalesce_ts)
+        return merged
+    return ranked_edges
+
+
+def _episode_from_stored(
+    row_id: str,
+    content: str | None,
+    valid_at: datetime | None,
+    scope_key: str,
+) -> Episode:
+    return {
+        "id": row_id,
+        "content": content or "",
+        "valid_at": valid_at.strftime("%Y-%m-%d %H:%M:%S") if valid_at else "",
+        "scope_key": scope_key,
+        "embedding": [],
+        "session_id": "",
+        "turn_index": 0,
+    }
+
+
+async def _parallel_document_sources(scope_keys: list[str]) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import episode_source_key, is_ingested_document_episode
+
+    seen: set[str] = set()
+    for sk in scope_keys:
+        try:
+            heads = await AIMemEpisode.list_ingested_document_heads(sk, limit=4000)
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
+            logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
+            return 0
+        for snippet in heads:
+            if not is_ingested_document_episode(snippet):
+                continue
+            key = episode_source_key(snippet)
+            if key:
+                seen.add(key)
+            if len(seen) >= 2:
+                return len(seen)
+    return len(seen)
+
+
+async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Episode]:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        DOC_COVER_EXTRACT_BUDGET,
+        cover_document_excerpts,
+        has_document_coverage_tokens,
+    )
+
+    if await _parallel_document_sources(scope_keys) < 2:
+        return []
+    if not has_document_coverage_tokens(query):
+        return []
+    pool: list[Episode] = []
+    for sk in scope_keys:
+        try:
+            rows = await AIMemEpisode.list_ingested_documents(sk, limit=12000)
+        except (OSError, RuntimeError, SQLAlchemyError) as exc:
+            logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
+            return []
+        for row in rows:
+            pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
+    if not pool:
+        return []
+    return cover_document_excerpts(pool, query, char_budget=DOC_COVER_EXTRACT_BUDGET)
+
+
+async def _expand_document_siblings(hits: list[Episode], scope_keys: list[str]) -> list[Episode]:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        episode_source_key,
+        is_ingested_document_episode,
+        merge_document_sibling_episodes,
+    )
+
+    titles: list[str] = []
+    seen_titles: set[str] = set()
+    for ep in hits:
+        raw = ep["content"] or ""
+        if not is_ingested_document_episode(raw):
+            continue
+        key = episode_source_key(raw)
+        if not key or key in seen_titles:
+            continue
+        seen_titles.add(key)
+        titles.append(key)
+        if len(titles) >= 8:
+            break
+    if not titles or not scope_keys:
+        return hits
+    pool: list[Episode] = []
+    for sk in scope_keys:
+        for title in titles:
+            try:
+                rows = await AIMemEpisode.list_document_chunks(sk, title, limit=40)
+            except (OSError, RuntimeError, SQLAlchemyError) as exc:
+                logger.warning(i18n_t("log.memory.document_pool_load_failed", e=exc))
+                return hits
+            for row in rows:
+                pool.append(_episode_from_stored(row.id, row.content, row.valid_at, row.scope_key))
+    if not pool:
+        return hits
+    return merge_document_sibling_episodes(hits, pool)
+
+
+async def _fetch_temporal_episodes(
+    query: str,
+    scope_keys: list[str],
+    start: datetime,
+    end: datetime,
+    buckets: int = 6,
+    per_bucket: int = 8,
+) -> list[Episode]:
+    from gsuid_core.ai_core.memory.vector.ops import search_episodes_in_range
+
+    from .event_time import temporal_search_query
+
+    topic = temporal_search_query(query)
+    if len(topic) < 8:
+        return []
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    span = (end_ts - start_ts) / max(buckets, 1)
+
+    async def _one_bucket(i: int) -> list[Episode]:
+        try:
+            return await search_episodes_in_range(
+                topic,
+                scope_keys,
+                start_ts + i * span,
+                start_ts + (i + 1) * span,
+                top_k=per_bucket,
+            )
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug(i18n_t("log.memory.time_bucket_retrieval", i=i, e=e))
+            return []
+
+    results = await asyncio.gather(*[_one_bucket(i) for i in range(buckets)])
+    seen: dict[str, Episode] = {}
+    for eps in results:
+        for ep in eps:
+            seen[ep["id"]] = ep
+    merged = list(seen.values())
+    merged.sort(key=lambda ep: ep["valid_at"] or "")
+    return merged
+
+
 async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> list[Episode]:
-    """C2：对用户 turn 用主题短语 rerank，再聚类成恰好 N 条阶段。"""
     from gsuid_core.ai_core.memory.retrieval.lexical import (
         _embedding_map,
         _assistant_turn,
@@ -1010,48 +1134,29 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
     return pack_first_mention_episodes(pool, query, n)
 
 
-async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[Entity]:
-    """对 Entity 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）"""
-    if not items:
-        return []
-    reranker = get_reranker()
-    if reranker is None:
-        logger.warning(i18n_t("log.memory.reranker_unavailable"))
-        return items[:top_k]
-    texts = [item["summary"] for item in items]
-    scores = list(await _run_sync_rerank(reranker, query, texts))
-    if len(scores) != len(items):
-        logger.warning(i18n_t("log.memory.reranker_scores_length_mismatch"))
-        return items[:top_k]
-    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
-    return [item for _, item in ranked[:top_k]]
+def _rrf_fuse_episodes(
+    dense_eps: list[Episode],
+    fts_eps: list[Episode],
+    keep_assistant: bool,
+) -> list[Episode]:
+    from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn
 
-
-async def _rerank_edges(query: str, items: list[Edge], top_k: int) -> list[Edge]:
-    """对 Edge 列表进行 Rerank（OPT-01: 使用线程池避免阻塞）。
-
-    Reranker 分数即"事实与当前 query 的相关性"——把它回写进 ``item["score"]`` 供下游
-    使用，并按 ``min_edge_rerank_score`` 剔除完全无关的边（相关性轴，与 weight 置信度无关）。
-    无 Reranker 时没有相关性信号，仅做 top_k 截断、不过滤。
-    """
-    if not items:
-        return []
-    reranker = get_reranker()
-    if reranker is None:
-        return items[:top_k]
-    texts = [item["fact"] for item in items]
-    scores = list(await _run_sync_rerank(reranker, query, texts))
-    if len(scores) != len(items):
-        logger.warning(i18n_t("log.memory.reranker_scores_length_mismatch"))
-        return items[:top_k]
-    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
-    kept: list[Edge] = []
-    for score, item in ranked[:top_k]:
-        item["score"] = score  # 回写相关性分数，供注入阶段与日志排查使用
-        if score < memory_config.min_edge_rerank_score:
-            continue  # 相关性过滤：剔除被判为完全无关（负分/低分）的事实
-        kept.append(item)
-    return kept
+    scores: dict[str, float] = {}
+    ep_map: dict[str, Episode] = {}
+    for rank, ep in enumerate(dense_eps):
+        eid = ep["id"]
+        ep_map[eid] = ep
+        asst = _assistant_turn(ep["content"] or "")
+        mult = 0.8 if asst and not keep_assistant else 1.25
+        scores[eid] = scores.get(eid, 0.0) + (1.0 / (60.0 + rank)) * mult
+    for rank, ep in enumerate(fts_eps):
+        eid = ep["id"]
+        ep_map[eid] = ep
+        asst = _assistant_turn(ep["content"] or "")
+        mult = 0.8 if asst and not keep_assistant else 1.5
+        scores[eid] = scores.get(eid, 0.0) + (1.0 / (60.0 + rank)) * mult
+    sorted_eids = sorted(scores, key=lambda x: scores[x], reverse=True)
+    return [ep_map[eid] for eid in sorted_eids]
 
 
 async def dual_route_retrieve(
@@ -1068,41 +1173,27 @@ async def dual_route_retrieve(
     bot_self_id: str = "",
     include_self: bool = True,
     persona_name: str = "",
+    memory_intent: str = "point_latest",
+    clock_at: datetime | None = None,
 ) -> MemoryContext:
-    """双路检索主入口。在 handle_ai.py 中，AI 准备回复前调用此函数。
-
-    Args:
-        query:              用户的原始查询文本
-        group_id:           原始群组 ID（如 "789012"）；**私聊必须传 None**，回退成
-            user_id 只会去查一个空的幻影 ``group:{user_id}``，召回恒为 0
-        user_id:            触发用户的 ID（可选，用于联合用户全局记忆）
-        top_k:              最终返回的 Episode 数量上限
-        enable_system2:     是否启用 System-2 全局选择（成本较高）。**必填、无默认值**：
-            这里曾是 ``True`` 而生产配置默认关，不传的调用点（工具路径）一直在偷跑一条
-            更贵的图遍历。跨模块边界的语义性参数不许在函数签名里给默认值——
-            需要默认就在唯一的配置层给。
-        enable_user_global: 是否联合查询用户跨群画像
-        inject_preferences: 是否注入程序性/偏好规则（意图门：纯闲聊轮可传 False 整轮跳过）
-        preference_contexts: 选择性注入——本轮相关的能力域/工具名集合。``None`` = 不过滤
-            （注入全部活跃规则，旧行为）；传入列表（可为空）则启用过滤：纠错规则与 ``general``
-            通用规则永远注入，其余非纠错规则仅当 ``target_context`` 命中本集合时才注入，避免
-            无关工具规则挤占预算、分散工具调用注意力。
-    """
-    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
-
-    if wants_parallel_document_coverage(query):
-        top_k = max(int(top_k), 80)
+    del enable_system2
+    from gsuid_core.ai_core.memory.observer import pending_episodes_for_scopes
+    from gsuid_core.ai_core.memory.database.models import AIMemEntity, AIMemPreference
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        token_in_text,
+        looks_like_sum_query,
+        expand_lexical_recall,
+        looks_like_count_query,
+        expand_episode_neighbors,
+        looks_like_attribute_query,
+        should_keep_assistant_hits,
+        wants_parallel_document_coverage,
+    )
 
     scope_keys: list[str] = []
-    group_scope = None
     if group_id:
-        group_scope = make_scope_key(
-            ScopeType.GROUP,
-            group_id,
-        )
+        group_scope = make_scope_key(ScopeType.GROUP, group_id)
         scope_keys.append(group_scope)
-
-        # 别名展开：若 query 中出现群内别名，附加正式名称以提升记忆召回
         try:
             from gsuid_core.ai_core.memory.group_profile import (
                 get_term_mappings,
@@ -1112,373 +1203,21 @@ async def dual_route_retrieve(
             mappings = await get_term_mappings(group_scope)
             expanded = expand_query_with_aliases(query, mappings)
             if expanded != query:
-                logger.debug(
-                    i18n_t("log.memory.query_alias_expansion_expanded", query=repr(query), expanded=repr(expanded))
-                )
                 query = expanded
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.debug(i18n_t("log.memory.alias_expansion", e=e))
-
-    # 无群聊上下文时，user_global 为用户主 scope 须执行检索。
-    # 群聊时仅在开启 enable_user_global 时并入跨群画像。
     if user_id and (not group_id or enable_user_global):
-        user_scope = make_scope_key(
-            ScopeType.USER_GLOBAL,
-            user_id,
-        )
-        scope_keys.append(user_scope)
-    else:
-        user_scope = None
-
-    # SELF 只开读：key 必须是账号 ID（observer C6 写 self:{bot_self_id}:{persona}）。
-    self_key = bot_self_id.strip()
-    if include_self and self_key:
+        scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, user_id))
+    if include_self and bot_self_id.strip():
         from gsuid_core.ai_core.memory.scope import self_scope_read_keys
 
-        for self_scope in self_scope_read_keys(self_key, persona_name):
+        for self_scope in self_scope_read_keys(bot_self_id.strip(), persona_name):
             if self_scope not in scope_keys:
                 scope_keys.append(self_scope)
 
-    # RF-Mem 熟悉度路由：通过向量探针不确定性动态触发 System-2 深检索。
-    effective_enable_system2 = enable_system2
-    is_recollection_route = False
-    probe_vec: Optional[list[float]] = None
-    probe_mean: float | None = None
-    # 仅在 System-2 开启或回忆环可用时发送探针，节省无意义计算开销。
-    _probe_can_act = enable_system2 or (
-        memory_config.enable_recollection_path and memory_config.qdrant_provider == "remote"
-    )
-    if memory_config.enable_familiarity_routing and scope_keys and _probe_can_act:
-        from .familiarity import ROUTE_RECOLLECTION, probe_and_route
-
-        route, _signal, probe_vec = await probe_and_route(query, scope_keys)
-        is_recollection_route = route == ROUTE_RECOLLECTION
-        effective_enable_system2 = enable_system2 and is_recollection_route
-        if _signal is not None:
-            probe_mean = _signal.mean_score
-
-    # 时间范围补召回：query 显式含日期时按时间窗直查 Episode（与 S1/S2 并行），
-    # 解决枚举/时序类问题（"从X到Y依次…"）语义相似检索召回不足的问题。
-    time_range = _extract_time_range(query)
-    thread_cues: list[MemoryEventCue] = []
-    span_eps: list[Episode] = []
-    if (looks_like_order_query(query) or looks_like_summary_query(query)) and user_id and scope_keys:
-        from sqlalchemy.exc import SQLAlchemyError
-
-        from gsuid_core.ai_core.rag.qhttp import UnexpectedResponse, ResponseHandlingException
-
-        from .thread_recall import recall_span_threads
-
-        try:
-            span_eps, thread_cues = await asyncio.wait_for(
-                recall_span_threads(query, scope_keys, user_id, group_id),
-                timeout=6.0,
-            )
-        except TimeoutError:
-            span_eps, thread_cues = [], []
-        except (
-            OSError,
-            RuntimeError,
-            ConnectionError,
-            SQLAlchemyError,
-            UnexpectedResponse,
-            ResponseHandlingException,
-        ) as e:
-            logger.warning(i18n_t("log.memory.thread_recall_fail", e=e))
-            span_eps, thread_cues = [], []
-    span_window = _span_search_window(query)
-    temporal_task: Optional[asyncio.Task] = None
-    if span_window and scope_keys:
-        temporal_task = asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, span_window[0], span_window[1]))
-    cover_task: asyncio.Task[list[Episode]] | None = None
-    if scope_keys:
-        # 覆盖摘录自带内容守卫（不足两份入库文档或无跨文档栏目词则空）。
-        cover_task = asyncio.create_task(_load_document_coverage(query, scope_keys))
-
-    # OPT-02: S1 和 S2 真正并行 - 使用 asyncio.gather 同时等待所有任务
-    s1_task = asyncio.create_task(
-        system1_search(
-            query,
-            scope_keys,
-            top_k=top_k,
-        )
-    )
-
-    # System-2 对 group_scope 和 user_scope 都执行
-    s2_tasks: list[asyncio.Task] = []
-    s2_scope_keys: list[str] = []
-    if effective_enable_system2:
-        if group_scope:
-            s2_tasks.append(asyncio.create_task(system2_global_selection(query, group_scope)))
-            s2_scope_keys.append(group_scope)
-        if user_scope:
-            s2_tasks.append(asyncio.create_task(system2_global_selection(query, user_scope)))
-            s2_scope_keys.append(user_scope)
-
-    # OPT-02: 同时等待 S1 和 S2，谁先完成谁先用，不存在先后阻塞
-    all_tasks = [s1_task] + s2_tasks
-    all_results = await asyncio.gather(*all_tasks, return_exceptions=True)
-
-    # 处理 System-1 结果
-    s1_raw = all_results[0]
-    if isinstance(s1_raw, Exception):
-        logger.error(i18n_t("log.memory.system_retrieval_s1_raw", s1_raw=s1_raw))
-        s1: System1Result = System1Result()
-    else:
-        s1 = s1_raw  # type: ignore[assignment]
-
-    s2_results: list[System2Result] = []
-    for i, raw_result in enumerate(all_results[1:], start=1):
-        if isinstance(raw_result, Exception):
-            logger.error(
-                i18n_t(
-                    "log.memory.system_retrieval_scope_raw",
-                    p0=s2_scope_keys[i - 1],
-                    raw_result=raw_result,
-                )
-            )
-        elif isinstance(raw_result, System2Result):
-            s2_results.append(raw_result)
-            logger.debug(
-                i18n_t(
-                    "log.memory.system_retrieval_scope_episode",
-                    p0=s2_scope_keys[i - 1],
-                    p1=len(raw_result.episodes),
-                    p2=len(raw_result.selected_entities),
-                    p3=len(raw_result.edges),
-                )
-            )
-
-    logger.debug(
-        i18n_t(
-            "log.memory.system_retrieval_episode_records",
-            p0=len(s1.episodes),
-            p1=len(s1.entities),
-            p2=len(s1.edges),
-        )
-    )
-
-    # 合并去重（多个 S2 结果之间也要去重）
-    s2_episodes = []
-    s2_entities = []
-    s2_edges = []
-    s2_categories = []
-    for s2 in s2_results:
-        s2_episodes.extend(s2.episodes)
-        s2_entities.extend(s2.selected_entities)
-        s2_edges.extend(s2.edges)
-        s2_categories.extend(s2.categories)
-
-    # 收集 System-2 检索路径
-    s2_retrieval_paths: list[list[dict]] = []
-    for s2 in s2_results:
-        s2_retrieval_paths.extend(s2.retrieval_paths)
-
-    # 先合并 S1 + S2 结果（去重）
-    all_episodes: list[Episode] = _merge_episodes(s1.episodes if s1 else [], s2_episodes)
-    covered: list[Episode] = []
-    if cover_task is not None:
-        from sqlalchemy.exc import SQLAlchemyError
-
-        try:
-            covered = await cover_task
-        except (OSError, RuntimeError, SQLAlchemyError) as exc:
-            logger.warning(i18n_t("log.memory.document_coverage_failed", e=exc))
-            covered = []
-    # 已按文档摘录时不再把同标题全文拉进 rerank，否则封面会挤掉问到的表。
-    if not covered:
-        all_episodes = await _expand_document_siblings(all_episodes, scope_keys)
-    all_entities: list[Entity] = _merge_entities(s1.entities if s1 else [], s2_entities)
-    all_edges: list[Edge] = _merge_edges(s1.edges if s1 else [], s2_edges)
-    all_categories: list[Category] = _merge_categories([], s2_categories)
-
-    # RF-Mem 回忆环（仅限远程 Qdrant）：低熟悉度时通过向量回忆补充 Episode 链。
-    if (
-        memory_config.enable_familiarity_routing
-        and memory_config.enable_recollection_path
-        and is_recollection_route
-        and not effective_enable_system2
-        and memory_config.qdrant_provider == "remote"
-        and scope_keys
-    ):
-        try:
-            from .familiarity import recollection_search, project_episodes_to_edges
-
-            recalled = await recollection_search(
-                query,
-                scope_keys,
-                top_k=top_k,
-                beam=memory_config.recollection_beam,
-                fanout=memory_config.recollection_fanout,
-                rounds=memory_config.recollection_rounds,
-                alpha=memory_config.recollection_alpha,
-                query_vector=probe_vec,  # 复用探针向量，省一次嵌入
-            )
-            if recalled:
-                all_episodes = _merge_episodes(all_episodes, recalled)
-                projected = await project_episodes_to_edges([e["id"] for e in recalled], scope_keys)
-                if projected:
-                    all_edges = _merge_edges(all_edges, projected)
-        except Exception as e:
-            logger.warning(i18n_t("log.memory.rf_mem_recall_loop_retrieval", e=e))
-
-    # 类型隔离 Rerank：Category 节点固定最高优先级，其余三路并行 Rerank。
-    ranked_episodes, ranked_entities, ranked_edges = await asyncio.gather(
-        _rerank_episodes(query, all_episodes, top_k),
-        _rerank_entities(query, all_entities, top_k * 2),
-        _rerank_edges(query, all_edges, top_k * 2),
-    )
-    if span_eps:
-        ranked_episodes = _merge_episodes(ranked_episodes, span_eps)
-    from .lexical import looks_like_latest_slot_query
-    from .event_time import looks_like_revision_query
-
-    if (looks_like_revision_query(query) or looks_like_latest_slot_query(query)) and ranked_edges and scope_keys:
-        from gsuid_core.ai_core.memory.database.models import AIMemEdge
-
-        pairs = [(e["source_id"], e["target_id"]) for e in ranked_edges[:12] if "source_id" in e and "target_id" in e]
-        names: dict[str, str] = {}
-        for e in ranked_edges:
-            names[e["source_id"]] = e["source_name"]
-            names[e["target_id"]] = e["target_name"]
-        have = {e["id"] for e in ranked_edges if "id" in e}
-        extra: list[Edge] = []
-        for sk in scope_keys:
-            vers = await AIMemEdge.list_pair_versions(sk, pairs, limit=40)
-            for v in vers:
-                if v.id in have:
-                    continue
-                mark = " 〔当前有效〕" if v.invalid_at is None else " 〔已被更新〕"
-                extra.append(
-                    {
-                        "id": v.id,
-                        "source_id": v.source_entity_id,
-                        "target_id": v.target_entity_id,
-                        "source_name": names[v.source_entity_id] if v.source_entity_id in names else "",
-                        "target_name": names[v.target_entity_id] if v.target_entity_id in names else "",
-                        "fact": (v.fact or "") + mark,
-                        "weight": 1.0,
-                        "score": 0.0,
-                        "valid_at_ts": v.valid_at.timestamp() if v.valid_at else None,
-                        "invalid_at_ts": v.invalid_at.timestamp() if v.invalid_at else None,
-                        "expired_at_ts": v.expired_at.timestamp() if v.expired_at else None,
-                    }
-                )
-                have.add(v.id)
-        if extra:
-            ranked_edges = extra + ranked_edges
-    # Category 按 layer 降序排列（最抽象的在前），不经过 Reranker
-    ranked_categories: list[Category] = sorted(all_categories, key=lambda c: c["layer"], reverse=True)
-
-    # 时间范围补召回结果：绕过 Reranker 直接并入（Reranker 按字面相似打分，会把时间窗
-    # 内低字面重合但时序上关键的片段踢掉）。合并后整体按时间升序，方便 LLM 重建时间线。
-    if temporal_task is not None:
-        try:
-            temporal_eps = await temporal_task
-            from gsuid_core.ai_core.memory.retrieval.lexical import (
-                stride_episodes_chrono,
-                episodes_in_time_window,
-            )
-
-            if temporal_eps:
-                from .event_time import looks_like_order_query as _is_order_q
-
-                # 排序题要全序，不能 stride 压成 24 条。
-                if len(temporal_eps) > 24 and not _is_order_q(query):
-                    temporal_eps = stride_episodes_chrono(temporal_eps, cap=24)
-                ranked_episodes = _merge_episodes(ranked_episodes[:20], temporal_eps)
-            # 主题词被剥光时分桶会空；时间窗直查仍要跑，否则整段时间线没了。
-            if time_range is not None and user_id:
-                win_eps = await episodes_in_time_window(
-                    user_id=user_id,
-                    group_id=group_id,
-                    start=time_range[0],
-                    end=time_range[1],
-                    limit=80,
-                )
-                if win_eps:
-                    ranked_episodes = _merge_episodes(ranked_episodes, win_eps)
-            if time_range is not None:
-                _t_start, _t_end = time_range
-            else:
-                _t_start, _t_end = None, None
-            logger.info(
-                i18n_t(
-                    "log.memory.time_range_supplemental_retrieval_2",
-                    p0=len(temporal_eps),
-                    p1=_t_start,
-                    p2=_t_end,
-                )
-            )
-        except Exception as e:
-            logger.warning(i18n_t("log.memory.time_range_supplemental_retrieval", e=e))
-
-    logger.info(
-        i18n_t(
-            "log.memory.total_episode_records_entity",
-            p0=len(all_episodes),
-            p1=len(all_entities),
-            p2=len(all_edges),
-            p3=len(all_categories),
-        )
-    )
-
-    # 异步刷新命中边的 last_accessed 时间戳，供衰减机制使用。
-    edge_ids = [e["id"] for e in ranked_edges if "id" in e and e["id"]]
-    if edge_ids:
-        from gsuid_core.ai_core.memory.database.models import AIMemEdge
-
-        # 置信度富集：从数据库读取边的佐证数与新鲜度计算综合权重。
-        conf_inputs = await AIMemEdge.get_confidence_inputs(edge_ids)
-        if conf_inputs:
-            for e in ranked_edges:
-                if e["id"] in conf_inputs:
-                    mc, decay = conf_inputs[e["id"]]
-                    e["weight"] = compute_edge_confidence(mc, decay)
-
-        async def _touch_edges_accessed() -> None:
-            try:
-                await AIMemEdge.touch_accessed(edge_ids)
-            except Exception as _e:
-                logger.debug(i18n_t("log.memory.refresh_edge_last_accessed", _e=_e))
-
-        def _on_task_done(t):
-            if t.cancelled():
-                return
-            exc = t.exception()
-            if exc is not None:
-                logger.warning(i18n_t("log.memory.background_task_refreshing_edge", exc=exc))
-
-        task = asyncio.create_task(_touch_edges_accessed())
-        task.add_done_callback(_on_task_done)
-
-    # C11 矛盾提示：命中边的 (src,tgt) 若有 Conflict 记录，取摘要随上下文注入。
-    # 一次带索引 IN 查询（ix_mem_conflict_scope_sig），失败静默降级不影响检索。
-    conflict_summaries: list[str] = []
-    if ranked_edges and scope_keys:
-        try:
-            from gsuid_core.ai_core.memory.database.models import AIMemConflict
-
-            sigs = list(
-                {
-                    f"{e['source_id']}|{e['target_id']}"
-                    for e in ranked_edges[: memory_config.search_edge_count]
-                    if e["source_id"] and e["target_id"]
-                }
-            )
-            conflict_summaries = await AIMemConflict.get_by_signatures(scope_keys, sigs)
-            if conflict_summaries:
-                logger.info(i18n_t("log.memory.contradiction_prompt_matched_conflict", p0=len(conflict_summaries)))
-        except Exception as e:
-            logger.debug(i18n_t("log.memory.contradiction_prompt_query", e=e))
-
-    # 程序性与偏好记忆：查询当前会话活跃规则，按上下文过滤后置顶注入。
     preference_items: list[PreferencePrompt] = []
     if memory_config.enable_preference_memory and scope_keys and inject_preferences:
         try:
-            from gsuid_core.ai_core.memory.database.models import AIMemPreference
-
-            # 按能力域过滤时适当放大拉取数量，避免提前截断。
             fetch_limit = (
                 memory_config.preference_max_inject * 3
                 if preference_contexts is not None
@@ -1486,7 +1225,6 @@ async def dual_route_retrieve(
             )
             pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
             if preference_contexts is not None:
-                # 纠错规则与通用规则恒保留，其余软偏好按能力域过滤保留。
                 ctx_set = set(preference_contexts)
                 pref_rows = [
                     r
@@ -1510,59 +1248,241 @@ async def dual_route_retrieve(
                 async def _touch_prefs() -> None:
                     try:
                         await AIMemPreference.touch_applied(pref_ids)
-                    except Exception as _e:
-                        logger.debug(i18n_t("log.memory.refresh_preference_last_applied", _e=_e))
+                    except (OSError, RuntimeError, ValueError) as e:
+                        logger.debug(i18n_t("log.memory.refresh_preference_last_applied", _e=e))
 
-                pref_task = asyncio.create_task(_touch_prefs())
-                pref_task.add_done_callback(_on_pref_task_done)
-        except Exception as e:
+                task = asyncio.create_task(_touch_prefs())
+                task.add_done_callback(_on_pref_task_done)
+        except (OSError, RuntimeError, ValueError) as e:
             logger.warning(i18n_t("log.memory.preference_retrieval", e=e))
 
-    # 未落库原文：闲聊进行中要等 idle 才写 SQL，检索必须先看见缓冲。
-    from gsuid_core.ai_core.memory.observer import pending_episodes_for_scopes
+    if memory_intent == "none":
+        entity_cards: list[Entity] = []
+        if scope_keys:
+            try:
+                names = await AIMemEntity.get_frequent_names(scope_keys[0], limit=8)
+                if names:
+                    entity_cards = [
+                        {
+                            "id": "",
+                            "name": n,
+                            "summary": "高频群成员/实体",
+                            "entity_type": "familiar",
+                            "layer": 0,
+                            "score": 0.0,
+                        }
+                        for n in names
+                    ]
+            except (OSError, RuntimeError, ValueError):
+                entity_cards = []
+        return MemoryContext(
+            preferences=preference_items,
+            entities=entity_cards,
+            retrieval_meta={"s1_episodes": 0, "s2_episodes": 0, "scope_keys": scope_keys},
+            memory_intent=memory_intent,
+        )
+
+    time_range = query_explicit_time_range(query)
+    if time_range is None and clock_at is not None and has_relative_time_span(query):
+        time_range = query_time_window(query, clock_at)
+
+    parallel_q = wants_parallel_document_coverage(query)
+    counting_q = looks_like_count_query(query) or looks_like_sum_query(query)
+    cand_k = (
+        max(top_k * 6, 128)
+        if (parallel_q or counting_q)
+        else (
+            max(top_k * 3, 96)
+            if memory_intent in ("timeline_order", "broad_summary", "version_diff")
+            else max(top_k * 2, 64)
+        )
+    )
+
+    s1_task = asyncio.create_task(system1_search(query, scope_keys, top_k=cand_k))
+    fts_task = asyncio.create_task(_fts_episodes(query, scope_keys, limit=cand_k))
+    cover_task = asyncio.create_task(_load_document_coverage(query, scope_keys)) if scope_keys else None
+
+    from .thread_recall import recall_span_threads
+
+    span_task = (
+        asyncio.create_task(recall_span_threads(query, scope_keys, user_id, group_id))
+        if (
+            memory_intent in ("timeline_order", "broad_summary")
+            or looks_like_order_query(query)
+            or looks_like_summary_query(query)
+        )
+        and user_id
+        and scope_keys
+        else None
+    )
+
+    temporal_task = (
+        asyncio.create_task(_fetch_temporal_episodes(query, scope_keys, time_range[0], time_range[1]))
+        if time_range is not None and scope_keys
+        else None
+    )
+
+    s1_res, fts_res = await asyncio.gather(s1_task, fts_task)
+    s1: System1Result = s1_res if isinstance(s1_res, System1Result) else System1Result()
+    fts_eps: list[Episode] = fts_res if isinstance(fts_res, list) else []
+
+    keep_asst = should_keep_assistant_hits(query)
+    episodes = _rrf_fuse_episodes(s1.episodes, fts_eps, keep_asst)
+
+    covered: list[Episode] = []
+    if cover_task is not None:
+        try:
+            covered = await cover_task
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(i18n_t("log.memory.document_coverage_failed", e=exc))
+            covered = []
+
+    if not covered:
+        episodes = await _expand_document_siblings(episodes, scope_keys)
 
     pending = pending_episodes_for_scopes(scope_keys)
     if pending:
-        ranked_episodes = _merge_episodes(pending, ranked_episodes)
+        episodes = _merge_episodes(pending, episodes)
+
+    span_eps: list[Episode] = []
+    thread_cues: list[MemoryEventCue] = []
+    if span_task is not None:
+        try:
+            span_eps, thread_cues = await asyncio.wait_for(span_task, timeout=6.0)
+        except (TimeoutError, OSError, RuntimeError, ConnectionError, ValueError) as e:
+            logger.debug(i18n_t("log.memory.thread_recall_fail", e=e))
+            span_eps, thread_cues = [], []
+
+    if span_eps:
+        episodes = _merge_episodes(episodes, span_eps)
+
+    if temporal_task is not None:
+        try:
+            temporal_eps = await temporal_task
+            if temporal_eps:
+                episodes = _merge_episodes(episodes, temporal_eps)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug(i18n_t("log.memory.time_range_supplemental_retrieval", e=e))
+
+    if time_range is not None and memory_intent in ("timeline_order", "version_diff", "broad_summary"):
+        from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+
+        start, end = time_range
+        in_window: list[Episode] = []
+        for sk in scope_keys:
+            for row in await AIMemEpisode.search_by_valid_at_range(sk, start, end, limit=80, ascending=True):
+                in_window.append(
+                    {
+                        "id": row.id,
+                        "content": row.content,
+                        "valid_at": str(row.valid_at),
+                        "scope_key": row.scope_key,
+                        "embedding": [],
+                        "session_id": row.session_id or "",
+                        "thread_id": row.thread_id or "",
+                        "turn_index": row.turn_index,
+                    }
+                )
+        if in_window:
+            episodes = _merge_episodes(episodes, in_window)
+
     if covered:
         from gsuid_core.ai_core.memory.retrieval.lexical import merge_coverage_with_metric_hits
 
-        ranked_episodes = merge_coverage_with_metric_hits(covered, ranked_episodes)
+        episodes = merge_coverage_with_metric_hits(covered, episodes)
 
+    # 排序题阶段重构
     order_stages: list[Episode] = []
-    if looks_like_order_query(query) and ranked_episodes:
+    if (looks_like_order_query(query) or memory_intent == "timeline_order") and episodes:
         from gsuid_core.ai_core.memory.retrieval.event_time import query_only_item_cap
 
         _n_stages = query_only_item_cap(query) or 8
         try:
             order_stages = await asyncio.wait_for(
-                _select_order_stages(query, ranked_episodes, _n_stages),
+                _select_order_stages(query, episodes, _n_stages),
                 timeout=8.0,
             )
-        except TimeoutError:
+        except (TimeoutError, OSError, RuntimeError, ValueError):
             order_stages = []
+
+    # 属性问答原句单独保留
+    reserved_episodes: list[Episode] = []
+    if (
+        looks_like_attribute_query(query)
+        and not looks_like_count_query(query)
+        and not looks_like_sum_query(query)
+        and not looks_like_order_query(query)
+    ):
+        q_tokens = [tok for tok in query.split() if len(tok) >= 2]
+        for ep in episodes:
+            raw = ep["content"] or ""
+            if re.search(r"\d", raw) and any(token_in_text(t, raw) for t in q_tokens):
+                reserved_episodes.append(ep)
+
+    if memory_intent != "none" and episodes:
+        episodes = await expand_episode_neighbors(episodes)
+
+    if memory_intent in ("point_latest", "broad_summary") and not episodes and scope_keys:
+        episodes = await expand_lexical_recall(
+            episodes,
+            query=query,
+            user_id=user_id,
+            group_id=group_id,
+            clock=clock_at,
+            reserved=[],
+            memory_intent=memory_intent,
+        )
+
+    ranked_entities = await _rerank_entities(query, s1.entities, top_k * 2)
+    ranked_edges = await _rerank_edges(query, s1.edges, top_k * 2)
+    ranked_edges = await _apply_intent_edges(memory_intent, ranked_edges, scope_keys, clock_at=clock_at)
+
+    edge_ids = [e["id"] for e in ranked_edges if e["id"]]
+    if edge_ids:
+        from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+        conf_inputs = await AIMemEdge.get_confidence_inputs(edge_ids)
+        if conf_inputs:
+            for e in ranked_edges:
+                if e["id"] in conf_inputs:
+                    mc, decay = conf_inputs[e["id"]]
+                    e["weight"] = compute_edge_confidence(mc, decay)
+
+        async def _touch_edges_accessed() -> None:
+            try:
+                await AIMemEdge.touch_accessed(edge_ids)
+            except (OSError, RuntimeError, ValueError) as e:
+                logger.debug(i18n_t("log.memory.refresh_edge_last_accessed", _e=e))
+
+        def _on_task_done(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.warning(i18n_t("log.memory.background_task_refreshing_edge", exc=exc))
+
+        task = asyncio.create_task(_touch_edges_accessed())
+        task.add_done_callback(_on_task_done)
 
     cover_ids = frozenset(str(ep["id"]) for ep in covered if "id" in ep) if covered else frozenset()
     return MemoryContext(
-        episodes=ranked_episodes,
+        episodes=episodes,
         entities=ranked_entities,
         edges=ranked_edges,
         covered=bool(covered),
         cover_ids=cover_ids,
-        categories=ranked_categories,
         preferences=preference_items,
-        conflicts=conflict_summaries,
         retrieval_meta={
-            "s1_episodes": len(s1.episodes) if s1 else 0,
-            "s2_episodes": sum(len(r.episodes) for r in s2_results),
+            "s1_episodes": len(s1.episodes),
+            "s2_episodes": 0,
             "scope_keys": scope_keys,
         },
-        retrieval_paths=s2_retrieval_paths,
         temporal_mode=time_range is not None,
         time_range=time_range,
-        low_evidence=probe_mean is not None and probe_mean < memory_config.abstention_score_threshold,
         events=thread_cues,
         order_stages=order_stages,
         asker_id=user_id if group_id else "",
-        pool_ids=[e["id"] for e in ranked_episodes if "id" in e],
+        reserved_episodes=reserved_episodes,
+        pool_ids=[e["id"] for e in episodes if "id" in e],
+        memory_intent=memory_intent,
     )

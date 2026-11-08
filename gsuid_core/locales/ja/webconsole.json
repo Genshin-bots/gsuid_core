@@ -102,6 +102,7 @@
   "log.webconsole.memory_manually_triggered_hierarchical": "[Memory] 階層グラフの再構築を手動でトリガーした scope_key={scope_key}",
   "log.webconsole.memory_scope_key_window_fail": "[Memory] scope={scope_key} ウィンドウ抽出に失敗（このウィンドウをスキップ）: {e}",
   "log.webconsole.memory_scope_key_window_fail_2": "[Memory] scope={scope_key} ウィンドウ抽出がタイムアウト（{p0}s）、このウィンドウをスキップ",
+  "log.webconsole.memory_reconcile_vectors_fail": "[Memory] インデックス照合のベクトル補正に失敗: {e}",
   "log.webconsole.mime_type_file_path": "[WebConsole] ファイル {file_path} の MIME タイプは {mime_type}",
   "log.webconsole.plugin_store_fail": "プラグインストア一覧の取得に失敗しました: {error}",
   "log.webconsole.received_request_app_path": "[WebConsole] リクエストを受信: /app/{path}",

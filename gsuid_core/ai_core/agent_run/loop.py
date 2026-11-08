@@ -987,6 +987,13 @@ class LoopPhase(RunOnceHost):
                         user_asked_detail=False,
                         forbid_title=non_master_title(_addr, self.persona_name),
                         entity_routed=st.entity_routed,
+                        user_text=(
+                            st.ev.raw_text
+                            if st.ev is not None and st.ev.raw_text
+                            else (
+                                st.last_user_question or (st.user_message if isinstance(st.user_message, str) else "")
+                            )
+                        ),
                     )
                     if _blk:
                         st.last_block_reason = _why

@@ -588,7 +588,7 @@ async def ingest_domain(
             "extract_concurrency": extract_concurrency,
         }
     if trigger_rebuild:
-        # System-2 读 AIMemHierarchicalGraphMeta，max_layer=0 时直接返回空结果：
+        # v2 没有 System-2 分层投影，Document QA 只走 FTS5 + 稠密召回：
         # 抽了实体/边却不建图，事实就没有任何消费方。
         assert extra is not None, "trigger_rebuild 需与 --extract 同用"
         extra["trigger_rebuild"] = True

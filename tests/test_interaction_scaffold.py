@@ -13,6 +13,28 @@ from gsuid_core.ai_core.interaction_scaffold import (
     ambient_followup_to_other,
     ellipsis_inherits_other_speaker,
 )
+from gsuid_core.ai_core.classifier.turn_router import (
+    TurnIntent,
+    MemoryIntent,
+    TurnRouteDecision,
+)
+
+
+def _route(
+    intent: TurnIntent = "闲聊",
+    memory_intent: MemoryIntent = "none",
+    *,
+    live: bool = False,
+    work: bool = False,
+) -> TurnRouteDecision:
+    return TurnRouteDecision(
+        intent=intent,
+        memory_intent=memory_intent,
+        soft_speak=False,
+        is_live_lookup=live,
+        needs_committed_work=work,
+    )
+
 
 H_REMIND = [("user", "帮我定个明晚的提醒"), ("assistant", "好嘞，明晚喊你~")]
 H_WEATHER = [("user", "帮我查下上海明天的天气"), ("assistant", "好的，上海明天多云转晴。")]
@@ -97,36 +119,65 @@ def test_ellipsis_inherits_other_speaker_gates_slot() -> None:
     assert tg.address_gated is True
 
 
-def test_live_lookup_and_task_request_patterns() -> None:
-    from gsuid_core.ai_core.interaction_scaffold import (
-        looks_like_memory_qa,
-        looks_like_live_lookup,
-        looks_like_task_request,
-        looks_like_committed_work,
+def test_turn_router_structural_contract() -> None:
+    """离线/单测环境：TurnRouter 只做结构退化，不扫业务词表。"""
+    import asyncio
+
+    from gsuid_core.ai_core.classifier.turn_router import (
+        TurnRouteDecision,
+        route_turn,
+        structural_route,
     )
 
-    assert looks_like_live_lookup("小明(用户ID:1)：看看我椿面板")
-    assert looks_like_task_request("帮我设个提醒")
-    assert not looks_like_live_lookup("今天好困")
-    assert not looks_like_task_request("今天好困")
-    assert looks_like_memory_qa("小明(用户ID:1)：你上次说过什么")
-    assert looks_like_memory_qa("还记得我说过什么吗")
-    assert looks_like_memory_qa("你记得上次那事吗")
-    assert looks_like_memory_qa("记不记得我提过")
-    assert looks_like_memory_qa("you said it last time")
-    assert not looks_like_memory_qa("How many projects have I led?")
-    assert not looks_like_memory_qa("What degree did I graduate with?")
-    assert not looks_like_memory_qa("仓库里有什么")
-    assert not looks_like_memory_qa("帮我设个提醒")
-    assert not looks_like_memory_qa("记得帮我设个提醒")
-    assert not looks_like_memory_qa("你记得帮我设个提醒")
-    assert not looks_like_memory_qa("那天天气不错")
-    assert not looks_like_memory_qa("谁说不行")
-    assert not looks_like_memory_qa("记下什么了")
-    assert looks_like_committed_work("帮我查一下库存")
-    assert looks_like_committed_work("看看我的面板")
-    assert not looks_like_committed_work("看看这个")
-    assert not looks_like_committed_work("看看这是谁")
+    empty = structural_route("")
+    assert empty.intent == "闲聊" and empty.memory_intent == "none"
+    assert structural_route("上海明天天气怎么样？").intent == "问答"
+    assert structural_route("How many projects have I led?").intent == "问答"
+    followup = structural_route("那明天呢", prev_turn_used_tools=True)
+    assert followup.intent == "工具" and followup.memory_intent == "point_latest"
+
+    decision = asyncio.run(route_turn("我上次说的预算是多少？"))
+    assert isinstance(decision, TurnRouteDecision)
+    assert decision.source == "structural_fallback"
+    assert decision.memory_intent == "point_latest"
+
+    # 软触发默认偏沉默，结构退化不允许擅自 force_speak。
+    assert decision.soft_speak is False
+
+    from gsuid_core.ai_core.interaction_scaffold import CheapGate, scaffold_hints_from_graph
+
+    tg = build_turn_graph(
+        "我上次说的预算是多少？",
+        persona_name="早柚",
+        is_tome=True,
+        user_type="direct",
+    )
+    hints = scaffold_hints_from_graph(
+        tg,
+        cheap=CheapGate.FULL,
+        intent="问答",
+        route_decision=TurnRouteDecision(
+            intent="问答",
+            memory_intent="point_latest",
+            soft_speak=False,
+            is_live_lookup=False,
+            needs_committed_work=False,
+        ),
+    )
+    assert any("search_cognition" in h for h in hints)
+    live = scaffold_hints_from_graph(
+        tg,
+        cheap=CheapGate.FULL,
+        intent="工具",
+        route_decision=TurnRouteDecision(
+            intent="工具",
+            memory_intent="none",
+            soft_speak=False,
+            is_live_lookup=True,
+            needs_committed_work=True,
+        ),
+    )
+    assert not any("search_cognition" in h for h in live)
 
 
 def test_group_look_here_does_not_force_tools() -> None:
@@ -136,6 +187,7 @@ def test_group_look_here_does_not_force_tools() -> None:
     from gsuid_core.ai_core.hooks.points import AgentHookPoint
     from gsuid_core.ai_core.kits.scaffold.kit import KIT, ScaffoldKit
     from gsuid_core.ai_core.interaction_scaffold import TurnGraph
+    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
 
     assert isinstance(KIT, ScaffoldKit)
     tg = TurnGraph(
@@ -151,16 +203,30 @@ def test_group_look_here_does_not_force_tools() -> None:
         query="看看这个",
         turn_graph=tg,
         persona_name="早柚",
+        route_decision=TurnRouteDecision(
+            intent="闲聊",
+            memory_intent="none",
+            soft_speak=False,
+            is_live_lookup=False,
+            needs_committed_work=False,
+        ),
     )
     asyncio.run(KIT.inject_style(idle))
     assert "transaction_priority" not in idle.blocks
 
     work = AgentHookContext(
         point=AgentHookPoint.COMPOSE_CONTEXT,
-        intent="",
+        intent="工具",
         query="帮我查一下库存",
         turn_graph=tg,
         persona_name="早柚",
+        route_decision=TurnRouteDecision(
+            intent="工具",
+            memory_intent="none",
+            soft_speak=False,
+            is_live_lookup=True,
+            needs_committed_work=True,
+        ),
     )
     asyncio.run(KIT.inject_style(work))
     assert "transaction_priority" in work.blocks
@@ -246,11 +312,15 @@ def test_memory_qa_hint_not_speaker_slot():
         user_type="direct",
         primary_speaker="u1",
     )
-    tool_hints = scaffold_hints_from_graph(tg_remind, cheap=CheapGate.FULL, intent="工具")
+    tool_hints = scaffold_hints_from_graph(
+        tg_remind, cheap=CheapGate.FULL, intent="工具", route_decision=_route("工具", "none", work=True)
+    )
     assert MEMORY_QA_HINT not in tool_hints
     assert SPEAKER_RECALL_HINT not in tool_hints
 
-    qa_hints = scaffold_hints_from_graph(tg_remind, cheap=CheapGate.FULL, intent="问答")
+    qa_hints = scaffold_hints_from_graph(
+        tg_remind, cheap=CheapGate.FULL, intent="问答", route_decision=_route("问答", "point_latest")
+    )
     assert MEMORY_QA_HINT in qa_hints
     assert SPEAKER_RECALL_HINT not in qa_hints
     assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, speaker_recall=False)
@@ -262,11 +332,15 @@ def test_memory_qa_hint_not_speaker_slot():
         user_type="direct",
         primary_speaker="u1",
     )
-    dated_hints = scaffold_hints_from_graph(tg_degree, cheap=CheapGate.FULL, intent="问答")
+    dated_hints = scaffold_hints_from_graph(
+        tg_degree, cheap=CheapGate.FULL, intent="问答", route_decision=_route("问答", "point_latest")
+    )
     assert MEMORY_QA_HINT in dated_hints
     assert SPEAKER_RECALL_HINT not in dated_hints
 
-    chat_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="闲聊")
+    chat_hints = scaffold_hints_from_graph(
+        tg_count, cheap=CheapGate.FULL, intent="闲聊", route_decision=_route("闲聊", "none")
+    )
     assert MEMORY_QA_HINT not in chat_hints
     assert SPEAKER_RECALL_HINT not in chat_hints
     tg_said = build_turn_graph(
@@ -276,10 +350,14 @@ def test_memory_qa_hint_not_speaker_slot():
         user_type="direct",
         primary_speaker="u1",
     )
-    said_chat = scaffold_hints_from_graph(tg_said, cheap=CheapGate.FULL, intent="闲聊")
+    said_chat = scaffold_hints_from_graph(
+        tg_said, cheap=CheapGate.FULL, intent="闲聊", route_decision=_route("闲聊", "point_latest")
+    )
     assert MEMORY_QA_HINT in said_chat
 
-    empty_hints = scaffold_hints_from_graph(tg_count, cheap=CheapGate.FULL, intent="")
+    empty_hints = scaffold_hints_from_graph(
+        tg_count, cheap=CheapGate.FULL, intent="", route_decision=_route("问答", "point_latest")
+    )
     assert MEMORY_QA_HINT in empty_hints
     assert SPEAKER_RECALL_HINT not in empty_hints
     assert "专名原话" in MEMORY_QA_HINT
@@ -350,7 +428,9 @@ def test_turn_graph_group_gates(monkeypatch):
         primary_speaker="9001",
     )
     assert decide_cheap_gate(tg_hi, intent="闲聊") is CheapGate.FULL
-    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_hi, cheap=CheapGate.FULL, intent="闲聊")
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(
+        tg_hi, cheap=CheapGate.FULL, intent="闲聊", route_decision=_route("闲聊", "none")
+    )
     tg_remember_task = build_turn_graph(
         "小明(用户ID:9001)：@早柚 记得帮我设个提醒",
         persona_name="早柚",
@@ -358,7 +438,9 @@ def test_turn_graph_group_gates(monkeypatch):
         user_type="group",
         primary_speaker="9001",
     )
-    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_remember_task, cheap=CheapGate.FULL, intent="闲聊")
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(
+        tg_remember_task, cheap=CheapGate.FULL, intent="闲聊", route_decision=_route("闲聊", "none")
+    )
     tg_said = build_turn_graph(
         "小明(用户ID:9001)：@早柚 你上次说过什么",
         persona_name="早柚",
@@ -366,7 +448,9 @@ def test_turn_graph_group_gates(monkeypatch):
         user_type="group",
         primary_speaker="9001",
     )
-    assert MEMORY_QA_HINT in scaffold_hints_from_graph(tg_said, cheap=CheapGate.FULL, intent="闲聊")
+    assert MEMORY_QA_HINT in scaffold_hints_from_graph(
+        tg_said, cheap=CheapGate.FULL, intent="闲聊", route_decision=_route("闲聊", "point_latest")
+    )
     tg_panel = build_turn_graph(
         "小明(用户ID:9001)：@早柚 看看我椿面板",
         persona_name="早柚",
@@ -375,7 +459,9 @@ def test_turn_graph_group_gates(monkeypatch):
         primary_speaker="9001",
     )
     assert decide_cheap_gate(tg_panel, intent="闲聊") is CheapGate.FULL
-    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(tg_panel, cheap=CheapGate.FULL, intent="问答")
+    assert MEMORY_QA_HINT not in scaffold_hints_from_graph(
+        tg_panel, cheap=CheapGate.FULL, intent="问答", route_decision=_route("工具", "none", live=True)
+    )
 
     # 同人 soft continue → full
     hist = [

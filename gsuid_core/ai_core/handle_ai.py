@@ -391,6 +391,7 @@ async def run_interactive_turn(
 
     hook_ctx.turn_graph = turn_graph
     hook_ctx.cheap_gate = cheap.value
+    session.route_decision = hook_ctx.route_decision
     hook_ctx.recent_report_titles = recent_report_titles(session.history)
     hist_block = ""
     if history_context is not None:

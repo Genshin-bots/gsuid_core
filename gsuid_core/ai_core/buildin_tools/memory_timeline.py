@@ -150,7 +150,7 @@ async def read_session(
     around: str = "",
     radius: int = 6,
 ) -> str:
-    """读一段 session 的 gist；可指定 #id 展开 ±radius 条原文。
+    """读一段 session 的逐轮摘要；可指定 #id 展开 ±radius 条原文。
 
     Args:
         ctx: 工具执行上下文
@@ -158,7 +158,7 @@ async def read_session(
         around: 可选 #id 或 episode_id，展开附近原文
         radius: 展开半径，默认 6
     """
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemTurnGist
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
     from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn, _speaker_stripped
 
     sid = (session_id or "").strip()
@@ -167,17 +167,15 @@ async def read_session(
     keys = set(_scope_keys(ctx.deps))
     if not keys:
         return "没有可检索的记忆范围。"
-    gists = [g for g in await AIMemTurnGist.list_by_session(sid) if g.scope_key in keys]
     rows = [r for r in await AIMemEpisode.get_session(sid) if r.scope_key in keys]
-    if not rows and not gists:
+    if not rows:
         return f"找不到 session {sid}。"
-    gist_by_eid = {g.episode_id: g.gist for g in gists}
-    lines: list[str] = [f"【session {sid} gist】"]
+    lines: list[str] = [f"【session {sid}】"]
     user_rows = [r for r in rows if not _assistant_turn(r.content or "")]
     for row in user_rows:
         day = row.valid_at.strftime("%Y-%m-%d") if row.valid_at else ""
         mark = _mark_for(row.id)
-        body = gist_by_eid[row.id] if row.id in gist_by_eid else _speaker_stripped(row.content or "")[:160]
+        body = _speaker_stripped(row.content or "")[:160]
         lines.append(f"{mark} · {day} · {body.replace(chr(10), ' ').strip()}")
     target = (around or "").strip()
     if target:

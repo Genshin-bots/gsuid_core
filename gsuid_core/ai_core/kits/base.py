@@ -72,14 +72,20 @@ def count_document_sources(text: str) -> int:
     return len(seen)
 
 
-def inject_memory_cap(query: str, *, covered: bool = False, n_doc_sources: int = 0) -> int:
-    """记忆整块总帽的**唯一**出口：pack 与 join 都调这里，两边不会各抬一个数。
-
-    只按「有没有逐份材料覆盖 / 问句是不是长时序或跨文档比较」选档。覆盖守卫
-    （scope、≥2 份、栏目实词、df）决定摘哪些行，留在检索侧，不搬进预算函数。
-    """
+def inject_memory_cap(
+    query: str,
+    *,
+    covered: bool = False,
+    n_doc_sources: int = 0,
+    memory_intent: str = "point_latest",
+) -> int:
+    """记忆整块总帽的**唯一**出口：pack 与 join 都调这里，两边不会各抬一个数。"""
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.retrieval.lexical import wants_parallel_document_coverage
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        looks_like_sum_query,
+        looks_like_count_query,
+        wants_parallel_document_coverage,
+    )
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         looks_like_span_query,
         looks_like_order_query,
@@ -89,7 +95,14 @@ def inject_memory_cap(query: str, *, covered: bool = False, n_doc_sources: int =
     default = int(memory_config.memory_inject_max_chars)
     wide = max(default, int(memory_config.memory_inject_wide_chars))
     multi_source = n_doc_sources >= _MEMORY_WIDE_MIN_DOC_SOURCES
-    timeline = looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query)
+    timeline = (
+        memory_intent in ("timeline_order", "version_diff", "broad_summary")
+        or looks_like_order_query(query)
+        or looks_like_span_query(query)
+        or looks_like_summary_query(query)
+        or looks_like_count_query(query)
+        or looks_like_sum_query(query)
+    )
     if covered or multi_source or timeline or wants_parallel_document_coverage(query):
         return wide
     return default

@@ -157,7 +157,6 @@ _QUERY_STOPWORDS = frozenset(
         "suggest",
         "recommend",
         "upcoming",
-        "previous",
         "conversation",
     }
 )
@@ -206,7 +205,7 @@ _CLOCK_PREFIX_RE = re.compile(r"^(?:当前时间[：:]\s*[^\n]+\n+)+")
 _CLOCK_LINE_RE = re.compile(r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
 _SHORT_TOKEN_RES: dict[str, re.Pattern[str]] = {}
 _LEXICAL_CAP = 72
-_PRIMARY_KEEP = 16
+_PRIMARY_KEEP = 8
 _HOP_TOKEN_CAP = 12
 _WINDOW_EPISODE_CAP = 64
 _ORDER_POOL_CAP = 400
@@ -371,6 +370,29 @@ def text_has_query_needles(query: str, text: str) -> bool:
     return hits >= 2
 
 
+_HYPERNYM_EXPANSIONS: dict[str, tuple[str, ...]] = {
+    "sibling": ("brother", "sister"),
+    "siblings": ("brother", "sister"),
+    "parent": ("father", "mother"),
+    "parents": ("father", "mother"),
+    "grandparent": ("grandfather", "grandmother"),
+    "grandparents": ("grandfather", "grandmother"),
+    "child": ("son", "daughter"),
+    "children": ("son", "daughter"),
+    "furniture": ("table", "chair", "desk", "sofa", "couch", "bed", "mattress", "bookshelf", "cabinet"),
+    "grocery": ("supermarket", "market", "store"),
+    "groceries": ("supermarket", "market", "store"),
+    "pet": ("dog", "cat", "puppy", "kitten"),
+    "pets": ("dog", "cat", "puppy", "kitten"),
+    "vehicle": ("car", "truck", "bike", "bicycle"),
+    "vehicles": ("car", "truck", "bike", "bicycle"),
+    "兄弟姐妹": ("哥哥", "弟弟", "姐姐", "妹妹"),
+    "父母": ("爸爸", "妈妈", "父亲", "母亲"),
+    "家具": ("桌", "椅", "床", "沙发", "柜"),
+    "宠物": ("猫", "狗"),
+}
+
+
 def query_tokens(query: str) -> list[str]:
     """丢掉停用词和问句套话，短语只从实词相邻对来。"""
     query = strip_clock_lines(query)
@@ -380,6 +402,8 @@ def query_tokens(query: str) -> list[str]:
     for m in _OVERLAP_TOKEN_RE.finditer(query):
         tok = m.group(0).replace("%", "").replace("\\", "")
         pieces = [tok]
+        if "-" in tok and tok.isascii():
+            pieces.extend([p for p in tok.split("-") if len(p) >= 2])
         if not tok.isascii() and len(tok) > 2 and "-" not in tok and not any(c.isdigit() for c in tok):
             pieces = [tok[i : i + 2] for i in range(len(tok) - 1)]
         for piece in pieces:
@@ -396,6 +420,11 @@ def query_tokens(query: str) -> list[str]:
             seen.add(key)
             out.append(piece)
             content.append(piece)
+            if key in _HYPERNYM_EXPANSIONS:
+                for syn in _HYPERNYM_EXPANSIONS[key]:
+                    if syn.lower() not in seen:
+                        seen.add(syn.lower())
+                        out.append(syn)
             if len(out) >= 14:
                 break
         if len(out) >= 14:
@@ -419,7 +448,7 @@ def _assistant_turn(raw: str) -> bool:
 
 def _polarity_samples(episodes: list[Episode], per_side: int) -> list[Episode]:
     """用户话正反极性各取几条，避免 hop 只从单侧簇长出来。"""
-    from gsuid_core.ai_core.memory.ingestion.edge import _fact_polarity
+    from gsuid_core.ai_core.memory.ingestion.algebra import _fact_polarity
 
     pos: list[Episode] = []
     neg: list[Episode] = []
@@ -558,12 +587,12 @@ def _recall_db_failed(exc: BaseException, backend: str) -> bool:
 async def expand_episode_neighbors(
     episodes: list[Episode],
     *,
-    seed: int = 8,
-    before: int = 3,
-    after: int = 3,
-    cap: int = 72,
+    seed: int = 12,
+    before: int = 14,
+    after: int = 14,
+    cap: int = 96,
 ) -> list[Episode]:
-    """命中后再取同 scope 时间邻条，把同一会话的计数/主题补回来。"""
+    """命中后再取同 scope 前后轮次，补足同会话指代但不挤占主召回预算。"""
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
     if not episodes or (before <= 0 and after <= 0):
@@ -578,7 +607,8 @@ async def expand_episode_neighbors(
         from sqlalchemy.exc import SQLAlchemyError
 
         try:
-            rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=before, after=after)
+            ep_id = str(ep["id"]) if "id" in ep else None
+            rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=before, after=after, episode_id=ep_id)
         except (OSError, SQLAlchemyError, TypeError) as e:
             if not _recall_db_failed(e, "neighbors"):
                 raise
@@ -722,7 +752,7 @@ async def expand_topic_session_turns(
     episodes: list[Episode],
     query: str,
     *,
-    cap: int = 72,
+    cap: int = 96,
     radius: int = 12,
     include_assistant: bool = False,
     named_only: bool = False,
@@ -860,9 +890,20 @@ _VALUE_SLOT_RE = re.compile(
     r"\bwhere (?:did|does|do|is|was|are)\b|"
     r"\bwhat was\b|"
     r"\bhow often\b|"
-    r"\bwhich (?:company|city|place|one)\s+(?:did|do|does|is|was|are)\b",
+    r"\bwhich\s+[\w\s]{1,30}?\s+(?:did|do|does|is|was|are)\b",
     re.IGNORECASE,
 )
+_COMPARE_RE = re.compile(
+    r"\b(?:the most|the least|highest|lowest|biggest|smallest|cheapest|most expensive|"
+    r"more than|less than|spend the most|spent the most|spend the least|spent the least)\b|"
+    r"最多|最少|最高|最低|最大|最小|最贵|最便宜|比较",
+    re.IGNORECASE,
+)
+
+
+def looks_like_compare_query(query: str) -> bool:
+    """比较/极值题：询问谁最多/最少/最高/最低等。"""
+    return bool(_COMPARE_RE.search(strip_clock_lines(query or "")))
 
 
 def looks_like_times_query(query: str) -> bool:
@@ -1000,6 +1041,17 @@ _TOPIC_SKIP = frozenset(
         "last",
         "most",
         "long",
+        "months",
+        "weeks",
+        "days",
+        "years",
+        "hours",
+        "four",
+        "three",
+        "two",
+        "one",
+        "five",
+        "second",
     }
 )
 _ASSISTANT_QUOTE_RE = re.compile(
@@ -1362,6 +1414,7 @@ def looks_like_session_read_query(query: str) -> bool:
         or looks_like_duration_query(body)
         or looks_like_count_query(body)
         or looks_like_sum_query(body)
+        or looks_like_attribute_query(body)
     ):
         return False
     return (
@@ -1686,7 +1739,7 @@ def pack_attribute_episodes(
     不同来源（文档标题或闲聊正文前缀）即使同一天也分开保留。
     """
     toks = attribute_content_tokens(query)
-    need = 2 if len(toks) >= 2 else 1
+    need = 1
     user: list[Episode] = []
     rest: list[Episode] = []
     for ep in episodes:
@@ -1708,15 +1761,15 @@ def pack_attribute_episodes(
         else:
             weak.append(ep)
     by_day: dict[str, Episode] = {}
+    day_counts: dict[str, int] = {}
     for ep in strong:
         day = str(ep["valid_at"] if "valid_at" in ep else "")[:10]
         src = episode_source_key(ep["content"] or "")
-        slot = f"{day}\0{src}"
-        prev = by_day[slot] if slot in by_day else None
-        stamp = str(ep["valid_at"] if "valid_at" in ep else "")
-        prev_stamp = str(prev["valid_at"] if prev is not None and "valid_at" in prev else "")
-        if prev is None or stamp >= prev_stamp:
+        cnt = day_counts.get(day, 0)
+        if cnt < 4:
+            slot = f"{day}#{cnt}\0{src}"
             by_day[slot] = ep
+            day_counts[day] = cnt + 1
     days = sorted(by_day, reverse=True)
     if cap > 0 and len(days) > cap:
         head = days[0]
@@ -1735,14 +1788,46 @@ def pack_attribute_episodes(
     named = prefer_named_lines(named, query, 16)
     named.sort(key=lambda ep: str(ep["valid_at"] if "valid_at" in ep else ""), reverse=True)
     seen = {e["id"] for e in named + pinned if "id" in e}
-    tail = [e for e in strong + weak + rest if "id" not in e or e["id"] not in seen]
+    seed_sids_turns: dict[str, set[int]] = {}
+    for ep in named + pinned:
+        sid = ep["session_id"] if "session_id" in ep and ep["session_id"] else None
+        if sid:
+            if sid not in seed_sids_turns:
+                seed_sids_turns[sid] = set()
+            if "turn_index" in ep:
+                t_idx = ep["turn_index"]
+                if isinstance(t_idx, int):
+                    seed_sids_turns[sid].add(t_idx)
+
+    session_exchange_eps: list[Episode] = []
+    if seed_sids_turns:
+        for ep in strong + weak + rest:
+            sid = ep["session_id"] if "session_id" in ep and ep["session_id"] else None
+            if not sid or sid not in seed_sids_turns:
+                continue
+            if "id" in ep and ep["id"] in seen:
+                continue
+            t_idx = ep["turn_index"] if "turn_index" in ep else None
+            if isinstance(t_idx, int) and seed_sids_turns[sid]:
+                min_dist = min(abs(t_idx - st) for st in seed_sids_turns[sid])
+                if min_dist > 8:
+                    continue
+            session_exchange_eps.append(ep)
+        session_exchange_eps.sort(
+            key=lambda ep: (
+                str(ep["valid_at"] if "valid_at" in ep else ""),
+                ep["turn_index"] if "turn_index" in ep else 0,
+            )
+        )
+
+    seen_all = seen | {e["id"] for e in session_exchange_eps if "id" in e}
+    tail = [e for e in strong + weak + rest if "id" not in e or e["id"] not in seen_all]
     tail.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""), reverse=True)
     limit = max(cap, 48)
     session_eps = [ep for ep in episodes if is_session_read(ep)]
-    session_ids = {ep["id"] for ep in session_eps if "id" in ep}
-    named = _without_ids(named, session_ids)
-    pinned = _without_ids(pinned, session_ids)
-    tail = _without_ids(tail, session_ids)
+    target_ids = seen_all
+    session_eps = [ep for ep in session_eps if "id" not in ep or ep["id"] not in target_ids]
+    tail = _without_ids(tail, {ep["id"] for ep in session_eps if "id" in ep})
     # 取值题的答案常在助手句。只留问句主题对得上的，避免任意数字插队。
     if should_keep_assistant_hits(query):
         needles = [t.lower() for t in toks]
@@ -1765,11 +1850,11 @@ def pack_attribute_episodes(
             key=lambda ep: (_overlap(ep), str(ep["valid_at"] if "valid_at" in ep else "")),
             reverse=True,
         )
-        assist_named = _without_ids(assist_named, session_ids)[:6]
+        assist_named = _without_ids(assist_named, target_ids)[:6]
         assist_ids = {ep["id"] for ep in assist_named if "id" in ep}
         tail = _without_ids(tail, assist_ids)
-        return (session_eps + assist_named + named + pinned + tail)[:limit]
-    return (session_eps + named + pinned + tail)[:limit]
+        return (named + pinned + session_exchange_eps + assist_named + session_eps[:4] + tail)[:limit]
+    return (named + pinned + session_exchange_eps + session_eps[:4] + tail)[:limit]
 
 
 def _latest_first(episodes: list[Episode]) -> list[Episode]:
@@ -2958,9 +3043,9 @@ def _source_manifest_episode(built: list[Episode]) -> Episode:
     )
 
 
-def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 24) -> list[Episode]:
-    """加总题留下同一主题里每笔带数字的原话，不按天只留最后一次。"""
-    cands = topic_pin_tokens(query, limit=4)
+def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 48) -> list[Episode]:
+    # 加总题保留各主题带数字或关键原话，支持多实体求和并集
+    cands = topic_pin_tokens(query, limit=6)
     users: list[Episode] = []
     seen_line: set[str] = set()
     for ep in episodes:
@@ -2973,12 +3058,31 @@ def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 24) -> lis
         seen_line.add(key)
         users.append(ep)
     valued = [ep for ep in users if states_a_value(ep["content"] or "")]
-    best: list[Episode] = []
+
+    chosen_ids: set[str] = set()
+    chosen: list[Episode] = []
+    per_cand = max(8, cap // max(len(cands), 1))
     for cand in cands:
-        rows = [ep for ep in valued if _topic_word_in_piece(cand, (ep["content"] or "").lower())]
-        if len(rows) > len(best):
-            best = rows
-    chosen = best or valued or users
+        cand_low = cand.lower()
+        matched = [ep for ep in valued if _topic_word_in_piece(cand_low, (ep["content"] or "").lower())]
+        if not matched:
+            matched = [ep for ep in users if _topic_word_in_piece(cand_low, (ep["content"] or "").lower())]
+        for ep in matched[:per_cand]:
+            eid = str(ep.get("id", ""))
+            if eid and eid in chosen_ids:
+                continue
+            if eid:
+                chosen_ids.add(eid)
+            chosen.append(ep)
+
+    for ep in valued + users:
+        if len(chosen) >= cap:
+            break
+        eid = str(ep.get("id", ""))
+        if eid and eid not in chosen_ids:
+            chosen_ids.add(eid)
+            chosen.append(ep)
+
     chosen.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
     return chosen[:cap]
 
@@ -3177,8 +3281,9 @@ def apply_query_episode_pack(
     time_range: tuple[datetime, datetime] | None,
     char_budget: int = 0,
     asker_id: str = "",
+    memory_intent: str = "point_latest",
 ) -> list[Episode]:
-    """事实清单放在最前，其余仍按原打包。"""
+    """事实清单放在最前，其余按显式记忆模态整形。"""
     lead = [ep for ep in episodes if is_fact_sheet(ep)]
     body = [ep for ep in episodes if ep not in lead]
     packed = _pack_without_sweep(
@@ -3188,6 +3293,7 @@ def apply_query_episode_pack(
         time_range=time_range,
         char_budget=char_budget,
         asker_id=asker_id,
+        memory_intent=memory_intent,
     )
     if not lead:
         return packed
@@ -3202,8 +3308,13 @@ def _pack_without_sweep(
     time_range: tuple[datetime, datetime] | None,
     char_budget: int = 0,
     asker_id: str = "",
+    memory_intent: str = "point_latest",
 ) -> list[Episode]:
-    """Chat 注入与 search_cognition 共用。时间线/计数才改形状，点查保持检索序。"""
+    """Chat 注入与 search_cognition 共用。显式模态优先，点查保持检索序。"""
+    eps = list(episodes)
+    if memory_intent == "none":
+        return []
+
     from gsuid_core.ai_core.memory.retrieval.event_time import (
         query_only_item_cap,
         looks_like_span_query,
@@ -3212,7 +3323,6 @@ def _pack_without_sweep(
         looks_like_duration_query,
     )
 
-    eps = list(episodes)
     # 优先尝试逐份材料覆盖逻辑，排在 looks_like_sum_query 之前以避免跨文档统计被截断。
     covered = cover_document_excerpts(eps, query, char_budget=char_budget)
     if covered:
@@ -3227,11 +3337,7 @@ def _pack_without_sweep(
         return pack_coverage_episodes(eps, query)
     if _COUNT_EXCLUDE_RE.search(query or "") and re.search(r"\bhow many\b", query or "", re.IGNORECASE):
         user = [e for e in eps if not _assistant_turn(e["content"] or "")]
-        valued = [
-            e for e in user if re.search(r"\d", e["content"] or "") and _topic_hit_count(query, e["content"] or "") >= 1
-        ]
-        rest = [e for e in eps if e not in valued]
-        return (_latest_first(valued) + rest)[:48]
+        return user[:48]
     asked = query_only_item_cap(query)
 
     synthetic = _is_full_history_window(time_range)
@@ -3252,35 +3358,32 @@ def _pack_without_sweep(
     if looks_like_order_query(query) and (asked is not None or not true_temporal):
         cap = asked if asked is not None else 12
         return pack_first_mention_episodes(_in_explicit_window(eps), query, cap=cap)
-    if looks_like_summary_query(query) and asked is None and not true_temporal:
+    if (
+        (looks_like_summary_query(query) or memory_intent == "broad_summary")
+        and asked is None
+        and not true_temporal
+        and not looks_like_count_query(query)
+    ):
         return pack_milestone_episodes(
             _in_explicit_window(eps), query, cap=_MILESTONE_PACK_CAP, char_budget=char_budget
         )
-    if true_temporal:
+    if (true_temporal or memory_intent == "timeline_order") and not (
+        looks_like_count_query(query)
+        or looks_like_sum_query(query)
+        or looks_like_attribute_query(query)
+        or looks_like_compare_query(query)
+        or looks_like_order_query(query)
+    ):
         user = [e for e in _in_explicit_window(eps) if not _assistant_turn(e["content"] or "")]
         user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
         return pack_timeline_episodes(user, cap=20, query=query)
-    if looks_like_attribute_query(query):
-        day_cap = 24 if looks_like_times_query(query) else 12
+    if looks_like_attribute_query(query) or looks_like_compare_query(query) or memory_intent == "version_diff":
+        day_cap = 24 if (looks_like_times_query(query) or looks_like_compare_query(query)) else 12
         return pack_attribute_episodes(eps, query, asker_id=asker_id, cap=day_cap)
     if looks_like_latest_slot_query(query):
         user = [e for e in eps if not _assistant_turn(e["content"] or "")]
         if looks_like_count_query(query):
-            digit = [
-                e
-                for e in user
-                if re.search(r"\d", e["content"] or "") and _topic_hit_count(query, e["content"] or "") >= 1
-            ]
-            # 「提到过几次」类计数：相关提及本身常不带数字，靠高主题重叠兜住（≥3 实词）。
-            strong = [
-                e
-                for e in user
-                if e not in digit
-                and not re.search(r"\d", e["content"] or "")
-                and _topic_hit_count(query, e["content"] or "") >= 3
-            ]
-            rest = [e for e in user if e not in digit and e not in strong]
-            return (_latest_first(digit) + strong + rest)[:96]
+            return user[:96]
         hit = [e for e in user if text_has_query_needles(query, e["content"] or "")]
         rest = [e for e in user if e not in hit]
         return (_latest_first(hit) + rest)[:48]
@@ -3484,21 +3587,44 @@ _STRONG_VALUE_RE = re.compile(
 )
 _PLAIN_NUM_RE = re.compile(r"\b\d{1,4}\b")
 _YEAR_ONLY_RE = re.compile(r"^(?:19|20)\d{2}$")
+_NAMED_VALUE_RE = re.compile(r"\b(?:[A-Z]{2,}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b")
+_NAMED_VALUE_STOP = frozenset({"AI", "OK", "PC", "TV", "UK", "US", "USA"})
+_ROLE_ATTRIBUTE_RE = re.compile(
+    r"\b(?:my\s+(?:previous|former|past|current|new|old|first|last|favorite|fav)?\s*(?:role|job|occupation|career|profession|title|position|work|workplace|company))\b"
+    r"|\b(?:worked|work|working|employed|served)\s+as\b"
+    r"|\b(?:role|job|title|position)\s+as\b"
+    r"|\b(?:i(?:'m| am| was|'ve been)\s+a(?:n)?)\s+[a-zA-Z]+",
+    re.IGNORECASE,
+)
 
 
 def _normalized_line(raw: str) -> str:
     return re.sub(r"\s+", " ", (raw or "").strip().lower())
 
 
+def _states_named_entity(text: str) -> bool:
+    """句中有大写专名或多词实体赋值，不要求出现阿拉伯数字。"""
+    for sentence in re.split(r"(?<=[.!?])\s+", text or ""):
+        for match in _NAMED_VALUE_RE.finditer(sentence):
+            token = match.group(0)
+            if token in _NAMED_VALUE_STOP:
+                continue
+            if token.isupper() or match.start() > 0:
+                return True
+    return False
+
+
 def states_a_value(text: str) -> bool:
-    """原句里有数量、金额、比例或日期。单独一个年份不算。"""
+    """原句里有数量、金额、比例、日期或具名实体。单独一个年份不算。"""
     if _STRONG_VALUE_RE.search(text or ""):
         return True
     for match in _PLAIN_NUM_RE.finditer(text or ""):
         if _YEAR_ONLY_RE.match(match.group(0)):
             continue
         return True
-    return False
+    if _ROLE_ATTRIBUTE_RE.search(text or ""):
+        return True
+    return _states_named_entity(text)
 
 
 def keep_sum_values(episodes: list[Episode], query: str, cap: int = 24) -> list[Episode]:
@@ -3637,14 +3763,13 @@ async def episodes_in_time_window(
         return []
     from sqlalchemy.exc import SQLAlchemyError
 
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemSession
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
     fetch_n = max(limit, 80)
     scope = memory_scope_key(user_id, group_id)
     openers: list[AIMemEpisode] = []
     try:
-        sess_rows = await AIMemSession.list_by_scope(scope, start=start, end=end, limit=max(limit, 40))
-        openers = await AIMemSession.openers_for([s.id for s in sess_rows])
+        openers = await AIMemEpisode.search_user_day_openers(scope, start, end, limit=max(limit, 40))
     except (OSError, SQLAlchemyError, TypeError) as e:
         if not _recall_db_failed(e, "time_window_openers"):
             raise
@@ -3741,40 +3866,6 @@ async def user_episodes_chrono_sample(
             eps.append(_episode_from_orm(row))
     eps.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
     return eps
-
-
-_WEAK_NEG_RE = re.compile(
-    r"\bnot sure\b|\bnot certain\b|\bdon't know\b|\bdo not know\b|不确定|不知道",
-    re.IGNORECASE,
-)
-
-
-def collect_user_stance_conflicts(episodes: list[Episode], query: str, cap: int = 3) -> list[str]:
-    """问句主题上用户正说/反说同时出现时，写成矛盾摘要。"""
-    from gsuid_core.ai_core.memory.ingestion.edge import _fact_polarity
-
-    q_toks = {t.lower() for t in query_tokens(query)}
-    if not q_toks:
-        return []
-    need = 2 if len(q_toks) >= 3 else 1
-    pos: list[str] = []
-    neg: list[str] = []
-    for ep in episodes:
-        raw = (ep["content"] or "").strip()
-        if len(raw) < 8 or _assistant_turn(raw):
-            continue
-        blob = raw.lower()
-        overlap = sum(1 for t in q_toks if token_in_text(t, blob))
-        if overlap < need:
-            continue
-        stance = _WEAK_NEG_RE.sub(" ", raw)
-        (neg if _fact_polarity(stance) else pos).append(raw)
-        if len(pos) >= 4 and len(neg) >= 4:
-            break
-    if not pos or not neg:
-        return []
-    n = min(cap, len(pos), len(neg))
-    return [f"用户曾说「{neg[i][:120]}」，也说过「{pos[i][:120]}」" for i in range(n)]
 
 
 _SPREAD_FRAME = frozenset(
@@ -4166,14 +4257,14 @@ _ASK_LINE_RE = re.compile(r"\b(?:can you|could you|would you|do you|recommend|su
 
 def _clause_around_focus(piece: str, focus: str) -> str:
     if not focus:
-        return piece[:140].rstrip()
+        return piece[:360].rstrip()
     at = piece.lower().find(focus.lower())
     if at < 0:
-        return piece[:140].rstrip()
-    win_start = max(0, at - 50)
+        return piece[:360].rstrip()
+    win_start = max(0, at - 100)
     space = piece.rfind(" ", win_start, at)
     start = space + 1 if space >= win_start else win_start
-    end = min(len(piece), at + len(focus) + 50)
+    end = min(len(piece), at + len(focus) + 240)
     return piece[start:end].strip(" ,.")
 
 
@@ -4209,13 +4300,22 @@ def _primary_name(piece: str) -> str:
 
 
 def _topic_word_in_piece(tok: str, piece_low: str) -> bool:
-    """主题词或其过去式/进行式。bake 对得上 baked，不靠单词特判。"""
+    # 主题词或其单复数/过去式/进行式，保持形态匹配对称
     if token_in_text(tok, piece_low):
         return True
-    low = tok.lower()
-    if len(low) < 4 or not low.isascii() or " " in low:
+    low = tok.lower().strip()
+    if len(low) < 3 or not low.isascii() or " " in low:
         return False
-    return re.search(rf"\b{re.escape(low)}(?:e?d|ing)\b", piece_low) is not None
+    stem = low
+    if low.endswith("ies") and len(low) > 4:
+        stem = low[:-3] + "y"
+    elif low.endswith("es") and len(low) > 4:
+        stem = low[:-2]
+    elif low.endswith("s") and not low.endswith("ss") and len(low) > 3:
+        stem = low[:-1]
+    if token_in_text(stem, piece_low):
+        return True
+    return re.search(rf"\b{re.escape(stem)}(?:e?s|e?d|ing)?\b", piece_low) is not None
 
 
 def _fact_sweep_relevant(piece: str, query: str) -> bool:
@@ -4486,6 +4586,7 @@ async def expand_lexical_recall(
     limit: int = _LEXICAL_CAP,
     clock: datetime | None = None,
     reserved: list[Episode] | None = None,
+    memory_intent: str = "",
 ) -> list[Episode]:
     """向量命中后再词面跨会话补齐；相对日窗口用显式 clock，缺省墙上时钟。"""
     from gsuid_core.ai_core.memory.retrieval.event_time import (
@@ -4548,7 +4649,7 @@ async def expand_lexical_recall(
         end=lex_end,
         user_only=in_win or count_q,
     )
-    merged = merge_episode_lists(episodes, extras, prefer_extras=True, limit=limit)
+    merged = merge_episode_lists(episodes, extras, prefer_extras=False, limit=limit)
     extra_qs = [q for q in extra_qs if q.strip() and q.strip().lower() != search_q.strip().lower()][:16]
     if extra_qs:
         extra_hits = await asyncio.gather(
@@ -4567,7 +4668,7 @@ async def expand_lexical_recall(
             ]
         )
         for batch in extra_hits:
-            merged = merge_episode_lists(merged, batch, prefer_extras=True, limit=limit)
+            merged = merge_episode_lists(merged, batch, prefer_extras=False, limit=limit)
     if extras:
         names = extra_tokens_from_hits(extras, search_q, cap=_HOP_TOKEN_CAP)
         if names:
@@ -4599,10 +4700,16 @@ async def expand_lexical_recall(
         spread_q = search_q or body
     elif need_spread:
         spread_q = body
+    elif memory_intent in ("broad_summary", "timeline_order") and not broad_thread:
+        spread_q = search_q or body
+    # 点查不得被主题扩散/事实清单重排：FTS/向量命中的证据句必须留在头部。
     if spread_q:
         spread = await spread_topic_episodes(spread_q, user_id=user_id, group_id=group_id)
         if spread:
-            merged = merge_episode_lists(spread, merged, prefer_extras=False, limit=max(limit, 96))
+            if memory_intent == "point_latest" and not (count_q or looks_like_sum_query(body) or orderish):
+                merged = merge_episode_lists(merged, spread, prefer_extras=False, limit=max(limit, 96))
+            else:
+                merged = merge_episode_lists(spread, merged, prefer_extras=False, limit=max(limit, 96))
         assist = await _assistant_topic_hits(spread_q, user_id=user_id, group_id=group_id)
         seeded = await expand_topic_session_turns(
             [*merged, *assist],
@@ -4735,7 +4842,6 @@ __all__ = [
     "pack_attribute_episodes",
     "apply_query_episode_pack",
     "cluster_episodes_by_time",
-    "collect_user_stance_conflicts",
     "diversify_episodes",
     "episodes_in_time_window",
     "expand_episode_neighbors",

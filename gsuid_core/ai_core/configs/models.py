@@ -425,12 +425,15 @@ def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, Think
     return base_url, api_key, model_name, model_effort
 
 
-def get_openai_model_by_name(config_name: str) -> OpenAIModel:
+def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIModel:
     """根据配置名获取 OpenAI 模型，按 request_method 选择端点。
 
     chat_completions → OpenAIChatModel(/v1/chat/completions)；
     responses → OpenAIResponsesModel(/v1/responses)。两者均接受同一 OpenAIProvider，
     且对 gs_agent 暴露相同接口（client/model_name/system/profile/request_stream）。
+
+    ``fast=True`` 时不注入思考档位：隔离用户在配置文件里为聊天设置的 max/high，
+    供前置路由与后台分诊使用。
 
     Args:
         config_name: 配置文件名（不含扩展名）
@@ -438,6 +441,9 @@ def get_openai_model_by_name(config_name: str) -> OpenAIModel:
     base_url, api_key, model_name, model_effort, request_method, continuous_usage, usage_stats_mode = (
         get_openai_config_by_name(config_name)
     )
+    if fast:
+        model_effort = None
+        usage_stats_mode = "incremental"
 
     # §23 墙钟 + 共享连接池（见 MODEL_REQUEST_TIMEOUT_HTTPX2 / _shared_model_httpx2_client）；
     # timeout 显式传 SDK 保证逐请求生效，max_retries=1 收紧 SDK 内建重试。
@@ -538,12 +544,14 @@ def make_anthropic_model(
     )
 
 
-def get_anthropic_chat_model_by_name(config_name: str) -> "AnthropicModel":
+def get_anthropic_chat_model_by_name(config_name: str, *, fast: bool = False) -> "AnthropicModel":
     """根据配置名获取Anthropic Chat Model
     Args:
         config_name: 配置文件名（不含扩展名）
     """
     base_url, api_key, model_name, model_effort = get_anthropic_config_by_name(config_name)
+    if fast:
+        model_effort = None
 
     logger.info(
         t(
@@ -598,7 +606,7 @@ def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, Thinking
     return base_url, api_key, model_name, model_effort
 
 
-def get_gemini_model_by_name(config_name: str) -> "GoogleModel":
+def get_gemini_model_by_name(config_name: str, *, fast: bool = False) -> "GoogleModel":
     """根据配置名获取 Gemini(Google GenAI 原生格式)模型。
 
     依赖可选包 ``google-genai``——延迟导入，缺依赖时只有 gemini 配置报错，
@@ -622,6 +630,8 @@ def get_gemini_model_by_name(config_name: str) -> "GoogleModel":
         ) from e
 
     base_url, api_key, model_name, model_effort = get_gemini_config_by_name(config_name)
+    if fast:
+        model_effort = None
 
     # 官方地址走 SDK 内建默认;仅中转地址才显式传 base_url。
     # http_client 走共享池并携带 §23 墙钟超时（genai 内部转发给 httpx，评审修复 E13）
@@ -692,6 +702,28 @@ def get_model_by_full_name(full_name: str) -> AnyModel:
     if provider == "anthropic":
         return get_anthropic_chat_model_by_name(config_name)
     return get_gemini_model_by_name(config_name)
+
+
+def get_fast_model_by_full_name(full_name: str) -> AnyModel:
+    """按全名构建**无思考**快模型：不注入 reasoning effort / thinking 档位。
+
+    前置路由、后台分诊与两阶段摄入统一走这条通道，避免用户为聊天配置的
+    ``model_effort="max"`` 让每次轻量调用吐出数千推理 Token。
+    """
+    provider, config_name = parse_provider_config_name(full_name)
+    if provider == "openai":
+        return get_openai_model_by_name(config_name, fast=True)
+    if provider == "anthropic":
+        return get_anthropic_chat_model_by_name(config_name, fast=True)
+    return get_gemini_model_by_name(config_name, fast=True)
+
+
+def get_fast_model_for_task(task_level: Literal["high", "low"] = "low") -> AnyModel:
+    """按任务级别取无思考快模型（默认 low）。未配置时抛 ValueError。"""
+    full_name = get_config_name_for_task(task_level)
+    if not full_name:
+        raise ValueError(t("log.ai.gscore_ai_config_model_file"))
+    return get_fast_model_by_full_name(full_name)
 
 
 def get_model_config_by_full_name(full_name: str) -> StringConfig:

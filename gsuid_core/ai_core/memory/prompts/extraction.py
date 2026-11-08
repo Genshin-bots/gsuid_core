@@ -1,203 +1,67 @@
-"""Entity & Edge 提取提示词
+"""两阶段记忆摄入提示词（Pass 1 分诊 + Pass 2 四态代数）。
 
-用于从对话文本中提取实体和关系的 LLM 提示词模板。
+静态指令走 system、变量走 user，保持稳定前缀可命中 provider 缓存。
 """
 
-# SYSTEM/USER 拆分依据：MiniMax 按「工具定义→系统提示词→对话内容」做前缀匹配，
-# 变量放 user message 才能让系统提示词构成 >512 token 的稳定缓存前缀。
-ENTITY_EXTRACTION_SYSTEM = """你是一个信息提取专家，处理来自即时通讯群组的对话记录。
+WINDOW_ROUTE_SYSTEM = """你是群聊窗口分诊器。只输出一行 JSON，不要解释、不要 markdown。
 
-请按以下步骤执行（在内部完成，最终只输出 JSON）：
+任务：把带编号的窗口对话按**话题**聚类，允许同一话题的行号不连续。
+禁止把纯表情/复读/网络烂梗/定型文/广告/无具体指代的互怼当成话题。
 
-**步骤1：初步提取**
-识别对话中所有实体（人、地点、话题、事件、概念）和关系。
+输出结构：
+{"clusters":[{"lines":[0,3,6],"action":"extract|episode_only|discard","thread_ref":"T1|new|null","topic_title":"<=24字"}],"open_lines":[7]}
 
-**步骤2：自我检查（Reflection）**
-检查是否遗漏了以下类型的实体：
-- 每一位发言者（[user_id]: 格式的所有 user_id）
-- 对话中提到但未单独列出的地名、产品名、组织名
-- 隐含的时间节点或事件名称
+动作判据：
+- discard：纯表情/复读、烂梗/定型文/复制段子、电商链接或拼团口令、无具体指代的群友互怼。
+- episode_only：有正常交流语境，但没有提到任何持久个人/项目事实、关系、阶段进展或对 Bot 的偏好要求。
+- extract：含明确的个人/项目属性、人际关系、具体事件/阶段进展、状态更新，或对 Bot 的偏好要求。
 
-**步骤3：合并输出**
-将步骤1和步骤2的结果合并，去除重复项，按以下格式输出。
+thread_ref：命中下方已有故事线卡片时填其编号（如 "T1"）；明显开启新故事线填 "new" 并给 topic_title；不确定填 null。
+open_lines：窗口末尾尚未聊完、需要留到下一窗合并理解的行号，最多 8 行且必须连续在末尾。没有则 []。"""
 
-**输出格式严格要求（使用简写键名提高处理速度）**：
-- n: 实体名称
-- s: 实体摘要(极简，不超过50字)
-- t: 标签数组（最多5个标签）
-- u: user_id (可选)
-- a: 别名指向的正式名称 (可选，若存在则表示此实体是别名，需配合 s 说明别名指向)
-- src: 关系主语
-- tgt: 关系宾语
-- f: 事实描述
+WINDOW_ROUTE_USER = """[已有故事线]
+{thread_cards}
 
-**别名标注规则**：
-- 当某个实体是另一个实体的别名时（如"大班尼特"是"妮可"的别名），在该实体的 a 字段填写正式名称
-- 别名实体的 s（摘要）应说明"是XXX的别名"，如 "s": "是妮可的别名"
-- 正式实体不需要填写 a 字段
-- 同一正式实体可以有多个别名（如"大班尼特"、"天使"都指向"妮可"）
+[窗口对话]
+{dialogue}
 
-**发言者实体格式**：n 直接使用 user_id 原始值（如 [100000001] 则 n="100000001"），
-t 包含 "Speaker"。
-
-**事实来源与代词约束（防幻觉）**：
-- 人物属性（职业、身份、资历、关系等）只能来自**该人物本人或其他用户的明确陈述**；
-- 仅当发言者使用"我"等第一人称或直接指代明确陈述自身事实时，才将该发言者绑定为主语；严禁将他人转述的泛化设定、复制文案、段子内容绑定到当前说话人上；
-- **不得**从 assistant 的建议、假设、示例或泛化表述中构造人物属性/事实边
-  （如 assistant 建议"可以找安全分析师帮忙"，不代表任何具体人物是安全分析师）；
-- 不确定某属性是否被明确陈述时，宁可不输出该实体/边。
-
-**别名判定约束（a 字段）**：仅当同句内有明确同位语/简称声明（如"X，又叫Y"或"X简称Y"）时填写 a 字段，严禁凭外部常识脑补跨领域别名映射。
-
-**Scope 判断规则**（简化版）：
-- 如果实体是发言者本人，且其属性在群组上下文中不相关（如"家住北京"、"职业是医生"），添加 "u": "<uid>" 和 scope_hint
-- 群组内的话题、事件、地点、产品等实体，不添加 scope_hint
-- 不确定时，不添加 scope_hint
-
-**主人/用户自我陈述槽**（独立于实体，顶层 `stated`）：
-- 说话人明确陈述自己的常驻地点 / 长期持有 / 长期偏好时输出
-  `{"u":"<uid>","k":"location|possession|preference","v":"<原话压缩>"}`
-- 仅第一人称长期稳定陈述；临时行程/短期状态（如"明天返校"、"今晚吃面"）进 events，不要写进 stated。
-- 旁人转述不要写进 stated。
-
-**时间事件（顶层 `events`）**：
-- 收录有日期、决定或明确结果的事实；纯闲聊可以没有 events。
-- 每条一句话摘要，保留关键名词与数字。`d` 为陈述日；另有发生日时再写 `e`。
-- `x` 写涉及实体名（与 entities 对齐，最多 4 个）；`a` 写 1–3 个同义说法。
-- 一般每批 0–8 条；纯闲聊批次可以没有 events。
-
-**对话类型分类（顶层 `window_kind`）**：
-综合判断本批对话的性质（四选一）：
-- "discard"：段子、复制文案、肯德基疯狂星期四等梗、假设情景、纯表情、复读、叙述性虚构；
-- "group_lore"：群内长期共识、黑话、群规、群梗等设定；
-- "speaker_fact"：具体发言者的真实属性、职业、地点、偏好；
-- "mixed"：混合以上多种类型。
-注意：当内容明显为复制粘贴段子/疯狂星期四文案（如"2010年你投资了...今天你借我50"）时，必须判定为 "discard"。
-
-**发言者态度评价（顶层 `attitudes`）**：
-评估本窗口内发言者对 Bot（助手）的态度（列表，每项含 user_id、attitude、evidence）：
-- "friendly"：友好、夸赞、感谢；
-- "neutral"：普通就事论事或正常提问；
-- "teasing"：善意开玩笑、调侃打趣；
-- "provoke"：阴阳怪气、挑衅、故意设套、故意刁难；
-- "hostile"：直接辱骂、恶意攻击、严重敌意。
-没有对 Bot 的发言或纯用户间对话留空列表 []。挑衅与敌意必须在 evidence 摘录简短原话。
-
-**输出格式（纯 JSON，不含任何额外文字）**：
-{
-  "entities":[
-    {"n": "100000001", "s": "群成员", "t": ["Speaker"], "u": "100000001"},
-    {"n": "户外运动", "s": "用户爱好", "t": ["Activity"]}
-  ],
-  "edges":[
-    {"src": "100000001", "tgt": "户外运动", "f": "喜欢户外运动"}
-  ],
-  "events":[
-    {"s": "提交临时专利申请并询问下一步", "d": "2024-05-15", "e": "", "x": ["临时专利申请"], "a": ["provisional filing"]}
-  ],
-  "stated":[],
-  "window_kind": "mixed",
-  "attitudes": [
-    {"user_id": "100000001", "attitude": "neutral", "evidence": ""}
-  ]
-}"""  # noqa: E501
-
-# 偏好记忆门控信号：抽取时由 LLM 同步返回布尔位，用于决定是否触发后续偏好蒸馏。
-PREFERENCE_FLAG_INSTRUCTION = """
-
-**附加判定（程序性偏好信号，独立于上面的实体/关系抽取）**：
-在输出 JSON 的**顶层**额外加一个布尔字段 `pref`：
-- 当对话中**用户在纠正或约束"助手(AI 自己)"未来的行为、工具调用方式、参数选择或输出格式**
-  （例："不对，画图要竖版的""以后搜资料用中文""回复简短点""别再用那个接口"）→ `"pref": true`；
-- 仅是客观事实陈述、闲聊、对第三方的评价、一次性情绪 → `"pref": false`；
-- 拿不准是否为"针对助手未来行为的长期规则"时 → `false`（宁缺毋滥）。
-即输出形如：{"entities":[...],"edges":[...],"pref":false}"""
+只输出 JSON："""
 
 
-# 每次调用变化的内容走 user message（「对话内容」模块），不参与稳定前缀缓存。
-ENTITY_EXTRACTION_USER = """——以下为本次待处理的具体内容——
+ALGEBRA_SYSTEM = """你是记忆代数抽取器。只输出一行 JSON，不要解释、不要 markdown。
 
-当前对话标识：{scope_key}
-{known_context}
-<对话内容>
-{dialogue_content}
-</对话内容>
+从一段群聊话题中抽取：
+1) entities：具名实体。每条含 n(名称)、k(speaker|person|project|item|location|org)、u(user_id 或 null)、s(<=50字摘要)。
+2) edges：事实边。每条含：
+   op: ADD | MERGE | SUPERSEDE | CONTRADICT
+   target: MERGE/SUPERSEDE/CONTRADICT 时填预取列表中的 E 编号，否则 null
+   source / target_name: 主语实体名 / 宾语实体名
+   kind: attribute | relation | milestone
+   slot: 蛇形英文槽位键（如 car_plan / project_budget / allergy）
+   fact: 完整自包含陈述句，禁止悬空谓语
+   subject: 事实归属群友的 user_id（客观项目事实填 null）
+   speaker: 实际说出这句话的发言人的 user_id
+   line: 该事实对应的窗口行号
+   event_date: 事实发生日期 YYYY-MM-DD 或 null
+3) preferences：对 Bot 未来行为的偏好/纠错。每条含 user_id / context（"general" 或能力域）/
+   rule / polarity（"do"|"dont"）/ correction（bool）。
 
-现在请基于上述「对话内容」输出 JSON：
-"""  # noqa: E501
+代数规则：
+- ADD：新增，同一主体同一槽位允许多值并存（如两只宠物）。
+- MERGE：与 target 语义等价，补充更完整细节并累加佐证。
+- SUPERSEDE：target 是同一槽位的旧值，新值取代它。
+- CONTRADICT：与 target 无解释硬矛盾，双方都保留并标记冲突。
+- 不确定是更新还是矛盾时，优先 MERGE，不要强行造冲突。
+- 只提取被明确陈述的事实；段子、假设、反问、复制文案不要抽。
+- 偏好只抽针对助手行为的长期规则，宁缺毋滥。"""
 
+ALGEBRA_USER = """[当前话题]
+{thread_card}
 
-# C2-a/C2-b：运行时注入已知别名+实体的上下文模板，
-# 由 worker._build_known_context 填充到 ENTITY_EXTRACTION_USER。
-KNOWN_CONTEXT_TEMPLATE = """
-<本群已知信息（提取时务必参考）>
-{alias_section}{entity_section}说明：遇到上述别名时，必须在该实体的 a 字段填写对应正式名称；
-遇到与上述已存在实体疑似同一对象的新名称时，也用 a 字段对齐到该正式名，避免同一对象被拆成多个实体。
-</本群已知信息>
-"""  # noqa: E501
+[已有实体/槽位预取]
+{known_edges}
 
+[窗口对话（行号已在行首）]
+{dialogue}
 
-# 程序性 / 偏好记忆抽取（独立 LLM 调用，create_by=MemPreferenceExtraction）
-# 设计：plans/procedural_preference_memory_design_20260614.md §4
-PREFERENCE_EXTRACTION_SYSTEM = """你是"用户偏好与纠错规则"蒸馏专家。输入是即时通讯对话片段（每行形如 [user_id]: 内容）和一份【可用能力清单】。
-
-你的唯一任务：找出用户对【助手(你)的行为、工具调用方式、输出格式、参数选择】发出的"纠正 / 偏好 / 规则要求"，蒸馏成助手未来应遵守的程序性规则。
-
-严格约束：
-- 只提取针对"助手未来行为"的程序性规则（如"调用某工具时参数怎么填""以后别用某接口""回复要简短"）。
-- 不要提取客观事实、闲聊、对第三方的评价、一次性情绪——这些不是规则。
-- 若对话里没有任何此类纠正/偏好，输出 {"preferences": []}。
-- 宁缺毋滥：不确定是否为长期规则时不要输出。
-
-每条规则字段（使用简写键名）：
-- ctx: 规则绑定的上下文，二选一：
-  - **仅当规则明确只针对某一个具体能力**（如"调某工具时参数怎么填"）→ 从【可用能力清单】里
-    **精确选一个**能力域或工具名；
-  - 若规则是**跨能力的通用约定**——风格/语气、**时间与日期的理解**（如"凌晨说的'明天'指当天
-    早上""按用户所在时区"）、单位、语言、称呼等，凡"任何相关工具都该遵守"的 → 一律填 "general"
-    （"general" 规则会对**所有**请求生效，正适合这类不绑定单一工具的语义约定）。
-  - 拿不准是"单一能力专属"还是"通用"时，**倾向 "general"**（宁可全局生效，也别误绑到单一工具
-    导致换个工具就失效）。
-- rule: 一句话规则，**必须包含"触发条件 + 行为 + 适用范围"三段**（例："调用 generate_image
-  生成图片时, orientation 用 portrait"；"给该用户设提醒时, 不要用早上 8 点前的时间"）。
-  - **禁止输出无条件的全面禁令**（✗"不要提及XX"）——必须还原用户原话实际针对的场景，
-    把范围写进规则本身（✓"给用户安排日程时不要安排XX类活动"）。范围丢失的规则会在
-    完全无关的场合被套用，比说错更有害；还原不出范围就不要输出这条。
-  - 规则约束的是"助手做什么"，不是助手角色的自我表达。用户若确实要求角色停止某种
-    自我表达，必须写明场合（如"在本群闲聊时"），不得蒸馏成对角色设定的全局否定。
-  - 若由纠正产生（corr=true），rule 末尾附上用户原话摘录（≤30 字），格式：
-    （原话:"..."）——后续轮读到规则时能自行判断适用边界。
-- pol: "do"（应当这样做）或 "dont"（不要这样做）。
-- corr: 是否由"纠正一次具体错误"产生（true / false）。
-- by: 提出该规则的发言者 user_id（取自该行 [user_id] 前缀；取不到留空）。
-
-输出纯 JSON（不含任何额外文字）：
-{"preferences":[{"ctx":"网络搜索","rule":"搜索资料时优先用中文关键词","pol":"do","corr":false,"by":"123"}]}"""  # noqa: E501
-
-PREFERENCE_EXTRACTION_USER = """——以下为本次待处理的内容——
-{capability_section}{tool_trace_section}<对话内容>
-{dialogue_content}
-</对话内容>
-
-现在请基于上述「对话内容」蒸馏 preferences，输出纯 JSON：
-"""  # noqa: E501
-
-
-GIST_EXTRACTION_SYSTEM = """You write one gist line per user turn. Do not skip or merge turns.
-
-Rules:
-- Language follows the source turn.
-- g = ≤30 words: what the user raised, asked, reported, or decided.
-- Keep names, tools, libraries, numbers, and error text.
-- new = whether this turn raises a sub-topic not seen earlier in THIS session.
-- title = ≤12 words for the session.
-
-Output JSON only:
-{"title":"...","aliases":["..."],"turns":[{"i":3,"g":"...","new":true}]}
-i must be the given turn_index."""
-
-GIST_EXTRACTION_USER = """User turns in this session:
-{turns}
-
-Output JSON only:
-"""
+只输出 JSON："""

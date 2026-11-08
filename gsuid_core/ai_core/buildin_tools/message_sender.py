@@ -316,6 +316,7 @@ async def send_message_by_ai(
                 image_sent=has_media,
                 has_status_tool=has_st,
                 tool_calls_so_far=["send_message_by_ai"],
+                user_text=_ev_text,
             )
             if _blk:
                 _note_send_block(tool_ctx, _why, text, tool_call_id=call_id)

@@ -1,18 +1,11 @@
-"""记忆系统数据库模块
-
-提供数据库会话工厂，复用 gsuid_core 现有的 SQLAlchemy 基础设施。
-"""
+"""记忆系统数据库模块：schema_v2 四表 + 偏好。"""
 
 from .models import (
     AIMemEdge,
     AIMemEntity,
     AIMemThread,
     AIMemEpisode,
-    AIMemSession,
-    AIMemCategory,
-    AIMemTurnGist,
-    AIMemCategoryEdge,
-    mem_category_entity_members,
+    AIMemPreference,
     mem_episode_entity_mentions,
 )
 
@@ -20,11 +13,7 @@ __all__ = [
     "AIMemEpisode",
     "AIMemEntity",
     "AIMemEdge",
-    "AIMemSession",
     "AIMemThread",
-    "AIMemTurnGist",
-    "AIMemCategory",
-    "AIMemCategoryEdge",
+    "AIMemPreference",
     "mem_episode_entity_mentions",
-    "mem_category_entity_members",
 ]

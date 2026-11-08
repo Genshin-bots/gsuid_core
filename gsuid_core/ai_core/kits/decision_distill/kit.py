@@ -1,4 +1,8 @@
-"""``gscore.decision_distill``：thinking 决策结论后台蒸馏（H08）。"""
+"""``gscore.decision_distill``：零 LLM 决策轨迹归档（H08）。
+
+常规对话不再额外调用模型蒸馏决策结论；只把本轮的思考摘要、工具名与结果
+按批写入 SELF 记忆，供后续检索当作可解释轨迹。
+"""
 
 from __future__ import annotations
 
@@ -50,14 +54,11 @@ class DecisionDistillKit(AgentKit):
 
 
 async def flush_decision_buffer() -> None:
-    """攒批 flush：SELF episode + 认知节点。LLM 失败退规则摘要。"""
+    """攒批 flush：纯本地规则摘要写 SELF episode。"""
     batch = list(_BUFFER)
     _BUFFER.clear()
-    if not batch:
-        return
-    distilled = await _llm_summaries(batch)
-    for i, item in enumerate(batch):
-        decision = distilled[i] if i < len(distilled) and distilled[i] else _rule_summary(item)
+    for item in batch:
+        decision = _rule_summary(item)
         if not decision:
             continue
         await _persist_decision(item.bot_self_id, item.persona_name, decision)
@@ -82,7 +83,7 @@ async def _persist_decision(bot_self_id: str, persona_name: str, decision: str) 
                 source="decision_distill",
             )
         )
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.warning(t("log.ai.decision_distill_remember_fail", e=e))
     try:
         await observe(
@@ -94,7 +95,7 @@ async def _persist_decision(bot_self_id: str, persona_name: str, decision: str) 
             observer_blacklist=[],
             message_type="private_msg",
         )
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.debug(t("log.ai.decision_distill_observe_fail", e=e))
 
 
@@ -105,79 +106,11 @@ def _rule_summary(item: _Pending) -> str:
     return f"决策：走 {tools}。理由：{rationale or '（过程略）'}。结局：{outcome}"[:200]
 
 
-async def _llm_summaries(batch: List[_Pending]) -> List[str]:
-    """轻量模型一次蒸整批；解析失败则空列表，调用方退规则摘要。"""
-    import os
-
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return []
-    from gsuid_core.ai_core.gs_agent import create_agent
-
-    blob_parts: List[str] = []
-    for i, item in enumerate(batch, start=1):
-        tools = ",".join(item.tools[:6])
-        blob_parts.append(f"#{i}\nthinking:{item.thinking[-400:]}\ntools:{tools}\nresult:{item.result}")
-    prompt = (
-        "从下列 run 各抽出 0-1 条决策。只输出 JSON 数组，"
-        '元素为 {"decision":"...","rationale":"...","outcome":"..."}。'
-        "闲聊且无工具则输出 []。\n\n" + "\n\n".join(blob_parts)
-    )
-    try:
-        agent = create_agent(
-            system_prompt="你是记忆管家，只蒸馏决策结论。禁止角色扮演。",
-            max_tokens=600,
-            create_by="DecisionDistill",
-            task_level="low",
-            is_subagent=True,
-            dynamic_tools=False,
-        )
-        try:
-            raw = await agent.run(user_message=prompt, return_mode="return")
-        finally:
-            if agent._session_logger is not None:
-                agent._session_logger.close()
-        return _parse_distill_json(str(raw or ""), len(batch))
-    except Exception as e:
-        logger.debug(t("log.ai.decision_distill_llm_fail", e=e))
-        return []
-
-
-def _parse_distill_json(raw: str, n: int) -> List[str]:
-    import json
-    from json.decoder import JSONDecodeError
-
-    start = raw.find("[")
-    end = raw.rfind("]")
-    if start < 0 or end <= start:
-        return []
-    try:
-        data = json.loads(raw[start : end + 1])
-    except JSONDecodeError:
-        return []
-    if not isinstance(data, list):
-        return []
-    out: List[str] = []
-    for item in data[:n]:
-        if not isinstance(item, dict):
-            out.append("")
-            continue
-        decision = item["decision"] if "decision" in item and isinstance(item["decision"], str) else ""
-        rationale = item["rationale"] if "rationale" in item and isinstance(item["rationale"], str) else ""
-        outcome = item["outcome"] if "outcome" in item and isinstance(item["outcome"], str) else ""
-        if not decision and not outcome:
-            out.append("")
-            continue
-        out.append(f"决策：{decision}。理由：{rationale}。结局：{outcome}"[:200])
-    while len(out) < n:
-        out.append("")
-    return out
-
-
 KIT = register_agent_kit(
     DecisionDistillKit(
         kit_id="gscore.decision_distill",
         slot="decision_distill",
-        display_name="决策蒸馏",
+        display_name="决策轨迹归档",
         owns_tools=(),
     )
 )

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import Depends
 from pydantic import Field, BaseModel
 from sqlmodel import col, func, select
-from sqlalchemy import or_
+from sqlalchemy import or_, and_
 from sqlalchemy.exc import SQLAlchemyError
 
 from gsuid_core.i18n import t
@@ -26,6 +26,7 @@ from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.utils.database.base_models import async_maker
+from gsuid_core.ai_core.memory.database.fts import ensure_fts_table
 from gsuid_core.webconsole._local_test_gate import (
     LOCAL_TEST_MODE,
     require_local_test,
@@ -34,18 +35,15 @@ from gsuid_core.webconsole._local_test_gate import (
 from gsuid_core.ai_core.memory.database.models import (
     AIMemEdge,
     AIMemEntity,
+    AIMemThread,
     AIMemEpisode,
-    AIMemCategory,
     AIMemPreference,
-    AIMemCategoryEdge,
-    mem_category_entity_members,
 )
 from gsuid_core.ai_core.memory.database.clear_ops import (
     clear_group_memories,
     clear_user_global_memories,
     clear_memories_for_scope_async,
 )
-from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta, rebuild_task
 
 from ._api_tags import AI_MEMORY
 
@@ -55,6 +53,13 @@ if TYPE_CHECKING:
 # WebConsole 端点捕获的"合法运行时/DB 故障"：这些应转成 status=1 返回给前端
 # 而**不**包括编程错误（KeyError/AttributeError/TypeError/NameError 等）——后者应
 _RUNTIME_ERRORS = (SQLAlchemyError, asyncio.TimeoutError, OSError, ValueError)
+
+_VIRTUAL_L1: tuple[tuple[str, str, str], ...] = (
+    ("virt:L1:attribute", "人物与实体属性", "attribute"),
+    ("virt:L1:relation", "跨实体关系网", "relation"),
+    ("virt:L1:milestone", "关键事件里程碑", "milestone"),
+    ("virt:L1:conflict", "待核实传闻与冲突", "conflict"),
+)
 
 # Pydantic 请求模型
 
@@ -66,8 +71,12 @@ class MemorySearchRequest(BaseModel):
     group_id: Optional[str] = Field(None, min_length=1, max_length=128, description="群组 ID")
     user_id: str = Field(..., max_length=64, description="用户 ID（可选，用于联合用户全局记忆）")
     top_k: int = Field(default=10, ge=1, le=50, description="返回结果数量上限")
-    enable_system2: bool = Field(default=True, description="是否启用 System-2 分层图遍历")
+    enable_system2: bool = Field(default=False, description="兼容字段（schema_v2 已无图遍历）")
     enable_user_global: bool = Field(default=False, description="是否联合查询用户跨群画像")
+    memory_intent: str = Field(
+        default="point_latest",
+        description="none / point_latest / version_diff / timeline_order / broad_summary",
+    )
 
 
 class BatchObserveTurn(BaseModel):
@@ -254,6 +263,7 @@ async def search_memory(
             top_k=req.top_k,
             enable_system2=req.enable_system2,
             enable_user_global=req.enable_user_global,
+            memory_intent=req.memory_intent,
         )
 
         return {
@@ -267,7 +277,9 @@ async def search_memory(
                 "preferences": mem_ctx.preferences,
                 "retrieval_meta": mem_ctx.retrieval_meta,
                 "prompt_text": mem_ctx.to_prompt_text(
-                    inject_memory_cap(req.query, covered=mem_ctx.covered), query=req.query
+                    inject_memory_cap(req.query, covered=mem_ctx.covered, memory_intent=req.memory_intent),
+                    query=req.query,
+                    memory_intent=req.memory_intent,
                 ),
             },
         }
@@ -293,7 +305,6 @@ def _build_extraction_windows(
     max_chars: int,
     max_turns: int,
     now_default: datetime,
-    mark_correction: bool,
 ) -> List[List["ObservationRecord"]]:
     """把连续 turn 切成抽取窗口；每窗口是一组 ObservationRecord（HIGH 价值）。
 
@@ -301,7 +312,7 @@ def _build_extraction_windows(
     每条 record 的 ``valid_at`` 用 turn 时间戳（缺省退当前时间），供按 valid_at 找代表性
     Episode 与时序探针；``is_correction`` 仅在偏好记忆开启时按纯规则探测（喂给偏好蒸馏门控）。
     """
-    from gsuid_core.ai_core.memory.observer import ObservationRecord, detect_correction_intent
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
 
     windows: List[List["ObservationRecord"]] = []
     cur: List["ObservationRecord"] = []
@@ -312,7 +323,6 @@ def _build_extraction_windows(
             continue
         speaker_id = "assistant" if turn.role == "assistant" else str(user_id)
         ts = ts_obj if ts_obj is not None else now_default
-        is_corr = bool(mark_correction and detect_correction_intent(content))
         rec = ObservationRecord(
             raw_content=content,
             speaker_id=speaker_id,
@@ -321,7 +331,6 @@ def _build_extraction_windows(
             timestamp=ts,
             message_type="private_msg",
             value_tier="HIGH",
-            is_correction=is_corr,
         )
         if cur and (cur_chars + len(content) > max_chars or len(cur) >= max_turns):
             windows.append(cur)
@@ -356,6 +365,158 @@ async def _find_episode_id_in_range(scope_key: str, start_ts: datetime, end_ts: 
         return ""
 
 
+async def _reconcile_scope_index(scope_key: str) -> Dict[str, Any]:
+    """零 LLM 对账：FTS5 重建 + Qdrant 缺失向量补偿。"""
+    import time as _time
+
+    from sqlalchemy import text as sql_text
+
+    from gsuid_core.utils.database.base_models import _db_type
+    from gsuid_core.ai_core.memory.database.fts import index_episode
+
+    started = _time.perf_counter()
+    fts_rows = 0
+    async with async_maker() as session:
+        await ensure_fts_table(session)
+        if _db_type == "sqlite":
+            await session.execute(
+                sql_text("DELETE FROM aimemepisode_fts WHERE scope_key = :sk"),
+                {"sk": scope_key},
+            )
+        result = await session.execute(select(AIMemEpisode).where(AIMemEpisode.scope_key == scope_key))
+        episodes = list(result.scalars().all())
+        for episode in episodes:
+            await index_episode(session, episode)
+            fts_rows += 1
+        await session.commit()
+
+    repaired = 0
+    try:
+        from sqlalchemy import inspect as _inspect
+
+        from gsuid_core.ai_core.rag.base import client
+        from gsuid_core.ai_core.memory.vector.ops import (
+            upsert_edge_vectors_batch,
+            upsert_entity_vectors_batch,
+            upsert_episode_vectors_batch,
+        )
+        from gsuid_core.ai_core.memory.vector.collections import (
+            MEMORY_EDGES_COLLECTION,
+            MEMORY_ENTITIES_COLLECTION,
+            MEMORY_EPISODES_COLLECTION,
+        )
+
+        del _inspect
+        if client is None:
+            return {"scope_key": scope_key, "fts_rows": fts_rows, "vectors_repaired": 0, "elapsed_ms": 0}
+
+        # Episode 向量补偿
+        async with async_maker() as session:
+            rows = list(
+                (await session.execute(select(AIMemEpisode).where(AIMemEpisode.scope_key == scope_key))).scalars().all()
+            )
+        ids = [r.qdrant_id or r.id for r in rows]
+        if ids:
+            points = await client.retrieve(
+                collection_name=MEMORY_EPISODES_COLLECTION,
+                ids=ids[:512],
+                with_payload=False,
+                with_vectors=False,
+            )
+            existing = {str(p.id) for p in points}
+            missing = [
+                {
+                    "episode_id": r.qdrant_id or r.id,
+                    "content": r.content,
+                    "scope_key": r.scope_key,
+                    "valid_at_ts": r.valid_at.timestamp() if r.valid_at else 0.0,
+                    "speaker_ids": r.speaker_ids,
+                    "session_id": r.session_id,
+                    "thread_id": r.thread_id,
+                    "turn_index": r.turn_index,
+                }
+                for r in rows
+                if (r.qdrant_id or r.id) not in existing
+            ]
+            if missing:
+                await upsert_episode_vectors_batch(missing)
+                repaired += len(missing)
+
+        # Entity / Edge 向量补偿（只补首页，避免按钮触发全库重嵌）
+        async with async_maker() as session:
+            entities = list(
+                (await session.execute(select(AIMemEntity).where(AIMemEntity.scope_key == scope_key).limit(200)))
+                .scalars()
+                .all()
+            )
+            edges = list(
+                (await session.execute(select(AIMemEdge).where(AIMemEdge.scope_key == scope_key).limit(200)))
+                .scalars()
+                .all()
+            )
+        if entities:
+            existing = {
+                str(p.id)
+                for p in await client.retrieve(
+                    collection_name=MEMORY_ENTITIES_COLLECTION,
+                    ids=[e.qdrant_id or e.id for e in entities],
+                    with_payload=False,
+                    with_vectors=False,
+                )
+            }
+            missing_entities = [
+                {
+                    "entity_id": e.qdrant_id or e.id,
+                    "name": e.name,
+                    "summary": e.summary,
+                    "scope_key": e.scope_key,
+                    "is_speaker": e.is_speaker,
+                    "user_id": e.user_id,
+                    "tag": e.tag,
+                }
+                for e in entities
+                if (e.qdrant_id or e.id) not in existing
+            ]
+            if missing_entities:
+                await upsert_entity_vectors_batch(missing_entities)
+                repaired += len(missing_entities)
+        if edges:
+            existing = {
+                str(p.id)
+                for p in await client.retrieve(
+                    collection_name=MEMORY_EDGES_COLLECTION,
+                    ids=[e.qdrant_id or e.id for e in edges],
+                    with_payload=False,
+                    with_vectors=False,
+                )
+            }
+            missing_edges = [
+                {
+                    "edge_id": e.qdrant_id or e.id,
+                    "fact": e.fact,
+                    "scope_key": e.scope_key,
+                    "valid_at_ts": e.valid_at.timestamp() if e.valid_at else None,
+                    "invalid_at_ts": e.invalid_at.timestamp() if e.invalid_at else None,
+                    "source_entity_id": e.source_entity_id,
+                    "target_entity_id": e.target_entity_id,
+                }
+                for e in edges
+                if (e.qdrant_id or e.id) not in existing
+            ]
+            if missing_edges:
+                await upsert_edge_vectors_batch(missing_edges)
+                repaired += len(missing_edges)
+    except _RUNTIME_ERRORS as e:
+        logger.warning(t("log.webconsole.memory_reconcile_vectors_fail", e=e))
+
+    return {
+        "scope_key": scope_key,
+        "fts_rows": fts_rows,
+        "vectors_repaired": repaired,
+        "elapsed_ms": round((_time.perf_counter() - started) * 1000, 2),
+    }
+
+
 async def _count_entities_edges(scope_key: str) -> Tuple[int, int]:
     """统计某 scope 当前的 Entity / Edge 数量（用于抽取前后差值上报）。"""
     async with async_maker() as session:
@@ -385,7 +546,6 @@ async def _run_extract_pass(
     """
     from gsuid_core.ai_core.memory.ingestion.worker import extract_window
 
-    mark_correction = memory_config.enable_preference_memory
     windows = _build_extraction_windows(
         parsed_turns,
         user_id=user_id,
@@ -393,7 +553,6 @@ async def _run_extract_pass(
         max_chars=req.extract_window_chars,
         max_turns=req.extract_window_turns,
         now_default=now_default,
-        mark_correction=mark_correction,
     )
     if req.extract_max_windows and req.extract_max_windows > 0:
         windows = windows[: req.extract_max_windows]
@@ -525,7 +684,7 @@ async def batch_observe(
             speaker_id = "assistant" if turn.role == "assistant" else str(req.user_id)
             ts = ts_obj if ts_obj is not None else now_default
             # 长 turn 切块：每块一条 Episode（同一 turn 的块共享时间戳），保证完整入嵌入窗口
-            for chunk in _chunk_text(content):
+            for chunk in _chunk_text(content, target=1200):
                 items.append(
                     {
                         "content": f"{speaker_id}: {chunk}",
@@ -551,10 +710,9 @@ async def batch_observe(
                 now_default=now_default,
             )
 
-        # trigger_rebuild：同步等待分层图重建。episodes 已同步落库、extract（若开）已写
-        # 实体/边，此时 rebuild 能看到最新图；评测 probe 紧随其后，异步重建会漏召回。
+        # trigger_rebuild：schema_v2 下只做零 LLM 的索引对账补偿。
         if req.trigger_rebuild:
-            await rebuild_task(scope_key)
+            await _reconcile_scope_index(scope_key)
 
         return {
             "status": 0,
@@ -1011,6 +1169,7 @@ async def list_edges(
     scope_key: Optional[str] = None,
     all_scopes: bool = False,
     entity_id: Optional[str] = None,
+    include_history: bool = False,
     page: int = 1,
     page_size: int = 20,
     _: Dict[str, Any] = Depends(require_auth),
@@ -1059,6 +1218,9 @@ async def list_edges(
                         col(AIMemEdge.target_entity_id) == entity_id,
                     )
                 )
+            if not include_history:
+                query = query.where(col(AIMemEdge.resolution_state).in_(["active", "contradicted"]))
+                count_query = count_query.where(col(AIMemEdge.resolution_state).in_(["active", "contradicted"]))
 
             total_result = await session.execute(count_query)
             total = total_result.scalar() or 0
@@ -1081,6 +1243,17 @@ async def list_edges(
                         "valid_at": str(edge.valid_at) if edge.valid_at else None,
                         "invalid_at": str(edge.invalid_at) if edge.invalid_at else None,
                         "created_at": str(edge.created_at) if edge.created_at else None,
+                        "edge_kind": edge.edge_kind,
+                        "slot_key": edge.slot_key,
+                        "resolution_state": edge.resolution_state,
+                        "provenance_tier": "transcribed" if edge.resolution_state == "staging" else "self",
+                        "superseded_by_id": edge.superseded_by_id,
+                        "contradicts_edge_id": edge.contradicts_edge_id,
+                        "thread_id": edge.thread_id,
+                        "event_at": str(edge.event_at) if edge.event_at else None,
+                        "mention_count": edge.mention_count,
+                        "decay_score": edge.decay_score,
+                        "last_accessed": str(edge.last_accessed) if edge.last_accessed else None,
                     }
                 )
 
@@ -1156,6 +1329,16 @@ async def get_edge_detail(
                     "invalid_at": str(edge.invalid_at) if edge.invalid_at else None,
                     "created_at": str(edge.created_at) if edge.created_at else None,
                     "qdrant_id": edge.qdrant_id,
+                    "edge_kind": edge.edge_kind,
+                    "slot_key": edge.slot_key,
+                    "resolution_state": edge.resolution_state,
+                    "provenance_tier": "transcribed" if edge.resolution_state == "staging" else "self",
+                    "superseded_by_id": edge.superseded_by_id,
+                    "contradicts_edge_id": edge.contradicts_edge_id,
+                    "thread_id": edge.thread_id,
+                    "event_at": str(edge.event_at) if edge.event_at else None,
+                    "mention_count": edge.mention_count,
+                    "decay_score": edge.decay_score,
                     "source_entity": source_entity,
                     "target_entity": target_entity,
                 },
@@ -1392,7 +1575,7 @@ async def delete_preference(
 # 5. 分层语义图（Category）浏览 API
 
 
-@app.get("/api/ai/memory/categories", summary="Category 列表", tags=AI_MEMORY)
+@app.get("/api/ai/memory/categories", summary="记忆虚拟分类投影", tags=AI_MEMORY)
 async def list_categories(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
@@ -1402,324 +1585,379 @@ async def list_categories(
     page_size: int = 20,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """
-    获取 Category（分层语义图节点）列表
-
-    支持按群组、层级过滤，分页返回。
-    设置 all_scopes=true 可返回所有范围的 Category。
-
-    Args:
-        group_id: 群组 ID（可选）
-        scope_key: 完整的 Scope Key（可选，优先级高于 group_id）
-        all_scopes: 是否返回所有范围的 Category（默认 False）
-        layer: 层级编号（可选，1=最具体，越大越抽象）
-        page: 页码
-        page_size: 每页数量
-
-    Returns:
-        status: 0成功，1失败
-        data: Category 列表及分页信息
-    """
+    """零 Token 虚拟分类：四大原语 + 故事线专题。"""
     try:
         actual_scope_key = scope_key
         if not all_scopes and actual_scope_key is None and group_id is not None:
             actual_scope_key = make_scope_key(ScopeType.GROUP, group_id)
 
         async with async_maker() as session:
-            # 1. 显式定义子查询：计算子类目数量
-            child_count_subq = (
-                select(func.count(col(AIMemCategoryEdge.child_category_id)))
-                .where(AIMemCategoryEdge.parent_category_id == AIMemCategory.id)
-                .scalar_subquery()
-                .label("child_count")
-            )
-
-            # 2. 显式定义子查询：计算关联实体数量
-            member_count_subq = (
-                select(func.count(mem_category_entity_members.c.entity_id))
-                .where(mem_category_entity_members.c.category_id == AIMemCategory.id)
-                .scalar_subquery()
-                .label("member_count")
-            )
-
-            # 3. 显式定义子查询：获取父分类 ID（取第一个父分类）
-            parent_id_subq = (
-                select(col(AIMemCategoryEdge.parent_category_id))
-                .where(AIMemCategoryEdge.child_category_id == AIMemCategory.id)
-                .limit(1)
-                .scalar_subquery()
-                .label("parent_id")
-            )
-
-            # 4. 构造主查询：同时选取模型和三个子查询结果
-            query = select(AIMemCategory, child_count_subq, member_count_subq, parent_id_subq)
-            count_query = select(func.count()).select_from(AIMemCategory)
-
-            # 注意：actual_scope_key 为 None 且 all_scopes=True 时，不加过滤条件，查所有
-            if actual_scope_key:
-                query = query.where(AIMemCategory.scope_key == actual_scope_key)
-                count_query = count_query.where(AIMemCategory.scope_key == actual_scope_key)
-
-            if layer is not None:
-                query = query.where(AIMemCategory.layer == layer)
-                count_query = count_query.where(AIMemCategory.layer == layer)
-
-            # 获取总数
-            total_result = await session.execute(count_query)
-            total = total_result.scalar() or 0
-
-            # 分页与排序
-            query = query.order_by(col(AIMemCategory.layer).asc(), col(AIMemCategory.name).asc())
-            query = query.offset((page - 1) * page_size).limit(page_size)
-
-            # 执行查询
-            result = await session.execute(query)
-            # 注意：此时 result 里的每一行是一个元组: (AIMemCategory实例, child_count, member_count)
-            rows = result.all()
-
-            items = []
-            for cat, child_count, member_count, parent_id in rows:
-                items.append(
-                    {
-                        "id": cat.id,
-                        "scope_key": cat.scope_key,
-                        "name": cat.name,
-                        "summary": cat.summary,
-                        "tag": cat.tag,
-                        "layer": cat.layer,
-                        "parent_id": parent_id,  # 直接使用 SQL 子查询的结果
-                        "child_categories_count": child_count,  # 直接使用 SQL 计算出的结果
-                        "member_entities_count": member_count,  # 直接使用 SQL 计算出的结果
-                        "created_at": str(cat.created_at) if cat.created_at else None,
-                        "updated_at": str(cat.updated_at) if cat.updated_at else None,
-                    }
-                )
-
+            items: List[Dict[str, Any]] = []
+            if layer is None or layer == 0:
+                if actual_scope_key:
+                    threads = await AIMemThread.list_by_scope(actual_scope_key, limit=100)
+                else:
+                    rows = await session.execute(
+                        select(AIMemThread).order_by(col(AIMemThread.last_at).desc()).limit(100)
+                    )
+                    threads = list(rows.scalars().all())
+                for th in threads:
+                    items.append(
+                        {
+                            "id": f"virt:thread:{th.id}",
+                            "scope_key": th.scope_key,
+                            "name": th.title or "未命名故事线",
+                            "summary": th.summary or "追加式里程碑故事线",
+                            "tag": ["thread", th.status],
+                            "layer": 0,
+                            "parent_id": None,
+                            "child_categories_count": 0,
+                            "member_entities_count": th.milestone_count,
+                            "created_at": str(th.first_at) if th.first_at else None,
+                            "updated_at": str(th.last_at) if th.last_at else None,
+                        }
+                    )
+            if layer is None or layer == 1:
+                for vid, name, kind in _VIRTUAL_L1:
+                    base = select(func.count()).select_from(AIMemEdge)
+                    if actual_scope_key:
+                        base = base.where(AIMemEdge.scope_key == actual_scope_key)
+                    if kind == "conflict":
+                        base = base.where(col(AIMemEdge.resolution_state).in_(["contradicted", "staging"]))
+                    else:
+                        base = base.where(
+                            col(AIMemEdge.edge_kind) == kind,
+                            col(AIMemEdge.resolution_state) == "active",
+                        )
+                    count = (await session.execute(base)).scalar() or 0
+                    items.append(
+                        {
+                            "id": vid,
+                            "scope_key": actual_scope_key or "",
+                            "name": name,
+                            "summary": f"实时 SQL 投影，共 {count} 条",
+                            "tag": ["virtual", kind],
+                            "layer": 1,
+                            "parent_id": None,
+                            "child_categories_count": 0,
+                            "member_entities_count": count,
+                            "created_at": None,
+                            "updated_at": None,
+                        }
+                    )
+            total = len(items)
+            start = (page - 1) * page_size
             return {
                 "status": 0,
                 "msg": "ok",
                 "data": {
-                    "items": items,
+                    "items": items[start : start + page_size],
                     "total": total,
                     "page": page,
                     "page_size": page_size,
                 },
             }
     except _RUNTIME_ERRORS as e:
-        return {
-            "status": 1,
-            "msg": f"获取 Category 列表失败: {str(e)}",
-            "data": None,
-        }
+        return {"status": 1, "msg": f"获取虚拟分类失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/memory/categories/{category_id}", summary="Category 详情", tags=AI_MEMORY)
+@app.get("/api/ai/memory/categories/{category_id}", summary="虚拟分类详情", tags=AI_MEMORY)
 async def get_category_detail(
     category_id: str,
+    scope_key: Optional[str] = None,
+    group_id: Optional[str] = None,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """
-    获取单个 Category 详情
-
-    包含子 Category 列表和成员 Entity 列表。
-
-    Args:
-        category_id: Category ID
-
-    Returns:
-        status: 0成功，1失败
-        data: Category 详情
-    """
+    """下钻虚拟分类：L1 原语返回成员实体/边，故事线返回里程碑与片段。"""
     try:
+        actual_scope_key = scope_key
+        if actual_scope_key is None and group_id is not None:
+            actual_scope_key = make_scope_key(ScopeType.GROUP, group_id)
         async with async_maker() as session:
-            result = await session.execute(select(AIMemCategory).where(AIMemCategory.id == category_id))
-            category = result.scalar_one_or_none()
-
-            if category is None:
-                return {"status": 1, "msg": f"未找到 Category: {category_id}", "data": None}
-
-            child_categories = []
-            if category.child_categories:
-                for child in category.child_categories:
-                    child_categories.append(
-                        {
-                            "id": child.id,
-                            "name": child.name,
-                            "layer": child.layer,
-                        }
+            if category_id.startswith("virt:thread:"):
+                thread_id = category_id[len("virt:thread:") :]
+                thread = await session.get(AIMemThread, thread_id)
+                if thread is None:
+                    return {"status": 1, "msg": f"未找到故事线: {thread_id}", "data": None}
+                milestones = await AIMemEdge.list_thread_milestones(thread.scope_key, thread.id, limit=200)
+                episode_ids = [m.source_episode_id for m in milestones if m.source_episode_id]
+                episodes = []
+                for eid in episode_ids:
+                    row = await session.get(AIMemEpisode, eid)
+                    if row is not None:
+                        episodes.append(
+                            {
+                                "id": row.id,
+                                "content": row.content,
+                                "valid_at": str(row.valid_at) if row.valid_at else None,
+                                "session_id": row.session_id,
+                                "thread_id": row.thread_id,
+                            }
+                        )
+                entity_ids = list({m.source_entity_id for m in milestones})
+                rows = await session.execute(select(AIMemEntity).where(col(AIMemEntity.id).in_(entity_ids)))
+                entities = list(rows.scalars().all()) if entity_ids else []
+                return {
+                    "status": 0,
+                    "msg": "ok",
+                    "data": {
+                        "id": category_id,
+                        "scope_key": thread.scope_key,
+                        "name": thread.title or "未命名故事线",
+                        "summary": thread.summary,
+                        "tag": ["thread", thread.status],
+                        "layer": 0,
+                        "parent_id": None,
+                        "created_at": str(thread.first_at) if thread.first_at else None,
+                        "updated_at": str(thread.last_at) if thread.last_at else None,
+                        "parent_categories": [],
+                        "child_categories": [],
+                        "member_entities": [
+                            {"id": e.id, "name": e.name, "summary": e.summary, "is_speaker": e.is_speaker}
+                            for e in entities
+                        ],
+                        "edges": [
+                            {"id": m.id, "fact": m.fact, "valid_at": str(m.valid_at) if m.valid_at else None}
+                            for m in milestones
+                        ],
+                        "episodes": episodes,
+                    },
+                }
+            if category_id.startswith("virt:L1:"):
+                kind = category_id.rsplit(":", 1)[-1]
+                query = select(AIMemEdge)
+                if actual_scope_key:
+                    query = query.where(AIMemEdge.scope_key == actual_scope_key)
+                if kind == "conflict":
+                    cond = col(AIMemEdge.resolution_state).in_(["contradicted", "staging"])
+                else:
+                    cond = and_(
+                        col(AIMemEdge.edge_kind) == kind,
+                        col(AIMemEdge.resolution_state) == "active",
                     )
-
-            parent_categories = []
-            if category.parent_categories:
-                for parent in category.parent_categories:
-                    parent_categories.append(
-                        {
-                            "id": parent.id,
-                            "name": parent.name,
-                            "layer": parent.layer,
-                        }
-                    )
-
-            member_entities = []
-            if category.member_entities:
-                for entity in category.member_entities:
-                    member_entities.append(
-                        {
-                            "id": entity.id,
-                            "name": entity.name,
-                            "summary": entity.summary,
-                            "is_speaker": entity.is_speaker,
-                        }
-                    )
-
-            # 获取父分类 ID（如果有父分类的话）
-            parent_id = None
-            if category.parent_categories and len(category.parent_categories) > 0:
-                parent_id = category.parent_categories[0].id
-
-            return {
-                "status": 0,
-                "msg": "ok",
-                "data": {
-                    "id": category.id,
-                    "scope_key": category.scope_key,
-                    "name": category.name,
-                    "summary": category.summary,
-                    "tag": category.tag,
-                    "layer": category.layer,
-                    "parent_id": parent_id,
-                    "created_at": str(category.created_at) if category.created_at else None,
-                    "updated_at": str(category.updated_at) if category.updated_at else None,
-                    "parent_categories": parent_categories,
-                    "child_categories": child_categories,
-                    "member_entities": member_entities,
-                },
-            }
+                query = query.where(cond).order_by(col(AIMemEdge.valid_at).desc()).limit(200)
+                edges = list((await session.execute(query)).scalars().all())
+                entity_ids = list({e.source_entity_id for e in edges} | {e.target_entity_id for e in edges})
+                rows = await session.execute(select(AIMemEntity).where(col(AIMemEntity.id).in_(entity_ids)))
+                entities = list(rows.scalars().all()) if entity_ids else []
+                label = category_id
+                for vid, name, _kind in _VIRTUAL_L1:
+                    if vid == category_id:
+                        label = name
+                return {
+                    "status": 0,
+                    "msg": "ok",
+                    "data": {
+                        "id": category_id,
+                        "scope_key": actual_scope_key or "",
+                        "name": label,
+                        "summary": f"实时 SQL 投影，共 {len(edges)} 条",
+                        "tag": ["virtual", kind],
+                        "layer": 1,
+                        "parent_id": None,
+                        "created_at": None,
+                        "updated_at": None,
+                        "parent_categories": [],
+                        "child_categories": [],
+                        "member_entities": [
+                            {"id": e.id, "name": e.name, "summary": e.summary, "is_speaker": e.is_speaker}
+                            for e in entities
+                        ],
+                        "edges": [
+                            {
+                                "id": e.id,
+                                "fact": e.fact,
+                                "resolution_state": e.resolution_state,
+                                "valid_at": str(e.valid_at) if e.valid_at else None,
+                            }
+                            for e in edges
+                        ],
+                        "episodes": [],
+                    },
+                }
+            return {"status": 1, "msg": f"未知虚拟分类: {category_id}", "data": None}
     except _RUNTIME_ERRORS as e:
-        return {
-            "status": 1,
-            "msg": f"获取 Category 详情失败: {str(e)}",
-            "data": None,
-        }
+        return {"status": 1, "msg": f"获取虚拟分类详情失败: {str(e)}", "data": None}
 
 
-@app.get("/api/ai/memory/hiergraph/status", summary="分层语义图状态", tags=AI_MEMORY)
+@app.get("/api/ai/memory/hiergraph/status", summary="虚拟分类投影状态", tags=AI_MEMORY)
 async def get_hiergraph_status(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """
-    获取分层语义图构建状态
-
-    返回指定 scope 的分层图元数据，包括最大层级、上次重建时间等。
-
-    Args:
-        group_id: 群组 ID（可选）
-        scope_key: 完整的 Scope Key（可选，优先级高于 group_id）
-
-    Returns:
-        status: 0成功，1失败
-        data: 分层图状态信息
-    """
     try:
         actual_scope_key = scope_key
         if actual_scope_key is None and group_id is not None:
             actual_scope_key = make_scope_key(ScopeType.GROUP, group_id)
-
-        if actual_scope_key is None:
-            return {"status": 1, "msg": "请提供 group_id 或 scope_key", "data": None}
-
         async with async_maker() as session:
-            result = await session.execute(
-                select(AIMemHierarchicalGraphMeta).where(AIMemHierarchicalGraphMeta.scope_key == actual_scope_key)
-            )
-            meta = result.scalar_one_or_none()
-
-            if meta is None:
-                return {
-                    "status": 0,
-                    "msg": "ok",
-                    "data": {
-                        "scope_key": actual_scope_key,
-                        "initialized": False,
-                        "max_layer": 0,
-                        "last_rebuild_at": None,
-                        "entity_count_at_last_rebuild": 0,
-                        "current_entity_count": 0,
-                    },
-                }
-
-            return {
-                "status": 0,
-                "msg": "ok",
-                "data": {
-                    "scope_key": meta.scope_key,
-                    "initialized": meta.max_layer > 0,
-                    "max_layer": meta.max_layer,
-                    "last_rebuild_at": str(meta.last_rebuild_at) if meta.last_rebuild_at else None,
-                    "entity_count_at_last_rebuild": meta.entity_count_at_last_rebuild,
-                    "current_entity_count": meta.current_entity_count,
-                    "group_summary_cache": meta.group_summary_cache,
-                    "group_summary_updated_at": (
-                        str(meta.group_summary_updated_at) if meta.group_summary_updated_at else None
-                    ),
-                },
-            }
-    except _RUNTIME_ERRORS as e:
+            thread_q = select(func.count()).select_from(AIMemThread)
+            edge_q = select(func.count()).select_from(AIMemEdge).where(col(AIMemEdge.resolution_state) == "active")
+            if actual_scope_key:
+                thread_q = thread_q.where(AIMemThread.scope_key == actual_scope_key)
+                edge_q = edge_q.where(AIMemEdge.scope_key == actual_scope_key)
+            thread_count = (await session.execute(thread_q)).scalar() or 0
+            active_edges = (await session.execute(edge_q)).scalar() or 0
         return {
-            "status": 1,
-            "msg": f"获取分层图状态失败: {str(e)}",
-            "data": None,
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "enabled": True,
+                "mode": "virtual_projection_v2",
+                "scope_key": actual_scope_key,
+                "initialized": True,
+                "l1_count": len(_VIRTUAL_L1),
+                "thread_count": thread_count,
+                "active_edges": active_edges,
+                "max_layer": 1,
+                "last_rebuild_at": None,
+                "entity_count_at_last_rebuild": 0,
+                "current_entity_count": active_edges,
+                "group_summary_cache": None,
+                "group_summary_updated_at": None,
+            },
         }
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"获取投影状态失败: {str(e)}", "data": None}
 
 
-@app.post("/api/ai/memory/hiergraph/rebuild", summary="重建分层记忆图谱", tags=AI_MEMORY)
+@app.post("/api/ai/memory/hiergraph/rebuild", summary="零 LLM 索引对账", tags=AI_MEMORY)
 async def trigger_hiergraph_rebuild(
     group_id: Optional[str] = None,
     scope_key: Optional[str] = None,
     _: Optional[Dict[str, Any]] = Depends(require_auth_or_local_test),
 ) -> Dict[str, Any]:
-    """
-    手动触发分层图重建（评测模式使用）
-
-    Args:
-        group_id: 群组 ID（可选）
-        scope_key: 完整的 Scope Key（可选，优先级高于 group_id）
-
-    Returns:
-        status: 0成功，1失败
-        data: 重建任务启动信息
-    """
     try:
         actual_scope_key = scope_key
         if actual_scope_key is None and group_id is not None:
             actual_scope_key = make_scope_key(ScopeType.GROUP, group_id)
-
         if actual_scope_key is None:
-            return {
-                "status": 1,
-                "msg": "必须提供 group_id 或 scope_key",
-                "data": None,
-            }
+            return {"status": 1, "msg": "必须提供 group_id 或 scope_key", "data": None}
+        stats = await _reconcile_scope_index(actual_scope_key)
+        return {"status": 0, "msg": "ok", "data": stats}
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"索引对账失败: {str(e)}", "data": None}
 
-        # 异步触发重建（不等待完成）
-        asyncio.create_task(rebuild_task(actual_scope_key))
 
+@app.get("/api/ai/memory/threads", summary="故事线列表", tags=AI_MEMORY)
+async def list_threads(
+    group_id: Optional[str] = None,
+    scope_key: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    try:
+        actual_scope_key = scope_key
+        if actual_scope_key is None and group_id is not None:
+            actual_scope_key = make_scope_key(ScopeType.GROUP, group_id)
+        async with async_maker() as session:
+            query = select(AIMemThread)
+            count_query = select(func.count()).select_from(AIMemThread)
+            if actual_scope_key:
+                query = query.where(AIMemThread.scope_key == actual_scope_key)
+                count_query = count_query.where(AIMemThread.scope_key == actual_scope_key)
+            if status:
+                query = query.where(col(AIMemThread.status) == status)
+                count_query = count_query.where(col(AIMemThread.status) == status)
+            total = (await session.execute(count_query)).scalar() or 0
+            rows = await session.execute(
+                query.order_by(col(AIMemThread.last_at).desc()).offset((page - 1) * page_size).limit(page_size)
+            )
+            items = [
+                {
+                    "id": th.id,
+                    "scope_key": th.scope_key,
+                    "title": th.title,
+                    "aliases": th.aliases,
+                    "summary": th.summary,
+                    "status": th.status,
+                    "milestone_count": th.milestone_count,
+                    "first_at": str(th.first_at) if th.first_at else None,
+                    "last_at": str(th.last_at) if th.last_at else None,
+                }
+                for th in rows.scalars().all()
+            ]
         return {
             "status": 0,
             "msg": "ok",
-            "data": {
-                "scope_key": actual_scope_key,
-                "message": "分层图重建任务已启动",
-            },
+            "data": {"items": items, "total": total, "page": page, "page_size": page_size},
         }
     except _RUNTIME_ERRORS as e:
-        return {
-            "status": 1,
-            "msg": f"触发分层图重建失败: {str(e)}",
-            "data": None,
-        }
+        return {"status": 1, "msg": f"获取故事线失败: {str(e)}", "data": None}
+
+
+@app.get("/api/ai/memory/threads/{thread_id}", summary="故事线详情", tags=AI_MEMORY)
+async def get_thread_detail(
+    thread_id: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    try:
+        async with async_maker() as session:
+            thread = await session.get(AIMemThread, thread_id)
+            if thread is None:
+                return {"status": 1, "msg": f"未找到故事线: {thread_id}", "data": None}
+            milestones = await AIMemEdge.list_thread_milestones(thread.scope_key, thread.id, limit=200, ascending=True)
+            episodes = await AIMemEpisode.list_by_thread(thread.scope_key, thread.id, limit=200, ascending=True)
+            entity_ids: set[str] = set()
+            for edge in milestones:
+                entity_ids.add(edge.source_entity_id)
+                entity_ids.add(edge.target_entity_id)
+            entities = []
+            if entity_ids:
+                entity_rows = await session.execute(
+                    select(AIMemEntity).where(col(AIMemEntity.id).in_(list(entity_ids)))
+                )
+                entities = [
+                    {
+                        "id": ent.id,
+                        "name": ent.name,
+                        "summary": ent.summary,
+                        "entity_type": ent.entity_kind,
+                        "is_speaker": ent.is_speaker,
+                    }
+                    for ent in entity_rows.scalars().all()
+                ]
+            return {
+                "status": 0,
+                "msg": "ok",
+                "data": {
+                    "id": thread.id,
+                    "scope_key": thread.scope_key,
+                    "title": thread.title,
+                    "aliases": thread.aliases,
+                    "summary": thread.summary,
+                    "status": thread.status,
+                    "milestone_count": thread.milestone_count,
+                    "first_at": str(thread.first_at) if thread.first_at else None,
+                    "last_at": str(thread.last_at) if thread.last_at else None,
+                    "milestones": [
+                        {
+                            "id": edge.id,
+                            "fact": edge.fact,
+                            "slot_key": edge.slot_key,
+                            "source_entity_id": edge.source_entity_id,
+                            "target_entity_id": edge.target_entity_id,
+                            "event_at": str(edge.event_at) if edge.event_at else None,
+                            "valid_at": str(edge.valid_at) if edge.valid_at else None,
+                        }
+                        for edge in milestones
+                    ],
+                    "episodes": [
+                        {
+                            "id": ep.id,
+                            "content": ep.content,
+                            "valid_at": str(ep.valid_at) if ep.valid_at else None,
+                            "session_id": ep.session_id,
+                        }
+                        for ep in episodes
+                    ],
+                    "entities": entities,
+                },
+            }
+    except _RUNTIME_ERRORS as e:
+        return {"status": 1, "msg": f"获取故事线详情失败: {str(e)}", "data": None}
 
 
 # 6. 记忆统计 API
@@ -1782,11 +2020,20 @@ async def get_memory_stats(
                 active_edge_query = active_edge_query.where(AIMemEdge.scope_key == actual_scope_key)
             active_edge_count = (await session.execute(active_edge_query)).scalar() or 0
 
-            # Category 统计
-            cat_query = select(func.count()).select_from(AIMemCategory)
+            # 故事线 / 四态边统计（category_count 保留为 0 兼容旧前端）
+            thread_query = select(func.count()).select_from(AIMemThread)
             if actual_scope_key:
-                cat_query = cat_query.where(AIMemCategory.scope_key == actual_scope_key)
-            category_count = (await session.execute(cat_query)).scalar() or 0
+                thread_query = thread_query.where(AIMemThread.scope_key == actual_scope_key)
+            thread_count = (await session.execute(thread_query)).scalar() or 0
+            state_counts: Dict[str, int] = {}
+            for state in ("active", "staging", "superseded", "contradicted"):
+                state_query = (
+                    select(func.count()).select_from(AIMemEdge).where(col(AIMemEdge.resolution_state) == state)
+                )
+                if actual_scope_key:
+                    state_query = state_query.where(AIMemEdge.scope_key == actual_scope_key)
+                state_counts[state] = (await session.execute(state_query)).scalar() or 0
+            category_count = 0
 
             # 程序性/偏好规则统计（活跃规则数 + 纠错规则数）
             pref_query = (
@@ -1827,6 +2074,8 @@ async def get_memory_stats(
                     "edge_count": edge_count,
                     "active_edge_count": active_edge_count,
                     "category_count": category_count,
+                    "thread_count": thread_count,
+                    "edge_state_counts": state_counts,
                     "preference_count": preference_count,
                     "preference_correction_count": preference_correction_count,
                     "observation_queue_size": queue_size,
@@ -2007,15 +2256,15 @@ async def list_scopes(
             )
             edge_stats = {row[0]: row[1] for row in edge_result.fetchall()}
 
-            # Category 统计
-            cat_result = await session.execute(
-                select(AIMemCategory.scope_key, func.count().label("category_count")).group_by(AIMemCategory.scope_key)
+            # 故事线统计（旧前端 category_count 保留为 0）
+            thread_result = await session.execute(
+                select(AIMemThread.scope_key, func.count().label("thread_count")).group_by(AIMemThread.scope_key)
             )
-            cat_stats = {row[0]: row[1] for row in cat_result.fetchall()}
+            thread_stats = {row[0]: row[1] for row in thread_result.fetchall()}
 
             # 合并所有 scope_key
             all_scope_keys = (
-                set(ep_stats.keys()) | set(ent_stats.keys()) | set(edge_stats.keys()) | set(cat_stats.keys())
+                set(ep_stats.keys()) | set(ent_stats.keys()) | set(edge_stats.keys()) | set(thread_stats.keys())
             )
 
             scopes = []
@@ -2035,7 +2284,8 @@ async def list_scopes(
                         "episode_count": ep_stats.get(sk, 0),
                         "entity_count": ent_stats.get(sk, 0),
                         "edge_count": edge_stats.get(sk, 0),
-                        "category_count": cat_stats.get(sk, 0),
+                        "category_count": 0,
+                        "thread_count": thread_stats.get(sk, 0),
                     }
                 )
 

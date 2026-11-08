@@ -131,6 +131,7 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
     addr = _extra_str(extra, "at_user_id")
     if not addr and ev is not None and ev.user_id:
         addr = str(ev.user_id)
+    user_text = ev.raw_text if ev is not None and ev.raw_text else ""
     blocked, why = should_block_user_visible_text(
         "silence_only",
         body,
@@ -140,12 +141,12 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
         tool_calls_so_far=["create_subagent"],
         speech_len_hard=resolve_chat_style(persona).hard if persona else 0,
         forbid_title=non_master_title(addr, persona or None),
+        user_text=user_text,
     )
     if blocked:
         log_output_block_on_session(_opening_session_id(tool_ctx), why, body, policy="silence_only")
         logger.info(i18n_t("log.agent.silent_skipping_text", _text=f"[opening/{why}] {body[:60]}"))
         return ""
-    user_text = ev.raw_text if ev is not None and ev.raw_text else ""
     _is_group = bool(ev is not None and ev.group_id)
     _gate_fb, body = tool_gate_feedback(body, extra, user_text=user_text, is_group=_is_group)
     if _gate_fb is not None:

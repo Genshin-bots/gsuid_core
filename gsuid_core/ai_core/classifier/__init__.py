@@ -1,19 +1,23 @@
-"""Classifier 模块 —— 用户消息意图分类
+"""Classifier 模块 —— 单轮路由。
 
-在主人格收到一条消息后，用本模块的分类器先做一次轻量意图判断
-（闲聊 / 工具调用 / 问答），帮助 ``gs_agent`` 决定走哪条 ``ai_mode`` 路径：
-
-- "闲聊"  → 走 persona 直接回复，不强制装配工具池；
-- "工具"  → 装配完整保底池 + 向量检索补充；
-- "问答"  → 触发 ``search_cognition`` 优先链路。
-
-分类器按句式归类，不加载机器学习库。单例是 ``classifier_service``。
-主人格的决策树仍是权威，分类结果只提示工具池怎么装。
-
-模块组成：
-- ``mode_classifier.py`` : 句式归类与上文拼接
+``TurnRouter`` 用一次无思考低档模型调用统一决定意图、记忆模态、软触发开口与
+事务委托信号；离线/单测环境退化为纯结构规则。
 """
 
+from gsuid_core.ai_core.classifier.turn_router import (
+    TurnIntent,
+    MemoryIntent,
+    TurnRouteDecision,
+    route_turn,
+    structural_route,
+)
 from gsuid_core.ai_core.classifier.mode_classifier import classifier_service
 
-__all__ = ["classifier_service"]
+__all__ = [
+    "MemoryIntent",
+    "TurnIntent",
+    "TurnRouteDecision",
+    "route_turn",
+    "structural_route",
+    "classifier_service",
+]

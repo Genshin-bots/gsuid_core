@@ -1,43 +1,37 @@
-"""记忆系统 Qdrant Collection 初始化
+"""schema_v2 记忆 Qdrant 集合初始化。
 
-确保记忆系统的三个 Qdrant Collection 存在，
-在 memory/startup.py 的初始化流程中调用一次。
+四个活跃集合：``memory_episodes / memory_entities / memory_edges / memory_threads``。
+统一建立 ``scope_key``（KEYWORD）与 ``valid_at_ts``（FLOAT）Payload 索引。
 """
-
-from typing import Any
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
-from .collections import (
-    MEMORY_EDGES_COLLECTION,
-    MEMORY_ENTITIES_COLLECTION,
-    MEMORY_EPISODES_COLLECTION,
-    MEMORY_EPISODES_COLD_COLLECTION,
-)
+from .collections import MEMORY_COLLECTIONS, MEMORY_ENTITIES_COLLECTION
 
 
-async def ensure_memory_collections():
-    """确保记忆系统的三个 Qdrant Collection 存在且配置正确。
+def _vector_names_for_collection(collection_name: str) -> tuple[str, ...]:
+    if collection_name == MEMORY_ENTITIES_COLLECTION:
+        return ("name_dense", "summary_dense")
+    return ("dense",)
 
-    在 memory/startup.py 的初始化流程中调用一次。
-    前置条件：rag/base.py 的 init_embedding_model() 必须已执行。
 
-    如果 Collection 已存在但向量配置或维度不匹配，会先导出旧 payload，
-    删除旧 Collection 后按当前嵌入模型维度重建，并基于 payload 重新生成向量。
-    """
+async def ensure_memory_collections() -> None:
+    """确保记忆集合存在、维度正确并带齐 Payload 索引。"""
     from gsuid_core.ai_core.rag.base import client, get_strict_dimension
+    from gsuid_core.ai_core.rag.qmodels import (
+        Distance,
+        Modifier,
+        VectorParams,
+        PayloadSchemaType,
+        SparseVectorParams,
+    )
     from gsuid_core.ai_core.rag.collection_migration import (
         get_vector_size,
-        load_payload_backup,
-        save_payload_backup,
-        scroll_all_payloads,
         ensure_vector_on_disk,
-        remove_payload_backup,
         ensure_payload_indexes,
         count_collection_points,
         force_recreate_collection,
-        find_latest_payload_backup,
     )
 
     if client is None:
@@ -50,56 +44,13 @@ async def ensure_memory_collections():
         logger.warning(t("log.memory.get_qdrant_collection_list", e=e))
         return
 
-    from gsuid_core.ai_core.rag.qmodels import (
-        Distance,
-        Modifier,
-        VectorParams,
-        PayloadSchemaType,
-        SparseVectorParams,
-    )
-
     dimension = get_strict_dimension()
     vector_config = VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True)
     sparse_config = SparseVectorParams(modifier=Modifier.IDF)
 
-    def _vectors_config_for_collection(collection_name: str) -> dict[str, VectorParams]:
-        if collection_name == MEMORY_ENTITIES_COLLECTION:
-            return {
-                "name_dense": vector_config,
-                "summary_dense": vector_config,
-            }
-        return {"dense": vector_config}
-
-    def _vector_names_for_collection(collection_name: str) -> tuple[str, ...]:
-        if collection_name == MEMORY_ENTITIES_COLLECTION:
-            return ("name_dense", "summary_dense")
-        return ("dense",)
-
-    for name in (
-        MEMORY_EPISODES_COLLECTION,
-        MEMORY_ENTITIES_COLLECTION,
-        MEMORY_EDGES_COLLECTION,
-    ):
+    for name in MEMORY_COLLECTIONS:
         try:
-            payload_backup: list[tuple[Any, dict[str, Any]]] = []
-            backup_path = None
-            latest_backup_path = find_latest_payload_backup(name)
             need_create = name not in existing
-            need_reindex_from_backup = False
-
-            if need_create and latest_backup_path is not None:
-                payload_backup = load_payload_backup(latest_backup_path, name)
-                backup_path = latest_backup_path
-                need_reindex_from_backup = bool(payload_backup)
-                if need_reindex_from_backup:
-                    logger.warning(
-                        t(
-                            "log.memory.collection_name_payload_2",
-                            name=name,
-                            p0=len(payload_backup),
-                        )
-                    )
-
             if not need_create:
                 col_info = await client.get_collection(collection_name=name)
                 vectors_config = col_info.config.params.vectors
@@ -107,57 +58,22 @@ async def ensure_memory_collections():
                     vector_name: get_vector_size(vectors_config, vector_name)
                     for vector_name in _vector_names_for_collection(name)
                 }
-                if any(actual_size != dimension for actual_size in vector_sizes.values()):
-                    payload_backup = await scroll_all_payloads(name)
-                    # 上次迁移可能在“已清空集合但未完成重嵌入”时中断（集合为空但维度仍不匹配），
-                    # 此时实时 scroll 到的 payload 比历史备份少甚至为空，优先用更完整的历史备份恢复，避免丢数据。
-                    if latest_backup_path is not None:
-                        prior_backup = load_payload_backup(latest_backup_path, name)
-                        if len(prior_backup) > len(payload_backup):
-                            logger.warning(
-                                t(
-                                    "log.memory.collection_name_payload",
-                                    name=name,
-                                    p0=len(payload_backup),
-                                    p1=len(prior_backup),
-                                )
-                            )
-                            payload_backup = prior_backup
-                            backup_path = latest_backup_path
-                    if backup_path is None:
-                        backup_path = await save_payload_backup(name, payload_backup)
+                if any(actual != dimension for actual in vector_sizes.values()):
                     logger.warning(
                         t(
                             "log.memory.collection_name_actual_vector",
                             name=name,
                             vector_sizes=vector_sizes,
                             dimension=dimension,
-                            p0=len(payload_backup),
+                            p0=await count_collection_points(name),
                         )
                     )
                     need_create = True
-                    need_reindex_from_backup = bool(payload_backup)
-                elif latest_backup_path is not None:
-                    backup_payloads = load_payload_backup(latest_backup_path, name)
-                    point_count = await count_collection_points(name)
-                    if backup_payloads and point_count < len(backup_payloads):
-                        payload_backup = backup_payloads
-                        backup_path = latest_backup_path
-                        need_create = True
-                        need_reindex_from_backup = True
-                        logger.warning(
-                            t(
-                                "log.memory.collection_name_points_point",
-                                name=name,
-                                point_count=point_count,
-                                p0=len(backup_payloads),
-                            )
-                        )
 
             if need_create:
                 await force_recreate_collection(
                     collection_name=name,
-                    vectors_config=_vectors_config_for_collection(name),
+                    vectors_config={vector_name: vector_config for vector_name in _vector_names_for_collection(name)},
                     sparse_vectors_config={"sparse": sparse_config},
                     on_disk_payload=True,
                 )
@@ -165,196 +81,23 @@ async def ensure_memory_collections():
 
                 if refreshed_client is None:
                     raise RuntimeError(t("log.meme.qdrant_client"))
-                await refreshed_client.create_payload_index(
-                    collection_name=name,
-                    field_name="scope_key",
-                    field_schema=PayloadSchemaType.KEYWORD,
-                )
+                for field_name, schema in (
+                    ("scope_key", PayloadSchemaType.KEYWORD),
+                    ("valid_at_ts", PayloadSchemaType.FLOAT),
+                ):
+                    await refreshed_client.create_payload_index(
+                        collection_name=name,
+                        field_name=field_name,
+                        field_schema=schema,
+                    )
                 logger.info(t("log.memory.creating_qdrant_collection_name", name=name))
-                if payload_backup:
-                    try:
-                        await _reindex_memory_payloads(name, payload_backup)
-                    except Exception as reindex_e:
-                        logger.error(
-                            t(
-                                "log.memory.collection_name_backup_path",
-                                name=name,
-                                backup_path=backup_path,
-                                reindex_e=reindex_e,
-                            )
-                        )
-                        raise
-                    remove_payload_backup(backup_path, name)
-                elif need_reindex_from_backup:
-                    logger.warning(t("log.memory.collection_name_marked_backup", name=name))
             else:
                 for vector_name in _vector_names_for_collection(name):
                     await ensure_vector_on_disk(name, vector_name)
-                # 补齐 scope_key 的 KEYWORD 索引，避免远程 Qdrant 在混合检索过滤时报错 400。
-                await ensure_payload_indexes(name, ["scope_key"])
+                await ensure_payload_indexes(name, ["scope_key", "valid_at_ts"])
                 logger.debug(t("log.memory.qdrant_collection_exists_configured", name=name))
         except Exception as e:
-            # RuntimeError 多为远程 Qdrant 权限或网络异常，记录 critical 并继续处理其余集合。
             if isinstance(e, RuntimeError):
                 logger.critical(t("log.memory.collection_name_invalid_startup", name=name, e=e))
             else:
                 logger.error(t("log.memory.check_rebuild_collection_name", name=name, e=e))
-
-    # 冷 Episode 集合确保存在，维度不匹配时重建为空，真值保留在 SQL。
-    await _ensure_episode_cold_collection(existing, dimension, vector_config, sparse_config)
-
-
-async def _ensure_episode_cold_collection(
-    existing: set[str],
-    dimension: int,
-    vector_config,
-    sparse_config,
-) -> None:
-    """确保冷 Episode 集合 memory_episodes_cold 存在且维度匹配（不匹配则重建为空）。"""
-    from gsuid_core.ai_core.rag.base import client
-    from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
-    from gsuid_core.ai_core.rag.collection_migration import (
-        get_vector_size,
-        ensure_vector_on_disk,
-        ensure_payload_indexes,
-        force_recreate_collection,
-    )
-
-    if client is None:
-        return
-
-    name = MEMORY_EPISODES_COLD_COLLECTION
-    try:
-        need_create = name not in existing
-        if not need_create:
-            col_info = await client.get_collection(collection_name=name)
-            actual_size = get_vector_size(col_info.config.params.vectors, "dense")
-            if actual_size != dimension:
-                logger.warning(
-                    t(
-                        "log.memory.name_actual_size_expected",
-                        name=name,
-                        actual_size=actual_size,
-                        dimension=dimension,
-                    )
-                )
-                need_create = True
-
-        if need_create:
-            await force_recreate_collection(
-                collection_name=name,
-                vectors_config={"dense": vector_config},
-                sparse_vectors_config={"sparse": sparse_config},
-                on_disk_payload=True,
-            )
-            from gsuid_core.ai_core.rag.base import client as refreshed_client
-
-            if refreshed_client is None:
-                raise RuntimeError(t("log.meme.qdrant_client"))
-            await refreshed_client.create_payload_index(
-                collection_name=name,
-                field_name="scope_key",
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-            logger.info(t("log.memory.creating_qdrant_cold_episode", name=name))
-        else:
-            await ensure_vector_on_disk(name, "dense")
-            # 同 ensure_memory_collections：已存在的冷集合也要补 KEYWORD 索引，
-            # 否则 Hybrid 检索按 scope_key 过滤时被远程 Qdrant 400 拒绝。
-            await ensure_payload_indexes(name, ["scope_key"])
-            logger.debug(t("log.memory.qdrant_cold_episode_collection", name=name))
-    except Exception as e:
-        # 与 ensure_memory_collections 一致：RuntimeError 视为运维配置异常，升级为 critical
-        if isinstance(e, RuntimeError):
-            logger.critical(t("log.memory.cold_episode_collection_name", name=name, e=e))
-        else:
-            logger.error(t("log.memory.check_rebuild_cold_episode", name=name, e=e))
-
-
-async def _reindex_memory_payloads(collection_name: str, payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
-    """基于旧记忆 payload 重新生成 dense/sparse 向量。"""
-    if collection_name == MEMORY_EPISODES_COLLECTION:
-        await _reindex_memory_episodes(payload_backup)
-    elif collection_name == MEMORY_ENTITIES_COLLECTION:
-        await _reindex_memory_entities(payload_backup)
-    elif collection_name == MEMORY_EDGES_COLLECTION:
-        await _reindex_memory_edges(payload_backup)
-
-
-async def _reindex_memory_episodes(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
-    from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vectors_batch
-
-    episodes_data: list[dict[str, Any]] = []
-    skipped = 0
-    for point_id, payload in payload_backup:
-        content = str(payload.get("content", ""))
-        if not content.strip():
-            skipped += 1
-            continue
-        episodes_data.append(
-            {
-                "episode_id": str(point_id),
-                "content": content,
-                "scope_key": str(payload.get("scope_key", "")),
-                "valid_at_ts": float(payload.get("valid_at_ts") or 0),
-                "speaker_ids": payload.get("speaker_ids", []) if isinstance(payload.get("speaker_ids"), list) else [],
-            }
-        )
-
-    await upsert_episode_vectors_batch(episodes_data)
-    logger.info(t("log.memory.episode_dimension_migration_migrated", p0=len(episodes_data), skipped=skipped))
-
-
-async def _reindex_memory_entities(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
-    from gsuid_core.ai_core.memory.vector.ops import upsert_entity_vectors_batch
-
-    entities_data: list[dict[str, Any]] = []
-    skipped = 0
-    for point_id, payload in payload_backup:
-        name = str(payload.get("name", ""))
-        summary = str(payload.get("summary", ""))
-        if not (name or summary):
-            skipped += 1
-            continue
-        _raw = payload.get("is_speaker", False)
-        _is_speaker = _raw if isinstance(_raw, bool) else str(_raw).lower() in ("true", "1", "yes")
-        entities_data.append(
-            {
-                "entity_id": str(point_id),
-                "name": name,
-                "summary": summary,
-                "scope_key": str(payload.get("scope_key", "")),
-                "is_speaker": _is_speaker,
-                "user_id": payload.get("user_id"),
-                "tag": payload.get("tag", []) if isinstance(payload.get("tag"), list) else [],
-            }
-        )
-
-    await upsert_entity_vectors_batch(entities_data)
-    logger.info(t("log.memory.entity_dimension_migration_migrated", p0=len(entities_data), skipped=skipped))
-
-
-async def _reindex_memory_edges(payload_backup: list[tuple[Any, dict[str, Any]]]) -> None:
-    from gsuid_core.ai_core.memory.vector.ops import upsert_edge_vectors_batch
-
-    edges_data: list[dict[str, Any]] = []
-    skipped = 0
-    for point_id, payload in payload_backup:
-        fact = str(payload.get("fact", ""))
-        if not fact.strip():
-            skipped += 1
-            continue
-        edges_data.append(
-            {
-                "edge_id": str(point_id),
-                "fact": fact,
-                "scope_key": str(payload.get("scope_key", "")),
-                "valid_at_ts": payload.get("valid_at_ts"),
-                "invalid_at_ts": payload.get("invalid_at_ts"),
-                "source_entity_id": str(payload.get("source_entity_id", "")),
-                "target_entity_id": str(payload.get("target_entity_id", "")),
-            }
-        )
-
-    await upsert_edge_vectors_batch(edges_data)
-    logger.info(t("log.memory.edge_dimension_migration_migrated", p0=len(edges_data), skipped=skipped))

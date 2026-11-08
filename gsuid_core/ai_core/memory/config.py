@@ -179,7 +179,7 @@ class MemoryConfig:
 
     @property
     def eval_mode(self) -> bool:
-        """评测模式：启用后摄入时不自动触发分层图重建，由外部统一调用 rebuild_task"""
+        """评测模式：启用后摄入不触发线程整理，由评测脚本统一触发。"""
         return mrc.get_config("eval_mode").data
 
     def _eo_int(self, key: str, default: int, *, stored: bool = False) -> int:

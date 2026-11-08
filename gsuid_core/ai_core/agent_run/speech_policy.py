@@ -284,8 +284,27 @@ def looks_like_empty_handoff(text: str) -> bool:
     return bool(_EMPTY_HANDOFF_RE.search(body))
 
 
-def looks_like_machine_latin(text: str) -> bool:
-    """长句拉丁字母占比过高：机器独白，不是 IM 角色句。纯链接放过。"""
+def user_speaks_latin(user_text: str) -> bool:
+    """用户当轮提问本身为英文/拉丁语系（无汉字且含拉丁词）时，英文答复不判机器独白。"""
+    from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+
+    body = extract_message_body(user_text or "").strip()
+    if not body:
+        return False
+    latin = 0
+    for ch in body:
+        o = ord(ch)
+        if 0x4E00 <= o <= 0x9FFF:
+            return False
+        if 65 <= o <= 90 or 97 <= o <= 122:
+            latin += 1
+    return latin >= 6
+
+
+def looks_like_machine_latin(text: str, *, user_text: str = "") -> bool:
+    """长句拉丁字母占比过高：机器独白，不是 IM 角色句。纯链接或英文对话放过。"""
+    if user_text and user_speaks_latin(user_text):
+        return False
     body = (text or "").strip()
     if len(body) < 40:
         return False
@@ -300,12 +319,12 @@ def looks_like_machine_latin(text: str) -> bool:
     return n * 5 >= len(body) * 3
 
 
-def looks_like_process_meta(text: str) -> bool:
+def looks_like_process_meta(text: str, *, user_text: str = "") -> bool:
     """是否框架/过程元话语（对用户即 OOC）。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
         return False
-    if looks_like_machine_latin(body):
+    if looks_like_machine_latin(body, user_text=user_text):
         return True
     return bool(_PROCESS_META_RE.search(body))
 
@@ -393,7 +412,7 @@ def _keeps_working(body: str) -> bool:
     return _WAIT_COMFORT_RE.search(body) is not None
 
 
-def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
+def looks_like_task_accept_speech(text: str, *, max_len: int = 0, user_text: str = "") -> bool:
     """开场接任务应：一句角色发言，表示接下来去做。
 
     不按 12 字卡死（会话痨人格会复述任务）。拦的是结构垃圾：编排词、过程动词、
@@ -415,13 +434,13 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0) -> bool:
         return False
     if looks_like_empty_handoff(body):
         return False
-    if looks_like_process_meta(body):
+    if looks_like_process_meta(body, user_text=user_text):
         return False
     if looks_like_capability_absence(body):
         return False
     if looks_like_stale_present_tense(body):
         return False
-    if looks_like_machine_latin(body):
+    if looks_like_machine_latin(body, user_text=user_text):
         return False
     content_lines = _accept_lines(body)
     if len(content_lines) > 2:
@@ -590,6 +609,7 @@ def should_block_user_visible_text(
     user_asked_detail: bool = False,
     forbid_title: str = "",
     entity_routed: bool = False,
+    user_text: str = "",
 ) -> tuple[bool, str]:
     """是否拦截本段对用户可见文本。返回 (block, reason)。"""
     body = (text or "").strip()
@@ -626,7 +646,7 @@ def should_block_user_visible_text(
 
     # 异步在途：开场接任务应一句（不按 12 字）；其后默认静默。清单/念白/完成腔不占额度。
     if inflight or pol == "silence_only":
-        if not wait_comfort_sent and looks_like_task_accept_speech(body, max_len=speech_len_hard):
+        if not wait_comfort_sent and looks_like_task_accept_speech(body, max_len=speech_len_hard, user_text=user_text):
             return False, "wait_comfort"
         return True, "silence_only_or_async"
 
@@ -642,7 +662,7 @@ def should_block_user_visible_text(
     if looks_like_delivery_status_narration(body):
         return True, "delivery_narration"
 
-    if looks_like_process_meta(body):
+    if looks_like_process_meta(body, user_text=user_text):
         return True, "process_meta"
 
     _wake = pol == "framework_deliver"

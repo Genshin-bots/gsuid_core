@@ -25,6 +25,7 @@ def join_blocks(ctx: AgentHookContext) -> str:
             ctx.query,
             covered=ctx.memory_covered,
             n_doc_sources=count_document_sources(memory_text),
+            memory_intent=ctx.route_decision.memory_intent if ctx.route_decision is not None else "point_latest",
         ),
     )
 

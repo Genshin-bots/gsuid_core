@@ -131,6 +131,7 @@ async def search_cognition(
     kinds: FrozenSet[CogKind],
     scope: CogScope,
     limit: int = 24,
+    memory_intent: str = "point_latest",
 ) -> List[CognitiveHit]:
     """联邦检索认知层。``kinds`` 与 ``scope`` **必填、无内部兜底**（见 types 模块 docstring）。
 
@@ -150,6 +151,7 @@ async def search_cognition(
                     kinds=kinds,
                     scope=scope,
                     limit=limit,
+                    memory_intent=memory_intent,
                 )
             )
         )
@@ -390,7 +392,8 @@ async def _expand_time_neighbors(
         if dt is None or not scope_key:
             continue
         try:
-            rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=before, after=after)
+            ep_id = str(ep["id"]) if "id" in ep else None
+            rows = await AIMemEpisode.neighbors_by_time(scope_key, dt, before=before, after=after, episode_id=ep_id)
         except (TypeError, RuntimeError) as e:
             # 单测无 async_maker / 库未就绪：保留向量命中，不打断回想
             logger.debug(t("log.ai.cognition_backend_fail", backend="neighbors", e=e))
@@ -421,10 +424,11 @@ async def _search_memory(
     kinds: FrozenSet[CogKind],
     scope: CogScope,
     limit: int,
+    memory_intent: str = "point_latest",
 ) -> _BackendResult:
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.ingestion.edge import _DANGLING_FACT_RE
     from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity
+    from gsuid_core.ai_core.memory.ingestion.algebra import _DANGLING_FACT_RE
     from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve, _fact_mentions_speaker
 
     stripped_speaker = strip_speaker_from_query(query, scope.user_id)
@@ -443,6 +447,8 @@ async def _search_memory(
         bot_self_id=scope.bot_self_id,
         include_self=True,
         persona_name=scope.persona_name,
+        memory_intent=memory_intent,
+        clock_at=scope.clock_at,
     )
     seed_ep_ids: set[str] = set()
     neighbor_ep_ids: set[str] = set()
@@ -451,9 +457,9 @@ async def _search_memory(
         if ctx.episodes:
             ctx.episodes = await _expand_time_neighbors(
                 ctx.episodes,
-                seed=6,
-                before=4,
-                after=4,
+                seed=8,
+                before=8,
+                after=8,
                 order_by_time=False,
             )
             neighbor_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep} - seed_ep_ids
@@ -463,9 +469,9 @@ async def _search_memory(
             user_id=scope.user_id,
             group_id=scope.group_id,
             clock=scope.clock_at,
+            memory_intent=memory_intent,
         )
         from gsuid_core.ai_core.memory.retrieval.lexical import (
-            looks_like_set_query,
             apply_query_episode_pack,
             collapse_document_episodes,
         )
@@ -476,8 +482,9 @@ async def _search_memory(
             temporal_mode=ctx.temporal_mode,
             time_range=ctx.time_range,
             asker_id=scope.user_id if scope.group_id else "",
+            memory_intent=memory_intent,
         )
-        if looks_like_set_query(search_q):
+        if memory_intent == "broad_summary":
             ctx.episodes = collapse_document_episodes(ctx.episodes)
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
@@ -996,6 +1003,7 @@ async def inject_memory_slice(
     priority_speakers: Set[str],
     current_speaker_ids: Set[str],
     preference_contexts: List[str],
+    memory_intent: str = "point_latest",
 ) -> str:
     """⑧ 每轮自动注入的**记忆+偏好切片**（与工具路径同一入口、同一 scope 纪律）。
 
@@ -1025,14 +1033,17 @@ async def inject_memory_slice(
         bot_self_id=scope.bot_self_id,
         include_self=True,
         persona_name=scope.persona_name,
+        memory_intent=memory_intent,
+        clock_at=scope.clock_at,
     )
-    cap = inject_memory_cap(query, covered=ctx.covered)
+    cap = inject_memory_cap(query, covered=ctx.covered, memory_intent=memory_intent)
     memory_text = ctx.to_prompt_text(
         max_chars=cap,
         priority_speakers=priority_speakers or None,
         current_speaker_ids=current_speaker_ids or None,
         query=query,
         now=scope.clock_at,
+        memory_intent=memory_intent,
     )
     tool_block = await format_recent_tool_conclusions(query, scope)
     if tool_block:

@@ -95,16 +95,19 @@ async def list_memory_conflicts(
     limit: int = Query(100, le=500),
     _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """列出某 scope 的记忆矛盾记录（C11 Contradiction）。"""
-    from gsuid_core.ai_core.memory.database.models import AIMemConflict
+    """列出某 scope 的四态冲突/待证边（schema_v2 收口到 AIMemEdge）。"""
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
     async with async_maker() as session:
         rows = list(
             (
                 await session.execute(
-                    select(AIMemConflict)
-                    .where(AIMemConflict.scope_key == scope_key)
-                    .order_by(col(AIMemConflict.created_at).desc())
+                    select(AIMemEdge)
+                    .where(
+                        AIMemEdge.scope_key == scope_key,
+                        col(AIMemEdge.resolution_state).in_(["contradicted", "staging"]),
+                    )
+                    .order_by(col(AIMemEdge.created_at).desc())
                     .limit(limit)
                 )
             )
@@ -114,12 +117,12 @@ async def list_memory_conflicts(
     return _ok(
         [
             {
-                "id": c.id,
-                "fact_signature": c.fact_signature,
-                "summary": c.summary,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "id": e.id,
+                "fact_signature": f"{e.source_entity_id}|{e.target_entity_id}|{e.slot_key}",
+                "summary": e.fact,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
             }
-            for c in rows
+            for e in rows
         ]
     )
 

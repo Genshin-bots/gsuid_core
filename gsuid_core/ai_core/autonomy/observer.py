@@ -276,16 +276,14 @@ async def _active_kanban_state(persona_name: str) -> tuple[set[str], set[str], l
 
 
 async def _group_summary(group_id: str) -> str:
-    from gsuid_core.ai_core.memory.ingestion.hiergraph import AIMemHierarchicalGraphMeta
+    from gsuid_core.ai_core.memory.group_profile import get_scope_summary
 
     scope_key = make_scope_key(ScopeType.GROUP, group_id)
     try:
-        meta = await AIMemHierarchicalGraphMeta.get_or_none(scope_key=scope_key)
+        summary = await get_scope_summary(scope_key)
     except SQLAlchemyError:
         return ""
-    if meta is None or not isinstance(meta.group_summary_cache, str):
-        return ""
-    return meta.group_summary_cache.strip()[:400]
+    return summary.strip()[:400]
 
 
 async def _recent_proactive_records(persona_name: str, now: float) -> list[str]:

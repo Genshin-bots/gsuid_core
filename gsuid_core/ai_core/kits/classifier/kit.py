@@ -1,7 +1,8 @@
-"""``gscore.classifier``：意图分类套件（H03）。
+"""``gscore.classifier``：前置单轮路由器（H03）。
 
-内核只提供 prior 文本；**intent 由槽位占用者写入**。无占用者时 intent 为空串，
-下游按「无意图」走（不是按闲聊走）。
+一次无思考轻量调用产出 ``TurnRouteDecision``，写入 ``ctx.route_decision`` 并
+同步 ``ctx.intent``。下游 ReactiveGate / MemoryKit / ScaffoldKit 只读结论，
+不再各自扫文本猜语义。
 """
 
 from gsuid_core.i18n import t
@@ -16,19 +17,27 @@ class ClassifierKit(AgentKit):
         on_agent_hook(AgentHookPoint.CLASSIFY, priority=110, kit_id=self.kit_id)(self.classify)
 
     async def classify(self, ctx: AgentHookContext) -> None:
-        from gsuid_core.ai_core.classifier import classifier_service
+        from gsuid_core.ai_core.classifier.turn_router import route_turn
 
-        prior = ctx.prior_user_turns
-        prev_tools = ctx.prev_turn_used_tools
-        res = await classifier_service.predict_async(
+        recent = [rec.content for rec in ctx.gate_history][-6:]
+        decision = await route_turn(
             ctx.query,
-            prior_user_turns=list(prior),
-            prev_turn_used_tools=prev_tools,
+            prior_user_turns=ctx.prior_user_turns,
+            prev_turn_used_tools=ctx.prev_turn_used_tools,
+            soft_triggered=ctx.soft_triggered,
+            clock_at=ctx.clock_at,
+            recent_group_messages=recent,
         )
-        logger.debug(t("log.ai.gscore_intent_recognition_result", res=res))
-        intent = str(res["intent"]) if "intent" in res else ""
-        if intent:
-            ctx.set_intent(intent)
+        ctx.route_decision = decision
+        ctx.set_intent(decision.intent)
+        logger.debug(
+            t(
+                "log.ai.turn_router_result",
+                intent=decision.intent,
+                memory_intent=decision.memory_intent,
+                source=decision.source,
+            )
+        )
 
 
 KIT = register_agent_kit(ClassifierKit(kit_id="gscore.classifier", slot="classifier", display_name="意图分类"))

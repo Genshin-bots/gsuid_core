@@ -286,6 +286,16 @@ def approval_resume_line(
 AUTONOMY_MERGE_PREFIX = "（系统：你在空闲自主行动时完成了以下探索或关心行动："
 AUTONOMY_PROACTIVE_FACT_PREFIX = "（系统校验：以下是你本次自主行动真实执行成功的工具记录与返回结果："
 
+# 记忆证据抬头（user 侧注入，入史前剥除）。
+MEMORY_TIMELINE_ORDER_NOTE = (
+    "（以下记忆片段已按真实发生时间从早到晚严格升序排列；回答事件先后顺序时直接依据序号与时间戳，不要按重要性重排。）"
+)
+MEMORY_CONFLICT_NOTE = (
+    "（标记 [存在未消解矛盾] 的两条记录来自不同时间或不同发言者；"
+    "若双方均未确认口误，如实说明两方说法，不要强行二选一。）"
+)
+MEMORY_STAGING_NOTE = "（标记 [待证实传闻] 的边仅作线索参考，不可当作既成事实断言。）"
+
 
 def autonomy_merge_line(fact_summary: str) -> str:
     """路径 B 被下一句唤醒时，注入当轮 user 侧。"""

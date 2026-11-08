@@ -1,221 +1,224 @@
-"""摄入引擎 Worker
+"""摄入 Worker（schema_v2）。
 
-单实例后台任务，从 observation_queue 消费消息，批量处理并写入数据库。
-按 scope_key 分组，维护缓冲区，满足时间窗口或数量阈值时触发 flush。
-
-关键设计：IngestionWorker 以主事件循环上的后台 task 运行。LLM 调用
-（Entity/Edge 提取）是纯异步网络 I/O，await 期间不阻塞事件循环；CPU 密集的
-embedding 推理已走 vector/ops.py 的独立线程池。历史上的"独立线程双事件循环"
-架构与主循环共享了循环亲和资源（pydantic_ai 缓存的 httpx.AsyncClient、全局
-SQLAlchemy 引擎、全局 AsyncQdrantClient），批次超时的跨循环取消会击中主循环
-Proactor 内核（WinError 995 → InvalidStateError → run_forever 崩溃 → WS 全线
-断连），详见 plans/ws_disconnect_agent_ingestion_investigation_20260611.md，
-故废弃。
+每个 scope 维护环形窗口；满足「28 条 / 静默 180s 且 >=4 条 / 最老 1800s」
+任一条件触发 Pass 1 分诊，再对 extract 聚类执行 Pass 2 四态代数。
 """
 
-import re
+from __future__ import annotations
+
 import time
 import queue as sync_queue
 import asyncio
-from typing import Tuple, Literal, Optional, TypedDict
-from datetime import datetime, timezone
-from collections import defaultdict
+from typing import Optional
 from collections.abc import Collection
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
-from gsuid_core.ai_core.memory.observer import ObservationRecord, get_observation_queue
-from gsuid_core.utils.database.base_models import async_maker
-from gsuid_core.ai_core.memory.ingestion.edge import extract_and_upsert_edges
-from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-from gsuid_core.ai_core.memory.ingestion.entity import extract_and_upsert_entities
-from gsuid_core.ai_core.memory.relative_schedule import looks_like_one_off_relative_schedule
-from gsuid_core.ai_core.memory.ingestion.hiergraph import increment_entity_count, check_and_trigger_hierarchical_update
-
-from ...utils import extract_json_from_text
-
-# 抽取前折叠（Fix-7）：仅由非字母数字字符（标点 / 表情 / 符号）构成的行视为无实体信息。
-# 注意 Python 正则默认 \w 含 CJK，故纯中文语气词不会命中此正则，由 _NOISE_WORDS 兜底。
-_NOISE_ONLY_RE = re.compile(r"^[\s\W_]+$")
-
-# QQ / 微信文字表情：整行仅为一对方括号包裹的短标签（如 [doge] / [微笑] / [OK] / [图片]），无实体信息。
-_EMOTE_RE = re.compile(r"^\[[^\[\]]{1,6}\]$")
-
-# 常见无实体信息的语气词 / 复读梗，喂给 LLM 抽取纯属浪费 Token（Episode 仍存全文）。
-_NOISE_WORDS = frozenset(
-    {
-        "哈",
-        "哈哈",
-        "哈哈哈",
-        "哈哈哈哈",
-        "草",
-        "笑死",
-        "awsl",
-        "yyds",
-        "666",
-        "233",
-        "2333",
-        "23333",
-        "在",
-        "在吗",
-        "嗯",
-        "嗯嗯",
-        "嗯呢",
-        "好",
-        "好的",
-        "好滴",
-        "好吧",
-        "ok",
-        "okk",
-        "收到",
-        "赞",
-        "顶",
-        "+1",
-        "啊",
-        "啊这",
-        "确实",
-        "是的",
-        "对",
-        "对对对",
-    }
+from gsuid_core.ai_core.memory.observer import (
+    ObservationRecord,
+    format_pending_line,
+    get_observation_queue,
 )
+from gsuid_core.ai_core.memory.database.models import AIMemThread, AIMemEpisode
 
-
-# 低档 provider 故障转移配置：用于回灌期抽取任务在额度耗尽时轮换。
-_FAILOVER_LOW_PROVIDERS = ["openai++商汤科技"]
-# 撞限流后先在当前 provider 退避重试这么多次，仍失败才切下一家——避免单次抖动就切到慢/坏 provider。
-_FAILOVER_AFTER_ATTEMPTS = 4
-
-# 退出前 flush 的整体上限（秒）：flush 对每个缓冲 scope 串行做 LLM 抽取，不设上限会把
-# core_shutdown_execute 卡住数十秒、拖住重启子进程拉起。
+_WINDOW_CAPACITY = 28
+_WINDOW_MAX_BATCH = 40
+_WINDOW_IDLE_SECONDS = 180
+_WINDOW_MAX_AGE_SECONDS = 1800
 _SHUTDOWN_FLUSH_TIMEOUT = 20.0
+_TIMER_INTERVAL = 10.0
 
 
-def _advance_low_provider(failed_provider: str) -> str:
-    """把低档任务 provider 轮换到 _FAILOVER 环的下一个。
+class _ScopeWindowBuffer:
+    """单 scope 环形缓冲区（worker 与 observer 共享只读快照）。"""
 
-    只有当"当前 provider 仍等于刚失败的 provider"时才推进——asyncio 单线程内
-    check+set 间无 await、原子，故并发窗口同时撞限流也只推进一格（其余命中 no-op），
-    不会越级跳过 provider。返回推进后的 provider 名。
-    """
+    def __init__(self) -> None:
+        self.records: list[ObservationRecord] = []
+        self.first_at = time.time()
+        self.last_activity = self.first_at
+
+    def push(self, record: ObservationRecord) -> None:
+        if not self.records:
+            self.first_at = time.time()
+        self.records.append(record)
+        self.last_activity = time.time()
+
+    def snapshot(self) -> list[ObservationRecord]:
+        return list(self.records)
+
+    def expired_by_age(self, now: float) -> bool:
+        return bool(self.records) and (now - self.first_at) >= _WINDOW_MAX_AGE_SECONDS
+
+    def should_flush(self, now: float) -> bool:
+        if not self.records:
+            return False
+        if len(self.records) >= _WINDOW_CAPACITY:
+            return True
+        if len(self.records) >= 4 and (now - self.last_activity) >= _WINDOW_IDLE_SECONDS:
+            return True
+        return self.expired_by_age(now)
+
+    def drain(self) -> list[ObservationRecord]:
+        records = self.records
+        self.records = []
+        self.first_at = time.time()
+        self.last_activity = self.first_at
+        return records
+
+
+def _budget_scope_from_scope_key(scope_key: str) -> Optional[tuple[str, str, str]]:
+    prefix, _, rest = scope_key.partition(":")
+    if not rest:
+        return None
+    if prefix == "group":
+        return (rest, "", "")
+    if prefix == "user_global":
+        return ("", rest, "")
+    if prefix == "user_in_group":
+        uid, sep, gid = rest.partition("@")
+        return (gid, uid, "") if sep else ("", uid, "")
+    return None
+
+
+def _record_ingestion_stats(record_count: int, success: bool) -> None:
     try:
-        from gsuid_core.ai_core.configs.ai_config import ai_config
+        from gsuid_core.ai_core.statistics import statistics_manager
 
-        cfg = ai_config.get_config("low_level_provider_config_name")
-        cur = cfg.data
-        if cur != failed_provider:
-            return cur  # 已被其它窗口切走，不重复推进
-        try:
-            idx = _FAILOVER_LOW_PROVIDERS.index(cur)
-        except ValueError:
-            idx = -1
-        nxt = _FAILOVER_LOW_PROVIDERS[(idx + 1) % len(_FAILOVER_LOW_PROVIDERS)]
-        if nxt != cur:
-            cfg.data = nxt
-            logger.warning(i18n_t("log.memory.lower_tier_provider_rate", cur=cur, nxt=nxt))
-        return nxt
-    except Exception as e:
-        logger.warning(i18n_t("log.memory.fail_provider_failover_failed", e=e))
-        return failed_provider
-
-
-def _compact_high_records_dialogue(records: list[ObservationRecord]) -> str:
-    """折叠抽取输入：剔除纯表情 / 标点 / 语气词等无实体信息行、合并相邻完全重复行，
-    并把**连续同一发言者**的多条消息并成一轮（IM 常见的一句话拆多条），省去重复的
-    ``[speaker_id]:`` 前缀、同时给 LLM 更连贯的发言上下文。
-
-    仅作用于喂给 LLM 的抽取文本以省 Token；Episode 已在上游 ``_ingest_batch`` 完整保存
-    原文，此处折叠不影响"记住全部群聊信息"。
-    """
-    # 每个元素是 (speaker_id, [该发言者连续的多条内容])
-    turns: list[tuple[str, list[str]]] = []
-    prev_content: str | None = None
-    for r in records:
-        content = r.raw_content.strip()
-        if not content:
-            continue
-        if content == prev_content:  # 相邻完全重复（复读 / 刷屏残留）只取一条
-            continue
-        if content in _NOISE_WORDS or _NOISE_ONLY_RE.match(content) or _EMOTE_RE.match(content):
-            continue
-        if turns and turns[-1][0] == r.speaker_id:
-            turns[-1][1].append(content)  # 连续同一发言者，并入当前轮
+        if success:
+            statistics_manager.record_memory_ingestion(record_count)
+            statistics_manager.record_memory_episode_created(record_count)
         else:
-            turns.append((r.speaker_id, [content]))
-        prev_content = content
-    return "\n".join(f"[{speaker_id}]: {' '.join(contents)}" for speaker_id, contents in turns)
+            statistics_manager.record_memory_ingestion_error(record_count)
+    except (ImportError, AttributeError):
+        pass
 
 
-class StatedFact(TypedDict):
-    u: str
-    k: str
-    v: str
+async def ingest_window(
+    records: list[ObservationRecord],
+    scope_key: str,
+    *,
+    force_settle: bool = False,
+    create_episodes: bool = True,
+    representative_episode_id: str = "",
+) -> dict[str, int]:
+    """单窗口两阶段摄入；``create_episodes=False`` 供评测回灌跳过重复写 Episode。"""
+    if not records:
+        return {"episodes": 0, "entities": 0, "edges": 0, "preferences": 0, "discarded": 0}
+
+    from gsuid_core.ai_core.gs_agent import set_budget_scope_context, reset_budget_scope_context
+
+    _bscope = _budget_scope_from_scope_key(scope_key)
+    _btoken = set_budget_scope_context(_bscope) if _bscope is not None else None
+    try:
+        return await _ingest_window_inner(
+            records,
+            scope_key,
+            force_settle=force_settle,
+            create_episodes=create_episodes,
+            representative_episode_id=representative_episode_id,
+        )
+    finally:
+        if _btoken is not None:
+            reset_budget_scope_context(_btoken)
 
 
-class ExtractedEventRow(TypedDict):
-    summary: str
-    start_date: str
-    end_date: str
-    entities: list[str]
-    aliases: list[str]
+async def _ingest_window_inner(
+    records: list[ObservationRecord],
+    scope_key: str,
+    *,
+    force_settle: bool,
+    create_episodes: bool,
+    representative_episode_id: str = "",
+) -> dict[str, int]:
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.memory.ingestion.algebra import extract_cluster
+    from gsuid_core.ai_core.memory.ingestion.window_router import route_window
 
+    _hm = get_history_manager()
+    for rec in records:
+        if not rec.command_hit and rec.message_id and _hm.is_command_hit(rec.message_id):
+            rec.command_hit = True
+        if rec.command_hit:
+            rec.raw_content = "[用户调用了 bot 功能]"
 
-class ExtractedAttitude(TypedDict):
-    user_id: str
-    attitude: Literal["friendly", "neutral", "teasing", "provoke", "hostile"]
-    evidence: str
+    threads = await AIMemThread.list_active(scope_key, limit=15)
+    route = await route_window(scope_key, records, threads, force_settle=force_settle)
 
+    open_lines = set(route["open_lines"])
+    stats = {"episodes": 0, "entities": 0, "edges": 0, "preferences": 0, "discarded": 0}
+    for cluster in route["clusters"]:
+        lines = [i for i in cluster["lines"] if i not in open_lines]
+        if not lines:
+            continue
+        if cluster["action"] == "discard":
+            stats["discarded"] += len(lines)
+            continue
 
-class ExtractedResult(TypedDict):
-    """LLM 实体/关系提取的规整结果。entities / edges 由 _restore_keys 保证键存在。"""
+        episode_id = ""
+        cluster_records = [records[i] for i in sorted(lines)]
+        if create_episodes:
+            content = "\n".join(format_pending_line(records[i]) for i in sorted(lines))
+            earliest = min(r.timestamp for r in cluster_records)
+            existing_thread = None
+            if cluster["thread_ref"] is not None and cluster["thread_ref"].startswith("T"):
+                try:
+                    index = int(cluster["thread_ref"][1:]) - 1
+                except ValueError:
+                    index = -1
+                if 0 <= index < len(threads):
+                    existing_thread = threads[index].id
+            episode = await AIMemEpisode.create_episode(
+                scope_key=scope_key,
+                content=content,
+                speaker_ids=list({r.speaker_id for r in cluster_records}),
+                valid_at=earliest,
+                thread_id=existing_thread,
+            )
+            episode_id = episode.id
+            stats["episodes"] += 1
 
-    entities: list[dict]
-    edges: list[dict]
-    events: list[ExtractedEventRow]
-    # 程序性偏好门控信号：实体抽取 LLM 顺手判定的"本批是否含针对助手未来行为的纠正/偏好"。
-    # 取代纯正则硬门控来决定是否触发第二次偏好蒸馏（仅 enable_preference_memory 时有意义）。
-    has_preference: bool
-    stated: list[StatedFact]
-    window_kind: str
-    attitudes: list[ExtractedAttitude]
+        if cluster["action"] == "extract":
+            try:
+                extracted = await asyncio.wait_for(
+                    extract_cluster(
+                        scope_key,
+                        records,
+                        sorted(lines),
+                        thread_ref=cluster["thread_ref"],
+                        topic_title=cluster["topic_title"],
+                        episode_id=episode_id or representative_episode_id,
+                        threads=threads,
+                    ),
+                    timeout=180.0,
+                )
+                stats["entities"] += extracted["entities"]
+                stats["edges"] += extracted["edges"]
+                stats["preferences"] += extracted["preferences"]
+                if episode_id and extracted["thread_id"]:
+                    await AIMemEpisode.assign_thread(episode_id, extracted["thread_id"])
+            except (asyncio.TimeoutError, OSError, RuntimeError, ValueError) as e:
+                logger.warning(i18n_t("log.memory.algebra_extract_failed", scope_key=scope_key, e=e))
+
+    _record_ingestion_stats(len(records), success=True)
+    return stats
 
 
 class IngestionWorker:
-    """单实例，以主事件循环上的后台 task 运行（同 multimodal.ImageUnderstandWorker）。
+    """单例后台任务：主事件循环上的窗口消费与 flush。"""
 
-    从 observation_queue（线程安全的 queue.Queue）消费消息，批量处理并写入数据库。
-    LLM 调用是 await 的网络 I/O，不阻塞事件循环；所有超时取消均发生在单一循环
-    内部，走正常 CancelledError 传播路径。
-    """
-
-    def __init__(self):
+    def __init__(self) -> None:
         self._queue = get_observation_queue()
-        self._db_session_factory = async_maker
-        # {scope_key: [ObservationRecord]}
-        self._buffers: dict[str, list[ObservationRecord]] = defaultdict(list)
-        # {scope_key: last_flush_time}
-        self._last_flush: dict[str, float] = {}
-        # {scope_key: 最后一条消息入缓冲的时间}——供 idle_flush_seconds 判「对话安静了」
-        self._last_activity: dict[str, float] = {}
-        # {scope_key: True} 标记某个 scope_key 正在 flush 中，避免重复创建 flush 任务
+        self._windows: dict[str, _ScopeWindowBuffer] = {}
         self._flushing: set[str] = set()
-        self._llm_semaphore: asyncio.Semaphore | None = None  # start() 时创建
-        self._running = False
-        # 保护 flush_all() 执行期间禁止新的 _flush 并发执行
-        self._flush_lock: asyncio.Lock | None = None  # start() 时创建
-        # 用于唤醒后台循环，避免关闭时仍等待 sleep/queue polling
-        self._stop_event: asyncio.Event | None = None  # start() 时创建
-        # 主循环上的后台任务句柄
+        self._llm_semaphore: asyncio.Semaphore | None = None
+        self._flush_lock: asyncio.Lock | None = None
+        self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
-        # 程序性记忆：纠错即时 flush 的 per-scope 上次触发时间（防 flush 风暴）
+        self._running = False
         self._priority_flush_at: dict[str, float] = {}
 
-    def start(self):
-        """在当前（主）事件循环中启动后台摄入任务，立即返回。
-
-        必须在主事件循环运行中调用（init_memory_system 满足此条件）。
-        """
+    def start(self) -> None:
         if self._running:
             logger.info(i18n_t("log.memory.ingestionworker_running_skipping_duplicate"))
             return
@@ -225,23 +228,19 @@ class IngestionWorker:
         self._running = True
         self._task = asyncio.create_task(self._run_forever(), name="memory_ingestion_worker")
 
-    async def _run_forever(self):
-        """后台主任务：并行运行队列消费与定时 flush 巡检"""
+    async def _run_forever(self) -> None:
         consume_task = asyncio.create_task(self._consume_loop(), name="memory_ingestion_consume")
-        flush_timer_task = asyncio.create_task(self._flush_timer_loop(), name="memory_ingestion_flush_timer")
+        timer_task = asyncio.create_task(self._timer_loop(), name="memory_ingestion_timer")
         try:
-            await asyncio.gather(consume_task, flush_timer_task)
+            await asyncio.gather(consume_task, timer_task)
         finally:
             self._running = False
-            for task in (consume_task, flush_timer_task):
+            for task in (consume_task, timer_task):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(consume_task, flush_timer_task, return_exceptions=True)
-
-            # 退出前 best-effort 落盘缓冲数据，加硬超时防其拖住关闭/重启（见 _SHUTDOWN_FLUSH_TIMEOUT）。
-            # stop() 的 cancel() 已被上方 gather 消费，wait_for 可正常计时，原取消在 finally 后续传。
+            await asyncio.gather(consume_task, timer_task, return_exceptions=True)
             try:
-                if self._buffers or not self._queue.empty():
+                if self._windows or not self._queue.empty():
                     await asyncio.wait_for(self._flush_all_inner(), timeout=_SHUTDOWN_FLUSH_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.warning(
@@ -253,20 +252,87 @@ class IngestionWorker:
             except Exception as e:
                 logger.warning(i18n_t("log.memory.pre_shutdown_ingestionworker_flush", e=e), exc_info=True)
 
-    async def flush_all(self, timeout: Optional[float] = 120.0):
-        """立即将所有缓冲区 flush 到数据库。
+    async def _consume_loop(self) -> None:
+        while self._running:
+            try:
+                record: ObservationRecord = self._queue.get_nowait()
+                window = self._windows.setdefault(record.scope_key, _ScopeWindowBuffer())
+                window.push(record)
+                if len(window.records) >= _WINDOW_CAPACITY and record.scope_key not in self._flushing:
+                    asyncio.create_task(self._flush(record.scope_key))
+            except sync_queue.Empty:
+                if self._stop_event is not None:
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                raise
 
-        用于 /api/chat_with_history 等需要同步等待记忆构建完成的场景。
+    async def _timer_loop(self) -> None:
+        while self._running:
+            if self._stop_event is not None:
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=_TIMER_INTERVAL)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            now = time.time()
+            for scope_key, window in list(self._windows.items()):
+                if scope_key in self._flushing or not window.should_flush(now):
+                    continue
+                asyncio.create_task(self._flush(scope_key))
 
-        ``timeout``：整体等待上限（秒）。live 链路（chat_with_history）默认 120s 防阻塞；
-        批量回灌（batch_observe 灌入上千 turn、数十批抽取）远超 120s，须由调用方放宽或传
-        ``None`` 表示不设整体上限（仍受每批 120s 子超时与调用方 HTTP 超时双重兜底，不会真无限）。
-        超时则放弃（取消在单循环内传播，安全）。
-        """
+    async def _flush(self, scope_key: str, *, force_settle: bool = False) -> None:
+        if scope_key in self._flushing:
+            return
+        window = self._windows.get(scope_key)
+        if window is None:
+            return
+        now = time.time()
+        force = force_settle or window.expired_by_age(now)
+        records = window.drain()
+        if not records:
+            return
+        self._flushing.add(scope_key)
+        assert self._llm_semaphore is not None
+        async with self._llm_semaphore:
+            batches = [records[i : i + _WINDOW_MAX_BATCH] for i in range(0, len(records), _WINDOW_MAX_BATCH)]
+            for batch in batches:
+                try:
+                    await ingest_window(batch, scope_key, force_settle=force)
+                except (OSError, RuntimeError, ValueError) as e:
+                    logger.error(
+                        i18n_t(
+                            "log.memory.ingestion_batch_fail",
+                            scope_key=scope_key,
+                            batch_idx=1,
+                            batch_total=len(batches),
+                            error=str(e),
+                        ),
+                        exc_info=True,
+                    )
+                    _record_ingestion_stats(len(batch), success=False)
+        self._flushing.discard(scope_key)
+
+    async def _flush_all_inner(self) -> None:
+        assert self._flush_lock is not None
+        async with self._flush_lock:
+            while not self._queue.empty():
+                try:
+                    record = self._queue.get_nowait()
+                    self._windows.setdefault(record.scope_key, _ScopeWindowBuffer()).push(record)
+                except sync_queue.Empty:
+                    break
+            for scope_key in list(self._windows.keys()):
+                await self._flush(scope_key, force_settle=True)
+
+    async def flush_all(self, timeout: Optional[float] = 120.0) -> None:
         if not self._running or self._flush_lock is None:
             logger.warning(i18n_t("log.memory.ingestionworker_running_skipping_flush"))
             return
-
         logger.info(i18n_t("log.memory.forced_synchronization_data"))
         try:
             if timeout is None:
@@ -278,61 +344,10 @@ class IngestionWorker:
         except Exception as e:
             logger.error(i18n_t("log.memory.flush_fail", e=e), exc_info=True)
 
-    async def _flush_all_inner(self):
-        """flush_all 核心逻辑"""
-        assert self._flush_lock is not None, "IngestionWorker 未初始化"
-        async with self._flush_lock:
-            # 消费所有队列中的数据到 buffers
-            while not self._queue.empty():
-                try:
-                    record = self._queue.get_nowait()
-                    self._buffers[record.scope_key].append(record)
-                except sync_queue.Empty:
-                    break
-
-            # flush buffers
-            logger.info(i18n_t("log.memory.synchronization_item", p0=len(self._buffers)))
-            scope_keys = list(self._buffers.keys())
-            for scope_key in scope_keys:
-                while scope_key in self._flushing:
-                    logger.debug(i18n_t("log.memory.scope_key_being_flushed", scope_key=scope_key))
-                    await asyncio.sleep(0.1)
-                if self._buffers.get(scope_key):
-                    await self._flush(scope_key)
-
-            # 再次消费队列 + flush，确保期间入队的数据也被写入
-            while not self._queue.empty():
-                try:
-                    record = self._queue.get_nowait()
-                    self._buffers[record.scope_key].append(record)
-                except sync_queue.Empty:
-                    break
-
-            scope_keys = list(self._buffers.keys())
-            for scope_key in scope_keys:
-                # _flushing 由各处 flush 任务在 finally 里 add/discard，per-key Event 需改全部协作方
-                while scope_key in self._flushing:  # noqa: ASYNC110
-                    await asyncio.sleep(0.1)
-                if self._buffers.get(scope_key):
-                    await self._flush(scope_key)
-
-            if memory_config.eval_mode:
-                logger.info(i18n_t("log.memory.evaluation_mode_skipping_hierarchical"))
-            else:
-                logger.info(i18n_t("log.memory.flush_hierarchical_graph_rebuilt"))
-
-    async def stop(self):
-        """停止后台消费循环并等待退出（含关闭前 flush）。
-
-        置位 _stop_event 后 _consume_loop / _flush_timer_loop 会自行醒来退出；
-        cancel 兜底卡死场景——本方法与 _run_forever 同循环，set 与 cancel 之间
-        无让出点，取消必然落在 gather 的 await 处，finally 中的关闭前 flush
-        仍会完整执行。
-        """
+    async def stop(self) -> None:
         self._running = False
         if self._stop_event is not None:
             self._stop_event.set()
-
         task = self._task
         self._task = None
         if task is None:
@@ -348,12 +363,6 @@ class IngestionWorker:
         logger.info(i18n_t("log.memory.memory_ingestionworker_stop_stopped"))
 
     def request_priority_flush(self, scope_key: str) -> None:
-        """纠错即时写快路径（程序性记忆 §4.3）：在主循环上调度一次该 scope 的优先 flush，
-        让数分钟内的"下一次"请求即可召回纠错偏好，而非等 batch_interval_seconds 大窗。
-
-        带 per-scope 间隔（preference_flush_settle_seconds）防连环纠正触发 flush 风暴。
-        由 observer.observe() 在纠错门控命中时调用（运行在主事件循环上）。
-        """
         if not self._running:
             return
         now = time.time()
@@ -361,312 +370,15 @@ class IngestionWorker:
         if now - last < memory_config.preference_flush_settle_seconds:
             return
         self._priority_flush_at[scope_key] = now
-        asyncio.create_task(self._priority_flush(scope_key))
+        asyncio.create_task(self._flush(scope_key))
 
     def peek_buffers(self, scope_keys: Collection[str]) -> list[ObservationRecord]:
-        """只读复制指定 scope 尚未 flush 的记录（不建空桶）。"""
         wanted = frozenset(scope_keys)
         out: list[ObservationRecord] = []
-        for key in wanted:
-            if key not in self._buffers:
-                continue
-            out.extend(self._buffers[key])
+        for key, window in self._windows.items():
+            if key in wanted:
+                out.extend(window.snapshot())
         return out
-
-    async def _priority_flush(self, scope_key: str):
-        """先把队列里待处理记录搬进 buffers（与 _consume_loop 同逻辑，确保刚入队的纠错记录
-        已落到 buffer），再 flush 目标 scope。"""
-        while not self._queue.empty():
-            try:
-                record: ObservationRecord = self._queue.get_nowait()
-                self._buffers[record.scope_key].append(record)
-                if record.scope_key not in self._last_flush:
-                    self._last_flush[record.scope_key] = time.time()
-            except sync_queue.Empty:
-                break
-        # 用 `in` 显式判定，避免 defaultdict 的 `[]` 访问副作用建空桶
-        if scope_key in self._buffers and self._buffers[scope_key] and scope_key not in self._flushing:
-            await self._flush(scope_key)
-
-    async def _consume_loop(self):
-        """从队列取消息，放入对应 scope_key 的缓冲区。
-
-        observation_queue 是线程安全的 queue.Queue（可能被非事件循环线程投递），
-        故保留非阻塞 get_nowait + 短轮询，不改 asyncio.Queue。
-        """
-        while self._running:
-            try:
-                record: ObservationRecord = self._queue.get_nowait()
-                self._buffers[record.scope_key].append(record)
-                self._last_activity[record.scope_key] = time.time()
-
-                # 首次入队初始化 _last_flush 为当前时间，避免立即触发定时刷盘。
-                if record.scope_key not in self._last_flush:
-                    self._last_flush[record.scope_key] = time.time()
-
-                # 超过单次上限且该 scope_key 没有正在 flush 时才触发
-                if (
-                    len(self._buffers[record.scope_key]) >= memory_config.batch_max_size
-                    and record.scope_key not in self._flushing
-                ):
-                    asyncio.create_task(self._flush(record.scope_key))
-            except sync_queue.Empty:
-                if self._stop_event is not None:
-                    try:
-                        await asyncio.wait_for(self._stop_event.wait(), timeout=0.2)
-                    except asyncio.TimeoutError:
-                        pass
-                else:
-                    await asyncio.sleep(0.2)
-            except asyncio.CancelledError:
-                raise
-
-    async def _flush_timer_loop(self):
-        """定期检查所有缓冲区，命中「对话已静默」或「聚合窗口到顶」的 flush。"""
-        while self._running:
-            if self._stop_event is not None:
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=30)
-                    break
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await asyncio.sleep(30)  # 每30秒检查一轮
-            now = time.time()
-            for scope_key in list(self._buffers.keys()):
-                if not self._buffers[scope_key] or scope_key in self._flushing:
-                    continue
-                if self._should_flush_on_timer(scope_key, now):
-                    asyncio.create_task(self._flush(scope_key))
-
-    def _should_flush_on_timer(self, scope_key: str, now: float) -> bool:
-        """定时器该不该把这个 scope 落库。
-
-        两个出口：
-        - **静默落库**（`idle_flush_seconds`）：对话安静下来就落。flush 是唯一的落库时机、
-          缓冲区在进程内存里，只靠 2 小时的聚合窗口意味着一段对话要在内存里躺两小时，
-          core 一重启就永久丢失（实测生产库真实 QQ 流量 Episode 数为 0）。按「静默」而非
-          固定周期触发，对话进行中不打断批量，抽取调用次数基本不变。
-        - **窗口到顶**（`batch_interval_seconds`）：长时间持续刷屏的 scope 兜底落一次。
-        """
-        idle_seconds = memory_config.idle_flush_seconds
-        if idle_seconds > 0:
-            last_activity = self._last_activity[scope_key] if scope_key in self._last_activity else 0.0
-            if last_activity and (now - last_activity) >= idle_seconds:
-                return True
-
-        last_flush = self._last_flush[scope_key] if scope_key in self._last_flush else 0.0
-        return (now - last_flush) >= memory_config.batch_interval_seconds
-
-    async def _flush(self, scope_key: str):
-        """将缓冲区中的消息批量处理"""
-        # Bug-01 修复：使用 _flushing 标记避免重复创建 flush 任务
-        if scope_key in self._flushing:
-            logger.debug(i18n_t("log.memory.scope_key_being_flushed_2", scope_key=scope_key))
-            return
-
-        self._flushing.add(scope_key)
-        records = self._buffers.pop(scope_key, [])
-        if not records:
-            self._flushing.discard(scope_key)
-            return
-        self._last_flush[scope_key] = time.time()
-
-        assert self._llm_semaphore is not None, "IngestionWorker 未初始化"
-        async with self._llm_semaphore:
-            batch_size = memory_config.batch_max_size
-            batches = [records[i : i + batch_size] for i in range(0, len(records), batch_size)]
-            logger.info(
-                i18n_t(
-                    "log.memory.scope_key_items_total",
-                    scope_key=scope_key,
-                    p0=len(records),
-                    p1=len(batches),
-                )
-            )
-            try:
-                for idx, batch in enumerate(batches):
-                    # P0: 对每批摄入添加超时保护，防止 LLM 调用无限阻塞
-                    try:
-                        await asyncio.wait_for(
-                            _ingest_batch(batch, scope_key),
-                            timeout=120,  # 单批最多 120 秒
-                        )
-                        _record_ingestion_stats(len(batch), success=True)
-                    except asyncio.TimeoutError:
-                        logger.warning(i18n_t("log.memory.scope_key_batch_ingestion", scope_key=scope_key))
-                        _record_ingestion_stats(len(batch), success=False)
-                    except Exception as e:
-                        # 仅退回从当前失败批起未处理的数据，避免重复摄入。
-                        logger.error(
-                            i18n_t(
-                                "log.memory.ingestion_batch_fail",
-                                scope_key=scope_key,
-                                batch_idx=idx + 1,
-                                batch_total=len(batches),
-                                error=str(e),
-                            ),
-                            exc_info=True,
-                        )
-                        remaining = [r for b in batches[idx:] for r in b]
-                        self._buffers[scope_key].extend(remaining)
-                        logger.warning(
-                            i18n_t(
-                                "log.memory.scope_key_batch_items",
-                                scope_key=scope_key,
-                                p0=idx + 1,
-                                p1=len(remaining),
-                            )
-                        )
-                        _record_ingestion_stats(len(remaining), success=False)
-                        break
-            finally:
-                self._flushing.discard(scope_key)
-
-
-def _record_ingestion_stats(record_count: int, success: bool):
-    """上报摄入统计到 StatisticsManager"""
-    try:
-        from gsuid_core.ai_core.statistics import statistics_manager
-
-        if success:
-            statistics_manager.record_memory_ingestion(record_count)
-            statistics_manager.record_memory_episode_created(record_count)
-        else:
-            statistics_manager.record_memory_ingestion_error(record_count)
-    except Exception:
-        pass  # 统计上报失败不应影响主流程
-
-
-def _record_entity_edge_stats(entity_count: int, edge_count: int):
-    """上报 Entity/Edge 创建统计到 StatisticsManager"""
-    try:
-        from gsuid_core.ai_core.statistics import statistics_manager
-
-        if entity_count > 0:
-            statistics_manager.record_memory_entity_created(entity_count)
-        if edge_count > 0:
-            statistics_manager.record_memory_edge_created(edge_count)
-    except Exception:
-        pass  # 统计上报失败不应影响主流程
-
-
-def _budget_scope_from_scope_key(scope_key: str) -> Optional[Tuple[str, str, str]]:
-    """把记忆 scope_key 映射为预算归属 scope (group_id, user_id, bot_id)。
-
-    group:<gid> → (gid, "", "")；user_global:<uid> → ("", uid, "")；
-    user_in_group:<uid>@<gid> → (gid, uid, "")；self:* 或未知 → None（Bot 自身记忆，
-    不归属任何用户/群额度）。bot_id 无法从 scope_key 还原，留空即可——群 / 全局规则照常
-    计入，仅不参与 bot 维度规则（后台记忆开销本就不该按平台细分）。
-    """
-    prefix, _, rest = scope_key.partition(":")
-    if not rest:
-        return None
-    if prefix == "group":
-        return (rest, "", "")
-    if prefix == "user_global":
-        return ("", rest, "")
-    if prefix == "user_in_group":
-        uid, sep, gid = rest.partition("@")
-        return (gid, uid, "") if sep else ("", uid, "")
-    return None
-
-
-async def _ingest_batch(
-    records: list[ObservationRecord],
-    scope_key: str,
-):
-    """核心摄入逻辑：将一批 ObservationRecord 转化为 Episode、Entity、Edge"""
-
-    # 把本批 scope 设为「当前预算归属」：实体抽取/偏好蒸馏等后台 LLM 调用不带 Event，靠此
-    # contextvar 把 Token 记入对应群/用户额度（只记账不触发闸门）；self/未知 scope 不归属。
-    from gsuid_core.ai_core.gs_agent import set_budget_scope_context, reset_budget_scope_context
-
-    _bscope = _budget_scope_from_scope_key(scope_key)
-    _btoken = set_budget_scope_context(_bscope) if _bscope is not None else None
-    try:
-        await _ingest_batch_inner(records, scope_key)
-    finally:
-        if _btoken is not None:
-            reset_budget_scope_context(_btoken)
-
-
-async def _ingest_batch_inner(
-    records: list[ObservationRecord],
-    scope_key: str,
-):
-    """实际摄入逻辑（被 _ingest_batch 包一层预算 scope contextvar 后调用）。"""
-
-    from gsuid_core.message_history import get_history_manager
-
-    _hm = get_history_manager()
-    for r in records:
-        if not r.command_hit and r.message_id and _hm.is_command_hit(r.message_id):
-            r.command_hit = True
-        if r.command_hit:
-            r.raw_content = "[用户调用了 bot 功能]"
-
-    # Step 1: 格式化对话文本（Episode 始终保存完整对话，含 LOW 价值消息与脱敏命令）
-    dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in records)
-    speaker_ids = list({r.speaker_id for r in records})
-    earliest_ts = min(r.timestamp for r in records)
-
-    # Step 2: 写入 Episode
-    episode = await AIMemEpisode.create_episode(
-        scope_key=scope_key,
-        content=dialogue,
-        speaker_ids=speaker_ids,
-        valid_at=earliest_ts,
-    )
-
-    # SELF 作用域与纯低价值批次仅写入 Episode，跳过实体与关系抽取。
-    is_self_scope = scope_key.startswith("self:")
-    high_records = [r for r in records if r.value_tier == "HIGH" and not r.command_hit]
-    if high_records:
-        from gsuid_core.ai_core.cognition.types import CogKind
-        from gsuid_core.ai_core.configs.ai_config import ai_config as _mem_ai
-        from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
-
-        _sum_n = int(_mem_ai.get_config("remember_fact_trunc").data)
-        summary = (dialogue or "").replace("\n", " ").strip()[:_sum_n]
-        if summary:
-            await remember(
-                MemoryWrite(
-                    kind=CogKind.EPISODE,
-                    ref=str(episode.id),
-                    scope_key=scope_key,
-                    title="",
-                    summary=summary,
-                    source="observe",
-                )
-            )
-    if is_self_scope or not high_records:
-        logger.debug(
-            i18n_t(
-                "log.memory.skip_scope_key_items_batch_low",
-                scope_key=scope_key,
-                p0=len(records),
-            )
-        )
-        return
-
-    # 步骤 3+：实体与关系抽取写入。抽取异常不向上传播，避免 Episode 重复写入。
-    try:
-        await _extract_and_upsert_from_episode(
-            episode_id=episode.id,
-            high_records=high_records,
-            speaker_ids=speaker_ids,
-            scope_key=scope_key,
-        )
-    except Exception as e:
-        logger.warning(
-            i18n_t(
-                "log.memory.scope_key_episode",
-                scope_key=scope_key,
-                p0=episode.id,
-                e=e,
-            )
-        )
 
 
 async def extract_window(
@@ -675,1019 +387,13 @@ async def extract_window(
     records: list[ObservationRecord],
     episode_id: str = "",
 ) -> None:
-    """窗口化实体/边抽取（评测/回灌专用，§14.1 解耦 Episode 粒度与抽取批次粒度）。
-
-    Episode 粒度（granular，≤900 字符/条，由 ``create_episodes_bulk`` 单独写入并嵌入，
-    供 System-1 召回）与**抽取批次粒度**在此彻底解耦：本函数对**连续若干 turn 拼成的
-    一个窗口**做一次实体/边抽取，复用 ``_extract_and_upsert_from_episode`` 的全部下游
-    （``_llm_extract`` → ``extract_and_upsert_entities`` → ``extract_and_upsert_edges`` →
-    user_global 跨群属性 → 偏好蒸馏），把图谱写到同一 scope。
-
-    **绝不**创建巨型 Episode、**绝不**走 observer 队列 + worker 的 80-turn 聚合路径
-    （那正是 §4.3/§4.4 的"巨型 Episode + 抽取超时丢数据"坑）。
-
-    Args:
-        scope_key: 目标 scope（与 granular Episode 同 scope，探针检索此 scope 即可命中）。
-        records: 窗口内连续 turn 的 ObservationRecord（已是 HIGH 价值、含 is_correction）。
-        episode_id: 窗口关联的代表性 granular Episode id，用于
-            ``mem_episode_entity_mentions`` 的可解释性（空串则跳过关联，不影响图谱写入）。
-
-    调用方负责窗口级宽松超时与"跳过该窗口不丢整 plan"（见 §14.2）；本函数内部不再额外
-    取消父任务，避免 §4.4 的 pydantic_ai 跨 Context 取消报错。
-    """
+    """评测/回灌入口：共用同一套 Pass 1 + Pass 2 真值源，不重复写 Episode。"""
     if not records:
         return
-    await _extract_and_upsert_from_episode(
-        episode_id=episode_id,
-        high_records=records,
-        speaker_ids=list({r.speaker_id for r in records}),
-        scope_key=scope_key,
+    await ingest_window(
+        records,
+        scope_key,
+        force_settle=True,
+        create_episodes=False,
+        representative_episode_id=episode_id,
     )
-
-
-def _parse_event_date(raw: str, fallback: "datetime | None") -> "datetime | None":
-    """把 LLM 给的 ISO 日期解析成 datetime（缺日按 1 号补），失败回落 fallback。"""
-    text = (raw or "").strip()
-    if not text:
-        return fallback
-    full = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
-    if full:
-        try:
-            return datetime(int(full.group(1)), int(full.group(2)), int(full.group(3)), tzinfo=timezone.utc)
-        except ValueError:
-            return fallback
-    month = re.match(r"(\d{4})-(\d{1,2})", text)
-    if month:
-        try:
-            return datetime(int(month.group(1)), int(month.group(2)), 1, tzinfo=timezone.utc)
-        except ValueError:
-            return fallback
-    return fallback
-
-
-async def _extract_and_upsert_from_episode(
-    *,
-    episode_id: str,
-    high_records: list[ObservationRecord],
-    speaker_ids: list[str],
-    scope_key: str,
-) -> None:
-    """从一段对话（一条 Episode 或一个抽取窗口）抽取实体/边并写入图谱（可失败阶段）。
-
-    N-2：调用方 ``_ingest_batch`` 在 try/except 内调用本函数。本阶段失败**不应**连累
-    已写入的 Episode 被退回缓冲重试——Episode 无幂等键，重试会重复写入。
-
-    ``episode_id`` 仅用于 ``mem_episode_entity_mentions`` 关联与背景上下文排除，可为空串
-    （窗口化抽取时传入代表性 granular Episode id；空则跳过关联）。
-    """
-    # 前置零成本过滤（§5.2）：有效非命令发言者少于 1 人时不抽取
-    valid_speakers = {r.speaker_id for r in high_records if not r.command_hit and r.speaker_id}
-    if len(valid_speakers) < 1:
-        logger.debug(i18n_t("log.memory.extraction_skip_no_valid_speakers", scope_key=scope_key))
-        return
-
-    # Step 3: 抽取仅使用 HIGH 价值消息，并在喂给 LLM 前折叠无实体信息行以省 Token（Fix-7）
-    extract_dialogue = _compact_high_records_dialogue(high_records)
-    if not extract_dialogue.strip() or (len(high_records) < 3 and len(extract_dialogue.strip()) < 40):
-        logger.debug(i18n_t("log.memory.scope_key_extraction_empty", scope_key=scope_key))
-        return
-
-    # 拼接近期背景上下文（Fix-1）：数量与单条字符上限均可在控制台配置，
-    # 调小 / 置 0 可显著降低每次抽取的固定 Token 开销（原文仍由 Episode 完整留存）。
-    background_count = memory_config.background_episode_count
-    if background_count > 0:
-        recent_episodes = await _get_recent_episodes(
-            scope_key,
-            limit=background_count,
-            max_content_chars=memory_config.background_episode_max_chars,
-            exclude_episode_id=episode_id,
-        )
-        if recent_episodes:
-            context_text = "\n".join(ep.content for ep in recent_episodes)
-            extract_dialogue = f"<近期背景>\n{context_text}\n</近期背景>\n\n<当前对话>\n{extract_dialogue}\n</当前对话>"
-
-    # Step 4: LLM 提取 + Entity 去重写入
-    extracted = await _llm_extract(extract_dialogue, scope_key)
-
-    # 模块 D 短路：discard 窗口不写实体、边和事件，段子窗口也不结算好感
-    if extracted.get("window_kind") == "discard":
-        logger.debug(i18n_t("log.memory.extraction_discard_window_short_circuit", scope_key=scope_key))
-        return
-
-    # 态度结算（负信号挑衅/敌意）
-    b_id = next((r.bot_id for r in high_records if r.bot_id), "")
-    p_name = next((r.persona_name for r in high_records if r.persona_name), "")
-    await _settle_extracted_attitudes(
-        extracted.get("attitudes", []),
-        scope_key=scope_key,
-        bot_id=b_id,
-        persona_name=p_name,
-    )
-
-    # C3-b：主人识别——把主人发言对应的 Speaker 实体打上 "Master" 标签，
-    # 供检索期优先。主人列表统一取 core_config.masters，不依赖人格 md 硬编码。
-    _apply_master_tags(extracted)
-
-    # Step 4.5: 别名重定向（实体消歧 Level-1），并维护群组画像
-    target_formals = {f for e in extracted["entities"] if (f := (e.get("alias_of") or "").strip())}
-    existing_formals: set[str] = set()
-    if target_formals:
-        from sqlmodel import col, select
-
-        from gsuid_core.ai_core.memory.database.models import AIMemEntity
-
-        async with async_maker() as session:
-            stmt = select(AIMemEntity.name).where(
-                col(AIMemEntity.scope_key) == scope_key,
-                col(AIMemEntity.name).in_(target_formals),
-            )
-            res = await session.execute(stmt)
-            existing_formals = {str(row[0]) for row in res.all() if row[0]}
-
-    alias_map = _apply_alias_redirection(extracted, existing_formals=existing_formals)
-    try:
-        from gsuid_core.ai_core.memory.group_profile import (
-            record_entity_tags,
-            record_term_mappings,
-        )
-
-        if alias_map:
-            await record_term_mappings(scope_key, alias_map, batch_id=episode_id)
-        # 累计实体标签频次，用于推断群组语境标签
-        all_tags: list[str] = []
-        for _e in extracted["entities"]:
-            # 累计实体"名称"作为群组话题标签——原先误用实体"类型"(Person/Game/
-            # Product…)既出戏又无意义（会被注入成"反复出现的话题: Person、Game"）。
-            if _e["name"]:
-                all_tags.append(_e["name"])
-        if all_tags:
-            await record_entity_tags(scope_key, all_tags)
-    except Exception as e:
-        logger.debug(i18n_t("log.memory.update_group_profile", e=e))
-
-    entity_name_to_id, new_entity_count = await extract_and_upsert_entities(
-        scope_key=scope_key,
-        entities_data=extracted["entities"],
-        episode_id=episode_id,
-        speaker_ids=speaker_ids,
-    )
-
-    # 上报 Entity 创建统计
-    _record_entity_edge_stats(
-        entity_count=new_entity_count,
-        edge_count=len(extracted["edges"] if "edges" in extracted else []),
-    )
-
-    # 增量更新 meta.current_entity_count，避免 _check_should_rebuild 全表 COUNT(*)
-    # 仅统计新建实体数量，防止已存在实体被更新时虚高计数
-    if new_entity_count > 0:
-        await increment_entity_count(scope_key, new_entity_count)
-
-    # 步骤 5：边关系写入。valid_at 取当前窗口最新对话时间戳以维护真实时序。
-    stmt_ts = max((r.timestamp for r in high_records), default=None)
-    await extract_and_upsert_edges(
-        scope_key=scope_key,
-        edges_data=extracted["edges"] if "edges" in extracted else [],
-        entity_name_to_id=entity_name_to_id,
-        valid_at=stmt_ts,
-    )
-
-    # Step 6: 时间事件写入（排序/时间线题素材）。日期取事件自报 ISO 日期，缺失用本窗口
-    # 最新对话时间戳兜底——保证「首次提及顺序」在时间轴上可比。
-    from gsuid_core.ai_core.memory.database.models import AIMemEvent, EventWriteRow
-
-    event_rows: list[EventWriteRow] = []
-    for ev in extracted["events"] if "events" in extracted else []:
-        summary = ev["summary"].strip()
-        if not summary:
-            continue
-        event_rows.append(
-            {
-                "summary": summary,
-                "start_at": _parse_event_date(ev["start_date"], stmt_ts),
-                "end_at": _parse_event_date(ev["end_date"], None),
-                "entities": ev["entities"],
-                "aliases": ev["aliases"],
-            }
-        )
-    if event_rows:
-        await AIMemEvent.upsert_events_bulk(scope_key, event_rows, episode_id=episode_id, fallback_at=stmt_ts)
-
-    # Step 7: user_global Scope 的跨群属性
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-
-    user_global_entities = [
-        e
-        for e in (extracted["entities"] if "entities" in extracted else [])
-        if (e["scope_hint"] if "scope_hint" in e else None) == "user_global"
-    ]
-    for user_id in speaker_ids:
-        # Bug-03 修复：使用 make_scope_key 函数生成 scope_key，保持一致性
-        user_global_scope = make_scope_key(ScopeType.USER_GLOBAL, user_id)
-        user_scoped_entities = [
-            e for e in user_global_entities if (e["user_id"] if "user_id" in e else None) == user_id
-        ]
-        if user_scoped_entities:
-            user_global_name_to_id, user_global_new_count = await extract_and_upsert_entities(
-                scope_key=user_global_scope,
-                entities_data=user_scoped_entities,
-                episode_id=episode_id,
-                speaker_ids=[user_id],
-            )
-            # 增量更新 user_global scope 的 entity 计数（仅统计新建实体）
-            if user_global_new_count > 0:
-                await increment_entity_count(user_global_scope, user_global_new_count)
-
-    # 步骤 7.5：偏好记忆蒸馏，由抽取阶段判定的 has_preference 门控触发。
-    pref_signal = extracted["has_preference"] if "has_preference" in extracted else False
-    await _write_master_stated_facts(
-        extracted["stated"] if "stated" in extracted else [],
-        speaker_ids=speaker_ids,
-        episode_id=episode_id,
-        scope_key=scope_key,
-        fallback_at=stmt_ts,
-    )
-    if memory_config.enable_preference_memory and pref_signal:
-        try:
-            await _extract_and_upsert_preferences(
-                high_records=high_records,
-                speaker_ids=speaker_ids,
-                scope_key=scope_key,
-                episode_id=episode_id,
-            )
-        except Exception as e:
-            logger.warning(i18n_t("log.memory.scope_key_preference_distillation", scope_key=scope_key, e=e))
-
-    # Step 8: 触发分层图更新检查（评测模式下跳过，由外部统一触发）
-    if not memory_config.eval_mode:
-        await check_and_trigger_hierarchical_update(scope_key)
-
-
-async def _get_recent_episodes(
-    scope_key: str, limit: int = 1, max_content_chars: int = 600, exclude_episode_id: str = ""
-) -> list:
-    """拉取最近 N 条 Episode 作为背景上下文，截断过长的 content 防止 token 超限。
-    排除当前 Episode，避免背景上下文包含当前对话本身造成冗余。
-
-    ``limit <= 0`` 表示不需要背景，直接返回空列表，省去一次数据库查询。
-    """
-    from sqlmodel import col, select
-
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-
-    if limit <= 0:
-        return []
-
-    async with async_maker() as session:
-        query = select(AIMemEpisode).where(AIMemEpisode.scope_key == scope_key)
-        if exclude_episode_id:
-            query = query.where(AIMemEpisode.id != exclude_episode_id)
-        result = await session.execute(query.order_by(col(AIMemEpisode.valid_at).desc()).limit(limit))
-        episodes = list(result.scalars().all())
-        # 截断过长的 content，防止单条 Episode 包含大量消息导致背景上下文 token 超限
-        for ep in episodes:
-            if len(ep.content) > max_content_chars:
-                ep.content = ep.content[:max_content_chars] + "...[已截断]"
-        return episodes
-
-
-async def _settle_extracted_attitudes(
-    attitudes: list[ExtractedAttitude],
-    *,
-    scope_key: str,
-    bot_id: str = "",
-    persona_name: str = "",
-) -> None:
-    if not attitudes or not bot_id.strip() or not persona_name.strip():
-        return
-    from gsuid_core.ai_core.memory.config import memory_config
-
-    if memory_config.eval_mode:
-        return
-    from gsuid_core.ai_core.relationship.engine import settle_semantic
-    from gsuid_core.ai_core.relationship.signals import NegSignal
-
-    for item in attitudes:
-        att = item["attitude"]
-        signal: NegSignal | None = None
-        if att in ("provoke", "provoking"):
-            signal = NegSignal.PROVOKE
-        elif att == "hostile":
-            signal = NegSignal.HOSTILE
-        if signal is not None:
-            try:
-                await settle_semantic(
-                    user_id=item["user_id"],
-                    bot_id=bot_id,
-                    persona_name=persona_name,
-                    signal=signal,
-                    evidence=item["evidence"],
-                )
-            except Exception as e:
-                logger.debug(i18n_t("log.memory.settle_semantic_failed", user_id=item["user_id"], e=e))
-
-
-def _apply_alias_redirection(
-    extracted: ExtractedResult,
-    existing_formals: Optional[set[str]] = None,
-) -> dict[str, str]:
-    """别名重定向（实体消歧 Level-1：alias_of 硬规则）。
-
-    将 LLM 标注了 alias_of 的别名实体合并到正式实体，
-    并把所有 edge 中对别名的引用重写为正式名称。
-
-    规则（Module A）：
-    1. 别名摘要不再拼进正式实体 summary，避免 summary 被反复改写污染；
-    2. alias_of 指向的正式实体若不在本批且库中不存在，不重命名，丢弃 alias_of。
-    """
-    entities = extracted["entities"]
-    edges = extracted["edges"]
-
-    # 1. 收集别名映射
-    alias_map: dict[str, str] = {}
-    for e in entities:
-        alias = (e["name"] or "").strip()
-        formal = (e["alias_of"] or "").strip()
-        if alias and formal and alias != formal:
-            alias_map[alias] = formal
-
-    if not alias_map:
-        for e in entities:
-            e.pop("alias_of", None)
-        return {}
-
-    # 2. 解析传递性别名（别名指向别名）
-    def _resolve(name: str, _depth: int = 0) -> str:
-        if _depth > 5 or name not in alias_map:
-            return name
-        return _resolve(alias_map[name], _depth + 1)
-
-    resolved = {a: _resolve(a) for a in alias_map}
-
-    # 筛选真正有效的重定向：正式实体必须在本批存在，或在已有实体库 (existing_formals) 中存在
-    by_name = {(e["name"] or "").strip(): e for e in entities}
-    valid_resolved: dict[str, str] = {}
-    for a, f in resolved.items():
-        if f in by_name or (existing_formals and f in existing_formals):
-            valid_resolved[a] = f
-
-    # 3. 重写 edge 的 src/tgt 引用（仅用有效重定向）
-    for edge in edges:
-        src = (edge["source"] or "").strip()
-        tgt = (edge["target"] or "").strip()
-        if src in valid_resolved and valid_resolved[src] != src:
-            edge["source"] = valid_resolved[src]
-        if tgt in valid_resolved and valid_resolved[tgt] != tgt:
-            edge["target"] = valid_resolved[tgt]
-
-    # 4. 合并别名实体到正式实体
-    kept: list[dict] = []
-    for e in entities:
-        name = (e["name"] or "").strip()
-        if name in valid_resolved and valid_resolved[name] != name:
-            formal = valid_resolved[name]
-            # 正式实体在本批或已有库中存在：丢弃别名实体，不合并 summary（§2.2）
-            if formal in by_name or (existing_formals and formal in existing_formals):
-                continue
-        # 无效别名或非别名实体，剥除 alias_of 并保留
-        e.pop("alias_of", None)
-        kept.append(e)
-
-    # 按 name 去重 kept 实体（若同批多个别名重命名为同一正式名，保留首个）
-    deduped_kept: list[dict] = []
-    seen_kept_names: set[str] = set()
-    for e in kept:
-        k_name = (e.get("name") or "").strip()
-        if k_name and k_name not in seen_kept_names:
-            seen_kept_names.add(k_name)
-            deduped_kept.append(e)
-        elif not k_name:
-            deduped_kept.append(e)
-
-    extracted["entities"] = deduped_kept
-    if valid_resolved:
-        logger.debug(i18n_t("log.memory.memory_resolved_alias_redirect", resolved=valid_resolved))
-    return valid_resolved
-
-
-def _apply_master_tags(extracted: ExtractedResult) -> None:
-    """给主人对应的 Speaker 实体打上 "Master" 标签（C3-b）。
-
-    主人列表统一取 ``core_config.masters``，不依赖人格 markdown 硬编码。
-    实体自带的 ``name`` / ``user_id`` 即发言者标识，据此与主人列表比对。
-    检索期可据此标签优先分配预算（见 C4 / dual_route）。
-    """
-    try:
-        from gsuid_core.config import core_config
-
-        masters = {str(m) for m in (core_config.get_config("masters") or [])}
-    except Exception:
-        masters = set()
-    if not masters:
-        return
-
-    for e in extracted["entities"]:
-        name = (e["name"] or "").strip()
-        uid = (e["user_id"] or "").strip() if e["user_id"] else ""
-        if name in masters or (uid and uid in masters):
-            tags = e["tag"] if isinstance(e["tag"], list) else []
-            if "Master" not in tags:
-                tags.append("Master")
-            e["tag"] = tags
-
-
-async def _build_known_context(scope_key: str, dialogue: str) -> str:
-    """构造注入实体提取提示词的"本群已知别名 + 已存在实体"片段（C2-a / C2-b）。
-
-    Token 防爆：别名只注入本批对话中字面命中的条目，外加少量高频兜底；
-    已存在实体取最近活跃的非发言者实体；整体硬限制约 1000 字符。
-    无可注入数据时返回空串。
-    """
-
-    from gsuid_core.ai_core.memory.group_profile import get_term_mappings
-    from gsuid_core.ai_core.memory.prompts.extraction import KNOWN_CONTEXT_TEMPLATE
-
-    MAX_BLOCK_CHARS = 1000
-
-    # 1. 汇总候选别名：群组画像 term_mappings（运行时学到的）+ 插件 ai_alias 注册表
-    candidates: dict[str, str] = {}
-    try:
-        term_mappings = await get_term_mappings(scope_key)
-        for alias, formal in term_mappings.items():
-            if alias and formal:
-                candidates[alias] = formal
-    except Exception as e:
-        logger.debug(i18n_t("log.memory.read_term_mappings", e=e))
-    # 2. L0 字面命中过滤：只保留本批对话出现的别名，不再无条件注入外部插件别名或兜底
-    hit: dict[str, str] = {a: f for a, f in candidates.items() if a in dialogue}
-
-    alias_section = ""
-    if hit:
-        pairs = "; ".join(f"{a}={f}" for a, f in list(hit.items())[:30])
-        alias_section = f"可能的别称（仅当上下文明确指同一对象时使用）：{pairs[:MAX_BLOCK_CHARS]}\n"
-
-    # 3. 本群高频已存在实体清单（C2-b 跨批次消歧锚点）
-    entity_section = ""
-    try:
-        from gsuid_core.ai_core.memory.database.models import AIMemEntity
-
-        names = await AIMemEntity.get_frequent_names(scope_key, limit=20)
-        named = [n for n in names if n and not n.isdigit()]
-        if named:
-            entity_section = f"已存在实体：{('、'.join(named))[:MAX_BLOCK_CHARS]}\n"
-    except Exception as e:
-        logger.debug(i18n_t("log.memory.read_high_frequency_entities", e=e))
-
-    if not alias_section and not entity_section:
-        return ""
-    return KNOWN_CONTEXT_TEMPLATE.format(alias_section=alias_section, entity_section=entity_section)
-
-
-async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
-    """调用 LLM 从对话文本中提取 Entity 和 Edge。
-
-    使用结构化 JSON 输出，减少解析失败风险。
-    当对话超过 MAX_CHARS 时，自动分片提取并合并去重，避免硬截断丢失内容。
-    """
-    MAX_CHARS = 14000
-
-    if len(dialogue) <= MAX_CHARS:
-        return await _llm_extract_single(dialogue, scope_key)
-
-    # 超长对话：按对话行分片，每片独立提取，最后合并去重
-    lines = dialogue.split("\n")
-    chunks: list[str] = []
-    current_chunk_lines: list[str] = []
-    current_len = 0
-
-    for line in lines:
-        line_len = len(line) + 1  # +1 for \n
-        if current_len + line_len > MAX_CHARS and current_chunk_lines:
-            chunks.append("\n".join(current_chunk_lines))
-            current_chunk_lines = [line]
-            current_len = line_len
-        else:
-            current_chunk_lines.append(line)
-            current_len += line_len
-
-    if current_chunk_lines:
-        chunks.append("\n".join(current_chunk_lines))
-
-    logger.info(i18n_t("log.memory.dialogue_long_characters_splitting", p0=len(dialogue), p1=len(chunks)))
-
-    # 逐片提取（串行，避免 LLM 并发过载）
-    all_entities: list[dict] = []
-    all_edges: list[dict] = []
-    all_stated: list[StatedFact] = []
-    all_events: list[ExtractedEventRow] = []
-    all_attitudes: list[ExtractedAttitude] = []
-    window_kinds: list[str] = []
-    has_preference = False
-    for i, chunk in enumerate(chunks):
-        result = await _llm_extract_single(chunk, scope_key)
-        chunk_kind = result.get("window_kind", "mixed")
-        window_kinds.append(chunk_kind)
-        # 丢弃窗口（段子/刷屏）不将其内部抽出的实体、边和事实并入总产物
-        if chunk_kind == "discard":
-            continue
-        all_entities.extend(result["entities"])
-        all_edges.extend(result["edges"])
-        all_stated.extend(result.get("stated", []))
-        all_events.extend(result.get("events", []))
-        all_attitudes.extend(result.get("attitudes", []))
-        # 任一有效分片判出偏好信号即视为整批命中
-        if result.get("has_preference"):
-            has_preference = True
-
-    # 按 name 去重 Entity（同名保留后出现的，信息更完整）
-    seen_names: dict[str, dict] = {}
-    for e in all_entities:
-        name = e["name"] if "name" in e else ""
-        if name:
-            seen_names[name] = e
-
-    # 按 (source, target, fact) 去重 Edge
-    seen_edges: dict[str, dict] = {}
-    for edge in all_edges:
-        key = (
-            f"{(edge['source'] if 'source' in edge else '')}|"
-            f"{(edge['target'] if 'target' in edge else '')}|"
-            f"{(edge['fact'] if 'fact' in edge else '')}"
-        )
-
-        if key:
-            seen_edges[key] = edge
-
-    final_kind = "mixed"
-    if window_kinds:
-        if all(k == "discard" for k in window_kinds):
-            final_kind = "discard"
-        elif all(k == "group_lore" for k in window_kinds):
-            final_kind = "group_lore"
-        elif all(k == "speaker_fact" for k in window_kinds):
-            final_kind = "speaker_fact"
-
-    return {
-        "entities": list(seen_names.values()),
-        "edges": list(seen_edges.values()),
-        "events": all_events,
-        "has_preference": has_preference,
-        "stated": all_stated,
-        "window_kind": final_kind,
-        "attitudes": all_attitudes,
-    }
-
-
-async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
-    """单次 LLM 提取调用，直接解析 JSON（不使用 output_type，避免 thinking trace）
-
-    使用简写键名 n/s/t/u/src/tgt/f，需要在解析后还原为完整键名。
-    """
-
-    from gsuid_core.ai_core.gs_agent import create_agent
-    from gsuid_core.ai_core.memory.prompts.extraction import (
-        ENTITY_EXTRACTION_USER,
-        ENTITY_EXTRACTION_SYSTEM,
-        PREFERENCE_FLAG_INSTRUCTION,
-    )
-
-    MAX_CHARS = 10000
-
-    # 安全兜底：单次调用仍限制长度
-    # 修复：向前查找最近的一个换行符进行安全截断，避免破坏 JSON 或半句话
-    if len(dialogue) > MAX_CHARS:
-        truncated = dialogue[:MAX_CHARS]
-        # 向前查找最近的一个换行符
-        last_newline = truncated.rfind("\n")
-        if last_newline > MAX_CHARS // 4:  # 至少要在前 1/4 处找到换行符才截断
-            truncated = truncated[:last_newline]
-        dialogue = truncated + "\n[内容已截断...]"
-
-    # C2-a / C2-b：注入"本群已知别名 + 已存在实体"，指导 LLM 对齐别名、跨批次消歧
-    known_context = await _build_known_context(scope_key, dialogue)
-
-    # 静态指令走 system_prompt、变量走 user message，构成稳定前缀以命中缓存（详见 prompts/extraction.py）。
-    prompt = ENTITY_EXTRACTION_USER.format(
-        scope_key=scope_key,
-        dialogue_content=dialogue,
-        known_context=known_context,
-    )
-
-    def _restore_keys(data: dict) -> ExtractedResult:
-        """将 LLM 输出的简写键名 JSON 还原为完整键名结构。
-
-        data 是 LLM 直接产出的原始 JSON，形状不受信任，因此逐字段用
-        in + isinstance 守卫取值，不使用 .get 兜底——缺失或类型不符即取默认值。
-        """
-        entities: list[dict] = []
-        edges: list[dict] = []
-
-        raw_entities = data["entities"] if "entities" in data else None
-        if isinstance(raw_entities, list):
-            for e in raw_entities:
-                if not isinstance(e, dict):
-                    continue
-                name = e["n"] if "n" in e and isinstance(e["n"], str) else ""
-                summary = e["s"] if "s" in e and isinstance(e["s"], str) else ""
-                tag = e["t"] if "t" in e and isinstance(e["t"], list) else []
-                user_id = e["u"] if "u" in e and isinstance(e["u"], str) else None
-                scope_hint = e["scope_hint"] if "scope_hint" in e and isinstance(e["scope_hint"], str) else None
-                alias_of = e["a"] if "a" in e and isinstance(e["a"], str) and e["a"] else None
-                entities.append(
-                    {
-                        "name": name,
-                        "summary": summary,
-                        "tag": tag,
-                        "user_id": user_id,
-                        "scope_hint": scope_hint,
-                        "is_speaker": "Speaker" in tag,
-                        "alias_of": alias_of,
-                    }
-                )
-
-        raw_edges = data["edges"] if "edges" in data else None
-        if isinstance(raw_edges, list):
-            for edge in raw_edges:
-                if not isinstance(edge, dict):
-                    continue
-                edges.append(
-                    {
-                        "source": edge["src"] if "src" in edge and isinstance(edge["src"], str) else "",
-                        "target": edge["tgt"] if "tgt" in edge and isinstance(edge["tgt"], str) else "",
-                        "fact": edge["f"] if "f" in edge and isinstance(edge["f"], str) else "",
-                        "user_id": edge["u"] if "u" in edge and isinstance(edge["u"], str) else None,
-                        "scope_hint": (
-                            edge["scope_hint"] if "scope_hint" in edge and isinstance(edge["scope_hint"], str) else None
-                        ),
-                    }
-                )
-
-        # 时间事件：s=摘要 d=开始日期 e=结束日期 x=涉及实体 a=别名（LLM 简写键）
-        events: list[ExtractedEventRow] = []
-        raw_events = data["events"] if "events" in data else None
-        if isinstance(raw_events, list):
-            for ev in raw_events:
-                if not isinstance(ev, dict):
-                    continue
-                summary = ev["s"] if "s" in ev and isinstance(ev["s"], str) else ""
-                if not summary.strip():
-                    continue
-                raw_entities = ev["x"] if "x" in ev and isinstance(ev["x"], list) else []
-                raw_aliases = ev["a"] if "a" in ev and isinstance(ev["a"], list) else []
-                events.append(
-                    {
-                        "summary": summary.strip(),
-                        "start_date": ev["d"] if "d" in ev and isinstance(ev["d"], str) else "",
-                        "end_date": ev["e"] if "e" in ev and isinstance(ev["e"], str) else "",
-                        "entities": [x for x in raw_entities if isinstance(x, str)],
-                        "aliases": [x for x in raw_aliases if isinstance(x, str)],
-                    }
-                )
-
-        # 程序性偏好门控信号（仅在 system prompt 追加了判定指令时模型才会产出）：取顶层 pref
-        has_preference = bool(data["pref"]) if "pref" in data else False
-        stated: list[StatedFact] = []
-        raw_stated = data["stated"] if "stated" in data else None
-        if isinstance(raw_stated, list):
-            for item in raw_stated:
-                if not isinstance(item, dict):
-                    continue
-                uid = item["u"] if "u" in item and isinstance(item["u"], str) else ""
-                kind = item["k"] if "k" in item and isinstance(item["k"], str) else ""
-                value = item["v"] if "v" in item and isinstance(item["v"], str) else ""
-                if uid and value:
-                    stated.append({"u": uid, "k": kind, "v": value})
-
-        # 窗口分类：discard / group_lore / speaker_fact / mixed
-        window_kind = data["window_kind"] if "window_kind" in data and isinstance(data["window_kind"], str) else "mixed"
-        if window_kind not in ("discard", "group_lore", "speaker_fact", "mixed"):
-            window_kind = "mixed"
-
-        # 发言者态度判定
-        attitudes: list[ExtractedAttitude] = []
-        raw_attitudes = data["attitudes"] if "attitudes" in data else None
-        if isinstance(raw_attitudes, list):
-            for att in raw_attitudes:
-                if not isinstance(att, dict):
-                    continue
-                u_id = att["user_id"] if "user_id" in att and isinstance(att["user_id"], str) else ""
-                raw_val = att["attitude"] if "attitude" in att and isinstance(att["attitude"], str) else "neutral"
-                attitude_val: Literal["friendly", "neutral", "teasing", "provoke", "hostile"]
-                if raw_val in ("friendly", "neutral", "teasing", "provoke", "provoking", "hostile"):
-                    if raw_val == "friendly":
-                        attitude_val = "friendly"
-                    elif raw_val == "teasing":
-                        attitude_val = "teasing"
-                    elif raw_val in ("provoke", "provoking"):
-                        attitude_val = "provoke"
-                    elif raw_val == "hostile":
-                        attitude_val = "hostile"
-                    else:
-                        attitude_val = "neutral"
-                else:
-                    attitude_val = "neutral"
-                evidence = att["evidence"] if "evidence" in att and isinstance(att["evidence"], str) else ""
-                if u_id:
-                    attitudes.append(
-                        {
-                            "user_id": u_id,
-                            "attitude": attitude_val,
-                            "evidence": evidence,
-                        }
-                    )
-
-        return {
-            "entities": entities,
-            "edges": edges,
-            "events": events,
-            "has_preference": has_preference,
-            "stated": stated,
-            "window_kind": window_kind,
-            "attitudes": attitudes,
-        }
-
-    try:
-        # 偏好门控开启时，把"顺手判 pref"指令追加到 system 末尾（不动稳定前缀的实体抽取部分，
-        # 关闭时前缀与改动前逐字节一致），让实体抽取 LLM 替代脆弱正则决定是否触发偏好蒸馏。
-        system_prompt = ENTITY_EXTRACTION_SYSTEM
-        if memory_config.enable_preference_memory:
-            system_prompt = ENTITY_EXTRACTION_SYSTEM + PREFERENCE_FLAG_INSTRUCTION
-        # 模型输出 JSON，遇限流时执行退避重试与故障转移。
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        raw_text = ""
-        for _rl_attempt in range(8):
-            _cur_prov = ai_config.get_config("low_level_provider_config_name").data
-            agent = create_agent(
-                create_by="MemEntityExtraction",
-                task_level="low",
-                system_prompt=system_prompt,
-                scope_key=scope_key,
-            )
-            raw = await asyncio.wait_for(agent.run(prompt), timeout=180)
-            raw_text = raw if isinstance(raw, str) else (raw.output if hasattr(raw, "output") else str(raw))
-            _low = raw_text.lower()
-            _is_rl = (
-                "429" in raw_text
-                or "rate_limit" in _low
-                or "rate limit" in _low
-                or "too many request" in _low
-                or "用量上限" in raw_text
-                or "额度" in raw_text
-            )
-            if _is_rl and _rl_attempt < 7:
-                # 遇限流先执行退避重试，eval 模式连撞后触发 provider 轮换。
-                if memory_config.eval_mode and _rl_attempt >= _FAILOVER_AFTER_ATTEMPTS:
-                    _advance_low_provider(_cur_prov)
-                await asyncio.sleep(min(1.5**_rl_attempt, 8))
-                continue
-            break
-        data = extract_json_from_text(raw_text)
-        # 若模型输出为数组，取首个 dict 归一化解析。
-        if isinstance(data, list):
-            data = next((item for item in data if isinstance(item, dict)), None)
-        if not isinstance(data, dict):
-            raise ValueError(f"extraction output is not a JSON object: {raw_text[:80]!r}")
-        return _restore_keys(data)
-
-    except asyncio.TimeoutError:
-        logger.warning(i18n_t("log.memory.extraction_timeout", scope_key=scope_key))
-        try:
-            from gsuid_core.ai_core.statistics import statistics_manager
-
-            statistics_manager.record_memory_extraction_error()
-        except Exception:
-            pass
-    except ValueError as e:
-        # 上游 agent 返回空/非 JSON 时 extract_json_from_text 抛 ValueError，
-        # 这是预期内的"模型输出不可用"，只 warning，不打 stack trace
-        logger.warning(i18n_t("log.memory.extraction_not_json", error=str(e)))
-        try:
-            from gsuid_core.ai_core.statistics import statistics_manager
-
-            statistics_manager.record_memory_extraction_error()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.error(i18n_t("log.memory.extraction_fail", error=str(e)), exc_info=True)
-        try:
-            from gsuid_core.ai_core.statistics import statistics_manager
-
-            statistics_manager.record_memory_extraction_error()
-        except Exception:
-            pass
-
-    return {
-        "entities": [],
-        "edges": [],
-        "events": [],
-        "has_preference": False,
-        "stated": [],
-        "window_kind": "mixed",
-        "attitudes": [],
-    }
-
-
-# 程序性 / 偏好记忆蒸馏（独立 LLM 调用，纠错门控命中才触发）
-# 设计：plans/procedural_preference_memory_design_20260614.md §4
-
-# 单批最多写入的偏好规则数，防 LLM 过度产出
-_PREFERENCE_MAX_PER_BATCH = 8
-
-
-def _build_capability_section() -> str:
-    """构造【可用能力清单】片段：把真实注册的能力域 + 工具名喂给偏好蒸馏 LLM，
-    避免 target_context 被凭空编造（§4.1-a / §5.3）。无注册工具时返回空串。"""
-    from gsuid_core.ai_core.register import get_registered_tools
-
-    domains: set[str] = set()
-    tool_names: list[str] = []
-    try:
-        for cat_tools in get_registered_tools().values():
-            for name, tb in cat_tools.items():
-                tool_names.append(name)
-                if tb.capability_domain:
-                    domains.add(tb.capability_domain)
-    except Exception:
-        return ""
-    if not tool_names:
-        return ""
-
-    MAX = 1200
-    domain_line = "、".join(sorted(domains)) if domains else "（暂无）"
-    names_line = "、".join(tool_names)
-    return (
-        "<可用能力清单（ctx 必须从中精确选择，选不到填 general）>\n"
-        f"能力域：{domain_line[:MAX]}\n"
-        f"工具名：{names_line[:MAX]}\n"
-        "</可用能力清单>\n"
-    )
-
-
-async def _write_master_stated_facts(
-    stated: list[StatedFact],
-    *,
-    speaker_ids: list[str],
-    episode_id: str,
-    scope_key: str,
-    fallback_at: datetime | None,
-) -> None:
-    """主人自我陈述硬写偏好，不经置信度门。旁人陈述忽略。"""
-    if not stated:
-        return
-    from gsuid_core.config import core_config
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-    from gsuid_core.ai_core.memory.database.models import AIMemEvent, EventWriteRow, AIMemPreference
-
-    raw_masters = core_config.get_config("masters")
-    masters = {str(x) for x in raw_masters} if isinstance(raw_masters, list) else set()
-    if not masters:
-        return
-    valid = set(speaker_ids)
-    pending_events: list[EventWriteRow] = []
-    for item in stated:
-        uid = item["u"]
-        kind = item["k"]
-        value = item["v"]
-        if not uid or uid not in masters or uid not in valid:
-            continue
-        body = value.strip()
-        if not body:
-            continue
-        # 一次性行程进事件；习惯和「明天指哪一天」仍进偏好。
-        if looks_like_one_off_relative_schedule(body):
-            pending_events.append(
-                {
-                    "summary": body[:200],
-                    "start_at": fallback_at,
-                    "end_at": None,
-                    "entities": [],
-                    "aliases": [],
-                }
-            )
-            continue
-        slot = kind.strip() if kind.strip() in ("location", "possession", "preference") else "preference"
-        await AIMemPreference.upsert(
-            scope_key=make_scope_key(ScopeType.USER_GLOBAL, uid),
-            user_id=uid,
-            target_context=slot,
-            preference_rule=body[:200],
-            polarity="do",
-            is_correction=False,
-            source_episode_id=episode_id,
-        )
-    if pending_events:
-        await AIMemEvent.upsert_events_bulk(
-            scope_key,
-            pending_events,
-            episode_id=episode_id,
-            fallback_at=fallback_at,
-        )
-
-
-async def _extract_and_upsert_preferences(
-    *,
-    high_records: list[ObservationRecord],
-    speaker_ids: list[str],
-    scope_key: str,
-    episode_id: str,
-) -> None:
-    """从命中纠错意图的批次独立蒸馏偏好规则，fan-out 写入各发言者的 USER_GLOBAL 偏好表。
-
-    - 输入：本批 HIGH records 折叠后的对话（保留 ``[speaker_id]`` 前缀供归属）+ 可用能力
-      清单 + 近期工具调用轨迹（纠错背景，§4.2）。
-    - 归属：默认归"提出纠正的发言者"个人（USER_GLOBAL:{uid}，跨群随用户），避免把一个人
-      的口味强加给全群（§10.2）。
-    - 写入：``AIMemPreference.upsert``（合并 / 极性反转 / 强化），SQL-only 不写向量。
-    """
-    from gsuid_core.ai_core.gs_agent import create_agent
-    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
-    from gsuid_core.ai_core.memory.prompts.extraction import (
-        PREFERENCE_EXTRACTION_USER,
-        PREFERENCE_EXTRACTION_SYSTEM,
-    )
-    from gsuid_core.ai_core.memory.ingestion.tool_trace import get_recent_tool_calls
-
-    dialogue = _compact_high_records_dialogue(high_records)
-    if not dialogue.strip():
-        return
-
-    capability_section = _build_capability_section()
-
-    tool_calls = get_recent_tool_calls(speaker_ids, limit=6)
-    if tool_calls:
-        joined = "\n".join(f"- {t}" for t in tool_calls)
-        tool_trace_section = (
-            f"<助手近期工具调用（纠错背景，参数可能正是被纠正的对象）>\n{joined}\n</助手近期工具调用>\n"
-        )
-    else:
-        tool_trace_section = ""
-
-    prompt = PREFERENCE_EXTRACTION_USER.format(
-        capability_section=capability_section,
-        tool_trace_section=tool_trace_section,
-        dialogue_content=dialogue,
-    )
-
-    agent = create_agent(
-        create_by="MemPreferenceExtraction",
-        task_level="low",
-        is_subagent=True,
-        system_prompt=PREFERENCE_EXTRACTION_SYSTEM,
-        scope_key=scope_key,
-    )
-    raw = await asyncio.wait_for(agent.run(prompt), timeout=120)
-    # 本调用未指定 output_type，agent.run 返回 str；非 str 直接 str() 兜底（不依赖 hasattr 探属性）
-    raw_text = raw if isinstance(raw, str) else str(raw)
-    data = extract_json_from_text(raw_text)
-    if isinstance(data, list):
-        data = next((item for item in data if isinstance(item, dict)), None)
-    if not isinstance(data, dict):
-        logger.debug(i18n_t("log.memory.preference_distillation_output_json", p0=repr(raw_text[:80])))
-        return
-
-    raw_prefs = data["preferences"] if "preferences" in data and isinstance(data["preferences"], list) else []
-    if not raw_prefs:
-        return
-
-    # 归属兜底：取本批命中纠错的发言者作默认归属；valid_speakers 防 LLM 编造 by
-    correction_speakers = [r.speaker_id for r in high_records if r.is_correction]
-    default_by = correction_speakers[0] if correction_speakers else (speaker_ids[0] if speaker_ids else "")
-    valid_speakers = set(speaker_ids)
-
-    written = 0
-    for p in raw_prefs[:_PREFERENCE_MAX_PER_BATCH]:
-        if not isinstance(p, dict):
-            continue
-        rule = (p["rule"] if "rule" in p and isinstance(p["rule"], str) else "").strip()
-        if not rule:
-            continue
-        ctx_raw = p["ctx"] if "ctx" in p and isinstance(p["ctx"], str) and p["ctx"].strip() else "general"
-        target_context = ctx_raw.strip()[:128]
-        polarity = "dont" if (p["pol"] if "pol" in p else "do") == "dont" else "do"
-        is_corr = bool(p["corr"]) if "corr" in p else False
-        by = (p["by"] if "by" in p and isinstance(p["by"], str) else "").strip()
-        if by not in valid_speakers:
-            by = default_by
-        if not by:
-            continue
-        pref_scope = make_scope_key(ScopeType.USER_GLOBAL, by)
-        upsert_result = await AIMemPreference.upsert(
-            scope_key=pref_scope,
-            user_id=by,
-            target_context=target_context,
-            preference_rule=rule,
-            polarity=polarity,
-            is_correction=is_corr,
-            source_episode_id=episode_id,
-        )
-        # with_session 在 DB 抖动时吞异常返回 None；判空避免解包 TypeError 中断整批剩余偏好写入
-        if not upsert_result:
-            continue
-        new_id, _is_new = upsert_result
-        if new_id:
-            written += 1
-
-    if written:
-        logger.info(i18n_t("log.memory.scope_key_distilled_wrote", scope_key=scope_key, written=written))

@@ -102,6 +102,7 @@
   "log.webconsole.memory_manually_triggered_hierarchical": "[Memory] 手动触发分层图重建 scope_key={scope_key}",
   "log.webconsole.memory_scope_key_window_fail": "[Memory] scope={scope_key} 窗口抽取失败（跳过该窗口）: {e}",
   "log.webconsole.memory_scope_key_window_fail_2": "[Memory] scope={scope_key} 窗口抽取超时（{p0}s），跳过该窗口",
+  "log.webconsole.memory_reconcile_vectors_fail": "[Memory] 索引对账向量补偿失败: {e}",
   "log.webconsole.mime_type_file_path": "[WebConsole] 文件 {file_path} 的 MIME 类型为 {mime_type}",
   "log.webconsole.plugin_store_fail": "获取插件商店列表失败: {error}",
   "log.webconsole.received_request_app_path": "[网页控制台] 收到请求: /app/{path}",

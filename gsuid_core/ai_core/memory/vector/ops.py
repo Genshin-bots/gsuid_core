@@ -29,9 +29,9 @@ from gsuid_core.ai_core.rag.qmodels import (
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
+    MEMORY_THREADS_COLLECTION,
     MEMORY_ENTITIES_COLLECTION,
     MEMORY_EPISODES_COLLECTION,
-    MEMORY_EPISODES_COLD_COLLECTION,
 )
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ _QDRANT_LOCKS: dict[str, asyncio.Lock] = {
     MEMORY_EPISODES_COLLECTION: asyncio.Lock(),
     MEMORY_ENTITIES_COLLECTION: asyncio.Lock(),
     MEMORY_EDGES_COLLECTION: asyncio.Lock(),
-    MEMORY_EPISODES_COLD_COLLECTION: asyncio.Lock(),
+    MEMORY_THREADS_COLLECTION: asyncio.Lock(),
 }
 
 # 有界线程池：用于单条 _embed_async / _sparse_embed_async 调用
@@ -266,6 +266,7 @@ async def upsert_episode_vector(
     speaker_ids: list[str],
     session_id: str | None = None,
     turn_index: int = 0,
+    thread_id: str | None = None,
 ):
     from gsuid_core.ai_core.rag.base import client
 
@@ -288,6 +289,8 @@ async def upsert_episode_vector(
             }
             if session_id:
                 payload["session_id"] = session_id
+            if thread_id:
+                payload["thread_id"] = thread_id
             point = PointStruct(
                 id=episode_id,
                 vector={"dense": vector} if sparse_vector is None else {"dense": vector, "sparse": sparse_vector},
@@ -343,6 +346,9 @@ def _episode_payload(d: dict[str, object]) -> dict[str, object]:
     sid = d["session_id"] if "session_id" in d else None
     if isinstance(sid, str) and sid:
         payload["session_id"] = sid
+    tid = d["thread_id"] if "thread_id" in d else None
+    if isinstance(tid, str) and tid:
+        payload["thread_id"] = tid
     return payload
 
 
@@ -1016,23 +1022,6 @@ async def probe_episode_scores(
             with_payload=False,
         )
         scores = [p.score for p in response.points]
-
-        # 热集命中不足 k → 补查冷集（降级容错：冷集查询失败仅记 debug，不影响已得的热集分数）。
-        if len(scores) < k:
-            try:
-                cold_resp = await client.query_points(
-                    collection_name=MEMORY_EPISODES_COLD_COLLECTION,
-                    query=query_dense,
-                    using="dense",
-                    query_filter=scope_filter,
-                    limit=k,
-                    with_payload=False,
-                )
-                scores.extend(p.score for p in cold_resp.points)
-            except Exception as e:
-                logger.debug(t("log.memory.qdrant_familiarity_probe_fallback_fail", e=e))
-
-        # 合并后按降序取前 k（两集各自已是降序，merge 后统一截断）
         scores.sort(reverse=True)
         return scores[:k]
     except Exception as e:
@@ -1115,60 +1104,6 @@ async def dense_search_episodes_with_vectors(
 
 
 # --- 生命周期裁剪 / 对账用向量操作（§3.2①、§2） ---
-
-
-async def demote_episodes_to_cold(episode_ids: list[str]) -> list[str]:
-    """把一批 Episode 的向量从热集合 memory_episodes 迁移到冷集合 memory_episodes_cold，
-    再从热集合删除，使热集合规模可控（§3.2① 冷热分集合）。
-
-    迁移采用"取回热点向量 → 写入冷集合 → 从热集合删除"，不重新嵌入。即便冷集合写入失败，
-    也会从热集合删除（SQL 文本始终是冷归档的权威真值、可审计；最坏仅丢失冷向量的可检索性）。
-    返回**已成功从热集合删除**的 Episode id 列表——调用方据此回写 SQL is_archived，
-    确保"标记为冷"与"已退出热集合"严格一致；删除失败的批次保持热态，下次维护重试。
-    """
-    from gsuid_core.ai_core.rag.base import client
-    from gsuid_core.ai_core.rag.qmodels import PointIdsList
-
-    if client is None or not episode_ids:
-        return []
-
-    evicted: list[str] = []
-    CHUNK = 256
-    for i in range(0, len(episode_ids), CHUNK):
-        batch = episode_ids[i : i + CHUNK]
-
-        # 1) 取回热点（含向量 + payload），用于原样迁入冷集合
-        records: list = []
-        try:
-            records = await client.retrieve(
-                collection_name=MEMORY_EPISODES_COLLECTION,
-                ids=list(batch),
-                with_payload=True,
-                with_vectors=True,
-            )
-        except Exception as e:
-            logger.warning(t("log.memory.qdrant_retrieve_hot_episode_fail", e=e))
-
-        # 2) 写入冷集合（best-effort，失败不阻断热集合删除）
-        points = [PointStruct(id=r.id, vector=r.vector, payload=r.payload or {}) for r in records if r.vector]
-        if points:
-            try:
-                async with _QDRANT_LOCKS[MEMORY_EPISODES_COLD_COLLECTION]:
-                    await client.upsert(collection_name=MEMORY_EPISODES_COLD_COLLECTION, points=points)
-            except Exception as e:
-                logger.warning(t("log.memory.qdrant_write_cold_episode_fail", e=e))
-
-        # 3) 从热集合删除（这一步成功才算降级生效）
-        try:
-            await client.delete(
-                collection_name=MEMORY_EPISODES_COLLECTION,
-                points_selector=PointIdsList(points=list(batch)),
-            )
-            evicted.extend(batch)
-        except Exception as e:
-            logger.warning(t("log.memory.qdrant_delete_hot_episode_fail", e=e))
-
-    return evicted
 
 
 async def scroll_point_ids(collection_name: str, batch_size: int = 500):
