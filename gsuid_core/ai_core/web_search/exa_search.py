@@ -12,7 +12,7 @@ from collections.abc import Callable, Awaitable
 
 import httpx
 from exa_py import AsyncExa
-from exa_py.api import Result, SearchResponse, ContentsOptions, TextContentsOptions
+from exa_py.api import Result, ResultWithText, SearchResponse, ContentsOptions, TextContentsOptions
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -223,7 +223,7 @@ def _text_limit(max_chars: int) -> int:
     return max_chars
 
 
-def _text_from_contents(response: SearchResponse[Result]) -> str:
+def _text_from_contents(response: SearchResponse[ResultWithText]) -> str:
     statuses = response.statuses
     if statuses:
         saw_success = False

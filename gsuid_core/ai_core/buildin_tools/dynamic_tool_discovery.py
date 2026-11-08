@@ -290,6 +290,31 @@ async def _matched_capability_node_ids(need: str, *, limit: int = 5) -> list[str
     return ids
 
 
+def _apply_mcp_tool_quota(hits: list[RankedHit]) -> tuple[list[RankedHit], list[str]]:
+    """同一 MCP server 直调工具最多 2 个；命中时返回其能力节点 id（必入专用档）。"""
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.agent_node.registry import owning_nodes_of_tools
+
+    groups: dict[str, list[RankedHit]] = {}
+    for hit in hits:
+        tb = find_tool_base(hit.name)
+        if tb is not None and tb.plugin.startswith("mcp_"):
+            groups.setdefault(tb.plugin, []).append(hit)
+    if not groups:
+        return hits, []
+    drop: set[str] = set()
+    node_ids: list[str] = []
+    for group in groups.values():
+        top = sorted(group, key=lambda h: h.score, reverse=True)
+        drop.update(h.name for h in top[2:])
+        owners = owning_nodes_of_tools([h.name for h in top[:2]])
+        for ids in owners.values():
+            for node_id in ids:
+                if node_id not in node_ids:
+                    node_ids.append(node_id)
+    return [h for h in hits if h.name not in drop], node_ids
+
+
 def _offered_dedicated_hits(
     *,
     names: Sequence[str],
@@ -306,7 +331,10 @@ def _offered_dedicated_hits(
             continue
         covers = list(tb.covers)
         retrieval = tb.retrieval_text
-        if tb.category != "mcp" and not need_matches_tool_text(need, retrieval, covers):
+        # MCP 不做类别豁免（审查第 2 条）：豁免会让 MCP 工具以 3000 分在
+        # 一切不相关 find_tools 轮次常驻粘连、污染提示词；覆盖面靠
+        # _mcp_tool_covers 的并集（配置 covers ∪ 服务中文描述短语）正常过匹配。
+        if not need_matches_tool_text(need, retrieval, covers):
             continue
         if (
             classify_callable_tool(
@@ -490,11 +518,7 @@ async def find_tools(
                 # 向量已召回；词面过滤会丢掉「对比表出成图」这类 exclusive
                 fold_names.append(tool.name)
                 continue
-            if (
-                tb.category != "mcp"
-                and tool.name not in identity_names
-                and not need_matches_tool_text(need, retrieval, covers)
-            ):
+            if tool.name not in identity_names and not need_matches_tool_text(need, retrieval, covers):
                 continue
             try:
                 run_ctx = replace(
@@ -602,6 +626,16 @@ async def find_tools(
             hit = _node_hit(node_id, float(500 - idx))
             if hit is not None:
                 generic_agents.append(hit)
+
+        dedicated_tools, mcp_owner_ids = _apply_mcp_tool_quota(dedicated_tools)
+        for idx, node_id in enumerate(mcp_owner_ids):
+            if not agent_is_dedicated(node_id):
+                continue
+            if any(a.name == node_id for a in dedicated_agents):
+                continue
+            hit = _node_hit(node_id, float(1900 - idx))
+            if hit is not None:
+                dedicated_agents.append(hit)
 
         plan = build_find_tools_plan(
             dedicated_agents=dedicated_agents,

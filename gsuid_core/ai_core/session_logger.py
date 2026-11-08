@@ -644,11 +644,23 @@ class AISessionLogger:
                     p0=self.session_id,
                 )
             )
+        # 落盘脱敏：session_log 会被人工分享/agent 回看，所有文本字段过 mask_pii。
+        from gsuid_core.ai_core.mcp.pii import mask_pii
+
+        def _mask(v: Any) -> Any:
+            if isinstance(v, str):
+                return mask_pii(v)
+            if isinstance(v, list):
+                return [_mask(item) for item in v]
+            if isinstance(v, dict):
+                return {k: _mask(item) for k, item in v.items()}
+            return v
+
         self.entries.append(
             {
                 "type": entry_type,
                 "timestamp": time.time(),
-                "data": data,
+                "data": _mask(data),
             }
         )
         self.updated_at = time.time()

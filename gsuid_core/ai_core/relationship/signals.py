@@ -56,6 +56,8 @@ class NegSignal(str, Enum):
     JAILBREAK = "neg.jailbreak"
     SET_FAVOR_CMD = "neg.set_favor_cmd"
     FORCE_TITLE = "neg.force_title"
+    PROVOKE = "neg.provoke"
+    HOSTILE = "neg.hostile"
 
 
 # 每类信号的权重。负信号不受 effective 限制（被骂但选择沉默也要记一笔）。
@@ -68,6 +70,8 @@ NEG_WEIGHTS: Dict[NegSignal, int] = {
     NegSignal.JAILBREAK: -2,
     NegSignal.SET_FAVOR_CMD: -1,
     NegSignal.FORCE_TITLE: -1,
+    NegSignal.PROVOKE: -3,
+    NegSignal.HOSTILE: -6,
 }
 
 # 无信号 / 被预算裁掉时的 reason code

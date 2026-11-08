@@ -278,6 +278,10 @@ class ObservationRecord:
     message_type: str  # "group_msg" | "private_msg"
     value_tier: str = "HIGH"  # 记忆价值分级："HIGH"=完整抽取 / "LOW"=仅写 Episode
     is_correction: bool = False  # 程序性记忆：是否命中纠错/偏好意图门控（仅偏好记忆开启时置位）
+    message_id: Optional[str] = None
+    bot_id: str = ""
+    persona_name: str = ""
+    command_hit: bool = False
 
 
 def _is_repeat(scope_key: str, content: str) -> bool:
@@ -307,6 +311,9 @@ def _classify_value_tier(content: str, gate_mode: str = "宽松") -> str:
     - ``均衡``：无强信号 / 情绪 / 实体特征的消息一律 LOW（不再因"够长"而 HIGH）。
     - ``严格``：仅含强信号或情绪词的消息为 HIGH，其余（含仅有实体特征的）一律 LOW。
     """
+    # 单条超长发言（>400字）视为长篇小作文/文章，降级为 LOW 仅存入 Episode
+    if len(content) > 400:
+        return "LOW"
     if _HIGH_SIGNAL_RE.search(content) or _EMOTION_RE.search(content) or detect_location_self_report(content):
         return "HIGH"
     # 至此：无强信号、无情绪词
@@ -378,6 +385,12 @@ def _gate(
     if _INJECTION_RE.search(stripped):
         logger.trace(t("log.memory.observer_injection_signature_filter_inject", p0=stripped[:30]))
         return None
+    # 凭据命令 / 凭据形态整条丢弃：token 绝不进记忆抽取管道
+    from gsuid_core.ai_core.mcp.pii import has_credential_form, is_credential_command
+
+    if is_credential_command(stripped) or has_credential_form(stripped):
+        logger.trace(t("log.memory.observer_credential_filtered"))
+        return None
     # 复读 / 刷屏检测
     if _is_repeat(scope_key, stripped):
         logger.trace(t("log.memory.observer_repetition_filter_matched", p0=stripped[:30]))
@@ -398,6 +411,7 @@ async def observe(
     force_scope_key: Optional[str] = None,
     bot_id: str = "",
     persona_name: str = "",
+    message_id: Optional[str] = None,
 ) -> None:
     """向观察队列投递一条消息记录。
 
@@ -417,6 +431,12 @@ async def observe(
     不应被丢进 ``self:`` 跳过抽取（否则探针召回不到 assistant 侧事实）。
     """
     from .scope import ScopeType, make_scope_key, self_scope_key
+
+    if message_id:
+        from gsuid_core.message_history import get_history_manager
+
+        if get_history_manager().is_command_hit(message_id):
+            return
 
     # force_scope_key 给定即视为评测回放：assistant 也当普通会话摄入，跳过 C6 SELF 路由
     is_self_speech = force_scope_key is None and speaker_id.startswith(_ASSISTANT_PREFIX)
@@ -442,6 +462,12 @@ async def observe(
         if tier is None:
             return
         value_tier = tier
+        # 群 scope 摄入前打码：群记忆全员可召回，PII 不落群记忆（私聊不掩——
+        # 用户私有记忆记手机号/地址是合法能力）。
+        if group_id:
+            from gsuid_core.ai_core.mcp.pii import mask_pii
+
+            content = mask_pii(content)
         # 程序性记忆门控（默认开）：命中纠错/偏好意图 → 强制 HIGH（确保进 high_records
         # 被偏好蒸馏消费）+ 标记 is_correction。纯规则、零 LLM，符合不变量 #1。
         if memory_config.enable_preference_memory and detect_correction_intent(content):
@@ -468,6 +494,9 @@ async def observe(
         message_type=message_type,
         value_tier=value_tier,
         is_correction=is_correction,
+        message_id=message_id,
+        bot_id=bot_id,
+        persona_name=persona_name,
     )
 
     try:

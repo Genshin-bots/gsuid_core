@@ -303,7 +303,8 @@ async def send_message_by_ai(
                 if cleaned:
                     text = cleaned
         if text:
-            _gate_fb = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text)
+            _is_group = bool(tool_ctx.ev is not None and tool_ctx.ev.group_id)
+            _gate_fb, text = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text, is_group=_is_group)
             if _gate_fb is not None:
                 _note_send_block(tool_ctx, "output_gate_tool", text, tool_call_id=call_id)
                 return _gate_fb

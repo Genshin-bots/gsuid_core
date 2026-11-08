@@ -16,6 +16,8 @@ uv run core / python -m gsuid_core.core → core.main()
 **两个进程**：父进程只用标准库，不加载 uvicorn 和插件。它一直是终端的前台任务，所以
 Ctrl+C 能同时送到父子两个进程。重启时，`restart_genshinuid` 先跑完关机钩子，
 再让子进程以 `RESTART_EXIT_CODE`（51）退出。父进程等 1 秒后用同样的参数再拉起一个子进程。
+环境里有 `UV`（即 `uv run` 启动）时，拉起前先跑 `uv sync --inexact --no-install-project`
+补上新版 core 加的依赖；失败照常拉起。不重装项目本身：Windows 上 `core.exe` 被启动链占用。
 其他退出码由父进程原样透传，父进程随后退出。开了「使用自定义重启命令」时，
 `restart_genshinuid` 仍走旧路径：杀掉当前进程，再执行 `restart_command`。
 
@@ -102,7 +104,7 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 | 5 | 定时任务 | `scheduled_task/startup.py` | `reload_pending_tasks()` 把 DB 中 pending 任务挂回 APScheduler |
 | 6 | 长任务编排 | `planning/startup.py` | 注册 Kanban 工具 + 内置/用户 Capability 画像 + 僵尸子任务恢复 + 每日 04:00 Artifact TTL 清理 |
 | 7 | Memory | `memory/startup.py` | Qdrant collection 检查 → `IngestionWorker` 主循环后台 task → 多模态摄入 worker → 每周记忆生命周期 job |
-| 8 | MCP 工具 | `mcp/startup.py` | 读 `mcp_configs/*.json` → 连 enabled 服务器 → 注册工具到 `_TOOL_REGISTRY["mcp"]`（仅 `register_as_ai_tools=true`） |
+| 8 | MCP 工具 | `mcp/startup.py` | 读 `mcp_configs/*.json`（旧 `schema_version` 自动迁移写回）→ 连 enabled 服务器 → 注册工具到 `_TOOL_REGISTRY["mcp"]`（仅 `register_as_ai_tools=true`）→ 每个启用服务建 `source="mcp"` 能力节点（`in_roster=False`）+ 孤儿节点清理 + 预热 + 异步 LLM 介绍补全 |
 | 9 | Meme | `meme/startup.py` | 建 inbox/common/rejected 目录 → 表情包 collection → 打标 worker |
 | 10 | 统计 | `statistics/startup.py` | `AISessionRegistry` 空闲清理循环 + Heartbeat 巡检 + 当日数据回灌 |
 | 11 | MCP Server | `mcp/server.py` | 把 `_TOOL_REGISTRY` 整库通过 MCP 暴露：默认 **http 挂载主 app `/api/mcp`（同端口 8765）**；stdio 为独立 task |

@@ -92,6 +92,7 @@ async def _init_memory():
 
 
 async def _init_mcp_tools():
+    from gsuid_core.ai_core.mcp import bind_command as _mcp_bind_command  # noqa: F401
     from gsuid_core.ai_core.mcp.startup import init_mcp_tools
 
     await init_mcp_tools()

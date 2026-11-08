@@ -367,6 +367,15 @@ class LoopPhase(RunOnceHost):
             if st.post_final_requests > 1:
                 st.ab_pending_nudges = []
 
+        # 输入闸：进模型上下文统一脱敏（群聊全掩；ev 缺失 fail-closed 按群处理；
+        # 私聊只掩凭据形态/凭据命令——私有记忆「记住我手机号」不受影响）。
+        from gsuid_core.ai_core.mcp.pii import apply_context_mask
+
+        node.request.parts = apply_context_mask(
+            node.request.parts,
+            is_group=st.ev is None or bool(st.ev.group_id),
+        )
+
         # 先扫本请求内 ToolReturn 形态，再决定墙钟文案（避免事实包刚返回却注入「禁工具」）
         for _pre in node.request.parts:
             if isinstance(_pre, NativeToolReturnPart) and is_hosted_web_search_name(_pre.tool_name):
@@ -1012,6 +1021,7 @@ class LoopPhase(RunOnceHost):
                         user_text=_user_raw,
                         channel="main",
                         count_attempt=_count_ab,
+                        is_group=bool(st.ev is not None and st.ev.group_id),
                     )
                     if _gr.decision is output_gate.GateDecision.FUSE:
                         st.ab_abort = True
@@ -1083,6 +1093,9 @@ class LoopPhase(RunOnceHost):
                         if _fb_sent:
                             st.wait_comfort_sent = True
                         continue
+                    # 群聊放行文本可能已被 mask_pii 打码：用 send_text 替换原文再入后续闸
+                    if _gr.decision is output_gate.GateDecision.ALLOW and _gr.send_text:
+                        _text = _gr.send_text
                     # 假完成预检：完成声明 + 本轮没有生效的写入（含 PIN 拒绝）
                     _fab_gate_on = not st.fake_done_retry and not st.effectual_mutate and bool(st.tool_names)
                     if _fab_gate_on and _claims_fake_done(_text):

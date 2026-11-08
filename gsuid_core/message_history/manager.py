@@ -148,6 +148,8 @@ class HistoryManager:
         # Token 计数: {Event: int} 每个 session 的当前 Token 总量
         self._session_tokens: Dict["Event", int] = {}
         self._msg_id_cache: Dict[Tuple["Event", str], Optional[MessageRecord]] = {}
+        self._command_hit_msg_ids: set[str] = set()
+        self._command_hit_queue: deque[str] = deque(maxlen=5000)
         self._lock = Lock()
 
     def _get_storage_event(self, event: "Event") -> "Event":
@@ -449,6 +451,84 @@ class HistoryManager:
                     self._msg_id_cache.pop(k, None)
             self._msg_id_cache[cache_key] = None
         return None
+
+    def mark_command_hit(self, session: Event | str, msg_id: Optional[str] = None) -> bool:
+        """标记一条消息命中命令触发器（command_hit=True）。
+
+        供下游（记忆观察丢弃、底片脱敏为 [用户调用了 bot 功能]、主会话历史脱敏）统一消费。
+        """
+        with self._lock:
+            history = None
+            if isinstance(session, Event):
+                storage_event = self._get_storage_event(session)
+                history = self._histories.get(storage_event)
+            else:
+                target_sid = str(session)
+                for storage_ev, deque_records in self._histories.items():
+                    if storage_ev.session_id == target_sid:
+                        history = deque_records
+                        break
+
+            if not history:
+                return False
+
+            target_id = str(msg_id).strip() if msg_id else None
+            matched_record: Optional[MessageRecord] = None
+            if target_id:
+                for record in reversed(history):
+                    if record.metadata:
+                        val = record.metadata.get("msg_id")
+                        if val is not None and str(val).strip() == target_id:
+                            matched_record = record
+                            break
+                        m_list = record.metadata.get("msg_id_list")
+                        if isinstance(m_list, list) and target_id in m_list:
+                            matched_record = record
+                            break
+
+            if matched_record is None and target_id is None:
+                now = time.time()
+                for record in reversed(history):
+                    if record.role == "user":
+                        if isinstance(session, Event):
+                            if session.user_id and record.user_id != session.user_id:
+                                continue
+                            if now - record.timestamp > 30.0:
+                                continue
+                        matched_record = record
+                        break
+
+            if matched_record is not None:
+                matched_record.metadata["command_hit"] = True
+                ids_to_record: list[str] = []
+                if target_id:
+                    ids_to_record.append(target_id)
+                mid = matched_record.metadata.get("msg_id")
+                if mid:
+                    ids_to_record.append(str(mid).strip())
+                m_list = matched_record.metadata.get("msg_id_list")
+                if isinstance(m_list, list):
+                    for item in m_list:
+                        if item:
+                            ids_to_record.append(str(item).strip())
+
+                for s_mid in ids_to_record:
+                    if s_mid and s_mid not in self._command_hit_msg_ids:
+                        if len(self._command_hit_queue) >= 5000:
+                            old = self._command_hit_queue.popleft()
+                            self._command_hit_msg_ids.discard(old)
+                        self._command_hit_queue.append(s_mid)
+                        self._command_hit_msg_ids.add(s_mid)
+                return True
+
+            return False
+
+    def is_command_hit(self, msg_id: Optional[str]) -> bool:
+        """检查指定平台消息 ID 是否命中过命令触发器。"""
+        if not msg_id:
+            return False
+        with self._lock:
+            return str(msg_id).strip() in self._command_hit_msg_ids
 
     def get_last_user_message(self, event: "Event") -> Optional[Dict[str, Any]]:
         """获取指定session中最后一条用户消息

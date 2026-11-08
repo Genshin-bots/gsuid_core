@@ -83,7 +83,7 @@ async def init_memory_system():
     except Exception as e:
         logger.warning(t("log.memory.start_c9_multimodal_ingestion", e=e))
 
-    # 4. C11：注册记忆生命周期维护定时任务（每周一次衰减 / 巩固 / 遗忘）
+    # 4. C11：注册记忆生命周期维护定时任务（每日 04:00 衰减 / 巩固 / 遗忘）
     try:
         from gsuid_core.aps import scheduler
 
@@ -91,8 +91,9 @@ async def init_memory_system():
 
         scheduler.add_job(
             func=run_lifecycle_maintenance,
-            trigger="interval",
-            weeks=1,
+            trigger="cron",
+            hour=4,
+            minute=0,
             id="ai_memory_lifecycle_maintenance",
             replace_existing=True,
         )

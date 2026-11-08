@@ -109,11 +109,17 @@ class AIToolTrace(BaseModel, table=True):
 
 
 def record_tool_call(user_id: str, tool_name: str, args: Any, bot_id: str = "") -> None:
-    """记录一笔工具调用（best-effort，绝不抛出）。"""
+    """记录一笔工具调用（best-effort，绝不抛出）。
+
+    args 摘要过 mask_pii：AIToolTrace 存 7 天且被偏好蒸馏当背景文本，
+    地址/手机号类敏感参数与凭据形态不能明文落库。
+    """
     if not user_id or not tool_name:
         return
     try:
-        args_str = str(args)
+        from gsuid_core.ai_core.mcp.pii import mask_pii
+
+        args_str = mask_pii(str(args))
         if len(args_str) > _ARGS_MAX_CHARS:
             args_str = args_str[:_ARGS_MAX_CHARS] + "...[截断]"
         if user_id not in _recent:

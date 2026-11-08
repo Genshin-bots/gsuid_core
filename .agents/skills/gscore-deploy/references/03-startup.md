@@ -173,6 +173,9 @@ environment=PYTHONUNBUFFERED=1
 > - `core` 启动后有两个进程：守护父进程，和它拉起的 core 子进程。父进程一直是终端的
 >   前台任务，所以重启之后在终端按 Ctrl+C 仍能关掉 core。
 > - 不依赖 Docker / systemd。Docker 里重启不会让容器退出。
+> - 用 `uv run core` 启动时，守护父进程在拉起新 core 之前先执行一次
+>   `uv sync --inexact --no-install-project`。`core更新` 拉到的新依赖在这一步装上。
+>   用 `python -m gsuid_core.core`、`pdm run`、`poetry run` 启动时不做这一步。
 > - 打开 `is_use_custom_restart_command` 后，`core重启` 改为杀掉当前进程，再执行
 >   `restart_command`。用 pm2 / systemd 托管、想让托管程序接手重启时才需要打开。
 

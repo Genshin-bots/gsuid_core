@@ -17,7 +17,7 @@ import re
 import time
 import queue as sync_queue
 import asyncio
-from typing import Tuple, Optional, TypedDict
+from typing import Tuple, Literal, Optional, TypedDict
 from datetime import datetime, timezone
 from collections import defaultdict
 from collections.abc import Collection
@@ -161,6 +161,12 @@ class ExtractedEventRow(TypedDict):
     aliases: list[str]
 
 
+class ExtractedAttitude(TypedDict):
+    user_id: str
+    attitude: Literal["friendly", "neutral", "teasing", "provoke", "hostile"]
+    evidence: str
+
+
 class ExtractedResult(TypedDict):
     """LLM 实体/关系提取的规整结果。entities / edges 由 _restore_keys 保证键存在。"""
 
@@ -171,6 +177,8 @@ class ExtractedResult(TypedDict):
     # 取代纯正则硬门控来决定是否触发第二次偏好蒸馏（仅 enable_preference_memory 时有意义）。
     has_preference: bool
     stated: list[StatedFact]
+    window_kind: str
+    attitudes: list[ExtractedAttitude]
 
 
 class IngestionWorker:
@@ -589,7 +597,16 @@ async def _ingest_batch_inner(
 ):
     """实际摄入逻辑（被 _ingest_batch 包一层预算 scope contextvar 后调用）。"""
 
-    # Step 1: 格式化对话文本（Episode 始终保存完整对话，含 LOW 价值消息）
+    from gsuid_core.message_history import get_history_manager
+
+    _hm = get_history_manager()
+    for r in records:
+        if not r.command_hit and r.message_id and _hm.is_command_hit(r.message_id):
+            r.command_hit = True
+        if r.command_hit:
+            r.raw_content = "[用户调用了 bot 功能]"
+
+    # Step 1: 格式化对话文本（Episode 始终保存完整对话，含 LOW 价值消息与脱敏命令）
     dialogue = "\n".join(f"[{r.speaker_id}]: {r.raw_content}" for r in records)
     speaker_ids = list({r.speaker_id for r in records})
     earliest_ts = min(r.timestamp for r in records)
@@ -604,7 +621,7 @@ async def _ingest_batch_inner(
 
     # SELF 作用域与纯低价值批次仅写入 Episode，跳过实体与关系抽取。
     is_self_scope = scope_key.startswith("self:")
-    high_records = [r for r in records if getattr(r, "value_tier", "HIGH") == "HIGH"]
+    high_records = [r for r in records if r.value_tier == "HIGH" and not r.command_hit]
     if high_records:
         from gsuid_core.ai_core.cognition.types import CogKind
         from gsuid_core.ai_core.configs.ai_config import ai_config as _mem_ai
@@ -723,6 +740,12 @@ async def _extract_and_upsert_from_episode(
     ``episode_id`` 仅用于 ``mem_episode_entity_mentions`` 关联与背景上下文排除，可为空串
     （窗口化抽取时传入代表性 granular Episode id；空则跳过关联）。
     """
+    # 前置零成本过滤（§5.2）：有效非命令发言者少于 1 人时不抽取
+    valid_speakers = {r.speaker_id for r in high_records if not r.command_hit and r.speaker_id}
+    if len(valid_speakers) < 1:
+        logger.debug(i18n_t("log.memory.extraction_skip_no_valid_speakers", scope_key=scope_key))
+        return
+
     # Step 3: 抽取仅使用 HIGH 价值消息，并在喂给 LLM 前折叠无实体信息行以省 Token（Fix-7）
     extract_dialogue = _compact_high_records_dialogue(high_records)
     if not extract_dialogue.strip() or (len(high_records) < 3 and len(extract_dialogue.strip()) < 40):
@@ -746,12 +769,42 @@ async def _extract_and_upsert_from_episode(
     # Step 4: LLM 提取 + Entity 去重写入
     extracted = await _llm_extract(extract_dialogue, scope_key)
 
+    # 模块 D 短路：discard 窗口不写实体、边和事件，段子窗口也不结算好感
+    if extracted.get("window_kind") == "discard":
+        logger.debug(i18n_t("log.memory.extraction_discard_window_short_circuit", scope_key=scope_key))
+        return
+
+    # 态度结算（负信号挑衅/敌意）
+    b_id = next((r.bot_id for r in high_records if r.bot_id), "")
+    p_name = next((r.persona_name for r in high_records if r.persona_name), "")
+    await _settle_extracted_attitudes(
+        extracted.get("attitudes", []),
+        scope_key=scope_key,
+        bot_id=b_id,
+        persona_name=p_name,
+    )
+
     # C3-b：主人识别——把主人发言对应的 Speaker 实体打上 "Master" 标签，
     # 供检索期优先。主人列表统一取 core_config.masters，不依赖人格 md 硬编码。
     _apply_master_tags(extracted)
 
     # Step 4.5: 别名重定向（实体消歧 Level-1），并维护群组画像
-    alias_map = _apply_alias_redirection(extracted)
+    target_formals = {f for e in extracted["entities"] if (f := (e.get("alias_of") or "").strip())}
+    existing_formals: set[str] = set()
+    if target_formals:
+        from sqlmodel import col, select
+
+        from gsuid_core.ai_core.memory.database.models import AIMemEntity
+
+        async with async_maker() as session:
+            stmt = select(AIMemEntity.name).where(
+                col(AIMemEntity.scope_key) == scope_key,
+                col(AIMemEntity.name).in_(target_formals),
+            )
+            res = await session.execute(stmt)
+            existing_formals = {str(row[0]) for row in res.all() if row[0]}
+
+    alias_map = _apply_alias_redirection(extracted, existing_formals=existing_formals)
     try:
         from gsuid_core.ai_core.memory.group_profile import (
             record_entity_tags,
@@ -759,7 +812,7 @@ async def _extract_and_upsert_from_episode(
         )
 
         if alias_map:
-            await record_term_mappings(scope_key, alias_map)
+            await record_term_mappings(scope_key, alias_map, batch_id=episode_id)
         # 累计实体标签频次，用于推断群组语境标签
         all_tags: list[str] = []
         for _e in extracted["entities"]:
@@ -898,19 +951,55 @@ async def _get_recent_episodes(
         return episodes
 
 
-def _apply_alias_redirection(extracted: ExtractedResult) -> dict[str, str]:
+async def _settle_extracted_attitudes(
+    attitudes: list[ExtractedAttitude],
+    *,
+    scope_key: str,
+    bot_id: str = "",
+    persona_name: str = "",
+) -> None:
+    if not attitudes or not bot_id.strip() or not persona_name.strip():
+        return
+    from gsuid_core.ai_core.memory.config import memory_config
+
+    if memory_config.eval_mode:
+        return
+    from gsuid_core.ai_core.relationship.engine import settle_semantic
+    from gsuid_core.ai_core.relationship.signals import NegSignal
+
+    for item in attitudes:
+        att = item["attitude"]
+        signal: NegSignal | None = None
+        if att in ("provoke", "provoking"):
+            signal = NegSignal.PROVOKE
+        elif att == "hostile":
+            signal = NegSignal.HOSTILE
+        if signal is not None:
+            try:
+                await settle_semantic(
+                    user_id=item["user_id"],
+                    bot_id=bot_id,
+                    persona_name=persona_name,
+                    signal=signal,
+                    evidence=item["evidence"],
+                )
+            except Exception as e:
+                logger.debug(i18n_t("log.memory.settle_semantic_failed", user_id=item["user_id"], e=e))
+
+
+def _apply_alias_redirection(
+    extracted: ExtractedResult,
+    existing_formals: Optional[set[str]] = None,
+) -> dict[str, str]:
     """别名重定向（实体消歧 Level-1：alias_of 硬规则）。
 
     将 LLM 标注了 alias_of 的别名实体合并到正式实体，
-    并把所有 edge 中对别名的引用重写为正式名称，
-    从而保证关于同一事物的记忆不会被分散到多个独立实体上。
+    并把所有 edge 中对别名的引用重写为正式名称。
 
-    （Level-2 向量相似度合并已由 AIMemEntity.extract_and_upsert 的混合检索去重承担。）
-
-    Returns:
-        {别名: 正式名称} 映射，供群组画像 term_mappings 记录。
+    规则（Module A）：
+    1. 别名摘要不再拼进正式实体 summary，避免 summary 被反复改写污染；
+    2. alias_of 指向的正式实体若不在本批且库中不存在，不重命名，丢弃 alias_of。
     """
-    # extracted 由 _restore_keys 规整产出，entities / edges 两键必然存在
     entities = extracted["entities"]
     edges = extracted["edges"]
 
@@ -935,43 +1024,50 @@ def _apply_alias_redirection(extracted: ExtractedResult) -> dict[str, str]:
 
     resolved = {a: _resolve(a) for a in alias_map}
 
-    # 3. 重写 edge 的 src/tgt 引用
+    # 筛选真正有效的重定向：正式实体必须在本批存在，或在已有实体库 (existing_formals) 中存在
+    by_name = {(e["name"] or "").strip(): e for e in entities}
+    valid_resolved: dict[str, str] = {}
+    for a, f in resolved.items():
+        if f in by_name or (existing_formals and f in existing_formals):
+            valid_resolved[a] = f
+
+    # 3. 重写 edge 的 src/tgt 引用（仅用有效重定向）
     for edge in edges:
         src = (edge["source"] or "").strip()
         tgt = (edge["target"] or "").strip()
-        if src in resolved and resolved[src] != src:
-            edge["source"] = resolved[src]
-        if tgt in resolved and resolved[tgt] != tgt:
-            edge["target"] = resolved[tgt]
+        if src in valid_resolved and valid_resolved[src] != src:
+            edge["source"] = valid_resolved[src]
+        if tgt in valid_resolved and valid_resolved[tgt] != tgt:
+            edge["target"] = valid_resolved[tgt]
 
     # 4. 合并别名实体到正式实体
-    by_name = {(e["name"] or "").strip(): e for e in entities}
     kept: list[dict] = []
     for e in entities:
         name = (e["name"] or "").strip()
-        if name in resolved and resolved[name] != name:
-            formal = resolved[name]
-            formal_entity = by_name[formal] if formal in by_name else None
-            alias_summary = (e["summary"] or "").strip()
-            if formal_entity is not None:
-                # 把别名摘要并入正式实体，别名本身不独立存储
-                if alias_summary and alias_summary not in (formal_entity["summary"] or ""):
-                    formal_entity["summary"] = (
-                        f"{formal_entity['summary'] or ''}\n（别名'{name}'：{alias_summary}）"
-                    ).strip()
-            else:
-                # 正式实体不在本批次，把别名实体重命名为正式名称后保留
-                e["name"] = formal
-                e.pop("alias_of", None)
-                kept.append(e)
-            continue
+        if name in valid_resolved and valid_resolved[name] != name:
+            formal = valid_resolved[name]
+            # 正式实体在本批或已有库中存在：丢弃别名实体，不合并 summary（§2.2）
+            if formal in by_name or (existing_formals and formal in existing_formals):
+                continue
+        # 无效别名或非别名实体，剥除 alias_of 并保留
         e.pop("alias_of", None)
         kept.append(e)
 
-    extracted["entities"] = kept
-    if resolved:
-        logger.debug(i18n_t("log.memory.memory_resolved_alias_redirect", resolved=resolved))
-    return resolved
+    # 按 name 去重 kept 实体（若同批多个别名重命名为同一正式名，保留首个）
+    deduped_kept: list[dict] = []
+    seen_kept_names: set[str] = set()
+    for e in kept:
+        k_name = (e.get("name") or "").strip()
+        if k_name and k_name not in seen_kept_names:
+            seen_kept_names.add(k_name)
+            deduped_kept.append(e)
+        elif not k_name:
+            deduped_kept.append(e)
+
+    extracted["entities"] = deduped_kept
+    if valid_resolved:
+        logger.debug(i18n_t("log.memory.memory_resolved_alias_redirect", resolved=valid_resolved))
+    return valid_resolved
 
 
 def _apply_master_tags(extracted: ExtractedResult) -> None:
@@ -1007,7 +1103,7 @@ async def _build_known_context(scope_key: str, dialogue: str) -> str:
     已存在实体取最近活跃的非发言者实体；整体硬限制约 1000 字符。
     无可注入数据时返回空串。
     """
-    from gsuid_core.ai_core.register import get_aliases_for_scope
+
     from gsuid_core.ai_core.memory.group_profile import get_term_mappings
     from gsuid_core.ai_core.memory.prompts.extraction import KNOWN_CONTEXT_TEMPLATE
 
@@ -1022,26 +1118,13 @@ async def _build_known_context(scope_key: str, dialogue: str) -> str:
                 candidates[alias] = formal
     except Exception as e:
         logger.debug(i18n_t("log.memory.read_term_mappings", e=e))
-    try:
-        for alias, formals in get_aliases_for_scope().items():
-            if alias and formals and alias not in candidates:
-                candidates[alias] = formals[0]
-    except Exception as e:
-        logger.debug(i18n_t("log.memory.read_ai_alias_registry", e=e))
-
-    # 2. L0 字面命中过滤：只保留本批对话出现的别名，不足 5 条时补高频兜底
+    # 2. L0 字面命中过滤：只保留本批对话出现的别名，不再无条件注入外部插件别名或兜底
     hit: dict[str, str] = {a: f for a, f in candidates.items() if a in dialogue}
-    if len(hit) < 5:
-        for a, f in candidates.items():
-            if len(hit) >= 5:
-                break
-            if a not in hit:
-                hit[a] = f
 
     alias_section = ""
     if hit:
         pairs = "; ".join(f"{a}={f}" for a, f in list(hit.items())[:30])
-        alias_section = f"已知别名映射：{pairs[:MAX_BLOCK_CHARS]}\n"
+        alias_section = f"可能的别称（仅当上下文明确指同一对象时使用）：{pairs[:MAX_BLOCK_CHARS]}\n"
 
     # 3. 本群高频已存在实体清单（C2-b 跨批次消歧锚点）
     entity_section = ""
@@ -1097,15 +1180,23 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
     all_edges: list[dict] = []
     all_stated: list[StatedFact] = []
     all_events: list[ExtractedEventRow] = []
+    all_attitudes: list[ExtractedAttitude] = []
+    window_kinds: list[str] = []
     has_preference = False
     for i, chunk in enumerate(chunks):
         result = await _llm_extract_single(chunk, scope_key)
+        chunk_kind = result.get("window_kind", "mixed")
+        window_kinds.append(chunk_kind)
+        # 丢弃窗口（段子/刷屏）不将其内部抽出的实体、边和事实并入总产物
+        if chunk_kind == "discard":
+            continue
         all_entities.extend(result["entities"])
         all_edges.extend(result["edges"])
-        all_stated.extend(result["stated"] if "stated" in result else [])
-        all_events.extend(result["events"] if "events" in result else [])
-        # 任一分片判出偏好信号即视为整批命中（偏好往往集中在某一段对话）
-        if "has_preference" in result and result["has_preference"]:
+        all_stated.extend(result.get("stated", []))
+        all_events.extend(result.get("events", []))
+        all_attitudes.extend(result.get("attitudes", []))
+        # 任一有效分片判出偏好信号即视为整批命中
+        if result.get("has_preference"):
             has_preference = True
 
     # 按 name 去重 Entity（同名保留后出现的，信息更完整）
@@ -1127,12 +1218,23 @@ async def _llm_extract(dialogue: str, scope_key: str) -> ExtractedResult:
         if key:
             seen_edges[key] = edge
 
+    final_kind = "mixed"
+    if window_kinds:
+        if all(k == "discard" for k in window_kinds):
+            final_kind = "discard"
+        elif all(k == "group_lore" for k in window_kinds):
+            final_kind = "group_lore"
+        elif all(k == "speaker_fact" for k in window_kinds):
+            final_kind = "speaker_fact"
+
     return {
         "entities": list(seen_names.values()),
         "edges": list(seen_edges.values()),
         "events": all_events,
         "has_preference": has_preference,
         "stated": all_stated,
+        "window_kind": final_kind,
+        "attitudes": all_attitudes,
     }
 
 
@@ -1256,12 +1358,52 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
                 if uid and value:
                     stated.append({"u": uid, "k": kind, "v": value})
 
+        # 窗口分类：discard / group_lore / speaker_fact / mixed
+        window_kind = data["window_kind"] if "window_kind" in data and isinstance(data["window_kind"], str) else "mixed"
+        if window_kind not in ("discard", "group_lore", "speaker_fact", "mixed"):
+            window_kind = "mixed"
+
+        # 发言者态度判定
+        attitudes: list[ExtractedAttitude] = []
+        raw_attitudes = data["attitudes"] if "attitudes" in data else None
+        if isinstance(raw_attitudes, list):
+            for att in raw_attitudes:
+                if not isinstance(att, dict):
+                    continue
+                u_id = att["user_id"] if "user_id" in att and isinstance(att["user_id"], str) else ""
+                raw_val = att["attitude"] if "attitude" in att and isinstance(att["attitude"], str) else "neutral"
+                attitude_val: Literal["friendly", "neutral", "teasing", "provoke", "hostile"]
+                if raw_val in ("friendly", "neutral", "teasing", "provoke", "provoking", "hostile"):
+                    if raw_val == "friendly":
+                        attitude_val = "friendly"
+                    elif raw_val == "teasing":
+                        attitude_val = "teasing"
+                    elif raw_val in ("provoke", "provoking"):
+                        attitude_val = "provoke"
+                    elif raw_val == "hostile":
+                        attitude_val = "hostile"
+                    else:
+                        attitude_val = "neutral"
+                else:
+                    attitude_val = "neutral"
+                evidence = att["evidence"] if "evidence" in att and isinstance(att["evidence"], str) else ""
+                if u_id:
+                    attitudes.append(
+                        {
+                            "user_id": u_id,
+                            "attitude": attitude_val,
+                            "evidence": evidence,
+                        }
+                    )
+
         return {
             "entities": entities,
             "edges": edges,
             "events": events,
             "has_preference": has_preference,
             "stated": stated,
+            "window_kind": window_kind,
+            "attitudes": attitudes,
         }
 
     try:
@@ -1335,7 +1477,15 @@ async def _llm_extract_single(dialogue: str, scope_key: str) -> ExtractedResult:
         except Exception:
             pass
 
-    return {"entities": [], "edges": [], "events": [], "has_preference": False, "stated": []}
+    return {
+        "entities": [],
+        "edges": [],
+        "events": [],
+        "has_preference": False,
+        "stated": [],
+        "window_kind": "mixed",
+        "attitudes": [],
+    }
 
 
 # 程序性 / 偏好记忆蒸馏（独立 LLM 调用，纠错门控命中才触发）

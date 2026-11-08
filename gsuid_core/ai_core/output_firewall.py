@@ -572,10 +572,11 @@ def build_rewrite_warning(hit: FirewallHit) -> str:
 
 # 重说仍命中时永不放行类目保持沉默，禁止使用预设罐头文案（AGENTS.md §1.9）。
 def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Optional[str]:
-    """工具路径发送前闸门（转发 ``output_gate.tool_gate_feedback``）。"""
+    """工具路径发送前闸门（转发 ``output_gate.tool_gate_feedback``，只回打回文案）。"""
     from gsuid_core.ai_core.output_gate import tool_gate_feedback
 
-    return tool_gate_feedback(text, extra, user_text=user_text)
+    fb, _ = tool_gate_feedback(text, extra, user_text=user_text)
+    return fb
 
 
 def scrub_or_drop(

@@ -167,3 +167,311 @@ def test_naive_utc_strips_tz() -> None:
     naive = naive_utc(aware)
     assert naive.tzinfo is None
     assert naive == datetime(2024, 1, 1, 12, 0, 0)
+
+
+def test_apply_alias_redirection_and_pending_terms(tmp_path: Path, monkeypatch) -> None:
+    from gsuid_core.ai_core.memory.ingestion.worker import ExtractedResult, _apply_alias_redirection
+
+    # 1. Formal entity in batch: alias dropped, formal summary NOT polluted
+    extracted: ExtractedResult = {
+        "entities": [
+            {
+                "name": "雷电将军",
+                "summary": "稻妻的神明",
+                "tag": [],
+                "user_id": None,
+                "scope_hint": None,
+                "is_speaker": False,
+                "alias_of": None,
+            },
+            {
+                "name": "雷军",
+                "summary": "小老板",
+                "tag": [],
+                "user_id": None,
+                "scope_hint": None,
+                "is_speaker": False,
+                "alias_of": "雷电将军",
+            },
+        ],
+        "edges": [{"source": "雷军", "target": "小米", "fact": "创立", "user_id": None, "scope_hint": None}],
+        "events": [],
+        "has_preference": False,
+        "stated": [],
+        "window_kind": "mixed",
+        "attitudes": [],
+    }
+    alias_map = _apply_alias_redirection(extracted)
+    assert alias_map == {"雷军": "雷电将军"}
+    assert len(extracted["entities"]) == 1
+    assert extracted["entities"][0]["name"] == "雷电将军"
+    assert "别名'雷军'" not in extracted["entities"][0]["summary"]
+    assert extracted["edges"][0]["source"] == "雷电将军"
+
+    # 2. Formal entity NOT in batch and NOT in existing_formals:
+    # alias not renamed, alias_of stripped.
+    extracted2: ExtractedResult = {
+        "entities": [
+            {
+                "name": "雷军",
+                "summary": "段子中的小老板",
+                "tag": [],
+                "user_id": None,
+                "scope_hint": None,
+                "is_speaker": False,
+                "alias_of": "雷电将军",
+            },
+        ],
+        "edges": [{"source": "雷军", "target": "比特币", "fact": "购买", "user_id": None, "scope_hint": None}],
+        "events": [],
+        "has_preference": False,
+        "stated": [],
+        "window_kind": "discard",
+        "attitudes": [],
+    }
+    alias_map2 = _apply_alias_redirection(extracted2, existing_formals=set())
+    assert alias_map2 == {}
+    assert len(extracted2["entities"]) == 1
+    assert extracted2["entities"][0]["name"] == "雷军"
+    assert "alias_of" not in extracted2["entities"][0]
+    assert extracted2["edges"][0]["source"] == "雷军"
+
+    # 3. Formal in existing_formals: alias dropped, edges redirected to formal
+    extracted3: ExtractedResult = {
+        "entities": [
+            {
+                "name": "雷军",
+                "summary": "段子中的小老板",
+                "tag": [],
+                "user_id": None,
+                "scope_hint": None,
+                "is_speaker": False,
+                "alias_of": "雷电将军",
+            },
+        ],
+        "edges": [{"source": "雷军", "target": "稻妻", "fact": "游历", "user_id": None, "scope_hint": None}],
+        "events": [],
+        "has_preference": False,
+        "stated": [],
+        "window_kind": "mixed",
+        "attitudes": [],
+    }
+    alias_map3 = _apply_alias_redirection(extracted3, existing_formals={"雷电将军"})
+    assert alias_map3 == {"雷军": "雷电将军"}
+    assert len(extracted3["entities"]) == 0
+    assert extracted3["edges"][0]["source"] == "雷电将军"
+
+    # 4. pending_terms 2-batch 晋升验证
+    import asyncio
+
+    from sqlmodel import SQLModel
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from gsuid_core.utils.database import base_models
+    from gsuid_core.ai_core.state_store.models import AIPersistentState  # noqa: F401
+    from gsuid_core.ai_core.memory.group_profile import (
+        get_group_profile,
+        record_term_mappings,
+    )
+
+    test_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{(tmp_path / 'test_state.db').as_posix()}",
+        poolclass=NullPool,
+        connect_args={"check_same_thread": False, "timeout": 5.0},
+    )
+    maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
+    monkeypatch.setattr(base_models, "async_maker", maker)
+    monkeypatch.setattr(base_models, "engine", test_engine)
+    monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+
+    async def scenario_pending_terms() -> None:
+        try:
+            async with test_engine.begin() as conn:
+                await conn.run_sync(SQLModel.metadata.create_all)
+            scope = "group:test_pending_terms_scope"
+            # 第一批次：进入 pending_terms，未晋升
+            await record_term_mappings(scope, {"雷军": "雷电将军"}, batch_id="batch_1")
+            prof1 = await get_group_profile(scope)
+            assert "雷军" not in prof1["term_mappings"]
+            assert "雷军" in prof1["pending_terms"]
+            assert prof1["pending_terms"]["雷军"]["hits"] == 1
+
+            # 第二批次（不同 batch_id）：累计 hits>=2，晋升至 term_mappings 并从 pending 移出
+            await record_term_mappings(scope, {"雷军": "雷电将军"}, batch_id="batch_2")
+            prof2 = await get_group_profile(scope)
+            assert prof2["term_mappings"]["雷军"] == "雷电将军"
+            assert "雷军" not in prof2["pending_terms"]
+        finally:
+            await test_engine.dispose()
+
+    asyncio.run(scenario_pending_terms())
+
+    # 4. resolve_mentioned_users 缓存与排除逻辑验证
+    import time
+
+    from gsuid_core.ai_core.mention_resolver import _GROUP_MEMBERS_CACHE, resolve_mentioned_users
+
+    async def scenario_mention() -> None:
+        assert await resolve_mentioned_users("", group_id=None) == ""
+        assert await resolve_mentioned_users("hi", group_id="12345") == ""
+
+        _GROUP_MEMBERS_CACHE["12345"] = (
+            time.time(),
+            {"张三": "1001", "李四": "1002", "测试人格": "9999"},
+        )
+        res = await resolve_mentioned_users(
+            "请问张三和李四今天有空吗？",
+            group_id="12345",
+            current_user_id="1001",
+            persona_name="测试人格",
+        )
+        assert "李四 = 群成员 1002" in res
+        assert "张三" not in res
+        assert "测试人格" not in res
+
+    asyncio.run(scenario_mention())
+
+
+def test_settle_semantic_rules(tmp_path: Path, monkeypatch) -> None:
+    from gsuid_core.ai_core.autonomy.gates import dm_allowed
+
+    assert dm_allowed(target_is_master=True, has_prior_dm=False, explicit_request=False) is True
+    assert dm_allowed(target_is_master=False, has_prior_dm=True, explicit_request=False) is True
+    assert dm_allowed(target_is_master=False, has_prior_dm=False, explicit_request=True) is True
+    assert dm_allowed(target_is_master=False, has_prior_dm=False, explicit_request=False) is False
+    import asyncio
+
+    from sqlmodel import SQLModel
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from gsuid_core.config import core_config
+    from gsuid_core.utils.database import base_models
+    from gsuid_core.ai_core.relationship.engine import _DAILY_LOSS_CAP, settle_semantic
+    from gsuid_core.ai_core.relationship.signals import NEG_WEIGHTS, NegSignal
+
+    assert NEG_WEIGHTS[NegSignal.PROVOKE] == -3
+    assert NEG_WEIGHTS[NegSignal.HOSTILE] == -6
+    assert _DAILY_LOSS_CAP == 20
+
+    test_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{(tmp_path / 'test_rel.db').as_posix()}",
+        poolclass=NullPool,
+        connect_args={"check_same_thread": False, "timeout": 5.0},
+    )
+    maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
+    monkeypatch.setattr(base_models, "async_maker", maker)
+    monkeypatch.setattr(base_models, "engine", test_engine)
+    monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+
+    orig_masters = list(core_config.get_config("masters"))
+
+    async def scenario() -> None:
+        try:
+            from gsuid_core.ai_core.database.models import UserFavorability  # noqa: F401
+            from gsuid_core.ai_core.memory.ingestion.worker import _settle_extracted_attitudes
+
+            async with test_engine.begin() as conn:
+                await conn.run_sync(SQLModel.metadata.create_all)
+
+            master_id = "master_123"
+            core_config.lazy_set_config("masters", [master_id])
+
+            # 1. 主人豁免扣分
+            outcome = await settle_semantic(
+                user_id=master_id,
+                bot_id="test_bot",
+                persona_name="test_persona",
+                signal=NegSignal.HOSTILE,
+                evidence="辱骂测试",
+            )
+            assert outcome.delta == 0
+
+            # 2. 普通用户负信号结算
+            normal_uid = "normal_user_456"
+            outcome2 = await settle_semantic(
+                user_id=normal_uid,
+                bot_id="test_bot",
+                persona_name="test_persona",
+                signal=NegSignal.PROVOKE,
+                evidence="挑衅测试",
+            )
+            assert outcome2.delta == -3
+
+            # 3. 再次结算敌意信号
+            outcome3 = await settle_semantic(
+                user_id=normal_uid,
+                bot_id="test_bot",
+                persona_name="test_persona",
+                signal=NegSignal.HOSTILE,
+                evidence="敌意测试",
+            )
+            assert outcome3.delta == -6
+
+            # 4. 验证 worker 抽取出的 "provoke" 成功触发 settle_semantic 扣分
+            await _settle_extracted_attitudes(
+                [{"user_id": normal_uid, "attitude": "provoke", "evidence": "阴阳怪气"}],
+                scope_key="group:654321",
+                bot_id="test_bot",
+                persona_name="test_persona",
+            )
+            rec = await UserFavorability.get_user_favorability(normal_uid, "test_bot", "test_persona")
+            assert rec is not None and rec.favorability == -12
+        finally:
+            core_config.lazy_set_config("masters", orig_masters)
+            await test_engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_mark_command_hit() -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.history_format import format_history_for_agent
+    from gsuid_core.message_history.manager import HistoryManager
+
+    mgr = HistoryManager()
+    ev = Event(
+        bot_id="test_bot",
+        user_id="123456",
+        group_id="654321",
+        user_type="group",
+        msg_id="msg_test_001",
+    )
+    rec = mgr.add_message(
+        event=ev,
+        role="user",
+        content="全天候",
+        metadata={"msg_id": "msg_test_001"},
+    )
+    assert rec.metadata.get("command_hit") is not True
+
+    hit = mgr.mark_command_hit(ev, "msg_test_001")
+    assert hit is True
+    assert rec.metadata.get("command_hit") is True
+    assert mgr.is_command_hit("msg_test_001") is True
+
+    rendered = format_history_for_agent([rec])
+    assert "[用户调用了 bot 功能]" in rendered
+    assert "全天候" not in rendered
+
+    # 兜底校验：无 msg_id 时安全匹配当前 user 发言
+    ev2 = Event(
+        bot_id="test_bot",
+        user_id="123456",
+        group_id="654321",
+        user_type="group",
+        msg_id="",
+    )
+    rec2 = mgr.add_message(event=ev2, role="user", content="签到")
+    assert mgr.mark_command_hit(ev2, None) is True
+    assert rec2.metadata.get("command_hit") is True
+
+    # 提供了不存在的 target_id 时绝不盲目误标其它记录
+    assert mgr.mark_command_hit(ev2, "non_existent_msg_id") is False
+
+    # 验证单条超长发言（>400字）降级为 LOW
+    from gsuid_core.ai_core.memory.observer import _classify_value_tier
+
+    assert _classify_value_tier("普通长文" * 120) == "LOW"
+    assert _classify_value_tier("普通长文" * 5) == "HIGH"

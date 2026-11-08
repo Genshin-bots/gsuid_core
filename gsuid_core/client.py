@@ -1,18 +1,15 @@
-import sys
 import random
 import asyncio
 from typing import Union
 
 import httpx
 import websockets.client
-from models import Message, MessageSend, MessageReceive
 from msgspec import json as msgjson, to_builtins
 from websockets.exceptions import ConnectionClosedError
 
-sys.path.append("..")
-from segment import MessageSegment  # noqa: E402
-
 from gsuid_core.i18n import t
+from gsuid_core.models import Message, MessageSend, MessageReceive
+from gsuid_core.segment import MessageSegment
 
 
 class GsClient:
@@ -20,9 +17,15 @@ class GsClient:
     async def async_connect(
         cls,
         IP: str = "localhost",
-        PORT: Union[str, int] = "8765",
-        WS_TOKEN: str = "abc111",
+        PORT: Union[str, int, None] = None,
+        WS_TOKEN: Union[str, None] = None,
     ):
+        from gsuid_core.config import core_config
+
+        if PORT is None:
+            PORT = core_config.get_config("PORT") or "8765"
+        if WS_TOKEN is None:
+            WS_TOKEN = str(core_config.get_config("WS_TOKEN") or "abc111")
         self = GsClient()
         cls.ws_url = f"ws://{IP}:{PORT}/ws/Nonebot?token={WS_TOKEN}"
         print(t("连接至WS链接{p0}...", p0=self.ws_url))
@@ -75,7 +78,7 @@ class GsClient:
             task.cancel()
 
 
-async def http_test():
+async def http_test(PORT: Union[str, int, None] = None):
     msg = to_builtins(
         MessageReceive(
             content=[
@@ -84,13 +87,16 @@ async def http_test():
         )
     )
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        from gsuid_core.config import core_config
+    from gsuid_core.config import core_config
 
-        ws_token = str(core_config.get_config("WS_TOKEN") or "")
-        headers = {"X-WS-Token": ws_token} if ws_token else {}
+    if PORT is None:
+        PORT = core_config.get_config("PORT") or "8765"
+    ws_token = str(core_config.get_config("WS_TOKEN") or "")
+    headers = {"X-WS-Token": ws_token} if ws_token else {}
+
+    async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
-            "http://127.0.0.1:8765/api/send_msg",
+            f"http://127.0.0.1:{PORT}/api/send_msg",
             json=msg,
             headers=headers,
         )
@@ -104,4 +110,5 @@ async def main():
     await client.start()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

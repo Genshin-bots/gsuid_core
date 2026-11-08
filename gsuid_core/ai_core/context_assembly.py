@@ -259,6 +259,19 @@ async def assemble_dynamic_context(
     if alias_note:
         text = f"{text}\n\n{alias_note}" if text else alias_note
         logger.debug(t("log.entity_index.alias_binding_injected", note=alias_note))
+
+    if group_id:
+        from gsuid_core.ai_core.mention_resolver import resolve_mentioned_users
+
+        mention_hint = await resolve_mentioned_users(
+            query,
+            group_id=group_id,
+            current_user_id=user_id,
+            persona_name=persona_name,
+        )
+        if mention_hint:
+            text = f"{text}\n\n{mention_hint}" if text else mention_hint
+
     return text, has_actionable
 
 

@@ -403,6 +403,15 @@ Persona 与能力代理画像统一为 **AgentNode**（`ai_core/agent_node/`）�
 grant / 自动提交审批），不依赖 LLM 自觉。详见
 [`docs/AGENT_NODE_UNIFICATION_20260707.md`](../../../../docs/AGENT_NODE_UNIFICATION_20260707.md)。
 
+**MCP 能力节点（2026-11）**：启用且 `register_as_ai_tools` 的 MCP 服务在启动时自动
+注册 `source="mcp"` 的 AgentNode（`node_id = mcp_{config_id}`，`in_roster=False` 固定、
+不进主人格花名册）。`mcp/node_profile.py` 生成基线节点；用户在控制台改的名字/描述/关键词
+以**覆盖层**（`MCPNodeOverlay`，`capability_agents/persistence.py`）落盘并与基线合并；
+generated_profile 由 `mcp/profile_generator.py` 用 `task_level="high"` 异步补全并直接生效。
+`find_tools` 对同一 MCP server 直调工具最多暴露 2 个，命中时对应节点必入专用档
+（`_apply_mcp_tool_quota`），引导走 `create_subagent` 委派。市场安装与 logo 代理见
+`webconsole/mcp_market_api.py` 与 `webconsole/docs/26-mcp-config.md`。
+
 ## 7.12 主 Agent 输出链路：统一输出闸门 `pre_send_gate`（2026-08）
 
 > 端到端时序与决策表见 [`docs/AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。

@@ -551,6 +551,7 @@ def pre_send_gate(
     user_text: str = "",
     channel: str = "main",
     count_attempt: bool = True,
+    is_group: bool = False,
 ) -> GateResult:
     """对即将发出的 agent 台词做发送前闸门。
 
@@ -560,6 +561,8 @@ def pre_send_gate(
         user_text: 本轮用户原文（OOC 身份追问门）
         channel: ``"main"`` | ``"tool"``
         count_attempt: 尖括号策略是否计入 attempts（同 response 后续段传 False）
+        is_group: 群聊出站 → 先过 ``mask_pii`` 就地打码再进各策略；
+            放行时 ``send_text`` 带打码后文本（调用方须用之替换原文）
     """
     if not text or not str(text).strip():
         return GateResult(decision=GateDecision.ALLOW)
@@ -567,6 +570,14 @@ def pre_send_gate(
     if channel not in ("main", "tool"):
         logger.warning(i18n_t("log.ai.output_gate_unknown_channel", channel=repr(channel)))
         channel = "main"
+
+    if is_group:
+        from gsuid_core.ai_core.mcp.pii import mask_pii, pii_hits
+
+        hits = pii_hits(text)
+        if hits:
+            text = mask_pii(text)
+            logger.warning(i18n_t("log.ai.output_gate_pii_masked", hits=",".join(hits)))
 
     bag_extra: Dict[str, Any] = extra if extra is not None else {}
 
@@ -582,7 +593,7 @@ def pre_send_gate(
     if r is not None and r.decision is not GateDecision.ALLOW:
         return r
 
-    return GateResult(decision=GateDecision.ALLOW)
+    return GateResult(decision=GateDecision.ALLOW, send_text=text if is_group else "")
 
 
 def tool_gate_feedback(
@@ -590,14 +601,16 @@ def tool_gate_feedback(
     extra: Dict[str, Any],
     *,
     user_text: str = "",
-) -> Optional[str]:
-    """工具路径：需打回时返回 feedback，放行返回 None。"""
-    r = pre_send_gate(text, extra, user_text=user_text, channel="tool")
+    is_group: bool = False,
+) -> "tuple[Optional[str], str]":
+    """工具路径：``(feedback, 生效文本)``——feedback 非 None 打回；
+    放行时第二元为生效文本（群聊可能已打码），调用方须用之发送。"""
+    r = pre_send_gate(text, extra, user_text=user_text, channel="tool", is_group=is_group)
     if r.decision is GateDecision.ALLOW:
-        return None
+        return None, r.send_text or text
     if r.decision is GateDecision.FALLBACK:
-        return r.feedback or r.send_text
-    return r.feedback or None
+        return r.feedback or r.send_text, ""
+    return r.feedback or None, ""
 
 
 # 历史裁剪认打回前缀。全文在 control/lines.py 的 GATE_NUDGE_MARKERS。

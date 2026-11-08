@@ -52,9 +52,11 @@ def history_to_prompt(
         for i, record in enumerate(history, 1):
             if record.role == "system" and not include_system:
                 continue
+            is_cmd = bool(record.metadata and record.metadata.get("command_hit"))
+            rec_content = "[用户调用了 bot 功能]" if is_cmd else record.content
             line = format_template.format(
                 role=record.role,
-                content=record.content,
+                content=rec_content,
                 timestamp=record.timestamp,
                 index=i,
                 user_id=record.user_id,
@@ -77,7 +79,9 @@ def history_to_prompt(
 
         if record.role == "user":
             user_label = record.user_name or record.user_id
-            lines.append(f"[用户-{user_label}]: {record.content}")
+            is_cmd = bool(record.metadata and record.metadata.get("command_hit"))
+            c_text = "[用户调用了 bot 功能]" if is_cmd else record.content
+            lines.append(f"[用户-{user_label}]: {c_text}")
         else:
             role_label = role_display.get(record.role, f"[{record.role}]")
             lines.append(f"{role_label}: {record.content}")
@@ -110,10 +114,11 @@ def history_to_messages(
         if record.role == "system" and not include_system:
             continue
 
+        c_text = "[用户调用了 bot 功能]" if (record.metadata and record.metadata.get("command_hit")) else record.content
         messages.append(
             {
                 "role": record.role,
-                "content": record.content,
+                "content": c_text,
             }
         )
 
@@ -313,6 +318,8 @@ def format_history_for_agent(
         return (" | " + " ".join(bits)) if bits else ""
 
     def _content_one_line(record: MessageRecord) -> str:
+        if record.metadata and record.metadata.get("command_hit"):
+            return "[用户调用了 bot 功能]"
         content = record.content.strip().replace("\n", " / ")
         # 句柄行不能按普通正文裁，否则 read_handle 拿到半个 id。
         if _THREAD_HANDLE_RE.search(content):
