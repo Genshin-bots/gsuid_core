@@ -129,6 +129,50 @@ def test_is_safe_filename_rejects_separators():
     assert not is_safe_relpath("assets/../../../data/config.json")
 
 
+def test_plugin_store_seeded_order_is_stable_across_pages():
+    from gsuid_core.webconsole.plugins_api import _plugin_store_order_key
+
+    plugin_ids = [f"plugin-{index:02d}" for index in range(48)]
+
+    def ordered(seed: str) -> list[str]:
+        return sorted(
+            plugin_ids,
+            key=lambda plugin_id: _plugin_store_order_key(
+                plugin_id,
+                deprecated=False,
+                has_update=False,
+                installed_tab=False,
+                order_seed=seed,
+            ),
+        )
+
+    first_order = ordered("page-session-a")
+    assert first_order == ordered("page-session-a")
+    assert first_order != ordered("page-session-b")
+
+    first_page = first_order[:32]
+    second_page = first_order[32:]
+    assert set(first_page).isdisjoint(second_page)
+    assert first_page + second_page == first_order
+
+    priorities = {
+        "plain": (False, False),
+        "update": (False, True),
+        "deprecated": (True, False),
+    }
+    prioritized = sorted(
+        priorities,
+        key=lambda plugin_id: _plugin_store_order_key(
+            plugin_id,
+            deprecated=priorities[plugin_id][0],
+            has_update=priorities[plugin_id][1],
+            installed_tab=True,
+            order_seed="page-session-a",
+        ),
+    )
+    assert prioritized == ["update", "plain", "deprecated"]
+
+
 def test_password_bcrypt_and_legacy_upgrade():
     from gsuid_core.webconsole.auth_api import (
         _PASSWORD_PREFIX_BCRYPT,
