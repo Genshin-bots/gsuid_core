@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import SQLModel, select
+from sqlalchemy import inspect
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -262,10 +263,14 @@ def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(tmp_path: Pat
                 fav = await UserFavorability.get_user_favorability("u1", "bot", "persona")
                 assert fav is not None and fav.favorability == 42
                 tables = await session.connection()
-                names = await tables.run_sync(lambda c: set(__import__("sqlalchemy").inspect(c).get_table_names()))
+                names = await tables.run_sync(lambda c: set(inspect(c).get_table_names()))
                 assert "aimemsession" not in names
                 assert "aimemcategory" not in names
                 assert "aimemepisode_fts" in names
+                index_names = await tables.run_sync(
+                    lambda c: {row["name"] for row in inspect(c).get_indexes("aimemepisode")}
+                )
+                assert "ix_mem_episode_valid_at" in index_names
 
             episode = await AIMemEpisode.create_episode(
                 scope_key="group:g1",

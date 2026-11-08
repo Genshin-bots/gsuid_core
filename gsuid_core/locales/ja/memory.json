@@ -4,6 +4,7 @@
   "log.memory.schema_v2_migrating": "[Memory] schema_v2 クリーンルーム移行を実行中...",
   "log.memory.schema_v2_non_sqlite_no_backup": "[Memory] 現在のデータベースは {db_type} です。schema_v2 は自動バックアップを作成しません。旧メモリテーブルを削除する前に手動でバックアップしてください。",
   "log.memory.schema_v2_done": "[Memory] schema_v2 移行完了（aimempreference は保持）",
+  "log.memory.query_indexes_created": "[Memory] クエリインデックスを {count} 件追加しました",
   "log.memory.schema_v2_qdrant_skip": "[Memory] schema_v2 Qdrant クリーンアップをスキップ: {e}",
   "log.memory.schema_v2_profile_cleanup_failed": "[Memory] schema_v2 グループプロフィール清理をスキップ: {e}",
   "log.memory.window_router_invalid_output": "[Memory] Pass 1 出力を解析できず、ウィンドウ全体を縮退: {scope_key}",

@@ -4,6 +4,7 @@
   "log.memory.schema_v2_migrating": "[Memory] Running schema_v2 clean-room migration...",
   "log.memory.schema_v2_non_sqlite_no_backup": "[Memory] Database is {db_type}; schema_v2 will not create an automatic backup. Legacy memory tables will be dropped, so back up first.",
   "log.memory.schema_v2_done": "[Memory] schema_v2 migration complete (aimempreference preserved)",
+  "log.memory.query_indexes_created": "[Memory] Added {count} query indexes",
   "log.memory.schema_v2_qdrant_skip": "[Memory] schema_v2 skipped Qdrant cleanup: {e}",
   "log.memory.schema_v2_profile_cleanup_failed": "[Memory] schema_v2 group profile cleanup skipped: {e}",
   "log.memory.window_router_invalid_output": "[Memory] Pass 1 output unparsable; whole window degraded: {scope_key}",

@@ -44,6 +44,14 @@ _LEGACY_TABLES = (
     "aimemthread",
 )
 
+# 控制台列表按时间全局倒序，复合索引前导列是 scope_key，需要独立索引兜底
+_QUERY_INDEXES = (
+    ("aimemepisode", "ix_mem_episode_valid_at"),
+    ("aimementity", "ix_mem_entity_updated_at"),
+    ("aimemedge", "ix_mem_edge_valid_at"),
+    ("aimemthread", "ix_mem_thread_last_at"),
+)
+
 
 def _read_version() -> int:
     if not _VERSION_FILE.exists():
@@ -109,6 +117,28 @@ async def _create_new_tables() -> None:
         await session.commit()
 
 
+async def _ensure_query_indexes() -> None:
+    from gsuid_core.ai_core.memory.database import models
+
+    metadata = models.SQLModel.metadata
+    indexes = [
+        (table_name, index_name, index)
+        for table_name, index_name in _QUERY_INDEXES
+        for index in metadata.tables[table_name].indexes
+        if index.name == index_name
+    ]
+    created = 0
+    async with engine.begin() as conn:
+        for table_name, index_name, index in indexes:
+            exists = await conn.run_sync(lambda sync_conn: inspect(sync_conn).has_index(table_name, index_name))
+            if exists:
+                continue
+            await conn.run_sync(lambda sync_conn: index.create(sync_conn))
+            created += 1
+    if created:
+        logger.info(t("log.memory.query_indexes_created", count=created))
+
+
 async def _clear_legacy_qdrant() -> None:
     from gsuid_core.ai_core.memory.vector.collections import LEGACY_MEMORY_COLLECTIONS
 
@@ -137,13 +167,14 @@ async def _clear_legacy_qdrant() -> None:
 
 
 async def ensure_memory_schema_v2() -> None:
-    """幂等入口：非 v2 执行净室迁移，v2 仅确保 FTS 虚表存在。"""
+    """幂等入口：非 v2 执行净室迁移，v2 确保 FTS 虚表与查询索引存在。"""
     from gsuid_core.ai_core.memory.database.fts import ensure_fts_table
 
     if _read_version() >= _SCHEMA_VERSION:
         async with async_maker() as session:
             await ensure_fts_table(session)
             await session.commit()
+        await _ensure_query_indexes()
         return
 
     logger.info(t("log.memory.schema_v2_migrating"))
@@ -154,6 +185,7 @@ async def ensure_memory_schema_v2() -> None:
     _backup_group_profiles()
     await _drop_legacy_tables()
     await _create_new_tables()
+    await _ensure_query_indexes()
     await _clear_legacy_qdrant()
     try:
         from gsuid_core.ai_core.memory.group_profile import clear_learned_terms

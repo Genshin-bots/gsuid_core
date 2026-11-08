@@ -168,6 +168,8 @@ class AIMemEpisode(SQLModel, table=True):
         Index("ix_mem_episode_scope_valid_at", "scope_key", "valid_at"),
         Index("ix_mem_episode_scope_session", "scope_key", "session_id", "valid_at"),
         Index("ix_mem_episode_scope_thread", "scope_key", "thread_id", "valid_at"),
+        # 控制台跨 scope 按时间倒序取首页，复合索引前导列是 scope_key，用不上
+        Index("ix_mem_episode_valid_at", "valid_at"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
@@ -908,6 +910,7 @@ class AIMemEntity(SQLModel, table=True):
         Index("ix_mem_entity_scope_name", "scope_key", "name"),
         Index("ix_mem_entity_scope_speaker", "scope_key", "is_speaker"),
         Index("ix_mem_entity_scope_id", "scope_key", "id"),
+        Index("ix_mem_entity_updated_at", "updated_at"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
@@ -1286,6 +1289,7 @@ class AIMemThread(SQLModel, table=True):
     __table_args__ = (
         Index("ix_mem_thread_scope_first", "scope_key", "first_at"),
         Index("ix_mem_thread_scope_active", "scope_key", "last_at"),
+        Index("ix_mem_thread_last_at", "last_at"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
@@ -1361,6 +1365,7 @@ class AIMemEdge(SQLModel, table=True):
         Index("ix_mem_edge_scope_src_slot", "scope_key", "source_entity_id", "slot_key"),
         Index("ix_mem_edge_scope_thread_time", "scope_key", "thread_id", "valid_at", "turn_index"),
         Index("ix_mem_edge_scope_state", "scope_key", "resolution_state"),
+        Index("ix_mem_edge_valid_at", "valid_at"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)

@@ -4,6 +4,7 @@
   "log.memory.schema_v2_migrating": "[Memory] 正在执行 schema_v2 净室迁移...",
   "log.memory.schema_v2_non_sqlite_no_backup": "[Memory] 当前数据库为 {db_type}，schema_v2 不会自动备份；即将删除旧记忆表，请先手动备份。",
   "log.memory.schema_v2_done": "[Memory] schema_v2 迁移完成（aimempreference 完整保留）",
+  "log.memory.query_indexes_created": "[Memory] 已补齐 {count} 个查询索引",
   "log.memory.schema_v2_qdrant_skip": "[Memory] schema_v2 跳过 Qdrant 清理: {e}",
   "log.memory.schema_v2_profile_cleanup_failed": "[Memory] schema_v2 清理群画像词表跳过: {e}",
   "log.memory.window_router_invalid_output": "[Memory] Pass 1 输出无法解析，整窗降级: {scope_key}",

@@ -136,7 +136,7 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
 
 `memory/database/migration_v2.py` 在 `init_memory_system()` 最前面执行：
 
-1. 读 `data/ai_core/memory/schema_version.json`；已是 v2 只确保 FTS 虚表。
+1. 读 `data/ai_core/memory/schema_version.json`；已是 v2 只确保 FTS 虚表与查询索引（`ix_mem_episode_valid_at` 等）。
 2. SQLite 备份到 `data/ai_core/memory/backup_v1/GsData_pre_v2.db.bak`，并复制 `group_profiles/`。
 3. DROP 旧表（含 `mem_episode_entity_mentions` / `aimemepisode_fts`）；`aimempreference.source_episode_id` 置空。
 4. `SQLModel.metadata.create_all` 建四表 + 偏好 + 关联表，建 FTS5。
