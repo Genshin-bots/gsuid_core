@@ -266,6 +266,29 @@ def test_non_empty_history_preserves_system_prompt_part(monkeypatch: pytest.Monk
         isinstance(p, SystemPromptPart) and p.content == "你是巡检角色。" for p in proactive_agent.history[0].parts
     )
 
+    from gsuid_core.ai_core.utils import _peel_ephemeral_system_lines
+    from gsuid_core.ai_core.control.lines import journal_delta_line
+    from gsuid_core.ai_core.agent_run.support import _ensure_session_anchor_on_first_user
+
+    cur, lean, where, _ = _ensure_session_anchor_on_first_user(
+        [], "你好", "你好", persona_name="", marker="【角色沉浸要求】测试"
+    )
+    assert where == "current"
+    assert "【角色沉浸要求】测试" in cur
+
+    # Subsequent turns must be recognized as 'already' even if history[0] had no marker/anchor
+    cur2, lean2, where2, _ = _ensure_session_anchor_on_first_user(
+        agent.history, "第二轮发言", "第二轮发言", persona_name="", marker="【角色沉浸要求】测试"
+    )
+    assert where2 == "already"
+    assert cur2 == "第二轮发言"
+    assert lean2 == "第二轮发言"
+
+    # Ephemeral journal delta line must be peeled before persisting to history
+    delta = journal_delta_line("[15:05 | 模拟盘记账] 记完收盘账")
+    combined_msg = f"[用户发言]\n今天怎么样\n{delta}"
+    assert _peel_ephemeral_system_lines(combined_msg) == "[用户发言]\n今天怎么样"
+
 
 if __name__ == "__main__":
     test_both_entries_consume_shared_assembly()

@@ -393,6 +393,14 @@ rewritten = await self._ooc_recover_persona_voice(hit, original, ev)  # 空串 =
 
 详见 `gscore-development` §6.7.3。
 
+### 1.12 禁止将前端产物编译复制至 dist 目录（构建隔离红线）
+
+**绝对禁止**从前端项目（如 `gsuid_hub`）编译打包（`pnpm build` / `pnpm build:core`）并将产物复制或输出到 `gsuid_core/webconsole/dist/` 中。
+
+- 前端静态资源编译打包与发布由维护者独立负责，禁止 Agent 擅自覆盖 `webconsole/dist`；
+- Agent 在开发或修改 WebConsole 前端时，只需维护前端工程源代码（`src/`、组件、样式、国际化配置等）；
+- 严禁向 `gsuid_core` 提交任何编译生成的 minified js/css/br/gz 产物与哈希碎片，防止污染 git 历史与带来大体量噪点。
+
 ---
 
 ## 二、类型提示规范

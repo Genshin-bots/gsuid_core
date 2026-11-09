@@ -185,6 +185,57 @@ def _first_real_user_prompt_part(history: Sequence[ModelMessage]) -> Optional[Us
     return None
 
 
+_SESSION_ANCHOR_NEEDLE = "【生活手账】"
+
+
+def _ensure_session_anchor_on_first_user(
+    history: Sequence[ModelMessage],
+    current: UserTurnText,
+    lean: UserTurnText,
+    *,
+    persona_name: str = "",
+    group_id: Optional[str] = None,
+    marker: str = "",
+    is_framework: bool = False,
+) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere, float]:
+    """会话首轮锚点（生活手账 + INNER_OS），只往当前 request 追加，持久后进入 history[0]。"""
+    if is_framework:
+        return current, lean, "skipped", 0.0
+
+    first = _first_real_user_prompt_part(history)
+    if first is not None:
+        return current, lean, "already", 0.0
+
+    if _user_content_contains(current, _SESSION_ANCHOR_NEEDLE) or (
+        marker and _user_content_contains(current, _INNER_OS_NEEDLE)
+    ):
+        return current, lean, "already", 0.0
+
+    anchor_parts: List[str] = []
+    latest_ts = 0.0
+    if persona_name:
+        from gsuid_core.ai_core.journal.manager import read_journal_for_context
+
+        journal_text, latest_ts = read_journal_for_context(
+            persona_name,
+            current_group_id=group_id,
+            since_ts=0.0,
+        )
+        if journal_text:
+            anchor_parts.append(f"\n\n【生活手账】\n{journal_text}")
+
+    if marker:
+        anchor_parts.append(marker)
+
+    if not anchor_parts:
+        return current, lean, "skipped", 0.0
+
+    combined = "".join(anchor_parts)
+    new_current = _append_user_text(current, combined)
+    new_lean = _append_user_text(lean, combined) if lean else lean
+    return new_current, new_lean, "current", latest_ts
+
+
 def _ensure_inner_os_on_first_user(
     history: Sequence[ModelMessage],
     current: UserTurnText,
@@ -193,21 +244,16 @@ def _ensure_inner_os_on_first_user(
     *,
     is_framework: bool,
 ) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere]:
-    """INNER_OS 只往当前 request 追加，禁止改 history[0]。"""
-    if not marker:
-        return current, lean, "skipped"
-
-    first = _first_real_user_prompt_part(history)
-    if first is not None and _user_content_contains(first.content, _INNER_OS_NEEDLE):
-        return current, lean, "already"
-
-    if is_framework:
-        return current, lean, "skipped"
-    if _user_content_contains(current, _INNER_OS_NEEDLE):
-        return current, lean, "already"
-    new_current = _append_user_text(current, marker)
-    new_lean = _append_user_text(lean, marker) if lean else lean
-    return new_current, new_lean, "current"
+    """向后兼容封装：旧版 INNER_OS 单独注入。"""
+    cur, ln, where, _ = _ensure_session_anchor_on_first_user(
+        history,
+        current,
+        lean,
+        persona_name="",
+        marker=marker,
+        is_framework=is_framework,
+    )
+    return cur, ln, where
 
 
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）

@@ -5,9 +5,10 @@ Persona APIs
 """
 
 import base64
-from typing import Any, Dict
+from typing import Any, Dict, List, TypedDict
 
 from fastapi import Depends, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
 import gsuid_core.webconsole.persona_store_api  # noqa: F401
@@ -38,6 +39,7 @@ from gsuid_core.ai_core.persona.settings import (
     DEFAULT_PERSONA_SETTINGS,
     persona_settings_manager,
 )
+from gsuid_core.webconsole.session_store import SessionRecord
 from gsuid_core.utils.plugins_config.models import GsDivider
 
 from ._api_tags import PERSONA
@@ -1364,3 +1366,101 @@ async def get_heartbeat_status(_: Dict[str, Any] = Depends(require_auth)) -> Dic
         }
     except Exception as e:
         return {"status": 1, "msg": f"获取 Heartbeat 状态失败: {e}", "data": None}
+
+
+class PersonaJournalData(TypedDict):
+    persona_name: str
+    content: str
+    standing_summary: str
+    timeline: List[str]
+    timeline_count: int
+
+
+class PersonaJournalResponse(TypedDict):
+    status: int
+    msg: str
+    data: PersonaJournalData
+
+
+class PersonaJournalUpdateRequest(BaseModel):
+    content: str = ""
+
+
+class PersonaJournalSaveData(TypedDict):
+    persona_name: str
+
+
+class PersonaJournalSaveResponse(TypedDict):
+    status: int
+    msg: str
+    data: PersonaJournalSaveData
+
+
+class PersonaJournalCompactData(TypedDict):
+    persona_name: str
+    compacted: bool
+
+
+class PersonaJournalCompactResponse(TypedDict):
+    status: int
+    msg: str
+    data: PersonaJournalCompactData
+
+
+@app.get("/api/persona/{persona_name}/journal", summary="获取指定人格的生活手账", tags=PERSONA)
+async def get_persona_journal(
+    persona_name: str,
+    _: SessionRecord = Depends(require_auth),
+) -> PersonaJournalResponse:
+    """获取指定人格的生活手账全文及解析后的分段结构。"""
+    from gsuid_core.ai_core.journal.manager import (
+        _read_sections,
+        get_journal_content,
+    )
+
+    content = get_journal_content(persona_name)
+    standing, timeline = _read_sections(content)
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "persona_name": persona_name,
+            "content": content,
+            "standing_summary": standing,
+            "timeline": timeline,
+            "timeline_count": len(timeline),
+        },
+    }
+
+
+@app.put("/api/persona/{persona_name}/journal", summary="保存指定人格的生活手账", tags=PERSONA)
+async def update_persona_journal(
+    persona_name: str,
+    data: PersonaJournalUpdateRequest,
+    _: SessionRecord = Depends(require_admin),
+) -> PersonaJournalSaveResponse:
+    """保存生活手账 markdown 全文。"""
+    from gsuid_core.ai_core.journal.manager import save_journal_content
+
+    save_journal_content(persona_name, data.content)
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {"persona_name": persona_name},
+    }
+
+
+@app.post("/api/persona/{persona_name}/journal/compact", summary="整理指定人格的生活手账", tags=PERSONA)
+async def compact_persona_journal(
+    persona_name: str,
+    _: SessionRecord = Depends(require_admin),
+) -> PersonaJournalCompactResponse:
+    """触发生活手账整理压缩。"""
+    from gsuid_core.ai_core.journal.manager import compact_journal
+
+    compacted = await compact_journal(persona_name)
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {"persona_name": persona_name, "compacted": compacted},
+    }

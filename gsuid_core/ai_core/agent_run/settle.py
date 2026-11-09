@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import time
+import asyncio
 from typing import Any, List, Sequence
+from datetime import datetime
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -663,6 +665,35 @@ class SettlePhase(RunOnceHost):
                     _dom = _tb.capability_domain if _tb else None
                     if _dom:
                         self._recent_tool_families[_dom] = _STICKY_FAMILY_TURNS
+
+                # 手账回流：主 Agent 调用了实质性工具且有可见回复，记入生活手账（私聊不写入公共手账）
+                _meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive"})
+                _substantive_tools = [t for t in (st.tool_call_list or []) if t not in _meta_tools]
+                _res_text = str(result.output or "").strip()
+                _is_private = st.ev is not None and (st.ev.user_type == "direct" or not st.ev.group_id)
+                if _substantive_tools and _res_text and "<SILENCE>" not in _res_text and not _is_private:
+                    from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+
+                    _tb = find_tool_base(_substantive_tools[0])
+                    _tool_name = _tb.name if _tb else _substantive_tools[0]
+                    _tag = (_tb.capability_domain if _tb and _tb.capability_domain else _tool_name) or "日常行动"
+                    _now = datetime.now()
+                    _clean_res = re.sub(r"^[#\s\-*]+", "", _res_text)[:60]
+                    _gid = str(st.ev.group_id or "") if st.ev and st.ev.group_id else ""
+                    _entry = JournalEntry(
+                        timestamp=_now.timestamp(),
+                        date_str=_now.strftime("%Y-%m-%d"),
+                        time_str=_now.strftime("%H:%M"),
+                        tag=_tag[:16],
+                        summary=_clean_res,
+                        group_id=_gid,
+                    )
+                    asyncio.create_task(
+                        record_journal_entry(
+                            _entry,
+                            target_personas=[self.persona_name] if self.persona_name else None,
+                        )
+                    )
 
             # 更新连续无工具调用计数（仅对交互式主 Agent 生效）。闲聊类意图不计数（§15）
             # 豁免口径与注入门同源：_PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。

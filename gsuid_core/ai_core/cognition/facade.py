@@ -1011,12 +1011,11 @@ async def inject_memory_slice(
     preference_contexts: List[str],
     memory_intent: str = "point_latest",
 ) -> str:
-    """⑧ 每轮自动注入的**记忆+偏好切片**（与工具路径同一入口、同一 scope 纪律）。
+    """⑧ 每轮自动注入的**记忆切片**（与工具路径同一入口、同一 scope 纪律）。
 
     刻意不走 :func:`render_cognition_block`：``to_prompt_text`` 的配额位
-    （偏好独立 ``preference_inject_budget_ratio`` / 事实 / 冲突 / 类目，片段吃剩余）
-    与第三方隐私门（敏感事实仅当事人在场才注入）必须保留——统一成通用渲染会让偏好
-    被事实挤掉，那正是「语义类型保留」不变量要防的事。
+    （事实 / 冲突 / 类目，片段吃剩余）与第三方隐私门（敏感事实仅当事人在场才注入）
+    必须保留；说话人偏好统一由尾部 ``load_speaker_preference_tail`` 归一化去重后输出一次。
 
     总帽只从 :func:`inject_memory_cap` 取：与 H05 注入同一条函数，工具路径不会另抬一档。
 
@@ -1033,7 +1032,7 @@ async def inject_memory_slice(
         top_k=memory_config.retrieval_top_k,
         enable_system2=scope.enable_system2,
         enable_user_global=scope.enable_user_global,
-        inject_preferences=True,
+        inject_preferences=False,
         preference_contexts=preference_contexts,
         bot_id=scope.bot_id,
         bot_self_id=scope.bot_self_id,

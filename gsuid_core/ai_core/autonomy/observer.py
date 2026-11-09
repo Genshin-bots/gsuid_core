@@ -128,6 +128,12 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     recent_tools = await _previous(persona_name, clock)
     bot_id, bot_self_id, ws_bot_id = _identity(lines, groups)
     proactive_records = await _recent_proactive_records(persona_name, clock)
+    from gsuid_core.ai_core.journal.manager import read_journal_for_context
+    from gsuid_core.ai_core.agent_node.registry import list_nodes
+
+    journal_text, _ = read_journal_for_context(persona_name)
+    nodes = list_nodes()
+    roster = [f"{n.node_id}: {n.display_name}" for n in nodes[:15]]
     return ObservationDigest(
         persona_name=persona_name,
         bot_id=bot_id,
@@ -144,6 +150,8 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         recently_used_tools=recent_tools,
         in_flight_tasks=in_flight,
         recent_proactive_records=proactive_records,
+        self_journal_summary=journal_text,
+        capability_roster=roster,
     )
 
 

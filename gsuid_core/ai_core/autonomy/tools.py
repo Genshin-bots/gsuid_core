@@ -23,6 +23,8 @@ ARTIFACT_LIMIT_BYTES = 32 * 1024
 AUTONOMY_TOOL_ALLOWLIST = frozenset(
     {
         "find_tools",
+        "create_subagent",
+        "read_handle",
         "web_search_tool",
         "web_fetch_tool",
         "read_image",

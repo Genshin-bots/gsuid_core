@@ -362,3 +362,8 @@ def quote_stale_line(time_str: str, minutes: int) -> str:
 def quote_bot_line(time_str: str) -> str:
     """原受件人正常追问你刚刚发出的发言。"""
     return f"（被引用的是你于 {time_str} 发出的发言）"
+
+
+def journal_delta_line(entry_body: str) -> str:
+    """会话中途新增生活手账的一行提醒（入史前由 _peel_ephemeral_system_lines 自动剥除）。"""
+    return f"（系统提示：刚刚经历：{entry_body}）"

@@ -343,6 +343,30 @@ class MemoryContext:
                 fact = _complete_fact_subject(e["fact"], e["source_name"])
                 if not fact or _DANGLING_FACT_RE.search(fact):
                     continue
+                # 语义相关性防线：剔除仅因同日期/低分召回且与问句实体完全无关的边
+                sc = float(e["score"] or 0.0) if "score" in e else 0.0
+                if sc < 0.35 and query.strip():
+                    from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+
+                    _stop_words = (
+                        "今天",
+                        "昨天",
+                        "明天",
+                        "现在",
+                        "刚才",
+                        "如何",
+                        "怎样",
+                        "什么",
+                        "查查",
+                        "帮我",
+                        "一下",
+                        "问问",
+                    )
+                    substantive = [tok for tok in query_tokens(query) if tok not in _stop_words]
+                    s_name = str(e["source_name"] or "") if "source_name" in e else ""
+                    t_name = str(e["target_name"] or "") if "target_name" in e else ""
+                    if substantive and not any(tok in fact or tok in s_name or tok in t_name for tok in substantive):
+                        continue
                 if _sensitive_fact_hit(fact, _extra_sensitive) and not (
                     current_speaker_ids and _fact_mentions_speaker(e, current_speaker_ids)
                 ):
@@ -485,6 +509,8 @@ class MemoryContext:
                     for ep in items:
                         raw = (ep["content"] or "").strip()
                         if len(raw) < 4:
+                            continue
+                        if "[决策结论]" in raw or "决策：走 " in raw:
                             continue
                         key = raw[:80]
                         if key in seen_content:

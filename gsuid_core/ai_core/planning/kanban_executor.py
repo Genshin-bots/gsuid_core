@@ -924,6 +924,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                 content=raw_result,
                 task=fresh,
                 res_handle=output_id or "",
+                is_silent_check=no_broadcast,
             )
         except Exception as _pe:
             logger.debug(t("log.ai.persist_subagent_result_skip", e=_pe))

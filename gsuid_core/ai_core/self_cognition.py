@@ -493,12 +493,21 @@ def collect_speaker_preference_rules(
     out: list[str] = []
     seen: set[str] = set()
 
+    def _pref_normalize_fingerprint(text: str, sid: str) -> str:
+        cleaned = re.sub(r"^\[[\d.\-]+\]\s*", "", text.strip())
+        if sid:
+            cleaned = re.sub(rf"用户\s*\(?user_id:\s*{re.escape(sid)}\)?|用户\s*{re.escape(sid)}", "用户", cleaned)
+        cleaned = re.sub(r'[\s，。；,;：:！!？?"\'「」()（）]', "", cleaned).lower()
+        return cleaned
+
     def push(text: str) -> None:
         body = text.strip()
         if not body or len(out) >= limit:
             return
-        key = body.lower().replace(" ", "").rstrip("。，.,!！")
+        key = _pref_normalize_fingerprint(body, speaker_id)
         if key in seen:
+            return
+        if any(key in prev or prev in key for prev in seen if len(key) >= 4 and len(prev) >= 4):
             return
         seen.add(key)
         out.append(body)
@@ -608,8 +617,6 @@ async def load_speaker_preference_tail(
             merged.append(row)
         for row in other_rows:
             if row.id in seen_ids or row.target_context == "possession":
-                continue
-            if row.target_context != "general" and row.target_context not in _STANDING_PREF_CONTEXTS:
                 continue
             if existing_text and row.preference_rule.strip() and row.preference_rule.strip() in existing_text:
                 continue

@@ -855,7 +855,7 @@ def scaffold_hints_from_graph(
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
     "create_subagent",
-    "capability_map",
+    "web_search_tool",
     "send_message_by_ai",
     "search_cognition",
     "read_handle",
@@ -863,7 +863,6 @@ MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "read_image",
     "read_video",
     "dispute_directive",
-    "record_meme",
     "add_once_task",
     "add_interval_task",
 )

@@ -1,8 +1,10 @@
 """阶段二：一次无状态的行动。会话不复用，工具表在进模型前收口。"""
 
+import re
 import time
 import uuid
 import asyncio
+from datetime import datetime
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -94,7 +96,7 @@ async def run_autonomy_agent(
         create_by="Autonomy",
         task_level="high",
         session_id=session_id,
-        dynamic_tools=False,
+        dynamic_tools=True,
         wall_clock_budget=180,
         on_trace=_on_trace,
     )
@@ -130,6 +132,26 @@ async def run_autonomy_agent(
         reset_guard(token)
         agent._session_logger.close()
     text = result if isinstance(result, str) else ""
+    if text and text.strip() and "<SILENCE>" not in text:
+        from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+
+        now_dt = datetime.now()
+        clean_res = re.sub(r"^[#\s\-*]+", "", text.strip())[:80]
+        entry = JournalEntry(
+            timestamp=now_dt.timestamp(),
+            date_str=now_dt.strftime("%Y-%m-%d"),
+            time_str=now_dt.strftime("%H:%M"),
+            tag="自主探索",
+            summary=clean_res,
+            group_id=guard.last_sent_group_id or "",
+        )
+        asyncio.create_task(
+            record_journal_entry(
+                entry,
+                target_personas=[digest.persona_name],
+            )
+        )
+
     duration_ms = int((time.perf_counter() - started) * 1000)
     return AutonomyReport(
         text,

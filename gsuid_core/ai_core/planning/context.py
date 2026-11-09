@@ -10,6 +10,7 @@ fail_task_tree 重建（参见 docs/AI_AGENT_ARCHITECTURE.md §3.5 持久化产�
 """
 
 from typing import Optional
+from datetime import datetime, timedelta
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -37,6 +38,22 @@ def _status_cn(s: str) -> str:
     return _STATUS_CN[s] if s in _STATUS_CN else s
 
 
+_ZOMBIE_TASK_HOURS = 24
+
+
+def _is_zombie_task(t: AIAgentTask, now: datetime) -> bool:
+    if t.recurring_trigger:
+        return False
+    if not t.updated_at:
+        return False
+    upd = t.updated_at
+    if upd.tzinfo is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=upd.tzinfo)
+    elif upd.tzinfo is None and now.tzinfo is not None:
+        upd = upd.replace(tzinfo=now.tzinfo)
+    return (now - upd) > timedelta(hours=_ZOMBIE_TASK_HOURS)
+
+
 async def build_task_context(user_id: str, current_group_id: Optional[str] = None) -> str:
     """构造当前用户活跃根任务的注入文本块（含每个根下子任务状态摘要）。
 
@@ -53,8 +70,13 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
         return ""
 
     other_scope_count = 0
+    now = datetime.now()
+    tasks = [t for t in tasks if not _is_zombie_task(t, now)]
+    if not tasks:
+        return ""
+
     if current_group_id is not None:
-        visible: list = []
+        visible: list[AIAgentTask] = []
         for t in tasks:
             # 私聊任务（group_id 空）对群同样是"其他会话"：详情不进群上下文（评审修复 F12）
             if str(t.group_id or "") != str(current_group_id):
@@ -62,6 +84,8 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
             else:
                 visible.append(t)
         tasks = visible
+    if not tasks:
+        return ""
 
     lines = ["【你正在为对方推进的事项（可被追问进度；对用户只说人话，勿念编号/节点名）】"]
     if other_scope_count:
@@ -138,6 +162,8 @@ async def has_actionable_task(user_id: str, current_group_id: Optional[str] = No
     """
     try:
         tasks = await AIAgentTask.list_for_owner(str(user_id), only_active=True, root_only=True)
+        now = datetime.now()
+        tasks = [t for t in tasks if not _is_zombie_task(t, now)]
         if current_group_id is not None:
             tasks = [t for t in tasks if str(t.group_id or "") == str(current_group_id)]
         counts = await AIAgentTask.child_status_counts([t.id for t in tasks if t.status == "running"])

@@ -85,6 +85,8 @@ class ObservationDigest:
     arc_max_hops: int = 2
     curiosity_focus: str = "balanced"
     cooled_topics: list[str] = field(default_factory=list)
+    self_journal_summary: str = ""
+    capability_roster: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

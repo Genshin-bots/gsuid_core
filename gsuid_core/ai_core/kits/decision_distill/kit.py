@@ -67,7 +67,6 @@ async def flush_decision_buffer() -> None:
 async def _persist_decision(bot_self_id: str, persona_name: str, decision: str) -> None:
     from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
-    from gsuid_core.ai_core.memory.observer import observe
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
     bid = bot_self_id or "default"
@@ -85,18 +84,6 @@ async def _persist_decision(bot_self_id: str, persona_name: str, decision: str) 
         )
     except (OSError, RuntimeError, ValueError) as e:
         logger.warning(t("log.ai.decision_distill_remember_fail", e=e))
-    try:
-        await observe(
-            content=f"[决策结论] {decision}",
-            speaker_id=f"__assistant_{bid}__",
-            group_id=None,
-            bot_self_id=bid,
-            persona_name=persona_name,
-            observer_blacklist=[],
-            message_type="private_msg",
-        )
-    except (OSError, RuntimeError, ValueError) as e:
-        logger.debug(t("log.ai.decision_distill_observe_fail", e=e))
 
 
 def _rule_summary(item: _Pending) -> str:

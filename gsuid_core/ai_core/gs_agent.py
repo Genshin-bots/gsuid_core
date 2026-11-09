@@ -348,6 +348,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # 预算归属 scope：(group_id, user_id, bot_id)。ev 缺失的自主入口经 bind_budget_scope
         # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
         self._budget_scope: Optional[Tuple[str, str, str]] = None
+        self._anchor_journal_ts: float = 0.0
 
         # 连续无工具轮数只做计数。催工具只在上一轮思考点了已装配工具却没调用时。
         self._consecutive_no_tool_rounds: int = 0

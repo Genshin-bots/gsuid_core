@@ -308,37 +308,26 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
 _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
     {
         "voice_anchor",
-        "mood",
-        "presence",
         "relationship",
         "task",
-        "plan_hint",
-        "soft_trigger",
+        "presence",
         "memory",
         "history",
+        "soft_trigger",
         "plugin_hints",
-        "group_context",
-        "chitchat_style",
-        "transaction_priority",
-        "report_titles",
     }
 )
-# 点名 suffix 产品块合计帽。voice_anchor、history 与单独预算的 memory 在帽外。
-_SUFFIX_PRODUCT_CAP = 400
+# 点名 suffix 产品块合计帽。history 与单独预算的 memory 在帽外。
+_SUFFIX_PRODUCT_CAP = 300
 _SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history"})
 _CAP_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history", "memory"})
 _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
+    "voice_anchor",
     "task",
-    "plan_hint",
     "relationship",
-    "mood",
     "presence",
-    "group_context",
     "soft_trigger",
     "plugin_hints",
-    "chitchat_style",
-    "transaction_priority",
-    "report_titles",
 )
 
 

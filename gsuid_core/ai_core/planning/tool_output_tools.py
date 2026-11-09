@@ -92,26 +92,48 @@ def _line(rec: AIToolOutputRecord) -> str:
     return f"- {rec.id} | {label} | {rec.date_str} | {rec.summary[:80]}"
 
 
+_SHORT_HANDLE_DIRECT_CHARS = 2400
+
+
 def _extract_query_snippets(text: str, query: str, window: int = 300, max_snippets: int = 5) -> str:
     """在文本中检索 query，提取其前后各 window 字符的上下文段落窗口。"""
-    if not query.strip():
+    if not query.strip() or len(text) <= _SHORT_HANDLE_DIRECT_CHARS:
         return text
-    q_low = query.lower()
+    q_low = query.lower().strip()
     t_low = text.lower()
-    indices: list[int] = []
-    start = 0
-    while len(indices) < max_snippets:
-        pos = t_low.find(q_low, start)
-        if pos == -1:
-            break
-        indices.append(pos)
-        start = pos + max(1, len(q_low))
+    tokens = [tok for tok in q_low.split() if tok]
+    indices: list[tuple[int, int]] = []
+    if len(tokens) <= 1:
+        start = 0
+        while len(indices) < max_snippets:
+            pos = t_low.find(q_low, start)
+            if pos == -1:
+                break
+            indices.append((pos, len(q_low)))
+            start = pos + max(1, len(q_low))
+    else:
+        found_positions: list[tuple[int, int]] = []
+        for tok in tokens:
+            st = 0
+            while True:
+                p = t_low.find(tok, st)
+                if p == -1:
+                    break
+                found_positions.append((p, len(tok)))
+                st = p + max(1, len(tok))
+        found_positions.sort()
+        for p, t_len in found_positions:
+            if not any(abs(p - prev_p) < window for prev_p, _ in indices):
+                indices.append((p, t_len))
+                if len(indices) >= max_snippets:
+                    break
+
     if not indices:
         return f"（未在内容中检索到关键词「{query}」，全文共 {len(text)} 字符）"
     snippets: list[str] = []
-    for i, pos in enumerate(indices, 1):
+    for i, (pos, m_len) in enumerate(indices, 1):
         s = max(0, pos - window)
-        e = min(len(text), pos + len(query) + window)
+        e = min(len(text), pos + m_len + window)
         prefix = "…" if s > 0 else ""
         suffix = "…" if e < len(text) else ""
         snippet = text[s:e].strip()

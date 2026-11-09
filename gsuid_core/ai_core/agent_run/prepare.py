@@ -32,8 +32,8 @@ from gsuid_core.ai_core.agent_run.support import (
     _STATUS_INQUIRY_HINT,
     _INTERACTIVE_CREATE_BY,
     _append_user_text,
-    _ensure_inner_os_on_first_user,
     _capability_exclusive_tool_names,
+    _ensure_session_anchor_on_first_user,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, is_control_envelope
@@ -430,14 +430,34 @@ class PreparePhase(RunOnceHost):
             st.tools = []
 
     def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None:
-        if self.create_by != "Chat" or not ai_config.get_config("enable_deepseek_rp").data:
+        if self.create_by not in ("Chat", "Agent"):
             return
-        st.final_user_message, st.lean_user_message, where = _ensure_inner_os_on_first_user(
+        marker = INNER_OS_MARKER if ai_config.get_config("enable_deepseek_rp").data else ""
+        persona_name = self.persona_name or ""
+        group_id = st.ev.group_id if st.ev is not None else None
+        st.final_user_message, st.lean_user_message, where, latest_ts = _ensure_session_anchor_on_first_user(
             self.history,
             st.final_user_message,
             st.lean_user_message,
-            INNER_OS_MARKER,
+            persona_name=persona_name,
+            group_id=group_id,
+            marker=marker,
             is_framework=st.fw_msg,
         )
         if where in ("history", "current"):
-            logger.info(i18n_t("log.agent.ds_inject"))
+            if latest_ts > 0.0:
+                self._anchor_journal_ts = latest_ts
+            if marker:
+                logger.info(i18n_t("log.agent.ds_inject"))
+        elif where == "already" and persona_name and not st.fw_msg:
+            from gsuid_core.ai_core.journal.manager import read_journal_for_context
+
+            since_ts = self._anchor_journal_ts if self._anchor_journal_ts > 0.0 else 0.01
+            delta_text, latest_ts = read_journal_for_context(
+                persona_name,
+                current_group_id=group_id,
+                since_ts=since_ts,
+            )
+            if delta_text:
+                st.final_user_message = _append_user_text(st.final_user_message, f"\n{delta_text}")
+                self._anchor_journal_ts = latest_ts

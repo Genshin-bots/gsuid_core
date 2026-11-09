@@ -244,6 +244,10 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
         lines.append("最近用过的工具：" + "、".join(digest.recently_used_tools[:8]))
     if digest.available_plugins_summary:
         lines.append("在线插件：" + "、".join(digest.available_plugins_summary[:30]))
+    if digest.self_journal_summary:
+        lines.append("你的生活手账（近期经历与今日事项）：\n" + digest.self_journal_summary)
+    if digest.capability_roster:
+        lines.append("你可以调遣的能力代理（可用 create_subagent 委派）：" + "、".join(digest.capability_roster[:15]))
     return "\n".join(lines)
 
 

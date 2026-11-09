@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 import asyncio
 import hashlib
@@ -246,12 +247,14 @@ async def persist_subagent_result(
     content: str,
     task: AIAgentTask,
     res_handle: str,
+    *,
+    is_silent_check: bool = False,
 ) -> Optional[PersistedHandleCard]:
     body = content or ""
-    if len(body.strip()) < 40:
+    if len(body.strip()) < 40 and not is_silent_check:
         return None
     root = task.root_task_id or task.id
-    return await _write_record(
+    card = await _write_record(
         rid_prefix="sa",
         content=body,
         root_task_id=root,
@@ -266,6 +269,35 @@ async def persist_subagent_result(
         res_handle=res_handle or "",
         long_structured=True,
     )
+    if card is not None:
+        from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+        from gsuid_core.ai_core.agent_node.registry import get_node
+
+        is_private = (task.scope_key or "").startswith("user_global:") and not task.group_id
+        if not is_private:
+            node = get_node(profile)
+            tag = (node.display_name if node else profile) or "后台任务"
+            tag = re.sub(r"(代理|Agent|_agent)$", "", tag).strip()
+            clean_summary = extract_info_summary(body, max_len=120)
+            clean_summary = re.sub(r"^[#\s\-*]+", "", clean_summary).strip()
+            now_dt = datetime.now()
+            entry = JournalEntry(
+                timestamp=now_dt.timestamp(),
+                date_str=now_dt.strftime("%Y-%m-%d"),
+                time_str=now_dt.strftime("%H:%M"),
+                tag=tag[:20],
+                summary=clean_summary[:80],
+                handle_id=card.id,
+                group_id=str(task.group_id or "") if task.group_id else "",
+                is_silent_check=is_silent_check or ("<<NO_BROADCAST>>" in content),
+            )
+            asyncio.create_task(
+                record_journal_entry(
+                    entry,
+                    fanout_all_active=not bool(task.group_id),
+                )
+            )
+    return card
 
 
 async def _remember_short_tool_fact(tool_name: str, content: str, ev: Optional[Event], session_id: str) -> None:
