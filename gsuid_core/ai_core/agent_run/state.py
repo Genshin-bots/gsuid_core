@@ -62,7 +62,6 @@ class RunOnceState:
     #: 材料：`self.history` 此刻还没 extend 本轮，工具名也证明不了有事实。
     run_tool_outputs: list[str] = field(default_factory=list)
     effectual_mutate: bool = False
-    wall_nudged: bool = False
     ooc_blocked: list[tuple[str, output_firewall.FirewallHit]] = field(default_factory=list)
     ab_pending_nudges: list[str] = field(default_factory=list)
     ab_abort: bool = False
@@ -134,8 +133,6 @@ class RunOnceState:
     # 时钟 / 限额
     limits: UsageLimits | None = None
     start_time: float = 0.0
-    wall_acc: Any | None = None
-    wall_clock_token: Any | None = None
     turn_id: str = ""
     # 用户回合：root 主人格生成并写入 contextvar；嵌套 run 继承。
     user_turn_id: str = ""

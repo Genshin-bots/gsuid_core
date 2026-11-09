@@ -27,7 +27,6 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import (
-    wall_clock,
     output_gate,
     output_firewall,
     angle_bracket_guard,
@@ -62,7 +61,6 @@ from gsuid_core.ai_core.agent_run.support import (
     canonical_tool_call,
     record_output_block,
     turn_reply_metadata,
-    _wall_clock_nudge_for,
     record_run_tool_output,
     _tool_return_looks_failed,
     absorb_run_image_delivered,
@@ -376,71 +374,6 @@ class LoopPhase(RunOnceHost):
             is_group=st.ev is None or bool(st.ev.group_id),
         )
 
-        # 先扫本请求内 ToolReturn 形态，再决定墙钟文案（避免事实包刚返回却注入「禁工具」）
-        for _pre in node.request.parts:
-            if isinstance(_pre, NativeToolReturnPart) and is_hosted_web_search_name(_pre.tool_name):
-                st.saw_web_source = True
-                continue
-            if type(_pre) is not ToolReturnPart:
-                continue
-            _pb = _pre.content if isinstance(_pre.content, str) else ""
-            _ptn = _pre.tool_name or ""
-            if _tool_return_is_async_pending(_pre):
-                st.pending_async_delivery = True
-            if _ptn == "create_subagent" and _RENDER_DONE_RECEIPT_MARK in _pb:
-                st.delegated_render = True
-            elif content_is_render_candidate(
-                tool_name=_ptn,
-                content=_pb,
-                fileos_folded=False,
-            ):
-                st.saw_structured_return = True
-            # 无时点聚合：只记内部账，不再往请求里塞禁令。
-            if _pb and _is_timeless_aggregate(_pb):
-                st.saw_timeless_aggregate = True
-            # 时效账本：web 滞后 / as_of 新鲜 / 其它成功非 web（挡「只有 web」误报）
-            if _pb and _tool_return_has_web_source_mark(_pb):
-                st.saw_web_source = True
-            if _pb and _tool_return_has_fresh_mark(_pb):
-                st.saw_fresh_data = True
-            elif (
-                _pb
-                and not _tool_return_is_async_pending(_pre)
-                and not _tool_return_looks_failed(_pre)
-                and not _tool_return_is_delegation_refusal(_pb)
-                and _tool_return_is_non_web_data(_pb)
-            ):
-                st.saw_non_web_data = True
-
-        # C-4 墙钟软预算：交互式 run 超时后，请求前注入收敛提示（只注入一次），
-        _wall_budget = (
-            self.wall_clock_budget
-            if self.wall_clock_budget is not None
-            else float(ai_config.get_config("scaffold_wall_clock_budget").data)
-        )
-        _wall_elapsed = time.time() - st.start_time - wall_clock.excluded_seconds(st.wall_acc)
-        if (
-            not st.wall_nudged
-            and _wall_budget > 0
-            and self.create_by in _INTERACTIVE_CREATE_BY
-            and _wall_elapsed > _wall_budget
-        ):
-            _need_pipe = bool(st.saw_structured_return and not st.delegated_render)
-            from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
-
-            _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
-            if _need_pipe and not _allow_render:
-                _need_pipe = False
-            _wall_txt = _wall_clock_nudge_for(need_render_pipeline=_need_pipe, allow_render=_allow_render)
-            node.request.parts = [*node.request.parts, UserPromptPart(content=_wall_txt)]
-            st.wall_nudged = True
-            logger.info(
-                i18n_t(
-                    "log.agent.wall_clock_soft_budget",
-                    p0=_wall_elapsed,
-                )
-            )
-
         # 输出闸门：上一轮 REWRITE feedback（多段已合并）注入下一轮请求
         if st.ab_pending_nudges:
             _had_ooc = any(output_gate.is_ooc_judge_feedback(n) for n in st.ab_pending_nudges)
@@ -496,8 +429,27 @@ class LoopPhase(RunOnceHost):
 
         _has_tool_return = False
         for part in node.request.parts:
-            if isinstance(part, ToolReturnPart):
+            if isinstance(part, NativeToolReturnPart) and is_hosted_web_search_name(part.tool_name):
+                st.saw_web_source = True
+            elif isinstance(part, ToolReturnPart):
                 _has_tool_return = True
+                if _tool_return_is_async_pending(part):
+                    st.pending_async_delivery = True
+                _init_body = part.content if isinstance(part.content, str) else ""
+                if _init_body:
+                    if _is_timeless_aggregate(_init_body):
+                        st.saw_timeless_aggregate = True
+                    if _tool_return_has_web_source_mark(_init_body):
+                        st.saw_web_source = True
+                    if _tool_return_has_fresh_mark(_init_body):
+                        st.saw_fresh_data = True
+                    elif (
+                        not _tool_return_is_async_pending(part)
+                        and not _tool_return_looks_failed(part)
+                        and not _tool_return_is_delegation_refusal(_init_body)
+                        and _tool_return_is_non_web_data(_init_body)
+                    ):
+                        st.saw_non_web_data = True
                 # 如果工具返回b64图片或者bytes内容, 则调用RM实例上传
                 if (isinstance(part.content, str) and part.content.startswith("base64://")) or isinstance(
                     part.content, bytes

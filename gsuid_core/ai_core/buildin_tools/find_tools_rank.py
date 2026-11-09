@@ -42,6 +42,7 @@ class FindToolsPlan:
     dedicated_tools: tuple[RankedHit, ...]
     generic_agents: tuple[RankedHit, ...]
     generic_tools: tuple[RankedHit, ...]
+    pinned_names: tuple[str, ...] = ()
 
     def has_dedicated(self) -> bool:
         return bool(self.dedicated_agents or self.dedicated_tools)
@@ -51,8 +52,9 @@ class FindToolsPlan:
 
     def loadable_tool_names(self) -> list[str]:
         names = [h.name for h in self.dedicated_tools]
-        if not self.has_dedicated():
-            names.extend(h.name for h in self.generic_tools)
+        for h in self.generic_tools:
+            if (not self.has_dedicated() or h.name in self.pinned_names) and h.name not in names:
+                names.append(h.name)
         return names
 
     def fingerprint(self) -> list[str]:
@@ -61,6 +63,10 @@ class FindToolsPlan:
         if not self.has_dedicated():
             fp.extend(f"agent:{h.name}" for h in self.generic_agents)
             fp.extend(h.name for h in self.generic_tools)
+        else:
+            for h in self.generic_tools:
+                if h.name in self.pinned_names and h.name not in fp:
+                    fp.append(h.name)
         return fp
 
 
@@ -266,15 +272,17 @@ def build_find_tools_plan(
     dedicated_tools: list[RankedHit],
     generic_agents: list[RankedHit],
     generic_tools: list[RankedHit],
+    pinned_names: Sequence[str] = (),
 ) -> FindToolsPlan:
-    """有专用项时丢掉通用档，避免模型改选调研/记忆管家。"""
+    """有专用项时丢掉非点名通用档，避免模型改选调研/记忆管家。"""
+    pinned_set = {n for n in pinned_names if n}
     d_agents = _dedupe_hits(dedicated_agents)[:_MAX_DEDICATED_AGENTS]
     d_tools = _dedupe_hits(dedicated_tools)[:_MAX_DEDICATED_TOOLS]
     g_agents = _dedupe_hits(generic_agents)
     g_tools = _dedupe_hits(generic_tools)
     if d_agents or d_tools:
         g_agents = []
-        g_tools = []
+        g_tools = [h for h in g_tools if h.name in pinned_set]
     else:
         g_agents = g_agents[:_MAX_GENERIC_AGENTS]
         g_tools = g_tools[:_MAX_GENERIC_TOOLS]
@@ -283,6 +291,7 @@ def build_find_tools_plan(
         dedicated_tools=tuple(d_tools),
         generic_agents=tuple(g_agents),
         generic_tools=tuple(g_tools),
+        pinned_names=tuple(sorted(pinned_set)),
     )
 
 

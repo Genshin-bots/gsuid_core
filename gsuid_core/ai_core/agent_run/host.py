@@ -58,6 +58,7 @@ class RunOnceHost:
     _last_attempt_delegated_render: bool
     _last_attempt_image_sent: bool
     _last_attempt_pending_async: bool
+    _last_attempt_effectual_mutate: bool
     _last_attempt_has_status_tool: bool
     _last_attempt_thinking: str
     _session_toolset_frozen: Optional[list[str]]

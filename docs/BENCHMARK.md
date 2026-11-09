@@ -20,8 +20,8 @@
 | 套件 | 测什么 | 口径 | 分数 |
 |------|--------|------|------|
 | **Agent 硬核套件** | 群聊 Agent：工具、寻址、人格、跨轮、安全、出图… | 独立 `user_id`；**pass^k=1**；通道核 12 工具 | **443/496 = 89.3%**（2026-09-04） |
-| **LongMemEval-S（生产 Chat）** | 目录卡 + 模型自己 `search_cognition` | `--enable-tools --no-memory-eval --inject-date` | **462/500 = 92.4%**（2026-09-03） |
-| **BEAM 100k（官方 128K）** | 多会话记忆探针（20 conv × 20 题） | 评测助手 + tools；`batch_observe` 灌对话；`clock_at` | **226/400 = 56.5%**（2026-09 · judge v1 贪心对齐，待复跑） |
+| **LongMemEval-S（生产 Chat）** | 目录卡 + 模型自己 `search_cognition` | `--enable-tools --no-memory-eval --inject-date` | **475/500 = 95.0%**（2026-11-09） |
+| **BEAM 100k（官方 128K）** | 多会话记忆探针（20 conv × 20 题） | 评测助手 + tools；`batch_observe` 灌对话；`clock_at` | **209/400 = 52.2%**（2026-11-09） |
 | **BEAM 500k（官方 500K）** | 同上，500K 语料（4 conv × 20 题） | 同上 | **37/80 = 46.2%**（2026-09-29 · judge v1 贪心对齐，待复跑） |
 | **BEAM 1M（官方 1M）** | 同上，1M 语料（35 conv × 20 题，74,630 turn） | 同上 | **302/700 = 43.1%**（2026-10-04 · passed 由 rubric 全中确定性推导，去掉「或语义一致」逃生门；700 条判分全部走 rubric 解析，无一条落到文本兜底） |
 | **CorpusQA 128k** | 跨文档统计 / 比较（分层 40 题，每域 10） | 评测助手 + tools；语料 `batch_observe`；不塞全文进当前轮 | **36/40 = 90.0%**（2026-09-28） |
@@ -31,26 +31,23 @@
 
 ### 1.0 BEAM 100k（官方 128K）
 
-报告：`eval/BEAM_official/results/100k/_runs/v2_reprobe_m3_c11/report.md`。
-
-> ⚠️ **判分器版本**：本节数字由 judge v1（`align_from_eq_matrix` 贪心 first-fit）产出。
-> 贪心在多行争抢同一列时会丢掉本可命中的边，而 `event_ordering` 的通过条件是「全对齐」，
-> 故 EO 类被系统性低估。判分器已改为最大基数匹配（Kuhn 增广路），
-> 重跑 judge + report 后本节数字需上调，勿拿它当现役基线。
+报告：`eval/BEAM_official/results/100k/report.md`。
 
 | 类别 | 过线 |
 |------|------|
-| abstention | 23/40 |
-| contradiction_resolution | 32/40 |
+| abstention | 27/40 |
+| contradiction_resolution | 28/40 |
 | event_ordering | 1/40 |
-| information_extraction | 25/40 |
-| instruction_following | 31/40 |
-| knowledge_update | 21/40 |
-| multi_session_reasoning | 16/40 |
-| preference_following | 33/40 |
-| summarization | 15/40 |
+| information_extraction | 31/40 |
+| instruction_following | 24/40 |
+| knowledge_update | 25/40 |
+| multi_session_reasoning | 12/40 |
+| preference_following | 31/40 |
+| summarization | 1/40 |
 | temporal_reasoning | 29/40 |
-| **合计** | **226/400 = 56.5%** |
+| **合计** | **209/400 = 52.2%** |
+
+EO：严格 pass 1/40 · coverage 54.0% · Kendall τ-b 官方 0.087 · 部分对齐 0.729。
 
 ### 1.1 BEAM 500k（官方 500K）
 
@@ -108,17 +105,17 @@
 
 ### 1.6 LongMemEval-S 生产 Chat
 
-HTTP **500/500**，`<SILENCE>` **0**。
+报告：`eval/longmemeval/results/report_unified_500.txt`。HTTP **500/500**，`<SILENCE>` **0**。
 
 | 域 | 通过 |
 |----|------|
-| SSP | 27/30 (90.0%) |
-| SSU | 69/70 (98.6%) |
-| SSA | 54/56 (96.4%) |
+| SSP | 28/30 (93.3%) |
+| SSU | 70/70 (100.0%) |
+| SSA | 56/56 (100.0%) |
 | KU | 76/78 (97.4%) |
-| MS | 118/133 (88.7%) |
-| TR | 118/133 (88.7%) |
-| **合计** | **462/500 = 92.4%** |
+| MS | 129/133 (97.0%) |
+| TR | 116/133 (87.2%) |
+| **合计** | **475/500 = 95.0%** |
 
 ### 1.7 Agent 硬核套件（pass^k=1）
 

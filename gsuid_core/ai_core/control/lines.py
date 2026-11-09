@@ -50,25 +50,6 @@ DRIFT_REMINDER = (
 MENTIONED_USERS_PREFIX = "（系统提示：本句提到："
 MENTIONED_USERS_SUFFIX = "。问到别人时回答别人的情况；不知道就说不知道。）"
 
-# 预算超时。wall_clock_nudge_for 按是否还能出图选一句。
-WALL_CLOCK_CLOSE = (
-    "（系统提示：本轮处理耗时已超预算。不要再发起新的工具调用。"
-    "立即基于已有信息用角色口吻给出最终回复；一句能说清就直接答。"
-    "信息不全就如实说明现状，绝不编造。"
-    "禁止对用户念内部节点名或编排流程；禁止用多段标题/列表把长信息念成台词。"
-    "若仍在等待后台：只输出 <SILENCE>，禁止过程叙事与任务编号。）"
-)
-WALL_CLOCK_CLOSE_NO_RENDER = WALL_CLOCK_CLOSE
-WALL_CLOCK_PIPELINE = (
-    "（系统提示：本轮处理耗时已超预算。不要再开新的检索。"
-    "用已经拿到的内容给出最终回复；一句能说清就直接答。"
-    "已有多点材料时可以委派 render_agent 出图，也可以不出图。"
-    "不要把出图写成这一步的义务，出图前也不必只输出 <SILENCE>。"
-    "信息不全就如实说明，绝不编造。"
-    "禁止对用户念内部节点名或编排流程；禁止把长信息念成多段台词。"
-    "若仍在等待后台：只输出 <SILENCE>。）"
-)
-
 STATUS_INQUIRY_HINT = (
     "\n\n（进行中任务·用户在问进度：先 list_my_kanban_tasks / artifact_get_recent 查状态；"
     "再以「我」的口吻短句告知还在弄/弄好了/翻砸了。"

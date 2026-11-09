@@ -105,7 +105,6 @@ _HISTORY_TRIM_RATIO = 0.6
 from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
     _FAKE_DONE_RE,
     _FAKE_DONE_NUDGE,
-    _WALL_CLOCK_NUDGE,
     _RENDER_TOOL_NAMES,
     _THRASH_FUSE_NUDGE,
     _FAKE_DONE_CASUAL_RE,
@@ -158,7 +157,6 @@ _ = (
     _STRUCTURAL_ZERO_TOOL_NUDGE,
     _THRASH_FUSE_NUDGE,
     _THRASH_SAME_TOOL_LIMIT,
-    _WALL_CLOCK_NUDGE,
     _append_user_text,
     _capability_exclusive_tool_names,
     _claims_fake_done,

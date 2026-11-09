@@ -19,7 +19,6 @@ from pydantic_ai.settings import ModelSettings
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import (
-    wall_clock,
     output_gate,
     output_firewall,
 )
@@ -43,13 +42,10 @@ from gsuid_core.ai_core.agent_run.state import (
     _require_context,
 )
 from gsuid_core.ai_core.agent_run.support import (
-    _WALL_CLOCK_NUDGE,
     _RENDER_TOOL_NAMES,
     _THRASH_FUSE_NUDGE,
     _SCHED_MUTATE_TOOLS,
-    _WALL_CLOCK_PIPELINE,
     _INTERACTIVE_CREATE_BY,
-    _WALL_CLOCK_CLOSE_NO_RENDER,
     _claims_fake_done,
     record_output_block,
     turn_reply_metadata,
@@ -60,6 +56,7 @@ from gsuid_core.ai_core.agent_run.support import (
     absorb_run_image_delivered,
     usage_limit_return_payload,
     _claims_missing_offered_tool,
+    _claims_inflight_without_backend,
 )
 from gsuid_core.ai_core.control.directive import (
     Directive,
@@ -81,6 +78,7 @@ from gsuid_core.ai_core.control.corrections import (
     missing_offered_tool_directive,
     structural_zero_tool_directive,
     framework_idle_deliver_directive,
+    unbacked_inflight_promise_directive,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.speech_policy import (
@@ -134,6 +132,10 @@ def _satisfaction_facts(st: RunOnceState) -> tuple[str, ...]:
         facts.append("image_sent")
     if st.delegated_render:
         facts.append("render_delegated")
+    if st.pending_async_delivery:
+        facts.append("async_delegated")
+    if st.effectual_mutate:
+        facts.append("effectual_mutated")
     if st.has_status_tool_call:
         facts.append("status_tool_called")
     if st.tool_call_list:
@@ -158,6 +160,7 @@ def _absorb_attempt_facts(
     delegated_render: bool,
     image_sent: bool,
     pending_async: bool,
+    effectual_mutate: bool = False,
     has_status_tool: bool,
 ) -> None:
     """把纠正轮写在宿主上的结构事实并回父 st（纠正轮是一份新 RunOnceState）。"""
@@ -170,6 +173,8 @@ def _absorb_attempt_facts(
         st.image_sent_this_run = True
     if pending_async:
         st.pending_async_delivery = True
+    if effectual_mutate:
+        st.effectual_mutate = True
     if has_status_tool:
         st.has_status_tool_call = True
 
@@ -503,6 +508,7 @@ class SettlePhase(RunOnceHost):
             delegated_render=self._last_attempt_delegated_render,
             image_sent=self._last_attempt_image_sent,
             pending_async=self._last_attempt_pending_async,
+            effectual_mutate=self._last_attempt_effectual_mutate,
             has_status_tool=self._last_attempt_has_status_tool,
         )
         self._last_attempt_tool_calls = st.tool_call_list
@@ -527,6 +533,31 @@ class SettlePhase(RunOnceHost):
         self._run_sent_texts.add(body)
         if st.main_channel_sends == 0:
             st.main_channel_sends = 1
+
+    async def _run_inv3_correction(
+        self,
+        st: RunOnceState,
+        directive: Directive,
+        result_msg: str,
+        *,
+        scrub_replaced: bool = True,
+    ) -> str:
+        """标准 INV-3 纠正重跑：产出可交付新文本则替换、下发并剥旧答，否则保留原答。"""
+        logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
+        prior = result_msg.strip()
+        corrected = await self._try_correction_pass(
+            st,
+            (directive,),
+            suppress_intermediate_text=True,
+            return_mode="return",
+        )
+        next_msg = _corrected_or_original(corrected, original=result_msg, user_text=_turn_user_text(st))
+        if next_msg.strip() != prior:
+            await self._emit_unsent_reply(st, next_msg)
+            self._scrub_fake_done_history({prior} if (scrub_replaced and prior) else set())
+        else:
+            self._scrub_fake_done_history(set())
+        return next_msg
 
     def _record_prefix_break_probe(self, st: RunOnceState, new_msgs: List[ModelMessage]) -> None:
         """对比上一 run 发送快照与当前 history 头，记 prefix_break_reason。"""
@@ -598,9 +629,6 @@ class SettlePhase(RunOnceHost):
                 _new_msgs,
                 st.lean_user_message,
                 strip_hint_texts=(
-                    _WALL_CLOCK_NUDGE,
-                    _WALL_CLOCK_CLOSE_NO_RENDER,
-                    _WALL_CLOCK_PIPELINE,
                     _THRASH_FUSE_NUDGE,
                     *output_gate.GATE_NUDGE_MARKERS,
                     *_correction_nudge_markers(),
@@ -809,6 +837,26 @@ class SettlePhase(RunOnceHost):
                     result_msg = "<SILENCE>"
                 self._scrub_fake_done_history(_fabricated)
 
+            # 无后台任务的在途承诺：未派出异步子任务且未完成生效写入，却许诺正在弄/做好后通知。
+            elif (
+                result_msg
+                and not st.effectual_mutate
+                and not st.pending_async_delivery
+                and not st.delegated_render
+                and not st.image_sent_this_run
+                and st.tool_names
+                and not st.fake_done_retry
+                and self.create_by in _INTERACTIVE_CREATE_BY
+                and self.create_by != "CapabilityAgent"
+                and _claims_inflight_without_backend(result_msg)
+            ):
+                _settle_correction_ran = True
+                result_msg = await self._run_inv3_correction(
+                    st,
+                    unbacked_inflight_promise_directive(tool_calls=len(st.tool_call_list)),
+                    result_msg,
+                )
+
             # 结构假完成：未读附件或可继承跟进 + 池非空 + 零调用。无正证据不开。
             elif (
                 result_msg
@@ -822,21 +870,11 @@ class SettlePhase(RunOnceHost):
                 and not is_silence_marker(result_msg.strip())
             ):
                 _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                corrected = await self._try_correction_pass(
+                result_msg = await self._run_inv3_correction(
                     st,
-                    (structural_zero_tool_directive(tool_pool_size=len(st.tool_names)),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
+                    structural_zero_tool_directive(tool_pool_size=len(st.tool_names)),
+                    result_msg,
                 )
-                # 自洽出口（INV-3）：纠正沉默 → 原答案生效；只有真产出才替换并剥旧答
-                _prior = result_msg.strip()
-                result_msg = _corrected_or_original(corrected, original=result_msg, user_text=_turn_user_text(st))
-                if result_msg.strip() != _prior:
-                    await self._emit_unsent_reply(st, result_msg)
-                    self._scrub_fake_done_history({_prior} if _prior else set())
-                else:
-                    self._scrub_fake_done_history(set())
 
             # 声称没有工具，但任务管理轮已装配对应工具
             elif (
@@ -850,20 +888,11 @@ class SettlePhase(RunOnceHost):
                 and not (_SCHED_MUTATE_TOOLS.intersection(st.tool_call_list))
             ):
                 _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                corrected = await self._try_correction_pass(
+                result_msg = await self._run_inv3_correction(
                     st,
-                    (missing_offered_tool_directive(tool_pool_size=len(st.tool_names)),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
+                    missing_offered_tool_directive(tool_pool_size=len(st.tool_names)),
+                    result_msg,
                 )
-                _prior = result_msg.strip()
-                result_msg = _corrected_or_original(corrected, original=result_msg, user_text=_turn_user_text(st))
-                if result_msg.strip() != _prior:
-                    await self._emit_unsent_reply(st, result_msg)
-                    self._scrub_fake_done_history({_prior} if _prior else set())
-                else:
-                    self._scrub_fake_done_history(set())
 
             # 被直接呼叫却整段沉默（含无可见文本出站；引用/寻址门仍允许沉默）
             elif (
@@ -878,18 +907,12 @@ class SettlePhase(RunOnceHost):
                 and not st.tg.address_gated
             ):
                 _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                _prior = result_msg.strip()
-                _sc = await self._try_correction_pass(
+                result_msg = await self._run_inv3_correction(
                     st,
-                    (addressed_silence_directive(),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
+                    addressed_silence_directive(),
+                    result_msg,
+                    scrub_replaced=False,
                 )
-                result_msg = _corrected_or_original(_sc, original=result_msg, user_text=_turn_user_text(st))
-                if result_msg.strip() != _prior:
-                    await self._emit_unsent_reply(st, result_msg)
-                self._scrub_fake_done_history(set())
 
             # 进度追问却零工具：纠正重跑去查 kanban/artifact
             elif (
@@ -902,18 +925,12 @@ class SettlePhase(RunOnceHost):
                 and self.create_by in ("Chat", "Agent")
             ):
                 _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                _prior = result_msg.strip()
-                _sc = await self._try_correction_pass(
+                result_msg = await self._run_inv3_correction(
                     st,
-                    (status_zero_tool_directive(),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
+                    status_zero_tool_directive(),
+                    result_msg,
+                    scrub_replaced=False,
                 )
-                result_msg = _corrected_or_original(_sc, original=result_msg, user_text=_turn_user_text(st))
-                if result_msg.strip() != _prior:
-                    await self._emit_unsent_reply(st, result_msg)
-                self._scrub_fake_done_history(set())
 
             # 交付回灌的进度句或大报表：补一次出图/发图。短事实直接交付用户。
             elif (
@@ -1000,23 +1017,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = "<SILENCE>"
                 if title_mentioned(_forbid_title(st, self.persona_name), result_msg):
                     result_msg = "<SILENCE>"
-                if (
-                    result_msg.strip()
-                    and not is_silence_marker(result_msg.strip())
-                    and result_msg.strip() not in self._run_sent_texts
-                    and st.bot is not None
-                    and st.return_mode in ("always", "by_bot")
-                ):
-                    _send_at = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
-                    await send_chat_result(
-                        st.bot,
-                        result_msg,
-                        ev=st.ev,
-                        at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
-                        extra_metadata=turn_reply_metadata(st.ev),
-                    )
-                    absorb_run_image_delivered(st)
-                    self._run_sent_texts.add(result_msg.strip())
+                await self._emit_unsent_reply(st, result_msg)
 
             elif (
                 not st.fake_done_retry
@@ -1043,23 +1044,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = _tc.strip()
                 else:
                     result_msg = "<SILENCE>"
-                if (
-                    result_msg.strip()
-                    and not is_silence_marker(result_msg.strip())
-                    and result_msg.strip() not in self._run_sent_texts
-                    and st.bot is not None
-                    and st.return_mode in ("always", "by_bot")
-                ):
-                    _send_at = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
-                    await send_chat_result(
-                        st.bot,
-                        result_msg,
-                        ev=st.ev,
-                        at_user_id=str(_send_at) if isinstance(_send_at, str) and _send_at else None,
-                        extra_metadata=turn_reply_metadata(st.ev),
-                    )
-                    absorb_run_image_delivered(st)
-                    self._run_sent_texts.add(result_msg.strip())
+                await self._emit_unsent_reply(st, result_msg)
 
             _voice_reason = _voice_block_reason(st, result_msg)
             if (
@@ -1083,23 +1068,11 @@ class SettlePhase(RunOnceHost):
                     suppress_intermediate_text=True,
                     return_mode="return",
                 )
-                # 纠正轮的工具事实已由 _try_correction_pass 就地并回父级并指回。
                 _disputed = len(self._run_disputes) > _disputes_before
                 if _disputed:
                     logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
                 result_msg = _voice_retry_text(_vc, disputed=_disputed, blocked=_blocked, user_text=_turn_user_text(st))
-                if (
-                    result_msg.strip()
-                    and not is_silence_marker(result_msg.strip())
-                    and result_msg.strip() not in self._run_sent_texts
-                    and st.bot is not None
-                    and st.return_mode in ("always", "by_bot")
-                ):
-                    await send_chat_result(st.bot, result_msg, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
-                    absorb_run_image_delivered(st)
-                    self._run_sent_texts.add(result_msg.strip())
-                    if st.main_channel_sends == 0:
-                        st.main_channel_sends = 1
+                await self._emit_unsent_reply(st, result_msg)
 
             # 申辩/义务未履行时，出口消毒不得再按报告体静默（否则暂扣原文永远发不出）
             _skip_report_exit = False
@@ -1715,6 +1688,7 @@ class SettlePhase(RunOnceHost):
         self._last_attempt_delegated_render = st.delegated_render
         self._last_attempt_image_sent = st.image_sent_this_run
         self._last_attempt_pending_async = st.pending_async_delivery
+        self._last_attempt_effectual_mutate = st.effectual_mutate
         self._last_attempt_has_status_tool = st.has_status_tool_call
         thinking_blob = "\n".join(s for s in st.thinking_segments if s)
         from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg
@@ -1728,9 +1702,6 @@ class SettlePhase(RunOnceHost):
         if st.user_turn_token is not None:
             reset_user_turn_id(st.user_turn_token)
             st.user_turn_token = None
-        # 同理还原墙钟时钟：嵌套 run 结束后父 run 必须拿回自己的累加器。
-        if st.wall_clock_token is not None:
-            wall_clock.uninstall_clock(st.wall_clock_token)
         # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享）， 防止内存中 key 无限累积。
         try:
             from gsuid_core.ai_core.buildin_tools.scheduler import (

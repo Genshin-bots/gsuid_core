@@ -12,10 +12,14 @@ from gsuid_core.ai_core.utils import (
 )
 from gsuid_core.ai_core.tool_safety import format_tool_execute_error
 from gsuid_core.ai_core.persona.prompts import TOOL_ORCHESTRATION_CONSTRAINTS
+from gsuid_core.ai_core.agent_run.support import _claims_inflight_without_backend
 from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
+    RankedHit,
     common_keyword_stems,
+    build_find_tools_plan,
     covers_from_trigger_keywords,
 )
+from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import _registry_identity_names
 
 
 class SkillNotFoundError(Exception):
@@ -75,36 +79,18 @@ def test_duplicate_key_degeneration_is_deduped() -> None:
     assert parsed == {"skill_name": "stock-market-analyzer", "args": {}}
     assert fixed.args.count('"args"') == 1
 
-
-def test_clean_args_survive_roundtrip() -> None:
-    args = json.dumps({"image_id": "img_3306bb58", "question": "看图"}, ensure_ascii=False)
-    part = ToolCallPart(tool_name="read_image", args=args, tool_call_id="call_y")
-    result = _canonicalize_tool_call_args_in_parts([part])
-    fixed = result[0]
-    assert isinstance(fixed, ToolCallPart)
-    assert isinstance(fixed.args, str)
-    assert json.loads(fixed.args) == {"image_id": "img_3306bb58", "question": "看图"}
-
-
-def test_unicode_not_escaped() -> None:
-    part = ToolCallPart(tool_name="t", args='{"q":"鸣潮角色"}', tool_call_id="c")
-    result = _canonicalize_tool_call_args_in_parts([part])
-    fixed = result[0]
-    assert isinstance(fixed, ToolCallPart)
-    assert isinstance(fixed.args, str)
-    assert "鸣潮角色" in fixed.args
-
-
-def test_dict_args_and_empty_args_untouched() -> None:
+    # clean args, unicode, and dict/empty args roundtrip
+    args = json.dumps({"image_id": "img_3306bb58", "question": "鸣潮角色"}, ensure_ascii=False)
+    p_clean = ToolCallPart(tool_name="read_image", args=args, tool_call_id="call_y")
     p_dict = ToolCallPart(tool_name="t", args={"a": 1}, tool_call_id="c1")
     p_empty = ToolCallPart(tool_name="t", args="", tool_call_id="c2")
-    result = _canonicalize_tool_call_args_in_parts([p_dict, p_empty])
-    r_dict = result[0]
-    r_empty = result[1]
-    assert isinstance(r_dict, ToolCallPart)
-    assert isinstance(r_empty, ToolCallPart)
-    assert r_dict.args == {"a": 1}
-    assert r_empty.args == ""
+    res2 = _canonicalize_tool_call_args_in_parts([p_clean, p_dict, p_empty])
+    f_clean, r_dict, r_empty = res2[0], res2[1], res2[2]
+    assert isinstance(f_clean, ToolCallPart) and isinstance(f_clean.args, str)
+    assert "鸣潮角色" in f_clean.args
+    assert json.loads(f_clean.args) == {"image_id": "img_3306bb58", "question": "鸣潮角色"}
+    assert isinstance(r_dict, ToolCallPart) and r_dict.args == {"a": 1}
+    assert isinstance(r_empty, ToolCallPart) and r_empty.args == ""
 
 
 def test_provider_internals_never_reach_user() -> None:
@@ -117,3 +103,43 @@ def test_provider_internals_never_reach_user() -> None:
     assert "tool_call_id" not in friendly
     assert "400" not in friendly
     assert friendly
+
+
+def test_pinned_identity_tool_survives_dedicated_hits() -> None:
+    rows = [("resume_my_kanban_tree", "core"), ("send_init_command", "SayuStock")]
+    assert _registry_identity_names("resume_my_kanban_tree", rows) == ["resume_my_kanban_tree"]
+    assert _registry_identity_names("resume_my_kanban_tree 恢复被暂停的 Kanban 任务树", rows) == [
+        "resume_my_kanban_tree"
+    ]
+    plan = build_find_tools_plan(
+        dedicated_agents=[],
+        dedicated_tools=[RankedHit(name="send_init_command", label="模拟盘初始化")],
+        generic_agents=[],
+        generic_tools=[
+            RankedHit(name="resume_my_kanban_tree", label="恢复任务树"),
+            RankedHit(name="list_scheduled_tasks", label="列出提醒"),
+        ],
+        pinned_names=("resume_my_kanban_tree",),
+    )
+    loaded = plan.loadable_tool_names()
+    assert "send_init_command" in loaded
+    assert "resume_my_kanban_tree" in loaded
+    assert "list_scheduled_tasks" not in loaded
+
+
+def test_claims_inflight_without_backend() -> None:
+    for pos in (
+        "建盘和推送我都挂上去，落好之后跟你说一声",
+        "收盘后十五分钟内那份总结图和点名，还挂在半路，没落成。这一处我盯到收口，不糊过去",
+        "这一路我还在搭，没搭好之前不跟你打保票。搭成了先出一张给你看，再往下走",
+        "没停，是没接上。我去把这根线重新系回去，一会儿给你个准话。",
+        "改完这一轮就停手，正事下次再说。",
+    ):
+        assert _claims_inflight_without_backend(pos), f"漏检在途承诺: {pos}"
+    for neg in (
+        "盘建好了。默认模拟盘，百万起步。",
+        "树没停，下周一上午九点自己会醒。",
+        "你要等落好之后再跟我说一声吗？",
+        "今天风不小，出门多穿一件。",
+    ):
+        assert not _claims_inflight_without_backend(neg), f"误触良性文本: {neg}"

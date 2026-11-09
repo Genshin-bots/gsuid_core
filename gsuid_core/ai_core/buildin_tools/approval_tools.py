@@ -25,7 +25,6 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core import approval as approval_center
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.wall_clock import pause_wall_clock
 from gsuid_core.ai_core.approval.halt import APPROVAL_HALT_MARK, halt_line
 from gsuid_core.ai_core.approval.models import AIApprovalRequest
 from gsuid_core.ai_core.approval.session_ctx import session_has_pending, current_caller_session_id
@@ -223,8 +222,7 @@ async def ask_user(
     # 会话级串行：receive_resp 的等待器是单槽位,并发会互相覆盖(答案错配/超时)
     lock = _ASK_USER_LOCKS.setdefault(_ask_user_lock_key(ev), asyncio.Lock())
     try:
-        # 排队 + 等人的时长不计入 C-4 墙钟软预算：用户思考慢不该把 Agent 逼进收敛
-        async with pause_wall_clock(), lock:
+        async with lock:
             if opts:
                 resp = await bot.receive_resp(question, option_list=opts[:5], timeout=timeout)
             else:
@@ -304,8 +302,7 @@ async def ask_user_form(
 
     # 与 ask_user 共用会话级串行锁：任一时刻同会话只有一套提问在收集
     lock = _ASK_USER_LOCKS.setdefault(_ask_user_lock_key(ev), asyncio.Lock())
-    # 收表单全程(排队 + 等人作答)不计入 C-4 墙钟软预算
-    async with pause_wall_clock(), lock:
+    async with lock:
         # 1) 同时呈现全部问题(send_option 只发按钮不等待)
         for i, q in enumerate(parsed):
             await bot.send_option(f"{i + 1}. {q['question']}", option_list=q["options"])

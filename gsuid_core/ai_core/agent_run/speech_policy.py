@@ -18,10 +18,7 @@ from gsuid_core.ai_core.utils import is_silence_marker
 from gsuid_core.ai_core.content_guard import is_observation_untrusted
 from gsuid_core.ai_core.control.lines import (
     MSG_SECTION_MARK,
-    WALL_CLOCK_CLOSE as _WALL_CLOCK_CLOSE,
     STATUS_INQUIRY_HINT as STATUS_INQUIRY_HINT,
-    WALL_CLOCK_PIPELINE as _WALL_CLOCK_PIPELINE,
-    WALL_CLOCK_CLOSE_NO_RENDER as _WALL_CLOCK_CLOSE_NO_RENDER,
 )
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     is_timeless_aggregate as _is_timeless_aggregate,
@@ -543,14 +540,6 @@ def resolve_speech_policy(
     if is_status_inquiry and has_active_task:
         return "status_ok"
     return "free"
-
-
-def wall_clock_nudge_for(*, need_render_pipeline: bool, allow_render: bool = True) -> str:
-    if need_render_pipeline and allow_render:
-        return _WALL_CLOCK_PIPELINE
-    if allow_render:
-        return _WALL_CLOCK_CLOSE
-    return _WALL_CLOCK_CLOSE_NO_RENDER
 
 
 def non_master_title(user_id: str, persona_name: str | None) -> str:

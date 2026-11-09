@@ -11,10 +11,7 @@ from pydantic_ai.usage import UsageLimits
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core import (
-    wall_clock,
-    interaction_scaffold,
-)
+from gsuid_core.ai_core import interaction_scaffold
 from gsuid_core.ai_core.const import (
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
@@ -121,9 +118,9 @@ class PreparePhase(RunOnceHost):
         self._last_attempt_delegated_render = False
         self._last_attempt_image_sent = False
         self._last_attempt_pending_async = False
+        self._last_attempt_effectual_mutate = False
         self._last_attempt_has_status_tool = False
         self._last_attempt_thinking = ""
-        st.wall_nudged = False  # C-4 墙钟软预算：每 run 至多注入一次收敛提示
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         st.ooc_blocked = []
         # 输出闸门：待注入 REWRITE feedback（同 response 可多段合并）；熔断后本轮静默
@@ -164,9 +161,6 @@ class PreparePhase(RunOnceHost):
 
         # 记录开始时间用于延迟统计
         st.start_time = time.time()
-        # C-4 墙钟时钟：ask_user 等"挂起等人"的时段记进 excluded，判定预算时扣除。
-        # token 在 finally 还原，否则嵌套 run（图片理解/subagent）会顶掉本 run 的时钟。
-        st.wall_acc, st.wall_clock_token = wall_clock.install_clock()
 
         logger.info(i18n_t("log.agent.run_start_started"))
         # st.turn_id：本轮 Agent Run 的唯一标识（= agent_run_id），写入 ToolContext.extra
@@ -206,12 +200,21 @@ class PreparePhase(RunOnceHost):
             "parent_create_by": self.create_by,
             MODEL_DECLARES_VIDEO_KEY: self._model_declares_video(),
         }
+        # 记录原始用户问题，供话术策略与后续总结共用
+        st.last_user_question = ""
+        if isinstance(st.user_message, str):
+            st.last_user_question = st.user_message.strip()
+        elif isinstance(st.user_message, Sequence):
+            st.last_user_question = "\n".join(item for item in st.user_message if isinstance(item, str)).strip()
         if st.ev is not None and not (st.ev.image_id_list or st.ev.image_id):
-            from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
+            if "待读图片ID:" in st.last_user_question:
+                st.run_extra["pending_unread_images"] = True
+            else:
+                from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
 
-            _pending = extract_pending_unread_images(st.ev, self.read_image_ids)
-            if _pending:
-                st.run_extra["pending_unread_images"] = _pending
+                _pending = extract_pending_unread_images(st.ev, self.read_image_ids)
+                if _pending:
+                    st.run_extra["pending_unread_images"] = _pending
         if self.persona_name:
             st.run_extra["persona_name"] = self.persona_name
         if st.user_turn_id:
@@ -228,9 +231,7 @@ class PreparePhase(RunOnceHost):
         if st.fw_msg and st.ev is not None and st.ev.user_id:
             st.run_extra["at_user_id"] = str(st.ev.user_id)
         # 话术策略：框架轮 / 进度追问 / 普通（详见 speech_policy）
-        _probe_for_policy = ""
-        if isinstance(st.user_message, str):
-            _probe_for_policy = st.user_message
+        _probe_for_policy = st.user_message if isinstance(st.user_message, str) else st.last_user_question
         st.status_inquiry = (not st.fw_msg) and looks_like_status_inquiry(
             _probe_for_policy,
             has_active_task=st.has_active_task,
@@ -242,6 +243,7 @@ class PreparePhase(RunOnceHost):
             has_active_task=st.has_active_task,
             user_text=_probe_for_policy,
         )
+        st.run_extra["speech_policy"] = st.speech_policy
         # 只锁框架回灌。真人消息里出现这四个字不算交付轮。
         if st.speech_policy == "framework_deliver" or (st.fw_msg and "交付回灌" in _probe_for_policy):
             from gsuid_core.ai_core.outbound import remember_outbound_topic
@@ -266,13 +268,6 @@ class PreparePhase(RunOnceHost):
 
     async def _run_once_prepare_user_message(self, st: RunOnceState) -> None:
         """用户消息外壳 / RAG / DS / 无工具提醒 / 脚手架 hints / session log。"""
-        # 记录原始用户问题，供后续强制总结使用
-        st.last_user_question = ""
-        if isinstance(st.user_message, str):
-            st.last_user_question = st.user_message.strip()
-        elif isinstance(st.user_message, Sequence):
-            # 从 Sequence[UserContent] 中提取纯文本
-            st.last_user_question = "\n".join(item for item in st.user_message if isinstance(item, str)).strip()
         from gsuid_core.ai_core.utils import mention_names_in_text
 
         st.run_extra["mention_names"] = mention_names_in_text(st.last_user_question)
@@ -409,26 +404,9 @@ class PreparePhase(RunOnceHost):
                 st.final_user_message = _append_user_text(st.final_user_message, UNMET_TOOL_REMINDER)
                 logger.debug(i18n_t("log.agent.forced_nudge_consecutive_turns"))
 
-        # 用户追问进行中任务：再判一次（用 last_user_question 剥壳后）并注入进度契约
-        if not st.fw_msg and not st.status_inquiry:
-            st.status_inquiry = looks_like_status_inquiry(
-                st.last_user_question,
-                has_active_task=st.has_active_task,
-            )
-            if st.status_inquiry and st.has_active_task:
-                st.speech_policy = resolve_speech_policy(
-                    is_framework=False,
-                    fake_done_retry=st.fake_done_retry,
-                    is_status_inquiry=True,
-                    has_active_task=True,
-                    user_text=st.last_user_question,
-                )
         if st.status_inquiry and st.has_active_task and self.create_by in ("Chat", "Agent"):
             st.final_user_message = _append_user_text(st.final_user_message, _STATUS_INQUIRY_HINT)
             logger.debug(i18n_t("log.agent.scaffold_ellipsis_style_follow_inject"))
-        if not st.fw_msg and st.has_active_task:
-            st.in_flight_short = spoken_user_body_len(st.last_user_question) <= 48
-        st.run_extra["speech_policy"] = st.speech_policy
 
         # 先钉一次：本轮 lean 必须带 marker，否则 _relean 会从持久 history 剥掉。
         self._inject_deepseek_rp_marker(st)

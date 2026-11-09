@@ -37,13 +37,14 @@ FIND_TOOLS_LOADED_KEY = "find_tools_last_loaded"
 
 
 def _registry_identity_names(need: str, rows: Sequence[tuple[str, str]]) -> list[str]:
-    """need 是工具名、插件名，或同一插件下的工具名前缀时，返回这些工具名。
-
-    含空白的句子不是标识符。短前缀打到多个插件时不挂。
-    """
+    """need 是工具名、插件名、前缀，或首词/子串含完整工具名时，返回这些工具名。"""
     needle = need.strip()
-    if not needle or any(ch.isspace() for ch in needle):
+    if not needle:
         return []
+    if any(ch.isspace() for ch in needle):
+        low = needle.lower()
+        tokens = [tok.strip("`'\"()[]{}，。：；、") for tok in low.split() if tok]
+        return [name for name, _plugin in rows if "_" in name and (name.lower() in tokens or name.lower() in low)]
     if any(name == needle for name, _plugin in rows):
         return [needle]
     plugin_hits = [name for name, plugin in rows if plugin == needle]
@@ -540,7 +541,7 @@ async def find_tools(
                 score=score,
             )
             # 已在通道核但被 visible_when 藏住时，仍要写进回执；通用档会被专用项丢掉。
-            if tool.name == "read_video":
+            if tool.name == "read_video" or tool.name in identity_names:
                 dedicated_tools.append(hit)
                 continue
             if tier == "dedicated":
@@ -639,6 +640,7 @@ async def find_tools(
             dedicated_tools=dedicated_tools,
             generic_agents=generic_agents,
             generic_tools=generic_tools,
+            pinned_names=tuple(identity_names),
         )
         if plan.is_empty():
             _record_capability_gap(need)

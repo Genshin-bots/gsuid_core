@@ -33,6 +33,7 @@ _REASON_TEXT: dict[str, str] = {
     "ooc_recover": "出戏改口之后没有可发的话。",
     "framework_leak_stripped": "去掉框架泄漏之后没有可发的话。",
     "fake_done": "上一句声称做完，但没有成功的改动。",
+    "unbacked_inflight_promise": "上一句承诺后台在跑或做好通知，但后台没有任何在途任务。",
     "missing_offered_tool": "该用的工具一个都没调用。",
     "addressed_silence": "有人直接点名，回复却是沉默。",
     "cover_hit_zero_tool": "点到了能力，却没有调用对应工具。",

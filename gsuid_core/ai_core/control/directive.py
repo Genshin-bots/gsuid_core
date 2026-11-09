@@ -32,6 +32,8 @@ _SATISFACTION_FACTS = frozenset(
     {
         "image_sent",
         "render_delegated",
+        "async_delegated",
+        "effectual_mutated",
         "status_tool_called",
         "any_tool_called",
         "delegation_checked",

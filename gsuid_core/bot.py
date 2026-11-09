@@ -51,7 +51,6 @@ from gsuid_core.load_template import (
 from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.message_history import get_history_manager, node_items_to_history
 from gsuid_core.ai_core.outbound import get_outbound_image_label
-from gsuid_core.ai_core.wall_clock import pause_wall_clock
 from gsuid_core.utils.image.image_tools import normalize_image_for_history
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.command_aside.capture import capture_outbound
@@ -1167,10 +1166,8 @@ class Bot:
 
                 self.mutiply_event = asyncio.Event()
 
-            # 等人作答的时长不计入 AI 的墙钟软预算（不在 Agent run 内时是空操作）
-            async with pause_wall_clock():
-                while self.mutiply_resp == []:
-                    await asyncio.wait_for(self.mutiply_event.wait(), timeout)
+            while self.mutiply_resp == []:
+                await asyncio.wait_for(self.mutiply_event.wait(), timeout)
 
             self.mutiply_event = asyncio.Event()
             return self.mutiply_resp.pop(0)
@@ -1179,8 +1176,7 @@ class Bot:
             self.instances[self.session_id] = self
             self.event = asyncio.Event()
             try:
-                async with pause_wall_clock():
-                    result = await self.wait_for_key(timeout)
+                result = await self.wait_for_key(timeout)
             finally:
                 # 无论正常返回还是超时异常，都清理单轮交互引用
                 self.receive_tag = False

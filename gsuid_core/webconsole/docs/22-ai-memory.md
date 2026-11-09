@@ -1,67 +1,57 @@
 # 22. AI Memory API - /api/ai/memory
 
-> **schema_v2（2026-11-08 起）**：System-2 分层图、`AIMemCategory*` 与 `AIMemHierarchicalGraphMeta` 已删除。
-> 分类接口改为四大原语 + 故事线的虚拟投影，`/hiergraph/rebuild` 只做 FTS5 与 Qdrant 对账。
-> 现行架构以 [`docs/MEMORY_SYSTEM.md`](../../../docs/MEMORY_SYSTEM.md) 为准；本文下方旧 System-2 描述仅作历史参考。
+> **架构版本：schema_v2（2026-11-08 起）**
+> 记忆系统已升级为 **四表 + 偏好、两阶段摄入（WindowRouter + Algebra）、四态事实代数、五模态检索（`dual_route_retrieve`）**。
+> 旧 System-2 分层语义图、`AIMemCategory*` 与 `AIMemHierarchicalGraphMeta` 已物理移除；`/categories` 改为零 Token 虚拟分类投影，`/hiergraph/rebuild` 改为零 LLM 的 FTS5 与 Qdrant 向量补偿对账。
+> 完整内部架构详见 [`docs/MEMORY_SYSTEM.md`](../../../docs/MEMORY_SYSTEM.md)。
 
-提供 AI 记忆系统的管理接口，包括记忆检索、Episode/Entity/Edge 浏览、虚拟分类投影、故事线、配置与统计信息等。
+提供 AI 记忆系统的管理接口，包括五模态记忆检索、Episode/Entity/Edge/Thread/Preference 浏览与治理、虚拟分类投影、索引对账、配置与统计信息等。
 
 ## 系统概述
 
-记忆系统基于 **Mnemis 双路检索** 思想，采用 **向量数据库（Qdrant）+ 关系数据库（SQLAlchemy）** 双路存储架构：
+记忆系统采用 **关系数据库（SQLAlchemy + SQLite FTS5）+ 向量数据库（Qdrant）** 混合存储与 **五模态检索** 架构（SQL 是权威真值源，Qdrant 与 FTS5 是索引）：
 
-- **System-1**：向量相似度检索，快速召回语义相关的 Episode/Entity/Edge
-- **System-2**：分层语义图遍历，从顶层 Category 自顶向下导航，找到相关 Entity
+- **前置路由（`TurnRouter`）**：入站消息在 `CLASSIFY` 点位经一次无思考低档调用产出 `memory_intent`（`none` / `point_latest` / `version_diff` / `timeline_order` / `broad_summary`）。
+- **两阶段摄入（`IngestionWorker`）**：
+  - **Pass 1 `WindowRouter`**：按话题切分对话窗口，归入已有或新建的 `AIMemThread` 故事线，或标记为 `episode_only` / `open_lines`。
+  - **Pass 2 `Algebra`**：抽取实体、执行四态边代数操作（`ADD` / `MERGE` / `SUPERSEDE` / `CONTRADICT`）、写入 `USER_GLOBAL` 偏好规则，并将 `milestone` 边追加至故事线脊柱。
+- **五模态检索（`dual_route_retrieve`）**：结合 FTS5 词面召回、Qdrant 稠密向量检索与 Thread/Session 时间轴，按 `memory_intent` 执行针对性的边状态过滤、版本链展开、升序时间线或跨会话均衡节选。
 
-两条路径并行执行，合并去重后经 Reranker 重排序输出。
-
-### 核心数据模型
+### 核心数据模型（四表 + 偏好）
 
 | 模型 | 说明 | 存储层 |
 |------|------|--------|
-| **Episode** | 原始对话片段（Base Graph 第一层） | DB + Qdrant |
-| **Entity** | 提取的实体节点（Base Graph 第二层） | DB + Qdrant |
-| **Edge** | 实体间关系/事实（Base Graph 第三层） | DB + Qdrant |
-| **Category** | 分层语义图节点（Hierarchical Graph） | DB |
-| **CategoryEdge** | Category 间层次关联 | DB |
-| **Preference** | 程序性/偏好规则（纠正 Agent 未来行为，如"调 `generate_image` 用竖图"），**硬约束**工具调用 | DB（SQL-only，无向量） |
+| **Thread** (`AIMemThread`) | 故事线 / 专题（追加式里程碑脊柱，记录起止时间与里程碑数） | DB + Qdrant (`memory_threads`) |
+| **Episode** (`AIMemEpisode`) | 原始对话片段（关联 `session_id`、`turn_index`、`thread_id`） | DB + FTS5 (`aimemepisode_fts`) + Qdrant (`memory_episodes`) |
+| **Entity** (`AIMemEntity`) | 提取的实体节点（人物/事物，含 `name_dense` + `summary_dense` 双向量） | DB + Qdrant (`memory_entities`) |
+| **Edge** (`AIMemEdge`) | 四态事实边（`edge_kind`: `attribute`/`relation`/`milestone`；`resolution_state`: `active`/`staging`/`superseded`/`contradicted`） | DB + Qdrant (`memory_edges`) |
+| **Preference** (`AIMemPreference`) | 程序性/偏好规则（纠正 Agent 未来行为，如"调 `generate_image` 用竖图"），**硬约束**工具调用 | DB（SQL-only，无向量） |
 
-> **Preference 与上面 4 类的区别**：Episode/Entity/Edge/Category 是**陈述性记忆**（用户是谁、说过什么），并构成向量+图谱双路检索；**Preference 是程序性记忆**（该怎样为这个用户调工具/排版/选参数），SQL-only 扁平规则、不构成图谱、以**置顶强约束**注入。详见实现文档 [`docs/PROCEDURAL_PREFERENCE_AND_RFMEM_IMPLEMENTATION_20260614.md`](../../../docs/PROCEDURAL_PREFERENCE_AND_RFMEM_IMPLEMENTATION_20260614.md)。
+> **四态边状态说明**：
+> - `active`：当前有效事实（本人自述或无特定主语归属）。
+> - `staging`：转述、传闻或第三人称未证实信息（检索注入时标记 `[待证实传闻]`）。
+> - `superseded`：已被后续新事实替代的历史版本（记录 `invalid_at` 与 `superseded_by_id`，在 `version_diff` 模态下展开）。
+> - `contradicted`：存在未消解矛盾的事实（双边互相记录 `contradicts_edge_id`，注入时标记 `⚠️[存在未消解矛盾]`）。
 
 ### Scope Key 隔离体系
 
-所有记忆节点均携带 `scope_key` 字段实现群组间严格隔离：
+所有记忆节点均携带 `scope_key` 字段实现群组与用户间严格隔离：
 
 | Scope 类型 | 格式 | 说明 |
 |------------|------|------|
-| `group` | `group:789012` | 群组级记忆 |
-| `user_global` | `user_global:12345` | 用户跨群全局画像 |
+| `group` | `group:789012` | 群组级共享记忆 |
+| `user_global` | `user_global:12345` | 用户跨群全局画像与偏好规则主存储 |
 | `user_in_group` | `user_in_group:12345@789012` | 用户在特定群组内的局部档案 |
-
-### 记忆质量增强机制
-
-记忆系统在提取、写入、检索三个阶段引入了一组质量增强机制：
-
-| 机制 | 阶段 | 说明 |
-|------|------|------|
-| **信息完整性检查** | 提取 | 提取提示词要求每条事实必须是「带明确主语的完整句子」且「含结论/具体信息」，丢弃缺主语的短语（"建议关注X"）和只有行为无结论的流水账（"询问了X"） |
-| **事实主语补全** | 检索 | 格式化注入文本时，用边的 source 实体名称给历史数据中缺主语的事实补全主语（如"建议关注X"→"用户100000001建议关注X"） |
-| **别名识别与重定向** | 提取 + 写入 | 识别"X就是Y"等别名声明，把外号（如"大班尼特"="妮可"）的所有关系边重定向到正式实体，避免同一事物的记忆被分散 |
-| **群组画像** | 写入 | 自动维护每个群组的语境标签（主要话题）与词汇映射表（群内特有别名），存于通用持久状态存储 |
-| **别名展开检索** | 检索 | query 中出现群内别名时，自动附加正式名称以提升召回 |
-| **Token 预算格式化** | 检索 | 注入对话的记忆文本按"核心事实 55% / 语义类目 15% / 相关对话 30%"预算配分，保证高信息密度 |
-
-群组画像还会以【当前群聊语境】文本注入对话上下文，让 AI 直接知道某个词在本群指什么。详见 [`docs/AI_AGENT_CAPABILITY_UPGRADE.md`](../../../docs/AI_AGENT_CAPABILITY_UPGRADE.md)。
 
 ---
 
-## 22.1 记忆双路检索
+## 22.1 记忆检索
 
 ```
 POST /api/ai/memory/search
 ```
 
-并行执行 System-1（向量相似度）和 System-2（分层图遍历），合并去重后经 Reranker 重排序，返回最终的 MemoryContext。
+按 `memory_intent` 执行五模态记忆检索（FTS5 词面 + Qdrant 稠密向量 + 故事线时间轴），返回结构化 `MemoryContext` 与组装后的 `prompt_text`。
 
 **请求体**:
 ```json
@@ -70,19 +60,21 @@ POST /api/ai/memory/search
     "group_id": "789012",
     "user_id": "12345",
     "top_k": 10,
-    "enable_system2": true,
-    "enable_user_global": false
+    "enable_system2": false,
+    "enable_user_global": false,
+    "memory_intent": "point_latest"
 }
 ```
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `query` | string | 是 | - | 查询文本，1-2000 字符 |
-| `group_id` | string | 是 | - | 群组 ID |
-| `user_id` | string | 否 | null | 用户 ID，用于联合用户全局记忆 |
+| `group_id` | string | 否 | null | 群组 ID |
+| `user_id` | string | 是 | - | 用户 ID，用于定位用户记忆或联合跨群画像 |
 | `top_k` | int | 否 | 10 | 返回结果数量上限，1-50 |
-| `enable_system2` | bool | 否 | true | 是否启用 System-2 分层图遍历 |
+| `enable_system2` | bool | 否 | false | 兼容保留字段（schema_v2 已无分层图遍历） |
 | `enable_user_global` | bool | 否 | false | 是否联合查询用户跨群画像 |
+| `memory_intent` | string | 否 | `"point_latest"` | 检索模态：`none` / `point_latest` / `version_diff` / `timeline_order` / `broad_summary` |
 
 **响应**:
 ```json
@@ -94,7 +86,7 @@ POST /api/ai/memory/search
             {
                 "id": "uuid-string",
                 "content": "对话片段内容",
-                "valid_at": "2024-01-15 10:30:00",
+                "valid_at": "2026-11-08 10:30:00",
                 "score": 0.92
             }
         ],
@@ -110,8 +102,8 @@ POST /api/ai/memory/search
         "edges": [
             {
                 "id": "uuid-string",
-                "fact": "实体间关系描述",
-                "valid_at": "2024-01-15 10:30:00",
+                "fact": "实体间关系或属性描述",
+                "valid_at": "2026-11-08 10:30:00",
                 "score": 0.85
             }
         ],
@@ -126,16 +118,15 @@ POST /api/ai/memory/search
             }
         ],
         "retrieval_meta": {
-            "s1_episodes": 8,
-            "s2_episodes": 5,
+            "memory_intent": "point_latest",
             "scope_keys": ["group:789012"]
         },
-        "prompt_text": "【用户偏好/纠错 - 须严格遵守】\n• [do] 调用生成图片类工具时默认用竖图\n\n【已知事实】\n• 实体间关系描述\n\n【历史对话片段】\n[2024-01-15] 对话片段内容..."
+        "prompt_text": "<untrusted_content source=\"memory_recall\">...</untrusted_content>"
     }
 }
 ```
 
-> `preferences` 为**本次检索会命中并注入的程序性/偏好硬约束**（纠错规则与 `general` 通用规则永远注入，软偏好按本轮能力域过滤）。控制台据此排查"为什么 Agent 还调错工具"。规则治理见 [22.13–22.16](#2213-偏好规则列表)。该字段在 `enable_preference_memory` 关闭时为空数组。
+> `preferences` 为**本次检索命中并注入的程序性/偏好硬约束**。规则治理见 [22.13–22.16](#2213-偏好规则列表)。该字段在 `enable_preference_memory` 关闭时为空数组。
 
 ---
 
@@ -145,14 +136,14 @@ POST /api/ai/memory/search
 GET /api/ai/memory/episodes
 ```
 
-获取 Episode（对话片段）列表，支持按群组过滤和分页。设置 `all_scopes=true` 可返回所有范围的 Episode。
+获取 Episode（对话片段）列表，支持按群组或 `scope_key` 过滤和分页。设置 `all_scopes=true` 可返回所有范围的 Episode。
 
 **Query 参数**:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `group_id` | string | 否 | - | 群组 ID（优先级低于 scope_key） |
-| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 group_id） |
+| `group_id` | string | 否 | - | 群组 ID（优先级低于 `scope_key`） |
+| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 `group_id`） |
 | `all_scopes` | bool | 否 | false | 是否返回所有范围的 Episode |
 | `page` | int | 否 | 1 | 页码，从 1 开始 |
 | `page_size` | int | 否 | 20 | 每页数量 |
@@ -169,8 +160,8 @@ GET /api/ai/memory/episodes
                 "scope_key": "group:789012",
                 "content": "聚合后的对话文本",
                 "speaker_ids": ["user001", "user002"],
-                "valid_at": "2024-01-15 10:30:00",
-                "created_at": "2024-01-15 10:30:00",
+                "valid_at": "2026-11-08 10:30:00",
+                "created_at": "2026-11-08 10:30:00",
                 "qdrant_id": "uuid-string"
             }
         ],
@@ -207,8 +198,8 @@ GET /api/ai/memory/episodes/{episode_id}
         "scope_key": "group:789012",
         "content": "聚合后的对话文本",
         "speaker_ids": ["user001", "user002"],
-        "valid_at": "2024-01-15 10:30:00",
-        "created_at": "2024-01-15 10:30:00",
+        "valid_at": "2026-11-08 10:30:00",
+        "created_at": "2026-11-08 10:30:00",
         "qdrant_id": "uuid-string",
         "mentioned_entities": [
             {
@@ -231,7 +222,7 @@ GET /api/ai/memory/episodes/{episode_id}
 DELETE /api/ai/memory/episodes/{episode_id}
 ```
 
-删除单个 Episode，同时删除数据库记录和 Qdrant 中的向量。
+删除单个 Episode，同时删除数据库记录和 Qdrant `memory_episodes` 集合中的向量。
 
 **路径参数**:
 
@@ -263,7 +254,7 @@ GET /api/ai/memory/entities
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `group_id` | string | 否 | - | 群组 ID |
-| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 group_id） |
+| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 `group_id`） |
 | `all_scopes` | bool | 否 | false | 是否返回所有范围的 Entity |
 | `is_speaker` | bool | 否 | - | 是否为说话者 |
 | `search` | string | 否 | - | 名称搜索关键词 |
@@ -285,8 +276,8 @@ GET /api/ai/memory/entities
                 "tag": ["标签1", "标签2"],
                 "is_speaker": false,
                 "user_id": null,
-                "created_at": "2024-01-15 10:30:00",
-                "updated_at": "2024-01-15 12:00:00"
+                "created_at": "2026-11-08 10:30:00",
+                "updated_at": "2026-11-08 12:00:00"
             }
         ],
         "total": 80,
@@ -304,7 +295,7 @@ GET /api/ai/memory/entities
 GET /api/ai/memory/entities/{entity_id}
 ```
 
-获取单个 Entity 详情，包含关联的 Episode 和 Edge 信息。
+获取单个 Entity 详情，包含关联的 Episode 和出入向 Edge 信息（各最多 20 条）。
 
 **路径参数**:
 
@@ -325,14 +316,14 @@ GET /api/ai/memory/entities/{entity_id}
         "tag": ["标签1", "标签2"],
         "is_speaker": false,
         "user_id": null,
-        "created_at": "2024-01-15 10:30:00",
-        "updated_at": "2024-01-15 12:00:00",
+        "created_at": "2026-11-08 10:30:00",
+        "updated_at": "2026-11-08 12:00:00",
         "qdrant_id": "uuid-string",
         "episodes": [
             {
                 "id": "uuid-string",
                 "content": "对话片段内容（前200字）...",
-                "valid_at": "2024-01-15 10:30:00"
+                "valid_at": "2026-11-08 10:30:00"
             }
         ],
         "edges": [
@@ -340,14 +331,14 @@ GET /api/ai/memory/entities/{entity_id}
                 "id": "uuid-string",
                 "fact": "关系描述",
                 "target_entity_id": "uuid-string",
-                "valid_at": "2024-01-15 10:30:00",
+                "valid_at": "2026-11-08 10:30:00",
                 "direction": "outgoing"
             },
             {
                 "id": "uuid-string",
                 "fact": "关系描述",
                 "source_entity_id": "uuid-string",
-                "valid_at": "2024-01-15 10:30:00",
+                "valid_at": "2026-11-08 10:30:00",
                 "direction": "incoming"
             }
         ]
@@ -363,7 +354,7 @@ GET /api/ai/memory/entities/{entity_id}
 DELETE /api/ai/memory/entities/{entity_id}
 ```
 
-删除单个 Entity，同时删除数据库记录和 Qdrant 中的向量。
+删除单个 Entity，同时删除数据库记录和 Qdrant `memory_entities` 集合中的向量。
 
 **路径参数**:
 
@@ -388,16 +379,17 @@ DELETE /api/ai/memory/entities/{entity_id}
 GET /api/ai/memory/edges
 ```
 
-获取 Edge（实体关系）列表，支持按群组、关联 Entity 过滤。设置 `all_scopes=true` 可返回所有范围的 Edge。
+获取 Edge（四态事实边）列表，支持按群组、关联 Entity 过滤。默认仅返回 `active` 与 `contradicted` 状态的当前边；设置 `include_history=true` 可包含 `staging`（待证实传闻）与 `superseded`（已替代历史版本）。
 
 **Query 参数**:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `group_id` | string | 否 | - | 群组 ID |
-| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 group_id） |
+| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 `group_id`） |
 | `all_scopes` | bool | 否 | false | 是否返回所有范围的 Edge |
 | `entity_id` | string | 否 | - | 关联的 Entity ID（返回该 Entity 的出边和入边） |
+| `include_history` | bool | 否 | false | 是否包含 `staging` 和 `superseded` 状态的边 |
 | `page` | int | 否 | 1 | 页码 |
 | `page_size` | int | 否 | 20 | 每页数量 |
 
@@ -414,9 +406,20 @@ GET /api/ai/memory/edges
                 "fact": "实体A喜欢实体B",
                 "source_entity_id": "uuid-string",
                 "target_entity_id": "uuid-string",
-                "valid_at": "2024-01-15 10:30:00",
+                "valid_at": "2026-11-08 10:30:00",
                 "invalid_at": null,
-                "created_at": "2024-01-15 10:30:00"
+                "created_at": "2026-11-08 10:30:00",
+                "edge_kind": "relation",
+                "slot_key": "like_target",
+                "resolution_state": "active",
+                "provenance_tier": "self",
+                "superseded_by_id": null,
+                "contradicts_edge_id": null,
+                "thread_id": null,
+                "event_at": "2026-11-08 10:30:00",
+                "mention_count": 2,
+                "decay_score": 1.0,
+                "last_accessed": null
             }
         ],
         "total": 50,
@@ -434,7 +437,7 @@ GET /api/ai/memory/edges
 GET /api/ai/memory/edges/{edge_id}
 ```
 
-获取单个 Edge 详情，包含源 Entity 和目标 Entity 信息。
+获取单个 Edge 详情，包含四态代数元数据以及源 Entity 和目标 Entity 信息。
 
 **路径参数**:
 
@@ -453,10 +456,20 @@ GET /api/ai/memory/edges/{edge_id}
         "fact": "实体A喜欢实体B",
         "source_entity_id": "uuid-string",
         "target_entity_id": "uuid-string",
-        "valid_at": "2024-01-15 10:30:00",
+        "valid_at": "2026-11-08 10:30:00",
         "invalid_at": null,
-        "created_at": "2024-01-15 10:30:00",
+        "created_at": "2026-11-08 10:30:00",
         "qdrant_id": "uuid-string",
+        "edge_kind": "relation",
+        "slot_key": "like_target",
+        "resolution_state": "active",
+        "provenance_tier": "self",
+        "superseded_by_id": null,
+        "contradicts_edge_id": null,
+        "thread_id": null,
+        "event_at": "2026-11-08 10:30:00",
+        "mention_count": 2,
+        "decay_score": 1.0,
         "source_entity": {
             "id": "uuid-string",
             "name": "实体A",
@@ -479,7 +492,7 @@ GET /api/ai/memory/edges/{edge_id}
 DELETE /api/ai/memory/edges/{edge_id}
 ```
 
-删除单个 Edge，同时删除数据库记录和 Qdrant 中的向量。
+删除单个 Edge，同时删除数据库记录和 Qdrant `memory_edges` 集合中的向量。
 
 **路径参数**:
 
@@ -498,22 +511,29 @@ DELETE /api/ai/memory/edges/{edge_id}
 
 ---
 
-## 22.11 Category 列表
+## 22.11 虚拟分类投影列表（Categories）
 
 ```
 GET /api/ai/memory/categories
 ```
 
-获取 Category（分层语义图节点）列表，支持按群组、层级过滤。设置 `all_scopes=true` 可返回所有范围的 Category。
+零 Token 虚拟分类投影（替代旧 `AIMemCategory` 表）：
+
+- **`layer=0`（故事线专题）**：投影 `AIMemThread` 表，节点 ID 形如 `virt:thread:{thread_id}`，`member_entities_count` 对应故事线的 `milestone_count`。
+- **`layer=1`（四大原语）**：实时 SQL 聚合投影 `AIMemEdge` 表：
+  - `virt:L1:attribute`：人物与实体属性（`edge_kind == "attribute"` 且 `active`）
+  - `virt:L1:relation`：跨实体关系网（`edge_kind == "relation"` 且 `active`）
+  - `virt:L1:milestone`：关键事件里程碑（`edge_kind == "milestone"` 且 `active`）
+  - `virt:L1:conflict`：待核实传闻与冲突（`resolution_state in ("contradicted", "staging")`）
 
 **Query 参数**:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `group_id` | string | 否 | - | 群组 ID |
-| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 group_id） |
-| `all_scopes` | bool | 否 | false | 是否返回所有范围的 Category |
-| `layer` | int | 否 | - | 层级编号（1=最具体，越大越抽象） |
+| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 `group_id`） |
+| `all_scopes` | bool | 否 | false | 是否返回所有范围的投影 |
+| `layer` | int | 否 | - | 层级过滤：`0` = 故事线，`1` = 四大原语，不传则合并返回 |
 | `page` | int | 否 | 1 | 页码 |
 | `page_size` | int | 否 | 20 | 每页数量 |
 
@@ -525,20 +545,33 @@ GET /api/ai/memory/categories
     "data": {
         "items": [
             {
-                "id": "uuid-string",
+                "id": "virt:thread:uuid-string",
                 "scope_key": "group:789012",
-                "name": "分类名称",
-                "summary": "分类摘要",
-                "tag": ["标签1"],
+                "name": "模拟盘交易计划",
+                "summary": "讨论模拟盘建仓与每日收盘总结安排",
+                "tag": ["thread", "active"],
+                "layer": 0,
+                "parent_id": null,
+                "child_categories_count": 0,
+                "member_entities_count": 4,
+                "created_at": "2026-11-08 10:00:00",
+                "updated_at": "2026-11-08 12:00:00"
+            },
+            {
+                "id": "virt:L1:attribute",
+                "scope_key": "group:789012",
+                "name": "人物与实体属性",
+                "summary": "实时 SQL 投影，共 42 条",
+                "tag": ["virtual", "attribute"],
                 "layer": 1,
                 "parent_id": null,
-                "child_categories_count": 3,
-                "member_entities_count": 8,
-                "created_at": "2024-01-15 10:30:00",
-                "updated_at": "2024-01-15 12:00:00"
+                "child_categories_count": 0,
+                "member_entities_count": 42,
+                "created_at": null,
+                "updated_at": null
             }
         ],
-        "total": 25,
+        "total": 5,
         "page": 1,
         "page_size": 20
     }
@@ -547,19 +580,23 @@ GET /api/ai/memory/categories
 
 ---
 
-## 22.12 Category 详情
+## 22.12 虚拟分类详情
 
 ```
 GET /api/ai/memory/categories/{category_id}
 ```
 
-获取单个 Category 详情，包含子 Category 列表和成员 Entity 列表。
+下钻查看虚拟分类详情：
+- `virt:thread:{thread_id}`：返回该故事线的里程碑边（`edges`）、关联实体（`member_entities`）与源对话片段（`episodes`）。
+- `virt:L1:{kind}`：返回对应原语下的边（最多 200 条）与涉及的实体列表。
 
-**路径参数**:
+**路径与 Query 参数**:
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `category_id` | string | Category ID |
+| 参数 | 位置 | 类型 | 说明 |
+|------|------|------|------|
+| `category_id` | path | string | 虚拟分类 ID（`virt:thread:...` 或 `virt:L1:...`） |
+| `scope_key` | query | string | 可选 Scope Key（用于 `virt:L1:*` 过滤范围） |
+| `group_id` | query | string | 可选群组 ID（优先级低于 `scope_key`） |
 
 **响应**:
 ```json
@@ -567,29 +604,17 @@ GET /api/ai/memory/categories/{category_id}
     "status": 0,
     "msg": "ok",
     "data": {
-        "id": "uuid-string",
+        "id": "virt:L1:attribute",
         "scope_key": "group:789012",
-        "name": "分类名称",
-        "summary": "分类摘要",
-        "tag": ["标签1"],
-        "layer": 2,
-        "parent_id": "parent-uuid-string",
-        "created_at": "2024-01-15 10:30:00",
-        "updated_at": "2024-01-15 12:00:00",
-        "parent_categories": [
-            {
-                "id": "uuid-string",
-                "name": "父分类名称",
-                "layer": 3
-            }
-        ],
-        "child_categories": [
-            {
-                "id": "uuid-string",
-                "name": "子分类名称",
-                "layer": 1
-            }
-        ],
+        "name": "人物与实体属性",
+        "summary": "实时 SQL 投影，共 42 条",
+        "tag": ["virtual", "attribute"],
+        "layer": 1,
+        "parent_id": null,
+        "created_at": null,
+        "updated_at": null,
+        "parent_categories": [],
+        "child_categories": [],
         "member_entities": [
             {
                 "id": "uuid-string",
@@ -597,7 +622,16 @@ GET /api/ai/memory/categories/{category_id}
                 "summary": "实体摘要",
                 "is_speaker": false
             }
-        ]
+        ],
+        "edges": [
+            {
+                "id": "uuid-string",
+                "fact": "属性事实描述",
+                "resolution_state": "active",
+                "valid_at": "2026-11-08 10:30:00"
+            }
+        ],
+        "episodes": []
     }
 }
 ```
@@ -610,21 +644,22 @@ GET /api/ai/memory/categories/{category_id}
 GET /api/ai/memory/preferences
 ```
 
-获取程序性/偏好规则列表，支持多维过滤与分页。排序：**纠错优先 → 高频强化 → 最近更新**。
+获取程序性/偏好规则列表，支持多维过滤、关键词搜索与分页。排序：**纠错优先 → 高频强化 → 最近更新**。
 
-> 偏好规则会以**置顶强约束**注入对话、**硬约束**工具调用。误抽的规则会持续误导 Agent，故人工治理（核对/编辑/停用/删除）比 Episode 更关键。偏好为 **SQL-only（无向量）**，所有治理操作只动数据库。
+> 偏好规则以**置顶强约束**注入对话、**硬约束**工具调用。偏好为 **SQL-only（无向量）**，主存 `user_global:{uid}`。
 
 **Query 参数**:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `scope_key` | string | 否 | - | 完整 Scope Key（偏好主存 `user_global:{uid}`，跨群随用户） |
-| `user_id` | string | 否 | - | 用户 ID；仅传 `user_id` 时自动按 `user_global:{user_id}` 推导 scope_key |
+| `scope_key` | string | 否 | - | 完整 Scope Key（若传入无冒号字符串，会同时匹配 `user_global:{val}` 与 `user_id`） |
+| `user_id` | string | 否 | - | 用户 ID；仅传 `user_id` 时自动按 `user_global:{user_id}` 推导 |
 | `target_context` | string | 否 | - | 绑定上下文：能力域/工具名，或 `general`（跨能力通用约定，永远注入） |
-| `is_correction` | bool | 否 | - | 是否为纠错规则（纠错类受保护、衰减更慢） |
+| `is_correction` | bool | 否 | - | 是否为纠错规则 |
 | `polarity` | string | 否 | - | 极性：`do`（应当） / `dont`（禁止） |
 | `is_active` | bool | 否 | - | 是否启用（软停用规则 `is_active=false`，保留审计） |
-| `all_scopes` | bool | 否 | false | 是否返回所有范围（忽略 scope_key/user_id 推导） |
+| `keyword` | string | 否 | - | 模糊匹配 `preference_rule` / `target_context` / `user_id` / `scope_key` |
+| `all_scopes` | bool | 否 | false | 是否返回所有范围 |
 | `page` | int | 否 | 1 | 页码 |
 | `page_size` | int | 否 | 20 | 每页数量 |
 
@@ -646,9 +681,9 @@ GET /api/ai/memory/preferences
                 "is_active": true,
                 "mention_count": 2,
                 "source_episode_id": "uuid-string",
-                "created_at": "2026-06-14 10:30:00",
-                "updated_at": "2026-06-14 12:00:00",
-                "last_applied_at": "2026-06-14 12:30:00"
+                "created_at": "2026-11-08 10:30:00",
+                "updated_at": "2026-11-08 12:00:00",
+                "last_applied_at": "2026-11-08 12:30:00"
             }
         ],
         "total": 7,
@@ -658,15 +693,6 @@ GET /api/ai/memory/preferences
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `target_context` | 规则适用范围：具体能力域/工具名，或 `general`（风格/时区/单位/语言等横切约定，对所有相关请求生效） |
-| `polarity` | `do` = 应当这样做；`dont` = 禁止这样做 |
-| `is_correction` | 是否由用户纠正意图触发（纠错规则注入优先级最高、生命周期受保护） |
-| `mention_count` | 同一规则被重复强化的次数（越高越稳定） |
-| `source_episode_id` | 溯源：蒸馏出该规则的 Episode ID |
-| `last_applied_at` | 最近一次被检索命中并注入的时间（命中后台异步刷新） |
-
 ---
 
 ## 22.14 偏好规则详情
@@ -675,36 +701,7 @@ GET /api/ai/memory/preferences
 GET /api/ai/memory/preferences/{pref_id}
 ```
 
-获取单条偏好规则详情（字段同列表项，含溯源 `source_episode_id`、强化计数 `mention_count`、最近应用时间 `last_applied_at`）。
-
-**路径参数**:
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `pref_id` | string | 偏好规则 ID |
-
-**响应**:
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": {
-        "id": "uuid-string",
-        "scope_key": "user_global:12345",
-        "user_id": "12345",
-        "target_context": "generate_image",
-        "preference_rule": "调用 generate_image 时默认使用竖图（9:16）",
-        "polarity": "do",
-        "is_correction": true,
-        "is_active": true,
-        "mention_count": 1,
-        "source_episode_id": "uuid-string",
-        "created_at": "2026-06-14 10:30:00",
-        "updated_at": "2026-06-14 10:30:00",
-        "last_applied_at": null
-    }
-}
-```
+获取单条偏好规则详情（字段同列表项）。
 
 ---
 
@@ -714,13 +711,7 @@ GET /api/ai/memory/preferences/{pref_id}
 PATCH /api/ai/memory/preferences/{pref_id}
 ```
 
-人工纠偏：修改规则正文 / 极性 / 绑定上下文 / 启停。**停用为软停用（`is_active=false`）而非删除，保留审计。** 仅更新请求中提供的字段。
-
-**路径参数**:
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `pref_id` | string | 偏好规则 ID |
+人工纠偏：修改规则正文 / 极性 / 绑定上下文 / 启停。**停用为软停用（`is_active=false`）而非删除，保留审计。**
 
 **请求体**:
 ```json
@@ -732,17 +723,6 @@ PATCH /api/ai/memory/preferences/{pref_id}
 }
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `preference_rule` | string | 否 | 规则正文，1-2000 字符 |
-| `polarity` | string | 否 | 极性 `do` / `dont`（非 `dont` 一律归一为 `do`） |
-| `target_context` | string | 否 | 绑定上下文（≤128 字符；为空时归为 `general`） |
-| `is_active` | bool | 否 | 启用 / 软停用 |
-
-> 至少提供一个可修改字段；任一字段变更都会刷新 `updated_at`。
-
-**响应**: 返回更新后的完整偏好规则对象（结构同 §22.14 详情）。
-
 ---
 
 ## 22.16 删除偏好规则
@@ -751,43 +731,159 @@ PATCH /api/ai/memory/preferences/{pref_id}
 DELETE /api/ai/memory/preferences/{pref_id}
 ```
 
-删除单条误抽的偏好规则。偏好为 SQL-only，无向量需清理。
-
-> 提示：误抽规则可优先用 §22.15 软停用（`is_active=false`）保留审计；确认无用再删除。
-
-**路径参数**:
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `pref_id` | string | 偏好规则 ID |
-
-**响应**:
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": null
-}
-```
+删除单条误抽的偏好规则（SQL-only）。
 
 ---
 
-## 22.17 分层语义图状态
+## 22.17 故事线（Threads）浏览与详情
+
+### 22.17.1 故事线列表
 
 ```
-GET /api/ai/memory/hiergraph/status
+GET /api/ai/memory/threads
 ```
 
-获取分层语义图构建状态，包括最大层级、上次重建时间等。
+分页获取 `AIMemThread` 故事线列表，按 `last_at` 倒序排列。
 
 **Query 参数**:
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `group_id` | string | 否 | - | 群组 ID |
-| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 group_id） |
+| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 `group_id`） |
+| `status` | string | 否 | - | 状态过滤（如 `active` / `archived`） |
+| `page` | int | 否 | 1 | 页码 |
+| `page_size` | int | 否 | 20 | 每页数量 |
 
-> 至少需要提供 `group_id` 或 `scope_key` 之一。
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "items": [
+            {
+                "id": "uuid-string",
+                "scope_key": "group:789012",
+                "title": "模拟盘交易计划",
+                "aliases": ["A股模拟盘"],
+                "summary": "讨论模拟盘建仓与每日收盘总结安排",
+                "status": "active",
+                "milestone_count": 4,
+                "first_at": "2026-11-08 10:00:00",
+                "last_at": "2026-11-08 12:00:00"
+            }
+        ],
+        "total": 1,
+        "page": 1,
+        "page_size": 20
+    }
+}
+```
+
+### 22.17.2 故事线详情
+
+```
+GET /api/ai/memory/threads/{thread_id}
+```
+
+获取单个故事线详情，包含按时间升序排列的里程碑边（`milestones`）、关联对话片段（`episodes`）与涉及的实体（`entities`）。
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "id": "uuid-string",
+        "scope_key": "group:789012",
+        "title": "模拟盘交易计划",
+        "aliases": ["A股模拟盘"],
+        "summary": "讨论模拟盘建仓与每日收盘总结安排",
+        "status": "active",
+        "milestone_count": 4,
+        "first_at": "2026-11-08 10:00:00",
+        "last_at": "2026-11-08 12:00:00",
+        "milestones": [
+            {
+                "id": "edge-uuid",
+                "fact": "创建百万起步默认模拟盘",
+                "slot_key": "milestone",
+                "source_entity_id": "ent-uuid-1",
+                "target_entity_id": "ent-uuid-2",
+                "event_at": "2026-11-08 10:05:00",
+                "valid_at": "2026-11-08 10:05:00"
+            }
+        ],
+        "episodes": [
+            {
+                "id": "ep-uuid",
+                "content": "对话内容...",
+                "valid_at": "2026-11-08 10:05:00",
+                "session_id": "sess-1"
+            }
+        ],
+        "entities": [
+            {
+                "id": "ent-uuid-1",
+                "name": "维拉",
+                "summary": "群主",
+                "entity_type": "person",
+                "is_speaker": true
+            }
+        ]
+    }
+}
+```
+
+---
+
+## 22.18 虚拟分类投影状态与零 LLM 索引对账
+
+### 22.18.1 虚拟分类投影状态
+
+```
+GET /api/ai/memory/hiergraph/status
+```
+
+获取指定范围的虚拟分类投影统计（兼容原 `/hiergraph/status` 路径）。
+
+**Query 参数**: `group_id` 或 `scope_key`（均可选，不传则统计全局）。
+
+**响应**:
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "enabled": true,
+        "mode": "virtual_projection_v2",
+        "scope_key": "group:789012",
+        "initialized": true,
+        "l1_count": 4,
+        "thread_count": 6,
+        "active_edges": 120,
+        "max_layer": 1,
+        "last_rebuild_at": null,
+        "entity_count_at_last_rebuild": 0,
+        "current_entity_count": 120,
+        "group_summary_cache": null,
+        "group_summary_updated_at": null
+    }
+}
+```
+
+### 22.18.2 零 LLM 索引对账（FTS5 + Qdrant 补偿）
+
+```
+POST /api/ai/memory/hiergraph/rebuild
+```
+
+不调用 LLM，对指定 `scope_key`（或 `group_id`）执行：
+1. 重建 SQLite `aimemepisode_fts` 全文检索索引；
+2. 检查并补齐 Qdrant 中缺失的 Episode / Entity / Edge 向量。
+
+**Query 参数**: 必须提供 `group_id` 或 `scope_key` 之一。
 
 **响应**:
 ```json
@@ -796,35 +892,24 @@ GET /api/ai/memory/hiergraph/status
     "msg": "ok",
     "data": {
         "scope_key": "group:789012",
-        "initialized": true,
-        "max_layer": 3,
-        "last_rebuild_at": "2024-01-15 10:30:00",
-        "entity_count_at_last_rebuild": 50,
-        "current_entity_count": 65,
-        "group_summary_cache": "该群组主要讨论技术话题...",
-        "group_summary_updated_at": "2024-01-15 12:00:00"
+        "fts_rows": 150,
+        "vectors_repaired": 3,
+        "elapsed_ms": 42.15
     }
 }
 ```
 
 ---
 
-## 22.18 记忆统计
+## 22.19 记忆统计
 
 ```
 GET /api/ai/memory/stats
 ```
 
-获取记忆系统统计数据，返回指定 scope 或全局的各类记忆节点数量统计。
+获取指定 scope 或全局的各类记忆节点数量、故事线数与四态边状态分布统计。
 
-**Query 参数**:
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `group_id` | string | 否 | - | 群组 ID |
-| `scope_key` | string | 否 | - | 完整的 Scope Key（优先级高于 group_id） |
-
-> 不提供参数时返回全局统计。
+**Query 参数**: `group_id`（可选）、`scope_key`（可选，优先级高于 `group_id`）。不传则返回全局统计。
 
 **响应**:
 ```json
@@ -838,38 +923,32 @@ GET /api/ai/memory/stats
         "speaker_entity_count": 25,
         "edge_count": 120,
         "active_edge_count": 100,
-        "category_count": 30,
+        "category_count": 0,
+        "thread_count": 12,
+        "edge_state_counts": {
+            "active": 95,
+            "staging": 5,
+            "superseded": 18,
+            "contradicted": 2
+        },
         "preference_count": 7,
         "preference_correction_count": 4,
-        "observation_queue_size": 5,
-        "scope_keys": ["group:789012", "group:345678", "user_global:12345"]
+        "observation_queue_size": 0,
+        "scope_keys": ["group:789012", "user_global:12345"]
     }
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `episode_count` | Episode 总数 |
-| `entity_count` | Entity 总数 |
-| `speaker_entity_count` | 说话者 Entity 数量 |
-| `edge_count` | Edge 总数（含已失效） |
-| `active_edge_count` | 有效 Edge 数量（invalid_at 为空） |
-| `category_count` | Category 总数 |
-| `preference_count` | 活跃（`is_active=true`）程序性/偏好规则数量 |
-| `preference_correction_count` | 其中由纠错触发（`is_correction=true`）的规则数量 |
-| `observation_queue_size` | 当前观察队列中待处理的消息数量 |
-| `scope_keys` | 所有有记忆数据的 scope_key 列表 |
-
 ---
 
-## 22.19 获取记忆配置
+## 22.20 获取与更新记忆配置
+
+### 22.20.1 获取记忆配置
 
 ```
 GET /api/ai/memory/config
 ```
 
-获取记忆系统当前配置。
-
 **响应**:
 ```json
 {
@@ -879,144 +958,49 @@ GET /api/ai/memory/config
         "observer_enabled": true,
         "observer_blacklist": [],
         "ingestion_enabled": true,
-        "batch_interval_seconds": 1800,
-        "batch_max_size": 30,
-        "llm_semaphore_limit": 2,
+        "batch_interval_seconds": 7200,
+        "batch_max_size": 80,
+        "llm_semaphore_limit": 3,
+        "idle_flush_seconds": 180,
         "enable_retrieval": true,
-        "enable_system2": true,
-        "enable_user_global_memory": false,
+        "enable_user_global_memory": true,
         "enable_heartbeat_memory": true,
         "retrieval_top_k": 10,
+        "memory_inject_max_chars": 3200,
+        "memory_inject_wide_chars": 48000,
+        "session_gap_seconds": 1800,
+        "fact_max_inject": 18,
         "dedup_similarity_threshold": 0.92,
-        "edge_conflict_threshold": 0.88,
-        "min_children_per_category": 3,
-        "max_layers": 5,
-        "hiergraph_rebuild_ratio": 1.10,
-        "hiergraph_rebuild_interval_seconds": 86400
+        "enable_preference_memory": true,
+        "preference_max_inject": 12,
+        "preference_max_per_context": 5,
+        "preference_inject_budget_ratio": 0.1,
+        "preference_immediate_flush": true
     }
 }
 ```
 
-### 配置项说明
-
-#### 观察者配置
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `observer_enabled` | bool | `true` | 是否启用消息观察者 |
-| `observer_blacklist` | string[] | `[]` | 黑名单群组 ID 列表 |
-
-#### 摄入配置
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `ingestion_enabled` | bool | `true` | 是否启用摄入引擎 |
-| `batch_interval_seconds` | int | `1800` | 消息聚合窗口（秒） |
-| `batch_max_size` | int | `30` | 单次最大聚合条数 |
-| `llm_semaphore_limit` | int | `2` | 同时进行的 LLM 调用上限 |
-
-#### 检索配置
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `enable_retrieval` | bool | `true` | 是否启用记忆检索 |
-| `enable_system2` | bool | `true` | 是否启用 System-2（成本较高） |
-| `enable_user_global_memory` | bool | `false` | 是否联合查询用户跨群画像 |
-| `enable_heartbeat_memory` | bool | `true` | 是否在 Heartbeat 中注入群组摘要 |
-| `retrieval_top_k` | int | `10` | 最终返回的 Episode 数量上限 |
-
-#### 去重与冲突阈值
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `dedup_similarity_threshold` | float | `0.92` | Entity 去重余弦相似度阈值 |
-| `edge_conflict_threshold` | float | `0.88` | Edge 语义冲突判断阈值 |
-
-#### 分层图配置
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `min_children_per_category` | int | `3` | 每个 Category 最少子节点数 |
-| `max_layers` | int | `5` | 分层图最大层数 |
-| `hiergraph_rebuild_ratio` | float | `1.10` | Entity 增长触发增量重建的比例 |
-| `hiergraph_rebuild_interval_seconds` | int | `86400` | 距上次重建触发增量重建的秒数 |
-
-#### 程序性 / 偏好记忆配置（默认开）
-
-> 自 2026-06-14 起，下列字段经 `MEMORY_CONFIG`（`@property` 转发）管理：在 WebConsole 的
-> **"GsCore AI 记忆配置 → 程序性/偏好记忆设置"** 分组调整并**持久化**到 `data/ai_core/memory_config.json`。
-> 本 `/api/ai/memory/config` 端点仅**只读反射**其当前值（GET 返回），**不能**经本端点的 PUT 修改。
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `enable_preference_memory` | bool | `true` | 程序性/偏好记忆总开关（**默认开**）；关闭后写入/蒸馏/注入/即时 flush 全部停用 |
-| `preference_max_inject` | int | `12` | 单次回复注入偏好规则条数上限 |
-| `preference_max_per_context` | int | `5` | 单能力域(`target_context`)保留的活跃规则上限（生命周期裁剪用） |
-| `preference_inject_budget_ratio` | float | `0.10` | 偏好区块占记忆注入字符预算的比例 |
-| `preference_immediate_flush` | bool | `true` | 纠错命中即时 flush（带去抖；受总开关前置） |
-
-#### RF-Mem 双过程检索配置（进阶，默认关）
-
-> 同上，经 **"RF-Mem 双过程检索设置(进阶)"** 分组持久化调整；本端点只读反射。
-> 阈值（`familiarity_theta_*` / `tau`）须按嵌入模型标定后再放量，回忆环额外要求 `qdrant_provider=remote`。
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `enable_familiarity_routing` | bool | `false` | 探针熟悉度路由总开关（关时不发探针、行为不变） |
-| `enable_recollection_path` | bool | `false` | 回忆环开关（仅 `qdrant_provider=remote` + 路由判低熟悉 + System-2 未触发时生效） |
-| `familiarity_theta_high` | float | `0.6` | 熟悉度上阈 θ_high（余弦语义，需标定） |
-| `familiarity_theta_low` | float | `0.3` | 熟悉度下阈 θ_low（需标定） |
-| `familiarity_tau` | float | `0.22` | 列表熵阈 τ（中段由熵裁决） |
-| `familiarity_lambda` | float | `20.0` | 温度 softmax 锐度 λ（不敏感） |
-| `familiarity_probe_k` | int | `15` | 探针候选数 |
-
----
-
-## 22.20 更新记忆配置
+### 22.20.2 更新运行时记忆配置
 
 ```
 PUT /api/ai/memory/config
 ```
 
-更新记忆系统配置。仅更新请求中提供的字段，未提供的字段保持不变。配置立即生效，但不会持久化（重启后恢复默认值）。
+更新运行时内存配置（重启后恢复配置文件默认值；持久化配置请在 WebConsole「GsCore AI 记忆配置」修改）。
 
-**请求体**:
-```json
-{
-    "observer_enabled": true,
-    "enable_system2": false,
-    "retrieval_top_k": 15
-}
-```
-
-> 只需提供需要修改的字段，未提供的字段保持不变。
-
-**响应**:
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": {
-        "observer_enabled": true,
-        "observer_blacklist": [],
-        "ingestion_enabled": true,
-        "batch_interval_seconds": 1800,
-        "batch_max_size": 30,
-        "llm_semaphore_limit": 2,
-        "enable_retrieval": true,
-        "enable_system2": false,
-        "enable_user_global_memory": false,
-        "enable_heartbeat_memory": true,
-        "retrieval_top_k": 15,
-        "dedup_similarity_threshold": 0.92,
-        "edge_conflict_threshold": 0.88,
-        "min_children_per_category": 3,
-        "max_layers": 5,
-        "hiergraph_rebuild_ratio": 1.10,
-        "hiergraph_rebuild_interval_seconds": 86400
-    }
-}
-```
+**可更新字段**:
+- `observer_enabled` (bool)
+- `observer_blacklist` (string[])
+- `ingestion_enabled` (bool)
+- `batch_interval_seconds` (int, 60–86400)
+- `batch_max_size` (int, 5–100)
+- `llm_semaphore_limit` (int, 1–10)
+- `idle_flush_seconds` (int, 0–86400)
+- `enable_retrieval` (bool)
+- `enable_user_global_memory` (bool)
+- `enable_heartbeat_memory` (bool)
+- `retrieval_top_k` (int, 1–50)
+- `dedup_similarity_threshold` (float, 0.5–1.0)
 
 ---
 
@@ -1026,7 +1010,7 @@ PUT /api/ai/memory/config
 GET /api/ai/memory/scopes
 ```
 
-获取所有有记忆数据的 Scope Key 列表，附带各类节点的数量统计。
+获取所有存在记忆数据的 Scope Key 列表及各表统计。
 
 **响应**:
 ```json
@@ -1041,7 +1025,9 @@ GET /api/ai/memory/scopes
             "episode_count": 50,
             "entity_count": 30,
             "edge_count": 40,
-            "category_count": 10
+            "category_count": 0,
+            "thread_count": 4,
+            "preference_count": 0
         },
         {
             "scope_key": "user_global:12345",
@@ -1050,7 +1036,9 @@ GET /api/ai/memory/scopes
             "episode_count": 20,
             "entity_count": 15,
             "edge_count": 10,
-            "category_count": 5
+            "category_count": 0,
+            "thread_count": 2,
+            "preference_count": 3
         }
     ]
 }
@@ -1058,55 +1046,21 @@ GET /api/ai/memory/scopes
 
 ---
 
-## 22.22 删除 Scope 记忆
+## 22.22 清理与批量删除记忆
+
+以下接口会同步清理 SQL 四表 + 偏好、SQLite FTS5 索引以及 Qdrant 四个集合（`memory_episodes` / `memory_entities` / `memory_edges` / `memory_threads`）。
+
+### 22.22.1 删除单个 Scope 记忆
 
 ```
 DELETE /api/ai/memory/scopes/{scope_key}
 ```
 
-删除指定 Scope 下的所有记忆数据，包括 Episode、Entity、Edge、Category 及其 Qdrant 向量。
-
-> ⚠️ **此操作不可逆，请谨慎使用！**
-
-**路径参数**:
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `scope_key` | string | 完整的 Scope Key（如 `group:789012`） |
-
-**响应**:
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": {
-        "scope_key": "group:789012",
-        "deleted_episodes": 50,
-        "deleted_entities": 30,
-        "deleted_edges": 40,
-        "deleted_categories": 10
-    }
-}
-```
-
----
-
-## 22.23 清空记忆（高级批量删除）
+### 22.22.2 高级批量清空（精确或前缀匹配）
 
 ```
 POST /api/ai/memory/clear
 ```
-
-清空指定 Scope 下的所有记忆数据，支持精确匹配或前缀模糊匹配。
-
-### Scope Key 匹配模式
-
-| 模式 | 说明 |
-|------|------|
-| **精确匹配** | `scope_key = "group:789012"` → 仅匹配 `"group:789012"` |
-| **前缀模糊匹配** | `scope_pattern = "group:789012"` → 匹配 `"group:789012"` 以及 `"group:789012@..."` |
-
-> 前缀模糊匹配适用于 `user_in_group` 类型 scope（如 `user_in_group:12345@789012`），它的前半部分与 `group:789012` 无关，因此前缀模式只能匹配 `"group:"` 开头、可能带 `@` 后缀的 scope_key。
 
 **请求体**:
 ```json
@@ -1117,15 +1071,19 @@ POST /api/ai/memory/clear
 }
 ```
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `scope_key` | string | 否 | null | 精确匹配的 Scope Key |
-| `scope_pattern` | string | 否 | null | 前缀匹配的 Scope Key |
-| `dry_run` | bool | 否 | false | 为 true 时仅统计数量，不实际删除 |
+### 22.22.3 清空群记忆
 
-> `scope_key` 和 `scope_pattern` 至少提供一个，同时提供时以 `scope_key` 为准（精确优先）。
+```
+DELETE /api/ai/memory/groups/{group_id}/clear?include_user_in_group=true&dry_run=false
+```
 
-**响应**:
+### 22.22.4 清空用户全局记忆
+
+```
+DELETE /api/ai/memory/users/{user_id}/global/clear?dry_run=false
+```
+
+**删除响应结构**:
 ```json
 {
     "status": 0,
@@ -1135,99 +1093,27 @@ POST /api/ai/memory/clear
         "deleted_episodes": 50,
         "deleted_entities": 30,
         "deleted_edges": 40,
-        "deleted_categories": 10
+        "deleted_threads": 4,
+        "deleted_categories": 0,
+        "deleted_preferences": 0
     }
 }
 ```
 
 ---
 
-## 22.24 清空群记忆
+## 22.23 本地评测与批量回灌端点（`GSUID_LOCAL_TEST_MODE=1`）
 
-```
-DELETE /api/ai/memory/groups/{group_id}/clear?include_user_in_group=true&dry_run=false
-```
+以下端点默认返回 404，仅在环境变量 `GSUID_LOCAL_TEST_MODE=1` 开启（且校验 `X-Local-Test-Token`）时可用，专供离线评测基准（LongMemEval / BEAM / CorpusQA / LOFT）调用：
 
-清空某个群的全部记忆，包括：
-
-1. `group:{group_id}` 下的所有记忆（Episode/Entity/Edge/Category）
-2. `user_in_group:*@{group_id}` 下所有用户的群内记忆档案（当 `include_user_in_group=true` 时）
-
-同时删除数据库记录和 Qdrant 中的向量。
-
-> ⚠️ **此操作不可逆，请谨慎使用！**
-
-**路径参数**:
-
-| 参数 | 类型 | 说明 |
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| `group_id` | string | 群组 ID |
-
-**Query 参数**:
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `include_user_in_group` | bool | 否 | true | 是否同时清空该群内所有用户的 user_in_group 记忆档案 |
-| `dry_run` | bool | 否 | false | 为 true 时仅统计数量，不实际删除 |
-
-**响应**:
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": {
-        "group_id": "789012",
-        "affected_scope_keys": [
-            "group:789012",
-            "user_in_group:11111@789012",
-            "user_in_group:22222@789012"
-        ],
-        "deleted_episodes": 50,
-        "deleted_entities": 30,
-        "deleted_edges": 40,
-        "deleted_categories": 10
-    }
-}
-```
-
----
-
-## 22.25 清空用户全局记忆
-
-```
-DELETE /api/ai/memory/users/{user_id}/global/clear?dry_run=false
-```
-
-清空某个用户的跨群全局记忆画像（`user_global:{user_id}` 下的所有记忆数据）。
-
-> ⚠️ **此操作不可逆，请谨慎使用！**
-
-**路径参数**:
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `user_id` | string | 用户 ID |
-
-**Query 参数**:
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `dry_run` | bool | 否 | false | 为 true 时仅统计数量，不实际删除 |
-
-**响应**:
-```json
-{
-    "status": 0,
-    "msg": "ok",
-    "data": {
-        "affected_scope_keys": ["user_global:12345"],
-        "deleted_episodes": 20,
-        "deleted_entities": 15,
-        "deleted_edges": 10,
-        "deleted_categories": 5
-    }
-}
-```
+| POST | `/api/ai/memory/batch_observe` | 批量回灌历史对话（支持 granular Episode 切块嵌入、窗口化 Pass 1/2 抽取与索引对账） |
+| POST | `/api/ai/memory/eval/retrieve` | 评测检索分段（只跑 `dual_route_retrieve`，不调答题 LLM） |
+| POST | `/api/ai/memory/eval/episodes` | 列出 user turn Episode（供 oracle 对齐） |
+| POST | `/api/ai/memory/eval/episode_vectors` | 按 Episode ID 批量读取 Qdrant dense 向量 |
+| POST | `/api/ai/memory/eval/embed_texts` | 用当前记忆 dense 模型批量嵌入文本 |
+| POST | `/api/ai/memory/eval/extract_aspects` | 触发睡眠期故事线补抽（`extract_aspects_for_scope`） |
 
 ---
 
@@ -1235,27 +1121,29 @@ DELETE /api/ai/memory/users/{user_id}/global/clear?dry_run=false
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/ai/memory/search` | 记忆双路检索 |
+| POST | `/api/ai/memory/search` | 五模态记忆检索 |
 | GET | `/api/ai/memory/episodes` | Episode 列表 |
 | GET | `/api/ai/memory/episodes/{episode_id}` | Episode 详情 |
 | DELETE | `/api/ai/memory/episodes/{episode_id}` | 删除 Episode |
 | GET | `/api/ai/memory/entities` | Entity 列表 |
 | GET | `/api/ai/memory/entities/{entity_id}` | Entity 详情 |
 | DELETE | `/api/ai/memory/entities/{entity_id}` | 删除 Entity |
-| GET | `/api/ai/memory/edges` | Edge 列表 |
+| GET | `/api/ai/memory/edges` | Edge 四态事实边列表（支持 `include_history`） |
 | GET | `/api/ai/memory/edges/{edge_id}` | Edge 详情 |
 | DELETE | `/api/ai/memory/edges/{edge_id}` | 删除 Edge |
-| GET | `/api/ai/memory/categories` | Category 列表 |
-| GET | `/api/ai/memory/categories/{category_id}` | Category 详情 |
+| GET | `/api/ai/memory/categories` | 记忆虚拟分类投影（L0 故事线 + L1 四大原语） |
+| GET | `/api/ai/memory/categories/{category_id}` | 虚拟分类详情 |
+| GET | `/api/ai/memory/threads` | 故事线（Thread）列表 |
+| GET | `/api/ai/memory/threads/{thread_id}` | 故事线详情（含里程碑、片段与实体） |
 | GET | `/api/ai/memory/preferences` | 偏好规则列表 |
 | GET | `/api/ai/memory/preferences/{pref_id}` | 偏好规则详情 |
 | PATCH | `/api/ai/memory/preferences/{pref_id}` | 更新偏好规则（人工纠偏） |
 | DELETE | `/api/ai/memory/preferences/{pref_id}` | 删除偏好规则 |
-| GET | `/api/ai/memory/hiergraph/status` | 分层语义图状态 |
-| POST | `/api/ai/memory/hiergraph/rebuild` | 手动触发分层图重建 |
-| GET | `/api/ai/memory/stats` | 记忆统计 |
+| GET | `/api/ai/memory/hiergraph/status` | 虚拟分类投影状态 |
+| POST | `/api/ai/memory/hiergraph/rebuild` | 零 LLM 索引对账（FTS5 + Qdrant 向量补偿） |
+| GET | `/api/ai/memory/stats` | 记忆统计（含 `thread_count` 与 `edge_state_counts`） |
 | GET | `/api/ai/memory/config` | 获取记忆配置 |
-| PUT | `/api/ai/memory/config` | 更新记忆配置 |
+| PUT | `/api/ai/memory/config` | 更新运行时记忆配置 |
 | GET | `/api/ai/memory/scopes` | Scope 列表 |
 | DELETE | `/api/ai/memory/scopes/{scope_key}` | 删除 Scope 记忆 |
 | POST | `/api/ai/memory/clear` | 清空记忆（高级批量删除） |

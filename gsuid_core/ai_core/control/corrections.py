@@ -34,6 +34,27 @@ def fake_done_directive(*, tool_pool_size: int) -> Directive:
     )
 
 
+def unbacked_inflight_promise_directive(*, tool_calls: int) -> Directive:
+    """许下后台在途/完成后通知承诺，但本轮既无在途子任务也无生效写入。"""
+    return Directive(
+        kind="correction",
+        reason_code="unbacked_inflight_promise",
+        observation=(
+            "你上一条回复向用户承诺正在后台处理或完成后通知，但本轮既没有成功派出后台子任务"
+            "（create_subagent），也没有完成任何生效的任务/日程写入——后台没有任何任务在跑。"
+            "现在立即调用 create_subagent、register_kanban_task 或对应执行工具把任务真正挂上去；"
+            "若确实缺少能力或卡在某一步，就如实向用户说明，禁止留空头在途承诺。"
+        ),
+        obligations=(
+            Obligation(
+                must="call_tool",
+                satisfied_by=("async_delegated", "effectual_mutated", "image_sent"),
+            ),
+        ),
+        evidence=Evidence(tool_calls=tool_calls, detail="无后台在途子任务且无生效写入"),
+    )
+
+
 def missing_offered_tool_directive(*, tool_pool_size: int) -> Directive:
     """声称没有工具，但本轮 schema 已有可用工具。"""
     return Directive(

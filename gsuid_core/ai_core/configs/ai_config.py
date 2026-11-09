@@ -528,14 +528,8 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "InteractionScaffold": GsDivider(
         "交互脚手架调参",
-        "C-1~C-4 交互脚手架的触发阈值(默认值按评测分布标定, 上线后按[Scaffold]日志的生产分布重标)",
+        "C-1~C-3 交互脚手架的触发阈值(默认值按评测分布标定, 上线后按[Scaffold]日志的生产分布重标)",
         "交互脚手架调参",
-    ),
-    "scaffold_wall_clock_budget": GsIntConfig(
-        "墙钟软预算(秒)",
-        "交互式run超过该墙钟秒数后注入一次'停止新工具轮,收敛作答'提示(C-4), 治多步任务延迟长尾",
-        45,
-        options=[30, 45, 60, 90, 120],
     ),
     "scaffold_followup_max_len": GsIntConfig(
         "省略式跟进最长字数",

@@ -349,35 +349,31 @@ async def create_subagent(
     if ctx.deps is not None and delegation_is_inflight(ctx.deps.extra):
         return PENDING_DELEGATION_HOLD
 
-    # 子代理墙钟不计入主人格 soft budget（research 常 >45s，否则触发禁工具→无法 render）
-    from gsuid_core.ai_core.wall_clock import pause_wall_clock
+    raw = await _create_subagent_impl(
+        ctx,
+        task=task,
+        max_tokens=max_tokens,
+        agent_profile=agent_profile,
+        transient=transient,
+    )
+    if ctx is not None and ctx.deps is not None:
+        from gsuid_core.ai_core.history_format import note_thread_handles_in_text
 
-    async with pause_wall_clock():
-        raw = await _create_subagent_impl(
-            ctx,
-            task=task,
-            max_tokens=max_tokens,
-            agent_profile=agent_profile,
-            transient=transient,
+        note_thread_handles_in_text(ctx.deps, raw)
+    head = (task or "").strip().split("\n", 1)[0][:80]
+    if ctx.deps is not None:
+        from gsuid_core.ai_core.outbound import write_decision_memo, remember_outbound_topic
+
+        remember_outbound_topic(ctx.deps.extra, head)
+        ev = ctx.deps.ev
+        await write_decision_memo(
+            bot_self_id=str(ev.bot_self_id) if ev is not None and ev.bot_self_id else "",
+            text=f"委派 {head[:40]}",
+            ref=f"decision:sub:{head[:40]}"[:160],
+            owner_user_id=str(ev.user_id) if ev is not None and ev.user_id else "",
         )
-        if ctx is not None and ctx.deps is not None:
-            from gsuid_core.ai_core.history_format import note_thread_handles_in_text
-
-            note_thread_handles_in_text(ctx.deps, raw)
-        head = (task or "").strip().split("\n", 1)[0][:80]
-        if ctx.deps is not None:
-            from gsuid_core.ai_core.outbound import write_decision_memo, remember_outbound_topic
-
-            remember_outbound_topic(ctx.deps.extra, head)
-            ev = ctx.deps.ev
-            await write_decision_memo(
-                bot_self_id=str(ev.bot_self_id) if ev is not None and ev.bot_self_id else "",
-                text=f"委派 {head[:40]}",
-                ref=f"decision:sub:{head[:40]}"[:160],
-                owner_user_id=str(ev.user_id) if ev is not None and ev.user_id else "",
-            )
-        body = f"（委派原问：{head}）\n{raw}" if head else raw
-        return await _maybe_fold_subagent_receipt(ctx, body)
+    body = f"（委派原问：{head}）\n{raw}" if head else raw
+    return await _maybe_fold_subagent_receipt(ctx, body)
 
 
 async def _maybe_fold_subagent_receipt(ctx: RunContext[ToolContext], text: str) -> str:
@@ -402,16 +398,13 @@ async def _maybe_fold_subagent_receipt(ctx: RunContext[ToolContext], text: str) 
 
 async def summarize_long_input(text: str, *, max_tokens: int = 18000) -> str:
     """内核长度防护：无工具上下文的摘要委派（不是模型可调的 ``create_subagent``）。"""
-    from gsuid_core.ai_core.wall_clock import pause_wall_clock
-
-    async with pause_wall_clock():
-        return await _create_subagent_impl(
-            None,
-            task=f"请总结以下用户输入，保留关键信息：\n\n{text}",
-            max_tokens=max_tokens,
-            agent_profile="",
-            transient=True,
-        )
+    return await _create_subagent_impl(
+        None,
+        task=f"请总结以下用户输入，保留关键信息：\n\n{text}",
+        max_tokens=max_tokens,
+        agent_profile="",
+        transient=True,
+    )
 
 
 async def _create_subagent_impl(

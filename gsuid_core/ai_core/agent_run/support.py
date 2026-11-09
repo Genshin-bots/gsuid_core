@@ -28,21 +28,17 @@ from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
 # re-export：settle / prepare / gs_agent 与测试共用
 from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
-    _WALL_CLOCK_CLOSE as _WALL_CLOCK_NUDGE,
     STATUS_INQUIRY_HINT as _STATUS_INQUIRY_HINT,
     _REPORT_SPEECH_NUDGE,
-    _WALL_CLOCK_PIPELINE,
     _RENDER_DELEGATE_NUDGE,
     _STATUS_ZERO_TOOL_NUDGE,
-    _WALL_CLOCK_CLOSE_NO_RENDER,
-    wall_clock_nudge_for as _wall_clock_nudge_for,
     looks_like_report_speech as _looks_like_report_speech,
 )
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     tool_call_targets_render_agent as _tool_call_targets_render_agent_core,
 )
 
-# 写入类日程工具：PIN 拒绝或失败不算生效。list 只读，不算。
+# 写入类日程/看板工具：PIN 拒绝或失败不算生效。list/evaluate 只读，不算。
 _EFFECTUAL_WRITE_TOOLS: frozenset[str] = frozenset(
     {
         "add_once_task",
@@ -51,6 +47,12 @@ _EFFECTUAL_WRITE_TOOLS: frozenset[str] = frozenset(
         "cancel_scheduled_task",
         "pause_scheduled_task",
         "resume_scheduled_task",
+        "register_kanban_task",
+        "respawn_subtask",
+        "fail_task_tree",
+        "pause_my_kanban_tree",
+        "resume_my_kanban_tree",
+        "disarm_my_recurring_template",
     }
 )
 
@@ -236,6 +238,14 @@ _SCHED_MUTATE_TOOLS: frozenset[str] = frozenset(
 )
 _MISSING_OFFERED_TOOL_RE = re.compile(r"没有.{0,16}工具")
 _DEFER_WORK_RE = re.compile(r"明天再|等我.{0,8}再(查|设|弄|翻)|等我.{0,16}(翻|查|搜)")
+_INFLIGHT_PROMISE_RE = re.compile(
+    r"(?:落好|搭好|挂好|建好|弄好|办好|做好|查好|画好|渲好|跑完|搭成|落成)之后.{0,10}(?:跟你说|叫你|喊你|唤你|告诉你|发你|给你)"
+    r"|搭成了.{0,8}先出.{0,6}给?你看"
+    r"|我还在(?:搭|挂|建|弄|配|改)[，,。；\s]"
+    r"|还在挂[，,。；\s]|挂在半路.{0,12}(?:盯到收口|接着)"
+    r"|我去把.{0,10}(?:重新系|接回去).{0,10}(?:一会儿|回头|稍后).{0,6}给?你"
+    r"|改完这一轮就停手.{0,10}下次再说"
+)
 
 
 def _claims_missing_offered_tool(text: str, offered: Sequence[str]) -> bool:
@@ -248,6 +258,14 @@ def _claims_missing_offered_tool(text: str, offered: Sequence[str]) -> bool:
 def _claims_deferred_work(text: str) -> bool:
     """把该办的事推到明天或「等我…再动手」。"""
     return bool(_DEFER_WORK_RE.search(text or ""))
+
+
+def _claims_inflight_without_backend(text: str) -> bool:
+    """对用户许下后台在途/完成后通知的承诺（无后台任务支撑时拦截）。"""
+    body = (text or "").strip()
+    if not body or _FAKE_DONE_QUESTION_RE.search(body):
+        return False
+    return bool(_INFLIGHT_PROMISE_RE.search(body))
 
 
 # 结构假完成：被呼叫 + 池内有工具 + 零调用 + 非沉默/非极短寒暄（不解析用户话题词）
