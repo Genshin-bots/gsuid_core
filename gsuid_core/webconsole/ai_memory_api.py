@@ -201,16 +201,10 @@ class MemoryConfigUpdateRequest(BaseModel):
         description="对话静默多久后 flush 落库；0=关闭静默落库",
     )
     enable_retrieval: Optional[bool] = None
-    enable_system2: Optional[bool] = None
     enable_user_global_memory: Optional[bool] = None
     enable_heartbeat_memory: Optional[bool] = None
     retrieval_top_k: Optional[int] = Field(default=None, ge=1, le=50)
     dedup_similarity_threshold: Optional[float] = Field(default=None, ge=0.5, le=1.0)
-    edge_conflict_threshold: Optional[float] = Field(default=None, ge=0.5, le=1.0)
-    min_children_per_category: Optional[int] = Field(default=None, ge=2, le=20)
-    max_layers: Optional[int] = Field(default=None, ge=1, le=10)
-    hiergraph_rebuild_ratio: Optional[float] = Field(default=None, ge=1.0, le=3.0)
-    hiergraph_rebuild_interval_seconds: Optional[int] = Field(default=None, ge=3600, le=604800)
 
 
 class PreferenceUpdateRequest(BaseModel):
@@ -1434,6 +1428,7 @@ async def list_preferences(
     all_scopes: bool = False,
     page: int = 1,
     page_size: int = 20,
+    keyword: Optional[str] = None,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """获取程序性/偏好规则列表。
@@ -1452,17 +1447,36 @@ async def list_preferences(
 
             conditions = []
             if actual_scope_key:
-                conditions.append(AIMemPreference.scope_key == actual_scope_key)
+                if ":" in actual_scope_key:
+                    conditions.append(col(AIMemPreference.scope_key) == actual_scope_key)
+                else:
+                    conditions.append(
+                        or_(
+                            col(AIMemPreference.scope_key) == actual_scope_key,
+                            col(AIMemPreference.scope_key) == f"user_global:{actual_scope_key}",
+                            col(AIMemPreference.user_id) == actual_scope_key,
+                        )
+                    )
             if user_id:
-                conditions.append(AIMemPreference.user_id == user_id)
+                conditions.append(col(AIMemPreference.user_id) == user_id)
             if target_context:
-                conditions.append(AIMemPreference.target_context == target_context)
+                conditions.append(col(AIMemPreference.target_context) == target_context)
             if is_correction is not None:
                 conditions.append(col(AIMemPreference.is_correction).is_(is_correction))
             if polarity:
-                conditions.append(AIMemPreference.polarity == polarity)
+                conditions.append(col(AIMemPreference.polarity) == polarity)
             if is_active is not None:
                 conditions.append(col(AIMemPreference.is_active).is_(is_active))
+            if keyword and keyword.strip():
+                kw = f"%{keyword.strip()}%"
+                conditions.append(
+                    or_(
+                        col(AIMemPreference.preference_rule).ilike(kw),
+                        col(AIMemPreference.target_context).ilike(kw),
+                        col(AIMemPreference.user_id).ilike(kw),
+                        col(AIMemPreference.scope_key).ilike(kw),
+                    )
+                )
             for cond in conditions:
                 query = query.where(cond)
                 count_query = count_query.where(cond)
@@ -2093,6 +2107,33 @@ async def get_memory_stats(
 # 7. 配置管理 API
 
 
+def _serialize_memory_config() -> Dict[str, Any]:
+    return {
+        "observer_enabled": memory_config.observer_enabled,
+        "observer_blacklist": memory_config.observer_blacklist,
+        "ingestion_enabled": memory_config.ingestion_enabled,
+        "batch_interval_seconds": memory_config.batch_interval_seconds,
+        "batch_max_size": memory_config.batch_max_size,
+        "llm_semaphore_limit": memory_config.llm_semaphore_limit,
+        "idle_flush_seconds": memory_config.idle_flush_seconds,
+        "enable_retrieval": memory_config.enable_retrieval,
+        "enable_user_global_memory": memory_config.enable_user_global_memory,
+        "enable_heartbeat_memory": memory_config.enable_heartbeat_memory,
+        "retrieval_top_k": memory_config.retrieval_top_k,
+        "memory_inject_max_chars": memory_config.memory_inject_max_chars,
+        "memory_inject_wide_chars": memory_config.memory_inject_wide_chars,
+        "session_gap_seconds": memory_config.session_gap_seconds,
+        "fact_max_inject": memory_config.fact_max_inject,
+        "dedup_similarity_threshold": memory_config.dedup_similarity_threshold,
+        # 程序性/偏好记忆（只读反射；经 MEMORY_CONFIG 持久化，于"记忆配置"分组调整）
+        "enable_preference_memory": memory_config.enable_preference_memory,
+        "preference_max_inject": memory_config.preference_max_inject,
+        "preference_max_per_context": memory_config.preference_max_per_context,
+        "preference_inject_budget_ratio": memory_config.preference_inject_budget_ratio,
+        "preference_immediate_flush": memory_config.preference_immediate_flush,
+    }
+
+
 @app.get("/api/ai/memory/config", summary="获取记忆配置", tags=AI_MEMORY)
 async def get_memory_config(
     _: Dict[str, Any] = Depends(require_auth),
@@ -2108,39 +2149,7 @@ async def get_memory_config(
         return {
             "status": 0,
             "msg": "ok",
-            "data": {
-                "observer_enabled": memory_config.observer_enabled,
-                "observer_blacklist": memory_config.observer_blacklist,
-                "ingestion_enabled": memory_config.ingestion_enabled,
-                "batch_interval_seconds": memory_config.batch_interval_seconds,
-                "batch_max_size": memory_config.batch_max_size,
-                "llm_semaphore_limit": memory_config.llm_semaphore_limit,
-                "idle_flush_seconds": getattr(memory_config, "idle_flush_seconds", 180),
-                "enable_retrieval": memory_config.enable_retrieval,
-                "enable_system2": memory_config.enable_system2,
-                "enable_user_global_memory": memory_config.enable_user_global_memory,
-                "enable_heartbeat_memory": memory_config.enable_heartbeat_memory,
-                "retrieval_top_k": memory_config.retrieval_top_k,
-                "dedup_similarity_threshold": memory_config.dedup_similarity_threshold,
-                "edge_conflict_threshold": memory_config.edge_conflict_threshold,
-                "min_children_per_category": memory_config.min_children_per_category,
-                "max_layers": memory_config.max_layers,
-                "hiergraph_rebuild_ratio": memory_config.hiergraph_rebuild_ratio,
-                "hiergraph_rebuild_interval_seconds": memory_config.hiergraph_rebuild_interval_seconds,
-                # 程序性/偏好记忆 + RF-Mem（只读反射；经 MEMORY_CONFIG 持久化，于"记忆配置"分组调整）
-                "enable_preference_memory": memory_config.enable_preference_memory,
-                "preference_max_inject": memory_config.preference_max_inject,
-                "preference_max_per_context": memory_config.preference_max_per_context,
-                "preference_inject_budget_ratio": memory_config.preference_inject_budget_ratio,
-                "preference_immediate_flush": memory_config.preference_immediate_flush,
-                "enable_familiarity_routing": memory_config.enable_familiarity_routing,
-                "enable_recollection_path": memory_config.enable_recollection_path,
-                "familiarity_theta_high": memory_config.familiarity_theta_high,
-                "familiarity_theta_low": memory_config.familiarity_theta_low,
-                "familiarity_tau": memory_config.familiarity_tau,
-                "familiarity_lambda": memory_config.familiarity_lambda,
-                "familiarity_probe_k": memory_config.familiarity_probe_k,
-            },
+            "data": _serialize_memory_config(),
         }
     except _RUNTIME_ERRORS as e:
         return {
@@ -2178,39 +2187,7 @@ async def update_memory_config(
         return {
             "status": 0,
             "msg": "ok",
-            "data": {
-                "observer_enabled": memory_config.observer_enabled,
-                "observer_blacklist": memory_config.observer_blacklist,
-                "ingestion_enabled": memory_config.ingestion_enabled,
-                "batch_interval_seconds": memory_config.batch_interval_seconds,
-                "batch_max_size": memory_config.batch_max_size,
-                "llm_semaphore_limit": memory_config.llm_semaphore_limit,
-                "idle_flush_seconds": getattr(memory_config, "idle_flush_seconds", 180),
-                "enable_retrieval": memory_config.enable_retrieval,
-                "enable_system2": memory_config.enable_system2,
-                "enable_user_global_memory": memory_config.enable_user_global_memory,
-                "enable_heartbeat_memory": memory_config.enable_heartbeat_memory,
-                "retrieval_top_k": memory_config.retrieval_top_k,
-                "dedup_similarity_threshold": memory_config.dedup_similarity_threshold,
-                "edge_conflict_threshold": memory_config.edge_conflict_threshold,
-                "min_children_per_category": memory_config.min_children_per_category,
-                "max_layers": memory_config.max_layers,
-                "hiergraph_rebuild_ratio": memory_config.hiergraph_rebuild_ratio,
-                "hiergraph_rebuild_interval_seconds": memory_config.hiergraph_rebuild_interval_seconds,
-                # 程序性/偏好记忆 + RF-Mem（只读反射；经 MEMORY_CONFIG 持久化，于"记忆配置"分组调整）
-                "enable_preference_memory": memory_config.enable_preference_memory,
-                "preference_max_inject": memory_config.preference_max_inject,
-                "preference_max_per_context": memory_config.preference_max_per_context,
-                "preference_inject_budget_ratio": memory_config.preference_inject_budget_ratio,
-                "preference_immediate_flush": memory_config.preference_immediate_flush,
-                "enable_familiarity_routing": memory_config.enable_familiarity_routing,
-                "enable_recollection_path": memory_config.enable_recollection_path,
-                "familiarity_theta_high": memory_config.familiarity_theta_high,
-                "familiarity_theta_low": memory_config.familiarity_theta_low,
-                "familiarity_tau": memory_config.familiarity_tau,
-                "familiarity_lambda": memory_config.familiarity_lambda,
-                "familiarity_probe_k": memory_config.familiarity_probe_k,
-            },
+            "data": _serialize_memory_config(),
         }
     except _RUNTIME_ERRORS as e:
         return {
@@ -2262,9 +2239,21 @@ async def list_scopes(
             )
             thread_stats = {row[0]: row[1] for row in thread_result.fetchall()}
 
+            # 偏好规则统计
+            pref_result = await session.execute(
+                select(AIMemPreference.scope_key, func.count().label("preference_count")).group_by(
+                    AIMemPreference.scope_key
+                )
+            )
+            pref_stats = {row[0]: row[1] for row in pref_result.fetchall()}
+
             # 合并所有 scope_key
             all_scope_keys = (
-                set(ep_stats.keys()) | set(ent_stats.keys()) | set(edge_stats.keys()) | set(thread_stats.keys())
+                set(ep_stats.keys())
+                | set(ent_stats.keys())
+                | set(edge_stats.keys())
+                | set(thread_stats.keys())
+                | set(pref_stats.keys())
             )
 
             scopes = []
@@ -2286,6 +2275,7 @@ async def list_scopes(
                         "edge_count": edge_stats.get(sk, 0),
                         "category_count": 0,
                         "thread_count": thread_stats.get(sk, 0),
+                        "preference_count": pref_stats.get(sk, 0),
                     }
                 )
 

@@ -35,7 +35,7 @@ ALGEBRA_SYSTEM = """你是记忆代数抽取器。只输出一行 JSON，不要�
 2) edges：事实边。每条含：
    op: ADD | MERGE | SUPERSEDE | CONTRADICT
    target: MERGE/SUPERSEDE/CONTRADICT 时填预取列表中的 E 编号，否则 null
-   source / target_name: 主语实体名 / 宾语实体名
+   source / target_name: 主语实体名 / 宾语实体名（单主体 attribute 或 milestone 无独立宾语实体时 target_name 填 null）
    kind: attribute | relation | milestone
    slot: 蛇形英文槽位键（如 car_plan / project_budget / allergy）
    fact: 完整自包含陈述句，禁止悬空谓语
@@ -43,8 +43,8 @@ ALGEBRA_SYSTEM = """你是记忆代数抽取器。只输出一行 JSON，不要�
    speaker: 实际说出这句话的发言人的 user_id
    line: 该事实对应的窗口行号
    event_date: 事实发生日期 YYYY-MM-DD 或 null
-3) preferences：对 Bot 未来行为的偏好/纠错。每条含 user_id / context（"general" 或能力域）/
-   rule / polarity（"do"|"dont"）/ correction（bool）。
+3) preferences：对 Bot 未来回复方式/行为的长期规则与纠错（严禁把持有物品当偏好，禁输出 context="possession"）。
+   每条含 user_id / context（"general" 或能力域）/ rule / polarity（"do"|"dont"）/ correction（bool）。
 
 代数规则：
 - ADD：新增，同一主体同一槽位允许多值并存（如两只宠物）。

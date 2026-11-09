@@ -12,7 +12,7 @@ import asyncio
 from typing import TYPE_CHECKING, Literal, TypedDict
 from datetime import datetime, timezone
 
-from sqlmodel import col, select, update
+from sqlmodel import col, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.i18n import t
@@ -137,15 +137,19 @@ def _parse_output(raw: str) -> AlgebraExtractOutput | None:
         for item in raw_entities:
             if not isinstance(item, dict):
                 continue
-            name = item["name"] if "name" in item and isinstance(item["name"], str) else ""
+            raw_name = item["name"] if "name" in item else item["n"] if "n" in item else ""
+            name = raw_name if isinstance(raw_name, str) else ""
             if not name.strip():
                 continue
-            uid = item["user_id"] if "user_id" in item and isinstance(item["user_id"], str) else None
-            summary = item["summary"] if "summary" in item and isinstance(item["summary"], str) else ""
+            raw_uid = item["user_id"] if "user_id" in item else item["u"] if "u" in item else None
+            uid = raw_uid.strip() if isinstance(raw_uid, str) and raw_uid.strip() else None
+            raw_sum = item["summary"] if "summary" in item else item["s"] if "s" in item else ""
+            summary = raw_sum if isinstance(raw_sum, str) else ""
+            raw_kind = item["kind"] if "kind" in item else item["k"] if "k" in item else None
             entities.append(
                 {
                     "name": name.strip(),
-                    "kind": _as_entity_kind(item["kind"] if "kind" in item else None),
+                    "kind": _as_entity_kind(raw_kind),
                     "user_id": uid,
                     "summary": summary[:200],
                 }
@@ -159,8 +163,7 @@ def _parse_output(raw: str) -> AlgebraExtractOutput | None:
                 continue
             fact = item["fact"] if "fact" in item and isinstance(item["fact"], str) else ""
             source = item["source"] if "source" in item and isinstance(item["source"], str) else ""
-            target = item["target_name"] if "target_name" in item else item["target"] if "target" in item else ""
-            if not fact.strip() or not source.strip() or not isinstance(target, str) or not target.strip():
+            if not fact.strip() or not source.strip() or _DANGLING_FACT_RE.search(fact.strip()):
                 continue
             op = item["op"] if "op" in item else "ADD"
             if op not in ("ADD", "MERGE", "SUPERSEDE", "CONTRADICT"):
@@ -168,14 +171,23 @@ def _parse_output(raw: str) -> AlgebraExtractOutput | None:
             edge_kind = item["kind"] if "kind" in item else "attribute"
             if edge_kind not in ("attribute", "relation", "milestone"):
                 edge_kind = "attribute"
+            raw_target_edge = item["target"] if "target" in item and isinstance(item["target"], str) else ""
+            target_edge_id = raw_target_edge.strip() if raw_target_edge.strip().startswith("E") else None
+            raw_tname = item["target_name"] if "target_name" in item else (None if target_edge_id else raw_target_edge)
+            target = raw_tname.strip() if isinstance(raw_tname, str) else ""
+            if not target:
+                if edge_kind in ("attribute", "milestone"):
+                    target = source.strip()
+                else:
+                    continue
             slot = item["slot"] if "slot" in item and isinstance(item["slot"], str) else ""
             line = item["line"] if "line" in item and isinstance(item["line"], int) else 0
             edges.append(
                 {
                     "op": op,
-                    "target_edge_id": item["target"] if "target" in item and isinstance(item["target"], str) else None,
+                    "target_edge_id": target_edge_id,
                     "source": source.strip(),
-                    "target": target.strip(),
+                    "target": target,
                     "edge_kind": edge_kind,
                     "slot_key": slot.strip()[:96],
                     "fact": fact.strip(),
@@ -201,11 +213,14 @@ def _parse_output(raw: str) -> AlgebraExtractOutput | None:
             if not uid or not rule.strip():
                 continue
             ctx_raw = item["context"] if "context" in item and isinstance(item["context"], str) else "general"
+            target_ctx = ctx_raw.strip()[:128] or "general"
+            if target_ctx == "possession":
+                continue
             polarity = "dont" if (item["polarity"] if "polarity" in item else "do") == "dont" else "do"
             preferences.append(
                 {
                     "user_id": uid,
-                    "target_context": ctx_raw.strip()[:128] or "general",
+                    "target_context": target_ctx,
                     "preference_rule": rule.strip()[:200],
                     "polarity": polarity,
                     "is_correction": bool(item["correction"]) if "correction" in item else False,
@@ -221,11 +236,18 @@ async def _prefetch(
     scope_key: str, records: list["ObservationRecord"]
 ) -> tuple[dict[str, str], list[AIMemEdge], dict[str, str]]:
     speaker_ids = list({r.speaker_id for r in records if r.speaker_id})
+    speaker_names = list({r.speaker_name for r in records if r.speaker_name})
+    lookup_names = list(set(speaker_ids + speaker_names))
     async with async_maker() as session:
         entity_rows = await session.execute(
             select(AIMemEntity).where(
                 col(AIMemEntity.scope_key) == scope_key,
-                col(AIMemEntity.name).in_(speaker_ids) if speaker_ids else False,
+                or_(
+                    col(AIMemEntity.user_id).in_(speaker_ids),
+                    col(AIMemEntity.name).in_(lookup_names),
+                )
+                if lookup_names
+                else False,
             )
         )
         entities = list(entity_rows.scalars().all())
@@ -314,7 +336,7 @@ async def extract_cluster(
 
     thread_list = threads if threads is not None else []
     _, known_edges, names = await _prefetch(scope_key, records)
-    thread_card = "（未关联故事线）"
+    thread_card = f"[新话题] {topic_title}" if topic_title else "（未关联故事线）"
     if thread_ref is not None:
         index = -1
         if thread_ref.startswith("T"):
@@ -358,7 +380,9 @@ async def extract_cluster(
     entity_vector_payloads: list[dict[str, object]] = []
     edge_vector_payloads: list[dict[str, object]] = []
     written_edges = 0
+    written_milestones = 0
     written_entities = 0
+    latest_valid_at = datetime.now(timezone.utc)
 
     async with db_write_guard(), async_maker() as session:
         thread_id = await _resolve_thread(session, scope_key, thread_list, thread_ref, topic_title)
@@ -480,14 +504,18 @@ async def extract_cluster(
                 }
             )
             written_edges += 1
+            if spec["edge_kind"] == "milestone":
+                written_milestones += 1
+            if valid_at > latest_valid_at:
+                latest_valid_at = valid_at
 
         if thread_id and written_edges:
             await session.execute(
                 update(AIMemThread)
                 .where(col(AIMemThread.id) == thread_id)
                 .values(
-                    milestone_count=col(AIMemThread.milestone_count) + 1,
-                    last_at=datetime.now(timezone.utc),
+                    milestone_count=col(AIMemThread.milestone_count) + written_milestones,
+                    last_at=latest_valid_at,
                     last_mentioned_at=datetime.now(timezone.utc),
                 )
             )

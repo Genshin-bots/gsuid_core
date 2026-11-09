@@ -176,8 +176,30 @@ def need_matches_node_text(
     return False
 
 
+_CJK_RUN_RE = re.compile(r"[\u3400-\u9fff]+")
+_LATIN_WORD_RE = re.compile(r"[A-Za-z0-9_+#.-]{2,}")
+
+
+def _extract_lexical_units(text: str) -> list[str]:
+    """通用词素单元：拉丁单词 + CJK 步长为 2 的二元组。"""
+    body = (text or "").lower()
+    units: list[str] = []
+    for m in _LATIN_WORD_RE.finditer(body):
+        units.append(m.group(0))
+    for m in _CJK_RUN_RE.finditer(body):
+        run = m.group(0)
+        if len(run) <= 3:
+            units.append(run)
+        else:
+            for i in range(0, len(run) - 1, 2):
+                units.append(run[i : i + 2])
+            if len(run) % 2 != 0:
+                units.append(run[-2:])
+    return units
+
+
 def need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) -> bool:
-    """单向命中：need∈retrieval、cover∈need（cover≥3）、或 ≥4 字中文窗口。禁止 hay∈need。"""
+    """单向命中：need∈retrieval、cover 蕴涵/包含在 need、或 CJK 词素重叠达标。"""
     n = (need or "").strip().lower()
     hay = (retrieval_text or "").strip().lower()
     if not n:
@@ -186,11 +208,16 @@ def need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) ->
         return True
     for c in covers:
         cl = (c or "").strip().lower()
+        if not cl:
+            continue
         if len(cl) >= _COVER_IN_NEED_MIN and cl in n:
+            return True
+        c_units = _extract_lexical_units(cl)
+        if c_units and all(u in n for u in c_units):
             return True
     if _hay_has_cjk_window(n, hay):
         return True
-    tokens = [t for t in re.split(r"[\s,，、；;。！？!?/|]+", n) if len(t) >= 2]
+    tokens = _extract_lexical_units(n)
     if not tokens or not hay:
         return False
     hits = sum(1 for t in tokens if t in hay)

@@ -296,26 +296,29 @@ async def project_episodes_to_edges(episode_ids: list[str], scope_keys: list[str
 async def probe_and_route(
     query: str,
     scope_keys: list[str],
+    *,
+    k: int = 15,
+    lam: float = 20.0,
+    theta_high: float = 0.6,
+    theta_low: float = 0.3,
+    tau: float = 0.22,
 ) -> tuple[str, Optional[FamiliaritySignal], Optional[list[float]]]:
     """对一次检索发探针并得出路由结论。返回 ``(route, signal, query_vector)``。
 
     探针失败 / 无候选 → 返回 (ROUTE_FAMILIARITY, None, vector?)，调用方据此维持现状（不深检索）。
     ``query_vector`` 是探针这一步算好的 query dense 向量，回忆环复用它即可省一次嵌入（嵌入失败为 None）。
     """
-    from gsuid_core.ai_core.memory.config import memory_config
     from gsuid_core.ai_core.memory.vector.ops import embed_query, probe_episode_scores
 
     # 只嵌入一次：探针与（可能跟进的）回忆环共用同一 query 向量
     query_vector = await embed_query(query)
-    scores = await probe_episode_scores(
-        query, scope_keys, k=memory_config.familiarity_probe_k, query_vector=query_vector or None
-    )
-    signal = compute_familiarity_signal(scores, lam=memory_config.familiarity_lambda)
+    scores = await probe_episode_scores(query, scope_keys, k=k, query_vector=query_vector or None)
+    signal = compute_familiarity_signal(scores, lam=lam)
     route = decide_route(
         signal,
-        theta_high=memory_config.familiarity_theta_high,
-        theta_low=memory_config.familiarity_theta_low,
-        tau=memory_config.familiarity_tau,
+        theta_high=theta_high,
+        theta_low=theta_low,
+        tau=tau,
     )
     logger.debug(
         t(

@@ -244,12 +244,9 @@ def test_roundtrip_login_fields() -> None:
     assert "ts" in result
 
 
-def test_plaintext_rejected() -> None:
+def test_crypto_rejections_and_tampering() -> None:
     with pytest.raises(AuthCryptoError):
         maybe_decrypt_auth_body({"email": "x", "password": "y"})
-
-
-def test_tampered_ciphertext_rejected() -> None:
     body = _frontend_encrypt({"email": "x", "password": "y"}, tamper_ct=True)
     with pytest.raises(AuthCryptoError):
         maybe_decrypt_auth_body(body)

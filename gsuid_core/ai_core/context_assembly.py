@@ -227,7 +227,7 @@ async def assemble_dynamic_context(
     )
     from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
 
-    tail = await load_speaker_preference_tail(bot_id, persona_name or "", user_id)
+    tail = await load_speaker_preference_tail(bot_id, persona_name or "", user_id, existing_text=memory_text)
     if tail:
         text = f"{text}\n\n{tail}" if text else tail
     from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
@@ -237,7 +237,15 @@ async def assemble_dynamic_context(
     # 叫人格名是在叫你，不是在问同名实体：先剥掉人格名和唤醒词再查别名表。
     persona_surfaces = collect_persona_surfaces(persona_name)
     alias_note = format_alias_bindings(strip_surfaces(query, persona_surfaces))
-    if not alias_note and history_context and intent != "闲聊":
+    if (
+        not alias_note
+        and history_context
+        and intent != "闲聊"
+        and (
+            len(strip_surfaces(query, persona_surfaces).strip()) <= 24
+            or (ctx.turn_graph is not None and bool(ctx.turn_graph.ellipsis_followup))
+        )
+    ):
         history_scope = (
             history_context.split("[历史对话]", 1)[0] if "[与你的对话]" in history_context else history_context
         )

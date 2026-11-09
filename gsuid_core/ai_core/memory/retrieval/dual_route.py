@@ -239,15 +239,15 @@ class MemoryContext:
             while i <= j:
                 idx = i if left else j
                 ln = len(items[idx])
-                if used + ln > budget and keep:
-                    break
-                keep.add(idx)
-                used += ln
                 if left:
                     i += 1
                 else:
                     j -= 1
                 left = not left
+                if used + ln > budget and keep:
+                    continue
+                keep.add(idx)
+                used += ln
             return [items[k] for k in range(n) if k in keep]
 
         from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT
@@ -307,10 +307,11 @@ class MemoryContext:
             fact_budget = int(max_chars * (0.15 if intent == "timeline_order" else 0.55))
             edges = list(self.edges[: memory_config.search_edge_count])
 
-            def _edge_rank(e: Edge) -> tuple[int, int, float]:
+            def _edge_rank(e: Edge) -> tuple[int, int, float, float]:
                 is_priority = 0 if (priority_speakers and e["source_name"] in priority_speakers) else 1
                 is_trivia = 1 if _TRIVIA_FACT_RE.search(e["fact"] or "") else 0
-                return (is_priority, is_trivia, -coalesce_ts(e))
+                score = float(e["score"]) if "score" in e and e["score"] else 0.0
+                return (is_priority, is_trivia, -round(score, 3), -coalesce_ts(e))
 
             if intent == "timeline_order":
                 edges.sort(key=coalesce_ts)
@@ -382,7 +383,7 @@ class MemoryContext:
             conf_lines = [f"• {s[:300]}" for s in self.conflicts[:6]]
             taken = _take(conf_lines, int(max_chars * 0.12))
             if taken:
-                parts.append("【陈述不一致】\n" + "\n".join(taken))
+                parts.append(f"【陈述不一致】{MEMORY_CONFLICT_NOTE}\n" + "\n".join(taken))
 
         if self.categories:
             cats = [c for c in self.categories if (not query or (c["name"] and c["name"] in query))]
@@ -428,8 +429,19 @@ class MemoryContext:
                     or looks_like_sum_query(query)
                     or looks_like_compare_query(query)
                 )
+                from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    query_tokens,
+                    token_in_text,
+                )
+
                 eps = list(self.episodes)
-                self_eps = [e for e in eps if (e["scope_key"] or "").startswith("self:")]
+                q_toks = query_tokens(query) if query else []
+                self_eps = [
+                    e
+                    for e in eps
+                    if (e["scope_key"] or "").startswith("self:")
+                    and (not q_toks or any(token_in_text(t, e["content"] or "") for t in q_toks))
+                ]
                 other_eps = [e for e in eps if not (e["scope_key"] or "").startswith("self:")]
 
                 clock = now if now is not None else datetime.now()
@@ -451,8 +463,10 @@ class MemoryContext:
                     else:
                         old_self.append(ep)
 
-                self_budget = 0 if cross_session else min(int(max_chars * 0.10), max(0, ep_budget // 5))
-                recent_budget = 0 if cross_session else min(int(ep_budget * 0.25), 400)
+                self_budget = (
+                    0 if (cross_session or not old_self) else min(int(max_chars * 0.10), max(0, ep_budget // 5))
+                )
+                recent_budget = 0 if (cross_session or not recent_self) else min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
                 ep_cap = 480 if (self.temporal_mode or intent == "timeline_order") else 1000
                 parallel_q = wants_parallel_document_coverage(query) or self.covered
@@ -523,8 +537,13 @@ class MemoryContext:
                     # 窗内优先前置，窗外后置保底，避免时间窗预估偏差导致证据硬丢失
                     other_eps = [e for e in other_eps if _in_win(e)] + [e for e in other_eps if not _in_win(e)]
 
-                if looks_like_order_query(query) or looks_like_span_query(query) or looks_like_summary_query(query):
-                    ep_cap = max(ep_cap, 4800)
+                if (
+                    looks_like_order_query(query)
+                    or looks_like_span_query(query)
+                    or looks_like_summary_query(query)
+                    or intent in ("timeline_order", "broad_summary")
+                ):
+                    ep_cap = 480 if not self.covered else max(ep_cap, 4800)
                 haystack = list(other_eps)
 
                 if self.covered:
@@ -549,8 +568,15 @@ class MemoryContext:
                     packed = collapse_document_episodes(packed)
                 if cross_session:
                     packed = packed[:60]
-                if looks_like_order_query(query) or looks_like_summary_query(query) or intent == "timeline_order":
-                    packed = sorted(packed, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+                if (
+                    looks_like_order_query(query)
+                    or looks_like_summary_query(query)
+                    or intent in ("timeline_order", "broad_summary")
+                ):
+                    sheet_tail = [e for e in packed if is_fact_sheet(e)]
+                    core_packed = [e for e in packed if not is_fact_sheet(e)]
+                    core_packed.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+                    packed = core_packed + sheet_tail
 
                 if looks_like_order_query(query) or intent == "timeline_order":
                     from gsuid_core.ai_core.memory.retrieval.lexical import (
@@ -558,7 +584,12 @@ class MemoryContext:
                         format_order_skeleton,
                     )
 
-                    stage_eps = self.order_stages if self.order_stages else packed
+                    non_sheet_packed = [e for e in packed if not is_fact_sheet(e)]
+                    stage_eps = (
+                        self.order_stages
+                        if self.order_stages and len(self.order_stages) >= len(non_sheet_packed)
+                        else non_sheet_packed
+                    )
                     skel = format_order_skeleton(stage_eps, query=query)
                     self.skeleton_ids = [e["id"] for e in stage_eps if "id" in e]
                     if skel:
@@ -572,9 +603,6 @@ class MemoryContext:
                     n = query_only_item_cap(query) or len(skel)
                     dial_n = max(n * 2, min(n * 3, 24)) if n else 16
                     packed = pack_order_dialogue(haystack, query, dial_n)
-                    lead = [ep for ep in haystack if is_fact_sheet(ep)]
-                    if lead:
-                        packed = lead + [ep for ep in packed if not is_fact_sheet(ep)]
                     self.inject_ids = [e["id"] for e in packed if "id" in e]
 
                 if not self.inject_ids:
@@ -605,12 +633,29 @@ class MemoryContext:
                 )
 
                 if (
-                    intent == "timeline_order"
+                    intent in ("timeline_order", "broad_summary")
                     or looks_like_order_query(query)
                     or looks_like_span_query(query)
                     or looks_like_summary_query(query)
                 ):
-                    taken = _take_head_tail(_ep_lines(user_eps, self_mark=False), other_budget)
+                    core_user_eps = [e for e in user_eps if not is_fact_sheet(e)]
+                    sheet_eps = [e for e in user_eps if is_fact_sheet(e)]
+                    want_asst = (intent == "broad_summary" or looks_like_summary_query(query)) and bool(asst_eps)
+                    user_share = (other_budget * 3) // 4 if want_asst else other_budget
+                    taken = _take_head_tail(_ep_lines(core_user_eps, self_mark=False), user_share)
+                    used_chars = sum(len(x) for x in taken)
+                    if want_asst and other_budget - used_chars > 120:
+                        taken_asst = _take_head_tail(
+                            _ep_lines(asst_eps, self_mark=False),
+                            other_budget - used_chars,
+                        )
+                        taken = taken + taken_asst
+                        used_chars = sum(len(x) for x in taken)
+                    if sheet_eps and other_budget - used_chars > 200:
+                        taken = taken + _take(
+                            _ep_lines(sheet_eps, self_mark=False),
+                            other_budget - used_chars,
+                        )
                 elif self.temporal_mode:
                     taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
                 elif not self.covered and (
@@ -757,16 +802,22 @@ def _merge_edges(*lists: Sequence[Edge]) -> list[Edge]:
 
 
 async def _fts_episodes(query: str, scope_keys: list[str], limit: int) -> list[Episode]:
+    from sqlmodel import col, select
+
+    from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.fts import match_episode_ids
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
     from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
 
     ids = await match_episode_ids(scope_keys, query_tokens(query), limit)
-    if not ids:
+    if not ids or async_maker is None:
         return []
+    async with async_maker() as session:
+        result = await session.execute(select(AIMemEpisode).where(col(AIMemEpisode.id).in_(ids)))
+        by_id = {row.id: row for row in result.scalars().all()}
     out: list[Episode] = []
     for eid in ids:
-        row = await AIMemEpisode.get_one(eid)
+        row = by_id[eid] if eid in by_id else None
         if row is None:
             continue
         out.append(
@@ -820,6 +871,7 @@ async def _refresh_edges_from_db(edges: list[Edge], scope_keys: list[str]) -> li
     if not edges:
         return edges
     ids = [e["id"] for e in edges if e["id"]]
+    score_by_id = {e["id"]: (e["score"], e["weight"]) for e in edges if e["id"]}
     async with async_maker() as session:
         result = await session.execute(select(AIMemEdge).where(col(AIMemEdge.id).in_(ids)))
         rows = list(result.scalars().all())
@@ -830,20 +882,57 @@ async def _refresh_edges_from_db(edges: list[Edge], scope_keys: list[str]) -> li
     for row in rows:
         typed = _edge_to_typed(row, names)
         if typed is not None:
+            if row.id in score_by_id:
+                typed["score"], typed["weight"] = score_by_id[row.id]
             by_id[row.id] = typed
     refreshed = [by_id[e["id"]] if e["id"] in by_id else e for e in edges]
 
     source_ids = list({e["source_id"] for e in refreshed if e["source_id"]})
+    slot_scores: dict[tuple[str, str], float] = {}
+    linked_scores: dict[str, float] = {}
+    for e in refreshed:
+        sc = e["score"]
+        slot = e["slot_key"] if "slot_key" in e and e["slot_key"] else ""
+        if slot and e["source_id"]:
+            key = (e["source_id"], slot)
+            if key not in slot_scores or sc > slot_scores[key]:
+                slot_scores[key] = sc
+        sup_id = e["superseded_by_id"] if "superseded_by_id" in e and e["superseded_by_id"] else ""
+        if sup_id:
+            prev_sup = linked_scores[sup_id] if sup_id in linked_scores else 0.0
+            if sc > prev_sup:
+                linked_scores[sup_id] = sc
+        con_id = e["contradicts_edge_id"] if "contradicts_edge_id" in e and e["contradicts_edge_id"] else ""
+        if con_id:
+            prev_con = linked_scores[con_id] if con_id in linked_scores else 0.0
+            if sc > prev_con:
+                linked_scores[con_id] = sc
+
     extra: list[Edge] = []
     have = {e["id"] for e in refreshed}
     for sk in scope_keys:
         for row in await AIMemEdge.get_for_entities(source_ids, sk, limit=60):
             if row.id in have:
                 continue
+            slot_key = (row.source_entity_id, row.slot_key or "")
+            if row.id in linked_scores:
+                inherited_score = linked_scores[row.id]
+            elif row.superseded_by_id and row.superseded_by_id in score_by_id:
+                inherited_score = score_by_id[row.superseded_by_id][0]
+            elif row.contradicts_edge_id and row.contradicts_edge_id in score_by_id:
+                inherited_score = score_by_id[row.contradicts_edge_id][0]
+            elif row.slot_key and slot_key in slot_scores:
+                inherited_score = slot_scores[slot_key]
+            elif row.resolution_state == "contradicted":
+                inherited_score = 0.1
+            else:
+                continue
             typed = _edge_to_typed(row, names)
             if typed is not None:
+                typed["score"] = inherited_score
                 extra.append(typed)
-    return extra + refreshed
+                have.add(row.id)
+    return refreshed + extra
 
 
 async def _apply_intent_edges(
@@ -901,7 +990,7 @@ async def _apply_intent_edges(
                     continue
                 extra.append(typed)
                 have.add(row.id)
-        return extra + ranked_edges
+        return ranked_edges + extra
 
     if intent == "timeline_order":
         from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
@@ -1090,10 +1179,7 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
         pack_first_mention_episodes,
     )
     from gsuid_core.ai_core.memory.retrieval.event_time import order_topic_span, temporal_search_query
-    from gsuid_core.ai_core.memory.retrieval.order_reconstruct import (
-        cluster_first_mentions,
-        select_by_topic_scores,
-    )
+    from gsuid_core.ai_core.memory.retrieval.order_reconstruct import select_by_topic_scores
 
     if n <= 0 or not episodes:
         return []
@@ -1109,28 +1195,23 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
     if topic and len(user) > 120:
         user = sorted(user, key=lambda e: -_topic_hit_count(topic, e["content"] or ""))[:120]
         user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    missing = [e["id"] for e in user if "id" in e and not (e["embedding"] if "embedding" in e else [])]
+    if missing:
+        from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
+
+        vecs = await retrieve_episode_dense_vectors(missing)
+        for e in user:
+            eid = e["id"] if "id" in e else ""
+            if eid and eid in vecs:
+                e["embedding"] = vecs[eid]
     reranker = get_reranker()
     pool = user
     if reranker is not None and topic:
         texts = [_speaker_stripped(e["content"] or "")[:200] for e in user]
         scores = list(await _run_sync_rerank(reranker, topic, texts))
         if len(scores) == len(user):
-            missing = [e["id"] for e in user if "id" in e and not (e["embedding"] if "embedding" in e else [])]
-            vecs: dict[str, list[float]] = {}
-            if missing:
-                from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
-
-                vecs = await retrieve_episode_dense_vectors(missing)
-            for e in user:
-                eid = e["id"] if "id" in e else ""
-                if eid and eid in vecs:
-                    e["embedding"] = vecs[eid]
-            have = _embedding_map([e for e in user if "embedding" in e and e["embedding"]])
+            have = _embedding_map(user)
             return select_by_topic_scores(user, scores, n, have)
-    with_vec = [e for e in pool if "embedding" in e and e["embedding"]]
-    emap = _embedding_map(with_vec)
-    if emap is not None and with_vec:
-        return cluster_first_mentions(with_vec, n, emap)
     return pack_first_mention_episodes(pool, query, n)
 
 
@@ -1184,7 +1265,6 @@ async def dual_route_retrieve(
         looks_like_sum_query,
         expand_lexical_recall,
         looks_like_count_query,
-        expand_episode_neighbors,
         looks_like_attribute_query,
         should_keep_assistant_hits,
         wants_parallel_document_coverage,
@@ -1224,6 +1304,7 @@ async def dual_route_retrieve(
                 else memory_config.preference_max_inject
             )
             pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
+            pref_rows = [r for r in pref_rows if r.target_context != "possession"]
             if preference_contexts is not None:
                 ctx_set = set(preference_contexts)
                 pref_rows = [
@@ -1340,9 +1421,21 @@ async def dual_route_retrieve(
     if not covered:
         episodes = await _expand_document_siblings(episodes, scope_keys)
 
-    pending = pending_episodes_for_scopes(scope_keys)
+    pending = pending_episodes_for_scopes(scope_keys, cap=16)
     if pending:
-        episodes = _merge_episodes(pending, episodes)
+        from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+
+        q_stripped = query.strip()
+        q_toks = query_tokens(query)
+        matched_pending: list[Episode] = []
+        for ep in pending:
+            raw = (ep["content"] or "").strip()
+            if not raw or (q_stripped and raw.endswith(f": {q_stripped}")):
+                continue
+            if not q_toks or any(token_in_text(t, raw) for t in q_toks):
+                matched_pending.append(ep)
+        if matched_pending:
+            episodes = _merge_episodes(episodes, matched_pending)
 
     span_eps: list[Episode] = []
     thread_cues: list[MemoryEventCue] = []
@@ -1419,9 +1512,6 @@ async def dual_route_retrieve(
             if re.search(r"\d", raw) and any(token_in_text(t, raw) for t in q_tokens):
                 reserved_episodes.append(ep)
 
-    if memory_intent != "none" and episodes:
-        episodes = await expand_episode_neighbors(episodes)
-
     if memory_intent in ("point_latest", "broad_summary") and not episodes and scope_keys:
         episodes = await expand_lexical_recall(
             episodes,
@@ -1432,6 +1522,8 @@ async def dual_route_retrieve(
             reserved=[],
             memory_intent=memory_intent,
         )
+
+    stance_conflicts: list[str] = []
 
     ranked_entities = await _rerank_entities(query, s1.entities, top_k * 2)
     ranked_edges = await _rerank_edges(query, s1.edges, top_k * 2)
@@ -1469,6 +1561,7 @@ async def dual_route_retrieve(
         episodes=episodes,
         entities=ranked_entities,
         edges=ranked_edges,
+        conflicts=stance_conflicts,
         covered=bool(covered),
         cover_ids=cover_ids,
         preferences=preference_items,

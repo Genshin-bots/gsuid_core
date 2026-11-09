@@ -1090,91 +1090,6 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         1800,
         options=[600, 1800, 3600, 7200],
     ),
-    "enable_system2get": GsBoolConfig(
-        "是否启用 System-2",
-        "指定是否启用 System-2, 可以提高检索精度但会增加性能开销",
-        False,
-    ),
-    "MemoryRetrieval": GsDivider(
-        "记忆摄取设置",
-        "记忆摄取设置",
-        "记忆摄取设置",
-    ),
-    "background_episode_count": GsIntConfig(
-        "抽取背景片段数量",
-        "实体抽取时注入的近期对话片段(Episode)数量, 用于跨批次指代消解; "
-        "调小可显著降低每次抽取的 Token 开销(原始信息仍由 Episode 完整留存), 0 表示不注入背景",
-        1,
-        options=[0, 1, 2, 3],
-    ),
-    "background_episode_max_chars": GsIntConfig(
-        "抽取背景片段字符上限",
-        "每条注入的近期对话片段(Episode)在抽取提示词中的最大字符数, 超出部分截断; 调小可降低 Token 开销",
-        600,
-        options=[300, 600, 1000, 2000],
-    ),
-    "extraction_value_gate": GsStrConfig(
-        "抽取价值门控档位",
-        "决定哪些消息会触发 LLM 实体抽取(无论档位, 原文都完整存为 Episode, 不丢信息)。"
-        "宽松: 默认全部抽取(最全, 最费 Token); "
-        "均衡: 无实体特征的纯寒暄降级为仅存档不抽取; "
-        "严格: 仅含强信号(姓名/承诺/情绪等)的消息才抽取(最省 Token)",
-        "均衡",
-        options=["宽松", "均衡", "严格"],
-    ),
-    "hiergraph_build_mode": GsStrConfig(
-        "分层图构建模式",
-        "分层类目树仅被 System-2 检索消费, 也是记忆重建 Token 的大头(实体/边/原文不受影响)。"
-        "自动: 仅当启用 System-2 时才构建整棵类目树, 否则只按需刷新群摘要(推荐, 最省); "
-        "始终: 总是构建完整类目树(旧行为); "
-        "仅摘要: 从不建树, 仅按需刷新群摘要; "
-        "关闭: 既不建树也不生成摘要(最省 Token)",
-        "自动",
-        options=["自动", "始终", "仅摘要", "关闭"],
-    ),
-    "hiergraph_batch_size": GsIntConfig(
-        "分层图单批节点数",
-        "建树时每次 LLM 分类的节点数。调大→单轮 LLM 调用更少、每批重发的固定开销(system+现有类目)"
-        "被摊薄更省 Token; 但过大会拉长单次耗时、逼近超时(超时兜底会让每节点单独成类, 污染类目)。"
-        "模型较慢时建议保持较小值",
-        20,
-        options=[15, 20, 30, 40],
-    ),
-    "hiergraph_vector_assign_threshold": GsStrConfig(
-        "分层图向量预分配阈值",
-        "建树时新实体与已归类近邻的余弦相似度 ≥ 此阈值即直接归类、跳过 LLM。"
-        "调低→更多实体走零 LLM 的预分配路径、更省 Token, 但误归类风险上升(宁可漏分不可错分)",
-        "0.85",
-        options=["0.80", "0.82", "0.85", "0.88", "0.90"],
-    ),
-    "hiergraph_min_entities": GsIntConfig(
-        "分层图最小实体门槛",
-        "scope 实体数低于此值则整体跳过分层图(含轻量群摘要)。调大→更多小群被整体跳过、更省 Token; "
-        "其召回仍由 System-1 向量 + edges 覆盖, 不影响记忆完整性",
-        30,
-        options=[30, 50, 80, 120, 200],
-    ),
-    "hiergraph_max_existing_cats": GsIntConfig(
-        "分层图已有类目上限",
-        "建树分类时每批最多带入的已有类目数(仅名称)。调小→每批 prompt 更省 Token, "
-        "但过小会让 LLM 看不到已有类目而重复造新类目, 反而膨胀后续成本",
-        50,
-        options=[20, 30, 50, 80],
-    ),
-    "hiergraph_node_summary_chars": GsIntConfig(
-        "分层图节点摘要字符上限",
-        "建树分类时每个待分类节点附带的实体摘要字符数(名称+标签始终保留)。"
-        "调小(含 0=不带摘要)更省 Token, 但摘要有助于消歧相近实体, 过小可能降低归类精度",
-        60,
-        options=[0, 30, 60, 100],
-    ),
-    "hiergraph_summary_delta": GsIntConfig(
-        "群摘要刷新增量阈值",
-        "自上次重建以来新增实体达此值才重新生成群摘要(Heartbeat/人格群语境消费)。"
-        "调大→摘要刷新更稀疏、更省 Token, 代价是摘要新鲜度下降",
-        50,
-        options=[50, 100, 200, 500],
-    ),
     "MemoryProcedural": GsDivider(
         "程序性 / 偏好记忆设置",
         "程序性 / 偏好记忆设置",
@@ -1195,7 +1110,7 @@ MEMORY_CONFIG: Dict[str, GSC] = {
     ),
     "fact_max_inject": GsIntConfig(
         "核心事实单次注入条数上限",
-        "单次回复最多注入的核心事实条数; 字符预算对短垃圾行不设防, 条数与字符双限取严(§25(4))",
+        "单次回复最多注入的核心事实条数; 与字符预算双限取严, 防止大量短句占满上下文",
         12,
         options=[6, 12, 20, 30],
     ),
@@ -1218,61 +1133,6 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "而非等聚合大窗。关闭则纠错偏好随常规摄入窗口落库",
         True,
     ),
-    "MemoryRFMem": GsDivider(
-        "RF-Mem 双过程检索设置(进阶)",
-        "RF-Mem 双过程检索设置(进阶)",
-        "RF-Mem 双过程检索设置(进阶)",
-    ),
-    "enable_familiarity_routing": GsBoolConfig(
-        "启用熟悉度路由",
-        "开启后用一次零 LLM 的向量探针(均分 s̄ + 列表熵)逐查询决定'检索多深', 把 System-2 从全局"
-        "开关降为'按不确定性触发': 熟悉的查询抑制 System-2 省 Token, 不确定的查询才放行深检索。"
-        "默认关; 阈值需按嵌入模型标定后再放量(见 MEMORY_SYSTEM 文档)",
-        False,
-    ),
-    "enable_recollection_path": GsBoolConfig(
-        "启用回忆环(仅 remote Qdrant)",
-        "回忆环是零 LLM 的 KMeans+α-mix 多轮向量深检索, 作为 System-2 关闭时的增召回替代。"
-        "仅在'启用熟悉度路由'开启、路由判低熟悉、System-2 未触发、且 qdrant_provider=remote 时生效"
-        "(本地嵌入式 Qdrant 是 O(N) 暴力扫, 多轮回忆会成倍放大检索成本, 故强制 remote)",
-        False,
-    ),
-    "familiarity_theta_high": GsFloatConfig(
-        "熟悉度上阈 θ_high",
-        "均分 s̄ ≥ 此值直接走浅检索(抑制 System-2)。余弦语义, 须按嵌入模型/语料离线标定"
-        "(论文英文模型经验值 0.6, 中文本地模型通常需平移; 建议取样本 s̄ 的 P75)",
-        0.6,
-        min_value=0.0,
-        max_value=1.0,
-    ),
-    "familiarity_theta_low": GsFloatConfig(
-        "熟悉度下阈 θ_low",
-        "均分 s̄ ≤ 此值直接走深检索。须按嵌入模型标定(论文经验值 0.3; 建议取样本 s̄ 的 P25)",
-        0.3,
-        min_value=0.0,
-        max_value=1.0,
-    ),
-    "familiarity_tau": GsFloatConfig(
-        "列表熵阈 τ",
-        "s̄ 落在上下阈之间时由列表熵 H 裁决: H > τ(候选分布越散越不确定)走深检索。"
-        "论文经验区间 0.2~0.25, > 0.35 会失去自适应",
-        0.22,
-        min_value=0.0,
-        max_value=1.0,
-    ),
-    "familiarity_lambda": GsFloatConfig(
-        "温度 softmax 锐度 λ",
-        "计算列表熵时对探针分数做温度 softmax 的锐度。论文 20~30, 不敏感, 一般无需调整",
-        20.0,
-        min_value=1.0,
-        max_value=100.0,
-    ),
-    "familiarity_probe_k": GsIntConfig(
-        "探针候选数 k",
-        "熟悉度探针拉取的候选 Episode 数(算 s̄/熵 用)。论文 10~20 即稳",
-        15,
-        options=[10, 15, 20, 30],
-    ),
     "MemoryExtra": GsDivider(
         "记忆其他设置",
         "记忆其他设置",
@@ -1280,7 +1140,7 @@ MEMORY_CONFIG: Dict[str, GSC] = {
     ),
     "eval_mode": GsBoolConfig(
         "记忆评测模式",
-        "指定是否启用记忆评测模式, 启用后无法使用 System-2 和 Rerank",
+        "指定是否启用记忆评测模式, 启用后跳过预测误差降级并在评测结束时统一执行故事线归并",
         False,
     ),
 }

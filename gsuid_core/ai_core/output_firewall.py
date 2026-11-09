@@ -601,6 +601,9 @@ def is_tech_dump(text: str) -> bool:
     """工具/子代理返回是否为堆栈或状态码技术 dump（供 tool return 入模前屏蔽）。"""
     if not text or not text.strip():
         return False
+    # 认知/记忆检索的历史对话引用含用户曾粘贴的报错，不属于当前工具异常堆栈
+    if '<untrusted source="memory_recall">' in text or "【认知检索】" in text:
+        return False
     if _TECH_DUMP_RE.search(_CODE_FENCE_RE.sub(" ", text)):
         return True
     # 大段 JSON 且含 status + error/detail 形态

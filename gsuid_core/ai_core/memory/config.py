@@ -93,39 +93,9 @@ class MemoryConfig:
     无 Reranker 时无相关性信号，不做此过滤。
     """
 
-    # ====== 去重与冲突阈值 ======
+    # ====== 去重阈值 ======
     dedup_similarity_threshold: float = 0.92
     """Entity 去重余弦相似度阈值，超过则视为同一实体"""
-
-    edge_conflict_threshold: float = 0.88
-    """Edge 语义冲突判断阈值，低于 Entity 阈值更宽松"""
-
-    # ====== 分层图（Hierarchical Graph）配置 ======
-    min_children_per_category: int = 3
-    """每个 Category 至少包含的子节点数（压缩效率约束）"""
-
-    max_layers: int = 3
-    """分层图最大层数"""
-
-    hiergraph_rebuild_ratio: float = 2.50
-    """Entity 增长超过此比例时触发增量重建"""
-
-    hiergraph_rebuild_interval_seconds: int = 172800
-    """距上次重建超过此秒数时触发增量重建（默认 48h）"""
-
-    # 回忆环内部超参。总开关和标定阈值在下方 property。
-    # 这些字段重启归位，不进控制台。
-    recollection_beam: int = 3
-    """回忆环 beam 宽 B（论文 2~3）。"""
-
-    recollection_fanout: int = 2
-    """回忆环 fanout F（论文 1~2，过大稀释 precision）。"""
-
-    recollection_rounds: int = 3
-    """回忆环最大轮数 R（复杂度封顶）。"""
-
-    recollection_alpha: float = 0.5
-    """回忆环 query-质心混合系数 α（论文 0.3~0.6，极端 0/1 退化）。"""
 
     # ====== 程序性 / 偏好记忆：即时 flush 去抖（运行时字段，进阶可调） ======
     # 总开关 enable_preference_memory 与注入/裁剪阈值已上 MEMORY_CONFIG（见下方 @property）。
@@ -169,13 +139,13 @@ class MemoryConfig:
 
     @property
     def fact_max_inject(self) -> int:
-        """单次注入的核心事实条数上限（与字符预算双限取严，§25(4)）。"""
+        """单次注入的核心事实条数上限（与字符预算双限取严）。"""
         return mrc.get_config("fact_max_inject").data
 
     @property
     def enable_system2(self) -> bool:
-        """是否启用 System-2 全局选择（成本较高，可按需关闭）"""
-        return mrc.get_config("enable_system2get").data
+        """兼容保留（schema_v2 已无分层图遍历，固定返回 False）。"""
+        return False
 
     @property
     def eval_mode(self) -> bool:
@@ -197,56 +167,6 @@ class MemoryConfig:
     def retrieve_hook_timeout_ms(self) -> int:
         """H05 检索钩子超时。"""
         return 15_000
-
-    @property
-    def qdrant_provider(self) -> str:
-        """Qdrant 部署形态（local 嵌入式 / remote 远程）。
-
-        回忆环（enable_recollection_path）以此为前置——本地嵌入式 Qdrant 是 O(N) 暴力
-        扫描，多轮回忆会成倍放大检索成本，故仅 remote 时才允许启用回忆环。
-        """
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        return ai_config.get_config("qdrant_provider").data
-
-    # ====== RF-Mem 熟悉度路由 + 回忆环（已上 MEMORY_CONFIG，WebConsole 可调） ======
-    @property
-    def enable_familiarity_routing(self) -> bool:
-        """探针熟悉度路由总开关：开启后用一次纯向量探针的 s̄/熵 逐查询决定"检索多深"，
-        把 System-2 从"全局开关"降为"按不确定性触发"。关闭时不发探针、行为不变。"""
-        return mrc.get_config("enable_familiarity_routing").data
-
-    @property
-    def enable_recollection_path(self) -> bool:
-        """回忆环（System-1.5，零 LLM 的 KMeans+α-mix 向量深检索）开关。
-        仅在 enable_familiarity_routing 开启、System-2 实际未触发、且 qdrant_provider=remote
-        时才生效（本地嵌入式 Qdrant 是 O(N) 暴力扫，多轮回忆会成倍放大检索墙）。"""
-        return mrc.get_config("enable_recollection_path").data
-
-    @property
-    def familiarity_probe_k(self) -> int:
-        """探针候选数（论文 10~20 即稳，对齐 retrieval_top_k）。"""
-        return mrc.get_config("familiarity_probe_k").data
-
-    @property
-    def familiarity_lambda(self) -> float:
-        """温度 softmax 锐度 λ（论文 20~30，不敏感）。"""
-        return float(mrc.get_config("familiarity_lambda").data)
-
-    @property
-    def familiarity_theta_high(self) -> float:
-        """熟悉度上阈 θ_high（余弦语义，需按嵌入模型标定；s̄ ≥ 此值直接走浅检索）。"""
-        return float(mrc.get_config("familiarity_theta_high").data)
-
-    @property
-    def familiarity_theta_low(self) -> float:
-        """熟悉度下阈 θ_low（s̄ ≤ 此值走深检索）。"""
-        return float(mrc.get_config("familiarity_theta_low").data)
-
-    @property
-    def familiarity_tau(self) -> float:
-        """列表熵阈 τ（论文 0.2~0.25；中段由熵裁决，H > τ 走深检索）。"""
-        return float(mrc.get_config("familiarity_tau").data)
 
     # ====== 程序性 / 偏好记忆（已上 MEMORY_CONFIG，WebConsole 可调；默认开） ======
     @property
@@ -291,73 +211,6 @@ class MemoryConfig:
         指定被动感知的范围
         """
         return mrc.get_config("memory_session").data
-
-    @property
-    def background_episode_count(self) -> int:
-        """实体抽取时注入的近期对话片段（Episode）数量。
-
-        用于跨批次指代消解；调小可显著降低每次抽取的 Token 开销
-        （原始信息仍由 Episode 完整留存），0 表示不注入背景。
-        """
-        return mrc.get_config("background_episode_count").data
-
-    @property
-    def background_episode_max_chars(self) -> int:
-        """每条注入的近期对话片段在抽取提示词中的最大字符数（超出截断）"""
-        return mrc.get_config("background_episode_max_chars").data
-
-    @property
-    def extraction_value_gate(self) -> str:
-        """抽取价值门控档位（宽松 / 均衡 / 严格）。
-
-        决定哪些消息触发 LLM 实体抽取；无论档位，原文都完整存为 Episode 不丢信息。
-        """
-        return mrc.get_config("extraction_value_gate").data
-
-    @property
-    def hiergraph_build_mode(self) -> str:
-        """分层图构建模式（自动 / 始终 / 仅摘要 / 关闭）。
-
-        分层类目树仅被 System-2 检索消费；非"始终"模式下可跳过 Layer-1/2/3 的 LLM
-        分类，大幅削减重建 Token（Episode/Entity/Edge 等记忆本体不受影响）。
-        """
-        return mrc.get_config("hiergraph_build_mode").data
-
-    @property
-    def hiergraph_batch_size(self) -> int:
-        """建树时每次 LLM 分类的节点数。
-
-        调大可减少单轮 LLM 调用次数、摊薄每批重发的固定开销，但过大有超时风险。
-        """
-        return mrc.get_config("hiergraph_batch_size").data
-
-    @property
-    def hiergraph_vector_assign_threshold(self) -> float:
-        """建树时向量预分配的余弦相似度阈值（配置为字符串，此处解析为 float）。
-
-        调低可让更多实体走零 LLM 的预分配路径以省 Token，代价是误归类风险上升。
-        """
-        return float(mrc.get_config("hiergraph_vector_assign_threshold").data)
-
-    @property
-    def hiergraph_min_entities(self) -> int:
-        """分层图最小实体门槛：scope 实体数低于此值则整体跳过分层图（含轻量群摘要）。"""
-        return mrc.get_config("hiergraph_min_entities").data
-
-    @property
-    def hiergraph_max_existing_cats(self) -> int:
-        """建树分类时每批最多带入的已有类目数（仅名称），上限越小越省 Token。"""
-        return mrc.get_config("hiergraph_max_existing_cats").data
-
-    @property
-    def hiergraph_node_summary_chars(self) -> int:
-        """建树分类时每个待分类节点附带的实体摘要字符上限（0 表示不带摘要）。"""
-        return mrc.get_config("hiergraph_node_summary_chars").data
-
-    @property
-    def hiergraph_summary_delta(self) -> int:
-        """群摘要刷新的新增实体阈值：达此增量才重算群摘要，调大更省 Token。"""
-        return mrc.get_config("hiergraph_summary_delta").data
 
 
 # 全局单例

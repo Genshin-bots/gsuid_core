@@ -118,7 +118,7 @@ def memory_intent_from_ctx(ctx: AgentHookContext) -> "MemoryIntent":
 
 
 def refine_retrieved_memory(mem: "MemoryContext", intent: "MemoryIntent", query: str = "") -> None:
-    """保留检索和重排得到的真实相关度排序，不盲目稀释。"""
+    """保留检索和重排得到的真实相关度排序。"""
     del mem, intent, query
 
 
@@ -400,14 +400,20 @@ class MemoryKit(AgentKit):
             mem.reserved_episodes = reserved_turns
         if wants_evidence_injection(ctx):
             from gsuid_core.ai_core.memory.retrieval.lexical import (
+                looks_like_count_query,
                 expand_episode_neighbors,
                 expand_topic_session_turns,
                 looks_like_personal_upkeep_query,
             )
 
-            if memory_intent != "none":
+            # 跨会话演进与时间线模态优先保留广度，不在单会话邻条上消耗预算。
+            if (
+                memory_intent not in ("timeline_order", "broad_summary")
+                and looks_like_count_query(search_q)
+                and not mem.temporal_mode
+            ):
                 mem.episodes = await expand_episode_neighbors(mem.episodes)
-            if looks_like_personal_upkeep_query(search_q):
+            elif looks_like_personal_upkeep_query(search_q) and not mem.temporal_mode:
                 mem.episodes = await expand_topic_session_turns(mem.episodes, search_q)
             refine_retrieved_memory(mem, memory_intent, search_q)
         text = format_retrieved_memory(ctx, mem)

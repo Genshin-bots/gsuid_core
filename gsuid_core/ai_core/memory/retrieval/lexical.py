@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from gsuid_core.ai_core.control.lines import SPEECH_ACT_HINT
 from gsuid_core.ai_core.memory.retrieval.types import Episode
 
 _FACT_SHEET_KIND = "fact_sheet"
@@ -205,7 +206,7 @@ _CLOCK_PREFIX_RE = re.compile(r"^(?:当前时间[：:]\s*[^\n]+\n+)+")
 _CLOCK_LINE_RE = re.compile(r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
 _SHORT_TOKEN_RES: dict[str, re.Pattern[str]] = {}
 _LEXICAL_CAP = 72
-_PRIMARY_KEEP = 8
+_PRIMARY_KEEP = 16
 _HOP_TOKEN_CAP = 12
 _WINDOW_EPISODE_CAP = 64
 _ORDER_POOL_CAP = 400
@@ -216,12 +217,6 @@ _DATA_ROWS_AFTER_HEADER = 8
 # 每个栏目词最多保留几条命中行（不再 top-1），预算由 _fit_cover_lines 收。
 _COVER_HITS_PER_TOKEN = 3
 
-# 原话只证明谁在该时点说过。as_of / [发生] 都不是「现在如此」。
-SPEECH_ACT_HINT = (
-    "每条只证明谁在该时点说过这句。[]是说话时间，[发生]是原话里的相对日期折到那天，"
-    "都不是现在已经如此。问现在的日期、数量或有没有发生，没有本轮工具结果就只转述谁在何时说过；"
-    "问谁说过什么时照原话并带上说话时间。"
-)
 # 覆盖摘录的抽取预算，不是注入预算：先按来源选行，注入再按 inject_memory_cap 收。
 # 抽取侧必须比注入宽档大，否则均分行数会在注入截断之前就被饿死。
 DOC_COVER_EXTRACT_BUDGET = 96000
@@ -587,10 +582,10 @@ def _recall_db_failed(exc: BaseException, backend: str) -> bool:
 async def expand_episode_neighbors(
     episodes: list[Episode],
     *,
-    seed: int = 12,
-    before: int = 14,
-    after: int = 14,
-    cap: int = 96,
+    seed: int = 8,
+    before: int = 3,
+    after: int = 3,
+    cap: int = 72,
 ) -> list[Episode]:
     """命中后再取同 scope 前后轮次，补足同会话指代但不挤占主召回预算。"""
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
@@ -2081,7 +2076,7 @@ def pack_first_mention_episodes(episodes: list[Episode], query: str, cap: int) -
     from gsuid_core.ai_core.memory.retrieval.order_reconstruct import cluster_first_mentions
 
     topic = order_topic_span(query) or temporal_search_query(query) or query
-    user = [e for e in episodes if not _assistant_turn(e["content"] or "")]
+    user = [e for e in episodes if not is_fact_sheet(e) and not _assistant_turn(e["content"] or "")]
     user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
 
     groups: dict[str, list[Episode]] = {}
@@ -2117,7 +2112,7 @@ def pack_first_mention_episodes(episodes: list[Episode], query: str, cap: int) -
         extras.extend(m for m in members if _eid(m) != oid)
 
     pool = list(primary)
-    vecs = _embedding_map([e for e in primary + extras if "embedding" in e and e["embedding"]])
+    vecs = _embedding_map(primary + extras)
     if vecs is not None:
         for ep in extras:
             eid = _eid(ep)
@@ -2130,6 +2125,19 @@ def pack_first_mention_episodes(episodes: list[Episode], query: str, cap: int) -
                 continue
             if _vec_cos(vecs[eid], vecs[oid]) < 0.88:
                 pool.append(ep)
+    elif extras:
+        from gsuid_core.ai_core.memory.retrieval.thread_recall import chrono_diverse_episodes
+
+        target_pool = max(cap * 3, 24)
+        diverse = chrono_diverse_episodes(primary + extras, target_pool)
+        have_ids = {_eid(e) for e in pool if _eid(e)}
+        for ep in diverse:
+            eid = _eid(ep)
+            if eid and eid in have_ids:
+                continue
+            if eid:
+                have_ids.add(eid)
+            pool.append(ep)
 
     pool.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
     if topic:
@@ -2147,16 +2155,41 @@ def pack_first_mention_episodes(episodes: list[Episode], query: str, cap: int) -
             return merged
         head = events if len(events) >= cap else events + stride_keep(rest, cap - len(events))
         return head[:cap]
-    pool_vecs = _embedding_map([e for e in pool if "embedding" in e and e["embedding"]])
-    if pool_vecs is not None and len(pool_vecs) == len(pool):
+    pool_vecs = _embedding_map(pool)
+    if pool_vecs is not None:
         return cluster_first_mentions(pool, cap, pool_vecs)
     return cluster_first_mentions(pool, cap)
 
 
 def pack_milestone_episodes(episodes: list[Episode], query: str, cap: int, char_budget: int = 0) -> list[Episode]:
-    """里程碑与 first-mention 同一套：session/日 opener + 向量聚类。"""
+    """里程碑与 first-mention 同一套：session/日 opener + 向量聚类，并附带关键助手回复。"""
     _ = char_budget
-    return pack_first_mention_episodes(episodes, query, cap)
+    user_milestones = pack_first_mention_episodes(episodes, query, cap)
+    asst_candidates = [e for e in episodes if not is_fact_sheet(e) and _assistant_turn(e["content"] or "")]
+    if not asst_candidates:
+        return user_milestones
+    asst_candidates.sort(
+        key=lambda e: (
+            -_topic_hit_count(query, e["content"] or ""),
+            str(e["valid_at"] if "valid_at" in e else ""),
+        )
+    )
+    asst_cap = min(8, max(4, cap // 4))
+    picked_asst: list[Episode] = []
+    seen_group: set[str] = set()
+    for ep in asst_candidates:
+        if _topic_hit_count(query, ep["content"] or "") < 1 and picked_asst:
+            continue
+        gkey = _session_group_key(ep) or (str(ep["id"]) if "id" in ep else "")
+        if gkey and gkey in seen_group:
+            continue
+        if gkey:
+            seen_group.add(gkey)
+        picked_asst.append(ep)
+        if len(picked_asst) >= asst_cap:
+            break
+    picked_asst.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    return user_milestones + picked_asst
 
 
 def episode_source_key(content: str) -> str:
@@ -3183,14 +3216,15 @@ def _order_topic_phrase(raw: str, *, query: str = "", line_chars: int = 88) -> s
 
 
 def pack_order_dialogue(episodes: list[Episode], query: str, cap: int) -> list[Episode]:
-    """排序题【相关对话】：2N–3N 条用户 turn，先 opener 再按主题补。"""
+    """排序题【相关对话】：2N–3N 条用户 turn，先每组 opener 再按 session 轮询主题补齐。"""
     if cap <= 0:
         return []
-    user = [e for e in episodes if not _assistant_turn(e["content"] or "")]
+    user = [e for e in episodes if not is_fact_sheet(e) and not _assistant_turn(e["content"] or "")]
     user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
     out: list[Episode] = []
     seen: set[str] = set()
-    seen_key: set[str] = set()
+    groups: dict[str, list[Episode]] = {}
+    group_order: list[str] = []
     for ep in user:
         raw = _speaker_stripped(ep["content"] or "")
         if _skip_order_noise(raw):
@@ -3198,28 +3232,48 @@ def pack_order_dialogue(episodes: list[Episode], query: str, cap: int) -> list[E
         eid = str(ep["id"]) if "id" in ep else ""
         if eid and eid in seen:
             continue
-        key = _session_group_key(ep)
-        if key and key in seen_key:
-            continue
         if eid:
             seen.add(eid)
-        if key:
-            seen_key.add(key)
-        out.append(ep)
+        key = _session_group_key(ep) or eid or f"row{len(group_order)}"
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(ep)
+    picked_ids: set[str] = set()
+    for key in group_order:
+        opener = groups[key][0]
+        oid = str(opener["id"]) if "id" in opener else ""
+        if oid:
+            picked_ids.add(oid)
+        out.append(opener)
         if len(out) >= cap:
             return out
-    for ep in user:
-        raw = _speaker_stripped(ep["content"] or "")
-        if _skip_order_noise(raw):
-            continue
-        eid = str(ep["id"]) if "id" in ep else ""
-        if eid and eid in seen:
-            continue
-        if eid:
-            seen.add(eid)
-        out.append(ep)
-        if len(out) >= cap:
+    rest_by_group: list[list[Episode]] = []
+    for key in group_order:
+        members = [
+            e for e in groups[key][1:] if not (str(e["id"]) if "id" in e else "") or str(e["id"]) not in picked_ids
+        ]
+        members.sort(
+            key=lambda e: (
+                -_topic_hit_count(query, e["content"] or ""),
+                str(e["valid_at"] if "valid_at" in e else ""),
+            )
+        )
+        if members:
+            rest_by_group.append(members)
+    idx = 0
+    while len(out) < cap and rest_by_group:
+        progressed = False
+        for members in rest_by_group:
+            if idx < len(members):
+                out.append(members[idx])
+                progressed = True
+                if len(out) >= cap:
+                    break
+        if not progressed:
             break
+        idx += 1
+    out.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
     return out[:cap]
 
 
@@ -3255,9 +3309,10 @@ def format_order_skeleton(
     line_chars: int = 88,
 ) -> list[str]:
     """把 first-mention 序列写成 ``1. YYYY-MM-DD · 主题``，生成前保序。"""
+    clean_eps = [ep for ep in episodes if not is_fact_sheet(ep)]
     lines: list[str] = []
-    stamps = _order_stamps(episodes)
-    for i, (ep, stamp) in enumerate(zip(episodes, stamps), 1):
+    stamps = _order_stamps(clean_eps)
+    for i, (ep, stamp) in enumerate(zip(clean_eps, stamps), 1):
         phrase = _order_topic_phrase(ep["content"] or "", query=query, line_chars=line_chars)
         if not phrase:
             continue
@@ -3283,9 +3338,14 @@ def apply_query_episode_pack(
     asker_id: str = "",
     memory_intent: str = "point_latest",
 ) -> list[Episode]:
-    """事实清单放在最前，其余按显式记忆模态整形。"""
+    """事实清单放在最前（排序/全历程摘要则后置），其余按显式记忆模态整形。"""
+    from gsuid_core.ai_core.memory.retrieval.event_time import (
+        looks_like_order_query,
+        looks_like_summary_query,
+    )
+
     lead = [ep for ep in episodes if is_fact_sheet(ep)]
-    body = [ep for ep in episodes if ep not in lead]
+    body = [ep for ep in episodes if not is_fact_sheet(ep)]
     packed = _pack_without_sweep(
         body,
         query,
@@ -3297,6 +3357,12 @@ def apply_query_episode_pack(
     )
     if not lead:
         return packed
+    if (
+        memory_intent in ("timeline_order", "broad_summary")
+        or looks_like_order_query(query)
+        or looks_like_summary_query(query)
+    ):
+        return packed + lead
     return lead + packed
 
 
@@ -4684,7 +4750,6 @@ async def expand_lexical_recall(
             )
             merged = merge_episode_lists(merged, hop, prefer_extras=True, limit=limit)
     orderish = looks_like_order_query(body) or looks_like_summary_query(body)
-    broad_thread = bool(re.search(r"throughout|across (?:our|the)", body, re.IGNORECASE))
     need_spread = (not orderish) and (
         count_q
         or looks_like_sum_query(body)
@@ -4696,11 +4761,11 @@ async def expand_lexical_recall(
         )
     )
     spread_q = ""
-    if orderish and not broad_thread:
+    if orderish:
         spread_q = search_q or body
     elif need_spread:
         spread_q = body
-    elif memory_intent in ("broad_summary", "timeline_order") and not broad_thread:
+    elif memory_intent in ("broad_summary", "timeline_order"):
         spread_q = search_q or body
     # 点查不得被主题扩散/事实清单重排：FTS/向量命中的证据句必须留在头部。
     if spread_q:
@@ -4720,8 +4785,8 @@ async def expand_lexical_recall(
             named_only=True,
             extra_cap=20,
         )
-        # 长回复默认只当邻句种子。点名/取值题的答案经常只写在助手句里。
-        if should_keep_assistant_hits(body):
+        # 长回复默认只当邻句种子。点名/取值/全历程摘要保留关键助手句。
+        if should_keep_assistant_hits(body) or looks_like_summary_query(body) or memory_intent == "broad_summary":
             merged = merge_episode_lists(assist, seeded, prefer_extras=True, limit=max(limit, 96))
         else:
             drop = {ep["id"] for ep in assist if "id" in ep}
@@ -4749,7 +4814,11 @@ async def expand_lexical_recall(
                 merged = merge_episode_lists(user_day[:8], merged, prefer_extras=False, limit=max(limit, 96))
             else:
                 merged = merge_episode_lists(merged, ranged, prefer_extras=True, limit=limit)
-    elif looks_like_order_query(body) or looks_like_summary_query(body):
+    elif (
+        looks_like_order_query(body)
+        or looks_like_summary_query(body)
+        or memory_intent in ("timeline_order", "broad_summary")
+    ):
         # 主题线程召回只在 dual_route 跑一次；这里只在候选过薄时退回时间采样。
         if len(merged) < 8:
             sample = await user_episodes_chrono_sample(
@@ -4761,6 +4830,20 @@ async def expand_lexical_recall(
             if sample:
                 pool = max(limit, len(sample))
                 merged = merge_episode_lists(merged, sample, prefer_extras=True, limit=pool)
+        missing_ids = [
+            str(ep["id"])
+            for ep in merged
+            if "id" in ep and not is_fact_sheet(ep) and not (ep["embedding"] if "embedding" in ep else [])
+        ]
+        if missing_ids:
+            from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
+
+            vecs = await retrieve_episode_dense_vectors(missing_ids)
+            if vecs:
+                for ep in merged:
+                    eid = str(ep["id"]) if "id" in ep else ""
+                    if eid and eid in vecs:
+                        ep["embedding"] = vecs[eid]
         return merged
     if looks_like_assistant_quote_query(body):
         quotes = await assistant_quote_episodes(body, user_id=user_id, group_id=group_id)

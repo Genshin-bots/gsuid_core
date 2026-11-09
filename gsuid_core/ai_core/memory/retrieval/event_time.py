@@ -408,8 +408,9 @@ _ONES: dict[str, int] = {
     "ten": 10,
 }
 _ITEM_CAP_RE = re.compile(
-    r"\b(?:(\d+)|(one|two|three|four|five|six|seven|eight|nine|ten))\s+items?\b|"
-    r"(?:列出|举出|说出|恰好|只要)\s*(\d+)\s*[条个项]",
+    r"\b(?:(\d+)|(one|two|three|four|five|six|seven|eight|nine|ten))\s+"
+    r"(?:(?:main|key|major|different)\s+)?(?:items?|aspects?|stages?|steps?|phases?|topics?|events?)\b|"
+    r"(?:列出|举出|说出|恰好|只要)\s*(\d+)\s*[条个项阶段方面步]",
     re.IGNORECASE,
 )
 _DURATION_RE = re.compile(

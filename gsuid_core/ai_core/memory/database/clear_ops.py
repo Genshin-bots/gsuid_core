@@ -107,6 +107,11 @@ async def _delete_db_by_scope_keys(
             select(func.count()).select_from(AIMemEdge).where(col(AIMemEdge.scope_key).in_(scope_keys))
         )
     ).scalar() or 0
+    thread_count = (
+        await session.execute(
+            select(func.count()).select_from(AIMemThread).where(col(AIMemThread.scope_key).in_(scope_keys))
+        )
+    ).scalar() or 0
     pref_count = (
         await session.execute(
             select(func.count()).select_from(AIMemPreference).where(col(AIMemPreference.scope_key).in_(scope_keys))
@@ -148,6 +153,7 @@ async def _delete_db_by_scope_keys(
         "deleted_episodes": ep_count,
         "deleted_entities": ent_count,
         "deleted_edges": edge_count,
+        "deleted_threads": thread_count,
         "deleted_categories": 0,
         "deleted_preferences": pref_count,
     }

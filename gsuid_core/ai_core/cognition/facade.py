@@ -209,7 +209,11 @@ async def search_cognition(
         for hid, hit in hits.items():
             confident = hit.score >= backend_floor
             body = hit.summary or hit.title
-            if hit.kind is CogKind.EPISODE and not text_has_query_needles(query, body):
+            if (
+                hit.kind is CogKind.EPISODE
+                and memory_intent not in ("timeline_order", "broad_summary")
+                and not text_has_query_needles(query, body)
+            ):
                 confident = False
             merged[hid] = replace(hit, high_confidence=confident)
 
@@ -526,7 +530,9 @@ async def _search_memory(
                 if raw_id and raw_id in neighbor_ep_ids and raw_id not in seed_ep_ids
                 else _EPISODE_SEED_SCORE
             )
-            if not text_has_query_needles(search_q, content):
+            if memory_intent not in ("timeline_order", "broad_summary") and not text_has_query_needles(
+                search_q, content
+            ):
                 ep_score = min(ep_score, 0.2)
             _add(
                 CognitiveHit(

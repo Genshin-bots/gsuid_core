@@ -47,8 +47,8 @@ _ONTOLOGY_FIELD = "self_ontology"
 # 笔记里点名的用户。短数字（日期、版本）不算。
 _PINNED_SPEAKER_RE = re.compile(r"\d{5,}|[0-9A-Fa-f]{16,}")
 _USER_MENTION_RE = re.compile(r"(?:用户ID[:：\s]*|用户[:：\s]*)([a-zA-Z0-9_\-]+)")
-# 主人自述槽，不跟纠错规则抢本轮名额。
-_STANDING_PREF_CONTEXTS = frozenset({"location", "possession"})
+# 主人常驻自述槽（如常住地）。
+_STANDING_PREF_CONTEXTS = frozenset({"location"})
 
 
 def default_self_ontology() -> str:
@@ -416,9 +416,75 @@ def note_applies_to_speaker(note: str, speaker_id: str) -> bool:
     return speaker_id in pinned
 
 
+_NEG_MARKERS = (
+    "不要",
+    "不用",
+    "不能",
+    "不可",
+    "别",
+    "勿",
+    "禁止",
+    "严禁",
+    "避免",
+    "不",
+    "never",
+    "don't",
+    "dont",
+    "avoid",
+    "no ",
+)
+
+
+def _has_negation_marker(text: str) -> bool:
+    low = text.lower()
+    return any(m in low for m in _NEG_MARKERS)
+
+
+def _rule_subsumed(new_rule: str, existing_rules: Sequence[str]) -> bool:
+    """通用子串包含与二元组重叠去重，不依赖任何特定业务词表或正则。"""
+    n_clean = "".join(c for c in new_rule.lower() if c.isalnum() or "\u4e00" <= c <= "\u9fff")
+    if not n_clean:
+        return True
+    n_neg = _has_negation_marker(new_rule)
+    for ex in existing_rules:
+        if _has_negation_marker(ex) != n_neg:
+            continue
+        e_clean = "".join(c for c in ex.lower() if c.isalnum() or "\u4e00" <= c <= "\u9fff")
+        if not e_clean:
+            continue
+        if n_clean == e_clean:
+            return True
+        if len(n_clean) >= 2 and n_clean in e_clean:
+            return True
+        if len(e_clean) >= 2 and e_clean in n_clean:
+            return True
+        g_n = set(n_clean[i : i + 2] for i in range(len(n_clean) - 1))
+        g_e = set(e_clean[i : i + 2] for i in range(len(e_clean) - 1))
+        if g_n and g_e and (len(g_n & g_e) / len(g_n | g_e)) >= 0.65:
+            return True
+    return False
+
+
+def _pref_tier(ctx: str, is_corr: bool, polarity: str = "do") -> int:
+    """偏好优先级分层：纠错 > 否定约束 > 常驻画像 > 通用偏好 > 其它上下文。"""
+    if is_corr:
+        return 0
+    if polarity == "dont":
+        return 1
+    if ctx in _STANDING_PREF_CONTEXTS:
+        return 2
+    if ctx == "general":
+        return 3
+    return 4
+
+
 def collect_speaker_preference_rules(
     notes: list[str],
-    scoped_rules: Sequence[tuple[str, str, bool] | tuple[str, str, bool, Optional[datetime]]],
+    scoped_rules: Sequence[
+        tuple[str, str, bool]
+        | tuple[str, str, bool, Optional[datetime]]
+        | tuple[str, str, bool, Optional[datetime], str]
+    ],
     speaker_id: str,
     *,
     limit: int,
@@ -440,15 +506,26 @@ def collect_speaker_preference_rules(
     ranked = sorted(
         scoped_rules,
         key=lambda item: (
-            0 if item[0] in _STANDING_PREF_CONTEXTS else (1 if item[2] else 2),
-            item[0],
+            _pref_tier(
+                item[0],
+                item[2],
+                item[4] if len(item) > 4 and isinstance(item[4], str) else "do",
+            ),
+            -(item[3].timestamp() if len(item) > 3 and item[3] is not None else 0),
         ),
     )
     now = datetime.now(timezone.utc)
+    seen_by_context: dict[tuple[str, str], list[str]] = {}
     for item in ranked:
         ctx = item[0]
         rule = item[1]
         created_at: datetime | None = item[3] if len(item) > 3 else None
+        polarity = item[4] if len(item) > 4 and isinstance(item[4], str) else "do"
+        existing_in_ctx = seen_by_context.setdefault((ctx, polarity), [])
+        if _rule_subsumed(rule, existing_in_ctx):
+            continue
+        existing_in_ctx.append(rule)
+
         tag = f"{ctx}：" if ctx and ctx != "general" else ""
         date_prefix = f"[{preference_written_on(created_at)}] " if created_at is not None else ""
         exp_tag = ""
@@ -469,44 +546,34 @@ def render_speaker_preference_tail(rules: list[str]) -> str:
     """当前说话人的偏好。拼在本轮 user 尾，入史前不留。"""
     if not rules:
         return ""
-    behavioral_keywords = (
-        "不要",
-        "别",
-        "禁止",
-        "纯文本",
-        "代码",
-        "格式",
-        "必须",
-        "称呼",
-        "叫我",
-        "不发",
-        "短一点",
-        "少说",
-        "简短",
-    )
     behavioral: list[str] = []
     trivia: list[str] = []
     for r in rules:
-        if any(kw in r for kw in behavioral_keywords):
-            behavioral.append(r)
-        else:
+        core = r.split("] ", 1)[-1] if r.startswith("[") and "] " in r else r
+        if "：" in core and not core.startswith("general："):
             trivia.append(r)
+        else:
+            behavioral.append(r)
 
     parts: list[str] = []
-    header = "【当前说话人的偏好】只约束这一轮的说话人。问句里没写到这些词也要遵守；别的群友不适用。"
     if behavioral:
-        lines = [f"• [要求/习惯] {rule}" for rule in behavioral]
+        header = "【当前说话人要求与习惯】只约束这一轮说话人；问句里没写到这些词也要遵守："
+        lines = [f"• {rule}" for rule in behavioral]
         parts.append(f"{header}\n" + "\n".join(lines))
     if trivia:
-        lines = [f"• [背景信息(未问及无需主动提及)] {rule}" for rule in trivia]
-        if not behavioral:
-            parts.append(f"{header}\n" + "\n".join(lines))
-        else:
-            parts.append("【当前说话人背景】未被问及时无需刻意复述：\n" + "\n".join(lines))
+        header = "【当前说话人背景】未被问及时无需刻意提及："
+        lines = [f"• {rule}" for rule in trivia]
+        parts.append(f"{header}\n" + "\n".join(lines))
     return "\n\n".join(parts)
 
 
-async def load_speaker_preference_tail(bot_id: str, persona_name: str, speaker_id: str) -> str:
+async def load_speaker_preference_tail(
+    bot_id: str,
+    persona_name: str,
+    speaker_id: str,
+    *,
+    existing_text: str = "",
+) -> str:
     """读这个人的 USER_GLOBAL 偏好和他名下的自我笔记。库未建则空。"""
     speaker = speaker_id.strip()
     if not speaker:
@@ -518,7 +585,7 @@ async def load_speaker_preference_tail(bot_id: str, persona_name: str, speaker_i
     from gsuid_core.ai_core.memory.config import memory_config
 
     model = await get_self_model(bot_id, persona_name)
-    scoped: list[tuple[str, str, bool, Optional[datetime]]] = []
+    scoped: list[tuple[str, str, bool, Optional[datetime], str]] = []
     if memory_config.enable_preference_memory:
         from gsuid_core.ai_core.memory.database.models import AIMemPreference
 
@@ -527,19 +594,35 @@ async def load_speaker_preference_tail(bot_id: str, persona_name: str, speaker_i
         standing_rows = await AIMemPreference.get_active(
             [scope],
             target_contexts=list(_STANDING_PREF_CONTEXTS),
-            limit=cap,
+            limit=min(cap, 2),
         )
         other_rows = await AIMemPreference.get_active([scope], limit=cap * 3)
         seen_ids: set[str] = set()
         merged: list[AIMemPreference] = []
-        for row in standing_rows + other_rows:
+        for row in standing_rows:
             if row.id in seen_ids:
+                continue
+            if existing_text and row.preference_rule.strip() and row.preference_rule.strip() in existing_text:
                 continue
             seen_ids.add(row.id)
             merged.append(row)
-        scoped = [(row.target_context, row.preference_rule, row.is_correction, row.created_at) for row in merged]
+        for row in other_rows:
+            if row.id in seen_ids or row.target_context == "possession":
+                continue
+            if row.target_context != "general" and row.target_context not in _STANDING_PREF_CONTEXTS:
+                continue
+            if existing_text and row.preference_rule.strip() and row.preference_rule.strip() in existing_text:
+                continue
+            seen_ids.add(row.id)
+            merged.append(row)
+        scoped = [
+            (row.target_context, row.preference_rule, row.is_correction, row.created_at, row.polarity) for row in merged
+        ]
+    notes = [
+        n for n in model["preferences_learned"] if not (existing_text and n.strip() and n.strip() in existing_text)
+    ]
     rules = collect_speaker_preference_rules(
-        model["preferences_learned"],
+        notes,
         scoped,
         speaker,
         limit=int(memory_config.preference_max_inject),

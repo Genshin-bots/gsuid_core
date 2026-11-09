@@ -88,7 +88,7 @@ def _format_results_for_model(results: list[dict], query: str = "") -> str:
     category="buildin",
     timeout=100.0,
     code_callable=True,
-    covers=["网页搜索", "网络检索", "天气查询", "新闻资讯", "外网搜索"],
+    covers=["网页搜索", "网络检索", "天气查询", "今天天气", "天气预报", "查天气", "实时天气", "新闻资讯", "外网搜索"],
 )
 async def web_search_tool(
     ctx: RunContext[ToolContext],
