@@ -707,6 +707,9 @@ class MemoryContext:
                 elif timeline_q and not self.covered:
                     taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET))
                 else:
+                    if not self.covered and not cross_session and not memory_config.eval_mode:
+                        user_eps = _filter_point_lookup_episodes(user_eps, query, dense_anchor_cap=2)
+                        asst_eps = _filter_point_lookup_episodes(asst_eps, query, dense_anchor_cap=0)
                     _ep_taken = _ep_lines(user_eps, self_mark=False)
                     if self.covered and self.cover_ids:
                         cover_eps = [ep for ep in user_eps if "id" in ep and str(ep["id"]) in self.cover_ids]
@@ -1241,6 +1244,74 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
     return pack_first_mention_episodes(pool, query, n)
 
 
+_EPISODE_STOP_WORDS = frozenset(
+    {
+        "今天",
+        "昨天",
+        "明天",
+        "现在",
+        "刚才",
+        "如何",
+        "怎样",
+        "什么",
+        "查查",
+        "帮我",
+        "一下",
+        "问问",
+        "可以",
+        "没有",
+        "一个",
+        "很多",
+        "觉得",
+        "怎么",
+    }
+)
+
+
+def _filter_point_lookup_episodes(
+    episodes: list[Episode],
+    query: str,
+    *,
+    dense_anchor_cap: int = 2,
+    direct_hit_cap: int = 6,
+) -> list[Episode]:
+    """点查/闲聊剥离低相关纯稠密凑数片段，保留双路/词面命中与至多 2 条顶部语义锚点。"""
+    if not episodes or not query.strip():
+        return episodes[: max(dense_anchor_cap, 2)]
+    from gsuid_core.ai_core.memory.retrieval.lexical import (
+        query_tokens,
+        is_fact_sheet,
+        token_in_text,
+        is_ingested_document_episode,
+    )
+
+    substantive = [tok for tok in query_tokens(query) if tok not in _EPISODE_STOP_WORDS and len(tok) >= 2]
+    direct_hits: list[Episode] = []
+    dense_anchors: list[Episode] = []
+    for ep in episodes:
+        raw = ep["content"] or ""
+        raw_lower = raw.lower()
+        has_lex = bool(substantive) and any(token_in_text(tok, raw_lower) for tok in substantive)
+        if is_fact_sheet(ep) or is_ingested_document_episode(raw):
+            direct_hits.append(ep)
+            continue
+        if "score" not in ep:
+            if has_lex:
+                direct_hits.append(ep)
+            continue
+        sc = float(ep["score"] or 0.0)
+        # RRF >= 0.022 代表命中 FTS5 精确路或 Dense+FTS 双路共识
+        if sc >= 0.022 or has_lex:
+            direct_hits.append(ep)
+        elif sc >= 0.0203 and len(dense_anchors) < dense_anchor_cap:
+            dense_anchors.append(ep)
+    if direct_hits:
+        if not any("score" in h for h in direct_hits) and dense_anchors:
+            return (direct_hits + dense_anchors)[:direct_hit_cap]
+        return direct_hits[:direct_hit_cap]
+    return dense_anchors
+
+
 def _rrf_fuse_episodes(
     dense_eps: list[Episode],
     fts_eps: list[Episode],
@@ -1255,15 +1326,22 @@ def _rrf_fuse_episodes(
         ep_map[eid] = ep
         asst = _assistant_turn(ep["content"] or "")
         mult = 0.8 if asst and not keep_assistant else 1.25
-        scores[eid] = scores.get(eid, 0.0) + (1.0 / (60.0 + rank)) * mult
+        prev = scores[eid] if eid in scores else 0.0
+        scores[eid] = prev + (1.0 / (60.0 + rank)) * mult
     for rank, ep in enumerate(fts_eps):
         eid = ep["id"]
         ep_map[eid] = ep
         asst = _assistant_turn(ep["content"] or "")
         mult = 0.8 if asst and not keep_assistant else 1.5
-        scores[eid] = scores.get(eid, 0.0) + (1.0 / (60.0 + rank)) * mult
+        prev = scores[eid] if eid in scores else 0.0
+        scores[eid] = prev + (1.0 / (60.0 + rank)) * mult
     sorted_eids = sorted(scores, key=lambda x: scores[x], reverse=True)
-    return [ep_map[eid] for eid in sorted_eids]
+    fused: list[Episode] = []
+    for eid in sorted_eids:
+        item = ep_map[eid]
+        item["score"] = round(scores[eid], 6)
+        fused.append(item)
+    return fused
 
 
 async def dual_route_retrieve(

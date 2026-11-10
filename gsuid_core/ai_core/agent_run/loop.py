@@ -468,7 +468,7 @@ class LoopPhase(RunOnceHost):
                         # 工具返回过长时写入短占位，避免污染上下文
                         part.content = f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
 
-                # FileOS：主人格与能力代理过阈值落盘+句柄；禁止长文进 history
+                # FileOS：凡具备 read_handle 回读能力的循环统一过阈值落盘+折句柄卡
                 _fileos_folded = False
                 _raw_tr = part.content if isinstance(part.content, str) else None
                 record_run_tool_output(st.run_tool_outputs, part.tool_name or "", _raw_tr)
@@ -484,7 +484,12 @@ class LoopPhase(RunOnceHost):
                     _pc = get_plan_context()
                     _tid = (_pc.task_id if _pc else "") or ""
                     _rid = (_pc.root_task_id if _pc else "") or ""
-                    if self.create_by in _MAIN_PERSONA_CREATE_BY or self.create_by == "CapabilityAgent":
+                    _can_read_handle = (
+                        self.create_by in _MAIN_PERSONA_CREATE_BY
+                        or "read_handle" in st.tool_names
+                        or (st.context is not None and "read_handle" in st.context.dynamic_tool_names)
+                    )
+                    if _can_read_handle:
                         _is_group = bool(st.ev is not None and st.ev.group_id)
                         try:
                             _folded = await persist_and_fold_tool_return(
@@ -503,8 +508,8 @@ class LoopPhase(RunOnceHost):
                         if _folded is not None:
                             part.content = _folded
                             _fileos_folded = True
-                            # 折叠≠可出图：仅形态达标才武装 render nudge
-                            if content_is_render_candidate(
+                            # 折叠≠可出图：仅主人格且形态达标才武装 render nudge
+                            if self.create_by in _MAIN_PERSONA_CREATE_BY and content_is_render_candidate(
                                 tool_name=part.tool_name or "",
                                 content=_raw_tr or "",
                                 fileos_folded=True,
@@ -691,6 +696,25 @@ class LoopPhase(RunOnceHost):
                         *node.request.parts,
                         UserPromptPart(content=_contract),
                     ]
+
+        if _has_tool_return and "run_code" in st.tool_names:
+            from gsuid_core.ai_core.register import find_tool_base
+            from gsuid_core.ai_core.control.lines import PTC_BATCH_NUDGE
+
+            _direct_code_callable = 0
+            for _p in node.request.parts:
+                if type(_p) is not ToolReturnPart:
+                    continue
+                _tname = _p.tool_name or ""
+                if not _tname or _tname == "run_code":
+                    continue
+                _tb = find_tool_base(_tname)
+                if _tb is not None and _tb.code_callable:
+                    _direct_code_callable += 1
+            if _direct_code_callable >= 3 and not any(
+                isinstance(p, UserPromptPart) and p.content == PTC_BATCH_NUDGE for p in node.request.parts
+            ):
+                node.request.parts = [*node.request.parts, UserPromptPart(content=PTC_BATCH_NUDGE)]
 
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
         # 工具回执先落盘，再标下一轮对话。否则瀑布把回执画进后一轮。

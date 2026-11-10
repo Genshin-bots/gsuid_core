@@ -143,6 +143,7 @@ def visible_when_sched_mutate(ctx: RunContext[ToolContext]) -> bool:
 _GATE_REJECT_MARKERS: tuple[str, ...] = (
     "本轮是管理已有条目",
     "本轮未点名：不要",
+    "当前轮次为未点名跟话或旁白点评",
 )
 
 

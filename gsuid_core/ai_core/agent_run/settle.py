@@ -623,10 +623,9 @@ class SettlePhase(RunOnceHost):
         if result:
             logger.info(i18n_t("log.agent.iter_ok"))
 
-            # 存 history 前把本轮 user turn 的 content 换成精简版（剥离 st.rag_context）
-            # 防止 [历史对话]/记忆/群语境快照逐轮累积膨胀 input 并冲淡缓存（§优化 O-1）。
+            # 先记本轮真实发给模型的前缀快照，再把 user 侧还原为精简版落盘（§优化 O-1）。
             _new_msgs = result.new_messages()
-            # 只剥框架注入；入史 == 最后一次请求所见（前缀缓存）。
+            self._record_prefix_break_probe(st, _new_msgs)
             _relean_user_turn(
                 _new_msgs,
                 st.lean_user_message,
@@ -639,7 +638,6 @@ class SettlePhase(RunOnceHost):
             _new_msgs = [m for m in _new_msgs if not (isinstance(m, ModelRequest) and len(m.parts) == 0)]
             _new_msgs = _dedupe_delivery_cards(_new_msgs)
             _new_msgs = _drop_unsent_text_from_tail(_new_msgs, st.unsent_texts)
-            self._record_prefix_break_probe(st, _new_msgs)
             self.history.extend(_new_msgs)
             _ctx_dyn = st.context
             if _ctx_dyn is not None:

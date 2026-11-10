@@ -385,7 +385,7 @@ async def extract_cluster(
         agent = GsCoreAIAgent(
             openai_chat_model=get_fast_model_for_task("low"),
             system_prompt=ALGEBRA_SYSTEM,
-            max_tokens=1400,
+            max_tokens=2400,
             create_by="MemAlgebra",
             task_level="low",
             is_subagent=True,

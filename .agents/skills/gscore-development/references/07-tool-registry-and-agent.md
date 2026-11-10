@@ -52,9 +52,9 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 
 沙箱里能 `await` 的名字必须同时满足：本轮已暴露、`ToolBase.code_callable is True`、
 没被 `blocked_tool_names` 或人格工具范围拿掉。`code_callable` 默认 True，插件只读
-工具不用声明。框架把发消息、写入、委派、改状态、装技能、跑命令标成 `False`。
-插件写工具同样要显式 `code_callable=False`。`run_code` 自己不能被嵌套 await。
-系统提示和本工具 brief/docstring 都写：代码里只查不写，发消息和写入在代码外直调。
+工具不用声明。结构化记录与产物登记（`record_put`/`record_append`/`record_update`/`artifact_put`）
+允许在代码内按循环顺序 `await` 批量写入；发消息、渲染出图、子代理委派、找工具、装技能、跑宿主机命令标成 `False`，
+插件带外部副作用或直发消息的工具同样要显式 `code_callable=False`。`run_code` 自己不能被嵌套 await。
 
 宿主调用仍进原工具包装，并记进 session log（`tool_call_id` 前缀 `mc_`）。
 脚本的中间值不进模型上下文；交回的是最后一行表达式，`print` 不交回。
@@ -92,18 +92,18 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 
 | 层 | 机制 | 作用 |
 |---|---|---|
-| L1 通道核 | `get_main_agent_tools()`：`MAIN_AGENT_CORE_TOOLS`（群/私同一份） | 发现/回想/委派/发送 + 一次性/周期提醒入口；列出/改/删走 L2 或检索 |
-| L2 状态驱动 | `get_state_driven_family_tools()`：按用户持久实体补能力族 | 跨轮追问定时任务/Kanban/record |
-| L3 会话驻留 | `_recent_tool_families`（sticky 3 轮） | 刚用过的族继续常驻数轮 |
+| L1 通道核 | `get_main_agent_tools()`：`MAIN_AGENT_CORE_TOOLS`（群/私同一份） | 发现/回想/委派/发送 + 一次性/周期提醒入口 |
+| L2 状态提示种子 | 在途任务/未完定时任务向 `turn_seeds` 注入查询/变更种子（渐进模式下仅当轮 user 侧提示 `find_tools`，不破冻结 schema） | 跨轮追问定时任务/Kanban 进度 |
+| L3 会话驻留 | `_recent_tool_families`（sticky 3 轮）+ `_session_appended_tools` 只增不减 | 刚用过的工具继续留在冻结池 |
 | L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族（"能建就能改/删"） |
 | L5 本句检索 | 当前句向量召回未暴露工具（含 self/buildin）；省略跟进才拼上文 | 闲聊跳过；工具/问答必搜 |
-| 本轮种子 | 检索命中 + 触发词钉扎（含 `send_*`），`append_turn_seeds` | 当轮可见，**不写入**会话快照 |
+| 本轮种子 | 检索命中 + 触发词钉扎 + 在途状态种子，渐进模式下转 `turn_seed_hint_line` | 保住工具段前缀缓存；未点名/旁白轮复原冻结池并由执行门拦截 |
 
 保底池全保留；查询池族展开后受 `tool_extra_pool_max` 限制。本轮种子另计，最多 4 个。群画像标签不再把工具冻进快照，只在省略跟进时拼进检索 query。`send_*` 仍不进静态附加池，但本轮种子豁免这层剥离。
 
 > **在途短轮瘦池（2026-08-16）**：`has_active_task` 且剥壳后真人句 ≤48 字时置
 > `RunOnceState.in_flight_short`。装配层跳过语境标签池与向量检索，`max_extra_tools≤2`，
-> 仍保留 L2 状态驱动（kanban / `check_delegation`）。这是通道形态（句长 + 活跃任务），
+> 在途看板/产物查询工具经 `turn_seeds` 提示 `find_tools` 按需挂载。这是通道形态（句长 + 活跃任务），
 > 不是话题词特判。唤醒词只剥装配壳内「ASCII 直接贴非 ASCII」。
 
 > **L4 族展开的公平性（2026-07-15 修）**：`expand_tools_to_families` 曾是**赢家通吃**——

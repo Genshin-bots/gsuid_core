@@ -84,7 +84,6 @@
   "log.agent.llm_text": "[大規模モデルテキスト]: {_text}",
   "log.agent.llm_thinking": "[大規模モデル思考]: {_thinking}",
   "log.agent.load_contextual_pool": "[GsCoreAIAgent] コンテキストツールプールの読み込みに失敗しました: {e}",
-  "log.agent.load_state_driven_pool": "[GsCoreAIAgent] 状態駆動ツールプールの読み込みに失敗しました: {e}",
   "log.agent.lock_ok": "[GsCoreAIAgent] 実行完了。ロックを解放します",
   "log.agent.main_persona_stripped_capability": "[GsCoreAIAgent] 主ペルソナから能力エージェント専用ツールを {n} 件除去: {names}",
   "log.agent.master_title_correction": "[GsCoreAIAgent] 主人以外への台詞に主人の呼称が含まれるため、書き直しを追加します",

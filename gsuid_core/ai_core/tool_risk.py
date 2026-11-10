@@ -23,6 +23,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import _is_master_user
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.control.lines import TOOLS_EXECUTION_GATED_DENY
 from gsuid_core.ai_core.agent_node.models import AgentNode
 
 # 会在宿主上跑代码或 shell 的工具。写文件不算：没执行入口就落在沙盒里。
@@ -37,6 +38,7 @@ HIGH_RISK_TOOL_NAMES: frozenset[str] = frozenset(
 
 MASTER_ONLY_NODE_DENY = "🚫 该能力代理仅主人可触发。"
 HIGH_RISK_TOOL_DENY = "🚫 高危工具仅主人可执行，已拒绝。"
+TOOLS_EXECUTION_GATED_KEY = "tools_execution_gated"
 
 
 class _NamedTool(Protocol):
@@ -120,7 +122,11 @@ async def block_high_risk_execute(
     args: ValidatedToolArgs,
     handler: WrapToolExecuteHandler,
 ) -> object:
-    """``wrap_tool_execute``：非主人的高危调用不进入工具函数。"""
+    """``wrap_tool_execute``：非主人的高危调用或寻址门/旁白轮次不进入工具函数。"""
+    if isinstance(ctx.deps, ToolContext) and (
+        TOOLS_EXECUTION_GATED_KEY in ctx.deps.extra and bool(ctx.deps.extra[TOOLS_EXECUTION_GATED_KEY])
+    ):
+        return TOOLS_EXECUTION_GATED_DENY
     name = (call.tool_name or tool_def.name or "").strip()
     denied = high_risk_block(_event_from_deps(ctx.deps), name)
     if denied is not None:

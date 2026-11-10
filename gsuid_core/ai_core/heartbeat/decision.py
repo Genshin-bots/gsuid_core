@@ -92,6 +92,7 @@ DELAYED_TOPIC_MINUTES = 3
 # 可点名窗口：超过则禁止假设对方在场（阈值不进配置，避免运行期漂移）。
 MASTER_ACTIVE_WINDOW_MIN = 30
 ACTIVE_WINDOW_MIN = 30
+HEARTBEAT_HISTORY_LIMIT = 20
 
 DELAYED_TOPIC_NOTE_TEMPLATE = (
     "\n\n（时间感知：群里最后一条消息是 {minutes} 分钟前发出的。"
@@ -418,8 +419,8 @@ async def run_heartbeat(
     persona_text = f"{role}\n{persona_content}"
     decision_persona_text = f"{role}\n{decision_persona}"
 
-    # 两个阶段共用同一份上下文，只格式化一次
-    history_context = format_history_for_agent(history=history)
+    # 两个阶段共用同一份近窗上下文，避免整群长历史全量进巡检提示词
+    history_context = format_history_for_agent(history=history[-HEARTBEAT_HISTORY_LIMIT:])
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # 获取群组摘要缓存（如果启用）

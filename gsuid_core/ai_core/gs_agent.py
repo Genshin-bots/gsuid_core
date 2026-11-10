@@ -310,6 +310,10 @@ class GsCoreAIAgent(RunOnceMixin):
         self._history_iter_active: bool = False
         # 4.7 supersede 交接语已删：在途根任务由 build_task_context 每轮从库注入。
         self.max_tokens = _max_tokens
+        # 仅显式传入 <=8192 的有界后台/工具上限才下发 wire，防 16k/50k 默认值触发上游 400。
+        self._wire_max_tokens: Optional[int] = (
+            max_tokens if (max_tokens is not None and 0 < max_tokens <= 8192) else None
+        )
         # 思考轮由 request_limit_for(create_by) 决定，此参数不再生效。
         self.max_iterations = max_iterations
         # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
@@ -1103,10 +1107,11 @@ class GsCoreAIAgent(RunOnceMixin):
             # auto_ImageDescSummary_* 的 subagent 日志，并 link 到当前调用方
             summary_agent = create_agent(
                 system_prompt="你是一个图片信息提炼助手，只输出精简摘要，不输出多余解释。",
-                max_tokens=500,
+                max_tokens=800,
                 create_by="ImageDescSummary",
                 task_level="low",
                 is_subagent=True,
+                thinking=False,
             )
             try:
                 summary = str(await summary_agent.run(prompt, return_mode="return")).strip()

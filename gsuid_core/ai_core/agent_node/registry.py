@@ -203,8 +203,30 @@ def list_persona_capability_nodes(persona_name: str | None) -> list[AgentNode]:
     return [n for n in _delegable_capability_nodes() if persona_allows_capability_agent(persona_name, n.node_id)]
 
 
+_ROSTER_FILLER_PREFIX_RE = re.compile(r"^(?:用户命令「[^」]+」[：:]\s*|用户要(?:在)?|需要进行|需要把|需要为|需要|负责)")
+
+
+def _summarize_node_for_roster(node: AgentNode) -> str:
+    """提炼节点的一句话极简摘要：优先 display_name + 核心短句，去除套话前缀。"""
+    disp = (node.display_name or "").strip()
+    has_disp = bool(disp and disp != node.node_id)
+    when = (node.when_to_use or "").strip()
+    if not when:
+        if has_disp:
+            return disp
+        from gsuid_core.logger import logger
+
+        logger.warning(t("log.agent.capability_node_missing_when", node=node.node_id))
+        return "专业任务"
+    first_clause = re.split(r"[；;（(。\n]", when)[0].strip()
+    cleaned = _ROSTER_FILLER_PREFIX_RE.sub("", first_clause).strip() or first_clause
+    if has_disp and disp not in cleaned:
+        return f"{disp}（{cleaned}）"
+    return cleaned
+
+
 def format_capability_roster(persona_name: str | None = None) -> str:
-    """可委派短花名册：每节点一行 node_id + when_to_use。covers 不进 system。"""
+    """可委派短花名册：每节点一行 node_id + 简短摘要。covers 不进 system。"""
     # in_roster=False（如 MCP 节点）仍可被路由/委派，只是不写进花名册文案。
     nodes: list[AgentNode] = [n for n in list_persona_capability_nodes(persona_name) if n.in_roster]
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -212,19 +234,9 @@ def format_capability_roster(persona_name: str | None = None) -> str:
     cap = int(ai_config.get_config("capability_roster_line_max").data)
     lines: list[str] = []
     for node in nodes:
-        when = (node.when_to_use or "").strip()
-        if not when:
-            from gsuid_core.logger import logger
-
-            logger.warning(t("log.agent.capability_node_missing_when", node=node.node_id))
-            when = "专业任务"
-        else:
-            # 提炼核心意图描述：截取首分句，去除出图与交付规则等冗余长套话
-            first_clause = re.split(r"[；;（(。]", when)[0].strip()
-            if first_clause:
-                when = first_clause
+        summary = _summarize_node_for_roster(node)
         prefix = f"- `{node.node_id}`："
-        line = prefix + when
+        line = prefix + summary
         if cap > 0 and len(line) > cap:
             line = prefix if len(prefix) >= cap else line[: cap - 1] + "…"
         lines.append(line)

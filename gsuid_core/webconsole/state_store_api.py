@@ -141,11 +141,15 @@ async def list_state_keys(
     scope: str = Query(..., description="scope 字符串，如 user:user_web_01 / group:1779024006344 / global"),
     prefix: str = Query("", description="可选 state_key 前缀过滤（如 'record:' 仅列结构化集合）"),
     include_expired: bool = Query(False, description="是否包含已过期 key（默认排除）"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="单页条数；不传=全量"),
+    offset: int = Query(0, ge=0, description="偏移量（用于分页）"),
 ) -> Dict[str, Any]:
     """列出某 scope 下的全部 key（含元信息，但不展开 value）。
 
+    支持 limit / offset 分页；不传 limit 时返回全量（向后兼容）。
+
     Returns:
-        ``{"items": [{"scope", "state_key", "version", "value_type", ...}], "count": N}``
+        ``{"items": [{"scope", "state_key", "version", "value_type", ...}], "total": int, "count": int}``
     """
     from datetime import datetime as _dt
 
@@ -163,7 +167,19 @@ async def list_state_keys(
             continue
         items.append(_entry_dict(row, include_value=False))
     items.sort(key=lambda x: x["state_key"])
-    return {"status": 0, "msg": "ok", "data": {"items": items, "count": len(items)}}
+    total = len(items)
+    sliced = items[offset : offset + limit] if limit is not None else items
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "items": sliced,
+            "total": total,
+            "count": len(sliced),
+            "limit": limit,
+            "offset": offset,
+        },
+    }
 
 
 @app.get("/api/ai/state-store/get", summary="取单条 (scope, state_key) 的完整 value", tags=STATE_STORE)

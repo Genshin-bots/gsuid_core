@@ -38,7 +38,6 @@ class AISessionRegistry:
 
     CLEANUP_INTERVAL = 3600  # 清理检查间隔（秒）
     IDLE_THRESHOLD = 7200  # 空闲阈值（秒），默认 2 小时（群聊活跃周期以小时计）
-    MAX_AI_HISTORY_LENGTH = 30  # AI会话最大历史长度
 
     def __init__(self) -> None:
         # AI会话对象: {session_id: GsCoreAIAgent}
@@ -125,11 +124,10 @@ class AISessionRegistry:
 
         cleaned = 0
         for session in self._ai_sessions.values():
-            # session.history 是 GsCoreAIAgent 的已声明 List[ModelMessage]，
-            # 类型追踪完备，无需 try/except AttributeError 兜底。
-            if len(session.history) > self.MAX_AI_HISTORY_LENGTH:
-                # 保头裁中段：禁止 history[-n:] 砍掉带 inner_os 的首条 user。
-                session.history, did = compact_session_history(session.history, self.MAX_AI_HISTORY_LENGTH)
+            limit = session.max_history
+            if limit > 0 and len(session.history) > limit:
+                # 保头裁中段：按会话自身的 max_history（即 agent_max_history 配置）裁剪。
+                session.history, did = compact_session_history(session.history, limit)
                 if did:
                     cleaned += 1
         return cleaned

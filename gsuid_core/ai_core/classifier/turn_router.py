@@ -27,7 +27,7 @@ MemoryIntent = Literal[
 ]
 
 _ROUTER_TIMEOUT = 4.0
-_ROUTER_MAX_TOKENS = 96
+_ROUTER_MAX_TOKENS = 512
 
 _CLOCK_RE = re.compile(r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
 

@@ -8,10 +8,6 @@ from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, on_agent_
 from gsuid_core.ai_core.kits.base import AgentKit
 from gsuid_core.ai_core.kits.registry import register_agent_kit
 
-# 口吻锚点太长会挤占注意力；system 已有完整约束，这里只钉一下防长会话漂移。
-# 拼上「口气」与复读提示后仍须落在 BLOCK_CHAR_BUDGET.voice_anchor 内。
-_VOICE_ANCHOR_MAX = 80
-
 
 class SelfCognitionKit(AgentKit):
     """自我认知：H29 稳定自述块 + H06 口吻锚点。"""
@@ -38,16 +34,13 @@ class SelfCognitionKit(AgentKit):
             ctx.set_context_block("self_model", text)
 
     async def voice_anchor(self, ctx: AgentHookContext) -> None:
-        """口吻锚点 + 当前关系档位的一句口气（只改语气，不改该不该办事）+ 复读提示。"""
-        from gsuid_core.ai_core.persona import get_voice_anchor
+        """当前关系档位的一句口气（只改语气，不改该不该办事）+ 复读提示。
 
+        角色固定口吻（Style）已在会话 system_prompt 中注入，不再每轮于 user 侧重复注入。
+        """
         if not ctx.persona_name:
             return
         parts: list[str] = []
-        anchor = get_voice_anchor(ctx.persona_name)
-        if anchor:
-            short = anchor[:_VOICE_ANCHOR_MAX] + "…" if len(anchor) > _VOICE_ANCHOR_MAX else anchor
-            parts.append(f"（口吻：{short}）")
         # voice 在「未打分」时为空串：没依据就不注入口气，别凭空编一个冷淡立场
         if ctx.relationship is not None and ctx.relationship.voice:
             parts.append(f"（对这个人的口气：{ctx.relationship.voice}）")

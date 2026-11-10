@@ -2580,26 +2580,45 @@ def _relean_user_prompt_part(
     part: UserPromptPart,
     lean_content: Union[str, List[UserContent]],
     strip_hint_texts: Tuple[str, ...],
-) -> UserPromptPart | None:
+) -> tuple[UserPromptPart | None, bool]:
     content = part.content
     if isinstance(content, str):
         if _is_framework_prompt_content(content):
             if _is_delivery_frame(content):
                 lean = lean_content if isinstance(lean_content, str) and lean_content else lean_delivery_frame(content)
                 if lean:
-                    return UserPromptPart(content=lean)
-            return None
+                    return UserPromptPart(content=lean), True
+            return None, False
         if _hint_matches_strip(content, strip_hint_texts):
-            return None
-        peeled = _peel_ephemeral_system_lines(content)
+            return None, False
+        did_lean = isinstance(lean_content, str) and bool(lean_content)
+        target = lean_content if isinstance(lean_content, str) and lean_content else content
+        peeled = _peel_ephemeral_system_lines(target)
         if not peeled.strip():
-            return None
+            return None, did_lean
         if peeled != content:
-            return UserPromptPart(content=peeled)
-        return part
+            return UserPromptPart(content=peeled), did_lean
+        return part, did_lean
+    if isinstance(lean_content, list) and bool(lean_content):
+        did_lean = True
+        source_items: Sequence[UserContent] = lean_content
+    elif isinstance(lean_content, str) and bool(lean_content):
+        did_lean = True
+        replaced_str = False
+        rebuilt: list[UserContent] = []
+        for item in content:
+            if isinstance(item, str) and not replaced_str:
+                rebuilt.append(lean_content)
+                replaced_str = True
+            else:
+                rebuilt.append(item)
+        source_items = rebuilt
+    else:
+        did_lean = False
+        source_items = content
     new_items: list[UserContent] = []
-    changed = False
-    for item in content:
+    changed = did_lean
+    for item in source_items:
         if not isinstance(item, str):
             new_items.append(item)
             continue
@@ -2617,10 +2636,10 @@ def _relean_user_prompt_part(
             changed = True
         new_items.append(peeled)
     if not new_items:
-        return None
+        return None, did_lean
     if changed:
-        return UserPromptPart(content=new_items)
-    return part
+        return UserPromptPart(content=new_items), did_lean
+    return part, did_lean
 
 
 def _relean_user_turn(
@@ -2628,14 +2647,21 @@ def _relean_user_turn(
     lean_content: Union[str, List[UserContent]],
     strip_hint_texts: Tuple[str, ...] = (),
 ) -> None:
-    """剥校验注入；交付帧改成一行入史，其它框架块丢弃。"""
+    """首条真人 UserPromptPart 替换为 lean_content（剥离 rag_context），并剥校验注入与框架块。"""
+    leaned = False
     for msg in new_messages:
         if not isinstance(msg, ModelRequest):
             continue
         kept_parts = []
         for part in msg.parts:
             if isinstance(part, UserPromptPart):
-                kept = _relean_user_prompt_part(part, lean_content, strip_hint_texts)
+                kept, did_lean = _relean_user_prompt_part(
+                    part,
+                    lean_content if not leaned else "",
+                    strip_hint_texts,
+                )
+                if did_lean:
+                    leaned = True
                 if kept is not None:
                     kept_parts.append(kept)
                 continue

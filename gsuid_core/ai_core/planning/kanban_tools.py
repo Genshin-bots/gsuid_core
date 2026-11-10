@@ -819,7 +819,7 @@ async def fail_task_tree(ctx: RunContext[ToolContext], task_ref_text: str, reaso
 # Artifact Hub 工具
 
 
-@ai_tools(category="planning", capability_domain="产物", code_callable=False)
+@ai_tools(category="planning", capability_domain="产物", code_callable=True)
 async def artifact_put(
     ctx: RunContext[ToolContext],
     payload: str = "",

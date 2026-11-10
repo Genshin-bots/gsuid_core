@@ -138,8 +138,8 @@ async def ops_sessions(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
         "msg": "ok",
         "data": {
             "count": len(items),
-            "idle_threshold": getattr(registry, "IDLE_THRESHOLD", 1800),
-            "max_ai_history": getattr(registry, "MAX_AI_HISTORY_LENGTH", 30),
+            "idle_threshold": registry.IDLE_THRESHOLD,
+            "max_ai_history": int(_cfg_get("agent_max_history", 50) or 50),
             "items": items,
             "ts": now,
         },

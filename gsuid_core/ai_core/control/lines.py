@@ -51,7 +51,7 @@ MENTIONED_USERS_PREFIX = "（系统提示：本句提到："
 MENTIONED_USERS_SUFFIX = "。问到别人时回答别人的情况；不知道就说不知道。）"
 
 STATUS_INQUIRY_HINT = (
-    "\n\n（进行中任务·用户在问进度：先 list_my_kanban_tasks / artifact_get_recent 查状态；"
+    "\n\n（进行中任务·用户在问进度：先查 list_my_kanban_tasks / artifact_get_recent（未挂在 schema 时先 find_tools）；"
     "再以「我」的口吻短句告知还在弄/弄好了/翻砸了。"
     "禁止空口编进度；禁止念节点名/任务号/句柄/代理；"
     "已有图则 send_message_by_ai 发出再说话。）"
@@ -69,6 +69,12 @@ THRASH_FUSE_NUDGE = (
     "停止再发这一次完全相同的调用。可以改参数，或基于已有结果交付结论。）"
 )
 
+PTC_BATCH_NUDGE = (
+    "（系统：检测到单步直接并发调用了多个工具；后续若仍有批量查询或批量记录写入，"
+    "请合并在单次 run_code 中执行（查询用 await asyncio.gather(...)，"
+    "同集合 record_* 写入用 for 循环顺序 await），避免多步膨胀。）"
+)
+
 UNMET_TOOL_REMINDER = (
     "\n\n（系统：上一轮你已经决定调用某个工具，但没有真正调用。"
     "本轮去调用它。若其实不必用工具，直接回答，不要为这条提示再找工具。）"
@@ -79,9 +85,7 @@ FIND_TOOLS_GAP_NOTE = (
     "禁止对用户讲检索过程、禁止念工具名、禁止说成「你要的东西不存在」。）"
 )
 
-STATE_PERSISTED_FAMILY_HINT = (
-    "\n\n（系统提示：当前会话已有持久条目。变更已有条目请用对应能力族的查询/修改/取消工具，不要再创建一条来代替。）"
-)
+TOOLS_EXECUTION_GATED_DENY = "ℹ️ 当前轮次为未点名跟话或旁白点评，无需调用工具，请直接简短回复或输出 <SILENCE>。"
 
 VISIBILITY_MANAGE_EXISTING = "（系统：本轮是管理已有条目：不要新建，用查询/修改/取消。）"
 
@@ -164,7 +168,7 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED = (
 
 POST_TOOL_FAIL_CONTRACT = (
     "（系统：本轮工具返回失败或空结果。禁止用角色懒惰结束本轮。"
-    "立刻换路：优先 web_search_tool 再取数；或 find_tools 后换工具。"
+    "立刻换路：优先用 web_search_tool（未挂在 schema 时先 find_tools）或换其他工具再取数。"
     "仅当结果已是长结构化内容时再 create_subagent(render_agent) 出图。"
     "只有换路后仍无果才可角色化短句说明。"
     "向用户提及失败时禁止使用开发者词汇（工具/配置/服务/接口/报错），"

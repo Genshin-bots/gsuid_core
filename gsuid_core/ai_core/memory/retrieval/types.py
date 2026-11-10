@@ -15,6 +15,7 @@ class Episode(TypedDict):
     event_at: NotRequired[str]
     speaker_summary: NotRequired[str]
     kind: NotRequired[str]
+    score: NotRequired[float]
 
 
 class Entity(TypedDict):

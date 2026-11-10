@@ -168,7 +168,7 @@ async def route_window(
         agent = GsCoreAIAgent(
             openai_chat_model=model,
             system_prompt=WINDOW_ROUTE_SYSTEM,
-            max_tokens=320,
+            max_tokens=800,
             create_by="MemWindowRouter",
             task_level="low",
             is_subagent=True,

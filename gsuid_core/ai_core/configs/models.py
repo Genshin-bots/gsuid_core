@@ -37,6 +37,7 @@ from pydantic_ai.models.openai import (
     OpenAIStreamedResponse,
     OpenAIChatModelSettings,
 )
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -47,11 +48,11 @@ from gsuid_core.ai_core.request_effort import capture_model_request_effort
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 from gsuid_core.ai_core.multimodal.openai_files import (
     OpenAIVideoInputFormat,
-    OpenAIChatModelWithVideo,
     parse_video_part_extra,
 )
 
 from .ai_config import ai_config
+from .openai_wire import RecoveringOpenAIChatModel, openai_profile_for_model
 from .gemini_config import get_gemini_config, get_gemini_config_dict
 from .openai_config import get_openai_config, get_openai_config_dict
 from .anthropic_wire import RecoveringAnthropicModel, anthropic_profile_for_model
@@ -171,6 +172,7 @@ THINKING_LEVEL_MAP: dict[str, ThinkingLevel] = {
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
+    "max": "max",
 }
 
 # 已保存的「自动」/ auto 仍省略 thinking，避免落到未知值后被当成 enable。
@@ -190,14 +192,11 @@ def to_thinking_level(value: str) -> ThinkingLevel | None:
     return THINKING_LEVEL_MAP[value]
 
 
-# 统一 ThinkingLevel 没有 max。OpenAI 协议用 openai_reasoning_effort 原样带上。
-OpenAIConfiguredEffort = ThinkingLevel | Literal["max"]
+OpenAIConfiguredEffort = ThinkingLevel
 
 
 def to_openai_effort(value: str) -> OpenAIConfiguredEffort | None:
-    """OpenAI 兼容配置的档位。max 不进统一 thinking。"""
-    if value == "max":
-        return "max"
+    """OpenAI 兼容配置的思考档位。"""
     return to_thinking_level(value)
 
 
@@ -212,10 +211,6 @@ def _with_openai_effort(
     settings: OpenAIChatModelSettings,
     model_effort: OpenAIConfiguredEffort | None,
 ) -> OpenAIChatModelSettings:
-    # prepare_request 只剥统一 thinking。max 留在协议字段里。
-    if model_effort == "max":
-        settings["openai_reasoning_effort"] = "max"
-        return settings
     if model_effort is not None:
         settings["thinking"] = model_effort
     return settings
@@ -230,9 +225,33 @@ def user_thinking_profile(
         # adaptive 不传。画像已承认思考时不动，保留「不能关闭」的结论。
         if model_effort is None:
             return default
-        if default.get("supports_thinking", False) or default.get("thinking_always_enabled", False):
+        if ("supports_thinking" in default and bool(default["supports_thinking"])) or (
+            "thinking_always_enabled" in default and bool(default["thinking_always_enabled"])
+        ):
             return default
         return merge_profile(default, ModelProfile(supports_thinking=True))
+
+    return _overlay
+
+
+def openai_user_thinking_profile(
+    model_effort: OpenAIConfiguredEffort | None,
+) -> Callable[[ModelProfile], ModelProfile]:
+    """OpenAI 兼容配置声明过思考档位时开启 supports_thinking 与 max 映射，供 fast/thinking=False 生效。"""
+
+    def _overlay(default: ModelProfile) -> ModelProfile:
+        if model_effort is None:
+            return default
+        has_thinking = ("supports_thinking" in default and bool(default["supports_thinking"])) or (
+            "thinking_always_enabled" in default and bool(default["thinking_always_enabled"])
+        )
+        patch = OpenAIModelProfile(
+            openai_chat_supports_max_reasoning_effort=True,
+            openai_responses_supports_max_reasoning_effort=True,
+        )
+        if not has_thinking:
+            patch["supports_thinking"] = True
+        return merge_profile(default, patch)
 
     return _overlay
 
@@ -370,7 +389,7 @@ class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
 
 
 @final
-class AutoUsageOpenAIChatModel(OpenAIChatModelWithVideo):
+class AutoUsageOpenAIChatModel(RecoveringOpenAIChatModel):
     """auto 模式下使用的 ChatModel：流式响应走 usage 语义在线探测。"""
 
     @property
@@ -438,11 +457,11 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
     Args:
         config_name: 配置文件名（不含扩展名）
     """
-    base_url, api_key, model_name, model_effort, request_method, continuous_usage, usage_stats_mode = (
+    base_url, api_key, model_name, configured_effort, request_method, continuous_usage, usage_stats_mode = (
         get_openai_config_by_name(config_name)
     )
+    settings_effort: OpenAIConfiguredEffort | None = None if fast else configured_effort
     if fast:
-        model_effort = None
         usage_stats_mode = "incremental"
 
     # §23 墙钟 + 共享连接池（见 MODEL_REQUEST_TIMEOUT_HTTPX2 / _shared_model_httpx2_client）；
@@ -467,15 +486,16 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
     video_inline_max_mb_raw = oconfig.get_config("video_inline_max_mb").data
     video_inline_max_mb = int(video_inline_max_mb_raw) if isinstance(video_inline_max_mb_raw, int) else 12
     video_url_passthrough = str(oconfig.get_config("video_url_passthrough").data)
-    # max 不写统一 thinking，画像不用为它改 supports_thinking。
-    keep_effort = user_thinking_profile(None if model_effort == "max" else model_effort)
+    learned = openai_profile_for_model(base_url, model_name)
+    keep_effort = openai_user_thinking_profile(configured_effort)
+
+    def _responses_profile(default: ModelProfile) -> ModelProfile:
+        return learned(keep_effort(default))
 
     def _chat_profile(default: ModelProfile) -> ModelProfile:
-        profile = keep_effort(default)
+        profile = learned(keep_effort(default))
         if send_back_thinking != "off":
             return profile
-        from pydantic_ai.profiles.openai import OpenAIModelProfile
-
         return merge_profile(profile, OpenAIModelProfile(openai_chat_send_back_thinking_parts=False))
 
     if request_method == "responses":
@@ -483,14 +503,14 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
         return OpenAIResponsesModel(
             model_name=model_name,
             provider=provider,
-            profile=keep_effort,
-            settings=_with_openai_effort(OpenAIChatModelSettings(), model_effort),
+            profile=_responses_profile,
+            settings=_with_openai_effort(OpenAIChatModelSettings(), settings_effort),
         )
 
     # cumulative 语义网关须取「最后累计值」而非逐 chunk 累加, 否则统计膨胀数十倍;
     # auto 模式用探测子类兜底白名单外的网关（见 _AutoUsageStreamedResponse）
     model_cls = (
-        OpenAIChatModelWithVideo if usage_stats_mode in ("incremental", "cumulative") else AutoUsageOpenAIChatModel
+        RecoveringOpenAIChatModel if usage_stats_mode in ("incremental", "cumulative") else AutoUsageOpenAIChatModel
     )
     return model_cls(
         model_name=model_name,
@@ -502,7 +522,7 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
             OpenAIChatModelSettings(
                 openai_continuous_usage_stats=usage_stats_mode == "cumulative",
             ),
-            model_effort,
+            settings_effort,
         ),
         video_input_format=video_input_format,
         video_fps=video_fps,
@@ -519,6 +539,7 @@ def make_anthropic_model(
     api_key: str,
     base_url: str,
     http_client: httpx2.AsyncClient,
+    profile_effort: ThinkingLevel | None = None,
 ) -> AnthropicModel:
     """构造 Anthropic 模型。思考形状用本进程从 400 正文里学到的事实。"""
     from anthropic import AsyncAnthropic
@@ -531,7 +552,7 @@ def make_anthropic_model(
         http_client=http_client,
     )
     learned = anthropic_profile_for_model(model_name)
-    keep_effort = user_thinking_profile(model_effort)
+    keep_effort = user_thinking_profile(profile_effort if profile_effort is not None else model_effort)
 
     def _profile(default: ModelProfile) -> ModelProfile:
         return keep_effort(learned(default))
@@ -549,9 +570,8 @@ def get_anthropic_chat_model_by_name(config_name: str, *, fast: bool = False) ->
     Args:
         config_name: 配置文件名（不含扩展名）
     """
-    base_url, api_key, model_name, model_effort = get_anthropic_config_by_name(config_name)
-    if fast:
-        model_effort = None
+    base_url, api_key, model_name, configured_effort = get_anthropic_config_by_name(config_name)
+    settings_effort = None if fast else configured_effort
 
     logger.info(
         t(
@@ -565,10 +585,11 @@ def get_anthropic_chat_model_by_name(config_name: str, *, fast: bool = False) ->
     # §23 墙钟 + 共享连接池：与 openai 工厂同一套超时/重试策略（评审修复 F8/E13）
     return make_anthropic_model(
         model_name,
-        model_effort,
+        settings_effort,
         api_key=api_key,
         base_url=base_url,
         http_client=_shared_model_httpx2_client("anthropic"),
+        profile_effort=configured_effort,
     )
 
 
@@ -629,9 +650,8 @@ def get_gemini_model_by_name(config_name: str, *, fast: bool = False) -> "Google
             )
         ) from e
 
-    base_url, api_key, model_name, model_effort = get_gemini_config_by_name(config_name)
-    if fast:
-        model_effort = None
+    base_url, api_key, model_name, configured_effort = get_gemini_config_by_name(config_name)
+    settings_effort = None if fast else configured_effort
 
     # 官方地址走 SDK 内建默认;仅中转地址才显式传 base_url。
     # http_client 走共享池并携带 §23 墙钟超时（genai 内部转发给 httpx，评审修复 E13）
@@ -645,8 +665,8 @@ def get_gemini_model_by_name(config_name: str, *, fast: bool = False) -> "Google
     return GoogleModel(
         model_name=model_name,
         provider=provider,
-        profile=user_thinking_profile(model_effort),
-        settings=_with_thinking(ModelSettings(), model_effort),
+        profile=user_thinking_profile(configured_effort),
+        settings=_with_thinking(ModelSettings(), settings_effort),
     )
 
 

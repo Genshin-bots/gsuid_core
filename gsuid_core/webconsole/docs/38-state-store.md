@@ -57,7 +57,7 @@ UI 建议把它做成下拉框 / 侧边栏，让主人选 scope 后再列 keys�
 ## 2. 列出某 scope 下的 keys
 
 ```
-GET /api/ai/state-store/keys?scope=user:user_web_01[&prefix=record:&include_expired=false]
+GET /api/ai/state-store/keys?scope=user:user_web_01[&prefix=record:&include_expired=false&limit=20&offset=0]
 ```
 
 | 参数 | 说明 |
@@ -65,6 +65,8 @@ GET /api/ai/state-store/keys?scope=user:user_web_01[&prefix=record:&include_expi
 | `scope` | 必填，从端点 1 拿到的 scope |
 | `prefix` | 可选 state_key 前缀过滤。常见值：`record:`（只看结构化集合）、`self_model`（看自我认知）等 |
 | `include_expired` | 默认 false——TTL 已过期的行不返回 |
+| `limit` | 可选，单页条数上限（1~500）；不传则返回全量 |
+| `offset` | 可选，分页偏移量，默认 0 |
 
 返回每个 key 的元信息（不展开 value，避免大 JSON 撑爆响应）：
 
@@ -93,7 +95,10 @@ GET /api/ai/state-store/keys?scope=user:user_web_01[&prefix=record:&include_expi
         "...": "..."
       }
     ],
-    "count": 12
+    "total": 31,
+    "count": 20,
+    "limit": 20,
+    "offset": 0
   }
 }
 ```

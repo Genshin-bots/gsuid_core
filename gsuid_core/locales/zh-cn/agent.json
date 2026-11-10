@@ -84,7 +84,6 @@
   "log.agent.llm_text": "[大模型文本]: {_text}",
   "log.agent.llm_thinking": "[大模型思考]: {_thinking}",
   "log.agent.load_contextual_pool": "[GsCoreAIAgent] 语境工具池加载失败: {e}",
-  "log.agent.load_state_driven_pool": "[GsCoreAIAgent] 状态驱动工具池加载失败: {e}",
   "log.agent.lock_ok": "[GsCoreAIAgent] 执行完成，释放锁",
   "log.agent.main_persona_stripped_capability": "[GsCoreAIAgent] 主人格剥离能力代理专属工具 {n} 个: {names}",
   "log.agent.master_title_correction": "[GsCoreAIAgent] 非主人收件人的台词含主人称呼，追加改写",

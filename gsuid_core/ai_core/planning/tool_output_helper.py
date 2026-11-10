@@ -32,10 +32,10 @@ _MIN_SEARCH_PERSIST_CHARS = 40
 _SEARCH_ERROR_PREFIXES = ("错误：", "错误:", "error:")
 _INLINE_MAX = 4096
 _TTL_DAYS = 30
-# 自适应折叠：私聊 / 群聊 / 能力代理
+# 自适应折叠：私聊 / 群聊 / 后台任务执行体
 _FOLD_PRIVATE = 1200
 _FOLD_GROUP = 900
-_FOLD_CAPABILITY = 12000
+_FOLD_CAPABILITY = 4000
 # 折叠卡内嵌要点上限（仅私聊；群聊主人格只留 summary，不当事实总线）
 _INLINE_HEAD_PRIVATE = 1400
 # 只读/回读类：内容已在 artifact/FileOS 真身里，禁止再落一份 tool_output
@@ -335,11 +335,15 @@ async def persist_and_fold_tool_return(
     is_group: bool = False,
     create_by: str = "",
 ) -> Optional[str]:
-    """过阈值落盘并返回句柄卡；能力代理大阈值且总带 inline_head。"""
+    """过阈值落盘并返回句柄卡；非主对话通道大阈值且总带 inline_head。"""
     tn = tool_name or ""
     if tn == "run_code":
         return None
-    is_cap = create_by == "CapabilityAgent"
+    from dataclasses import replace
+
+    from gsuid_core.ai_core.agent_run.support import _MAIN_PERSONA_CREATE_BY
+
+    is_cap = bool(create_by) and create_by not in _MAIN_PERSONA_CREATE_BY
     if not should_persist_tool_return(tn, content):
         await _remember_short_tool_fact(tn, content, ev, session_id)
         return None
@@ -374,17 +378,20 @@ async def persist_and_fold_tool_return(
     if card is None:
         return None
     fileos_metrics.inc_fold()
-    effective_is_group = False if is_cap else is_group
-    # 能力代理本无 create_subagent，花名册口径只对主人格生效
-    render_allowed = True
-    if not is_cap:
-        from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+    if is_cap:
+        return fold_card_for_main_prompt(
+            replace(card, long_structured=False),
+            content=content,
+            is_group=False,
+            render_allowed=False,
+        ).format()
+    from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
-        render_allowed = persona_allows_capability_agent(_persona_name_for_session(session_id), "render_agent")
+    render_allowed = persona_allows_capability_agent(_persona_name_for_session(session_id), "render_agent")
     return fold_card_for_main_prompt(
         card,
         content=content,
-        is_group=effective_is_group,
+        is_group=is_group,
         render_allowed=render_allowed,
     ).format()
 

@@ -84,7 +84,6 @@
   "log.agent.llm_text": "[LLM text]: {_text}",
   "log.agent.llm_thinking": "[LLM thinking]: {_thinking}",
   "log.agent.load_contextual_pool": "[GsCoreAIAgent] Failed to load contextual tool pool: {e}",
-  "log.agent.load_state_driven_pool": "[GsCoreAIAgent] Failed to load state-driven tool pool: {e}",
   "log.agent.lock_ok": "[GsCoreAIAgent] Execution complete; releasing lock",
   "log.agent.main_persona_stripped_capability": "[GsCoreAIAgent] Main persona stripped {n} capability-agent-only tools: {names}",
   "log.agent.master_title_correction": "[GsCoreAIAgent] Reply to a non-master contains the master title; appending a rewrite",

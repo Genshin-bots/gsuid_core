@@ -57,9 +57,7 @@ def _tool_output_access_allowed(
     if ev is None:
         return True
     owner = (resolved.owner_user_id or "").strip()
-    if not owner:
-        return False
-    if str(ev.user_id) == owner:
+    if owner and str(ev.user_id) == owner:
         return True
     if ev.group_id and resolved.scope_key and str(ev.group_id) == resolved.scope_key:
         return True

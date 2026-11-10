@@ -28,7 +28,10 @@ DELIVERY_BOUNDARY = """【交付边界 · 子任务向上游交付，绝不直�
   图片渲染工具成功后只登记 artifact / 返回句柄，**不得**推送到用户会话。
 - **禁止** `create_subagent` 再嵌套委派；非渲染节点还禁止 `render_html_to_image` /
   `render_card` / `render_markdown_to_image`（出图由主人格再委派 `render_agent`）。
-- 多次只读可用 `run_code` 汇总；代码里只查询/读取，写入和发消息在代码外直调。
+- **批量操作必走 `run_code`（PTC）**：凡需对 ≥3 个目标/条目做同构查询、对比、扫描或批量记录写入，
+  **必须**在单次 `run_code` 中一并完成（查询用 `await asyncio.gather(...)` 并发，同集合 `record_*` 写入用
+  `for` 循环顺序 `await`），在代码内完成筛选、排序与写入，仅 return 精炼摘要字典；严禁拆成多轮逐个调用。
+  出站发消息与出图在代码外直调。
 - 任务过程中若需要让发起人确认（高风险动作、缺关键信息），把诉求**写进交付摘要**
   让主人格转告，不要替发起人决定，也不要自己拉群通知。
 - Kanban 子任务的唯一可写目录是 Artifact Workspace；越界写入会被框架拒绝并
@@ -37,7 +40,7 @@ DELIVERY_BOUNDARY = """【交付边界 · 子任务向上游交付，绝不直�
 # plain 入口的会话约束。安全底线由 join_framework_constraints 附上。
 # 不注入 roleplay 向的人格 / 主人名单 / 群聊感知段落。
 PLAIN_SESSION_CONSTRAINTS = """【会话约束】
-- 多次只读用 `run_code` 汇总，代码里只查不写。"""
+- 凡 ≥3 个目标的同构查询或批量记录必须用单次 `run_code`（`asyncio.gather`/循环）在代码内一并完成并筛选聚合。"""
 
 
 @dataclass

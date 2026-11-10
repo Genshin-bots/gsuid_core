@@ -33,9 +33,9 @@ from gsuid_core.ai_core.rag.tools import (
     align_seeds_to_context_plugin,
     search_tools_with_entity_routing,
 )
-from gsuid_core.ai_core.tool_risk import skill_tool_visible
+from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY, skill_tool_visible
 from gsuid_core.ai_core.tool_safety import build_tool_safety_capability
-from gsuid_core.ai_core.control.lines import STATE_PERSISTED_FAMILY_HINT, turn_seed_hint_line
+from gsuid_core.ai_core.control.lines import turn_seed_hint_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
@@ -73,21 +73,6 @@ _SCHED_MUTATE_NAMES: frozenset[str] = frozenset(
 def _session_tool_ceiling() -> int:
     raw = ai_config.get_config("session_tool_ceiling").data
     return int(raw) if isinstance(raw, int) else 24
-
-
-def l2_state_driven_wanted(
-    *,
-    addr_gated: bool,
-    is_group: bool,
-    call_to_self: bool,
-    followup_detected: bool,
-) -> bool:
-    """L2 是否加载持久实体对应的非 exclusive 族。群聊须点名或省略跟进；私聊始终 1:1。"""
-    if addr_gated:
-        return False
-    if not is_group:
-        return True
-    return call_to_self or followup_detected
 
 
 def snapshot_tool_allowed(
@@ -332,20 +317,41 @@ class ToolsPhase(RunOnceHost):
                 out.append(tb.tool)
         return out
 
+    def _restore_frozen_session_tools(self) -> ToolList:
+        """按会话已冻结名单还原 ToolList，避免旁白/寻址门清空工具导致前缀缓存失配。"""
+        if not self._session_toolset_frozen:
+            return []
+        out: ToolList = []
+        seen: set[str] = set()
+        for name in self._session_toolset_frozen:
+            if not name or name in seen:
+                continue
+            tb = find_tool_base(name)
+            if tb is not None:
+                seen.add(name)
+                out.append(tb.tool)
+        if ENABLE_PROGRESSIVE_TOOLS and "find_tools" not in seen:
+            ft = find_tool_base("find_tools")
+            if ft is not None:
+                out.append(ft.tool)
+        return out
+
     async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
         from gsuid_core.ai_core.command_aside.policy import aside_blocks_tools
 
         if aside_blocks_tools():
-            st.tools = []
-            st.tool_names = []
+            st.tools = self._restore_frozen_session_tools()
+            st.tool_names = [t.name for t in st.tools]
             st.exposed_tool_names = []
+            st.expose_dynamic = bool(st.tools and ENABLE_PROGRESSIVE_TOOLS)
             self._last_assembled_domains = set()
             blocked_ctx = _require_context(st)
             from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
 
             blocked_ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = []
-            self._session_logger.log_tools_list([])
+            blocked_ctx.extra[TOOLS_EXECUTION_GATED_KEY] = True
+            self._session_logger.log_tools_list(st.tool_names)
             return
         # 渐进式工具暴露是否在本轮生效（仅自动装配 + 非闲聊轮）。决定是否挂 RetrievableToolset。
         st.expose_dynamic = False
@@ -424,8 +430,10 @@ class ToolsPhase(RunOnceHost):
                 )
 
         if st.addr_gated:
-            # C-3 寻址门（**内核密封**）：@别人且未点自己 → 零工具，且不打 ASSEMBLE_TOOLS
-            st.tools = []
+            # C-3 寻址门：保留已冻结会话工具 schema 保住前缀缓存，执行期由 tool_execute 拦截
+            st.tools = self._restore_frozen_session_tools()
+            st.expose_dynamic = bool(st.tools and ENABLE_PROGRESSIVE_TOOLS)
+            _require_context(st).extra[TOOLS_EXECUTION_GATED_KEY] = True
             _caller_by_name: dict[str, Tool[ToolContext]] = {}
         elif _assemble or self.create_by in _AGENTIC_CREATE_BY:
             _caller_tools: ToolList = list(st.tools) if st.tools else []
@@ -469,38 +477,9 @@ class ToolsPhase(RunOnceHost):
                                 core_names.add(_tn)
                                 core_tools.append(_tb.tool)
 
-                # L2：有持久实体则补该族非 exclusive 工具（点名/跟进/私聊；旁观不加）
                 extra_tools: ToolList = []
                 _is_group = bool(st.tg is not None and st.tg.is_group)
                 _call_self = bool(st.tg is not None and st.tg.call_to_self)
-                if l2_state_driven_wanted(
-                    addr_gated=st.addr_gated,
-                    is_group=_is_group,
-                    call_to_self=_call_self,
-                    followup_detected=st.followup_detected,
-                ):
-                    try:
-                        from gsuid_core.ai_core.tool_state_signals import (
-                            get_state_driven_families,
-                            get_state_driven_family_tools,
-                        )
-
-                        _exclusive_now = _capability_exclusive_tool_names()
-                        _l2_domains = await get_state_driven_families(st.ev, has_active_task=st.has_active_task)
-                        if _l2_domains:
-                            extra_tools += await get_state_driven_family_tools(
-                                st.ev,
-                                exclude_names=core_names | _exclusive_now,
-                                has_active_task=st.has_active_task,
-                            )
-                            # 状态族是「有持久实体就整族可用」，但仍受 enabled_tools 收放
-                            if not _scope.is_open:
-                                extra_tools = _scope.filter_tools(extra_tools)
-                            st.final_user_message = _append_user_text(
-                                st.final_user_message, STATE_PERSISTED_FAMILY_HINT
-                            )
-                    except Exception as e:
-                        logger.debug(i18n_t("log.agent.load_state_driven_pool", e=e))
 
                 # L3 不写 core；跨轮靠 find_tools 成功后 append。TTL 仍递减。
                 _interactive = self.create_by in _INTERACTIVE_CREATE_BY
@@ -627,13 +606,6 @@ class ToolsPhase(RunOnceHost):
                                 _hit = any(_mounted(name) for name in core_names)
                             if _hit:
                                 st.entity_routed = True
-                    if st.intent in ("工具", "问答"):
-                        for _tn in ("web_search_tool", "web_fetch_tool"):
-                            if _tn in core_names:
-                                continue
-                            _tb = find_tool_base(_tn)
-                            if _tb is not None:
-                                extra_tools.append(_tb.tool)
 
                 # 静态附加池仍去掉 send_*。本轮种子在快照后追加，不受这层剥离。
                 if st.group_slim or _interactive:
@@ -693,6 +665,30 @@ class ToolsPhase(RunOnceHost):
                                     names=sorted(_stripped)[:12],
                                 )
                             )
+
+                if st.has_active_task:
+                    for _st_name in ("list_my_kanban_tasks", "artifact_get_recent", "cancel_kanban_task"):
+                        if not _scope.is_open and not _scope.tool_enabled(_st_name):
+                            continue
+                        _st_tb = find_tool_base(_st_name)
+                        if _st_tb is not None and all(s.name != _st_name for s in turn_seeds):
+                            turn_seeds.append(_st_tb.tool)
+                if (
+                    _interactive
+                    and not st.in_flight_short
+                    and st.ev is not None
+                    and str(st.ev.user_id).strip()
+                    and (st.followup_detected or _call_self)
+                ):
+                    from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
+
+                    if await user_has_active_schedules(str(st.ev.user_id)):
+                        for _sc_name in ("get_scheduled_tasks", "update_scheduled_task", "cancel_scheduled_task"):
+                            if not _scope.is_open and not _scope.tool_enabled(_sc_name):
+                                continue
+                            _sc_tb = find_tool_base(_sc_name)
+                            if _sc_tb is not None and all(s.name != _sc_name for s in turn_seeds):
+                                turn_seeds.append(_sc_tb.tool)
 
                 # 渐进式工具暴露：PIN 恒在 schema，是否调用交给模型。
                 if ENABLE_PROGRESSIVE_TOOLS:
@@ -946,7 +942,8 @@ class ToolsPhase(RunOnceHost):
         """构建 pydantic-ai Agent 与流式统计元数据；返回 Agent 实例。"""
         # 指定 return_model 时通过 st.output_type 强制 pydantic_ai 结构化输出。
         _guarded_skills = skills_toolset.filtered(skill_tool_visible)
-        _toolsets = [_guarded_skills] if self.create_by in _SKILLS_CREATE_BY and not st.addr_gated else []
+        _keep_skills = not st.addr_gated or bool(self._session_toolset_frozen)
+        _toolsets = [_guarded_skills] if self.create_by in _SKILLS_CREATE_BY and _keep_skills else []
         # 启用渐进式暴露时挂 RetrievableToolset：每个 step 读 dynamic_tool_names 即时暴露命中工具。
         # exclude_names：静态池 + 能力代理专属（防 find_tools 把已剥离工具回灌主人格）。
         if st.expose_dynamic:
@@ -962,6 +959,8 @@ class ToolsPhase(RunOnceHost):
         if self.model:
             # 必须拷贝：self.model.settings 是模型对象的共享状态，就地改会污染后续所有 run
             _base_settings: ModelSettings = self.model.settings.copy() if self.model.settings else ModelSettings()
+            if self._wire_max_tokens is not None:
+                _base_settings["max_tokens"] = self._wire_max_tokens
             thinking_override = self.thinking
             if thinking_override is not None:
                 _base_settings["thinking"] = thinking_override
@@ -971,6 +970,7 @@ class ToolsPhase(RunOnceHost):
                 "MemSummary",
                 "MemProfileExtraction",
                 "MemClusterNaming",
+                "ImageDescSummary",
             ):
                 _base_settings["thinking"] = False
             if memory_config.eval_mode:

@@ -101,7 +101,7 @@ def _matches_where(record: Dict[str, Any], where_field: str, where_value: str) -
     return str(record[where_field]) == where_value
 
 
-@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=True)
 async def record_put(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -238,7 +238,7 @@ async def record_list(
     return json.dumps(items, ensure_ascii=False)
 
 
-@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=True)
 async def record_append(
     ctx: RunContext[ToolContext],
     collection: str,
@@ -295,7 +295,7 @@ async def record_append(
     return f"ok rid={chosen['rid']}"
 
 
-@ai_tools(category="planning", capability_domain="结构化记录", code_callable=False)
+@ai_tools(category="planning", capability_domain="结构化记录", code_callable=True)
 async def record_update(
     ctx: RunContext[ToolContext],
     collection: str,

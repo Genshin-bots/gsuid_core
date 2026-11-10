@@ -203,3 +203,133 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
 
     delta = journal_delta_line("[15:05 | 模拟盘记账] 记完收盘账")
     assert _peel_ephemeral_system_lines(f"[用户发言]\n今天怎么样\n{delta}") == "[用户发言]\n今天怎么样"
+
+    from pydantic_ai.models import ModelRequestParameters
+    from pydantic_ai.messages import ImageUrl, UserPromptPart
+    from pydantic_ai.exceptions import ModelHTTPError
+    from pydantic_ai.profiles.openai import openai_model_profile
+
+    from gsuid_core.ai_core.utils import _relean_user_turn
+    from gsuid_core.ai_core.control.lines import TOOLS_EXECUTION_GATED_DENY
+    from gsuid_core.ai_core.configs.models import openai_user_thinking_profile
+    from gsuid_core.ai_core.configs.openai_wire import (
+        revise_openai_attempt,
+        clear_openai_wire_facts,
+        openai_profile_for_model,
+    )
+    from gsuid_core.ai_core.memory.retrieval.types import Episode
+    from gsuid_core.ai_core.buildin_tools.visibility import tool_return_is_gate_reject
+    from gsuid_core.ai_core.memory.retrieval.dual_route import _filter_point_lookup_episodes
+
+    full_req = ModelRequest(parts=[UserPromptPart(content=f"[历史对话]\nA: 1\n\n[用户发言]\n你好\n{delta}")])
+    _relean_user_turn([full_req], "[用户发言]\n你好")
+    assert isinstance(full_req.parts[0], UserPromptPart)
+    assert full_req.parts[0].content == "[用户发言]\n你好"
+
+    mm_req = ModelRequest(
+        parts=[
+            UserPromptPart(
+                content=[f"[历史对话]\nA: 1\n\n[用户发言]\n看图\n{delta}", ImageUrl(url="https://x.invalid/a.png")]
+            )
+        ]
+    )
+    _relean_user_turn([mm_req], "[用户发言]\n看图")
+    assert isinstance(mm_req.parts[0], UserPromptPart)
+    assert isinstance(mm_req.parts[0].content, list)
+    assert mm_req.parts[0].content[0] == "[用户发言]\n看图"
+    assert isinstance(mm_req.parts[0].content[1], ImageUrl)
+
+    assert tool_return_is_gate_reject(TOOLS_EXECUTION_GATED_DENY) is True
+
+    eps: list[Episode] = [
+        {
+            "id": f"e{i}",
+            "content": f"无关日常片段 {i}",
+            "valid_at": "",
+            "scope_key": "group:group_1",
+            "embedding": [],
+            "score": 0.0208 - i * 0.0003,
+        }
+        for i in range(6)
+    ]
+    assert len(_filter_point_lookup_episodes(eps, "今天天气如何", dense_anchor_cap=2)) == 2
+
+    stopword_pending: Episode = {
+        "id": "p_stop",
+        "content": "测试用户A: 今天午饭吃面",
+        "valid_at": "",
+        "scope_key": "group:group_1",
+        "embedding": [],
+    }
+    kept_after_stop = _filter_point_lookup_episodes([*eps, stopword_pending], "今天天气如何", dense_anchor_cap=2)
+    assert [e["id"] for e in kept_after_stop] == ["e0", "e1"]
+
+    substantive_pending: Episode = {
+        "id": "p_hit",
+        "content": "测试用户A: 猫粮牌子选了测试款",
+        "valid_at": "",
+        "scope_key": "group:group_1",
+        "embedding": [],
+    }
+    kept_with_hit = _filter_point_lookup_episodes([*eps, substantive_pending], "今天猫粮牌子是什么", dense_anchor_cap=2)
+    assert [e["id"] for e in kept_with_hit] == ["p_hit", "e0", "e1"]
+
+    clear_openai_wire_facts()
+    try:
+        base_prof = openai_user_thinking_profile("max")(openai_model_profile("MiniMax-M3.1-Flash"))
+        assert "supports_thinking" in base_prof and base_prof["supports_thinking"] is True
+        err_none = ModelHTTPError(
+            status_code=400,
+            model_name="MiniMax-M3.1-Flash",
+            body={"error": {"message": "invalid reasoning_effort: none; expected low, medium, high, max"}},
+        )
+        rev1 = revise_openai_attempt(
+            "https://api.minimaxi.com/v1",
+            "MiniMax-M3.1-Flash",
+            err_none,
+            None,
+            ModelRequestParameters(thinking=False),
+        )
+        assert rev1 is not None
+        learned_prof = openai_profile_for_model("https://api.minimaxi.com/v1", "MiniMax-M3.1-Flash")(base_prof)
+        assert "openai_reasoning_efforts" in learned_prof
+        assert learned_prof["openai_reasoning_efforts"] == frozenset({"low", "medium", "high", "max"})
+    finally:
+        clear_openai_wire_facts()
+
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.planning.handle_resolver import ResolvedHandle
+    from gsuid_core.ai_core.planning.tool_output_tools import _tool_output_access_allowed
+    from gsuid_core.ai_core.planning.tool_output_helper import should_fold_for_model
+
+    assert should_fold_for_model("x" * 4500, tool_name="web_search_tool", is_group=True, is_capability=True) is True
+    assert should_fold_for_model("x" * 3500, tool_name="web_search_tool", is_group=True, is_capability=True) is False
+
+    grp_handle = ResolvedHandle(
+        id="to_test000001",
+        source="tool_output",
+        mime="text/plain",
+        summary="测试摘要",
+        owner_user_id="",
+        scope_key="group_1",
+        payload_inline="正文",
+        payload_path="",
+        size_bytes=6,
+    )
+    test_model = TestModel()
+    ctx_same_grp = RunContext(
+        deps=ToolContext(ev=Event(bot_id="test", user_id="", group_id="group_1")),
+        model=test_model,
+        usage=RunUsage(),
+    )
+    ctx_other_grp = RunContext(
+        deps=ToolContext(ev=Event(bot_id="test", user_id="", group_id="group_2")),
+        model=test_model,
+        usage=RunUsage(),
+    )
+    assert _tool_output_access_allowed(grp_handle, ctx_same_grp) is True
+    assert _tool_output_access_allowed(grp_handle, ctx_other_grp) is False

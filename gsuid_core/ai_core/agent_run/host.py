@@ -40,6 +40,7 @@ class RunOnceHost:
     _active_config_name: str | None
     system_prompt: str | None
     max_tokens: int | None
+    _wire_max_tokens: int | None
     max_iterations: int | None
     session_id: str
     persona_name: str | None
