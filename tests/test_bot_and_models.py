@@ -13,7 +13,7 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core import utils as ai_utils
 from gsuid_core.segment import Message
 from gsuid_core.ai_core.trigger_bridge import MockBot
-from gsuid_core.ai_core.persona.chat_style import DEFAULT_CHAT_STYLE, _tier_for
+from gsuid_core.ai_core.persona.chat_style import DEFAULT_CHAT_STYLE, ChatStyle, _tier_for
 
 
 def _plain_text(message: Union[Message, List[Message], str, bytes, List[str]]) -> str:
@@ -62,7 +62,7 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
     return [_plain_text(message) for message in _drive(text, monkeypatch, bubbles=bubbles)]
 
 
-def test_high_level_bot_wraps_low_level() -> None:
+def test_bot_wrapper_and_chat_style_contract() -> None:
     low = _Bot("ws-alpha")
     ev = Event(
         bot_id="onebot",
@@ -73,70 +73,34 @@ def test_high_level_bot_wraps_low_level() -> None:
         WS_BOT_ID="ws-alpha",
     )
     high = Bot(low, ev)
-    assert high.bot is low
-    assert high.ev is ev
-    assert not hasattr(low, "ev")
-    assert high.bot_id == ev.bot_id
-    assert hasattr(high, "send")
+    assert high.bot is low and high.ev is ev and not hasattr(low, "ev")
+    assert high.bot_id == ev.bot_id and hasattr(high, "send")
 
-
-def test_mockbot_requires_high_level_bot() -> None:
-    low = _Bot("ws-alpha")
-    ev = Event(bot_id="onebot", bot_self_id="self1", user_type="direct", user_id="u1", WS_BOT_ID="ws-alpha")
-    high = Bot(low, ev)
     mock = MockBot(high, {"image_ids": []})
     assert object.__getattribute__(mock, "_real_bot") is high
-
-
-def test_blank_line_survives_leak_stripper() -> None:
     assert ai_utils.strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
 
-
-def test_send_chat_result_splits_on_blank_line(monkeypatch: pytest.MonkeyPatch) -> None:
-    out = _run("第一句\n\n第二句", monkeypatch)
-    assert len(out) == 2
-    assert out[0].strip() == "第一句"
-    assert out[1].strip() == "第二句"
-
-
-def test_send_chat_result_clamps_to_persona_bubble_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    out = _run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=2)
-    assert len(out) == 2
-    assert out[0].strip() == "一"
-    assert "二" in out[1] and "四" in out[1]
-
-
-def test_send_chat_result_turns_cq_at_into_at_segment(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent = _drive("[CQ:at,qq=100000002,name=foo] 到时间啦", monkeypatch)
-    assert len(sent) == 1
-    assert isinstance(sent[0], list)
-    pairs = [(seg.type, seg.data) for seg in sent[0] if isinstance(seg, Message)]
-    assert pairs == [("at", "100000002"), ("text", " 到时间啦")]
-
-
-def test_bubble_cap_follows_chat_style(monkeypatch: pytest.MonkeyPatch) -> None:
-    src = "一\n\n二\n\n三\n\n四"
-    assert len(_run(src, monkeypatch, bubbles=1)) == 1
-    assert len(_run(src, monkeypatch, bubbles=4)) == 4
-
-
-def test_chat_style_tier_boundaries() -> None:
-    assert _tier_for(0)[0] == 1
-    assert _tier_for(DEFAULT_CHAT_STYLE)[0] == 2
-    assert _tier_for(100)[0] >= 3
-
-
-def test_chat_style_hint_is_persona_neutral() -> None:
+    assert _tier_for(0)[0] == 1 and _tier_for(DEFAULT_CHAT_STYLE)[0] == 2 and _tier_for(100)[0] >= 3
     banned = ("唔", "呼", "zzz", "早柚", "貉", "股票", "黄金", "原神", "提瓦特")
     for value in (0, 50, 100):
         hint = _tier_for(value)[3]
-        assert hint
-        assert not any(word in hint for word in banned)
-
-
-def test_chat_style_dataclass_is_frozen() -> None:
-    from gsuid_core.ai_core.persona.chat_style import ChatStyle
+        assert hint and not any(word in hint for word in banned)
 
     style = ChatStyle(bubbles=2, soft=60, hard=150, segment_hint="x")
     with pytest.raises(dataclasses.FrozenInstanceError):
         setattr(style, "bubbles", 3)
+
+
+def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    out = _run("第一句\n\n第二句", monkeypatch)
+    assert [s.strip() for s in out] == ["第一句", "第二句"]
+
+    clamped = _run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=2)
+    assert len(clamped) == 2 and clamped[0].strip() == "一" and "二" in clamped[1] and "四" in clamped[1]
+    assert len(_run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=1)) == 1
+    assert len(_run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=4)) == 4
+
+    sent = _drive("[CQ:at,qq=100000002,name=foo] 到时间啦", monkeypatch)
+    assert len(sent) == 1 and isinstance(sent[0], list)
+    pairs = [(seg.type, seg.data) for seg in sent[0] if isinstance(seg, Message)]
+    assert pairs == [("at", "100000002"), ("text", " 到时间啦")]

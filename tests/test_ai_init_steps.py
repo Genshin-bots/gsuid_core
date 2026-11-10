@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from typing import List
 
 import pytest
 
+import gsuid_core.ai_core.startup as st
 from gsuid_core.ai_core.startup import _INIT_STEPS, init_ai_core
 from gsuid_core.utils.database.startup import (
     AI_DATABASE_MODEL_MODULES,
     CORE_DATABASE_MODEL_MODULES,
     import_database_models,
 )
+from gsuid_core.ai_core.configs.ai_config import ai_config
 
 
-def test_init_steps_order_is_stable() -> None:
+def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     names = [name for name, _fn in _INIT_STEPS]
     assert names == [
         "Agent 套件",
@@ -34,63 +37,34 @@ def test_init_steps_order_is_stable() -> None:
         "命令执行",
     ]
 
-
-def test_init_ai_core_returns_before_steps_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    import gsuid_core.ai_core.startup as st
-    from gsuid_core.ai_core.configs import ai_config as cfg_mod
-
     class _Off:
         data = False
 
+    class _On:
+        data = True
+
     monkeypatch.setattr(st, "_AI_CORE_READY", False)
     monkeypatch.setattr(st, "_AI_CORE_INITIALIZING", False)
-    monkeypatch.setattr(cfg_mod.ai_config, "get_config", lambda _key: _Off())
+    monkeypatch.setattr(ai_config, "get_config", lambda _key: _Off())
     called: List[str] = []
 
     async def _boom() -> None:
         called.append("step")
 
     monkeypatch.setattr("gsuid_core.ai_core.startup._INIT_STEPS", [("should_not_run", _boom)])
-    import asyncio
-
     asyncio.run(init_ai_core())
     assert called == []
 
-
-def test_ai_table_modules_skipped_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    imported: List[str] = []
-
-    def _capture(name: str) -> object:
-        imported.append(name)
-        return object()
-
-    class _Off:
-        data = False
-
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    monkeypatch.setattr(ai_config, "get_config", lambda _key: _Off())
-    monkeypatch.setattr(importlib, "import_module", _capture)
+    imported_off: List[str] = []
+    monkeypatch.setattr(importlib, "import_module", lambda name: (imported_off.append(name), object())[1])
     import_database_models()
-    assert imported == list(CORE_DATABASE_MODEL_MODULES)
-    assert not any(m in imported for m in AI_DATABASE_MODEL_MODULES)
+    assert imported_off == list(CORE_DATABASE_MODEL_MODULES)
+    assert not any(m in imported_off for m in AI_DATABASE_MODEL_MODULES)
 
-
-def test_ai_table_modules_imported_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    imported: List[str] = []
-
-    def _capture(name: str) -> object:
-        imported.append(name)
-        return object()
-
-    class _On:
-        data = True
-
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
+    imported_on: List[str] = []
     monkeypatch.setattr(ai_config, "get_config", lambda _key: _On())
-    monkeypatch.setattr(importlib, "import_module", _capture)
+    monkeypatch.setattr(importlib, "import_module", lambda name: (imported_on.append(name), object())[1])
     import_database_models()
-    assert imported[: len(CORE_DATABASE_MODEL_MODULES)] == list(CORE_DATABASE_MODEL_MODULES)
+    assert imported_on[: len(CORE_DATABASE_MODEL_MODULES)] == list(CORE_DATABASE_MODEL_MODULES)
     for mod in AI_DATABASE_MODEL_MODULES:
-        assert mod in imported
+        assert mod in imported_on

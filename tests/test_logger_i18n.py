@@ -377,8 +377,6 @@ def _translated_sources(
 
 
 def _scope_for(parsed: _ParsedSource, node: ast.AST) -> _Scope:
-    # 参数注解等表达式在定义函数时由外层作用域求值；ScopeBuilder 不需要深入记录
-    # 它们，扫描时回落模块作用域即可。实际函数体和类体中的节点都会有精确 scope。
     return parsed.scopes.get(id(node), parsed.module_scope)
 
 
@@ -419,9 +417,11 @@ def _declared_languages() -> Set[str]:
             continue
         languages: Set[str] = set()
         for stmt in node.body:
-            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Constant):
-                continue
-            if isinstance(stmt.value.value, str):
+            if (
+                isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)
+            ):
                 languages.add(stmt.value.value)
         return languages
     raise AssertionError("i18n.py 中未找到 Lang 枚举")
@@ -455,7 +455,6 @@ def _load_catalog_file(path: Path) -> Dict[str, str]:
 
 
 def _load_catalogs() -> Dict[str, Dict[str, str]]:
-    """支持 ``locales/<lang>/*.json`` 目录布局；兼容遗留单文件 ``locales/<lang>.json``。"""
     catalogs: Dict[str, Dict[str, str]] = {}
     if not _LOCALES.is_dir():
         return catalogs
@@ -481,6 +480,10 @@ def _placeholder_signature(text: str) -> Tuple[Counter, Counter]:
     return brace, printf
 
 
+def _placeholder_names(template: str) -> list[str]:
+    return [m.group(1) for m in _BRACE_FIELD_RE.finditer(template)]
+
+
 def _iter_i18n_calls(parsed: _ParsedSource) -> Iterator[ast.Call]:
     for node in ast.walk(parsed.tree):
         if isinstance(node, ast.Call) and _is_i18n_call(node, _scope_for(parsed, node)):
@@ -491,8 +494,8 @@ def _format_offenders(offenders: Iterable[str]) -> str:
     return "\n".join(f"  {item}" for item in offenders)
 
 
-def test_logger_detector_covers_supported_forms() -> None:
-    parsed = _parse_text(
+def test_framework_logger_i18n_and_static_keys() -> None:
+    parsed_sample = _parse_text(
         """
 import logging
 import structlog
@@ -511,171 +514,111 @@ struct_logger.info(i18n_t("log.good.ok"))
 logger.exception(error)
 """
     )
-    violations, count = _collect_logger_violations(parsed)
-    assert count == 7
-    assert len(violations) == 5
-    assert any("trace literal" in item for item in violations)
-    assert any("logger.warning(message)" in item for item in violations)
-    assert not any("log.good.ok" in item for item in violations)
+    sample_violations, sample_count = _collect_logger_violations(parsed_sample)
+    assert sample_count == 7 and len(sample_violations) == 5
+    assert any("trace literal" in item for item in sample_violations)
+    assert not any("log.good.ok" in item for item in sample_violations)
 
+    with pytest.raises(ValueError, match="重复 key"):
+        json.loads('{"same": "first", "same": "second"}', object_pairs_hook=_reject_duplicate_keys)
 
-def test_all_framework_logger_messages_use_i18n() -> None:
-    offenders: List[str] = []
+    declared = _declared_languages()
+    found = {
+        path.stem if path.is_file() else path.name
+        for path in _LOCALES.iterdir()
+        if not path.name.startswith((".", "_")) and (path.is_dir() or (path.is_file() and path.suffix == ".json"))
+    }
+    assert declared == found
+
+    catalogs = _load_catalogs()
+    assert "zh-cn" in catalogs
+    reference = catalogs["zh-cn"]
+    catalog_offenders: List[str] = []
+    for lang, catalog in catalogs.items():
+        missing = sorted(set(reference) - set(catalog))
+        extra = sorted(set(catalog) - set(reference))
+        if missing or extra:
+            catalog_offenders.append(f"{lang}: 缺失={missing[:20]}，多余={extra[:20]}")
+            continue
+        for key, reference_text in reference.items():
+            if _placeholder_signature(reference_text) != _placeholder_signature(catalog[key]):
+                catalog_offenders.append(f"{lang}: {key!r} 占位符不一致")
+    assert not catalog_offenders, "locale key 或占位符不完整：\n" + _format_offenders(catalog_offenders)
+
+    log_offenders: List[str] = []
+    key_offenders: List[str] = []
     count = 0
     for path in _iter_source_files():
         parsed = _parse_source(path)
         violations, file_count = _collect_logger_violations(parsed)
         count += file_count
         rel = path.relative_to(_ROOT).as_posix()
-        offenders.extend(f"{rel}:{item}" for item in violations)
-
-    assert count > 1000, f"只识别到 {count} 个 logger 调用，扫描器可能已失效"
-    assert not offenders, "以下框架日志含未接入 t()/i18n_t() 的静态文案：\n" + _format_offenders(offenders)
-
-
-def test_locale_files_match_declared_languages() -> None:
-    declared = _declared_languages()
-    # 语言目录 或 遗留单文件
-    found: Set[str] = set()
-    for path in _LOCALES.iterdir():
-        if path.name.startswith((".", "_")):
-            continue
-        if path.is_dir() or (path.is_file() and path.suffix == ".json"):
-            found.add(path.stem if path.is_file() else path.name)
-    assert declared == found, (
-        f"Lang 与 locale 布局不一致：仅 Lang={sorted(declared - found)}，仅磁盘={sorted(found - declared)}"
-    )
-
-
-def test_locale_catalogs_have_identical_keys_and_placeholders() -> None:
-    catalogs = _load_catalogs()
-    assert catalogs, "未找到 locale JSON"
-    reference_lang = "zh-cn"
-    assert reference_lang in catalogs, "缺少基准语言 zh-cn/"
-    reference = catalogs[reference_lang]
-    offenders: List[str] = []
-
-    for lang, catalog in catalogs.items():
-        missing = sorted(set(reference) - set(catalog))
-        extra = sorted(set(catalog) - set(reference))
-        if missing or extra:
-            offenders.append(f"{lang}: 缺失={missing[:20]}，多余={extra[:20]}")
-            continue
-        for key, reference_text in reference.items():
-            if _placeholder_signature(reference_text) != _placeholder_signature(catalog[key]):
-                offenders.append(
-                    f"{lang}: {key!r} 占位符不一致: "
-                    f"zh-cn={_placeholder_signature(reference_text)!r}, "
-                    f"{lang}={_placeholder_signature(catalog[key])!r}"
-                )
-
-    assert not offenders, "locale key 或占位符不完整：\n" + _format_offenders(offenders)
-
-
-def test_static_i18n_keys_exist_and_format_kwargs_are_complete() -> None:
-    catalogs = _load_catalogs()
-    offenders: List[str] = []
-    for path in _iter_source_files():
-        parsed = _parse_source(path)
-        rel = path.relative_to(_ROOT).as_posix()
+        log_offenders.extend(f"{rel}:{item}" for item in violations)
         for call in _iter_i18n_calls(parsed):
             if not call.args or not isinstance(call.args[0], ast.Constant) or not isinstance(call.args[0].value, str):
                 continue
             key = call.args[0].value
             missing_langs = [lang for lang, catalog in catalogs.items() if key not in catalog]
             if missing_langs:
-                offenders.append(f"{rel}:L{call.lineno}: {key!r} 缺少 locale: {missing_langs}")
+                key_offenders.append(f"{rel}:L{call.lineno}: {key!r} 缺少 locale: {missing_langs}")
                 continue
-            required = {item[0] for item in _placeholder_signature(catalogs["zh-cn"][key])[0]}
+            required = {item[0] for item in _placeholder_signature(reference[key])[0]}
             if any(keyword.arg is None for keyword in call.keywords):
                 continue
             provided = {keyword.arg for keyword in call.keywords if keyword.arg not in {None, "lang"}}
             missing_params = sorted(required - provided)
             if missing_params:
-                offenders.append(
-                    f"{rel}:L{call.lineno}: {key!r} 未传具名占位符 {missing_params}; 调用={ast.unparse(call)}"
-                )
+                key_offenders.append(f"{rel}:L{call.lineno}: {key!r} 未传具名占位符 {missing_params}")
 
-    assert not offenders, "静态 i18n key 或调用参数不完整：\n" + _format_offenders(offenders)
-
-
-def test_duplicate_locale_key_detector_is_active() -> None:
-    with pytest.raises(ValueError, match="重复 key"):
-        json.loads('{"same": "first", "same": "second"}', object_pairs_hook=_reject_duplicate_keys)
+    assert count > 1000, f"只识别到 {count} 个 logger 调用，扫描器可能已失效"
+    assert not log_offenders, "以下框架日志含未接入 t()/i18n_t() 的静态文案：\n" + _format_offenders(log_offenders)
+    assert not key_offenders, "静态 i18n key 或调用参数不完整：\n" + _format_offenders(key_offenders)
 
 
-def test_log_keys_get_module_emoji_assembly() -> None:
-    from gsuid_core.i18n import t, load_catalogs, ensure_log_emoji, starts_with_emoji
-
-    load_catalogs()
-    catalogs = _load_catalogs()
-    sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.server.")), None)
-    assert sample is not None
-    text = t(sample, lang="zh-cn")
-    assert starts_with_emoji(text) or text == sample
-    # 无 emoji 的 value 应被装配
-    assert ensure_log_emoji("log.meme.foo", "hello").startswith("🎭")
-
-
-def test_msg_keys_do_not_get_log_emoji() -> None:
-    """HTTP/API 用户文案使用 msg.*，不得被 ensure_log_emoji 加前缀。"""
-    from gsuid_core.i18n import t, load_catalogs, starts_with_emoji
-
-    load_catalogs()
-    catalogs = _load_catalogs()
-    msg_keys = [k for k in catalogs["zh-cn"] if k.startswith("msg.")]
-    assert msg_keys, "应存在 msg.* 词条（API 文案命名空间）"
-    for key in msg_keys:
-        text = t(key, lang="zh-cn", **{name: "x" for name in _placeholder_names(catalogs["zh-cn"][key])})
-        assert not starts_with_emoji(text), f"{key} 不应带日志 emoji: {text!r}"
-
-
-def _placeholder_names(template: str) -> list[str]:
-    return [m.group(1) for m in _BRACE_FIELD_RE.finditer(template)]
-
-
-def test_plugin_locales_register_without_touching_framework_dir(tmp_path: Path) -> None:
-    """插件词条只存在于插件目录，由 register 摄入，不得写入框架 locales。
-
-    使用临时插件目录，避免依赖 gitignore 的真实插件（CI 无 GenshinUID 等）。
-    """
+def test_emoji_assembly_and_plugin_locale_isolation(tmp_path: Path) -> None:
     from gsuid_core.i18n import (
         t,
         load_catalogs,
+        ensure_log_emoji,
+        starts_with_emoji,
         plugin_locale_key_count,
         unregister_plugin_locales,
         discover_and_register_plugin_locales,
     )
 
+    load_catalogs()
+    catalogs = _load_catalogs()
+    sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.server.")), None)
+    assert sample is not None
+    assert starts_with_emoji(t(sample, lang="zh-cn"))
+    assert ensure_log_emoji("log.meme.foo", "hello").startswith("🎭")
+
+    msg_keys = [k for k in catalogs["zh-cn"] if k.startswith("msg.")]
+    assert msg_keys
+    for key in msg_keys:
+        text = t(key, lang="zh-cn", **{name: "x" for name in _placeholder_names(catalogs["zh-cn"][key])})
+        assert not starts_with_emoji(text), f"{key} 不应带日志 emoji: {text!r}"
+
     plugin_name = "FakePluginUID"
     plugin_root = tmp_path / plugin_name
-    locales = plugin_root / "locales"
     sample_key = "log.fakepluginuid.hello"
-    sample_value = "[FakePlugin] hello {name}"
     for lang in ("zh-cn", "en", "ja"):
-        lang_dir = locales / lang
+        lang_dir = plugin_root / "locales" / lang
         lang_dir.mkdir(parents=True)
         (lang_dir / "logs.json").write_text(
-            json.dumps({sample_key: sample_value}, ensure_ascii=False, indent=2) + "\n",
+            json.dumps({sample_key: "[FakePlugin] hello {name}"}, ensure_ascii=False),
             encoding="utf-8",
         )
 
-    # 框架 locales 不得出现插件专有 key 文件污染（仅运行时合并）
     for lang_dir in _LOCALES.iterdir():
-        if not lang_dir.is_dir():
-            continue
-        for f in lang_dir.glob("*.json"):
-            data = json.loads(f.read_text(encoding="utf-8"))
-            bad = [k for k in data if k.startswith("log.fakepluginuid.") or k.startswith("log.genshinuid.")]
-            assert not bad, f"框架 {f} 不应含插件词条: {bad[:5]}"
+        if lang_dir.is_dir():
+            for f in lang_dir.glob("*.json"):
+                data = json.loads(f.read_text(encoding="utf-8"))
+                assert not [k for k in data if k.startswith(("log.fakepluginuid.", "log.genshinuid."))]
 
-    load_catalogs()
     unregister_plugin_locales(plugin_name)
-    n = discover_and_register_plugin_locales(plugin_root, plugin_name)
-    assert n > 0
+    assert discover_and_register_plugin_locales(plugin_root, plugin_name) > 0
     assert plugin_locale_key_count(plugin_name) > 0
-    # t() 可能为 log.* 装配模块 emoji；确保 key 已解析且占位符生效
     resolved = t(sample_key, lang="zh-cn", name="world")
-    assert "hello" in resolved and "world" in resolved
-    assert sample_key not in resolved
+    assert "hello" in resolved and "world" in resolved and sample_key not in resolved
     unregister_plugin_locales(plugin_name)

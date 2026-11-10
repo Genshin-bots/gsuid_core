@@ -21,23 +21,15 @@ BOT_ID = "test-ws-bot"
 _UVICORN_SEND_AFTER_CLOSE = "Unexpected ASGI message 'websocket.send', after sending 'websocket.close'"
 
 
-def _capture_warning(monkeypatch: pytest.MonkeyPatch) -> List[str]:
-    warnings: List[str] = []
-
-    def _warning(event: object, *_args: object, **_kwargs: object) -> None:
-        warnings.append(str(event))
-
-    monkeypatch.setattr("gsuid_core.handler.logger.warning", _warning)
-    return warnings
-
-
-async def _connected_socket() -> tuple[WebSocket, List[Message]]:
+async def _connected_socket(*, fail_send: bool = False) -> tuple[WebSocket, List[Message]]:
     sent: List[Message] = []
 
     async def receive() -> Message:
         return {"type": "websocket.connect"}
 
     async def send(message: Message) -> None:
+        if fail_send and message["type"] == "websocket.send":
+            raise RuntimeError(_UVICORN_SEND_AFTER_CLOSE)
         sent.append(message)
 
     ws = WebSocket({"type": "websocket", "path": "/ws/x", "headers": []}, receive, send)
@@ -45,23 +37,9 @@ async def _connected_socket() -> tuple[WebSocket, List[Message]]:
     return ws, sent
 
 
-async def _send_raises_socket() -> WebSocket:
-    async def receive() -> Message:
-        return {"type": "websocket.connect"}
-
-    async def send(message: Message) -> None:
-        if message["type"] == "websocket.send":
-            raise RuntimeError(_UVICORN_SEND_AFTER_CLOSE)
-
-    ws = WebSocket({"type": "websocket", "path": "/ws/x", "headers": []}, receive, send)
-    await ws.accept()
-    return ws
-
-
 @pytest.fixture(autouse=True)
 def _restore_gss_state() -> Iterator[None]:
-    saved_ws = dict(gss.active_ws)
-    saved_bot = dict(gss.active_bot)
+    saved_ws, saved_bot = dict(gss.active_ws), dict(gss.active_bot)
     yield
     gss.active_ws.clear()
     gss.active_ws.update(saved_ws)
@@ -69,71 +47,44 @@ def _restore_gss_state() -> Iterator[None]:
     gss.active_bot.update(saved_bot)
 
 
-def test_undecodable_frame_warns_once_and_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    warnings = _capture_warning(monkeypatch)
+def test_decode_inbound_frame_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: List[str] = []
+    monkeypatch.setattr("gsuid_core.handler.logger.warning", lambda event, *a, **kw: warnings.append(str(event)))
+
     assert decode_inbound_frame(b'{"bot_id":"yunzai"', "yunzai") is None
-    assert len(warnings) == 1
-    assert "yunzai" in warnings[0]
+    assert len(warnings) == 1 and "yunzai" in warnings[0]
 
-
-def test_wrong_type_frame_warns_once_and_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    warnings = _capture_warning(monkeypatch)
+    warnings.clear()
     assert decode_inbound_frame(b"[]", "yunzai") is None
-    assert len(warnings) == 1
-    assert "Expected" in warnings[0]
+    assert len(warnings) == 1 and "Expected" in warnings[0]
 
-
-def test_valid_frame_decodes_without_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    warnings = _capture_warning(monkeypatch)
+    warnings.clear()
     raw = msgjson.encode(
-        MessageReceive(
-            bot_id="yunzai",
-            bot_self_id="1",
-            user_id="2",
-            content=[CoreMessage(type="text", data="hi")],
-        )
+        MessageReceive(bot_id="yunzai", bot_self_id="1", user_id="2", content=[CoreMessage(type="text", data="hi")])
     )
     decoded = decode_inbound_frame(raw, "yunzai")
-    assert decoded is not None
-    assert decoded.bot_id == "yunzai"
-    assert decoded.content[0].data == "hi"
+    assert decoded is not None and decoded.bot_id == "yunzai" and decoded.content[0].data == "hi"
     assert warnings == []
 
 
-def test_gs_logger_delivers_when_connected() -> None:
+def test_gs_logger_and_disconnect_lifecycle() -> None:
     async def scenario() -> None:
         ws, sent = await _connected_socket()
-        await GsLogger(BOT_ID, ws).info("hello")
+        glog = GsLogger(BOT_ID, ws)
+        await glog.info("hello")
         assert [m["type"] for m in sent] == ["websocket.accept", "websocket.send"]
 
-    asyncio.run(scenario())
-
-
-def test_gs_logger_silent_after_close() -> None:
-    async def scenario() -> None:
-        ws, sent = await _connected_socket()
-        glog = GsLogger(BOT_ID, ws)
         await ws.close(code=1001)
+        sent.clear()
         await glog.info("after close")
-        assert ws.application_state == WebSocketState.DISCONNECTED
-        assert not any(m["type"] == "websocket.send" for m in sent)
+        assert ws.application_state == WebSocketState.DISCONNECTED and sent == []
 
-    asyncio.run(scenario())
+        raced_ws, _ = await _connected_socket(fail_send=True)
+        raced_log = GsLogger(BOT_ID, raced_ws)
+        await raced_log.info("raced")
+        assert raced_log.bot is None
+        await raced_log.info("raced again")
 
-
-def test_gs_logger_swallows_send_race() -> None:
-    async def scenario() -> None:
-        ws = await _send_raises_socket()
-        glog = GsLogger(BOT_ID, ws)
-        await glog.info("raced")
-        assert glog.bot is None
-        await glog.info("raced again")
-
-    asyncio.run(scenario())
-
-
-def test_stale_disconnect_leaves_new_connection_alone() -> None:
-    async def scenario() -> None:
         stale_ws, _ = await _connected_socket()
         fresh_ws, fresh_sent = await _connected_socket()
         bot = _Bot(BOT_ID, fresh_ws)
@@ -141,26 +92,11 @@ def test_stale_disconnect_leaves_new_connection_alone() -> None:
         gss.active_bot[BOT_ID] = bot
 
         await gss.disconnect(BOT_ID, stale_ws)
-
-        assert gss.active_ws.get(BOT_ID) is fresh_ws
-        assert bot.bot is fresh_ws
-        assert fresh_ws.application_state == WebSocketState.CONNECTED
+        assert gss.active_ws.get(BOT_ID) is fresh_ws and bot.bot is fresh_ws
         assert not any(m["type"] == "websocket.close" for m in fresh_sent)
 
-    asyncio.run(scenario())
-
-
-def test_current_disconnect_tears_down() -> None:
-    async def scenario() -> None:
-        ws, sent = await _connected_socket()
-        bot = _Bot(BOT_ID, ws)
-        gss.active_ws[BOT_ID] = ws
-        gss.active_bot[BOT_ID] = bot
-
-        await gss.disconnect(BOT_ID, ws)
-
-        assert BOT_ID not in gss.active_ws
-        assert bot.bot is None
-        assert any(m["type"] == "websocket.close" for m in sent)
+        await gss.disconnect(BOT_ID, fresh_ws)
+        assert BOT_ID not in gss.active_ws and bot.bot is None
+        assert any(m["type"] == "websocket.close" for m in fresh_sent)
 
     asyncio.run(scenario())

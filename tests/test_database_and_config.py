@@ -28,28 +28,6 @@ from gsuid_core.buildin_plugins.core_command.core_restart.restart import (
 )
 
 
-class _PopenCapture:
-    cmd: str = ""
-    called: bool = False
-
-    def fake_popen(self, cmd: str, *, shell: bool = False, env: dict[str, str] | None = None) -> SimpleNamespace:
-        self.called = True
-        self.cmd = cmd
-        return SimpleNamespace()
-
-
-class _RestartPathProbe:
-    def __init__(self) -> None:
-        self.shutdown_calls = 0
-        self.exit_scheduled = 0
-
-    async def fake_shutdown(self) -> None:
-        self.shutdown_calls += 1
-
-    def fake_schedule_exit(self) -> None:
-        self.exit_scheduled += 1
-
-
 class _FakeChild:
     def __init__(self, code: int) -> None:
         self.code = code
@@ -63,59 +41,14 @@ class _FakeChild:
         return None
 
 
-class _PopenScript:
-    """按顺序给每次 Popen 一个退出码，并记下拉起过的命令。"""
-
-    def __init__(self, codes: list[int]) -> None:
-        self.codes = codes
-        self.commands: list[list[str]] = []
-
-    def fake_popen(self, command: list[str], *, env: dict[str, str]) -> _FakeChild:
-        self.commands.append(command)
-        return _FakeChild(self.codes[len(self.commands) - 1])
-
-
-def _patch_supervisor(monkeypatch: pytest.MonkeyPatch, codes: list[int]) -> _PopenScript:
-    script = _PopenScript(codes)
-    monkeypatch.setattr(supervisor_mod.subprocess, "Popen", script.fake_popen)
-    monkeypatch.setattr(supervisor_mod.time, "sleep", lambda _seconds: None)
-    return script
-
-
-def _patch_restart_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    supervised: bool,
-    custom_command: bool,
-) -> tuple[_PopenCapture, _RestartPathProbe]:
-    capture = _PopenCapture()
-    probe = _RestartPathProbe()
-    monkeypatch.setattr(restart_mod.subprocess, "Popen", capture.fake_popen)
-    monkeypatch.setattr(restart_mod, "core_shutdown_execute", probe.fake_shutdown)
-    monkeypatch.setattr(restart_mod, "_schedule_restart_exit", probe.fake_schedule_exit)
-    monkeypatch.setattr(restart_mod, "is_supervised", lambda: supervised)
-    monkeypatch.setattr(restart_mod, "is_custom_restart_enabled", lambda: custom_command)
-    monkeypatch.setattr(restart_mod, "get_restart_command", lambda: "pm2 restart gscore")
-    monkeypatch.setattr(restart_mod, "restart_sh_path", tmp_path / "gs_restart.sh")
-    monkeypatch.setattr(restart_mod, "restart_guard_path", lambda: tmp_path / "guard.json")
-    return capture, probe
-
-
-def test_same_task_reenters_the_gate() -> None:
+def test_sqlite_write_gate_reentry_and_priority() -> None:
     async def scenario() -> None:
         gate = SqliteWriteGate()
         async with gate:
             async with gate.hold(core=False):
                 async with gate:
-                    return
+                    pass
 
-    asyncio.run(scenario())
-
-
-def test_core_writer_runs_before_a_queued_plugin() -> None:
-    async def scenario() -> None:
-        gate = SqliteWriteGate()
         order: list[str] = []
         release = asyncio.Event()
         started = asyncio.Event()
@@ -147,44 +80,9 @@ def test_core_writer_runs_before_a_queued_plugin() -> None:
     asyncio.run(scenario())
 
 
-def test_read_session_cannot_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_session_read_only_and_savepoint_isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
-        db_path = tmp_path / "ro.db"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path.as_posix()}",
-            poolclass=NullPool,
-            connect_args={"check_same_thread": False, "timeout": 5.0},
-        )
-        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-        monkeypatch.setattr(base_models, "async_maker", maker)
-        monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-
-        class Probe:
-            @classmethod
-            @with_session
-            async def prepare(cls, session: AsyncSession) -> str:
-                await session.execute(text("CREATE TABLE probe_ro (n INTEGER)"))
-                await session.execute(text("INSERT INTO probe_ro (n) VALUES (1)"))
-                return "ready"
-
-            @classmethod
-            @with_read_session
-            async def write(cls, session: AsyncSession) -> None:
-                await session.execute(text("INSERT INTO probe_ro (n) VALUES (2)"))
-
-        assert await Probe.prepare() == "ready"
-        with pytest.raises(OperationalError):
-            await Probe.write()
-
-    asyncio.run(scenario())
-
-
-def test_nested_write_rolls_back_only_the_failed_savepoint(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def scenario() -> None:
-        db_path = tmp_path / "nest-save.db"
+        db_path = tmp_path / "session-test.db"
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{db_path.as_posix()}",
             poolclass=NullPool,
@@ -198,106 +96,98 @@ def test_nested_write_rolls_back_only_the_failed_savepoint(
         class Probe:
             @classmethod
             @with_session
-            async def prepare(cls, session: AsyncSession) -> str:
-                await session.execute(text("CREATE TABLE probe_nest (n INTEGER)"))
-                return "ready"
+            async def prepare(cls, session: AsyncSession) -> None:
+                await session.execute(text("CREATE TABLE probe (n INTEGER)"))
+                await session.execute(text("INSERT INTO probe (n) VALUES (1)"))
+
+            @classmethod
+            @with_read_session
+            async def bad_read_write(cls, session: AsyncSession) -> None:
+                await session.execute(text("INSERT INTO probe (n) VALUES (2)"))
 
             @classmethod
             @with_session
-            async def outer_swallows(cls, session: AsyncSession) -> str:
-                await session.execute(text("INSERT INTO probe_nest (n) VALUES (1)"))
+            async def inner_bad(cls, session: AsyncSession) -> None:
+                await session.execute(text("INSERT INTO no_such_table (n) VALUES (2)"))
+
+            @classmethod
+            @with_session
+            async def outer_swallows(cls, session: AsyncSession) -> int:
+                await session.execute(text("INSERT INTO probe (n) VALUES (3)"))
                 try:
                     await cls.inner_bad()
                 except OperationalError:
                     pass
-                return "swallowed"
+                res = await session.execute(text("SELECT COUNT(*) FROM probe"))
+                return int(res.scalar_one())
 
-            @classmethod
-            @with_session
-            async def inner_bad(cls, session: AsyncSession) -> str:
-                await session.execute(text("INSERT INTO no_such_table (n) VALUES (2)"))
-                return "bad"
-
-            @classmethod
-            @with_session
-            async def count(cls, session: AsyncSession) -> int:
-                result = await session.execute(text("SELECT COUNT(*) FROM probe_nest"))
-                return int(result.scalar_one())
-
-        assert await Probe.prepare() == "ready"
-        assert await Probe.outer_swallows() == "swallowed"
-        assert await Probe.count() == 1
+        try:
+            await Probe.prepare()
+            with pytest.raises(OperationalError):
+                await Probe.bad_read_write()
+            assert await Probe.outer_swallows() == 2
+        finally:
+            await engine.dispose()
 
     asyncio.run(scenario())
 
 
-def test_sanitize_restart_env_drops_uv_recursion_keys() -> None:
-    source = {
-        "PATH": "/usr/bin",
-        "VIRTUAL_ENV": "/venv",
-        "UV_RUN_RECURSION_DEPTH": "101",
-        "UV_INTERNAL__RECURSION_DEPTH": "7",
-        "GSUID_CORE_SUPERVISED": "1",
-    }
-    cleaned = sanitize_restart_env(source)
-    assert "UV_RUN_RECURSION_DEPTH" not in cleaned
-    assert "UV_INTERNAL__RECURSION_DEPTH" not in cleaned
-    assert "GSUID_CORE_SUPERVISED" not in cleaned
-    assert cleaned["PATH"] == "/usr/bin"
+def test_restart_env_guard_and_supervisor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cleaned = sanitize_restart_env(
+        {
+            "PATH": "/usr/bin",
+            "UV_RUN_RECURSION_DEPTH": "101",
+            "uv_internal__recursion_depth": "7",
+            "GSUID_CORE_SUPERVISED": "1",
+        }
+    )
+    assert cleaned == {"PATH": "/usr/bin"}
+    assert (
+        build_restart_shell_command("Windows", 4242, "uv run core")
+        == "taskkill /F /PID 4242 & timeout /t 2 /nobreak > NUL & uv run core"
+    )
 
-
-def test_sanitize_restart_env_is_case_insensitive() -> None:
-    source = {"Path": "/bin", "uv_run_recursion_depth": "3"}
-    cleaned = sanitize_restart_env(source)
-    assert cleaned == {"Path": "/bin"}
-
-
-def test_build_restart_shell_command_windows() -> None:
-    cmd = build_restart_shell_command("Windows", 4242, "uv run core")
-    assert cmd == "taskkill /F /PID 4242 & timeout /t 2 /nobreak > NUL & uv run core"
-
-
-def test_can_spawn_restart_window() -> None:
     now = 1_000.0
     assert can_spawn_restart([], now) is True
-    full = [now - 1.0] * RESTART_GUARD_MAX_IN_WINDOW
-    assert can_spawn_restart(full, now) is False
+    assert can_spawn_restart([now - 1.0] * RESTART_GUARD_MAX_IN_WINDOW, now) is False
 
-
-def test_record_restart_and_allow_persists_and_throttles(tmp_path: Path) -> None:
     guard = tmp_path / "core_restart_guard.json"
-    now = 5_000.0
     for index in range(RESTART_GUARD_MAX_IN_WINDOW):
-        assert record_restart_and_allow(guard, now + index) is True
-    assert record_restart_and_allow(guard, now + RESTART_GUARD_MAX_IN_WINDOW) is False
+        assert record_restart_and_allow(guard, 5_000.0 + index) is True
+    assert record_restart_and_allow(guard, 5_000.0 + RESTART_GUARD_MAX_IN_WINDOW) is False
 
+    spawned: list[str] = []
+    shutdowns: list[int] = []
+    exits: list[int] = []
 
-def test_restart_under_supervisor_exits_instead_of_spawning(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    capture, probe = _patch_restart_path(monkeypatch, tmp_path, supervised=True, custom_command=False)
+    async def _fake_shutdown() -> None:
+        shutdowns.append(1)
+
+    monkeypatch.setattr(restart_mod.subprocess, "Popen", lambda cmd, **kw: (spawned.append(cmd), SimpleNamespace())[1])
+    monkeypatch.setattr(restart_mod, "core_shutdown_execute", _fake_shutdown)
+    monkeypatch.setattr(restart_mod, "_schedule_restart_exit", lambda: exits.append(1))
+    monkeypatch.setattr(restart_mod, "is_supervised", lambda: True)
+    monkeypatch.setattr(restart_mod, "is_custom_restart_enabled", lambda: False)
+    monkeypatch.setattr(restart_mod, "restart_sh_path", tmp_path / "gs_restart.sh")
+    monkeypatch.setattr(restart_mod, "restart_guard_path", lambda: tmp_path / "guard.json")
     asyncio.run(restart_genshinuid(event=None, is_send=False))
-    assert probe.shutdown_calls == 1
-    assert probe.exit_scheduled == 1
-    assert capture.called is False
+    assert shutdowns == [1] and exits == [1] and spawned == []
 
-
-def test_dependency_sync_command_only_under_uv_run(tmp_path: Path) -> None:
     uv = tmp_path / "uv.exe"
-    assert dependency_sync_command({}) is None
-    assert dependency_sync_command({"UV": str(uv)}) is None
+    assert dependency_sync_command({}) is None and dependency_sync_command({"UV": str(uv)}) is None
     uv.write_bytes(b"")
     assert dependency_sync_command({"UV": str(uv)}) == [str(uv), "sync", "--inexact", "--no-install-project"]
 
-
-def test_supervisor_syncs_deps_before_respawn_even_if_sync_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    script = _patch_supervisor(monkeypatch, [RESTART_EXIT_CODE, 1, 0])
+    commands: list[list[str]] = []
+    codes = iter([RESTART_EXIT_CODE, 1, 0, RESTART_EXIT_CODE, 3])
+    monkeypatch.setattr(
+        supervisor_mod.subprocess,
+        "Popen",
+        lambda command, *, env: (commands.append(command), _FakeChild(next(codes)))[1],
+    )
+    monkeypatch.setattr(supervisor_mod.time, "sleep", lambda _s: None)
     assert Supervisor(["core"], {}, ["uv", "sync"]).run() == 0
-    assert script.commands == [["core"], ["uv", "sync"], ["core"]]
-
-
-def test_supervisor_without_uv_respawns_directly(monkeypatch: pytest.MonkeyPatch) -> None:
-    script = _patch_supervisor(monkeypatch, [RESTART_EXIT_CODE, 3])
+    assert commands == [["core"], ["uv", "sync"], ["core"]]
+    commands.clear()
     assert Supervisor(["core"], {}).run() == 3
-    assert script.commands == [["core"], ["core"]]
+    assert commands == [["core"], ["core"]]

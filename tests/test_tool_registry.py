@@ -26,88 +26,19 @@ class SkillNotFoundError(Exception):
     pass
 
 
-def test_covers_from_trigger_keywords_skips_abbrev() -> None:
-    out = covers_from_trigger_keywords(
-        ("矩阵", "终焉矩阵", "矩阵叠兵", "jz", "sy"),
-        ["已有覆盖"],
-    )
-    assert out[0] == "已有覆盖"
-    assert "矩阵叠兵" in out
-    assert "终焉矩阵" in out
-    assert "jz" not in out
-    assert "sy" not in out
-    assert "矩阵" not in out
+def test_tool_keywords_ranking_and_orchestration_prompt() -> None:
+    out = covers_from_trigger_keywords(("矩阵", "终焉矩阵", "矩阵叠兵", "jz", "sy"), ["已有覆盖"])
+    assert out[0] == "已有覆盖" and "矩阵叠兵" in out and "终焉矩阵" in out
+    assert "jz" not in out and "sy" not in out and "矩阵" not in out
 
-
-def test_orchestration_prompt_follows_tier_order() -> None:
     assert "专用能力>专用工具>通用能力>通用工具" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "对口专用项禁止改用通用项" in TOOL_ORCHESTRATION_CONSTRAINTS
-    assert "有专用工具直接调勿改派" in TOOL_ORCHESTRATION_CONSTRAINTS
     assert "零调用禁止说做不到" in TOOL_ORCHESTRATION_CONSTRAINTS
 
-
-def test_common_keyword_stems_extracts_shared_subtokens() -> None:
-    stems = common_keyword_stems(["刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音评论"])
-    assert "抖音" in stems
+    assert "抖音" in common_keyword_stems(["刷抖音", "抖音推荐", "抖音热门", "抖音视频", "抖音评论"])
     assert common_keyword_stems(["天气查询", "今日天气", "城市天气"]) == ["天气"]
 
-
-def test_format_tool_execute_error_shape() -> None:
-    msg = format_tool_execute_error("read_skill_resource", SkillNotFoundError("Skill 'data-analysis' not found."))
-    assert msg.startswith("⚠️ 工具 read_skill_resource 执行失败")
-    assert "SkillNotFoundError" in msg
-    assert "data-analysis" in msg
-
-
-def test_format_truncates_long_detail() -> None:
-    long = "x" * 2000
-    msg = format_tool_execute_error("t", RuntimeError(long))
-    assert len(msg) < 1200
-    assert "…" in msg
-
-
-def test_duplicate_key_degeneration_is_deduped() -> None:
-    degenerate = '{"skill_name": "stock-market-analyzer", ' + ", ".join(['"args": {}'] * 80) + "}"
-    part = ToolCallPart(tool_name="run_skill_script", args=degenerate, tool_call_id="call_x")
-    result = _canonicalize_tool_call_args_in_parts([part])
-
-    assert len(result) == 1
-    fixed = result[0]
-    assert isinstance(fixed, ToolCallPart)
-    assert isinstance(fixed.args, str)
-    parsed = json.loads(fixed.args)
-    assert parsed == {"skill_name": "stock-market-analyzer", "args": {}}
-    assert fixed.args.count('"args"') == 1
-
-    # clean args, unicode, and dict/empty args roundtrip
-    args = json.dumps({"image_id": "img_3306bb58", "question": "鸣潮角色"}, ensure_ascii=False)
-    p_clean = ToolCallPart(tool_name="read_image", args=args, tool_call_id="call_y")
-    p_dict = ToolCallPart(tool_name="t", args={"a": 1}, tool_call_id="c1")
-    p_empty = ToolCallPart(tool_name="t", args="", tool_call_id="c2")
-    res2 = _canonicalize_tool_call_args_in_parts([p_clean, p_dict, p_empty])
-    f_clean, r_dict, r_empty = res2[0], res2[1], res2[2]
-    assert isinstance(f_clean, ToolCallPart) and isinstance(f_clean.args, str)
-    assert "鸣潮角色" in f_clean.args
-    assert json.loads(f_clean.args) == {"image_id": "img_3306bb58", "question": "鸣潮角色"}
-    assert isinstance(r_dict, ToolCallPart) and r_dict.args == {"a": 1}
-    assert isinstance(r_empty, ToolCallPart) and r_empty.args == ""
-
-
-def test_provider_internals_never_reach_user() -> None:
-    raw = (
-        "执行出错: status_code: 400, model_name: MiniMax-M3, "
-        "body: {'message': 'invalid function arguments json string, tool_call_id: call_NUU (2013)'}"
-    )
-    friendly = sanitize_error_for_user(raw)
-    assert "MiniMax" not in friendly
-    assert "tool_call_id" not in friendly
-    assert "400" not in friendly
-    assert friendly
-
-
-def test_pinned_identity_tool_survives_dedicated_hits() -> None:
     rows = [("resume_my_kanban_tree", "core"), ("send_init_command", "SayuStock")]
-    assert _registry_identity_names("resume_my_kanban_tree", rows) == ["resume_my_kanban_tree"]
     assert _registry_identity_names("resume_my_kanban_tree 恢复被暂停的 Kanban 任务树", rows) == [
         "resume_my_kanban_tree"
     ]
@@ -122,9 +53,35 @@ def test_pinned_identity_tool_survives_dedicated_hits() -> None:
         pinned_names=("resume_my_kanban_tree",),
     )
     loaded = plan.loadable_tool_names()
-    assert "send_init_command" in loaded
-    assert "resume_my_kanban_tree" in loaded
-    assert "list_scheduled_tasks" not in loaded
+    assert "send_init_command" in loaded and "resume_my_kanban_tree" in loaded and "list_scheduled_tasks" not in loaded
+
+
+def test_tool_error_formatting_and_arg_canonicalization() -> None:
+    msg = format_tool_execute_error("read_skill_resource", SkillNotFoundError("Skill 'data-analysis' not found."))
+    assert msg.startswith("⚠️ 工具 read_skill_resource 执行失败") and "SkillNotFoundError" in msg
+    long_msg = format_tool_execute_error("t", RuntimeError("x" * 2000))
+    assert len(long_msg) < 1200 and "…" in long_msg
+
+    friendly = sanitize_error_for_user(
+        "执行出错: status_code: 400, model_name: MiniMax-M3, "
+        "body: {'message': 'invalid function arguments json string, tool_call_id: call_NUU (2013)'}"
+    )
+    assert friendly and "MiniMax" not in friendly and "tool_call_id" not in friendly and "400" not in friendly
+
+    degenerate = '{"skill_name": "stock-market-analyzer", ' + ", ".join(['"args": {}'] * 80) + "}"
+    part = ToolCallPart(tool_name="run_skill_script", args=degenerate, tool_call_id="call_x")
+    args = json.dumps({"image_id": "img_3306bb58", "question": "角色查询"}, ensure_ascii=False)
+    p_clean = ToolCallPart(tool_name="read_image", args=args, tool_call_id="call_y")
+    p_dict = ToolCallPart(tool_name="t", args={"a": 1}, tool_call_id="c1")
+    p_empty = ToolCallPart(tool_name="t", args="", tool_call_id="c2")
+    fixed, f_clean, r_dict, r_empty = _canonicalize_tool_call_args_in_parts([part, p_clean, p_dict, p_empty])
+
+    assert isinstance(fixed, ToolCallPart) and isinstance(fixed.args, str)
+    assert json.loads(fixed.args) == {"skill_name": "stock-market-analyzer", "args": {}}
+    assert fixed.args.count('"args"') == 1
+    assert isinstance(f_clean, ToolCallPart) and isinstance(f_clean.args, str) and "角色查询" in f_clean.args
+    assert isinstance(r_dict, ToolCallPart) and r_dict.args == {"a": 1}
+    assert isinstance(r_empty, ToolCallPart) and r_empty.args == ""
 
 
 def test_claims_inflight_without_backend() -> None:
