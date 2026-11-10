@@ -1081,13 +1081,32 @@ class AIMemEntity(SQLModel, table=True):
                         existing_map[uname] = matched
 
         _MAX_SUMMARY_CHARS = 2000
+        speaker_id_set = {s for s in speaker_ids if s}
         for entity_data in entities_data:
             name = (entity_data["name"] if "name" in entity_data else "").strip()
             if not name:
                 continue
             existing = existing_map[name] if name in existing_map else None
             tag_list = entity_data["tag"] if "tag" in entity_data else []
+            raw_uid = entity_data["user_id"] if "user_id" in entity_data else None
+            uid = raw_uid if isinstance(raw_uid, str) and raw_uid.strip() else None
+            is_spk = bool(entity_data["is_speaker"]) if "is_speaker" in entity_data else False
+            if not is_spk and uid is not None and uid in speaker_id_set:
+                is_spk = True
+            raw_kind = entity_data["kind"] if "kind" in entity_data else "person"
+            kind = raw_kind if isinstance(raw_kind, str) else "person"
+            if is_spk:
+                if kind == "person":
+                    kind = "speaker"
+                if "speaker" not in tag_list:
+                    tag_list = list(tag_list) + ["speaker"]
             if existing:
+                if is_spk and not existing.is_speaker:
+                    existing.is_speaker = True
+                if is_spk and existing.entity_kind == "person":
+                    existing.entity_kind = "speaker"
+                if uid and not existing.user_id:
+                    existing.user_id = uid
                 new_summary = entity_data["summary"] if "summary" in entity_data else ""
                 if new_summary and new_summary not in existing.summary:
                     combined = f"{existing.summary}\n{new_summary}".strip()
@@ -1096,6 +1115,8 @@ class AIMemEntity(SQLModel, table=True):
                     existing.summary = combined
                 existing_tags = existing.tag if isinstance(existing.tag, list) else []
                 merged_tags = list(set(existing_tags) | set(tag_list))
+                if is_spk and "speaker" not in merged_tags:
+                    merged_tags.append("speaker")
                 existing.tag = merged_tags
                 existing.updated_at = datetime.now(timezone.utc)
                 session.add(existing)
@@ -1120,9 +1141,9 @@ class AIMemEntity(SQLModel, table=True):
                     name=name,
                     summary=entity_data["summary"] if "summary" in entity_data else "",
                     tag=tag_list,
-                    is_speaker=entity_data["is_speaker"] if "is_speaker" in entity_data else False,
-                    entity_kind=entity_data["kind"] if "kind" in entity_data else "person",
-                    user_id=entity_data["user_id"] if "user_id" in entity_data else None,
+                    is_speaker=is_spk,
+                    entity_kind=kind,
+                    user_id=uid,
                     qdrant_id=entity_id,
                 )
                 session.add(new_entity)
@@ -1132,8 +1153,8 @@ class AIMemEntity(SQLModel, table=True):
                         "name": name,
                         "summary": entity_data["summary"] if "summary" in entity_data else "",
                         "scope_key": scope_key,
-                        "is_speaker": entity_data["is_speaker"] if "is_speaker" in entity_data else False,
-                        "user_id": entity_data["user_id"] if "user_id" in entity_data else None,
+                        "is_speaker": is_spk,
+                        "user_id": uid,
                         "tag": tag_list,
                     }
                 )

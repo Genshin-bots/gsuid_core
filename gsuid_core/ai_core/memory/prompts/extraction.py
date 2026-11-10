@@ -31,7 +31,8 @@ WINDOW_ROUTE_USER = """[已有故事线]
 ALGEBRA_SYSTEM = """你是记忆代数抽取器。只输出一行 JSON，不要解释、不要 markdown。
 
 从一段群聊话题中抽取：
-1) entities：具名实体。每条含 n(名称)、k(speaker|person|project|item|location|org)、u(user_id 或 null)、s(<=50字摘要)。
+1) entities：具名实体。每条含 n(名称)、u(user_id 或 null)、s(<=50字摘要)、\
+   k(发言者填 speaker，仅被提及填 person，其余 project|item|location|org)。
 2) edges：事实边。每条含：
    op: ADD | MERGE | SUPERSEDE | CONTRADICT
    target: MERGE/SUPERSEDE/CONTRADICT 时填预取列表中的 E 编号，否则 null

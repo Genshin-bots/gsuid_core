@@ -386,16 +386,31 @@ async def extract_cluster(
 
     async with db_write_guard(), async_maker() as session:
         thread_id = await _resolve_thread(session, scope_key, thread_list, thread_ref, topic_title)
+        window_speaker_ids = {r.speaker_id for r in records if r.speaker_id}
+        window_speaker_names = {r.speaker_name for r in records if r.speaker_name}
+        edge_speaker_ids = {e["speaker_user_id"] for e in output["edges"] if e["speaker_user_id"]}
+        all_speaker_ids = window_speaker_ids | edge_speaker_ids
+        name_to_uid: dict[str, str] = {r.speaker_name: r.speaker_id for r in records if r.speaker_name and r.speaker_id}
+
         entity_data: list[dict[str, object]] = []
         for spec in output["entities"]:
+            uid = spec["user_id"]
+            if uid is None and spec["name"] in name_to_uid:
+                uid = name_to_uid[spec["name"]]
+            is_speaker = (
+                spec["kind"] == "speaker"
+                or (uid is not None and uid in all_speaker_ids)
+                or spec["name"] in window_speaker_names
+            )
+            kind: EntityKind = "speaker" if is_speaker and spec["kind"] == "person" else spec["kind"]
             entity_data.append(
                 {
                     "name": spec["name"],
                     "summary": spec["summary"],
-                    "tag": [spec["kind"]],
-                    "user_id": spec["user_id"],
-                    "is_speaker": spec["kind"] == "speaker",
-                    "kind": spec["kind"],
+                    "tag": [kind],
+                    "user_id": uid,
+                    "is_speaker": is_speaker,
+                    "kind": kind,
                 }
             )
         requested_names = {spec["source"] for spec in output["edges"]} | {spec["target"] for spec in output["edges"]}
@@ -417,7 +432,7 @@ async def extract_cluster(
             scope_key,
             entity_data,
             episode_id,
-            [r.speaker_id for r in records],
+            list(all_speaker_ids),
             hybrid_name_ids=hybrid_ids,
         )
         entity_vector_payloads.extend(payloads)

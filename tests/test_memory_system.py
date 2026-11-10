@@ -472,6 +472,53 @@ def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> N
 
             point_rendered = latest.to_prompt_text(4000, memory_intent="point_latest")
             assert "存在未消解矛盾" in point_rendered
+
+            # 说话人实体判定与旧实体自愈升级校验
+            async with maker() as session:
+                await AIMemEntity.extract_and_upsert(
+                    session,
+                    "group:g1",
+                    [
+                        {
+                            "name": "测试用户A",
+                            "summary": "测试项目提问",
+                            "tag": ["person"],
+                            "user_id": "100000001",
+                            "is_speaker": False,
+                            "kind": "person",
+                        }
+                    ],
+                    episode_id="",
+                    speaker_ids=["100000001"],
+                )
+                await session.commit()
+                res = await session.execute(
+                    select(AIMemEntity).where(AIMemEntity.name == "测试用户A", AIMemEntity.scope_key == "group:g1")
+                )
+                ent = res.scalar_one()
+                assert ent.is_speaker is True
+                assert ent.entity_kind == "speaker"
+                assert "speaker" in ent.tag
+
+                ent.is_speaker = False
+                ent.entity_kind = "person"
+                session.add(ent)
+                await session.commit()
+
+                await AIMemEntity.extract_and_upsert(
+                    session,
+                    "group:g1",
+                    [{"name": "测试用户A", "summary": "测试进展汇报", "tag": ["person"], "user_id": "100000001"}],
+                    episode_id="",
+                    speaker_ids=["100000001"],
+                )
+                await session.commit()
+                res = await session.execute(
+                    select(AIMemEntity).where(AIMemEntity.name == "测试用户A", AIMemEntity.scope_key == "group:g1")
+                )
+                ent = res.scalar_one()
+                assert ent.is_speaker is True
+                assert ent.entity_kind == "speaker"
         finally:
             await test_engine.dispose()
 

@@ -107,11 +107,11 @@ def test_send_chat_result_clamps_to_persona_bubble_cap(monkeypatch: pytest.Monke
 
 
 def test_send_chat_result_turns_cq_at_into_at_segment(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent = _drive("[CQ:at,qq=169629556,name=foo] 到时间啦", monkeypatch)
+    sent = _drive("[CQ:at,qq=100000002,name=foo] 到时间啦", monkeypatch)
     assert len(sent) == 1
     assert isinstance(sent[0], list)
     pairs = [(seg.type, seg.data) for seg in sent[0] if isinstance(seg, Message)]
-    assert pairs == [("at", "169629556"), ("text", " 到时间啦")]
+    assert pairs == [("at", "100000002"), ("text", " 到时间啦")]
 
 
 def test_bubble_cap_follows_chat_style(monkeypatch: pytest.MonkeyPatch) -> None:
