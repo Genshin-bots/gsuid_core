@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import base64
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -13,6 +12,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import PERSONA_PATH
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join
+from gsuid_core.utils.image.image_io import bytes_from_inline_image_ref
 
 _CARD_HEADER = "# appearance-card v2"
 _SUMMARY_LABELS = ("摘要：", "摘要:")
@@ -170,19 +170,7 @@ def list_trusted_image_paths(persona_name: str) -> list[Path]:
 
 def bytes_from_image_ref(url: str) -> bytes | None:
     """DataURI / base64:// → 字节；远程 URL 不下载（pHash 跳过）。"""
-    raw = url.strip()
-    if raw.startswith("base64://"):
-        try:
-            return base64.b64decode(raw[9:], validate=False)
-        except ValueError:
-            return None
-    if raw.startswith("data:image/") and "," in raw:
-        _header, b64 = raw.split(",", 1)
-        try:
-            return base64.b64decode(b64, validate=False)
-        except ValueError:
-            return None
-    return None
+    return bytes_from_inline_image_ref(url)
 
 
 def visual_fingerprint(data: bytes) -> tuple[int, int] | None:

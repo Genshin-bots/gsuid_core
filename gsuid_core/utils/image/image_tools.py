@@ -5,7 +5,7 @@ import random
 import asyncio
 import mimetypes
 from io import BytesIO
-from typing import Any, List, Tuple, Union, Optional, overload
+from typing import List, Tuple, Union, Optional, overload
 from pathlib import Path
 
 import httpx
@@ -103,12 +103,17 @@ def image_to_base64(image: ImageInput) -> str:
         return ""
 
 
-def normalize_image_for_history(image: Any, resource_id: Optional[str] = None) -> str:
+def normalize_image_for_history(
+    image: str | bytes | io.BytesIO | Image.Image | Path | None,
+    resource_id: Optional[str] = None,
+) -> str:
     """提取历史消息中的图片标识：直链返回 URL，非直链返回资源接口路由。"""
     if not image:
         return ""
     if isinstance(image, str):
         trimmed = image.strip()
+        if trimmed.startswith("link://"):
+            trimmed = trimmed[7:].strip()
         if trimmed.startswith(("http://", "https://")):
             return trimmed
     if resource_id:
@@ -116,12 +121,16 @@ def normalize_image_for_history(image: Any, resource_id: Optional[str] = None) -
     return ""
 
 
-def normalize_image_to_url_or_data(image: Any) -> str:
+def normalize_image_to_url_or_data(
+    image: str | bytes | io.BytesIO | Image.Image | Path | None,
+) -> str:
     """将图片输入转换为 URL 或 DataURI 字符串。"""
     if not image:
         return ""
     if isinstance(image, str):
         trimmed = image.strip()
+        if trimmed.startswith("link://"):
+            trimmed = trimmed[7:].strip()
         if trimmed.startswith(("http://", "https://", "data:image/")):
             return trimmed
         if trimmed.startswith("base64://"):
@@ -145,6 +154,10 @@ async def change_ev_image_to_bytes(img: str) -> bytes: ...
 
 
 @overload
+async def change_ev_image_to_bytes(img: bytes) -> bytes: ...
+
+
+@overload
 async def change_ev_image_to_bytes(img: List[str]) -> List[bytes]: ...
 
 
@@ -157,49 +170,49 @@ async def change_ev_image_to_bytes(img: Image.Image) -> bytes: ...
 
 
 async def change_ev_image_to_bytes(
-    img: Union[str, List[str], None, Image.Image],
+    img: Union[str, bytes, List[str], None, Image.Image],
 ) -> Union[
     None,
     bytes,
     List[bytes],
 ]:
-    if isinstance(img, str):
-        img_list = [img]
-    elif isinstance(img, Image.Image):
-        img_list = [img]
-    else:
-        img_list = img
+    from gsuid_core.utils.image.image_io import (
+        unwrap_image_url,
+        decode_local_or_inline_image_bytes,
+    )
 
-    result_list = []
+    img_list: list[str | bytes | Image.Image] | None
+    if isinstance(img, (str, bytes, Image.Image)):
+        img_list = [img]
+    elif img is None:
+        img_list = None
+    else:
+        img_list = list(img)
+
+    result_list: List[bytes] = []
 
     if img_list:
         for item in img_list:
-            if isinstance(item, Image.Image):
-                result_list.append(item.tobytes())
-            elif item.startswith(("http", "https")):
-                image_bytes = await sget(item)
-                result_list.append(image_bytes.content)
+            if isinstance(item, str):
+                url = unwrap_image_url(item)
+                if url.startswith(("http://", "https://")):
+                    image_bytes = await sget(url)
+                    result_list.append(image_bytes.content)
+                    continue
+            decoded, err = decode_local_or_inline_image_bytes(item, allow_raw_base64=True)
+            if decoded is not None:
+                result_list.append(decoded)
+            elif isinstance(item, str):
+                logger.warning(t("log.image.item_error", item=item[:120]))
+                raise ValueError(err or "无法解码图片字符串")
             else:
-                # Base64图片
-                if item.startswith("base64://"):
-                    base64_str = item.replace("base64://", "")
-                    result_list.append(base64.b64decode(base64_str))
-                elif item.startswith("data:image/png;base64,"):
-                    base64_str = item.replace("data:image/png;base64,", "")
-                    result_list.append(base64.b64decode(base64_str))
-                elif item.startswith("data:image/jpeg;base64,"):
-                    base64_str = item.replace("data:image/jpeg;base64,", "")
-                    result_list.append(base64.b64decode(base64_str))
-                else:
-                    logger.warning(t("log.image.item_error", item=item))
-                    result_list.append(item.encode())
+                raise ValueError(err or "无法解码图片对象")
     else:
         return None
 
-    if isinstance(img, str):
+    if isinstance(img, (str, bytes, Image.Image)):
         return result_list[0]
-    else:
-        return result_list
+    return result_list
 
 
 def tint_image(input_image: Image.Image, color: Tuple[int, int, int]):

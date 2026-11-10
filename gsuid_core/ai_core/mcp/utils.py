@@ -453,15 +453,25 @@ async def prepare_source_for_mcp(
         >>> url = await prepare_source_for_mcp("https://example.com/img.png")
     """
     # GsCore 资源句柄先物化为 Data URI，再落入后续保存临时文件逻辑
-    source = await _materialize_resource_handle(source)
+    from gsuid_core.utils.image.image_io import unwrap_image_url, bytes_to_data_uri, decode_data_or_base64_uri
+
+    source = unwrap_image_url(await _materialize_resource_handle(source))
 
     # HTTP/HTTPS URL 直接返回
     if source.startswith("http://") or source.startswith("https://"):
         return source
 
     # 已存在的文件路径直接返回
-    if await asyncio.to_thread(os.path.exists, source):
+    if len(source) <= 4096 and await asyncio.to_thread(os.path.exists, source):
         return source
+
+    # base64:// 仅在魔数确认为图片时转成图片 DataURI，避免污染音视频等非图 base64
+    if source.startswith("base64://"):
+        decoded, dec_err = decode_data_or_base64_uri(source)
+        if dec_err is None and decoded:
+            uri, _, _ = bytes_to_data_uri(decoded, fallback_mime=None)
+            if uri is not None:
+                source = uri
 
     # DataURI 格式保存为临时文件
     if source.startswith("data:"):

@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import io
 import json
+import zlib
 import base64
+import struct
+import asyncio
 
 from PIL import Image
-from pydantic_ai.messages import ImageUrl, ModelRequest, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import (
+    ImageUrl,
+    ModelRequest,
+    ToolCallPart,
+    BinaryContent,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from gsuid_core.ai_core.utils import (
     _is_image_payload_error,
@@ -16,9 +26,22 @@ from gsuid_core.ai_core.utils import (
     _canonicalize_tool_call_args_in_parts,
 )
 from gsuid_core.ai_core.tool_safety import format_tool_execute_error
+from gsuid_core.utils.image.image_io import (
+    sniff_image_mime,
+    unwrap_image_url,
+    normalize_inline_image,
+    to_provider_image_content,
+    adapt_messages_images_for_model,
+)
+from gsuid_core.utils.resource_manager import ResourceManager
 from gsuid_core.ai_core.persona.prompts import TOOL_ORCHESTRATION_CONSTRAINTS
+from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 from gsuid_core.ai_core.agent_run.support import _claims_inflight_without_backend
 from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
+from gsuid_core.ai_core.multimodal.animated_frames import (
+    _composite_frames,
+    render_animation_sheets,
+)
 from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
     RankedHit,
     common_keyword_stems,
@@ -96,11 +119,98 @@ def test_tool_error_formatting_and_arg_canonicalization() -> None:
     assert err is None and injected is not None and len(injected) == 1
     assert isinstance(injected[0], ImageUrl) and injected[0].url.startswith("data:image/jpeg;base64,")
 
+    gemini_injected, gemini_err = to_provider_image_content(bmp_b64, provider_or_model="google")
+    assert gemini_err is None and gemini_injected is not None and len(gemini_injected) == 1
+    assert isinstance(gemini_injected[0], BinaryContent) and gemini_injected[0].media_type == "image/jpeg"
+
+    pil_img = Image.new("RGBA", (16, 16), (255, 0, 0, 128))
+    local_rm = ResourceManager()
+    rid = local_rm.register(pil_img)
+    rm_bytes = asyncio.run(local_rm.get(rid))
+    assert sniff_image_mime(rm_bytes) == "image/png"
+
+    webp_buf = io.BytesIO()
+    Image.new("RGB", (12, 12), (10, 20, 30)).save(webp_buf, format="WEBP")
+    webp_raw_b64 = base64.b64encode(webp_buf.getvalue()).decode("ascii")
+    webp_data_uri = f"data:image/webp;base64,{webp_raw_b64}"
+    assert sniff_image_mime(asyncio.run(change_ev_image_to_bytes(webp_data_uri))) == "image/webp"
+    assert sniff_image_mime(asyncio.run(change_ev_image_to_bytes(webp_raw_b64))) == "image/webp"
+    assert unwrap_image_url("link://https://example.com/a.png") == "https://example.com/a.png"
+
+    def _png_chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    def _rgba_idat(w: int, h: int, rgba: tuple[int, int, int, int]) -> bytes:
+        row = b"\x00" + bytes(rgba) * w
+        return zlib.compress(row * h)
+
+    apng_bytes = b"".join(
+        [
+            b"\x89PNG\r\n\x1a\n",
+            _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 6, 0, 0, 0)),
+            _png_chunk(b"acTL", struct.pack(">II", 3, 0)),
+            _png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 16, 16, 0, 0, 1, 10, 0, 0)),
+            _png_chunk(b"IDAT", _rgba_idat(16, 16, (255, 0, 0, 255))),
+            _png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", 1, 8, 8, 4, 4, 1, 10, 2, 1)),
+            _png_chunk(b"fdAT", struct.pack(">I", 2) + _rgba_idat(8, 8, (0, 255, 0, 255))),
+            _png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", 3, 4, 4, 0, 0, 1, 10, 0, 0)),
+            _png_chunk(b"fdAT", struct.pack(">I", 4) + _rgba_idat(4, 4, (0, 0, 255, 255))),
+            _png_chunk(b"IEND", b""),
+        ]
+    )
+    norm_apng = normalize_inline_image(apng_bytes, flatten_animation=False)
+    assert norm_apng == (apng_bytes, "image/png")
+    comp_apng = _composite_frames(Image.open(io.BytesIO(apng_bytes)))
+    assert len(comp_apng) == 3
+    assert comp_apng[1].getpixel((12, 12)) == (255, 0, 0, 255)
+    assert comp_apng[1].getpixel((6, 6)) == (0, 255, 0, 255)
+    assert comp_apng[2].getpixel((6, 6)) == (255, 0, 0, 255)
+    assert comp_apng[2].getpixel((1, 1)) == (0, 0, 255, 255)
+    apng_sheets = render_animation_sheets(apng_bytes)
+    assert apng_sheets is not None and len(apng_sheets.images) == 3
+
+    gif_buf = io.BytesIO()
+    gif_frames = [Image.new("RGB", (24, 24), (idx * 10, 50, 100)) for idx in range(20)]
+    gif_frames[0].save(gif_buf, format="GIF", save_all=True, append_images=gif_frames[1:], duration=50)
+    gif_sheets = render_animation_sheets(gif_buf.getvalue())
+    assert gif_sheets is not None and len(gif_sheets.images) == 5
+    sheet0 = Image.open(io.BytesIO(gif_sheets.images[0]))
+    assert sheet0.size == (604, 604)
+
+    png_buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(png_buf, format="PNG")
+    png_data_uri = f"data:image/png;base64,{base64.b64encode(png_buf.getvalue()).decode('ascii')}"
+    orig_user_part = UserPromptPart(content=["测试图片消息", ImageUrl(url=png_data_uri)])
+    orig_tool_part = ToolReturnPart(
+        tool_name="read_image",
+        content=[ImageUrl(url=png_data_uri)],
+        tool_call_id="call_img_1",
+    )
+    orig_req = ModelRequest(parts=[orig_user_part, orig_tool_part])
+    google_adapted = adapt_messages_images_for_model([orig_req], "google")
+    assert isinstance(orig_user_part.content[1], ImageUrl)
+    adapted_req = google_adapted[0]
+    assert isinstance(adapted_req, ModelRequest)
+    adapted_up = adapted_req.parts[0]
+    adapted_tr = adapted_req.parts[1]
+    assert isinstance(adapted_up, UserPromptPart) and isinstance(adapted_up.content[1], BinaryContent)
+    assert isinstance(adapted_tr, ToolReturnPart) and isinstance(adapted_tr.content, list)
+    assert isinstance(adapted_tr.content[0], BinaryContent)
+
+    openai_adapted = adapt_messages_images_for_model(google_adapted, "openai")
+    openai_req = openai_adapted[0]
+    assert isinstance(openai_req, ModelRequest)
+    openai_up = openai_req.parts[0]
+    assert isinstance(openai_up, UserPromptPart) and isinstance(openai_up.content[1], ImageUrl)
+    assert openai_up.content[1].url.startswith("data:image/png;base64,")
+
     svg_b64 = "base64://" + base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").decode("ascii")
     svg_injected, svg_err = _to_tool_image_content(svg_b64, provider="openai")
     assert svg_injected is None and svg_err is not None and "不是有效图片" in svg_err
 
     assert _is_image_payload_error("Invalid request: invalid base64 image_url trace_id: 123")
+    assert _is_image_payload_error('URL protocol "data" is not allowed. Only http:// and https:// are supported.')
     assert _is_image_payload_error(".messages[8].image[0]: You have uploaded an unsupported image.")
     history_req = ModelRequest(
         parts=[

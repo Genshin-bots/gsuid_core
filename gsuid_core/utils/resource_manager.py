@@ -69,7 +69,9 @@ class ResourceManager:
         """
         resource_id = f"img_{uuid.uuid4().hex[:16]}"
         if isinstance(data, Image.Image):
-            data = data.tobytes()
+            from gsuid_core.utils.image.image_io import encode_pil_image
+
+            data, _ = encode_pil_image(data)
 
         self._put(resource_id, data)
         return resource_id

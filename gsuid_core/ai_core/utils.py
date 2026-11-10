@@ -696,13 +696,11 @@ async def handle_tool_result(
 
 
 def _bytes_to_normalized_data_uri(data: bytes, fallback_mime: str = "image/png") -> tuple[str, bytes, str]:
-    from gsuid_core.ai_core.buildin_tools.image_reader import _normalize_inline_image
+    from gsuid_core.utils.image.image_io import bytes_to_data_uri
 
-    normalized = _normalize_inline_image(data, flatten_animation=False)
-    if normalized is not None:
-        norm_data, mime = normalized
-        return f"data:{mime};base64,{base64.b64encode(norm_data).decode('ascii')}", norm_data, mime
-    return f"data:{fallback_mime};base64,{base64.b64encode(data).decode('ascii')}", data, fallback_mime
+    uri, norm_data, mime = bytes_to_data_uri(data, fallback_mime=fallback_mime, flatten_animation=False)
+    assert uri is not None
+    return uri, norm_data, mime
 
 
 def _file_to_data_uri(path: str) -> str:
@@ -713,115 +711,81 @@ def _file_to_data_uri(path: str) -> str:
 
 
 def _normalize_image_url(raw: str) -> str:
-    """将各种图片格式统一转为可消费的 URL（HTTP 或 DataURI）
+    """将各种图片格式统一转为可消费的 URL（HTTP 或 DataURI）。"""
+    from gsuid_core.utils.image.image_io import (
+        unwrap_image_url,
+        bytes_to_data_uri,
+        decode_local_or_inline_image_bytes,
+    )
 
-    Args:
-        raw: 原始图片标识，支持 http/https URL、本地文件路径、
-            base64:// 前缀、data:image/ 前缀、裸 base64
-
-    Returns:
-        标准化的图片 URL
-    """
-    if raw.startswith(("http://", "https://")):
-        return raw
-    if raw.startswith("base64://"):
-        b64_payload = raw.removeprefix("base64://")
-        try:
-            decoded = base64.b64decode(b64_payload, validate=False)
-        except ValueError:
-            decoded = b""
-        if decoded:
-            uri, _, _ = _bytes_to_normalized_data_uri(decoded, fallback_mime="image/png")
-            return uri
-        return f"data:image/png;base64,{b64_payload}"
-    if raw.startswith("data:image/"):
-        if ";base64," in raw:
-            _, _, b64_payload = raw.partition(";base64,")
-            try:
-                decoded = base64.b64decode(b64_payload, validate=False)
-            except ValueError:
-                decoded = b""
-            if decoded:
-                from gsuid_core.ai_core.buildin_tools.image_reader import _normalize_inline_image
-
-                normalized = _normalize_inline_image(decoded, flatten_animation=False)
-                if normalized is not None:
-                    norm_data, mime = normalized
-                    return f"data:{mime};base64,{base64.b64encode(norm_data).decode('ascii')}"
-        return raw
-    # 只对带图片后缀的短路径读盘，避免对裸 base64 做 isfile
+    unwrapped = unwrap_image_url(raw)
+    if unwrapped.startswith(("http://", "https://")):
+        return unwrapped
+    # 本地文件路径读取异常直接上抛，由 materialize_image_url 按 strict 处理
     if (
-        len(raw) <= 4096
-        and raw.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
-        and os.path.isfile(raw)
+        len(unwrapped) <= 4096
+        and unwrapped.lower().endswith((".png", ".apng", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+        and os.path.isfile(unwrapped)
     ):
-        return _file_to_data_uri(raw)
-    return f"data:image/png;base64,{raw}"
+        return _file_to_data_uri(unwrapped)
+    decoded, err = decode_local_or_inline_image_bytes(unwrapped, allow_raw_base64=True)
+    if err is None and decoded:
+        uri, _, _ = bytes_to_data_uri(decoded, fallback_mime="image/png", flatten_animation=False)
+        if uri is not None:
+            return uri
+    if unwrapped.startswith("data:image/"):
+        return unwrapped
+    if unwrapped.startswith("base64://"):
+        return f"data:image/png;base64,{unwrapped[9:]}"
+    return f"data:image/png;base64,{unwrapped}"
 
 
 def _guess_image_mime(url: str) -> str:
     """按 URL 扩展名兜底推断图片 MIME，识别不出时默认 image/jpeg。"""
-    u = url.lower()
-    if u.endswith(".png"):
-        return "image/png"
-    if u.endswith(".gif"):
-        return "image/gif"
-    if u.endswith(".webp"):
-        return "image/webp"
-    if u.endswith((".jpg", ".jpeg")):
-        return "image/jpeg"
-    return "image/jpeg"
+    from gsuid_core.utils.image.image_io import guess_image_mime_from_name
+
+    return guess_image_mime_from_name(url, default="image/jpeg")
 
 
 async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
-    """把图片标识统一物化为「不会过期」的可消费形式。
+    """把图片标识统一物化为「不会过期」的可消费形式。"""
+    from gsuid_core.utils.image.image_io import unwrap_image_url
 
-    远程 http(s) 图片 URL（典型如 QQ 带 ``rkey`` 的临时链接）有时效，过期后
-    推理端再去下载就会返回 500「Failed to download image」。而这些 URL 会被
-    写进 pydantic_ai 的 ``message_history`` 并在之后每一轮重发——一旦过期，整个
-    会话会被反复 500 卡死。故在「入历史前」就把远程 URL 下载并编码为 base64
-    DataURI（内联数据，永不过期）。
-
-    - http(s) URL：下载 → ``data:<mime>;base64,<...>``；下载失败时回退原 URL
-      （不致命，行为不差于改动前）。
-      当 ``strict=True`` 时下载失败会抛出异常而非静默回退，供调用方显式处理。
-    - 本地文件路径：读字节 → ``data:<mime>;base64,<...>``；读失败时同上。
-    - base64:// / data:image/ / 裸 base64：交给 :func:`_normalize_image_url`
-      处理即可，本就不会过期，无需下载。
-
-    Args:
-        raw: 原始图片标识。
-        strict: 是否严格模式。为 True 时下载/读盘失败抛出 RuntimeError，
-                为 False（默认）时失败回退原始标识。
-    """
-    if not raw.startswith(("http://", "https://")):
+    unwrapped = unwrap_image_url(raw)
+    if not unwrapped.startswith(("http://", "https://")):
         try:
-            return _normalize_image_url(raw)
+            return _normalize_image_url(unwrapped)
         except OSError as e:
             if strict:
-                raise RuntimeError(i18n_t("本地图片读取失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
+                raise RuntimeError(
+                    i18n_t("本地图片读取失败，无法物化为 base64: {p0} ({e})", p0=unwrapped[:120], e=e)
+                ) from e
             logger.warning(i18n_t("log.ai.gscoreai_convert_local_image_fail", e=e))
-            return raw
+            return unwrapped
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(raw)
+            resp = await client.get(unwrapped)
             resp.raise_for_status()
             data = resp.content
-            header_mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            header_mime = (
+                resp.headers["content-type"].split(";")[0].strip().lower() if "content-type" in resp.headers else ""
+            )
         fallback_mime = (
             header_mime
             if header_mime in ("image/png", "image/jpeg", "image/gif", "image/webp")
-            else _guess_image_mime(raw)
+            else _guess_image_mime(unwrapped)
         )
         uri, norm_data, mime = _bytes_to_normalized_data_uri(data, fallback_mime=fallback_mime)
         logger.debug(i18n_t("log.ai.gscoreai_remote_image_materialized", mime=mime, p0=len(norm_data)))
         return uri
     except Exception as e:
         if strict:
-            raise RuntimeError(i18n_t("远程图片下载失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
+            raise RuntimeError(
+                i18n_t("远程图片下载失败，无法物化为 base64: {p0} ({e})", p0=unwrapped[:120], e=e)
+            ) from e
         logger.warning(i18n_t("log.ai.gscoreai_convert_remote_image_fail", e=e))
-        return raw
+        return unwrapped
 
 
 # 单个视频的字节数上限(MB), 防止超大视频把内存打爆; 可用环境变量覆盖
@@ -1058,32 +1022,38 @@ async def prepare_content_payload(
         return content_payload, guard_flags
 
     # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
-    # 远程 URL（如 QQ 带 rkey 的临时链接）会在短时间内过期；一旦以原始
+    from gsuid_core.utils.image.image_io import to_provider_image_content
     from gsuid_core.ai_core.configs.models import get_config_name_for_task, parse_provider_config_name
-    from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
     try:
-        provider = parse_provider_config_name(get_config_name_for_task(task_level))[0]
+        sess = get_ai_session_registry().get_ai_session(ev.session_id) if ev.session_id else None
+        if sess is not None:
+            provider = sess._routed_provider()
+        else:
+            provider = parse_provider_config_name(get_config_name_for_task(task_level))[0]
     except Exception:  # noqa: BLE001 - 判定失败按 openai（旧行为：一律 ImageUrl）
         provider = "openai"
     for i in ev.image_list:
         if isinstance(i, str):
-            # strict=True：远程图片下载失败直接抛出，跳过该图片而非把过期 URL 塞进历史
             try:
                 url = await materialize_image_url(i, strict=True)
             except Exception as e:
                 logger.warning(i18n_t("log.ai.gscoreai_image_materialization_url_fail", p0=i[:120], e=e))
                 continue
-            injected, inject_err = _to_tool_image_content(url, provider=provider)
-            if injected:
-                content_payload.extend(injected)
-            else:
-                if inject_err:
-                    logger.warning(i18n_t("log.ai.unable_process_image_id_err", i=i, e=inject_err))
-                else:
-                    logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
+            injected, inject_err = to_provider_image_content(url, provider_or_model=provider)
+        elif isinstance(i, (bytes, bytearray, Image.Image)):
+            injected, inject_err = to_provider_image_content(i, provider_or_model=provider)
         else:
-            logger.warning(i18n_t("log.ai.unable_process_image_id", i=i))
+            logger.warning(i18n_t("log.ai.unable_process_image_id", i=str(i)[:80]))
+            continue
+
+        if injected:
+            content_payload.extend(injected)
+        elif inject_err:
+            logger.warning(i18n_t("log.ai.unable_process_image_id_err", i=str(i)[:80], e=inject_err))
+        else:
+            logger.warning(i18n_t("log.ai.unable_process_image_id", i=str(i)[:80]))
 
     return content_payload, guard_flags
 
@@ -2087,6 +2057,8 @@ def _truncate_message_for_log(msg: Any, max_base64_len: int = 100) -> Any:
         if ";base64," in url and len(url) > max_base64_len:
             return ImageUrl(url=f"{url[:max_base64_len]}...[base64截断, 总长={len(url)}]")
         return msg
+    elif isinstance(msg, BinaryContent):
+        return f"BinaryContent(media_type={msg.media_type!r}, bytes={len(msg.data)})"
     elif isinstance(msg, list):
         return [_truncate_message_for_log(item, max_base64_len) for item in msg]
     return msg
@@ -2345,6 +2317,7 @@ _IMAGE_ERROR_HINTS: tuple[str, ...] = (
     "download image",
     "image format",
     "decode image",
+    'url protocol "data"',
 )
 _MESSAGES_IMAGE_ERR_RE = re.compile(r"\.messages\[\d+\]\.image", re.IGNORECASE)
 

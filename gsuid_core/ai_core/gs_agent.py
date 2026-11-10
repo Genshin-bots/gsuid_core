@@ -6,7 +6,6 @@ PydanticAI Agent 核心模块
 import re
 import time
 import uuid
-import base64
 import asyncio
 from typing import TYPE_CHECKING, Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
 from datetime import datetime
@@ -670,6 +669,7 @@ class GsCoreAIAgent(RunOnceMixin):
 
     def _routed_provider(self) -> str:
         """本轮实际模型的 provider，不用任务主配置（failover 后会不同）。"""
+        from pydantic_ai.models import Model
         from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
         from pydantic_ai.models.anthropic import AnthropicModel
 
@@ -686,6 +686,13 @@ class GsCoreAIAgent(RunOnceMixin):
             return "openai"
         if isinstance(model, AnthropicModel):
             return "anthropic"
+        if isinstance(model, Model):
+            sys_name = model.system.lower()
+            if sys_name in ("google", "gemini"):
+                return "gemini"
+            if sys_name == "anthropic":
+                return "anthropic"
+            return "openai"
         if model is not None:
             return "gemini"
         return get_provider_for_task(self.task_level)
@@ -763,16 +770,17 @@ class GsCoreAIAgent(RunOnceMixin):
         return await fetch_video_bytes(item.url)
 
     async def _frames_from_video_bytes(self, data: bytes, mime: str, video_idx: int) -> list[UserContent]:
+        from gsuid_core.utils.image.image_io import image_bytes_to_provider_part
         from gsuid_core.ai_core.multimodal.frame_extract import extract_frames_ffmpeg
 
+        provider = self._routed_provider()
         video_format = mime.split("/")[-1] or "mp4"
         frames = await extract_frames_ffmpeg(data, video_format=video_format, interval_seconds=2.0)
         result: list[UserContent] = [
             f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---"
         ]
         for frame in frames:
-            b64 = base64.b64encode(frame).decode("ascii")
-            result.append(ImageUrl(url=f"data:image/jpeg;base64,{b64}"))
+            result.append(image_bytes_to_provider_part(frame, "image/jpeg", provider))
         logger.info(
             i18n_t(
                 "log.agent.video_frame_sampled_images",
@@ -970,30 +978,46 @@ class GsCoreAIAgent(RunOnceMixin):
         Returns:
             处理后的消息，可能是 str 或 list[UserContent]
         """
+        from gsuid_core.utils.image.image_io import (
+            bytes_to_data_uri,
+            to_provider_image_content,
+            bytes_from_inline_image_ref,
+            image_bytes_to_provider_part,
+        )
         from gsuid_core.ai_core.configs.models import get_model_config_for_task
         from gsuid_core.ai_core.image_understand import understand_image
 
         model_config = get_model_config_for_task(self.task_level)
-        model_support: str = model_config.get_config("model_support").data
+        raw_support: object = model_config.get_config("model_support").data
+        fallback_support: str | list[str]
+        if isinstance(raw_support, list):
+            fallback_support = [str(x) for x in raw_support]
+        elif isinstance(raw_support, str):
+            fallback_support = raw_support
+        else:
+            fallback_support = ""
+        model_support = self._routed_model_support(fallback_support)
+        provider = self._routed_provider()
 
         # 视频先行转换——OpenAI/Anthropic 模型不接受 VideoUrl，必须在入历史前处理掉
         content_list = await self._prepare_video_content(content_list, model_support)
 
-        # 分离文本和图片
+        # 分离文本和图片（同时兼容 ImageUrl 与图片类 BinaryContent）
         text_parts: list[str] = []
         image_urls: list[str] = []
         for item in content_list:
             if isinstance(item, ImageUrl):
                 image_urls.append(item.url)
+            elif isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/"):
+                uri, _, _ = bytes_to_data_uri(item.data, fallback_mime=str(item.media_type or "image/png"))
+                assert uri is not None
+                image_urls.append(uri)
             elif isinstance(item, str):
                 text_parts.append(item)
 
         if "image" in model_support and not self._disable_direct_image_in_run:
-            # 模型支持图片，保留原始内容；动图先收成静图序列。
-            from gsuid_core.ai_core.persona.appearance import (
-                bytes_from_image_ref,
-                format_look_identity_note,
-            )
+            # 模型支持图片，按实际激活 provider 输出 BinaryContent / ImageUrl；动图收成静图序列
+            from gsuid_core.ai_core.persona.appearance import format_look_identity_note
             from gsuid_core.ai_core.multimodal.animated_frames import render_animation_sheets
 
             result: list[UserContent] = []
@@ -1002,24 +1026,35 @@ class GsCoreAIAgent(RunOnceMixin):
             for item in content_list:
                 if isinstance(item, str):
                     result.append(f"[用户发言]\n{item}")
-                elif isinstance(item, ImageUrl):
-                    # Fix-07 兜底：入历史前再次确认远程 URL 已物化为 base64；
-                    # 若物化失败（仍为 http(s) URL），跳过该图片，避免把过期
-                    url = await materialize_image_url(item.url)
-                    if url.startswith(("http://", "https://")):
-                        logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
-                        continue
-                    raw = bytes_from_image_ref(url)
+                elif isinstance(item, ImageUrl) or (
+                    isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/")
+                ):
+                    raw: bytes | None
+                    source_for_inject: str | bytes
+                    if isinstance(item, BinaryContent):
+                        raw = item.data
+                        source_for_inject = item.data
+                    else:
+                        url = await materialize_image_url(item.url)
+                        if url.startswith(("http://", "https://")):
+                            logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
+                            continue
+                        raw = bytes_from_inline_image_ref(url)
+                        source_for_inject = url
                     sheets = await asyncio.to_thread(render_animation_sheets, raw) if raw else None
                     if sheets is not None:
                         result.append(sheets.note)
                         for blob in sheets.images:
-                            encoded = base64.b64encode(blob).decode("ascii")
-                            result.append(ImageUrl(url=f"data:image/jpeg;base64,{encoded}"))
+                            result.append(image_bytes_to_provider_part(blob, "image/jpeg", provider))
                     else:
-                        result.append(ImageUrl(url=url))
+                        injected, inject_err = to_provider_image_content(source_for_inject, provider_or_model=provider)
+                        if injected:
+                            result.extend(injected)
+                        elif inject_err:
+                            logger.warning(i18n_t("log.ai.unable_process_image_id_err", i="user_message", e=inject_err))
+                            continue
                     if self.persona_name:
-                        note = format_look_identity_note(self.persona_name, bytes_from_image_ref(url))
+                        note = format_look_identity_note(self.persona_name, raw)
                         if note and note not in seen_notes:
                             seen_notes.add(note)
                             notes.append(note)
@@ -1036,12 +1071,8 @@ class GsCoreAIAgent(RunOnceMixin):
         # 模型不支持图片，调用图片理解模块转述
         if image_urls:
             logger.info(i18n_t("log.agent.imgund_images_image_paraphrasing", p0=len(image_urls)))
-            # 用户问题：用于把冗长的图片描述按需精简到与问题相关的部分
             user_question = "\n".join(text_parts).strip()
-            from gsuid_core.ai_core.persona.appearance import (
-                bytes_from_image_ref,
-                format_look_identity_note,
-            )
+            from gsuid_core.ai_core.persona.appearance import format_look_identity_note
 
             descriptions: list[str] = []
             for idx, url in enumerate(image_urls):
@@ -1054,7 +1085,7 @@ class GsCoreAIAgent(RunOnceMixin):
                     description = await self._summarize_image_description(description, user_question)
                     line = f"图片{idx + 1}: {description}"
                     if self.persona_name:
-                        note = format_look_identity_note(self.persona_name, bytes_from_image_ref(url))
+                        note = format_look_identity_note(self.persona_name, bytes_from_inline_image_ref(url))
                         if note:
                             line = f"{line}\n{note}"
                     descriptions.append(line)

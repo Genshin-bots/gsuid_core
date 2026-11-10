@@ -1,21 +1,25 @@
-"""工具执行失败 → 可恢复 tool return（不炸整轮 Agent）。
+"""Agent 运行期安全与协议 capability（工具失败回收 + 高危门禁 + 跨供应商图片协议适配）。
 
-pydantic-ai 默认把工具体抛出的异常冒泡成 agent_error，单次
-``read_skill_resource`` / 业务工具误抛就会整轮 ``执行出错``。
-挂 ``on_tool_execute_error``：把异常收成 ⚠️ 文案回给模型，便于改道。
+1. ``tool_execute_error``：把工具异常收成可读 ⚠️ 回执给模型改道，避免单工具误抛打崩整轮。
+2. ``tool_execute``：拦截非主人触发的高危工具调用。
+3. ``prepare_model_request``：在确定实际服务模型后，将消息中的内联图片在 ``ImageUrl(data:...)``
+   与 ``BinaryContent`` 间非原地互转，避免 Google / Anthropic 因 ``data:`` 协议触发 SSRF 拦截。
 """
 
 from __future__ import annotations
 
-from typing import Any
+import dataclasses
 
 from pydantic_ai.tools import RunContext, ToolDefinition
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.capabilities import Hooks
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_risk import block_high_risk_execute
+from gsuid_core.utils.image.image_io import adapt_messages_images_for_model
 
 _TOOL_SAFETY_CAP_ID = "gscore-tool-safety"
 
@@ -35,13 +39,14 @@ def format_tool_execute_error(tool_name: str, error: BaseException) -> str:
 
 
 async def _on_tool_execute_error(
-    ctx: RunContext[Any],
+    ctx: RunContext[ToolContext],
     *,
     call: ToolCallPart,
     tool_def: ToolDefinition,
-    args: dict[str, Any],
+    args: dict[str, object],
     error: Exception,
 ) -> str:
+    _ = ctx, args
     name = call.tool_name or tool_def.name or "unknown"
     msg = format_tool_execute_error(name, error)
     logger.warning(
@@ -55,9 +60,22 @@ async def _on_tool_execute_error(
     return msg
 
 
-def build_tool_safety_capability() -> Hooks[Any]:
-    """供 Agent(capabilities=[...]) 挂载的工具失败回收 capability。"""
+async def _prepare_model_request_images(
+    ctx: RunContext[ToolContext],
+    request_context: ModelRequestContext,
+) -> ModelRequestContext:
+    """发往模型前将内联图片块适配到当前实际模型的协议（Google/Anthropic 禁 data: URL）。"""
+    _ = ctx
+    adapted = adapt_messages_images_for_model(request_context.messages, request_context.model)
+    if all(a is b for a, b in zip(adapted, request_context.messages, strict=True)):
+        return request_context
+    return dataclasses.replace(request_context, messages=adapted)
+
+
+def build_tool_safety_capability() -> Hooks[ToolContext]:
+    """供 Agent(capabilities=[...]) 挂载的工具失败回收与跨供应商图片协议适配。"""
     return Hooks(
+        prepare_model_request=_prepare_model_request_images,
         tool_execute=block_high_risk_execute,
         tool_execute_error=_on_tool_execute_error,
         id=_TOOL_SAFETY_CAP_ID,

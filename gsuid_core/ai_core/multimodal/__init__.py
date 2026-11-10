@@ -11,6 +11,22 @@
 - document.py: 文档内容提取管道（PDF/Word/Excel → Markdown）
 """
 
+from gsuid_core.utils.image.image_io import (
+    encode_pil_image,
+    sniff_image_mime,
+    unwrap_image_url,
+    bytes_to_data_uri,
+    normalize_inline_image,
+    decode_data_or_base64_uri,
+    to_provider_image_content,
+    guess_image_mime_from_name,
+    bytes_from_inline_image_ref,
+    image_bytes_to_provider_part,
+    provider_prefers_binary_image,
+    adapt_messages_images_for_model,
+    decode_local_or_inline_image_bytes,
+)
+
 from .asr import transcribe_audio
 from .video import understand_video, extract_video_frames
 from .document import extract_document_content
@@ -36,4 +52,17 @@ __all__ = [
     "upload_media_for_task",
     "video_delivery_mode",
     "video_bytes_to_openai_content",
+    "sniff_image_mime",
+    "guess_image_mime_from_name",
+    "unwrap_image_url",
+    "encode_pil_image",
+    "decode_data_or_base64_uri",
+    "bytes_from_inline_image_ref",
+    "decode_local_or_inline_image_bytes",
+    "normalize_inline_image",
+    "bytes_to_data_uri",
+    "provider_prefers_binary_image",
+    "image_bytes_to_provider_part",
+    "to_provider_image_content",
+    "adapt_messages_images_for_model",
 ]

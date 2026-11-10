@@ -831,20 +831,9 @@ async def render_card(
 
 
 def _sniff_image_mime(data: bytes) -> str:
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "image/png"
-    if data[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    if data[:6] in (b"GIF87a", b"GIF89a"):
-        return "image/gif"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    if data[:2] == b"BM":
-        return "image/bmp"
-    head = data[:200].lstrip().lower()
-    if head.startswith(b"<svg") or b"<svg" in data[:500].lower():
-        return "image/svg+xml"
-    return "image/png"
+    from gsuid_core.utils.image.image_io import sniff_image_mime
+
+    return sniff_image_mime(data, allow_svg=True) or "image/png"
 
 
 def _bytes_to_data_uri(data: bytes, mime: Optional[str] = None) -> str:
@@ -933,18 +922,18 @@ async def _resolve_embed_source_bytes(
     source: str,
 ) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     """解析嵌图来源 → (bytes, mime_hint, error)。"""
-    raw = (source or "").strip()
+    from gsuid_core.utils.image.image_io import unwrap_image_url, decode_data_or_base64_uri
+
+    raw = unwrap_image_url(source or "")
     if not raw:
         return None, None, "image_source 不能为空"
 
-    # data URI
-    if raw.startswith("data:image/"):
-        try:
-            header, b64 = raw.split(",", 1)
-            mime = header.split(";")[0].split(":", 1)[1]
-            return base64.b64decode(b64), mime, None
-        except Exception as e:
-            return None, None, f"data URI 解析失败: {e}"
+    # data URI / base64://
+    if raw.startswith(("data:image/", "base64://")):
+        decoded, dec_err = decode_data_or_base64_uri(raw)
+        if dec_err is not None or decoded is None:
+            return None, None, dec_err or "data URI 解析失败"
+        return decoded, _sniff_image_mime(decoded), None
 
     # Iconify 按需单图标：icon:prefix/name
     m = _ICON_SOURCE_RE.match(raw)

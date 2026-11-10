@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import io
-import base64
 import asyncio
 from typing import Literal
 from contextvars import Token, ContextVar
 from dataclasses import dataclass
 
-from PIL import Image
-
 from gsuid_core.models import Message
+from gsuid_core.utils.image.image_io import (
+    sniff_image_mime,
+    unwrap_image_url,
+    normalize_inline_image,
+    bytes_from_inline_image_ref,
+)
 
 MAX_IMAGE_BYTES = 1_500_000
 MAX_IMAGES = 1
@@ -119,73 +121,20 @@ def _from_str(raw: str) -> SentPiece | None:
     text = raw.strip()
     if not text or text in {"<SILENCE>", "<silence>"}:
         return None
-    if text.startswith("base64://"):
-        return _from_b64(text[len("base64://") :])
-    if text.startswith("data:image/") and "," in text:
-        return _from_b64(text.split(",", 1)[1])
+    if text.startswith(("base64://", "data:image/")):
+        data = bytes_from_inline_image_ref(text)
+        if data is None:
+            return SentPiece(kind="image", omitted=True)
+        return _from_bytes(data)
     return SentPiece(kind="text", text=text)
 
 
-def _from_b64(payload: str) -> SentPiece:
-    try:
-        data = base64.b64decode(payload, validate=False)
-    except ValueError:
-        return SentPiece(kind="image", omitted=True)
-    return _from_bytes(data)
-
-
 def _compress_image_data(data: bytes, max_bytes: int = MAX_IMAGE_BYTES) -> tuple[bytes, str] | None:
-    # 缩放到长边 1568px 内，并循环降质直到 <= 上限
-    try:
-        with Image.open(io.BytesIO(data)) as img:
-            w, h = img.size
-            max_edge = max(w, h)
-            target_edge = 1568
-            if max_edge > target_edge:
-                scale = target_edge / float(max_edge)
-                new_w = max(1, int(w * scale))
-                new_h = max(1, int(h * scale))
-                img = img.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
-
-            has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
-            if has_alpha:
-                buf = io.BytesIO()
-                img.save(buf, format="PNG", optimize=True)
-                val = buf.getvalue()
-                if len(val) <= max_bytes:
-                    return val, "image/png"
-                for scale in (0.75, 0.5):
-                    sw = max(1, int(img.width * scale))
-                    sh = max(1, int(img.height * scale))
-                    scaled = img.resize((sw, sh), resample=Image.Resampling.LANCZOS)
-                    buf = io.BytesIO()
-                    scaled.save(buf, format="PNG", optimize=True)
-                    val = buf.getvalue()
-                    if len(val) <= max_bytes:
-                        return val, "image/png"
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                if img.mode == "RGBA":
-                    bg.paste(img, mask=img.split()[3])
-                else:
-                    bg.paste(img.convert("RGBA"), mask=img.convert("RGBA").split()[3])
-                img = bg
-
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-
-            for q in (85, 75, 60, 45, 30):
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=q, optimize=True)
-                val = buf.getvalue()
-                if len(val) <= max_bytes:
-                    return val, "image/jpeg"
-    except (OSError, ValueError):
-        return None
-    return None
+    return normalize_inline_image(data, max_bytes=max_bytes, target_edge=1568, flatten_animation=True)
 
 
 def _from_bytes(data: bytes) -> SentPiece:
-    mime = _sniff_image(data)
+    mime = sniff_image_mime(data)
     if mime is None:
         return SentPiece(kind="text", text="[文件]")
     return SentPiece(kind="image", image=data, media_type=mime)
@@ -201,8 +150,8 @@ def _from_message(message: Message) -> list[SentPiece]:
         if isinstance(data, bytes):
             return [_from_bytes(data)]
         if isinstance(data, str):
-            stripped = data.strip()
-            if stripped.startswith("http://") or stripped.startswith("https://"):
+            stripped = unwrap_image_url(data)
+            if stripped.startswith(("http://", "https://")):
                 return [SentPiece(kind="image", image_url=stripped, media_type="image/url")]
             piece = _from_str(stripped)
             if piece is None:
@@ -217,15 +166,3 @@ def _from_message(message: Message) -> list[SentPiece]:
     if label:
         return [SentPiece(kind="text", text=label)]
     return []
-
-
-def _sniff_image(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
-        return "image/gif"
-    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
