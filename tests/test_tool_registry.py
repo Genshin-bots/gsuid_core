@@ -100,3 +100,23 @@ def test_claims_inflight_without_backend() -> None:
         "今天风不小，出门多穿一件。",
     ):
         assert not _claims_inflight_without_backend(neg), f"误触良性文本: {neg}"
+
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.autonomy.tools import (
+        send_message_by_ai as autonomy_send,
+        build_autonomy_tools,
+    )
+    from gsuid_core.ai_core.autonomy.verifier import output_is_failed
+
+    assert output_is_failed("[{'type': 'extra_forbidden', 'loc': ('target_id',)}]")
+    assert output_is_failed("发送被拦截：目标当前处于防打扰冷静期。")
+    assert output_is_failed("拒绝发送：必须指定发送目标")
+    assert output_is_failed("ℹ️ 当前不在 Kanban 任务上下文中，artifact_put 不可用。")
+    assert not output_is_failed("已成功向 群 group_1 发送消息：测试问候")
+
+    agent = GsCoreAIAgent(create_by="Autonomy", dynamic_tools=True)
+    autonomy_tools = build_autonomy_tools()
+    stabilized = agent._stabilize_session_toolset(autonomy_tools, [], [])
+    by_name = {t.name: t for t in stabilized}
+    assert "list_plugin_commands" in by_name and "run_bot_command" in by_name
+    assert by_name["send_message_by_ai"].function is autonomy_send

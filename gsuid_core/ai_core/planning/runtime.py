@@ -37,6 +37,9 @@ class PlanRunContext:
     allowed_write_roots: List[Path] = field(default_factory=list)
     # v2 · 当前执行体画像（artifact_put / workspace_file 登记时回填）
     agent_profile: str = ""
+    # 无 Kanban 任务时（独立调用 artifact_put）的归属与作用域兜底
+    owner_user_id: str = ""
+    scope_key: str = ""
 
 
 _current_plan: contextvars.ContextVar[Optional[PlanRunContext]] = contextvars.ContextVar(

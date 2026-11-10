@@ -377,12 +377,22 @@ async def put_artifact(
        ``payload.<ext>``，``mime`` 决定扩展名（``json`` → ``.json`` / ``html`` →
        ``.html`` / ``markdown`` → ``.md`` / 其它 → ``.txt``）。
 
-    返回新建的 AIAgentArtifact 行；不在任务上下文中时返回 None。
+    返回新建的 AIAgentArtifact 行；file_path 与 payload 均为空或文件不存在时返回 None。
     """
+    if file_path is None and not payload.strip():
+        return None
     if plan_ctx is None:
         plan_ctx = get_plan_context()
     if plan_ctx is None or not plan_ctx.root_task_id:
-        return None
+        plan_ctx = PlanRunContext(
+            task_id=(plan_ctx.task_id if plan_ctx and plan_ctx.task_id else "adhoc"),
+            root_task_id="adhoc",
+            artifact_workspace=plan_ctx.artifact_workspace if plan_ctx else None,
+            allowed_write_roots=list(plan_ctx.allowed_write_roots) if plan_ctx else [],
+            agent_profile=plan_ctx.agent_profile if plan_ctx else "",
+            owner_user_id=plan_ctx.owner_user_id if plan_ctx else "",
+            scope_key=plan_ctx.scope_key if plan_ctx else "",
+        )
 
     workspace = plan_ctx.artifact_workspace
     if workspace is None:
@@ -474,8 +484,8 @@ async def _remember_and_index_artifact(
 
     try:
         task = await AIAgentTask.get_by_id(plan_ctx.root_task_id or art.root_task_id)
-        owner = (task.owner_user_id if task is not None else "") or ""
-        scope_key = (task.scope_key if task is not None else "") or ""
+        owner = (task.owner_user_id if task is not None else plan_ctx.owner_user_id) or ""
+        scope_key = (task.scope_key if task is not None else plan_ctx.scope_key) or ""
         as_of = datetime.now().strftime("%Y-%m-%d")
         await remember(
             MemoryWrite(

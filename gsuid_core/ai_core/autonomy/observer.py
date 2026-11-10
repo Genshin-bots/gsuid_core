@@ -300,7 +300,7 @@ async def _recent_proactive_records(persona_name: str, now: float) -> list[str]:
     for row in rows:
         if now - row.created_at > CARE_COOLDOWN_SECONDS:
             continue
-        if row.delivery_mode != "immediate_push" and "send_message_by_ai" not in row.plugins_used_json:
+        if row.delivery_mode != "immediate_push":
             continue
         age = _age_label(row.created_at, now)
         target = row.target_user_id or row.target_session_key or "群聊"

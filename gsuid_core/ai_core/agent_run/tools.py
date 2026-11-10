@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, List, TypeVar, Protocol, Sequence
 
 from pydantic_ai import Agent
+from pydantic_ai.tools import Tool
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 from pydantic_ai.capabilities import AbstractCapability
 
@@ -318,7 +319,14 @@ class ToolsPhase(RunOnceHost):
         self._session_toolset_frozen = names
         self._session_toolset_tags = tags
         out: ToolList = []
+        by_name: dict[str, Tool[ToolContext]] = {}
+        for t in list(core) + list(extras):
+            if t.name not in by_name:
+                by_name[t.name] = t
         for name in names:
+            if name in by_name:
+                out.append(by_name[name])
+                continue
             tb = find_tool_base(name)
             if tb is not None:
                 out.append(tb.tool)
@@ -418,7 +426,10 @@ class ToolsPhase(RunOnceHost):
         if st.addr_gated:
             # C-3 寻址门（**内核密封**）：@别人且未点自己 → 零工具，且不打 ASSEMBLE_TOOLS
             st.tools = []
+            _caller_by_name: dict[str, Tool[ToolContext]] = {}
         elif _assemble or self.create_by in _AGENTIC_CREATE_BY:
+            _caller_tools: ToolList = list(st.tools) if st.tools else []
+            _caller_by_name = {t.name: t for t in _caller_tools}
             if _assemble:
                 qy = ""
                 # 框架回灌：交付包不作向量检索 query（避免噪声 + 误装工具）
@@ -428,9 +439,13 @@ class ToolsPhase(RunOnceHost):
                     elif st.ev is not None:
                         qy = st.ev.raw_text
 
-                # 第一层：群/私同一通道核（创建类提醒钉核；列出/改/删走 L2 / 检索 / find_tools）。
-                core_tools = await get_main_agent_tools()
-                core_names = {t.name for t in core_tools}
+                # 调用方传入的默认工具置顶进核且优先覆盖同名全局工具，防会话顶截断或被替换
+                core_tools: ToolList = list(_caller_tools)
+                core_names: set[str] = {t.name for t in core_tools}
+                for _mt in await get_main_agent_tools():
+                    if _mt.name not in core_names:
+                        core_names.add(_mt.name)
+                        core_tools.append(_mt)
                 _fam_exclusive = _capability_exclusive_tool_names()
                 for _tn in complete_kernel_family_names(list(core_names), exclusive=_fam_exclusive):
                     if _tn in core_names:
@@ -439,12 +454,6 @@ class ToolsPhase(RunOnceHost):
                     if _tb is not None:
                         core_names.add(_tn)
                         core_tools.append(_tb.tool)
-
-                # 调用方显式传入的基础工具（dynamic 节点的 packs+白名单）并入保底
-                for _bt in st.tools:
-                    if _bt.name not in core_names:
-                        core_names.add(_bt.name)
-                        core_tools.append(_bt)
 
                 # 节点显式白名单：persona 投影节点在 config.json 声明的 st.tool_names 并入保底
                 if self.persona_name:
@@ -788,6 +797,7 @@ class ToolsPhase(RunOnceHost):
             else:
                 logger.debug(i18n_t("log.agent.passed_tools_list_arguments", p0=len(st.tools)))
         else:
+            _caller_by_name = {t.name: t for t in st.tools} if st.tools else {}
             logger.debug(i18n_t("log.agent.skip_tool_search_searching_tools"))
 
         # 工具装配套件与第三方钉工具点后各剥离一次 exclusive，防误装 render_* 工具。
@@ -797,11 +807,13 @@ class ToolsPhase(RunOnceHost):
 
         logger.debug(i18n_t("log.agent.tool_list", p0=[tool.name for tool in st.tools]))
 
-        # 最终去重（兼容外部直接传入 st.tools 的情况）
+        # 最终去重（兼容外部直接传入 st.tools 的情况），且同名工具始终保留调用方默认实现
         from gsuid_core.ai_core.command_aside.policy import aside_extra_tools
 
         for extra_tool in aside_extra_tools():
             st.tools.append(extra_tool)
+        if _caller_by_name:
+            st.tools = [_caller_by_name[t.name] if t.name in _caller_by_name else t for t in st.tools]
         if self.create_by == "Autonomy":
             from gsuid_core.ai_core.autonomy.tools import autonomy_tool_allowed
 

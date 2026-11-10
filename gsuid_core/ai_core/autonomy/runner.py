@@ -33,6 +33,7 @@ class AutonomyReport:
         session_id: str = "",
         last_sent_user_id: str = "",
         last_sent_group_id: str = "",
+        sent_count: int = 0,
     ) -> None:
         self.text = text
         self.steps = steps
@@ -40,6 +41,7 @@ class AutonomyReport:
         self.session_id = session_id
         self.last_sent_user_id = last_sent_user_id
         self.last_sent_group_id = last_sent_group_id
+        self.sent_count = sent_count
 
 
 class TraceCollector:
@@ -160,6 +162,7 @@ async def run_autonomy_agent(
         session_id,
         last_sent_user_id=guard.last_sent_user_id,
         last_sent_group_id=guard.last_sent_group_id,
+        sent_count=guard.sent_count,
     )
 
 

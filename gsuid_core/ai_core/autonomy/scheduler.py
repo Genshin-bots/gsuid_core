@@ -203,8 +203,11 @@ class AutonomyScheduler:
         )
         mode = decision.mode
         pin = decision.pin
-        tool_sent = any(
-            step.tool_name == "send_message_by_ai" and not step.is_error and not output_is_failed(step.output_text)
+        tool_sent = report.sent_count > 0 or any(
+            step.tool_name == "send_message_by_ai"
+            and not step.is_error
+            and not output_is_failed(step.output_text)
+            and step.output_text.strip().startswith("已成功向")
             for step in report.steps
         )
         if tool_sent:

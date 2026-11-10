@@ -11,7 +11,21 @@ from gsuid_core.ai_core.autonomy.models import (
 
 # 这些工具只是在看菜单或翻记忆，不算「已经帮人做成一件事」。
 META_TOOLS = frozenset({"list_plugin_commands", "find_tools", "search_cognition", "recall_cognition"})
-FAIL_MARKS = ("未绑定", "失败", "超时", "权限不足", "拒绝：", "没有在线的适配器", "不代发")
+FAIL_MARKS = (
+    "未绑定",
+    "失败",
+    "超时",
+    "权限不足",
+    "拒绝：",
+    "拒绝发送",
+    "拒绝私聊",
+    "发送被拦截",
+    "没有在线的适配器",
+    "不代发",
+    "不可用",
+    "extra_forbidden",
+    "ValidationError",
+)
 _RESOURCE = re.compile(r"res_[A-Za-z0-9_-]+")
 _FOOTER = {
     "DRIVE": "drive",

@@ -380,23 +380,33 @@ async def sync_persona_artifacts(persona_name: str, bot_self_id: str = "") -> in
     return count
 
 
-async def artifact_put(ctx: RunContext[ToolContext], title: str, body: str) -> str:
+async def artifact_put(
+    ctx: RunContext[ToolContext],
+    title: str = "",
+    body: str = "",
+    summary: str = "",
+    payload: str = "",
+) -> str:
     """把这次探索写成一份本地笔记，不发给任何人。
 
     Args:
         ctx: 工具上下文。
         title: 笔记标题，只保留字母、数字、下划线和汉字。
         body: 笔记正文，最长 32KB。
+        summary: 可选标题别名（兼容产物参数习惯）。
+        payload: 可选正文别名（兼容产物参数习惯）。
     """
     del ctx
+    resolved_title = title.strip() or summary.strip() or "note"
+    resolved_body = body if body.strip() else payload
     state = _GUARD.get()
     persona_name = state.persona_name if state is not None else "autonomy"
-    res = write_artifact(title, body, persona_name=persona_name)
+    res = write_artifact(resolved_title, resolved_body, persona_name=persona_name)
     if res.startswith("已写入"):
-        stem = safe_filename(title).removesuffix(".txt")
+        stem = safe_filename(resolved_title).removesuffix(".txt")
         handle = f"note:{persona_name}:{stem}"
         bot_self_id = state.bot_self_id if state is not None else ""
-        await index_note_node(persona_name, stem, body, handle, bot_self_id=bot_self_id)
+        await index_note_node(persona_name, stem, resolved_body, handle, bot_self_id=bot_self_id)
         return f"已写入笔记《{stem}》（句柄: {handle}）"
     return res
 
