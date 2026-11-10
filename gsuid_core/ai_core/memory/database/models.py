@@ -1868,6 +1868,55 @@ class AIMemPreference(SQLModel, table=True):
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
+    async def cleanup_polluted_scopes_in_session(cls, session: AsyncSession) -> int:
+        """清理误写进 user_global 的助手自 ID 与群号偏好行（幂等）。"""
+        from sqlalchemy import or_ as _or, delete as _delete, inspect as _inspect
+
+        from gsuid_core.utils.database.models import CoreGroup
+
+        conn = await session.connection()
+        table_names = await conn.run_sync(lambda sync_conn: set(_inspect(sync_conn).get_table_names()))
+        if "aimempreference" not in table_names:
+            return 0
+        known_gids: set[str] = set()
+        if "coregroup" in table_names:
+            cg_rows = await session.execute(select(CoreGroup.group_id).distinct())
+            for row in cg_rows.fetchall():
+                gid = str(row[0] or "").strip()
+                if gid and gid != "1":
+                    known_gids.add(gid)
+        for table_name, model in (
+            ("aimemepisode", AIMemEpisode),
+            ("aimementity", AIMemEntity),
+            ("aimemedge", AIMemEdge),
+            ("aimemthread", AIMemThread),
+        ):
+            if table_name not in table_names:
+                continue
+            sk_rows = await session.execute(
+                select(model.scope_key).where(col(model.scope_key).startswith("group:")).distinct()
+            )
+            for row in sk_rows.fetchall():
+                sk = str(row[0] or "").strip()
+                if sk.startswith("group:"):
+                    gid = sk[len("group:") :].strip()
+                    if gid:
+                        known_gids.add(gid)
+
+        conds = [
+            col(cls.user_id).startswith("__assistant_"),
+            col(cls.scope_key).startswith("user_global:__assistant_"),
+            col(cls.scope_key).startswith("user_global:group:"),
+            col(cls.scope_key).startswith("user_global:self:"),
+        ]
+        if known_gids:
+            bogus_scopes = [f"user_global:{gid}" for gid in known_gids]
+            conds.append(col(cls.scope_key).in_(bogus_scopes))
+
+        result = await session.execute(_delete(cls).where(_or(*conds)))
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+    @classmethod
     async def prune_per_context(cls, max_per_context: int) -> int:
         if max_per_context <= 0:
             return 0

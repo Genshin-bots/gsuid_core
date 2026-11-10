@@ -2255,6 +2255,9 @@ async def list_scopes(
                 | set(thread_stats.keys())
                 | set(pref_stats.keys())
             )
+            known_group_ids = {
+                sk[len("group:") :] for sk in all_scope_keys if isinstance(sk, str) and sk.startswith("group:")
+            }
 
             scopes = []
             for sk in sorted(all_scope_keys):
@@ -2264,18 +2267,22 @@ async def list_scopes(
                     parts = sk.split(":", 1)
                     scope_type = parts[0]
                     scope_id = parts[1] if len(parts) > 1 else ""
+                if scope_type == "user_global" and (
+                    scope_id.startswith(("__assistant_", "self:", "group:")) or scope_id in known_group_ids
+                ):
+                    continue
 
                 scopes.append(
                     {
                         "scope_key": sk,
                         "scope_type": scope_type,
                         "scope_id": scope_id,
-                        "episode_count": ep_stats.get(sk, 0),
-                        "entity_count": ent_stats.get(sk, 0),
-                        "edge_count": edge_stats.get(sk, 0),
+                        "episode_count": ep_stats[sk] if sk in ep_stats else 0,
+                        "entity_count": ent_stats[sk] if sk in ent_stats else 0,
+                        "edge_count": edge_stats[sk] if sk in edge_stats else 0,
                         "category_count": 0,
-                        "thread_count": thread_stats.get(sk, 0),
-                        "preference_count": pref_stats.get(sk, 0),
+                        "thread_count": thread_stats[sk] if sk in thread_stats else 0,
+                        "preference_count": pref_stats[sk] if sk in pref_stats else 0,
                     }
                 )
 

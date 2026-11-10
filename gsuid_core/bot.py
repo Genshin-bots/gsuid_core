@@ -645,25 +645,27 @@ class _Bot:
                 is_enable_memory: bool = ai_config.get_config("enable_memory").data
                 memory_mode: list[str] = memory_config.memory_mode
                 if enable_ai and is_enable_memory and "主动会话" in memory_mode:
-                    # memory 包会拉起记忆启动链，且可能再回到 Bot。
+                    # 仅在 AI 人格发言上下文中观察出站回复，避免普通插件命令污染未启用群
                     from gsuid_core.ai_core.memory import observe
                     from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
 
-                    try:
-                        task = asyncio.create_task(
-                            observe(
-                                content=message_list_to_str(mr),
-                                speaker_id=f"__assistant_{bot_id}__",
-                                group_id=target_id if target_type == "group" else None,
-                                bot_self_id=bot_self_id,
-                                observer_blacklist=memory_config.observer_blacklist,
-                                message_type="group_msg" if target_type == "group" else "private_msg",
-                                persona_name=get_speaking_persona(),
+                    speaking_persona = get_speaking_persona()
+                    if speaking_persona:
+                        try:
+                            task = asyncio.create_task(
+                                observe(
+                                    content=message_list_to_str(mr),
+                                    speaker_id=f"__assistant_{bot_id}__",
+                                    group_id=target_id if target_type == "group" else None,
+                                    bot_self_id=bot_self_id,
+                                    observer_blacklist=memory_config.observer_blacklist,
+                                    message_type="group_msg" if target_type == "group" else "private_msg",
+                                    persona_name=speaking_persona,
+                                )
                             )
-                        )
-                        self._add_bg_task(task)
-                    except Exception:
-                        pass  # Observer 失败不应影响主流程
+                            self._add_bg_task(task)
+                        except Exception:
+                            pass  # Observer 失败不应影响主流程
                 # ============================================
 
                 logger.info(

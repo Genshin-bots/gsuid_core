@@ -214,8 +214,13 @@ def cog_scope_from_ctx(ctx: AgentHookContext) -> "CogScope":
     )
 
 
-def _in_observe_scope(session_id: str, memory_session: str) -> bool:
+def _in_observe_scope(session_id: str, memory_session: str, ev: Event | None = None) -> bool:
     """被动感知范围：全部群聊 = 全记；按人格配置 = 只记人格覆盖的 session。"""
+    if ev is not None:
+        from gsuid_core.ai_core.command_aside.runner import _list_allows
+
+        if not _list_allows(ev):
+            return False
     if memory_session == "全部群聊":
         return True
     if memory_session != "按人格配置":
@@ -286,7 +291,9 @@ class MemoryKit(AgentKit):
             return
         if not memory_config.observer_enabled or "被动感知" not in memory_config.memory_mode:
             return
-        if not _in_observe_scope(ev.session_id, memory_config.memory_session):
+        if not _in_observe_scope(ev.session_id, memory_config.memory_session, ev):
+            return
+        if ev.user_type != "direct" and not ctx.group_id:
             return
 
         has_text = bool(ev.raw_text and ev.raw_text.strip())

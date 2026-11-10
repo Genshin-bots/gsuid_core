@@ -51,9 +51,13 @@ def _sqlite_engine(path: Path):
 
 
 def test_memory_scope_and_private_isolation() -> None:
+    from gsuid_core.models import Event
     from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
     from gsuid_core.ai_core.cognition import CogScope
-    from gsuid_core.ai_core.kits.memory.kit import cog_scope_from_ctx
+    from gsuid_core.ai_core.kits.memory.kit import _in_observe_scope, cog_scope_from_ctx
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.memory.ingestion.algebra import _resolve_preference_user_id
 
     scope_key = make_scope_key(ScopeType.USER_GLOBAL, "100000006")
     assert scope_key == "user_global:100000006" and not scope_key.startswith("group:")
@@ -74,6 +78,47 @@ def test_memory_scope_and_private_isolation() -> None:
     ctx = AgentHookContext(point=AgentHookPoint.RETRIEVE_CONTEXT)
     scope = cog_scope_from_ctx(ctx)
     assert isinstance(scope, CogScope) and scope.group_id is None and scope.is_private
+
+    now = datetime.now(timezone.utc)
+    records = [
+        ObservationRecord(
+            raw_content="请简短回复",
+            speaker_id="100000001",
+            group_id="200000001",
+            scope_key="group:200000001",
+            timestamp=now,
+            message_type="group_msg",
+            speaker_name="测试用户A",
+        ),
+        ObservationRecord(
+            raw_content="好的",
+            speaker_id="__assistant_onebot__",
+            group_id="200000001",
+            scope_key="group:200000001",
+            timestamp=now,
+            message_type="group_msg",
+        ),
+    ]
+    assert _resolve_preference_user_id("100000001", records, "group:200000001") == "100000001"
+    assert _resolve_preference_user_id("测试用户A", records, "group:200000001") == "100000001"
+    assert _resolve_preference_user_id("__assistant_onebot__", records, "group:200000001") == ""
+    assert _resolve_preference_user_id("200000001", records, "group:200000001") == ""
+    assert _resolve_preference_user_id("999999999", records, "group:200000001") == ""
+
+    orig_black = list(ai_config.get_config("black_list").data)
+    orig_white = list(ai_config.get_config("white_list").data)
+    try:
+        ai_config.get_config("black_list").data = ["200000009"]
+        ai_config.get_config("white_list").data = ["200000001"]
+        ev_blocked = Event(bot_id="onebot", user_id="100000001", group_id="200000009", user_type="group")
+        ev_unlisted = Event(bot_id="onebot", user_id="100000001", group_id="200000002", user_type="group")
+        ev_allowed = Event(bot_id="onebot", user_id="100000001", group_id="200000001", user_type="group")
+        assert not _in_observe_scope(ev_blocked.session_id, "全部群聊", ev_blocked)
+        assert not _in_observe_scope(ev_unlisted.session_id, "全部群聊", ev_unlisted)
+        assert _in_observe_scope(ev_allowed.session_id, "全部群聊", ev_allowed)
+    finally:
+        ai_config.get_config("black_list").data = orig_black
+        ai_config.get_config("white_list").data = orig_white
 
 
 def test_session_split_and_episode_clustering() -> None:
@@ -168,6 +213,15 @@ def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(tmp_path: Pat
                             preference_rule="回答简短",
                             polarity="do",
                             is_correction=True,
+                        ),
+                        AIMemPreference(
+                            id="pref-bot",
+                            scope_key="user_global:__assistant_onebot__",
+                            user_id="__assistant_onebot__",
+                            target_context="general",
+                            preference_rule="助手自身脏偏好",
+                            polarity="do",
+                            is_correction=False,
                         ),
                         UserFavorability(user_id="u1", bot_id="bot", persona_name="persona", favorability=42),
                     ]

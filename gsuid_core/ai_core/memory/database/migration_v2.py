@@ -169,10 +169,12 @@ async def _clear_legacy_qdrant() -> None:
 async def ensure_memory_schema_v2() -> None:
     """幂等入口：非 v2 执行净室迁移，v2 确保 FTS 虚表与查询索引存在。"""
     from gsuid_core.ai_core.memory.database.fts import ensure_fts_table
+    from gsuid_core.ai_core.memory.database.models import AIMemPreference
 
     if _read_version() >= _SCHEMA_VERSION:
         async with async_maker() as session:
             await ensure_fts_table(session)
+            await AIMemPreference.cleanup_polluted_scopes_in_session(session)
             await session.commit()
         await _ensure_query_indexes()
         return
@@ -185,6 +187,9 @@ async def ensure_memory_schema_v2() -> None:
     _backup_group_profiles()
     await _drop_legacy_tables()
     await _create_new_tables()
+    async with async_maker() as session:
+        await AIMemPreference.cleanup_polluted_scopes_in_session(session)
+        await session.commit()
     await _ensure_query_indexes()
     await _clear_legacy_qdrant()
     try:

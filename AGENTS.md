@@ -1,78 +1,43 @@
 # AGENTS.md
 
-> 本文件遵循 [AGENTS.md](https://agents.md/)：给编码 Agent 的仓库说明（README for agents）。
-> 它取代已删除的 `docs/LLM.md`。**§1–§9 编号保持不变**，源码注释里的「§3.5.2」等仍指向这里。
->
-> 架构 / 触发链路 / 启动时序 / AI 子系统 / 已知坑：按需读
-> [`.agents/skills/gscore-development/SKILL.md`](.agents/skills/gscore-development/SKILL.md)，
-> **不要**一次把所有 `references/` 塞进上下文。源码是唯一事实源。
+> 本文件遵循 [AGENTS.md](https://agents.md/)，取代已删除的 `docs/LLM.md`。**§1–§9 编号保持不变**（源码注释里的「§3.5.2」等仍指向这里）。
+> 架构 / 触发链路 / 启动时序 / AI 子系统 / 已知坑按需读 [`.agents/skills/gscore-development/SKILL.md`](.agents/skills/gscore-development/SKILL.md)，不要一次把所有 `references/` 塞进上下文。源码是唯一事实源。
 
 ## Project overview
 
-GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler** 的**单进程**服务：
+GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler** 单进程服务（默认端口 `8765`，WebConsole `http://<HOST>:<PORT>/app`，Python `>=3.11,<4.0`）：
 
-- **不是 Bot**。Core 不直连聊天平台。适配器以 WS 客户端连 `/ws/{bot_id}`，上报 `MessageReceive`，再把 `MessageSend` 发回平台。
-- **插件宿主**。业务在 `gsuid_core/plugins/`；`@sv.on_xxx` 在 import 时登记触发器。
-- **AI 中枢**。无命令匹配时由 `gsuid_core/ai_core/` 接管（Persona、工具、记忆、RAG、巡检、长任务）。
-- **不能独立当聊天机器人用**；需配合 NoneBot2 / AstrBot / Koishi 等上游 Bot。
-
-默认端口 `8765`，WebConsole：`http://<HOST>:<PORT>/app`。Python `>=3.11,<4.0`。
+- **不是 Bot**：不直连聊天平台，需配合 NoneBot2 / AstrBot / Koishi 等上游适配器连 `/ws/{bot_id}` 收发 `MessageReceive` / `MessageSend`。
+- **插件宿主**：业务在 `gsuid_core/plugins/`，`@sv.on_xxx` 在 import 时登记触发器。
+- **AI 中枢**：无命令匹配时由 `gsuid_core/ai_core/` 接管（Persona、工具、记忆、RAG、巡检、长任务）。
 
 ## Repository map
 
 ```
 .
-├── AGENTS.md                 # 本文件：Agent 必读（红线 + 结构 + 命令）
-├── README.md                 # 人类用户 README（部署 / Docker）
-├── pyproject.toml            # 依赖、入口 `core = gsuid_core.core:main`
-├── ruff.toml                 # line-length=120，lint E/F/I/W
-├── pyrightconfig.json        # basic；排除 plugins / data
-├── .agents/skills/           # 开发文档 Skill（给 Agent 按任务加载）
-├── docs/                     # 已落地的专题说明（生命周期 / Takumi 等）
-├── plans/                    # 方案设计文档。新方案写这里，不进 git
+├── AGENTS.md                 # Agent 必读（红线 + 结构 + 命令）
+├── pyproject.toml / ruff.toml / pyrightconfig.json
+├── .agents/skills/           # 编码 Agent 开发指南（非模型运行时 Skill）
+├── docs/                     # 已落地的专题说明（改对应机制后同步更新）
+├── plans/                    # 新方案设计文档写这里（.gitignore，单次一份，不进 docs/）
 ├── gsuid_core/               # 框架包
-│   ├── core.py               # 进程入口
-│   ├── supervisor.py         # 守护父进程：拉起 core 子进程，子进程以 51 退出时原地重拉
-│   ├── app_life.py           # FastAPI lifespan / 两阶段钩子
-│   ├── server.py / gss.py    # 插件加载、连接、钩子注册表
-│   ├── meta_plugins.py       # 基础设施插件先加载，并把 <包>.api 挂到 sys.modules
-│   ├── handler.py            # handle_event：命令匹配 + AI 分流
-│   ├── bot.py                # _Bot（底层）/ Bot（高层）
-│   ├── sv.py / trigger.py    # Plugins / SV / 触发器
-│   ├── models.py             # Event / MessageReceive / MessageSend
-│   ├── config.py             # CoreConfig / PluginConfigStore
+│   ├── core.py / supervisor.py / app_life.py / server.py / gss.py / meta_plugins.py
+│   ├── handler.py / bot.py / sv.py / trigger.py / models.py / config.py
 │   ├── utils/                # database / image / plugins_config / …
-│   ├── webconsole/           # 网页控制台 API + dist
-│   ├── plugins/              # 用户插件（运行时，不进类型检查）
-│   ├── buildin_plugins/      # 内置命令（安装/重启/帮助/状态）
-│   └── ai_core/              # AI 子系统（见下）
-├── tests/                    # pytest
-├── eval/                     # 实机评测（打运行中的 core，不要进程内重建世界）
-├── changelogs/               # 每版一个 md：`CHANGELOG.md` 索引 + `<版本>.md`（见「变更记录」）
-└── data/                     # 运行时生成：配置 / DB / 日志 / AI 状态（不进 git）
+│   ├── webconsole/           # 网页控制台 API + dist（禁止编译覆盖 dist，见 §1.12）
+│   ├── plugins/ / buildin_plugins/
+│   └── ai_core/              # startup / handle_ai / ai_router / gs_agent / agent_run /
+│                             # register / output_gate / context_assembly / control/lines.py /
+│                             # memory / rag / persona / heartbeat / planning
+├── tests/                    # pytest（离线、无 LLM、总数 ≤ 200）
+├── eval/                     # 实机评测（打运行中的 core）
+├── changelogs/               # CHANGELOG.md 索引 + <版本>.md
+└── data/                     # 运行时生成（配置 / DB / 日志 / AI 状态，不进 git）
 ```
 
-`gsuid_core/ai_core/` 速查：
-
-| 路径 | 职责 |
-|------|------|
-| `startup.py` | `init_ai_core`，按 `_INIT_STEPS` 串行初始化 |
-| `handle_ai.py` | AI 聊天入口 |
-| `ai_router.py` / `session_registry.py` | Session 路由与注册表 |
-| `gs_agent.py` + `agent_run/` | Agent 环：准备 → 工具 → iter → 收尾 |
-| `register.py` | `@ai_tools` / 工具注册表 / `ai_alias` / `ai_entity` / `ai_skill` |
-| `output_gate.py` | `pre_send_gate`（尖括号 → OOC） |
-| `context_assembly.py` | system prompt + 每轮注入的唯一装配点 |
-| `control/lines.py` | 当轮 user 侧控制句只在这里定义（§1.11） |
-| `memory/` `rag/` `persona/` `heartbeat/` `planning/` | 记忆 / 知识库 / 人设 / 巡检 / 长任务 |
-
-更细的模块图与消息总链路：`.agents/skills/gscore-development/references/01-architecture-and-modules.md`。
-
-**运行时 Skill**（模型 `list_skills` / `run_skill_script`）在 `data/ai_core/skills/` 或插件 repo 的 `skills/`，**不是** `.agents/skills/`。后者是给编码 Agent 的开发指南。
+> **运行时 Skill**（模型 `list_skills` / `run_skill_script`）在 `data/ai_core/skills/` 或插件 `skills/`，不是 `.agents/skills/`。
 
 ## Skills
-
-任务对上后再 `Read` 对应 `SKILL.md`，再按索引打开**一篇** `references/`。
 
 | 任务 | Skill |
 |------|--------|
@@ -82,779 +47,152 @@ GsCore（早柚核心 / `gsuid-core`）是 **FastAPI + WebSocket + APScheduler**
 | 写平台适配器（WS 协议 / MessageReceive） | [gscore-adapter-development](.agents/skills/gscore-adapter-development/SKILL.md) |
 | 部署 / Docker / WebConsole / WS_TOKEN | [gscore-deploy](.agents/skills/gscore-deploy/SKILL.md) |
 | 写用户可见文字（更新日志 / 文档 / 报错 / 注释） | [human-talk](.agents/skills/human-talk/SKILL.md) |
+| 编写、审查或清理单测 | [test-audit](.agents/skills/test-audit/SKILL.md) |
 
-`docs/` 里还有生命周期、记忆系统、Takumi 出图等已经落地的专题（见各 Skill「关联文档」）。改这些机制后，同步 `docs/` 里对应的章节。
+## Setup & 交付闸（改完必须全绿）
 
-新的方案设计文档应写在 `plans/`，不应再写入 `docs/`。一次设计一份文件。`plans/` 在 `.gitignore` 里，不提交。已经在 `docs/` 里的专题说明仍留在原地，不为同一份说明再在 `plans/` 复制一份。
-
-## Setup commands
-
-一律在仓库根目录（含 `pyproject.toml`）执行。推荐 **uv**。
+一律在仓库根目录执行。`dev` 组不是默认组，开发者必须带 `--dev`（生产环境用 `uv sync --no-dev`）：
 
 ```sh
-# 安装（开发者必须带 --dev，否则不装 ruff / basedpyright / pytest）
-uv python install 3.12
+# 安装与启动
 uv sync --python 3.12 --dev
-uv run python -m ensurepip
+uv run core                                # --dev 只加载 -dev 插件；--host / --port 临时覆盖
 
-# 启动（等价：poetry run core / pdm run core / python -m gsuid_core.core）
-uv run core
-uv run core --dev                          # 只加载目录名以 -dev 结尾的插件
-uv run core --host 0.0.0.0 --port 9527     # CLI 覆盖不写回文件
-```
-
-`dev` 组**不是**默认组（`pyproject.toml` 的 `default-groups = []`）：用户 `uv sync` /
-`uv run core` 不装 ruff / basedpyright / pytest 等测试工具。开发者跑交付闸必须显式
-`uv sync --dev`，或给单条命令加 `uv run --dev`。**生产镜像与部署环境用
-`uv sync --no-dev`**（`Dockerfile` 已如此），别把测试工具打进线上 venv。
-
-```sh
-# 检查命令见下「交付闸」——改完必须全绿，否则不算完成
-```
-
-实机评测必须打**已启动且加载全部插件**的 core（不要 `--dev`）：
-
-```powershell
-$env:GSUID_LOCAL_TEST_MODE="1"
-$env:GSUID_LOCAL_TEST_TOKEN="<token>"
-$env:PYTHONUTF8="1"
-$env:NO_PROXY="localhost,127.0.0.1"
-uv run core --port 8765
-```
-
-碰装配 / 闸门 / 每轮注入 / 启动顺序时，单测全绿不够，还要对照 `eval/agent` 群聊基准。
-
-依赖锁文件 `uv.lock` / `poetry.lock` / `pdm.lock` 以 `uv.lock` 为准，版本线见 `.pre-commit-config.yaml`。
-重解 poetry.lock 只用约定的 2.5.1：`uv tool run --from "poetry==2.5.1" poetry lock`；本机 PATH 上的旧
-poetry（2.1.4）读不出 `[dependency-groups]`，会把 dev 组（pytest / ruff / basedpyright / pre-commit）
-从锁里丢掉，并误报 `pyproject.toml changed significantly`。校验用同一个 2.5.1：`poetry check --lock`。
-
-## Testing
-
-- 测试在 `tests/`，`pytest`，文件 `test_*.py`。默认收集面必须离线、无 LLM。
-- **单测规模与增删标准**：
-  - `tests/` 总收集用例数**严格控制在 200 个以内**，只保留和补充保护核心架构契约与关键边界的高价值单测。
-  - **一次性验证用后即删**：为单次 bug 修复、特定 issue 验证或本地排查编写的临时单测脚本，在本地执行验证通过后**必须删除**，禁止作为 `test_issueXXX.py` 或碎片文件提交并堆积进仓库。
-  - **关键防线就近合并**：若修复涉及核心协议或重要防线，只允许将断言**就近合并或参数化追加至现有的对应核心测试模块**中，禁止随意新增单测文件。
-  - **测试数据全脱敏（绝对红线）**：所有测试用例、断言、mock 数据与 fixture 中**绝对禁止**混入真实群友昵称、真实用户 ID、真实群号或线上群聊真实对话。所有测试必须使用脱敏虚拟数据（如「测试用户A」、「100000001」、「测试项目X」）。
-- 需要已启动 core 的 WS/HTTP 脚本放 `eval/manual/`（不要 `test_` 前缀）或 `eval/agent/`；禁止再往 `tests/` 加。
-- 类型：basedpyright / pyright，`typeCheckingMode=basic`；`gsuid_core/plugins` 与 `data` 已排除。
-- 行宽 120（ruff）；`#` 注释更严，见 §1.6。
-- 改交互脚手架必须跑 `tests/test_interaction_scaffold.py`（正反双向）。
-- 改工具 docstring / covers：`tests/test_ai_tool_docstrings.py`。
-- 框架 `logger.*` 必须走 `t()` / `i18n_t()`，**第一参必须是静态字符串 key**（`log.<module>.<semantic>`）；禁止三元 / 拼接 / 变量当 key。改日志或 locale 必须跑 `tests/test_logger_i18n.py`（即 `.github/workflows/i18n.yml`）。
-
-## 变更记录（CHANGELOG）
-
-`changelogs/` 里**每个版本一个文件**：`CHANGELOG.md` 是索引与约定，`<版本>.md` 是该版正文。
-
-- **动手前** 先翻相关版本的 `<版本>.md`，确认这次改动不与既有设计冲突。版本边界以 `pyproject.toml` 的 `version` 变动为准。升版打开这一版：之后的提交写入当前版本文件，直到下一次升版；不要为同一版本号另开 `-unreleased`。
-- **动手后** 判断这次改动**够不够格进更新日志**。判断标准：
-
-| 要记 | 不用记 |
-|------|--------|
-| 新增能力、新增命令 / 工具 / 配置项 | 修错字、改文案、调格式、调边距 |
-| 对外行为变化（默认值、返回结构、调用方式） | 纯内部重构、类型守卫收窄（isinstance 等） |
-| 破坏性变更、依赖 / 部署要求变化 | 补测试、注释、docstring |
-| 可量化的性能变化 | 日志文案微调、未发布特性的中间临时修补 |
-
-> **小修小补不进更新日志。** 上面右列的改动不用写条目——写满了反而没人看。拿不准就问自己「使用者能感知到这个变化吗」，感知不到就不写。
-
-- **特性聚合（就近合并，禁止线性堆叠）** 同一功能在当前版本的多次修改或后续完善，**必须就近合并进已有条目**，只在条目末尾追加 commit 短号（如 `[sha1](https://github.com/Genshin-bots/gsuid_core/commit/sha1) [sha2](https://github.com/Genshin-bots/gsuid_core/commit/sha2)`），禁止按提交流水账追加新条目。单次任务 / 单个 commit **最多只允许新增或修改 1~2 条**。
-- **写了怎么写** 按 [human-talk](.agents/skills/human-talk/SKILL.md) 的受控中文：一句话一件事、写清执行者、不用「优化 / 完善 / 若干 / 显著」这类空词（要写就写具体对象或数字）、数字必须带条件。
-- **字数与细节限制** 每条正文（不计链接）**控制在 80 字以内**，严禁超过 120 字。只讲影响与用法，**禁止在日志里罗列代码实现细节**（不抄全量词表、算法步长、切帧参数、内部数据结构字段）。
-- **链接格式** ``[`短号`](https://github.com/Genshin-bots/gsuid_core/commit/短号)``，链接要能打开。
-- **链接可以先欠着** 改完就写条目，别等提交。commit 短号拿到之前，条目末尾可以不挂链接——先落地比先提交更常见。
-- **每次动 `changelogs/` 都要回填** 把目标 `<版本>.md` 里**所有没有链接的条目**逐条查一遍（`grep '^- ' changelogs/<版本>.md | grep -v 'commit/'`）：对应改动**已经提交**的，用 `git log --oneline -S'<改动关键词>'` 找到短号补上；**还没提交**的原样留着，别编链接。条目先落地、链接滚动补齐。
-
-> **别写占位符。** `core更新记录` 卡片只把 commit 链接本身剥掉（`core_update_history/changelog.py` 的 `_plain`），`[待补]`、`<待补>`、HTML 注释都会原样显示给用户。**「没有链接」本身就是待回填的标记**，不需要额外写东西。
-
-- **emoji** 沿用仓库自己的 commit emoji 约定（`✨` 新增 / `🐛` 修复 / `🎨` 调整 / `⚡` 性能 / `💥` 破坏性 / `🔒` 安全 …），清单见 `changelogs/CHANGELOG.md`。
-- **新版本** 在 `pyproject.toml` 升 `version` 时，同步新建 `changelogs/<新版本>.md`，并在 `CHANGELOG.md` 索引表加一行。之后的提交写入该新文件。已经低于当前 `version` 的文件**只增不改**（历史记录不是当前状态的说明书）；确实写错了可以改，但要在当前版本条目里说明。
-
-## 交付闸（改完必须过，否则不算完成）
-
-**每次改动在向用户宣告完成之前**，必须在仓库根目录把下面全部跑绿。缺一项、失败一项都不许交付：
-
-```sh
+# 交付闸（向用户宣告完成前必须全绿，缺一不可）
 uv run --dev ruff check gsuid_core tests eval
 uv run --dev ruff format --check gsuid_core tests eval
 uv run --dev pytest tests -q
 uv run --dev basedpyright
 ```
 
-- **CI**：当前仓库 CI 含 i18n 守门（`tests/test_logger_i18n.py`）。`pytest tests` 已覆盖；若只改了触及面，至少跑触及测试 **加上** `tests/test_logger_i18n.py`。
-- **pyright**：`basedpyright` 与 `pyright` 择一，配置见 `pyrightconfig.json`（`basic`，排除 `plugins` / `data`）。新增标红必须按 §1.5 修掉，禁止 `cast` / `type: ignore` / `Any` 糊弄。
-- 装配 / 闸门 / 每轮注入 / 启动顺序：单测全绿仍不够，还要对照 `eval/agent` 群聊基准（见上）。
+- **实机评测**：碰装配 / 闸门 / 每轮注入 / 启动顺序时，除单测外须对照 `eval/agent` 群聊基准（打已启动且加载全部插件的 core，不带 `--dev`）。
+- **锁文件**：以 `uv.lock` 为准；重解 `poetry.lock` 固定用 `uv tool run --from "poetry==2.5.1" poetry lock` 并跑 `poetry check --lock`。
+- **安全**：公网必配 `WS_TOKEN` 或 `TRUSTED_IPS`；`REGISTER_CODE` 仅限单管理员（ECDH + AES-GCM）；密钥不进仓库或 `data/`。
 
-## Security notes
+## Testing & CHANGELOG
 
-- 公网必须配 `WS_TOKEN` 或 `TRUSTED_IPS`，否则外网 WS 会被拒。
-- WebConsole：`REGISTER_CODE` 只能注册一个管理员；握手为 ECDH + AES-GCM。
-- 密钥与 token 只走配置 / 环境，不要写进仓库或提交到 `data/`。
+**Testing**：
+- `tests/test_*.py` 必须离线、无 LLM；需要运行中 core 的脚本放 `eval/manual/`（无 `test_` 前缀）或 `eval/agent/`。
+- **规模与防线**：`tests/` 总用例数**严格 ≤ 200**；单次 bug 排查的临时脚本验证后**即删**，禁止提交 `test_issueXXX.py`；核心防线断言**就近合并**到现有模块。
+- **专项必跑**：改交互脚手架跑 `tests/test_interaction_scaffold.py`；改工具 docstring / covers 跑 `tests/test_ai_tool_docstrings.py`；改日志或 locale 跑 `tests/test_logger_i18n.py`（`t()` / `i18n_t()` 首参必须是静态 key `log.<module>.<semantic>`，禁三元/拼接/变量）。
+
+**CHANGELOG（`changelogs/<版本>.md`）**：
+- **准入**：只记用户可感知变化（新能力/命令/配置、对外行为变化、破坏性变更、可量化性能变化）；修错字、内部重构、类型收窄、补测试/注释等**不记**。
+- **就近合并**：同一功能多次修改必须合并进已有条目并追加 commit 短号，单次任务最多新增/修改 1~2 条。
+- **写法**：按 `human-talk` 受控中文，每条正文 ≤ 80 字（严禁超 120 字），只写影响与用法，禁列代码细节。
+- **链接与回填**：格式 ``[`短号`](https://github.com/Genshin-bots/gsuid_core/commit/短号)``；未提交可先不挂链接，**禁止写 `[待补]` 等占位符**；每次动 `changelogs/` 时回填已提交条目的短号。
 
 ---
 
 ## 一、绝对红线（Strict Red Lines）
 
-以下规则为**绝对禁止**，违反将导致代码质量严重下降，必须从根源上避免：
-
 ### 1.1 禁止使用 try-except 兜底
+遇到类型或属性问题必须从类型标注和逻辑解决，禁止吞异常。唯一例外：解析 LLM 自由文本 / Qdrant payload / 加密报文等不可信外部输入，及插件观测性的 `_ai_return_xxx()`。
 
-```python
-# ❌ 错误示例
-try:
-    result = data.get("key")
-except (AttributeError, KeyError):
-    result = None
-```
+### 1.2 禁止使用 `cast()` 类型强制转换
+`cast` 是类型欺骗。遇到类型冲突应使用 `A | B` + `isinstance` 守卫或调整函数签名。
 
-遇到类型错误或属性访问问题，**必须从类型提示标注和代码逻辑上解决**，而非用 try-except 吞掉异常。
+### 1.3 禁止使用 `type: ignore` 抑制类型检查
+仅在第三方库类型标注错误且无法绕过时作最后手段，**严禁掩盖自身代码类型问题**。
 
-唯一例外：解析 LLM 自由文本 / Qdrant payload / 加密报文等**不可信外部输入**处，为「绝不打断主链路」按需保留。插件里 `_ai_return_xxx()` 也允许 try/except（观测性代码，失败只打 warning）。
+### 1.4 禁止使用 `getattr` / `dict.get` 等兜底语法
+明确定义 `TypedDict` / `@dataclass` / 泛型，或用 `isinstance` / `in` 守卫后直接访问属性与键。
 
-### 1.2 禁止使用 cast() 类型强制转换
+### 1.5 遇到类型标红的解决思路
+`标红 → 分析原因 → 检查类型定义与逻辑漏洞 → Union + isinstance → 最后才考虑 assert`。
 
-```python
-# ❌ 错误示例
-result = cast(str, some_unknown_type)
-```
-
-cast 是类型层面的欺骗，掩盖了真实的类型问题。遇到类型冲突应该：
-
-- 使用 `Union` 标记多种可能的类型
-- 使用 `isinstance` 进行类型守卫
-- 调整函数签名以反映真实的类型约束
-
-### 1.3 禁止使用 type: ignore 抑制类型检查
-
-```python
-# ❌ 错误示例
-data = some_function()  # type: ignore
-```
-
-type: ignore 是最后手段，仅在**第三方库类型标注错误且无法绕过**时使用（如某些 ORM 框架的已知问题）。**不得用于掩盖自身代码的类型问题**。
-
-### 1.4 禁止使用 getattr/dict.get 等兜底语法
-
-```python
-# ❌ 错误示例
-name = getattr(user, "name", None)
-value = data.get("key", None)
-```
-
-这些语法暗示了对类型的不确定。应该：
-
-- 明确定义类型（使用 TypedDict、数据类、泛型）
-- 使用 `isinstance` 进行类型守卫后安全访问
-- 如果确定某个键/属性存在，直接访问并让类型检查器验证
-
-### 1.5 遇到类型标红的正确解决思路
-
-```
-标红 → 分析原因 → 类型定义是否正确 → 逻辑是否有漏洞 → Union + isinstance → 最后才考虑 assert
-```
-
-**核心原则**：类型标红是类型系统在告诉你代码存在潜在问题，而不是让你去压制它。
-
-### 1.6 禁止冗长注释（`#` 注释必须精简直接）
-
-**`#` 注释最多两行，每行不超过 88 个字符。** 注释的价值在于「用最精确的一句话点明为什么 / 有什么坑」，而不是把代码翻译成中文、或写五六行长篇大论。
-
-```python
-# ❌ 错误示例：五六行长篇大论 + 单行超长
-# 这个函数用来处理用户发来的消息，首先解析消息内容，然后判断消息类型……
-
-# ✅ 正确示例：一句话点明非显而易见的关键点
-# 群聊 user_id 置空以保证同群共享同一个 deque（见 §3.1.1）
-async def handle(msg): ...
-```
-
-**写注释的判据**：
-
-- 代码已能自解释的**不写**注释——不要把 Python 翻译成中文。
-- 要写就写**为什么这样做 / 有什么坑 / 边界条件**，不写「做了什么」。
-- 一条注释两行讲不清，说明这段逻辑该拆函数 / 改命名，而不是堆注释。
-- 超过两行 = 信号：要么删到两行内，要么这段代码本身需要重构。
-
-> 该上限（每行 88 字）比代码 `line-length=120` 更严，是**刻意**的：注释越短越会被读，长注释会被跳过、且极易随代码改动过期变成误导。
+### 1.6 禁止冗长注释（`#` 注释最多 2 行，每行 ≤ 88 字符）
+代码能自解释的不写注释；要写只写「为什么 / 有什么坑 / 边界条件」，不复述代码。两行讲不清说明应拆函数或改命名。
 
 ### 1.7 前缀缓存红线（AI 会话）
-
-改 `ai_core` 会话 / Agent loop / history 时**绝对禁止**破坏 provider 前缀缓存：
-
-1. **禁止中途改写 `system_prompt` 字符串**（会话内默认 TTL=inf）。需要系统提醒 → 只向**当前 request 追加 `UserPromptPart`**，落盘前 `_relean` 剥掉（`（系统：` / `（系统校验：` 等）。句子正文只在 `control/lines.py` 写一次（§1.11）。
-2. **禁止砍 history 头部**（`history[-n:]` 式 compact）。须用 `compact_session_history` / 保头裁中段；禁止把锚点消息插回头部。
-3. **动态 per-turn 内容**（mood / 关系 / 记忆 / 精确时间）进 **user 侧**，不进 system。
-
-详见 `gscore-development` §6.7.1 / §12.7。
+改 `ai_core` 会话 / Agent loop / history 时严禁破坏 provider 前缀缓存：
+1. **禁止中途改写 `system_prompt`**。当轮系统提醒只追加到当前 request 的 `UserPromptPart`，落盘前剥除，正文只在 `control/lines.py` 定义（§1.11）。
+2. **禁止砍 history 头部**（如 `history[-n:]`），须用 `compact_session_history` 保头裁中段。
+3. **动态 per-turn 内容**（mood / 关系 / 记忆 / 精确时间）一律进 **user 侧**。
 
 ### 1.8 禁止 `Any`：运行时变量必须有完整、可追踪的类型
-
-`Any` 与 `cast` / `type: ignore` 同类：类型检查在这里停掉，后续读写全部失明。
-
-**禁止**在本仓库代码里引入或传播 `Any`（含 `list[Any]`、`dict[str, Any]`、`Optional[Any]`、
-`Callable[..., Any]`、`TypeVar` 无界到退化为 Any）。
-
-所有**运行时变量**——函数参数 / 返回值 / 实例属性 / 跨语句使用的局部变量——必须有**完整、
-可追踪**的类型：从定义点顺着赋值与调用，类型检查器能推出具体类型，读代码的人也能指到
-`TypedDict` / dataclass / Protocol / Union / 泛型实参，而不是「这里是 Any」。
-
-```python
-# ❌ 错误：用 Any 把问题藏起来
-from typing import Any
-
-payload: dict[str, Any] = raw
-result: Any = await session.execute(stmt)
-
-# ✅ 正确：把结构写出来，边界用守卫收窄
-class Payload(TypedDict):
-    user_id: str
-    text: str
-
-payload: Payload = raw
-result = await session.execute(stmt)
-deleted = result.rowcount if isinstance(result, CursorResult) else 0
-```
-
-遇到「现在还不知道是什么」时：
-
-- 多种已知形态 → `A | B` + `isinstance`（见 §2.4）
-- 结构化 dict → `TypedDict`；配置 / 状态袋 → `@dataclass` / `NamedTuple`
-- 只关心一组方法 → `Protocol`
-- 容器元素同构 → `list[T]` / `dict[K, V]` / `Sequence[T]`，不要 `list[Any]`
-- 第三方 stub 标成 `Any` / `Result[Any]`（如 SQLAlchemy）→ **在调用点立刻收窄**，
-  不要把 `Any` 赋给下游变量、更不要写进本仓库的公开签名
-
-`object` 当「万能袋」、裸 `dict` / `list` 当业务数据，等同于 Any，同样禁止。
-测试里的假对象用 `Protocol` 或显式 stub 类，不要 `MagicMock` + `Any` 糊弄生产签名。
+禁止引入或传播 `Any`（含 `list[Any]`、`dict[str, Any]`、`Callable[..., Any]`、裸 `dict`/`list`/`object` 万能袋）。结构化字典用 `TypedDict`，状态用 `@dataclass`，接口用 `Protocol`；第三方返回 `Any`（如 SQLAlchemy `Result[Any]`）必须在调用点立刻用 `isinstance` 收窄。测试假对象用 `Protocol` 或显式 stub 类，禁止 `MagicMock` + `Any`。
 
 ### 1.9 禁止人格锁定 / 能力锁定（通用框架）
-
-GsCore 是**通用框架**：部署者自己写人格卡、自己装插件。框架运行时**不得**假定某个具体人格或某个业务垂直存在。
-
-**人格锁定（禁止）**：框架代码、用户可见兜底、闸门、脚手架、分类器、规划提示 **不得**写死某个角色的姓名、口癖、自称、出身或道具梗（如「早柚」「唔…」「呼」「zzz」「卷轴」「本貉」）。口癖配额 / 结尾语气词必须从**当前人格卡**解析（Tone Markers 等）；卡上没有就当无口癖。**框架不替人格说话**：命中闸门一律让当前人格自己重说一句，**不允许任何预设罐头文案**（§1.9）。两次都不干净时人格/一致性类**原样发送**（出戏闸不该吃掉整轮对话），`fund_claim` / `machine_dump` 与模型主动沉默才发 `<SILENCE>`。
-
-**能力锁定（禁止）**：框架意图分类 / 规划 / 路由 / 提示词 **不得**内置业务垂直词表（游戏练度/圣遗物/命座、股票/研报/模拟盘、把某城市天气写进核心特判等）。插件能力只许插件自己声明：`covers` / 带领域前缀的 `aliases` / `capability_domain` / `ai_entity` / `ai_alias`。框架只做确定性查表 + 向量召回，不在核心维护「这个词属于哪款游戏 / 哪条业务线」。禁止为某个业务域写栏目词表、猜分隔约定、把插件名写进装配路径。
-
-```python
-# ❌ 框架把默认人格的口癖写进运行时
-if text.endswith(("zzz", "呼", "唔")): ...
-# ❌ 框架用预设文案冒充人格发言（2026-09 起彻底禁止）
-clean_text = "这个不太想说呢。"
-
-# ❌ 框架意图词表收插件专属域词
-KNOWLEDGE_NOUNS = {"圣遗物", "命座", "元素精通", "模拟盘"}
-
-# ✅ 口癖从当前人格卡解析；命中闸门让当前人格自己重说一句
-markers = get_tone_markers(persona_name)
-rewritten = await self._ooc_recover_persona_voice(hit, original, ev)  # 空串 = 沉默
-
-
-# ✅ 垂直能力由插件自描述，框架不内置词表
-@ai_tools(covers=["…"], aliases=["领域A·能力X"], capability_domain="…")
-```
-
-**允许（不是锁定）**：
-
-- 产品品牌「早柚核心」出现在日志 / WebConsole / 更新文案。
-- 仓库可附带一份**默认人格卡**（`sayu_persona_prompt`；目录为空时种子一份）。运行时仍按当前启用人格工作，不把该卡的口癖抄进框架。
-- 框架一等能力节点（`render_agent` / `research_agent` 等）是通用基础设施。
-- 插件代码；评测 / 单测用某个已启用人格名做寻址 fixture；历史事故注释点名具体插件。
-- HTML 模板库的通用版式名（metrics / ranking / weather 卡片）是可视化原语，不是路由特判。
-- 遗留的游戏 UID / Cookie / Enka 工具在 `utils/`，服务已装插件，不进 AI 路由词表。
+- **人格锁定（禁止）**：框架代码、闸门、脚手架、分类器、提示词**不得**写死特定角色姓名、口癖、自称或梗；口癖从当前人格卡动态解析。**框架不替人格说话**：命中闸门一律让当前人格重说，**严禁任何预设罐头文案**；两次仍不净时人格/一致性类原样发送，`fund_claim` / `machine_dump` 与主动沉默才发 `<SILENCE>`。
+- **能力锁定（禁止）**：框架路由 / 规划 / 提示词**不得**内置业务垂直词表（如游戏圣遗物/命座、股票模拟盘等）。垂直能力只由插件通过 `@ai_tools(covers=..., aliases=..., capability_domain=...)` / `ai_entity` / `ai_alias` 自声明。
 
 ### 1.10 未过交付闸禁止宣告完成
-
-改完必须把「交付闸」跑绿（ruff / format / `pytest tests` / basedpyright，以及 CI 的 i18n）。
-缺项或失败不许说做完。`i18n_t()` / `t()` 的 key 必须是静态字符串，禁止三元表达式。
+ruff check / ruff format / pytest / basedpyright（含 i18n 守门）全绿前禁止宣告完成。
 
 ### 1.11 当轮控制句只定义一次（`control/lines.py`）
-
-仍插进**当前 request 的 user 侧**、落盘前剥掉的句子，正文只写在
-`gsuid_core/ai_core/control/lines.py`。调用处 `import` 这个名字。
-程序靠开头对上历史、或用 `is` 认出同一句时，用的就是这份对象。再抄一份字面量，对不上。
-
-写在这个文件里：
-
-- 前缀是 `（系统：` / `（系统提示：` / `（系统校验：` / `⛔` 的当轮提醒。闸门打回的开头收在 `GATE_NUDGE_MARKERS`，全文和开头是同一份常量。
-- 程序用来切正文或判定寻址的记号：`--- 消息 ---`、`（直接找你说的）`、`（@的是这位用户，不是你）`、引用记号。
-- 要填运行时槽位的，写成同文件里的函数：`capability_hit_line`、`master_title_ban_line`、`repetition_line`、`alias_binding_line`、`quote_object_line`、`ownership_line`、`delivery_wake_line`。
-
-留在原处：
-
-- 提示词组默认正文（跟进、记忆问答、寻址说明）留在 `interaction_scaffold.py`，目录在 `prompt_group/catalog.py`。用户改的是提示词组；改句子改不了「这条什么时候插入」。
-- 绑在某条义务上的观察留在 `control/corrections.py`，和 `Obligation` 放一起。
-- 只用来从旧历史里认出并剥掉、当前不再插入的句子，留在认出它的文件：`agent_run/support.py` 的假完成 / 零工具，`agent_run/speech_policy.py` 里三句旧打回。这两处不再加新的当轮句子。
-- `<control>` 信封，以及子 Agent / 评测器 / 识图自己的 system 提示，留在各自的渲染处。
-
-`lines.py` 是叶子：不 import `agent_run`、`utils`、`output_gate`、`interaction_scaffold`。
-这些句子仍走 §1.7：只追加到当前 request，不改 `system_prompt`，入史前剥掉。
-不放进提示词组字段，也不放进插件配置。
-
-详见 `gscore-development` §6.7.3。
+插入当前 request user 侧、落盘前剥除的控制句与寻址记号（`（系统：`、`⛔`、`GATE_NUDGE_MARKERS`、`--- 消息 ---` 等）只写在叶子模块 `gsuid_core/ai_core/control/lines.py`，调用处 `import` 引用，禁止散落硬编码字面量。
 
 ### 1.12 禁止将前端产物编译复制至 dist 目录（构建隔离红线）
-
-**绝对禁止**从前端项目（如 `gsuid_hub`）编译打包（`pnpm build` / `pnpm build:core`）并将产物复制或输出到 `gsuid_core/webconsole/dist/` 中。
-
-- 前端静态资源编译打包与发布由维护者独立负责，禁止 Agent 擅自覆盖 `webconsole/dist`；
-- Agent 在开发或修改 WebConsole 前端时，只需维护前端工程源代码（`src/`、组件、样式、国际化配置等）；
-- 严禁向 `gsuid_core` 提交任何编译生成的 minified js/css/br/gz 产物与哈希碎片，防止污染 git 历史与带来大体量噪点。
+**绝对禁止**从前端仓库（如 `gsuid_hub`）执行 `build` / `build:core` 并将产物输出或复制到 `gsuid_core/webconsole/dist/`。修改前端时只维护前端工程源码（`src/`），严禁向 `gsuid_core` 写入或提交任何编译生成的 minified js/css/br/gz 产物。
 
 ### 1.13 测试用例与数据全面脱敏（隐私安全红线）
-
-**绝对禁止**在 `tests/`、`eval/` 或任何测试夹具、断言和 Mock 数据中混入真实群友昵称、真实用户 ID、真实群号或线上群聊真实对话片段。
-
-- 本地排查问题、复现 bug 时若参考服务端日志，编写测试断言前**必须彻底脱敏**；
-- 实体名、用户名统一使用虚拟占位（如「测试用户A」、「张三」、「阿强」）；
-- ID 统一使用虚拟编号（如 `100000001`、`group_1`）；
-- 测试事实、对话与消息正文必须使用合成抽象语句（如「测试项目提问」、「测试进展汇报」），严禁直接复制真实群聊文本进仓库。
+**绝对禁止**在 `tests/`、`eval/` 或 fixture / 断言中混入真实群友昵称、真实用户 ID、真实群号或线上群聊原文。统一使用虚拟数据（如「测试用户A」、`100000001`、`group_1`、「测试项目提问」）。
 
 ---
 
 ## 二、类型提示规范
 
-### 2.1 完全类型提示原则
-
-所有函数、方法的参数和返回值**必须有类型注解**，且注解必须是可追踪的具体类型
-（见 §1.8）。写了 `: Any` 等于没写，不算合规。
-
-```python
-# ✅ 正确示例
-async def process_user(user_id: str, bot_id: str) -> User | None:
-    ...
-
-# ❌ 错误示例
-async def process_user(user_id, bot_id):
-    ...
-
-# ❌ 错误示例：注解是 Any，类型链在这里断掉
-async def process_user(user_id: str, bot_id: str) -> Any:
-    ...
-```
-
-### 2.2 Union vs Optional 的选择
-
-```python
-# ✅ 推荐：当存在多种具体类型时使用 Union
-result: str | int | None  # 三种可能
-
-# ✅ 推荐：当值可能不存在时使用 Optional (即 | None)
-name: str | None  # 要么是字符串，要么是 None
-```
-
-### 2.3 复杂数据结构的类型定义
-
-使用 `TypedDict` 定义结构化字典：
-
-```python
-from typing import TypedDict
-
-class UserProfile(TypedDict):
-    user_id: str
-    nickname: str
-    level: int
-    items: list[str]
-```
-
-使用 `@dataclass` 定义配置类：
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class BotConfig:
-    bot_id: str
-    auto_retry: bool
-    max_retry: int
-```
-
-### 2.4 多类型冲突的正当处理方式
-
-当一个值确实可能返回多种类型，且无法在类型层面统一时：
-
-```python
-# ✅ 正确：使用 Union + isinstance 守卫
-def process_result(result: str | int | dict) -> str:
-    if isinstance(result, dict):
-        return result["message"] if "message" in result else ""
-    elif isinstance(result, int):
-        return str(result)
-    else:
-        return result
-
-# ✅ 正确：谨慎使用 assert（仅当确定运行时类型时）
-assert isinstance(data, str), "data must be str at this point"
-```
+- **2.1 完全类型提示**：所有函数参数与返回值必须有具体可追踪的类型注解（写 `: Any` 视为未写）。
+- **2.2 Union 与 Optional**：多类型用 `str | int`，可空用 `str | None`。
+- **2.3 复杂结构**：字典结构用 `TypedDict`，配置与状态用 `@dataclass`。
+- **2.4 多类型冲突**：用 `Union` + `isinstance` 分支守卫（如 `if isinstance(result, dict): ...`），仅在运行时确定不变量时谨慎用 `assert isinstance(...)`。
 
 ---
 
 ## 三、数据库操作规范
 
-### 3.1 数据库基类继承体系
-
-GsCore 使用 SQLModel 作为 ORM，数据库模型应继承 `gsuid_core/utils/database/base_models.py` 中的基类：
-
-```
-BaseIDModel          # 最基础，只有 id 字段
-    └── BaseBotIDModel  # 包含 bot_id 字段
-            └── BaseModel   # 包含 bot_id + user_id 字段
-```
-
-```python
-from gsuid_core.utils.database.base_models import BaseIDModel, BaseBotIDModel, BaseModel
-
-class MyData(BaseModel, table=True):
-    """需要 bot_id 和 user_id 的数据表"""
-    name: str = Field(title="名称")
-```
-
-### 3.1.1 SQLModel 表命名规范
-
-SQLModel **不使用** `__tablename__` 属性。表名由类名自动推导，规则为**全小写、无下划线**：
-
-```python
-# ✅ 正确：类名 AiMemeRecord → 表名 aimemerecord
-class AiMemeRecord(SQLModel, table=True):
-    meme_id: str = Field(primary_key=True)
-
-# ❌ 错误：不要使用 __tablename__
-class MemeRecord(SQLModel, table=True):
-    __tablename__ = "ai_meme_records"  # 禁止！
-```
-
-**命名示例**：
-
-| 类名 | 表名（自动推导） |
-|------|-----------------|
-| `AiMemeRecord` | `aimemerecord` |
-| `AIMemEpisode` | `aimemepisode` |
-| `CoreUser` | `coreuser` |
-| `AIScheduledTask` | `aischeduledtask` |
-
-**规则**：
-
-1. 类名使用 PascalCase（大驼峰）
-2. 表名自动为类名的全小写形式
-3. **禁止**使用 `__tablename__` 覆盖
-4. 如果需要自定义表名约束（如索引），使用 `__table_args__`
-
-### 3.2 `@with_session` / `@with_read_session`
-
-所有数据库类方法必须挂其中一个装饰器：
-
-- `@with_session`：写入 / 读后写 / 删除（SQLite 走写槽）
-- `@with_read_session`：纯 SELECT（SQLite 走独立读槽，不跟大写抢）
-
-二者都会自动创建 session、提交、异常回滚、归还连接池。
-
-```python
-from gsuid_core.utils.database.base_models import with_session, with_read_session
-from sqlalchemy.ext.asyncio import AsyncSession
-
-class User(BaseModel):
-    @classmethod
-    @with_read_session
-    async def get_user_by_name(cls, session: AsyncSession, name: str) -> User | None:
-        stmt = select(cls).where(cls.name == name)
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
-```
-
-**注意**：签名必须包含 `session: AsyncSession` 作为第二个参数（紧跟 cls 或 self）。
-插件侧完整说明见 `gscore-plugin-development` §5.3。
-
-### 3.3 复杂场景下的 async_maker()
-
-当需要在类方法外手动管理 session，或需要更精细控制事务时：
-
-```python
-from gsuid_core.utils.database.base_models import async_maker
-
-async def batch_operation():
-    async with async_maker() as session:
-        result = await session.execute(select(Data))
-        await session.commit()
-        return result.scalars().all()
-```
-
-### 3.4 数据库方法必须写在类中
-
-所有与特定表相关的数据库操作应封装在该表对应的模型类中，而非散落在各处：
-
-```python
-class CoreUser(BaseBotIDModel, table=True):
-    @classmethod
-    @with_session
-    async def clean_repeat_user(cls, session: AsyncSession):
-        ...
-```
-
-### 3.5 SQLModel / SQLAlchemy 查询的类型安全写法
-
-ORM 查询是 `cast` / `type: ignore` / `getattr` 的重灾区。下面三条是**从根源消除**这些兜底的正确写法，违反 §1.2~1.4 去糊弄 basedpyright 的标红，先回到这里。
-
-#### 3.5.1 比较表达式一律用 `col()` 包裹列
-
-SQLModel 字段注解是 Python 类型（如 `created_at: int`），所以 `cls.created_at >= ts` 被类型检查器判为 **`bool`**，传进 `where()` 会标红。用 `col()` 把列还原成 `ColumnElement`：
-
-```python
-# ❌ 错误：cls.created_at >= ts 是 bool
-stmt = delete(cls).where(cls.created_at >= since_ts)
-
-# ✅ 正确：col() 包裹得到 ColumnElement[bool]
-stmt = delete(cls).where(col(cls.created_at) >= since_ts)
-```
-
-`where` / `order_by` / `group_by` / `!=` / `.is_(False)` **全部**适用。
-
-> 陷阱：`select(cls).where(cls.x == v)` 恰好**不报错**——SQLModel 的 `Select.where` 重载把 `bool` 也收进了 union；但 `delete()`/`update()` 是 SQLAlchemy 原生、`where` 严格只收 `ColumnElement[bool]` 就会报错。**不要依赖前者的宽松，一律 `col()` 包裹**。
-
-#### 3.5.2 `rowcount` 用 `isinstance(result, CursorResult)` 守卫
-
-`session.execute()` 静态返回 `Result[Any]`，**没有** `rowcount`。DML（`delete`/`update`）运行时真实返回的是 `CursorResult`。用类型守卫安全取值，而不是 `cast` / `getattr` / `# type: ignore`：
-
-```python
-from sqlalchemy.engine import CursorResult
-
-result = await session.execute(delete(cls).where(col(cls.created_at) < before_ts))
-deleted = result.rowcount if isinstance(result, CursorResult) else 0
-```
-
-#### 3.5.3 不要把运行时变长列表 splat 进 `select()`
-
-`select(*cols, total)`（`cols` 是运行时按分支拼出来的 `list`）无法匹配 `select` 的重载，且 `row[i]` 退化成 `Any`。**按分支写出列数确定的 `select()`**：
-
-```python
-# ❌ 错误：变长 splat
-stmt = select(*group_cols, total).where(...)
-
-# ✅ 正确：列数确定 → Select[tuple[str, str, int]]
-conds: List[ColumnElement[bool]] = [col(cls.created_at) >= since_ts]
-stmt = select(col(cls.group_id), col(cls.user_id), total).where(*conds)
-```
+- **3.1 基类与表名**：继承 `gsuid_core/utils/database/base_models.py` 中的 `BaseIDModel` → `BaseBotIDModel` → `BaseModel`。类名用 PascalCase，表名自动推导为全小写无下划线（如 `AIMemEpisode` → `aimemepisode`），**严禁定义 `__tablename__`**（索引约束用 `__table_args__`）。
+- **3.2 会话装饰器**：写/改/删挂 `@with_session`，纯查询挂 `@with_read_session`，方法第二参数固定为 `session: AsyncSession`。
+- **3.3 手动事务**：类外复杂事务用 `async with async_maker() as session:`。
+- **3.4 方法内聚**：表相关的数据库操作必须封装在对应模型类的 `@classmethod` 中。
+- **3.5 SQLModel / SQLAlchemy 类型安全写法**：
+  - **3.5.1 `col()` 包裹列**：`where` / `order_by` / `group_by` 中的字段比较一律用 `col(cls.field) >= val`，避免被推导为 `bool`。
+  - **3.5.2 `CursorResult` 守卫**：取 `rowcount` 一律写 `deleted = result.rowcount if isinstance(result, CursorResult) else 0`。
+  - **3.5.3 禁止变长 splat**：禁止 `select(*dynamic_cols)`，按分支写出列数确定的 `select(col(cls.a), col(cls.b))`。
 
 ---
 
 ## 四、异步编程规范
 
-### 4.1 全部使用异步方法
-
-这是一个**完全异步的项目**，所有可能阻塞的方法都必须定义为 `async def`：
-
-```python
-# ✅ 正确
-async def fetch_data(url: str) -> dict:
-    async with httpx.AsyncClient() as client:
-        return (await client.get(url)).json()
-
-# ❌ 错误：同步阻塞
-def fetch_data(url: str) -> dict:
-    with requests.get(url) as response:
-        return response.json()
-```
-
-### 4.2 同步代码的异步桥接
-
-如有确实需要使用的同步代码，使用 `to_thread` 工具：
-
-```python
-from gsuid_core.pool import to_thread
-
-@to_thread
-def sync_calculation(data: list) -> int:
-    return sum(data)
-
-result = await sync_calculation(my_list)
-```
+- **4.1 全异步**：所有 I/O 或可能阻塞的方法必须定义为 `async def`（如用 `httpx.AsyncClient` 而非 `requests`）。
+- **4.2 同步桥接**：CPU 密集或无法异步的同步函数用 `from gsuid_core.pool import to_thread` 的 `@to_thread` 包装后 `await` 调用。
 
 ---
 
 ## 五、项目核心模块概览
 
-### 5.1 ai_core 模块
-
-AI 核心模块，位于 `gsuid_core/ai_core/`，包含：
-
-| 子模块 | 用途 |
-|--------|------|
-| `memory/` | 记忆系统，包含 entity、edge、hiergraph、retrieval、vector 等 |
-| `rag/` | RAG 知识库系统 |
-| `scheduled_task/` | 定时任务系统 |
-| `persona/` | 人设系统 |
-| `control/` | 控制面 `Directive`；当轮 user 侧句子只在 `lines.py`（§1.11） |
-| `history/` | 对话历史管理 |
-| `web_search/` | 统一网页搜索（Tavily/Jina/Exa/AnySearch/Firecrawl/MCP + 多源策略） |
-| `web_fetch/` | 网页抓取转 Markdown（Jina Reader / local + 多源策略） |
-
-### 5.2 webconsole 模块
-
-Web 控制台 API，位于 `gsuid_core/webconsole/`。所有 API 路由使用 FastAPI：
-
-```python
-from fastapi import APIRouter, Depends
-from gsuid_core.webconsole.auth_api import require_auth
-
-app = APIRouter()
-
-@app.get("/api/example")
-async def example_endpoint(_user: Dict = Depends(require_auth)):
-    ...
-```
-
-### 5.3 utils 模块
-
-工具模块，位于 `gsuid_core/utils/`：
-
-| 子模块 | 用途 |
-|--------|------|
-| `database/` | 数据库相关，base_models.py 包含核心基类 |
-| `image/` | 图片处理工具 |
-| `api/` | 第三方 API 请求封装 |
-| `plugins_config/` | 插件配置管理 |
-| `upload/` | 文件上传工具 |
+- **5.1 `gsuid_core/ai_core/`**：含 `memory/`（记忆图谱与偏好）、`rag/`（知识库）、`scheduled_task/`（定时任务）、`persona/`（人设）、`control/`（控制面，`lines.py` 见 §1.11）、`history/`（会话历史）、`web_search/` 与 `web_fetch/`。
+- **5.2 `gsuid_core/webconsole/`**：FastAPI 路由，鉴权依赖 `Depends(require_auth)`（来自 `gsuid_core.webconsole.auth_api`）。
+- **5.3 `gsuid_core/utils/`**：含 `database/`、`image/`、`api/`、`plugins_config/`、`upload/`。
 
 ---
 
 ## 六、配置管理
 
-### 6.1 插件配置类
-
-使用 `gsuid_core/utils/plugins_config/` 下的配置类管理插件配置：
-
-```python
-from gsuid_core.utils.plugins_config.gs_config import GsConfig
-
-class MyPluginConfig(GsConfig):
-    """插件配置类"""
-
-    @property
-    def config_name(self) -> str:
-        return "my_plugin"
-
-    def setup_config(self) -> Dict[str, GSC]:
-        return {
-            "api_key": GsStrConfig(
-                title="API Key",
-                description="输入 API Key",
-                default=""
-            ),
-            "max_count": GsIntConfig(
-                title="最大数量",
-                description="最大处理数量",
-                default=10
-            )
-        }
-```
-
-### 6.2 资源配置路径
-
-```python
-from gsuid_core.utils.resource_manager import get_res_path
-
-res_path = get_res_path()
-config_path = res_path / "config"
-data_path = res_path / "data"
-```
+- **6.1 插件配置**：通过 `gsuid_core/utils/plugins_config/gs_config.py`（`GsStrConfig` / `GsIntConfig` / `GsBoolConfig` / `GsListStrConfig` 等）声明配置项。
+- **6.2 资源路径**：统一用 `from gsuid_core.utils.resource_manager import get_res_path` 获取 `data/` 下路径。
 
 ---
 
 ## 七、日志规范
 
-使用项目封装的日志器：
-
-```python
-from gsuid_core.logger import Logger
-
-logger = Logger("MyModule")
-
-logger.info("操作开始...")
-logger.warning("需要注意的情况")
-logger.error("错误信息", exc_info=True)
-```
+使用 `from gsuid_core.logger import logger`；框架核心日志必须走 `t()` / `i18n_t()` 且第一参数为静态 key（`log.<module>.<semantic>`），过 `tests/test_logger_i18n.py`。
 
 ---
 
-## 八、Bot 与 _Bot 类区分（关键知识）
+## 八、`Bot` 与 `_Bot` 类区分
 
-> **⚠️ 这是高频混淆点**：`_Bot` 和 `Bot` 是两个完全不同的类，混用会导致运行时错误。
-
-### 8.1 `_Bot` — 底层 Bot 实现
-
-**文件**: `gsuid_core/bot.py`，**构造函数**: `_Bot(_id: str, ws: Optional[WebSocket] = None)`
-
-底层实现，负责 WebSocket 连接管理、消息队列、发送调度。**不依赖 Event**。
-
-```python
-class _Bot:
-    def __init__(self, _id: str, ws: Optional[WebSocket] = None):
-        self.bot_id = _id
-        self.bot = ws
-        self.queue = asyncio.queues.PriorityQueue()
-        self.sem = asyncio.Semaphore(10)
-        self._send_queue = asyncio.queues.Queue()
-```
-
-**使用场景**: 框架内部连接管理、HTTP API 模式（`_Bot("HTTP")`）。
-
-### 8.2 `Bot` — 高层包装器
-
-**文件**: `gsuid_core/bot.py`，**构造函数**: `Bot(bot: _Bot, ev: Event)`
-
-高层包装器，封装 `_Bot` + `Event`，供插件和触发器使用。提供 `send()`、`receive_resp()` 等业务 API。
-
-```python
-class Bot:
-    def __init__(self, bot: _Bot, ev: Event):
-        self.bot = bot
-        self.ev = ev
-        self.bot_id = ev.bot_id
-        self.bot_self_id = ev.bot_self_id
-```
-
-**使用场景**: 插件触发器函数参数 `bot: Bot`、AI Agent 调用、MockBot 包装。
-
-### 8.3 关键区别
-
-| 特性 | `_Bot` | `Bot` |
-|------|--------|-------|
-| 构造参数 | `_id: str, ws: Optional[WebSocket]` | `bot: _Bot, ev: Event` |
-| 依赖 Event | ❌ | ✅ 强依赖 |
-| send 方法 | `target_send()` 需完整参数 | `send()` 自动从 ev 提取 |
-| 交互式等待 | ❌ | ✅ `receive_resp()` |
-| 适用场景 | 框架内部、连接管理 | 插件开发、触发器函数 |
-
-### 8.4 禁止混用
-
-```python
-# ❌ 错误：在需要 Bot 的地方传入 _Bot
-from gsuid_core.bot import _Bot
-mock_bot = _Bot("MCP_Server")  # 缺少 Event，send() 会崩溃
-
-# ✅ 正确：创建完整的 Bot 实例
-from gsuid_core.bot import _Bot, Bot
-_bot = _Bot("MCP_Server")
-mock_ev = Event()
-bot = Bot(_bot, mock_ev)
-```
+- **8.1 `_Bot(_id: str, ws: Optional[WebSocket] = None)`**：底层 WebSocket 连接与发送队列实现，不绑定 `Event`，供框架内部连接管理与 ` target_send()` 使用。
+- **8.2 `Bot(bot: _Bot, ev: Event)`**：高层业务包装器，强依赖 `Event`，提供 `send()`、`receive_resp()`，供插件触发器、AI Agent 和 `MockBot` 使用。
+- **8.3 / 8.4 禁止混用**：在需要 `Bot` 的地方严禁直接传 `_Bot("...")`，必须构造 `Bot(_Bot("..."), ev)`。
 
 ---
 
-## 九、总结
+## 九、总结（编码优先级）
 
-编辑本项目代码时，记住以下优先级：
-
-1. **类型问题 → 从类型标注和代码逻辑解决，不使用兜底语法；禁止 `Any`，运行时变量类型必须可追踪（§1.8）**
-2. **人格 / 能力锁定 → 框架不写死某个人格的口癖，也不内置业务垂直词表（§1.9）**
-3. **数据库操作 → 继承基类 + `@with_session`（写）/ `@with_read_session`（纯 SELECT）**
-4. **异步要求 → 所有可能阻塞的方法都用 async def**
-5. **代码组织 → 相关方法封装在类中，使用 dataclass/TypedDict 定义数据结构**
-6. **Bot 类型 → 插件/触发器用 `Bot`（高层），框架内部用 `_Bot`（底层），禁止混用**
-7. **注释精简 → `#` 注释最多两行、每行 ≤88 字，只写「为什么/坑/边界」，不复述代码**
-8. **交付闸 → ruff / format / pytest / basedpyright（及 CI 的 i18n）全绿才允许说做完**
-9. **用户可见文字 → 写前查 `changelogs/`，写后按 human-talk 判断要不要记更新日志（小修小补不记）**
-10. **当轮控制句 → 只在 `control/lines.py` 写一次，调用处 import（§1.11）**
-11. **方案设计文档 → 新方案写 `plans/`，不写 `docs/`。`docs/` 只改已经落地的专题说明**
-
-专题细节按 Skills 表按需加载，不要把整本 `references/` 一次读完。
+1. **红线先行**：无兜底（§1.1–§1.4）、无 `Any`（§1.8）、无人格/能力锁定（§1.9）、**不编译覆盖 `webconsole/dist`（§1.12）**、测试全脱敏（§1.13）。
+2. **缓存与控制句**：不改 `system_prompt`、不砍 history 头（§1.7），当轮控制句只写 `control/lines.py`（§1.11）。
+3. **数据库与异步**：无 `__tablename__`、`@with_session` / `@with_read_session`、`col()` + `CursorResult`（§3），全链路 `async def`（§4）。
+4. **注释与文档**：`#` 注释 ≤ 2 行 × 88 字（§1.6）；新设计写 `plans/`；按标准更新 `changelogs/`。
+5. **交付闸必过**：`ruff check` / `ruff format --check` / `pytest tests -q` / `basedpyright` 全绿后才宣告完成（§1.10）。

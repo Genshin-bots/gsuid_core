@@ -275,6 +275,34 @@ def _format_dialogue(records: list["ObservationRecord"], lines: list[int]) -> st
     return "\n".join(format_window_line(i, records[i]) for i in lines if 0 <= i < len(records))
 
 
+def _resolve_preference_user_id(
+    raw_uid: str,
+    records: list["ObservationRecord"],
+    scope_key: str,
+) -> str:
+    """校验偏好 user_id 必须为本窗真实群友/私聊用户，拒收助手与群号。"""
+    uid = raw_uid.strip()
+    if uid.startswith("user_global:"):
+        uid = uid[len("user_global:") :].strip()
+    if not uid or uid.startswith(("__assistant_", "self:", "group:")):
+        return ""
+    if scope_key.startswith("group:") and uid == scope_key[len("group:") :]:
+        return ""
+    human_ids = {
+        r.speaker_id
+        for r in records
+        if r.speaker_id
+        and not r.speaker_id.startswith("__assistant_")
+        and (not r.group_id or r.speaker_id != r.group_id)
+    }
+    if uid in human_ids:
+        return uid
+    name_to_human = {r.speaker_name: r.speaker_id for r in records if r.speaker_name and r.speaker_id in human_ids}
+    if uid in name_to_human:
+        return name_to_human[uid]
+    return ""
+
+
 async def _resolve_thread(
     session: "AsyncSession",
     scope_key: str,
@@ -547,22 +575,27 @@ async def extract_cluster(
         except (OSError, RuntimeError, ValueError) as e:
             logger.warning(t("log.memory.algebra_edge_vector_failed", scope_key=scope_key, e=e))
 
+    written_prefs = 0
     for pref in output["preferences"]:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 
+        pref_uid = _resolve_preference_user_id(pref["user_id"], records, scope_key)
+        if not pref_uid:
+            continue
         await AIMemPreference.upsert(
-            scope_key=make_scope_key(ScopeType.USER_GLOBAL, pref["user_id"]),
-            user_id=pref["user_id"],
+            scope_key=make_scope_key(ScopeType.USER_GLOBAL, pref_uid),
+            user_id=pref_uid,
             target_context=pref["target_context"],
             preference_rule=pref["preference_rule"],
             polarity=pref["polarity"],
             is_correction=pref["is_correction"],
             source_episode_id=episode_id or None,
         )
+        written_prefs += 1
 
     return {
         "entities": written_entities,
         "edges": written_edges,
-        "preferences": len(output["preferences"]),
+        "preferences": written_prefs,
         "thread_id": thread_id or "",
     }
