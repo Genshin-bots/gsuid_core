@@ -193,6 +193,7 @@ class PreparePhase(RunOnceHost):
             "agent_run_id": st.turn_id,
             "run_sent_texts": self._run_sent_texts,
             "read_image_ids": self.read_image_ids,
+            "disable_direct_image_injection": self._disable_direct_image_in_run,
             # 同引用透传：纠正轮里 dispute_directive 的申辩要能被外层 settle 读到
             DISPUTE_EXTRA_KEY: self._run_disputes,
             "speech_policy": "free",

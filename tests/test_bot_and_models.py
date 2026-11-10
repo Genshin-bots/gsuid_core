@@ -8,7 +8,13 @@ from typing import List, Union, Mapping, Optional
 
 import pytest
 
-from gsuid_core.bot import Bot, _Bot
+from gsuid_core.bot import (
+    Bot,
+    BotReceiveMode,
+    BotConnectionState,
+    RecallCapabilityState,
+    _Bot,
+)
 from gsuid_core.models import Event
 from gsuid_core.ai_core import utils as ai_utils
 from gsuid_core.segment import Message
@@ -75,6 +81,23 @@ def test_bot_wrapper_and_chat_style_contract() -> None:
     high = Bot(low, ev)
     assert high.bot is low and high.ev is ev and not hasattr(low, "ev")
     assert high.bot_id == ev.bot_id and hasattr(high, "send")
+    assert low.connection_state == BotConnectionState.EXPIRED
+    assert low.recall_capability_state == RecallCapabilityState.PROBING
+    low._disconnected_at = 1000.0
+    assert low.get_connection_state(now=1100.0) == BotConnectionState.RETAINED
+    assert low.get_connection_state(now=1400.0) == BotConnectionState.EXPIRED
+    low._supports_recall = True
+    assert low.recall_capability_state == RecallCapabilityState.SUPPORTED
+    low._supports_recall = False
+    assert low.recall_capability_state == RecallCapabilityState.UNSUPPORTED
+    assert high.receive_mode == BotReceiveMode.IDLE
+    high.receive_tag = True
+    assert high.receive_mode == BotReceiveMode.SINGLE
+    high.mutiply_tag = True
+    assert high.receive_mode == BotReceiveMode.MULTI
+    high.set_event()
+    high.set_mutiply_event()
+    assert high.event.is_set() and high.mutiply_event.is_set()
 
     mock = MockBot(high, {"image_ids": []})
     assert object.__getattribute__(mock, "_real_bot") is high

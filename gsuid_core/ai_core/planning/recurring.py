@@ -270,7 +270,7 @@ async def _fire_template(template_root_id: str) -> None:
             disarm_template,
             clone_tree_for_fire,
         )
-        from .models import AIAgentTask
+        from .models import AIAgentTask, RecurringStatus
         from .kanban_executor import kick_root
 
         template = await AIAgentTask.get_by_id(template_root_id)
@@ -278,7 +278,7 @@ async def _fire_template(template_root_id: str) -> None:
             logger.warning(t("log.ai.kanban_recurring_trigger_template", template_root_id=template_root_id))
             unschedule_template(template_root_id)
             return
-        if template.recurring_status != "armed":
+        if template.recurring_status != RecurringStatus.ARMED:
             logger.info(
                 t(
                     "log.ai.kanban_recurring_trigger_template_skip_2",
@@ -522,7 +522,7 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
     """
     try:
         from .kanban import clone_subtask_for_fire, disarm_subtask_template
-        from .models import AIAgentTask
+        from .models import AIAgentTask, RecurringStatus
         from .kanban_executor import kick_root
 
         sub = await AIAgentTask.get_by_id(subtask_id)
@@ -530,7 +530,7 @@ async def _fire_subtask_template(subtask_id: str, root_task_id: str) -> None:
             logger.warning(t("log.ai.kanban_recurring_subtask_trigger", subtask_id=subtask_id))
             unschedule_subtask_template(subtask_id)
             return
-        if sub.recurring_status != "armed":
+        if sub.recurring_status != RecurringStatus.ARMED:
             logger.info(
                 t(
                     "log.ai.kanban_recurring_subtask_trigger_skip_2",

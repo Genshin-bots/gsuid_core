@@ -255,7 +255,7 @@ async def _groups(
 
 async def _active_kanban_state(persona_name: str) -> tuple[set[str], set[str], list[str]]:
     """查询该人格正在推进的后台任务，避开正在执行 subagent 的用户和群。"""
-    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.models import AIAgentTask, RecurringStatus
 
     try:
         rows = await AIAgentTask.list_by_status("pending", "running", "waiting_approval")
@@ -267,7 +267,7 @@ async def _active_kanban_state(persona_name: str) -> tuple[set[str], set[str], l
     for row in rows:
         if row.node_kind != "root":
             continue
-        if row.recurring_trigger and row.recurring_status == "armed":
+        if row.recurring_trigger and row.recurring_status == RecurringStatus.ARMED:
             continue
         if row.persona_name and row.persona_name != persona_name:
             continue

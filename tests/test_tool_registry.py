@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import io
 import json
+import base64
 
-from pydantic_ai.messages import ToolCallPart
+from PIL import Image
+from pydantic_ai.messages import ImageUrl, ModelRequest, ToolCallPart, UserPromptPart
 
 from gsuid_core.ai_core.utils import (
+    _is_image_payload_error,
     sanitize_error_for_user,
+    _strip_remote_images_from_history,
     _canonicalize_tool_call_args_in_parts,
 )
 from gsuid_core.ai_core.tool_safety import format_tool_execute_error
 from gsuid_core.ai_core.persona.prompts import TOOL_ORCHESTRATION_CONSTRAINTS
 from gsuid_core.ai_core.agent_run.support import _claims_inflight_without_backend
+from gsuid_core.ai_core.buildin_tools.image_reader import _to_tool_image_content
 from gsuid_core.ai_core.buildin_tools.find_tools_rank import (
     RankedHit,
     common_keyword_stems,
@@ -82,6 +88,34 @@ def test_tool_error_formatting_and_arg_canonicalization() -> None:
     assert isinstance(f_clean, ToolCallPart) and isinstance(f_clean.args, str) and "角色查询" in f_clean.args
     assert isinstance(r_dict, ToolCallPart) and r_dict.args == {"a": 1}
     assert isinstance(r_empty, ToolCallPart) and r_empty.args == ""
+
+    bmp_buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (120, 200, 80)).save(bmp_buf, format="BMP")
+    bmp_b64 = "base64://" + base64.b64encode(bmp_buf.getvalue()).decode("ascii")
+    injected, err = _to_tool_image_content(bmp_b64, provider="openai")
+    assert err is None and injected is not None and len(injected) == 1
+    assert isinstance(injected[0], ImageUrl) and injected[0].url.startswith("data:image/jpeg;base64,")
+
+    svg_b64 = "base64://" + base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").decode("ascii")
+    svg_injected, svg_err = _to_tool_image_content(svg_b64, provider="openai")
+    assert svg_injected is None and svg_err is not None and "不是有效图片" in svg_err
+
+    assert _is_image_payload_error("Invalid request: invalid base64 image_url trace_id: 123")
+    assert _is_image_payload_error(".messages[8].image[0]: You have uploaded an unsupported image.")
+    history_req = ModelRequest(
+        parts=[
+            UserPromptPart(
+                content=[
+                    "用户提问",
+                    ImageUrl(url="data:image/png;base64,AAAA"),
+                ]
+            )
+        ]
+    )
+    assert _strip_remote_images_from_history([history_req], include_inline=False) == 0
+    assert _strip_remote_images_from_history([history_req], include_inline=True) == 1
+    assert isinstance(history_req.parts[0], UserPromptPart)
+    assert list(history_req.parts[0].content) == ["用户提问", "[图片已失效，无法再显示]"]
 
 
 def test_claims_inflight_without_backend() -> None:

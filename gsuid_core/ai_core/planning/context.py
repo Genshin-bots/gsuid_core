@@ -29,6 +29,7 @@ _STATUS_CN: dict[str, str] = {
     "paused": "已暂停",
     "waiting_approval": "等待审批",
     "completed": "已完成",
+    "skipped": "已跳过",
     "failed": "失败",
     "cancelled": "已取消",
 }

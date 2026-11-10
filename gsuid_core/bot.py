@@ -1,6 +1,7 @@
 import time
 import asyncio
 import inspect
+from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -80,6 +81,25 @@ RECALL_WAIT_TIMEOUT: float = 10.0
 # 连续 N 次「整次调用一帧都没回执」后，将该连接标记为"不支持回执"，后续 wait_recall=True
 # 直接返回空结果不再等待；任意一帧成功回执即清零。避免旧 adapter 反复吃满超时。
 RECALL_DISABLE_AFTER_TIMEOUTS: int = 3
+BOT_RETAIN_TIMEOUT: float = 300.0
+
+
+class BotConnectionState(StrEnum):
+    CONNECTED = "connected"
+    RETAINED = "retained"
+    EXPIRED = "expired"
+
+
+class RecallCapabilityState(StrEnum):
+    PROBING = "probing"
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+
+
+class BotReceiveMode(StrEnum):
+    IDLE = "idle"
+    SINGLE = "single"
+    MULTI = "multi"
 
 
 def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
@@ -196,6 +216,32 @@ class _Bot:
         self._recall_timeout_streak: int = 0
         # echo -> MessageRecord 出站消息记录关联表（用于回执异步回写平台 msg_id）
         self._echo_records: Dict[str, "MessageRecord"] = {}
+
+    def get_connection_state(
+        self,
+        now: Optional[float] = None,
+        timeout: float = BOT_RETAIN_TIMEOUT,
+    ) -> BotConnectionState:
+        """返回当前连接生命周期状态：connected / retained / expired。"""
+        if self.bot is not None:
+            return BotConnectionState.CONNECTED
+        ts = time.time() if now is None else now
+        if self._disconnected_at is None or (ts - self._disconnected_at) > timeout:
+            return BotConnectionState.EXPIRED
+        return BotConnectionState.RETAINED
+
+    @property
+    def connection_state(self) -> BotConnectionState:
+        return self.get_connection_state()
+
+    @property
+    def recall_capability_state(self) -> RecallCapabilityState:
+        """返回回执能力三态：probing / supported / unsupported。"""
+        if self._supports_recall is True:
+            return RecallCapabilityState.SUPPORTED
+        if self._supports_recall is False:
+            return RecallCapabilityState.UNSUPPORTED
+        return RecallCapabilityState.PROBING
 
     def _register_echo_record(self, echo: str, record: "MessageRecord") -> None:
         if len(self._echo_records) >= 1000:
@@ -917,8 +963,19 @@ class Bot:
         self.receive_tag = False
         self.mutiply_tag = False
         self.mutiply_resp: List[Event] = []
+        self.event: asyncio.Event = asyncio.Event()
+        self.mutiply_event: asyncio.Event = asyncio.Event()
         # 当前用户语言缓存（懒解析，一次事件内复用），见 get_lang()
         self._lang: Optional[str] = None
+
+    @property
+    def receive_mode(self) -> BotReceiveMode:
+        """返回当前交互等待状态：idle / single / multi。"""
+        if self.mutiply_tag:
+            return BotReceiveMode.MULTI
+        if self.receive_tag:
+            return BotReceiveMode.SINGLE
+        return BotReceiveMode.IDLE
 
     @property
     def logger(self) -> GsLogger:

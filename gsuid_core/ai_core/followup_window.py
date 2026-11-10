@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import time
+from enum import StrEnum
 from typing import Dict
 from dataclasses import dataclass
 
@@ -16,12 +17,38 @@ from gsuid_core.models import Event
 _GC_THRESHOLD = 512
 
 
+class FollowupWindowState(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    MISSING = "missing"
+    REPLY_CAP_REACHED = "reply_cap_reached"
+    CEILING_EXPIRED = "ceiling_expired"
+    WINDOW_EXPIRED = "window_expired"
+
+
 @dataclass
 class _BurstState:
     burst_start: float  # 本轮连续对话起点（受 max_total 天花板约束）
     last_hard_ts: float  # 最近一次硬触发时刻（窗口从此起算）
     soft_replies: int = 0  # 软触发已成功回复次数
     consecutive_silence: int = 0  # 连续被判定沉默次数
+
+    def evaluate_state(
+        self,
+        now: float,
+        window_seconds: int,
+        max_total_seconds: int,
+        max_replies: int = 2,
+    ) -> FollowupWindowState:
+        if window_seconds <= 0:
+            return FollowupWindowState.DISABLED
+        if max_replies > 0 and self.soft_replies >= max_replies:
+            return FollowupWindowState.REPLY_CAP_REACHED
+        if (now - self.burst_start) > max_total_seconds:
+            return FollowupWindowState.CEILING_EXPIRED
+        if (now - self.last_hard_ts) > window_seconds:
+            return FollowupWindowState.WINDOW_EXPIRED
+        return FollowupWindowState.ACTIVE
 
 
 _states: Dict[str, _BurstState] = {}
@@ -95,6 +122,28 @@ def record_gate_silence(session_id: str, user_id: str) -> None:
         del _states[k]
 
 
+def get_followup_window_state(
+    session_id: str,
+    user_id: str,
+    window_seconds: int,
+    max_total_seconds: int,
+    max_replies: int = 2,
+) -> FollowupWindowState:
+    """评估该用户在当前会话的免唤醒续聊窗口状态。"""
+    if window_seconds <= 0:
+        return FollowupWindowState.DISABLED
+    k = _key(session_id, user_id)
+    st = _states[k] if k in _states else None
+    if st is None:
+        return FollowupWindowState.MISSING
+    return st.evaluate_state(
+        time.time(),
+        window_seconds,
+        max_total_seconds,
+        max_replies,
+    )
+
+
 def list_active_windows(
     window_seconds: int,
     max_total_seconds: int,
@@ -109,8 +158,8 @@ def list_active_windows(
         session_id, user_id = k.split("::", 1)
         age_hard = now - st.last_hard_ts
         age_burst = now - st.burst_start
-        under_cap = max_replies <= 0 or st.soft_replies < max_replies
-        active = window_seconds > 0 and age_burst <= max_total_seconds and age_hard <= window_seconds and under_cap
+        state = st.evaluate_state(now, window_seconds, max_total_seconds, max_replies)
+        active = state == FollowupWindowState.ACTIVE
         out.append(
             {
                 "session_id": session_id,
@@ -122,6 +171,7 @@ def list_active_windows(
                 "remaining_window": max(0.0, round(window_seconds - age_hard, 1)),
                 "remaining_ceiling": max(0.0, round(max_total_seconds - age_burst, 1)),
                 "active": active,
+                "state": state.value,
                 "soft_replies": st.soft_replies,
                 "consecutive_silence": st.consecutive_silence,
             }
@@ -138,18 +188,16 @@ def in_followup_window(
     max_replies: int = 2,
 ) -> bool:
     """该用户当前是否处于免唤醒续聊窗口内（软触发是否成立）。"""
-    if window_seconds <= 0:
-        return False
-    k = _key(session_id, user_id)
-    st = _states[k] if k in _states else None
-    if st is None:
-        return False
-    if max_replies > 0 and st.soft_replies >= max_replies:
-        return False
-    now = time.time()
-    if (now - st.burst_start) > max_total_seconds:
-        return False
-    return (now - st.last_hard_ts) <= window_seconds
+    return (
+        get_followup_window_state(
+            session_id,
+            user_id,
+            window_seconds,
+            max_total_seconds,
+            max_replies,
+        )
+        == FollowupWindowState.ACTIVE
+    )
 
 
 def merge_followup_burst(events: list[Event]) -> Event | None:

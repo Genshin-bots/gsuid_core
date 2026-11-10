@@ -29,6 +29,7 @@ import shutil
 import asyncio
 import functools
 import py_compile
+from enum import StrEnum
 from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
 from pathlib import Path
 
@@ -542,6 +543,24 @@ def _is_installed(logs: list, plugin_name: str) -> bool:
     return any(lg.event_type == "decision" and lg.content == target for lg in logs)
 
 
+class PluginInstallPhase(StrEnum):
+    NONE = "none"
+    AWAIT_INSTALL = "await_install"
+    DO_INSTALL = "do_install"
+    AWAIT_STAGE = "await_stage"
+    DO_STAGE = "do_stage"
+    AWAIT_DELETE = "await_delete"
+    DO_FINALIZE = "do_finalize"
+    INSTALLED = "installed"
+
+
+_APPROVAL_TRANSITIONS: dict[str, PluginInstallPhase] = {
+    "install": PluginInstallPhase.DO_INSTALL,
+    "stage": PluginInstallPhase.DO_STAGE,
+    "delete": PluginInstallPhase.DO_FINALIZE,
+}
+
+
 def _install_state(logs: list, plugin_name: str) -> Tuple[str, Optional[str]]:
     """重放账本 + 审批事件，得出该插件安装状态机的当前阶段与暂存目录名。
 
@@ -559,7 +578,7 @@ def _install_state(logs: list, plugin_name: str) -> Tuple[str, Optional[str]]:
     - ``installed``     已安装完成
     """
     head = _mark(plugin_name, "")
-    phase = "none"
+    phase: PluginInstallPhase = PluginInstallPhase.NONE
     pending: Optional[str] = None  # 我最近一次"已发起、待裁决"的审批类型
     staged_name: Optional[str] = None
     for lg in logs:
@@ -567,24 +586,26 @@ def _install_state(logs: list, plugin_name: str) -> Tuple[str, Optional[str]]:
         if lg.event_type == "decision" and c.startswith(head):
             kind = c[len(head) :]
             if kind == "req-install":
-                pending, phase = "install", "await_install"
+                pending, phase = "install", PluginInstallPhase.AWAIT_INSTALL
             elif kind == "req-stage":
-                pending, phase = "stage", "await_stage"
+                pending, phase = "stage", PluginInstallPhase.AWAIT_STAGE
             elif kind == "req-delete":
-                pending, phase = "delete", "await_delete"
+                pending, phase = "delete", PluginInstallPhase.AWAIT_DELETE
             elif kind.startswith("staged|"):
                 staged_name = kind[len("staged|") :] or None
             elif kind == "installed":
-                phase, pending = "installed", None
+                phase, pending = PluginInstallPhase.INSTALLED, None
             elif kind == "reset":
-                phase, pending, staged_name = "none", None, None
+                phase, pending, staged_name = PluginInstallPhase.NONE, None, None
         elif lg.event_type == "approval":
             if c.startswith("主人批准") and pending is not None:
-                phase = {"install": "do_install", "stage": "do_stage", "delete": "do_finalize"}[pending]
+                phase = _APPROVAL_TRANSITIONS[pending]
                 pending = None
-            elif c.startswith("主人拒绝"):
-                pending = None
-    return phase, staged_name
+            elif c.startswith("主人拒绝") and pending is not None:
+                # 拒绝后回退到 none，避免子任务重派后卡死在 await_* 无效去重等待态；
+                # 暂存目录仍在盘上，staged_name 保留以便后续 do_finalize 收尾。
+                phase, pending = PluginInstallPhase.NONE, None
+    return phase.value, staged_name
 
 
 async def _halt_for_dedupe(dedupe: str) -> str:

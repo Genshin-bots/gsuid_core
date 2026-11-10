@@ -288,11 +288,15 @@ def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic_core import ErrorDetails
+    from pydantic_ai.messages import ImageUrl, RetryInfo, UserPromptPart, RetryFeedbackPart
+
     import gsuid_core.ai_core.mcp.client as client_mod
     from gsuid_core.ai_core.mcp.pii import (
         mask_pii,
         pii_hits,
         mask_for_agent,
+        apply_context_mask,
         has_credential_form,
         is_credential_command,
         mask_credential_command,
@@ -314,6 +318,31 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     assert "tok123" not in mask_credential_command("mcp绑定 瑞幸 tok123")
     assert "13812345678" not in mask_for_agent("电话13812345678", is_group=True)
     assert "13812345678" in mask_for_agent("电话13812345678", is_group=False)
+
+    b64_uri = "data:image/png;base64,iVBORw0KGgo13812345678AAAANSUhEUg1234567890123456789=="
+    assert mask_pii(b64_uri) == b64_uri and pii_hits(b64_uri) == []
+    assert mask_for_agent("base64://abc13812345678xyz==", is_group=True) == "base64://abc13812345678xyz=="
+    part_in = UserPromptPart(content=["联系电话13812345678", ImageUrl(url=b64_uri)])
+    masked_parts = apply_context_mask([part_in], is_group=True)
+    assert len(masked_parts) == 1 and isinstance(masked_parts[0], UserPromptPart)
+    masked_content = list(masked_parts[0].content)
+    assert masked_content[0] == "联系电话138****5678"
+    assert isinstance(masked_content[1], ImageUrl) and masked_content[1].url == b64_uri
+
+    fb_detail: ErrorDetails = {
+        "type": "value_error",
+        "loc": ("x",),
+        "msg": "号码13812345678不合法",
+        "input": "13812345678",
+        "ctx": {},
+        "url": "",
+    }
+    fb_in = RetryFeedbackPart(content=[fb_detail], retry=RetryInfo(cause="validation_error"))
+    fb_out = apply_context_mask([fb_in], is_group=True)
+    assert len(fb_out) == 1 and isinstance(fb_out[0], RetryFeedbackPart)
+    fb_content = fb_out[0].content
+    assert isinstance(fb_content, list)
+    assert fb_content[0]["msg"] == "号码138****5678不合法" and fb_content[0]["input"] == "138****5678"
 
     assert _parse_bind_args("tok123", ["LUCKIN_MCP_TOKEN"]) == {"LUCKIN_MCP_TOKEN": "tok123"}
     assert _parse_bind_args("A_KEY=1 B_KEY=2", ["A_KEY", "B_KEY"]) == {"A_KEY": "1", "B_KEY": "2"}

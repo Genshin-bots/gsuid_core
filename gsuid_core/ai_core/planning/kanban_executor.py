@@ -33,7 +33,7 @@ from gsuid_core.ai_core.control.mailbox import drain_one, post_to_session
 from gsuid_core.ai_core.control.directive import Directive
 
 from . import kanban
-from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact
+from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact, RecurringStatus
 from .runtime import (
     PlanRunContext,
     bind_plan_context,
@@ -1009,7 +1009,7 @@ async def execute_ready_tasks(root_task_id: str) -> None:
         return
     if root.status in ("completed", "failed", "cancelled"):
         return
-    if root.recurring_trigger and root.recurring_status == "armed":
+    if root.recurring_trigger and root.recurring_status == RecurringStatus.ARMED:
         logger.debug(
             t(
                 "log.ai.kanban_skipping_direct_scheduling_skip",

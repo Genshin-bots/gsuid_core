@@ -15,6 +15,7 @@ UUID 主键，不复用 BaseIDModel 的自增 int 主键，因此通过下方 ``
 
 import uuid
 import asyncio
+from enum import StrEnum
 from typing import Dict, List, Optional, Sequence
 from pathlib import Path
 from datetime import datetime
@@ -28,24 +29,70 @@ from sqlalchemy.dialects.postgresql import JSON
 from gsuid_core.i18n import t
 from gsuid_core.utils.database.base_models import with_session, with_read_session
 
+
+class TaskStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskNodeKind(StrEnum):
+    ROOT = "root"
+    SUBTASK = "subtask"
+
+
+class RecurringStatus(StrEnum):
+    NONE = ""
+    ARMED = "armed"
+    DISARMED = "disarmed"
+
+
+class KanbanColumn(StrEnum):
+    TARGET = "target"
+    PROGRESS = "progress"
+    DONE = "Done"
+    BLOCKED = "Blocked"
+    FAILED = "failed"
+
+
+class TaskNodeRole(StrEnum):
+    AGGREGATE_ROOT = "aggregate_root"
+    LEAF_ROOT = "leaf_root"
+    RECURRING_ROOT_TEMPLATE = "recurring_root_template"
+    RECURRING_SUBTASK_TEMPLATE = "recurring_subtask_template"
+    EXECUTABLE_SUBTASK = "executable_subtask"
+
+
 # 任务状态：``waiting_approval`` 用于把"审批挂起"与"主人手动暂停"区分开， 避免同一个 paused 同时表示两种语义
 TASK_STATUSES = (
-    "pending",
-    "running",
-    "paused",
-    "waiting_approval",
-    "completed",
-    "failed",
-    "cancelled",
+    TaskStatus.PENDING.value,
+    TaskStatus.RUNNING.value,
+    TaskStatus.PAUSED.value,
+    TaskStatus.WAITING_APPROVAL.value,
+    TaskStatus.COMPLETED.value,
+    TaskStatus.SKIPPED.value,
+    TaskStatus.FAILED.value,
+    TaskStatus.CANCELLED.value,
 )
 # 任务节点类型：根任务 / 子任务
-NODE_KINDS = ("root", "subtask")
+NODE_KINDS = (TaskNodeKind.ROOT.value, TaskNodeKind.SUBTASK.value)
 # 失败处理策略：默认通知主人格定夺，不自动级联整树失败
 FAILURE_POLICIES = ("notify_persona", "auto_abort")
 # 工作区策略：默认仅允许操作 Artifact Workspace 内文件
 WORKSPACE_POLICIES = ("artifact_only", "unrestricted")
 # 看板列与任务状态映射
-KANBAN_COLUMNS = ("target", "progress", "Done", "Blocked", "failed")
+KANBAN_COLUMNS = (
+    KanbanColumn.TARGET.value,
+    KanbanColumn.PROGRESS.value,
+    KanbanColumn.DONE.value,
+    KanbanColumn.BLOCKED.value,
+    KanbanColumn.FAILED.value,
+)
 
 
 def _uuid() -> str:
@@ -340,6 +387,19 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
         for child in child_result.scalars().all():
             grouped.setdefault(child.root_task_id, []).append(child)
         return roots, grouped
+
+
+def classify_task_node_role(task: AIAgentTask, children_count: int = 0) -> TaskNodeRole:
+    """识别 AIAgentTask 节点在 Kanban 树中的显式角色。"""
+    if task.node_kind == TaskNodeKind.ROOT:
+        if task.recurring_trigger and not task.template_root_id:
+            return TaskNodeRole.RECURRING_ROOT_TEMPLATE
+        if task.agent_profile and children_count == 0:
+            return TaskNodeRole.LEAF_ROOT
+        return TaskNodeRole.AGGREGATE_ROOT
+    if task.node_kind == TaskNodeKind.SUBTASK and task.recurring_trigger and not task.template_subtask_id:
+        return TaskNodeRole.RECURRING_SUBTASK_TEMPLATE
+    return TaskNodeRole.EXECUTABLE_SUBTASK
 
 
 class AIAgentTaskLog(_PlanCRUD, SQLModel, table=True):

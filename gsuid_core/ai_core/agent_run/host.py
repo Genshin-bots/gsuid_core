@@ -79,6 +79,8 @@ class RunOnceHost:
     _outbound_stream: bool
     #: Token 用量分类；空则用 create_by
     _stats_chat_type: str
+    #: 当轮图片 400 重试时禁用原生直投，降级走文字转述
+    _disable_direct_image_in_run: bool
 
     # ── GsCoreAIAgent 实现 ──
     def extract_history(self) -> None:

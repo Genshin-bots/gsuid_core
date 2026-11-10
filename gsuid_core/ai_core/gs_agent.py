@@ -47,6 +47,7 @@ from gsuid_core.ai_core.utils import (
     is_silence_marker,
     _is_content_rejected,
     materialize_image_url,
+    _is_image_payload_error,
     compact_session_history,
     _is_retryable_client_error,
     _is_non_retryable_model_error,
@@ -378,6 +379,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
         # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
         self._last_drift_push_count: int = 0
+        self._disable_direct_image_in_run: bool = False
 
         self.model: Optional[AnyModel] = openai_chat_model
         # 记录本会话激活配置全名（provider++name）与内容指纹，仅自动解析模型时记录；显式传
@@ -982,7 +984,7 @@ class GsCoreAIAgent(RunOnceMixin):
             elif isinstance(item, str):
                 text_parts.append(item)
 
-        if "image" in model_support:
+        if "image" in model_support and not self._disable_direct_image_in_run:
             # 模型支持图片，保留原始内容；动图先收成静图序列。
             from gsuid_core.ai_core.persona.appearance import (
                 bytes_from_image_ref,
@@ -1216,6 +1218,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # 新一轮 run 则允许合法地再说同样的话。
         self._run_sent_texts = set()
         self._run_disputes = []
+        self._disable_direct_image_in_run = False
 
         max_attempts: int = ai_config.get_config("agent_max_run_attempts").data
         retry_delay: float = ai_config.get_config("agent_run_retry_delay").data
@@ -1232,145 +1235,153 @@ class GsCoreAIAgent(RunOnceMixin):
 
         attempt = 0
         total_attempts = max_attempts
-        while attempt < total_attempts:
-            attempt += 1
-            # 闸开着别再打上游；套餐打满重试必复现。
-            _qkey = self._quota_breaker_key()
-            if quota_breaker.is_open(_qkey):
-                statistics_manager.record_error(error_type="quota_breaker_open", message="breaker_open")
-                self._session_logger.log_error("quota_breaker_open", "breaker_open")
-                return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
-            try:
-                return await self._execute_run_once(
-                    user_message=user_message,
-                    bot=bot,
-                    ev=ev,
-                    rag_context=rag_context,
-                    tools=tools,
-                    return_mode=return_mode,
-                    output_type=output_type,
-                    intent=intent,
-                    has_active_task=has_active_task,
-                    budget_gate=budget_gate,
-                    suppress_intermediate_text=suppress_intermediate_text,
-                    turn_graph=turn_graph,
-                    cheap_gate=cheap_gate,
-                    is_framework_injection=is_framework_injection,
-                )
-            except Exception as e:
-                err_str = str(e)
-                # 自愈：过期远程图片导致的下载失败会让后续每轮都 500，先剥离历史里的 过期远程图片，
-                if "download image" in err_str.lower():
-                    stripped = _strip_remote_images_from_history(self.history)
-                    if stripped:
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.image_download_stripped_expired",
-                                stripped=stripped,
-                            )
-                        )
-
-                # 只按本次异常分类走配额文案，别把超时/审核改写成套餐打满。
-                _qkind = classify_provider_error(e)
-                quota_breaker.note_hit(_qkey, _qkind)
-                if _qkind == "quota":
-                    logger.warning(i18n_t("log.agent.pydanticai_quota_exhausted", e=e))
-                    statistics_manager.record_error(error_type="quota_exhausted", message=err_str)
-                    self._session_logger.log_error("quota_exhausted", err_str)
+        try:
+            while attempt < total_attempts:
+                attempt += 1
+                # 闸开着别再打上游；套餐打满重试必复现。
+                _qkey = self._quota_breaker_key()
+                if quota_breaker.is_open(_qkey):
+                    statistics_manager.record_error(error_type="quota_breaker_open", message="breaker_open")
+                    self._session_logger.log_error("quota_breaker_open", "breaker_open")
                     return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
+                try:
+                    return await self._execute_run_once(
+                        user_message=user_message,
+                        bot=bot,
+                        ev=ev,
+                        rag_context=rag_context,
+                        tools=tools,
+                        return_mode=return_mode,
+                        output_type=output_type,
+                        intent=intent,
+                        has_active_task=has_active_task,
+                        budget_gate=budget_gate,
+                        suppress_intermediate_text=suppress_intermediate_text,
+                        turn_graph=turn_graph,
+                        cheap_gate=cheap_gate,
+                        is_framework_injection=is_framework_injection,
+                    )
+                except Exception as e:
+                    err_str = str(e)
+                    # 自愈：图片下载失败或 base64/格式被上游 400 拒绝时，剥离历史图片并在重试时降级走文字转述
+                    if _is_image_payload_error(err_str):
+                        self._disable_direct_image_in_run = True
+                        include_inline = "download image" not in err_str.lower()
+                        stripped = _strip_remote_images_from_history(
+                            self.history,
+                            include_inline=include_inline,
+                        )
+                        if stripped:
+                            logger.warning(
+                                i18n_t(
+                                    "log.agent.image_download_stripped_expired",
+                                    stripped=stripped,
+                                )
+                            )
 
-                # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast， 不再消耗剩余重试次数。
-                non_retryable = _is_non_retryable_model_error(e)
+                    # 只按本次异常分类走配额文案，别把超时/审核改写成套餐打满。
+                    _qkind = classify_provider_error(e)
+                    quota_breaker.note_hit(_qkey, _qkind)
+                    if _qkind == "quota":
+                        logger.warning(i18n_t("log.agent.pydanticai_quota_exhausted", e=e))
+                        statistics_manager.record_error(error_type="quota_exhausted", message=err_str)
+                        self._session_logger.log_error("quota_exhausted", err_str)
+                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
 
-                # 例外：非内容审核的 4xx 给一次干净历史重试（模型退化畸形请求是随机性的）
-                if non_retryable and not client_error_retry_used and _is_retryable_client_error(e):
-                    client_error_retry_used = True
-                    # 不占常规重试预算：末次 attempt 命中时也真的会重跑（评审修复 F6）
-                    total_attempts += 1
-                    if self._last_attempt_tool_calls:
+                    # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast， 不再消耗剩余重试次数。
+                    non_retryable = _is_non_retryable_model_error(e)
+
+                    # 例外：非内容审核的 4xx 给一次干净历史重试（模型退化畸形请求是随机性的）
+                    if non_retryable and not client_error_retry_used and _is_retryable_client_error(e):
+                        client_error_retry_used = True
+                        # 不占常规重试预算：末次 attempt 命中时也真的会重跑（评审修复 F6）
+                        total_attempts += 1
+                        if self._last_attempt_tool_calls:
+                            logger.warning(
+                                i18n_t(
+                                    "log.agent.pydanticai_tools_clean_retry_fail",
+                                    p0=", ".join(self._last_attempt_tool_calls),
+                                )
+                            )
                         logger.warning(
                             i18n_t(
-                                "log.agent.pydanticai_tools_clean_retry_fail",
-                                p0=", ".join(self._last_attempt_tool_calls),
+                                "log.agent.pydanticai_client_suspected_degraded_fail",
+                                e=e,
                             )
                         )
-                    logger.warning(
-                        i18n_t(
-                            "log.agent.pydanticai_client_suspected_degraded_fail",
-                            e=e,
-                        )
-                    )
-                    await asyncio.sleep(retry_delay)
-                    continue
+                        await asyncio.sleep(retry_delay)
+                        continue
 
-                if attempt < total_attempts and not non_retryable:
-                    logger.warning(
-                        i18n_t(
-                            "log.agent.pydanticai_core_request_attempt_fail",
-                            attempt=attempt,
-                            max_attempts=max_attempts,
-                            retry_delay=retry_delay,
-                            e=e,
-                        )
-                    )
-                    await asyncio.sleep(retry_delay)
-                    continue
-
-                # 永久性客户端错误是上游对本次输入的明确拒绝（非本服务 bug）：只打一行
-                # warning（不刷 traceback），按内容审核 / 其他客户端错误分类记账并返回友好文案。
-                if non_retryable:
-                    assert isinstance(e, ModelHTTPError)  # 见 _is_non_retryable_model_error
-                    if _is_content_rejected(e):
+                    if attempt < total_attempts and not non_retryable:
                         logger.warning(
                             i18n_t(
-                                "log.agent.pydanticai_refused_process_input",
+                                "log.agent.pydanticai_core_request_attempt_fail",
+                                attempt=attempt,
+                                max_attempts=max_attempts,
+                                retry_delay=retry_delay,
+                                e=e,
+                            )
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+
+                    # 永久性客户端错误是上游对本次输入的明确拒绝（非本服务 bug）：只打一行
+                    # warning（不刷 traceback），按内容审核 / 其他客户端错误分类记账并返回友好文案。
+                    if non_retryable:
+                        assert isinstance(e, ModelHTTPError)  # 见 _is_non_retryable_model_error
+                        if _is_content_rejected(e):
+                            logger.warning(
+                                i18n_t(
+                                    "log.agent.pydanticai_refused_process_input",
+                                    p0=e.status_code,
+                                    err_str=err_str,
+                                )
+                            )
+                            statistics_manager.record_error(error_type="content_rejected", message=err_str)
+                            self._session_logger.log_error("content_rejected", err_str)
+                            return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.pydanticai_client_fail_retry_err",
                                 p0=e.status_code,
                                 err_str=err_str,
                             )
                         )
-                        statistics_manager.record_error(error_type="content_rejected", message=err_str)
-                        self._session_logger.log_error("content_rejected", err_str)
-                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
-                    logger.warning(
-                        i18n_t(
-                            "log.agent.pydanticai_client_fail_retry_err",
-                            p0=e.status_code,
-                            err_str=err_str,
-                        )
-                    )
-                    statistics_manager.record_error(error_type="client_error", message=err_str)
-                    self._session_logger.log_error("client_error", err_str)
-                    return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
+                        statistics_manager.record_error(error_type="client_error", message=err_str)
+                        self._session_logger.log_error("client_error", err_str)
+                        return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
-                # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
-                if isinstance(e, httpx.TimeoutException):
-                    logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
-                    statistics_manager.record_error(error_type="timeout", message=err_str)
-                    self._session_logger.log_error("timeout", err_str)
-                    return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
-                if isinstance(e, httpx.HTTPError):
-                    low = err_str.lower()
-                    if "rate" in low or "429" in low or "limit" in low:
-                        logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
-                        statistics_manager.record_error(error_type="rate_limit", message=err_str)
-                        self._session_logger.log_error("rate_limit", err_str)
+                    # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
+                    if isinstance(e, httpx.TimeoutException):
+                        logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
+                        statistics_manager.record_error(error_type="timeout", message=err_str)
+                        self._session_logger.log_error("timeout", err_str)
+                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
+                    if isinstance(e, httpx.HTTPError):
+                        low = err_str.lower()
+                        if "rate" in low or "429" in low or "limit" in low:
+                            logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
+                            statistics_manager.record_error(error_type="rate_limit", message=err_str)
+                            self._session_logger.log_error("rate_limit", err_str)
+                        else:
+                            logger.warning(i18n_t("log.agent.pydanticai_run_fail_network", e=e))
+                            statistics_manager.record_error(error_type="network_error", message=err_str)
+                            self._session_logger.log_error("network_error", err_str)
+                        return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
+
+                    logger.error(i18n_t("log.agent.pydanticai_run_fail", e=e))
+                    logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
+                    if "529" in err_str:
+                        statistics_manager.record_error(error_type="api_529_error", message=err_str)
                     else:
-                        logger.warning(i18n_t("log.agent.pydanticai_run_fail_network", e=e))
-                        statistics_manager.record_error(error_type="network_error", message=err_str)
-                        self._session_logger.log_error("network_error", err_str)
+                        statistics_manager.record_error(error_type="agent_error", message=err_str)
+                    self._session_logger.log_error("agent_error", err_str)
                     return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
-                logger.error(i18n_t("log.agent.pydanticai_run_fail", e=e))
-                logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
-                if "529" in err_str:
-                    statistics_manager.record_error(error_type="api_529_error", message=err_str)
-                else:
-                    statistics_manager.record_error(error_type="agent_error", message=err_str)
-                self._session_logger.log_error("agent_error", err_str)
-                return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
-
-        # while 至少执行一次循环，正常不可达；兜底也必须闭合 run（评审修复 F6）
-        return _fail(f"{ERROR_RESULT_PREFIX}: 未知错误")
+            # while 至少执行一次循环，正常不可达；兜底也必须闭合 run（评审修复 F6）
+            return _fail(f"{ERROR_RESULT_PREFIX}: 未知错误")
+        finally:
+            self._disable_direct_image_in_run = False
 
     async def _lightweight_text_rewrite(
         self,

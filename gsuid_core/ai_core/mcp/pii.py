@@ -11,8 +11,10 @@
 """
 
 import re
-from typing import Any, List
+from typing import List, TypeVar, Sequence
 from dataclasses import replace
+
+_PartT = TypeVar("_PartT")
 
 # ── 模式表 ──────────────────────────────────────────────────────────
 
@@ -104,9 +106,18 @@ def _mask_addresses(text: str) -> str:
     return "".join(out)
 
 
+def _is_binary_data_uri(text: str) -> bool:
+    """是否为 base64:// 或 data:*;base64, 二进制编码串（禁止跑正则以免破坏编码）。"""
+    if text.startswith("base64://"):
+        return True
+    if text.startswith("data:") and ";base64," in text[:128]:
+        return True
+    return False
+
+
 def mask_pii(text: str) -> str:
     """通用 PII 就地掩码。返回打码后的文本。"""
-    if not text:
+    if not text or _is_binary_data_uri(text):
         return text
     out = _PHONE_RE.sub(lambda m: m.group(0)[:3] + "****" + m.group(0)[-4:], text)
     out = _IDCARD_RE.sub(lambda m: m.group(0)[:4] + "**********" + m.group(0)[-4:], out)
@@ -122,7 +133,7 @@ def mask_pii(text: str) -> str:
 def pii_hits(text: str) -> list[str]:
     """返回命中的 PII 类型列表（审计用，不返回原文）。"""
     hits: list[str] = []
-    if not text:
+    if not text or _is_binary_data_uri(text):
         return hits
     if _PHONE_RE.search(text):
         hits.append("phone")
@@ -141,12 +152,12 @@ def pii_hits(text: str) -> list[str]:
 
 def has_credential_form(text: str) -> bool:
     """文本是否含凭据形态（Bearer / token= / api_key= 等）。"""
-    return bool(text) and bool(_CRED_FORM_RE.search(text))
+    return bool(text) and not _is_binary_data_uri(text) and bool(_CRED_FORM_RE.search(text))
 
 
 def mask_credential_forms(text: str) -> str:
     """只掩凭据形态（私聊输入闸用——保留手机号等私有记忆能力）。"""
-    if not text:
+    if not text or _is_binary_data_uri(text):
         return text
     out = _BEARER_RE.sub("Bearer ****", text)
     return _CRED_KV_RE.sub(lambda m: m.group(1) + "****", out)
@@ -177,7 +188,7 @@ def mask_credential_command(text: str) -> str:
 
 def mask_for_agent(text: str, *, is_group: bool) -> str:
     """进模型上下文的脱敏：任何 scope 掩凭据命令+凭据形态；群聊追加全 PII。"""
-    if not text:
+    if not text or _is_binary_data_uri(text):
         return text
     out = mask_credential_command(text)
     out = mask_credential_forms(out)
@@ -187,66 +198,100 @@ def mask_for_agent(text: str, *, is_group: bool) -> str:
 # ── 上下文 parts 重建（输入闸） ─────────────────────────────────────
 
 
-def _mask_text_leaf(value: Any, is_group: bool) -> Any:
-    if isinstance(value, str):
-        return mask_for_agent(value, is_group=is_group)
-    if isinstance(value, list):
-        return [_mask_text_leaf(item, is_group) for item in value]
-    if isinstance(value, dict):
-        return {k: _mask_text_leaf(v, is_group) for k, v in value.items()}
-    return value
-
-
-def apply_context_mask(parts: List[Any], is_group: bool) -> List[Any]:
+def apply_context_mask(parts: Sequence[_PartT], is_group: bool) -> List[_PartT]:
     """重建 ModelRequest.parts：所有文本字段过 mask_for_agent。
 
     - UserPromptPart.content（str 或 UserContent 列表）、ToolReturnPart/
       NativeToolReturnPart.content、TextPart.content、RetryPromptPart.content
       → 掩码副本
-    - SystemPromptPart 跳过（自有注入文本，不是用户/工具数据）
+    - SystemPromptPart 与 ImageUrl / BinaryContent 等媒体对象跳过
     - 不原地改：parts 与 session.history 共享对象
     """
-    from pydantic_ai.messages import SystemPromptPart
+    from pydantic_core import ErrorDetails
+    from pydantic_ai.messages import (
+        TextPart,
+        UserContent,
+        ToolReturnPart,
+        UserPromptPart,
+        RetryPromptPart,
+        SystemPromptPart,
+        RetryFeedbackPart,
+        NativeToolReturnPart,
+    )
 
-    masked: List[Any] = []
+    masked: List[_PartT] = []
     for part in parts:
         if isinstance(part, SystemPromptPart):
             masked.append(part)
             continue
-        content = getattr(part, "content", None)
-        if content is None:
-            masked.append(part)
+        if isinstance(part, UserPromptPart):
+            content = part.content
+            if isinstance(content, str):
+                new_str = mask_for_agent(content, is_group=is_group)
+                masked.append(part if new_str == content else replace(part, content=new_str))
+            else:
+                new_items: list[UserContent] = []
+                changed = False
+                for item in content:
+                    if isinstance(item, str):
+                        masked_item = mask_for_agent(item, is_group=is_group)
+                        if masked_item != item:
+                            changed = True
+                        new_items.append(masked_item)
+                    else:
+                        new_items.append(item)
+                masked.append(replace(part, content=new_items) if changed else part)
             continue
-        new_content = _mask_part_content(content, is_group)
-        if new_content is content:
-            masked.append(part)
+        if isinstance(part, TextPart):
+            new_str = mask_for_agent(part.content, is_group=is_group)
+            masked.append(part if new_str == part.content else replace(part, content=new_str))
             continue
-        try:
-            masked.append(replace(part, content=new_content))
-        except TypeError:
-            masked.append(part)
+        if isinstance(part, RetryPromptPart):
+            if isinstance(part.content, str):
+                new_str = mask_for_agent(part.content, is_group=is_group)
+                masked.append(part if new_str == part.content else replace(part, content=new_str))
+            else:
+                masked.append(part)
+            continue
+        if isinstance(part, RetryFeedbackPart):
+            if isinstance(part.content, str):
+                new_str = mask_for_agent(part.content, is_group=is_group)
+                masked.append(part if new_str == part.content else replace(part, content=new_str))
+                continue
+            changed_details = False
+            new_details: list[ErrorDetails] = []
+            for detail in part.content:
+                new_msg = mask_for_agent(detail["msg"], is_group=is_group)
+                detail_input = detail["input"]
+                new_input = (
+                    mask_for_agent(detail_input, is_group=is_group) if isinstance(detail_input, str) else detail_input
+                )
+                if new_msg == detail["msg"] and new_input == detail_input:
+                    new_details.append(detail)
+                    continue
+                changed_details = True
+                new_details.append({**detail, "msg": new_msg, "input": new_input})
+            masked.append(replace(part, content=new_details) if changed_details else part)
+            continue
+        if isinstance(part, (ToolReturnPart, NativeToolReturnPart)):
+            new_content = _mask_part_content(part.content, is_group)
+            masked.append(part if new_content is part.content else replace(part, content=new_content))
+            continue
+        masked.append(part)
     return masked
 
 
-def _mask_part_content(content: Any, is_group: bool) -> Any:
-    """part.content 可能是 str / list[UserContent] / 其它结构。"""
+def _mask_part_content(content: object, is_group: bool) -> object:
+    """递归掩码工具返回中的文本叶子；媒体 dataclass 原样透传。"""
     if isinstance(content, str):
         return mask_for_agent(content, is_group=is_group)
-    if isinstance(content, (list, tuple)):
-        return [_mask_part_content(item, is_group) for item in content]
+    if isinstance(content, list):
+        masked_list = [_mask_part_content(item, is_group) for item in content]
+        return content if all(a is b for a, b in zip(masked_list, content)) else masked_list
+    if isinstance(content, tuple):
+        masked_tuple = tuple(_mask_part_content(item, is_group) for item in content)
+        return content if all(a is b for a, b in zip(masked_tuple, content)) else masked_tuple
     if isinstance(content, dict):
-        return {k: _mask_part_content(v, is_group) for k, v in content.items()}
-    # pydantic_ai UserContent 等 dataclass：逐字段掩文本
-    if hasattr(content, "__dataclass_fields__"):
-        try:
-            return replace(
-                content,
-                **{
-                    f: _mask_part_content(getattr(content, f), is_group)
-                    for f in content.__dataclass_fields__
-                    if isinstance(getattr(content, f, None), str)
-                },
-            )
-        except TypeError:
-            return content
+        masked_dict = {k: _mask_part_content(v, is_group) for k, v in content.items()}
+        return content if all(masked_dict[k] is content[k] for k in content) else masked_dict
     return content

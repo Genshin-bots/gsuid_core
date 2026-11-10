@@ -33,7 +33,7 @@ except ImportError:
     from packaging.requirements import Requirement
 
 
-from gsuid_core.bot import _Bot
+from gsuid_core.bot import BotConnectionState, _Bot
 from gsuid_core.i18n import t, discover_and_register_plugin_locales
 from gsuid_core.config import core_config, plugin_config_store
 from gsuid_core.logger import logger, hl_plugin
@@ -602,9 +602,8 @@ class GsServer:
 
         if bot_id in self.active_bot:
             bot = self.active_bot[bot_id]
-            disconnected_at: Optional[float] = bot._disconnected_at
-            # 仅在实例已断开（bot.bot 为空）且超时 5 分钟时重建，避免丢弃在途发送队列。
-            stale = bot.bot is None and (disconnected_at is None or time.time() - disconnected_at > 300)
+            # 仅在实例已断开且超过 5 分钟保留窗口（expired）时重建，避免丢弃在途发送队列。
+            stale = bot.connection_state == BotConnectionState.EXPIRED
             if stale:
                 logger.warning(t("log.server.bot_timeout_recreate", bot_id=bot_id))
                 # 先 cancel 旧 send_task，防止孤儿 Task 持续运行

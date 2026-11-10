@@ -24,12 +24,14 @@ Agent 对当前问题的注意力。因此框架的策略是：图片本体存�
 3. ``http(s)://`` / ``base64://`` / ``data:image/`` —— 直接物化后转述。
 """
 
+import io
 import re
 import base64
 import asyncio
 from typing import Literal
 
 import httpx
+from PIL import Image, ImageOps
 from pydantic_ai import ImageUrl, RunContext, ToolReturn, BinaryContent
 
 from gsuid_core.i18n import t
@@ -43,6 +45,9 @@ from gsuid_core.ai_core.multimodal.animated_frames import AnimationSheets, rende
 
 # 单次图片理解超时时间（秒），兼顾多模态供应商转述耗时与快速重试需求。
 _UNDERSTAND_TIMEOUT = 90.0
+_MAX_INLINE_IMAGE_BYTES = 1_500_000
+_MAX_INLINE_IMAGE_EDGE = 2048
+_VISION_MIMES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
 # 路径/文件名误当 image_id 时的快速拒绝（文本类扩展名）
 _NON_IMAGE_SUFFIXES = (
@@ -57,15 +62,12 @@ _NON_IMAGE_SUFFIXES = (
     ".xml",
     ".yaml",
     ".yml",
+    ".svg",
 )
 
 
 def _sniff_image_mime(data: bytes) -> str | None:
-    """按文件头魔数推断图片 MIME；**识别不出返回 None**（禁止默认 image/png）。
-
-    旧实现识别失败仍返回 image/png，markdown/二进制被当图塞进多模态 →
-    服务商 400 unknown format，整轮 run 崩掉而不是工具错误回 agent。
-    """
+    """按文件头魔数推断位图 MIME；识别不出（含文本/SVG）返回 None。"""
     if not data or len(data) < 3:
         return None
     if data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -78,10 +80,95 @@ def _sniff_image_mime(data: bytes) -> str | None:
         return "image/webp"
     if data[:2] == b"BM":
         return "image/bmp"
-    head = data.lstrip()[:256].lower()
-    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
-        return "image/svg+xml"
     return None
+
+
+def _has_multiple_frames(img: Image.Image) -> bool:
+    try:
+        img.seek(1)
+    except EOFError:
+        return False
+    img.seek(0)
+    return True
+
+
+def _reencode_image(
+    img: Image.Image,
+    *,
+    max_bytes: int = _MAX_INLINE_IMAGE_BYTES,
+    target_edge: int = _MAX_INLINE_IMAGE_EDGE,
+) -> tuple[bytes, str] | None:
+    """缩放并重编码为标准 PNG/JPEG，确保尺寸与体积满足视觉网关限制。"""
+    img = ImageOps.exif_transpose(img)
+    w, h = img.size
+    max_edge = max(w, h)
+    if max_edge > target_edge:
+        scale = target_edge / float(max_edge)
+        img = img.resize(
+            (max(1, int(w * scale)), max(1, int(h * scale))),
+            resample=Image.Resampling.LANCZOS,
+        )
+
+    has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+    if has_alpha:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        val = buf.getvalue()
+        if len(val) <= max_bytes:
+            return val, "image/png"
+        for scale in (0.75, 0.5):
+            scaled = img.resize(
+                (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                resample=Image.Resampling.LANCZOS,
+            )
+            buf = io.BytesIO()
+            scaled.save(buf, format="PNG", optimize=True)
+            val = buf.getvalue()
+            if len(val) <= max_bytes:
+                return val, "image/png"
+        rgba = img if img.mode == "RGBA" else img.convert("RGBA")
+        bg = Image.new("RGB", rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.split()[3])
+        img = bg
+
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    for q in (85, 75, 60, 45, 30):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=q, optimize=True)
+        val = buf.getvalue()
+        if len(val) <= max_bytes:
+            return val, "image/jpeg"
+    return None
+
+
+def _normalize_inline_image(
+    data: bytes,
+    *,
+    flatten_animation: bool = False,
+) -> tuple[bytes, str] | None:
+    """校验并归一化内联图片（转 BMP/CMYK，压缩超大图）；非图片返回 None。"""
+    mime = _sniff_image_mime(data)
+    if mime is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            if not flatten_animation and mime in ("image/gif", "image/webp") and _has_multiple_frames(img):
+                return data, mime
+            needs_reencode = (
+                mime not in _VISION_MIMES
+                or len(data) > _MAX_INLINE_IMAGE_BYTES
+                or max(img.size) > _MAX_INLINE_IMAGE_EDGE
+                or img.mode not in ("RGB", "RGBA", "L", "LA", "P")
+            )
+            if not needs_reencode:
+                return data, mime
+            return _reencode_image(img)
+    except (OSError, ValueError):
+        if mime in _VISION_MIMES and len(data) <= _MAX_INLINE_IMAGE_BYTES:
+            return data, mime
+        return None
 
 
 def _not_image_error(image_id: str, data: bytes, hint: str = "") -> str:
@@ -110,10 +197,11 @@ def _not_image_error(image_id: str, data: bytes, hint: str = "") -> str:
 
 def _bytes_to_data_uri(data: bytes) -> tuple[str | None, str | None]:
     """图片字节 → DataURI；非图片返回 ``(None, 错误说明)``。"""
-    mime = _sniff_image_mime(data)
-    if mime is None:
+    normalized = _normalize_inline_image(data, flatten_animation=False)
+    if normalized is None:
         return None, ""
-    b64 = base64.b64encode(data).decode("ascii")
+    norm_data, mime = normalized
+    b64 = base64.b64encode(norm_data).decode("ascii")
     return f"data:{mime};base64,{b64}", None
 
 
@@ -267,17 +355,18 @@ def _to_tool_image_content(
         禁止再塞给服务商（否则 400 整轮崩）。
 
     - ``http(s)://`` → ``ImageUrl``（远程图无法本地验魔数）
-    - DataURI：再验魔数；gemini/anthropic 用 ``BinaryContent``，openai 兼容用 ``ImageUrl``
+    - DataURI：再验魔数并归一化体积/格式；gemini/anthropic 用 ``BinaryContent``，openai 兼容用 ``ImageUrl``
     """
     url = image_url
     if url.startswith("base64://"):
         data, dec_err = _decode_data_or_base64_uri(url)
         if dec_err or data is None:
             return None, dec_err or "❌ base64:// 无效"
-        mime = _sniff_image_mime(data)
-        if mime is None:
+        normalized = _normalize_inline_image(data, flatten_animation=True)
+        if normalized is None:
             return None, _not_image_error("base64://…", data)
-        url = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+        norm_data, mime = normalized
+        url = f"data:{mime};base64,{base64.b64encode(norm_data).decode('ascii')}"
 
     if url.startswith(("http://", "https://")):
         return [ImageUrl(url=url)], None
@@ -286,13 +375,14 @@ def _to_tool_image_content(
         data, dec_err = _decode_data_or_base64_uri(url)
         if dec_err or data is None:
             return None, dec_err or "❌ data:image 无效"
-        mime = _sniff_image_mime(data)
-        if mime is None:
+        normalized = _normalize_inline_image(data, flatten_animation=True)
+        if normalized is None:
             return None, _not_image_error("data:image/…", data)
+        norm_data, mime = normalized
         if provider in ("gemini", "anthropic"):
-            return [BinaryContent(data=data, media_type=mime)], None
+            return [BinaryContent(data=norm_data, media_type=mime)], None
         # openai 兼容（MiniMax 等）：DataURI ImageUrl；BinaryContent 会被当裸二进制
-        b64 = base64.b64encode(data).decode("ascii")
+        b64 = base64.b64encode(norm_data).decode("ascii")
         return [ImageUrl(url=f"data:{mime};base64,{b64}")], None
 
     return None, f"❌ 无法将 URL 规范为可注入图片: {url[:80]}"
@@ -429,9 +519,15 @@ async def read_image(
         return error
     assert image_url is not None
 
+    disable_direct = (
+        bool(ctx.deps.extra["disable_direct_image_injection"])
+        if ctx.deps.extra and "disable_direct_image_injection" in ctx.deps.extra
+        else False
+    )
     # 主模型支持多模态 → 注入会话原生看图（须二次校验，坏内容只回 str）
-    if _current_model_supports_image(ctx.deps.parent_session_id):
-        injected, inject_err = _to_tool_image_content(image_url, provider=_current_provider(ctx.deps.parent_session_id))
+    if not disable_direct and _current_model_supports_image(ctx.deps.parent_session_id):
+        provider = _current_provider(ctx.deps.parent_session_id)
+        injected, inject_err = _to_tool_image_content(image_url, provider=provider)
         if inject_err:
             return inject_err
         if injected is not None:
@@ -442,16 +538,20 @@ async def read_image(
             sheets = await _animation_sheets(image_url)
             if sheets is not None:
                 shown = f"{sheets.note}\n{shown}"
-                injected = [
-                    ImageUrl(url=f"data:image/jpeg;base64,{base64.b64encode(blob).decode('ascii')}")
-                    for blob in sheets.images
-                ]
+                if provider in ("gemini", "anthropic"):
+                    injected = [BinaryContent(data=blob, media_type="image/jpeg") for blob in sheets.images]
+                else:
+                    injected = [
+                        ImageUrl(url=f"data:image/jpeg;base64,{base64.b64encode(blob).decode('ascii')}")
+                        for blob in sheets.images
+                    ]
             return ToolReturn(
                 return_value=f"{note}\n{shown}" if note else shown,
                 content=injected,
             )
 
     # 不支持多模态 / 无法内联 → 文字转述
+    from gsuid_core.ai_core.utils import _is_image_payload_error
     from gsuid_core.ai_core.image_understand import understand_image
 
     # 仅吞 RuntimeError / HTTPError / TimeoutError 并重试一次；其它上抛
@@ -479,6 +579,8 @@ async def read_image(
                     e=e,
                 )
             )
+            if _is_image_payload_error(str(e)):
+                break
     if last_err is not None:
         return f"❌ 图片读取失败（已重试）：{last_err}"
 

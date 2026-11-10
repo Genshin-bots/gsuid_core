@@ -31,6 +31,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ThinkingPart,
     ToolCallPart,
+    BinaryContent,
     ModelResponse,
     ToolReturnPart,
     UserPromptPart,
@@ -694,11 +695,21 @@ async def handle_tool_result(
     return res_str
 
 
+def _bytes_to_normalized_data_uri(data: bytes, fallback_mime: str = "image/png") -> tuple[str, bytes, str]:
+    from gsuid_core.ai_core.buildin_tools.image_reader import _normalize_inline_image
+
+    normalized = _normalize_inline_image(data, flatten_animation=False)
+    if normalized is not None:
+        norm_data, mime = normalized
+        return f"data:{mime};base64,{base64.b64encode(norm_data).decode('ascii')}", norm_data, mime
+    return f"data:{fallback_mime};base64,{base64.b64encode(data).decode('ascii')}", data, fallback_mime
+
+
 def _file_to_data_uri(path: str) -> str:
     with open(path, "rb") as fh:
         data = fh.read()
-    mime = _guess_image_mime(path)
-    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    uri, _, _ = _bytes_to_normalized_data_uri(data, fallback_mime=_guess_image_mime(path))
+    return uri
 
 
 def _normalize_image_url(raw: str) -> str:
@@ -714,11 +725,36 @@ def _normalize_image_url(raw: str) -> str:
     if raw.startswith(("http://", "https://")):
         return raw
     if raw.startswith("base64://"):
-        return f"data:image/png;base64,{raw.removeprefix('base64://')}"
+        b64_payload = raw.removeprefix("base64://")
+        try:
+            decoded = base64.b64decode(b64_payload, validate=False)
+        except ValueError:
+            decoded = b""
+        if decoded:
+            uri, _, _ = _bytes_to_normalized_data_uri(decoded, fallback_mime="image/png")
+            return uri
+        return f"data:image/png;base64,{b64_payload}"
     if raw.startswith("data:image/"):
+        if ";base64," in raw:
+            _, _, b64_payload = raw.partition(";base64,")
+            try:
+                decoded = base64.b64decode(b64_payload, validate=False)
+            except ValueError:
+                decoded = b""
+            if decoded:
+                from gsuid_core.ai_core.buildin_tools.image_reader import _normalize_inline_image
+
+                normalized = _normalize_inline_image(decoded, flatten_animation=False)
+                if normalized is not None:
+                    norm_data, mime = normalized
+                    return f"data:{mime};base64,{base64.b64encode(norm_data).decode('ascii')}"
         return raw
     # 只对带图片后缀的短路径读盘，避免对裸 base64 做 isfile
-    if len(raw) <= 4096 and raw.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")) and os.path.isfile(raw):
+    if (
+        len(raw) <= 4096
+        and raw.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+        and os.path.isfile(raw)
+    ):
         return _file_to_data_uri(raw)
     return f"data:image/png;base64,{raw}"
 
@@ -772,12 +808,15 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
             resp = await client.get(raw)
             resp.raise_for_status()
             data = resp.content
-            mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-        if not mime.startswith("image/"):
-            mime = _guess_image_mime(raw)
-        b64 = base64.b64encode(data).decode("ascii")
-        logger.debug(i18n_t("log.ai.gscoreai_remote_image_materialized", mime=mime, p0=len(data)))
-        return f"data:{mime};base64,{b64}"
+            header_mime = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        fallback_mime = (
+            header_mime
+            if header_mime in ("image/png", "image/jpeg", "image/gif", "image/webp")
+            else _guess_image_mime(raw)
+        )
+        uri, norm_data, mime = _bytes_to_normalized_data_uri(data, fallback_mime=fallback_mime)
+        logger.debug(i18n_t("log.ai.gscoreai_remote_image_materialized", mime=mime, p0=len(norm_data)))
+        return uri
     except Exception as e:
         if strict:
             raise RuntimeError(i18n_t("远程图片下载失败，无法物化为 base64: {p0} ({e})", p0=raw[:120], e=e)) from e
@@ -2299,13 +2338,31 @@ def _drop_orphan_tool_results(history: List[ModelMessage]) -> List[ModelMessage]
     return cleaned
 
 
-def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
-    """剥离 history 中已过期的远程图片 URL（http/https）。
+_IMAGE_ERROR_HINTS: tuple[str, ...] = (
+    "image_url",
+    "unsupported image",
+    "invalid image",
+    "download image",
+    "image format",
+    "decode image",
+)
+_MESSAGES_IMAGE_ERR_RE = re.compile(r"\.messages\[\d+\]\.image", re.IGNORECASE)
 
-    远程图片在若干小时后其临时 URL 会失效，导致 provider 重试下载抛 500。
-    发现该错误时就地将 http/https ImageUrl 替换为纯文本占位符，避免卡死后续全部请求。
-    base64 DataURI 与 BinaryContent 不依赖外部下载，保留不动。
-    """
+
+def _is_image_payload_error(err_str: str) -> bool:
+    """异常信息是否指向图片载荷异常（过期外链 / 损坏 base64 / 不支持的图片格式）。"""
+    low = (err_str or "").lower()
+    if any(h in low for h in _IMAGE_ERROR_HINTS):
+        return True
+    return _MESSAGES_IMAGE_ERR_RE.search(low) is not None
+
+
+def _strip_remote_images_from_history(
+    history: List[ModelMessage],
+    *,
+    include_inline: bool = False,
+) -> int:
+    """剥离 history 中已过期的远程图片 URL（或被上游拒绝的内联图片）。"""
     removed = 0
     for msg in history:
         if not isinstance(msg, ModelRequest):
@@ -2319,8 +2376,16 @@ def _strip_remote_images_from_history(history: List[ModelMessage]) -> int:
             new_content: List[UserContent] = []
             changed = False
             for item in content:
-                if isinstance(item, ImageUrl) and item.url.startswith(("http://", "https://")):
-                    new_content.append("[图片已过期，无法再显示]")
+                if isinstance(item, ImageUrl) and (include_inline or item.url.startswith(("http://", "https://"))):
+                    new_content.append("[图片已失效，无法再显示]")
+                    changed = True
+                    removed += 1
+                elif (
+                    include_inline
+                    and isinstance(item, BinaryContent)
+                    and str(item.media_type or "").startswith("image/")
+                ):
+                    new_content.append("[图片已失效，无法再显示]")
                     changed = True
                     removed += 1
                 else:
