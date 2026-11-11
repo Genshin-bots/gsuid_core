@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
 from gsuid_core.ai_core.planning.tool_output_protocol import (
     load_payload_text,
+    is_raster_image_mime,
     format_paginated_body,
 )
 
@@ -80,7 +81,7 @@ async def _from_artifact(art: Any) -> ResolvedHandle:
     from gsuid_core.ai_core.planning.models import AIAgentTask
 
     mime = art.mime or "text/plain"
-    src = "image" if mime.startswith("image/") else "artifact"
+    src = "image" if (bool(art.payload_path) and is_raster_image_mime(mime)) else "artifact"
     size = 0
     if art.payload_inline:
         size = len(art.payload_inline.encode("utf-8"))
@@ -238,7 +239,7 @@ def format_resolved(
     offset: int = 0,
     limit: int = 8000,
 ) -> str:
-    if resolved.source == "image" or resolved.mime.startswith("image/"):
+    if resolved.source == "image" or (bool(resolved.payload_path) and is_raster_image_mime(resolved.mime)):
         return (
             f"handle {resolved.id} | kind=image | mime={resolved.mime}\n"
             f"summary: {resolved.summary}\n"

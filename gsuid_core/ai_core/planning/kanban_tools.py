@@ -918,8 +918,10 @@ async def artifact_put(
             select_data={"id": plan_ctx.task_id},
             update_data={"output_artifact_id": art.id},
         )
+    from gsuid_core.ai_core.planning.tool_output_protocol import is_raster_image_mime
+
     binary_hint = ""
-    if art.payload_path and art.mime and art.mime.startswith("image/"):
+    if art.payload_path and art.mime and is_raster_image_mime(art.mime):
         binary_hint = "（真实图片文件，主人格可 send_message_by_ai 直发）"
     elif art.payload_path:
         binary_hint = "（落盘文件）"

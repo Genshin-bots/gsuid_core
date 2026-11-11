@@ -461,11 +461,13 @@ async def send_message_by_ai(
 
                         await release_image_delivery(ev, img_id)
                         occupied_res_ids.remove(img_id)
+                    # 仍有本调用认领的待发图片占用时保留旗标，禁止借文本句柄提前解锁委派
+                    if ctx.deps is not None and not occupied_res_ids:
+                        ctx.deps.extra["delivery_has_image"] = False
                     failed_notes.append(
-                        f"❌ 资源ID: {img_id} 是文本类 Kanban artifact（非图片字节），"
-                        f"请用 artifact_get('{img_id}') 取原文后："
-                        f"短文用 text 参数发送，长文/多数据用 render_html_to_image 出图。"
-                        f"要原样发文件请改用 file_ids 参数。"
+                        f"❌ 资源ID: {img_id} 是文本类 Kanban artifact（非光栅图片字节），"
+                        f'请委派 create_subagent(agent_profile="render_agent", task=传入该句柄与事实包) 出图，'
+                        f"短文改用 text 参数，原样发文件改用 file_ids 参数。"
                     )
             else:
                 try:

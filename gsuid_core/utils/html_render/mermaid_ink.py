@@ -137,9 +137,12 @@ def adapt_mermaid_svg(svg: str) -> str:
     root.set("data-gs-mermaid", "1")
     root.set("width", _num(box_w))
     root.set("height", _num(box_h))
-    root.set("style", f"width:{box_w:.1f}px;height:{box_h:.1f}px;")
+    root.set("style", f"display:block;max-width:100%;width:{box_w:.1f}px;height:auto;margin:0 auto;")
     xml = etree.tostring(root, encoding="unicode")
-    return f'<div style="margin:8px 0;line-height:0;">{xml}</div>'
+    return (
+        '<div style="margin:10px 0;padding:12px 14px;line-height:0;width:100%;'
+        f'background:#ffffff;border-radius:12px;overflow:hidden;box-sizing:border-box;">{xml}</div>'
+    )
 
 
 def _svg_or_error(response: httpx.Response) -> str:

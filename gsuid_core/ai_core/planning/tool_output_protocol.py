@@ -41,6 +41,12 @@ _DISCLAIMER_MARKERS = (
 )
 
 
+def is_raster_image_mime(mime: str) -> bool:
+    """IM 可直接作为图片发送的光栅图像 MIME（排除文本类 image/svg+xml）。"""
+    m = (mime or "").strip().lower()
+    return m.startswith("image/") and not m.startswith("image/svg")
+
+
 def looks_like_handle_card(text: str) -> bool:
     """已是句柄卡正文 → 禁止再落盘/折叠。"""
     body = (text or "").lstrip()
@@ -205,7 +211,7 @@ class PersistedHandleCard:
                     "long_structured=true → 当前人格未启用出图委派：禁止委派 render_agent，"
                     "用一两句概括 summary 交付给用户，禁止把对照表整段念进气泡"
                 )
-        if self.mime.startswith("image/"):
+        if self.kind == "image" and is_raster_image_mime(self.mime):
             lines.append("image=true → send_message_by_ai(image_id=本id) 直发，勿 read_handle 当文本")
         head = (self.inline_head or "").strip()
         if head:

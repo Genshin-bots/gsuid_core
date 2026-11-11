@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import json
 import zlib
 import base64
@@ -264,3 +265,214 @@ def test_claims_inflight_without_backend() -> None:
     by_name = {t.name: t for t in stabilized}
     assert "list_plugin_commands" in by_name and "run_bot_command" in by_name
     assert by_name["send_message_by_ai"].function is autonomy_send
+
+
+def test_render_chart_and_html_self_healing() -> None:
+    from gsuid_core.utils.html_render import _sanitize_for_takumi_engine
+    from gsuid_core.ai_core.buildin_tools.chart_svg import chart_spec_to_svg
+    from gsuid_core.ai_core.buildin_tools.html_render_tools import (
+        _TRANSPARENT_1PX_PNG,
+        _fallback_icon_svg,
+        _prepare_free_html,
+        embed_photo_block_reason,
+        _collect_auto_embed_sources,
+    )
+
+    assert embed_photo_block_reason("<div>自定义信息图</div>", embed_on=True, searched=False, found=False) is None
+    assert (
+        embed_photo_block_reason(
+            '<div class="gs-page layout-dashboard theme-slate"></div>',
+            embed_on=True,
+            searched=False,
+            found=False,
+        )
+        is None
+    )
+    blocked = embed_photo_block_reason(
+        '<div class="gs-page layout-feature theme-ocean"></div>',
+        embed_on=True,
+        searched=False,
+        found=False,
+    )
+    assert blocked is not None and "find_images" in blocked
+
+    broken_html = (
+        '<div class="gs-page theme-ink">'
+        '<div class="gs-card"><div class="gs-kv">'
+        '<div class="gs-k">指标A</div><div class="gs-v">100</div>'
+        '<div class="gs-k">指标B</div><div class="gs-v">200</div>'
+        "</div></div>"
+        '<div class="gs-tip"><div class="gs-card-title">结论</div><div class="gs-text">谨慎观察</div></div>'
+        "<table><tr><th>名称</th><th>数值</th></tr><tr><td>样本1</td><td>42</td></tr></table>"
+        "</div>"
+    )
+    healed = _prepare_free_html(broken_html)
+    assert 'class="gs-kv-list"' in healed and healed.count('<div class="gs-kv">') == 2
+    assert 'class="gs-tip stack"' in healed
+    assert ":first-child" not in healed and ".md-table-row + .md-table-row" in healed
+
+    signed_svg = chart_spec_to_svg(
+        {
+            "type": "bar",
+            "signed": True,
+            "data": [
+                {"label": "短期", "value": "+1.5%"},
+                {"label": "中期", "value": "-25%"},
+                {"label": "全年", "value": "+180%"},
+            ],
+        }
+    )
+    assert "+1.5%" in signed_svg and "+180%" in signed_svg and "-25%" in signed_svg
+    assert 'height="0.' not in signed_svg
+
+    bench_svg = chart_spec_to_svg(
+        {
+            "type": "benchmark",
+            "width": 340,
+            "data": [
+                {"label": "方案甲", "sub": "新版架构", "value": "280元", "highlight": True},
+                {"label": "方案乙", "sub": "旧版基线", "value": "31.6秒"},
+            ],
+        }
+    )
+    assert "280元" in bench_svg and "新版架构" in bench_svg and 'fill-opacity="0.22"' in bench_svg
+    for m in re.finditer(r'<text x="([0-9.]+)"[^>]*>280元</text>', bench_svg):
+        assert float(m.group(1)) <= 290.0
+
+    phrasing_healed = _prepare_free_html(
+        '<div class="gs-page"><div class="td">场次<b>持平微降</b>，转化率回升</div>'
+        '<div class="lbox">第一行<br>第二行</div></div>'
+    )
+    assert '<div style="min-width:0">场次<b>持平微降</b>，转化率回升</div>' in phrasing_healed
+    assert '<div style="min-width:0">第一行<br>第二行</div>' in phrasing_healed
+
+    sanitized = _sanitize_for_takumi_engine('<div style="background:linear-gradient(135deg,#111,#222)">A ⇔ B ⇒ C</div>')
+    assert "⇔" not in sanitized and "⇒" not in sanitized and "↔" in sanitized and "→" in sanitized
+    assert "background-repeat:no-repeat" in sanitized
+
+    mixed_assets = "".join(f'<img src="img_p{i:02d}">' for i in range(20)) + "".join(
+        f'<img src="icon:mdi/num-{i}">' for i in range(25)
+    )
+    collected = _collect_auto_embed_sources(mixed_assets)
+    assert len(collected) == 45 and "icon:mdi/num-24" in collected
+
+    pre_healed = _prepare_free_html("<style>.box{color:#eee;}</style><div class='box'><pre>x = 1</pre></div>")
+    assert pre_healed.index("takumi-pre-reset") < pre_healed.index(".box{color:#eee;}")
+
+    wide_in_cols = _prepare_free_html(
+        '<div class="cols"><div class="card">左卡</div>'
+        '<div class="card"><div class="tbl"><div class="tr">'
+        '<div class="td">1</div><div class="td">2</div><div class="td">3</div>'
+        '<div class="td">4</div><div class="td">5</div></div></div></div></div>'
+    )
+    assert "flex-direction:column;grid-template-columns:1fr" in wide_in_cols
+
+    levels_svg = chart_spec_to_svg(
+        {
+            "type": "levels",
+            "data": [
+                {"label": "上界", "value": 210, "role": "high"},
+                {"label": "当前位", "value": 146, "role": "current"},
+                {"label": "下界", "value": 130, "role": "low"},
+            ],
+        }
+    )
+    assert 'stroke-dasharray="5 3"' in levels_svg and "146" in levels_svg
+
+    donut_svg = chart_spec_to_svg(
+        {
+            "type": "donut",
+            "width": 360,
+            "data": [{"label": "核心项", "value": 60}, {"label": "其余十二项长名合计", "value": 40}],
+        }
+    )
+    assert ">合计<" in donut_svg and ">100<" in donut_svg and "其余十二项长名合计" not in donut_svg
+
+    px_raw = base64.b64decode(_TRANSPARENT_1PX_PNG.split(",", 1)[1])
+    px_im = Image.open(io.BytesIO(px_raw)).convert("RGBA")
+    assert px_im.getpixel((0, 0)) == (0, 0, 0, 0)
+    assert b"#0e7490" in _fallback_icon_svg("0e7490")
+
+    nth_sanitized = _sanitize_for_takumi_engine("<style>.tbl .tr:nth-child(even) .td{background:#f7fafc;}</style>")
+    assert ":nth-child" not in nth_sanitized and ":__takumi_zebra_noop__" in nth_sanitized
+
+    aligned_tbl = _prepare_free_html(
+        '<table><tr><th style="width:45%">项目</th><th style="width:55%">说明</th></tr>'
+        "<tr><td>甲</td><td>详情文本</td></tr></table>"
+    )
+    assert "width:45%" not in aligned_tbl and aligned_tbl.count("flex:") >= 4
+
+    nested_span_flex = _prepare_free_html(
+        "<style>.codec{background:#0b1220;padding:12px}</style>"
+        '<div class="tr"><span class="td">样本甲<span class="code">001</span></span>'
+        '<span class="td">24.5</span></div>'
+        '<div class="kv"><span class="kk">总量指标</span>'
+        '<span class="kv2">468.2 <span class="up">+7.1%</span></span></div>'
+    )
+    assert '<div class="tr"><span class="td">样本甲' in nested_span_flex
+    assert '<div class="kv"><span class="kk">总量指标' in nested_span_flex
+    assert "color:#e2e8f0" in nested_span_flex
+
+    hbar_neg_svg = chart_spec_to_svg(
+        {
+            "type": "hbar",
+            "signed": True,
+            "width": 420,
+            "data": [
+                {"label": "类别甲近三月", "value": -105.51, "unit": "亿"},
+                {"label": "类别乙近三月", "value": 16.94, "unit": "亿"},
+            ],
+        }
+    )
+    cat_m = re.search(r'<text x="([0-9.]+)"[^>]*>类别甲近三月</text>', hbar_neg_svg)
+    neg_m = re.search(r'<text x="([0-9.]+)"[^>]*>-105\.51亿</text>', hbar_neg_svg)
+    assert cat_m is not None and neg_m is not None
+    assert float(neg_m.group(1)) - float(cat_m.group(1)) >= 75.0
+
+    from gsuid_core.ai_core.planning.handle_resolver import ResolvedHandle, format_resolved
+    from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard, is_raster_image_mime
+
+    assert is_raster_image_mime("image/png") and is_raster_image_mime("image/jpeg")
+    assert not is_raster_image_mime("image/svg+xml")
+    svg_card = PersistedHandleCard(
+        id="res_svg001",
+        kind="artifact",
+        mime="image/svg+xml",
+        summary="三合一矢量图",
+        size_bytes=512,
+        long_structured=True,
+        render_allowed=True,
+    ).format()
+    assert "image=true" not in svg_card and "render_agent" in svg_card
+    svg_resolved = format_resolved(
+        ResolvedHandle(
+            id="res_svg001",
+            source="artifact",
+            mime="image/svg+xml",
+            summary="三合一矢量图",
+            owner_user_id="100000001",
+            scope_key="u:100000001",
+            payload_inline="<svg><rect/></svg>",
+            payload_path="",
+            size_bytes=18,
+        )
+    )
+    assert "<svg><rect/></svg>" in svg_resolved and "send_message_by_ai(image_id=" not in svg_resolved
+
+    from gsuid_core.ai_core.buildin_tools.chart_svg import register_chart_svg, resolve_chart_placeholders
+    from gsuid_core.ai_core.buildin_tools.html_render_tools import _UNRESOLVED_CHART_PLACEHOLDER_RE
+
+    cid = register_chart_svg(levels_svg)
+    expanded_html = _prepare_free_html(f'<div class="card">{{{{{cid}}}}}</div>')
+    assert cid not in expanded_html and "<svg" in expanded_html
+    assert resolve_chart_placeholders(f"<div>__{cid}__</div>").startswith("<div><svg")
+    assert _UNRESOLVED_CHART_PLACEHOLDER_RE.search("<div>__CHART_MONTH__</div>") is not None
+    assert _UNRESOLVED_CHART_PLACEHOLDER_RE.search("<div>{{chart_missing}}</div>") is not None
+
+    wrapped_cjk = _sanitize_for_takumi_engine(
+        "<div><span>-12.53%</span>、<span>-19.22%</span>、-16.15%，区间 18.5~24.2</div>"
+    )
+    assert "、\u200b<span>-19.22%</span>" in wrapped_cjk
+    assert "、\u200b-16.15%" in wrapped_cjk
+    assert "18.5~\u200b24.2" in wrapped_cjk
+    assert _sanitize_for_takumi_engine(wrapped_cjk) == wrapped_cjk

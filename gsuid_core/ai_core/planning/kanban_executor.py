@@ -53,7 +53,7 @@ _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 def _artifact_text_excerpt(arts: List[AIAgentArtifact], *, limit: int = 4000) -> str:
     """拼接 text/* artifact 正文摘要（优先 inline，再读 path），供主人格转述。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text, is_raster_image_mime
 
     if limit <= 0 or not arts:
         return ""
@@ -63,7 +63,7 @@ def _artifact_text_excerpt(arts: List[AIAgentArtifact], *, limit: int = 4000) ->
         if remaining <= 0:
             break
         mime = (a.mime or "text/plain").strip().lower()
-        if mime.startswith("image/"):
+        if is_raster_image_mime(mime):
             continue
         body, err = load_payload_text(
             payload_inline=a.payload_inline,
@@ -346,9 +346,11 @@ async def _persona_relay(
         arts = await AIAgentArtifact.list_for_task(task.id)
         artifact_block: str = ""
         if arts:
-            # 排序：图片落盘 > 其它落盘 > 纯 inline 文本；同档按时间倒序（最新先）
+            from gsuid_core.ai_core.planning.tool_output_protocol import is_raster_image_mime
+
+            # 排序：光栅图片落盘 > 其它落盘 > 纯 inline 文本；同档按时间倒序（最新先）
             def _priority(a: AIAgentArtifact) -> int:
-                if a.payload_path and a.mime.startswith("image/"):
+                if a.payload_path and is_raster_image_mime(a.mime):
                     return 0
                 if a.payload_path:
                     return 1
@@ -356,7 +358,7 @@ async def _persona_relay(
 
             sorted_arts = sorted(arts, key=lambda a: (_priority(a), -a.created_at.timestamp()))
             recommended: Optional[AIAgentArtifact] = next(
-                (a for a in sorted_arts if a.payload_path and a.mime.startswith("image/")),
+                (a for a in sorted_arts if a.payload_path and is_raster_image_mime(a.mime)),
                 None,
             ) or next((a for a in sorted_arts if a.payload_path), None)
 
@@ -553,14 +555,14 @@ def _format_delivery_for_main_agent(
 ) -> str:
     """拼给主人格的交付包：与 PersistedHandleCard 同形，禁止全文塞 prompt。"""
     _ = raw_result
-    from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard
+    from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard, is_raster_image_mime
 
     cards: List[str] = []
     primary = ""
     primary_is_image = False
     for a in arts[:8]:
         mime = a.mime or "text/plain"
-        is_img = bool(mime.startswith("image/"))
+        is_img = bool(a.payload_path) and is_raster_image_mime(mime)
         size = len((a.payload_inline or "").encode("utf-8")) if a.payload_inline else 0
         card = PersistedHandleCard(
             id=a.id,
@@ -579,7 +581,7 @@ def _format_delivery_for_main_agent(
             primary_is_image = True
     if not primary and arts:
         primary = arts[0].id
-        primary_is_image = bool((arts[0].mime or "").startswith("image/"))
+        primary_is_image = bool(arts[0].payload_path) and is_raster_image_mime(arts[0].mime or "")
 
     owner = (task.owner_user_id or "").strip()
     parts = [

@@ -25,19 +25,34 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.html_render import im_templates, render_md_to_bytes, render_html_to_bytes
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.buildin_tools.chart_svg import resolve_chart_placeholders
 from gsuid_core.ai_core.buildin_tools.render_kit import PHOTO_LAYOUTS, page_layout, inject_render_kit
 
 # 嵌图上限：防 agent 把数 MB 原图塞进 HTML 撑爆上下文
 _EMBED_MAX_BYTES = 450_000
 _EMBED_HTTP_TIMEOUT = 12.0
-_EMBED_USER_AGENT = "GsCore-HTMLEmbed/1.0 (+local-render)"
-# 单次 HTML 自动嵌图：并发与数量上限（通用，不按业务域特判）
-_AUTO_EMBED_MAX_IMAGES = 32
+_EMBED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 GsCore-HTMLEmbed/1.0"
+# 单次 HTML 自动嵌图：位图资源与轻量矢量图标分开计数，防多图标挤掉后半段 icon:
+_AUTO_EMBED_MAX_IMAGES = 40
+_AUTO_EMBED_MAX_ICONS = 96
 # 840 逻辑宽 × 2 倍像素比，满宽头图要 1680px 才不糊；嵌入图最长边仍是 1280
 _AUTO_EMBED_MAX_SIDE = 1280
-_AUTO_EMBED_CONCURRENCY = 6
-# Iconify 按需单图标（约 1KB），替代本地 100MB 图标包
-_ICONIFY_SVG_URL = "https://api.iconify.design/{prefix}/{name}.svg"
+_AUTO_EMBED_CONCURRENCY = 4
+_ICONIFY_CACHE_MAX = 512
+_ICONIFY_SVG_CACHE: dict[str, bytes] = {}
+_ICONIFY_RAW_CACHE: dict[str, tuple[int, int, int, int, str]] = {}
+_ICONIFY_API_HOSTS = (
+    "https://api.iconify.design",
+    "https://api.simplesvg.com",
+    "https://api.unisvg.com",
+)
+_ICON_NAME_FALLBACKS: dict[str, str] = {
+    "pagoda": "temple-buddhist",
+    "globe-outline": "earth",
+    "call-split": "source-fork",
+    "monitor-question": "monitor-eye",
+    "mountain": "image-filter-hdr",
+}
 _ICON_SOURCE_RE = re.compile(
     r"^icon:(?P<prefix>[a-z0-9-]+)/(?P<name>[a-z0-9-]+)"
     r"(?:\?color=(?:#|%23)?(?P<color>[0-9a-f]{3}|[0-9a-f]{6}))?$",
@@ -53,24 +68,38 @@ _CSS_URL_RE = re.compile(
     r"url\(\s*(?P<q>['\"]?)(?P<src>(?:https?://|icon:|img_|res_)[^'\"\)\s]+?)(?P=q)\s*\)",
     re.IGNORECASE,
 )
-# 解析失败时的 1×1 透明 PNG，避免布局塌成破图占位文字
+_UNRESOLVED_CHART_PLACEHOLDER_RE = re.compile(
+    r"__(?:CHART|SVG|PLOT|GRAPH)[A-Z0-9_]*__"
+    r"|\{\{\s*(?:chart|svg|plot|graph)[^}]*\}\}",
+    re.IGNORECASE,
+)
+# 解析失败时的真正 RGBA(0,0,0,0) 1×1 全透明 PNG（旧常量误用半透明红像素会导致粉色方块）
 _TRANSPARENT_1PX_PNG = (
     "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
 )
-# Takumi 引擎基础 CSS，不强制 body 背景色以避免覆盖浅色主题。
+_TAKUMI_PRE_RESET_CSS = """
+/* takumi-pre-reset */
+pre{padding:14px 16px;border-radius:12px;background:rgba(128,128,128,0.12);
+  border:1px solid rgba(128,128,128,0.22);color:inherit;
+  font-family:"Mono",Consolas,Menlo,monospace;font-size:14.5px;line-height:1.58;white-space:pre-wrap;}
+code{font-family:"Mono",Consolas,Menlo,monospace;}
+"""
+
+# Takumi 引擎基础 CSS，不强制 body 背景或内边距，避免覆盖自由排版主题。
 _TAKUMI_ENGINE_HYGIENE_CSS = """
 /* engine hygiene — not a visual theme */
 img{max-width:100%;height:auto;}
-/* chips: only block CJK vertical wrap; do not override display/padding.
+/* chips & keys: block 2-char CJK vertical crush in flex rows.
    不要给 tag 加 border-box，Takumi shrink-to-fit 会把 padding 从字宽里扣掉。 */
-.tag,.badge,.chip,.pill,.label{
+.tag,.badge,.chip,.pill,.label,.kv-k,.kv-key{
   white-space:nowrap;
   word-break:keep-all;
   writing-mode:horizontal-tb;
   width:auto;
   flex-shrink:0;
 }
+.ico,.icon,.icon-box,.ch-ico,.sec-ico,.h2-ico{flex-shrink:0;}
 /* brand/logo: single horizontal run, not stacked glyphs in a square */
 .logo,.brand,.brand-mark,.icon-label{
   writing-mode:horizontal-tb;white-space:nowrap;word-break:keep-all;
@@ -295,11 +324,214 @@ def _rewrite_html_tables(html: str) -> str:
     return _inject_style(rewritten, md_table_flex_css(theme="layout"))
 
 
+_GS_KV_PAIR_RE = re.compile(
+    r'(<(?:div|span)\b[^>]*\bclass=["\'][^"\']*\bgs-k\b[^"\']*["\'][^>]*>'
+    r"(?:(?!</?(?:div|span)\b).)*</(?:div|span)>\s*"
+    r'<(?:div|span)\b[^>]*\bclass=["\'][^"\']*\bgs-v\b[^"\']*["\'][^>]*>'
+    r"(?:(?!</?(?:div|span)\b).)*</(?:div|span)>)",
+    re.IGNORECASE | re.DOTALL,
+)
+_GS_KV_MULTI_RE = re.compile(
+    r'<div\s+class=(["\'])gs-kv\1>\s*'
+    r"((?:<(?:div|span)\b[^>]*\bclass=[\"'][^\"']*\bgs-k\b[^\"']*[\"'][^>]*>"
+    r"(?:(?!</?(?:div|span)\b).)*</(?:div|span)>\s*"
+    r"<(?:div|span)\b[^>]*\bclass=[\"'][^\"']*\bgs-v\b[^\"']*[\"'][^>]*>"
+    r"(?:(?!</?(?:div|span)\b).)*</(?:div|span)>\s*){2,})</div>",
+    re.IGNORECASE | re.DOTALL,
+)
+_GS_TIP_BLOCK_RE = re.compile(
+    r'<div\s+class=(["\'])gs-tip\1>((?:(?!</div>\s*</div>).)*?)</div>',
+    re.IGNORECASE | re.DOTALL,
+)
+_LEAF_DIV_RE = re.compile(
+    r"(<div\b[^>]*>)((?:(?!</?div\b).)+)(</div>)",
+    re.IGNORECASE | re.DOTALL,
+)
+_BLOCK_OR_MEDIA_TAG_RE = re.compile(
+    r"<(?:p|section|article|header|footer|ul|ol|li|table|tr|td|th|svg|img|pre|blockquote|hr|h[1-6])\b",
+    re.IGNORECASE,
+)
+_INLINE_TYPO_TAG_RE = re.compile(
+    r"<(?:br|b|strong|em|i|code|mark|small|sub|sup|u|s|span)\b",
+    re.IGNORECASE,
+)
+_EMPTY_SPAN_RE = re.compile(r"<span\b[^>]*>\s*</span>", re.IGNORECASE)
+_INNER_PAIRED_INLINE_RE = re.compile(
+    r"<(b|strong|em|i|code|mark|small|sub|sup|u|s|span|a)\b[^>]*>"
+    r"(?:(?!</?\1\b).)*</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
+_CSS_RULE_RE = re.compile(r"([^{}@]+)\{([^{}]*)\}")
+_DARK_HEX_BG_RE = re.compile(
+    r"(?:^|;|\s)background(?:-color)?\s*:\s*#(?:[01][0-9a-f]{5}|2[0-6][0-9a-f]{4}|[01][0-9a-f]{2})\b",
+    re.IGNORECASE,
+)
+_CSS_COLOR_PROP_RE = re.compile(r"(?:^|;|\s)color\s*:", re.IGNORECASE)
+
+
+def _heal_dark_surface_contrast(html: str) -> str:
+    """深底容器（#00..#26）漏写 color 时自动补亮色字，防浅色页内嵌暗色代码卡黑字撞黑底。"""
+
+    def _patch_rule(rm: re.Match[str]) -> str:
+        sel, body = rm.group(1), rm.group(2)
+        if "::" in sel or _CSS_COLOR_PROP_RE.search(body) or not _DARK_HEX_BG_RE.search(body):
+            return rm.group(0)
+        sep = "" if body.rstrip().endswith(";") or not body.strip() else ";"
+        return f"{sel}{{{body}{sep}color:#e2e8f0}}"
+
+    def _patch_style(sm: re.Match[str]) -> str:
+        return f"{sm.group(1)}{_CSS_RULE_RE.sub(_patch_rule, sm.group(2))}{sm.group(3)}"
+
+    return _STYLE_BLOCK_RE.sub(_patch_style, html)
+
+
+def _heal_flex_phrasing_leaves(html: str) -> str:
+    """自愈 flex 叶子容器内的行内混排（防 <br> 横向拆列及 <b>/<span> 纵向断行，保留多列 <span> 表格行）。"""
+
+    def _wrap_leaf(m: re.Match[str]) -> str:
+        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
+        if not _INLINE_TYPO_TAG_RE.search(inner):
+            return m.group(0)
+        if _BLOCK_OR_MEDIA_TAG_RE.search(inner) or _EMPTY_SPAN_RE.search(inner):
+            return m.group(0)
+        stripped = inner
+        for _ in range(8):
+            nxt = _INNER_PAIRED_INLINE_RE.sub("", stripped)
+            if nxt == stripped:
+                break
+            stripped = nxt
+        has_top_br = bool(re.search(r"<br\b", stripped, flags=re.I))
+        bare = re.sub(r"<[^>]+>", "", stripped).strip()
+        if not has_top_br and not bare:
+            return m.group(0)
+        return f'{open_tag}<div style="min-width:0">{inner}</div>{close_tag}'
+
+    return _LEAF_DIV_RE.sub(_wrap_leaf, html)
+
+
+_DIV_TOKEN_RE = re.compile(r"<div\b[^>]*>|</div>", re.IGNORECASE)
+_TWO_COL_CLS_TOKENS = frozenset({"cols", "cols-2", "col-2", "grid-2", "two-col", "two-cols", "gs-grid", "split-2"})
+_TR_CLS_RE = re.compile(r'\bclass\s*=\s*["\'][^"\']*\b(?:tr|trow|table-row)\b', re.IGNORECASE)
+_TD_CELL_RE = re.compile(r'<(?:div|span)\b[^>]*\bclass=["\'][^"\']*\b(?:td|cell)\b', re.IGNORECASE)
+_TR_HTML_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+
+
+def _contains_wide_table(fragment: str) -> bool:
+    for tr_m in _TR_HTML_RE.finditer(fragment):
+        if len(re.findall(r"<t[dh]\b", tr_m.group(1), flags=re.I)) >= 5:
+            return True
+    stack: list[tuple[int, str]] = []
+    for dm in _DIV_TOKEN_RE.finditer(fragment):
+        tok = dm.group(0)
+        if tok.lower().startswith("</div"):
+            if not stack:
+                continue
+            inner_start, open_tok = stack.pop()
+            if _TR_CLS_RE.search(open_tok) and len(_TD_CELL_RE.findall(fragment[inner_start : dm.start()])) >= 5:
+                return True
+        else:
+            stack.append((dm.end(), tok))
+    return False
+
+
+def _is_two_col_open_tag(open_tag: str) -> bool:
+    cls_m = re.search(r'\bclass\s*=\s*["\']([^"\']+)["\']', open_tag, flags=re.I)
+    if cls_m:
+        tokens = set(cls_m.group(1).lower().split())
+        if "cols-3" not in tokens and (tokens & _TWO_COL_CLS_TOKENS):
+            return True
+    sty_m = re.search(r'\bstyle\s*=\s*["\']([^"\']+)["\']', open_tag, flags=re.I)
+    if sty_m:
+        sty = sty_m.group(1).lower()
+        if "1fr 1fr" in sty or "repeat(2," in sty.replace(" ", ""):
+            return True
+    return False
+
+
+def _heal_wide_tables_in_two_col(html: str) -> str:
+    """当双列并排容器内塞入 ≥5 列的宽表时自动改为纵向全宽堆叠，防数字竖向挤碎。"""
+    stack: list[tuple[int, int, str]] = []
+    patches: list[tuple[int, int, str]] = []
+    for m in _DIV_TOKEN_RE.finditer(html):
+        tok = m.group(0)
+        if tok.lower().startswith("</div"):
+            if not stack:
+                continue
+            start_idx, end_open, open_tag = stack.pop()
+            if _is_two_col_open_tag(open_tag) and _contains_wide_table(html[end_open : m.start()]):
+                if re.search(r'\bstyle\s*=\s*["\']', open_tag, flags=re.I):
+                    new_tag = re.sub(
+                        r'(\bstyle\s*=\s*["\'])([^"\']*)(["\'])',
+                        r"\1\2;flex-direction:column;grid-template-columns:1fr\3",
+                        open_tag,
+                        count=1,
+                        flags=re.I,
+                    )
+                else:
+                    new_tag = open_tag[:-1] + ' style="flex-direction:column;grid-template-columns:1fr">'
+                patches.append((start_idx, end_open, new_tag))
+        else:
+            stack.append((m.start(), m.end(), tok))
+    if not patches:
+        return html
+    out = html
+    for s_idx, e_idx, replacement in sorted(patches, key=lambda x: x[0], reverse=True):
+        out = out[:s_idx] + replacement + out[e_idx:]
+    return out
+
+
+def _heal_common_kit_traps(html: str) -> str:
+    """自愈高频排版误用：多对键值挤单行 .gs-kv、无图标多块 .gs-tip、双栏塞宽表、深底漏字色、flex 叶子行内混排。"""
+    html = _heal_dark_surface_contrast(html)
+    html = _heal_wide_tables_in_two_col(html)
+    if "gs-kv" in html:
+
+        def _split_kv(m: re.Match[str]) -> str:
+            pairs = _GS_KV_PAIR_RE.findall(m.group(2))
+            if len(pairs) < 2:
+                return m.group(0)
+            rows = "".join(f'<div class="gs-kv">{p}</div>' for p in pairs)
+            return f'<div class="gs-kv-list">{rows}</div>'
+
+        html = _GS_KV_MULTI_RE.sub(_split_kv, html)
+
+    if "gs-tip" in html:
+
+        def _stack_tip(m: re.Match[str]) -> str:
+            inner = m.group(2)
+            if "gs-ico" in inner or "<img" in inner.lower():
+                return m.group(0)
+            if "gs-card-title" in inner or len(re.findall(r"<div\b", inner, flags=re.I)) >= 2:
+                return f'<div class="gs-tip stack">{inner}</div>'
+            return m.group(0)
+
+        html = _GS_TIP_BLOCK_RE.sub(_stack_tip, html)
+
+    return _heal_flex_phrasing_leaves(html)
+
+
+def _prepend_style(html: str, css: str) -> str:
+    """把低优先级默认样式前置到首个 <style> 之前，让 agent 自写规则优先胜出。"""
+    block = f"<style>\n{css}\n</style>\n"
+    lower = html.lower()
+    head = re.search(r"<head\b[^>]*>", lower)
+    if head is not None:
+        return html[: head.end()] + "\n" + block + html[head.end() :]
+    first_style = lower.find("<style")
+    if first_style != -1:
+        return html[:first_style] + block + html[first_style:]
+    return block + html
+
+
 def _prepare_free_html(html_content: str) -> str:
-    """自由 HTML 预处理：不套设计壳；用到 ``gs-`` 类时前置组件库；table 改写；引擎卫生 CSS。"""
-    html = html_content.strip()
+    """自由 HTML 预处理：展开图表句柄；自愈误用；按需前置组件库；table/SVG 改写；卫生 CSS。"""
+    html = resolve_chart_placeholders(html_content.strip())
     if not html:
         return html
+    html = _heal_common_kit_traps(html)
+    if "<pre" in html.lower() and "takumi-pre-reset" not in html:
+        html = _prepend_style(html, _TAKUMI_PRE_RESET_CSS)
     html = inject_render_kit(html)
     html = _rewrite_html_tables(html)
     from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
@@ -880,17 +1112,32 @@ def _shrink_raster_if_needed(data: bytes, *, max_side: int, max_bytes: int) -> b
     return out
 
 
-async def _download_url_bytes(url: str) -> Tuple[Optional[bytes], Optional[str]]:
-    """GET 图片 URL。成功 (bytes, None)；失败 (None, 中文错误)。"""
-    try:
-        async with httpx.AsyncClient(
-            timeout=_EMBED_HTTP_TIMEOUT,
-            follow_redirects=True,
-            headers={"User-Agent": _EMBED_USER_AGENT},
-        ) as client:
-            resp = await client.get(url)
-    except httpx.HTTPError as e:
-        return None, f"下载失败: {type(e).__name__}: {e}"
+async def _download_url_bytes(
+    url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """GET 图片 URL（带退避重试）。成功 (bytes, None)；失败 (None, 中文错误)。"""
+    resp: httpx.Response | None = None
+    last_err = ""
+    for attempt in range(3):
+        try:
+            if client is not None and attempt == 0:
+                resp = await client.get(url)
+            else:
+                async with httpx.AsyncClient(
+                    timeout=_EMBED_HTTP_TIMEOUT,
+                    follow_redirects=True,
+                    headers={"User-Agent": _EMBED_USER_AGENT},
+                ) as tmp_client:
+                    resp = await tmp_client.get(url)
+            break
+        except httpx.HTTPError as e:
+            last_err = f"下载失败: {type(e).__name__}: {e}"
+            if attempt < 2:
+                await asyncio.sleep(0.35 * (attempt + 1))
+    if resp is None:
+        return None, last_err or "下载失败: 网络不可达"
     if resp.status_code >= 400:
         return None, f"下载失败: HTTP {resp.status_code}"
     data = resp.content
@@ -898,28 +1145,120 @@ async def _download_url_bytes(url: str) -> Tuple[Optional[bytes], Optional[str]]
         return None, "下载失败: 空响应"
     if len(data) > 5_000_000:
         return None, "下载失败: 文件超过 5MB"
-    ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    raw_ct = resp.headers["content-type"] if "content-type" in resp.headers else ""
+    ctype = raw_ct.split(";")[0].strip().lower()
     if ctype and not (
         ctype.startswith("image/") or ctype in ("application/octet-stream", "binary/octet-stream") or "svg" in ctype
     ):
-        # 部分 CDN 不给 image/*；靠魔数兜底
         if _sniff_image_mime(data) == "image/png" and not data.startswith(b"\x89PNG"):
-            # default sniff may false-positive; check for html error page
             if data.lstrip()[:1] in (b"<", b"{") and b"<svg" not in data[:800].lower():
                 return None, f"下载失败: Content-Type 非图片 ({ctype or 'unknown'})"
     return data, None
 
 
-def _iconify_url(prefix: str, name: str, color: Optional[str]) -> str:
+def _iconify_url(prefix: str, name: str, color: Optional[str], *, host: str = "https://api.iconify.design") -> str:
     """``<img>`` 里的 SVG 不吃 CSS color，着色只能让 Iconify 出图时填。"""
-    url = _ICONIFY_SVG_URL.format(prefix=prefix, name=name)
+    url = f"{host}/{prefix}/{name}.svg"
     if color:
         url += f"?color=%23{color.lower()}"
     return url
 
 
+def _normalize_icon_name(prefix: str, name: str) -> str:
+    if prefix == "mdi" and name in _ICON_NAME_FALLBACKS:
+        return _ICON_NAME_FALLBACKS[name]
+    return name
+
+
+def _store_iconify_raw(key: str, entry: tuple[int, int, int, int, str]) -> None:
+    if len(_ICONIFY_RAW_CACHE) >= _ICONIFY_CACHE_MAX:
+        _ICONIFY_RAW_CACHE.pop(next(iter(_ICONIFY_RAW_CACHE)))
+    _ICONIFY_RAW_CACHE[key] = entry
+
+
+def _render_iconify_svg(entry: tuple[int, int, int, int, str], color: str | None) -> bytes:
+    left, top, w, h, body = entry
+    hex_c = f"#{color.lower()}" if color else "currentColor"
+    colored = body.replace("currentColor", hex_c) if color else body
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+        f'viewBox="{left} {top} {w} {h}">{colored}</svg>'
+    )
+    return svg.encode("utf-8")
+
+
+def _fallback_icon_svg(color: str | None) -> bytes:
+    """图标名不存在或网络彻底离线时合成同色系几何矢量徽章，杜绝空圆圈与破图块。"""
+    hex_c = f"#{color.lower()}" if color else "#64748b"
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">'
+        f'<circle cx="12" cy="12" r="8.2" stroke="{hex_c}" stroke-width="2" stroke-opacity="0.88"/>'
+        f'<circle cx="12" cy="12" r="3.1" fill="{hex_c}"/></svg>'
+    )
+    return svg.encode("utf-8")
+
+
+async def _prefetch_iconify_batch(sources: list[str], client: httpx.AsyncClient) -> None:
+    """按 prefix 合并拉取整页 Iconify JSON，把 30+ 次单图标请求压缩为 1 次并支持多源容灾。"""
+    by_prefix: dict[str, list[str]] = {}
+    for src in sources:
+        m = _ICON_SOURCE_RE.match(src.strip())
+        if m is None:
+            continue
+        prefix = m.group("prefix").lower()
+        name = _normalize_icon_name(prefix, m.group("name").lower())
+        key = f"{prefix}/{name}"
+        if key in _ICONIFY_RAW_CACHE:
+            continue
+        if prefix not in by_prefix:
+            by_prefix[prefix] = []
+        if name not in by_prefix[prefix]:
+            by_prefix[prefix].append(name)
+
+    for prefix, names in by_prefix.items():
+        for start in range(0, len(names), 48):
+            chunk = names[start : start + 48]
+            query = ",".join(chunk)
+            payload: dict[str, object] | None = None
+            for host in _ICONIFY_API_HOSTS:
+                url = f"{host}/{prefix}.json?icons={query}"
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        parsed: object = resp.json()
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                            break
+                except (httpx.HTTPError, ValueError):
+                    continue
+            if payload is None:
+                continue
+            def_w = payload["width"] if "width" in payload and isinstance(payload["width"], int) else 24
+            def_h = payload["height"] if "height" in payload and isinstance(payload["height"], int) else 24
+            icons_map = payload["icons"] if "icons" in payload and isinstance(payload["icons"], dict) else {}
+            aliases_map = payload["aliases"] if "aliases" in payload and isinstance(payload["aliases"], dict) else {}
+            for req_name in chunk:
+                target = req_name
+                if target not in icons_map and target in aliases_map:
+                    al_obj = aliases_map[target]
+                    if isinstance(al_obj, dict) and "parent" in al_obj and isinstance(al_obj["parent"], str):
+                        target = al_obj["parent"]
+                if target not in icons_map:
+                    continue
+                ic_obj = icons_map[target]
+                if not isinstance(ic_obj, dict) or "body" not in ic_obj or not isinstance(ic_obj["body"], str):
+                    continue
+                left = ic_obj["left"] if "left" in ic_obj and isinstance(ic_obj["left"], int) else 0
+                top = ic_obj["top"] if "top" in ic_obj and isinstance(ic_obj["top"], int) else 0
+                iw = ic_obj["width"] if "width" in ic_obj and isinstance(ic_obj["width"], int) else def_w
+                ih = ic_obj["height"] if "height" in ic_obj and isinstance(ic_obj["height"], int) else def_h
+                _store_iconify_raw(f"{prefix}/{req_name}", (left, top, iw, ih, ic_obj["body"]))
+
+
 async def _resolve_embed_source_bytes(
     source: str,
+    *,
+    client: httpx.AsyncClient | None = None,
 ) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     """解析嵌图来源 → (bytes, mime_hint, error)。"""
     from gsuid_core.utils.image.image_io import unwrap_image_url, decode_data_or_base64_uri
@@ -935,22 +1274,30 @@ async def _resolve_embed_source_bytes(
             return None, None, dec_err or "data URI 解析失败"
         return decoded, _sniff_image_mime(decoded), None
 
-    # Iconify 按需单图标：icon:prefix/name
+    # Iconify 矢量图标：优先命中批量预热缓存，未命中则轮询多镜像，缺名降级同色几何图标
     m = _ICON_SOURCE_RE.match(raw)
     if m is not None:
         prefix = m.group("prefix").lower()
-        name = m.group("name").lower()
-        url = _iconify_url(prefix, name, m.group("color"))
-        data, err = await _download_url_bytes(url)
-        if err is not None or data is None:
-            return None, None, f"图标拉取失败 ({prefix}/{name}): {err or '空响应'}"
-        if b"<svg" not in data[:800].lower():
-            return None, None, f"图标拉取失败: 非 SVG 响应 ({prefix}/{name})"
-        return data, "image/svg+xml", None
+        name = _normalize_icon_name(prefix, m.group("name").lower())
+        color = m.group("color")
+        raw_key = f"{prefix}/{name}"
+        if raw_key in _ICONIFY_RAW_CACHE:
+            return _render_iconify_svg(_ICONIFY_RAW_CACHE[raw_key], color), "image/svg+xml", None
+        cache_url = _iconify_url(prefix, name, color)
+        if cache_url in _ICONIFY_SVG_CACHE:
+            return _ICONIFY_SVG_CACHE[cache_url], "image/svg+xml", None
+        for host in _ICONIFY_API_HOSTS:
+            data, err = await _download_url_bytes(_iconify_url(prefix, name, color, host=host), client=client)
+            if err is None and data is not None and b"<svg" in data[:800].lower():
+                if len(_ICONIFY_SVG_CACHE) >= _ICONIFY_CACHE_MAX:
+                    _ICONIFY_SVG_CACHE.pop(next(iter(_ICONIFY_SVG_CACHE)))
+                _ICONIFY_SVG_CACHE[cache_url] = data
+                return data, "image/svg+xml", None
+        return _fallback_icon_svg(color), "image/svg+xml", None
 
     # http(s)
     if raw.startswith("http://") or raw.startswith("https://"):
-        data, err = await _download_url_bytes(raw)
+        data, err = await _download_url_bytes(raw, client=client)
         if err is not None:
             return None, None, err
         assert data is not None
@@ -991,9 +1338,10 @@ async def _source_to_data_uri(
     source: str,
     *,
     max_side: int = _AUTO_EMBED_MAX_SIDE,
+    client: httpx.AsyncClient | None = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """解析来源 → (data_uri, error)。"""
-    data, mime, err = await _resolve_embed_source_bytes(source)
+    data, mime, err = await _resolve_embed_source_bytes(source, client=client)
     if err is not None or data is None:
         return None, err or "未知错误"
     data = _shrink_raster_if_needed(data, max_side=max_side, max_bytes=_EMBED_MAX_BYTES)
@@ -1006,20 +1354,22 @@ async def _source_to_data_uri(
 
 
 def _collect_auto_embed_sources(html: str) -> list[str]:
-    """收集 HTML 内需自动嵌图的唯一 src（img + CSS url），保序去重。"""
+    """收集 HTML 内需自动嵌图的唯一 src（位图与 icon: 矢量图标分桶限流）。"""
     seen: set[str] = set()
-    ordered: list[str] = []
-    for m in _IMG_SRC_ATTR_RE.finditer(html):
-        src = m.group("src").strip()
-        if _needs_auto_embed(src) and src not in seen:
+    images: list[str] = []
+    icons: list[str] = []
+    for regex in (_IMG_SRC_ATTR_RE, _CSS_URL_RE):
+        for m in regex.finditer(html):
+            src = m.group("src").strip()
+            if not _needs_auto_embed(src) or src in seen:
+                continue
             seen.add(src)
-            ordered.append(src)
-    for m in _CSS_URL_RE.finditer(html):
-        src = m.group("src").strip()
-        if _needs_auto_embed(src) and src not in seen:
-            seen.add(src)
-            ordered.append(src)
-    return ordered[:_AUTO_EMBED_MAX_IMAGES]
+            if src.lower().startswith("icon:"):
+                if len(icons) < _AUTO_EMBED_MAX_ICONS:
+                    icons.append(src)
+            elif len(images) < _AUTO_EMBED_MAX_IMAGES:
+                images.append(src)
+    return images + icons
 
 
 async def _auto_embed_html_images(html: str) -> str:
@@ -1035,17 +1385,24 @@ async def _auto_embed_html_images(html: str) -> str:
     sem = asyncio.Semaphore(_AUTO_EMBED_CONCURRENCY)
     resolved: dict[str, str] = {}
 
-    async def _one(src: str) -> None:
-        async with sem:
-            uri, err = await _source_to_data_uri(src)
-            if uri is not None:
-                resolved[src] = uri
-                logger.info(t("log.ai.auto_embed_ok", src=repr(src[:96]), uri_len=len(uri)))
-            else:
-                resolved[src] = _TRANSPARENT_1PX_PNG
-                logger.warning(t("log.ai.auto_embed_fail", src=repr(src[:96]), err=err))
+    async with httpx.AsyncClient(
+        timeout=_EMBED_HTTP_TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": _EMBED_USER_AGENT},
+    ) as shared_client:
+        await _prefetch_iconify_batch(sources, shared_client)
 
-    await asyncio.gather(*(_one(s) for s in sources))
+        async def _one(src: str) -> None:
+            async with sem:
+                uri, err = await _source_to_data_uri(src, client=shared_client)
+                if uri is not None:
+                    resolved[src] = uri
+                    logger.info(t("log.ai.auto_embed_ok", src=repr(src[:96]), uri_len=len(uri)))
+                else:
+                    resolved[src] = _TRANSPARENT_1PX_PNG
+                    logger.warning(t("log.ai.auto_embed_fail", src=repr(src[:96]), err=err))
+
+        await asyncio.gather(*(_one(s) for s in sources))
 
     def _repl_img(m: re.Match[str]) -> str:
         src = m.group("src").strip()
@@ -1069,29 +1426,24 @@ _PHOTO_HANDLE_RE = re.compile(r"""src\s*=\s*["']img_""", re.IGNORECASE)
 
 
 def embed_photo_block_reason(html: str, *, embed_on: bool, searched: bool, found: bool) -> str | None:
-    """嵌入配图开启且版式需要照片时，没搜过或搜到了却没写进 HTML，就拒绝渲染。
+    """嵌入配图开启且显式选用图文画册版式（feature / gallery / magazine）时，强制先搜并嵌入照片。
 
-    没声明 ``layout-*`` 按需要照片处理。
+    自由定制 HTML（未声明 ``layout-*``）或数据/对比/架构版式不强制照片，允许纯图表与图标排版。
     """
     if not embed_on or _PHOTO_HANDLE_RE.search(html):
         return None
     layout = page_layout(html)
-    if layout is not None and layout not in PHOTO_LAYOUTS:
+    if layout is None or layout not in PHOTO_LAYOUTS:
         return None
-    undeclared = (
-        "gs-page 上没有声明 layout-*：先按内容选一个版式。数据看板 / 排行 / 对比 / 时间线 / 简报不强制照片。"
-        if layout is None
-        else ""
-    )
     if not searched:
         return (
-            f"{undeclared}layout-{layout or 'feature'} 需要照片，还没有拉图。"
+            f"layout-{layout} 需要实景/对象照片，还没有拉图。"
             "先调一次 find_images（主题图 + 每个主要对象一个词），把返回的 img_ 句柄写进 HTML 再渲染。"
             "task 里写图源缺失、官方图拉不到，仍然要搜。"
         )
     if found:
         return (
-            f"{undeclared}find_images 已经返回了 img_ 句柄，HTML 里一张都没用。"
+            "find_images 已经返回了 img_ 句柄，HTML 里一张都没用。"
             "把句柄写进照片槽位（gs-hero / gs-split-media / gs-cover / gs-thumb）后再渲染。"
         )
     return None
@@ -1105,40 +1457,37 @@ async def render_html_to_image(
     image_format: Literal["png", "jpeg"] = "png",
     max_width: int = 840,
 ) -> str | bytes:
-    """将 HTML 渲染为手机竖屏长图并自动发送。**render_agent 出图主工具**。
+    """将 HTML 渲染为高质感编辑级信息图长图并自动发送。**render_agent 出图主工具**。
 
     主人格应 ``create_subagent(agent_profile="render_agent", task=...)`` 委派，勿自行堆 HTML。
     整份事实包只渲**一张**：多区块写在同一 HTML 里，不要连调本工具。
 
-    ## 组件库（推荐）
-    外层写 ``<div class="gs-page layout-xxx theme-xxx">``，版式按内容形态选：
-    feature / gallery / magazine（需要照片）、dashboard / ranking / compare / timeline / brief
-    （照片可选）。用 ``gs-`` 组件拼版（hero / band / split / stat-hero / section / card / cover /
-    media / grid / tile / rank / compare / quote / steps / kpis / timeline / kv / tip / footer）；
-    用到 ``gs-`` 类时系统自动注入组件 CSS，自写 ``<style>`` 可覆盖。
-    主题：paper / ocean / forest / sunset / sakura / violet / slate / ink（ink 为暗色）。
+    ## 视觉与版式自由度（两种路径均可，鼓励按主题创意定制）
+    1. **自由定制编辑级信息图**：自写完整 ``<style>`` 定制配色、渐变、圆角卡片、巨型核心指标（68–88px）、
+       对比高亮框（accent border + 柔和 box-shadow）与多栏网格；深色（#07090e 曜石黑 + 青/紫/金霓虹强调）
+       与浅色（#f8fafc 杂志纸感白 + 深石板字 + 高饱和语义色）均可按内容气质自由选择。
+    2. **gs- 组件加速混排**：外层可选 ``<div class="gs-page layout-xxx theme-xxx">``，用到 ``gs-`` 类时自动前置注入
+       基础 CSS（paper / ocean / forest / sunset / sakura / violet / slate 浅色；ink / obsidian 暗色），
+       自写 ``<style>`` 排在后面可任意覆盖扩展。
 
-    ## 图片
-    - 嵌入配图开启且版式需要照片（feature / gallery / magazine，或没声明版式）时，必须先
-      ``find_images``，再把返回的 ``img_`` 写进 HTML，否则拒绝渲染。搜过且一张都没有，才允许改用图标。
-    - 其余版式照片可选：数据看板的主图是图表，排行 / 对比可放 logo 或缩略图。
-    - 嵌入配图关闭时不要调 ``find_images``。
-    - 照片必须放进带圆角的容器（``gs-hero`` / ``gs-split-media`` / ``gs-cover`` / ``gs-thumb`` /
-      ``gs-avatar``），
-      img 是容器第一个子元素。Takumi 只在容器有 border-radius 时裁切；
-      **禁止**用 ``background-image`` 放照片，**禁止**给裸 ``<img>`` 写 margin / 固定高度。
-    - 图标：``<img src="icon:mdi/map-marker?color=1d6fb8">``（Iconify，颜色要写在 src 里）。
+    ## 图标、照片与图表
+    - **语义图标（强烈推荐）**：章节标题、指标卡、对比项、提示框积极使用彩色 Iconify 图标：
+      ``<img src="icon:mdi/compass-outline?color=0284c7" width="22" height="22">``（颜色不带 #）。
+    - **实景照片**：旅游/美食/人物/展品等具象题材且开启嵌入配图时，先调 ``find_images`` 拿 ``img_`` 句柄放入带
+      ``border-radius`` + ``overflow:hidden`` 的容器；抽象概念/数据分析/技术原理解析无需强凑无关网图。
+    - **数据图表**：≥3 个可比数值先调 ``render_chart_spec``（可选 ``benchmark`` 胶囊对标条、``levels`` 非零锚定
+      关键位阶梯、``bar``/``hbar`` 正负比例柱、``line`` 趋势线、``donut`` 环形占比），直接把返回头注释里的
+      ``{{chart_xxxxxxxx}}`` 句柄或完整 ``<svg>`` 放进卡片（严禁自造 ``__CHART_*__`` 占位符）。
+    - **状态机 / 架构流程 / 时序图**：支持 ``<pre class="mermaid">stateDiagram-v2 ...</pre>``
+      （服务端自动转高清矢量图），也可手写精美的内联 ``<svg>`` 或 HTML Flex 状态流卡片呈现机制细节。
 
-    ## 硬约束
-    - 逻辑宽默认 840，上限 1000。高度随内容，整图高宽比不超过 3.8。
-    - 字号：正文 18–20px，辅助 ≥15px，标题 ≥36px；禁止 14px 以下的正文。
-    - 整页不透明底；明暗 token 自洽（暗底浅字 / 浅底深字），定义 background 必须同级写 color。
-    - 字重 MiSans VF 轴 150–700：正文 400，小节 520，标题 630，大数字 700；800/900 无效。
-    - 无 JS / float / 列表符号 / 伪元素排版；布局用 flex 或基础 grid。
-    - Mermaid 用 class="mermaid" 或 language-mermaid。服务向 mermaid.ink 取 SVG 再出图，
-      不要在页面里引 mermaid.js。服务不可用时只有该块变成黑底红字，整页仍出图。
-    - ``<table>`` 会被改写成 flex 行：禁 rowspan/colspan、禁 ``td.xxx`` 选择器；价格与涨跌拆两列。
-    - ≥3 个可比数值先 ``render_chart_spec`` 拿 SVG 再嵌；多实体传 ``series`` + 图例。
+    ## Takumi 引擎硬红线（违者排版崩坏）
+    - 逻辑宽默认 840（上限 1000），整图高宽比 ≤ 4.0，整页必须有不透明底色，深浅字色高对比自洽。
+    - **严禁**使用 ``:first-child`` / ``:last-child``（Takumi 不支持，必失效）；间距用 ``gap`` 或相邻兄弟 ``+``。
+    - **防两字竖排挤压**：左右横排（flex row）中，左侧标签/键名/图标容器**必须**写 ``flex:none; white-space:nowrap;``！
+    - **防贴边零留白**：带边框或底色的卡片内部必须有 ``padding: 20px 22px``，
+      纵向堆叠容器必须设 ``display:flex; flex-direction:column; gap:16px``。
+    - 字重 MiSans VF 轴 150–700（正文 400、小标题 600、主标题/大数字 700；800/900 无效）。无 JS / float / 伪元素排版。
 
     Args:
         ctx: 工具执行上下文
@@ -1151,6 +1500,17 @@ async def render_html_to_image(
     """
     if not html_content or not html_content.strip():
         return "渲染失败：HTML内容不能为空"
+
+    html_content = resolve_chart_placeholders(html_content)
+    probe_body = re.sub(r"<(pre|code)\b[^>]*>.*?</\1>", "", html_content, flags=re.I | re.S)
+    unresolved_m = _UNRESOLVED_CHART_PLACEHOLDER_RE.search(probe_body)
+    if unresolved_m is not None:
+        tok = unresolved_m.group(0)[:48]
+        return (
+            f"⚠️ 渲染中止（未消耗出图额度）：HTML 含未展开的图表占位符 `{tok}`。"
+            "请改用 render_chart_spec 返回头注释中的 `{{chart_xxxxxxxx}}` 句柄或内联真实 `<svg>…</svg>` 后，"
+            "重新调用一次 render_html_to_image。"
+        )
 
     from gsuid_core.ai_core.configs.ai_config import render_embed_images_enabled
 

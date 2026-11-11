@@ -7,9 +7,13 @@ HTML渲染工具模块
 
 from __future__ import annotations
 
+import re
 import asyncio
-from typing import Any, Literal, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Optional
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from pytakumi import Renderer as _TakumiRenderer
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -267,6 +271,136 @@ def _root_max_width_css(root_max_width: float | None) -> str:
     return f".pytakumi-root{{max-width:{float(root_max_width)}px;}}"
 
 
+_TAKUMI_GLYPH_TABLE = str.maketrans(
+    {
+        "⇒": "→",
+        "➜": "→",
+        "➔": "→",
+        "➝": "→",
+        "➞": "→",
+        "⟶": "→",
+        "⟹": "→",
+        "⇐": "←",
+        "⟵": "←",
+        "⟸": "←",
+        "⇔": "↔",
+        "⇌": "↔",
+        "▸": "▶",
+        "▹": "▶",
+        "▷": "▶",
+        "◁": "◀",
+        "✗": "✕",
+        "✘": "✕",
+    }
+)
+_GRADIENT_BG_RE = re.compile(
+    r"(?<![-\w])background\s*:\s*([^;{}<>\"']*(?:linear|radial|conic)-gradient\([^;{}<>\"']*\)(?:[^;{}<>\"']*))",
+    re.IGNORECASE,
+)
+_STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
+_TAKUMI_NTH_RE = re.compile(r":nth-(?:child|of-type)\(\s*(?:even|odd|\d*n[^)]*)\s*\)", re.IGNORECASE)
+_RAW_BLOCK_RE = re.compile(
+    r"<!--.*?-->|<(style|script|svg|pre)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_INLINE_OPEN_TAG_RE = re.compile(r"^<(?:span|b|strong|em|i|code)\b", re.IGNORECASE)
+_CJK_PUNCT_NUM_RE = re.compile(r"([、，；])(?=[-+~0-9A-Za-z])")
+_DIGIT_TILDE_RE = re.compile(r"(?<=\d)~(?=\d)")
+
+
+def _inject_cjk_wrap_opportunities(html: str) -> str:
+    """在顿号/逗号后紧跟行内数字标签处补零宽断行点，防 Takumi 整串不折行导致右缘裁切。"""
+    kept: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        kept.append(m.group(0))
+        return f"\x00TAKUMI_BLK_{len(kept) - 1}\x00"
+
+    masked = _RAW_BLOCK_RE.sub(_stash, html)
+    tokens = re.split(r"(<[^>]+>)", masked)
+    for idx in range(0, len(tokens), 2):
+        txt = tokens[idx]
+        if not txt:
+            continue
+        txt = _CJK_PUNCT_NUM_RE.sub("\\1\u200b", txt)
+        txt = _DIGIT_TILDE_RE.sub("~\u200b", txt)
+        if txt[-1] in "、，；" and idx + 1 < len(tokens) and _INLINE_OPEN_TAG_RE.match(tokens[idx + 1]):
+            txt = f"{txt}\u200b"
+        tokens[idx] = txt
+    rebuilt = "".join(tokens)
+    for idx, block in enumerate(kept):
+        rebuilt = rebuilt.replace(f"\x00TAKUMI_BLK_{idx}\x00", block)
+    return rebuilt
+
+
+def _sanitize_for_takumi_engine(html: str) -> str:
+    """替换缺字箭头、补中文标点断行点、屏蔽空白节点 nth-child 斑马纹并补渐变 no-repeat。"""
+    if not html:
+        return html
+    out = html.replace("&hArr;", "↔").replace("&rArr;", "→").replace("&lArr;", "←").translate(_TAKUMI_GLYPH_TABLE)
+    out = _inject_cjk_wrap_opportunities(out)
+    out = _STYLE_BLOCK_RE.sub(
+        lambda m: f"{m.group(1)}{_TAKUMI_NTH_RE.sub(':__takumi_zebra_noop__', m.group(2))}{m.group(3)}",
+        out,
+    )
+
+    def _add_no_repeat(m: re.Match[str]) -> str:
+        val = m.group(1)
+        if "no-repeat" in val.lower():
+            return m.group(0)
+        return f"{m.group(0)};background-repeat:no-repeat"
+
+    return _GRADIENT_BG_RE.sub(_add_no_repeat, out)
+
+
+def _html_to_pic_stepdown(
+    html: str,
+    *,
+    width: int,
+    height: int | None,
+    fmt: _RenderFormat,
+    quality: int | None,
+    css: str | None = None,
+    stylesheets: list[str] | None = None,
+    renderer: "_TakumiRenderer | None",
+    dpr: float | None,
+    font_families: list[str],
+    lang: str | None,
+) -> bytes:
+    """超长图触发 pytakumi 64MP 视口上限时自动降档 DPR 重试，保证一次出图。"""
+    logical_w = width / dpr if (dpr is not None and dpr > 1.0) else float(width)
+    candidates: list[float | None] = [dpr]
+    if dpr is not None and dpr > 1.0:
+        for step in (1.5, 1.25, 1.0):
+            if step < dpr:
+                candidates.append(None if step == 1.0 else step)
+
+    last_err: Exception | None = None
+    for idx, cur_dpr in enumerate(candidates):
+        scale = cur_dpr if cur_dpr is not None else 1.0
+        cur_w = width if idx == 0 else max(1, round(logical_w * scale))
+        try:
+            return html_to_pic(
+                html,
+                width=cur_w,
+                height=height,
+                format=fmt,
+                quality=quality,
+                css=css,
+                stylesheets=stylesheets,
+                renderer=renderer,
+                device_pixel_ratio=cur_dpr,
+                font_families=font_families,
+                lang=lang,
+            )
+        except (ValueError, RuntimeError) as e:
+            last_err = e
+            if "Invalid viewport dimensions" not in str(e) or idx == len(candidates) - 1:
+                raise
+    assert last_err is not None
+    raise last_err
+
+
 def _sync_render_html(
     html: str,
     *,
@@ -301,17 +435,17 @@ def _sync_render_html(
     from gsuid_core.utils.html_render.mermaid_ink import expand_mermaid_in_html
     from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
 
-    # 先改图表 SVG，再嵌入 mermaid，避免 1:1 的 mermaid 被拉成通栏
-    html = expand_mermaid_in_html(rewrite_svg_charts_for_takumi(html))
-    return html_to_pic(
+    # 先改图表 SVG，再嵌入 mermaid，最后修正引擎渐变与缺字码位
+    html = _sanitize_for_takumi_engine(expand_mermaid_in_html(rewrite_svg_charts_for_takumi(html)))
+    return _html_to_pic_stepdown(
         html,
         width=width,
         height=height,
-        format=fmt,
+        fmt=fmt,
         quality=quality,
         css=css,
         renderer=renderer,
-        device_pixel_ratio=_dpr_from_dpi(dpi),
+        dpr=_dpr_from_dpi(dpi),
         font_families=_font_families(font_name),
         lang=lang or None,
     )
@@ -372,7 +506,7 @@ def _sync_render_md(
     from gsuid_core.utils.html_render.svg_chart_rewrite import rewrite_svg_charts_for_takumi
 
     body_html = expand_mermaid_in_html(rewrite_svg_charts_for_takumi(rewrite_tables_for_takumi(markdown_to_html(md))))
-    html = wrap_markdown_html(body_html)
+    html = _sanitize_for_takumi_engine(wrap_markdown_html(body_html))
     gh_css = load_template("github-markdown-dark.css" if dark else "github-markdown.css")
     sheets: list[str] = [gh_css]
     if "md-table" in body_html and ".md-table" not in gh_css:
@@ -382,15 +516,15 @@ def _sync_render_md(
         sheets.append(md_table_flex_css(markdown_body=True, theme="dark" if dark else "light"))
     if css:
         sheets.append(css)
-    return html_to_pic(
+    return _html_to_pic_stepdown(
         html,
         width=width,
         height=None,
-        format=fmt,
+        fmt=fmt,
         quality=quality,
         stylesheets=sheets,
         renderer=renderer,
-        device_pixel_ratio=_dpr_from_dpi(dpi),
+        dpr=_dpr_from_dpi(dpi),
         font_families=_font_families(None),
         lang="zh",
     )

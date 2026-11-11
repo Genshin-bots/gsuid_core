@@ -628,32 +628,30 @@ async def render_card(title: str, lines: list[str]) -> bytes:
 
 ## 10. Agent 写 HTML 前检查清单
 
-- [ ] 是否优先使用了 `im_templates`？
-- [ ] 是否通过 `render_html_to_bytes` 渲染，而不是裸调 pytakumi？
-- [ ] 中文字体栈是否包含 `MiSans`？
-- [ ] 字重是否落在 330–700（标题 630 / 正文 330–400；勿写 800/900）？
-- [ ] 代码块是否使用 `"Mono", Consolas, Menlo, monospace`？
-- [ ] 布局是否主要使用 flexbox？
-- [ ] 是否避免了 `display:table`、`float`、原生 `<ul>` marker？
-- [ ] 是否避免了远程资源和 JavaScript？
-- [ ] 用户内容是否 HTML 转义？
-- [ ] 是否避免使用 `✗`、`✘`、`▸` 等可能缺字的符号？
-- [ ] 空内容是否有兜底，避免高度为 0？
-- [ ] ≥3 个可比数值是否先 `render_chart_spec` 再嵌 SVG（禁止 CSS 色条冒充图）？
-- [ ] 多实体对比是否用 `series`+图例，而不是把身份拍扁进 label？
+- [ ] 是否通过 `render_html_to_bytes` / `render_html_to_image` 渲染，而不是裸调 pytakumi？
+- [ ] 中文字体栈是否包含 `MiSans`，字重落在 `150–700`（正文 400、小标题 600、主标题/大数字 700；勿写 800/900）？
+- [ ] 是否**禁用**了 Takumi 不支持的 `:first-child` / `:last-child`，改用 `gap` 或相邻兄弟选择器 `+`？
+- [ ] 横排 flex 行中，左侧键名/标签/图标外框是否显式写了 `flex: none; white-space: nowrap`（防中文两字竖排挤压）？
+- [ ] 卡片内部是否有 `padding: 20px 22px`，纵向堆叠容器是否设了 `display: flex; flex-direction: column; gap: 16px`？
+- [ ] 是否避免了 `display:table`、`float`、原生 `<ul>` marker、照片用 `background-image`？
+- [ ] 彩色语义图标是否使用 `icon:mdi/<name>?color=<hex>`（十六进制不带 `#`）？
+- [ ] ≥3 个可比数值是否按形态选对 `render_chart_spec`（`benchmark` 胶囊对标、`levels` 非零锚定关键位阶梯、`bar`/`hbar` 正负比例柱、`line` 趋势、`donut` 环形图），且 `dark` 参数与卡片底色一致？
+- [ ] 状态转移 / 架构流程图是否使用 `<pre class="mermaid">`（服务端经 `mermaid_ink` 转自适应矢量图）或结构化卡片？
 
 ---
 
 ## 11. 相关代码与测试
 
 - 渲染封装：`gsuid_core/utils/html_render/__init__.py`
-- IM 模板：`gsuid_core/utils/html_render/im_templates.py`
-- 迁移回归测试：`tests/test_pytakumi_migration.py`
-- 模板测试：`tests/test_im_templates.py`
-- 图表编码：`tests/test_chart_encoding_and_inflight.py` / `gsuid_core/ai_core/buildin_tools/chart_svg.py`
+- SVG 图表缩放与文字提升：`gsuid_core/utils/html_render/svg_chart_rewrite.py`
+- Mermaid 矢量转换：`gsuid_core/utils/html_render/mermaid_ink.py`
+- 声明式图表原语：`gsuid_core/ai_core/buildin_tools/chart_svg.py`
+- 组件库与 HTML 出图工具：`gsuid_core/ai_core/buildin_tools/render_kit.py`、`gsuid_core/ai_core/buildin_tools/html_render_tools.py`
+- 版式画廊实测脚本：`eval/manual/render_layout_gallery.py`
+- 单元防线：`tests/test_tool_registry.py`
 
 运行验证：
 
 ```powershell
-python -m pytest tests/test_pytakumi_migration.py tests/test_im_templates.py
+uv run --dev pytest tests/test_tool_registry.py -q
 ```

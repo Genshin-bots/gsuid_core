@@ -158,21 +158,23 @@ def _span_from_text(
         return ""
     x = _num_attr(attrs, "x", 0.0) + extra_xy[0]
     y = _num_attr(attrs, "y", 0.0) + extra_xy[1]
-    fs = _num_attr(attrs, "font-size", 12.0)
-    if fs <= 0:
-        fs = 12.0
+    fs_raw = _num_attr(attrs, "font-size", 12.0)
+    if fs_raw <= 0:
+        fs_raw = 12.0
     fill = attrs["fill"] if "fill" in attrs and attrs["fill"] else "#e2e8f0"
     weight = attrs["font-weight"] if "font-weight" in attrs else ""
     dx, dy = _translate_delta(attrs["transform"] if "transform" in attrs else "")
     x += dx
     y += dy
-    # SVG y 是基线；HTML top 是盒顶，上移约 0.8em
-    top = y - fs * 0.82
+    # SVG y 是基线；按 viewBox 字号折算盒顶偏移，缩放后仍对齐图形
+    top = y - fs_raw * 0.82
     bw, bh = box
     if bw <= 0:
         bw = 1.0
     if bh <= 0:
         bh = 1.0
+    scale = min(1.25, 680.0 / bw) if 420.0 <= bw < 640.0 else 1.0
+    fs_css = max(11.5, fs_raw * scale) if bw >= 420.0 else max(10.5, fs_raw)
     left_pct = x / bw * 100.0
     top_pct = top / bh * 100.0
     anchor = (attrs["text-anchor"] if "text-anchor" in attrs else "start").strip().lower()
@@ -183,7 +185,7 @@ def _span_from_text(
     else:
         tx = "none"
     weight_css = f"font-weight:{weight};" if weight else ""
-    style = f"left:{left_pct:.2f}%;top:{top_pct:.2f}%;font-size:{fs:.1f}px;color:{fill};transform:{tx};{weight_css}"
+    style = f"left:{left_pct:.2f}%;top:{top_pct:.2f}%;font-size:{fs_css:.1f}px;color:{fill};transform:{tx};{weight_css}"
     return f'<span class="svg-label" style="{style}">{_esc_html(body)}</span>'
 
 

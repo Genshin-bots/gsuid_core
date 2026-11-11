@@ -65,8 +65,27 @@ def _classes_from_open_tag(cell_open_tag: str) -> list[str]:
     return [t for t in _CLASS_TOKEN_RE.findall(m.group(1)) if t]
 
 
+def _cell_width_hint(cell_open_tag: str) -> float | None:
+    """提取 th/td 上的显式列宽提示（百分比或 px），统一折算为列权重。"""
+    m_style = re.search(
+        r'style\s*=\s*["\'][^"\']*(?<![-\w])width\s*:\s*(\d+(?:\.\d+)?)\s*(%|px)?',
+        cell_open_tag,
+        flags=re.I,
+    )
+    if m_style:
+        val = float(m_style.group(1))
+        unit = (m_style.group(2) or "px").lower()
+        return val if unit == "%" else val / 8.0
+    m_attr = re.search(r'\bwidth\s*=\s*["\']?(\d+(?:\.\d+)?)(%|px)?', cell_open_tag, flags=re.I)
+    if m_attr:
+        val = float(m_attr.group(1))
+        unit = (m_attr.group(2) or "px").lower()
+        return val if unit == "%" else val / 8.0
+    return None
+
+
 def _inline_style_from_open_tag(cell_open_tag: str) -> str:
-    """保留 text-align 以外的 inline style（颜色/字重等）。"""
+    """保留颜色/字重等视觉内联样式，剥除单格 width/flex 防止表头与表体列缝错位。"""
     m = re.search(r'style\s*=\s*["\']([^"\']*)["\']', cell_open_tag, flags=re.I)
     if not m:
         return ""
@@ -75,10 +94,47 @@ def _inline_style_from_open_tag(cell_open_tag: str) -> str:
         d = decl.strip()
         if not d:
             continue
-        if re.match(r"text-align\s*:", d, flags=re.I):
+        if re.match(r"(?:text-align|(?:min-|max-)?width|flex(?:-grow|-shrink|-basis)?)\s*:", d, flags=re.I):
             continue
         parts.append(d)
     return "; ".join(parts)
+
+
+def _plain_visual_len(cell_html: str) -> float:
+    text = re.sub(r"<[^>]+>", "", cell_html)
+    text = re.sub(r"&[a-zA-Z]+;|&#\d+;", " ", text)
+    text = " ".join(text.split())
+    return sum(2.0 if ord(ch) > 127 else 1.0 for ch in text)
+
+
+def _column_flex_weights(
+    rows: list[tuple[list[tuple[str, str, int]], bool]],
+    n_cols: int,
+) -> list[float]:
+    if n_cols <= 1:
+        return [1.0] * n_cols
+    col_max: list[float] = [4.0] * n_cols
+    explicit: list[float | None] = [None] * n_cols
+    for cells, _ in rows:
+        col = 0
+        for open_tag, cell_html, cs in cells:
+            if cs == 1 and col < n_cols:
+                if explicit[col] is None and open_tag:
+                    hint = _cell_width_hint(open_tag)
+                    if hint is not None and hint > 0:
+                        explicit[col] = hint
+                vlen = min(72.0, _plain_visual_len(cell_html))
+                if vlen > col_max[col]:
+                    col_max[col] = vlen
+            col += cs
+    auto_w = [round(max(1.0, min(3.6, (m / 8.0) ** 0.56)), 2) for m in col_max]
+    known = [v for v in explicit if v is not None]
+    if len(known) >= 2:
+        avg_exp = sum(known) / len(known)
+        avg_auto = sum(auto_w) / len(auto_w)
+        scale = avg_auto / max(1.0, avg_exp)
+        return [round(max(0.8, (e * scale) if e is not None else a), 2) for e, a in zip(explicit, auto_w)]
+    return auto_w
 
 
 def _column_alignments(
@@ -237,8 +293,10 @@ def _rewrite_tables_local(html: str) -> str:
         aligns = _column_alignments(expanded)
         while len(aligns) < n_cols:
             aligns.append(None)
+        weights = _column_flex_weights(expanded, n_cols)
 
-        parts = ['<div class="md-table" role="table">']
+        tbl_cls = "md-table md-table-dense" if n_cols >= 5 else "md-table"
+        parts = [f'<div class="{tbl_cls}" role="table">']
         for r_i, (cells, is_header) in enumerate(expanded):
             row_cls = "md-table-row md-table-header" if is_header else "md-table-row"
             if not is_header and r_i % 2 == 0:
@@ -268,8 +326,9 @@ def _rewrite_tables_local(html: str) -> str:
                     inline = _inline_style_from_open_tag(open_tag)
                     if inline:
                         style_parts.append(inline)
-                if cs > 1:
-                    style_parts.append(f"flex:{cs} 1 0")
+                span_weight = sum(weights[col_pos : min(n_cols, col_pos + cs)]) or float(cs)
+                if not any(re.match(r"(?:flex|width)\s*:", p, flags=re.I) for p in style_parts):
+                    style_parts.append(f"flex:{span_weight:.2f} 1 0")
                 style_html = f' style="{"; ".join(style_parts)}"' if style_parts else ""
                 parts.append(f'<div class="{cell_cls}" role="cell"{style_html}>{cell}</div>')
                 col_pos += cs
@@ -313,18 +372,18 @@ def rewrite_tables_for_takumi(html: str, *, prefer_local: bool = False) -> str:
 MD_TABLE_LAYOUT_CSS = """
 .md-table{
   display:flex;flex-direction:column;width:100%;margin:12px 0;
-  border:1px solid rgba(128,128,128,0.35);border-radius:8px;overflow:hidden;
+  border:1px solid rgba(128,128,128,0.32);border-radius:12px;overflow:hidden;
 }
 .md-table-row{
-  display:flex;flex-direction:row;width:100%;
-  border-top:1px solid rgba(128,128,128,0.28);align-items:stretch;
+  display:flex;flex-direction:row;width:100%;align-items:stretch;
 }
-.md-table-row:first-child{border-top:none;}
-.md-table-header{font-weight:700;background:rgba(128,128,128,0.18);}
-.md-table-row-alt{background:rgba(128,128,128,0.08);}
-.md-table-cell{flex:1 1 0;padding:8px 12px;min-width:0;font-size:13px;line-height:1.4;}
+.md-table-row + .md-table-row{border-top:1px solid rgba(128,128,128,0.24);}
+.md-table-header{font-weight:700;background:rgba(128,128,128,0.16);}
+.md-table-row-alt{background:rgba(128,128,128,0.06);}
+.md-table-cell{flex:1 1 0;padding:10px 12px;min-width:0;font-size:14.5px;line-height:1.5;}
+.md-table-dense .md-table-cell{padding:8px 8px;font-size:13.5px;}
 .md-table-th{font-weight:700;}
-.md-table-cell-border{border-right:1px solid rgba(128,128,128,0.28);}
+.md-table-cell-border{border-right:1px solid rgba(128,128,128,0.24);}
 .md-table-cell-left{text-align:left;}
 .md-table-cell-right{text-align:right;}
 .md-table-cell-center{text-align:center;}
@@ -334,18 +393,17 @@ MD_TABLE_LAYOUT_CSS = """
 MD_TABLE_FLEX_CSS_LIGHT = """
 .md-table{
   display:flex;flex-direction:column;width:100%;margin:12px 0;
-  border:1px solid #d1d9e0;border-radius:8px;overflow:hidden;
+  border:1px solid #d1d9e0;border-radius:12px;overflow:hidden;
 }
 .md-table-row{
-  display:flex;flex-direction:row;width:100%;
-  border-top:1px solid #d1d9e0;align-items:stretch;background:#fff;
+  display:flex;flex-direction:row;width:100%;align-items:stretch;background:#fff;
 }
-.md-table-row:first-child{border-top:none;}
+.md-table-row + .md-table-row{border-top:1px solid #e2e8f0;}
 .md-table-header{font-weight:700;background:#eef3f9;color:#1f2937;}
-.md-table-row-alt{background:#f7f9fc;}
-.md-table-cell{flex:1 1 0;padding:8px 12px;min-width:0;font-size:13px;line-height:1.4;color:#1f2937;}
+.md-table-row-alt{background:#f8fafc;}
+.md-table-cell{flex:1 1 0;padding:10px 14px;min-width:0;font-size:14.5px;line-height:1.5;color:#1f2937;}
 .md-table-th{font-weight:700;color:#111827;}
-.md-table-cell-border{border-right:1px solid #d1d9e0;}
+.md-table-cell-border{border-right:1px solid #e2e8f0;}
 .md-table-cell-left{text-align:left;}
 .md-table-cell-right{text-align:right;}
 .md-table-cell-center{text-align:center;}
@@ -355,19 +413,18 @@ MD_TABLE_FLEX_CSS_LIGHT = """
 MD_TABLE_FLEX_CSS_DARK = """
 .md-table{
   display:flex;flex-direction:column;width:100%;margin:12px 0;
-  border:1px solid #2f3d56;border-radius:8px;overflow:hidden;
+  border:1px solid #2a364d;border-radius:12px;overflow:hidden;
 }
 .md-table-row{
-  display:flex;flex-direction:row;width:100%;
-  border-top:1px solid #2f3d56;align-items:stretch;background:#1a2538;
+  display:flex;flex-direction:row;width:100%;align-items:stretch;background:#151e2e;
 }
-.md-table-row:first-child{border-top:none;}
-.md-table-header{font-weight:700;background:#5b9dd9;color:#061018;}
-.md-table-row-alt{background:#202c42;}
-.md-table-cell{flex:1 1 0;padding:8px 12px;min-width:0;font-size:13px;line-height:1.4;color:#f2f6fc;}
-.md-table-th{font-weight:700;color:#061018;}
-.md-table-cell-border{border-right:1px solid #2f3d56;}
-.md-table-header .md-table-cell-border{border-right-color:rgba(6,16,24,0.2);}
+.md-table-row + .md-table-row{border-top:1px solid #263248;}
+.md-table-header{font-weight:700;background:#1e2d45;color:#f8fafc;}
+.md-table-row-alt{background:#192437;}
+.md-table-cell{flex:1 1 0;padding:10px 14px;min-width:0;font-size:14.5px;line-height:1.5;color:#e2e8f0;}
+.md-table-th{font-weight:700;color:#f8fafc;}
+.md-table-cell-border{border-right:1px solid #263248;}
+.md-table-header .md-table-cell-border{border-right-color:rgba(148,163,184,0.2);}
 .md-table-cell-left{text-align:left;}
 .md-table-cell-right{text-align:right;}
 .md-table-cell-center{text-align:center;}
