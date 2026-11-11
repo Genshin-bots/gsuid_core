@@ -186,3 +186,28 @@ def test_auth_password_roles_and_ecdh_crypto() -> None:
         maybe_decrypt_auth_body({"email": "x", "password": "y"})
     with pytest.raises(AuthCryptoError):
         maybe_decrypt_auth_body(_frontend_encrypt({"email": "x", "password": "y"}, tamper_ct=True))
+
+
+def test_plugin_prefs_recent_mru_and_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.webconsole.plugin_prefs as plugin_prefs
+
+    prefs_file = tmp_path / "webconsole_plugin_prefs.json"
+    monkeypatch.setattr(plugin_prefs, "PLUGIN_PREFS_PATH", prefs_file)
+    monkeypatch.setattr(plugin_prefs, "_cache", None)
+
+    assert plugin_prefs.get_plugin_prefs_sync() == {
+        "recent_plugins": [],
+        "last_edited_plugin": "",
+    }
+
+    plugin_prefs.record_recent_plugin_sync("demo_plugin_a", edited=True)
+    plugin_prefs.record_recent_plugin_sync("demo_plugin_b", edited=False)
+    after_dup = plugin_prefs.record_recent_plugin_sync("DEMO_PLUGIN_A", edited=False)
+
+    assert after_dup["recent_plugins"] == ["DEMO_PLUGIN_A", "demo_plugin_b"]
+    assert after_dup["last_edited_plugin"] == "demo_plugin_a"
+
+    monkeypatch.setattr(plugin_prefs, "_cache", None)
+    reloaded = plugin_prefs.get_plugin_prefs_sync()
+    assert reloaded["recent_plugins"] == ["DEMO_PLUGIN_A", "demo_plugin_b"]
+    assert reloaded["last_edited_plugin"] == "demo_plugin_a"

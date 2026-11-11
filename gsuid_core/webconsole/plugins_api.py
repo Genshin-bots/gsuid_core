@@ -5,10 +5,11 @@ Plugins APIs
 
 import base64
 import hashlib
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 from pathlib import Path
 
 from fastapi import Body, Query, Depends, Request
+from pydantic import BaseModel
 
 from gsuid_core.sv import SL
 from gsuid_core.i18n import t
@@ -20,6 +21,12 @@ from gsuid_core.utils.secret_mask import (
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
 from gsuid_core.webconsole.plugin_page import pages_for_plugin
+from gsuid_core.webconsole.plugin_prefs import (
+    PluginPrefsPayload,
+    get_plugin_prefs,
+    record_recent_plugin,
+)
+from gsuid_core.webconsole.session_store import SessionRecord
 from gsuid_core.utils.plugins_config.models import (
     GSC,
     GsDivider,
@@ -238,6 +245,36 @@ async def get_plugin_usage_rank(_user: Dict[str, Any] = Depends(require_auth)):
     from gsuid_core.webconsole.plugin_usage import get_plugin_usage
 
     data = await get_plugin_usage()
+    return {"status": 0, "msg": "ok", "data": data}
+
+
+class RecentPluginBody(BaseModel):
+    plugin: str
+    edited: bool = False
+
+
+class PluginPrefsApiResponse(TypedDict):
+    status: int
+    msg: str
+    data: PluginPrefsPayload
+
+
+@app.get("/api/plugins/recent", summary="获取最近使用与最后编辑的插件", tags=PLUGINS)
+async def get_recent_plugins_api(
+    _user: SessionRecord = Depends(require_auth),
+) -> PluginPrefsApiResponse:
+    """获取面板记录的最近使用插件列表（MRU）与最后编辑插件名。"""
+    data = await get_plugin_prefs()
+    return {"status": 0, "msg": "ok", "data": data}
+
+
+@app.post("/api/plugins/recent", summary="记录最近使用或最后编辑的插件", tags=PLUGINS)
+async def record_recent_plugin_api(
+    body: RecentPluginBody,
+    _user: SessionRecord = Depends(require_auth),
+) -> PluginPrefsApiResponse:
+    """把指定插件置顶到最近使用列表；``edited=True`` 时同步更新最后编辑插件。"""
+    data = await record_recent_plugin(body.plugin, body.edited)
     return {"status": 0, "msg": "ok", "data": data}
 
 
@@ -708,6 +745,7 @@ async def update_plugin_config(
     if not is_success:
         return {"status": 1, "msg": "未找到可更新的配置项"}
 
+    await record_recent_plugin(plugin_name, True)
     return {"status": 0, "msg": "配置已保存"}
 
 
@@ -750,6 +788,7 @@ async def update_plugin_config_item(
             if item_name in config_obj.config_list:
                 try:
                     if _write_config_item(config_obj, item_name, value):
+                        await record_recent_plugin(plugin_name, True)
                         return {"status": 0, "msg": "配置项已保存"}
                     return {"status": 1, "msg": "配置项写入失败"}
                 except Exception as e:
@@ -802,6 +841,7 @@ async def update_plugin_service_config(
 
     # Ensure lists are properly handled (no need for split, accept directly)
     plugin.set(False, **data)
+    await record_recent_plugin(plugin_name, True)
 
     return {"status": 0, "msg": "服务配置已保存"}
 
@@ -871,6 +911,7 @@ async def update_plugin_service_field(
         value = int(value)
 
     plugin.set(False, **{field_name: value})
+    await record_recent_plugin(plugin_name, True)
     return {"status": 0, "msg": "服务配置已保存"}
 
 
@@ -911,6 +952,7 @@ async def update_sv_config(
         update_data["priority"] = int(update_data["priority"])
 
     sv.set(False, **update_data)
+    await record_recent_plugin(plugin_name, True)
 
     return {"status": 0, "msg": "服务配置已保存"}
 
@@ -955,6 +997,7 @@ async def update_sv_field(
         value = int(value)
 
     sv.set(False, **{field_name: value})
+    await record_recent_plugin(plugin_name, True)
     return {"status": 0, "msg": "服务配置已保存"}
 
 
@@ -998,6 +1041,7 @@ async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str,
     # 再读 result.status 会报 Cannot read properties of undefined (reading 'status')。
     if result.lstrip().startswith("❌"):
         return {"status": 1, "msg": result, "data": {"plugin_name": plugin_name, "ok": False}}
+    await record_recent_plugin(plugin_name, True)
     return {"status": 0, "msg": result, "data": {"plugin_name": plugin_name, "ok": True}}
 
 

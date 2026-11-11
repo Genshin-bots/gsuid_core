@@ -78,6 +78,8 @@ DIST_EX_PATH = gs_data_path / "dist"
 WEB_SESSIONS_PATH = gs_data_path / "webconsole_sessions.json"
 # 会话管理页的会话偏好：置顶 / 拉黑 / 群备注，纯面板状态，与适配器无关
 CHAT_PREFS_PATH = gs_data_path / "webconsole_chat_prefs.json"
+# 插件选择器偏好：最近使用插件列表与最后编辑插件，纯面板状态
+PLUGIN_PREFS_PATH = gs_data_path / "webconsole_plugin_prefs.json"
 
 # Live Chat（控制台实时聊天）多文件目录：
 #   identity.json / index.json / conversations/{id}.json

@@ -315,3 +315,33 @@ const iconUrl = `/api/plugins/icon/${encodeURIComponent(pluginName)}`;
 ```
 
 > **与 `/api/plugins/list` 的区别**：`/api/plugins/list` 返回的 `icon` 字段是 base64 编码的 Data URI 字符串，适合内联使用；而 `/api/plugins/icon/{name}` 直接返回图片文件，适合通过 URL 引用，可利用浏览器缓存，性能更优。
+
+---
+
+## 3.13 最近使用与最后编辑的插件
+```
+GET /api/plugins/recent
+POST /api/plugins/recent
+```
+
+记录网页控制台插件选择器的最近使用列表（最多保留 16 项，按最近使用时间倒序去重）与最后编辑插件名。保存插件参数、服务配置、SV 配置或重载插件成功后，后端会自动更新 `last_edited_plugin` 与 `recent_plugins`。
+
+**POST 请求体**：
+```json
+{
+    "plugin": "SamplePluginA",
+    "edited": false
+}
+```
+
+**响应**：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "recent_plugins": ["SamplePluginA", "SamplePluginB"],
+        "last_edited_plugin": "SamplePluginA"
+    }
+}
+```
