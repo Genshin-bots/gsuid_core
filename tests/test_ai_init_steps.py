@@ -54,6 +54,7 @@ def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch) ->
         "Meme",
         "统计",
         "自主行动",
+        "生活手账",
         "MCP Server",
         "命令执行",
     ]

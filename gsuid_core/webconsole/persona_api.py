@@ -1458,7 +1458,7 @@ async def compact_persona_journal(
     """触发生活手账整理压缩。"""
     from gsuid_core.ai_core.journal.manager import compact_journal
 
-    compacted = await compact_journal(persona_name)
+    compacted = await compact_journal(persona_name, force=True)
     return {
         "status": 0,
         "msg": "ok",

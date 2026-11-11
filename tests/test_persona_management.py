@@ -155,3 +155,72 @@ def test_persona_isolation_for_relationship_cognition_and_aside(
             await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from gsuid_core.ai_core.journal import manager as jm
+
+    journal_dir = tmp_path / "journals"
+    monkeypatch.setattr(jm, "JOURNAL_DIR", journal_dir)
+
+    async def scenario() -> None:
+        # 1. 离线单测环境禁用外部 LLM
+        async def _mock_summarize(persona_name: str, standing: str, timeline: list[str]) -> str | None:
+            return "- 做梦整理：已跟进各项事务。"
+
+        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _mock_summarize)
+
+        assert await jm.compact_journal("tester") is False
+
+        p = jm.get_journal_path("tester")
+        content = (
+            "# tester的生活手账\n\n"
+            "## 常驻状态与近期小结\n"
+            "- 目前一切正常，日常处理群聊交互与各项委派。\n\n"
+            "## 今日行动流水\n"
+            "- [10:00 | 查天气] 查了广州天气 (群:1001)\n"
+            "- [11:30 | 模拟盘] 巡检了持仓\n"
+        )
+        p.write_text(content, encoding="utf-8")
+
+        compacted = await jm.compact_journal("tester", force=True)
+        assert compacted is True
+        new_content = p.read_text(encoding="utf-8")
+        standing, timeline = jm._read_sections(new_content)
+        assert len(timeline) == 0
+        assert "做梦整理：已跟进各项事务" in standing
+        assert jm.get_last_compact_ts("tester") > 0.0
+
+        # 测试降级规则兜底
+        async def _mock_none(*args: object, **kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _mock_none)
+        p.write_text(content, encoding="utf-8")
+        assert await jm.compact_journal("tester", force=True) is True
+        standing_fallback, _ = jm._read_sections(p.read_text(encoding="utf-8"))
+        assert "项日常与委派事务" in standing_fallback
+
+        assert await jm.compact_journal("tester") is False
+
+        # 测试每小时巡检与 active_hours 门禁
+        p.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(jm, "is_within_active_hours", lambda *args, **kwargs: True)
+        await jm.check_and_compact_all_journals()
+        _, remaining_timeline = jm._read_sections(p.read_text(encoding="utf-8"))
+        assert len(remaining_timeline) == 2
+
+        monkeypatch.setattr(jm, "is_within_active_hours", lambda *args, **kwargs: False)
+        jm._save_last_compact_ts("tester", time.time() - 3600)
+        await jm.check_and_compact_all_journals()
+        _, remaining_timeline2 = jm._read_sections(p.read_text(encoding="utf-8"))
+        assert len(remaining_timeline2) == 2
+
+        jm._save_last_compact_ts("tester", time.time() - 90000)
+        await jm.check_and_compact_all_journals()
+        _, final_timeline = jm._read_sections(p.read_text(encoding="utf-8"))
+        assert len(final_timeline) == 0
+
+    asyncio.run(scenario())

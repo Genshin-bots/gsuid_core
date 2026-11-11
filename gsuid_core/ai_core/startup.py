@@ -117,6 +117,16 @@ async def _init_autonomy() -> None:
     await init_autonomy()
 
 
+async def _init_journal() -> None:
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return
+    from gsuid_core.ai_core.journal.manager import init_journal_scheduler
+
+    await init_journal_scheduler()
+
+
 async def _init_mcp_server():
     from gsuid_core.ai_core.mcp.server import init_mcp_server
 
@@ -255,6 +265,7 @@ _INIT_STEPS = [
     ("Meme", _init_meme),
     ("统计", _init_statistics),
     ("自主行动", _init_autonomy),
+    ("生活手账", _init_journal),
     ("MCP Server", _init_mcp_server),
     ("命令执行", _init_command_exec),
 ]
@@ -398,3 +409,14 @@ async def flush_ai_sessions_on_shutdown() -> None:
             logger.info(t("log.ai.aisessionlogger_shutdown_persisted_closed", closed=closed))
     except Exception as e:  # noqa: BLE001
         logger.exception(t("log.ai.aisessionlogger_shutdown_persistence", e=e))
+
+
+@on_core_shutdown
+async def stop_journal_scheduler_on_shutdown() -> None:
+    """框架关闭时停止生活手账每小时定时整理任务。"""
+    try:
+        from gsuid_core.ai_core.journal.manager import stop_journal_scheduler
+
+        await stop_journal_scheduler()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(t("log.ai.journal_compact_fail", persona_name="system", e=e))

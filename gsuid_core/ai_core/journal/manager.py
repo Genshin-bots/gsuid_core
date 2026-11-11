@@ -7,15 +7,25 @@
 from __future__ import annotations
 
 import re
+import json
+import time
 import asyncio
-from typing import Dict, List, Tuple, Sequence
+from typing import Dict, List, Tuple, Optional, Sequence
 from pathlib import Path
 from dataclasses import dataclass
 
+from gsuid_core.i18n import t
+from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
-from gsuid_core.ai_core.persona.config import persona_config_manager
+from gsuid_core.ai_core.persona.config import (
+    read_autonomy_runtime,
+    is_within_active_hours,
+    persona_config_manager,
+)
 
 JOURNAL_DIR: Path = AI_CORE_PATH / "journals"
+_JOURNAL_STATE_FILE: str = ".journal_state.json"
+_JOB_ID: str = "ai_journal_hourly_compact"
 
 _DEFAULT_SUMMARY_MAX_CHARS = 300
 _MAX_TIMELINE_ENTRIES = 20
@@ -25,6 +35,17 @@ _LINE_PARSER = re.compile(
 )
 _JOURNAL_LOCKS: Dict[str, asyncio.Lock] = {}
 _LAST_UPDATE_TS: Dict[str, float] = {}
+
+_DREAM_SYSTEM_PROMPT = (
+    "你正在进行夜间记忆整理（做梦与手账提炼）。\n"
+    "根据提供的【原常驻状态与近期小结】和【今日行动流水】，提炼生成更新后的【常驻状态与近期小结】。\n"
+    "要求：\n"
+    "1. 严格使用第一人称或角色自称，以简洁的 Markdown 无序列表（`- ...`）输出 1~3 条小结。\n"
+    "2. 总结当前处于持续中的重要工作状态、责任职责、近期习惯偏好或关键发现，淘汰已失效的琐碎细节。\n"
+    "3. 严禁出现机械技术标记（如句柄 sa_xxx、群号 群:xxx、工具名 search_stock、API等）。\n"
+    "4. 总长度严格控制在 250 字以内，语言自然亲切。\n"
+    "5. 仅输出以 `- ` 开头的列表项，严禁输出任何标题、前言或额外解释。"
+)
 
 
 def _get_persona_lock(persona_name: str) -> asyncio.Lock:
@@ -249,8 +270,142 @@ def read_journal_for_context(
     return "\n\n".join(parts), latest_ts
 
 
-async def compact_journal(persona_name: str) -> bool:
-    """自动整理手账：精炼旧流水合入常驻小结，裁切过长流水。"""
+def _get_journal_state_path() -> Path:
+    return _ensure_journal_dir() / _JOURNAL_STATE_FILE
+
+
+def _load_journal_state() -> dict[str, float]:
+    path = _get_journal_state_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    res: dict[str, float] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, (int, float)):
+            res[k] = float(v)
+    return res
+
+
+def _save_last_compact_ts(persona_name: str, ts: float) -> None:
+    state = _load_journal_state()
+    key = persona_name.strip() or "default"
+    state[key] = ts
+    path = _get_journal_state_path()
+    try:
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        logger.warning(t("log.ai.journal_compact_save_state_fail", e=e))
+
+
+def get_last_compact_ts(persona_name: str) -> float:
+    """获取指定人格上次记忆整理的时间戳（未整理过返回 0.0）。"""
+    key = persona_name.strip() or "default"
+    state = _load_journal_state()
+    if key in state:
+        return state[key]
+    return 0.0
+
+
+def get_all_journal_personas() -> list[str]:
+    """获取所有需要维护手账的人格列表（包含激活人格与磁盘已有手账的人格）。"""
+    names = set(get_active_personas())
+    if JOURNAL_DIR.exists():
+        for file in JOURNAL_DIR.glob("*.md"):
+            if file.stem and not file.name.startswith("."):
+                names.add(file.stem)
+    return sorted(names)
+
+
+def _rule_based_summary(standing_part: str, timeline_lines: Sequence[str]) -> str:
+    """规则备用提炼：当大模型不可用时保证手账精炼收敛。"""
+    tags: list[str] = []
+    for line in timeline_lines:
+        m = _LINE_PARSER.match(line)
+        if m:
+            tag = m.group("tag")
+            if tag:
+                tags.append(tag)
+    unique_tags = list(dict.fromkeys(tags))
+    tag_str = f"（含 {', '.join(unique_tags[:4])} 等）" if unique_tags else ""
+    addendum = f"- 前期完成了 {len(timeline_lines)} 项日常与委派事务{tag_str}。"
+
+    if not standing_part or standing_part.strip() == "- 目前一切正常，日常处理群聊交互与各项委派。":
+        return f"{addendum}\n- 目前各项日常事务正常推进中。"
+    base_lines = [line.strip() for line in standing_part.splitlines() if line.strip().startswith("-")]
+    base = base_lines[0] if base_lines else "- 目前日常运转正常。"
+    combined = f"{base}\n{addendum}"
+    return combined[:_DEFAULT_SUMMARY_MAX_CHARS]
+
+
+async def _summarize_journal_with_llm(
+    persona_name: str,
+    standing_part: str,
+    timeline_lines: Sequence[str],
+) -> Optional[str]:
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return None
+
+    from gsuid_core.ai_core.utils import is_agent_error_text
+    from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
+
+    card = ""
+    try:
+        raw_card = await load_persona(persona_name)
+        card = extract_compact_persona(raw_card) or raw_card
+    except Exception:
+        card = ""
+
+    system_prompt = f"{card}\n\n{_DREAM_SYSTEM_PROMPT}" if card else _DREAM_SYSTEM_PROMPT
+    timeline_block = "\n".join(timeline_lines[-100:])
+    user_prompt = f"【原常驻状态与近期小结】\n{standing_part or '（暂无）'}\n\n【今日行动流水】\n{timeline_block}"
+
+    agent = create_agent(
+        system_prompt=system_prompt,
+        create_by="Journal_Compact",
+        persona_name=persona_name,
+        session_id=f"journal_compact_{persona_name}_{int(time.time())}",
+        is_subagent=True,
+        task_level="low",
+        dynamic_tools=False,
+    )
+    try:
+        result = await agent.run(user_prompt, tools=[], return_mode="return", budget_gate=False)
+    except Exception as e:
+        logger.warning(t("log.ai.journal_compact_fail", persona_name=persona_name, e=e))
+        return None
+    finally:
+        agent._session_logger.close()
+
+    text = result if isinstance(result, str) else ""
+    if not text or is_agent_error_text(text):
+        return None
+
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("【"):
+            continue
+        if stripped.startswith(("-", "*", "•")):
+            lines.append(f"- {stripped.lstrip('-*• ')}")
+        else:
+            lines.append(f"- {stripped}")
+
+    if not lines:
+        return None
+
+    return "\n".join(lines[:3])[:_DEFAULT_SUMMARY_MAX_CHARS]
+
+
+async def compact_journal(persona_name: str, *, force: bool = False) -> bool:
+    """自动整理手账：精炼旧流水合入常驻小结，清空今日行动流水。"""
     key = persona_name.strip() or "default"
     async with _get_persona_lock(key):
         path = get_journal_path(key)
@@ -258,15 +413,60 @@ async def compact_journal(persona_name: str) -> bool:
             return False
         content = path.read_text(encoding="utf-8")
         standing_part, timeline_lines = _read_sections(content)
-        if len(timeline_lines) <= _MAX_TIMELINE_ENTRIES:
+        if not timeline_lines:
             return False
 
-        # 保留最近的新鲜流水，超出的旧流水合并至小结
-        overflow = timeline_lines[:-_MAX_TIMELINE_ENTRIES]
-        kept = timeline_lines[-_MAX_TIMELINE_ENTRIES:]
-        tags = {line.split("|")[1].split("]")[0].strip() for line in overflow if "|" in line}
-        addendum = f"\n- 前期完成了 {len(overflow)} 项日常事项（含 {', '.join(list(tags)[:4])} 等）。"
-        new_standing = (standing_part + addendum)[:_DEFAULT_SUMMARY_MAX_CHARS]
+        llm_summary = await _summarize_journal_with_llm(key, standing_part, timeline_lines)
+        new_standing = llm_summary or _rule_based_summary(standing_part, timeline_lines)
 
-        _write_back(path, key, new_standing, kept)
+        _write_back(path, key, new_standing, [])
+        now_ts = time.time()
+        _LAST_UPDATE_TS[key] = now_ts
+        _save_last_compact_ts(key, now_ts)
+        logger.info(t("log.ai.journal_compact_success", persona_name=key, count=len(timeline_lines)))
         return True
+
+
+async def check_and_compact_all_journals() -> None:
+    """每小时定时巡检：检查不在活动时间内且 24h 内未整理的人格，执行做梦整理。"""
+    now = time.time()
+    for persona_name in get_all_journal_personas():
+        key = persona_name.strip() or "default"
+        cfg = persona_config_manager.get_config(key)
+        runtime = read_autonomy_runtime(cfg)
+        within_active = is_within_active_hours(list(runtime.active_hours), runtime.timezone)
+        if within_active:
+            continue
+
+        last_compact = get_last_compact_ts(key)
+        if last_compact > 0.0 and (now - last_compact) < 86400.0:
+            continue
+
+        try:
+            await compact_journal(key)
+        except Exception as e:
+            logger.exception(t("log.ai.journal_compact_fail", persona_name=key, e=e))
+
+
+async def init_journal_scheduler() -> None:
+    """注册每小时手账整理定时任务。"""
+    from gsuid_core.aps import scheduler
+
+    scheduler.add_job(
+        func=check_and_compact_all_journals,
+        trigger="interval",
+        hours=1,
+        id=_JOB_ID,
+        name="生活手账定时整理",
+        replace_existing=True,
+    )
+    logger.info(t("log.ai.journal_scheduler_start"))
+
+
+async def stop_journal_scheduler() -> None:
+    """停止生活手账定时整理任务。"""
+    from gsuid_core.aps import scheduler
+
+    job = scheduler.get_job(_JOB_ID)
+    if job is not None:
+        scheduler.remove_job(_JOB_ID)
