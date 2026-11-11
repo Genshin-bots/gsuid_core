@@ -459,6 +459,16 @@ def test_render_chart_and_html_self_healing() -> None:
     )
     assert "<svg><rect/></svg>" in svg_resolved and "send_message_by_ai(image_id=" not in svg_resolved
 
+    from gsuid_core.utils.resource_manager import RM
+    from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
+
+    test_img = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4"
+    img_handle = RM.register(test_img)
+    resolved_img = asyncio.run(resolve_handle(img_handle))
+    assert resolved_img is not None
+    assert resolved_img.source == "image" and resolved_img.mime == "image/png"
+    assert "send_message_by_ai(image_id=" in format_resolved(resolved_img)
+
     from gsuid_core.ai_core.buildin_tools.chart_svg import register_chart_svg, resolve_chart_placeholders
     from gsuid_core.ai_core.buildin_tools.html_render_tools import _UNRESOLVED_CHART_PLACEHOLDER_RE
 

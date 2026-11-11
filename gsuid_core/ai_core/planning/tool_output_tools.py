@@ -72,6 +72,8 @@ async def _handle_access_allowed(
         return _tool_output_access_allowed(resolved, ctx)
     if resolved.source == "knowledge":
         return True
+    if resolved.source == "image" and resolved.id.startswith("img_"):
+        return True
     if resolved.source in {"artifact", "image"}:
         from gsuid_core.ai_core.planning.models import AIAgentArtifact
         from gsuid_core.ai_core.planning.runtime import get_plan_context

@@ -242,6 +242,9 @@ def _format_subtask_prompt(
         '**不要**用 `artifact_put(payload=\'{"file": "..."}\')` 这种 JSON 元数据冒充文件——'
         "只有真实文件 artifact 才能被主人格经 `send_message_by_ai` 作为图片/文件发出"
         "（图片用 image_ids，文件用 file_ids，单文件 ≤10MB）。"
+        "\n- 媒体生成产物（调用工具直接返回的 img_ / aud_ / vid_ 资源 ID）："
+        "内存已登记就绪，直接在返回值结论中附带该 ID（如 img_xxxxxxxx），"
+        "由上游直接发送；无需也不强制用 artifact_put 登记文件。"
         '\n- 纯文本结论 / 报告正文：`artifact_put(payload="...", summary="...")`。'
         "\n- 持久化业务数据（签到名单、流水、任务条目等）：用 `record_put` / "
         "`record_append` / `record_update` 写入框架统一的 `record:<集合名>` 集合，"

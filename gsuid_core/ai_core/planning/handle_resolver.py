@@ -213,8 +213,31 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
         if rec is None:
             return None
         return _from_tool_output(rec)
-    # Artifact / image res_
-    if hid.startswith("res_") or hid.startswith("img_"):
+    # RM 内存图片资源
+    if hid.startswith("img_"):
+        from gsuid_core.utils.resource_manager import RM
+
+        if hid in RM._store:
+            data, _ = RM._store[hid]
+            return ResolvedHandle(
+                id=hid,
+                source="image",
+                mime="image/png",
+                summary=f"图片资源 ({hid})",
+                owner_user_id="",
+                scope_key="",
+                payload_inline=None,
+                payload_path="",
+                size_bytes=RM._size_of(data),
+            )
+        from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+        art = await AIAgentArtifact.get_by_id(hid)
+        if art is not None:
+            return await _from_artifact(art)
+        return None
+    # Artifact res_
+    if hid.startswith("res_"):
         from gsuid_core.ai_core.planning.models import AIAgentArtifact
 
         art = await AIAgentArtifact.get_by_id(hid)

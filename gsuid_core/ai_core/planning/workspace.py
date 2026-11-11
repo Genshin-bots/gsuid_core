@@ -406,7 +406,20 @@ async def put_artifact(
         if not src.is_absolute():
             src = (workspace / src).resolve()
         if not src.exists() or not src.is_file():
-            return None
+            raw_id = Path(file_path).name.strip()
+            if raw_id.endswith(".png"):
+                raw_id = raw_id[:-4]
+            if raw_id.startswith("img_"):
+                from gsuid_core.utils.resource_manager import RM
+
+                if raw_id in RM._store:
+                    img_bytes = await RM.get(raw_id)
+                    workspace.mkdir(parents=True, exist_ok=True)
+                    target = workspace / f"{raw_id}.png"
+                    target.write_bytes(img_bytes)
+                    src = target
+            if not src.exists() or not src.is_file():
+                return None
         # 安全闸刀：登记的文件必须落在 workspace 内（避免登记越界路径，绕过沙盒）
         if not _is_inside(src, workspace):
             if _can_auto_import_file(src, plan_ctx):
