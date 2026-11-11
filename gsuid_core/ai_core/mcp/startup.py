@@ -499,6 +499,56 @@ def _build_mcp_check_func(
     return _mcp_check_func
 
 
+MCP_FALLBACK_DOMAIN_PREFIX = "MCP:"
+
+
+def _mcp_capability_domain(client: Any, config: "MCPConfig | None") -> str:
+    """MCP 工具的能力域：配置声明优先，缺省 `MCP:<服务名>`，供 find_tools 分族检索分槽。"""
+    declared = ""
+    if config is not None:
+        declared = str(getattr(config, "capability_domain", "") or "").strip()
+    return declared or f"{MCP_FALLBACK_DOMAIN_PREFIX}{client.name}"
+
+
+def _mcp_tool_covers(
+    config: "MCPConfig | None",
+    extracted: "list[str] | None",
+    *,
+    tool_name: str,
+    server_name: str,
+) -> list[str]:
+    """MCP 工具的召回覆盖词：**并集去重**（审查第 3 条），供向量检索与词面匹配。
+
+    来源三路，缺一不可：
+    1. 配置声明 ``config.covers``（用户手写的能力覆盖面）；
+    2. ``node_profile.mcp_tool_covers`` 从**服务中文描述**提取的短语
+       （``extracted`` 参数，注册调用方已算好）——未手写 covers 的 MCP 服务
+       全靠它保留中文分词，丢掉会倒退（审查指出的原实现缺陷）；
+    3. 工具名 + 服务名（英文标识兜底）。
+
+    按小写值去重保序，截断上限防止把检索文本撑爆。
+    """
+    raw: list[str] = []
+    if config is not None:
+        for item in getattr(config, "covers", None) or []:
+            text = str(item).strip()
+            if text:
+                raw.append(text)
+    for item in extracted or []:
+        text = str(item).strip()
+        if text:
+            raw.append(text)
+    raw.extend([tool_name, server_name])
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for text in raw:
+        key = text.lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(text)
+    return uniq[:12]
+
+
 def _register_mcp_tool(
     client: MCPClient,
     tool_name: str,
@@ -569,7 +619,10 @@ def _register_mcp_tool(
         tool=tool_obj,
         check_func=check_func,
         category=MCP_CATEGORY,
-        covers=covers or [],
+        capability_domain=_mcp_capability_domain(client, config),
+        # 并集去重（审查第 3 条）：配置声明 covers ∪ node_profile 从服务中文描述
+        # 提取的短语（covers 参数）∪ 工具名 ∪ 服务名——不丢描述提取的中文分词
+        covers=_mcp_tool_covers(config, covers, tool_name=tool_name, server_name=client.name),
     )
 
     if MCP_CATEGORY not in tool_registry:

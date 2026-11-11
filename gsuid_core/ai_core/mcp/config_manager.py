@@ -340,6 +340,10 @@ class MCPConfig:
     bind_help: str = ""
     bind_url: str = ""
     bind_alias: list[str] = field(default_factory=list)
+    # 能力域与召回覆盖词（供 find_tools 分族检索 / 词面匹配），均可在 JSON 里省略；
+    # covers 与 node_profile.mcp_tool_covers 从服务中文描述提取的短语做并集（见 startup）
+    capability_domain: str = ""
+    covers: list[str] = field(default_factory=list)
 
     def get_transport(self) -> str:
         """获取有效的传输方式（规范化 + 必要时按 url / command 推断）。"""
@@ -402,6 +406,10 @@ class MCPConfig:
             result["bind_url"] = self.bind_url
         if self.bind_alias:
             result["bind_alias"] = list(self.bind_alias)
+        if self.capability_domain:
+            result["capability_domain"] = self.capability_domain
+        if self.covers:
+            result["covers"] = list(self.covers)
         return result
 
     @classmethod
@@ -465,6 +473,8 @@ class MCPConfig:
             bind_alias=[a for a in data.get("bind_alias", []) if isinstance(a, str)]
             if isinstance(data.get("bind_alias"), list)
             else [],
+            capability_domain=str(data.get("capability_domain", "") or ""),
+            covers=[str(x) for x in (data.get("covers") or [])],
         )
 
     def get_tool_required_pm(self, tool_name: str) -> int:

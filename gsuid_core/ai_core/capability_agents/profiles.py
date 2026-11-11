@@ -973,6 +973,8 @@ def register_builtin_profiles() -> None:
             display_name="插件开发代理",
             prompt=_PLUGIN_DEVELOPER_PROMPT,
             when_to_use=(
+                "边界：需求=给 AI 增加一个可被调用的能力（MCP 工具）→ 交由 MCP 管理类能力处理；"
+                "本画像只做真正的插件（命令/界面/适配器）。"
                 "需要为 GsCore 框架本身编写一个新插件并自助加载使用的任务："
                 "脚手架 → 写业务代码 → 语法自检 → 热加载进运行中的框架。仅主人可用。"
             ),
