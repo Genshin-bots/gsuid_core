@@ -23,7 +23,9 @@ from gsuid_core.ai_core.mcp.node_profile import (
     tools_hash,
     mcp_node_id,
     build_mcp_node,
+    mcp_plugin_name,
     load_mcp_overlay,
+    mcp_registered_tool_name,
 )
 from gsuid_core.ai_core.mcp.config_manager import (
     MCPConfig,
@@ -74,18 +76,19 @@ def _llm_enabled() -> bool:
     return bool(ai_config.get_config("enable").data) and bool(ai_config.get_config("mcp_profile_llm_enable").data)
 
 
-def _registered_names(config: MCPConfig) -> List[str]:
+def _registered_names(config_id: str, config: MCPConfig) -> List[str]:
     """该服务当前在注册表里的实际工具名（plugin 精确匹配）。"""
     from gsuid_core.ai_core.register import get_registered_tools
 
-    plugin_name = f"mcp_{config.name}"
-    mcp_tools = get_registered_tools().get("mcp", {})
-    return [name for name, tool_base in mcp_tools.items() if tool_base.plugin == plugin_name]
+    plugin_names = {mcp_plugin_name(config_id, config.name), f"mcp_{config.name}"}
+    reg = get_registered_tools()
+    mcp_tools = reg["mcp"] if "mcp" in reg else {}
+    return [name for name, tool_base in mcp_tools.items() if tool_base.plugin in plugin_names]
 
 
 def _needs_generation(config_id: str, config: MCPConfig) -> bool:
     """自动生成门槛：有注册工具 + 无中文描述 + 无用户覆盖 + 画像缺失或过期。"""
-    if not _registered_names(config):
+    if not _registered_names(config_id, config):
         return False
     if has_cjk(config.description):
         return False
@@ -189,16 +192,15 @@ async def _refresh_after_profile(config_id: str) -> None:
     config = mcp_config_manager.get_config(config_id)
     if config is None:
         return
-    names = _registered_names(config)
+    names = _registered_names(config_id, config)
     if not names:
         return
     register_agent_node(build_mcp_node(config_id, config, names))
-    tool_defs = {tool.name: tool for tool in config.tools}
-    prefix = f"mcp_{config.name}_"
-    for registered in names:
+    server_key = config_id or config.name
+    for tool_def in config.tools:
+        registered = mcp_registered_tool_name(server_key, tool_def.name)
         tool_base = find_tool_base(registered)
-        tool_def = tool_defs.get(registered[len(prefix) :]) if registered.startswith(prefix) else None
-        if tool_base is not None and tool_def is not None:
+        if tool_base is not None:
             tool_base.covers = mcp_tool_covers(config, tool_def.description)
     await _sync_tool_index()
     await _warm_agent_node_index()

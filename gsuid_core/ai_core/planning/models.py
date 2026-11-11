@@ -263,13 +263,13 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
         return task
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_id(cls, session: AsyncSession, task_id: str) -> Optional["AIAgentTask"]:
         result = await session.execute(select(cls).where(col(cls.id) == task_id))
         return result.scalar_one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_for_owner(
         cls,
         session: AsyncSession,
@@ -293,7 +293,7 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
         return list(result.scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_by_status(cls, session: AsyncSession, *statuses: str) -> List["AIAgentTask"]:
         result = await session.execute(select(cls).where(col(cls.status).in_(statuses)))
         return list(result.scalars().all())
@@ -429,7 +429,7 @@ class AIAgentTaskLog(_PlanCRUD, SQLModel, table=True):
         session.add(cls(task_id=task_id, event_type=event_type, content=content[:4000], step_id=step_id))
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_for_task(
         cls,
         session: AsyncSession,
@@ -478,13 +478,13 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
     expires_at: Optional[datetime] = Field(default=None, index=True)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_id(cls, session: AsyncSession, res_id: str) -> Optional["AIAgentArtifact"]:
         result = await session.execute(select(cls).where(col(cls.id) == res_id))
         return result.scalar_one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_for_root(cls, session: AsyncSession, root_task_id: str) -> List["AIAgentArtifact"]:
         result = await session.execute(
             select(cls).where(col(cls.root_task_id) == root_task_id).order_by(col(cls.created_at).asc())
@@ -492,7 +492,7 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
         return list(result.scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_for_task(cls, session: AsyncSession, task_id: str) -> List["AIAgentArtifact"]:
         result = await session.execute(
             select(cls).where(col(cls.task_id) == task_id).order_by(col(cls.created_at).asc())
@@ -535,7 +535,7 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
         return list(result.scalars().all()), total
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_recent_for_root(
         cls,
         session: AsyncSession,
@@ -549,7 +549,7 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
         return list(result.scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def search_recent_for_owner(
         cls,
         session: AsyncSession,

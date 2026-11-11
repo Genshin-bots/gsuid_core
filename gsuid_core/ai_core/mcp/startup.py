@@ -520,8 +520,10 @@ def _register_mcp_tool(
         config: MCP 服务器配置（用于权限检查）
         covers: 检索短语（服务级描述 + 工具描述首行）
     """
-    # 使用 client.name 作为前缀避免工具名冲突
-    registered_name = f"mcp_{client.name}_{tool_name}"
+    from gsuid_core.ai_core.mcp.node_profile import mcp_plugin_name, mcp_registered_tool_name
+
+    # 生成合法标识符作为注册名，并同步给 Tool 对象保证 find_tool_base 一致
+    registered_name = mcp_registered_tool_name(config_id or client.name, tool_name)
 
     # 检查是否已注册
     tool_registry = _get_tool_registry()
@@ -544,6 +546,7 @@ def _register_mcp_tool(
         config=config,
         tool_def=tool_def,
     )
+    wrapper_func.__name__ = registered_name
 
     # 根据 tool_permissions 生成权限检查函数
     check_func = None
@@ -558,14 +561,19 @@ def _register_mcp_tool(
                 )
             )
 
-    # 创建 PydanticAI Tool 对象
-    tool_obj = Tool(wrapper_func, takes_ctx=True)
+    # 创建 PydanticAI Tool 对象（显式对齐注册名，避免裸名导致检索反查断链）
+    tool_obj = Tool(wrapper_func, takes_ctx=True, name=registered_name)
+
+    cn_name = ""
+    if config is not None and "chinese_name" in config.market_meta:
+        cn_name = config.market_meta["chinese_name"].strip()
+    header = f"[MCP:{client.name}/{cn_name}]" if cn_name and cn_name != client.name else f"[MCP:{client.name}]"
 
     # 创建 ToolBase 并注册
     tool_base = ToolBase(
         name=registered_name,
-        description=f"[MCP:{client.name}] {tool_description}",
-        plugin=f"mcp_{client.name}",
+        description=f"{header} {tool_description}",
+        plugin=mcp_plugin_name(config_id, client.name),
         tool=tool_obj,
         check_func=check_func,
         category=MCP_CATEGORY,
@@ -601,20 +609,25 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> list[str]:
     # 保存客户端引用（shared scope；用户 scope 客户端按需另建）
     _mcp_clients[_scope_key(config_id, _SHARED_SCOPE)] = client
 
-    # 回写工具清单：重启后按目录直注册，不再依赖此刻可连服务器。
-    ok, save_msg = mcp_config_manager.update_config(
-        config_id,
-        {
-            "tools": [
-                {
-                    "name": tool_info.name,
-                    "description": tool_info.description,
-                    "parameters": input_schema_to_parameters(tool_info.input_schema),
-                }
-                for tool_info in tools
-            ]
-        },
-    )
+    # 回写工具清单（保留已有的 exposure / mutating / credential_params 等分级配置）
+    existing_by_name = {td.name: td for td in config.tools}
+    default_exposure = "private" if (config.env or config.headers) else "public"
+    merged_defs: dict[str, MCPToolDefinition] = {}
+    persisted_tools: list[dict[str, object]] = []
+    for tool_info in tools:
+        old_td = existing_by_name[tool_info.name] if tool_info.name in existing_by_name else None
+        td = MCPToolDefinition(
+            name=tool_info.name,
+            description=tool_info.description,
+            parameters=input_schema_to_parameters(tool_info.input_schema),
+            exposure=old_td.exposure if old_td is not None else default_exposure,
+            mutating=old_td.mutating if old_td is not None else False,
+            sensitive_args=old_td.sensitive_args if old_td is not None else False,
+            credential_params=list(old_td.credential_params) if old_td is not None else [],
+        )
+        merged_defs[tool_info.name] = td
+        persisted_tools.append(td.to_dict())
+    ok, save_msg = mcp_config_manager.update_config(config_id, {"tools": persisted_tools})
     if not ok:
         logger.warning(t("log.mcp.catalog_persist_failed", p0=config.name, p1=save_msg))
 
@@ -629,6 +642,7 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> list[str]:
                     _input_schema_from_json_schema(tool_info.input_schema),
                     config=config,
                     config_id=config_id,
+                    tool_def=merged_defs[tool_info.name],
                     covers=mcp_tool_covers(config, tool_info.description),
                 )
             )
@@ -640,21 +654,24 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> list[str]:
 
 def _forget_mcp_server(config_id: str) -> int:
     """从注册表摘掉该服务器的工具。不写向量库。"""
+    from gsuid_core.ai_core.mcp.node_profile import mcp_plugin_name
+
     tool_registry = _get_tool_registry()
     if MCP_CATEGORY not in tool_registry:
         return 0
 
     config = mcp_config_manager.get_config(config_id)
     if config is None:
-        client = _mcp_clients.get(_scope_key(config_id, _SHARED_SCOPE))
+        shared_key = _scope_key(config_id, _SHARED_SCOPE)
+        client = _mcp_clients[shared_key] if shared_key in _mcp_clients else None
         server_name = client.name if client is not None else config_id
     else:
         server_name = config.name
 
-    # 按 ToolBase.plugin 精确匹配，避免 "a" 误摘 "a_b" 的工具。
-    plugin_name = f"mcp_{server_name}"
+    # 同时匹配 config_id 与旧服务名，改名或删配置都不会遗留孤儿工具
+    plugin_names = {mcp_plugin_name(config_id, server_name), f"mcp_{server_name}"}
     tools_to_remove = [
-        name for name, tool_base in tool_registry[MCP_CATEGORY].items() if tool_base.plugin == plugin_name
+        name for name, tool_base in tool_registry[MCP_CATEGORY].items() if tool_base.plugin in plugin_names
     ]
 
     for tool_name in tools_to_remove:
@@ -752,8 +769,13 @@ async def register_single_mcp_server(config_id: str) -> tuple[int, str]:
         return 0, f"配置 '{config.name}' 未开启 AI 工具注册"
 
     names: list[str] = []
+    used_catalog = False
     try:
         names = await _register_mcp_server(config_id, config)
+        if not names and config.tools:
+            # 远程握手超时或待用户绑定凭据时，回退已保存的初始工具清单注册
+            names = _register_catalog(config_id, config)
+            used_catalog = bool(names)
     finally:
         await _sync_tool_index()
 
@@ -766,6 +788,8 @@ async def register_single_mcp_server(config_id: str) -> tuple[int, str]:
     else:
         unregister_agent_node(mcp_node_id(config_id))
 
+    if used_catalog:
+        return len(names), f"远程握手未通，已按预设清单注册 {len(names)} 个工具（调用时再连接）"
     return len(names), f"注册完成，共 {len(names)} 个工具"
 
 

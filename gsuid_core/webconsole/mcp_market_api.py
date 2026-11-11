@@ -10,6 +10,7 @@
 """
 
 import re
+import ssl
 import json
 import time
 import shutil
@@ -18,6 +19,7 @@ import hashlib
 import ipaddress
 from typing import Any, Set, Dict, List, Callable, Optional, Coroutine, TypedDict
 from pathlib import Path
+from dataclasses import field, dataclass
 from urllib.parse import quote, urlparse, parse_qsl, quote_plus, urlunparse
 
 import httpx
@@ -36,7 +38,11 @@ from gsuid_core.ai_core.mcp.transport import (
     is_http_mcp_transport,
 )
 from gsuid_core.ai_core.mcp.mcp_presets import MCP_PRESETS
-from gsuid_core.ai_core.mcp.config_manager import mcp_config_manager, parse_mcp_json_server
+from gsuid_core.ai_core.mcp.config_manager import (
+    mcp_config_manager,
+    parse_mcp_json_server,
+    input_schema_to_parameters,
+)
 from gsuid_core.utils.plugins_config.models import GSC, GsIntConfig, GsStrConfig
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
@@ -157,6 +163,7 @@ class MarketTool(TypedDict, total=False):
     name: str
     description: str
     params: List[MarketToolParam]
+    input_schema: Dict[str, object]
 
 
 # 合并目录缓存：(endpoint|search|category|hosted) → (ts, entries, 上游total, truncated, degraded)
@@ -223,6 +230,63 @@ _CONTENT_EXT = {
 }
 _LOGO_FETCHING: set[str] = set()
 _LOGO_FAILED: set[str] = set()
+_LOGO_CACHED_KEYS: set[str] = set()
+_LOGO_CONCURRENCY = 6
+_LOGO_QUEUE_CAP = 128
+_DETAIL_CHECK_CONCURRENCY = 16
+_BG_DRAIN_CONCURRENCY = 4
+_BG_DRAIN_CAP = 300
+_SSL_CONTEXT: Optional[ssl.SSLContext] = None
+
+
+@dataclass
+class _MarketLoopState:
+    loop: asyncio.AbstractEventLoop
+    client: Optional[httpx.AsyncClient] = None
+    client_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    cache_io_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    detail_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(_DETAIL_CHECK_CONCURRENCY))
+    logo_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(_LOGO_CONCURRENCY))
+    bg_drain_queue: Dict[str, MarketEntry] = field(default_factory=dict)
+    bg_drain_task: Optional[asyncio.Task[None]] = None
+
+
+_LOOP_STATE: Optional[_MarketLoopState] = None
+
+
+def _loop_state() -> _MarketLoopState:
+    global _LOOP_STATE
+    loop = asyncio.get_running_loop()
+    if _LOOP_STATE is None or _LOOP_STATE.loop is not loop or _LOOP_STATE.loop.is_closed():
+        _LOOP_STATE = _MarketLoopState(loop=loop)
+    return _LOOP_STATE
+
+
+async def _ensure_ssl_context() -> ssl.SSLContext:
+    # Windows 加载系统根证书库会同步扫证书存储，放线程池只做一次
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        _SSL_CONTEXT = await asyncio.to_thread(ssl.create_default_context)
+    return _SSL_CONTEXT
+
+
+async def _shared_http_client() -> httpx.AsyncClient:
+    state = _loop_state()
+    if state.client is not None and not state.client.is_closed:
+        return state.client
+    async with state.client_lock:
+        if state.client is not None and not state.client.is_closed:
+            return state.client
+        ssl_ctx = await _ensure_ssl_context()
+        state.client = httpx.AsyncClient(
+            verify=ssl_ctx,
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+        )
+        return state.client
+
+
+def _err_text(err: BaseException) -> str:
+    return str(err) or type(err).__name__
 
 
 def _logo_key(url: str) -> str:
@@ -240,11 +304,36 @@ def ensure_logo_cached(upstream: str) -> None:
     if not url.startswith(("https://", "http://")) or url in _LOGO_FAILED:
         return
     key = _logo_key(url)
-    if (_LOGO_DIR / f"{key}.json").exists() or url in _LOGO_FETCHING:
+    if key in _LOGO_CACHED_KEYS or url in _LOGO_FETCHING or len(_LOGO_FETCHING) >= _LOGO_QUEUE_CAP:
         return
     _LOGO_FETCHING.add(url)
     task = asyncio.create_task(_download_logo(url, key))
     task.add_done_callback(lambda _task: _LOGO_FETCHING.discard(url))
+
+
+def _logo_meta_exists(key: str) -> bool:
+    return (_LOGO_DIR / f"{key}.json").exists()
+
+
+def _read_logo_cached(key: str) -> Optional[tuple[Path, str]]:
+    meta_path = _LOGO_DIR / f"{key}.json"
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    file_name = meta["file"] if "file" in meta else None
+    if not isinstance(file_name, str):
+        return None
+    img_path = _LOGO_DIR / file_name
+    if not img_path.exists():
+        return None
+    raw_ct = meta["content_type"] if "content_type" in meta else None
+    media_type = raw_ct if isinstance(raw_ct, str) else "application/octet-stream"
+    return img_path, media_type
 
 
 def _write_logo_files(key: str, ext: str, content: bytes, meta: dict[str, str]) -> None:
@@ -255,7 +344,7 @@ def _write_logo_files(key: str, ext: str, content: bytes, meta: dict[str, str]) 
 
 def _sniff_image(content: bytes, content_type: str) -> Optional[tuple[str, str]]:
     """按魔数识别图片 → (扩展名, media_type)；上游 CDN 常把 PNG 发成 octet-stream。"""
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+    if content.startswith(b"\x89PNG\r\n\r\n") or content.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png", "image/png"
     if content.startswith(b"\xff\xd8\xff"):
         return ".jpg", "image/jpeg"
@@ -268,30 +357,42 @@ def _sniff_image(content: bytes, content_type: str) -> Optional[tuple[str, str]]
     if content.lstrip()[:1] == b"<" and b"<svg" in content[:512].lower():
         return ".svg", "image/svg+xml"
     if content_type.startswith("image/"):
-        return _CONTENT_EXT.get(content_type, ".img"), content_type
+        return _CONTENT_EXT[content_type] if content_type in _CONTENT_EXT else ".img", content_type
     return None
 
 
 async def _download_logo(url: str, key: str) -> None:
     """下载 logo 落盘（图片 + meta sidecar）；确定失败记 _LOGO_FAILED，绝不抛出。"""
     try:
-        timeout = float(mcp_market_config.get_config("request_timeout_sec").data or 10)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(min(timeout, 10.0)), follow_redirects=True) as client:
-            resp = await client.get(url)
-        if resp.status_code != 200 or len(resp.content) > _LOGO_MAX_BYTES:
-            _LOGO_FAILED.add(url)
-            return
-        content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-        sniffed = _sniff_image(resp.content, content_type)
-        if sniffed is None:
-            _LOGO_FAILED.add(url)
-            return
-        ext, media_type = sniffed
-        meta = {"url": url, "content_type": media_type, "file": f"{key}{ext}"}
-        await asyncio.to_thread(_write_logo_files, key, ext, resp.content, meta)
+        async with _loop_state().logo_sem:
+            if key in _LOGO_CACHED_KEYS:
+                return
+            if await asyncio.to_thread(_logo_meta_exists, key):
+                _LOGO_CACHED_KEYS.add(key)
+                return
+            timeout = float(mcp_market_config.get_config("request_timeout_sec").data or 10)
+            client = await _shared_http_client()
+            resp = await client.get(
+                url,
+                timeout=httpx.Timeout(min(timeout, 10.0)),
+                follow_redirects=True,
+            )
+            if resp.status_code != 200 or len(resp.content) > _LOGO_MAX_BYTES:
+                _LOGO_FAILED.add(url)
+                return
+            raw_ct = resp.headers["content-type"] if "content-type" in resp.headers else ""
+            content_type = raw_ct.split(";")[0].strip().lower()
+            sniffed = _sniff_image(resp.content, content_type)
+            if sniffed is None:
+                _LOGO_FAILED.add(url)
+                return
+            ext, media_type = sniffed
+            meta = {"url": url, "content_type": media_type, "file": f"{key}{ext}"}
+            await asyncio.to_thread(_write_logo_files, key, ext, resp.content, meta)
+            _LOGO_CACHED_KEYS.add(key)
     except Exception as e:
         # 瞬时网络错误不进失败集：下次 ensure/请求还会重试
-        logger.debug(t("log.mcp.market_logo_fetch_failed", e=e))
+        logger.debug(t("log.mcp.market_logo_fetch_failed", e=_err_text(e)))
 
 
 # ---- 上游数据规范化（不可信外部输入：逐字段 isinstance，坏记录整条跳过）----
@@ -526,8 +627,6 @@ _MCPCN_PAGE_SIZE = 12
 _MCPCN_CATALOG_CAP = 3000
 # 目录翻页并发度（第一页拿到 total_pages 后 gather 剩余页）
 _CATALOG_PAGE_CONCURRENCY = 8
-# 详情批量判定并发度（两源可安装过滤共用）
-_DETAIL_CHECK_CONCURRENCY = 24
 # mcpmarket /api/categories 里只对 UI 有意义、不能当过滤条件用的虚拟桶
 _MCPCN_VIRTUAL_CATEGORIES = {"全部", "客户端", "直连", "最热", "最新"}
 # mcpmarket 中文分类 → 魔搭英文 slug（无映射的分类下直接跳过魔搭源）
@@ -557,16 +656,16 @@ async def _fetch_mcpcn_categories() -> List[str]:
         return _MCPCN_CATEGORIES_CACHE[1]
     names: List[str] = []
     try:
-        async with httpx.AsyncClient(timeout=_market_timeout()) as client:
-            resp = await client.get(f"{MCPCN_ENDPOINT}/api/categories")
+        client = await _shared_http_client()
+        resp = await client.get(f"{MCPCN_ENDPOINT}/api/categories", timeout=_market_timeout())
         if resp.status_code == 200:
             payload = resp.json()
             if isinstance(payload, list):
                 for item in payload:
                     if not isinstance(item, dict):
                         continue
-                    name = item.get("name")
-                    count = item.get("count")
+                    name = item["name"] if "name" in item else None
+                    count = item["count"] if "count" in item else None
                     if (
                         isinstance(name, str)
                         and name
@@ -576,7 +675,7 @@ async def _fetch_mcpcn_categories() -> List[str]:
                     ):
                         names.append(name)
     except Exception as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
     _MCPCN_CATEGORIES_CACHE = (time.time(), names)
     return names
 
@@ -932,50 +1031,81 @@ def _mcpcn_tool_params(raw_params: Any) -> List[MarketToolParam]:
     return params
 
 
-def _mcpcn_tools(raw: Dict[str, Any]) -> List[MarketTool]:
-    """优先 tools_enrich（含中文 desc + 中文参数），退化为 OpenAI function 形态 tools。"""
+def _extract_plain_mcpcn_tool(entry: object) -> Optional[MarketTool]:
+    """解析 raw['tools'] 单项（兼容标准 MCP inputSchema 与 OpenAI function 两种形态）。"""
+    if not isinstance(entry, dict):
+        return None
+    fn = entry["function"] if "function" in entry and isinstance(entry["function"], dict) else entry
+    name = fn["name"] if "name" in fn else None
+    if not (isinstance(name, str) and name):
+        return None
+    item = MarketTool(name=name)
+    desc_raw = fn["description"] if "description" in fn else None
+    desc = _mcpcn_text(desc_raw)
+    if desc:
+        item["description"] = desc
+    schema_raw: object = None
+    for key in ("inputSchema", "input_schema", "parameters"):
+        if key in fn and fn[key] is not None:
+            schema_raw = fn[key]
+            break
+    if isinstance(schema_raw, dict):
+        item["input_schema"] = schema_raw
+    params = _mcpcn_tool_params(schema_raw)
+    if params:
+        item["params"] = params
+    return item
+
+
+def _mcpcn_tools(raw: Dict[str, object]) -> List[MarketTool]:
+    """优先 tools_enrich 中文描述，缺失参数定义时用 raw['tools'] 的 inputSchema 补全。"""
+    plain_list: List[MarketTool] = []
+    plain_by_name: Dict[str, MarketTool] = {}
+    plain = raw["tools"] if "tools" in raw else None
+    if isinstance(plain, list):
+        for raw_item in plain:
+            parsed = _extract_plain_mcpcn_tool(raw_item)
+            if parsed is not None and "name" in parsed:
+                plain_list.append(parsed)
+                plain_by_name[parsed["name"]] = parsed
+
     tools: List[MarketTool] = []
-    enrich = raw.get("tools_enrich")
+    enrich = raw["tools_enrich"] if "tools_enrich" in raw else None
     if isinstance(enrich, list):
-        for t in enrich:
-            if not isinstance(t, dict):
+        for t_raw in enrich:
+            if not isinstance(t_raw, dict):
                 continue
-            name = t.get("name")
+            name = t_raw["name"] if "name" in t_raw else None
             if not (isinstance(name, str) and name):
                 continue
             item: MarketTool = {"name": name}
-            desc = _mcpcn_text(t.get("description"))
-            if not desc:
-                zh = t.get("description_zh")
-                desc = zh if isinstance(zh, str) else ""
+            desc = _mcpcn_text(t_raw["description"] if "description" in t_raw else None)
+            if not desc and "description_zh" in t_raw and isinstance(t_raw["description_zh"], str):
+                desc = t_raw["description_zh"]
+            fallback = plain_by_name[name] if name in plain_by_name else None
+            if not desc and fallback is not None and "description" in fallback:
+                desc = fallback["description"]
             if desc:
                 item["description"] = desc
-            params = _mcpcn_tool_params(t.get("parameters"))
-            if params:
+            schema_raw: object = None
+            for key in ("inputSchema", "input_schema", "parameters"):
+                if key in t_raw and t_raw[key] is not None:
+                    schema_raw = t_raw[key]
+                    break
+            if isinstance(schema_raw, dict):
+                item["input_schema"] = schema_raw
+            params = _mcpcn_tool_params(schema_raw)
+            if not params and fallback is not None:
+                if "params" in fallback:
+                    item["params"] = fallback["params"]
+                if "input_schema" not in item and "input_schema" in fallback:
+                    item["input_schema"] = fallback["input_schema"]
+            elif params:
                 item["params"] = params
             tools.append(item)
         if tools:
             return tools
-    plain = raw.get("tools")
-    if isinstance(plain, list):
-        for t in plain:
-            if not isinstance(t, dict):
-                continue
-            fn = t.get("function")
-            if not isinstance(fn, dict):
-                continue
-            name = fn.get("name")
-            if not (isinstance(name, str) and name):
-                continue
-            item = MarketTool(name=name)
-            desc = fn.get("description")
-            if isinstance(desc, str) and desc:
-                item["description"] = desc
-            params = _mcpcn_tool_params(fn.get("parameters"))
-            if params:
-                item["params"] = params
-            tools.append(item)
-    return tools
+    return plain_list
 
 
 def _normalize_mcpcn_detail(raw: Any) -> Optional[Dict[str, Any]]:
@@ -1039,97 +1169,99 @@ async def _fetch_mcpcn_catalog(search: str, category: str, hosted: bool) -> Opti
         return params
 
     try:
-        async with httpx.AsyncClient(timeout=_market_timeout()) as client:
+        client = await _shared_http_client()
+        timeout = _market_timeout()
 
-            async def get_page(page: int) -> Optional[Dict[str, Any]]:
-                resp = await client.get(f"{MCPCN_ENDPOINT}/api/servers?{qs(page)}")
-                return resp.json() if resp.status_code == 200 else None
+        async def get_page(page: int) -> Optional[Dict[str, Any]]:
+            resp = await client.get(f"{MCPCN_ENDPOINT}/api/servers?{qs(page)}", timeout=timeout)
+            return resp.json() if resp.status_code == 200 else None
 
-            first = await get_page(1)
-            if not isinstance(first, dict):
-                return None
-            servers = first.get("servers")
-            if not isinstance(servers, list):
-                return None
-            t_raw = first.get("total_servers")
-            total = t_raw if isinstance(t_raw, int) else len(servers)
-            total_pages = first.get("total_pages")
-            raw_items: List[Any] = list(servers)
-            need_pages = min(
-                total_pages if isinstance(total_pages, int) else 1,
-                -(-_MCPCN_CATALOG_CAP // _MCPCN_PAGE_SIZE),
-            )
-            if need_pages > 1:
-                sem = asyncio.Semaphore(_CATALOG_PAGE_CONCURRENCY)
+        first = await get_page(1)
+        if not isinstance(first, dict):
+            return None
+        servers = first["servers"] if "servers" in first else None
+        if not isinstance(servers, list):
+            return None
+        t_raw = first["total_servers"] if "total_servers" in first else None
+        total = t_raw if isinstance(t_raw, int) else len(servers)
+        total_pages = first["total_pages"] if "total_pages" in first else None
+        raw_items: List[Any] = list(servers)
+        need_pages = min(
+            total_pages if isinstance(total_pages, int) else 1,
+            -(-_MCPCN_CATALOG_CAP // _MCPCN_PAGE_SIZE),
+        )
+        if need_pages > 1:
+            sem = asyncio.Semaphore(_CATALOG_PAGE_CONCURRENCY)
 
-                async def guarded(page: int) -> Optional[Dict[str, Any]]:
-                    async with sem:
-                        return await get_page(page)
+            async def guarded(page: int) -> Optional[Dict[str, Any]]:
+                async with sem:
+                    return await get_page(page)
 
-                rest = await asyncio.gather(*(guarded(p) for p in range(2, need_pages + 1)), return_exceptions=True)
-                for r in rest:
-                    items = r.get("servers") if isinstance(r, dict) else None
-                    if isinstance(items, list):
-                        raw_items.extend(items)
-            entries: List[MarketEntry] = []
-            for item in raw_items:
-                if hosted and not (isinstance(item, dict) and item.get("has_instance")):
-                    continue
-                entry = _normalize_mcpcn_item(item)
-                if entry is not None:
-                    entries.append(entry)
-                    if len(entries) >= _MCPCN_CATALOG_CAP:
-                        break
-            return entries, total
+            rest = await asyncio.gather(*(guarded(p) for p in range(2, need_pages + 1)), return_exceptions=True)
+            for r in rest:
+                items = r["servers"] if isinstance(r, dict) and "servers" in r else None
+                if isinstance(items, list):
+                    raw_items.extend(items)
+        entries: List[MarketEntry] = []
+        for item in raw_items:
+            if hosted and not (isinstance(item, dict) and "has_instance" in item and bool(item["has_instance"])):
+                continue
+            entry = _normalize_mcpcn_item(item)
+            if entry is not None:
+                entries.append(entry)
+                if len(entries) >= _MCPCN_CATALOG_CAP:
+                    break
+        return entries, total
     except Exception as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
         return None
 
 
 # 详情在途请求去重：预热任务 / 过滤续跑 / 详情端点并发查同一 key 时只打一次上游
-_DETAIL_INFLIGHT: Dict[str, asyncio.Task] = {}
+_DETAIL_INFLIGHT: Dict[str, asyncio.Task[Optional[Dict[str, Any]]]] = {}
 
 
 async def _detail_cached_fetch(
     cache_key: str, fetch: Callable[[], Coroutine[Any, Any, Optional[Dict[str, Any]]]]
 ) -> Optional[Dict[str, Any]]:
     """TTL 缓存 + 在途去重：命中直接返回；未命中并发调用共享同一个拉取协程。"""
-    cached = _DETAIL_CACHE.get(cache_key)
+    cached = _DETAIL_CACHE[cache_key] if cache_key in _DETAIL_CACHE else None
     if cached and time.time() - cached[0] < _detail_ttl():
         return cached[1]
-    task = _DETAIL_INFLIGHT.get(cache_key)
+    task = _DETAIL_INFLIGHT[cache_key] if cache_key in _DETAIL_INFLIGHT else None
     if task is None:
         task = asyncio.create_task(fetch())
         _DETAIL_INFLIGHT[cache_key] = task
         task.add_done_callback(lambda _t: _DETAIL_INFLIGHT.pop(cache_key, None))
     try:
-        return await task
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         return None
 
 
 async def _get_mcpcn_detail(sid: str) -> Optional[Dict[str, Any]]:
-    """mcpcn: 前缀详情；TTL 缓存 + logo 预取。"""
-    global _detail_dirty
+    """mcpcn: 前缀详情；TTL 缓存。"""
     cache_key = f"{MCPCN_ENDPOINT}|{MCPCN_PREFIX}{sid}"
 
     async def _fetch() -> Optional[Dict[str, Any]]:
         global _detail_dirty
         try:
-            async with httpx.AsyncClient(timeout=_market_timeout()) as client:
-                resp = await client.get(f"{MCPCN_ENDPOINT}/api/servers/{quote(sid, safe='')}")
+            client = await _shared_http_client()
+            resp = await client.get(
+                f"{MCPCN_ENDPOINT}/api/servers/{quote(sid, safe='')}",
+                timeout=_market_timeout(),
+            )
             if resp.status_code != 200:
                 return None
             detail = _normalize_mcpcn_detail(resp.json())
             if detail is not None:
                 _DETAIL_CACHE[cache_key] = (time.time(), detail)
                 _detail_dirty = True
-                logo = detail.get("logo_url", "")
-                if isinstance(logo, str) and logo:
-                    ensure_logo_cached(logo)
             return detail
         except Exception as e:
-            logger.warning(t("log.mcp.market_fetch_failed", e=e))
+            logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
             return None
 
     return await _detail_cached_fetch(cache_key, _fetch)
@@ -1166,18 +1298,19 @@ async def _fetch_market_page(
     if filt:
         body["filter"] = filt
     try:
-        async with httpx.AsyncClient(timeout=_market_timeout()) as client:
-            resp = await client.put(
-                f"{_market_endpoint()}/openapi/v1/mcp/servers",
-                json=body,
-                headers=_market_headers(),
-            )
+        client = await _shared_http_client()
+        resp = await client.put(
+            f"{_market_endpoint()}/openapi/v1/mcp/servers",
+            json=body,
+            headers=_market_headers(),
+            timeout=_market_timeout(),
+        )
         if resp.status_code != 200:
             return None
         payload = resp.json()
         return payload if isinstance(payload, dict) else None
     except Exception as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
         return None
 
 
@@ -1209,20 +1342,22 @@ async def _fetch_market_detail(qualified_name: str) -> Optional[Dict[str, Any]]:
     url = f"{_market_endpoint()}/openapi/v1/mcp/servers/{quote(qualified_name, safe='')}"
     want_op_url = _has_market_token()
     try:
-        async with httpx.AsyncClient(timeout=_market_timeout()) as client:
-            resp = await client.get(
-                f"{url}?get_operational_url=true" if want_op_url else url,
-                headers=_market_headers(),
-            )
-            if resp.status_code in (401, 403) and want_op_url:
-                resp = await client.get(url, headers=_market_headers())
+        client = await _shared_http_client()
+        timeout = _market_timeout()
+        resp = await client.get(
+            f"{url}?get_operational_url=true" if want_op_url else url,
+            headers=_market_headers(),
+            timeout=timeout,
+        )
+        if resp.status_code in (401, 403) and want_op_url:
+            resp = await client.get(url, headers=_market_headers(), timeout=timeout)
         if resp.status_code != 200:
             return None
         payload = resp.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
+        data = payload["data"] if isinstance(payload, dict) and "data" in payload else None
         return data if isinstance(data, dict) else None
     except Exception as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
         return None
 
 
@@ -1242,7 +1377,7 @@ _DISK_TTL_MIN = 21600.0  # 6h（目录）
 _DETAIL_TTL_MIN = 259200.0  # 72h（详情判定）
 _DETAIL_DISK_KEEP = 4000  # 详情缓存落盘最多保留条数（要能装下 cap 全量判定结果）
 # 归一化规则版本：变体过滤/字段映射变化时 +1，旧版磁盘缓存（目录+详情）整体丢弃
-_NORMALIZER_VERSION = 8
+_NORMALIZER_VERSION = 9
 # 失效端点探测：活端点 24h 内不重复探；死端点 6h 后重探（502 可能是临时抖动）
 _DEAD_URL_VERSION = 1
 _ALIVE_TTL = 86400.0
@@ -1319,6 +1454,15 @@ def _load_persisted_caches() -> None:
                 _DEAD_URL_CACHE[key] = (float(value[0]), value[1])
 
 
+async def _ensure_caches_loaded() -> None:
+    if _caches_loaded:
+        return
+    async with _loop_state().cache_io_lock:
+        if _caches_loaded:
+            return
+        await asyncio.to_thread(_load_persisted_caches)
+
+
 def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -1332,11 +1476,16 @@ def _save_catalog_cache() -> None:
         cutoff = time.time() - _effective_ttl() * 4
         payload = {
             "version": _NORMALIZER_VERSION,
-            "items": {k: v for k, v in _CATALOG_CACHE.items() if v[0] >= cutoff},
+            "items": {k: v for k, v in list(_CATALOG_CACHE.items()) if v[0] >= cutoff},
         }
         _write_json_atomic(_CATALOG_CACHE_FILE, payload)
     except OSError as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
+
+
+async def _save_catalog_cache_async() -> None:
+    async with _loop_state().cache_io_lock:
+        await asyncio.to_thread(_save_catalog_cache)
 
 
 def _flush_detail_cache() -> None:
@@ -1347,7 +1496,7 @@ def _flush_detail_cache() -> None:
     _detail_dirty = False
     try:
         cutoff = time.time() - _detail_ttl() * 4
-        items = [(k, v) for k, v in _DETAIL_CACHE.items() if v[0] >= cutoff]
+        items = [(k, v) for k, v in list(_DETAIL_CACHE.items()) if v[0] >= cutoff]
         items.sort(key=lambda kv: kv[1][0], reverse=True)
         payload = {
             "version": _NORMALIZER_VERSION,
@@ -1355,7 +1504,14 @@ def _flush_detail_cache() -> None:
         }
         _write_json_atomic(_DETAIL_CACHE_FILE, payload)
     except OSError as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
+
+
+async def _flush_detail_cache_async() -> None:
+    if not _detail_dirty:
+        return
+    async with _loop_state().cache_io_lock:
+        await asyncio.to_thread(_flush_detail_cache)
 
 
 def _flush_dead_url_cache() -> None:
@@ -1365,16 +1521,23 @@ def _flush_dead_url_cache() -> None:
         return
     _dead_url_dirty = False
     try:
-        items = sorted(_DEAD_URL_CACHE.items(), key=lambda kv: kv[1][0], reverse=True)
+        items = sorted(list(_DEAD_URL_CACHE.items()), key=lambda kv: kv[1][0], reverse=True)
         payload = {"version": _DEAD_URL_VERSION, "items": dict(items[:_DEAD_URL_KEEP])}
         _write_json_atomic(_DEAD_URL_CACHE_FILE, payload)
     except OSError as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
+
+
+async def _flush_dead_url_cache_async() -> None:
+    if not _dead_url_dirty:
+        return
+    async with _loop_state().cache_io_lock:
+        await asyncio.to_thread(_flush_dead_url_cache)
 
 
 def _is_url_cached_dead(url: str) -> bool:
     """同步查缓存：URL 是否已被判失效（只看不探，过滤路径用）。"""
-    rec = _DEAD_URL_CACHE.get(url)
+    rec = _DEAD_URL_CACHE[url] if url in _DEAD_URL_CACHE else None
     if not rec:
         return False
     ts, dead = rec
@@ -1384,8 +1547,8 @@ def _is_url_cached_dead(url: str) -> bool:
 async def _probe_url_alive(url: str) -> bool:
     """GET 探活：连接失败/超时/404/410/5xx → 失效；401/405/400 等算活（服务在，只是要鉴权/POST）。"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(_PROBE_TIMEOUT), follow_redirects=True) as client:
-            resp = await client.get(url)
+        client = await _shared_http_client()
+        resp = await client.get(url, timeout=httpx.Timeout(_PROBE_TIMEOUT), follow_redirects=True)
         return resp.status_code not in (404, 410) and resp.status_code < 500
     except (httpx.HTTPError, OSError):
         return False
@@ -1440,56 +1603,80 @@ def _peek_detail(qualified_name: str) -> Optional[Dict[str, Any]]:
 
 
 async def _filter_installable(entries: List[MarketEntry]) -> tuple[List[MarketEntry], bool]:
-    """只留有可安装变体的条目。返回 (存活, 判定未完)。
-
-    已缓存判定直接分类；未判定的并发取详情但受 _DETAIL_CHECK_BUDGET 限制——
-    超时未完的任务不取消，后台继续把判定写进详情缓存，本轮先不呈现这些条目，
-    下个请求缓存命中后即得完整结果。
-    """
-    kept: List[MarketEntry] = []
+    """只留有可安装变体的条目。返回 (存活, 判定未完)。"""
+    live_by_qn: Dict[str, bool] = {}
     pending: List[MarketEntry] = []
     for e in entries:
-        detail = _peek_detail(e["qualified_name"])
+        qn = e["qualified_name"]
+        detail = _peek_detail(qn)
         if detail is None:
             pending.append(e)
-        elif _has_live_variants(detail):
-            kept.append(e)
+        else:
+            live_by_qn[qn] = _has_live_variants(detail)
     if not pending:
-        return kept, False
-    sem = asyncio.Semaphore(_DETAIL_CHECK_CONCURRENCY)
+        return [e for e in entries if e["qualified_name"] in live_by_qn and live_by_qn[e["qualified_name"]]], False
 
-    async def check(entry: MarketEntry) -> bool:
-        async with sem:
-            detail = await _get_detail(entry["qualified_name"])
-        return isinstance(detail, dict) and _has_live_variants(detail)
+    state = _loop_state()
+    deadline = time.monotonic() + _DETAIL_CHECK_BUDGET
+    cursor = 0
+    total_pending = len(pending)
 
-    tasks: Dict[asyncio.Task[bool], MarketEntry] = {asyncio.create_task(check(e)): e for e in pending}
-    done, running = await asyncio.wait(tasks.keys(), timeout=_DETAIL_CHECK_BUDGET)
-    if running:
-        asyncio.create_task(_flush_detail_cache_when(running))
-    for task in done:
-        try:
-            if task.result() is True:
-                kept.append(tasks[task])
-        except Exception:
-            pass
-    return kept, bool(running)
+    async def worker() -> None:
+        nonlocal cursor
+        while cursor < total_pending and time.monotonic() < deadline:
+            idx = cursor
+            cursor += 1
+            qn = pending[idx]["qualified_name"]
+            async with state.detail_sem:
+                if time.monotonic() >= deadline:
+                    return
+                detail = await _get_detail(qn)
+            live_by_qn[qn] = isinstance(detail, dict) and _has_live_variants(detail)
+
+    worker_n = min(total_pending, _DETAIL_CHECK_CONCURRENCY)
+    workers = [asyncio.create_task(worker()) for _ in range(worker_n)]
+    _done, still_running = await asyncio.wait(workers, timeout=_DETAIL_CHECK_BUDGET)
+    for w in still_running:
+        w.cancel()
+    if still_running:
+        await asyncio.gather(*still_running, return_exceptions=True)
+
+    unresolved = [e for e in pending if e["qualified_name"] not in live_by_qn]
+    if unresolved:
+        _schedule_bg_detail_drain(state, unresolved)
+    kept = [e for e in entries if e["qualified_name"] in live_by_qn and live_by_qn[e["qualified_name"]]]
+    return kept, bool(unresolved)
 
 
-async def _flush_detail_cache_when(tasks: Set[asyncio.Task[bool]]) -> None:
-    """后台判定任务全部落定后统一写盘一次（异常在此消费，不污染请求方）。"""
-    await asyncio.gather(*tasks, return_exceptions=True)
-    _flush_detail_cache()
+def _schedule_bg_detail_drain(state: _MarketLoopState, unresolved: List[MarketEntry]) -> None:
+    # 搜索连敲时只保留最新一轮前 N 条待预热项，避免多轮后台队列叠加冲垮事件循环
+    state.bg_drain_queue.clear()
+    for entry in unresolved[:_BG_DRAIN_CAP]:
+        state.bg_drain_queue[entry["qualified_name"]] = entry
+    if state.bg_drain_task is None or state.bg_drain_task.done():
+        state.bg_drain_task = asyncio.create_task(_run_bg_detail_drain(state))
+
+
+async def _run_bg_detail_drain(state: _MarketLoopState) -> None:
+    async def drain_worker() -> None:
+        while state.bg_drain_queue:
+            qn = next(iter(state.bg_drain_queue))
+            state.bg_drain_queue.pop(qn, None)
+            if _peek_detail(qn) is not None:
+                continue
+            async with state.detail_sem:
+                await _get_detail(qn)
+            await asyncio.sleep(0.02)
+
+    await asyncio.gather(*(drain_worker() for _ in range(_BG_DRAIN_CONCURRENCY)), return_exceptions=True)
+    await _flush_detail_cache_async()
 
 
 async def warm_market_caches() -> None:
-    """启动后台预热：把详情可装性判定填满缓存，用户首次打开市场不再等全量判定。
-
-    低并发跑完整个基础目录；已判定（72h 内）的条目跳过，所以缓存全量命中时
-    只剩一次目录拉取（~3s）。失败静默——首个真实请求会走限时判定兜底。
-    """
+    """启动后台预热：把详情可装性判定填满缓存，用户首次打开市场不再等全量判定。"""
     try:
-        _load_persisted_caches()
+        await _ensure_caches_loaded()
+        state = _loop_state()
         pending: List[MarketEntry] = []
         cat = await _fetch_mcpcn_catalog("", "", False)
         if cat is not None:
@@ -1500,17 +1687,24 @@ async def warm_market_caches() -> None:
             if fetched is not None:
                 pending.extend(e for e in fetched[0] if _peek_detail(e["qualified_name"]) is None)
         if pending:
-            sem = asyncio.Semaphore(_WARM_CONCURRENCY)
+            cursor = 0
+            total = len(pending)
 
-            async def check(entry: MarketEntry) -> None:
-                async with sem:
-                    try:
-                        await _get_detail(entry["qualified_name"])
-                    except Exception:
-                        pass
+            async def warm_worker() -> None:
+                nonlocal cursor
+                while cursor < total:
+                    idx = cursor
+                    cursor += 1
+                    qn = pending[idx]["qualified_name"]
+                    if _peek_detail(qn) is not None:
+                        continue
+                    async with state.detail_sem:
+                        await _get_detail(qn)
+                    await asyncio.sleep(0.01)
 
-            await asyncio.gather(*(check(e) for e in pending), return_exceptions=True)
-            _flush_detail_cache()
+            worker_n = min(total, _WARM_CONCURRENCY)
+            await asyncio.gather(*(warm_worker() for _ in range(worker_n)), return_exceptions=True)
+            await _flush_detail_cache_async()
             logger.info(t("log.mcp.market_warm_done", n=len(pending)))
         # 失效端点扫描：目录全部条目的 http 变体 URL 低并发探活，死链进缓存
         urls: Set[str] = set()
@@ -1519,32 +1713,40 @@ async def warm_market_caches() -> None:
                 continue
             for e in entries_src[0]:
                 d = _peek_detail(e["qualified_name"])
-                if not isinstance(d, dict):
+                if not isinstance(d, dict) or "variants" not in d or not isinstance(d["variants"], list):
                     continue
-                for v in d.get("variants", []):
+                for v in d["variants"]:
                     if (
                         isinstance(v, dict)
-                        and is_http_mcp_transport(v.get("transport", ""))
-                        and isinstance(v.get("url"), str)
+                        and "transport" in v
+                        and isinstance(v["transport"], str)
+                        and is_http_mcp_transport(v["transport"])
+                        and "url" in v
+                        and isinstance(v["url"], str)
                         and v["url"]
                     ):
                         urls.add(v["url"])
         if urls:
-            url_sem = asyncio.Semaphore(4)
+            url_list = list(urls)
+            url_cursor = 0
+            url_total = len(url_list)
+            dead_n = 0
 
-            async def probe(url: str) -> bool:
-                async with url_sem:
-                    try:
-                        return await _remote_url_alive(url)
-                    except Exception:
-                        return True  # 探针自身异常不误判失效
+            async def probe_worker() -> None:
+                nonlocal url_cursor, dead_n
+                while url_cursor < url_total:
+                    idx = url_cursor
+                    url_cursor += 1
+                    alive = await _remote_url_alive(url_list[idx])
+                    if not alive:
+                        dead_n += 1
+                    await asyncio.sleep(0.01)
 
-            results = await asyncio.gather(*(probe(u) for u in urls), return_exceptions=True)
-            _flush_dead_url_cache()
-            dead_n = sum(1 for r in results if r is False)
+            await asyncio.gather(*(probe_worker() for _ in range(min(url_total, 4))), return_exceptions=True)
+            await _flush_dead_url_cache_async()
             logger.info(t("log.mcp.market_dead_probe_done", p0=len(urls), p1=dead_n))
     except Exception as e:
-        logger.warning(t("log.mcp.market_fetch_failed", e=e))
+        logger.warning(t("log.mcp.market_fetch_failed", e=_err_text(e)))
 
 
 async def _get_detail(qualified_name: str) -> Optional[Dict[str, Any]]:
@@ -1562,9 +1764,6 @@ async def _get_detail(qualified_name: str) -> Optional[Dict[str, Any]]:
         if detail is not None:
             _DETAIL_CACHE[cache_key] = (time.time(), detail)
             _detail_dirty = True
-            logo = detail.get("logo_url", "")
-            if isinstance(logo, str) and logo:
-                ensure_logo_cached(logo)
         return detail
 
     return await _detail_cached_fetch(cache_key, _fetch)
@@ -1627,9 +1826,9 @@ async def list_market_entries(
     want_ms = source != "mcpmarket"
     scope_key = f"{_market_endpoint()}|{source}|{normalized_search}|{normalized_category}|{hosted}"
 
-    _load_persisted_caches()
+    await _ensure_caches_loaded()
     partial = False
-    cached = _CATALOG_CACHE.get(scope_key)
+    cached = _CATALOG_CACHE[scope_key] if scope_key in _CATALOG_CACHE else None
     if cached and time.time() - cached[0] < _effective_ttl():
         merged, upstream_total, truncated, degraded = cached[1], cached[2], cached[3], cached[4]
     else:
@@ -1638,15 +1837,15 @@ async def list_market_entries(
         if normalized_category:
             if normalized_category in MCPCN_TO_MODELSCOPE_CATEGORY:
                 zh_category = normalized_category
-            else:
-                zh_category = MODELSCOPE_TO_MCPCN_CATEGORY.get(normalized_category, "")
+            elif normalized_category in MODELSCOPE_TO_MCPCN_CATEGORY:
+                zh_category = MODELSCOPE_TO_MCPCN_CATEGORY[normalized_category]
         # mcpmarket：中文标签直传；英文 slug 能反查才用，否则跳过（避免无过滤拉全量）
         cn_category_known = not normalized_category or normalized_category not in MARKET_CATEGORIES or bool(zh_category)
         cn_category = normalized_category if normalized_category not in MARKET_CATEGORIES else zh_category
         # 魔搭：英文 slug 直用；中文经映射，无映射跳过
         ms_category = normalized_category if normalized_category in MARKET_CATEGORIES else ""
-        if not ms_category and zh_category:
-            ms_category = MCPCN_TO_MODELSCOPE_CATEGORY.get(zh_category, "")
+        if not ms_category and zh_category and zh_category in MCPCN_TO_MODELSCOPE_CATEGORY:
+            ms_category = MCPCN_TO_MODELSCOPE_CATEGORY[zh_category]
         ms_category_known = not normalized_category or bool(ms_category)
 
         async def _cn_flow() -> tuple[List[MarketEntry], int, bool, bool, bool]:
@@ -1681,7 +1880,7 @@ async def list_market_entries(
         # 任一请求源失败 → degraded；过期缓存兜底（不刷新 ts，上游恢复即回新数据），仍空才回落预设卡片
         degraded = (want_mcpcn and mcpcn_failed) or (want_ms and ms_failed)
         if not merged and degraded:
-            stale = _CATALOG_CACHE.get(scope_key)
+            stale = _CATALOG_CACHE[scope_key] if scope_key in _CATALOG_CACHE else None
             if stale:
                 merged, upstream_total, truncated = stale[1], stale[2], stale[3]
             else:
@@ -1690,14 +1889,14 @@ async def list_market_entries(
                 ]
                 truncated = False
                 _CATALOG_CACHE[scope_key] = (time.time(), merged, upstream_total, truncated, degraded)
-                _save_catalog_cache()
+                await _save_catalog_cache_async()
         else:
             truncated = mcpcn_more or ms_truncated
             if not partial:
                 # 判定未完的 scope 不写目录缓存：下个请求重拉目录（~3s）后判定点已大量命中详情缓存，返回即完整
                 _CATALOG_CACHE[scope_key] = (time.time(), merged, upstream_total, truncated, degraded)
-                _save_catalog_cache()
-        _flush_detail_cache()
+                await _save_catalog_cache_async()
+        await _flush_detail_cache_async()
 
     categories = MARKET_CATEGORIES if source == "modelscope" else await _fetch_mcpcn_categories()
     _sort_market_entries(merged, sort)
@@ -1715,8 +1914,8 @@ async def list_market_entries(
         "window_limited": want_ms and not _has_market_token(),
         "partial": partial,
     }
-    for entry in data["entries"]:
-        logo = entry.get("logo_url", "")
+    for entry in page_entries:
+        logo = entry["logo_url"] if "logo_url" in entry else ""
         if isinstance(logo, str) and logo:
             ensure_logo_cached(logo)
     return {"status": 0, "msg": "ok", "data": data}
@@ -1732,11 +1931,14 @@ async def get_market_entry_detail(
     _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """服务详情：含全部传输变体（远程优先）、readme、source_url。"""
-    _load_persisted_caches()
+    await _ensure_caches_loaded()
     detail = await _get_detail(qualified_name)
-    _flush_detail_cache()
+    await _flush_detail_cache_async()
     if detail is None:
         return {"status": 1, "msg": f"未找到服务 '{qualified_name}' 或上游不可达", "data": None}
+    logo = detail["logo_url"] if "logo_url" in detail else ""
+    if isinstance(logo, str) and logo:
+        ensure_logo_cached(logo)
     return {"status": 0, "msg": "ok", "data": detail}
 
 
@@ -1750,28 +1952,28 @@ async def market_transports(
     _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """卡片徽章用：每个服务的可用 transport 列表。详情缓存支撑，并发取详情（≤48 条）。"""
-    _load_persisted_caches()
-    sem = asyncio.Semaphore(12)
+    await _ensure_caches_loaded()
+    state = _loop_state()
     result: Dict[str, List[str]] = {}
 
     async def one(name: str) -> None:
-        async with sem:
+        async with state.detail_sem:
             detail = await _get_detail(name)
         if detail is None:
             return
-        variants = detail.get("variants")
+        variants = detail["variants"] if "variants" in detail else None
         transports: List[str] = []
         if isinstance(variants, list):
             for v in variants:
-                if isinstance(v, dict):
-                    transport = v.get("transport")
+                if isinstance(v, dict) and "transport" in v:
+                    transport = v["transport"]
                     if isinstance(transport, str) and transport and transport not in transports:
                         transports.append(transport)
         if transports:
             result[name] = transports
 
     await asyncio.gather(*(one(n) for n in body.qualified_names[:48] if isinstance(n, str)))
-    _flush_detail_cache()
+    await _flush_detail_cache_async()
     return {"status": 0, "msg": "ok", "data": {"transports": result}}
 
 
@@ -1786,16 +1988,16 @@ async def market_install_preview(
     _: Dict[str, Any] = Depends(require_admin),
 ) -> Dict[str, Any]:
     """按选定变体生成安装草稿：只做规范化与标注，不落盘。"""
-    _load_persisted_caches()
+    await _ensure_caches_loaded()
     detail = await _get_detail(body.qualified_name)
-    _flush_detail_cache()
+    await _flush_detail_cache_async()
     if detail is None:
         return {"status": 1, "msg": f"未找到服务 '{body.qualified_name}' 或上游不可达", "data": None}
-    variants_raw = detail.get("variants")
+    variants_raw = detail["variants"] if "variants" in detail else None
     variants = variants_raw if isinstance(variants_raw, list) else []
     if not variants:
         return {"status": 1, "msg": "该服务没有可用的安装方式", "data": None}
-    default_index = detail.get("default_variant")
+    default_index = detail["default_variant"] if "default_variant" in detail else None
     index = (
         body.variant_index
         if 0 <= body.variant_index < len(variants)
@@ -1810,14 +2012,17 @@ async def market_install_preview(
         v["url"]
         for v in variants
         if isinstance(v, dict)
-        and is_http_mcp_transport(v.get("transport", ""))
-        and isinstance(v.get("url"), str)
+        and "transport" in v
+        and isinstance(v["transport"], str)
+        and is_http_mcp_transport(v["transport"])
+        and "url" in v
+        and isinstance(v["url"], str)
         and v["url"]
     ]
     dead_urls: List[str] = []
     if http_urls:
         alive = await asyncio.gather(*(_remote_url_alive(u) for u in http_urls), return_exceptions=True)
-        _flush_dead_url_cache()
+        await _flush_dead_url_cache_async()
         dead_urls = [u for u, ok in zip(http_urls, alive) if ok is not True]
 
     name = _str_field(variant, "name") or _str_field(detail, "name") or body.qualified_name
@@ -1858,29 +2063,33 @@ async def market_install_preview(
             tool_name = tool.get("name")
             if not isinstance(tool_name, str) or not tool_name:
                 continue
-            params_raw = tool.get("params")
-            parameters: Dict[str, Dict[str, Any]] = {}
-            if isinstance(params_raw, list):
+            schema_obj = tool["input_schema"] if "input_schema" in tool else None
+            params_raw = tool["params"] if "params" in tool else None
+            parameters: Dict[str, Dict[str, object]] = {}
+            if isinstance(schema_obj, dict):
+                parameters = input_schema_to_parameters(schema_obj)
+            elif isinstance(params_raw, list):
                 for p in params_raw:
                     if not isinstance(p, dict):
                         continue
-                    p_name = p.get("name")
+                    p_name = p["name"] if "name" in p else None
                     if not isinstance(p_name, str) or not p_name:
                         continue
-                    p_def: Dict[str, Any] = {}
-                    p_type = p.get("type")
+                    p_def: Dict[str, object] = {}
+                    p_type = p["type"] if "type" in p else None
                     if isinstance(p_type, str) and p_type:
                         p_def["type"] = p_type
-                    p_desc = p.get("description")
+                    p_desc = p["description"] if "description" in p else None
                     if isinstance(p_desc, str) and p_desc:
                         p_def["description"] = p_desc
-                    if p.get("required") is True:
+                    if "required" in p and p["required"] is True:
                         p_def["required"] = True
                     parameters[p_name] = p_def
+            desc_val = tool["description"] if "description" in tool and isinstance(tool["description"], str) else ""
             preview_tools.append(
                 {
                     "name": tool_name,
-                    "description": tool.get("description") if isinstance(tool.get("description"), str) else "",
+                    "description": desc_val,
                     "parameters": parameters,
                 }
             )
@@ -1917,24 +2126,16 @@ async def get_mcp_market_logo(
     if not url.startswith(("https://", "http://")):
         raise HTTPException(status_code=404, detail="invalid logo url")
     key = _logo_key(url)
-    meta_path = _LOGO_DIR / f"{key}.json"
-    if not meta_path.exists():
+    hit = await asyncio.to_thread(_read_logo_cached, key)
+    if hit is None:
         await _download_logo(url, key)
-    if not meta_path.exists():
+        hit = await asyncio.to_thread(_read_logo_cached, key)
+    if hit is None:
         raise HTTPException(status_code=404, detail="logo fetch failed")
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        raise HTTPException(status_code=404, detail="logo meta invalid") from None
-    if not isinstance(meta, dict):
-        raise HTTPException(status_code=404, detail="logo meta invalid")
-    file_name = meta.get("file")
-    content_type = meta.get("content_type")
-    img_path = _LOGO_DIR / file_name if isinstance(file_name, str) else None
-    if img_path is None or not img_path.exists():
-        raise HTTPException(status_code=404, detail="logo file missing")
+    img_path, media_type = hit
+    _LOGO_CACHED_KEYS.add(key)
     return FileResponse(
         img_path,
-        media_type=content_type if isinstance(content_type, str) else "application/octet-stream",
+        media_type=media_type,
         headers={"Cache-Control": "public, max-age=86400"},
     )

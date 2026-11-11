@@ -524,7 +524,7 @@ def _capability_exclusive_tool_names() -> set[str]:
 
     exclusive: set[str] = set()
     for node in list_nodes():
-        if node.source == "persona" or node.node_id == "capability_evaluator":
+        if node.source in ("persona", "mcp") or node.node_id == "capability_evaluator":
             continue
         owned = set(resolve_pack_tool_names(node.tool_packs) + list(node.tool_names))
         exclusive |= owned - shared

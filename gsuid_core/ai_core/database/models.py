@@ -87,7 +87,7 @@ class UserFavorability(BaseModel, table=True):
         return level_name_of(self.favorability)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_user_favorability(
         cls,
         session: AsyncSession,
@@ -292,7 +292,7 @@ class UserFavorability(BaseModel, table=True):
         return result
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_scores_for(
         cls,
         session: AsyncSession,
@@ -324,7 +324,7 @@ class UserFavorability(BaseModel, table=True):
         return best
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_user_favorability(
         cls,
         session: AsyncSession,
@@ -351,7 +351,7 @@ class UserFavorability(BaseModel, table=True):
             return []
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_top_favorability_users(
         cls,
         session: AsyncSession,

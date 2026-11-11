@@ -776,7 +776,7 @@ class AiMemeKnowledge(BaseBotIDModel, table=True):
     last_hit_at: Optional[datetime] = Field(default=None, title="最后命中")
 
     @classmethod
-    @with_session
+    @with_read_session
     async def match_terms(
         cls,
         session: AsyncSession,

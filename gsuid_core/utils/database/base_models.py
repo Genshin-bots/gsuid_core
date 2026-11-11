@@ -522,16 +522,17 @@ def _session_wrapper(
         operation = func.__qualname__
         # 复用本任务的连接，避免嵌套写再开一条连接去抢锁。
         # savepoint 失败只回滚这一层，外层 commit 带不走半截语句。
-        if not read_only:
-            active = _owned_write_session()
-            if active is not None:
-                bound = active
+        active = _owned_write_session()
+        if active is not None:
+            bound = active
+            if read_only:
+                return await func(self, bound, *args, **kwargs)
 
-                async def _nested() -> R:
-                    async with bound.begin_nested():
-                        return await func(self, bound, *args, **kwargs)
+            async def _nested() -> R:
+                async with bound.begin_nested():
+                    return await func(self, bound, *args, **kwargs)
 
-                return await _retry_db(_nested)
+            return await _retry_db(_nested)
 
         async def _run_in_session(lease: _SqliteDriverLease | None) -> R:
             async with async_maker() as session:

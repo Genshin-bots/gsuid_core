@@ -19,7 +19,7 @@ from sqlmodel import Field, col, delete, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gsuid_core.utils.database.base_models import BaseModel, with_session
+from gsuid_core.utils.database.base_models import BaseModel, with_session, with_read_session
 
 # 每用户保留最近 N 笔工具调用
 _MAX_PER_USER = 8
@@ -80,7 +80,7 @@ class AIToolTrace(BaseModel, table=True):
         )
 
     @classmethod
-    @with_session
+    @with_read_session
     async def recent_for_users(
         cls,
         session: AsyncSession,

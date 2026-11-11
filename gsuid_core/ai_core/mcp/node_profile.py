@@ -55,6 +55,34 @@ def mcp_node_id(config_id: str) -> str:
     return f"{MCP_NODE_PREFIX}{config_id}"
 
 
+def _safe_ident_part(raw: str) -> str:
+    """将任意服务名或工具名收敛为合法的 ASCII 标识符片段。"""
+    if re.fullmatch(r"[A-Za-z0-9_-]+", raw):
+        return raw
+    ascii_part = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_-")
+    if not ascii_part or any(ord(ch) > 127 for ch in raw):
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:6]
+        return f"{ascii_part}_{digest}" if ascii_part else digest
+    return ascii_part
+
+
+def mcp_registered_tool_name(server_key: str, tool_name: str) -> str:
+    """生成符合模型函数调用规范（^[a-zA-Z0-9_-]{1,64}$）的注册工具名。"""
+    server_part = _safe_ident_part(server_key)
+    tool_part = _safe_ident_part(tool_name)
+    full = f"mcp_{server_part}_{tool_part}"
+    if len(full) > 64:
+        digest = hashlib.sha1(full.encode("utf-8")).hexdigest()[:8]
+        full = f"{full[:55].rstrip('_-')}_{digest}"
+    return full
+
+
+def mcp_plugin_name(config_id: str, server_name: str) -> str:
+    """MCP 工具所属 plugin 标识，优先绑定稳定的 config_id。"""
+    key = config_id.strip() or server_name.strip()
+    return f"mcp_{key}"
+
+
 def has_cjk(text: str) -> bool:
     """是否含至少 4 个 CJK 字符（判定"中文介绍可用"的阈值）。"""
     return sum(1 for ch in text if "一" <= ch <= "鿿") >= 4
@@ -147,18 +175,20 @@ def gen_match_keywords(config_id: str, config: MCPConfig) -> List[str]:
 
 
 def mcp_tool_covers(config: Optional[MCPConfig], tool_description: str) -> List[str]:
-    """单个 MCP 工具的检索短语：服务描述短语（≤3）+ 工具英文首行。"""
+    """单个 MCP 工具的检索短语：工具自身首行居首（供摘要区分），后接服务描述短语（≤3）。"""
     covers: List[str] = []
+    line = first_line(tool_description)[:40]
+    if line:
+        covers.append(line)
     if config is not None:
+        server_phrases = 0
         for phrase in re.split(r"[，,、；;。\n]", effective_description(config)):
             p = phrase.strip()
             if len(p) >= 3 and p not in covers:
                 covers.append(p)
-            if len(covers) >= 3:
+                server_phrases += 1
+            if server_phrases >= 3:
                 break
-    line = first_line(tool_description)[:40]
-    if line and line not in covers:
-        covers.append(line)
     return covers
 
 

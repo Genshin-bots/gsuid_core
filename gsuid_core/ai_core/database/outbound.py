@@ -20,6 +20,7 @@ from gsuid_core.utils.database.base_models import (
     BaseIDModel,
     async_maker,
     with_session,
+    with_read_session,
     sqlite_gated_write,
 )
 
@@ -110,7 +111,7 @@ class OutboundAudit(BaseIDModel, table=True):
         return 1
 
     @classmethod
-    @with_session
+    @with_read_session
     async def match_by_text(
         cls,
         session: AsyncSession,
@@ -130,7 +131,7 @@ class OutboundAudit(BaseIDModel, table=True):
         return rows[idx]
 
     @classmethod
-    @with_session
+    @with_read_session
     async def recent_for_group(
         cls,
         session: AsyncSession,
@@ -146,7 +147,7 @@ class OutboundAudit(BaseIDModel, table=True):
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def search_recent(
         cls,
         session: AsyncSession,

@@ -163,6 +163,60 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
     assert overlay == {"display_name": "自定义"}
     assert compute_mcp_overlay(overlay, node, {"display_name": node.display_name}) == {}
 
+    import re as _re
+
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.agent_node import unregister_agent_node
+    from gsuid_core.ai_core.mcp.startup import _forget_mcp_server, register_single_mcp_server
+    from gsuid_core.ai_core.agent_run.support import _capability_exclusive_tool_names
+    from gsuid_core.ai_core.buildin_tools.find_tools_rank import classify_callable_tool
+
+    fallback_cfg = MCPConfig(
+        name="Demo's Shop",
+        transport="streamable_http",
+        url="https://x.example/mcp",
+        description="搜索活动日历、领取优惠券等核心能力",
+        market_meta={"chinese_name": "演示门店（中国）"},
+        register_as_ai_tools=True,
+        tools=[MCPToolDefinition(name="claim-coupon", description="自动领取当前可用优惠券\n补充说明")],
+    )
+    manager._cache["demo_s_shop"] = fallback_cfg
+
+    async def _timeout_list_tools(_self: object) -> list[object]:
+        raise TimeoutError("连接超时")
+
+    async def _noop_async(*_a: object, **_kw: object) -> None:
+        return None
+
+    monkeypatch.setattr("gsuid_core.ai_core.mcp.startup.mcp_config_manager", manager)
+    monkeypatch.setattr("gsuid_core.ai_core.mcp.client.MCPClient.list_tools", _timeout_list_tools)
+    monkeypatch.setattr("gsuid_core.ai_core.mcp.startup._sync_tool_index", _noop_async)
+    monkeypatch.setattr("gsuid_core.ai_core.mcp.startup._warm_agent_node_index", _noop_async)
+    monkeypatch.setattr("gsuid_core.ai_core.mcp.profile_generator.schedule_profile_generation", lambda *_a: False)
+    try:
+        reg_count, _ = asyncio.run(register_single_mcp_server("demo_s_shop"))
+        assert reg_count == 1
+        reg_name = "mcp_demo_s_shop_claim-coupon"
+        assert _re.fullmatch(r"[A-Za-z0-9_-]{1,64}", reg_name) is not None
+        tb = find_tool_base(reg_name)
+        assert tb is not None and tb.tool.name == reg_name and find_tool_base(tb.tool.name) is tb
+        assert "演示门店（中国）" in tb.description and tb.covers[0] == "自动领取当前可用优惠券"
+        exclusive_names = _capability_exclusive_tool_names()
+        assert reg_name not in exclusive_names
+        assert (
+            classify_callable_tool(
+                name=tb.name,
+                category=tb.category,
+                plugin=tb.plugin,
+                hide_from_main=tb.hide_from_main,
+                exclusive=exclusive_names,
+            )
+            == "dedicated"
+        )
+    finally:
+        _forget_mcp_server("demo_s_shop")
+        unregister_agent_node(mcp_node_id("demo_s_shop"))
+
     monkeypatch.setattr(
         "gsuid_core.ai_core.register.find_tool_base",
         lambda n: types.SimpleNamespace(plugin="mcp_x" if n != "other" else "builtin"),
@@ -230,10 +284,23 @@ def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch)
             "mcp_config": {
                 "mcpServers": {"mcd": {"command": "npx", "args": ["-y", "mcd-mcp"], "env": {"MCD_MCP_TOKEN": ""}}}
             },
+            "tools_enrich": [{"name": "query-stores", "description": "查询附近门店"}],
+            "tools": [
+                {
+                    "name": "query-stores",
+                    "description": "EN desc",
+                    "inputSchema": {
+                        "properties": {"city": {"type": "string", "description": "城市"}},
+                        "required": ["city"],
+                    },
+                }
+            ],
         }
     )
     assert cn_detail is not None and cn_detail["qualified_name"] == "mcpcn:68f8abc123"
     assert len(cn_detail["variants"]) == 2 and cn_detail["variants"][0]["transport"] == "streamable_http"
+    assert cn_detail["tools"][0]["description"] == "查询附近门店"
+    assert cn_detail["tools"][0]["params"][0]["name"] == "city" and cn_detail["tools"][0]["params"][0]["required"]
 
     for bad_url in (
         "http://localhost:8080/see",
@@ -285,6 +352,34 @@ def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch)
     )
     assert len(kept_cached) == 1
     mcp_market_api._DETAIL_CACHE.clear()
+
+    async def budget_and_client_scenario() -> None:
+        c1 = await mcp_market_api._shared_http_client()
+        c2 = await mcp_market_api._shared_http_client()
+        assert c1 is c2
+        monkeypatch.setattr(mcp_market_api, "_DETAIL_CHECK_BUDGET", 0.03)
+        monkeypatch.setattr(mcp_market_api, "_BG_DRAIN_CAP", 3)
+
+        async def slow_detail(qn: str) -> dict[str, list[dict[str, str]]]:
+            if qn == "fast/live":
+                return {"variants": [{"transport": "stdio"}]}
+            await asyncio.sleep(0.2)
+            return {"variants": [{"transport": "stdio"}]}
+
+        monkeypatch.setattr(mcp_market_api, "_get_detail", slow_detail)
+        batch = [MarketEntry(qualified_name="fast/live", source="modelscope")] + [
+            MarketEntry(qualified_name=f"slow/{i}", source="modelscope") for i in range(10)
+        ]
+        kept_part, inc = await mcp_market_api._filter_installable(batch)
+        state = mcp_market_api._loop_state()
+        assert [e["qualified_name"] for e in kept_part] == ["fast/live"] and inc is True
+        assert len(state.bg_drain_queue) <= 3
+        if state.bg_drain_task is not None:
+            state.bg_drain_task.cancel()
+            await asyncio.gather(state.bg_drain_task, return_exceptions=True)
+        await c1.aclose()
+
+    asyncio.run(budget_and_client_scenario())
 
 
 def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

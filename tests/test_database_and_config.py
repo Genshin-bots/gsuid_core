@@ -111,20 +111,33 @@ def test_session_read_only_and_savepoint_isolation(tmp_path: Path, monkeypatch: 
                 await session.execute(text("INSERT INTO no_such_table (n) VALUES (2)"))
 
             @classmethod
+            @with_read_session
+            async def read_count(cls, session: AsyncSession) -> int:
+                res = await session.execute(text("SELECT COUNT(*) FROM probe"))
+                return int(res.scalar_one())
+
+            @classmethod
             @with_session
             async def outer_swallows(cls, session: AsyncSession) -> int:
                 await session.execute(text("INSERT INTO probe (n) VALUES (3)"))
+                assert await cls.read_count() == 2
                 try:
                     await cls.inner_bad()
                 except OperationalError:
                     pass
-                res = await session.execute(text("SELECT COUNT(*) FROM probe"))
-                return int(res.scalar_one())
+                return await cls.read_count()
 
         try:
             await Probe.prepare()
             with pytest.raises(OperationalError):
                 await Probe.bad_read_write()
+
+            async def _reader() -> int:
+                return await Probe.read_count()
+
+            async with base_models.sqlite_write_gate.hold(core=True, label="test_hold"):
+                # 另一任务纯读会话不占写闸门，写锁被占期间仍可直接完成
+                assert await asyncio.create_task(_reader()) == 1
             assert await Probe.outer_swallows() == 2
         finally:
             await engine.dispose()
