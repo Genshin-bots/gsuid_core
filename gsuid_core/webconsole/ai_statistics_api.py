@@ -5,10 +5,11 @@ AI Statistics APIs
 包括 Token 消耗、费用估算、延迟统计、意图分布、Heartbeat 决策等。
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 from datetime import datetime, timedelta
 
 from fastapi import Depends
+from pydantic import Field, BaseModel
 
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.webconsole.app_app import app
@@ -511,6 +512,41 @@ async def get_statistics_history(
         return {"status": 1, "msg": f"获取历史统计失败: {str(e)}", "data": None}
 
 
+class SingleCostEstimateData(TypedDict):
+    cost: float
+    currency: str
+
+
+class SingleCostEstimateResponse(TypedDict):
+    status: int
+    msg: str
+    data: Optional[SingleCostEstimateData]
+
+
+class CostEstimateItem(BaseModel):
+    model: str
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
+
+
+class BatchCostEstimateRequest(BaseModel):
+    items: List[CostEstimateItem] = Field(default_factory=list)
+
+
+class BatchCostEstimateData(TypedDict):
+    total_cost: float
+    costs: List[float]
+    currency: str
+
+
+class BatchCostEstimateResponse(TypedDict):
+    status: int
+    msg: str
+    data: Optional[BatchCostEstimateData]
+
+
 @app.get("/api/ai/statistics/estimate-cost", summary="估算单次模型调用费用", tags=AI_STATS)
 async def estimate_model_cost(
     model: str,
@@ -519,7 +555,7 @@ async def estimate_model_cost(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     _: Dict[str, Any] = Depends(require_auth),
-) -> Dict[str, Any]:
+) -> SingleCostEstimateResponse:
     """按价格表（genai-prices + 补充价目）估算一次模型调用费用。
 
     ``data`` 为 ``{cost, currency}``，cost 单位 USD；模型查不到价目时 cost 为 0。
@@ -535,3 +571,35 @@ async def estimate_model_cost(
         return {"status": 0, "msg": "ok", "data": {"cost": cost, "currency": "USD"}}
     except Exception as e:
         return {"status": 1, "msg": f"估算费用失败: {str(e)}", "data": None}
+
+
+@app.post("/api/ai/statistics/estimate-cost-batch", summary="批量估算模型调用费用", tags=AI_STATS)
+async def estimate_model_cost_batch(
+    req: BatchCostEstimateRequest,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> BatchCostEstimateResponse:
+    """按价格表批量估算模型调用费用，返回逐项费用与合计总费用。"""
+    try:
+        costs: List[float] = []
+        total_cost: float = 0.0
+        for item in req.items:
+            c = calculate_model_cost(
+                item.model,
+                max(0, item.input_tokens),
+                max(0, item.output_tokens),
+                max(0, item.cache_read_tokens),
+                max(0, item.cache_write_tokens),
+            )
+            costs.append(c)
+            total_cost += c
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "total_cost": round(total_cost, 6),
+                "costs": costs,
+                "currency": "USD",
+            },
+        }
+    except Exception as e:
+        return {"status": 1, "msg": f"批量估算费用失败: {str(e)}", "data": None}

@@ -235,3 +235,28 @@ def test_restart_env_guard_and_supervisor(tmp_path: Path, monkeypatch: pytest.Mo
     commands.clear()
     assert Supervisor(["core"], {}).run() == 3
     assert commands == [["core"], ["core"]]
+
+
+def test_estimate_model_cost_endpoints() -> None:
+    """验证单次与批量模型费用估算接口的正确性。"""
+    from gsuid_core.webconsole.ai_statistics_api import (
+        CostEstimateItem,
+        BatchCostEstimateRequest,
+        estimate_model_cost,
+        estimate_model_cost_batch,
+    )
+
+    res = asyncio.run(estimate_model_cost("minimax-m3.1-flash", 1_000_000, 1_000_000, 0, 0, _={}))
+    assert res["status"] == 0 and res["data"] is not None
+    assert res["data"]["cost"] == pytest.approx(0.75, rel=1e-3)
+
+    req = BatchCostEstimateRequest(
+        items=[
+            CostEstimateItem(model="minimax-m3.1-flash", input_tokens=1_000_000, output_tokens=1_000_000),
+            CostEstimateItem(model="minimax-m3.1-flash", input_tokens=1_000_000, output_tokens=0),
+        ]
+    )
+    res_batch = asyncio.run(estimate_model_cost_batch(req, _={}))
+    assert res_batch["status"] == 0 and res_batch["data"] is not None
+    assert res_batch["data"]["total_cost"] == pytest.approx(0.90, rel=1e-3)
+    assert len(res_batch["data"]["costs"]) == 2
