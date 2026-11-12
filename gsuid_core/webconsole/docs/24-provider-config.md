@@ -680,3 +680,47 @@ Provider 代表 AI 服务提供方的格式类型：
     "video_url_passthrough": "off"
 }
 ```
+
+---
+
+## 按任务覆盖模型
+
+默认情况下，每个任务按「高级 / 低级」两档取配置。用户可为单个任务类型改档或指定任意配置文件。覆盖存在 `ai_config.task_model_overrides`（`{任务ID: [主配置, 备用配置]}`），主配置为 `@high` / `@low` 表示改用该档位，为 `provider++name` 表示指定配置文件。覆盖指向的配置文件被删除后，运行时回退到调用方的档位。
+
+> 这些接口即时落库。前端的整包保存必须跳过 `task_model_overrides`，否则旧值会覆盖新值。
+
+### 获取全部任务类型
+
+```
+GET /api/ai_task_models
+```
+
+返回 `groups`（分组顺序）、`levels`（两档当前主/备配置）、`kinds`（任务列表）、`orphans`（已保存但未登记的任务 ID）。`kinds[]` 的字段：
+
+| 字段 | 说明 |
+|------|------|
+| `id` / `title` / `desc` / `group` | 任务 ID、名称、说明、分组 |
+| `default_level` | 默认档位 |
+| `follows_caller` | 为 true 时档位跟随调用方（如图片理解），`default_level` 仅作展示 |
+| `fast` | 走无思考快模型通道 |
+| `stats_keys` | 该任务在 `/api/ai/statistics/*` 的 `by_type` 里的记账键（`lower(create_by)`），可能多个；按此把用量行 join 回任务，未命中的行按原始键展示 |
+| `override` | `{primary, secondary, valid}` 或 null；`valid=false` 表示指向的配置已不存在 |
+| `effective` | `{primary, secondary, source, level}`；`source` 为 `default` / `level` / `config` |
+
+### 设置单个任务
+
+```
+PUT /api/ai_task_models/{task_kind}
+{"primary": "@low" | "provider++name", "secondary": "" | "provider++name"}
+```
+
+主配置为档位记号时忽略 `secondary`（备用随档位走）。未知任务、配置不存在、备用与主配置相同都返回 `status: 1`。
+
+### 清除覆盖
+
+```
+DELETE /api/ai_task_models/{task_kind}   # 单个任务恢复默认
+DELETE /api/ai_task_models               # 全部恢复默认
+```
+
+三个写接口都需要管理员权限，成功时返回与 GET 相同结构的最新数据。

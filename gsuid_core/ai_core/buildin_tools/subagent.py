@@ -37,6 +37,7 @@ from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.task_kinds import TASK_SUBAGENT
 from gsuid_core.ai_core.control.delegation import await_delegation, delegation_handle
 
 # 注意：create_agent 在 create_subagent() 内部懒加载导入
@@ -526,6 +527,7 @@ async def _create_subagent_impl(
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             create_by="AutoPlanner",
+            task_kind=TASK_SUBAGENT,
             task_level="high",
             session_id=subagent_session_id,
             is_subagent=True,

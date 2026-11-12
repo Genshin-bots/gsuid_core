@@ -31,6 +31,7 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.proactive import emit_proactive_message
 from gsuid_core.ai_core.control.mailbox import drain_one, post_to_session
 from gsuid_core.ai_core.control.directive import Directive
+from gsuid_core.ai_core.configs.task_kinds import TASK_KANBAN_RELAY
 
 from . import kanban
 from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact, RecurringStatus
@@ -395,6 +396,7 @@ async def _persona_relay(
         agent = create_agent(
             system_prompt=base,
             create_by="Kanban_Relay",
+            task_kind=TASK_KANBAN_RELAY,
             persona_name=task.persona_name,
             task_level="low",
             session_id=relay_session_id,

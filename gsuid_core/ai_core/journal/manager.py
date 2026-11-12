@@ -22,6 +22,7 @@ from gsuid_core.ai_core.persona.config import (
     is_within_active_hours,
     persona_config_manager,
 )
+from gsuid_core.ai_core.configs.task_kinds import TASK_JOURNAL_COMPACT
 
 JOURNAL_DIR: Path = AI_CORE_PATH / "journals"
 _JOURNAL_STATE_FILE: str = ".journal_state.json"
@@ -370,6 +371,7 @@ async def _summarize_journal_with_llm(
     agent = create_agent(
         system_prompt=system_prompt,
         create_by="Journal_Compact",
+        task_kind=TASK_JOURNAL_COMPACT,
         persona_name=persona_name,
         session_id=f"journal_compact_{persona_name}_{int(time.time())}",
         is_subagent=True,

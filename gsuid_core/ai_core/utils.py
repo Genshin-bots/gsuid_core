@@ -872,6 +872,7 @@ async def prepare_content_payload(
     ev: Event,
     task_level: Literal["high", "low"] = "high",
     *,
+    task_kind: Optional[str] = None,
     quoted_tome: bool = False,
     pending_unread_images: Optional[Sequence[PendingImage]] = None,
 ) -> Tuple[Sequence[UserContent], "GuardFlags"]:
@@ -888,6 +889,7 @@ async def prepare_content_payload(
     Args:
         ev: 事件对象
         task_level: 任务级别
+        task_kind: 任务类型 ID，用于套用按任务覆盖的模型配置
 
     Returns:
         ``(content payload, 输入守卫命中标记)``。标记透传给 ⑩ 结算判负向信号，
@@ -1001,7 +1003,7 @@ async def prepare_content_payload(
     if ev.video_id_list:
         from gsuid_core.ai_core.configs.models import get_model_config_for_task
 
-        _support = get_model_config_for_task(task_level).get_config("model_support").data
+        _support = get_model_config_for_task(task_level, task_kind).get_config("model_support").data
         if "video" in _support:
             text += "\n--- 用户发送了视频(未展开, 需要查看内容时调用 read_video(视频ID)) ---"
             for i in ev.video_id_list:
@@ -1031,7 +1033,7 @@ async def prepare_content_payload(
         if sess is not None:
             provider = sess._routed_provider()
         else:
-            provider = parse_provider_config_name(get_config_name_for_task(task_level))[0]
+            provider = parse_provider_config_name(get_config_name_for_task(task_level, task_kind))[0]
     except Exception:  # noqa: BLE001 - 判定失败按 openai（旧行为：一律 ImageUrl）
         provider = "openai"
     for i in ev.image_list:

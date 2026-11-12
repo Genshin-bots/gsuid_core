@@ -69,6 +69,7 @@ from gsuid_core.ai_core.configs.models import (
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.task_kinds import TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
 from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
@@ -281,6 +282,7 @@ class GsCoreAIAgent(RunOnceMixin):
         on_trace: Optional[Callable[[TraceKind, str], None]] = None,
         capability_node_id: Optional[str] = None,
         thinking: Optional[ThinkingLevel] = None,
+        task_kind: Optional[str] = None,
     ):
         # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
         _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
@@ -322,6 +324,8 @@ class GsCoreAIAgent(RunOnceMixin):
         # 契约见 _emit_trace。
         self.on_trace = on_trace
         self.task_level: Literal["high", "low"] = task_level  # 任务级别，用于选择对应的模型配置
+        # 任务类型 ID（configs/task_kinds）：用户可按任务覆盖模型，None=只按 task_level
+        self.task_kind: Optional[str] = task_kind
 
         self.create_by = create_by
         # 本 run 出站模式 / 用量分类；run() 入口写入，纠正轮读同一份
@@ -390,9 +394,9 @@ class GsCoreAIAgent(RunOnceMixin):
         self.model_config_name: Optional[str] = None
         self.model_config_fingerprint: Optional[str] = None
         if self.model is None:
-            self.model = get_model_for_task(task_level)
-            self.model_config_name = get_config_name_for_task(task_level)
-            self.model_config_fingerprint = get_model_fingerprint_for_task(task_level)
+            self.model = get_model_for_task(task_level, task_kind)
+            self.model_config_name = get_config_name_for_task(task_level, task_kind)
+            self.model_config_fingerprint = get_model_fingerprint_for_task(task_level, task_kind)
         # 本次 run 实际路由到的配置全名：故障切换时会临时指向备用配置，与 model 同步；
         # 显式传 model 的会话恒为 None（无配置文件可读）。
         self._active_config_name: Optional[str] = self.model_config_name
@@ -606,12 +610,12 @@ class GsCoreAIAgent(RunOnceMixin):
         if self.model_config_name is None:
             return False
 
-        current = get_config_name_for_task(self.task_level)
+        current = get_config_name_for_task(self.task_level, self.task_kind)
         # 配置被清空（current 为空）时不动：避免把仍可用的会话打成不可用。
         if not current:
             return False
 
-        current_fp = get_model_fingerprint_for_task(self.task_level)
+        current_fp = get_model_fingerprint_for_task(self.task_level, self.task_kind)
         # 全名与内容指纹都未变才视为无变化；任一变化都触发热替换。
         if current == self.model_config_name and current_fp == self.model_config_fingerprint:
             return False
@@ -619,7 +623,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # 仅捕获配置非法（空名/未知 provider）这一可预期失败：沿用原模型不打断会话；
         # 其余意外错误照常抛出，符合 §1.1 不吞噬非预期异常。
         try:
-            new_model = get_model_for_task(self.task_level)
+            new_model = get_model_for_task(self.task_level, self.task_kind)
         except ValueError as e:
             logger.warning(
                 i18n_t(
@@ -636,6 +640,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # close 会拖垮全进程会话（曾致所有请求报 client has been closed），交给 GC 即可。
         self.model = new_model
         self.model_config_name = current
+        self._active_config_name = current
         self.model_config_fingerprint = current_fp
         # 全名变=换配置文件；全名同指纹变=原地改了当前配置文件字段。
         change_desc = f"{old} → {current}" if old != current else f"{current}（配置内容已更新）"
@@ -695,7 +700,7 @@ class GsCoreAIAgent(RunOnceMixin):
             return "openai"
         if model is not None:
             return "gemini"
-        return get_provider_for_task(self.task_level)
+        return get_provider_for_task(self.task_level, self.task_kind)
 
     def _quota_breaker_key(self) -> str:
         """配额熔断的分闸键：本轮实际激活的模型配置全名。
@@ -858,7 +863,7 @@ class GsCoreAIAgent(RunOnceMixin):
                         )
                         continue
                     data, mime = await self._video_item_to_bytes(item)
-                    file_uri = await upload_media_for_task(data, mime, self.task_level)
+                    file_uri = await upload_media_for_task(data, mime, self.task_level, self.task_kind)
                     result.append(UploadedFile(file_id=file_uri, provider_name="google-gla", media_type=mime))
                     continue
 
@@ -987,7 +992,7 @@ class GsCoreAIAgent(RunOnceMixin):
         from gsuid_core.ai_core.configs.models import get_model_config_for_task
         from gsuid_core.ai_core.image_understand import understand_image
 
-        model_config = get_model_config_for_task(self.task_level)
+        model_config = get_model_config_for_task(self.task_level, self.task_kind)
         raw_support: object = model_config.get_config("model_support").data
         fallback_support: str | list[str]
         if isinstance(raw_support, list):
@@ -1141,6 +1146,7 @@ class GsCoreAIAgent(RunOnceMixin):
                 max_tokens=800,
                 create_by="ImageDescSummary",
                 task_level="low",
+                task_kind=TASK_IMAGE_DESC_SUMMARY,
                 is_subagent=True,
                 thinking=False,
             )
@@ -1983,8 +1989,8 @@ class GsCoreAIAgent(RunOnceMixin):
             logger.info(i18n_t("log.agent.lock_ok"))
             return result
 
-        _primary_cfg = get_config_name_for_task(self.task_level)
-        _secondary_cfg = get_2nd_config_name_for_task(self.task_level)
+        _primary_cfg = get_config_name_for_task(self.task_level, self.task_kind)
+        _secondary_cfg = get_2nd_config_name_for_task(self.task_level, self.task_kind)
         logger.debug(
             i18n_t(
                 "log.agent.provider_routing_task_level",
@@ -1994,7 +2000,9 @@ class GsCoreAIAgent(RunOnceMixin):
             )
         )
         for _attempt in range(2):
-            async with provider_router.slot(self.task_level, session_id=self.session_id) as routed_name:
+            async with provider_router.slot(
+                self.task_level, session_id=self.session_id, task_kind=self.task_kind
+            ) as routed_name:
                 logger.debug(
                     i18n_t(
                         "log.agent.attempt_routed_config_name",
@@ -2074,6 +2082,7 @@ def create_agent(
     on_trace: Optional[Callable[[TraceKind, str], None]] = None,
     capability_node_id: Optional[str] = None,
     thinking: Optional[ThinkingLevel] = None,
+    task_kind: Optional[str] = None,
 ) -> GsCoreAIAgent:
     """
     创建 PydanticAI Agent 实例
@@ -2085,6 +2094,8 @@ def create_agent(
         max_iterations: 已忽略。思考轮按 create_by 分档，见 request_limit_for。
         persona_name: Persona 名称（用于热重载检测）
         task_level: 任务级别，"high"表示高级任务，"low"表示低级任务
+        task_kind: 任务类型 ID（见 ``configs/task_kinds``）。给了才能被用户按任务覆盖模型；
+            插件可用 ``register_ai_task_kind`` 登记自己的任务类型
         session_id: 会话 ID，用于关联 session 日志
         is_subagent: 是否为 SubAgent，为 True 时日志存放于独立子目录
         dynamic_tools: dynamic 能力族开关；None 沿用旧门（agentic 且未传 tools 才装配）
@@ -2121,6 +2132,7 @@ def create_agent(
         on_trace=on_trace,
         capability_node_id=capability_node_id,
         thinking=thinking,
+        task_kind=task_kind,
     )
 
 
@@ -2141,6 +2153,7 @@ async def build_new_persona(query: str) -> str:
         system_prompt=CHARACTER_BUILDING_TEMPLATE,
         create_by="BuildPersona",
         task_level="high",
+        task_kind=TASK_BUILD_PERSONA,
     )
     response = await agent.run(query)
     return response.strip()

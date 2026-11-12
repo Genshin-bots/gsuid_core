@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import extract_json_from_text
+from gsuid_core.ai_core.configs.task_kinds import TASK_MEMORY_WINDOW_ROUTER
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.observer import ObservationRecord
@@ -145,11 +146,9 @@ async def route_window(
         return fallback
 
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-    from gsuid_core.ai_core.configs.models import get_fast_model_for_task
+    from gsuid_core.ai_core.configs.models import get_config_name_for_task
 
-    try:
-        model = get_fast_model_for_task("low")
-    except (ImportError, ValueError, RuntimeError):
+    if not get_config_name_for_task("low", TASK_MEMORY_WINDOW_ROUTER):
         return fallback
 
     from datetime import datetime, timezone
@@ -166,10 +165,10 @@ async def route_window(
     )
     try:
         agent = GsCoreAIAgent(
-            openai_chat_model=model,
             system_prompt=WINDOW_ROUTE_SYSTEM,
             max_tokens=800,
             create_by="MemWindowRouter",
+            task_kind=TASK_MEMORY_WINDOW_ROUTER,
             task_level="low",
             is_subagent=True,
             dynamic_tools=False,

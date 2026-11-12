@@ -61,6 +61,15 @@ AI_CONFIG: Dict[str, GSC] = {
         ),
         data="",
     ),
+    "task_model_overrides": GsDictConfig(
+        "按任务覆盖模型",
+        (
+            "高级：为单个任务类型覆盖默认的高级/低级配置。键为任务 ID，值为 [主配置, 备用配置]；"
+            "主配置填 '@high' / '@low' 表示改用该档位，填 'provider++name' 表示指定配置文件。"
+            "请在「任务配置」页的高级面板里编辑"
+        ),
+        {},
+    ),
     "embedding_provider": GsStrConfig(
         "嵌入模型服务提供方",
         "指定嵌入模型提供方",

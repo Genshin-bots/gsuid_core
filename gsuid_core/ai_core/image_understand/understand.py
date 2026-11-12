@@ -36,6 +36,7 @@ from gsuid_core.ai_core.configs.models import (
     get_model_config_for_task,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.task_kinds import TASK_IMAGE_UNDERSTAND
 
 
 def _get_provider() -> str:
@@ -94,10 +95,10 @@ def _resolve_native_image_model(
     返回类型扩大到 AnyModel（含 GoogleModel）：当前仅由调用方 if isinstance 区分
     OpenAI/Anthropic 三家；gemini 多模态原生支持存在但本函数未直接走, 后续可扩展。
     """
-    model_config = get_model_config_for_task(task_level)
+    model_config = get_model_config_for_task(task_level, TASK_IMAGE_UNDERSTAND)
     model_support = model_config.get_config("model_support").data
     if "image" in model_support:
-        return get_model_for_task(task_level)
+        return get_model_for_task(task_level, TASK_IMAGE_UNDERSTAND)
     return None
 
 
@@ -137,6 +138,7 @@ async def _understand_image_native(
         max_tokens=1024,
         create_by="ImageUnderstand",
         task_level=task_level,
+        task_kind=TASK_IMAGE_UNDERSTAND,
         is_subagent=True,
     )
     try:

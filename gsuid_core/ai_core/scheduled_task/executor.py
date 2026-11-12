@@ -27,6 +27,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.configs.task_kinds import TASK_SCHEDULED
 
 from .models import AIScheduledTask
 from ..base_prompts import join_framework_constraints
@@ -195,6 +196,7 @@ async def execute_scheduled_task(task_id: str) -> None:
             system_prompt=exec_prompt,
             persona_name=None,
             create_by="ScheduledTask_Exec",
+            task_kind=TASK_SCHEDULED,
             session_id=exec_session_id,
             is_subagent=True,
         )

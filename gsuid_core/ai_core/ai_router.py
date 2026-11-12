@@ -21,6 +21,7 @@ from gsuid_core.message_history import get_history_manager
 
 # AI 会话对象注册表
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
+from gsuid_core.ai_core.configs.task_kinds import TASK_CHAT
 
 from .persona import persona_config_manager
 from .gs_agent import GsCoreAIAgent, create_agent
@@ -173,6 +174,7 @@ async def _get_or_create_ai_session(
         system_prompt=base_persona,
         persona_name=persona_name,
         create_by="Chat",
+        task_kind=TASK_CHAT,
         task_level="high",
         session_id=session_id,
     )

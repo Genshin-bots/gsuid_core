@@ -21,6 +21,7 @@ import json
 import hashlib
 from typing import TYPE_CHECKING, Union, Literal, final
 from functools import lru_cache
+from dataclasses import dataclass
 from collections.abc import Callable, AsyncIterator
 from typing_extensions import override
 
@@ -44,6 +45,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.utils.path_safety import is_safe_filename
 from gsuid_core.ai_core.request_effort import capture_model_request_effort
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 from gsuid_core.ai_core.multimodal.openai_files import (
@@ -52,11 +54,12 @@ from gsuid_core.ai_core.multimodal.openai_files import (
 )
 
 from .ai_config import ai_config
+from .task_kinds import TaskLevel
 from .openai_wire import RecoveringOpenAIChatModel, openai_profile_for_model
-from .gemini_config import get_gemini_config, get_gemini_config_dict
-from .openai_config import get_openai_config, get_openai_config_dict
+from .gemini_config import get_gemini_config, gemini_config_manager, get_gemini_config_dict
+from .openai_config import get_openai_config, openai_config_manager, get_openai_config_dict
 from .anthropic_wire import RecoveringAnthropicModel, anthropic_profile_for_model
-from .anthropic_config import get_anthropic_config, get_anthropic_config_dict
+from .anthropic_config import get_anthropic_config, anthropic_config_manager, get_anthropic_config_dict
 
 if TYPE_CHECKING:
     from pydantic_ai.models.google import GoogleModel
@@ -680,18 +683,119 @@ def get_low_level_config_name() -> str:
     return ai_config.get_config("low_level_provider_config_name").data
 
 
-def get_config_name_for_task(task_level: Literal["high", "low"]) -> str:
-    """获取指定任务级别当前激活的配置全名（provider++name 格式）"""
+# 任务覆盖里「改用某档位」的记号；其余非空值视为 provider++name 配置全名
+TASK_ROUTE_LEVEL_REFS: dict[str, TaskLevel] = {"@high": "high", "@low": "low"}
+TaskRouteSource = Literal["default", "level", "config"]
+
+
+@dataclass(frozen=True)
+class TaskModelOverride:
+    primary: str
+    secondary: str
+
+
+@dataclass(frozen=True)
+class TaskModelRoute:
+    """某任务实际生效的主/备配置。source=default 表示未覆盖，走调用方档位。"""
+
+    primary: str
+    secondary: str
+    source: TaskRouteSource
+    level: TaskLevel | None
+
+
+def _level_primary(task_level: TaskLevel) -> str:
     return get_high_level_config_name() if task_level == "high" else get_low_level_config_name()
 
 
-def get_2nd_config_name_for_task(task_level: Literal["high", "low"]) -> str:
-    """获取指定任务级别的备用（兜底）配置全名（provider++name 格式），未配置返回空串"""
-    key = f"{task_level}_level_2nd_provider_config_name"
-    try:
-        return ai_config.get_config(key).data
-    except Exception:
+def _level_secondary(task_level: TaskLevel) -> str:
+    raw: object = ai_config.get_config(f"{task_level}_level_2nd_provider_config_name").data
+    return raw if isinstance(raw, str) else ""
+
+
+def normalize_provider_config_name(full_name: str) -> str:
+    """规范化为 ``provider++config_name``；未知 provider 或空名时返回空串。"""
+    if not full_name:
         return ""
+    if PROVIDER_CONFIG_SEPARATOR in full_name:
+        provider = full_name.split(PROVIDER_CONFIG_SEPARATOR, 1)[0]
+        if provider not in SUPPORTED_PROVIDERS:
+            return ""
+    provider, config_name = parse_provider_config_name(full_name)
+    if not config_name:
+        return ""
+    return format_provider_config_name(provider, config_name)
+
+
+def provider_config_exists(full_name: str) -> bool:
+    """配置全名能否落到磁盘上真实存在的配置文件（未知 provider 或非法名视为不存在）。"""
+    if not full_name or full_name in TASK_ROUTE_LEVEL_REFS:
+        return False
+    if PROVIDER_CONFIG_SEPARATOR in full_name:
+        provider = full_name.split(PROVIDER_CONFIG_SEPARATOR, 1)[0]
+        if provider not in SUPPORTED_PROVIDERS:
+            return False
+    provider, config_name = parse_provider_config_name(full_name)
+    if not config_name or not is_safe_filename(config_name):
+        return False
+    if provider == "openai":
+        return openai_config_manager.exists(config_name)
+    if provider == "anthropic":
+        return anthropic_config_manager.exists(config_name)
+    return gemini_config_manager.exists(config_name)
+
+
+def get_task_model_overrides() -> dict[str, TaskModelOverride]:
+    """读取全部任务覆盖；结构不合法的条目直接忽略（该字段允许用户手改 JSON）。"""
+    raw: object = ai_config.get_config("task_model_overrides").data
+    out: dict[str, TaskModelOverride] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, entry in raw.items():
+        if not isinstance(key, str) or not isinstance(entry, list) or not entry:
+            continue
+        primary = entry[0] if isinstance(entry[0], str) else ""
+        secondary = entry[1] if len(entry) > 1 and isinstance(entry[1], str) else ""
+        if primary.strip():
+            out[key] = TaskModelOverride(primary.strip(), secondary.strip())
+    return out
+
+
+def save_task_model_overrides(overrides: dict[str, TaskModelOverride]) -> bool:
+    """整表写回；仅「改档位」的条目不保存备用配置（备用随档位走）。"""
+    data: dict[str, list[str]] = {}
+    for key, ov in overrides.items():
+        secondary = "" if ov.primary in TASK_ROUTE_LEVEL_REFS else ov.secondary
+        data[key] = [ov.primary, secondary]
+    return ai_config.set_config("task_model_overrides", data)
+
+
+def resolve_task_route(task_level: TaskLevel, task_kind: str | None = None) -> TaskModelRoute:
+    """解析任务实际使用的主/备配置。
+
+    覆盖指向的配置文件已被删除时回退调用方档位，避免一处删配置让整个任务不可用。
+    """
+    if task_kind:
+        overrides = get_task_model_overrides()
+        if task_kind in overrides:
+            ov = overrides[task_kind]
+            if ov.primary in TASK_ROUTE_LEVEL_REFS:
+                lvl = TASK_ROUTE_LEVEL_REFS[ov.primary]
+                return TaskModelRoute(_level_primary(lvl), _level_secondary(lvl), "level", lvl)
+            if provider_config_exists(ov.primary):
+                secondary = ov.secondary if provider_config_exists(ov.secondary) else ""
+                return TaskModelRoute(ov.primary, secondary, "config", None)
+    return TaskModelRoute(_level_primary(task_level), _level_secondary(task_level), "default", task_level)
+
+
+def get_config_name_for_task(task_level: TaskLevel, task_kind: str | None = None) -> str:
+    """获取任务当前激活的配置全名（provider++name 格式），已计入按任务覆盖"""
+    return resolve_task_route(task_level, task_kind).primary
+
+
+def get_2nd_config_name_for_task(task_level: TaskLevel, task_kind: str | None = None) -> str:
+    """获取任务的备用（兜底）配置全名（provider++name 格式），未配置返回空串"""
+    return resolve_task_route(task_level, task_kind).secondary
 
 
 def get_max_concurrency_for_config(full_name: str) -> int:
@@ -738,9 +842,9 @@ def get_fast_model_by_full_name(full_name: str) -> AnyModel:
     return get_gemini_model_by_name(config_name, fast=True)
 
 
-def get_fast_model_for_task(task_level: Literal["high", "low"] = "low") -> AnyModel:
+def get_fast_model_for_task(task_level: TaskLevel = "low", task_kind: str | None = None) -> AnyModel:
     """按任务级别取无思考快模型（默认 low）。未配置时抛 ValueError。"""
-    full_name = get_config_name_for_task(task_level)
+    full_name = get_config_name_for_task(task_level, task_kind)
     if not full_name:
         raise ValueError(t("log.ai.gscore_ai_config_model_file"))
     return get_fast_model_by_full_name(full_name)
@@ -752,8 +856,8 @@ def get_model_config_by_full_name(full_name: str) -> StringConfig:
     return _get_provider_string_config(provider, config_name)
 
 
-def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfig:
-    full_name = get_config_name_for_task(task_level)
+def get_model_config_for_task(task_level: TaskLevel, task_kind: str | None = None) -> StringConfig:
+    full_name = get_config_name_for_task(task_level, task_kind)
     if not full_name:
         raise ValueError(t("log.ai.gscore_ai_config_model_file"))
 
@@ -761,12 +865,12 @@ def get_model_config_for_task(task_level: Literal["high", "low"]) -> StringConfi
     return _get_provider_string_config(provider, config_name)
 
 
-def get_provider_for_task(task_level: Literal["high", "low"]) -> str:
+def get_provider_for_task(task_level: TaskLevel, task_kind: str | None = None) -> str:
     """获取指定任务级别当前激活配置的 provider 类型（"openai"/"anthropic"/"gemini"）。
 
     未设置配置时返回空串——调用方（如多模态分支）应视为"非 gemini"处理。
     """
-    full_name = get_config_name_for_task(task_level)
+    full_name = get_config_name_for_task(task_level, task_kind)
     if not full_name:
         return ""
     provider, _ = parse_provider_config_name(full_name)
@@ -774,17 +878,19 @@ def get_provider_for_task(task_level: Literal["high", "low"]) -> str:
 
 
 def get_model_for_task(
-    task_level: Literal["high", "low"],
+    task_level: TaskLevel,
+    task_kind: str | None = None,
 ) -> AnyModel:
     """根据任务级别获取对应的模型
 
     Args:
         task_level: 任务级别，"high"表示高级任务，"low"表示低级任务
+        task_kind: 任务类型 ID（见 task_kinds），用于套用按任务覆盖
 
     Returns:
         对应的ChatModel实例
     """
-    full_name = get_config_name_for_task(task_level)
+    full_name = get_config_name_for_task(task_level, task_kind)
 
     if not full_name:
         raise ValueError(t("log.ai.gscore_ai_config_model_file"))
@@ -792,14 +898,14 @@ def get_model_for_task(
     return get_model_by_full_name(full_name)
 
 
-def get_model_fingerprint_for_task(task_level: Literal["high", "low"]) -> str:
+def get_model_fingerprint_for_task(task_level: TaskLevel, task_kind: str | None = None) -> str:
     """激活配置的内容指纹（含 request_method）。
 
     全名相同但配置文件内字段被原地改动（如把 request_method 从 chat_completions 改为
     responses、或改 base_url/model_name）时指纹随之变化，供存活会话据此热替换模型。
     无配置时返回空串；取不到配置字典时退回全名，至少保住"切到别的配置文件"这条路径。
     """
-    full_name = get_config_name_for_task(task_level)
+    full_name = get_config_name_for_task(task_level, task_kind)
     if not full_name:
         return ""
 

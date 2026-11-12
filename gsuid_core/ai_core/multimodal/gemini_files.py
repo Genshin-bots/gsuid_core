@@ -108,6 +108,7 @@ async def upload_media_for_task(
     data: bytes,
     mime_type: str,
     task_level: Literal["high", "low"] = "high",
+    task_kind: str | None = None,
 ) -> str:
     """用指定任务级别当前激活的 gemini 配置上传媒体, 返回 ``file_uri``。
 
@@ -123,12 +124,12 @@ async def upload_media_for_task(
         parse_provider_config_name,
     )
 
-    provider = get_provider_for_task(task_level)
+    provider = get_provider_for_task(task_level, task_kind)
     if provider != "gemini":
         raise ValueError(
             t("🎬 [GeminiFiles] {p0}级配置的 provider 是 {provider}, 不是 gemini", p0=task_level, provider=provider)
         )
-    _, config_name = parse_provider_config_name(get_config_name_for_task(task_level))
+    _, config_name = parse_provider_config_name(get_config_name_for_task(task_level, task_kind))
     base_url, api_key, _, _ = get_gemini_config_by_name(config_name)
     # 官方默认地址不传 base_url(用 SDK 内建默认,避免 URL 拼接差异)
     return await upload_media_to_gemini(data, mime_type, api_key=api_key, base_url=normalize_gemini_base_url(base_url))

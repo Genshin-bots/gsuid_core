@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.control.lines import MSG_SECTION_MARK
+from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER
 
 TurnIntent = Literal["闲聊", "工具", "问答"]
 MemoryIntent = Literal[
@@ -216,7 +217,7 @@ def _can_call_llm() -> bool:
     try:
         from gsuid_core.ai_core.configs.models import get_config_name_for_task
 
-        return bool(get_config_name_for_task("low"))
+        return bool(get_config_name_for_task("low", TASK_TURN_ROUTER))
     except (ImportError, ValueError, AttributeError):
         return False
 
@@ -251,13 +252,12 @@ async def route_turn(
 
     try:
         from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-        from gsuid_core.ai_core.configs.models import get_fast_model_for_task
 
         agent = GsCoreAIAgent(
-            openai_chat_model=get_fast_model_for_task("low"),
             system_prompt=_ROUTER_SYSTEM,
             max_tokens=_ROUTER_MAX_TOKENS,
             create_by="TurnRouter",
+            task_kind=TASK_TURN_ROUTER,
             task_level="low",
             is_subagent=True,
             dynamic_tools=False,

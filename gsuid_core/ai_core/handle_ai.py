@@ -363,12 +363,15 @@ async def run_interactive_turn(
         if enqueue_ts is not None:
             enqueue_ts = time.time()
 
+    await session.refresh_model_if_changed()
     pending_images = []
     if not (event.image_id_list or event.image_id):
         pending_images = extract_pending_unread_images(event, session.read_image_ids)
 
     user_messages, guard_flags = await prepare_content_payload(
         event,
+        session.task_level,
+        task_kind=session.task_kind,
         quoted_tome=turn_graph.quoted_tome,
         pending_unread_images=pending_images,
     )

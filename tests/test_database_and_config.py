@@ -260,3 +260,115 @@ def test_estimate_model_cost_endpoints() -> None:
     assert res_batch["status"] == 0 and res_batch["data"] is not None
     assert res_batch["data"]["total_cost"] == pytest.approx(0.90, rel=1e-3)
     assert len(res_batch["data"]["costs"]) == 2
+
+
+class _StubConfigManager:
+    def __init__(self, names: set[str]) -> None:
+        self.names = names
+
+    def exists(self, config_name: str) -> bool:
+        return config_name in self.names
+
+
+def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """按任务覆盖：改档、指定配置、配置被删后回退调用方档位。"""
+    from gsuid_core.ai_core.configs import models
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    monkeypatch.setattr(models, "openai_config_manager", _StubConfigManager({"High", "Low", "Vision"}))
+    values = {
+        "high_level_provider_config_name": "openai++High",
+        "low_level_provider_config_name": "openai++Low",
+        "high_level_2nd_provider_config_name": "openai++High2",
+        "low_level_2nd_provider_config_name": "",
+        "task_model_overrides": {
+            "chat": ["@low", "openai++ignored"],
+            "image_understand": ["openai++Vision", "openai++Gone"],
+            "meme_tagger": ["openai++Deleted", ""],
+            "broken": "not-a-list",
+        },
+    }
+    for key, value in values.items():
+        monkeypatch.setattr(ai_config.get_config(key), "data", value)
+
+    chat = models.resolve_task_route("high", "chat")
+    assert (chat.primary, chat.secondary, chat.source, chat.level) == ("openai++Low", "", "level", "low")
+    vision = models.resolve_task_route("high", "image_understand")
+    assert (vision.primary, vision.secondary, vision.source) == ("openai++Vision", "", "config")
+    meme = models.resolve_task_route("low", "meme_tagger")
+    assert (meme.primary, meme.source, meme.level) == ("openai++Low", "default", "low")
+    plain = models.resolve_task_route("high", None)
+    assert (plain.primary, plain.secondary, plain.source) == ("openai++High", "openai++High2", "default")
+    assert "broken" not in models.get_task_model_overrides()
+
+    assert models.provider_config_exists("High")
+    assert models.provider_config_exists("openai++High")
+    assert not models.provider_config_exists("")
+    assert not models.provider_config_exists("openai++")
+    assert not models.provider_config_exists("openai++../High")
+    assert not models.provider_config_exists("openai++a/High")
+
+
+def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """规范化主备重名校验，以及 refresh_model_if_changed 同步 _active_config_name。"""
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.ai_core import gs_agent as gs_agent_mod
+    from gsuid_core.ai_core.configs import models
+    from gsuid_core.webconsole.session_store import SessionRecord
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER
+    from gsuid_core.webconsole.ai_task_models_api import TaskOverrideBody, set_ai_task_model
+
+    monkeypatch.setattr(models, "openai_config_manager", _StubConfigManager({"MiniMAX", "Backup"}))
+    stored: dict[str, list[str]] = {}
+    monkeypatch.setattr(ai_config.get_config("high_level_provider_config_name"), "data", "openai++MiniMAX")
+    monkeypatch.setattr(ai_config.get_config("low_level_provider_config_name"), "data", "openai++MiniMAX")
+    monkeypatch.setattr(ai_config.get_config("high_level_2nd_provider_config_name"), "data", "")
+    monkeypatch.setattr(ai_config.get_config("low_level_2nd_provider_config_name"), "data", "openai++Backup")
+    monkeypatch.setattr(ai_config.get_config("task_model_overrides"), "data", stored)
+
+    def _save_cfg(key: str, val: dict[str, list[str]]) -> bool:
+        if key != "task_model_overrides":
+            return False
+        stored.clear()
+        stored.update(val)
+        return True
+
+    monkeypatch.setattr(ai_config, "set_config", _save_cfg)
+
+    admin = SessionRecord(user={"role": "admin"}, email="a@test", created="", expires="")
+    dup = asyncio.run(
+        set_ai_task_model("turn_router", TaskOverrideBody(primary="MiniMAX", secondary="openai++MiniMAX"), admin)
+    )
+    assert dup["status"] == 1 and "不能与主配置相同" in dup["msg"]
+
+    ok = asyncio.run(set_ai_task_model("turn_router", TaskOverrideBody(primary="MiniMAX", secondary="Backup"), admin))
+    assert ok["status"] == 0 and stored["turn_router"] == ["openai++MiniMAX", "openai++Backup"]
+
+    built_models: list[str] = []
+
+    def _fake_model(lvl: models.TaskLevel, kind: str | None = None) -> TestModel:
+        full_name = models.get_config_name_for_task(lvl, kind)
+        built_models.append(full_name)
+        return TestModel(model_name=full_name)
+
+    monkeypatch.setattr(gs_agent_mod, "get_model_for_task", _fake_model)
+    monkeypatch.setattr(
+        gs_agent_mod,
+        "get_model_fingerprint_for_task",
+        lambda lvl, kind=None: f"fp:{models.get_config_name_for_task(lvl, kind)}",
+    )
+
+    agent = gs_agent_mod.GsCoreAIAgent(task_level="low", task_kind=TASK_TURN_ROUTER, thinking=False)
+    try:
+        assert agent.model_config_name == "openai++MiniMAX"
+        assert agent._active_config_name == "openai++MiniMAX"
+
+        stored["turn_router"] = ["openai++Backup", ""]
+        assert asyncio.run(agent.refresh_model_if_changed()) is True
+        assert agent.model_config_name == "openai++Backup"
+        assert agent._active_config_name == "openai++Backup"
+        assert built_models == ["openai++MiniMAX", "openai++Backup"]
+    finally:
+        agent._session_logger.close()

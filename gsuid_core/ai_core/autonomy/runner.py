@@ -18,6 +18,7 @@ from gsuid_core.ai_core.autonomy.models import (
 )
 from gsuid_core.ai_core.agent_run.support import TraceKind
 from gsuid_core.ai_core.autonomy.verifier import output_is_failed
+from gsuid_core.ai_core.configs.task_kinds import TASK_AUTONOMY
 
 _RESOURCE_PREFIX = "res_"
 
@@ -96,6 +97,7 @@ async def run_autonomy_agent(
         persona_name=digest.persona_name,
         max_history=1,
         create_by="Autonomy",
+        task_kind=TASK_AUTONOMY,
         task_level="high",
         session_id=session_id,
         dynamic_tools=True,

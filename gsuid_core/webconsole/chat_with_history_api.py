@@ -23,6 +23,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.ai_core.memory.observer import parse_iso_or_unix_timestamp
+from gsuid_core.ai_core.configs.task_kinds import TASK_CHAT, TASK_EVAL_JUDGE
 from gsuid_core.webconsole._local_test_gate import LOCAL_TEST_MODE, require_local_test
 
 from ._api_tags import CHAT
@@ -179,6 +180,7 @@ async def chatWithHistory(
         create_by=_create_by,
         max_history=0 if req.as_judge else req.max_history,
         task_level="low" if req.as_judge else "high",
+        task_kind=TASK_EVAL_JUDGE if req.as_judge else TASK_CHAT,
         session_id=(f"judge_{user_id}" if req.as_judge else f"test_{user_id}_{uuid.uuid4().hex[:8]}"),
         dynamic_tools=http_dynamic_tools(as_judge=req.as_judge, enable_tools=req.enable_tools),
         wall_clock_budget=60.0 if req.as_judge else None,

@@ -23,6 +23,7 @@ from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.ai_core.persona.settings import get_master_title
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.task_kinds import TASK_REACTIVE_GATE, TASK_HEARTBEAT_OUTPUT, TASK_HEARTBEAT_DECISION
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
 
@@ -478,6 +479,7 @@ async def run_heartbeat(
     decision_agent: GsCoreAIAgent = create_agent(
         decision_persona_text,
         create_by="Heartbeat_Decision",
+        task_kind=TASK_HEARTBEAT_DECISION,
         persona_name=persona_name,
         session_id=decision_session_id,
         is_subagent=True,
@@ -576,6 +578,7 @@ async def run_heartbeat(
     output_agent: GsCoreAIAgent = create_agent(
         speak_system_prompt,
         create_by="Heartbeat_Output",
+        task_kind=TASK_HEARTBEAT_OUTPUT,
         persona_name=persona_name,
         session_id=output_session_id,
         is_subagent=True,
@@ -813,6 +816,7 @@ async def run_reactive_gate(
         agent: GsCoreAIAgent = create_agent(
             persona_text,
             create_by="Reactive_Gate",
+            task_kind=TASK_REACTIVE_GATE,
             persona_name=persona_name,
             session_id=sid,
             is_subagent=True,

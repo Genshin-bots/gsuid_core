@@ -153,18 +153,18 @@ async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
     return uri, None
 
 
-def _current_task_level(parent_session_id: str | None) -> Literal["high", "low"]:
-    """取当前主 Agent 的 task_level（从父 session 取；拿不到默认 high）。"""
+def _current_task_route(parent_session_id: str | None) -> tuple[Literal["high", "low"], str | None]:
+    """取当前主 Agent 的 (task_level, task_kind)（从父 session 取；拿不到默认 high）。"""
     try:
         if parent_session_id:
             from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
             sess = get_ai_session_registry().get_ai_session(parent_session_id)
             if sess is not None:
-                return sess.task_level
+                return sess.task_level, sess.task_kind
     except Exception as e:  # noqa: BLE001
         logger.debug(t("log.buildin.image_reader_task_level_fail", error=str(e)))
-    return "high"
+    return "high", None
 
 
 def _current_model_supports_image(parent_session_id: str | None) -> bool:
@@ -175,7 +175,8 @@ def _current_model_supports_image(parent_session_id: str | None) -> bool:
 
         sess = get_ai_session_registry().get_ai_session(parent_session_id) if parent_session_id else None
         task_level = sess.task_level if sess is not None else "high"
-        fallback_raw: object = get_model_config_for_task(task_level).get_config("model_support").data
+        task_kind = sess.task_kind if sess is not None else None
+        fallback_raw: object = get_model_config_for_task(task_level, task_kind).get_config("model_support").data
         fallback: str | list[str]
         if isinstance(fallback_raw, list):
             fallback = [str(x) for x in fallback_raw]
@@ -204,8 +205,8 @@ def _current_provider(parent_session_id: str | None) -> str:
             parse_provider_config_name,
         )
 
-        task_level = _current_task_level(parent_session_id)
-        return parse_provider_config_name(get_config_name_for_task(task_level))[0]
+        task_level, task_kind = _current_task_route(parent_session_id)
+        return parse_provider_config_name(get_config_name_for_task(task_level, task_kind))[0]
     except Exception as e:  # noqa: BLE001
         logger.debug(t("log.buildin.image_reader_provider_fail", error=str(e)))
         return "openai"

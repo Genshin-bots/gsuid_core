@@ -20,6 +20,8 @@ def create_agent(
     session_id: Optional[str] = None,
     is_subagent: bool = False,
     dynamic_tools: Optional[bool] = None,
+    ...,
+    task_kind: Optional[str] = None,
 ) -> GsCoreAIAgent
 ```
 
@@ -37,6 +39,28 @@ def create_agent(
 | `session_id` | `str` | `None` | 会话 ID（关联 session 日志）；缺省自动派生一次性 subagent id |
 | `is_subagent` | `bool` | `False` | 为 True 时日志落独立子目录 |
 | `dynamic_tools` | `bool` | `None` | 五层自动装配（`dynamic` 工具能力族）开关：`True`=每轮装配并与显式 `tools` 合并；`False`=永不装配；`None`=沿用旧门（`create_by` 属 agentic 白名单且未传 `tools` 才装配） |
+| `task_kind` | `str` | `None` | 任务类型 ID。给了才能被用户在「任务配置 → 按任务指定模型」里改档或指定配置文件；`None` 只按 `task_level` 选模型 |
+
+**按任务覆盖模型**：插件想让自己的 Agent 出现在 WebConsole 的覆盖面板里，先登记任务类型，再在 `create_agent` 传同一个 ID：
+
+```python
+from gsuid_core.ai_core.configs.task_kinds import AITaskKind, register_ai_task_kind
+
+KIND = register_ai_task_kind(
+    AITaskKind(
+        id="myplugin_summary",
+        title="群聊总结",
+        desc="每日群聊总结",
+        group="plugin",
+        default_level="low",
+        # 该任务在 token 统计里的记账键 = lower(create_by)，统计页据此 join 用量
+        stats_keys=("mypluginsummary",),
+    )
+)
+agent = create_agent(system_prompt="...", task_level="low", task_kind=KIND.id, create_by="MyPluginSummary")
+```
+
+用户没覆盖时仍按 `task_level` 取配置；覆盖指向的配置文件被删除后自动回退 `task_level`。
 
 **示例**：
 

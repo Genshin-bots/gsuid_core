@@ -175,9 +175,9 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
     finally:
         clear_entity_index()
 
-    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _level: TestModel())
-    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_config_name_for_task", lambda _level: "test:m")
-    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_fingerprint_for_task", lambda _level: "fp")
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _level, _kind=None: TestModel())
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_config_name_for_task", lambda _level, _kind=None: "test:m")
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_fingerprint_for_task", lambda _level, _kind=None: "fp")
 
     agent = create_agent(system_prompt="你是测试角色。", persona_name="早柚", create_by="Chat")
     _load_request_history(

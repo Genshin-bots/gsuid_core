@@ -13,6 +13,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
+from gsuid_core.ai_core.configs.task_kinds import TASK_TEMP_ASSISTANT
 
 from .state import ban_scope, get_ban_remaining, set_persona_override
 
@@ -169,6 +170,7 @@ async def run_ephemeral_agent(bot: Bot, ev: Event):
             "只基于用户本次输入完成任务，回答应清晰、准确、直接。"
         ),
         create_by="CoreAIControlBTW",
+        task_kind=TASK_TEMP_ASSISTANT,
         task_level="high",
         session_id=session_id,
         is_subagent=True,

@@ -119,14 +119,15 @@ class ProviderRouter:
         task_level: Literal["high", "low"],
         session_id: str | None = None,
         timeout: float = 300.0,
+        task_kind: str | None = None,
     ) -> str:
         """为一次 LLM 请求选路并占用一个并发槽位，返回选中的配置全名。
 
         优先粘性复用同会话 provider；主配置可用且有余量 → 主；
         否则备用配置可用且有余量 → 备用；都满则轮询等待。
         """
-        primary = get_config_name_for_task(task_level)
-        secondary = get_2nd_config_name_for_task(task_level)
+        primary = get_config_name_for_task(task_level, task_kind)
+        secondary = get_2nd_config_name_for_task(task_level, task_kind)
         if not primary:
             return primary  # 未配置模型，交由上层报错
         deadline = time.time() + timeout
@@ -164,9 +165,14 @@ class ProviderRouter:
             self._slots[full_name].in_flight -= 1
 
     @asynccontextmanager
-    async def slot(self, task_level: Literal["high", "low"], session_id: str | None = None):
+    async def slot(
+        self,
+        task_level: Literal["high", "low"],
+        session_id: str | None = None,
+        task_kind: str | None = None,
+    ):
         """异步上下文管理器：``async with provider_router.slot("low", session_id=sid) as full_name:``"""
-        full_name = await self.acquire(task_level, session_id=session_id)
+        full_name = await self.acquire(task_level, session_id=session_id, task_kind=task_kind)
         try:
             yield full_name
         finally:

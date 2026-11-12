@@ -26,6 +26,7 @@ from dataclasses import field, asdict, dataclass
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.agent_node import AgentNode, list_nodes, register_agent_node
+from gsuid_core.ai_core.configs.task_kinds import TASK_CAPABILITY_EVAL
 
 _EVALUATOR_PROFILE_ID = "capability_evaluator"
 
@@ -514,6 +515,7 @@ async def _run_evaluator_once(
         system_prompt=system_prompt,
         max_tokens=8000,
         create_by="CapabilityEvaluator",
+        task_kind=TASK_CAPABILITY_EVAL,
         task_level="low",
         session_id=f"capeval_{owner_user_id}_{int(time.time() * 1000) % 10_000_000}",
         is_subagent=True,

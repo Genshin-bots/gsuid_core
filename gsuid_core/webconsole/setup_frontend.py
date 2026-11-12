@@ -81,6 +81,8 @@ def _import_webconsole_apis() -> None:
         ai_statistics_api,
         ai_memory_eval_api,
         ai_performance_api,
+        # 按任务覆盖模型（任务配置页高级面板）
+        ai_task_models_api,
         knowledge_base_api,
         ai_session_logs_api,
         # 运维诊断中心（Bot/Session/触发回放/配置快照等）

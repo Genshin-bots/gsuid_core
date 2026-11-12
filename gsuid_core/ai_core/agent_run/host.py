@@ -37,6 +37,7 @@ class RunOnceHost:
     create_by: str
     model: AnyModel
     task_level: Literal["high", "low"]
+    task_kind: str | None
     _active_config_name: str | None
     system_prompt: str | None
     max_tokens: int | None

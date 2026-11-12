@@ -13,6 +13,7 @@ from typing import Optional
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.ai_core.configs.task_kinds import TASK_RELATIONSHIP_DISTILL
 
 _TRIGGER_MIN_SCORE = 35
 _TRIGGER_MIN_NEW_INTERACTIONS = 15
@@ -127,6 +128,7 @@ async def _run_dyadic_distill(
         agent = create_agent(
             system_prompt=card,
             create_by="Dyadic_Distill",
+            task_kind=TASK_RELATIONSHIP_DISTILL,
             persona_name=persona_name,
             session_id=f"dyadic_{persona_name}_{user_id}_{int(time.time())}",
             is_subagent=True,

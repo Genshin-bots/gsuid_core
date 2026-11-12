@@ -40,6 +40,7 @@ from gsuid_core.ai_core.agent_node import (
     compose_task_prompt,
     resolve_pack_tool_names,
 )
+from gsuid_core.ai_core.configs.task_kinds import TASK_CAPABILITY_AGENT
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
@@ -174,6 +175,7 @@ async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional
         system_prompt=await task_system_prompt(node, ev),
         max_tokens=ai_config.get_config("task_max_tokens").data,
         create_by="CapabilityAgent",
+        task_kind=TASK_CAPABILITY_AGENT,
         task_level="high",
         session_id=session_id,
         is_subagent=True,
@@ -364,6 +366,7 @@ async def run_capability_agent(
             system_prompt=await task_system_prompt(node, ev, persona_name),
             max_tokens=ai_config.get_config("task_max_tokens").data,
             create_by="CapabilityAgent",  # 不在工具自动装配白名单，配合显式 tools
+            task_kind=TASK_CAPABILITY_AGENT,
             task_level="high",
             session_id=session_id,
             is_subagent=True,

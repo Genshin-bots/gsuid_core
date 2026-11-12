@@ -27,6 +27,7 @@ from gsuid_core.ai_core.mcp.node_profile import (
     load_mcp_overlay,
     mcp_registered_tool_name,
 )
+from gsuid_core.ai_core.configs.task_kinds import TASK_MCP_PROFILE
 from gsuid_core.ai_core.mcp.config_manager import (
     MCPConfig,
     GeneratedProfile,
@@ -170,6 +171,7 @@ async def _call_llm(config: MCPConfig) -> str:
         system_prompt=_MCP_PROFILE_SYSTEM_PROMPT,
         max_tokens=600,
         create_by="MCPProfileGenerator",
+        task_kind=TASK_MCP_PROFILE,
         task_level="high",
         session_id=f"mcp_profile_{config.name}_{int(time.time())}",
         is_subagent=True,

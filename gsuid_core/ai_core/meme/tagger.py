@@ -22,6 +22,7 @@ from gsuid_core.ai_core.gs_agent import create_agent
 from gsuid_core.ai_core.meme.vocab import SCENE_WORDS, EMOTION_WORDS, join_words
 from gsuid_core.ai_core.meme.config import meme_config
 from gsuid_core.ai_core.meme.library import MemeLibrary, _read_file, get_memes_base_path
+from gsuid_core.ai_core.configs.task_kinds import TASK_MEME_TAGGER
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 # 打标队列
@@ -358,6 +359,7 @@ async def _call_tag_agent(
         system_prompt=TAG_PROMPT,
         max_tokens=21000,
         create_by="MemeTagger",
+        task_kind=TASK_MEME_TAGGER,
         task_level="low",
     )
 

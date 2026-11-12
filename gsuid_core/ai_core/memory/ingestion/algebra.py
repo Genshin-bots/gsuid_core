@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import extract_json_from_text
+from gsuid_core.ai_core.configs.task_kinds import TASK_MEMORY_ALGEBRA
 from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.database.models import (
     AIMemEdge,
@@ -355,7 +356,6 @@ async def extract_cluster(
     if not lines:
         return {"entities": 0, "edges": 0, "preferences": 0, "thread_id": ""}
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-    from gsuid_core.ai_core.configs.models import get_fast_model_for_task
     from gsuid_core.ai_core.memory.vector.ops import (
         upsert_edge_vectors_batch,
         upsert_entity_vectors_batch,
@@ -383,10 +383,10 @@ async def extract_cluster(
     )
     try:
         agent = GsCoreAIAgent(
-            openai_chat_model=get_fast_model_for_task("low"),
             system_prompt=ALGEBRA_SYSTEM,
             max_tokens=2400,
             create_by="MemAlgebra",
+            task_kind=TASK_MEMORY_ALGEBRA,
             task_level="low",
             is_subagent=True,
             dynamic_tools=False,
