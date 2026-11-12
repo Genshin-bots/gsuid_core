@@ -391,6 +391,7 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
         mask_pii,
         pii_hits,
         mask_for_agent,
+        mask_pii_in_html,
         apply_context_mask,
         has_credential_form,
         is_credential_command,
@@ -404,8 +405,32 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
 
     s = "收货人 张三 电话13812345678 地址 上海市黄浦区南京东路100号3栋502室"
     masked = mask_pii(s)
-    assert "138****5678" in masked and "张*" in masked and "南京东路" not in masked
+    assert "138********" in masked and "收货人 **" in masked and "张" not in masked and "南京东路" not in masked
     assert "phone" in pii_hits(s) and mask_pii("我在黄浦区上班") == "我在黄浦区上班"
+    # 旅游攻略 / 公共景点街道不误伤，住宅户室与收货标签精准脱敏
+    travel_guide = (
+        "推荐路线：1. 上海市黄浦区南京东路299号 2. 地址：北京市东城区景山前街4号故宫博物院 3. 杭州市西湖区龙井路1号"
+    )
+    assert mask_pii(travel_guide) == travel_guide and pii_hits(travel_guide) == []
+    res_only = "送到浙江省杭州市西湖区文三路90号2单元401室"
+    assert "文三路" not in mask_pii(res_only) and "address" in pii_hits(res_only)
+    tail_district = "我住上海市黄浦区南京东路100号3栋502室靠近静安区"
+    assert "南京东路" not in mask_pii(tail_district) and "address" in pii_hits(tail_district)
+    md_order = "| **收货人** | 李四五 |\n| **收货地址** | 广东省深圳市南山区科技南十二路18号 |"
+    masked_md = mask_pii(md_order)
+    assert "李" not in masked_md and "***" in masked_md and "科技南十二路" not in masked_md
+    html_order = (
+        "<style>.c{color:#138123}</style><div class='c'>"
+        "<span>收货人</span><span>王五</span>"
+        "<span>电话</span><span>13987654321</span>"
+        "<span>地址</span><span>上海市黄浦区南京东路100号</span></div>"
+    )
+    masked_html = mask_pii_in_html(html_order)
+    assert "王" not in masked_html and "<span>**</span>" in masked_html
+    assert "139********" in masked_html and "南京东路" not in masked_html and "#138123" in masked_html
+    html_travel = "<div><span>景点</span><span>故宫</span><span>地址</span><span>北京市东城区景山前街4号</span></div>"
+    assert mask_pii_in_html(html_travel) == html_travel
+    assert "张三" not in mask_pii_in_html("收货人 张三 电话13812345678")
     assert "abc123def" not in mask_pii("Authorization: Bearer abc123def456")
     assert has_credential_form("api_key=xyz12345") and not has_credential_form("今天天气不错")
 
@@ -421,7 +446,7 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     masked_parts = apply_context_mask([part_in], is_group=True)
     assert len(masked_parts) == 1 and isinstance(masked_parts[0], UserPromptPart)
     masked_content = list(masked_parts[0].content)
-    assert masked_content[0] == "联系电话138****5678"
+    assert masked_content[0] == "联系电话138********"
     assert isinstance(masked_content[1], ImageUrl) and masked_content[1].url == b64_uri
 
     fb_detail: ErrorDetails = {
@@ -437,7 +462,7 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     assert len(fb_out) == 1 and isinstance(fb_out[0], RetryFeedbackPart)
     fb_content = fb_out[0].content
     assert isinstance(fb_content, list)
-    assert fb_content[0]["msg"] == "号码138****5678不合法" and fb_content[0]["input"] == "138****5678"
+    assert fb_content[0]["msg"] == "号码138********不合法" and fb_content[0]["input"] == "138********"
 
     assert _parse_bind_args("tok123", ["LUCKIN_MCP_TOKEN"]) == {"LUCKIN_MCP_TOKEN": "tok123"}
     assert _parse_bind_args("A_KEY=1 B_KEY=2", ["A_KEY", "B_KEY"]) == {"A_KEY": "1", "B_KEY": "2"}

@@ -365,13 +365,15 @@ class LoopPhase(RunOnceHost):
             if st.post_final_requests > 1:
                 st.ab_pending_nudges = []
 
-        # 输入闸：进模型上下文统一脱敏（群聊全掩；ev 缺失 fail-closed 按群处理；
-        # 私聊只掩凭据形态/凭据命令——私有记忆「记住我手机号」不受影响）。
+        # 输入闸：主会话与 render_agent 在群聊全掩；内部能力代理保留地址供工具链使用，仅掩凭据。
         from gsuid_core.ai_core.mcp.pii import apply_context_mask
 
+        _is_internal_cap = (
+            self.is_subagent and bool(self.capability_node_id) and self.capability_node_id != "render_agent"
+        )
         node.request.parts = apply_context_mask(
             node.request.parts,
-            is_group=st.ev is None or bool(st.ev.group_id),
+            is_group=False if _is_internal_cap else (st.ev is None or bool(st.ev.group_id)),
         )
 
         # 输出闸门：上一轮 REWRITE feedback（多段已合并）注入下一轮请求

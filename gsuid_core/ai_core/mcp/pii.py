@@ -22,18 +22,33 @@ _PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _IDCARD_RE = re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")
 # 银行卡 16-19 位：不与手机号/身份证重叠（先掩前两者后扫剩余）
 _BANKCARD_RE = re.compile(r"(?<!\d)\d{16,19}(?!\d)")
-# 详细住址：同句含 省市区县 且 路街巷道号栋室单元
 _ADDR_REGION_RE = re.compile(r"[省市区县]")
 _ADDR_DETAIL_RE = re.compile(r"[路街巷道号栋室单元]")
-# JSON 字段名标记的地址值
+# 住宅户室级细粒度：含楼栋/单元/室/户或小区门牌，排除普通商业街牌号与旅游景点
+_RESIDENTIAL_DETAIL_RE = re.compile(
+    r"(?:[0-9一二三四五六七八九十百甲乙丙丁A-Za-z]+\s*(?:栋|幢|号楼|单元|室|户|弄\s*\d+\s*号))"
+    r"|(?:(?:小区|公寓|花园|新村|家园|宿舍|住宅)\s*[^\n，。；;,.|<]{0,16}?[0-9一二三四五六七八九十]+\s*(?:号|栋|幢|单元|室|楼))"
+)
+# 显式个人地址字段（不含泛化的「地址/地点/位置」，防误伤景点与门店）
 _ADDR_FIELD_RE = re.compile(
-    r"((?:address|addr|receiver|consignee|收货地址|配送地址|详细地址)[\"'，：:=\s]+)([^,\"'，。]{6,60})",
+    r"((?:address|addr|receiver_?addr(?:ess)?|shipping_?addr(?:ess)?|consignee_?addr(?:ess)?|home_?addr(?:ess)?"
+    r"|收货地址|配送地址|寄件地址|家庭住址|居住地址|详细住址|个人住址|户籍地址|联系地址|详细地址)"
+    r"(?:[\*_~`\s]*[：:=|\"'][\*_~`\s\"']*|\s+))([^,\"'，。；;\n|<]{4,80})",
     re.IGNORECASE,
 )
-# 姓名上下文标记：收货人/收件人/联系人/姓名/realName 后的 2-4 个汉字
-_NAME_FIELD_RE = re.compile(
-    r"(收货人|收件人|联系人|姓名|realName)([\"'，：:=\s]+)([\u4e00-\u9fff]{2,4})",
+# 共现上下文下的泛化地址字段（同段含手机号/身份证/收货人时生效）
+_ADDR_COOCCUR_FIELD_RE = re.compile(
+    r"((?:地址|住址|送至|配送至)(?:[\*_~`\s]*[：:=|\"'][\*_~`\s\"']*|\s+))([^,\"'，。；;\n|<]{4,80})",
     re.IGNORECASE,
+)
+# 姓名上下文标记：收货人/收件人/联系人/姓名/realName 后的 2-4 个汉字（兼容 Markdown 与表格）
+_NAME_FIELD_RE = re.compile(
+    r"(收货人|收件人|寄件人|联系人|真实姓名|客户姓名|用户姓名|姓名|real_?name|receiver_?name|consignee_?name)"
+    r"([\*_~`\s]*[：:=|\"'][\*_~`\s\"']*|\s+)([\u4e00-\u9fff]{2,4}(?:·[\u4e00-\u9fff]{2,4})?)",
+    re.IGNORECASE,
+)
+_NON_ADMIN_SUFFIX_RE = re.compile(
+    r"(?:所在|所属)?(?:地区|省市区|市区|城区|小区|社区|园区|校区|学区|景区|展区|街区|商区|城市)$"
 )
 # 凭据形态：Bearer xxx / token=xxx / api_key=xxx / key:xxx
 _BEARER_RE = re.compile(r"Bearer\s+\S{8,}", re.IGNORECASE)
@@ -46,6 +61,33 @@ _CRED_FORM_RE = re.compile(
     r"(?:Bearer\s+\S{8,})|(?:(?:token|api_?key|app_?key|secret|password|auth)[=:：]\s*\S{6,})",
     re.IGNORECASE,
 )
+_HTML_PROTECT_RE = re.compile(
+    r"(<(?:style|script)\b[^>]*>.*?</(?:style|script)>|<!--.*?-->)", re.IGNORECASE | re.DOTALL
+)
+_HTML_CROSS_NAME_RE = re.compile(
+    r"((?:收货人|收件人|寄件人|联系人|真实姓名|客户姓名|用户姓名|姓名|real_?name|receiver_?name|consignee_?name)"
+    r"\s*[:：]?\s*(?:</[a-zA-Z0-9]+\s*>\s*)+(?:<[a-zA-Z0-9]+\b[^>]*>\s*)+)"
+    r"([\u4e00-\u9fff]{2,4}(?:·[\u4e00-\u9fff]{2,4})?)(?=\s*<)",
+    re.IGNORECASE,
+)
+_HTML_CROSS_ADDR_STRICT_RE = re.compile(
+    r"((?:address|addr|receiver_?addr(?:ess)?|shipping_?addr(?:ess)?|consignee_?addr(?:ess)?|home_?addr(?:ess)?"
+    r"|收货地址|配送地址|寄件地址|家庭住址|居住地址|详细住址|个人住址|户籍地址|联系地址|详细地址)"
+    r"\s*[:：]?\s*(?:</[a-zA-Z0-9]+\s*>\s*)+(?:<[a-zA-Z0-9]+\b[^>]*>\s*)+)"
+    r"([^<>]{4,80})(?=\s*<)",
+    re.IGNORECASE,
+)
+_HTML_CROSS_ADDR_COOCCUR_RE = re.compile(
+    r"((?:地址|住址|送至|配送至)"
+    r"\s*[:：]?\s*(?:</[a-zA-Z0-9]+\s*>\s*)+(?:<[a-zA-Z0-9]+\b[^>]*>\s*)+)"
+    r"([^<>]{4,80})(?=\s*<)",
+    re.IGNORECASE,
+)
+
+
+def _has_personal_identity(text: str) -> bool:
+    """文本是否含个人身份要素（手机号 / 身份证 / 显式姓名标签）。"""
+    return bool(_PHONE_RE.search(text) or _IDCARD_RE.search(text) or _NAME_FIELD_RE.search(text))
 
 
 def _mask_address_value(v: str) -> str:
@@ -64,44 +106,46 @@ def _mask_address_value(v: str) -> str:
 
 
 def _last_admin_boundary(seg: str) -> int:
-    """返回 seg 内最后一个连续行政区边界（省/市/区/县）的结束位置，无则 -1。
-
-    「上海市黄浦区南京东路…」→ 停在「黄浦区」之后（连吃市+区）。
-    """
-    end = -1
-    pos = 0
+    """返回 seg 内紧邻详细地址的行政区链尾结束位置（多段细节取最早），无则 -1。"""
+    best_end = -1
+    cur_end = -1
     for m in re.finditer(r"[\u4e00-\u9fff]{1,}?(省|自治区|市|区|县)", seg):
-        # 连续行政链条：上一次边界与本段之间只隔非行政字符时仍算延伸
-        if end == -1 or m.start() <= pos:
-            end = m.end()
-            pos = m.end()
+        word = m.group(0)
+        if _NON_ADMIN_SUFFIX_RE.search(word):
+            continue
+        if cur_end == -1 or m.start() <= cur_end:
+            cur_end = m.end()
         else:
-            break
-    return end
+            if best_end == -1 and _ADDR_DETAIL_RE.search(seg[cur_end : m.start()]):
+                best_end = cur_end
+            cur_end = m.end()
+    return best_end if best_end != -1 else cur_end
 
 
-def _mask_address_segment(seg: str) -> str:
-    """疑似地址句：保留到最后一个行政区边界，其后整段掩为 ***。
-
-    例：``地址 上海市黄浦区南京东路100号3栋502室`` → ``地址 上海市黄浦区***``
-    """
+def _mask_address_segment(seg: str, *, allow_street_only: bool = False) -> str:
+    """疑似个人地址句：保留到最后一个行政区边界，其后整段掩为 ***。"""
     end = _last_admin_boundary(seg)
     if end <= 0 or end >= len(seg):
         return seg
-    # 边界后必须还有地址细节词（防「我在黄浦区上班」这类非地址误掩）
-    if not _ADDR_DETAIL_RE.search(seg[end:]):
+    tail = seg[end:]
+    if allow_street_only:
+        if not _ADDR_DETAIL_RE.search(tail):
+            return seg
+    elif not _RESIDENTIAL_DETAIL_RE.search(tail):
         return seg
     return seg[:end] + "***"
 
 
-def _mask_addresses(text: str) -> str:
-    """逐句扫描：同句含 行政区词+地址细节词 → 掩到区县。"""
-    parts = re.split(r"([^\n，。；;,.]+)", text)
+def _mask_addresses(text: str, *, has_pii_context: bool = False) -> str:
+    """逐句扫描个人地址：仅住宅户室粒度或与个人身份要素共现时掩到区县。"""
+    parts = re.split(r"([^\n，。；;,.|<]+)", text)
     out: List[str] = []
     for seg in parts:
         if _ADDR_REGION_RE.search(seg) and _ADDR_DETAIL_RE.search(seg):
             seg = _ADDR_FIELD_RE.sub(lambda fm: fm.group(1) + _mask_address_value(fm.group(2)), seg)
-            seg = _mask_address_segment(seg)
+            if has_pii_context:
+                seg = _ADDR_COOCCUR_FIELD_RE.sub(lambda fm: fm.group(1) + _mask_address_value(fm.group(2)), seg)
+            seg = _mask_address_segment(seg, allow_street_only=has_pii_context)
         out.append(seg)
     return "".join(out)
 
@@ -115,19 +159,66 @@ def _is_binary_data_uri(text: str) -> bool:
     return False
 
 
-def mask_pii(text: str) -> str:
+def mask_pii(text: str, *, has_pii_context: bool = False) -> str:
     """通用 PII 就地掩码。返回打码后的文本。"""
     if not text or _is_binary_data_uri(text):
         return text
-    out = _PHONE_RE.sub(lambda m: m.group(0)[:3] + "****" + m.group(0)[-4:], text)
+    cooccur = has_pii_context or _has_personal_identity(text)
+    out = _PHONE_RE.sub(lambda m: m.group(0)[:3] + "********", text)
     out = _IDCARD_RE.sub(lambda m: m.group(0)[:4] + "**********" + m.group(0)[-4:], out)
     out = _BANKCARD_RE.sub(lambda m: "****" + m.group(0)[-4:], out)
     out = _ADDR_FIELD_RE.sub(lambda m: m.group(1) + _mask_address_value(m.group(2)), out)
-    out = _mask_addresses(out)
-    out = _NAME_FIELD_RE.sub(lambda m: m.group(1) + m.group(2) + m.group(3)[0] + "*", out)
+    if cooccur:
+        out = _ADDR_COOCCUR_FIELD_RE.sub(
+            lambda m: (
+                m.group(1) + _mask_address_value(m.group(2))
+                if (_ADDR_REGION_RE.search(m.group(2)) or _ADDR_DETAIL_RE.search(m.group(2)))
+                else m.group(0)
+            ),
+            out,
+        )
+    out = _mask_addresses(out, has_pii_context=cooccur)
+    out = _NAME_FIELD_RE.sub(lambda m: m.group(1) + m.group(2) + ("*" * len(m.group(3))), out)
     out = _BEARER_RE.sub("Bearer ****", out)
     out = _CRED_KV_RE.sub(lambda m: m.group(1) + "****", out)
     return out
+
+
+def mask_pii_in_html(html: str) -> str:
+    """HTML 渲染前脱敏：保护 style/script，支持跨标签键值与文本节点脱敏。"""
+    if not html or _is_binary_data_uri(html):
+        return html
+    protected: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        idx = len(protected)
+        protected.append(m.group(0))
+        return f"\x00HTML_PROTECT_{idx}\x00"
+
+    work = _HTML_PROTECT_RE.sub(_stash, html)
+    visible_text = re.sub(r"<[^>]+>", " ", work)
+    cooccur = _has_personal_identity(visible_text) or bool(_HTML_CROSS_NAME_RE.search(work))
+
+    work = _HTML_CROSS_NAME_RE.sub(lambda m: m.group(1) + ("*" * len(m.group(2))), work)
+    work = _HTML_CROSS_ADDR_STRICT_RE.sub(lambda m: m.group(1) + _mask_address_value(m.group(2).strip()), work)
+    if cooccur:
+        work = _HTML_CROSS_ADDR_COOCCUR_RE.sub(
+            lambda m: (
+                m.group(1) + _mask_address_value(m.group(2).strip())
+                if (_ADDR_REGION_RE.search(m.group(2)) or _ADDR_DETAIL_RE.search(m.group(2)))
+                else m.group(0)
+            ),
+            work,
+        )
+    # 首尾补哨兵括号：纯文本片段与首尾裸文本节点也走同一脱敏
+    work = re.sub(
+        r">([^<>]+)<",
+        lambda m: ">" + mask_pii(m.group(1), has_pii_context=cooccur) + "<",
+        ">" + work + "<",
+    )[1:-1]
+    for idx, block in enumerate(protected):
+        work = work.replace(f"\x00HTML_PROTECT_{idx}\x00", block)
+    return work
 
 
 def pii_hits(text: str) -> list[str]:
@@ -135,6 +226,7 @@ def pii_hits(text: str) -> list[str]:
     hits: list[str] = []
     if not text or _is_binary_data_uri(text):
         return hits
+    cooccur = _has_personal_identity(text)
     if _PHONE_RE.search(text):
         hits.append("phone")
     if _IDCARD_RE.search(text):
@@ -143,6 +235,14 @@ def pii_hits(text: str) -> list[str]:
         hits.append("bank_card")
     if _ADDR_FIELD_RE.search(text):
         hits.append("address_field")
+    elif _mask_addresses(text, has_pii_context=cooccur) != text or (
+        cooccur
+        and any(
+            _ADDR_REGION_RE.search(m.group(2)) or _ADDR_DETAIL_RE.search(m.group(2))
+            for m in _ADDR_COOCCUR_FIELD_RE.finditer(text)
+        )
+    ):
+        hits.append("address")
     if _NAME_FIELD_RE.search(text):
         hits.append("name_field")
     if _BEARER_RE.search(text) or _CRED_KV_RE.search(text):

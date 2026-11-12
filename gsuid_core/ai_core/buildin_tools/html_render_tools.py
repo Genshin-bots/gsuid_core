@@ -1046,7 +1046,14 @@ async def render_card(
         return f"渲染失败：payload JSON 无效（{e}）"
 
     try:
-        html = _build_card_html(card_type, title.strip(), meta.strip(), data)
+        from gsuid_core.ai_core.mcp.pii import mask_pii, mask_pii_in_html
+
+        is_group = _is_group_render_ctx(ctx)
+        safe_title = mask_pii(title.strip()) if is_group else title.strip()
+        safe_meta = mask_pii(meta.strip()) if is_group else meta.strip()
+        html = _build_card_html(card_type, safe_title, safe_meta, data)
+        if is_group:
+            html = mask_pii_in_html(html)
         image_bytes = await render_html_to_bytes(
             html,
             max_width=720.0 * 2.0,
@@ -1449,6 +1456,19 @@ def embed_photo_block_reason(html: str, *, embed_on: bool, searched: bool, found
     return None
 
 
+def _is_group_render_ctx(ctx: RunContext[ToolContext]) -> bool:
+    """判断当前渲染调用是否处于群聊会话（含群聊派生的 Kanban 子任务）。"""
+    deps = ctx.deps
+    if isinstance(deps, ToolContext) and deps.ev is not None:
+        return bool(deps.ev.group_id)
+    from gsuid_core.ai_core.planning.runtime import get_plan_context
+
+    plan = get_plan_context()
+    if plan is not None and plan.scope_key:
+        return plan.scope_key.startswith("group:")
+    return False
+
+
 # 与 card/md 同属 media：主人格不保底；由 render_agent 白名单持有
 @ai_tools(category="media", capability_domain="资料出图", code_callable=False)
 async def render_html_to_image(
@@ -1532,6 +1552,10 @@ async def render_html_to_image(
         return blocked
 
     try:
+        from gsuid_core.ai_core.mcp.pii import mask_pii_in_html
+
+        if _is_group_render_ctx(ctx):
+            html_content = mask_pii_in_html(html_content)
         # 先自动嵌图（外链/icon/资源），再 table 改写与引擎卫生 CSS
         html = await _auto_embed_html_images(html_content)
         html = _prepare_free_html(html)
@@ -1585,7 +1609,11 @@ async def render_markdown_to_image(
         return "渲染失败：内容不能为空"
 
     try:
+        from gsuid_core.ai_core.mcp.pii import mask_pii
+
         md = f"# {title}\n\n{markdown_content.strip()}{_footer()}"
+        if _is_group_render_ctx(ctx):
+            md = mask_pii(md)
         logical_w = _clamp_logical_width(max_width)
         _dpr = 2.0
         image_bytes = await render_md_to_bytes(

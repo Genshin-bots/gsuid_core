@@ -1504,11 +1504,14 @@ async def _try_present_via_render_agent(
     import time
     import hashlib
 
+    from gsuid_core.ai_core.mcp.pii import mask_pii
     from gsuid_core.ai_core.capability_agents.runner import (
         CAPABILITY_AGENT_ERROR_PREFIX,
         run_capability_agent,
     )
 
+    if ev.group_id:
+        md = mask_pii(md)
     token = _PRESENT_RENDER_DEPTH.set(_PRESENT_RENDER_DEPTH.get() + 1)
     raw = ""
     # 外部模型失败不能吞掉这条消息，调用方再走 markdown 图。
@@ -1555,13 +1558,17 @@ async def _send_report_images(
 
     主路径应已由 ``render_agent`` 出图；此处是呈现层兜底。
     """
+    from gsuid_core.ai_core.mcp.pii import mask_pii
     from gsuid_core.utils.html_render import render_md_to_bytes
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
+    is_group = bool((ev is not None and ev.group_id) or (bot.ev is not None and bot.ev.group_id))
     max_width: int = ai_config.get_config("markdown_image_max_width").data
     css_path = await asyncio.to_thread(_markdown_dark_css_path)
     for title, body in reports:
         md = f"# {title}\n\n{body}" if title else body
+        if is_group:
+            md = mask_pii(md)
         if await _try_present_via_render_agent(md, bot, ev, extra_metadata):
             continue
         md = f"{md}{_report_footer()}"
@@ -1591,9 +1598,12 @@ async def _try_render_markdown_image(
     成功返回 ``True``；渲染失败返回 ``False``，由调用方**优雅降级**回按空行拆条的原逻辑
     （宁可刷屏也不要丢消息）。
     """
+    from gsuid_core.ai_core.mcp.pii import mask_pii
     from gsuid_core.utils.html_render import render_md_to_bytes
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
+    if bot.ev is not None and bot.ev.group_id:
+        md = mask_pii(md)
     max_width: int = ai_config.get_config("markdown_image_max_width").data
     try:
         css_path = await asyncio.to_thread(_markdown_dark_css_path)
