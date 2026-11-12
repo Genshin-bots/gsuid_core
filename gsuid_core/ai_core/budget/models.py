@@ -118,7 +118,7 @@ class AIBudgetWhitelist(BaseIDModel, table=True):
         return list(result.scalars().all())
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_entry(cls, session: AsyncSession, entry_id: int) -> Optional["AIBudgetWhitelist"]:
         """按 id 获取单条白名单。"""
         stmt = select(cls).where(col(cls.id) == entry_id)
@@ -163,7 +163,7 @@ class AIBudgetUsageRecord(BaseIDModel, table=True):
         return True
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_records_since(cls, session: AsyncSession, since_ts: int) -> List["AIBudgetUsageRecord"]:
         """取 since_ts 起的全部流水。仅启动时一次性载入内存，此后读写都走内存。"""
         stmt = select(cls).where(col(cls.created_at) >= since_ts).order_by(col(cls.created_at).asc())

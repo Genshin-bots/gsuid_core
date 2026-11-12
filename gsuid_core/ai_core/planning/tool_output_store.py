@@ -11,7 +11,7 @@ from sqlmodel import Field, SQLModel, UniqueConstraint, col, select
 from sqlalchemy import Text, Column
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gsuid_core.utils.database.base_models import with_session
+from gsuid_core.utils.database.base_models import with_session, with_read_session
 
 
 # 同步删 payload：async 侧只能经 asyncio.to_thread 调它，文件 IO 不阻塞事件循环
@@ -64,7 +64,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
     expires_at: Optional[datetime] = Field(default=None, index=True)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_id(
         cls,
         session: AsyncSession,
@@ -74,7 +74,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         return result.scalar_one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_hash(
         cls,
         session: AsyncSession,
@@ -97,7 +97,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         return result.scalar_one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def search(
         cls,
         session: AsyncSession,
@@ -234,7 +234,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         return len(rids), rids
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_admin(
         cls,
         session: AsyncSession,
@@ -289,7 +289,7 @@ class AIToolOutputRecord(_ToolOutputCRUD, SQLModel, table=True):
         return list(result.scalars().all()), total
 
     @classmethod
-    @with_session
+    @with_read_session
     async def distinct_tool_names(cls, session: AsyncSession, limit: int = 200) -> List[str]:
         """筛选用：出现过的 tool_name（非空）。"""
         stmt = (

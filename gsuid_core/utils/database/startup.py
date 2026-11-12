@@ -36,6 +36,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.meme.pack_model",
     "gsuid_core.ai_core.cognition.nodes",
     "gsuid_core.ai_core.memory.ingestion.tool_trace",
+    "gsuid_core.ai_core.mcp.credential_store",
 )
 
 

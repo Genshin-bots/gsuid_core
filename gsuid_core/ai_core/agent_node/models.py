@@ -10,7 +10,7 @@ Persona 与能力代理（原 ``CapabilityAgentProfile``）在框架内同构为
 消耗经 gs_agent 的预算 scope 上溯到来源会话记账。
 """
 
-from typing import List, Literal
+from typing import List, Literal, Callable, Optional
 from dataclasses import field, dataclass
 
 from ..base_prompts import join_framework_constraints
@@ -55,6 +55,7 @@ class AgentNode:
     node_id: str
     display_name: str
     prompt: str
+    prompt_builder: Optional[Callable[[], str]] = None
     prompt_style: PromptStyle = "plain"
     # ── routing：编排 / 委派层消费 ──
     when_to_use: str = ""
@@ -86,7 +87,8 @@ class AgentNode:
 def compose_task_prompt(node: AgentNode) -> str:
     """task-mode 系统提示词 = 身份核 + 交付边界叠加层（节点可覆写）。"""
     boundary = node.boundary_override or DELIVERY_BOUNDARY
-    return f"{node.prompt.rstrip()}\n\n{boundary}"
+    body = node.prompt_builder() if node.prompt_builder is not None else node.prompt
+    return f"{body.rstrip()}\n\n{boundary}"
 
 
 def compose_plain_session_prompt(node: AgentNode, persona_name: str | None = None) -> str:
@@ -96,5 +98,6 @@ def compose_plain_session_prompt(node: AgentNode, persona_name: str | None = Non
     组装（含情绪 / 群语境 / 完整 SYSTEM_CONSTRAINTS），不经本函数。
     框架底线读该人格的提示词组；不传人格时用默认组。
     """
-    body = f"{node.prompt.rstrip()}\n\n{PLAIN_SESSION_CONSTRAINTS}"
+    body = node.prompt_builder() if node.prompt_builder is not None else node.prompt
+    body = f"{body.rstrip()}\n\n{PLAIN_SESSION_CONSTRAINTS}"
     return join_framework_constraints(persona_name, body)

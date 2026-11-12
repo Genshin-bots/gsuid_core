@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -143,6 +144,36 @@ def test_session_read_only_and_savepoint_isolation(tmp_path: Path, monkeypatch: 
             await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_ai_model_session_decorator_flags() -> None:
+    """抽查 AI 模型方法的读写会话标记与 MCP 凭据表启动注册，锁定「纯读不占写闸门」防线。"""
+    from gsuid_core.ai_core.budget.models import AIBudgetWhitelist
+    from gsuid_core.utils.database.startup import AI_DATABASE_MODEL_MODULES
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+    from gsuid_core.ai_core.mcp.credential_store import MCPUserCredential
+    from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
+
+    assert "gsuid_core.ai_core.mcp.credential_store" in AI_DATABASE_MODEL_MODULES
+    for fn in (
+        AiMemeRecord.get_by_meme_id,
+        AiMemeRecord.get_pending_records,
+        MCPUserCredential.get_row,
+        MCPUserCredential.list_rows_for_config,
+        AIBudgetWhitelist.get_entry,
+        AIToolOutputRecord.get_by_id,
+        AIToolOutputRecord.search,
+        AIToolOutputRecord.list_admin,
+        AIToolOutputRecord.distinct_tool_names,
+    ):
+        assert inspect.getclosurevars(fn).nonlocals.get("read_only") is True, fn.__qualname__
+    for fn in (
+        MCPUserCredential.upsert_row,
+        MCPUserCredential.delete_rows_for_config,
+        AiMemeRecord.record_usage,
+        AIToolOutputRecord.batch_insert_data,
+    ):
+        assert inspect.getclosurevars(fn).nonlocals.get("read_only") is False, fn.__qualname__
 
 
 def test_restart_env_guard_and_supervisor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

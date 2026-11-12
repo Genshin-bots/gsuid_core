@@ -22,7 +22,7 @@ from sqlmodel import Field, col, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.config import core_config
-from gsuid_core.utils.database.base_models import Bind, with_session
+from gsuid_core.utils.database.base_models import Bind, with_session, with_read_session
 
 from .pii import has_credential_form
 from .config_manager import MCPConfig, mcp_config_manager
@@ -97,28 +97,38 @@ class MCPUserCredential(Bind, table=True):
     status: str = Field(default="ok", title="ok / expired / revoked")
 
     @classmethod
-    async def ensure_table(cls) -> None:
-        """懒建表：全局 create_all 时序早于本模块 import（见 state_store）。"""
+    async def ensure_table(cls, session: Optional[AsyncSession] = None) -> None:
+        """懒建表兜底：startup 注册覆盖常规时序，AI 关闭/旁路场景仍可能缺表。
+        仅写方法传入 session 复用事务连接；SQLite 读会话 query_only 无法 DDL。"""
         global _table_ensured
         if _table_ensured:
             return
         from gsuid_core.i18n import t as i18n_t
         from gsuid_core.logger import logger
-        from gsuid_core.utils.database.base_models import engine
 
         try:
-            async with engine.begin() as conn:
+            if session is not None:
+                conn = await session.connection()
                 await conn.run_sync(
                     cls.metadata.create_all,
                     tables=[cls.metadata.tables["mcpusercredential"]],
                     checkfirst=True,
                 )
+            else:
+                from gsuid_core.utils.database.base_models import engine
+
+                async with engine.begin() as conn:
+                    await conn.run_sync(
+                        cls.metadata.create_all,
+                        tables=[cls.metadata.tables["mcpusercredential"]],
+                        checkfirst=True,
+                    )
+            _table_ensured = True
         except Exception as e:
             logger.warning(i18n_t("log.mcp.cred_table_check_fail", e=e))
-        _table_ensured = True
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_row(
         cls,
         session: AsyncSession,
@@ -130,7 +140,7 @@ class MCPUserCredential(Bind, table=True):
         return await _select_row(session, cls, config_id, bot_id, user_id)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_rows_for_user(
         cls,
         session: AsyncSession,
@@ -143,7 +153,7 @@ class MCPUserCredential(Bind, table=True):
         return [r for r in result.scalars().all() if isinstance(r, cls)]
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_rows_for_config(
         cls,
         session: AsyncSession,
@@ -168,6 +178,7 @@ class MCPUserCredential(Bind, table=True):
         bound_at: float,
         last_ok_at: float,
     ) -> "MCPUserCredential":
+        await cls.ensure_table(session)
         row = await _select_row(session, cls, config_id, bot_id, user_id)
         if row is None:
             row = cls(
@@ -193,6 +204,7 @@ class MCPUserCredential(Bind, table=True):
         bot_id: str,
         user_id: str,
     ) -> bool:
+        await cls.ensure_table(session)
         row = await _select_row(session, cls, config_id, bot_id, user_id)
         if row is None:
             return False
@@ -208,6 +220,7 @@ class MCPUserCredential(Bind, table=True):
         bot_id: str,
         user_id: str,
     ) -> None:
+        await cls.ensure_table(session)
         row = await _select_row(session, cls, config_id, bot_id, user_id)
         if row is not None:
             row.status = "expired"
@@ -220,6 +233,7 @@ class MCPUserCredential(Bind, table=True):
         session: AsyncSession,
         config_id: str,
     ) -> int:
+        await cls.ensure_table(session)
         stmt = select(cls).where(col(cls.config_id) == config_id)
         result = await session.execute(stmt)
         rows = [r for r in result.scalars().all() if isinstance(r, cls)]

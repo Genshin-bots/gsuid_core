@@ -95,7 +95,7 @@ class AiMemeRecord(SQLModel, table=True):
     # ── 数据库操作方法 ──
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_meme_id(
         cls,
         session: AsyncSession,
@@ -106,7 +106,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalar_one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def exists_by_meme_id(
         cls,
         session: AsyncSession,
@@ -161,7 +161,7 @@ class AiMemeRecord(SQLModel, table=True):
         return True
 
     @classmethod
-    @with_session
+    @with_read_session
     async def list_for_purge(
         cls,
         session: AsyncSession,
@@ -199,7 +199,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_folder(
         cls,
         session: AsyncSession,
@@ -238,7 +238,7 @@ class AiMemeRecord(SQLModel, table=True):
         return records, total
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_records(
         cls,
         session: AsyncSession,
@@ -273,7 +273,7 @@ class AiMemeRecord(SQLModel, table=True):
         return records, total
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_meme_ids(
         cls,
         session: AsyncSession,
@@ -286,7 +286,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_pending_records(
         cls,
         session: AsyncSession,
@@ -299,7 +299,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_by_status(
         cls,
         session: AsyncSession,
@@ -310,7 +310,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_by_folder(
         cls,
         session: AsyncSession,
@@ -326,7 +326,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_all_records_no_page(
         cls,
         session: AsyncSession,
@@ -342,7 +342,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalars().all()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def random_pick(
         cls,
         session: AsyncSession,
@@ -362,7 +362,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalar_one_or_none()
 
     @classmethod
-    @with_session
+    @with_read_session
     async def least_used_pick(
         cls,
         session: AsyncSession,
@@ -404,7 +404,7 @@ class AiMemeRecord(SQLModel, table=True):
         session.add(record)
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_stats(
         cls,
         session: AsyncSession,
@@ -457,7 +457,7 @@ class AiMemeRecord(SQLModel, table=True):
         }
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_distinct_personas(
         cls,
         session: AsyncSession,
@@ -491,7 +491,7 @@ class AiMemeRecord(SQLModel, table=True):
         return items
 
     @classmethod
-    @with_session
+    @with_read_session
     async def count_daily_by_group(
         cls,
         session: AsyncSession,
@@ -510,7 +510,7 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalar() or 0
 
     @classmethod
-    @with_session
+    @with_read_session
     async def search_by_ids(
         cls,
         session: AsyncSession,
@@ -528,7 +528,7 @@ class AiMemeRecord(SQLModel, table=True):
         return [record_map[mid] for mid in meme_ids if mid in record_map]
 
     @classmethod
-    @with_session
+    @with_read_session
     async def get_by_persona(
         cls,
         session: AsyncSession,
@@ -583,7 +583,7 @@ class AiMemeRecord(SQLModel, table=True):
         return records, total
 
     @classmethod
-    @with_session
+    @with_read_session
     async def search_by_tags(
         cls,
         session: AsyncSession,
