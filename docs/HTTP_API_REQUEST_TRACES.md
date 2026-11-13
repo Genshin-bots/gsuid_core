@@ -72,7 +72,7 @@ v1 **不承诺** `/api/send_msg` 触发的命令函数体内日志进入 HTTP �
 - 不追踪 `/app/**`、`/ws/**`、`/docs`、OpenAPI、非 `/api` 的 MCP 挂载（配置成 `/mcp` 时本就不在范围内）。
 - 不把 HTTP 追踪做成 OpenTelemetry / W3C `traceparent`。
 - 不引入 SQL 表；不给 daily log 建索引（v1 用 `to_thread` 扫描）。
-- v1 不改 `_safe_run` / `_process` / `handler.py`，因此**不**把命令函数体 / `handle_ai_chat` 的日志并进 HTTP 桶。
+- v1 不改 `_safe_run` / `_process` / `handler.py`，因此**不**把命令函数体 / `handle_inbox_turn` 的日志并进 HTTP 桶。
 - 不记录请求 / 响应 body。
 - 不保证 `print()`、非 `GsCore` logger、`to_thread` 线程内日志被捕获。
 - 不给命令追踪补 `error_count`。
@@ -371,7 +371,7 @@ asyncio.create_task(self._safe_run(ctx))  # 复制的是 _process 的 contextvar
 | 中间件 + `sendMsg` + `handle_event` 直到 `queue.put_nowait` | 有 | 无 | 有（如 `cmd_triggered`） | 无 |
 | `_safe_run` / 插件命令函数体 | **无** | bind 后有 | **无** | 有 |
 | HTTP 任务在 `wait_task` 返回之后、middleware clear 之前 | 有 | 无 | 有 | 无 |
-| AI 未匹配走 `handle_ai_chat` 入队 | HTTP **不等待**（无 `task_event`） | 无 | 请求很快 finalize；AI 日志在 `_process` 上，**无** `http_trace_id` | 无 `TraceContext` 则命令桶也无 |
+| AI 未匹配走 `handle_inbox_turn` 入队 | HTTP **不等待**（无 `task_event`） | 无 | 请求很快 finalize；AI 日志在 `_process` 上，**无** `http_trace_id` | 无 `TraceContext` 则命令桶也无 |
 
 v1 **禁止**为了「双桶重叠」改 `bot.py` / `handler.py`。HTTP 页排障 `/api/send_msg`：能看到入队前日志与 HTTP status/耗时；命令内部去 `#/traces`。
 

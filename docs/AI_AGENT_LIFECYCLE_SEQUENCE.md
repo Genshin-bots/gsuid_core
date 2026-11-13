@@ -97,10 +97,11 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
     │  有命令 → 插件路径结束（可不进主 Agent）
     │  无命令 ↓
     ▼
-③ AI 触发门控（persona / 提及 / 软触发）       [handler 尾部]
-    │  入队 handle_ai_chat → bot.queue
+③ AI 唤醒判定 + 收件箱 settle                [handler 尾部]
+    │  classify_wake → InboxScheduler.submit
+    │  落定合并后入队 run_turn(turn) → bot.queue
     ▼
-④ handle_ai_chat 早退闸门                     [handle_ai]
+④ handle_inbox_turn 早退闸门                   [handle_ai]
     │  enable / 等就绪 / Semaphore / TTL / 预算 / 空内容 / H01
     ▼
 ⑤ Session + TurnGraph                         [ai_router / interaction_scaffold]
@@ -113,11 +114,11 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
     │  hostile/cold **未点名** → SILENCE（结算 reached_model=False）
     │  @ / 引用 bot 不因低好感硬静；点名一律 FULL
     ▼
-⑦ 软触发沉默门（**仅** soft_triggered）        [reactive_gate]
-    │  硬 @ / 引用 bot 不走此门
+⑦ 软唤醒路由（**仅** soft wake 项）            [TurnRouter / H04]
+    │  hard 项（@ / 呼名 / 私聊 / 回执批次）不走此门
     ▼
 ⑧ 装配 user 侧上下文                          [payload / memory / history / assembly]
-    │  quoted_tome → QUOTE_TOME_MARKER（不要写成「直接找你」）
+    │  引用边渲为 ↩#n 出处事实行（不写「直接找你」）
     │  zone 口吻进口吻锚；未点名 suffix 清空产品块
     │  群历史仅 FULL 且点名/跟进/任务；CheapGate 终判（活跃任务可抬回 FULL）
     ▼
@@ -195,11 +196,11 @@ C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**�
 | MemeObs | `meme.observer` | 表情入库观察（后台） |
 | MemObs | `memory.observe` / `observer` | 对话记忆入缓冲（后台） |
 | BotQueue | `bot._Bot.queue` / `_process` | **串行**消费命令与 AI 协程 |
-| HandleAI | `handle_ai.handle_ai_chat` | 早退闸、意图、软门、装配、调 Agent |
+| HandleAI | `handle_ai.handle_inbox_turn` / `run_interactive_turn` | 早退闸、意图、软路由、装配、调 Agent |
 | Budget | `budget.budget_manager` | Session Token 额度 |
 | AIRouter | `ai_router.get_ai_session` | 读/建 `GsCoreAIAgent` + 稳定 system_prompt |
 | Classifier | `mode_classifier` / `classifier_service` | 闲聊/工具/问答 |
-| SoftGate | `heartbeat.decision.run_reactive_gate` | 软触发沉默门（**仅** `soft_triggered`） |
+| TurnRouter | `inbox` 软唤醒路由（H04 `REACTIVE_GATE`） | soft wake 项读线程视图判相关性 |
 | TurnGraph | `interaction_scaffold.build_turn_graph` | 本轮结构：`call_to_self` / `quoted_tome` / 开口门 |
 | CheapGate | `interaction_scaffold.decide_cheap_gate` | silence / full；quiet_zone 未点名才硬静 |
 | RelView | `relationship.RelationshipView` | zone + line + voice；H02 写入，CheapGate / 装配共用 |
@@ -253,8 +254,8 @@ sequenceDiagram
         Handler->>BotQueue: put 插件 trigger.func
         BotQueue-->>User: 插件回复路径（可不进 AI）
     else 无命令且 AI 门控通过
-        Handler->>BotQueue: put handle_ai_chat(soft?)
-        BotQueue->>HandleAI: 串行执行
+        Handler->>BotQueue: classify_wake → InboxScheduler.submit<br/>settle 后 put run_turn(turn)
+        BotQueue->>HandleAI: 串行执行 handle_inbox_turn
 
         Note over HandleAI: ④ 预算/Semaphore/TTL/空内容
 
@@ -268,10 +269,10 @@ sequenceDiagram
         Classifier-->>HandleAI: intent
         Note over HandleAI: CheapGate 初判：quiet_zone 未点名才硬静<br/>@/引用 bot 进环
 
-        opt soft_triggered
-            HandleAI->>SoftGate: run_reactive_gate
+        opt soft wake 项
+            HandleAI->>TurnRouter: route_turn(render_router_view)
             alt 沉默
-                SoftGate-->>HandleAI: False
+                TurnRouter-->>HandleAI: soft_speak=None
                 HandleAI-->>BotQueue: return（不装记忆/不跑 Agent）
             else 放行
                 SoftGate-->>HandleAI: True
@@ -279,7 +280,7 @@ sequenceDiagram
             end
         end
 
-        Note over HandleAI: payload：quoted_tome→QUOTE_TOME_MARKER<br/>否则 is_tome→DIRECT_MARKER
+        Note over HandleAI: 正文=线程视图增量（↩#n 出处行）<br/>+ prepare_media_payload 媒体段RKER
         HandleAI->>DualRoute: dual_route_retrieve（非寒暄）
         DualRoute-->>HandleAI: memory_context_text
         HandleAI->>CtxAsm: assemble_dynamic_context
@@ -363,7 +364,7 @@ sequenceDiagram
 | 模式配置 | 用户句写入点 | 助手句写入点 |
 |----------|--------------|--------------|
 | 含「被动感知」 | `handler` 入站 | 通常仍靠「主动会话」+ `bot.send` 观察助手 |
-| 仅「主动会话」（无被动） | `handle_ai_chat` 早段 observe（能进 AI 才写） | `bot.send` 时 `speaker_id=__assistant_{bot_id}__` |
+| 仅「主动会话」（无被动） | `handle_inbox_turn` 早段 observe（能进 AI 才写） | `bot.send` 时 `speaker_id=__assistant_{bot_id}__` |
 | 两者都开 | 入站只写一次（handle_ai **跳过**用户 observe 防双写） | 同上 |
 
 ---
@@ -393,13 +394,10 @@ sequenceDiagram
         alt 无 persona
             Handler-->>Handler: return 静默
         else 提及应答模式
-            alt is_tome / 关键词
-                Handler->>Follow: note_hard_trigger(session, user)
-                Handler->>Stats: record_trigger(mention|keyword)
-                Handler->>BotQueue: put handle_ai_chat(soft=False)
-            else 群聊未@别人 且 in_followup_window
-                Handler->>Stats: record_trigger(followup)
-                Handler->>BotQueue: put handle_ai_chat(soft=True)
+            alt classify_wake 命中
+                Handler->>Follow: note_hard_trigger(session, user)  # hard kind
+                Handler->>Stats: record_trigger(kind)
+                Handler->>BotQueue: InboxScheduler.submit → settle → put run_turn(turn)
             else
                 Handler-->>Handler: return 静默（不唤醒）
             end
@@ -484,14 +482,13 @@ sequenceDiagram
         Note over Cheap: @/引用 bot 即使 hostile 也进环
     end
 
-    opt soft_triggered
-        HandleAI->>SoftGate: run_reactive_gate(history≈15, persona)
-        Note over SoftGate: 规则预筛（零 LLM）→ 模糊再轻量模型<br/>引用 bot / 硬 @ 不走此门
+    opt soft wake 项
+        HandleAI->>TurnRouter: route_turn(render_router_view)
+        Note over TurnRouter: 读同一份线程视图判相关性<br/>hard 项不走此门
         alt 沉默
-            SoftGate-->>HandleAI: False → return
+            TurnRouter-->>HandleAI: soft_speak=None → return
         else 放行
-            SoftGate-->>HandleAI: True
-            HandleAI->>HandleAI: enqueue_ts = now
+            TurnRouter-->>HandleAI: soft_speak=目标 uid
         end
     end
 ```
@@ -505,7 +502,7 @@ sequenceDiagram
     autonumber
     participant HandleAI
     participant Favor as UserFavorability
-    participant Payload as prepare_content_payload
+    participant Payload as prepare_media_payload
     participant DualRoute
     participant Pref as preferences (SQL)
     participant Qdrant as Qdrant memory_*
@@ -518,8 +515,8 @@ sequenceDiagram
     participant GsAgent
 
     HandleAI->>Favor: RelationshipView 已在 H02（不在 payload 再查好感）
-    HandleAI->>Payload: prepare_content_payload(event, quoted_tome=tg.quoted_tome)
-    Note over Payload: 说话人 / DIRECT 或 QUOTE_TOME 标记 / 图 / --- 消息 --- / 引用块 / 时间
+    HandleAI->>Payload: prepare_media_payload(event)
+    Note over Payload: 图 / 音频 / 文件段 → payload；正文来自线程视图 render_delta
 
     alt enable_memory 且 enable_retrieval
         alt 寒暄门控命中（短+闲聊+无实体…）
@@ -537,9 +534,9 @@ sequenceDiagram
 
     alt cheap=FULL 且 (call_to_self / 省略跟进 / 任务管理)
         HandleAI->>HistoryA: get_history 去掉本轮（仅群聊）
-        HandleAI->>HistoryA: 当前用户优先 + format_history_for_agent
+        HandleAI->>HistoryA: 线程视图 render_window/read_seq 之后增量
     else 未点名
-        Note over HistoryA: 不灌【历史对话】块（省 token）
+        Note over HistoryA: 不灌历史增量块（省 token）
     end
 
     HandleAI->>CtxAsm: assemble_dynamic_context（**全部进 user 侧**，不改 system）
@@ -547,7 +544,7 @@ sequenceDiagram
     CtxAsm->>Rel: 关系行（per-user，禁进共享 system）
     CtxAsm->>Rel: voice_anchor += zone 口吻（未打分不注入）
     CtxAsm->>PlanCtx: 长任务文案 → has_actionable
-    Note over CtxAsm: 顺序：情绪→关系→口吻→身份锚→历史<br/>→记忆(高置信)→任务→闲聊风格<br/>→事务优先级(工具/问答)→report标题<br/>→最后软触发NOTE<br/>未点名：suffix 清空产品块<br/>QUOTE_TOME_HINT 走 prepare hints，不受 suffix 清
+    Note over CtxAsm: 顺序：情绪→关系→口吻→身份锚→历史<br/>→记忆(高置信)→任务→闲聊风格<br/>→事务优先级(工具/问答)→report标题<br/>→inbox_pending→evidence→plugin_hints<br/>未点名：suffix 清空产品块
     CtxAsm-->>HandleAI: full_context, has_actionable
     Note over HandleAI: CheapGate 终判（has_actionable 可抬回 FULL）
 
@@ -896,7 +893,7 @@ command_triggers 非空
   → 按 priority 入队 trigger.func(Bot, event)
   → logger.info cmd_triggered
   → block 触发器可打断后续
-  → 本条通常**不再**进 handle_ai_chat
+  → 本条通常**不再**进 AI 轮（handle_inbox_turn）
 ```
 
 （`on_message` 类触发器另轨：每条消息可挂后台，不挡 AI 判定。）
@@ -923,25 +920,29 @@ command_triggers 非空
 **提及应答**（生产默认）：
 
 ```text
-should_respond = event.is_tome          # @机器人、私聊、**引用 bot 消息**
-             or 关键词命中 keywords
-             or 软触发：
-                  硬触发刚登记过 followup 窗口
-                  and 群聊 and 未 at 别人
-                  and in_followup_window(session_id, user_id)
-             or framework_aliases 命中（记 followup）
+kind = classify_wake(event, persona_name, wake_names, in_followup)
+  private  → 私聊一律 hard
+  mention  → @机器人 hard
+  name     → 正文呼人格名/关键词/别名 hard
+  quote_self → 引用 Bot 已发消息（soft）
+  followup → 续聊窗口内普通发言（soft）
+  receipt  → 命令回执（command_aside 提交）
+→ InboxScheduler.submit(PendingEntry)；同会话单飞，soft 项进 settle 合并窗口
 ```
 
 `is_tome` 在 `msg_process` 里由 **@ `bot_self_id`** 或私聊置位。引用 bot 的消息
 适配器应同样置 `is_tome=True`，并带 `reply` / `reply_id`（core 记引用块，不自己猜
-「引用的是不是 bot」）。进 AI 后 **仍是硬触发**（`soft_triggered=False`），**不走**
-⑦ 软门；`quoted_tome` 只改 payload 标记，由环内人格判断回不回（§6.4）。
+「引用的是不是 bot」）。进收件箱后 @/呼名为 hard 唤醒；`quote_self` 是 soft 唤醒，
+由 TurnRouter 读线程视图判相关性（§7）。
 
-| 触发类型 | `trigger_type` 统计 | 后续 |
+| 唤醒类型 | `trigger_type` 统计 | 后续 |
 |----------|---------------------|------|
-| @/私聊/引用 bot | `mention` | 硬触发，`note_hard_trigger` 开窗口 |
-| 关键词 | `keyword` | 同上 |
-| 续聊窗口内普通发言 | `followup` | `soft_triggered=True`，稍后沉默门 |
+| 私聊 | `private` | hard，`note_hard_trigger` 开窗口 |
+| @机器人 | `mention` | 同上 |
+| 正文呼名/关键词 | `name` | 同上 |
+| 引用 Bot 已发消息 | `quote_self` | soft，TurnRouter 判相关性 |
+| 续聊窗口内普通发言 | `followup` | soft，同上 |
+| 命令回执 | `receipt` | command_aside 提交 |
 
 **AI Core 未就绪**：
 
@@ -954,13 +955,10 @@ logger.info  ai_initializing
 **入队**：
 
 ```python
-ws.queue.put_nowait(
-    TaskContext(
-        coro=handle_ai_chat(Bot(ws, event), event, enqueue_ts=now, soft_triggered=...),
-        name="handle_ai_chat",
-        priority=event.user_pm,
-    )
+get_inbox_scheduler().submit(
+    PendingEntry(item=WakeItem(...), event=event, kind=kind, …)
 )
+# 落定后由调度器入队：ws.queue.put_nowait(TaskContext(coro=run_turn(turn)))
 ```
 
 `bot._process` **串行**消费队列（同 bot 上命令与 AI 互不并发抢同一 send 路径）。
@@ -969,16 +967,16 @@ ws.queue.put_nowait(
 
 | 时机 | 日志 |
 |------|------|
-| 统计 | `statistics_manager.record_trigger(mention|keyword|followup)`（内存，非 console 必打） |
+| 统计 | `statistics_manager.record_trigger(kind)`（wake kind；内存，非 console 必打） |
 | 入队成功 | 通常无单独 info（看后续 handle_ai） |
 
 ---
 
-## 5. 阶段 ④：`handle_ai_chat` 早退闸门
+## 5. 阶段 ④：`handle_inbox_turn` 早退闸门
 
 > 时序图：**§S.4**（闸门 + Session + TurnGraph + 意图 + CheapGate + 软门）
 
-文件：`gsuid_core/ai_core/handle_ai.py`。生产 `handle_ai_chat` 与评测
+文件：`gsuid_core/ai_core/handle_ai.py`。生产 `handle_inbox_turn`（收件箱轮）与评测
 `/api/chat_with_history` **共用** `run_interactive_turn`（评测 `as_judge` 除外：
 跳过人设/脚手架/工具，只跑 1 轮判 PASS/FAIL）。
 
@@ -989,8 +987,8 @@ ws.queue.put_nowait(
   → TurnGraph / 开口门（结构性静音在 rel 之前，不结算）
   → H02 AFTER_SESSION（RelationshipView）
   → H03 CLASSIFY → CheapGate 初判
-  → H04 软门（仅 soft_triggered）
-  → payload(quoted_tome) → H05 检索 → H06/H07 合成
+  → H04 软唤醒路由（仅 soft wake 项，TurnRouter）
+  → 线程视图 + media payload → H05 检索 → H06/H07 合成
   → CheapGate 终判 → session.run(turn_graph, cheap_gate)
   → 出站 → 结算 + H08
 ```
@@ -1094,11 +1092,9 @@ registry.get_ai_session(session_id)
 **`quoted_tome` 纪律（2026-08-26）**：
 
 ```text
-引用 bot 消息 → 适配器 is_tome=True → 硬触发入队（不是 soft）
-  → call_to_self = True（开口门不会因「没点名」掐掉）
-  → quoted_tome = True（正文没有「角色名+你/帮…」这类呼名时）
-  → payload 写 QUOTE_TOME_MARKER，不要写 DIRECT_MARKER「直接找你说的」
-  → prepare 追加 QUOTE_TOME_HINT：追问/吩咐才回；跟别人说话或故意惹你 → <SILENCE>
+引用 bot 消息 → EventLink 记录引用边（reply_to_author=self）→ quote_self soft 唤醒
+  → TurnRouter 读 ↩#n 出处行判「引用≠找你」，判有关才进主模型
+  → 主模型线程视图同见出处行；寻址用 <reply #seq>，不回可 <SILENCE>
   → CheapGate 不因引用硬静；环内人格自己判断
 ```
 
@@ -1108,7 +1104,7 @@ registry.get_ai_session(session_id)
 |------|------|
 | 私聊 / `is_addressed_to_self`（含 is_tome、引用 bot） | SPEAK |
 | @别人且没同时找自己 / ambient 催别人 / 省略继承他人槽 / 多人同条无人呼叫 | SILENCE |
-| `soft_triggered` 未命中强负 | SPEAK（交给 ⑦ 软门细判） |
+| soft wake 项 | SPEAK（交给 ⑦ TurnRouter 细判） |
 | 其余已入队的群消息 | SPEAK（避免误吞正经请求） |
 
 命中 SILENCE 或 `address_gated` → `run_interactive_turn` **立刻返回** `<SILENCE>`，
@@ -1194,26 +1190,19 @@ zone 口吻写在 user 侧 `voice_anchor`（`relationship.zones._ZONE_VOICE`）�
 
 ---
 
-## 8. 阶段 ⑦：软触发沉默门（仅 `soft_triggered`）
+## 8. 阶段 ⑦：软唤醒路由（仅 soft wake 项）
 
-**只对免唤醒续聊**。硬 @、关键词、私聊、**引用 bot（`quoted_tome`）都不走此门**。
-套件 `gscore.reactive_gate` 在 `ctx.soft_triggered` 为假时直接 `return None`。
+**只对 `quote_self` / `followup` 等 soft 唤醒**。hard 项（私聊、@、呼名、回执批次
+内的 hard 项）不走此路由。TurnRouter 与主模型读同一份
+`render_router_view` 线程视图（被引用对象完整出处行），判「这轮有没有要找你的」。
 
-```text
-run_reactive_gate(event, history_manager 近 15 条, persona_name)
-  ├─ 规则预筛：空/纯语气/@别人 → 直接沉默（不打 LLM）
-  ├─ 规则预筛：短接续 → 直接放行
-  └─ 否则轻量 LLM 门
-```
+| 结果 | 行为 |
+|------|------|
+| `soft_speak=None` | 沉默，不装记忆、不跑主 Agent |
+| `soft_speak=uid` | 放行：本轮只回该 uid 的 pending 项 |
 
-| 结果 | 行为 | 日志 |
-|------|------|------|
-| 沉默 | return，不装记忆、不跑主 Agent | `软触发沉默门判定与AI无关，保持沉默` |
-| 放行 | 重置 enqueue_ts（门耗时不计入过期） | `软触发沉默门放行，按续聊处理` |
-| 异常 | fail-open 放行主 Agent | debug |
-
-后续还有 user 侧 `SOFT_TRIGGER_NOTE` + 人设「沉默规则」两道偏沉默约束。
-引用 bot 的沉默由 **QUOTE_TOME_HINT + zone 口吻 + 模型 `<SILENCE>`** 完成，不在这里。
+引用 bot 的「引用≠找你」由 TurnRouter 引用出处行 + router prompt 原则完成；
+主模型侧另有 `<reply #seq>` 显式寻址与 `<SILENCE>` 出口。
 
 ---
 
@@ -1224,18 +1213,15 @@ run_reactive_gate(event, history_manager 近 15 条, persona_name)
 ### 9.1 用户 payload
 
 ```text
-user_messages, guard_flags = prepare_content_payload(event, quoted_tome=turn_graph.quoted_tome)
-  # 说话人标注（主人只标权限，好感/zone 不在这里——H06 relationship 块统一写）
-  # is_tome → DIRECT_MARKER「（直接找你说的）」
-  #          或 QUOTE_TOME_MARKER「（引用了你的上一条。先判断…）」
-  # --- 消息 --- 正文 + 输入守卫标注
-  # --- 引用消息 --- + resolve_quote 等值消解
-  # 惰性图 ID / 音频 / 文件
+user_message = 线程视图增量（render_delta：#seq / ↩#n(出处) / →@ / 你[回执] / 〔已发〕）
+  + prepare_media_payload：图 / 音频 / 文件段
+  + 输入守卫标注（content_guard）
 可选：长文 create_subagent 摘要
 追加：[当前时间：…]   # turn_pipeline.stamp_current_time
 ```
 
-`quoted_tome` 时**禁止**写 DIRECT_MARKER，否则模型会被「直接找你」逼成必回。
+引用关系已渲成 `↩#n(引用者→被引用者 · 时间 · 类型)` 事实行，模型靠 `<reply #seq>`
+显式寻址；寻址真值取自 EventLink，不再用正文标记。
 
 ### 9.2 记忆检索：H05 `RETRIEVE_CONTEXT`（读，不写）
 
@@ -1263,19 +1249,10 @@ fire_hooks(RETRIEVE_CONTEXT, ctx)        # 内核唯一动作
 
 ### 9.3 群消息历史渲染（读 A 轨）
 
-**不是每轮都灌。** `handle_ai` 只在 `cheap is FULL` **且**
-`call_to_self or ellipsis_followup or task_management` 时调用
-`build_group_history_block`。未点名旁观不塞【历史对话】。
-
-```text
-# 私聊：不注入 IM 历史（pydantic_ai session.history 已覆盖，避免破坏缓存前缀）
-# 评测 HTTP 可传入 history_context="" 跳过
-raw = history_manager.get_history(...)      # 群 deque 全窗
-records = raw[:-1]                          # 去掉本轮（已在 payload）
-[与你的对话] 当前说话人的 user 句（含未点名）+ 机器人出站，从新到旧凑满 14 条
-  纯 <SILENCE> 不注入；本轮出站句柄写入该格，追问时 read_handle
-[历史对话] 最近 20 条里的他人 user 句，最多 6 条
-```
+**线程视图取代旧【历史对话】/【与你的对话】。** 每轮 B 轨输入是
+`render_window`/`render_delta`：A 轨全窗按 seq 渲染「昵称(用户ID)：正文」、
+`↩#n` 引用边、`→@`、`你[回执]`、`〔已发〕` 出站行。增量只渲染 `read_seq` 之后的新行；
+私聊不注入 IM 历史（session.history 已覆盖，保前缀缓存）。
 
 ### 9.4 动态上下文唯一顺序（`CONTEXT_BLOCK_ORDER` + 合成器）
 
@@ -1295,7 +1272,7 @@ records = raw[:-1]                          # 去掉本轮（已在 payload）
 | 2 | `relationship` | `gscore.favorability`（per-user，**绝不能进共享 system**） |
 | 3 | `voice_anchor` | `gscore.self_cognition`（人格口吻锚 ≤80 字 + **当前 zone 口气**；`scored=False` 不注入口气） |
 | 4 | `identity` | `gscore.identity`（**密封槽**，关不掉）——**仅私聊** user 侧再钉一次；群聊身份只留 system，避免双写 |
-| 5 | `history` | **内核**（`turn_pipeline.build_group_history_block`；HistoryManager 是消息基础设施） |
+| 5 | `inbox_pending` | **内核**（`inbox/blocks.py`（待你回应）块；HistoryManager 是消息基础设施） |
 | 6 | `group_context` | `gscore.group_profile`（群词汇映射；成员称呼仍在 system 稳定块） |
 | 7 | `memory` | `gscore.memory`（H05 检索 → H06 注入；预算 `memory_inject_max_chars`=800 + 梗预注入） |
 | 8 | `task` | `gscore.planning_context`（顺带写 `has_actionable`） |
@@ -1303,7 +1280,7 @@ records = raw[:-1]                          # 去掉本轮（已在 payload）
 | 10 | `chitchat_style` | `gscore.scaffold`（仅 intent=闲聊且无上轮工具且无活跃任务） |
 | 11 | `transaction_priority` | `gscore.scaffold`（intent∈{工具,问答}：优先调工具，困/懒不是跳过理由） |
 | 12 | `report_titles` | `gscore.scaffold`（上一轮资料图标题） |
-| 13 | `soft_trigger` | `gscore.reactive_gate`（`SOFT_TRIGGER_NOTE`，近因） |
+| 13 | `inbox_identity` / `inbox_related` / `evidence` | `gscore.inbox`（工具身份/相关往来）+ `gscore.evidence`（证据块） |
 | 14 | `plugin_hints` | 第三方 H07 `append_user_hint` 汇入，**恒在最后** |
 
 > 历史注意：本节旧版写的顺序是「历史对话 → 情绪 → …」，与代码不符（代码里情绪在最前），
@@ -1322,9 +1299,8 @@ records = raw[:-1]                          # 去掉本轮（已在 payload）
 **精确时间**在 `turn_pipeline.stamp_current_time` / user 正文侧（`[当前时间：…]`），不进 system。
 
 **群聊 suffix 过滤**（`context_assembly.suffix_allowed_blocks`）：未点名 →
-产品块表清空（情绪/关系/记忆/历史都不进 user suffix）。`QUOTE_TOME_HINT` /
-`FOLLOWUP_HINT` 走 `prepare` 的 `scaffold_hints_from_graph`，
-**不受** suffix 清空。
+产品块表清空（情绪/关系/记忆/历史都不进 user suffix）。`FOLLOWUP_HINT` 等脚手架
+提示走 `prepare` 的 `scaffold_hints_from_graph`，**不受** suffix 清空。
 
 hostile/cold 的 zone 口吻（仅 `scored=True` 时注入）：
 
@@ -1432,7 +1408,7 @@ logger.info ====== Agent 运行开始 ======
 拼接 rag_context → final_user_message
 可选 DS 角色 Marker / 无工具强制提醒（闲聊意图豁免计数）
 交互脚手架：消费入口 TurnGraph（缺则现场 build，带 has_reply）
-  C-1/C-2/C-3 + quoted_tome → QUOTE_TOME_HINT
+  C-1/C-2/C-3 + quote_self → QUOTE_TOME_HINT
   PIN：日程/回想工具 schema 恒在，check_func 拒执行（不拆 schema）
   群聊瘦保底 / 可见性 hint
 session_logger.log_run_start()
@@ -1778,7 +1754,7 @@ session_log entries（磁盘，可稍后刷）：
 
 日志例：`[output_gate] RUN FUSED after N bounces` / `[output_gate/angle_bracket] REWRITE k/3` / OOC firewall 相关 warning。
 
-### 11.2 `handle_ai_chat` 尾
+### 11.2 `handle_inbox_turn` 尾
 
 结果**只分类一次**（`turn_pipeline.classify_run_result`），出站与结算复用同一判定：
 
@@ -1991,8 +1967,8 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 18. **空闲 GC**：`IDLE_THRESHOLD` 7200s；回收前把 history 摘要写入记忆（B 轨丢、语义由记忆承接）。
 19. **袖珍 `plan_hint`**：结构信号（并列连词 / 先…再 / 近期评估）触发；选路看花名册与评估缓存，不按业务词分支。
 20. **心想闸**：通道形态（长「心想」段）REWRITE，2 次后剥段落放行；不靠业务关键词。
-21. **引用 bot = is_tome，进环判断**：`quoted_tome` 只换 QUOTE_TOME_MARKER + HINT，
-    不走软门、不因 hostile 硬静。跟别人说话或故意惹 → 模型 `<SILENCE>`。
+21. **引用 bot → quote_self soft 唤醒**：TurnRouter 读 `↩#n` 出处行判相关性，
+    不因 hostile 硬静。跟别人说话或故意惹 → 沉默出口 / 模型 `<SILENCE>`。
 22. **CheapGate quiet_zone**：hostile/cold **未点名**才早退；被 @ 闲聊走 FULL。
     zone 口吻进 `voice_anchor`（未打分不注入）。`group_lurk_mode` 默认关。
 23. **假完成认生效写**：`effectual_mutate` 仅 add/modify/cancel/pause/resume 且非 PIN 拒绝。

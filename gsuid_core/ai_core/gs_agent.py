@@ -58,6 +58,7 @@ from gsuid_core.ai_core.rag.tools import (
 )
 from gsuid_core.ai_core.quota_guard import quota_breaker, classify_provider_error
 from gsuid_core.ai_core.prefix_probe import PrefixSnapshot
+from gsuid_core.ai_core.control.lines import THREAD_VIEW_PREFIXES
 from gsuid_core.ai_core.configs.models import (
     AnyModel,
     get_model_for_task,
@@ -69,7 +70,7 @@ from gsuid_core.ai_core.configs.models import (
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.configs.task_kinds import TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
+from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER, TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
 from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
@@ -301,6 +302,8 @@ class GsCoreAIAgent(RunOnceMixin):
         self.persona_name = persona_name  # 用于热重载检查
         # 本会话建提示词时看到的人格/提示词组 mtime。按会话记，避免只重载一路。
         self.persona_source_mtime: float = 0.0
+        # B 轨线程视图是否要追溯块：新建/恢复为 True，主模型跑过一轮后 H2 置 False
+        self.thread_backfill_due: bool = True
         # 用于串行执行 run 方法的锁
         self._run_lock = asyncio.Lock()
         # A: 同 Session 新消息抢答时 set，当前 generation 在节点间隙 abort
@@ -486,72 +489,6 @@ class GsCoreAIAgent(RunOnceMixin):
         # 保证下次 _agent.iter(message_history=self.history) 入参自洽。
         self.extract_history()
 
-    async def locked_append_then_run(
-        self,
-        user_content: str | Sequence[UserContent],
-        assistant_text: str,
-        followup: str | Sequence[UserContent] | None,
-        bot: Bot | None,
-        ev: Event | None,
-        *,
-        is_framework_injection: bool,
-        budget_gate: bool,
-        stats_chat_type: str,
-    ) -> str | None:
-        """先写入命令回执，再在同一把锁里决定要不要点评。
-
-        锁要盖住两步：提及应答不能读到只写了一半的 history。
-        没有点评时返回 None；点评跑过则返回模型正文，沉默时是空串。
-        """
-        async with self._run_lock:
-            prev_stream = self._outbound_stream
-            prev_stats = self._stats_chat_type
-            self._cancel_generation = asyncio.Event()
-            self._running_framework = bool(is_framework_injection)
-            self._outbound_stream = False
-            self._stats_chat_type = stats_chat_type
-            try:
-                self.append_command_receipt(user_content, assistant_text)
-                if followup is None:
-                    return None
-                result = await self._run_under_lock(
-                    user_message=followup,
-                    bot=bot,
-                    ev=ev,
-                    rag_context=None,
-                    tools=None,
-                    # return 先交回正文。点评落盘后再发，避免下一位在落盘前又去读源码。
-                    return_mode="return",
-                    output_type=None,
-                    enqueue_ts=None,
-                    intent=None,
-                    has_active_task=False,
-                    budget_gate=budget_gate,
-                    suppress_intermediate_text=False,
-                    turn_graph=None,
-                    cheap_gate=None,
-                    is_framework_injection=is_framework_injection,
-                )
-                if isinstance(result, str):
-                    return result
-                return ""
-            finally:
-                self._running_framework = False
-                self._outbound_stream = prev_stream
-                self._stats_chat_type = prev_stats
-
-    def append_command_receipt(
-        self,
-        user_content: str | Sequence[UserContent],
-        assistant_text: str,
-    ) -> None:
-        """把命令原话和已发出的回执追加到 history 尾部。不改 system_prompt。"""
-        if not assistant_text:
-            return
-        self.history.append(ModelRequest(parts=[UserPromptPart(content=user_content)]))
-        self.history.append(ModelResponse(parts=[TextPart(content=assistant_text)]))
-        self.extract_history()
-
     def _ensure_system_prompt_in_history(self) -> None:
         """非空 history 缺 SystemPromptPart 时补齐（防 proactive 首轮或外部装入历史丢失 system_prompt）。"""
         if not self.history or not self.system_prompt:
@@ -588,6 +525,7 @@ class GsCoreAIAgent(RunOnceMixin):
         after: int = len(self.history)
         # 仅「因超长主动裁剪且确有条目被丢弃」才打 auto_compact（供 webconsole 画独立色块）
         if did_truncate and after < before:
+            self.thread_backfill_due = True
             self._session_logger.log_history_reset("auto_compact", {"before": before, "after": after})
         logger.debug(i18n_t("log.agent.history_processed_entries", p0=len(self.history)))
 
@@ -964,6 +902,12 @@ class GsCoreAIAgent(RunOnceMixin):
                 result.append(f"--- 视频{video_idx}: [视频处理失败: {e}] ---")
         return result
 
+    def _user_speech_shell(self, text: str) -> str:
+        """套 ``[用户发言]`` 壳；线程视图与 TurnRouter 的机器提示不套。"""
+        if text.startswith(THREAD_VIEW_PREFIXES) or self.task_kind == TASK_TURN_ROUTER:
+            return text
+        return f"[用户发言]\n{text}"
+
     async def _prepare_user_message(
         self,
         content_list: list[UserContent],
@@ -1030,7 +974,7 @@ class GsCoreAIAgent(RunOnceMixin):
             seen_notes: set[str] = set()
             for item in content_list:
                 if isinstance(item, str):
-                    result.append(f"[用户发言]\n{item}")
+                    result.append(self._user_speech_shell(item))
                 elif isinstance(item, ImageUrl) or (
                     isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/")
                 ):
@@ -1110,8 +1054,8 @@ class GsCoreAIAgent(RunOnceMixin):
                     combined = f"{combined}\n用户发送了视频，但当前模型无法读取视频内容。"
                 else:
                     combined = "用户发送了视频，但当前模型无法读取视频内容。"
-            return f"[用户发言]\n{combined}"
-        mixed: list[UserContent] = [f"[用户发言]\n{combined}"]
+            return self._user_speech_shell(combined)
+        mixed: list[UserContent] = [self._user_speech_shell(combined)]
         mixed.extend(native_videos)
         return mixed
 
@@ -1898,13 +1842,6 @@ class GsCoreAIAgent(RunOnceMixin):
         """
         self._outbound_stream = outbound_stream
         self._stats_chat_type = stats_chat_type if stats_chat_type else ""
-        # 同 Session 后到消息排队等锁，不再 cancel 进行中的工具轮。
-        if self.create_by in _INTERACTIVE_CREATE_BY and self._run_lock.locked():
-            if is_framework_injection or self._running_framework:
-                logger.info(i18n_t("log.agent.supersede_skip_framework_queue"))
-            else:
-                logger.info(i18n_t("log.agent.supersede_queue_wait"))
-
         async with self._run_lock:
             logger.info(i18n_t("log.agent.acquired_lock"))
             # 本 generation 独立 cancel 事件；上轮 set 过的不得污染本轮

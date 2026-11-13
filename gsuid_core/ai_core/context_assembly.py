@@ -31,14 +31,6 @@ from gsuid_core.ai_core.relationship import RelationshipView
 if TYPE_CHECKING:
     from gsuid_core.ai_core.hooks import AgentHookContext
 
-# 软触发（免唤醒续聊）的默认偏沉默提示——生产/评测共用同一文案
-SOFT_TRIGGER_NOTE = (
-    "（**续聊软触发**：这条来自最近找过你的人，但**没有 @ 你**，默认按'路过'处理。"
-    "只有当它明显在接着你们刚才的话题（追问 / 补充 / 直接回应你）时才回应；"
-    "若是泛泛感慨、像在跟群里别人说、或换了与你无关的新话题，请直接输出 <SILENCE> 保持沉默。"
-    "拿不准时优先沉默，不要为了续上话而硬接。）"
-)
-
 
 async def build_stable_context(event: Event, persona_name: str = "") -> str:
     """建 session / TTL 刷新时组装固化进 system_prompt 的慢变上下文（§优化 O-3）。
@@ -126,12 +118,18 @@ async def build_session_system_prompt(event: Event, persona_name: str, *, clock_
     extra_stable_context = await fire_stable_context_hooks(event, persona_name) or await build_stable_context(
         event, persona_name
     )
-    return await build_persona_prompt(
+    prompt = await build_persona_prompt(
         persona_name,
         group_description=group_description or None,
         extra_stable_context=extra_stable_context or None,
         clock_date=clock_date,
     )
+    # 线程视图阅读协议是交互 Chat 会话的固定静态段（会话内不变，附末尾）。
+    from gsuid_core.ai_core.base_prompts import INBOX_READING_PROTOCOL
+
+    if INBOX_READING_PROTOCOL not in prompt:
+        prompt = f"{prompt}\n\n{INBOX_READING_PROTOCOL}"
+    return prompt
 
 
 def join_context_blocks(
@@ -144,11 +142,11 @@ def join_context_blocks(
 
 
 def history_line_is_assistant(line: str) -> bool:
-    """助手历史行。普通回复是 AI:，点名回复是 AI→。"""
-    mark = "] "
-    at = line.find(mark)
-    rest = line[at + len(mark) :] if at >= 0 else line
-    return rest.startswith("AI:") or rest.startswith("AI→")
+    """线程视图助手行：发言以〔已发〕结尾，回执行含 [回执]。"""
+    from gsuid_core.ai_core.control.lines import THREAD_SENT_MARK
+
+    stripped = line.rstrip()
+    return stripped.endswith(THREAD_SENT_MARK) or "[回执]" in stripped
 
 
 async def assemble_dynamic_context(
@@ -246,19 +244,13 @@ async def assemble_dynamic_context(
             or (ctx.turn_graph is not None and bool(ctx.turn_graph.ellipsis_followup))
         )
     ):
-        history_scope = (
-            history_context.split("[历史对话]", 1)[0] if "[与你的对话]" in history_context else history_context
-        )
+        # 线程视图窗口：每行 #seq 开头；同说话人用户行才有别名继承意义。
         recent_user_lines: list[str] = []
-        for line in reversed(history_scope.splitlines()):
+        for line in reversed(history_context.splitlines()):
             stripped_line = line.strip()
-            if (
-                history_line_is_assistant(stripped_line)
-                or not stripped_line
-                or stripped_line.startswith(("[历史对话]", "[与你的对话]"))
-            ):
+            if not stripped_line or history_line_is_assistant(stripped_line):
                 continue
-            if "用户ID:" in stripped_line and user_id and f"用户ID:{user_id}" not in stripped_line:
+            if user_id and f"用户ID:{user_id}" not in stripped_line:
                 continue
             recent_user_lines.append(stripped_line)
             if len(recent_user_lines) >= 2:
@@ -305,6 +297,8 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
         ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}{hint}"
 
 
+# 收件箱结构块永远放行且不占产品帽：待回应列表与证据各有自身尺寸上限。
+_ALWAYS_SUFFIX_BLOCKS: frozenset[str] = frozenset({"inbox_pending", "evidence"})
 _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
     {
         "voice_anchor",
@@ -313,20 +307,20 @@ _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
         "presence",
         "memory",
         "history",
-        "soft_trigger",
         "plugin_hints",
     }
+    | _ALWAYS_SUFFIX_BLOCKS
 )
 # 点名 suffix 产品块合计帽。history 与单独预算的 memory 在帽外。
 _SUFFIX_PRODUCT_CAP = 300
 _SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history"})
-_CAP_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history", "memory"})
+_CAP_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history", "memory"}) | _ALWAYS_SUFFIX_BLOCKS
 _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
     "voice_anchor",
     "task",
     "relationship",
     "presence",
-    "soft_trigger",
+    "inbox_pending",
     "plugin_hints",
 )
 
@@ -334,17 +328,15 @@ _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
 def suffix_allowed_blocks(ctx: "AgentHookContext") -> frozenset[str] | None:
     """群聊 suffix 允许的产品块。None = 不过滤（私聊 / 无 TurnGraph）。
 
-    未寻址轮保留 :data:`_SUFFIX_EXEMPT_BLOCKS`（口吻锚 + 群转录）；若本轮由软触发
-    放行，还需保留 ``soft_trigger`` 提醒，否则模型看不到「不像是对你说的就 <SILENCE>」。
+    未寻址轮只保留 :data:`_SUFFIX_EXEMPT_BLOCKS`（口吻锚 + 群转录）+ 收件箱结构块
+    （``inbox_pending`` / ``evidence``）——寻址与否都得让模型看到谁在找它与依据。
     """
     tg = ctx.turn_graph
     if tg is None or not tg.is_group:
         return None
     addressed = bool(tg.call_to_self or tg.ellipsis_followup or tg.task_management)
     if not addressed:
-        if ctx.soft_triggered:
-            return _SUFFIX_EXEMPT_BLOCKS | frozenset({"soft_trigger"})
-        return _SUFFIX_EXEMPT_BLOCKS
+        return _SUFFIX_EXEMPT_BLOCKS | _ALWAYS_SUFFIX_BLOCKS
     return _ADDRESSED_FULL_BLOCKS
 
 

@@ -30,9 +30,9 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 | H01 | `BEFORE_AI_CHAT` | 预算通过之后、session 之前 | `gscore.session_mute` |
 | H02 | `AFTER_SESSION` | `get_ai_session` 之后 | `gscore.favorability`（读 View）、`gscore.memory`（主动会话 observe） |
 | H03 | `CLASSIFY` | 内核只给 prior；**intent 由占用者写入** | `gscore.classifier`、`gscore.statistics` |
-| H04 | `REACTIVE_GATE` | 仅 `soft_triggered` | `gscore.reactive_gate` |
+| H04 | `REACTIVE_GATE` | 仅软唤醒项（soft wake） | `gscore.reactive_gate`（TurnRouter 路由） |
 | H05 | `RETRIEVE_CONTEXT` | compose 之前的「贵检索」窗 | `gscore.memory`（**唯一 15s 长超时**） |
-| H06 | `COMPOSE_CONTEXT` | 合成器开火，各套件 `set_context_block` | mood / favorability / memory / planning / scaffold / self_cognition / identity / reactive_gate |
+| H06 | `COMPOSE_CONTEXT` | 合成器开火，各套件 `set_context_block` | mood / favorability / memory / planning / scaffold / self_cognition / identity / inbox / evidence |
 | H07 | `AFTER_CONTEXT` | 合成完毕、`session.run` 前 | 第三方 `append_user_hint` → `plugin_hints` |
 | H08 | `AFTER_RUN` | 结算之后 | `gscore.mood` 更新、`gscore.favorability` 上报 |
 | H09 | `ON_AI_ERROR` | 外层 except | 统计 / 告警 |

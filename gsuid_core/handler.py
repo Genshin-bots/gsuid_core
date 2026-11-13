@@ -3,7 +3,6 @@ import asyncio
 from copy import deepcopy
 from uuid import uuid4
 from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
 
 from msgspec import DecodeError, ValidationError, json as msgjson
 
@@ -28,6 +27,7 @@ from gsuid_core.global_val import get_platform_val, mark_command_dirty
 from gsuid_core.trigger_index import get_trigger_index
 from gsuid_core.utils.cooldown import cooldown_tracker
 from gsuid_core.message_history import (
+    MessageRecord,
     segments_preview,
     get_history_manager,
     segments_from_event,
@@ -35,11 +35,7 @@ from gsuid_core.message_history import (
 )
 from gsuid_core.utils.database.models import CoreUser, CoreGroup, Subscribe
 from gsuid_core.utils.resource_manager import RM
-from gsuid_core.ai_core.followup_window import (
-    note_hard_trigger,
-    in_followup_window,
-    merge_followup_burst,
-)
+from gsuid_core.ai_core.followup_window import in_followup_window
 from gsuid_core.utils.image.image_tools import normalize_image_for_history
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.gs_config import (
@@ -47,19 +43,6 @@ from gsuid_core.utils.plugins_config.gs_config import (
     log_config,
 )
 from gsuid_core.utils.database.global_val_models import DataType
-
-
-@dataclass
-class _SoftDebounceItem:
-    ws: _Bot
-    event: Event
-    events: list[Event]
-    enqueue_ts: float
-    trigger_type: str
-    task: asyncio.Task[None] | None = None
-
-
-_soft_debounce_map: dict[str, _SoftDebounceItem] = {}
 
 # hooks / persona.config / approval / handle_ai / startup 都在 enable_ai 分支内导入。
 # 提到模块顶层会让 import handler 在关 AI 时仍拉起工具注册与审批栈。
@@ -452,14 +435,14 @@ _RICH_SEGMENT_TYPES = frozenset(
 )
 
 
-def _record_inbound_history(event: Event) -> None:
+def _record_inbound_history(event: Event) -> Optional["MessageRecord"]:
     """入站写入 HistoryManager。无配文纯图也记，后面的轮次才能看见上一张。"""
     has_text = bool(event.raw_text and event.raw_text.strip())
     has_image = bool(event.image_id or event.image_id_list)
     has_node = event.node is not None
     has_rich = any(isinstance(item, Message) and item.type in _RICH_SEGMENT_TYPES for item in (event.content or []))
     if not (has_text or event.at_list or has_image or has_node or has_rich or event.is_tome):
-        return
+        return None
 
     user_name = None
     if event.sender and "nickname" in event.sender:
@@ -536,7 +519,7 @@ def _record_inbound_history(event: Event) -> None:
         # 是空串，控制台从内存还原时只能显示「空消息」
         content = segments_preview(segments)
 
-    get_history_manager().add_message(
+    return get_history_manager().add_message(
         event=event,
         role="user",
         content=content,
@@ -599,7 +582,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             ws._add_bg_task(asyncio.create_task(fire_hooks(AgentHookPoint.ON_INBOUND, inbound_ctx)))
 
     # 图片观察在 H00 按 event 自己判。历史入库：正文、纯 @、无配文纯图都记。
-    _record_inbound_history(event)
+    inbound_record = _record_inbound_history(event)
+    if inbound_record is not None and event.group_id:
+        from gsuid_core.ai_core.inbox.feedback import note_inbound
+
+        note_inbound(inbound_record, str(event.group_id), str(event.user_id))
 
     # 记忆 / 表情 / 图片记忆的入站观察已迁至 H00（``kits/memory``、``kits/meme``）：
     # 关 memory 槽就该不观察，观察与检索不该分处两地各判一次开关。
@@ -837,50 +824,15 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
         keywords = persona_config.get_config("keywords").data
 
         if "提及应答" in ai_mode:
-            # 确定响应与触发类型：is_tome 记为 mention，关键词命中记为 keyword。
-            should_respond = event.is_tome
-            trigger_type = "mention" if should_respond else ""
-            if not should_respond and keywords:
-                # 检查消息内容是否包含关键词
-                msg_text = getattr(event, "raw_text", "") or ""
-                should_respond = any(kw in msg_text for kw in keywords)
-                if should_respond:
-                    trigger_type = "keyword"
-
-            # 免唤醒续聊窗口：硬触发登记起点，窗口期内的普通发言作为软触发放行。
-            soft_triggered = False
-            _fw = ai_config.get_config("follow_up_window").data
-            _fmax = ai_config.get_config("follow_up_max_total").data
-            _fmax_rep = (
-                ai_config.get_config("follow_up_max_replies").data if "follow_up_max_replies" in ai_config.config else 2
-            )
-            if should_respond:
-                k = f"{session_id}::{event.user_id}"
-                pending = _soft_debounce_map.pop(k, None)
-                if pending is not None and pending.task is not None and not pending.task.done():
-                    pending.task.cancel()
-                note_hard_trigger(session_id, event.user_id, _fw, _fmax)
-            elif _fw and event.group_id and not event.at_list:
-                if in_followup_window(session_id, event.user_id, _fw, _fmax, max_replies=_fmax_rep):
-                    should_respond = True
-                    soft_triggered = True
-                    trigger_type = "followup"
-
-            if not should_respond:
-                msg_text = event.raw_text or ""
-                aliases = core_config.get_config("framework_aliases")
-                alias_list = [str(a) for a in aliases] if isinstance(aliases, list) else []
-                if alias_list and any(a and a in msg_text for a in alias_list):
-                    should_respond = True
-                    soft_triggered = True
-                    trigger_type = "followup"
-
-            if not should_respond:
-                return
-
             from gsuid_core.ai_core.startup import is_ai_core_ready, is_ai_core_initializing
-            from gsuid_core.ai_core.handle_ai import handle_ai_chat
             from gsuid_core.ai_core.statistics import statistics_manager
+            from gsuid_core.ai_core.inbox.state import (
+                WAKE_STRENGTH,
+                WakeItem,
+                PendingEntry,
+                classify_wake,
+            )
+            from gsuid_core.ai_core.inbox.scheduler import get_inbox_scheduler
 
             if not is_ai_core_ready():
                 if is_ai_core_initializing():
@@ -889,72 +841,50 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.warning(t("log.handler.ai_init_incomplete"))
                 return
 
-            _debounce = (
-                float(ai_config.get_config("follow_up_debounce_seconds").data)
-                if "follow_up_debounce_seconds" in ai_config.config
-                else 0.0
-            )
-            if soft_triggered and _debounce > 0:
-                k = f"{session_id}::{event.user_id}"
-                existing = _soft_debounce_map[k] if k in _soft_debounce_map else None
-                if existing is not None:
-                    if existing.task is not None and not existing.task.done():
-                        existing.task.cancel()
-                    existing.events.append(event)
-                    existing.event = event
-                else:
-                    existing = _SoftDebounceItem(
-                        ws=ws,
-                        event=event,
-                        events=[event],
-                        enqueue_ts=time.time(),
-                        trigger_type=trigger_type,
-                    )
-                    _soft_debounce_map[k] = existing
-
-                async def _flush_debounce(debounce_key: str, wait_s: float) -> None:
-                    try:
-                        await asyncio.sleep(wait_s)
-                    except asyncio.CancelledError:
-                        return
-                    item = _soft_debounce_map.pop(debounce_key, None)
-                    if item is None:
-                        return
-                    merged = merge_followup_burst(item.events)
-                    if merged is None:
-                        return
-                    statistics_manager.record_trigger(trigger_type=item.trigger_type or "followup")
-                    task_ctx = TaskContext(
-                        coro=handle_ai_chat(
-                            Bot(item.ws, merged),
-                            merged,
-                            enqueue_ts=item.enqueue_ts,
-                            soft_triggered=True,
-                        ),
-                        name="handle_ai_chat",
-                        priority=merged.user_pm,
-                    )
-                    item.ws.queue.put_nowait(task_ctx)
-
-                existing.task = asyncio.create_task(_flush_debounce(k, _debounce))
+            # 结构唤醒判定：唤醒名 = 人格名 + persona keywords + framework_aliases。
+            link = inbound_record.link if inbound_record is not None else None
+            if link is None:
                 return
-
-            # 记录触发方式统计（trigger_type 已在上方按 mention/keyword 定型，
-            # 此处不再覆盖，保证关键词触发能正确计入 keyword 分布）
-            statistics_manager.record_trigger(trigger_type=trigger_type or "mention")
-
-            # 将AI处理逻辑放入队列异步执行，避免阻塞
-            task_ctx = TaskContext(
-                coro=handle_ai_chat(
-                    Bot(ws, event),
-                    event,
-                    enqueue_ts=time.time(),
-                    soft_triggered=soft_triggered,
-                ),
-                name="handle_ai_chat",
-                priority=event.user_pm,
+            aliases = core_config.get_config("framework_aliases")
+            alias_list = [str(a) for a in aliases] if isinstance(aliases, list) else []
+            wake_names = [persona_name, *[str(k) for k in keywords], *alias_list]
+            _fw = ai_config.get_config("follow_up_window").data
+            _fmax = ai_config.get_config("follow_up_max_total").data
+            _fmax_rep = (
+                ai_config.get_config("follow_up_max_replies").data if "follow_up_max_replies" in ai_config.config else 2
             )
-            ws.queue.put_nowait(task_ctx)
+            in_followup = bool(
+                _fw
+                and event.group_id
+                and not event.at_list
+                and in_followup_window(session_id, event.user_id, _fw, _fmax, max_replies=_fmax_rep)
+            )
+            kind = classify_wake(
+                user_type=event.user_type or "group",
+                at_self=link.at_self,
+                reply_to_author=link.reply_to_author,
+                raw_text=event.raw_text or "",
+                wake_names=wake_names,
+                in_followup=in_followup,
+                has_at_others=any(uid != str(event.bot_self_id) for uid in link.at_targets),
+            )
+            if kind is None:
+                return
+            statistics_manager.record_trigger(trigger_type=kind)
+            get_inbox_scheduler().submit(
+                ws,
+                PendingEntry(
+                    item=WakeItem(
+                        seq=link.seq,
+                        user_id=str(event.user_id),
+                        kind=kind,
+                        strength=WAKE_STRENGTH[kind],
+                        created_at=time.time(),
+                    ),
+                    event=event,
+                    persona_name=persona_name,
+                ),
+            )
 
 
 async def get_user_pml(msg: MessageReceive) -> int:

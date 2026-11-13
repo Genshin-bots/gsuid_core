@@ -65,6 +65,7 @@ from gsuid_core.ai_core.control.directive import (
     obligation_satisfied,
     render_control_envelope,
 )
+from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
 from gsuid_core.ai_core.control.corrections import (
     fake_done_directive,
     master_title_directive,
@@ -266,7 +267,7 @@ def _needs_render_obligation(st: RunOnceState, result_msg: str, *, allow_render:
         return False
     if not st.saw_structured_return or not st.tool_call_list:
         return False
-    if _looks_like_report_speech(result_msg or ""):
+    if _looks_like_report_speech(result_msg):
         return True
     if looks_like_empty_handoff(result_msg or ""):
         return True
@@ -638,6 +639,23 @@ class SettlePhase(RunOnceHost):
             _new_msgs = [m for m in _new_msgs if not (isinstance(m, ModelRequest) and len(m.parts) == 0)]
             _new_msgs = _dedupe_delivery_cards(_new_msgs)
             _new_msgs = _drop_unsent_text_from_tail(_new_msgs, st.unsent_texts)
+
+            # 证据：本轮工具观测前缀进 ToolReturnPart 正文（§4.6 B 轨）。
+            from gsuid_core.message_history import get_history_manager
+            from gsuid_core.ai_core.inbox.turn import current_turn
+            from gsuid_core.ai_core.evidence.render import prefix_tool_returns_with_evidence
+
+            _turn = current_turn()
+            if _turn is not None and st.ev is not None:
+                _records = get_history_manager().get_history(st.ev)
+                _nicks = {r.user_id: (r.user_name or r.user_id) for r in _records if r.user_id and r.role == "user"}
+                prefix_tool_returns_with_evidence(
+                    _new_msgs,
+                    _turn.observations,
+                    _turn.session_id,
+                    st.ev.bot_id,
+                    lambda uid: _nicks[uid] if uid in _nicks else uid,
+                )
             self.history.extend(_new_msgs)
             _ctx_dyn = st.context
             if _ctx_dyn is not None:
@@ -667,7 +685,7 @@ class SettlePhase(RunOnceHost):
                 # 手账回流：主 Agent 调用了实质性工具且有可见回复，记入生活手账（私聊不写入公共手账）
                 _meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive"})
                 _substantive_tools = [t for t in (st.tool_call_list or []) if t not in _meta_tools]
-                _res_text = str(result.output or "").strip()
+                _res_text = strip_protocol_tags(str(result.output or "")).strip()
                 _is_private = st.ev is not None and (st.ev.user_type == "direct" or not st.ev.group_id)
                 if _substantive_tools and _res_text and "<SILENCE>" not in _res_text and not _is_private:
                     from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
@@ -678,6 +696,8 @@ class SettlePhase(RunOnceHost):
                     _now = datetime.now()
                     _clean_res = re.sub(r"^[#\s\-*]+", "", _res_text)[:60]
                     _gid = str(st.ev.group_id or "") if st.ev and st.ev.group_id else ""
+                    _journal_turn = current_turn()
+                    _journal_active = _journal_turn.active_entry() if _journal_turn is not None else None
                     _entry = JournalEntry(
                         timestamp=_now.timestamp(),
                         date_str=_now.strftime("%Y-%m-%d"),
@@ -685,6 +705,7 @@ class SettlePhase(RunOnceHost):
                         tag=_tag[:16],
                         summary=_clean_res,
                         group_id=_gid,
+                        requested_by=_journal_active.item.user_id if _journal_active is not None else "",
                     )
                     asyncio.create_task(
                         record_journal_entry(
@@ -801,6 +822,8 @@ class SettlePhase(RunOnceHost):
 
             # 始终返回字符串类型
             result_msg = str(result.output).strip()
+            # 协议标签（<reply #n>）只供出站路由，判定/匹配一律用剥签文本。
+            _match_msg = strip_protocol_tags(result_msg).strip()
             # 工具调用列表只进调试日志，不追加到用户可见消息
             if st.tool_call_list:
                 logger.debug(i18n_t("log.agent.current_tool_call_event", p0=", ".join(st.tool_call_list)))
@@ -842,7 +865,7 @@ class SettlePhase(RunOnceHost):
                 and not st.fake_done_retry
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 # 结构证据：预检暂扣 or 文本宣称完成；PIN 拒绝也算没改世界
-                and (st.fab_blocked or _claims_fake_done(result_msg))
+                and (st.fab_blocked or _claims_fake_done(_match_msg))
             ):
                 _settle_correction_ran = True
                 logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
@@ -857,7 +880,7 @@ class SettlePhase(RunOnceHost):
                 # 与其它三条纠正的 INV-3 有意分岔：原答案是**编造的完成声明**，
                 # 不能当 fallback 留给用户；无干净纠正则静默，并一律剥掉那句谎话。
                 _fabricated = {t.strip() for t in st.fab_blocked}
-                if _claims_fake_done(result_msg):
+                if _claims_fake_done(_match_msg):
                     _fabricated.add(result_msg.strip())
                 if isinstance(corrected, str) and _correction_is_deliverable(corrected, user_text=_turn_user_text(st)):
                     result_msg = corrected.strip()
@@ -877,7 +900,7 @@ class SettlePhase(RunOnceHost):
                 and not st.fake_done_retry
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
-                and _claims_inflight_without_backend(result_msg)
+                and _claims_inflight_without_backend(_match_msg)
             ):
                 _settle_correction_ran = True
                 result_msg = await self._run_inv3_correction(
@@ -895,7 +918,7 @@ class SettlePhase(RunOnceHost):
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
                 and st.ev is not None
-                and _zero_tool_needs_correction(st, video_readable=self._model_declares_video(), result_msg=result_msg)
+                and _zero_tool_needs_correction(st, video_readable=self._model_declares_video(), result_msg=_match_msg)
                 and not is_silence_marker(result_msg.strip())
             ):
                 _settle_correction_ran = True
@@ -913,7 +936,7 @@ class SettlePhase(RunOnceHost):
                 and self.create_by != "CapabilityAgent"
                 and st.tg is not None
                 and st.tg.task_management
-                and _claims_missing_offered_tool(result_msg, st.tool_names)
+                and _claims_missing_offered_tool(_match_msg, st.tool_names)
                 and not (_SCHED_MUTATE_TOOLS.intersection(st.tool_call_list))
             ):
                 _settle_correction_ran = True
@@ -972,10 +995,10 @@ class SettlePhase(RunOnceHost):
                 and not is_silence_marker(result_msg.strip())
                 and self.create_by in ("Chat", "Agent")
             ):
-                _is_dense_report = (_looks_like_report_speech(result_msg) and len(result_msg.strip()) >= 160) or (
+                _is_dense_report = (_looks_like_report_speech(_match_msg) and len(result_msg.strip()) >= 160) or (
                     result_msg.count("|") >= 6 and "\n" in result_msg
                 )
-                _is_progress_meta = looks_like_deliver_progress(result_msg)
+                _is_progress_meta = looks_like_deliver_progress(_match_msg)
                 if _is_progress_meta or _is_dense_report:
                     _settle_correction_ran = True
                     logger.warning(i18n_t("log.agent.delivery_idle_correction"))
@@ -1044,7 +1067,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = _ec.strip()
                 else:
                     result_msg = "<SILENCE>"
-                if title_mentioned(_forbid_title(st, self.persona_name), result_msg):
+                if title_mentioned(_forbid_title(st, self.persona_name), _match_msg):
                     result_msg = "<SILENCE>"
                 await self._emit_unsent_reply(st, result_msg)
 
@@ -1054,7 +1077,7 @@ class SettlePhase(RunOnceHost):
                 and not is_silence_marker(result_msg.strip())
                 and self.create_by in _INTERACTIVE_CREATE_BY
                 and self.create_by != "CapabilityAgent"
-                and title_mentioned(_forbid_title(st, self.persona_name), result_msg)
+                and title_mentioned(_forbid_title(st, self.persona_name), _match_msg)
             ):
                 _settle_correction_ran = True
                 _ban = _forbid_title(st, self.persona_name)
@@ -1075,7 +1098,7 @@ class SettlePhase(RunOnceHost):
                     result_msg = "<SILENCE>"
                 await self._emit_unsent_reply(st, result_msg)
 
-            _voice_reason = _voice_block_reason(st, result_msg)
+            _voice_reason = _voice_block_reason(st, _match_msg)
             if (
                 not _settle_correction_ran
                 and _voice_reason
@@ -1107,7 +1130,7 @@ class SettlePhase(RunOnceHost):
             _skip_report_exit = False
             _replacement_visible = False
             # 出处凭据 + 尚未出图。排版失配只决定要不要进纠正，不单独构成义务。
-            _chart_like = _needs_render_obligation(st, result_msg)
+            _chart_like = _needs_render_obligation(st, _match_msg)
             _render_obligation = _chart_like and _allow_render
             if (
                 not _settle_correction_ran
@@ -1125,7 +1148,7 @@ class SettlePhase(RunOnceHost):
                     _directive = numeric_recitation_directive(allow_render=_allow_render)
                 else:
                     _directive = render_obligation_directive(
-                        recited_report=_looks_like_report_speech(result_msg or ""),
+                        recited_report=_looks_like_report_speech(_match_msg),
                         tool_calls=len(st.tool_call_list),
                         allow_render=_allow_render,
                     )
@@ -1303,12 +1326,12 @@ class SettlePhase(RunOnceHost):
                     "AutoPlanner",
                 )
                 if _skip_roleplay_scrub:
-                    if output_firewall.is_tech_dump(result_msg):
+                    if output_firewall.is_tech_dump(_match_msg):
                         result_msg = "⚠️ 子任务返回技术错误堆栈，已屏蔽。请主人格换路或重试（勿向用户念本句）。"
                 else:
                     # 框架不替人格说话：命中就让人格自己重说一句，重说不出来就沉默
                     _hit = output_firewall.check_ooc(
-                        result_msg,
+                        _match_msg,
                         user_text=st.ev.raw_text if st.ev is not None and st.ev.raw_text else "",
                     )
                     if _hit is not None:

@@ -1,0 +1,3 @@
+{
+  "log.evidence.credential_changed": "[証拠] 資格情報変更：service={service} uid={uid}@{bot}"
+}

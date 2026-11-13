@@ -75,6 +75,8 @@ class AgentHookContext:
     cheap_gate: str = ""
     prior_user_turns: List[str] = field(default_factory=list)
     gate_history: List["MessageRecord"] = field(default_factory=list)
+    # 收件箱轮次的 router 视图（时间线 + 待判断块），内核装配好供 classifier 只读。
+    router_view: str = ""
     # CLASSIFY 点位唯一写入：下游 Gate / Memory / Scaffold 只读，不再各自扫文本。
     route_decision: Optional["TurnRouteDecision"] = None
     assembled_domains: List[str] = field(default_factory=list)

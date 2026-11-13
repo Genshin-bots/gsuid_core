@@ -82,9 +82,63 @@ GET /api/history/chat/{session_id}/messages?limit=20&before=1760000000.0
   "content": "纯文本，给 AI 用",
   "segments": [{"type": "text", "text": "你好"}],
   "sender": {"user_id": "777", "nickname": "小明", "role": "admin"},
-  "msg_id": "123456"
+  "msg_id": "123456",
+  "link": null
 }
 ```
+
+`link` 是 A 轨会话内链接（`EventLinkDict`，未分配 seq 的记录为 `null`）：
+
+```json
+{
+  "seq": 5,
+  "msg_id": "b5",
+  "reply_to_seq": null,
+  "reply_to_author": null,
+  "at_targets": [],
+  "at_self": false,
+  "in_reply_to_seqs": [3],
+  "seen_seq": 4,
+  "evidence": ["ob_1a2b"]
+}
+```
+
+- `seq`：会话内单调序号；`reply_to_seq`/`reply_to_author`：入站引用边（`self` 表示引用的是 Bot）；
+- `at_self`：@ 的是 Bot 本人；`in_reply_to_seqs`：出站行的回复目标 seq；`seen_seq`：构造时已读水位；
+- `evidence`：出站行关联的工具证据观测 ID（`ob_…`），明细走 47.10 接口。
+
+## 47.10 线程视图与证据
+
+```
+GET /api/history/chat/{session_id}/thread_view?limit=40
+GET /api/history/chat/{session_id}/evidence?obs_ids=ob_1a2b,ob_3c4d
+```
+
+`/thread_view` 返回 `thread_view.render_window` 渲染出的整窗文本（`{thread_view: "…"}`），
+即模型 B 轨所见的时间线（`#seq`、`↩#n`、〔已发〕等标记都在文本里）。
+
+`/evidence` 按出站消息 `link.evidence` 的 obs_id 返回观测明细数组 `observations`；
+进程内证据库已逐出的 obs_id 会被跳过（返回空数组属正常）。每条形如：
+
+```json
+{
+  "obs_id": "ob_1a2b",
+  "tool_name": "mcp_xxx_query",
+  "service": "服务ID或插件名",
+  "requested_by": "100000001",
+  "requested_by_seq": 3,
+  "credential_owner": "100000001",
+  "outcome": "auth_required",
+  "outcome_label": "缺凭据",
+  "stale": false,
+  "observed_at": 1760000000.0,
+  "summary": "需要绑定凭据",
+  "handle": ""
+}
+```
+
+`credential_owner`：`null`=非 MCP 工具、`"shared"`=共享凭据、其他=个人凭据 uid；
+`stale=true` / `outcome_label=已失效（凭据已变更）` 表示该观测早于最近一次凭据变更。
 
 `self=true` 表示机器人自己发的。`msg_id` 是平台消息 ID，引用回复要用它。
 

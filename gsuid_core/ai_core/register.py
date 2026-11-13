@@ -86,6 +86,17 @@ _CORE_ONLY_CATEGORIES = frozenset({"self", "buildin", "meta"})
 
 # 工具注册表: Dict[分类名, Dict[工具名, ToolBase]]
 _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
+
+# 服务工具集最近一次注册/重注册时间；旧自述召回按此截断（§4.7）。
+service_changed_at: Dict[str, float] = {}
+
+
+def note_service_changed(service: str) -> None:
+    import time as _time
+
+    service_changed_at[service] = _time.time()
+
+
 _ENTITIES: List[Union[KnowledgePoint, KnowledgeBase, ImageEntity]] = []  # 来自插件注册的知识和图片
 _MANUAL_ENTITIES: List[ManualKnowledgeBase] = []  # 手动添加的知识，不会自动同步
 _IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片

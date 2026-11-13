@@ -52,10 +52,10 @@ from gsuid_core.ai_core.rag.tools import (
 ## 1.4 AI 聊天入口
 
 ```python
-from gsuid_core.ai_core.handle_ai import handle_ai_chat
+from gsuid_core.ai_core.handle_ai import handle_inbox_turn
 ```
 
-详见 [§5.4 `handle_ai_chat`](./05-create-agent.md)。
+详见 [§5.4 `handle_inbox_turn`](./05-create-agent.md)。
 
 ## 1.5 工具上下文与 PydanticAI
 

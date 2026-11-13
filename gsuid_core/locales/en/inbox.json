@@ -1,0 +1,6 @@
+{
+  "log.inbox.item_expired": "[GsCore][Inbox] Wake item #{seq}({kind}) expired: {reason}",
+  "log.inbox.turn_failed": "[GsCore][Inbox] Inbox turn failed, batch returned to pending: session={session_id} error={error}",
+  "log.inbox.reply_ref_invalid": "[GsCore][Inbox] Reply plan referenced invalid #seq: {seqs}",
+  "log.inbox.bubble_capped": "[GsCore][Inbox] Bubble count over limit, dropped {count} bubbles"
+}

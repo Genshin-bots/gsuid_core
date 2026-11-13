@@ -434,7 +434,11 @@ class CaptureBot(Bot):
             body = message_list_to_str(msgs) if msgs else ""
         if not body.strip():
             return
+        from gsuid_core.message_history.link import current_outbound
         from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
+
+        _binding = current_outbound()
+        _personal_cred = _binding is not None and _binding.personal_credential
 
         try:
             task = asyncio.create_task(
@@ -447,6 +451,7 @@ class CaptureBot(Bot):
                     message_type="group_msg" if self.ev.group_id else "private_msg",
                     bot_id=self.ev.bot_id,
                     persona_name=get_speaking_persona(),
+                    personal_credential=_personal_cred,
                 )
             )
             self.bot._add_bg_task(task)

@@ -29,6 +29,11 @@ MEME_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MEME_TAG_RE = MEME_TAG_PATTERN
+_REPLY_TAG_RE = re.compile(
+    r"`*(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*/?\s*reply(?:\s+[#\d,\s]*?)?\s*/?\s*(?:>|&gt;|&#62;|&#x3e;|＞|\\>)`*",
+    re.IGNORECASE,
+)
+
 _SILENCE_TAG_RE = re.compile(
     r"(?:<|&lt;|&#60;|＜|\\<)/?(?:SILENCE|沉默)\s*/?(?:>|&gt;|&#62;|＞|\\>)",
     re.IGNORECASE,
@@ -174,6 +179,7 @@ def strip_protocol_tags(text: str) -> str:
         return text
     out = _MEME_TAG_RE.sub("", text)
     out = _SILENCE_TAG_RE.sub("", out)
+    out = _REPLY_TAG_RE.sub("", out)
     return out
 
 
@@ -319,6 +325,8 @@ def _is_protocol_tag_raw(raw: str) -> bool:
     if low.startswith("<meme") or low.startswith("</meme"):
         return True
     if "silence" in low:
+        return True
+    if low.startswith("<reply"):
         return True
     return False
 

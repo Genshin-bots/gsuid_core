@@ -697,6 +697,9 @@ class _Bot:
 
                     speaking_persona = get_speaking_persona()
                     if speaking_persona:
+                        from gsuid_core.message_history.link import current_outbound
+
+                        _binding = current_outbound()
                         try:
                             task = asyncio.create_task(
                                 observe(
@@ -707,6 +710,9 @@ class _Bot:
                                     observer_blacklist=memory_config.observer_blacklist,
                                     message_type="group_msg" if target_type == "group" else "private_msg",
                                     persona_name=speaking_persona,
+                                    personal_credential=(
+                                        _binding.personal_credential if _binding is not None else False
+                                    ),
                                 )
                             )
                             self._add_bg_task(task)

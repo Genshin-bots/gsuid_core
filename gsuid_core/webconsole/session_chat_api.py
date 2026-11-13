@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import asyncio
-from typing import Any, Set, Dict, List, Tuple, Optional, Sequence
+from typing import Any, Set, Dict, List, Tuple, Optional, Sequence, TypedDict
 from collections import Counter
 
 from fastapi import Body, File, Form, Depends, WebSocket, UploadFile, WebSocketDisconnect
@@ -723,6 +723,82 @@ async def get_chat_messages(
         )
     except Exception as e:
         return _fail(f"获取消息失败: {e}")
+
+
+# ── 线程视图 / 证据（§4.7 回放） ────────────────────────────────────────
+
+
+class _EvidenceObsItem(TypedDict):
+    obs_id: str
+    tool_name: str
+    service: str
+    requested_by: str
+    requested_by_seq: int
+    credential_owner: Optional[str]
+    outcome: str
+    outcome_label: str
+    stale: bool
+    observed_at: float
+    summary: str
+    handle: str
+
+
+@app.get("/api/history/chat/{session_id}/thread_view", summary="会话线程视图文本", tags=SESSION_CHAT)
+async def get_thread_view(
+    session_id: str,
+    limit: int = 40,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """返回该会话 A 轨历史的 ``render_window`` 线程视图文本。"""
+    ev = _resolve(session_id)
+    if ev is None:
+        return _fail("无效的 session_id 格式")
+    from gsuid_core.ai_core.thread_view import render_window
+
+    records = get_history_manager().get_history(ev)
+    capped = max(1, min(int(limit or 40), 200))
+    return _ok({"session_id": session_id, "thread_view": render_window(records, limit=capped)})
+
+
+@app.get("/api/history/chat/{session_id}/evidence", summary="出站消息证据观测明细", tags=SESSION_CHAT)
+async def get_evidence_observations(
+    session_id: str,
+    obs_ids: str = "",
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """按出站 ``link.evidence`` 的 obs_id 返回观测明细；库中已逐出的返回空。"""
+    ev = _resolve(session_id)
+    if ev is None:
+        return _fail("无效的 session_id 格式")
+    from gsuid_core.ai_core.control.lines import EVIDENCE_STALE_AUTH, EVIDENCE_OUTCOME_LABELS
+    from gsuid_core.ai_core.evidence.store import get_evidence_store
+
+    store = get_evidence_store(session_id)
+    items: List[_EvidenceObsItem] = []
+    for raw_id in (x.strip() for x in obs_ids.split(",")):
+        if not raw_id:
+            continue
+        obs = store.find(raw_id)
+        if obs is None:
+            continue
+        stale = store.is_invalidated(obs, str(ev.bot_id))
+        items.append(
+            {
+                "obs_id": obs.obs_id,
+                "tool_name": obs.tool_name,
+                "service": obs.service,
+                "requested_by": obs.requested_by,
+                "requested_by_seq": obs.requested_by_seq,
+                "credential_owner": obs.credential_owner,
+                "outcome": obs.outcome,
+                "outcome_label": EVIDENCE_STALE_AUTH if stale else EVIDENCE_OUTCOME_LABELS[obs.outcome],
+                "stale": stale,
+                "observed_at": obs.observed_at,
+                "summary": obs.summary,
+                "handle": obs.handle,
+            }
+        )
+    return _ok({"session_id": session_id, "observations": items})
 
 
 # ---------------------------------------------------------------------------

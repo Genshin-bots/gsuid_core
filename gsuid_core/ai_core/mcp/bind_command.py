@@ -90,7 +90,12 @@ def _parse_bind_args(rest: str, keys: list[str]) -> dict[str, str] | None:
     return creds
 
 
-def _bind_guide(config: MCPConfig, config_id: str) -> str:
+def _who_of(ev: Event) -> str:
+    who = ev.sender["nickname"] if ev.sender and "nickname" in ev.sender else f"用户ID:{ev.user_id}"
+    return who
+
+
+def _bind_guide(config: MCPConfig, config_id: str, who: str = "") -> str:
     keys = _bindable_keys(config)
     if not keys:
         return i18n_t("log.mcp.bind_guide_none", name=config.name)
@@ -100,6 +105,7 @@ def _bind_guide(config: MCPConfig, config_id: str) -> str:
     return i18n_t(
         "log.mcp.bind_guide",
         name=config.name,
+        who=who,
         keys="、".join(keys),
         example=f"mcp绑定 {config.name} {example_key}=<你的凭据>"
         if len(keys) > 1
@@ -151,9 +157,12 @@ async def _verify_and_store(
         bound_at=now,
         last_ok_at=now,
     )
+    from gsuid_core.ai_core.evidence.store import notify_credential_changed
+
     from .startup import drop_user_client_cache
 
     drop_user_client_cache(config_id, ev.bot_id, ev.user_id)
+    notify_credential_changed(config_id, ev.bot_id, ev.user_id)
     masked = "、".join(f"{k}=…{mask_token_tail(v)[-4:]}" for k, v in creds.items())
     await bot.send(i18n_t("log.mcp.bind_ok", name=config.name, masked=masked))
 
@@ -190,12 +199,12 @@ async def mcp_bind_cmd(bot: Bot, ev: Event) -> None:
 
     keys = _bindable_keys(config)
     if not args_str:
-        await bot.send(_bind_guide(config, config_id))
+        await bot.send(_bind_guide(config, config_id, _who_of(ev)))
         return
 
     creds = _parse_bind_args(args_str, keys)
     if creds is None:
-        await bot.send(_bind_guide(config, config_id))
+        await bot.send(_bind_guide(config, config_id, _who_of(ev)))
         return
     creds = sanitize_creds(creds)
     await _verify_and_store(bot, ev, config, config_id, creds)
@@ -215,9 +224,12 @@ async def mcp_unbind_cmd(bot: Bot, ev: Event) -> None:
         await bot.send(i18n_t("log.mcp.bind_no_service", query=rest))
         return
     ok = await MCPUserCredential.delete_row(config_id, ev.bot_id, ev.user_id)
+    from gsuid_core.ai_core.evidence.store import notify_credential_changed
+
     from .startup import drop_user_client_cache
 
     drop_user_client_cache(config_id, ev.bot_id, ev.user_id)
+    notify_credential_changed(config_id, ev.bot_id, ev.user_id)
     if ok:
         assert config is not None
         await bot.send(i18n_t("log.mcp.unbind_ok", name=config.name))
@@ -245,12 +257,12 @@ async def mcp_bind_list_cmd(bot: Bot, ev: Event) -> None:
     await bot.send(i18n_t("log.mcp.bind_list", lines="\n".join(lines)))
 
 
-def bind_guide_for_tool(config_id: str) -> str:
+def bind_guide_for_tool(config_id: str, who: str = "") -> str:
     """wrapper 用：未绑/过期时回给 agent 的 BIND_GUIDE 文本。"""
     config = mcp_config_manager.get_config(config_id)
     if config is None:
         return i18n_t("log.mcp.bind_guide_missing")
-    return _bind_guide(config, config_id)
+    return _bind_guide(config, config_id, who)
 
 
 try:

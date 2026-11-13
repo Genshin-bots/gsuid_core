@@ -579,9 +579,10 @@ class ToolsPhase(RunOnceHost):
                     _scan = strip_surfaces(_utter, _ignore) if _ignore else _utter
                     _bg = ""
                     if st.ev is not None:
-                        from gsuid_core.ai_core.turn_pipeline import build_group_history_block
+                        from gsuid_core.message_history import get_history_manager
+                        from gsuid_core.ai_core.thread_view import render_window
 
-                        _bg = build_group_history_block(st.ev)
+                        _bg = render_window(get_history_manager().get_history(st.ev))
                     _lock = lock_plugin(_scan, _bg)
                     if _lock.plugin:
                         st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _lock.plugin

@@ -128,8 +128,6 @@
   "log.agent.skip_tool_search_searching_tools": "[GsCoreAIAgent] Not searching tools",
   "log.agent.skipping_duplicate": "[GsCoreAIAgent] Skipping duplicate text (already sent this turn): {p0}",
   "log.agent.supersede_cancel_current": "[GsCoreAIAgent] newer message for session, cancel current generation",
-  "log.agent.supersede_queue_wait": "[GsCoreAIAgent] newer message for session, queue until current run finishes",
-  "log.agent.supersede_skip_framework_queue": "[GsCoreAIAgent] lock busy: framework injection queues without cancel",
   "log.agent.suppressing_intermediate_text": "[GsCoreAIAgent] Suppressing intermediate text: {p0}",
   "log.agent.text_send_fail_failed": "[GsCoreAIAgent] Text send failed: {_e}",
   "log.agent.token_usage_input_tokens": "[GsCoreAIAgent] Token usage: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",

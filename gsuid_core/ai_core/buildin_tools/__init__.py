@@ -188,6 +188,9 @@ from gsuid_core.ai_core.command_exec.tools import (
     check_command_available,
 )
 
+# 收件箱多目标身份切换（visible_when 多目标批次才可见）
+from gsuid_core.ai_core.buildin_tools.act_for import act_for
+
 # Kanban 任务编排工具 - 多代理协作任务树
 from gsuid_core.ai_core.planning.kanban_tools import (
     artifact_get,
@@ -434,6 +437,8 @@ __all__ = [
     "find_tools",
     "discover_tools",
     "list_available_tools",
+    # 收件箱多目标身份切换
+    "act_for",
     # 插件开发工具（plugin_developer_agent 专用）
     "scaffold_plugin",
     "validate_plugin",

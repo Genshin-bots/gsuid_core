@@ -82,7 +82,7 @@ for sv in SL.lst:
 4. AI Mode 检查：
    ├── "提及应答" in ai_mode → 检查 @机器人(is_tome) 或 命中 keywords
    └── 免唤醒续聊窗口内的普通群发言 → 软触发（trigger_type="followup"，见 §4.6）
-5. 任务入队：ws.queue.put_nowait(TaskContext(coro=handle_ai_chat(...)))
+5. 唤醒判定：classify_wake(event, …) → InboxScheduler.submit(PendingEntry)；落定合并后入队 TaskContext(coro=run_turn(turn))
 ```
 
 > `enable_ai` 在 `handle_ai.py` 是**函数内动态读取**而非模块级常量——WebConsole 切总开关后
@@ -127,40 +127,34 @@ if "提及应答" in ai_mode:
 `wait_task` 只绑命令路径，不是禁 `handle_event` 的理由。AI 总开关关闭时
 `register_http_agent_routes` 不挂该面。
 
-## 4.4 `handle_ai_chat` 全链路（`handle_ai.py`）
+## 4.4 `handle_inbox_turn` 收件箱轮（`handle_ai.py`）
+
+群聊按「多方事件流」建模，不再是一对一问答：
 
 ```
-1. enable_ai 检查（动态）→ 关则 return
-2. 并发控制：async with _ai_semaphore（Semaphore(10)）
-3. 双层长度防护（见 §4.5）
-4. 意图识别：classifier_service.predict_async(query) → 闲聊 / 工具 / 问答
-5. 获取 AI Session：session = await get_ai_session(event)（见 §06）
-6. 记忆检索：dual_route_retrieve() 双路检索（见 §09），拼进 full_context
-7. 历史上下文：format_history_for_agent() 近 30 条 → rag_context = "【历史对话】..."
-   注意：RAG 知识库检索不再前置强制，由主 Agent 的 search_cognition 工具按需调用
-8. 调 Agent：chat_result = await session.run(user_message, bot, ev, rag_context)
-9. 发送回复：send_chat_result(bot, chat_result)（支持 `<@用户ID>` / `<@昵称>` 解析 + 打字延迟）
-10. 记忆观察：observe() 把 AI 回复入队记忆系统
+1. handler 写 A 轨：_record_inbound_history 给每条消息分配会话内单调 seq（EventLink）
+2. classify_wake 判定唤醒类型：private/mention/name/quote_self/followup/receipt（hard/soft）
+3. InboxScheduler.submit(PendingEntry)：同会话单飞，soft 项进 settle 合并窗口
+   （群聊 hard 1.5s / 私聊 hard 0.8s / soft 5s），一次落定后入队 TaskContext(run_turn)
+4. handle_inbox_turn(turn)：并发信号量 + 长度防护 → 意图分类 → get_ai_session
+   → TurnRouter（soft 项先读线程视图判定，无关则沉默不进主模型）
+   → run_interactive_turn：render_delta 线程视图作 B 轨输入
+   → InboxKit 注入（待你回应）/（工具身份）/（相关往来）/（本群近况）块
+   → turn.reached_model=True 紧邻 session.run
+5. 出站：send_chat_result 先 parse_reply_plan 解析 <reply #seq>，分组发送；
+   OutboundBinding 写入 EventLink（in_reply_to_seqs/evidence），回执通道不拦截
+6. 结算：answered 集合只含 pending 项；未达模型不推进 read_seq，错误重试 1 次后过期
 ```
 
-> **软触发的沉默门**：续聊软触发的消息（见 §4.6）在进主链路前先过一道
-> `heartbeat/decision.run_reactive_gate`（复用 Heartbeat 轻量结构判断"是否还在跟我说话"），
-> 与 AI 无关则直接沉默、不进主链路、不消耗主 Agent。
+> `enable_ai` 在 `handle_ai.py` 仍是函数内动态读取——WebConsole 切总开关后无需重启（D-21）。
 
 ## 4.5 双层长度防护
 
-恶意/超长输入会击穿 Token 预算。`handle_ai_chat` 两层硬保护：
+恶意/超长输入会击穿 Token 预算，两层硬保护（沿用原 `handle_ai_chat` 口径）：
 
 ```python
-ABSOLUTE_MAX_LENGTH = 60000   # 第一层：硬截断（防子 Agent Token 爆炸 / API 超限）
-MAX_SUMMARY_LENGTH = 15000    # 第二层：超过则调 create_subagent 智能摘要
-
-if len(event.raw_text) > ABSOLUTE_MAX_LENGTH:
-    query = query[:ABSOLUTE_MAX_LENGTH] + "...[文本过长，已自动截断]"
-    event.raw_text = query
-if len(event.raw_text) > MAX_SUMMARY_LENGTH:
-    summarized = await create_subagent(ctx=None, task=f"请总结...{event.raw_text}", ...)
-    user_messages = summarized
+ABSOLUTE_MAX_LENGTH = 60000   # 硬截断
+MAX_SUMMARY_LENGTH = 15000    # 超过则子 Agent 摘要
 ```
 
 | 层级 | 触发 | 处理 | 目的 |
@@ -169,52 +163,51 @@ if len(event.raw_text) > MAX_SUMMARY_LENGTH:
 | 二 | `> 15000` 字符 | 子 Agent 智能摘要 | 压缩长文保留关键信息 |
 | 无 | `≤ 15000` 字符 | 直接传主 Agent | 正常处理 |
 
-> 第二层阈值 15000 是因为现代 LLM 上下文动辄 128K，2000 字符对它毫无压力。代码/报错日志等
-> 长文摘要会丢细节，应尽量避免自动摘要——所以阈值定得较高。
+## 4.6 免唤醒续聊与软唤醒（收件箱 settle）
 
-## 4.6 免唤醒续聊（软触发）
+旧「软防抖 + reactive_gate 沉默门」已由收件箱落定合并 + TurnRouter 取代：
 
-`ai_core/followup_window.py`（纯进程内存 + TTL 惰性清理）。
-
-- **登记**：`handler.py` 在硬触发（@/关键词/私聊）时登记窗口起点。硬触发直接打断抢占并清空旧的软触发防抖缓冲。
-- **防抖合并**：短消息在入队前缓冲（`follow_up_debounce_seconds`，默认 3.0s），同一说话人的连续短句合并为一条提交。
-- **放行与上限**：未硬触发时，若用户处于窗口内、且是群聊里未 @ 别人的普通发言，按"软触发"放行（`trigger_type="followup"`）。单次窗口内软触发成功回复达到上限（`follow_up_max_replies`，默认 2 次，0 表示不限制）后不再软触发。同一次 burst 里再次硬触发会把次数清零，不重置硬天花板。
-- **沉默门**：软触发消息在 `handle_ai` 先过 `run_reactive_gate`，**默认偏沉默**：
-  - **结构负信号预筛**：引用能对上某条用户消息、AI 上次回话后他人刚 @ 说话人（看历史 `at_list`）、AI 上次回话后已插入 ≥2 条他人发言且未呼名，直接判定沉默。引用机器人或对不上的引用不靠这条规则沉默。
-  - **规则预筛**：剔除高频模糊词，仅确切跟进动作或呼名直通，其余交由轻量 LLM 门。
-  - **超时即沉默**：钩子点位 `REACTIVE_GATE` 默认判定为沉默，超时（6000ms）或异常一律沉默，不再放行。
-  - **连续沉默关窗**：连续 2 次被门判定沉默，自动提前关闭该用户的续聊窗口。
-- **主会话免干扰**：软触发轮的主 Agent 不再注入 `SOFT_CONTINUE_HINT`，仅保留旁观沉默出口。
-- **硬规则**：① 窗口从硬触发起算；② 续聊**不续费**（说话不会延长窗口）；③ 有硬天花板与次数上限。
+- **续聊窗口**：`followup_window.py` 不变——硬触发登记窗口、不续费、有硬天花板与
+  `follow_up_max_replies` 上限；窗口内普通发言按 `followup` soft 唤醒提交。
+- **soft 唤醒**：`quote_self`（引用 Bot 的消息）与 `followup` 先入 pending，
+  settle 合并多条为一轮；TurnRouter 读 `render_router_view` 线程视图判相关性，
+  判无关 → `route_decision.soft_speak=None` 即沉默，不进主模型。正文点名人格升 hard。
+- **引用≠找你**：TurnRouter 与主模型读同一份事实（被引用对象的完整出处：
+  `↩#n(你→名 · 时间 · 闲聊回复)`），router prompt 写明原则，不再替模型下结论。
+- **回执唤醒**：`command_aside` 命令回执以 `receipt` 类型进收件箱（A 轨 `你[回执]` 行），
+  批次含 hard 项时不受回执工具策略限制。
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
 | `follow_up_window` | 30s | 续聊窗口长度 |
 | `follow_up_max_total` | 300s | 硬天花板 |
-| `follow_up_max_replies` | 2 | 单个窗口内软触发成功回复上限 |
-| `follow_up_debounce_seconds` | 3.0s | 短消息合并防抖等待时间 |
+| `follow_up_max_replies` | 2 | 单窗口内续聊成功回复上限 |
+| `inbox_settle_max_ms` | 5000 | 落定合并上限 |
+| `inbox_feedback_window` | 120 | 「有人接/没人接」观察窗 |
 
-`statistics` 触发分布新增 `followup` 维度。
+`statistics` 触发分布按 wake kind 记录。
 
-> ⚠️ **成本**：默认 30s 内每条群消息触发一次沉默门判定；沉默门默认偏沉默且超时/异常一律沉默，大幅避免活跃群被打扰。运维诊断可在 `/api/ops/followup` 查看明细与 `gate_stats`。
+## 4.7 命令补充（`aside` → 回执唤醒）
 
-## 4.7 命令补充（`aside`）
+`ai_core/command_aside/` 不再做概率点评 run，改为向收件箱提交 `receipt` 唤醒项：
 
-`ai_core/command_aside/`（命令执行后的回执归档与概率点评）。
-
-- **回执入会话**：命令执行完毕发出回复后，将回执写入当前 AI 会话。图片超过 1.5MB 自动等比缩放并降质，若仍超限标记省略并记录在 user 提示中，杜绝伪文本占位符。
-- **默认沉默**：点评提示词默认输出 `<SILENCE>`，仅在有明确报错、新高或难点时简短建议，禁止复述图内数字。
-- **隔离与复读抑制**：点评 run 跳过交互脚手架提示，不注入续聊追加提示，并接入历史自身复读抑制。
-- **建议记忆**：仅对失败或用法说明抽取骨架存入记忆，脱敏数字与变量，设置 7 天 TTL 与 200 条上限。
-- **结构排除与层级推导**：`pm <= 2`（主人、超管、群主；不含群管理员 `pm=3`）的服务自动免除 Aside；`SV(aside=...)` 支持服务级批量继承；触发器 `aside: bool | None` 作为底层逃生舱，元事件 `on_meta(aside=...)` 同样生效；人格配置支持 `aside_skip_plugins`（默认 `["core_command"]`）与 `aside_cooldown_seconds` 冷却。冷却只在点评真的发出去之后开始计。
+- **回执入 A 轨**：命令执行完毕的回执以 `你[回执]` 行进线程视图，增量块可见；
+  不再向会话追加合成 request/response 对（不打断增量历史与 run 锁）。
+- **建议记忆**：仅对失败或用法说明抽取骨架存入记忆，脱敏数字与变量，7 天 TTL、200 条上限。
+- **工具策略**：轮内含回执项时按回执的 allow_tools/advice_memory 绑定工具策略；
+  批次含 hard 项时不封锁工具。
+- **结构排除**：`pm <= 2` 的服务、`SV(aside=...)`、触发器 `aside`、元事件
+  `on_meta(aside=...)`、人格 `aside_skip_plugins` 与 `aside_cooldown_seconds` 全部沿用。
 
 ## 4.8 触发方式统计维度
 
-| 触发方式 | 说明 | 记录位置 |
+| 唤醒类型 | 说明 | 记录位置 |
 |---------|------|----------|
-| `mention` | 用户 @机器人 | `handler.py` |
-| `keyword` | 关键词触发 | `handler.py` |
-| `followup` | 免唤醒续聊软触发 | `followup_window` / `handle_ai` |
+| `private` | 私聊消息 | `inbox/state.py::classify_wake` |
+| `mention` | @机器人 | `inbox/state.py::classify_wake` |
+| `name` | 正文呼名（人格名/关键词/别名） | `inbox/state.py::classify_wake` |
+| `quote_self` | 引用 Bot 已发消息 | `inbox/state.py::classify_wake` |
+| `followup` | 免唤醒续聊窗口内发言 | `followup_window` + `classify_wake` |
+| `receipt` | 命令回执（原 aside） | `command_aside/runner.py` |
 | `heartbeat` | 定时巡检主动发言 | `heartbeat/inspector.py` |
-| `aside` | 命令补充（命令回执之后） | `command_aside/runner.py` |
 | `scheduled` | 定时/循环任务 | `scheduled_task/executor.py` |

@@ -124,18 +124,18 @@ async def get_main_agent_tools(query: str = "") -> ToolList
 
 > 保底池加载机制与 category 关系详见 [§3.2 分类说明](./03-tool-categories.md)。
 
-## 5.4 `handle_ai_chat` — AI聊天入口
+## 5.4 `handle_inbox_turn` — AI 收件箱轮入口
 
 ```python
-from gsuid_core.ai_core.handle_ai import handle_ai_chat
+from gsuid_core.ai_core.handle_ai import handle_inbox_turn
 
-async def handle_ai_chat(bot: Bot, event: Event)
+async def handle_inbox_turn(turn: InboxTurn, ws: _Bot) -> TurnOutcome
 ```
 
 **工作流程**：
-1. 双层长度防护：硬截断 + 智能摘要
-2. 意图识别：使用分类器判断用户意图（闲聊/工具/问答）
-3. 获取 AI Session（含 system_prompt/Persona）
-4. 准备上下文（历史记录 + 记忆检索）
-5. 调用 Agent 生成回复
-6. 发送回复给用户
+1. `handler` 写 A 轨（EventLink/seq），`classify_wake` 定唤醒类型，`InboxScheduler` settle 合并
+2. 双层长度防护：硬截断 + 智能摘要
+3. 意图识别：使用分类器判断用户意图（闲聊/工具/问答）
+4. 获取 AI Session（含 system_prompt/Persona）
+5. TurnRouter 判软唤醒相关性 → `run_interactive_turn`（线程视图 + inbox/evidence 块）
+6. `parse_reply_plan` 解析 `<reply #seq>` → 分组发送（EventLink 出站绑定）

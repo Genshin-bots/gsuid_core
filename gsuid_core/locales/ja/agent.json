@@ -128,8 +128,6 @@
   "log.agent.skip_tool_search_searching_tools": "[GsCoreAIAgent] ツールを検索しません",
   "log.agent.skipping_duplicate": "[GsCoreAIAgent] 重複テキストをスキップします（既送信）: {p0}",
   "log.agent.supersede_cancel_current": "[GsCoreAIAgent] newer message for session, cancel current generation",
-  "log.agent.supersede_queue_wait": "[GsCoreAIAgent] 同セッションの新着メッセージは現在の実行終了まで待機",
-  "log.agent.supersede_skip_framework_queue": "[GsCoreAIAgent] ロック占有中：フレームワーク注入はキューし cancel しない",
   "log.agent.suppressing_intermediate_text": "[GsCoreAIAgent] 中間テキストを抑制します: {p0}",
   "log.agent.text_send_fail_failed": "[GsCoreAIAgent] テキスト送信に失敗しました: {_e}",
   "log.agent.token_usage_input_tokens": "[GsCoreAIAgent] トークン消費: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",

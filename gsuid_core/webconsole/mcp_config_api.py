@@ -1365,6 +1365,7 @@ async def admin_bind_mcp(
         return {"status": 1, "msg": "共享配置中找不到凭据值，无法安装绑定", "data": None}
 
     from gsuid_core.ai_core.mcp.startup import drop_user_client_cache
+    from gsuid_core.ai_core.evidence.store import notify_credential_changed
     from gsuid_core.ai_core.mcp.credential_store import MCPUserCredential
 
     now = time.time()
@@ -1380,6 +1381,7 @@ async def admin_bind_mcp(
             last_ok_at=now,
         )
         drop_user_client_cache(config_id, pair.bot_id, pair.user_id)
+        notify_credential_changed(config_id, pair.bot_id, pair.user_id)
         bound += 1
 
     return {"status": 0, "msg": "ok", "data": {"bound_count": bound}}
@@ -1394,10 +1396,12 @@ async def revoke_mcp_binding(
 ) -> Dict[str, Any]:
     """删除一条用户绑定并清对应 @user: 客户端缓存。"""
     from gsuid_core.ai_core.mcp.startup import drop_user_client_cache
+    from gsuid_core.ai_core.evidence.store import notify_credential_changed
     from gsuid_core.ai_core.mcp.credential_store import MCPUserCredential
 
     ok = await MCPUserCredential.delete_row(config_id, bot_id, user_id)
     drop_user_client_cache(config_id, bot_id, user_id)
+    notify_credential_changed(config_id, bot_id, user_id)
     if not ok:
         return {"status": 1, "msg": "该用户在此服务下没有绑定", "data": None}
     return {"status": 0, "msg": "ok", "data": {"revoked": True}}

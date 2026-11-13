@@ -82,3 +82,29 @@ def test_angle_bracket_guard_detection_and_sanitization() -> None:
 
     out = sanitize_illegal_angle_tags("困了<bubble/>别闹`<meme: 困>`")
     assert "bubble" not in out.lower() and "meme" in out.lower() and "困了" in out
+
+
+def test_parse_reply_plan_table() -> None:
+    """回复计划：无标签回落缺省、多目标合并、非法 #seq 丢弃、max_targets 截断、<SILENCE>。"""
+    from gsuid_core.ai_core.reply_plan import parse_reply_plan
+    from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags, find_illegal_angle_tags
+
+    cases = [
+        # (正文, valid_seqs, default, max_targets, 期望组, 期望 invalid, 期望 silence)
+        ("直接一句话", frozenset({1, 2}), (1,), 3, [((1,), "直接一句话")], (), False),
+        ("<reply #2>\n给B", frozenset({1, 2}), (1,), 3, [((2,), "给B")], (), False),
+        ("<reply #1 #2>\n合并回复", frozenset({1, 2, 3}), (1,), 3, [((1, 2), "合并回复")], (), False),
+        ("<reply #9>\n引错", frozenset({1, 2}), (1,), 3, [((1,), "引错")], (9,), False),
+        ("<reply #1 #2 #3>\n截断", frozenset({1, 2, 3}), (1,), 2, [((1, 2), "截断")], (), False),
+        ("<reply #2> 同行给B", frozenset({1, 2}), (1,), 3, [((2,), "同行给B")], (), False),
+        ("<reply #1>\n<SILENCE>\n<reply #2>\n给B", frozenset({1, 2}), (1,), 3, [((2,), "给B")], (), False),
+        ("<SILENCE>", frozenset({1}), (1,), 3, [], (), True),
+    ]
+    for text, valid, default, mx, groups, invalid, silence in cases:
+        plan = parse_reply_plan(text, valid_seqs=valid, default_seqs=default, max_targets=mx)
+        assert plan.silence == silence, text
+        assert [(g.seqs, g.text) for g in plan.groups] == groups, text
+        assert plan.invalid_refs == invalid, text
+
+    assert "<reply #3>" not in find_illegal_angle_tags("好 <reply #3> 嗯")
+    assert "<reply" not in strip_protocol_tags("<reply #3>\n你好")

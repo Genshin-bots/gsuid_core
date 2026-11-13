@@ -31,9 +31,10 @@ base64 只留类型占位 —— 控制台知道「发过这个」就够了。
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, TypedDict
 
 from gsuid_core.models import Event, Message
+from gsuid_core.message_history.link import EventLink
 
 # 合并转发最多展开几层；再深就只留计数，免得一条消息把内存撑爆
 _MAX_NODE_DEPTH = 3
@@ -287,6 +288,18 @@ def segments_from_event(event: Event) -> List[Dict[str, Any]]:
     return segments
 
 
+class RecordLinkDict(TypedDict, total=False):
+    seq: int
+    msg_id: str
+    reply_to_seq: "int | None"
+    reply_to_author: "str | None"
+    at_targets: List[str]
+    at_self: bool
+    in_reply_to_seqs: List[int]
+    seen_seq: int
+    evidence: List[str]
+
+
 class RecordLike(Protocol):
     @property
     def role(self) -> str: ...
@@ -308,6 +321,9 @@ class RecordLike(Protocol):
 
     @property
     def metadata(self) -> Dict[str, Any]: ...
+
+    @property
+    def link(self) -> "EventLink | None": ...
 
 
 def chat_message_from_record(record: RecordLike, segments: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -340,6 +356,7 @@ def chat_message_from_record(record: RecordLike, segments: Optional[List[Dict[st
         "segments": segments,
         "sender": sender_dict,
         "msg_id": str(meta.get("msg_id") or ""),
+        "link": record.link.to_dict() if record.link is not None else None,
     }
 
 

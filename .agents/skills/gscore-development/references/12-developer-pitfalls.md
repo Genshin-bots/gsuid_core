@@ -206,13 +206,9 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 
 ## 12.10 续聊软触发与偏好记忆的成本（默认开）
 
-- **续聊沉默门**：默认 30s 窗口内每条群消息触发一次沉默门 LLM 判定，群活跃时有额外开销。沉默门
-  **默认偏沉默**：仅模型明确判定"接续/指向你"才放行；模型输出非 str / JSON 解析失败 / 缺
-  `should_speak` 一律按沉默处理（不再回落放行），只有**真异常**（无历史 / 无人格 / LLM 调用崩溃）
-  才放行交主 Agent 兜底。窗口/天花板按群活跃度观察调整。
-  > 三道沉默关卡需口径一致：`run_reactive_gate`（门）/ `handle_ai` 软触发提示 / `prompts.py`
-  > `## 沉默规则` 的"续聊场景"条款。历史上门放水 + 主 Agent 把续聊当"直接找你必须回应" → 几乎
-  > 不沉默、一直输出。改其一务必同步另两处（见 [§04](./04-event-trigger-flow.md) §4.6）。
+- **软唤醒路由**：`quote_self` / `followup` 软唤醒项进收件箱 pending，settle 合并后由
+  TurnRouter（H04 `REACTIVE_GATE`）读线程视图判相关性，判无关即沉默、不进主模型。窗口/天花板
+  按群活跃度观察调整（见 [§04](./04-event-trigger-flow.md) §4.6）。
 - **偏好记忆**：开箱启用工具轨迹 + 纠错探测 + **第二次蒸馏 LLM** + 置顶强约束注入。误抽偏好以
   强约束置顶可能过度约束工具调用（已有软停用 + salience 裁剪 + 精确能力域过滤兜底）。首次放量
   建议观察第二次蒸馏 Token 成本。
@@ -604,7 +600,7 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
 已修复（明细见 [`docs/AI_CORE_CHANGE_REVIEW_20260712.md`](../../../../docs/AI_CORE_CHANGE_REVIEW_20260712.md)）。
 后续改这些模块必须守住的点：
 
-- **`content_guard.neutralize_encoded_injection` 跑在每条生产消息上**（`prepare_content_payload`）。
+- **`content_guard.neutralize_encoded_injection` 跑在每条生产消息上**（`prepare_media_payload`）。
   意图门（解码提示 + 照做意图）的两侧词都不能收日常词：`转义`（改引号转义是日常提问）、
   裸 `回复/输出/说出` 曾让 "JWT base64 帮我看下再回复我" 触发屏蔽。兜底词库不能收
   `return xxx`（所有代码都含）。改词后必须同时跑：eval 的 inj_*/adv_* 注入样本（须全 HIT）
@@ -653,7 +649,7 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
 - **C-3 寻址前置门**（`addressed_to_someone_else`）：当前消息带「@的是这位用户，不是你」标注、
   未同时点名自己、非 is_tome 时，**装配层直接把 `tools` 清空**（含 send_message_by_ai / find_tools
   / skills_toolset），把"不冲你来=零工具"从模型自觉变成硬约束。根治隐性指代域的 over-tooling。
-  **寻址记号唯一定义在 `control/lines.py` 的 `AT_OTHER_MARKER` / `DIRECT_MARKER`**。
+  **寻址记号唯一定义在 `control/lines.py` 的 `AT_OTHER_MARKER`**。
   `interaction_scaffold` 再导出同一对象；utils / history_format 只 import，不抄字面量。
   再抄一份，C-3 寻址门对不上，静默失效（`test_at_marker_single_source`）。
 - **C-4 墙钟软预算**（`gs_agent` ModelRequestNode 前）：交互式 run 墙钟超预算后，请求前注入一次
@@ -674,7 +670,7 @@ gate 误判的代价只能是"本该有工具却没给"，绝不能是"本该沉
 `content_guard.defuse_fake_system_hint` 加降权标注（幂等，同 `defuse_fake_tool_result` 模式）。
 
 **🔴 长度/内容判定必须过 `extract_message_body`（P0 教训，2026-07-12 第六轮）**：
-生产的 user_message 不是裸文本，是 `prepare_content_payload` 的完整 payload
+生产的 user_message 不是裸文本，是 `prepare_media_payload` 的完整 payload
 （关系行 + 「--- 消息 ---」分节 + 正文 + 附件/@ 段落）+ handle_ai 追加的「【当前时间】」行；
 评测端点传的才是裸文本。曾因判定直接吃整个 payload，`ambient_followup_to_other`（≤20 字门）
 在**生产永远不触发**、`references_task_management`（≤60 字门）基本失效，而评测全绿——

@@ -194,6 +194,7 @@ class CoreMessageCache(SQLModel, table=True):
             "segments": _loads(self.segments, []),
             "sender": sender,
             "msg_id": self.msg_id,
+            "link": None,
         }
 
 

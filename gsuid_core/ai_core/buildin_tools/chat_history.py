@@ -12,7 +12,7 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.message_history import MessageRecord
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.history_format import format_history_for_agent
+from gsuid_core.ai_core.thread_view import render_window
 from gsuid_core.message_history.manager import HistoryManager
 
 _RESULT_CAP = 40
@@ -264,11 +264,7 @@ def read_chat_history_text(
             return f"{label} 这个时间附近没有发言。"
         return f"{label} 没有命中。换个词，或用 at=HH:MM 指定时间。"
     shown = [_clip_hit_record(rec, needle) for rec in picked]
-    body = format_history_for_agent(
-        shown,
-        block_header="[会话记录] 旧→新",
-        content_limit=_HIT_CONTENT_LIMIT * 2,
-    )
+    body = render_window(shown)
     head = f"{label} · 命中 {total} 条"
     if total > len(picked):
         head += f"，这里是其中 {len(picked)} 条"

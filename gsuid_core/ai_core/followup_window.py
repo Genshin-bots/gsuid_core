@@ -12,8 +12,6 @@ from enum import StrEnum
 from typing import Dict
 from dataclasses import dataclass
 
-from gsuid_core.models import Event
-
 _GC_THRESHOLD = 512
 
 
@@ -198,68 +196,3 @@ def in_followup_window(
         )
         == FollowupWindowState.ACTIVE
     )
-
-
-def merge_followup_burst(events: list[Event]) -> Event | None:
-    """把缓冲期内同一说话人的几条消息合成最后一条。没有正文也没有附件时返回 None。"""
-    if not events:
-        return None
-    host = events[-1]
-    texts: list[str] = []
-    images = list(host.image_list)
-    image_ids = list(host.image_id_list)
-    for src in events:
-        raw = (src.raw_text or src.text or "").strip()
-        if raw:
-            texts.append(raw)
-        if src is host:
-            continue
-        for img in src.image_list:
-            if img not in images:
-                images.append(img)
-        if not src.image_list and src.image is not None and src.image not in images:
-            images.append(src.image)
-        for image_id in src.image_id_list:
-            if image_id and image_id not in image_ids:
-                image_ids.append(image_id)
-        if not src.image_id_list and src.image_id and src.image_id not in image_ids:
-            image_ids.append(src.image_id)
-    merged = "\n".join(texts)
-    has_file = any(src.file for src in events)
-    has_node = any(src.node is not None for src in events)
-    has_audio = any(src.audio_id or src.audio_id_list for src in events)
-    has_video = any(src.video_id or src.video_id_list for src in events)
-    if not merged and not images and not has_file and not has_node and not has_audio and not has_video:
-        return None
-    if merged:
-        host.raw_text = merged
-        host.text = merged
-    if images:
-        host.image_list = images
-        last_image = images[-1]
-        if isinstance(last_image, str):
-            host.image = last_image
-    if image_ids:
-        host.image_id_list = image_ids
-        host.image_id = image_ids[-1]
-    if not host.file:
-        for src in events:
-            if src.file:
-                host.file = src.file
-                host.file_name = src.file_name
-                host.file_type = src.file_type
-                break
-    if host.node is None:
-        for src in events:
-            if src.node is not None:
-                host.node = src.node
-                break
-    return host
-
-
-def revoke_fresh_hard_trigger(session_id: str, user_id: str) -> None:
-    """仅当本次硬触发是全新开启的 burst 时撤销窗口。"""
-    k = _key(session_id, user_id)
-    st = _states[k] if k in _states else None
-    if st is not None and st.burst_start == st.last_hard_ts:
-        del _states[k]

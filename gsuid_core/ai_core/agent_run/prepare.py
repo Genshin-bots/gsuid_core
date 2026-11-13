@@ -454,10 +454,15 @@ class PreparePhase(RunOnceHost):
             from gsuid_core.ai_core.journal.manager import read_journal_for_context
 
             since_ts = self._anchor_journal_ts if self._anchor_journal_ts > 0.0 else 0.01
+            from gsuid_core.ai_core.inbox.turn import current_turn
+
+            _turn = current_turn()
+            _targets = [e.item.user_id for e in _turn.entries] if _turn is not None else None
             delta_text, latest_ts = read_journal_for_context(
                 persona_name,
                 current_group_id=group_id,
                 since_ts=since_ts,
+                turn_target_uids=_targets,
             )
             if delta_text:
                 st.final_user_message = _append_user_text(st.final_user_message, f"\n{delta_text}")

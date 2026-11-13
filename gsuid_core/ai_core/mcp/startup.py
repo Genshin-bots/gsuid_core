@@ -6,7 +6,8 @@ MCP 工具启动注册模块
 """
 
 import inspect
-from typing import Any, Dict, Optional, TypedDict
+from typing import Any, Dict, Literal, Optional, TypedDict
+from dataclasses import dataclass
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import Tool
@@ -197,12 +198,22 @@ def _make_mcp_client(config: MCPConfig, creds: Optional[Dict[str, str]] = None) 
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ScopeResolution:
+    """private scope 裁决结果；outcome 供证据观测定性（§4.5）。"""
+
+    client: "MCPClient | None"
+    error: "str | None"
+    creds: "Dict[str, str] | None"
+    outcome: Literal["ok", "auth_required", "error"]
+
+
 async def _resolve_scope_client(
     config_id: str,
     config: MCPConfig,
     ev: Optional["Event"],
-) -> "tuple[MCPClient | None, str | None, Dict[str, str] | None]":
-    """裁决 private 执行 scope → (client, 错误/BIND_GUIDE, creds map)。
+) -> ScopeResolution:
+    """裁决 private 执行 scope → client / 错误文案 / creds map / outcome。
 
     发起人本人凭据；未绑/过期→BIND_GUIDE；ev None→按
     allow_autonomous_private 决定（mutating 由调用方先拒）。
@@ -217,8 +228,10 @@ async def _resolve_scope_client(
 
     if ev is None:
         if not config.allow_autonomous_private:
-            return None, "该工具需要用户凭据，且服务未允许无人任务使用共享凭据执行", None
-        return _make_mcp_client(config), None, dict(config.env)
+            return ScopeResolution(
+                None, "该工具需要用户凭据，且服务未允许无人任务使用共享凭据执行", None, "auth_required"
+            )
+        return ScopeResolution(_make_mcp_client(config), None, dict(config.env), "ok")
 
     scope = _user_scope(ev.bot_id, ev.user_id)
     cache_key = _scope_key(config_id, scope)
@@ -226,15 +239,16 @@ async def _resolve_scope_client(
     creds, row = await resolve_user_creds(config_id, ev.bot_id, ev.user_id)
     if creds is None:
         _mcp_clients.pop(cache_key, None)
-        return None, bind_guide_for_tool(config_id), None
+        who = ev.sender["nickname"] if ev.sender and "nickname" in ev.sender else f"用户ID:{ev.user_id}"
+        return ScopeResolution(None, bind_guide_for_tool(config_id, who=who), None, "auth_required")
 
     cached = _mcp_clients.get(cache_key)
     if cached is not None:
-        return cached, None, creds
+        return ScopeResolution(cached, None, creds, "ok")
 
     client = _make_mcp_client(config, creds)
     _mcp_clients[cache_key] = client
-    return client, None, creds
+    return ScopeResolution(client, None, creds, "ok")
 
 
 # 共享 scope 下拒绝的账号指针参数（public 工具不该收这些）
@@ -379,11 +393,19 @@ def _build_mcp_tool_function(
     async def mcp_tool_wrapper(ctx: RunContext[ToolContext], **kwargs: Any) -> str:
         """MCP 工具包装函数：scope 裁决 → 凭据注入 → mutating 审批 → 调用。"""
         from gsuid_core.ai_core.mcp.pii import mask_pii
+        from gsuid_core.ai_core.evidence.capture import current_evidence_mark
 
         ev = ctx.deps.ev if ctx.deps is not None else None
+        mark = current_evidence_mark()
+        if mark is not None:
+            mark.service = config_id or client.name
+            mark.mutating = mutating
+            mark.credential_owner = "shared" if exposure != "private" else (ev.user_id if ev is not None else "shared")
 
         # mutating + 无人执行体无条件拒（写操作必须有人确认）
         if mutating and ev is None:
+            if mark is not None:
+                mark.outcome_hint = "error"
             return "该工具会修改账号状态，无人任务不允许执行。"
 
         # 1. scope 裁决：private→发起人凭据；public→共享凭据
@@ -391,16 +413,24 @@ def _build_mcp_tool_function(
         scope_creds: "Dict[str, str] | None" = dict(config.env) if config is not None else None
         if exposure == "private":
             if config is None or not config_id:
+                if mark is not None:
+                    mark.outcome_hint = "error"
                 return "MCP 配置缺失，无法执行私有工具。"
-            run_client, err, scope_creds = await _resolve_scope_client(config_id, config, ev)
-            if run_client is None:
-                return err or "需要绑定凭据。"
+            resolution = await _resolve_scope_client(config_id, config, ev)
+            if resolution.client is None:
+                if mark is not None:
+                    mark.outcome_hint = "error" if resolution.outcome == "error" else "auth_required"
+                return resolution.error or "需要绑定凭据。"
+            run_client = resolution.client
+            scope_creds = resolution.creds
 
         # 2. 过滤 None + sensitive_args 掩码（参数不记日志/trace）
         call_args = {k: v for k, v in kwargs.items() if v is not None}
         if exposure == "public" or ev is None:
             pointer_err = _reject_shared_pointer_args(tool_name, call_args)
             if pointer_err is not None:
+                if mark is not None:
+                    mark.outcome_hint = "error"
                 return pointer_err
 
         safe_args_repr = mask_pii(repr(call_args)) if sensitive_args else repr(call_args)
@@ -435,10 +465,14 @@ def _build_mcp_tool_function(
                             error_text=error_text,
                         )
                     )
+                    if mark is not None:
+                        mark.outcome_hint = "error"
                     return f"MCP 工具执行失败: {error_text}"
                 return result.text
             except Exception as e:
                 logger.error(t("log.mcp.mcp_tool_name_call_fail", p0=client.name, tool_name=tool_name, e=e))
+                if mark is not None:
+                    mark.outcome_hint = "error"
                 return f"MCP 工具调用异常: {e}"
 
         if mutating:
@@ -584,8 +618,22 @@ def _register_mcp_tool(
         tool_registry[MCP_CATEGORY] = {}
     tool_registry[MCP_CATEGORY][registered_name] = tool_base
 
+    from gsuid_core.ai_core.evidence.providers import register_private_mcp_service
+
+    if tool_def is not None and tool_def.exposure == "private" and config_id:
+        register_private_mcp_service(config_id)
+
     logger.info(t("log.mcp.register_registered_name", registered_name=registered_name, p0=client.name))
     return registered_name
+
+
+def _note_mcp_service_changed(config_name: str, client_name: str = "") -> None:
+    from gsuid_core.ai_core.register import note_service_changed
+
+    if config_name:
+        note_service_changed(config_name)
+    if client_name and client_name != config_name:
+        note_service_changed(client_name)
 
 
 async def _register_mcp_server(config_id: str, config: MCPConfig) -> list[str]:
@@ -631,6 +679,9 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> list[str]:
     if not ok:
         logger.warning(t("log.mcp.catalog_persist_failed", p0=config.name, p1=save_msg))
 
+    old_sig = [(td.name, td.description) for td in config.tools]
+    new_sig = [(tool_info.name, tool_info.description) for tool_info in tools]
+
     registered_names: list[str] = []
     for tool_info in tools:
         try:
@@ -648,6 +699,9 @@ async def _register_mcp_server(config_id: str, config: MCPConfig) -> list[str]:
             )
         except Exception as e:
             logger.error(t("log.mcp.fail_register_tool_failed", p0=config.name, p1=tool_info.name, e=e))
+
+    if old_sig != new_sig:
+        _note_mcp_service_changed(config.name, client.name)
 
     return registered_names
 
@@ -731,7 +785,10 @@ async def unregister_mcp_server(config_id: str) -> int:
     from gsuid_core.ai_core.agent_node import unregister_agent_node
     from gsuid_core.ai_core.mcp.node_profile import mcp_node_id
 
+    cfg = mcp_config_manager.get_config(config_id)
     removed = _forget_mcp_server(config_id)
+    if removed > 0 and cfg is not None:
+        _note_mcp_service_changed(cfg.name)
     unregister_agent_node(mcp_node_id(config_id))
     await _sync_tool_index()
     return removed
@@ -760,10 +817,12 @@ async def register_single_mcp_server(config_id: str) -> tuple[int, str]:
         removed = await unregister_mcp_server(config_id)
         return 0, f"配置 '{config.name}' 已禁用，移除了 {removed} 个旧工具"
 
-    _forget_mcp_server(config_id)
+    removed_prev = _forget_mcp_server(config_id)
 
     if not config.register_as_ai_tools:
         # 不注册工具也不建节点；call_mcp_tool 业务调用不受影响。
+        if removed_prev > 0:
+            _note_mcp_service_changed(config.name)
         unregister_agent_node(mcp_node_id(config_id))
         await _sync_tool_index()
         return 0, f"配置 '{config.name}' 未开启 AI 工具注册"
@@ -813,6 +872,7 @@ async def register_single_from_catalog(config_id: str) -> tuple[int, str]:
     names = _register_catalog(config_id, config)
     await _sync_tool_index()
     if names:
+        _note_mcp_service_changed(config.name)
         register_agent_node(build_mcp_node(config_id, config, names))
         await _warm_agent_node_index()
         from gsuid_core.ai_core.mcp.profile_generator import schedule_profile_generation

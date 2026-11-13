@@ -1,0 +1,3 @@
+{
+  "log.evidence.credential_changed": "[证据] 凭据变更：service={service} uid={uid}@{bot}"
+}

@@ -70,8 +70,10 @@ def _import_builtin_kits() -> None:
     import 是 no-op，注册表会一直空着。
     新增套件时在此追加一行——列表是有意手写的，便于按槽位排查加载顺序。
     """
+    from gsuid_core.ai_core.evidence import kit as evidence_kit
     from gsuid_core.ai_core.kits.meme import kit as meme_kit
     from gsuid_core.ai_core.kits.mood import kit as mood_kit
+    from gsuid_core.ai_core.kits.inbox import kit as inbox_kit
     from gsuid_core.ai_core.kits.fileos import kit as fileos_kit
     from gsuid_core.ai_core.kits.memory import kit as memory_kit
     from gsuid_core.ai_core.kits.speech import kit as speech_kit
@@ -101,6 +103,8 @@ def _import_builtin_kits() -> None:
         decision_distill_kit,
         classifier_kit,
         reactive_gate_kit,
+        inbox_kit,
+        evidence_kit,
         scaffold_kit,
         session_mute_kit,
         statistics_kit,

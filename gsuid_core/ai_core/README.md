@@ -33,7 +33,7 @@
 | `output_gate.py` | **`pre_send_gate`**：发送前统一编排（尖括号 → OOC）；`GateBag` 状态；`tool_gate_feedback`。 |
 | `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
 | `output_firewall.py` | 出戏词库 + `check_ooc`（策略实现；编排见 `output_gate`）；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
-| `handle_ai.py` | 用户消息入口（被消息触发器调用）。负责会话匹配、前置规则过滤、`format_history_for_agent` 构造 history_context、调用 `GsCoreAIAgent.run`。 |
+| `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
 | `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
 | `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |
 | `ai_router.py` | `get_ai_session` / `get_ai_session_by_id`：根据 Event 找到或创建主用户绑定的 `GsCoreAIAgent`，并触发 Persona 热重载、主人好感度初始化。 |
@@ -43,7 +43,7 @@
 | `register.py` | `@ai_tools` 装饰器，把工具按 category（`self / buildin / 插件名`）登记到全局工具表。 |
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
 | `utils.py` | `send_chat_result`（**呈现层**：report/meme/长文出图/拆条/漏网 sanitize）、`SILENCE_MARKERS`、`extract_json_from_text`。合规打回不在此。 |
-| `history_format.py` | `format_history_for_agent`：把 `message_history.MessageRecord` 序列化成 LLM 可读的 `history_context` 文本（被动回复走这条路）。 |
+| `history_format.py` | `history_to_prompt` / `history_to_messages` / `outbound_history_fields` / `format_private_recent_history` 等 MessageRecord 格式化辅助；群聊线程视图在 `thread_view.py`。 |
 | `normalize.py` / `content_guard.py` | 文本归一化与内容安全辅助。 |
 | `check_func.py` | 通用权限 / 状态检查工具。 |
 | `trigger_bridge.py` | 把"主人格 LLM 决定要调一个具体命令"桥接到 GsCore 触发器系统。 |
@@ -377,10 +377,10 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 ### A. 被动回复（用户消息）
 
 ```
-User → Trigger → handle_ai
-                 ├─ message_history 已经写入 user 消息
+User → Trigger → handler → InboxScheduler → handle_inbox_turn
+                 ├─ message_history 已经写入 user 消息（seq + 引用/@ 边）
                  ├─ get_ai_session(ev) → GsCoreAIAgent（单例 / 热重载）
-                 ├─ format_history_for_agent → history_context 文本
+                 ├─ thread_view.render_delta → 本轮增量线程视图
                  └─ GsCoreAIAgent.run(user_message, ev, bot)
                        ├─ extract_history() 截断 + 孤儿清理
                        ├─ 工具池组装（保底+语境+查询）

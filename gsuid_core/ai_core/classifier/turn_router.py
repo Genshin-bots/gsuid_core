@@ -27,7 +27,7 @@ MemoryIntent = Literal[
     "broad_summary",
 ]
 
-_ROUTER_TIMEOUT = 4.0
+ROUTER_TIMEOUT_S = 4.0
 _ROUTER_MAX_TOKENS = 512
 
 _CLOCK_RE = re.compile(r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
@@ -115,7 +115,8 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 字段与取值：
 - i: "chat" | "tool" | "qa"
 - m: "none" | "latest" | "diff" | "order" | "sum"
-- s: bool。免唤醒软触发时，当前消息是否确实在对 Bot 延续对话或值得自然接话。默认 false（偏沉默）。
+- s: bool。仅当有 [待判断] 列表时有意义：列表里是否确有人在对你说话（问你、让你评价、反驳你、\
+延续和你的对话），或确实值得自然接一句。只是起哄、围观、在和别人聊、普通命令回执时为 false。默认 false。
 - l: bool。是否在查实时外部数据（实时天气/股价/面板等），为 true 时跳过个人历史记忆预灌。
 - w: bool。是否明确委托 Bot 执行具体事务、查数或设提醒。
 - ts / te: 若用户显式问某个时间区间，结合基准时钟输出 "YYYY-MM-DD"；否则 null。
@@ -127,6 +128,7 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 - none=纯寒暄或本轮上下文自足；latest=常规事实/属性点查；diff=变更历史/前后对比/矛盾核实；
   order=事件先后/时间线；sum=跨会话总结/数量统计/集合盘点。
 - 若消息含必须依赖历史的泛指指代（如“那个/上次/之前/后来呢”），m 不得为 none，保底 latest。
+- 被引用不等于被叫：引用你的话但在和别人起哄/围观，s=false。
 
 只输出：{"i":"chat","m":"none","s":false,"l":false,"w":false,"ts":null,"te":null}"""
 
@@ -139,11 +141,15 @@ def _build_router_prompt(
     soft_triggered: bool,
     clock_at: datetime | None,
     recent_group_messages: Sequence[str],
+    thread_view: str,
 ) -> str:
     clock = (clock_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     lines = [f"[当前时间] {clock}", f"[上一轮用过工具] {'yes' if prev_turn_used_tools else 'no'}"]
     if soft_triggered:
         lines.append("[软触发] yes")
+    if thread_view:
+        lines.append(thread_view)
+    elif soft_triggered:
         msgs = [m.strip() for m in recent_group_messages if m and m.strip()][-6:]
         if msgs:
             lines.append("[近期群消息]")
@@ -230,6 +236,7 @@ async def route_turn(
     soft_triggered: bool = False,
     clock_at: datetime | None = None,
     recent_group_messages: Sequence[str] = (),
+    thread_view: str = "",
 ) -> TurnRouteDecision:
     """一次无思考轻量路由；不可用/超时/输出非法时退化到结构规则。"""
     body = strip_router_header(query)
@@ -248,6 +255,7 @@ async def route_turn(
         soft_triggered=soft_triggered,
         clock_at=clock_at,
         recent_group_messages=recent_group_messages,
+        thread_view=thread_view,
     )
 
     try:
@@ -264,7 +272,7 @@ async def route_turn(
             thinking=False,
         )
         try:
-            raw = await asyncio.wait_for(agent.run(user_message=prompt, return_mode="return"), timeout=_ROUTER_TIMEOUT)
+            raw = await asyncio.wait_for(agent.run(user_message=prompt, return_mode="return"), timeout=ROUTER_TIMEOUT_S)
         finally:
             agent._session_logger.close()
         decision = _parse_decision(raw if isinstance(raw, str) else str(raw))

@@ -7,12 +7,12 @@
 
 ## 10.1 RAG 不再前置强制检索（设计基线）
 
-历史缺陷 D-11：原 `handle_ai_chat` 在所有意图下强制 RAG 检索拼进上下文——用户只说"你好"也要
+历史缺陷 D-11：原 `handle_ai_chat`（现 `handle_inbox_turn`）在所有意图下强制 RAG 检索拼进上下文——用户只说"你好"也要
 向量化 + 查 Qdrant + 塞无关结果，多 1 到 2 秒延迟 + 无谓 Token。
 
 **现状**：主人格回想工具是 `search_cognition`，由 LLM 自主判断是否调。
 片段很多时仍展开 query 里点名的已挂载枢纽（别名或枢纽 title 精确匹配）。正文不进每轮装配，只在这次回想的路径卡里出现。
-`handle_ai_chat` 的 `rag_context` 只含历史对话上下文，**不再强制检索**。命中公共枢纽时，
+AI 入口（现 `handle_inbox_turn`/`run_interactive_turn`）的 `rag_context` 只含历史对话上下文，**不再强制检索**。命中公共枢纽时，
 工具回执带路径卡；问到某一栏且能唯一选定则同一次附全文（≤6000 字，仅 `kb_plugin` / `kb_kbdoc`；
 `to_` 不展开正文）。
 ⑧ 闲聊不灌路径卡。

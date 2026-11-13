@@ -127,3 +127,58 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
     assert len(sent) == 1 and isinstance(sent[0], list)
     pairs = [(seg.type, seg.data) for seg in sent[0] if isinstance(seg, Message)]
     assert pairs == [("at", "100000002"), ("text", " 到时间啦")]
+
+
+def test_event_link_seq_reply_and_at_self() -> None:
+    """EventLink：seq 单调递增、引用边解析到 uid/self/None、自动@不置 at_self、dict 往返保 link。"""
+    from gsuid_core.message_history import MessageRecord, HistoryManager
+
+    mgr = HistoryManager()
+
+    def ev(uid: str, nick: str) -> Event:
+        return Event("OneBot", "900000001", "", "group", "70001", uid, {"nickname": nick}, 6)
+
+    c_ev = ev("100000003", "测试用户C")
+    b_ev = ev("100000002", "测试用户B")
+    bot_ev = ev("900000001", "测试人格")
+
+    u1 = mgr.add_message(c_ev, "user", "让你画图", user_name="测试用户C", metadata={"msg_id": "m1"})
+    bot1 = mgr.add_message(
+        bot_ev,
+        "assistant",
+        "唔…好",
+        user_name="测试人格",
+        metadata={"msg_id": "b1", "speech_channel": "persona"},
+    )
+    assert u1.link is not None and bot1.link is not None and u1.link.seq < bot1.link.seq
+
+    cases = [
+        # (reply_id, at_bot, 期望 reply_to_author, 期望 reply_to_seq, 期望 at_self)
+        ("m1", False, "100000003", u1.link.seq, False),  # 用户引用用户
+        ("b1", True, "self", bot1.link.seq, False),  # 引用 Bot 自带自动@不算 at_self
+        ("b1", False, "self", bot1.link.seq, False),  # 用户引用 Bot
+        ("lost", True, None, None, True),  # 引用对象已出窗口：无引用边，真@仍算
+        (None, True, None, None, True),  # 纯 @
+        (None, False, None, None, False),
+    ]
+    last_seq = bot1.link.seq
+    for i, (reply_id, at_bot, author, rseq, aself) in enumerate(cases):
+        meta: dict[str, object] = {"msg_id": f"q{i}", "at_bot": at_bot}
+        if reply_id is not None:
+            meta["reply_id"] = reply_id
+        rec = mgr.add_message(b_ev, "user", f"case{i}", user_name="测试用户B", metadata=meta)
+        link = rec.link
+        assert link is not None
+        assert link.reply_to_author == author, f"case{i}"
+        assert link.reply_to_seq == rseq, f"case{i}"
+        assert link.at_self is aself, f"case{i}"
+        assert link.seq > last_seq
+        last_seq = link.seq
+        rt = MessageRecord.from_dict(rec.to_dict())
+        assert rt.link == link
+
+    assert mgr.head_seq(b_ev) == last_seq
+    after = mgr.records_after(b_ev, bot1.link.seq)
+    assert [r.link.seq for r in after if r.link] == list(range(bot1.link.seq + 1, last_seq + 1))
+    found = mgr.find_by_seq(b_ev, u1.link.seq)
+    assert found is not None and found.content == "让你画图"

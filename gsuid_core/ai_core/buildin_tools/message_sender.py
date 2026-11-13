@@ -555,6 +555,8 @@ async def send_message_by_ai(
         from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
         _meta = turn_reply_metadata(ev)
+        # 工具交付不算人格发言：防收件箱回复计划劫持，时间线渲染为「你[回执]」。
+        _meta["speech_channel"] = "tool_delivery"
         if _at_uid:
             _meta["reply_to_user_id"] = _at_uid
             if ev is None or _at_uid != str(ev.user_id):

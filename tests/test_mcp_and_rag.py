@@ -517,3 +517,104 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     hang = MCPClient(name="hang", transport="stdio", command=sys.executable, args=["-c", "import time; time.sleep(60)"])
     with pytest.raises(TimeoutError, match="连接超时"):
         asyncio.run(hang.list_tools())
+
+
+def test_evidence_block_groups_and_credential_invalidation() -> None:
+    """证据块：替别人查的观测、实时凭据状态、失效标记（§4.6）。"""
+    from gsuid_core.ai_core.evidence.kit import render_evidence_block
+    from gsuid_core.ai_core.evidence.store import (
+        LiveState,
+        Observation,
+        get_evidence_store,
+        notify_credential_changed,
+    )
+    from gsuid_core.message_history.manager import MessageRecord
+    from gsuid_core.ai_core.evidence.providers import _PROVIDERS
+
+    class _StubProvider:
+        def __init__(self, bound: set) -> None:
+            self.bound = bound
+
+        async def current(self, service: str, bot_id: str, user_id: str) -> LiveState:
+            return LiveState(
+                service=service,
+                user_id=user_id,
+                aspect="credential",
+                value="bound" if user_id in self.bound else "unbound",
+            )
+
+    sid = "test_evidence_sess_1"
+    svc = "test_svc_1"
+    bot = "test_bot_1"
+    store = get_evidence_store(sid)
+    store.observations.clear()
+    store.invalidations.clear()
+    _PROVIDERS[svc] = _StubProvider({"100000002"})
+
+    store.append(
+        Observation(
+            obs_id="ob_test01",
+            session_id=sid,
+            tool_name="mcp_test_svc_1_query",
+            service=svc,
+            requested_by="100000001",
+            requested_by_seq=3,
+            credential_owner="100000001",
+            outcome="auth_required",
+            observed_at=time.time() - 30,
+            summary="需要绑定凭据",
+            handle="",
+        )
+    )
+    records = [
+        MessageRecord(role="user", content="查一下", user_id="100000001", user_name="测试用户A"),
+        MessageRecord(role="user", content="我也看看", user_id="100000002", user_name="测试用户B"),
+    ]
+
+    block = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
+    assert "（证据）" in block and "替别人查的：" in block and "ob_test01" in block
+    assert "替测试用户A查" in block and "已绑定" in block and "测试用户B" in block
+    assert "需绑定凭据" not in block or "缺凭据" in block
+
+    notify_credential_changed(svc, bot, "100000001", session_id=sid)
+    block2 = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
+    assert "已失效（凭据已变更）" in block2
+
+    store.append(
+        Observation(
+            obs_id="ob_test02",
+            session_id=sid,
+            tool_name="mcp_test_svc_1_shared",
+            service=svc,
+            requested_by="100000002",
+            requested_by_seq=4,
+            credential_owner="shared",
+            outcome="data",
+            observed_at=time.time() - 5,
+            summary="公开数据",
+            handle="",
+        )
+    )
+    block3 = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
+    assert "共享凭据" in block3 and "shared的凭据" not in block3
+
+    from gsuid_core.ai_core.register import service_changed_at
+    from gsuid_core.ai_core.mcp.startup import _register_catalog, _forget_mcp_server, _note_mcp_service_changed
+    from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition
+
+    service_changed_at.pop("svc_unchanged_test", None)
+    cfg = MCPConfig(
+        name="svc_unchanged_test",
+        description="test",
+        transport="stdio",
+        command="echo",
+        tools=[MCPToolDefinition(name="ping", description="ping")],
+    )
+    try:
+        _register_catalog("cfg_unchanged_test", cfg)
+        assert "svc_unchanged_test" not in service_changed_at
+        _note_mcp_service_changed("svc_unchanged_test")
+        assert "svc_unchanged_test" in service_changed_at
+    finally:
+        _forget_mcp_server("cfg_unchanged_test")
+        service_changed_at.pop("svc_unchanged_test", None)

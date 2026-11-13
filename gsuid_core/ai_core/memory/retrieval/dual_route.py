@@ -487,6 +487,18 @@ class MemoryContext:
                     else:
                         old_self.append(ep)
 
+                # 能力自述早于该服务工具集最近一次注册变更的不召回（§4.7）。
+                from gsuid_core.ai_core.register import service_changed_at
+
+                def _stale_self_episode(ep: Episode, ep_ts: datetime | None) -> bool:
+                    if ep_ts is None:
+                        return False
+                    text = ep["content"] or ""
+                    for svc, changed in service_changed_at.items():
+                        if svc in text and ep_ts.timestamp() < changed:
+                            return True
+                    return False
+
                 self_budget = (
                     0 if (cross_session or not old_self) else min(int(max_chars * 0.10), max(0, ep_budget // 5))
                 )
@@ -510,6 +522,13 @@ class MemoryContext:
                         raw = (ep["content"] or "").strip()
                         if len(raw) < 4:
                             continue
+                        if self_mark:
+                            from gsuid_core.ai_core.memory.retrieval.lexical import (
+                                parse_episode_valid_at as _parse_ts,
+                            )
+
+                            if _stale_self_episode(ep, _parse_ts(ep["valid_at"] or "")):
+                                continue
                         if "[决策结论]" in raw or "决策：走 " in raw:
                             continue
                         key = raw[:80]

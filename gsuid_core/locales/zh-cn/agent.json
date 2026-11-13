@@ -128,8 +128,6 @@
   "log.agent.skip_tool_search_searching_tools": "[GsCoreAIAgent] 不搜索工具",
   "log.agent.skipping_duplicate": "[GsCoreAIAgent] 跳过重复文本(本轮已发): {p0}",
   "log.agent.supersede_cancel_current": "[GsCoreAIAgent] 同 Session 新消息到达，请求取消当前生成",
-  "log.agent.supersede_queue_wait": "[GsCoreAIAgent] 同 Session 新消息到达，排队等当前轮结束",
-  "log.agent.supersede_skip_framework_queue": "[GsCoreAIAgent] 锁忙：框架回灌排队，不 cancel 当前轮",
   "log.agent.suppressing_intermediate_text": "[GsCoreAIAgent] 抑制中间文本: {p0}",
   "log.agent.text_send_fail_failed": "[GsCoreAIAgent] 文本发送失败: {_e}",
   "log.agent.token_usage_input_tokens": "[GsCoreAIAgent] Token消耗: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}, cache_write={cache_write_tokens}",

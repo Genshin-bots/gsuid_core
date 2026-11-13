@@ -27,7 +27,6 @@ from pydantic_ai.messages import (
 )
 
 from gsuid_core.ai_core.control.lines import (
-    DIRECT_MARKER,
     DRIFT_REMINDER,
     AT_OTHER_MARKER,
     MSG_SECTION_HEAD as _MSG_SECTION_HEAD,
@@ -417,7 +416,7 @@ def is_addressed_to_self(
     is_tome / DIRECT / @名 / 句首呼名 / 名+呼语 → 呼叫。无 @ 的帮我/自问见 TurnGraph。
     句首名可紧贴 CJK（脚本边界或非昵称后缀）；名+子/酱 这类加长仍不算。
     """
-    if is_tome or DIRECT_MARKER in message_text:
+    if is_tome:
         return True
     names: list[str] = []
     for n in (persona_name, *extra_names):
@@ -447,8 +446,6 @@ def is_addressed_to_self(
 def addressed_to_someone_else(message_text: str, persona_name: str, is_tome: bool) -> bool:
     """当前消息是否明确 @ 了别人且没有同时找自己——是则本轮砍掉工具集（C-3）。"""
     if is_tome or AT_OTHER_MARKER not in message_text:
-        return False
-    if DIRECT_MARKER in message_text:
         return False
     if is_addressed_to_self(message_text, persona_name, False):
         return False
@@ -540,7 +537,7 @@ def ambient_followup_to_other(
     只在当前消息**自身不含** @ 标注（那种走主门）、非 is_tome、不点名自己、且足够短
     （催促口吻）时才成立；避免误伤"接着自己和你的对话"的正常跟进。
     """
-    if is_tome or AT_OTHER_MARKER in current_text or DIRECT_MARKER in current_text:
+    if is_tome or AT_OTHER_MARKER in current_text:
         return False
     body = extract_message_body(current_text)
     if len(body) > max_len or _names_self(current_text, persona_name):
@@ -827,7 +824,7 @@ def scaffold_hints_from_graph(
     if tg.ellipsis_followup:
         hints.append(_turn("followup"))
     elif tg.soft_continue and not tg.soft_triggered:
-        # 省略跟进优先；软触发轮不叠 soft_continue（只留 SOFT_TRIGGER_NOTE）
+        # 省略跟进优先；软触发轮不叠 soft_continue
         hints.append(_turn("soft_continue"))
     if tg.multi_speaker and tg.call_to_self:
         hints.append(_turn("multi_speaker"))
@@ -852,8 +849,10 @@ def scaffold_hints_from_graph(
 
 
 # 通道核：发现、回想、委派、发送、提醒，以及有媒体才露的读图/读视频。
+# act_for 常驻挂载；单目标轮由 visible_when 隐藏（多目标批要靠它切工具身份）。
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
+    "act_for",
     "create_subagent",
     "web_search_tool",
     "send_message_by_ai",

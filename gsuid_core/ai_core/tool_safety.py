@@ -14,6 +14,7 @@ from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.capabilities import Hooks
+from pydantic_ai.capabilities.abstract import ValidatedToolArgs, WrapToolExecuteHandler
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -48,6 +49,9 @@ async def _on_tool_execute_error(
 ) -> str:
     _ = ctx, args
     name = call.tool_name or tool_def.name or "unknown"
+    from gsuid_core.ai_core.evidence.capture import record_tool_error
+
+    record_tool_error(name, error)
     msg = format_tool_execute_error(name, error)
     logger.warning(
         t(
@@ -72,11 +76,54 @@ async def _prepare_model_request_images(
     return dataclasses.replace(request_context, messages=adapted)
 
 
+async def _inbox_act_for_execute(
+    ctx: RunContext[object],
+    *,
+    call: ToolCallPart,
+    tool_def: ToolDefinition,
+    args: ValidatedToolArgs,
+    handler: WrapToolExecuteHandler,
+) -> object:
+    """``wrap_tool_execute``：多目标收件箱批次未 act_for 时拦截非豁免工具。"""
+    from gsuid_core.ai_core.inbox.turn import current_turn
+    from gsuid_core.ai_core.control.lines import ACT_FOR_REQUIRED_DENY
+    from gsuid_core.ai_core.buildin_tools.act_for import ACT_FOR_EXEMPT_TOOLS
+
+    turn = current_turn()
+    name = (call.tool_name or tool_def.name or "").strip()
+    if turn is not None and turn.multi_target and turn.active_seq is None and name not in ACT_FOR_EXEMPT_TOOLS:
+        return ACT_FOR_REQUIRED_DENY
+    return await _evidence_capture_execute(ctx, call=call, tool_def=tool_def, args=args, handler=handler, name=name)
+
+
+async def _evidence_capture_execute(
+    ctx: RunContext[object],
+    *,
+    call: ToolCallPart,
+    tool_def: ToolDefinition,
+    args: ValidatedToolArgs,
+    handler: WrapToolExecuteHandler,
+    name: str,
+) -> object:
+    """工具证据捕获：入链时放 outcome 槽，MCP 包装填写；返回后入观测库（§4.5）。"""
+    from gsuid_core.ai_core.evidence.capture import (
+        record_tool_result,
+        take_evidence_mark,
+        reset_evidence_mark,
+    )
+
+    token = reset_evidence_mark()
+    result = await block_high_risk_execute(ctx, call=call, tool_def=tool_def, args=args, handler=handler)
+    mark = take_evidence_mark(token)
+    record_tool_result(name, result, mark)
+    return result
+
+
 def build_tool_safety_capability() -> Hooks[ToolContext]:
     """供 Agent(capabilities=[...]) 挂载的工具失败回收与跨供应商图片协议适配。"""
     return Hooks(
         prepare_model_request=_prepare_model_request_images,
-        tool_execute=block_high_risk_execute,
+        tool_execute=_inbox_act_for_execute,
         tool_execute_error=_on_tool_execute_error,
         id=_TOOL_SAFETY_CAP_ID,
     )

@@ -49,7 +49,7 @@ gsuid_core/
 gsuid_core/ai_core/
 ├── __init__.py          # 核心初始化
 ├── startup.py           # 唯一 AI 启动钩子 init_ai_core（按 _INIT_STEPS 串行初始化各子系统）
-├── handle_ai.py         # AI 聊天入口：handle_ai_chat + 共用 run_passive_interactive_chat
+├── handle_ai.py         # AI 入口：handle_inbox_turn（收件箱轮）+ run_interactive_turn/run_passive_interactive_chat
 ├── http_agent/          # HTTP 流式 Agent API（默认关；不进 handle_event）
 ├── ai_router.py         # Session 路由（get_ai_session / Persona 热重载检测）
 ├── session_registry.py  # AISessionRegistry：GsCoreAIAgent 对象注册表 + 空闲清理
@@ -108,7 +108,8 @@ core.py::websocket_endpoint  ──►  _Bot._process()  ──►  handler.py::
        └───────────────┬───────────────────────────────────────┘
               有命令匹配 │                 │ 无命令匹配（或权限不足）
                         ▼                 ▼
-            执行 trigger.func(Bot)   handle_ai.py::handle_ai_chat(Bot, Event)
+            执行 trigger.func(Bot)   handler 判定 wake → InboxScheduler.submit
+            （插件命令）              → 落定后 handle_ai.py::handle_inbox_turn(turn)
             （插件命令）                  │ 并发信号量 + 双层长度防护
                                           │ 意图分类 + get_ai_session + 记忆检索
                                           ▼

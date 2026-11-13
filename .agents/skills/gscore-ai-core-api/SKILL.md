@@ -48,7 +48,7 @@ description: >
 | 二 | `@ai_tools` 装饰器（签名、**covers/aliases 检索面**、四种模式、check_func、返回值） | [references/02-ai-tools-decorator.md](./references/02-ai-tools-decorator.md) |
 | 三 | 工具分类系统（`_TOOL_REGISTRY` 内部结构、保底池概念、Agent 调用架构、插件分类建议） | [references/03-tool-categories.md](./references/03-tool-categories.md) |
 | 四 | 触发器 → AI 工具桥接（`to_ai` / `ai_return` / `MockBot` / `send_message_by_ai` / 资源ID RM 机制 / 权限检查） | [references/04-trigger-bridge.md](./references/04-trigger-bridge.md) |
-| 五 | `create_agent` 与 Agent 架构（`create_agent` 签名、`GsCoreAIAgent.run()` 全参数、`get_main_agent_tools`、`handle_ai_chat`） | [references/05-create-agent.md](./references/05-create-agent.md) |
+| 五 | `create_agent` 与 Agent 架构（`create_agent` 签名、`GsCoreAIAgent.run()` 全参数、`get_main_agent_tools`、`handle_inbox_turn`） | [references/05-create-agent.md](./references/05-create-agent.md) |
 | 六 | 知识库与别名注册（`ai_entity` / `add_manual_knowledge` 手动知识管理 / `ai_alias` 含 C2 scope / `ai_image` 图片实体） | [references/06-knowledge-and-alias.md](./references/06-knowledge-and-alias.md) |
 | 七 | 内置工具大全（含 **search_cognition 路径卡** / **attach_article** / render_chart_spec / web 时效 + Kanban + 能力代理 + self_model） | [references/07-builtin-tools.md](./references/07-builtin-tools.md) |
 | 八 | Persona 角色系统 + Memory 记忆系统（Persona 类、build_persona_prompt、`memory_config` / `dual_route_retrieve` / `observe`） | [references/08-persona-and-memory.md](./references/08-persona-and-memory.md) |

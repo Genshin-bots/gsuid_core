@@ -3,7 +3,7 @@ name: gscore-development
 description: >
   当用户要求"维护/开发 gsuid_core 框架本身"、"GsCore 是怎么启动的"、
   "消息从进来到 AI 回复经过了哪些步骤"、"触发器是怎么匹配的"、
-  "handle_event / handle_ai_chat 干了什么"、"AI Session 怎么路由 / 怎么隔离"、
+  "handle_event / 收件箱 handle_inbox_turn 干了什么"、"AI Session 怎么路由 / 怎么隔离"、
   "工具注册表 / 渐进式工具加载 / find_tools 是怎么回事"、
   "AI 为什么召不回某个插件的工具 / 工具选错插件 / 实体路由"、
   "记忆没存下来 / 偏好记忆为空 / 私聊记忆 scope 不对"、
@@ -20,7 +20,7 @@ description: >
   与「插件开发」「适配器开发」「AI Core API（给插件用）」三个 SKILL 不同，本 SKILL
   讲的是**框架自身的内部实现与设计约束**：项目启动时序与两阶段钩子、插件发现/加载/
   依赖安装、配置系统（CoreConfig / PluginConfigStore / SV 配置 / 热重载）、事件处理
-  入口 `handler.py` 与触发器匹配、命令 vs AI 的分流、`handle_ai_chat` 全链路、
+  入口 `handler.py` 与触发器匹配、命令 vs AI 的分流、`handle_inbox_turn` 收件箱全链路、
   `_Bot`/`Bot`/`MockBot` 三类 Bot、AI Session 路由与隔离、Persona 系统、工具注册表与
   渐进式装配（三层工具池 + Reranker 精排 + `find_tools` 动态暴露 + `visible_when` 条件
   隐藏）、Heartbeat 定时巡检与免唤醒续聊、定时任务与 Kanban 长任务/能力代理、记忆系统
@@ -61,7 +61,7 @@ description: >
 | 五 | Bot 三类（`_Bot` 底层 / `Bot` 高层 / `MockBot` AI 代理、连接管理与 5 分钟重连复用、发送队列串行化） | [references/05-bot-classes.md](./references/05-bot-classes.md) |
 | 六 | AI Session 路由与 Persona（`ai_router`、**前缀缓存红线 / 保头裁中段**、Persona 热重载） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |
 | 七 | 工具注册表与 Agent 装配（`@ai_tools`/`covers`/`aliases`、L0 实体路由、`find_tools` 分流、**节点语义路由**、输出闸、**render_chart_spec series+图例**、`in_flight_short`） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
-| 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊软触发、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
+| 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊与收件箱软唤醒路由、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
 | 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem、**§9.14 认知枢纽/公共域挂文**） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账含 agent、启动挂载公共枢纽、Dense+BM25） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |

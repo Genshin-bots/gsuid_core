@@ -85,7 +85,7 @@ async def example(_user: Dict = Depends(require_auth)): ...
 私聊按人）对 Token 设 **5h/天/周** 三档上限，支持白名单 + 主人豁免。三张表
 （`AIBudgetRule`/`AIBudgetWhitelist`/`AIBudgetUsageRecord`，受总开关控制建表，已登记进
 `AI_DATABASE_MODEL_MODULES`）。判定/记账走 `budget/manager.py::budget_manager`：
-拦截在 `handle_ai.py::handle_ai_chat` 调 LLM **前**（`check`），记账在
+拦截在 `handle_ai.py`（`handle_inbox_turn`/`run_interactive_turn`）调 LLM **前**（`check`），记账在
 `gs_agent.py::_execute_run` 记 Token **后**（`record_usage`，仅带 `ev` 的交互式 run）。
 全局策略在 `budget/config.py`（`budget_config.json`）。前端 API 见
 `webconsole/budget_api.py`（`/api/ai/budget/*`）与 `webconsole/docs/41-ai-budget.md`。

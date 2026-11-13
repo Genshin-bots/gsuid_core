@@ -1,0 +1,6 @@
+{
+  "log.inbox.item_expired": "[GsCore][Inbox] 起動項目 #{seq}({kind}) が期限切れ：{reason}",
+  "log.inbox.turn_failed": "[GsCore][Inbox] 受信トレイターン失敗、バッチを保留に戻す：session={session_id} error={error}",
+  "log.inbox.reply_ref_invalid": "[GsCore][Inbox] 返信プランが無効な #seq を参照：{seqs}",
+  "log.inbox.bubble_capped": "[GsCore][Inbox] バブル数超過、{count} 件を破棄"
+}

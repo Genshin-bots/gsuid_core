@@ -27,7 +27,8 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "chitchat_style",
     "transaction_priority",
     "report_titles",
-    "soft_trigger",
+    "inbox_pending",
+    "evidence",
     "plugin_hints",
 )
 
@@ -48,7 +49,8 @@ BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "chitchat_style": 160,
     "transaction_priority": 80,
     "report_titles": 80,
-    "soft_trigger": 220,
+    "inbox_pending": 600,
+    "evidence": 400,
     "plugin_hints": 150,
 }
 
@@ -194,6 +196,8 @@ KIT_SLOTS: Tuple[KitSlot, ...] = (
     _slot("planning_context", "gscore.planning_context", "长任务文案 + has_actionable"),
     _slot("classifier", "gscore.classifier", "意图分类"),
     _slot("reactive_gate", "gscore.reactive_gate", "软触发沉默门"),
+    _slot("inbox", "gscore.inbox", "收件箱待回应 / 工具身份 / 相关往来块"),
+    _slot("evidence", "gscore.evidence", "工具证据观测与实时凭据状态"),
     _slot("scaffold", "gscore.scaffold", "TurnGraph 消费 / CheapGate / 脚手架 hints"),
     _slot("session_mute", "gscore.session_mute", "会话静默窗"),
     _slot("statistics", "gscore.statistics", "统计记账（只上报，不扣减）"),

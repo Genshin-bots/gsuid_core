@@ -210,12 +210,35 @@ AI_CONFIG: Dict[str, GSC] = {
         2,
         options=[1, 2, 3, 5],
     ),
-    "follow_up_debounce_seconds": GsFloatConfig(
-        "免唤醒续聊防抖合并缓冲(秒)",
-        "群聊中同一用户在续聊窗口内连发短消息时，等待合并的缓冲时间（秒）。硬触发不进缓冲。设为0关闭合并。",
-        3.0,
-        min_value=0.0,
-        max_value=10.0,
+    "inbox_settle_max_ms": GsIntConfig(
+        "收件箱静默窗上限(毫秒)",
+        "群聊收件箱：同一说话人续发可延长静默窗，但从首个触发项起算的总等待不超过此上限（毫秒）。",
+        5000,
+        max_value=30000,
+    ),
+    "inbox_max_bubbles": GsIntConfig(
+        "收件箱单轮最多气泡",
+        "一轮收件箱回复最多发几条气泡，超出的截断并记日志。",
+        3,
+        max_value=10,
+    ),
+    "inbox_max_targets": GsIntConfig(
+        "收件箱单轮最多目标人数",
+        "一轮收件箱回复最多指向几名待回应用户，超出的目标截断。",
+        3,
+        max_value=10,
+    ),
+    "inbox_delta_max_lines": GsIntConfig(
+        "收件箱增量块行数上限",
+        "线程视图增量块超过此行数时保留待回应项及其引用链与最近 20 行，中间省略。",
+        60,
+        max_value=400,
+    ),
+    "inbox_feedback_window": GsIntConfig(
+        "收件箱反馈统计窗口(秒)",
+        "判断「有人接/没人接」时，Bot 出站后观察群内反应的时间窗（秒）。",
+        120,
+        max_value=600,
     ),
     "spMode": GsDivider(
         "Agent 特殊模式",

@@ -443,8 +443,8 @@ def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch) -> None:
     from gsuid_core.config import core_config
     from gsuid_core.models import Event
     from gsuid_core.utils.database import base_models
+    from gsuid_core.ai_core.thread_view import render_window
     from gsuid_core.ai_core.autonomy.gates import dm_allowed
-    from gsuid_core.ai_core.history_format import format_history_for_agent
     from gsuid_core.ai_core.database.models import UserFavorability  # noqa: F401
     from gsuid_core.ai_core.memory.observer import ObservationRecord
     from gsuid_core.message_history.manager import HistoryManager
@@ -495,7 +495,7 @@ def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch) -> None:
     ev = Event(bot_id="test_bot", user_id="123456", group_id="654321", user_type="group", msg_id="msg_test_001")
     rec = mgr.add_message(event=ev, role="user", content="全天候", metadata={"msg_id": "msg_test_001"})
     assert mgr.mark_command_hit(ev, "msg_test_001") is True and rec.metadata.get("command_hit") is True
-    rendered = format_history_for_agent([rec])
+    rendered = render_window([rec])
     assert "[用户调用了 bot 功能]" in rendered and "全天候" not in rendered
 
     window = _ScopeWindowBuffer()
@@ -513,3 +513,29 @@ def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch) -> None:
         if i == 2:
             assert not window.should_flush(window.first_at)
     assert window.should_flush(window.first_at)
+
+
+def test_personal_credential_evidence_excluded_from_group_facts() -> None:
+    """个人凭据出站行不进群级事实抽取输入（§4.7）。"""
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+    from gsuid_core.ai_core.memory.ingestion.worker import filter_group_scope_records
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        ("group:9", True, False),
+        ("group:9", False, True),
+        ("user_global:1", True, True),
+        ("self:bot:x", True, True),
+    ]
+    for scope_key, personal, expected_kept in rows:
+        rec = ObservationRecord(
+            raw_content="出站文本",
+            speaker_id="__assistant_bot__",
+            group_id="9",
+            scope_key=scope_key,
+            timestamp=now,
+            message_type="group_msg",
+            personal_credential=personal,
+        )
+        kept = filter_group_scope_records(scope_key, [rec])
+        assert (len(kept) == 1) == expected_kept

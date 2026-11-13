@@ -4,7 +4,7 @@
 出站分发，以及在固定锚点 ``fire_hooks``。产品能力（记忆、关系温度、情绪、意图分类、
 软触发门、脚手架注入、工具装配）全部是**套件**，挂在 hook 总线上。
 
-``run_interactive_turn`` 是生产 ``handle_ai_chat`` 与评测
+``run_interactive_turn`` 是生产 ``handle_inbox_turn`` 与评测
 ``/api/chat_with_history`` 共用的**唯一一轮编排**。评测只允许在进这个函数之前
 做适配（建 Event / 灌 history / 夹具 View），不许再自己分类、检索或结算。
 
@@ -29,15 +29,22 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.hooks import HookDecision, AgentHookPoint, AgentHookContext, fire_hooks
-from gsuid_core.ai_core.utils import prepare_content_payload, has_model_visible_content
+from gsuid_core.ai_core.utils import prepare_media_payload, has_model_visible_content
 from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
-from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.gs_agent import STALE_CHAT_REQUEST_TTL, GsCoreAIAgent
+from gsuid_core.message_history import MessageRecord, get_history_manager
+from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 from gsuid_core.ai_core.ai_router import get_ai_session
+from gsuid_core.ai_core.inbox.turn import (
+    InboxTurn,
+    bind_turn,
+    reset_turn,
+    single_turn_from_event,
+)
+from gsuid_core.ai_core.thread_view import render_delta, render_router_view
 from gsuid_core.ai_core.relationship import RelationshipView, fetch_relationship, collect_priority_speakers
+from gsuid_core.message_history.link import EventLink
 from gsuid_core.ai_core.content_guard import GuardFlags, annotate_untrusted_message_ex
 from gsuid_core.ai_core.turn_pipeline import (
-    stale_request,
     evaluate_budget,
     check_budget_gate,
     deliver_run_result,
@@ -46,7 +53,6 @@ from gsuid_core.ai_core.turn_pipeline import (
     classify_run_result,
     prev_turn_used_tools,
     recent_report_titles,
-    build_group_history_block,
     apply_absolute_length_guard,
     build_private_history_block,
     prior_user_turns_for_intent,
@@ -55,13 +61,15 @@ from gsuid_core.ai_core.turn_pipeline import (
 )
 from gsuid_core.ai_core.trigger_bridge import MockBot
 from gsuid_core.ai_core.followup_window import (
+    note_hard_trigger,
     record_soft_reply,
     record_gate_outcome,
     record_gate_silence,
-    revoke_fresh_hard_trigger,
 )
+from gsuid_core.ai_core.inbox.scheduler import TurnOutcome, set_turn_runner
 from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
     CheapGate,
@@ -131,6 +139,7 @@ async def run_passive_interactive_chat(
     settle: bool = True,
     outbound_stream: bool = False,
     stats_chat_type: Optional[str] = None,
+    inbox_turn: Optional[InboxTurn] = None,
 ) -> PassiveChatResult:
     """适配器与 HTTP Agent 共用的被动聊天入口（不含 ``_ai_semaphore``）。
 
@@ -211,6 +220,7 @@ async def run_passive_interactive_chat(
             settle=settle,
             outbound_stream=outbound_stream,
             stats_chat_type=stats_chat_type,
+            inbox_turn=inbox_turn,
         )
         if turn.is_silence:
             return PassiveChatResult("silence", turn=turn)
@@ -219,42 +229,54 @@ async def run_passive_interactive_chat(
         reset_speaking_persona(_speaking_token)
 
 
-async def handle_ai_chat(
-    bot: Bot,
-    event: Event,
-    enqueue_ts: Optional[float] = None,
-    soft_triggered: bool = False,
-) -> None:
-    """被动交互主链路（异步队列执行）。
+async def handle_inbox_turn(turn: InboxTurn, ws: _Bot) -> TurnOutcome:
+    """收件箱轮次入口（异步队列执行）。**不抛**：边界内一切异常归一成
+    ``TurnOutcome(error=True)``，调度器据此重试 / 过期。
 
     锚点顺序：预算 → H01 → 长度防护 → Session → TurnGraph/开口门 → H02 → H03 分类
     → 开口门重判 → H04 软门 → payload → H05 检索 → H06/H07 合成 → 开口门终判
     → ``session.run`` → 出站 → 结算 + H08。
-
-    Args:
-        bot: Bot对象，用于发送消息
-        event: Event事件对象，包含用户输入和相关上下文
-        enqueue_ts: 入队时刻（O-A 队头阻塞防护）
-        soft_triggered: 是否为免唤醒续聊软触发
     """
-    if not ai_config.get_config("enable").data:
-        logger.debug(t("log.ai.gscore_service_enabled_skipping"))
-        return
-    if not await _wait_core_ready():
-        return
-
+    primary = turn.primary
+    bot = Bot(ws, primary.event)
+    has_hard = any(e.item.strength == "hard" for e in turn.entries)
     async with _ai_semaphore:
-        if stale_request(enqueue_ts, STALE_CHAT_REQUEST_TTL, event=event):
-            return
+        token = bind_turn(turn)
+        from gsuid_core.ai_core.inbox.receipt import receipt_tool_policy, settle_receipt_entries
+        from gsuid_core.ai_core.command_aside.policy import bind_tool_policy, restore_tool_policy
+
+        # 回执批一律绑工具策略：allow_tools=False 的回执整轮禁工具；
+        # 混有 hard 项时只挂附加工具不封锁（hard 需要工具）。
+        pol_tokens = None
+        if any(e.receipt is not None for e in turn.entries):
+            _pol_allow, _pol_extra = receipt_tool_policy(turn)
+            pol_tokens = bind_tool_policy(_pol_allow or has_hard, _pol_extra)
         try:
-            await run_passive_interactive_chat(
+            result = await run_passive_interactive_chat(
                 bot,
-                event,
-                enqueue_ts=enqueue_ts,
-                soft_triggered=soft_triggered,
+                primary.event,
+                soft_triggered=not has_hard,
+                inbox_turn=turn,
+            )
+            inner = result.turn
+            if inner is not None and inner.result_text:
+                settle_receipt_entries(turn, inner.result_text, turn.persona_name)
+            return TurnOutcome(
+                reached_model=turn.reached_model,
+                error=bool(inner.is_error) if inner is not None else False,
+                answered=frozenset(turn.answered),
             )
         except Exception as e:
-            logger.exception(t("log.ai.gscore_ai_exception_chat_error", e=e))
+            logger.exception(t("log.inbox.turn_failed", session_id=turn.session_id, error=str(e)))
+            return TurnOutcome(
+                reached_model=turn.reached_model,
+                error=True,
+                answered=frozenset(turn.answered),
+            )
+        finally:
+            reset_turn(token)
+            if pol_tokens is not None:
+                restore_tool_policy(pol_tokens)
 
 
 async def run_interactive_turn(
@@ -272,12 +294,37 @@ async def run_interactive_turn(
     history_context: Optional[str] = None,
     outbound_stream: bool = False,
     stats_chat_type: Optional[str] = None,
+    inbox_turn: Optional[InboxTurn] = None,
 ) -> InteractiveTurnResult:
     """生产与评测共用的一轮编排（H01 之后的分类 / 检索 / 装配 / 结算）。
 
     调用方只负责建 Event / Session / hook_ctx。分类、检索、CheapGate、结算
     必须走这里，否则评测会变成第三套语义。
     """
+
+    turn = inbox_turn if inbox_turn is not None else single_turn_from_event(event, session.persona_name or "")
+
+    history = get_history_manager()
+    # 评测 / HTTP：事件未入 A 轨时合成瞬时记录供线程视图渲染（不落库）。
+    render_records: list[MessageRecord] = list(history.get_history(event))
+    for entry in turn.entries:
+        if history.find_by_seq(event, entry.item.seq) is None:
+            seq = history.head_seq(event) + 1
+            entry.item.seq = seq
+            render_records.append(
+                MessageRecord(
+                    role="user",
+                    content=entry.event.raw_text or "",
+                    user_id=str(entry.event.user_id or ""),
+                    link=EventLink(seq=seq, msg_id=str(entry.event.msg_id or "")),
+                )
+            )
+
+    # query：单目标 = 该项正文；多目标 = 各 pending 正文按行拼接。
+    if turn.multi_target:
+        query = "\n".join(e.event.raw_text or "" for e in turn.entries if (e.event.raw_text or "").strip())
+    else:
+        query = turn.primary.event.raw_text or ""
 
     def _count_soft_silence() -> None:
         if not soft_triggered or not event.user_id:
@@ -294,10 +341,15 @@ async def run_interactive_turn(
 
     is_rep_bot, is_bystander_q, is_stale_q = inspect_quote_relation(event)
 
+    # is_tome 用「本批是否有 hard 唤醒」：auto-@ 的引用了你的话也是 hard，
+    # 但语义上不是直接找你。at_bot 用主目标链接上的 at_self（不是事件透传）。
+    _primary_link = next(
+        (r.link for r in render_records if r.link is not None and r.link.seq == turn.primary.item.seq), None
+    )
     turn_graph = build_turn_graph(
         query,
         persona_name=session.persona_name or "",
-        is_tome=bool(event.is_tome),
+        is_tome=any(e.item.strength == "hard" for e in turn.entries),
         user_type=str(event.user_type or ("group" if event.group_id else "direct")),
         primary_speaker=str(event.user_id or ""),
         recent=recent_history_texts(session.history),
@@ -306,7 +358,7 @@ async def run_interactive_turn(
         followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
         ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
         has_reply=bool(event.reply or event.reply_id),
-        at_bot=bool(event.at_bot),
+        at_bot=bool(_primary_link and _primary_link.at_self),
         is_reply_to_bot=is_rep_bot,
         is_bystander_quote=is_bystander_q,
         is_stale_quote=is_stale_q,
@@ -330,6 +382,17 @@ async def run_interactive_turn(
     if not hook_ctx.prior_user_turns:
         hook_ctx.prior_user_turns = prior_turns
     hook_ctx.prev_turn_used_tools = prev_turn_used_tools(session.history, current_user_id=str(event.user_id or ""))
+    # 线程视图必须先于 CLASSIFY 渲染：TurnRouter 在 H03 里读 router_view 与 pending 列表。
+    delta_text = render_delta(
+        render_records,
+        from_seq=turn.from_seq,
+        head_seq=turn.head_seq,
+        backfill=turn.backfill,
+        pending_seqs=tuple(e.item.seq for e in turn.entries),
+        persona_name=session.persona_name,
+        private=not bool(event.group_id),
+    )
+    hook_ctx.router_view = render_router_view(turn, render_records)
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
 
@@ -353,7 +416,7 @@ async def run_interactive_turn(
     logger.info(t("log.ai.gscore_ai_intent_mode", intent=intent or "-"))
 
     if soft_triggered:
-        hook_ctx.gate_history = get_history_manager().get_history(event, limit=15)
+        hook_ctx.gate_history = history.get_history(event, limit=15)
         decision = await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx)
         if decision is not HookDecision.CONTINUE or not hook_ctx.should_speak:
             record_gate_silence(event.session_id, str(event.user_id))
@@ -368,11 +431,12 @@ async def run_interactive_turn(
     if not (event.image_id_list or event.image_id):
         pending_images = extract_pending_unread_images(event, session.read_image_ids)
 
-    user_messages, guard_flags = await prepare_content_payload(
-        event,
+    # 线程视图 delta 已在 CLASSIFY 前渲染（路由要看同一份时间线），这里直接入 payload。
+    user_messages, guard_flags = await prepare_media_payload(
+        [(e.item.seq, e.event) for e in turn.entries],
+        delta_text,
         session.task_level,
         task_kind=session.task_kind,
-        quoted_tome=turn_graph.quoted_tome,
         pending_unread_images=pending_images,
     )
     await apply_summary_guard(event, user_messages)
@@ -400,9 +464,8 @@ async def run_interactive_turn(
     if history_context is not None:
         hist_block = history_context
     elif event.group_id:
-        # 群转录是群聊轮的**必备输入**，不是"被寻址时的加分项"。寻址门只决定能不能答，
-        # 不决定看不看得见群：软触发轮砍掉它，模型只能靠语义猜指代，会安到别人头上。
-        hist_block = build_group_history_block(event)
+        # 群聊增量已在 user 消息的线程视图里；history 块不再拼旧群转录。
+        hist_block = ""
     else:
         # 私聊在会话冷启动时（历史为空或首轮），回灌近 8 条近期私聊记录
         is_cold = len(session.history) <= 1
@@ -444,6 +507,7 @@ async def run_interactive_turn(
     if merge_line:
         user_messages = [*user_messages, merge_line]
 
+    turn.reached_model = True
     chat_result = await session.run(
         user_message=user_messages,
         bot=bot,
@@ -469,12 +533,22 @@ async def run_interactive_turn(
             _arcs = await load_micro_arcs(_pn)
             consolidate_for_target(_arcs, event.group_id or "", event.user_id or "")
             await save_micro_arcs(_pn, _arcs)
-    if turn_graph.quoted_tome and is_silence and not session.last_run_sent_visible_reply and event.user_id:
-        revoke_fresh_hard_trigger(event.session_id, str(event.user_id))
-    if is_silence and soft_triggered and event.user_id:
-        record_gate_silence(event.session_id, str(event.user_id))
-    elif soft_triggered and not is_error and not is_silence and event.user_id:
-        record_soft_reply(event.session_id, str(event.user_id))
+
+    # 收件箱落定：answered 的每人登记续聊窗口；followup 项按 answered/dismissed 记账。
+    session.thread_backfill_due = False
+    if not is_error:
+        _fw = ai_config.get_config("follow_up_window").data
+        _fmax = ai_config.get_config("follow_up_max_total").data
+        answered_uids = {e.item.user_id for e in turn.entries if e.item.seq in turn.answered}
+        for uid in answered_uids:
+            note_hard_trigger(event.session_id, str(uid), _fw, _fmax)
+        for e in turn.entries:
+            if e.item.kind != "followup":
+                continue
+            if e.item.seq in turn.answered:
+                record_soft_reply(event.session_id, str(e.item.user_id))
+            else:
+                record_gate_silence(event.session_id, str(e.item.user_id))
     if deliver:
         await deliver_run_result(
             bot,
@@ -488,7 +562,8 @@ async def run_interactive_turn(
 
     if settle and session.persona_name:
         hook_ctx.tool_names_called = tuple(session._last_attempt_tool_calls)
-        hook_ctx.result_text = result_text[:200]
+        # 入档/蒸馏用的是剥签台词；<reply #n> 只留给出站路由。
+        hook_ctx.result_text = strip_protocol_tags(result_text).strip()[:200]
         _think_max = int(ai_config.get_config("thinking_text_max").data)
         _think = session._last_attempt_thinking or ""
         hook_ctx.thinking_text = _think[-_think_max:] if _think else ""
@@ -608,3 +683,6 @@ async def _settle_silent_turn(
 
 # 情绪更新已迁至 ``kits/mood/kit.py``（H08）：六张关键词表在 relationship/signals.py，
 # mood 与关系温度一次扫描两用，结论不会再各说各话。
+
+# 模块加载即登记，保证首个 WS 事件到达前 runner 已就位。
+set_turn_runner(handle_inbox_turn)

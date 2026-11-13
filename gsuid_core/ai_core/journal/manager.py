@@ -32,7 +32,8 @@ _DEFAULT_SUMMARY_MAX_CHARS = 300
 _MAX_TIMELINE_ENTRIES = 20
 _LINE_PARSER = re.compile(
     r"^- \[(?P<time>[^\]|]+)(?: \| (?P<tag>[^\]]+))?\] (?P<text>.*?)"
-    r"(?: \(群:(?P<gid>\d+)\))?(?: \(句柄: (?P<hid>[^)]+)\))?(?: \((?P<cnt>×\d+)\))?$"
+    r"(?: \(群:(?P<gid>\d+)\))?(?: \(句柄: (?P<hid>[^)]+)\))?"
+    r"(?: \(替:(?P<who>[^)]+)\))?(?: \((?P<cnt>×\d+)\))?$"
 )
 _JOURNAL_LOCKS: Dict[str, asyncio.Lock] = {}
 _LAST_UPDATE_TS: Dict[str, float] = {}
@@ -68,6 +69,7 @@ class JournalEntry:
     handle_id: str = ""
     group_id: str = ""
     is_silent_check: bool = False
+    requested_by: str = ""  # 触发该工具条目的说话人 uid（§4.7 F15）
 
 
 def _ensure_journal_dir() -> Path:
@@ -138,6 +140,8 @@ def _format_entry_line(entry: JournalEntry) -> str:
         parts.append(f" (群:{entry.group_id})")
     if entry.handle_id:
         parts.append(f" (句柄: {entry.handle_id})")
+    if entry.requested_by:
+        parts.append(f" (替:{entry.requested_by})")
     return "".join(parts)
 
 
@@ -226,6 +230,7 @@ def read_journal_for_context(
     *,
     current_group_id: str | None = None,
     since_ts: float = 0.0,
+    turn_target_uids: Sequence[str] | None = None,
 ) -> Tuple[str, float]:
     """读取手账供上下文装配。
 
@@ -257,8 +262,13 @@ def read_journal_for_context(
         if visible_lines and latest_ts > since_ts:
             from gsuid_core.ai_core.control.lines import journal_delta_line
 
-            recent = visible_lines[-1]
-            return journal_delta_line(recent.lstrip("- ")), latest_ts
+            # 替本轮目标以外的人跑的工具条目不注入（§4.7 F15）。
+            for recent in reversed(visible_lines):
+                m = _LINE_PARSER.match(recent)
+                who = m.group("who") if m else None
+                if who and turn_target_uids is not None and who not in turn_target_uids:
+                    continue
+                return journal_delta_line(recent.lstrip("- ")), latest_ts
         return "", latest_ts
 
     parts: List[str] = []

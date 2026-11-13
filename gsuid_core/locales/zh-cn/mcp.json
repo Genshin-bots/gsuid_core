@@ -3,7 +3,7 @@
   "log.mcp.ai_master_switch_skipping_2": "[MCP] AI总开关已关闭，跳过MCP工具注册",
   "log.mcp.bind_audit": "[MCP Bind] cmd={cmd} user={uid}@{bot} outcome={outcome}",
   "log.mcp.bind_available": "可绑定的 MCP 服务：\n{lines}\n\n发送：mcp绑定 <服务名> <凭据>",
-  "log.mcp.bind_guide": "【{name}】需要先绑定你的凭据才能使用。\n需绑项：{keys}\n请【私聊】我发送：{example}{help}\n（绑定操作只在私聊受理，请勿在群里发送凭据）",
+  "log.mcp.bind_guide": "【{name}】{who}还没绑定凭据，需要先绑定才能使用。\n需绑项：{keys}\n请【私聊】我发送：{example}{help}\n（绑定操作只在私聊受理，请勿在群里发送凭据）",
   "log.mcp.bind_guide_missing": "该 MCP 服务不存在或已删除。",
   "log.mcp.bind_guide_none": "【{name}】无需绑定凭据即可使用。",
   "log.mcp.bind_guide_url": "获取凭据：{url}",

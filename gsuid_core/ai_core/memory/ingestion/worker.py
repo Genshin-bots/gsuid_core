@@ -123,6 +123,16 @@ async def ingest_window(
             reset_budget_scope_context(_btoken)
 
 
+def filter_group_scope_records(
+    scope_key: str,
+    records: list[ObservationRecord],
+) -> list[ObservationRecord]:
+    """个人凭据出站行只落该用户 scope，不进群级事实抽取输入（§4.7）。"""
+    if not scope_key.startswith("group:"):
+        return records
+    return [r for r in records if not r.personal_credential]
+
+
 async def _ingest_window_inner(
     records: list[ObservationRecord],
     scope_key: str,
@@ -135,7 +145,12 @@ async def _ingest_window_inner(
     from gsuid_core.ai_core.memory.ingestion.algebra import extract_cluster
     from gsuid_core.ai_core.memory.ingestion.window_router import route_window
 
+    stats = {"episodes": 0, "entities": 0, "edges": 0, "preferences": 0, "discarded": 0}
     _hm = get_history_manager()
+    records = filter_group_scope_records(scope_key, records)
+    if not records:
+        return stats
+
     for rec in records:
         if not rec.command_hit and rec.message_id and _hm.is_command_hit(rec.message_id):
             rec.command_hit = True
@@ -146,7 +161,6 @@ async def _ingest_window_inner(
     route = await route_window(scope_key, records, threads, force_settle=force_settle)
 
     open_lines = set(route["open_lines"])
-    stats = {"episodes": 0, "entities": 0, "edges": 0, "preferences": 0, "discarded": 0}
     for cluster in route["clusters"]:
         lines = [i for i in cluster["lines"] if i not in open_lines]
         if not lines:

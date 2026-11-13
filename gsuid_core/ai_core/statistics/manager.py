@@ -449,8 +449,8 @@ class StatisticsManager:
                 "conversion_rate": hb_true / (hb_true + hb_false) * 100 if (hb_true + hb_false) > 0 else 0,
             },
             "trigger_distribution": {
-                k: {"count": agg_triggers.get(k, 0), "percentage": agg_triggers.get(k, 0) / total_triggers * 100}
-                for k in ["mention", "keyword", "followup", "heartbeat", "scheduled"]
+                k: {"count": v, "percentage": v / total_triggers * 100}
+                for k, v in sorted(agg_triggers.items(), key=lambda kv: kv[1], reverse=True)
             },
             "rag": {
                 "hit_count": self._rag["hit"],

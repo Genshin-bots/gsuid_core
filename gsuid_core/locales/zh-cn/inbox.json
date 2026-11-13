@@ -1,0 +1,6 @@
+{
+  "log.inbox.item_expired": "[GsCore][Inbox] 唤醒项 #{seq}({kind}) 已过期：{reason}",
+  "log.inbox.turn_failed": "[GsCore][Inbox] 收件箱轮次执行失败，本批退回待处理：session={session_id} error={error}",
+  "log.inbox.reply_ref_invalid": "[GsCore][Inbox] 回复计划引用了无效的 #seq：{seqs}",
+  "log.inbox.bubble_capped": "[GsCore][Inbox] 本轮气泡数超限，已丢弃 {count} 条"
+}

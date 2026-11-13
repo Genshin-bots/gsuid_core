@@ -34,7 +34,6 @@ from gsuid_core.ai_core.models import PendingImage
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.quota_guard import quota_breaker
 from gsuid_core.ai_core.control.lines import MSG_SECTION_HEAD
-from gsuid_core.ai_core.history_format import compose_group_history
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
@@ -250,30 +249,6 @@ def build_private_history_block(event: Event, *, is_cold_session: bool = False) 
     from gsuid_core.ai_core.history_format import format_private_recent_history
 
     return format_private_recent_history(records[-8:])
-
-
-def build_group_history_block(event: Event, *, is_cold_session: bool = False) -> str:
-    """群聊 IM 历史块；私聊在冷启动时按需回灌近 8 条私聊记录。"""
-    if not event.group_id:
-        return build_private_history_block(event, is_cold_session=is_cold_session)
-
-    raw = get_history_manager().get_history(event)
-    records = raw[:-1] if raw else []
-    if not records:
-        return ""
-    nickname: Optional[str] = None
-    if event.sender and "nickname" in event.sender:
-        nick = event.sender["nickname"]
-        if isinstance(nick, str) and nick.strip():
-            nickname = nick.strip()
-    block = compose_group_history(
-        records,
-        current_user_id=str(event.user_id),
-        current_user_name=nickname,
-    )
-    if block:
-        logger.debug(t("log.ai.gscore_historical", p0=len(records)))
-    return block
 
 
 def classify_run_result(chat_result: str) -> Tuple[str, bool, bool]:

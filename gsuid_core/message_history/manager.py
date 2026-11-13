@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import field, dataclass
 
 from gsuid_core.models import Event, Message
+from gsuid_core.message_history.link import EventLink, current_outbound
 
 
 def node_items_to_history(items: List[Message], *, register_media: bool = True) -> List[Dict[str, Any]]:
@@ -96,6 +97,7 @@ class MessageRecord:
     user_avatar: Optional[str] = None  # 发送者头像URL
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    link: Optional[EventLink] = None  # 会话内序号与引用/@边，skip_ai_history 不分配
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
@@ -107,11 +109,14 @@ class MessageRecord:
             "user_avatar": self.user_avatar,
             "timestamp": self.timestamp,
             "metadata": self.metadata,
+            "link": self.link.to_dict() if self.link is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> MessageRecord:
         """从字典创建实例"""
+        link_raw: object = data["link"] if "link" in data else None
+        link = EventLink.from_dict(link_raw) if isinstance(link_raw, dict) else None
         return cls(
             role=data["role"],
             content=data["content"],
@@ -120,6 +125,7 @@ class MessageRecord:
             user_avatar=data.get("user_avatar"),
             timestamp=data.get("timestamp", time.time()),
             metadata=data.get("metadata", {}),
+            link=link,
         )
 
 
@@ -150,6 +156,8 @@ class HistoryManager:
         self._msg_id_cache: Dict[Tuple["Event", str], Optional[MessageRecord]] = {}
         self._command_hit_msg_ids: set[str] = set()
         self._command_hit_queue: deque[str] = deque(maxlen=5000)
+        # 每会话单调事件序号，锁内分配；进程重启从 1 起（内存历史本就为空）
+        self._session_seq: Dict["Event", int] = {}
         self._lock = Lock()
 
     def _get_storage_event(self, event: "Event") -> "Event":
@@ -208,22 +216,61 @@ class HistoryManager:
                 user_avatar=user_avatar,
                 metadata=meta,
             )
-        record = MessageRecord(
-            role=role,
-            content=content,
-            user_id=event.user_id,
-            user_name=user_name,
-            user_avatar=user_avatar,
-            metadata=meta,
-        )
+        # 群聊 user_id 不参与会话标识，存储 key 统一置空；通过 WS_BOT_ID 与 bot_self_id 隔离。
+        storage_event = self._get_storage_event(event)
+
+        # 引用边在锁外先查（find_by_msg_id 自取同一把锁，不能嵌套）
+        reply_to_seq: Optional[int] = None
+        reply_to_author: Optional[str] = None
+        if role == "user":
+            reply_id = meta["reply_id"] if "reply_id" in meta else None
+            if reply_id is not None and str(reply_id).strip():
+                quoted = self.find_by_msg_id(storage_event, str(reply_id))
+                if quoted is not None:
+                    if quoted.link is not None:
+                        reply_to_seq = quoted.link.seq
+                    if quoted.role == "assistant" or str(quoted.user_id) == str(event.bot_self_id):
+                        reply_to_author = "self"
+                    else:
+                        reply_to_author = str(quoted.user_id)
+        at_targets: Tuple[str, ...] = ()
+        if role == "user" and "at_list" in meta and isinstance(meta["at_list"], list):
+            seen_targets: set[str] = set()
+            normalized: List[str] = []
+            for item in meta["at_list"]:
+                key = str(item)
+                if key and key not in seen_targets:
+                    seen_targets.add(key)
+                    normalized.append(key)
+            at_targets = tuple(normalized)
+        at_self = bool(meta["at_bot"] if "at_bot" in meta else False) and reply_to_author != "self"
+        binding = current_outbound() if role == "assistant" else None
 
         # 估算新消息的 Token 数
         new_tokens = _estimate_tokens(content)
 
-        # 群聊 user_id 不参与会话标识，存储 key 统一置空；通过 WS_BOT_ID 与 bot_self_id 隔离。
-        storage_event = self._get_storage_event(event)
-
         with self._lock:
+            seq = (self._session_seq[storage_event] if storage_event in self._session_seq else 0) + 1
+            self._session_seq[storage_event] = seq
+            record = MessageRecord(
+                role=role,
+                content=content,
+                user_id=event.user_id,
+                user_name=user_name,
+                user_avatar=user_avatar,
+                metadata=meta,
+                link=EventLink(
+                    seq=seq,
+                    msg_id=str(meta["msg_id"]) if "msg_id" in meta and meta["msg_id"] is not None else "",
+                    reply_to_seq=reply_to_seq,
+                    reply_to_author=reply_to_author,
+                    at_targets=at_targets,
+                    at_self=at_self,
+                    seen_seq=binding.seen_seq if binding is not None else None,
+                    in_reply_to_seqs=binding.in_reply_to_seqs if binding is not None else (),
+                    evidence=binding.evidence if binding is not None else (),
+                ),
+            )
             if storage_event not in self._histories:
                 self._histories[storage_event] = deque()
                 self._session_tokens[storage_event] = 0
@@ -416,6 +463,32 @@ class HistoryManager:
             history = self._histories.get(storage_event, deque())
             return len(history)
 
+    def head_seq(self, event: "Event") -> int:
+        """会话 A 轨当前已分配的最大 seq；无记录为 0。"""
+        storage_event = self._get_storage_event(event)
+        with self._lock:
+            return self._session_seq[storage_event] if storage_event in self._session_seq else 0
+
+    def records_after(self, event: "Event", seq: int) -> List[MessageRecord]:
+        """取 seq 之后的全部记录（无 link 的旧记录不在其内）。"""
+        storage_event = self._get_storage_event(event)
+        with self._lock:
+            if storage_event not in self._histories:
+                return []
+            history = self._histories[storage_event]
+            return [r for r in history if r.link is not None and r.link.seq > seq]
+
+    def find_by_seq(self, event: "Event", seq: int) -> Optional[MessageRecord]:
+        """按 seq 反查单条记录。"""
+        storage_event = self._get_storage_event(event)
+        with self._lock:
+            if storage_event not in self._histories:
+                return None
+            for record in self._histories[storage_event]:
+                if record.link is not None and record.link.seq == seq:
+                    return record
+            return None
+
     def find_by_msg_id(self, event: "Event", msg_id: str) -> Optional[MessageRecord]:
         """按平台消息 ID 在当前会话滑动窗口中倒序反查单条消息。"""
         if not msg_id:
@@ -563,6 +636,7 @@ class HistoryManager:
         with self._lock:
             if storage_event in self._histories:
                 self._histories[storage_event].clear()
+            self._session_seq.pop(storage_event, None)
             keys_to_del = [k for k in self._msg_id_cache if k[0] == storage_event]
             for k in keys_to_del:
                 del self._msg_id_cache[k]
@@ -585,6 +659,7 @@ class HistoryManager:
                 del self._session_metadata[storage_event]
             if storage_event in self._session_tokens:
                 del self._session_tokens[storage_event]
+            self._session_seq.pop(storage_event, None)
 
         if deleted:
             self._publish_session_event("deleted", storage_event.session_id)
@@ -627,6 +702,11 @@ class HistoryManager:
             target_history.extend(merged_records)
             self._session_tokens.pop(source_key, None)
             self._session_tokens[target_key] = sum(_estimate_tokens(rec.content) for rec in target_history)
+            self._session_seq.pop(source_key, None)
+            self._session_seq[target_key] = max(
+                (rec.link.seq for rec in target_history if rec.link is not None),
+                default=0,
+            )
             self._retain_rolling(target_key)
 
             now = time.time()

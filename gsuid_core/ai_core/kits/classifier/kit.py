@@ -27,6 +27,7 @@ class ClassifierKit(AgentKit):
             soft_triggered=ctx.soft_triggered,
             clock_at=ctx.clock_at,
             recent_group_messages=recent,
+            thread_view=ctx.router_view,
         )
         ctx.route_decision = decision
         ctx.set_intent(decision.intent)

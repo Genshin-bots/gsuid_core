@@ -53,7 +53,6 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
     from gsuid_core.ai_core.hooks.models import AgentHookContext
     from gsuid_core.ai_core.hooks.points import AgentHookPoint
     from gsuid_core.ai_core.context_assembly import (
-        SOFT_TRIGGER_NOTE,
         _SUFFIX_PRODUCT_CAP,
         suffix_allowed_blocks,
         assemble_dynamic_context,
@@ -77,14 +76,12 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
         )
     )
     assert has_actionable in (False, True)
-    i_hist, i_mem, i_guide, i_soft = (
+    i_hist, i_mem, i_guide = (
         full.find("[历史对话]"),
         full.find("[长期记忆"),
         full.find("[guide]"),
-        full.find(SOFT_TRIGGER_NOTE),
     )
-    assert 0 <= i_hist < i_mem < i_guide < i_soft
-    assert full.endswith(SOFT_TRIGGER_NOTE)
+    assert 0 <= i_hist < i_mem < i_guide
 
     tg = TurnGraph(
         user_type="group",
@@ -118,7 +115,8 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
         call_to_self=False,
     )
     idle_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=idle, cheap_gate="full")
-    assert suffix_allowed_blocks(idle_ctx) == frozenset({"voice_anchor", "history"})
+    # 未寻址群轮：产品块全剥，但收件箱结构块（待回应/证据）永远放行。
+    assert suffix_allowed_blocks(idle_ctx) == frozenset({"voice_anchor", "history", "inbox_pending", "evidence"})
     idle_ctx.blocks = {"voice_anchor": voice, "task": "任务块", "memory": "M" * 80, "history": "H" * 500}
     _apply_suffix_block_policy(idle_ctx)
     assert "task" not in idle_ctx.blocks and "memory" not in idle_ctx.blocks
@@ -129,7 +127,7 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
         cheap_gate="full",
         soft_triggered=True,
     )
-    assert suffix_allowed_blocks(soft_ctx) == frozenset({"voice_anchor", "history", "soft_trigger"})
+    assert suffix_allowed_blocks(soft_ctx) == frozenset({"voice_anchor", "history", "inbox_pending", "evidence"})
 
 
 def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -144,9 +142,10 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
     from gsuid_core.ai_core.agent_run.support import _ensure_session_anchor_on_first_user
     from gsuid_core.webconsole.chat_with_history_api import ChatHistoryTurn, _load_request_history
 
-    assert history_line_is_assistant("[14:32:18] AI: 晴天")
-    assert history_line_is_assistant("[14:32:18] AI→小明(用户ID:456): 晴天")
-    assert not history_line_is_assistant("[14:32:05] 小明(用户ID:456): 今天天气怎么样")
+    assert history_line_is_assistant("#4 [14:32:18] 你: 晴天〔已发〕")
+    assert history_line_is_assistant("#5 [14:32:20] 你→#3(小明): 晴天〔已发〕")
+    assert history_line_is_assistant("#6 [14:32:30] 你[回执]→小明: 已记录")
+    assert not history_line_is_assistant("#3 [14:32:05] 小明(用户ID:456): 今天天气怎么样")
 
     _load_kits_once()
     clear_entity_index()
@@ -333,3 +332,87 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert _tool_output_access_allowed(grp_handle, ctx_same_grp) is True
     assert _tool_output_access_allowed(grp_handle, ctx_other_grp) is False
+
+
+def test_render_delta_quote_edges_and_merge() -> None:
+    """线程视图：引用边显式标出；同人连发合并但带引用的单独成行。"""
+    from gsuid_core.message_history import MessageRecord
+    from gsuid_core.ai_core.thread_view import render_delta
+    from gsuid_core.message_history.link import EventLink
+
+    base = 1_780_000_000.0
+
+    def user_rec(
+        seq: int,
+        uid: str,
+        name: str,
+        text: str,
+        reply_to_seq: int | None = None,
+        reply_to_author: str | None = None,
+        at_self: bool = False,
+    ) -> MessageRecord:
+        return MessageRecord(
+            role="user",
+            content=text,
+            user_id=uid,
+            user_name=name,
+            timestamp=base + seq * 8,
+            metadata={"user_type": "group", "msg_id": f"m{seq}"},
+            link=EventLink(
+                seq=seq,
+                msg_id=f"m{seq}",
+                reply_to_seq=reply_to_seq,
+                reply_to_author=reply_to_author,
+                at_self=at_self,
+            ),
+        )
+
+    records = [
+        user_rec(1, "100000003", "测试用户C", "pil活"),
+        user_rec(2, "100000003", "测试用户C", "让你画图"),
+        user_rec(3, "100000002", "测试用户B", "ぴー活是什么意思", at_self=True),
+        user_rec(4, "100000002", "测试用户B", "神了", reply_to_seq=2, reply_to_author="100000003"),
+        MessageRecord(
+            role="assistant",
+            content="唔…P活一般是パパ活的缩写，简单说就是…",
+            user_id="100000002",
+            user_name="测试人格",
+            timestamp=base + 5 * 8,
+            metadata={
+                "msg_id": "b5",
+                "speech_channel": "persona",
+                "persona_name": "测试人格",
+                "reply_to_user_id": "100000002",
+                "reply_to_user_name": "测试用户B",
+            },
+            link=EventLink(seq=5, msg_id="b5", in_reply_to_seqs=(3,), seen_seq=4),
+        ),
+        user_rec(6, "100000004", "测试用户D", "谁叫汉堡", reply_to_seq=5, reply_to_author="self"),
+        user_rec(7, "100000004", "测试用户D", "x2"),
+        user_rec(8, "100000004", "测试用户D", "x3"),
+    ]
+
+    out = render_delta(
+        records,
+        from_seq=0,
+        head_seq=8,
+        backfill=False,
+        pending_seqs=frozenset({4, 6}),
+        persona_name="测试人格",
+        private=False,
+    )
+    lines = out.splitlines()
+
+    quote_idx = next(i for i, ln in enumerate(lines) if "神了" in ln)
+    sent_idx = next(i for i, ln in enumerate(lines) if "〔已发〕" in ln)
+    assert quote_idx < sent_idx
+    assert "↩#2(测试用户C" in lines[quote_idx]
+
+    quoted = next(ln for ln in lines if "谁叫汉堡" in ln)
+    assert quoted.startswith("#6 ") and "↩#5(" in quoted
+    # 旁观引用渲染：含原收件人与时间差，且无指令性措辞（§5.2）
+    assert "↩#5(你→测试用户B" in quoted and "前 · 闲聊回复" in quoted
+    for w in ("要回", "应该", "请回", "必须", "不要"):
+        assert w not in quoted
+    merged = next(ln for ln in lines if ln.startswith("#7–#8"))
+    assert "x2 / x3" in merged

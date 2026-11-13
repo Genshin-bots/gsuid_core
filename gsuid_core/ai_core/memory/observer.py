@@ -175,6 +175,7 @@ class ObservationRecord:
     at_targets: tuple[str, ...] = ()
     bot_id: str = ""
     persona_name: str = ""
+    personal_credential: bool = False  # 出站依据含个人凭据：禁进群级事实抽取（§4.7）
     command_hit: bool = False
 
 
@@ -297,6 +298,7 @@ async def observe(
     reply_to_msg_id: str = "",
     reply_preview: str = "",
     at_targets: Sequence[str] = (),
+    personal_credential: bool = False,
 ) -> None:
     """向观察队列投递一条消息记录（不 await 调用为主）。"""
     from .scope import ScopeType, make_scope_key, self_scope_key
@@ -350,6 +352,7 @@ async def observe(
         at_targets=tuple(at_targets),
         bot_id=bot_id,
         persona_name=persona_name,
+        personal_credential=personal_credential,
     )
 
     try:

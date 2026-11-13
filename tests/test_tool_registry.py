@@ -486,3 +486,76 @@ def test_render_chart_and_html_self_healing() -> None:
     assert "、\u200b-16.15%" in wrapped_cjk
     assert "18.5~\u200b24.2" in wrapped_cjk
     assert _sanitize_for_takumi_engine(wrapped_cjk) == wrapped_cjk
+
+
+def test_inbox_act_for_gate_and_identity() -> None:
+    """多目标批次：act_for 前非豁免工具被 ACT_FOR_REQUIRED_DENY 拦截；
+    act_for("#5") 换绑后 deps.ev 变成 #5 说话人；单目标轮 act_for 不可见。"""
+    from pydantic_ai.tools import RunContext, ToolDefinition
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.messages import ToolCallPart
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+    from gsuid_core.ai_core.tool_safety import _inbox_act_for_execute
+    from gsuid_core.ai_core.control.lines import ACT_FOR_REQUIRED_DENY
+    from gsuid_core.ai_core.buildin_tools.act_for import act_for, _act_for_visible
+
+    ev_a = Event(bot_id="test", user_id="100000001", group_id="group_1")
+    ev_b = Event(bot_id="test", user_id="100000002", group_id="group_1")
+    ev_b.sender = {"nickname": "测试用户B"}
+    entries = (
+        PendingEntry(
+            item=WakeItem(seq=3, user_id="100000001", kind="mention", strength="hard", created_at=1.0),
+            event=ev_a,
+        ),
+        PendingEntry(
+            item=WakeItem(seq=5, user_id="100000002", kind="mention", strength="hard", created_at=1.0),
+            event=ev_b,
+        ),
+    )
+    turn = InboxTurn(session_id="sess_1", persona_name="", entries=entries, from_seq=0, head_seq=5)
+    from gsuid_core.ai_core.inbox.blocks import render_identity_block
+
+    id_block = render_identity_block(turn, ())
+    assert 'act_for("#3")' in id_block and "默认" not in id_block
+    token = bind_turn(turn)
+    try:
+        ctx = RunContext(deps=ToolContext(ev=ev_a), model=TestModel(), usage=RunUsage())
+        call = ToolCallPart(tool_name="web_search", tool_call_id="c1")
+        tdef = ToolDefinition(name="web_search")
+
+        async def _handler(_args: dict) -> str:
+            return "sentinel"
+
+        assert _act_for_visible(ctx) is True
+        denied = asyncio.run(_inbox_act_for_execute(ctx, call=call, tool_def=tdef, args={}, handler=_handler))
+        assert denied == ACT_FOR_REQUIRED_DENY
+
+        asyncio.run(act_for(ctx, "#5"))
+        assert turn.active_seq == 5
+        assert ctx.deps.ev is ev_b
+
+        passed = asyncio.run(_inbox_act_for_execute(ctx, call=call, tool_def=tdef, args={}, handler=_handler))
+        assert passed == "sentinel"
+    finally:
+        reset_turn(token)
+
+    single = InboxTurn(
+        session_id="sess_1",
+        persona_name="",
+        entries=entries[:1],
+        from_seq=0,
+        head_seq=3,
+    )
+    token = bind_turn(single)
+    try:
+        ctx = RunContext(deps=ToolContext(ev=ev_a), model=TestModel(), usage=RunUsage())
+        assert _act_for_visible(ctx) is False
+        rejected = asyncio.run(act_for(ctx, "#3"))
+        assert rejected == ACT_FOR_REQUIRED_DENY
+    finally:
+        reset_turn(token)

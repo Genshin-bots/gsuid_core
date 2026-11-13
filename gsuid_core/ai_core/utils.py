@@ -57,6 +57,8 @@ from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
 
 if TYPE_CHECKING:
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.reply_plan import ReplyGroup
     from gsuid_core.ai_core.content_guard import GuardFlags
 
 # 表情没有字数，按 7 个字计，间隔是 1 秒。
@@ -95,6 +97,7 @@ SILENCE_MARKERS: frozenset[str] = frozenset(
 # 模型常把 <SILENCE> 写成 CJK「<沉默>」或转义为 &lt;SILENCE&gt;。
 _PROTOCOL_TAG_RE = re.compile(
     r"(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*/?\s*(?:silence|end_turn|no_tool_call|沉默)\s*/?\s*(?:>|&gt;|&#62;|&#x3e;|＞|\\>)"
+    r"|(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*/?\s*reply(?:\s+[#\d,\s]*?)?\s*/?\s*(?:>|&gt;|&#62;|&#x3e;|＞|\\>)"
     r"|(?:(?:\[|\\\[)\s*(?:silence|沉默)\s*(?:\]|\\\]))",
     re.IGNORECASE,
 )
@@ -109,13 +112,25 @@ _SILENCE_FRAGMENT_RE = re.compile(
 )
 
 # 框架控制/协议标签白名单名（转义还原仅匹配此类，避免误伤业务代码）
-_CONTROL_TAG_NAMES_PATTERN = r"(?:/?\s*(?:silence|end_turn|no_tool_call|沉默|think|tool_calls?)\s*/?|meme[：:].*?)"
+_CONTROL_TAG_NAMES_PATTERN = (
+    r"(?:/?\s*(?:silence|end_turn|no_tool_call|沉默|think|tool_calls?)\s*/?|meme[：:].*?"
+    r"|reply\s+[#\d,\s]*)"
+)
 _ESCAPED_CONTROL_TAG_RE = re.compile(
     r"(?:&lt;|&#60;|&#x3c;|＜|\\<)\s*(" + _CONTROL_TAG_NAMES_PATTERN + r")\s*(?:&gt;|&#62;|&#x3e;|＞|\\>)",
     re.IGNORECASE,
 )
 _ESCAPED_TAG_HINTS: tuple[str, ...] = ("&lt;", "&#60;", "&#x3c;", "＜", "\\<")
-_CONTROL_WORD_HINTS: tuple[str, ...] = ("silence", "沉默", "think", "tool_call", "no_tool_call", "end_turn", "meme")
+_CONTROL_WORD_HINTS: tuple[str, ...] = (
+    "silence",
+    "沉默",
+    "think",
+    "tool_call",
+    "no_tool_call",
+    "end_turn",
+    "meme",
+    "reply #",
+)
 
 
 def normalize_escaped_control_tags(text: str) -> str:
@@ -176,7 +191,8 @@ def is_silence_marker(text: str) -> bool:
     return _PROTOCOL_EMPTYISH_RE.match(leftover) is not None
 
 
-_PROTOCOL_TAG_NAMES: tuple[str, ...] = ("silence", "end_turn", "no_tool_call", "沉默")
+_PROTOCOL_TAG_NAMES: tuple[str, ...] = ("silence", "end_turn", "no_tool_call", "沉默", "reply")
+_REPLY_HOLD_RE = re.compile(r"^" + re.escape(chr(60)) + r"reply[#\d,\s]*$", re.IGNORECASE)
 _PROTOCOL_COMPLETE_COMPACT: tuple[str, ...] = (
     *(form for name in _PROTOCOL_TAG_NAMES for form in (f"<{name}>", f"<{name}/>", f"</{name}>", f"</{name}/>")),
     "[silence]",
@@ -194,6 +210,8 @@ def _is_protocol_hold(text: str) -> bool:
         return False
     if compact in _PROTOCOL_COMPLETE_COMPACT:
         return False
+    if _REPLY_HOLD_RE.match(compact) is not None:
+        return True
     return any(tag.startswith(compact) for tag in _PROTOCOL_COMPLETE_COMPACT)
 
 
@@ -284,7 +302,7 @@ def strip_framework_user_leaks(text: str) -> str:
 
 
 def has_model_visible_content(ev: Event) -> bool:
-    """该消息是否含模型可见内容——判据与 prepare_content_payload 的模态清单同源。
+    """该消息是否含模型可见内容——判据与 prepare_media_payload 的模态清单同源。
 
     空内容前置门(§17)只应拦"纯表情/戳一戳"类消息；新增模态时改这里而非各调用点。
     """
@@ -861,203 +879,132 @@ def _build_relationship_description(
     else:
         speaker = f"用户ID:{user_id}"
 
-    # 主人：只标身份与优先级，不再写「直接…」——是否直连由 is_tome 时注入的
-    # DIRECT_MARKER 单独表达，避免与寻址标记语义叠床架屋。
+    # 主人：只标身份与优先级；是否直连由 turn_graph / 唤醒分类的 is_tome 表达。
     if _is_master_user(user_id):
         return f"[⚡主人] {speaker}"
     return speaker
 
 
-async def prepare_content_payload(
-    ev: Event,
+async def prepare_media_payload(
+    events: Sequence[Tuple[int, "Event"]],
+    text: str,
     task_level: Literal["high", "low"] = "high",
     *,
     task_kind: Optional[str] = None,
-    quoted_tome: bool = False,
     pending_unread_images: Optional[Sequence[PendingImage]] = None,
 ) -> Tuple[Sequence[UserContent], "GuardFlags"]:
-    """
-    准备消息内容列表给AI看, 包含文本、图片ID、文件内容、事件对象
+    """线程视图轮次的媒体负载：渲染好的时间线文本 + 各事件图/音/视频/合并转发。
 
-    图片处理分两种模式（由 ai_config ``lazy_image_read`` 开关决定）：
-    - 惰性投喂（默认开启）：图片本体不进上下文，只把图片ID以文字透传给 AI；
-      AI 需要看图时再调用 ``read_image(图片ID)`` 按需读取。群聊图片多时显著省 Token。
-    - 直接投喂（关闭时，旧行为）：把图片物化为 ImageUrl 放进 content payload，
-      再由 ``GsCoreAIAgent._execute_run`` 处理（模型支持图片时直接传图，
-      不支持时通过 understand_image 转述为文字）。
-
-    Args:
-        ev: 事件对象
-        task_level: 任务级别
-        task_kind: 任务类型 ID，用于套用按任务覆盖的模型配置
-
-    Returns:
-        ``(content payload, 输入守卫命中标记)``。标记透传给 ⑩ 结算判负向信号，
-        不再像历史实现那样把三个探测器的 bool 丢掉。
+    正文安全标注由 ``thread_view._guard_body`` 逐条做过；这里重跑探测器只为回收
+    GuardFlags 供结算判负向信号。``events`` 为 ``(seq, Event)`` 对，多事件时媒体
+    段前冠 ``#seq`` 便于模型对齐到行。
     """
     from gsuid_core.ai_core.content_guard import GuardFlags
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
-    # 惰性图片投喂开关：群聊图片多时, 默认只透传图片ID, 由 AI 按需 read_image 读图,
-    # 避免一次性把大量图片塞进多模态上下文导致 Token 爆炸 / 注意力被稀释。
     lazy_image_read = bool(ai_config.get_config("lazy_image_read").data)
+    content_payload: list[UserContent] = [text]
+    hit_fake_tool = False
+    hit_fake_system = False
+    hit_encoded = False
+    multi = len(events) > 1
 
-    content_payload: list[UserContent] = []
-
-    # 获取用户昵称
-    nickname = None
-    if ev.sender:
-        nickname = ev.sender.get("nickname") or ev.sender.get("card") or None
-
-    # 说话者标识（群聊共享 session 时必须带 ID）
-    relationship_desc = _build_relationship_description(nickname, str(ev.user_id))
-    current_turn_header = f"{relationship_desc}\n"
-
-    # 寻址记号和「--- 消息 ---」的定义在 control/lines.py。
-    from gsuid_core.ai_core.control.lines import (
-        DIRECT_MARKER,
-        AT_OTHER_MARKER,
-        MSG_SECTION_HEAD,
-        QUOTE_TOME_MARKER,
-    )
-
-    is_at_me = getattr(ev, "is_tome", False) or (ev.user_type == "direct")
-    if is_at_me:
-        # 引用 bot 仍是 is_tome，但不要写成「直接找你」逼模型必回。
-        current_turn_header += f"{QUOTE_TOME_MARKER if quoted_tome else DIRECT_MARKER}\n"
-
-    current_turn_header += MSG_SECTION_HEAD
-
-    text = current_turn_header
-    guard_flags = GuardFlags()
-    if not ev.text:
-        text += "用户没有发送文本内容。"
-    else:
-        # 输入侧安全标注（§B.3-2）：伪造工具返回降权。只加标注、不改原意；
-        # 受 content_guard_enable 开关控制。低俗/钓鱼防线在 system prompt 合规层。
-        body = ev.text.strip()
-        if ai_config.get_config("content_guard_enable").data:
+    for seq, ev in events:
+        tag = f"#{seq} " if multi else ""
+        body_text = (ev.text or "").strip()
+        if body_text and ai_config.get_config("content_guard_enable").data:
             from gsuid_core.ai_core.content_guard import annotate_untrusted_message_ex
 
-            body, guard_flags = annotate_untrusted_message_ex(body)
-        text += body
+            _, _f = annotate_untrusted_message_ex(body_text)
+            hit_fake_tool = hit_fake_tool or _f.fake_tool_result
+            hit_fake_system = hit_fake_system or _f.fake_system_hint
+            hit_encoded = hit_encoded or _f.encoded_injection
 
-    is_pure_image_quote = bool((ev.reply_id or quoted_tome) and not ev.reply and ev.image_id_list)
-    has_quote = bool(ev.reply or ev.reply_id or quoted_tome)
-    if has_quote:
-        reply_body = ev.reply if ev.reply else ("[引用图片消息]" if is_pure_image_quote else "[引用消息]")
-        text += f"\n--- 引用消息 ---\n{reply_body}\n"
-        from gsuid_core.ai_core.outbound import resolve_quote
+        if ev.node is not None:
+            from gsuid_core.models import format_node_preview
 
-        hit = await resolve_quote(ev)
-        if hit is not None:
-            text += f"{hit.line}\n"
-    from gsuid_core.ai_core.outbound import ownership_hint
+            preview = format_node_preview(ev.node)
+            content_payload.append(f"--- {tag}合并转发 ---\n{preview}\n")
 
-    own = await ownership_hint(ev)
-    if own:
-        if not text.endswith("\n"):
-            text += "\n"
-        text += f"{own}\n"
-
-    if ev.node is not None:
-        from gsuid_core.models import format_node_preview
-
-        preview = format_node_preview(ev.node)
-        text += "\n--- 合并转发 ---\n"
-        if not ev.reply or preview not in str(ev.reply):
-            text += f"{preview}\n"
-
-    # 预处理, 将用户发送的文本/AT/图片ID/音频ID等信息整合到一个字符串中, 方便AI处理
-    if ev.image_id_list:
-        if lazy_image_read:
-            if is_pure_image_quote:
-                text += "\n--- 被引用消息中的图片(未展开, 需要分析或评价图内内容时请调用 read_image(图片ID)) ---"
+        media_text = ""
+        if ev.image_id_list:
+            if lazy_image_read:
+                media_text += f"--- {tag}用户发送了图片(未展开, 需要查看内容时请调用 read_image(图片ID)) ---"
+                for i in ev.image_id_list:
+                    media_text += f"\n图片ID: {i}"
+                media_text += "\n"
             else:
-                text += "\n--- 用户发送了图片(未展开, 需要查看内容时请调用 read_image(图片ID)) ---"
-            for i in ev.image_id_list:
-                text += f"\n图片ID: {i}"
-            text += "\n"
-        else:
-            for i in ev.image_id_list:
-                if is_pure_image_quote:
-                    text += f"\n--- 被引用消息图片ID: {i} ---\n"
-                else:
-                    text += f"\n--- 用户上传图片ID: {i} ---\n"
+                for i in ev.image_id_list:
+                    media_text += f"--- {tag}用户上传图片ID: {i} ---\n"
 
-    if pending_unread_images and not (ev.image_id_list or ev.image_id):
+        if ev.audio_id:
+            media_text += f"--- {tag}用户上传音频ID: {ev.audio_id} ---\n"
+        for i in ev.audio_id_list:
+            media_text += f"--- {tag}用户上传音频ID: {i} ---\n"
+
+        if ev.video_id_list:
+            from gsuid_core.ai_core.configs.models import get_model_config_for_task
+
+            _support = get_model_config_for_task(task_level, task_kind).get_config("model_support").data
+            if "video" in _support:
+                media_text += f"--- {tag}用户发送了视频(未展开, 需要查看内容时调用 read_video(视频ID)) ---"
+                for i in ev.video_id_list:
+                    media_text += f"\n视频ID: {i}"
+                media_text += "\n"
+            else:
+                media_text += f"--- {tag}用户发送了视频(当前模型无法查看视频内容) ---\n"
+        if media_text:
+            content_payload.append(media_text)
+
+    if pending_unread_images and not any(ev.image_id_list or ev.image_id for _, ev in events):
         from gsuid_core.ai_core.control.lines import pending_unread_image_guide_line
 
-        text += "\n--- 当前说话人刚发出的待讨论图片（尚未读取） ---\n"
+        pending_text = "\n--- 当前说话人刚发出的待讨论图片（尚未读取） ---\n"
         for p_img in pending_unread_images:
-            text += f"- [{p_img.time_str}] 配文：「{p_img.text}」 | 待读图片ID: {p_img.img_id}\n"
-            text += f"{pending_unread_image_guide_line(p_img.img_id)}\n"
+            pending_text += f"- [{p_img.time_str}] 配文：「{p_img.text}」 | 待读图片ID: {p_img.img_id}\n"
+            pending_text += f"{pending_unread_image_guide_line(p_img.img_id)}\n"
+        content_payload.append(pending_text)
 
-    if hasattr(ev, "audio_id") and ev.audio_id:
-        text += f"\n--- 用户上传音频ID: {ev.audio_id} ---\n"
-
-    for i in getattr(ev, "audio_id_list", []):
-        text += f"\n--- 用户上传音频ID: {i} ---\n"
-
-    # 视频始终惰性：只透传 ID。未声明 video 时不指引 read_video（工具也不会挂）
-    if ev.video_id_list:
-        from gsuid_core.ai_core.configs.models import get_model_config_for_task
-
-        _support = get_model_config_for_task(task_level, task_kind).get_config("model_support").data
-        if "video" in _support:
-            text += "\n--- 用户发送了视频(未展开, 需要查看内容时调用 read_video(视频ID)) ---"
-            for i in ev.video_id_list:
-                text += f"\n视频ID: {i}"
-            text += "\n"
-        else:
-            text += "\n--- 用户发送了视频(当前模型无法查看视频内容) ---\n"
-
-    # @Bot 自己在入库层已转成 is_tome（见 handler.msg_process），at_list 里只会有
-    # 别的用户——显式标注，防止模型把"@某人+提问"误读成在叫自己。
-    for at in ev.at_list:
-        text += f"\n--- @了用户: {at}{AT_OTHER_MARKER} ---\n"
-
-    content_payload.append(text)
-
-    # 惰性模式：图片只以 ID 形式存在（已在上方文本注明），不把本体喂进多模态上下文， 由 AI 调用 read_image 按需读取。
     if lazy_image_read:
-        return content_payload, guard_flags
+        return content_payload, GuardFlags(hit_fake_tool, hit_fake_system, hit_encoded)
 
-    # Fix-07: 收到消息时立即物化远程图片 URL，避免过期后写入历史。
+    # 非惰性：物化各事件图片为 provider 内容（同原 content payload 的直投路径）。
     from gsuid_core.utils.image.image_io import to_provider_image_content
     from gsuid_core.ai_core.configs.models import get_config_name_for_task, parse_provider_config_name
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-    try:
-        sess = get_ai_session_registry().get_ai_session(ev.session_id) if ev.session_id else None
-        if sess is not None:
-            provider = sess._routed_provider()
-        else:
-            provider = parse_provider_config_name(get_config_name_for_task(task_level, task_kind))[0]
-    except Exception:  # noqa: BLE001 - 判定失败按 openai（旧行为：一律 ImageUrl）
-        provider = "openai"
-    for i in ev.image_list:
-        if isinstance(i, str):
-            try:
-                url = await materialize_image_url(i, strict=True)
-            except Exception as e:
-                logger.warning(i18n_t("log.ai.gscoreai_image_materialization_url_fail", p0=i[:120], e=e))
-                continue
-            injected, inject_err = to_provider_image_content(url, provider_or_model=provider)
-        elif isinstance(i, (bytes, bytearray, Image.Image)):
-            injected, inject_err = to_provider_image_content(i, provider_or_model=provider)
-        else:
-            logger.warning(i18n_t("log.ai.unable_process_image_id", i=str(i)[:80]))
+    for _seq, ev in events:
+        if not ev.image_list:
             continue
+        try:
+            sess = get_ai_session_registry().get_ai_session(ev.session_id) if ev.session_id else None
+            if sess is not None:
+                provider = sess._routed_provider()
+            else:
+                provider = parse_provider_config_name(get_config_name_for_task(task_level, task_kind))[0]
+        except Exception:  # noqa: BLE001 - 判定失败按 openai（与旧行为一致）
+            provider = "openai"
+        for i in ev.image_list:
+            if isinstance(i, str):
+                try:
+                    url = await materialize_image_url(i, strict=True)
+                except Exception as e:
+                    logger.warning(i18n_t("log.ai.gscoreai_image_materialization_url_fail", p0=i[:120], e=e))
+                    continue
+                injected, inject_err = to_provider_image_content(url, provider_or_model=provider)
+            elif isinstance(i, (bytes, bytearray, Image.Image)):
+                injected, inject_err = to_provider_image_content(i, provider_or_model=provider)
+            else:
+                logger.warning(i18n_t("log.ai.unable_process_image_id", i=str(i)[:80]))
+                continue
+            if injected:
+                content_payload.extend(injected)
+            elif inject_err:
+                logger.warning(i18n_t("log.ai.unable_process_image_id_err", i=str(i)[:80], e=inject_err))
+            else:
+                logger.warning(i18n_t("log.ai.unable_process_image_id", i=str(i)[:80]))
 
-        if injected:
-            content_payload.extend(injected)
-        elif inject_err:
-            logger.warning(i18n_t("log.ai.unable_process_image_id_err", i=str(i)[:80], e=inject_err))
-        else:
-            logger.warning(i18n_t("log.ai.unable_process_image_id", i=str(i)[:80]))
-
-    return content_payload, guard_flags
+    return content_payload, GuardFlags(hit_fake_tool, hit_fake_system, hit_encoded)
 
 
 def _looks_like_tool_table(text: str) -> bool:
@@ -1724,6 +1671,8 @@ async def send_chat_result(
     ooc_check: bool = True,
     at_user_id: str | None = None,
     mention_names: Optional[Dict[str, str]] = None,
+    _reply_prefix: Optional[Sequence[Message]] = None,
+    _plan_group: bool = False,
 ) -> None:
     """
     解析并发送聊天结果，支持：
@@ -1748,6 +1697,46 @@ async def send_chat_result(
     if is_silence_marker(_trimmed):
         logger.debug(i18n_t("log.ai.send_chat_result_special_trimmed_skip", _trimmed=repr(_trimmed)))
         return
+
+    # 收件箱轮次的人格发言走回复计划（§1.6）：工具过渡句 / 回执通道不受影响。
+    # 必须在 remainder_after_protocol_tags 剥 <reply #n> 之前解析。
+    _turn = None
+    if meta["speech_channel"] == "persona" and not _plan_group:
+        from gsuid_core.ai_core.inbox.turn import current_turn
+
+        _turn = current_turn()
+    if _turn is not None:
+        from gsuid_core.message_history import get_history_manager
+        from gsuid_core.ai_core.reply_plan import parse_reply_plan
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        # 合法目标：本批 pending ∪ 本轮可见窗口 (from_seq, head_seq] 内所有已编号记录。
+        _valid = {e.item.seq for e in _turn.entries}
+        if ev is not None:
+            for _rec in get_history_manager().get_history(ev):
+                if _rec.link is not None and _turn.from_seq < _rec.link.seq <= _turn.head_seq:
+                    _valid.add(_rec.link.seq)
+        _plan = parse_reply_plan(
+            _trimmed,
+            valid_seqs=frozenset(_valid),
+            default_seqs=(_turn.primary.item.seq,),
+            max_targets=int(ai_config.get_config("inbox_max_targets").data),
+        )
+        if _plan.invalid_refs:
+            logger.info(i18n_t("log.inbox.reply_ref_invalid", seqs=",".join(str(s) for s in _plan.invalid_refs)))
+        if _plan.silence:
+            return
+        if _plan.groups:
+            await _send_reply_plan_groups(
+                bot,
+                _plan.groups,
+                turn=_turn,
+                ev=ev,
+                meta=meta,
+                ooc_check=ooc_check,
+            )
+            return
+
     _speech = remainder_after_protocol_tags(_trimmed).strip()
     if not _speech:
         return
@@ -1892,12 +1881,31 @@ async def send_chat_result(
     _at_done = False
     _audit = _outbound_auditor(ev)
     _total = len(blocks)
+    # 回复计划轮次：人格发言的气泡全轮累计到 turn.bubbles_sent，超 cap 丢弃。
+    _plan_turn = None
+    if meta["speech_channel"] == "persona":
+        from gsuid_core.ai_core.inbox.turn import current_turn
+
+        _plan_turn = current_turn()
+    _prefix = list(_reply_prefix) if _reply_prefix else []
 
     for _idx, block in enumerate(blocks, 1):
         if not block.strip():
             continue
 
+        if _plan_turn is not None:
+            from gsuid_core.ai_core.configs.ai_config import ai_config
+
+            _cap = int(ai_config.get_config("inbox_max_bubbles").data)
+            if _plan_turn.bubbles_sent >= _cap:
+                logger.info(i18n_t("log.inbox.bubble_capped", count=len(blocks) - _idx))
+                break
+            _plan_turn.bubbles_sent += 1
+
         segments = _parse_at_segments(block)
+        if _prefix:
+            segments = [*_prefix, *segments]
+            _prefix = []
         _has_force_in_block = any(s.type == "at" and str(s.data or "") == _force_at for s in segments)
         if _force_at and not _at_done:
             if not _has_force_in_block:
@@ -1922,6 +1930,120 @@ async def send_chat_result(
 
     # 台词发完补发资料图（制品通道兜底），再发表情包
     await _send_trailing_artifacts()
+
+
+async def _send_reply_plan_groups(
+    bot: Bot,
+    groups: Sequence["ReplyGroup"],
+    *,
+    turn: "InboxTurn",
+    ev: Event | None,
+    meta: dict[str, object],
+    ooc_check: bool,
+) -> None:
+    """回复计划分发（§1.6）：每组一次出站，绑定 OutboundBinding 与目标收件人。
+
+    首气泡形态：目标即 A 轨最新 user 记录 → 纯文本；非最新且有 msg_id → 前置
+    ``Message("reply", msg_id)``；多目标 → 依次前置 ``MessageSegment.at(uid)``。
+    """
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.message_history.link import OutboundBinding, bind_outbound, reset_outbound
+    from gsuid_core.ai_core.evidence.store import get_evidence_store
+
+    pending = frozenset(e.item.seq for e in turn.entries)
+
+    # 依据里含个人凭据 → 出站记录禁止进群级事实抽取（§4.7），随 binding 传给发送层。
+    _store = get_evidence_store(turn.session_id)
+    _personal_cred = any(
+        (o := _store.find(obs_id)) is not None and o.credential_owner is not None and o.credential_owner != "shared"
+        for obs_id in turn.observations
+    )
+    latest_user_seq = -1
+    if ev is not None:
+        for rec in reversed(get_history_manager().get_history(ev)):
+            if rec.role == "user" and rec.link is not None:
+                latest_user_seq = rec.link.seq
+                break
+
+    for group in groups:
+        target_seqs = [s for s in group.seqs]
+        if not target_seqs:
+            target_seqs = [turn.primary.item.seq]
+
+        # 组内目标：seq → (uid, name)。entry 优先，缺者回退 A 轨记录。
+        targets: list[tuple[str, str]] = []
+        for seq in target_seqs:
+            uid, uname = "", ""
+            entry = turn.entry_for(seq)
+            if entry is not None:
+                uid = str(entry.event.user_id or "")
+                if "nickname" in entry.event.sender:
+                    nick = entry.event.sender["nickname"]
+                    if isinstance(nick, str):
+                        uname = nick.strip()
+            elif ev is not None:
+                rec = get_history_manager().find_by_seq(ev, seq)
+                if rec is not None:
+                    uid = str(rec.user_id)
+                    uname = rec.user_name or ""
+            if uid and all(u != uid for u, _ in targets):
+                targets.append((uid, uname))
+        if not targets:
+            targets.append((str(ev.user_id if ev is not None else ""), ""))
+
+        prefix: list[Message] = []
+        if len(targets) > 1:
+            prefix = [MessageSegment.at(uid) for uid, _ in targets]
+        elif target_seqs[0] != latest_user_seq:
+            msg_id = ""
+            entry = turn.entry_for(target_seqs[0])
+            if entry is not None and entry.event.msg_id:
+                msg_id = str(entry.event.msg_id)
+            elif ev is not None:
+                rec = get_history_manager().find_by_seq(ev, target_seqs[0])
+                if rec is not None and "msg_id" in rec.metadata:
+                    msg_id = str(rec.metadata["msg_id"])
+            if msg_id:
+                prefix = [Message("reply", msg_id)]
+
+        gmeta = dict(meta)
+        gmeta["reply_to_user_id"] = targets[0][0]
+        if targets[0][1]:
+            gmeta["reply_to_user_name"] = targets[0][1]
+
+        binding = OutboundBinding(
+            seen_seq=turn.head_seq,
+            in_reply_to_seqs=tuple(target_seqs),
+            evidence=tuple(turn.observations),
+            personal_credential=_personal_cred,
+        )
+        token = bind_outbound(binding)
+        try:
+            await send_chat_result(
+                bot,
+                group.text,
+                ev=ev,
+                extra_metadata=gmeta,
+                ooc_check=ooc_check,
+                _reply_prefix=prefix,
+                _plan_group=True,
+            )
+        finally:
+            reset_outbound(token)
+        turn.answered |= {s for s in target_seqs if s in pending}
+
+        # 群级反馈（§5.3）：出站绑定已应答项 → 登记 open entry 观察「有人接」。
+        if ev is not None and ev.group_id:
+            from gsuid_core.ai_core.inbox.feedback import register_feedback
+
+            answered_entries = [e for e in turn.entries if e.item.seq in target_seqs]
+            if answered_entries:
+                register_feedback(
+                    str(ev.group_id),
+                    answered_entries[0].item.kind,
+                    get_history_manager().head_seq(ev),
+                    frozenset(str(e.event.user_id) for e in answered_entries),
+                )
 
 
 def _split_meme_tag(tag: str) -> tuple[str, str]:

@@ -3,7 +3,7 @@
   "log.mcp.ai_master_switch_skipping_2": "[MCP] AI マスタースイッチ OFF、MCP ツール登録をスキップ",
   "log.mcp.bind_audit": "[MCP Bind] cmd={cmd} user={uid}@{bot} outcome={outcome}",
   "log.mcp.bind_available": "バインド可能な MCP サービス：\n{lines}\n\n送信：mcp绑定 <サービス名> <資格情報>",
-  "log.mcp.bind_guide": "【{name}】先に資格情報をバインドしてください。\n必要項目：{keys}\n【DM】で送信：{example}{help}\n（バインドはDMのみ受付。グループに資格情報を送らないでください）",
+  "log.mcp.bind_guide": "【{name}】{who}はまだ資格情報をバインドしていません。\n必要項目：{keys}\n【DM】で送信：{example}{help}\n（バインドはDMのみ受付。グループに資格情報を送らないでください）",
   "log.mcp.bind_guide_missing": "この MCP サービスは存在しないか削除されました。",
   "log.mcp.bind_guide_none": "【{name}】はバインド不要で使えます。",
   "log.mcp.bind_guide_url": "資格情報の取得先：{url}",

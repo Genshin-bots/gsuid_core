@@ -5,15 +5,12 @@ agent_run/support.py，只用来从历史里认出并剥掉。提示词组默认
 interaction_scaffold.py。新句子写在这里再 import。约定见 AGENTS.md §1.11。
 """
 
+from typing import Final
+
 # 消息外壳。程序靠这些记号切正文。
 MSG_SECTION_MARK = "--- 消息 ---"
 MSG_SECTION_HEAD = MSG_SECTION_MARK + "\n"
-DIRECT_MARKER = "（直接找你说的）"
 AT_OTHER_MARKER = "（@的是这位用户，不是你）"
-QUOTE_TOME_MARKER = (
-    "（引用了你的消息。先看被引用内容原本是发给谁的：明确追问或吩咐你才回；"
-    "旁人围观感叹、跟别人说话或故意惹你则 <SILENCE>。）"
-)
 
 # 入史时用来认出闸门打回。开头必须和下面全文一致。
 ANGLE_NUDGE_MARKER = "（系统校验：发送内容含非法尖括号标签"
@@ -378,3 +375,77 @@ def quote_bot_line(time_str: str) -> str:
 def journal_delta_line(entry_body: str) -> str:
     """会话中途新增生活手账的一行提醒（入史前由 _peel_ephemeral_system_lines 自动剥除）。"""
     return f"（系统提示：刚刚经历：{entry_body}）"
+
+
+# ── 收件箱 / 线程视图 ──
+# 线程视图行内记号（入史静态文本，渲染器共用）
+THREAD_REPLY_MARK = "↩"
+THREAD_AT_MARK = "→@"
+THREAD_SENT_MARK = "〔已发〕"
+THREAD_RECEIPT_TAG = "你[回执]"
+THREAD_BACKFILL_SUFFIX = " · 追溯"
+
+
+THREAD_VIEW_GROUP_KIND = "群消息"
+THREAD_VIEW_PRIVATE_KIND = "私聊消息"
+# 线程视图正文的前缀指纹：入 user 消息侧时不许再套 [用户发言] 外壳。
+THREAD_VIEW_PREFIXES: tuple[str, str] = (f"[{THREAD_VIEW_GROUP_KIND} ", f"[{THREAD_VIEW_PRIVATE_KIND} ")
+
+
+def thread_view_header(first_seq: int, last_seq: int, *, private: bool, backfill: bool) -> str:
+    kind = THREAD_VIEW_PRIVATE_KIND if private else THREAD_VIEW_GROUP_KIND
+    return f"[{kind} #{first_seq}–#{last_seq}]{THREAD_BACKFILL_SUFFIX if backfill else ''}"
+
+
+def omitted_lines_marker(count: int) -> str:
+    return f"（中间省略 {count} 条）"
+
+
+# 当轮动态块头（入史前剥除；正文组装在 inbox/blocks.py）
+PENDING_BLOCK_HEAD = "（待你回应）"
+IDENTITY_BLOCK_HEAD = "（工具身份）"
+RELATED_BLOCK_HEAD = "（相关往来）"
+RECEIPT_CONTEXT_HEAD = "（回执上下文）"
+GROUP_RECENT_BLOCK_HEAD = "（本群近况）"
+ROUTER_TIMELINE_HEAD = "[近期时间线]"
+ROUTER_PENDING_HEAD = "[待判断]"
+ROUTER_PRINCIPLE = "原则：被引用不等于被叫；在问你、让你评价、反驳你才算有关。"
+
+# act_for：多目标批次里的工具身份护栏
+ACT_FOR_REQUIRED_DENY = "本批有多人找你，请先调 act_for 指明替谁执行，再调其它工具。"
+
+# 群级反馈事实（§5.3）：kind → 渲染标签 + 一行格式。
+FEEDBACK_KIND_LABELS: Final[dict[str, str]] = {
+    "mention": "@后接话",
+    "name": "点名后接话",
+    "quote_self": "被引用后接话",
+    "followup": "续聊接话",
+    "receipt": "回执后接话",
+}
+
+
+def feedback_kind_fact(label: str, total: int, hits: int) -> str:
+    """``近 N 次「<label>」M 次有人接``。"""
+    return f"近 {total} 次「{label}」{hits} 次有人接"
+
+
+# 证据块与工具结果前缀（§4.6；B 轨 obs 行 / 出站〔依据〕标签 / 实时状态行）
+EVIDENCE_BLOCK_HEAD = "（证据）"
+EVIDENCE_FOR_TARGETS_HEAD = "替本轮待回应者查的："
+EVIDENCE_FOR_OTHERS_HEAD = "替别人查的："
+EVIDENCE_LIVE_HEAD = "实时状态（刚查询）："
+EVIDENCE_STALE_AUTH = "已失效（凭据已变更）"
+EVIDENCE_OUTCOME_LABELS: Final[dict[str, str]] = {
+    "data": "已返回",
+    "auth_required": "缺凭据",
+    "error": "失败",
+    "action_done": "已执行",
+}
+
+
+def act_for_confirm_line(seq: int, speaker: str) -> str:
+    return f"当前替 #{seq} {speaker} 执行工具"
+
+
+def act_for_unknown_ref_line(ref: str) -> str:
+    return f"act_for 失败：{ref} 不在本轮待回应项里"

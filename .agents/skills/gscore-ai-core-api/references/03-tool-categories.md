@@ -23,6 +23,7 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
         "state_delete": ToolBase(...),
         "state_list": ToolBase(...),
         "state_append": ToolBase(...),
+        "act_for": ToolBase(...),  # 多目标批内切换生效目标；单目标轮隐藏
         # render_html_to_image 已迁 media，由 render_agent 持有（非 buildin 保底）
     },
     "common": {
@@ -94,6 +95,7 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 │  - search_cognition       - web_search_tool          │
 │  - web_fetch_tool         - get_self_info            │
 │  - state_get/set/delete/list/append                  │
+│  - act_for（多目标批内切换生效目标；单目标轮隐藏）       │
 │                                                     │
 │  Common工具（向量检索按需加载）:                      │
 │  - search_image / meme / 定时任务管理 / 持久 Agent…   │

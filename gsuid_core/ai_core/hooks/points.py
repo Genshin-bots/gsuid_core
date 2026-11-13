@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Dict, Tuple, FrozenSet
 from dataclasses import dataclass
 
+from gsuid_core.ai_core.classifier.turn_router import ROUTER_TIMEOUT_S
+
 
 class AgentHookPoint(str, Enum):
     """31 个正式点位：入站 1 + 外环 9 + 单次 run 20 + 建 session 1。"""
@@ -15,7 +17,7 @@ class AgentHookPoint(str, Enum):
     # ── 入站（handler.py，生命周期 ①）──
     ON_INBOUND = "H00"
 
-    # ── 外环（handle_ai_chat，④–⑩）──
+    # ── 外环（handle_inbox_turn，④–⑩）──
     BEFORE_AI_CHAT = "H01"
     AFTER_SESSION = "H02"
     CLASSIFY = "H03"
@@ -114,25 +116,26 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
     s.point: s
     for s in (
         _spec(AgentHookPoint.ON_INBOUND, "handler.handle_event", 200),
-        _spec(AgentHookPoint.BEFORE_AI_CHAT, "handle_ai.handle_ai_chat:budget_passed", 500, _C.ABORT, _C.SILENCE),
-        _spec(AgentHookPoint.AFTER_SESSION, "handle_ai.handle_ai_chat:get_ai_session", 500),
+        _spec(AgentHookPoint.BEFORE_AI_CHAT, "handle_ai.handle_inbox_turn:budget_passed", 500, _C.ABORT, _C.SILENCE),
+        _spec(AgentHookPoint.AFTER_SESSION, "handle_ai.handle_inbox_turn:get_ai_session", 500),
+        # 预算必须盖过 TurnRouter 自身超时，否则软批被整批静默。
         _spec(
             AgentHookPoint.CLASSIFY,
-            "handle_ai.handle_ai_chat:intent",
-            2000,
+            "handle_ai.handle_inbox_turn:intent",
+            int(ROUTER_TIMEOUT_S * 1000) + 1000,
             _C.SET_INTENT,
             _C.SET_ACTIONABLE,
             _C.ABORT,
         ),
         _spec(
             AgentHookPoint.REACTIVE_GATE,
-            "handle_ai.handle_ai_chat:soft_gate",
+            "handle_ai.handle_inbox_turn:soft_gate",
             6000,
             _C.SET_SHOULD_SPEAK,
             _C.SILENCE,
             on_timeout_decision=HookDecision.SILENCE,
         ),
-        _spec(AgentHookPoint.RETRIEVE_CONTEXT, "handle_ai.handle_ai_chat:retrieve", 15000, _C.SET_BLOCK),
+        _spec(AgentHookPoint.RETRIEVE_CONTEXT, "handle_ai.handle_inbox_turn:retrieve", 15000, _C.SET_BLOCK),
         _spec(
             AgentHookPoint.COMPOSE_CONTEXT,
             "kits.compose.compose_dynamic_context",
@@ -140,13 +143,13 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
             _C.SET_BLOCK,
             _C.SET_ACTIONABLE,
         ),
-        _spec(AgentHookPoint.AFTER_CONTEXT, "handle_ai.handle_ai_chat:composed", 500, _C.SET_BLOCK, _C.APPEND_HINT),
-        _spec(AgentHookPoint.AFTER_RUN, "handle_ai.handle_ai_chat:settle", 500),
+        _spec(AgentHookPoint.AFTER_CONTEXT, "handle_ai.handle_inbox_turn:composed", 500, _C.SET_BLOCK, _C.APPEND_HINT),
+        _spec(AgentHookPoint.AFTER_RUN, "handle_ai.handle_inbox_turn:settle", 500),
         _spec(AgentHookPoint.ASSEMBLE_TOOLS, "agent_run.tools:assemble", 2000, _C.MUTATE_TOOLS),
         _spec(AgentHookPoint.AFTER_ASSEMBLE_TOOLS, "agent_run.tools:after_assemble", 200, _C.MUTATE_TOOLS),
         _spec(AgentHookPoint.ON_STABLE_CONTEXT, "context_assembly.build_session_system_prompt", 500, _C.SET_BLOCK),
         # 契约已定但内核尚未启用的点位（wired=False），挂载时记录警告。
-        _spec(AgentHookPoint.ON_AI_ERROR, "handle_ai.handle_ai_chat:except", 500, wired=False),
+        _spec(AgentHookPoint.ON_AI_ERROR, "handle_ai.handle_inbox_turn:except", 500, wired=False),
         _spec(AgentHookPoint.BEFORE_RUN, "agent_run.prepare:run_once_state", 200, _C.ABORT, wired=False),
         _spec(AgentHookPoint.AFTER_BUDGET, "agent_run.prepare:budget_passed", 200, wired=False),
         _spec(AgentHookPoint.AFTER_INIT, "agent_run.prepare:tool_context", 200, wired=False),

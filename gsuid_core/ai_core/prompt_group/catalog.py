@@ -12,7 +12,6 @@ from gsuid_core.ai_core.persona.prompts import (
 )
 from gsuid_core.ai_core.heartbeat.decision import (
     DECISION_USER_TEMPLATE,
-    REACTIVE_GATE_TEMPLATE,
     PROACTIVE_MESSAGE_USER_TEMPLATE,
 )
 from gsuid_core.ai_core.persona.chat_style import ANSWER_CONTRACT
@@ -96,13 +95,6 @@ SPECS: tuple[PromptSpec, ...] = (
         "会话·系统提示",
         "作答契约",
         "发送时排在台词长度后面。承认不知道时不要接着解释这份不知道从哪来。",
-        (),
-    ),
-    PromptSpec(
-        "soft_trigger",
-        "会话·每轮注入",
-        "续聊软触发",
-        "免唤醒续聊、且这条没有 @ 时，加在本轮 user 末尾。",
         (),
     ),
     PromptSpec(
@@ -198,26 +190,11 @@ SPECS: tuple[PromptSpec, ...] = (
         ),
     ),
     PromptSpec(
-        "reactive_gate",
-        "定时巡检",
-        "续聊软门",
-        "免唤醒续聊时，判断这条是不是还在跟人格说话。末尾的 JSON 输出要求由程序固定，显示在正文下面。",
-        ("speaker_desc", "history_context"),
-    ),
-    PromptSpec(
         "scheduled_executor",
         "定时任务",
         "定时任务执行体",
         "替换人格。条件不满足时要保持只输出沉默标记。",
         (),
-    ),
-    PromptSpec(
-        "aside_comment",
-        "命令补充",
-        "命令补充",
-        "命令回执发出后、决定补一句时使用。程序会填入插件、源码摘录、已有记忆和工具约束。"
-        "默认组每次启动从程序写回；要改这段，请复制一个提示词组再改。",
-        ("plugin_label", "source_section", "memory_section", "tool_clause"),
     ),
     PromptSpec(
         "autonomy_system_guide",
@@ -277,22 +254,12 @@ def default_body(key: str) -> str:
         return format_template_to_mustache(DECISION_USER_TEMPLATE)
     if key == "heartbeat_speak":
         return format_template_to_mustache(PROACTIVE_MESSAGE_USER_TEMPLATE)
-    if key == "reactive_gate":
-        return format_template_to_mustache(REACTIVE_GATE_TEMPLATE)
     if key == "scheduled_executor":
         return SCHEDULED_TASK_EXECUTOR_PROMPT
-    if key == "aside_comment":
-        from gsuid_core.ai_core.command_aside.prompt import ASIDE_COMMENT_BODY
-
-        return ASIDE_COMMENT_BODY
     if key == "autonomy_system_guide":
         from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
 
         return AUTONOMY_SYSTEM_GUIDE
-    if key == "soft_trigger":
-        from gsuid_core.ai_core.context_assembly import SOFT_TRIGGER_NOTE
-
-        return SOFT_TRIGGER_NOTE
     if key == "identity":
         return (
             "（身份：你是「{{char_name}}」。自我指称只按角色卡；他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）"
