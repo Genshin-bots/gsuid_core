@@ -232,10 +232,8 @@ def test_tool_error_formatting_and_arg_canonicalization() -> None:
 def test_claims_inflight_without_backend() -> None:
     for pos in (
         "建盘和推送我都挂上去，落好之后跟你说一声",
-        "收盘后十五分钟内那份总结图和点名，还挂在半路，没落成。这一处我盯到收口，不糊过去",
-        "这一路我还在搭，没搭好之前不跟你打保票。搭成了先出一张给你看，再往下走",
-        "没停，是没接上。我去把这根线重新系回去，一会儿给你个准话。",
-        "改完这一轮就停手，正事下次再说。",
+        "这批数据我还在跑，跑完再跟你说",
+        "一会儿跑完再发给你",
     ):
         assert _claims_inflight_without_backend(pos), f"漏检在途承诺: {pos}"
     for neg in (

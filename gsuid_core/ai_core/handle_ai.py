@@ -73,9 +73,9 @@ from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
     CheapGate,
-    GroupOpenGate,
+    admit_pre_router,
     build_turn_graph,
-    decide_cheap_gate,
+    admit_post_classify,
     has_recent_tool_call,
     recent_history_texts,
 )
@@ -337,15 +337,21 @@ async def run_interactive_turn(
     hook_ctx.query = query
     hook_ctx.soft_triggered = soft_triggered
 
-    from gsuid_core.ai_core.outbound import inspect_quote_relation
-
-    is_rep_bot, is_bystander_q, is_stale_q = inspect_quote_relation(event)
-
-    # is_tome 用「本批是否有 hard 唤醒」：auto-@ 的引用了你的话也是 hard，
-    # 但语义上不是直接找你。at_bot 用主目标链接上的 at_self（不是事件透传）。
     _primary_link = next(
         (r.link for r in render_records if r.link is not None and r.link.seq == turn.primary.item.seq), None
     )
+    if hook_ctx.inbound_link is None and _primary_link is not None:
+        hook_ctx.inbound_link = _primary_link
+
+    from gsuid_core.ai_core.outbound import inspect_quote_relation
+
+    is_rep_bot, is_bystander_q, is_stale_q = inspect_quote_relation(
+        event, records=render_records, primary_link=_primary_link
+    )
+
+    # is_tome 用「本批是否有 hard 唤醒」：auto-@ 的引用了你的话也是 hard，
+    # 但语义上不是直接找你。at_bot 用主目标链接上的 at_self（不是事件透传）。
+    _recent_tool = has_recent_tool_call(session.history)
     turn_graph = build_turn_graph(
         query,
         persona_name=session.persona_name or "",
@@ -354,7 +360,7 @@ async def run_interactive_turn(
         primary_speaker=str(event.user_id or ""),
         recent=recent_history_texts(session.history),
         soft_triggered=soft_triggered,
-        recent_tool_call=has_recent_tool_call(session.history),
+        recent_tool_call=_recent_tool,
         followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
         ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
         has_reply=bool(event.reply or event.reply_id),
@@ -364,8 +370,8 @@ async def run_interactive_turn(
         is_stale_quote=is_stale_q,
     )
     hook_ctx.turn_graph = turn_graph
-    # 只拦开口门 / 寻址门。lurk / 低好感区要 rel，不能在 AFTER_SESSION 前判。
-    if turn_graph.open_gate is GroupOpenGate.SILENCE or turn_graph.address_gated:
+    # 一段入站门（零 DB / 零 LLM）：开口门、寻址门与复读刷屏直接在路由前拦下。
+    if not admit_pre_router(turn_graph):
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, "", True, hook_ctx, hook_ctx.relationship)
@@ -396,35 +402,50 @@ async def run_interactive_turn(
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
 
-    cheap = decide_cheap_gate(
+    # 二段入站门：合并 CheapGate（温度/潜水/任务延续）与软触发 H04 REACTIVE_GATE。
+    reactive_ok = True
+    reactive_timeout = False
+    if soft_triggered:
+        hook_ctx.gate_history = history.get_history(event, limit=15)
+        rg_decision = await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx)
+        reactive_ok = rg_decision is HookDecision.CONTINUE and hook_ctx.should_speak
+        reactive_timeout = rg_decision is HookDecision.SILENCE and hook_ctx.decision_reason == "timeout"
+
+    _has_active = hook_ctx.has_actionable or _recent_tool or bool(hook_ctx.prev_turn_used_tools)
+    cheap = admit_post_classify(
         turn_graph,
         soft_triggered=soft_triggered,
+        has_active_task=_has_active,
         intent=intent,
         rel=rel,
-        # H03 套件旗 + history 工具证据；装配后的第二道仍用 has_actionable
-        has_active_task=(
-            hook_ctx.has_actionable or has_recent_tool_call(session.history) or bool(hook_ctx.prev_turn_used_tools)
-        ),
+        should_speak=reactive_ok,
     )
     hook_ctx.cheap_gate = cheap.value
     if cheap is CheapGate.SILENCE:
-        logger.info(t("log.ai.gscore_group_open_gate_silence"))
-        if settle:
-            await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
+        reactive_only_silence = (
+            soft_triggered
+            and not reactive_ok
+            and admit_post_classify(
+                turn_graph,
+                soft_triggered=soft_triggered,
+                has_active_task=_has_active,
+                intent=intent,
+                rel=rel,
+                should_speak=True,
+            )
+            is CheapGate.FULL
+        )
+        if soft_triggered and not reactive_ok and reactive_timeout:
+            record_gate_outcome("timeout_silence")
+        if not reactive_only_silence:
+            logger.info(t("log.ai.gscore_group_open_gate_silence"))
+            if settle:
+                await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
         _count_soft_silence()
         return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
     logger.info(t("log.ai.gscore_ai_intent_mode", intent=intent or "-"))
-
-    if soft_triggered:
-        hook_ctx.gate_history = history.get_history(event, limit=15)
-        decision = await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx)
-        if decision is not HookDecision.CONTINUE or not hook_ctx.should_speak:
-            record_gate_silence(event.session_id, str(event.user_id))
-            if decision is HookDecision.SILENCE and hook_ctx.decision_reason == "timeout":
-                record_gate_outcome("timeout_silence")
-            return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
-        if enqueue_ts is not None:
-            enqueue_ts = time.time()
+    if soft_triggered and enqueue_ts is not None:
+        enqueue_ts = time.time()
 
     await session.refresh_model_if_changed()
     pending_images = []
@@ -456,8 +477,6 @@ async def run_interactive_turn(
     if enqueue_ts is not None:
         enqueue_ts = time.time()
 
-    hook_ctx.turn_graph = turn_graph
-    hook_ctx.cheap_gate = cheap.value
     session.route_decision = hook_ctx.route_decision
     hook_ctx.recent_report_titles = recent_report_titles(session.history)
     hist_block = ""
@@ -487,19 +506,6 @@ async def run_interactive_turn(
         bot=bot,
         hook_ctx=hook_ctx,
     )
-    cheap = decide_cheap_gate(
-        turn_graph,
-        soft_triggered=soft_triggered,
-        has_active_task=has_actionable,
-        intent=intent,
-        rel=rel,
-    )
-    if cheap is CheapGate.SILENCE:
-        logger.info(t("log.ai.gscore_group_open_gate_silence"))
-        if settle:
-            await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
-        _count_soft_silence()
-        return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
 
     from gsuid_core.ai_core.autonomy.dispatch import ack_autonomy_merge, peek_autonomy_merge
 

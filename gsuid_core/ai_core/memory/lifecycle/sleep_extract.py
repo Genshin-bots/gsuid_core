@@ -51,11 +51,14 @@ def enqueue_session(session_id: str) -> None:
 def _title_from_opener(raw: str) -> str:
     from gsuid_core.ai_core.memory.retrieval.lexical import _speaker_stripped, _prose_without_markup
 
-    text = _prose_without_markup(_speaker_stripped(raw or ""))
-    text = " ".join(text.split())
-    if len(text) > 80:
-        return text[:80].rstrip(" ,.;:") + "…"
-    return text or "session"
+    for line in (raw or "").splitlines():
+        text = " ".join(_prose_without_markup(_speaker_stripped(line)).split())
+        if not text:
+            continue
+        if len(text) > 36:
+            return text[:36].rstrip(" ,.;:，。；：") + "…"
+        return text
+    return "session"
 
 
 def _title_key(title: str) -> str:
@@ -102,7 +105,10 @@ async def ensure_scope_threads(scope_key: str) -> int:
     try:
         from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
 
-        vecs = await retrieve_episode_dense_vectors([r["opener_id"] for r in rows if r["opener_id"]])
+        ep_ids = list(
+            {r["opener_id"] for r in rows if r["opener_id"]} | {th.qdrant_id for th in existing if th.qdrant_id}
+        )
+        vecs = await retrieve_episode_dense_vectors(ep_ids)
     except (TimeoutError, OSError, RuntimeError, SQLAlchemyError) as e:
         logger.debug(i18n_t("log.memory.sleep_extract_fail", scope_key=scope_key, e=e))
 

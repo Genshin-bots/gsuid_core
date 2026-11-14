@@ -182,3 +182,24 @@ def test_event_link_seq_reply_and_at_self() -> None:
     assert [r.link.seq for r in after if r.link] == list(range(bot1.link.seq + 1, last_seq + 1))
     found = mgr.find_by_seq(b_ev, u1.link.seq)
     assert found is not None and found.content == "让你画图"
+
+
+def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
+    """超限分段无损合入末条气泡，detached_turn_scope 隔离前台轮次上下文。"""
+    from gsuid_core.ai_core.utils import pack_outbound_bubbles
+    from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn, current_turn, detached_turn_scope
+
+    packed = pack_outbound_bubbles(["第一段", "第二段", "第三段", "第四段"], 2)
+    assert packed == ["第一段", "第二段\n\n第三段\n\n第四段"]
+    assert pack_outbound_bubbles(["单段"], 0) == []
+    assert pack_outbound_bubbles(["甲", "乙"], 4) == ["甲", "乙"]
+
+    turn = InboxTurn(session_id="group:200000001", persona_name="测试角色", entries=(), from_seq=0, head_seq=1)
+    tok = bind_turn(turn)
+    try:
+        assert current_turn() is turn
+        with detached_turn_scope():
+            assert current_turn() is None
+        assert current_turn() is turn
+    finally:
+        reset_turn(tok)

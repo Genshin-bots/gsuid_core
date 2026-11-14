@@ -35,6 +35,7 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.rag.tools import search_tools
+from gsuid_core.ai_core.control.lines import RES_HANDLE_RE
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.task_kinds import TASK_SUBAGENT
@@ -77,7 +78,6 @@ def _strip_transient_wrapper(text: str) -> str:
 
 
 # 已登记产物句柄：有 res_ 即视为可消费交付（勿被 OOC 误杀后再判 incomplete）
-_RES_HANDLE_RE = re.compile(r"\bres_[0-9a-fA-F]{6,}\b")
 _ARTIFACT_REGISTERED_RE = re.compile(
     r"(已登记\s*artifact|artifact[_\s-]?put|事实包已登记|登记为\s*\*?`?res_)",
     re.IGNORECASE,
@@ -122,7 +122,7 @@ def looks_like_incomplete_subagent_delivery(text: str) -> bool:
     if body.startswith("⚠️") or "执行失败" in body[:40]:
         return False
     # 成功交付硬信号：句柄 / 登记声明（优先于过程口癖）
-    if _RES_HANDLE_RE.search(body) or _ARTIFACT_REGISTERED_RE.search(body):
+    if RES_HANDLE_RE.search(body) or _ARTIFACT_REGISTERED_RE.search(body):
         return False
     has_structure = (
         "|" in body

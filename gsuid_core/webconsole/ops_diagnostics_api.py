@@ -220,9 +220,21 @@ class IntentRequest(BaseModel):
 @app.post("/api/ops/intent", summary="意图分类试跑", tags=_OPS)
 async def ops_intent(body: IntentRequest, _user: Dict = Depends(require_auth)) -> Dict[str, Any]:
     try:
-        from gsuid_core.ai_core.classifier.mode_classifier import classifier_service
+        from gsuid_core.ai_core.classifier.turn_router import route_turn
 
-        result = await classifier_service.predict_async(body.text.strip())
+        text = body.text.strip()
+        decision = await route_turn(text)
+        result = {
+            "text": text,
+            "intent": decision.intent,
+            "conf": 0.9 if decision.source == "llm" else 0.6,
+            "reason": decision.source,
+            "memory_intent": decision.memory_intent,
+            "soft_speak": decision.soft_speak,
+            "is_live_lookup": decision.is_live_lookup,
+            "needs_committed_work": decision.needs_committed_work,
+            "source": decision.source,
+        }
         return {"status": 0, "msg": "ok", "data": result}
     except Exception as e:
         return {"status": 1, "msg": str(e), "data": None}
@@ -372,9 +384,21 @@ async def ops_trigger_replay(
     intent = None
     if should_respond and body.text.strip():
         try:
-            from gsuid_core.ai_core.classifier.mode_classifier import classifier_service
+            from gsuid_core.ai_core.classifier.turn_router import route_turn
 
-            intent = await classifier_service.predict_async(body.text.strip())
+            text = body.text.strip()
+            decision = await route_turn(text, soft_triggered=soft_triggered)
+            intent = {
+                "text": text,
+                "intent": decision.intent,
+                "conf": 0.9 if decision.source == "llm" else 0.6,
+                "reason": decision.source,
+                "memory_intent": decision.memory_intent,
+                "soft_speak": decision.soft_speak,
+                "is_live_lookup": decision.is_live_lookup,
+                "needs_committed_work": decision.needs_committed_work,
+                "source": decision.source,
+            }
             steps.append({"step": "intent", "pass": True, "detail": intent})
         except Exception as e:
             steps.append({"step": "intent", "pass": False, "detail": str(e)})

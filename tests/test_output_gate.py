@@ -108,3 +108,108 @@ def test_parse_reply_plan_table() -> None:
 
     assert "<reply #3>" not in find_illegal_angle_tags("好 <reply #3> 嗯")
     assert "<reply" not in strip_protocol_tags("<reply #3>\n你好")
+
+
+def test_report_speech_and_allow_render_gate() -> None:
+    """自然多段对话不被误判为汇报，且无出图人格不因待出图拦截文本。"""
+    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_report_speech, should_block_user_visible_text
+
+    casual_paras = (
+        "你先别急，我刚刚把这几个步骤在脑子里过了一遍，其实没你想的那么复杂。\n\n"
+        "第一步只要先把常用配置确认好，后面就能直接连贯跑起来，中间不用反复切页面。\n\n"
+        "第二步注意留好缓冲时间，真卡住了再回来问我，我陪你一段段排查。\n\n"
+        "总之放心去试就行，有异常随时告诉我。"
+    )
+    assert not looks_like_report_speech(casual_paras)
+
+    bullet_report = (
+        "整理了以下四项关键改动与详细核对说明供团队排查时参考：\n"
+        "- 第一项配置说明：调整默认值、重试策略与超时时间，确保长期高并发环境下稳定运行且不丢包。\n"
+        "- 第二项权限检查：在入站入口严格校验目标范围、机器人身份与账号绑定关系，避免多人串线。\n"
+        "- 第三项缓存优化：超限分段无损合并至尾部气泡并保留段落格式，防止长文本被静默丢弃。\n"
+        "- 第四项日志审计：补充关键路径异常告警信息与追踪上下文，方便运维在事后直接定位根因。"
+    )
+    assert looks_like_report_speech(bullet_report)
+
+    blocked_allow, _ = should_block_user_visible_text(
+        "free",
+        bullet_report,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=(),
+        fact_pack_pending=True,
+        allow_render=True,
+    )
+    blocked_no_render, _ = should_block_user_visible_text(
+        "free",
+        bullet_report,
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=(),
+        fact_pack_pending=True,
+        allow_render=False,
+    )
+    assert blocked_allow is True
+    assert blocked_no_render is False
+
+    # 收敛话术策略表：pre_send_gate(speech_ctx=...) 与 settle 出口共享同一评价器
+    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+    from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext, evaluate_speech_policy
+
+    ctx_inline = SpeechContext(
+        policy="free",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=("search",),
+        fact_pack_pending=True,
+        allow_render=True,
+    )
+    gate_res = pre_send_gate(bullet_report, {}, channel="main", speech_ctx=ctx_inline)
+    assert gate_res.decision is GateDecision.REWRITE
+    assert gate_res.policy == "speech_policy" and gate_res.detail == "report_speech"
+
+    ctx_settle = SpeechContext(
+        policy="silence_only",
+        pending_async=False,
+        image_sent=False,
+        has_status_tool=False,
+        tool_calls_so_far=(),
+        in_settle_exit=True,
+    )
+    assert evaluate_speech_policy(ctx_settle, "测试用户A 可以试试这个方案。") == (False, "ok")
+
+    from gsuid_core.ai_core.control.policy_ring import (
+        _OUTBOUND_RING,
+        evaluate_speech_ring,
+        rewrite_directive_for,
+    )
+
+    assert evaluate_speech_ring(ctx_inline, bullet_report) == (True, "report_speech")
+    rw = rewrite_directive_for(
+        "report_speech",
+        allow_render=True,
+        tool_calls=1,
+        recited_report=True,
+        forbid_title="",
+        wait_already_sent=False,
+    )
+    assert rw is not None and rw.reason_code == "report_speech"
+    assert (
+        rewrite_directive_for(
+            "ok",
+            allow_render=True,
+            tool_calls=0,
+            recited_report=False,
+            forbid_title="",
+            wait_already_sent=False,
+        )
+        is None
+    )
+    assert {r.name for r in _OUTBOUND_RING} == {"speech_policy", "angle_bracket", "ooc", "inner_os"}
+
+    # 未知 channel 回落为 main 语义（machine_dump 延迟到 run 末重说而非 tool 当场打回）
+    unknown_res = pre_send_gate("Traceback (most recent call last):\n  File x", {}, channel="unknown")
+    assert unknown_res.decision is GateDecision.REWRITE and unknown_res.defer_ooc is True

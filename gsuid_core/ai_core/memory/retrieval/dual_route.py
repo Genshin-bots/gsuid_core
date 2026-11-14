@@ -23,6 +23,7 @@ from gsuid_core.ai_core.control.lines import (
     MEMORY_STAGING_NOTE,
     MEMORY_CONFLICT_NOTE,
     MEMORY_TIMELINE_ORDER_NOTE,
+    MEMORY_SPEAKER_ISOLATION_NOTE,
 )
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.memory.ingestion.algebra import _DANGLING_FACT_RE
@@ -40,10 +41,7 @@ from .system1 import System1Result, system1_search
 from .event_time import (
     query_time_window,
     event_at_from_text,
-    looks_like_span_query,
     has_relative_time_span,
-    looks_like_order_query,
-    looks_like_summary_query,
     query_explicit_time_range,
 )
 
@@ -53,7 +51,7 @@ _POINT_LOOKUP_EP_BUDGET = 8000
 _TS_MAX = 4_102_444_800.0
 
 _RERANK_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="reranker")
-_TRIVIA_FACT_RE = re.compile(r"(提及|提到|在唱|演唱|唱歌|询问|聊到|讨论|说起|谈到)")
+_TRIVIA_FACT_RE = re.compile(r"(提及|提到|询问|聊到|讨论|说起|谈到)")
 _IDENTITY_FACT_KEYWORDS = ("本人是", "就是", "叫做", "别名")
 
 _SENSITIVE_FACT_RE = re.compile(
@@ -269,12 +267,7 @@ class MemoryContext:
             parts.append("【检索提示】记忆中没有与该问题直接相关的证据。")
 
         if self.events:
-            if (
-                intent in ("timeline_order", "broad_summary")
-                or looks_like_order_query(query)
-                or looks_like_summary_query(query)
-                or looks_like_span_query(query)
-            ):
+            if intent in ("timeline_order", "broad_summary"):
                 ev_lines: list[str] = []
                 for ev in self.events[:16]:
                     src = ev["source"] if "source" in ev else ""
@@ -323,16 +316,12 @@ class MemoryContext:
             conflict = any(("resolution_state" in e and e["resolution_state"] == "contradicted") for e in edges)
             staging = any(("resolution_state" in e and e["resolution_state"] == "staging") for e in edges)
 
-            from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_latest_slot_query
-            from gsuid_core.ai_core.memory.retrieval.event_time import looks_like_revision_query
-
-            keep_versions = (
-                intent == "version_diff" or looks_like_revision_query(query) or looks_like_latest_slot_query(query)
-            )
+            keep_versions = intent == "version_diff"
             now_ts = time.time()
             _extra_sensitive = _get_sensitive_extra_terms()
             fact_lines: list[str] = []
             seen_facts: set[str] = set()
+            has_self_edge = False
 
             for i, e in enumerate(edges, start=1):
                 invalid_at = e["invalid_at_ts"]
@@ -378,12 +367,15 @@ class MemoryContext:
 
                 state = e["resolution_state"] if "resolution_state" in e else "active"
                 mark = ""
+                if "scope_key" in e and e["scope_key"].startswith("self:"):
+                    has_self_edge = True
+                    mark = "[自我经历] "
                 if state == "contradicted":
-                    mark = "⚠️[存在未消解矛盾] "
+                    mark += "⚠️[存在未消解矛盾] "
                 elif state == "staging":
-                    mark = "[待证实传闻] "
+                    mark += "[待证实传闻] "
                 elif state == "superseded" and intent == "version_diff":
-                    mark = "[已于后续更新] "
+                    mark += "[已于后续更新] "
 
                 _id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
                 _dt = _edge_date_prefix(e)
@@ -401,6 +393,8 @@ class MemoryContext:
                     header += MEMORY_CONFLICT_NOTE
                 if staging:
                     header += MEMORY_STAGING_NOTE
+                if has_self_edge:
+                    header += MEMORY_SPEAKER_ISOLATION_NOTE
                 parts.append(_speech(header + "\n" + "\n".join(taken)))
 
         if self.conflicts:
@@ -426,32 +420,20 @@ class MemoryContext:
             if ep_budget > 120:
                 from gsuid_core.ai_core.memory.retrieval.lexical import (
                     is_fact_sheet,
-                    is_session_read,
-                    excerpt_session_read,
                     looks_like_set_query,
                     looks_like_sum_query,
                     looks_like_count_query,
                     apply_query_episode_pack,
-                    looks_like_compare_query,
                     collapse_document_episodes,
-                    looks_like_attribute_query,
                     is_ingested_document_episode,
-                    looks_like_latest_slot_query,
                     wants_parallel_document_coverage,
                 )
-                from gsuid_core.ai_core.memory.retrieval.event_time import (
-                    query_only_item_cap,
-                    looks_like_duration_query,
-                )
+                from gsuid_core.ai_core.memory.retrieval.event_time import query_only_item_cap
 
                 cross_session = (
                     intent in ("timeline_order", "broad_summary")
-                    or looks_like_order_query(query)
-                    or looks_like_span_query(query)
-                    or looks_like_summary_query(query)
                     or looks_like_count_query(query)
-                    or looks_like_sum_query(query)
-                    or looks_like_compare_query(query)
+                    or looks_like_sum_query(query, memory_intent=intent)
                 )
                 from gsuid_core.ai_core.memory.retrieval.lexical import (
                     query_tokens,
@@ -505,8 +487,12 @@ class MemoryContext:
                 recent_budget = 0 if (cross_session or not recent_self) else min(int(ep_budget * 0.25), 400)
                 other_budget = max(0, ep_budget - self_budget - recent_budget)
                 ep_cap = 480 if (self.temporal_mode or intent == "timeline_order") else 1000
-                parallel_q = wants_parallel_document_coverage(query) or self.covered
-                doc_cap = max_chars if parallel_q else (12000 if looks_like_set_query(query) else max(ep_cap, 2400))
+                parallel_q = wants_parallel_document_coverage(query, memory_intent=intent) or self.covered
+                doc_cap = (
+                    max_chars
+                    if parallel_q
+                    else (12000 if looks_like_set_query(query, memory_intent=intent) else max(ep_cap, 2400))
+                )
 
                 def _assistant_turn(raw: str) -> bool:
                     low = raw.lstrip().lower()
@@ -540,9 +526,7 @@ class MemoryContext:
                         if is_ingested_document_episode(raw):
                             undated.append(f"{prefix}{raw[:doc_cap]}")
                             continue
-                        if is_session_read(ep):
-                            shown = excerpt_session_read(raw, query) or raw[:2400]
-                        elif is_fact_sheet(ep):
+                        if is_fact_sheet(ep):
                             shown = raw[:4800]
                         elif _assistant_turn(raw) and len(raw) > ep_cap:
                             from gsuid_core.ai_core.memory.retrieval.lexical import (
@@ -553,7 +537,7 @@ class MemoryContext:
                             shown = excerpt_around_ordinal(raw, query, max(ep_cap, 900))
                             if not shown:
                                 shown = excerpt_keep_numbers(raw, ep_cap)
-                        if (looks_like_summary_query(query) or intent == "broad_summary") and _assistant_turn(raw):
+                        if intent == "broad_summary" and _assistant_turn(raw):
                             from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_around_tokens
 
                             shown = excerpt_around_tokens(raw, query, 480) or shown
@@ -582,12 +566,7 @@ class MemoryContext:
                     # 窗内优先前置，窗外后置保底，避免时间窗预估偏差导致证据硬丢失
                     other_eps = [e for e in other_eps if _in_win(e)] + [e for e in other_eps if not _in_win(e)]
 
-                if (
-                    looks_like_order_query(query)
-                    or looks_like_span_query(query)
-                    or looks_like_summary_query(query)
-                    or intent in ("timeline_order", "broad_summary")
-                ):
+                if intent in ("timeline_order", "broad_summary"):
                     ep_cap = 480 if not self.covered else max(ep_cap, 4800)
                 haystack = list(other_eps)
 
@@ -597,7 +576,7 @@ class MemoryContext:
                     rest_pack = [ep for ep in packed if "id" not in ep or str(ep["id"]) not in self.cover_ids]
                     packed = cover_first + rest_pack
                 else:
-                    wide_pack = cross_session or looks_like_set_query(query) or parallel_q
+                    wide_pack = cross_session or looks_like_set_query(query, memory_intent=intent) or parallel_q
                     pack_cap = max_chars if wide_pack else _POINT_LOOKUP_EP_BUDGET
                     packed = apply_query_episode_pack(
                         haystack,
@@ -609,21 +588,17 @@ class MemoryContext:
                         memory_intent=intent,
                     )
 
-                if looks_like_set_query(query):
+                if looks_like_set_query(query, memory_intent=intent):
                     packed = collapse_document_episodes(packed)
                 if cross_session:
                     packed = packed[:60]
-                if (
-                    looks_like_order_query(query)
-                    or looks_like_summary_query(query)
-                    or intent in ("timeline_order", "broad_summary")
-                ):
+                if intent in ("timeline_order", "broad_summary"):
                     sheet_tail = [e for e in packed if is_fact_sheet(e)]
                     core_packed = [e for e in packed if not is_fact_sheet(e)]
                     core_packed.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
                     packed = core_packed + sheet_tail
 
-                if looks_like_order_query(query) or intent == "timeline_order":
+                if intent == "timeline_order":
                     from gsuid_core.ai_core.memory.retrieval.lexical import (
                         pack_order_dialogue,
                         format_order_skeleton,
@@ -658,10 +633,9 @@ class MemoryContext:
 
                 if (
                     self.reserved_episodes
-                    and looks_like_attribute_query(query)
+                    and intent == "version_diff"
                     and not looks_like_count_query(query)
-                    and not looks_like_sum_query(query)
-                    and not looks_like_order_query(query)
+                    and not looks_like_sum_query(query, memory_intent=intent)
                 ):
                     from gsuid_core.ai_core.memory.retrieval.lexical import render_value_timeline
 
@@ -673,19 +647,10 @@ class MemoryContext:
                         reserved_ids = {ep["id"] for ep in self.reserved_episodes if "id" in ep}
                         user_eps = [ep for ep in user_eps if "id" not in ep or ep["id"] not in reserved_ids]
 
-                timeline_q = (
-                    looks_like_span_query(query) or looks_like_duration_query(query) or looks_like_summary_query(query)
-                )
-
-                if (
-                    intent in ("timeline_order", "broad_summary")
-                    or looks_like_order_query(query)
-                    or looks_like_span_query(query)
-                    or looks_like_summary_query(query)
-                ):
+                if intent in ("timeline_order", "broad_summary"):
                     core_user_eps = [e for e in user_eps if not is_fact_sheet(e)]
                     sheet_eps = [e for e in user_eps if is_fact_sheet(e)]
-                    want_asst = (intent == "broad_summary" or looks_like_summary_query(query)) and bool(asst_eps)
+                    want_asst = intent == "broad_summary" and bool(asst_eps)
                     user_share = (other_budget * 3) // 4 if want_asst else other_budget
                     taken = _take_head_tail(_ep_lines(core_user_eps, self_mark=False), user_share)
                     used_chars = sum(len(x) for x in taken)
@@ -705,26 +670,15 @@ class MemoryContext:
                     taken = _take(_ep_lines(user_eps, self_mark=False), other_budget)
                 elif not self.covered and (
                     looks_like_count_query(query)
-                    or looks_like_sum_query(query)
-                    or looks_like_compare_query(query)
-                    or looks_like_latest_slot_query(query)
+                    or looks_like_sum_query(query, memory_intent=intent)
+                    or intent == "version_diff"
                 ):
                     count_budget = (
                         other_budget
-                        if (
-                            looks_like_count_query(query)
-                            or looks_like_sum_query(query)
-                            or looks_like_compare_query(query)
-                        )
+                        if (looks_like_count_query(query) or looks_like_sum_query(query, memory_intent=intent))
                         else min(other_budget, _POINT_LOOKUP_EP_BUDGET)
                     )
                     taken = _take(_ep_lines(user_eps, self_mark=False), count_budget)
-                elif looks_like_duration_query(query) and not self.covered:
-                    taken = _take_head_tail(
-                        _ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET)
-                    )
-                elif timeline_q and not self.covered:
-                    taken = _take(_ep_lines(user_eps, self_mark=False), min(other_budget, _POINT_LOOKUP_EP_BUDGET))
                 else:
                     if not self.covered and not cross_session and not memory_config.eval_mode:
                         user_eps = _filter_point_lookup_episodes(user_eps, query, dense_anchor_cap=2)
@@ -783,20 +737,6 @@ async def _run_sync_rerank(reranker: RerankerProvider, query: str, texts: list[s
         _RERANK_EXECUTOR,
         lambda: list(reranker.rerank(query, texts)),
     )
-
-
-async def _rerank_episodes(query: str, items: list[Episode], top_k: int) -> list[Episode]:
-    if not items:
-        return []
-    reranker = get_reranker()
-    if reranker is None:
-        return items[:top_k]
-    texts = [item["content"] for item in items]
-    scores = list(await _run_sync_rerank(reranker, query, texts))
-    if len(scores) != len(items):
-        return items[:top_k]
-    ranked = sorted(zip(scores, items), key=lambda x: x[0], reverse=True)
-    return [item for _, item in ranked[:top_k]]
 
 
 async def _rerank_entities(query: str, items: list[Entity], top_k: int) -> list[Entity]:
@@ -902,6 +842,7 @@ def _edge_to_typed(row: object, names: dict[str, str]) -> Edge | None:
         "expired_at_ts": row.expired_at.timestamp() if row.expired_at else None,
         "edge_kind": row.edge_kind,
         "slot_key": row.slot_key,
+        "scope_key": row.scope_key,
         "resolution_state": row.resolution_state,
         "superseded_by_id": row.superseded_by_id,
         "contradicts_edge_id": row.contradicts_edge_id,
@@ -1226,7 +1167,7 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
         _speaker_stripped,
         pack_first_mention_episodes,
     )
-    from gsuid_core.ai_core.memory.retrieval.event_time import order_topic_span, temporal_search_query
+    from gsuid_core.ai_core.memory.retrieval.event_time import temporal_search_query
     from gsuid_core.ai_core.memory.retrieval.order_reconstruct import select_by_topic_scores
 
     if n <= 0 or not episodes:
@@ -1239,7 +1180,7 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
         user.append(ep)
     if not user:
         return []
-    topic = order_topic_span(query) or temporal_search_query(query) or query
+    topic = temporal_search_query(query) or query
     if topic and len(user) > 120:
         user = sorted(user, key=lambda e: -_topic_hit_count(topic, e["content"] or ""))[:120]
         user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
@@ -1285,6 +1226,22 @@ _EPISODE_STOP_WORDS = frozenset(
         "怎么",
     }
 )
+
+
+def _cap_self_scope_edges(edges: list[Edge], scope_keys: list[str], max_self: int = 2) -> list[Edge]:
+    """群聊检索限制来自 self: 的边条数，避免助手自述挤占群成员事实槽位。"""
+    if not any(sk.startswith("group:") for sk in scope_keys):
+        return edges
+    out: list[Edge] = []
+    self_count = 0
+    for edge in edges:
+        sk = edge["scope_key"] if "scope_key" in edge else ""
+        if sk.startswith("self:"):
+            if self_count >= max_self:
+                continue
+            self_count += 1
+        out.append(edge)
+    return out
 
 
 def _filter_point_lookup_episodes(
@@ -1388,8 +1345,6 @@ async def dual_route_retrieve(
         looks_like_sum_query,
         expand_lexical_recall,
         looks_like_count_query,
-        looks_like_attribute_query,
-        should_keep_assistant_hits,
         wants_parallel_document_coverage,
     )
 
@@ -1427,7 +1382,7 @@ async def dual_route_retrieve(
                 else memory_config.preference_max_inject
             )
             pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
-            pref_rows = [r for r in pref_rows if r.target_context != "possession"]
+            pref_rows = [r for r in pref_rows if r.target_context not in ("possession", "location")]
             if preference_contexts is not None:
                 ctx_set = set(preference_contexts)
                 pref_rows = [
@@ -1490,8 +1445,8 @@ async def dual_route_retrieve(
     if time_range is None and clock_at is not None and has_relative_time_span(query):
         time_range = query_time_window(query, clock_at)
 
-    parallel_q = wants_parallel_document_coverage(query)
-    counting_q = looks_like_count_query(query) or looks_like_sum_query(query)
+    parallel_q = wants_parallel_document_coverage(query, memory_intent=memory_intent)
+    counting_q = looks_like_count_query(query) or looks_like_sum_query(query, memory_intent=memory_intent)
     cand_k = (
         max(top_k * 6, 128)
         if (parallel_q or counting_q)
@@ -1510,13 +1465,7 @@ async def dual_route_retrieve(
 
     span_task = (
         asyncio.create_task(recall_span_threads(query, scope_keys, user_id, group_id))
-        if (
-            memory_intent in ("timeline_order", "broad_summary")
-            or looks_like_order_query(query)
-            or looks_like_summary_query(query)
-        )
-        and user_id
-        and scope_keys
+        if memory_intent in ("timeline_order", "broad_summary") and user_id and scope_keys
         else None
     )
 
@@ -1530,7 +1479,7 @@ async def dual_route_retrieve(
     s1: System1Result = s1_res if isinstance(s1_res, System1Result) else System1Result()
     fts_eps: list[Episode] = fts_res if isinstance(fts_res, list) else []
 
-    keep_asst = should_keep_assistant_hits(query)
+    keep_asst = memory_intent == "broad_summary"
     episodes = _rrf_fuse_episodes(s1.episodes, fts_eps, keep_asst)
 
     covered: list[Episode] = []
@@ -1609,7 +1558,7 @@ async def dual_route_retrieve(
 
     # 排序题阶段重构
     order_stages: list[Episode] = []
-    if (looks_like_order_query(query) or memory_intent == "timeline_order") and episodes:
+    if memory_intent == "timeline_order" and episodes:
         from gsuid_core.ai_core.memory.retrieval.event_time import query_only_item_cap
 
         _n_stages = query_only_item_cap(query) or 8
@@ -1621,13 +1570,12 @@ async def dual_route_retrieve(
         except (TimeoutError, OSError, RuntimeError, ValueError):
             order_stages = []
 
-    # 属性问答原句单独保留
+    # 属性演进原句单独保留
     reserved_episodes: list[Episode] = []
     if (
-        looks_like_attribute_query(query)
+        memory_intent == "version_diff"
         and not looks_like_count_query(query)
-        and not looks_like_sum_query(query)
-        and not looks_like_order_query(query)
+        and not looks_like_sum_query(query, memory_intent=memory_intent)
     ):
         q_tokens = [tok for tok in query.split() if len(tok) >= 2]
         for ep in episodes:
@@ -1651,6 +1599,7 @@ async def dual_route_retrieve(
     ranked_entities = await _rerank_entities(query, s1.entities, top_k * 2)
     ranked_edges = await _rerank_edges(query, s1.edges, top_k * 2)
     ranked_edges = await _apply_intent_edges(memory_intent, ranked_edges, scope_keys, clock_at=clock_at)
+    ranked_edges = _cap_self_scope_edges(ranked_edges, scope_keys)
 
     edge_ids = [e["id"] for e in ranked_edges if e["id"]]
     if edge_ids:

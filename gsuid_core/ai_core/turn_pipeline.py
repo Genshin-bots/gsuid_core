@@ -295,7 +295,8 @@ async def deliver_run_result(
             logger.info(t("log.ai.gscore_fallback_suppressed_repeat"))
         else:
             try:
-                await send_chat_result(bot, user_facing, ev=event, extra_metadata=turn_reply_metadata(event))
+                err_meta: dict[str, object] = {**turn_reply_metadata(event), "skip_ai_history": True}
+                await send_chat_result(bot, user_facing, ev=event, extra_metadata=err_meta)
             except Exception as e:
                 logger.warning(t("log.ai.gscore_sanitized_fallback", e=e))
         await notify_master_of_agent_error(

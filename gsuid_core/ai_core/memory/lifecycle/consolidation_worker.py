@@ -263,7 +263,6 @@ async def _reconcile_dangling_vectors() -> int:
     from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemEpisode
     from gsuid_core.ai_core.memory.vector.collections import (
         MEMORY_EDGES_COLLECTION,
-        MEMORY_THREADS_COLLECTION,
         MEMORY_ENTITIES_COLLECTION,
         MEMORY_EPISODES_COLLECTION,
     )
@@ -273,7 +272,6 @@ async def _reconcile_dangling_vectors() -> int:
         (MEMORY_ENTITIES_COLLECTION, AIMemEntity),
         (MEMORY_EDGES_COLLECTION, AIMemEdge),
     ]
-    _ = MEMORY_THREADS_COLLECTION
 
     total = 0
     for collection, model in targets:

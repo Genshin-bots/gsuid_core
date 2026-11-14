@@ -26,6 +26,7 @@ from gsuid_core.ai_core.kits.registry import register_agent_kit
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.cognition import CogScope
+    from gsuid_core.message_history.manager import EventLink
     from gsuid_core.ai_core.classifier.turn_router import MemoryIntent
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
@@ -97,12 +98,20 @@ def _format_memory_catalog(mem: "MemoryContext", _query: str = "") -> str:
     return "\n".join(lines)
 
 
-def retrieve_query_for_search(query: str) -> str:
-    """检索用 query：剥墙钟行和 eval「当前时间」前缀。"""
+def retrieve_query_for_search(query: str, persona_name: str = "") -> str:
+    """检索用 query：剥墙钟行、eval 前缀与当前人格唤醒词。"""
+    from gsuid_core.ai_core.entity_index import strip_surfaces
     from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+    from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
     from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
 
     body = strip_clock_lines(extract_message_body(query))
+    if persona_name and body:
+        surfaces = collect_persona_surfaces(persona_name)
+        if surfaces:
+            stripped = strip_surfaces(body, surfaces)
+            if len(stripped) >= 2:
+                body = stripped
     return body or query.strip()
 
 
@@ -139,7 +148,7 @@ def wants_evidence_injection(ctx: AgentHookContext) -> bool:
 def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
     """Chat 短闲聊目录卡；问答/长问句走统一的 ``to_prompt_text``。"""
     ctx.memory_covered = mem.covered
-    q = retrieve_query_for_search(ctx.query)
+    q = retrieve_query_for_search(ctx.query, persona_name=ctx.persona_name or "")
     if not wants_evidence_injection(ctx):
         return _format_memory_catalog(mem, q)
     from gsuid_core.ai_core.kits.base import inject_memory_cap
@@ -245,17 +254,21 @@ class ObserveMeta(TypedDict):
     reply_to_msg_id: str
     reply_preview: str
     at_targets: tuple[str, ...]
+    reply_to_bot: bool
 
 
-def _observe_meta(ev: Event) -> ObserveMeta:
+def _observe_meta(ev: Event, *, link: "EventLink | None" = None) -> ObserveMeta:
     reply_id = str(ev.reply_id).strip() if ev.reply_id else ""
     reply_preview = (ev.reply or "").strip()[:120]
-    at_targets = tuple(str(item) for item in (ev.at_list or []) if str(item).strip())
+    at_targets = (
+        link.at_targets if link is not None else tuple(str(item) for item in (ev.at_list or []) if str(item).strip())
+    )
     return {
         "speaker_name": _speaker_name(ev, str(ev.user_id or "")),
         "reply_to_msg_id": reply_id,
         "reply_preview": reply_preview,
         "at_targets": at_targets,
+        "reply_to_bot": bool(link is not None and link.reply_to_author == "self"),
     }
 
 
@@ -295,6 +308,11 @@ class MemoryKit(AgentKit):
             return
         if ev.user_type != "direct" and not ctx.group_id:
             return
+        if isinstance(ev.sender, dict) and (
+            ("is_bot" in ev.sender and bool(ev.sender["is_bot"]))
+            or ("role" in ev.sender and str(ev.sender["role"]).lower() == "bot")
+        ):
+            return
 
         has_text = bool(ev.raw_text and ev.raw_text.strip())
         image_urls = _image_urls(ev)
@@ -309,7 +327,7 @@ class MemoryKit(AgentKit):
                 bot_id=str(ev.bot_id),
                 persona_name=ctx.persona_name or "",
                 message_id=str(ev.msg_id) if ev.msg_id else None,
-                **_observe_meta(ev),
+                **_observe_meta(ev, link=ctx.inbound_link),
             )
         # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆，
         # 避免后台对每张群图都发起一次视觉模型调用（Token + 日志噪声）。
@@ -347,7 +365,7 @@ class MemoryKit(AgentKit):
             bot_id=str(ev.bot_id),
             persona_name=ctx.persona_name or "",
             message_id=str(ev.msg_id) if ev.msg_id else None,
-            **_observe_meta(ev),
+            **_observe_meta(ev, link=ctx.inbound_link),
         )
 
     async def retrieve(self, ctx: AgentHookContext) -> None:
@@ -362,7 +380,7 @@ class MemoryKit(AgentKit):
             return
         if not should_prefetch_memory(ctx):
             return
-        search_q = retrieve_query_for_search(ctx.query)
+        search_q = retrieve_query_for_search(ctx.query, persona_name=ctx.persona_name or "")
         memory_intent = memory_intent_from_ctx(ctx)
 
         pref_contexts: List[str] = []
@@ -409,8 +427,6 @@ class MemoryKit(AgentKit):
             from gsuid_core.ai_core.memory.retrieval.lexical import (
                 looks_like_count_query,
                 expand_episode_neighbors,
-                expand_topic_session_turns,
-                looks_like_personal_upkeep_query,
             )
 
             # 跨会话演进与时间线模态优先保留广度，不在单会话邻条上消耗预算。
@@ -420,8 +436,6 @@ class MemoryKit(AgentKit):
                 and not mem.temporal_mode
             ):
                 mem.episodes = await expand_episode_neighbors(mem.episodes)
-            elif looks_like_personal_upkeep_query(search_q) and not mem.temporal_mode:
-                mem.episodes = await expand_topic_session_turns(mem.episodes, search_q)
             refine_retrieved_memory(mem, memory_intent, search_q)
         text = format_retrieved_memory(ctx, mem)
         if text:

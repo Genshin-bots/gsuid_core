@@ -29,8 +29,9 @@
 | 文件 / 目录 | 职责 |
 |---|---|
 | `gs_agent.py` | **`GsCoreAIAgent`**：会话类 + 重试 / history 裁剪 / 闸门收尾 / 工厂。**单次 run 主路径已拆到 `agent_run/`**（见下）。 |
-| `agent_run/` | **单次 `_execute_run_once` 阶段包**（2026-08）：prepare → tools → loop → settle；`speech_policy` 出站话术策略。详见 §`agent_run/`。 |
-| `output_gate.py` | **`pre_send_gate`**：发送前统一编排（尖括号 → OOC）；`GateBag` 状态；`tool_gate_feedback`。 |
+| `agent_run/` | **单次 `_execute_run_once` 阶段包**（2026-08）：prepare → tools → loop → settle；`speech_policy` 提供检测原语，裁决表收敛于 `control/policy_ring.py`。详见 §`agent_run/`。 |
+| `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
+| `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）；`tool_gate_feedback`。 |
 | `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
 | `output_firewall.py` | 出戏词库 + `check_ooc`（策略实现；编排见 `output_gate`）；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |

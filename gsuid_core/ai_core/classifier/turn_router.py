@@ -6,16 +6,15 @@ MemoryKit / ScaffoldKit 只读结论，不再各自扫文本猜语义。
 
 from __future__ import annotations
 
-import re
 import json
 import asyncio
 from typing import Literal, Protocol, Sequence
-from datetime import date, datetime
+from datetime import datetime
 from dataclasses import dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.control.lines import MSG_SECTION_MARK
+from gsuid_core.ai_core.control.lines import CLOCK_LINE_RE, MSG_SECTION_MARK
 from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER
 
 TurnIntent = Literal["闲聊", "工具", "问答"]
@@ -27,10 +26,8 @@ MemoryIntent = Literal[
     "broad_summary",
 ]
 
-ROUTER_TIMEOUT_S = 4.0
+ROUTER_TIMEOUT_S = 8.0
 _ROUTER_MAX_TOKENS = 512
-
-_CLOCK_RE = re.compile(r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
 
 
 class _UserTurnRecord(Protocol):
@@ -46,8 +43,6 @@ class TurnRouteDecision:
     soft_speak: bool
     is_live_lookup: bool
     needs_committed_work: bool
-    time_start: datetime | None = None
-    time_end: datetime | None = None
     source: Literal["llm", "structural_fallback"] = "llm"
 
 
@@ -56,7 +51,7 @@ def strip_router_header(text: str) -> str:
     body = text or ""
     if MSG_SECTION_MARK in body:
         body = body.split(MSG_SECTION_MARK, 1)[-1]
-    body = _CLOCK_RE.sub("", body)
+    body = CLOCK_LINE_RE.sub("", body)
     first_line = body.splitlines()[0] if body.splitlines() else ""
     if first_line.startswith("---") and first_line.endswith("---"):
         body = "\n".join(body.splitlines()[1:])
@@ -119,7 +114,6 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 延续和你的对话），或确实值得自然接一句。只是起哄、围观、在和别人聊、普通命令回执时为 false。默认 false。
 - l: bool。是否在查实时外部数据（实时天气/股价/面板等），为 true 时跳过个人历史记忆预灌。
 - w: bool。是否明确委托 Bot 执行具体事务、查数或设提醒。
-- ts / te: 若用户显式问某个时间区间，结合基准时钟输出 "YYYY-MM-DD"；否则 null。
 
 判据：
 - chat=寒暄、表情、感叹、纯接梗，没有待办也没有需要查证的事实。
@@ -130,7 +124,7 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 - 若消息含必须依赖历史的泛指指代（如“那个/上次/之前/后来呢”），m 不得为 none，保底 latest。
 - 被引用不等于被叫：引用你的话但在和别人起哄/围观，s=false。
 
-只输出：{"i":"chat","m":"none","s":false,"l":false,"w":false,"ts":null,"te":null}"""
+只输出：{"i":"chat","m":"none","s":false,"l":false,"w":false}"""
 
 
 def _build_router_prompt(
@@ -161,18 +155,6 @@ def _build_router_prompt(
     lines.append("[本轮消息]")
     lines.append(body)
     return "\n".join(lines)
-
-
-def _parse_date(raw: object) -> datetime | None:
-    if not isinstance(raw, str):
-        return None
-    text = raw.strip()
-    if not text:
-        return None
-    try:
-        return datetime.combine(date.fromisoformat(text[:10]), datetime.min.time())
-    except ValueError:
-        return None
 
 
 def _parse_decision(raw: str) -> TurnRouteDecision | None:
@@ -209,8 +191,6 @@ def _parse_decision(raw: str) -> TurnRouteDecision | None:
         soft_speak=bool(data["s"]) if "s" in data else False,
         is_live_lookup=bool(data["l"]) if "l" in data else False,
         needs_committed_work=bool(data["w"]) if "w" in data else False,
-        time_start=_parse_date(data["ts"] if "ts" in data else None),
-        time_end=_parse_date(data["te"] if "te" in data else None),
         source="llm",
     )
 

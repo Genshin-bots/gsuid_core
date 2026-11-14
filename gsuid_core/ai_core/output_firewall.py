@@ -24,7 +24,13 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.content_guard import normalize_for_match
-from gsuid_core.ai_core.control.lines import OOC_JUDGE_MARKER, FUND_CLAIM_PREFIX, TOOL_NAME_LEAK_NUDGE
+from gsuid_core.ai_core.control.lines import (
+    CODE_FENCE_RE,
+    INTERNAL_LEAK_RE,
+    OOC_JUDGE_MARKER,
+    FUND_CLAIM_PREFIX,
+    TOOL_NAME_LEAK_NUDGE,
+)
 
 # ── 分类词库 ────────────────────────────────────────────────────────
 # 规范化后匹配（吃掉"M i M o"式规避）。部署者可经 ai_config.output_firewall_extra_terms 补充。
@@ -86,64 +92,11 @@ _SYSTEM_TERMS: Tuple[str, ...] = (
     "系统提示词",
     "max_tokens",
     "maxtokens",
-    # 框架内部用语（对用户念出即出戏；工具名/句柄见 _FRAMEWORK_LEAK_RE）
+    # 框架内部用语（对用户念出即出戏；工具名/句柄见 lines.INTERNAL_LEAK_RE）
     "主人格",
     "能力代理",
     "子代理",
     "转译",
-)
-
-# 工具 API / 资源句柄 / 编排元话语泄漏到用户台词 → 出戏
-_FRAMEWORK_LEAK_RE = re.compile(
-    r"\bsend_message_by_ai\b"
-    r"|\bcreate_subagent\b"
-    r"|\bartifact_get\b"
-    r"|\bartifact_put\b"
-    r"|\bread_handle\b"
-    r"|\bsearch_handles\b"
-    r"|\bsearch_persisted_outputs\b"
-    r"|\blist_persisted_outputs\b"
-    r"|\bgrep_persisted_outputs\b"
-    r"|\bweb_search_tool\b"
-    r"|\bweb_search\b"
-    r"|\bfind_tools\b"
-    r"|\brender_html_to_image\b"
-    r"|\brender_agent\b"
-    r"|\bresearch_agent\b"
-    r"|\bagent_profile\s*="
-    r"|\bimage_ids?\s*="
-    r"|\bres_[0-9a-fA-F]{6,}\b"
-    r"|\bimg_[0-9a-fA-F]{6,}\b"
-    r"|\bto_[0-9a-fA-F]{6,}\b"
-    r"|\bsa_[0-9a-fA-F]{6,}\b"
-    r"|\bdlg_[0-9a-fA-F-]{8,}\b"
-    r"|\bcheck_delegation\b"
-    r"|\bdispute_directive\b"
-    r"|persisted\s+id\s*="
-    r"|\[persisted\s+id="
-    r"|交给主人格"
-    r"|主人格发"
-    r"|tool_return"
-    r"|long_structured"
-    r"|inline_head"
-    r"|how_to_read"
-    r"|Kanban"
-    r"|artifact\s*:"
-    r"|产物句柄"
-    r"|资源ID\s*:"
-    r"|框架·任务完成"
-    r"|系统校验",
-    re.IGNORECASE,
-)
-
-# 系统过程文案 / 内部口头禅对用户泄露（gateway 硬拦）
-_SYSTEM_COPY_LEAK_RE = re.compile(
-    r"(时效存疑|自己再验|数据没刷|没刷出来|没法.{0,8}编数字|"
-    r"回炉了?你再|回炉|"
-    r"（系统提示|（系统校验|\[框架[·・.]|"
-    r"禁止再检索|禁止把句柄|禁止念|"
-    r"create_subagent\(|agent_profile=)",
-    re.IGNORECASE,
 )
 
 # 机器腔熔断：拦截复读技术堆栈或状态 JSON，状态码仅匹配 4xx/5xx。
@@ -152,12 +105,10 @@ _TECH_DUMP_RE = re.compile(
     r"|File \"[^\"]+\", line \d+"
     r"|\bstatus_code\s*[:=]\s*[45]\d\d\b"
     r"|[\"']status[\"']\s*:\s*[45]\d\d"
-    r"|\{['\"]status['\"]\s*:\s*[45]\d\d"
     r"|\bat 0x[0-9a-fA-F]+\b"
     r"|pydantic_core|pydantic_ai\.",
     re.IGNORECASE,
 )
-_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 # 语境技术词：与第一人称绑定时拦截自我泄露，第三方讨论放行。
 _CTX_TECH_SELF_RE = re.compile(
     r"(我|人家|咱们?|本喵|本人)(的|这边的?)?\s*(训练数据|训练语料|参数量|知识截止|上下文窗口|采样参数"
@@ -438,11 +389,8 @@ def check_ooc(
     if _fund is not None:
         return FirewallHit(category="fund_claim", matched=[_fund])
     # 机器腔/堆栈：优先于裸 system 词
-    if _TECH_DUMP_RE.search(_CODE_FENCE_RE.sub(" ", text)):
+    if _TECH_DUMP_RE.search(CODE_FENCE_RE.sub(" ", text)):
         return FirewallHit(category="machine_dump", matched=["技术堆栈/状态码"])
-    _dev = _dev_vocab_hit(text)
-    if _dev is not None:
-        return FirewallHit(category="dev_vocab", matched=[_dev])
     if model_hits or _MODEL_ATTRIB_RE.search(text):
         # 精度门：裸词/"由…开发"须与自绑定句式**同小句**共现、或身份追问下的超短直答
         # （"MiniMax 呀"）才算泄露；长文本第三方提及（AI 新闻摘要/讨论）放行。
@@ -459,12 +407,9 @@ def check_ooc(
         system_hits.append("错误码")
     if _SAMPLING_PARAM_RE.search(text):
         system_hits.append("temperature")
-    _fw = _FRAMEWORK_LEAK_RE.search(text)
-    if _fw is not None:
-        system_hits.append(f"框架泄漏:{_fw.group(0)[:40]}")
-    _sc = _SYSTEM_COPY_LEAK_RE.search(text)
-    if _sc is not None:
-        system_hits.append(f"系统文案:{_sc.group(0)[:40]}")
+    _leak = INTERNAL_LEAK_RE.search(text)
+    if _leak is not None:
+        system_hits.append(f"框架泄漏:{_leak.group(0)[:40]}")
     _tool_leak = _exposed_tool_name_leak(text, exposed_tool_names)
     if _tool_leak is not None:
         system_hits.append(f"框架泄漏:{_tool_leak}")
@@ -475,19 +420,7 @@ def check_ooc(
     return None
 
 
-_DEV_VOCAB_RE = re.compile(r"(工具(?!人)|接口|配置|服务).{0,12}(没配|没好|失败|报错|不可用|还没|未配置|配好)")
-_DEV_VOCAB_WHITELIST_RE = re.compile(r"(数据口径|统计口径|工具人)")
 _FRAMEWORK_TECH_RE = re.compile(r"(FastAPI|WebSocket|框架|插件系统|Python|SQLAlchemy)")
-_FRAMEWORK_IS_RE = re.compile(r"是(一个)?")
-
-
-def _dev_vocab_hit(text: str) -> Optional[str]:
-    if _DEV_VOCAB_WHITELIST_RE.search(text):
-        return None
-    m = _DEV_VOCAB_RE.search(text)
-    if m is None:
-        return None
-    return m.group(0)[:40]
 
 
 def _framework_alias_list() -> list[str]:
@@ -501,7 +434,7 @@ def _framework_alias_list() -> list[str]:
 
 def _objective_framework_intro(text: str) -> bool:
     """框架名 +「是」+ 技术名词的说明文。角色化转述不含该形态，不命中。"""
-    if not _FRAMEWORK_IS_RE.search(text) or not _FRAMEWORK_TECH_RE.search(text):
+    if "是" not in text or not _FRAMEWORK_TECH_RE.search(text):
         return False
     return any(alias in text for alias in _framework_alias_list() if alias)
 
@@ -579,24 +512,6 @@ def gate_warn_once(extra: Dict[str, Any], text: str, user_text: str = "") -> Opt
     return fb
 
 
-def scrub_or_drop(
-    text: str,
-    tier: str = "roleplay",
-    user_text: str = "",
-) -> Tuple[str, bool]:
-    """无反馈通道路径的末端兜底：命中则**丢弃**正文，不代答。
-
-    框架不替人格说话（§1.9）：有 run 的路径一律让人格自己重说一句（见
-    ``GsCoreAIAgent._ooc_recover_persona_voice``）；这里只给没有 run 的出口
-    （proactive 播报、``send_chat_result`` 末端）用——返回空串即「不发」。
-    返回 ``(输出文本, 是否被丢弃)``。
-    """
-    hit = check_ooc(text, tier, user_text=user_text)
-    if hit is None:
-        return text, False
-    return "", True
-
-
 def is_tech_dump(text: str) -> bool:
     """工具/子代理返回是否为堆栈或状态码技术 dump（供 tool return 入模前屏蔽）。"""
     if not text or not text.strip():
@@ -604,7 +519,7 @@ def is_tech_dump(text: str) -> bool:
     # 认知/记忆检索的历史对话引用含用户曾粘贴的报错，不属于当前工具异常堆栈
     if '<untrusted source="memory_recall">' in text or "【认知检索】" in text:
         return False
-    if _TECH_DUMP_RE.search(_CODE_FENCE_RE.sub(" ", text)):
+    if _TECH_DUMP_RE.search(CODE_FENCE_RE.sub(" ", text)):
         return True
     # 大段 JSON 且含 status + error/detail 形态
     s = text.strip()

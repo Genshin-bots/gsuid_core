@@ -145,9 +145,6 @@ TASK_HEARTBEAT_DECISION: Final = _builtin(
 TASK_HEARTBEAT_OUTPUT: Final = _builtin(
     "heartbeat_output", "巡检发言", "巡检决定发言后生成实际内容。", "proactive", "high", stats=("heartbeat_output",)
 )
-TASK_REACTIVE_GATE: Final = _builtin(
-    "reactive_gate", "免唤醒续聊判定", "未被 @ 时判断是否接话。", "proactive", "high", stats=("reactive_gate",)
-)
 
 # ── 记忆与关系 ──
 TASK_MEMORY_ALGEBRA: Final = _builtin(

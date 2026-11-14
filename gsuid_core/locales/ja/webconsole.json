@@ -119,6 +119,7 @@
   "log.webconsole.sesslog_retrieve_log_file": "[SessionLogsAPI] ログファイルの取得に失敗: {e}",
   "log.webconsole.sesslog_retrieve_log_list": "[SessionLogsAPI] ログ一覧の取得に失敗: {e}",
   "log.webconsole.sesslog_retrieve_log_statistics": "[SessionLogsAPI] ログ統計の取得に失敗: {e}",
+  "log.webconsole.sesslog_retrieve_log_usage": "[SessionLogsAPI] セッションチェーンのトークン使用量の取得に失敗: {e}",
   "log.webconsole.spa_fallback_index_html": "[WebConsole] SPA fallback で index.html を返す",
   "log.webconsole.start_event": "質疑応答を開始します",
   "log.webconsole.statestore_api_batch_deletion_requested_delete": "[StateStore-API] 一括削除: requested={p0} deleted={deleted_count} not_found={not_found_count}",

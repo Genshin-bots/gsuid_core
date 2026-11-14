@@ -119,6 +119,7 @@
   "log.webconsole.sesslog_retrieve_log_file": "[SessionLogsAPI] 获取日志文件失败: {e}",
   "log.webconsole.sesslog_retrieve_log_list": "[SessionLogsAPI] 获取日志列表失败: {e}",
   "log.webconsole.sesslog_retrieve_log_statistics": "[SessionLogsAPI] 获取日志统计失败: {e}",
+  "log.webconsole.sesslog_retrieve_log_usage": "[SessionLogsAPI] 获取会话链 Token 用量失败: {e}",
   "log.webconsole.spa_fallback_index_html": "[网页控制台] SPA fallback 返回 index.html",
   "log.webconsole.start_event": "启动问答",
   "log.webconsole.statestore_api_batch_deletion_requested_delete": "[StateStore-API] 批量删除: requested={p0} deleted={deleted_count} not_found={not_found_count}",

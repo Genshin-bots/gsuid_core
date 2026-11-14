@@ -66,6 +66,17 @@ class _ScopeWindowBuffer:
         self.last_activity = self.first_at
         return records
 
+    def requeue_front(self, records: list[ObservationRecord]) -> None:
+        """将滞留的 open_lines 放回队列头部，避免同一条被连续顺延。"""
+        if not records:
+            return
+        had_newer = bool(self.records)
+        self.records = [*records, *self.records]
+        if not had_newer:
+            now = time.time()
+            self.first_at = now
+            self.last_activity = now
+
 
 def _budget_scope_from_scope_key(scope_key: str) -> Optional[tuple[str, str, str]]:
     prefix, _, rest = scope_key.partition(":")
@@ -101,6 +112,7 @@ async def ingest_window(
     force_settle: bool = False,
     create_episodes: bool = True,
     representative_episode_id: str = "",
+    deferred_out: Optional[list[ObservationRecord]] = None,
 ) -> dict[str, int]:
     """单窗口两阶段摄入；``create_episodes=False`` 供评测回灌跳过重复写 Episode。"""
     if not records:
@@ -117,6 +129,7 @@ async def ingest_window(
             force_settle=force_settle,
             create_episodes=create_episodes,
             representative_episode_id=representative_episode_id,
+            deferred_out=deferred_out,
         )
     finally:
         if _btoken is not None:
@@ -140,6 +153,7 @@ async def _ingest_window_inner(
     force_settle: bool,
     create_episodes: bool,
     representative_episode_id: str = "",
+    deferred_out: Optional[list[ObservationRecord]] = None,
 ) -> dict[str, int]:
     from gsuid_core.message_history import get_history_manager
     from gsuid_core.ai_core.memory.ingestion.algebra import extract_cluster
@@ -160,11 +174,19 @@ async def _ingest_window_inner(
     threads = await AIMemThread.list_active(scope_key, limit=15)
     route = await route_window(scope_key, records, threads, force_settle=force_settle)
 
-    open_lines = set(route["open_lines"])
+    # 只对首次顺延的 open_lines 回放队列；defer_count >= 1 或 force_settle 时必须当轮落库。
+    defer_indices: set[int] = set()
+    if deferred_out is not None and not force_settle:
+        for i in route["open_lines"]:
+            if 0 <= i < len(records) and records[i].defer_count < 1:
+                defer_indices.add(i)
+    settled_indices: set[int] = set()
+
     for cluster in route["clusters"]:
-        lines = [i for i in cluster["lines"] if i not in open_lines]
+        lines = [i for i in cluster["lines"] if 0 <= i < len(records) and i not in defer_indices]
         if not lines:
             continue
+        settled_indices.update(lines)
         if cluster["action"] == "discard":
             stats["discarded"] += len(lines)
             continue
@@ -202,7 +224,7 @@ async def _ingest_window_inner(
                         thread_ref=cluster["thread_ref"],
                         topic_title=cluster["topic_title"],
                         episode_id=episode_id or representative_episode_id,
-                        threads=threads,
+                        threads=list(threads),
                     ),
                     timeout=180.0,
                 )
@@ -213,6 +235,24 @@ async def _ingest_window_inner(
                     await AIMemEpisode.assign_thread(episode_id, extracted["thread_id"])
             except (asyncio.TimeoutError, OSError, RuntimeError, ValueError) as e:
                 logger.warning(i18n_t("log.memory.algebra_extract_failed", scope_key=scope_key, e=e))
+
+    leftover = [i for i in range(len(records)) if i not in defer_indices and i not in settled_indices]
+    if leftover and create_episodes:
+        leftover_records = [records[i] for i in leftover]
+        await AIMemEpisode.create_episode(
+            scope_key=scope_key,
+            content="\n".join(format_pending_line(r) for r in leftover_records),
+            speaker_ids=list({r.speaker_id for r in leftover_records}),
+            valid_at=min(r.timestamp for r in leftover_records),
+            thread_id=None,
+        )
+        stats["episodes"] += 1
+
+    if deferred_out is not None and defer_indices:
+        for i in sorted(defer_indices):
+            rec = records[i]
+            rec.defer_count += 1
+            deferred_out.append(rec)
 
     _record_ingestion_stats(len(records), success=True)
     return stats
@@ -302,7 +342,7 @@ class IngestionWorker:
     async def _flush(self, scope_key: str, *, force_settle: bool = False) -> None:
         if scope_key in self._flushing:
             return
-        window = self._windows.get(scope_key)
+        window = self._windows[scope_key] if scope_key in self._windows else None
         if window is None:
             return
         now = time.time()
@@ -311,25 +351,37 @@ class IngestionWorker:
         if not records:
             return
         self._flushing.add(scope_key)
+        deferred_records: list[ObservationRecord] = []
         assert self._llm_semaphore is not None
-        async with self._llm_semaphore:
-            batches = [records[i : i + _WINDOW_MAX_BATCH] for i in range(0, len(records), _WINDOW_MAX_BATCH)]
-            for batch in batches:
-                try:
-                    await ingest_window(batch, scope_key, force_settle=force)
-                except (OSError, RuntimeError, ValueError) as e:
-                    logger.error(
-                        i18n_t(
-                            "log.memory.ingestion_batch_fail",
-                            scope_key=scope_key,
-                            batch_idx=1,
-                            batch_total=len(batches),
-                            error=str(e),
-                        ),
-                        exc_info=True,
-                    )
-                    _record_ingestion_stats(len(batch), success=False)
-        self._flushing.discard(scope_key)
+        try:
+            async with self._llm_semaphore:
+                batches = [records[i : i + _WINDOW_MAX_BATCH] for i in range(0, len(records), _WINDOW_MAX_BATCH)]
+                for batch_idx, batch in enumerate(batches, 1):
+                    batch_deferred: list[ObservationRecord] = []
+                    try:
+                        await ingest_window(
+                            batch,
+                            scope_key,
+                            force_settle=force,
+                            deferred_out=batch_deferred,
+                        )
+                        deferred_records.extend(batch_deferred)
+                    except (OSError, RuntimeError, ValueError) as e:
+                        logger.error(
+                            i18n_t(
+                                "log.memory.ingestion_batch_fail",
+                                scope_key=scope_key,
+                                batch_idx=batch_idx,
+                                batch_total=len(batches),
+                                error=str(e),
+                            ),
+                            exc_info=True,
+                        )
+                        _record_ingestion_stats(len(batch), success=False)
+        finally:
+            if deferred_records:
+                window.requeue_front(deferred_records)
+            self._flushing.discard(scope_key)
 
     async def _flush_all_inner(self) -> None:
         assert self._flush_lock is not None

@@ -6,16 +6,12 @@ import math
 
 from gsuid_core.ai_core.memory.retrieval.types import Episode, MemoryEventCue
 from gsuid_core.ai_core.memory.retrieval.event_time import (
-    order_topic_span,
     query_only_item_cap,
     temporal_search_query,
 )
 
 
 def _topic_query(query: str) -> str:
-    span = order_topic_span(query)
-    if span:
-        return span
     topic = temporal_search_query(query)
     return topic if topic else (query or "").strip()
 

@@ -80,10 +80,12 @@ from gsuid_core.ai_core.agent_run.opening_line import (
 from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     MAIN_CHANNEL_VISIBLE_LIMIT,
+    SpeechContext,
     non_master_title,
     is_status_tool_name,
+    evaluate_speech_policy,
+    normalize_speech_policy,
     content_is_render_candidate,
-    should_block_user_visible_text,
 )
 from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_name
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
@@ -211,6 +213,27 @@ class LoopPhase(RunOnceHost):
         bot = self._outbound_bot(st)
         if bot is not None:
             bot.discard_streamed_preview(text)
+
+    def _record_speech_block(self, st: RunOnceState, why: str, text: str) -> None:
+        """记录话术策略拦截状态并丢弃同轮流式预览。"""
+        st.last_block_reason = why
+        record_output_block(st, self._session_logger, why, text)
+        # 只记排版失配；**不得**回写 saw_structured_return（由真实 ToolReturn 置位）。
+        if why in ("report_speech", "empty_handoff", "persona_length_breach"):
+            st.presentation_mismatch = True
+            if text not in st.presentation_withheld:
+                st.presentation_withheld.append(text)
+                st.presentation_withheld_reasons.append(why)
+        elif why == "numeric_recitation" or why in ZERO_OUTPUT_VOICE_REASONS:
+            st.presentation_mismatch = True
+            st.presentation_withheld_reasons.append(why)
+        logger.info(
+            i18n_t(
+                "log.agent.silent_skipping_text",
+                _text=f"[speech_policy={st.speech_policy}/{why}] {text[:60]}",
+            )
+        )
+        self._discard_stream_preview(st, text)
 
     async def _commit_streamed_or_send(
         self,
@@ -941,6 +964,7 @@ class LoopPhase(RunOnceHost):
                     _hard = resolve_chat_style(self.persona_name).hard
                 st.saw_final_response = True
                 # return 不下发；话术门 continue 会让评测 HTTP 抓不到念数答卷
+                _speech_ctx: SpeechContext | None = None
                 if self.create_by in _MAIN_PERSONA_CREATE_BY and st.return_mode != "return":
                     _fact_pending = bool(
                         st.saw_structured_return and not st.delegated_render and not st.image_sent_this_run
@@ -950,9 +974,16 @@ class LoopPhase(RunOnceHost):
                     _addr = str(_at_raw) if isinstance(_at_raw, str) and _at_raw else ""
                     if not _addr and st.ev is not None and st.ev.user_id:
                         _addr = str(st.ev.user_id)
-                    _blk, _why = should_block_user_visible_text(
-                        st.speech_policy,
-                        _text,
+                    from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+                    _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
+                    _user_q = (
+                        st.ev.raw_text
+                        if st.ev is not None and st.ev.raw_text
+                        else (st.last_user_question or (st.user_message if isinstance(st.user_message, str) else ""))
+                    )
+                    _speech_ctx = SpeechContext(
+                        policy=normalize_speech_policy(st.speech_policy),
                         pending_async=st.pending_async_delivery,
                         image_sent=st.image_sent_this_run,
                         has_status_tool=st.has_status_tool_call,
@@ -965,39 +996,16 @@ class LoopPhase(RunOnceHost):
                         user_asked_detail=False,
                         forbid_title=non_master_title(_addr, self.persona_name),
                         entity_routed=st.entity_routed,
-                        user_text=(
-                            st.ev.raw_text
-                            if st.ev is not None and st.ev.raw_text
-                            else (
-                                st.last_user_question or (st.user_message if isinstance(st.user_message, str) else "")
-                            )
-                        ),
+                        user_text=_user_q,
+                        allow_render=_allow_render,
                     )
-                    if _blk:
-                        st.last_block_reason = _why
-                        record_output_block(st, self._session_logger, _why, _text)
-                        # 只记排版失配；**不得**回写 saw_structured_return（那是出处凭据，
-                        # 由真实 ToolReturn 置位）。伪造它会让纯文本长回答被当成待出图事实包。
-                        if _why in ("report_speech", "empty_handoff", "persona_length_breach"):
-                            st.presentation_mismatch = True
-                            # 暂扣原文：纠正被申辩/无替代品时由 settle 兜底发出（INV-4）
-                            if _text not in st.presentation_withheld:
-                                st.presentation_withheld.append(_text)
-                                st.presentation_withheld_reasons.append(_why)
-                        elif _why == "numeric_recitation" or _why in ZERO_OUTPUT_VOICE_REASONS:
-                            # 不进 INV-4。原因留给 settle：念数出图，完成态/过程词改口。
-                            st.presentation_mismatch = True
-                            st.presentation_withheld_reasons.append(_why)
-                        logger.info(
-                            i18n_t(
-                                "log.agent.silent_skipping_text",
-                                _text=f"[speech_policy={st.speech_policy}/{_why}] {_text[:60]}",
-                            )
-                        )
-                        self._discard_stream_preview(st, _text)
-                        continue
+                    if not st.bot:
+                        _blk, _why = evaluate_speech_policy(_speech_ctx, _text)
+                        if _blk:
+                            self._record_speech_block(st, _why, _text)
+                            continue
                 if st.bot and _text and st.return_mode in ["always", "by_bot"]:
-                    # 统一输出闸门；同 response 尖括号只计一次 attempt
+                    # 统一输出闸门（含话术策略）；同 response 尖括号只计一次 attempt
                     _user_raw = st.ev.raw_text if st.ev is not None and st.ev.raw_text else ""
                     _count_ab = not _ab_attempt_counted_this_response
                     _gr = output_gate.pre_send_gate(
@@ -1007,6 +1015,7 @@ class LoopPhase(RunOnceHost):
                         channel="main",
                         count_attempt=_count_ab,
                         is_group=bool(st.ev is not None and st.ev.group_id),
+                        speech_ctx=_speech_ctx,
                     )
                     if _gr.decision is output_gate.GateDecision.FUSE:
                         st.ab_abort = True
@@ -1023,6 +1032,9 @@ class LoopPhase(RunOnceHost):
                         self._discard_stream_preview(st, _text)
                         continue
                     if _gr.decision is output_gate.GateDecision.REWRITE:
+                        if _gr.policy == "speech_policy":
+                            self._record_speech_block(st, _gr.detail or "speech_policy", _text)
+                            continue
                         _gate_why = (
                             f"output_gate_{_gr.policy}"
                             if _gr.policy in ("angle_bracket", "ooc", "inner_os")

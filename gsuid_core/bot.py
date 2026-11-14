@@ -53,7 +53,6 @@ from gsuid_core.message_models import Button, ButtonType
 from gsuid_core.message_history import get_history_manager, node_items_to_history
 from gsuid_core.ai_core.outbound import get_outbound_image_label
 from gsuid_core.utils.image.image_tools import normalize_image_for_history
-from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.command_aside.capture import capture_outbound
 from gsuid_core.utils.plugins_config.gs_config import (
     bm_config,
@@ -683,42 +682,6 @@ class _Bot:
                 local_val = await get_global_val(bot_id, bot_self_id)
 
                 local_val["send"] += 1
-
-                # memory 包的 __init__ 会 import server，server 再 import Bot。
-                from gsuid_core.ai_core.memory.config import memory_config
-
-                enable_ai: bool = ai_config.get_config("enable").data
-                is_enable_memory: bool = ai_config.get_config("enable_memory").data
-                memory_mode: list[str] = memory_config.memory_mode
-                if enable_ai and is_enable_memory and "主动会话" in memory_mode:
-                    # 仅在 AI 人格发言上下文中观察出站回复，避免普通插件命令污染未启用群
-                    from gsuid_core.ai_core.memory import observe
-                    from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
-
-                    speaking_persona = get_speaking_persona()
-                    if speaking_persona:
-                        from gsuid_core.message_history.link import current_outbound
-
-                        _binding = current_outbound()
-                        try:
-                            task = asyncio.create_task(
-                                observe(
-                                    content=message_list_to_str(mr),
-                                    speaker_id=f"__assistant_{bot_id}__",
-                                    group_id=target_id if target_type == "group" else None,
-                                    bot_self_id=bot_self_id,
-                                    observer_blacklist=memory_config.observer_blacklist,
-                                    message_type="group_msg" if target_type == "group" else "private_msg",
-                                    persona_name=speaking_persona,
-                                    personal_credential=(
-                                        _binding.personal_credential if _binding is not None else False
-                                    ),
-                                )
-                            )
-                            self._add_bg_task(task)
-                        except Exception:
-                            pass  # Observer 失败不应影响主流程
-                # ============================================
 
                 logger.info(
                     t(

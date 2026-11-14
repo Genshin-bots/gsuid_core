@@ -36,11 +36,6 @@ _PAST_SPAN_RE = re.compile(
     r"(days?|weeks?|months?)\b",
     re.IGNORECASE,
 )
-_CLOCK_PARSE_RE = re.compile(
-    r"(?:当前时间[：:]\s*|\[当前时间[：:]\s*)"
-    r"(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})"
-    r"(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?"
-)
 _CN_AGO_RE = re.compile(r"(两|三|四|五|六|七|十|\d+)\s*([天周月])前")
 _CN_YESTERDAY_RE = re.compile(r"昨天|昨晚")
 _CN_LAST_WEEK_RE = re.compile(r"上周")
@@ -129,23 +124,6 @@ def event_times_in_text(text: str, said_at: datetime) -> list[datetime]:
     return out
 
 
-def parse_query_clock(text: str) -> datetime | None:
-    """问句里的 inject_date / [当前时间]；没有就不猜墙上时钟。"""
-    if not text:
-        return None
-    m = _CLOCK_PARSE_RE.search(text)
-    if m is None:
-        return None
-    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    hh = int(m.group(4)) if m.group(4) else 12
-    mm = int(m.group(5)) if m.group(5) else 0
-    ss = int(m.group(6)) if m.group(6) else 0
-    try:
-        return datetime(y, mo, d, hh, mm, ss)
-    except ValueError:
-        return None
-
-
 def has_relative_time_span(query: str) -> bool:
     """问句在用相对日定位事件。不含裸 today，避免和 currently 撞车。"""
     blob = (query or "").lower().replace("’", "'")
@@ -175,7 +153,7 @@ def strip_relative_time_spans(query: str) -> str:
         _CN_LAST_WEEK_RE,
     ):
         body = pat.sub(" ", body)
-    return re.sub(r"\s+", " ", body).strip()
+    return _WS_RE.sub(" ", body).strip()
 
 
 def _cn_ago_count(raw: str) -> int:
@@ -247,54 +225,11 @@ def query_time_window(query: str, clock: datetime) -> tuple[datetime, datetime] 
 # 分隔符两侧允许空格：中文正文常写成「2024 年 1 月 1 日」，不容忍空格时整句匹配不到，
 # 于是带枚举词也照样不收窄时间窗。
 _QUERY_DATE_RE = re.compile(r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?")
-# 英文保留 \b，否则 summar 会把 summary 切碎。汉字是 \w，中文枚举词不能套 \b。
-_TEMPORAL_ENUM_RE = re.compile(
-    r"\b(?:in order|sequence|chronolog\w*|progress(?:ed)?|summar\w*|overview|"
-    r"evol\w*|develop(?:ed|ment)?|timeline|history)\b"
-    r"|(?:依次|顺序|时间线|先后|经过|演变|变化|历程|总结|概述|回顾)",
-    re.IGNORECASE,
-)
-_ENUM_FILLER_RE = re.compile(
-    r"\b(?:from|between|until|through|list|please|can you|could you|the|topics?|events?|items?)\b",
-    re.IGNORECASE,
-)
-# 请求套话占 token。长动词忽略大小写；a/an 与短代词区分大小写，以免剥掉 Plan A。
-# 边界用「前字符非字母」而非 \b，避免切开 improve。
-_REQUEST_VERBS = (
-    r"give|show|tell|walk|bring|provide|summari[sz]e|explain|describe|recap|"
-    r"comprehensive|complete|quick|quickest|full|thorough|detailed|brief|short|"
-    r"everything|can|could|would|please|has|have|had|been|"
-    r"of|about|for|that|this|what|how|why|when|where|which|who"
-)
-_REQUEST_PRONOUNS = r"i|we|they|it|its|my|our|me|us|you|your"
-_APOS = r"['’ʼ]"
-# 缩写单独一条：必须先于单字母代词剥除，否则 i/we 被吃掉只剩 've 挂在句首。
-_REQUEST_ABBREV_RE = re.compile(
-    r"(?<![^\W\d_])(?:i" + _APOS + r"?ve|we" + _APOS + r"?ve|you" + _APOS + r"?ve|"
-    r"they" + _APOS + r"?ve|i" + _APOS + r"?m|we" + _APOS + r"?re|you" + _APOS + r"?re|"
-    r"let" + _APOS + r"?s)(?![^\W\d_])",
-    re.IGNORECASE,
-)
-_REQUEST_BOILERPLATE_RE = re.compile(
-    # 边界按「非字母」判定：ASCII 撇号和 U+2019 弯引号都算词内字符。
-    r"(?<![^\W\d_])(?:" + _REQUEST_VERBS + r")(?![^\W\d_])",
-    re.IGNORECASE,
-)
-_REQUEST_PRONOUN_RE = re.compile(
-    r"(?<![^\W\d_])(?:" + _REQUEST_PRONOUNS + r")(?![^\W\d_])",
-)
-_REQUEST_ARTICLE_RE = re.compile(
-    r"(?<![^\W\d_])(?:a|an)(?![^\W\d_])",
-)
-# 剥除处的标点也要断词，否则会把两侧实词黏成一个（I'm→'m+前词）。
-_PUNCT_GAP_RE = re.compile(r"[,;:!?()\[\]{}\"'`]+")
 _WS_RE = re.compile(r"\s+")
 
 
 def query_explicit_time_range(query: str) -> tuple[datetime, datetime] | None:
-    """≥2 个日期且带时序/枚举词 → [最早, 最晚+1天]。点查不触发。"""
-    if not _TEMPORAL_ENUM_RE.search(query or ""):
-        return None
+    """query 含 ≥2 个显式日期 → [最早, 最晚+1天]。"""
     dates: list[datetime] = []
     for m in _QUERY_DATE_RE.finditer(query or ""):
         try:
@@ -306,93 +241,11 @@ def query_explicit_time_range(query: str) -> tuple[datetime, datetime] | None:
     return min(dates), max(dates) + timedelta(days=1)
 
 
-_ASPECTS_OF_RE = re.compile(
-    r"\baspects of\s+(.+?)(?:\s+throughout|\s+across our|\s+across the|\s+in order|\?|$)",
-    re.IGNORECASE | re.DOTALL,
-)
-_STAGES_OF_RE = re.compile(
-    r"\b(?:stages|concepts) (?:of |related to )(.+?)"
-    r"(?:\s+throughout|\s+across|\?|$)",
-    re.IGNORECASE | re.DOTALL,
-)
-_ASPECT_VERB_RE = re.compile(
-    r"^(?:\w+ing(?:\s+and\s+\w+ing)?)\s+(?:the |my |our )?",
-    re.IGNORECASE,
-)
-
-
-def order_topic_span(query: str) -> str:
-    """问句「aspects of X」里的 X；没有则空串。"""
-    body = query or ""
-    m = _ASPECTS_OF_RE.search(body)
-    span = m.group(1) if m is not None else ""
-    if not span:
-        m2 = _STAGES_OF_RE.search(body)
-        span = m2.group(1) if m2 is not None else ""
-    span = _ASPECT_VERB_RE.sub("", re.sub(r"\s+", " ", span).strip())
-    return span.strip(" ,")
-
-
 def temporal_search_query(query: str) -> str:
-    """去掉日期和枚举套话，留给分桶语义检索的主题词。
-
-    剥完请求套话后若主题词被剥空（全是 give me a summary 这类），退回原问句：
-    空主题比带噪声的主题更差，后者至少还能命中专名。
-    """
+    """去掉显式日期字符串，留给分桶语义检索的主题词；剥空时退回原问句。"""
     body = _QUERY_DATE_RE.sub(" ", query or "")
-    body = _TEMPORAL_ENUM_RE.sub(" ", body)
-    body = _ENUM_FILLER_RE.sub(" ", body)
-    # 缩写先剥：否则 i/we 会先被当独立词吃掉，只剩 've 挂在句首。
-    for pattern in (
-        _REQUEST_ABBREV_RE,
-        _REQUEST_PRONOUN_RE,
-        _REQUEST_ARTICLE_RE,
-        _REQUEST_BOILERPLATE_RE,
-        _PUNCT_GAP_RE,
-        _WS_RE,
-    ):
-        body = pattern.sub(" ", body).strip()
     body = _WS_RE.sub(" ", body).strip(" ,.?!")
     return body or (query or "").strip()
-
-
-# 无显式起止日期的排序/全历程摘要。不含 in order to、裸 have I ever。
-_SPAN_ORDER_RE = re.compile(
-    r"\bin order\b(?!\s+to\b)|"
-    r"\bchronolog|"
-    r"throughout (?:our |the )?conversations?|"
-    r"across (?:our |the )?conversations?|"
-    r"walk me through the order|"
-    r"list the order|"
-    r"the order in which|"
-    r"\bthe order of\b|"
-    r"\bearliest to latest\b|"
-    r"\bfrom earliest\b|"
-    r"先后顺序|"
-    r"依次|顺序|时间线|先后|历程",
-    re.IGNORECASE,
-)
-_SPAN_SUMMARY_RE = re.compile(
-    r"comprehensive summary|"
-    r"complete summary|"
-    r"quick summary|"
-    r"summarize (?:what|my|the|how|our)|"
-    r"give me a (?:clear |comprehensive |brief |complete |quick |full )?summary|"
-    r"summary of (?:how|everything|what|the)|"
-    r"key actions and decisions|"
-    r"major milestones|"
-    r"how (?:has|have|did) .{0,80}(?:progressed|evolved|developed)|"
-    r"全面总结|进展如何|发展历程",
-    re.IGNORECASE,
-)
-
-
-def looks_like_span_query(query: str) -> bool:
-    """排序/全历程/显式日期窗：要整段时间线，不是点查。"""
-    body = query or ""
-    if query_explicit_time_range(body) is not None:
-        return True
-    return bool(_SPAN_ORDER_RE.search(body) or _SPAN_SUMMARY_RE.search(body))
 
 
 _ONES: dict[str, int] = {
@@ -413,16 +266,6 @@ _ITEM_CAP_RE = re.compile(
     r"(?:列出|举出|说出|恰好|只要)\s*(\d+)\s*[条个项阶段方面步]",
     re.IGNORECASE,
 )
-_DURATION_RE = re.compile(
-    r"how many (?:days?|weeks?|months?|hours?)\b.{0,60}\bbetween\b|"
-    r"\bbetween\b.{0,120}\band\b.{0,40}(?:days?|weeks?|months?)|"
-    r"(?:多少|几)[天周个月小时].{0,20}之间",
-    re.IGNORECASE,
-)
-_BETWEEN_CLAUSE_RE = re.compile(
-    r"\bbetween\s+(?:when\s+I\s+)?(.+?)\s+and\s+(?:when\s+I\s+)?(.+?)(?:\?|$)",
-    re.IGNORECASE | re.DOTALL,
-)
 
 
 def query_only_item_cap(query: str) -> int | None:
@@ -440,47 +283,3 @@ def query_only_item_cap(query: str) -> int | None:
         n = int(m.group(3))
         return n if 1 <= n <= 20 else None
     return None
-
-
-def looks_like_order_query(query: str) -> bool:
-    """时间序清单：in order / 顺序 / 时间线。摘要题不算。"""
-    body = query or ""
-    if _SPAN_SUMMARY_RE.search(body):
-        return False
-    return bool(_SPAN_ORDER_RE.search(body))
-
-
-def looks_like_summary_query(query: str) -> bool:
-    return bool(_SPAN_SUMMARY_RE.search(query or ""))
-
-
-_REVISION_RE = re.compile(
-    r"\b(?:now|currently|current|latest|updated|changed|which is it|or did i)\b|"
-    r"到底(?:是)?|还是|现在(?:是|改)|最新",
-    re.IGNORECASE,
-)
-
-
-def looks_like_revision_query(query: str) -> bool:
-    """KU / CR：要同一属性的版本链，不是只要当前有效边。"""
-    return bool(_REVISION_RE.search(query or ""))
-
-
-def looks_like_duration_query(query: str) -> bool:
-    """两端事件的时间差。不是 how many commits 那种计数。"""
-    return bool(_DURATION_RE.search(query or ""))
-
-
-def duration_anchor_queries(query: str) -> list[str]:
-    """between when I X and when I Y → 两条独立词面。"""
-    m = _BETWEEN_CLAUSE_RE.search(query or "")
-    if m is None:
-        return []
-    a = re.sub(r"\s+", " ", (m.group(1) or "").strip())
-    b = re.sub(r"\s+", " ", (m.group(2) or "").strip())
-    out: list[str] = []
-    for part in (a, b):
-        part = re.sub(r"[?!.]+$", "", part).strip()
-        if len(part) >= 8:
-            out.append(part)
-    return out

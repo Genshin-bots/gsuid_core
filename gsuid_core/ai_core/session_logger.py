@@ -61,6 +61,7 @@ Heartbeat / ScheduledTask / Kanban / 工具主动发送 / 记忆·meme·评估�
         ended_at,
         entry_count,
         type_counts,  # 预先算好的各类型条目计数，供列表接口免解析 entries
+        usage,  # 预先聚合的 token 用量，供整链统计免解析 entries
     )
     linked_agents, linked_agent_count
     entries  # 始终是最后一个顶层字段（供 webconsole 头部快速读取）
@@ -96,7 +97,7 @@ import uuid
 import base64
 import asyncio
 import hashlib
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Literal, Optional, TypedDict
 from pathlib import Path
 from datetime import datetime
 
@@ -104,6 +105,7 @@ from pydantic_ai.messages import FileUrl, BinaryContent
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.models import SessionUsageModelUnit
 from gsuid_core.ai_core.resource import (
     AI_SESSION_LOGS_PATH,
     AI_SUBAGENT_LOGS_PATH,
@@ -114,6 +116,7 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.models import (
         SessionLogEntry,
         LinkedAgentRecord,
+        SessionUsageStats,
         SessionLogFileData,
     )
 
@@ -301,6 +304,129 @@ def _attach_reason_text(data: dict[str, str], reason: str) -> None:
     text = reason_text(reason)
     if text:
         data["reason_text"] = text
+
+
+def _usage_num(v: Any) -> int:
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def extract_session_usage(entries: List["SessionLogEntry"]) -> "SessionUsageStats":
+    """从一段 entries 聚合 token 用量与按模型归并的计价单元（webconsole 前端同口径）。
+
+    - 总量优先按各轮 ``token_usage``（结算总量）；无任何 ``token_usage`` 时回退 ``step_usage``；
+    - 计价单元按 run 隔离：run 内收集 ``step_usage``（每步真实模型），该 run 无
+      step_usage 时收集其 ``token_usage``；无 run_start/run_end 包裹时扁平扫描兜底；
+    - 最终按 model 归并（LLM 按百万 token 线性计价，同模型合并数学等价）。
+    """
+    inp = out = cr = cw = runs = 0
+    has_token_usage = False
+    for e in entries:
+        if e["type"] != "token_usage":
+            continue
+        has_token_usage = True
+        d = e["data"]
+        inp += _usage_num(d.get("input_tokens"))
+        out += _usage_num(d.get("output_tokens"))
+        cr += _usage_num(d.get("cache_read_tokens"))
+        cw += _usage_num(d.get("cache_write_tokens"))
+        runs += 1
+
+    if not has_token_usage:
+        for e in entries:
+            if e["type"] != "step_usage":
+                continue
+            d = e["data"]
+            inp += _usage_num(d.get("input_tokens"))
+            out += _usage_num(d.get("output_tokens"))
+            cr += _usage_num(d.get("cache_read_tokens"))
+            cw += _usage_num(d.get("cache_write_tokens"))
+            runs += 1
+
+    models: Dict[str, "SessionUsageModelUnit"] = {}
+
+    def _add(model: str, i: int, o: int, r: int, w: int) -> None:
+        slot = models.get(model)
+        if slot is None:
+            slot = SessionUsageModelUnit(
+                model=model,
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            )
+            models[model] = slot
+        slot["input_tokens"] += i
+        slot["output_tokens"] += o
+        slot["cache_read_tokens"] += r
+        slot["cache_write_tokens"] += w
+
+    cur_steps: List[Tuple[str, int, int, int, int]] = []
+    cur_run_usage: Optional[Tuple[str, int, int, int, int]] = None
+    in_run = False
+
+    def _flush_run() -> None:
+        nonlocal cur_steps, cur_run_usage
+        if cur_steps:
+            for m, i, o, r, w in cur_steps:
+                _add(m, i, o, r, w)
+        elif cur_run_usage is not None:
+            _add(*cur_run_usage)
+        cur_steps = []
+        cur_run_usage = None
+
+    for e in entries:
+        etype: str = e["type"]
+        d = e["data"]
+        if etype == "run_start":
+            if in_run or cur_steps or cur_run_usage is not None:
+                _flush_run()
+            in_run = True
+        elif etype == "run_end":
+            if in_run:
+                _flush_run()
+                in_run = False
+        elif etype in ("step_usage", "token_usage"):
+            model = d.get("model_name")
+            if not isinstance(model, str) or not model:
+                continue
+            unit = (
+                model,
+                _usage_num(d.get("input_tokens")),
+                _usage_num(d.get("output_tokens")),
+                _usage_num(d.get("cache_read_tokens")),
+                _usage_num(d.get("cache_write_tokens")),
+            )
+            if etype == "step_usage":
+                cur_steps.append(unit)
+            else:
+                cur_run_usage = unit
+
+    if in_run or cur_steps or cur_run_usage is not None:
+        _flush_run()
+
+    # 无 run 包裹的日志（旧文件 / 后台调用）扁平扫描兜底
+    if not models:
+        for e in entries:
+            if e["type"] not in ("step_usage", "token_usage"):
+                continue
+            model = e["data"].get("model_name")
+            if isinstance(model, str) and model:
+                _add(
+                    model,
+                    _usage_num(e["data"].get("input_tokens")),
+                    _usage_num(e["data"].get("output_tokens")),
+                    _usage_num(e["data"].get("cache_read_tokens")),
+                    _usage_num(e["data"].get("cache_write_tokens")),
+                )
+
+    return {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "cache_read_tokens": cr,
+        "cache_write_tokens": cw,
+        "runs": runs,
+        "models": list(models.values()),
+    }
 
 
 def _silence_result_data(output: str, tool_calls: list[str], silence_reason: str) -> dict[str, str | list[str]]:
@@ -1274,11 +1400,11 @@ class AISessionLogger:
     def _build_data(self) -> "SessionLogFileData":
         """构建完整的日志数据结构。
 
-        ``type_counts`` 在落盘时预先算好并持久化，``entries`` 作为**最后一个**顶层字段
-        写出——这样 webconsole 列表/概览/分类接口只需读取 entries 之前的元数据头
-        （含 type_counts / linked_agents）即可构建摘要，无需解析庞大的 entries 数组
-        （详见 ai_session_logs_api._read_log_header）。遍历 entries 统计 type_counts
-        的开销相对 json.dump 序列化同一批 entries 可忽略。
+        ``type_counts`` / ``usage`` 在落盘时预先算好并持久化，``entries`` 作为**最后一个**
+        顶层字段写出——这样 webconsole 列表/概览/分类/整链用量接口只需读取 entries 之前的
+        元数据头（含 type_counts / usage / linked_agents）即可构建摘要，无需解析庞大的
+        entries 数组（详见 ai_session_logs_api._read_log_header）。遍历 entries 统计
+        type_counts / usage 的开销相对 json.dump 序列化同一批 entries 可忽略。
         """
         type_counts: Dict[str, int] = {}
         for entry in self.entries:
@@ -1300,6 +1426,7 @@ class AISessionLogger:
             "ended_at": self.ended_at,
             "entry_count": len(self.entries),
             "type_counts": type_counts,
+            "usage": extract_session_usage(self.entries),
             "linked_agents": self.linked_agents,
             "linked_agent_count": len(self.linked_agents),
             # entries 必须保持在最后，供 webconsole 头部快速读取（见上）

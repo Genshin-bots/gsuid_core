@@ -14,10 +14,10 @@ from collections.abc import MutableMapping
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
-from gsuid_core.ai_core.output_gate import tool_gate_feedback
+from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
 from gsuid_core.ai_core.agent_run.speech_policy import (
+    SpeechContext,
     non_master_title,
-    should_block_user_visible_text,
 )
 
 OPENING_SLOT_KEY = "opening_line_slot"
@@ -132,9 +132,12 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
     if not addr and ev is not None and ev.user_id:
         addr = str(ev.user_id)
     user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-    blocked, why = should_block_user_visible_text(
-        "silence_only",
-        body,
+    from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+
+    _allow_render = persona_allows_capability_agent(persona or None, "render_agent")
+    _is_group = bool(ev is not None and ev.group_id)
+    speech_ctx = SpeechContext(
+        policy="silence_only",
         pending_async=True,
         image_sent=False,
         has_status_tool=False,
@@ -142,17 +145,16 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
         speech_len_hard=resolve_chat_style(persona).hard if persona else 0,
         forbid_title=non_master_title(addr, persona or None),
         user_text=user_text,
+        allow_render=_allow_render,
     )
-    if blocked:
+    gr = pre_send_gate(body, extra, user_text=user_text, channel="tool", is_group=_is_group, speech_ctx=speech_ctx)
+    if gr.decision is not GateDecision.ALLOW:
+        why = gr.detail if gr.policy == "speech_policy" else "output_gate_tool"
         log_output_block_on_session(_opening_session_id(tool_ctx), why, body, policy="silence_only")
-        logger.info(i18n_t("log.agent.silent_skipping_text", _text=f"[opening/{why}] {body[:60]}"))
+        if gr.policy == "speech_policy":
+            logger.info(i18n_t("log.agent.silent_skipping_text", _text=f"[opening/{why}] {body[:60]}"))
         return ""
-    _is_group = bool(ev is not None and ev.group_id)
-    _gate_fb, body = tool_gate_feedback(body, extra, user_text=user_text, is_group=_is_group)
-    if _gate_fb is not None:
-        log_output_block_on_session(_opening_session_id(tool_ctx), "output_gate_tool", body, policy="silence_only")
-        return ""
-    return body
+    return gr.send_text or body
 
 
 async def _deliver(tool_ctx: ToolContext, text: str) -> bool:

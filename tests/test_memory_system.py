@@ -539,3 +539,126 @@ def test_personal_credential_evidence_excluded_from_group_facts() -> None:
         )
         kept = filter_group_scope_records(scope_key, [rec])
         assert (len(kept) == 1) == expected_kept
+
+
+def test_observer_gate_and_memory_invariants(monkeypatch) -> None:
+    """拦截同行 bot 与报错回声，过滤残缺事实、限制自我边配额并剥离唤醒词。"""
+    import asyncio
+
+    from gsuid_core.ai_core.memory import group_profile
+    from gsuid_core.ai_core.kits.memory import kit as mem_kit
+    from gsuid_core.ai_core.control.lines import SYSTEM_ECHO_PREFIXES
+    from gsuid_core.ai_core.memory.observer import _gate, observe
+    from gsuid_core.ai_core.persona.settings import DEFAULT_ERROR_GENERIC
+    from gsuid_core.ai_core.memory.retrieval.types import Edge
+    from gsuid_core.ai_core.memory.ingestion.algebra import _is_tautology_fact, _is_incomplete_fact
+    from gsuid_core.ai_core.memory.retrieval.dual_route import _cap_self_scope_edges
+
+    asyncio.run(observe("同行bot发言测试", "100000001", "200000001", "800000001", []))
+    assert _gate("你好", "800000001", "800000002", [], "200000001", "group:200000001") is None
+    assert _gate("正常发言", "__assistant_onebot__", "800000002", [], "200000001", "group:200000001") is None
+    assert _gate(DEFAULT_ERROR_GENERIC, "100000001", "800000002", [], "200000001", "group:200000001") is None
+    assert (
+        _gate(f"{SYSTEM_ECHO_PREFIXES[0]} 拦截", "100000001", "800000002", [], "200000001", "group:200000001") is None
+    )
+    assert _gate("周末一起去爬山", "100000001", "800000002", [], "200000001", "group:200000001") == "HIGH"
+
+    assert _is_incomplete_fact("测试用户A提到")
+    assert _is_incomplete_fact("测试用户A提到的")
+    assert _is_incomplete_fact("测试用户A认为是不是")
+    assert not _is_incomplete_fact("测试用户A昨天买了一本书")
+    assert not _is_incomplete_fact("测试用户A昨天去北京了")
+    assert not _is_incomplete_fact("测试用户A喜欢吃辣的")
+    assert not _is_incomplete_fact("测试用户A性格比较外向")
+    assert _is_tautology_fact("测试用户A 和 测试角色", "测试用户A", "测试角色")
+
+    def _edge(eid: str, sk: str) -> Edge:
+        return {
+            "id": eid,
+            "source_id": "s",
+            "target_id": "t",
+            "source_name": "测试用户A",
+            "target_name": "测试角色",
+            "fact": f"事实{eid}",
+            "weight": 1.0,
+            "score": 0.8,
+            "valid_at_ts": 1.0,
+            "invalid_at_ts": None,
+            "scope_key": sk,
+        }
+
+    capped = _cap_self_scope_edges(
+        [_edge("s1", "self:b:p"), _edge("s2", "self:b:p"), _edge("s3", "self:b:p"), _edge("g1", "group:200000001")],
+        ["group:200000001", "self:b:p"],
+    )
+    assert [e["id"] for e in capped] == ["s1", "s2", "g1"]
+
+    monkeypatch.setattr(group_profile, "collect_persona_surfaces", lambda name: ("测试角色",) if name else ())
+    assert mem_kit.retrieve_query_for_search("测试角色 明天几点集合", persona_name="测试角色") == "明天几点集合"
+    assert mem_kit.retrieve_query_for_search("测试角色", persona_name="测试角色") == "测试角色"
+
+
+def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
+    """open_lines 至多顺延一次且不跨多窗无限累积；超时兜底按 5 分钟间隔分段。"""
+    import asyncio
+    from datetime import timedelta
+    from dataclasses import dataclass
+
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+    from gsuid_core.ai_core.memory.ingestion import worker as worker_mod, window_router
+    from gsuid_core.ai_core.memory.ingestion.window_router import WindowRouteOutput
+
+    t0 = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    r0 = ObservationRecord("第一句", "100000001", "200000001", "group:200000001", t0, "group_msg")
+    r1 = ObservationRecord(
+        "十分钟后", "100000001", "200000001", "group:200000001", t0 + timedelta(minutes=10), "group_msg"
+    )
+
+    fb = window_router._fallback([r0, r1])
+    assert [c["lines"] for c in fb["clusters"]] == [[0], [1]]
+
+    @dataclass
+    class _StubEp:
+        id: str
+
+    created: list[str] = []
+
+    async def _fake_list_active(*_args: object, **_kwargs: object) -> list[object]:
+        return []
+
+    async def _fake_create_ep(**kwargs: object) -> _StubEp:
+        created.append(str(kwargs["content"]))
+        return _StubEp(id=f"ep_{len(created)}")
+
+    async def _fake_route(*_args: object, **_kwargs: object) -> WindowRouteOutput:
+        return {
+            "clusters": [{"lines": [0], "action": "episode_only", "thread_ref": None, "topic_title": ""}],
+            "open_lines": [0],
+        }
+
+    monkeypatch.setattr(worker_mod.AIMemThread, "list_active", _fake_list_active)
+    monkeypatch.setattr(worker_mod.AIMemEpisode, "create_episode", _fake_create_ep)
+    monkeypatch.setattr(window_router, "route_window", _fake_route)
+
+    deferred: list[ObservationRecord] = []
+    asyncio.run(worker_mod.ingest_window([r0], "group:200000001", deferred_out=deferred))
+    assert len(deferred) == 1 and deferred[0].defer_count == 1 and not created
+
+    buf = worker_mod._ScopeWindowBuffer()
+    buf.push(
+        ObservationRecord("新消息", "100000002", "200000001", "group:200000001", t0 + timedelta(seconds=1), "group_msg")
+    )
+    buf.requeue_front(deferred)
+    assert buf.drain()[0].raw_content == "第一句"
+
+    deferred_second: list[ObservationRecord] = []
+    asyncio.run(worker_mod.ingest_window([r0], "group:200000001", deferred_out=deferred_second))
+    assert not deferred_second and len(created) == 1
+
+    # reply_to_bot 单一事实源：无 @ 或呼名时仍可认定簇寻址到 bot
+    from gsuid_core.ai_core.memory.ingestion.algebra import _cluster_addresses_bot
+
+    r_reply = ObservationRecord(
+        "我怕辣", "100000001", "200000001", "group:200000001", t0, "group_msg", reply_to_bot=True
+    )
+    assert _cluster_addresses_bot([r_reply], [0]) is True

@@ -21,7 +21,7 @@
 
 | 模型 | 说明 | 存储层 |
 |------|------|--------|
-| **Thread** (`AIMemThread`) | 故事线 / 专题（追加式里程碑脊柱，记录起止时间与里程碑数） | DB + Qdrant (`memory_threads`) |
+| **Thread** (`AIMemThread`) | 故事线 / 专题（追加式里程碑脊柱，记录起止时间与里程碑数） | DB |
 | **Episode** (`AIMemEpisode`) | 原始对话片段（关联 `session_id`、`turn_index`、`thread_id`） | DB + FTS5 (`aimemepisode_fts`) + Qdrant (`memory_episodes`) |
 | **Entity** (`AIMemEntity`) | 提取的实体节点（人物/事物，含 `name_dense` + `summary_dense` 双向量） | DB + Qdrant (`memory_entities`) |
 | **Edge** (`AIMemEdge`) | 四态事实边（`edge_kind`: `attribute`/`relation`/`milestone`；`resolution_state`: `active`/`staging`/`superseded`/`contradicted`） | DB + Qdrant (`memory_edges`) |
@@ -1048,7 +1048,7 @@ GET /api/ai/memory/scopes
 
 ## 22.22 清理与批量删除记忆
 
-以下接口会同步清理 SQL 四表 + 偏好、SQLite FTS5 索引以及 Qdrant 四个集合（`memory_episodes` / `memory_entities` / `memory_edges` / `memory_threads`）。
+以下接口会同步清理 SQL 四表 + 偏好、SQLite FTS5 索引以及 Qdrant 三个活跃集合（`memory_episodes` / `memory_entities` / `memory_edges`）。
 
 ### 22.22.1 删除单个 Scope 记忆
 

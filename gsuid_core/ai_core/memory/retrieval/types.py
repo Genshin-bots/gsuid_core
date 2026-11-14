@@ -41,6 +41,7 @@ class Edge(TypedDict):
     expired_at_ts: NotRequired[Optional[float]]
     edge_kind: NotRequired[str]
     slot_key: NotRequired[str]
+    scope_key: NotRequired[str]
     resolution_state: NotRequired[str]
     superseded_by_id: NotRequired[Optional[str]]
     contradicts_edge_id: NotRequired[Optional[str]]

@@ -8,6 +8,7 @@
 义务（:class:`Obligation`）由 ``settle`` 结构化验证，不看模型文本；
 模型认为观察不成立时走 ``dispute_directive`` 申辩，而非对用户解释。
 仍插进当轮 user 槽的句子集中在 :mod:`gsuid_core.ai_core.control.lines`。
+话术、出站闸门与 settle 收尾的单表驱动策略环集中在 :mod:`gsuid_core.ai_core.control.policy_ring`。
 """
 
 from gsuid_core.ai_core.control.directive import (

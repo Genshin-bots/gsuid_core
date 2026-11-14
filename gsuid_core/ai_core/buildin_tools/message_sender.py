@@ -286,58 +286,74 @@ async def send_message_by_ai(
     if pol == "status_ok" and not has_st and not has_media:
         return "⚠️ 用户在追问进度：先 list_my_kanban_tasks / artifact_get_recent 查状态，再发。禁止空口报完成。"
 
-    # 统一输出闸门（尖括号 + OOC …）：打回则 return feedback，放行继续发
-    if text:
-        from gsuid_core.ai_core.output_gate import tool_gate_feedback
-        from gsuid_core.ai_core.agent_run.speech_policy import should_block_user_visible_text
-
-        _ev_text = tool_ctx.ev.raw_text if tool_ctx.ev is not None and tool_ctx.ev.raw_text else ""
-        if text:
-            from gsuid_core.ai_core.angle_bracket_guard import (
-                has_illegal_angle_tags,
-                sanitize_illegal_angle_tags,
-            )
-
-            if has_illegal_angle_tags(text):
-                cleaned = sanitize_illegal_angle_tags(text)
-                if cleaned:
-                    text = cleaned
-        if text:
-            _is_group = bool(tool_ctx.ev is not None and tool_ctx.ev.group_id)
-            _gate_fb, text = tool_gate_feedback(text, tool_ctx.extra, user_text=_ev_text, is_group=_is_group)
-            if _gate_fb is not None:
-                _note_send_block(tool_ctx, "output_gate_tool", text, tool_call_id=call_id)
-                return _gate_fb
-        if text:
-            _blk, _why = should_block_user_visible_text(
-                pol or "free",
-                text,
-                pending_async=False,
-                image_sent=has_media,
-                has_status_tool=has_st,
-                tool_calls_so_far=["send_message_by_ai"],
-                user_text=_ev_text,
-            )
-            if _blk:
-                _note_send_block(tool_ctx, _why, text, tool_call_id=call_id)
-                return _refuse_outbound(_why)
-
-    # 目标用户（§E.3）：默认当前对话者；Event 保证 user_id 存在，不用 getattr 兜底
     ev = tool_ctx.ev
     _wake = extra["delivery_wake"] is True if "delivery_wake" in extra else False
-    if _wake and ev is not None and ev.user_id:
-        target_id = str(ev.user_id)
-        extra["at_user_id"] = target_id
-    else:
-        target_id = user_id or (str(ev.user_id) if ev is not None else "")
-    if text:
-        from gsuid_core.ai_core.persona.settings import persona_name_from_event
-        from gsuid_core.ai_core.agent_run.speech_policy import title_mentioned, non_master_title
+    target_id = (
+        str(ev.user_id)
+        if (_wake and ev is not None and ev.user_id)
+        else (user_id or (str(ev.user_id) if ev is not None else ""))
+    )
 
-        _ban = non_master_title(target_id, persona_name_from_event(ev))
-        if title_mentioned(_ban, text):
-            _note_send_block(tool_ctx, "master_title", text, tool_call_id=call_id)
-            return f"⚠️ 接收人不是主人，台词不能出现「{_ban}」。改写后再发，不要用这个称呼。"
+    # 统一输出闸门（话术策略 + 称呼 + 尖括号 + OOC）：打回则 return feedback，放行继续发
+    if text:
+        from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+        from gsuid_core.ai_core.persona.settings import persona_name_from_event
+        from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+        from gsuid_core.ai_core.agent_run.speech_policy import (
+            SpeechContext,
+            non_master_title,
+            normalize_speech_policy,
+        )
+
+        _ev_text = ev.raw_text if ev is not None and ev.raw_text else ""
+        from gsuid_core.ai_core.angle_bracket_guard import (
+            has_illegal_angle_tags,
+            sanitize_illegal_angle_tags,
+        )
+
+        if has_illegal_angle_tags(text):
+            cleaned = sanitize_illegal_angle_tags(text)
+            if cleaned:
+                text = cleaned
+        if text:
+            _persona = persona_name_from_event(ev)
+            _ban = non_master_title(target_id, _persona)
+            _allow_render = persona_allows_capability_agent(_persona, "render_agent")
+            _is_group = bool(ev is not None and ev.group_id)
+            _gr = pre_send_gate(
+                text,
+                tool_ctx.extra,
+                user_text=_ev_text,
+                channel="tool",
+                is_group=_is_group,
+                speech_ctx=SpeechContext(
+                    policy=normalize_speech_policy(pol or "free"),
+                    pending_async=False,
+                    image_sent=has_media,
+                    has_status_tool=has_st,
+                    tool_calls_so_far=("send_message_by_ai",),
+                    forbid_title=_ban,
+                    user_text=_ev_text,
+                    allow_render=_allow_render,
+                ),
+            )
+            if _gr.decision is not GateDecision.ALLOW:
+                if _gr.policy == "speech_policy":
+                    _why = _gr.detail or "speech_policy"
+                    _note_send_block(tool_ctx, _why, text, tool_call_id=call_id)
+                    if _why == "master_title":
+                        return f"⚠️ 接收人不是主人，台词不能出现「{_ban}」。改写后再发，不要用这个称呼。"
+                    return _refuse_outbound(_why)
+                _note_send_block(tool_ctx, "output_gate_tool", text, tool_call_id=call_id)
+                if _gr.decision is GateDecision.FALLBACK:
+                    return _gr.feedback or _gr.send_text
+                return _gr.feedback or ""
+            if _gr.send_text:
+                text = _gr.send_text
+
+    # 目标用户（§E.3）：默认当前对话者；delivery_wake 时回填 extra["at_user_id"]
+    if _wake and ev is not None and ev.user_id:
+        extra["at_user_id"] = target_id
     session_id = str(ev.session_id) if ev is not None else (tool_ctx.parent_session_id or "")
 
     for img_id in target_image_ids:

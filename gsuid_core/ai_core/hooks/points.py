@@ -130,7 +130,7 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
         _spec(
             AgentHookPoint.REACTIVE_GATE,
             "handle_ai.handle_inbox_turn:soft_gate",
-            6000,
+            500,
             _C.SET_SHOULD_SPEAK,
             _C.SILENCE,
             on_timeout_decision=HookDecision.SILENCE,

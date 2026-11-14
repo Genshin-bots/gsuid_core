@@ -13,12 +13,18 @@ from __future__ import annotations
 import re
 from typing import Literal, Sequence
 from datetime import datetime
+from dataclasses import dataclass
 
+from gsuid_core.config import core_config
 from gsuid_core.ai_core.utils import is_silence_marker
 from gsuid_core.ai_core.content_guard import is_observation_untrusted
 from gsuid_core.ai_core.control.lines import (
+    RES_HANDLE_RE,
+    MD_LIST_ITEM_RE,
+    INTERNAL_LEAK_RE,
     MSG_SECTION_MARK,
     STATUS_INQUIRY_HINT as STATUS_INQUIRY_HINT,
+    CAPABILITY_OR_DEV_LEAK_RE,
 )
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     is_timeless_aggregate as _is_timeless_aggregate,
@@ -65,45 +71,26 @@ _PREMATURE_DELIVERY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 空交付 / 摆烂：声称**已有材料**却不出图、推给用户「再喊我」（须配合 fact_pack_pending）
+# 空交付 / 推诿：声称已有材料却推给用户「要哪段 / 再喊我」（须配合 fact_pack_pending）
 _EMPTY_HANDOFF_RE = re.compile(
     r"(念不(动|完|下)|懒得念|太长了.{0,10}(不|懒|念)|"
-    r"记着呢|全(都)?(记|在)(着|里|呢)|细节(全)?在|"
-    r"要哪段|再喊我|有点印象|"
-    r"全记着|都在里面了(?!…?图)|"
-    r"先睡了.{0,8}$)",
+    r"要哪段|再喊我|"
+    r"都在里面了(?!…?图))",
     re.IGNORECASE,
 )
 
-# 过程/框架元话语：对用户可见即 OOC（结构通道词，非业务域）
-_PROCESS_META_RE = re.compile(
-    r"(时效存疑|自己再验|数据没刷|没刷出来|没法.{0,8}编数字|"
-    r"回炉了?你再|回炉|系统校验|框架[·・.]任务|产物句柄|"
-    r"long_structured|tool_return|inline_head|"
-    r"how_to_read|persisted\s+id)",
-    re.IGNORECASE,
-)
-
-# 能力缺失判定：工具或接口未安装，排除句读避免跨分句误判。
-_OWN_TOOLKIT_DENY_RE = re.compile(
-    r"(?:工具(?!人)|接口).{0,8}没(?:挂|装|配)"
-    r"|(?:没|未)(?:挂|装).{0,8}(?:工具(?!人)|接口|那玩意)"
-    r"|没(?:有)?[^。！？\n，,；;]{0,6}(?:工具(?!人)|接口)(?!文档|说明|手册)"
-    r"|没有.{0,6}对应工具"
-)
 _REDIRECT_EXECUTOR_RE = re.compile(
     r"(?:别的家伙|另一个机器人|那个机器人).{0,16}(?:管|干|指令|命令)"
     r"|(?:那种指令|那种命令).{0,16}(?:别的家伙|另一个机器人|那个机器人)"
-    r"|你直接发\s*[`]"
-    r"|你直接发\s*[「『\"]\s*(?:/|gs)"
-    r"|先发\s*[`]"
-    r"|先发\s*[「『\"]\s*(?:/|gs)"
+    r"|(?:你直接发|先发)\s*(?:[`]|[「『\"]\s*/)"
 )
 _TODAY_NOW_RE = re.compile(r"今天|今日|现在|此刻")
 _YMD_RE = re.compile(r"(20\d{2})[-年./](\d{1,2})[-月./](\d{1,2})")
 _REMINISCE_RE = re.compile(r"想起|记得|回忆|想想|那年|那天|那次|那会儿|那时候")
-# 「是/为」太宽：日期句「今天是某日」不是过期气温。
-_STALE_READING_RE = re.compile(r"气温|温度|°C|℃|晴|阴|雨|雪|度")
+_HISTORICAL_LOOKUP_RE = re.compile(r"看了|查了|翻了|回看|历史|记录|存档|当时|那会儿")
+_METRIC_VALUE_RE = re.compile(
+    r"(?:\d+(?:\.\d+)?\s*(?:[%‰℃°]|度|元|块|分|点|倍|个|条|次|人|ms|KB|MB|GB))|(?:[¥$€]\s*\d)"
+)
 
 # 交付状态汇报：以系统日志口吻播报已完成且自我静默时判定命中。
 _DELIVERY_REPORT_RE = re.compile(
@@ -156,7 +143,6 @@ _WAIT_COMFORT_RE = re.compile(
 _ORCHESTRATION_NARRATION_RE = re.compile(
     r"(让|叫|派)\s*[A-Za-z][A-Za-z0-9_]{2,}\s*(去|来|出|画|渲|跑|执行|处理)|"
     r"(让|叫|派)\s*(?!我|自己|你)(?:[^\s，。！？、]{0,4}(?:agent|worker|帮手|助手|后台|代理|子任务|节点|工具|系统)|[A-Za-z][A-Za-z0-9_]{2,})\s*(去|来|出|画|渲|跑|执行|处理|查)|"
-    r"\b(render_agent|research_agent|create_subagent|agent_profile)\b|"
     r"\brender\b.{0,6}(出|画|渲)|"
     r"(出|画|渲).{0,6}\brender\b",
     re.IGNORECASE,
@@ -323,7 +309,14 @@ def looks_like_process_meta(text: str, *, user_text: str = "") -> bool:
         return False
     if looks_like_machine_latin(body, user_text=user_text):
         return True
-    return bool(_PROCESS_META_RE.search(body))
+    return bool(INTERNAL_LEAK_RE.search(body))
+
+
+def _configured_command_starts() -> list[str]:
+    raw = core_config.get_config("command_start")
+    if not isinstance(raw, list):
+        return []
+    return [p for p in raw if isinstance(p, str) and p.strip()]
 
 
 def looks_like_capability_absence(text: str) -> bool:
@@ -331,9 +324,16 @@ def looks_like_capability_absence(text: str) -> bool:
     body = (text or "").strip()
     if not body or is_silence_marker(body):
         return False
-    if _OWN_TOOLKIT_DENY_RE.search(body) is not None:
+    if CAPABILITY_OR_DEV_LEAK_RE.search(body) is not None:
         return True
-    return _REDIRECT_EXECUTOR_RE.search(body) is not None
+    if _REDIRECT_EXECUTOR_RE.search(body) is not None:
+        return True
+    starts = _configured_command_starts()
+    if starts:
+        escaped = "|".join(re.escape(p) for p in starts)
+        if re.search(rf"(?:你直接发|先发)\s*[「『\"]\s*(?:{escaped})", body) is not None:
+            return True
+    return False
 
 
 def _clause_around(text: str, idx: int) -> str:
@@ -351,7 +351,7 @@ def _clause_around(text: str, idx: int) -> str:
 
 
 def looks_like_stale_present_tense(text: str, *, now: datetime | None = None) -> bool:
-    """是否把过期年月日说成今天/现在的读数。回忆句、无年份月日不判。"""
+    """是否把过期年月日数值读数说成今天/现在的实况。回忆/回看历史、纯日期不判。"""
     body = (text or "").strip()
     if not body or is_silence_marker(body):
         return False
@@ -370,9 +370,12 @@ def looks_like_stale_present_tense(text: str, *, now: datetime | None = None) ->
             continue
         if _REMINISCE_RE.search(clause) is not None:
             continue
-        win_lo = max(0, m.start() - 10)
-        win_hi = min(len(body), m.end() + 12)
-        if _STALE_READING_RE.search(body[win_lo:win_hi]) is not None:
+        win_lo = max(0, m.start() - 12)
+        win_hi = min(len(body), m.end() + 16)
+        window = body[win_lo:win_hi]
+        if _HISTORICAL_LOOKUP_RE.search(window) is not None:
+            continue
+        if _METRIC_VALUE_RE.search(window) is not None:
             return True
     return False
 
@@ -392,15 +395,12 @@ def looks_like_wait_comfort(text: str) -> bool:
         return False
     if _INFLIGHT_PROCESS_VERB_RE.search(body):
         return False
-    # 不得同时是空交付摆烂
-    if _EMPTY_HANDOFF_RE.search(body) and not _WAIT_COMFORT_RE.search(body):
-        return False
     if claims_premature_delivery(body):
         return False
     return bool(_WAIT_COMFORT_RE.search(body))
 
 
-def _keeps_working(body: str) -> bool:
+def keeps_working(body: str) -> bool:
     """一句里还在查，不算已经交付。空交付摆烂不算。"""
     if looks_like_empty_handoff(body):
         return False
@@ -445,7 +445,7 @@ def looks_like_task_accept_speech(text: str, *, max_len: int = 0, user_text: str
     # 两行只放行「括号动作 + 台词」。两段正文仍是结构垃圾。
     if len(content_lines) == 2 and not any(_line_is_action_beat(ln) for ln in content_lines):
         return False
-    if claims_premature_delivery(body) and not _keeps_working(body):
+    if claims_premature_delivery(body) and not keeps_working(body):
         return False
     if looks_like_wait_comfort(body):
         return True
@@ -473,11 +473,6 @@ def _line_is_action_beat(line: str) -> bool:
     return (line.startswith("（") and line.endswith("）")) or (line.startswith("(") and line.endswith(")"))
 
 
-def looks_like_inflight_quota_speech(text: str) -> bool:
-    """在途第二句起的极短额度（≤12 字）。开场接任务应走 looks_like_task_accept_speech。"""
-    return looks_like_task_accept_speech(text, max_len=IN_FLIGHT_SPEECH_MAX)
-
-
 def has_orchestration_narration(text: str) -> bool:
     """是否在向用户叙述内部编排（worker/节点名）。"""
     body = (text or "").strip()
@@ -494,9 +489,6 @@ def looks_like_report_speech(text: str) -> bool:
     if is_silence_marker(body):
         return False
     heads = len(_MD_HEADING_RE.findall(body))
-    # 行首加粗小标题（**命名规则** 单独成行）
-    bold_lines = len(re.findall(r"(?m)^\*{0,2}\*\*[^*\n]{2,40}\*\*\s*$", body))
-    heads = max(heads, bold_lines)
     paras = [p for p in re.split(r"\n\s*\n", body) if p.strip()]
     pipe_dense = body.count("|") >= 6 and "\n" in body
     if pipe_dense and len(body) >= 120:
@@ -504,9 +496,8 @@ def looks_like_report_speech(text: str) -> bool:
     # 两个及以上小标题 + 一定长度 → 长结构体
     if heads >= 2 and len(body) >= 100:
         return True
-    if len(paras) >= 4 and len(body) >= 140:
-        return True
-    if len(paras) >= 3 and len(body) >= 220:
+    # 多条列表项展开（如多条排行/明细列表），普通口语多段分段不拦截
+    if len(MD_LIST_ITEM_RE.findall(body)) >= 4 and len(body) >= 180:
         return True
     # 单段超长「小作文」
     if len(paras) <= 2 and len(body) >= 500 and (heads >= 1 or body.count("…") + body.count("...") >= 4):
@@ -567,7 +558,9 @@ def title_mentioned(title: str, body: str) -> bool:
     return token in text
 
 
-_DELIVER_PROGRESS_RE = re.compile(r"别催|还没|催一下|在弄")
+_DELIVER_PROGRESS_RE = re.compile(
+    r"别催了?|还在(?:跑|查|弄|画|等结果)|还没(?:跑完|查完|出结果|弄好)|再等.{0,4}(?:就好|马上)"
+)
 
 
 def looks_like_deliver_progress(text: str) -> bool:
@@ -580,6 +573,58 @@ def looks_like_deliver_progress(text: str) -> bool:
     if looks_like_delivery_status_narration(body):
         return True
     return _DELIVER_PROGRESS_RE.search(body) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechContext:
+    """话术策略判定上下文：供轮中门闩、工具发信与 settle 出口共用。"""
+
+    policy: SpeechPolicy
+    pending_async: bool
+    image_sent: bool
+    has_status_tool: bool
+    tool_calls_so_far: Sequence[str]
+    wait_comfort_sent: bool = False
+    fact_pack_pending: bool = False
+    has_active_task: bool = False
+    render_inflight: bool = False
+    speech_len_hard: int = 0
+    user_asked_detail: bool = False
+    forbid_title: str = ""
+    entity_routed: bool = False
+    user_text: str = ""
+    allow_render: bool = True
+    in_settle_exit: bool = False
+    render_obligation: bool = False
+    skip_report_exit: bool = False
+    is_delivery_wake: bool = False
+
+    @property
+    def inflight(self) -> bool:
+        return bool(self.pending_async or self.render_inflight)
+
+    @property
+    def renderable_pack(self) -> bool:
+        return bool(self.fact_pack_pending and self.allow_render)
+
+
+def normalize_speech_policy(policy: str) -> SpeechPolicy:
+    if policy == "silence_only":
+        return "silence_only"
+    if policy == "status_ok":
+        return "status_ok"
+    if policy == "framework_nudge":
+        return "framework_nudge"
+    if policy == "framework_deliver":
+        return "framework_deliver"
+    return "free"
+
+
+def evaluate_speech_policy(ctx: SpeechContext, text: str) -> tuple[bool, str]:
+    """委托统一策略环判定本段可见文本是否拦截。返回 (block, reason)。"""
+    from gsuid_core.ai_core.control.policy_ring import evaluate_speech_ring
+
+    return evaluate_speech_ring(ctx, text)
 
 
 def should_block_user_visible_text(
@@ -599,114 +644,27 @@ def should_block_user_visible_text(
     forbid_title: str = "",
     entity_routed: bool = False,
     user_text: str = "",
+    allow_render: bool = True,
 ) -> tuple[bool, str]:
     """是否拦截本段对用户可见文本。返回 (block, reason)。"""
-    body = (text or "").strip()
-    if not body:
-        return True, "empty"
-    if is_silence_marker(body):
-        return False, "silence"
-
-    pol: SpeechPolicy = (
-        policy
-        if policy
-        in (
-            "free",
-            "silence_only",
-            "status_ok",
-            "framework_nudge",
-            "framework_deliver",
-        )
-        else "free"
+    ctx = SpeechContext(
+        policy=normalize_speech_policy(policy),
+        pending_async=pending_async,
+        image_sent=image_sent,
+        has_status_tool=has_status_tool,
+        tool_calls_so_far=tool_calls_so_far,
+        wait_comfort_sent=wait_comfort_sent,
+        fact_pack_pending=fact_pack_pending,
+        has_active_task=has_active_task,
+        render_inflight=render_inflight,
+        speech_len_hard=speech_len_hard,
+        user_asked_detail=user_asked_detail,
+        forbid_title=forbid_title,
+        entity_routed=entity_routed,
+        user_text=user_text,
+        allow_render=allow_render,
     )
-    inflight = bool(pending_async or render_inflight)
-
-    # 接收人不是主人时，称呼出现在配图收尾里也要拦（image_sent 会提前放行短句）。
-    if title_mentioned(forbid_title, body):
-        return True, "master_title"
-
-    # 图已在这次发送里：编排词和交付汇报仍拒。多段说明随图发出。
-    if image_sent:
-        if has_orchestration_narration(body):
-            return True, "orchestration_leak"
-        if looks_like_delivery_status_narration(body):
-            return True, "delivery_narration"
-        return False, "post_image_ok"
-
-    # 异步在途：开场接任务应一句（不按 12 字）；其后默认静默。清单/念白/完成腔不占额度。
-    if inflight or pol == "silence_only":
-        if not wait_comfort_sent and looks_like_task_accept_speech(body, max_len=speech_len_hard, user_text=user_text):
-            return False, "wait_comfort"
-        return True, "silence_only_or_async"
-
-    if pol == "framework_nudge":
-        # 纠正轮：允许「等一下」+ 工具；禁止闲聊抱怨
-        if looks_like_wait_comfort(body) and not wait_comfort_sent:
-            return False, "wait_comfort"
-        return True, "framework_nudge_no_speech"
-
-    if has_orchestration_narration(body):
-        return True, "orchestration_leak"
-
-    if looks_like_delivery_status_narration(body):
-        return True, "delivery_narration"
-
-    if looks_like_process_meta(body, user_text=user_text):
-        return True, "process_meta"
-
-    _wake = pol == "framework_deliver"
-    if (
-        claims_premature_delivery(
-            body,
-            has_fact_pack=fact_pack_pending,
-            tool_called_this_run=bool(tool_calls_so_far),
-            is_delivery_wake=_wake,
-        )
-        and not image_sent
-        and not _keeps_working(body)
-    ):
-        return True, "premature_delivery"
-
-    # 多点读数：只有真有待出图事实包才拦。无事实包的数字句是回答本身。
-    if (
-        fact_pack_pending
-        and not image_sent
-        and looks_like_numeric_recitation(body)
-        and not (pol == "status_ok" and has_status_tool)
-    ):
-        return True, "numeric_recitation"
-
-    # 仅当真有待出图材料时：空交付/摆烂才拦截并武装纠正
-    if fact_pack_pending and looks_like_empty_handoff(body) and not image_sent:
-        return True, "empty_handoff"
-
-    # 长结构台词：仅当**真有待出图事实包**时才拦（该走 render）。
-    # 无事实包的长文本是用户点名要的正文（作文/代码/翻译），交呈现层，不拦不改。
-    if pol in ("free", "status_ok", "framework_deliver") and fact_pack_pending and looks_like_report_speech(body):
-        return True, "report_speech"
-
-    if entity_routed and not image_sent and not tool_calls_so_far and pol in ("free", "status_ok"):
-        # 本轮检索已装上查询工具，空口答会被当成事实。同响应后面的工具调用仍会执行。
-        return True, "entity_without_tool"
-
-    if pol == "framework_deliver":
-        # 进度句不出站；复杂大表格念表不出站。轻量短事实允许直接交付。
-        if not image_sent:
-            if looks_like_deliver_progress(body):
-                return True, "deliver_before_send"
-            if (looks_like_report_speech(body) and len(body) >= 160) or (body.count("|") >= 6 and "\n" in body):
-                return True, "deliver_before_send"
-        return False, "ok"
-
-    if pol == "status_ok":
-        # 追问进度：零工具不得对用户报状态/完成（含极短句）
-        if not has_status_tool and not tool_calls_so_far:
-            return True, "status_without_tool"
-        return False, "ok"
-
-    # 长度只写角色卡。硬拦会吞 by_bot 群聊回复（纠正/INV-4 未接此原因）。
-    _ = (speech_len_hard, user_asked_detail)
-    return False, "ok"
+    return evaluate_speech_policy(ctx, text)
 
 
 def content_is_render_candidate(
@@ -738,12 +696,12 @@ def content_is_render_candidate(
         if _tool_return_is_delegation_refusal(body):
             return False
         # 完成交付：足够长且非过程口癖
-        if "事实包" in body or "artifact" in body.lower() or re.search(r"\bres_[0-9a-fA-F]{6,}\b", body):
+        if "事实包" in body or "artifact" in body.lower() or RES_HANDLE_RE.search(body):
             return len(body) >= 80
         return len(body) >= 200 and ("|" in body or body.count("\n") >= 6)
 
     # 有 res_ 句柄的长文
-    if re.search(r"\bres_[0-9a-fA-F]{6,}\b", body) and len(body) >= 40:
+    if RES_HANDLE_RE.search(body) and len(body) >= 40:
         return True
 
     # 无时点聚合（气候/月均/历史均值）：不武装出图——把「常年均值」渲成图当答案

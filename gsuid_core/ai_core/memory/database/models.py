@@ -1672,7 +1672,24 @@ class AIMemEdge(SQLModel, table=True):
     async def _purge_by_ids_db(cls, session: AsyncSession, edge_ids: list[str]) -> int:
         from sqlalchemy import delete as _delete
 
+        thread_rows = await session.execute(
+            select(cls.thread_id).where(col(cls.qdrant_id).in_(edge_ids), col(cls.thread_id).is_not(None))
+        )
+        affected_threads = {str(r[0]) for r in thread_rows.all() if r[0]}
         await session.execute(_delete(cls).where(col(cls.qdrant_id).in_(edge_ids)))
+        for tid in affected_threads:
+            cnt_res = await session.execute(
+                select(func.count())
+                .select_from(cls)
+                .where(
+                    col(cls.thread_id) == tid,
+                    col(cls.edge_kind) == "milestone",
+                    col(cls.invalid_at).is_(None),
+                    col(cls.resolution_state) != "superseded",
+                )
+            )
+            actual = int(cnt_res.scalar_one() or 0)
+            await session.execute(update(AIMemThread).where(col(AIMemThread.id) == tid).values(milestone_count=actual))
         return len(edge_ids)
 
     @classmethod

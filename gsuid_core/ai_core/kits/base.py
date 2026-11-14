@@ -88,24 +88,16 @@ def inject_memory_cap(
         looks_like_count_query,
         wants_parallel_document_coverage,
     )
-    from gsuid_core.ai_core.memory.retrieval.event_time import (
-        looks_like_span_query,
-        looks_like_order_query,
-        looks_like_summary_query,
-    )
 
     default = int(memory_config.memory_inject_max_chars)
     wide = max(default, int(memory_config.memory_inject_wide_chars))
     multi_source = n_doc_sources >= _MEMORY_WIDE_MIN_DOC_SOURCES
     timeline = (
         memory_intent in ("timeline_order", "version_diff", "broad_summary")
-        or looks_like_order_query(query)
-        or looks_like_span_query(query)
-        or looks_like_summary_query(query)
         or looks_like_count_query(query)
-        or looks_like_sum_query(query)
+        or looks_like_sum_query(query, memory_intent=memory_intent)
     )
-    if covered or multi_source or timeline or wants_parallel_document_coverage(query):
+    if covered or multi_source or timeline or wants_parallel_document_coverage(query, memory_intent=memory_intent):
         return wide
     return default
 

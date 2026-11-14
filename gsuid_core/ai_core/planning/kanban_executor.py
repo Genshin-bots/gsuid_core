@@ -29,6 +29,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.proactive import emit_proactive_message
+from gsuid_core.ai_core.control.lines import CODE_FENCE_RE, INTERNAL_ARTIFACT_TOKEN_PATTERN
 from gsuid_core.ai_core.control.mailbox import drain_one, post_to_session
 from gsuid_core.ai_core.control.directive import Directive
 from gsuid_core.ai_core.configs.task_kinds import TASK_KANBAN_RELAY
@@ -46,10 +47,6 @@ from .runtime import (
 from .workspace import put_artifact, ensure_workspace
 
 _VALID_USER_TYPES = ("group", "direct", "channel", "sub_channel")
-
-# 围栏代码块匹配（含语言标注的 ```python ... ```）。用于在"转译兜底"时剥离能力代理
-# 原始产出里的大段代码 / 原始数据——它们绝不该直接回灌给用户（群聊刷屏与污染）。
-_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 
 
 def _artifact_text_excerpt(arts: List[AIAgentArtifact], *, limit: int = 4000) -> str:
@@ -92,17 +89,14 @@ def _sanitize_for_user(text: str) -> str:
     """
     if not text:
         return text
-    sanitized = _CODE_FENCE_RE.sub("〔代码已省略〕", text)
+    sanitized = CODE_FENCE_RE.sub("〔代码已省略〕", text)
     # 半个未配对的围栏：从首个 ``` 处截断，杜绝半截代码块漏出
     if "```" in sanitized:
         sanitized = sanitized.split("```", 1)[0].rstrip() + " 〔代码已省略〕"
     return sanitized.strip()[:600]
 
 
-_RELAY_META_LINE_RE = re.compile(
-    r"(?im)^.*(?:artifact|res_[0-9a-f]{6,}|img_[0-9a-f]{6,}|send_message_by_ai|"
-    r"create_subagent|主人格|句柄|Kanban|tool_return).*$"
-)
+_RELAY_META_LINE_RE = re.compile(rf"(?im)^.*(?:artifact|{INTERNAL_ARTIFACT_TOKEN_PATTERN}|主人格|句柄|Kanban).*$")
 
 
 def _sanitize_relay_spoken(text: str) -> str:
@@ -741,7 +735,7 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
     # 私聊（direct）里消息只会发给发起人本人，@ 没有提醒意义、反而污染台词；
     # 只在群聊/频道场景注入 @提示（user_type 口径与 _build_event 一致）。
     _user_type = task.user_type if task.user_type in _VALID_USER_TYPES else "direct"
-    at_hint = f"收尾时 @发起人 `@{owner}`。" if owner and _user_type != "direct" else ""
+    at_hint = f"收尾时 @发起人 `<@{owner}>`。" if owner and _user_type != "direct" else ""
     title_ban = ""
     if owner:
         from gsuid_core.ai_core.utils import _is_master_user
@@ -754,17 +748,20 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
     from gsuid_core.ai_core.control.lines import delivery_wake_line
 
     frame_text = delivery_wake_line(delivery, at_hint, title_ban, allow_render=allow_render)
+    from gsuid_core.ai_core.inbox.turn import detached_turn_scope
+
     record_delivery_wake(session_id, root_id)
     root_token = bind_delivery_root(root_id)
     try:
-        await session.run(
-            user_message=frame_text,
-            bot=bot,
-            ev=ev,
-            return_mode="by_bot",
-            has_active_task=True,
-            is_framework_injection=True,
-        )
+        with detached_turn_scope():
+            await session.run(
+                user_message=frame_text,
+                bot=bot,
+                ev=ev,
+                return_mode="by_bot",
+                has_active_task=True,
+                is_framework_injection=True,
+            )
     finally:
         reset_delivery_root(root_token)
     logger.info(t("log.ai.kanban_deferred_main_delivery_done", task=task.id[:8]))

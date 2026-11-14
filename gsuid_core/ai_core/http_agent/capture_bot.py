@@ -13,9 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Dict, List, Union, Literal, Mapping, Optional
 
-from gsuid_core.bot import Bot, _Bot, message_list_to_str
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
+from gsuid_core.bot import Bot, _Bot
 from gsuid_core.models import Event, Message
 from gsuid_core.message_models import ButtonType
 from gsuid_core.ai_core.http_agent.types import AttachmentKind, AttachmentEncoding
@@ -194,11 +192,10 @@ class CaptureBot(Bot):
         text: str,
         extra_metadata: Optional[Mapping[str, object]] = None,
     ) -> None:
-        """delta 已出站：只记 history / observe，不再入 SSE。"""
+        """delta 已出站：只记 history，不再入 SSE。"""
         if not text:
             return
         await self._record_history(text, extra_metadata)
-        await self._observe_outbound(text)
 
     async def send(
         self,
@@ -208,7 +205,6 @@ class CaptureBot(Bot):
         wait_recall: bool = False,
     ) -> Optional[List[str]]:
         await self._record_history(message, extra_metadata)
-        await self._observe_outbound(message)
         await self._enqueue_visible(message)
         return None
 
@@ -406,54 +402,3 @@ class CaptureBot(Bot):
                 user_name="AI",
                 metadata=metadata,
             )
-
-    async def _observe_outbound(self, message: Union[Message, List[Message], str, bytes, List[str]]) -> None:
-        from gsuid_core.ai_core.memory.config import memory_config
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        enable_ai = bool(ai_config.get_config("enable").data)
-        is_enable_memory = bool(ai_config.get_config("enable_memory").data)
-        memory_mode = memory_config.memory_mode
-        if not (enable_ai and is_enable_memory and "主动会话" in memory_mode):
-            return
-        from gsuid_core.ai_core.memory.observer import observe
-
-        if isinstance(message, str):
-            body = message
-        elif isinstance(message, bytes):
-            body = "[图片/文件]"
-        elif isinstance(message, Message):
-            body = message_list_to_str([message])
-        else:
-            msgs: List[Message] = []
-            for item in message:
-                if isinstance(item, Message):
-                    msgs.append(item)
-                elif isinstance(item, str):
-                    msgs.append(Message(type="text", data=item))
-            body = message_list_to_str(msgs) if msgs else ""
-        if not body.strip():
-            return
-        from gsuid_core.message_history.link import current_outbound
-        from gsuid_core.ai_core.persona.speaking_ctx import get_speaking_persona
-
-        _binding = current_outbound()
-        _personal_cred = _binding is not None and _binding.personal_credential
-
-        try:
-            task = asyncio.create_task(
-                observe(
-                    content=body,
-                    speaker_id=f"__assistant_{self.ev.bot_id}__",
-                    group_id=self.ev.group_id if self.ev.group_id else None,
-                    bot_self_id=self.ev.bot_self_id,
-                    observer_blacklist=memory_config.observer_blacklist,
-                    message_type="group_msg" if self.ev.group_id else "private_msg",
-                    bot_id=self.ev.bot_id,
-                    persona_name=get_speaking_persona(),
-                    personal_credential=_personal_cred,
-                )
-            )
-            self.bot._add_bg_task(task)
-        except Exception as e:
-            logger.debug(t("log.ai.http_agent_observe_fail", e=e))

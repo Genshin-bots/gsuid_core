@@ -58,11 +58,17 @@ def format_thread_cards(threads: list["AIMemThread"], now_ts: float) -> str:
 
 
 def _fallback(records: list["ObservationRecord"]) -> WindowRouteOutput:
-    indices = list(range(len(records)))
-    if not indices:
+    if not records:
         return {"clusters": [], "open_lines": []}
+    groups: list[list[int]] = [[0]]
+    for idx in range(1, len(records)):
+        gap = (records[idx].timestamp - records[idx - 1].timestamp).total_seconds()
+        if gap > 300.0:
+            groups.append([idx])
+        else:
+            groups[-1].append(idx)
     return {
-        "clusters": [{"lines": indices, "action": "episode_only", "thread_ref": None, "topic_title": ""}],
+        "clusters": [{"lines": g, "action": "episode_only", "thread_ref": None, "topic_title": ""} for g in groups],
         "open_lines": [],
     }
 
@@ -166,7 +172,7 @@ async def route_window(
     try:
         agent = GsCoreAIAgent(
             system_prompt=WINDOW_ROUTE_SYSTEM,
-            max_tokens=800,
+            max_tokens=2048,
             create_by="MemWindowRouter",
             task_kind=TASK_MEMORY_WINDOW_ROUTER,
             task_level="low",
@@ -178,7 +184,7 @@ async def route_window(
         try:
             raw = await asyncio.wait_for(
                 agent.run(user_message=prompt, return_mode="return"),
-                timeout=15.0,
+                timeout=25.0,
             )
         finally:
             agent._session_logger.close()

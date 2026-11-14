@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING
+from contextlib import contextmanager
 from contextvars import Token, ContextVar
 from dataclasses import field, dataclass
+from collections.abc import Iterator
 
 from gsuid_core.models import Event
 from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+from gsuid_core.message_history.link import bind_outbound, reset_outbound
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
@@ -69,6 +72,18 @@ def reset_turn(token: Token[InboxTurn | None]) -> None:
 
 def current_turn() -> InboxTurn | None:
     return _current.get()
+
+
+@contextmanager
+def detached_turn_scope() -> Iterator[None]:
+    """后台延迟回调隔离作用域：不继承前台轮次与出站回复绑定。"""
+    turn_tok = bind_turn(None)
+    out_tok = bind_outbound(None)
+    try:
+        yield
+    finally:
+        reset_outbound(out_tok)
+        reset_turn(turn_tok)
 
 
 def backfill_due_for(session_id: str) -> bool:

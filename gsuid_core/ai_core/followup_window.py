@@ -58,6 +58,7 @@ _gate_stats: dict[str, int] = {
     "llm_silence": 0,
     "timeout_silence": 0,
     "error_silence": 0,
+    "router_fallback": 0,
 }
 
 

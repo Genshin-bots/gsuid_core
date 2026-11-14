@@ -154,13 +154,38 @@ class LinkedAgentRecord(TypedDict):
     linked_at: float
 
 
+class SessionUsageModelUnit(TypedDict):
+    """按模型归并的计价单元（同模型多次调用合并即可线性计价）"""
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+
+
+class SessionUsageStats(TypedDict):
+    """单分段 / 整链的 token 用量聚合（``extract_session_usage`` 唯一产出）
+
+    ``runs`` 为计量到的 run 数；``models`` 为按模型归并的计价单元，
+    供 webconsole/前端做费用估算。
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    runs: int
+    models: List[SessionUsageModelUnit]
+
+
 class SessionLogFileData(TypedDict):
     """AI 会话日志文件的磁盘 JSON 结构（``AISessionLogger._build_data`` 唯一来源）
 
-    字段顺序即落盘顺序：``entries`` 始终在最后，``type_counts`` 在 entries 之前预先
-    持久化，使 webconsole 能只读 entries 之前的元数据头构建摘要（见
-    ``ai_session_logs_api._read_log_header``）。``type_counts`` 标记为 ``NotRequired``
-    仅为兼容历史（升级前落盘）文件——新写入恒包含该字段。
+    字段顺序即落盘顺序：``entries`` 始终在最后，``type_counts`` 与 ``usage`` 在
+    entries 之前预先持久化，使 webconsole 能只读 entries 之前的元数据头构建摘要
+    （见 ``ai_session_logs_api._read_log_header``）。``type_counts`` / ``usage``
+    标记为 ``NotRequired`` 仅为兼容历史（升级前落盘）文件——新写入恒包含这两个字段。
     """
 
     session_id: str
@@ -178,6 +203,7 @@ class SessionLogFileData(TypedDict):
     ended_at: Optional[float]
     entry_count: int
     type_counts: NotRequired[Dict[str, int]]
+    usage: NotRequired[SessionUsageStats]
     linked_agents: List[LinkedAgentRecord]
     linked_agent_count: int
     entries: List[SessionLogEntry]

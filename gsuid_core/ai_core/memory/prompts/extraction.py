@@ -44,7 +44,8 @@ ALGEBRA_SYSTEM = """你是记忆代数抽取器。只输出一行 JSON，不要�
    speaker: 实际说出这句话的发言人的 user_id
    line: 该事实对应的窗口行号
    event_date: 事实发生日期 YYYY-MM-DD 或 null
-3) preferences：对 Bot 未来回复方式/行为的长期规则与纠错（严禁把持有物品当偏好，禁输出 context="possession"）。
+3) preferences：对 Bot 未来回复方式/行为的长期规则与纠错
+   （严禁把持有物品或地点当偏好，禁输出 context="possession"/"location"）。
    每条含 user_id / context（"general" 或能力域）/ rule / polarity（"do"|"dont"）/ correction（bool）。
 
 代数规则：

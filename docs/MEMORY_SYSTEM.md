@@ -150,14 +150,13 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
 
 ## 7. Qdrant 集合
 
-`memory/vector/collections.py` 只保留四个活跃集合：
+`memory/vector/collections.py` 只保留三个活跃集合（`AIMemThread` 故事线仅存 SQLite）：
 
 | 集合 | 向量 |
 |------|------|
 | `memory_episodes` | `dense` |
 | `memory_entities` | `name_dense` + `summary_dense` |
 | `memory_edges` | `dense` |
-| `memory_threads` | `dense` |
 
 统一 Payload 索引：`scope_key`（KEYWORD）、`valid_at_ts`（FLOAT）。
 

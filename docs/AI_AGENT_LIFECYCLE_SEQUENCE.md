@@ -130,7 +130,7 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
     ▼
 ⑩ 回合收尾：history lean / 闸门收尾重写 / 关系温度结算 / mood
     ▼
-⑪ 发送路径旁路：Bot 出站 + 助手侧记忆 observe  [bot.send]
+⑪ 发送路径：Bot 出站 + 助手侧 A 轨历史  [bot.send]
     ▼
 ⑫ 异步沉淀：session_log 刷盘 / 记忆 flush / 统计 / 认知节点回流
 ```
@@ -214,7 +214,7 @@ C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**�
 | CapRunner | `capability_agents.runner` | 无人格能力节点执行 |
 | Kanban | `planning.kanban` / `kanban_executor` | 任务树、kick、转译推群 |
 | SendPath | `utils.send_chat_result` | 呈现层：report / meme / 出图 / 拆条 / sanitize |
-| BotSend | `bot._Bot.send` | WS 出站 + 助手历史 + 主动会话 observe |
+| BotSend | `bot._Bot.send` | WS 出站 + 助手历史（不再逐条记忆 observe） |
 | SessLog | `session_logger.AISessionLogger` | C 轨事件流（可落盘） |
 | Ingest | `memory.ingestion.worker` | Episode/边/偏好异步 flush |
 | Stats | `statistics_manager` | 触发/意图/token（内存→日汇总） |
@@ -361,10 +361,10 @@ sequenceDiagram
 
 **记忆双写口径**：
 
-| 模式配置 | 用户句写入点 | 助手句写入点 |
+| 模式配置 | 用户句写入点 | 助手句记录点 |
 |----------|--------------|--------------|
-| 含「被动感知」 | `handler` 入站 | 通常仍靠「主动会话」+ `bot.send` 观察助手 |
-| 仅「主动会话」（无被动） | `handle_inbox_turn` 早段 observe（能进 AI 才写） | `bot.send` 时 `speaker_id=__assistant_{bot_id}__` |
+| 含「被动感知」 | `handler` 入站 | 写入 A 轨历史；会话空闲 GC 时 `distill_idle_session` 写入自述摘要 |
+| 仅「主动会话」（无被动） | `handle_inbox_turn` 早段 observe（能进 AI 才写） | 同上（不再在 `bot.send` 逐条 observe） |
 | 两者都开 | 入站只写一次（handle_ai **跳过**用户 observe 防双写） | 同上 |
 
 ---
@@ -730,9 +730,6 @@ sequenceDiagram
 
     SendPath->>BotSend: bot.send(...)
     BotSend->>HistoryA: add_message(role=assistant)（有内容时）
-    opt memory_mode 含「主动会话」
-        BotSend--)MemObs: observe(__assistant_bot__, 发出文本)
-    end
     BotSend->>Adapter: MessageSend WS
 
     HandleAI->>HandleAI: 判定有效可见回复
@@ -823,7 +820,7 @@ flowchart TD
     G0 -->|ALLOW/FALLBACK| M[send_chat_result 呈现]
     G0 -->|REWRITE| J
     G0 -->|FUSE| O
-    M --> N[bot.send + 助手 observe]
+    M --> N[bot.send]
     J --> O[lean history + 闸门收尾 + favor/mood]
     N --> Q[异步 flush]
     O --> Q
@@ -1543,7 +1540,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 
 **INV-4 兜底**：排版闸暂扣过原文、而纠正被申辩或未履行义务时，`settle._deliver_withheld()`
 在 by_bot 的 `return ""` **之前**真把原文发出去——否则整轮零输出。
-`dispute_directive` / `check_delegation` 已进 `SLIM_GROUP_CORE_TOOLS`：群聊是主战场，
+`dispute_directive` / `check_delegation` 已进 `MAIN_AGENT_CORE_TOOLS`：群聊是主战场，
 这两个缺席则模型只能用用户可见文本争辩，正是要消的 OOC。
 
 **在途委派（2026-08-14）**：`create_subagent` 回执改印 `dlg_<root_task_id>` 句柄（原印
@@ -1766,7 +1763,7 @@ session_log entries（磁盘，可稍后刷）：
 | **有效互动** | `last_run_sent_visible_reply` **或** 非沉默返回值（by_bot 空串不能当没说话） |
 | **关系温度结算** | `relationship.engine.settle_turn(reached_model=True, …)`，**唯一写主** |
 | H08 `AFTER_RUN` | mood 更新 / 统计上报，消费结算返回的**同一份**信号扫描结果 |
-| （可选）助手侧 observe | 部分路径；出站主路径在 bot.send |
+| 助手侧记忆 | 出站不再逐条 observe；仅会话空闲 GC 时写入摘要 |
 
 **每轮无条件 +1 已删除。** 涨分靠规则（当日首次有内容 / 明确照顾），扣分靠规则
 （侮辱 / 越狱 / 设好感命令 / 强迫称谓），都受日预算与高分段递减约束。详见
@@ -1779,18 +1776,11 @@ session_log entries（磁盘，可稍后刷）：
 
 ---
 
-## 12. 阶段 ⑪：出站 `bot.send` 与助手记忆
+## 12. 阶段 ⑪：出站 `bot.send`
 
 > 时序图：**§S.8**
 
-`send_chat_result` → `Bot`/`_Bot` 组 `MessageSend` → WS 推适配器。
-
-若记忆模式含「主动会话」：
-
-```text
-observe(content=发出文本, speaker_id=__assistant_{bot_id}__, ...)
-  → 入 Ingestion 缓冲（与用户 observe 相同介质）
-```
+`send_chat_result` → `Bot`/`_Bot` 组 `MessageSend` → WS 推适配器。出站不再逐条写入记忆观察队列；助手回复保留在 A 轨会话历史，仅在会话空闲 GC（`distill_idle_session`）时汇总写入 `self` 域摘要。
 
 平台侧消息已出；本地 **HistoryManager 是否写 bot 侧** 取决于发送路径是否 `add_message(role=assistant)`（命令/AI 发送封装处）。
 

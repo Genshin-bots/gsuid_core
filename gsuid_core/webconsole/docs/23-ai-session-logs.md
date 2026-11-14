@@ -19,6 +19,7 @@
   - [3. 日志文件详情（按文件名，调试用）](#3-日志文件详情按文件名调试用)
   - [4. 日志统计概览](#4-日志统计概览)
   - [5. 查询会话关联 Agent](#5-查询会话关联-agent)
+  - [5.5. 会话链 Token 用量](#55-会话链-token-用量)
   - [6. 日志分类（按会话来源聚合）](#6-日志分类按会话来源聚合)
   - [7. 日志数据结构](#7-日志数据结构)
     - [Entry 类型说明](#entry-类型说明)
@@ -79,6 +80,7 @@
 | file_name | string \| null | 持久化文件名 |
 | linked_agents | array | 关联的 Agent 列表（见下表） |
 | linked_agent_count | int | 关联 Agent 数量 |
+| usage | object | **链内整链 token 用量聚合**（input/output/cache_read/cache_write/runs/models），仅当链内全部分段摘要都带 usage 时出现；缺省时调 [用量接口](#55-会话链-token-用量) 补齐 |
 
 > `entry_count` / `type_counts` 为**链内各分段求和**；`updated_at` 取最新分段；`ended_at` / `is_active` 由**最新分段**决定（链是否仍在写）；`duration_seconds` = 链结束 − 链创建（活跃则用当前时间近似）。
 
@@ -447,6 +449,58 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | linked_agents | array | 关联 Agent 列表（已 enriched，含 entry_count、type_counts、is_active、source） |
 | total | int | 关联 Agent 总数 |
 | by_type | object | 按类型统计的关联 Agent 数量 |
+
+---
+
+## 5.5. 会话链 Token 用量
+
+**端点**: `GET /api/ai/session_logs/usage`
+
+**描述**: 获取**整条逻辑会话链**的 token 用量聚合（覆盖链内全部分段，含前端尚未懒加载的分段）。详情页头部的用量/费用统计以本接口为准，避免超长会话只显示最新分段的局部数据。内存活跃分段按实时 entries 聚合；磁盘分段优先读文件头预聚合 `usage`（新格式），头部缺该字段时对该文件整解析一次并回填摘要缓存。
+
+**请求参数**（Query）:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| chain_id | string | 是 | 逻辑会话链标识（列表卡片的 `chain_id`；旧文件即 `session_uuid`） |
+
+**响应示例**:
+
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "input_tokens": 601200,
+        "output_tokens": 8410,
+        "cache_read_tokens": 427100,
+        "cache_write_tokens": 0,
+        "runs": 39,
+        "models": [
+            {
+                "model": "gpt-5",
+                "input_tokens": 601200,
+                "output_tokens": 8410,
+                "cache_read_tokens": 427100,
+                "cache_write_tokens": 0
+            }
+        ]
+    }
+}
+```
+
+**data 字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| input_tokens | int | 输入 token 总量（含缓存读/写，与 entry 口径一致） |
+| output_tokens | int | 输出 token 总量 |
+| cache_read_tokens | int | 前缀缓存命中读入的 token 量 |
+| cache_write_tokens | int | 写入前缀缓存的 token 量 |
+| runs | int | 计量到的 run 数（token_usage 条目数；无则按 step_usage） |
+| models | array | 按模型归并的计价单元（同模型合并，可直接送费用估算） |
+
+> 用量口径：总量优先按各轮 `token_usage`（结算总量），无任何 `token_usage` 时回退 `step_usage`；计价单元按 run 隔离、run 内优先 `step_usage`（每步真实模型），与前端 `usage.ts` 同口径。找不到链或全链无用量数据时返回 `status: 1`。
 
 ---
 

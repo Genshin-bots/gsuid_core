@@ -5,6 +5,7 @@ agent_run/support.py，只用来从历史里认出并剥掉。提示词组默认
 interaction_scaffold.py。新句子写在这里再 import。约定见 AGENTS.md §1.11。
 """
 
+import re
 from typing import Final
 
 # 消息外壳。程序靠这些记号切正文。
@@ -273,7 +274,6 @@ def approval_resume_line(
 
 
 AUTONOMY_MERGE_PREFIX = "（系统：你在空闲自主行动时完成了以下探索或关心行动："
-AUTONOMY_PROACTIVE_FACT_PREFIX = "（系统校验：以下是你本次自主行动真实执行成功的工具记录与返回结果："
 
 # 记忆证据抬头（user 侧注入，入史前剥除）。
 SPEECH_ACT_HINT = (
@@ -286,6 +286,11 @@ MEMORY_CONFLICT_NOTE = (
     "（标记 [存在未消解矛盾] 的两条记录来自不同时间或不同发言者，尚未确认哪一条仍成立，请结合时间如实说明。）"
 )
 MEMORY_STAGING_NOTE = "（标记 [待证实传闻] 的边仅作线索参考，不可当作既成事实断言。）"
+MEMORY_SPEAKER_ISOLATION_NOTE = (
+    "（注意主体隔离：未绑定到具体群成员的自我/全局记录仅代表你自己的过往认知或发言，"
+    "严禁将其归为群内任何当前说话人的特征或昵称；涉及他人事实必须核对明确的用户账号。）"
+)
+SYSTEM_ECHO_PREFIXES: tuple[str, ...] = ("⛔", "（系统：", "（系统提示：", "（系统校验：")
 
 
 def autonomy_merge_line(fact_summary: str) -> str:
@@ -293,16 +298,6 @@ def autonomy_merge_line(fact_summary: str) -> str:
     return (
         f"{AUTONOMY_MERGE_PREFIX}{fact_summary}。"
         "如果与当前对话气氛合适，可以在回复对方后自然地顺嘴提一句；若当前话题严肃或不相关，则不必强行提起。）"
-    )
-
-
-def autonomy_proactive_fact_line(facts: list[str], resources: list[str]) -> str:
-    """路径 A 只许复述这些已经核验过的结果。"""
-    joined_facts = "；".join(facts) if facts else "无"
-    res_hint = f"；可用图片资源 ID：{', '.join(resources)}" if resources else ""
-    return (
-        f"{AUTONOMY_PROACTIVE_FACT_PREFIX}{joined_facts}{res_hint}。"
-        "你只能基于上述已核验的事实向对方分享或关心，严禁声称完成了上述列表之外的任何操作。）"
     )
 
 
@@ -449,3 +444,46 @@ def act_for_confirm_line(seq: int, speaker: str) -> str:
 
 def act_for_unknown_ref_line(ref: str) -> str:
     return f"act_for 失败：{ref} 不在本轮待回应项里"
+
+
+# ── 共享正则模式（纯叶子常量，供路由/护栏/检索复用）──────────────────────────
+CLOCK_LINE_PATTERN: Final[str] = r"(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])"
+CLOCK_LINE_RE: Final[re.Pattern[str]] = re.compile(CLOCK_LINE_PATTERN)
+CODE_FENCE_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
+CODE_SPAN_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
+RES_HANDLE_RE: Final[re.Pattern[str]] = re.compile(r"\bres_[0-9a-fA-F]{6,}\b")
+MEDIA_HANDLE_RE: Final[re.Pattern[str]] = re.compile(r"\b(?:img|res|aud|vid)_[0-9a-fA-F]{6,}\b")
+MD_NUM_MARKER: Final[str] = r"\d+[.、)]"
+MD_BULLET_MARKER: Final[str] = r"[-*•]"
+MD_LIST_ITEM_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?m)^\s*(?:{MD_BULLET_MARKER}|{MD_NUM_MARKER})\s+\S",
+)
+TOOL_OR_API_TERM: Final[str] = r"(?:工具(?!人)|接口)"
+CAPABILITY_OR_DEV_LEAK_RE: Final[re.Pattern[str]] = re.compile(
+    rf"{TOOL_OR_API_TERM}.{{0,8}}没(?:挂|装|配)"
+    rf"|(?:没|未)(?:挂|装).{{0,8}}(?:{TOOL_OR_API_TERM}|那玩意)"
+    rf"|没(?:有)?[^。！？\n，,；;]{{0,6}}{TOOL_OR_API_TERM}(?!文档|说明|手册)"
+    r"|没有.{0,6}对应工具"
+    rf"|(?:{TOOL_OR_API_TERM}|配置|服务).{{0,12}}(?:没配|没好|失败|报错|不可用|还没|未配置|配好)"
+)
+PROCESS_META_CORE_PATTERN: Final[str] = (
+    r"时效存疑|自己再验|数据没刷|没刷出来|没法.{0,8}编数字|"
+    r"回炉了?你再|回炉|系统校验|框架[·・.]任务|产物句柄|"
+    r"交给主人格|主人格发|（系统提示|\[框架[·・.]|禁止再检索|禁止把句柄|禁止念"
+)
+INTERNAL_ARTIFACT_TOKEN_PATTERN: Final[str] = (
+    r"\bsend_message_by_ai\b|\bcreate_subagent\b|\bartifact_get\b|\bartifact_put\b|"
+    r"\bread_handle\b|\bsearch_handles\b|\bsearch_persisted_outputs\b|"
+    r"\blist_persisted_outputs\b|\bgrep_persisted_outputs\b|\bweb_search_tool\b|"
+    r"\bweb_search\b|\bfind_tools\b|\brender_html_to_image\b|\brender_agent\b|"
+    r"\bresearch_agent\b|\bcheck_delegation\b|\bdispute_directive\b|"
+    r"\bagent_profile\s*=|\bimage_ids?\s*=|"
+    r"\bres_[0-9a-f]{6,}\b|\bimg_[0-9a-f]{6,}\b|\bto_[0-9a-f]{6,}\b|"
+    r"\bsa_[0-9a-f]{6,}\b|\bdlg_[0-9a-f-]{8,}\b|"
+    r"persisted\s+id|\btool_return\b|\blong_structured\b|\binline_head\b|"
+    r"\bhow_to_read\b|\bKanban\b|artifact\s*:|资源ID\s*:|产物句柄"
+)
+INTERNAL_LEAK_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?:{PROCESS_META_CORE_PATTERN}|{INTERNAL_ARTIFACT_TOKEN_PATTERN})",
+    re.IGNORECASE,
+)

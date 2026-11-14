@@ -33,6 +33,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
     _RENDER_DELEGATE_NUDGE,
     _STATUS_ZERO_TOOL_NUDGE,
     looks_like_report_speech as _looks_like_report_speech,
+    looks_like_capability_absence,
 )
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     tool_call_targets_render_agent as _tool_call_targets_render_agent_core,
@@ -166,12 +167,6 @@ def _user_prompt_is_framework(content: UserPromptContent) -> bool:
     return bool(texts) and all(_is_framework_prompt_content(item) for item in texts)
 
 
-def _as_user_turn_text(content: UserPromptContent) -> UserTurnText:
-    if isinstance(content, str):
-        return content
-    return list(content)
-
-
 def _first_real_user_prompt_part(history: Sequence[ModelMessage]) -> Optional[UserPromptPart]:
     for msg in history:
         if not isinstance(msg, ModelRequest):
@@ -236,26 +231,6 @@ def _ensure_session_anchor_on_first_user(
     return new_current, new_lean, "current", latest_ts
 
 
-def _ensure_inner_os_on_first_user(
-    history: Sequence[ModelMessage],
-    current: UserTurnText,
-    lean: UserTurnText,
-    marker: str,
-    *,
-    is_framework: bool,
-) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere]:
-    """向后兼容封装：旧版 INNER_OS 单独注入。"""
-    cur, ln, where, _ = _ensure_session_anchor_on_first_user(
-        history,
-        current,
-        lean,
-        persona_name="",
-        marker=marker,
-        is_framework=is_framework,
-    )
-    return cur, ln, where
-
-
 # 交互式主 Agent 的 create_by 集合（交互脚手架/墙钟软预算适用范围；TEST=本地评测端点）
 _INTERACTIVE_CREATE_BY = ("Chat", "Agent", "TEST", "CapabilityAgent")
 # 思考轮数收口只给要交交付物的代理。主人格走强制总结，不插这句。
@@ -282,28 +257,18 @@ _SCHED_MUTATE_TOOLS: frozenset[str] = frozenset(
         "resume_scheduled_task",
     }
 )
-_MISSING_OFFERED_TOOL_RE = re.compile(r"没有.{0,16}工具")
-_DEFER_WORK_RE = re.compile(r"明天再|等我.{0,8}再(查|设|弄|翻)|等我.{0,16}(翻|查|搜)")
 _INFLIGHT_PROMISE_RE = re.compile(
-    r"(?:落好|搭好|挂好|建好|弄好|办好|做好|查好|画好|渲好|跑完|搭成|落成)之后.{0,10}(?:跟你说|叫你|喊你|唤你|告诉你|发你|给你)"
-    r"|搭成了.{0,8}先出.{0,6}给?你看"
-    r"|我还在(?:搭|挂|建|弄|配|改)[，,。；\s]"
-    r"|还在挂[，,。；\s]|挂在半路.{0,12}(?:盯到收口|接着)"
-    r"|我去把.{0,10}(?:重新系|接回去).{0,10}(?:一会儿|回头|稍后).{0,6}给?你"
-    r"|改完这一轮就停手.{0,10}下次再说"
+    r"(?:落好|搭好|挂好|建好|弄好|办好|做好|查好|画好|渲好|跑完|算完|写完)之后.{0,10}(?:跟你说|叫你|喊你|唤你|告诉你|发你|给你)"
+    r"|我还在(?:跑|查|搭|挂|算|画|弄|改).{0,12}(?:弄好|跑完|算完|画完|查完|好了|完了|完成)再(?:跟你说|告诉你|发你|给你)"
+    r"|(?:一会儿|回头|稍后|等下).{0,10}(?:弄好|跑完|做好|查完).{0,6}再?(?:发你|给你|告诉你|跟你说)"
 )
 
 
 def _claims_missing_offered_tool(text: str, offered: Sequence[str]) -> bool:
-    """声称没有工具，但本轮 schema 非空。"""
-    if not _MISSING_OFFERED_TOOL_RE.search(text or ""):
+    """声称缺少工具或把任务推给另一套指令/机器人，但本轮已提供非空工具集。"""
+    if not offered:
         return False
-    return bool(offered)
-
-
-def _claims_deferred_work(text: str) -> bool:
-    """把该办的事推到明天或「等我…再动手」。"""
-    return bool(_DEFER_WORK_RE.search(text or ""))
+    return looks_like_capability_absence(text or "")
 
 
 def _claims_inflight_without_backend(text: str) -> bool:

@@ -44,59 +44,26 @@ from gsuid_core.ai_core.agent_run.state import (
     _require_context,
 )
 from gsuid_core.ai_core.agent_run.support import (
-    _RENDER_TOOL_NAMES,
     _THRASH_FUSE_NUDGE,
-    _SCHED_MUTATE_TOOLS,
-    _INTERACTIVE_CREATE_BY,
-    _claims_fake_done,
     record_output_block,
     turn_reply_metadata,
     collect_run_thinking,
-    _claims_deferred_work,
     _correction_nudge_markers,
-    _looks_like_report_speech,
     absorb_run_image_delivered,
     usage_limit_return_payload,
-    _claims_missing_offered_tool,
-    _claims_inflight_without_backend,
 )
 from gsuid_core.ai_core.control.directive import (
     Directive,
-    obligation_satisfied,
     render_control_envelope,
 )
 from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
-from gsuid_core.ai_core.control.corrections import (
-    fake_done_directive,
-    master_title_directive,
-    blocked_voice_directive,
-    inflight_wait_directive,
-    premature_claim_directive,
-    entity_zero_tool_directive,
-    status_zero_tool_directive,
-    addressed_silence_directive,
-    render_obligation_directive,
-    numeric_recitation_directive,
-    cover_hit_zero_tool_directive,
-    missing_offered_tool_directive,
-    structural_zero_tool_directive,
-    framework_idle_deliver_directive,
-    unbacked_inflight_promise_directive,
+from gsuid_core.ai_core.control.policy_ring import (
+    SettleRingInput,
+    turn_user_text,
+    corrected_or_original,
+    run_settle_policy_ring,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
-from gsuid_core.ai_core.agent_run.speech_policy import (
-    ZERO_OUTPUT_VOICE_REASONS,
-    title_mentioned,
-    non_master_title,
-    looks_like_process_meta,
-    looks_like_wait_comfort,
-    looks_like_empty_handoff,
-    claims_premature_delivery,
-    has_orchestration_narration,
-    looks_like_deliver_progress,
-    looks_like_numeric_recitation,
-    looks_like_delivery_status_narration,
-)
 from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
 
 # 收口交付的第一行。不以能力代理失败前缀开头，看板才会把这一步标完成。
@@ -128,34 +95,6 @@ async def _deliver_withheld(st: RunOnceState, sent: set[str]) -> None:
         return
 
 
-def _satisfaction_facts(st: RunOnceState) -> tuple[str, ...]:
-    """把 RunOnceState 投影成义务履行判据（结构事实，不看模型文本）。"""
-    facts: list[str] = []
-    if st.image_sent_this_run:
-        facts.append("image_sent")
-    if st.delegated_render:
-        facts.append("render_delegated")
-    if st.pending_async_delivery:
-        facts.append("async_delegated")
-    if st.effectual_mutate:
-        facts.append("effectual_mutated")
-    if st.has_status_tool_call:
-        facts.append("status_tool_called")
-    if st.tool_call_list:
-        facts.append("any_tool_called")
-    if "check_delegation" in st.tool_call_list:
-        facts.append("delegation_checked")
-    if st.main_channel_sends > 0:
-        facts.append("user_visible_sent")
-    return tuple(facts)
-
-
-def _obligations_met(directive: Directive, st: RunOnceState) -> bool:
-    """指令的全部义务是否已结构化履行（INV-B）。"""
-    facts = _satisfaction_facts(st)
-    return all(obligation_satisfied(ob, facts=facts, tool_calls=st.tool_call_list) for ob in directive.obligations)
-
-
 def _absorb_attempt_facts(
     st: RunOnceState,
     *,
@@ -182,100 +121,6 @@ def _absorb_attempt_facts(
         st.has_status_tool_call = True
 
 
-_RENDER_OBLIGATION_REASONS: frozenset[str] = frozenset({"report_speech", "empty_handoff", "numeric_recitation"})
-
-
-def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
-    """本条是否带未读附件（图/音频/文件/可读视频）。引用纯图消息不计为用户新附件。"""
-    ev = st.ev
-    if "pending_unread_images" in st.run_extra and bool(st.run_extra["pending_unread_images"]):
-        return True
-    if ev is None:
-        return False
-    quoted_pure_image = bool((ev.reply_id or (st.tg is not None and st.tg.quoted_tome)) and not ev.reply)
-    if (ev.image_id_list or ev.image_id) and not quoted_pure_image:
-        return True
-    if ev.audio_id_list or ev.audio_id:
-        return True
-    if ev.file:
-        return True
-    if video_readable and (ev.video_id_list or ev.video_id):
-        return True
-    return False
-
-
-def _utterance_cover_hit(st: RunOnceState) -> bool:
-    """原话去掉 cover 后几乎没剩内容，才算这条命令就是本轮请求。"""
-    if st.ev is None or not st.ev.raw_text:
-        return False
-    from gsuid_core.ai_core.rag.tools import cover_dominates_utterance
-
-    return cover_dominates_utterance(st.ev.raw_text.strip())
-
-
-def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool, result_msg: str = "") -> bool:
-    """零工具纠正：未读附件、可继承跟进、点名任务管理、或把该办的事推到明天。"""
-    if _has_unread_attachment(st, video_readable=video_readable):
-        return True
-    if st.followup_detected:
-        return True
-    if st.tg is not None and st.tg.ellipsis_followup:
-        return True
-    if st.tg is not None and st.tg.call_to_self and st.tg.task_management:
-        return True
-    return bool(st.tg is not None and st.tg.call_to_self and _claims_deferred_work(result_msg))
-
-
-def _turn_user_text(st: RunOnceState) -> str:
-    """提取当轮提问文本，用于区分英文正常作答与机器独白。"""
-    if st.ev is not None and st.ev.raw_text:
-        return st.ev.raw_text
-    if st.last_user_question:
-        return st.last_user_question
-    if isinstance(st.user_message, str):
-        return st.user_message
-    return ""
-
-
-def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
-    """整轮零输出时，该改口的拦截原因。在途或已出图不叫醒。"""
-    if st.main_channel_sends > 0 or st.image_sent_this_run:
-        return ""
-    if st.pending_async_delivery or st.delegated_render:
-        return ""
-    if "numeric_recitation" in st.presentation_withheld_reasons:
-        return ""
-    for reason in st.presentation_withheld_reasons:
-        if reason in ZERO_OUTPUT_VOICE_REASONS:
-            return reason
-    body = (result_msg or "").strip()
-    if not body or is_silence_marker(body):
-        return ""
-    if claims_premature_delivery(body):
-        return "premature_delivery"
-    if has_orchestration_narration(body) or looks_like_process_meta(body, user_text=_turn_user_text(st)):
-        return "process_meta"
-    return ""
-
-
-def _needs_render_obligation(st: RunOnceState, result_msg: str, *, allow_render: bool = True) -> bool:
-    """有出处凭据且台词呈报告体、念数或空交付时才进纠正。
-
-    没有事实包的念数是回答本身，不武装出图。人格关掉 render_agent 时不把出图当义务。
-    """
-    if not allow_render:
-        return False
-    if not st.saw_structured_return or not st.tool_call_list:
-        return False
-    if _looks_like_report_speech(result_msg):
-        return True
-    if looks_like_empty_handoff(result_msg or ""):
-        return True
-    if looks_like_numeric_recitation(result_msg or ""):
-        return True
-    return any(r in _RENDER_OBLIGATION_REASONS for r in st.presentation_withheld_reasons)
-
-
 def _should_deliver_withheld(
     st: RunOnceState,
     *,
@@ -293,72 +138,6 @@ def _should_deliver_withheld(
         return True
     # 未进纠正（短 empty_handoff）时不能只靠 _skip_report_exit，否则整轮零输出
     return bool(st.saw_structured_return)
-
-
-def _forbid_title(st: RunOnceState, persona_name: str | None) -> str:
-    raw = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
-    uid = str(raw) if isinstance(raw, str) and raw else ""
-    if not uid and st.ev is not None and st.ev.user_id:
-        uid = str(st.ev.user_id)
-    return non_master_title(uid, persona_name)
-
-
-def _correction_is_deliverable(text: str, *, is_delivery_wake: bool = False, user_text: str = "") -> bool:
-    """纠正产出是否可直接交付（非沉默、非编排/元叙述脏输出）。"""
-    body = (text or "").strip()
-    if not body or is_silence_marker(body):
-        return False
-    return not (
-        has_orchestration_narration(body)
-        or claims_premature_delivery(body, is_delivery_wake=is_delivery_wake)
-        or _looks_like_report_speech(body)
-        or looks_like_process_meta(body, user_text=user_text)
-    )
-
-
-def _rewrite_directive_for_block(
-    reason: str,
-    *,
-    allow_render: bool,
-    tool_calls: int,
-    recited_report: bool,
-    forbid_title: str,
-    wait_already_sent: bool,
-) -> Directive | None:
-    """拦住后可以重说的原因。纠正轮里的再拦、以及已经放过等待的在途句，不再重说。"""
-    if reason in ("orchestration_leak", "delivery_narration", "process_meta"):
-        return blocked_voice_directive()
-    if reason == "premature_delivery":
-        return premature_claim_directive()
-    if reason == "numeric_recitation":
-        return numeric_recitation_directive(allow_render=allow_render)
-    if reason in ("report_speech", "empty_handoff"):
-        return render_obligation_directive(
-            recited_report=recited_report or reason == "report_speech",
-            tool_calls=tool_calls,
-            allow_render=allow_render,
-        )
-    if reason == "master_title" and forbid_title:
-        return master_title_directive(forbid_title)
-    if reason == "entity_without_tool":
-        return entity_zero_tool_directive()
-    if reason == "status_without_tool":
-        return status_zero_tool_directive()
-    if reason == "deliver_before_send":
-        return framework_idle_deliver_directive(allow_render=allow_render)
-    if reason == "silence_only_or_async" and not wait_already_sent:
-        return inflight_wait_directive()
-    return None
-
-
-def _voice_retry_text(corrected: object, *, disputed: bool, blocked: str, user_text: str = "") -> str:
-    """话术闸拦下后交回一次：申辩则交还原文，否则只收可交付改写。"""
-    if disputed:
-        body = blocked.strip()
-        if body and not is_silence_marker(body):
-            return body
-        return "<SILENCE>"
-    return _corrected_or_original(corrected, original="<SILENCE>", user_text=user_text)
 
 
 _DLG_ROOT_RE = re.compile(r"dlg_([0-9a-fA-F-]{8,})")
@@ -416,17 +195,6 @@ def _drop_unsent_text_from_tail(messages: List[ModelMessage], unsent: Sequence[s
     return out
 
 
-def _corrected_or_original(corrected: object, *, original: str, user_text: str = "") -> str:
-    """纠正轮结果收敛（INV-3）。
-
-    纠正**只有**产出可交付内容才有权替换原答案；沉默或脏输出一律保留原答案，
-    否则「纠正判据误报 → 模型沉默 → 原答案被销毁」会让整轮对用户零输出。
-    """
-    if not isinstance(corrected, str) or not _correction_is_deliverable(corrected, user_text=user_text):
-        return original
-    return corrected.strip()
-
-
 async def load_session_salvage_material(session_id: str) -> str:
     """本会话最近落盘的检索原文，新的在前。库失败时返回空串，改用本轮摘录。"""
     if not session_id:
@@ -472,6 +240,63 @@ async def _read_session_salvage_material(session_id: str) -> str:
 
 
 class SettlePhase(RunOnceHost):
+    @property
+    def sent_texts(self) -> set[str]:
+        return self._run_sent_texts
+
+    @property
+    def dispute_count(self) -> int:
+        return len(self._run_disputes)
+
+    def latest_dispute_preview(self) -> str:
+        return self._run_disputes[-1][:120] if self._run_disputes else ""
+
+    @property
+    def attempt_tool_calls(self) -> Sequence[str]:
+        return self._last_attempt_tool_calls
+
+    def model_declares_video(self) -> bool:
+        return self._model_declares_video()
+
+    async def try_correction_pass(
+        self,
+        st: RunOnceState,
+        directives: tuple[Directive, ...],
+        *,
+        suppress_intermediate_text: bool = True,
+        return_mode: ReturnMode = "return",
+    ) -> object:
+        return await self._try_correction_pass(
+            st,
+            directives,
+            suppress_intermediate_text=suppress_intermediate_text,
+            return_mode=return_mode,
+        )
+
+    async def emit_unsent_reply(self, st: RunOnceState, text: str) -> None:
+        await self._emit_unsent_reply(st, text)
+
+    async def run_inv3_correction(
+        self,
+        st: RunOnceState,
+        directive: Directive,
+        result_msg: str,
+        *,
+        scrub_replaced: bool = True,
+    ) -> str:
+        return await self._run_inv3_correction(
+            st,
+            directive,
+            result_msg,
+            scrub_replaced=scrub_replaced,
+        )
+
+    def scrub_fake_done_history(self, fabricated: set[str]) -> None:
+        self._scrub_fake_done_history(fabricated)
+
+    def note_output_block(self, st: RunOnceState, reason: str, body: str) -> None:
+        record_output_block(st, self._session_logger, reason, body)
+
     async def _try_correction_pass(
         self,
         st: RunOnceState,
@@ -554,7 +379,7 @@ class SettlePhase(RunOnceHost):
             suppress_intermediate_text=True,
             return_mode="return",
         )
-        next_msg = _corrected_or_original(corrected, original=result_msg, user_text=_turn_user_text(st))
+        next_msg = corrected_or_original(corrected, original=result_msg, user_text=turn_user_text(st))
         if next_msg.strip() != prior:
             await self._emit_unsent_reply(st, next_msg)
             self._scrub_fake_done_history({prior} if (scrub_replaced and prior) else set())
@@ -831,9 +656,6 @@ class SettlePhase(RunOnceHost):
             self._session_logger.log_run_end()
             # result 在出口消毒后再记，避免 raw 念数被当成已出站。
 
-            # 假完成结算（结构判据收口）。同轮至多一次纠正重跑，防 status+render 双触发。
-            _settle_correction_ran = False
-
             # 人格花名册无 render_agent 时，出图义务/文案整体降级为口头交付
             from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
@@ -853,460 +675,19 @@ class SettlePhase(RunOnceHost):
                     except Exception as _se:
                         logger.debug(i18n_t("log.agent.fakedone_se", _se=_se))
 
-            # 直发暂扣原文只在真改过世界时成立。tool_call_list 对只读工具（搜索/翻页）
-            # 也会填，用它当条件会让「只查了没改」也跳过纠正，把编造的完成声明发出去。
-            if st.fab_blocked and st.effectual_mutate and st.bot and st.return_mode in ["always", "by_bot"]:
-                logger.info(i18n_t("log.agent.fakedone_claim"))
-                await _resend_fab_blocked()
-            elif (
-                result_msg
-                and not st.effectual_mutate
-                and st.tool_names
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                # 结构证据：预检暂扣 or 文本宣称完成；PIN 拒绝也算没改世界
-                and (st.fab_blocked or _claims_fake_done(_match_msg))
-            ):
-                _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.fakedone_call_action_appending_ok"))
-                corrected = await self._try_correction_pass(
-                    st,
-                    (fake_done_directive(tool_pool_size=len(st.tool_names)),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
-                )
-                if corrected is None and st.fab_blocked and st.bot and st.return_mode in ["always", "by_bot"]:
-                    await _resend_fab_blocked()
-                # 与其它三条纠正的 INV-3 有意分岔：原答案是**编造的完成声明**，
-                # 不能当 fallback 留给用户；无干净纠正则静默，并一律剥掉那句谎话。
-                _fabricated = {t.strip() for t in st.fab_blocked}
-                if _claims_fake_done(_match_msg):
-                    _fabricated.add(result_msg.strip())
-                if isinstance(corrected, str) and _correction_is_deliverable(corrected, user_text=_turn_user_text(st)):
-                    result_msg = corrected.strip()
-                    await self._emit_unsent_reply(st, result_msg)
-                else:
-                    result_msg = "<SILENCE>"
-                self._scrub_fake_done_history(_fabricated)
-
-            # 无后台任务的在途承诺：未派出异步子任务且未完成生效写入，却许诺正在弄/做好后通知。
-            elif (
-                result_msg
-                and not st.effectual_mutate
-                and not st.pending_async_delivery
-                and not st.delegated_render
-                and not st.image_sent_this_run
-                and st.tool_names
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-                and _claims_inflight_without_backend(_match_msg)
-            ):
-                _settle_correction_ran = True
-                result_msg = await self._run_inv3_correction(
-                    st,
-                    unbacked_inflight_promise_directive(tool_calls=len(st.tool_call_list)),
-                    result_msg,
-                )
-
-            # 结构假完成：未读附件或可继承跟进 + 池非空 + 零调用。无正证据不开。
-            elif (
-                result_msg
-                and not st.tool_call_list
-                and st.tool_names
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-                and st.ev is not None
-                and _zero_tool_needs_correction(st, video_readable=self._model_declares_video(), result_msg=_match_msg)
-                and not is_silence_marker(result_msg.strip())
-            ):
-                _settle_correction_ran = True
-                result_msg = await self._run_inv3_correction(
-                    st,
-                    structural_zero_tool_directive(tool_pool_size=len(st.tool_names)),
-                    result_msg,
-                )
-
-            # 声称没有工具，但任务管理轮已装配对应工具
-            elif (
-                result_msg
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-                and st.tg is not None
-                and st.tg.task_management
-                and _claims_missing_offered_tool(_match_msg, st.tool_names)
-                and not (_SCHED_MUTATE_TOOLS.intersection(st.tool_call_list))
-            ):
-                _settle_correction_ran = True
-                result_msg = await self._run_inv3_correction(
-                    st,
-                    missing_offered_tool_directive(tool_pool_size=len(st.tool_names)),
-                    result_msg,
-                )
-
-            # 被直接呼叫却整段沉默（含无可见文本出站；引用/寻址门仍允许沉默）
-            elif (
-                (not result_msg or is_silence_marker(result_msg.strip()))
-                and not self._run_sent_texts
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-                and st.tg is not None
-                and st.tg.call_to_self
-                and not st.tg.quoted_tome
-                and not st.tg.address_gated
-            ):
-                _settle_correction_ran = True
-                result_msg = await self._run_inv3_correction(
-                    st,
-                    addressed_silence_directive(),
-                    result_msg,
-                    scrub_replaced=False,
-                )
-
-            # 进度追问却零工具：纠正重跑去查 kanban/artifact
-            elif (
-                st.status_inquiry
-                and st.has_active_task
-                and not st.tool_call_list
-                and not st.fake_done_retry
-                and result_msg
-                and not is_silence_marker(result_msg.strip())
-                and self.create_by in ("Chat", "Agent")
-            ):
-                _settle_correction_ran = True
-                result_msg = await self._run_inv3_correction(
-                    st,
-                    status_zero_tool_directive(),
-                    result_msg,
-                    scrub_replaced=False,
-                )
-
-            # 交付回灌的进度句或大报表：补一次出图/发图。短事实直接交付用户。
-            elif (
-                st.fw_msg
-                and ("delivery_wake" in st.run_extra and st.run_extra["delivery_wake"] is True)
-                and not st.fake_done_retry
-                and not st.tool_call_list
-                and not st.image_sent_this_run
-                and result_msg
-                and not is_silence_marker(result_msg.strip())
-                and self.create_by in ("Chat", "Agent")
-            ):
-                _is_dense_report = (_looks_like_report_speech(_match_msg) and len(result_msg.strip()) >= 160) or (
-                    result_msg.count("|") >= 6 and "\n" in result_msg
-                )
-                _is_progress_meta = looks_like_deliver_progress(_match_msg)
-                if _is_progress_meta or _is_dense_report:
-                    _settle_correction_ran = True
-                    logger.warning(i18n_t("log.agent.delivery_idle_correction"))
-                    _prior = result_msg.strip()
-                    _disputes_before = len(self._run_disputes)
-                    _dc = await self._try_correction_pass(
-                        st,
-                        (framework_idle_deliver_directive(allow_render=_allow_render),),
-                        suppress_intermediate_text=True,
-                        return_mode="return",
-                    )
-                    _disputed = len(self._run_disputes) > _disputes_before
-                    if _disputed:
-                        result_msg = _prior
-                    elif isinstance(_dc, str) and _correction_is_deliverable(
-                        _dc, is_delivery_wake=True, user_text=_turn_user_text(st)
-                    ):
-                        result_msg = _dc.strip()
-                    else:
-                        result_msg = "<SILENCE>"
-                else:
-                    # 简短事实交付（如版本查询、轻量状态），直接放行
-                    pass
-
-            # 实体已装上查询工具却空口作答：先拦住，纠正轮拿回文本再发。
-            elif (
-                (st.entity_routed or _utterance_cover_hit(st))
-                and st.tg is not None
-                and st.tg.call_to_self
-                and not st.tool_call_list
-                and not st.fake_done_retry
-                and result_msg
-                and not is_silence_marker(result_msg.strip())
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-            ):
-                _settle_correction_ran = True
-                _cover_hit = _utterance_cover_hit(st)
-                if _cover_hit:
-                    logger.warning(i18n_t("log.agent.cover_hit_zero_tool_correction"))
-                else:
-                    logger.warning(i18n_t("log.agent.entity_zero_tool_correction"))
-                _prior = result_msg.strip()
-                _disputes_before = len(self._run_disputes)
-                _ec = await self._try_correction_pass(
-                    st,
-                    (cover_hit_zero_tool_directive() if _cover_hit else entity_zero_tool_directive(),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
-                )
-                _disputed = len(self._run_disputes) > _disputes_before
-                _called = [n for n in self._last_attempt_tool_calls if n != "dispute_directive"]
-                # 命中 cover 的空口建议不能靠申辩留住。
-                if _disputed and not _cover_hit:
-                    result_msg = _prior
-                elif (
-                    _called and isinstance(_ec, str) and _correction_is_deliverable(_ec, user_text=_turn_user_text(st))
-                ):
-                    result_msg = _ec.strip()
-                elif (
-                    (not _called)
-                    and isinstance(_ec, str)
-                    and _correction_is_deliverable(_ec, user_text=_turn_user_text(st))
-                    and not _cover_hit
-                ):
-                    result_msg = _ec.strip()
-                else:
-                    result_msg = "<SILENCE>"
-                if title_mentioned(_forbid_title(st, self.persona_name), _match_msg):
-                    result_msg = "<SILENCE>"
-                await self._emit_unsent_reply(st, result_msg)
-
-            elif (
-                not st.fake_done_retry
-                and result_msg
-                and not is_silence_marker(result_msg.strip())
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-                and title_mentioned(_forbid_title(st, self.persona_name), _match_msg)
-            ):
-                _settle_correction_ran = True
-                _ban = _forbid_title(st, self.persona_name)
-                logger.warning(i18n_t("log.agent.master_title_correction"))
-                _tc = await self._try_correction_pass(
-                    st,
-                    (master_title_directive(_ban),),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
-                )
-                if (
-                    isinstance(_tc, str)
-                    and _correction_is_deliverable(_tc, user_text=_turn_user_text(st))
-                    and not title_mentioned(_ban, _tc)
-                ):
-                    result_msg = _tc.strip()
-                else:
-                    result_msg = "<SILENCE>"
-                await self._emit_unsent_reply(st, result_msg)
-
-            _voice_reason = _voice_block_reason(st, _match_msg)
-            if (
-                not _settle_correction_ran
-                and _voice_reason
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-            ):
-                _settle_correction_ran = True
-                logger.warning(i18n_t("log.agent.render_data_nudge_once"))
-                _voice_directive = (
-                    premature_claim_directive() if _voice_reason == "premature_delivery" else blocked_voice_directive()
-                )
-                _blocked = result_msg.strip()
-                _disputes_before = len(self._run_disputes)
-                # 内层 framework_nudge 会丢掉改写；文本交回本层再发。
-                _vc = await self._try_correction_pass(
-                    st,
-                    (_voice_directive,),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
-                )
-                _disputed = len(self._run_disputes) > _disputes_before
-                if _disputed:
-                    logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
-                result_msg = _voice_retry_text(_vc, disputed=_disputed, blocked=_blocked, user_text=_turn_user_text(st))
-                await self._emit_unsent_reply(st, result_msg)
-
-            # 申辩/义务未履行时，出口消毒不得再按报告体静默（否则暂扣原文永远发不出）
-            _skip_report_exit = False
-            _replacement_visible = False
-            # 出处凭据 + 尚未出图。排版失配只决定要不要进纠正，不单独构成义务。
-            _chart_like = _needs_render_obligation(st, _match_msg)
-            _render_obligation = _chart_like and _allow_render
-            if (
-                not _settle_correction_ran
-                and _chart_like
-                and not st.delegated_render
-                and not st.pending_async_delivery
-                and not st.image_sent_this_run
-                and not (_RENDER_TOOL_NAMES & set(st.tool_call_list))
-                and not st.fake_done_retry
-                and self.create_by in _INTERACTIVE_CREATE_BY
-                and self.create_by != "CapabilityAgent"
-            ):
-                logger.warning(i18n_t("log.agent.render_data_nudge_once"))
-                if "numeric_recitation" in st.presentation_withheld_reasons:
-                    _directive = numeric_recitation_directive(allow_render=_allow_render)
-                else:
-                    _directive = render_obligation_directive(
-                        recited_report=_looks_like_report_speech(_match_msg),
-                        tool_calls=len(st.tool_call_list),
-                        allow_render=_allow_render,
-                    )
-                _disputes_before = len(self._run_disputes)
-                _sent_before_correction = set(self._run_sent_texts)
-                _settle_correction_ran = True
-                _rc = await self._try_correction_pass(
-                    st,
-                    (_directive,),
-                    suppress_intermediate_text=True,
-                    return_mode="return",
-                )
-                # 纠正轮的工具事实已由 _try_correction_pass 就地并回父级并指回，
-                # 所以下面判义务时读到的 st.tool_call_list 已含嵌套 create_subagent。
-                _disputed = len(self._run_disputes) > _disputes_before
-                _orig_before = result_msg
-                # 模型申辩了观察不成立 → 原答案照原样交付（这正是它不再对用户反驳的前提）
-                if _disputed:
-                    logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
-                    self._scrub_fake_done_history(set())
-                else:
-                    # INV-3：纠正未产出可交付内容 → 原答案生效，绝不因纠正沉默吞掉本轮
-                    result_msg = _corrected_or_original(_rc, original=result_msg, user_text=_turn_user_text(st))
-                    _drop_texts: set[str] = set()
-                    if result_msg.strip() != _orig_before.strip():
-                        _drop_texts.add(_orig_before.strip())
-                    self._scrub_fake_done_history(_drop_texts)
-                    if not _obligations_met(_directive, st):
-                        logger.info(i18n_t("log.agent.directive_obligation_unmet", code=_directive.reason_code))
-                # 申辩或义务仍未履行 → 出口消毒不得再按报告体静默（否则暂扣原文发不出）
-                _skip_report_exit = _disputed or not _obligations_met(_directive, st)
-                # 已有替代品时不得再冲刷暂扣原文；等一句安抚不算替代
-                _adopted = (not _disputed) and result_msg.strip() != _orig_before.strip()
-                _nested_visible = any(
-                    t.strip() and t not in st.presentation_withheld and not looks_like_wait_comfort(t)
-                    for t in (self._run_sent_texts - _sent_before_correction)
-                )
-                _replacement_visible = _adopted or _nested_visible
-                if _disputed or result_msg.strip() != _orig_before.strip():
-                    await self._emit_unsent_reply(st, result_msg)
-
-            # 出口：还能重说的先重说一次。重说仍不合格，才改成沉默。
-            _gate_reason = ""
-            _gate_body = ""
-            if self.create_by in ("Chat", "Agent") and result_msg and st.return_mode != "return":
-                _rs = result_msg.strip()
-                # 本轮已发出的句子不再改写成沉默（话术纠正/申辩的补发）。
-                if _rs in self._run_sent_texts:
-                    pass
-                elif st.image_sent_this_run:
-                    # 发图后编排、交付播报、长结构、过程词先重说。追问和较长收尾留下。
-                    if has_orchestration_narration(_rs):
-                        _gate_reason = "orchestration_leak"
-                    elif looks_like_delivery_status_narration(_rs):
-                        _gate_reason = "delivery_narration"
-                    elif _looks_like_report_speech(_rs):
-                        _gate_reason = "report_speech"
-                    elif looks_like_process_meta(_rs, user_text=_turn_user_text(st)):
-                        _gate_reason = "process_meta"
-                    if _gate_reason:
-                        _gate_body = _rs
-                        result_msg = "<SILENCE>"
-                elif (st.pending_async_delivery or st.delegated_render) and not is_silence_marker(_rs):
-                    # 在途还没放过等待：留给下面的重说。已经等过一次就沉默。
-                    if looks_like_wait_comfort(_rs) and not st.wait_comfort_sent:
-                        result_msg = _rs
-                    else:
-                        _gate_reason = "silence_only_or_async"
-                        _gate_body = _rs
-                        result_msg = "<SILENCE>"
-                elif has_orchestration_narration(_rs):
-                    _gate_reason = "orchestration_leak"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                elif looks_like_delivery_status_narration(_rs):
-                    _gate_reason = "delivery_narration"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                elif looks_like_process_meta(_rs, user_text=_turn_user_text(st)):
-                    _gate_reason = "process_meta"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                elif (
-                    claims_premature_delivery(
-                        _rs,
-                        has_fact_pack=st.saw_structured_return,
-                        tool_called_this_run=bool(st.tool_call_list),
-                        is_delivery_wake=bool(
-                            st.fw_msg and "delivery_wake" in st.run_extra and st.run_extra["delivery_wake"] is True
-                        ),
-                    )
-                    and not st.image_sent_this_run
-                ):
-                    _gate_reason = "premature_delivery"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                elif looks_like_empty_handoff(_rs) and not st.image_sent_this_run:
-                    _gate_reason = "empty_handoff"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                elif (
-                    st.saw_structured_return
-                    and st.tool_call_list
-                    and not st.image_sent_this_run
-                    and looks_like_numeric_recitation(_rs)
-                ):
-                    _gate_reason = "numeric_recitation"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                elif (
-                    _render_obligation
-                    and not _skip_report_exit
-                    and not st.image_sent_this_run
-                    and _looks_like_report_speech(_rs)
-                ):
-                    # 有真事实包却念表。无事实包的长正文放行。
-                    _gate_reason = "report_speech"
-                    _gate_body = _rs
-                    result_msg = "<SILENCE>"
-                if (
-                    _gate_reason
-                    and _gate_body
-                    and not _settle_correction_ran
-                    and not st.fake_done_retry
-                    and self.create_by in _INTERACTIVE_CREATE_BY
-                    and self.create_by != "CapabilityAgent"
-                ):
-                    _rewrite = _rewrite_directive_for_block(
-                        _gate_reason,
-                        allow_render=_allow_render,
-                        tool_calls=len(st.tool_call_list),
-                        recited_report=_looks_like_report_speech(_gate_body),
-                        forbid_title=_forbid_title(st, self.persona_name),
-                        wait_already_sent=st.wait_comfort_sent,
-                    )
-                    if _rewrite is not None:
-                        _disputes_before = len(self._run_disputes)
-                        _rewritten = await self._try_correction_pass(
-                            st,
-                            (_rewrite,),
-                            suppress_intermediate_text=True,
-                            return_mode="return",
-                        )
-                        _disputed = len(self._run_disputes) > _disputes_before
-                        if _disputed:
-                            logger.info(i18n_t("log.agent.directive_disputed", reason=self._run_disputes[-1][:120]))
-                        # 申辩成立 → 观察不成立，被拦原文照原样交付（与 _voice_retry_text 同语义）
-                        _next = _voice_retry_text(
-                            _rewritten, disputed=_disputed, blocked=_gate_body, user_text=_turn_user_text(st)
-                        )
-                        if not is_silence_marker(_next):
-                            result_msg = _next
-                            await self._emit_unsent_reply(st, result_msg)
-                            _gate_reason = ""
-                            _replacement_visible = True
-                if _gate_reason:
-                    st.silence_reason = _gate_reason
-                    record_output_block(st, self._session_logger, _gate_reason, _gate_body)
+            _ring_out = await run_settle_policy_ring(
+                self,
+                SettleRingInput(
+                    st=st,
+                    result_msg=result_msg,
+                    match_msg=_match_msg,
+                    allow_render=_allow_render,
+                    resend_fab_blocked=_resend_fab_blocked,
+                ),
+            )
+            result_msg = _ring_out.result_msg
+            _skip_report_exit = _ring_out.skip_report_exit
+            _replacement_visible = _ring_out.replacement_visible
 
             # INV-4：暂扣原文在纠正未兑现（或根本没进纠正）且没有替代品时必须发出。
             if _should_deliver_withheld(

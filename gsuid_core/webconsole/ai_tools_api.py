@@ -343,20 +343,26 @@ async def assemble_tools_preview(
     )
     pool = expand_tools_to_families(seeds, exclude_names=core_names, max_tools=max_extra)
 
-    def _plugin_of(name: str) -> str:
+    # 条目自描述：前端 tooltip 直接读这里的描述，不再回查分页的工具列表
+    def _entry_of(name: str) -> Dict[str, str]:
         tb = find_tool_base(name)
         if tb is None:
-            return "unknown"
-        return tb.plugin
+            return {"name": name, "plugin": "unknown", "description": "", "category": ""}
+        return {
+            "name": name,
+            "plugin": tb.plugin,
+            "description": tb.description,
+            "category": tb.category,
+        }
 
     return {
         "status": 0,
         "msg": "ok",
         "data": {
             "query": body.query,
-            "core": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in core_tools],
-            "seeds": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in seeds],
-            "pool": [{"name": t.name, "plugin": _plugin_of(t.name)} for t in pool],
+            "core": [_entry_of(t.name) for t in core_tools],
+            "seeds": [_entry_of(t.name) for t in seeds],
+            "pool": [_entry_of(t.name) for t in pool],
             "core_pool_size": len(core_names),
             "recall": recall,
             "max_extra": max_extra,

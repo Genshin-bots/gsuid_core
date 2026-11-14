@@ -391,3 +391,50 @@ def test_style_push_address_and_ambient_gates() -> None:
     for mod in (interaction_scaffold, utils, history_format):
         src = inspect.getsource(mod)
         assert "@的是这位用户，不是你" not in src and "直接找你说的" not in src
+
+
+def test_turn_router_pure_semantic_without_fast_ack() -> None:
+    """无正则 fast_ack 特判：离线退化走 structural_fallback，问句进问答。"""
+    import asyncio
+
+    from gsuid_core.ai_core.classifier.turn_router import route_turn
+
+    for msg in ("收到", "好的", "早安"):
+        dec = asyncio.run(route_turn(msg))
+        assert dec.source == "structural_fallback", msg
+        assert dec.intent == "闲聊" and dec.memory_intent == "none"
+
+    for q in ("在吗？", "测试项目进展如何？"):
+        qa_dec = asyncio.run(route_turn(q))
+        assert qa_dec.source == "structural_fallback", q
+        assert qa_dec.intent == "问答" and qa_dec.memory_intent == "point_latest"
+
+    # 合并入站说话门：一段结构静默（address_gated），二段软触发与 should_speak 收口
+    from gsuid_core.ai_core.interaction_scaffold import (
+        CheapGate,
+        TurnGraph,
+        GroupOpenGate,
+        admit_pre_router,
+        admit_post_classify,
+    )
+
+    tg_gated = TurnGraph(
+        user_type="group",
+        message_text="快出来",
+        persona_name="测试角色",
+        is_tome=False,
+        primary_speaker="100000001",
+        address_gated=True,
+    )
+    assert not admit_pre_router(tg_gated)
+    tg_open = TurnGraph(
+        user_type="group",
+        message_text="早上好",
+        persona_name="测试角色",
+        is_tome=False,
+        primary_speaker="100000001",
+        open_gate=GroupOpenGate.SPEAK,
+    )
+    assert admit_pre_router(tg_open)
+    assert admit_post_classify(tg_open, soft_triggered=True, should_speak=False) is CheapGate.SILENCE
+    assert admit_post_classify(tg_open, soft_triggered=True, should_speak=True) is CheapGate.FULL

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Match, Callable, Iterator, Optional, NamedTuple
+from typing import TYPE_CHECKING, Match, Callable, Iterator, Optional, Sequence, NamedTuple
 from datetime import datetime
 from contextvars import Token, ContextVar
 from dataclasses import dataclass
@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+
+if TYPE_CHECKING:
+    from gsuid_core.message_history.manager import EventLink, MessageRecord
 
 _outbound_image_label: ContextVar[str] = ContextVar("outbound_image_label", default="")
 # 泄漏句柄补发不经过 send_message_by_ai，用这个标记并回本轮「已经出图」。
@@ -298,21 +301,30 @@ async def record_outbound(
         logger.debug(i18n_t("log.ai.outbound_purge_skip", e=e))
 
 
-def inspect_quote_relation(ev: Event) -> tuple[bool | None, bool, bool]:
+def inspect_quote_relation(
+    ev: Event,
+    *,
+    records: Optional[Sequence["MessageRecord"]] = None,
+    primary_link: Optional["EventLink"] = None,
+) -> tuple[bool | None, bool, bool]:
     """检查当前事件引用的消息与 Bot、当前说话人的物理关系（100% 结构化事实源）。
 
-    返回: (is_reply_to_bot, is_bystander_quote, is_stale_quote)
-    - is_reply_to_bot: True=引用了Bot，False=引用了非Bot(自己或他人)，None=未引用或无记录
-    - is_bystander_quote: 当引用Bot时，当前发言者是否不是原受件人（他人围观借楼）
-    - is_stale_quote: 当引用Bot时，距离原消息发送时间是否已超 180 秒（翻旧账借楼）
+    优先消费当前 ``EventLink.reply_to_seq`` 命中内存记录，无缓存链接时回退按 ``reply_id`` 检索。
     """
-    reply_id = (ev.reply_id or "").strip()
-    if not reply_id:
-        return None, False, False
+    rec: Optional["MessageRecord"] = None
+    if primary_link is not None and primary_link.reply_to_seq is not None and records is not None:
+        rec = next(
+            (r for r in records if r.link is not None and r.link.seq == primary_link.reply_to_seq),
+            None,
+        )
+    if rec is None:
+        reply_id = (ev.reply_id or "").strip()
+        if not reply_id:
+            return None, False, False
 
-    from gsuid_core.message_history import get_history_manager
+        from gsuid_core.message_history import get_history_manager
 
-    rec = get_history_manager().find_by_msg_id(ev, reply_id)
+        rec = get_history_manager().find_by_msg_id(ev, reply_id)
     if rec is None:
         return None, False, False
 

@@ -18,12 +18,16 @@ class ReactiveGateKit(AgentKit):
     async def gate(self, ctx: AgentHookContext) -> AgentHookResult | None:
         if ctx.ev is None or not ctx.soft_triggered:
             return None
+        from gsuid_core.ai_core.followup_window import record_gate_outcome
+
         # 前置路由器已经判过「该不该接话」：O(1) 消费，未判定按沉默处理。
         allowed = ctx.route_decision.soft_speak if ctx.route_decision is not None else None
         ctx.set_should_speak(bool(allowed))
         if not allowed:
+            record_gate_outcome("llm_silence")
             logger.info(t("log.ai.gscore_soft_trigger_silent"))
             return ctx.silence("reactive_gate")
+        record_gate_outcome("llm_speak")
         logger.info(t("log.ai.gscore_soft_trigger_silent_2"))
         return None
 

@@ -77,14 +77,26 @@ async def invalidate_memory_edge(
     _user: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """软删除一条错误 Edge（设 invalid_at），不物理删除。"""
+    from gsuid_core.ai_core.memory.vector.ops import update_edge_lifecycle_payloads
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
     async with async_maker() as session:
         edge = (await session.execute(select(AIMemEdge).where(AIMemEdge.id == edge_id))).scalar_one_or_none()
         if edge is None:
             return _err("Edge 不存在")
-        edge.invalid_at = datetime.now(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        edge.invalid_at = now_utc
+        res_state = edge.resolution_state or "active"
         await session.commit()
+    await update_edge_lifecycle_payloads(
+        [
+            {
+                "edge_id": edge_id,
+                "invalid_at_ts": now_utc.timestamp(),
+                "resolution_state": res_state,
+            }
+        ]
+    )
     logger.info(i18n_t("log.webconsole.agtdbg_admin_soft_deleted_edge", edge_id=edge_id))
     return _ok({"edge_id": edge_id})
 

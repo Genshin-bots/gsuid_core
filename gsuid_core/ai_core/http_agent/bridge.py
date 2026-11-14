@@ -32,7 +32,7 @@ async def attach_inbound_tracks(bot: CaptureBot, event: Event) -> None:
         metadata["image_id_list"] = event.image_id_list
     elif event.image_id:
         metadata["image_id"] = event.image_id
-    get_history_manager().add_message(
+    inbound_record = get_history_manager().add_message(
         event=event,
         role="user",
         content=event.raw_text.strip() if event.raw_text else "",
@@ -46,6 +46,7 @@ async def attach_inbound_tracks(bot: CaptureBot, event: Event) -> None:
             ev=event,
             session_id=event.session_id,
             create_by="Chat",
+            inbound_link=inbound_record.link,
             query=event.raw_text or "",
         )
         bot.bot._add_bg_task(asyncio.create_task(fire_hooks(AgentHookPoint.ON_INBOUND, inbound_ctx)))

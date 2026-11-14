@@ -31,6 +31,10 @@ class ClassifierKit(AgentKit):
         )
         ctx.route_decision = decision
         ctx.set_intent(decision.intent)
+        if decision.source == "structural_fallback":
+            from gsuid_core.ai_core.followup_window import record_gate_outcome
+
+            record_gate_outcome("router_fallback")
         logger.debug(
             t(
                 "log.ai.turn_router_result",

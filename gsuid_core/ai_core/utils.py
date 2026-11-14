@@ -53,6 +53,11 @@ from gsuid_core.ai_core.const import (
 )
 from gsuid_core.ai_core.models import PendingImage
 from gsuid_core.utils.image.convert import convert_img
+from gsuid_core.ai_core.control.lines import (
+    CODE_SPAN_RE,
+    MD_NUM_MARKER,
+    MD_BULLET_MARKER,
+)
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
 
@@ -101,7 +106,6 @@ _PROTOCOL_TAG_RE = re.compile(
     r"|(?:(?:\[|\\\[)\s*(?:silence|沉默)\s*(?:\]|\\\]))",
     re.IGNORECASE,
 )
-_PROTOCOL_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 _BARE_SILENCE_RE = re.compile(r"^\s*silence\s*$", re.IGNORECASE)
 _PROTOCOL_EMPTYISH_RE = re.compile(r"^[\s\-–—.,，。！？!?、；;：:\u3000·•…]*$")
 # 截断残片：ILENCE> / SILENCE> / <SILENCE / 沉默> / <沉默。裸「沉默」是可见台词。
@@ -146,7 +150,7 @@ def normalize_escaped_control_tags(text: str) -> str:
         held.append(m.group(0))
         return f"\x00{len(held) - 1}\x00"
 
-    protected = _PROTOCOL_CODE_SPAN_RE.sub(_hold, text)
+    protected = CODE_SPAN_RE.sub(_hold, text)
     normalized = _ESCAPED_CONTROL_TAG_RE.sub(r"<\1>", protected)
     for i, chunk in enumerate(held):
         normalized = normalized.replace(f"\x00{i}\x00", chunk)
@@ -163,7 +167,7 @@ def remainder_after_protocol_tags(text: str) -> str:
         held.append(m.group(0))
         return f"\x00{len(held) - 1}\x00"
 
-    protected = _PROTOCOL_CODE_SPAN_RE.sub(_hold, text)
+    protected = CODE_SPAN_RE.sub(_hold, text)
     stripped = _PROTOCOL_TAG_RE.sub("", protected)
     for i, chunk in enumerate(held):
         stripped = stripped.replace(f"\x00{i}\x00", chunk)
@@ -225,7 +229,7 @@ def split_protocol_hold(buf: str, *, force: bool = False) -> tuple[str, str]:
     # 未闭合 <SILENCE 是 hold 前缀，不能当残片丢掉，否则下一分片 `>` 会漏出去
     if is_silence_marker(buf) and not _is_protocol_hold(buf):
         return "", ""
-    spans = [(m.start(), m.end()) for m in _PROTOCOL_CODE_SPAN_RE.finditer(buf)]
+    spans = [(m.start(), m.end()) for m in CODE_SPAN_RE.finditer(buf)]
     hold_at: int | None = None
     for i, ch in enumerate(buf):
         if ch not in "<[":
@@ -1022,8 +1026,6 @@ def _looks_like_tool_table(text: str) -> bool:
 
 
 _HTML_BR_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
-# 代码块 / 行内代码：用户可能正是在问 HTML 标签本身，这些区域不许动
-_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 
 
 def _normalize_html_linebreaks(text: str) -> str:
@@ -1042,7 +1044,7 @@ def _normalize_html_linebreaks(text: str) -> str:
 
     parts: list[str] = []
     last = 0
-    for m in _CODE_SPAN_RE.finditer(text):
+    for m in CODE_SPAN_RE.finditer(text):
         parts.append(_HTML_BR_RE.sub("\n", text[last : m.start()]))
         parts.append(m.group(0))
         last = m.end()
@@ -1073,8 +1075,8 @@ _MD_TABLE_ROW_RE = re.compile(r"\|.*\|.*\|")
 # 整行粗体小标题（如 ``**一、概况**`` / ``**当前值：**``）——agent 长报告常用它代替 # 标题
 _MD_BOLD_HEADER_RE = re.compile(r"(?m)^\s{0,3}\*\*[^*\n]{1,40}\*\*[：:]?\s*$")
 # 编号列表项（1. / 1、 / 1) 开头）、无序列表项（- / * / • 开头，后须跟空格+内容）
-_MD_NUM_LIST_RE = re.compile(r"(?m)^\s{0,3}\d+[.、)]\s+\S")
-_MD_BULLET_RE = re.compile(r"(?m)^\s{0,3}[-*•]\s+\S")
+_MD_NUM_LIST_RE = re.compile(rf"(?m)^\s{{0,3}}{MD_NUM_MARKER}\s+\S")
+_MD_BULLET_RE = re.compile(rf"(?m)^\s{{0,3}}{MD_BULLET_MARKER}\s+\S")
 
 
 def _has_markdown_table(text: str) -> bool:
@@ -1663,6 +1665,18 @@ def _outbound_auditor(ev: Event | None) -> Optional[Callable[[str, int, int], No
     return _log
 
 
+def pack_outbound_bubbles(blocks: Sequence[str], budget: int) -> list[str]:
+    """按气泡预算无损打包分段文本；超出预算的尾部合并进最后一个气泡。"""
+    cleaned = [b.strip() for b in blocks if b.strip()]
+    if not cleaned or budget <= 0:
+        return []
+    if len(cleaned) <= budget:
+        return cleaned
+    head = cleaned[: budget - 1]
+    tail = "\n\n".join(cleaned[budget - 1 :])
+    return [*head, tail]
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -1871,36 +1885,40 @@ async def send_chat_result(
     # 按空行分割为多条消息；条数上限由人格「说话强度」决定（chat_style 派生）。
     # 超出部分并入最后一条，避免 IM 刷屏。
     _PERSONA_MAX_BUBBLES = _persona_max_bubbles(ev)
-    blocks = [b for b in re.split(r"\n\s*\n", clean_text) if b.strip()]
-    if len(blocks) > _PERSONA_MAX_BUBBLES:
-        head = blocks[: _PERSONA_MAX_BUBBLES - 1]
-        tail = "\n".join(b.strip() for b in blocks[_PERSONA_MAX_BUBBLES - 1 :])
-        blocks = [*head, tail]
-        logger.debug(i18n_t("log.ai.persona_bubbles_clamped", p0=_PERSONA_MAX_BUBBLES))
-    _force_at = (at_user_id or "").strip()
-    _at_done = False
-    _audit = _outbound_auditor(ev)
-    _total = len(blocks)
-    # 回复计划轮次：人格发言的气泡全轮累计到 turn.bubbles_sent，超 cap 丢弃。
+    raw_blocks = [b for b in re.split(r"\n\s*\n", clean_text) if b.strip()]
+    # 回复计划轮次：先把文本无损打包进剩余气泡配额，避免尾部正文被截断
     _plan_turn = None
     if meta["speech_channel"] == "persona":
         from gsuid_core.ai_core.inbox.turn import current_turn
 
         _plan_turn = current_turn()
+
+    _budget = _PERSONA_MAX_BUBBLES
+    if _plan_turn is not None:
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        _cap = max(1, int(ai_config.get_config("inbox_max_bubbles").data))
+        _turn_rem = max(0, _cap - _plan_turn.bubbles_sent)
+        _budget = min(_PERSONA_MAX_BUBBLES, _turn_rem)
+
+    if _budget <= 0:
+        if raw_blocks:
+            logger.info(i18n_t("log.inbox.bubble_capped", count=len(raw_blocks)))
+        await _send_trailing_artifacts()
+        return
+
+    if len(raw_blocks) > _budget:
+        logger.debug(i18n_t("log.ai.persona_bubbles_clamped", p0=_budget))
+    blocks = pack_outbound_bubbles(raw_blocks, _budget)
+    _force_at = (at_user_id or "").strip()
+    _at_done = False
+    _audit = _outbound_auditor(ev)
+    _total = len(blocks)
     _prefix = list(_reply_prefix) if _reply_prefix else []
 
     for _idx, block in enumerate(blocks, 1):
         if not block.strip():
             continue
-
-        if _plan_turn is not None:
-            from gsuid_core.ai_core.configs.ai_config import ai_config
-
-            _cap = int(ai_config.get_config("inbox_max_bubbles").data)
-            if _plan_turn.bubbles_sent >= _cap:
-                logger.info(i18n_t("log.inbox.bubble_capped", count=len(blocks) - _idx))
-                break
-            _plan_turn.bubbles_sent += 1
 
         segments = _parse_at_segments(block)
         if _prefix:
@@ -1918,6 +1936,9 @@ async def send_chat_result(
                 continue
             segments = kept
         segments = _ensure_at_trailing_space(segments)
+
+        if _plan_turn is not None:
+            _plan_turn.bubbles_sent += 1
 
         # 停顿按台词算，括号提醒不计入
         plain_text = strip_mention_tags(block)

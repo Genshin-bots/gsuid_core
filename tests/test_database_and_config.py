@@ -372,3 +372,24 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
         assert built_models == ["openai++MiniMAX", "openai++Backup"]
     finally:
         agent._session_logger.close()
+
+    from gsuid_core.ai_core.models import SessionLogEntry
+    from gsuid_core.ai_core.session_logger import extract_session_usage
+
+    log_entries: list[SessionLogEntry] = [
+        {
+            "type": "step_usage",
+            "timestamp": 1.0,
+            "data": {"model_name": "m-pre", "input_tokens": 10, "output_tokens": 2},
+        },
+        {"type": "run_start", "timestamp": 2.0, "data": {}},
+        {
+            "type": "token_usage",
+            "timestamp": 3.0,
+            "data": {"model_name": "m-run", "input_tokens": 50, "output_tokens": 5},
+        },
+        {"type": "run_end", "timestamp": 4.0, "data": {}},
+    ]
+    usage = extract_session_usage(log_entries)
+    by_model = {u["model"]: u["input_tokens"] for u in usage["models"]}
+    assert by_model == {"m-pre": 10, "m-run": 50}

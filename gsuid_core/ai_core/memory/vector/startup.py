@@ -1,6 +1,6 @@
 """schema_v2 记忆 Qdrant 集合初始化。
 
-四个活跃集合：``memory_episodes / memory_entities / memory_edges / memory_threads``。
+三个活跃集合：``memory_episodes / memory_entities / memory_edges``。
 统一建立 ``scope_key``（KEYWORD）与 ``valid_at_ts``（FLOAT）Payload 索引。
 """
 

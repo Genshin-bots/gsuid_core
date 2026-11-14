@@ -17,6 +17,7 @@ from typing import (
     List,
     Tuple,
     Literal,
+    Mapping,
     Optional,
     Sequence,
     TypedDict,
@@ -31,10 +32,17 @@ from fastapi.concurrency import run_in_threadpool
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.models import SessionLogEntry, LinkedAgentRecord, SessionLogFileData
+from gsuid_core.ai_core.models import (
+    SessionLogEntry,
+    LinkedAgentRecord,
+    SessionUsageStats,
+    SessionLogFileData,
+    SessionUsageModelUnit,
+)
 from gsuid_core.ai_core.resource import AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
+from gsuid_core.ai_core.session_logger import extract_session_usage
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
 from ._api_tags import AI_SESSION_LOGS
@@ -109,6 +117,9 @@ class SessionLogSummary(TypedDict):
     # 以下仅在「链卡片」（分组后的列表条目）上出现；中间态的单分段摘要不带，故 NotRequired。
     segment_count: NotRequired[int]
     segments: NotRequired[List[SegmentMeta]]
+    # token 用量聚合：单分段摘要为自身用量；链卡片仅当链内全部分段摘要都带 usage 时为
+    # 整链合计（新格式文件头预聚合 / 惰性整解析回填）；缺该键时前端走 /usage 接口补齐。
+    usage: NotRequired[SessionUsageStats]
 
 
 class SessionLogDetail(SessionLogSummary, total=False):
@@ -174,6 +185,7 @@ def _build_summary_from_memory(
         "file_name": file_name,
         "linked_agents": _enrich_linked_agents_list(linked_agents, index),
         "linked_agent_count": len(linked_agents),
+        "usage": extract_session_usage(entries),
     }
 
 
@@ -371,16 +383,19 @@ def _parse_log_file_base(path: Path, st: Optional[os.stat_result] = None) -> Opt
     if cached is not None and cached[0] == sig:
         return cached[1]
 
-    # 1. 优先头部快速读取（新格式）：命中即拿到 type_counts / linked_agents，无需读 entries
+    # 1. 优先头部快速读取（新格式）：命中即拿到 type_counts / usage / linked_agents，无需读 entries
     header = _read_log_header(path)
     data: Dict[str, Any]
     type_counts: Dict[str, int]
+    usage: Optional[SessionUsageStats]
     if header is not None and "type_counts" in header and "session_id" in header and "created_at" in header:
         data = header
         tc = header.get("type_counts")
         type_counts = tc if isinstance(tc, dict) else {}
+        # 头部 usage 缺省（中间版本文件）→ 摘要不带该键，由 /usage 接口惰性整解析补齐
+        usage = header.get("usage") if isinstance(header.get("usage"), dict) else None
     else:
-        # 2. 回退完整解析（旧格式 / 头部不可用）：遍历 entries 现算 type_counts
+        # 2. 回退完整解析（旧格式 / 头部不可用）：遍历 entries 现算 type_counts 与 usage
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -389,11 +404,27 @@ def _parse_log_file_base(path: Path, st: Optional[os.stat_result] = None) -> Opt
         # 磁盘文件可能由历史版本写入、字段不全；按 _build_data 契约类型化读取，缺字段取默认
         if not isinstance(data, dict) or "session_id" not in data or "created_at" not in data:
             return None
+        raw_entries: List[SessionLogEntry] = data.get("entries", [])
         type_counts = {}
-        for entry in data.get("entries", []):
+        for entry in raw_entries:
             etype: str = entry.get("type", "unknown")
             type_counts[etype] = type_counts.get(etype, 0) + 1
+        usage = extract_session_usage(raw_entries)
 
+    summary = _base_summary_from_data(path, data, type_counts, usage)
+    with _CACHE_LOCK:
+        _BASE_SUMMARY_CACHE[key] = (sig, summary)
+        _cache_dirty = True
+    return summary
+
+
+def _base_summary_from_data(
+    path: Path,
+    data: Mapping[str, Any],
+    type_counts: Dict[str, int],
+    usage: Optional[SessionUsageStats],
+) -> SessionLogSummary:
+    """从已解析的日志文件数据（头部或全文）构建基础摘要；``usage`` 缺省时该键不出现。"""
     created_at: float = data.get("created_at", 0)
     ended_at: Optional[float] = data.get("ended_at")
     updated_at: float = data.get("updated_at", 0)
@@ -427,9 +458,8 @@ def _parse_log_file_base(path: Path, st: Optional[os.stat_result] = None) -> Opt
         "linked_agents": linked_agents,
         "linked_agent_count": len(linked_agents),
     }
-    with _CACHE_LOCK:
-        _BASE_SUMMARY_CACHE[key] = (sig, summary)
-        _cache_dirty = True
+    if usage is not None:
+        summary["usage"] = usage
     return summary
 
 
@@ -721,6 +751,43 @@ def _seg_meta(s: SessionLogSummary) -> SegmentMeta:
     }
 
 
+def _merge_usage_stats(usages: Sequence[SessionUsageStats]) -> SessionUsageStats:
+    """把多个分段的用量聚合为整链用量（models 按模型名归并）。"""
+    merged: SessionUsageStats = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "runs": 0,
+        "models": [],
+    }
+    models: Dict[str, SessionUsageModelUnit] = {}
+    for u in usages:
+        merged["input_tokens"] += u["input_tokens"]
+        merged["output_tokens"] += u["output_tokens"]
+        merged["cache_read_tokens"] += u["cache_read_tokens"]
+        merged["cache_write_tokens"] += u["cache_write_tokens"]
+        merged["runs"] += u["runs"]
+        for m in u["models"]:
+            slot = models.get(m["model"])
+            if slot is None:
+                slot = SessionUsageModelUnit(
+                    model=m["model"],
+                    input_tokens=m["input_tokens"],
+                    output_tokens=m["output_tokens"],
+                    cache_read_tokens=m["cache_read_tokens"],
+                    cache_write_tokens=m["cache_write_tokens"],
+                )
+                models[m["model"]] = slot
+            else:
+                slot["input_tokens"] += m["input_tokens"]
+                slot["output_tokens"] += m["output_tokens"]
+                slot["cache_read_tokens"] += m["cache_read_tokens"]
+                slot["cache_write_tokens"] += m["cache_write_tokens"]
+    merged["models"] = list(models.values())
+    return merged
+
+
 def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLogSummary:
     """把同一 chain_id 的多个分段摘要聚合成一张「逻辑会话链卡片」。
 
@@ -762,7 +829,16 @@ def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLog
     elif created_at:
         duration = time.time() - created_at
 
-    return {
+    # 全部分段摘要都带 usage 时归并为整链用量；缺任一段则不出该键，由 /usage 接口补齐
+    usages: List[SessionUsageStats] = []
+    for s in segs:
+        su = s.get("usage")
+        if su is None:
+            usages = []
+            break
+        usages.append(su)
+
+    card: SessionLogSummary = {
         "session_id": latest["session_id"],
         "session_uuid": latest["session_uuid"],
         "persona_name": latest["persona_name"],
@@ -787,6 +863,9 @@ def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLog
         "segment_count": len(segs),
         "segments": [_seg_meta(s) for s in segs],
     }
+    if usages:
+        card["usage"] = _merge_usage_stats(usages)
+    return card
 
 
 def _group_segments_into_chains(segments: List[SessionLogSummary]) -> List[SessionLogSummary]:
@@ -1559,6 +1638,130 @@ async def get_session_logs_overview(
         return {
             "status": 1,
             "msg": f"获取日志统计失败: {str(e)}",
+            "data": None,
+        }
+
+
+# --- 5.5 会话链 Token 用量 API ---
+
+
+def _usage_for_disk_file(path: Path) -> Optional[SessionUsageStats]:
+    """取单个磁盘日志文件的 token 用量聚合。
+
+    先走 ``_parse_log_file_base`` 的摘要路径（头部快速读取会把新格式文件的预聚合
+    ``usage`` 带进摘要缓存，旧格式整解析时也会顺带算好）。摘要缺 ``usage`` 的仅有
+    中间版本文件（有 type_counts 无 usage）——对它整文件解析一次，把带 usage 的
+    摘要原子换入缓存，之后访问零解析开销。
+    """
+    base = _parse_log_file_base(path)
+    u = base.get("usage") if base is not None else None
+    if u is not None:
+        return u
+
+    data = _load_log_detail(path)
+    if data is None:
+        return None
+    usage = extract_session_usage(data.get("entries", []))
+
+    try:
+        st = path.stat()
+    except OSError:
+        return usage
+    tc = data.get("type_counts")
+    type_counts = tc if isinstance(tc, dict) else {}
+    fresh = _base_summary_from_data(path, data, type_counts, usage)
+    global _cache_dirty
+    with _CACHE_LOCK:
+        _BASE_SUMMARY_CACHE[str(path)] = ((st.st_mtime, st.st_size), fresh)
+        _cache_dirty = True
+    return usage
+
+
+def _resolve_chain_usage(chain_id: str) -> Optional[SessionUsageStats]:
+    """整链 token 用量：对链内每个分段取 usage 后归并。
+
+    分段解析顺序：内存活跃分段（uuid 匹配则从实时 entries 聚合）→ 磁盘文件
+    （索引 O(1) 定位 → 摘要缓存/文件头/惰性整解析）。任一源都拿不到的分段跳过，
+    其余照常合计——拿不到用量比「整链 0」更不误导。
+    """
+    card: Optional[SessionLogSummary] = None
+    for item in _build_unified_list_cached():
+        if item["chain_id"] == chain_id:
+            card = item
+            break
+    if card is None:
+        return None
+
+    # 链卡片自身已带整链 usage（全部分段摘要齐备）→ 直接返回，零文件 IO
+    existing = card.get("usage")
+    if existing is not None:
+        return existing
+
+    registry = get_ai_session_registry()
+    usages: List[SessionUsageStats] = []
+    for seg in card.get("segments", []):
+        sid: str = seg["session_id"]
+        suuid: Optional[str] = seg["session_uuid"]
+
+        session = registry.get_ai_session(sid)
+        if session is not None:
+            logger_obj = session._session_logger
+            if suuid is None or logger_obj.session_uuid == suuid:
+                usages.append(extract_session_usage(list(logger_obj.entries)))
+                continue
+
+        path = _lookup_log_path(sid, suuid)
+        if path is None and seg["file_name"]:
+            for base_dir in (AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH):
+                cand = base_dir / seg["file_name"]
+                if cand.exists():
+                    path = cand
+                    break
+        if path is None:
+            continue
+        u = _usage_for_disk_file(path)
+        if u is not None:
+            usages.append(u)
+
+    if not usages:
+        return None
+    return _merge_usage_stats(usages)
+
+
+@app.get("/api/ai/session_logs/usage", summary="会话链 Token 用量", tags=AI_SESSION_LOGS)
+async def get_session_chain_usage(
+    chain_id: str,
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    获取整条逻辑会话链的 token 用量聚合（覆盖链内全部分段）
+
+    前端详情头部展示的是整链口径：未懒加载的分段也计入，避免超长会话只看到
+    最新分段的局部统计。返回 ``models`` 为按模型归并的计价单元（供费用估算）。
+
+    Args:
+        chain_id: 逻辑会话链标识（列表卡片的 chain_id；旧文件即 session_uuid）
+
+    Returns:
+        status: 0成功，1失败
+        data: {input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+               runs, models: [{model, input_tokens, output_tokens,
+               cache_read_tokens, cache_write_tokens}]}
+    """
+    try:
+        usage = await run_in_threadpool(_resolve_chain_usage, chain_id)
+        if usage is None:
+            return {
+                "status": 1,
+                "msg": f"未找到会话链或无用量数据: {chain_id}",
+                "data": None,
+            }
+        return {"status": 0, "msg": "ok", "data": usage}
+    except Exception as e:
+        logger.error(t("log.webconsole.sesslog_retrieve_log_usage", e=e))
+        return {
+            "status": 1,
+            "msg": f"获取会话用量失败: {str(e)}",
             "data": None,
         }
 

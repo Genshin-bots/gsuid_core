@@ -16,7 +16,7 @@ from gsuid_core.ai_core.hooks.markers import format_hint
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.relationship import RelationshipView
-    from gsuid_core.message_history.manager import MessageRecord
+    from gsuid_core.message_history.manager import EventLink, MessageRecord
     from gsuid_core.ai_core.relationship.engine import SettleOutcome
     from gsuid_core.ai_core.interaction_scaffold import TurnGraph
     from gsuid_core.ai_core.relationship.signals import TurnSignals
@@ -49,6 +49,7 @@ class AgentHookContext:
     is_subagent: bool = False
     is_correction: bool = False
     is_framework: bool = False
+    inbound_link: Optional["EventLink"] = None
     query: str = ""
     # ── 装配 ──
     intent: Optional[str] = None

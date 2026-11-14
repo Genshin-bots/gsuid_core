@@ -12,7 +12,7 @@ import asyncio
 from typing import TYPE_CHECKING, Literal, TypedDict
 from datetime import datetime, timezone
 
-from sqlmodel import col, or_, select, update
+from sqlmodel import col, or_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.i18n import t
@@ -32,10 +32,51 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.observer import ObservationRecord
 
 _DANGLING_FACT_RE = re.compile(
-    r"(?:(?:提到|提及|被提及|表示|认为|觉得|提出|指出|强调|透露|说道|谈到|聊到|说起|问到|询问|说)[了过]?"
-    r"|(?:讨论|谈论|回复|回应|回答|评价|分享|补充|吐槽|感叹)[了过])"
-    r"[。.!！?？…]?$"
+    r"(?:(?:提到|提及|被提及|表示|认为|觉得|提出|指出|强调|透露|说道|谈到|聊到|说起|问到|询问|说)[了过]?的?"
+    r"|(?:讨论|谈论|回复|回应|回答|评价|分享|补充|吐槽|感叹)(?:[了过]的?|的))"
+    r"\s*[。.!！?？…]*$"
 )
+_TRAILING_INCOMPLETE_RE = re.compile(r"(?:是不是|有没有|能不能|是否)\s*[。.!！?？…]*$")
+
+
+def _is_incomplete_fact(fact: str) -> bool:
+    clean = fact.strip()
+    if len(clean) < 4:
+        return True
+    return bool(_DANGLING_FACT_RE.search(clean) or _TRAILING_INCOMPLETE_RE.search(clean))
+
+
+def _is_tautology_fact(fact: str, source: str, target: str) -> bool:
+    clean = fact.strip()
+    rest = clean.replace(source.strip(), "").replace(target.strip(), "")
+    rest = rest.strip(" \t\r\n，,。.!！?？:：;；是的有和与")
+    return len(rest) < 2
+
+
+def _cluster_addresses_bot(records: list["ObservationRecord"], lines: list[int]) -> bool:
+    from gsuid_core.ai_core.memory.observer import _is_known_bot_speaker
+    from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+    surfaces_by_persona: dict[str, tuple[str, ...]] = {}
+    for idx in lines:
+        if not (0 <= idx < len(records)):
+            continue
+        rec = records[idx]
+        if rec.reply_to_bot:
+            return True
+        pname = rec.persona_name
+        if pname:
+            if pname not in surfaces_by_persona:
+                surfaces_by_persona[pname] = tuple(s for s in collect_persona_surfaces(pname) if s)
+            if pname in rec.raw_content:
+                return True
+            surfaces = surfaces_by_persona[pname]
+            if surfaces and any(s in rec.raw_content for s in surfaces):
+                return True
+        if rec.at_targets and any(_is_known_bot_speaker(aid, "") for aid in rec.at_targets):
+            return True
+    return False
+
 
 _NEGATION_MARKERS = ("不", "没", "无", "非", "别", "讨厌", "拒绝", "反对", "停止")
 _NEGATION_RE_EN = re.compile(
@@ -164,7 +205,7 @@ def _parse_output(raw: str) -> AlgebraExtractOutput | None:
                 continue
             fact = item["fact"] if "fact" in item and isinstance(item["fact"], str) else ""
             source = item["source"] if "source" in item and isinstance(item["source"], str) else ""
-            if not fact.strip() or not source.strip() or _DANGLING_FACT_RE.search(fact.strip()):
+            if not fact.strip() or not source.strip() or _is_incomplete_fact(fact):
                 continue
             op = item["op"] if "op" in item else "ADD"
             if op not in ("ADD", "MERGE", "SUPERSEDE", "CONTRADICT"):
@@ -215,7 +256,7 @@ def _parse_output(raw: str) -> AlgebraExtractOutput | None:
                 continue
             ctx_raw = item["context"] if "context" in item and isinstance(item["context"], str) else "general"
             target_ctx = ctx_raw.strip()[:128] or "general"
-            if target_ctx == "possession":
+            if target_ctx in ("possession", "location"):
                 continue
             polarity = "dont" if (item["polarity"] if "polarity" in item else "do") == "dont" else "do"
             preferences.append(
@@ -357,13 +398,16 @@ async def extract_cluster(
         return {"entities": 0, "edges": 0, "preferences": 0, "thread_id": ""}
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
     from gsuid_core.ai_core.memory.vector.ops import (
+        EdgeLifecycleUpdate,
         upsert_edge_vectors_batch,
         upsert_entity_vectors_batch,
+        update_edge_lifecycle_payloads,
     )
     from gsuid_core.ai_core.memory.prompts.extraction import ALGEBRA_USER, ALGEBRA_SYSTEM
 
     thread_list = threads if threads is not None else []
     _, known_edges, names = await _prefetch(scope_key, records)
+
     thread_card = f"[新话题] {topic_title}" if topic_title else "（未关联故事线）"
     if thread_ref is not None:
         index = -1
@@ -384,7 +428,7 @@ async def extract_cluster(
     try:
         agent = GsCoreAIAgent(
             system_prompt=ALGEBRA_SYSTEM,
-            max_tokens=2400,
+            max_tokens=4096,
             create_by="MemAlgebra",
             task_kind=TASK_MEMORY_ALGEBRA,
             task_level="low",
@@ -407,30 +451,49 @@ async def extract_cluster(
     by_short = {_short_edge(edge.id): edge for edge in known_edges}
     entity_vector_payloads: list[dict[str, object]] = []
     edge_vector_payloads: list[dict[str, object]] = []
+    lifecycle_updates: list[EdgeLifecycleUpdate] = []
+    affected_threads: set[str] = set()
     written_edges = 0
     written_milestones = 0
     written_entities = 0
     latest_valid_at = datetime.now(timezone.utc)
+    is_group_scope = scope_key.startswith("group:")
 
     async with db_write_guard(), async_maker() as session:
         thread_id = await _resolve_thread(session, scope_key, thread_list, thread_ref, topic_title)
-        window_speaker_ids = {r.speaker_id for r in records if r.speaker_id}
-        window_speaker_names = {r.speaker_name for r in records if r.speaker_name}
-        edge_speaker_ids = {e["speaker_user_id"] for e in output["edges"] if e["speaker_user_id"]}
+        cluster_recs = [records[i] for i in lines if 0 <= i < len(records)]
+        window_speaker_ids = {
+            r.speaker_id for r in cluster_recs if r.speaker_id and not r.speaker_id.startswith("__assistant_")
+        }
+        name_to_uid_candidates: dict[str, set[str]] = {}
+        for r in cluster_recs:
+            if not r.speaker_id or r.speaker_id.startswith("__assistant_"):
+                continue
+            if r.speaker_name:
+                name_to_uid_candidates.setdefault(r.speaker_name, set()).add(r.speaker_id)
+        name_to_uid: dict[str, str] = {
+            n: next(iter(uids)) for n, uids in name_to_uid_candidates.items() if len(uids) == 1
+        }
+        edge_speaker_ids = {
+            e["speaker_user_id"]
+            for e in output["edges"]
+            if e["speaker_user_id"] and not e["speaker_user_id"].startswith("__assistant_")
+        }
         all_speaker_ids = window_speaker_ids | edge_speaker_ids
-        name_to_uid: dict[str, str] = {r.speaker_name: r.speaker_id for r in records if r.speaker_name and r.speaker_id}
 
         entity_data: list[dict[str, object]] = []
         for spec in output["entities"]:
             uid = spec["user_id"]
+            if uid is not None and uid.startswith("__assistant_"):
+                uid = None
             if uid is None and spec["name"] in name_to_uid:
                 uid = name_to_uid[spec["name"]]
-            is_speaker = (
-                spec["kind"] == "speaker"
-                or (uid is not None and uid in all_speaker_ids)
-                or spec["name"] in window_speaker_names
-            )
-            kind: EntityKind = "speaker" if is_speaker and spec["kind"] == "person" else spec["kind"]
+            is_speaker = bool(uid is not None and uid in all_speaker_ids)
+            kind: EntityKind = spec["kind"]
+            if kind == "speaker" and not is_speaker:
+                kind = "person"
+            elif is_speaker and kind == "person":
+                kind = "speaker"
             entity_data.append(
                 {
                     "name": spec["name"],
@@ -444,14 +507,16 @@ async def extract_cluster(
         requested_names = {spec["source"] for spec in output["edges"]} | {spec["target"] for spec in output["edges"]}
         existing_names = {item["name"] for item in entity_data}
         for name in sorted(requested_names - existing_names):
+            implicit_uid = name_to_uid[name] if name in name_to_uid else None
+            implicit_is_speaker = implicit_uid is not None and implicit_uid in all_speaker_ids
             entity_data.append(
                 {
                     "name": name,
                     "summary": "",
-                    "tag": ["Topic"],
-                    "user_id": None,
-                    "is_speaker": False,
-                    "kind": "person",
+                    "tag": ["speaker"] if implicit_is_speaker else ["Topic"],
+                    "user_id": implicit_uid,
+                    "is_speaker": implicit_is_speaker,
+                    "kind": "speaker" if implicit_is_speaker else "person",
                 }
             )
         hybrid_ids = await AIMemEntity.prefetch_hybrid_name_ids(scope_key, entity_data)
@@ -467,6 +532,8 @@ async def extract_cluster(
         written_entities = new_count
 
         for spec in output["edges"]:
+            if spec["edge_kind"] == "milestone" and _is_tautology_fact(spec["fact"], spec["source"], spec["target"]):
+                continue
             source_id = name_to_id[spec["source"]] if spec["source"] in name_to_id else ""
             target_id = name_to_id[spec["target"]] if spec["target"] in name_to_id else ""
             if not source_id or not target_id:
@@ -477,8 +544,10 @@ async def extract_cluster(
             event_at = _parse_date(spec["event_date"])
             speaker = spec["speaker_user_id"] or line_rec.speaker_id
             subject = spec["subject_user_id"]
-            state: ResolutionState = (
-                "active" if not subject or subject == speaker or spec["edge_kind"] == "milestone" else "staging"
+            # 群聊第三方陈述即使标为 milestone 也必须先 staging，防止谣言/错认直接转正。
+            state: ResolutionState = "staging" if (is_group_scope and subject and subject != speaker) else "active"
+            effective_kind: EdgeKind = (
+                "attribute" if (spec["edge_kind"] == "milestone" and not thread_id) else spec["edge_kind"]
             )
             old = by_short[spec["target_edge_id"]] if spec["target_edge_id"] in by_short else None
 
@@ -499,6 +568,7 @@ async def extract_cluster(
                         "invalid_at_ts": old.invalid_at.timestamp() if old.invalid_at else None,
                         "source_entity_id": old.source_entity_id,
                         "target_entity_id": old.target_entity_id,
+                        "resolution_state": old.resolution_state,
                     }
                 )
                 continue
@@ -513,10 +583,10 @@ async def extract_cluster(
                 fact=spec["fact"],
                 source_entity_id=source_id,
                 target_entity_id=target_id,
-                edge_kind=spec["edge_kind"],
+                edge_kind=effective_kind,
                 slot_key=spec["slot_key"],
                 resolution_state=new_state,
-                thread_id=thread_id if spec["edge_kind"] == "milestone" else None,
+                thread_id=thread_id if effective_kind == "milestone" else None,
                 source_episode_id=episode_id or None,
                 turn_index=line_idx,
                 event_at=event_at,
@@ -529,11 +599,29 @@ async def extract_cluster(
                 old.invalid_at = valid_at
                 old.superseded_by_id = edge_id
                 session.add(old)
+                if old.qdrant_id:
+                    lifecycle_updates.append(
+                        {
+                            "edge_id": old.qdrant_id,
+                            "invalid_at_ts": valid_at.timestamp(),
+                            "resolution_state": "superseded",
+                        }
+                    )
+                if old.thread_id:
+                    affected_threads.add(old.thread_id)
             elif spec["op"] == "CONTRADICT" and old is not None:
                 old.resolution_state = "contradicted"
                 old.contradicts_edge_id = edge_id
                 new_edge.contradicts_edge_id = old.id
                 session.add(old)
+                if old.qdrant_id:
+                    lifecycle_updates.append(
+                        {
+                            "edge_id": old.qdrant_id,
+                            "invalid_at_ts": old.invalid_at.timestamp() if old.invalid_at else None,
+                            "resolution_state": "contradicted",
+                        }
+                    )
             session.add(new_edge)
             edge_vector_payloads.append(
                 {
@@ -544,24 +632,43 @@ async def extract_cluster(
                     "invalid_at_ts": None,
                     "source_entity_id": source_id,
                     "target_entity_id": target_id,
+                    "resolution_state": new_state,
                 }
             )
             written_edges += 1
-            if spec["edge_kind"] == "milestone":
+            if effective_kind == "milestone":
                 written_milestones += 1
             if valid_at > latest_valid_at:
                 latest_valid_at = valid_at
 
         if thread_id and written_edges:
-            await session.execute(
-                update(AIMemThread)
-                .where(col(AIMemThread.id) == thread_id)
-                .values(
-                    milestone_count=col(AIMemThread.milestone_count) + written_milestones,
-                    last_at=latest_valid_at,
-                    last_mentioned_at=datetime.now(timezone.utc),
+            affected_threads.add(thread_id)
+        for tid in affected_threads:
+            cnt_res = await session.execute(
+                select(func.count())
+                .select_from(AIMemEdge)
+                .where(
+                    col(AIMemEdge.thread_id) == tid,
+                    col(AIMemEdge.edge_kind) == "milestone",
+                    col(AIMemEdge.invalid_at).is_(None),
+                    col(AIMemEdge.resolution_state) != "superseded",
                 )
             )
+            actual = int(cnt_res.scalar_one() or 0)
+            if tid == thread_id and written_edges:
+                await session.execute(
+                    update(AIMemThread)
+                    .where(col(AIMemThread.id) == tid)
+                    .values(
+                        milestone_count=actual,
+                        last_at=latest_valid_at,
+                        last_mentioned_at=datetime.now(timezone.utc),
+                    )
+                )
+            else:
+                await session.execute(
+                    update(AIMemThread).where(col(AIMemThread.id) == tid).values(milestone_count=actual)
+                )
         await session.commit()
 
     if entity_vector_payloads:
@@ -574,11 +681,16 @@ async def extract_cluster(
             await upsert_edge_vectors_batch(edge_vector_payloads)
         except (OSError, RuntimeError, ValueError) as e:
             logger.warning(t("log.memory.algebra_edge_vector_failed", scope_key=scope_key, e=e))
+    if lifecycle_updates:
+        await update_edge_lifecycle_payloads(lifecycle_updates)
 
+    addresses_bot = (not is_group_scope) or _cluster_addresses_bot(records, lines)
     written_prefs = 0
     for pref in output["preferences"]:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 
+        if not addresses_bot or pref["target_context"] in ("possession", "location"):
+            continue
         pref_uid = _resolve_preference_user_id(pref["user_id"], records, scope_key)
         if not pref_uid:
             continue

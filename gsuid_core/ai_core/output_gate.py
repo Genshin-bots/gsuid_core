@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from dataclasses import field, dataclass
 
 from gsuid_core.i18n import t as i18n_t
@@ -34,6 +34,9 @@ from gsuid_core.ai_core.control.lines import (
     FUND_CLAIM_PREFIX,
     GATE_NUDGE_MARKERS as GATE_NUDGE_MARKERS,
 )
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext
 
 # ── 结果类型 ────────────────────────────────────────────────────────
 
@@ -541,7 +544,7 @@ def merge_rewrite_feedbacks(feedbacks: Sequence[str]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-# ── 公开入口 ────────────────────────────────────────────────────────
+# ── 公开入口（委托统一策略环） ─────────────────────────────────────────
 
 
 def pre_send_gate(
@@ -552,48 +555,26 @@ def pre_send_gate(
     channel: str = "main",
     count_attempt: bool = True,
     is_group: bool = False,
+    speech_ctx: "SpeechContext | None" = None,
 ) -> GateResult:
-    """对即将发出的 agent 台词做发送前闸门。
-
-    Args:
-        text: 模型要对用户说的正文
-        extra: ``ToolContext.extra``；None 时无状态
-        user_text: 本轮用户原文（OOC 身份追问门）
-        channel: ``"main"`` | ``"tool"``
-        count_attempt: 尖括号策略是否计入 attempts（同 response 后续段传 False）
-        is_group: 群聊出站 → 先过 ``mask_pii`` 就地打码再进各策略；
-            放行时 ``send_text`` 带打码后文本（调用方须用之替换原文）
-    """
-    if not text or not str(text).strip():
-        return GateResult(decision=GateDecision.ALLOW)
+    """对即将发出的 agent 台词做发送前闸门（由 ``control.policy_ring`` 单表执行）。"""
+    from gsuid_core.ai_core.control.policy_ring import OutboundEvaluators, run_outbound_gate
 
     if channel not in ("main", "tool"):
         logger.warning(i18n_t("log.ai.output_gate_unknown_channel", channel=repr(channel)))
         channel = "main"
-
-    if is_group:
-        from gsuid_core.ai_core.mcp.pii import mask_pii, pii_hits
-
-        hits = pii_hits(text)
-        if hits:
-            text = mask_pii(text)
-            logger.warning(i18n_t("log.ai.output_gate_pii_masked", hits=",".join(hits)))
-
     bag_extra: Dict[str, Any] = extra if extra is not None else {}
-
-    r = _eval_angle_bracket(text, bag_extra, channel=channel, count_attempt=count_attempt)
-    if r is not None and r.decision is not GateDecision.ALLOW:
-        return r
-
-    r = _eval_ooc(text, bag_extra, user_text=user_text, channel=channel)
-    if r is not None and r.decision is not GateDecision.ALLOW:
-        return r
-
-    r = _eval_inner_os(text, bag_extra, channel=channel, user_text=user_text)
-    if r is not None and r.decision is not GateDecision.ALLOW:
-        return r
-
-    return GateResult(decision=GateDecision.ALLOW, send_text=text if is_group else "")
+    return run_outbound_gate(
+        text,
+        channel=channel,
+        is_group=is_group,
+        speech_ctx=speech_ctx,
+        evaluators=OutboundEvaluators(
+            angle_bracket=lambda t: _eval_angle_bracket(t, bag_extra, channel=channel, count_attempt=count_attempt),
+            ooc=lambda t: _eval_ooc(t, bag_extra, user_text=user_text, channel=channel),
+            inner_os=lambda t: _eval_inner_os(t, bag_extra, channel=channel, user_text=user_text),
+        ),
+    )
 
 
 def tool_gate_feedback(
@@ -602,10 +583,11 @@ def tool_gate_feedback(
     *,
     user_text: str = "",
     is_group: bool = False,
+    speech_ctx: "SpeechContext | None" = None,
 ) -> "tuple[Optional[str], str]":
     """工具路径：``(feedback, 生效文本)``——feedback 非 None 打回；
     放行时第二元为生效文本（群聊可能已打码），调用方须用之发送。"""
-    r = pre_send_gate(text, extra, user_text=user_text, channel="tool", is_group=is_group)
+    r = pre_send_gate(text, extra, user_text=user_text, channel="tool", is_group=is_group, speech_ctx=speech_ctx)
     if r.decision is GateDecision.ALLOW:
         return None, r.send_text or text
     if r.decision is GateDecision.FALLBACK:

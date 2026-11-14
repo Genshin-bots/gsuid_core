@@ -15,7 +15,10 @@ from __future__ import annotations
 import re
 from typing import List, Sequence
 
-from gsuid_core.ai_core.control.lines import ANGLE_NUDGE_MARKER as NUDGE_MARKER
+from gsuid_core.ai_core.control.lines import (
+    CODE_SPAN_RE,
+    ANGLE_NUDGE_MARKER as NUDGE_MARKER,
+)
 
 # 同一 agent.run / 同 turn 内最多打回次数（第 3 次仍失败 → 熔断）
 MAX_RETRIES = 3
@@ -38,9 +41,6 @@ _SILENCE_TAG_RE = re.compile(
     r"(?:<|&lt;|&#60;|＜|\\<)/?(?:SILENCE|沉默)\s*/?(?:>|&gt;|&#62;|＞|\\>)",
     re.IGNORECASE,
 )
-
-# 与 utils._normalize_html_linebreaks 同形：教学/代码回复里的标签勿当非法
-_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 
 # 形如标签：以字母开头的名 + 可选属性/自闭合（不含「< 数字」比较）
 _ANGLE_TAG_RE = re.compile(
@@ -185,7 +185,7 @@ def strip_protocol_tags(text: str) -> str:
 
 def _mask_code_spans(text: str) -> str:
     """代码区替换为空格，避免 `` `<br>` `` / fenced HTML 被当非法标签。"""
-    return _CODE_SPAN_RE.sub(lambda m: " " * (m.end() - m.start()), text)
+    return CODE_SPAN_RE.sub(lambda m: " " * (m.end() - m.start()), text)
 
 
 def _tag_name(raw: str) -> str:
@@ -364,7 +364,7 @@ def sanitize_illegal_angle_tags(text: str) -> str:
         return text
     parts: list[str] = []
     last = 0
-    for m in _CODE_SPAN_RE.finditer(text):
+    for m in CODE_SPAN_RE.finditer(text):
         parts.append(_sanitize_region(text[last : m.start()]))
         parts.append(m.group(0))
         last = m.end()

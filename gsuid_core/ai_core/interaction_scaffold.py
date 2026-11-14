@@ -29,7 +29,9 @@ from pydantic_ai.messages import (
 from gsuid_core.ai_core.control.lines import (
     DRIFT_REMINDER,
     AT_OTHER_MARKER,
+    MEDIA_HANDLE_RE,
     MSG_SECTION_HEAD as _MSG_SECTION_HEAD,
+    CLOCK_LINE_PATTERN,
 )
 
 if TYPE_CHECKING:
@@ -40,7 +42,7 @@ if TYPE_CHECKING:
 _SPEAKER_PREFIX_RE = re.compile(r"^[^：:（()）\n]{1,16}\(用户ID:[^)]{1,24}\)[：:]\s*")
 # 生产 payload 的装饰（prepare_content_payload / handle_ai）：关系行 + 「--- 消息 ---」
 # 分节 + 附件/@ 标注段落 + 每轮追加的「[当前时间：…]」行（兼容旧「【当前时间】」）。
-_TIME_LINE_RE = re.compile(r"\n?(?:【当前时间】[^\n]*|\[当前时间[：:][^\n]*\])")
+_TIME_LINE_RE = re.compile(rf"\n?{CLOCK_LINE_PATTERN}")
 _SECTION_LINE_RE = re.compile(r"^---[^\n]*---\s*$", re.MULTILINE)
 
 
@@ -294,11 +296,10 @@ def count_style_pushes(current_text: str, recent: List[Tuple[str, str]], speaker
     「用户ID:<speaker_id>」标识的消息，不传（私聊/无 event 场景）保持全量计数。
     """
     n = 1 if _is_style_push(extract_message_body(current_text)) else 0
-    sid_re = re.compile(rf"用户ID:{re.escape(speaker_id)}(?![0-9])") if speaker_id else None
     for role, txt in recent:
         if role != "user" or not _is_style_push(txt):
             continue
-        if sid_re is not None and sid_re.search(txt) is None:
+        if speaker_id and speaker_id not in _SPEAKER_ID_RE.findall(txt):
             continue
         n += 1
     return n
@@ -332,9 +333,6 @@ _SELF_ASK_RE = re.compile(r"我.{0,16}(?:来着|是哪|几[个天票月]|多少[
 _NAME_TAIL_OK = frozenset(" \t，,、：:!！?？~～啊呀呢吧嘛哦喔诶喂哈")
 # 粘在中文名后会把名字加长的昵称后缀（名+子 / 小姐姐）。今/记/帮 不是后缀。
 _CJK_DIMINUTIVE = frozenset("子酱君桑哥姐妹宝喵")
-# 正文 @ 必须带空白，避免 @名看看这是谁 把整句吃掉。
-_LEADING_AT_WITH_SPACE_RE = re.compile(r"^@\S+\s+")
-_ADDRESS_PUNCT = " \t，,、：:!！?？~～"
 
 
 def _rest_after_name(body: str, name: str) -> str | None:
@@ -371,22 +369,6 @@ def _at_mentions_name(message_text: str, name: str) -> bool:
     if name.isascii():
         return re.search(rf"@{re.escape(name)}\b", message_text, re.IGNORECASE) is not None
     return False
-
-
-def strip_leading_address(body: str, persona_name: str = "") -> str:
-    """剥句首 @名 / 呼名，剩下纯正文。无空白的 `@名看看这是谁` 只在已知名时剥。"""
-    t = body.strip()
-    if persona_name:
-        rest = _rest_after_name(t, f"@{persona_name}")
-        if rest is not None:
-            return rest.lstrip(_ADDRESS_PUNCT).strip()
-        rest = _rest_after_name(t, persona_name)
-        if rest is not None and _call_boundary_ok(persona_name, rest):
-            return rest.lstrip("".join(_NAME_TAIL_OK)).strip()
-    m = _LEADING_AT_WITH_SPACE_RE.match(t)
-    if m:
-        return t[m.end() :].strip()
-    return t
 
 
 class GroupOpenGate(str, Enum):
@@ -744,6 +726,44 @@ def _same_body_repeat_count(tg: TurnGraph) -> int:
     return n
 
 
+def admit_pre_router(tg: TurnGraph) -> bool:
+    """一段结构准入门（零 DB / 零 LLM）：群聊开口门、寻址门与复读刷屏拦截。"""
+    if not tg.is_group:
+        return True
+    if tg.open_gate is GroupOpenGate.SILENCE or tg.address_gated:
+        return False
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    repeat_n = int(ai_config.get_config("group_repeat_body_n").data)
+    if repeat_n > 1 and _same_body_repeat_count(tg) >= repeat_n:
+        return False
+    return True
+
+
+def admit_post_classify(
+    tg: TurnGraph,
+    *,
+    soft_triggered: bool = False,
+    has_active_task: bool = False,
+    intent: str = "",
+    rel: Optional["RelationshipView"] = None,
+    should_speak: bool = True,
+) -> CheapGate:
+    """二段合并准入门：统一 CheapGate 与软触发 REACTIVE_GATE 的最终说话判定。"""
+    cheap = decide_cheap_gate(
+        tg,
+        soft_triggered=soft_triggered,
+        has_active_task=has_active_task,
+        intent=intent,
+        rel=rel,
+    )
+    if cheap is CheapGate.SILENCE:
+        return CheapGate.SILENCE
+    if soft_triggered and not should_speak:
+        return CheapGate.SILENCE
+    return CheapGate.FULL
+
+
 def decide_cheap_gate(
     tg: TurnGraph,
     *,
@@ -865,11 +885,8 @@ MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "add_once_task",
     "add_interval_task",
 )
-SLIM_GROUP_CORE_TOOLS: frozenset[str] = frozenset(MAIN_AGENT_CORE_TOOLS)
 
 
-# 框架自己的资源句柄 / 装配标注（非业务话题词）
-_MEDIA_HANDLE_RE = re.compile(r"\b(?:img|res|aud|vid)_[0-9a-fA-F]{6,}\b")
 _MEDIA_LABEL_MARKERS = ("图片ID:", "图片ID：", "音频ID:", "音频ID：", "视频ID:", "视频ID：")
 
 
@@ -892,4 +909,4 @@ def message_has_media_handles(
         return False
     if any(m in t for m in _MEDIA_LABEL_MARKERS):
         return True
-    return _MEDIA_HANDLE_RE.search(t) is not None
+    return MEDIA_HANDLE_RE.search(t) is not None

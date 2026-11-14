@@ -119,6 +119,7 @@
   "log.webconsole.sesslog_retrieve_log_file": "[SessionLogsAPI] Failed to retrieve the log file: {e}",
   "log.webconsole.sesslog_retrieve_log_list": "[SessionLogsAPI] Failed to retrieve the log list: {e}",
   "log.webconsole.sesslog_retrieve_log_statistics": "[SessionLogsAPI] Failed to retrieve log statistics: {e}",
+  "log.webconsole.sesslog_retrieve_log_usage": "[SessionLogsAPI] Failed to retrieve session chain token usage: {e}",
   "log.webconsole.spa_fallback_index_html": "[WebConsole] SPA fallback returning index.html",
   "log.webconsole.start_event": "Start Q&A",
   "log.webconsole.statestore_api_batch_deletion_requested_delete": "[StateStore-API] Batch deletion: requested={p0} deleted={deleted_count} not_found={not_found_count}",

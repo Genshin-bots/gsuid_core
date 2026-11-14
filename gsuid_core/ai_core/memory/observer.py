@@ -33,7 +33,7 @@ _TIMESTAMP_STRPTIME_FORMATS = (
     "%d-%B-%Y",
     "%d-%b-%Y",
 )
-_LONGMEMEVAL_WEEKDAY_RE = re.compile(r"\s*\([A-Za-z]{3,9}\)\s*")
+_PAREN_WEEKDAY_RE = re.compile(r"\s*\([A-Za-z]{3,9}\)\s*")
 
 
 def parse_iso_or_unix_timestamp(raw: int | float | str | None) -> Optional[datetime]:
@@ -55,7 +55,7 @@ def parse_iso_or_unix_timestamp(raw: int | float | str | None) -> Optional[datet
             return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
         except (TypeError, ValueError, OSError):
             pass
-        s_clean = _LONGMEMEVAL_WEEKDAY_RE.sub(" ", s).strip()
+        s_clean = _PAREN_WEEKDAY_RE.sub(" ", s).strip()
         for fmt in _TIMESTAMP_STRPTIME_FORMATS:
             try:
                 dt = datetime.strptime(s_clean, fmt)
@@ -86,75 +86,6 @@ _INJECTION_RE = re.compile(
 )
 _USER_COMMAND_RE = re.compile(r"^[/#!！·、.]{1,2}\S")
 
-_MEME_EXPLAIN_RE = re.compile(r"(是.{0,16}梗|的梗|梗的意思|.{0,12}是个梗|这是.{0,16}(梗|黑话))")
-_MEME_LEARN_RE = re.compile(
-    r"[「『\"“]([^」』\"”]{2,20})[」』\"”]\s*(?:是|就是)(.+?)(?:的梗|梗)"
-    r"|([^」』\"”\s]{2,12})是(.+?)的梗"
-)
-
-
-def detect_meme_explain_intent(content: str) -> bool:
-    return bool(_MEME_EXPLAIN_RE.search(content or ""))
-
-
-def parse_meme_explain(content: str) -> tuple[str, str] | None:
-    m = _MEME_LEARN_RE.search(content or "")
-    if m is None:
-        return None
-    term = (m.group(1) or m.group(3) or "").strip()
-    meaning = (m.group(2) or m.group(4) or "").strip()[:300]
-    if len(term) < 2 or len(meaning) < 2:
-        return None
-    return term, meaning
-
-
-def _schedule_meme_knowledge_write(
-    bot_id: str,
-    group_id: str | None,
-    term: str,
-    meaning: str,
-    persona_name: str = "",
-) -> None:
-    if not bot_id:
-        return
-    import asyncio
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-
-    async def _write() -> None:
-        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key
-        from gsuid_core.ai_core.cognition.types import CogKind
-        from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
-        from gsuid_core.ai_core.meme.database_model import AiMemeKnowledge
-
-        scope_key = make_scope_key(ScopeType.GROUP, group_id) if group_id else ""
-        row = await AiMemeKnowledge.upsert_term(
-            bot_id=bot_id or "default",
-            term=term,
-            meaning=meaning,
-            origin="",
-            usage="",
-            scope_key=scope_key,
-            confidence=0.9,
-            source="群友解释",
-        )
-        await remember(
-            MemoryWrite(
-                kind=CogKind.MEME_KNOWLEDGE,
-                ref=str(row.id),
-                scope_key=scope_key or self_scope_key(bot_id, persona_name),
-                owner_user_id="",
-                title=term,
-                summary=meaning[:120],
-                source="群友解释",
-            )
-        )
-
-    loop.create_task(_write())
-
 
 @dataclass
 class ObservationRecord:
@@ -167,7 +98,7 @@ class ObservationRecord:
     timestamp: datetime
     message_type: str
     value_tier: str = "HIGH"
-    is_correction: bool = False
+    reply_to_bot: bool = False
     message_id: Optional[str] = None
     speaker_name: str = ""
     reply_to_msg_id: str = ""
@@ -177,6 +108,7 @@ class ObservationRecord:
     persona_name: str = ""
     personal_credential: bool = False  # 出站依据含个人凭据：禁进群级事实抽取（§4.7）
     command_hit: bool = False
+    defer_count: int = 0
 
 
 class _ScopeWindow:
@@ -243,6 +175,54 @@ def _looks_like_command(text: str) -> bool:
     return bool(_USER_COMMAND_RE.match(text)) and len(text) <= 30
 
 
+_KNOWN_BOT_SELF_IDS: set[str] = set()
+
+
+def _is_known_bot_speaker(speaker_id: str, bot_self_id: str) -> bool:
+    sid = (speaker_id or "").strip()
+    if not sid:
+        return False
+    if sid == (bot_self_id or "").strip():
+        return True
+    if sid.startswith(_ASSISTANT_PREFIX) or sid in _KNOWN_BOT_SELF_IDS:
+        return True
+    from gsuid_core.global_val import bot_val
+
+    return any(sid in bmap for bmap in bot_val.values())
+
+
+def _is_system_or_error_echo(stripped: str) -> bool:
+    from gsuid_core.ai_core.control.lines import (
+        INNER_OS_PREFIX,
+        OOC_JUDGE_MARKER,
+        FUND_CLAIM_PREFIX,
+        SYSTEM_ECHO_PREFIXES,
+        TOOL_NAME_LEAK_PREFIX,
+    )
+    from gsuid_core.ai_core.persona.settings import (
+        DEFAULT_ERROR_QUOTA,
+        DEFAULT_ERROR_GENERIC,
+        DEFAULT_ERROR_TIMEOUT,
+        DEFAULT_ERROR_CONTENT_POLICY,
+    )
+
+    if stripped.startswith(("[会话摘要] ",)):
+        return False
+    err_texts = (
+        DEFAULT_ERROR_GENERIC,
+        DEFAULT_ERROR_TIMEOUT,
+        DEFAULT_ERROR_QUOTA,
+        DEFAULT_ERROR_CONTENT_POLICY,
+    )
+    if any(e and (stripped.startswith(e) or e in stripped[:60]) for e in err_texts):
+        return True
+    if stripped.startswith(SYSTEM_ECHO_PREFIXES):
+        return True
+    return stripped.startswith(
+        (FUND_CLAIM_PREFIX[:10], OOC_JUDGE_MARKER[:12], TOOL_NAME_LEAK_PREFIX[:12], INNER_OS_PREFIX[:12])
+    )
+
+
 def _gate(
     content: str,
     speaker_id: str,
@@ -252,12 +232,14 @@ def _gate(
     scope_key: str,
 ) -> Optional[str]:
     """协议级清洗。返回 "HIGH" 或 None。"""
-    if speaker_id == bot_self_id:
+    if not (speaker_id or "").strip() or _is_known_bot_speaker(speaker_id, bot_self_id):
         return None
     if group_id and group_id in observer_blacklist:
         return None
     stripped = content.strip()
     if not stripped:
+        return None
+    if _is_system_or_error_echo(stripped):
         return None
     if stripped.startswith("[图片]") and len(stripped) < 10:
         return None
@@ -298,6 +280,7 @@ async def observe(
     reply_to_msg_id: str = "",
     reply_preview: str = "",
     at_targets: Sequence[str] = (),
+    reply_to_bot: bool = False,
     personal_credential: bool = False,
 ) -> None:
     """向观察队列投递一条消息记录（不 await 调用为主）。"""
@@ -309,10 +292,14 @@ async def observe(
         if get_history_manager().is_command_hit(message_id):
             return
 
+    bsid = (bot_self_id or "").strip()
+    if bsid:
+        _KNOWN_BOT_SELF_IDS.add(bsid)
+
     is_self_speech = force_scope_key is None and speaker_id.startswith(_ASSISTANT_PREFIX)
     if is_self_speech:
         stripped = content.strip()
-        if not stripped:
+        if not stripped or _is_system_or_error_echo(stripped):
             return
         scope_key = self_scope_key(bot_self_id, persona_name)
         value_tier = "LOW"
@@ -332,10 +319,6 @@ async def observe(
             from gsuid_core.ai_core.mcp.pii import mask_pii
 
             content = mask_pii(content)
-        if detect_meme_explain_intent(content):
-            parsed = parse_meme_explain(content)
-            if parsed is not None:
-                _schedule_meme_knowledge_write(bot_id, group_id, parsed[0], parsed[1], persona_name)
 
     record = ObservationRecord(
         raw_content=content,
@@ -350,6 +333,7 @@ async def observe(
         reply_to_msg_id=reply_to_msg_id,
         reply_preview=reply_preview[:120],
         at_targets=tuple(at_targets),
+        reply_to_bot=reply_to_bot,
         bot_id=bot_id,
         persona_name=persona_name,
         personal_credential=personal_credential,

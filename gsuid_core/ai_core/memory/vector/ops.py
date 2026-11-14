@@ -29,13 +29,20 @@ from gsuid_core.ai_core.rag.qmodels import (
 
 from .collections import (
     MEMORY_EDGES_COLLECTION,
-    MEMORY_THREADS_COLLECTION,
     MEMORY_ENTITIES_COLLECTION,
     MEMORY_EPISODES_COLLECTION,
 )
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity, Episode
+
+
+class EdgeLifecycleUpdate(TypedDict):
+    """写到 Qdrant Edge payload 的生命周期状态同步项。"""
+
+    edge_id: str
+    invalid_at_ts: float | None
+    resolution_state: str
 
 
 class CandidatePoint(TypedDict):
@@ -58,7 +65,6 @@ _QDRANT_LOCKS: dict[str, asyncio.Lock] = {
     MEMORY_EPISODES_COLLECTION: asyncio.Lock(),
     MEMORY_ENTITIES_COLLECTION: asyncio.Lock(),
     MEMORY_EDGES_COLLECTION: asyncio.Lock(),
-    MEMORY_THREADS_COLLECTION: asyncio.Lock(),
 }
 
 # 有界线程池：用于单条 _embed_async / _sparse_embed_async 调用
@@ -435,6 +441,7 @@ async def upsert_edge_vector(
     invalid_at_ts: Optional[float],
     source_entity_id: str,
     target_entity_id: str,
+    resolution_state: str = "active",
 ):
     """写入 Edge 向量到 Qdrant"""
     from gsuid_core.ai_core.rag.base import client
@@ -458,12 +465,35 @@ async def upsert_edge_vector(
                 "invalid_at_ts": invalid_at_ts,
                 "source_entity_id": source_entity_id,
                 "target_entity_id": target_entity_id,
+                "resolution_state": resolution_state,
             },
         )
         await client.upsert(
             collection_name=MEMORY_EDGES_COLLECTION,
             points=[point],
         )
+
+
+async def update_edge_lifecycle_payloads(updates: list[EdgeLifecycleUpdate]) -> None:
+    """把 SQLite 中边的 invalid_at_ts 与 resolution_state 同步到 Qdrant payload。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not updates:
+        return
+
+    async with _QDRANT_LOCKS[MEMORY_EDGES_COLLECTION]:
+        for item in updates:
+            try:
+                await client.set_payload(
+                    collection_name=MEMORY_EDGES_COLLECTION,
+                    payload={
+                        "invalid_at_ts": item["invalid_at_ts"],
+                        "resolution_state": item["resolution_state"],
+                    },
+                    points=[item["edge_id"]],
+                )
+            except Exception as e:
+                logger.warning(t("log.memory.qdrant_batch_write_edge", e=e))
 
 
 async def upsert_entity_vectors_batch(entities_data: list[dict]):
@@ -562,6 +592,7 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
                     "invalid_at_ts": d["invalid_at_ts"] if "invalid_at_ts" in d else None,
                     "source_entity_id": d["source_entity_id"] if "source_entity_id" in d else "",
                     "target_entity_id": d["target_entity_id"] if "target_entity_id" in d else "",
+                    "resolution_state": d["resolution_state"] if "resolution_state" in d else "active",
                 },
             )
         )
@@ -705,6 +736,14 @@ async def _hybrid_search_edges(
             value = r["valid_at_ts"]
             if isinstance(value, (int, float)) or value is None:
                 valid_at_ts = value
+        resolution_state: str = ""
+        if "resolution_state" in r and isinstance(r["resolution_state"], str):
+            resolution_state = r["resolution_state"]
+        if invalid_at_ts is not None or resolution_state == "superseded":
+            continue
+        scope_key: str = ""
+        if "scope_key" in r and isinstance(r["scope_key"], str):
+            scope_key = r["scope_key"]
         # 按 AGENTS.md §1.4：dict lookup 也走显式分支，不写 `d[k] if k in d else ""` 兜底
         source_name: str = ""
         if source_id in id_to_name:
@@ -713,20 +752,23 @@ async def _hybrid_search_edges(
         if target_id in id_to_name:
             target_name = id_to_name[target_id]
 
-        edges.append(
-            {
-                "id": r["id"],
-                "source_id": source_id,
-                "target_id": target_id,
-                "source_name": source_name,
-                "target_name": target_name,
-                "fact": fact,
-                "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
-                "score": score,
-                "valid_at_ts": valid_at_ts,
-                "invalid_at_ts": invalid_at_ts,
-            }
-        )
+        edge_item: "Edge" = {
+            "id": r["id"],
+            "source_id": source_id,
+            "target_id": target_id,
+            "source_name": source_name,
+            "target_name": target_name,
+            "fact": fact,
+            "weight": 0.0,  # 占位：检索期 dual_route 据 mention_count/decay_score 富集
+            "score": score,
+            "valid_at_ts": valid_at_ts,
+            "invalid_at_ts": invalid_at_ts,
+        }
+        if resolution_state:
+            edge_item["resolution_state"] = resolution_state
+        if scope_key:
+            edge_item["scope_key"] = scope_key
+        edges.append(edge_item)
     return edges
 
 

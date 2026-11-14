@@ -559,6 +559,13 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
         ai_scope_banned = is_scope_banned(event.session_id)
 
+    # 先入 A 轨历史生成 EventLink，再派 H00 观察与后续链路共享单一事实源。
+    inbound_record = _record_inbound_history(event)
+    if inbound_record is not None and event.group_id:
+        from gsuid_core.ai_core.inbox.feedback import note_inbound
+
+        note_inbound(inbound_record, str(event.group_id), str(event.user_id))
+
     # ====== H00 入站观察扇出（记忆 / 表情 / 图片记忆）======
     # 只观察，**不挡**命令/AI 分流；要拦 AI 走 H01。失败 fail-open。
     if enable_ai and not ai_scope_banned:
@@ -577,16 +584,10 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 ev=event,
                 session_id=event.session_id,
                 create_by="Chat",
+                inbound_link=inbound_record.link if inbound_record is not None else None,
                 query=event.raw_text or "",
             )
             ws._add_bg_task(asyncio.create_task(fire_hooks(AgentHookPoint.ON_INBOUND, inbound_ctx)))
-
-    # 图片观察在 H00 按 event 自己判。历史入库：正文、纯 @、无配文纯图都记。
-    inbound_record = _record_inbound_history(event)
-    if inbound_record is not None and event.group_id:
-        from gsuid_core.ai_core.inbox.feedback import note_inbound
-
-        note_inbound(inbound_record, str(event.group_id), str(event.user_id))
 
     # 记忆 / 表情 / 图片记忆的入站观察已迁至 H00（``kits/memory``、``kits/meme``）：
     # 关 memory 槽就该不观察，观察与检索不该分处两地各判一次开关。
