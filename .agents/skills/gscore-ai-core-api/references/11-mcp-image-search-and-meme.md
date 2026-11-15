@@ -345,20 +345,21 @@ for r in results:
 ### 11.3b.1 概述
 
 `web_fetch_tool` → `gsuid_core.ai_core.web_fetch.fetch_webpage_as_markdown`。
-支持 **Jina Reader**（默认）、**DeepSeek**、**Exa Contents** 与 **local** 本机直连，并带与搜索同构的多源策略。
+支持 **Jina Reader**（默认）、**DeepSeek**、**Exa Contents**、**AnySearch Extract** 与 **local** 本机直连，并带与搜索同构的多源策略。
 
 | 提供方 | 端点 / 方式 | API Key |
 |--------|-------------|---------|
 | **Jina**（默认主用） | `https://r.jina.ai/{url}` | **可选**；匿名有额度，填 Key 更高 |
 | **DeepSeek** | DeepSeek Fetch API | 必填，`deepseek_config` |
 | **Exa** | `POST https://api.exa.ai/contents` | 必填，与搜索共用 `exa_config`。默认备用不含 Exa |
+| **AnySearch** | `POST https://api.anysearch.com/v1/extract` | **可选**，与搜索共用 `anysearch_config`；无 Key 走匿名每日额度 |
 | **local**（默认备用） | aiohttp 直连 + BS4/markdownify | 无；走 `web_fetch_config` 的 proxy/UA/超时 |
 
 ### 11.3b.2 配置
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `webfetch_provider` | **`Jina`** | 主用：`Jina` / `DeepSeek` / `Exa` / `local` |
+| `webfetch_provider` | **`Jina`** | 主用：`Jina` / `DeepSeek` / `Exa` / `AnySearch` / `local` |
 | `webfetch_lb_strategy` | **`error_switch`** | 同搜索：`none` / `error_switch` / `auto_balance` |
 | `webfetch_fallback_order` | **`["local"]`** | 备用顺序；空列表运行时也回落 `["local"]` |
 | `web_fetch_config` | — | local 的 proxy / trust_env / timeout / UA / 体积上限 |
@@ -369,8 +370,8 @@ for r in results:
 内置工具外层：`web_fetch_tool` 使用 `@ai_tools(..., timeout=100.0)`。
 
 日志：开始即打
-`[WebFetch] 开始抓取 provider=Jina|DeepSeek|Exa|local url=... (...)`，
-完成 `[WebFetch][Jina|DeepSeek|Exa|local] 抓取完成`；失败切换见 `webfetch_provider_fail` / `webfetch_failover_ok`。
+`[WebFetch] 开始抓取 provider=Jina|DeepSeek|Exa|AnySearch|local url=... (...)`，
+完成 `[WebFetch][Jina|DeepSeek|Exa|AnySearch|local] 抓取完成`；失败切换见 `webfetch_provider_fail` / `webfetch_failover_ok`。
 
 ### 11.3b.3 使用示例
 

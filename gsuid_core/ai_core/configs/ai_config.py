@@ -116,9 +116,10 @@ AI_CONFIG: Dict[str, GSC] = {
         "网页抓取服务提供方（主用）",
         "Jina：经 r.jina.ai 读取（API Key 可选）；DeepSeek：经 DeepSeek Fetch API 抓取；"
         "Exa：经 Exa Contents 读取这个 URL 的正文（用 exa_config 的 Key）；"
+        "AnySearch：经 AnySearch Extract 读取正文（用 anysearch_config 的 Key，可匿名）；"
         "local：本机直连抓取并转 Markdown。多源策略非「无」时，失败会按备用顺序切换",
         "Jina",
-        options=["Jina", "DeepSeek", "Exa", "local"],
+        options=["Jina", "DeepSeek", "Exa", "AnySearch", "local"],
     ),
     "webfetch_lb_strategy": GsStrConfig(
         "网页抓取多源策略",
@@ -130,7 +131,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "网页抓取备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用）。默认 local",
         ["local"],
-        options=["Jina", "DeepSeek", "Exa", "local"],
+        options=["Jina", "DeepSeek", "Exa", "AnySearch", "local"],
     ),
     "render_image_sources": GsListStrConfig(
         "出图配图来源",
@@ -735,7 +736,7 @@ ANYSEARCH_CONFIG: Dict[str, GSC] = {
     ),
     "timeout": GsIntConfig(
         "请求超时(秒)",
-        "调用 api.anysearch.com/v1/search 的超时时间",
+        "调用 api.anysearch.com /v1/search 与 /v1/extract 的超时时间",
         30,
         options=[10, 15, 20, 30, 45, 60],
     ),

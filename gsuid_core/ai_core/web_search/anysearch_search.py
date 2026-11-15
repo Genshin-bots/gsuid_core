@@ -1,5 +1,6 @@
 """
 AnySearch Web Search（POST https://api.anysearch.com/v1/search）
+与按 URL 抓取（POST https://api.anysearch.com/v1/extract）。
 
 文档：https://www.anysearch.com/docs#quick-start
 鉴权：Authorization: Bearer <api_key> 可选；无 Key 走匿名（按 IP 限流 + 每日免费额度）。
@@ -19,6 +20,7 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.configs.ai_config import anysearch_config
 
 _SEARCH_URL = "https://api.anysearch.com/v1/search"
+_EXTRACT_URL = "https://api.anysearch.com/v1/extract"
 _CLIENT_HEADER = "gsuid-core/1.0"
 _MAX_RESULTS_CAP = 100
 
@@ -162,8 +164,8 @@ def _payload_code(payload: object) -> int | None:
     return raw
 
 
-async def _do_anysearch_search(query: str, max_results: int, api_key: str) -> list[dict[str, str | float]]:
-    headers: dict[str, str] = {
+def _build_headers(api_key: str) -> dict[str, str]:
+    headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "gsuid-core-anysearch/1.0",
@@ -171,38 +173,46 @@ async def _do_anysearch_search(query: str, max_results: int, api_key: str) -> li
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
+
+async def _read_json_payload(resp: aiohttp.ClientResponse) -> tuple[object, str]:
+    text = await resp.text()
+    try:
+        return (json.loads(text) if text else {}), text
+    except json.JSONDecodeError:
+        return {"message": text[:300]}, text
+
+
+def _rid_part(payload: object) -> str:
+    rid = _request_id(payload)
+    return f" request_id={rid}" if rid else ""
+
+
+def _raise_for_status(status: int, payload: object, text: str, op: str) -> None:
+    """HTTP 错误与业务 code 统一抛 AnySearchError；op 标记 search / extract。"""
+    rid_part = _rid_part(payload)
+    if status in (401, 403):
+        raise AnySearchError(f"AnySearch {op} auth HTTP {status}{rid_part}: {_error_message(payload, text[:300])}")
+    # 402 的 message 可能含服务端自动生成的凭据，只保留状态码与 request_id
+    if status == 402:
+        raise AnySearchError(f"AnySearch {op} quota HTTP 402{rid_part}")
+    if status == 429:
+        raise AnySearchError(f"AnySearch {op} rate limit HTTP 429{rid_part}: {_error_message(payload, text[:300])}")
+    if status >= 400:
+        raise AnySearchError(f"AnySearch {op} HTTP {status}{rid_part}: {_error_message(payload, text[:300])}")
+    code = _payload_code(payload)
+    if code not in (None, 0, 200):
+        raise AnySearchError(f"AnySearch {op} error code={code}{rid_part}: {_error_message(payload, text[:200])}")
+
+
+async def _do_anysearch_search(query: str, max_results: int, api_key: str) -> list[dict[str, str | float]]:
     timeout = aiohttp.ClientTimeout(total=_timeout_sec())
     body = _build_search_body(query, max_results)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(_SEARCH_URL, json=body, headers=headers) as resp:
-            text = await resp.text()
-            payload: object
-            try:
-                payload = json.loads(text) if text else {}
-            except json.JSONDecodeError:
-                payload = {"message": text[:300]}
-
-            rid = _request_id(payload)
-            rid_part = f" request_id={rid}" if rid else ""
-            if resp.status == 401 or resp.status == 403:
-                raise AnySearchError(
-                    f"AnySearch auth HTTP {resp.status}{rid_part}: {_error_message(payload, text[:300])}"
-                )
-            if resp.status == 402:
-                raise AnySearchError(f"AnySearch quota HTTP 402{rid_part}: {_error_message(payload, text[:300])}")
-            if resp.status == 429:
-                raise AnySearchError(f"AnySearch rate limit HTTP 429{rid_part}: {_error_message(payload, text[:300])}")
-            if resp.status >= 400:
-                raise AnySearchError(
-                    f"AnySearch search HTTP {resp.status}{rid_part}: {_error_message(payload, text[:300])}"
-                )
-
-            code = _payload_code(payload)
-            if code not in (None, 0, 200):
-                raise AnySearchError(
-                    f"AnySearch search error code={code}{rid_part}: {_error_message(payload, text[:200])}"
-                )
+        async with session.post(_SEARCH_URL, json=body, headers=_build_headers(api_key)) as resp:
+            payload, text = await _read_json_payload(resp)
+            _raise_for_status(resp.status, payload, text, "search")
             return _normalize_results(payload, max_results)
 
 
@@ -244,6 +254,84 @@ async def anysearch_search(
     if last_err:
         raise AnySearchError(f"{msg}: {last_err}") from last_err
     raise AnySearchError(msg)
+
+
+def _extract_text(payload: object) -> str:
+    if not isinstance(payload, dict) or "data" not in payload:
+        return ""
+    data = payload["data"]
+    if not isinstance(data, dict):
+        return ""
+    content = data["content"] if "content" in data else None
+    if not isinstance(content, str):
+        return ""
+    text = content.strip()
+    title = data["title"] if "title" in data else None
+    if text and isinstance(title, str) and title.strip():
+        return f"# {title.strip()}\n\n{text}"
+    return text
+
+
+async def _do_anysearch_extract(url: str, api_key: str) -> str:
+    """单次 /v1/extract；400/422 抛 ValueError 立即失败，HTTP/业务/传输错误上抛供换 Key。"""
+    timeout = aiohttp.ClientTimeout(total=_timeout_sec())
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(_EXTRACT_URL, json={"url": url}, headers=_build_headers(api_key)) as resp:
+            payload, text = await _read_json_payload(resp)
+            if resp.status in (400, 422):
+                raise ValueError(
+                    f"AnySearch extract HTTP {resp.status}{_rid_part(payload)}: {_error_message(payload, text[:300])}"
+                )
+            _raise_for_status(resp.status, payload, text, "extract")
+            return _extract_text(payload)
+
+
+async def anysearch_fetch_markdown(url: str, max_chars: int) -> str:
+    """
+    用 AnySearch Extract 读取指定 URL 的正文文本（服务端提取，不保证为 Markdown 格式）。
+
+    Key 池非空时轮询重试，全空则匿名调用；400/422 说明请求本身有问题，直接失败。
+    空正文或全部尝试失败抛 ValueError，供抓取链换源。
+    """
+    api_key_pool = _get_api_key_pool()
+    keys_to_try = api_key_pool if api_key_pool else [""]
+    auth_mode = "with_api_key" if api_key_pool else "anonymous"
+    logger.info(
+        t(
+            "log.ai.webfetch_start",
+            provider="AnySearch",
+            url=url,
+            detail=f"endpoint={_EXTRACT_URL} auth={auth_mode}",
+        )
+    )
+
+    tried: set[str] = set()
+    last_err: Exception | None = None
+    while len(tried) < len(keys_to_try):
+        remaining = [k for k in keys_to_try if k not in tried]
+        api_key = _select_api_key(remaining)
+        if api_key is None:
+            break
+        tried.add(api_key)
+        try:
+            result = await _do_anysearch_extract(url, api_key)
+            if not result:
+                raise ValueError(t("抓取结果为空，切换下一源"))
+            if len(result) > max_chars:
+                result = result[:max_chars] + "\n\n...(内容已截断)"
+            logger.info(t("log.ai.webfetch_anysearch_ok", url=url, p0=len(result)))
+            return result
+        except ValueError:
+            raise
+        except (AnySearchError, aiohttp.ClientError, TimeoutError, OSError) as e:
+            last_err = e
+            tail = api_key[-4:] if api_key else "anon"
+            logger.warning(t("log.ai.webfetch_anysearch_try_fail", p0=tail, url=url, e=e))
+            continue
+
+    if last_err:
+        raise ValueError(t("AnySearch 抓取失败: {e}", e=last_err)) from last_err
+    raise ValueError(t("AnySearch 抓取失败: empty response"))
 
 
 def anysearch_search_configured() -> bool:

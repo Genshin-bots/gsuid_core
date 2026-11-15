@@ -642,6 +642,8 @@
   "log.ai.video_keyframe_extraction_image": "[Video] Using keyframe extraction + image understanding approach, extracting {max_frames} frames",
   "log.ai.video_provider_mcp_supported": "[Video] Unknown provider '{provider}', only MCP is supported",
   "log.ai.webfetch_all_providers_failed": "[WebFetch] All providers failed: {url}; {p0}",
+  "log.ai.webfetch_anysearch_ok": "[WebFetch][AnySearch] Fetch completed: {url}, length: {p0}",
+  "log.ai.webfetch_anysearch_try_fail": "[WebFetch][AnySearch] api_key ...{p0} failed: {url}, error: {e}",
   "log.ai.webfetch_content_long_truncated": "[WebFetch] Content too long, truncated: {url}, original length: {p0}, truncated to: {max_length}",
   "log.ai.webfetch_deepseek_ok": "[WebFetch][DeepSeek] Fetch completed: {url}, length: {p0}",
   "log.ai.webfetch_deepseek_try_fail": "[WebFetch][DeepSeek] Attempt failed: {url}, error: {e}",
