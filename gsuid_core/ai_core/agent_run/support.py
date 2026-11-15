@@ -21,17 +21,22 @@ from pydantic_ai.messages import (
 from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
-from gsuid_core.ai_core.control.lines import THRASH_FUSE_NUDGE as _THRASH_FUSE_NUDGE  # noqa: F401
+from gsuid_core.ai_core.control.lines import (
+    THRASH_FUSE_NUDGE as _THRASH_FUSE_NUDGE,  # noqa: F401
+    STATUS_INQUIRY_HINT as _STATUS_INQUIRY_HINT,  # noqa: F401
+    SCHED_TASK_NOUN_BASE,
+)
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
 # re-export：settle / prepare / gs_agent 与测试共用
 from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
-    STATUS_INQUIRY_HINT as _STATUS_INQUIRY_HINT,
     _REPORT_SPEECH_NUDGE,
     _RENDER_DELEGATE_NUDGE,
     _STATUS_ZERO_TOOL_NUDGE,
+)
+from gsuid_core.ai_core.control.outbound_detectors import (  # noqa: F401
     looks_like_report_speech as _looks_like_report_speech,
     looks_like_capability_absence,
 )
@@ -112,7 +117,7 @@ _FAKE_DONE_RE = re.compile(
     r"|^[^，。！？]{0,4}[，,]?\s*(改成|改到|改为|换成|定在)[^。！？]{0,16}(提醒|叫你|喊你|通知)"
 )
 # "搞定/弄好"是生活化动词（角色闲聊"我搞定了午饭"合法）——该支须同句出现可工具化名词才算
-_FAKE_DONE_TASK_NOUN_RE = re.compile(r"提醒|闹钟|任务|日程|定时|预约|待办|计划|通知|订阅")
+_FAKE_DONE_TASK_NOUN_RE = re.compile(rf"{SCHED_TASK_NOUN_BASE}|任务|预约|计划|通知")
 _FAKE_DONE_CASUAL_RE = re.compile(r"(我|已经?|帮你|给你)[^，。！？]{0,4}(搞定|办好|弄好|安排上)了")
 # 疑问/揣测句排除：向用户提问（"你安排好了吗"）或不确定表述不是完成声明
 _FAKE_DONE_QUESTION_RE = re.compile(

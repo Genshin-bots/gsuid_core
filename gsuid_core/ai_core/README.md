@@ -33,7 +33,7 @@
 | `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
 | `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）；`tool_gate_feedback`。 |
 | `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
-| `output_firewall.py` | 出戏词库 + `check_ooc`（策略实现；编排见 `output_gate`）；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
+| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语与数据驱动 `_OOC_RING` 规则表；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
 | `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
 | `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |

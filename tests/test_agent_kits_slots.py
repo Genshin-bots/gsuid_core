@@ -154,7 +154,6 @@ def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
         "BEFORE_AI_CHAT",
         "AFTER_SESSION",
         "CLASSIFY",
-        "REACTIVE_GATE",
         "RETRIEVE_CONTEXT",
         "COMPOSE_CONTEXT",
         "AFTER_RUN",

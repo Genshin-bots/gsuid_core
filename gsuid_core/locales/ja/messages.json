@@ -149,7 +149,5 @@
   "🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！": "🧠 [GsCore][AI] AI モデル設定ファイルが未設定です、まず Web コンソールで設定ファイルを設定してください！",
   "🧠 [Memory] 文本 {i} 嵌入失败（413 限流），无法继续": "🧠 [Memory] テキスト {i} の Embedding に失敗した（413 レート制限）。続行できない",
   "🧠 [Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}": "🧠 [Qdrant] コレクション {collection_name} に keyword インデックスを作成しました: {field}",
-  "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}": "🧠 [{log_tag}] バッチ埋め込みの返却数が異常: expected={p0}, actual={p1}",
-  "🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默": "🫧 [ReactiveGate] 判断に有効な should_speak がないため、デフォルトで沈黙する",
-  "🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}": "🫧 [ReactiveGate] ソフトトリガー沈黙 gate でエラーが発生したため、通過させてメイン Agent のフォールバックに委ねる: {e}"
+  "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}": "🧠 [{log_tag}] バッチ埋め込みの返却数が異常: expected={p0}, actual={p1}"
 }

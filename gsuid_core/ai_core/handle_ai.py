@@ -75,7 +75,7 @@ from gsuid_core.ai_core.interaction_scaffold import (
     CheapGate,
     admit_pre_router,
     build_turn_graph,
-    admit_post_classify,
+    decide_cheap_gate,
     has_recent_tool_call,
     recent_history_texts,
 )
@@ -387,6 +387,8 @@ async def run_interactive_turn(
         prior_turns = prior_turns_from_agent_history(session.history, query)
     if not hook_ctx.prior_user_turns:
         hook_ctx.prior_user_turns = prior_turns
+    if not hook_ctx.gate_history and hist_records:
+        hook_ctx.gate_history = hist_records[-15:]
     hook_ctx.prev_turn_used_tools = prev_turn_used_tools(session.history, current_user_id=str(event.user_id or ""))
     # 线程视图必须先于 CLASSIFY 渲染：TurnRouter 在 H03 里读 router_view 与 pending 列表。
     delta_text = render_delta(
@@ -402,42 +404,31 @@ async def run_interactive_turn(
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
 
-    # 二段入站门：合并 CheapGate（温度/潜水/任务延续）与软触发 H04 REACTIVE_GATE。
+    # 二段入站门：合并 CheapGate（温度/潜水/任务延续）与软触发 TurnRouter.soft_speak。
     reactive_ok = True
-    reactive_timeout = False
     if soft_triggered:
-        hook_ctx.gate_history = history.get_history(event, limit=15)
-        rg_decision = await fire_hooks(AgentHookPoint.REACTIVE_GATE, hook_ctx)
-        reactive_ok = rg_decision is HookDecision.CONTINUE and hook_ctx.should_speak
-        reactive_timeout = rg_decision is HookDecision.SILENCE and hook_ctx.decision_reason == "timeout"
+        reactive_ok = bool(hook_ctx.route_decision is not None and hook_ctx.route_decision.soft_speak)
+        hook_ctx.should_speak = reactive_ok
+        if reactive_ok:
+            record_gate_outcome("llm_speak")
+            logger.info(t("log.ai.gscore_soft_trigger_silent_2"))
+        else:
+            record_gate_outcome("llm_silence")
+            logger.info(t("log.ai.gscore_soft_trigger_silent"))
 
     _has_active = hook_ctx.has_actionable or _recent_tool or bool(hook_ctx.prev_turn_used_tools)
-    cheap = admit_post_classify(
+    base_cheap = decide_cheap_gate(
         turn_graph,
         soft_triggered=soft_triggered,
         has_active_task=_has_active,
         intent=intent,
         rel=rel,
-        should_speak=reactive_ok,
     )
+    reactive_blocked = soft_triggered and not reactive_ok
+    cheap = CheapGate.SILENCE if (base_cheap is CheapGate.SILENCE or reactive_blocked) else CheapGate.FULL
     hook_ctx.cheap_gate = cheap.value
     if cheap is CheapGate.SILENCE:
-        reactive_only_silence = (
-            soft_triggered
-            and not reactive_ok
-            and admit_post_classify(
-                turn_graph,
-                soft_triggered=soft_triggered,
-                has_active_task=_has_active,
-                intent=intent,
-                rel=rel,
-                should_speak=True,
-            )
-            is CheapGate.FULL
-        )
-        if soft_triggered and not reactive_ok and reactive_timeout:
-            record_gate_outcome("timeout_silence")
-        if not reactive_only_silence:
+        if not (reactive_blocked and base_cheap is CheapGate.FULL):
             logger.info(t("log.ai.gscore_group_open_gate_silence"))
             if settle:
                 await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")

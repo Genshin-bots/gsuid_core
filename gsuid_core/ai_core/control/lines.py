@@ -453,6 +453,7 @@ CODE_FENCE_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
 CODE_SPAN_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
 RES_HANDLE_RE: Final[re.Pattern[str]] = re.compile(r"\bres_[0-9a-fA-F]{6,}\b")
 MEDIA_HANDLE_RE: Final[re.Pattern[str]] = re.compile(r"\b(?:img|res|aud|vid)_[0-9a-fA-F]{6,}\b")
+SCHED_TASK_NOUN_BASE: Final[str] = r"提醒|闹钟|定时(?:任务)?|日程|待办|订阅"
 MD_NUM_MARKER: Final[str] = r"\d+[.、)]"
 MD_BULLET_MARKER: Final[str] = r"[-*•]"
 MD_LIST_ITEM_RE: Final[re.Pattern[str]] = re.compile(

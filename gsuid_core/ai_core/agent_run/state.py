@@ -10,9 +10,9 @@ from pydantic_ai.messages import UserContent
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
-from gsuid_core.ai_core import output_firewall
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import ToolList
+from gsuid_core.ai_core.control.outbound_detectors import FirewallHit
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.agent_node.tool_scope import ToolScope
@@ -62,7 +62,7 @@ class RunOnceState:
     #: 材料：`self.history` 此刻还没 extend 本轮，工具名也证明不了有事实。
     run_tool_outputs: list[str] = field(default_factory=list)
     effectual_mutate: bool = False
-    ooc_blocked: list[tuple[str, output_firewall.FirewallHit]] = field(default_factory=list)
+    ooc_blocked: list[tuple[str, FirewallHit]] = field(default_factory=list)
     ab_pending_nudges: list[str] = field(default_factory=list)
     ab_abort: bool = False
     fab_blocked: list[str] = field(default_factory=list)

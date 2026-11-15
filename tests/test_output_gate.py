@@ -112,7 +112,8 @@ def test_parse_reply_plan_table() -> None:
 
 def test_report_speech_and_allow_render_gate() -> None:
     """自然多段对话不被误判为汇报，且无出图人格不因待出图拦截文本。"""
-    from gsuid_core.ai_core.agent_run.speech_policy import looks_like_report_speech, should_block_user_visible_text
+    from gsuid_core.ai_core.agent_run.speech_policy import should_block_user_visible_text
+    from gsuid_core.ai_core.control.outbound_detectors import looks_like_report_speech
 
     casual_paras = (
         "你先别急，我刚刚把这几个步骤在脑子里过了一遍，其实没你想的那么复杂。\n\n"
@@ -186,6 +187,14 @@ def test_report_speech_and_allow_render_gate() -> None:
         evaluate_speech_ring,
         rewrite_directive_for,
     )
+    from gsuid_core.ai_core.control.outbound_detectors import (
+        _OOC_RING,
+        SOFT_JUDGE_CATEGORIES,
+        NEVER_RELEASE_CATEGORIES,
+        LAST_RESORT_SEND_ORIGINAL_CATEGORIES,
+        build_ooc_warning,
+        inspect_outbound_ooc,
+    )
 
     assert evaluate_speech_ring(ctx_inline, bullet_report) == (True, "report_speech")
     rw = rewrite_directive_for(
@@ -209,7 +218,34 @@ def test_report_speech_and_allow_render_gate() -> None:
         is None
     )
     assert {r.name for r in _OUTBOUND_RING} == {"speech_policy", "angle_bracket", "ooc", "inner_os"}
+    assert [r.category for r in _OOC_RING] == [
+        "delivery_narration",
+        "meta_narration",
+        "capability_absence",
+        "stale_present",
+        "ai_selfref",
+        "fund_claim",
+        "machine_dump",
+        "model_identity",
+        "system_term",
+    ]
+    assert NEVER_RELEASE_CATEGORIES == {
+        "fund_claim",
+        "machine_dump",
+        "capability_absence",
+        "meta_narration",
+        "stale_present",
+    }
+    assert SOFT_JUDGE_CATEGORIES == {"model_identity", "ai_selfref"}
+    assert LAST_RESORT_SEND_ORIGINAL_CATEGORIES == {"capability_absence", "meta_narration", "stale_present"}
+    hit = inspect_outbound_ooc("我是语言模型。")
+    assert hit is not None and hit.category == "ai_selfref"
+    assert "ai_selfref" in build_ooc_warning(hit)
 
     # 未知 channel 回落为 main 语义（machine_dump 延迟到 run 末重说而非 tool 当场打回）
     unknown_res = pre_send_gate("Traceback (most recent call last):\n  File x", {}, channel="unknown")
     assert unknown_res.decision is GateDecision.REWRITE and unknown_res.defer_ooc is True
+
+    from gsuid_core.ai_core.agent_run.support import _claims_fake_done
+
+    assert _claims_fake_done("我已经把定时弄好了")

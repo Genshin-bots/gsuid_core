@@ -4,7 +4,7 @@
 
 - ``wrap_untrusted``：把外部 / 多模态 / 用户可控内容套统一"不可信栅栏"，让模型对
   栅栏内的指令 / 权限 / 身份声明一律当数据、不执行（read_image / RAG / web_* / MCP 复用）。
-- ``normalize_for_match``：词库匹配前的规范化（output_firewall 复用）。
+- ``normalize_for_match``：词库匹配前的规范化（``control.outbound_detectors`` 复用）。
 
 低俗谐音 / 钓鱼连锁信**不在此做词库识别**（2026-07-08 评审移除：手工词库在真实俚语
 空间覆盖率≈0，且常用词碰撞误杀实测严重）——该防线在 system prompt 合规层

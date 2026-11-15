@@ -421,7 +421,7 @@ generated_profile 由 `mcp/profile_generator.py` 用 `task_level="high"` 异步�
 
 | 层 | 模块 | 职责 |
 |----|------|------|
-| **策略检测** | `angle_bracket_guard` / `output_firewall` | 独立可测；不直接发消息 |
+| **策略检测** | `angle_bracket_guard` / `control/outbound_detectors` | 独立可测；不直接发消息 |
 | **编排** | `output_gate.pre_send_gate` | **唯一**「能不能发 / 打回 / 熔断」入口 |
 | **环内接线** | `gs_agent` | TextPart 调 gate；`ModelRequest` 注入 feedback；run 末 `_resolve_output_gate_after_run` |
 | **呈现** | `send_chat_result` | report / meme / 长文出图 / 拆条 / 漏网 sanitize；**不做**策略打回 |
@@ -436,7 +436,7 @@ generated_profile 由 `mcp/profile_generator.py` 用 `task_level="high"` 异步�
    - 同一次 `ModelResponse` 内多 `TextPart`：`begin_response_batch` + `count_attempt=False` →
      **只计 1 次 attempt**；多段 feedback 用 `merge_rewrite_feedbacks` 合并后注入下一轮请求。
    - 检测启发式：形如 `</?Name…>`；`List<str>` 等 PascalCase 泛型 / 含 `@` 邮箱跳过，降假阳性。
-2. **`ooc`**（`output_firewall.check_ooc`）：
+2. **`ooc`**（`outbound_detectors.inspect_outbound_ooc` + `policy_ring.evaluate_ooc_gate`）：
    - 主路径：`machine_dump` → `REWRITE`+`defer_ooc`（与 never-release 同路：run 末让当前
      人格自己重说一句，**无罐头兜底**）；**`delivery_narration`
      → `FUSE`**（交付已完成，重说无意义，直接静默）；资金红线持续 `REWRITE`。

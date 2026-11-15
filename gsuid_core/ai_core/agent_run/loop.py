@@ -28,7 +28,6 @@ from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import (
     output_gate,
-    output_firewall,
     angle_bracket_guard,
 )
 from gsuid_core.ai_core.utils import (
@@ -86,6 +85,10 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     evaluate_speech_policy,
     normalize_speech_policy,
     content_is_render_candidate,
+)
+from gsuid_core.ai_core.control.outbound_detectors import (
+    TECH_DUMP_TOOL_SHIELD,
+    is_tech_dump,
 )
 from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_name
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
@@ -569,8 +572,8 @@ class LoopPhase(RunOnceHost):
                     and type(part) is ToolReturnPart
                     and isinstance(part.content, str)
                 ):
-                    if output_firewall.is_tech_dump(part.content):
-                        part.content = output_firewall.TECH_DUMP_TOOL_SHIELD
+                    if is_tech_dump(part.content):
+                        part.content = TECH_DUMP_TOOL_SHIELD
                     else:
                         from gsuid_core.ai_core.utils import (
                             _summarize_structured_data,

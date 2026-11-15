@@ -97,7 +97,7 @@ AI 子系统**不再各自** `@on_core_start`，而是由 `ai_core/startup.py` �
 
 | # | 名称 | 实现 | 主要工作 |
 |---|------|------|----------|
-| 1 | **Agent 套件** | `kits/__init__.py::load_enabled_kits()` | 按 `kit_slots.*` 装载 18 个第一方套件（**只挂 hook**，重依赖在 hook 体内懒导入，实测 0.14s） |
+| 1 | **Agent 套件** | `kits/__init__.py::load_enabled_kits()` | 按 `kit_slots.*` 装载 20 个第一方套件（**只挂 hook**，重依赖在 hook 体内懒导入，实测 0.14s） |
 | 2 | RAG | `rag/startup.py::init_all()` | 预下载模型 → 线程内初始化嵌入模型 → 建 tools/knowledge/image collection → 同步工具/知识/图片 |
 | 3 | Persona | `persona/startup.py` | 写默认 Persona「早柚」+ 迁移旧配置 |
 | 4 | 审批中心 | `ai_core/approval` | 注册内置审批类别 + 预热 pending |

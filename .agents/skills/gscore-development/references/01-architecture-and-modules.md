@@ -56,7 +56,6 @@ gsuid_core/ai_core/
 ├── gs_agent.py          # GsCoreAIAgent：工具装配、Agent.iter 环、输出闸接线、收尾重写
 ├── output_gate.py       # pre_send_gate：发送前统一编排（尖括号 → OOC）；GateBag 状态
 ├── angle_bracket_guard.py  # 非法 <> 检测/文案/sanitize（<br> 非法；协议仅 SILENCE/meme/report）
-├── output_firewall.py   # 出戏词库 + check_ooc / never-release（策略实现，编排见 output_gate）
 ├── register.py          # @ai_tools 装饰器 + _TOOL_REGISTRY 工具注册表 + visible_when + ai_alias/ai_entity
 ├── entity_index.py      # 实体身份索引 surface(正式名/别名)→插件，供 L0 实体路由确定性定插件（见 [§7.3b](./07-tool-registry-and-agent.md)）
 ├── models.py            # ToolContext / ToolBase / 数据模型（含 dynamic_tool_names）
@@ -67,7 +66,7 @@ gsuid_core/ai_core/
 ├── self_cognition.py    # 自我认知 self_model 演化层（自述块随 session 进稳定前缀；关系行每轮注入，见 §06）
 ├── interaction_scaffold.py  # 交互脚手架 C-1 到 C-3：省略跟进/漂移预算/寻址前置门 + extract_message_body（见 §12.22d）
 ├── context_assembly.py  # 上下文装配共享层：session system prompt + 每轮动态注入的唯一定义（生产/评测端点同源，见 §06/§11）
-├── control/             # 控制面 Directive；当轮 user 侧句子只在 lines.py（AGENTS.md §1.11 / §6.7.3）
+├── control/             # 控制面 Directive、policy_ring、outbound_detectors；当轮 user 侧句子只在 lines.py（AGENTS.md §1.11 / §6.7.3）
 ├── configs/             # ai_config 全局配置 + 配置数据模型
 ├── buildin_tools/       # 内建 AI 工具（见 §07）
 ├── skills/              # 运行时 Skill 系统（list_skills / run_skill_script + install_skill 统一安装/热重载）

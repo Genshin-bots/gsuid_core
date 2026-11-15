@@ -44,9 +44,13 @@ from gsuid_core.ai_core.control.corrections import (
 from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
     SpeechContext,
+    non_master_title,
+)
+from gsuid_core.ai_core.control.outbound_detectors import (
+    ooc_rule_for,
     keeps_working,
     title_mentioned,
-    non_master_title,
+    inspect_outbound_ooc,
     looks_like_process_meta,
     looks_like_wait_comfort,
     looks_like_empty_handoff,
@@ -361,6 +365,135 @@ def run_outbound_gate(
         if res is not None and res.decision is not GateDecision.ALLOW:
             return res
     return GateResult(decision=GateDecision.ALLOW, send_text=text if is_group else "")
+
+
+# ── B2. 数据驱动 OOC 防火墙裁决环（规则表定义在 control.outbound_detectors） ───
+
+
+@dataclass(frozen=True, slots=True)
+class OocGateHooks:
+    """``evaluate_ooc_gate`` 需要回调的 ``output_gate`` 状态动作。"""
+
+    is_reminded: Callable[[], bool]
+    mark_reminded: Callable[[], None]
+    set_abort_ooc: Callable[[], None]
+
+
+def evaluate_ooc_gate(
+    text: str,
+    *,
+    user_text: str,
+    channel: str,
+    exposed_tool_names: Sequence[str],
+    hooks: OocGateHooks,
+) -> Optional[GateResult]:
+    """按 ``_OOC_RING`` 裁决单条出站台词的 OOC 放行 / 重写 / 熔断。"""
+    hit = inspect_outbound_ooc(text, user_text=user_text, exposed_tool_names=exposed_tool_names)
+    if hit is None:
+        return None
+    rule = ooc_rule_for(hit.category)
+    if rule is None:
+        return None
+    warn = rule.render_warning(hit)
+
+    if rule.severity == "fuse":
+        if channel == "main":
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_drop_text_after_fuse",
+                    policy="ooc",
+                    preview=repr(text[:80]),
+                )
+            )
+            hooks.set_abort_ooc()
+            return GateResult(
+                decision=GateDecision.FUSE,
+                policy="ooc",
+                feedback=warn,
+                ooc_hit=hit,
+                fused=True,
+                detail=hit.category,
+            )
+        return GateResult(
+            decision=GateDecision.REWRITE,
+            policy="ooc",
+            feedback=warn,
+            ooc_hit=hit,
+            detail=hit.category,
+        )
+
+    if rule.severity == "never_release_defer":
+        if hit.category == "machine_dump":
+            if channel == "main":
+                logger.warning(
+                    i18n_t(
+                        "log.ai.output_gate_ooc_rewrite_machine_dump_main",
+                        preview=repr(text[:80]),
+                    )
+                )
+            else:
+                logger.warning(i18n_t("log.ai.output_gate_ooc_rewrite_machine_dump_tool"))
+        else:
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_ooc_rewrite_never_release",
+                    category=hit.category,
+                )
+            )
+        return GateResult(
+            decision=GateDecision.REWRITE,
+            policy="ooc",
+            feedback=warn,
+            defer_ooc=channel == "main",
+            ooc_hit=hit,
+            detail=hit.category,
+        )
+
+    # 软出戏与系统术语：已送达提醒时仅放行主通道自主判断正文；工具通道继续打回。
+    if hooks.is_reminded():
+        if channel == "main":
+            logger.warning(i18n_t("log.ai.output_gate_ooc_allow_after_warn", category=hit.category))
+            return GateResult(decision=GateDecision.ALLOW, policy="ooc", detail="judged")
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_rewrite_first_warn",
+                category=hit.category,
+                matched=repr(hit.matched[:4]),
+            )
+        )
+        return GateResult(
+            decision=GateDecision.REWRITE,
+            policy="ooc",
+            feedback=warn,
+            ooc_hit=hit,
+            detail=hit.category,
+        )
+
+    if channel == "tool":
+        hooks.mark_reminded()
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_rewrite_first_warn",
+                category=hit.category,
+                matched=repr(hit.matched[:4]),
+            )
+        )
+    else:
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_ooc_defer",
+                category=hit.category,
+                matched=repr(hit.matched[:4]),
+            )
+        )
+    return GateResult(
+        decision=GateDecision.REWRITE,
+        policy="ooc",
+        feedback=warn,
+        defer_ooc=channel == "main",
+        ooc_hit=hit,
+        detail=hit.category,
+    )
 
 
 # ── C. 回合结算策略环（前置结构纠偏 + 出口话术裁决 + 单次重说） ───────────────

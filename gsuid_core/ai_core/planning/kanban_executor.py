@@ -101,7 +101,7 @@ _RELAY_META_LINE_RE = re.compile(rf"(?im)^.*(?:artifact|{INTERNAL_ARTIFACT_TOKEN
 
 def _sanitize_relay_spoken(text: str) -> str:
     """转译产物清洗：去掉内部句柄/工具名/元流程台词，并过 OOC。"""
-    from gsuid_core.ai_core.output_firewall import check_ooc
+    from gsuid_core.ai_core.control.outbound_detectors import inspect_outbound_ooc
 
     raw = (text or "").strip()
     if not raw:
@@ -110,11 +110,11 @@ def _sanitize_relay_spoken(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if not cleaned:
         return "搞定了。"
-    hit = check_ooc(cleaned)
+    hit = inspect_outbound_ooc(cleaned)
     if hit is not None:
         # 再剥一轮框架泄漏后仍脏 → 极短中性兜底，绝不把 API 念给用户
         cleaned2 = _RELAY_META_LINE_RE.sub("", cleaned).strip()
-        if not cleaned2 or check_ooc(cleaned2) is not None:
+        if not cleaned2 or inspect_outbound_ooc(cleaned2) is not None:
             return "搞定了，图里有。"
         return cleaned2[:400]
     return cleaned[:600]

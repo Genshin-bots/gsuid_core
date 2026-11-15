@@ -56,7 +56,7 @@ def _drive(
         sent.append(message)
 
     monkeypatch.setattr(ai_utils.asyncio, "sleep", _no_sleep)
-    monkeypatch.setattr("gsuid_core.ai_core.output_firewall.is_enabled", lambda: False)
+    monkeypatch.setattr("gsuid_core.ai_core.control.outbound_detectors.is_ooc_firewall_enabled", lambda: False)
     monkeypatch.setattr(Bot, "send", _fake_send)
     if bubbles is not None:
         monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda ev: bubbles)

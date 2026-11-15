@@ -31,6 +31,7 @@ from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.control.lines import (
     INNER_OS_NUDGE,
+    OOC_JUDGE_MARKER,
     FUND_CLAIM_PREFIX,
     GATE_NUDGE_MARKERS as GATE_NUDGE_MARKERS,
 )
@@ -298,9 +299,7 @@ def ooc_reminder_delivered(extra: Dict[str, Any]) -> bool:
 
 
 def is_ooc_judge_feedback(text: str) -> bool:
-    from gsuid_core.ai_core import output_firewall as of
-
-    return bool(text) and (of.OOC_JUDGE_MARKER in text or text.startswith(FUND_CLAIM_PREFIX))
+    return bool(text) and (OOC_JUDGE_MARKER in text or text.startswith(FUND_CLAIM_PREFIX))
 
 
 def _eval_ooc(
@@ -310,135 +309,29 @@ def _eval_ooc(
     user_text: str,
     channel: str,
 ) -> Optional[GateResult]:
-    from gsuid_core.ai_core import output_firewall as of
+    from gsuid_core.ai_core.control.policy_ring import OocGateHooks, evaluate_ooc_gate
+    from gsuid_core.ai_core.control.outbound_detectors import (
+        EXPOSED_TOOLS_EXTRA_KEY,
+        is_ooc_firewall_enabled,
+    )
 
-    if not of.is_enabled():
+    if not is_ooc_firewall_enabled():
         return None
-
     names: list[str] = []
-    if of.EXPOSED_TOOLS_EXTRA_KEY in extra:
-        raw_names = extra[of.EXPOSED_TOOLS_EXTRA_KEY]
+    if EXPOSED_TOOLS_EXTRA_KEY in extra:
+        raw_names = extra[EXPOSED_TOOLS_EXTRA_KEY]
         if isinstance(raw_names, (list, tuple, set, frozenset)):
             names = [str(x) for x in raw_names if str(x)]
-    hit = of.check_ooc(text, user_text=user_text, exposed_tool_names=names)
-    if hit is None:
-        return None
-
-    if hit.category == "machine_dump":
-        # 主通道也走重写：技术堆栈不该由框架罐头代答，改由当前人格自己重说一句
-        # （defer_ooc → run 末 _ooc_rewrite_and_send）。工具通道无 run，当场打回。
-        if channel == "main":
-            logger.warning(
-                i18n_t(
-                    "log.ai.output_gate_ooc_rewrite_machine_dump_main",
-                    preview=repr(text[:80]),
-                )
-            )
-        else:
-            logger.warning(i18n_t("log.ai.output_gate_ooc_rewrite_machine_dump_tool"))
-        return GateResult(
-            decision=GateDecision.REWRITE,
-            policy="ooc",
-            feedback=of.build_rewrite_warning(hit),
-            defer_ooc=channel == "main",
-            ooc_hit=hit,
-            detail=hit.category,
-        )
-
-    if hit.category == "delivery_narration":
-        if channel == "main":
-            logger.warning(
-                i18n_t(
-                    "log.ai.output_gate_drop_text_after_fuse",
-                    policy="ooc",
-                    preview=repr(text[:80]),
-                )
-            )
-            _set_abort(extra, "ooc")
-            return GateResult(
-                decision=GateDecision.FUSE,
-                policy="ooc",
-                feedback=of.build_rewrite_warning(hit),
-                ooc_hit=hit,
-                fused=True,
-                detail=hit.category,
-            )
-        return GateResult(
-            decision=GateDecision.REWRITE,
-            policy="ooc",
-            feedback=of.build_rewrite_warning(hit),
-            ooc_hit=hit,
-            detail=hit.category,
-        )
-
-    warn = of.build_rewrite_warning(hit)
-    if hit.category in of.NEVER_RELEASE_CATEGORIES:
-        logger.warning(
-            i18n_t(
-                "log.ai.output_gate_ooc_rewrite_never_release",
-                category=hit.category,
-            )
-        )
-        return GateResult(
-            decision=GateDecision.REWRITE,
-            policy="ooc",
-            feedback=warn,
-            defer_ooc=channel == "main",
-            ooc_hit=hit,
-            detail=hit.category,
-        )
-
-    # 软出戏：主/工具同一套。提醒已送达后，只放行主路径新一代正文（自主判断）。
-    # 工具发送不二次放行，继续打回，要求改用正文。
-    turn_id = _extra_turn_id(extra)
-    if turn_id and ooc_reminder_delivered(extra):
-        if channel == "main":
-            logger.warning(
-                i18n_t(
-                    "log.ai.output_gate_ooc_allow_after_warn",
-                    category=hit.category,
-                )
-            )
-            return GateResult(decision=GateDecision.ALLOW, policy="ooc", detail="judged")
-        logger.warning(
-            i18n_t(
-                "log.ai.output_gate_ooc_rewrite_first_warn",
-                category=hit.category,
-                matched=repr(hit.matched[:4]),
-            )
-        )
-        return GateResult(
-            decision=GateDecision.REWRITE,
-            policy="ooc",
-            feedback=warn,
-            ooc_hit=hit,
-            detail=hit.category,
-        )
-
-    if channel == "tool":
-        mark_ooc_reminded(extra)
-        logger.warning(
-            i18n_t(
-                "log.ai.output_gate_ooc_rewrite_first_warn",
-                category=hit.category,
-                matched=repr(hit.matched[:4]),
-            )
-        )
-    else:
-        logger.warning(
-            i18n_t(
-                "log.ai.output_gate_ooc_defer",
-                category=hit.category,
-                matched=repr(hit.matched[:4]),
-            )
-        )
-    return GateResult(
-        decision=GateDecision.REWRITE,
-        policy="ooc",
-        feedback=warn,
-        defer_ooc=channel == "main",
-        ooc_hit=hit,
-        detail=hit.category,
+    return evaluate_ooc_gate(
+        text,
+        user_text=user_text,
+        channel=channel,
+        exposed_tool_names=names,
+        hooks=OocGateHooks(
+            is_reminded=lambda: ooc_reminder_delivered(extra),
+            mark_reminded=lambda: mark_ooc_reminded(extra),
+            set_abort_ooc=lambda: _set_abort(extra, "ooc"),
+        ),
     )
 
 

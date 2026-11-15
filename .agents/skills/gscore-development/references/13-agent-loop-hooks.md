@@ -29,8 +29,8 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 | H00 | `ON_INBOUND` | `handler.handle_event`，Event 建完、**不挡**命令/AI 分流 | `gscore.memory` 观察、`gscore.meme` |
 | H01 | `BEFORE_AI_CHAT` | 预算通过之后、session 之前 | `gscore.session_mute` |
 | H02 | `AFTER_SESSION` | `get_ai_session` 之后 | `gscore.favorability`（读 View）、`gscore.memory`（主动会话 observe） |
-| H03 | `CLASSIFY` | 内核只给 prior；**intent 由占用者写入** | `gscore.classifier`、`gscore.statistics` |
-| H04 | `REACTIVE_GATE` | 仅软唤醒项（soft wake） | `gscore.reactive_gate`（TurnRouter 路由） |
+| H03 | `CLASSIFY` | 内核只给 prior；**intent 与 `route_decision` 由占用者写入** | `gscore.classifier`、`gscore.statistics` |
+| H04 | `REACTIVE_GATE` | 已下线（`wired=False`；软门由 `handle_ai` 直接消费 `TurnRouter.soft_speak`） | — |
 | H05 | `RETRIEVE_CONTEXT` | compose 之前的「贵检索」窗 | `gscore.memory`（**唯一 15s 长超时**） |
 | H06 | `COMPOSE_CONTEXT` | 合成器开火，各套件 `set_context_block` | mood / favorability / memory / planning / scaffold / self_cognition / identity / inbox / evidence |
 | H07 | `AFTER_CONTEXT` | 合成完毕、`session.run` 前 | 第三方 `append_user_hint` → `plugin_hints` |
@@ -84,14 +84,14 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 | `stash_retrieved(name, text)` | H05 | 检索窗暂存，H06 再写成正式块 |
 | `set_has_actionable(flag)` | H06 | planning 抬档 |
 | `set_intent(intent)` | H03 | 仅 `闲聊`/`工具`/`问答` |
-| `set_should_speak(flag)` | H04 | 软门结果 |
+| `set_should_speak(flag)` | H04（已下线） | 软门结果（现由 H03 `TurnRouter.soft_speak` 直接处理） |
 | `append_user_hint(text)` | H07 H13 H16 | 自动加 `（套件·` / `（插件·` 前缀 |
 | `ensure_tools` / `drop_tools` | H14 H15 | 护栏见 §13.6 |
 | `replace_text(text)` | H20 | 改台词 |
 | `set_tool_return(text)` | H17 | 折叠/摘要 |
 | `request_correction(reason)` | H23 H24 | 纠正 |
 | `abort(reason)` | H01 H03 H10 | 整轮不跑 |
-| `silence(reason)` | H01 H04 H20 | 本轮不出声 |
+| `silence(reason)` | H01 H20（H04 已下线） | 本轮不出声 |
 | `veto_tool(reason)` | H18 | 拦下这次工具调用 |
 
 **只读**：`ctx.group_id`（**私聊恒 `None`**，记忆 scope 防回归的地基）、`ctx.user_id`、
@@ -155,7 +155,7 @@ KIT = register_agent_kit(
 
 ---
 
-## 13.6 18 个槽位
+## 13.6 20 个槽位
 
 | slot | 默认占用者 | 互斥 | 说明 |
 |------|------------|------|------|
@@ -166,11 +166,13 @@ KIT = register_agent_kit(
 | `self_cognition` | `gscore.self_cognition` | 是 | 稳定自述（H29）+ 口吻锚点 |
 | `group_profile` | `gscore.group_profile` | 是 | 稳定前缀群画像（H29） |
 | `planning_context` | `gscore.planning_context` | 是 | 长任务文案 + `has_actionable` |
-| `classifier` | `gscore.classifier` | 是 | intent |
-| `reactive_gate` | `gscore.reactive_gate` | 是 | 软门 + 软触发提示块 |
-| `scaffold` | `gscore.scaffold` | 是 | 风格短句 + C-1/C-2 hints |
+| `classifier` | `gscore.classifier` | 是 | intent + `TurnRouter`（含 `soft_speak`） |
+| `inbox` | `gscore.inbox` | 是 | 收件箱待回应 / 工具身份 / 相关往来块 |
+| `evidence` | `gscore.evidence` | 是 | 工具证据观测与实时凭据状态 |
+| `scaffold` | `gscore.scaffold` | 是 | TurnGraph 消费 / CheapGate / 脚手架 hints |
 | `session_mute` | `gscore.session_mute` | 是 | 静默窗 |
 | `statistics` | `gscore.statistics` | 是 | 统计（**只上报，不扣减**） |
+| `decision_distill` | `gscore.decision_distill` | 否 | thinking 决策蒸馏（H08，可关） |
 | `tool_assembly` | `gscore.tool_assembly` | 是 | 五层装配 + `find_tools` |
 | `fileos` | `gscore.fileos` | 是 | 回执折叠 |
 | `post_tool` | `gscore.post_tool` | 是 | 工具后契约 |
@@ -179,7 +181,7 @@ KIT = register_agent_kit(
 | `persona_identity` | `gscore.identity` | **密封** | 身份锚：不可关 |
 
 槽名**不含点号**（点号既是槽名一部分又是配置层级分隔符会有解析歧义）。
-配置键 `kit_slots.<slot>`，由槽位表**派生**——不要手写 18 个近似条目。
+配置键 `kit_slots.<slot>`，由槽位表**派生**——不要手写 20 个近似条目。
 
 ### 工具装配槽的三条内核收口（换套件也逃不掉）
 

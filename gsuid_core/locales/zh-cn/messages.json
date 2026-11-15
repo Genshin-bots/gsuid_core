@@ -149,7 +149,5 @@
   "🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！": "🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！",
   "🧠 [Memory] 文本 {i} 嵌入失败（413 限流），无法继续": "🧠 [Memory] 文本 {i} 嵌入失败（413 限流），无法继续",
   "🧠 [Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}": "🧠 [Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}",
-  "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}": "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}",
-  "🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默": "🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默",
-  "🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}": "🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}"
+  "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}": "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}"
 }

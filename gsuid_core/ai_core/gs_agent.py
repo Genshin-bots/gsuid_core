@@ -32,7 +32,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core import output_gate, output_firewall, angle_bracket_guard
+from gsuid_core.ai_core import output_gate, angle_bracket_guard
 from gsuid_core.ai_core.const import (
     ERROR_QUOTA_EXHAUSTED,
     STALE_CHAT_REQUEST_TTL,
@@ -75,6 +75,15 @@ from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
     looks_like_provider_failure,
+)
+from gsuid_core.ai_core.control.outbound_detectors import (
+    SOFT_JUDGE_CATEGORIES as _SOFT_JUDGE_CATEGORIES,
+    NEVER_RELEASE_CATEGORIES as _NEVER_RELEASE_CATEGORIES,
+    LAST_RESORT_SEND_ORIGINAL_CATEGORIES as _LAST_RESORT_SEND_ORIGINAL_CATEGORIES,
+    FirewallHit,
+    build_ooc_warning,
+    inspect_outbound_ooc,
+    is_ooc_firewall_enabled,
 )
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
@@ -1402,19 +1411,19 @@ class GsCoreAIAgent(RunOnceMixin):
             return ""
         return out
 
-    def _ooc_hard_hit(self, text: str, ev: Optional[Event]) -> Optional[output_firewall.FirewallHit]:
+    def _ooc_hard_hit(self, text: str, ev: Optional[Event]) -> Optional[FirewallHit]:
         """复检：文本是否仍落在永不放行类目上。空串不算命中。"""
         if not text:
             return None
         user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-        hit = output_firewall.check_ooc(text, user_text=user_text)
-        if hit is not None and hit.category in output_firewall.NEVER_RELEASE_CATEGORIES:
+        hit = inspect_outbound_ooc(text, user_text=user_text)
+        if hit is not None and hit.category in _NEVER_RELEASE_CATEGORIES:
             return hit
         return None
 
     async def _ooc_persona_voice(
         self,
-        hit: output_firewall.FirewallHit,
+        hit: FirewallHit,
         original: str,
         *,
         strict: bool,
@@ -1425,7 +1434,7 @@ class GsCoreAIAgent(RunOnceMixin):
         """
         if strict:
             ask = (
-                f"{output_firewall.build_rewrite_warning(hit)}\n\n"
+                f"{build_ooc_warning(hit)}\n\n"
                 f"【刚才那句】\n{original}\n\n"
                 "用你当前的人格自己重说一句要发给用户的话，一句话就够。"
                 "别解释这份材料为什么没有、来自哪里、覆盖到哪里。"
@@ -1433,7 +1442,7 @@ class GsCoreAIAgent(RunOnceMixin):
             )
         else:
             ask = (
-                f"{output_firewall.build_rewrite_warning(hit)}\n\n"
+                f"{build_ooc_warning(hit)}\n\n"
                 f"【待判断的原文】\n{original}\n\n"
                 "请自主判断后直接输出要发给用户的内容："
                 "不是出戏就原样或微调；是暴露自身身份再用角色口吻改写。不要解释。"
@@ -1447,13 +1456,13 @@ class GsCoreAIAgent(RunOnceMixin):
 
     async def _ooc_recover_persona_voice(
         self,
-        hit: output_firewall.FirewallHit,
+        hit: FirewallHit,
         original: str,
         ev: Optional[Event],
     ) -> str:
         """永不放行类目的统一恢复：重说 → 复检 → 再给一次「只许结论」的机会。
 
-        两次都不干净时：人格 / 一致性类**原样发送**（``_LAST_RESORT_SEND_ORIGINAL``）——
+        两次都不干净时：人格 / 一致性类**原样发送**（``LAST_RESORT_SEND_ORIGINAL_CATEGORIES``）——
         出戏闸不该吃掉整轮对话；``fund_claim`` / ``machine_dump`` 与「模型主动沉默 /
         重说调用失败」返回空串，由调用方按不发送处理。
         """
@@ -1463,7 +1472,7 @@ class GsCoreAIAgent(RunOnceMixin):
         rewritten = await self._ooc_persona_voice(hit, original, strict=True)
         if self._ooc_hard_hit(rewritten, ev) is None:
             return rewritten
-        if hit.category in output_firewall._LAST_RESORT_SEND_ORIGINAL:
+        if hit.category in _LAST_RESORT_SEND_ORIGINAL_CATEGORIES:
             logger.warning(i18n_t("log.agent.firewall_rewrite_output_released_original", p0=hit.category))
             return original
         logger.warning(i18n_t("log.agent.firewall_rewrite_output_hit_non", p0=hit.category))
@@ -1471,7 +1480,7 @@ class GsCoreAIAgent(RunOnceMixin):
 
     async def _ooc_rewrite_and_send(
         self,
-        blocked: List[Tuple[str, output_firewall.FirewallHit]],
+        blocked: List[Tuple[str, FirewallHit]],
         bot: Bot,
         ev: Optional[Event],
     ) -> None:
@@ -1483,7 +1492,7 @@ class GsCoreAIAgent(RunOnceMixin):
         """
         original = "\n\n".join(text for text, _ in blocked)
         first_hit = blocked[0][1]
-        hard = first_hit.category in output_firewall.NEVER_RELEASE_CATEGORIES
+        hard = first_hit.category in _NEVER_RELEASE_CATEGORIES
         blocked_texts = {text for text, _ in blocked}
 
         if hard:
@@ -1637,11 +1646,11 @@ class GsCoreAIAgent(RunOnceMixin):
 
         命中就让人格自己重说一句；说两次都不行时按类目口径返回原文或空串（空串 = 不发送）。
         """
-        if not text or not output_firewall.is_enabled():
+        if not text or not is_ooc_firewall_enabled():
             return text
         user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-        hit = output_firewall.check_ooc(text, user_text=user_text)
-        if hit is None or hit.category in output_firewall.SOFT_JUDGE_CATEGORIES:
+        hit = inspect_outbound_ooc(text, user_text=user_text)
+        if hit is None or hit.category in _SOFT_JUDGE_CATEGORIES:
             return text
         logger.warning(i18n_t("log.agent.firewall_ooc_outbound_recover", p0=hit.category))
         return await self._ooc_recover_persona_voice(hit, text, ev)
@@ -1653,7 +1662,7 @@ class GsCoreAIAgent(RunOnceMixin):
         ev: Optional[Event],
         *,
         return_mode: str,
-        ooc_blocked: List[Tuple[str, output_firewall.FirewallHit]],
+        ooc_blocked: List[Tuple[str, FirewallHit]],
         ab_abort: bool,
     ) -> bool:
         """尖括号收尾 + OOC 重说。返回是否尖括号熔断静默。"""

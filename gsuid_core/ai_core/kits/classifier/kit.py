@@ -1,7 +1,7 @@
 """``gscore.classifier``：前置单轮路由器（H03）。
 
 一次无思考轻量调用产出 ``TurnRouteDecision``，写入 ``ctx.route_decision`` 并
-同步 ``ctx.intent``。下游 ReactiveGate / MemoryKit / ScaffoldKit 只读结论，
+同步 ``ctx.intent``。下游 ``handle_ai`` / MemoryKit / ScaffoldKit 只读结论，
 不再各自扫文本猜语义。
 """
 

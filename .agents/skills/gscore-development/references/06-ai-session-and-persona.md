@@ -219,7 +219,7 @@ RESOURCE_PATH/persona/{persona_name}/
 | `error_content_policy` | `这条消息触发了内容安全策略，我没法处理` | 内容安全 |
 
 > **出戏拦截没有罐头文案**（2026-09 起）：`fallback_ooc` / `fallback_machine` 两个键与
-> `output_firewall.fallback_ooc_text` / `fallback_machine_text` 访问器已删除。命中闸门一律
+> 旧 `output_firewall` 兜底访问器已删除（OOC 规则表已迁至 `control/outbound_detectors.py`）。命中闸门一律
 > 让当前人格自己重说一句（`gs_agent._ooc_recover_persona_voice`，两次机会），两次都不干净时
 > 人格/一致性类**原样发送**、`fund_claim` / `machine_dump` 与模型主动沉默才丢弃；没有 run 的
 > 出口（主动播报 / `send_chat_result` 末端）直接丢弃正文。

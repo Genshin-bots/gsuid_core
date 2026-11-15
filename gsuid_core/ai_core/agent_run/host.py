@@ -11,7 +11,6 @@ from pydantic_ai.settings import ThinkingLevel
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
-from gsuid_core.ai_core import output_firewall
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import ToolList
 from gsuid_core.ai_core.configs.models import AnyModel
@@ -19,6 +18,7 @@ from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.agent_run.support import TraceKind
 from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
+from gsuid_core.ai_core.control.outbound_detectors import FirewallHit
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
@@ -109,12 +109,12 @@ class RunOnceHost:
     async def _lightweight_text_rewrite(self, rewrite_message: str, *, max_tokens: int | None = None) -> str:
         raise NotImplementedError
 
-    def _ooc_hard_hit(self, text: str, ev: Event | None) -> output_firewall.FirewallHit | None:
+    def _ooc_hard_hit(self, text: str, ev: Event | None) -> FirewallHit | None:
         raise NotImplementedError
 
     async def _ooc_recover_persona_voice(
         self,
-        hit: output_firewall.FirewallHit,
+        hit: FirewallHit,
         original: str,
         ev: Event | None,
     ) -> str:
@@ -127,7 +127,7 @@ class RunOnceHost:
         ev: Event | None,
         *,
         return_mode: str,
-        ooc_blocked: list[tuple[str, output_firewall.FirewallHit]],
+        ooc_blocked: list[tuple[str, FirewallHit]],
         ab_abort: bool,
     ) -> bool:
         raise NotImplementedError

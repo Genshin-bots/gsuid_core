@@ -20,10 +20,7 @@ from pydantic_ai.settings import ModelSettings
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core import (
-    output_gate,
-    output_firewall,
-)
+from gsuid_core.ai_core import output_gate
 from gsuid_core.ai_core.const import (
     _STICKY_FAMILY_TURNS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
@@ -65,6 +62,11 @@ from gsuid_core.ai_core.control.policy_ring import (
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
 from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
+from gsuid_core.ai_core.control.outbound_detectors import (
+    is_tech_dump,
+    inspect_outbound_ooc,
+    is_ooc_firewall_enabled,
+)
 
 # 收口交付的第一行。不以能力代理失败前缀开头，看板才会把这一步标完成。
 _USAGE_LIMIT_SALVAGE_BANNER = "⚠ 思考轮数已到上限。下面是根据已收集材料收口的交付，未继续补查。"
@@ -701,17 +703,17 @@ class SettlePhase(RunOnceHost):
                 self._log_run_result(st, result_msg)
                 return ""
             # 对用户可见出口才做 roleplay OOC；子代理/能力代理 return 必须保留 res_ 句柄
-            if result_msg and output_firewall.is_enabled() and self.create_by not in ("EvalJudge", "TEST"):
+            if result_msg and is_ooc_firewall_enabled() and self.create_by not in ("EvalJudge", "TEST"):
                 _skip_roleplay_scrub = self.is_subagent or self.create_by in (
                     "CapabilityAgent",
                     "AutoPlanner",
                 )
                 if _skip_roleplay_scrub:
-                    if output_firewall.is_tech_dump(_match_msg):
+                    if is_tech_dump(_match_msg):
                         result_msg = "⚠️ 子任务返回技术错误堆栈，已屏蔽。请主人格换路或重试（勿向用户念本句）。"
                 else:
                     # 框架不替人格说话：命中就让人格自己重说一句，重说不出来就沉默
-                    _hit = output_firewall.check_ooc(
+                    _hit = inspect_outbound_ooc(
                         _match_msg,
                         user_text=st.ev.raw_text if st.ev is not None and st.ev.raw_text else "",
                     )

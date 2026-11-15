@@ -1824,12 +1824,15 @@ async def send_chat_result(
     # 框架不替人格说话，也不发罐头（§1.9）；制品图/表情包仍照发。
     _ooc_replaced = False
     if (clean_text or report_blocks) and ooc_check:
-        from gsuid_core.ai_core.output_firewall import check_ooc, is_enabled
+        from gsuid_core.ai_core.control.outbound_detectors import (
+            inspect_outbound_ooc,
+            is_ooc_firewall_enabled,
+        )
 
-        if is_enabled():
-            # 短答门需要来话上下文：身份追问下的超短直答才算泄露（见 check_ooc docstring）
+        if is_ooc_firewall_enabled():
+            # 短答门需要来话上下文：身份追问下的超短直答才算泄露（见 outbound_detectors）
             _user_text = ev.raw_text if ev is not None and ev.raw_text else ""
-            _hit = check_ooc(clean_text, user_text=_user_text) if clean_text else None
+            _hit = inspect_outbound_ooc(clean_text, user_text=_user_text) if clean_text else None
             if _hit is not None:
                 logger.warning(
                     i18n_t(
@@ -1844,7 +1847,7 @@ async def send_chat_result(
             if report_blocks:
                 _kept_blocks: List[Tuple[str, str]] = []
                 for _r_title, _r_body in report_blocks:
-                    _r_hit = check_ooc(_r_body, user_text=_user_text)
+                    _r_hit = inspect_outbound_ooc(_r_body, user_text=_user_text)
                     if _r_hit is None:
                         _kept_blocks.append((_r_title, _r_body))
                     else:

@@ -133,6 +133,7 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
             500,
             _C.SET_SHOULD_SPEAK,
             _C.SILENCE,
+            wired=False,
             on_timeout_decision=HookDecision.SILENCE,
         ),
         _spec(AgentHookPoint.RETRIEVE_CONTEXT, "handle_ai.handle_inbox_turn:retrieve", 15000, _C.SET_BLOCK),

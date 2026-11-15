@@ -409,13 +409,14 @@ def test_turn_router_pure_semantic_without_fast_ack() -> None:
         assert qa_dec.source == "structural_fallback", q
         assert qa_dec.intent == "问答" and qa_dec.memory_intent == "point_latest"
 
-    # 合并入站说话门：一段结构静默（address_gated），二段软触发与 should_speak 收口
+    # 入站说话门：一段结构静默（address_gated），二段 CheapGate 判定
     from gsuid_core.ai_core.interaction_scaffold import (
         CheapGate,
         TurnGraph,
         GroupOpenGate,
         admit_pre_router,
-        admit_post_classify,
+        decide_cheap_gate,
+        references_task_management,
     )
 
     tg_gated = TurnGraph(
@@ -436,5 +437,5 @@ def test_turn_router_pure_semantic_without_fast_ack() -> None:
         open_gate=GroupOpenGate.SPEAK,
     )
     assert admit_pre_router(tg_open)
-    assert admit_post_classify(tg_open, soft_triggered=True, should_speak=False) is CheapGate.SILENCE
-    assert admit_post_classify(tg_open, soft_triggered=True, should_speak=True) is CheapGate.FULL
+    assert decide_cheap_gate(tg_open, soft_triggered=True) is CheapGate.FULL
+    assert references_task_management("把定时改到明天")

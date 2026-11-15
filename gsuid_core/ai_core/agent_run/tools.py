@@ -347,7 +347,7 @@ class ToolsPhase(RunOnceHost):
             st.expose_dynamic = bool(st.tools and ENABLE_PROGRESSIVE_TOOLS)
             self._last_assembled_domains = set()
             blocked_ctx = _require_context(st)
-            from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+            from gsuid_core.ai_core.control.outbound_detectors import EXPOSED_TOOLS_EXTRA_KEY
 
             blocked_ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = []
             blocked_ctx.extra[TOOLS_EXECUTION_GATED_KEY] = True
@@ -573,7 +573,7 @@ class ToolsPhase(RunOnceHost):
                     elif st.ev is not None and st.ev.text:
                         _utter = st.ev.text
                     else:
-                        from gsuid_core.ai_core.agent_run.speech_policy import spoken_user_body
+                        from gsuid_core.ai_core.control.outbound_detectors import spoken_user_body
 
                         _utter = spoken_user_body(qy)
                     _scan = strip_surfaces(_utter, _ignore) if _ignore else _utter
@@ -820,7 +820,7 @@ class ToolsPhase(RunOnceHost):
         st.tool_names = [t.name for t in st.tools]
         st.exposed_tool_names = list(st.tool_names)
         _ctx = _require_context(st)
-        from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+        from gsuid_core.ai_core.control.outbound_detectors import EXPOSED_TOOLS_EXTRA_KEY
 
         _ctx.extra[EXPOSED_TOOLS_EXTRA_KEY] = list(st.tool_names)
 

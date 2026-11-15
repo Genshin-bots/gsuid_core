@@ -149,7 +149,5 @@
   "🧠 [GsCore][AI] 未设置AI模型配置文件，请先前往网页控制台设置配置文件！": "🧠 [GsCore][AI] AI model config file is not set, please set it in the Web Console first!",
   "🧠 [Memory] 文本 {i} 嵌入失败（413 限流），无法继续": "🧠 [Memory] Embedding failed for text {i} (413 rate limit); cannot continue",
   "🧠 [Qdrant] 已为集合 {collection_name} 创建 keyword 索引: {field}": "🧠 [Qdrant] Created keyword index for collection {collection_name}: {field}",
-  "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}": "🧠 [{log_tag}] Batch embedding returned abnormal count: expected={p0}, actual={p1}",
-  "🫧 [ReactiveGate] 决策缺合法 should_speak，默认沉默": "🫧 [ReactiveGate] Decision lacks a valid should_speak; defaulting to silence",
-  "🫧 [ReactiveGate] 软触发沉默门出错，放行交主Agent兜底: {e}": "🫧 [ReactiveGate] Soft-trigger silence gate error; allowing main Agent to handle fallback: {e}"
+  "🧠 [{log_tag}] 批量嵌入返回数量异常: expected={p0}, actual={p1}": "🧠 [{log_tag}] Batch embedding returned abnormal count: expected={p0}, actual={p1}"
 }

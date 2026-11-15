@@ -119,7 +119,7 @@ def _prepend_tools(
 
 def _record_find_tools_round(extra: dict[str, Any], loaded: list[str]) -> bool:
     """记下本轮暴露名。返回 True 表示相对上一轮没有新名字。"""
-    from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+    from gsuid_core.ai_core.control.outbound_detectors import EXPOSED_TOOLS_EXTRA_KEY
 
     had_prev = FIND_TOOLS_LOADED_KEY in extra
     prev_raw = extra[FIND_TOOLS_LOADED_KEY] if had_prev else None
@@ -424,8 +424,8 @@ async def find_tools(
     """
     try:
         from gsuid_core.ai_core.register import find_tool_base
-        from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
         from gsuid_core.ai_core.agent_node.registry import owning_nodes_of_tools
+        from gsuid_core.ai_core.control.outbound_detectors import EXPOSED_TOOLS_EXTRA_KEY
 
         exclusive = set(ctx.deps.blocked_tool_names)
         offered_raw = ctx.deps.extra[EXPOSED_TOOLS_EXTRA_KEY] if EXPOSED_TOOLS_EXTRA_KEY in ctx.deps.extra else None

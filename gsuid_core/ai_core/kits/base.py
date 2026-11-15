@@ -187,7 +187,6 @@ KIT_SLOTS: Tuple[KitSlot, ...] = (
     _slot("group_profile", "gscore.group_profile", "稳定前缀群画像"),
     _slot("planning_context", "gscore.planning_context", "长任务文案 + has_actionable"),
     _slot("classifier", "gscore.classifier", "意图分类"),
-    _slot("reactive_gate", "gscore.reactive_gate", "软触发沉默门"),
     _slot("inbox", "gscore.inbox", "收件箱待回应 / 工具身份 / 相关往来块"),
     _slot("evidence", "gscore.evidence", "工具证据观测与实时凭据状态"),
     _slot("scaffold", "gscore.scaffold", "TurnGraph 消费 / CheapGate / 脚手架 hints"),

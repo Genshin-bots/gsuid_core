@@ -60,7 +60,7 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
   - 句末问号 → `问答 / point_latest`
   - 上一轮用过工具且 ≤24 字 → `工具 / point_latest`
   - 其余 → `闲聊 / none`
-- 下游 ReactiveGate、MemoryKit、ScaffoldKit、Visibility、`search_cognition` 只消费结论，不再扫文本猜语义。
+- 下游 `handle_ai`（软触发直读 `route_decision.soft_speak`）、MemoryKit、ScaffoldKit、Visibility、`search_cognition` 只消费结论，不再扫文本猜语义。
 
 `mode_classifier.py` 仅保留旧 `IntentService` 调用形状，内部走结构退化。
 
@@ -182,8 +182,7 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
 | `classifier/turn_router.py` | `TurnRouteDecision` + 唯一前置路由调用 + 结构退化 |
 | `classifier/mode_classifier.py` | 旧 `IntentService` 兼容壳 |
 | `hooks/models.py` | `AgentHookContext.route_decision` |
-| `kits/classifier/kit.py` | CLASSIFY 点位调用 TurnRouter |
-| `kits/reactive_gate/kit.py` | 消费 `soft_speak` |
+| `kits/classifier/kit.py` | CLASSIFY 点位调用 TurnRouter（含 `soft_speak`） |
 | `kits/decision_distill/kit.py` | 缓冲 + 规则摘要，零 LLM |
 | `memory/observer.py` | 富元数据观察、噪声/命令门控、环形窗口 |
 | `memory/ingestion/window_router.py` | Pass 1 话题分诊 |

@@ -68,7 +68,7 @@ async def _get_pool() -> AsyncMonty:
 
 
 def _exposed_names(ctx: RunContext[ToolContext]) -> set[str]:
-    from gsuid_core.ai_core.output_firewall import EXPOSED_TOOLS_EXTRA_KEY
+    from gsuid_core.ai_core.control.outbound_detectors import EXPOSED_TOOLS_EXTRA_KEY
 
     extra = ctx.deps.extra
     raw = extra[EXPOSED_TOOLS_EXTRA_KEY] if EXPOSED_TOOLS_EXTRA_KEY in extra else None

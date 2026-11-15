@@ -1,6 +1,6 @@
 """前置单轮路由器：一次无思考轻量调用判定意图、记忆模态与软触发开口。
 
-替代历史正则分类器：输出结构化 ``TurnRouteDecision``，下游 ReactiveGate /
+替代历史正则分类器：输出结构化 ``TurnRouteDecision``，下游 ``handle_ai`` /
 MemoryKit / ScaffoldKit 只读结论，不再各自扫文本猜语义。
 """
 

@@ -207,7 +207,7 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 ## 12.10 续聊软触发与偏好记忆的成本（默认开）
 
 - **软唤醒路由**：`quote_self` / `followup` 软唤醒项进收件箱 pending，settle 合并后由
-  TurnRouter（H04 `REACTIVE_GATE`）读线程视图判相关性，判无关即沉默、不进主模型。窗口/天花板
+  TurnRouter（H03 产出 `soft_speak`，`handle_ai` 消费）读线程视图判相关性，判无关即沉默、不进主模型。窗口/天花板
   按群活跃度观察调整（见 [§04](./04-event-trigger-flow.md) §4.6）。
 - **偏好记忆**：开箱启用工具轨迹 + 纠错探测 + **第二次蒸馏 LLM** + 置顶强约束注入。误抽偏好以
   强约束置顶可能过度约束工具调用（已有软停用 + salience 裁剪 + 精确能力域过滤兜底）。首次放量
@@ -436,9 +436,9 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 
 ## 12.22 输出安全防线的不变量（统一闸门 / 出戏 / 内容守卫，2026-08）
 
-**编排入口**：`ai_core/output_gate.py::pre_send_gate`（尖括号 + OOC 等「能不能发」的唯一短路编排）。
-检测实现分模块：`angle_bracket_guard`（非法 `<>`，含 **`<br>` 非法**）/ `output_firewall`
-（`check_ooc`）/ `content_guard`（不可信包裹）。环内接线在 `gs_agent`（feedback 注入、
+**编排入口**：`ai_core/output_gate.py::pre_send_gate`（尖括号 + OOC 等「能不能发」的唯一短路编排，策略表委托 `control/policy_ring.py`）。
+检测实现分模块：`angle_bracket_guard`（非法 `<>`，含 **`<br>` 非法**）/ `control/outbound_detectors.py`
+（`inspect_outbound_ooc`）/ `content_guard`（不可信包裹）。环内接线在 `gs_agent`（feedback 注入、
 `_resolve_output_gate_after_run`）；呈现在 `send_chat_result`。详见 [§7.12](./07-tool-registry-and-agent.md)、
 [`AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。
 
@@ -457,9 +457,9 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 | 路径 | 检测点 | 命中行为 |
 |------|--------|----------|
 | 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；软 OOC 注入系统提醒，提醒后放行下一句；无下一轮 → 自判发送；machine_dump → REWRITE+defer（同 never-release 走人格重说）；delivery_narration → FUSE |
-| 工具发送（`send_message_by_ai`） | `tool_gate_feedback`（历史别名 `gate_warn_once`） | 软 OOC 系统提醒、不二次放行（改用正文）；尖括号与 never-release 持续打回 |
-| 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `check_ooc` + 尖括号 sanitize | 丢弃台词 / 删非法标签，**不发罐头** |
-| run 末 never-release 恢复 | `_ooc_recover_persona_voice` | 当前人格重说一句 → 复检 → 再给一次「只许结论」；两次都不干净：人格/一致性类**原样发送**（`_LAST_RESORT_SEND_ORIGINAL`），`fund_claim`/`machine_dump` 与模型主动沉默才丢弃（`_ooc_safe_outbound` / settle return 出口同此口径） |
+| 工具发送（`send_message_by_ai`） | `tool_gate_feedback` | 软 OOC 系统提醒、不二次放行（改用正文）；尖括号与 never-release 持续打回 |
+| 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `inspect_outbound_ooc` + 尖括号 sanitize | 丢弃台词 / 删非法标签，**不发罐头** |
+| run 末 never-release 恢复 | `_ooc_recover_persona_voice` | 当前人格重说一句 → 复检 → 再给一次「只许结论」；两次都不干净：人格/一致性类**原样发送**（`LAST_RESORT_SEND_ORIGINAL_CATEGORIES`），`fund_claim`/`machine_dump` 与模型主动沉默才丢弃（`_ooc_safe_outbound` / settle return 出口同此口径） |
 
 - **DELIVERED 终局态（2026-08-10）在 gate 之前**：`send_message_by_ai` 带台词成功交付 →
   本 run `speech_policy="delivered"`，`should_block_user_visible_text` 对非 SILENCE 一律拦
@@ -474,7 +474,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
   长 `create_subagent` 回执与检索长文一样折成句柄卡。反问靠 `read_handle`，不要把全文塞回主历史。
 - **`ooc_check=False` 只允许用于已过 gate / 重说产物**。新增发送路径默认带检。
 - 状态只写 `extra["output_gate"]` → `GateBag`，勿发明平行计数键。
-- `check_ooc(tier="plain")` 生产尚无调用方，别当它已接线。
+- `inspect_outbound_ooc(tier="plain")` 生产尚无调用方，别当它已接线。
 
 ### 🔴 拆条靠空行：呈现层任何一步都不能压掉 `\n\n`（2026-09-28 修复）
 
@@ -536,7 +536,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 - 若将来 prompt 纪律实证不够（看生产日志），升级方向是**副作用工具入口的低成本 LLM 语义
   判定**（low_level provider + normalize 后 hash 缓存 + fail-open），而不是回到词库。
 
-### 🔴 output_firewall 词库（模型名/AI自指）新增条目前必须过"规范化碰撞"检查
+### 🔴 outbound_detectors 词库（模型名/AI自指）新增条目前必须过"规范化碰撞"检查
 
 出戏防火墙的 `_MODEL_TERMS` 词库**保留**（身份泄露是公开事故面，且 prompt 防线已被
 "2.5"事故实证穿透，必须代码级兜底）。但 `normalize_for_match` 删词内分隔符（空格/点/
@@ -544,14 +544,14 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 
 - `豆包/星火/文心/小爱` 等已知碰撞常用词——主路径有重说闭环兜着（误杀=多一次
   生成），**但若把它们引入没有重说语义的新路径，就会复现"整条回复被硬替换"事故**。
-- 加词前用一批日常语料跑 `check_ooc` 验证误杀面（`tests/test_benign_fp.py` 两向都要跑）。
+- 加词前用一批日常语料跑 `inspect_outbound_ooc` 验证误杀面（`tests/test_benign_fp.py` 两向都要跑）。
 - 部署者热补词走 `ai_config.output_firewall_extra_terms`，不要硬编码进 `_MODEL_TERMS`。
 - **词库分档（2026-07-12 第四/五轮）**：`_SYSTEM_TERMS` 只留硬词（systemprompt/max_tokens…）；
   `训练数据/参数量/上下文窗口/知识截止/采样参数/api密钥/apikey` 是 AI 行业闲聊与开发者日常词
   （"自己备个 API key"曾把整份工具推荐 scrub 成兜底句），在 `_CTX_TECH_SELF_RE` 里**绑定
   第一人称**才算泄露——真实密钥泄露由 `_SK_KEY_RE` 按 sk- 形态兜底；`供应商` 已删除。
   裸模型名的精度门：`_SELF_BIND_RE` 省主语支须**句首/标点后**（"群主用的是 ChatGPT"是第三方
-  转述不拦）；**短答直答门是条件门**——`check_ooc(text, user_text=…)` 只在来话命中
+  转述不拦）；**短答直答门是条件门**——`inspect_outbound_ooc(text, user_text=…)` 只在来话命中
   `_IDENTITY_PROBE_RE`（身份追问）时启用，AI 话题闲聊里的短句放行（C-5 对齐）。
   召回侧补 `_AI_ADMIT_RE`：多轮软磨下的**句首认领式承认**（"确实…是AI啦"，无"我"字，
   `_AI_SELFREF_RE` 第一人称要求接不住）；否定式（"才不是AI呢"）因否定词不在填充词集天然放行。

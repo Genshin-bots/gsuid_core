@@ -25,7 +25,7 @@
 > `render_chart_spec` series+图例+零轴**）
 > 主线：**适配器推来一条群聊消息 → 是否进 AI → 读哪些数据 → 激活哪些模块 → 怎么回复 → 什么被沉淀 → 首尾日志**
 > 源码是唯一事实源。改 `handler` / `handle_ai` / `gs_agent` / **`agent_run/*`** / `output_gate` /
-> `output_firewall` / `subagent` / `delegation_contracts` / 装配 / 记忆后请同步本文。
+> `control/*` / `subagent` / `delegation_contracts` / 装配 / 记忆后请同步本文。
 > 关联：
 > - 开发技能：`.agents/skills/gscore-development/references/02-startup-lifecycle.md`、`04-event-trigger-flow.md`、`06-ai-session-and-persona.md`、`07-tool-registry-and-agent.md`、`09-memory-system.md`
 > - 会话日志：`AI_SESSION_LOG_CHAIN_AND_WATERFALL_20260708.md`
@@ -144,15 +144,15 @@ SSE 仅闸后 `text`/`attachment` 与单一终态；无 tool/thinking。取消�
 ### 1.1 内核 vs 套件（2026-08-15 起）
 
 上面 12 阶段是**内核编排**。产品能力（记忆 / 关系温度 / 情绪 / 意图分类 / 软门 /
-脚手架注入 / 工具装配 / FileOS 折叠 / 质量纠正）**不再写在阶段函数体里**，而是 **19** 个
+脚手架注入 / 工具装配 / FileOS 折叠 / 质量纠正）**不再写在阶段函数体里**，而是 **20** 个
 可替换**套件**（`kits/base.py::KIT_SLOTS`），挂在同一张 **31 点位 hook 总线**上：
 
 ```text
 handler   ①  ──→ H00 ON_INBOUND                    记忆观察 / 表情观察 / 图片记忆
 handle_ai ④  ──→ H01 BEFORE_AI_CHAT                会话静默窗（abort）
           ⑤  ──→ H02 AFTER_SESSION                 关系温度 View / 主动会话 observe
-          ⑥  ──→ H03 CLASSIFY                      意图（**由槽位占用者写入**）
-          ⑦  ──→ H04 REACTIVE_GATE                 软触发沉默门（仅 soft；引用 bot 不走）
+          ⑥  ──→ H03 CLASSIFY                      意图与软唤醒相关性（**由槽位占用者写入**）
+          ⑦  ──  (H04 REACTIVE_GATE 已下线 wired=False；软门由 handle_ai 直接消费 route_decision.soft_speak)
           ⑧  ──→ H05 RETRIEVE_CONTEXT              贵检索窗（唯一 15s 长超时）
               ──→ H06 COMPOSE_CONTEXT              各套件填命名块
               ──→ H07 AFTER_CONTEXT                第三方追加 hint
@@ -200,7 +200,7 @@ C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**�
 | Budget | `budget.budget_manager` | Session Token 额度 |
 | AIRouter | `ai_router.get_ai_session` | 读/建 `GsCoreAIAgent` + 稳定 system_prompt |
 | Classifier | `mode_classifier` / `classifier_service` | 闲聊/工具/问答 |
-| TurnRouter | `inbox` 软唤醒路由（H04 `REACTIVE_GATE`） | soft wake 项读线程视图判相关性 |
+| TurnRouter | `classifier.turn_router`（H03 产出） | soft wake 项读线程视图判相关性，`handle_ai` 消费 `soft_speak` |
 | TurnGraph | `interaction_scaffold.build_turn_graph` | 本轮结构：`call_to_self` / `quoted_tome` / 开口门 |
 | CheapGate | `interaction_scaffold.decide_cheap_gate` | silence / full；quiet_zone 未点名才硬静 |
 | RelView | `relationship.RelationshipView` | zone + line + voice；H02 写入，CheapGate / 装配共用 |
@@ -1583,7 +1583,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 `speech_policy="delivered"`：此后对用户只许 `<SILENCE>`，杜绝「任务已完成，图已发送给…」
 这类系统日志腔 OOC。media-only 交付不置位，保留一句角色收尾额度（post_image_ok）。
 
-**机器腔判据（形态，非业务词）**：`Traceback`、`File "…", line`、`"status": 5xx`、`status_code`、常见 `*Error:`、内存地址、框架栈特征等（`output_firewall._TECH_DUMP_RE` / `is_tech_dump`）。
+**机器腔判据（形态，非业务词）**：`Traceback`、`File "…", line`、`"status": 5xx`、`status_code`、常见 `*Error:`、内存地址、框架栈特征等（`control/outbound_detectors.py::_TECH_DUMP_RE` / `is_tech_dump`）。
 
 **工具执行**可读：插件函数 / MCP / buildin；可写：插件业务 DB、state_store、Kanban、artifact 文件等（视工具）。
 
@@ -1594,14 +1594,15 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 | 策略顺序 | 模块 | 命中决策 | 同 turn 行为 |
 |----------|------|----------|--------------|
 | 1 `angle_bracket` | `angle_bracket_guard` | 非法 `<>`（如 `<bubble/>` / **`<br>`**）→ **REWRITE**；同 ModelResponse 多段只计 1 次 attempt；累计 3 次 → **FUSE** | 主路径：下一轮 ModelRequest 注入 feedback（`merge_rewrite_feedbacks`）；工具：return 警告；熔断后本轮静默并 scrub 历史 |
-| 2 `ooc` | `output_firewall.check_ooc` | **machine_dump** 主路径 → **FALLBACK**；**delivery_narration** 主路径 → **FUSE**；软出戏主/工具同一套：注入系统提醒让模型自判，提醒后只放行主路径下一句正文（不强制剥模型名、不二次发送放行）；无下一轮 → run 末自判发送；资金/机器腔 never-release 持续打回 | 状态仅 `extra["output_gate"]` → **`GateBag`**（`angle_bracket` / `ooc` 的 `PolicyState` + `ooc_warned_turn_ids` = 提醒已送达） |
+| 2 `ooc` | `control/outbound_detectors.inspect_outbound_ooc` + `control/policy_ring.evaluate_ooc_gate` | **machine_dump** 主路径 → **REWRITE+defer**（run 末人格重说）；**delivery_narration** 主路径 → **FUSE**；软出戏主/工具同一套：注入系统提醒让模型自判，提醒后只放行主路径下一句正文（不强制剥模型名、不二次发送放行）；无下一轮 → run 末自判发送；资金/机器腔 never-release 持续打回 | 状态仅 `extra["output_gate"]` → **`GateBag`**（`angle_bracket` / `ooc` 的 `PolicyState` + `ooc_warned_turn_ids` = 提醒已送达） |
 
 **决策枚举** `GateDecision`：`ALLOW` | `REWRITE` | `FALLBACK` | `FUSE`。
 
-**OOC 类目**（`check_ooc` 返回 `FirewallHit.category`）：`model_identity` / `ai_selfref` /
-`system_term`（框架泄漏 / 系统文案）/ `fund_claim` / `machine_dump` / **`delivery_narration`**。
+**OOC 类目**（`inspect_outbound_ooc` 返回 `FirewallHit.category`）：`model_identity` / `ai_selfref` /
+`system_term`（框架泄漏 / 系统文案）/ `fund_claim` / `machine_dump` / **`delivery_narration`** /
+`capability_absence` / `meta_narration` / `stale_present`。
 `delivery_narration`（2026-08-10）= 交付状态汇报的系统日志腔（「任务已完成 / 图已发送给X /
-无需追加发言」），由 `speech_policy.looks_like_delivery_status_narration` 双信号共现检测
+无需追加发言」），由 `outbound_detectors.looks_like_delivery_status_narration` 双信号共现检测
 （交付/完成播报 × 行政化自我静默），不认业务关键词；与 DELIVERED 终局态互补（终局态是主闸，
 此类目是未置终局时的兜底）。
 
@@ -1644,7 +1645,7 @@ API 错误字面量 → 角色短句替换
 （主契约：render_agent → render_html_to_image 登记 artifact，非 <report> 标签协议）
 非法 <> sanitize 兜底（漏网；``<br>``→换行；``<report>`` 标签删除）
 解析 <meme:情绪>；剥 markdown / *动作*（保留整行/整段（…）心声，跟人设）
-若 ooc_check：台词 + report 体再 check_ooc → 替换/丢弃（无重说）
+若 ooc_check：台词 + report 体再 inspect_outbound_ooc → 替换/丢弃（无重说）
 长 markdown 整篇出图：配置 render_long_markdown_as_image（**默认 False**，2026-08-08）
   · 开启时仍只作呈现层兜底，避免主人格浅分析被渲成丑图
   · 失败则降级空行拆条
@@ -1983,7 +1984,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | TurnGraph / 开口门 | 是 | Session 后立刻；结构性静音不结算 |
 | CheapGate | 是 | 分类后 + 装配后；quiet_zone 未点名才硬静 |
 | mode_classifier | 是 | 进 AI 必跑（开口门已静则不到这） |
-| reactive_gate | 仅 soft | 引用 bot / 硬 @ 不走 |
+| soft_speak 软门 | 仅 soft | 引用 bot / 硬 @ 不走；由 TurnRouter 产出、`handle_ai` 消费 |
 | RelationshipView | 是 | H02；zone voice 进口吻锚 |
 | ai_router / Session | 是 | |
 | context_assembly | 是 | 未点名 suffix 清空产品块 |

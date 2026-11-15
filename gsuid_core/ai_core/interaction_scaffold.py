@@ -32,6 +32,7 @@ from gsuid_core.ai_core.control.lines import (
     MEDIA_HANDLE_RE,
     MSG_SECTION_HEAD as _MSG_SECTION_HEAD,
     CLOCK_LINE_PATTERN,
+    SCHED_TASK_NOUN_BASE,
 )
 
 if TYPE_CHECKING:
@@ -86,9 +87,10 @@ def recent_history_texts(history: List[ModelMessage], limit: int = 6) -> List[Tu
 
 
 # 跨轮省略跟进：依据上一轮真实 ToolCallPart 证据与当前句省略特征判定。
+_SCHED_MUTATE_VERBS = r"换成|提前|推迟|延后|取消|去掉|恢复"
 _FOLLOWUP_VERB_RE = re.compile(
-    r"改成|改到|改为|改回|换成|换个|挪到|往[前后]挪|提前|推迟|延后|取消|不要了|不用了|"
-    r"去掉|删掉|删了|别删|停了?|停一?下|别提醒|暂停|恢复|再查|再看|重新查"
+    rf"改[成到为回]|换个|挪到|往[前后]挪|{_SCHED_MUTATE_VERBS}|不要了|不用了|"
+    r"删[掉了]|别删|停了?|停一?下|别提醒|暂停|再查|再看|重新查"
 )
 _FOLLOWUP_THAT_RE = re.compile(r"^那[^。！？，,]{1,8}呢[？?]?$")
 # 省略式跟进的最长字数（超过=有独立语义的实质发言）；默认值，可被 ai_config 覆盖
@@ -177,7 +179,7 @@ def _history_has_any_speaker_id(recent: List[Tuple[str, str]]) -> bool:
     return any(extract_speaker_id(txt) for r, txt in recent if r == "user")
 
 
-_INTERPERSONAL_REWRITE_RE = re.compile(r"把[他她你我它]们?的.{1,6}(?:改成|改为|换成)")
+_INTERPERSONAL_REWRITE_RE = re.compile(r"把[他她你我它]们?的.{1,6}(?:改[成为]|换成)")
 
 
 def is_manage_ellipsis_form(current_text: str, *, max_len: int = FOLLOWUP_MAXLEN_DEFAULT) -> bool:
@@ -238,10 +240,8 @@ def ellipsis_inherits_other_speaker(
 
 # 任务管理意图：查/改/删/停 已有的提醒/定时任务/日程——无论是否省略跟进，都需要调度族工具
 # （list/modify/cancel/pause）才能定位既有条目。用于把这些工具补进池（比省略跟进更宽的触发面）。
-_TASK_NOUN_RE = re.compile(r"提醒|闹钟|定时任务?|日程|待办|订阅|任务列表")
-_TASK_MANAGE_VERB_RE = re.compile(
-    r"改|修改|换成|挪|提前|推迟|延后|取消|删|去掉|停|暂停|恢复|列|看看|有哪些|哪些|几个|多少个|查[一下]*"
-)
+_TASK_NOUN_RE = re.compile(rf"{SCHED_TASK_NOUN_BASE}|任务列表")
+_TASK_MANAGE_VERB_RE = re.compile(rf"改|挪|删|停|{_SCHED_MUTATE_VERBS}|列|看看|哪些|几个|多少个|查")
 
 
 def references_task_management(current_text: str) -> bool:
@@ -447,7 +447,7 @@ def decide_group_open_gate(
 
     - 私聊 / 明确呼叫自己 → SPEAK
     - @别人 / 催别人 ambient / 多人同条无呼叫 → SILENCE
-    - soft_triggered 未命中强负 → SPEAK（交给 reactive_gate 细判）
+    - soft_triggered 未命中强负 → SPEAK（交给 TurnRouter.soft_speak 细判）
     - 其余默认 SPEAK（避免误吞已入队的正经请求）
     """
     if user_type == "direct":
@@ -740,30 +740,6 @@ def admit_pre_router(tg: TurnGraph) -> bool:
     return True
 
 
-def admit_post_classify(
-    tg: TurnGraph,
-    *,
-    soft_triggered: bool = False,
-    has_active_task: bool = False,
-    intent: str = "",
-    rel: Optional["RelationshipView"] = None,
-    should_speak: bool = True,
-) -> CheapGate:
-    """二段合并准入门：统一 CheapGate 与软触发 REACTIVE_GATE 的最终说话判定。"""
-    cheap = decide_cheap_gate(
-        tg,
-        soft_triggered=soft_triggered,
-        has_active_task=has_active_task,
-        intent=intent,
-        rel=rel,
-    )
-    if cheap is CheapGate.SILENCE:
-        return CheapGate.SILENCE
-    if soft_triggered and not should_speak:
-        return CheapGate.SILENCE
-    return CheapGate.FULL
-
-
 def decide_cheap_gate(
     tg: TurnGraph,
     *,
@@ -783,15 +759,10 @@ def decide_cheap_gate(
     # intent 仍由调用方传入；档位不再按闲聊分流
     if not tg.is_group:
         return CheapGate.FULL
-    if tg.open_gate is GroupOpenGate.SILENCE:
-        return CheapGate.SILENCE
-    if tg.address_gated:
+    if not admit_pre_router(tg):
         return CheapGate.SILENCE
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
-    _repeat_n = int(ai_config.get_config("group_repeat_body_n").data)
-    if _repeat_n > 1 and _same_body_repeat_count(tg) >= _repeat_n:
-        return CheapGate.SILENCE
     if bool(ai_config.get_config("group_lurk_mode").data):
         _master = rel is not None and rel.is_master
         if (

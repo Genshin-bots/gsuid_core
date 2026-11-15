@@ -430,7 +430,6 @@ async def ops_output_preview(
     body: OutputPreviewRequest,
     _user: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
-    from gsuid_core.ai_core import output_firewall
     from gsuid_core.ai_core.utils import (
         _strip_persona_markdown,
         _strip_resource_handles,
@@ -438,9 +437,13 @@ async def ops_output_preview(
         _strip_tool_call_artifacts,
         _strip_special_control_tokens,
     )
+    from gsuid_core.ai_core.control.outbound_detectors import (
+        inspect_outbound_ooc,
+        is_ooc_firewall_enabled,
+    )
 
     raw = body.text or ""
-    hit = output_firewall.check_ooc(raw, tier=body.tier, user_text=body.user_text or "")
+    hit = inspect_outbound_ooc(raw, tier=body.tier, user_text=body.user_text or "")
     stages: Dict[str, str] = {"raw": raw}
     t1 = _strip_tool_call_artifacts(raw)
     stages["after_strip_tool_call"] = t1
@@ -457,7 +460,7 @@ async def ops_output_preview(
         "status": 0,
         "msg": "ok",
         "data": {
-            "firewall_enabled": output_firewall.is_enabled(),
+            "firewall_enabled": is_ooc_firewall_enabled(),
             "ooc_hit": (None if hit is None else {"category": hit.category, "matched": list(hit.matched)}),
             "stages": stages,
             "final": t5,
