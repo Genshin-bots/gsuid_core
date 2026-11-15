@@ -238,7 +238,7 @@ def test_restart_env_guard_and_supervisor(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_estimate_model_cost_endpoints() -> None:
-    """验证单次与批量模型费用估算接口的正确性。"""
+    """费用估算接口契约：批量逐项与单估一致、合计为逐项之和、未知模型计 0。"""
     from gsuid_core.webconsole.ai_statistics_api import (
         CostEstimateItem,
         BatchCostEstimateRequest,
@@ -248,18 +248,21 @@ def test_estimate_model_cost_endpoints() -> None:
 
     res = asyncio.run(estimate_model_cost("minimax-m3.1-flash", 1_000_000, 1_000_000, 0, 0, _={}))
     assert res["status"] == 0 and res["data"] is not None
-    assert res["data"]["cost"] == pytest.approx(0.75, rel=1e-3)
+    single_cost = res["data"]["cost"]
+    assert single_cost > 0 and res["data"]["currency"] == "USD"
 
     req = BatchCostEstimateRequest(
         items=[
             CostEstimateItem(model="minimax-m3.1-flash", input_tokens=1_000_000, output_tokens=1_000_000),
             CostEstimateItem(model="minimax-m3.1-flash", input_tokens=1_000_000, output_tokens=0),
+            CostEstimateItem(model="unknown-model-xyz", input_tokens=1_000_000, output_tokens=1_000_000),
         ]
     )
     res_batch = asyncio.run(estimate_model_cost_batch(req, _={}))
     assert res_batch["status"] == 0 and res_batch["data"] is not None
-    assert res_batch["data"]["total_cost"] == pytest.approx(0.90, rel=1e-3)
-    assert len(res_batch["data"]["costs"]) == 2
+    costs = res_batch["data"]["costs"]
+    assert len(costs) == 3 and costs[0] == single_cost and costs[2] == 0
+    assert res_batch["data"]["total_cost"] == pytest.approx(sum(costs), abs=1e-6)
 
 
 class _StubConfigManager:

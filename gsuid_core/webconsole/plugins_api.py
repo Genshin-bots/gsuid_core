@@ -1062,15 +1062,33 @@ def _plugin_store_order_key(
     return (int(deprecated), int(installed_tab and not has_update), random_key)
 
 
+def _plugin_store_star_order_key(
+    plugin_id: str,
+    *,
+    deprecated: bool,
+    star_count: int | None,
+    descending: bool,
+    order_seed: str | None,
+) -> tuple[int, int, int, str, str]:
+    random_key = ""
+    if order_seed is not None:
+        random_key = hashlib.sha256(f"{order_seed}\0{plugin_id}".encode()).hexdigest()
+    star_order = 0
+    if star_count is not None:
+        star_order = -star_count if descending else star_count
+    return (int(deprecated), int(star_count is None), star_order, random_key, plugin_id.lower())
+
+
 @app.get("/api/plugin-store/list", summary="获取插件商店列表", tags=PLUGINS)
 async def get_plugin_store_list(
     request: Request,
-    _user: Dict[str, Any] = Depends(require_auth),
+    _user: SessionRecord = Depends(require_auth),
     tab: Optional[str] = Query(None, description="页签筛选：all / installed / updates / fun / tool / adapter"),
     search: Optional[str] = Query(None, description="按插件名/描述/标签模糊匹配"),
     limit: Optional[int] = Query(None, ge=1, le=200, description="单页条数；不传=全量"),
     offset: int = Query(0, ge=0, description="偏移量"),
     order_seed: Optional[str] = Query(None, min_length=1, max_length=128, description="分页随机排序种子"),
+    sort: Optional[str] = Query(None, description="排序方式：default / stars_desc / stars_asc"),
 ):
     """
     获取远程插件商店的插件列表
@@ -1088,6 +1106,7 @@ async def get_plugin_store_list(
         limit: 单页条数；不传=全量
         offset: 偏移量
         order_seed: 分页随机排序种子；同一种子保持跨页顺序稳定
+        sort: 排序方式（default / stars_desc / stars_asc）
 
     Returns:
         status: 0成功，1失败
@@ -1198,15 +1217,43 @@ async def get_plugin_store_list(
 
         # 全局排序必须先于分页，避免停止维护或可更新插件落入错误页。
         # 同一 order_seed 让独立分页请求共享同一顺序。
-        selected.sort(
-            key=lambda p: _plugin_store_order_key(
-                p["id"],
-                deprecated=p["type"] == "danger" and p["content"] == "停止维护",
-                has_update=p["hasUpdate"],
-                installed_tab=tab == "installed",
-                order_seed=order_seed,
+        effective_sort = sort if sort in ("stars_desc", "stars_asc") else "default"
+        if effective_sort != "default":
+            from gsuid_core.webconsole.github_auth_api import parse_github_repo, resolve_repo_star_counts
+
+            repo_by_id: dict[str, str] = {}
+            for p in selected:
+                raw_link = p["link"]
+                link_str = raw_link if isinstance(raw_link, str) and raw_link else f"https://github.com/{p['id']}"
+                repo = parse_github_repo(link_str)
+                if repo is not None:
+                    repo_by_id[p["id"]] = repo.lower()
+            star_counts = await resolve_repo_star_counts(repo_by_id.values())
+            descending = effective_sort == "stars_desc"
+
+            def _star_key(p: dict[str, object]) -> tuple[int, int, int, str, str]:
+                pid = str(p["id"])
+                repo_key = repo_by_id[pid] if pid in repo_by_id else ""
+                count = star_counts[repo_key] if repo_key in star_counts else None
+                return _plugin_store_star_order_key(
+                    pid,
+                    deprecated=p["type"] == "danger" and p["content"] == "停止维护",
+                    star_count=count,
+                    descending=descending,
+                    order_seed=order_seed,
+                )
+
+            selected.sort(key=_star_key)
+        else:
+            selected.sort(
+                key=lambda p: _plugin_store_order_key(
+                    p["id"],
+                    deprecated=p["type"] == "danger" and p["content"] == "停止维护",
+                    has_update=p["hasUpdate"],
+                    installed_tab=tab == "installed",
+                    order_seed=order_seed,
+                )
             )
-        )
 
         total_count = len(formatted_plugins)
         count = len(selected)
@@ -1228,6 +1275,7 @@ async def get_plugin_store_list(
                 "offset": offset,
                 "has_more": offset + len(page_items) < count,
                 "order_seed": order_seed,
+                "sort": effective_sort,
             },
         }
     except Exception as e:

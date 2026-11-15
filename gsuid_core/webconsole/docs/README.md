@@ -65,6 +65,7 @@ GsCore WebConsole 提供基于 FastAPI 的 RESTful API，供前端 React 应用�
 42. [插件页面 - /plugin-pages 与 /api/plugin-pages](./46-plugin-pages.md)
 43. [会话管理（消息记录）API - /api/history/chat](./47-session-chat.md)（含 WebSocket 实时推送）
 44. [人格市场 API - /api/persona-store](./48-persona-store.md)（git 整包导入 / 同步 / 卸载）
+45. [GitHub 连接 API - /api/github](./49-github.md)（Device Flow 授权 / 插件 star 查询与操作）
 
 ---
 

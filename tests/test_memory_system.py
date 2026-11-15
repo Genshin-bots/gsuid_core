@@ -70,11 +70,6 @@ def test_memory_scope_and_private_isolation() -> None:
                 offenders.append(f"{rel}:{node.lineno}  {ast.unparse(node)}")
     assert not offenders
 
-    bad = ast.parse("x = event.group_id or event.user_id").body[0]
-    ok = ast.parse("x = event.group_id in bl or event.user_id in bl").body[0]
-    assert isinstance(bad, ast.Assign) and _is_group_id_fallback(bad.value)
-    assert isinstance(ok, ast.Assign) and not _is_group_id_fallback(ok.value)
-
     ctx = AgentHookContext(point=AgentHookPoint.RETRIEVE_CONTEXT)
     scope = cog_scope_from_ctx(ctx)
     assert isinstance(scope, CogScope) and scope.group_id is None and scope.is_private

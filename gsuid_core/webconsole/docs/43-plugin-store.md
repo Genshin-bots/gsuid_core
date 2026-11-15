@@ -32,11 +32,12 @@ GET /api/plugin-store/list
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| tab | string | 否 | 页签筛选：`all` / `installed` / `updates` / `fun` / `tool` |
+| tab | string | 否 | 页签筛选：`all` / `installed` / `updates` / `fun` / `tool` / `adapter` |
 | search | string | 否 | 按插件 ID / 描述 / 标签模糊匹配 |
 | limit | integer | 否 | 单页条数（1–200）；**不传则返回全量** |
 | offset | integer | 否 | 偏移量，默认 0 |
 | order_seed | string | 否 | 随机排序种子，长度 1–128；同一种子保持跨页顺序稳定 |
+| sort | string | 否 | 排序方式：`default`（默认，复用 order_seed）/ `stars_desc`（Star 从高到低）/ `stars_asc`（Star 从低到高） |
 
 **响应**（成功）：
 ```json
@@ -75,7 +76,8 @@ GET /api/plugin-store/list
         "limit": 32,
         "offset": 0,
         "has_more": true,
-        "order_seed": "4a875b45d09043afab5442b4bdea85d8"
+        "order_seed": "4a875b45d09043afab5442b4bdea85d8",
+        "sort": "default"
     }
 }
 ```
@@ -99,9 +101,11 @@ GET /api/plugin-store/list
 | `data.limit` / `data.offset` | `integer` / `null` | 本次请求的分页参数；`limit` 为 null 表示未分页 |
 | `data.has_more` | `boolean` | 是否还有下一页 |
 | `data.order_seed` | `string` / `null` | 后端采用的随机排序种子；未传时为 null |
+| `data.sort` | `string` | 实际生效的排序方式：`default` / `stars_desc` / `stars_asc`（非法值自动回退为 `default`） |
 
 > 前端应在进入页面时生成一个 `order_seed`，并在翻页期间复用该值。后端先筛选完整列表，
-> 再按种子排序，最后分页。停止维护的插件仍排在最后。
+> 再全局排序，最后分页。停止维护的插件始终排在最后；`sort` 为 `stars_desc` / `stars_asc`
+> 时按仓库 star 数排序（已知 star 数排在无数据之前，同 star 数按 `order_seed` 稳定排序）。
 
 **错误响应**：
 ```json

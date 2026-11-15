@@ -80,6 +80,10 @@ WEB_SESSIONS_PATH = gs_data_path / "webconsole_sessions.json"
 CHAT_PREFS_PATH = gs_data_path / "webconsole_chat_prefs.json"
 # 插件选择器偏好：最近使用插件列表与最后编辑插件，纯面板状态
 PLUGIN_PREFS_PATH = gs_data_path / "webconsole_plugin_prefs.json"
+# GitHub 账号连接（Device Flow token，Fernet 加密落盘）
+GITHUB_AUTH_PATH = gs_data_path / "webconsole_github.json"
+# GitHub 仓库 star 数磁盘缓存（跨重启复用，避免频繁重启耗尽匿名 REST 配额）
+GITHUB_STARS_CACHE_PATH = gs_data_path / "webconsole_github_stars.json"
 
 # Live Chat（控制台实时聊天）多文件目录：
 #   identity.json / index.json / conversations/{id}.json

@@ -93,7 +93,9 @@ def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch) ->
     for mod in AI_DATABASE_MODEL_MODULES:
         assert mod in imported_on
 
-    # 显式状态机契约断言：Kanban 节点角色 / 续聊窗口 / 插件审批拒绝回退
+
+def test_state_machine_contracts() -> None:
+    """Kanban 节点角色 / 续聊窗口 / 插件审批拒绝回退三个独立状态机契约。"""
     assert TaskStatus.SKIPPED.value in TASK_STATUSES
     root_node = AIAgentTask(goal="测试根任务", node_kind="root")
     assert classify_task_node_role(root_node, children_count=2) == TaskNodeRole.AGGREGATE_ROOT
