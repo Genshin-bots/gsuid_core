@@ -185,7 +185,44 @@ await send_board_cast_msg(msgs)
 > 一般场景下 **优先用 `gs_subscribe`**，[`send_board_cast_msg`](../references/16-common-utilities.md) 仅在你已经有外部数据源
 > （比如从某 API 拉到的目标列表）时使用。
 
-## 16.10 速查表：常用 import
+## 16.10 登记备份建议路径：`register_backup_path`
+
+插件告诉框架「`data/` 下哪些目录是用户数据 / 配置 / 可重新下载的资源」。WebConsole
+`/backup` 页有「按建议」视图列出全部建议；`user_data` 与显式 `default_selected=True`
+的建议会被**一次性**自动加进 `backup_dir`（含定时备份），用户取消勾选后不会回填
+（记录在 `backup_hint_applied` 里）。
+
+```python
+def _register_backup_hints() -> None:
+    try:
+        from gsuid_core.utils.backup.hints import register_backup_path
+    except ImportError:
+        return  # 旧 Core 没有该模块，直接跳过
+    register_backup_path("MyPlugin", "MyPlugin/players", "user_data", "按 UID 存档的抽卡记录与面板")
+    register_backup_path("MyPlugin", "MyPlugin/config.json", "config", "插件配置", default_selected=True)
+    register_backup_path("MyPlugin", "MyPlugin/resource", "regenerable", "可用命令重新下载的素材")
+
+
+_register_backup_hints()
+```
+
+- `kind` 判定：`user_data` = 删了就回不去的用户内容（存档、绑定、记录）；`config` = 用户改过
+  的配置与自定义素材（背景图等）；`regenerable` = 能用命令 / 网络重新拉取的资源。
+- `plugin` 必须等于 `Plugins(name=...)` 的名字：热重载按这个名字注销建议，写错会残留。
+- 默认勾选只生效一次：`user_data` 默认勾，`config` 显式 `default_selected=True` 才勾，
+  `regenerable` 一律不勾。框架**从不自动移除**用户已勾选的路径。
+- `path` 必须落在 `data/` 内（相对 `data/` 或其下绝对路径，越界抛 `ValueError`），
+  不要求路径已存在。
+- 搬目录用 `replaces`：`register_backup_path(..., replaces=["MyPlugin/old_dir"])`。
+  旧路径还在用户的勾选里就自动换成新路径（与 `default_selected` 无关）；旧路径曾被
+  自动勾选又被用户取消，则新路径同样不自动补回。**目录里的文件迁移是插件自己的事**，
+  `replaces` 只迁勾选记录不搬文件。
+- 同一 `rel` 重复登记后者覆盖，热重载安全；热重载会自动注销该插件的建议，无需手动
+  `unregister_backup_paths`（插件目录内主动卸载时仍可调用，参数是 `Plugins` 名）。
+- 不要登记缓存目录（`IMAGE_TEMP`、`data_cache` 等在备份树里本就不展示），也不要登记
+  临时 / 可重建产物。
+
+## 16.11 速查表：常用 import
 
 ```python
 # —— 框架核心 ——

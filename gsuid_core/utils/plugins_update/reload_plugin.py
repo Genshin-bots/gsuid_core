@@ -408,6 +408,14 @@ def reload_plugin(plugin_name: str) -> str:
 
     SL.plugins.pop(plugin_name, None)
 
+    # 备份建议路径以 Plugins.name 为键登记，重载前按实际 name 与目录名一起注销
+    from gsuid_core.utils.backup.hints import unregister_backup_paths
+
+    for plugins in plugins_to_del:
+        if plugins.name:
+            unregister_backup_paths(plugins.name)
+    unregister_backup_paths(plugin_name)
+
     # 第三步：清理 sys.modules 和 _module_cache
     # 必须覆盖所有子模块，不能只清入口
     if meta_info is not None:

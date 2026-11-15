@@ -24,6 +24,11 @@ BACKUP_CONFIG: Dict[str, GSC] = {
         "指定需要备份的目录",
         [str(DB_PATH)],
     ),
+    "backup_hint_applied": GsListStrConfig(
+        "已应用备份建议",
+        "已自动勾选的备份建议路径，内部状态，不在控制台展示",
+        [],
+    ),
     "webdav_url": GsStrConfig(
         "WebDAV URL",
         "WebDAV 服务器地址",

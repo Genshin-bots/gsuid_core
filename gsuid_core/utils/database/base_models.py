@@ -1,3 +1,5 @@
+import os
+import shutil
 import asyncio
 import sqlite3
 import contextlib
@@ -14,6 +16,7 @@ from typing import (
     Awaitable,
 )
 from pathlib import Path
+from datetime import datetime
 from functools import wraps
 from collections.abc import Coroutine, AsyncIterator
 from typing_extensions import ParamSpec, Concatenate
@@ -36,7 +39,7 @@ from sqlalchemy.sql.expression import func, null, true
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.data_store import get_res_path
+from gsuid_core.data_store import backup_path, get_res_path
 from gsuid_core.utils.database.write_gate import WriteGateTimeout, sqlite_write_gate
 from gsuid_core.utils.plugins_config.gs_config import database_config
 
@@ -214,6 +217,24 @@ def _discard_sqlite_snapshot(dest: Path) -> None:
             sidecar.unlink()
 
 
+def apply_pending_db_restore() -> None:
+    """启动时把还原暂存库换入主库，旧库与边车归档到备份目录。
+
+    还原不碰运行中的 ``GsData.db``，只写 ``GsData.db.restore-pending``；
+    这里在 WAL 初始化之前完成替换，本次启动直接读新库。
+    """
+    pending = DB_PATH.with_name(DB_PATH.name + ".restore-pending")
+    if not pending.is_file():
+        return
+    archive = backup_path / f"pre-restore-db-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    archive.mkdir(parents=True, exist_ok=True)
+    for side in (DB_PATH, *_sqlite_sidecars(DB_PATH)):
+        if side.exists():
+            shutil.move(str(side), str(archive / side.name))
+    os.replace(pending, DB_PATH)
+    logger.info(i18n_t("log.backup.pending_db_applied", p0=archive))
+
+
 def sqlite_consistent_snapshot(src: Path, dest: Path) -> None:
     """用 SQLite 在线备份 API 把 ``src`` 导出一致快照到 ``dest``。
 
@@ -284,6 +305,7 @@ async def init_database():
             if _db_type == "sqlite":
                 # 默认 QueuePool 会在等写锁时占满槽（2026-07 雪崩）。NullPool + 单写者闸门。
                 # sqlite3.connect 会堵满 busy_timeout，不能占着事件循环。
+                await asyncio.to_thread(apply_pending_db_restore)
                 await asyncio.to_thread(_enable_sqlite_wal, db_url)
                 db_config.update(
                     {
