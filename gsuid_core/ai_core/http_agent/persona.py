@@ -5,6 +5,21 @@ from __future__ import annotations
 from gsuid_core.ai_core.http_agent.types import HttpAgentKeyRecord
 from gsuid_core.ai_core.http_agent.config import load_http_agent_settings
 
+# HTTP Agent 专属的会话级内存人格钉选（仅 HTTP_AGENT: 会话使用）。
+_HTTP_PERSONA_OVERRIDES: dict[str, str] = {}
+
+
+def set_http_persona_override(session_id: str, persona_name: str) -> None:
+    _HTTP_PERSONA_OVERRIDES[session_id] = persona_name
+
+
+def get_http_persona_override(session_id: str) -> str | None:
+    return _HTTP_PERSONA_OVERRIDES.get(session_id)
+
+
+def clear_http_persona_override(session_id: str) -> bool:
+    return _HTTP_PERSONA_OVERRIDES.pop(session_id, None) is not None
+
 
 class PersonaResolveError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
@@ -70,7 +85,5 @@ def resolve_http_persona(
         raise PersonaResolveError(422, "persona_unbound", "persona does not exist")
 
     if req and (existing is None or existing == req):
-        from gsuid_core.buildin_plugins.core_command.core_ai_control.state import set_persona_override
-
-        set_persona_override(session_id, candidate)
+        set_http_persona_override(session_id, candidate)
     return candidate

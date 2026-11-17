@@ -7,9 +7,6 @@ from typing import Optional
 
 from gsuid_core.models import Event
 
-# 当前会话范围内的人格热切换覆盖：{session_id: persona_name}
-_PERSONA_OVERRIDES: dict[str, str] = {}
-
 # 当前会话范围内的 AI 禁言：{scope_key: expire_at_unix_seconds}
 _AI_BAN_UNTIL: dict[str, float] = {}
 
@@ -36,21 +33,6 @@ def get_target_scope_key(
     if target_type == "direct":
         return f"{ws_bid}:{bid}:{self_id}:private:{target_id}"
     return f"{ws_bid}:{bid}:{self_id}:group:{target_id}"
-
-
-def set_persona_override(session_id: str, persona_name: str) -> None:
-    """设置当前 session 的人格覆盖。"""
-    _PERSONA_OVERRIDES[session_id] = persona_name
-
-
-def get_persona_override(session_id: str) -> Optional[str]:
-    """获取当前 session 的人格覆盖。"""
-    return _PERSONA_OVERRIDES.get(session_id)
-
-
-def clear_persona_override(session_id: str) -> bool:
-    """清除当前 session 的人格覆盖。"""
-    return _PERSONA_OVERRIDES.pop(session_id, None) is not None
 
 
 def ban_scope(session_id: str, seconds: int) -> float:

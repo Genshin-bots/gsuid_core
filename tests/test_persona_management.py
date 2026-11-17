@@ -224,3 +224,168 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
         assert len(final_timeline) == 0
 
     asyncio.run(scenario())
+
+
+def _setup_isolated_persona_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gsuid_core.ai_core.persona import config as persona_cfg_mod
+    from gsuid_core.ai_core.proactive import dm_lease as dm_lease_mod
+
+    monkeypatch.setattr(persona_cfg_mod, "PERSONA_PATH", tmp_path)
+    monkeypatch.setattr(persona_cfg_mod.persona_config_manager, "_base_path", tmp_path)
+    persona_cfg_mod.persona_config_manager.clear_cache()
+
+    lease_file = tmp_path / "dm_leases.json"
+    monkeypatch.setattr(dm_lease_mod, "_path", lambda: lease_file)
+    monkeypatch.setattr(dm_lease_mod, "_cached_path", None)
+    monkeypatch.setattr(dm_lease_mod, "_cached_mtime", -1.0)
+    monkeypatch.setattr(dm_lease_mod, "_cached_leases", {})
+
+
+def _seed_persona(tmp_path: Path, name: str, scope: str, groups: list[str] | None = None) -> None:
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    pdir = tmp_path / name
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "persona.md").write_text(f"# {name}\n", encoding="utf-8")
+    cfg = persona_config_manager.get_config(name)
+    assert cfg.set_config("scope", scope)
+    assert cfg.set_config("target_groups", list(groups or []))
+
+
+def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.http_agent.persona import set_http_persona_override, clear_http_persona_override
+
+    _setup_isolated_persona_env(tmp_path, monkeypatch)
+    _seed_persona(tmp_path, "alpha", "specific", ["group_1"])
+    _seed_persona(tmp_path, "beta", "specific", [])
+    _seed_persona(tmp_path, "global_p", "global")
+    _seed_persona(tmp_path, "only_dm", "global_private")
+    _seed_persona(tmp_path, "off", "disabled")
+
+    group_sid = "ws1:onebot:10001:group:group_1"
+    dm_sid = "ws1:onebot:10001:private:100000001"
+    http_sid = "HTTP_AGENT:onebot:s1:group:group_1"
+
+    assert persona_config_manager.get_persona_for_session(group_sid) == "alpha"
+
+    ok, _ = persona_config_manager.assign_target_to_persona("beta", "group_1", is_private=False)
+    assert ok is True
+    persona_config_manager.clear_cache()
+    assert "group_1" not in persona_config_manager.get_config("alpha").get_config("target_groups").data
+    assert "group_1" in persona_config_manager.get_config("beta").get_config("target_groups").data
+    assert persona_config_manager.get_persona_for_session(group_sid) == "beta"
+
+    ok, _ = persona_config_manager.assign_target_to_persona("global_p", "group_1", is_private=False)
+    assert ok is True
+    assert persona_config_manager.get_config("global_p").get_config("scope").data == "global"
+    assert "group_1" not in persona_config_manager.get_config("beta").get_config("target_groups").data
+    assert persona_config_manager.get_persona_for_session(group_sid) == "global_p"
+
+    ok_dm, _ = persona_config_manager.assign_target_to_persona("only_dm", "group_1", is_private=False)
+    assert ok_dm is False
+    ok_off, _ = persona_config_manager.assign_target_to_persona("off", "group_1", is_private=False)
+    assert ok_off is False
+
+    # HTTP_AGENT 专属覆盖仅作用于 HTTP_AGENT 会话，不干扰普通会话
+    set_http_persona_override(http_sid, "alpha")
+    try:
+        assert persona_config_manager.get_persona_for_session(http_sid) == "alpha"
+        assert persona_config_manager.get_persona_for_session(group_sid) == "global_p"
+        assert persona_config_manager.get_persona_for_session(dm_sid) == "global_p"
+    finally:
+        clear_http_persona_override(http_sid)
+
+
+def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+    from gsuid_core.ai_core.proactive.dm_lease import grant_dm_lease, get_active_dm_lease
+    from gsuid_core.buildin_plugins.core_command.core_ai_control import (
+        switch_persona,
+        sv_core_ai_control,
+        sv_core_persona_control,
+    )
+
+    _setup_isolated_persona_env(tmp_path, monkeypatch)
+    _seed_persona(tmp_path, "alpha", "global")
+    _seed_persona(tmp_path, "beta", "specific", [])
+
+    assert sv_core_persona_control is not sv_core_ai_control
+    assert sv_core_persona_control.name != sv_core_ai_control.name
+    assert sv_core_persona_control.pm == 0
+    assert sv_core_ai_control.pm == 0
+
+    sent: list[str] = []
+
+    async def _fake_send(self: Bot, message: object, *args: object, **kwargs: object) -> None:
+        sent.append(str(message))
+
+    monkeypatch.setattr(Bot, "send", _fake_send)
+
+    registry = get_ai_session_registry()
+    group_sid = "ws1:onebot:10001:group:group_1"
+    other_group_sid = "ws2:onebot:10002:group:group_1"
+    dm_sid = "ws1:onebot:10001:private:100000001"
+    dummy_model = OpenAIChatModel("gpt-test", provider=OpenAIProvider(api_key="test"))
+
+    registry.set_ai_session(
+        group_sid,
+        GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=group_sid),
+    )
+    registry.set_ai_session(
+        other_group_sid,
+        GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=other_group_sid),
+    )
+    registry.set_ai_session(
+        dm_sid,
+        GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=dm_sid),
+    )
+
+    grant_dm_lease(user_id="100000001", persona_name="alpha", bot_id="onebot")
+
+    async def scenario() -> None:
+        try:
+            group_ev = Event(
+                bot_id="onebot",
+                bot_self_id="10001",
+                user_type="group",
+                group_id="group_1",
+                user_id="100000001",
+                text="beta",
+                WS_BOT_ID="ws1",
+            )
+            await switch_persona(Bot(_Bot("ws1"), group_ev), group_ev)
+            assert "beta" in sent[-1]
+            assert persona_config_manager.get_persona_for_session(group_ev.session_id) == "beta"
+            assert not registry.has_ai_session(group_sid)
+            assert not registry.has_ai_session(other_group_sid)
+            assert registry.has_ai_session(dm_sid)
+            # 群聊切换绝不动用私聊 dm_lease
+            assert get_active_dm_lease("100000001", "onebot") is not None
+
+            dm_ev = Event(
+                bot_id="onebot",
+                bot_self_id="10001",
+                user_type="direct",
+                group_id=None,
+                user_id="100000001",
+                text="beta",
+                WS_BOT_ID="ws1",
+            )
+            await switch_persona(Bot(_Bot("ws1"), dm_ev), dm_ev)
+            assert get_active_dm_lease("100000001", "onebot") is None
+            assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
+            assert not registry.has_ai_session(dm_sid)
+        finally:
+            registry.remove_ai_session(group_sid)
+            registry.remove_ai_session(other_group_sid)
+            registry.remove_ai_session(dm_sid)
+
+    asyncio.run(scenario())

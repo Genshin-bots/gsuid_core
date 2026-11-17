@@ -15,10 +15,11 @@ from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.configs.task_kinds import TASK_TEMP_ASSISTANT
 
-from .state import ban_scope, get_ban_remaining, set_persona_override
+from .state import ban_scope, get_ban_remaining
 
 # AI 依赖改函数内懒加载：此插件始终加载，顶层 import 会让 AI 关闭时也付出整套 AI 重栈
 sv_core_ai_control = SV("Core AI控制", pm=0)
+sv_core_persona_control = SV("Core AI人格控制", pm=0)
 
 _DURATION_RE = re.compile(r"(?P<num>\d+)\s*(?P<unit>秒|s|分钟|分|m|小时|时|h|天|日|d)?", re.IGNORECASE)
 
@@ -63,10 +64,62 @@ def _parse_duration(text: str, default_seconds: int = 1800) -> int:
 
 
 def _list_persona_names() -> list[str]:
-    """列出可用人格名称。"""
+    """列出全部人格名称。"""
     from gsuid_core.ai_core.persona.config import persona_config_manager
 
     return sorted(persona_config_manager.get_all_configs().keys())
+
+
+def _list_personas_by_status() -> tuple[list[str], list[str]]:
+    """返回 (已启用人格列表, 未启用人格列表)。"""
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
+    enabled: list[str] = []
+    disabled: list[str] = []
+    for name, cfg in sorted(persona_config_manager.get_all_configs().items()):
+        if cfg.get_config("scope").data == "disabled":
+            disabled.append(name)
+        else:
+            enabled.append(name)
+    return enabled, disabled
+
+
+def _format_persona_choices() -> str:
+    enabled, disabled = _list_personas_by_status()
+    lines = ["可切换人格：" + ("、".join(enabled) if enabled else "无")]
+    if disabled:
+        lines.append("未启用人格（需先在控制台启用）：" + "、".join(disabled))
+    return "\n".join(lines)
+
+
+def _reset_target_ai_sessions(
+    session_id: str,
+    target_id: str,
+    *,
+    is_private: bool,
+    persona_name: str,
+) -> None:
+    """移除同群/同私聊用户的活跃 AI 会话，确保下次对话以新人格重建。"""
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    registry = get_ai_session_registry()
+    expected_kind = "private" if is_private else "group"
+    to_remove: list[str] = []
+    for sid in registry.get_all_ai_sessions():
+        if sid == session_id:
+            to_remove.append(sid)
+            continue
+        if sid.startswith("HTTP_AGENT:"):
+            continue
+        parts = sid.split(":", 4)
+        if len(parts) == 5 and parts[3] == expected_kind and parts[4] == target_id:
+            to_remove.append(sid)
+
+    for sid in to_remove:
+        session = registry.get_ai_session(sid)
+        if session is not None and session._session_logger is not None:
+            session._session_logger.log_history_reset("persona_switch", {"persona_name": persona_name})
+        registry.remove_ai_session(sid)
 
 
 def _resolve_persona_name(text: str) -> Optional[str]:
@@ -111,32 +164,51 @@ async def clear_ai_session(bot: Bot, ev: Event):
     await bot.send(await bot.t("✅ [Core AI控制] 已清空当前会话历史，并重置当前 AI Session。"))
 
 
-@sv_core_ai_control.on_command(("persona", "人格切换"), block=True)
+@sv_core_persona_control.on_command(("persona", "人格切换"), block=True)
 async def switch_persona(bot: Bot, ev: Event):
-    """在当前 session 范围内热切换人格。"""
+    """持久切换当前群或私聊的人格配置（等价于控制台修改 target_groups）。"""
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+
     session_id = ev.session_id
-    persona_name = _resolve_persona_name(ev.text)
-    if persona_name is None:
-        names = _list_persona_names()
-        if not ev.text.strip():
-            await bot.send(
-                "❌ [Core AI控制] 请指定要切换的人格名称。\n可用人格：" + ("、".join(names) if names else "无")
-            )
-        else:
-            await bot.send(
-                f"❌ [Core AI控制] 未找到人格：{ev.text.strip()}\n可用人格：" + ("、".join(names) if names else "无")
-            )
+    is_private = ev.user_type == "direct"
+    target_id = (ev.user_id if is_private else ev.group_id) or ""
+    raw_name = ev.text.strip()
+
+    if not raw_name:
+        current = persona_config_manager.get_persona_for_session(session_id)
+        scope_label = "私聊" if is_private else "群聊"
+        await bot.send(
+            f"📌 [Core AI人格控制] 当前{scope_label}生效人格：{current or '无'}\n"
+            f"用法：corepersona <人格名称>\n" + _format_persona_choices()
+        )
         return
 
-    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+    persona_name = _resolve_persona_name(raw_name)
+    if persona_name is None:
+        await bot.send(f"❌ [Core AI人格控制] 未找到人格：{raw_name}\n" + _format_persona_choices())
+        return
 
-    registry = get_ai_session_registry()
-    # 移除会话前先打 history_reset(persona_switch) 标记（带新人格名），供前端时间线区分色块。
-    session = registry.get_ai_session(session_id)
-    if session is not None:
-        session._session_logger.log_history_reset("persona_switch", {"persona_name": persona_name})
-    set_persona_override(session_id, persona_name)
-    registry.remove_ai_session(session_id)
+    ok, err_msg = persona_config_manager.assign_target_to_persona(
+        persona_name,
+        target_id,
+        is_private=is_private,
+    )
+    if not ok:
+        await bot.send(f"❌ [Core AI人格控制] {err_msg}")
+        return
+
+    # 仅在私聊主动切换时清理私聊亲和租约，避免旧租约继续劫持后续私聊。
+    if is_private and ev.user_id:
+        from gsuid_core.ai_core.proactive.dm_lease import revoke_dm_lease
+
+        revoke_dm_lease(ev.user_id, ev.bot_id or "")
+
+    _reset_target_ai_sessions(
+        session_id,
+        target_id.strip(),
+        is_private=is_private,
+        persona_name=persona_name,
+    )
     logger.info(
         t(
             "log.core.core_ai_control_hot_swapping_persona",
@@ -144,11 +216,9 @@ async def switch_persona(bot: Bot, ev: Event):
             persona_name=persona_name,
         )
     )
+    scope_label = "私聊" if is_private else "群聊"
     await bot.send(
-        await bot.t(
-            "✅ [Core AI控制] 当前会话已切换人格为「{persona_name}」，后续 AI 配置将按该人格即时生效。",
-            persona_name=persona_name,
-        )
+        f"✅ [Core AI人格控制] 已将当前{scope_label}人格切换为「{persona_name}」，配置已保存，下次对话即刻生效。"
     )
 
 

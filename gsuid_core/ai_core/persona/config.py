@@ -993,10 +993,11 @@ class PersonaConfigManager(ConfigSetManager):
         - 私聊: "{WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}"
 
         匹配规则：
-        1. 会话级 override（若存在且人格仍在）
-        2. scope=specific 且 target_groups 含该 group_id / user_id
-        3. 回退：``global``，否则群聊用 ``global_group``、私聊用 ``global_private``
-        4. 没有则返回 None
+        1. HTTP_AGENT 会话专属请求级钉选（仅 ``HTTP_AGENT:`` 前缀）
+        2. 私聊 dm_lease 亲和租约（若存在且未 disabled）
+        3. scope=specific 且 target_groups 含该 group_id / user_id
+        4. 回退：``global``，否则群聊用 ``global_group``、私聊用 ``global_private``
+        5. 没有则返回 None
 
         Args:
             session_id: Session ID
@@ -1024,16 +1025,14 @@ class PersonaConfigManager(ConfigSetManager):
             # 无法解析格式
             raise ValueError(f"Invalid session_id format: {session_id}")
 
-        try:
-            from gsuid_core.buildin_plugins.core_command.core_ai_control.state import get_persona_override
-
-            override_persona = get_persona_override(session_id)
-            if override_persona and override_persona in self.get_all_configs():
-                return override_persona
-        except Exception:
-            pass
-
         all_configs = self.get_all_configs()
+
+        if parts[0] == "HTTP_AGENT":
+            from gsuid_core.ai_core.http_agent.persona import get_http_persona_override
+
+            override_persona = get_http_persona_override(session_id)
+            if override_persona and override_persona in all_configs:
+                return override_persona
 
         # 私聊租约优先：主动私聊签约的人格承接后续私聊回复（回复黑洞修复）
         if is_private_chat and user_id:
@@ -1057,6 +1056,54 @@ class PersonaConfigManager(ConfigSetManager):
                     return persona_name
 
         return self.get_fallback_persona(is_private=is_private_chat)
+
+    def assign_target_to_persona(
+        self,
+        persona_name: str,
+        target_id: str,
+        *,
+        is_private: bool,
+    ) -> tuple[bool, str]:
+        """将群聊或私聊目标切换绑定到指定人格（等价于控制台调整 target_groups）。"""
+        tid = target_id.strip()
+        if not tid:
+            return False, "未获取到当前群聊或用户 ID，无法切换人格。"
+
+        all_configs = self.get_all_configs()
+        if persona_name not in all_configs:
+            return False, f"未找到人格：{persona_name}"
+
+        target_cfg = all_configs[persona_name]
+        target_scope = str(target_cfg.get_config("scope").data)
+        if target_scope == "disabled":
+            return False, f"人格「{persona_name}」当前未启用（scope=disabled），请先在控制台启用后再切换。"
+        if target_scope == "global_private" and not is_private:
+            return False, f"人格「{persona_name}」的启用范围为「仅全部私聊」(global_private)，无法在群聊中绑定。"
+        if target_scope == "global_group" and is_private:
+            return False, f"人格「{persona_name}」的启用范围为「仅全部群聊」(global_group)，无法在私聊中绑定。"
+
+        for other_name, other_cfg in all_configs.items():
+            if other_name == persona_name:
+                continue
+            if other_cfg.get_config("scope").data != "specific":
+                continue
+            raw_other = other_cfg.get_config("target_groups").data
+            current_other = [str(g) for g in raw_other] if isinstance(raw_other, list) else []
+            if tid in current_other:
+                cleaned_other = [g for g in current_other if g != tid]
+                ok, msg = self.set_target_groups(other_name, cleaned_other)
+                if not ok:
+                    return False, msg
+
+        if target_scope == "specific":
+            raw_target = target_cfg.get_config("target_groups").data
+            current_target = [str(g) for g in raw_target] if isinstance(raw_target, list) else []
+            if tid not in current_target:
+                ok, msg = self.set_target_groups(persona_name, [*current_target, tid])
+                if not ok:
+                    return False, msg
+
+        return True, "ok"
 
     def get_persona_config_dict(self, persona_name: str) -> Optional[Dict]:
         """
