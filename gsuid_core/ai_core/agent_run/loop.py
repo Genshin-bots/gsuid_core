@@ -227,9 +227,13 @@ class LoopPhase(RunOnceHost):
             if text not in st.presentation_withheld:
                 st.presentation_withheld.append(text)
                 st.presentation_withheld_reasons.append(why)
+            if st.context is not None:
+                st.context.extra["dispute_has_prior_reply"] = True
         elif why == "numeric_recitation" or why in ZERO_OUTPUT_VOICE_REASONS:
             st.presentation_mismatch = True
             st.presentation_withheld_reasons.append(why)
+            if st.context is not None:
+                st.context.extra["dispute_has_prior_reply"] = True
         logger.info(
             i18n_t(
                 "log.agent.silent_skipping_text",

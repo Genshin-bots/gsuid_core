@@ -638,12 +638,12 @@ def _obligations_met(directive: Directive, st: RunOnceState) -> bool:
 
 def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
     ev = st.ev
-    if "pending_unread_images" in st.run_extra and bool(st.run_extra["pending_unread_images"]):
-        return True
     if ev is None:
         return False
     quoted_pure_image = bool((ev.reply_id or (st.tg is not None and st.tg.quoted_tome)) and not ev.reply)
-    if (ev.image_id_list or ev.image_id) and not quoted_pure_image:
+    own_imgs = [i for i in ev.image_id_list if i not in ev.reply_image_id_list]
+    has_own_img = bool(own_imgs or (ev.image_id and ev.image_id not in ev.reply_image_id_list))
+    if has_own_img and not quoted_pure_image:
         return True
     if ev.audio_id_list or ev.audio_id:
         return True

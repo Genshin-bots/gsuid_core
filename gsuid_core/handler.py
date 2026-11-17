@@ -458,24 +458,57 @@ def _record_inbound_history(event: Event) -> Optional["MessageRecord"]:
         "user_type": event.user_type,
         "sender": _sender_snapshot(event),
     }
-    if event.image_id_list:
-        metadata["image_id_list"] = event.image_id_list
-    elif event.image_id:
-        metadata["image_id"] = event.image_id
+    had_post_reply_imgs = bool(
+        event.reply_image_id_list
+        and event.image_id_list
+        and event.reply_image_id_list == event.image_id_list[-len(event.reply_image_id_list) :]
+        and event.reply_image_id_list != event.image_id_list[: len(event.reply_image_id_list)]
+    )
+    if event.reply_id and event.image_id_list:
+        hm = get_history_manager()
+        quoted = hm.find_by_msg_id(hm._get_storage_event(event), str(event.reply_id))
+        if quoted is not None:
+            q_meta = quoted.metadata
+            if "image_id_list" in q_meta and isinstance(q_meta["image_id_list"], list):
+                q_count = len(q_meta["image_id_list"])
+            elif "images" in q_meta and isinstance(q_meta["images"], list):
+                q_count = len(q_meta["images"])
+            elif quoted.role == "assistant" and "[图片" in quoted.content:
+                q_count = 1
+            else:
+                q_count = 0
+            if q_count <= 0:
+                event.reply_image_id_list = []
+            elif len(event.image_id_list) <= q_count:
+                event.reply_image_id_list = list(event.image_id_list)
+            elif had_post_reply_imgs:
+                event.reply_image_id_list = list(event.image_id_list[-q_count:])
+            else:
+                event.reply_image_id_list = list(event.image_id_list[:q_count])
 
-    # 提取图片直链或资源接口路由
+    own_image_ids = [i for i in event.image_id_list if i not in event.reply_image_id_list]
+    if own_image_ids:
+        metadata["image_id_list"] = own_image_ids
+    elif event.image_id and event.image_id not in event.reply_image_id_list:
+        metadata["image_id"] = event.image_id
+    if event.reply_image_id_list:
+        metadata["reply_image_id_list"] = list(event.reply_image_id_list)
+
+    # 提取当前发言人自己上传的图片直链（排除被引用历史图片，防二次引用链污染）
     inbound_images: list[str] = []
     if event.image_list:
         for idx, img in enumerate(event.image_list):
             if img:
                 try:
                     res_id = event.image_id_list[idx] if idx < len(event.image_id_list) else event.image_id
+                    if res_id and res_id in event.reply_image_id_list:
+                        continue
                     norm = normalize_image_for_history(img, res_id)
                     if norm:
                         inbound_images.append(norm)
                 except Exception:
                     pass
-    elif event.image:
+    elif event.image and event.image_id not in event.reply_image_id_list:
         try:
             norm = normalize_image_for_history(event.image, event.image_id)
             if norm:
@@ -921,11 +954,17 @@ async def msg_process(msg: MessageReceive) -> Event:
     if msg.user_type == "direct":
         event.is_tome = True
 
+    saw_body = False
+    saw_reply = False
+    pre_body_reply_imgs: List[str] = []
+    post_reply_imgs: List[str] = []
     for _msg in msg.content:
         if _msg.type == "text":
             if not _msg.data:
                 continue
             text_part = str(_msg.data).strip()
+            if text_part:
+                saw_body = True
             event.raw_text += text_part  # type:ignore
             event.text += text_part  # type:ignore
             """
@@ -934,6 +973,7 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.is_tome = True
             """
         elif _msg.type == "at":
+            saw_body = True
             # str 归一化：适配器可能给 int 型 at 目标，不归一会让 @Bot 落进 at_list，
             # 下游"@的不是你"标注（history_format/utils）就会反向压制真正的 @Bot 消息
             if str(_msg.data) == str(event.bot_self_id):
@@ -949,17 +989,27 @@ async def msg_process(msg: MessageReceive) -> Event:
                 event.image_list.append(_msg.data)
                 event.image_id = RM.register(_msg.data)
                 event.image_id_list.append(event.image_id)
+                if saw_body and saw_reply:
+                    post_reply_imgs.append(event.image_id)
+                elif saw_reply and not saw_body:
+                    pre_body_reply_imgs.append(event.image_id)
+                else:
+                    saw_body = True
         elif _msg.type == "record":
+            saw_body = True
             if _msg.data:
                 event.audio_id = RM.register_audio(_msg.data)
                 event.audio_id_list.append(event.audio_id)
         elif _msg.type == "video":
+            saw_body = True
             if _msg.data:
                 event.video_id = RM.register_video(_msg.data)
                 event.video_id_list.append(event.video_id)
         elif _msg.type == "reply":
+            saw_reply = True
             event.reply = _msg.data
         elif _msg.type == "reply_id" and _msg.data is not None:
+            saw_reply = True
             event.reply_id = str(_msg.data)
         elif _msg.type == "node":
             event.node = normalize_node_items(_msg.data)
@@ -982,6 +1032,10 @@ async def msg_process(msg: MessageReceive) -> Event:
                     event.group_id = str(_msg.data["group_id"])
         _content.append(_msg)
     event.content = _content
+    if post_reply_imgs:
+        event.reply_image_id_list = post_reply_imgs
+    elif pre_body_reply_imgs and saw_body:
+        event.reply_image_id_list = pre_body_reply_imgs
     if event.node is not None and (event.reply is not None or event.reply_id):
         preview = format_node_preview(event.node)
         if not event.reply:

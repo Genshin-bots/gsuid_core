@@ -156,7 +156,10 @@ async def _read_single_handle(
     query: str = "",
 ) -> str:
     if is_delegation_handle(hid):
-        deleg = await load_delegation(hid)
+        ev = ctx.deps.ev
+        owner = str(ev.user_id) if ev is not None and ev.user_id else ""
+        sid = str(ev.session_id) if ev is not None and ev.session_id else ""
+        deleg = await load_delegation(hid, owner_user_id=owner, session_id=sid)
         if deleg is None:
             return f"⚠️ 委派句柄不存在: {hid}"
         formatted = format_delegation(deleg)

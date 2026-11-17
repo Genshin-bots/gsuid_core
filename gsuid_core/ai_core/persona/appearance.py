@@ -14,7 +14,7 @@ from gsuid_core.ai_core.resource import PERSONA_PATH
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join
 from gsuid_core.utils.image.image_io import bytes_from_inline_image_ref
 
-_CARD_HEADER = "# appearance-card v2"
+_CARD_HEADER = "# appearance-card v3"
 _SUMMARY_LABELS = ("摘要：", "摘要:")
 _SUMMARY_MAX = 80
 _CARD_MAX = 1200
@@ -253,12 +253,19 @@ def match_trusted_image(persona_name: str, data: bytes) -> bool:
     return False
 
 
-def format_look_identity_note(persona_name: str, image_data: bytes | None) -> str:
-    """看图当下的视觉身份提示。无卡且未命中哈希时返回空串。"""
+def format_look_identity_note(
+    persona_name: str,
+    image_data: bytes | None,
+    *,
+    allow_card_fallback: bool = True,
+) -> str:
+    """看图当下的视觉身份提示。未命中受信任哈希时仅按需下发指纹卡。"""
     if not persona_name:
         return ""
     if image_data is not None and match_trusted_image(persona_name, image_data):
         return HIT_SELF_NOTE
+    if not allow_card_fallback:
+        return ""
     card = load_appearance_card(persona_name)
     if not card:
         return ""
@@ -290,10 +297,18 @@ async def refresh_appearance_card(persona_name: str) -> str:
     out = appearance_path(persona_name)
     if portrait is None or not _needs_vision_refresh(out, portrait):
         return load_appearance_line(persona_name)
+    prompt = _APPEARANCE_PROMPT
+    persona_doc = _read_text(persona_dir / "persona.md")[:600]
+    if persona_doc:
+        prompt = (
+            f"{_APPEARANCE_PROMPT}\n"
+            "若画面局部造型细节与下列角色设定文本存在歧义，以设定文本中的特征描述为准，"
+            f"但仍不要写出角色姓名或作品名：\n{persona_doc}"
+        )
     try:
         from gsuid_core.ai_core.image_understand.understand import understand_image
 
-        desc = await understand_image(str(portrait), prompt=_APPEARANCE_PROMPT)
+        desc = await understand_image(str(portrait), prompt=prompt)
     except Exception as e:
         logger.debug(t("log.persona.appearance_understand_fail", p0=persona_name, e=e))
         return load_appearance_line(persona_name)

@@ -119,12 +119,14 @@ def sched_tool_visibility(
     followup_detected: bool,
     has_active_schedules: bool,
     manage_form: bool = False,
+    quoted_tome: bool = False,
 ) -> tuple[bool, bool]:
     """返回 (新建可见, 变更可见)。管理形藏新建，不要求 history 里有 ToolCall。"""
     addressed = (not is_group) or ((not address_gated) and (call_to_self or followup_detected))
     managing = followup_detected or manage_form
     create_ok = addressed and not managing
-    mutate_ok = (not is_group) or (addressed and (has_active_schedules or managing))
+    quoted_manage = (not address_gated) and quoted_tome and (has_active_schedules or managing)
+    mutate_ok = (not is_group) or (addressed and (has_active_schedules or managing)) or quoted_manage
     return create_ok, mutate_ok
 
 
@@ -153,7 +155,9 @@ def tool_return_is_gate_reject(content: str) -> bool:
 
 
 def check_sched_create(deps: ToolContext) -> tuple[bool, str]:
-    """create_ok=False 时拒 add_*，提示改用查询/修改/取消。"""
+    """create_ok=False 时拒 add_*，提示改用查询/修改/取消。后台/能力代理不拦。"""
+    if not deps.allow_user_outbound:
+        return True, ""
     extra = deps.extra
     if SCHED_CREATE_OK_KEY not in extra:
         return True, ""
@@ -163,7 +167,9 @@ def check_sched_create(deps: ToolContext) -> tuple[bool, str]:
 
 
 def check_sched_mutate(deps: ToolContext) -> tuple[bool, str]:
-    """mutate_ok=False 时拒 list/modify/cancel/pause/resume。"""
+    """mutate_ok=False 时拒 list/modify/cancel/pause/resume。后台/能力代理不拦。"""
+    if not deps.allow_user_outbound:
+        return True, ""
     extra = deps.extra
     if SCHED_MUTATE_OK_KEY not in extra:
         return True, ""

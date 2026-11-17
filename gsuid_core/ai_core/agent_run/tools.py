@@ -668,23 +668,37 @@ class ToolsPhase(RunOnceHost):
                             )
 
                 if st.has_active_task:
-                    for _st_name in ("list_my_kanban_tasks", "artifact_get_recent", "cancel_kanban_task"):
+                    for _st_name in (
+                        "list_my_kanban_tasks",
+                        "check_delegation",
+                        "pause_my_kanban_tree",
+                        "resume_my_kanban_tree",
+                        "fail_task_tree",
+                        "respawn_subtask",
+                        "artifact_get_recent",
+                    ):
                         if not _scope.is_open and not _scope.tool_enabled(_st_name):
                             continue
                         _st_tb = find_tool_base(_st_name)
                         if _st_tb is not None and all(s.name != _st_name for s in turn_seeds):
                             turn_seeds.append(_st_tb.tool)
+                _sched_manage_turn = bool(st.followup_detected or (st.tg is not None and st.tg.task_management))
                 if (
                     _interactive
-                    and not st.in_flight_short
+                    and (not st.in_flight_short or _sched_manage_turn)
                     and st.ev is not None
                     and str(st.ev.user_id).strip()
-                    and (st.followup_detected or _call_self)
+                    and (_sched_manage_turn or _call_self or (st.tg is not None and st.tg.quoted_tome))
                 ):
                     from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
 
-                    if await user_has_active_schedules(str(st.ev.user_id)):
-                        for _sc_name in ("get_scheduled_tasks", "update_scheduled_task", "cancel_scheduled_task"):
+                    if await user_has_active_schedules(str(st.ev.user_id)) or _sched_manage_turn:
+                        for _sc_name in (
+                            "list_scheduled_tasks",
+                            "modify_scheduled_task",
+                            "cancel_scheduled_task",
+                            "pause_scheduled_task",
+                        ):
                             if not _scope.is_open and not _scope.tool_enabled(_sc_name):
                                 continue
                             _sc_tb = find_tool_base(_sc_name)

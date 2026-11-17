@@ -9,7 +9,9 @@ import zlib
 import base64
 import struct
 import asyncio
+from pathlib import Path
 
+import pytest
 from PIL import Image
 from pydantic_ai.messages import (
     ImageUrl,
@@ -557,3 +559,263 @@ def test_inbox_act_for_gate_and_identity() -> None:
         assert rejected == ACT_FOR_REQUIRED_DENY
     finally:
         reset_turn(token)
+
+
+def test_subagent_kanban_lifecycle_and_seed_integrity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kanban/定时任务种子工具全注册可达；查状态(#ordinal/dlg_)、真暂停/恢复、在途改派与真终结全链路闭环。"""
+    from sqlmodel import SQLModel
+    from sqlalchemy.pool import NullPool
+    from pydantic_ai.tools import RunContext
+    from pydantic_ai.usage import RunUsage
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from pydantic_ai.models.test import TestModel
+
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    import gsuid_core.ai_core.planning.kanban_tools  # noqa: F401
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.utils.database import base_models as db_base
+    from gsuid_core.ai_core.planning import kanban, kanban_executor
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.context import build_task_context, has_actionable_task
+    from gsuid_core.ai_core.planning.kanban_tools import (
+        fail_task_tree,
+        respawn_subtask,
+        list_my_kanban_tasks,
+        pause_my_kanban_tree,
+        resume_my_kanban_tree,
+    )
+    from gsuid_core.ai_core.buildin_tools.visibility import (
+        SCHED_MUTATE_OK_KEY,
+        check_sched_mutate,
+        sched_tool_visibility,
+    )
+    from gsuid_core.ai_core.buildin_tools.control_tools import check_delegation
+
+    # 1) 种子工具名完整性：杜绝幽灵工具名导致 find_tool_base 静默返回 None
+    for tool_name in (
+        "list_my_kanban_tasks",
+        "check_delegation",
+        "pause_my_kanban_tree",
+        "resume_my_kanban_tree",
+        "fail_task_tree",
+        "respawn_subtask",
+        "artifact_get_recent",
+        "list_scheduled_tasks",
+        "modify_scheduled_task",
+        "cancel_scheduled_task",
+        "pause_scheduled_task",
+    ):
+        assert find_tool_base(tool_name) is not None, tool_name
+
+    # 引用 Bot 自身消息时允许管理已有定时任务，且后台能力代理内部不受主会话未点名门拦截
+    _, mutate_quoted = sched_tool_visibility(
+        is_group=True,
+        address_gated=False,
+        call_to_self=False,
+        followup_detected=False,
+        has_active_schedules=True,
+        quoted_tome=True,
+    )
+    assert mutate_quoted is True
+    cap_deps = ToolContext(allow_user_outbound=False, extra={SCHED_MUTATE_OK_KEY: False})
+    assert check_sched_mutate(cap_deps) == (True, "")
+
+    async def scenario() -> None:
+        base_dir = Path(str(tmp_path))
+        db_file = base_dir / "kanban_lifecycle.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_file.as_posix()}", poolclass=NullPool)
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        monkeypatch.setattr(db_base, "async_maker", maker)
+        monkeypatch.setattr(db_base, "_db_initialized", True)
+        monkeypatch.setattr(kanban, "async_maker", maker)
+        monkeypatch.setattr(
+            kanban_executor,
+            "ensure_workspace",
+            lambda rid, cid, agent_profile="": base_dir / "ws" / rid / cid,
+        )
+
+        prompts_seen: list[str] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
+        cancelled_runs: list[str] = []
+        wakes: list[str] = []
+
+        async def fake_cap_agent(
+            profile_id: str,
+            task: str,
+            ev: Event | None = None,
+            **_kw: object,
+        ) -> str:
+            _ = (profile_id, ev)
+            prompts_seen.append(task)
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled_runs.append(task)
+                # 模拟旧协程在释放节点锁前仍有异步清理耗时的真实竞态窗口
+                await asyncio.sleep(0.05)
+                raise
+            return f"已完成产出：{task[:30]}"
+
+        async def fake_wake(task_row: AIAgentTask, raw: str) -> None:
+            wakes.append(f"{task_row.id}:{raw[:20]}")
+
+        from gsuid_core.bot import Bot, _Bot
+
+        monkeypatch.setattr("gsuid_core.ai_core.capability_agents.runner.run_capability_agent", fake_cap_agent)
+        monkeypatch.setattr(kanban_executor, "_wake_main_agent_for_delivery", fake_wake)
+        monkeypatch.setattr(kanban_executor, "_get_bot", lambda _t, e: Bot(_Bot("ws1"), e))
+
+        ev = Event("OneBot", "900000001", "k1", "group", "group_1", "100000001", {}, 0)
+        ctx = RunContext(deps=ToolContext(ev=ev), model=TestModel(), usage=RunUsage())
+
+        # 2) 创建叶子根任务并启动：支持用 #ordinal 查询进度，暂停时真正中断在途协程
+        root1, _ = await kanban.create_kanban_tree(
+            goal="把测试城市甲的缴费比例渲成信息图",
+            owner_user_id="100000001",
+            scope_key="group:group_1",
+            bot_id="OneBot",
+            persona_name="测试人格",
+            subtasks=[],
+            root_agent_profile="render_agent",
+            group_id="group_1",
+            user_type="group",
+            session_id=ev.session_id,
+        )
+        kanban_executor.mark_deferred_main_delivery(root1.id)
+        runner1 = asyncio.create_task(kanban_executor.kick_root(root1.id))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        status_card = await check_delegation(ctx, f"#{root1.ordinal}")
+        assert "⏳ 仍在后台执行" in status_card and f"dlg_{root1.id}" in status_card
+        task_ctx_text = await build_task_context("100000001", current_group_id="group_1")
+        assert f"事项#{root1.ordinal} (dlg_{root1.id})" in task_ctx_text
+
+        pause_out = await pause_my_kanban_tree(ctx, "城市甲的缴费比例", reason="先等一下")
+        assert "已暂停一次性任务" in pause_out
+        await asyncio.wait_for(runner1, timeout=2.0)
+        assert len(cancelled_runs) == 1
+        r1_after_pause = await AIAgentTask.get_by_id(root1.id)
+        assert r1_after_pause is not None and r1_after_pause.status == "paused"
+        assert wakes == []
+        paused_card = await check_delegation(ctx, f"事项#{root1.ordinal}")
+        assert "⏸️ 已暂停" in paused_card
+        assert await has_actionable_task("100000001", current_group_id="group_1") is True
+        listed = await list_my_kanban_tasks(ctx)
+        assert f"dlg_{root1.id}" in listed
+
+        # 恢复暂停的任务并放行完成
+        started.clear()
+        release.set()
+        resume_out = await resume_my_kanban_tree(ctx, "")
+        assert "已重新派发" in resume_out
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        for _ in range(40):
+            await asyncio.sleep(0.02)
+            done_row = await AIAgentTask.get_by_id(root1.id)
+            if done_row is not None and done_row.status == "completed" and len(wakes) == 1:
+                break
+        done_row = await AIAgentTask.get_by_id(root1.id)
+        assert done_row is not None and done_row.status == "completed"
+        assert len(wakes) == 1
+
+        # 3) 在途改派（含持锁退栈竞态与「把关/目的/了解」词根保留）及真终结
+        started.clear()
+        release.clear()
+        root2, _ = await kanban.create_kanban_tree(
+            goal="质量把关与目的了解专题调研",
+            owner_user_id="100000001",
+            scope_key="group:group_1",
+            bot_id="OneBot",
+            persona_name="测试人格",
+            subtasks=[],
+            root_agent_profile="research_agent",
+            group_id="group_1",
+            user_type="group",
+            session_id=ev.session_id,
+        )
+        kanban_executor.mark_deferred_main_delivery(root2.id)
+        runner2 = asyncio.create_task(kanban_executor.kick_root(root2.id))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        started.clear()
+        mod_out = await respawn_subtask(
+            ctx,
+            "把质量把关与目的了解那个任务",
+            new_description="质量把关二期参数复核",
+        )
+        assert "✅" in mod_out
+        await asyncio.wait_for(runner2, timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert "质量把关二期参数复核" in prompts_seen[-1]
+
+        fail_out = await fail_task_tree(ctx, "质量把关二期", "用户取消查询")
+        assert "已终结整树" in fail_out
+        for _ in range(15):
+            await asyncio.sleep(0.02)
+        r2_final = await AIAgentTask.get_by_id(root2.id)
+        assert r2_final is not None and r2_final.status == "failed"
+        assert len(wakes) == 1
+
+        # 3b) 多步骤任务树未写 #subN 时自动定位到当前活跃子步骤并改派，不破坏根与已完成前置步骤
+        started.clear()
+        release.clear()
+        root3, children3 = await kanban.create_kanban_tree(
+            goal="多步骤阶段分析任务",
+            owner_user_id="100000001",
+            scope_key="group:group_1",
+            bot_id="OneBot",
+            persona_name="测试人格",
+            subtasks=[
+                {"description": "第一阶段收集", "agent_profile": "research_agent"},
+                {"description": "第二阶段汇总", "agent_profile": "research_agent", "depends_on": [0]},
+            ],
+            group_id="group_1",
+            user_type="group",
+            session_id=ev.session_id,
+        )
+        await kanban.mark_subtask_completed(children3[0], output_artifact_id="")
+        runner3 = asyncio.create_task(kanban_executor.kick_root(root3.id))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        started.clear()
+        mod_multi = await respawn_subtask(ctx, "多步骤阶段分析", new_description="第二阶段深度汇总")
+        assert "✅" in mod_multi
+        await asyncio.wait_for(runner3, timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert "第二阶段深度汇总" in prompts_seen[-1]
+        sub1_after = await AIAgentTask.get_by_id(children3[0].id)
+        root3_after = await AIAgentTask.get_by_id(root3.id)
+        assert sub1_after is not None and sub1_after.status == "completed"
+        assert root3_after is not None and root3_after.status == "running"
+        await fail_task_tree(ctx, "多步骤阶段分析", "测试结束清理")
+
+        # 4) 周期模板 disarm 同步摘除 APScheduler
+        unscheduled: list[str] = []
+        monkeypatch.setattr(
+            "gsuid_core.ai_core.planning.recurring.unschedule_template",
+            lambda tid: unscheduled.append(tid) or True,
+        )
+        tpl, _ = await kanban.create_kanban_tree(
+            goal="每日晨报汇总",
+            owner_user_id="100000001",
+            scope_key="group:group_1",
+            bot_id="OneBot",
+            persona_name="测试人格",
+            subtasks=[{"description": "汇总数据", "agent_profile": "research_agent"}],
+            recurring_trigger="interval:3600",
+        )
+        assert await kanban.disarm_template(tpl.id) is True
+        assert unscheduled == [tpl.id]
+
+        await engine.dispose()
+
+    asyncio.run(scenario())

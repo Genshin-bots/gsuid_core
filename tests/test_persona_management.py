@@ -1091,3 +1091,58 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
             registry.remove_ai_session(dm_sid)
 
     asyncio.run(scenario())
+
+
+def test_appearance_card_v3_and_self_visual_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """外观指纹卡：非自拍提问不下发 MISS 指纹卡、受信任立绘精确命中仍保留，且旧 v2 卡自动升级 v3。"""
+    import io
+
+    from PIL import Image
+
+    from gsuid_core.ai_core.persona import appearance as app_mod
+    from gsuid_core.ai_core.prompt_group.catalog import default_body
+
+    assert "图中角色与此一致才是你" not in default_body("appearance_line")
+
+    pdir = tmp_path / "personas" / "alpha"
+    pdir.mkdir(parents=True)
+    monkeypatch.setattr(app_mod, "PERSONA_PATH", tmp_path / "personas")
+    app_mod._HASH_INDEX.clear()
+
+    portrait_img = Image.new("RGB", (32, 32), color=(40, 120, 90))
+    for x in range(16):
+        for y in range(32):
+            portrait_img.putpixel((x, y), (220, 180, 140))
+    portrait_path = pdir / "image.png"
+    portrait_img.save(portrait_path, format="PNG")
+    (pdir / "persona.md").write_text("Name: 测试角色\n特征：深蓝风衣配银色徽章", encoding="utf-8")
+
+    # 旧 v2 卡片应被判定需要重刷，刷新时携带 persona.md 设定消歧并升级至 v3 头
+    out_card = pdir / "appearance.txt"
+    out_card.write_text("# appearance-card v2\n摘要：旧版待刷新摘要", encoding="utf-8")
+    assert app_mod._needs_vision_refresh(out_card, portrait_path) is True
+
+    captured_prompts: list[str] = []
+
+    async def fake_understand(_path: str, prompt: str | None = None, **_kw: object) -> str:
+        captured_prompts.append(prompt or "")
+        return "摘要：深蓝风衣配银色徽章的角色\n常服：深蓝风衣"
+
+    monkeypatch.setattr("gsuid_core.ai_core.image_understand.understand.understand_image", fake_understand)
+    line = asyncio.run(app_mod.refresh_appearance_card("alpha"))
+    assert line == "深蓝风衣配银色徽章的角色"
+    assert captured_prompts and "深蓝风衣配银色徽章" in captured_prompts[0]
+    assert app_mod._needs_vision_refresh(out_card, portrait_path) is False
+
+    # 普通无关表情包：allow_card_fallback=False 时绝不注入 MISS_SELF_PREFIX，显式追问时才注入
+    other_buf = io.BytesIO()
+    Image.new("RGB", (32, 32), color=(200, 20, 20)).save(other_buf, format="PNG")
+    other_bytes = other_buf.getvalue()
+    assert app_mod.format_look_identity_note("alpha", other_bytes, allow_card_fallback=False) == ""
+    assert app_mod.MISS_SELF_PREFIX in app_mod.format_look_identity_note("alpha", other_bytes, allow_card_fallback=True)
+
+    # 精确匹配受信任立绘本身时，即使未显式问是不是自己也返回 HIT_SELF_NOTE
+    self_buf = io.BytesIO()
+    portrait_img.save(self_buf, format="PNG")
+    hit_note = app_mod.format_look_identity_note("alpha", self_buf.getvalue(), allow_card_fallback=False)
+    assert hit_note == app_mod.HIT_SELF_NOTE

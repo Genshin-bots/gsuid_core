@@ -419,3 +419,216 @@ def test_inbox_scheduler_settle_and_one_time_settlement() -> None:
         )
         == "private"
     )
+
+
+def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
+    """引用图不冒充发言人新发图、无关斗图不强制挂起读图，且群聊多人连发点名自动顺延聚批。"""
+    from gsuid_core.bot import _Bot
+    from gsuid_core.models import Message, MessageReceive
+    from gsuid_core.handler import msg_process, _record_inbound_history
+    from gsuid_core.ai_core.utils import prepare_media_payload
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+    from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
+    from gsuid_core.ai_core.inbox.scheduler import TurnOutcome, InboxScheduler
+
+    async def scenario() -> None:
+        hm = get_history_manager()
+        base_ev = Event("OneBot", "900000001", "m0", "group", "70009", "100000001", {}, 6)
+        hm.clear_history(base_ev)
+        try:
+            # 1) Bot 先发出一张命令回执图（#1），用户A 引用该回执图调侃（current + quoted 顺序）
+            hm.add_message(
+                base_ev,
+                role="assistant",
+                content="[图片/文件]",
+                metadata={"msg_id": "bot_card_1", "speech_channel": "command"},
+            )
+            raw_quote = MessageReceive(
+                bot_id="OneBot",
+                bot_self_id="900000001",
+                msg_id="u_quote_1",
+                user_type="group",
+                group_id="70009",
+                user_id="100000002",
+                sender={"nickname": "测试用户B"},
+                content=[
+                    Message("text", "测试人格，注意防潮"),
+                    Message("reply_id", "bot_card_1"),
+                    Message("image", "https://example.invalid/bot_card.png"),
+                    Message("reply", ""),
+                ],
+            )
+            ev_quote = await msg_process(raw_quote)
+            # 传统命令插件仍能读到 ev.image_id_list，但引用图被精准拆入 reply_image_id_list
+            assert len(ev_quote.image_id_list) == 1
+            assert ev_quote.reply_image_id_list == ev_quote.image_id_list
+            rec_q = _record_inbound_history(ev_quote)
+            assert rec_q is not None and "image_id_list" not in rec_q.metadata
+            assert "images" not in rec_q.metadata
+            assert rec_q.metadata["reply_image_id_list"] == ev_quote.reply_image_id_list
+
+            payload, _ = await prepare_media_payload([(2, ev_quote)], "[群消息 #1–#2]\n#2: 测试人格，注意防潮")
+            joined = "\n".join(p for p in payload if isinstance(p, str))
+            assert "引用的历史图片" in joined and "用户发送了图片" not in joined
+
+            # 1b) 二次引用：用户C 引用用户B那条纯文字调侃并附带本人新发图（[reply_id, reply, image, text] 顺序）
+            # 用户B 的记录不含 images，用户C 自己的新图必须归为本人新发而非历史引用图
+            ev_chain = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_chain_own_img",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000005",
+                    sender={"nickname": "测试用户C"},
+                    content=[
+                        Message("reply_id", "u_quote_1"),
+                        Message("reply", "测试人格，注意防潮"),
+                        Message("image", "https://example.invalid/user_c_own.png"),
+                        Message("text", "帮我看下这张新图"),
+                    ],
+                )
+            )
+            rec_chain = _record_inbound_history(ev_chain)
+            assert ev_chain.reply_image_id_list == []
+            assert rec_chain is not None and rec_chain.metadata["image_id_list"] == ev_chain.image_id_list
+            payload_c, _ = await prepare_media_payload([(3, ev_chain)], "[群消息 #2–#3]\n#3: 帮我看下这张新图")
+            joined_c = "\n".join(p for p in payload_c if isinstance(p, str))
+            assert "用户发送了图片" in joined_c and "引用的历史图片" not in joined_c
+
+            # 2) quoted + current 适配器顺序同样能归入 reply_image_id_list；随后同人调侃不会把被引用图捞成待读图
+            raw_quote_pre = MessageReceive(
+                bot_id="OneBot",
+                bot_self_id="900000001",
+                msg_id="u_quote_2",
+                user_type="group",
+                group_id="70009",
+                user_id="100000002",
+                sender={"nickname": "测试用户B"},
+                content=[
+                    Message("reply_id", "bot_card_1"),
+                    Message("reply", ""),
+                    Message("image", "https://example.invalid/bot_card.png"),
+                    Message("text", "不用代理能存上去？"),
+                ],
+            )
+            ev_quote_pre = await msg_process(raw_quote_pre)
+            assert ev_quote_pre.reply_image_id_list == ev_quote_pre.image_id_list
+            _record_inbound_history(ev_quote_pre)
+
+            ev_followup = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_joke_3",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000002",
+                    content=[Message("text", "给测试人格装上")],
+                )
+            )
+            _record_inbound_history(ev_followup)
+            assert extract_pending_unread_images(ev_followup, set()) == []
+
+            # 3) 对群里别人发的表情包不进入待读图；紧邻纯图+追问则进入中性参考块
+            ev_to_other = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_meme_other",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000003",
+                    content=[Message("at", "100000001"), Message("image", "https://example.invalid/meme.png")],
+                )
+            )
+            _record_inbound_history(ev_to_other)
+            ev_ask_bot = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_ask_meme",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000003",
+                    content=[Message("text", "测试人格来点表情包")],
+                )
+            )
+            _record_inbound_history(ev_ask_bot)
+            assert extract_pending_unread_images(ev_ask_bot, set()) == []
+
+            ev_split_img = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_split_1",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000004",
+                    content=[Message("image", "https://example.invalid/doc.png")],
+                )
+            )
+            _record_inbound_history(ev_split_img)
+            ev_split_q = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_split_2",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000004",
+                    content=[Message("text", "测试人格帮我看下这张图")],
+                )
+            )
+            _record_inbound_history(ev_split_q)
+            pending_imgs = extract_pending_unread_images(ev_split_q, set())
+            assert len(pending_imgs) == 1
+            split_payload, _ = await prepare_media_payload(
+                [(9, ev_split_q)],
+                "[群消息 #8–#9]",
+                pending_unread_images=pending_imgs,
+            )
+            split_joined = "\n".join(p for p in split_payload if isinstance(p, str))
+            assert "仅当本句确在追问或讨论该图时调用" in split_joined
+            assert "对方正在追问上面刚发出的待讨论图片" not in split_joined
+
+            # 4) 群聊多人连发 hard 点名在结算窗内顺延合并为同一批多目标 InboxTurn
+            now = [2000.0]
+            sleeps: list[float] = []
+            batches: list[InboxTurn] = []
+
+            async def manual_sleep(sec: float) -> None:
+                sleeps.append(sec)
+                now[0] += sec
+
+            async def ok_runner(turn: InboxTurn, _ws: _Bot) -> TurnOutcome:
+                batches.append(turn)
+                return TurnOutcome(
+                    reached_model=True, error=False, answered=frozenset(e.item.seq for e in turn.entries)
+                )
+
+            sched = InboxScheduler(clock=lambda: now[0], sleep=manual_sleep, runner=ok_runner)
+            ws = _Bot("coalesce_ws")
+            ev_u1 = Event("OneBot", "900000001", "c1", "group", "70009", "100000001", {}, 6)
+            ev_u2 = Event("OneBot", "900000001", "c2", "group", "70009", "100000002", {}, 6)
+            sched.submit(
+                ws, PendingEntry(WakeItem(21, "100000001", "name", "hard", now[0]), ev_u1, persona_name="测试人格")
+            )
+            key = (ev_u1.session_id, "测试人格")
+            first_deadline = sched._inboxes[key].settle_deadline
+            sched.submit(
+                ws,
+                PendingEntry(WakeItem(22, "100000002", "name", "hard", now[0] + 0.5), ev_u2, persona_name="测试人格"),
+            )
+            assert sched._inboxes[key].settle_deadline > first_deadline
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert len(batches) == 1 and [e.item.seq for e in batches[0].entries] == [21, 22]
+        finally:
+            hm.clear_history(base_ev)
+
+    asyncio.run(scenario())

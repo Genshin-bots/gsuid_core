@@ -308,6 +308,7 @@ def remember_silence_handles(
 
     meta: dict[str, object] = {"outbound_handles": kept}
     meta.update(turn_reply_metadata(event))
+    meta["speech_channel"] = "tool_delivery"
     mgr.add_message(
         event=event,
         role="assistant",

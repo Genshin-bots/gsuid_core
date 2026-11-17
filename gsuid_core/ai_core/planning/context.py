@@ -88,7 +88,7 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
     if not tasks:
         return ""
 
-    lines = ["【你正在为对方推进的事项（可被追问进度；对用户只说人话，勿念编号/节点名）】"]
+    lines = ["【你正在为对方推进的事项（可被追问进度；句柄仅进工具参数，对用户只说人话，勿念编号/句柄/节点名）】"]
     if other_scope_count:
         lines.append(f"（另有 {other_scope_count} 个任务在其他会话推进中——细节不属于本群，被问到也只说这一句）")
     for t in tasks[:_MAX_INJECT]:
@@ -99,10 +99,12 @@ async def build_task_context(user_id: str, current_group_id: Optional[str] = Non
         kind_label = "周期模板（等 cron 触发）" if is_template else "一次性任务"
         # display_name 可能含内部描述：截断且不暴露 profile
         _title = (t.display_name or t.goal or "进行中事项")[:40]
-        lines.append(f"事项#{t.ordinal}｜{_title}｜{status_cn}｜{kind_label}｜更新于{upd}")
+        lines.append(f"事项#{t.ordinal} (dlg_{t.id})｜{_title}｜{status_cn}｜{kind_label}｜更新于{upd}")
         # 用户安全摘要（聊天通道转述用）
         if t.status in ("running", "pending"):
             lines.append("  └ 对外可说：还在弄、还没好（勿提内部节点）")
+        elif t.status == "paused":
+            lines.append("  └ 对外可说：已经先停着了")
         elif t.status == "waiting_approval":
             lines.append("  └ 对外可说：卡在等你确认/点一下")
         elif t.status == "failed":
@@ -135,12 +137,12 @@ _LIVE_CHILD_STATUSES = ("running", "waiting_approval")
 
 
 def _root_has_live_work(root: AIAgentTask, child_counts: dict[str, int]) -> bool:
-    """根任务此刻是否真有活在跑或在等审批。
-
-    周期托管根两轮之间一直是 running，子节点却只有待启动 / 已完成，
-    不算在途；没有子节点的叶子根自己就是执行体，running 即在跑。
-    """
+    """根任务此刻是否有在跑、等审批或刚暂停待恢复/终结的一次性工作。"""
     if root.status == "waiting_approval":
+        return True
+    if root.status == "paused" and not root.recurring_trigger:
+        return True
+    if root.status == "pending" and not root.recurring_trigger and not child_counts:
         return True
     if root.status != "running":
         return False

@@ -932,14 +932,29 @@ async def prepare_media_payload(
 
         media_text = ""
         if ev.image_id_list:
-            if lazy_image_read:
-                media_text += f"--- {tag}用户发送了图片(未展开, 需要查看内容时请调用 read_image(图片ID)) ---"
-                for i in ev.image_id_list:
-                    media_text += f"\n图片ID: {i}"
-                media_text += "\n"
-            else:
-                for i in ev.image_id_list:
-                    media_text += f"--- {tag}用户上传图片ID: {i} ---\n"
+            own_imgs = [i for i in ev.image_id_list if i not in ev.reply_image_id_list]
+            quoted_imgs = list(ev.reply_image_id_list)
+            if own_imgs:
+                if lazy_image_read:
+                    media_text += f"--- {tag}用户发送了图片(未展开, 需要查看内容时请调用 read_image(图片ID)) ---"
+                    for i in own_imgs:
+                        media_text += f"\n图片ID: {i}"
+                    media_text += "\n"
+                else:
+                    for i in own_imgs:
+                        media_text += f"--- {tag}用户上传图片ID: {i} ---\n"
+            if quoted_imgs:
+                if lazy_image_read:
+                    media_text += (
+                        f"--- {tag}当前消息引用的历史图片"
+                        "(非当前说话人新发；仅当回应需核对原图细节时调用 read_image(图片ID)) ---"
+                    )
+                    for i in quoted_imgs:
+                        media_text += f"\n图片ID: {i}"
+                    media_text += "\n"
+                else:
+                    for i in quoted_imgs:
+                        media_text += f"--- {tag}引用的历史图片ID: {i} ---\n"
 
         if ev.audio_id:
             media_text += f"--- {tag}用户上传音频ID: {ev.audio_id} ---\n"
@@ -963,7 +978,7 @@ async def prepare_media_payload(
     if pending_unread_images and not any(ev.image_id_list or ev.image_id for _, ev in events):
         from gsuid_core.ai_core.control.lines import pending_unread_image_guide_line
 
-        pending_text = "\n--- 当前说话人刚发出的待讨论图片（尚未读取） ---\n"
+        pending_text = "\n--- 当前说话人刚发过的未读图片（供按需参考） ---\n"
         for p_img in pending_unread_images:
             pending_text += f"- [{p_img.time_str}] 配文：「{p_img.text}」 | 待读图片ID: {p_img.img_id}\n"
             pending_text += f"{pending_unread_image_guide_line(p_img.img_id)}\n"

@@ -641,6 +641,10 @@ class HistoryManager:
             for k in keys_to_del:
                 del self._msg_id_cache[k]
             existed = storage_event in self._histories
+        from gsuid_core.ai_core.inbox.scheduler import _scheduler as _inbox_sched
+
+        if _inbox_sched is not None:
+            _inbox_sched.reset_session(storage_event.session_id)
         self._publish_session_event("cleared", storage_event.session_id)
         return existed
 

@@ -567,6 +567,9 @@ async def disarm_template(template_root_id: str) -> bool:
         update_data={"recurring_status": RecurringStatus.DISARMED},
     )
     await AIAgentTaskLog.add_log(template_root_id, "decision", "周期模板已 disarm")
+    from .recurring import unschedule_template
+
+    unschedule_template(template_root_id)
     return True
 
 
@@ -931,6 +934,9 @@ async def pause_task(task_id: str) -> bool:
         select_data={"id": task_id},
         update_data={"status": "paused", "updated_at": now},
     )
+    from .kanban_executor import cancel_running_node
+
+    cancel_running_node(task_id)
     await AIAgentTaskLog.add_log(task_id, "decision", "任务已被主人暂停")
     logger.info(t("log.ai.kanban_task_id_paused", task_id=task_id))
     return True
@@ -971,19 +977,20 @@ async def respawn_child_task(
     task: AIAgentTask,
     *,
     new_description: Optional[str] = None,
-    new_params: Optional[Dict[str, Any]] = None,
+    new_params: Optional[Dict[str, object]] = None,
     new_agent_profile: Optional[str] = None,
     respawn_limit: int = DEFAULT_RESPAWN_LIMIT,
 ) -> Tuple[bool, str]:
-    """复活一个 failed 子任务，把状态重置为 pending，自增 respawn_count。
+    """重派 failed/waiting_approval 任务，或热修改 running/paused/pending 任务。"""
+    if task.node_kind == "root":
+        children = await _query_children(task.id)
+        if not is_leaf_root(task, len(children)):
+            return False, "多步骤根任务不可直接重派，请指定具体子步骤（如 #sub2）"
+    if task.status not in ("failed", "waiting_approval", "running", "paused", "pending"):
+        return False, f"子任务当前状态 {task.status} 不可重派或修改"
 
-    Returns:
-        (success, message)。达上限时不重派，转 waiting_approval。
-    """
-    if task.status not in ("failed", "waiting_approval"):
-        return False, f"子任务当前状态 {task.status} 不可重派（仅 failed / waiting_approval）"
-
-    if task.respawn_count >= respawn_limit:
+    was_failed = task.status in ("failed", "waiting_approval")
+    if was_failed and task.respawn_count >= respawn_limit:
         # 达上限后开中心票据。确认只认私聊确认码或审批中心。
         await request_subtask_approval(
             task,
@@ -993,9 +1000,10 @@ async def respawn_child_task(
         return False, f"重派次数达上限 {respawn_limit}，已转待审批"
 
     now = datetime.now()
-    update_data: Dict[str, Any] = {
+    next_count = task.respawn_count + 1 if was_failed else task.respawn_count
+    update_data: Dict[str, object] = {
         "status": "pending",
-        "respawn_count": task.respawn_count + 1,
+        "respawn_count": next_count,
         "failure_reason": None,
         "updated_at": now,
     }
@@ -1008,14 +1016,24 @@ async def respawn_child_task(
         update_data["agent_profile"] = new_agent_profile
 
     await AIAgentTask.update_data_by_data(select_data={"id": task.id}, update_data=update_data)
+    from .kanban_executor import cancel_running_node
+
+    cancel_running_node(task.id)
+    if task.root_task_id and task.root_task_id != task.id:
+        root = await AIAgentTask.get_by_id(task.root_task_id)
+        if root is not None and root.status in ("paused", "failed"):
+            await AIAgentTask.update_data_by_data(
+                select_data={"id": root.id},
+                update_data={"status": "running", "failure_reason": None, "updated_at": now},
+            )
     await AIAgentTaskLog.add_log(
         task.id,
         "decision",
-        f"子任务被主人格重派 #{task.respawn_count + 1}: {new_description or '（原描述）'}",
+        f"任务被修改/重派: {new_description or '（原描述）'}",
     )
     # 重派之后旧的 not_before（如有）已经无效，摘掉避免到点又触发
     _drop_not_before_job(task.id)
-    return True, f"已重派子任务（第 {task.respawn_count + 1} 次）"
+    return True, "已更新并重新派发任务" if not was_failed else f"已重派子任务（第 {next_count} 次）"
 
 
 async def request_subtask_approval(
@@ -1115,19 +1133,28 @@ async def approve_subtask(task: AIAgentTask, approved: bool, note: str = "") -> 
 
 
 async def fail_task_tree(root_task_id: str, reason: str) -> bool:
-    """明确终结整棵任务树：根任务 failed + 未完成子任务级联 failed。"""
+    """明确终结整棵任务树：根任务 failed + 未完成子任务级联 failed，并取消在途协程。"""
     root, children = await get_task_tree(root_task_id)
     if root is None:
         return False
     now = datetime.now()
+    root_update: Dict[str, object] = {
+        "status": "failed",
+        "failure_reason": reason[:4000],
+        "updated_at": now,
+    }
+    if root.recurring_trigger and root.recurring_status == RecurringStatus.ARMED:
+        root_update["recurring_status"] = RecurringStatus.DISARMED
+        from .recurring import unschedule_template
+
+        unschedule_template(root.id)
     await AIAgentTask.update_data_by_data(
         select_data={"id": root.id},
-        update_data={
-            "status": "failed",
-            "failure_reason": reason[:4000],
-            "updated_at": now,
-        },
+        update_data=root_update,
     )
+    from .kanban_executor import cancel_running_root
+
+    cancel_running_root(root.id, clear_delivery=True)
     cascaded = 0
     for c in children:
         if c.status in ("completed", "skipped", "failed", "cancelled"):

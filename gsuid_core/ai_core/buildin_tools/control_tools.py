@@ -16,7 +16,12 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, DISPUTE_CLOSED_KEY
+from gsuid_core.ai_core.control.directive import (
+    DISPUTE_ACKED_KEY,
+    DISPUTE_EXTRA_KEY,
+    DISPUTE_CLOSED_KEY,
+    DISPUTE_HAS_PRIOR_REPLY_KEY,
+)
 from gsuid_core.ai_core.control.delegation import (
     await_delegation,
     format_delegation,
@@ -39,13 +44,15 @@ async def check_delegation(
 ) -> str:
     """查在途委派的真实状态与产物；``wait_sec>0`` 则等到终态或超时。
 
-    ``delegation_id`` 用 create_subagent 回执里的 ``dlg_…`` 句柄（裸 root_task_id
-    亦可）。用户追问进度 / 好了没 / 做完没 时用 ``wait_sec=0`` 立即读。
+    ``delegation_id`` 支持 ``dlg_…`` 句柄、裸 root_task_id 或当前会话 ``#序号``。
+    用户追问进度 / 好了没 / 做完没 时用 ``wait_sec=0`` 立即读。
     句柄只进本工具参数，**禁止**写进给用户看的台词。
     """
-    _ = ctx
+    ev = ctx.deps.ev
+    owner = str(ev.user_id) if ev is not None and ev.user_id else ""
+    sid = str(ev.session_id) if ev is not None and ev.session_id else ""
     wait = max(0.0, min(float(wait_sec), _MAX_WAIT_SEC))
-    deleg = await await_delegation(delegation_id, wait_sec=wait)
+    deleg = await await_delegation(delegation_id, wait_sec=wait, owner_user_id=owner, session_id=sid)
     if deleg is None:
         return f"⚠️ 委派不存在或已过期: {delegation_id}"
     return format_delegation(deleg)
@@ -70,11 +77,17 @@ async def dispute_directive(ctx: RunContext[ToolContext], reason: str) -> str:
     extra = ctx.deps.extra
     if DISPUTE_CLOSED_KEY in extra and extra[DISPUTE_CLOSED_KEY]:
         return "申辩已记录，不要再调本工具。只输出 <SILENCE>。"
+    if DISPUTE_ACKED_KEY in extra and extra[DISPUTE_ACKED_KEY]:
+        return "申辩已记录，无需重复调用；请直接正常回复用户（不要提及本次校验）。"
     bucket = extra[DISPUTE_EXTRA_KEY] if DISPUTE_EXTRA_KEY in extra else None
     if not isinstance(bucket, list):
         bucket = []
         extra[DISPUTE_EXTRA_KEY] = bucket
     bucket.append(body[:500])
-    extra[DISPUTE_CLOSED_KEY] = True
     logger.info(t("log.agent.directive_disputed", reason=body[:120]))
+    has_prior = DISPUTE_HAS_PRIOR_REPLY_KEY in extra and bool(extra[DISPUTE_HAS_PRIOR_REPLY_KEY])
+    if not has_prior:
+        extra[DISPUTE_ACKED_KEY] = True
+        return "已记录申辩：本轮尚未发出过回复，忽略上述误判提示，直接用角色口吻正常回复用户（不要提及本次校验）。"
+    extra[DISPUTE_CLOSED_KEY] = True
     return "已记录申辩：本轮不必改写上一条回复，也不要向用户提及本次校验。只输出 <SILENCE>。"

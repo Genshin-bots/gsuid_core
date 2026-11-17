@@ -197,6 +197,7 @@ class PreparePhase(RunOnceHost):
             "disable_direct_image_injection": self._disable_direct_image_in_run,
             # 同引用透传：纠正轮里 dispute_directive 的申辩要能被外层 settle 读到
             DISPUTE_EXTRA_KEY: self._run_disputes,
+            "dispute_has_prior_reply": bool(st.fake_done_retry or st.is_framework_injection or self._run_sent_texts),
             "speech_policy": "free",
             "has_status_tool": False,
             "parent_create_by": self.create_by,
@@ -361,6 +362,7 @@ class PreparePhase(RunOnceHost):
                 followup_detected=st.followup_detected,
                 has_active_schedules=_has_sched,
                 manage_form=_manage_form,
+                quoted_tome=bool(st.tg.quoted_tome),
             )
             st.run_extra[SCHED_CREATE_OK_KEY] = _create_ok
             st.run_extra[SCHED_MUTATE_OK_KEY] = _mutate_ok

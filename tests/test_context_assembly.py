@@ -89,17 +89,27 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=tg, cheap_gate="full")
     allowed = suffix_allowed_blocks(ctx)
     assert allowed is not None and "voice_anchor" in allowed
-    voice = "（口吻：短）"
+    voice = "（口吻：" + "轻软简短" * 45 + "）"
     ctx.blocks = {
         "voice_anchor": voice,
-        "task": "任务块",
-        "relationship": "R" * 80,
+        "inbox_pending": "（待你回应）" + "甲" * 160,
+        "task": "事项#1｜进行中" + "X" * 90,
+        "relationship": "R" * 90,
         "memory": "M" * 80,
         "history": "H" * 500,
     }
     _apply_suffix_block_policy(ctx)
     assert ctx.blocks["voice_anchor"] == voice and ctx.blocks["history"] == "H" * 500
-    assert sum(len(v) for k, v in ctx.blocks.items() if k not in ("voice_anchor", "history")) <= _SUFFIX_PRODUCT_CAP
+    assert ctx.blocks["task"].startswith("事项#1｜进行中") and not ctx.blocks["task"].endswith("…")
+    assert ctx.blocks["relationship"] == "R" * 90
+    assert (
+        sum(
+            len(v)
+            for k, v in ctx.blocks.items()
+            if k not in ("voice_anchor", "history", "memory", "inbox_pending", "evidence")
+        )
+        <= _SUFFIX_PRODUCT_CAP
+    )
 
     idle = TurnGraph(
         user_type="group",
@@ -411,3 +421,22 @@ def test_render_delta_quote_edges_and_merge() -> None:
         assert w not in quoted
     merged = next(ln for ln in lines if ln.startswith("#7–#8"))
     assert "x2 / x3" in merged
+
+    # 静默轮记入 A 轨的 dlg_ 委派句柄标记为 tool_delivery，绝不渲染成「你: dlg_…〔已发〕」角色台词
+    from gsuid_core.models import Event
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.thread_view import render_window
+    from gsuid_core.ai_core.history_format import is_persona_speech, remember_silence_handles
+
+    hm = get_history_manager()
+    ev_dlg = Event("OneBot", "900000001", "dlg_m1", "group", "group_dlg_1", "100000001", {}, 6)
+    hm.clear_history(ev_dlg)
+    try:
+        hm.add_message(ev_dlg, role="user", content="帮我画一张测试指标图", user_name="测试用户A")
+        remember_silence_handles(ev_dlg, ["dlg_2f7fe0a6-db1c-4aff-8195-b80c721ae644"], manager=hm)
+        stored = hm.get_history(ev_dlg)
+        assert len(stored) == 2 and not is_persona_speech(stored[-1])
+        win = render_window(stored, persona_name="测试人格")
+        assert "dlg_2f7fe0a6" not in win
+    finally:
+        hm.clear_history(ev_dlg)

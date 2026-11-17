@@ -198,13 +198,13 @@ def extract_pending_unread_images(
     event: Event,
     read_image_ids: set[str],
     *,
-    window_seconds: float = 180.0,
-    max_images: int = 3,
+    window_seconds: float = 45.0,
+    max_images: int = 2,
 ) -> list[PendingImage]:
-    """提取同说话人在上次 AI 回复之后（<=180s）发出的挂起未读图片。"""
+    """提取同说话人紧邻连发（<=45s、未与别人在群内另开对话）的未读图片。"""
     if not event.user_id:
         return []
-    records = get_history_manager().get_history(event, limit=20)
+    records = get_history_manager().get_history(event, limit=12)
     if not records:
         return []
     now_ts = time.time()
@@ -215,23 +215,30 @@ def extract_pending_unread_images(
             break
         if now_ts - rec.timestamp > window_seconds:
             break
-        if rec.role == "user" and str(rec.user_id) == str(event.user_id):
-            img_ids: list[str] = []
-            if rec.metadata and "image_id_list" in rec.metadata:
-                val = rec.metadata["image_id_list"]
-                if isinstance(val, list):
-                    img_ids.extend(str(x) for x in val if x)
-            elif rec.metadata and "image_id" in rec.metadata:
-                val = rec.metadata["image_id"]
-                if val:
-                    img_ids.append(str(val))
-            for iid in img_ids:
-                if iid and iid not in read_image_ids and not any(p.img_id == iid for p in pending):
-                    t_str = datetime.fromtimestamp(rec.timestamp).strftime("%H:%M:%S")
-                    desc = (rec.content or "").strip()[:80] or "图片"
-                    pending.append(PendingImage(img_id=iid, text=desc, time_str=t_str))
-                    if len(pending) >= max_images:
-                        break
+        if rec.role != "user":
+            continue
+        if str(rec.user_id) != str(event.user_id):
+            continue
+        if rec.link is not None:
+            to_other_quote = bool(rec.link.reply_to_author and rec.link.reply_to_author != "self")
+            if to_other_quote or bool(rec.link.at_targets):
+                break
+        img_ids: list[str] = []
+        if rec.metadata and "image_id_list" in rec.metadata:
+            val = rec.metadata["image_id_list"]
+            if isinstance(val, list):
+                img_ids.extend(str(x) for x in val if x)
+        elif rec.metadata and "image_id" in rec.metadata:
+            val = rec.metadata["image_id"]
+            if val:
+                img_ids.append(str(val))
+        for iid in img_ids:
+            if iid and iid not in read_image_ids and not any(p.img_id == iid for p in pending):
+                t_str = datetime.fromtimestamp(rec.timestamp).strftime("%H:%M:%S")
+                desc = (rec.content or "").strip()[:80] or "图片"
+                pending.append(PendingImage(img_id=iid, text=desc, time_str=t_str))
+                if len(pending) >= max_images:
+                    break
         if len(pending) >= max_images:
             break
     pending.reverse()

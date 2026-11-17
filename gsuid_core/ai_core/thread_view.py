@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Sequence
 from datetime import datetime
 from dataclasses import dataclass
 
-from gsuid_core.ai_core.utils import is_silence_marker
+from gsuid_core.ai_core.utils import is_silence_marker, _strip_resource_handles
 from gsuid_core.message_history import MessageRecord
 from gsuid_core.ai_core.control.lines import (
     THREAD_AT_MARK,
@@ -199,6 +199,8 @@ def _assistant_line(record: MessageRecord, ctx: "_RenderCtx") -> str | None:
     link = record.link
     seq = link.seq if link is not None else 0
     if is_silence_marker(record.content.strip()):
+        return None
+    if _speech_channel(record) == "tool_delivery" and not _strip_resource_handles(record.content).strip():
         return None
     you = _you(record, ctx.persona_name)
     ts = _format_timestamp(record.timestamp)

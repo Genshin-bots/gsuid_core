@@ -87,13 +87,18 @@ class InboxScheduler:
             self._spawn_settle(key)
             return
 
-        # settling：同说话人续发延长（受总上限约束）；hard 项把窗收回起步值
-        if entry.item.user_id == inbox.last_speaker:
+        # settling：同说话人续发或群聊多人连发点名时顺延（受总上限约束）；软窗首次升 hard 收回起步值
+        had_hard = any(
+            s != entry.item.seq and e.item.state == "pending" and e.item.strength == "hard"
+            for s, e in inbox.items.items()
+        )
+        is_group_multi_hard = entry.event.user_type != "direct" and had_hard and entry.item.strength == "hard"
+        if entry.item.user_id == inbox.last_speaker or is_group_multi_hard:
             inbox.settle_deadline = min(
                 max(inbox.settle_deadline, now) + SAME_SPEAKER_EXTEND_S,
                 inbox.settle_started + self._settle_max_s(),
             )
-        if entry.item.strength == "hard":
+        elif entry.item.strength == "hard" and not had_hard:
             inbox.settle_deadline = min(inbox.settle_deadline, now + self._initial_settle_s(entry))
         inbox.last_speaker = entry.item.user_id
 
@@ -141,6 +146,21 @@ class InboxScheduler:
         self._inboxes.pop(key, None)
         self._ws.pop(key, None)
         self._settle_tasks.pop(key, None)
+
+    def reset_session(self, session_id: str) -> None:
+        """会话历史清空时同步重置已读游标与挂起项，防 seq 回绕错位。"""
+        for key in [k for k in self._last_read_seq if k[0] == session_id]:
+            self._last_read_seq.pop(key, None)
+        for key in [k for k in self._inboxes if k[0] == session_id]:
+            inbox = self._inboxes[key]
+            inbox.read_seq = 0
+            inbox.items.clear()
+            inbox.dirty = False
+            if inbox.phase != "running":
+                task = self._settle_tasks.pop(key, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                self._drop(key)
 
     def _spawn_settle(self, key: tuple[str, str]) -> None:
         if key in self._settle_tasks and not self._settle_tasks[key].done():
@@ -190,12 +210,14 @@ class InboxScheduler:
         entries = tuple(sorted(pending, key=lambda e: (e.item.strength != "hard", e.item.seq)))
         from gsuid_core.message_history import get_history_manager
 
+        head_seq = get_history_manager().head_seq(entries[0].event)
+        from_seq = inbox.read_seq if inbox.read_seq < head_seq else self._initial_read_seq(entries[0])
         return InboxTurn(
             session_id=inbox.session_id,
             persona_name=inbox.persona_name,
             entries=entries,
-            from_seq=inbox.read_seq,
-            head_seq=get_history_manager().head_seq(entries[0].event),
+            from_seq=from_seq,
+            head_seq=head_seq,
             backfill=backfill_due_for(inbox.session_id),
         )
 

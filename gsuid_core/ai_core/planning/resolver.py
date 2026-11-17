@@ -13,8 +13,42 @@ from typing import List, Optional
 
 from .models import AIAgentTask
 
-# 序号引用："任务#3" / "第3个" / "第三个"
-_ORDINAL_RE = re.compile(r"(?:任务\s*#?|第)\s*([0-9一二三四五六七八九十]+)\s*个?")
+# 序号引用："任务#3" / "事项#3" / "task#3" / "#3" / "第3个"
+_ORDINAL_RE = re.compile(r"(?:(?:任务|事项|task)\s*#?|#\s*|第\s*)([0-9一二三四五六七八九十]+)\s*个?", re.IGNORECASE)
+_DLG_RE = re.compile(r"(?:\bdlg_)?([0-9a-fA-F]{8}-[0-9a-fA-F-]{8,}|[0-9a-fA-F]{12,})\b")
+_TASK_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "那个",
+        "那条",
+        "这个",
+        "这条",
+        "刚才",
+        "之前",
+        "最近",
+        "上次",
+        "上回",
+        "昨天",
+        "进行",
+        "行中",
+        "运行",
+        "在跑",
+        "暂停",
+        "停止",
+        "停掉",
+        "取消",
+        "关闭",
+        "重派",
+        "修改",
+        "改成",
+        "改为",
+        "恢复",
+        "任务",
+        "事项",
+        "子任",
+        "帮我",
+        "一下",
+    }
+)
 _CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
 # 状态关键词 → 任务 status 集合
@@ -43,6 +77,39 @@ def _parse_cn_int(token: str) -> Optional[int]:
     return None
 
 
+def _query_terms(q: str) -> list[str]:
+    chunks = [c for c in re.split(r"[\s,，。！？!?/\\|：:;；#()（）「」『』\"']+", q) if len(c) >= 2]
+    terms: list[str] = []
+    for chunk in chunks:
+        if chunk.isascii():
+            if chunk not in _TASK_STOPWORDS and chunk not in terms:
+                terms.append(chunk)
+            continue
+        if len(chunk) == 2:
+            if chunk not in _TASK_STOPWORDS and chunk not in terms:
+                terms.append(chunk)
+            continue
+        for i in range(len(chunk) - 1):
+            bg = chunk[i : i + 2]
+            if bg not in _TASK_STOPWORDS and bg not in terms:
+                terms.append(bg)
+    return terms
+
+
+def _match_score(task: AIAgentTask, q: str, terms: list[str]) -> int:
+    score = 0
+    if task.task_alias and (task.task_alias in q or q in task.task_alias):
+        score += 10
+    if task.display_name and task.display_name in q:
+        score += 8
+    haystack = f"{task.task_alias or ''} {task.display_name or ''} {(task.goal or '')[:200]}".lower()
+    for term in terms:
+        t_low = term.lower()
+        if t_low in haystack:
+            score += 3 if len(t_low) >= 3 else 1
+    return score
+
+
 async def resolve_task_ref(
     query: str,
     owner_user_id: str,
@@ -50,23 +117,30 @@ async def resolve_task_ref(
 ) -> List[AIAgentTask]:
     """把一句自然语言引用解析为候选任务列表。
 
-    解析优先级：序号命中 > 别名/显示名字面命中 > 状态词命中 > "最近/那个"取最新。
+    解析优先级：dlg_/UUID 命中 > 序号命中 > 别名/关键词命中 > 状态词命中 > "最近/那个"取最新。
     返回 0 个表示未识别；返回 >1 个表示需要向用户澄清。
-
-    Args:
-        query:          用户自然语言（如"昨天那个周报任务"）
-        owner_user_id:  当前用户 ID——只解析其名下任务（建议七权限边界）
-        scope_key:      作用域（暂作软过滤，保留扩展位）
-
-    Returns:
-        候选任务列表（已去重）
     """
+    _ = scope_key
     tasks = await AIAgentTask.list_for_owner(owner_user_id, root_only=True)
     if not tasks:
         return []
     q = query.strip()
+    if not q:
+        return [tasks[0]]
 
-    # 1) 序号引用
+    # 0) dlg_ / UUID 前缀直命
+    dm = _DLG_RE.search(q)
+    if dm is not None:
+        raw_id = dm.group(1).lower()
+        id_hits = [t for t in tasks if t.id.lower() == raw_id or t.id.lower().startswith(raw_id)]
+        if id_hits:
+            return id_hits
+
+    # 1) 序号引用（含纯数字串）
+    if q.isdigit():
+        ord_hits = [t for t in tasks if t.ordinal == int(q)]
+        if ord_hits:
+            return ord_hits
     m = _ORDINAL_RE.search(q)
     if m:
         n = _parse_cn_int(m.group(1))
@@ -75,14 +149,11 @@ async def resolve_task_ref(
             if hit:
                 return hit
 
-    # 2) 别名 / 显示名字面命中
-    name_hits = [
-        t
-        for t in tasks
-        if (t.task_alias and t.task_alias in q)
-        or (t.display_name and t.display_name in q)
-        or any(kw and kw in q for kw in t.goal[:20].split())
-    ]
+    # 2) 别名 / 显示名 / 任务目标关键词双向评分
+    terms = _query_terms(q)
+    scored = [(t, _match_score(t, q, terms)) for t in tasks]
+    best_score = max((s for _, s in scored), default=0)
+    name_hits = [t for t, s in scored if s > 0 and s == best_score]
     if len(name_hits) == 1:
         return name_hits
 

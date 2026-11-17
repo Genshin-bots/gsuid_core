@@ -251,3 +251,59 @@ def test_report_speech_and_allow_render_gate() -> None:
     assert _claims_fake_done("我已经把定时弄好了")
     assert inspect_outbound_ooc("上周那项活动我这边没找到相关记录。") is None
     assert inspect_outbound_ooc("我这边数据库没有这条条目。") is not None
+
+
+def test_numeric_recitation_and_initial_dispute_contracts() -> None:
+    """短对话含 <reply #seq> 与年份不误判念数；首轮误判申辩不把本轮锁死为 <SILENCE>。"""
+    import asyncio
+
+    from pydantic_ai.tools import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.control.directive import (
+        DISPUTE_ACKED_KEY,
+        DISPUTE_EXTRA_KEY,
+        DISPUTE_CLOSED_KEY,
+        DISPUTE_HAS_PRIOR_REPLY_KEY,
+    )
+    from gsuid_core.ai_core.control.outbound_detectors import looks_like_numeric_recitation
+    from gsuid_core.ai_core.buildin_tools.control_tools import dispute_directive
+
+    # 协议头 <reply #seq> 与日历年份/日期不计入业务读数，保持原始 (80, 6, 4/140) 阈值不漂移
+    concise_qa = (
+        "<reply #1538>\n"
+        "按基数比例计算而非总额：个人费率 2%、单位费率 6%；"
+        "2026 年与 2026-11 口径下基数区间为 5000 到 25000，封顶按上限折算。"
+    )
+    assert looks_like_numeric_recitation(concise_qa) is False
+
+    long_prose_metrics = (
+        "关于这项指标的本轮测算结果如下：基础系数调整为 12.5%，浮动比例 3.2%，"
+        "参考下限 4800，封顶上限 28500；折算后每期固定核定基数会随申报档位同步浮动，"
+        "如果叠加补充档位还会额外计入对应差额部分，建议结合当月实际申报明细逐项核对确认后再执行后续系统的配置调整与归档备份。"
+    )
+    assert len(long_prose_metrics) >= 140
+    assert looks_like_numeric_recitation(long_prose_metrics) is True
+
+    dense_list = "- 项目甲：单位 16% / 个人 8%\n- 项目乙：单位 6% / 个人 2%\n- 项目丙：单位 0.8% / 个人 0.2%"
+    assert looks_like_numeric_recitation(dense_list) is True
+
+    # 首轮尚未产出过回复时调用 dispute_directive：记录申辩但不置 DISPUTE_CLOSED_KEY
+    ctx_init = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+    msg_init = asyncio.run(dispute_directive(ctx_init, "用户问的是生猪行情，不是咖啡点单"))
+    assert ctx_init.deps.extra[DISPUTE_EXTRA_KEY] == ["用户问的是生猪行情，不是咖啡点单"]
+    assert ctx_init.deps.extra[DISPUTE_ACKED_KEY] is True
+    assert DISPUTE_CLOSED_KEY not in ctx_init.deps.extra
+    assert "正常回复用户" in msg_init and "<SILENCE>" not in msg_init
+
+    # 拦截重跑轮已有暂扣回复时调用 dispute_directive：置 DISPUTE_CLOSED_KEY 走静默放行原回复
+    ctx_retry = RunContext(
+        deps=ToolContext(extra={DISPUTE_HAS_PRIOR_REPLY_KEY: True}),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    msg_retry = asyncio.run(dispute_directive(ctx_retry, "上一段是用户明确要求的纯文本口头概括"))
+    assert ctx_retry.deps.extra[DISPUTE_CLOSED_KEY] is True
+    assert "<SILENCE>" in msg_retry

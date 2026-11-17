@@ -348,8 +348,11 @@ def quote_command_card_line(time_str: str) -> str:
 
 
 def pending_unread_image_guide_line(img_id: str) -> str:
-    """当前说话人刚发出的挂起未读图片提权引导。"""
-    return f'（对方正在追问上面刚发出的待讨论图片，请先调用 read_image("{img_id}") 查看原图，严禁凭旧话题猜测图内内容）'
+    """当前说话人刚发出的挂起未读图片中性提示。"""
+    return (
+        f'（以上是当前说话人刚发出的未读图片；仅当本句确在追问或讨论该图时调用 read_image("{img_id}")，'
+        "日常表情包或无关话题请忽略）"
+    )
 
 
 def quote_bystander_line(time_str: str, target_desc: str) -> str:

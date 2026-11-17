@@ -164,17 +164,23 @@ def looks_like_status_inquiry(text: str, *, has_active_task: bool) -> bool:
     return False
 
 
+_CALENDAR_YEAR_RE = re.compile(r"(?<![\d.])20\d{2}(?=\s*年|[-/.]\d{1,2})")
+
+
 def looks_like_numeric_recitation(text: str) -> bool:
     """台词是否在念多点读数（多行数字对照表或高密度小数/百分号）。"""
-    body = (text or "").strip()
+    from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
+
+    body = strip_protocol_tags(text or "").strip()
     if not body or is_silence_marker(body):
         return False
-    n_digits = len(re.findall(r"\d+", body))
+    scrubbed = _CALENDAR_YEAR_RE.sub("", body)
+    n_digits = len(re.findall(r"\d+", scrubbed))
     if _fact_lines_multi_point(body) and n_digits >= 5 and len(body) >= 24:
         return True
     if len(body) < 80:
         return False
-    nums = re.findall(r"(?<![\d.])(?:\d+\.\d+%?|\d{1,3}%|\d{4,})(?![\d.])", body)
+    nums = re.findall(r"(?<![\d.])(?:\d+\.\d+%?|\d{1,3}%|\d{4,})(?![\d.])", scrubbed)
     if len(nums) >= 6:
         return True
     return len(nums) >= 4 and len(body) >= 140

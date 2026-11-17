@@ -313,11 +313,9 @@ _SUFFIX_PRODUCT_CAP = 300
 _SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history"})
 _CAP_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history", "memory"}) | _ALWAYS_SUFFIX_BLOCKS
 _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
-    "voice_anchor",
     "task",
     "relationship",
     "presence",
-    "inbox_pending",
     "plugin_hints",
 )
 

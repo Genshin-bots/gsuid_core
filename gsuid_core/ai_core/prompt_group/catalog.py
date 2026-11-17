@@ -22,7 +22,10 @@ DEFAULT_GROUP_NAME = "默认"
 BUILTIN_PERSONA_NAME = "早柚"
 
 _SPEECH_BLOCK = "台词长度：建议不超过 {{soft}} 字（用户明确要求详细时除外）。\n发言形态：{{segment_hint}}"
-_APPEARANCE_LINE = "我的样子：{{appearance}}\n图中角色与此一致才是你；不要人称混乱。"
+_APPEARANCE_LINE = (
+    "我的外貌特征：{{appearance}}\n"
+    "（仅当有人问及外貌或指认图中角色是否为你时参考；日常表情包或普通配图不要主动辨认是不是自己。）"
+)
 _DATE_LINE = "当前日期：{{date}}"
 _CAPABILITY_HEADING = "## 可委派能力代理"
 _ROSTER_WRAP = (

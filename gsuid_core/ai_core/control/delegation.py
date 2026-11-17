@@ -11,19 +11,21 @@ session_id / 产物挂 ``AIAgentArtifact``）。本模块只做两件事：
 
 from __future__ import annotations
 
+import re
 import asyncio
 from typing import Literal, Sequence
 from dataclasses import dataclass
 
 DELEGATION_HANDLE_PREFIX = "dlg_"
+_ORDINAL_HANDLE_RE = re.compile(r"^(?:(?:事项|任务|task)\s*#?|#)\s*(\d+)$", re.IGNORECASE)
 
-DelegationStatus = Literal["running", "done", "failed", "cancelled", "waiting_approval"]
+DelegationStatus = Literal["running", "paused", "done", "failed", "cancelled", "waiting_approval"]
 
-# AIAgentTask.status → 对模型暴露的终态语义（pending/paused 对模型都是「还在跑」）
+# AIAgentTask.status → 对模型暴露的状态语义
 _STATUS_MAP: dict[str, DelegationStatus] = {
     "pending": "running",
     "running": "running",
-    "paused": "running",
+    "paused": "paused",
     "completed": "done",
     "failed": "failed",
     "cancelled": "cancelled",
@@ -73,17 +75,41 @@ def root_task_id_of(handle: str) -> str:
 
 
 def is_delegation_handle(handle: str) -> bool:
-    return (handle or "").strip().startswith(DELEGATION_HANDLE_PREFIX)
+    hid = (handle or "").strip()
+    return hid.startswith(DELEGATION_HANDLE_PREFIX) or _ORDINAL_HANDLE_RE.match(hid) is not None
 
 
-async def load_delegation(handle: str) -> Delegation | None:
-    """读取委派状态与产物；找不到返回 None。"""
+def _parse_ordinal_handle(handle: str) -> int | None:
+    hid = (handle or "").strip()
+    if hid.isdigit():
+        return int(hid)
+    m = _ORDINAL_HANDLE_RE.match(hid)
+    if m is not None:
+        return int(m.group(1))
+    return None
+
+
+async def load_delegation(
+    handle: str,
+    *,
+    owner_user_id: str = "",
+    session_id: str = "",
+) -> Delegation | None:
+    """读取委派状态与产物；支持 ``dlg_<uuid>``、裸 UUID 及同会话 ``#ordinal``。"""
     from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
 
     root_id = root_task_id_of(handle)
     if not root_id:
         return None
     task = await AIAgentTask.get_by_id(root_id)
+    if task is None:
+        ordinal = _parse_ordinal_handle(root_id)
+        if ordinal is not None:
+            task = await AIAgentTask.get_root_by_ordinal(
+                ordinal,
+                owner_user_id=owner_user_id,
+                session_id=session_id,
+            )
     if task is None:
         return None
     # 按 root 取：产物登记在**执行节点**上（多节点树是 child），list_for_task(root)
@@ -105,27 +131,34 @@ async def load_delegation(handle: str) -> Delegation | None:
     )
 
 
-async def await_delegation(handle: str, *, wait_sec: float = 0.0) -> Delegation | None:
+async def await_delegation(
+    handle: str,
+    *,
+    wait_sec: float = 0.0,
+    owner_user_id: str = "",
+    session_id: str = "",
+) -> Delegation | None:
     """轮询或等待到终态。
 
     ``wait_sec <= 0`` 即单次读取（用户追问进度用）；``> 0`` 则轮询至终态或超时。
     这样「内联同步等 5s」只是本函数的一个默认参数，不再是独立代码路径。
     """
-    current = await load_delegation(handle)
-    if current is None or wait_sec <= 0 or current.is_terminal:
+    current = await load_delegation(handle, owner_user_id=owner_user_id, session_id=session_id)
+    if current is None or wait_sec <= 0 or current.is_terminal or current.status == "paused":
         return current
     waited = 0.0
     while waited < wait_sec:
         await asyncio.sleep(_POLL_INTERVAL_SEC)
         waited += _POLL_INTERVAL_SEC
-        current = await load_delegation(handle)
-        if current is None or current.is_terminal:
+        current = await load_delegation(handle, owner_user_id=owner_user_id, session_id=session_id)
+        if current is None or current.is_terminal or current.status == "paused":
             return current
     return current
 
 
 _STATUS_LABEL: dict[DelegationStatus, str] = {
     "running": "⏳ 仍在后台执行",
+    "paused": "⏸️ 已暂停",
     "done": "✅ 已完成",
     "failed": "❌ 失败",
     "cancelled": "🚫 已取消",
@@ -156,7 +189,9 @@ def format_delegation(d: Delegation) -> str:
         lines.append("文本产物: " + ", ".join(text_arts[:5]) + "（artifact_get 取原文）")
     if not d.artifacts:
         lines.append("（暂无产物登记）")
-    if not d.is_terminal:
+    if d.status == "paused":
+        lines.append("当前已暂停：可用 resume_my_kanban_tree 恢复，或用 respawn_subtask 修改描述重派。")
+    elif not d.is_terminal:
         lines.append("尚未完成：完成后框架会自动回灌交付包，不要重复委派同一任务。")
     return "\n".join(lines)
 

@@ -977,8 +977,10 @@ class GsCoreAIAgent(RunOnceMixin):
         if "image" in model_support and not self._disable_direct_image_in_run:
             # 模型支持图片，按实际激活 provider 输出 BinaryContent / ImageUrl；动图收成静图序列
             from gsuid_core.ai_core.persona.appearance import format_look_identity_note
+            from gsuid_core.ai_core.buildin_tools.image_reader import wants_self_visual
             from gsuid_core.ai_core.multimodal.animated_frames import render_animation_sheets
 
+            ask_self = wants_self_visual("\n".join(text_parts).strip())
             result: list[UserContent] = []
             notes: list[str] = []
             seen_notes: set[str] = set()
@@ -1013,7 +1015,7 @@ class GsCoreAIAgent(RunOnceMixin):
                             logger.warning(i18n_t("log.ai.unable_process_image_id_err", i="user_message", e=inject_err))
                             continue
                     if self.persona_name:
-                        note = format_look_identity_note(self.persona_name, raw)
+                        note = format_look_identity_note(self.persona_name, raw, allow_card_fallback=ask_self)
                         if note and note not in seen_notes:
                             seen_notes.add(note)
                             notes.append(note)
@@ -1032,19 +1034,25 @@ class GsCoreAIAgent(RunOnceMixin):
             logger.info(i18n_t("log.agent.imgund_images_image_paraphrasing", p0=len(image_urls)))
             user_question = "\n".join(text_parts).strip()
             from gsuid_core.ai_core.persona.appearance import format_look_identity_note
+            from gsuid_core.ai_core.buildin_tools.image_reader import wants_self_visual
 
+            ask_self = wants_self_visual(user_question)
             descriptions: list[str] = []
             for idx, url in enumerate(image_urls):
                 try:
                     description = await understand_image(
                         image_url=url,
                         parent_session_id=self.session_id,
-                        persona_name=self.persona_name,
+                        persona_name=self.persona_name if ask_self else None,
                     )
                     description = await self._summarize_image_description(description, user_question)
                     line = f"图片{idx + 1}: {description}"
                     if self.persona_name:
-                        note = format_look_identity_note(self.persona_name, bytes_from_inline_image_ref(url))
+                        note = format_look_identity_note(
+                            self.persona_name,
+                            bytes_from_inline_image_ref(url),
+                            allow_card_fallback=ask_self,
+                        )
                         if note:
                             line = f"{line}\n{note}"
                     descriptions.append(line)

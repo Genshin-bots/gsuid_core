@@ -270,6 +270,27 @@ class AIAgentTask(_PlanCRUD, SQLModel, table=True):
 
     @classmethod
     @with_read_session
+    async def get_root_by_ordinal(
+        cls,
+        session: AsyncSession,
+        ordinal: int,
+        *,
+        owner_user_id: str = "",
+        session_id: str = "",
+    ) -> Optional["AIAgentTask"]:
+        stmt = select(cls).where(col(cls.node_kind) == "root", col(cls.ordinal) == ordinal)
+        if owner_user_id:
+            stmt = stmt.where(col(cls.owner_user_id) == owner_user_id)
+        elif session_id:
+            stmt = stmt.where(col(cls.session_id) == session_id)
+        else:
+            return None
+        stmt = stmt.order_by(col(cls.updated_at).desc()).limit(1)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_read_session
     async def list_for_owner(
         cls,
         session: AsyncSession,

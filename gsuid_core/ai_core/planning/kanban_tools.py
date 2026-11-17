@@ -699,33 +699,37 @@ async def _resolve_subtask(ev, subtask_ref: str) -> Optional[AIAgentTask]:
     直接返回根任务本身——主人格可以用 ``"<root_ref>"`` 或 ``"<root_ref>#sub1"``
     都能命中。
     """
-    if not subtask_ref:
-        return None
-    ref = subtask_ref.strip()
+    ref = (subtask_ref or "").strip()
     if "#sub" in ref:
         root_ref, sub_part = ref.split("#sub", 1)
     else:
         root_ref, sub_part = ref, ""
     candidates = await resolve_task_ref(root_ref, str(ev.user_id)) if root_ref else []
-    if not candidates:
+    if not candidates and not root_ref:
         roots = await AIAgentTask.list_for_owner(str(ev.user_id), only_active=True, root_only=True)
+        if not roots:
+            roots = await AIAgentTask.list_for_owner(str(ev.user_id), root_only=True)
         candidates = roots[:1]
     if not candidates:
         return None
     root = candidates[0]
     _, children = await kanban.get_task_tree(root.id)
-    # 叶子根：根任务自身就是执行节点，没有子任务时直接返回根任务
+    # 叶子根或无子步骤周期根：直接返回根任务本身
     if not children:
-        if kanban.is_leaf_root(root, 0):
+        if kanban.is_leaf_root(root, 0) or bool(root.recurring_trigger):
             return root
         return None
-    try:
-        idx = int(sub_part.strip()) if sub_part.strip() else 1
-    except ValueError:
-        idx = 1
-    if 1 <= idx <= len(children):
-        return children[idx - 1]
-    return children[0]
+    sub_str = sub_part.strip()
+    if sub_str:
+        idx = int(sub_str) if sub_str.isdigit() else 1
+        if 1 <= idx <= len(children):
+            return children[idx - 1]
+        return children[0]
+    for st_group in (("failed", "waiting_approval"), ("running", "paused"), ("pending",)):
+        hits = [c for c in children if c.status in st_group]
+        if hits:
+            return hits[0]
+    return children[-1]
 
 
 @ai_tools(category="planning", capability_domain=_CAP, code_callable=False)
@@ -733,19 +737,18 @@ async def respawn_subtask(
     ctx: RunContext[ToolContext],
     subtask_ref: str,
     new_description: Optional[str] = None,
-    new_params: Optional[Dict[str, Any]] = None,
+    new_params: Optional[Dict[str, object]] = None,
     new_agent_profile: Optional[str] = None,
 ) -> str:
-    """加载并重新派发某个 failed 子任务。
+    """修改或重新派发进行中/已暂停/已失败的任务节点（立即取消旧在途执行并按新描述重跑）。
 
     Args:
-        subtask_ref: 子任务引用句柄；形如 "周报任务#sub2" 或 "#sub2"（默认取最近根任务）。
+        subtask_ref: 任务引用句柄（支持 ``#序号``、``dlg_…``、关键词或 ``任务名#sub2``；留空取最近活跃任务）。
         new_description: 修正后的任务描述（覆盖原 goal）。
         new_params: 修正后的参数（覆盖 params_override）。
         new_agent_profile: 改派给其它 profile（必须已注册）。
 
-    超过 3 次重派会强制转 waiting_approval。主人用私聊确认码或审批中心批准。
-    群里说「同意」不会通过。
+    对失败重试超过 3 次会转 waiting_approval；对运行中/已暂停任务的修改会立即中断旧执行并按新参数启动。
     """
     ev = ctx.deps.ev
     if ev is None:
@@ -772,12 +775,15 @@ async def respawn_subtask(
         new_params=new_params,
         new_agent_profile=new_agent_profile,
     )
-    if ok and task.root_task_id:
+    root_id = task.root_task_id or task.id
+    if ok and root_id:
         import asyncio
 
-        from .kanban_executor import kick_root
+        from .kanban_executor import kick_root, mark_deferred_main_delivery
 
-        asyncio.create_task(kick_root(task.root_task_id))
+        if (task.session_id or "").strip() and kanban.is_leaf_root(task, 0):
+            mark_deferred_main_delivery(root_id)
+        asyncio.create_task(kick_root(root_id))
     return ("✅ " if ok else "ℹ️ ") + msg
 
 
@@ -1208,14 +1214,14 @@ async def list_my_kanban_tasks(
     if not roots:
         return f"ℹ️ 过滤后无任务（goal_filter={goal_filter!r}, status={status}）。"
 
-    lines = [f"📋 任务树（owner={owner}，{len(roots)} 棵）：", ""]
-    lines.append("| # | goal | 状态 | 周期 | 错误 |")
-    lines.append("|---|------|------|------|------|")
+    lines = [f"📋 任务树（owner={owner}，{len(roots)} 棵，句柄仅进工具参数、严禁写入台词）：", ""]
+    lines.append("| # | 句柄 | goal | 状态 | 周期 | 错误 |")
+    lines.append("|---|------|------|------|------|------|")
     safe_bits: list[str] = []
     for r in roots[:30]:
         trig = (r.recurring_trigger or "-")[:24]
         err = (r.failure_reason or "")[:40]
-        lines.append(f"| #{r.ordinal} | {(r.goal or '')[:50]} | {r.status} | {trig} | {err} |")
+        lines.append(f"| #{r.ordinal} | dlg_{r.id} | {(r.goal or '')[:50]} | {r.status} | {trig} | {err} |")
         # 聊天通道转述：状态人话，禁止原样念 goal/节点
         _sc = {
             "pending": "还没开始",
@@ -1270,13 +1276,25 @@ async def pause_my_kanban_tree(
             return f"⏸️ 已暂停周期 Kanban 树【任务#{root.ordinal}｜{root.display_name}】：{reason or '无原因'}"
         return f"⚠️ disarm 失败: 任务#{root.ordinal}"
 
-    # 一次性任务 → 改状态
-    from .models import AIAgentTask
+    # 一次性任务 → 暂停根与活跃子节点，并立即中断在途协程
+    from datetime import datetime as _dt
 
+    from .models import AIAgentTask
+    from .kanban_executor import cancel_running_root
+
+    now = _dt.now()
+    _, children = await kanban.get_task_tree(root.id)
     await AIAgentTask.update_data_by_data(
         select_data={"id": root.id},
-        update_data={"status": "paused", "failure_reason": reason or "paused by owner"},
+        update_data={"status": "paused", "failure_reason": reason or "paused by owner", "updated_at": now},
     )
+    for child in children:
+        if child.status in ("pending", "running"):
+            await AIAgentTask.update_data_by_data(
+                select_data={"id": child.id},
+                update_data={"status": "paused", "updated_at": now},
+            )
+    cancel_running_root(root.id, clear_delivery=True)
     return f"⏸️ 已暂停一次性任务【任务#{root.ordinal}｜{root.display_name}】"
 
 
@@ -1288,7 +1306,7 @@ async def resume_my_kanban_tree(
     """恢复被暂停的 Kanban 任务树。
 
     周期模板：arm_recurring_subtask 重挂 APScheduler
-    一次性任务：状态置回 pending（需要 respawn_subtask 重新派发）
+    一次性任务：状态置回可执行态并重新派发执行
     """
     ev = ctx.deps.ev
     if ev is None:
@@ -1308,15 +1326,27 @@ async def resume_my_kanban_tree(
             return f"▶️ 已恢复周期 Kanban 树【任务#{root.ordinal}｜{root.display_name}】"
         return f"⚠️ arm 失败: {msg}"
 
-    from .models import AIAgentTask
-    from .kanban_executor import kick_root
+    import asyncio
+    from datetime import datetime as _dt
 
+    from .models import AIAgentTask
+    from .kanban_executor import kick_root, mark_deferred_main_delivery
+
+    now = _dt.now()
+    _, children = await kanban.get_task_tree(root.id)
+    leaf = kanban.is_leaf_root(root, len(children))
     await AIAgentTask.update_data_by_data(
         select_data={"id": root.id},
-        update_data={"status": "pending", "failure_reason": ""},
+        update_data={"status": "pending" if leaf else "running", "failure_reason": "", "updated_at": now},
     )
-    import asyncio
-
+    for child in children:
+        if child.status == "paused":
+            await AIAgentTask.update_data_by_data(
+                select_data={"id": child.id},
+                update_data={"status": "pending", "updated_at": now},
+            )
+    if leaf and (root.session_id or "").strip():
+        mark_deferred_main_delivery(root.id)
     asyncio.create_task(kick_root(root.id))
     return f"▶️ 已重新派发一次性任务【任务#{root.ordinal}｜{root.display_name}】"
 

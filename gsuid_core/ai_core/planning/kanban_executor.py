@@ -497,6 +497,39 @@ def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
 _INTERACTIVE_RELAY_ROOTS: set[str] = set()
 # 同步等待已超时：完成后唤醒主人格交付，禁止 _persona_relay 替发（2026-08-04）。
 _DEFERRED_MAIN_DELIVERY_ROOTS: set[str] = set()
+# 运行中能力代理协程注册表：暂停/取消/重派时立即中断，不空烧 token 也不反写终态。
+_RUNNING_NODE_TASKS: dict[str, asyncio.Task[str]] = {}
+_ROOT_RUNNING_NODES: dict[str, set[str]] = {}
+
+
+def cancel_running_node(task_id: str) -> bool:
+    """取消指定任务节点正在运行的能力代理协程。"""
+    running = _RUNNING_NODE_TASKS.pop(task_id, None)
+    if running is not None and not running.done():
+        running.cancel()
+        return True
+    return False
+
+
+def cancel_running_root(root_task_id: str, *, clear_delivery: bool = True) -> int:
+    """取消整棵任务树下所有在途协程，并清理待回灌队列。"""
+    node_ids = set(_ROOT_RUNNING_NODES.pop(root_task_id, set()))
+    node_ids.add(root_task_id)
+    cancelled = 0
+    for nid in node_ids:
+        if cancel_running_node(nid):
+            cancelled += 1
+    if clear_delivery:
+        discard_interactive_relay_root(root_task_id)
+        suffix = f"|{root_task_id}"
+        for key in [k for k in list(_delivery_pending) if k.endswith(suffix)]:
+            sid = key.rsplit("|", 1)[0]
+            _delivery_pending.pop(key, None)
+            ft = _delivery_flush_tasks.pop(key, None)
+            if ft is not None and not ft.done():
+                ft.cancel()
+            drain_one(sid, "delivery", root_task_id)
+    return cancelled
 
 
 def has_pending_interactive_deliveries() -> bool:
@@ -822,7 +855,9 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
     """派活单个子任务节点。"""
     lock = kanban.get_task_node_lock(child.id)
     if lock.locked():
-        return
+        active_cap = _RUNNING_NODE_TASKS[child.id] if child.id in _RUNNING_NODE_TASKS else None
+        if active_cap is not None and not active_cap.done() and not active_cap.cancelled():
+            return
     async with lock:
         # 再读一次最新状态防 race
         fresh = await AIAgentTask.get_by_id(child.id)
@@ -870,20 +905,36 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         resume_hint = await _build_resume_hint(fresh)
         prompt = _format_subtask_prompt(root, fresh, upstream, resume_hint)
 
-        # 3) 让能力代理执行
+        # 3) 让能力代理执行（登记在途协程供暂停/终结/改派即时中断）
         raw_result: str = ""
+        cap_task: asyncio.Task[str] | None = None
+        if root.id not in _ROOT_RUNNING_NODES:
+            _ROOT_RUNNING_NODES[root.id] = set()
+        _ROOT_RUNNING_NODES[root.id].add(fresh.id)
         try:
             from gsuid_core.ai_core.capability_agents.runner import run_capability_agent
 
             profile_id = fresh.agent_profile or "research_agent"
-            raw_result = await run_capability_agent(
-                profile_id=profile_id,
-                task=prompt,
-                ev=ev,
-                bot=bot,
-                session_id_suffix=f"kanban_{root.id[:6]}_{fresh.id[:6]}",
-                persona_name=fresh.persona_name or root.persona_name or "",
+            cap_task = asyncio.create_task(
+                run_capability_agent(
+                    profile_id=profile_id,
+                    task=prompt,
+                    ev=ev,
+                    bot=bot,
+                    session_id_suffix=f"kanban_{root.id[:6]}_{fresh.id[:6]}",
+                    persona_name=fresh.persona_name or root.persona_name or "",
+                )
             )
+            _RUNNING_NODE_TASKS[fresh.id] = cap_task
+            raw_result = await cap_task
+        except asyncio.CancelledError:
+            cur_node = await AIAgentTask.get_by_id(fresh.id)
+            cur_root = await AIAgentTask.get_by_id(root.id) if root.id != fresh.id else cur_node
+            if (cur_node is not None and cur_node.status != "running") or (
+                cur_root is not None and cur_root.status in ("paused", "failed", "cancelled")
+            ):
+                return
+            raise
         except Exception as e:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
             await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
@@ -896,6 +947,12 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             )
             return
         finally:
+            if fresh.id in _RUNNING_NODE_TASKS and _RUNNING_NODE_TASKS[fresh.id] is cap_task:
+                _RUNNING_NODE_TASKS.pop(fresh.id, None)
+            if root.id in _ROOT_RUNNING_NODES:
+                _ROOT_RUNNING_NODES[root.id].discard(fresh.id)
+                if not _ROOT_RUNNING_NODES[root.id]:
+                    _ROOT_RUNNING_NODES.pop(root.id, None)
             reset_plan_context(token)
 
         # 3.5) 剥离静默标记：能力代理声明"本轮无值得播报"时，完成+归档但不推群
@@ -904,9 +961,12 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             # 纯标记输出也要留档，下游依赖本节点 artifact 时不至于拿到空上游
             raw_result = "（本轮无值得播报的进展）"
 
-        # 4) 挂起不留档、不叫醒主人格。批准后的回灌另走调用会话。
+        # 4) 挂起、暂停、取消或已被重派重置为 pending 时：禁止反写 completed 或回灌发群。
         latest = await AIAgentTask.get_by_id(fresh.id)
-        if latest is not None and latest.status == "waiting_approval":
+        latest_root = await AIAgentTask.get_by_id(root.id) if root.id != fresh.id else latest
+        if latest is None or latest.status != "running":
+            return
+        if latest_root is not None and latest_root.status in ("paused", "failed", "cancelled"):
             return
         output_id = latest.output_artifact_id if latest and latest.output_artifact_id else ""
         if not output_id and raw_result:
