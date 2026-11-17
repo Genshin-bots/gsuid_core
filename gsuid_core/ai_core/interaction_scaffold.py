@@ -126,7 +126,8 @@ MEMORY_QA_HINT = (
     "不是句中日期、数量或状态的当前事实。"
     "问谁说过什么时按片段原文作答并带上说话时点；"
     "问现在如何而原话会过期时，没有本轮工具结果就只转述说过的话。"
-    "片段不够再 search_cognition，query 写说话人ID + 问题里的专名/主题。"
+    "片段不够再 search_cognition，query 保留说话人原文语言的专名/主题词（不要把英文专名全译成中文），"
+    "群聊可带说话人ID。"
     "目录卡不是全文。作答点名命中里的专名原话。"
     "点查过往记录且片段确实对不上才说没有，不要用相近事实顶替；"
     "问方法/步骤/举例则按问句本身作答，不因记忆不全拒答。）"
@@ -829,8 +830,8 @@ def scaffold_hints_from_graph(
             elif not tg.is_group and intent in ("问答", ""):
                 hints.append(_turn("memory_qa"))
             return hints
-        # 实时查数不要催 search_cognition，否则会占满思考轮。
-        if route_decision.is_live_lookup:
+        # 纯实时查数不要催 search_cognition，否则会占满思考轮。
+        if route_decision.is_live_lookup and route_decision.memory_intent == "none":
             pass
         elif (intent == "工具" or route_decision.needs_committed_work) and tg.is_group:
             hints.append(_turn("speaker_recall"))

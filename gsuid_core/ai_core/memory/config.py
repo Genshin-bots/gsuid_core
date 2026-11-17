@@ -118,6 +118,11 @@ class MemoryConfig:
         return self._eo_int("memory_inject_wide_chars", 48000, stored=True)
 
     @property
+    def evidence_mode(self) -> bool:
+        """记忆证据优先模式：默认关闭；开启后跳过目录卡并直接按宽档注入证据正文。"""
+        return bool(mrc.get_config("evidence_mode").data)
+
+    @property
     def session_gap_seconds(self) -> int:
         """相邻 Episode 超过此时长则切新 session（秒）。"""
         return mrc.get_config("session_gap_seconds").data
@@ -146,11 +151,6 @@ class MemoryConfig:
     def enable_system2(self) -> bool:
         """兼容保留（schema_v2 已无分层图遍历，固定返回 False）。"""
         return False
-
-    @property
-    def eval_mode(self) -> bool:
-        """评测模式：启用后摄入不触发线程整理，由评测脚本统一触发。"""
-        return mrc.get_config("eval_mode").data
 
     def _eo_int(self, key: str, default: int, *, stored: bool = False) -> int:
         import os

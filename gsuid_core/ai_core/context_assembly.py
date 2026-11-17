@@ -160,7 +160,6 @@ async def assemble_dynamic_context(
     rel: Optional[RelationshipView] = None,
     history_context: str = "",
     memory_context_text: str = "",
-    memory_guide: str = "",
     soft_triggered: bool = False,
     intent: str = "",
     recent_report_titles: Tuple[str, ...] = (),
@@ -197,8 +196,6 @@ async def assemble_dynamic_context(
     ctx.soft_triggered = soft_triggered
     ctx.prev_turn_used_tools = prev_turn_used_tools
     ctx.recent_report_titles = recent_report_titles
-    if memory_guide:
-        ctx.memory_guide = memory_guide
 
     # 内核填的两块：history 是消息基础设施；memory 文本由 ⑧ 已检索好（或套件 H05 暂存）
     if history_context:
@@ -294,7 +291,7 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
     mem = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
     if mem and "memory" not in ctx.blocks:
         hint = "\n（需要更多细节请调 search_cognition）"
-        ctx.blocks["memory"] = f"{ctx.memory_guide}[长期记忆]\n{mem}{hint}"
+        ctx.blocks["memory"] = f"[长期记忆]\n{mem}{hint}"
 
 
 # 收件箱结构块永远放行且不占产品帽：待回应列表与证据各有自身尺寸上限。

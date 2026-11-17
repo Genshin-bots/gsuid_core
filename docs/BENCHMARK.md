@@ -20,7 +20,7 @@
 | 套件 | 测什么 | 口径 | 分数 |
 |------|--------|------|------|
 | **Agent 硬核套件** | 群聊 Agent：工具、寻址、人格、跨轮、安全、出图… | 独立 `user_id`；**pass^k=1**；通道核 12 工具 | **443/496 = 89.3%**（2026-09-04） |
-| **LongMemEval-S（生产 Chat）** | 目录卡 + 模型自己 `search_cognition` | `--enable-tools --no-memory-eval --inject-date` | **475/500 = 95.0%**（2026-11-09） |
+| **LongMemEval-S（生产 Chat）** | 目录卡 + 模型自己 `search_cognition` | `--enable-tools --inject-date` | **475/500 = 95.0%**（2026-11-09） |
 | **BEAM 100k（官方 128K）** | 多会话记忆探针（20 conv × 20 题） | 评测助手 + tools；`batch_observe` 灌对话；`clock_at` | **209/400 = 52.2%**（2026-11-09） |
 | **BEAM 500k（官方 500K）** | 同上，500K 语料（4 conv × 20 题） | 同上 | **37/80 = 46.2%**（2026-09-29 · judge v1 贪心对齐，待复跑） |
 | **BEAM 1M（官方 1M）** | 同上，1M 语料（35 conv × 20 题，74,630 turn） | 同上 | **302/700 = 43.1%**（2026-10-04 · passed 由 rubric 全中确定性推导，去掉「或语义一致」逃生门；700 条判分全部走 rubric 解析，无一条落到文本兜底） |
@@ -192,7 +192,7 @@ uv run python eval/run_eval.py longmem mark-fails --tag prod7
 uv run python eval/run_eval.py longmem run-domains --tag prod7
 ```
 
-不要开 `GSUID_EVAL_MEMORY_FULL_SCOPE`。不要 `--clear-first` 除非有意毁掉该 scope。
+不要 `--clear-first` 除非有意毁掉该 scope。
 
 ### A.3 BEAM（官方 ladder：100k / 500k / 1m / 10m）
 
@@ -212,7 +212,7 @@ uv run python eval/BEAM_official/run_official.py reprobe --scale 100k --conv 0 -
 uv run python eval/BEAM_official/run_official.py ladder
 ```
 
-口径：评测助手 + `enable_tools` + `memory_eval=False` + `clock_at`。`user_id=beam_off_<scale>_<conv>`。
+口径：评测助手 + `enable_tools` + `clock_at`。`user_id=beam_off_<scale>_<conv>`。
 
 长跑必须用 `Start-Process` 脱离终端；后台任务有 50 分钟硬上限，单 conv 灌库就会超时被杀。
 旧一轮结果归档在 `results/<scale>/_runs/<tag>/`，对照前先把当前 `answers_*.json` 拷进去。

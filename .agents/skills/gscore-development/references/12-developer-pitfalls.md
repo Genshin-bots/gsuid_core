@@ -360,7 +360,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
   数字/版本永远召回不到**。
 - **坑②：抽取批次撞子超时丢图谱**。每批实体/边抽取一次 LLM 调用必撞 120s 子超时被丢 →
   **0 entity / 0 edge**，System-1 图形同虚设。
-- **解法（评测/回灌专用，`eval_mode` / 新端点字段闸门保护，线上行为不变）**：
+- **解法（评测/回灌专用，`batch_observe` 端点字段控制，线上行为不变）**：
   1. **Episode 粒度**：`AIMemEpisode.create_episodes_bulk` **每 turn 一条 granular Episode**（`_chunk_text`
      按句子边界切 ≤900 字符、同 turn 块共享时间戳），纯嵌入零 LLM、可被 System-1 精确召回。
   2. **抽取批次粒度**：`batch_observe(extract=true)` → `worker.extract_window` 把**连续多轮 turn 拼成

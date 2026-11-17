@@ -1,4 +1,4 @@
-"""生产词面召回：query 实词 + 命中专名跨会话补条。Chat 不走 eval_protocol。
+"""生产词面召回：query 实词 + 命中专名跨会话补条。
 
 时间线/计数问句在 apply_query_episode_pack 整形；点查保持检索序。
 """

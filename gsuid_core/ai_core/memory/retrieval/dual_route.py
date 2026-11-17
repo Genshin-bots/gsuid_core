@@ -680,7 +680,7 @@ class MemoryContext:
                     )
                     taken = _take(_ep_lines(user_eps, self_mark=False), count_budget)
                 else:
-                    if not self.covered and not cross_session and not memory_config.eval_mode:
+                    if not self.covered and not cross_session:
                         user_eps = _filter_point_lookup_episodes(user_eps, query, dense_anchor_cap=2)
                         asst_eps = _filter_point_lookup_episodes(asst_eps, query, dense_anchor_cap=0)
                     _ep_taken = _ep_lines(user_eps, self_mark=False)

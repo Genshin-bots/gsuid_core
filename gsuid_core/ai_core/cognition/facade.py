@@ -141,6 +141,9 @@ async def search_cognition(
     if not query.strip() or not kinds:
         return []
 
+    stripped_speaker = strip_speaker_from_query(query, scope.user_id)
+    search_q = strip_clock_lines(stripped_speaker) or stripped_speaker
+
     tasks: List[asyncio.Task[_BackendResult]] = []
     labels: List[str] = []
     if kinds & MEMORY_KINDS:
@@ -212,16 +215,16 @@ async def search_cognition(
             if (
                 hit.kind is CogKind.EPISODE
                 and memory_intent not in ("timeline_order", "broad_summary")
-                and not text_has_query_needles(query, body)
+                and not text_has_query_needles(search_q, body)
             ):
                 confident = False
             merged[hid] = replace(hit, high_confidence=confident)
 
     if not merged:
-        logger.debug(t("log.ai.cognition_empty", q=query[:40]))
+        logger.debug(t("log.ai.cognition_empty", q=search_q[:40]))
         return []
 
-    fused_ids = _fuse_ids(ranked_lists, labels, limit=limit, merged=merged, query=query)
+    fused_ids = _fuse_ids(ranked_lists, labels, limit=limit, merged=merged, query=search_q)
     ordered = [merged[i] for i in fused_ids if i in merged]
     kind_hi: Dict[CogKind, int] = {}
     capped: List[CognitiveHit] = []
@@ -235,21 +238,18 @@ async def search_cognition(
                 kind_hi[hit.kind] = n + 1
         capped.append(hit)
     final = await _drop_stale_handles(capped)
-    # 弱相关片段不进结果：相对分在 RRF 名次上几乎拉不开，专名零命中也会报「命中 24」。
+    # 弱相关片段收口：有强命中只留强命中；无强命中时保留前几条高分语义候选，避免同义/跨语问句只剩1条。
     has_strong_ep = any(h.kind is CogKind.EPISODE and h.high_confidence for h in final)
     if has_strong_ep:
         final = [h for h in final if h.kind is not CogKind.EPISODE or h.high_confidence]
     else:
-        best_ep_id = ""
-        best_ep_score = -1.0
-        for h in final:
-            if h.kind is CogKind.EPISODE and h.score > best_ep_score:
-                best_ep_score = h.score
-                best_ep_id = h.id
-        if best_ep_id:
-            final = [h for h in final if h.kind is not CogKind.EPISODE or h.id == best_ep_id]
-        else:
-            final = [h for h in final if h.kind is not CogKind.EPISODE]
+        ep_candidates = sorted(
+            (h for h in final if h.kind is CogKind.EPISODE and h.score > 0),
+            key=lambda h: h.score,
+            reverse=True,
+        )[:6]
+        keep_ep_ids = {h.id for h in ep_candidates}
+        final = [h for h in final if h.kind is not CogKind.EPISODE or h.id in keep_ep_ids]
     logger.debug(t("log.ai.cognition_hits", n=len(final), backends=",".join(labels)))
     return final
 
@@ -533,7 +533,7 @@ async def _search_memory(
             if memory_intent not in ("timeline_order", "broad_summary") and not text_has_query_needles(
                 search_q, content
             ):
-                ep_score = min(ep_score, 0.2)
+                ep_score = round(ep_score * 0.5, 4)
             _add(
                 CognitiveHit(
                     kind=CogKind.EPISODE,
@@ -1170,11 +1170,14 @@ def render_cognition_block(
     shown = 0
     ep_shown = 0
     shown_lines: List[str] = []
+    has_strong_ep = any(h.kind is CogKind.EPISODE and h.high_confidence for h in hits)
+    has_any_strong = any(h.high_confidence for h in hits)
     for hit in hits:
-        if hit.kind is CogKind.EPISODE and hit.high_confidence and ep_shown >= _EPISODE_EXPAND_CAP:
+        show = hit.high_confidence or (hit.kind is CogKind.EPISODE and not has_strong_ep) or (not has_any_strong)
+        if hit.kind is CogKind.EPISODE and show and ep_shown >= _EPISODE_EXPAND_CAP:
             weak_n += 1
             continue
-        if hit.high_confidence:
+        if show:
             shown += 1
             if hit.kind is CogKind.EPISODE:
                 ep_shown += 1

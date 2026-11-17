@@ -100,7 +100,6 @@ def _make_args(
         skip_ingest=skip_ingest,
         question_type=qtype,
         enable_tools=True,
-        no_memory_eval=True,
         persona_name="评测助手",
         concurrency=CONCURRENCY,
         answers_file=answers,
@@ -172,7 +171,7 @@ async def cmd_reset(base_url: str) -> int:
             [
                 "# LongMemEval-S fresh（清库重灌）",
                 "",
-                "口径：评测助手 + `--enable-tools` + `--no-memory-eval` + `--inject-date` + `--clear-first`。",
+                "口径：评测助手 + `--enable-tools` + `--inject-date` + `--clear-first`。",
                 "不 skip-ingest。答卷后缀 `_fresh`，不覆盖 prod7。",
                 "",
             ]

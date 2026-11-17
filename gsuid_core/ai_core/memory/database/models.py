@@ -986,8 +986,6 @@ class AIMemEntity(SQLModel, table=True):
     ) -> dict[str, str]:
         from gsuid_core.ai_core.memory.config import memory_config as _mc
 
-        if _mc.eval_mode:
-            return {}
         cls._normalize_entity_data_names(entities_data)
         all_names = list(
             {
@@ -1051,9 +1049,6 @@ class AIMemEntity(SQLModel, table=True):
 
         unmatched_names = [n for n in all_names if n not in existing_map]
         from gsuid_core.ai_core.memory.config import memory_config as _mc
-
-        if unmatched_names and _mc.eval_mode:
-            unmatched_names = []
 
         if unmatched_names and hybrid_name_ids is not None:
             for uname in unmatched_names:

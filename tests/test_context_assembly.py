@@ -31,11 +31,8 @@ def test_both_entries_consume_shared_assembly() -> None:
     assert "async def run_interactive_turn(" in handle_ai
     assert "run_interactive_turn(" in endpoint
     assert 'else "Chat"' in endpoint
-    assert "memory_eval=_memory_eval" in endpoint
-    guide_at = endpoint.index("_MEMORY_EVAL_GUIDE")
-    guide = endpoint[guide_at : guide_at + 4200]
-    assert "【核心事实】" in guide and "【相关对话片段】" in guide and "【本题证据会话】" not in guide
-    assert "UPDATES" in guide and "ALL injected facts" in guide and "Garden herbs" not in guide
+    assert "memory_eval" not in endpoint and "evidence_mode" not in endpoint
+    assert "_MEMORY_EVAL_GUIDE" not in endpoint
     assert "parse_injected_clock" not in assembly and "parse_injected_clock" not in endpoint
     assert "parse_clock_at" in endpoint and "req.clock_at" in endpoint
     assert 'create_by in _MAIN_PERSONA_CREATE_BY and st.return_mode != "return"' in loop
@@ -71,17 +68,15 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
             rel=None,
             history_context="[历史对话] 旧→新\n小明: 你好",
             memory_context_text="用户喜欢喝美式",
-            memory_guide="[guide]\n",
             soft_triggered=True,
         )
     )
     assert has_actionable in (False, True)
-    i_hist, i_mem, i_guide = (
+    i_hist, i_mem = (
         full.find("[历史对话]"),
         full.find("[长期记忆"),
-        full.find("[guide]"),
     )
-    assert 0 <= i_hist < i_mem < i_guide
+    assert 0 <= i_hist < i_mem
 
     tg = TurnGraph(
         user_type="group",

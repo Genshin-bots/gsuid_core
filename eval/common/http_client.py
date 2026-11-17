@@ -65,7 +65,6 @@ async def call_chat_with_history(
     enable_tools: Optional[bool] = None,
     max_history: Optional[int] = None,
     as_judge: Optional[bool] = None,
-    memory_eval: Optional[bool] = None,
     clock_at: Optional[str] = None,
     skip_memory: Optional[bool] = None,
 ) -> Dict[str, Any]:
@@ -113,8 +112,6 @@ async def call_chat_with_history(
         payload["max_history"] = max_history
     if as_judge is not None:
         payload["as_judge"] = as_judge
-    if memory_eval is not None:
-        payload["memory_eval"] = memory_eval
     if clock_at is not None:
         payload["clock_at"] = clock_at
     if skip_memory is not None:

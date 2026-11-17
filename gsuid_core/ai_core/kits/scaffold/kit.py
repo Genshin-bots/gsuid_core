@@ -55,7 +55,7 @@ class ScaffoldKit(AgentKit):
             or ctx.intent in ("工具", "问答")
             or bool(ctx.route_decision is not None and ctx.route_decision.needs_committed_work)
         )
-        if need_tools and not ctx.memory_eval:
+        if need_tools:
             from gsuid_core.ai_core.prompt_group.store import render_prompt
 
             ctx.set_context_block(

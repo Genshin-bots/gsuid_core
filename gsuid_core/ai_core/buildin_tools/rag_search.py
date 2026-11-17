@@ -140,8 +140,11 @@ def format_knowledge_catalog(rows: list[_CatalogRow], offsets: dict[tuple[str, i
 
 def _line_source(hits: list[CognitiveHit]) -> list[CognitiveHit]:
     pool = [hit for hit in hits if hit.kind is not CogKind.KNOWLEDGE]
-    strong = [hit for hit in pool if hit.high_confidence]
-    return strong if strong else pool
+    has_strong_ep = any(hit.kind is CogKind.EPISODE and hit.high_confidence for hit in pool)
+    has_strong_other = any(hit.kind is not CogKind.EPISODE and hit.high_confidence for hit in pool)
+    if not has_strong_ep and not has_strong_other:
+        return pool
+    return [hit for hit in pool if hit.high_confidence or (hit.kind is CogKind.EPISODE and not has_strong_ep)]
 
 
 def line_pages(hits: list[CognitiveHit]) -> list[list[CognitiveHit]]:
@@ -392,7 +395,8 @@ async def search_cognition(
     - 用户问到过去的事（"上周/上次/之前我们聊过…""你说过的那个…"），当前上下文没答案时；
     - 需要"已有材料"（专业知识、说明文档、稳定资料、以前搜过的长文）时；
     - 想确认"我对某人了解多少 / 有没有答应过什么"时；
-    - 问已有记忆：query 带上问题里的专名/数字/约束；
+    - 问已有记忆：query 带上问题里的专名/数字/约束，并**保留与对话原文一致的语言关键词**
+      （用户/记录是英文就用英文关键词搜，不要全译成中文）；
     - 问已入库的专名时，片段再多也先看路径卡；路径卡在就不改走 web_search。
     - 办眼前的事需要说话人身上的事实、当前消息和上文都没写：query 写「说话人ID + 要填的槽」，
       不要把本次外部题目的词拼进去；填槽后再 web_search / 专域工具。

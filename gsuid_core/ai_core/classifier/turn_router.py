@@ -27,7 +27,7 @@ MemoryIntent = Literal[
 ]
 
 ROUTER_TIMEOUT_S = 8.0
-_ROUTER_MAX_TOKENS = 512
+_ROUTER_MAX_TOKENS = 2048
 
 
 class _UserTurnRecord(Protocol):
@@ -112,7 +112,8 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 - m: "none" | "latest" | "diff" | "order" | "sum"
 - s: bool。仅当有 [待判断] 列表时有意义：列表里是否确有人在对你说话（问你、让你评价、反驳你、\
 延续和你的对话），或确实值得自然接一句。只是起哄、围观、在和别人聊、普通命令回执时为 false。默认 false。
-- l: bool。是否在查实时外部数据（实时天气/股价/面板等），为 true 时跳过个人历史记忆预灌。
+- l: bool。是否在查纯粹的实时外部数据（当前天气/实时股价/新闻等）且不依赖过往私人记录；\
+为 true 且 m=none 时跳过个人历史记忆预灌。
 - w: bool。是否明确委托 Bot 执行具体事务、查数或设提醒。
 
 判据：

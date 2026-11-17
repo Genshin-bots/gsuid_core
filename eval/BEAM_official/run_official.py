@@ -458,7 +458,7 @@ def write_scale_report(spec: ScaleSpec) -> tuple[int, int]:
         f"# Official BEAM {spec.paper_name} ({spec.key})",
         "",
         "题目：Mohammadta/BEAM 同 split 对话 + 配套 probing_questions（每 conv 20 题）。",
-        "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False + clock_at）。",
+        "口径：生产 Chat（评测助手 + enable_tools + clock_at）。",
         f"user_id=`{spec.user_prefix}_<conv>`。输出 `{_out_dir(spec)}`。",
         "",
     ]

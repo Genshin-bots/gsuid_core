@@ -119,7 +119,7 @@ async def _lm_probe(args: argparse.Namespace) -> None:
     print(
         f"[lm-probe] extract={extract} system2={system2} inject_date={inject_date} "
         f"clear_first={clear_first} skip_ingest={skip_ingest} "
-        f"enable_tools={args.enable_tools} memory_eval={not args.no_memory_eval} "
+        f"enable_tools={args.enable_tools} "
         f"type={qtype} persona={args.persona_name or '评测助手'} "
         f"concurrency={args.concurrency} -> {os.path.basename(answers_file)}"
     )
@@ -159,7 +159,6 @@ async def _lm_probe(args: argparse.Namespace) -> None:
                 enable_observer=False,
                 enable_system2=system2,
                 enable_tools=args.enable_tools,
-                memory_eval=not args.no_memory_eval,
                 persona_name=args.persona_name or "评测助手",
                 clock_at=clock_at,
             )
@@ -368,7 +367,6 @@ async def _lm_run_domains(args: argparse.Namespace) -> None:
     args.skip_ingest = True
     args.inject_date = True
     args.enable_tools = True
-    args.no_memory_eval = True
     args.concurrency = 1
     for qtype in types:
         args.question_type = qtype
@@ -520,11 +518,6 @@ def main() -> int:
         "--enable-tools",
         action="store_true",
         help="probe: 装配真实工具（含 search_cognition），对齐生产 Chat",
-    )
-    p.add_argument(
-        "--no-memory-eval",
-        action="store_true",
-        help="probe: 不灌评测证据块，走生产目录卡 + 模型自己 search_cognition",
     )
     p.add_argument("--tag", default=None, help="run-domains/mark-fails: 答卷文件后缀，如 prod7")
     p.add_argument(

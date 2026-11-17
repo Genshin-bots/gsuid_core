@@ -592,6 +592,87 @@ def test_observer_gate_and_memory_invariants(monkeypatch) -> None:
     assert mem_kit.retrieve_query_for_search("测试角色 明天几点集合", persona_name="测试角色") == "明天几点集合"
     assert mem_kit.retrieve_query_for_search("测试角色", persona_name="测试角色") == "测试角色"
 
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
+
+    qa_none_ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        intent="问答",
+        route_decision=TurnRouteDecision("问答", "none", True, False, False),
+    )
+    assert mem_kit.memory_intent_from_ctx(qa_none_ctx) == "point_latest"
+    chat_none_ctx = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        intent="闲聊",
+        route_decision=TurnRouteDecision("闲聊", "none", True, False, False),
+    )
+    assert mem_kit.memory_intent_from_ctx(chat_none_ctx) == "none"
+    live_with_mem = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        intent="工具",
+        route_decision=TurnRouteDecision("工具", "point_latest", True, True, True),
+    )
+    assert mem_kit.should_prefetch_memory(live_with_mem) is True
+    pure_live = AgentHookContext(
+        point=AgentHookPoint.RETRIEVE_CONTEXT,
+        intent="工具",
+        route_decision=TurnRouteDecision("工具", "none", True, True, True),
+    )
+    assert mem_kit.should_prefetch_memory(pure_live) is False
+
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
+    from gsuid_core.ai_core.memory.config import MemoryConfig, memory_config
+
+    assert memory_config.evidence_mode is False
+    assert mem_kit.wants_evidence_injection(chat_none_ctx) is False
+    assert inject_memory_cap("普通点查") == memory_config.memory_inject_max_chars
+    monkeypatch.setattr(MemoryConfig, "evidence_mode", property(lambda _self: True))
+    assert mem_kit.memory_intent_from_ctx(chat_none_ctx) == "point_latest"
+    assert mem_kit.wants_evidence_injection(chat_none_ctx) is True
+    assert mem_kit.wants_evidence_injection(pure_live) is False
+    assert inject_memory_cap("普通点查") == max(
+        memory_config.memory_inject_max_chars, memory_config.memory_inject_wide_chars
+    )
+
+    from gsuid_core.ai_core.cognition.types import CogKind, CognitiveHit
+    from gsuid_core.ai_core.cognition.facade import render_cognition_block
+    from gsuid_core.ai_core.buildin_tools.rag_search import line_pages
+
+    weak_ep = CognitiveHit(
+        kind=CogKind.EPISODE,
+        id="ep_1",
+        title="",
+        summary="Commuted by subway to work",
+        score=0.4,
+        high_confidence=False,
+    )
+    strong_fact = CognitiveHit(
+        kind=CogKind.FACT,
+        id="fact_1",
+        title="",
+        summary="用户偏好地铁通勤",
+        score=0.8,
+        high_confidence=True,
+    )
+    weak_rec = CognitiveHit(
+        kind=CogKind.RECORD,
+        id="rec_1",
+        title="",
+        summary="无关记录",
+        score=0.1,
+        high_confidence=False,
+    )
+    pages = line_pages([strong_fact, weak_ep, weak_rec])
+    flat_ids = [h.id for page in pages for h in page]
+    assert "ep_1" in flat_ids and "fact_1" in flat_ids and "rec_1" not in flat_ids
+    rendered_mixed = render_cognition_block("怎么上班", [strong_fact, weak_ep, weak_rec])
+    assert "Commuted by subway to work" in rendered_mixed
+    assert "用户偏好地铁通勤" in rendered_mixed
+    assert "另有 1 条弱相关" in rendered_mixed
+    rendered_only_weak = render_cognition_block("怎么上班", [weak_ep])
+    assert "Commuted by subway to work" in rendered_only_weak
+    assert "弱相关" not in rendered_only_weak
+
 
 def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
     """open_lines 至多顺延一次且不跨多窗无限累积；超时兜底按 5 分钟间隔分段。"""

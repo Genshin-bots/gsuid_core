@@ -139,7 +139,7 @@ class BatchObserveRequest(BaseModel):
         description=(
             "是否对本批 turn 做窗口化实体/边抽取（§14.1）。开启后按连续 turn 拼窗口、"
             "每窗口一次 LLM 抽取，复用 worker._extract_and_upsert_from_episode 下游写实体/边；"
-            "**不**复活 observer 队列 + 80-turn 聚合路径。建议配 eval_mode=true，抽取后统一 rebuild。"
+            "**不**复活 observer 队列 + 80-turn 聚合路径。抽取后按需统一 rebuild。"
         ),
     )
     extract_window_chars: int = Field(
@@ -693,7 +693,7 @@ async def batch_observe(
             await AIMemEpisode.create_episodes_bulk(scope_key, items)
 
         # §14.1 窗口化实体/边抽取：把连续 turn 拼窗口、每窗口一次 LLM 抽取写实体/边/偏好。
-        # eval_mode=true 时下游不每批触发分层图重建（由外部抽取全完成后统一 rebuild）。
+        # 下游不每批触发分层图重建（需要时由外部抽取全完成后统一 rebuild）。
         extract_stats: Optional[Dict[str, Any]] = None
         if req.extract:
             extract_stats = await _run_extract_pass(

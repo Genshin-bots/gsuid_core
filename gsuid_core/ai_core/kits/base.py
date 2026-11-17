@@ -91,6 +91,8 @@ def inject_memory_cap(
 
     default = int(memory_config.memory_inject_max_chars)
     wide = max(default, int(memory_config.memory_inject_wide_chars))
+    if memory_config.evidence_mode:
+        return wide
     multi_source = n_doc_sources >= _MEMORY_WIDE_MIN_DOC_SOURCES
     timeline = (
         memory_intent in ("timeline_order", "version_diff", "broad_summary")

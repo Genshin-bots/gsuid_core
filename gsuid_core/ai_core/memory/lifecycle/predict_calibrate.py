@@ -12,8 +12,6 @@ async def should_downgrade_high(scope_key: str, content: str) -> bool:
     """最近 K 条 Episode 向量里有一条足够像，就不必再抽实体/边。"""
     if not scope_key or not (content or "").strip():
         return False
-    if memory_config.eval_mode:
-        return False
     from gsuid_core.ai_core.memory.vector.ops import embed_query, retrieve_episode_dense_vectors
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 

@@ -732,7 +732,6 @@ class _ProbeConfig(TypedDict):
     tools: bool | None
     observer: bool
     system2: bool
-    memory_eval: bool | None
     clock: str
 
 
@@ -764,7 +763,6 @@ async def cmd_probe(
     resume: bool = True,
     persona_name: Optional[str] = "评测助手",
     enable_tools: Optional[bool] = True,
-    memory_eval: Optional[bool] = False,
     fallback_clock: Optional[str] = None,
     concurrency: int = 1,
 ) -> str:
@@ -783,7 +781,6 @@ async def cmd_probe(
             "tools": enable_tools,
             "observer": enable_observer,
             "system2": enable_system2,
-            "memory_eval": memory_eval,
             "clock": fallback_clock or "",
         }
     )
@@ -816,7 +813,7 @@ async def cmd_probe(
     conc = _clamp_concurrency(concurrency)
     print(
         f"[Probe] user_id={user_id} persona={persona_name} "
-        f"enable_tools={enable_tools} memory_eval={memory_eval} "
+        f"enable_tools={enable_tools} "
         f"共 {len(probes)} 题，已存在 {len(existing_ids)} 条，并发 {conc}"
     )
 
@@ -878,7 +875,6 @@ async def cmd_probe(
                         # 事件排序/摘要/跨会话等聚合题靠类目自顶向下遍历召回，纯 System-1 向量召回不足。
                         enable_system2=enable_system2,
                         enable_tools=enable_tools,
-                        memory_eval=memory_eval,
                         clock_at=clock_at,
                     )
                     status_code = resp.get("status_code", -1)
@@ -1173,7 +1169,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="覆盖默认 user_id（默认 beam_eval_<conv>）",
     )
     p_all.add_argument("--no-judge", dest="do_judge", action="store_false")
-    # 默认重建：eval_mode 下 flush_all 跳过自动重建，不重建则检索缺 category 路
+    # 默认重建：全量摄入完成后显式对账/重建。
     p_all.add_argument("--rebuild", dest="rebuild", action="store_true", default=True)
     p_all.add_argument("--no-rebuild", dest="rebuild", action="store_false")
 

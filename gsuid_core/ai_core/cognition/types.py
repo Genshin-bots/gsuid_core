@@ -80,8 +80,6 @@ class CogScope:
     # 语义性开关，由调用方从配置显式表态（不在这里给默认真值）
     enable_system2: bool = False
     enable_user_global: bool = True
-    # LongMem 证据转储（format_eval_memory）。默认关，生产/Agent 评测不得打开。
-    memory_eval: bool = False
     # 评测 HTTP clock_at。None=检索用墙上时钟；禁止从用户原文解析。
     clock_at: Optional[datetime] = None
     # 当前说话的人格。空字符串表示这次检索不按包过滤出图（调用方应传空序列，而不是 None）。

@@ -7,7 +7,7 @@
 GsCore 不把 128k token 塞进单轮 prompt。评测协议：
 
 1. **ingest**：每个 domain 一份共享语料 → `batch_observe` 写入 `user_global:eval_cqa_{scale}_{domain}`
-2. **probe**：`/api/chat_with_history`，人格 **评测助手**，`enable_tools=True`，`memory_eval=False`
+2. **probe**：`/api/chat_with_history`，人格 **评测助手**，`enable_tools=True`
 3. **judge**：数字 / 列表先规则匹配；规则失败再走 LLM（官方 ORM 口径加 `--llm-fallback-on-rule-fail`）
 
 需要已启动、且 `GSUID_LOCAL_TEST_MODE=1` 的 core（不要 `--dev`）。

@@ -954,9 +954,6 @@ class ToolsPhase(RunOnceHost):
                 *_toolsets,
                 RetrievableToolset(exclude_names=_dyn_exclude, scope=_scope if _scope is not None else None),
             ]
-        # eval_mode 下固定 temperature=0：记忆评测的答案须可复现，
-        from gsuid_core.ai_core.memory.config import memory_config
-
         if self.model:
             # 必须拷贝：self.model.settings 是模型对象的共享状态，就地改会污染后续所有 run
             _base_settings: ModelSettings = self.model.settings.copy() if self.model.settings else ModelSettings()
@@ -974,8 +971,6 @@ class ToolsPhase(RunOnceHost):
                 "ImageDescSummary",
             ):
                 _base_settings["thinking"] = False
-            if memory_config.eval_mode:
-                _base_settings["temperature"] = 0.0
             # 归属透传（默认关闭）：把本次 run 的调用方标识按配置带给上游网关
             _model_settings: ModelSettings | None = merge_model_settings(
                 _base_settings,

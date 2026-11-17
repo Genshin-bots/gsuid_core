@@ -387,7 +387,6 @@ async def cmd_probe(args: argparse.Namespace) -> int:
                 timeout=timeout,
                 enable_observer=False,
                 enable_tools=bool(args.enable_tools),
-                memory_eval=False,
                 persona_name=str(args.persona_name),
             )
             status = resp.get("status_code", -1)
@@ -520,7 +519,7 @@ def write_report(task: str, dataset: str, length: str, tag: str, judge_file: str
     lines = [
         f"# LOFT {task}/{dataset}/{length}{(' ' + tag) if tag else ''}",
         "",
-        "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False）。",
+        "口径：生产 Chat（评测助手 + enable_tools）。",
         "语料灌入记忆，题目不把整库塞进当前轮。",
         "",
         f"**总分：{passed}/{total} ({pct:.1f}%)**",

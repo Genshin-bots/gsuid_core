@@ -172,7 +172,7 @@ async def route_window(
     try:
         agent = GsCoreAIAgent(
             system_prompt=WINDOW_ROUTE_SYSTEM,
-            max_tokens=2048,
+            max_tokens=8192,
             create_by="MemWindowRouter",
             task_kind=TASK_MEMORY_WINDOW_ROUTER,
             task_level="low",

@@ -1111,6 +1111,12 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         48000,
         options=[16000, 28000, 48000, 64000, 96000],
     ),
+    "evidence_mode": GsBoolConfig(
+        "记忆证据优先模式",
+        "默认关闭。开启后非纯实时查数轮次跳过目录卡并按宽档预算直接注入记忆证据正文，"
+        "路由未指定深度时按 point_latest 检索",
+        False,
+    ),
     "session_gap_seconds": GsIntConfig(
         "Session 切分静默阈值（秒）",
         "同 scope 相邻 Episode 间隔超过此秒数则开新 session；默认 1800（30 分钟）",
@@ -1159,16 +1165,6 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "命中纠错意图的 scope 走优先 flush 快路径(带去抖), 让数分钟内的'下一次'请求即可召回纠错偏好, "
         "而非等聚合大窗。关闭则纠错偏好随常规摄入窗口落库",
         True,
-    ),
-    "MemoryExtra": GsDivider(
-        "记忆其他设置",
-        "记忆其他设置",
-        "记忆其他设置",
-    ),
-    "eval_mode": GsBoolConfig(
-        "记忆评测模式",
-        "指定是否启用记忆评测模式, 启用后跳过预测误差降级并在评测结束时统一执行故事线归并",
-        False,
     ),
 }
 

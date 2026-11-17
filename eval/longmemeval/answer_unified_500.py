@@ -84,7 +84,6 @@ async def main() -> None:
                         enable_observer=False,
                         enable_system2=False,
                         enable_tools=True,
-                        memory_eval=False,
                         persona_name="评测助手",
                         clock_at=clock,
                     )

@@ -59,7 +59,6 @@ class ChatWithHistoryRequest(BaseModel):
     # 评测夹具：直接注入关系温度分数（None=真查库）。让 rel_style_* 用例不必写 SQL。
     rel_score: Optional[int] = None
     as_judge: bool = False  # 评测判分：跳过人设/脚手架/工具，只出 PASS/FAIL 或 rubric JSON
-    memory_eval: bool = False  # LongMem：灌证据会话、跳过 800 字帽、禁工具指令
     clock_at: Optional[str] = None  # 评测墙上「今天」；整字段，禁止从 message 解析
     skip_memory: bool = False  # 本轮不检索记忆（同账号 U_full / 金标粘贴）
 
@@ -67,35 +66,6 @@ class ChatWithHistoryRequest(BaseModel):
 def http_dynamic_tools(*, as_judge: bool, enable_tools: bool) -> bool:
     """HTTP 评测的工具装配开关。False 必须是关，不能退化成 None（Chat 会按 agentic 再打开）。"""
     return False if as_judge else bool(enable_tools)
-
-
-# 记忆评测专用：通用时间戳规则。不进生产 system，不含题型金标提示。
-_MEMORY_EVAL_GUIDE = (
-    "[Memory-usage guidelines] The fragments below are timestamped. When answering:\n"
-    "1) For a CURRENT/latest value of the SAME attribute, later timestamps are UPDATES — "
-    "answer with the most recent; do not list older values or ask which is correct. "
-    "Do not double-count a figure that is already a combined total.\n"
-    "2) Different timestamps of the SAME attribute are UPDATES, not contradictions. "
-    "Only call it contradictory when two claims cannot be ordered as an update.\n"
-    "3) Quote the exact number/version/date/price from the fragments; don't paraphrase.\n"
-    "3b) 【核心事实】 timestamps are statement time (when said); [发生 YYYY-MM-DD] is event "
-    "time. Current/latest values use the later statement time; event order uses event time.\n"
-    "4) Prefer 【核心事实】 for current attributes; use 【相关对话片段】 for what was "
-    "said/listed. If the question asks what was recommended/listed/said, use assistant "
-    "turns; for a personal fact about the user, use user turns.\n"
-    "5) Do not infer a person's qualifications solely from the assistant's past praise; "
-    "require an explicit user statement.\n"
-    "6) When the user asks HOW to do a task, ground the answer in remembered specifics "
-    "from the fragments instead of inventing placeholders.\n"
-    "7) Reply in the same language as the user's question.\n"
-    "8) Use evidence from ALL injected facts and fragments; do not stop after the first block.\n"
-    "9) If an asked constraint is absent from the fragments, say it is not mentioned — "
-    "do not substitute a nearby fact.\n"
-    "10) Relative phrases (how many days/weeks ago, last Friday) are relative to "
-    "the injected clock_at / [当前时间] stamp, not the real-world calendar.\n"
-    "11) If the injected fragments do not answer the question, call search_cognition "
-    "with a focused query before concluding that no record exists.\n"
-)
 
 
 @app.post("/api/chat_with_history", include_in_schema=LOCAL_TEST_MODE, summary="带历史的对话", tags=CHAT)
@@ -146,7 +116,6 @@ async def chatWithHistory(
         await _ingest_request_history(req, user_id, group_id, bot_id)
 
     _create_by = "EvalJudge" if req.as_judge else "Chat"
-    _memory_eval = (not req.as_judge) and bool(req.memory_eval)
     from gsuid_core.ai_core.turn_pipeline import parse_clock_at, injected_clock_date_label
 
     clock = parse_clock_at(req.clock_at)
@@ -199,8 +168,6 @@ async def chatWithHistory(
         create_by=_create_by,
         query=req.message,
         persona_name=persona_name,
-        memory_guide=_MEMORY_EVAL_GUIDE if _memory_eval else "",
-        memory_eval=_memory_eval,
         skip_memory=bool(req.skip_memory),
         clock_at=clock,
     )
@@ -231,17 +198,26 @@ async def chatWithHistory(
             history_context="",
         )
         memory_text = hook_ctx.retrieved["memory"] if "memory" in hook_ctx.retrieved else ""
-        from gsuid_core.ai_core.utils import is_silence_marker, strip_framework_user_leaks
+        from gsuid_core.ai_core.utils import (
+            is_silence_marker,
+            strip_framework_user_leaks,
+            remainder_after_protocol_tags,
+        )
 
         tool_calls = list(agent._last_attempt_tool_calls)
         sent = "\n".join(t for t in agent.last_run_visible_texts if t.strip())
         if outcome.silenced_early and not sent:
             return {"status_code": 200, "data": "<SILENCE>", "memory": memory_text, "tool_calls": tool_calls}
+
+        def _visible_text(raw: str) -> str:
+            # 与生产出站一致：<reply #n> 等协议标签不进用户可见文本。
+            return remainder_after_protocol_tags(strip_framework_user_leaks(raw)).strip()
+
         data = outcome.result_text if outcome.result else ""
         if isinstance(data, str):
-            data = strip_framework_user_leaks(data)
+            data = _visible_text(data)
         if (not data or is_silence_marker(data) or outcome.is_silence) and sent:
-            data = strip_framework_user_leaks(sent)
+            data = _visible_text(sent)
         if not data or is_silence_marker(data):
             return {"status_code": 200, "data": "<SILENCE>", "memory": memory_text, "tool_calls": tool_calls}
         out: dict[str, object] = {
@@ -318,6 +294,6 @@ async def _ingest_request_history(
     worker = get_ingestion_worker()
     if worker is not None:
         await worker.flush_all()
-    if memory_config.eval_mode or req.trigger_rebuild:
+    if req.trigger_rebuild:
         # schema_v2：向量/FTS 已随 Episode 同步写入，无需再触发分层图重建。
         logger.debug(t("log.webconsole.memory_manually_triggered_hierarchical", scope_key="schema_v2"))

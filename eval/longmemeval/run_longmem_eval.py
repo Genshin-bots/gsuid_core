@@ -320,8 +320,7 @@ async def run_phase_s1_only(
 
                     print(f"\n[PhaseA Question {idx}] ID: {question_id} ({len(turns)} turns)")
 
-                    # 摄入走 batch_observe（同步 flush、按 turn 切块直写 Episode，带时间戳）；
-                    # chat_with_history 的 observer 队列路径在 eval_mode 下不产 Episode（检索恒空）。
+                    # 摄入走 batch_observe（同步 flush、按 turn 切块直写 Episode，带时间戳）。
                     obs = await call_batch_observe(
                         client=client,
                         base_url=base_url,

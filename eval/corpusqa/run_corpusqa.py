@@ -6,7 +6,7 @@ CorpusQA（Tongyi-Zhiwen, arXiv:2601.14952）测的是证据高度分散的语�
 
   按 domain 清库 → batch_observe 灌文档 → chat_with_history 作答 → 规则+LLM 判分
 
-协议对齐生产 Chat：评测助手 + enable_tools + memory_eval=False + 不抽实体。
+协议对齐生产 Chat：评测助手 + enable_tools + 不抽实体。
 同一 domain 共享一份语料（doc_files 集合唯一），只灌一次。
 
 用法::
@@ -697,7 +697,6 @@ async def cmd_probe(args: argparse.Namespace) -> int:
                 enable_observer=False,
                 enable_system2=_system2_arg(args),
                 enable_tools=bool(args.enable_tools),
-                memory_eval=False,
                 persona_name=str(args.persona_name),
             )
             status = resp.get("status_code", -1)
@@ -815,7 +814,7 @@ def write_report(scale: str, tag: str, judge_file: str | None = None) -> None:
     lines = [
         f"# CorpusQA {scale}{(' ' + tag) if tag else ''}",
         "",
-        "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False）。",
+        "口径：生产 Chat（评测助手 + enable_tools）。",
         "语料按 domain 灌入记忆，题目不把 128k 正文塞进当前轮。",
         "",
     ]

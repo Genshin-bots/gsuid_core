@@ -428,7 +428,7 @@ async def extract_cluster(
     try:
         agent = GsCoreAIAgent(
             system_prompt=ALGEBRA_SYSTEM,
-            max_tokens=4096,
+            max_tokens=8192,
             create_by="MemAlgebra",
             task_kind=TASK_MEMORY_ALGEBRA,
             task_level="low",

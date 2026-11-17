@@ -631,7 +631,7 @@ _META_SELF_MECH_RE = re.compile(
     r"|(我|咱|俺|人家|本人|本喵|本机)[^。！？\n，,；;]{0,6}(这边|这头|底下|手里|手头|手上|这儿)"
 )
 _MECH_NOUN = r"(?:内部|后台|资料|知识|记忆|数据|私有|本地|检索|素材|云端)库|数据表|检索层|检索器|词表|提示词|数据源"
-_META_MECH_NOUN = _MECH_NOUN + r"|记录|档案|台账|索引|条目|日志|缓存|上下文|数据"
+_META_MECH_NOUN = _MECH_NOUN + r"|档案|台账|索引|条目|日志|缓存|上下文"
 _MECH_NOUN_RE = re.compile(_MECH_NOUN)
 _META_MECH_NOUN_RE = re.compile(_META_MECH_NOUN)
 _ABSENT_CORE = r"没(?!有?(?:问题|异常|关系|事|必要|意思|兴趣|毛病))|未(?!来)|尚未|不存在|是空"

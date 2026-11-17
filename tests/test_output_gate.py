@@ -249,3 +249,5 @@ def test_report_speech_and_allow_render_gate() -> None:
     from gsuid_core.ai_core.agent_run.support import _claims_fake_done
 
     assert _claims_fake_done("我已经把定时弄好了")
+    assert inspect_outbound_ooc("上周那项活动我这边没找到相关记录。") is None
+    assert inspect_outbound_ooc("我这边数据库没有这条条目。") is not None

@@ -11,7 +11,7 @@
   all      conv 0..9
 
 默认输出 ``eval/BEAM_official/results/1m/``，不覆盖历史 ``answers_0.json``。
-探针走生产 Chat：评测助手 + enable_tools + memory_eval=False + clock_at。
+探针走生产 Chat：评测助手 + enable_tools + clock_at。
 """
 
 from __future__ import annotations
@@ -166,7 +166,7 @@ def _write_10m_report() -> None:
     lines: list[str] = [
         "# BEAM-10M（10 plan 累计）汇总",
         "",
-        "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False + clock_at）。",
+        "口径：生产 Chat（评测助手 + enable_tools + clock_at）。",
         "每条 conversation 灌入 plan 1–10 后再答同一套 20 题。输出目录 `eval/BEAM_official/results/10m/`。",
         "不覆盖 `results/1m/` 与历史 `answers_0.json`。",
         "",
@@ -243,7 +243,7 @@ def _write_run_report(plan_ids: list[int]) -> None:
     lines: list[str] = [
         f"# {title} 汇总",
         "",
-        "口径：生产 Chat（评测助手 + enable_tools + memory_eval=False + clock_at）。",
+        "口径：生产 Chat（评测助手 + enable_tools + clock_at）。",
         f"plans={plans}。输出目录 `{OUT_DIR}`。",
         "",
     ]

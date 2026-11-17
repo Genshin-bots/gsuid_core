@@ -117,12 +117,14 @@ def retrieve_query_for_search(query: str, persona_name: str = "") -> str:
 
 def memory_intent_from_ctx(ctx: AgentHookContext) -> "MemoryIntent":
     """读取前置路由结论；缺失时按点查处理（不是按闲聊跳过）。"""
+    from gsuid_core.ai_core.memory.config import memory_config
 
     decision = ctx.route_decision
     if decision is None:
         return "point_latest"
-    if ctx.memory_eval and decision.memory_intent == "none":
-        return "point_latest"
+    if decision.memory_intent == "none":
+        if not decision.is_live_lookup and (memory_config.evidence_mode or ctx.intent in ("问答", "工具")):
+            return "point_latest"
     return decision.memory_intent
 
 
@@ -132,14 +134,16 @@ def refine_retrieved_memory(mem: "MemoryContext", intent: "MemoryIntent", query:
 
 
 def wants_evidence_injection(ctx: AgentHookContext) -> bool:
-    """有历史依赖或问答/工具意图就注入正文；纯寒暄只给目录卡。"""
-    if ctx.memory_eval:
-        return True
+    """有历史依赖或问答/工具意图就注入正文；纯寒暄只给目录卡（证据优先模式除外）。"""
+    from gsuid_core.ai_core.memory.config import memory_config
+
     decision = ctx.route_decision
     if decision is None:
         return True
-    if decision.is_live_lookup:
+    if decision.is_live_lookup and decision.memory_intent == "none":
         return False
+    if memory_config.evidence_mode:
+        return True
     if decision.memory_intent != "none":
         return True
     return ctx.intent in ("问答", "工具") or bool(decision.needs_committed_work)
@@ -168,9 +172,9 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
 
 
 def should_prefetch_memory(ctx: AgentHookContext) -> bool:
-    """实时查数跳过个人历史预灌；其余交给 memory_intent 决定检索深度。"""
+    """纯实时外部查数跳过个人历史预灌；其余交给 memory_intent 决定检索深度。"""
     decision = ctx.route_decision
-    if decision is not None and decision.is_live_lookup:
+    if decision is not None and decision.is_live_lookup and decision.memory_intent == "none":
         return False
     tg = ctx.turn_graph
     if tg is None or not tg.is_group:
@@ -218,7 +222,6 @@ def cog_scope_from_ctx(ctx: AgentHookContext) -> "CogScope":
         persona_name=ctx.persona_name or "",
         enable_system2=enable_system2,
         enable_user_global=memory_config.enable_user_global_memory,
-        memory_eval=ctx.memory_eval,
         clock_at=ctx.clock_at,
     )
 
@@ -489,9 +492,6 @@ class MemoryKit(AgentKit):
         text = ctx.retrieved["memory"] if "memory" in ctx.retrieved else ""
         if text:
             parts.append(f"[长期记忆]\n{text}")
-            guide = ctx.memory_guide or ""
-            if guide:
-                parts.append(guide)
         prefetch = ctx.retrieved["cognition_prefetch"] if "cognition_prefetch" in ctx.retrieved else ""
         if prefetch:
             parts.append(prefetch)
