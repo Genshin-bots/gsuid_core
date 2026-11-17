@@ -54,6 +54,7 @@ class RunOnceHost:
     route_decision: "TurnRouteDecision | None"
     _session_logger: AISessionLogger
     _run_sent_texts: set[str]
+    _run_sent_order: list[str]
     read_image_ids: set[str]
     _run_disputes: list[str]
     _last_attempt_tool_calls: list[str]

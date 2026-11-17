@@ -290,6 +290,22 @@ class AutonomyScheduler:
         if facts.has_substantive_outcome and decision.drive != "rest":
             memo = f"{take}（{parsed.fact[:120]}）" if (_arc_ready and take) else decision.summary
             await _remember(persona_name, digest, pin, memo, facts, activity_id)
+        await _record_autonomy_journal(
+            persona_name=persona_name,
+            raw_text=report.text,
+            steps=report.steps,
+            spoken_text=parsed.spoken_text,
+            topic=parsed.topic,
+            fact=parsed.fact,
+            take=take,
+            decision=decision,
+            facts=facts,
+            pin=pin,
+            mode=mode,
+            tool_sent=tool_sent,
+            last_sent_group_id=report.last_sent_group_id,
+            last_sent_user_id=report.last_sent_user_id,
+        )
         self._advance(persona_name)
         logger.info(
             t(
@@ -541,3 +557,120 @@ async def _store(
 
 def _empty_facts() -> FactPack:
     return FactPack([], [], [], False)
+
+
+def _extract_note_handle_from_steps(persona_name: str, steps: list[AutonomyStepTrace]) -> str:
+    """若本轮自主行动成功调用了 artifact_put，优先从返回文本提取 note: 句柄（不受长正文 JSON 截断影响）。"""
+    import re as _re
+    import json as _json
+
+    from gsuid_core.ai_core.autonomy.tools import safe_filename
+
+    out_handle_re = _re.compile(r"(?:句柄\s*[:：]\s*)(note:[^\s）)]+)")
+    for step in reversed(steps):
+        if step.tool_name != "artifact_put" or step.is_error or output_is_failed(step.output_text):
+            continue
+        m_out = out_handle_re.search(step.output_text or "")
+        if m_out is not None:
+            return m_out.group(1).strip()
+        raw_args = step.args_summary.strip()
+        if not raw_args:
+            continue
+        try:
+            parsed_args = _json.loads(raw_args)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(parsed_args, dict):
+            title_val = ""
+            if "title" in parsed_args and isinstance(parsed_args["title"], str) and parsed_args["title"].strip():
+                title_val = parsed_args["title"].strip()
+            elif (
+                "summary" in parsed_args and isinstance(parsed_args["summary"], str) and parsed_args["summary"].strip()
+            ):
+                title_val = parsed_args["summary"].strip()
+            if title_val:
+                stem = safe_filename(title_val).removesuffix(".txt")
+                if stem:
+                    return f"note:{persona_name}:{stem}"
+    return ""
+
+
+async def _record_autonomy_journal(
+    *,
+    persona_name: str,
+    raw_text: str,
+    steps: list[AutonomyStepTrace],
+    spoken_text: str,
+    topic: str,
+    fact: str,
+    take: str,
+    decision: DeliveryDecision,
+    facts: FactPack,
+    pin: DeliveryPin | None,
+    mode: str,
+    tool_sent: bool,
+    last_sent_group_id: str,
+    last_sent_user_id: str = "",
+) -> None:
+    """在 parse_footer 之后写入干净的自主探索手账，杜绝 DRIVE: 协议行、429 报错与私聊关怀泄漏。"""
+    from datetime import datetime as _dt
+
+    from gsuid_core.ai_core.utils import is_agent_error_text
+    from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+    from gsuid_core.ai_core.journal.sanitizer import is_rejected_journal_body, sanitize_journal_summary
+
+    if not raw_text or not raw_text.strip() or is_agent_error_text(raw_text):
+        return
+    if decision.drive == "rest" and not facts.has_substantive_outcome and not tool_sent:
+        return
+
+    gid = ""
+    if tool_sent and last_sent_group_id:
+        gid = last_sent_group_id
+    elif mode in ("immediate_push", "staged_merge") and pin is not None and pin.group_id:
+        gid = pin.group_id
+
+    # 私聊主动关怀绝不写入公共 self.md，防止通过首轮锚点泄露给所有群聊
+    is_private_care = (
+        (tool_sent and not last_sent_group_id and bool(last_sent_user_id))
+        or (pin is not None and bool(pin.user_id) and not pin.group_id)
+        or (decision.drive == "care_user" and not gid)
+    )
+    if is_private_care:
+        return
+
+    candidates: list[str] = []
+    if spoken_text and not is_rejected_journal_body(spoken_text):
+        candidates.append(spoken_text)
+    if fact:
+        prefix = f"关注「{topic}」：{fact}" if topic and topic not in fact else fact
+        combined = f"{prefix}；{take}" if take and take not in prefix else prefix
+        candidates.append(combined)
+    elif take:
+        candidates.append(take)
+    if decision.summary:
+        candidates.append(decision.summary)
+
+    clean_summary = ""
+    for cand in candidates:
+        if is_rejected_journal_body(cand):
+            continue
+        cleaned = sanitize_journal_summary(cand, max_chars=110)
+        if cleaned:
+            clean_summary = cleaned
+            break
+    if not clean_summary:
+        return
+
+    note_hid = _extract_note_handle_from_steps(persona_name, steps)
+    now_dt = _dt.now()
+    entry = JournalEntry(
+        timestamp=now_dt.timestamp(),
+        date_str=now_dt.strftime("%Y-%m-%d"),
+        time_str=now_dt.strftime("%H:%M"),
+        tag="自主探索",
+        summary=clean_summary,
+        handle_id=note_hid,
+        group_id=gid,
+    )
+    await record_journal_entry(entry, target_personas=[persona_name])

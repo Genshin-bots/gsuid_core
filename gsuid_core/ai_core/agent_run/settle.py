@@ -84,7 +84,7 @@ _SALVAGE_TOTAL_CAP = 12000
 _SALVAGE_ROW_LIMIT = 10
 
 
-async def _deliver_withheld(st: RunOnceState, sent: set[str]) -> None:
+async def _deliver_withheld(st: RunOnceState, sent: set[str], sent_order: list[str] | None = None) -> None:
     """把排版闸暂扣的原文真正发给用户（INV-4 兜底，只发第一段防刷屏）。"""
     for body in st.presentation_withheld:
         if not body or body in sent:
@@ -94,6 +94,8 @@ async def _deliver_withheld(st: RunOnceState, sent: set[str]) -> None:
         await send_chat_result(st.bot, body, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
         absorb_run_image_delivered(st)
         sent.add(body)
+        if sent_order is not None and body not in sent_order:
+            sent_order.append(body)
         return
 
 
@@ -361,6 +363,8 @@ class SettlePhase(RunOnceHost):
         )
         absorb_run_image_delivered(st)
         self._run_sent_texts.add(body)
+        if body not in self._run_sent_order:
+            self._run_sent_order.append(body)
         if st.main_channel_sends == 0:
             st.main_channel_sends = 1
 
@@ -509,38 +513,6 @@ class SettlePhase(RunOnceHost):
                     if _dom:
                         self._recent_tool_families[_dom] = _STICKY_FAMILY_TURNS
 
-                # 手账回流：主 Agent 调用了实质性工具且有可见回复，记入生活手账（私聊不写入公共手账）
-                _meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive"})
-                _substantive_tools = [t for t in (st.tool_call_list or []) if t not in _meta_tools]
-                _res_text = strip_protocol_tags(str(result.output or "")).strip()
-                _is_private = st.ev is not None and (st.ev.user_type == "direct" or not st.ev.group_id)
-                if _substantive_tools and _res_text and "<SILENCE>" not in _res_text and not _is_private:
-                    from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
-
-                    _tb = find_tool_base(_substantive_tools[0])
-                    _tool_name = _tb.name if _tb else _substantive_tools[0]
-                    _tag = (_tb.capability_domain if _tb and _tb.capability_domain else _tool_name) or "日常行动"
-                    _now = datetime.now()
-                    _clean_res = re.sub(r"^[#\s\-*]+", "", _res_text)[:60]
-                    _gid = str(st.ev.group_id or "") if st.ev and st.ev.group_id else ""
-                    _journal_turn = current_turn()
-                    _journal_active = _journal_turn.active_entry() if _journal_turn is not None else None
-                    _entry = JournalEntry(
-                        timestamp=_now.timestamp(),
-                        date_str=_now.strftime("%Y-%m-%d"),
-                        time_str=_now.strftime("%H:%M"),
-                        tag=_tag[:16],
-                        summary=_clean_res,
-                        group_id=_gid,
-                        requested_by=_journal_active.item.user_id if _journal_active is not None else "",
-                    )
-                    asyncio.create_task(
-                        record_journal_entry(
-                            _entry,
-                            target_personas=[self.persona_name] if self.persona_name else None,
-                        )
-                    )
-
             # 更新连续无工具调用计数（仅对交互式主 Agent 生效）。闲聊类意图不计数（§15）
             # 豁免口径与注入门同源：_PROGRESSIVE_TOOLS_SKIP_INTENTS（评审修复 E12）。
             if self.create_by in ["Chat", "Agent"] and st.intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS:
@@ -674,6 +646,8 @@ class SettlePhase(RunOnceHost):
                         await send_chat_result(st.bot, _bt, ev=st.ev, extra_metadata=turn_reply_metadata(st.ev))
                         absorb_run_image_delivered(st)
                         self._run_sent_texts.add(_bt)
+                        if _bt not in self._run_sent_order:
+                            self._run_sent_order.append(_bt)
                     except Exception as _se:
                         logger.debug(i18n_t("log.agent.fakedone_se", _se=_se))
 
@@ -697,9 +671,10 @@ class SettlePhase(RunOnceHost):
                 skip_report_exit=_skip_report_exit,
                 replacement_visible=_replacement_visible,
             ):
-                await _deliver_withheld(st, self._run_sent_texts)
+                await _deliver_withheld(st, self._run_sent_texts, self._run_sent_order)
 
             if st.return_mode in ["by_bot"] and st.bot and st.ev:
+                self._record_settle_journal(st, result_msg)
                 self._log_run_result(st, result_msg)
                 return ""
             # 对用户可见出口才做 roleplay OOC；子代理/能力代理 return 必须保留 res_ 句柄
@@ -743,6 +718,8 @@ class SettlePhase(RunOnceHost):
                         st.silence_reason = "framework_leak_stripped"
                         record_output_block(st, self._session_logger, "framework_leak_stripped", _leak_original)
                     result_msg = "<SILENCE>"
+            if isinstance(result_msg, str):
+                self._record_settle_journal(st, result_msg)
             result_msg = self._attach_unfinished_tool_return(st, result_msg)
             self._log_run_result(st, result_msg)
             if isinstance(result_msg, str):
@@ -751,6 +728,118 @@ class SettlePhase(RunOnceHost):
 
         # result 为空时的默认返回值（常量：handle_ai 好感度门等消费端按它识别准失败轮）
         return NO_RESULT_TEXT
+
+    def _record_settle_journal(self, st: RunOnceState, final_msg: str) -> None:
+        """在策略环、OOC 防火墙与协议泄漏剥离全部通过后，把合规实质行动写入驻群手账。"""
+        if st.ab_abort or st.ev is None or st.ev.user_type == "direct" or not st.ev.group_id:
+            return
+        skip_role = self.is_subagent or self.create_by in (
+            "Aside",
+            "Autonomy",
+            "Heartbeat_Decision",
+            "Heartbeat_Output",
+            "Journal_Compact",
+            "CapabilityAgent",
+            "AutoPlanner",
+            "EvalJudge",
+        )
+        if skip_role:
+            return
+
+        from gsuid_core.message_history import get_history_manager
+        from gsuid_core.ai_core.register import find_tool_base
+        from gsuid_core.ai_core.inbox.turn import current_turn
+        from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+        from gsuid_core.ai_core.journal.sanitizer import (
+            clean_journal_tag,
+            is_rejected_journal_body,
+            sanitize_journal_summary,
+        )
+
+        meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive", "act_for"})
+        substantive_tools = [tn for tn in (st.tool_call_list or []) if tn not in meta_tools]
+        ordered_bubbles: list[str] = [
+            t_s.strip() for t_s in self._run_sent_order if t_s.strip() and "<SILENCE>" not in t_s
+        ]
+        for extra_txt in sorted(self._run_sent_texts):
+            clean_extra = extra_txt.strip()
+            if clean_extra and "<SILENCE>" not in clean_extra and clean_extra not in ordered_bubbles:
+                ordered_bubbles.append(clean_extra)
+
+        if st.return_mode in ("by_bot",) and st.bot is not None:
+            # by_bot 模式以已通过各层闸门真实出站的文本为准，绝不读取未出站的原始 result.output
+            if ordered_bubbles:
+                raw_out = "；".join(ordered_bubbles)
+            elif st.image_sent_this_run:
+                raw_out = "已完成群内图片交付"
+            else:
+                return
+        else:
+            tail_msg = final_msg.strip()
+            valid_tail = (
+                bool(tail_msg)
+                and not is_silence_marker(tail_msg)
+                and "<SILENCE>" not in tail_msg
+                and not is_rejected_journal_body(tail_msg)
+            )
+            if ordered_bubbles:
+                combined = list(ordered_bubbles)
+                if valid_tail and tail_msg not in combined:
+                    combined.append(tail_msg)
+                raw_out = "；".join(combined)
+            elif valid_tail:
+                raw_out = tail_msg
+            elif st.image_sent_this_run:
+                raw_out = "已完成群内图片交付"
+            else:
+                return
+
+        if not raw_out or is_silence_marker(raw_out) or is_rejected_journal_body(raw_out):
+            return
+
+        nicks_for_j: dict[str, str] = {}
+        if st.ev is not None:
+            j_recs = get_history_manager().get_history(st.ev)
+            nicks_for_j = {r.user_id: (r.user_name or r.user_id) for r in j_recs if r.user_id and r.role == "user"}
+
+        clean_res = sanitize_journal_summary(raw_out, max_chars=110, nicks=nicks_for_j)
+        is_delivery_wake = "delivery_wake" in st.run_extra and bool(st.run_extra["delivery_wake"])
+        qualifies = bool(substantive_tools) or st.image_sent_this_run or is_delivery_wake or len(clean_res) >= 60
+        if not clean_res or not qualifies:
+            return
+
+        if is_delivery_wake and (not substantive_tools or substantive_tools == ["send_message_by_ai"]):
+            j_tag = "交付完结"
+        elif substantive_tools:
+            tb0 = find_tool_base(substantive_tools[0])
+            raw_t = (
+                tb0.capability_domain if tb0 and tb0.capability_domain else (tb0.name if tb0 else substantive_tools[0])
+            )
+            j_tag = clean_journal_tag(raw_t or "日常行动")
+        elif st.image_sent_this_run:
+            j_tag = "图文交付"
+        else:
+            j_tag = "群聊答疑"
+
+        now = datetime.now()
+        gid = str(st.ev.group_id or "") if st.ev and st.ev.group_id else ""
+        journal_turn = current_turn()
+        journal_active = journal_turn.active_entry() if journal_turn is not None else None
+        entry = JournalEntry(
+            timestamp=now.timestamp(),
+            date_str=now.strftime("%Y-%m-%d"),
+            time_str=now.strftime("%H:%M"),
+            tag=j_tag,
+            summary=clean_res,
+            group_id=gid,
+            requested_by=journal_active.item.user_id if journal_active is not None else "",
+        )
+        asyncio.create_task(
+            record_journal_entry(
+                entry,
+                target_personas=[self.persona_name] if self.persona_name else None,
+            )
+        )
 
     async def _note_truncated_usage(
         self,

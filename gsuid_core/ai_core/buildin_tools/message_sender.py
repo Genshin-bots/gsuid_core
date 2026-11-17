@@ -603,6 +603,9 @@ async def send_message_by_ai(
                 )
                 if isinstance(_sent_registry, set):
                     _sent_registry.add(text.strip())
+                _sent_order = tool_ctx.extra["run_sent_order"] if "run_sent_order" in tool_ctx.extra else None
+                if isinstance(_sent_order, list) and text.strip() not in _sent_order:
+                    _sent_order.append(text.strip())
                 # 发给当前对话者之后，主通道不再复述同一轮。
                 if ev is not None and ev.user_id and target_id == str(ev.user_id):
                     tool_ctx.extra["direct_user_sent"] = True

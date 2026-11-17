@@ -192,6 +192,7 @@ class PreparePhase(RunOnceHost):
             "turn_id": st.turn_id,
             "agent_run_id": st.turn_id,
             "run_sent_texts": self._run_sent_texts,
+            "run_sent_order": self._run_sent_order,
             "read_image_ids": self.read_image_ids,
             "disable_direct_image_injection": self._disable_direct_image_in_run,
             # 同引用透传：纠正轮里 dispute_directive 的申辩要能被外层 settle 读到
@@ -464,6 +465,7 @@ class PreparePhase(RunOnceHost):
                 since_ts=since_ts,
                 turn_target_uids=_targets,
             )
+            if latest_ts > since_ts:
+                self._anchor_journal_ts = latest_ts
             if delta_text:
                 st.final_user_message = _append_user_text(st.final_user_message, f"\n{delta_text}")
-                self._anchor_journal_ts = latest_ts

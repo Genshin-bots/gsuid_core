@@ -159,69 +159,771 @@ def test_persona_isolation_for_relationship_cognition_and_aside(
 
 def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import time
+    from typing import Sequence
 
-    from gsuid_core.ai_core.journal import manager as jm
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm
 
     journal_dir = tmp_path / "journals"
     monkeypatch.setattr(jm, "JOURNAL_DIR", journal_dir)
+    jm._SHARD_CACHE.clear()
+    jm._SHARD_UPDATE_TS.clear()
+
+    async def _no_gt(persona_name: str, shard_id: str, now_ts: float) -> jd.GroundTruthDigest:
+        del persona_name, shard_id, now_ts
+        return jd.GroundTruthDigest(completed=("测试项目报告",))
+
+    monkeypatch.setattr(jm, "collect_ground_truth", _no_gt)
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.autonomy.tools.artifact_dir",
+        lambda pname, root=None: tmp_path / "notes" / pname,
+    )
 
     async def scenario() -> None:
-        # 1. 离线单测环境禁用外部 LLM
-        async def _mock_summarize(persona_name: str, standing: str, timeline: list[str]) -> str | None:
-            return "- 做梦整理：已跟进各项事务。"
+        llm_called_shards: list[str] = []
 
-        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _mock_summarize)
+        async def _stub_summarize(
+            persona_name: str,
+            doc: jm.ShardDocument,
+            gt: jd.GroundTruthDigest,
+            prev_month_rollover: Sequence[str] = (),
+        ) -> jd.DreamLLMOutcome:
+            del persona_name, prev_month_rollover
+            llm_called_shards.append(doc.shard_id)
+            done_tag = gt.completed[0] if gt.completed else "日常"
+            return {
+                "persistent": ["保持核实后再作答的习惯。"],
+                "monthly": [f"[已完结] {done_tag} 已闭环交付。"],
+                "yesterday": ["做梦整理：已跟进各项事务。"],
+            }
+
+        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _stub_summarize)
 
         assert await jm.compact_journal("tester") is False
 
-        p = jm.get_journal_path("tester")
-        content = (
+        # 旧版单文件写盘 → 自动无损拆迁至 self.md 与 groups/group_1001.md
+        legacy_file = journal_dir / "tester.md"
+        legacy_file.parent.mkdir(parents=True, exist_ok=True)
+        legacy_file.write_text(
             "# tester的生活手账\n\n"
             "## 常驻状态与近期小结\n"
             "- 目前一切正常，日常处理群聊交互与各项委派。\n\n"
             "## 今日行动流水\n"
-            "- [10:00 | 查天气] 查了广州天气 (群:1001)\n"
-            "- [11:30 | 模拟盘] 巡检了持仓\n"
+            "- [10:00 | 查天气] 查了测试城市天气 (群:group_1001)\n"
+            "- [11:30 | 自主探索] 整理了个人读书摘要\n",
+            encoding="utf-8",
         )
-        p.write_text(content, encoding="utf-8")
 
         compacted = await jm.compact_journal("tester", force=True)
         assert compacted is True
-        new_content = p.read_text(encoding="utf-8")
-        standing, timeline = jm._read_sections(new_content)
+        assert not legacy_file.exists()
+
+        self_path = jm.get_journal_path("tester")
+        grp_path = jm.get_journal_path("tester", group_id="group_1001")
+        assert self_path.exists() and grp_path.exists()
+
+        standing, timeline = jm._read_sections(jm.get_journal_content("tester"))
         assert len(timeline) == 0
         assert "做梦整理：已跟进各项事务" in standing
+        assert "[已完结] 测试项目报告" in grp_path.read_text(encoding="utf-8")
         assert jm.get_last_compact_ts("tester") > 0.0
 
-        # 测试降级规则兜底
-        async def _mock_none(*args: object, **kwargs: object) -> None:
+        # 验证 429 临时故障保护：非强制夜间巡检遇 transient_error 绝不清空流水
+        await jm.record_journal_entry(
+            jm.JournalEntry(
+                timestamp=time.time(),
+                date_str="2026-11-17",
+                time_str="14:00",
+                tag="查资料",
+                summary="核对了第一份数据；核对了第二份数据；核对了第三份数据。",
+                group_id="group_1001",
+            ),
+            target_personas=["tester"],
+        )
+
+        async def _stub_transient(
+            persona_name: str,
+            doc: jm.ShardDocument,
+            gt: jd.GroundTruthDigest,
+            prev_month_rollover: Sequence[str] = (),
+        ) -> jd.DreamLLMOutcome:
+            del persona_name, doc, gt, prev_month_rollover
+            return "transient_error"
+
+        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _stub_transient)
+        assert await jm.compact_journal("tester", force=False) is False
+        _, kept_lines = jm._read_sections(grp_path.read_text(encoding="utf-8"))
+        assert len(kept_lines) == 1
+
+        # LLM 未启用返回 None 时走确定性规则跨日兜底，同时写入月度归档
+        async def _stub_none(
+            persona_name: str,
+            doc: jm.ShardDocument,
+            gt: jd.GroundTruthDigest,
+            prev_month_rollover: Sequence[str] = (),
+        ) -> jd.DreamLLMOutcome:
+            del persona_name, doc, gt, prev_month_rollover
             return None
 
-        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _mock_none)
-        p.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _stub_none)
         assert await jm.compact_journal("tester", force=True) is True
-        standing_fallback, _ = jm._read_sections(p.read_text(encoding="utf-8"))
-        assert "项日常与委派事务" in standing_fallback
-
+        standing_fb, tl_fb = jm._read_sections(grp_path.read_text(encoding="utf-8"))
+        assert len(tl_fb) == 0
+        assert "核对了第一份数据" in standing_fb and "journal:tester:group_1001:" in standing_fb
         assert await jm.compact_journal("tester") is False
 
-        # 测试每小时巡检与 active_hours 门禁
-        p.write_text(content, encoding="utf-8")
+        # 测试作息窗口门禁与自然睡眠日去重（消除 24h 时间戳漂移）
+        await jm.record_journal_entry(
+            jm.JournalEntry(
+                timestamp=time.time(),
+                date_str="2026-11-17",
+                time_str="20:10",
+                tag="自主探索",
+                summary="晚间记录了一条新的自主观察。",
+            ),
+            target_personas=["tester"],
+        )
         monkeypatch.setattr(jm, "is_within_active_hours", lambda *args, **kwargs: True)
         await jm.check_and_compact_all_journals()
-        _, remaining_timeline = jm._read_sections(p.read_text(encoding="utf-8"))
-        assert len(remaining_timeline) == 2
+        assert len(jm.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 1
+
+        import json
+
+        def _write_test_compact_ts(ts_val: float) -> None:
+            st_file = journal_dir / ".journal_state.json"
+            st_data = json.loads(st_file.read_text(encoding="utf-8")) if st_file.exists() else {}
+            entry = st_data["tester"] if "tester" in st_data and isinstance(st_data["tester"], dict) else {}
+            entry["last_compact_ts"] = ts_val
+            entry["last_dream_date"] = jd.logical_sleep_date("Asia/Shanghai", ts_val)
+            st_data["tester"] = entry
+            st_file.write_text(json.dumps(st_data, ensure_ascii=False), encoding="utf-8")
 
         monkeypatch.setattr(jm, "is_within_active_hours", lambda *args, **kwargs: False)
-        jm._save_last_compact_ts("tester", time.time() - 3600)
+        _write_test_compact_ts(time.time() - 3600)
         await jm.check_and_compact_all_journals()
-        _, remaining_timeline2 = jm._read_sections(p.read_text(encoding="utf-8"))
-        assert len(remaining_timeline2) == 2
+        assert len(jm.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 1
 
-        jm._save_last_compact_ts("tester", time.time() - 90000)
+        _write_test_compact_ts(time.time() - 90000)
         await jm.check_and_compact_all_journals()
-        _, final_timeline = jm._read_sections(p.read_text(encoding="utf-8"))
-        assert len(final_timeline) == 0
+        assert len(jm.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 0
+
+    asyncio.run(scenario())
+
+
+def test_journal_sharding_sanitization_and_dream_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import time
+    from typing import Sequence
+
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm, sanitizer as js
+    from gsuid_core.ai_core.autonomy.models import FactPack, DeliveryPin, DeliveryDecision, AutonomyStepTrace
+    from gsuid_core.ai_core.autonomy.verifier import parse_footer
+    from gsuid_core.ai_core.autonomy.scheduler import _record_autonomy_journal
+    from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
+    from gsuid_core.ai_core.planning.tool_output_tools import _handle_access_allowed
+
+    _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
+    _seed_persona(
+        tmp_path / "personas_cfg",
+        "alpha",
+        "specific",
+        ["group_1", "group_hot", "group_quiet", "villa_1:room_9"],
+    )
+
+    journal_dir = tmp_path / "journals"
+    notes_root = tmp_path / "autonomy_notes"
+    monkeypatch.setattr(jm, "JOURNAL_DIR", journal_dir)
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.autonomy.tools.artifact_dir",
+        lambda pname, root=None: notes_root / pname,
+    )
+    jm._SHARD_CACHE.clear()
+    jm._SHARD_UPDATE_TS.clear()
+    jm._RECENT_ENTRY_TS.clear()
+
+    # 1. 句界与 ASCII 词元边界保护（复现截图 148%，R 与 Markd 腰斩 + 多行吃字 + 报错拦截）
+    raw_rsi = (
+        "查了一下群友提到的测试新材，抓到的数据是：页面（11-13 更新）显示昨收 43.44，"
+        "当日区间 42.92~46.82，近一年涨幅约 148%，RSI(14) 41.21，市值约 69.5 亿。"
+    )
+    cut_rsi = js.sanitize_journal_summary(raw_rsi, max_chars=80)
+    assert not cut_rsi.endswith("R") and not cut_rsi.endswith("R…")
+
+    raw_md = "官方机器人平台翻了翻，频道和群聊都能跑，消息能收也能发，支持文本、Markdown、图片、语音和文件。"
+    cut_md = js.sanitize_journal_summary(raw_md, max_chars=46)
+    assert "Markd…" not in cut_md and not cut_md.endswith("Markd")
+
+    multiline = "<reply #12>\n第一段结论核实完毕\n第二段补充细节 <@100000001>"
+    flat = js.sanitize_journal_summary(multiline, max_chars=110, nicks={"100000001": "测试用户A"})
+    assert "\n" not in flat and "@测试用户A" in flat
+    assert js.is_rejected_journal_body("执行出错: 模型套餐用量已达上限") is True
+    assert js.is_rejected_journal_body("这次的定时任务没能执行成功，稍后再让我试试吧") is True
+    assert js.is_rejected_journal_body("DRIVE: group_topic\nTARGET: group_1") is True
+    assert js.clean_journal_tag("web_search_tool") == "查资料"
+
+    async def scenario() -> None:
+        from datetime import datetime, timedelta
+
+        from gsuid_core.utils.database import base_models as db_base
+        from gsuid_core.ai_core.planning import tool_output_helper as toh
+        from gsuid_core.ai_core.database.models import AIAutonomyActivity
+        from gsuid_core.ai_core.planning.models import AIAgentTask
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        monkeypatch.setattr(db_base, "async_maker", maker)
+
+        now = time.time()
+
+        # 2. 子任务归属路由（未传或旧已删人格按群回落至 alpha，未启用群绝不广播给无关人格）
+        assert jm.resolve_persona_for_group_or_session(persona_name=None, group_id="group_1") == "alpha"
+        assert jm.resolve_persona_for_group_or_session(persona_name="deleted_ghost", group_id="group_1") == "alpha"
+        await jm.record_journal_entry(
+            jm.JournalEntry(
+                now, "2026-11-18", "09:00", "查资料", "未绑定群的流水不应污染其它人格", group_id="group_unassigned"
+            )
+        )
+        assert not (journal_dir / "personas" / "alpha" / "groups" / "group_unassigned.md").exists()
+
+        # 3. Autonomy parse_footer 后写入干净 FACT+TAKE+长笔记句柄（兼容 500 字截断 JSON），且隔离私聊关怀与 429 报错
+        footer_only_out = (
+            "DRIVE: group_topic\nTARGET: group_1\nTOPIC: 隔夜指标盘点\nOUTCOME: found\n"
+            "FACT: 三大指数回落，波动率抬升\nTAKE: 数字看多了眼花，先记在本子上。"
+        )
+        parsed = parse_footer(footer_only_out)
+        truncated_long_args = ('{"summary": "隔夜盘点小记", "body": "' + "详细核查记录文本" * 80)[:500]
+        step = AutonomyStepTrace(
+            step_index=0,
+            tool_name="artifact_put",
+            args_summary=truncated_long_args,
+            output_text="已写入笔记《隔夜盘点小记》（句柄: note:alpha:隔夜盘点小记）",
+        )
+        pin = DeliveryPin(
+            user_id="",
+            group_id="group_1",
+            is_master=False,
+            zone_value="familiar",
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            session_key="group:group_1",
+            last_human_ts=now - 60,
+        )
+        await _record_autonomy_journal(
+            persona_name="alpha",
+            raw_text=footer_only_out,
+            steps=[step],
+            spoken_text=parsed.spoken_text,
+            topic=parsed.topic,
+            fact=parsed.fact,
+            take=parsed.take,
+            decision=DeliveryDecision("group_topic", "staged_merge", pin, parsed.summary),
+            facts=FactPack(["artifact_put"], ["ok"], [], True),
+            pin=pin,
+            mode="staged_merge",
+            tool_sent=False,
+            last_sent_group_id="",
+        )
+        # 私聊主动关怀（care_user）不得写入公共 self.md
+        dm_pin = DeliveryPin(
+            user_id="100000001",
+            group_id="",
+            is_master=False,
+            zone_value="intimate",
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            session_key="direct:100000001",
+            last_human_ts=now - 60,
+        )
+        await _record_autonomy_journal(
+            persona_name="alpha",
+            raw_text="给你带了一句私聊提醒",
+            steps=[],
+            spoken_text="给你带了一句私聊提醒",
+            topic="私聊问候",
+            fact="",
+            take="",
+            decision=DeliveryDecision("care_user", "immediate_push", dm_pin, "给你带了一句私聊提醒"),
+            facts=FactPack(["send_message_by_ai"], ["ok"], [], True),
+            pin=dm_pin,
+            mode="immediate_push",
+            tool_sent=True,
+            last_sent_group_id="",
+            last_sent_user_id="100000001",
+        )
+        assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+        await _record_autonomy_journal(
+            persona_name="alpha",
+            raw_text="执行出错: 模型套餐用量已达上限",
+            steps=[],
+            spoken_text="执行出错: 模型套餐用量已达上限",
+            topic="",
+            fact="",
+            take="",
+            decision=DeliveryDecision("rest", "silent_only", None, ""),
+            facts=FactPack([], [], [], False),
+            pin=None,
+            mode="silent_only",
+            tool_sent=False,
+            last_sent_group_id="",
+        )
+        g1_text, _ = jm.read_journal_for_context("alpha", current_group_id="group_1")
+        assert "DRIVE:" not in g1_text
+        assert "三大指数回落" in g1_text and "note:alpha:隔夜盘点小记" in g1_text
+        assert "用量已达上限" not in g1_text
+
+        # 4. 跨行静默巡检折叠（中间夹杂普通行动时仍能原位合并为 ×2，不泄漏 <<NO_BROADCAST>>）
+        await jm.record_journal_entry(
+            jm.JournalEntry(now, "2026-11-18", "09:30", "周期巡检", "<<NO_BROADCAST>>", group_id="group_quiet"),
+            target_personas=["alpha"],
+        )
+        await jm.record_journal_entry(
+            jm.JournalEntry(now + 1, "2026-11-18", "10:00", "查资料", "帮群友查了测试条目。", group_id="group_quiet"),
+            target_personas=["alpha"],
+        )
+        _, ts_after_substantive = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
+        await jm.record_journal_entry(
+            jm.JournalEntry(
+                now + 2, "2026-11-18", "10:30", "周期巡检", "（本轮无值得播报的进展）", group_id="group_quiet"
+            ),
+            target_personas=["alpha"],
+        )
+        delta_after_silent, _ = jm.read_journal_for_context(
+            "alpha", current_group_id="group_quiet", since_ts=ts_after_substantive
+        )
+        assert delta_after_silent == ""
+        gq_doc = jm.parse_shard_markdown(jm.get_journal_path("alpha", "group_quiet").read_text(encoding="utf-8"))
+        assert len(gq_doc.timeline) == 2
+        assert "<<NO_BROADCAST>>" not in "\n".join(gq_doc.timeline)
+        assert "(×2)" in gq_doc.timeline[-1] and "09:30~10:30" in gq_doc.timeline[-1]
+
+        # 5. 超大群突发洪峰环形定长（单日写入 75 条仍严格 <= 50 行，锚点严格 <= 880 字，且零污染其它群）
+        for i in range(75):
+            await jm.record_journal_entry(
+                jm.JournalEntry(
+                    now + 10 + i,
+                    "2026-11-18",
+                    f"11:{i % 60:02d}",
+                    "查资料" if i % 2 == 0 else "看图辨认",
+                    f"回应了大群第 {i} 次高频资料核验请求并给出结论。",
+                    group_id="group_hot",
+                ),
+                target_personas=["alpha"],
+            )
+        gh_doc = jm.parse_shard_markdown(jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"))
+        assert len(gh_doc.timeline) <= jm.GROUP_TIMELINE_RING_CAP
+        hot_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_hot")
+        quiet_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
+        dm_anchor, _ = jm.read_journal_for_context("alpha", current_group_id=None)
+        assert len(hot_anchor) <= jm.ANCHOR_TOTAL_MAX_CHARS
+        assert "早先概览" in hot_anchor
+        assert "高频资料核验" not in quiet_anchor and "高频资料核验" not in dm_anchor
+
+        # 6. 做梦三级阀门 + 双 ID 平台群号 (:) + 长摘要归档句柄防截断 + 并发 dirty_shards 防丢失 + 路径穿越拦截
+        await jm.record_journal_entry(
+            jm.JournalEntry(
+                now + 90, "2026-11-18", "12:00", "查资料", "核查了双ID房间的测试配置。", group_id="villa_1:room_9"
+            ),
+            target_personas=["alpha"],
+        )
+        heavy_llm_shards: list[str] = []
+
+        async def _track_llm(
+            persona_name: str,
+            doc: jm.ShardDocument,
+            gt: jd.GroundTruthDigest,
+            prev_month_rollover: Sequence[str] = (),
+        ) -> jd.DreamLLMOutcome:
+            del persona_name, gt, prev_month_rollover
+            heavy_llm_shards.append(doc.shard_id)
+            if doc.shard_id == "group_hot":
+                # 模拟做梦耗时期间另一人格 beta 并发写入 dirty_shards，验证不会被覆盖抹掉
+                jm._mark_shard_dirty_sync("beta", "group_concurrent")
+            return {
+                "persistent": ["高频核查保持结论先行。"],
+                "monthly": ["本月持续跟进大群高频测试专题。"],
+                "yesterday": [
+                    "昨日从早到晚密集完成了数十次资料比对、图片文字核验与多轮统计口径复核，确保各项数据准确无误。"
+                ],
+            }
+
+        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _track_llm)
+        # group_1 / villa_1:room_9 仅 1 条（轻度分片）→ 0 LLM；group_hot 50 条（重度分片）→ 触发 LLM
+        assert await jm.compact_journal("alpha", force=False) is True
+        assert "group_hot" in heavy_llm_shards
+        assert "group_1" not in heavy_llm_shards
+        assert "villa_1:room_9" not in heavy_llm_shards
+        assert "group_concurrent" in jm._load_full_state()["beta"]["dirty_shards"]
+
+        gh_after = jm.parse_shard_markdown(
+            jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"), "group_hot"
+        )
+        sleep_day = gh_after.yesterday_label
+        # 长昨日摘要追加归档句柄后绝不腰斩句柄尾部
+        assert f"journal:alpha:group_hot:{sleep_day}" in gh_after.yesterday[-1]
+
+        # 双 ID 群号 (villa_1:room_9) 归档句柄完整可解，且恶意路径穿越一律拒绝返回 None
+        dual_hid = f"journal:alpha:villa_1:room_9:{sleep_day}"
+        resolved_dual = await resolve_handle(dual_hid)
+        assert resolved_dual is not None and "双ID房间" in (resolved_dual.payload_inline or "")
+        assert await resolve_handle("journal:..:self:2026-11-18") is None
+        assert await resolve_handle("journal:alpha:group_1:../../etc") is None
+
+        g1_after = jm.parse_shard_markdown(
+            jm.get_journal_path("alpha", "group_1").read_text(encoding="utf-8"), "group_1"
+        )
+        assert len(g1_after.yesterday) >= 1 and len(g1_after.timeline) == 0
+        arch_hid = f"journal:alpha:group_1:{sleep_day}"
+        resolved_arch = await resolve_handle(arch_hid)
+        assert resolved_arch is not None and "三大指数回落" in (resolved_arch.payload_inline or "")
+
+        def _make_ctx(ev: Event) -> RunContext[ToolContext]:
+            return RunContext(
+                deps=ToolContext(bot=None, ev=ev),
+                model=TestModel(),
+                usage=RunUsage(),
+                prompt="check",
+            )
+
+        ev_g1 = Event(bot_id="onebot", bot_self_id="1", user_id="100000001", user_type="group", group_id="group_1")
+        ev_g2 = Event(
+            bot_id="onebot", bot_self_id="1", user_id="group_quiet", user_type="group", group_id="group_quiet"
+        )
+        ev_dm = Event(bot_id="onebot", bot_self_id="1", user_id="100000001", user_type="direct", group_id=None)
+        assert await _handle_access_allowed(resolved_arch, _make_ctx(ev_g1)) is True
+        assert await _handle_access_allowed(resolved_arch, _make_ctx(ev_g2)) is False
+        assert await _handle_access_allowed(resolved_arch, _make_ctx(ev_dm)) is False
+
+        # 7. Phase 3 个人笔记 Wiki 整编（零垂直词表 + 防止『关于_XX_笔记』误聚）+ 365 天休眠群归档与唤醒
+        alpha_notes = notes_root / "alpha"
+        alpha_notes.mkdir(parents=True, exist_ok=True)
+        for idx, suffix in enumerate(("小抄", "小笔记", "调查")):
+            (alpha_notes / f"体态拉伸_{suffix}.txt").write_text(
+                f"第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。",
+                encoding="utf-8",
+            )
+        for distinct_topic in ("睡眠规律", "饮水习惯", "桌面收纳"):
+            (alpha_notes / f"关于_{distinct_topic}_笔记.txt").write_text(
+                f"独立主题记录：{distinct_topic}。",
+                encoding="utf-8",
+            )
+        old_snap = alpha_notes / "2026-10-01_日常速记.txt"
+        old_snap.write_text("单日临时快照数据。", encoding="utf-8")
+        old_ts = now - 15 * 86400
+        os.utime(old_snap, (old_ts, old_ts))
+
+        merged_n, archived_n = await jd.consolidate_persona_notes(
+            "alpha", notes_dir=alpha_notes, now_ts=now, allow_llm=False
+        )
+        assert merged_n == 1 and archived_n == 4
+        assert (alpha_notes / "topic_体态拉伸.md").exists()
+        assert not (alpha_notes / "topic_关于.md").exists()
+        assert not old_snap.exists()
+        # 合并后的新专题句柄与已归档的旧碎片句柄均可通过 read_handle 无损解析
+        assert await resolve_handle("note:alpha:topic_体态拉伸") is not None
+        assert await resolve_handle("note:alpha:体态拉伸_小抄") is not None
+
+        # 超 60 天未活跃群自动迁入 dormant_groups，再次读取时无缝唤醒
+        g1_file = jm.get_journal_path("alpha", "group_1")
+        ancient_ts = now - 70 * 86400
+        os.utime(g1_file, (ancient_ts, ancient_ts))
+        jm._SHARD_CACHE.clear()
+        dormant_cnt, _ = await jd.run_storage_gc_sync(jm._persona_root("alpha"), now)
+        assert dormant_cnt >= 1 and not g1_file.exists()
+        woken_text, _ = jm.read_journal_for_context("alpha", current_group_id="group_1")
+        assert "三大指数回落" in woken_text and g1_file.exists()
+
+        # 8. 实库验证 Phase 1 真值对账（completed 入已完结，>24h 僵尸审批项不进 in_flight）
+        now_dt = datetime.fromtimestamp(now)
+        async with maker() as s:
+            s.add(
+                AIAgentTask(
+                    id="t_done",
+                    goal="完成分析",
+                    display_name="年度报表核查",
+                    status="completed",
+                    group_id="group_1",
+                    updated_at=now_dt - timedelta(hours=2),
+                )
+            )
+            s.add(
+                AIAgentTask(
+                    id="t_zombie",
+                    goal="旧审批",
+                    display_name="过期十天审批单",
+                    status="waiting_approval",
+                    group_id="group_1",
+                    updated_at=now_dt - timedelta(hours=30),
+                )
+            )
+            s.add(
+                AIAutonomyActivity(
+                    persona_name="alpha",
+                    bot_id="onebot",
+                    bot_self_id="1",
+                    drive_kind="self_explore",
+                    summary="自主整理了读书摘要",
+                    created_at=now - 600,
+                )
+            )
+            await s.commit()
+
+        gt_g1 = await jd.collect_ground_truth("alpha", "group_1", now)
+        assert "年度报表核查" in gt_g1.completed
+        assert "过期十天审批单" not in gt_g1.in_flight
+        gt_self = await jd.collect_ground_truth("alpha", "__self__", now)
+        assert any("读书摘要" in x for x in gt_self.autonomy_facts)
+
+        # 9. persist_subagent_result 在 persona_name=None 时按 group_id 路由至 alpha，不落 default
+        from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard
+
+        async def _fake_write_rec(**kwargs: object) -> PersistedHandleCard:
+            del kwargs
+            return PersistedHandleCard(
+                id="sa_test0001",
+                kind="tool_output",
+                mime="text/plain",
+                summary="子代理测试结果摘要",
+                size_bytes=200,
+                read_tool="read_handle",
+            )
+
+        monkeypatch.setattr(toh, "_write_record", _fake_write_rec)
+        long_sub_body = (
+            "完整的子代理调研结论内容，包含多维度测试指标核查与交叉对比结论，"
+            "总字符数超过四十个字符门槛以便触发手账自动回流落盘流程。"
+        )
+        sub_task = AIAgentTask(
+            id="t_sub",
+            goal="调研",
+            display_name="调研子任务",
+            persona_name=None,
+            group_id="group_1",
+            scope_key="group:group_1",
+            owner_user_id="100000001",
+        )
+
+        def _read_raw_text(p: Path) -> str:
+            return p.read_text(encoding="utf-8")
+
+        def _read_timeline_now(p: Path) -> list[str]:
+            return jm.parse_shard_markdown(_read_raw_text(p)).timeline if p.exists() else []
+
+        async def _wait_timeline_has(shard_path: Path, needle: str, timeout: float = 1.5) -> list[str]:
+            deadline = time.monotonic() + timeout
+            lines: list[str] = []
+            while time.monotonic() < deadline:
+                lines = _read_timeline_now(shard_path)
+                if any(needle in ln for ln in lines):
+                    return lines
+                await asyncio.sleep(0.01)
+            return lines
+
+        g1_shard_path = jm.get_journal_path("alpha", "group_1")
+        await toh.persist_subagent_result(
+            profile="research_agent",
+            content=long_sub_body,
+            task=sub_task,
+            res_handle="res_test1",
+        )
+        tl_after_sub = await _wait_timeline_has(g1_shard_path, "sa_test0001")
+        assert any("sa_test0001" in ln for ln in tl_after_sub)
+        assert not (journal_dir / "personas" / "default" / "groups" / "group_1.md").exists()
+
+        # 10. 主 Agent settle 回流边界：看板回灌结单入账，Aside 旁白与无 ev 调用隔离不入账
+        from gsuid_core.ai_core import session_logger as sl_mod
+        from gsuid_core.ai_core.gs_agent import create_agent
+        from gsuid_core.ai_core.control.lines import delivery_wake_line
+
+        monkeypatch.setattr(sl_mod, "AI_SESSION_LOGS_PATH", tmp_path / "session_logs")
+        monkeypatch.setattr(sl_mod, "AI_SUBAGENT_LOGS_PATH", tmp_path / "session_logs" / "subagents")
+        offline_test_model = TestModel(
+            call_tools=[],
+            custom_output_text="年度报表核查结果已经全部整理完毕，各项指标均符合预期标准。",
+        )
+        monkeypatch.setattr(
+            "gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _level, _kind=None: offline_test_model
+        )
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_by_full_name", lambda _name: offline_test_model)
+
+        aside_agent = create_agent(
+            system_prompt="测试角色",
+            persona_name="alpha",
+            create_by="Aside",
+            session_id="ws1:onebot:1:group:group_1",
+        )
+        try:
+            await aside_agent.run(
+                "命令旁白长句子测试，即便超过六十个字符的点评内容也不应该被写入驻群生活手账以免大群命令洪峰灌水污染手账记录。",
+                ev=ev_g1,
+                tools=[],
+                return_mode="return",
+                budget_gate=False,
+            )
+        finally:
+            aside_agent._session_logger.close()
+        await asyncio.sleep(0.03)
+        g1_after_aside = jm.parse_shard_markdown(g1_shard_path.read_text(encoding="utf-8"))
+        assert not any("年度报表核查结果" in ln for ln in g1_after_aside.timeline)
+
+        chat_agent = create_agent(
+            system_prompt="测试角色",
+            persona_name="alpha",
+            create_by="Chat",
+            session_id="ws1:onebot:1:group:group_1",
+        )
+        try:
+            # 无 ev 的内部调用严禁误落入公共 self.md
+            await chat_agent.run(
+                "这是一句超过六十个字符的无事件内部调用测试输入，用于验证无事件时不会误入公共自我手账文件。",
+                ev=None,
+                tools=[],
+                return_mode="return",
+                budget_gate=False,
+            )
+            wake_msg = delivery_wake_line("【子任务交付】任务#1「年度报表核查」已完成。", "", "", allow_render=False)
+            await chat_agent.run(
+                wake_msg,
+                ev=ev_g1,
+                tools=[],
+                return_mode="return",
+                budget_gate=False,
+                is_framework_injection=True,
+            )
+        finally:
+            chat_agent._session_logger.close()
+        tl_after_wake = await _wait_timeline_has(g1_shard_path, "交付完结")
+        assert any("交付完结" in ln and "年度报表核查结果" in ln for ln in tl_after_wake)
+        assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+
+        # 验证 send_message_by_ai 发送正文后无论是返回 <SILENCE> 还是短收尾语（如“发好啦”），均保序保留真实已发正文
+        from pydantic_ai.tools import Tool
+
+        from gsuid_core.bot import Bot, _Bot
+
+        tail_after_send_model = TestModel(call_tools=["_mock_send_by_ai"], custom_output_text="发好啦~")
+        monkeypatch.setattr(
+            "gsuid_core.ai_core.gs_agent.get_model_for_task",
+            lambda _level, _kind=None: tail_after_send_model,
+        )
+        monkeypatch.setattr(
+            "gsuid_core.ai_core.gs_agent.get_model_by_full_name",
+            lambda _name: tail_after_send_model,
+        )
+        img_agent = create_agent(
+            system_prompt="测试角色",
+            persona_name="alpha",
+            create_by="Chat",
+            session_id="ws1:onebot:1:group:group_1",
+            dynamic_tools=False,
+        )
+
+        async def _mock_send_by_ai() -> str:
+            for bubble in ("先看结论汇总Z", "再看分项比例表A，各项比例分开列在表里。"):
+                img_agent._run_sent_texts.add(bubble)
+                img_agent._run_sent_order.append(bubble)
+            return "已成功发送"
+
+        try:
+            await img_agent.run(
+                "请帮我生成一张比例汇总图",
+                ev=ev_g1,
+                tools=[Tool(_mock_send_by_ai)],
+                return_mode="return",
+                budget_gate=False,
+            )
+        finally:
+            img_agent._session_logger.close()
+        tl_after_img = await _wait_timeline_has(g1_shard_path, "先看结论汇总Z")
+        assert any("先看结论汇总Z；再看分项比例表A" in ln and "发好啦" in ln for ln in tl_after_img)
+
+        # 验证 return 与 by_bot 双模式下被闸门拦截/未出站的泄漏文本均绝不混入手账
+        leak_model = TestModel(
+            call_tools=[], custom_output_text="<control>内部系统提醒泄露文本超过六十个字符也不得入账</control>"
+        )
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _level, _kind=None: leak_model)
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_by_full_name", lambda _name: leak_model)
+        for _mode in ("return", "by_bot"):
+            leak_agent = create_agent(
+                system_prompt="测试角色",
+                persona_name="alpha",
+                create_by="Chat",
+                session_id="ws1:onebot:1:group:group_1",
+            )
+            try:
+                await leak_agent.run(
+                    "测试泄漏拦截",
+                    bot=Bot(_Bot("onebot"), ev_g1) if _mode == "by_bot" else None,
+                    ev=ev_g1,
+                    tools=[],
+                    return_mode=_mode,
+                    budget_gate=False,
+                )
+            finally:
+                leak_agent._session_logger.close()
+        await asyncio.sleep(0.03)
+        g1_after_leak = jm.parse_shard_markdown(_read_raw_text(g1_shard_path))
+        assert not any("内部系统提醒泄露" in ln for ln in g1_after_leak.timeline)
+
+        # 11. 主动出口（scheduled_task / heartbeat）异步入账、拦截失败兜底文案 + WebConsole 占位符过滤与单分片整理
+        from gsuid_core.ai_core.proactive import emitter as emitter_mod
+
+        async def _noop_send_chat(*_a: object, **_kw: object) -> None:
+            return None
+
+        async def _noop_sync_main(**_kw: object) -> None:
+            return None
+
+        monkeypatch.setattr(emitter_mod, "send_chat_result", _noop_send_chat)
+        monkeypatch.setattr(emitter_mod, "_sync_to_main_session", _noop_sync_main)
+        await emitter_mod.emit_proactive_message(
+            event=ev_g1,
+            message="这次的定时任务没能执行成功，稍后再让我试试吧\n⏰ 定时任务 task_fail",
+            source="scheduled_task",
+            trigger_reason="task_fail",
+            bot=Bot(_Bot("onebot"), ev_g1),
+            persona_name="alpha",
+            suppress_when_heartbeat_recent=False,
+        )
+        sent_ok = await emitter_mod.emit_proactive_message(
+            event=ev_g1,
+            message="大家早上好，今天天气很清爽。\n⏰ 定时任务: 晨间问候",
+            source="scheduled_task",
+            trigger_reason="task_morning",
+            bot=Bot(_Bot("onebot"), ev_g1),
+            persona_name="alpha",
+            suppress_when_heartbeat_recent=False,
+        )
+        assert sent_ok is True
+        tl_after_proactive = await _wait_timeline_has(g1_shard_path, "定时提醒")
+        assert not any("没能执行成功" in ln for ln in tl_after_proactive)
+        assert any("定时提醒" in ln and "大家早上好" in ln and "定时任务" not in ln for ln in tl_after_proactive)
+
+        structured_view = jm.get_journal_structured("alpha")
+        assert any(gs["group_id"] == "group_1" and gs["timeline_count"] >= 1 for gs in structured_view["group_shards"])
+        assert len(structured_view["archive_months"]) >= 1
+        compat_md = jm.get_journal_content("alpha")
+        compat_standing, compat_tl = jm._read_sections(compat_md)
+        assert compat_standing and any("(群:group_1)" in ln for ln in compat_tl)
+
+        # WebConsole 保存往返不会将占位文案固化进槽位，且单分片手动整理仅压缩指定群分片
+        await jm.save_journal_content_async("alpha", _read_raw_text(g1_shard_path), shard_id="group_1")
+        assert jm.parse_shard_markdown(_read_raw_text(g1_shard_path), "group_1").monthly == []
+        assert await jm.compact_journal("alpha", force=True, target_shard="group_1", max_llm_shards=1) is True
+        assert len(jm.parse_shard_markdown(_read_raw_text(g1_shard_path)).timeline) == 0
+
+        await engine.dispose()
 
     asyncio.run(scenario())
 

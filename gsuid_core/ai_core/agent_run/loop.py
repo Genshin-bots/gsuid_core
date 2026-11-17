@@ -254,6 +254,8 @@ class LoopPhase(RunOnceHost):
                 # 收件人必须进 commit：群转录的 AI→ 分支只认这条记录上的 metadata。
                 await bot.commit_streamed_history(text, extra_metadata=turn_reply_metadata(st.ev))
             self._run_sent_texts.add(text)
+            if text not in self._run_sent_order:
+                self._run_sent_order.append(text)
             st.main_channel_sends += 1
             return
         _mention_raw = st.run_extra["mention_names"] if "mention_names" in st.run_extra else None
@@ -272,6 +274,8 @@ class LoopPhase(RunOnceHost):
         )
         absorb_run_image_delivered(st)
         self._run_sent_texts.add(text)
+        if text not in self._run_sent_order:
+            self._run_sent_order.append(text)
         st.main_channel_sends += 1
 
     async def _send_gated_text(self, st: RunOnceState, text: str, *, at_user_id: str | None) -> None:
@@ -1086,6 +1090,8 @@ class LoopPhase(RunOnceHost):
                                 )
                                 absorb_run_image_delivered(st)
                                 self._run_sent_texts.add(_fb)
+                                if _fb not in self._run_sent_order:
+                                    self._run_sent_order.append(_fb)
                                 st.main_channel_sends += 1
                                 _fb_sent = True
                             except Exception as _me:
@@ -1133,6 +1139,8 @@ class LoopPhase(RunOnceHost):
                     # 纠正轮由外层发送；先记入已发送会让外层当成重复而丢掉。
                     if not st.fake_done_retry:
                         self._run_sent_texts.add(_text)
+                        if _text not in self._run_sent_order:
+                            self._run_sent_order.append(_text)
 
             elif isinstance(part, ThinkingPart):
                 _thinking = part.content.strip()

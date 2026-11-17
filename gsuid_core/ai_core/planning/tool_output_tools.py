@@ -70,8 +70,15 @@ async def _handle_access_allowed(
 ) -> bool:
     if resolved.source == "tool_output":
         return _tool_output_access_allowed(resolved, ctx)
-    if resolved.source == "knowledge":
+    if resolved.source in ("knowledge", "note"):
         return True
+    if resolved.source == "journal":
+        if not resolved.scope_key:
+            return True
+        ev = ctx.deps.ev
+        if ev is None:
+            return True
+        return bool(ev.group_id) and str(ev.group_id) == resolved.scope_key
     if resolved.source == "image" and resolved.id.startswith("img_"):
         return True
     if resolved.source in {"artifact", "image"}:
@@ -186,7 +193,7 @@ async def read_handle(
     handle_ids: list[str] | None = None,
     query: str = "",
 ) -> str:
-    """统一读句柄：to_/sa_/res_/img_/dlg_/kb_plugin/kb_kbdoc 均可；支持单句柄、多句柄与关键词窗口提取。
+    """统一读句柄：to_/sa_/res_/img_/dlg_/note:/journal:/kb_plugin/kb_kbdoc 均可；支持单句柄、多句柄与关键词窗口提取。
 
     长文按 **字符** offset/limit 分页（见返回文首【读窗口】）。
     支持多句柄批量读：传入 handle_ids 一次获取多个句柄内容，避免多次往返。

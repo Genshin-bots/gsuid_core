@@ -21,7 +21,7 @@ from gsuid_core.ai_core.planning.tool_output_protocol import (
 @dataclass(frozen=True)
 class ResolvedHandle:
     id: str
-    source: str  # tool_output | artifact | image | unknown
+    source: str  # tool_output | artifact | image | knowledge | journal | note | unknown
     mime: str
     summary: str
     owner_user_id: str
@@ -33,11 +33,12 @@ class ResolvedHandle:
     task_id: str = ""
 
 
-HandleKind = Literal["tool_output", "artifact", "image", "delegation", "knowledge", "unknown"]
+HandleKind = Literal["tool_output", "artifact", "image", "delegation", "knowledge", "journal", "unknown"]
 
 _PREFIX_KINDS: tuple[tuple[str, HandleKind], ...] = (
     ("kb_plugin:", "knowledge"),
     ("kb_kbdoc:", "knowledge"),
+    ("journal:", "journal"),
     ("to_", "tool_output"),
     ("sa_", "tool_output"),
     ("res_", "artifact"),
@@ -169,6 +170,61 @@ async def kbdoc_char_offsets(doc_id: str) -> dict[int, int]:
     return offsets
 
 
+def _resolve_note_handle_sync(hid: str, pname: str, title: str) -> Optional[ResolvedHandle]:
+    import json as _json
+
+    from gsuid_core.ai_core.autonomy.tools import artifact_dir, safe_filename
+
+    base_dir = artifact_dir(pname)
+    stem = safe_filename(title).removesuffix(".txt")
+    for cand_path in (base_dir / f"{stem}.md", base_dir / f"{stem}.txt"):
+        if cand_path.exists():
+            text = cand_path.read_text(encoding="utf-8")
+            mime = "text/markdown" if cand_path.suffix == ".md" else "text/plain"
+            return ResolvedHandle(
+                id=hid,
+                source="note",
+                mime=mime,
+                summary=f"{pname} 的笔记：{title}",
+                owner_user_id="",
+                scope_key="",
+                payload_inline=text,
+                payload_path=str(cand_path),
+                size_bytes=len(text.encode("utf-8")),
+            )
+    raw_arch_dir = base_dir / "archived_raw"
+    if raw_arch_dir.exists():
+        for afile in sorted(raw_arch_dir.glob("*.jsonl"), reverse=True):
+            with afile.open("r", encoding="utf-8", errors="replace") as fp:
+                for line in fp:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec_obj = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    if (
+                        isinstance(rec_obj, dict)
+                        and "title" in rec_obj
+                        and rec_obj["title"] == stem
+                        and "body" in rec_obj
+                        and isinstance(rec_obj["body"], str)
+                    ):
+                        body_txt = rec_obj["body"]
+                        return ResolvedHandle(
+                            id=hid,
+                            source="note",
+                            mime="text/plain",
+                            summary=f"{pname} 的历史归档笔记：{title}",
+                            owner_user_id="",
+                            scope_key="",
+                            payload_inline=body_txt,
+                            payload_path="",
+                            size_bytes=len(body_txt.encode("utf-8")),
+                        )
+    return None
+
+
 async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
     hid = (handle_id or "").strip()
     if not hid:
@@ -185,27 +241,53 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
         if text is None:
             return None
         return _from_knowledge(hid, text)
+    if hid.startswith("journal:"):
+        import re as _re
+
+        rest_j = hid[len("journal:") :]
+        pname_raw, sep1, tail_j = rest_j.partition(":")
+        if not sep1:
+            return None
+        if ":" in tail_j:
+            shard_raw, _, date_raw = tail_j.rpartition(":")
+        else:
+            shard_raw, date_raw = "__self__", tail_j
+        pname = pname_raw.strip()
+        date_key = date_raw.strip()
+        shard_id = shard_raw.strip()
+        if (
+            not pname
+            or pname in (".", "..")
+            or ".." in pname
+            or shard_id in (".", "..")
+            or ".." in shard_id
+            or _re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", date_key) is None
+        ):
+            return None
+        from gsuid_core.ai_core.journal.manager import SELF_SHARD_ID, read_archived_journal_handle
+
+        eff_shard = shard_id or SELF_SHARD_ID
+        text = await read_archived_journal_handle(pname, eff_shard, date_key)
+        if text:
+            return ResolvedHandle(
+                id=hid,
+                source="journal",
+                mime="text/markdown",
+                summary=f"{pname} 的手账归档 ({date_key})",
+                owner_user_id="",
+                scope_key="" if eff_shard == SELF_SHARD_ID else eff_shard,
+                payload_inline=text,
+                payload_path="",
+                size_bytes=len(text.encode("utf-8")),
+            )
+        return None
     if hid.startswith("note:"):
         _, _, rest = hid.partition(":")
         pname, _, title = rest.partition(":")
-        if pname and title:
-            from gsuid_core.ai_core.autonomy.tools import artifact_dir, safe_filename
+        if pname and title and pname.strip() not in (".", "..") and ".." not in pname:
+            from gsuid_core.pool import to_thread
 
-            filename = safe_filename(title)
-            file_path = artifact_dir(pname) / filename
-            if file_path.exists():
-                text = file_path.read_text(encoding="utf-8")
-                return ResolvedHandle(
-                    id=hid,
-                    source="artifact",
-                    mime="text/plain",
-                    summary=f"{pname} 的笔记：{title}",
-                    owner_user_id="",
-                    scope_key="",
-                    payload_inline=text,
-                    payload_path=str(file_path),
-                    size_bytes=len(text.encode("utf-8")),
-                )
+            return await to_thread(_resolve_note_handle_sync)(hid, pname, title)
         return None
     # FileOS
     if hid.startswith("to_") or hid.startswith("sa_"):

@@ -166,7 +166,7 @@ TASK_MEMORY_WINDOW_ROUTER: Final = _builtin(
     stats=("memwindowrouter",),
 )
 TASK_JOURNAL_COMPACT: Final = _builtin(
-    "journal_compact", "日志压缩", "把人格日志压缩成摘要。", "memory", "low", stats=("journal_compact",)
+    "journal_compact", "日志压缩", "把人格日志压缩成摘要。", "memory", "high", stats=("journal_compact",)
 )
 TASK_RELATIONSHIP_DISTILL: Final = _builtin(
     "relationship_distill",

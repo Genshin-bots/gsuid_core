@@ -7,7 +7,7 @@ Persona APIs
 import base64
 from typing import Any, Dict, List, TypedDict
 
-from fastapi import Depends, HTTPException
+from fastapi import Body, Depends, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
@@ -1368,10 +1368,33 @@ async def get_heartbeat_status(_: Dict[str, Any] = Depends(require_auth)) -> Dic
         return {"status": 1, "msg": f"获取 Heartbeat 状态失败: {e}", "data": None}
 
 
+class PersonaJournalGroupShardItem(TypedDict):
+    group_id: str
+    content: str
+    persistent: List[str]
+    monthly: List[str]
+    yesterday: List[str]
+    month_label: str
+    yesterday_label: str
+    timeline: List[str]
+    timeline_count: int
+
+
 class PersonaJournalData(TypedDict):
     persona_name: str
     content: str
+    self_content: str
+    self_persistent: List[str]
+    self_monthly: List[str]
+    self_yesterday: List[str]
+    self_yesterday_label: str
+    self_timeline: List[str]
     standing_summary: str
+    persistent_summary: str
+    monthly_summary: str
+    yesterday_summary: str
+    group_shards: List[PersonaJournalGroupShardItem]
+    archive_months: List[str]
     timeline: List[str]
     timeline_count: int
 
@@ -1384,6 +1407,11 @@ class PersonaJournalResponse(TypedDict):
 
 class PersonaJournalUpdateRequest(BaseModel):
     content: str = ""
+    shard_id: str = ""
+
+
+class PersonaJournalCompactRequest(BaseModel):
+    shard_id: str = ""
 
 
 class PersonaJournalSaveData(TypedDict):
@@ -1412,21 +1440,35 @@ async def get_persona_journal(
     persona_name: str,
     _: SessionRecord = Depends(require_auth),
 ) -> PersonaJournalResponse:
-    """获取指定人格的生活手账全文及解析后的分段结构。"""
+    """获取指定人格的生活手账全文及解析后的多尺度分片结构。"""
+    from gsuid_core.pool import to_thread
     from gsuid_core.ai_core.journal.manager import (
         _read_sections,
         get_journal_content,
+        get_journal_structured,
     )
 
-    content = get_journal_content(persona_name)
+    content = await to_thread(get_journal_content)(persona_name)
     standing, timeline = _read_sections(content)
+    structured = await to_thread(get_journal_structured)(persona_name)
     return {
         "status": 0,
         "msg": "ok",
         "data": {
             "persona_name": persona_name,
             "content": content,
+            "self_content": structured["self_content"],
+            "self_persistent": structured["self_persistent"],
+            "self_monthly": structured["self_monthly"],
+            "self_yesterday": structured["self_yesterday"],
+            "self_yesterday_label": structured["self_yesterday_label"],
+            "self_timeline": structured["self_timeline"],
             "standing_summary": standing,
+            "persistent_summary": structured["persistent_summary"],
+            "monthly_summary": structured["monthly_summary"],
+            "yesterday_summary": structured["yesterday_summary"],
+            "group_shards": structured["group_shards"],
+            "archive_months": structured["archive_months"],
             "timeline": timeline,
             "timeline_count": len(timeline),
         },
@@ -1439,10 +1481,10 @@ async def update_persona_journal(
     data: PersonaJournalUpdateRequest,
     _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalSaveResponse:
-    """保存生活手账 markdown 全文。"""
-    from gsuid_core.ai_core.journal.manager import save_journal_content
+    """保存生活手账 Markdown（支持单分片加锁写回或全景写回）。"""
+    from gsuid_core.ai_core.journal.manager import save_journal_content_async
 
-    save_journal_content(persona_name, data.content)
+    await save_journal_content_async(persona_name, data.content, shard_id=data.shard_id)
     return {
         "status": 0,
         "msg": "ok",
@@ -1453,12 +1495,19 @@ async def update_persona_journal(
 @app.post("/api/persona/{persona_name}/journal/compact", summary="整理指定人格的生活手账", tags=PERSONA)
 async def compact_persona_journal(
     persona_name: str,
+    body: PersonaJournalCompactRequest | None = Body(default=None),
     _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalCompactResponse:
-    """触发生活手账整理压缩。"""
+    """触发手账整理压缩（支持指定单分片速整，全景手动整理限制同步重度 LLM 次数防网关超时）。"""
     from gsuid_core.ai_core.journal.manager import compact_journal
 
-    compacted = await compact_journal(persona_name, force=True)
+    req_shard = body.shard_id.strip() if body is not None and body.shard_id else ""
+    compacted = await compact_journal(
+        persona_name,
+        force=True,
+        target_shard=req_shard or None,
+        max_llm_shards=1 if req_shard else 3,
+    )
     return {
         "status": 0,
         "msg": "ok",

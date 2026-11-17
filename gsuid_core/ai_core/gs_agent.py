@@ -383,6 +383,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._recent_user_texts: List[str] = []
         # by_bot 单轮已发送文本去重集合：弱模型常跨轮重复同一段最终答复，叠加瞬时 故障重试重发，
         self._run_sent_texts: set[str] = set()
+        self._run_sent_order: List[str] = []
         self.read_image_ids: set[str] = set()
         # 本用户轮内模型对框架校验的申辩理由（dispute_directive 写，settle 读）。
         # 与 _run_sent_texts 同样同引用透传进纠正轮，使外层能看到内层的申辩。
@@ -1212,6 +1213,7 @@ class GsCoreAIAgent(RunOnceMixin):
         # 跨重试共享、按用户轮次重置：重试重跑 _execute_run_once 不会重发已送达的段；
         # 新一轮 run 则允许合法地再说同样的话。
         self._run_sent_texts = set()
+        self._run_sent_order = []
         self._run_disputes = []
         self._disable_direct_image_in_run = False
 
@@ -1516,6 +1518,8 @@ class GsCoreAIAgent(RunOnceMixin):
                 extra_metadata=turn_reply_metadata(ev),
             )
             self._run_sent_texts.add(rewritten)
+            if rewritten not in self._run_sent_order:
+                self._run_sent_order.append(rewritten)
         except Exception as e:
             logger.debug(i18n_t("log.agent.agent_event", e=e))
         self._replace_blocked_text_in_history(blocked_texts, rewritten)
@@ -1709,6 +1713,8 @@ class GsCoreAIAgent(RunOnceMixin):
                             extra_metadata=turn_reply_metadata(ev),
                         )
                         self._run_sent_texts.add(rewritten)
+                        if rewritten not in self._run_sent_order:
+                            self._run_sent_order.append(rewritten)
                         sent_ok = True
                 except Exception as abe:
                     logger.debug(i18n_t("log.ai.output_gate_angle_rewrite_send_fail", e=abe))
