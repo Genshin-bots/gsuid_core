@@ -618,3 +618,77 @@ def test_evidence_block_groups_and_credential_invalidation() -> None:
     finally:
         _forget_mcp_server("cfg_unchanged_test")
         service_changed_at.pop("svc_unchanged_test", None)
+
+
+def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FastEmbed 静态模型（safetensors）缓存校验、mmap 零告警加载与 512 token 预算上限。"""
+    import gc
+    import struct
+    import warnings
+    from pathlib import Path
+
+    import numpy as np
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+
+    import gsuid_core.ai_core.rag.base as rag_base
+    from gsuid_core.ai_core.configs.ai_config import local_embedding_config
+    from gsuid_core.ai_core.rag.embedding.local import (
+        LocalEmbeddingProvider,
+        resolve_fastembed_model_spec,
+    )
+
+    model_name = "minishlab/potion-multilingual-128M"
+    assert model_name in local_embedding_config.get_config("embedding_model_name").options
+
+    # 旧版 fastembed 缺少 static_embedding 子模块时，默认 ONNX 模型仍须正常解析不崩启动。
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "fastembed.text.static_embedding", None)
+        legacy_spec = resolve_fastembed_model_spec("BAAI/bge-small-en-v1.5")
+        assert legacy_spec.is_static is False and "bge-small-en-v1.5" in legacy_spec.hf_repo
+
+    cache_root = Path(tmp_path) / "models_cache"
+    rev = "a" * 40
+    repo_dir = cache_root / "models--minishlab--potion-multilingual-128M"
+    snap = repo_dir / "snapshots" / rev
+    refs = repo_dir / "refs"
+    snap.mkdir(parents=True)
+    refs.mkdir(parents=True)
+    (refs / "main").write_text(rev, encoding="utf-8")
+    (snap / "config.json").write_text(json.dumps({"max_position_embeddings": 8192}), encoding="utf-8")
+
+    vocab = {"[UNK]": 0, "hello": 1, "world": 2, "test": 3}
+    tok = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
+    tok.pre_tokenizer = Whitespace()
+    tok.save(str(snap / "tokenizer.json"))
+
+    orig_model = local_embedding_config.get_config("embedding_model_name").data
+    monkeypatch.setattr(rag_base, "MODELS_CACHE", cache_root)
+    local_embedding_config.get_config("embedding_model_name").data = model_name
+    try:
+        # 缺 model.safetensors 时缓存必须判无效
+        assert rag_base._is_models_cache_valid() is False
+
+        raw = np.ascontiguousarray(np.ones((4, 256), dtype=np.float32), dtype="<f4").tobytes()
+        header = json.dumps({"embeddings": {"dtype": "F32", "shape": [4, 256], "data_offsets": [0, len(raw)]}}).encode(
+            "utf-8"
+        )
+        (snap / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + raw)
+
+        assert rag_base._is_models_cache_valid() is True
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            provider = LocalEmbeddingProvider(model_name=model_name, cache_dir=str(cache_root))
+        try:
+            assert provider.dimension == 256
+            assert provider.max_input_tokens == 512
+            vecs = provider.embed_sync(["hello world"])
+            assert len(vecs) == 1 and len(vecs[0]) == 256
+        finally:
+            provider.close()
+            del provider
+            gc.collect()
+    finally:
+        local_embedding_config.get_config("embedding_model_name").data = orig_model

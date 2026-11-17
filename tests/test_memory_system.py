@@ -738,3 +738,114 @@ def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
         "我怕辣", "100000001", "200000001", "group:200000001", t0, "group_msg", reply_to_bot=True
     )
     assert _cluster_addresses_bot([r_reply], [0]) is True
+
+
+def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
+    """记忆向量写入与检索必须经过 jieba 中文预分词，且单条实体稀疏向量覆盖 summary。"""
+    import re
+    import zlib
+    from dataclasses import dataclass
+
+    import gsuid_core.ai_core.rag.base as rag_base
+    from gsuid_core.ai_core.rag.qlocal import LocalQdrant
+    from gsuid_core.ai_core.memory.vector import ops as mem_ops
+    from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
+    from gsuid_core.ai_core.memory.vector.startup import ensure_memory_collections
+
+    @dataclass
+    class _SparseOut:
+        indices: list[int]
+        values: list[float]
+
+    class _SimpleWordBm25:
+        """复现 fastembed Qdrant/bm25 SimpleTokenizer：仅按 \\w+ 切词，连续中文不切分。"""
+
+        def embed(self, texts: list[str]) -> list[_SparseOut]:
+            outputs: list[_SparseOut] = []
+            for text in texts:
+                counts: dict[int, float] = {}
+                for token in re.findall(r"\w+", text.lower()):
+                    idx = zlib.crc32(token.encode("utf-8")) & 0x7FFFFFFF
+                    prev = counts[idx] if idx in counts else 0.0
+                    counts[idx] = prev + 1.0
+                items = sorted(counts.items())
+                outputs.append(_SparseOut([k for k, _ in items], [v for _, v in items]))
+            return outputs
+
+    class _OrthogonalDenseProvider(EmbeddingProvider):
+        @property
+        def dimension(self) -> int:
+            return 4
+
+        def embed_sync(self, texts: list[str]) -> list[list[float]]:
+            out: list[list[float]] = []
+            for t in texts:
+                # 查询向量与入库向量正交（余弦 0），确保纯靠稀疏 BM25 分支召回。
+                if "?" in t or "？" in t or len(t) <= 6:
+                    out.append([0.0, 1.0, 0.0, 0.0])
+                else:
+                    out.append([1.0, 0.0, 0.0, 0.0])
+            return out
+
+    qclient = LocalQdrant(tmp_path / "mem_qdrant")
+    monkeypatch.setattr(rag_base, "client", qclient)
+    monkeypatch.setattr(rag_base, "embedding_provider", _OrthogonalDenseProvider())
+    monkeypatch.setattr(rag_base, "_get_sparse_model", lambda: _SimpleWordBm25())
+
+    async def scenario() -> None:
+        try:
+            await ensure_memory_collections()
+            await mem_ops.upsert_episode_vector(
+                episode_id="11111111-1111-1111-1111-111111111111",
+                content="测试用户A周末去了上海科技馆参观航天展",
+                scope_key="group:200000001",
+                valid_at_ts=1700000000.0,
+                speaker_ids=["100000001"],
+            )
+            await mem_ops.upsert_episode_vector(
+                episode_id="22222222-2222-2222-2222-222222222222",
+                content="测试用户B在家看书休息",
+                scope_key="group:200000001",
+                valid_at_ts=1700000010.0,
+                speaker_ids=["100000002"],
+            )
+            eps = await mem_ops.search_episodes(
+                "上海科技馆",
+                ["group:200000001"],
+                top_k=5,
+                score_threshold=0.95,
+            )
+            assert [e["id"] for e in eps] == ["11111111-1111-1111-1111-111111111111"]
+
+            await mem_ops.upsert_entity_vector(
+                entity_id="33333333-3333-3333-3333-333333333333",
+                name="测试用户A",
+                summary="周末常去上海科技馆看航天展",
+                scope_key="group:200000001",
+                is_speaker=True,
+                user_id="100000001",
+                tag=["Speaker"],
+            )
+            ents = await mem_ops.search_entities("航天展", ["group:200000001"], top_k=5)
+            assert any(ent["id"] == "33333333-3333-3333-3333-333333333333" for ent in ents)
+
+            await mem_ops.upsert_edge_vectors_batch(
+                [
+                    {
+                        "edge_id": "44444444-4444-4444-4444-444444444444",
+                        "fact": "测试用户A收藏了月球陨石标本",
+                        "scope_key": "group:200000001",
+                        "valid_at_ts": 1700000020.0,
+                        "invalid_at_ts": None,
+                        "source_entity_id": "33333333-3333-3333-3333-333333333333",
+                        "target_entity_id": "33333333-3333-3333-3333-333333333333",
+                        "resolution_state": "active",
+                    }
+                ]
+            )
+            edges = await mem_ops.search_edges("月球陨石", ["group:200000001"], top_k=5)
+            assert [ed["id"] for ed in edges] == ["44444444-4444-4444-4444-444444444444"]
+        finally:
+            await qclient.close()
+
+    asyncio.run(scenario())

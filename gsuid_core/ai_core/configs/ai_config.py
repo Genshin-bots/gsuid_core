@@ -925,12 +925,14 @@ WEB_FETCH_CONFIG: Dict[str, GSC] = {
 LOCAL_EMBEDDING_CONFIG: Dict[str, GSC] = {
     "embedding_model_name": GsStrConfig(
         "指定嵌入模型名称",
-        "本地 fastembed 模型。bge-small-en-v1.5 为 384 维英文模型，中文工具召回由 CJK-BM25 补齐",
+        "本地 fastembed 模型。bge-small-en-v1.5 为 384 维英文模型，中文工具召回由 CJK-BM25 补齐；"
+        "minishlab/potion-multilingual-128M 为 256 维多语言静态嵌入，NumPy 查表无 ONNX 内存池膨胀",
         "BAAI/bge-small-en-v1.5",
         options=[
             "jinaai/jina-embeddings-v2-base-zh",
             "BAAI/bge-small-zh-v1.5",
             "BAAI/bge-small-en-v1.5",
+            "minishlab/potion-multilingual-128M",
         ],
     ),
     "embedding_modalities": GsListStrConfig(

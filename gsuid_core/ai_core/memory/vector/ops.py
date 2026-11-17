@@ -9,12 +9,12 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Optional, TypedDict, cast
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.rag.base import _get_sparse_model, embed_texts_with_backoff, upsert_points_with_backoff
+from gsuid_core.ai_core.rag.base import embed_texts_with_backoff, upsert_points_with_backoff
 from gsuid_core.ai_core.rag.hybrid import hybrid_query
+from gsuid_core.ai_core.rag.sparse import sparse_embed_single, sparse_embed_batch_async
 from gsuid_core.ai_core.rag.qmodels import (
     Range,
     Filter,
@@ -23,7 +23,6 @@ from gsuid_core.ai_core.rag.qmodels import (
     Condition,
     MatchValue,
     PointStruct,
-    SparseVector,
     FieldCondition,
 )
 
@@ -66,17 +65,6 @@ _QDRANT_LOCKS: dict[str, asyncio.Lock] = {
     MEMORY_ENTITIES_COLLECTION: asyncio.Lock(),
     MEMORY_EDGES_COLLECTION: asyncio.Lock(),
 }
-
-# 有界线程池：用于单条 _embed_async / _sparse_embed_async 调用
-# 注意：max_workers=4 仅用于单条文本的 embedding，避免无界线程耗尽资源
-_EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem_embed")
-
-# 批量 Embedding 执行器：ONNX Runtime 自带多线程，此处单工作线程避免线程争用。
-_EMBED_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem_embed_batch")
-
-# Sparse Embedding 降级计数器，用于监控降级频率
-_sparse_degrade_count = 0
-_sparse_degrade_last_log = 0.0
 
 
 async def _upsert_locked(collection_name: str, points: list[PointStruct]) -> None:
@@ -153,105 +141,6 @@ async def embed_texts_dense(texts: list[str]) -> list[list[float]]:
     return await _embed_batch_async(texts)
 
 
-def _sparse_embed(text: str) -> Optional[SparseVector]:
-    """生成 BM25 稀疏向量"""
-    global _sparse_degrade_count, _sparse_degrade_last_log
-    import time as _time
-
-    model = _get_sparse_model()
-    if model is None:
-        # Sparse Embedding 模型不可用，降级为纯 Dense 搜索
-        _sparse_degrade_count += 1
-        now = _time.time()
-        if now - _sparse_degrade_last_log > 300:  # 每 5 分钟最多记录一次
-            logger.warning(
-                t(
-                    "log.memory.sparse_embedding_unavailable_degraded",
-                    _sparse_degrade_count=_sparse_degrade_count,
-                )
-            )
-            _sparse_degrade_last_log = now
-        return None
-    try:
-        result = list(model.embed([text]))[0]
-        return SparseVector(
-            indices=[int(i) for i in result.indices],
-            values=[float(v) for v in result.values],
-        )
-    except Exception as e:
-        logger.warning(t("log.memory.fail_sparse_embedding_failed", e=e))
-        return None
-
-
-async def _sparse_embed_async(text: str) -> Optional[SparseVector]:
-    """异步包装 _sparse_embed，将同步 CPU 计算移入有界线程池"""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_EMBED_EXECUTOR, _sparse_embed, text)
-
-
-def _sparse_embed_batch(texts: list[str]) -> list[Optional[SparseVector]]:
-    """同步批量调用 SparseTextEmbedding.embed，利用其原生批量接口一次处理多条文本。
-
-    BUG-08 修复：相比逐条调用 _sparse_embed（受限于 4 线程池），批量接口可减少
-    Python↔C++ 上下文切换开销，在大量文本场景下性能提升显著。
-    如果模型不支持批量接口，则降级为逐条调用。
-    """
-    global _sparse_degrade_count, _sparse_degrade_last_log
-    import time as _time
-
-    model = _get_sparse_model()
-    if model is None:
-        _sparse_degrade_count += 1
-        now = _time.time()
-        if now - _sparse_degrade_last_log > 300:
-            logger.warning(
-                t(
-                    "log.memory.sparse_embedding_unavailable_degraded",
-                    _sparse_degrade_count=_sparse_degrade_count,
-                )
-            )
-            _sparse_degrade_last_log = now
-        return [None] * len(texts)
-
-    try:
-        # 尝试使用批量接口
-        results = list(model.embed(texts))
-        vectors: list[Optional[SparseVector]] = [
-            SparseVector(
-                indices=[int(i) for i in result.indices],
-                values=[float(v) for v in result.values],
-            )
-            for result in results
-        ]
-        return vectors
-    except TypeError:
-        # 模型不支持批量接口，降级为逐条调用
-        _sparse_degrade_count += 1
-        now = _time.time()
-        if now - _sparse_degrade_last_log > 300:
-            logger.warning(
-                t(
-                    "log.memory.sparsetextembedding_batch_interface_degraded",
-                    _sparse_degrade_count=_sparse_degrade_count,
-                )
-            )
-            _sparse_degrade_last_log = now
-        return [_sparse_embed(text) for text in texts]
-    except Exception as e:
-        logger.warning(t("log.memory.sparse_batch_embedding", e=e))
-        return [None] * len(texts)
-
-
-async def _sparse_embed_batch_async(texts: list[str]) -> list[Optional[SparseVector]]:
-    """异步包装 _sparse_embed_batch，使用专用单线程执行器。
-
-    BUG-08 修复：使用专用单线程执行器（max_workers=1），
-    与 _embed_batch_async 保持一致，确保 Sparse Embedding 模型独占 CPU 资源。
-    """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_EMBED_BATCH_EXECUTOR, _sparse_embed_batch, texts)
-
-
 def _scope_filter(scope_keys: str | list[str]) -> Optional[Filter]:
     """构造 scope_key 过滤器，支持单值或多值（OR）"""
 
@@ -281,7 +170,7 @@ async def upsert_episode_vector(
 
     # 1. 锁外计算 Embedding (CPU耗时操作，使用线程池避免阻塞事件循环)
     vector = await _embed_async(content)
-    sparse_vector = await _sparse_embed_async(content)
+    sparse_vector = await sparse_embed_single(content)
 
     # 2. 锁内写入 (防止并发破坏索引长度同步)
     async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
@@ -319,7 +208,7 @@ async def upsert_episode_vectors_batch(episodes_data: list[dict]):
 
     texts = [str(d["content"]) for d in episodes_data]
     dense_vectors = await _embed_batch_async(texts)
-    sparse_vectors = await _sparse_embed_batch_async(texts)
+    sparse_vectors = await sparse_embed_batch_async(texts)
 
     points = []
     for i, d in enumerate(episodes_data):
@@ -404,7 +293,7 @@ async def upsert_entity_vector(
         summary_vector = await _embed_async(summary)
     else:
         summary_vector = name_vector
-    sparse_vector = await _sparse_embed_async(name)
+    sparse_vector = await sparse_embed_single(f"{name}: {summary}" if summary else name)
 
     # 构建 named vectors（dense 与 sparse），在集合锁保护下写入 Qdrant。
     vector_data: dict[str, Vector] = {
@@ -451,7 +340,7 @@ async def upsert_edge_vector(
 
     # 1. 锁外计算 Embedding (CPU耗时操作，使用线程池避免阻塞事件循环)
     vector = await _embed_async(fact)
-    sparse_vector = await _sparse_embed_async(fact)
+    sparse_vector = await sparse_embed_single(fact)
 
     # 2. 锁内写入 (防止并发破坏索引长度同步)
     async with _QDRANT_LOCKS[MEMORY_EDGES_COLLECTION]:
@@ -519,7 +408,7 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
 
     name_vectors = await _embed_batch_async(names)
     summary_vectors = await _embed_batch_async(summaries)
-    sparse_vectors = await _sparse_embed_batch_async(sparse_texts)
+    sparse_vectors = await sparse_embed_batch_async(sparse_texts)
 
     points = []
     for i, d in enumerate(entities_data):
@@ -575,7 +464,7 @@ async def upsert_edge_vectors_batch(edges_data: list[dict]):
     dense_vectors = await _embed_batch_async(texts)
 
     # BUG-08 修复：使用批量 Sparse Embedding 接口，提升大量文本时的效率
-    sparse_vectors = await _sparse_embed_batch_async(texts)
+    sparse_vectors = await sparse_embed_batch_async(texts)
 
     # 2. 组装 PointStruct
     points = []
@@ -800,7 +689,7 @@ async def _hybrid_search_impl(
         return []
 
     query_dense = await _embed_async(query)
-    query_sparse = await _sparse_embed_async(query)
+    query_sparse = await sparse_embed_single(query)
 
     scope_filter = _scope_filter(scope_keys)
 

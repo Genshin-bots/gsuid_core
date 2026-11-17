@@ -187,6 +187,7 @@
   "log.rag.sparse_bm25_embedding_batch": "[Sparse] BM25 スパース埋め込み失敗、本バッチは純粋 dense にフォールバック: {e}",
   "log.rag.sparse_jieba_unavailable_bm25_fail": "[Sparse] jieba が利用不可、BM25 は分割なし (中国語マッチング制限) にフォールバック: {e}",
   "log.rag.sparse_pre_download": "[RAG] Sparse モデル事前ダウンロード完了",
+  "log.rag.static_embedding_cache_incomplete": "[RAG] 静的埋め込みモデルキャッシュが未準備です（重みまたはトークナイザーが不足）: {model_name}",
   "log.rag.tools_action_str_name": "[Tools] [{action_str}] ツール: {tool_name}",
   "log.rag.tools_buildin_imported_registry": "[Tools] buildin_tools インポート済み、現在の _TOOL_REGISTRY サイズ: {p0}",
   "log.rag.tools_cleaning_deleted": "[Tools] 削除されたツール {p0} 個を清理",

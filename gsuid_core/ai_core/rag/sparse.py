@@ -1,7 +1,7 @@
 """稀疏向量（BM25）嵌入共享工具
 
 把"jieba 中文预分词 + fastembed BM25 稀疏嵌入"收敛为可复用的公共函数，供需要
-"稀疏 + 稠密"混合检索的模块（表情包等）共用，保证**写入与查询两侧使用同一分词**、
+"稀疏 + 稠密"混合检索的模块（记忆 / 表情包 / 产物索引等）共用，保证**写入与查询两侧使用同一分词**、
 token 一致。
 
 设计沿用 rag/knowledge.py 的成熟实现：
@@ -59,6 +59,8 @@ def jieba_segment(text: str) -> str:
 
 def sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVector]]:
     """同步批量生成 BM25 稀疏向量；模型不可用/失败时返回等长 None（调用方自动降级纯 dense）。"""
+    if not texts:
+        return []
     from gsuid_core.ai_core.rag.base import _get_sparse_model
 
     model = _get_sparse_model()

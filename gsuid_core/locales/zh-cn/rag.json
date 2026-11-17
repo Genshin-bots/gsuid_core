@@ -187,6 +187,7 @@
   "log.rag.sparse_bm25_embedding_batch": "[Sparse] BM25 稀疏嵌入失败，本批降级纯 dense: {e}",
   "log.rag.sparse_jieba_unavailable_bm25_fail": "[Sparse] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}",
   "log.rag.sparse_pre_download": "[RAG] Sparse模型预下载完成",
+  "log.rag.static_embedding_cache_incomplete": "[RAG] 静态嵌入模型缓存未就绪（缺少权重或分词器）: {model_name}",
   "log.rag.tools_action_str_name": "[Tools] [{action_str}] 工具: {tool_name}",
   "log.rag.tools_buildin_imported_registry": "[Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {p0}",
   "log.rag.tools_cleaning_deleted": "[Tools] 清理 {p0} 个已删除的工具",

@@ -187,6 +187,7 @@
   "log.rag.sparse_bm25_embedding_batch": "[Sparse] BM25 sparse embedding failed, this batch degraded to pure dense: {e}",
   "log.rag.sparse_jieba_unavailable_bm25_fail": "[Sparse] jieba unavailable, BM25 degraded to no tokenization (limited Chinese matching): {e}",
   "log.rag.sparse_pre_download": "[RAG] Sparse model pre-download complete",
+  "log.rag.static_embedding_cache_incomplete": "[RAG] Static embedding model cache incomplete (missing weights or tokenizer): {model_name}",
   "log.rag.tools_action_str_name": "[Tools] [{action_str}] Tool: {tool_name}",
   "log.rag.tools_buildin_imported_registry": "[Tools] buildin_tools imported, current _TOOL_REGISTRY size: {p0}",
   "log.rag.tools_cleaning_deleted": "[Tools] Cleaning {p0} deleted tools",

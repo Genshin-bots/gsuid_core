@@ -1453,7 +1453,7 @@ wheels = [
 
 [[package]]
 name = "gsuid-core"
-version = "0.12.1"
+version = "0.12.2"
 source = { editable = "." }
 default-groups = []
 dependencies = [
@@ -1536,7 +1536,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=45.0.5" },
     { name = "exa-py", specifier = ">=2.12.1" },
     { name = "fastapi", specifier = ">=0.115.10" },
-    { name = "fastembed", specifier = ">=0.7.4" },
+    { name = "fastembed", specifier = ">=0.9.1" },
     { name = "fastmcp", specifier = ">=3.2.0,<4" },
     { name = "firecrawl-py", specifier = ">=4.40.0" },
     { name = "genai-prices", specifier = ">=0.1.9" },

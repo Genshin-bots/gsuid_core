@@ -2,7 +2,9 @@
 
 import os
 import json
+import mmap as std_mmap
 from pathlib import Path
+from dataclasses import dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -16,6 +18,74 @@ _FALLBACK_MAX_TOKENS = 512
 _warned_legacy_env: set[str] = set()
 
 
+@dataclass(frozen=True)
+class FastEmbedModelSpec:
+    hf_repo: str
+    model_file: str
+    is_static: bool
+    static_max_tokens: int
+
+
+def resolve_fastembed_model_spec(model_name: str) -> FastEmbedModelSpec:
+    """按 fastembed 注册表解析 HF 仓库、权重文件名及是否为静态模型。"""
+    from gsuid_core.ai_core.rag.base import _get_embedding_hf_repo
+
+    try:
+        from fastembed import TextEmbedding
+    except ImportError:
+        return FastEmbedModelSpec(
+            hf_repo=_get_embedding_hf_repo(model_name),
+            model_file="model.onnx",
+            is_static=False,
+            static_max_tokens=_FALLBACK_MAX_TOKENS,
+        )
+
+    try:
+        from fastembed.text.static_embedding import MAX_LENGTH, StaticTextEmbedding
+
+        static_cls: type | None = StaticTextEmbedding
+        static_cap = MAX_LENGTH
+    except ImportError:
+        static_cls = None
+        static_cap = _FALLBACK_MAX_TOKENS
+
+    target = model_name.strip().lower()
+    for model_cls in TextEmbedding.EMBEDDINGS_REGISTRY:
+        for desc in model_cls._list_supported_models():
+            if desc.model.lower() == target:
+                hf_repo = desc.sources.hf or model_name
+                is_static = (static_cls is not None and model_cls is static_cls) or desc.model_file.lower().endswith(
+                    ".safetensors"
+                )
+                return FastEmbedModelSpec(
+                    hf_repo=hf_repo,
+                    model_file=desc.model_file,
+                    is_static=is_static,
+                    static_max_tokens=static_cap,
+                )
+
+    return FastEmbedModelSpec(
+        hf_repo=_get_embedding_hf_repo(model_name),
+        model_file="model.onnx",
+        is_static=False,
+        static_max_tokens=_FALLBACK_MAX_TOKENS,
+    )
+
+
+def resolve_model_cache_dir(cache_root: Path, hf_repo: str) -> Path:
+    """定位 HF 模型缓存目录；大小写敏感文件系统兼容历史小写目录名。"""
+    from gsuid_core.ai_core.rag.base import _hf_cache_dirname
+
+    expected = cache_root / _hf_cache_dirname(hf_repo)
+    if expected.is_dir() or not cache_root.is_dir():
+        return expected
+    target_lower = expected.name.lower()
+    for entry in cache_root.iterdir():
+        if entry.is_dir() and entry.name.lower() == target_lower:
+            return entry
+    return expected
+
+
 def _warn_legacy_embed_env(env_name: str, config_key: str) -> None:
     if env_name in _warned_legacy_env:
         return
@@ -26,11 +96,10 @@ def _warn_legacy_embed_env(env_name: str, config_key: str) -> None:
     logger.warning(t("log.rag.embedding_env_ignored", env_name=env_name, config_key=config_key))
 
 
-def _configured_max_tokens(cache_dir: str, model_name: str) -> int:
-    """读模型 config.json 里的最大长度。tokenizer 的 512 经常是没改过的默认值。"""
-    from gsuid_core.ai_core.rag.base import _hf_cache_dirname, _get_embedding_hf_repo
-
-    root = Path(cache_dir) / _hf_cache_dirname(_get_embedding_hf_repo(model_name))
+def _configured_max_tokens(cache_dir: str, model_name: str, spec: FastEmbedModelSpec | None = None) -> int:
+    """读模型 config.json 里的最大长度；静态模型受限于 fastembed 固定截断上限。"""
+    resolved = spec if spec is not None else resolve_fastembed_model_spec(model_name)
+    root = resolve_model_cache_dir(Path(cache_dir), resolved.hf_repo)
     cfg_path: Path | None = None
     ref = root / "refs" / "main"
     if ref.is_file():
@@ -45,21 +114,23 @@ def _configured_max_tokens(cache_dir: str, model_name: str) -> int:
                 if candidate.is_file():
                     cfg_path = candidate
                     break
-    if cfg_path is None:
-        return _FALLBACK_MAX_TOKENS
-    try:
-        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return _FALLBACK_MAX_TOKENS
-    if not isinstance(raw, dict):
-        return _FALLBACK_MAX_TOKENS
-    for key in ("model_max_length", "max_position_embeddings"):
-        if key not in raw:
-            continue
-        value = raw[key]
-        if isinstance(value, int) and 8 <= value <= 32768:
-            return value
-    return _FALLBACK_MAX_TOKENS
+    configured = _FALLBACK_MAX_TOKENS
+    if cfg_path is not None:
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            raw = None
+        if isinstance(raw, dict):
+            for key in ("model_max_length", "max_position_embeddings"):
+                if key not in raw:
+                    continue
+                value = raw[key]
+                if isinstance(value, int) and 8 <= value <= 32768:
+                    configured = value
+                    break
+    if resolved.is_static:
+        return min(configured, resolved.static_max_tokens)
+    return configured
 
 
 def _config_int(key: str) -> "int | None":
@@ -89,30 +160,44 @@ def _resolve_batch_size() -> int:
 class LocalEmbeddingProvider(EmbeddingProvider):
     """本地嵌入模型提供方（基于 fastembed）"""
 
-    def __init__(self, model_name: str, cache_dir: str, threads: int | None = None):
+    def __init__(self, model_name: str, cache_dir: str, threads: int | None = None, *, mmap: bool | None = None):
         from fastembed import TextEmbedding
 
-        if threads is None:
-            threads = _resolve_threads()
-
+        spec = resolve_fastembed_model_spec(model_name)
         self._model_name = model_name
         self._batch_size = _resolve_batch_size()
-        self._model = TextEmbedding(
-            model_name=model_name,
-            cache_dir=cache_dir,
-            threads=threads,
-            local_files_only=True,
-        )
+        self._is_static = spec.is_static
+
+        if spec.is_static:
+            # 静态模型走 NumPy 查表：传 threads 会触发 UserWarning，默认开 mmap 省常驻内存。
+            use_mmap = True if mmap is None else mmap
+            effective_threads = 0
+            self._model = TextEmbedding(
+                model_name=model_name,
+                cache_dir=cache_dir,
+                threads=None,
+                local_files_only=True,
+                mmap=use_mmap,
+            )
+        else:
+            effective_threads = _resolve_threads() if threads is None else threads
+            self._model = TextEmbedding(
+                model_name=model_name,
+                cache_dir=cache_dir,
+                threads=effective_threads,
+                local_files_only=True,
+            )
+
         # 通过一次空推断获取维度
         test_vec = list(self._model.embed(["test"]))[0]
         self._dim = len(test_vec)
-        self._max_input_tokens = _configured_max_tokens(cache_dir, model_name)
+        self._max_input_tokens = _configured_max_tokens(cache_dir, model_name, spec)
         logger.info(
             t(
                 "log.rag.embedding_local_name_dimension",
                 model_name=model_name,
                 p0=self._dim,
-                threads=threads,
+                threads=effective_threads,
                 p1=self._batch_size,
             )
         )
@@ -131,3 +216,22 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
     def embed_single_sync(self, text: str) -> list[float]:
         return [float(x) for x in next(iter(self._model.embed([text])))]
+
+    def close(self) -> None:
+        """释放静态模型 mmap 文件句柄（Windows 重置或清理缓存目录前需显式关闭）。"""
+        if not self._is_static:
+            return
+        try:
+            from fastembed.text.static_embedding import StaticTextEmbedding
+        except ImportError:
+            return
+
+        inner = self._model.model
+        if not isinstance(inner, StaticTextEmbedding):
+            return
+        for arr in (inner.embeddings, inner.weights, inner.token_mapping):
+            if arr is not None and isinstance(arr.base, std_mmap.mmap):
+                arr.base.close()
+        inner.embeddings = None
+        inner.weights = None
+        inner.token_mapping = None

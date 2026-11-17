@@ -49,7 +49,8 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "pydantic>=2.12.2",
     "playwright>=1.58.0",
-    "fastembed>=0.7.4",
+    # 0.9.1 起 potion 静态嵌入才改为 safetensors + NumPy 并支持 mmap
+    "fastembed>=0.9.1",
     "qdrant-client>=1.17.0",
     "python-multipart>=0.0.22",
     "tavily-python>=0.7.23",
@@ -69,7 +70,7 @@ dependencies = [
     "pydantic-monty>=1.0.0",
 ]
 name = "gsuid-core"
-version = "0.12.1"
+version = "0.12.2"
 description = "KimigaiiWuyi/GenshinUID 的核心部分，平台无关，便于移植到其他平台以及框架。"
 readme = "README.md"
 

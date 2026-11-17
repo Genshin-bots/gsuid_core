@@ -62,7 +62,7 @@ def _get_embedding_hf_repo(model_name: str) -> str:
     if "bge-small-zh-v1.5" in model_name:
         return "Qdrant/bge-small-zh-v1.5"
     if "bge-small-en-v1.5" in model_name:
-        return "qdrant/bge-small-en-v1.5-onnx-q"
+        return "Qdrant/bge-small-en-v1.5-onnx-Q"
     return model_name
 
 
@@ -70,7 +70,6 @@ def _hf_cache_dirname(repo_id: str) -> str:
     return "models--" + repo_id.replace("/", "--")
 
 
-EMBEDDING_HF_REPO: Final[str] = _get_embedding_hf_repo(EMBEDDING_MODEL_NAME)
 SPARSE_HF_REPO: Final[str] = "Qdrant/bm25"
 RERANKER_HF_REPO: Final[str] = RERANKER_MODEL_NAME  # BAAI/bge-reranker-base
 
@@ -510,14 +509,46 @@ def _dir_has_onnx(path: Path) -> bool:
     return False
 
 
+def _dir_has_static_bundle(path: Path, model_file: str) -> bool:
+    if not path.is_dir():
+        return False
+    weight_name = Path(model_file).name.lower()
+    has_weights = False
+    has_tokenizer = False
+    try:
+        for entry in path.rglob("*"):
+            if not entry.is_file() or entry.stat().st_size <= 0:
+                continue
+            name_lower = entry.name.lower()
+            if name_lower == weight_name or entry.suffix.lower() == ".safetensors":
+                has_weights = True
+            elif name_lower == "tokenizer.json":
+                has_tokenizer = True
+    except OSError:
+        return False
+    return has_weights and has_tokenizer
+
+
 def _is_models_cache_valid() -> bool:
-    """当前配置的本地嵌入模型是否已在 MODELS_CACHE 里（含 ONNX）。"""
+    """当前配置的本地嵌入模型是否已在 MODELS_CACHE 里（含 ONNX 或静态 safetensors）。"""
+    from gsuid_core.ai_core.rag.embedding.local import (
+        resolve_model_cache_dir,
+        resolve_fastembed_model_spec,
+    )
+
     model_name = str(local_embedding_config.get_config("embedding_model_name").data)
-    repo = _get_embedding_hf_repo(model_name)
-    embedding_model_dir = MODELS_CACHE / _hf_cache_dirname(repo)
+    spec = resolve_fastembed_model_spec(model_name)
+    embedding_model_dir = resolve_model_cache_dir(MODELS_CACHE, spec.hf_repo)
     dir_size = _get_dir_size(embedding_model_dir)
-    # bge-small-zh 量化包约 90MB；其它模型只防空目录。
-    min_size = 88 * 1024 * 1024 if "bge-small-zh-v1.5" in repo else 10 * 1024 * 1024
+    if spec.is_static:
+        if not _dir_has_static_bundle(embedding_model_dir, spec.model_file):
+            logger.info(t("log.rag.static_embedding_cache_incomplete", model_name=model_name))
+            return False
+        logger.info(t("log.rag.cache_exists_size_skipping", p0=_format_size(dir_size)))
+        return True
+
+    # bge-small-zh 量化包约 90MB；其它 ONNX 模型只防空目录。
+    min_size = 88 * 1024 * 1024 if "bge-small-zh-v1.5" in spec.hf_repo else 10 * 1024 * 1024
     if not _dir_has_onnx(embedding_model_dir) or dir_size < min_size:
         logger.info(
             t(
@@ -533,13 +564,14 @@ def _is_models_cache_valid() -> bool:
 
 
 def _prefetch_local_embedding_model(model_name: str) -> None:
-    """用 fastembed 拉当前模型的 ONNX，保证 local_files_only 启动能命中缓存。"""
+    """用 fastembed 拉当前模型权重，lazy_load=True 只落盘不额外加载进内存。"""
     from fastembed import TextEmbedding
 
     TextEmbedding(
         model_name=model_name,
         cache_dir=str(MODELS_CACHE),
         local_files_only=False,
+        lazy_load=True,
     )
 
 
@@ -574,7 +606,9 @@ async def pre_download_models():
     os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
     try:
         # 下载Embedding模型。已设置的 HF_ENDPOINT 由 huggingface_hub 自己读取。
-        embed_repo = _get_embedding_hf_repo(model_name)
+        from gsuid_core.ai_core.rag.embedding.local import resolve_fastembed_model_spec
+
+        embed_repo = resolve_fastembed_model_spec(model_name).hf_repo
         logger.info(t("log.rag.pre_downloading_embedding_hf", EMBEDDING_HF_REPO=embed_repo))
         await asyncio.to_thread(_prefetch_local_embedding_model, model_name)
         logger.info(t("log.rag.embedding_pre_download"))

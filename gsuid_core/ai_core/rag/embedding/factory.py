@@ -140,4 +140,6 @@ def get_embedding_provider() -> EmbeddingProvider:
 def reset_embedding_provider() -> None:
     """重置全局嵌入提供方单例（用于配置热重载）"""
     global _provider
+    if isinstance(_provider, LocalEmbeddingProvider):
+        _provider.close()
     _provider = None

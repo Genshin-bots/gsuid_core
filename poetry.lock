@@ -457,7 +457,7 @@ description = "Backport of CPython tarfile module"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version == \"3.11\""
+markers = "python_full_version == \"3.11.*\""
 files = [
     {file = "backports.tarfile-1.2.0-py3-none-any.whl", hash = "sha256:77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34"},
     {file = "backports_tarfile-1.2.0.tar.gz", hash = "sha256:d75e02c268746e1b8144c278978b6e98e85de6ad16f8e4b0844a154557eca991"},
@@ -1313,40 +1313,40 @@ standard-no-fastapi-cloud-cli = ["email-validator (>=2.0.0)", "fastapi-cli[stand
 
 [[package]]
 name = "fastembed"
-version = "0.9.0"
+version = "0.9.1"
 description = "Fast, light, accurate library built for retrieval embedding generation"
 optional = false
 python-versions = ">=3.10.0"
 groups = ["main"]
 files = [
-    {file = "fastembed-0.9.0-py3-none-any.whl", hash = "sha256:273d408edec8c0f161711d8f6e44e4a5b559d18e8edf6bf805415d55dc772846"},
-    {file = "fastembed-0.9.0.tar.gz", hash = "sha256:bc3beadb46ecb3580ab832d12670be7ecb937f80adfcb7b77b03f7eef76c394a"},
+    {file = "fastembed-0.9.1-py3-none-any.whl", hash = "sha256:95042ac7f685bda6697861066d49f8b119fbde8b75ed5162bbb7e84e2dad0e1d"},
+    {file = "fastembed-0.9.1.tar.gz", hash = "sha256:8b4b2881ea85a4d36e8f284466671437b3fed869c33cdc71d6f6c48ddff115c7"},
 ]
 
 [package.dependencies]
 huggingface-hub = ">=0.20,<2.0"
-loguru = ">=0.7.2,<0.8.0"
+loguru = ">=0.7.2,<0.8"
 mmh3 = ">=4.1.0,<6.0.0"
 numpy = [
-    {version = ">=1.21", markers = "python_version == \"3.11\""},
-    {version = ">=1.26", markers = "python_version == \"3.12\""},
-    {version = ">=2.1.0", markers = "python_version == \"3.13\""},
-    {version = ">=2.3.0", markers = "python_version >= \"3.14\""},
+    {version = ">=1.21", markers = "python_full_version == \"3.11.*\""},
+    {version = ">=1.26", markers = "python_full_version == \"3.12.*\""},
+    {version = ">=2.1.0", markers = "python_full_version == \"3.13.*\""},
+    {version = ">=2.3.0", markers = "python_full_version >= \"3.14.0\""},
 ]
 onnxruntime = [
-    {version = ">1.21.0,!=1.24.0,!=1.24.1", markers = "python_version == \"3.13\""},
-    {version = ">=1.17.0,!=1.20.0,!=1.24.0,!=1.24.1", markers = "python_version >= \"3.11\" and python_version < \"3.13\""},
-    {version = ">=1.24.2", markers = "python_version >= \"3.14\""},
+    {version = ">1.21.0,!=1.24.0,!=1.24.1", markers = "python_full_version == \"3.13.*\""},
+    {version = ">=1.17.0,!=1.20.0,!=1.24.0,!=1.24.1", markers = "python_full_version >= \"3.11.0\" and python_full_version < \"3.13.0\""},
+    {version = ">=1.24.2", markers = "python_full_version >= \"3.14.0\""},
 ]
 pillow = [
-    {version = ">=11.0.0,<13.0", markers = "python_version == \"3.13\""},
-    {version = ">=10.3.0,<13.0", markers = "python_version >= \"3.10\" and python_version < \"3.13\""},
-    {version = ">=12.0.0,<13.0", markers = "python_version >= \"3.14\""},
+    {version = ">=11.0.0,<14.0", markers = "python_full_version == \"3.13.*\""},
+    {version = ">=10.3.0,<14.0", markers = "python_full_version >= \"3.10.0\" and python_full_version < \"3.13.0\""},
+    {version = ">=12.0.0,<14.0", markers = "python_full_version >= \"3.14.0\""},
 ]
-py-rust-stemmers = ">=0.1.0,<0.2.0"
-requests = ">=2.31,<3.0"
+py-rust-stemmers = ">=0.1.0,<0.2"
+requests = ">=2.31,<3"
 tokenizers = ">=0.15,<1.0"
-tqdm = ">=4.66,<5.0"
+tqdm = ">=4.66,<5"
 
 [[package]]
 name = "fastmcp"
@@ -2195,7 +2195,7 @@ description = "Read metadata from Python packages"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "python_version == \"3.11\""
+markers = "python_full_version == \"3.11.*\""
 files = [
     {file = "importlib_metadata-9.0.1-py3-none-any.whl", hash = "sha256:bba5600596a7e21f3eef53281cf28d6a5195634d2f2b78ff9501a3272c6eaab0"},
     {file = "importlib_metadata-9.0.1.tar.gz", hash = "sha256:ab830580bc0ef3db61ce8fae716389e5462b67e033018bab6d8f80ef17172f99"},
@@ -3653,7 +3653,7 @@ description = "Fundamental package for array computing in Python"
 optional = false
 python-versions = ">=3.11"
 groups = ["main"]
-markers = "python_version == \"3.11\""
+markers = "python_full_version == \"3.11.*\""
 files = [
     {file = "numpy-2.4.6-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:0280e0356c0829a18d9de1cb7eee50ec22ca639878d7240307ca0943d73cd2c4"},
     {file = "numpy-2.4.6-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:110f8b71aacb688ec69062bb7f6938a0f8acb01b7c1c4beb453c65b6d234584d"},
@@ -3736,7 +3736,7 @@ description = "Fundamental package for array computing in Python"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
-markers = "python_version >= \"3.12\""
+markers = "python_full_version >= \"3.12.0\""
 files = [
     {file = "numpy-2.5.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:cb189f09db39283b26bfd061ec16189e14f71c6755207f72a0f7540867afe5b9"},
     {file = "numpy-2.5.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f59a878c33d6b88122d80d239bb3b845d58708750b0cb06a09aebb9b18ec696c"},
@@ -5827,7 +5827,7 @@ description = "Fundamental algorithms for scientific computing in Python"
 optional = false
 python-versions = ">=3.11"
 groups = ["main"]
-markers = "python_version == \"3.11\""
+markers = "python_full_version == \"3.11.*\""
 files = [
     {file = "scipy-1.17.1-cp311-cp311-macosx_10_14_x86_64.whl", hash = "sha256:1f95b894f13729334fb990162e911c9e5dc1ab390c58aa6cbecb389c5b5e28ec"},
     {file = "scipy-1.17.1-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:e18f12c6b0bc5a592ed23d3f7b891f68fd7f8241d69b7883769eb5d5dfb52696"},
@@ -5907,7 +5907,7 @@ description = "Fundamental algorithms for scientific computing in Python"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
-markers = "python_version >= \"3.12\""
+markers = "python_full_version >= \"3.12.0\""
 files = [
     {file = "scipy-1.18.1-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:457fd7a2a8edeb044ab6ffbc0aa03ff6cd18491356e5e0c834d76ce621b916d1"},
     {file = "scipy-1.18.1-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:e708533e8b2ae2497d65346538a7dcc92814410b25b81432eac66de0f2af8265"},
@@ -6418,7 +6418,7 @@ files = [
     {file = "typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"},
     {file = "typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"},
 ]
-markers = {dev = "python_version < \"3.13\""}
+markers = {dev = "python_full_version == \"3.11.*\" or python_full_version == \"3.12.*\""}
 
 [[package]]
 name = "typing-inspection"
@@ -6967,7 +6967,7 @@ description = "Backport of pathlib-compatible object wrapper for zip files"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "python_version == \"3.11\""
+markers = "python_full_version == \"3.11.*\""
 files = [
     {file = "zipp-4.1.1-py3-none-any.whl", hash = "sha256:8979f52d874162f485ff2981e3891f3a3317b7a3dd43ff1e1775b9304f307a9c"},
     {file = "zipp-4.1.1.tar.gz", hash = "sha256:7ebb7a44c021b29fd8dbd7cce6812d0d7b5b454521f93cc71af6ccd155aaa70b"},
@@ -6984,4 +6984,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "8b999ed0e3a38d771a8bd706a36af70c36cab453c9c983709f3d4eaf911e7b73"
+content-hash = "7ffcb1dd689c015c8853a2ee156341ce137e5e6cb63a14bf2e8fdf5e39044b58"

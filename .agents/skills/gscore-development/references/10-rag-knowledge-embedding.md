@@ -164,7 +164,9 @@ WebConsole API：`/api/embedding_config/*`（provider / local / openai / summary
 
 **2C2G / 小核机**：本地嵌入会周期性打满核，`embedding_provider=openai`（远程）几乎必选——
 既消 CPU-bound 瓶颈又去掉最大动态内存；配 reranker 关（`enable_rerank=false`，本地 reranker ONNX
-是另一大内存项）+ `qdrant_provider=remote`。2 核机保持 `embed_threads=1`。
+是另一大内存项）+ `qdrant_provider=remote`。2 核机保持 `embed_threads=1`。若坚持纯离线本地嵌入，
+可选配静态模型 `minishlab/potion-multilingual-128M`（`safetensors` + 默认 `mmap=True`，纯 NumPy 查表池化，
+不走 `onnxruntime` 故无内存 arena 膨胀，代价是细粒度语义区分弱于上下文模型）。
 
 ## 10.6 周边 AI 接口
 
