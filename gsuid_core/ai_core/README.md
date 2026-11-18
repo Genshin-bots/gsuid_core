@@ -351,9 +351,10 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `web_search/exa_search.py` | Exa 搜索，结果正文是摘录；同一 Key 池供 `web_fetch` 的 Contents。网络错误换 Key。 |
 | `web_search/anysearch_search.py` | AnySearch `POST /v1/search`（Key 可选，匿名有每日免费额度）；同一 Key 池供 `web_fetch` 的 `/v1/extract` 抓取。 |
 | `web_search/firecrawl_search.py` | Firecrawl 官方 SDK `AsyncFirecrawl.search`（Key 可选，keyless 免费档按 IP 限流）。 |
-| `web_fetch/__init__.py` | URL 抓取：默认 **Jina** `r.jina.ai`（Key 可选）。可选 DeepSeek、Exa Contents、AnySearch Extract（可匿名）、**local** 直连。空正文或错误换源。 |
+| `web_search/keenable_search.py` | Keenable 搜索与抓取（仅读 `keenable_config`，Key 可选；无 Key 走 `/v1/search/public` 与 `/v1/fetch/public`）。 |
+| `web_fetch/__init__.py` | URL 抓取：默认 **Jina** `r.jina.ai`（Key 可选）。可选 DeepSeek、Exa Contents、AnySearch Extract（可匿名）、Keenable Fetch（可无 Key）、**local** 直连。空正文或错误换源。 |
 
-配置：`ai_config` 的 `websearch_*` / `webfetch_*`；`tavily_config.json` / `jina_config.json` / `exa_config.json` / `anysearch_config.json` / `firecrawl_config.json` / `web_fetch_config.json`。**热读，改配置无需重启。**
+配置：`ai_config` 的 `websearch_*` / `webfetch_*`；`tavily_config.json` / `jina_config.json` / `exa_config.json` / `anysearch_config.json` / `firecrawl_config.json` / `keenable_config.json` / `web_fetch_config.json`。**热读，改配置无需重启。**
 内置工具：`web_search_tool` / `web_fetch_tool` 外层 `timeout=100`。控制台：`/ai-config` → 网络搜索服务 / 网页抓取服务。
 
 ---

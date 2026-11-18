@@ -214,6 +214,20 @@ def _check_websearch_config() -> Dict[str, Any]:
             result["note"] = f"已配置 {keyed} 个 Firecrawl API Key"
         else:
             result["note"] = "Firecrawl 可用无密钥免费额度（未配置 API Key）"
+    elif provider == "Keenable":
+        from gsuid_core.ai_core.configs.ai_config import keenable_config
+
+        api_keys = keenable_config.get_config("api_key").data
+        keyed = 0
+        if isinstance(api_keys, list):
+            keyed = len([k for k in api_keys if isinstance(k, str) and k.strip()])
+        elif isinstance(api_keys, str) and api_keys.strip():
+            keyed = 1
+        result["configured"] = True
+        if keyed:
+            result["note"] = f"已配置 {keyed} 个 Keenable API Key"
+        else:
+            result["note"] = "Keenable 可用公开搜索端点（未配置 API Key）"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:
@@ -539,7 +553,7 @@ def _analyze_missing_configs(wizard_data: Dict[str, Any]) -> List[Dict[str, Any]
                 "item": "网络搜索",
                 "severity": "warning",
                 "message": f"网络搜索未配置: {websearch.get('note', '未知错误')}",
-                "recommendation": "配置 Tavily/Jina/Exa/AnySearch API Key 或配置 MCP 搜索工具",
+                "recommendation": "配置 Tavily/Jina/Exa/DeepSeek/AnySearch/Firecrawl/Keenable 或配置 MCP 搜索工具",
             }
         )
 

@@ -24,6 +24,8 @@
   "Jina 抓取失败: empty response": "Jina 抓取失败: empty response",
   "Jina 抓取失败: {e}": "Jina 抓取失败: {e}",
   "Jina 抓取失败，状态码: {p0}，URL: {url}": "Jina 抓取失败，状态码: {p0}，URL: {url}",
+  "Keenable 抓取失败: empty response": "Keenable 抓取失败: empty response",
+  "Keenable 抓取失败: {e}": "Keenable 抓取失败: {e}",
   "MCP 配置 '{mcp_id}' 不存在，请检查配置": "MCP 配置 '{mcp_id}' 不存在，请检查配置",
   "Meme 维度迁移未恢复任何索引，保留重试状态并等待下次启动继续恢复": "Meme 维度迁移未恢复任何索引，保留重试状态并等待下次启动继续恢复",
   "OpenAI 嵌入模型 API 密钥不能为空，请在配置中至少设置一个 api_key": "OpenAI 嵌入模型 API 密钥不能为空，请在配置中至少设置一个 api_key",

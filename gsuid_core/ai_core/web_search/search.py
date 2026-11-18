@@ -1,7 +1,7 @@
 """
 Web Search 公共 API 模块
 
-提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / Jina / AnySearch / Firecrawl / MCP）。
+提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / Jina / AnySearch / Firecrawl / MCP / Keenable）。
 支持多源策略：
 - none：仅主用源
 - error_switch：主用失败后按备用顺序切换（默认）
@@ -43,6 +43,7 @@ from .tavily_search import (
     tavily_search_with_context,
 )
 from .deepseek_search import deepseek_search, deepseek_search_configured
+from .keenable_search import keenable_search, keenable_search_configured
 from .anysearch_search import anysearch_search, anysearch_search_configured
 from .firecrawl_search import firecrawl_search, firecrawl_search_configured
 
@@ -122,6 +123,8 @@ def _provider_configured(provider: str) -> bool:
         return firecrawl_search_configured()
     if name == "DeepSeek":
         return deepseek_search_configured()
+    if name == "Keenable":
+        return keenable_search_configured()
     if is_mcp_provider(name) or name.upper() == "MCP":
         return bool(get_mcp_tool_id_optional("websearch_mcp_tool_id"))
     return False
@@ -281,6 +284,10 @@ async def _invoke_provider(
 
     if name == "DeepSeek":
         results = await deepseek_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None} if with_context else results
+
+    if name == "Keenable":
+        results = await keenable_search(query=query, max_results=max_results)
         return {"results": results, "answer": None} if with_context else results
 
     if is_mcp_provider(name) or name.upper() == "MCP":

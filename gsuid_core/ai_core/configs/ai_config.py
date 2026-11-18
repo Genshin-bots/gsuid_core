@@ -97,7 +97,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "指定网络搜索的主用提供方。未配置或主用无 Key 时走 AnySearch 匿名额度。"
         "多源策略非「无」时，失败会按备用顺序切换到其它已配置源",
         "AnySearch",
-        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP", "Keenable"],
     ),
     "websearch_lb_strategy": GsStrConfig(
         "网络搜索多源策略",
@@ -108,18 +108,19 @@ AI_CONFIG: Dict[str, GSC] = {
     "websearch_fallback_order": GsListStrConfig(
         "网络搜索备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用源）。留空则自动收集已配置源"
-        "（顺序：AnySearch → Firecrawl → DeepSeek → Tavily → Exa → Jina → MCP）",
+        "（顺序：AnySearch → Firecrawl → DeepSeek → Tavily → Exa → Jina → MCP；Keenable 需手动加入备用顺序或设为主用）",
         [],
-        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP", "Keenable"],
     ),
     "webfetch_provider": GsStrConfig(
         "网页抓取服务提供方（主用）",
         "Jina：经 r.jina.ai 读取（API Key 可选）；DeepSeek：经 DeepSeek Fetch API 抓取；"
         "Exa：经 Exa Contents 读取这个 URL 的正文（用 exa_config 的 Key）；"
         "AnySearch：经 AnySearch Extract 读取正文（用 anysearch_config 的 Key，可匿名）；"
+        "Keenable：经 Keenable /v1/fetch 抓取 Markdown（用 keenable_config 的 Key，可无 Key 走公开端点）；"
         "local：本机直连抓取并转 Markdown。多源策略非「无」时，失败会按备用顺序切换",
         "Jina",
-        options=["Jina", "DeepSeek", "Exa", "AnySearch", "local"],
+        options=["Jina", "DeepSeek", "Exa", "AnySearch", "local", "Keenable"],
     ),
     "webfetch_lb_strategy": GsStrConfig(
         "网页抓取多源策略",
@@ -131,7 +132,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "网页抓取备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用）。默认 local",
         ["local"],
-        options=["Jina", "DeepSeek", "Exa", "AnySearch", "local"],
+        options=["Jina", "DeepSeek", "Exa", "AnySearch", "local", "Keenable"],
     ),
     "render_image_sources": GsListStrConfig(
         "出图配图来源",
@@ -719,6 +720,41 @@ EXA_CONFIG: Dict[str, GSC] = {
     ),
 }
 
+KEENABLE_CONFIG: Dict[str, GSC] = {
+    "api_key": GsListStrConfig(
+        "Keenable API密钥（可选）",
+        "可留空，走公开端点 /v1/search/public 与 /v1/fetch/public；填写后使用带 Key 的 /v1/search 与 /v1/fetch"
+        "（仅读取本配置，不读环境变量）。请前往 https://keenable.ai 获取 API Key。"
+        "无效 Key 不会回落匿名。支持多 Key 池轮询",
+        [],
+        options=[],
+    ),
+    "max_results": GsIntConfig(
+        "最大搜索结果数",
+        "POST /v1/search 的 max_results，默认 10，范围 1–50",
+        10,
+        max_value=50,
+        options=[5, 10, 15, 20, 50],
+    ),
+    "timeout": GsIntConfig(
+        "请求超时(秒)",
+        "调用 Keenable Search / Fetch 的超时时间",
+        20,
+        options=[10, 15, 20, 30, 45, 60],
+    ),
+    "mode": GsStrConfig(
+        "搜索模式",
+        "pro：深度检索与更佳排序（默认）；realtime：最低延迟响应",
+        "pro",
+        options=["pro", "realtime"],
+    ),
+    "fetch_live": GsBoolConfig(
+        "抓取实时回源(live)",
+        "为 True 时从目标站点实时抓取（不读 Keenable 索引缓存），默认 False",
+        False,
+    ),
+}
+
 ANYSEARCH_CONFIG: Dict[str, GSC] = {
     "api_key": GsListStrConfig(
         "AnySearch API密钥",
@@ -1211,6 +1247,12 @@ exa_config = StringConfig(
     "GsCore AI Exa搜索配置",
     get_res_path("ai_core") / "exa_config.json",
     EXA_CONFIG,
+)
+
+keenable_config = StringConfig(
+    "GsCore AI Keenable搜索抓取配置",
+    get_res_path("ai_core") / "keenable_config.json",
+    KEENABLE_CONFIG,
 )
 
 anysearch_config = StringConfig(
