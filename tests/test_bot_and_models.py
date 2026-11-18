@@ -128,6 +128,72 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
     pairs = [(seg.type, seg.data) for seg in sent[0] if isinstance(seg, Message)]
     assert pairs == [("at", "100000002"), ("text", " 到时间啦")]
 
+    # 首气泡打字停顿（sleep）期间若有新用户消息插队，唤醒后自动补挂 Message("reply", msg_id)
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+
+    hm = get_history_manager()
+    ev_u1 = Event("OneBot", "900000001", "mid_1", "group", "group_pause_1", "100000001", {"nickname": "测试用户A"}, 6)
+    ev_u2 = Event("OneBot", "900000001", "mid_2", "group", "group_pause_1", "100000002", {"nickname": "测试用户B"}, 6)
+    hm.clear_history(ev_u1)
+    try:
+        rec1 = hm.add_message(ev_u1, "user", "测试提问", user_name="测试用户A", metadata={"msg_id": "mid_1"})
+        assert rec1.link is not None
+        turn = InboxTurn(
+            session_id=ev_u1.session_id,
+            persona_name="测试人格",
+            entries=(
+                PendingEntry(
+                    WakeItem(rec1.link.seq, "100000001", "name", "hard", 1.0),
+                    ev_u1,
+                    persona_name="测试人格",
+                ),
+            ),
+            from_seq=0,
+            head_seq=rec1.link.seq,
+        )
+        captured: list[Union[Message, List[Message], str, bytes, List[str]]] = []
+        interjected = [False]
+
+        async def _interject_on_sleep(_sec: float) -> None:
+            if not interjected[0]:
+                interjected[0] = True
+                hm.add_message(ev_u2, "user", "测试插话", user_name="测试用户B", metadata={"msg_id": "mid_2"})
+
+        async def _capture_send(
+            self: Bot,
+            message: Union[Message, List[Message], str, bytes, List[str]],
+            at_sender: bool = False,
+            extra_metadata: Optional[Mapping[str, object]] = None,
+            wait_recall: bool = False,
+        ) -> None:
+            captured.append(message)
+
+        monkeypatch.setattr(ai_utils.asyncio, "sleep", _interject_on_sleep)
+        monkeypatch.setattr("gsuid_core.ai_core.control.outbound_detectors.is_ooc_firewall_enabled", lambda: False)
+        monkeypatch.setattr(Bot, "send", _capture_send)
+        monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda _ev: 2)
+        tok = bind_turn(turn)
+        try:
+            asyncio.run(
+                ai_utils.send_chat_result(
+                    Bot(_Bot("ws_p1"), ev_u1),
+                    f"<reply #{rec1.link.seq}>\n第一段回应。\n\n第二段回应。",
+                    ev=ev_u1,
+                    ooc_check=False,
+                )
+            )
+        finally:
+            reset_turn(tok)
+        assert len(captured) == 2 and isinstance(captured[0], list) and isinstance(captured[1], list)
+        seg0 = [(s.type, s.data) for s in captured[0] if isinstance(s, Message)]
+        seg1 = [(s.type, s.data) for s in captured[1] if isinstance(s, Message)]
+        assert seg0[0] == ("reply", "mid_1")
+        assert all(t != "reply" for t, _ in seg1)
+    finally:
+        hm.clear_history(ev_u1)
+
 
 def test_event_link_seq_reply_and_at_self() -> None:
     """EventLink：seq 单调递增、引用边解析到 uid/self/None、自动@不置 at_self、dict 往返保 link。"""

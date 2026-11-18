@@ -134,11 +134,13 @@ if "提及应答" in ai_mode:
 ```
 1. handler 写 A 轨：_record_inbound_history 给每条消息分配会话内单调 seq（EventLink）
 2. classify_wake 判定唤醒类型：private/mention/name/quote_self/followup/receipt（hard/soft）
-3. InboxScheduler.submit(PendingEntry)：同会话单飞，soft 项进 settle 合并窗口
-   （群聊 hard 1.5s / 私聊 hard 0.8s / soft 5s），一次落定后入队 TaskContext(run_turn)
-4. handle_inbox_turn(turn)：并发信号量 + 长度防护 → 意图分类 → get_ai_session
-   → TurnRouter（soft 项先读线程视图判定，无关则沉默不进主模型）
-   → run_interactive_turn：render_delta 线程视图作 B 轨输入
+3. InboxScheduler.submit(PendingEntry)：同会话单飞，pending 进 settle 合并窗口
+   （群聊 hard 1.5s / 私聊 hard 0.8s / soft 5s）；_build_turn 执行同批同说话人幂等折叠与
+   90s 跨轮非个人绑定（无工具观测且 memory_intent=="none"）精确消解，一次落定后入队 TaskContext(run_turn)
+4. handle_inbox_turn(turn)：并发信号量 + 长度防护 → get_ai_session → 一段开口门
+   → TurnRouter（群聊收件箱轮在 source=="llm" 时统一消费 soft_speak: bool 拦截复读/三方提及/软触发无关；
+     离线退化 structural_fallback 保底放行 hard 项）
+   → run_interactive_turn：render_delta 线程视图（含出站〔依据〕）作 B 轨输入
    → InboxKit 注入（待你回应）/（工具身份）/（相关往来）/（本群近况）块
    → turn.reached_model=True 紧邻 session.run
 5. 出站：send_chat_result 先 parse_reply_plan 解析 <reply #seq>，分组发送；
@@ -169,9 +171,10 @@ MAX_SUMMARY_LENGTH = 15000    # 超过则子 Agent 摘要
 
 - **续聊窗口**：`followup_window.py` 不变——硬触发登记窗口、不续费、有硬天花板与
   `follow_up_max_replies` 上限；窗口内普通发言按 `followup` soft 唤醒提交。
-- **soft 唤醒**：`quote_self`（引用 Bot 的消息）与 `followup` 先入 pending，
-  settle 合并多条为一轮；TurnRouter 读 `render_router_view` 线程视图判相关性，
-  判无关 → `route_decision.soft_speak=None` 即沉默，不进主模型。正文点名人格升 hard。
+- **soft 唤醒与统一路由门**：`quote_self`（引用 Bot 的消息）与 `followup` 先入 pending，
+  settle 合并多条为一轮；TurnRouter 读 `render_router_view`（含 `[你的称呼]` 与 `〔依据〕`）判开口，
+  群聊收件箱轮在 `source=="llm"` 时统一以 `route_decision.soft_speak=False` 沉默早退（不进主模型），
+  超时/退化 `structural_fallback` 时保底放行 hard 项。正文点名人格升 hard。
 - **引用≠找你**：TurnRouter 与主模型读同一份事实（被引用对象的完整出处：
   `↩#n(你→名 · 时间 · 闲聊回复)`），router prompt 写明原则，不再替模型下结论。
 - **回执唤醒**：`command_aside` 命令回执以 `receipt` 类型进收件箱（A 轨 `你[回执]` 行），

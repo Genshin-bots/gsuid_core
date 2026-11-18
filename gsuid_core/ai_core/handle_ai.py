@@ -349,16 +349,29 @@ async def run_interactive_turn(
         event, records=render_records, primary_link=_primary_link
     )
 
-    # is_tome 用「本批是否有 hard 唤醒」：auto-@ 的引用了你的话也是 hard，
-    # 但语义上不是直接找你。at_bot 用主目标链接上的 at_self（不是事件透传）。
+    # is_tome 仅认协议级定向（私聊 / 真 @Bot）；文本呼名交由 TurnGraph 语言学边界判定。
     _recent_tool = has_recent_tool_call(session.history)
+    _is_protocol_tome = (
+        (event.user_type == "direct" or any(e.item.kind in ("private", "mention") for e in turn.entries))
+        if inbox_turn is not None
+        else (bool(event.is_tome) or event.user_type == "direct")
+    )
+    _pending_seqs = {e.item.seq for e in turn.entries}
+    _recent_user_bodies: list[tuple[str, str]] | None = None
+    if inbox_turn is not None:
+        _recent_user_bodies = [
+            (str(r.user_id or ""), r.content)
+            for r in render_records
+            if r.role == "user" and (r.link is None or r.link.seq not in _pending_seqs)
+        ][-20:]
     turn_graph = build_turn_graph(
         query,
         persona_name=session.persona_name or "",
-        is_tome=any(e.item.strength == "hard" for e in turn.entries),
+        is_tome=_is_protocol_tome,
         user_type=str(event.user_type or ("group" if event.group_id else "direct")),
         primary_speaker=str(event.user_id or ""),
         recent=recent_history_texts(session.history),
+        recent_user_bodies=_recent_user_bodies,
         soft_triggered=soft_triggered,
         recent_tool_call=_recent_tool,
         followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
@@ -399,22 +412,40 @@ async def run_interactive_turn(
         pending_seqs=tuple(e.item.seq for e in turn.entries),
         persona_name=session.persona_name,
         private=not bool(event.group_id),
+        session_id=turn.session_id,
+        bot_id=bot_id,
     )
     hook_ctx.router_view = render_router_view(turn, render_records)
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
+    turn.memory_dependent = bool(
+        hook_ctx.route_decision is not None and hook_ctx.route_decision.memory_intent != "none"
+    )
 
-    # 二段入站门：合并 CheapGate（温度/潜水/任务延续）与软触发 TurnRouter.soft_speak。
+    # 二段入站门：群聊收件箱轮在 LLM 路由可用时统一认 TurnRouter.soft_speak；离线退化保底 hard 放行。
+    router_gated = bool(
+        soft_triggered
+        or (
+            inbox_turn is not None
+            and bool(event.group_id)
+            and hook_ctx.route_decision is not None
+            and hook_ctx.route_decision.source == "llm"
+        )
+    )
     reactive_ok = True
-    if soft_triggered:
+    if router_gated:
         reactive_ok = bool(hook_ctx.route_decision is not None and hook_ctx.route_decision.soft_speak)
         hook_ctx.should_speak = reactive_ok
         if reactive_ok:
-            record_gate_outcome("llm_speak")
-            logger.info(t("log.ai.gscore_soft_trigger_silent_2"))
+            if soft_triggered:
+                record_gate_outcome("llm_speak")
+                logger.info(t("log.ai.gscore_soft_trigger_silent_2"))
         else:
-            record_gate_outcome("llm_silence")
-            logger.info(t("log.ai.gscore_soft_trigger_silent"))
+            if soft_triggered:
+                record_gate_outcome("llm_silence")
+                logger.info(t("log.ai.gscore_soft_trigger_silent"))
+            else:
+                logger.info(t("log.ai.gscore_router_gate_silent"))
 
     _has_active = hook_ctx.has_actionable or _recent_tool or bool(hook_ctx.prev_turn_used_tools)
     base_cheap = decide_cheap_gate(
@@ -424,7 +455,7 @@ async def run_interactive_turn(
         intent=intent,
         rel=rel,
     )
-    reactive_blocked = soft_triggered and not reactive_ok
+    reactive_blocked = router_gated and not reactive_ok
     cheap = CheapGate.SILENCE if (base_cheap is CheapGate.SILENCE or reactive_blocked) else CheapGate.FULL
     hook_ctx.cheap_gate = cheap.value
     if cheap is CheapGate.SILENCE:

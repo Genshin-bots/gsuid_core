@@ -32,6 +32,7 @@ class InboxTurn:
     active_seq: int | None = None
     answered: set[int] = field(default_factory=set)
     observations: list[str] = field(default_factory=list)
+    memory_dependent: bool = False
     bubbles_sent: int = 0
     reached_model: bool = False
 

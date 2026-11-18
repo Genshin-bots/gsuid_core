@@ -7,6 +7,7 @@
 import asyncio
 import inspect
 
+import pytest
 from pydantic_ai.messages import TextPart, ToolCallPart, ModelResponse
 
 from gsuid_core.ai_core import utils, history_format, interaction_scaffold
@@ -265,7 +266,7 @@ def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
     assert tg_quote.quoted_tome and QUOTE_TOME_HINT in scaffold_hints_from_graph(tg_quote, cheap=CheapGate.FULL)
 
 
-def test_group_open_gate_and_addressing() -> None:
+def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert is_addressed_to_self("小明(用户ID:1)：@早柚 在吗", "早柚", False)
     assert is_addressed_to_self("小明(用户ID:1)：早柚你看这个", "早柚", False)
     assert is_addressed_to_self("小明(用户ID:1)：柚柚 帮我看一眼", "早柚", False, extra_names=("柚柚",))
@@ -338,6 +339,169 @@ def test_group_open_gate_and_addressing() -> None:
         assert references_task_management(m)
     for m in ["早柚早上好呀今天天气真不错", "帮我算算88乘以12"]:
         assert not references_task_management(m)
+
+    # 结构化 A 轨近期用户记录计数（不受合行、无昵称或半边括号影响）及宿主框架名不冒充直接呼叫
+    from gsuid_core.ai_core.interaction_scaffold import _same_body_repeat_count, ambient_followup_to_other
+
+    tg_rep = build_turn_graph(
+        "测试复读句 (:",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+        recent_user_bodies=[
+            ("9001", "测试复读句 (:"),
+            ("9002", "测试复读句 (:"),
+            ("9001", "测试复读句 (:"),
+        ],
+    )
+    assert _same_body_repeat_count(tg_rep) == 3
+
+    tg_fw_alias = build_turn_graph(
+        f"小明(用户ID:1)：@了用户:小红(用户ID:2){AT_OTHER_MARKER} GsCore 怎么配置",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="1",
+    )
+    assert tg_fw_alias.call_to_self is False and tg_fw_alias.address_gated is True
+    assert not ambient_followup_to_other(
+        "sayu帮我看下",
+        [("user", prev)],
+        "早柚",
+        False,
+        extra_names=("sayu",),
+    )
+
+    from gsuid_core.ai_core.classifier.turn_router import _build_router_prompt
+
+    router_p = _build_router_prompt(
+        "测试正文",
+        prior_user_turns=(),
+        prev_turn_used_tools=False,
+        soft_triggered=False,
+        clock_at=None,
+        recent_group_messages=(),
+        thread_view="",
+        persona_names=("测试人格", "test_alias"),
+    )
+    assert "[你的称呼] 测试人格 / test_alias" in router_p
+
+    # 群聊收件箱轮统一认 TurnRouter(source="llm").soft_speak，而 structural_fallback 对 hard 保底放行
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.kits import occupants_of, load_enabled_kits
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.handle_ai import run_interactive_turn
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+    from gsuid_core.ai_core.relationship import view_from_score
+
+    if not occupants_of("classifier"):
+        asyncio.run(load_enabled_kits(run_init_steps=False))
+
+    ev_grp = Event(
+        "OneBot", "900000001", "m_g1", "group", "group_1", "100000001", {}, 6, raw_text="测试群友甲，早柚走了"
+    )
+    bot_grp = Bot(_Bot("ws_g1"), ev_grp)
+    stub_decision = [
+        TurnRouteDecision(
+            "闲聊", "none", soft_speak=False, is_live_lookup=False, needs_committed_work=False, source="llm"
+        )
+    ]
+
+    async def _fake_route_turn(*_args: object, **_kwargs: object) -> TurnRouteDecision:
+        return stub_decision[0]
+
+    monkeypatch.setattr("gsuid_core.ai_core.classifier.turn_router.route_turn", _fake_route_turn)
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.gs_agent.get_model_for_task",
+        lambda _level, _kind=None: TestModel(custom_output_text="测试回复"),
+    )
+    monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_config_name_for_task", lambda _level, _kind=None: "test:m")
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.gs_agent.get_model_fingerprint_for_task",
+        lambda _level, _kind=None: "fp",
+    )
+    sess = GsCoreAIAgent(
+        system_prompt="你是测试角色。",
+        persona_name="早柚",
+        create_by="Chat",
+        dynamic_tools=False,
+        thinking=False,
+    )
+
+    t_llm_block = InboxTurn(
+        session_id=ev_grp.session_id,
+        persona_name="早柚",
+        entries=(PendingEntry(WakeItem(1, "100000001", "name", "hard", 1.0), ev_grp, persona_name="早柚"),),
+        from_seq=0,
+        head_seq=1,
+    )
+    hctx1 = AgentHookContext(
+        point=AgentHookPoint.BEFORE_AI_CHAT,
+        ev=ev_grp,
+        bot=bot_grp,
+        session_id=ev_grp.session_id,
+        relationship=view_from_score(20, False),
+    )
+    res_block = asyncio.run(
+        run_interactive_turn(
+            bot=bot_grp,
+            event=ev_grp,
+            session=sess,
+            query=ev_grp.raw_text,
+            hook_ctx=hctx1,
+            soft_triggered=False,
+            return_mode="return",
+            deliver=False,
+            settle=False,
+            inbox_turn=t_llm_block,
+        )
+    )
+    assert res_block.is_silence and res_block.silenced_early and not t_llm_block.reached_model
+    assert t_llm_block.memory_dependent is False
+
+    stub_decision[0] = TurnRouteDecision(
+        "问答",
+        "point_latest",
+        soft_speak=False,
+        is_live_lookup=False,
+        needs_committed_work=False,
+        source="structural_fallback",
+    )
+    t_fallback_open = InboxTurn(
+        session_id=ev_grp.session_id,
+        persona_name="早柚",
+        entries=(PendingEntry(WakeItem(2, "100000001", "name", "hard", 2.0), ev_grp, persona_name="早柚"),),
+        from_seq=0,
+        head_seq=2,
+    )
+    hctx2 = AgentHookContext(
+        point=AgentHookPoint.BEFORE_AI_CHAT,
+        ev=ev_grp,
+        bot=bot_grp,
+        session_id=ev_grp.session_id,
+        relationship=view_from_score(20, False),
+    )
+    res_fallback = asyncio.run(
+        run_interactive_turn(
+            bot=bot_grp,
+            event=ev_grp,
+            session=sess,
+            query=ev_grp.raw_text,
+            hook_ctx=hctx2,
+            soft_triggered=False,
+            return_mode="return",
+            deliver=False,
+            settle=False,
+            inbox_turn=t_fallback_open,
+        )
+    )
+    assert t_fallback_open.reached_model and not res_fallback.silenced_early
+    assert t_fallback_open.memory_dependent is True
 
 
 def test_style_push_address_and_ambient_gates() -> None:

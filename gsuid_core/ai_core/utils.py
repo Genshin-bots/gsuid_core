@@ -1702,6 +1702,7 @@ async def send_chat_result(
     mention_names: Optional[Dict[str, str]] = None,
     _reply_prefix: Optional[Sequence[Message]] = None,
     _plan_group: bool = False,
+    _reply_target: Optional[Tuple[int, str]] = None,
 ) -> None:
     """
     解析并发送聊天结果，支持：
@@ -1933,6 +1934,7 @@ async def send_chat_result(
     _audit = _outbound_auditor(ev)
     _total = len(blocks)
     _prefix = list(_reply_prefix) if _reply_prefix else []
+    _deferred_reply = _reply_target
 
     for _idx, block in enumerate(blocks, 1):
         if not block.strip():
@@ -1963,6 +1965,19 @@ async def send_chat_result(
 
         await asyncio.sleep(bubble_pause(len(plain_text)))
 
+        if _deferred_reply is not None and ev is not None:
+            _t_seq, _t_mid = _deferred_reply
+            _deferred_reply = None
+            from gsuid_core.message_history import get_history_manager
+
+            _cur_latest = -1
+            for _rec in reversed(get_history_manager().get_history(ev)):
+                if _rec.role == "user" and _rec.link is not None:
+                    _cur_latest = _rec.link.seq
+                    break
+            if _cur_latest != -1 and _cur_latest != _t_seq and not any(s.type == "reply" for s in segments):
+                segments = [Message("reply", _t_mid), *segments]
+
         await bot.send(segments, extra_metadata=extra_metadata)
         if _audit is not None:
             _audit(plain_text.strip(), _idx, _total)
@@ -1982,8 +1997,9 @@ async def _send_reply_plan_groups(
 ) -> None:
     """回复计划分发（§1.6）：每组一次出站，绑定 OutboundBinding 与目标收件人。
 
-    首气泡形态：目标即 A 轨最新 user 记录 → 纯文本；非最新且有 msg_id → 前置
-    ``Message("reply", msg_id)``；多目标 → 依次前置 ``MessageSegment.at(uid)``。
+    首气泡形态：单目标且发送时刻仍为 A 轨最新 user 记录 → 纯文本；非最新（含打字停顿
+    期间有新消息插队）且有 msg_id → 前置 ``Message("reply", msg_id)``；多目标 → 依次
+    前置 ``MessageSegment.at(uid)``。
     """
     from gsuid_core.message_history import get_history_manager
     from gsuid_core.message_history.link import OutboundBinding, bind_outbound, reset_outbound
@@ -2031,9 +2047,10 @@ async def _send_reply_plan_groups(
             targets.append((str(ev.user_id if ev is not None else ""), ""))
 
         prefix: list[Message] = []
+        reply_target: tuple[int, str] | None = None
         if len(targets) > 1:
             prefix = [MessageSegment.at(uid) for uid, _ in targets]
-        elif target_seqs[0] != latest_user_seq:
+        else:
             msg_id = ""
             entry = turn.entry_for(target_seqs[0])
             if entry is not None and entry.event.msg_id:
@@ -2042,8 +2059,10 @@ async def _send_reply_plan_groups(
                 rec = get_history_manager().find_by_seq(ev, target_seqs[0])
                 if rec is not None and "msg_id" in rec.metadata:
                     msg_id = str(rec.metadata["msg_id"])
-            if msg_id:
+            if target_seqs[0] != latest_user_seq and msg_id:
                 prefix = [Message("reply", msg_id)]
+            elif msg_id:
+                reply_target = (target_seqs[0], msg_id)
 
         gmeta = dict(meta)
         gmeta["reply_to_user_id"] = targets[0][0]
@@ -2066,6 +2085,7 @@ async def _send_reply_plan_groups(
                 ooc_check=ooc_check,
                 _reply_prefix=prefix,
                 _plan_group=True,
+                _reply_target=reply_target,
             )
         finally:
             reset_outbound(token)

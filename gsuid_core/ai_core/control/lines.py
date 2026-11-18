@@ -407,7 +407,10 @@ RECEIPT_CONTEXT_HEAD = "（回执上下文）"
 GROUP_RECENT_BLOCK_HEAD = "（本群近况）"
 ROUTER_TIMELINE_HEAD = "[近期时间线]"
 ROUTER_PENDING_HEAD = "[待判断]"
-ROUTER_PRINCIPLE = "原则：被引用不等于被叫；在问你、让你评价、反驳你才算有关。"
+ROUTER_PRINCIPLE = (
+    "原则：被引用或含你名字不等于在叫你（叫别人、群友互聊提及、其他Bot播报均无关）；"
+    "复读或起哄紧邻上文你刚公开答复过的同一件事（无替他人查的〔依据〕）无需再回。"
+)
 
 # act_for：多目标批次里的工具身份护栏
 ACT_FOR_REQUIRED_DENY = "本批有多人找你，请先调 act_for 指明替谁执行，再调其它工具。"

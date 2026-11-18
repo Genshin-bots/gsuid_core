@@ -396,7 +396,12 @@ async def run_heartbeat(
     decision_persona_text = f"{role}\n{decision_persona}"
 
     # 两个阶段共用同一份近窗上下文，避免整群长历史全量进巡检提示词
-    history_context = render_window(history[-HEARTBEAT_HISTORY_LIMIT:], persona_name=persona_name)
+    history_context = render_window(
+        history[-HEARTBEAT_HISTORY_LIMIT:],
+        persona_name=persona_name,
+        session_id=event.session_id,
+        bot_id=str(event.bot_id or ""),
+    )
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # 获取群组摘要缓存（如果启用）

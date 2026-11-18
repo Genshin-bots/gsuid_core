@@ -335,6 +335,13 @@ def _budget_lines(lines: list[_Line], pending_seqs: frozenset[int], seq_index: d
     return out
 
 
+def _first_meta_str(records: Sequence[MessageRecord], key: str) -> str:
+    for rec in records:
+        if key in rec.metadata and isinstance(rec.metadata[key], str) and rec.metadata[key]:
+            return str(rec.metadata[key])
+    return ""
+
+
 def render_delta(
     records: Sequence[MessageRecord],
     *,
@@ -344,6 +351,8 @@ def render_delta(
     pending_seqs: frozenset[int] | tuple[int, ...],
     persona_name: str | None,
     private: bool,
+    session_id: str = "",
+    bot_id: str = "",
 ) -> str:
     """B 轨增量块：from_seq（不含）之后的时间线；backfill 往前再带 ≤40 行。"""
     linked = [r for r in records if r.link is not None]
@@ -353,12 +362,11 @@ def render_delta(
         before = [r for r in linked if r.link is not None and r.link.seq <= from_seq]
         before.sort(key=lambda r: r.link.seq if r.link is not None else 0)
         delta = before[-_BACKFILL_LINES:] + delta
-    meta0 = linked[0].metadata if linked else {}
     ctx = _RenderCtx(
         seq_index=seq_index,
         persona_name=persona_name,
-        session_id=str(meta0["session_id"]) if "session_id" in meta0 else "",
-        bot_id=str(meta0["bot_id"]) if "bot_id" in meta0 else "",
+        session_id=session_id or _first_meta_str(linked, "session_id"),
+        bot_id=bot_id or _first_meta_str(linked, "bot_id"),
     )
     lines = _render_lines(delta, ctx)
     pending = frozenset(pending_seqs)
@@ -373,18 +381,19 @@ def render_window(
     *,
     limit: int = _BACKFILL_LINES,
     persona_name: str | None = None,
+    session_id: str = "",
+    bot_id: str = "",
 ) -> str:
     """最近 limit 条全窗口视图：heartbeat / chat_history / WebConsole 诊断用。"""
     linked = [r for r in records if r.link is not None]
     linked.sort(key=lambda r: r.link.seq if r.link is not None else 0)
     window = linked[-limit:] if limit > 0 else linked
     seq_index = {r.link.seq: r for r in linked if r.link is not None}
-    meta0 = linked[0].metadata if linked else {}
     ctx = _RenderCtx(
         seq_index=seq_index,
         persona_name=persona_name,
-        session_id=str(meta0["session_id"]) if "session_id" in meta0 else "",
-        bot_id=str(meta0["bot_id"]) if "bot_id" in meta0 else "",
+        session_id=session_id or _first_meta_str(linked, "session_id"),
+        bot_id=bot_id or _first_meta_str(linked, "bot_id"),
     )
     lines = _render_lines(window, ctx)
     private = any(
@@ -451,12 +460,11 @@ def render_router_view(turn: InboxTurn, records: Sequence[MessageRecord]) -> str
     linked = [r for r in records if r.link is not None]
     linked.sort(key=lambda r: r.link.seq if r.link is not None else 0)
     seq_index = {r.link.seq: r for r in linked if r.link is not None}
-    meta0 = linked[0].metadata if linked else {}
     ctx = _RenderCtx(
         seq_index=seq_index,
         persona_name=turn.persona_name,
-        session_id=str(meta0["session_id"]) if "session_id" in meta0 else "",
-        bot_id=str(meta0["bot_id"]) if "bot_id" in meta0 else "",
+        session_id=turn.session_id or _first_meta_str(linked, "session_id"),
+        bot_id=str(turn.primary.event.bot_id or "") or _first_meta_str(linked, "bot_id"),
     )
     tail = linked[-_TAIL_KEEP_LINES:]
     lines = _render_lines(tail, ctx)

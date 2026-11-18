@@ -110,8 +110,14 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 字段与取值：
 - i: "chat" | "tool" | "qa"
 - m: "none" | "latest" | "diff" | "order" | "sum"
-- s: bool。仅当有 [待判断] 列表时有意义：列表里是否确有人在对你说话（问你、让你评价、反驳你、\
-延续和你的对话），或确实值得自然接一句。只是起哄、围观、在和别人聊、普通命令回执时为 false。默认 false。
+- s: bool。[待判断] 列表中是否有至少一条消息需要你开口回应：
+  1) 有人明确 @你 或直接叫你说话（提问、委托、吐槽、表情互动）时为 true；
+  2) 以下情况即使带 @ 或含你名字也为 false：
+     - [待判断] 只是复读（+1）或跟风起哄 [近期时间线] 里你刚刚已公开回应过的同一句话/同一件事\
+（若前次回复带〔依据: 替某人查…〕或问题本身指向说话人个人情况/过往记录，而本次换了另一人问他自己的，则为 true）；
+     - 句首在叫别人、群友互聊中第三人称提起你的名字（如讨论项目/插件名）、或其他机器人的状态播报；
+  3) 未 @你 也未叫你（仅引用你、续聊窗或回执）时：确在向你追问、让你评价、反驳你或延续对话为 true；\
+围观起哄、跟别人聊、普通命令回执为 false。
 - l: bool。是否在查纯粹的实时外部数据（当前天气/实时股价/新闻等）且不依赖过往私人记录；\
 为 true 且 m=none 时跳过个人历史记忆预灌。
 - w: bool。是否明确委托 Bot 执行具体事务、查数或设提醒。
@@ -123,7 +129,6 @@ _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要�
 - none=纯寒暄或本轮上下文自足；latest=常规事实/属性点查；diff=变更历史/前后对比/矛盾核实；
   order=事件先后/时间线；sum=跨会话总结/数量统计/集合盘点。
 - 若消息含必须依赖历史的泛指指代（如“那个/上次/之前/后来呢”），m 不得为 none，保底 latest。
-- 被引用不等于被叫：引用你的话但在和别人起哄/围观，s=false。
 
 只输出：{"i":"chat","m":"none","s":false,"l":false,"w":false}"""
 
@@ -137,9 +142,13 @@ def _build_router_prompt(
     clock_at: datetime | None,
     recent_group_messages: Sequence[str],
     thread_view: str,
+    persona_names: Sequence[str] = (),
 ) -> str:
     clock = (clock_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     lines = [f"[当前时间] {clock}", f"[上一轮用过工具] {'yes' if prev_turn_used_tools else 'no'}"]
+    names = [n.strip() for n in persona_names if n and n.strip()]
+    if names:
+        lines.append(f"[你的称呼] {' / '.join(names)}")
     if soft_triggered:
         lines.append("[软触发] yes")
     if thread_view:
@@ -218,6 +227,7 @@ async def route_turn(
     clock_at: datetime | None = None,
     recent_group_messages: Sequence[str] = (),
     thread_view: str = "",
+    persona_names: Sequence[str] = (),
 ) -> TurnRouteDecision:
     """一次无思考轻量路由；不可用/超时/输出非法时退化到结构规则。"""
     body = strip_router_header(query)
@@ -237,6 +247,7 @@ async def route_turn(
         clock_at=clock_at,
         recent_group_messages=recent_group_messages,
         thread_view=thread_view,
+        persona_names=persona_names,
     )
 
     try:

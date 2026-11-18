@@ -279,6 +279,7 @@
   "log.ai.gscore_sanitized_fallback": "[GsCore][AI] 脱敏フォールバック文案の送信に失敗しました: {e}",
   "log.ai.gscore_sanitized_fallback_user": "[GsCore][AI] 今ターンの実行に失敗しました。脱敏フォールバック文案をユーザーに送信します: {r}",
   "log.ai.gscore_service_enabled_skipping": "[GsCore][AI] AI サービスが無効化されているため、処理をスキップします",
+  "log.ai.gscore_router_gate_silent": "[GsCore][AI] 前置ルーターが応答不要（復唱／第三者言及）と判定したため、メイン Agent をスキップします",
   "log.ai.gscore_soft_trigger_silent": "[GsCore][AI] ソフトトリガー無音ゲートが AI と無関係と判定。沈黙を維持します",
   "log.ai.gscore_soft_trigger_silent_2": "[GsCore][AI] ソフトトリガー無音ゲートを通過。継続会話として処理します",
   "log.ai.gscore_soft_trigger_silent_3": "[GsCore][AI] ソフトトリガー無音ゲートで異常発生。メイン Agent にフォールバックとして渡します: {e}",

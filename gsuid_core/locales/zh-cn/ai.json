@@ -279,6 +279,7 @@
   "log.ai.gscore_sanitized_fallback": "[GsCore][AI] 脱敏兜底文案发送失败: {e}",
   "log.ai.gscore_sanitized_fallback_user": "[GsCore][AI] 本轮执行失败，向用户发送脱敏兜底文案: {r}",
   "log.ai.gscore_service_enabled_skipping": "[GsCore][AI] AI服务未启用，跳过处理",
+  "log.ai.gscore_router_gate_silent": "[GsCore][AI] 前置路由判定无需回应（复读/三方提及），跳过主 Agent",
   "log.ai.gscore_soft_trigger_silent": "[GsCore][AI] 软触发沉默门判定与AI无关，保持沉默",
   "log.ai.gscore_soft_trigger_silent_2": "[GsCore][AI] 软触发沉默门放行，按续聊处理",
   "log.ai.gscore_soft_trigger_silent_3": "[GsCore][AI] 软触发沉默门异常，放行交主Agent兜底: {e}",

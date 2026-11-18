@@ -114,8 +114,8 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
     │  hostile/cold **未点名** → SILENCE（结算 reached_model=False）
     │  @ / 引用 bot 不因低好感硬静；点名一律 FULL
     ▼
-⑦ 软唤醒路由（**仅** soft wake 项）            [TurnRouter / H04]
-    │  hard 项（@ / 呼名 / 私聊 / 回执批次）不走此门
+⑦ 前置路由开口门（群聊收件箱轮 + 软唤醒）    [TurnRouter / H03]
+    │  source=="llm" 时消费 soft_speak: bool；离线退化保底 hard 放行
     ▼
 ⑧ 装配 user 侧上下文                          [payload / memory / history / assembly]
     │  引用边渲为 ↩#n 出处事实行（不写「直接找你」）
@@ -200,7 +200,7 @@ C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**�
 | Budget | `budget.budget_manager` | Session Token 额度 |
 | AIRouter | `ai_router.get_ai_session` | 读/建 `GsCoreAIAgent` + 稳定 system_prompt |
 | Classifier | `mode_classifier` / `classifier_service` | 闲聊/工具/问答 |
-| TurnRouter | `classifier.turn_router`（H03 产出） | soft wake 项读线程视图判相关性，`handle_ai` 消费 `soft_speak` |
+| TurnRouter | `classifier.turn_router`（H03 产出） | 读线程视图与 `〔依据〕` 判意图/记忆模态/群聊开口 `soft_speak: bool` |
 | TurnGraph | `interaction_scaffold.build_turn_graph` | 本轮结构：`call_to_self` / `quoted_tome` / 开口门 |
 | CheapGate | `interaction_scaffold.decide_cheap_gate` | silence / full；quiet_zone 未点名才硬静 |
 | RelView | `relationship.RelationshipView` | zone + line + voice；H02 写入，CheapGate / 装配共用 |
@@ -269,13 +269,13 @@ sequenceDiagram
         Classifier-->>HandleAI: intent
         Note over HandleAI: CheapGate 初判：quiet_zone 未点名才硬静<br/>@/引用 bot 进环
 
-        opt soft wake 项
+        opt 群聊收件箱轮（source=="llm"）或 soft wake 项
             HandleAI->>TurnRouter: route_turn(render_router_view)
-            alt 沉默
-                TurnRouter-->>HandleAI: soft_speak=None
+            alt 沉默（复读 / 三方提及 / 软触发无关）
+                TurnRouter-->>HandleAI: soft_speak=False
                 HandleAI-->>BotQueue: return（不装记忆/不跑 Agent）
             else 放行
-                SoftGate-->>HandleAI: True
+                TurnRouter-->>HandleAI: soft_speak=True
                 Note over HandleAI: 重置 enqueue_ts
             end
         end
@@ -482,13 +482,13 @@ sequenceDiagram
         Note over Cheap: @/引用 bot 即使 hostile 也进环
     end
 
-    opt soft wake 项
+    opt 群聊收件箱轮（source=="llm"）或 soft wake 项
         HandleAI->>TurnRouter: route_turn(render_router_view)
-        Note over TurnRouter: 读同一份线程视图判相关性<br/>hard 项不走此门
+        Note over TurnRouter: 读同一份线程视图与〔依据〕判开口；<br/>structural_fallback 保底放行 hard 项
         alt 沉默
-            TurnRouter-->>HandleAI: soft_speak=None → return
+            TurnRouter-->>HandleAI: soft_speak=False → return
         else 放行
-            TurnRouter-->>HandleAI: soft_speak=目标 uid
+            TurnRouter-->>HandleAI: soft_speak=True
         end
     end
 ```
@@ -983,8 +983,8 @@ get_inbox_scheduler().submit(
 预算 → H01 → 长度防护 → Session
   → TurnGraph / 开口门（结构性静音在 rel 之前，不结算）
   → H02 AFTER_SESSION（RelationshipView）
-  → H03 CLASSIFY → CheapGate 初判
-  → H04 软唤醒路由（仅 soft wake 项，TurnRouter）
+  → H03 CLASSIFY（TurnRouter 产出 intent / memory_intent / soft_speak）
+  → 二段开口门（群聊收件箱轮 source=="llm" 统一认 soft_speak；离线退化保底 hard 放行） + CheapGate 初判
   → 线程视图 + media payload → H05 检索 → H06/H07 合成
   → CheapGate 终判 → session.run(turn_graph, cheap_gate)
   → 出站 → 结算 + H08
@@ -1187,16 +1187,14 @@ zone 口吻写在 user 侧 `voice_anchor`（`relationship.zones._ZONE_VOICE`）�
 
 ---
 
-## 8. 阶段 ⑦：软唤醒路由（仅 soft wake 项）
+## 8. 阶段 ⑦：前置路由开口门（群聊收件箱轮 + 软唤醒）
 
-**只对 `quote_self` / `followup` 等 soft 唤醒**。hard 项（私聊、@、呼名、回执批次
-内的 hard 项）不走此路由。TurnRouter 与主模型读同一份
-`render_router_view` 线程视图（被引用对象完整出处行），判「这轮有没有要找你的」。
+群聊收件箱轮在 `TurnRouter` 走 LLM（`source == "llm"`）时统一消费 `route_decision.soft_speak`（含 `mention` / `name` / `quote_self` / `followup` / `receipt`），用来一并消解换词复读、三方提起项目/角色名与其他机器人播报；私聊始终放行；当路由超时或离线退化（`source == "structural_fallback"`）时，仅对 `soft_triggered` 生效，保底放行 `hard` 项。`TurnRouter` 与主模型共读 `render_router_view`（含引用出处行与出站 `〔依据: 替谁查…〕` 标签）。
 
 | 结果 | 行为 |
 |------|------|
-| `soft_speak=None` | 沉默，不装记忆、不跑主 Agent |
-| `soft_speak=uid` | 放行：本轮只回该 uid 的 pending 项 |
+| `soft_speak=False` | 沉默，不装记忆、不跑主 Agent（软触发记 `gscore_soft_trigger_silent`，硬唤醒记 `gscore_router_gate_silent`） |
+| `soft_speak=True` | 放行进入主 Agent，由主模型按 `<reply #seq>` 寻址回应 |
 
 引用 bot 的「引用≠找你」由 TurnRouter 引用出处行 + router prompt 原则完成；
 主模型侧另有 `<reply #seq>` 显式寻址与 `<SILENCE>` 出口。
@@ -1984,7 +1982,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | TurnGraph / 开口门 | 是 | Session 后立刻；结构性静音不结算 |
 | CheapGate | 是 | 分类后 + 装配后；quiet_zone 未点名才硬静 |
 | mode_classifier | 是 | 进 AI 必跑（开口门已静则不到这） |
-| soft_speak 软门 | 仅 soft | 引用 bot / 硬 @ 不走；由 TurnRouter 产出、`handle_ai` 消费 |
+| soft_speak 路由开口门 | 群聊收件箱 + soft | 私聊不走；`structural_fallback` 保底放行 hard；由 TurnRouter 产出、`handle_ai` 消费 |
 | RelationshipView | 是 | H02；zone voice 进口吻锚 |
 | ai_router / Session | 是 | |
 | context_assembly | 是 | 未点名 suffix 清空产品块 |
@@ -2042,9 +2040,11 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 # 无 Agent 运行开始；结构性静音不结算，quiet_zone 早退会结算负信号
 ```
 
-**软触发沉默早退**：
+**前置路由 / 软触发沉默早退**：
 
 ```text
+[info ] 🧠 [GsCore][AI] 前置路由判定无需回应（复读/三方提及），跳过主 Agent
+# 或软触发无 hard 项时：
 [info ] 🧠 [GsCore][AI] 软触发沉默门判定与AI无关，保持沉默
 # 无 Agent 运行开始
 ```

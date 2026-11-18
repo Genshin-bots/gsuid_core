@@ -582,7 +582,11 @@ class ToolsPhase(RunOnceHost):
                         from gsuid_core.message_history import get_history_manager
                         from gsuid_core.ai_core.thread_view import render_window
 
-                        _bg = render_window(get_history_manager().get_history(st.ev))
+                        _bg = render_window(
+                            get_history_manager().get_history(st.ev),
+                            session_id=st.ev.session_id,
+                            bot_id=str(st.ev.bot_id or ""),
+                        )
                     _lock = lock_plugin(_scan, _bg)
                     if _lock.plugin:
                         st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = _lock.plugin

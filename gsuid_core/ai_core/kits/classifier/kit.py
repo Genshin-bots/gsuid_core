@@ -17,9 +17,11 @@ class ClassifierKit(AgentKit):
         on_agent_hook(AgentHookPoint.CLASSIFY, priority=110, kit_id=self.kit_id)(self.classify)
 
     async def classify(self, ctx: AgentHookContext) -> None:
+        from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
         from gsuid_core.ai_core.classifier.turn_router import route_turn
 
         recent = [rec.content for rec in ctx.gate_history][-6:]
+        surfaces = collect_persona_surfaces(ctx.persona_name)
         decision = await route_turn(
             ctx.query,
             prior_user_turns=ctx.prior_user_turns,
@@ -28,6 +30,7 @@ class ClassifierKit(AgentKit):
             clock_at=ctx.clock_at,
             recent_group_messages=recent,
             thread_view=ctx.router_view,
+            persona_names=surfaces,
         )
         ctx.route_decision = decision
         ctx.set_intent(decision.intent)

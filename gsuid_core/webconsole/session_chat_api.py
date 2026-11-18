@@ -757,7 +757,12 @@ async def get_thread_view(
 
     records = get_history_manager().get_history(ev)
     capped = max(1, min(int(limit or 40), 200))
-    return _ok({"session_id": session_id, "thread_view": render_window(records, limit=capped)})
+    return _ok(
+        {
+            "session_id": session_id,
+            "thread_view": render_window(records, limit=capped, session_id=session_id, bot_id=str(ev.bot_id or "")),
+        }
+    )
 
 
 @app.get("/api/history/chat/{session_id}/evidence", summary="出站消息证据观测明细", tags=SESSION_CHAT)

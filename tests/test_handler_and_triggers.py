@@ -628,6 +628,257 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                 await asyncio.sleep(0)
             await ws.queue.get_nowait().coro
             assert len(batches) == 1 and [e.item.seq for e in batches[0].entries] == [21, 22]
+
+            # 5) 同批全等折叠 + 跨轮零工具 +1 消解 + 有工具观测跨人放行（复刻在途复读场景）
+            batches.clear()
+            in_flight_gate = asyncio.Event()
+            release_turn1 = asyncio.Event()
+            emit_tool_obs = [False]
+
+            async def gated_runner(turn: InboxTurn, _ws: _Bot) -> TurnOutcome:
+                batches.append(turn)
+                if emit_tool_obs[0]:
+                    turn.observations.append("ob_test0001")
+                if len(batches) == 1:
+                    in_flight_gate.set()
+                    await release_turn1.wait()
+                return TurnOutcome(
+                    reached_model=True, error=False, answered=frozenset(e.item.seq for e in turn.entries)
+                )
+
+            sched_dup = InboxScheduler(clock=lambda: now[0], sleep=manual_sleep, runner=gated_runner)
+            ev_r1 = Event(
+                "OneBot", "900000001", "r1", "group", "70009", "100000001", {}, 6, raw_text="测试人格，发测试凭据给我"
+            )
+            ev_r2 = Event(
+                "OneBot", "900000001", "r2", "group", "70009", "100000002", {}, 6, raw_text="测试人格，发测试凭据给我"
+            )
+            sched_dup.submit(
+                ws, PendingEntry(WakeItem(31, "100000001", "name", "hard", now[0]), ev_r1, persona_name="测试人格")
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            t_run1 = asyncio.create_task(ws.queue.get_nowait().coro)
+            await in_flight_gate.wait()
+            # 第 1 轮 running 期间（+14s）用户B 发送全等 +1 消息
+            now[0] += 14.0
+            sched_dup.submit(
+                ws, PendingEntry(WakeItem(32, "100000002", "name", "hard", now[0]), ev_r2, persona_name="测试人格")
+            )
+            release_turn1.set()
+            await t_run1
+            for _ in range(12):
+                await asyncio.sleep(0)
+            # 上一轮零工具调用，用户B 的 +1 全等消息在 _build_turn 直接消解，不起第 2 轮
+            assert ws.queue.empty() and len(batches) == 1
+
+            # 同批去重只消解同说话人的连点重发；跨说话人同文保留在批内（支持 act_for 与 <reply #a #b>）
+            ev_b1 = Event(
+                "OneBot", "900000001", "b1", "group", "70009", "100000001", {}, 6, raw_text="测试人格，领每日奖励"
+            )
+            ev_b1_dup = Event(
+                "OneBot", "900000001", "b1_dup", "group", "70009", "100000001", {}, 6, raw_text="测试人格，领每日奖励"
+            )
+            ev_b2 = Event(
+                "OneBot", "900000001", "b2", "group", "70009", "100000002", {}, 6, raw_text="测试人格，领每日奖励"
+            )
+            ev_b3 = Event(
+                "OneBot",
+                "900000001",
+                "b3",
+                "group",
+                "70009",
+                "100000001",
+                {},
+                6,
+                raw_text="测试人格，领每日奖励",
+                image_id="img_own_1",
+                image_id_list=["img_own_1"],
+            )
+            emit_tool_obs[0] = True
+            sched_dup.submit(
+                ws, PendingEntry(WakeItem(41, "100000001", "name", "hard", now[0]), ev_b1, persona_name="测试人格")
+            )
+            sched_dup.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(42, "100000001", "name", "hard", now[0] + 0.1), ev_b1_dup, persona_name="测试人格"
+                ),
+            )
+            sched_dup.submit(
+                ws,
+                PendingEntry(WakeItem(43, "100000002", "name", "hard", now[0] + 0.2), ev_b2, persona_name="测试人格"),
+            )
+            sched_dup.submit(
+                ws,
+                PendingEntry(WakeItem(44, "100000001", "name", "hard", now[0] + 0.3), ev_b3, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in batches[1].entries] == [41, 43, 44]
+            assert batches[1].multi_target is True
+
+            # 上一轮产生了工具观测（emit_tool_obs=True）：同人重发仍消解，跨人 +1 正常放行
+            sched_dup.submit(
+                ws,
+                PendingEntry(WakeItem(45, "100000001", "name", "hard", now[0] + 5.0), ev_b1, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            assert ws.queue.empty()
+            ev_b4 = Event(
+                "OneBot", "900000001", "b4", "group", "70009", "100000004", {}, 6, raw_text="测试人格，领每日奖励"
+            )
+            sched_dup.submit(
+                ws,
+                PendingEntry(WakeItem(46, "100000004", "name", "hard", now[0] + 6.0), ev_b4, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in batches[2].entries] == [46]
+
+            # at_bot 维度区分：无 @ 的软唤醒已答不应吞掉后续显式 @Bot 的同文呼叫；未应答项不写入去重缓存
+            emit_tool_obs[0] = False
+            answer_none = [True]
+
+            async def selective_runner(turn: InboxTurn, _ws: _Bot) -> TurnOutcome:
+                batches.append(turn)
+                if emit_mem_dep[0]:
+                    turn.memory_dependent = True
+                ans = frozenset() if answer_none[0] else frozenset(e.item.seq for e in turn.entries)
+                return TurnOutcome(reached_model=True, error=False, answered=ans)
+
+            emit_mem_dep = [False]
+            sched_sel = InboxScheduler(clock=lambda: now[0], sleep=manual_sleep, runner=selective_runner)
+            ev_unans = Event("OneBot", "900000001", "u1", "group", "70009", "100000001", {}, 6, raw_text="在吗")
+            sched_sel.submit(
+                ws,
+                PendingEntry(WakeItem(51, "100000001", "followup", "soft", now[0]), ev_unans, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            # #51 未应答（answered 为空），用户重发不会被吞
+            answer_none[0] = False
+            sched_sel.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(52, "100000001", "followup", "soft", now[0] + 1.0), ev_unans, persona_name="测试人格"
+                ),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            # #52（at_bot=False）已应答后，另一人显式 @Bot（at_bot=True）发「在吗」仍正常放行
+            ev_at = Event(
+                "OneBot", "900000001", "u2", "group", "70009", "100000002", {}, 6, raw_text="在吗", at_bot=True
+            )
+            sched_sel.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(53, "100000002", "mention", "hard", now[0] + 2.0), ev_at, persona_name="测试人格"
+                ),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in batches[-1].entries] == [53]
+
+            # at_list 维度区分：@测试用户甲 与 @测试用户乙 的同正文请求不会互相吞掉
+            ev_at_u1 = Event(
+                "OneBot",
+                "900000001",
+                "u_at1",
+                "group",
+                "70009",
+                "100000001",
+                {},
+                6,
+                raw_text="测试人格帮我看看",
+                at="100000008",
+                at_list=["100000008"],
+            )
+            ev_at_u2 = Event(
+                "OneBot",
+                "900000001",
+                "u_at2",
+                "group",
+                "70009",
+                "100000002",
+                {},
+                6,
+                raw_text="测试人格帮我看看",
+                at="100000009",
+                at_list=["100000009"],
+            )
+            sched_sel.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(54, "100000001", "name", "hard", now[0] + 3.0), ev_at_u1, persona_name="测试人格"
+                ),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            sched_sel.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(55, "100000002", "name", "hard", now[0] + 4.0), ev_at_u2, persona_name="测试人格"
+                ),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in batches[-1].entries] == [55]
+
+            # 零工具但依赖个人记忆（memory_dependent=True）：同人重发消解，跨人同问放行
+            emit_mem_dep[0] = True
+            ev_mem1 = Event(
+                "OneBot",
+                "900000001",
+                "m_q1",
+                "group",
+                "70009",
+                "100000001",
+                {},
+                6,
+                raw_text="测试人格，我上次说的那个怎么样",
+            )
+            ev_mem2 = Event(
+                "OneBot",
+                "900000001",
+                "m_q2",
+                "group",
+                "70009",
+                "100000002",
+                {},
+                6,
+                raw_text="测试人格，我上次说的那个怎么样",
+            )
+            sched_sel.submit(
+                ws,
+                PendingEntry(WakeItem(56, "100000001", "name", "hard", now[0] + 5.0), ev_mem1, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            sched_sel.submit(
+                ws,
+                PendingEntry(WakeItem(57, "100000001", "name", "hard", now[0] + 6.0), ev_mem1, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            assert ws.queue.empty()
+            sched_sel.submit(
+                ws,
+                PendingEntry(WakeItem(58, "100000002", "name", "hard", now[0] + 7.0), ev_mem2, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in batches[-1].entries] == [58]
         finally:
             hm.clear_history(base_ev)
 

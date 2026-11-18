@@ -422,8 +422,90 @@ def test_render_delta_quote_edges_and_merge() -> None:
     merged = next(ln for ln in lines if ln.startswith("#7–#8"))
     assert "x2 / x3" in merged
 
-    # 静默轮记入 A 轨的 dlg_ 委派句柄标记为 tool_delivery，绝不渲染成「你: dlg_…〔已发〕」角色台词
+    # record.metadata 不含 session_id 时，render_delta 与 render_router_view 均能透传渲染〔依据〕标签
+    import time as _time
+
     from gsuid_core.models import Event
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+    from gsuid_core.ai_core.thread_view import render_router_view
+    from gsuid_core.ai_core.evidence.store import Observation, get_evidence_store
+
+    sess_id = "OneBot:onebot:900000001:group:70001"
+    store = get_evidence_store(sess_id)
+    store.observations.clear()
+    obs_now = _time.time()
+    obs = Observation(
+        obs_id="ob_basis01",
+        session_id=sess_id,
+        tool_name="daily_checkin",
+        service="TestPlugin",
+        requested_by="100000002",
+        requested_by_seq=3,
+        credential_owner="100000002",
+        outcome="data",
+        observed_at=obs_now,
+        summary="已完成签到",
+        handle="",
+    )
+    store.append(obs)
+    try:
+        ev_records = [
+            *records[:4],
+            MessageRecord(
+                role="assistant",
+                content="已帮你完成签到啦",
+                user_id="900000001",
+                user_name="测试人格",
+                timestamp=base + 42,
+                metadata={
+                    "msg_id": "b_ev",
+                    "bot_id": "OneBot",
+                    "speech_channel": "persona",
+                    "persona_name": "测试人格",
+                    "reply_to_user_id": "100000002",
+                    "reply_to_user_name": "测试用户B",
+                },
+                link=EventLink(seq=5, msg_id="b_ev", in_reply_to_seqs=(3,), seen_seq=4, evidence=("ob_basis01",)),
+            ),
+            user_rec(6, "100000004", "测试用户D", "测试人格，帮我签到"),
+        ]
+        delta_with_ev = render_delta(
+            ev_records,
+            from_seq=0,
+            head_seq=6,
+            backfill=False,
+            pending_seqs=(6,),
+            persona_name="测试人格",
+            private=False,
+            session_id=sess_id,
+        )
+        turn_ev = InboxTurn(
+            session_id=sess_id,
+            persona_name="测试人格",
+            entries=(
+                PendingEntry(
+                    WakeItem(6, "100000004", "name", "hard", base + 48),
+                    Event(
+                        "OneBot", "900000001", "m6", "group", "70001", "100000004", {}, 6, raw_text="测试人格，帮我签到"
+                    ),
+                    persona_name="测试人格",
+                ),
+            ),
+            from_seq=5,
+            head_seq=6,
+        )
+        from gsuid_core.ai_core.thread_view import render_window as _render_window_ev
+
+        router_with_ev = render_router_view(turn_ev, ev_records)
+        win_with_ev = _render_window_ev(ev_records, persona_name="测试人格", session_id=sess_id)
+        assert "〔依据: 替测试用户B查" in delta_with_ev
+        assert "〔依据: 替测试用户B查" in router_with_ev
+        assert "〔依据: 替测试用户B查" in win_with_ev
+    finally:
+        store.observations.clear()
+
+    # 静默轮记入 A 轨的 dlg_ 委派句柄标记为 tool_delivery，绝不渲染成「你: dlg_…〔已发〕」角色台词
     from gsuid_core.message_history import get_history_manager
     from gsuid_core.ai_core.thread_view import render_window
     from gsuid_core.ai_core.history_format import is_persona_speech, remember_silence_handles

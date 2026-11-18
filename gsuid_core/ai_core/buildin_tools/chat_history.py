@@ -264,7 +264,7 @@ def read_chat_history_text(
             return f"{label} 这个时间附近没有发言。"
         return f"{label} 没有命中。换个词，或用 at=HH:MM 指定时间。"
     shown = [_clip_hit_record(rec, needle) for rec in picked]
-    body = render_window(shown)
+    body = render_window(shown, session_id=target.session_id, bot_id=str(target.bot_id or ""))
     head = f"{label} · 命中 {total} 条"
     if total > len(picked):
         head += f"，这里是其中 {len(picked)} 条"

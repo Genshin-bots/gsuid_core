@@ -60,7 +60,7 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
   - 句末问号 → `问答 / point_latest`
   - 上一轮用过工具且 ≤24 字 → `工具 / point_latest`
   - 其余 → `闲聊 / none`
-- 下游 `handle_ai`（软触发直读 `route_decision.soft_speak`）、MemoryKit、ScaffoldKit、Visibility、`search_cognition` 只消费结论，不再扫文本猜语义。
+- 下游 `handle_ai`（软触发与群聊收件箱轮直读 `route_decision.soft_speak`）、MemoryKit、ScaffoldKit、Visibility、`search_cognition` 只消费结论，不再扫文本猜语义。
 
 `mode_classifier.py` 仅保留旧 `IntentService` 调用形状，内部走结构退化。
 

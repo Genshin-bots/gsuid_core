@@ -279,6 +279,7 @@
   "log.ai.gscore_sanitized_fallback": "[GsCore][AI] Failed to send the sanitized fallback message: {e}",
   "log.ai.gscore_sanitized_fallback_user": "[GsCore][AI] This turn's execution failed; sending a sanitized fallback message to the user: {r}",
   "log.ai.gscore_service_enabled_skipping": "[GsCore][AI] AI service not enabled; skipping processing",
+  "log.ai.gscore_router_gate_silent": "[GsCore][AI] Turn router decided no reply needed (repeat/third-party mention); skipping main Agent",
   "log.ai.gscore_soft_trigger_silent": "[GsCore][AI] Soft-trigger silent gate decided it's unrelated to AI; staying silent",
   "log.ai.gscore_soft_trigger_silent_2": "[GsCore][AI] Soft-trigger silent gate passed; treating as continuation",
   "log.ai.gscore_soft_trigger_silent_3": "[GsCore][AI] Soft-trigger silent gate errored; passing to main agent as fallback: {e}",

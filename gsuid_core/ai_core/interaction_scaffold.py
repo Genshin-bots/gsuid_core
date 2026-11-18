@@ -226,9 +226,10 @@ def ellipsis_inherits_other_speaker(
     *,
     speaker_id: str = "",
     max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
+    extra_names: Sequence[str] = (),
 ) -> bool:
     """乙的短省略形、上一轮 user 是别人、且未点名自己 → 不是你的槽。"""
-    if is_tome or is_addressed_to_self(current_text, persona_name, is_tome):
+    if is_tome or is_addressed_to_self(current_text, persona_name, is_tome, extra_names=extra_names):
         return False
     if not is_manage_ellipsis_form(current_text, max_len=max_len):
         return False
@@ -379,12 +380,14 @@ class GroupOpenGate(str, Enum):
     SILENCE = "silence"
 
 
-def _names_self(text: str, persona_name: str) -> bool:
-    """正文是否出现角色名（含第三人称提及）。"""
-    if not persona_name:
+def _names_self(text: str, persona_name: str, extra_names: Sequence[str] = ()) -> bool:
+    """正文是否出现角色名或配置唤醒词（含第三人称提及）。"""
+    surfaces = [s.strip() for s in (persona_name, *extra_names) if s and s.strip()]
+    if not surfaces:
         return False
     body = "\n".join(ln for ln in text.splitlines() if "@了用户" not in ln)
-    return persona_name in body
+    folded = body.casefold()
+    return any((s.casefold() in folded if s.isascii() else s in body) for s in surfaces)
 
 
 def is_addressed_to_self(
@@ -426,11 +429,17 @@ def is_addressed_to_self(
     return False
 
 
-def addressed_to_someone_else(message_text: str, persona_name: str, is_tome: bool) -> bool:
+def addressed_to_someone_else(
+    message_text: str,
+    persona_name: str,
+    is_tome: bool,
+    *,
+    extra_names: Sequence[str] = (),
+) -> bool:
     """当前消息是否明确 @ 了别人且没有同时找自己——是则本轮砍掉工具集（C-3）。"""
     if is_tome or AT_OTHER_MARKER not in message_text:
         return False
-    if is_addressed_to_self(message_text, persona_name, False):
+    if is_addressed_to_self(message_text, persona_name, False, extra_names=extra_names):
         return False
     return True
 
@@ -443,6 +452,7 @@ def decide_group_open_gate(
     user_type: str,
     soft_triggered: bool = False,
     recent: Sequence[Tuple[str, str]] | None = None,
+    extra_names: Sequence[str] = (),
 ) -> GroupOpenGate:
     """群聊开口前置门：进主 LLM/重装配前判定。
 
@@ -453,14 +463,14 @@ def decide_group_open_gate(
     """
     if user_type == "direct":
         return GroupOpenGate.SPEAK
-    if is_addressed_to_self(message_text, persona_name, is_tome):
+    if is_addressed_to_self(message_text, persona_name, is_tome, extra_names=extra_names):
         return GroupOpenGate.SPEAK
     recent_list = list(recent) if recent is not None else []
-    if addressed_to_someone_else(message_text, persona_name, is_tome):
+    if addressed_to_someone_else(message_text, persona_name, is_tome, extra_names=extra_names):
         return GroupOpenGate.SILENCE
-    if ambient_followup_to_other(message_text, recent_list, persona_name, is_tome):
+    if ambient_followup_to_other(message_text, recent_list, persona_name, is_tome, extra_names=extra_names):
         return GroupOpenGate.SILENCE
-    if ellipsis_inherits_other_speaker(message_text, recent_list, persona_name, is_tome):
+    if ellipsis_inherits_other_speaker(message_text, recent_list, persona_name, is_tome, extra_names=extra_names):
         return GroupOpenGate.SILENCE
     # 多人同条且无人呼叫你 = 群里互聊
     if is_multi_speaker_message(message_text):
@@ -514,6 +524,8 @@ def ambient_followup_to_other(
     persona_name: str,
     is_tome: bool,
     max_len: int = AMBIENT_MAXLEN_DEFAULT,
+    *,
+    extra_names: Sequence[str] = (),
 ) -> bool:
     """当前是短促追问、且紧邻的上一条用户消息 @ 了别人、本条又没点名自己——判为催被@者（C-3 扩展）。
 
@@ -523,7 +535,7 @@ def ambient_followup_to_other(
     if is_tome or AT_OTHER_MARKER in current_text:
         return False
     body = extract_message_body(current_text)
-    if len(body) > max_len or _names_self(current_text, persona_name):
+    if len(body) > max_len or _names_self(current_text, persona_name, extra_names):
         return False
     # 最近一条 user 历史是否 @ 了别人
     last_user = next((t for r, t in reversed(recent) if r == "user"), "")
@@ -565,6 +577,7 @@ class TurnGraph:
     style_push_count: int = 0
     open_gate: GroupOpenGate = GroupOpenGate.SPEAK
     recent: List[Tuple[str, str]] = field(default_factory=list)
+    recent_user_bodies: Optional[List[Tuple[str, str]]] = None
 
     @property
     def is_group(self) -> bool:
@@ -609,6 +622,7 @@ def build_turn_graph(
     user_type: str,
     primary_speaker: str = "",
     recent: Sequence[Tuple[str, str]] | None = None,
+    recent_user_bodies: Sequence[Tuple[str, str]] | None = None,
     soft_triggered: bool = False,
     recent_tool_call: bool = False,
     followup_max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
@@ -621,6 +635,7 @@ def build_turn_graph(
 ) -> TurnGraph:
     """从本轮消息 + 近历史构建 TurnGraph（唯一权威结构源）。"""
     recent_list = list(recent) if recent is not None else []
+    user_bodies_list = list(recent_user_bodies) if recent_user_bodies is not None else None
     text = message_text or ""
     speakers = list_speaker_ids(text)
     primary = primary_speaker or extract_speaker_id(text) or ""
@@ -650,8 +665,10 @@ def build_turn_graph(
     call = is_addressed_to_self(text, persona_name, is_tome, extra_names=extra)
     multi = len(speakers) >= 2
     addr = (
-        addressed_to_someone_else(text, persona_name, is_tome)
-        or ambient_followup_to_other(text, recent_list, persona_name, is_tome, max_len=ambient_max_len)
+        addressed_to_someone_else(text, persona_name, is_tome, extra_names=extra)
+        or ambient_followup_to_other(
+            text, recent_list, persona_name, is_tome, max_len=ambient_max_len, extra_names=extra
+        )
         or ellipsis_inherits_other_speaker(
             text,
             recent_list,
@@ -659,6 +676,7 @@ def build_turn_graph(
             is_tome,
             speaker_id=primary,
             max_len=followup_max_len,
+            extra_names=extra,
         )
     )
     ellipsis = detect_ellipsis_followup(
@@ -684,6 +702,7 @@ def build_turn_graph(
         user_type=user_type,
         soft_triggered=soft_triggered,
         recent=recent_list,
+        extra_names=extra,
     )
     return TurnGraph(
         user_type=user_type or "direct",
@@ -705,6 +724,7 @@ def build_turn_graph(
         style_push_count=pushes,
         open_gate=open_g,
         recent=recent_list,
+        recent_user_bodies=user_bodies_list,
     )
 
 
@@ -715,6 +735,13 @@ def _same_body_repeat_count(tg: TurnGraph) -> int:
         return 0
     n = 1
     sid = tg.primary_speaker
+    if tg.recent_user_bodies is not None:
+        for uid, content in reversed(tg.recent_user_bodies):
+            if sid and uid and uid != sid:
+                continue
+            if extract_message_body(content) == body:
+                n += 1
+        return n
     for role, text in reversed(tg.recent):
         if role != "user":
             continue
