@@ -722,22 +722,29 @@ EXA_CONFIG: Dict[str, GSC] = {
 KEENABLE_CONFIG: Dict[str, GSC] = {
     "api_key": GsListStrConfig(
         "Keenable API密钥（可选）",
-        "可留空，走公开搜索端点；填写后使用带 Key 的 /v1/search。"
-        "请前往 https://keenable.ai 获取 API Key。支持多 Key 池轮询",
+        "可留空，走公开搜索端点 /v1/search/public；填写后使用带 Key 的 /v1/search（仅读取本配置，不读环境变量）。"
+        "请前往 https://keenable.ai 获取 API Key。无效 Key 不会回落匿名。支持多 Key 池轮询",
         [],
         options=[],
     ),
     "max_results": GsIntConfig(
         "最大搜索结果数",
-        "指定每次搜索的最大返回结果数量",
+        "POST /v1/search 的 max_results，默认 10，范围 1–50",
         10,
-        options=[5, 10, 15, 20],
+        max_value=50,
+        options=[5, 10, 15, 20, 50],
     ),
     "timeout": GsIntConfig(
         "请求超时(秒)",
         "调用 Keenable Search 的超时时间",
         20,
         options=[10, 15, 20, 30, 45, 60],
+    ),
+    "mode": GsStrConfig(
+        "搜索模式",
+        "pro：深度检索与更佳排序（默认）；realtime：最低延迟响应",
+        "pro",
+        options=["pro", "realtime"],
     ),
 }
 
