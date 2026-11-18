@@ -43,9 +43,9 @@ from .tavily_search import (
     tavily_search_with_context,
 )
 from .deepseek_search import deepseek_search, deepseek_search_configured
+from .keenable_search import keenable_search, keenable_search_configured
 from .anysearch_search import anysearch_search, anysearch_search_configured
 from .firecrawl_search import firecrawl_search, firecrawl_search_configured
-from .keenable_search import keenable_search, keenable_search_configured
 
 # 单条 MCP 原始返回兜底透传时的最大字符数，避免一次搜索把上下文吃满
 _MAX_MCP_RAW_CHARS = 4000

@@ -10,8 +10,8 @@ from gsuid_core.ai_core.web_search.keenable_search import (
     APP_TITLE,
     KEYED_SEARCH_URL,
     PUBLIC_SEARCH_URL,
-    _normalize_items,
     keenable_search,
+    _normalize_items,
     keenable_search_configured,
 )
 
@@ -74,9 +74,7 @@ def _session(response):
 
 
 def test_keenable_search_uses_public_endpoint_and_title_header_without_a_key():
-    response = _FakeResponse(
-        {"results": [{"title": "A", "url": "https://a.example", "snippet": "body A"}]}
-    )
+    response = _FakeResponse({"results": [{"title": "A", "url": "https://a.example", "snippet": "body A"}]})
     session = _session(response)
 
     with (
@@ -104,9 +102,7 @@ def test_keenable_search_uses_public_endpoint_and_title_header_without_a_key():
 
 
 def test_keenable_search_uses_keyed_endpoint_when_a_key_is_configured():
-    response = _FakeResponse(
-        {"results": [{"title": "A", "url": "https://a.example", "snippet": "body A"}]}
-    )
+    response = _FakeResponse({"results": [{"title": "A", "url": "https://a.example", "snippet": "body A"}]})
     session = _session(response)
 
     with (
