@@ -553,7 +553,7 @@ def _analyze_missing_configs(wizard_data: Dict[str, Any]) -> List[Dict[str, Any]
                 "item": "网络搜索",
                 "severity": "warning",
                 "message": f"网络搜索未配置: {websearch.get('note', '未知错误')}",
-                "recommendation": "配置 Tavily/Jina/Exa/AnySearch API Key 或配置 MCP 搜索工具",
+                "recommendation": "配置 Tavily/Jina/Exa/DeepSeek/AnySearch/Firecrawl/Keenable 或配置 MCP 搜索工具",
             }
         )
 

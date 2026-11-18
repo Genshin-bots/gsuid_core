@@ -660,6 +660,8 @@
   "log.ai.webfetch_html_markdown_conversion_fail": "[WebFetch] HTML から Markdown への変換に失敗: {url}、エラー: {e}",
   "log.ai.webfetch_jina_ok": "[WebFetch][Jina] 取得完了: {url}、長さ: {p0}",
   "log.ai.webfetch_jina_try_fail": "[WebFetch][Jina] 試行失敗: {url}、エラー: {e}",
+  "log.ai.webfetch_keenable_ok": "[WebFetch][Keenable] 取得完了: {url}、長さ: {p0}",
+  "log.ai.webfetch_keenable_try_fail": "[WebFetch][Keenable] api_key ...{p0} が失敗: {url}、エラー: {e}",
   "log.ai.webfetch_local_ok": "[WebFetch][local] 取得完了: {url}、長さ: {p0}",
   "log.ai.webfetch_network_request_url_fail": "[WebFetch] ネットワークリクエストに失敗: {url}、エラー: {e}",
   "log.ai.webfetch_provider_fail": "[WebFetch] プロバイダー {provider} 失敗（戦略={strategy}）url={url}: {e}",

@@ -660,6 +660,8 @@
   "log.ai.webfetch_html_markdown_conversion_fail": "[WebFetch] HTML to Markdown conversion failed: {url}, error: {e}",
   "log.ai.webfetch_jina_ok": "[WebFetch][Jina] Fetch completed: {url}, length: {p0}",
   "log.ai.webfetch_jina_try_fail": "[WebFetch][Jina] Attempt failed: {url}, error: {e}",
+  "log.ai.webfetch_keenable_ok": "[WebFetch][Keenable] Fetch completed: {url}, length: {p0}",
+  "log.ai.webfetch_keenable_try_fail": "[WebFetch][Keenable] api_key ...{p0} failed: {url}, error: {e}",
   "log.ai.webfetch_local_ok": "[WebFetch][local] Fetch completed: {url}, length: {p0}",
   "log.ai.webfetch_network_request_url_fail": "[WebFetch] Network request failed: {url}, error: {e}",
   "log.ai.webfetch_provider_fail": "[WebFetch] Provider {provider} failed (strategy={strategy}) url={url}: {e}",

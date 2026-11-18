@@ -2,10 +2,10 @@
 Web Fetch 模块
 
 提供网页内容抓取并转换为文本格式的功能。
-支持 Jina、DeepSeek、Exa Contents、AnySearch Extract 与本机 aiohttp 等多源提供方。
+支持 Jina、DeepSeek、Exa Contents、AnySearch Extract、Keenable 与本机 aiohttp 等多源提供方。
 
 注意：不同提供方返回的文本格式有所差异：
-- Jina Reader 与 local 模式返回结构化的 Markdown 文本；
+- Jina Reader、Keenable Fetch 与 local 模式返回结构化的 Markdown 文本；
 - Exa Contents、AnySearch Extract 或 DeepSeek 抓取返回经过服务端清洗提取的网页正文文本，
   并不一定包含 Markdown 标记（如二级标题、超链接等）。
 调用方应按网页文本处理，勿强假设其包含 Markdown 语法结构。
@@ -37,6 +37,7 @@ from gsuid_core.ai_core.configs.ai_config import (
     web_fetch_config,
 )
 from gsuid_core.ai_core.web_search.exa_search import exa_fetch_markdown
+from gsuid_core.ai_core.web_search.keenable_search import keenable_fetch_markdown
 from gsuid_core.ai_core.web_search.anysearch_search import anysearch_fetch_markdown
 
 _DEFAULT_UA = (
@@ -144,11 +145,13 @@ def _normalize_fetch_provider(raw: Any) -> str:
         return "Exa"
     if lowered == "anysearch" or s == "AnySearch":
         return "AnySearch"
+    if lowered == "keenable" or s == "Keenable":
+        return "Keenable"
     return "Jina"
 
 
 def _webfetch_provider() -> str:
-    """主用源：local | Jina | DeepSeek | Exa | AnySearch；控制台热改，无需重启。默认 Jina。"""
+    """主用源：local | Jina | DeepSeek | Exa | AnySearch | Keenable；控制台热改，无需重启。默认 Jina。"""
     raw = ai_config.get_config("webfetch_provider", "Jina").data
     return _normalize_fetch_provider(raw)
 
@@ -556,6 +559,8 @@ async def _invoke_fetch_provider(
         return await exa_fetch_markdown(url, max_md)
     if provider == "AnySearch":
         return await anysearch_fetch_markdown(url, max_md)
+    if provider == "Keenable":
+        return await keenable_fetch_markdown(url, max_md)
     return await _fetch_via_local(url, timeout=timeout, max_length=max_length)
 
 
@@ -567,7 +572,7 @@ async def fetch_webpage_as_markdown(
     """
     抓取指定 URL 的网页内容并转换为文本格式。
 
-    按 ``webfetch_provider`` + ``webfetch_lb_strategy`` 在 Jina / DeepSeek / Exa / AnySearch / local
+    按 ``webfetch_provider`` + ``webfetch_lb_strategy`` 在 Jina / DeepSeek / Exa / AnySearch / Keenable / local
     间切换或分流。配置热读，控制台修改后无需重启。
 
     注意：

@@ -660,6 +660,8 @@
   "log.ai.webfetch_html_markdown_conversion_fail": "[WebFetch] HTML 转 Markdown 失败: {url}, 错误: {e}",
   "log.ai.webfetch_jina_ok": "[WebFetch][Jina] 抓取完成: {url}, 长度: {p0}",
   "log.ai.webfetch_jina_try_fail": "[WebFetch][Jina] 尝试失败: {url}, 错误: {e}",
+  "log.ai.webfetch_keenable_ok": "[WebFetch][Keenable] 抓取完成: {url}, 长度: {p0}",
+  "log.ai.webfetch_keenable_try_fail": "[WebFetch][Keenable] api_key ...{p0} 失败: {url}, 错误: {e}",
   "log.ai.webfetch_local_ok": "[WebFetch][local] 抓取完成: {url}, 长度: {p0}",
   "log.ai.webfetch_network_request_url_fail": "[WebFetch] 网络请求失败: {url}, 错误: {e}",
   "log.ai.webfetch_provider_fail": "[WebFetch] 提供方 {provider} 失败（策略={strategy}）url={url}: {e}",
