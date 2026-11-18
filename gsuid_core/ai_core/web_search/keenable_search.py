@@ -151,7 +151,9 @@ async def _read_json_payload(resp: aiohttp.ClientResponse) -> tuple[object, str]
     text = await resp.text()
     try:
         return (json.loads(text) if text else {}), text
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as err:
+        if resp.status < 400:
+            raise KeenableSearchError(f"Keenable invalid JSON HTTP {resp.status}: {text[:200]}") from err
         return {"message": text[:300]}, text
 
 
@@ -177,19 +179,19 @@ def _error_detail(payload: object, fallback: str) -> str:
     return f"{prefix}: {body}"
 
 
-def _raise_for_status(status: int, payload: object, text: str) -> None:
+def _raise_for_status(status: int, payload: object, text: str, op: str) -> None:
     if status < 400:
         return
     detail = _error_detail(payload, text[:300])
     if status in (400, 422):
-        raise KeenableRequestError(f"Keenable bad request HTTP {status}{detail}")
+        raise KeenableRequestError(f"Keenable {op} bad request HTTP {status}{detail}")
     if status in (401, 403):
-        raise KeenableSearchError(f"Keenable auth HTTP {status}{detail}")
+        raise KeenableSearchError(f"Keenable {op} auth HTTP {status}{detail}")
     if status == 402:
-        raise KeenableSearchError(f"Keenable credits HTTP 402{detail}")
+        raise KeenableSearchError(f"Keenable {op} credits HTTP 402{detail}")
     if status == 429:
-        raise KeenableSearchError(f"Keenable rate limit HTTP 429{detail}")
-    raise KeenableSearchError(f"Keenable search HTTP {status}{detail}")
+        raise KeenableSearchError(f"Keenable {op} rate limit HTTP 429{detail}")
+    raise KeenableSearchError(f"Keenable {op} HTTP {status}{detail}")
 
 
 async def _do_keenable_search(
@@ -215,7 +217,7 @@ async def _do_keenable_search(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, json=body, headers=headers) as resp:
             payload, text = await _read_json_payload(resp)
-            _raise_for_status(resp.status, payload, text)
+            _raise_for_status(resp.status, payload, text, "search")
             if not isinstance(payload, dict):
                 raise KeenableSearchError(f"Keenable returned unexpected JSON: {text[:300]}")
             return _normalize_items(payload, max_results)
@@ -317,7 +319,7 @@ async def _do_keenable_fetch(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(endpoint, params=params, headers=headers) as resp:
             payload, text = await _read_json_payload(resp)
-            _raise_for_status(resp.status, payload, text)
+            _raise_for_status(resp.status, payload, text, "fetch")
             if not isinstance(payload, dict):
                 raise KeenableSearchError(f"Keenable returned unexpected JSON: {text[:300]}")
             return _extract_fetch_markdown(payload)

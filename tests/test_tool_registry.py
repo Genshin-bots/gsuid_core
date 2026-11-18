@@ -10,6 +10,7 @@ import base64
 import struct
 import asyncio
 from pathlib import Path
+from dataclasses import field, dataclass
 
 import pytest
 from PIL import Image
@@ -821,13 +822,80 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
     asyncio.run(scenario())
 
 
+@dataclass
+class _KeenableHttpCall:
+    url: str
+    headers: dict[str, str]
+    payload: dict[str, object] | None = None
+    params: dict[str, str | int] | None = None
+
+
+class _KeenableFakeResponse:
+    def __init__(self, payload: object, status: int = 200, *, text_error: Exception | None = None) -> None:
+        self._payload = payload
+        self.status = status
+        self._text_error = text_error
+
+    async def text(self) -> str:
+        if self._text_error is not None:
+            raise self._text_error
+        return self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
+
+    async def __aenter__(self) -> _KeenableFakeResponse:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
+        return None
+
+
+@dataclass
+class _KeenableSessionRecorder:
+    responses: list[_KeenableFakeResponse]
+    calls: list[_KeenableHttpCall] = field(default_factory=list)
+
+    def make_session(self, timeout: object = None) -> _KeenableFakeSession:
+        return _KeenableFakeSession(self)
+
+
+class _KeenableFakeSession:
+    def __init__(self, recorder: _KeenableSessionRecorder) -> None:
+        self._recorder = recorder
+
+    def post(self, url: str, *, json: dict[str, object], headers: dict[str, str]) -> _KeenableFakeResponse:
+        self._recorder.calls.append(_KeenableHttpCall(url=url, payload=json, headers=headers))
+        return self._recorder.responses.pop(0)
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, str | int],
+        headers: dict[str, str],
+    ) -> _KeenableFakeResponse:
+        self._recorder.calls.append(_KeenableHttpCall(url=url, params=params, headers=headers))
+        return self._recorder.responses.pop(0)
+
+    async def __aenter__(self) -> _KeenableFakeSession:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
+        return None
+
+
 def test_keenable_search_auth_normalization_and_error_contracts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Keenable 归一、仅读配置鉴权、限幅与 400 不轮询 / 401 轮询 / 402 失败契约。"""
-    from types import TracebackType
-    from dataclasses import field, dataclass
-
     import aiohttp
 
     from gsuid_core.ai_core.web_search import keenable_search as ks
@@ -842,61 +910,6 @@ def test_keenable_search_auth_normalization_and_error_contracts(
         _normalize_items,
         keenable_search_configured,
     )
-
-    @dataclass
-    class _PostCall:
-        url: str
-        payload: dict[str, object]
-        headers: dict[str, str]
-
-    class _FakeResponse:
-        def __init__(self, payload: object, status: int = 200, *, text_error: Exception | None = None) -> None:
-            self._payload = payload
-            self.status = status
-            self._text_error = text_error
-
-        async def text(self) -> str:
-            if self._text_error is not None:
-                raise self._text_error
-            return self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
-
-        async def __aenter__(self) -> _FakeResponse:
-            return self
-
-        async def __aexit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            tb: TracebackType | None,
-        ) -> None:
-            return None
-
-    @dataclass
-    class _SessionRecorder:
-        responses: list[_FakeResponse]
-        calls: list[_PostCall] = field(default_factory=list)
-
-        def make_session(self, timeout: object = None) -> _FakeSession:
-            return _FakeSession(self)
-
-    class _FakeSession:
-        def __init__(self, recorder: _SessionRecorder) -> None:
-            self._recorder = recorder
-
-        def post(self, url: str, *, json: dict[str, object], headers: dict[str, str]) -> _FakeResponse:
-            self._recorder.calls.append(_PostCall(url=url, payload=json, headers=headers))
-            return self._recorder.responses.pop(0)
-
-        async def __aenter__(self) -> _FakeSession:
-            return self
-
-        async def __aexit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            tb: TracebackType | None,
-        ) -> None:
-            return None
 
     assert keenable_search_configured() is True
     sample = {
@@ -936,9 +949,9 @@ def test_keenable_search_auth_normalization_and_error_contracts(
     monkeypatch.setenv("KEENABLE_API_KEY", "env-key-must-not-be-read")
     monkeypatch.setattr(keenable_config.get_config("api_key"), "data", [])
     monkeypatch.setattr(keenable_config.get_config("mode"), "data", "realtime")
-    rec_pub = _SessionRecorder(
+    rec_pub = _KeenableSessionRecorder(
         [
-            _FakeResponse(
+            _KeenableFakeResponse(
                 {
                     "results": [
                         {
@@ -950,7 +963,7 @@ def test_keenable_search_auth_normalization_and_error_contracts(
                     ]
                 }
             ),
-            _FakeResponse({}, text_error=aiohttp.ClientPayloadError("truncated stream")),
+            _KeenableFakeResponse({}, text_error=aiohttp.ClientPayloadError("truncated stream")),
         ]
     )
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_pub.make_session)
@@ -964,16 +977,16 @@ def test_keenable_search_auth_normalization_and_error_contracts(
 
     with pytest.raises(KeenableSearchError):
         asyncio.run(keenable_search("hello", max_results=0))
-    assert rec_pub.calls[1].payload["max_results"] == 1
+    assert rec_pub.calls[1].payload is not None and rec_pub.calls[1].payload["max_results"] == 1
 
     monkeypatch.setattr(keenable_config.get_config("api_key"), "data", ["keen_bad", "keen_good"])
     monkeypatch.setattr(keenable_config.get_config("mode"), "data", "pro")
     monkeypatch.setattr(ks, "_select_api_key", lambda pool: pool[0] if pool else None)
 
-    rec_keyed = _SessionRecorder(
+    rec_keyed = _KeenableSessionRecorder(
         [
-            _FakeResponse({"error": "Invalid key", "code": "invalid_api_key"}, status=401),
-            _FakeResponse({"results": [{"title": "OK", "url": "https://ok.example", "snippet": "good"}]}),
+            _KeenableFakeResponse({"error": "Invalid key", "code": "invalid_api_key"}, status=401),
+            _KeenableFakeResponse({"results": [{"title": "OK", "url": "https://ok.example", "snippet": "good"}]}),
         ]
     )
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_keyed.make_session)
@@ -983,18 +996,26 @@ def test_keenable_search_auth_normalization_and_error_contracts(
     assert [c.headers["X-API-Key"] for c in rec_keyed.calls] == ["keen_bad", "keen_good"]
 
     # 400 请求错误不跨 Key 重试，且非 dict 载荷错误保留 ": " 分隔符
-    rec_bad = _SessionRecorder([_FakeResponse(["bad_param"], status=400)])
+    rec_bad = _KeenableSessionRecorder([_KeenableFakeResponse(["bad_param"], status=400)])
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_bad.make_session)
     with pytest.raises(KeenableRequestError, match=r"HTTP 400: \["):
         asyncio.run(keenable_search("hello", max_results=3))
     assert len(rec_bad.calls) == 1
 
-    rec_402 = _SessionRecorder([_FakeResponse({"error": "Out of credits", "code": "insufficient_credits"}, 402)])
+    rec_402 = _KeenableSessionRecorder(
+        [_KeenableFakeResponse({"error": "Out of credits", "code": "insufficient_credits"}, 402)]
+    )
     monkeypatch.setattr(keenable_config.get_config("api_key"), "data", ["keen_only"])
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_402.make_session)
     with pytest.raises(KeenableSearchError, match="insufficient_credits"):
         asyncio.run(keenable_search("hello", max_results=3))
     assert [c.url for c in rec_402.calls] == [KEYED_SEARCH_URL]
+
+    # 200 非 JSON 响应显式报错而非静默变空结果
+    rec_html = _KeenableSessionRecorder([_KeenableFakeResponse("<html>bad gateway</html>", status=200)])
+    monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_html.make_session)
+    with pytest.raises(KeenableSearchError, match=r"invalid JSON HTTP 200"):
+        asyncio.run(keenable_search("hello", max_results=3))
 
 
 def test_websearch_keenable_opt_in_routing_and_wizard(
@@ -1045,9 +1066,6 @@ def test_keenable_fetch_and_webfetch_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Keenable Fetch：无 Key / 有 Key 轮询、400 不重试、截断，以及 web_fetch 调度与默认隔离。"""
-    from types import TracebackType
-    from dataclasses import field, dataclass
-
     from gsuid_core.ai_core import web_fetch as wf
     from gsuid_core.ai_core.web_search import keenable_search as ks
     from gsuid_core.ai_core.configs.ai_config import ai_config, keenable_config
@@ -1058,64 +1076,6 @@ def test_keenable_fetch_and_webfetch_routing(
         keenable_fetch_markdown,
     )
 
-    @dataclass
-    class _GetCall:
-        url: str
-        params: dict[str, str | int]
-        headers: dict[str, str]
-
-    class _FakeGetResponse:
-        def __init__(self, payload: object, status: int = 200) -> None:
-            self._payload = payload
-            self.status = status
-
-        async def text(self) -> str:
-            return self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
-
-        async def __aenter__(self) -> _FakeGetResponse:
-            return self
-
-        async def __aexit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            tb: TracebackType | None,
-        ) -> None:
-            return None
-
-    @dataclass
-    class _GetRecorder:
-        responses: list[_FakeGetResponse]
-        calls: list[_GetCall] = field(default_factory=list)
-
-        def make_session(self, timeout: object = None) -> _FakeGetSession:
-            return _FakeGetSession(self)
-
-    class _FakeGetSession:
-        def __init__(self, recorder: _GetRecorder) -> None:
-            self._recorder = recorder
-
-        def get(
-            self,
-            url: str,
-            *,
-            params: dict[str, str | int],
-            headers: dict[str, str],
-        ) -> _FakeGetResponse:
-            self._recorder.calls.append(_GetCall(url=url, params=params, headers=headers))
-            return self._recorder.responses.pop(0)
-
-        async def __aenter__(self) -> _FakeGetSession:
-            return self
-
-        async def __aexit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            tb: TracebackType | None,
-        ) -> None:
-            return None
-
     # 默认抓取链不包含 Keenable
     monkeypatch.setattr(ai_config.get_config("webfetch_provider"), "data", "Jina")
     monkeypatch.setattr(ai_config.get_config("webfetch_lb_strategy"), "data", "error_switch")
@@ -1125,9 +1085,9 @@ def test_keenable_fetch_and_webfetch_routing(
     # 无 Key 走 /v1/fetch/public，携带 X-Keenable-Title / live / max_chars，并附带标题与截断
     monkeypatch.setattr(keenable_config.get_config("api_key"), "data", [])
     monkeypatch.setattr(keenable_config.get_config("fetch_live"), "data", True)
-    rec_pub = _GetRecorder(
+    rec_pub = _KeenableSessionRecorder(
         [
-            _FakeGetResponse({"title": "Doc Title", "content": "x" * 60}),
+            _KeenableFakeResponse({"title": "Doc Title", "content": "x" * 60}),
         ]
     )
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_pub.make_session)
@@ -1143,10 +1103,10 @@ def test_keenable_fetch_and_webfetch_routing(
     monkeypatch.setattr(keenable_config.get_config("api_key"), "data", ["keen_bad", "keen_good"])
     monkeypatch.setattr(keenable_config.get_config("fetch_live"), "data", False)
     monkeypatch.setattr(ks, "_select_api_key", lambda pool: pool[0] if pool else None)
-    rec_keyed = _GetRecorder(
+    rec_keyed = _KeenableSessionRecorder(
         [
-            _FakeGetResponse({"error": "Invalid key", "code": "invalid_api_key"}, status=401),
-            _FakeGetResponse({"title": "Ignored", "content": "# Already Heading\nbody"}),
+            _KeenableFakeResponse({"error": "Invalid key", "code": "invalid_api_key"}, status=401),
+            _KeenableFakeResponse({"title": "Ignored", "content": "# Already Heading\nbody"}),
         ]
     )
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_keyed.make_session)
@@ -1154,13 +1114,20 @@ def test_keenable_fetch_and_webfetch_routing(
     assert md_keyed == "# Already Heading\nbody"
     assert [c.url for c in rec_keyed.calls] == [KEYED_FETCH_URL, KEYED_FETCH_URL]
     assert [c.headers["X-API-Key"] for c in rec_keyed.calls] == ["keen_bad", "keen_good"]
-    assert rec_keyed.calls[1].params["live"] == "false"
+    assert rec_keyed.calls[1].params is not None and rec_keyed.calls[1].params["live"] == "false"
 
-    rec_400 = _GetRecorder([_FakeGetResponse({"message": "invalid url"}, status=400)])
+    rec_400 = _KeenableSessionRecorder([_KeenableFakeResponse({"message": "invalid url"}, status=400)])
     monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_400.make_session)
     with pytest.raises(ValueError, match="Keenable 抓取失败"):
         asyncio.run(keenable_fetch_markdown("https://bad.example", max_chars=1000))
     assert len(rec_400.calls) == 1
+
+    # 5xx 报错区分 fetch 操作名
+    monkeypatch.setattr(keenable_config.get_config("api_key"), "data", [])
+    rec_503 = _KeenableSessionRecorder([_KeenableFakeResponse({"message": "upstream down"}, status=503)])
+    monkeypatch.setattr(ks.aiohttp, "ClientSession", rec_503.make_session)
+    with pytest.raises(ValueError, match=r"Keenable fetch HTTP 503"):
+        asyncio.run(keenable_fetch_markdown("https://down.example", max_chars=1000))
 
     # web_fetch 调度与 failover 到 local
     monkeypatch.setattr(ai_config.get_config("webfetch_provider"), "data", "Keenable")
