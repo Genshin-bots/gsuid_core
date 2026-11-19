@@ -20,7 +20,7 @@ from typing import (
     Sequence,
 )
 
-import httpx
+import httpx2
 from PIL import Image
 from json_repair import repair_json
 from pydantic_ai.messages import (
@@ -786,7 +786,7 @@ async def materialize_image_url(raw: str, *, strict: bool = False) -> str:
             return unwrapped
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx2.AsyncClient(timeout=30.0) as client:
             resp = await client.get(unwrapped)
             resp.raise_for_status()
             data = resp.content
@@ -836,11 +836,11 @@ async def fetch_video_bytes(url: str) -> tuple[bytes, str]:
 
     limit = VIDEO_MAX_MB * 1024 * 1024
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0), follow_redirects=True) as client:
+        async with httpx2.AsyncClient(timeout=httpx2.Timeout(30.0, read=300.0), follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.content
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         raise RuntimeError(i18n_t("🎬 [GsCoreAI] 视频下载失败: {p0} ({e})", p0=url[:120], e=e)) from e
     if len(data) > limit:
         raise RuntimeError(

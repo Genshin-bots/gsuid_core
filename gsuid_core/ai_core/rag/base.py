@@ -12,8 +12,7 @@ import threading
 from typing import Final, Union, Callable, Sequence, Awaitable
 from pathlib import Path
 
-import httpx
-from huggingface_hub import snapshot_download
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -70,7 +69,6 @@ def _hf_cache_dirname(repo_id: str) -> str:
     return "models--" + repo_id.replace("/", "--")
 
 
-SPARSE_HF_REPO: Final[str] = "Qdrant/bm25"
 RERANKER_HF_REPO: Final[str] = RERANKER_MODEL_NAME  # BAAI/bge-reranker-base
 
 
@@ -368,7 +366,7 @@ async def _download_and_extract_zip(base_url: str, tag: str, zip_name: str, targ
 
     tmp_path = None
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        async with httpx2.AsyncClient(timeout=httpx2.Timeout(300.0)) as client:
             async with client.stream("GET", zip_url) as response:
                 if response.status_code != 200:
                     logger.warning(
@@ -564,7 +562,20 @@ def _is_models_cache_valid() -> bool:
 
 
 def _prefetch_local_embedding_model(model_name: str) -> None:
-    """用 fastembed 拉当前模型权重，lazy_load=True 只落盘不额外加载进内存。"""
+    """拉取当前本地嵌入模型权重；静态模型直接走 HF snapshot_download，不导入 fastembed。"""
+    from gsuid_core.ai_core.rag.embedding.local import resolve_fastembed_model_spec
+
+    spec = resolve_fastembed_model_spec(model_name)
+    if spec.is_static:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id=spec.hf_repo,
+            cache_dir=str(MODELS_CACHE),
+            allow_patterns=["config.json", "tokenizer.json", spec.model_file, "*.safetensors"],
+        )
+        return
+
     from fastembed import TextEmbedding
 
     TextEmbedding(
@@ -576,15 +587,7 @@ def _prefetch_local_embedding_model(model_name: str) -> None:
 
 
 async def pre_download_models():
-    """提前下载所有模型到缓存目录
-
-    优先从资源库下载zip包并解压，如果失败则回退到HuggingFace下载。
-
-    下载三个模型：
-    1. Embedding模型: 当前 local_embedding_config 指定的 fastembed 模型
-    2. Sparse模型: Qdrant/bm25 -> MODELS_CACHE
-    3. Reranker模型: BAAI/bge-reranker-base -> RERANK_MODELS_CACHE
-    """
+    """提前下载本地嵌入与 Reranker 模型到缓存目录（BM25 稀疏检索已纯 Python 化，无需下载）。"""
     if not is_enable_ai():
         return
 
@@ -613,17 +616,11 @@ async def pre_download_models():
         await asyncio.to_thread(_prefetch_local_embedding_model, model_name)
         logger.info(t("log.rag.embedding_pre_download"))
 
-        # 下载Sparse模型
-        logger.info(t("log.rag.pre_downloading_sparse_hf", SPARSE_HF_REPO=SPARSE_HF_REPO))
-        snapshot_download(
-            repo_id=SPARSE_HF_REPO,
-            cache_dir=str(MODELS_CACHE),
-        )
-        logger.info(t("log.rag.sparse_pre_download"))
-
         # 下载Reranker模型（仅本地 rerank 模式需要预下载）
         rerank_provider = ai_config.get_config("rerank_provider").data
         if is_enable_rerank() and rerank_provider == "local":
+            from huggingface_hub import snapshot_download
+
             logger.info(t("log.rag.pre_downloading_reranker_hf", RERANKER_HF_REPO=RERANKER_HF_REPO))
             snapshot_download(
                 repo_id=RERANKER_HF_REPO,
@@ -678,36 +675,8 @@ class _EmbeddingModelWrapper:
 embedding_model: "Union[_EmbeddingModelWrapper, None]" = None
 embedding_provider: "Union[EmbeddingProvider, None]" = None
 client: QdrantSession | None = None
-# 全局 Sparse Embedding 模型（懒加载，线程安全）
-_sparse_model = None
-_sparse_model_lock = threading.Lock()
 # 客户端初始化锁：避免多线程并发构造 AsyncQdrantClient 产生本地文件锁冲突。
 _client_init_lock = threading.Lock()
-
-
-def _get_sparse_model():
-    """隐患三修复：添加线程锁防止并发初始化模型"""
-    global _sparse_model
-
-    if not is_enable_ai():
-        return
-
-    if _sparse_model is None:
-        with _sparse_model_lock:
-            # 双重检查锁定
-            if _sparse_model is None:
-                try:
-                    from fastembed import SparseTextEmbedding
-
-                    _sparse_model = SparseTextEmbedding(
-                        model_name="Qdrant/bm25",
-                        cache_dir=str(MODELS_CACHE),
-                        threads=2,
-                        local_files_only=True,
-                    )
-                except Exception as e:
-                    logger.warning(t("log.rag.memory_sparsetextembedding_initialization", e=e))
-    return _sparse_model
 
 
 def init_embedding_model():

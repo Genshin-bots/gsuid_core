@@ -1,6 +1,7 @@
 from typing import Dict
 
 from gsuid_core.data_store import get_res_path
+from gsuid_core.ai_core.const import FOLLOWUP_MAXLEN_DEFAULT
 from gsuid_core.ai_core.kits.base import OFF, KIT_SLOTS
 from gsuid_core.utils.plugins_config.models import (
     GSC,
@@ -11,7 +12,6 @@ from gsuid_core.utils.plugins_config.models import (
     GsFloatConfig,
     GsListStrConfig,
 )
-from gsuid_core.ai_core.interaction_scaffold import FOLLOWUP_MAXLEN_DEFAULT
 from gsuid_core.utils.plugins_config.gs_config import GsDivider, StringConfig
 
 AI_CONFIG: Dict[str, GSC] = {

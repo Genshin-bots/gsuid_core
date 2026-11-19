@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from typing import final
 from contextlib import asynccontextmanager
 from dataclasses import replace, dataclass
 from collections.abc import Callable, AsyncIterator
@@ -13,12 +14,14 @@ from typing_extensions import override
 
 from openai import AsyncOpenAI
 from pydantic_ai import RunContext
+from openai.types.chat import ChatCompletionChunk
+from pydantic_ai.usage import RequestUsage
 from pydantic_ai.models import StreamedResponse, ModelRequestParameters
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.models.openai import OpenAIChatModelSettings
+from pydantic_ai.models.openai import OpenAIStreamedResponse, OpenAIChatModelSettings
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 
 from gsuid_core.i18n import t
@@ -282,3 +285,93 @@ class RecoveringOpenAIChatModel(OpenAIChatModelWithVideo):
         if "profile" in self.__dict__:
             delattr(self, "profile")
         return revised
+
+
+# 每 chunk 携带「累计」usage 的已知网关（vLLM/SGLang 系）：pydantic_ai 默认
+# 逐 chunk 累加会令 token 统计膨胀约 chunk 数倍，必须改为「取最后一个值」。
+CUMULATIVE_USAGE_URL_KEYWORDS = ("siliconflow",)
+
+# 运行时探测到累计语义的 base_url（进程内记忆），后续 auto 建模直接继承。
+DETECTED_CUMULATIVE_URLS: set[str] = set()
+
+
+class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
+    """流式 usage 语义在线探测（auto 模式专用）。"""
+
+    def _enable_replace_semantics(self) -> None:
+        updated = (
+            OpenAIChatModelSettings(**self._model_settings)
+            if self._model_settings is not None
+            else OpenAIChatModelSettings()
+        )
+        updated["openai_continuous_usage_stats"] = True
+        self._model_settings: OpenAIChatModelSettings | None = updated
+
+    @override
+    async def _validate_response(self) -> AsyncIterator[ChatCompletionChunk]:
+        usage_seen = 0
+        first_prompt_tokens = 0
+        prev_completion_tokens = -1
+        monotone = True
+        last_usage_chunk: ChatCompletionChunk | None = None
+        shadow_sum = RequestUsage()
+
+        flipped = self._provider_url in DETECTED_CUMULATIVE_URLS or any(
+            kw in self._provider_url for kw in CUMULATIVE_USAGE_URL_KEYWORDS
+        )
+        if flipped:
+            self._enable_replace_semantics()
+
+        async for chunk in self._response:
+            if chunk.usage is not None:
+                usage_seen += 1
+                last_usage_chunk = chunk
+                shadow_sum += self._map_usage(chunk)
+                prompt_tokens = chunk.usage.prompt_tokens or 0
+                completion_tokens = chunk.usage.completion_tokens or 0
+                if usage_seen == 1:
+                    first_prompt_tokens = prompt_tokens
+                else:
+                    monotone = monotone and (
+                        first_prompt_tokens > 0
+                        and prompt_tokens == first_prompt_tokens
+                        and completion_tokens >= prev_completion_tokens
+                    )
+                    if monotone and not flipped:
+                        flipped = True
+                        self._enable_replace_semantics()
+                prev_completion_tokens = completion_tokens
+            yield chunk
+
+        if not flipped or last_usage_chunk is None:
+            return
+        if monotone:
+            self._usage: RequestUsage = self._map_usage(last_usage_chunk)
+            if usage_seen >= 2 and self._provider_url not in DETECTED_CUMULATIVE_URLS:
+                DETECTED_CUMULATIVE_URLS.add(self._provider_url)
+                logger.warning(
+                    t(
+                        "log.ai.gscore_provider_url_usage_seen",
+                        provider_url=self._provider_url,
+                        usage_seen=usage_seen,
+                    )
+                )
+        else:
+            self._usage = shadow_sum
+            logger.warning(
+                t(
+                    "log.ai.gscore_provider_url_usage_chunk",
+                    provider_url=self._provider_url,
+                    usage_seen=usage_seen,
+                )
+            )
+
+
+@final
+class AutoUsageOpenAIChatModel(RecoveringOpenAIChatModel):
+    """auto 模式下使用的 ChatModel：流式响应走 usage 语义在线探测。"""
+
+    @property
+    @override
+    def _streamed_response_cls(self) -> type[OpenAIStreamedResponse]:
+        return _AutoUsageStreamedResponse

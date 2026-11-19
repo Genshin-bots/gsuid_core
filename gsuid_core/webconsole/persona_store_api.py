@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-import httpx
+import httpx2
 from fastapi import Depends
 from pydantic import BaseModel
 
@@ -62,7 +62,7 @@ def _str_list_field(info: dict[str, object], key: str) -> list[str]:
 
 async def _fetch_remote_personas() -> dict[str, dict[str, object]]:
     """拉取远程人格目录；顶层 personas 非 dict 或条目畸形时降级为空。"""
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         response = await client.get(persona_store.PERSONA_STORE_LIB, timeout=15)
         response.raise_for_status()
         raw = response.json()

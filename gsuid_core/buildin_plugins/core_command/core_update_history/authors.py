@@ -13,7 +13,7 @@ from pathlib import Path
 from dataclasses import replace
 from urllib.parse import quote
 
-import httpx
+import httpx2
 from PIL import Image, ImageDraw
 
 from gsuid_core.data_store import get_res_path
@@ -232,7 +232,7 @@ def _parse_commit_payload(payload: object) -> tuple[str, str, str]:
 
 
 async def _github_commit(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     repo: str,
     sha: str,
     gate: asyncio.Semaphore,
@@ -241,7 +241,7 @@ async def _github_commit(
         try:
             resp = await client.get(f"https://api.github.com/repos/{repo}/commits/{sha}")
             resp.raise_for_status()
-        except httpx.HTTPError:
+        except httpx2.HTTPError:
             return "", "", ""
     return _parse_commit_payload(resp.json())
 
@@ -262,7 +262,7 @@ async def _avatar_uri(url: str) -> str:
         return ""
     try:
         resp = await sget(url, use_cache=True)
-    except (httpx.HTTPError, OSError, TimeoutError):
+    except (httpx2.HTTPError, OSError, TimeoutError):
         return ""
     if resp.status_code != 200 or not resp.content:
         return ""
@@ -319,8 +319,8 @@ async def resolve_authors(shas: Sequence[str]) -> dict[str, CommitAuthor]:
             reps.append(sha)
         repo = await _origin_repo(root) if root is not None else _DEFAULT_REPO
         gate = asyncio.Semaphore(_API_CONCURRENCY)
-        timeout = httpx.Timeout(connect=3.0, read=8.0, write=3.0, pool=3.0)
-        async with httpx.AsyncClient(
+        timeout = httpx2.Timeout(connect=3.0, read=8.0, write=3.0, pool=3.0)
+        async with httpx2.AsyncClient(
             timeout=timeout,
             headers=await _github_headers(),
             follow_redirects=True,
@@ -407,7 +407,7 @@ async def attach_authors(versions: Sequence[ChangelogVersion]) -> tuple[Changelo
         return tuple(versions)
     try:
         by_sha = await resolve_authors(shas)
-    except (httpx.HTTPError, OSError, json.JSONDecodeError, TimeoutError):
+    except (httpx2.HTTPError, OSError, json.JSONDecodeError, TimeoutError):
         return tuple(versions)
     painted: list[ChangelogVersion] = []
     for version in versions:

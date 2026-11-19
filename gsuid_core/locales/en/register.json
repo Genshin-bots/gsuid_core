@@ -1,4 +1,6 @@
 {
+  "log.register.ai_register_hook_fail": "[Register] @on_ai_register lazy callback [{name}] failed: {e}",
+  "log.register.ai_register_hooks_done": "[Register] Executed {count} plugin lazy AI register callback(s)",
   "log.register.ai_registry_skill_directory_fail": "[AI][Registry] Skill directory registration failed: {p0}",
   "log.register.ai_registry_skill_directory_ok": "[AI][Registry] Skill directory registered (plugin={plugin}, count={p0}): {p1}",
   "log.register.ai_tools_decorator_check": "[Register] @ai_tools decorator check_func has an issue, please review...",

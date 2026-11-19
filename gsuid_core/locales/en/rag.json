@@ -63,7 +63,6 @@
   "log.rag.kb_ai_feature_enabled_unable_4": "[Knowledge] AI feature not enabled, unable to search knowledge",
   "log.rag.kb_ai_feature_enabled_unable_5": "[Knowledge] AI feature not enabled, unable to query knowledge",
   "log.rag.kb_backfilling_manual_knowledge": "[Knowledge] Backfilling old manual knowledge to SQL source of truth: {p0} items",
-  "log.rag.kb_bm25_sparse_embedding_batch": "[Knowledge] BM25 sparse embedding failed, this batch degraded to pure dense: {e}",
   "log.rag.kb_collection_knowledge_name_load": "[Knowledge] Collection {KNOWLEDGE_COLLECTION_NAME} dimension changed, exported {p0} payloads and forced rebuild and re-embedding",
   "log.rag.kb_deep_reconciliation_report": "[Knowledge] Deep reconciliation complete: {report}",
   "log.rag.kb_delete_vectors_doc_id": "[Knowledge] Failed to delete vectors by doc_id, falling back to delete by point ID: {e}",
@@ -110,7 +109,6 @@
   "log.rag.log_tag_remote_rejected_large": "[{log_tag}] Remote rejected large batch (413), batch size {current_bs} -> {new_bs}: {e}",
   "log.rag.log_tag_single_item_triggers_skip": "[{log_tag}] Single item still triggers 413 rate limit, skipping: index={index}, err={e}",
   "log.rag.log_tag_single_point_triggers_skip": "[{log_tag}] Single Point still triggers 413, skipping: index={index}, err={e}",
-  "log.rag.memory_sparsetextembedding_initialization": "[Memory] SparseTextEmbedding initialization failed: {e}",
   "log.rag.migration_backup_file_collection_skip": "[Migration] Backup file Collection mismatch, ignored: {backup_path}",
   "log.rag.migration_collection_name_backup": "[Migration] Collection {collection_name} migration backup deletion failed, please confirm manually: {backup_path}, {e}",
   "log.rag.migration_collection_name_payload": "[Migration] Collection {collection_name} migration payload backed up to: {backup_path}",
@@ -124,7 +122,6 @@
   "log.rag.pre_download_attempt_load": "[RAG] Model pre-download failed, will attempt to load when used: {e}",
   "log.rag.pre_downloading_embedding_hf": "[RAG] Pre-downloading Embedding model: {EMBEDDING_HF_REPO}",
   "log.rag.pre_downloading_reranker_hf": "[RAG] Pre-downloading Reranker model: {RERANKER_HF_REPO}",
-  "log.rag.pre_downloading_sparse_hf": "[RAG] Pre-downloading Sparse model: {SPARSE_HF_REPO}",
   "log.rag.preferring_download_cache_resource": "[RAG] Preferring to download model cache from resource hub...",
   "log.rag.qdrant_backend_remote_missing": "[Qdrant] Old backend is remote but missing connection configuration, unable to migrate historical data, status aligned",
   "log.rag.qdrant_check_migrate_collection_fail": "[Qdrant] Failed to check/migrate collection {collection_name} on_disk configuration: {e}",
@@ -185,8 +182,6 @@
   "log.rag.skillskb_skill_documents_date_skip": "[SkillsKB] Skill documents are up to date ({p0} skills / {total_files} documents), skipping re-embedding",
   "log.rag.skillskb_skill_documents_found_skip": "[SkillsKB] No skill documents found, skipping mounting: {_SKILLS_ROOT}",
   "log.rag.sparse_bm25_embedding_batch": "[Sparse] BM25 sparse embedding failed, this batch degraded to pure dense: {e}",
-  "log.rag.sparse_jieba_unavailable_bm25_fail": "[Sparse] jieba unavailable, BM25 degraded to no tokenization (limited Chinese matching): {e}",
-  "log.rag.sparse_pre_download": "[RAG] Sparse model pre-download complete",
   "log.rag.static_embedding_cache_incomplete": "[RAG] Static embedding model cache incomplete (missing weights or tokenizer): {model_name}",
   "log.rag.tools_action_str_name": "[Tools] [{action_str}] Tool: {tool_name}",
   "log.rag.tools_buildin_imported_registry": "[Tools] buildin_tools imported, current _TOOL_REGISTRY size: {p0}",
@@ -218,5 +213,8 @@
   "log.rag.tools_write_tool_writing": "[Tools] Writing {p0} tools...",
   "log.rag.zip_name_download_extraction": "[RAG] {zip_name}.zip download complete: {p0}, starting extraction...",
   "log.rag.zip_name_download_progress": "[RAG] {zip_name}.zip download progress: {p0} / {p1} ({progress:.1f}%)",
-  "log.rag.zip_name_downloaded": "[RAG] {zip_name}.zip downloaded: {p0}"
+  "log.rag.zip_name_downloaded": "[RAG] {zip_name}.zip downloaded: {p0}",
+  "log.rag.sparse_migration_collection_done": "[BM25 Migration] Refreshed {count} sparse vectors in collection {collection}",
+  "log.rag.sparse_migration_collection_fail": "[BM25 Migration] Failed to refresh sparse vectors in {collection}: {e}",
+  "log.rag.sparse_migration_done": "[BM25 Migration] Completed sparse vector migration ({count} points refreshed)"
 }

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiofiles
 from PIL import Image
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger

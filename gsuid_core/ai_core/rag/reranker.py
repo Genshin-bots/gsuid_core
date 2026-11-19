@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any, List, Optional, Protocol
 
-import httpx
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -72,7 +72,7 @@ class RemoteRerankerProvider:
             "return_documents": False,
         }
 
-        response = httpx.post(url, json=payload, headers=headers, timeout=60.0)
+        response = httpx2.post(url, json=payload, headers=headers, timeout=60.0)
         response.raise_for_status()
         data = response.json()
 

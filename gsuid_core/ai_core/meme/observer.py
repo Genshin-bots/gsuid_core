@@ -12,7 +12,7 @@ from typing import List, Optional, OrderedDict as TOrderedDict
 from collections import OrderedDict
 from dataclasses import dataclass
 
-import httpx
+import httpx2
 from PIL import Image
 
 from gsuid_core.i18n import t
@@ -89,7 +89,7 @@ async def _download_image(url: str) -> Optional[tuple[bytes, str]]:
     Returns:
         (图片数据, MIME 类型) 或 None
     """
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         logger.debug(t("log.meme.image_download_url_2", url=url))
         response = await client.get(url)
         if response.status_code != 200:

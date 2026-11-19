@@ -1,4 +1,6 @@
 {
+  "log.register.ai_register_hook_fail": "[Register] @on_ai_register 延迟注册回调 [{name}] 执行失败: {e}",
+  "log.register.ai_register_hooks_done": "[Register] 已执行 {count} 个插件 AI 延迟注册回调",
   "log.register.ai_registry_skill_directory_fail": "[AI][Registry] Skill 目录注册失败: {p0}",
   "log.register.ai_registry_skill_directory_ok": "[AI][Registry] Skill 目录注册成功（plugin={plugin}, count={p0}）: {p1}",
   "log.register.ai_tools_decorator_check": "[Register] @ai_tools 装饰器 check_func 存在问题, 请开发者检查...",

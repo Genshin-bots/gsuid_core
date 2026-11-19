@@ -195,7 +195,11 @@ def _clean_plugin_agent_state(plugin_name: str) -> None:
     try:
         from gsuid_core.ai_core.kits import KIT_SLOTS, get_kit, enable_kit, disable_kit, occupants_of
         from gsuid_core.ai_core.hooks import drop_hooks_for_module
-        from gsuid_core.ai_core.register import unregister_tools_of_plugin, unregister_entities_of_plugin
+        from gsuid_core.ai_core.register import (
+            unregister_tools_of_plugin,
+            unregister_entities_of_plugin,
+            unregister_ai_register_hooks_of_plugin,
+        )
 
         # 槽位回落：插件套件被卸掉后按配置重新装默认占用者，否则该槽静默变 off
         for slot in KIT_SLOTS:
@@ -210,6 +214,7 @@ def _clean_plugin_agent_state(plugin_name: str) -> None:
         dropped = drop_hooks_for_module(plugin_name)
         tools = unregister_tools_of_plugin(plugin_name)
         unregister_entities_of_plugin(plugin_name)
+        unregister_ai_register_hooks_of_plugin(plugin_name)
         if dropped or tools:
             logger.info(
                 i18n_t(
@@ -295,16 +300,22 @@ def _run_plugin_start_hooks(plugin_name: str) -> None:
     """
     try:
         from gsuid_core.server import core_start_def
+        from gsuid_core.ai_core.register import run_ai_register_hooks, has_pending_ai_register_hooks
 
         # 第 3.5 步②已清掉旧 hook、第四步重新 import 注册了 fresh hook, 这里过滤到的就是 fresh 的
         plugin_hooks = sorted(
             h for h in core_start_def if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
         )
-        if not plugin_hooks:
+        has_ai_hooks = has_pending_ai_register_hooks(plugin_name)
+        if not plugin_hooks and not has_ai_hooks:
             logger.debug(i18n_t("log.plugin.gscore_name_core_start", plugin_name=plugin_name))
             return
 
         async def _runner():
+            if has_ai_hooks:
+                await run_ai_register_hooks(plugin_name)
+            if not plugin_hooks:
+                return
             logger.info(
                 i18n_t(
                     "log.plugin.gscore_running_startup_hooks",

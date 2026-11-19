@@ -86,3 +86,6 @@ ERROR_QUOTA_EXHAUSTED = "模型套餐用量已达上限"
 # O-A 私聊队头阻塞防护：Chat 在 _run_lock / 全局闸上排队超过此秒数则丢弃。
 # 群/频道共享 session 不丢（后到说话人只是等锁）；框架回灌永不丢。
 STALE_CHAT_REQUEST_TTL = 8.0
+
+# 省略式跟进短句的最大字数默认阈值（ai_config 与 interaction_scaffold 共用）。
+FOLLOWUP_MAXLEN_DEFAULT = 24

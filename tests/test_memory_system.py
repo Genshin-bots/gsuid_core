@@ -741,36 +741,12 @@ def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
 
 
 def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
-    """记忆向量写入与检索必须经过 jieba 中文预分词，且单条实体稀疏向量覆盖 summary。"""
-    import re
-    import zlib
-    from dataclasses import dataclass
-
+    """记忆向量写入与检索走纯 Python CJK 二元语法 BM25，不依赖 jieba/fastembed 且覆盖 entity summary。"""
     import gsuid_core.ai_core.rag.base as rag_base
     from gsuid_core.ai_core.rag.qlocal import LocalQdrant
     from gsuid_core.ai_core.memory.vector import ops as mem_ops
     from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
     from gsuid_core.ai_core.memory.vector.startup import ensure_memory_collections
-
-    @dataclass
-    class _SparseOut:
-        indices: list[int]
-        values: list[float]
-
-    class _SimpleWordBm25:
-        """复现 fastembed Qdrant/bm25 SimpleTokenizer：仅按 \\w+ 切词，连续中文不切分。"""
-
-        def embed(self, texts: list[str]) -> list[_SparseOut]:
-            outputs: list[_SparseOut] = []
-            for text in texts:
-                counts: dict[int, float] = {}
-                for token in re.findall(r"\w+", text.lower()):
-                    idx = zlib.crc32(token.encode("utf-8")) & 0x7FFFFFFF
-                    prev = counts[idx] if idx in counts else 0.0
-                    counts[idx] = prev + 1.0
-                items = sorted(counts.items())
-                outputs.append(_SparseOut([k for k, _ in items], [v for _, v in items]))
-            return outputs
 
     class _OrthogonalDenseProvider(EmbeddingProvider):
         @property
@@ -790,7 +766,7 @@ def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
     qclient = LocalQdrant(tmp_path / "mem_qdrant")
     monkeypatch.setattr(rag_base, "client", qclient)
     monkeypatch.setattr(rag_base, "embedding_provider", _OrthogonalDenseProvider())
-    monkeypatch.setattr(rag_base, "_get_sparse_model", lambda: _SimpleWordBm25())
+    monkeypatch.setattr(rag_base, "is_enable_ai", lambda: True)
 
     async def scenario() -> None:
         try:
@@ -845,6 +821,62 @@ def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
             )
             edges = await mem_ops.search_edges("月球陨石", ["group:200000001"], top_k=5)
             assert [ed["id"] for ed in edges] == ["44444444-4444-4444-4444-444444444444"]
+
+            # 存量旧索引空间（如原 fastembed mmh3）原地迁移：保留 dense，刷新 sparse 后可被召回且幂等。
+            from gsuid_core.ai_core import state_store
+            from gsuid_core.ai_core.rag.qmodels import PointStruct, SparseVector
+            from gsuid_core.ai_core.configs.ai_config import ai_config
+            from gsuid_core.ai_core.migrations.sparse_bm25_v1 import migrate_sparse_bm25_vectors
+
+            class _On:
+                data = True
+
+            legacy_id = "55555555-5555-5555-5555-555555555555"
+            legacy_dense = [0.6, 0.0, 0.0, 0.8]
+            await qclient.upsert(
+                collection_name="memory_episodes",
+                points=[
+                    PointStruct(
+                        id=legacy_id,
+                        vector={
+                            "dense": legacy_dense,
+                            "sparse": SparseVector(indices=[123456], values=[1.0]),
+                        },
+                        payload={
+                            "content": "测试用户C计划去敦煌莫高窟旅行",
+                            "scope_key": "group:200000001",
+                            "valid_at_ts": 1700000030.0,
+                            "speaker_ids": ["100000003"],
+                            "turn_index": 0,
+                        },
+                    )
+                ],
+            )
+            before = await mem_ops.search_episodes("敦煌莫高窟", ["group:200000001"], top_k=5, score_threshold=0.95)
+            assert legacy_id not in [item["id"] for item in before]
+
+            markers: dict[tuple[str, str], object] = {}
+
+            async def _get_state(scope: str, key: str) -> object:
+                return markers[(scope, key)] if (scope, key) in markers else None
+
+            async def _set_state(scope: str, key: str, value: object) -> None:
+                markers[(scope, key)] = value
+
+            monkeypatch.setattr(ai_config, "get_config", lambda _k: _On())
+            monkeypatch.setattr(state_store, "state_get_value", _get_state)
+            monkeypatch.setattr(state_store, "state_set_value", _set_state)
+
+            migrated = await migrate_sparse_bm25_vectors()
+            assert migrated >= 1
+            after = await mem_ops.search_episodes("敦煌莫高窟", ["group:200000001"], top_k=5, score_threshold=0.95)
+            assert [item["id"] for item in after] == [legacy_id]
+            fetched = await qclient.retrieve(collection_name="memory_episodes", ids=[legacy_id], with_vectors=True)
+            assert len(fetched) == 1 and isinstance(fetched[0].vector, dict)
+            preserved_dense = fetched[0].vector["dense"]
+            assert isinstance(preserved_dense, list) and len(preserved_dense) == len(legacy_dense)
+            assert all(abs(a - b) < 1e-5 for a, b in zip(preserved_dense, legacy_dense))
+            assert await migrate_sparse_bm25_vectors() == 0
         finally:
             await qclient.close()
 

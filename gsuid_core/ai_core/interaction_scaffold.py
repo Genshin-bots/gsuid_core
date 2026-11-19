@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from gsuid_core.ai_core.const import FOLLOWUP_MAXLEN_DEFAULT as FOLLOWUP_MAXLEN_DEFAULT
 from gsuid_core.ai_core.control.lines import (
     DRIFT_REMINDER,
     AT_OTHER_MARKER,
@@ -89,8 +90,6 @@ _FOLLOWUP_VERB_RE = re.compile(
     r"删[掉了]|别删|停了?|停一?下|别提醒|暂停|再查|再看|重新查"
 )
 _FOLLOWUP_THAT_RE = re.compile(r"^那[^。！？，,]{1,8}呢[？?]?$")
-# 省略式跟进的最长字数（超过=有独立语义的实质发言）；默认值，可被 ai_config 覆盖
-FOLLOWUP_MAXLEN_DEFAULT = 24
 # 群聊消息说话人锚点：与 history_format / 评测合成前缀一致
 _SPEAKER_ID_RE = re.compile(r"用户ID:([^)）\s，,]+)")
 

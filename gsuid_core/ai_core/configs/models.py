@@ -17,54 +17,42 @@ pydantic-ai 升级: ModelProfile 在 2.0 起改 `TypedDict`, ``from_profile`` �
 改为 ``(default_profile) -> Profile``(框架把已解析的默认 profile 喂过来)。
 """
 
+from __future__ import annotations
+
 import ssl
 import json
 import asyncio
 import hashlib
-from typing import TYPE_CHECKING, Union, Literal, final
+from typing import TYPE_CHECKING, Union, Literal
 from dataclasses import dataclass
-from collections.abc import Callable, AsyncIterator
+from collections.abc import Callable
 from typing_extensions import override
 
-import httpx
 import httpx2
 import httpcore2
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionChunk
-from pydantic_ai.usage import RequestUsage
 from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.settings import ModelSettings, ThinkingLevel
-from pydantic_ai.models.openai import (
-    OpenAIChatModel,
-    OpenAIResponsesModel,
-    OpenAIStreamedResponse,
-    OpenAIChatModelSettings,
-)
 from pydantic_ai.profiles.openai import OpenAIModelProfile
-from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.utils.path_safety import is_safe_filename
 from gsuid_core.ai_core.request_effort import capture_model_request_effort
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
-from gsuid_core.ai_core.multimodal.openai_files import (
-    OpenAIVideoInputFormat,
-    parse_video_part_extra,
-)
 
 from .ai_config import ai_config
 from .task_kinds import TaskLevel, parent_task_kind
-from .openai_wire import RecoveringOpenAIChatModel, openai_profile_for_model
 from .gemini_config import get_gemini_config, gemini_config_manager, get_gemini_config_dict
 from .openai_config import get_openai_config, openai_config_manager, get_openai_config_dict
-from .anthropic_wire import RecoveringAnthropicModel, anthropic_profile_for_model
 from .anthropic_config import get_anthropic_config, anthropic_config_manager, get_anthropic_config_dict
 
 if TYPE_CHECKING:
+    import httpx
     from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel, OpenAIChatModelSettings
+    from pydantic_ai.models.anthropic import AnthropicModel
+
+    from gsuid_core.ai_core.multimodal.openai_files import OpenAIVideoInputFormat
 
 # 配置名称分隔符
 PROVIDER_CONFIG_SEPARATOR = "++"
@@ -72,21 +60,17 @@ PROVIDER_CONFIG_SEPARATOR = "++"
 # 受支持的 provider 类型（webconsole API 与配置解析共用一份定义）
 SUPPORTED_PROVIDERS: tuple[str, ...] = ("openai", "anthropic", "gemini")
 
-# 任一 provider 构建出的模型对象（gemini 为延迟导入，注解用前向引用）
+# 任一 provider 构建出的模型对象（各 provider 均延迟导入，注解用前向引用）
 AnyModel = Union["OpenAIChatModel", "OpenAIResponsesModel", "AnthropicModel", "GoogleModel"]
 
 # OpenAI 请求方式：chat_completions 走 /v1/chat/completions，responses 走 /v1/responses。
 RequestMethod = Literal["chat_completions", "responses"]
 
 # OpenAI 模型对象（两种端点对 gs_agent 接口完全一致，仅底层请求路径不同）。
-OpenAIModel = Union[OpenAIChatModel, OpenAIResponsesModel]
-
-# §23 请求墙钟：SDK 默认 read=600s×内建重试 ≈ 最长 30 分钟静默停滞（生产实录 15.5 分钟）。
-# read 是流式段间超时，不限制正常长输出；瞬时故障重试统一由 _execute_run 负责。
-MODEL_REQUEST_TIMEOUT = httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool=30.0)
+OpenAIModel = Union["OpenAIChatModel", "OpenAIResponsesModel"]
 
 # openai 3.x / anthropic 1.x 的 HTTP 栈换成了 httpx2，与 httpx 不是同一套类、不可互传；
-# 只有 google-genai 仍吃 httpx，故按库分两套池（同 §23 墙钟）。
+# 只有 google-genai 仍吃 httpx（在 _shared_model_http_client 内懒导入），同 §23 墙钟。
 MODEL_REQUEST_TIMEOUT_HTTPX2 = httpx2.Timeout(connect=15.0, read=180.0, write=60.0, pool=30.0)
 _MODEL_HTTPX2_LIMITS = httpx2.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0)
 
@@ -205,13 +189,14 @@ _MODEL_CLIENT_GENERATIONS: dict[tuple[str, str], int] = {}
 
 
 def _shared_model_http_client(provider: str, config_name: str = "") -> httpx.AsyncClient:
-    """进程级共享 HTTP 客户端（按 (provider, config_name) 分池隔离，主备互不拖垮）。"""
+    """进程级共享 httpx 客户端（仅 google-genai 需要，懒导入 httpx 避免非 Gemini 场景常驻）。"""
+    import httpx
+
     key = (provider, config_name)
     client = _MODEL_HTTP_CLIENTS[key] if key in _MODEL_HTTP_CLIENTS else None
     if client is None or client.is_closed:
-        # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
         client = httpx.AsyncClient(
-            timeout=MODEL_REQUEST_TIMEOUT,
+            timeout=httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool=30.0),
             event_hooks={"request": [capture_model_request_effort]},
         )
         _MODEL_HTTP_CLIENTS[key] = client
@@ -413,137 +398,27 @@ def to_request_method(value: str) -> RequestMethod:
     return "chat_completions"
 
 
-# 每 chunk 携带「累计」usage 的已知网关（vLLM/SGLang 系）：pydantic_ai 默认
-# 逐 chunk 累加会令 token 统计膨胀约 chunk 数倍，必须改为「取最后一个值」。
+# 每 chunk 携带「累计」usage 的已知网关（vLLM/SGLang 系）：避免在此导入 openai_wire。
 _CUMULATIVE_USAGE_URL_KEYWORDS = ("siliconflow",)
-
-# 运行时探测到累计语义的 base_url（进程内记忆），后续 auto 建模直接继承。
-_detected_cumulative_urls: set[str] = set()
 
 
 def _resolve_continuous_usage(base_url: str, mode: str) -> bool:
-    """根据配置与 base_url 判定流式 usage 是否为累计语义（cumulative）。
-
-    True → 传给 pydantic_ai 的 openai_continuous_usage_stats，使其对每个
-    chunk 的 usage 取「替换」而非「累加」，避免 token 统计成倍膨胀。
-    """
+    """根据配置与 base_url 判定流式 usage 是否为累计语义（cumulative）。"""
     if mode == "cumulative":
         return True
     if mode == "incremental":
         return False
     if mode != "auto":
         logger.warning(t("log.ai.gscore_usage_stats_mode_config", mode=repr(mode)))
-    if base_url in _detected_cumulative_urls:
-        return True
+    import sys
+
+    wire_mod = sys.modules.get("gsuid_core.ai_core.configs.openai_wire")
+    if wire_mod is not None:
+        from .openai_wire import DETECTED_CUMULATIVE_URLS
+
+        if base_url in DETECTED_CUMULATIVE_URLS:
+            return True
     return any(kw in base_url for kw in _CUMULATIVE_USAGE_URL_KEYWORDS)
-
-
-class _AutoUsageStreamedResponse(OpenAIStreamedResponse):
-    """流式 usage 语义在线探测（auto 模式专用）。
-
-    标准 OpenAI 语义下整条流只有最后一个 chunk 携带 usage；vLLM 系累计语义
-    则每个 chunk 都携带「运行总量」（prompt_tokens 恒定、completion_tokens
-    单调不减）。探测分两层：
-
-    1. 即时翻转：观测到第 2 个带 usage 的 chunk 且符合累计特征时，原地翻转
-       openai_continuous_usage_stats。pydantic_ai 的 _get_event_iterator 在流
-       循环内逐 chunk 读取该设置，翻转后改为「替换」语义，后续累计值会覆盖
-       之前误加的和。
-    2. 终局对账：全程持续校验每个 usage chunk 的累计特征（prompt 恒定 +
-       completion 单调不减），并同时维护一份「增量语义影子和」。流结束时：
-       证据链完整 → usage 直接定格为最后一个 chunk 的精确累计值；中途翻转
-       后证据链断裂（罕见的非标准语义）→ 用影子和整体回退到增量解释，
-       误判也不丢数。
-
-    _validate_response 是 pydantic_ai 文档标明供子类覆写的 chunk 校验钩子
-    （官方 openrouter 模型同样以 async generator 形式覆写）。
-    """
-
-    def _enable_replace_semantics(self) -> None:
-        # 拷贝后再改: merge 出的 settings 可能被别处持有,
-        # 避免把本次判定结果泄漏到其他请求对象上
-        updated = (
-            OpenAIChatModelSettings(**self._model_settings)
-            if self._model_settings is not None
-            else OpenAIChatModelSettings()
-        )
-        updated["openai_continuous_usage_stats"] = True
-        self._model_settings: OpenAIChatModelSettings | None = updated
-
-    @override
-    async def _validate_response(self) -> AsyncIterator[ChatCompletionChunk]:
-        usage_seen = 0
-        first_prompt_tokens = 0
-        prev_completion_tokens = -1
-        monotone = True  # 累计特征是否始终成立
-        last_usage_chunk: ChatCompletionChunk | None = None
-        shadow_sum = RequestUsage()  # 按增量语义累加的影子和, 供误判回退
-
-        # 白名单/已探测网关直接预置「替换」语义。只改响应对象、不影响请求体
-        # （请求此刻已发出）, 探测校验仍全程进行, 预置错了也会被终局对账纠正
-        flipped = self._provider_url in _detected_cumulative_urls or any(
-            kw in self._provider_url for kw in _CUMULATIVE_USAGE_URL_KEYWORDS
-        )
-        if flipped:
-            self._enable_replace_semantics()
-
-        async for chunk in self._response:
-            if chunk.usage is not None:
-                usage_seen += 1
-                last_usage_chunk = chunk
-                shadow_sum += self._map_usage(chunk)
-                prompt_tokens = chunk.usage.prompt_tokens or 0
-                completion_tokens = chunk.usage.completion_tokens or 0
-                if usage_seen == 1:
-                    first_prompt_tokens = prompt_tokens
-                else:
-                    monotone = monotone and (
-                        first_prompt_tokens > 0
-                        and prompt_tokens == first_prompt_tokens
-                        and completion_tokens >= prev_completion_tokens
-                    )
-                    if monotone and not flipped:
-                        flipped = True
-                        self._enable_replace_semantics()
-                prev_completion_tokens = completion_tokens
-            yield chunk
-
-        # 终局对账（流被中途取消时不执行, 维持 pydantic_ai 的 best-effort 语义）
-        if not flipped or last_usage_chunk is None:
-            return
-        if monotone:
-            # 证据链完整: 定格为最后一个累计值, 翻转前误加的部分一并修正
-            self._usage: RequestUsage = self._map_usage(last_usage_chunk)
-            # 仅 1 个 usage chunk 无法证明累计语义(预置命中的标准网关即如此), 不入registry
-            if usage_seen >= 2 and self._provider_url not in _detected_cumulative_urls:
-                _detected_cumulative_urls.add(self._provider_url)
-                logger.warning(
-                    t(
-                        "log.ai.gscore_provider_url_usage_seen",
-                        provider_url=self._provider_url,
-                        usage_seen=usage_seen,
-                    )
-                )
-        else:
-            # 翻转后证据链断裂(非累计语义): 用影子和回退增量解释, 误判不丢数
-            self._usage = shadow_sum
-            logger.warning(
-                t(
-                    "log.ai.gscore_provider_url_usage_chunk",
-                    provider_url=self._provider_url,
-                    usage_seen=usage_seen,
-                )
-            )
-
-
-@final
-class AutoUsageOpenAIChatModel(RecoveringOpenAIChatModel):
-    """auto 模式下使用的 ChatModel：流式响应走 usage 语义在线探测。"""
-
-    @property
-    @override
-    def _streamed_response_cls(self) -> type[OpenAIStreamedResponse]:
-        return _AutoUsageStreamedResponse
 
 
 def get_openai_config_by_name(
@@ -605,6 +480,14 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
     Args:
         config_name: 配置文件名（不含扩展名）
     """
+    from openai import AsyncOpenAI
+    from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIChatModelSettings
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.ai_core.multimodal.openai_files import parse_video_part_extra
+
+    from .openai_wire import AutoUsageOpenAIChatModel, RecoveringOpenAIChatModel, openai_profile_for_model
+
     base_url, api_key, model_name, configured_effort, request_method, continuous_usage, usage_stats_mode = (
         get_openai_config_by_name(config_name)
     )
@@ -690,6 +573,9 @@ def make_anthropic_model(
 ) -> AnthropicModel:
     """构造 Anthropic 模型。思考形状用本进程从 400 正文里学到的事实。"""
     from anthropic import AsyncAnthropic
+    from pydantic_ai.providers.anthropic import AnthropicProvider
+
+    from .anthropic_wire import RecoveringAnthropicModel, anthropic_profile_for_model
 
     client = AsyncAnthropic(
         api_key=api_key,

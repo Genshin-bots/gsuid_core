@@ -63,7 +63,6 @@
   "log.rag.kb_ai_feature_enabled_unable_4": "[Knowledge] AI功能未启用，无法搜索知识",
   "log.rag.kb_ai_feature_enabled_unable_5": "[Knowledge] AI功能未启用，无法查询知识",
   "log.rag.kb_backfilling_manual_knowledge": "[Knowledge] 回填旧手动知识到 SQL 真值源: {p0} 条",
-  "log.rag.kb_bm25_sparse_embedding_batch": "[Knowledge] BM25 稀疏嵌入失败，本批降级纯 dense: {e}",
   "log.rag.kb_collection_knowledge_name_load": "[Knowledge] 集合 {KNOWLEDGE_COLLECTION_NAME} 维度变化，导出 {p0} 条 payload 后强制重建并重嵌入",
   "log.rag.kb_deep_reconciliation_report": "[Knowledge] 深度对账完成: {report}",
   "log.rag.kb_delete_vectors_doc_id": "[Knowledge] 按 doc_id 删除向量失败，回退按点ID删除: {e}",
@@ -110,7 +109,6 @@
   "log.rag.log_tag_remote_rejected_large": "[{log_tag}] 远端拒绝大批量(413)，批大小 {current_bs} -> {new_bs}: {e}",
   "log.rag.log_tag_single_item_triggers_skip": "[{log_tag}] 单条仍触发 413 限流，跳过: index={index}, err={e}",
   "log.rag.log_tag_single_point_triggers_skip": "[{log_tag}] 单条 Point 仍触发 413，跳过: index={index}, err={e}",
-  "log.rag.memory_sparsetextembedding_initialization": "[Memory] SparseTextEmbedding 初始化失败: {e}",
   "log.rag.migration_backup_file_collection_skip": "[Migration] 备份文件 Collection 不匹配，已忽略: {backup_path}",
   "log.rag.migration_collection_name_backup": "[Migration] Collection {collection_name} 迁移备份删除失败，请手动确认: {backup_path}, {e}",
   "log.rag.migration_collection_name_payload": "[Migration] Collection {collection_name} 迁移 payload 已备份到: {backup_path}",
@@ -124,7 +122,6 @@
   "log.rag.pre_download_attempt_load": "[RAG] 模型预下载失败，将在使用时尝试加载: {e}",
   "log.rag.pre_downloading_embedding_hf": "[RAG] 预下载Embedding模型: {EMBEDDING_HF_REPO}",
   "log.rag.pre_downloading_reranker_hf": "[RAG] 预下载Reranker模型: {RERANKER_HF_REPO}",
-  "log.rag.pre_downloading_sparse_hf": "[RAG] 预下载Sparse模型: {SPARSE_HF_REPO}",
   "log.rag.preferring_download_cache_resource": "[RAG] 优先尝试从资源库下载模型缓存...",
   "log.rag.qdrant_backend_remote_missing": "[Qdrant] 旧后端为 remote 但缺少连接配置，无法迁移历史数据，已对齐状态",
   "log.rag.qdrant_check_migrate_collection_fail": "[Qdrant] 检查/迁移集合 {collection_name} on_disk 配置失败: {e}",
@@ -185,8 +182,6 @@
   "log.rag.skillskb_skill_documents_date_skip": "[SkillsKB] skill 文档已是最新（{p0} 个 skill / {total_files} 篇），跳过重嵌",
   "log.rag.skillskb_skill_documents_found_skip": "[SkillsKB] 未发现任何 skill 文档，跳过挂载: {_SKILLS_ROOT}",
   "log.rag.sparse_bm25_embedding_batch": "[Sparse] BM25 稀疏嵌入失败，本批降级纯 dense: {e}",
-  "log.rag.sparse_jieba_unavailable_bm25_fail": "[Sparse] jieba 不可用，BM25 退化为不分词（中文匹配受限）: {e}",
-  "log.rag.sparse_pre_download": "[RAG] Sparse模型预下载完成",
   "log.rag.static_embedding_cache_incomplete": "[RAG] 静态嵌入模型缓存未就绪（缺少权重或分词器）: {model_name}",
   "log.rag.tools_action_str_name": "[Tools] [{action_str}] 工具: {tool_name}",
   "log.rag.tools_buildin_imported_registry": "[Tools] buildin_tools 已导入，当前 _TOOL_REGISTRY 大小: {p0}",
@@ -218,5 +213,8 @@
   "log.rag.tools_write_tool_writing": "[Tools] 写入 {p0} 个工具...",
   "log.rag.zip_name_download_extraction": "[RAG] {zip_name}.zip 下载完成: {p0}，开始解压...",
   "log.rag.zip_name_download_progress": "[RAG] {zip_name}.zip 下载进度: {p0} / {p1} ({progress:.1f}%)",
-  "log.rag.zip_name_downloaded": "[RAG] {zip_name}.zip 已下载: {p0}"
+  "log.rag.zip_name_downloaded": "[RAG] {zip_name}.zip 已下载: {p0}",
+  "log.rag.sparse_migration_collection_done": "[BM25 迁移] 集合 {collection} 已原地刷新 {count} 条稀疏向量",
+  "log.rag.sparse_migration_collection_fail": "[BM25 迁移] 集合 {collection} 刷新稀疏向量失败: {e}",
+  "log.rag.sparse_migration_done": "[BM25 迁移] 存量稀疏向量迁移完成，共刷新 {count} 条"
 }

@@ -2,7 +2,7 @@ import random
 import asyncio
 from typing import Union
 
-import httpx
+import httpx2
 import websockets.client
 from msgspec import json as msgjson, to_builtins
 from websockets.exceptions import ConnectionClosedError
@@ -94,7 +94,7 @@ async def http_test(PORT: Union[str, int, None] = None):
     ws_token = str(core_config.get_config("WS_TOKEN") or "")
     headers = {"X-WS-Token": ws_token} if ws_token else {}
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx2.AsyncClient(timeout=20) as client:
         response = await client.post(
             f"http://127.0.0.1:{PORT}/api/send_msg",
             json=msg,

@@ -9,22 +9,23 @@ import base64
 import binascii
 import warnings
 import dataclasses
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic_ai.models import Model
-from pydantic_ai.messages import (
-    ImageUrl,
-    UserContent,
-    ModelMessage,
-    ModelRequest,
-    BinaryContent,
-    ToolReturnPart,
-    UserPromptPart,
-    ModelRequestPart,
-    ToolReturnContent,
-)
+
+if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+    from pydantic_ai.messages import (
+        ImageUrl,
+        UserContent,
+        ModelMessage,
+        BinaryContent,
+        ToolReturnPart,
+        UserPromptPart,
+        ModelRequestPart,
+        ToolReturnContent,
+    )
 
 MAX_INLINE_IMAGE_BYTES = 1_500_000
 MAX_INLINE_IMAGE_EDGE = 2048
@@ -404,7 +405,11 @@ def provider_prefers_binary_image(provider_or_model: str | Model | None) -> bool
     """Google/Anthropic 拒收 data: 协议 ImageUrl（触发 SSRF 拦截），必须走 BinaryContent。"""
     if isinstance(provider_or_model, str):
         return provider_or_model.strip().lower() in ("gemini", "google", "anthropic")
-    if isinstance(provider_or_model, Model):
+    if provider_or_model is None:
+        return False
+    from pydantic_ai.models import Model as _Model
+
+    if isinstance(provider_or_model, _Model):
         return provider_or_model.system.lower() in ("google", "gemini", "anthropic")
     return False
 
@@ -415,10 +420,12 @@ def image_bytes_to_provider_part(
     provider_or_model: str | Model | None = "openai",
 ) -> ImageUrl | BinaryContent:
     """已归一化的图片字节 → 对应供应商的多模态消息块。"""
+    from pydantic_ai.messages import ImageUrl as _ImageUrl, BinaryContent as _BinaryContent
+
     if provider_prefers_binary_image(provider_or_model):
-        return BinaryContent(data=data, media_type=mime)
+        return _BinaryContent(data=data, media_type=mime)
     b64 = base64.b64encode(data).decode("ascii")
-    return ImageUrl(url=f"data:{mime};base64,{b64}")
+    return _ImageUrl(url=f"data:{mime};base64,{b64}")
 
 
 def not_image_error_message(image_id: str, data: bytes, hint: str = "") -> str:
@@ -454,7 +461,9 @@ def to_provider_image_content(
     if isinstance(source, str):
         url = unwrap_image_url(source)
         if url.startswith(("http://", "https://")):
-            return [ImageUrl(url=url)], None
+            from pydantic_ai.messages import ImageUrl as _ImageUrl
+
+            return [_ImageUrl(url=url)], None
         if not url.startswith(("base64://", "data:image/")):
             return None, f"❌ 无法将 URL 规范为可注入图片: {url[:80]}"
         data, dec_err = decode_data_or_base64_uri(url)
@@ -475,40 +484,44 @@ def to_provider_image_content(
 
 
 def _adapt_single_media_item(item: UserContent, prefers_binary: bool) -> UserContent:
-    if isinstance(item, ImageUrl):
+    from pydantic_ai.messages import ImageUrl as _ImageUrl, BinaryContent as _BinaryContent
+
+    if isinstance(item, _ImageUrl):
         url = unwrap_image_url(item.url)
         if prefers_binary and url.startswith(("data:image/", "base64://")):
             data = bytes_from_inline_image_ref(url)
             if data is not None:
                 normalized = normalize_inline_image(data, flatten_animation=True)
                 if normalized is not None:
-                    return BinaryContent(data=normalized[0], media_type=normalized[1])
+                    return _BinaryContent(data=normalized[0], media_type=normalized[1])
                 mime = sniff_image_mime(data) or "image/png"
-                return BinaryContent(data=data, media_type=mime)
+                return _BinaryContent(data=data, media_type=mime)
         if url != item.url:
-            return ImageUrl(url=url)
+            return _ImageUrl(url=url)
         return item
 
-    if isinstance(item, BinaryContent) and not prefers_binary:
+    if isinstance(item, _BinaryContent) and not prefers_binary:
         mime = str(item.media_type or "")
         if mime.startswith("image/"):
             b64 = base64.b64encode(item.data).decode("ascii")
-            return ImageUrl(url=f"data:{mime};base64,{b64}")
+            return _ImageUrl(url=f"data:{mime};base64,{b64}")
     return item
 
 
 def _adapt_tool_return_part(part: ToolReturnPart, prefers_binary: bool) -> ToolReturnPart:
+    from pydantic_ai.messages import ImageUrl as _ImageUrl, BinaryContent as _BinaryContent
+
     content = part.content
     if not isinstance(content, list):
         return part
     changed = False
     new_items: list[ToolReturnContent] = []
     for elem in content:
-        if isinstance(elem, (ImageUrl, BinaryContent)):
+        if isinstance(elem, (_ImageUrl, _BinaryContent)):
             adapted = _adapt_single_media_item(elem, prefers_binary)
             if adapted is not elem:
                 changed = True
-            if isinstance(adapted, (ImageUrl, BinaryContent)):
+            if isinstance(adapted, (_ImageUrl, _BinaryContent)):
                 new_items.append(adapted)
             else:
                 new_items.append(elem)
@@ -540,21 +553,27 @@ def adapt_messages_images_for_model(
     model: str | Model | None,
 ) -> list[ModelMessage]:
     """发往模型前的非原地图片协议适配（不污染持久化 self.history）。"""
+    from pydantic_ai.messages import (
+        ModelRequest as _ModelRequest,
+        ToolReturnPart as _ToolReturnPart,
+        UserPromptPart as _UserPromptPart,
+    )
+
     prefers_binary = provider_prefers_binary_image(model)
     out: list[ModelMessage] = []
     for msg in messages:
-        if not isinstance(msg, ModelRequest):
+        if not isinstance(msg, _ModelRequest):
             out.append(msg)
             continue
         part_changed = False
         new_parts: list[ModelRequestPart] = []
         for part in msg.parts:
-            if isinstance(part, UserPromptPart):
+            if isinstance(part, _UserPromptPart):
                 adapted_up = _adapt_user_prompt_part(part, prefers_binary)
                 if adapted_up is not part:
                     part_changed = True
                 new_parts.append(adapted_up)
-            elif isinstance(part, ToolReturnPart):
+            elif isinstance(part, _ToolReturnPart):
                 adapted_tr = _adapt_tool_return_part(part, prefers_binary)
                 if adapted_tr is not part:
                     part_changed = True

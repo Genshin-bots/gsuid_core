@@ -1,18 +1,17 @@
-"""Exa 网页搜索与按 URL 抓取。
+"""Exa 网页搜索与按 URL 抓取（httpx2 直调 REST API，不导入 exa_py SDK）。
 
 api_key 可以配多把，失败后换一把重试。
-不传 type：配置文件里的 search_type 不读取。
-httpx 的连接失败和超时同样换 Key。单次请求 30 秒到点就取消，短于工具外层的 100 秒。
+单次请求 30 秒超时，短于工具外层的 100 秒以便及时换 Key。
 """
+
+from __future__ import annotations
 
 import random
 import asyncio
-from typing import Literal, TypeVar, NoReturn, Optional
+from typing import Literal, TypeVar, NoReturn
 from collections.abc import Callable, Awaitable
 
-import httpx
-from exa_py import AsyncExa
-from exa_py.api import Result, ResultWithText, SearchResponse, ContentsOptions, TextContentsOptions
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -20,6 +19,7 @@ from gsuid_core.ai_core.configs.ai_config import exa_config
 
 from .date_utils import normalize_published_date
 
+_EXA_BASE_URL = "https://api.exa.ai"
 _EXA_TIMEOUT_SEC = 30
 _EXA_TEXT_MAX = 1_000_000
 _Kind = Literal["search", "fetch"]
@@ -30,37 +30,22 @@ _RETRYABLE: tuple[type[Exception], ...] = (
     OSError,
     ValueError,
     TypeError,
-    httpx.HTTPError,
+    TimeoutError,
+    httpx2.HTTPError,
 )
 
 
 def _get_api_key_pool() -> list[str]:
-    """
-    获取 api_key 池
-
-    Returns:
-        api_key 列表，如果是单个字符串则转换为单元素列表
-    """
     api_key_data = exa_config.get_config("api_key").data
 
     if isinstance(api_key_data, list):
-        return [k for k in api_key_data if k]
-    elif isinstance(api_key_data, str) and api_key_data:
+        return [k for k in api_key_data if isinstance(k, str) and k]
+    if isinstance(api_key_data, str) and api_key_data:
         return [api_key_data]
-    else:
-        return []
+    return []
 
 
-def _select_api_key(api_key_pool: list[str]) -> Optional[str]:
-    """
-    从 api_key 池中选择一个 api_key（随机选择）
-
-    Args:
-        api_key_pool: api_key 列表
-
-    Returns:
-        选中的 api_key，如果池为空则返回 None
-    """
+def _select_api_key(api_key_pool: list[str]) -> str | None:
     if not api_key_pool:
         return None
     return random.choice(api_key_pool)
@@ -91,10 +76,37 @@ def _raise_all_failed(kind: _Kind, last_err: Exception | None) -> NoReturn:
     raise ValueError(t("log.ai.webfetch_exa_api_keys") + detail)
 
 
+def _as_dict(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, object] = {}
+    for k, v in raw.items():
+        if isinstance(k, str):
+            out[k] = v
+    return out
+
+
+async def _post_exa(path: str, api_key: str, payload: dict[str, object]) -> dict[str, object]:
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    async with httpx2.AsyncClient(
+        base_url=_EXA_BASE_URL,
+        timeout=httpx2.Timeout(float(_EXA_TIMEOUT_SEC)),
+    ) as client:
+        resp = await client.post(path, json=payload, headers=headers)
+        resp.raise_for_status()
+        parsed = _as_dict(resp.json())
+    if not parsed:
+        raise ValueError("Exa 响应非 JSON 对象")
+    return parsed
+
+
 async def _with_keys(
     kind: _Kind,
     pool: list[str],
-    call: Callable[[AsyncExa], Awaitable[_T]],
+    call: Callable[[str], Awaitable[_T]],
     *,
     url: str = "",
 ) -> _T:
@@ -105,103 +117,76 @@ async def _with_keys(
         if not api_key:
             break
         tried.add(api_key)
-        exa = AsyncExa(api_key=api_key)
         try:
-            # SDK 的 httpx 超时是 600 秒，工具外层 100 秒会先取消，来不及换 Key。
-            return await asyncio.wait_for(call(exa), _EXA_TIMEOUT_SEC)
+            return await asyncio.wait_for(call(api_key), _EXA_TIMEOUT_SEC)
         except _RETRYABLE as e:
             _log_key_failure(kind, api_key, url, e)
             last_err = e
     _raise_all_failed(kind, last_err)
 
 
-async def _do_exa_search(
-    exa: AsyncExa,
-    query: str,
-    max_results: int,
-) -> list[dict]:
-    """
-    执行 Exa 搜索的内部方法
-
-    Args:
-        exa: Exa 客户端
-        query: 搜索查询关键词
-        max_results: 最大返回结果数量
-
-    Returns:
-        搜索结果列表
-    """
-    contents: ContentsOptions = {
-        "highlights": True,
-        "text": {"max_characters": 1000},
-    }
-    response = await exa.search(
-        query,
-        num_results=max_results,
-        contents=contents,
-    )
-
-    results = []
-    for item in response.results:
-        results.append(
-            {
-                "title": item.title or "",
-                "url": item.url or "",
-                "content": _extract_hit_content(item),
-                "published_date": _published_date(item.published_date),
-                "score": item.score if item.score is not None else 0.0,
-            }
-        )
-
-    return results
-
-
-def _extract_hit_content(item: Result) -> str:
-    highlighted = _highlight_text(item)
-    if highlighted:
-        return highlighted
-    if item.text:
-        return item.text.strip()
+def _extract_hit_content(item: dict[str, object]) -> str:
+    raw_hl = item["highlights"] if "highlights" in item else None
+    if isinstance(raw_hl, list):
+        lines = [piece.strip() for piece in raw_hl if isinstance(piece, str) and piece.strip()]
+        if lines:
+            return "\n".join(lines)
+    raw_text = item["text"] if "text" in item else None
+    if isinstance(raw_text, str) and raw_text.strip():
+        return raw_text.strip()
     return ""
 
 
-def _highlight_text(item: Result) -> str:
-    pieces = item.highlights
-    if not pieces:
-        return ""
-    lines: list[str] = []
-    for piece in pieces:
-        text = piece.strip()
-        if text:
-            lines.append(text)
-    return "\n".join(lines)
+def _published_date(item: dict[str, object]) -> str:
+    for key in ("publishedDate", "published_date"):
+        if key in item and isinstance(item[key], str):
+            return normalize_published_date(item[key])
+    return ""
 
 
-def _published_date(raw: str | None) -> str:
-    return normalize_published_date(raw)
+async def _do_exa_search(
+    api_key: str,
+    query: str,
+    max_results: int,
+) -> list[dict[str, str | float]]:
+    payload: dict[str, object] = {
+        "query": query,
+        "numResults": max_results,
+        "contents": {
+            "highlights": True,
+            "text": {"maxCharacters": 1000},
+        },
+    }
+    response = await _post_exa("/search", api_key, payload)
+    raw_results = response["results"] if "results" in response else None
+    results: list[dict[str, str | float]] = []
+    if not isinstance(raw_results, list):
+        return results
+    for raw_item in raw_results:
+        item = _as_dict(raw_item)
+        if not item:
+            continue
+        title = str(item["title"]) if "title" in item and item["title"] is not None else ""
+        url = str(item["url"]) if "url" in item and item["url"] is not None else ""
+        raw_score = item["score"] if "score" in item else None
+        score = float(raw_score) if isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool) else 0.0
+        results.append(
+            {
+                "title": title,
+                "url": url,
+                "content": _extract_hit_content(item),
+                "published_date": _published_date(item),
+                "score": score,
+            }
+        )
+    return results
 
 
 async def exa_search(
     query: str,
-    max_results: Optional[int] = None,
-) -> list[dict]:
-    """
-    使用 Exa API 进行 web 搜索
-
-    支持 api_key 池配置，会自动轮询尝试不同的 api_key。
-
-    Args:
-        query: 搜索查询关键词
-        max_results: 最大返回结果数量，默认10条
-
-    Returns:
-        搜索结果列表，每条包含 title、url、content、score 等字段
-
-    Example:
-        >>> results = await exa_search("Python 教程")
-        >>> for r in results:
-        ...     print(r["title"], r["url"])
-    """
+    max_results: int | None = None,
+) -> list[dict[str, str | float]]:
+    """使用 Exa API 进行 web 搜索，支持 api_key 池轮询重试。"""
     api_key_pool = _get_api_key_pool()
     if not api_key_pool:
         _raise_no_key("search")
@@ -209,8 +194,8 @@ async def exa_search(
     if max_results is None:
         max_results = int(exa_config.get_config("max_results").data or "10")
 
-    async def _call(exa: AsyncExa) -> list[dict]:
-        return await _do_exa_search(exa, query, max_results)
+    async def _call(api_key: str) -> list[dict[str, str | float]]:
+        return await _do_exa_search(api_key, query, max_results)
 
     return await _with_keys("search", api_key_pool, _call)
 
@@ -223,28 +208,29 @@ def _text_limit(max_chars: int) -> int:
     return max_chars
 
 
-def _text_from_contents(response: SearchResponse[ResultWithText]) -> str:
-    statuses = response.statuses
-    if statuses:
+def _text_from_contents(response: dict[str, object]) -> str:
+    raw_statuses = response["statuses"] if "statuses" in response else None
+    if isinstance(raw_statuses, list) and raw_statuses:
         saw_success = False
-        for item in statuses:
-            if item.status == "success":
+        for item in raw_statuses:
+            mapped = _as_dict(item)
+            if "status" in mapped and mapped["status"] == "success":
                 saw_success = True
                 break
         if not saw_success:
             return ""
-    if not response.results:
+    raw_results = response["results"] if "results" in response else None
+    if not isinstance(raw_results, list) or not raw_results:
         return ""
-    text = response.results[0].text
-    if text is None:
+    first = _as_dict(raw_results[0])
+    raw_text = first["text"] if "text" in first else None
+    if not isinstance(raw_text, str):
         return ""
-    return text.strip()
+    return raw_text.strip()
 
 
 async def exa_fetch_markdown(url: str, max_chars: int) -> str:
-    """用 Exa Contents 读取指定 URL 的正文文本（清洗后的纯文本，不保证为 Markdown 格式）。
-    空正文抛 ValueError，供抓取链换源。
-    """
+    """用 Exa Contents 读取指定 URL 的正文文本；空正文抛 ValueError 供抓取链换源。"""
     api_key_pool = _get_api_key_pool()
     if not api_key_pool:
         _raise_no_key("fetch")
@@ -259,12 +245,13 @@ async def exa_fetch_markdown(url: str, max_chars: int) -> str:
         )
     )
 
-    async def _call(exa: AsyncExa) -> str:
-        text_opts: TextContentsOptions = {"max_characters": limit}
-        raw = await exa.get_contents([url], text=text_opts)
-        if not isinstance(raw, SearchResponse):
-            return ""
-        return _text_from_contents(raw)
+    async def _call(api_key: str) -> str:
+        payload: dict[str, object] = {
+            "urls": [url],
+            "text": {"maxCharacters": limit},
+        }
+        response = await _post_exa("/contents", api_key, payload)
+        return _text_from_contents(response)
 
     text = await _with_keys("fetch", api_key_pool, _call, url=url)
     if not text:

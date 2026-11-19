@@ -11,7 +11,6 @@ from pydantic_ai import RunContext
 
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.web_search import web_search
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.web_search.date_utils import normalize_published_date
 
@@ -120,6 +119,8 @@ async def web_search_tool(
     """
     if limit is None:
         limit = ai_config.get_config("web_search_default_limit").data
+    from gsuid_core.ai_core.web_search import web_search
+
     results = await web_search(
         query=query,
         max_results=limit,

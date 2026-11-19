@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 from dataclasses import field, dataclass
 
-import httpx
+import httpx2
 import aiofiles
 
 from gsuid_core.i18n import t
@@ -188,7 +188,7 @@ async def _download_and_install(
 
 async def _download(url: str, dest: Path) -> str:
     sha = hashlib.sha256()
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+    async with httpx2.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
             # 分块流式落盘：整包读进内存再写会吃满 event loop 线程的堆

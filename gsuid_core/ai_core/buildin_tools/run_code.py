@@ -4,7 +4,6 @@ from pydantic_ai import RunContext
 
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.monty_exec import execute_script
 
 _BRIEF = (
     "用户点名本工具，或要对多次工具结果做批量查询、筛选、对齐、算术或批量记录时，写一段 Python 执行。"
@@ -43,4 +42,6 @@ async def run_code(ctx: RunContext[ToolContext], code: str) -> str:
     Returns:
         最后一行表达式的文本；失败时是一段说明。
     """
+    from gsuid_core.ai_core.monty_exec import execute_script
+
     return await execute_script(ctx, code)

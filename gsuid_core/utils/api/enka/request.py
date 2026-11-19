@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from ..utils import _HEADER
 from .models import EnkaData

@@ -12,7 +12,7 @@ from typing import TypedDict
 from pathlib import Path
 from urllib.parse import quote
 
-import httpx
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -249,7 +249,7 @@ def _same_path(left: Path, right: Path) -> bool:
     return left.resolve() == right.resolve()
 
 
-async def _download_file(client: httpx.AsyncClient, url: str, dest: Path) -> bool:
+async def _download_file(client: httpx2.AsyncClient, url: str, dest: Path) -> bool:
     async with client.stream("GET", url) as response:
         if response.status_code != 200:
             logger.warning(
@@ -298,11 +298,11 @@ async def _sync_remote_webconsole(holder: FrontendDist) -> bool:
 
     index_url = f"{base_url.rstrip('/')}/WebConsole/"
     logger.info(t("log.webconsole.dist_remote_check", url=index_url))
-    timeout = httpx.Timeout(120.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    timeout = httpx2.Timeout(120.0)
+    async with httpx2.AsyncClient(timeout=timeout) as client:
         try:
             response = await client.get(index_url)
-        except httpx.HTTPError as exc:
+        except httpx2.HTTPError as exc:
             logger.warning(t("log.webconsole.dist_remote_fail", error=exc))
             return False
         if response.status_code != 200:

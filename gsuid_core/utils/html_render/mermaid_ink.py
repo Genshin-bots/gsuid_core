@@ -12,7 +12,7 @@ import base64
 from html import escape, unescape
 from dataclasses import dataclass
 
-import httpx
+import httpx2
 import lxml.etree as etree
 
 from gsuid_core.i18n import t
@@ -20,7 +20,7 @@ from gsuid_core.logger import logger
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 _INK_SVG = "https://mermaid.ink/svg/"
-_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_TIMEOUT = httpx2.Timeout(15.0, connect=5.0)
 _HEADERS = {"User-Agent": "gsuid-core"}
 _MAX_SVG_CHARS = 2_000_000
 _SHAPE_TAGS = frozenset({"rect", "circle", "ellipse", "polygon", "polyline", "path", "line"})
@@ -82,12 +82,12 @@ class _Sel:
         return score
 
 
-def fetch_mermaid_svg(code: str, *, client: httpx.Client | None = None) -> str:
+def fetch_mermaid_svg(code: str, *, client: httpx2.Client | None = None) -> str:
     """按 mermaid.ink 的 base64 URL 取 SVG。失败抛 :class:`MermaidInkError`。"""
     token = base64.urlsafe_b64encode(code.encode("utf-8")).decode("ascii")
     url = _INK_SVG + token
     if client is None:
-        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True, headers=_HEADERS) as owned:
+        with httpx2.Client(timeout=_TIMEOUT, follow_redirects=True, headers=_HEADERS) as owned:
             response = owned.get(url)
     else:
         response = client.get(url)
@@ -99,7 +99,7 @@ def expand_mermaid_in_html(html: str) -> str:
     blocks = _find_blocks(html)
     if not blocks:
         return html
-    with httpx.Client(timeout=_TIMEOUT, follow_redirects=True, headers=_HEADERS) as client:
+    with httpx2.Client(timeout=_TIMEOUT, follow_redirects=True, headers=_HEADERS) as client:
         out = html
         for block in reversed(blocks):
             out = out[: block.start] + _replacement(block.source, client) + out[block.end :]
@@ -145,7 +145,7 @@ def adapt_mermaid_svg(svg: str) -> str:
     )
 
 
-def _svg_or_error(response: httpx.Response) -> str:
+def _svg_or_error(response: httpx2.Response) -> str:
     status = response.status_code
     text = response.text
     if status != 200:
@@ -156,7 +156,7 @@ def _svg_or_error(response: httpx.Response) -> str:
     return text
 
 
-def _replacement(source: str, client: httpx.Client) -> str:
+def _replacement(source: str, client: httpx2.Client) -> str:
     if not source.strip():
         return ""
     try:

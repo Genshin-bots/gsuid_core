@@ -13,7 +13,7 @@ import datetime
 from typing import TYPE_CHECKING, Any, Tuple, Literal, Optional
 from pathlib import Path
 
-import httpx
+import httpx2
 from pydantic_ai import RunContext
 
 if TYPE_CHECKING:
@@ -24,7 +24,6 @@ from gsuid_core.logger import logger
 from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.utils.html_render import im_templates, render_md_to_bytes, render_html_to_bytes
 from gsuid_core.ai_core.control.lines import MAX_RENDERS_PER_TASK
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.buildin_tools.chart_svg import resolve_chart_placeholders
@@ -809,6 +808,8 @@ def _as_str_list(items: Any) -> list[str]:
 
 
 def _build_card_html(card_type: str, title: str, meta: str, payload: dict[str, Any]) -> str:
+    from gsuid_core.utils.html_render import im_templates
+
     footer = str(payload["footer"]) if "footer" in payload else "数据可能滞后 · 仅供参考"
     if card_type == "weather":
         metrics_raw = payload["metrics"] if "metrics" in payload else []
@@ -1054,6 +1055,7 @@ async def render_card(
 
     try:
         from gsuid_core.ai_core.mcp.pii import mask_pii, mask_pii_in_html
+        from gsuid_core.utils.html_render import render_html_to_bytes
 
         is_group = _is_group_render_ctx(ctx)
         safe_title = mask_pii(title.strip()) if is_group else title.strip()
@@ -1129,24 +1131,24 @@ def _shrink_raster_if_needed(data: bytes, *, max_side: int, max_bytes: int) -> b
 async def _download_url_bytes(
     url: str,
     *,
-    client: httpx.AsyncClient | None = None,
+    client: httpx2.AsyncClient | None = None,
 ) -> Tuple[Optional[bytes], Optional[str]]:
     """GET 图片 URL（带退避重试）。成功 (bytes, None)；失败 (None, 中文错误)。"""
-    resp: httpx.Response | None = None
+    resp: httpx2.Response | None = None
     last_err = ""
     for attempt in range(3):
         try:
             if client is not None and attempt == 0:
                 resp = await client.get(url)
             else:
-                async with httpx.AsyncClient(
+                async with httpx2.AsyncClient(
                     timeout=_EMBED_HTTP_TIMEOUT,
                     follow_redirects=True,
                     headers={"User-Agent": _EMBED_USER_AGENT},
                 ) as tmp_client:
                     resp = await tmp_client.get(url)
             break
-        except httpx.HTTPError as e:
+        except httpx2.HTTPError as e:
             last_err = f"下载失败: {type(e).__name__}: {e}"
             if attempt < 2:
                 await asyncio.sleep(0.35 * (attempt + 1))
@@ -1212,7 +1214,7 @@ def _fallback_icon_svg(color: str | None) -> bytes:
     return svg.encode("utf-8")
 
 
-async def _prefetch_iconify_batch(sources: list[str], client: httpx.AsyncClient) -> None:
+async def _prefetch_iconify_batch(sources: list[str], client: httpx2.AsyncClient) -> None:
     """按 prefix 合并拉取整页 Iconify JSON，把 30+ 次单图标请求压缩为 1 次并支持多源容灾。"""
     by_prefix: dict[str, list[str]] = {}
     for src in sources:
@@ -1243,7 +1245,7 @@ async def _prefetch_iconify_batch(sources: list[str], client: httpx.AsyncClient)
                         if isinstance(parsed, dict):
                             payload = parsed
                             break
-                except (httpx.HTTPError, ValueError):
+                except (httpx2.HTTPError, ValueError):
                     continue
             if payload is None:
                 continue
@@ -1272,7 +1274,7 @@ async def _prefetch_iconify_batch(sources: list[str], client: httpx.AsyncClient)
 async def _resolve_embed_source_bytes(
     source: str,
     *,
-    client: httpx.AsyncClient | None = None,
+    client: httpx2.AsyncClient | None = None,
 ) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     """解析嵌图来源 → (bytes, mime_hint, error)。"""
     from gsuid_core.utils.image.image_io import unwrap_image_url, decode_data_or_base64_uri
@@ -1352,7 +1354,7 @@ async def _source_to_data_uri(
     source: str,
     *,
     max_side: int = _AUTO_EMBED_MAX_SIDE,
-    client: httpx.AsyncClient | None = None,
+    client: httpx2.AsyncClient | None = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """解析来源 → (data_uri, error)。"""
     data, mime, err = await _resolve_embed_source_bytes(source, client=client)
@@ -1399,7 +1401,7 @@ async def _auto_embed_html_images(html: str) -> str:
     sem = asyncio.Semaphore(_AUTO_EMBED_CONCURRENCY)
     resolved: dict[str, str] = {}
 
-    async with httpx.AsyncClient(
+    async with httpx2.AsyncClient(
         timeout=_EMBED_HTTP_TIMEOUT,
         follow_redirects=True,
         headers={"User-Agent": _EMBED_USER_AGENT},
@@ -1560,6 +1562,7 @@ async def render_html_to_image(
 
     try:
         from gsuid_core.ai_core.mcp.pii import mask_pii_in_html
+        from gsuid_core.utils.html_render import render_html_to_bytes
 
         if _is_group_render_ctx(ctx):
             html_content = mask_pii_in_html(html_content)
@@ -1617,6 +1620,7 @@ async def render_markdown_to_image(
 
     try:
         from gsuid_core.ai_core.mcp.pii import mask_pii
+        from gsuid_core.utils.html_render import render_md_to_bytes
 
         md = f"# {title}\n\n{markdown_content.strip()}{_footer()}"
         if _is_group_render_ctx(ctx):

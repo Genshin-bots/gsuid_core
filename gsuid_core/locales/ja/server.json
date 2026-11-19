@@ -19,6 +19,8 @@
   "log.server.discover_done": "[GsCore] プラグインの発見と依存関係チェックが完了しました、所要時間: {elapsed:.2f}秒",
   "log.server.hook_exec_fail": "フック実行エラー: {error}",
   "log.server.import_done": "プラグインインポート完了 ({elapsed:.2f}s)",
+  "log.server.import_mem_header": "プラグインインポート RSS 増分 Top 10（全 {count} 件 / +{total:.1f} MB）:",
+  "log.server.import_mem_item": "🧠 +{mb:5.1f} MB  {name}",
   "log.server.import_slow_header": "{count} モジュール / {total:.2f}s · Top 10:",
   "log.server.import_slow_item": "⏱️ {dur:6.2f}s  {name}",
   "log.server.importing_plugin": "インポート中 {stem}...",

@@ -678,14 +678,19 @@ def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pyte
 
         assert rag_base._is_models_cache_valid() is True
 
-        with warnings.catch_warnings():
+        # 静态模型加载须彻底绕过 fastembed / onnxruntime（即使两者不可导入也正常工作）。
+        with monkeypatch.context() as mp, warnings.catch_warnings():
+            mp.setitem(sys.modules, "fastembed", None)
+            mp.setitem(sys.modules, "onnxruntime", None)
             warnings.simplefilter("error", UserWarning)
             provider = LocalEmbeddingProvider(model_name=model_name, cache_dir=str(cache_root))
         try:
             assert provider.dimension == 256
             assert provider.max_input_tokens == 512
-            vecs = provider.embed_sync(["hello world"])
-            assert len(vecs) == 1 and len(vecs[0]) == 256
+            vecs = provider.embed_sync(["hello world", "[UNK]"])
+            assert len(vecs) == 2 and len(vecs[0]) == 256
+            assert abs(sum(x * x for x in vecs[0]) - 1.0) < 1e-4
+            assert all(x == 0.0 for x in vecs[1])
         finally:
             provider.close()
             del provider

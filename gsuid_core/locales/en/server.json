@@ -19,6 +19,8 @@
   "log.server.discover_done": "[GsCore] Plugin discovery and dependency check complete, took {elapsed:.2f}s",
   "log.server.hook_exec_fail": "Hook execution error: {error}",
   "log.server.import_done": "Plugin import done ({elapsed:.2f}s)",
+  "log.server.import_mem_header": "Plugin import RSS delta Top 10 ({count} plugins / +{total:.1f} MB):",
+  "log.server.import_mem_item": "🧠 +{mb:5.1f} MB  {name}",
   "log.server.import_slow_header": "Imported {count} modules / {total:.2f}s · Top 10:",
   "log.server.import_slow_item": "⏱️ {dur:6.2f}s  {name}",
   "log.server.importing_plugin": "Importing {stem}...",

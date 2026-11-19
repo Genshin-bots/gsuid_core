@@ -5,7 +5,7 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 
-import httpx
+import httpx2
 from PIL import Image
 
 from gsuid_core.i18n import t
@@ -27,15 +27,15 @@ def _url_cache_path(url: str) -> Path:
     return _URL_CACHE_DIR / f"{key}.bin"
 
 
-async def _read_cached(url: str) -> httpx.Response | None:
+async def _read_cached(url: str) -> httpx2.Response | None:
     path = _url_cache_path(url)
     if not path.exists():
         return None
     if time.time() - path.stat().st_mtime > _SGET_CACHE_TTL:
         return None
     content = await asyncio.to_thread(path.read_bytes)
-    request = httpx.Request("GET", url)
-    return httpx.Response(200, content=content, request=request)
+    request = httpx2.Request("GET", url)
+    return httpx2.Response(200, content=content, request=request)
 
 
 async def _write_cache(url: str, content: bytes) -> None:
@@ -45,21 +45,21 @@ async def _write_cache(url: str, content: bytes) -> None:
     await asyncio.to_thread(os.replace, tmp_path, path)
 
 
-async def sget(url: str, use_cache: bool = False) -> httpx.Response:
+async def sget(url: str, use_cache: bool = False) -> httpx2.Response:
     if use_cache:
         cached = await _read_cached(url)
         if cached is not None:
             return cached
 
     logger.info(t("log.image.sget_content_download_url", url=url))
-    timeout = httpx.Timeout(
+    timeout = httpx2.Timeout(
         connect=_SGET_CONNECT_TIMEOUT,
         read=_SGET_READ_TIMEOUT,
         write=_SGET_WRITE_TIMEOUT,
         pool=_SGET_POOL_TIMEOUT,
     )
     async with asyncio.timeout(_SGET_TOTAL_TIMEOUT):
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
         ) as client:

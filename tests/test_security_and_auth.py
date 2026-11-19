@@ -269,7 +269,7 @@ def test_github_auth_stars_and_store_sorting(
     import asyncio
     from urllib.parse import urlparse
 
-    import httpx
+    import httpx2
     from starlette.requests import Request as StarletteRequest
 
     import gsuid_core.webconsole.plugins_api as plugins_api
@@ -305,32 +305,32 @@ def test_github_auth_stars_and_store_sorting(
     store_payload: dict[str, object] = {"plugins": {}}
     store_url = urlparse(plugins_lib)
 
-    def _handler(request: httpx.Request) -> httpx.Response:
+    def _handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.host == store_url.hostname and request.url.path == store_url.path:
-            return httpx.Response(200, json=store_payload)
+            return httpx2.Response(200, json=store_payload)
         if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
-            return httpx.Response(200, json={"access_token": "gho_secret_token", "scope": oauth_scope})
+            return httpx2.Response(200, json={"access_token": "gho_secret_token", "scope": oauth_scope})
         if request.url.path == "/user":
-            return httpx.Response(200, json={"login": oauth_login, "avatar_url": "https://example.com/a.png"})
+            return httpx2.Response(200, json={"login": oauth_login, "avatar_url": "https://example.com/a.png"})
         if request.url.path.startswith("/user/starred/"):
-            return httpx.Response(204)
+            return httpx2.Response(204)
         if request.url.path == "/graphql":
             if graphql_status == 401:
-                return httpx.Response(401, json={"message": "Bad credentials"})
-            return httpx.Response(200, json={"data": {"r0": {"stargazerCount": 99, "viewerHasStarred": False}}})
+                return httpx2.Response(401, json={"message": "Bad credentials"})
+            return httpx2.Response(200, json={"data": {"r0": {"stargazerCount": 99, "viewerHasStarred": False}}})
         if request.url.path.startswith("/repos/"):
             rest_calls.append(request.url.path)
             if network_fail_all:
-                raise httpx.ConnectError("offline", request=request)
+                raise httpx2.ConnectError("offline", request=request)
             if request.url.path == "/repos/owner/repo-a" and not rate_limit_all:
-                return httpx.Response(200, json={"stargazers_count": 99})
-            return httpx.Response(429, json={"message": "rate limit"})
-        return httpx.Response(404, json={"message": "Not Found"})
+                return httpx2.Response(200, json={"stargazers_count": 99})
+            return httpx2.Response(429, json={"message": "rate limit"})
+        return httpx2.Response(404, json={"message": "Not Found"})
 
-    orig_async_client = httpx.AsyncClient
-    transport = httpx.MockTransport(_handler)
+    orig_async_client = httpx2.AsyncClient
+    transport = httpx2.MockTransport(_handler)
     monkeypatch.setattr(
-        httpx,
+        httpx2,
         "AsyncClient",
         lambda *, timeout=15: orig_async_client(timeout=timeout, transport=transport),
     )

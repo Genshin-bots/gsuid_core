@@ -6,7 +6,7 @@ import enum
 import json
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-import httpx
+import httpx2
 
 from gsuid_core.ai_core.rag.qmodels import (
     Range,
@@ -331,7 +331,7 @@ class HttpQdrant:
         *,
         timeout: float = 30,
         trust_env: bool = True,
-        http: httpx.AsyncClient | None = None,
+        http: httpx2.AsyncClient | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         self._api_key = api_key
@@ -346,13 +346,13 @@ class HttpQdrant:
     def release_embedded_cache(self) -> None:
         return None
 
-    async def _session(self) -> httpx.AsyncClient:
+    async def _session(self) -> httpx2.AsyncClient:
         if self._http is not None:
             return self._http
         headers: dict[str, str] = {}
         if self._api_key:
             headers["api-key"] = self._api_key
-        self._http = httpx.AsyncClient(
+        self._http = httpx2.AsyncClient(
             base_url=self._url,
             timeout=self._timeout,
             headers=headers,

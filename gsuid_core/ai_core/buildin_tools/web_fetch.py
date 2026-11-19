@@ -9,7 +9,6 @@ from pydantic_ai import RunContext
 
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.web_fetch import fetch_webpage_as_markdown
 from gsuid_core.ai_core.buildin_tools.visibility import context_has_url
 
 
@@ -38,6 +37,8 @@ async def web_fetch_tool(
         >>> print(content)
     """
     try:
+        from gsuid_core.ai_core.web_fetch import fetch_webpage_as_markdown
+
         content = await fetch_webpage_as_markdown(url=url)
     except ValueError as e:
         return f"抓取失败: {e}"

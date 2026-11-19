@@ -5,8 +5,10 @@ MCP 工具启动注册模块
 真正调用工具时才建立连接。清单为空时启动跳过；控制台单独注册才会去连。
 """
 
+from __future__ import annotations
+
 import inspect
-from typing import Any, Dict, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, TypedDict
 from dataclasses import dataclass
 
 from pydantic_ai import RunContext
@@ -17,13 +19,15 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.models import ToolBase, ToolContext
-from gsuid_core.ai_core.mcp.client import MCPClient
 from gsuid_core.ai_core.mcp.config_manager import (
     MCPConfig,
     MCPToolDefinition,
     mcp_config_manager,
     input_schema_to_parameters,
 )
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.mcp.client import MCPClient
 
 # 延迟导入 _TOOL_REGISTRY 避免循环依赖。
 
@@ -183,6 +187,7 @@ def _input_schema_from_json_schema(raw: object) -> JsonSchemaObject:
 
 
 def _make_mcp_client(config: MCPConfig, creds: Optional[Dict[str, str]] = None) -> MCPClient:
+    from gsuid_core.ai_core.mcp.client import MCPClient
     from gsuid_core.ai_core.mcp.credential_store import render_client_kwargs
 
     kwargs = render_client_kwargs(config, creds)

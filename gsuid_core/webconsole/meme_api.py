@@ -21,7 +21,6 @@ from fastapi.responses import StreamingResponse
 import gsuid_core.webconsole.meme_pack_api  # noqa: F401  登记 /packs，必须早于 /{meme_id}
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
-from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
 from gsuid_core.ai_core.meme.library import (
     MemeLibrary,
     _read_file,
@@ -613,6 +612,8 @@ async def upload_meme(
             await PackStore.note_pending_pack(record.meme_id, pack_id)
 
         if auto_tag:
+            from gsuid_core.ai_core.meme.tagger import enqueue_tag
+
             await AiMemeRecord.update_record(record.meme_id, {"status": "pending"})
             await enqueue_tag(record.meme_id)
         else:
@@ -657,6 +658,8 @@ async def retag_meme(
 
         await PackStore.prepare_retag(meme_id)
         await AiMemeRecord.update_record(meme_id, {"status": "pending"})
+
+        from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
 
         if not is_tagging_enabled():
             return {
@@ -896,6 +899,7 @@ async def batch_retag_pending(
             }
 
         # VLM 打标关闭时，仅重置为 pending，由开启后台扫描自动补打标
+        from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
         from gsuid_core.ai_core.meme.pack_model import PackStore
 
         if not is_tagging_enabled():
@@ -1284,6 +1288,8 @@ async def import_memes(
                         await AiMemeRecord.update_record(meme_id, {"assign_default_pack": False})
 
                     if auto_tag:
+                        from gsuid_core.ai_core.meme.tagger import enqueue_tag
+
                         await enqueue_tag(meme_id)
                     elif (
                         record is not None

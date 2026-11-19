@@ -19,7 +19,7 @@
 
 from typing import TYPE_CHECKING, Optional
 
-import httpx
+import httpx2
 from pydantic_ai import RunContext
 
 from gsuid_core.i18n import t
@@ -61,11 +61,11 @@ async def _resolve_avatar_image(ev: Event, target_user_id: Optional[str]) -> "Op
 
     # 兜底：纯数字 ID 仍按 QQ qlogo 尝试（覆盖部分 QQ 系 adapter）
     if target.isdigit():
-        # 仅吞网络失败(httpx.HTTPError)与图片解析失败(qlogo 取不到时 404 体被当图片
+        # 仅吞网络失败(httpx2.HTTPError)与图片解析失败(qlogo 取不到时 404 体被当图片
         # 解析 → PIL.UnidentifiedImageError ⊂ OSError)；其余异常照常上抛，不做兜底。
         try:
             return await get_qq_avatar(target)
-        except (httpx.HTTPError, OSError) as e:
+        except (httpx2.HTTPError, OSError) as e:
             logger.debug(t("log.ai.buildintools_get_user_avatar_fail_3", e=e))
             return None
     return None
@@ -110,7 +110,7 @@ async def get_user_avatar(
 
     try:
         img = await _resolve_avatar_image(ev, clean_user_id)
-    except (httpx.HTTPError, OSError) as e:
+    except (httpx2.HTTPError, OSError) as e:
         logger.exception(t("log.ai.buildintools_get_user_avatar_fail_2", target=target, e=e))
         return f"❌ 获取头像失败: {e}"
 

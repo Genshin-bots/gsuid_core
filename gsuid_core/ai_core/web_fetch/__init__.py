@@ -23,7 +23,7 @@ import itertools
 import threading
 from typing import Any, Dict, List, Tuple, Optional
 
-import httpx
+import httpx2
 import aiohttp
 from bs4 import Comment, BeautifulSoup
 from markdownify import markdownify as md
@@ -616,7 +616,7 @@ async def fetch_webpage_as_markdown(
                     )
                 )
             return result
-        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, OSError, httpx.HTTPError) as e:
+        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError, OSError, httpx2.HTTPError) as e:
             errors.append(f"{provider}: {e}")
             logger.warning(
                 t(

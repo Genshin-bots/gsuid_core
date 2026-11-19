@@ -163,6 +163,28 @@ _pending_install: List[str] = []
 _pending_update: List[str] = []
 # 插件导入耗时记录 (插件名, 耗时秒)，用于启动耗时归因
 _import_durations: List[Tuple[str, float]] = []
+# 插件导入 RSS 内存增量汇总 {插件名: MB}，用于启动内存归因
+_import_memory_mb: Dict[str, float] = {}
+
+
+def _current_rss_mb() -> float:
+    import psutil
+
+    return psutil.Process(os.getpid()).memory_info().rss / (1024.0 * 1024.0)
+
+
+def _plugin_owner_name(module_name: str, filepath: Path, _type: str) -> str:
+    parts = module_name.split(".")
+    if len(parts) >= 2 and parts[0] in ("plugins", "buildin_plugins"):
+        return parts[1]
+    if _type == "single":
+        return filepath.stem
+    return filepath.parent.stem
+
+
+def get_plugin_import_memory() -> dict[str, float]:
+    """返回各插件启动导入阶段的 RSS 内存增量快照（MB）。"""
+    return {name: round(mb, 2) for name, mb in _import_memory_mb.items()}
 
 
 @overload
@@ -469,6 +491,7 @@ class GsServer:
             return module
 
         start_time = time.time()
+        rss_before = _current_rss_mb()
         spec = importlib.util.spec_from_file_location(module_name, filepath)
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load spec for {module_name}")
@@ -487,6 +510,10 @@ class GsServer:
 
         end_time = time.time()
         duration = round(end_time - start_time, 2)
+        rss_delta = _current_rss_mb() - rss_before
+        owner = _plugin_owner_name(module_name, filepath, _type)
+        prev_mb = _import_memory_mb[owner] if owner in _import_memory_mb else 0.0
+        _import_memory_mb[owner] = prev_mb + rss_delta
 
         if _type == "plugin":
             name = filepath.parent.stem
@@ -575,6 +602,7 @@ class GsServer:
         # 阶段三：先 import 基础设施插件并挂短 import 别名，再 import 常规插件
         _import_start = time.time()
         _import_durations.clear()
+        _import_memory_mb.clear()
         if meta_groups:
             logger.info(t("log.server.meta_plugin_import_start", count=len(meta_groups)))
         for _plugin, modules, info in meta_groups:
@@ -590,6 +618,15 @@ class GsServer:
             logger.info(t("log.server.import_slow_header", count=len(_import_durations), total=total))
             for name, dur in top:
                 logger.info(t("log.server.import_slow_item", dur=dur, name=hl_plugin(name)))
+
+        # 启动内存归因：输出 RSS 增量最高的插件 Top 10（≥0.5 MB）
+        heavy_mem = [(name, mb) for name, mb in _import_memory_mb.items() if mb >= 0.5]
+        if heavy_mem:
+            top_mem = sorted(heavy_mem, key=lambda x: x[1], reverse=True)[:10]
+            total_mem = sum(mb for _, mb in _import_memory_mb.items() if mb > 0.0)
+            logger.info(t("log.server.import_mem_header", count=len(_import_memory_mb), total=total_mem))
+            for name, mb in top_mem:
+                logger.info(t("log.server.import_mem_item", mb=mb, name=hl_plugin(name)))
 
         plugin_config_store.save_all()
         core_config.lazy_write_config()

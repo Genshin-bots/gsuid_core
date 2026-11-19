@@ -1,4 +1,6 @@
 {
+  "log.register.ai_register_hook_fail": "[Register] @on_ai_register 遅延登録コールバック [{name}] の実行に失敗しました: {e}",
+  "log.register.ai_register_hooks_done": "[Register] プラグイン AI 遅延登録コールバック {count} 件を実行しました",
   "log.register.ai_registry_skill_directory_fail": "[AI][Registry] Skill ディレクトリの登録に失敗しました: {p0}",
   "log.register.ai_registry_skill_directory_ok": "[AI][Registry] Skill ディレクトリの登録に成功しました（plugin={plugin}, count={p0}）: {p1}",
   "log.register.ai_tools_decorator_check": "[Register] @ai_tools デコレータの check_func に問題があります。開発者を確認してください...",

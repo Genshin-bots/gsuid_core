@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 from contextlib import contextmanager
 from contextvars import Token, ContextVar
 from dataclasses import dataclass
 from collections.abc import Iterator
 
-import httpx
 import httpx2
+
+if TYPE_CHECKING:
+    import httpx
 
 
 @dataclass

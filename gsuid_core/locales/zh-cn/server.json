@@ -19,6 +19,8 @@
   "log.server.discover_done": "[早柚核心] 插件发现与依赖检查完成, 耗时: {elapsed:.2f}秒",
   "log.server.hook_exec_fail": "Hooks执行错误: {error}",
   "log.server.import_done": "插件导入完成 ({elapsed:.2f}s)",
+  "log.server.import_mem_header": "插件导入内存增量 Top 10（共 {count} 个插件 / +{total:.1f} MB）:",
+  "log.server.import_mem_item": "🧠 +{mb:5.1f} MB  {name}",
   "log.server.import_slow_header": "导入 {count} 个模块 / {total:.2f}s · Top 10:",
   "log.server.import_slow_item": "⏱️ {dur:6.2f}s  {name}",
   "log.server.importing_plugin": "导入 {stem}...",

@@ -18,7 +18,7 @@ from typing import Iterable, TypedDict, TypeGuard, NotRequired
 from datetime import datetime
 from dataclasses import field, dataclass
 
-import httpx
+import httpx2
 from fastapi import Depends
 from pydantic import BaseModel
 from boltons.fileutils import atomic_save
@@ -512,7 +512,7 @@ def _star_toggle_cache_update(cached: StarInfo | None, star: bool) -> StarInfo |
     return StarInfo(count=cached["count"], starred=star)
 
 
-def _resp_json(resp: httpx.Response) -> object:
+def _resp_json(resp: httpx2.Response) -> object:
     """GitHub 返回体属不可信外部输入：非 JSON（如 502 HTML 页）按 None 处理。"""
     try:
         return resp.json()
@@ -526,7 +526,7 @@ async def _fetch_graphql_stars(token: str, repos: list[str]) -> _GraphqlResult:
     if not repos:
         return result
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             for start in range(0, len(repos), _GRAPHQL_BATCH_SIZE):
                 batch = repos[start : start + _GRAPHQL_BATCH_SIZE]
                 resp = await client.post(
@@ -551,7 +551,7 @@ async def _fetch_graphql_stars(token: str, repos: list[str]) -> _GraphqlResult:
                         result.error = global_err
                         return result
                 result.stars.update(parse_star_graphql_data(gql_data, batch))
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         result.error = f"GitHub 请求失败: {e}"
     return result
 
@@ -576,7 +576,7 @@ async def _fetch_anon_stars(repos: list[str]) -> dict[str, StarInfo]:
     dirty = False
     semaphore = asyncio.Semaphore(_ANON_CONCURRENCY)
 
-    async def _one(client: httpx.AsyncClient, repo: str) -> None:
+    async def _one(client: httpx2.AsyncClient, repo: str) -> None:
         nonlocal rate_limited, dirty, consecutive_failures
         stale_count = _cache_get_stale_count(repo.lower())
         if rate_limited or consecutive_failures >= _ANON_MAX_FAILURES:
@@ -588,7 +588,7 @@ async def _fetch_anon_stars(repos: list[str]) -> dict[str, StarInfo]:
                 return
             try:
                 resp = await client.get(f"{_API_BASE}/repos/{repo}", headers=_headers())
-            except httpx.HTTPError:
+            except httpx2.HTTPError:
                 consecutive_failures += 1
                 stars[repo] = StarInfo(count=stale_count, starred=None)
                 return
@@ -612,7 +612,7 @@ async def _fetch_anon_stars(repos: list[str]) -> dict[str, StarInfo]:
             else:
                 stars[repo] = StarInfo(count=stale_count, starred=None)
 
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+    async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         await asyncio.gather(*(_one(client, repo) for repo in missing))
     for repo in missing:
         if repo not in stars:
@@ -682,13 +682,13 @@ async def github_status(_user: SessionRecord = Depends(require_auth)) -> _Envelo
 async def github_device_start(_user: SessionRecord = Depends(require_admin)) -> _Envelope:
     global _pending_device
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(
                 _DEVICE_CODE_URL,
                 params={"client_id": GITHUB_CLIENT_ID, "scope": STAR_SCOPE},
                 headers={"Accept": "application/json"},
             )
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         return {"status": 1, "msg": f"GitHub 设备码申请失败: {e}"}
     data = _resp_json(resp)
     if not isinstance(data, dict) or "error" in data or resp.status_code != 200:
@@ -737,7 +737,7 @@ async def github_device_poll(_user: SessionRecord = Depends(require_admin)) -> _
         return {"status": 0, "msg": "ok", "data": DevicePollData(state="expired")}
 
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(
                 _ACCESS_TOKEN_URL,
                 headers={"Accept": "application/json"},
@@ -788,7 +788,7 @@ async def github_device_poll(_user: SessionRecord = Depends(require_admin)) -> _
             can_star = _scope_can_star(_read_str(data, "scope"))
 
             user_resp = await client.get(f"{_API_BASE}/user", headers=_headers(token))
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         return {"status": 1, "msg": f"GitHub 授权轮询失败: {e}"}
 
     user_data = _resp_json(user_resp)
@@ -882,7 +882,7 @@ async def _set_star(owner: str, repo: str, star: bool) -> _Envelope:
     if not is_valid_repo_name(f"{owner}/{repo}"):
         return {"status": 1, "msg": "仓库名不合法"}
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        async with httpx2.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             if star:
                 resp = await client.put(
                     f"{_API_BASE}/user/starred/{owner}/{repo}",
@@ -894,7 +894,7 @@ async def _set_star(owner: str, repo: str, star: bool) -> _Envelope:
                     f"{_API_BASE}/user/starred/{owner}/{repo}",
                     headers=_headers(viewer["token"]),
                 )
-    except httpx.HTTPError as e:
+    except httpx2.HTTPError as e:
         return {"status": 1, "msg": f"GitHub 请求失败: {e}"}
     if resp.status_code == 401:
         logger.warning(t("log.webconsole.github_token_revoked"))

@@ -5,7 +5,6 @@ import time
 import uuid
 import asyncio
 from typing import Any, Dict, List, Union, Mapping, Optional, Sequence, NamedTuple, AsyncIterator
-from concurrent.futures import ThreadPoolExecutor
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -70,9 +69,6 @@ from .reranker import rerank_results
 # 知识库 dense 命名向量名（旧库为单一无名向量；改名即触发结构迁移，见 init_knowledge_collection）
 KNOWLEDGE_DENSE_VECTOR = "dense"
 
-# BM25 稀疏嵌入专用单线程执行器：ONNX Runtime 自带多线程，多 Python 线程会过度订阅反而更慢。
-_KNOWLEDGE_SPARSE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kb_sparse")
-
 # 集合初始化串行锁：避免 init_all 与 reload_ai_rag 并发重建集合导致冲突与重复重嵌。
 _knowledge_collection_init_lock = asyncio.Lock()
 # 插件 on_core_start 与 init_all 会同时进入。先到者未写入时，后到者会把同一批再嵌一遍。
@@ -93,75 +89,13 @@ def _knowledge_sparse_config() -> dict:
     return {"sparse": SparseVectorParams(modifier=Modifier.IDF)}
 
 
-# jieba 中文预分词状态：None=未尝试 / True=可用 / False=不可用（避免每次调用重复 import 与告警）
-_jieba_state: Optional[bool] = None
-
-
-def _ensure_jieba() -> bool:
-    """惰性初始化 jieba（首次调用建词典，可能数百 ms），并抑制其首次构建的 info 噪声。"""
-    global _jieba_state
-    if _jieba_state is not None:
-        return _jieba_state
-    try:
-        import logging
-
-        import jieba
-
-        jieba.setLogLevel(logging.WARNING)  # 抑制首次 "Building prefix dict..." info
-        _jieba_state = True
-    except Exception as e:
-        logger.warning(i18n_t("log.rag.kb_jieba_unavailable_bm25_fail", e=e))
-        _jieba_state = False
-    return _jieba_state
-
-
-def _jieba_segment(text: str) -> str:
-    """jieba 中文预分词：切词后以空格连接，喂给 BM25 即可按词匹配；不可用/失败时原样返回。
-
-    fastembed 的 BM25 SimpleTokenizer 只按非 ``\\w`` 切分，而 ``\\w`` 含 CJK，连续中文整句
-    会被切成"一个巨型 token"，与库内词条永不匹配。先用 jieba 把中文切成词即可补上这层匹配。
-    """
-    if not text or not _ensure_jieba():
-        return text
-    try:
-        import jieba
-
-        tokens = [t for t in jieba.lcut(text) if t and not t.isspace()]
-        return " ".join(tokens) if tokens else text
-    except Exception:
-        return text
-
-
-def _knowledge_sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVector]]:
-    """同步批量生成 BM25 稀疏向量；模型不可用/失败时返回等长 None（自动降级纯 dense）。
-
-    **写入与查询两侧必须用同一分词**：本函数是唯一稀疏入口（写入经 _compute_knowledge_points、
-    查询经 query_knowledge/search_manual_knowledge 都到这里），故 jieba 预分词只在此处做一次，
-    保证两侧 token 一致。
-    """
-    from gsuid_core.ai_core.rag.base import _get_sparse_model
-
-    model = _get_sparse_model()
-    if model is None:
-        return [None] * len(texts)
-    try:
-        seg_texts = [_jieba_segment(t) for t in texts]
-        results = list(model.embed(seg_texts))
-        vectors: List[Optional[SparseVector]] = [
-            SparseVector(indices=[int(i) for i in r.indices], values=[float(v) for v in r.values]) for r in results
-        ]
-        return vectors
-    except Exception as e:
-        logger.warning(i18n_t("log.rag.kb_bm25_sparse_embedding_batch", e=e))
-        return [None] * len(texts)
-
-
 async def _sparse_embed_batch_async(texts: List[str]) -> List[Optional[SparseVector]]:
-    """异步包装：把同步 BM25 计算移入单线程执行器，避免阻塞事件循环。"""
+    """统一复用 rag.sparse 的纯 Python CJK 二元语法 BM25 稀疏向量。"""
     if not texts:
         return []
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_KNOWLEDGE_SPARSE_EXECUTOR, _knowledge_sparse_embed_batch, texts)
+    from gsuid_core.ai_core.rag.sparse import sparse_embed_batch_async
+
+    return await sparse_embed_batch_async(texts)
 
 
 def _build_named_point(

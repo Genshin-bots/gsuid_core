@@ -3,7 +3,7 @@
 import base64
 from typing import Final, Union
 
-import httpx
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -145,7 +145,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "input": texts,
         }
 
-        with httpx.Client(timeout=60.0) as client:
+        with httpx2.Client(timeout=60.0) as client:
             response = client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -175,7 +175,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "input": texts,
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx2.AsyncClient(timeout=60.0) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -207,7 +207,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "input": [{"image": base64.b64encode(img).decode("utf-8")} for img in images],
         }
 
-        with httpx.Client(timeout=120.0) as client:
+        with httpx2.Client(timeout=120.0) as client:
             response = client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -231,7 +231,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             "model": self._model_name,
             "input": [{"image": base64.b64encode(img).decode("utf-8")} for img in images],
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx2.AsyncClient(timeout=120.0) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()

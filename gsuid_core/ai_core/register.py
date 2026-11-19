@@ -1,15 +1,26 @@
+from __future__ import annotations
+
 import asyncio
 import inspect
-from typing import Dict, List, Tuple, Union, TypeVar, Callable, Optional, Awaitable, cast, overload, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Tuple,
+    Union,
+    TypeVar,
+    Callable,
+    Optional,
+    Awaitable,
+    cast,
+    overload,
+    get_type_hints,
+)
 from pathlib import Path
-
-from pydantic_ai import RunContext, ToolReturn
-from pydantic_ai.tools import Tool
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.segment import Message
-from gsuid_core.ai_core.utils import handle_tool_result
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_health import (
     is_tool_frozen,
@@ -18,6 +29,9 @@ from gsuid_core.ai_core.tool_health import (
 )
 
 from .models import ToolBase, ImageEntity, KnowledgeBase, KnowledgePoint, ManualKnowledgeBase, ManualKnowledgeUpdate
+
+if TYPE_CHECKING:
+    from pydantic_ai import RunContext, ToolReturn
 
 _PARAM_ERROR_HINTS: Dict[str, str] = {
     "render_chart_spec": '⚠️ 缺少 data。正确格式：data=[{"label":"A","value":1}, ...]',
@@ -48,7 +62,7 @@ def _param_error_hint(tool_name: str, raw_result: str) -> str:
 
 # 工具函数返回契约：str/Message/bytes 经 handle_tool_result 序列化；
 # ToolReturn 原样透传 pydantic_ai（多模态内容注入会话，如 read_image 直投）
-ToolFunc = Callable[..., Awaitable[Union[str, Message, bytes, ToolReturn]]]
+ToolFunc = Callable[..., Awaitable[Union[str, Message, bytes, "ToolReturn"]]]
 F = TypeVar("F", bound=ToolFunc)
 
 # 定义 check_func 的类型 - 支持同步和异步函数
@@ -192,6 +206,11 @@ def ai_tools(
                 return cast(F, fn)
         except Exception:
             pass
+
+        from pydantic_ai import RunContext, ToolReturn
+        from pydantic_ai.tools import Tool
+
+        from gsuid_core.ai_core.utils import handle_tool_result
 
         # 1. 解析原函数的参数签名
         sig = inspect.signature(fn)
@@ -1055,3 +1074,82 @@ def ai_skill(path: Union[str, Path], plugin: Optional[str] = None) -> None:
         )
     else:
         logger.warning(t("log.register.ai_registry_skill_directory_fail", p0=result["msg"]))
+
+
+AIRegisterHook = Callable[[], Union[None, Awaitable[None]]]
+_AI_REGISTER_HOOKS: List[AIRegisterHook] = []
+_EXECUTED_AI_REGISTER_HOOKS: List[AIRegisterHook] = []
+
+
+def _hook_belongs_to_plugin(hook: AIRegisterHook, plugin_name: str) -> bool:
+    mod = hook.__module__ if inspect.isfunction(hook) or inspect.ismethod(hook) else type(hook).__module__
+    return (
+        mod == plugin_name
+        or mod.startswith(f"{plugin_name}.")
+        or f".{plugin_name}." in mod
+        or mod.endswith(f".{plugin_name}")
+    )
+
+
+def on_ai_register(fn: AIRegisterHook) -> AIRegisterHook:
+    """插件 AI 延迟注册装饰器：仅在 AI 启用且进入 init_ai_core（RAG 同步前）才执行。
+
+    用于把读取大体积 JSON、构造 ai_entity / ai_alias / ai_image 等重操作从插件 import 期
+    移到 AI 初始化阶段，避免 AI 关闭时白占内存与启动耗时。支持同步或异步函数。
+    """
+    if not any(existing is fn for existing in _AI_REGISTER_HOOKS):
+        _AI_REGISTER_HOOKS.append(fn)
+    return fn
+
+
+def unregister_ai_register_hooks_of_plugin(plugin_name: str) -> int:
+    """热重载清理：摘除指定插件的 @on_ai_register 回调及已执行记录。"""
+    before = len(_AI_REGISTER_HOOKS)
+    _AI_REGISTER_HOOKS[:] = [h for h in _AI_REGISTER_HOOKS if not _hook_belongs_to_plugin(h, plugin_name)]
+    _EXECUTED_AI_REGISTER_HOOKS[:] = [
+        h for h in _EXECUTED_AI_REGISTER_HOOKS if not _hook_belongs_to_plugin(h, plugin_name)
+    ]
+    return before - len(_AI_REGISTER_HOOKS)
+
+
+def has_pending_ai_register_hooks(plugin_name: Optional[str] = None) -> bool:
+    """返回是否存在尚未执行的 @on_ai_register 回调（可按插件名过滤）。"""
+    for hook in _AI_REGISTER_HOOKS:
+        if plugin_name is not None and not _hook_belongs_to_plugin(hook, plugin_name):
+            continue
+        if not any(done is hook for done in _EXECUTED_AI_REGISTER_HOOKS):
+            return True
+    return False
+
+
+async def run_ai_register_hooks(plugin_name: Optional[str] = None) -> int:
+    """执行尚未运行过的 @on_ai_register 回调，返回本次成功执行的数量。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if not ai_config.get_config("enable").data:
+        return 0
+
+    executed = 0
+    for hook in list(_AI_REGISTER_HOOKS):
+        if plugin_name is not None and not _hook_belongs_to_plugin(hook, plugin_name):
+            continue
+        if any(done is hook for done in _EXECUTED_AI_REGISTER_HOOKS):
+            continue
+        try:
+            res = hook()
+            if inspect.isawaitable(res):
+                await res
+            _EXECUTED_AI_REGISTER_HOOKS.append(hook)
+            executed += 1
+        except Exception as e:
+            hook_name = hook.__name__ if inspect.isfunction(hook) or inspect.ismethod(hook) else repr(hook)
+            logger.exception(
+                t(
+                    "log.register.ai_register_hook_fail",
+                    name=hook_name,
+                    e=e,
+                )
+            )
+    if executed:
+        logger.info(t("log.register.ai_register_hooks_done", count=executed))
+    return executed

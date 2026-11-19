@@ -128,6 +128,12 @@ async def _init_journal() -> None:
 
 
 async def _init_mcp_server():
+    from gsuid_core.ai_core.configs.ai_config import ai_config, mcp_server_config
+
+    if not ai_config.get_config("enable").data:
+        return
+    if not mcp_server_config.get_config("enable_mcp_server").data:
+        return
     from gsuid_core.ai_core.mcp.server import init_mcp_server
 
     await init_mcp_server()
@@ -250,10 +256,23 @@ async def wait_ai_core_ready(timeout: float = 300.0) -> bool:
         return False
 
 
-# AI 各子系统按依赖拓扑顺序初始化（RAG 优先，MCP Server 靠后）。
+async def _init_sparse_bm25_migration() -> None:
+    from gsuid_core.ai_core.migrations.sparse_bm25_v1 import migrate_sparse_bm25_vectors
+
+    await migrate_sparse_bm25_vectors()
+
+
+async def _init_plugin_ai_registers() -> None:
+    from gsuid_core.ai_core.register import run_ai_register_hooks
+
+    await run_ai_register_hooks()
+
+
+# AI 各子系统按依赖拓扑顺序初始化（先跑插件 AI 延迟注册，再同步 RAG，MCP Server 靠后）。
 _INIT_STEPS = [
     # 套件最先装：只挂 hook，却决定整条 loop 有没有情绪/关系/记忆/工具装配
     ("Agent 套件", _init_agent_kits),
+    ("插件 AI 延迟注册", _init_plugin_ai_registers),
     ("RAG", _init_rag),
     ("Persona", _init_persona),
     ("多人格隔离迁移", _init_persona_scope_migration),
@@ -263,6 +282,7 @@ _INIT_STEPS = [
     ("Memory", _init_memory),
     ("MCP 工具", _init_mcp_tools),
     ("Meme", _init_meme),
+    ("BM25 稀疏向量迁移", _init_sparse_bm25_migration),
     ("统计", _init_statistics),
     ("自主行动", _init_autonomy),
     ("生活手账", _init_journal),
@@ -387,6 +407,10 @@ async def close_qdrant_client_on_shutdown() -> None:
 @on_core_shutdown
 async def close_monty_pool_on_shutdown() -> None:
     """关掉代码沙箱的 worker 进程。没人用过 ``run_code`` 时池子不存在。"""
+    import sys
+
+    if "gsuid_core.ai_core.monty_exec" not in sys.modules:
+        return
     from gsuid_core.ai_core.monty_exec import close_monty_pool
 
     await close_monty_pool()

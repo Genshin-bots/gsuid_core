@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Dict, Union, Optional
 
 from bs4 import Tag, BeautifulSoup
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from ..utils import _HEADER
 

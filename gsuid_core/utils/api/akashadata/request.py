@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Dict, Literal, Optional
 
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from .api import AKASHA_CHAR_URL, AKASHA_RANK_URL, AKASHA_ABYSS_URL
 from ..types import AnyDict

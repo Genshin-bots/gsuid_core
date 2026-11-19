@@ -17,7 +17,7 @@ import itertools
 import threading
 from typing import Any
 
-import httpx
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -62,14 +62,14 @@ class ProviderEmptyResultError(RuntimeError):
     """提供方返回空结果，供多源策略切换下一源。"""
 
 
-# httpx.HTTPError 覆盖连接失败和超时。Exa SDK 不把它们收成 ValueError。
+# httpx2.HTTPError 覆盖连接失败和超时。Exa SDK 不把它们收成 ValueError。
 _FAILOVER_ERRORS = (
     RuntimeError,
     ProviderEmptyResultError,
     TypeError,
     ValueError,
     OSError,
-    httpx.HTTPError,
+    httpx2.HTTPError,
 )
 
 

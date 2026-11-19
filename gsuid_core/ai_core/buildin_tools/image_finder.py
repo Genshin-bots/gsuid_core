@@ -15,7 +15,7 @@ from typing import TypedDict
 from pathlib import Path
 from dataclasses import dataclass
 
-import httpx
+import httpx2
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic_ai import RunContext
 
@@ -191,12 +191,12 @@ def normalize_image(data: bytes) -> _NormalizedImage | None:
     return {"data": buf.getvalue(), "width": im.width, "height": im.height}
 
 
-async def _download(client: httpx.AsyncClient, url: str) -> bytes | None:
+async def _download(client: httpx2.AsyncClient, url: str) -> bytes | None:
     if not url:
         return None
     try:
         resp = await client.get(url)
-    except httpx.HTTPError:
+    except httpx2.HTTPError:
         return None
     if resp.status_code >= 400 or not resp.content or len(resp.content) > _MAX_DOWNLOAD_BYTES:
         return None
@@ -349,7 +349,7 @@ async def _firecrawl_candidates(query: str, limit: int) -> list[ImageCandidate]:
     return found[: limit * 3]
 
 
-async def _so360_candidates(client: httpx.AsyncClient, query: str, limit: int) -> list[ImageCandidate]:
+async def _so360_candidates(client: httpx2.AsyncClient, query: str, limit: int) -> list[ImageCandidate]:
     resp = await client.get(
         _SO360_URL,
         params={"q": query, "src": "srp", "pn": str(limit * 3), "sn": "0"},
@@ -362,7 +362,7 @@ async def _so360_candidates(client: httpx.AsyncClient, query: str, limit: int) -
 
 async def _candidates_from(
     source: str,
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     query: str,
     limit: int,
 ) -> list[ImageCandidate]:
@@ -384,7 +384,7 @@ async def _candidates_from(
 class _Verifier:
     """单次调用内共享：限并发下载，并按原始字节去重（同图不同链接只留一张）。"""
 
-    def __init__(self, client: httpx.AsyncClient) -> None:
+    def __init__(self, client: httpx2.AsyncClient) -> None:
         self._client = client
         self._sem = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
         self._seen: set[str] = set()
@@ -438,7 +438,7 @@ async def _find_for_query(
     query: str,
     need: int,
     sources: list[str],
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     verifier: _Verifier,
 ) -> list[FoundImage]:
     key = f"{need}|{query}"
@@ -498,7 +498,7 @@ async def search_and_verify_images(
     if not sources:
         return [], "配图来源已在配置里关闭（render_image_sources 为空）。"
     need = min(max(per_query, 1), _MAX_PER_QUERY)
-    async with httpx.AsyncClient(
+    async with httpx2.AsyncClient(
         timeout=_DOWNLOAD_TIMEOUT,
         follow_redirects=True,
         headers={"User-Agent": _BROWSER_UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6"},

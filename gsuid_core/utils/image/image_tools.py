@@ -8,9 +8,9 @@ from io import BytesIO
 from typing import List, Tuple, Union, Optional, overload
 from pathlib import Path
 
-import httpx
+import httpx2
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from httpx import get
+from httpx2 import get
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -335,7 +335,7 @@ async def get_event_avatar(ev: Event, avatar_path: Optional[Path] = None) -> Ima
             try:
                 content = (await sget(avatar_url, use_cache=True)).content
                 img = Image.open(BytesIO(content)).convert("RGBA")
-            except (httpx.HTTPError, OSError, TimeoutError):
+            except (httpx2.HTTPError, OSError, TimeoutError):
                 img = None
 
     if img is None and ev.bot_id == "onebot" and not ev.sender:
@@ -389,7 +389,7 @@ async def get_pic(url, size: Optional[Tuple[int, int]] = None) -> Image.Image:
     """
     从网络获取图片, 格式化为RGBA格式的指定尺寸
     """
-    async with httpx.AsyncClient(timeout=None) as client:
+    async with httpx2.AsyncClient(timeout=None) as client:
         resp = await client.get(url=url)
         if resp.status_code != 200:
             if size is None:
@@ -554,7 +554,7 @@ async def get_qq_avatar(
         resp = await sget(avatar_url, use_cache=True)
         char_pic = Image.open(BytesIO(resp.content)).convert("RGBA")
         return char_pic
-    except (httpx.HTTPError, OSError, TimeoutError) as e:
+    except (httpx2.HTTPError, OSError, TimeoutError) as e:
         logger.warning(t("log.image.url_error_download_fail", url=avatar_url, error=e))
         return None
 
@@ -571,7 +571,7 @@ async def get_qqgroup_avatar(
         resp = await sget(avatar_url, use_cache=True)
         char_pic = Image.open(BytesIO(resp.content)).convert("RGBA")
         return char_pic
-    except (httpx.HTTPError, OSError, TimeoutError) as e:
+    except (httpx2.HTTPError, OSError, TimeoutError) as e:
         logger.warning(t("log.image.url_error_download_fail_2", url=avatar_url, error=e))
         return None
 

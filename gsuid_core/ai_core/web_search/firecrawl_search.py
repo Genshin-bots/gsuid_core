@@ -1,35 +1,27 @@
 """
-Firecrawl Web Search（官方 SDK ``AsyncFirecrawl.search`` → POST /v2/search）
+Firecrawl Web Search（httpx2 直调 POST https://api.firecrawl.dev/v2/search）
 
-文档：https://docs.firecrawl.dev/sdks/python
+不加载第三方 firecrawl-py SDK。
 鉴权：api_key 可选；无 Key 走 keyless 免费档（按 IP 限流）。无效 Key 不会回落匿名。
 """
 
 from __future__ import annotations
 
 import random
-from typing import Protocol, runtime_checkable
 
-import httpx
-from firecrawl import AsyncFirecrawl
-from firecrawl.v2.types import Document, SearchData, SearchResultWeb, SearchResultImages
-from firecrawl.v2.utils.error_handler import FirecrawlError
+import httpx2
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.configs.ai_config import firecrawl_config
 
+_FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
 _MAX_RESULTS_CAP = 100
 _IMG_CAP = 6
 
 
 class FirecrawlSearchError(RuntimeError):
     """Firecrawl 搜索失败（额度/鉴权/网络等），供上层多源切换捕获。"""
-
-
-@runtime_checkable
-class _SearchClient(Protocol):
-    async def search(self, query: str, limit: int, timeout: int) -> object: ...
 
 
 def _get_api_key_pool() -> list[str]:
@@ -81,55 +73,6 @@ def _first_str(item: dict[str, object], *keys: str) -> str:
     return ""
 
 
-def _new_client(api_key: str) -> object:
-    timeout_sec = float(_timeout_sec())
-    if api_key:
-        return AsyncFirecrawl(api_key=api_key, timeout=timeout_sec)
-    return AsyncFirecrawl(timeout=timeout_sec)
-
-
-def _hit_from_web(item: SearchResultWeb) -> dict[str, str | float] | None:
-    title = item.title if item.title else ""
-    url = item.url if item.url else ""
-    content = item.description if item.description else ""
-    if not title and not url and not content:
-        return None
-    return {"title": title, "url": url, "content": content, "published_date": "", "score": 0.0}
-
-
-def _hit_from_document(item: Document) -> dict[str, str | float] | None:
-    title = ""
-    url = ""
-    content = ""
-    meta = item.metadata
-    if meta is not None:
-        if meta.title:
-            title = meta.title
-        elif meta.og_title:
-            title = meta.og_title
-        if meta.url:
-            url = meta.url
-        elif meta.og_url:
-            url = meta.og_url
-        if meta.description:
-            content = meta.description
-        elif meta.og_description:
-            content = meta.og_description
-    if item.markdown:
-        content = item.markdown
-    elif item.summary and not content:
-        content = item.summary
-    published = ""
-    if meta is not None:
-        if meta.published_time:
-            published = meta.published_time
-        elif meta.dc_date:
-            published = meta.dc_date
-    if not title and not url and not content:
-        return None
-    return {"title": title, "url": url, "content": content, "published_date": published, "score": 0.0}
-
-
 def _as_str_map(item: object) -> dict[str, object]:
     if not isinstance(item, dict):
         return {}
@@ -141,137 +84,99 @@ def _as_str_map(item: object) -> dict[str, object]:
 
 
 def _published_from_mapping(item: dict[str, object]) -> str:
-    direct = _first_str(item, "published_time").strip()
+    direct = _first_str(item, "published_time", "publishedTime").strip()
     if direct:
         return direct
     raw_meta = item["metadata"] if "metadata" in item else None
-    if not isinstance(raw_meta, dict):
+    meta = _as_str_map(raw_meta)
+    if not meta:
         return ""
-    meta: dict[str, object] = {}
-    for key, value in raw_meta.items():
-        if isinstance(key, str):
-            meta[key] = value
-    published = _first_str(meta, "published_time").strip()
+    published = _first_str(meta, "published_time", "publishedTime").strip()
     if published:
         return published
-    return _first_str(meta, "dc_date").strip()
+    return _first_str(meta, "dc_date", "dcDate").strip()
 
 
 def _hit_from_mapping(item: dict[str, object]) -> dict[str, str | float] | None:
-    title = _first_str(item, "title")
-    url = _first_str(item, "url", "source_url")
-    content = _first_str(item, "description", "markdown", "content", "snippet")
+    meta = _as_str_map(item["metadata"]) if "metadata" in item else {}
+    title = _first_str(item, "title") or _first_str(meta, "title", "ogTitle", "og_title")
+    url = _first_str(item, "url", "source_url", "sourceURL") or _first_str(meta, "url", "ogUrl", "og_url")
+    content = _first_str(item, "markdown", "description", "content", "snippet", "summary") or _first_str(
+        meta, "description", "ogDescription", "og_description"
+    )
     published = _published_from_mapping(item)
     if not title and not url and not content:
         return None
     return {"title": title, "url": url, "content": content, "published_date": published, "score": 0.0}
 
 
-def _hit_from_image(item: SearchResultImages) -> dict[str, str | float] | None:
-    img = item.image_url if item.image_url else ""
-    page = item.url if item.url else ""
-    url = img if img else page
-    if not url.startswith(("http://", "https://")):
-        return None
-    title = item.title if item.title else "(配图)"
-    return {
-        "title": title,
-        "url": url,
-        "content": "",
-        "published_date": "",
-        "score": 0.0,
-        "image_url": url,
-        "kind": "image",
-    }
-
-
-def _web_items(payload: object) -> list[object]:
-    if isinstance(payload, SearchData):
-        web = payload.web
-        return list(web) if isinstance(web, list) else []
-    if isinstance(payload, dict) and "web" in payload:
-        raw = payload["web"]
-        return raw if isinstance(raw, list) else []
-    return []
-
-
-def _image_items(payload: object) -> list[object]:
-    if isinstance(payload, SearchData):
-        images = payload.images
-        return list(images) if isinstance(images, list) else []
-    if isinstance(payload, dict) and "images" in payload:
-        raw = payload["images"]
-        return raw if isinstance(raw, list) else []
-    return []
-
-
 def _normalize_results(payload: object, max_results: int) -> list[dict[str, str | float]]:
-    """将 SDK ``SearchData.web`` / dict ``web`` 归一为 title/url/content/score。"""
+    """将 /v2/search 的 data（web / images）归一为 title/url/content/score。"""
+    mapped_payload = _as_str_map(payload)
+    web_raw = mapped_payload["web"] if "web" in mapped_payload else None
+    images_raw = mapped_payload["images"] if "images" in mapped_payload else None
+
     out: list[dict[str, str | float]] = []
-    for item in _web_items(payload):
-        hit: dict[str, str | float] | None
-        if isinstance(item, SearchResultWeb):
-            hit = _hit_from_web(item)
-        elif isinstance(item, Document):
-            hit = _hit_from_document(item)
-        elif isinstance(item, dict):
+    if isinstance(web_raw, list):
+        for item in web_raw:
             hit = _hit_from_mapping(_as_str_map(item))
-        else:
-            continue
-        if hit is None:
-            continue
-        out.append(hit)
-        if len(out) >= max_results:
-            break
+            if hit is None:
+                continue
+            out.append(hit)
+            if len(out) >= max_results:
+                break
 
     img_n = 0
-    for item in _image_items(payload):
-        if img_n >= _IMG_CAP:
-            break
-        img_hit: dict[str, str | float] | None
-        if isinstance(item, SearchResultImages):
-            img_hit = _hit_from_image(item)
-        elif isinstance(item, dict):
+    if isinstance(images_raw, list):
+        for item in images_raw:
+            if img_n >= _IMG_CAP:
+                break
             mapped = _as_str_map(item)
-            img_url = _first_str(mapped, "image_url", "url")
+            img_url = _first_str(mapped, "imageUrl", "image_url", "url")
             if not img_url.startswith(("http://", "https://")):
                 continue
             title = _first_str(mapped, "title") or "(配图)"
-            img_hit = {
-                "title": title,
-                "url": img_url,
-                "content": "",
-                "published_date": "",
-                "score": 0.0,
-                "image_url": img_url,
-                "kind": "image",
-            }
-        else:
-            continue
-        if img_hit is None:
-            continue
-        out.append(img_hit)
-        img_n += 1
+            out.append(
+                {
+                    "title": title,
+                    "url": img_url,
+                    "content": "",
+                    "published_date": "",
+                    "score": 0.0,
+                    "image_url": img_url,
+                    "kind": "image",
+                }
+            )
+            img_n += 1
     return out
 
 
 async def _do_firecrawl_search(query: str, max_results: int, api_key: str) -> list[dict[str, str | float]]:
-    client = _new_client(api_key)
-    if not isinstance(client, _SearchClient):
-        raise FirecrawlSearchError("Firecrawl client missing search()")
-    raw: object = await client.search(query, limit=max_results, timeout=_timeout_ms())
-    return _normalize_results(raw, max_results)
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload: dict[str, object] = {
+        "query": query,
+        "limit": max_results,
+        "timeout": _timeout_ms(),
+    }
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(float(_timeout_sec()))) as client:
+        resp = await client.post(_FIRECRAWL_SEARCH_URL, json=payload, headers=headers)
+        if resp.status_code != 200:
+            raise FirecrawlSearchError(f"Firecrawl HTTP {resp.status_code}: {resp.text[:200]}")
+        body = _as_str_map(resp.json())
+    if not body or "success" not in body or body["success"] is not True:
+        err_msg = _first_str(body, "error", "message") or "Firecrawl search failed"
+        raise FirecrawlSearchError(err_msg)
+    data = body["data"] if "data" in body else {}
+    return _normalize_results(data, max_results)
 
 
 async def firecrawl_search(
     query: str,
     max_results: int | None = None,
 ) -> list[dict[str, str | float]]:
-    """
-    使用 Firecrawl 官方 SDK 进行 web 搜索。
-
-    Key 池非空时轮询重试；全空则 keyless 免费档。无效 Key 不会改走匿名。
-    """
+    """使用 Firecrawl REST API 进行 web 搜索；Key 池非空时轮询重试，全空走 keyless 免费档。"""
     if max_results is None:
         max_results = _as_int(firecrawl_config.get_config("max_results").data, 10)
     max_results = _clamp_max_results(max_results)
@@ -293,8 +198,7 @@ async def firecrawl_search(
             return results
         except (
             FirecrawlSearchError,
-            FirecrawlError,
-            httpx.HTTPError,
+            httpx2.HTTPError,
             TimeoutError,
             OSError,
             ValueError,

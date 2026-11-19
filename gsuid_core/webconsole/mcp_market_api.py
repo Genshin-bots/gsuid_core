@@ -22,7 +22,7 @@ from pathlib import Path
 from dataclasses import field, dataclass
 from urllib.parse import quote, urlparse, parse_qsl, quote_plus, urlunparse
 
-import httpx
+import httpx2
 from fastapi import Query, Depends, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
@@ -242,7 +242,7 @@ _SSL_CONTEXT: Optional[ssl.SSLContext] = None
 @dataclass
 class _MarketLoopState:
     loop: asyncio.AbstractEventLoop
-    client: Optional[httpx.AsyncClient] = None
+    client: Optional[httpx2.AsyncClient] = None
     client_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cache_io_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     detail_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(_DETAIL_CHECK_CONCURRENCY))
@@ -270,7 +270,7 @@ async def _ensure_ssl_context() -> ssl.SSLContext:
     return _SSL_CONTEXT
 
 
-async def _shared_http_client() -> httpx.AsyncClient:
+async def _shared_http_client() -> httpx2.AsyncClient:
     state = _loop_state()
     if state.client is not None and not state.client.is_closed:
         return state.client
@@ -278,9 +278,9 @@ async def _shared_http_client() -> httpx.AsyncClient:
         if state.client is not None and not state.client.is_closed:
             return state.client
         ssl_ctx = await _ensure_ssl_context()
-        state.client = httpx.AsyncClient(
+        state.client = httpx2.AsyncClient(
             verify=ssl_ctx,
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            limits=httpx2.Limits(max_connections=32, max_keepalive_connections=16),
         )
         return state.client
 
@@ -374,7 +374,7 @@ async def _download_logo(url: str, key: str) -> None:
             client = await _shared_http_client()
             resp = await client.get(
                 url,
-                timeout=httpx.Timeout(min(timeout, 10.0)),
+                timeout=httpx2.Timeout(min(timeout, 10.0)),
                 follow_redirects=True,
             )
             if resp.status_code != 200 or len(resp.content) > _LOGO_MAX_BYTES:
@@ -1548,9 +1548,9 @@ async def _probe_url_alive(url: str) -> bool:
     """GET 探活：连接失败/超时/404/410/5xx → 失效；401/405/400 等算活（服务在，只是要鉴权/POST）。"""
     try:
         client = await _shared_http_client()
-        resp = await client.get(url, timeout=httpx.Timeout(_PROBE_TIMEOUT), follow_redirects=True)
+        resp = await client.get(url, timeout=httpx2.Timeout(_PROBE_TIMEOUT), follow_redirects=True)
         return resp.status_code not in (404, 410) and resp.status_code < 500
-    except (httpx.HTTPError, OSError):
+    except (httpx2.HTTPError, OSError):
         return False
 
 

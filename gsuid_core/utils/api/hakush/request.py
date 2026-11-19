@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Union, Literal, Optional, cast
 
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from .api import (
     HAKUSH_CHAR_URL,

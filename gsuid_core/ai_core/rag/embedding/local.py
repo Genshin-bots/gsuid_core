@@ -2,13 +2,18 @@
 
 import os
 import json
-import mmap as std_mmap
 from pathlib import Path
 from dataclasses import dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.embedding.base import EmbeddingProvider
+from gsuid_core.ai_core.rag.embedding.static_mmap import (
+    STATIC_MAX_LENGTH,
+    StaticMmapEmbedding,
+    resolve_snapshot_dir,
+    find_known_static_model,
+)
 
 # onnxruntime arena 只增不减，兜底取低值：threads=1，batch=16。
 # 线程数和 batch 只读嵌入配置，避免 env 把内存地板抬高。
@@ -27,7 +32,16 @@ class FastEmbedModelSpec:
 
 
 def resolve_fastembed_model_spec(model_name: str) -> FastEmbedModelSpec:
-    """按 fastembed 注册表解析 HF 仓库、权重文件名及是否为静态模型。"""
+    """优先匹配内置静态模型表（不触发 fastembed/onnxruntime 导入），否则回退 fastembed 注册表。"""
+    known_static = find_known_static_model(model_name)
+    if known_static is not None:
+        return FastEmbedModelSpec(
+            hf_repo=known_static.hf_repo,
+            model_file=known_static.model_file,
+            is_static=True,
+            static_max_tokens=STATIC_MAX_LENGTH,
+        )
+
     from gsuid_core.ai_core.rag.base import _get_embedding_hf_repo
 
     try:
@@ -158,28 +172,27 @@ def _resolve_batch_size() -> int:
 
 
 class LocalEmbeddingProvider(EmbeddingProvider):
-    """本地嵌入模型提供方（基于 fastembed）"""
+    """本地嵌入模型提供方（静态模型直读 safetensors mmap，ONNX 模型走 fastembed）。"""
 
     def __init__(self, model_name: str, cache_dir: str, threads: int | None = None, *, mmap: bool | None = None):
-        from fastembed import TextEmbedding
-
         spec = resolve_fastembed_model_spec(model_name)
         self._model_name = model_name
         self._batch_size = _resolve_batch_size()
         self._is_static = spec.is_static
+        self._static_model: StaticMmapEmbedding | None = None
 
         if spec.is_static:
-            # 静态模型走 NumPy 查表：传 threads 会触发 UserWarning，默认开 mmap 省常驻内存。
+            # 静态模型直读 safetensors mmap，不导入 fastembed/onnxruntime。
             use_mmap = True if mmap is None else mmap
             effective_threads = 0
-            self._model = TextEmbedding(
-                model_name=model_name,
-                cache_dir=cache_dir,
-                threads=None,
-                local_files_only=True,
-                mmap=use_mmap,
-            )
+            cache_root = resolve_model_cache_dir(Path(cache_dir), spec.hf_repo)
+            snapshot_dir = resolve_snapshot_dir(cache_root, spec.model_file)
+            static_model = StaticMmapEmbedding(snapshot_dir, spec.model_file, use_mmap=use_mmap)
+            self._static_model = static_model
+            self._model = static_model
         else:
+            from fastembed import TextEmbedding
+
             effective_threads = _resolve_threads() if threads is None else threads
             self._model = TextEmbedding(
                 model_name=model_name,
@@ -219,19 +232,6 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
     def close(self) -> None:
         """释放静态模型 mmap 文件句柄（Windows 重置或清理缓存目录前需显式关闭）。"""
-        if not self._is_static:
-            return
-        try:
-            from fastembed.text.static_embedding import StaticTextEmbedding
-        except ImportError:
-            return
-
-        inner = self._model.model
-        if not isinstance(inner, StaticTextEmbedding):
-            return
-        for arr in (inner.embeddings, inner.weights, inner.token_mapping):
-            if arr is not None and isinstance(arr.base, std_mmap.mmap):
-                arr.base.close()
-        inner.embeddings = None
-        inner.weights = None
-        inner.token_mapping = None
+        if self._static_model is not None:
+            self._static_model.close()
+            self._static_model = None

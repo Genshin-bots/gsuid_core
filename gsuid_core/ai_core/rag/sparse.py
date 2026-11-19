@@ -1,92 +1,70 @@
-"""稀疏向量（BM25）嵌入共享工具
+"""纯 Python CJK 二元语法 BM25 稀疏向量工具。
 
-把"jieba 中文预分词 + fastembed BM25 稀疏嵌入"收敛为可复用的公共函数，供需要
-"稀疏 + 稠密"混合检索的模块（记忆 / 表情包 / 产物索引等）共用，保证**写入与查询两侧使用同一分词**、
-token 一致。
-
-设计沿用 rag/knowledge.py 的成熟实现：
-- BM25 模型来自 ``rag.base._get_sparse_model``（全局懒加载、线程安全）；
-- jieba 预分词解决 fastembed 的 BM25 SimpleTokenizer 只按非 ``\\w`` 切分、会把连续中文
-  整句切成"一个巨型 token"导致与库内词条永不匹配的问题；
-- 同步 BM25 计算移入单线程执行器：ONNX Runtime 自带多线程，多 Python 线程会过度订阅
-  反而更慢，故 max_workers=1。
+复用 ``tool_lexical.tokenize``（中文单字 + 相邻二元语法 + 拉丁/数字词）与标准 BM25 词频公式
+生成 Qdrant ``SparseVector``，配合服务端 ``modifier="idf"`` 实现混合检索。
+不依赖 ``fastembed`` / ``onnxruntime`` / ``jieba``，写作与查询共用同一路径，零模型常驻内存。
 """
 
-import asyncio
-import logging
-from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor
+from __future__ import annotations
 
-from gsuid_core.i18n import t as i18n_t
-from gsuid_core.logger import logger
+import hashlib
+from collections import Counter
+
 from gsuid_core.ai_core.rag.qmodels import SparseVector
+from gsuid_core.ai_core.rag.tool_lexical import tokenize
 
-# BM25 稀疏嵌入专用单线程执行器
-_SPARSE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sparse_embed")
-
-# jieba 中文预分词状态：None=未尝试 / True=可用 / False=不可用（避免每次调用重复 import 与告警）
-_jieba_state: Optional[bool] = None
-
-
-def _ensure_jieba() -> bool:
-    """惰性初始化 jieba（首次调用建词典，可能数百 ms），并抑制其首次构建的 info 噪声。"""
-    global _jieba_state
-    if _jieba_state is not None:
-        return _jieba_state
-    try:
-        import jieba
-
-        jieba.setLogLevel(logging.WARNING)
-        _jieba_state = True
-    except Exception as e:
-        logger.warning(i18n_t("log.rag.sparse_jieba_unavailable_bm25_fail", e=e))
-        _jieba_state = False
-    return _jieba_state
+_BM25_K1: float = 1.2
+_BM25_B: float = 0.75
+_BM25_AVG_LEN: float = 256.0
+_INDEX_MASK: int = 0x7FFFFFFF
 
 
-def jieba_segment(text: str) -> str:
-    """jieba 中文预分词：切词后以空格连接，喂给 BM25 即可按词匹配；不可用/失败时原样返回。"""
-    if not text or not _ensure_jieba():
-        return text
-    try:
-        import jieba
-
-        tokens = [t for t in jieba.lcut(text) if t and not t.isspace()]
-        return " ".join(tokens) if tokens else text
-    except Exception:
-        return text
+def _token_index(token: str) -> int:
+    """将词元确定性映射到 31 位非负整数槽位，跨进程/跨平台一致。"""
+    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=4).digest()
+    return int.from_bytes(digest, "little") & _INDEX_MASK
 
 
-def sparse_embed_batch(texts: List[str]) -> List[Optional[SparseVector]]:
-    """同步批量生成 BM25 稀疏向量；模型不可用/失败时返回等长 None（调用方自动降级纯 dense）。"""
+def _embed_one(text: str) -> SparseVector:
+    tokens = tokenize(text)
+    if not tokens:
+        return SparseVector(indices=[], values=[])
+
+    counts = Counter(tokens)
+    doc_len = float(len(tokens))
+    denom_base = _BM25_K1 * (1.0 - _BM25_B + _BM25_B * doc_len / _BM25_AVG_LEN)
+    tf_map: dict[int, float] = {}
+    for token, raw_freq in counts.items():
+        idx = _token_index(token)
+        freq = float(raw_freq)
+        tf = freq * (_BM25_K1 + 1.0) / (freq + denom_base)
+        # 极低概率哈希碰撞时累加词频得分，保持索引唯一有序。
+        tf_map[idx] = tf_map[idx] + tf if idx in tf_map else tf
+
+    ordered = sorted(tf_map.items())
+    return SparseVector(
+        indices=[idx for idx, _ in ordered],
+        values=[val for _, val in ordered],
+    )
+
+
+def sparse_embed_batch(texts: list[str]) -> list[SparseVector | None]:
+    """同步批量生成 BM25 稀疏向量；AI 总开关关闭时返回等长 None。"""
     if not texts:
         return []
-    from gsuid_core.ai_core.rag.base import _get_sparse_model
+    from gsuid_core.ai_core.rag.base import is_enable_ai
 
-    model = _get_sparse_model()
-    if model is None:
+    if not is_enable_ai():
         return [None] * len(texts)
-    try:
-        seg_texts = [jieba_segment(t) for t in texts]
-        results = list(model.embed(seg_texts))
-        vectors: List[Optional[SparseVector]] = [
-            SparseVector(indices=[int(i) for i in r.indices], values=[float(v) for v in r.values]) for r in results
-        ]
-        return vectors
-    except Exception as e:
-        logger.warning(i18n_t("log.rag.sparse_bm25_embedding_batch", e=e))
-        return [None] * len(texts)
+    return [_embed_one(text) for text in texts]
 
 
-async def sparse_embed_batch_async(texts: List[str]) -> List[Optional[SparseVector]]:
-    """异步包装：把同步 BM25 计算移入单线程执行器，避免阻塞事件循环。"""
-    if not texts:
-        return []
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_SPARSE_EXECUTOR, sparse_embed_batch, texts)
+async def sparse_embed_batch_async(texts: list[str]) -> list[SparseVector | None]:
+    """异步批量生成 BM25 稀疏向量（纯内存轻量分词，直接返回不额外养线程池）。"""
+    return sparse_embed_batch(texts)
 
 
-async def sparse_embed_single(text: str) -> Optional[SparseVector]:
-    """异步生成单条 BM25 稀疏向量；不可用时返回 None。"""
-    results = await sparse_embed_batch_async([text])
+async def sparse_embed_single(text: str) -> SparseVector | None:
+    """异步生成单条 BM25 稀疏向量。"""
+    results = sparse_embed_batch([text])
     return results[0] if results else None

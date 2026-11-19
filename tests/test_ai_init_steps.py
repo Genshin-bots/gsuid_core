@@ -39,10 +39,16 @@ from gsuid_core.ai_core.buildin_tools.plugin_developer import (
 )
 
 
-def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import sys
+    import subprocess
+
+    from gsuid_core.ai_core import register as ai_reg
+
     names = [name for name, _fn in _INIT_STEPS]
     assert names == [
         "Agent 套件",
+        "插件 AI 延迟注册",
         "RAG",
         "Persona",
         "多人格隔离迁移",
@@ -52,6 +58,7 @@ def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch) ->
         "Memory",
         "MCP 工具",
         "Meme",
+        "BM25 稀疏向量迁移",
         "统计",
         "自主行动",
         "生活手账",
@@ -79,6 +86,93 @@ def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch) ->
     assert called == []
     assert get_ai_core_init_phase() == AICoreInitPhase.DISABLED
 
+    # @on_ai_register：AI 关闭时不执行；开启后按序执行、失败可重试、成功后幂等、热重载可注销重跑。
+    reg_hits: List[str] = []
+    flaky_calls: List[int] = []
+    monkeypatch.setattr(ai_reg, "_AI_REGISTER_HOOKS", [])
+    monkeypatch.setattr(ai_reg, "_EXECUTED_AI_REGISTER_HOOKS", [])
+
+    @ai_reg.on_ai_register
+    def _sync_hook() -> None:
+        reg_hits.append("sync")
+
+    @ai_reg.on_ai_register
+    async def _async_hook() -> None:
+        reg_hits.append("async")
+
+    @ai_reg.on_ai_register
+    def _flaky_hook() -> None:
+        flaky_calls.append(1)
+        if len(flaky_calls) == 1:
+            raise RuntimeError("transient")
+        reg_hits.append("flaky_ok")
+
+    assert asyncio.run(ai_reg.run_ai_register_hooks()) == 0
+    assert reg_hits == []
+
+    monkeypatch.setattr(ai_config, "get_config", lambda _key: _On())
+    assert asyncio.run(ai_reg.run_ai_register_hooks()) == 2
+    assert reg_hits == ["sync", "async"]
+    assert asyncio.run(ai_reg.run_ai_register_hooks()) == 1
+    assert reg_hits == ["sync", "async", "flaky_ok"]
+    assert asyncio.run(ai_reg.run_ai_register_hooks()) == 0
+
+    def _reload_v1() -> None:
+        reg_hits.append("reload_v1")
+
+    _reload_v1.__module__ = "gsuid_core.plugins.DemoReload.mod"
+    ai_reg.on_ai_register(_reload_v1)
+    assert ai_reg.has_pending_ai_register_hooks("DemoReload") is True
+    assert asyncio.run(ai_reg.run_ai_register_hooks("DemoReload")) == 1
+    assert ai_reg.has_pending_ai_register_hooks("DemoReload") is False
+    assert ai_reg.unregister_ai_register_hooks_of_plugin("DemoReload") == 1
+
+    def _reload_v2() -> None:
+        reg_hits.append("reload_v2")
+
+    _reload_v2.__module__ = "gsuid_core.plugins.DemoReload.mod"
+    ai_reg.on_ai_register(_reload_v2)
+    assert ai_reg.has_pending_ai_register_hooks("DemoReload") is True
+    assert asyncio.run(ai_reg.run_ai_register_hooks("DemoReload")) == 1
+    assert reg_hits[-2:] == ["reload_v1", "reload_v2"]
+
+    # 子进程契约：导入 AI 开关/图片 IO/工具注册/轻量配置/下载模块不拉起重型第三方库。
+    probe = (
+        "import sys; "
+        "import gsuid_core.ai_core.configs.ai_config, gsuid_core.utils.image.image_io, "
+        "gsuid_core.ai_core.register, gsuid_core.ai_core.mcp.transport, "
+        "gsuid_core.ai_core.web_search.date_utils, gsuid_core.ai_core.rag.sparse, "
+        "gsuid_core.utils.download_resource.download_file; "
+        "leaked = [m for m in ('pydantic_ai','fastembed','onnxruntime','jieba','fastmcp',"
+        "'tavily','exa_py','firecrawl','openai','anthropic','httpx') if m in sys.modules]; "
+        "assert not leaked, f'leaked: {leaked}'"
+    )
+    proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+    # 插件导入内存归因归属名归一化
+    from pathlib import Path
+
+    import httpx
+
+    from gsuid_core.server import _plugin_owner_name, get_plugin_import_memory
+    from gsuid_core.utils.download_resource.download_file import download
+
+    assert _plugin_owner_name("plugins.DemoUID.sub.mod", Path("a/b.py"), "module") == "DemoUID"
+    assert _plugin_owner_name("buildin_plugins.core_command.cmd", Path("a/b.py"), "module") == "core_command"
+    assert _plugin_owner_name("single_mod", Path("x/demo.py"), "single") == "demo"
+    assert isinstance(get_plugin_import_memory(), dict)
+
+    # 外部插件仍传入 httpx v1 AsyncClient 时，download() 必须兼容且写入成功。
+    async def _download_with_httpx_v1() -> int | None:
+        transport = httpx.MockTransport(lambda _req: httpx.Response(200, content=b"ok-v1"))
+        async with httpx.AsyncClient(transport=transport) as v1_client:
+            return await download("https://example.invalid/a.bin", tmp_path, "a.bin", sess=v1_client)
+
+    assert asyncio.run(_download_with_httpx_v1()) == 200
+    assert (tmp_path / "a.bin").read_bytes() == b"ok-v1"
+
+    monkeypatch.setattr(ai_config, "get_config", lambda _key: _Off())
     imported_off: List[str] = []
     monkeypatch.setattr(importlib, "import_module", lambda name: (imported_off.append(name), object())[1])
     import_database_models()

@@ -16,7 +16,7 @@ from typing import List, Tuple, Optional, TypedDict, NotRequired
 from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin, parse_qs, urlparse
 
-import httpx
+import httpx2
 from pydantic_ai_skills import SkillsToolset
 
 from gsuid_core.i18n import t
@@ -237,7 +237,7 @@ def _http_get_bytes(source_url: str) -> tuple[bytes | None, str | None]:
         url_err = validate_install_source_url(current)
         if url_err:
             return None, url_err
-        resp = httpx.get(current, follow_redirects=False, timeout=_HTTP_TIMEOUT)
+        resp = httpx2.get(current, follow_redirects=False, timeout=_HTTP_TIMEOUT)
         if resp.is_redirect:
             if "location" not in resp.headers:
                 return None, "重定向缺少 Location"
@@ -378,7 +378,7 @@ def install_skill(
             err = _acquire_source(source_url, workdir)
         except (
             OSError,
-            httpx.HTTPError,
+            httpx2.HTTPError,
             tarfile.TarError,
             zipfile.BadZipFile,
             subprocess.TimeoutExpired,

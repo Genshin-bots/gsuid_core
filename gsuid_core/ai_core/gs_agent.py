@@ -4,13 +4,13 @@ PydanticAI Agent 核心模块
 """
 
 import re
+import sys
 import time
 import uuid
 import asyncio
 from typing import TYPE_CHECKING, Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
 from datetime import datetime
 
-import httpx
 import httpx2
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
@@ -588,8 +588,6 @@ class GsCoreAIAgent(RunOnceMixin):
     def _routed_provider(self) -> str:
         """本轮实际模型的 provider，不用任务主配置（failover 后会不同）。"""
         from pydantic_ai.models import Model
-        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
-        from pydantic_ai.models.anthropic import AnthropicModel
 
         from gsuid_core.ai_core.configs.models import (
             get_provider_for_task,
@@ -600,10 +598,6 @@ class GsCoreAIAgent(RunOnceMixin):
         if name:
             return parse_provider_config_name(name)[0]
         model = self.model
-        if isinstance(model, (OpenAIChatModel, OpenAIResponsesModel)):
-            return "openai"
-        if isinstance(model, AnthropicModel):
-            return "anthropic"
         if isinstance(model, Model):
             sys_name = model.system.lower()
             if sys_name in ("google", "gemini"):
@@ -1336,12 +1330,12 @@ class GsCoreAIAgent(RunOnceMixin):
                         return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                     # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
-                    if isinstance(e, (httpx.TimeoutException, httpx2.TimeoutException)):
+                    if _is_http_timeout_error(e):
                         logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
                         statistics_manager.record_error(error_type="timeout", message=err_str)
                         self._session_logger.log_error("timeout", err_str)
                         return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
-                    if isinstance(e, (httpx.HTTPError, httpx2.HTTPError)):
+                    if _is_http_transport_error(e):
                         low = err_str.lower()
                         if "rate" in low or "429" in low or "limit" in low:
                             logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
@@ -1999,14 +1993,39 @@ class GsCoreAIAgent(RunOnceMixin):
         return "" if output_type is None else None
 
 
+def _is_http_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx2.TimeoutException):
+        return True
+    if "httpx" in sys.modules:
+        import httpx
+
+        return isinstance(exc, httpx.TimeoutException)
+    return False
+
+
+def _is_http_transport_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx2.HTTPError):
+        return True
+    if "httpx" in sys.modules:
+        import httpx
+
+        return isinstance(exc, httpx.HTTPError)
+    return False
+
+
 def _is_pool_timeout_error(exc: BaseException) -> bool:
     """沿异常链检查根因是否为 httpx/httpx2 连接池超时。"""
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if isinstance(cur, (httpx.PoolTimeout, httpx2.PoolTimeout)):
+        if isinstance(cur, httpx2.PoolTimeout):
             return True
+        if "httpx" in sys.modules:
+            import httpx
+
+            if isinstance(cur, httpx.PoolTimeout):
+                return True
         cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
     return False
 

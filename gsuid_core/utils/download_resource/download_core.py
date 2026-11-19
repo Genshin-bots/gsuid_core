@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from pathlib import Path
 from urllib.parse import unquote
 
-import httpx
+import httpx2
 from bs4 import BeautifulSoup
 
 from gsuid_core.i18n import t
@@ -24,7 +24,7 @@ def _sync_check_url(tag: str, url: str):
     """同步版测速，在线程池中并发执行，不受 event loop 阻塞影响"""
     try:
         start_time = time.time()
-        with httpx.Client(timeout=httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)) as client:
+        with httpx2.Client(timeout=httpx2.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)) as client:
             response = client.get(url)
             elapsed_time = time.time() - start_time
             if response.status_code == 200 and "Index of /" in response.text:
@@ -154,20 +154,20 @@ def parse_autoindex_names(page: bytes) -> list[str]:
     return names
 
 
-async def _get_url(url: str, client: httpx.AsyncClient) -> bytes:
+async def _get_url(url: str, client: httpx2.AsyncClient) -> bytes:
     try:
         response = await client.get(url)
         return response.read()
-    except httpx.HTTPStatusError as exc:
+    except httpx2.HTTPStatusError as exc:
         logger.warning(t("log.resource_download.http_error", url=url, error=exc))
         return b""
-    except httpx.ConnectError as exc:
+    except httpx2.ConnectError as exc:
         logger.warning(t("log.resource_download.connect_error", url=url, error=exc))
         return b""
-    except httpx.UnsupportedProtocol as exc:
+    except httpx2.UnsupportedProtocol as exc:
         logger.warning(t("log.resource_download.unsupported_protocol", url=url, error=exc))
         return b""
-    except httpx.RequestError as exc:
+    except httpx2.RequestError as exc:
         logger.warning(t("log.resource_download.request_error", url=url, error=exc))
         return b""
 
@@ -176,7 +176,7 @@ async def download_atag_file(
     PLUGIN_RES: str,
     endpoint: str,
     EPATH_MAP: Dict[str, Path],
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     TAG: str,
     plugin_name: str,
 ):
@@ -295,7 +295,7 @@ async def download_all_file(
     if TAG is None:
         TAG = "[Unknown]"
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(200.0)) as client:
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(200.0)) as client:
         n = 0
         for endpoint in EPATH_MAP:
             await download_atag_file(

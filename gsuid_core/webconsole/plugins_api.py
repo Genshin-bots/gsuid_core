@@ -216,6 +216,9 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
         status: 0成功
         data: 插件列表，每项包含 id、name、description、enabled、status、icon
     """
+    from gsuid_core.server import get_plugin_import_memory
+
+    mem_map = get_plugin_import_memory()
     tasks = []
 
     for plugin_name, plugin in SL.plugins.items():
@@ -233,6 +236,7 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
                 "kind": "meta" if provides is not None else "plugin",
                 "provides": provides,
                 "pages": pages_for_plugin(plugin_name),
+                "memory_mb": mem_map[plugin_name] if plugin_name in mem_map else None,
             }
         )
 
@@ -1113,12 +1117,12 @@ async def get_plugin_store_list(
         data: 包含 plugins、fun_plugins、tool_plugins、adapter_plugins、plugin_groups 的对象
             + count（筛选后总数）/ total_count（全量）/ counts（各页签总数）
     """
-    import httpx
+    import httpx2
 
     from gsuid_core.utils.plugins_update.api import plugins_lib
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx2.AsyncClient() as client:
             response = await client.get(plugins_lib, timeout=15)
             response.raise_for_status()
             plugin_data = response.json()

@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Any, Dict, List, Union, Literal, Optional, cast, overload
 from pathlib import Path
 
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from ..types import AnyDict
 from ..utils import cache_data

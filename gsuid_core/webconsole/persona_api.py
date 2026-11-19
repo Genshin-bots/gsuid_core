@@ -24,7 +24,6 @@ from gsuid_core.ai_core.persona import (
     get_persona_avatar_path,
     list_available_personas,
 )
-from gsuid_core.ai_core.gs_agent import build_new_persona
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.ai_core.persona.config import persona_config_manager
@@ -576,6 +575,8 @@ async def create_persona(
         }
 
     try:
+        from gsuid_core.ai_core.gs_agent import build_new_persona
+
         content = await build_new_persona(query)
         await save_persona(name, content)
         return {

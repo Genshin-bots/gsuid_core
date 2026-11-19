@@ -63,7 +63,6 @@
   "log.rag.kb_ai_feature_enabled_unable_4": "[Knowledge] AI 機能が無効、ナレッジ検索できません",
   "log.rag.kb_ai_feature_enabled_unable_5": "[Knowledge] AI 機能が無効、ナレッジを検索できません",
   "log.rag.kb_backfilling_manual_knowledge": "[Knowledge] 旧手動ナレッジを SQL 真のソースにバックフィル中: {p0} 件",
-  "log.rag.kb_bm25_sparse_embedding_batch": "[Knowledge] BM25 スパース埋め込み失敗、本バッチは純粋 dense にフォールバック: {e}",
   "log.rag.kb_collection_knowledge_name_load": "[Knowledge] コレクション {KNOWLEDGE_COLLECTION_NAME} の次元が変化、{p0} 件の payload をエクスポート後に強制再構築して再埋め込み",
   "log.rag.kb_deep_reconciliation_report": "[Knowledge] 詳細照合完了: {report}",
   "log.rag.kb_delete_vectors_doc_id": "[Knowledge] doc_id によるベクトル削除失敗、ポイント ID 削除にフォールバック: {e}",
@@ -110,7 +109,6 @@
   "log.rag.log_tag_remote_rejected_large": "[{log_tag}] リモートが大批量を拒否 (413)、バッチサイズ {current_bs} -> {new_bs}: {e}",
   "log.rag.log_tag_single_item_triggers_skip": "[{log_tag}] 単一でも 413 レート制限が発生、スキップ: index={index}, err={e}",
   "log.rag.log_tag_single_point_triggers_skip": "[{log_tag}] 単一 Point でも 413 が発生、スキップ: index={index}, err={e}",
-  "log.rag.memory_sparsetextembedding_initialization": "[Memory] SparseTextEmbedding 初期化失敗: {e}",
   "log.rag.migration_backup_file_collection_skip": "[Migration] バックアップファイルの Collection が一致しないため無視: {backup_path}",
   "log.rag.migration_collection_name_backup": "[Migration] Collection {collection_name} の移行バックアップ削除に失敗、手動で確認してください: {backup_path}, {e}",
   "log.rag.migration_collection_name_payload": "[Migration] Collection {collection_name} 移行 payload のバックアップ先: {backup_path}",
@@ -124,7 +122,6 @@
   "log.rag.pre_download_attempt_load": "[RAG] モデル事前ダウンロード失敗、使用時にロードを試行します: {e}",
   "log.rag.pre_downloading_embedding_hf": "[RAG] Embedding モデル事前ダウンロード中: {EMBEDDING_HF_REPO}",
   "log.rag.pre_downloading_reranker_hf": "[RAG] Reranker モデル事前ダウンロード中: {RERANKER_HF_REPO}",
-  "log.rag.pre_downloading_sparse_hf": "[RAG] Sparse モデル事前ダウンロード中: {SPARSE_HF_REPO}",
   "log.rag.preferring_download_cache_resource": "[RAG] リソースハブからのモデルキャッシュダウンロードを優先試行中...",
   "log.rag.qdrant_backend_remote_missing": "[Qdrant] 旧バックエンドが remote だが接続設定不足、履歴データを移行できません、状態を揃えました",
   "log.rag.qdrant_check_migrate_collection_fail": "[Qdrant] コレクション {collection_name} の on_disk 設定確認/移行に失敗: {e}",
@@ -185,8 +182,6 @@
   "log.rag.skillskb_skill_documents_date_skip": "[SkillsKB] skill ドキュメントは最新 ({p0} skill / {total_files} 件)、再埋め込みをスキップ",
   "log.rag.skillskb_skill_documents_found_skip": "[SkillsKB] skill ドキュメントが見つかりません、マウントをスキップ: {_SKILLS_ROOT}",
   "log.rag.sparse_bm25_embedding_batch": "[Sparse] BM25 スパース埋め込み失敗、本バッチは純粋 dense にフォールバック: {e}",
-  "log.rag.sparse_jieba_unavailable_bm25_fail": "[Sparse] jieba が利用不可、BM25 は分割なし (中国語マッチング制限) にフォールバック: {e}",
-  "log.rag.sparse_pre_download": "[RAG] Sparse モデル事前ダウンロード完了",
   "log.rag.static_embedding_cache_incomplete": "[RAG] 静的埋め込みモデルキャッシュが未準備です（重みまたはトークナイザーが不足）: {model_name}",
   "log.rag.tools_action_str_name": "[Tools] [{action_str}] ツール: {tool_name}",
   "log.rag.tools_buildin_imported_registry": "[Tools] buildin_tools インポート済み、現在の _TOOL_REGISTRY サイズ: {p0}",
@@ -218,5 +213,8 @@
   "log.rag.tools_write_tool_writing": "[Tools] {p0} 個のツールを書き込み中...",
   "log.rag.zip_name_download_extraction": "[RAG] {zip_name}.zip ダウンロード完了: {p0}、解凍を開始...",
   "log.rag.zip_name_download_progress": "[RAG] {zip_name}.zip ダウンロード進捗: {p0} / {p1} ({progress:.1f}%)",
-  "log.rag.zip_name_downloaded": "[RAG] {zip_name}.zip ダウンロード済み: {p0}"
+  "log.rag.zip_name_downloaded": "[RAG] {zip_name}.zip ダウンロード済み: {p0}",
+  "log.rag.sparse_migration_collection_done": "[BM25 移行] コレクション {collection} のスパースベクトルを {count} 件更新しました",
+  "log.rag.sparse_migration_collection_fail": "[BM25 移行] コレクション {collection} のスパースベクトル更新に失敗しました: {e}",
+  "log.rag.sparse_migration_done": "[BM25 移行] 既存スパースベクトルの移行が完了しました（計 {count} 件更新）"
 }

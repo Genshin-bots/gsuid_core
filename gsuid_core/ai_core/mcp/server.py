@@ -47,7 +47,7 @@ from typing import (
 from urllib.parse import urljoin
 
 import anyio
-import httpx
+import httpx2
 import mcp.types as mcp_types
 from fastmcp import FastMCP
 from pydantic_ai import RunContext, ToolReturn
@@ -491,7 +491,7 @@ def _append_distinct(parts: List[str], incoming: str) -> None:
         parts.append(piece)
 
 
-async def _read_capped(resp: httpx.Response) -> bytes:
+async def _read_capped(resp: httpx2.Response) -> bytes:
     chunks: List[bytes] = []
     total = 0
     async for chunk in resp.aiter_bytes():
@@ -505,8 +505,8 @@ async def _read_capped(resp: httpx.Response) -> bytes:
 async def _fetch_mcp_image(url: str) -> bytes:
     """拉取 http(s) 图片。超限、拒绝的主机和过多跳转都不把整段下完。"""
     current = url
-    timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    timeout = httpx2.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+    async with httpx2.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         for _hop in range(4):
             reason = reject_outbound_http_url(current)
             if reason is not None:
@@ -523,7 +523,7 @@ async def _fetch_mcp_image(url: str) -> bytes:
                         return await _read_capped(resp)
             except _McpImageRejected:
                 raise
-            except (TimeoutError, httpx.HTTPError, httpx.InvalidURL) as exc:
+            except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL) as exc:
                 # 这一跳的地址才是客户端能核对的引用，资源 ID 对不上原图
                 raise _McpImageRejected(current) from exc
     raise _McpImageRejected(url)
@@ -556,7 +556,7 @@ async def _load_registered_image(resource_id: str) -> tuple[bytes, str]:
             data = await _fetch_mcp_image(text)
         except _McpImageRejected:
             raise
-        except (TimeoutError, httpx.HTTPError, httpx.InvalidURL) as exc:
+        except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL) as exc:
             # 拉取函数被中断时仍把原地址写进结果，不退回资源 ID
             raise _McpImageRejected(text) from exc
         return data, text
@@ -834,7 +834,7 @@ async def _build_tool_result(
             except _McpImageTooLarge:
                 has_oversized = True
                 continue
-            except (TimeoutError, httpx.HTTPError, httpx.InvalidURL, ValueError, _McpImageRejected) as e:
+            except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL, ValueError, _McpImageRejected) as e:
                 # 外链超时、拒绝或解码失败都是外部输入，不能丢掉已经拿到的文本和图片
                 logger.warning(
                     t(

@@ -28,7 +28,7 @@ import re
 import asyncio
 from typing import Literal
 
-import httpx
+import httpx2
 from pydantic_ai import ImageUrl, RunContext, ToolReturn, BinaryContent
 
 from gsuid_core.i18n import t
@@ -500,7 +500,7 @@ async def read_image(
             )
             last_err = None
             break
-        except (RuntimeError, httpx.HTTPError, asyncio.TimeoutError) as e:
+        except (RuntimeError, httpx2.HTTPError, asyncio.TimeoutError) as e:
             last_err = e
             logger.warning(
                 t(
