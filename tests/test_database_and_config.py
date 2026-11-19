@@ -274,7 +274,7 @@ class _StubConfigManager:
 
 
 def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """按任务覆盖：改档、指定配置、配置被删后回退调用方档位。"""
+    """按任务覆盖：改档、指定配置、层级回退（子代理→能力代理→默认档）与失效配置兜底。"""
     from gsuid_core.ai_core.configs import models
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -288,6 +288,9 @@ def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
             "chat": ["@low", "openai++ignored"],
             "image_understand": ["openai++Vision", "openai++Gone"],
             "meme_tagger": ["openai++Deleted", ""],
+            "capability_agent": ["@low", ""],
+            "capability_agent:render_agent": ["openai++Vision", ""],
+            "capability_agent:code_agent": ["openai++Deleted", ""],
             "broken": "not-a-list",
         },
     }
@@ -295,14 +298,59 @@ def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(ai_config.get_config(key), "data", value)
 
     chat = models.resolve_task_route("high", "chat")
-    assert (chat.primary, chat.secondary, chat.source, chat.level) == ("openai++Low", "", "level", "low")
+    assert (chat.primary, chat.secondary, chat.source, chat.level, chat.inherited_from) == (
+        "openai++Low",
+        "",
+        "level",
+        "low",
+        None,
+    )
     vision = models.resolve_task_route("high", "image_understand")
-    assert (vision.primary, vision.secondary, vision.source) == ("openai++Vision", "", "config")
+    assert (vision.primary, vision.secondary, vision.source, vision.inherited_from) == (
+        "openai++Vision",
+        "",
+        "config",
+        None,
+    )
     meme = models.resolve_task_route("low", "meme_tagger")
-    assert (meme.primary, meme.source, meme.level) == ("openai++Low", "default", "low")
+    assert (meme.primary, meme.source, meme.level, meme.inherited_from) == ("openai++Low", "default", "low", None)
     plain = models.resolve_task_route("high", None)
-    assert (plain.primary, plain.secondary, plain.source) == ("openai++High", "openai++High2", "default")
+    assert (plain.primary, plain.secondary, plain.source, plain.inherited_from) == (
+        "openai++High",
+        "openai++High2",
+        "default",
+        None,
+    )
     assert "broken" not in models.get_task_model_overrides()
+
+    # 层级回退：独立覆盖优先；未覆盖或覆盖失效时回退父级 capability_agent
+    cap_render = models.resolve_task_route("high", "capability_agent:render_agent")
+    assert (cap_render.primary, cap_render.source, cap_render.inherited_from) == ("openai++Vision", "config", None)
+    cap_research = models.resolve_task_route("high", "capability_agent:research_agent")
+    assert (cap_research.primary, cap_research.source, cap_research.level, cap_research.inherited_from) == (
+        "openai++Low",
+        "level",
+        "low",
+        "capability_agent",
+    )
+    cap_code = models.resolve_task_route("high", "capability_agent:code_agent")
+    assert (cap_code.primary, cap_code.source, cap_code.level, cap_code.inherited_from) == (
+        "openai++Low",
+        "level",
+        "low",
+        "capability_agent",
+    )
+
+    # 父级也失效时回退调用方默认档位
+    values["task_model_overrides"] = {"capability_agent": ["openai++Deleted", ""]}
+    monkeypatch.setattr(ai_config.get_config("task_model_overrides"), "data", values["task_model_overrides"])
+    cap_fallback = models.resolve_task_route("high", "capability_agent:research_agent")
+    assert (cap_fallback.primary, cap_fallback.source, cap_fallback.level, cap_fallback.inherited_from) == (
+        "openai++High",
+        "default",
+        "high",
+        None,
+    )
 
     assert models.provider_config_exists("High")
     assert models.provider_config_exists("openai++High")
@@ -318,12 +366,20 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
 
     from gsuid_core.ai_core import gs_agent as gs_agent_mod
     from gsuid_core.ai_core.configs import models
+    from gsuid_core.ai_core.agent_node import AgentNode, get_node, register_agent_node, unregister_agent_node
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
     from gsuid_core.webconsole.session_store import SessionRecord
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER
-    from gsuid_core.webconsole.ai_task_models_api import TaskOverrideBody, set_ai_task_model
+    from gsuid_core.webconsole.ai_task_models_api import (
+        TaskOverrideBody,
+        set_ai_task_model,
+        get_ai_task_models,
+        clear_ai_task_model,
+    )
+    from gsuid_core.ai_core.capability_agents.runner import reopen_capability_agent
 
-    monkeypatch.setattr(models, "openai_config_manager", _StubConfigManager({"MiniMAX", "Backup"}))
+    monkeypatch.setattr(models, "openai_config_manager", _StubConfigManager({"MiniMAX", "Backup", "RenderCfg"}))
     stored: dict[str, list[str]] = {}
     monkeypatch.setattr(ai_config.get_config("high_level_provider_config_name"), "data", "openai++MiniMAX")
     monkeypatch.setattr(ai_config.get_config("low_level_provider_config_name"), "data", "openai++MiniMAX")
@@ -349,32 +405,120 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
     ok = asyncio.run(set_ai_task_model("turn_router", TaskOverrideBody(primary="MiniMAX", secondary="Backup"), admin))
     assert ok["status"] == 0 and stored["turn_router"] == ["openai++MiniMAX", "openai++Backup"]
 
-    built_models: list[str] = []
-
-    def _fake_model(lvl: models.TaskLevel, kind: str | None = None) -> TestModel:
-        full_name = models.get_config_name_for_task(lvl, kind)
-        built_models.append(full_name)
-        return TestModel(model_name=full_name)
-
-    monkeypatch.setattr(gs_agent_mod, "get_model_for_task", _fake_model)
-    monkeypatch.setattr(
-        gs_agent_mod,
-        "get_model_fingerprint_for_task",
-        lambda lvl, kind=None: f"fp:{models.get_config_name_for_task(lvl, kind)}",
+    # 能力代理动态投影、单代理覆盖、父级继承与卸载后的孤儿识别
+    node_a = AgentNode(
+        node_id="test_cap_render",
+        display_name="测试渲染代理",
+        prompt="test",
+        when_to_use="测试渲染",
+        source="builtin",
+        plugin="core",
     )
-
-    agent = gs_agent_mod.GsCoreAIAgent(task_level="low", task_kind=TASK_TURN_ROUTER, thinking=False)
+    node_b = AgentNode(
+        node_id="test_cap_user",
+        display_name="测试自定义代理",
+        prompt="test",
+        when_to_use="测试自定义",
+        source="user",
+    )
+    node_eval = AgentNode(
+        node_id="capability_evaluator",
+        display_name="评估器",
+        prompt="eval",
+        source="builtin",
+    )
+    had_eval = get_node("capability_evaluator") is not None
+    register_agent_node(node_a)
+    register_agent_node(node_b)
+    if not had_eval:
+        register_agent_node(node_eval)
     try:
-        assert agent.model_config_name == "openai++MiniMAX"
-        assert agent._active_config_name == "openai++MiniMAX"
+        bad_eval = asyncio.run(
+            set_ai_task_model("capability_agent:capability_evaluator", TaskOverrideBody(primary="RenderCfg"), admin)
+        )
+        assert bad_eval["status"] == 1
+        bad_missing = asyncio.run(
+            set_ai_task_model("capability_agent:missing_node", TaskOverrideBody(primary="RenderCfg"), admin)
+        )
+        assert bad_missing["status"] == 1
 
-        stored["turn_router"] = ["openai++Backup", ""]
-        assert asyncio.run(agent.refresh_model_if_changed()) is True
-        assert agent.model_config_name == "openai++Backup"
-        assert agent._active_config_name == "openai++Backup"
-        assert built_models == ["openai++MiniMAX", "openai++Backup"]
+        set_parent = asyncio.run(set_ai_task_model("capability_agent", TaskOverrideBody(primary="Backup"), admin))
+        assert set_parent["status"] == 0
+        set_child = asyncio.run(
+            set_ai_task_model("capability_agent:test_cap_render", TaskOverrideBody(primary="RenderCfg"), admin)
+        )
+        assert set_child["status"] == 0 and set_child["data"] is not None
+        by_id = {k["id"]: k for k in set_child["data"]["kinds"]}
+        assert "capability_agent:capability_evaluator" not in by_id
+        assert by_id["capability_agent:test_cap_render"]["parent_id"] == "capability_agent"
+        assert by_id["capability_agent:test_cap_render"]["node_source"] == "builtin"
+        assert by_id["capability_agent:test_cap_render"]["stats_keys"] == ["capability_agent:test_cap_render"]
+        assert by_id["capability_agent:test_cap_render"]["effective"]["primary"] == "openai++RenderCfg"
+        assert by_id["capability_agent:test_cap_render"]["effective"]["inherited_from"] is None
+        assert by_id["capability_agent:test_cap_user"]["effective"]["primary"] == "openai++Backup"
+        assert by_id["capability_agent:test_cap_user"]["effective"]["inherited_from"] == "capability_agent"
+
+        built_models: list[str] = []
+
+        def _fake_model(lvl: models.TaskLevel, kind: str | None = None) -> TestModel:
+            full_name = models.get_config_name_for_task(lvl, kind)
+            built_models.append(full_name)
+            return TestModel(model_name=full_name)
+
+        monkeypatch.setattr(gs_agent_mod, "get_model_for_task", _fake_model)
+        monkeypatch.setattr(
+            gs_agent_mod,
+            "get_model_fingerprint_for_task",
+            lambda lvl, kind=None: f"fp:{models.get_config_name_for_task(lvl, kind)}",
+        )
+
+        # 验证 CapabilityAgent 实例化走独立 task_kind、对应覆盖模型与分代理统计键
+        reopened = asyncio.run(reopen_capability_agent("test_cap_render", "capagent_test_cap_render_1", None))
+        assert reopened is not None
+        try:
+            assert reopened.task_kind == "capability_agent:test_cap_render"
+            assert reopened.model_config_name == "openai++RenderCfg"
+            captured_stats_type: list[str] = []
+
+            async def _capture_gate(st: object) -> str:
+                from gsuid_core.ai_core.agent_run.state import RunOnceState
+
+                assert isinstance(st, RunOnceState)
+                captured_stats_type.append(st.stats_chat_type)
+                return ""
+
+            monkeypatch.setattr(reopened, "_run_once_budget_gate", _capture_gate)
+            asyncio.run(reopened._execute_run_once("ping"))
+            assert captured_stats_type == ["capability_agent:test_cap_render"]
+        finally:
+            get_ai_session_registry().remove_ai_session("capagent_test_cap_render_1")
+            reopened._session_logger.close()
+
+        agent = gs_agent_mod.GsCoreAIAgent(task_level="low", task_kind=TASK_TURN_ROUTER, thinking=False)
+        try:
+            assert agent.model_config_name == "openai++MiniMAX"
+            assert agent._active_config_name == "openai++MiniMAX"
+
+            stored["turn_router"] = ["openai++Backup", ""]
+            assert asyncio.run(agent.refresh_model_if_changed()) is True
+            assert agent.model_config_name == "openai++Backup"
+            assert agent._active_config_name == "openai++Backup"
+            assert built_models == ["openai++RenderCfg", "openai++MiniMAX", "openai++Backup"]
+        finally:
+            agent._session_logger.close()
     finally:
-        agent._session_logger.close()
+        unregister_agent_node("test_cap_render")
+        unregister_agent_node("test_cap_user")
+        if not had_eval:
+            unregister_agent_node("capability_evaluator")
+
+    # 卸载节点后旧覆盖落入 orphans，DELETE 可清理
+    after_remove = asyncio.run(get_ai_task_models(admin))
+    assert after_remove["data"] is not None
+    assert "capability_agent:test_cap_render" in after_remove["data"]["orphans"]
+    cleaned = asyncio.run(clear_ai_task_model("capability_agent:test_cap_render", admin))
+    assert cleaned["data"] is not None
+    assert "capability_agent:test_cap_render" not in cleaned["data"]["orphans"]
 
     from gsuid_core.ai_core.models import SessionLogEntry
     from gsuid_core.ai_core.session_logger import extract_session_usage

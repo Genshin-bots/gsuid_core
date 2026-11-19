@@ -109,11 +109,33 @@ TASK_EVAL_JUDGE: Final = _builtin(
 
 # ── 智能体与编排 ──
 TASK_SUBAGENT: Final = _builtin(
-    "subagent", "子 Agent", "主 Agent 派生的子任务（含出图 render_agent）。", "agent", "high", stats=("autoplanner",)
+    "subagent", "子 Agent", "主 Agent 派生的通用规划子任务（无画像兜底路径）。", "agent", "high", stats=("autoplanner",)
 )
 TASK_CAPABILITY_AGENT: Final = _builtin(
-    "capability_agent", "能力代理", "按能力画像执行的长任务 Agent。", "agent", "high", stats=("capabilityagent",)
+    "capability_agent",
+    "能力代理",
+    "按能力画像执行的长任务 Agent（各代理默认继承此配置）。",
+    "agent",
+    "high",
+    stats=("capabilityagent",),
 )
+CAPABILITY_AGENT_TASK_PREFIX: Final = f"{TASK_CAPABILITY_AGENT}:"
+
+
+def capability_agent_task_kind(node_id: str) -> str:
+    """能力代理节点的分层 task_kind（如 ``capability_agent:render_agent``）。"""
+    nid = node_id.strip()
+    return f"{CAPABILITY_AGENT_TASK_PREFIX}{nid}" if nid else TASK_CAPABILITY_AGENT
+
+
+def parent_task_kind(task_kind: str) -> str | None:
+    """提取 ``<parent>:<scope>`` 形态的父任务 ID；无冒号或空段返回 None。"""
+    if ":" not in task_kind:
+        return None
+    parent, scope = task_kind.split(":", 1)
+    return parent if parent and scope else None
+
+
 TASK_CAPABILITY_EVAL: Final = _builtin(
     "capability_eval", "能力代理评估", "评估能力代理的产出是否达标。", "agent", "low", stats=("capabilityevaluator",)
 )

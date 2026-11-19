@@ -11,10 +11,12 @@
 from __future__ import annotations
 
 from typing import Literal, TypedDict
+from dataclasses import dataclass
 
 from fastapi import Depends
 from pydantic import BaseModel
 
+from gsuid_core.ai_core.agent_node import AgentNode, get_node, list_nodes
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth, require_admin
 from gsuid_core.ai_core.configs.models import (
@@ -29,14 +31,25 @@ from gsuid_core.ai_core.configs.models import (
 from gsuid_core.webconsole.session_store import SessionRecord
 from gsuid_core.ai_core.configs.task_kinds import (
     TASK_GROUP_ORDER,
+    TASK_CAPABILITY_AGENT,
+    CAPABILITY_AGENT_TASK_PREFIX,
     TaskGroup,
     TaskLevel,
     AITaskKind,
     get_ai_task_kind,
     list_ai_task_kinds,
+    capability_agent_task_kind,
 )
 
 from ._api_tags import PROVIDER_CONFIG
+
+NodeSourceOut = Literal["builtin", "plugin", "user", "mcp"]
+_NODE_SOURCE_ORDER: dict[NodeSourceOut, int] = {
+    "builtin": 0,
+    "plugin": 1,
+    "user": 2,
+    "mcp": 3,
+}
 
 
 class OverrideOut(TypedDict):
@@ -51,6 +64,8 @@ class EffectiveOut(TypedDict):
     secondary: str
     source: Literal["default", "level", "config"]
     level: TaskLevel | None
+    # 生效配置继承自哪个父任务 ID（如能力代理子项继承自 "capability_agent"）；None=非继承
+    inherited_from: str | None
 
 
 class TaskKindOut(TypedDict):
@@ -65,6 +80,12 @@ class TaskKindOut(TypedDict):
     stats_keys: list[str]
     override: OverrideOut | None
     effective: EffectiveOut
+    # 父任务 ID（能力代理子节点指向 "capability_agent"）；顶层任务为 None
+    parent_id: str | None
+    # 能力代理节点来源；非能力代理子项为 None
+    node_source: NodeSourceOut | None
+    # 能力代理宿主插件名（builtin 为 "core"）；非能力代理子项或无宿主插件为 None
+    plugin: str | None
 
 
 class LevelRouteOut(TypedDict):
@@ -91,6 +112,86 @@ class TaskOverrideBody(BaseModel):
     secondary: str = ""
 
 
+@dataclass(frozen=True)
+class _TaskKindEntry:
+    kind: AITaskKind
+    parent_id: str | None = None
+    node_source: NodeSourceOut | None = None
+    plugin: str | None = None
+
+
+def _delegable_node_source(node: AgentNode | None) -> NodeSourceOut | None:
+    """判定节点是否为可单独配置模型的能力代理（排除 persona 与 capability_evaluator）。"""
+    if node is None or node.node_id == "capability_evaluator":
+        return None
+    if node.source == "builtin":
+        return "builtin"
+    if node.source == "plugin":
+        return "plugin"
+    if node.source == "user":
+        return "user"
+    if node.source == "mcp":
+        return "mcp"
+    return None
+
+
+def _projected_capability_entries() -> list[_TaskKindEntry]:
+    """实时投影全部可委派能力代理节点，免维护独立注册表同步。"""
+    staged: list[tuple[int, _TaskKindEntry]] = []
+    for node in list_nodes(include_persona=False):
+        source = _delegable_node_source(node)
+        if source is None:
+            continue
+        kind_id = capability_agent_task_kind(node.node_id)
+        title = node.display_name.strip() or node.node_id
+        desc = node.when_to_use.strip() or f"能力代理节点 {node.node_id}"
+        plugin = node.plugin.strip() or None
+        kind = AITaskKind(
+            id=kind_id,
+            title=title,
+            desc=desc,
+            group="agent",
+            default_level="high",
+            stats_keys=(kind_id.lower(),),
+        )
+        staged.append(
+            (
+                _NODE_SOURCE_ORDER[source],
+                _TaskKindEntry(
+                    kind=kind,
+                    parent_id=TASK_CAPABILITY_AGENT,
+                    node_source=source,
+                    plugin=plugin,
+                ),
+            )
+        )
+    staged.sort(key=lambda pair: pair[0])
+    return [entry for _, entry in staged]
+
+
+def _all_task_entries() -> list[_TaskKindEntry]:
+    entries: list[_TaskKindEntry] = []
+    cap_children = _projected_capability_entries()
+    inserted_children = False
+    for kind in list_ai_task_kinds():
+        entries.append(_TaskKindEntry(kind=kind))
+        if kind.id == TASK_CAPABILITY_AGENT:
+            entries.extend(cap_children)
+            inserted_children = True
+    if not inserted_children:
+        entries.extend(cap_children)
+    return entries
+
+
+def _is_known_task_kind(task_kind: str) -> bool:
+    if get_ai_task_kind(task_kind) is not None:
+        return True
+    if task_kind.startswith(CAPABILITY_AGENT_TASK_PREFIX):
+        node_id = task_kind[len(CAPABILITY_AGENT_TASK_PREFIX) :]
+        return bool(node_id) and _delegable_node_source(get_node(node_id)) is not None
+    return False
+
+
 def _override_valid(ov: TaskModelOverride) -> bool:
     if ov.primary in TASK_ROUTE_LEVEL_REFS:
         return True
@@ -99,7 +200,8 @@ def _override_valid(ov: TaskModelOverride) -> bool:
     return not ov.secondary or provider_config_exists(ov.secondary)
 
 
-def _kind_out(kind: AITaskKind, overrides: dict[str, TaskModelOverride]) -> TaskKindOut:
+def _kind_out(entry: _TaskKindEntry, overrides: dict[str, TaskModelOverride]) -> TaskKindOut:
+    kind = entry.kind
     route = resolve_task_route(kind.default_level, kind.id)
     override: OverrideOut | None = None
     if kind.id in overrides:
@@ -120,22 +222,26 @@ def _kind_out(kind: AITaskKind, overrides: dict[str, TaskModelOverride]) -> Task
             "secondary": route.secondary,
             "source": route.source,
             "level": route.level,
+            "inherited_from": route.inherited_from,
         },
+        "parent_id": entry.parent_id,
+        "node_source": entry.node_source,
+        "plugin": entry.plugin,
     }
 
 
 def _build_data() -> TaskModelsData:
     overrides = get_task_model_overrides()
-    kinds = list_ai_task_kinds()
+    entries = _all_task_entries()
     levels: dict[str, LevelRouteOut] = {}
     for lvl in ("high", "low"):
         route = resolve_task_route(lvl)
         levels[lvl] = {"primary": route.primary, "secondary": route.secondary}
-    known = {k.id for k in kinds}
+    known = {e.kind.id for e in entries}
     return {
         "groups": list(TASK_GROUP_ORDER),
         "levels": levels,
-        "kinds": [_kind_out(k, overrides) for k in kinds],
+        "kinds": [_kind_out(e, overrides) for e in entries],
         "orphans": sorted(k for k in overrides if k not in known),
     }
 
@@ -159,7 +265,7 @@ async def set_ai_task_model(
     body: TaskOverrideBody,
     _: SessionRecord = Depends(require_admin),
 ) -> TaskModelsResp:
-    if get_ai_task_kind(task_kind) is None:
+    if not _is_known_task_kind(task_kind):
         return _fail(f"未知的任务类型: {task_kind}")
     primary = body.primary.strip()
     secondary = body.secondary.strip()

@@ -56,7 +56,7 @@ from gsuid_core.ai_core.multimodal.openai_files import (
 )
 
 from .ai_config import ai_config
-from .task_kinds import TaskLevel
+from .task_kinds import TaskLevel, parent_task_kind
 from .openai_wire import RecoveringOpenAIChatModel, openai_profile_for_model
 from .gemini_config import get_gemini_config, gemini_config_manager, get_gemini_config_dict
 from .openai_config import get_openai_config, openai_config_manager, get_openai_config_dict
@@ -846,6 +846,7 @@ class TaskModelRoute:
     secondary: str
     source: TaskRouteSource
     level: TaskLevel | None
+    inherited_from: str | None = None
 
 
 def _level_primary(task_level: TaskLevel) -> str:
@@ -915,21 +916,27 @@ def save_task_model_overrides(overrides: dict[str, TaskModelOverride]) -> bool:
 
 
 def resolve_task_route(task_level: TaskLevel, task_kind: str | None = None) -> TaskModelRoute:
-    """解析任务实际使用的主/备配置。
+    """解析任务实际使用的主/备配置（支持 ``parent:scope`` 层级回退）。
 
-    覆盖指向的配置文件已被删除时回退调用方档位，避免一处删配置让整个任务不可用。
+    覆盖指向的配置文件已被删除时依次回退父级覆盖、调用方档位，避免单点失效。
     """
     if task_kind:
         overrides = get_task_model_overrides()
-        if task_kind in overrides:
-            ov = overrides[task_kind]
+        candidates: list[tuple[str, str | None]] = [(task_kind, None)]
+        parent = parent_task_kind(task_kind)
+        if parent is not None:
+            candidates.append((parent, parent))
+        for candidate, inherited_from in candidates:
+            if candidate not in overrides:
+                continue
+            ov = overrides[candidate]
             if ov.primary in TASK_ROUTE_LEVEL_REFS:
                 lvl = TASK_ROUTE_LEVEL_REFS[ov.primary]
-                return TaskModelRoute(_level_primary(lvl), _level_secondary(lvl), "level", lvl)
+                return TaskModelRoute(_level_primary(lvl), _level_secondary(lvl), "level", lvl, inherited_from)
             if provider_config_exists(ov.primary):
                 secondary = ov.secondary if provider_config_exists(ov.secondary) else ""
-                return TaskModelRoute(ov.primary, secondary, "config", None)
-    return TaskModelRoute(_level_primary(task_level), _level_secondary(task_level), "default", task_level)
+                return TaskModelRoute(ov.primary, secondary, "config", None, inherited_from)
+    return TaskModelRoute(_level_primary(task_level), _level_secondary(task_level), "default", task_level, None)
 
 
 def get_config_name_for_task(task_level: TaskLevel, task_kind: str | None = None) -> str:

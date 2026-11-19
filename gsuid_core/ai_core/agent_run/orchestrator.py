@@ -20,6 +20,7 @@ from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.configs.task_kinds import capability_agent_task_kind
 from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 
 
@@ -66,6 +67,9 @@ class OrchestratorPhase(RunOnceHost):
 
         # 形参默认 False；配置默认 True。任一为 True 则抑制（控制台可改配置）。
         _suppress = suppress_intermediate_text or bool(ai_config.get_config("suppress_intermediate_text").data)
+        _default_stats_type = (
+            capability_agent_task_kind(self.capability_node_id) if self.capability_node_id else self.create_by
+        )
 
         st = RunOnceState(
             user_message=user_message,
@@ -84,7 +88,7 @@ class OrchestratorPhase(RunOnceHost):
             is_framework_injection=is_framework_injection,
             injection_reason=injection_reason,
             outbound_stream=self._outbound_stream,
-            stats_chat_type=self._stats_chat_type if self._stats_chat_type else self.create_by,
+            stats_chat_type=self._stats_chat_type if self._stats_chat_type else _default_stats_type,
         )
 
         # 1) 预算闸门（可早退；放行返回哨兵，尚未 install 墙钟 / scope token）
