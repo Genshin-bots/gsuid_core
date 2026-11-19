@@ -96,7 +96,7 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 
 **只读**：`ctx.group_id`（**私聊恒 `None`**，记忆 scope 防回归的地基）、`ctx.user_id`、
 `ctx.bot_id`、`ctx.relationship`、`ctx.intent`、`ctx.prev_turn_used_tools`、
-`ctx.recent_report_titles`、`ctx.mood_key`、`ctx.cheap_gate`。
+`ctx.recent_report_titles`、`ctx.mood_key`。
 
 ---
 
@@ -169,7 +169,7 @@ KIT = register_agent_kit(
 | `classifier` | `gscore.classifier` | 是 | intent + `TurnRouter`（含 `soft_speak`） |
 | `inbox` | `gscore.inbox` | 是 | 收件箱待回应 / 相关往来块 |
 | `evidence` | `gscore.evidence` | 是 | 工具证据观测与实时凭据状态 |
-| `scaffold` | `gscore.scaffold` | 是 | TurnGraph 消费 / CheapGate / 脚手架 hints |
+| `scaffold` | `gscore.scaffold` | 是 | TurnGraph 消费 / 脚手架 hints |
 | `session_mute` | `gscore.session_mute` | 是 | 静默窗 |
 | `statistics` | `gscore.statistics` | 是 | 统计（**只上报，不扣减**） |
 | `decision_distill` | `gscore.decision_distill` | 否 | thinking 决策蒸馏（H08，可关） |

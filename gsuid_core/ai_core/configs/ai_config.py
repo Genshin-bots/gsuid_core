@@ -11,7 +11,7 @@ from gsuid_core.utils.plugins_config.models import (
     GsFloatConfig,
     GsListStrConfig,
 )
-from gsuid_core.ai_core.interaction_scaffold import AMBIENT_MAXLEN_DEFAULT, FOLLOWUP_MAXLEN_DEFAULT
+from gsuid_core.ai_core.interaction_scaffold import FOLLOWUP_MAXLEN_DEFAULT
 from gsuid_core.utils.plugins_config.gs_config import GsDivider, StringConfig
 
 AI_CONFIG: Dict[str, GSC] = {
@@ -236,11 +236,11 @@ AI_CONFIG: Dict[str, GSC] = {
         60,
         max_value=400,
     ),
-    "inbox_feedback_window": GsIntConfig(
-        "收件箱反馈统计窗口(秒)",
-        "判断「有人接/没人接」时，Bot 出站后观察群内反应的时间窗（秒）。",
-        120,
-        max_value=600,
+    "inbox_group_busy_msg_per_min": GsIntConfig(
+        "群聊高活跃续聊静默阈值(条/分)",
+        "群内近 60 秒他人消息数达到此值时抑制无 @ 的续聊软唤醒，0 表示不限制。",
+        12,
+        max_value=120,
     ),
     "spMode": GsDivider(
         "Agent 特殊模式",
@@ -304,7 +304,7 @@ AI_CONFIG: Dict[str, GSC] = {
     ),
     "group_lurk_mode": GsBoolConfig(
         "群聊未点名默认静默",
-        "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。不含 soft_continue。默认关闭。修改后即时生效",
+        "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。默认关闭。修改后即时生效",
         False,
     ),
     "group_at_list_max": GsIntConfig(
@@ -570,12 +570,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "C-1省略式跟进判定的消息字数上限, 超过视为有独立语义的实质发言不触发",
         FOLLOWUP_MAXLEN_DEFAULT,
         options=[16, 24, 32, 48],
-    ),
-    "scaffold_ambient_max_len": GsIntConfig(
-        "催被@者短句字数上限",
-        "C-3扩展判定(上一条@了别人,本条为短促催促)的字数上限, 超过视为实质发言不封工具",
-        AMBIENT_MAXLEN_DEFAULT,
-        options=[12, 20, 28, 40],
     ),
     "history_merge_window": GsIntConfig(
         "同人连发合并窗口(秒)",

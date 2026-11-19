@@ -1,7 +1,7 @@
 # GsCore AI：一条消息的完整生命周期
 
 > 日期：**2026-08-26**（群聊开口：**引用 bot = `is_tome` 仍进环**，`quoted_tome` 只改注入；
-> CheapGate 不对 @/引用硬静，hostile/cold 未点名才早退；zone 口吻进环由人格判 `<SILENCE>`；
+> 群策略门（`allow_group_speak`）不对 @/引用硬静，hostile/cold 未点名才早退；zone 口吻进环由人格判 `<SILENCE>`；
 > 假完成认 **effectual write**（PIN 拒绝 ≠ 办成）；超轮数 / 框架泄漏剥成沉默；
 > 评测 HTTP 与生产共用 `run_interactive_turn`，`send_message_by_ai` 折回可见文本；
 > TEST 委派内联等 90s /
@@ -45,12 +45,12 @@
 | **§1** | 一图总览：单条消息 12 个阶段（文字） |
 | **§S** | **时序图集（Mermaid）**：端到端 + 分阶段 + 记忆/表情 + Subagent/Kanban + 异步沉淀 |
 | **§2–§13** | **按时间顺序逐步走**（读 / 写 / 模块 / 日志） |
-| **§6.4 / §7.5** | TurnGraph / 开口门 / CheapGate / `quoted_tome`（引用进环、低好感不硬掐） |
+| **§6.4 / §7.5** | TurnGraph / 二段群门（`admit_pre_router` + `allow_group_speak`）/ `quoted_tome`（引用进环、低好感不硬掐） |
 | **§10.0–§10.8** | Agent 环：`agent_run` 阶段包地图 / 闸门 / 假完成 / 呈现层 / return OOC |
 | **§14** | 三套历史 / 三类落盘对照 |
 | **§15** | 进程启动与 `init_ai_core`（消息到来之前） |
 | **§16** | 后台链路 + **create_subagent 三路径 + 理想长信息流水线** |
-| **§17** | 成本 / 委派 / 出图 / 开口门 / CheapGate 备忘 |
+| **§17** | 成本 / 委派 / 出图 / 群聊二段门备忘 |
 
 **读图约定**：
 
@@ -107,10 +107,10 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
 ⑤ Session + TurnGraph                         [ai_router / interaction_scaffold]
     │  读/建 GsCoreAIAgent + system_prompt 固化
     │  build_turn_graph：call_to_self / quoted_tome / 开口门
-    │  GroupOpenGate.SILENCE 或 address_gated → 早退（结构性静音，不结算）
-    │  H02 AFTER_SESSION：RelationshipView（CheapGate 要 zone）
+    │  admit_pre_router(tg) 为 False 或非句首呼名且 @ 他人 → 早退（结构性静音，不结算）
+    │  H02 AFTER_SESSION：RelationshipView（群策略门要 zone）
     ▼
-⑥ 意图分类 + CheapGate 初判                   [mode_classifier]
+⑥ 前置路由 + 群策略门                          [TurnRouter / allow_group_speak]
     │  hostile/cold **未点名** → SILENCE（结算 reached_model=False）
     │  @ / 引用 bot 不因低好感硬静；点名一律 FULL
     ▼
@@ -120,7 +120,7 @@ GSUID_LOCAL_TEST_MODE=1 GSUID_LOCAL_TEST_TOKEN=... PYTHONUTF8=1 \
 ⑧ 装配 user 侧上下文                          [payload / memory / history / assembly]
     │  引用边渲为 ↩#n 出处事实行（不写「直接找你」）
     │  zone 口吻进口吻锚；未点名 suffix 清空产品块
-    │  群历史仅 FULL 且点名/跟进/任务；CheapGate 终判（活跃任务可抬回 FULL）
+    │  群聊增量由线程视图切片承载；策略门统一在 CLASSIFY 后一次裁决
     ▼
 ⑨ Agent.run：工具五层 + LLM 迭代               [gs_agent + agent_run]
     │  prepare → tools → loop → settle（§10.0）
@@ -175,7 +175,7 @@ agent_run    ──→ H10–H13   prepare（预算后 / ToolContext / user 外�
 
 **留在内核、不许做成可关套件的**：`system_prompt` 稳定、预算闸与记账、exclusive 剥离、
 `pre_send_gate` 唯一入口、保头裁中段、`_relean`、`_run_lock` / 抢答、AI 总开关、
-`content_guard` 输入侧防护、**TurnGraph 构建**、**CheapGate 判定调用点**、
+`content_guard` 输入侧防护、**TurnGraph 构建**、**群策略门（`allow_group_speak`）判定调用点**、
 C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**渲染成 user 侧 hint**。
 
 ---
@@ -199,11 +199,11 @@ C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**�
 | HandleAI | `handle_ai.handle_inbox_turn` / `run_interactive_turn` | 早退闸、意图、软路由、装配、调 Agent |
 | Budget | `budget.budget_manager` | Session Token 额度 |
 | AIRouter | `ai_router.get_ai_session` | 读/建 `GsCoreAIAgent` + 稳定 system_prompt |
-| Classifier | `mode_classifier` / `classifier_service` | 闲聊/工具/问答 |
+| Classifier | `classifier/turn_router.py`（`TurnRouter`） | 归属枚举 `a` / 意图 / 记忆模态 |
 | TurnRouter | `classifier.turn_router`（H03 产出） | 读线程视图与 `〔依据〕` 判意图/记忆模态/群聊开口 `soft_speak: bool` |
 | TurnGraph | `interaction_scaffold.build_turn_graph` | 本轮结构：`call_to_self` / `quoted_tome` / 开口门 |
-| CheapGate | `interaction_scaffold.decide_cheap_gate` | silence / full；quiet_zone 未点名才硬静 |
-| RelView | `relationship.RelationshipView` | zone + line + voice；H02 写入，CheapGate / 装配共用 |
+| 群策略门 | `interaction_scaffold.allow_group_speak` | bool；lurk / quiet_zone 未点名才硬静 |
+| RelView | `relationship.RelationshipView` | zone + line + voice；H02 写入，群策略门 / 装配共用 |
 | DualRoute | `memory.retrieval.dual_route` | 双路记忆检索（读） |
 | CtxAsm | `context_assembly` | user 侧动态上下文顺序 |
 | GsAgent | `gs_agent.GsCoreAIAgent` + `agent_run/*` | 单次 run 编排；工具五层 + LLM 迭代 + 出站闸 |
@@ -267,7 +267,7 @@ sequenceDiagram
 
         HandleAI->>Classifier: predict_async(prior, prev_tools)
         Classifier-->>HandleAI: intent
-        Note over HandleAI: CheapGate 初判：quiet_zone 未点名才硬静<br/>@/引用 bot 进环
+        Note over HandleAI: 群策略门：quiet_zone / lurk 未点名才硬静<br/>@/引用 bot 进环
 
         opt 群聊收件箱轮（source=="llm"）或 soft wake 项
             HandleAI->>TurnRouter: route_turn(render_router_view)
@@ -285,9 +285,9 @@ sequenceDiagram
         DualRoute-->>HandleAI: memory_context_text
         HandleAI->>CtxAsm: assemble_dynamic_context
         CtxAsm-->>HandleAI: full_context + has_actionable
-        Note over HandleAI: CheapGate 终判（活跃任务可抬回 FULL）
+        Note over HandleAI: 通过二段门后进入上下文装配
 
-        HandleAI->>GsAgent: run(..., turn_graph, cheap_gate)
+        HandleAI->>GsAgent: run(..., turn_graph)
 
         Note over GsAgent: ⑨ 工具 L1–L5 + exclusive 剥离<br/>find_tools 常挂；roster 在 system<br/>可 supersede 取消
 
@@ -410,7 +410,7 @@ sequenceDiagram
 
 ---
 
-### S.4 阶段 ④–⑦：早退闸 → Session → TurnGraph → 意图 → CheapGate → 软门
+### S.4 阶段 ④–⑦：早退闸 → Session → TurnGraph → TurnRouter → 群策略门
 
 ```mermaid
 sequenceDiagram
@@ -425,7 +425,7 @@ sequenceDiagram
     participant TG as TurnGraph
     participant Rel as RelView
     participant Classifier
-    participant Cheap as CheapGate
+    participant Gate as allow_group_speak
     participant SoftGate
 
     HandleAI->>HandleAI: enable + wait_ai_core_ready
@@ -469,12 +469,12 @@ sequenceDiagram
     Rel-->>HandleAI: RelationshipView（zone / voice / is_master）
 
     HandleAI->>GsAgent: 扫 history 近 6 条助手是否 ToolCall
-    HandleAI->>HistoryA: get_history → collect_prior_user_turns
+    HandleAI->>HistoryA: get_history → render_delta / render_router_view
     HandleAI->>Classifier: predict_async(query, prior, prev_tools)
     Classifier-->>HandleAI: intent + reason
     HandleAI->>HandleAI: record_intent / record_activity
 
-    HandleAI->>Cheap: decide_cheap_gate(tg, intent, rel)
+    HandleAI->>Gate: allow_group_speak(tg, has_active_task, rel)
     alt SILENCE（quiet_zone 未点名 / lurk / 重复正文）
         HandleAI->>HandleAI: settle_turn(reached_model=False)
         HandleAI-->>HandleAI: return SILENCE
@@ -546,9 +546,9 @@ sequenceDiagram
     CtxAsm->>PlanCtx: 长任务文案 → has_actionable
     Note over CtxAsm: 顺序：情绪→关系→口吻→身份锚→历史<br/>→记忆(高置信)→任务→闲聊风格<br/>→事务优先级(工具/问答)→report标题<br/>→inbox_pending→evidence→plugin_hints<br/>未点名：suffix 清空产品块
     CtxAsm-->>HandleAI: full_context, has_actionable
-    Note over HandleAI: CheapGate 终判（has_actionable 可抬回 FULL）
+    Note over HandleAI: 装配完成，直接进入主循环
 
-    HandleAI->>GsAgent: run(..., rag_context, intent, turn_graph, cheap_gate)
+    HandleAI->>GsAgent: run(..., rag_context, intent, turn_graph)
 ```
 
 > **2026-08-17 Everything is Memory**：统一写契约 `remember(MemoryWrite)`；
@@ -802,14 +802,14 @@ flowchart TD
     F --> OG{开口门 / 寻址门}
     OG -->|@别人 / 多人互聊| Z
     OG --> REL[H02 关系 View]
-    REL --> F2[意图 + CheapGate]
+    REL --> F2[TurnRouter + 群策略门]
     F2 -->|quiet_zone 未点名| Z
     F2 --> G{软触发?}
     G -->|是| H{沉默门}
     H -->|沉默| Z
     H -->|放行| I[payload + 检索 + 装配]
     G -->|否| I
-    I --> CG2{CheapGate 终判}
+    I --> CG2{允许发言?}
     CG2 -->|silence| Z
     CG2 --> J[Agent.run]
     J --> K{工具/文本}
@@ -971,7 +971,7 @@ get_inbox_scheduler().submit(
 
 ## 5. 阶段 ④：`handle_inbox_turn` 早退闸门
 
-> 时序图：**§S.4**（闸门 + Session + TurnGraph + 意图 + CheapGate + 软门）
+> 时序图：**§S.4**（闸门 + Session + TurnGraph + TurnRouter + 群策略门）
 
 文件：`gsuid_core/ai_core/handle_ai.py`。生产 `handle_inbox_turn`（收件箱轮）与评测
 `/api/chat_with_history` **共用** `run_interactive_turn`（评测 `as_judge` 除外：
@@ -984,9 +984,9 @@ get_inbox_scheduler().submit(
   → TurnGraph / 开口门（结构性静音在 rel 之前，不结算）
   → H02 AFTER_SESSION（RelationshipView）
   → H03 CLASSIFY（TurnRouter 产出 intent / memory_intent / soft_speak）
-  → 二段开口门（群聊收件箱轮 source=="llm" 统一认 soft_speak；离线退化保底 hard 放行） + CheapGate 初判
+  → 二段门（TurnRouter 归属判定 + allow_group_speak 策略门；显式 @Bot 直通）
   → 线程视图 + media payload → H05 检索 → H06/H07 合成
-  → CheapGate 终判 → session.run(turn_graph, cheap_gate)
+  → session.run(turn_graph)
   → 出站 → 结算 + H08
 ```
 
@@ -1072,7 +1072,7 @@ registry.get_ai_session(session_id)
 
 ### 6.4 TurnGraph 与开口门（Session 后立刻）
 
-> 源码：`interaction_scaffold.build_turn_graph` / `decide_group_open_gate`。
+> 源码：`interaction_scaffold.build_turn_graph` / `admit_pre_router`。
 > 内核在 H02 **之前**构建；套件只读、不许另造一套结构。
 
 `TurnGraph` 是本轮话语结构的一等公民。门、脚手架 hints、工具装配、suffix 过滤只读它。
@@ -1083,8 +1083,7 @@ registry.get_ai_session(session_id)
 | `call_to_self` | 呼叫自己：`is_tome` **或** 正文呼名 / `@名` / 句首角色名（可紧贴 CJK；ASCII 名大小写不敏感；名+子/酱 不算） |
 | `quoted_tome` | `is_tome` 且有 `reply`/`reply_id` 且正文没有呼名/吩咐。引用 bot 仍算点名，**只改注入** |
 | `address_gated` | @别人 / ambient 催被@者 / 乙继承甲的省略槽 |
-| `ellipsis_followup` / `task_management` / `soft_continue` | 省略跟进 / 任务管理形 / 同人短续聊 |
-| `open_gate` | `GroupOpenGate.SPEAK \| SILENCE` |
+| `ellipsis_followup` / `task_management` | 省略跟进 / 任务管理形 |
 
 **`quoted_tome` 纪律（2026-08-26）**：
 
@@ -1092,10 +1091,10 @@ registry.get_ai_session(session_id)
 引用 bot 消息 → EventLink 记录引用边（reply_to_author=self）→ quote_self soft 唤醒
   → TurnRouter 读 ↩#n 出处行判「引用≠找你」，判有关才进主模型
   → 主模型线程视图同见出处行；寻址用 <reply #seq>，不回可 <SILENCE>
-  → CheapGate 不因引用硬静；环内人格自己判断
+  → 群策略门不因引用硬静；环内人格自己判断
 ```
 
-**开口门** `decide_group_open_gate`（在取关系 **之前**，故不看 zone）：
+**一段结构门** `admit_pre_router`（在取关系 **之前**，故不看 zone）：
 
 | 条件 | 结果 |
 |------|------|
@@ -1121,7 +1120,7 @@ registry.get_ai_session(session_id)
 | `prior_user_turns` | HistoryManager 同 user_id 近几句（去掉本轮已入库的末条） |
 | `prev_turn_used_tools` | `session.history` **最近最多 6 条** ModelResponse 是否含 ToolCallPart |
 
-### 7.2 判别路径（`mode_classifier.predict_async`）
+### 7.2 判别路径（`turn_router.route_turn`）
 
 1. 短句/省略跟进 + 有 prior → **ContextPrimary**：拼接 `prior[-3:] + 当前` 再跑分类器
 2. 长句先闲聊 → ContextJoin 再判
@@ -1155,9 +1154,9 @@ registry.get_ai_session(session_id)
 
 `reason` 例：`ContextPrimary:Rule: Check Data`、`Structural: ellipsis follow-up after tools`。
 
-### 7.5 CheapGate（分类后初判、装配后终判）
+### 7.5 群策略门（`allow_group_speak`）
 
-> 源码：`interaction_scaffold.decide_cheap_gate`。调用点在内核，**不是**可关套件。
+> 源码：`interaction_scaffold.allow_group_speak`。调用点在内核，**不是**可关套件。
 
 成本档：`SILENCE` 不进 loop；`FULL` 完整装配。
 
@@ -1174,7 +1173,7 @@ rel.is_quiet_zone（hostile/cold）
 
 **低好感不硬掐 @/引用**（2026-08-26）：hostile/cold 的人 **被 @ 或引用 bot** 仍进环。
 zone 口吻写在 user 侧 `voice_anchor`（`relationship.zones._ZONE_VOICE`）：故意惹/嘲讽
-可以整段 `<SILENCE>`，但「该查该办照做」。CheapGate 不再把「hostile 闲聊」直接静音——
+可以整段 `<SILENCE>`，但「该查该办照做」。群策略门不再把「hostile 闲聊」直接静音——
 那会让人格没机会判断，也扣不到分。
 
 两次判定：
@@ -1183,7 +1182,7 @@ zone 口吻写在 user 侧 `voice_anchor`（`relationship.zones._ZONE_VOICE`）�
    `settle_turn(reached_model=False)`（只放行负信号，防吸收态）。
 2. **装配后**：planning 套件可能把 `has_actionable` 抬真 → 从 SILENCE 抬回 FULL。
 
-`group_lurk_mode` 默认关。打开后，未点名的群氛围消息一律 CheapGate 静音（主人和任务跟进除外）。
+`group_lurk_mode` 默认关。打开后，未点名的群氛围消息一律群策略门静音（主人和任务跟进除外）。
 
 ---
 
@@ -1307,7 +1306,7 @@ hostile/cold 的 zone 口吻（仅 `scored=True` 时注入）：
 
 ### 9.5 交给 Agent
 
-装配后再 `decide_cheap_gate(..., has_active_task=has_actionable)`。若此时 SILENCE，
+二段门在 CLASSIFY 后由 `allow_group_speak` 结合 `TurnRouter` 一次裁决；若未放行，
 走与初判相同的早退结算。否则：
 
 ```python
@@ -1321,7 +1320,6 @@ chat_result = await session.run(
     intent=intent,
     has_active_task=has_actionable,
     turn_graph=turn_graph,
-    cheap_gate=cheap,
 )
 ```
 
@@ -1768,7 +1766,7 @@ session_log entries（磁盘，可稍后刷）：
 （侮辱 / 越狱 / 设好感命令 / 强迫称谓），都受日预算与高分段递减约束。详见
 [`AI_CORE_THREE_LINE_REFACTOR_20260815.md`](AI_CORE_THREE_LINE_REFACTOR_20260815.md) §4。
 
-> **两处结算调用点**：正常收尾 `reached_model=True`；**CheapGate 静音早退**
+> **两处结算调用点**：正常收尾 `reached_model=True`；**群策略门静音早退**
 > `reached_model=False`（Engine 内部只放行负信号）。不补第二处就会出现吸收态——
 > 用户越界 → zone 掉到 cold → 以后未 @ 的越界发言全部走早退 → 再也扣不到分。
 > 结构性静音（@了别人 / 多人互聊 / 催别人）**不结算**：那些内容不是冲着人格来的。
@@ -1958,7 +1956,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 20. **心想闸**：通道形态（长「心想」段）REWRITE，2 次后剥段落放行；不靠业务关键词。
 21. **引用 bot → quote_self soft 唤醒**：TurnRouter 读 `↩#n` 出处行判相关性，
     不因 hostile 硬静。跟别人说话或故意惹 → 沉默出口 / 模型 `<SILENCE>`。
-22. **CheapGate quiet_zone**：hostile/cold **未点名**才早退；被 @ 闲聊走 FULL。
+22. **群策略门 quiet_zone**：hostile/cold **未点名**才早退；被 @ 闲聊放行。
     zone 口吻进 `voice_anchor`（未打分不注入）。`group_lurk_mode` 默认关。
 23. **假完成认生效写**：`effectual_mutate` 仅 add/modify/cancel/pause/resume 且非 PIN 拒绝。
 24. **出口消毒**：`strip_framework_user_leaks`；UsageLimit / 出图在途超轮 → `<SILENCE>`。
@@ -1980,14 +1978,14 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 | memory.observe | 条件 | 被动/主动模式 |
 | dual_route_retrieve | 条件 | 非寒暄跳过 |
 | TurnGraph / 开口门 | 是 | Session 后立刻；结构性静音不结算 |
-| CheapGate | 是 | 分类后 + 装配后；quiet_zone 未点名才硬静 |
-| mode_classifier | 是 | 进 AI 必跑（开口门已静则不到这） |
+| 群策略门 | 是 | CLASSIFY 后一次裁决；lurk / quiet_zone 未点名才硬静 |
+| TurnRouter | 按需 | 显式 `@Bot` 直通跳过；其余群聊轮由轻量模型裁决 |
 | soft_speak 路由开口门 | 群聊收件箱 + soft | 私聊不走；`structural_fallback` 保底放行 hard；由 TurnRouter 产出、`handle_ai` 消费 |
 | RelationshipView | 是 | H02；zone voice 进口吻锚 |
 | ai_router / Session | 是 | |
 | context_assembly | 是 | 未点名 suffix 清空产品块 |
 | agent_run 工具装配 | 是 | `tools.py`；层随状态/向量/驻留变；**不**因闲聊硬砍；exclusive 剥离；PIN 恒可见 |
-| LLM provider | 是 | 除非开口门 / CheapGate / 软门早退 |
+| LLM provider | 是 | 除非一段结构门 / TurnRouter / 群策略门早退 |
 | 插件工具 / MCP | 条件 | 模型点名才执行 |
 | **create_subagent / 能力代理** | 条件 | 重任务 / 出图；return 跳过 roleplay scrub |
 | **speech_policy / DELIVERED 终局** | 条件 | by_bot 台词前话术态分流；带台词交付后只许 SILENCE；出图在途静默；多点读数密度闸 |
@@ -2008,7 +2006,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 # ── ③ 无命令，AI 入队（常无单独行）──
 
 # ── ④–⑦ handle_ai ──
-[info ] 🧠 [GsCore][AI] 群开口门选择沉默           # 开口门 / CheapGate 早退
+[info ] 🧠 [GsCore][AI] 群开口门选择沉默           # 一段结构门 / 群策略门早退
 [debug] 🧠 [GsCore][AI] 意图识别结果: {...}
 [info ] 🧠 [GsCore][AI] 工具模式                  # 或 闲聊/问答
 
@@ -2033,7 +2031,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 # memory idle_flush 后 embedding + SQL（独立日志前缀）
 ```
 
-**开口门 / CheapGate 早退**：
+**结构门 / 群策略门早退**：
 
 ```text
 [info ] 🧠 [GsCore][AI] 群开口门选择沉默

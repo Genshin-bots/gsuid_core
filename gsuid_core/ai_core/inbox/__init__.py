@@ -20,10 +20,7 @@ from gsuid_core.ai_core.inbox.state import (
     ReceiptContext,
     classify_wake,
 )
-from gsuid_core.ai_core.inbox.blocks import (
-    render_pending_block,
-    render_related_block,
-)
+from gsuid_core.ai_core.inbox.blocks import render_pending_block
 from gsuid_core.ai_core.inbox.scheduler import (
     TurnRunner,
     TurnOutcome,
@@ -52,7 +49,6 @@ __all__ = [
     "current_turn",
     "get_inbox_scheduler",
     "render_pending_block",
-    "render_related_block",
     "reset_turn",
     "set_turn_runner",
     "single_turn_from_event",

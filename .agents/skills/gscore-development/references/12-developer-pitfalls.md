@@ -672,8 +672,7 @@ gate 误判的代价只能是"本该有工具却没给"，绝不能是"本该沉
 **🔴 长度/内容判定必须过 `extract_message_body`（P0 教训，2026-07-12 第六轮）**：
 生产的 user_message 不是裸文本，是 `prepare_media_payload` 的完整 payload
 （关系行 + 「--- 消息 ---」分节 + 正文 + 附件/@ 段落）+ handle_ai 追加的「【当前时间】」行；
-评测端点传的才是裸文本。曾因判定直接吃整个 payload，`ambient_followup_to_other`（≤20 字门）
-在**生产永远不触发**、`references_task_management`（≤60 字门）基本失效，而评测全绿——
+评测端点传的才是裸文本。曾因判定直接吃整个 payload，导致长度门与 `references_task_management`（≤60 字门）在生产静默失效而评测全绿——
 与 C-3 rag 污染 bug 同款的「评测看得见、生产静默失效」。新增任何长度/内容类判定都必须
 走 `extract_message_body`（@ 标注类判定看完整 payload），并在
 `tests/test_interaction_scaffold.py` 补真实 payload 形态的用例锁（参考

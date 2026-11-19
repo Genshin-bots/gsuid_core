@@ -62,7 +62,7 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
   - 其余 → `闲聊 / none`
 - 下游 `handle_ai`（软触发与群聊收件箱轮直读 `route_decision.soft_speak`）、MemoryKit、ScaffoldKit、Visibility、`search_cognition` 只消费结论，不再扫文本猜语义。
 
-`mode_classifier.py` 仅保留旧 `IntentService` 调用形状，内部走结构退化。
+前置单轮路由已全部收敛至 `classifier/turn_router.py`（无旧兼容壳）。
 
 ---
 
@@ -180,7 +180,6 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
 | 文件 | 职责 |
 |------|------|
 | `classifier/turn_router.py` | `TurnRouteDecision` + 唯一前置路由调用 + 结构退化 |
-| `classifier/mode_classifier.py` | 旧 `IntentService` 兼容壳 |
 | `hooks/models.py` | `AgentHookContext.route_decision` |
 | `kits/classifier/kit.py` | CLASSIFY 点位调用 TurnRouter（含 `soft_speak`） |
 | `kits/decision_distill/kit.py` | 缓冲 + 规则摘要，零 LLM |

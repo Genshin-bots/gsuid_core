@@ -43,7 +43,6 @@ class RunOnceState:
     suppress_intermediate_text: bool
     fake_done_retry: bool
     turn_graph: Any | None
-    cheap_gate: Any | None
     is_framework_injection: bool
     #: 纠正轮的 reason_code。只进会话日志，不写进给模型的信封。
     injection_reason: str = ""
@@ -155,7 +154,6 @@ class RunOnceState:
     addr_gated: bool = False
     followup_detected: bool = False
     tg: Any | None = None
-    cheap: Any | None = None
     has_media: bool = False
     group_slim: bool = False
 

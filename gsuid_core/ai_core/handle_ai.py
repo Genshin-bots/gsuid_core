@@ -54,10 +54,7 @@ from gsuid_core.ai_core.turn_pipeline import (
     prev_turn_used_tools,
     recent_report_titles,
     apply_absolute_length_guard,
-    build_private_history_block,
-    prior_user_turns_for_intent,
     extract_pending_unread_images,
-    prior_turns_from_agent_history,
 )
 from gsuid_core.ai_core.trigger_bridge import MockBot
 from gsuid_core.ai_core.followup_window import (
@@ -72,10 +69,9 @@ from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
-    CheapGate,
     admit_pre_router,
     build_turn_graph,
-    decide_cheap_gate,
+    allow_group_speak,
     has_recent_tool_call,
     recent_history_texts,
 )
@@ -298,7 +294,7 @@ async def run_interactive_turn(
 ) -> InteractiveTurnResult:
     """生产与评测共用的一轮编排（H01 之后的分类 / 检索 / 装配 / 结算）。
 
-    调用方只负责建 Event / Session / hook_ctx。分类、检索、CheapGate、结算
+    调用方只负责建 Event / Session / hook_ctx。分类、检索、群策略门、结算
     必须走这里，否则评测会变成第三套语义。
     """
 
@@ -366,6 +362,9 @@ async def run_interactive_turn(
             for r in render_records
             if r.role == "user" and (r.link is None or r.link.seq not in _pending_seqs)
         ][-20:]
+    _has_at_other = bool(
+        event.group_id and not event.at_bot and any(str(uid) != str(event.bot_self_id) for uid in event.at_list)
+    )
     turn_graph = build_turn_graph(
         query,
         persona_name=session.persona_name or "",
@@ -377,15 +376,15 @@ async def run_interactive_turn(
         soft_triggered=soft_triggered,
         recent_tool_call=_recent_tool,
         followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
-        ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
         has_reply=bool(event.reply or event.reply_id),
         at_bot=bool(_primary_link and _primary_link.at_self),
+        has_at_other=_has_at_other,
         is_reply_to_bot=is_rep_bot,
         is_bystander_quote=is_bystander_q,
         is_stale_quote=is_stale_q,
     )
     hook_ctx.turn_graph = turn_graph
-    # 一段入站门（零 DB / 零 LLM）：开口门、寻址门与复读刷屏直接在路由前拦下。
+    # 一段入站门（零 DB / 零 LLM）：寻址门（含协议 @他人）、多人无呼叫互聊与复读刷屏直接拦下。
     if not admit_pre_router(turn_graph):
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         _count_soft_silence()
@@ -397,11 +396,7 @@ async def run_interactive_turn(
         rel = await fetch_relationship(str(event.user_id), bot_id, session.persona_name or "")
         hook_ctx.relationship = rel
 
-    prior_turns, hist_records = prior_user_turns_for_intent(event, query)
-    if not prior_turns:
-        prior_turns = prior_turns_from_agent_history(session.history, query)
-    if not hook_ctx.prior_user_turns:
-        hook_ctx.prior_user_turns = prior_turns
+    hist_records = render_records[-30:]
     if not hook_ctx.gate_history and hist_records:
         hook_ctx.gate_history = hist_records[-15:]
     hook_ctx.prev_turn_used_tools = prev_turn_used_tools(session.history, current_user_id=str(event.user_id or ""))
@@ -417,21 +412,48 @@ async def run_interactive_turn(
         session_id=turn.session_id,
         bot_id=bot_id,
     )
-    hook_ctx.router_view = render_router_view(turn, render_records)
+    hook_ctx.wake_kind = turn.primary.item.kind
+    if turn.primary.receipt is not None:
+        _rcpt_plugin = turn.primary.receipt.plugin_label or "插件"
+        _rcpt_body = (turn.primary.receipt.receipt_text or "[图片]").strip()[:200]
+        hook_ctx.router_query = f"[命令回执] 插件={_rcpt_plugin} 内容={_rcpt_body}"
+    # 群聊显式 @Bot（全 mention）直通主模型，省掉一次 TurnRouter LLM 往返
+    if inbox_turn is not None and bool(event.group_id) and all(e.item.kind == "mention" for e in turn.entries):
+        hook_ctx.skip_llm_router = True
+    _relation_label = "主人" if rel.is_master else (rel.zone.value if rel.scored else "普通群友")
+    _anchor_ts = hook_ctx.clock_at.timestamp() if hook_ctx.clock_at is not None else time.time()
+    _group_rate_1m = (
+        sum(1 for r in render_records if r.role == "user" and 0.0 <= _anchor_ts - r.timestamp <= 60.0)
+        if event.group_id
+        else 0
+    )
+    hook_ctx.router_view = render_router_view(
+        turn,
+        render_records,
+        relation_label=_relation_label,
+        group_rate_1m=_group_rate_1m,
+    )
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
     turn.memory_dependent = bool(
         hook_ctx.route_decision is not None and hook_ctx.route_decision.memory_intent != "none"
     )
 
-    # 二段入站门：群聊收件箱轮在 LLM 路由可用时统一认 TurnRouter.soft_speak；离线退化保底 hard 放行。
+    # 二段入站门：LLM 路由可用时认 TurnRouter.soft_speak；name 降级若明确判为 to_other 亦静默。
     router_gated = bool(
         soft_triggered
         or (
             inbox_turn is not None
             and bool(event.group_id)
             and hook_ctx.route_decision is not None
-            and hook_ctx.route_decision.source == "llm"
+            and (
+                hook_ctx.route_decision.source == "llm"
+                or (
+                    turn.primary.item.kind == "name"
+                    and hook_ctx.route_decision.addressing == "to_other"
+                    and not hook_ctx.route_decision.soft_speak
+                )
+            )
         )
     )
     reactive_ok = True
@@ -450,18 +472,11 @@ async def run_interactive_turn(
                 logger.info(t("log.ai.gscore_router_gate_silent"))
 
     _has_active = hook_ctx.has_actionable or _recent_tool or bool(hook_ctx.prev_turn_used_tools)
-    base_cheap = decide_cheap_gate(
-        turn_graph,
-        soft_triggered=soft_triggered,
-        has_active_task=_has_active,
-        intent=intent,
-        rel=rel,
-    )
+    policy_ok = allow_group_speak(turn_graph, has_active_task=_has_active, rel=rel)
     reactive_blocked = router_gated and not reactive_ok
-    cheap = CheapGate.SILENCE if (base_cheap is CheapGate.SILENCE or reactive_blocked) else CheapGate.FULL
-    hook_ctx.cheap_gate = cheap.value
-    if cheap is CheapGate.SILENCE:
-        if not (reactive_blocked and base_cheap is CheapGate.FULL):
+    speak_ok = policy_ok and not reactive_blocked
+    if not speak_ok:
+        if not (reactive_blocked and policy_ok):
             logger.info(t("log.ai.gscore_group_open_gate_silence"))
             if settle:
                 await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
@@ -503,16 +518,8 @@ async def run_interactive_turn(
 
     session.route_decision = hook_ctx.route_decision
     hook_ctx.recent_report_titles = recent_report_titles(session.history)
-    hist_block = ""
-    if history_context is not None:
-        hist_block = history_context
-    elif event.group_id:
-        # 群聊增量已在 user 消息的线程视图里；history 块不再拼旧群转录。
-        hist_block = ""
-    else:
-        # 私聊在会话冷启动时（历史为空或首轮），回灌近 8 条近期私聊记录
-        is_cold = len(session.history) <= 1
-        hist_block = build_private_history_block(event, is_cold_session=is_cold)
+    # 群聊与私聊冷启动增量均已在 B 轨线程视图里，仅评测显式传入时透传 history_context。
+    hist_block = history_context if history_context is not None else ""
     full_context, has_actionable = await assemble_dynamic_context(
         query=query,
         user_id=str(event.user_id),
@@ -548,7 +555,6 @@ async def run_interactive_turn(
         intent=intent,
         has_active_task=has_actionable,
         turn_graph=turn_graph,
-        cheap_gate=cheap,
         outbound_stream=outbound_stream,
         stats_chat_type=stats_chat_type,
     )
@@ -605,7 +611,6 @@ async def run_interactive_turn(
             query=query,
             intent=intent,
             rel=rel,
-            cheap=cheap,
             guard_flags=guard_flags,
             effective=not is_error and (session.last_run_sent_visible_reply or (bool(result_text) and not is_silence)),
             is_silence=is_silence,
@@ -624,7 +629,6 @@ async def _settle_and_fire_after_run(
     query: str,
     intent: str,
     rel: RelationshipView,
-    cheap: CheapGate,
     guard_flags: GuardFlags | None,
     effective: bool,
     is_silence: bool,
@@ -688,7 +692,7 @@ async def _settle_silent_turn(
     rel: RelationshipView,
     persona_name: str = "",
 ) -> None:
-    """CheapGate 静音早退路径的结算（``reached_model=False``：只放行负信号）。
+    """群策略门静音早退路径的结算（``reached_model=False``：只放行负信号）。
 
     不补这一次结算就会出现吸收态：**用户越界 → zone 掉到 cold → 以后未 @ 的越界发言
     全部走早退 → 再也扣不到分**。闸门应该过滤（只过滤正信号），不该整轮跳过。

@@ -31,13 +31,19 @@ from gsuid_core.ai_core.history_format import (
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.inbox.state import PendingEntry
 
 _PERSONA_SPEECH_LABEL = "闲聊回复"
 _MAX_ANCHOR_CHARS = 60
 _MAX_RECEIPT_CHARS = 280
 _BACKFILL_LINES = 16
-_TAIL_KEEP_LINES = 20
 _QUOTE_HOPS = 3
+_SLICE_RECENT_WINDOW_S = 180.0
+_SLICE_MAX_AGE_S = 1800.0
+_SLICE_SELF_PRE_LIMIT = 3
+_SLICE_GROUP_RECENT_LIMIT = 6
+_SPAM_REPEAT_MIN = 3
+_ROUTER_RECENT_LIMIT = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +67,20 @@ def _speaker_label(record: MessageRecord) -> str:
     from gsuid_core.ai_core.utils import _build_relationship_description
 
     return _build_relationship_description(record.user_name, str(record.user_id))
+
+
+def _compact_speaker_label(record: MessageRecord) -> str:
+    """TurnRouter 专用紧凑称呼：省掉 (用户ID:xxxx) 降 token，保留主人标识。"""
+    from gsuid_core.ai_core.utils import _is_master_user
+
+    name = _plain_name(record)
+    if _is_master_user(str(record.user_id)):
+        return f"[⚡主人] {name}"
+    return name
+
+
+def _ctx_speaker(record: MessageRecord, ctx: "_RenderCtx") -> str:
+    return _compact_speaker_label(record) if ctx.compact else _speaker_label(record)
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -192,7 +212,7 @@ def _user_line(record: MessageRecord, ctx: "_RenderCtx") -> str:
     link = record.link
     seq = link.seq if link is not None else 0
     markers = _at_markers(record, ctx.seq_index) + _quote_marker(record, ctx.seq_index, ctx.persona_name)
-    return f"#{seq} [{_format_timestamp(record.timestamp)}] {_speaker_label(record)}{markers}: {_user_body(record)}"
+    return f"#{seq} [{_format_timestamp(record.timestamp)}] {_ctx_speaker(record, ctx)}{markers}: {_user_body(record)}"
 
 
 def _assistant_line(record: MessageRecord, ctx: "_RenderCtx") -> str | None:
@@ -225,6 +245,7 @@ class _RenderCtx:
     persona_name: str | None
     session_id: str = ""
     bot_id: str = ""
+    compact: bool = False
 
 
 def _evidence_suffix(record: MessageRecord, ctx: "_RenderCtx") -> str:
@@ -271,12 +292,25 @@ def _render_lines(records: Sequence[MessageRecord], ctx: _RenderCtx) -> list[_Li
         first, last = group[0], group[-1]
         first_seq = first.link.seq if first.link is not None else 0
         last_seq = last.link.seq if last.link is not None else 0
-        bodies = " / ".join(_user_body(r) for r in group)
+        raw_bodies = [_user_body(r) for r in group]
+        parts: list[str] = []
+        idx = 0
+        while idx < len(raw_bodies):
+            end = idx + 1
+            while end < len(raw_bodies) and raw_bodies[end] == raw_bodies[idx]:
+                end += 1
+            if end - idx >= _SPAM_REPEAT_MIN:
+                parts.append(f"{raw_bodies[idx]} (×{end - idx})")
+            else:
+                parts.extend(raw_bodies[idx:end])
+            idx = end
+        bodies = " / ".join(parts)
         seqs = tuple(r.link.seq for r in group if r.link is not None)
         if len(group) == 1:
             text = _user_line(first, ctx)
         else:
-            text = f"#{first_seq}–#{last_seq} [{_format_timestamp(first.timestamp)}] {_speaker_label(first)}: {bodies}"
+            ts = _format_timestamp(first.timestamp)
+            text = f"#{first_seq}–#{last_seq} [{ts}] {_ctx_speaker(first, ctx)}: {bodies}"
         out.append(_Line(first=first_seq, last=last_seq, seqs=seqs, text=text))
         group.clear()
 
@@ -304,42 +338,126 @@ def _render_lines(records: Sequence[MessageRecord], ctx: _RenderCtx) -> list[_Li
     return [line for line in out if line.text]
 
 
-def _budget_lines(lines: list[_Line], pending_seqs: frozenset[int], seq_index: dict[int, MessageRecord]) -> list[str]:
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    max_lines = int(ai_config.get_config("inbox_delta_max_lines").data)
-    if len(lines) <= max_lines:
-        return [line.text for line in lines]
-    keep_seqs: set[int] = set(pending_seqs)
-    for seq in pending_seqs:
-        cur = seq
-        for _ in range(_QUOTE_HOPS):
-            if cur not in seq_index:
-                break
-            rec = seq_index[cur]
-            if rec.link is None or rec.link.reply_to_seq is None:
-                break
-            cur = rec.link.reply_to_seq
-            keep_seqs.add(cur)
-    keep_idx = {i for i, line in enumerate(lines) if any(s in keep_seqs for s in line.seqs)}
-    keep_idx.update(range(max(0, len(lines) - _TAIL_KEEP_LINES), len(lines)))
-    dropped = len(lines) - len(keep_idx)
-    out: list[str] = []
-    marked = False
-    for i, line in enumerate(lines):
-        if i in keep_idx:
-            out.append(line.text)
-        elif not marked:
-            out.append(omitted_lines_marker(dropped))
-            marked = True
-    return out
-
-
 def _first_meta_str(records: Sequence[MessageRecord], key: str) -> str:
     for rec in records:
         if key in rec.metadata and isinstance(rec.metadata[key], str) and rec.metadata[key]:
             return str(rec.metadata[key])
     return ""
+
+
+def _is_unrelated_command_noise(record: MessageRecord, target_uids: frozenset[str]) -> bool:
+    if record.role == "user":
+        return bool("command_hit" in record.metadata and record.metadata["command_hit"]) and (
+            str(record.user_id or "") not in target_uids
+        )
+    if record.role == "assistant" and _speech_channel(record) in _RECEIPT_CHANNELS:
+        meta = record.metadata
+        uid = str(meta["reply_to_user_id"]) if "reply_to_user_id" in meta and meta["reply_to_user_id"] else ""
+        return not uid or uid not in target_uids
+    return False
+
+
+def _select_group_slice(
+    delta: list[MessageRecord],
+    *,
+    pending_seqs: frozenset[int],
+    seq_index: dict[int, MessageRecord],
+    group_recent_limit: int = _SLICE_GROUP_RECENT_LIMIT,
+) -> tuple[list[MessageRecord], int]:
+    """统一群聊切片：待回应 ∪ 引用链(≤3跳) ∪ 本人3分钟内前置(≤3) ∪ 群近3分钟(≤N)。"""
+    if not delta:
+        return [], 0
+    anchor_recs = [seq_index[s] for s in pending_seqs if s in seq_index]
+    anchor_ts = max((r.timestamp for r in anchor_recs), default=delta[-1].timestamp)
+    target_uids = frozenset(str(r.user_id) for r in anchor_recs if r.role == "user" and r.user_id)
+
+    quote_seqs: set[int] = set()
+    for seq in pending_seqs:
+        cur = seq
+        for _ in range(_QUOTE_HOPS):
+            rec = seq_index[cur] if cur in seq_index else None
+            if rec is None or rec.link is None or rec.link.reply_to_seq is None:
+                break
+            cur = rec.link.reply_to_seq
+            if cur in seq_index:
+                quote_seqs.add(cur)
+
+    keep_seqs: set[int] = set(pending_seqs) | quote_seqs
+    cutoff_recent = anchor_ts - _SLICE_RECENT_WINDOW_S
+    if target_uids:
+        self_pre = [
+            r.link.seq
+            for r in delta
+            if r.role == "user"
+            and r.link is not None
+            and r.link.seq not in keep_seqs
+            and str(r.user_id or "") in target_uids
+            and r.timestamp >= cutoff_recent
+        ]
+        keep_seqs.update(self_pre[-_SLICE_SELF_PRE_LIMIT:])
+    ambient = [
+        r.link.seq
+        for r in delta
+        if r.link is not None
+        and r.link.seq not in keep_seqs
+        and r.timestamp >= cutoff_recent
+        and not _is_unrelated_command_noise(r, target_uids)
+    ]
+    keep_seqs.update(ambient[-group_recent_limit:])
+
+    by_seq = {r.link.seq: r for r in delta if r.link is not None}
+    for seq in quote_seqs:
+        if seq in seq_index and seq not in by_seq:
+            by_seq[seq] = seq_index[seq]
+    selected = [
+        r
+        for seq, r in sorted(by_seq.items())
+        if seq in keep_seqs
+        and (seq in pending_seqs or seq in quote_seqs or anchor_ts - r.timestamp <= _SLICE_MAX_AGE_S)
+    ]
+    return selected, sum(1 for r in delta if r.link is not None and r.link.seq not in keep_seqs)
+
+
+def _collapse_consecutive_repeats(
+    records: Sequence[MessageRecord],
+    lines: list[_Line],
+    pending_seqs: frozenset[int],
+    ctx: _RenderCtx,
+) -> list[_Line]:
+    """同说话人连续 ≥3 条非待回应相同正文折叠为一行，避免刷屏占窗。"""
+    if len(lines) < _SPAM_REPEAT_MIN:
+        return lines
+    rec_by_seq = {r.link.seq: r for r in records if r.link is not None}
+
+    def _sig(line: _Line) -> tuple[str, str] | None:
+        rec = (
+            rec_by_seq[line.first]
+            if (len(line.seqs) == 1 and line.first not in pending_seqs and line.first in rec_by_seq)
+            else None
+        )
+        if rec is None or rec.role != "user" or not rec.content.strip():
+            return None
+        return (str(rec.user_id or ""), rec.content.strip())
+
+    out: list[_Line] = []
+    i = 0
+    while i < len(lines):
+        sig = _sig(lines[i])
+        j = i + 1
+        while sig is not None and j < len(lines) and _sig(lines[j]) == sig:
+            j += 1
+        if sig is not None and j - i >= _SPAM_REPEAT_MIN:
+            first_rec = rec_by_seq[lines[i].first]
+            last_seq = lines[j - 1].last
+            body = _one_line(_guard_body(first_rec.content), _MAX_ANCHOR_CHARS)
+            ts = _format_timestamp(first_rec.timestamp)
+            text = f"#{lines[i].first}–#{last_seq} [{ts}] {_ctx_speaker(first_rec, ctx)}: {body} (×{j - i})"
+            seqs = tuple(s for ln in lines[i:j] for s in ln.seqs)
+            out.append(_Line(first=lines[i].first, last=last_seq, seqs=seqs, text=text))
+        else:
+            out.extend(lines[i:j])
+        i = j
+    return out
 
 
 def render_delta(
@@ -354,23 +472,48 @@ def render_delta(
     session_id: str = "",
     bot_id: str = "",
 ) -> str:
-    """B 轨增量块：from_seq（不含）之后的时间线；backfill 往前再带 ≤40 行。"""
+    """B 轨增量块：群聊按统一相关性公式切片；私聊保留线性增量。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
     linked = [r for r in records if r.link is not None]
     seq_index = {r.link.seq: r for r in linked if r.link is not None}
+    pending = frozenset(pending_seqs)
     delta = [r for r in linked if r.link is not None and r.link.seq > from_seq]
     if backfill:
-        before = [r for r in linked if r.link is not None and r.link.seq <= from_seq]
-        before.sort(key=lambda r: r.link.seq if r.link is not None else 0)
+        anchor_ts = max(
+            (seq_index[s].timestamp for s in pending if s in seq_index),
+            default=(delta[-1].timestamp if delta else (linked[-1].timestamp if linked else 0.0)),
+        )
+        before = sorted(
+            (
+                r
+                for r in linked
+                if r.link is not None
+                and r.link.seq <= from_seq
+                and (private or anchor_ts <= 0.0 or anchor_ts - r.timestamp <= _SLICE_MAX_AGE_S)
+            ),
+            key=lambda r: r.link.seq if r.link is not None else 0,
+        )
         delta = before[-_BACKFILL_LINES:] + delta
+
+    dropped = 0
+    if not private and pending:
+        delta, dropped = _select_group_slice(delta, pending_seqs=pending, seq_index=seq_index)
+
     ctx = _RenderCtx(
         seq_index=seq_index,
         persona_name=persona_name,
         session_id=session_id or _first_meta_str(linked, "session_id"),
         bot_id=bot_id or _first_meta_str(linked, "bot_id"),
     )
-    lines = _render_lines(delta, ctx)
-    pending = frozenset(pending_seqs)
-    rendered = _budget_lines(lines, pending, seq_index)
+    lines = _collapse_consecutive_repeats(delta, _render_lines(delta, ctx), pending, ctx)
+    max_lines = int(ai_config.get_config("inbox_delta_max_lines").data)
+    if len(lines) > max_lines:
+        dropped += len(lines) - max_lines
+        lines = lines[-max_lines:]
+    rendered = [line.text for line in lines]
+    if dropped > 0:
+        rendered = [omitted_lines_marker(dropped), *rendered]
     first = lines[0].first if lines else from_seq
     head = thread_view_header(first, head_seq, private=private, backfill=backfill)
     return "\n".join([head, *rendered])
@@ -441,7 +584,7 @@ def _activity_after(seq_index: dict[int, MessageRecord], seq: int, target_uid: s
 
 
 def _pending_fact(entry_item_uid: str, entry_seq: int, seq_index: dict[int, MessageRecord]) -> str:
-    """待判断项行尾事实：有无往来；引用自己的补被引出站后的活跃度。"""
+    """待判断项行尾事实：有无往来；引用自己的显式标出引用归属与活跃度。"""
     last = _last_reply_to(seq_index, entry_item_uid)
     contact = f"你上次回他是 #{last}" if last is not None else "之前未与你往来"
     rec = seq_index[entry_seq] if entry_seq in seq_index else None
@@ -450,35 +593,99 @@ def _pending_fact(entry_item_uid: str, entry_seq: int, seq_index: dict[int, Mess
         target = seq_index[rec.link.reply_to_seq] if rec.link.reply_to_seq in seq_index else None
         if target is not None and target.role == "assistant":
             meta = target.metadata
-            target_uid = str(meta["reply_to_user_id"]) if "reply_to_user_id" in meta else ""
-            extra = "；" + _activity_after(seq_index, rec.link.reply_to_seq, target_uid, entry_item_uid)
+            target_uid = (
+                str(meta["reply_to_user_id"]) if "reply_to_user_id" in meta and meta["reply_to_user_id"] else ""
+            )
+            ago = _ago(rec.timestamp - target.timestamp)
+            if _speech_channel(target) in _RECEIPT_CHANNELS:
+                owner = "本人触发" if target_uid == entry_item_uid else "他人触发"
+                quote_tag = f"引用对象=你[回执]·由{owner}({ago})"
+            elif target_uid == entry_item_uid:
+                quote_tag = f"引用对象=你→本人({ago})"
+            else:
+                who = _name_by_uid(seq_index, target_uid) if target_uid else "未知"
+                quote_tag = f"引用对象=你→他人({who}·{ago})"
+            extra = f"；{quote_tag}；{_activity_after(seq_index, rec.link.reply_to_seq, target_uid, entry_item_uid)}"
     return f"{contact}{extra}"
 
 
-def render_router_view(turn: InboxTurn, records: Sequence[MessageRecord]) -> str:
-    """精简线程视图 + 待判断列表，给 TurnRouter 读。"""
+def format_pending_entry_line(
+    entry: PendingEntry,
+    seq_index: dict[int, MessageRecord],
+    ctx: _RenderCtx,
+    *,
+    include_kind: bool = False,
+) -> str:
+    """渲染单条待回应项行（主 Agent 待回应块与 TurnRouter 共享）。"""
+    item = entry.item
+    if include_kind and entry.receipt is not None:
+        plugin = entry.receipt.plugin_label or "插件"
+        body = _one_line(entry.receipt.receipt_text or "[图片]", 100)
+        who = _name_by_uid(seq_index, item.user_id)
+        return f"★#{item.seq} receipt · 插件={plugin} · 触发者={who}「{body}」"
+    prefix = f"★#{item.seq} {item.kind} · " if include_kind else f"★#{item.seq} "
+    rec = seq_index[item.seq] if item.seq in seq_index else None
+    if rec is not None:
+        markers = _at_markers(rec, seq_index) + _quote_marker(rec, seq_index, ctx.persona_name)
+        body = _one_line(_guard_body(rec.content), _MAX_ANCHOR_CHARS)
+        head = f"{prefix}{_ctx_speaker(rec, ctx)}{markers}「{body}」"
+    else:
+        head = f"{prefix}用户ID:{item.user_id}"
+    return f"{head} · {_pending_fact(item.user_id, item.seq, seq_index)}"
+
+
+def render_router_view(
+    turn: InboxTurn,
+    records: Sequence[MessageRecord],
+    *,
+    relation_label: str = "",
+    group_rate_1m: int = 0,
+) -> str:
+    """精简线程视图 + 待判断列表 + 场景元信息，给 TurnRouter 读。"""
     linked = [r for r in records if r.link is not None]
     linked.sort(key=lambda r: r.link.seq if r.link is not None else 0)
     seq_index = {r.link.seq: r for r in linked if r.link is not None}
+    pending = frozenset(e.item.seq for e in turn.entries)
     ctx = _RenderCtx(
         seq_index=seq_index,
         persona_name=turn.persona_name,
         session_id=turn.session_id or _first_meta_str(linked, "session_id"),
         bot_id=str(turn.primary.event.bot_id or "") or _first_meta_str(linked, "bot_id"),
+        compact=True,
     )
-    tail = linked[-_TAIL_KEEP_LINES:]
-    lines = _render_lines(tail, ctx)
-    out = [ROUTER_TIMELINE_HEAD, *(line.text for line in lines), ROUTER_PENDING_HEAD]
-    for entry in turn.entries:
-        item = entry.item
-        rec = seq_index[item.seq] if item.seq in seq_index else None
-        if rec is not None:
-            speaker = _speaker_label(rec)
-            markers = _at_markers(rec, seq_index) + _quote_marker(rec, seq_index, ctx.persona_name)
-            body = _one_line(_guard_body(rec.content), _MAX_ANCHOR_CHARS)
-            head = f"★#{item.seq} {item.kind} · {speaker}{markers}「{body}」"
-        else:
-            head = f"★#{item.seq} {item.kind} · 用户ID:{item.user_id}"
-        out.append(f"{head} · {_pending_fact(item.user_id, item.seq, seq_index)}")
+    tail, _ = _select_group_slice(
+        linked,
+        pending_seqs=pending,
+        seq_index=seq_index,
+        group_recent_limit=_ROUTER_RECENT_LIMIT,
+    )
+    # 补入你上次回该说话人的最后一条（30 分钟内），便于判定 follow_self 续聊关系
+    last_reply_seq = _last_reply_to(seq_index, turn.primary.item.user_id)
+    if last_reply_seq is not None and last_reply_seq in seq_index:
+        tail_seqs = {r.link.seq for r in tail if r.link is not None}
+        if last_reply_seq not in tail_seqs:
+            anchor_ts = max(
+                (seq_index[s].timestamp for s in pending if s in seq_index),
+                default=(linked[-1].timestamp if linked else 0.0),
+            )
+            last_rec = seq_index[last_reply_seq]
+            if anchor_ts <= 0.0 or anchor_ts - last_rec.timestamp <= _SLICE_MAX_AGE_S:
+                tail = sorted([*tail, last_rec], key=lambda r: r.link.seq if r.link is not None else 0)
+
+    lines = _collapse_consecutive_repeats(tail, _render_lines(tail, ctx), pending, ctx)
+    out = [
+        ROUTER_TIMELINE_HEAD,
+        *(line.text for line in lines),
+        ROUTER_PENDING_HEAD,
+        *(format_pending_entry_line(e, seq_index, ctx, include_kind=True) for e in turn.entries),
+    ]
+    if relation_label or group_rate_1m > 0:
+        scene_parts: list[str] = []
+        if relation_label:
+            scene_parts.append(f"关系={relation_label}")
+        if group_rate_1m > 0:
+            scene_parts.append(f"近1分钟群消息={group_rate_1m}条")
+        scene_parts.append(f"触发={turn.primary.item.kind}")
+        out.append("[场景] " + " · ".join(scene_parts))
     out.append(ROUTER_PRINCIPLE)
     return "\n".join(out)

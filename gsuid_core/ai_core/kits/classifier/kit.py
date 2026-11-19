@@ -18,23 +18,31 @@ class ClassifierKit(AgentKit):
 
     async def classify(self, ctx: AgentHookContext) -> None:
         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
-        from gsuid_core.ai_core.classifier.turn_router import route_turn
+        from gsuid_core.ai_core.classifier.turn_router import route_turn, structural_route
 
-        recent = [rec.content for rec in ctx.gate_history][-6:]
         surfaces = collect_persona_surfaces(ctx.persona_name)
-        decision = await route_turn(
-            ctx.query,
-            prior_user_turns=ctx.prior_user_turns,
-            prev_turn_used_tools=ctx.prev_turn_used_tools,
-            soft_triggered=ctx.soft_triggered,
-            clock_at=ctx.clock_at,
-            recent_group_messages=recent,
-            thread_view=ctx.router_view,
-            persona_names=surfaces,
-        )
+        target_query = ctx.router_query if ctx.router_query else ctx.query
+        if ctx.skip_llm_router:
+            decision = structural_route(
+                target_query,
+                prev_turn_used_tools=ctx.prev_turn_used_tools,
+                soft_triggered=ctx.soft_triggered,
+                wake_kind=ctx.wake_kind,
+                persona_names=surfaces,
+            )
+        else:
+            decision = await route_turn(
+                target_query,
+                prev_turn_used_tools=ctx.prev_turn_used_tools,
+                soft_triggered=ctx.soft_triggered,
+                clock_at=ctx.clock_at,
+                thread_view=ctx.router_view,
+                persona_names=surfaces,
+                wake_kind=ctx.wake_kind,
+            )
         ctx.route_decision = decision
         ctx.set_intent(decision.intent)
-        if decision.source == "structural_fallback":
+        if decision.source == "structural_fallback" and not ctx.skip_llm_router:
             from gsuid_core.ai_core.followup_window import record_gate_outcome
 
             record_gate_outcome("router_fallback")
@@ -43,7 +51,7 @@ class ClassifierKit(AgentKit):
                 "log.ai.turn_router_result",
                 intent=decision.intent,
                 memory_intent=decision.memory_intent,
-                source=decision.source,
+                source=f"{decision.source}:{decision.addressing or '-'}",
             )
         )
 

@@ -594,10 +594,6 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
 
     # 先入 A 轨历史生成 EventLink，再派 H00 观察与后续链路共享单一事实源。
     inbound_record = _record_inbound_history(event)
-    if inbound_record is not None and event.group_id:
-        from gsuid_core.ai_core.inbox.feedback import note_inbound
-
-        note_inbound(inbound_record, str(event.group_id), str(event.user_id))
 
     # ====== H00 入站观察扇出（记忆 / 表情 / 图片记忆）======
     # 只观察，**不挡**命令/AI 分流；要拦 AI 走 H01。失败 fail-open。
@@ -887,12 +883,27 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             _fmax_rep = (
                 ai_config.get_config("follow_up_max_replies").data if "follow_up_max_replies" in ai_config.config else 2
             )
+            _busy_rpm = (
+                int(ai_config.get_config("inbox_group_busy_msg_per_min").data)
+                if "inbox_group_busy_msg_per_min" in ai_config.config
+                else 12
+            )
             in_followup = bool(
                 _fw
                 and event.group_id
                 and not event.at_list
                 and in_followup_window(session_id, event.user_id, _fw, _fmax, max_replies=_fmax_rep)
             )
+            if in_followup and _busy_rpm > 0:
+                from gsuid_core.ai_core.followup_window import group_is_too_busy_for_followup
+
+                if group_is_too_busy_for_followup(
+                    get_history_manager().get_history(event),
+                    speaker_uid=str(event.user_id or ""),
+                    now=time.time(),
+                    busy_per_min=_busy_rpm,
+                ):
+                    in_followup = False
             kind = classify_wake(
                 user_type=event.user_type or "group",
                 at_self=link.at_self,

@@ -6,9 +6,10 @@ MemoryKit / ScaffoldKit 只读结论，不再各自扫文本猜语义。
 
 from __future__ import annotations
 
+import re
 import json
 import asyncio
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Sequence
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -25,15 +26,31 @@ MemoryIntent = Literal[
     "timeline_order",
     "broad_summary",
 ]
+AddressingKind = Literal[
+    "direct_ask",
+    "follow_self",
+    "to_other",
+    "comment_receipt",
+    "repeat",
+    "noise",
+]
+_SPEAK_ADDR_KINDS: frozenset[AddressingKind] = frozenset({"direct_ask", "follow_self"})
 
 ROUTER_TIMEOUT_S = 8.0
-_ROUTER_MAX_TOKENS = 2048
+_ROUTER_MAX_TOKENS = 512
 
-
-class _UserTurnRecord(Protocol):
-    role: Literal["user", "assistant", "system"]
-    user_id: str
-    content: str
+# 纯语法/通用交际结构（不含垂直业务词表，遵守 §1.9）：供离线/直通退化识别提问与委托。
+_IMPERATIVE_RE = re.compile(
+    r"(?:帮我|帮忙|麻烦你?|请你?|查一下|查下|查询|搜一下|搜下|搜索|看看|看下|列一下|列出|算一下|"
+    r"总结|整理|翻译|提醒我|告诉我|对比一下|画一?[张个幅]|发一?[个条份]|写一?[个篇份段]|"
+    r"做一?[个张份]|删[掉除]?|改一?下|修改|设置|设一?个|生成|下载|导出|保存|记录|分析|统计|检查|排查)"
+)
+_INTERROGATIVE_RE = re.compile(
+    r"(?:如何|怎么|怎样|为什么|为啥|多少|几个|几点|几天|多久|哪[里个些种位儿]|谁[是能会说]|什么|啥[时候意思叫]?|是否|能否|可不可以|有没有|(?:吗|呢)\s*$)"
+)
+_DIFF_MODALITY_RE = re.compile(r"(?:对比|比较|变化|区别|不同之处|改了什么|前后)")
+_ORDER_MODALITY_RE = re.compile(r"(?:时间线|先后顺序|按顺序|从头到尾|先后)")
+_SUM_MODALITY_RE = re.compile(r"(?:总结|汇总|梳理一下|一共|总共|全部列出|盘点)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +61,7 @@ class TurnRouteDecision:
     is_live_lookup: bool
     needs_committed_work: bool
     source: Literal["llm", "structural_fallback"] = "llm"
+    addressing: AddressingKind | None = None
 
 
 def strip_router_header(text: str) -> str:
@@ -58,24 +76,17 @@ def strip_router_header(text: str) -> str:
     return body.strip()
 
 
-def collect_prior_user_turns(
-    records: Sequence[_UserTurnRecord],
-    current_user_id: str,
-    *,
-    max_turns: int = 3,
-) -> list[str]:
-    """从历史记录提取同一用户近期原文（旧→新）。"""
-    out: list[str] = []
-    for rec in records:
-        if rec.role != "user":
-            continue
-        uid = str(rec.user_id or "")
-        if uid and current_user_id and uid != str(current_user_id):
-            continue
-        body = strip_router_header(rec.content if isinstance(rec.content, str) else "")
-        if body:
-            out.append(body)
-    return out[-max_turns:]
+def is_sentence_start_name(text: str, persona_names: Sequence[str]) -> bool:
+    """人格称呼是否出现在句首（去前导空白与标点）；用于区分直接呼叫与句中第三人称提及。"""
+    cleaned = text.strip().lstrip("@＠,，、:：!！?？~～.。· ")
+    if not cleaned:
+        return False
+    low = cleaned.lower()
+    for name in persona_names:
+        n = name.strip().lower()
+        if n and low.startswith(n):
+            return True
+    return False
 
 
 def structural_route(
@@ -83,64 +94,107 @@ def structural_route(
     *,
     prev_turn_used_tools: bool = False,
     soft_triggered: bool = False,
+    wake_kind: str = "",
+    persona_names: Sequence[str] = (),
 ) -> TurnRouteDecision:
-    """离线/超时确定性退化：只判空串、句末问号与省略跟进长度。"""
+    """离线/直通确定性路由：按通用疑问/祈使语法与唤醒结构判意图与开口。"""
     body = strip_router_header(query)
     if not body:
         intent: TurnIntent = "闲聊"
-    elif body.endswith(("?", "？")):
-        intent = "问答"
+    elif _IMPERATIVE_RE.search(body):
+        intent = "工具"
     elif prev_turn_used_tools and len(body) <= 24:
         intent = "工具"
+    elif body.endswith(("?", "？")) or _INTERROGATIVE_RE.search(body):
+        intent = "问答"
     else:
         intent = "闲聊"
+
     memory_intent: MemoryIntent = "none" if intent == "闲聊" else "point_latest"
+    if body:
+        if _DIFF_MODALITY_RE.search(body):
+            memory_intent = "version_diff"
+        elif _ORDER_MODALITY_RE.search(body):
+            memory_intent = "timeline_order"
+        elif _SUM_MODALITY_RE.search(body):
+            memory_intent = "broad_summary"
+        elif wake_kind in ("mention", "private") and memory_intent == "none" and len(body) >= 3:
+            # 显式 @Bot 或私聊直通时不因缺问号饿死记忆检索（保留 1–2 字纯寒暄为 none）
+            memory_intent = "point_latest"
+
+    if wake_kind in ("mention", "private"):
+        soft_speak = True
+        addr: AddressingKind = "direct_ask"
+    elif wake_kind == "name":
+        soft_speak = True if not persona_names else is_sentence_start_name(body, persona_names)
+        addr = "direct_ask" if soft_speak else "to_other"
+    elif soft_triggered or wake_kind in ("quote_self", "followup", "receipt"):
+        soft_speak = False
+        addr = "noise"
+    else:
+        soft_speak = False
+        addr = "noise"
+
     return TurnRouteDecision(
         intent=intent,
         memory_intent=memory_intent,
-        soft_speak=False,
+        soft_speak=soft_speak,
         is_live_lookup=False,
-        needs_committed_work=False,
+        needs_committed_work=intent == "工具",
         source="structural_fallback",
+        addressing=addr,
     )
 
 
 _ROUTER_SYSTEM = """你是群聊前置路由器。只输出一行 JSON，不要解释、不要 markdown。
 
-字段与取值：
+字段与取值（a 必须排第一位，先定话头归属再填其余字段）：
+- a: 互斥归属枚举（6 选 1）
+  * "direct_ask": 明确在对你说话（提问、委托、吐槽、表情互动）
+  * "follow_self": 紧接你刚回复给本人的话继续追问、反驳、评价或撒娇互动（尤其安静群/熟人）
+  * "to_other": 句首在叫别人、群友互聊中第三人称提起你/项目名、或其他机器人的播报
+  * "comment_receipt": 对着命令回执或别人触发的卡片/图发表围观感叹/吐槽，未向你提问
+  * "repeat": 复读（+1）或换词起哄你刚答复过的同一件事（若前次带〔依据: 替某人查…〕且换了另一人查自己的，选 direct_ask）
+  * "noise": 无关插话，或无需接话的普通成功命令回执（仅报错/异常回执值得开口时选 direct_ask）
 - i: "chat" | "tool" | "qa"
 - m: "none" | "latest" | "diff" | "order" | "sum"
-- s: bool。[待判断] 列表中是否有至少一条消息需要你开口回应：
-  1) 有人明确 @你 或直接叫你说话（提问、委托、吐槽、表情互动）时为 true；
-  2) 以下情况即使带 @ 或含你名字也为 false：
-     - [待判断] 只是复读（+1）或跟风起哄 [近期时间线] 里你刚刚已公开回应过的同一句话/同一件事\
-（若前次回复带〔依据: 替某人查…〕或问题本身指向说话人个人情况/过往记录，而本次换了另一人问他自己的，则为 true）；
-     - 句首在叫别人、群友互聊中第三人称提起你的名字（如讨论项目/插件名）、或其他机器人的状态播报；
-  3) 未 @你 也未叫你（仅引用你、续聊窗或回执）时：确在向你追问、让你评价、反驳你或延续对话为 true；\
-围观起哄、跟别人聊、普通命令回执为 false。
-- l: bool。是否在查纯粹的实时外部数据（当前天气/实时股价/新闻等）且不依赖过往私人记录；\
-为 true 且 m=none 时跳过个人历史记忆预灌。
-- w: bool。是否明确委托 Bot 执行具体事务、查数或设提醒。
+- l: bool。是否在查纯粹的实时外部数据且不依赖过往私人记录；为 true 且 m=none 时跳过个人记忆预灌。
+- w: bool。是否明确委托 Bot 执行具体事务、查数或设提醒（已完成命令回执一律为 false）。
 
 判据：
-- chat=寒暄、表情、感叹、纯接梗，没有待办也没有需要查证的事实。
-- tool=要求执行动作、查询当前数据、设置提醒或调用能力。
+- chat=寒暄、表情、感叹、纯接梗，无待办也无查证事实。
+- tool=要求执行动作、查当前数据、设提醒或调用能力。
 - qa=需要知识、解释、方法，或对已有信息的回答。
-- none=纯寒暄或本轮上下文自足；latest=常规事实/属性点查；diff=变更历史/前后对比/矛盾核实；
-  order=事件先后/时间线；sum=跨会话总结/数量统计/集合盘点。
-- 若消息含必须依赖历史的泛指指代（如“那个/上次/之前/后来呢”），m 不得为 none，保底 latest。
+- none=纯寒暄或本轮上下文自足；latest=常规事实点查；diff=前后对比/变更；order=时间线；sum=跨会话总结统计。
+- 含泛指历史指代（“那个/上次/之前/后来呢”）时 m 不得为 none，保底 latest。
 
-只输出：{"i":"chat","m":"none","s":false,"l":false,"w":false}"""
+只输出：{"a":"noise","i":"chat","m":"none","l":false,"w":false}"""
+
+
+_INTENT_MAP: dict[str, TurnIntent] = {"chat": "闲聊", "tool": "工具", "qa": "问答"}
+_MEMORY_MAP: dict[str, MemoryIntent] = {
+    "none": "none",
+    "latest": "point_latest",
+    "diff": "version_diff",
+    "order": "timeline_order",
+    "sum": "broad_summary",
+}
+_ADDR_MAP: dict[str, AddressingKind] = {
+    "direct_ask": "direct_ask",
+    "follow_self": "follow_self",
+    "to_other": "to_other",
+    "comment_receipt": "comment_receipt",
+    "repeat": "repeat",
+    "noise": "noise",
+}
 
 
 def _build_router_prompt(
     body: str,
     *,
-    prior_user_turns: Sequence[str],
     prev_turn_used_tools: bool,
     soft_triggered: bool,
     clock_at: datetime | None,
-    recent_group_messages: Sequence[str],
     thread_view: str,
     persona_names: Sequence[str] = (),
 ) -> str:
@@ -153,24 +207,13 @@ def _build_router_prompt(
         lines.append("[软触发] yes")
     if thread_view:
         lines.append(thread_view)
-    elif soft_triggered:
-        msgs = [m.strip() for m in recent_group_messages if m and m.strip()][-6:]
-        if msgs:
-            lines.append("[近期群消息]")
-            lines.extend(f"- {m}" for m in msgs)
-    priors = [p.strip() for p in prior_user_turns if p and p.strip()][-3:]
-    if priors:
-        lines.append("[同一用户近期发言]")
-        lines.extend(f"- {p}" for p in priors)
-    lines.append("[本轮消息]")
-    lines.append(body)
+    lines.extend(["[本轮消息]", body])
     return "\n".join(lines)
 
 
 def _parse_decision(raw: str) -> TurnRouteDecision | None:
     text = raw.strip()
-    start = text.find("{")
-    end = text.rfind("}")
+    start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         return None
     try:
@@ -179,29 +222,26 @@ def _parse_decision(raw: str) -> TurnRouteDecision | None:
         return None
     if not isinstance(data, dict):
         return None
-
     raw_i = data["i"] if "i" in data and isinstance(data["i"], str) else ""
-    intent_map: dict[str, TurnIntent] = {"chat": "闲聊", "tool": "工具", "qa": "问答"}
-    if raw_i not in intent_map:
+    if raw_i not in _INTENT_MAP:
         return None
+    intent = _INTENT_MAP[raw_i]
     raw_m = data["m"] if "m" in data and isinstance(data["m"], str) else ""
-    memory_map: dict[str, MemoryIntent] = {
-        "none": "none",
-        "latest": "point_latest",
-        "diff": "version_diff",
-        "order": "timeline_order",
-        "sum": "broad_summary",
-    }
-    memory_intent: MemoryIntent = memory_map[raw_m] if raw_m in memory_map else "point_latest"
-    if intent_map[raw_i] == "闲聊" and raw_m not in memory_map:
-        memory_intent = "none"
+    default_m: MemoryIntent = "none" if intent == "闲聊" else "point_latest"
+    memory_intent: MemoryIntent = _MEMORY_MAP[raw_m] if raw_m in _MEMORY_MAP else default_m
+    raw_a = data["a"] if "a" in data and isinstance(data["a"], str) else ""
+    addressing: AddressingKind | None = _ADDR_MAP[raw_a] if raw_a in _ADDR_MAP else None
+    soft_speak = (
+        addressing in _SPEAK_ADDR_KINDS if addressing is not None else bool(data["s"]) if "s" in data else False
+    )
     return TurnRouteDecision(
-        intent=intent_map[raw_i],
+        intent=intent,
         memory_intent=memory_intent,
-        soft_speak=bool(data["s"]) if "s" in data else False,
+        soft_speak=soft_speak,
         is_live_lookup=bool(data["l"]) if "l" in data else False,
         needs_committed_work=bool(data["w"]) if "w" in data else False,
         source="llm",
+        addressing=addressing,
     )
 
 
@@ -221,13 +261,12 @@ def _can_call_llm() -> bool:
 async def route_turn(
     query: str,
     *,
-    prior_user_turns: Sequence[str] = (),
     prev_turn_used_tools: bool = False,
     soft_triggered: bool = False,
     clock_at: datetime | None = None,
-    recent_group_messages: Sequence[str] = (),
     thread_view: str = "",
     persona_names: Sequence[str] = (),
+    wake_kind: str = "",
 ) -> TurnRouteDecision:
     """一次无思考轻量路由；不可用/超时/输出非法时退化到结构规则。"""
     body = strip_router_header(query)
@@ -235,17 +274,17 @@ async def route_turn(
         body,
         prev_turn_used_tools=prev_turn_used_tools,
         soft_triggered=soft_triggered,
+        wake_kind=wake_kind,
+        persona_names=persona_names,
     )
     if not body or not _can_call_llm():
         return fallback
 
     prompt = _build_router_prompt(
         body,
-        prior_user_turns=prior_user_turns,
         prev_turn_used_tools=prev_turn_used_tools,
         soft_triggered=soft_triggered,
         clock_at=clock_at,
-        recent_group_messages=recent_group_messages,
         thread_view=thread_view,
         persona_names=persona_names,
     )

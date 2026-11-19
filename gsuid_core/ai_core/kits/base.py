@@ -191,7 +191,7 @@ KIT_SLOTS: Tuple[KitSlot, ...] = (
     _slot("classifier", "gscore.classifier", "意图分类"),
     _slot("inbox", "gscore.inbox", "收件箱待回应 / 相关往来块"),
     _slot("evidence", "gscore.evidence", "工具证据观测与实时凭据状态"),
-    _slot("scaffold", "gscore.scaffold", "TurnGraph 消费 / CheapGate / 脚手架 hints"),
+    _slot("scaffold", "gscore.scaffold", "TurnGraph 消费 / 脚手架 hints"),
     _slot("session_mute", "gscore.session_mute", "会话静默窗"),
     _slot("statistics", "gscore.statistics", "统计记账（只上报，不扣减）"),
     _slot(

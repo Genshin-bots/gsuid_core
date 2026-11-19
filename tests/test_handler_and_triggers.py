@@ -907,6 +907,118 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                 await asyncio.sleep(0)
             await ws.queue.get_nowait().coro
             assert [e.item.seq for e in batches[-1].entries] == [58]
+
+            # 未说完起手式（纯 @Bot / 极短呼名）首窗拉长至 4.0s；完整问句保持 1.5s
+            ev_bare_at = Event("OneBot", "900000001", "bare1", "group", "70009", "100000001", {}, 6, raw_text="")
+            ev_bare_at.at_bot = True
+            ev_short_name = Event(
+                "OneBot", "900000001", "sn1", "group", "70009", "100000001", {}, 6, raw_text="测试人格"
+            )
+            ev_full_q = Event(
+                "OneBot", "900000001", "fq1", "group", "70009", "100000001", {}, 6, raw_text="今日指标如何？"
+            )
+            assert (
+                sched_sel._initial_settle_s(
+                    PendingEntry(
+                        WakeItem(60, "100000001", "mention", "hard", now[0]), ev_bare_at, persona_name="测试人格"
+                    )
+                )
+                == 4.0
+            )
+            assert (
+                sched_sel._initial_settle_s(
+                    PendingEntry(
+                        WakeItem(61, "100000001", "name", "hard", now[0]), ev_short_name, persona_name="测试人格"
+                    )
+                )
+                == 4.0
+            )
+            assert (
+                sched_sel._initial_settle_s(
+                    PendingEntry(
+                        WakeItem(62, "100000001", "mention", "hard", now[0]), ev_full_q, persona_name="测试人格"
+                    )
+                )
+                == 1.5
+            )
+            ev_short_greet = Event("OneBot", "900000001", "sg1", "group", "70009", "100000001", {}, 6, raw_text="你好")
+            ev_short_greet.at_bot = True
+            ev_name_greet = Event(
+                "OneBot", "900000001", "ng1", "group", "70009", "100000001", {}, 6, raw_text="测试人格早安"
+            )
+            assert (
+                sched_sel._initial_settle_s(
+                    PendingEntry(
+                        WakeItem(64, "100000001", "mention", "hard", now[0]), ev_short_greet, persona_name="测试人格"
+                    )
+                )
+                == 1.5
+            )
+            assert (
+                sched_sel._initial_settle_s(
+                    PendingEntry(
+                        WakeItem(65, "100000001", "name", "hard", now[0]), ev_name_greet, persona_name="测试人格"
+                    )
+                )
+                == 1.5
+            )
+            # 别名起手式（如小名/关键词）剥除后也触发 4.0s 首窗
+            from gsuid_core.ai_core.memory import group_profile as _gp
+
+            _orig_surfaces = _gp.collect_persona_surfaces
+            _gp.collect_persona_surfaces = lambda _name: ("测试别名",)
+            try:
+                ev_alias_name = Event(
+                    "OneBot", "900000001", "an1", "group", "70009", "100000001", {}, 6, raw_text="测试别名"
+                )
+                assert (
+                    sched_sel._initial_settle_s(
+                        PendingEntry(
+                            WakeItem(63, "100000001", "name", "hard", now[0]), ev_alias_name, persona_name="测试人格"
+                        )
+                    )
+                    == 4.0
+                )
+            finally:
+                _gp.collect_persona_surfaces = _orig_surfaces
+
+            # 活跃大群速率门控 + parse_reply_plan 禁止引用非本轮 pending seq
+            from gsuid_core.message_history import MessageRecord
+            from gsuid_core.ai_core.reply_plan import parse_reply_plan
+            from gsuid_core.ai_core.followup_window import group_is_too_busy_for_followup
+
+            busy_recs = [
+                MessageRecord(
+                    role="user",
+                    content=f"消息{k}",
+                    user_id=f"10000010{k % 5}",
+                    user_name="群友",
+                    timestamp=1000.0 - k * 2,
+                )
+                for k in range(12)
+            ]
+            assert (
+                group_is_too_busy_for_followup(busy_recs, speaker_uid="100000001", now=1000.0, busy_per_min=12) is True
+            )
+            assert (
+                group_is_too_busy_for_followup(busy_recs[:3], speaker_uid="100000001", now=1000.0, busy_per_min=12)
+                is False
+            )
+
+            plan_bad = parse_reply_plan(
+                "<reply #65>\n旧消息回复",
+                valid_seqs=frozenset({72}),
+                default_seqs=(72,),
+                max_targets=3,
+            )
+            assert plan_bad.invalid_refs == (65,) and not any(65 in g.seqs for g in plan_bad.groups)
+            plan_ok = parse_reply_plan(
+                "<reply #72>\n本轮回复",
+                valid_seqs=frozenset({72}),
+                default_seqs=(72,),
+                max_targets=3,
+            )
+            assert plan_ok.invalid_refs == () and plan_ok.groups[0].seqs == (72,)
         finally:
             hm.clear_history(base_ev)
 

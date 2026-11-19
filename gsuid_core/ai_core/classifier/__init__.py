@@ -11,7 +11,6 @@ from gsuid_core.ai_core.classifier.turn_router import (
     route_turn,
     structural_route,
 )
-from gsuid_core.ai_core.classifier.mode_classifier import classifier_service
 
 __all__ = [
     "MemoryIntent",
@@ -19,5 +18,4 @@ __all__ = [
     "TurnRouteDecision",
     "route_turn",
     "structural_route",
-    "classifier_service",
 ]

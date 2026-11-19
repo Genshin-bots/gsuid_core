@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import asyncio
 from typing import TYPE_CHECKING, Callable, Awaitable
@@ -30,9 +31,10 @@ TurnRunner = Callable[[InboxTurn, "_Bot"], Awaitable["TurnOutcome"]]
 
 # runner 执行失败后退回 pending 的最多重试次数；超限记 expired
 _MAX_RETRIES = 1
-# 私聊 / 群聊 hard 唤醒与软唤醒静默窗（秒）
+# 私聊 / 群聊 hard 唤醒、未说完起手式与软唤醒静默窗（秒）
 _PRIVATE_HARD_SETTLE_S = 0.8
 _GROUP_HARD_SETTLE_S = 1.5
+_INCOMPLETE_OPENER_SETTLE_S = 4.0
 _SOFT_SETTLE_S = 5.0
 _READ_SEQ_CAP = 1024
 _EXACT_DEDUP_TTL_S = 90.0
@@ -56,17 +58,54 @@ class _SettledExact:
     speaker_bound: bool
 
 
-def _exact_dedup_key(entry: PendingEntry) -> _ExactDedupKey | None:
-    """群聊无自有附件消息的字节幂等键 (正文, reply_id, at_bot, at_list)；带媒体或空正文返回 None。"""
+def _has_own_media(entry: PendingEntry) -> bool:
     ev = entry.event
-    if ev.user_type == "direct" or entry.receipt is not None:
-        return None
     own_img = (
         any(i not in ev.reply_image_id_list for i in ev.image_id_list)
         or bool(ev.image_id and ev.image_id not in ev.reply_image_id_list)
         or bool(ev.image and not ev.image_id_list and not ev.reply_image_id_list)
     )
-    if own_img or ev.audio_id or ev.audio_id_list or ev.video_id or ev.video_id_list or ev.file or ev.node:
+    return bool(own_img or ev.audio_id or ev.audio_id_list or ev.video_id or ev.video_id_list or ev.file or ev.node)
+
+
+_OPENER_FILLERS = " \t，,。.!！~～啊呀呢哦吧诶喂"
+
+
+def _is_incomplete_opener(entry: PendingEntry) -> bool:
+    """群聊未说完起手式（纯 @Bot 或纯呼名/别名且无实质正文/问号/媒体/引用）：拉长首窗。"""
+    ev = entry.event
+    if ev.user_type == "direct" or entry.receipt is not None or entry.item.kind not in ("mention", "name"):
+        return False
+    if _has_own_media(entry) or ev.reply_id or ev.reply:
+        return False
+    text = (ev.raw_text or "").strip()
+    if "?" in text or "？" in text:
+        return False
+    if entry.item.kind == "mention":
+        if not text:
+            return bool(ev.at_bot)
+        return not text.strip(_OPENER_FILLERS)
+    rem = text
+    surfaces: list[str] = []
+    if entry.persona_name:
+        from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+        surfaces.append(entry.persona_name)
+        surfaces.extend(collect_persona_surfaces(entry.persona_name))
+    for name in sorted({s.strip() for s in surfaces if s and s.strip()}, key=len, reverse=True):
+        if name.isascii():
+            rem = re.sub(re.escape(name), "", rem, flags=re.IGNORECASE)
+        elif name in rem:
+            rem = rem.replace(name, "")
+    return not rem.strip(_OPENER_FILLERS)
+
+
+def _exact_dedup_key(entry: PendingEntry) -> _ExactDedupKey | None:
+    """群聊无自有附件消息的字节幂等键 (正文, reply_id, at_bot, at_list)；带媒体或空正文返回 None。"""
+    ev = entry.event
+    if ev.user_type == "direct" or entry.receipt is not None:
+        return None
+    if _has_own_media(entry):
         return None
     text = (ev.raw_text or "").strip()
     if not text:
@@ -206,6 +245,8 @@ class InboxScheduler:
         if entry.item.strength == "hard":
             if entry.event.user_type == "direct":
                 return _PRIVATE_HARD_SETTLE_S
+            if _is_incomplete_opener(entry):
+                return min(_INCOMPLETE_OPENER_SETTLE_S, self._settle_max_s())
             return _GROUP_HARD_SETTLE_S
         return _SOFT_SETTLE_S
 

@@ -44,7 +44,7 @@
 | `register.py` | `@ai_tools` 装饰器，把工具按 category（`self / buildin / 插件名`）登记到全局工具表。 |
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
 | `utils.py` | `send_chat_result`（**呈现层**：report/meme/长文出图/拆条/漏网 sanitize）、`SILENCE_MARKERS`、`extract_json_from_text`。合规打回不在此。 |
-| `history_format.py` | `history_to_prompt` / `history_to_messages` / `outbound_history_fields` / `format_private_recent_history` 等 MessageRecord 格式化辅助；群聊线程视图在 `thread_view.py`。 |
+| `history_format.py` | `history_to_prompt` / `history_to_messages` / `outbound_history_fields` 等 MessageRecord 格式化辅助；群聊与私聊线程视图统一在 `thread_view.py`。 |
 | `normalize.py` / `content_guard.py` | 文本归一化与内容安全辅助。 |
 | `check_func.py` | 通用权限 / 状态检查工具。 |
 | `trigger_bridge.py` | 把"主人格 LLM 决定要调一个具体命令"桥接到 GsCore 触发器系统。 |
@@ -303,9 +303,9 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `models.py / dataclass_models.py` | 计数数据结构（含 `user_turn_*` / `agent_run_*`）。 |
 | `startup.py` | 启动期初始化。 |
 
-### `classifier/` — 模式分类
+### `classifier/` — 前置单轮路由
 
-`mode_classifier.py`：路由消息到不同 ai_mode（闲聊 / 任务 / RAG / 沉默 等）。模型文件落 `data/ai_core/intent_classifier_v5.2.joblib`。
+`turn_router.py`：单轮无思考轻量路由（`TurnRouter`），输出归属枚举 `a`、意图 `i`、记忆模态 `m`、实时查询 `l` 与事务委托 `w`；显式 `@Bot` 直通结构规则，离线自动退化至 `structural_route`。
 
 ### `state_store/` — 持久化业务状态
 

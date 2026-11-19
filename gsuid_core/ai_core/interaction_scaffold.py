@@ -1,11 +1,10 @@
-"""交互脚手架（C-1/C-2/C-3 + TurnGraph + CheapGate）。
+"""交互脚手架（C-1/C-2/C-3 + TurnGraph + 群聊结构门）。
 
 - C-1 跨轮省略式跟进：省略短句 → 先 list 再 modify 的结构提示。
 - C-2 会话级漂移预算：立规矩次数累积提醒。
-- C-3 寻址前置门：@别人且未点自己 → 零工具 / 可硬静音。
+- C-3 寻址前置门：@别人且未点自己 → 零工具 / 硬静音。
 - TurnGraph：本轮话语结构的一等公民（说话人/呼叫/跟进），门与装配只读它。
-- CheapGate：silence | full。群聊未点名可静音；点名一律完整装配。
-- 瘦工具：群聊 full 默认瘦保底，按 TurnGraph 证据加厚。
+- 两段门辅助：`admit_pre_router`（零 LLM 结构门）与 `allow_group_speak`（策略门）。
 
 判据均为结构/语言学范畴，不含评测载荷词。
 """
@@ -13,7 +12,6 @@
 from __future__ import annotations
 
 import re
-from enum import Enum
 from typing import TYPE_CHECKING, List, Tuple, Optional, Sequence
 from dataclasses import field, dataclass
 
@@ -55,10 +53,8 @@ def extract_message_body(text: str) -> str:
     """从消息文本中提取用户正文，供本模块所有**长度/内容**类判定使用。
 
     兼容三种形态：生产 payload（关系行 + 「--- 消息 ---」+ 正文 + 附件/@ 段 +
-    [当前时间：…] 行）、评测消息（「昵称(用户ID:x)：正文」）、裸文本。判定曾直接吃
-    整个 payload——关系行 + 时间行把长度门撑爆，`ambient_followup_to_other`（≤20 字）
-    在生产**永远不触发**、`references_task_management`（≤60 字）基本失效，而评测传
-    裸文本一切正常——与 C-3 rag 污染 bug 同款的「评测看得见、生产静默失效」。
+    [当前时间：…] 行）、评测消息（「昵称(用户ID:x)：正文」）、裸文本。长度门必须经此剥离
+    装饰行，避免生产 payload 撑爆 `references_task_management`（≤60 字）等长度上限。
     """
     t = text
     idx = t.find(_MSG_SECTION_HEAD)
@@ -98,47 +94,6 @@ FOLLOWUP_MAXLEN_DEFAULT = 24
 # 群聊消息说话人锚点：与 history_format / 评测合成前缀一致
 _SPEAKER_ID_RE = re.compile(r"用户ID:([^)）\s，,]+)")
 
-FOLLOWUP_HINT = (
-    "\n\n（系统提示：这句是对你们上一轮动作的省略式跟进，对象承接上文。"
-    "若要改/取消/暂停一个已建立的安排：先用列表类工具（如 list_scheduled_tasks）定位到目标那一条，"
-    "再用对应的 modify/cancel/pause 工具精确操作——绝不要新建一条重复的；"
-    "若是换个对象再查一遍，沿用上一轮的查询方式补全参数后真正去查。没调工具前不要说已完成。）"
-)
-
-# 同人 bot 刚回后的短续聊：结构证据是 soft_continue，不靠话题词。
-SOFT_CONTINUE_HINT = (
-    "\n\n（系统提示：同人在你刚回过后的短续聊——承接上文对象/任务。"
-    "若在追问/补充查询/对比，必须真正调查询或搜索工具；"
-    "缺细节时先用上文实体或记忆/查询工具尝试，禁止空口编造或只用澄清结束。）"
-)
-
-# 办眼前的事要填说话人槽：模型自己组合 search_cognition 的 query，不靠问句向量碰巧召回。
-SPEAKER_RECALL_HINT = (
-    "\n\n（系统提示：办眼前的事若要填说话人身上的事实且本句/上文没写，"
-    "先 search_cognition，query 只写「说话人ID + 要填的槽」，不要把本次外部题目的词拼进去；"
-    "回想不到就问一句，禁止空槽硬查。）"
-)
-
-# 问已有记忆 / 按偏好给建议：必须搜，且 query 带本题主题，不要抄目录干扰标题。
-MEMORY_QA_HINT = (
-    "\n\n（系统提示：这是在问或用已有记忆。"
-    "已注入【相关对话片段】/【核心事实】只说明谁在何时说过，"
-    "不是句中日期、数量或状态的当前事实。"
-    "问谁说过什么时按片段原文作答并带上说话时点；"
-    "问现在如何而原话会过期时，没有本轮工具结果就只转述说过的话。"
-    "片段不够再 search_cognition，query 保留说话人原文语言的专名/主题词（不要把英文专名全译成中文），"
-    "群聊可带说话人ID。"
-    "目录卡不是全文。作答点名命中里的专名原话。"
-    "点查过往记录且片段确实对不上才说没有，不要用相近事实顶替；"
-    "问方法/步骤/举例则按问句本身作答，不因记忆不全拒答。）"
-)
-
-MULTI_SPEAKER_HINT = (
-    "\n\n（系统提示：本条混入了多人发言。"
-    "只处理明确找你的那一位的请求；旁白/对别人说的话不抢答、不串请求、不把甲的槽位继承给乙。"
-    "若没人找你，输出 <SILENCE>。）"
-)
-
 
 def extract_speaker_id(text: str) -> str:
     """从消息文本抽出首个「用户ID:xxx」；没有则空串。"""
@@ -154,11 +109,6 @@ def list_speaker_ids(text: str) -> List[str]:
         if sid not in seen:
             seen.append(sid)
     return seen
-
-
-def is_multi_speaker_message(text: str) -> bool:
-    """结构判据：同一条消息混入 ≥2 个不同说话人前缀。"""
-    return len(list_speaker_ids(text)) >= 2
 
 
 def has_recent_tool_call(history: Sequence[ModelMessage], limit: int = 6) -> bool:
@@ -216,28 +166,6 @@ def detect_ellipsis_followup(
         return True
     last_sid = _last_user_speaker_id(recent)
     return (not last_sid) or last_sid == sid
-
-
-def ellipsis_inherits_other_speaker(
-    current_text: str,
-    recent: List[Tuple[str, str]],
-    persona_name: str,
-    is_tome: bool,
-    *,
-    speaker_id: str = "",
-    max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
-    extra_names: Sequence[str] = (),
-) -> bool:
-    """乙的短省略形、上一轮 user 是别人、且未点名自己 → 不是你的槽。"""
-    if is_tome or is_addressed_to_self(current_text, persona_name, is_tome, extra_names=extra_names):
-        return False
-    if not is_manage_ellipsis_form(current_text, max_len=max_len):
-        return False
-    sid = speaker_id or extract_speaker_id(current_text)
-    if not sid or not _history_has_any_speaker_id(recent):
-        return False
-    last_sid = _last_user_speaker_id(recent)
-    return bool(last_sid) and last_sid != sid
 
 
 # 任务管理意图：查/改/删/停 已有的提醒/定时任务/日程——无论是否省略跟进，都需要调度族工具
@@ -307,21 +235,10 @@ def count_style_pushes(current_text: str, recent: List[Tuple[str, str]], speaker
     return n
 
 
-# 寻址记号的定义在 control/lines.py。引用 bot 仍是 is_tome，但不能写成「直接找你」。
-QUOTE_TOME_HINT = (
-    "\n\n（系统提示：对方引用了你的消息，不等于在找你。"
-    "若被引用内容原本是交付给别的群友，而当前说话人只是围观感叹/随口评价、没有向你提出具体问题或请求，"
-    "或是在跟群里别人说话、故意惹你，输出 <SILENCE>；仅在向你追问/反驳/吩咐时才开口。）"
-)
 # 引用同时带第二人称祈使：按直接找你，不用 quoted_tome。
 _QUOTE_DIRECTED_RE = re.compile(
     r"^(?:你|您)?(?:\s|仔细|好好|重新|快){0,2}"
     r"(?:帮|给|查|看|搜|翻|算|设|改|取消|删|列|如何|怎么|怎样|评价|觉得|认为)"
-)
-
-ADDRESS_GATE_HINT = (
-    "\n\n（系统提示：这条消息 @ 的是群里另一个人、并不是在叫你，本轮已不提供任何工具。"
-    "与你无关就输出 <SILENCE> 保持沉默，至多旁观轻带一句；绝不替被 @ 的人回话、绝不演成 TA。）"
 )
 
 # 呼语：角色名后紧接第二人称/祈使（模板，运行时 escape 名）
@@ -373,23 +290,6 @@ def _at_mentions_name(message_text: str, name: str) -> bool:
     return False
 
 
-class GroupOpenGate(str, Enum):
-    """群聊开口门结果：只决定是否进主 loop，不裁剪可见上下文。"""
-
-    SPEAK = "speak"
-    SILENCE = "silence"
-
-
-def _names_self(text: str, persona_name: str, extra_names: Sequence[str] = ()) -> bool:
-    """正文是否出现角色名或配置唤醒词（含第三人称提及）。"""
-    surfaces = [s.strip() for s in (persona_name, *extra_names) if s and s.strip()]
-    if not surfaces:
-        return False
-    body = "\n".join(ln for ln in text.splitlines() if "@了用户" not in ln)
-    folded = body.casefold()
-    return any((s.casefold() in folded if s.isascii() else s in body) for s in surfaces)
-
-
 def is_addressed_to_self(
     message_text: str,
     persona_name: str,
@@ -429,57 +329,6 @@ def is_addressed_to_self(
     return False
 
 
-def addressed_to_someone_else(
-    message_text: str,
-    persona_name: str,
-    is_tome: bool,
-    *,
-    extra_names: Sequence[str] = (),
-) -> bool:
-    """当前消息是否明确 @ 了别人且没有同时找自己——是则本轮砍掉工具集（C-3）。"""
-    if is_tome or AT_OTHER_MARKER not in message_text:
-        return False
-    if is_addressed_to_self(message_text, persona_name, False, extra_names=extra_names):
-        return False
-    return True
-
-
-def decide_group_open_gate(
-    message_text: str,
-    *,
-    persona_name: str,
-    is_tome: bool,
-    user_type: str,
-    soft_triggered: bool = False,
-    recent: Sequence[Tuple[str, str]] | None = None,
-    extra_names: Sequence[str] = (),
-) -> GroupOpenGate:
-    """群聊开口前置门：进主 LLM/重装配前判定。
-
-    - 私聊 / 明确呼叫自己 → SPEAK
-    - @别人 / 催别人 ambient / 多人同条无呼叫 → SILENCE
-    - soft_triggered 未命中强负 → SPEAK（交给 TurnRouter.soft_speak 细判）
-    - 其余默认 SPEAK（避免误吞已入队的正经请求）
-    """
-    if user_type == "direct":
-        return GroupOpenGate.SPEAK
-    if is_addressed_to_self(message_text, persona_name, is_tome, extra_names=extra_names):
-        return GroupOpenGate.SPEAK
-    recent_list = list(recent) if recent is not None else []
-    if addressed_to_someone_else(message_text, persona_name, is_tome, extra_names=extra_names):
-        return GroupOpenGate.SILENCE
-    if ambient_followup_to_other(message_text, recent_list, persona_name, is_tome, extra_names=extra_names):
-        return GroupOpenGate.SILENCE
-    if ellipsis_inherits_other_speaker(message_text, recent_list, persona_name, is_tome, extra_names=extra_names):
-        return GroupOpenGate.SILENCE
-    # 多人同条且无人呼叫你 = 群里互聊
-    if is_multi_speaker_message(message_text):
-        return GroupOpenGate.SILENCE
-    if soft_triggered:
-        return GroupOpenGate.SPEAK
-    return GroupOpenGate.SPEAK
-
-
 def build_tool_search_query(
     current: str,
     recent_user_texts: Sequence[str] = (),
@@ -513,45 +362,7 @@ def build_tool_search_query(
     return q[-max_chars:]
 
 
-# 跨轮 ambient 催促：上一条（同一说话人）@ 了别人、
-# 当前消息无 @ 标注，C-3 主门抓不到。
-AMBIENT_MAXLEN_DEFAULT = 20
-
-
-def ambient_followup_to_other(
-    current_text: str,
-    recent: List[Tuple[str, str]],
-    persona_name: str,
-    is_tome: bool,
-    max_len: int = AMBIENT_MAXLEN_DEFAULT,
-    *,
-    extra_names: Sequence[str] = (),
-) -> bool:
-    """当前是短促追问、且紧邻的上一条用户消息 @ 了别人、本条又没点名自己——判为催被@者（C-3 扩展）。
-
-    只在当前消息**自身不含** @ 标注（那种走主门）、非 is_tome、不点名自己、且足够短
-    （催促口吻）时才成立；避免误伤"接着自己和你的对话"的正常跟进。
-    """
-    if is_tome or AT_OTHER_MARKER in current_text:
-        return False
-    body = extract_message_body(current_text)
-    if len(body) > max_len or _names_self(current_text, persona_name, extra_names):
-        return False
-    # 最近一条 user 历史是否 @ 了别人
-    last_user = next((t for r, t in reversed(recent) if r == "user"), "")
-    return AT_OTHER_MARKER in last_user
-
-
-# ── TurnGraph / CheapGate ───────────────────────────────────────────
-
-SOFT_CONTINUE_MAXLEN = 40
-
-
-class CheapGate(str, Enum):
-    """进主 loop 前的成本档：silence 不进；full 完整装配。"""
-
-    SILENCE = "silence"
-    FULL = "full"
+# ── TurnGraph / 群聊门控 ────────────────────────────────────────────
 
 
 @dataclass
@@ -572,10 +383,8 @@ class TurnGraph:
     address_gated: bool = False
     ellipsis_followup: bool = False
     task_management: bool = False
-    soft_continue: bool = False
     soft_triggered: bool = False
     style_push_count: int = 0
-    open_gate: GroupOpenGate = GroupOpenGate.SPEAK
     recent: List[Tuple[str, str]] = field(default_factory=list)
     recent_user_bodies: Optional[List[Tuple[str, str]]] = None
 
@@ -591,27 +400,7 @@ class TurnGraph:
     @property
     def wants_tool_search(self) -> bool:
         """是否值得做向量工具检索（有呼叫/跟进/任务，非纯旁观）。"""
-        return self.call_to_self or self.needs_task_tools or self.soft_continue
-
-
-def detect_soft_continue(
-    message_text: str,
-    recent: Sequence[Tuple[str, str]],
-    speaker_id: str,
-    *,
-    max_len: int = SOFT_CONTINUE_MAXLEN,
-) -> bool:
-    """同人在 bot 刚回过之后的短续聊（未 @ 也可接住，不继承他人槽位）。"""
-    body = extract_message_body(message_text)
-    if not body or len(body) > max_len or not recent:
-        return False
-    if not any(r == "assistant" for r, _ in recent):
-        return False
-    last_user = next((t for r, t in reversed(recent) if r == "user"), "")
-    last_sid = extract_speaker_id(last_user)
-    if last_sid and speaker_id and last_sid != speaker_id:
-        return False
-    return True
+        return self.call_to_self or self.needs_task_tools
 
 
 def build_turn_graph(
@@ -626,9 +415,9 @@ def build_turn_graph(
     soft_triggered: bool = False,
     recent_tool_call: bool = False,
     followup_max_len: int = FOLLOWUP_MAXLEN_DEFAULT,
-    ambient_max_len: int = AMBIENT_MAXLEN_DEFAULT,
     has_reply: bool = False,
     at_bot: bool = False,
+    has_at_other: bool = False,
     is_reply_to_bot: Optional[bool] = None,
     is_bystander_quote: bool = False,
     is_stale_quote: bool = False,
@@ -647,15 +436,10 @@ def build_turn_graph(
     # 显式点名（在文本中打出角色名）不是借楼
     textual = is_addressed_to_self(text, persona_name, False, extra_names=extra)
     if is_reply_to_bot is True:
-        # 旁人借楼或翻旧账：即便 C 端自动补了 @Bot，仍属于借楼（quoted_tome=True），
-        # 除非既非旁人借楼也非翻旧账时，textual 显式点名才算直接交互。
         quoted_tome = is_bystander_quote or is_stale_quote or not textual
     elif is_reply_to_bot is False:
-        # 引用的是自己或群友的消息：C 端客户端自动 @ 的是原作者，绝不可能自动 @Bot。
-        # 消息中若有 at_bot，100% 是用户主动手动输入的，绝非借楼！
         quoted_tome = False
     else:
-        # 未能在历史查到被引用者身份时的保守兜底：若有引用且未显式直呼角色名，保守置为 quoted_tome
         quoted_tome = bool(at_bot or is_tome) and has_reply and not textual
 
     if quoted_tome and not is_bystander_quote:
@@ -664,21 +448,9 @@ def build_turn_graph(
             quoted_tome = False
     call = is_addressed_to_self(text, persona_name, is_tome, extra_names=extra)
     multi = len(speakers) >= 2
-    addr = (
-        addressed_to_someone_else(text, persona_name, is_tome, extra_names=extra)
-        or ambient_followup_to_other(
-            text, recent_list, persona_name, is_tome, max_len=ambient_max_len, extra_names=extra
-        )
-        or ellipsis_inherits_other_speaker(
-            text,
-            recent_list,
-            persona_name,
-            is_tome,
-            speaker_id=primary,
-            max_len=followup_max_len,
-            extra_names=extra,
-        )
-    )
+    # C-3：明确 @ 了别人（协议 at_list 或兼容标注）且未同时呼叫自己 → 零工具硬静音
+    at_other_present = has_at_other or (AT_OTHER_MARKER in text)
+    addr = (not is_tome) and at_other_present and (not call)
     ellipsis = detect_ellipsis_followup(
         text,
         recent_list,
@@ -687,23 +459,13 @@ def build_turn_graph(
         speaker_id=primary,
     )
     task_mgmt = references_task_management(text)
-    if not call and not addr and AT_OTHER_MARKER not in text:
+    if not call and not addr and not at_other_present:
         body = extract_message_body(text)
         if body and _SELF_ASK_RE.search(body):
             call = True
         elif body and _DIRECTED_REQ_RE.match(body) and (ellipsis or task_mgmt or recent_tool_call):
             call = True
-    soft_c = (not call) and detect_soft_continue(text, recent_list, primary)
     pushes = count_style_pushes(text, recent_list, speaker_id=primary)
-    open_g = decide_group_open_gate(
-        text,
-        persona_name=persona_name,
-        is_tome=is_tome,
-        user_type=user_type,
-        soft_triggered=soft_triggered,
-        recent=recent_list,
-        extra_names=extra,
-    )
     return TurnGraph(
         user_type=user_type or "direct",
         message_text=text,
@@ -719,10 +481,8 @@ def build_turn_graph(
         address_gated=addr,
         ellipsis_followup=ellipsis,
         task_management=task_mgmt,
-        soft_continue=soft_c,
         soft_triggered=soft_triggered,
         style_push_count=pushes,
-        open_gate=open_g,
         recent=recent_list,
         recent_user_bodies=user_bodies_list,
     )
@@ -743,9 +503,7 @@ def _same_body_repeat_count(tg: TurnGraph) -> int:
                 n += 1
         return n
     for role, text in reversed(tg.recent):
-        if role != "user":
-            continue
-        if extract_message_body(text) != body:
+        if role != "user" or extract_message_body(text) != body:
             continue
         last_sid = extract_speaker_id(text)
         if sid and last_sid and last_sid != sid:
@@ -755,10 +513,10 @@ def _same_body_repeat_count(tg: TurnGraph) -> int:
 
 
 def admit_pre_router(tg: TurnGraph) -> bool:
-    """一段结构准入门（零 DB / 零 LLM）：群聊开口门、寻址门与复读刷屏拦截。"""
+    """一段结构准入门（零 DB / 零 LLM）：寻址门、多人无呼叫互聊与复读刷屏拦截。"""
     if not tg.is_group:
         return True
-    if tg.open_gate is GroupOpenGate.SILENCE or tg.address_gated:
+    if tg.address_gated or (tg.multi_speaker and not tg.call_to_self):
         return False
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -768,60 +526,32 @@ def admit_pre_router(tg: TurnGraph) -> bool:
     return True
 
 
-def decide_cheap_gate(
+def allow_group_speak(
     tg: TurnGraph,
     *,
-    soft_triggered: bool = False,
     has_active_task: bool = False,
-    intent: str = "",
     rel: Optional["RelationshipView"] = None,
-) -> CheapGate:
-    """基于 TurnGraph（+关系温度）决定成本档。
-
-    - 私聊 → full
-    - 开口门/寻址门强负（多人互聊、@别人、ambient 催别人）→ silence
-    - **群聊 + 未 @ + zone ∈ {hostile, cold} → silence**。引用 bot 的 is_tome
-      仍进环，由人格判断是否 <SILENCE>。呼名 / 活跃任务 / 省略跟进抬回。
-    - 其余（含被 @ 闲聊、未 @ 的群消息）→ full，由模型/C-3 决定是否 <SILENCE>
-    """
-    # intent 仍由调用方传入；档位不再按闲聊分流
+) -> bool:
+    """二段群聊策略门（结合潜水开关与冷淡/敌对关系档位）；私聊一律放行。"""
     if not tg.is_group:
-        return CheapGate.FULL
+        return True
     if not admit_pre_router(tg):
-        return CheapGate.SILENCE
+        return False
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
+    engaged = tg.is_tome or tg.call_to_self or tg.ellipsis_followup or tg.needs_task_tools or has_active_task
+    is_master = rel is not None and rel.is_master
     if bool(ai_config.get_config("group_lurk_mode").data):
-        _master = rel is not None and rel.is_master
-        if (
-            not _master
-            and not tg.is_tome
-            and not tg.call_to_self
-            and not tg.ellipsis_followup
-            and not tg.task_management
-            and not is_manage_ellipsis_form(tg.message_text)
-            and not has_active_task
-        ):
-            return CheapGate.SILENCE
-    if (
-        rel is not None
-        and rel.is_quiet_zone
-        and not rel.is_master
-        and not tg.is_tome
-        and not tg.call_to_self
-        and not tg.ellipsis_followup
-        and not tg.soft_continue
-        and not tg.needs_task_tools
-        and not has_active_task
-    ):
-        return CheapGate.SILENCE
-    return CheapGate.FULL
+        if not is_master and not engaged and not is_manage_ellipsis_form(tg.message_text):
+            return False
+    if rel is not None and rel.is_quiet_zone and not is_master and not engaged:
+        return False
+    return True
 
 
 def scaffold_hints_from_graph(
     tg: TurnGraph,
     *,
-    cheap: CheapGate,
     speaker_recall: bool = True,
     intent: str = "",
     persona_name: str | None = None,
@@ -842,14 +572,11 @@ def scaffold_hints_from_graph(
         hints.append(_turn("quote_tome"))
     if tg.ellipsis_followup:
         hints.append(_turn("followup"))
-    elif tg.soft_continue and not tg.soft_triggered:
-        # 省略跟进优先；软触发轮不叠 soft_continue
-        hints.append(_turn("soft_continue"))
     if tg.multi_speaker and tg.call_to_self:
         hints.append(_turn("multi_speaker"))
     if tg.style_push_count >= 2:
         hints.append(DRIFT_REMINDER)
-    if cheap is CheapGate.FULL and (not tg.is_group or tg.call_to_self) and speaker_recall:
+    if (not tg.is_group or tg.call_to_self) and speaker_recall:
         if route_decision is None:
             # 未接前置路由（第三方替换 classifier 槽）：只按既有 intent 结构分流。
             if intent == "工具" and tg.is_group:

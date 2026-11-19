@@ -192,23 +192,33 @@ async def apply_aside(
     commented = False
     if not in_cooldown and not all_omitted and comment_this_time(shape, settings, roll):
         memory = lookup_advice(plugin, receipt, trigger_id=entry_rel, persona_name=persona_name) if plugin else ""
+        # 纯图片回执且无文本、无建议记忆、未开工具时不提交 TurnRouter，避免空图刷屏
+        pure_empty_image = (
+            shape == "image"
+            and receipt.strip() in ("", "[图片]", "[图片/文件]")
+            and not memory
+            and not settings.allow_tools
+        )
+        if pure_empty_image:
+            memory = ""
         if memory:
             _note_session(session, memory, "aside_memory")
             logger.info(t("log.ai.command_aside_memory_hit", session_id=event.session_id, plugin=plugin))
         # 回执唤醒项：seq 指向本次命令在 A 轨最后一条回执出站记录。群聊里
         # 并发出站会交错，用收件人 uid 收窄，避免锚到别人那轮的发送上。
-        records = get_history_manager().get_history(event)
         receipt_seq = -1
-        expected_uid = str(event.user_id or "")
-        for rec in reversed(records):
-            if rec.role != "assistant" or rec.link is None:
-                continue
-            if event.user_type != "direct" and (
-                "reply_to_user_id" not in rec.metadata or str(rec.metadata["reply_to_user_id"]) != expected_uid
-            ):
-                continue
-            receipt_seq = rec.link.seq
-            break
+        if not pure_empty_image:
+            records = get_history_manager().get_history(event)
+            expected_uid = str(event.user_id or "")
+            for rec in reversed(records):
+                if rec.role != "assistant" or rec.link is None:
+                    continue
+                if event.user_type != "direct" and (
+                    "reply_to_user_id" not in rec.metadata or str(rec.metadata["reply_to_user_id"]) != expected_uid
+                ):
+                    continue
+                receipt_seq = rec.link.seq
+                break
         if receipt_seq >= 0 and bot is not None:
             from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry, ReceiptContext
             from gsuid_core.ai_core.inbox.scheduler import get_inbox_scheduler

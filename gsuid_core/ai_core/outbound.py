@@ -190,19 +190,6 @@ def _fmt_hm(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M")
 
 
-# 归属提示的时间上界。超过就不再出现：一条陈旧的"你刚把 X 发给了 Y"比没有更糟，
-# 它会让模型把一段早已翻篇的对话当成正在进行的那一段。
-OWNERSHIP_HINT_TTL_SECONDS = 300.0
-
-
-def _fmt_ago(age_seconds: float) -> str:
-    """相对时间前缀。60s 内不说时间，久了才加，避免每条消息都拖一句。"""
-    if age_seconds < 60:
-        return ""
-    minutes = int(age_seconds // 60)
-    return f"{minutes} 分钟前"
-
-
 def proactive_directed_target(event: Event, message: str) -> str:
     """群播报只有正文里的 <@用户ID> 才算定向。裸 @ 不算。
 
@@ -479,43 +466,6 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
 
     line = quote_object_line(_fmt_hm(hit.ts), who, topic, extra)
     return QuoteResolve(line=line, topic=topic, handle=handle, target=who, is_bot_reply=True)
-
-
-async def ownership_hint(ev: Event) -> str:
-    """当前发言者不是最近交付对象时给一句归属。
-
-    只在**很近的**交付后才出现。早先取全群最近一次交付且没有时间上界，还断言"你刚把"，
-    于是一条 73 分钟前的交付仍在宣告"你正在跟别人对话"——每条旁观者消息都带一句这种
-    环境描述，等于持续把模型预置进二人对话。群转录本身（`[与你的对话]` + `AI→收件人`）
-    才是群况的权威来源，这里只补"刚才那次交付归谁"这一个事实。
-    """
-    gid = ledger_group_key(ev)
-    if not gid or ev.user_id is None:
-        return ""
-    from sqlalchemy.exc import OperationalError, ProgrammingError
-
-    from gsuid_core.ai_core.database.outbound import OutboundAudit
-
-    if not _db_ready():
-        return ""
-    try:
-        rows = await OutboundAudit.recent_for_group(gid, limit=1)
-    except (OperationalError, ProgrammingError) as e:
-        logger.debug(i18n_t("log.ai.outbound_read_skip", e=e))
-        return ""
-    if not rows:
-        return ""
-    last = rows[0]
-    if not last.target_user or last.target_user == str(ev.user_id):
-        return ""
-    age = time.time() - float(last.ts)
-    if age > OWNERSHIP_HINT_TTL_SECONDS:
-        return ""
-    who = last.target_name or last.target_user
-    topic = _clean_topic_head(last.topic or last.text, 12) or "图片"
-    from gsuid_core.ai_core.control.lines import ownership_line
-
-    return ownership_line(_fmt_ago(age), topic, who)
 
 
 @dataclass(frozen=True)

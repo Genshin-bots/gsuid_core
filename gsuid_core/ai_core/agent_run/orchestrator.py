@@ -20,7 +20,7 @@ from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
+from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 
 
 class OrchestratorPhase(RunOnceHost):
@@ -39,7 +39,6 @@ class OrchestratorPhase(RunOnceHost):
         suppress_intermediate_text: bool = False,
         fake_done_retry: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
         injection_reason: str = "",
     ) -> object:
@@ -82,7 +81,6 @@ class OrchestratorPhase(RunOnceHost):
             suppress_intermediate_text=_suppress,
             fake_done_retry=fake_done_retry,
             turn_graph=turn_graph,
-            cheap_gate=cheap_gate,
             is_framework_injection=is_framework_injection,
             injection_reason=injection_reason,
             outbound_stream=self._outbound_stream,

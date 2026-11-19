@@ -186,7 +186,7 @@ MAX_SUMMARY_LENGTH = 15000    # 超过则子 Agent 摘要
 | `follow_up_max_total` | 300s | 硬天花板 |
 | `follow_up_max_replies` | 2 | 单窗口内续聊成功回复上限 |
 | `inbox_settle_max_ms` | 5000 | 落定合并上限 |
-| `inbox_feedback_window` | 120 | 「有人接/没人接」观察窗 |
+| `inbox_group_busy_msg_per_min` | 12 | 高活跃群压制免唤醒续聊的近 1 分钟速率阈值（0 关闭） |
 
 `statistics` 触发分布按 wake kind 记录。
 

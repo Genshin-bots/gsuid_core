@@ -500,6 +500,11 @@ def collect_speaker_preference_rules(
         cleaned = re.sub(r'[\s，。；,;：:！!？?"\'「」()（）]', "", cleaned).lower()
         return cleaned
 
+    def _char_bigrams(s: str) -> set[str]:
+        return {s[i : i + 2] for i in range(len(s) - 1)} if len(s) >= 2 else set()
+
+    seen_bigrams: list[set[str]] = []
+
     def push(text: str) -> None:
         body = text.strip()
         if not body or len(out) >= limit:
@@ -509,7 +514,12 @@ def collect_speaker_preference_rules(
             return
         if any(key in prev or prev in key for prev in seen if len(key) >= 4 and len(prev) >= 4):
             return
+        bg = _char_bigrams(key)
+        if len(bg) >= 8 and any(len(bg & prev_bg) / min(len(bg), len(prev_bg)) >= 0.55 for prev_bg in seen_bigrams):
+            return
         seen.add(key)
+        if len(bg) >= 8:
+            seen_bigrams.append(bg)
         out.append(body)
 
     ranked = sorted(

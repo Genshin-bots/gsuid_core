@@ -70,11 +70,15 @@ class AgentHookContext:
     # 本轮显式时钟（评测 HTTP clock_at）。None=墙上时钟。
     clock_at: Optional[datetime] = None
     relationship: Optional["RelationshipView"] = None
-    cheap_gate: str = ""
-    prior_user_turns: List[str] = field(default_factory=list)
     gate_history: List["MessageRecord"] = field(default_factory=list)
     # 收件箱轮次的 router 视图（时间线 + 待判断块），内核装配好供 classifier 只读。
     router_view: str = ""
+    # 非空时 classifier 优先路由此文本（如命令回执摘要，避免把原命令当用户新委托）。
+    router_query: str = ""
+    # 本轮唤醒类型（mention / name / quote_self / followup / receipt / private）。
+    wake_kind: str = ""
+    # True 时跳过前置 LLM 路由，直接走确定性结构路由（如显式 @Bot 直通）。
+    skip_llm_router: bool = False
     # CLASSIFY 点位唯一写入：下游 Gate / Memory / Scaffold 只读，不再各自扫文本。
     route_decision: Optional["TurnRouteDecision"] = None
     assembled_domains: List[str] = field(default_factory=list)

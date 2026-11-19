@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import time
 from enum import StrEnum
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 from dataclasses import dataclass
+from collections.abc import Sequence
+
+if TYPE_CHECKING:
+    from gsuid_core.message_history import MessageRecord
 
 _GC_THRESHOLD = 512
 
@@ -196,3 +200,35 @@ def in_followup_window(
         )
         == FollowupWindowState.ACTIVE
     )
+
+
+def group_is_too_busy_for_followup(
+    records: Sequence[MessageRecord],
+    *,
+    speaker_uid: str,
+    now: float,
+    busy_per_min: int,
+    max_intervening_others: int = 4,
+) -> bool:
+    """活跃大群压制免唤醒续聊：近 1 分钟他人刷屏达标或距上次 Bot 回复间插过多他人消息。"""
+    if busy_per_min <= 0 or not records:
+        return False
+    recent_other = sum(
+        1
+        for r in records
+        if r.role == "user" and str(r.user_id or "") != speaker_uid and 0.0 <= now - r.timestamp <= 60.0
+    )
+    if recent_other >= busy_per_min:
+        return True
+    intervening = 0
+    saw_last_bot = False
+    for r in reversed(records):
+        if r.role == "assistant":
+            meta = r.metadata
+            if "reply_to_user_id" in meta and str(meta["reply_to_user_id"]) == speaker_uid:
+                saw_last_bot = True
+                break
+            continue
+        if r.role == "user" and str(r.user_id or "") != speaker_uid:
+            intervening += 1
+    return saw_last_bot and intervening > max_intervening_others

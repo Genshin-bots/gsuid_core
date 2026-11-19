@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import TYPE_CHECKING, List, Tuple, Optional, Sequence
+from typing import TYPE_CHECKING, Tuple, Optional, Sequence
 from datetime import datetime, timezone
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,7 +34,6 @@ from gsuid_core.ai_core.models import PendingImage
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.quota_guard import quota_breaker
 from gsuid_core.ai_core.control.lines import MSG_SECTION_HEAD
-from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
 if TYPE_CHECKING:
@@ -245,19 +244,6 @@ def extract_pending_unread_images(
     return pending
 
 
-def build_private_history_block(event: Event, *, is_cold_session: bool = False) -> str:
-    """私聊在冷启动时按需回灌近 8 条私聊记录。"""
-    if event.group_id or not is_cold_session:
-        return ""
-    raw = get_history_manager().get_history(event)
-    records = raw[:-1] if raw else []
-    if not records:
-        return ""
-    from gsuid_core.ai_core.history_format import format_private_recent_history
-
-    return format_private_recent_history(records[-8:])
-
-
 def classify_run_result(chat_result: str) -> Tuple[str, bool, bool]:
     """把一次 run 的返回值分类一次，供下发与结算复用。
 
@@ -382,38 +368,6 @@ def prev_turn_used_tools(
         if seen >= max_assistant_turns:
             break
     return False
-
-
-def prior_turns_from_agent_history(history: Sequence[ModelMessage], query: str) -> List[str]:
-    """从 agent.history 抽出同用户先验（评测把请求 history 灌进 session 后用）。"""
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-
-    texts: List[str] = []
-    for msg in history:
-        if not isinstance(msg, ModelRequest):
-            continue
-        for part in msg.parts:
-            if isinstance(part, UserPromptPart) and isinstance(part.content, str) and part.content.strip():
-                texts.append(part.content)
-    if texts and texts[-1].strip() == query.strip():
-        texts = texts[:-1]
-    return texts[-4:]
-
-
-def prior_user_turns_for_intent(event: Event, query: str) -> Tuple[List[str], List[MessageRecord]]:
-    """意图分类的同用户先验。返回 ``(prior_turns, 本轮取到的历史)``。
-
-    handler 已把本轮用户句入库，prior 须去掉与 query 相同的末条，否则分类器会把
-    当前句当成「上一轮也这么说」的证据。
-    """
-    from gsuid_core.ai_core.classifier.mode_classifier import collect_prior_user_turns
-
-    history_manager = get_history_manager()
-    records = history_manager.get_history(event, limit=30)
-    prior = collect_prior_user_turns(records, str(event.user_id), max_turns=5)
-    if prior and prior[-1].strip() == query.strip():
-        prior = prior[:-1]
-    return prior[-4:], records
 
 
 def stale_request(

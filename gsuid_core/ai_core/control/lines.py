@@ -227,11 +227,6 @@ def quote_object_line(when: str, who: str, topic: str, extra: str) -> str:
     return f"（系统：引用对象：你于 {when} 发给{who}的「{topic}」{extra}）"
 
 
-def ownership_line(ago: str, topic: str, who: str) -> str:
-    """ago 已含「刚才」这类时间词。"""
-    return f"（系统：{ago}你把「{topic}」发给了{who}。）"
-
-
 def delivery_wake_line(delivery: str, at_hint: str, title_ban: str, allow_render: bool = True) -> str:
     """看板交付回灌。at_hint / title_ban 可为空。"""
     render_hint = (
@@ -401,30 +396,13 @@ def omitted_lines_marker(count: int) -> str:
 
 # 当轮动态块头（入史前剥除；正文组装在 inbox/blocks.py）
 PENDING_BLOCK_HEAD = "（待你回应）"
-RELATED_BLOCK_HEAD = "（相关往来）"
 RECEIPT_CONTEXT_HEAD = "（回执上下文）"
-GROUP_RECENT_BLOCK_HEAD = "（本群近况）"
 ROUTER_TIMELINE_HEAD = "[近期时间线]"
 ROUTER_PENDING_HEAD = "[待判断]"
 ROUTER_PRINCIPLE = (
     "原则：被引用或含你名字不等于在叫你（叫别人、群友互聊提及、其他Bot播报均无关）；"
     "复读或起哄紧邻上文你刚公开答复过的同一件事（无替他人查的〔依据〕）无需再回。"
 )
-
-# 群级反馈事实（§5.3）：kind → 渲染标签 + 一行格式。
-FEEDBACK_KIND_LABELS: Final[dict[str, str]] = {
-    "mention": "@后接话",
-    "name": "点名后接话",
-    "quote_self": "被引用后接话",
-    "followup": "续聊接话",
-    "receipt": "回执后接话",
-}
-
-
-def feedback_kind_fact(label: str, total: int, hits: int) -> str:
-    """``近 N 次「<label>」M 次有人接``。"""
-    return f"近 {total} 次「{label}」{hits} 次有人接"
-
 
 # 证据块与工具结果前缀（§4.6；B 轨 obs 行 / 出站〔依据〕标签 / 实时状态行）
 EVIDENCE_BLOCK_HEAD = "（证据）"

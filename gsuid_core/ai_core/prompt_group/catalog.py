@@ -122,13 +122,6 @@ SPECS: tuple[PromptSpec, ...] = (
         (),
     ),
     PromptSpec(
-        "soft_continue",
-        "会话·每轮注入",
-        "同人短续聊",
-        "你刚回过，同一个人马上又说一句时注入。",
-        (),
-    ),
-    PromptSpec(
         "speaker_recall",
         "会话·每轮注入",
         "先回忆说话人",
@@ -270,33 +263,48 @@ def default_body(key: str) -> str:
     if key == "transaction_priority":
         return "（本轮有实际事务，优先调工具完成；人设口吻不是跳过理由。）"
     if key == "followup":
-        from gsuid_core.ai_core.interaction_scaffold import FOLLOWUP_HINT
-
-        return FOLLOWUP_HINT
-    if key == "soft_continue":
-        from gsuid_core.ai_core.interaction_scaffold import SOFT_CONTINUE_HINT
-
-        return SOFT_CONTINUE_HINT
+        return (
+            "\n\n（系统提示：这句是对你们上一轮动作的省略式跟进，对象承接上文。"
+            "若要改/取消/暂停一个已建立的安排：先用列表类工具（如 list_scheduled_tasks）定位到目标那一条，"
+            "再用对应的 modify/cancel/pause 工具精确操作——绝不要新建一条重复的；"
+            "若是换个对象再查一遍，沿用上一轮的查询方式补全参数后真正去查。没调工具前不要说已完成。）"
+        )
     if key == "speaker_recall":
-        from gsuid_core.ai_core.interaction_scaffold import SPEAKER_RECALL_HINT
-
-        return SPEAKER_RECALL_HINT
+        return (
+            "\n\n（系统提示：办眼前的事若要填说话人身上的事实且本句/上文没写，"
+            "先 search_cognition，query 只写「说话人ID + 要填的槽」，不要把本次外部题目的词拼进去；"
+            "回想不到就问一句，禁止空槽硬查。）"
+        )
     if key == "memory_qa":
-        from gsuid_core.ai_core.interaction_scaffold import MEMORY_QA_HINT
-
-        return MEMORY_QA_HINT
+        return (
+            "\n\n（系统提示：这是在问或用已有记忆。"
+            "已注入【相关对话片段】/【核心事实】只说明谁在何时说过，"
+            "不是句中日期、数量或状态的当前事实。"
+            "问谁说过什么时按片段原文作答并带上说话时点；"
+            "问现在如何而原话会过期时，没有本轮工具结果就只转述说过的话。"
+            "片段不够再 search_cognition，query 保留说话人原文语言的专名/主题词（不要把英文专名全译成中文），"
+            "群聊可带说话人ID。"
+            "目录卡不是全文。作答点名命中里的专名原话。"
+            "点查过往记录且片段确实对不上才说没有，不要用相近事实顶替；"
+            "问方法/步骤/举例则按问句本身作答，不因记忆不全拒答。）"
+        )
     if key == "multi_speaker":
-        from gsuid_core.ai_core.interaction_scaffold import MULTI_SPEAKER_HINT
-
-        return MULTI_SPEAKER_HINT
+        return (
+            "\n\n（系统提示：本条混入了多人发言。"
+            "只处理明确找你的那一位的请求；旁白/对别人说的话不抢答、不串请求、不把甲的槽位继承给乙。"
+            "若没人找你，输出 <SILENCE>。）"
+        )
     if key == "address_gate":
-        from gsuid_core.ai_core.interaction_scaffold import ADDRESS_GATE_HINT
-
-        return ADDRESS_GATE_HINT
+        return (
+            "\n\n（系统提示：这条消息 @ 的是群里另一个人、并不是在叫你，本轮已不提供任何工具。"
+            "与你无关就输出 <SILENCE> 保持沉默，至多旁观轻带一句；绝不替被 @ 的人回话、绝不演成 TA。）"
+        )
     if key == "quote_tome":
-        from gsuid_core.ai_core.interaction_scaffold import QUOTE_TOME_HINT
-
-        return QUOTE_TOME_HINT
+        return (
+            "\n\n（系统提示：对方引用了你的消息，不等于在找你。"
+            "若被引用内容原本是交付给别的群友，而当前说话人只是围观感叹/随口评价、没有向你提出具体问题或请求，"
+            "或是在跟群里别人说话、故意惹你，输出 <SILENCE>；仅在向你追问/反驳/吩咐时才开口。）"
+        )
     raise KeyError(key)
 
 

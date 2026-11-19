@@ -17,7 +17,7 @@ from gsuid_core.ai_core.configs.models import AnyModel
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.agent_run.support import TraceKind
-from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
+from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 from gsuid_core.ai_core.control.outbound_detectors import FirewallHit
 
 if TYPE_CHECKING:
@@ -182,7 +182,6 @@ class RunOnceHost:
         suppress_intermediate_text: bool = False,
         fake_done_retry: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
         injection_reason: str = "",
     ) -> object:

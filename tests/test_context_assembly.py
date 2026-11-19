@@ -86,7 +86,7 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
         primary_speaker="u1",
         call_to_self=True,
     )
-    ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=tg, cheap_gate="full")
+    ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=tg)
     allowed = suffix_allowed_blocks(ctx)
     assert allowed is not None and "voice_anchor" in allowed
     voice = "（口吻：" + "轻软简短" * 45 + "）"
@@ -119,7 +119,7 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
         primary_speaker="u1",
         call_to_self=False,
     )
-    idle_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=idle, cheap_gate="full")
+    idle_ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, turn_graph=idle)
     # 未寻址群轮：产品块全剥，但收件箱结构块（待回应/证据）永远放行。
     assert suffix_allowed_blocks(idle_ctx) == frozenset({"voice_anchor", "history", "inbox_pending", "evidence"})
     idle_ctx.blocks = {"voice_anchor": voice, "task": "任务块", "memory": "M" * 80, "history": "H" * 500}
@@ -129,7 +129,6 @@ def test_dynamic_context_ordering_and_suffix_policy() -> None:
     soft_ctx = AgentHookContext(
         point=AgentHookPoint.COMPOSE_CONTEXT,
         turn_graph=idle,
-        cheap_gate="full",
         soft_triggered=True,
     )
     assert suffix_allowed_blocks(soft_ctx) == frozenset({"voice_anchor", "history", "inbox_pending", "evidence"})
@@ -522,3 +521,232 @@ def test_render_delta_quote_edges_and_merge() -> None:
         assert "dlg_2f7fe0a6" not in win
     finally:
         hm.clear_history(ev_dlg)
+
+    # 群聊统一切片：30 分钟前无关命令回执裁掉、连续 4 条同人重复折叠为 (×4)、
+    # TurnRouter 视图正确标注 receipt 与 quote_self 归属及 [场景] 行
+    from gsuid_core.ai_core.inbox.state import ReceiptContext
+
+    t_now = base + 7200.0
+    slice_records = [
+        MessageRecord(
+            role="user",
+            content="旧指令触发",
+            user_id="100000099",
+            user_name="测试用户Z",
+            timestamp=t_now - 3600.0,
+            metadata={"user_type": "group", "msg_id": "old1", "command_hit": True},
+            link=EventLink(seq=10, msg_id="old1"),
+        ),
+        MessageRecord(
+            role="assistant",
+            content="[图片]",
+            user_id="900000001",
+            user_name="测试人格",
+            timestamp=t_now - 3595.0,
+            metadata={
+                "msg_id": "old2",
+                "speech_channel": "command_aside",
+                "persona_name": "测试人格",
+                "reply_to_user_id": "100000099",
+                "reply_to_user_name": "测试用户Z",
+            },
+            link=EventLink(seq=11, msg_id="old2"),
+        ),
+        MessageRecord(
+            role="assistant",
+            content="这是之前回复给测试用户A 的内容",
+            user_id="900000001",
+            user_name="测试人格",
+            timestamp=t_now - 90.0,
+            metadata={
+                "msg_id": "bot12",
+                "speech_channel": "persona",
+                "persona_name": "测试人格",
+                "reply_to_user_id": "100000001",
+                "reply_to_user_name": "测试用户A",
+            },
+            link=EventLink(seq=12, msg_id="bot12", in_reply_to_seqs=(10,)),
+        ),
+        *[
+            MessageRecord(
+                role="user",
+                content="哈哈",
+                user_id="100000002",
+                user_name="测试用户B",
+                timestamp=t_now - 60.0 + idx * 5.0,
+                metadata={"user_type": "group", "msg_id": f"rep_{idx}"},
+                link=EventLink(seq=13 + idx, msg_id=f"rep_{idx}", reply_to_seq=12, reply_to_author="self"),
+            )
+            for idx in range(4)
+        ],
+        MessageRecord(
+            role="user",
+            content="测试一下这个",
+            user_id="100000001",
+            user_name="测试用户A",
+            timestamp=t_now,
+            metadata={"user_type": "group", "msg_id": "q17"},
+            link=EventLink(seq=17, msg_id="q17", reply_to_seq=12, reply_to_author="self"),
+        ),
+    ]
+    sliced_delta = render_delta(
+        slice_records,
+        from_seq=9,
+        head_seq=17,
+        backfill=True,
+        pending_seqs=(17,),
+        persona_name="测试人格",
+        private=False,
+    )
+    assert "#10 " not in sliced_delta and "#11 " not in sliced_delta
+    assert "(×4)" in sliced_delta and "#17 " in sliced_delta
+
+    # 私聊冷启动 backfill 不受 30 分钟群聊断层限制；无引用同人连发 ≥3 相同正文合行亦折叠为 (×N)
+    dm_old_records = [
+        MessageRecord(
+            role="user",
+            content="两小时前的私聊问题",
+            user_id="100000001",
+            user_name="测试用户A",
+            timestamp=t_now - 7200.0,
+            metadata={"user_type": "direct", "msg_id": "dm1"},
+            link=EventLink(seq=1, msg_id="dm1"),
+        ),
+        MessageRecord(
+            role="user",
+            content="继续聊",
+            user_id="100000001",
+            user_name="测试用户A",
+            timestamp=t_now,
+            metadata={"user_type": "direct", "msg_id": "dm2"},
+            link=EventLink(seq=2, msg_id="dm2"),
+        ),
+    ]
+    dm_delta = render_delta(
+        dm_old_records, from_seq=1, head_seq=2, backfill=True, pending_seqs=(2,), persona_name="测试人格", private=True
+    )
+    assert "两小时前的私聊问题" in dm_delta
+
+    unquoted_spam = [
+        MessageRecord(
+            role="user",
+            content="刷屏词",
+            user_id="100000002",
+            user_name="测试用户B",
+            timestamp=t_now - 30.0 + idx * 2.0,
+            metadata={"user_type": "group", "msg_id": f"sp_{idx}"},
+            link=EventLink(seq=20 + idx, msg_id=f"sp_{idx}"),
+        )
+        for idx in range(4)
+    ] + [
+        MessageRecord(
+            role="user",
+            content="正经问题",
+            user_id="100000001",
+            user_name="测试用户A",
+            timestamp=t_now,
+            metadata={"user_type": "group", "msg_id": "sp_q"},
+            link=EventLink(seq=25, msg_id="sp_q"),
+        )
+    ]
+    spam_delta = render_delta(
+        unquoted_spam,
+        from_seq=19,
+        head_seq=25,
+        backfill=False,
+        pending_seqs=(25,),
+        persona_name="测试人格",
+        private=False,
+    )
+    assert "刷屏词 (×4)" in spam_delta
+
+    turn_qself = InboxTurn(
+        session_id="OneBot:onebot:900000001:group:70002",
+        persona_name="测试人格",
+        entries=(
+            PendingEntry(
+                WakeItem(17, "100000001", "quote_self", "soft", t_now),
+                Event("OneBot", "900000001", "q17", "group", "70002", "100000001", {}, 0, raw_text="测试一下这个"),
+                persona_name="测试人格",
+            ),
+        ),
+        from_seq=16,
+        head_seq=17,
+    )
+    rview_q = render_router_view(turn_qself, slice_records, relation_label="主人", group_rate_1m=5)
+    assert "引用对象=你→本人" in rview_q
+    assert "[场景] 关系=主人 · 近1分钟群消息=5条 · 触发=quote_self" in rview_q
+    assert "(用户ID:" not in rview_q
+
+    turn_rcpt = InboxTurn(
+        session_id="OneBot:onebot:900000001:group:70002",
+        persona_name="测试人格",
+        entries=(
+            PendingEntry(
+                WakeItem(11, "100000099", "receipt", "soft", t_now),
+                Event("OneBot", "900000001", "old1", "group", "70002", "100000099", {}, 6, raw_text="旧指令触发"),
+                receipt=ReceiptContext(None, "测试插件", "entry.py", "错误码 -400016"),
+                persona_name="测试人格",
+            ),
+        ),
+        from_seq=10,
+        head_seq=11,
+    )
+    rview_rcpt = render_router_view(turn_rcpt, slice_records)
+    assert "★#11 receipt · 插件=测试插件" in rview_rcpt and "你上次回他是" not in rview_rcpt
+
+    # 日志经历去重 / 偏好 2-gram 去重 / 空摘要观测过滤
+    from pydantic_ai.messages import TextPart, ModelResponse
+
+    from gsuid_core.ai_core.self_cognition import collect_speaker_preference_rules
+    from gsuid_core.ai_core.agent_run.prepare import _journal_delta_in_recent_history
+
+    hist_j = [ModelResponse(parts=[TextPart(content="刚刚帮测试用户A查了今日天气，结果是晴天")])]
+    assert _journal_delta_in_recent_history("刚刚帮测试用户A查了今日天气，结果是晴天", hist_j) is True
+    assert _journal_delta_in_recent_history("完全不同的另一件新日程安排记录", hist_j) is False
+    two_seg = (
+        "（系统提示：刚刚经历：[12:00 | 闲聊] 刚刚帮测试用户A查了今日天气，结果是晴天；"
+        "[12:01 | 闲聊] 全新的另一条未复述事项记录）"
+    )
+    assert _journal_delta_in_recent_history(two_seg, hist_j) is False
+
+    dedup_prefs = collect_speaker_preference_rules(
+        [],
+        [
+            ("用户(user_id:100000001)对测试人格使用昵称小柚子来称呼", "naming", False),
+            ("用户(user_id:100000001)平时对测试人格使用昵称小柚子来称呼", "general", False),
+            ("用户(user_id:100000001)喜欢喝热美式咖啡", "general", False),
+        ],
+        "100000001",
+        limit=6,
+    )
+    assert len(dedup_prefs) == 2
+
+    # 源头拒写空壳 read_image 观测，避免污染证据存储与渲染
+    from gsuid_core.ai_core.inbox.turn import bind_turn, reset_turn
+    from gsuid_core.ai_core.evidence.capture import record_tool_result
+
+    empty_sess = "OneBot:onebot:900000001:group:70098_ev"
+    empty_store = get_evidence_store(empty_sess)
+    empty_store.observations.clear()
+    tok_ev = bind_turn(
+        InboxTurn(
+            session_id=empty_sess,
+            persona_name="测试人格",
+            entries=(
+                PendingEntry(
+                    WakeItem(1, "100000001", "mention", "hard", obs_now),
+                    Event("OneBot", "900000001", "ev1", "group", "70098", "100000001", {}, 6),
+                    persona_name="测试人格",
+                ),
+            ),
+            from_seq=0,
+            head_seq=1,
+        )
+    )
+    try:
+        record_tool_result("read_image", b"raw-bytes", None)
+        assert not empty_store.observations
+    finally:
+        reset_turn(tok_ev)
+        empty_store.observations.clear()

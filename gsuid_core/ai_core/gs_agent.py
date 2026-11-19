@@ -73,7 +73,7 @@ from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER, TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
-from gsuid_core.ai_core.interaction_scaffold import CheapGate, TurnGraph
+from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
     looks_like_provider_failure,
@@ -1169,7 +1169,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> str: ...
 
@@ -1189,7 +1188,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> _T: ...
 
@@ -1207,7 +1205,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
     ) -> Union[str, Any]:
         """核心回复请求的瞬时失败重试包装。
@@ -1265,7 +1262,6 @@ class GsCoreAIAgent(RunOnceMixin):
                         budget_gate=budget_gate,
                         suppress_intermediate_text=suppress_intermediate_text,
                         turn_graph=turn_graph,
-                        cheap_gate=cheap_gate,
                         is_framework_injection=is_framework_injection,
                     )
                 except Exception as e:
@@ -1803,7 +1799,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
         outbound_stream: bool = False,
         stats_chat_type: Optional[str] = None,
@@ -1826,7 +1821,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
         outbound_stream: bool = False,
         stats_chat_type: Optional[str] = None,
@@ -1847,7 +1841,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool = False,
         suppress_intermediate_text: bool = False,
         turn_graph: Optional[TurnGraph] = None,
-        cheap_gate: Optional[CheapGate] = None,
         is_framework_injection: bool = False,
         outbound_stream: bool = False,
         stats_chat_type: Optional[str] = None,
@@ -1875,7 +1868,6 @@ class GsCoreAIAgent(RunOnceMixin):
                 伴随的文字都不由主循环发送。委派时同一次回复里的开场句由 create_subagent
                 派发成功后代发一次（过同一套话术闸）。无工具的最终回复照常发送。
             turn_graph: 入口构建的 TurnGraph（可选）；缺省时在装配层现场构建。
-            cheap_gate: CheapGate 成本档（可选）；驱动群聊瘦保底。
             outbound_stream: True=可见文本按 delta 出站；False=等完整 TextPart。
                 与 pydantic-ai ``node.stream()``（TTFT/TPS）正交。
             stats_chat_type: Token 用量分类；空则用 ``create_by``。HTTP 入口传 Http_Chat。
@@ -1908,7 +1900,6 @@ class GsCoreAIAgent(RunOnceMixin):
                     budget_gate=budget_gate,
                     suppress_intermediate_text=suppress_intermediate_text,
                     turn_graph=turn_graph,
-                    cheap_gate=cheap_gate,
                     is_framework_injection=is_framework_injection,
                 )
             finally:
@@ -1930,7 +1921,6 @@ class GsCoreAIAgent(RunOnceMixin):
         budget_gate: bool,
         suppress_intermediate_text: bool,
         turn_graph: Optional[TurnGraph],
-        cheap_gate: Optional[CheapGate],
         is_framework_injection: bool,
     ) -> Union[str, Any]:
         """已持锁：TTL 校验 + provider 路由 + 真正执行。"""
@@ -1960,7 +1950,6 @@ class GsCoreAIAgent(RunOnceMixin):
                 budget_gate=budget_gate,
                 suppress_intermediate_text=suppress_intermediate_text,
                 turn_graph=turn_graph,
-                cheap_gate=cheap_gate,
                 is_framework_injection=is_framework_injection,
             )
 

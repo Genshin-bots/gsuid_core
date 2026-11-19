@@ -8,6 +8,7 @@ from typing import Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic_ai.usage import UsageLimits
+from pydantic_ai.messages import TextPart, ModelMessage, ModelResponse
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -59,6 +60,22 @@ def _ephemeral_system_block(text: str) -> str:
         else:
             lines.append(f"（系统：{s}）")
     return "\n".join(lines)
+
+
+def _journal_delta_in_recent_history(delta_text: str, history: Sequence[ModelMessage]) -> bool:
+    """若「刚刚经历」各分条正文均已在最近 2 条 ModelResponse 中出现，跳过重复注入。"""
+    inner = delta_text.removeprefix("（系统提示：刚刚经历：").rstrip("）)").strip()
+    needles = [(seg.split("] ", 1)[1] if "] " in seg else seg).strip()[:24] for seg in inner.split("；") if seg.strip()]
+    needles = [n for n in needles if len(n) >= 8]
+    if not needles:
+        return False
+    recent_texts = [
+        p.content
+        for m in [m for m in history if isinstance(m, ModelResponse)][-2:]
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    return all(any(n in txt for txt in recent_texts) for n in needles)
 
 
 class PreparePhase(RunOnceHost):
@@ -302,7 +319,6 @@ class PreparePhase(RunOnceHost):
         st.addr_gated = False
         st.followup_detected = False
         st.tg = st.turn_graph
-        st.cheap = st.cheap_gate
         if self.create_by in _INTERACTIVE_CREATE_BY and not st.fw_msg and st.stats_chat_type != ASIDE_MODE:
             _cur_text = st.last_user_question
             _probe = st.ev.raw_text if st.ev is not None and st.ev.raw_text else st.last_user_question
@@ -329,16 +345,17 @@ class PreparePhase(RunOnceHost):
                     recent=_recent,
                     recent_tool_call=interaction_scaffold.has_recent_tool_call(self.history),
                     followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
-                    ambient_max_len=int(ai_config.get_config("scaffold_ambient_max_len").data),
                     has_reply=_has_reply,
                     at_bot=bool(st.ev.at_bot) if st.ev is not None else False,
+                    has_at_other=bool(
+                        st.ev is not None
+                        and st.ev.group_id
+                        and not st.ev.at_bot
+                        and any(str(uid) != str(st.ev.bot_self_id) for uid in st.ev.at_list)
+                    ),
                     is_reply_to_bot=is_rep_bot,
                     is_bystander_quote=is_bystander_q,
                     is_stale_quote=is_stale_q,
-                )
-            if st.cheap is None:
-                st.cheap = interaction_scaffold.decide_cheap_gate(
-                    st.tg, has_active_task=st.has_active_task, intent=str(st.intent or "")
                 )
             st.addr_gated = bool(st.tg.address_gated)
             st.followup_detected = bool(st.tg.needs_task_tools)
@@ -378,7 +395,6 @@ class PreparePhase(RunOnceHost):
                 st.final_user_message = _append_user_text(st.final_user_message, f"\n{_vh}")
             _hints = interaction_scaffold.scaffold_hints_from_graph(
                 st.tg,
-                cheap=st.cheap,
                 speaker_recall=self.dynamic_tools is not False,
                 intent=str(st.intent or ""),
                 persona_name=self.persona_name,
@@ -469,5 +485,5 @@ class PreparePhase(RunOnceHost):
             )
             if latest_ts > since_ts:
                 self._anchor_journal_ts = latest_ts
-            if delta_text:
+            if delta_text and not _journal_delta_in_recent_history(delta_text, self.history):
                 st.final_user_message = _append_user_text(st.final_user_message, f"\n{delta_text}")

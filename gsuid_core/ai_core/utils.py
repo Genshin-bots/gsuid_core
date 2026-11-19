@@ -1736,16 +1736,11 @@ async def send_chat_result(
 
         _turn = current_turn()
     if _turn is not None:
-        from gsuid_core.message_history import get_history_manager
         from gsuid_core.ai_core.reply_plan import parse_reply_plan
         from gsuid_core.ai_core.configs.ai_config import ai_config
 
-        # 合法目标：本批 pending ∪ 本轮可见窗口 (from_seq, head_seq] 内所有已编号记录。
+        # 单说话人轮次：合法目标仅限本轮待回应项，防止模型幻觉指向窗口内更早消息
         _valid = {e.item.seq for e in _turn.entries}
-        if ev is not None:
-            for _rec in get_history_manager().get_history(ev):
-                if _rec.link is not None and _turn.from_seq < _rec.link.seq <= _turn.head_seq:
-                    _valid.add(_rec.link.seq)
         _plan = parse_reply_plan(
             _trimmed,
             valid_seqs=frozenset(_valid),
@@ -2090,19 +2085,6 @@ async def _send_reply_plan_groups(
         finally:
             reset_outbound(token)
         turn.answered |= {s for s in target_seqs if s in pending}
-
-        # 群级反馈（§5.3）：出站绑定已应答项 → 登记 open entry 观察「有人接」。
-        if ev is not None and ev.group_id:
-            from gsuid_core.ai_core.inbox.feedback import register_feedback
-
-            answered_entries = [e for e in turn.entries if e.item.seq in target_seqs]
-            if answered_entries:
-                register_feedback(
-                    str(ev.group_id),
-                    answered_entries[0].item.kind,
-                    get_history_manager().head_seq(ev),
-                    frozenset(str(e.event.user_id) for e in answered_entries),
-                )
 
 
 def _split_meme_tag(tag: str) -> tuple[str, str]:

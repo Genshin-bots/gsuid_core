@@ -223,15 +223,6 @@ def _handles_from_metadata(record: MessageRecord) -> List[str]:
     return found
 
 
-def format_private_recent_history(records: Sequence[MessageRecord]) -> str:
-    """私聊冷启动时格式化最近历史记录（线程视图窗口）。"""
-    if not records:
-        return ""
-    from gsuid_core.ai_core.thread_view import render_window
-
-    return render_window(records)
-
-
 def _read_handle_list(ctx: ToolContext) -> List[str]:
     extra = ctx.extra
     if _THREAD_HANDLES_KEY not in extra:

@@ -73,6 +73,11 @@ def record_tool_result(tool_name: str, result: object, mark: EvidenceMark | None
 
     text = result if isinstance(result, str) else ""
     outcome = _outcome_of(mark)
+    summary = _one_line(text)
+    handle = _extract_handle(text)
+    # 纯二进制/空返回且无句柄的常规读观测（如 read_image）不写入空壳证据
+    if outcome == "data" and not summary and not handle:
+        return
     obs = Observation(
         obs_id=make_obs_id(tool_name, _requested_by(turn), time.time()),
         session_id=turn.session_id,
@@ -83,8 +88,8 @@ def record_tool_result(tool_name: str, result: object, mark: EvidenceMark | None
         credential_owner=mark.credential_owner if mark is not None else None,
         outcome=outcome,
         observed_at=time.time(),
-        summary=_one_line(text),
-        handle=_extract_handle(text),
+        summary=summary,
+        handle=handle,
     )
     get_evidence_store(turn.session_id).append(obs)
     turn.observations.append(obs.obs_id)

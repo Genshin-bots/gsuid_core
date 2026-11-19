@@ -1,12 +1,11 @@
-"""Smoke: C-1 ellipsis is tool-trajectory only; soft_continue covers text-only history."""
+"""Smoke: C-1 ellipsis is tool-trajectory only."""
 
 from gsuid_core.ai_core.interaction_scaffold import (
-    SOFT_CONTINUE_HINT,
-    CheapGate,
     build_turn_graph,
     detect_ellipsis_followup,
     scaffold_hints_from_graph,
 )
+from gsuid_core.ai_core.prompt_group.catalog import default_body
 
 
 def main() -> None:
@@ -26,13 +25,12 @@ def main() -> None:
         user_type="group",
         primary_speaker="9101",
         recent=h,
-        recent_tool_call=False,
+        recent_tool_call=True,
     )
-    assert tg.soft_continue, "text-only short continue should still be soft_continue"
-    assert not tg.ellipsis_followup
-    hints = scaffold_hints_from_graph(tg, cheap=CheapGate.FULL)
-    assert SOFT_CONTINUE_HINT in hints
-    print("ok soft_continue without prior_action_re")
+    assert tg.ellipsis_followup
+    hints = scaffold_hints_from_graph(tg)
+    assert default_body("followup") in hints
+    print("ok ellipsis tool-trajectory only")
 
 
 if __name__ == "__main__":
