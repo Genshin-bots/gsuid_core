@@ -1075,3 +1075,176 @@ def test_keenable_fetch_and_webfetch_routing(
     monkeypatch.setattr(wf, "keenable_fetch_markdown", _empty_fetch)
     monkeypatch.setattr(wf, "_fetch_via_local", _ok_local)
     assert asyncio.run(wf.fetch_webpage_as_markdown("https://k.example")) == "local-fallback"
+
+
+def test_subagent_read_image_vision_gate_large_slice_and_render_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """能力代理读图按模型识图能力门控、大图切片注入，且 render 单任务出图上限写死为 4。"""
+    from dataclasses import dataclass
+
+    from pydantic_ai.tools import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.messages import ToolReturn, ModelRequest, UserPromptPart
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.agent_node import get_node
+    from gsuid_core.utils.image.image_io import slice_large_image_for_vision
+    from gsuid_core.ai_core.buildin_tools import image_reader as ir, html_render_tools as hrt
+    from gsuid_core.utils.resource_manager import RM
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+
+    register_builtin_profiles()
+    render_node = get_node("render_agent")
+    assert render_node is not None and "read_image" in render_node.tool_names
+
+    @dataclass
+    class _ScanCtx:
+        deps: ToolContext | None
+        messages: list[ModelRequest]
+
+    ev_plain = Event("OneBot", "900000001", "k1", "group", "group_1", "100000001", {}, 0, text="画个持仓报告图")
+    res_msg = [ModelRequest(parts=[UserPromptPart(content="图片已生成（50KB），句柄 `res_a1b2c3d4`")])]
+
+    monkeypatch.setattr(ir, "_current_model_supports_image", lambda _sid: False)
+    sub_deps_off = ToolContext(ev=ev_plain, allow_user_outbound=False)
+    main_deps_off = ToolContext(ev=ev_plain, allow_user_outbound=True)
+    assert ir.visible_when_read_image(_ScanCtx(deps=sub_deps_off, messages=res_msg)) is False
+    # 主人格即使非原生识图模型，在上下文含 res_ 时仍保留 read_image（走 understand_image）
+    assert ir.visible_when_read_image(_ScanCtx(deps=main_deps_off, messages=res_msg)) is True
+
+    monkeypatch.setattr(ir, "_current_model_supports_image", lambda _sid: True)
+    prose_res_msg = [ModelRequest(parts=[UserPromptPart(content="变量 res_data 已就绪")])]
+    assert ir.visible_when_read_image(_ScanCtx(deps=sub_deps_off, messages=[])) is False
+    assert ir.visible_when_read_image(_ScanCtx(deps=sub_deps_off, messages=prose_res_msg)) is False
+    assert ir.visible_when_read_image(_ScanCtx(deps=sub_deps_off, messages=res_msg)) is True
+
+    # 普通小图不切片；长图、宽图与超大二维图切片后通过 read_image 多图注入
+    small_buf = io.BytesIO()
+    Image.new("RGB", (800, 600), (20, 30, 40)).save(small_buf, format="PNG")
+    assert slice_large_image_for_vision(small_buf.getvalue()) is None
+
+    tall_buf = io.BytesIO()
+    Image.new("RGB", (1680, 7200), (15, 23, 42)).save(tall_buf, format="PNG")
+    tall_id = RM.register(tall_buf.getvalue())
+    ctx_sub = RunContext(
+        deps=ToolContext(ev=ev_plain, allow_user_outbound=False, parent_session_id="capagent_render_test"),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    tall_ret = asyncio.run(ir.read_image(ctx_sub, tall_id))
+    assert isinstance(tall_ret, ToolReturn)
+    assert isinstance(tall_ret.content, list) and len(tall_ret.content) >= 3
+    assert "切分为" in str(tall_ret.return_value)
+
+    wide_buf = io.BytesIO()
+    Image.new("RGB", (4000, 1600), (16, 26, 36)).save(wide_buf, format="PNG")
+    wide_slices = slice_large_image_for_vision(wide_buf.getvalue())
+    assert wide_slices is not None and len(wide_slices[0]) >= 2 and "从左到右" in wide_slices[1]
+
+    big2d_buf = io.BytesIO()
+    Image.new("RGB", (3000, 3000), (18, 28, 38)).save(big2d_buf, format="PNG")
+    big2d_slices = slice_large_image_for_vision(big2d_buf.getvalue())
+    assert big2d_slices is not None and len(big2d_slices[0]) == 5
+
+    # 单任务渲染上限写死为 4，且重渲不覆盖先前落盘文件
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+    from gsuid_core.ai_core.planning.runtime import PlanRunContext, bind_plan_context, reset_plan_context
+
+    monkeypatch.setattr(hrt, "_RENDER_EMIT_COUNTS", {})
+    saved_paths: list[Path] = []
+    art_counter = {"n": 0}
+    small_bytes = small_buf.getvalue()
+
+    async def _fake_put_artifact(
+        *,
+        summary: str,
+        mime: str,
+        artifact_kind: str,
+        plan_ctx: PlanRunContext,
+        file_path: Path,
+    ) -> AIAgentArtifact:
+        _ = (summary, mime, artifact_kind, plan_ctx)
+        art_counter["n"] += 1
+        saved_paths.append(file_path)
+        return AIAgentArtifact(
+            id=f"res_test_{art_counter['n']}",
+            root_task_id="root_render_cap",
+            task_id="task_render_cap",
+            mime="image/png",
+            artifact_kind="output",
+            summary="test render",
+            payload_path=str(file_path),
+            size_bytes=len(small_bytes),
+        )
+
+    async def _noop_update(**_kw: object) -> None:
+        return None
+
+    async def _noop_summary(default: str) -> str:
+        return default
+
+    from gsuid_core.ai_core.planning import models as plan_models, workspace as plan_workspace
+
+    monkeypatch.setattr(plan_workspace, "put_artifact", _fake_put_artifact)
+    monkeypatch.setattr(plan_models.AIAgentTask, "update_data_by_data", _noop_update)
+    monkeypatch.setattr(hrt, "_summary_for_render", _noop_summary)
+
+    plan_ctx = PlanRunContext(
+        task_id="task_render_cap_01",
+        step_id=None,
+        root_task_id="root_render_cap_01",
+        artifact_workspace=tmp_path / "render_ws",
+        allowed_write_roots=[tmp_path / "render_ws"],
+        agent_profile="render_agent",
+    )
+    tok = bind_plan_context(plan_ctx)
+    try:
+        outs = [asyncio.run(hrt._finish_image(ctx_sub, small_bytes)) for _ in range(5)]
+    finally:
+        reset_plan_context(tok)
+
+    for idx in range(4):
+        out_item = outs[idx]
+        assert isinstance(out_item, str)
+        assert f"res_test_{idx + 1}" in out_item
+    assert len(set(saved_paths)) == 4
+    out_fifth = outs[4]
+    assert isinstance(out_fifth, str)
+    assert "已成功出图 4 次" in out_fifth
+
+    # 主会话直发路径仍严格限 1 次防刷屏；render_agent 轮后契约允许 read_image 自检重渲
+    from gsuid_core.ai_core.control.lines import (
+        POST_TOOL_OUTPUT_CONTRACT_RENDER,
+        POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
+    )
+
+    assert "read_image" in POST_TOOL_OUTPUT_CONTRACT_RENDER
+    assert "read_image" in POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED
+
+    from gsuid_core.bot import Bot, _Bot
+
+    real_bot = Bot(_Bot("ws_render_cap"), ev_plain)
+
+    async def _fake_bot_send(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(real_bot, "send", _fake_bot_send)
+
+    ctx_main = RunContext(
+        deps=ToolContext(
+            ev=ev_plain,
+            bot=real_bot,
+            allow_user_outbound=True,
+            extra={"turn_id": "turn_main_cap_1"},
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    main_first = asyncio.run(hrt._finish_image(ctx_main, small_bytes))
+    main_second = asyncio.run(hrt._finish_image(ctx_main, small_bytes))
+    assert isinstance(main_first, str) and "图片已发送" in main_first
+    assert isinstance(main_second, str) and "不再重复直发" in main_second

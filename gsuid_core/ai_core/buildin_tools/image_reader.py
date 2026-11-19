@@ -36,16 +36,18 @@ from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.image.image_io import (
+    sniff_image_mime,
     unwrap_image_url,
     bytes_to_data_uri,
     not_image_error_message,
     decode_data_or_base64_uri as _decode_data_or_base64_uri,
     to_provider_image_content,
     image_bytes_to_provider_part,
+    slice_large_image_for_vision,
 )
 from gsuid_core.ai_core.content_guard import wrap_untrusted
 from gsuid_core.utils.resource_manager import RM
-from gsuid_core.ai_core.buildin_tools.visibility import context_has_image
+from gsuid_core.ai_core.buildin_tools.visibility import VisibilityScanCtx, context_has_image
 from gsuid_core.ai_core.multimodal.animated_frames import AnimationSheets, render_animation_sheets
 
 # 单次图片理解超时时间（秒），兼顾多模态供应商转述耗时与快速重试需求。
@@ -80,6 +82,82 @@ def _bytes_to_data_uri(data: bytes) -> tuple[str | None, str | None]:
     return uri, None
 
 
+async def _resolve_raw_image_bytes(image_id: str) -> tuple[bytes | None, str | None, str | None]:
+    """解析图片 ID / URL，优先返回原始未缩放字节以支持大图切片。
+
+    Returns:
+        ``(raw_bytes, http_url, error)``。本地/内联资源返回 ``(bytes, None, None)``，
+        远端直链返回 ``(None, url, None)``，非法/文本/缺失返回 ``(None, None, error)``。
+    """
+    raw = unwrap_image_url(image_id)
+    if not raw:
+        return None, None, "❌ image_id 不能为空"
+
+    low = raw.lower().split("?", 1)[0]
+    if any(low.endswith(suf) for suf in _NON_IMAGE_SUFFIXES):
+        return (
+            None,
+            None,
+            f"❌ {raw} 看起来不是图片（文本类扩展名）。请用 artifact_get / 读文件工具，而不是 read_image。",
+        )
+
+    if raw.startswith(("base64://", "data:image/")):
+        data, dec_err = _decode_data_or_base64_uri(raw)
+        if dec_err:
+            return None, None, dec_err
+        assert data is not None
+        if sniff_image_mime(data) is None:
+            return None, None, _not_image_error(raw[:48], data)
+        return data, None, None
+
+    if raw.startswith(("http://", "https://")):
+        return None, raw, None
+
+    if raw.startswith("res_"):
+        from gsuid_core.ai_core.buildin_tools.message_sender import _resolve_kanban_artifact
+
+        payload = await _resolve_kanban_artifact(raw)
+        if isinstance(payload, bytes):
+            if sniff_image_mime(payload) is None:
+                return (
+                    None,
+                    None,
+                    _not_image_error(
+                        raw,
+                        payload,
+                        hint="该 res_ 在 artifact 层可能被标成 image/*，但落盘内容不是图。",
+                    ),
+                )
+            return payload, None, None
+        if isinstance(payload, str):
+            preview = payload.strip()
+            if len(preview) > 6000:
+                preview = preview[:6000] + "\n…(已截断，完整原文请 artifact_get / artifact_get_recent)"
+            return (
+                None,
+                None,
+                (
+                    f"❌ 资源 {raw} 是**文本类** artifact（非图片），read_image 不能看它。\n"
+                    f"请改用 `artifact_get('{raw}')` 或 `artifact_get_recent` 取原文，"
+                    f"再用 `render_html_to_image` 出图。\n"
+                    f"--- 原文预览 ---\n" + wrap_untrusted("artifact_text", preview)
+                ),
+            )
+
+    try:
+        data = await RM.get(raw)
+    except ValueError as e:
+        if "找不到资源" in str(e):
+            return None, None, f"❌ 找不到图片资源: {raw}（可能已过期或 ID 不正确）"
+        return None, None, f"❌ 图片资源 {raw} 读取失败: {e}"
+    if not isinstance(data, (bytes, bytearray)):
+        return None, None, f"❌ 资源 {raw} 类型异常（{type(data).__name__}），不是图片字节"
+    data_b = bytes(data)
+    if sniff_image_mime(data_b) is None:
+        return None, None, _not_image_error(raw, data_b)
+    return data_b, None, None
+
+
 async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
     """把图片 ID / URL 统一解析成可消费的 image_url。
 
@@ -87,69 +165,15 @@ async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
         ``(image_url, error)``。成功 error 为 None；失败 image_url 为 None、
         error 为给 Agent 的中文说明。**非图片内容必须在此拦下**，不得交给服务商。
     """
-    raw = unwrap_image_url(image_id)
-    if not raw:
-        return None, "❌ image_id 不能为空"
-
-    # 明显非图扩展名（路径/文件名误当 image_id）
-    low = raw.lower().split("?", 1)[0]
-    if any(low.endswith(suf) for suf in _NON_IMAGE_SUFFIXES):
-        return None, (f"❌ {raw} 看起来不是图片（文本类扩展名）。请用 artifact_get / 读文件工具，而不是 read_image。")
-
-    # 1. data:image / base64:// → 解码后魔数校验
-    if raw.startswith(("base64://", "data:image/")):
-        data, dec_err = _decode_data_or_base64_uri(raw)
-        if dec_err:
-            return None, dec_err
-        assert data is not None
-        uri, _ = _bytes_to_data_uri(data)
-        if uri is None:
-            return None, _not_image_error(raw[:48], data)
-        return uri, None
-
-    # http(s) 无法在本地验魔数，原样交给下游；失败由 understand / 服务商路径处理
-    if raw.startswith(("http://", "https://")):
-        return raw, None
-
-    # 2. res_xxx：bytes=图（仍要魔数）；str=文本
-    if raw.startswith("res_"):
-        from gsuid_core.ai_core.buildin_tools.message_sender import _resolve_kanban_artifact
-
-        payload = await _resolve_kanban_artifact(raw)
-        if isinstance(payload, bytes):
-            uri, _ = _bytes_to_data_uri(payload)
-            if uri is None:
-                return None, _not_image_error(
-                    raw,
-                    payload,
-                    hint="该 res_ 在 artifact 层可能被标成 image/*，但落盘内容不是图。",
-                )
-            return uri, None
-        if isinstance(payload, str):
-            preview = payload.strip()
-            if len(preview) > 6000:
-                preview = preview[:6000] + "\n…(已截断，完整原文请 artifact_get / artifact_get_recent)"
-            return None, (
-                f"❌ 资源 {raw} 是**文本类** artifact（非图片），read_image 不能看它。\n"
-                f"请改用 `artifact_get('{raw}')` 或 `artifact_get_recent` 取原文，"
-                f"再用 `render_html_to_image` 出图。\n"
-                f"--- 原文预览 ---\n" + wrap_untrusted("artifact_text", preview)
-            )
-        # payload 为 None：可能前缀写成 res_ 但落在 RM，继续 RM
-
-    # 3. RM 临时资源（img_xxx 或 res_ 兜底）
-    try:
-        data = await RM.get(raw)
-    except ValueError as e:
-        if "找不到资源" in str(e):
-            return None, f"❌ 找不到图片资源: {raw}（可能已过期或 ID 不正确）"
-        return None, f"❌ 图片资源 {raw} 读取失败: {e}"
-    if not isinstance(data, (bytes, bytearray)):
-        return None, f"❌ 资源 {raw} 类型异常（{type(data).__name__}），不是图片字节"
-    data_b = bytes(data)
-    uri, _ = _bytes_to_data_uri(data_b)
+    raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id)
+    if error:
+        return None, error
+    if http_url is not None:
+        return http_url, None
+    assert raw_bytes is not None
+    uri, _ = _bytes_to_data_uri(raw_bytes)
     if uri is None:
-        return None, _not_image_error(raw, data_b)
+        return None, _not_image_error(image_id[:48], raw_bytes)
     return uri, None
 
 
@@ -280,7 +304,7 @@ async def _animation_sheets(image_url: str) -> AnimationSheets | None:
     return sheets
 
 
-def _self_visual_note(ctx: RunContext[ToolContext], image_url: str, question: str | None) -> str:
+def _self_visual_note(ctx: RunContext[ToolContext], image_ref_or_bytes: str | bytes, question: str | None) -> str:
     """主人格看图时附视觉身份；能力代理不演戏。不打破惰性。"""
     if not ctx.deps.allow_user_outbound:
         return ""
@@ -291,7 +315,17 @@ def _self_visual_note(ctx: RunContext[ToolContext], image_url: str, question: st
         return ""
     from gsuid_core.ai_core.persona.appearance import bytes_from_image_ref, format_look_identity_note
 
-    return format_look_identity_note(persona, bytes_from_image_ref(image_url))
+    raw = image_ref_or_bytes if isinstance(image_ref_or_bytes, bytes) else bytes_from_image_ref(image_ref_or_bytes)
+    return format_look_identity_note(persona, raw)
+
+
+def visible_when_read_image(ctx: VisibilityScanCtx) -> bool:
+    """``read_image`` 可见性：子代理要求当前模型具备原生读图能力且上下文有图。"""
+    deps = ctx.deps
+    if deps is not None and not deps.allow_user_outbound:
+        if not _current_model_supports_image(deps.parent_session_id):
+            return False
+    return context_has_image(ctx)
 
 
 def _mark_image_id_read(ctx: RunContext[ToolContext], image_id: str) -> None:
@@ -311,7 +345,29 @@ def _mark_image_id_read(ctx: RunContext[ToolContext], image_id: str) -> None:
                     read_set.discard(oldest)
 
 
-@ai_tools(category="buildin", visible_when=context_has_image, timeout=120.0)
+def _build_direct_image_return(
+    ctx: RunContext[ToolContext],
+    *,
+    image_id: str,
+    injected: list[ImageUrl | BinaryContent],
+    image_ref_or_bytes: str | bytes,
+    question: str | None,
+    prefix_note: str = "",
+) -> ToolReturn:
+    """统一构造原生识图 ToolReturn，收口标记、日志与自我视觉提示。"""
+    _mark_image_id_read(ctx, image_id)
+    logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
+    shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
+    if prefix_note:
+        shown = f"{prefix_note}\n{shown}"
+    note = _self_visual_note(ctx, image_ref_or_bytes, question)
+    return ToolReturn(
+        return_value=f"{note}\n{shown}" if note else shown,
+        content=injected,
+    )
+
+
+@ai_tools(category="buildin", visible_when=visible_when_read_image, timeout=120.0)
 async def read_image(
     ctx: RunContext[ToolContext],
     image_id: str,
@@ -320,20 +376,21 @@ async def read_image(
     """
     查看（读取）一张图片的内容
 
-    群聊里上传的图片不会直接进入你的视野，只会以「图片ID」(形如 ``img_xxxxxxxx``)
-    的形式出现在消息里。当你需要真正看清某张图里有什么时，调用本工具把它读出来：
-    工具会按 ID 取回图片并转述成文字描述返回给你。
+    群聊里上传或渲染/生成的图片不会直接进入你的视野，只会以「图片ID」(``img_xxxxxxxx``
+    或图片类产物 ``res_xxxxxxxx``) 出现。需要真正看清某张图时，调用本工具将其呈现给你：
+    支持原生识图的模型会直接看到高清原图（超长/超大渲染图会自动切分为多段清晰呈现）；
+    不支持原生识图的模型会转为客观文字描述。
 
-    适用场景：用户发了图问"这是什么/帮我看看/图里写了啥"、需要根据图片内容回复、
-    需要识别 :func:`get_user_avatar` 取回的头像长什么样等。
+    适用场景：用户发了图问"这是什么/帮我看看/图里写了啥"、改图前看清原图、
+    渲染或生图完成后检视成图排版/细节质量等。
 
     Args:
         ctx: 工具执行上下文
-        image_id: 图片资源ID。支持消息里出现的 ``img_xxxxxxxx``（用户上传图）、
+        image_id: 图片资源ID。支持消息里出现的 ``img_xxxxxxxx``（用户上传图/AIGC成图）、
             ``res_xxxxxxxx``（**仅图片类**能力代理产物，mime 以 image/ 开头）、
             以及 ``http(s)://`` / ``base64://`` / ``data:image/`` 直链。
             文本类 ``res_``（如 text/markdown）请用 ``artifact_get``，不要本工具。
-        question: 可选，你想从图里知道什么（如"图里的文字是什么""这是哪个角色"）。
+        question: 可选，你想从图里知道什么（如"图里的文字是什么""排版有无裁切重叠"）。
             传入后描述会聚焦到你关心的点，不传则返回图片的通用客观描述。
 
     Returns:
@@ -342,13 +399,12 @@ async def read_image(
 
     Example:
         >>> await read_image(ctx, "img_1a2b3c4d")
-        >>> await read_image(ctx, "img_1a2b3c4d", question="图里这串报错具体是什么？")
+        >>> await read_image(ctx, "res_1a2b3c4d", question="检查文字有无裁切或表格错位")
     """
-    image_url, error = await _resolve_image_to_url(image_id)
+    raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id)
     if error:
         # 非图片 / 找不到 / 解码失败：只回字符串，绝不 ToolReturn 注入
         return error
-    assert image_url is not None
 
     disable_direct = (
         bool(ctx.deps.extra["disable_direct_image_injection"])
@@ -358,22 +414,72 @@ async def read_image(
     # 主模型支持多模态 → 注入会话原生看图（须二次校验，坏内容只回 str）
     if not disable_direct and _current_model_supports_image(ctx.deps.parent_session_id):
         provider = _current_provider(ctx.deps.parent_session_id)
-        injected, inject_err = _to_tool_image_content(image_url, provider=provider)
-        if inject_err:
-            return inject_err
-        if injected is not None:
-            _mark_image_id_read(ctx, image_id)
-            logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
-            shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
-            note = _self_visual_note(ctx, image_url, question)
-            sheets = await _animation_sheets(image_url)
+        if raw_bytes is not None:
+            sheets = await asyncio.to_thread(render_animation_sheets, raw_bytes)
             if sheets is not None:
-                shown = f"{sheets.note}\n{shown}"
-                injected = [image_bytes_to_provider_part(blob, "image/jpeg", provider) for blob in sheets.images]
-            return ToolReturn(
-                return_value=f"{note}\n{shown}" if note else shown,
-                content=injected,
+                return _build_direct_image_return(
+                    ctx,
+                    image_id=image_id,
+                    injected=[image_bytes_to_provider_part(blob, "image/jpeg", provider) for blob in sheets.images],
+                    image_ref_or_bytes=raw_bytes,
+                    question=question,
+                    prefix_note=sheets.note,
+                )
+
+            large_slices = await asyncio.to_thread(slice_large_image_for_vision, raw_bytes)
+            if large_slices is not None:
+                slices, slice_note = large_slices
+                return _build_direct_image_return(
+                    ctx,
+                    image_id=image_id,
+                    injected=[image_bytes_to_provider_part(blob, mime, provider) for blob, mime in slices],
+                    image_ref_or_bytes=raw_bytes,
+                    question=question,
+                    prefix_note=slice_note,
+                )
+
+            injected, inject_err = to_provider_image_content(
+                raw_bytes,
+                provider_or_model=provider,
+                flatten_animation=True,
             )
+            if inject_err:
+                return inject_err
+            if injected is not None:
+                return _build_direct_image_return(
+                    ctx,
+                    image_id=image_id,
+                    injected=injected,
+                    image_ref_or_bytes=raw_bytes,
+                    question=question,
+                )
+        elif http_url is not None:
+            injected, inject_err = _to_tool_image_content(http_url, provider=provider)
+            if inject_err:
+                return inject_err
+            if injected is not None:
+                sheets = await _animation_sheets(http_url)
+                prefix_note = sheets.note if sheets is not None else ""
+                parts = (
+                    [image_bytes_to_provider_part(blob, "image/jpeg", provider) for blob in sheets.images]
+                    if sheets is not None
+                    else injected
+                )
+                return _build_direct_image_return(
+                    ctx,
+                    image_id=image_id,
+                    injected=parts,
+                    image_ref_or_bytes=http_url,
+                    question=question,
+                    prefix_note=prefix_note,
+                )
+
+    image_url: str | None = http_url
+    if image_url is None:
+        assert raw_bytes is not None
+        image_url, _ = _bytes_to_data_uri(raw_bytes)
+        if image_url is None:
+            return _not_image_error(image_id[:48], raw_bytes)
 
     # 不支持多模态 / 无法内联 → 文字转述
     from gsuid_core.ai_core.utils import _is_image_payload_error

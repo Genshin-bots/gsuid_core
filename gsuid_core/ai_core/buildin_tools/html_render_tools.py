@@ -6,6 +6,7 @@
 
 import re
 import json
+import uuid
 import base64
 import asyncio
 import datetime
@@ -24,6 +25,7 @@ from gsuid_core.segment import MessageSegment
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.html_render import im_templates, render_md_to_bytes, render_html_to_bytes
+from gsuid_core.ai_core.control.lines import MAX_RENDERS_PER_TASK
 from gsuid_core.utils.resource_manager import RM
 from gsuid_core.ai_core.buildin_tools.chart_svg import resolve_chart_placeholders
 from gsuid_core.ai_core.buildin_tools.render_kit import PHOTO_LAYOUTS, page_layout, inject_render_kit
@@ -122,9 +124,8 @@ def _clamp_logical_width(max_width: int) -> int:
     return min(w, _LOGICAL_WIDTH_MAX)
 
 
-# 同一 Kanban 任务内成功出图次数（防 render_agent 连调多次刷屏）
-# key=task_id；进程内即可，任务结束无强清
-_RENDER_EMITTED_TASKS: set[str] = set()
+# 同一任务内最多成功出图次数（子代理写死为 MAX_RENDERS_PER_TASK=4；主会话直发限 1 次防刷屏）
+_RENDER_EMIT_COUNTS: dict[str, int] = {}
 _RENDER_EMITTED_MAX = 256
 # 透明像素兜底底色：仅当角点采不到不透明像素时使用（优先采样画面已有实色）。
 # 这是管线兜底，不是强制 agent 只能用暗色主题。
@@ -622,15 +623,18 @@ def _render_emit_key(ctx: RunContext[ToolContext], task_id: str) -> str:
     return ""
 
 
-def _mark_render_emitted(task_id: str) -> None:
+def _mark_render_emitted(task_id: str) -> int:
     if not task_id:
-        return
-    if len(_RENDER_EMITTED_TASKS) >= _RENDER_EMITTED_MAX:
-        # 半量淘汰，防 set 无限涨
-        for i, k in enumerate(list(_RENDER_EMITTED_TASKS)):
+        return 0
+    if task_id not in _RENDER_EMIT_COUNTS and len(_RENDER_EMIT_COUNTS) >= _RENDER_EMITTED_MAX:
+        # 半量淘汰，防 dict 无限涨
+        for i, k in enumerate(list(_RENDER_EMIT_COUNTS)):
             if i % 2 == 0:
-                _RENDER_EMITTED_TASKS.discard(k)
-    _RENDER_EMITTED_TASKS.add(task_id)
+                _RENDER_EMIT_COUNTS.pop(k, None)
+    prev = _RENDER_EMIT_COUNTS[task_id] if task_id in _RENDER_EMIT_COUNTS else 0
+    count = prev + 1
+    _RENDER_EMIT_COUNTS[task_id] = count
+    return count
 
 
 async def _try_send_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> bool:
@@ -716,7 +720,7 @@ async def _register_image_artifact(image_bytes: bytes, *, summary: str = "render
     if workspace is None:
         return ""
     workspace.mkdir(parents=True, exist_ok=True)
-    fname = f"render_{plan.task_id[:8]}.png"
+    fname = f"render_{plan.task_id[:8]}_{uuid.uuid4().hex[:6]}.png"
     path = workspace / fname
     path.write_bytes(image_bytes)
     art = await put_artifact(
@@ -738,10 +742,7 @@ async def _register_image_artifact(image_bytes: bytes, *, summary: str = "render
 
 
 async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str | bytes:
-    """不透明化 → 主人格可直发；能力代理只登记 artifact / 回传 bytes。
-
-    同一 Kanban 任务默认只成功产出一张（防多段刷屏）。
-    """
+    """不透明化 → 主人格可直发（单轮限 1 次）；能力代理登记 artifact（最多 4 次）。"""
     from gsuid_core.ai_core.planning.runtime import get_plan_context
 
     image_bytes = _ensure_opaque_image_bytes(image_bytes)
@@ -749,23 +750,29 @@ async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str
     plan = get_plan_context()
     task_id = plan.task_id if plan is not None else ""
     emit_key = _render_emit_key(ctx, task_id)
+    emitted_count = _RENDER_EMIT_COUNTS[emit_key] if emit_key and emit_key in _RENDER_EMIT_COUNTS else 0
+    max_renders = 1 if ctx.deps.allow_user_outbound else MAX_RENDERS_PER_TASK
 
-    if emit_key and emit_key in _RENDER_EMITTED_TASKS:
+    if emit_key and emitted_count >= max_renders:
+        if ctx.deps.allow_user_outbound:
+            return "⚠️ 本轮已直接向用户发送过 1 张图，不再重复直发。需要自检精修请委派 render_agent。"
         return (
-            "⚠️ 本任务已成功出过图，本次未再产出。"
-            "请把全部区块合并进**一张**完整 HTML，只调用一次 render_html_to_image；"
-            "不要按章节拆成多次渲染。用户未明确要求多页时禁止连渲多张。"
+            f"⚠️ 本任务已成功出图 {MAX_RENDERS_PER_TASK} 次（已达单任务上限），本次未再产出。"
+            "请直接交付最近一次已生成的 `res_` 句柄，不要继续重渲。"
         )
 
     # 能力代理 / 子 Agent：禁止直发；优先落盘 image artifact 供主人格发送
     if not ctx.deps.allow_user_outbound:
         handle = await _register_image_artifact(image_bytes)
         if handle:
-            _mark_render_emitted(emit_key)
-            return _RENDER_OK_HANDLE.format(
+            count = _mark_render_emitted(emit_key)
+            base_msg = _RENDER_OK_HANDLE.format(
                 kb=len(image_bytes) // 1024,
                 handle_part=f"，句柄 `{handle}`",
             )
+            if count > 0:
+                return f"{base_msg}（第 {count}/{MAX_RENDERS_PER_TASK} 次出图；若 `read_image` 可用可检视并修改重渲）"
+            return base_msg
         # 无 plan 上下文：回传 bytes，由 agent loop 注册 img_ 资源
         return image_bytes
 
@@ -1480,7 +1487,7 @@ async def render_html_to_image(
     """将 HTML 渲染为高质感编辑级信息图长图并自动发送。**render_agent 出图主工具**。
 
     主人格应 ``create_subagent(agent_profile="render_agent", task=...)`` 委派，勿自行堆 HTML。
-    整份事实包只渲**一张**：多区块写在同一 HTML 里，不要连调本工具。
+    整份事实包应合在同一张图内呈现；``render_agent`` 出图后若可用 ``read_image`` 检视并修图重渲（单任务最多 4 次）。
 
     ## 视觉与版式自由度（两种路径均可，鼓励按主题创意定制）
     1. **自由定制编辑级信息图**：自写完整 ``<style>`` 定制配色、渐变、圆角卡片、巨型核心指标（68–88px）、

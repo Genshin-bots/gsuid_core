@@ -32,6 +32,7 @@ class VisibilityScanCtx(Protocol):
 
 
 _URL_RE = re.compile(r"https?://", re.IGNORECASE)
+_RES_HANDLE_RE = re.compile(r"\bres_[0-9a-f]{8,}\b", re.IGNORECASE)
 
 
 def _iter_context_texts(ctx: VisibilityScanCtx) -> Iterator[str]:
@@ -207,15 +208,15 @@ def visible_when_timeline_query(ctx: VisibilityScanCtx) -> bool:
 
 
 def context_has_image(ctx: VisibilityScanCtx) -> bool:
-    """``read_image`` 的 visible_when：当前轮或上下文里有图片时才暴露。"""
+    """``read_image`` 的 visible_when：当前轮或上下文里有图片或 ``res_`` 产物时暴露。"""
     ev = ctx.deps.ev if ctx.deps is not None else None
     if ev is None:
         return True
     if ev.image_id or ev.image_id_list or ev.image or ev.image_list:
         return True
-    # 懒加载历史里的图片以"图片ID: img_xxx"文本形式留存，扫到也放行
+    # 懒加载历史里的图片以 img_ / res_<hex> / "图片ID" / "图片已生成" 留存，扫到即放行
     for text in _iter_context_texts(ctx):
-        if "img_" in text or "图片ID" in text:
+        if "img_" in text or "图片ID" in text or "图片已生成" in text or _RES_HANDLE_RE.search(text):
             return True
     return False
 

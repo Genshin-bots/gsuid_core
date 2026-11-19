@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import os
+import math
 import base64
 import binascii
+import warnings
 import dataclasses
 from typing import Sequence
 from pathlib import Path
@@ -290,6 +292,112 @@ def bytes_to_data_uri(
         b64 = base64.b64encode(data).decode("ascii")
         return f"data:{fallback_mime};base64,{b64}", data, fallback_mime
     return None, b"", ""
+
+
+def _slice_along_axis(
+    img: Image.Image,
+    *,
+    vertical: bool,
+) -> tuple[list[tuple[bytes, str]], str] | None:
+    """沿主轴切分超长竖图或超宽横图，相邻保留重叠区防止跨段文字截断。"""
+    w, h = img.size
+    major, minor = (h, w) if vertical else (w, h)
+    target_minor = min(minor, 1200)
+    scale = target_minor / float(minor)
+    scaled_major = max(1, round(major * scale))
+    overlap_scaled = 120
+    max_slice_major = 1800
+    max_slices = 8
+    n = min(
+        max_slices,
+        max(2, math.ceil((scaled_major - overlap_scaled) / (max_slice_major - overlap_scaled))),
+    )
+    orig_overlap = max(40, round(overlap_scaled / scale))
+    orig_step = (major - orig_overlap) / float(n)
+    slices: list[tuple[bytes, str]] = []
+    for i in range(n):
+        start = 0 if i == 0 else max(0, round(i * orig_step))
+        end = major if i == n - 1 else min(major, round((i + 1) * orig_step + orig_overlap))
+        box = (0, start, w, end) if vertical else (start, 0, end, h)
+        slice_edge = min(MAX_INLINE_IMAGE_EDGE, max(target_minor, round((end - start) * scale)))
+        encoded = reencode_image(
+            img.crop(box),
+            max_bytes=MAX_INLINE_IMAGE_BYTES,
+            target_edge=slice_edge,
+        )
+        if encoded is None:
+            return None
+        slices.append(encoded)
+    direction = "从上到下" if vertical else "从左到右"
+    edges = f"图1顶部→图{len(slices)}底部" if vertical else f"图1最左→图{len(slices)}最右"
+    ratio = major / float(minor)
+    note = (
+        f"📐 原图尺寸 {w}×{h}px（{'高宽' if vertical else '宽高'}比 {ratio:.2f}），"
+        f"已{direction}切分为 {len(slices)} 段（相邻重叠 {orig_overlap}px，{edges}）供清晰检视。"
+    )
+    return slices, note
+
+
+def slice_large_image_for_vision(
+    data: bytes,
+) -> tuple[list[tuple[bytes, str]], str] | None:
+    """将超长竖图、超宽横图或超大分辨率位图切分为多张清晰局部图供多模态检视；普通图返回 None。"""
+    mime = sniff_image_mime(data)
+    if mime is None:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as opened:
+                if _has_multiple_frames(opened):
+                    return None
+                img = ImageOps.exif_transpose(opened)
+                w, h = img.size
+                if w <= 0 or h <= 0:
+                    return None
+
+                if h > int(w * 2.2) and h > 2500:
+                    return _slice_along_axis(img, vertical=True)
+
+                if w > int(h * 2.2) and w > 2500:
+                    return _slice_along_axis(img, vertical=False)
+
+                if w > 2400 and h > 2400:
+                    overview = reencode_image(
+                        img,
+                        max_bytes=MAX_INLINE_IMAGE_BYTES,
+                        target_edge=1280,
+                    )
+                    if overview is None:
+                        return None
+                    ox = min(160, w // 12)
+                    oy = min(160, h // 12)
+                    mx = w // 2
+                    my = h // 2
+                    boxes = (
+                        (0, 0, min(w, mx + ox), min(h, my + oy)),
+                        (max(0, mx - ox), 0, w, min(h, my + oy)),
+                        (0, max(0, my - oy), min(w, mx + ox), h),
+                        (max(0, mx - ox), max(0, my - oy), w, h),
+                    )
+                    quad_slices: list[tuple[bytes, str]] = [overview]
+                    for box in boxes:
+                        encoded = reencode_image(
+                            img.crop(box),
+                            max_bytes=MAX_INLINE_IMAGE_BYTES,
+                            target_edge=1600,
+                        )
+                        if encoded is None:
+                            return None
+                        quad_slices.append(encoded)
+                    note = (
+                        f"📐 原图尺寸 {w}×{h}px，已生成 5 张检视图："
+                        "图1为全局缩略图，图2~图5依次为左上、右上、左下、右下高清局部切片。"
+                    )
+                    return quad_slices, note
+    except (Image.DecompressionBombError, OSError, SyntaxError, UnidentifiedImageError, ValueError):
+        return None
+    return None
 
 
 def provider_prefers_binary_image(provider_or_model: str | Model | None) -> bool:

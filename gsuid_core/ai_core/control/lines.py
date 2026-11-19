@@ -124,6 +124,17 @@ POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
     "（出图由主人格再委派 render_agent）。）"
 )
 
+MAX_RENDERS_PER_TASK: Final[int] = 4
+
+_RENDER_TAIL_CONTRACT: Final[str] = (
+    "写**一份**完整 HTML 调 render_html_to_image（max_width 840）；"
+    "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
+    "若已成功出图且工具表有 read_image：先调 read_image 自检裁切/撞色/重叠，"
+    f"有缺陷可改后重渲（单任务最多 {MAX_RENDERS_PER_TASK} 次）；"
+    "确认无误后停止渲染，只交 1～3 句摘要 + 最终定稿的 1 个图片 res_ 句柄。"
+    "禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
+)
+
 POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "（系统：本轮已有工具返回。你是 render_agent——"
     "若尚未成功出图：按内容气质设计高对比信息图"
@@ -138,11 +149,7 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER = (
     "超长文必须去重提炼为 6～8 节高密度信息图完整收束（剔除工具调试报错表、总表数≤6、禁写「下篇续」断尾），"
     "≥4 列的表格必须独占全宽整行（严禁塞入双列半宽卡），双列并排须左右高度均衡；"
     "严禁用 :first-child/:last-child，左右横排左标签必加 flex:none;white-space:nowrap，"
-    "卡片必留内边距与纵向 gap；"
-    "写**一份**完整 HTML，只调用一次 render_html_to_image（max_width 840）；"
-    "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
-    "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
-    "禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
+    "卡片必留内边距与纵向 gap；" + _RENDER_TAIL_CONTRACT
 )
 
 POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED = (
@@ -156,11 +163,7 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED = (
     "超长文必须去重提炼为 6～8 节高密度信息图完整收束（剔除工具调试报错表、总表数≤6、禁写「下篇续」断尾），"
     "≥4 列的表格必须独占全宽整行（严禁塞入双列半宽卡），双列并排须左右高度均衡；"
     "严禁用 :first-child/:last-child，左右横排左标签必加 flex:none;white-space:nowrap，"
-    "卡片必留内边距与纵向 gap；"
-    "写**一份**完整 HTML，只调用一次 render_html_to_image（max_width 840）；"
-    "出图工具**只登记 artifact / 返回句柄**，禁止对用户会话直发。"
-    "若已成功出图：停止再调 render_*，只交 1～3 句摘要 + 图片 res_ 句柄。"
-    "禁止拆多张连渲；禁止只交 HTML 源码；禁止 web 再检索与编造数字。）"
+    "卡片必留内边距与纵向 gap；" + _RENDER_TAIL_CONTRACT
 )
 
 POST_TOOL_FAIL_CONTRACT = (

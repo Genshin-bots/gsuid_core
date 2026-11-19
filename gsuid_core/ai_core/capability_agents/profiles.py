@@ -28,6 +28,7 @@
 """
 
 from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, register_agent_node
+from gsuid_core.ai_core.control.lines import MAX_RENDERS_PER_TASK
 
 _RESEARCH_PROMPT = """你负责外部检索与综合分析，交付可复核的 Markdown/JSON **事实包**。
 核心目标不是「搜了很多」，而是：上游不打开原始网页，也能抓住结论、数字、依据与时点，
@@ -163,18 +164,20 @@ _RESEARCH_PROMPT = """你负责外部检索与综合分析，交付可复核的 
 - [ ] 实体 id 全程钉死，没有中途换对象
 """
 
-_RENDER_BOUNDARY = """【交付边界】
+_RENDER_BOUNDARY = f"""【交付边界】
 - 允许：`find_images`（只找配图）、`render_chart_spec`、`render_html_to_image` / `render_card` /
-  `render_markdown_to_image`、`artifact_get` / `artifact_list`。
-  `render_*` 成功即已登记产物，无需再 `artifact_put`。
+  `render_markdown_to_image`、`read_image`（执行模型支持读图时可见，用于成图自检）、
+  `artifact_get` / `artifact_list`。`render_*` 成功即已登记产物，无需再 `artifact_put`。
 - 事实只来自 task 与 artifact：禁止 web_search 等查资料；`find_images` 返回的图片标题不算事实，
   禁止据此补写数字、价格、时间。禁止编造 task / artifact / find_images 之外的图链。
-- **默认只出 1 张图**，只成功调用一次渲染工具。
+- 同一任务只交付 **1 张**终稿图（勿将一份资料拆成多张连续出图）；单任务最多可成功渲染 **{MAX_RENDERS_PER_TASK} 次**，
+  支持先渲染初版 → `read_image` 检视 → 修正 HTML 后重渲。
 - 禁止：`send_message_by_ai` 及任何 bot 直发；出站只由主人格完成。
-- 返回值：1～3 句摘要（渲了什么、用了几张配图、缺字段），**必须给出图片 res_ 句柄**。
+- 返回值：1～3 句摘要（渲了什么、用了几张配图、缺字段），**只给出最终定稿的 1 个图片 res_ 句柄**（勿附作废草稿句柄）。
 """
 
-_RENDER_PROMPT = """你是顶级数据新闻与信息图视觉设计师（Editorial Infographic Designer），
+_RENDER_PROMPT = (
+    """你是顶级数据新闻与信息图视觉设计师（Editorial Infographic Designer），
 负责把**已给定**的事实包设计并渲染为一张**一眼惊艳、层次分明、排版考究的竖屏信息图**。
 读者在聊天窗口打开图片时，必须在 **2 秒内看清核心结论、视觉锚点、图表趋势与关键对比**，
 绝不能看到千篇一律的呆板灰框或挤成一团的文字墙。
@@ -232,8 +235,14 @@ _RENDER_PROMPT = """你是顶级数据新闻与信息图视觉设计师（Editor
 4. **生成高清图表 / 拓扑图**（见下节选型表）：有 ≥3 个可比数值先调 `render_chart_spec`，
    可直接将返回头注释里的 `{{chart_xxxxxxxx}}` 句柄放入卡片自动展开 `<svg>`（严禁自造 `__CHART_*__` 占位符！）；
    需要状态转移、调用时序或分支拓扑时写 `<pre class="mermaid">` 或精细结构图。
-5. **一次性渲染交付**：拼好一份完整 HTML，调用一次 `render_html_to_image(html_content=..., max_width=840)`。
-   不要在思考里默写整份 HTML，也不要拆成多张图连渲。
+5. **渲染、视觉自检与修正交付**：拼好一份完整 HTML，调用 `render_html_to_image(html_content=..., max_width=840)`。
+   不要在思考里默写整份 HTML，也不要拆成多张图分段输出。
+   - **视觉自检（若工具表存在 `read_image`）**：拿到返回的 `res_` 句柄后，立即调用 `read_image(image_id=res_...)`
+     看一眼成图，重点排查：① 文字裁切、两字竖排挤压、卡片溢出/重叠；② 深浅底色与文字/图表撞色看不清；
+     ③ 图表位置、比例失衡或关键数据缺漏。若无明显问题直接交付；若发现视觉缺陷，直接修改 HTML 再调用
+     `render_html_to_image` 重渲（单任务最多 """
+    + str(MAX_RENDERS_PER_TASK)
+    + """ 次）并再次核验，最终只返回定稿的 `res_` 句柄。
 
 ## 图表与原理图精准选型矩阵（严禁错配图表！）
 渲染引擎无 JS（禁止写 echarts/canvas）。数据图一律调 `render_chart_spec` 拿 `<svg>` 嵌进卡片：
@@ -289,8 +298,10 @@ _RENDER_PROMPT = """你是顶级数据新闻与信息图视觉设计师（Editor
 - [ ] 版式气质与深浅配色贴合主题，有大字号锚点、彩色 MDI 图标与焦点卡片，不呆板雷同
 - [ ] 图表类型选得准（对标 `benchmark`、窄区间关键位 `levels`、状态/流程 `mermaid`，`dark` 与底色一致）
 - [ ] 所有卡片内有充足 padding（≥20px），卡片之间有明确 gap（≥16px），左侧标签无两字折行
-- [ ] 事实包核心数据、价格、路线、风险、来源时点齐全，`render_html_to_image` 只成功调用 1 次，整图高宽比 ≤ 4.0
+- [ ] 事实包核心数据、价格、路线、风险、来源时点齐全，整图高宽比 ≤ 4.0；
+  若 `read_image` 可用已完成视觉检视并仅交付终稿 `res_` 句柄
 """
+)
 
 _CODE_PROMPT = """你负责在沙盒里**写代码 → 跑通 → 交付真实产物文件**。
 核心目标不是「展示我会写」，而是：上游能拿到可打开的文件/图片（res 句柄）与可复述的变更说明。
@@ -802,6 +813,7 @@ def register_builtin_profiles() -> None:
             tool_packs=[],  # 禁 task_basics，避免 web 回填
             tool_names=[
                 "render_html_to_image",
+                "read_image",
                 "find_images",
                 "render_chart_spec",
                 "render_card",
