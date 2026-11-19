@@ -123,10 +123,6 @@ def obligation_satisfied(ob: Obligation, *, facts: Sequence[str], tool_calls: Se
     return False
 
 
-def known_satisfaction_facts() -> frozenset[str]:
-    return _SATISFACTION_FACTS
-
-
 def render_control_envelope(directives: Sequence[Directive]) -> str:
     """把若干 Directive 渲染成单个 ``<control>`` 段。
 
@@ -161,11 +157,3 @@ def render_control_envelope(directives: Sequence[Directive]) -> str:
 def is_control_envelope(text: str) -> bool:
     """字符串是否已是 ``<control>`` 信封（history 剥离用）。"""
     return text.lstrip().startswith(f"<{CONTROL_ENVELOPE_TAG}")
-
-
-def disputes_of(extra: Mapping[str, object]) -> list[str]:
-    """读取本轮申辩理由（settle / 观测用）。"""
-    bucket = extra[DISPUTE_EXTRA_KEY] if DISPUTE_EXTRA_KEY in extra else None
-    if not isinstance(bucket, list):
-        return []
-    return [item for item in bucket if isinstance(item, str)]

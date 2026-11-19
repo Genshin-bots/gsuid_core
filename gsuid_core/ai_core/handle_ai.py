@@ -96,7 +96,6 @@ class InteractiveTurnResult:
     is_error: bool
     intent: str
     silenced_early: bool
-    hook_ctx: AgentHookContext
     rel: Optional[RelationshipView]
 
 
@@ -388,7 +387,7 @@ async def run_interactive_turn(
     if not admit_pre_router(turn_graph):
         logger.info(t("log.ai.gscore_group_open_gate_silence"))
         _count_soft_silence()
-        return InteractiveTurnResult("", "<SILENCE>", True, False, "", True, hook_ctx, hook_ctx.relationship)
+        return InteractiveTurnResult("", "<SILENCE>", True, False, "", True, hook_ctx.relationship)
 
     await fire_hooks(AgentHookPoint.AFTER_SESSION, hook_ctx)
     rel = hook_ctx.relationship
@@ -459,7 +458,6 @@ async def run_interactive_turn(
     reactive_ok = True
     if router_gated:
         reactive_ok = bool(hook_ctx.route_decision is not None and hook_ctx.route_decision.soft_speak)
-        hook_ctx.should_speak = reactive_ok
         if reactive_ok:
             if soft_triggered:
                 record_gate_outcome("llm_speak")
@@ -481,7 +479,7 @@ async def run_interactive_turn(
             if settle:
                 await _settle_silent_turn(event, bot_id, query, intent, rel, hook_ctx.persona_name or "")
         _count_soft_silence()
-        return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, hook_ctx, rel)
+        return InteractiveTurnResult("", "<SILENCE>", True, False, intent, True, rel)
     logger.info(t("log.ai.gscore_ai_intent_mode", intent=intent or "-"))
     if soft_triggered and enqueue_ts is not None:
         enqueue_ts = time.time()
@@ -617,7 +615,7 @@ async def run_interactive_turn(
             is_error=is_error,
             persona_name=session.persona_name or "",
         )
-    return InteractiveTurnResult(chat_result, result_text, is_silence, is_error, intent, False, hook_ctx, rel)
+    return InteractiveTurnResult(chat_result, result_text, is_silence, is_error, intent, False, rel)
 
 
 async def _settle_and_fire_after_run(

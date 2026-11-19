@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Optional, TypedDict, cast
+from typing import TYPE_CHECKING, Optional, TypedDict
 from collections.abc import Sequence
 
 from gsuid_core.i18n import t
@@ -42,21 +42,6 @@ class EdgeLifecycleUpdate(TypedDict):
     edge_id: str
     invalid_at_ts: float | None
     resolution_state: str
-
-
-class CandidatePoint(TypedDict):
-    """RF-Mem 回忆环 / 熟悉度探针 dense 检索返回的单个候选点。
-
-    抽成 TypedDict 替代裸 ``dict``：让 ``dense_search_episodes_with_vectors`` 的返回与
-    回忆环里 ``hits`` 的字段访问自文档化（id/vector/score/content/valid_at_ts/scope_key）。
-    """
-
-    id: str
-    vector: Optional[list[float]]  # 取不到 dense 向量时为 None
-    score: float
-    content: str
-    valid_at_ts: Optional[float]
-    scope_key: str
 
 
 # Qdrant 写入互斥锁：按集合隔离保护 upsert 操作，防止并发破坏索引长度同步。
@@ -245,24 +230,6 @@ def _episode_payload(d: dict[str, object]) -> dict[str, object]:
     if isinstance(tid, str) and tid:
         payload["thread_id"] = tid
     return payload
-
-
-async def set_episode_session_payload(items: list[tuple[str, str, int]]) -> None:
-    """回填后批量写 session_id / turn_index，失败由调用方记日志。"""
-    from gsuid_core.ai_core.rag.base import client
-
-    if client is None or not items:
-        return
-    async with _QDRANT_LOCKS[MEMORY_EPISODES_COLLECTION]:
-        for i in range(0, len(items), 64):
-            chunk = items[i : i + 64]
-            for eid, sid, turn in chunk:
-                await client.set_payload(
-                    collection_name=MEMORY_EPISODES_COLLECTION,
-                    payload={"session_id": sid, "turn_index": turn},
-                    points=[eid],
-                    wait=True,
-                )
 
 
 async def upsert_entity_vector(
@@ -794,64 +761,6 @@ async def search_edges(query: str, scope_keys: list[str], top_k: int = 20) -> li
     return await _hybrid_search_edges(query, scope_keys, top_k)
 
 
-async def search_categorized_neighbors(
-    entity_ids: list[str],
-    scope_key: str,
-    top_k: int = 5,
-) -> dict[str, list[tuple[str, float]]]:
-    """复用各 Entity 在 Qdrant 中已存的 summary_dense 向量（不重新嵌入），
-    检索同 scope 内最相似的近邻。
-
-    返回 ``{entity_id: [(neighbor_id, cosine_score), ...]}``：已剔除自身、按相似度降序。
-    供分层图 Layer-1 向量预分配（把新实体并入近邻所在 Category）使用。
-    """
-    from gsuid_core.ai_core.rag.base import client
-
-    if client is None or not entity_ids:
-        return {}
-
-    scope_filter = _scope_filter(scope_key)
-
-    try:
-        retrieved = await client.retrieve(
-            collection_name=MEMORY_ENTITIES_COLLECTION,
-            ids=list(entity_ids),
-            with_payload=False,
-            with_vectors=["summary_dense"],
-        )
-    except Exception as e:
-        logger.warning(t("log.memory.qdrant_batch_fetch_entity_fail", e=e))
-        return {}
-
-    id_to_vector: dict[str, list[float]] = {}
-    for point in retrieved:
-        vector = point.vector
-        if isinstance(vector, dict) and "summary_dense" in vector:
-            dense = vector["summary_dense"]
-            if isinstance(dense, list):
-                # summary_dense 恒为一维 dense；过滤出数值元素，排除多向量分支以对齐 list[float]
-                id_to_vector[str(point.id)] = [float(x) for x in dense if isinstance(x, (int, float))]
-
-    neighbors: dict[str, list[tuple[str, float]]] = {}
-    for entity_id, dense in id_to_vector.items():
-        try:
-            response = await client.query_points(
-                collection_name=MEMORY_ENTITIES_COLLECTION,
-                query=dense,
-                using="summary_dense",
-                query_filter=scope_filter,
-                limit=top_k + 1,
-                with_payload=False,
-            )
-        except Exception as e:
-            logger.warning(t("log.memory.qdrant_entity_nearest_neighbor_fail", entity_id=entity_id, e=e))
-            continue
-        pairs = [(str(p.id), p.score) for p in response.points if str(p.id) != entity_id]
-        if pairs:
-            neighbors[entity_id] = pairs[:top_k]
-    return neighbors
-
-
 async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> list["Entity"]:
     """根据 entity_ids 批量获取 Entity 详情（用于 One-hop 邻居扩展）
 
@@ -904,134 +813,6 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         )
 
     return entities
-
-
-# RF-Mem 双过程检索：熟悉度探针 + 回忆环用向量操作
-# 设计：plans/rf_mem_dual_process_retrieval_assessment_20260614.md
-
-
-async def embed_query(text: str) -> list[float]:
-    """对查询文本做一次 dense 嵌入（供回忆环 α-mix 的 query 残差使用）。"""
-    return await _embed_async(text)
-
-
-async def probe_episode_scores(
-    query: str,
-    scope_keys: list[str],
-    k: int = 15,
-    query_vector: Optional[list[float]] = None,
-) -> list[float]:
-    """RF-Mem 熟悉度探针：对 memory_episodes（必要时含冷集 memory_episodes_cold）发一次
-    **纯 dense** 查询，取真实余弦分。
-
-    关键（评估 §5.1/§5.2）：现混合检索 `_hybrid_search_impl` 返回的是 RRF 融合分
-    （量级 ~1/(60+rank)≈0.016），与论文 θ 阈值的**余弦语义不可比**；且其默认
-    `score_threshold=0.3` 会先砍掉低分候选、扭曲"低熟悉度查询"的 s̄/熵。故探针走专用
-    纯 dense 查询、**score_threshold=0、不复用 RRF 那条线**。返回降序余弦分列表（可能短于 k）。
-
-    冷集补查：热集命中不足 k 时（用户有大量冷归档记忆、熟悉度被低估 → 过度路由 Recollection），
-    追加查询冷集补足候选，让 s̄/熵 基于更全的语义邻居计算。两集合并后按余弦降序取前 k。
-
-    ``query_vector``：已算好的 query dense 向量（回忆环复用探针时传入，省一次嵌入）；缺省则现算。
-    """
-    from gsuid_core.ai_core.rag.base import client
-
-    if client is None or not scope_keys:
-        return []
-
-    scope_filter = _scope_filter(scope_keys)
-    try:
-        # embedding 也放入 try：provider 未就绪等异常时降级为"无信号"，由路由保守走 Familiarity，
-        # 绝不让探针把异常冒泡到检索主链路。
-        query_dense = query_vector if query_vector else await _embed_async(query)
-        response = await client.query_points(
-            collection_name=MEMORY_EPISODES_COLLECTION,
-            query=query_dense,
-            using="dense",
-            query_filter=scope_filter,
-            limit=k,
-            with_payload=False,
-        )
-        scores = [p.score for p in response.points]
-        scores.sort(reverse=True)
-        return scores[:k]
-    except Exception as e:
-        logger.debug(t("log.memory.qdrant_familiarity_probe_query", e=e))
-        return []
-
-
-async def dense_search_episodes_with_vectors(
-    query_vector: list[float],
-    scope_keys: list[str],
-    top_n: int,
-    exclude_ids: Optional[set[str]] = None,
-) -> list[CandidatePoint]:
-    """以给定 dense 向量检索 memory_episodes，返回候选的 id / dense 向量 / 余弦分 / 内容。
-
-    供回忆环（KMeans 聚类需要候选向量、α-mix 需要质心）使用。score_threshold=0 取全谱。
-    返回元素形如 ``{"id", "vector", "score", "content", "valid_at_ts", "scope_key"}``；
-    取不到 dense 向量的候选其 ``vector`` 为 None（调用方据此跳过聚类，但仍可作为命中）。
-
-    ``exclude_ids``：检索侧去重——已命中的 Episode 经 ``must_not`` HasId 排除，避免每轮回忆把
-    top-N 槽位浪费在已见 Episode 上、稀释新覆盖（论文在检索侧排除 Seen）。
-    """
-    from gsuid_core.ai_core.rag.base import client
-
-    if client is None or not scope_keys or not query_vector:
-        return []
-
-    scope_filter = _scope_filter(scope_keys)
-    # 将已见 Episode 作为 must_not HasId 叠加到过滤条件，保证空 scope 时依然生效。
-    if exclude_ids:
-        from gsuid_core.ai_core.rag.qmodels import HasIdCondition, ExtendedPointId
-
-        # str id 是合法的 ExtendedPointId，但 qdrant stub 中 list 不变性令直传报错；
-        # must_not 的输出元素类型(含 tuple)亦宽于其入参所需的 List[Condition]——均用 cast 收口。
-        capped = cast("list[ExtendedPointId]", list(exclude_ids)[:1024])
-        existing_must = scope_filter.must if scope_filter is not None else []
-        existing_must_not = (
-            cast("list[Condition]", list(scope_filter.must_not))
-            if scope_filter is not None and scope_filter.must_not
-            else []
-        )
-        existing_must_not.append(HasIdCondition(has_id=capped))
-        scope_filter = Filter(must=existing_must, must_not=existing_must_not)
-    try:
-        response = await client.query_points(
-            collection_name=MEMORY_EPISODES_COLLECTION,
-            query=list(query_vector),
-            using="dense",
-            query_filter=scope_filter,
-            limit=top_n,
-            with_payload=True,
-            with_vectors=["dense"],
-        )
-    except Exception as e:
-        logger.debug(t("log.memory.qdrant_recall_loop_dense_fail", e=e))
-        return []
-
-    out: list[CandidatePoint] = []
-    for p in response.points:
-        vec: Optional[list[float]] = None
-        if isinstance(p.vector, dict) and "dense" in p.vector and isinstance(p.vector["dense"], list):
-            # dense 恒为一维；过滤出数值元素，排除多向量分支以对齐 list[float]
-            vec = [float(x) for x in p.vector["dense"] if isinstance(x, (int, float))]
-        payload = p.payload if p.payload is not None else {}
-        content = payload["content"] if "content" in payload else ""
-        scope_key = payload["scope_key"] if "scope_key" in payload else ""
-        raw_ts = payload["valid_at_ts"] if "valid_at_ts" in payload else None
-        valid_at = float(raw_ts) if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) else None
-        out.append(
-            {
-                "id": str(p.id),
-                "vector": vec,
-                "score": p.score,
-                "content": content if isinstance(content, str) else "",
-                "valid_at_ts": valid_at,
-                "scope_key": scope_key if isinstance(scope_key, str) else "",
-            }
-        )
-    return out
 
 
 # --- 生命周期裁剪 / 对账用向量操作（§3.2①、§2） ---

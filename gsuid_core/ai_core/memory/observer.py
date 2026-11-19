@@ -5,7 +5,6 @@
 """
 
 import re
-import time
 import queue as sync_queue
 from typing import TYPE_CHECKING, Optional, Sequence
 from datetime import datetime, timezone
@@ -109,50 +108,6 @@ class ObservationRecord:
     personal_credential: bool = False  # 出站依据含个人凭据：禁进群级事实抽取（§4.7）
     command_hit: bool = False
     defer_count: int = 0
-
-
-class _ScopeWindow:
-    """单 scope 环形窗口：容量 / 静默 / 最老封顶三出口。"""
-
-    __slots__ = ("records", "last_activity", "first_at")
-
-    def __init__(self) -> None:
-        self.records: deque[ObservationRecord] = deque()
-        self.last_activity: float = time.time()
-        self.first_at: float = self.last_activity
-
-    def push(self, rec: ObservationRecord) -> None:
-        if not self.records:
-            self.first_at = time.time()
-        self.records.append(rec)
-        self.last_activity = time.time()
-
-    def snapshot(self) -> list[ObservationRecord]:
-        return list(self.records)
-
-    def should_flush(
-        self,
-        now: float,
-        *,
-        capacity: int,
-        idle_seconds: int,
-        max_age_seconds: int,
-        force: bool = False,
-    ) -> bool:
-        if not self.records:
-            return False
-        if force:
-            return True
-        if len(self.records) >= capacity:
-            return True
-        if idle_seconds > 0 and len(self.records) >= 4 and (now - self.last_activity) >= idle_seconds:
-            return True
-        return (now - self.first_at) >= max_age_seconds
-
-    def drain(self) -> list[ObservationRecord]:
-        records = list(self.records)
-        self.records.clear()
-        return records
 
 
 def _is_repeat(scope_key: str, content: str) -> bool:

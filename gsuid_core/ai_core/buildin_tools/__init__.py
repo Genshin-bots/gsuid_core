@@ -314,7 +314,6 @@ from gsuid_core.ai_core.buildin_tools.file_operations import (
 from gsuid_core.ai_core.buildin_tools.memory_timeline import (
     read_session,
     search_turns,
-    mark_evidence,
     recall_session,
 )
 
@@ -364,7 +363,6 @@ __all__ = [
     "recall_session",
     "search_turns",
     "read_session",
-    "mark_evidence",
     "read_chat_history",
     "attach_article",
     # 图片读取工具（按ID取图转述，保底）

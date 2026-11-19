@@ -289,12 +289,6 @@ AI_CONFIG: Dict[str, GSC] = {
         24,
         options=[12, 16, 24, 32, 48],
     ),
-    "group_session_tool_ceiling": GsIntConfig(
-        "群聊会话工具名硬顶",
-        "群聊瘦核下的工具名上限; 超顶拒新名、不 evict。闲聊保持瘦核, 有持久实体时才 append。修改后即时生效",
-        20,
-        options=[12, 16, 20, 24, 32],
-    ),
     "main_channel_visible_limit": GsIntConfig(
         "主通道单轮出站上限",
         "本项管模型单轮能发几段 TextPart（委派开场句 + 终局各占一格）。"
@@ -306,12 +300,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "群聊未点名默认静默",
         "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。默认关闭。修改后即时生效",
         False,
-    ),
-    "group_at_list_max": GsIntConfig(
-        "群聊 at 列表展开上限",
-        "at_list 超过该长度则拒绝扩写点名, 只记条数。修改后即时生效",
-        8,
-        options=[4, 8, 12, 16],
     ),
     "group_repeat_body_n": GsIntConfig(
         "同人短窗同文重复次数",

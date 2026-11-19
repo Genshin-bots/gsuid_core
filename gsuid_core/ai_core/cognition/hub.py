@@ -922,17 +922,6 @@ async def _link_one(scope_key: str, name: str, entity_id: str) -> None:
         logger.debug(i18n_t("log.ai.cognition_link_entity_fail", name=name[:40], e=e))
 
 
-def schedule_link_entities(scope_key: str, name_to_id: Dict[str, str]) -> None:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    for name, eid in name_to_id.items():
-        task = loop.create_task(_link_one(scope_key, name, eid))
-        _LINK_TASKS.add(task)
-        task.add_done_callback(_LINK_TASKS.discard)
-
-
 async def scan_entities_to_world(stats: MountStats) -> None:
     from gsuid_core.ai_core.memory.database.models import AIMemEntity
 

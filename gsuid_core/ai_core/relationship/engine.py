@@ -280,65 +280,6 @@ async def _read_view(user_id: str, bot_id: str, persona_name: str, is_master: bo
     )
 
 
-async def apply_model_delta(
-    *,
-    user_id: str,
-    bot_id: str,
-    delta: int,
-    user_name: str = "",
-    persona_name: str = "",
-) -> SettleOutcome:
-    """内部增量（吃与框架结算同一份日预算）。模型侧增量工具已删除，勿再接回工具表。"""
-    from gsuid_core.ai_core.database.models import UserFavorability
-
-    if not engine_enabled() or delta == 0:
-        view = await _read_view(user_id, bot_id, persona_name, False)
-        return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, None, wrote=False)
-
-    record = await UserFavorability.get_or_create_user_favorability(user_id, bot_id, persona_name, user_name)
-    before = record.favorability
-    now_ts = int(time.time())
-    today = _today()
-    day_rolled = record.daily_ymd != today
-    daily_gain = 0 if day_rolled else record.daily_gain
-    daily_loss = 0 if day_rolled else record.daily_loss
-
-    applied_raw = clip_to_budget(delta, daily_gain=daily_gain, daily_loss=daily_loss)
-    new_score = _clamp(before + applied_raw)
-    applied = new_score - before
-    reason = "model.delta" if applied else REASON_BUDGET
-    await UserFavorability.apply_settlement(
-        user_id,
-        bot_id,
-        persona_name,
-        new_score=new_score,
-        delta=applied,
-        reason=reason,
-        now_ts=now_ts,
-        daily_ymd=today,
-        daily_gain=daily_gain + max(0, applied),
-        daily_loss=daily_loss + max(0, -applied),
-        bump_interaction=False,
-        refresh_positive=False,
-        user_name=user_name,
-    )
-    logger.info(t("log.ai.relationship_model_delta", user=user_id, delta=applied, score=new_score))
-    return SettleOutcome(
-        applied,
-        reason,
-        before,
-        new_score,
-        view_from_score(
-            new_score,
-            False,
-            vibe=record.interaction_vibe or "",
-            callbacks=tuple(record.shared_callbacks_list),
-        ),
-        None,
-        wrote=True,
-    )
-
-
 async def apply_admin_set(
     *,
     user_id: str,

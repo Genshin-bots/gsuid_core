@@ -8,10 +8,8 @@ from typing import Literal
 from pathlib import Path
 from collections.abc import Awaitable
 
-from gsuid_core.sv import SL
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
-from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.trigger import Trigger
@@ -135,29 +133,6 @@ def load_aside_settings(persona_name: str) -> AsideSettings | None:
 
 def raw_receipt_text(pieces: list[SentPiece]) -> str:
     return "\n".join(piece.text.strip() for piece in pieces if piece.kind == "text" and piece.text.strip())
-
-
-def _get_plugin_commands(plugin_name: str) -> set[str]:
-    if not plugin_name:
-        return set()
-    prefixes: list[str] = []
-    cfg_prefixes = core_config.get_config("command_start")
-    if isinstance(cfg_prefixes, list):
-        prefixes = [str(p) for p in cfg_prefixes if p]
-    if not prefixes:
-        prefixes = [""]
-
-    commands: set[str] = set()
-    for sv in SL.lst.values():
-        if sv.self_plugin_name != plugin_name:
-            continue
-        for type_dict in sv.TL.values():
-            for trig in type_dict.values():
-                kw = str(trig.keyword)
-                commands.add(kw)
-                for p in prefixes:
-                    commands.add(f"{p}{kw}")
-    return commands
 
 
 def _note_session(session: GsCoreAIAgent | None, content: str, source: str) -> None:

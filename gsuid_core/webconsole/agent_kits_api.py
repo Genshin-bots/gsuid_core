@@ -117,10 +117,7 @@ async def agentKitSlots(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
 
 @app.get("/api/agent_kits/hooks", summary="Hook 点位与挂载情况", tags=AGENT_KITS)
 async def agentKitHooks(_user: Dict = Depends(require_auth)) -> Dict[str, Any]:
-    """列出 31 个点位的契约（内核锚点 / 能力票 / 超时预算）与当前挂载者。
-
-    未接线的点位 ``owners`` 为空——这既可能是「本期没接」，也可能是槽位被关了。
-    """
+    """列出全部已接线点位的契约（内核锚点 / 能力票 / 超时预算）与当前挂载者。"""
     from gsuid_core.ai_core.hooks import (
         HOOK_POINT_SPECS,
         AgentHookPoint,

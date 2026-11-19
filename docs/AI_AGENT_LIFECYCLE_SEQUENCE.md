@@ -143,25 +143,19 @@ SSE 仅闸后 `text`/`attachment` 与单一终态；无 tool/thinking。取消�
 
 ### 1.1 内核 vs 套件（2026-08-15 起）
 
-上面 12 阶段是**内核编排**。产品能力（记忆 / 关系温度 / 情绪 / 意图分类 / 软门 /
-脚手架注入 / 工具装配 / FileOS 折叠 / 质量纠正）**不再写在阶段函数体里**，而是 **20** 个
-可替换**套件**（`kits/base.py::KIT_SLOTS`），挂在同一张 **31 点位 hook 总线**上：
+上面 12 阶段是**内核编排**。产品能力（记忆 / 关系温度 / 情绪 / 意图分类 / 脚手架注入等）
+**不再写在阶段函数体里**，而是 **15** 个可替换**套件**（`kits/base.py::KIT_SLOTS`），挂在同一张 **11 点位 hook 总线**上：
 
 ```text
 handler   ①  ──→ H00 ON_INBOUND                    记忆观察 / 表情观察 / 图片记忆
 handle_ai ④  ──→ H01 BEFORE_AI_CHAT                会话静默窗（abort）
           ⑤  ──→ H02 AFTER_SESSION                 关系温度 View / 主动会话 observe
           ⑥  ──→ H03 CLASSIFY                      意图与软唤醒相关性（**由槽位占用者写入**）
-          ⑦  ──  (H04 REACTIVE_GATE 已下线 wired=False；软门由 handle_ai 直接消费 route_decision.soft_speak)
           ⑧  ──→ H05 RETRIEVE_CONTEXT              贵检索窗（唯一 15s 长超时）
               ──→ H06 COMPOSE_CONTEXT              各套件填命名块
               ──→ H07 AFTER_CONTEXT                第三方追加 hint
-          ⑩  ──→ H08 AFTER_RUN                     mood / 统计上报
-              ──→ H09 ON_AI_ERROR
-agent_run    ──→ H10–H13   prepare（预算后 / ToolContext / user 外壳）
-             ──→ H14/H15/H15b  工具装配 / 钉工具 / 建 Agent 后
-             ──→ H16–H22   iter（模型请求前 / ToolReturn / ToolCall / 出站前后）
-             ──→ H23–H28   settle / 纠正 / usage limit / 取消 / 失败 / cleanup
+          ⑩  ──→ H08 AFTER_RUN                     mood / 统计上报 / 决策蒸馏
+agent_run    ──→ H14/H15 ASSEMBLE_TOOLS / AFTER_ASSEMBLE_TOOLS  第三方增删工具（空表零开销）
 建 session   ──→ H29 ON_STABLE_CONTEXT              **唯一**允许写 system 的点位
 ```
 
@@ -1524,7 +1518,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 [`AI_CONTROL_PLANE_UNIFICATION_20260814.md`](AI_CONTROL_PLANE_UNIFICATION_20260814.md)）：
 
 1. **INV-1 出处 ≠ 排版**：`saw_structured_return` 只能由真实 `ToolReturnPart` 置位；
-   台词呈长结构只记 `presentation_mismatch`，**不得**据此强制工具或销毁内容。
+   台词呈长结构只暂扣 `presentation_withheld`，**不得**据此强制工具或销毁内容。
    出图义务只在「真出处 +（台词呈报告体 / empty_handoff 暂扣）」时武装。
    观测源栅栏（`image_ocr` 等）不得武装出图。报告体拦截仍要 `fact_pack_pending`。
 2. **INV-3 纠正非破坏性**：`_corrected_or_original()` —— 纠正沉默或脏输出则**原答案生效**。

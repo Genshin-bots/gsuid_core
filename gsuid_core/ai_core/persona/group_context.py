@@ -115,15 +115,3 @@ async def _get_group_summary_from_memory(group_id: str) -> Optional[str]:
         logger.debug(t("log.persona.groupcontext_get_group_profile_fail", e=e))
 
     return None
-
-
-def clear_group_context_cache(group_id: Optional[str] = None) -> None:
-    """清除群聊上下文缓存
-
-    Args:
-        group_id: 指定群聊 ID，None 表示清除所有缓存
-    """
-    if group_id is None:
-        _group_context_cache.clear()
-    else:
-        _group_context_cache.pop(group_id, None)

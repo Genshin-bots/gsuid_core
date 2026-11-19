@@ -250,29 +250,6 @@ def _without_progress_tool(tools: ToolList) -> ToolList:
     return [t for t in tools if t.name != _PROGRESS_TOOL]
 
 
-def _kernel_owns_tool_assembly() -> bool:
-    """``tool_assembly`` 槽是否仍由第一方套件占据（= 内核跑五层装配）。
-
-    槽位 ``off`` 或被用户套件占据时返回 False：内核让位，只留调用方传入的工具
-    与自己的 exclusive 收口。总闸关闭时视为内核自管（回落纯内核编排）。
-
-    判据取**配置**而非运行期占用表：占用表是在 ``load_enabled_kits`` 里填的，而它排在
-    ``_INIT_STEPS`` 后段。用占用表会把「套件还没加载完」误读成「用户把槽拆了」，于是
-    在启动窗口内所有请求都退化成零工具（``find_tools`` 一并消失）——实测某个前置
-    init 步骤卡住数分钟时，整轮基准 24 例全部 0 工具调用。「没装好」不等于「不要装」，
-    这个门必须 fail-open。
-    """
-    from gsuid_core.ai_core.kits import resolve_slot_config
-    from gsuid_core.ai_core.hooks import hooks_enabled
-
-    if not hooks_enabled():
-        return True
-    configured = resolve_slot_config("tool_assembly")
-    if not configured:
-        return False
-    return all(kit_id.startswith("gscore.") for kit_id in configured)
-
-
 class ToolsPhase(RunOnceHost):
     def _stabilize_session_toolset(
         self,
@@ -374,12 +351,6 @@ class ToolsPhase(RunOnceHost):
             _assemble = self.dynamic_tools
         else:
             _assemble = self.create_by in _AGENTIC_CREATE_BY and not st.tools
-
-        # 装配套件为 off 时不执行自动装配，仅保留入参工具与委派补全。
-        # 此模式下特权分类 find_tools 一并不注入。
-        if _assemble and not _kernel_owns_tool_assembly():
-            logger.info(i18n_t("log.agent.tool_assembly_slot_not_kernel"))
-            _assemble = False
 
         # persona 的 enabled_tools 作用域：本轮向量检索 / find_tools / 动态暴露的收放口径。
         # 只管检索池，不动常驻直装工具与 tool_packs 静态挂载。

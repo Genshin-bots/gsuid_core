@@ -285,18 +285,6 @@ async def update_mood(
     return new_state
 
 
-async def reset_mood(persona_name: str, group_id: str) -> None:
-    """重置 Persona 在指定群聊的情绪状态为中性
-
-    Args:
-        persona_name: Persona 名称
-        group_id: 群聊 ID
-    """
-    key = _make_mood_key(persona_name, group_id)
-    _mood_states.pop(key, None)
-    logger.debug(t("log.persona.mood_persona_name_group_id_reset", persona_name=persona_name, group_id=group_id))
-
-
 def get_all_mood_states() -> Dict[str, MoodState]:
     """获取所有情绪状态（用于调试/监控）"""
     return dict(_mood_states)

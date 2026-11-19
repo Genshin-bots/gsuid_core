@@ -292,33 +292,6 @@ async def retrieve_self_episodes(bot_id: str, persona_name: str, limit: int = 3)
     return "\n".join(lines)
 
 
-def get_capability_domains() -> Dict[str, List[str]]:
-    """按 capability_domain 聚合已注册工具，未声明的按 category 兜底（C3-d）。
-
-    Returns:
-        {能力域名称: [工具名, ...]}
-    """
-    from gsuid_core.ai_core.register import get_registered_tools
-
-    # category 兜底标签
-    cat_labels = {
-        "self": "核心能力",
-        "buildin": "基础工具",
-        "common": "常用工具",
-        "media": "多媒体处理",
-        "default": "子任务工具",
-        "by_trigger": "插件功能",
-    }
-    domains: Dict[str, List[str]] = {}
-    registry = get_registered_tools()
-    for category, tools in registry.items():
-        for tool_name, tool_base in tools.items():
-            # capability_domain 是 ToolBase 已声明字段，直接访问；缺省按 category 兜底
-            domain = tool_base.capability_domain or (cat_labels[category] if category in cat_labels else category)
-            domains.setdefault(domain, []).append(tool_name)
-    return domains
-
-
 async def _compute_live_recurring_topics(
     scope_key: str,
     top_n: int = 5,

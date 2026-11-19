@@ -33,7 +33,7 @@ from gsuid_core.ai_core.hooks import (
     clear_hooks,
     on_agent_hook,
 )
-from gsuid_core.ai_core.hooks.points import WIRED_POINTS, HOOK_POINT_SPECS
+from gsuid_core.ai_core.hooks.points import HOOK_POINT_SPECS
 from gsuid_core.ai_core.kits.compose import compose_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -117,13 +117,15 @@ def test_slot_exclusivity_sealing_and_config(isolated) -> None:
     assert enable_kit(x.kit_id) and enable_kit(y.kit_id)
     assert set(occupants_of("inbound_observe")) == {"x.obs", "y.obs"}
 
-    default = register_agent_kit(_FakeKit(kit_id="gscore.speech", slot="speech", display_name="D", sealed=True))
-    mine = register_agent_kit(_FakeKit(kit_id="mine.speech", slot="speech", display_name="M"))
+    default = register_agent_kit(
+        _FakeKit(kit_id="gscore.identity", slot="persona_identity", display_name="D", sealed=True)
+    )
+    mine = register_agent_kit(_FakeKit(kit_id="mine.identity", slot="persona_identity", display_name="M"))
     assert enable_kit(default.kit_id)
     with pytest.raises(KitSlotError, match="密封"):
         enable_kit(mine.kit_id)
-    assert occupants_of("speech") == ("gscore.speech",)
-    assert enable_kit(mine.kit_id, allow_replace_sealed=True) and occupants_of("speech") == ("mine.speech",)
+    assert occupants_of("persona_identity") == ("gscore.identity",)
+    assert enable_kit(mine.kit_id, allow_replace_sealed=True) and occupants_of("persona_identity") == ("mine.identity",)
 
     with pytest.raises(KitSlotError, match="未知槽名"):
         register_agent_kit(_FakeKit(kit_id="bad.kit", slot="no_such_slot", display_name="bad"))
@@ -144,7 +146,7 @@ def test_slot_exclusivity_sealing_and_config(isolated) -> None:
 
 def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
     enabled = _run(load_enabled_kits(run_init_steps=False))
-    assert len(enabled) >= 18, enabled
+    assert len(enabled) == 15, enabled
     empty = [name for name, occ in slot_health().items() if not occ]
     assert not empty, f"这些槽没有占用者: {empty}"
 
@@ -157,8 +159,6 @@ def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
         "RETRIEVE_CONTEXT",
         "COMPOSE_CONTEXT",
         "AFTER_RUN",
-        "ON_TOOL_CALL",
-        "ASSEMBLE_TOOLS",
         "ON_STABLE_CONTEXT",
     ]
     missing = [p for p in required if not wired.get(p)]
@@ -176,5 +176,5 @@ def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
         if re.search(r"fire_hooks\(\s*point\b", text):
             fired |= set(re.findall(r"AgentHookPoint\.([A-Z0-9_]+)", text))
 
-    assert {p.name for p in WIRED_POINTS} == fired
+    assert {p.name for p in AgentHookPoint} == fired
     assert len(HOOK_POINT_SPECS) == len(AgentHookPoint)

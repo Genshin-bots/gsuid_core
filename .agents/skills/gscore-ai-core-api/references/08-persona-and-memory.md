@@ -168,12 +168,3 @@ queue = get_observation_queue()
 
 > 框架内部实现细节（轨迹背景 `tool_trace`、生命周期裁剪、清空联动）见
 > `.agents/skills/gscore-development/references/09-memory-system.md` §9.9。
-
-### 8.2.6 RF-Mem 双过程检索（2026-06-15，**默认关**）
-
-`memory/retrieval/familiarity.py` 接入"回忆-熟悉度双过程理论"：熟悉度探针（dense 查询取真实
-余弦分 → 均分 s̄ + 列表熵 H(p)，逐查询决定检索深度）+ 回忆环（零 LLM 的 KMeans + α-mix 多轮深
-检索，KMeans 走专用线程池不阻塞循环）。
-
-> ⚠️ **默认关**：阈值（`familiarity_theta_*` / `tau`）需按嵌入模型离线标定后再放量；回忆环强绑
-> `qdrant_provider=remote`。详见 `gscore-development` §9.10。

@@ -90,7 +90,6 @@ from gsuid_core.ai_core.control.outbound_detectors import (
     TECH_DUMP_TOOL_SHIELD,
     is_tech_dump,
 )
-from gsuid_core.ai_core.agent_run.remote_web_search import is_hosted_web_search_name
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     DELEGATION_INFLIGHT_KEY as _DELEGATION_INFLIGHT_KEY,
     PENDING_DELEGATION_HOLD as _PENDING_DELEGATION_HOLD,
@@ -104,12 +103,8 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_FAIL_CONTRACT_CAPABILITY as _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY as _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED as _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
-    is_timeless_aggregate as _is_timeless_aggregate,
     post_tool_contracts_for as _post_tool_contracts_for,
     web_search_delegate_line as _web_search_delegate_line,
-    tool_return_has_fresh_mark as _tool_return_has_fresh_mark,
-    tool_return_is_non_web_data as _tool_return_is_non_web_data,
-    tool_return_has_web_source_mark as _tool_return_has_web_source_mark,
     tool_return_is_delegation_refusal as _tool_return_is_delegation_refusal,
     inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
@@ -223,14 +218,12 @@ class LoopPhase(RunOnceHost):
         record_output_block(st, self._session_logger, why, text)
         # 只记排版失配；**不得**回写 saw_structured_return（由真实 ToolReturn 置位）。
         if why in ("report_speech", "empty_handoff", "persona_length_breach"):
-            st.presentation_mismatch = True
             if text not in st.presentation_withheld:
                 st.presentation_withheld.append(text)
                 st.presentation_withheld_reasons.append(why)
             if st.context is not None:
                 st.context.extra["dispute_has_prior_reply"] = True
         elif why == "numeric_recitation" or why in ZERO_OUTPUT_VOICE_REASONS:
-            st.presentation_mismatch = True
             st.presentation_withheld_reasons.append(why)
             if st.context is not None:
                 st.context.extra["dispute_has_prior_reply"] = True
@@ -465,27 +458,10 @@ class LoopPhase(RunOnceHost):
 
         _has_tool_return = False
         for part in node.request.parts:
-            if isinstance(part, NativeToolReturnPart) and is_hosted_web_search_name(part.tool_name):
-                st.saw_web_source = True
-            elif isinstance(part, ToolReturnPart):
+            if isinstance(part, ToolReturnPart):
                 _has_tool_return = True
                 if _tool_return_is_async_pending(part):
                     st.pending_async_delivery = True
-                _init_body = part.content if isinstance(part.content, str) else ""
-                if _init_body:
-                    if _is_timeless_aggregate(_init_body):
-                        st.saw_timeless_aggregate = True
-                    if _tool_return_has_web_source_mark(_init_body):
-                        st.saw_web_source = True
-                    if _tool_return_has_fresh_mark(_init_body):
-                        st.saw_fresh_data = True
-                    elif (
-                        not _tool_return_is_async_pending(part)
-                        and not _tool_return_looks_failed(part)
-                        and not _tool_return_is_delegation_refusal(_init_body)
-                        and _tool_return_is_non_web_data(_init_body)
-                    ):
-                        st.saw_non_web_data = True
                 # 如果工具返回b64图片或者bytes内容, 则调用RM实例上传
                 if (isinstance(part.content, str) and part.content.startswith("base64://")) or isinstance(
                     part.content, bytes
@@ -869,8 +845,6 @@ class LoopPhase(RunOnceHost):
 
         # 带函数工具的回复里的字一律先不发。hosted 搜索不当函数工具。
         _saw_tool_call_this_turn = _response_has_function_tool_call(node.model_response.parts)
-        if _saw_tool_call_this_turn:
-            st.tool_bearing_responses += 1
         _resp_unsent: list[str] = []
         # 同 ModelResponse 多 TextPart：尖括号 attempt 只计 1 次
         output_gate.begin_response_batch(_require_context(st).extra)
@@ -915,8 +889,6 @@ class LoopPhase(RunOnceHost):
             # hosted 工具计入 tool_call_list，避免 settle 判零工具。
             # 不置 _saw_tool_call_this_turn，否则 suppress 会丢掉同响应里的最终答案。
             elif isinstance(part, (NativeToolCallPart, NativeToolReturnPart)):
-                if is_hosted_web_search_name(part.tool_name):
-                    st.saw_web_source = True
                 if isinstance(part, NativeToolCallPart):
                     st.tool_call_list.append(part.tool_name)
                     self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)

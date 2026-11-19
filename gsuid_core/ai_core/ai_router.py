@@ -84,45 +84,6 @@ async def get_ai_session(event: Event) -> GsCoreAIAgent:
     return await _get_or_create_ai_session(event)
 
 
-async def get_ai_session_by_id(
-    session_id: str,
-    user_id: str,
-    group_id: Optional[str] = None,
-    is_group_chat: bool = False,
-) -> Optional[GsCoreAIAgent]:
-    """通过 session_id 获取或创建 AI Session"""
-    # 从 session_id 构造 Event，保留各级 bot_id 避免历史记录 key 不一致。
-    from gsuid_core.models import Event
-
-    parts = session_id.split(":", 4)
-    if len(parts) != 5:
-        return None
-
-    ws_bot_id, bot_id, bot_self_id, target_type, target_id = parts
-    if not ws_bot_id or not bot_id or not bot_self_id or not target_id:
-        return None
-    if target_type == "group":
-        parsed_group_id = target_id
-        parsed_user_id = ""
-        user_type = "group"
-    elif target_type == "private":
-        parsed_group_id = None
-        parsed_user_id = target_id
-        user_type = "direct"
-    else:
-        return None
-
-    ev = Event(
-        bot_id=bot_id,
-        bot_self_id=bot_self_id,
-        user_id=parsed_user_id,
-        group_id=parsed_group_id,
-        user_type=user_type,
-        WS_BOT_ID=ws_bot_id,
-    )
-    return await _get_or_create_ai_session(ev, session_id=session_id)
-
-
 async def _get_or_create_ai_session(
     event: Event,
     session_id: Optional[str] = None,

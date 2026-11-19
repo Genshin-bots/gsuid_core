@@ -517,7 +517,6 @@
   "log.ai.relationship_dedupe_done": "[Relationship] 重複した (user_id,bot_id) 行 {n} 件を統合しました(絶対値最大のスコアを保持)",
   "log.ai.relationship_dedupe_fail": "[Relationship] 重複行の整理に失敗、一意制約は作成されていません: {e}",
   "log.ai.relationship_fetch_degraded": "[Relationship] 関係温度の読み取りに失敗、未採点として扱います: {e}",
-  "log.ai.relationship_model_delta": "[Relationship] モデル増分(非推奨ツール) user={user} delta={delta} score={score}",
   "log.ai.relationship_priority_speakers": "[Relationship] 記憶予算の優先発言者 group={group} 件数={n}",
   "log.ai.relationship_priority_speakers_degraded": "[Relationship] スコアの一括取得に失敗、優先発言者はマスターのみ: {e}",
   "log.ai.relationship_settle_noop": "[Relationship] 今回はシグナルなし user={user} reason={reason}",

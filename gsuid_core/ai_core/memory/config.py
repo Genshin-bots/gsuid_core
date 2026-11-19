@@ -128,16 +128,6 @@ class MemoryConfig:
         return mrc.get_config("session_gap_seconds").data
 
     @property
-    def abstention_score_threshold(self) -> float:
-        """熟悉度探针 s̄ 低于此值时，span/点查注入头提示证据不足。"""
-        return 0.22
-
-    @property
-    def predict_calibrate_threshold(self) -> float:
-        """Phase 7：近邻余弦 ≥ 此值视为已知，HIGH 降为 LOW。"""
-        return 0.92
-
-    @property
     def sleep_extract_batch(self) -> int:
         """浅睡每轮最多消化的 session 数。"""
         return 8

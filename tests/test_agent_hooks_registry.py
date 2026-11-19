@@ -1,4 +1,4 @@
-"""Hook 总线契约：31 点位 / 执行序 / 能力票 / 超时 / fail-open。"""
+"""Hook 总线契约：已接线点位 / 执行序 / 能力票 / 超时 / fail-open。"""
 
 from __future__ import annotations
 
@@ -38,26 +38,19 @@ def _run(coro: Any) -> Any:
 
 
 def test_hook_points_specs_and_ids() -> None:
-    assert len(AgentHookPoint) == 31, [p.name for p in AgentHookPoint]
+    assert len(AgentHookPoint) == 11, [p.name for p in AgentHookPoint]
     assert set(HOOK_POINT_SPECS) == set(AgentHookPoint)
     for point in AgentHookPoint:
         spec = spec_for(point)
-        assert spec.anchor and spec.default_timeout_ms > 0
+        assert spec.anchor and spec.default_timeout_ms > 0 and spec.wired
     assert spec_for(AgentHookPoint.RETRIEVE_CONTEXT).default_timeout_ms == 15000
     longest = max(HOOK_POINT_SPECS.values(), key=lambda s: s.default_timeout_ms)
     assert longest.point is AgentHookPoint.RETRIEVE_CONTEXT
-    for point in (
-        AgentHookPoint.BEFORE_MODEL_REQUEST,
-        AgentHookPoint.ON_TOOL_CALL,
-        AgentHookPoint.BEFORE_TEXT_GATE,
-        AgentHookPoint.AFTER_SEND,
-    ):
-        assert spec_for(point).default_timeout_ms <= 50, point.name
 
     assert AgentHookPoint.ON_INBOUND.value == "H00"
     assert AgentHookPoint.RETRIEVE_CONTEXT.value == "H05"
     assert AgentHookPoint.COMPOSE_CONTEXT.value == "H06"
-    assert AgentHookPoint.AFTER_BUILD_AGENT.value == "H15b"
+    assert AgentHookPoint.ASSEMBLE_TOOLS.value == "H14"
     assert AgentHookPoint.ON_STABLE_CONTEXT.value == "H29"
     ids = [p.value for p in AgentHookPoint]
     assert len(set(ids)) == len(ids)
@@ -84,16 +77,16 @@ def test_dispatch_order_sync_fail_open_timeout_and_short_circuit() -> None:
 
     seen: List[int] = []
 
-    @on_agent_hook(AgentHookPoint.AFTER_SEND, priority=100)
+    @on_agent_hook(AgentHookPoint.ON_INBOUND, priority=100)
     def sync_hook(ctx: AgentHookContext) -> None:
         seen.append(1)
 
-    @on_agent_hook(AgentHookPoint.AFTER_SEND, priority=200, timeout_ms=30)
+    @on_agent_hook(AgentHookPoint.ON_INBOUND, priority=200, timeout_ms=30)
     async def slow(ctx: AgentHookContext) -> None:
         await asyncio.sleep(2.0)
         raise AssertionError("should have been cancelled")
 
-    assert _run(fire_hooks(AgentHookPoint.AFTER_SEND, AgentHookContext(point=AgentHookPoint.AFTER_SEND))) is (
+    assert _run(fire_hooks(AgentHookPoint.ON_INBOUND, AgentHookContext(point=AgentHookPoint.ON_INBOUND))) is (
         HookDecision.CONTINUE
     )
     assert seen == [1]
@@ -113,9 +106,15 @@ def test_dispatch_order_sync_fail_open_timeout_and_short_circuit() -> None:
     )
     assert ran == ["after"]
 
-    assert not hooks_registered(AgentHookPoint.ON_THINKING)
-    assert _run(fire_hooks(AgentHookPoint.ON_THINKING, AgentHookContext(point=AgentHookPoint.ON_THINKING))) is (
-        HookDecision.CONTINUE
+    assert not hooks_registered(AgentHookPoint.AFTER_ASSEMBLE_TOOLS)
+    assert (
+        _run(
+            fire_hooks(
+                AgentHookPoint.AFTER_ASSEMBLE_TOOLS,
+                AgentHookContext(point=AgentHookPoint.AFTER_ASSEMBLE_TOOLS),
+            )
+        )
+        is HookDecision.CONTINUE
     )
 
     @on_agent_hook(AgentHookPoint.BEFORE_AI_CHAT, priority=100)
@@ -132,7 +131,7 @@ def test_dispatch_order_sync_fail_open_timeout_and_short_circuit() -> None:
 
 
 def test_capabilities_blocks_and_drop_hooks() -> None:
-    ctx = AgentHookContext(point=AgentHookPoint.AFTER_SEND)
+    ctx = AgentHookContext(point=AgentHookPoint.AFTER_RUN)
     with pytest.raises(HookCapabilityError):
         ctx.set_context_block("memory", "x")
     with pytest.raises(HookCapabilityError):

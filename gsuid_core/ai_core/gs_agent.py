@@ -200,43 +200,6 @@ _STRUCTURED_FORMAT_RE = re.compile(
 )
 
 
-def _extract_character_anchors(history: list[ModelMessage], count: int = 2) -> list[ModelMessage]:
-    """从历史中提取最早的、最符合角色设定的 assistant 文本回复作为"锚定消息"。
-
-    选择标准（轻量规则，无 LLM）：
-    - 是 ModelResponse 且包含 TextPart（非纯 ToolCallPart）
-    - 文本长度 ≤ 150 字（角色短句）
-    - 不含结构化格式（表格/编号/加粗标题）
-    - 优先选择含语气词/省略号/角色动作描写的回复
-
-    返回最多 ``count`` 条 ModelResponse 消息（保持原始顺序）。
-    """
-    from pydantic_ai.messages import TextPart as _TP, ModelResponse as _MR
-
-    anchors = []
-    for msg in history:
-        if len(anchors) >= count:
-            break
-        if not isinstance(msg, _MR):
-            continue
-        # 提取文本内容
-        text_parts = [p.content for p in msg.parts if isinstance(p, _TP) and p.content.strip()]
-        if not text_parts:
-            continue
-        text = text_parts[0]
-        # 跳过过长回复（OOC 特征）
-        if len(text) > 150:
-            continue
-        # 跳过含结构化格式的回复
-        if _STRUCTURED_FORMAT_RE.search(text):
-            continue
-        # 跳过 <SILENCE> 和系统标记
-        if text.strip() in ("<SILENCE>", ""):
-            continue
-        anchors.append(msg)
-    return anchors
-
-
 # scope_key（记忆 scope，见 memory/scope.py）→ 可嵌进 session_id 的一段指向标识： group:789012 →
 # group-789012 / user_global:12345 → uglobal-12345 /
 _SCOPE_SEG_CODE: dict[str, str] = {
@@ -1765,7 +1728,7 @@ class GsCoreAIAgent(RunOnceMixin):
             self._scrub_gate_history(set(), drop_blocked=False)
 
         # 尖括号熔断仍恢复独立 OOC 段（与 angle scrub 正交）
-        if ooc_blocked and bot and return_mode in ["always", "by_bot"] and not plan.skip_ooc_rewrite:
+        if ooc_blocked and bot and return_mode in ["always", "by_bot"]:
             await self._ooc_rewrite_and_send(ooc_blocked, bot, ev)
         return angle_fused
 

@@ -128,11 +128,6 @@ def memory_intent_from_ctx(ctx: AgentHookContext) -> "MemoryIntent":
     return decision.memory_intent
 
 
-def refine_retrieved_memory(mem: "MemoryContext", intent: "MemoryIntent", query: str = "") -> None:
-    """保留检索和重排得到的真实相关度排序。"""
-    del mem, intent, query
-
-
 def wants_evidence_injection(ctx: AgentHookContext) -> bool:
     """有历史依赖或问答/工具意图就注入正文；纯寒暄只给目录卡（证据优先模式除外）。"""
     from gsuid_core.ai_core.memory.config import memory_config
@@ -282,14 +277,13 @@ def _image_urls(ev: Event) -> List[str]:
 
 
 class MemoryKit(AgentKit):
-    """记忆：入站观察 + 认知检索 + 注入 + 工具轨迹。"""
+    """记忆：入站观察 + 认知检索 + 注入。"""
 
     def register(self) -> None:
         on_agent_hook(AgentHookPoint.ON_INBOUND, priority=110, kit_id=self.kit_id, timeout_ms=500)(self.observe)
         on_agent_hook(AgentHookPoint.AFTER_SESSION, priority=150, kit_id=self.kit_id)(self.observe_active_session)
         on_agent_hook(AgentHookPoint.RETRIEVE_CONTEXT, priority=110, kit_id=self.kit_id)(self.retrieve)
         on_agent_hook(AgentHookPoint.COMPOSE_CONTEXT, priority=150, kit_id=self.kit_id)(self.inject)
-        on_agent_hook(AgentHookPoint.ON_TOOL_CALL, priority=110, kit_id=self.kit_id)(self.trace_tool)
 
     async def observe(self, ctx: AgentHookContext) -> None:
         """入站被动感知（原 ``handler.py`` 的 Memory Observer Hook）。
@@ -439,7 +433,6 @@ class MemoryKit(AgentKit):
                 and not mem.temporal_mode
             ):
                 mem.episodes = await expand_episode_neighbors(mem.episodes)
-            refine_retrieved_memory(mem, memory_intent, search_q)
         text = format_retrieved_memory(ctx, mem)
         if text:
             ctx.stash_retrieved("memory", text)
@@ -543,16 +536,6 @@ class MemoryKit(AgentKit):
         for hid in hit_ids:
             await AiMemeKnowledge.bump_hit(hid)
         return "\n".join(lines)
-
-    async def trace_tool(self, ctx: AgentHookContext) -> None:
-        """工具调用轨迹入记忆（供偏好蒸馏作背景，判「刚纠正完」）。"""
-        from gsuid_core.ai_core.memory.config import memory_config
-        from gsuid_core.ai_core.memory.ingestion.tool_trace import record_tool_call
-
-        if not ctx.tool_name or not ctx.user_id or not memory_config.enable_preference_memory:
-            return
-        bot_id = ctx.ev.bot_id if ctx.ev is not None else ""
-        record_tool_call(ctx.user_id, ctx.tool_name, ctx.tool_args, bot_id=bot_id)
 
 
 KIT = register_agent_kit(

@@ -19,9 +19,9 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 
 ---
 
-## 13.2 31 个点位
+## 13.2 11 个已接线点位
 
-编号 `Hxx` 是**稳定 ID**：删点只标 deprecated，**不复用编号**。
+编号 `Hxx` 是**稳定 ID**：删点不复用旧编号，新增点位追加到末尾。
 每个点位在 `hooks/points.py::HOOK_POINT_SPECS` 里声明内核锚点、能力票、默认超时。
 
 | ID | 枚举 | 时机（内核锚点） | 默认套件 |
@@ -30,32 +30,12 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 | H01 | `BEFORE_AI_CHAT` | 预算通过之后、session 之前 | `gscore.session_mute` |
 | H02 | `AFTER_SESSION` | `get_ai_session` 之后 | `gscore.favorability`（读 View）、`gscore.memory`（主动会话 observe） |
 | H03 | `CLASSIFY` | 内核只给 prior；**intent 与 `route_decision` 由占用者写入** | `gscore.classifier`、`gscore.statistics` |
-| H04 | `REACTIVE_GATE` | 已下线（`wired=False`；软门由 `handle_ai` 直接消费 `TurnRouter.soft_speak`） | — |
 | H05 | `RETRIEVE_CONTEXT` | compose 之前的「贵检索」窗 | `gscore.memory`（**唯一 15s 长超时**） |
 | H06 | `COMPOSE_CONTEXT` | 合成器开火，各套件 `set_context_block` | mood / favorability / memory / planning / scaffold / self_cognition / identity / inbox / evidence |
 | H07 | `AFTER_CONTEXT` | 合成完毕、`session.run` 前 | 第三方 `append_user_hint` → `plugin_hints` |
-| H08 | `AFTER_RUN` | 结算之后 | `gscore.mood` 更新、`gscore.favorability` 上报 |
-| H09 | `ON_AI_ERROR` | 外层 except | 统计 / 告警 |
-| H10 | `BEFORE_RUN` | `RunOnceState` 构造后、预算前 | — |
-| H11 | `AFTER_BUDGET` | 预算放行后 | — |
-| H12 | `AFTER_INIT` | `ToolContext` 已建 | 套件写 `plugin.{kit}.` extra |
-| H13 | `AFTER_PREPARE_USER` | user 外壳拼完 | `gscore.scaffold` hints |
-| H14 | `ASSEMBLE_TOOLS` | `addr_gated` 已判定 | **仅** `slot=tool_assembly` 占用者 |
-| H15 | `AFTER_ASSEMBLE_TOOLS` | 默认套件跑完、exclusive **之前** | 第三方 `ensure_tools` / `drop_tools` |
-| H15b | `AFTER_BUILD_AGENT` | `Agent(...)` 之后 | — |
-| H16 | `BEFORE_MODEL_REQUEST` | 墙钟/闸门 feedback/thrash 注入之后、stream 前 | `gscore.post_tool` |
-| H17 | `ON_TOOL_RETURN` | 单条 ToolReturn | `gscore.fileos` |
-| H18 | `ON_TOOL_CALL` | 尚未执行工具体 | `gscore.memory` 工具轨迹；第三方 veto |
-| H19 | `ON_THINKING` | ThinkingPart | — |
-| H20 | `BEFORE_TEXT_GATE` | `speech_policy` **之后**、`pre_send_gate` **之前** | 第三方改写 |
-| H21 | `AFTER_TEXT_GATE` | gate 返回后 | `gscore.speech`（密封，只观测） |
-| H22 | `AFTER_SEND` | `send_chat_result` 成功后 | 统计 |
-| H23 | `BEFORE_SETTLE` | history + `_relean` + 闸门收尾之后、纠正之前 | `gscore.quality` |
-| H24 | `BEFORE_CORRECTION` | 即将嵌套 `_execute_run_once` | `gscore.quality` |
-| H25 | `ON_USAGE_LIMIT` | 强制总结前 | — |
-| H26 | `ON_CANCEL` | supersede | — |
-| H27 | `ON_RUN_ERROR` | 重试耗尽 | — |
-| H28 | `AFTER_CLEANUP` | finally 之后 | 套件释放 extra |
+| H08 | `AFTER_RUN` | 结算之后 | `gscore.mood` 更新、`gscore.favorability` 上报、`gscore.decision_distill` |
+| H14 | `ASSEMBLE_TOOLS` | `addr_gated` 已判定（空表跳过，零开销） | 第三方增删工具 |
+| H15 | `AFTER_ASSEMBLE_TOOLS` | 装配后、exclusive **之前** | 第三方 `ensure_tools` / `drop_tools` |
 | H29 | `ON_STABLE_CONTEXT` | `build_session_system_prompt` 内，**仅新建 / persona 热更** | `gscore.self_cognition`、`gscore.group_profile` |
 
 ### 超时预算
@@ -63,12 +43,9 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 | 点位 | 第三方默认 | 说明 |
 |------|------------|------|
 | H00 | 200ms | memory observe 声明 500ms |
-| H01–H04 / H07–H09 | 500ms | classifier / 软门 2s（已有 LLM） |
+| H01–H03 / H06–H08 / H29 | 500ms | H03 随 `ROUTER_TIMEOUT_S + 1s` |
 | **H05** | **15s** | **唯一允许的长超时**（双路 + rerank）。第三方占 `memory` 槽 = 接受这个预算 |
-| H06 | 500ms | 应只读缓存/已检索结果 |
-| H10–H15 | 200ms | tool_assembly 2s（含向量检索） |
-| H16–H22 | **50ms** | 热路径，别在这里做 IO |
-| H23–H28 | 200ms | quality 与内核纠正同寿 |
+| H14 / H15 | 2s / 200ms | 工具装配与收口 |
 
 ---
 
@@ -82,17 +59,12 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 |------|-----------|------|
 | `set_context_block(name, text)` | H05 H06 H07 H29 | `name` 必须在 `CONTEXT_BLOCK_ORDER`（或 H29 的稳定块名），未知名**拒绝** |
 | `stash_retrieved(name, text)` | H05 | 检索窗暂存，H06 再写成正式块 |
-| `set_has_actionable(flag)` | H06 | planning 抬档 |
+| `set_has_actionable(flag)` | H03 H06 | planning 抬档 |
 | `set_intent(intent)` | H03 | 仅 `闲聊`/`工具`/`问答` |
-| `set_should_speak(flag)` | H04（已下线） | 软门结果（现由 H03 `TurnRouter.soft_speak` 直接处理） |
-| `append_user_hint(text)` | H07 H13 H16 | 自动加 `（套件·` / `（插件·` 前缀 |
+| `append_user_hint(text)` | H07 | 自动加 `（套件·` / `（插件·` 前缀 |
 | `ensure_tools` / `drop_tools` | H14 H15 | 护栏见 §13.6 |
-| `replace_text(text)` | H20 | 改台词 |
-| `set_tool_return(text)` | H17 | 折叠/摘要 |
-| `request_correction(reason)` | H23 H24 | 纠正 |
-| `abort(reason)` | H01 H03 H10 | 整轮不跑 |
-| `silence(reason)` | H01 H20（H04 已下线） | 本轮不出声 |
-| `veto_tool(reason)` | H18 | 拦下这次工具调用 |
+| `abort(reason)` | H01 H03 | 整轮不跑 |
+| `silence(reason)` | H01 | 本轮不出声 |
 
 **只读**：`ctx.group_id`（**私聊恒 `None`**，记忆 scope 防回归的地基）、`ctx.user_id`、
 `ctx.bot_id`、`ctx.relationship`、`ctx.intent`、`ctx.prev_turn_used_tools`、
@@ -155,12 +127,12 @@ KIT = register_agent_kit(
 
 ---
 
-## 13.6 20 个槽位
+## 13.6 15 个槽位
 
 | slot | 默认占用者 | 互斥 | 说明 |
 |------|------------|------|------|
 | `inbound_observe` | `gscore.meme` | 否 | 入站观察扇出（记忆观察随 `memory` 槽走） |
-| `memory` | `gscore.memory` | 是 | 检索 + 注入 + 工具轨迹 + 观察 |
+| `memory` | `gscore.memory` | 是 | 检索 + 注入 + 观察 |
 | `favorability` | `gscore.favorability` | 是 | 关系温度读 / 注入 / 上报 / 衰减 job |
 | `mood` | `gscore.mood` | 是 | 情绪注入 + 收尾更新 |
 | `self_cognition` | `gscore.self_cognition` | 是 | 稳定自述（H29）+ 口吻锚点 |
@@ -173,15 +145,10 @@ KIT = register_agent_kit(
 | `session_mute` | `gscore.session_mute` | 是 | 静默窗 |
 | `statistics` | `gscore.statistics` | 是 | 统计（**只上报，不扣减**） |
 | `decision_distill` | `gscore.decision_distill` | 否 | thinking 决策蒸馏（H08，可关） |
-| `tool_assembly` | `gscore.tool_assembly` | 是 | 五层装配 + `find_tools` |
-| `fileos` | `gscore.fileos` | 是 | 回执折叠 |
-| `post_tool` | `gscore.post_tool` | 是 | 工具后契约 |
-| `quality` | `gscore.quality` | 是 | 假完成 / 出图纠正 |
-| `speech` | `gscore.speech` | **密封** | 出站话术态：可关不可替 |
 | `persona_identity` | `gscore.identity` | **密封** | 身份锚：不可关 |
 
 槽名**不含点号**（点号既是槽名一部分又是配置层级分隔符会有解析歧义）。
-配置键 `kit_slots.<slot>`，由槽位表**派生**——不要手写 20 个近似条目。
+配置键 `kit_slots.<slot>`，由槽位表**派生**——不要手写近似条目。
 
 ### 工具装配槽的三条内核收口（换套件也逃不掉）
 
@@ -223,14 +190,14 @@ KIT = register_agent_kit(
 [AgentKit]  load slot=memory kit=gscore.memory
 [AgentKit]  replace slot=memory old=gscore.memory new=mymem.mem0
 [AgentHook] fail point=RETRIEVE_CONTEXT hook=gscore.memory.retrieve e=...
-[AgentHook] 超时 point=AFTER_SEND hook=... 预算=50ms
+[AgentHook] 超时 point=ON_INBOUND hook=... 预算=200ms
 ```
 
 WebConsole（需登录）：
 
 - `GET /api/agent_kits/slots` —— 槽位健康（`occupants` 为空 = 该槽 off；
   `sealed=true 且 occupants=[]` 应打红字）
-- `GET /api/agent_kits/hooks` —— 31 点位契约 + 当前挂载者 + 总闸状态
+- `GET /api/agent_kits/hooks` —— 已接线点位契约 + 当前挂载者 + 总闸状态
 - `GET /api/relationship/view?user_id=…` —— zone / `last_reason` / 日预算余量
 - `GET /api/cognition/nodes?keyword=…` —— 认知节点索引
 

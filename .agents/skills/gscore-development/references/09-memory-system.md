@@ -3,7 +3,7 @@
 > **返回主入口**：[`../SKILL.md`](../SKILL.md) · **上一章**：[八、主动发言与任务编排](./08-heartbeat-scheduled-planning.md) · **下一章**：[十、RAG 知识库与嵌入](./10-rag-knowledge-embedding.md)
 
 记忆系统（`ai_core/memory/`）让 AI"记住"群聊里发生的事。本章覆盖整条链路 + 偏好记忆 +
-RF-Mem 双过程检索 + 生命周期 + 多模态摄入。
+生命周期 + 多模态摄入。
 
 ## 9.1 设计理念（先建立心智）
 
@@ -152,7 +152,7 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   Chat join：order/span/summary 与 pack 同帽 16k，其它问句仍 8k。骨架不在 H06 再打一轮 LLM。
   证据分过低时注入头加一行 abstention。召回原话只证明谁在该时点说过，不把句中日期或状态当成当前事实（`SPEECH_ACT_HINT`）。
   `looks_like_span_query` 也开 temporal arm；无显式日期则该 scope 全程、bucket 按 session 数自适应。
-  工具：`search_turns` / `read_session` / `mark_evidence` / `recall_session`（`visible_when` 仅 order/span/summary）。
+  工具：`search_turns` / `read_session` / `recall_session`（`visible_when` 仅 order/span/summary）。
   排序题一律走编号骨架（`format_order_skeleton`，日期 · 一句话 + 同日累计序号），按 session 轮询收敛到 N。
   **账本时间线（`eo_strategy=ledger` + `EoSelector` + `build_ledger`）已于 2026-10-05 整体删除**：
   开关、配置项、`ledger_timeline.py` / `paging.py` / `eo_selector.py` / `order_answer.py` 一并移除，
@@ -260,20 +260,7 @@ LLM 分类与向量检索在 session / 写锁外：
 > 误抽偏好以强约束置顶可能过度约束工具调用（已有 WebConsole 软停用 + salience 裁剪 + 精确能力
 > 域过滤兜底）。`tool_trace` 是进程内存，多实例不共享。
 
-## 9.10 RF-Mem 双过程检索（2026-06-15，**默认关**）
-
-`memory/retrieval/familiarity.py` 接入"回忆-熟悉度双过程理论"：
-
-- **熟悉度探针**（`vector/ops.probe_episode_scores`）：一次纯 dense 查询取真实余弦分，算均分 s̄
-  + 列表熵 H(p)，逐查询决定"检索多深"，把 System-2 从全局静态开关降为"按不确定性触发"。
-- **回忆环**（零 LLM 的 KMeans + α-mix 多轮向量深检索）：低熟悉且 System-2 未触发时补召回，把
-  召回 Episode 链**关系投影**成精准 Edge 事实。KMeans 走专用线程池，不阻塞事件循环。
-
-> ⚠️ **默认关的原因**：阈值（`familiarity_theta_*` / `tau`）是论文英文模型经验值，中文本地模型
-> 通常需平移、需离线标定后再放量；回忆环强绑 `qdrant_provider=remote`（本地嵌入式 Qdrant 是
-> O(N) 暴力扫，多轮成倍放大成本）。配置描述已标注"需标定"。
-
-## 9.11 记忆生命周期（C11，`memory/lifecycle/`）
+## 9.10 记忆生命周期（C11，`memory/lifecycle/`）
 
 `run_lifecycle_maintenance` 由 APScheduler **每周**触发，纯规则无 LLM：
 

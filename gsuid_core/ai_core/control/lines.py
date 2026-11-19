@@ -115,14 +115,6 @@ POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = POST_TOOL_OUTPUT_CONTRACT
 
 POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
 
-TIMELESS_AGGREGATE_CAVEAT = "（系统：返回体看起来没有当前时点。别说成「现在/此刻」；不够可以换路再查，短答也可以。）"
-
-WEB_ONLY_STALENESS_CAVEAT = (
-    "（系统：本轮只有网页来源，可能滞后。"
-    "报数时带上出处；不够新就换工具或换 query 再查，取不到就如实说。"
-    "结构化数据工具（find_tools / 能力代理）往往更靠谱。）"
-)
-
 POST_TOOL_OUTPUT_CONTRACT_CAPABILITY = (
     "（系统：本轮已有工具返回。你是能力代理——必须把结果整理成 **Markdown 或 JSON 事实包** "
     "交付主人格（条目/日期/数字/来源/时点/依据），或 artifact_put 持久化。"

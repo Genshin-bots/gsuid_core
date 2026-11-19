@@ -180,10 +180,6 @@ class QuoteResolve:
     topic: str
     handle: str
     target: str
-    is_bot_reply: bool = False
-    is_bystander_quote: bool = False
-    is_stale_quote: bool = False
-    time_delta: float = 0.0
 
 
 def _fmt_hm(ts: int) -> str:
@@ -371,10 +367,6 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                         topic="命令卡片",
                         handle="",
                         target="群内",
-                        is_bot_reply=True,
-                        is_bystander_quote=is_bystander,
-                        is_stale_quote=is_stale,
-                        time_delta=time_delta,
                     )
                 gid = ledger_group_key(ev)
                 hit = None
@@ -399,10 +391,6 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                         topic=topic,
                         handle=handle,
                         target=who,
-                        is_bot_reply=True,
-                        is_bystander_quote=is_bystander,
-                        is_stale_quote=is_stale,
-                        time_delta=time_delta,
                     )
                 if is_bystander:
                     line = quote_bystander_line(time_str, target_desc)
@@ -415,10 +403,6 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                     topic="你的发言",
                     handle="",
                     target=target_desc,
-                    is_bot_reply=True,
-                    is_bystander_quote=is_bystander,
-                    is_stale_quote=is_stale,
-                    time_delta=time_delta,
                 )
             elif rec.role == "user":
                 if str(rec.user_id) == str(ev.user_id):
@@ -427,7 +411,6 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                         topic="说话人自己的发言",
                         handle="",
                         target="当前说话人",
-                        is_bot_reply=False,
                     )
                 else:
                     speaker = rec.user_name or f"用户{rec.user_id}"
@@ -436,7 +419,6 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                         topic="群友发言",
                         handle="",
                         target=speaker,
-                        is_bot_reply=False,
                     )
 
     # 2. 兜底：A 轨未查到 msg_id 时，仅对有正文文本做 OutboundAudit 匹配（禁止全群盲抓图片）
@@ -465,7 +447,7 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
     from gsuid_core.ai_core.control.lines import quote_object_line
 
     line = quote_object_line(_fmt_hm(hit.ts), who, topic, extra)
-    return QuoteResolve(line=line, topic=topic, handle=handle, target=who, is_bot_reply=True)
+    return QuoteResolve(line=line, topic=topic, handle=handle, target=who)
 
 
 @dataclass(frozen=True)

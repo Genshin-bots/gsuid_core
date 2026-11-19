@@ -588,24 +588,6 @@ def main_persona_roster_ok(tb: ToolBase) -> bool:
     return tb.name not in _capability_exclusive_tool_names()
 
 
-def collapse_family_domains(domains: List[str]) -> List[str]:
-    """同前缀 ≥3 个域折成一条索引名（后缀 …）。"""
-    buckets: dict[str, list[str]] = {}
-    for domain in domains:
-        d = (domain or "").strip()
-        if not d:
-            continue
-        buckets.setdefault(_family_bucket(d), []).append(d)
-    titles: list[str] = []
-    for bucket in sorted(buckets):
-        members = sorted(set(buckets[bucket]))
-        if len(members) >= 3:
-            titles.append(f"{bucket}…")
-        else:
-            titles.extend(members)
-    return titles
-
-
 def format_capability_family_overview(*, max_families: int = 30, max_chars: int = 1200) -> str:
     """按 capability_domain 聚合的工具族速览。只给 find_tools / get_self 回执，不进 system。"""
     grouped: dict[str, list[ToolBase]] = {}

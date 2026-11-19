@@ -7,8 +7,6 @@ from datetime import datetime, timedelta
 
 from pydantic_ai import RunContext
 
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.ai_core.control.delegation import (
@@ -23,7 +21,7 @@ from gsuid_core.ai_core.planning.handle_resolver import (
     format_resolved,
 )
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse, load_payload_text
+from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
 
 
 def _owner_scope(ctx: RunContext[ToolContext], scope: str = "auto") -> tuple[Optional[str], Optional[str]]:
@@ -219,71 +217,6 @@ async def read_handle(
         res = await _read_single_handle(ctx, hid, offset, limit, query)
         results.append(f"=== {hid} ===\n{res}")
     return "\n\n".join(results)
-
-
-async def search_fileos_outputs(
-    ctx: RunContext[ToolContext],
-    query: str,
-    scope: str = "auto",
-    limit: int = 8,
-    *,
-    section_header: bool = True,
-) -> str:
-    """FileOS hybrid+SQL 融合检索（**非工具**，供 ``search_cognition`` 联邦）。
-
-    已下线独立 agent 工具 ``search_persisted_outputs`` / ``search_handles``，
-    避免与 ``search_cognition`` 双入口选型混乱。
-    """
-    owner, scope_key, err = _require_owner(ctx, scope)
-    if err:
-        return err
-    hybrid_ids: list[str] = []
-    hybrid_meta: dict[str, dict] = {}
-    try:
-        from gsuid_core.ai_core.planning.tool_output_index import search_tool_outputs
-
-        hits = await search_tool_outputs(
-            query=query,
-            limit=limit * 2,
-            scope_key=scope_key,
-            owner_user_id=owner,
-        )
-        for h in hits:
-            rid = str(h["id"]) if "id" in h else ""
-            if rid:
-                hybrid_ids.append(rid)
-                hybrid_meta[rid] = h
-    except Exception as e:
-        logger.debug(t("log.ai.tool_output_hybrid_search_skip", e=e))
-
-    sql_rows = await AIToolOutputRecord.search(
-        owner_user_id=owner,
-        scope_key=scope_key,
-        keyword=query,
-        limit=limit * 2,
-    )
-    sql_ids = [r.id for r in sql_rows]
-    sql_map = {r.id: r for r in sql_rows}
-
-    fused = rrf_fuse([hybrid_ids, sql_ids], limit=limit)
-    if not fused:
-        return ""
-    lines: list[str] = []
-    if section_header:
-        lines.append(f"【近期检索落盘】融合命中 {len(fused)} 条（历史工具材料，数字可能过时）：")
-    else:
-        lines.append(f"📚 融合检索 {len(fused)} 条：")
-    for rid in fused:
-        if rid in sql_map:
-            lines.append(_line(sql_map[rid]))
-        elif rid in hybrid_meta:
-            h = hybrid_meta[rid]
-            sm = str(h["summary"])[:80] if "summary" in h else ""
-            lines.append(f"- {rid} | hybrid | {sm}")
-        else:
-            lines.append(f"- {rid}")
-    lines.append("需要全文时用 read_handle(handle_id=…) 分页取。")
-    return "\n".join(lines)
 
 
 @ai_tools(

@@ -37,7 +37,7 @@
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
 | `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
 | `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |
-| `ai_router.py` | `get_ai_session` / `get_ai_session_by_id`：根据 Event 找到或创建主用户绑定的 `GsCoreAIAgent`，并触发 Persona 热重载、主人好感度初始化。 |
+| `ai_router.py` | `get_ai_session`：根据 Event 找到或创建主用户绑定的 `GsCoreAIAgent`，并触发 Persona 热重载、主人好感度初始化。 |
 | `session_registry.py` | `{session_id → GsCoreAIAgent}` 注册表 + 空闲 session 清理 / logger flush / shutdown。 |
 | `session_logger.py` | **`AISessionLogger`** —— ai_core **唯一**的会话日志序列化器（所有来源同一条写盘路径）。entry 类型由 `SESSION_ENTRY_TYPES` 白名单固定（`system_prompt / user_input / tool_call / tool_return / text_output / thinking / proactive_emission` 等）；`link_agent` 串联 SubAgent；会话窗口 `SESSION_WINDOW_SECONDS=3600`（相同 session_id 续写 / 超时滚动）；`log_standalone_proactive` 处理主动消息磁盘回退。落 `data/ai_core/session_logs[/subagents]/`。**完整契约见 `docs/AI_SESSION_LOGGING.md`；修改 entry / linked_agents 结构会影响 webconsole 前端**。 |
 | `models.py` | `ToolContext`（包含 `bot / ev / extra / parent_session_id`）、`ToolBase`、`KnowledgeBase` 等 TypedDict。 |

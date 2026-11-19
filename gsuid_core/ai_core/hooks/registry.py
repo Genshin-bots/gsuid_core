@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple, Callable, Optional
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.hooks.models import HookFn, HookRegistration
-from gsuid_core.ai_core.hooks.points import WIRED_POINTS, AgentHookPoint, spec_for
+from gsuid_core.ai_core.hooks.points import AgentHookPoint, spec_for
 
 _REGISTRY: Dict[AgentHookPoint, List[HookRegistration]] = {}
 _ORDER_SEQ = 0
@@ -33,20 +33,12 @@ def on_agent_hook(
 
     ``priority`` 越小越先。``create_by=None`` 表示用默认过滤器（Chat/Agent/TEST）。
     ``timeout_ms=None`` 取点位默认预算（见 ``HOOK_POINT_SPECS``）。
-
-    挂到 ``wired=False`` 的点位上会**告警**：契约已定但内核还没在那儿开火，回调永远
-    不会执行。静默接受这种注册最坑——插件作者按发布的点位表写了 `veto_tool`，
-    上线后既没效果也没有任何错误信息。
     """
 
     def decorator(func: HookFn) -> HookFn:
         global _ORDER_SEQ
         _ORDER_SEQ += 1
         module = func.__module__ if hasattr(func, "__module__") else ""
-        if point not in WIRED_POINTS:
-            # 第三方插件注册未接线点位时告警，第一方占位套件静默放行。
-            emit = logger.debug if kit_id else logger.warning
-            emit(t("log.agent.hooks_point_not_wired", point=point.name, owner=kit_id or module or "?"))
         reg = HookRegistration(
             point=point,
             func=func,

@@ -17,7 +17,6 @@ from typing import Optional
 from gsuid_core.sv import SV
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
-from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
 from .client import MCPClient
@@ -283,16 +282,3 @@ try:
 
 except ImportError:
     pass
-
-
-def log_bind_attempt(command: str, ev: Event, outcome: str) -> None:
-    """凭据命令审计：只记动词/服务/结果，永不记 token。"""
-    logger.info(
-        i18n_t(
-            "log.mcp.bind_audit",
-            cmd=command,
-            uid=ev.user_id,
-            bot=ev.bot_id,
-            outcome=outcome,
-        )
-    )

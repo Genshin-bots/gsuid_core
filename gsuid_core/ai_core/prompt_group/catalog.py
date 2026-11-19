@@ -208,10 +208,6 @@ def spec_keys() -> frozenset[str]:
     return frozenset(_SPEC_BY_KEY)
 
 
-def spec_of(key: str) -> PromptSpec:
-    return _SPEC_BY_KEY[key]
-
-
 def default_body(key: str) -> str:
     """代码里的默认正文。默认组运行时读这里，不读磁盘上被人改过的副本。"""
     if key == "framework_core":

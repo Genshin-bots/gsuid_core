@@ -182,7 +182,7 @@ def _slot(name: str, default: str, desc: str, *, exclusive: bool = True, sealed:
 KIT_SLOTS: Tuple[KitSlot, ...] = (
     # 记忆的入站观察随 memory 槽走（关 memory 就该不观察），故本槽默认只有表情
     _slot("inbound_observe", "gscore.meme", "入站旁路观察（表情入库；可多占）", exclusive=False),
-    _slot("memory", "gscore.memory", "检索 + 注入 + 工具轨迹 + 记忆工具"),
+    _slot("memory", "gscore.memory", "检索 + 注入 + 记忆工具"),
     _slot("favorability", "gscore.favorability", "关系温度：读 / 注入 / 结算 / 衰减"),
     _slot("mood", "gscore.mood", "人格情绪：注入 + 收尾更新"),
     _slot("self_cognition", "gscore.self_cognition", "稳定前缀自述 + 每轮关系行"),
@@ -200,11 +200,6 @@ KIT_SLOTS: Tuple[KitSlot, ...] = (
         "thinking 决策蒸馏（H08，可关）",
         exclusive=False,
     ),
-    _slot("tool_assembly", "gscore.tool_assembly", "五层工具装配 + find_tools"),
-    _slot("fileos", "gscore.fileos", "长回执落盘折叠"),
-    _slot("post_tool", "gscore.post_tool", "工具后契约注入"),
-    _slot("quality", "gscore.quality", "假完成 / 出图纠正"),
-    _slot("speech", "gscore.speech", "出站话术态（密封：可关不可替）", sealed=True),
     _slot("persona_identity", "gscore.identity", "身份锚（密封：不可关）", sealed=True),
 )
 
@@ -237,7 +232,6 @@ class AgentKit:
     display_name: str
     owns_tools: Tuple[str, ...] = ()
     sealed: bool = False
-    enabled_by_default: bool = True
     init_step: Optional[Callable[[], Awaitable[None]]] = None
 
     def register(self) -> None:

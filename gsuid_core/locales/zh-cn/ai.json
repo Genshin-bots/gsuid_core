@@ -517,7 +517,6 @@
   "log.ai.relationship_dedupe_done": "[Relationship] 已合并 (user_id,bot_id) 重复行 {n} 条(保留分数绝对值最大者)",
   "log.ai.relationship_dedupe_fail": "[Relationship] 重复行去重失败, 唯一约束未建立: {e}",
   "log.ai.relationship_fetch_degraded": "[Relationship] 关系温度读取失败, 降级为未打分: {e}",
-  "log.ai.relationship_model_delta": "[Relationship] 模型增量(已弃用工具) user={user} delta={delta} score={score}",
   "log.ai.relationship_priority_speakers": "[Relationship] 记忆预算优先发言者 group={group} 共 {n} 个",
   "log.ai.relationship_priority_speakers_degraded": "[Relationship] 批量取分失败, 优先发言者只含主人: {e}",
   "log.ai.relationship_settle_noop": "[Relationship] 本轮无信号 user={user} reason={reason}",

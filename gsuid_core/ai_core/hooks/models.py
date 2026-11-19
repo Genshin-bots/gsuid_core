@@ -57,7 +57,6 @@ class AgentHookContext:
     retrieved: Dict[str, str] = field(default_factory=dict)
     hints: List[str] = field(default_factory=list)
     has_actionable: bool = False
-    should_speak: bool = True
     # 内核每轮填好、供套件只读的事实（不是套件自己去查库）
     mood_key: str = ""
     soft_triggered: bool = False
@@ -88,20 +87,12 @@ class AgentHookContext:
     settle_outcome: Optional["SettleOutcome"] = None
     enable_system2: Optional[bool] = None
     # ── 工具 ──
-    tool_name: Optional[str] = None
-    tool_args: Dict[str, object] = field(default_factory=dict)
-    tool_return_text: Optional[str] = None
     ensured_tools: List[str] = field(default_factory=list)
     dropped_tools: List[str] = field(default_factory=list)
     addr_gated: bool = False
-    # ── 出站 ──
-    text: str = ""
-    replacement_text: Optional[str] = None
     # ── 控制 ──
     decision: HookDecision = HookDecision.CONTINUE
     decision_reason: str = ""
-    correction_requested: bool = False
-    correction_reason: str = ""
     thinking_text: str = ""
     tool_names_called: Tuple[str, ...] = ()
     result_text: str = ""
@@ -146,10 +137,6 @@ class AgentHookContext:
             raise HookCapabilityError(f"intent 只允许 闲聊/工具/问答，实际 {intent!r}")
         self.intent = intent
 
-    def set_should_speak(self, flag: bool) -> None:
-        self._require(HookCapability.SET_SHOULD_SPEAK)
-        self.should_speak = flag
-
     def append_user_hint(self, text: str) -> None:
         """追加本轮 user 侧 hint（带来源前缀，不进持久 history）。"""
         self._require(HookCapability.APPEND_HINT)
@@ -170,19 +157,6 @@ class AgentHookContext:
             if name and name not in self.dropped_tools:
                 self.dropped_tools.append(name)
 
-    def replace_text(self, text: str) -> None:
-        self._require(HookCapability.REPLACE_TEXT)
-        self.replacement_text = text
-
-    def set_tool_return(self, text: str) -> None:
-        self._require(HookCapability.REPLACE_TOOL_RETURN)
-        self.tool_return_text = text
-
-    def request_correction(self, reason: str) -> None:
-        self._require(HookCapability.REQUEST_CORRECTION)
-        self.correction_requested = True
-        self.correction_reason = reason
-
     # ── 控制码 ──
 
     def abort(self, reason: str = "") -> AgentHookResult:
@@ -192,10 +166,6 @@ class AgentHookContext:
     def silence(self, reason: str = "") -> AgentHookResult:
         self._require(HookCapability.SILENCE)
         return AgentHookResult(HookDecision.SILENCE, reason)
-
-    def veto_tool(self, reason: str = "") -> AgentHookResult:
-        self._require(HookCapability.VETO_TOOL)
-        return AgentHookResult(HookDecision.VETO_TOOL, reason)
 
     # ── 只读派生 ──
 

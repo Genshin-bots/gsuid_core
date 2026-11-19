@@ -154,21 +154,6 @@ def _existing_plugin_dirname(plugin_name: str) -> str:
     return ci_match or plugin_name
 
 
-def _suggest_available_plugin_name(base: str) -> str:
-    """脚手架重名时给一个尚未被占用的新插件名（大小写不敏感判重）。"""
-    root = _plugin_root()
-    existing: set = set()
-    try:
-        existing = {e.name.lower() for e in root.iterdir() if e.is_dir()}
-    except OSError:
-        pass
-    for i in range(2, 100):
-        cand = f"{base}{i}"
-        if cand.lower() not in existing:
-            return cand
-    return f"{base}New"
-
-
 def _skeleton_files(
     plugin_name: str,
     display_name: str,

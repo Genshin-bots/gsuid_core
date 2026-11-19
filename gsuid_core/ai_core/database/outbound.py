@@ -51,18 +51,6 @@ class DeliveryHit:
     session_id: str
 
 
-@dataclass(frozen=True)
-class OutboundHit:
-    ts: int
-    topic: str
-    target_user: str
-    target_name: str
-    owner_user_id: str
-    image_handles: str
-    text: str
-    session_id: str
-
-
 class OutboundAudit(BaseIDModel, table=True):
     """出站审计：一次成功发送一行。表名 ``outboundaudit``。"""
 

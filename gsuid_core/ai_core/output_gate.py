@@ -349,11 +349,8 @@ class AfterRunAnglePlan:
     replace_map: dict[str, str] = field(default_factory=dict)
     # 否则需要补轻量重写（仅最后一条 blocked）
     rewrite_original: str = ""
-    # 需要 scrub nudge；若 fused 或 rewrite 失败则 drop blocked
+    # 需要 scrub nudge
     scrub_nudges: bool = True
-    drop_blocked: bool = False
-    # 尖括号熔断仍恢复独立 OOC 段（默认 False=不跳过）
-    skip_ooc_rewrite: bool = False
 
 
 def _build_angle_replace_map(blocked: Sequence[str], cleaned: Sequence[str]) -> dict[str, str]:
@@ -393,8 +390,6 @@ def plan_angle_after_run(
             blocked=blocked,
             attempts=attempts,
             scrub_nudges=True,
-            drop_blocked=True,
-            skip_ooc_rewrite=False,
         )
     if not blocked:
         return AfterRunAnglePlan(
@@ -402,8 +397,6 @@ def plan_angle_after_run(
             blocked=[],
             attempts=attempts,
             scrub_nudges=bool(attempts),
-            drop_blocked=False,
-            skip_ooc_rewrite=False,
         )
     cleaned = [t for t in clean_sent if t and not ab.has_illegal_angle_tags(t)]
     if cleaned:
@@ -413,8 +406,6 @@ def plan_angle_after_run(
             attempts=attempts,
             replace_map=_build_angle_replace_map(blocked, cleaned),
             scrub_nudges=True,
-            drop_blocked=False,
-            skip_ooc_rewrite=False,
         )
     return AfterRunAnglePlan(
         fused=False,
@@ -422,8 +413,6 @@ def plan_angle_after_run(
         attempts=attempts,
         rewrite_original=blocked[-1],
         scrub_nudges=True,
-        drop_blocked=False,
-        skip_ooc_rewrite=False,
     )
 
 

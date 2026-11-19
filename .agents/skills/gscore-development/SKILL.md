@@ -24,7 +24,7 @@ description: >
   `_Bot`/`Bot`/`MockBot` 三类 Bot、AI Session 路由与隔离、Persona 系统、工具注册表与
   渐进式装配（三层工具池 + Reranker 精排 + `find_tools` 动态暴露 + `visible_when` 条件
   隐藏）、Heartbeat 定时巡检与免唤醒续聊、定时任务与 Kanban 长任务/能力代理、记忆系统
-  （双路检索 / Scope 隔离 / 摄入 / 分层图 / 偏好记忆 / RF-Mem / 生命周期 / 多模态）、
+  （双路检索 / Scope 隔离 / 摄入 / 分层图 / 偏好记忆 / 生命周期 / 多模态）、
   RAG 知识库（SQL 真值源 + 对账 + 过滤下推）与嵌入 Provider、统计系统、网页控制台 API
   与认证加密、数据库基类与 AI 表 / 总开关、帮助系统，以及一份**已知坑与开发注意事项**
   清单（D-1 到 D-22 历史缺陷 + 续聊/偏好/多进程/事件循环等踩坑点）。
@@ -62,7 +62,7 @@ description: >
 | 六 | AI Session 路由与 Persona（`ai_router`、**前缀缓存红线 / 保头裁中段**、Persona 热重载） | [references/06-ai-session-and-persona.md](./references/06-ai-session-and-persona.md) |
 | 七 | 工具注册表与 Agent 装配（`@ai_tools`/`covers`/`aliases`、L0 实体路由、`find_tools` 分流、**节点语义路由**、输出闸、**render_chart_spec series+图例**、`in_flight_short`） | [references/07-tool-registry-and-agent.md](./references/07-tool-registry-and-agent.md) |
 | 八 | 主动发言与任务编排（Heartbeat 定时巡检、免唤醒续聊与收件箱软唤醒路由、Scheduled Task 定时任务、Kanban 长任务 + 能力代理 + HITL 审批） | [references/08-heartbeat-scheduled-planning.md](./references/08-heartbeat-scheduled-planning.md) |
-| 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、RF-Mem、**§9.14 认知枢纽/公共域挂文**） | [references/09-memory-system.md](./references/09-memory-system.md) |
+| 九 | 记忆系统（双路检索、Scope 隔离、Observer/Ingestion、分层语义图、偏好记忆、**§9.14 认知枢纽/公共域挂文**） | [references/09-memory-system.md](./references/09-memory-system.md) |
 | 十 | RAG 知识库与嵌入（知识 SQL 真值源 + 两级对账含 agent、启动挂载公共枢纽、Dense+BM25） | [references/10-rag-knowledge-embedding.md](./references/10-rag-knowledge-embedding.md) |
 | 十一 | 统计 / 网页控制台 / 数据库 / 帮助系统（AI Statistics、WebConsole API + 认证加密、数据库基类与 AI 表、帮助系统） | [references/11-statistics-webconsole-database.md](./references/11-statistics-webconsole-database.md) |
 | 十二 | 已知坑与开发注意事项（D-1 到 D-22、统一输出闸、**§12.24 认知枢纽**、代码红线指针） | [references/12-developer-pitfalls.md](./references/12-developer-pitfalls.md) |

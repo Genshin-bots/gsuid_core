@@ -194,21 +194,6 @@ async def read_session(
     return "\n".join(lines) if len(lines) > 1 else f"session {sid} 没有用户发言。"
 
 
-@ai_tools(category="buildin", visible_when=visible_when_timeline_query, code_callable=False)
-async def mark_evidence(ctx: RunContext[ToolContext], turn_ids: list[str]) -> str:
-    """把本轮认定的首次子话题标记登记为证据。阶段一每找到一条就调用。
-
-    Args:
-        ctx: 工具执行上下文
-        turn_ids: 时间线上的标记，如 ["#abcdef12"]
-    """
-    _ = ctx
-    from gsuid_core.ai_core.agent_run.evidence_stage import mark_turn_ids
-
-    n = mark_turn_ids(turn_ids)
-    return f"已登记 {n} 条证据。"
-
-
 @ai_tools(category="buildin", visible_when=visible_when_timeline_query)
 async def recall_session(ctx: RunContext[ToolContext], session_id: str) -> str:
     """兼容旧名：等价 ``read_session``。

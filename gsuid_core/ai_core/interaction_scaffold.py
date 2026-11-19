@@ -378,8 +378,6 @@ class TurnGraph:
     multi_speaker: bool = False
     call_to_self: bool = False
     quoted_tome: bool = False
-    is_bystander_quote: bool = False
-    is_stale_quote: bool = False
     address_gated: bool = False
     ellipsis_followup: bool = False
     task_management: bool = False
@@ -476,8 +474,6 @@ def build_turn_graph(
         multi_speaker=multi,
         call_to_self=call,
         quoted_tome=quoted_tome,
-        is_bystander_quote=is_bystander_quote,
-        is_stale_quote=is_stale_quote,
         address_gated=addr,
         ellipsis_followup=ellipsis,
         task_management=task_mgmt,

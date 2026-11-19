@@ -64,19 +64,6 @@ def _get_file_extension(filename: str) -> str:
     return ext.lower()
 
 
-def is_supported_document(filename: str) -> bool:
-    """检查文件是否为支持的文档格式
-
-    Args:
-        filename: 文件名
-
-    Returns:
-        True 如果是支持的文档格式
-    """
-    ext = _get_file_extension(filename)
-    return ext in SUPPORTED_DOCUMENT_FORMATS
-
-
 async def extract_document_content(
     file_data: bytes,
     filename: str,

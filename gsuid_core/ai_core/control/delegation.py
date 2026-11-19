@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import asyncio
-from typing import Literal, Sequence
+from typing import Literal
 from dataclasses import dataclass
 
 DELEGATION_HANDLE_PREFIX = "dlg_"
@@ -194,9 +194,3 @@ def format_delegation(d: Delegation) -> str:
     elif not d.is_terminal:
         lines.append("尚未完成：完成后框架会自动回灌交付包，不要重复委派同一任务。")
     return "\n".join(lines)
-
-
-def format_delegations(items: Sequence[Delegation]) -> str:
-    if not items:
-        return "ℹ️ 当前没有在途委派。"
-    return "\n\n".join(format_delegation(d) for d in items)

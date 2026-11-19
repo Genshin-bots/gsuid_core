@@ -703,19 +703,6 @@ def get_pending_recurring_templates_ready_to_arm(
     return out
 
 
-def next_not_before(children: List[AIAgentTask]) -> Optional[datetime]:
-    """返回所有 pending 子任务里最早一次未到的 ``not_before``——供调度器决定
-    "再过多久要不要醒一次"。全无延后子任务时返回 None。
-    """
-    now = datetime.now()
-    upcoming = [
-        c.not_before for c in children if c.status == "pending" and c.not_before is not None and c.not_before > now
-    ]
-    if not upcoming:
-        return None
-    return min(upcoming)
-
-
 def compute_kanban_column(task: AIAgentTask, deps_satisfied: bool = True) -> str:
     """Kanban 列映射。"""
     if task.status in ("completed", "skipped"):

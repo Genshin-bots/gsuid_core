@@ -1,7 +1,6 @@
 {
   "log.mcp.ai_master_switch_skipping": "[MCP] AI master switch is off, skipping MCP Server startup",
   "log.mcp.ai_master_switch_skipping_2": "[MCP] AI master switch is off, skipping MCP tool registration",
-  "log.mcp.bind_audit": "[MCP Bind] cmd={cmd} user={uid}@{bot} outcome={outcome}",
   "log.mcp.bind_available": "Bindable MCP services:\n{lines}\n\nSend: mcp绑定 <service> <credential>",
   "log.mcp.bind_guide": "[{name}] {who} has not bound a credential yet.\nRequired: {keys}\nSend me in PRIVATE chat: {example}{help}\n(Binding is only accepted in private chat; never post credentials in groups)",
   "log.mcp.bind_guide_missing": "This MCP service does not exist or was removed.",

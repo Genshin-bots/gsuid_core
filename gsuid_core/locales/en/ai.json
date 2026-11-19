@@ -517,7 +517,6 @@
   "log.ai.relationship_dedupe_done": "[Relationship] Merged {n} duplicate (user_id,bot_id) rows, keeping the largest magnitude score",
   "log.ai.relationship_dedupe_fail": "[Relationship] Row de-duplication failed; unique constraint not created: {e}",
   "log.ai.relationship_fetch_degraded": "[Relationship] Failed to read relationship temperature; falling back to unscored: {e}",
-  "log.ai.relationship_model_delta": "[Relationship] model delta (deprecated tool) user={user} delta={delta} score={score}",
   "log.ai.relationship_priority_speakers": "[Relationship] memory-budget priority speakers group={group} count={n}",
   "log.ai.relationship_priority_speakers_degraded": "[Relationship] Batch score lookup failed; priority speakers limited to masters: {e}",
   "log.ai.relationship_settle_noop": "[Relationship] no signal this turn user={user} reason={reason}",

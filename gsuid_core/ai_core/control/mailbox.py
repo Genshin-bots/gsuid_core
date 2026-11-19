@@ -79,13 +79,6 @@ def post_to_session(session_id: str, directive: Directive, *, merge_key: str = "
     mailbox_for(session_id).post(directive, merge_key=merge_key)
 
 
-def drain_session(session_id: str) -> tuple[Directive, ...]:
-    sid = (session_id or "").strip()
-    if sid not in _mailboxes:
-        return ()
-    return _mailboxes[sid].drain()
-
-
 def drain_one(session_id: str, kind: str, merge_key: str = "") -> Directive | None:
     """只消费本投递方自己的槽位（防抽走兄弟 root 的待投递）。"""
     sid = (session_id or "").strip()
@@ -97,10 +90,3 @@ def drain_one(session_id: str, kind: str, merge_key: str = "") -> Directive | No
 def has_pending(session_id: str) -> bool:
     sid = (session_id or "").strip()
     return sid in _mailboxes and _mailboxes[sid].pending()
-
-
-def discard_session(session_id: str) -> None:
-    """会话回收时清邮箱，避免进程内无界增长。"""
-    sid = (session_id or "").strip()
-    if sid in _mailboxes:
-        del _mailboxes[sid]

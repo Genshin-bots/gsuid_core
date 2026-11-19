@@ -74,19 +74,14 @@ def _import_builtin_kits() -> None:
     from gsuid_core.ai_core.kits.meme import kit as meme_kit
     from gsuid_core.ai_core.kits.mood import kit as mood_kit
     from gsuid_core.ai_core.kits.inbox import kit as inbox_kit
-    from gsuid_core.ai_core.kits.fileos import kit as fileos_kit
     from gsuid_core.ai_core.kits.memory import kit as memory_kit
-    from gsuid_core.ai_core.kits.speech import kit as speech_kit
-    from gsuid_core.ai_core.kits.quality import kit as quality_kit
     from gsuid_core.ai_core.kits.identity import kit as identity_kit
     from gsuid_core.ai_core.kits.scaffold import kit as scaffold_kit
-    from gsuid_core.ai_core.kits.post_tool import kit as post_tool_kit
     from gsuid_core.ai_core.kits.classifier import kit as classifier_kit
     from gsuid_core.ai_core.kits.statistics import kit as statistics_kit
     from gsuid_core.ai_core.kits.favorability import kit as favorability_kit
     from gsuid_core.ai_core.kits.session_mute import kit as session_mute_kit
     from gsuid_core.ai_core.kits.group_profile import kit as group_profile_kit
-    from gsuid_core.ai_core.kits.tool_assembly import kit as tool_assembly_kit
     from gsuid_core.ai_core.kits.self_cognition import kit as self_cognition_kit
     from gsuid_core.ai_core.kits.decision_distill import kit as decision_distill_kit
     from gsuid_core.ai_core.kits.planning_context import kit as planning_context_kit
@@ -106,11 +101,6 @@ def _import_builtin_kits() -> None:
         scaffold_kit,
         session_mute_kit,
         statistics_kit,
-        tool_assembly_kit,
-        fileos_kit,
-        post_tool_kit,
-        quality_kit,
-        speech_kit,
         identity_kit,
     ):
         register_agent_kit(module.KIT)

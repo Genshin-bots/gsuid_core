@@ -258,10 +258,6 @@ async def web_search_tool(
 > **异常或空结果**会在多源策略下切换下一源。工具外层 `timeout=100` 覆盖串行 failover。
 > MCP 时配置 `mcp_tools_config.websearch_mcp_tool_id`。详见 [§11.3](./11-mcp-image-search-and-meme.md)。
 >
-> **时效标记（2026-08）**：返回体带 `[source=web|staleness_risk=high]`。loop 账本据此判断
-> 「本轮只有滞后 web」→ 注入 `WEB_ONLY_STALENESS_CAVEAT`（禁止把网页数字当「此刻」实时读数）。
-> 结构化工具应返回 `[as_of=…]` 挡住误报。
->
 > **落盘回想（2026-08-16）**：返回体带 `query:` 行。FileOS 短标题用 query（不是
 > `<search_results>`）；整页结果用规则摘要进落盘 `summary`、`tool_output` 节点和枢纽挂件。
 > 下次 `search_cognition` 用原 query 可命中 FileOS / 路径卡。SERP 全文不晋升百科。

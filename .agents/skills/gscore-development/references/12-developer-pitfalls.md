@@ -213,12 +213,6 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
   强约束置顶可能过度约束工具调用（已有软停用 + salience 裁剪 + 精确能力域过滤兜底）。首次放量
   建议观察第二次蒸馏 Token 成本。
 
-## 12.11 RF-Mem 阈值未标定即放量会退化（默认关）
-
-`familiarity_theta_*` / `tau` 是论文英文模型经验值，中文本地模型通常需平移。回忆环强绑
-`qdrant_provider=remote`（本地嵌入式 Qdrant O(N) 暴力扫，多轮成倍放大）。**保持默认关，标定后
-再放量**。
-
 ## 12.12 `extract_json_from_text` 的健壮性（2026-06-15 重写）
 
 `ai_core/utils.py` 由"正则 + repair"重写为"**括号配平** + repair"：跳过字符串字面量内括号与

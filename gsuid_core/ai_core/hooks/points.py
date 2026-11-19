@@ -12,49 +12,23 @@ from gsuid_core.ai_core.classifier.turn_router import ROUTER_TIMEOUT_S
 
 
 class AgentHookPoint(str, Enum):
-    """31 个正式点位：入站 1 + 外环 9 + 单次 run 20 + 建 session 1。"""
+    """11 个已接线点位：入站 1 + 外环 7 + 工具装配 2 + 建 session 1。"""
 
-    # ── 入站（handler.py，生命周期 ①）──
+    # ── 入站（handler.py）──
     ON_INBOUND = "H00"
 
-    # ── 外环（handle_inbox_turn，④–⑩）──
+    # ── 外环（handle_inbox_turn）──
     BEFORE_AI_CHAT = "H01"
     AFTER_SESSION = "H02"
     CLASSIFY = "H03"
-    REACTIVE_GATE = "H04"
     RETRIEVE_CONTEXT = "H05"
     COMPOSE_CONTEXT = "H06"
     AFTER_CONTEXT = "H07"
     AFTER_RUN = "H08"
-    ON_AI_ERROR = "H09"
 
-    # ── 内环 A：prepare ──
-    BEFORE_RUN = "H10"
-    AFTER_BUDGET = "H11"
-    AFTER_INIT = "H12"
-    AFTER_PREPARE_USER = "H13"
-
-    # ── 内环 B：tools ──
+    # ── 内环：工具装配（agent_run/tools.py）──
     ASSEMBLE_TOOLS = "H14"
     AFTER_ASSEMBLE_TOOLS = "H15"
-    AFTER_BUILD_AGENT = "H15b"
-
-    # ── 内环 C：iter ──
-    BEFORE_MODEL_REQUEST = "H16"
-    ON_TOOL_RETURN = "H17"
-    ON_TOOL_CALL = "H18"
-    ON_THINKING = "H19"
-    BEFORE_TEXT_GATE = "H20"
-    AFTER_TEXT_GATE = "H21"
-    AFTER_SEND = "H22"
-
-    # ── 内环 D：settle / 失败 / 清理 ──
-    BEFORE_SETTLE = "H23"
-    BEFORE_CORRECTION = "H24"
-    ON_USAGE_LIMIT = "H25"
-    ON_CANCEL = "H26"
-    ON_RUN_ERROR = "H27"
-    AFTER_CLEANUP = "H28"
 
     # ── 建 session（唯一允许贡献 system 稳定块的点）──
     ON_STABLE_CONTEXT = "H29"
@@ -66,7 +40,6 @@ class HookDecision(str, Enum):
     CONTINUE = "continue"
     ABORT_RUN = "abort_run"
     SILENCE = "silence"
-    VETO_TOOL = "veto_tool"
 
 
 class HookCapability(str, Enum):
@@ -75,15 +48,10 @@ class HookCapability(str, Enum):
     SET_BLOCK = "set_context_block"
     SET_ACTIONABLE = "set_has_actionable"
     SET_INTENT = "set_intent"
-    SET_SHOULD_SPEAK = "set_should_speak"
     APPEND_HINT = "append_user_hint"
     MUTATE_TOOLS = "ensure_tools/drop_tools"
-    REPLACE_TEXT = "replace_text"
     ABORT = "abort"
     SILENCE = "silence"
-    VETO_TOOL = "veto_tool"
-    REPLACE_TOOL_RETURN = "set_tool_return"
-    REQUEST_CORRECTION = "request_correction"
 
 
 @dataclass(frozen=True)
@@ -94,7 +62,7 @@ class HookPointSpec:
     anchor: str
     capabilities: FrozenSet[HookCapability]
     default_timeout_ms: int
-    wired: bool
+    wired: bool = True
     on_timeout_decision: HookDecision = HookDecision.CONTINUE
 
 
@@ -103,15 +71,14 @@ def _spec(
     anchor: str,
     timeout_ms: int,
     *caps: HookCapability,
-    wired: bool = True,
     on_timeout_decision: HookDecision = HookDecision.CONTINUE,
 ) -> HookPointSpec:
-    return HookPointSpec(point, anchor, frozenset(caps), timeout_ms, wired, on_timeout_decision)
+    return HookPointSpec(point, anchor, frozenset(caps), timeout_ms, True, on_timeout_decision)
 
 
 _C = HookCapability
 
-# 超时预算见计划 §4.7：热路径（H16–H22）50ms，H05 检索 15s 是唯一允许的长超时。
+# H05 检索 15s 是唯一允许的长超时，其余点位控制在 200ms–2s。
 HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
     s.point: s
     for s in (
@@ -127,15 +94,6 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
             _C.SET_ACTIONABLE,
             _C.ABORT,
         ),
-        _spec(
-            AgentHookPoint.REACTIVE_GATE,
-            "handle_ai.handle_inbox_turn:soft_gate",
-            500,
-            _C.SET_SHOULD_SPEAK,
-            _C.SILENCE,
-            wired=False,
-            on_timeout_decision=HookDecision.SILENCE,
-        ),
         _spec(AgentHookPoint.RETRIEVE_CONTEXT, "handle_ai.handle_inbox_turn:retrieve", 15000, _C.SET_BLOCK),
         _spec(
             AgentHookPoint.COMPOSE_CONTEXT,
@@ -149,68 +107,8 @@ HOOK_POINT_SPECS: Dict[AgentHookPoint, HookPointSpec] = {
         _spec(AgentHookPoint.ASSEMBLE_TOOLS, "agent_run.tools:assemble", 2000, _C.MUTATE_TOOLS),
         _spec(AgentHookPoint.AFTER_ASSEMBLE_TOOLS, "agent_run.tools:after_assemble", 200, _C.MUTATE_TOOLS),
         _spec(AgentHookPoint.ON_STABLE_CONTEXT, "context_assembly.build_session_system_prompt", 500, _C.SET_BLOCK),
-        # 契约已定但内核尚未启用的点位（wired=False），挂载时记录警告。
-        _spec(AgentHookPoint.ON_AI_ERROR, "handle_ai.handle_inbox_turn:except", 500, wired=False),
-        _spec(AgentHookPoint.BEFORE_RUN, "agent_run.prepare:run_once_state", 200, _C.ABORT, wired=False),
-        _spec(AgentHookPoint.AFTER_BUDGET, "agent_run.prepare:budget_passed", 200, wired=False),
-        _spec(AgentHookPoint.AFTER_INIT, "agent_run.prepare:tool_context", 200, wired=False),
-        _spec(
-            AgentHookPoint.AFTER_PREPARE_USER,
-            "agent_run.prepare:prepare_user",
-            200,
-            _C.APPEND_HINT,
-            wired=False,
-        ),
-        _spec(AgentHookPoint.AFTER_BUILD_AGENT, "agent_run.tools:built_agent", 200, wired=False),
-        _spec(
-            AgentHookPoint.BEFORE_MODEL_REQUEST,
-            "agent_run.loop:before_stream",
-            50,
-            _C.APPEND_HINT,
-            wired=False,
-        ),
-        _spec(
-            AgentHookPoint.ON_TOOL_RETURN,
-            "agent_run.loop:tool_return",
-            500,
-            _C.REPLACE_TOOL_RETURN,
-            wired=False,
-        ),
-        _spec(AgentHookPoint.ON_TOOL_CALL, "agent_run.loop:tool_call", 50, _C.VETO_TOOL, wired=False),
-        _spec(AgentHookPoint.ON_THINKING, "agent_run.loop:thinking", 50, wired=False),
-        _spec(
-            AgentHookPoint.BEFORE_TEXT_GATE,
-            "agent_run.loop:before_pre_send_gate",
-            50,
-            _C.REPLACE_TEXT,
-            _C.SILENCE,
-            wired=False,
-        ),
-        _spec(AgentHookPoint.AFTER_TEXT_GATE, "agent_run.loop:after_pre_send_gate", 50, wired=False),
-        _spec(AgentHookPoint.AFTER_SEND, "agent_run.loop:after_send", 50, wired=False),
-        _spec(
-            AgentHookPoint.BEFORE_SETTLE,
-            "agent_run.settle:before_correction",
-            200,
-            _C.REQUEST_CORRECTION,
-            wired=False,
-        ),
-        _spec(
-            AgentHookPoint.BEFORE_CORRECTION,
-            "agent_run.settle:correction",
-            200,
-            _C.REQUEST_CORRECTION,
-            wired=False,
-        ),
-        _spec(AgentHookPoint.ON_USAGE_LIMIT, "agent_run.settle:usage_limit", 200, _C.APPEND_HINT, wired=False),
-        _spec(AgentHookPoint.ON_CANCEL, "agent_run.loop:supersede", 200, wired=False),
-        _spec(AgentHookPoint.ON_RUN_ERROR, "agent_run.loop:retry_exhausted", 200, wired=False),
-        _spec(AgentHookPoint.AFTER_CLEANUP, "agent_run.loop:finally", 200, wired=False),
     )
 }
-
-# 内核真正会开火的点位。第三方挂到其余点位上不会执行——注册时告警而非静默。
-WIRED_POINTS: FrozenSet[AgentHookPoint] = frozenset(p for p, s in HOOK_POINT_SPECS.items() if s.wired)
 
 # H29 只在建 session / persona 热更时触发。dispatcher 硬拒非建 session 调用，
 # 否则套件把它当每轮 hook 用就会每轮改 system、打光 provider 前缀缓存。

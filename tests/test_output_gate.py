@@ -35,7 +35,7 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
     assert pre_send_gate(dirty, extra, channel="main").decision is GateDecision.FUSE
     assert is_fused(extra)
     plan = plan_angle_after_run(extra, clean_sent=[])
-    assert plan.fused and plan.drop_blocked and plan.skip_ooc_rewrite is False
+    assert plan.fused and plan.blocked and plan.scrub_nudges
 
     extra_single: dict = {}
     begin_response_batch(extra_single)

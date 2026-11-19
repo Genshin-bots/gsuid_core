@@ -91,9 +91,6 @@ class RunOnceState:
     silence_reason: str = ""
     # 本 run 已写入会话日志的拦截（原因, 原文），避免闸与收尾各记一次。
     output_block_seen: set[tuple[str, str]] = field(default_factory=set)
-    # 排版失配：台词呈长结构被拦。**纯呈现问题**，不得据此强制工具或销毁内容
-    # （用户可能就是要长文本）。与 saw_structured_return 正交，见 INV-1/INV-3。
-    presentation_mismatch: bool = False
     # 被排版闸暂扣、从未出站的台词原文。纠正被申辩或未产出替代品时须真发出去，
     # 否则 by_bot 路径 return "" 会让整轮零输出（INV-4）。
     presentation_withheld: list[str] = field(default_factory=list)
@@ -101,13 +98,6 @@ class RunOnceState:
     presentation_withheld_reasons: list[str] = field(default_factory=list)
     # 本轮已暴露给模型的工具名（装配池 ∪ find_tools），供台词标识符泄漏检测。
     exposed_tool_names: list[str] = field(default_factory=list)
-    # 本轮见过「无时点聚合」工具返回（气候/月均/历史均值）→ 台词禁冒充实时读数
-    saw_timeless_aggregate: bool = False
-    # 时效账本（方案七）：web 滞后 / as_of 新鲜 / 其它成功非 web 返回。
-    # 仅「有 web 且无 as_of 且无非 web 数据」才注入 WEB_ONLY_STALENESS_CAVEAT。
-    saw_web_source: bool = False
-    saw_fresh_data: bool = False
-    saw_non_web_data: bool = False
     # 本轮已发过一句等待安慰（出图前）
     wait_comfort_sent: bool = False
     # 委派已派出，开场句却没说出去（没写或被闸拦）：回执后允许人格补一句
@@ -120,8 +110,6 @@ class RunOnceState:
     render_ack_seen: bool = False
     # 主通道已成功发送的台词段数（单轮出站配额兜底，见 4.10）
     main_channel_sends: int = 0
-    # 本 run 已见过几个「含函数 ToolCall」的 ModelResponse（出站槽计数）
-    tool_bearing_responses: int = 0
     # 本 run 因出站槽丢掉、须从 new_messages 剥掉的 TextPart 正文
     unsent_texts: list[str] = field(default_factory=list)
     web_search_delegate_nudged: bool = False

@@ -48,20 +48,6 @@ from gsuid_core.ai_core.control.outbound_detectors import (
 )
 
 
-def _ephemeral_system_block(text: str) -> str:
-    """入史前按行剥（系统：）。动态清单不能留在持久 user turn 里。"""
-    lines: list[str] = []
-    for ln in text.splitlines():
-        s = ln.strip()
-        if not s:
-            continue
-        if s.startswith("（系统："):
-            lines.append(s)
-        else:
-            lines.append(f"（系统：{s}）")
-    return "\n".join(lines)
-
-
 def _journal_delta_in_recent_history(delta_text: str, history: Sequence[ModelMessage]) -> bool:
     """若「刚刚经历」各分条正文均已在最近 2 条 ModelResponse 中出现，跳过重复注入。"""
     inner = delta_text.removeprefix("（系统提示：刚刚经历：").rstrip("）)").strip()
@@ -166,7 +152,6 @@ class PreparePhase(RunOnceHost):
 
         reset_run_image_delivered()
         st.has_status_tool_call = False
-        st.presentation_mismatch = False
         st.presentation_withheld = []
         st.presentation_withheld_reasons = []
         st.wait_comfort_sent = False
