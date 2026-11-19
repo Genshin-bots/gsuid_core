@@ -2,6 +2,7 @@
 
 import asyncio
 from typing import TypedDict
+from urllib.parse import urlsplit
 
 import httpx
 from mcp import McpError
@@ -44,6 +45,17 @@ def _clean_result_text(text: str, max_chars: int) -> str:
     return sanitize_mcp_text(text, max_chars=max_chars).replace("<", "&lt;")
 
 
+def _is_source_url(url: str) -> bool:
+    if not url.lower().startswith(("https://", "http://")) or any(
+        char.isspace() or not char.isprintable() or char in "<>" for char in url
+    ):
+        return False
+    try:
+        return bool(urlsplit(url).hostname)
+    except ValueError:
+        return False
+
+
 async def parallel_search(query: str, max_results: int | None = None) -> list[ParallelSearchResult]:
     query = query.strip()
     if not query or (max_results is not None and max_results <= 0):
@@ -58,7 +70,7 @@ async def parallel_search(query: str, max_results: int | None = None) -> list[Pa
         async with asyncio.timeout(_TIMEOUT_SECONDS):
             async with Client(transport, client_info=client_info) as client:
                 result = await client.call_tool_mcp("web_search", {"objective": query, "search_queries": [query]})
-    except (httpx.HTTPError, McpError, RuntimeError) as exc:
+    except* (httpx.HTTPError, McpError, RuntimeError) as exc:
         raise RuntimeError("Parallel MCP search request failed") from exc
     if result.isError:
         raise RuntimeError("Parallel MCP web_search returned a tool error")
@@ -70,9 +82,7 @@ async def parallel_search(query: str, max_results: int | None = None) -> list[Pa
 
     results: list[ParallelSearchResult] = []
     for hit in response.results:
-        if not hit.url.lower().startswith(("https://", "http://")) or any(
-            char.isspace() or not char.isprintable() or char in "<>" for char in hit.url
-        ):
+        if not _is_source_url(hit.url):
             continue
         results.append(
             {
