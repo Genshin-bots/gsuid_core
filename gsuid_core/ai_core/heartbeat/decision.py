@@ -23,7 +23,6 @@ from gsuid_core.ai_core.proactive.speak import (
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.ai_core.persona.settings import get_master_title
-from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.task_kinds import TASK_HEARTBEAT_DECISION
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
@@ -140,10 +139,6 @@ def hook_cites_human_span(hook: str, bodies: Sequence[str]) -> bool:
                 if b[i : i + 4] in hn:
                     return True
     return False
-
-
-def _hook_must_cite_human() -> bool:
-    return bool(ai_config.get_config("heartbeat_hook_require_human_span").data)
 
 
 def _hook_span_sources(history: List[MessageRecord], extra_context: str = "") -> list[str]:
@@ -529,7 +524,7 @@ async def run_heartbeat(
     if not _hook.strip():
         logger.debug(t("log.ai.heartbeat_no_hook_silent", mood=mood))
         return None
-    if _hook_must_cite_human() and not hook_cites_human_span(_hook, _hook_span_sources(history, extra_context)):
+    if not hook_cites_human_span(_hook, _hook_span_sources(history, extra_context)):
         logger.debug(t("log.heartbeat.hook_span_miss", mood=mood))
         return None
 

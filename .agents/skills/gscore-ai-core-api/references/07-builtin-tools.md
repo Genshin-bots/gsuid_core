@@ -249,7 +249,7 @@ async def attach_article(
 async def web_search_tool(
     ctx: RunContext[ToolContext],
     query: str,                       # 搜索关键词
-    limit: Optional[int] = None,      # 最大结果数；None 时用 web_search_default_limit
+    limit: Optional[int] = None,      # 最大结果数；None 时默认 10
 ) -> str
 ```
 
@@ -382,7 +382,7 @@ async def get_self_persona_info(
 @ai_tools(category="common", capability_domain="用户档案", check_func=_set_favor_master_only)
 async def set_user_favorability(
     ctx: RunContext[ToolContext],
-    value: int,                     # 好感度绝对值（按 favor_floor/ceil 钳制）
+    value: int,                     # 好感度绝对值（按 FAVOR_FLOOR..FAVOR_CEIL 钳制）
     user_id: Optional[str] = None,
 ) -> str
 ```

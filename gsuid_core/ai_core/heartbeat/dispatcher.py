@@ -33,6 +33,7 @@ MAX_PROACTIVE_PER_HOUR = 1
 MAX_PROACTIVE_PER_DAY = 5
 _HOUR_SECONDS = 3600
 _DAY_SECONDS = 86400
+_HEARTBEAT_REPEAT_WINDOW: int = 8
 
 
 _MEME_TAG_STRIP_RE = re.compile(
@@ -173,10 +174,7 @@ class UnifiedProactiveDispatcher:
     def _repeat_window(self, window: Optional[int]) -> int:
         if window is not None and window > 0:
             return window
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        n = int(ai_config.get_config("heartbeat_repeat_window").data)
-        return n if n > 0 else 8
+        return _HEARTBEAT_REPEAT_WINDOW
 
     def remember_heartbeat_text(
         self,

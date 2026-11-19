@@ -35,7 +35,7 @@ SpeechPolicy = Literal[
     "framework_deliver",
 ]
 
-# 单轮主通道可见台词上限默认（配置 main_channel_visible_limit 覆盖）
+# 单轮主通道可见台词上限
 MAIN_CHANNEL_VISIBLE_LIMIT = 2
 
 _RENDER_DELEGATE_NUDGE = (

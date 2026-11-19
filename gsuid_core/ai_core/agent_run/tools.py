@@ -70,9 +70,7 @@ _SCHED_MUTATE_NAMES: frozenset[str] = frozenset(
 )
 
 
-def _session_tool_ceiling() -> int:
-    raw = ai_config.get_config("session_tool_ceiling").data
-    return int(raw) if isinstance(raw, int) else 24
+_SESSION_TOOL_CEILING: int = 24
 
 
 def snapshot_tool_allowed(
@@ -272,7 +270,7 @@ class ToolsPhase(RunOnceHost):
             None if rebuild else self._session_toolset_frozen,
             incoming,
             exclusive=exclusive,
-            ceiling=_session_tool_ceiling(),
+            ceiling=_SESSION_TOOL_CEILING,
         )
         from gsuid_core.ai_core.approval.session_ctx import session_has_pending
 

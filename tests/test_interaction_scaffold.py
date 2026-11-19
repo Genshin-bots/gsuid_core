@@ -188,7 +188,7 @@ def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
     monkeypatch.setattr(
         cfg_mod.ai_config,
         "get_config",
-        lambda k: _Box(False) if k == "group_lurk_mode" else (_Box(99) if k == "group_repeat_body_n" else real(k)),
+        lambda k: _Box(False) if k == "group_lurk_mode" else real(k),
     )
 
     memory_qa_hint = default_body("memory_qa")

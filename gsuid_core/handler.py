@@ -885,11 +885,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
             _fmax_rep = (
                 ai_config.get_config("follow_up_max_replies").data if "follow_up_max_replies" in ai_config.config else 2
             )
-            _busy_rpm = (
-                int(ai_config.get_config("inbox_group_busy_msg_per_min").data)
-                if "inbox_group_busy_msg_per_min" in ai_config.config
-                else 12
-            )
+            _busy_rpm = 12  # 高活跃群抑制无 @ 续聊软唤醒阈值（条/分）
             in_followup = bool(
                 _fw
                 and event.group_id

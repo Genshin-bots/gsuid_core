@@ -493,7 +493,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 
 | 闸 | 位置 | 管什么 | 默认 | 可配 |
 |----|------|--------|------|------|
-| `main_channel_visible_limit` | `ai_config.py` | 模型单轮能发几段 TextPart | 2 | 是（≤6） |
+| `MAIN_CHANNEL_VISIBLE_LIMIT` | `agent_run/speech_policy.py` | 模型单轮能发几段 TextPart | 2 | 否（常量） |
 | `chat_style.bubbles` | `persona/chat_style.py` | 一段 TextPart 能拆成几条气泡 | 2 | 是 |
 
 两把闸相乘，只调一把会「改了没反应」。`chat_style` 是**建 session 时**进 system 稳定前缀的
@@ -651,9 +651,8 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
   nudge 挂在 run 中途的后续 ModelRequest 上，**由 `_relean_user_turn(strip_hint_texts=…)` 从
   持久历史剥离**，不跨轮累积。
 
-**阈值全部走 `ai_config`**（`scaffold_wall_clock_budget`=45s / `scaffold_followup_max_len`=24 /
-`scaffold_ambient_max_len`=20 / `history_merge_window`=120s）：默认值按评测分布标定，
-上线后按 `[Scaffold]` 日志的生产分布重标，不要当成已验证常量。
+**阈值按评测分布标定为常量**（`FOLLOWUP_MAXLEN_DEFAULT=24` / `HISTORY_MERGE_WINDOW_S=120.0`），
+后续如按 `[Scaffold]` 日志生产分布调整，请统一修改 `ai_core/const.py`。
 
 **铁律**：脚手架的所有判据必须是**结构/语言学范畴**（时间量词、闭类动词、@标注结构），
 **绝不能塞评测集载荷词/具体暗号**——否则退化成又一处过拟合。改这里必须同时跑

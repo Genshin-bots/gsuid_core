@@ -11,8 +11,9 @@ from pydantic_ai import RunContext
 
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.web_search.date_utils import normalize_published_date
+
+_WEB_SEARCH_DEFAULT_LIMIT: int = 10
 
 
 def _format_results_for_model(results: list[dict], query: str = "") -> str:
@@ -108,7 +109,7 @@ async def web_search_tool(
     Args:
         ctx: 工具执行上下文
         query: 搜索查询关键词，如"最新的科技新闻"或"Python 教程"
-        limit: 最大返回结果数量，留空(None)时取全局配置 web_search_default_limit
+        limit: 最大返回结果数量，留空(None)时默认 10
 
     Returns:
         搜索结果列表字符串（信息可能滞后）
@@ -118,7 +119,7 @@ async def web_search_tool(
         >>> print(results)
     """
     if limit is None:
-        limit = ai_config.get_config("web_search_default_limit").data
+        limit = _WEB_SEARCH_DEFAULT_LIMIT
     from gsuid_core.ai_core.web_search import web_search
 
     results = await web_search(

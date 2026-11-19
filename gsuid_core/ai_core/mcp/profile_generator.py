@@ -158,15 +158,17 @@ def _parse_payload(raw: str) -> Optional[_ProfilePayload]:
     return _ProfilePayload(description=description, keywords=_clean_keywords(payload.keywords))
 
 
+_MCP_PROFILE_LLM_TIMEOUT_S: float = 60.0
+
+
 async def _call_llm(config: MCPConfig) -> str:
     """高级档模型一次生成调用；超时/异常向外抛（由 _run 兜底计 failed）。"""
     from gsuid_core.ai_core.gs_agent import create_agent
-    from gsuid_core.ai_core.configs.ai_config import ai_config
 
     tools_brief = "\n".join(f"- {tool.name}: {first_line(tool.description)}" for tool in config.tools[:20])
     display = config.market_meta.get("chinese_name") or config.name
     user_msg = f"服务名称：{display}\n内部名：{config.name}\n工具清单：\n{tools_brief or '（空）'}"
-    timeout = float(ai_config.get_config("mcp_profile_llm_timeout_sec").data or 60)
+    timeout = _MCP_PROFILE_LLM_TIMEOUT_S
     agent = create_agent(
         system_prompt=_MCP_PROFILE_SYSTEM_PROMPT,
         max_tokens=600,

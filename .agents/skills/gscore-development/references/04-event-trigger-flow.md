@@ -182,11 +182,11 @@ MAX_SUMMARY_LENGTH = 15000    # 超过则子 Agent 摘要
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `follow_up_window` | 30s | 续聊窗口长度 |
+| `follow_up_window` | 45s | 续聊窗口长度 |
 | `follow_up_max_total` | 300s | 硬天花板 |
 | `follow_up_max_replies` | 2 | 单窗口内续聊成功回复上限 |
-| `inbox_settle_max_ms` | 5000 | 落定合并上限 |
-| `inbox_group_busy_msg_per_min` | 12 | 高活跃群压制免唤醒续聊的近 1 分钟速率阈值（0 关闭） |
+
+（收件箱落定上限 `_INBOX_SETTLE_MAX_S=5.0s` 与高活跃群静默阈值 `12 条/分` 已内置为固定常量。）
 
 `statistics` 触发分布按 wake kind 记录。
 

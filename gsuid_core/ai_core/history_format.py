@@ -159,9 +159,9 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
 
 # 用户连发消息合并窗口（秒）：窗口内同用户的相邻消息在历史中合并为一个发言块。
 def _merge_window() -> float:
-    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.const import HISTORY_MERGE_WINDOW_S
 
-    return float(ai_config.get_config("history_merge_window").data)
+    return HISTORY_MERGE_WINDOW_S
 
 
 # 出站产物句柄。不含 to_/sa_：那些是检索落盘，不是对这个人发出去的内容。

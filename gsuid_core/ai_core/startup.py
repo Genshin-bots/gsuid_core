@@ -150,15 +150,15 @@ async def _init_favor_decay():
     from gsuid_core.aps import scheduler
     from gsuid_core.ai_core.database import UserFavorability
     from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.relationship.engine import FAVOR_IDLE_DAYS, FAVOR_DAILY_DECAY
 
     async def _job() -> None:
         if not ai_config.get_config("enable").data:
             return
-        step = int(ai_config.get_config("favor_daily_decay").data)
+        step = FAVOR_DAILY_DECAY
         if step <= 0:
             return
-        idle_days = int(ai_config.get_config("favor_idle_days").data)
-        idle_before = int(_time.time()) - idle_days * 86400
+        idle_before = int(_time.time()) - FAVOR_IDLE_DAYS * 86400
         n = await UserFavorability.decay_idle_toward_neutral(step, idle_before)
         if n:
             logger.info(t("log.ai.userfavorability_daily_favorability_decay", n=n, step=step))

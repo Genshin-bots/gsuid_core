@@ -536,12 +536,12 @@ HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 
 > 时，把未剥 markdown 的 `md_source` 交给 `render_agent` 出一张信息卡；没启用、或没交出图片，
 > 才用 `render_md_to_bytes`。兜底图样式在 `markdown_dark.css`：近黑底、奶油色标题、金色小节，
 > 列表用横线分隔，不画左侧色条。两路都失败则**优雅降级**回拆条。判定**刻意保守**（`_should_render_markdown_image`）：
-> 须够长（`markdown_image_min_chars`，默认 400）+ 拆分后 ≥3 段 + 含明确结构信号——**表格 / ≥2 个
+> 须够长（`_MARKDOWN_IMAGE_MIN_CHARS=400`）+ 拆分后 ≥3 段 + 含明确结构信号——**表格 / ≥2 个
 > ATX 标题 / ≥2 个整行粗体小标题（`**一、xxx**`）/ 编号列表 ≥2 项 / 无序列表 ≥3 项 / 水平线且 ≥1 标题**。
 > （agent 研报常用 `**粗体小标题** + 编号建议` 而非 markdown 表格 / `#` 标题，故一并纳入——否则像
 > session ...644256 药明康德那条会被拆成 ~8 段。）**纯口语连发短句、单段短文、代码块**都不命中
 > （代码块要可复制，保留文本行为）。OOC 兜底命中时（`clean_text` 已被替换成短兜底文本）也不出图。
-> 阈值 / 宽度 / 开关见 `ai_config`（`OutputRendering` 分组）。回归锁同下。
+> 总开关见 `ai_config.render_long_markdown_as_image`（最小字数 400 与最大宽度 760 已内置为常量）。回归锁同下。
 
 > 🔴 **尖括号协议（2026-08）**。仅 `<SILENCE>` / `<meme:…>` 合法。
 > - **`<br>`**：非法 → gate 打回；sanitize 漏网时落成 `\n`。

@@ -91,7 +91,7 @@ results = await web_search(query="原神 4.0 更新内容", max_results=10)
 
 **参数（工具侧）：**
 - `query`: 搜索查询关键词
-- `limit`: 最大返回条数；`None` 时用 `web_search_default_limit`
+- `limit`: 最大返回条数；`None` 时默认 10
 
 **返回：** 带边界的摘要文本（空结果有明确提示）。结构化列表字段为 `title` / `url` / `content` / `score`。
 

@@ -87,5 +87,11 @@ ERROR_QUOTA_EXHAUSTED = "模型套餐用量已达上限"
 # 群/频道共享 session 不丢（后到说话人只是等锁）；框架回灌永不丢。
 STALE_CHAT_REQUEST_TTL = 8.0
 
-# 省略式跟进短句的最大字数默认阈值（ai_config 与 interaction_scaffold 共用）。
+# 省略式跟进短句的最大字数默认阈值（interaction_scaffold 使用）。
 FOLLOWUP_MAXLEN_DEFAULT = 24
+
+# 历史渲染同人连发合并窗口（秒，history_format 与 thread_view 共用）。
+HISTORY_MERGE_WINDOW_S: float = 120.0
+
+# 思考内容蒸馏尾部截断字数上限（handle_ai 与 agent_run/settle 共用）。
+THINKING_TEXT_MAX: int = 2000

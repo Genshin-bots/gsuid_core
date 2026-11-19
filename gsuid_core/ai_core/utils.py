@@ -1105,6 +1105,12 @@ def _has_markdown_table(text: str) -> bool:
     return ("---" in text) or (text.count("|") >= 4)
 
 
+_MARKDOWN_IMAGE_MIN_CHARS: int = 400
+_MARKDOWN_IMAGE_MAX_WIDTH: int = 760
+_INBOX_MAX_TARGETS: int = 3
+_INBOX_MAX_BUBBLES: int = 3
+
+
 def _should_render_markdown_image(text: str) -> bool:
     """判断一段 AI 输出是否是"结构化长 markdown 文档"，值得整篇渲染成一张图片下发。
 
@@ -1113,7 +1119,7 @@ def _should_render_markdown_image(text: str) -> bool:
     会因此被拆成几十条刷屏，且 IM 不渲染 markdown，用户看到的是满屏字面 ``**`` / ``|``。
 
     判定**刻意保守**，只在"确实是文档"时命中，绝不误伤日常连发短句：
-      - 必须够长（≥ ``markdown_image_min_chars``）；
+      - 必须够长（≥ ``_MARKDOWN_IMAGE_MIN_CHARS``）；
       - 且拆分后 ≥3 段（单段短文没有出图必要）；
       - 且含明确结构信号：**表格** / ≥2 个 ATX 标题 / ≥2 个整行粗体小标题 /
         编号列表≥2 项 / 无序列表≥3 项 /（水平分割线 且 ≥1 个标题）。
@@ -1126,8 +1132,7 @@ def _should_render_markdown_image(text: str) -> bool:
     if not ai_config.get_config("render_long_markdown_as_image").data:
         return False
 
-    min_chars: int = ai_config.get_config("markdown_image_min_chars").data
-    if len(text) < max(int(min_chars), 1):
+    if len(text) < _MARKDOWN_IMAGE_MIN_CHARS:
         return False
 
     blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
@@ -1526,10 +1531,8 @@ async def _send_report_images(
     """
     from gsuid_core.ai_core.mcp.pii import mask_pii
     from gsuid_core.utils.html_render import render_md_to_bytes
-    from gsuid_core.ai_core.configs.ai_config import ai_config
 
     is_group = bool((ev is not None and ev.group_id) or (bot.ev is not None and bot.ev.group_id))
-    max_width: int = ai_config.get_config("markdown_image_max_width").data
     css_path = await asyncio.to_thread(_markdown_dark_css_path)
     for title, body in reports:
         md = f"# {title}\n\n{body}" if title else body
@@ -1542,7 +1545,7 @@ async def _send_report_images(
             image_bytes = await render_md_to_bytes(
                 md=md,
                 css_path=css_path,
-                max_width=int(max_width),
+                max_width=_MARKDOWN_IMAGE_MAX_WIDTH,
                 image_format="png",
                 dark=False,
             )
@@ -1566,17 +1569,15 @@ async def _try_render_markdown_image(
     """
     from gsuid_core.ai_core.mcp.pii import mask_pii
     from gsuid_core.utils.html_render import render_md_to_bytes
-    from gsuid_core.ai_core.configs.ai_config import ai_config
 
     if bot.ev is not None and bot.ev.group_id:
         md = mask_pii(md)
-    max_width: int = ai_config.get_config("markdown_image_max_width").data
     try:
         css_path = await asyncio.to_thread(_markdown_dark_css_path)
         image_bytes = await render_md_to_bytes(
             md=f"{md}{_report_footer()}",
             css_path=css_path,
-            max_width=int(max_width),
+            max_width=_MARKDOWN_IMAGE_MAX_WIDTH,
             image_format="png",
             dark=False,
         )
@@ -1737,7 +1738,6 @@ async def send_chat_result(
         _turn = current_turn()
     if _turn is not None:
         from gsuid_core.ai_core.reply_plan import parse_reply_plan
-        from gsuid_core.ai_core.configs.ai_config import ai_config
 
         # 单说话人轮次：合法目标仅限本轮待回应项，防止模型幻觉指向窗口内更早消息
         _valid = {e.item.seq for e in _turn.entries}
@@ -1745,7 +1745,7 @@ async def send_chat_result(
             _trimmed,
             valid_seqs=frozenset(_valid),
             default_seqs=(_turn.primary.item.seq,),
-            max_targets=int(ai_config.get_config("inbox_max_targets").data),
+            max_targets=_INBOX_MAX_TARGETS,
         )
         if _plan.invalid_refs:
             logger.info(i18n_t("log.inbox.reply_ref_invalid", seqs=",".join(str(s) for s in _plan.invalid_refs)))
@@ -1909,10 +1909,7 @@ async def send_chat_result(
 
     _budget = _PERSONA_MAX_BUBBLES
     if _plan_turn is not None:
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        _cap = max(1, int(ai_config.get_config("inbox_max_bubbles").data))
-        _turn_rem = max(0, _cap - _plan_turn.bubbles_sent)
+        _turn_rem = max(0, _INBOX_MAX_BUBBLES - _plan_turn.bubbles_sent)
         _budget = min(_PERSONA_MAX_BUBBLES, _turn_rem)
 
     if _budget <= 0:

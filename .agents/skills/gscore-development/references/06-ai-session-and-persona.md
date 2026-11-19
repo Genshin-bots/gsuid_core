@@ -153,7 +153,7 @@ RESOURCE_PATH/persona/{persona_name}/
 - 契约句只讲**结构**，不含业务垂直词与角色口癖，框架层人格中性（AGENTS.md §1.9）。
 - 建 session 时经 `processor.build_persona_prompt` 进 **system 稳定前缀**，会话内不改串
   （§1.7）。改说话强度、建议字数或提示词组后，用这张人格的每一路会话都会重建。
-- 气泡数与 `ai_config.main_channel_visible_limit` 是**两把相乘的闸**，只调一把没反应。
+- 气泡数与 `speech_policy.MAIN_CHANNEL_VISIBLE_LIMIT`（固定为 2）是**两把相乘的闸**。
 - ⚠️ 边界对齐 `options=[0, 25, 50, 75, 100]`，**默认 50 必须落在「默认」档**——
   改分档时别让默认值掉进 terse，否则升级即静默把「最多 2 条」降成 1 条。
   锁在 `tests/test_send_chat_result_bubbles.py`。
@@ -271,7 +271,7 @@ TTL，须接受画像刷新会改串打掉前缀。
 - `at_list` 渲染为「@了用户: id(昵称)（@的是这位用户，不是你）」——前提是入库层
   （`handler.msg_process`）已把 @Bot 转成 `is_tome`、不进 at_list（该比较已做 str 归一化，
   改适配器时保持 at 段 data 可 str 化）。
-- 同一用户在合并窗口（`ai_config.history_merge_window`，默认 120s）内的连发合并为一个
+- 同一用户在合并窗口（`const.HISTORY_MERGE_WINDOW_S`，120s）内的连发合并为一个
   发言块；窗口**锚定组内首条**而非相邻两条——链式相邻比较会让长独白无限合并成只有首条
   时间戳的巨块，heartbeat 的时效判断（"你刚刚才说过话"）会被带偏。改合并逻辑时保持
   "块跨度有上限"这个不变式。

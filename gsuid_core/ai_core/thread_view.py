@@ -274,10 +274,13 @@ def _record_line(record: MessageRecord, ctx: _RenderCtx) -> str | None:
     return None
 
 
-def _merge_window_s() -> float:
-    from gsuid_core.ai_core.configs.ai_config import ai_config
+_INBOX_DELTA_MAX_LINES: int = 60
 
-    return float(ai_config.get_config("history_merge_window").data)
+
+def _merge_window_s() -> float:
+    from gsuid_core.ai_core.const import HISTORY_MERGE_WINDOW_S
+
+    return HISTORY_MERGE_WINDOW_S
 
 
 def _render_lines(records: Sequence[MessageRecord], ctx: _RenderCtx) -> list[_Line]:
@@ -473,8 +476,6 @@ def render_delta(
     bot_id: str = "",
 ) -> str:
     """B 轨增量块：群聊按统一相关性公式切片；私聊保留线性增量。"""
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
     linked = [r for r in records if r.link is not None]
     seq_index = {r.link.seq: r for r in linked if r.link is not None}
     pending = frozenset(pending_seqs)
@@ -507,10 +508,9 @@ def render_delta(
         bot_id=bot_id or _first_meta_str(linked, "bot_id"),
     )
     lines = _collapse_consecutive_repeats(delta, _render_lines(delta, ctx), pending, ctx)
-    max_lines = int(ai_config.get_config("inbox_delta_max_lines").data)
-    if len(lines) > max_lines:
-        dropped += len(lines) - max_lines
-        lines = lines[-max_lines:]
+    if len(lines) > _INBOX_DELTA_MAX_LINES:
+        dropped += len(lines) - _INBOX_DELTA_MAX_LINES
+        lines = lines[-_INBOX_DELTA_MAX_LINES:]
     rendered = [line.text for line in lines]
     if dropped > 0:
         rendered = [omitted_lines_marker(dropped), *rendered]

@@ -13,7 +13,7 @@ from typing import Dict, Tuple, Optional
 
 
 class Zone(str, Enum):
-    """六档关系温度，覆盖 favor_floor..favor_ceil 全区间。"""
+    """六档关系温度，覆盖 FAVOR_FLOOR..FAVOR_CEIL 全区间。"""
 
     HOSTILE = "hostile"
     COLD = "cold"

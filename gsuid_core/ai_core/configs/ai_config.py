@@ -1,7 +1,6 @@
 from typing import Dict
 
 from gsuid_core.data_store import get_res_path
-from gsuid_core.ai_core.const import FOLLOWUP_MAXLEN_DEFAULT
 from gsuid_core.ai_core.kits.base import OFF, KIT_SLOTS
 from gsuid_core.utils.plugins_config.models import (
     GSC,
@@ -212,36 +211,6 @@ AI_CONFIG: Dict[str, GSC] = {
         2,
         options=[1, 2, 3, 5],
     ),
-    "inbox_settle_max_ms": GsIntConfig(
-        "收件箱静默窗上限(毫秒)",
-        "群聊收件箱：同一说话人续发可延长静默窗，但从首个触发项起算的总等待不超过此上限（毫秒）。",
-        5000,
-        max_value=30000,
-    ),
-    "inbox_max_bubbles": GsIntConfig(
-        "收件箱单轮最多气泡",
-        "一轮收件箱回复最多发几条气泡，超出的截断并记日志。",
-        3,
-        max_value=10,
-    ),
-    "inbox_max_targets": GsIntConfig(
-        "收件箱单轮最多目标人数",
-        "一轮收件箱回复最多指向几名待回应用户，超出的目标截断。",
-        3,
-        max_value=10,
-    ),
-    "inbox_delta_max_lines": GsIntConfig(
-        "收件箱增量块行数上限",
-        "线程视图增量块超过此行数时保留待回应项及其引用链与最近 20 行，中间省略。",
-        60,
-        max_value=400,
-    ),
-    "inbox_group_busy_msg_per_min": GsIntConfig(
-        "群聊高活跃续聊静默阈值(条/分)",
-        "群内近 60 秒他人消息数达到此值时抑制无 @ 的续聊软唤醒，0 表示不限制。",
-        12,
-        max_value=120,
-    ),
     "spMode": GsDivider(
         "Agent 特殊模式",
         "Agent 特殊模式",
@@ -283,75 +252,15 @@ AI_CONFIG: Dict[str, GSC] = {
         "无 ToolCall 的终局开口。内容仍走已有闸门。调用方显式传 True 时仍强制抑制。修改后即时生效",
         True,
     ),
-    "session_tool_ceiling": GsIntConfig(
-        "会话工具名硬顶",
-        "主会话工具名列表上限; 超顶拒新名、不 evict。修改后即时生效",
-        24,
-        options=[12, 16, 24, 32, 48],
-    ),
-    "main_channel_visible_limit": GsIntConfig(
-        "主通道单轮出站上限",
-        "本项管模型单轮能发几段 TextPart（委派开场句 + 终局各占一格）。"
-        "一段拆几条由人格「说话强度」决定，两闸相乘。修改后即时生效",
-        2,
-        options=[1, 2, 3, 4, 5, 6],
-    ),
     "group_lurk_mode": GsBoolConfig(
         "群聊未点名默认静默",
         "开启后群聊未点名且非主人/呼名/省略跟进/活跃任务时默认 SILENCE。默认关闭。修改后即时生效",
         False,
     ),
-    "group_repeat_body_n": GsIntConfig(
-        "同人短窗同文重复次数",
-        "同一用户短窗内相同正文达到该次数则本轮 SILENCE。修改后即时生效",
-        3,
-        options=[2, 3, 5, 8],
-    ),
-    "heartbeat_hook_require_human_span": GsBoolConfig(
-        "巡检话头必须引用人类原句",
-        "开启后 context_hook 对不上近窗人类句或刚完成的事则沉默。修改后即时生效",
-        True,
-    ),
-    "heartbeat_repeat_window": GsIntConfig(
-        "巡检近窗去重条数",
-        "与最近 N 条主动正文过相似则沉默。修改后即时生效",
-        8,
-        options=[4, 6, 8, 12],
-    ),
-    "thinking_text_max": GsIntConfig(
-        "thinking 蒸馏字数上限",
-        "hook_ctx.thinking_text 取 thinking 尾部的最大字数。修改后即时生效",
-        2000,
-        options=[500, 1000, 2000, 4000],
-    ),
-    "remember_fact_trunc": GsIntConfig(
-        "短工具回执 FACT 截断字数",
-        "未落盘的短工具回执写入 FACT 时的摘要截断长度。修改后即时生效",
-        200,
-        options=[80, 120, 200, 400],
-    ),
-    "outbound_topic_n": GsIntConfig(
-        "出站 topic 缺省字数",
-        "record_outbound 的 topic 为空时, 用可见文本前 N 字。修改后即时生效",
-        12,
-        options=[8, 12, 16, 24],
-    ),
-    "capability_roster_line_max": GsIntConfig(
-        "能力花名册单行字数上限",
-        "system 花名册每行 when_to_use 上限；不截断丢节点。详情走 capability_map。修改后下次新建会话生效",
-        45,
-        options=[45, 60, 80, 120, 200],
-    ),
     "mcp_profile_llm_enable": GsBoolConfig(
         "MCP 中文介绍 LLM 补全",
         "注册 MCP 服务后若缺中文描述, 后台调用高级模型生成中文能力说明供路由使用; 关闭则只用拼接文案",
         True,
-    ),
-    "mcp_profile_llm_timeout_sec": GsIntConfig(
-        "MCP 介绍生成超时(秒)",
-        "MCP 中文介绍单次 LLM 调用超时时间, 超时只影响生成质量, 不影响工具注册",
-        60,
-        options=[30, 60, 90, 120],
     ),
     "agent_max_run_attempts": GsIntConfig(
         "核心请求重试次数",
@@ -388,7 +297,7 @@ AI_CONFIG: Dict[str, GSC] = {
     # 安全防线（见 docs/SESSION_LOG_SECURITY_FINDINGS_20260707.md）
     "SecurityGuard": GsDivider(
         "安全防线",
-        "输出出戏防火墙 / 内容守卫 / 好感度约束",
+        "输出出戏防火墙 / 内容守卫 / 好感度总开关",
         "安全防线",
     ),
     "output_firewall_enable": GsBoolConfig(
@@ -414,77 +323,14 @@ AI_CONFIG: Dict[str, GSC] = {
         "开启后, 群消息中疑似'伪造工具返回'的文本会被降权标注, 防止粘贴伪造结果注入",
         True,
     ),
-    "favor_floor": GsIntConfig(
-        "好感度下限",
-        "好感度可达的最小值(clamp), 防止越界无限下跌",
-        -100,
-        options=[-100, -50, -200],
-    ),
-    "favor_ceil": GsIntConfig(
-        "好感度上限",
-        "好感度可达的最大值(clamp), 防止越界无限上涨",
-        100,
-        options=[100, 150, 200],
-    ),
-    "favor_daily_decay": GsIntConfig(
-        "好感度闲置衰减步长",
-        "闲置超过'闲置衰减天数'的用户每日向中性(0)回归的步长, 0=不衰减。活跃用户不衰减",
-        1,
-        options=[0, 1, 2, 3],
-    ),
-    "Relationship": GsDivider(
-        "关系温度(好感度)引擎",
-        "好感度 = 人格对'这个人'的长期关系温度: 由互动质量与越界行为驱动, 不是聊天条数",
-        "关系温度(好感度)引擎",
-    ),
     "favor_engine_enable": GsBoolConfig(
         "关系引擎总开关",
         "关闭则只读不写(管理员 set_user_favorability 工具除外), 用于回滚",
         True,
     ),
-    "favor_idle_days": GsIntConfig(
-        "闲置衰减天数",
-        "距最近一次正向互动超过该天数才开始每日衰减; 天天水群的用户不会被衰减掉档",
-        3,
-        options=[1, 3, 7, 14],
-    ),
-    "favor_daily_gain_cap": GsIntConfig(
-        "每日增益上限",
-        "同一用户单日最多涨多少好感, 防止'聊得多就涨满'",
-        3,
-        options=[1, 2, 3, 5],
-    ),
-    "favor_session_gain_cap": GsIntConfig(
-        "会话窗增益上限",
-        "同一用户在'会话窗分钟数'内普通正信号最多涨多少",
-        1,
-        options=[1, 2, 3],
-    ),
-    "favor_session_window_minutes": GsIntConfig(
-        "会话窗分钟数",
-        "普通正信号的节流窗口长度(分钟)",
-        30,
-        options=[15, 30, 60],
-    ),
-    "favor_high_zone_diminish": GsBoolConfig(
-        "高分段递减",
-        "开启后 familiar 及以上区间忽略普通正信号, 只保留显著正信号",
-        True,
-    ),
-    "favor_meaningful_min_len": GsIntConfig(
-        "有内容对话最小字数",
-        "闲聊轮要被算作'当日首次有内容'所需的最小文本长度",
-        12,
-        options=[8, 12, 20],
-    ),
-    "favor_care_signal_enable": GsBoolConfig(
-        "正向照顾信号",
-        "开启后'分享情绪/身体状况且本轮履约'可 +1; 关闭则只保留负向规则与当日首次有内容",
-        True,
-    ),
     "OutputRendering": GsDivider(
         "长文本呈现",
-        "长 markdown 整篇出图, 防止 agent 长报告按空行拆成几十条刷屏群聊",
+        "长 markdown 整篇出图兜底",
         "长文本呈现",
     ),
     "render_long_markdown_as_image": GsBoolConfig(
@@ -494,18 +340,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "未启用出图或没交出图片时，才用 render_md_to_bytes。"
         "默认关闭，避免主人格浅分析被渲成丑图。判定刻意保守。",
         False,
-    ),
-    "markdown_image_min_chars": GsIntConfig(
-        "整篇出图最小字符数",
-        "文本短于该字符数一律不出图(仍按空行拆条连发), 避免把简短回复也变成图片",
-        400,
-        options=[210, 300, 400, 500, 800],
-    ),
-    "markdown_image_max_width": GsIntConfig(
-        "整篇出图最大宽度",
-        "长 markdown 渲染成图片时的最大宽度(像素); 表格列很多时可调大",
-        760,
-        options=[600, 760, 900, 1080],
     ),
     "ToolTuning": GsDivider(
         "工具检索装配调参",
@@ -541,29 +375,6 @@ AI_CONFIG: Dict[str, GSC] = {
         "知识库混合检索 dense 分支的余弦下限(方案六): 挡住跨域低相关条目(如金融问题召回"
         "游戏词条)。只作用于 dense 分支, BM25 精确词命中不受影响; 调高更严、调低更宽",
         0.35,
-    ),
-    "web_search_default_limit": GsIntConfig(
-        "Web搜索默认结果数",
-        "web_search_tool 未显式指定时返回的搜索结果条数默认值",
-        10,
-        options=[5, 10, 15, 20],
-    ),
-    "InteractionScaffold": GsDivider(
-        "交互脚手架调参",
-        "C-1~C-3 交互脚手架的触发阈值(默认值按评测分布标定, 上线后按[Scaffold]日志的生产分布重标)",
-        "交互脚手架调参",
-    ),
-    "scaffold_followup_max_len": GsIntConfig(
-        "省略式跟进最长字数",
-        "C-1省略式跟进判定的消息字数上限, 超过视为有独立语义的实质发言不触发",
-        FOLLOWUP_MAXLEN_DEFAULT,
-        options=[16, 24, 32, 48],
-    ),
-    "history_merge_window": GsIntConfig(
-        "同人连发合并窗口(秒)",
-        "历史渲染时同一用户在窗口内的相邻消息合并为一个发言块; 块跨度受此上限约束(时间失真上限=窗口值)",
-        120,
-        options=[60, 120, 180, 300],
     ),
     "AgentKits": GsDivider(
         "Agent 套件与 Hook 总线",

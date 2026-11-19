@@ -1157,7 +1157,7 @@ registry.get_ai_session(session_id)
 ```text
 私聊                              → FULL
 开口门 SILENCE / address_gated    → SILENCE（通常开口门已早退）
-同人重复正文 ≥ group_repeat_body_n → SILENCE
+同人重复正文 ≥ 3（`_GROUP_REPEAT_BODY_N`） → SILENCE
 group_lurk_mode 且未点名/无任务   → SILENCE（主人除外）
 rel.is_quiet_zone（hostile/cold）
   且非主人、未 is_tome、未 call_to_self
@@ -1413,7 +1413,7 @@ session_logger.log_user_input(final_user_message)
 |----|------|------|
 | L1 保底 | 每轮 | 群聊瘦核 ∪ 钉核 `find_tools` / `create_subagent` / `capability_map` |
 | L2 状态 | 本群/本会话有持久实体，且群聊已点名/省略跟进（私聊始终） | `get_state_driven_family_tools` 补对应族、剥 exclusive；旁观不加。核内**非状态驱动**域首轮族闭合（跳过定时任务/Kanban/产物/record）。`send_*` extras 不进静态附加池。群聊 extras 不 L4 整族展开 |
-| L3 驻留 | 不写 core | 跨轮靠 `find_tools` 成功后 **append-only**（`session_tool_ceiling` 硬顶，超顶拒新名） |
+| L3 驻留 | 不写 core | 跨轮靠 `find_tools` 成功后 **append-only**（`_SESSION_TOOL_CEILING=24` 硬顶，超顶拒新名） |
 | 语境 | 有 group | 群画像 tags → 附加池；**exclusive 永不进主会话**（无 shield） |
 | L4/L5 向量 | 非 in_flight 短轮 | 近文 + 本轮检索；新名字只 append，禁止删除/排序/热槽替换。点名/跟进不跳过（瘦核不含 web_search） |
 | 委派 | 交互主人格 | exclusive 集合来自节点注册表；roster 在 **system** |
@@ -1491,7 +1491,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
                     3) **pre_send_gate(channel=main)**  ← 统一合规闸（见 §10.5）
                     4) 假完成预检：声称办完且 **无 effectual_mutate**
                        （PIN 拒绝 / 失败 / 只 list 不算写成功）→ 暂扣 fab_blocked
-                    5) 主通道单轮出站配额（`main_channel_visible_limit`，默认 2）
+                    5) 主通道单轮出站配额（`MAIN_CHANNEL_VISIBLE_LIMIT=2`）
                     6) ALLOW → send_chat_result（呈现层，见 §10.6）
                     unsent 从本轮 new_messages 尾部剥掉（不进 B 轨）
         Thinking  → log_thinking

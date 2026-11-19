@@ -1215,11 +1215,10 @@ class SettlePhase(RunOnceHost):
         self._last_attempt_pending_async = st.pending_async_delivery
         self._last_attempt_effectual_mutate = st.effectual_mutate
         self._last_attempt_has_status_tool = st.has_status_tool_call
-        thinking_blob = "\n".join(s for s in st.thinking_segments if s)
-        from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg
+        from gsuid_core.ai_core.const import THINKING_TEXT_MAX
 
-        _think_max = int(_ai_cfg.get_config("thinking_text_max").data)
-        self._last_attempt_thinking = thinking_blob[-_think_max:] if thinking_blob else ""
+        thinking_blob = "\n".join(s for s in st.thinking_segments if s)
+        self._last_attempt_thinking = thinking_blob[-THINKING_TEXT_MAX:] if thinking_blob else ""
         # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
         if st.budget_scope_token is not None:
             _current_budget_scope.reset(st.budget_scope_token)

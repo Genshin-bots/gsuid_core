@@ -374,7 +374,6 @@ async def run_interactive_turn(
         recent_user_bodies=_recent_user_bodies,
         soft_triggered=soft_triggered,
         recent_tool_call=_recent_tool,
-        followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
         has_reply=bool(event.reply or event.reply_id),
         at_bot=bool(_primary_link and _primary_link.at_self),
         has_at_other=_has_at_other,
@@ -610,10 +609,11 @@ async def run_interactive_turn(
     if settle and session.persona_name:
         hook_ctx.tool_names_called = tuple(session._last_attempt_tool_calls)
         # 入档/蒸馏用的是剥签台词；<reply #n> 只留给出站路由。
+        from gsuid_core.ai_core.const import THINKING_TEXT_MAX
+
         hook_ctx.result_text = strip_protocol_tags(result_text).strip()[:200]
-        _think_max = int(ai_config.get_config("thinking_text_max").data)
         _think = session._last_attempt_thinking or ""
-        hook_ctx.thinking_text = _think[-_think_max:] if _think else ""
+        hook_ctx.thinking_text = _think[-THINKING_TEXT_MAX:] if _think else ""
         await _settle_and_fire_after_run(
             bot=bot,
             event=event,

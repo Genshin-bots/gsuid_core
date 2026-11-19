@@ -329,7 +329,6 @@ class PreparePhase(RunOnceHost):
                     primary_speaker=_spk0,
                     recent=_recent,
                     recent_tool_call=interaction_scaffold.has_recent_tool_call(self.history),
-                    followup_max_len=int(ai_config.get_config("scaffold_followup_max_len").data),
                     has_reply=_has_reply,
                     at_bot=bool(st.ev.at_bot) if st.ev is not None else False,
                     has_at_other=bool(

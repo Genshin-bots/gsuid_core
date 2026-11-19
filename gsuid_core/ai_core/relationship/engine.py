@@ -47,20 +47,20 @@ class SettleOutcome:
     wrote: bool = False
 
 
+FAVOR_FLOOR: int = -100
+FAVOR_CEIL: int = 100
+FAVOR_DAILY_DECAY: int = 1
+FAVOR_IDLE_DAYS: int = 3
+FAVOR_DAILY_GAIN_CAP: int = 3
+FAVOR_SESSION_GAIN_CAP: int = 1
+FAVOR_SESSION_WINDOW_MINUTES: int = 30
+FAVOR_HIGH_ZONE_DIMINISH: bool = True
+FAVOR_MEANINGFUL_MIN_LEN: int = 12
+FAVOR_CARE_SIGNAL_ENABLE: bool = True
+
+
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
-
-
-def _cfg_int(key: str) -> int:
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    return int(ai_config.get_config(key).data)
-
-
-def _cfg_bool(key: str) -> bool:
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    return bool(ai_config.get_config(key).data)
 
 
 def engine_enabled() -> bool:
@@ -73,7 +73,7 @@ def engine_enabled() -> bool:
 
 
 def _clamp(score: int) -> int:
-    return max(_cfg_int("favor_floor"), min(_cfg_int("favor_ceil"), score))
+    return max(FAVOR_FLOOR, min(FAVOR_CEIL, score))
 
 
 def plan_delta(
@@ -103,10 +103,10 @@ def plan_delta(
         positives: List[PosSignal] = []
         if first_meaningful_today and signals.meaningful:
             positives.append(PosSignal.FIRST_MEANINGFUL)
-        if signals.care and _cfg_bool("favor_care_signal_enable"):
+        if signals.care and FAVOR_CARE_SIGNAL_ENABLE:
             positives.append(PosSignal.CARE)
         # 高分段递减：familiar 及以上忽略普通正信号，只保留显著正信号（care）
-        if _cfg_bool("favor_high_zone_diminish") and is_at_least(zone, Zone.FAMILIAR):
+        if FAVOR_HIGH_ZONE_DIMINISH and is_at_least(zone, Zone.FAMILIAR):
             positives = [p for p in positives if p is PosSignal.CARE]
         # 会话窗节流：30min 内普通正信号已用满则不再加
         if session_gain_used:
@@ -134,7 +134,7 @@ def clip_to_budget(
 ) -> int:
     """日预算裁剪。返回实际可应用的 delta（可能为 0）。"""
     if raw_delta > 0:
-        remaining = _cfg_int("favor_daily_gain_cap") - daily_gain
+        remaining = FAVOR_DAILY_GAIN_CAP - daily_gain
         return max(0, min(raw_delta, remaining))
     if raw_delta < 0:
         remaining = _DAILY_LOSS_CAP - daily_loss
@@ -170,7 +170,7 @@ async def settle_turn(
         effective=effective and not silenced,
         is_master=is_master,
         guard=guard_flags,
-        meaningful_min_len=_cfg_int("favor_meaningful_min_len"),
+        meaningful_min_len=FAVOR_MEANINGFUL_MIN_LEN,
     )
 
     if not engine_enabled():
@@ -194,12 +194,12 @@ async def settle_turn(
     first_meaningful_today = daily_gain == 0
 
     # 会话窗节流：距最近一次正向互动不足窗口且当日已吃满窗口配额 → 普通正信号不再加
-    window_seconds = _cfg_int("favor_session_window_minutes") * 60
+    window_seconds = FAVOR_SESSION_WINDOW_MINUTES * 60
     session_gain_used = (
         existing is not None
         and existing.last_positive_interact_at > 0
         and now_ts - existing.last_positive_interact_at < window_seconds
-        and daily_gain >= _cfg_int("favor_session_gain_cap")
+        and daily_gain >= FAVOR_SESSION_GAIN_CAP
     )
 
     raw_delta, reason, hits = plan_delta(

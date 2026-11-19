@@ -68,7 +68,6 @@ from gsuid_core.ai_core.agent_run.support import (
     _tool_return_is_effectual_write,
     _update_thrash_streak_for_response,
 )
-from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.agent_run.opening_line import (
     arm_opening_line,
@@ -1088,10 +1087,7 @@ class LoopPhase(RunOnceHost):
                         self._discard_stream_preview(st, _text)
                         continue
                     # 单轮出站配额兜底（4.10）：主通道台词超限即静默，防多 TextPart 刷屏
-                    _cap = int(ai_config.get_config("main_channel_visible_limit").data)
-                    if _cap < 1:
-                        _cap = MAIN_CHANNEL_VISIBLE_LIMIT
-                    if st.main_channel_sends >= _cap:
+                    if st.main_channel_sends >= MAIN_CHANNEL_VISIBLE_LIMIT:
                         st.last_block_reason = "main_channel_cap"
                         record_output_block(st, self._session_logger, "main_channel_cap", _text)
                         logger.info(

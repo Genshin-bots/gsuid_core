@@ -44,10 +44,9 @@ class HeartbeatInspector:
       通过 → _inspect_session_with_semaphore（Semaphore(5) 控并发）
         └── run_heartbeat 两阶段：
               阶段一 决策（DECISION_PROMPT）→ {should_speak, mood, context_hook}
-                    └─ 话头门：空 hook，或 hook 对不上近窗人类原句/C8 合并语境
-                       （`heartbeat_hook_require_human_span`）→ 降级沉默
+                    └─ 话头门：空 hook，或 hook 对不上近窗人类原句/C8 合并语境 → 降级沉默
                        合并语境 peek，开口成功后才 consume
-              阶段二 生成发言；与近窗主动正文过相似（`heartbeat_repeat_window`）→ 丢弃
+              阶段二 生成发言；与近窗主动正文过相似（`_HEARTBEAT_REPEAT_WINDOW=8`）→ 丢弃
             → _send_proactive_message（metadata={"proactive": True}）
 ```
 

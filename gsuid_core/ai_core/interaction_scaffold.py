@@ -507,16 +507,16 @@ def _same_body_repeat_count(tg: TurnGraph) -> int:
     return n
 
 
+_GROUP_REPEAT_BODY_N: int = 3
+
+
 def admit_pre_router(tg: TurnGraph) -> bool:
     """一段结构准入门（零 DB / 零 LLM）：寻址门、多人无呼叫互聊与复读刷屏拦截。"""
     if not tg.is_group:
         return True
     if tg.address_gated or (tg.multi_speaker and not tg.call_to_self):
         return False
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-
-    repeat_n = int(ai_config.get_config("group_repeat_body_n").data)
-    if repeat_n > 1 and _same_body_repeat_count(tg) >= repeat_n:
+    if _same_body_repeat_count(tg) >= _GROUP_REPEAT_BODY_N:
         return False
     return True
 

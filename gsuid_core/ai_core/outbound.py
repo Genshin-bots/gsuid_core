@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 _outbound_image_label: ContextVar[str] = ContextVar("outbound_image_label", default="")
 # 泄漏句柄补发不经过 send_message_by_ai，用这个标记并回本轮「已经出图」。
 _run_image_delivered: ContextVar[bool] = ContextVar("run_image_delivered", default=False)
+_OUTBOUND_TOPIC_N: int = 12
 
 
 def _db_ready() -> bool:
@@ -237,10 +238,7 @@ async def record_outbound(
         if art is not None and art.summary:
             topic_s = _clean_topic_head(art.summary, 12)
     if not topic_s:
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        n = int(ai_config.get_config("outbound_topic_n").data)
-        topic_s = _clean_topic_head((text or "").replace("\n", " "), n)
+        topic_s = _clean_topic_head((text or "").replace("\n", " "), _OUTBOUND_TOPIC_N)
     try:
         await OutboundAudit.record(
             session_id=sid,

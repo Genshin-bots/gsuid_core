@@ -321,15 +321,17 @@ async def persist_subagent_result(
     return card
 
 
+_REMEMBER_FACT_TRUNC: int = 200
+
+
 async def _remember_short_tool_fact(tool_name: str, content: str, ev: Optional[Event], session_id: str) -> None:
     body = (content or "").strip()
     if not body or looks_like_handle_card(body):
         return
     from gsuid_core.ai_core.cognition.types import CogKind
-    from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
-    trunc = int(ai_config.get_config("remember_fact_trunc").data)
+    trunc = _REMEMBER_FACT_TRUNC
     owner, _fileos, cog_scope = _scope_from_ev(ev)
     digest = content_sha256(body)[:16]
     await remember(

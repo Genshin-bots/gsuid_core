@@ -36,6 +36,7 @@ _PRIVATE_HARD_SETTLE_S = 0.8
 _GROUP_HARD_SETTLE_S = 1.5
 _INCOMPLETE_OPENER_SETTLE_S = 4.0
 _SOFT_SETTLE_S = 5.0
+_INBOX_SETTLE_MAX_S = 5.0
 _READ_SEQ_CAP = 1024
 _EXACT_DEDUP_TTL_S = 90.0
 _EXACT_DEDUP_PER_SESSION_CAP = 16
@@ -237,9 +238,7 @@ class InboxScheduler:
                 self._recent_exact.popitem(last=False)
 
     def _settle_max_s(self) -> float:
-        from gsuid_core.ai_core.configs.ai_config import ai_config
-
-        return float(ai_config.get_config("inbox_settle_max_ms").data) / 1000.0
+        return _INBOX_SETTLE_MAX_S
 
     def _initial_settle_s(self, entry: PendingEntry) -> float:
         if entry.item.strength == "hard":

@@ -22,12 +22,10 @@ from gsuid_core.utils.database.base_models import BaseModel, BaseIDModel, with_s
 
 
 def _clamp_favor(value: int) -> int:
-    """把分数钳到 favor_floor / favor_ceil。两项已在配置模板注册。"""
-    from gsuid_core.ai_core.configs.ai_config import ai_config
+    """把分数钳到 FAVOR_FLOOR..FAVOR_CEIL。"""
+    from gsuid_core.ai_core.relationship.engine import FAVOR_CEIL, FAVOR_FLOOR
 
-    floor: int = ai_config.get_config("favor_floor").data
-    ceil: int = ai_config.get_config("favor_ceil").data
-    return max(floor, min(ceil, value))
+    return max(FAVOR_FLOOR, min(FAVOR_CEIL, value))
 
 
 def _escape_like(text: str) -> str:
