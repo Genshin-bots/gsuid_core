@@ -1,7 +1,7 @@
 """
 Web Search 公共 API 模块
 
-提供统一的 web 搜索接口，根据用户配置自动选择搜索引擎（Tavily / Exa / Jina / AnySearch / Firecrawl / MCP / Keenable）。
+提供统一的 Web 搜索接口，根据用户配置选择搜索引擎。
 支持多源策略：
 - none：仅主用源
 - error_switch：主用失败后按备用顺序切换（默认）
@@ -125,6 +125,8 @@ def _provider_configured(provider: str) -> bool:
         return deepseek_search_configured()
     if name == "Keenable":
         return keenable_search_configured()
+    if name == "Parallel":
+        return True
     if is_mcp_provider(name) or name.upper() == "MCP":
         return bool(get_mcp_tool_id_optional("websearch_mcp_tool_id"))
     return False
@@ -288,6 +290,12 @@ async def _invoke_provider(
 
     if name == "Keenable":
         results = await keenable_search(query=query, max_results=max_results)
+        return {"results": results, "answer": None} if with_context else results
+
+    if name == "Parallel":
+        from .parallel_search import parallel_search
+
+        results = [dict(hit) for hit in await parallel_search(query=query, max_results=max_results)]
         return {"results": results, "answer": None} if with_context else results
 
     if is_mcp_provider(name) or name.upper() == "MCP":

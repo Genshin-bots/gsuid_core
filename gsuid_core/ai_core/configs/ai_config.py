@@ -94,9 +94,10 @@ AI_CONFIG: Dict[str, GSC] = {
     "websearch_provider": GsStrConfig(
         "网络搜索服务提供方（主用）",
         "指定网络搜索的主用提供方。未配置或主用无 Key 时走 AnySearch 匿名额度。"
+        "Parallel 无需 API Key，选用后会将搜索词发送给 Parallel。"
         "多源策略非「无」时，失败会按备用顺序切换到其它已配置源",
         "AnySearch",
-        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP", "Keenable"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP", "Keenable", "Parallel"],
     ),
     "websearch_lb_strategy": GsStrConfig(
         "网络搜索多源策略",
@@ -107,9 +108,10 @@ AI_CONFIG: Dict[str, GSC] = {
     "websearch_fallback_order": GsListStrConfig(
         "网络搜索备用源顺序",
         "错误切换/自动分流时的候选顺序（不含主用源）。留空则自动收集已配置源"
-        "（顺序：AnySearch → Firecrawl → DeepSeek → Tavily → Exa → Jina → MCP；Keenable 需手动加入备用顺序或设为主用）",
+        "（顺序：AnySearch → Firecrawl → DeepSeek → Tavily → Exa → Jina → MCP；"
+        "Keenable 和 Parallel 需手动加入备用顺序或设为主用）",
         [],
-        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP", "Keenable"],
+        options=["AnySearch", "Firecrawl", "DeepSeek", "Tavily", "Jina", "Exa", "MCP", "Keenable", "Parallel"],
     ),
     "webfetch_provider": GsStrConfig(
         "网页抓取服务提供方（主用）",
