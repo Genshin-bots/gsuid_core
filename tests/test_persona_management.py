@@ -508,6 +508,29 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert "<<NO_BROADCAST>>" not in "\n".join(gq_doc.timeline)
         assert "(×2)" in gq_doc.timeline[-1] and "09:30~10:30" in gq_doc.timeline[-1]
 
+        # 4b. 跨日残留流水（前晚 20:55 留在今日 09:43 之前）不得被套上今日日期后当成「刚刚经历」反复注入
+        from datetime import datetime as _dt
+
+        today_str = _dt.fromtimestamp(now).strftime("%Y-%m-%d")
+        cur_hhmm = _dt.fromtimestamp(now).strftime("%H:%M")
+        stale_path = jm.get_journal_path("alpha", "group_rollover")
+        stale_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_path.write_text(
+            f"# alpha的驻群手账 (群:group_rollover)\n\n"
+            f"## 本群今日行动流水 ({today_str})\n"
+            f"- [23:55 | 交付完结] 昨夜遗留的旧播报内容。\n"
+            f"- [00:05 | 查资料] 今日早间已完成的新记录。\n"
+            f"- [{cur_hhmm} | 查资料] 今日当前已完成记录。\n",
+            encoding="utf-8",
+        )
+        jm._SHARD_CACHE.pop(stale_path, None)
+        jm._SHARD_UPDATE_TS.pop(("alpha", "group_rollover"), None)
+        jm._RECENT_ENTRY_TS.pop(("alpha", "group_rollover"), None)
+        delta_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover", since_ts=now - 30.0)
+        assert "昨夜遗留的旧播报内容" not in delta_roll
+        anchor_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover")
+        assert "昨夜遗留的旧播报内容" not in anchor_roll and "今日当前已完成记录" in anchor_roll
+
         # 5. 超大群突发洪峰环形定长（单日写入 75 条仍严格 <= 50 行，锚点严格 <= 880 字，且零污染其它群）
         for i in range(75):
             await jm.record_journal_entry(

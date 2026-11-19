@@ -224,6 +224,7 @@ class Event(MessageReceive):
     at_list: List[Any] = []
     is_tome: bool = False
     at_bot: bool = False
+    quote_auto_at: bool = False
     reply: Optional[str] = None
     reply_id: Optional[str] = None
     node: Optional[List[Message]] = None

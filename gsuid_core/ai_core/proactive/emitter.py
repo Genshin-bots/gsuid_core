@@ -157,6 +157,19 @@ async def emit_proactive_message(
         是否真的发送成功。被 C8 抑制 / bot 解析失败时返回 ``False``。
     """
     files: List[str] = list(generator_log_files or [])
+    if not event.bot_self_id or event.bot_self_id == "0":
+        from gsuid_core.message_history import get_history_manager
+
+        _res_bid, _res_self = get_history_manager().resolve_session_identity(
+            ws_bot_id=event.WS_BOT_ID,
+            bot_id=event.bot_id,
+            target_type=event.user_type,
+            target_id=event.group_id if event.user_type != "direct" else event.user_id,
+        )
+        if _res_self:
+            event.bot_self_id = _res_self
+            if not event.bot_id or event.bot_id == "Bot" or event.bot_id == event.WS_BOT_ID:
+                event.bot_id = _res_bid
     target_key: str = _target_key(event)
     dispatcher = get_dispatcher()
 

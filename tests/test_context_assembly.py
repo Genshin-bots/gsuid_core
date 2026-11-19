@@ -695,6 +695,62 @@ def test_render_delta_quote_edges_and_merge() -> None:
     rview_rcpt = render_router_view(turn_rcpt, slice_records)
     assert "★#11 receipt · 插件=测试插件" in rview_rcpt and "你上次回他是" not in rview_rcpt
 
+    # 主 Agent 待回应块对命令回执不得退化为「AI(用户ID:...)」
+    import gsuid_core.ai_core.outbound as _outbound_mod
+    from gsuid_core.ai_core.outbound import QuoteResolve
+    from gsuid_core.ai_core.inbox.blocks import quote_fact_lines, render_pending_block
+
+    pblock_rcpt = render_pending_block(turn_rcpt, slice_records)
+    assert "★#11 [命令回执] 插件=测试插件" in pblock_rcpt and "AI(" not in pblock_rcpt
+
+    # 窗口外引用（reply_to_seq=None）仍必须触发 resolve_quote 补回出站事实行
+    out_of_win_ev = Event(
+        "OneBot",
+        "900000001",
+        "q_oow",
+        "group",
+        "70002",
+        "100000001",
+        {},
+        0,
+        raw_text="这",
+        reply_id="missing_mid",
+        reply="测试播报内容",
+    )
+    turn_oow = InboxTurn(
+        session_id="OneBot:onebot:900000001:group:70002",
+        persona_name="测试人格",
+        entries=(
+            PendingEntry(
+                WakeItem(18, "100000001", "quote_self", "soft", t_now), out_of_win_ev, persona_name="测试人格"
+            ),
+        ),
+        from_seq=17,
+        head_seq=18,
+    )
+    oow_rec = MessageRecord(
+        role="user",
+        content="这",
+        user_id="100000001",
+        user_name="测试用户A",
+        timestamp=t_now,
+        metadata={"msg_id": "q_oow", "reply_id": "missing_mid", "reply_preview": "测试播报内容"},
+        link=EventLink(seq=18, msg_id="q_oow", reply_to_seq=None, reply_to_author="self"),
+    )
+    orig_resolve_quote = _outbound_mod.resolve_quote
+
+    async def _fake_resolve_quote(_ev: Event) -> QuoteResolve:
+        return QuoteResolve(
+            line="（被引用的是你于 14:40 发给群内的「测试播报」）", topic="测试播报", handle="", target="群内"
+        )
+
+    _outbound_mod.resolve_quote = _fake_resolve_quote
+    try:
+        qfacts = asyncio.run(quote_fact_lines(turn_oow, [*slice_records, oow_rec]))
+    finally:
+        _outbound_mod.resolve_quote = orig_resolve_quote
+    assert qfacts == ["★#18 （被引用的是你于 14:40 发给群内的「测试播报」）"]
+
     # 日志经历去重 / 偏好 2-gram 去重 / 空摘要观测过滤
     from pydantic_ai.messages import TextPart, ModelResponse
 

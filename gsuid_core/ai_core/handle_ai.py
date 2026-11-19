@@ -416,9 +416,22 @@ async def run_interactive_turn(
         _rcpt_plugin = turn.primary.receipt.plugin_label or "插件"
         _rcpt_body = (turn.primary.receipt.receipt_text or "[图片]").strip()[:200]
         hook_ctx.router_query = f"[命令回执] 插件={_rcpt_plugin} 内容={_rcpt_body}"
-    # 群聊显式 @Bot（全 mention）直通主模型，省掉一次 TurnRouter LLM 往返
-    if inbox_turn is not None and bool(event.group_id) and all(e.item.kind == "mention" for e in turn.entries):
-        hook_ctx.skip_llm_router = True
+    # 群聊显式 @Bot 直通主模型；但若带引用且原消息作者不明（防残留自动 @），仍过 TurnRouter 辨归属
+    if inbox_turn is not None and bool(event.group_id):
+        _seq_map = {r.link.seq: r.link for r in render_records if r.link is not None}
+
+        def _is_confirmed_mention(entry_seq: int, entry_kind: str, entry_ev: Event) -> bool:
+            if entry_kind != "mention":
+                return False
+            if not (entry_ev.reply_id or entry_ev.reply):
+                return True
+            if entry_ev.quote_auto_at:
+                return False
+            _lnk = _seq_map[entry_seq] if entry_seq in _seq_map else None
+            return bool(_lnk is not None and _lnk.reply_to_author not in (None, "self"))
+
+        if all(_is_confirmed_mention(e.item.seq, e.item.kind, e.event) for e in turn.entries):
+            hook_ctx.skip_llm_router = True
     _relation_label = "主人" if rel.is_master else (rel.zone.value if rel.scored else "普通群友")
     _anchor_ts = hook_ctx.clock_at.timestamp() if hook_ctx.clock_at is not None else time.time()
     _group_rate_1m = (

@@ -523,6 +523,8 @@ def _record_inbound_history(event: Event) -> Optional["MessageRecord"]:
         metadata["at_list"] = event.at_list
     if event.at_bot:
         metadata["at_bot"] = True
+    if event.quote_auto_at:
+        metadata["quote_auto_at"] = True
     if event.reply_id:
         metadata["reply_id"] = event.reply_id
     if event.reply:
@@ -966,7 +968,10 @@ async def msg_process(msg: MessageReceive) -> Event:
         event.is_tome = True
 
     saw_body = False
+    saw_text = False
     saw_reply = False
+    at_bot_count = 0
+    at_bot_after_text = False
     pre_body_reply_imgs: List[str] = []
     post_reply_imgs: List[str] = []
     for _msg in msg.content:
@@ -976,6 +981,7 @@ async def msg_process(msg: MessageReceive) -> Event:
             text_part = str(_msg.data).strip()
             if text_part:
                 saw_body = True
+                saw_text = True
             event.raw_text += text_part  # type:ignore
             event.text += text_part  # type:ignore
             """
@@ -990,6 +996,9 @@ async def msg_process(msg: MessageReceive) -> Event:
             if str(_msg.data) == str(event.bot_self_id):
                 event.is_tome = True
                 event.at_bot = True
+                at_bot_count += 1
+                if saw_text:
+                    at_bot_after_text = True
                 continue
             else:
                 event.at = str(_msg.data)
@@ -1043,6 +1052,14 @@ async def msg_process(msg: MessageReceive) -> Event:
                     event.group_id = str(_msg.data["group_id"])
         _content.append(_msg)
     event.content = _content
+    # 引用附带单次前置 @Bot 且未 @ 他人时，标记为疑似引用自动 @，供下游消歧
+    event.quote_auto_at = bool(
+        event.at_bot
+        and (event.reply_id or event.reply)
+        and at_bot_count == 1
+        and not at_bot_after_text
+        and not event.at_list
+    )
     if post_reply_imgs:
         event.reply_image_id_list = post_reply_imgs
     elif pre_body_reply_imgs and saw_body:

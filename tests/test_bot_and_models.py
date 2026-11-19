@@ -249,6 +249,29 @@ def test_event_link_seq_reply_and_at_self() -> None:
     found = mgr.find_by_seq(b_ev, u1.link.seq)
     assert found is not None and found.content == "让你画图"
 
+    # 引用对象出窗时，QQ 随引用自动附带的 quote_auto_at 必须落为 quote_self 而非伪造 at_self
+    auto_rec = mgr.add_message(
+        b_ev,
+        "user",
+        "这",
+        user_name="测试用户B",
+        metadata={"msg_id": "q_auto", "at_bot": True, "quote_auto_at": True, "reply_id": "lost_proactive"},
+    )
+    assert auto_rec.link is not None
+    assert auto_rec.link.reply_to_author == "self"
+    assert auto_rec.link.at_self is False
+
+    # 出站缺失 bot_self_id 时从活跃会话反查真实身份；echo 延迟回写 msg_id 后清掉负缓存
+    res_bid, res_self = mgr.resolve_session_identity(
+        ws_bot_id=None, bot_id="Bot", target_type="group", target_id="70001"
+    )
+    assert (res_bid, res_self) == ("OneBot", "900000001")
+    delayed = mgr.add_message(bot_ev, "assistant", "主动播报", user_name="AI", metadata={})
+    assert mgr.find_by_msg_id(b_ev, "late_mid_1") is None
+    mgr.attach_msg_id(delayed, "late_mid_1")
+    assert mgr.find_by_msg_id(b_ev, "late_mid_1") is delayed
+    assert delayed.link is not None and delayed.link.msg_id == "late_mid_1"
+
 
 def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
     """超限分段无损合入末条气泡，detached_turn_scope 隔离前台轮次上下文。"""

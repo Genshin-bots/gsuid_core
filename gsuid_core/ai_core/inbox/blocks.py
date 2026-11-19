@@ -34,11 +34,14 @@ async def quote_fact_lines(turn: InboxTurn, records: Sequence[MessageRecord]) ->
     seq_index = _index(records)
     out: list[str] = []
     for entry in turn.entries:
+        ev = entry.event
+        if not (ev.reply_id or ev.reply):
+            continue
         rec = seq_index[entry.item.seq] if entry.item.seq in seq_index else None
         link = rec.link if rec is not None else None
-        if link is None or link.reply_to_seq is None or link.reply_to_seq in seq_index:
+        if link is not None and link.reply_to_seq is not None and link.reply_to_seq in seq_index:
             continue
-        hit = await resolve_quote(entry.event)
+        hit = await resolve_quote(ev)
         if hit is not None and hit.line:
             out.append(f"★#{entry.item.seq} {hit.line}")
     return out

@@ -482,6 +482,52 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             assert "images" not in rec_q.metadata
             assert rec_q.metadata["reply_image_id_list"] == ev_quote.reply_image_id_list
 
+            # 1a) 引用自动附带单次前置 @Bot 与显式手动 @Bot 区分（兼容 reply 在前/在后两种段序）
+            ev_auto_1 = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_auto_at_1",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000002",
+                    sender={"nickname": "测试用户B"},
+                    content=[
+                        Message("reply_id", "out_of_window_bot_msg"),
+                        Message("reply", "测试播报正文"),
+                        Message("at", "900000001"),
+                        Message("text", "这"),
+                    ],
+                )
+            )
+            assert ev_auto_1.at_bot is True and ev_auto_1.quote_auto_at is True
+            rec_auto_1 = _record_inbound_history(ev_auto_1)
+            assert rec_auto_1 is not None and rec_auto_1.link is not None
+            assert rec_auto_1.link.at_self is False and rec_auto_1.link.reply_to_author == "self"
+
+            ev_explicit_2 = await msg_process(
+                MessageReceive(
+                    bot_id="OneBot",
+                    bot_self_id="900000001",
+                    msg_id="u_explicit_at_2",
+                    user_type="group",
+                    group_id="70009",
+                    user_id="100000002",
+                    sender={"nickname": "测试用户B"},
+                    content=[
+                        Message("reply_id", "out_of_window_bot_msg"),
+                        Message("reply", "测试播报正文"),
+                        Message("at", "900000001"),
+                        Message("at", "900000001"),
+                        Message("text", "帮我看看"),
+                    ],
+                )
+            )
+            assert ev_explicit_2.at_bot is True and ev_explicit_2.quote_auto_at is False
+            rec_exp_2 = _record_inbound_history(ev_explicit_2)
+            assert rec_exp_2 is not None and rec_exp_2.link is not None
+            assert rec_exp_2.link.at_self is True
+
             payload, _ = await prepare_media_payload([(2, ev_quote)], "[群消息 #1–#2]\n#2: 测试人格，注意防潮")
             joined = "\n".join(p for p in payload if isinstance(p, str))
             assert "引用的历史图片" in joined and "用户发送了图片" not in joined

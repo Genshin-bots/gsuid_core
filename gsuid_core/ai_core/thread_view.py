@@ -618,11 +618,12 @@ def format_pending_entry_line(
 ) -> str:
     """渲染单条待回应项行（主 Agent 待回应块与 TurnRouter 共享）。"""
     item = entry.item
-    if include_kind and entry.receipt is not None:
+    if entry.receipt is not None:
         plugin = entry.receipt.plugin_label or "插件"
         body = _one_line(entry.receipt.receipt_text or "[图片]", 100)
         who = _name_by_uid(seq_index, item.user_id)
-        return f"★#{item.seq} receipt · 插件={plugin} · 触发者={who}「{body}」"
+        prefix = f"★#{item.seq} receipt · " if include_kind else f"★#{item.seq} [命令回执] "
+        return f"{prefix}插件={plugin} · 触发者={who}「{body}」"
     prefix = f"★#{item.seq} {item.kind} · " if include_kind else f"★#{item.seq} "
     rec = seq_index[item.seq] if item.seq in seq_index else None
     if rec is not None:

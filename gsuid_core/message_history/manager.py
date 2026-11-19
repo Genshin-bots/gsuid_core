@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Tuple, Literal, Optional
 from itertools import islice
 from threading import Lock
 from collections import deque
-from dataclasses import field, dataclass
+from dataclasses import field, replace, dataclass
 
 from gsuid_core.models import Event, Message
 from gsuid_core.message_history.link import EventLink, current_outbound
@@ -222,10 +222,12 @@ class HistoryManager:
         # 引用边在锁外先查（find_by_msg_id 自取同一把锁，不能嵌套）
         reply_to_seq: Optional[int] = None
         reply_to_author: Optional[str] = None
+        reply_id_str = ""
         if role == "user":
             reply_id = meta["reply_id"] if "reply_id" in meta else None
             if reply_id is not None and str(reply_id).strip():
-                quoted = self.find_by_msg_id(storage_event, str(reply_id))
+                reply_id_str = str(reply_id).strip()
+                quoted = self.find_by_msg_id(storage_event, reply_id_str)
                 if quoted is not None:
                     if quoted.link is not None:
                         reply_to_seq = quoted.link.seq
@@ -243,6 +245,10 @@ class HistoryManager:
                     seen_targets.add(key)
                     normalized.append(key)
             at_targets = tuple(normalized)
+        quote_auto_at = bool(meta["quote_auto_at"]) if "quote_auto_at" in meta else False
+        # 引用出窗时单次前置 @Bot 按 quote_self 降级过 TurnRouter（有意取舍：偶发手打单 @ 仍会由路由判答）
+        if role == "user" and reply_to_author is None and reply_id_str and quote_auto_at and not at_targets:
+            reply_to_author = "self"
         at_self = bool(meta["at_bot"] if "at_bot" in meta else False) and reply_to_author != "self"
         binding = current_outbound() if role == "assistant" else None
 
@@ -524,6 +530,59 @@ class HistoryManager:
                     self._msg_id_cache.pop(k, None)
             self._msg_id_cache[cache_key] = None
         return None
+
+    def attach_msg_id(self, record: MessageRecord, msg_id: str) -> None:
+        """回写出站记录的平台 msg_id，并清掉 _msg_id_cache 中同 ID 的负缓存。"""
+        clean_id = str(msg_id).strip()
+        if not clean_id:
+            return
+        with self._lock:
+            if record.metadata is not None:
+                record.metadata["msg_id"] = clean_id
+                if "msg_id_list" not in record.metadata or not isinstance(record.metadata["msg_id_list"], list):
+                    record.metadata["msg_id_list"] = []
+                m_list = record.metadata["msg_id_list"]
+                if clean_id not in m_list:
+                    m_list.append(clean_id)
+            if record.link is not None and not record.link.msg_id:
+                record.link = replace(record.link, msg_id=clean_id)
+            stale_keys = [k for k, v in self._msg_id_cache.items() if k[1] == clean_id and v is None]
+            for k in stale_keys:
+                del self._msg_id_cache[k]
+
+    def resolve_session_identity(
+        self,
+        *,
+        ws_bot_id: Optional[str],
+        bot_id: str,
+        target_type: str,
+        target_id: Optional[str],
+    ) -> Tuple[str, str]:
+        """出站缺少 bot_self_id 时，从活跃会话反查真实 (bot_id, bot_self_id)。"""
+        if not target_id:
+            return bot_id, ""
+        best_rank = (-1, -1.0)
+        best_pair = (bot_id, "")
+        with self._lock:
+            for ev_key, meta in self._session_metadata.items():
+                cand_self = str(ev_key.bot_self_id or "").strip()
+                if not cand_self or cand_self == "0":
+                    continue
+                if target_type == "direct":
+                    if ev_key.user_type != "direct" or str(ev_key.user_id or "") != str(target_id):
+                        continue
+                else:
+                    if ev_key.user_type == "direct" or str(ev_key.group_id or "") != str(target_id):
+                        continue
+                ws_match = 1 if (ws_bot_id and ev_key.WS_BOT_ID == ws_bot_id) else 0
+                bid_match = 1 if (bot_id and ev_key.bot_id == bot_id) else 0
+                raw_access = meta["last_access"] if "last_access" in meta else 0.0
+                last_access = float(raw_access) if isinstance(raw_access, (int, float)) else 0.0
+                rank = (ws_match * 2 + bid_match, last_access)
+                if rank > best_rank:
+                    best_rank = rank
+                    best_pair = (ev_key.bot_id or bot_id, cand_self)
+        return best_pair
 
     def mark_command_hit(self, session: Event | str, msg_id: Optional[str] = None) -> bool:
         """标记一条消息命中命令触发器（command_hit=True）。

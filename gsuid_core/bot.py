@@ -334,12 +334,7 @@ class _Bot:
             _mid = data["id"] if "id" in data else None
             if rec is not None and rec.metadata is not None and _mid is not None:
                 new_id = str(_mid[0]) if isinstance(_mid, list) else str(_mid)
-                rec.metadata["msg_id"] = new_id
-                if "msg_id_list" not in rec.metadata:
-                    rec.metadata["msg_id_list"] = []
-                m_list = rec.metadata["msg_id_list"]
-                if isinstance(m_list, list) and new_id not in m_list:
-                    m_list.append(new_id)
+                get_history_manager().attach_msg_id(rec, new_id)
             if fut is not None and not fut.done():
                 # 消息 ID 统一规范化为 str，多条发送返回的 list 在外层扁平化处理。
                 if _mid is None:
@@ -408,14 +403,27 @@ class _Bot:
         _record: Optional["MessageRecord"] = None
         _hist_pending: Optional[Tuple[Event, str, Dict[str, Any]]] = None
         try:
-            # 确定 group_id 和 user_id
+            # 确定 group_id 和 user_id；缺 bot_self_id 时从历史活跃会话补齐，避免落幽灵桶
+            _hist_bot_id = bot_id
+            _hist_bot_self_id = bot_self_id
+            if (not _hist_bot_self_id or _hist_bot_self_id == "0") and target_id:
+                _res_bid, _res_self = get_history_manager().resolve_session_identity(
+                    ws_bot_id=self.bot_id,
+                    bot_id=bot_id,
+                    target_type=target_type,
+                    target_id=target_id,
+                )
+                if _res_self:
+                    _hist_bot_id = _res_bid
+                    _hist_bot_self_id = _res_self
+
             if target_type == "direct":
                 _hist_group_id = None
-                _hist_user_id = target_id if target_id else bot_self_id
+                _hist_user_id = target_id if target_id else _hist_bot_self_id
             else:
                 # 群聊场景：优先使用 bot_self_id，回退到 bot_id
                 _hist_group_id = target_id
-                _hist_user_id = bot_self_id or bot_id or self.bot_id
+                _hist_user_id = _hist_bot_self_id or _hist_bot_id or self.bot_id
 
             # 提取消息内容
             content: str = ""
@@ -506,8 +514,8 @@ class _Bot:
 
                 if not is_silence_marker(content):
                     ev = Event(
-                        bot_id=bot_id,
-                        bot_self_id=bot_self_id,
+                        bot_id=_hist_bot_id,
+                        bot_self_id=_hist_bot_self_id,
                         user_type=target_type,
                         group_id=_hist_group_id,
                         user_id=_hist_user_id,

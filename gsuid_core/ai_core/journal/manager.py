@@ -981,6 +981,53 @@ def _latest_ts_for_scope(persona_key: str, shard_id: str, doc: ShardDocument | N
         return mem_ts
 
 
+def _line_end_minutes(line: str) -> int | None:
+    parsed = parse_timeline_line(line)
+    if parsed is None:
+        return None
+    end_hhmm = parsed.time_str.split("~")[-1].strip()
+    if len(end_hhmm) == 5 and end_hhmm[2] == ":" and end_hhmm[:2].isdigit() and end_hhmm[3:].isdigit():
+        return int(end_hhmm[:2]) * 60 + int(end_hhmm[3:])
+    return None
+
+
+def _is_future_timeline_line(line: str, today_label: str, now_ts: float) -> bool:
+    """检查行时间套上 today_label 后是否晚于当前墙上时钟超 5 分钟（跨日残留旧行）。"""
+    if len(today_label) != 10:
+        return False
+    parsed = parse_timeline_line(line)
+    if parsed is None:
+        return False
+    end_hhmm = parsed.time_str.split("~")[-1].strip()
+    if len(end_hhmm) != 5 or end_hhmm[2] != ":":
+        return False
+    try:
+        line_min_ts = _dt.strptime(f"{today_label} {end_hhmm}", "%Y-%m-%d %H:%M").timestamp()
+    except ValueError:
+        return False
+    return line_min_ts > now_ts + 300.0
+
+
+def _today_timeline_tail(lines: Sequence[str], *, today_label: str = "") -> List[str]:
+    """仅保留末段当日有效流水：遇跨日回跳（前条比后条晚超 60 分钟）截断，并剔除未来时间戳残留。"""
+    if not lines:
+        return []
+    kept: List[str] = []
+    later_min: int | None = None
+    now_ts = time.time()
+    for ln in reversed(lines):
+        cur_min = _line_end_minutes(ln)
+        if cur_min is not None:
+            if later_min is not None and cur_min > later_min + 60:
+                break
+            later_min = cur_min
+        if today_label and _is_future_timeline_line(ln, today_label, now_ts):
+            continue
+        kept.append(ln)
+    kept.reverse()
+    return kept
+
+
 def _is_entry_newer_than_since(
     persona_key: str,
     shard_id: str,
@@ -1003,6 +1050,9 @@ def _is_entry_newer_than_since(
         if len(end_hhmm) == 5 and end_hhmm[2] == ":":
             try:
                 line_min_ts = _dt.strptime(f"{today_label} {end_hhmm}", "%Y-%m-%d %H:%M").timestamp()
+                # 晚于当前墙上时钟超 5 分钟必为跨日残留旧流水，避免套上今日日期后恒判为最新
+                if line_min_ts > time.time() + 300.0:
+                    return False
                 return line_min_ts >= (int(since_ts) // 60) * 60
             except ValueError:
                 pass
@@ -1059,10 +1109,10 @@ def read_journal_for_context(
 
         candidates: List[Tuple[str, str, str]] = []
         if grp_doc is not None and ts_grp > since_ts:
-            for ln in grp_doc.timeline:
+            for ln in _today_timeline_tail(grp_doc.timeline, today_label=grp_doc.today_label):
                 candidates.append((gid, grp_doc.today_label, ln))
         if self_doc is not None and self_visible_timeline and ts_self > since_ts:
-            for ln in self_visible_timeline:
+            for ln in _today_timeline_tail(self_visible_timeline, today_label=self_doc.today_label):
                 candidates.append((SELF_SHARD_ID, self_doc.today_label, ln))
 
         matched: List[str] = []
@@ -1106,10 +1156,10 @@ def read_journal_for_context(
             blocks.append("【本群昨日记忆】\n" + "\n".join(grp_yest))
 
     combined_timeline: List[str] = []
-    if self_visible_timeline:
-        combined_timeline.extend(self_visible_timeline[-3:])
+    if self_doc is not None and self_visible_timeline:
+        combined_timeline.extend(_today_timeline_tail(self_visible_timeline, today_label=self_doc.today_label)[-3:])
     if grp_doc is not None and grp_doc.timeline:
-        combined_timeline.extend(grp_doc.timeline)
+        combined_timeline.extend(_today_timeline_tail(grp_doc.timeline, today_label=grp_doc.today_label))
 
     if combined_timeline:
         tl_text = _compact_timeline_for_anchor(combined_timeline, recent_cap=ANCHOR_RECENT_TIMELINE_CAP)
