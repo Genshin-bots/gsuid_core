@@ -1169,3 +1169,522 @@ def test_appearance_card_v3_and_self_visual_guard(tmp_path: Path, monkeypatch: p
     portrait_img.save(self_buf, format="PNG")
     hit_note = app_mod.format_look_identity_note("alpha", self_buf.getvalue(), allow_card_fallback=False)
     assert hit_note == app_mod.HIT_SELF_NOTE
+
+
+def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """主动发言共享层、Autonomy 发信收口、沉默出口护栏与规划轮系统提示边界。"""
+    import time
+
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core import gs_agent as gs_agent_mod
+    from gsuid_core.ai_core.utils import NO_RESULT_TEXT
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.utils.database import base_models as db_base
+    from gsuid_core.ai_core.persona import persona as persona_cls_mod
+    from gsuid_core.ai_core.autonomy import (
+        tools as auto_tools,
+        observer as auto_obs,
+        scheduler as auto_sched,
+    )
+    from gsuid_core.ai_core.proactive import speak as pro_speak, emitter as pro_emitter
+    from gsuid_core.ai_core.autonomy.models import (
+        GroupObservation,
+        AutonomyStepTrace,
+        ObservationDigest,
+        CareTargetSnapshot,
+    )
+    from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
+    from gsuid_core.ai_core.autonomy.runner import AutonomyReport
+    from gsuid_core.ai_core.database.models import AIAutonomyActivity
+    from gsuid_core.ai_core.autonomy.verifier import extract_facts, output_is_failed, output_is_skipped
+    from gsuid_core.ai_core.heartbeat.dispatcher import UnifiedProactiveDispatcher
+    from gsuid_core.ai_core.prompt_group.catalog import spec_keys
+
+    _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
+    _seed_persona(tmp_path / "personas_cfg", "alpha", "specific", ["group_speak_1", "group_speak_2"])
+    (tmp_path / "personas_cfg" / "alpha" / "persona.md").write_text(
+        "Name: alpha\nStyle (风格): 轻快短句",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(persona_cls_mod, "PERSONA_PATH", tmp_path / "personas_cfg")
+
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        monkeypatch.setattr(db_base, "async_maker", maker)
+
+        now = time.time()
+
+        # 1. 共享系统提示 + autonomy_speak 注册 + 称呼边界
+        assert "autonomy_speak" in spec_keys()
+        assert "刚才看到你在说" not in AUTONOMY_SYSTEM_GUIDE
+        assert "artifact_put" in AUTONOMY_SYSTEM_GUIDE
+        speak_sys = pro_speak.build_proactive_speak_system_prompt("alpha", "Name: alpha", include_meme_protocol=True)
+        assert "角色扮演" in speak_sys and "Name: alpha" in speak_sys and "框架通用底线" in speak_sys
+        assert "<meme:" in speak_sys
+        speak_sys_no_meme = pro_speak.build_proactive_speak_system_prompt(
+            "alpha", "Name: alpha", include_meme_protocol=False
+        )
+        assert "<meme:" not in speak_sys_no_meme
+
+        speak_user = pro_speak.build_autonomy_speak_user_prompt(
+            draft="长篇测试指标数据 123.45% 词条列表",
+            is_group=True,
+            recent_context="测试用户A: 今天真热闹",
+            master_title="主人",
+            target_is_master=False,
+            target_name="测试用户A",
+            allow_meme=True,
+            persona_name="alpha",
+        )
+        assert "严禁称呼「主人」" in speak_user and "禁止复读数据与词条" in speak_user
+
+        speak_user_open = pro_speak.build_autonomy_speak_user_prompt(
+            draft="群里有人在聊新玩具",
+            is_group=True,
+            recent_context="测试用户A: 新玩具挺好玩",
+            master_title="主人",
+            target_is_master=False,
+            target_name="",
+            persona_name="alpha",
+        )
+        assert "对方不是主人" not in speak_user_open and "只有回应主人本人发的消息时才称「主人」" in speak_user_open
+
+        # 2. 私聊上下文在无/有私聊历史时均保留群触发话头与准确标签
+        dm_snap = CareTargetSnapshot(
+            user_id="100000001",
+            user_name="测试用户A",
+            score=90,
+            zone_value="close",
+            is_master=True,
+            bound_uids={},
+            recent_lines=["群 group_1 刚刚 [目标] 测试用户A: 群里没聊完的话题"],
+            group_id="group_1",
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            session_key="group:group_1",
+            last_human_ts=now - 60.0,
+        )
+        dm_guard = auto_tools.GuardState(
+            persona_name="alpha",
+            whitelist=frozenset({"100000001"}),
+            sessions={},
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            allowed_groups={},
+            allowed_users={"100000001": dm_snap},
+            now=now,
+        )
+        dm_ev = Event(bot_id="onebot", bot_self_id="10001", user_id="100000001", user_pm=6, user_type="direct")
+        dm_ctx_text, dm_ctx_header = auto_tools._recent_chat_context_for_send(dm_ev, dm_guard, None, "100000001")
+        assert "群 group_1" in dm_ctx_text and dm_ctx_header == "[对方近期互动记录（含群聊与私聊）]"
+        dm_prompt = pro_speak.build_autonomy_speak_user_prompt(
+            draft="私下跟进一句",
+            is_group=False,
+            recent_context=dm_ctx_text,
+            context_header=dm_ctx_header,
+            master_title="主人",
+            target_is_master=True,
+            target_name="测试用户A",
+            persona_name="alpha",
+        )
+        assert "[对方近期互动记录（含群聊与私聊）]" in dm_prompt and "[最近的私聊上下文]" not in dm_prompt
+
+        from gsuid_core.message_history import get_history_manager
+
+        hm = get_history_manager()
+        hm.add_message(dm_ev, "user", "前两天私聊说过的话", user_name="测试用户A")
+        try:
+            dm_both_text, dm_both_header = auto_tools._recent_chat_context_for_send(dm_ev, dm_guard, None, "100000001")
+            assert dm_both_header == ""
+            assert "[最近的私聊上下文]" in dm_both_text and "[对方近期在群里的发言]" in dm_both_text
+            assert "群里没聊完的话题" in dm_both_text
+            dm_both_prompt = pro_speak.build_autonomy_speak_user_prompt(
+                draft="私下跟进一句",
+                is_group=False,
+                recent_context=dm_both_text,
+                context_header=dm_both_header,
+                master_title="主人",
+                target_is_master=True,
+                target_name="测试用户A",
+                persona_name="alpha",
+            )
+            assert dm_both_prompt.count("[最近的私聊上下文]") == 1
+        finally:
+            hm._histories.pop(dm_ev, None)
+
+        # 3. 近期发信防重摘要走短话题，不回灌长串数值
+        await AIAutonomyActivity.insert_activity(
+            persona_name="alpha",
+            bot_id="onebot",
+            bot_self_id="10001",
+            drive_kind="group_topic",
+            target_user_id="",
+            target_session_key="group:group_1",
+            plugins_used_json='["web_search_tool", "send_message_by_ai"]',
+            steps_json="[]",
+            fact_pack_json="{}",
+            summary="原始技术指标99.9%与长串百科数值",
+            open_trails_json='["测试话题甲"]',
+            delivery_mode="immediate_push",
+            step_count=2,
+            duration_ms=100,
+            session_id="autonomy:alpha:test",
+            created_at=now - 120.0,
+        )
+        pro_recs = await auto_obs._recent_proactive_records("alpha", now)
+        assert any("测试话题甲" in item for item in pro_recs)
+        assert all("99.9%" not in item for item in pro_recs)
+
+        # 4. send_message_by_ai：silence 按目标锁、error 不计已发、MAX_SPEAK_ATTEMPTS 限流与成功回传日志
+        emitted_calls: list[tuple[str, list[str]]] = []
+
+        async def _fake_emit(
+            ev: Event,
+            message: str,
+            *,
+            source: str,
+            trigger_reason: str,
+            generator_log_files: list[str] | None = None,
+            suppress_when_heartbeat_recent: bool = True,
+            at_user_id: str | None = None,
+            persona_name: str | None = None,
+            source_group_id: str = "",
+        ) -> bool:
+            del ev, source, trigger_reason, suppress_when_heartbeat_recent, at_user_id, persona_name, source_group_id
+            emitted_calls.append((message, list(generator_log_files or [])))
+            return True
+
+        compose_reply: list[pro_speak.ComposeOutcome] = [
+            pro_speak.ComposeOutcome(status="silence", log_files=["autonomy_output_silent.json"]),
+            pro_speak.ComposeOutcome(status="error", log_files=["autonomy_output_err.json"]),
+            pro_speak.ComposeOutcome(status="ok", text="今天这话题挺好玩呀", log_files=["autonomy_output_ok.json"]),
+        ]
+
+        async def _fake_compose(
+            *,
+            persona_name: str,
+            event: Event,
+            draft: str,
+            recent_context: str,
+            target_is_master: bool,
+            target_name: str = "",
+            target_zone_label: str = "",
+            context_header: str = "",
+        ) -> pro_speak.ComposeOutcome:
+            del (
+                persona_name,
+                event,
+                draft,
+                recent_context,
+                target_is_master,
+                target_name,
+                target_zone_label,
+                context_header,
+            )
+            return compose_reply.pop(0)
+
+        g_obs = GroupObservation(
+            group_id="group_speak_1",
+            summary="",
+            recent_lines=["测试用户A: 测试项目提问"],
+            last_human_ts=now - 300.0,
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            session_key="group:group_speak_1",
+            last_assistant_ts=0.0,
+        )
+        g_obs2 = GroupObservation(
+            group_id="group_speak_2",
+            summary="",
+            recent_lines=["测试用户B: 另一群话题"],
+            last_human_ts=now - 300.0,
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            session_key="group:group_speak_2",
+            last_assistant_ts=0.0,
+        )
+        guard = auto_tools.GuardState(
+            persona_name="alpha",
+            whitelist=frozenset(),
+            sessions={},
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            allowed_groups={"group_speak_1": g_obs, "group_speak_2": g_obs2},
+            allowed_users={},
+            now=now,
+        )
+        auto_ctx = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+        with monkeypatch.context() as mp:
+            mp.setattr(pro_emitter, "emit_proactive_message", _fake_emit)
+            mp.setattr(pro_speak, "compose_autonomy_message", _fake_compose)
+            tok = auto_tools.bind_guard(guard)
+            try:
+                silent_res = await auto_tools.send_message_by_ai(
+                    auto_ctx,
+                    text="刚才看到群里在聊测试数据 88.8%",
+                    target_id="group_speak_1",
+                    target_type="group",
+                )
+                assert silent_res.startswith("已跳过发送")
+                assert not output_is_failed(silent_res) and output_is_skipped(silent_res)
+                skipped_facts = extract_facts(
+                    [
+                        AutonomyStepTrace(
+                            step_index=0,
+                            tool_name="send_message_by_ai",
+                            args_summary="{}",
+                            output_text=silent_res,
+                            is_error=output_is_failed(silent_res),
+                        )
+                    ]
+                )
+                assert not skipped_facts.has_substantive_outcome
+                assert guard.sent_count == 0 and not emitted_calls
+
+                same_target_res = await auto_tools.send_message_by_ai(
+                    auto_ctx,
+                    text="换个说法再试试",
+                    target_id="group_speak_1",
+                    target_type="group",
+                )
+                assert same_target_res.startswith("发送被拦截") and output_is_failed(same_target_res)
+                assert len(compose_reply) == 2
+
+                err_res = await auto_tools.send_message_by_ai(
+                    auto_ctx,
+                    text="刚才看到群里在聊测试数据 88.8%",
+                    target_id="group_speak_2",
+                    target_type="group",
+                )
+                assert err_res.startswith("发送失败") and output_is_failed(err_res)
+                assert guard.sent_count == 0 and not emitted_calls
+
+                capped_res = await auto_tools.send_message_by_ai(
+                    auto_ctx,
+                    text="刚才看到群里在聊测试数据 88.8%",
+                    target_id="group_speak_2",
+                    target_type="group",
+                )
+                assert capped_res.startswith("发送被拦截") and output_is_failed(capped_res)
+                assert len(compose_reply) == 1
+
+                guard.speak_attempts = 0
+                sent_res = await auto_tools.send_message_by_ai(
+                    auto_ctx,
+                    text="刚才看到群里在聊测试数据 88.8%",
+                    target_id="group_speak_2",
+                    target_type="group",
+                )
+                assert sent_res.startswith("已成功向") and guard.sent_count == 1
+                assert emitted_calls == [("今天这话题挺好玩呀", ["autonomy_output_ok.json"])]
+            finally:
+                auto_tools.reset_guard(tok)
+
+        # 5. 共用执行收口 run_proactive_speak_agent：引号/沉默/错误/超时均关闭 logger 并保留日志路径
+        assert pro_speak.strip_message_quotes("“外层中文引号”") == "外层中文引号"
+        assert pro_speak.strip_message_quotes("“甲”和“乙”") == "“甲”和“乙”"
+
+        disp_meme = UnifiedProactiveDispatcher()
+        disp_meme.register_send("group_speak_1", "heartbeat", "早安呀\n<meme:happy>", persona_name="alpha")
+        assert not disp_meme.would_repeat_heartbeat("group_speak_1", "去吃饭吗\n<meme:happy>", persona_name="alpha")
+
+        class _StubLogger:
+            def __init__(self, path: str) -> None:
+                self._file_path = path
+                self.closed = False
+                self.run_ended = False
+                self.errors: list[tuple[str, str]] = []
+
+            def log_error(self, error_type: str, message: str) -> None:
+                self.errors.append((error_type, message))
+
+            def log_run_end(self) -> None:
+                self.run_ended = True
+
+            def close(self) -> None:
+                self.closed = True
+
+        class _StubSpeakAgent:
+            def __init__(self, reply: str, path: str, *, raise_timeout: bool = False) -> None:
+                self._reply = reply
+                self._raise_timeout = raise_timeout
+                self._session_logger = _StubLogger(path)
+
+            def bind_budget_scope(self, ev: Event) -> None:
+                del ev
+
+            async def run(self, *, user_message: str, return_mode: str = "by_bot", budget_gate: bool = False) -> str:
+                del user_message, budget_gate
+                assert return_mode == "return"
+                if self._raise_timeout:
+                    raise asyncio.TimeoutError
+                return self._reply
+
+        stub_plan: list[tuple[str, bool]] = [
+            ('"这句带引号也该干净发出去"', False),
+            ("<SILENCE>", False),
+            (NO_RESULT_TEXT, False),
+            ("执行出错: Request timed out.", False),
+            ("", True),
+            ("<SILENCE>", False),
+        ]
+        created_sids: list[str] = []
+        created_loggers: list[_StubLogger] = []
+
+        def _fake_create_agent(
+            system_prompt: str,
+            *,
+            create_by: str = "",
+            task_kind: str = "",
+            persona_name: str = "",
+            session_id: str = "",
+            is_subagent: bool = False,
+        ) -> _StubSpeakAgent:
+            del system_prompt, create_by, task_kind, persona_name, is_subagent
+            created_sids.append(session_id)
+            reply_text, should_timeout = stub_plan.pop(0)
+            agent_stub = _StubSpeakAgent(reply_text, f"{session_id}.json", raise_timeout=should_timeout)
+            created_loggers.append(agent_stub._session_logger)
+            return agent_stub
+
+        grp_ev = Event(
+            bot_id="onebot",
+            bot_self_id="10001",
+            user_id="",
+            user_pm=6,
+            user_type="group",
+            group_id="group_1",
+        )
+        with monkeypatch.context() as mp:
+            mp.setattr(gs_agent_mod, "create_agent", _fake_create_agent)
+            res_ok = await pro_speak.compose_autonomy_message(
+                persona_name="alpha",
+                event=grp_ev,
+                draft="草稿",
+                recent_context="测试用户A: 聊聊",
+                target_is_master=False,
+            )
+            res_sil = await pro_speak.compose_autonomy_message(
+                persona_name="alpha",
+                event=grp_ev,
+                draft="草稿",
+                recent_context="测试用户A: 聊聊",
+                target_is_master=False,
+            )
+            res_nores = await pro_speak.compose_autonomy_message(
+                persona_name="alpha",
+                event=grp_ev,
+                draft="草稿",
+                recent_context="测试用户A: 聊聊",
+                target_is_master=False,
+            )
+            res_err = await pro_speak.compose_autonomy_message(
+                persona_name="alpha",
+                event=grp_ev,
+                draft="草稿",
+                recent_context="测试用户A: 聊聊",
+                target_is_master=False,
+            )
+            res_timeout = await pro_speak.run_proactive_speak_agent(
+                persona_name="alpha",
+                event=grp_ev,
+                system_prompt="sys",
+                user_prompt="usr",
+                create_by="Heartbeat_Output",
+                session_id="hb_timeout_test",
+            )
+            res_hb_sil = await pro_speak.run_proactive_speak_agent(
+                persona_name="alpha",
+                event=grp_ev,
+                system_prompt="sys",
+                user_prompt="usr",
+                create_by="Heartbeat_Output",
+                session_id="hb_silence_test",
+            )
+        assert res_ok.status == "ok" and res_ok.text == "这句带引号也该干净发出去" and len(res_ok.log_files) == 1
+        assert res_sil.status == "silence" and res_sil.text == ""
+        assert res_nores.status == "error" and res_err.status == "error"
+        assert res_timeout.status == "error" and res_timeout.log_files == ["hb_timeout_test.json"]
+        assert created_loggers[4].run_ended and created_loggers[4].errors == [("timeout", "proactive speak timeout")]
+        assert res_hb_sil.status == "silence" and res_hb_sil.log_files == ["hb_silence_test.json"]
+        assert len(set(created_sids)) == 6 and all(lg.closed for lg in created_loggers)
+
+        # 6. emit_proactive_message 出口兜底拦截空消息与 <SILENCE>
+        assert (
+            await pro_emitter.emit_proactive_message(
+                grp_ev,
+                "<SILENCE>",
+                source="heartbeat",
+                trigger_reason="测试沉默拦截",
+            )
+            is False
+        )
+        assert (
+            await pro_emitter.emit_proactive_message(
+                grp_ev,
+                "   ",
+                source="autonomy",
+                trigger_reason="测试空消息拦截",
+            )
+            is False
+        )
+
+        # 7. Autonomy 规划轮系统提示不附 framework_core，避免与 6 行尾块契约冲突
+        captured_planner_sys: list[str] = []
+
+        async def _fake_build_obs(_persona_name: str) -> ObservationDigest:
+            return ObservationDigest(
+                persona_name="alpha",
+                bot_id="onebot",
+                bot_self_id="10001",
+                ws_bot_id="ws1",
+                mood_score=0.5,
+                care_targets=[],
+                group_digests=[g_obs],
+            )
+
+        async def _fake_run_autonomy(
+            digest: ObservationDigest,
+            *,
+            system_prompt: str,
+            user_prompt: str,
+        ) -> AutonomyReport:
+            del digest, user_prompt
+            captured_planner_sys.append(system_prompt)
+            return AutonomyReport(
+                text="DRIVE: rest\nTARGET: -\nTOPIC: -\nOUTCOME: none\nFACT: 无\nTAKE: 先歇会儿。",
+                steps=[],
+                duration_ms=10,
+                session_id="autonomy_planner_test",
+            )
+
+        async def _allow_run(_persona_name: str, *, force: bool) -> str:
+            del _persona_name, force
+            return ""
+
+        sched = auto_sched.AutonomyScheduler()
+        with monkeypatch.context() as mp:
+            mp.setattr(sched, "_blocked", _allow_run)
+            mp.setattr(auto_sched, "build_observation", _fake_build_obs)
+            mp.setattr(auto_sched, "run_autonomy_agent", _fake_run_autonomy)
+            await sched.run_persona("alpha", force=True)
+        assert len(captured_planner_sys) == 1
+        assert "框架通用底线" not in captured_planner_sys[0]
+        assert "只输出 `<SILENCE>`" not in captured_planner_sys[0]
+        assert "Name: alpha" in captured_planner_sys[0]
+
+        await engine.dispose()
+
+    asyncio.run(scenario())

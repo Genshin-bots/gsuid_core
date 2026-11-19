@@ -35,6 +35,12 @@ _HOUR_SECONDS = 3600
 _DAY_SECONDS = 86400
 
 
+_MEME_TAG_STRIP_RE = re.compile(
+    r"`*(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*meme\s*[：:][^>＞]+?(?:>|&gt;|&#62;|&#x3e;|＞|\\>)`*",
+    re.IGNORECASE,
+)
+
+
 def ngram_jaccard(a: str, b: str, n: int = 3) -> float:
     """字符 n-gram Jaccard；空串为 0。"""
     ta = re.sub(r"\s+", "", a or "")
@@ -199,14 +205,16 @@ class UnifiedProactiveDispatcher:
         window: Optional[int] = None,
         persona_name: str = "",
     ) -> bool:
-        if not target_key or not text.strip():
+        stripped = _MEME_TAG_STRIP_RE.sub("", text).strip()
+        if not target_key or not stripped:
             return False
         rkey = _persona_key(persona_name, target_key)
         cap = self._repeat_window(window)
         hist = self._recent_texts[rkey] if rkey in self._recent_texts else []
         recent = hist[-max(1, cap) :]
         for prev in recent:
-            if texts_too_similar(prev, text):
+            prev_clean = _MEME_TAG_STRIP_RE.sub("", prev).strip()
+            if prev_clean and texts_too_similar(prev_clean, stripped):
                 return True
         return False
 

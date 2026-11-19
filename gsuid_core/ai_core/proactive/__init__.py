@@ -1,23 +1,27 @@
-"""主动消息统一发送闭包。
+"""主动消息统一出口、私聊租约与共享人格表达层。
 
 详细设计：``plans/proactive_message_session_unification_20260529.md``
 
-对外只暴露 ``emit_proactive_message``——所有"框架在 LLM run 之外注入到
-用户会话"的输出（Heartbeat / ScheduledTask / Kanban 转译 / 失败播报 等）
-都必须走这一个入口，由它统一完成：
-
-1. C8 防撞车（``UnifiedProactiveDispatcher.should_suppress_heartbeat``）；
-2. ``bot.send`` 单次落 ``message_history``（``metadata.proactive=True`` 等
-   分类字段从这里透传）；
-3. 写入用户绑定 ``GsCoreAIAgent`` 的 ``self.history``（一条 assistant-only
-   ``ModelMessage``），让下一轮 LLM 看得到自己说过什么；
-4. 写入该用户 session 的 ``AISessionLogger``（新增 ``proactive_emission``
-   entry，可在 webconsole 主动消息时间线里展示）；
-5. C8 网关登记 ``register_send``（保留旧的合并语境策略）；
-6. 私聊场景同步签发私聊亲和契约（``grant_dm_lease``），保证 72 小时内原人格跟进。
+对外暴露三组能力：
+- ``emit_proactive_message`` / ``resolve_event_session_identity``：
+  所有框架在主 LLM run 之外向用户会话注入主动输出的唯一出口，
+  统一完成 C8 防撞车、``bot.send``、主 session 历史与日志同步、网关登记和私聊租约签发；
+- ``dm_lease``（``grant/get_active/renew/revoke_dm_lease``）：私聊主动关怀的 72 小时亲和租约；
+- ``speak``（``build_proactive_speak_system_prompt`` / ``run_proactive_speak_agent`` /
+  ``compose_autonomy_message`` / ``ComposeOutcome``）：
+  Heartbeat 与 Autonomy 共享的主动发言人格表达层与执行收口。
 """
 
-from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
+from gsuid_core.ai_core.proactive.speak import (
+    ComposeOutcome,
+    compose_autonomy_message,
+    run_proactive_speak_agent,
+    build_proactive_speak_system_prompt,
+)
+from gsuid_core.ai_core.proactive.emitter import (
+    emit_proactive_message,
+    resolve_event_session_identity,
+)
 from gsuid_core.ai_core.proactive.dm_lease import (
     grant_dm_lease,
     renew_dm_lease,
@@ -26,9 +30,14 @@ from gsuid_core.ai_core.proactive.dm_lease import (
 )
 
 __all__ = [
+    "ComposeOutcome",
+    "build_proactive_speak_system_prompt",
+    "compose_autonomy_message",
     "emit_proactive_message",
     "grant_dm_lease",
     "get_active_dm_lease",
     "renew_dm_lease",
+    "resolve_event_session_identity",
     "revoke_dm_lease",
+    "run_proactive_speak_agent",
 ]

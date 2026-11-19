@@ -143,7 +143,12 @@ TASK_HEARTBEAT_DECISION: Final = _builtin(
     stats=("heartbeat_decision",),
 )
 TASK_HEARTBEAT_OUTPUT: Final = _builtin(
-    "heartbeat_output", "巡检发言", "巡检决定发言后生成实际内容。", "proactive", "high", stats=("heartbeat_output",)
+    "heartbeat_output",
+    "巡检发言",
+    "巡检与自主行动决定发言后生成实际内容。",
+    "proactive",
+    "high",
+    stats=("heartbeat_output", "autonomy_output"),
 )
 
 # ── 记忆与关系 ──

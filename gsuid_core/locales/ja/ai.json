@@ -75,6 +75,8 @@
   "log.ai.autonomy_run_start": "[自主行動] {persona_name} を開始",
   "log.ai.autonomy_scheduler_start": "[自主行動] スケジューラを起動した",
   "log.ai.autonomy_scheduler_stop": "[自主行動] スケジューラを停止した",
+  "log.ai.autonomy_speak_done": "[自主発言] {persona_name} の能動発言: {message}",
+  "log.ai.autonomy_speak_fail": "[自主発言] {persona_name} の発言生成に失敗: {e}",
   "log.ai.autonomy_tick_skip": "[自主行動] {persona_name} をスキップ：{reason}",
   "log.ai.budget_cleaned_expired_usage_delete": "[Budget] 期限切れの使用量トランザクションを {deleted} 件クリーンアップ",
   "log.ai.budget_delete_db_transactions_fail": "[Budget] リセット時の DB トランザクション削除に失敗（メモリはクリア済み、再起動またはリロードに残る）: {e}",

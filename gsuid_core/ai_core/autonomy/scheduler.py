@@ -37,7 +37,13 @@ from gsuid_core.ai_core.database.models import AIAutonomyActivity
 from gsuid_core.ai_core.persona.persona import Persona
 from gsuid_core.ai_core.autonomy.dispatch import STAGE_TTL_SECONDS, stage_text, route_delivery
 from gsuid_core.ai_core.autonomy.observer import build_observation
-from gsuid_core.ai_core.autonomy.verifier import fact_summary, parse_footer, extract_facts, output_is_failed
+from gsuid_core.ai_core.autonomy.verifier import (
+    fact_summary,
+    parse_footer,
+    extract_facts,
+    output_is_failed,
+    output_is_skipped,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
@@ -166,10 +172,14 @@ class AutonomyScheduler:
             return "rest"
         logger.info(t("log.ai.autonomy_run_start", persona_name=persona_name))
         card = await Persona(persona_name).load_content()
+        role = render_prompt(persona_name, "role_playing_start").strip()
         guide = render_prompt(persona_name, "autonomy_system_guide")
+        persona_block = f"{role}\n{card}" if role else card
+        # 规划轮需输出 6 行尾块，不附 framework_core 避免其 <SILENCE> 指令冲突。
+        autonomy_system = f"{persona_block}\n\n{guide}"
         report = await run_autonomy_agent(
             digest,
-            system_prompt=f"{card}\n\n{guide}",
+            system_prompt=autonomy_system,
             user_prompt=render_digest(digest, now=now),
         )
         parsed = parse_footer(report.text)
@@ -207,6 +217,7 @@ class AutonomyScheduler:
             step.tool_name == "send_message_by_ai"
             and not step.is_error
             and not output_is_failed(step.output_text)
+            and not output_is_skipped(step.output_text)
             and step.output_text.strip().startswith("已成功向")
             for step in report.steps
         )

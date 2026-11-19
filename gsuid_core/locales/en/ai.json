@@ -75,6 +75,8 @@
   "log.ai.autonomy_run_start": "[Autonomy] Start {persona_name}",
   "log.ai.autonomy_scheduler_start": "[Autonomy] Scheduler started",
   "log.ai.autonomy_scheduler_stop": "[Autonomy] Scheduler stopped",
+  "log.ai.autonomy_speak_done": "[AutonomySpeak] {persona_name} proactive message: {message}",
+  "log.ai.autonomy_speak_fail": "[AutonomySpeak] {persona_name} compose failed: {e}",
   "log.ai.autonomy_tick_skip": "[Autonomy] Skip {persona_name}: {reason}",
   "log.ai.budget_cleaned_expired_usage_delete": "[Budget] Cleaned expired usage transactions {deleted} entries",
   "log.ai.budget_delete_db_transactions_fail": "[Budget] Failed to delete DB transactions during reset (memory cleared, residual on restart or reload): {e}",

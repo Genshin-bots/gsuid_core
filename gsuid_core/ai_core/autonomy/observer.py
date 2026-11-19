@@ -8,7 +8,7 @@ from gsuid_core.config import core_config
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.persona.mood import get_all_mood_states
 from gsuid_core.ai_core.autonomy.binds import collect_bound_uids
-from gsuid_core.ai_core.autonomy.codec import load_steps
+from gsuid_core.ai_core.autonomy.codec import load_steps, load_str_list
 from gsuid_core.ai_core.persona.config import (
     read_drive_traits,
     scope_covers_session,
@@ -304,9 +304,14 @@ async def _recent_proactive_records(persona_name: str, now: float) -> list[str]:
             continue
         age = _age_label(row.created_at, now)
         target = row.target_user_id or row.target_session_key or "群聊"
-        summary = row.summary.strip()[:60]
+        trails = load_str_list(row.open_trails_json)
+        topic = trails[0].strip()[:24] if trails else ""
+        if topic:
+            found.append(f"{age}向 {target} 聊过话题「{topic}」")
+            continue
+        summary = row.summary.strip()[:28]
         if summary:
-            found.append(f"{age}向 {target} 发信：{summary}")
+            found.append(f"{age}向 {target} 聊过：{summary}")
     return found
 
 

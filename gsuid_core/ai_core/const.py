@@ -27,6 +27,7 @@ MAIN_TURN_CREATE_BY = frozenset(
         "TEST",
         "Heartbeat_Decision",
         "Heartbeat_Output",
+        "Autonomy_Output",
         "Reactive_Gate",
         "MemEntityExtraction",
         "MemPreferenceExtraction",

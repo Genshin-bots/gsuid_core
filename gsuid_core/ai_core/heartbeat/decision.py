@@ -12,16 +12,19 @@ from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.thread_view import render_window
-from gsuid_core.ai_core.base_prompts import join_framework_constraints
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.relationship import Zone, zone_of, zone_level_name
 from gsuid_core.ai_core.memory.config import memory_config
 from gsuid_core.ai_core.database.models import UserFavorability
+from gsuid_core.ai_core.proactive.speak import (
+    run_proactive_speak_agent,
+    build_proactive_speak_system_prompt,
+)
 from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.ai_core.persona.settings import get_master_title
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.configs.task_kinds import TASK_HEARTBEAT_OUTPUT, TASK_HEARTBEAT_DECISION
+from gsuid_core.ai_core.configs.task_kinds import TASK_HEARTBEAT_DECISION
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
 
@@ -169,15 +172,6 @@ def build_staleness_section(history: List[MessageRecord], now_ts: float) -> str:
     if elapsed_minutes < STALE_TOPIC_MINUTES_DEFAULT:
         return DELAYED_TOPIC_NOTE_TEMPLATE.format(minutes=elapsed_minutes)
     return STALENESS_NOTE_TEMPLATE.format(minutes=elapsed_minutes)
-
-
-def _strip_message_quotes(text: str) -> str:
-    text = text.strip()
-    for quote in ('"""', "'''", '"', "'"):
-        if text.startswith(quote) and text.endswith(quote) and len(text) > len(quote) * 2:
-            text = text[len(quote) : -len(quote)].strip()
-            break
-    return text
 
 
 async def _get_group_summary_for_heartbeat(group_id: str) -> str:
@@ -392,7 +386,6 @@ async def run_heartbeat(
     compact_persona = extract_compact_persona(persona_content)
     decision_persona = compact_persona or persona_content
     role = _render_prompt(persona_name, "role_playing_start")
-    persona_text = f"{role}\n{persona_content}"
     decision_persona_text = f"{role}\n{decision_persona}"
 
     # 两个阶段共用同一份近窗上下文，避免整群长历史全量进巡检提示词
@@ -542,7 +535,7 @@ async def run_heartbeat(
 
     logger.info(t("log.ai.heartbeat_decided_interject_mood", mood=mood, event=event))
 
-    # 阶段二：生成发言 B-1：发言阶段同样把人格放 system_prompt（用完整原文 persona_text）
+    # 阶段二：生成发言 B-1：发言阶段经共享构建器把完整原文 persona_content 放 system_prompt
     message_user = _render_prompt(
         persona_name,
         "heartbeat_speak",
@@ -554,40 +547,24 @@ async def run_heartbeat(
         master_title=get_master_title(persona_name),
     )
 
-    speak_system_prompt = join_framework_constraints(persona_name, persona_text)
-    output_agent: GsCoreAIAgent = create_agent(
-        speak_system_prompt,
-        create_by="Heartbeat_Output",
-        task_kind=TASK_HEARTBEAT_OUTPUT,
+    speak_system_prompt = build_proactive_speak_system_prompt(persona_name, persona_content)
+    outcome = await run_proactive_speak_agent(
         persona_name=persona_name,
+        event=event,
+        system_prompt=speak_system_prompt,
+        user_prompt=message_user,
+        create_by="Heartbeat_Output",
         session_id=output_session_id,
-        is_subagent=True,
     )
-    # 与决策阶段一致：绑定 scope 记账 + 超额硬拦截。
-    output_agent.bind_budget_scope(event)
-    output_logger = output_agent._session_logger
-    try:
-        result = await output_agent.run(user_message=message_user, budget_gate=True)
-    except Exception as e:
-        logger.exception(t("log.ai.heartbeat_fail_generation_stage", e=e))
-        if output_logger is not None:
-            generator_log_files.append(str(output_logger._file_path))
-            output_logger.close()
+    generator_log_files.extend(outcome.log_files)
+    if outcome.status == "silence":
+        logger.debug(t("log.ai.heartbeat_output_silence_remaining"))
         return None
-
-    if output_logger is not None:
-        generator_log_files.append(str(output_logger._file_path))
-        output_logger.close()
-
-    if not result or not result.strip():
+    if outcome.status != "ok" or not outcome.text:
         logger.debug(t("log.ai.heartbeat_generation_stage_nothing"))
         return None
 
-    if is_agent_error_text(result):
-        logger.debug(t("log.ai.heartbeat_generation_stage_nothing"))
-        return None
-
-    message: str = _strip_message_quotes(result)
+    message: str = outcome.text
     if get_dispatcher().would_repeat_heartbeat(target_key, message, persona_name=persona_name):
         logger.debug(t("log.heartbeat.repeat_suppressed", mood=mood))
         return None

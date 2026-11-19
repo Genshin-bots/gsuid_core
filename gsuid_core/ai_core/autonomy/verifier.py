@@ -26,6 +26,7 @@ FAIL_MARKS = (
     "extra_forbidden",
     "ValidationError",
 )
+SKIP_MARKS = ("已跳过发送",)
 _RESOURCE = re.compile(r"res_[A-Za-z0-9_-]+")
 _FOOTER = {
     "DRIVE": "drive",
@@ -46,12 +47,19 @@ def output_is_failed(text: str) -> bool:
     return any(mark in body for mark in FAIL_MARKS)
 
 
+def output_is_skipped(text: str) -> bool:
+    body = text.strip()
+    if not body:
+        return False
+    return any(mark in body for mark in SKIP_MARKS)
+
+
 def extract_facts(steps: list[AutonomyStepTrace]) -> FactPack:
     verified: list[str] = []
     observations: list[str] = []
     resources: list[str] = []
     for step in steps:
-        if step.is_error or output_is_failed(step.output_text):
+        if step.is_error or output_is_failed(step.output_text) or output_is_skipped(step.output_text):
             continue
         verified.append(step.tool_name)
         if step.tool_name not in META_TOOLS:

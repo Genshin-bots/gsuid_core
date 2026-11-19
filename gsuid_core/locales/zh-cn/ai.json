@@ -75,6 +75,8 @@
   "log.ai.autonomy_run_start": "[自主行动] 开始 {persona_name}",
   "log.ai.autonomy_scheduler_start": "[自主行动] 调度已启动",
   "log.ai.autonomy_scheduler_stop": "[自主行动] 调度已停止",
+  "log.ai.autonomy_speak_done": "[自主发言] {persona_name} 主动发言: {message}",
+  "log.ai.autonomy_speak_fail": "[自主发言] {persona_name} 发声失败: {e}",
   "log.ai.autonomy_tick_skip": "[自主行动] 跳过 {persona_name}：{reason}",
   "log.ai.budget_cleaned_expired_usage_delete": "[Budget] 清理过期用量流水 {deleted} 条",
   "log.ai.budget_delete_db_transactions_fail": "[Budget] 重置时删除 DB 流水失败（内存已清，重启或回载残留）: {e}",

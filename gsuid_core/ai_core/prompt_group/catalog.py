@@ -54,7 +54,7 @@ SPECS: tuple[PromptSpec, ...] = (
         "framework_core",
         "会话·系统提示",
         "框架底线",
-        "主人格、定时任务执行体和巡检发言会附上这一段。留空则不附。默认组每次启动从程序写回。",
+        "主人格、定时任务执行体、巡检发言和自主发言会附上这一段。留空则不附。默认组每次启动从程序写回。",
         (),
     ),
     PromptSpec(
@@ -199,6 +199,13 @@ SPECS: tuple[PromptSpec, ...] = (
         "人格空闲时自己观察和行动使用。正文不含当天时间和具体业务词。",
         (),
     ),
+    PromptSpec(
+        "autonomy_speak",
+        "自主行动",
+        "自主发言",
+        "自主行动决定开口时，将草稿收束成人格口吻的短句。上下文、对象称呼与草稿由程序填入。",
+        ("context_section", "addressing_section", "draft", "length_rule", "meme_rule"),
+    ),
 )
 
 _SPEC_BY_KEY: dict[str, PromptSpec] = {spec.key: spec for spec in SPECS}
@@ -252,6 +259,10 @@ def default_body(key: str) -> str:
         from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
 
         return AUTONOMY_SYSTEM_GUIDE
+    if key == "autonomy_speak":
+        from gsuid_core.ai_core.proactive.speak import AUTONOMY_SPEAK_USER_TEMPLATE
+
+        return format_template_to_mustache(AUTONOMY_SPEAK_USER_TEMPLATE)
     if key == "identity":
         return (
             "（身份：你是「{{char_name}}」。自我指称只按角色卡；他人绰号不等于你的身份，禁止改物种/性别/名字去迎合。）"

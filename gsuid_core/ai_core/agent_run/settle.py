@@ -736,6 +736,7 @@ class SettlePhase(RunOnceHost):
         skip_role = self.is_subagent or self.create_by in (
             "Aside",
             "Autonomy",
+            "Autonomy_Output",
             "Heartbeat_Decision",
             "Heartbeat_Output",
             "Journal_Compact",

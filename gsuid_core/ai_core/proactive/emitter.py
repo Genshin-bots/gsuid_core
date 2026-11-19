@@ -31,7 +31,7 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import send_chat_result
+from gsuid_core.ai_core.utils import send_chat_result, is_silence_marker
 from gsuid_core.ai_core.session_logger import ProactiveSource
 
 # 旧路径仍保留（heartbeat/dispatcher.py），本模块直接复用其单例，
@@ -125,6 +125,24 @@ async def _sync_to_main_session(
     session._session_logger._persist_sync()
 
 
+def resolve_event_session_identity(event: Event) -> None:
+    """补齐事件缺失或为 ``0`` 的 ``bot_self_id`` 与 ``bot_id``，避免会话查找落空。"""
+    if event.bot_self_id and event.bot_self_id != "0":
+        return
+    from gsuid_core.message_history import get_history_manager
+
+    res_bid, res_self = get_history_manager().resolve_session_identity(
+        ws_bot_id=event.WS_BOT_ID,
+        bot_id=event.bot_id,
+        target_type=event.user_type,
+        target_id=event.group_id if event.user_type != "direct" else event.user_id,
+    )
+    if res_self:
+        event.bot_self_id = res_self
+        if not event.bot_id or event.bot_id == "Bot" or event.bot_id == event.WS_BOT_ID:
+            event.bot_id = res_bid
+
+
 async def emit_proactive_message(
     event: Event,
     message: str,
@@ -154,22 +172,12 @@ async def emit_proactive_message(
             不被刚发完的 Heartbeat 抑制。
 
     Returns:
-        是否真的发送成功。被 C8 抑制 / bot 解析失败时返回 ``False``。
+        是否真的发送成功。被 C8 抑制 / 沉默信号 / bot 解析失败时返回 ``False``。
     """
+    if not message or not message.strip() or is_silence_marker(message.strip()):
+        return False
     files: List[str] = list(generator_log_files or [])
-    if not event.bot_self_id or event.bot_self_id == "0":
-        from gsuid_core.message_history import get_history_manager
-
-        _res_bid, _res_self = get_history_manager().resolve_session_identity(
-            ws_bot_id=event.WS_BOT_ID,
-            bot_id=event.bot_id,
-            target_type=event.user_type,
-            target_id=event.group_id if event.user_type != "direct" else event.user_id,
-        )
-        if _res_self:
-            event.bot_self_id = _res_self
-            if not event.bot_id or event.bot_id == "Bot" or event.bot_id == event.WS_BOT_ID:
-                event.bot_id = _res_bid
+    resolve_event_session_identity(event)
     target_key: str = _target_key(event)
     dispatcher = get_dispatcher()
 
@@ -210,6 +218,8 @@ async def emit_proactive_message(
 
     pname = persona_name or persona_name_from_event(event)
     out_msg = rewrite_cq_at(message)
+    if not out_msg or not out_msg.strip() or is_silence_marker(out_msg.strip()):
+        return False
     if out_msg:
         _bag: Dict[str, object] = {}
         if pname:

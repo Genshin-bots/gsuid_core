@@ -19,6 +19,7 @@ from gsuid_core.ai_core.autonomy.models import GroupObservation, CareTargetSnaps
 from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 
 USER_PM = 6
+MAX_SPEAK_ATTEMPTS = 2
 ARTIFACT_LIMIT_BYTES = 32 * 1024
 AUTONOMY_TOOL_ALLOWLIST = frozenset(
     {
@@ -73,6 +74,8 @@ class GuardState:
     allowed_groups: dict[str, GroupObservation] = field(default_factory=dict)
     allowed_users: dict[str, CareTargetSnapshot] = field(default_factory=dict)
     sent_count: int = 0
+    speak_attempts: int = 0
+    silenced_targets: set[str] = field(default_factory=set)
     sent_targets: list[str] = field(default_factory=list)
     now: float = 0.0
     hour_cap: int = 2
@@ -447,6 +450,57 @@ def _resolve_send_target(
     return dest_group_id, dest_user_id
 
 
+def _recent_chat_context_for_send(
+    event: Event,
+    state: GuardState,
+    dest_group_id: str | None,
+    dest_user_id: str,
+) -> tuple[str, str]:
+    """读取目标会话近窗记录与对应标题，私聊时兼顾近期群聊触发话头。"""
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.thread_view import render_window
+
+    records = get_history_manager().get_history(event, limit=12)
+    if records:
+        rendered = render_window(
+            records[-10:],
+            persona_name=state.persona_name,
+            session_id=event.session_id,
+            bot_id=str(event.bot_id or ""),
+        )
+        if dest_group_id:
+            return rendered, "[群里最近发生的事]"
+        if dest_user_id and dest_user_id in state.allowed_users:
+            group_lines = [ln for ln in state.allowed_users[dest_user_id].recent_lines if ln.startswith("群 ")][-6:]
+            if group_lines:
+                combined = f"[最近的私聊上下文]\n{rendered}\n\n[对方近期在群里的发言]\n" + "\n".join(group_lines)
+                return combined, ""
+        return rendered, "[最近的私聊上下文]"
+    if dest_group_id and dest_group_id in state.allowed_groups:
+        lines = state.allowed_groups[dest_group_id].recent_lines[-10:]
+        return "\n".join(lines), "[群里最近发生的事]"
+    if dest_user_id and dest_user_id in state.allowed_users:
+        lines = state.allowed_users[dest_user_id].recent_lines[-8:]
+        return "\n".join(lines), "[对方近期互动记录（含群聊与私聊）]"
+    return "", ""
+
+
+def _target_addressing(
+    state: GuardState,
+    dest_user_id: str,
+) -> tuple[bool, str, str]:
+    """解析目标对象的主人身份、显示名与关系档位名。"""
+    from gsuid_core.ai_core.relationship.zones import Zone, zone_level_name
+
+    if not dest_user_id or dest_user_id not in state.allowed_users:
+        return False, "", ""
+    snap = state.allowed_users[dest_user_id]
+    zone_label = ""
+    if snap.zone_value in {item.value for item in Zone}:
+        zone_label = zone_level_name(Zone(snap.zone_value))
+    return bool(snap.is_master), snap.user_name, zone_label
+
+
 async def send_message_by_ai(
     ctx: RunContext[ToolContext],
     text: str,
@@ -455,14 +509,15 @@ async def send_message_by_ai(
     group_id: str = "",
     user_id: str = "",
 ) -> str:
-    """主动向观察底片中的群或关心对象发送一条消息。
+    """主动向观察底片中的群或关心对象发送一条简短自然的人格发言。
 
-    单次自主行动只允许成功发送 1 条消息。发送前框架会自动进行防打扰与频次风控。
+    单次自主行动只允许成功发送 1 条消息。发送前框架会自动进行防打扰、频次风控，
+    并按当前人格的主动发言口吻收束台词（避免「刚才看到…」套话与长篇数据复读）。
     私聊保持私聊。回群只用调用里写出的群号，不用关心对象最近待过的另一个群。
 
     Args:
         ctx: 工具上下文。
-        text: 要发送的消息内容（以你的人格口吻自然表达）。
+        text: 想表达的核心念头与关键依据（不要自编「刚才看到…」套话或堆砌数据清单；发声层会按人格口吻润色）。
         target_id: 目标 ID，可以是群号（如 "123456"）或用户 ID（如 "10001"），必须来自底片。
         target_type: 目标类型，"group"（群聊）或 "user"（私聊），默认为 "group"。
         group_id: 可选，群号。传入后发到这个群。
@@ -474,6 +529,8 @@ async def send_message_by_ai(
         return "拒绝：当前不在自主行动里"
     if state.sent_count >= 1:
         return "⚠️ 本次自主行动已经发送过消息了，请勿单轮重复刷屏。"
+    if state.speak_attempts >= MAX_SPEAK_ATTEMPTS:
+        return "发送被拦截：本轮主动发声尝试已达上限，请勿反复重试，可将要点用 artifact_put 存为个人笔记。"
 
     body = text.strip()
     if not body:
@@ -541,6 +598,8 @@ async def send_message_by_ai(
         ws_bot_id = u_snap.ws_bot_id or ws_bot_id
 
     target_key = make_target_key(dest_group_id, dest_user_id or None)
+    if target_key in state.silenced_targets:
+        return "发送被拦截：本轮已判定此刻不宜向该目标开口，请勿反复重试，可将要点用 artifact_put 存为个人笔记。"
     dispatcher = get_dispatcher()
     clock = time.time() if state.now >= 100_000_000 else state.now
     if dispatcher.should_suppress_by_rate(target_key, max_per_hour=state.hour_cap, max_per_day=state.day_cap):
@@ -556,7 +615,11 @@ async def send_message_by_ai(
             return "发送被拦截：AI 刚刚（60秒内）在群内已有发言。为了防刷屏，请勿连续发信。"
 
     from gsuid_core.models import Event
-    from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
+    from gsuid_core.ai_core.proactive.speak import compose_autonomy_message
+    from gsuid_core.ai_core.proactive.emitter import (
+        emit_proactive_message,
+        resolve_event_session_identity,
+    )
 
     event = Event(
         bot_id=bot_id or "Bot",
@@ -568,11 +631,35 @@ async def send_message_by_ai(
         group_id=dest_group_id,
         WS_BOT_ID=ws_bot_id or None,
     )
+    resolve_event_session_identity(event)
+    target_is_master, target_name, target_zone_label = _target_addressing(state, dest_user_id)
+    recent_context, context_header = _recent_chat_context_for_send(event, state, dest_group_id, dest_user_id)
+    state.speak_attempts += 1
+    outcome = await compose_autonomy_message(
+        persona_name=state.persona_name,
+        event=event,
+        draft=body,
+        recent_context=recent_context,
+        context_header=context_header,
+        target_is_master=target_is_master,
+        target_name=target_name,
+        target_zone_label=target_zone_label,
+    )
+    if outcome.status == "silence":
+        state.silenced_targets.add(target_key)
+        return "已跳过发送：结合当前聊天氛围判断此刻不宜开口，已保持沉默。可将要点用 artifact_put 存为个人笔记。"
+    if outcome.status != "ok" or not outcome.text:
+        return "发送失败：主动发言生成阶段出错，消息未发出。可将要点用 artifact_put 存为个人笔记。"
+    composed = outcome.text
+    if dispatcher.would_repeat_heartbeat(target_key, composed, persona_name=state.persona_name):
+        return "发送被拦截：与近期主动发言内容过于相似，已避免重复打扰。"
+
     sent = await emit_proactive_message(
         event,
-        body[:400],
+        composed[:400],
         source="autonomy",
         trigger_reason=f"{state.persona_name} 自主发信",
+        generator_log_files=outcome.log_files,
         suppress_when_heartbeat_recent=True,
         at_user_id=dest_user_id if (dest_group_id and dest_user_id) else None,
         persona_name=state.persona_name,
@@ -589,8 +676,8 @@ async def send_message_by_ai(
         else:
             target_desc = f"用户 {dest_user_id}"
         state.sent_targets.append(target_desc)
-        return f"已成功向 {target_desc} 发送消息：{body[:100]}"
-    return "发送失败：当前处于冷却、频次限额或网络离线，消息未发出。"
+        return f"已成功向 {target_desc} 发送消息：{composed[:100]}"
+    return "发送失败：当前被冷静期、频次限额、内容闸门拦截或网络离线，消息未发出。"
 
 
 def build_autonomy_tools() -> list[Tool[ToolContext]]:
