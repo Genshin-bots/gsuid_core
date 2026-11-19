@@ -275,7 +275,7 @@ def test_inbox_scheduler_settle_and_one_time_settlement() -> None:
         assert ws.queue.empty()
         assert not sched._inboxes
 
-        # 5) runner 报错：退回 pending 重试一次，再错记 expired
+        # 5) runner 报错：模型前异常退回重试一次；已达模型的故障直接 expired 不整批重跑
         e9 = entry(9)
         sched.submit(ws, e9)
         await pump()
@@ -291,6 +291,19 @@ def test_inbox_scheduler_settle_and_one_time_settlement() -> None:
         await pump()
         assert e9.item.state == "expired"
         assert e9.item.retries == 2
+        assert ws.queue.empty()
+        assert not sched._inboxes and not sched._ws
+
+        e9_model = entry(19)
+        sched.submit(ws, e9_model)
+        await pump()
+        model_fail = asyncio.create_task(ws.queue.get_nowait().coro)
+        await asyncio.sleep(0)
+        outcomes.put_nowait(TurnOutcome(reached_model=True, error=True, answered=frozenset()))
+        await model_fail
+        await pump()
+        assert e9_model.item.state == "expired"
+        assert e9_model.item.retries == 0
         assert ws.queue.empty()
         assert not sched._inboxes and not sched._ws
 
@@ -595,7 +608,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             assert "仅当本句确在追问或讨论该图时调用" in split_joined
             assert "对方正在追问上面刚发出的待讨论图片" not in split_joined
 
-            # 4) 群聊多人连发 hard 点名在结算窗内顺延合并为同一批多目标 InboxTurn
+            # 4) 仅同说话人连发顺延合并；不同说话人的 hard 点名不延长当前结算窗且独立成轮
             now = [2000.0]
             sleeps: list[float] = []
             batches: list[InboxTurn] = []
@@ -612,22 +625,34 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
 
             sched = InboxScheduler(clock=lambda: now[0], sleep=manual_sleep, runner=ok_runner)
             ws = _Bot("coalesce_ws")
-            ev_u1 = Event("OneBot", "900000001", "c1", "group", "70009", "100000001", {}, 6)
-            ev_u2 = Event("OneBot", "900000001", "c2", "group", "70009", "100000002", {}, 6)
+            ev_u1a = Event("OneBot", "900000001", "c1a", "group", "70009", "100000001", {}, 6, raw_text="在吗")
+            ev_u1b = Event("OneBot", "900000001", "c1b", "group", "70009", "100000001", {}, 6, raw_text="帮我查个东西")
+            ev_u2 = Event("OneBot", "900000001", "c2", "group", "70009", "100000002", {}, 6, raw_text="我也问一下")
             sched.submit(
-                ws, PendingEntry(WakeItem(21, "100000001", "name", "hard", now[0]), ev_u1, persona_name="测试人格")
+                ws, PendingEntry(WakeItem(21, "100000001", "name", "hard", now[0]), ev_u1a, persona_name="测试人格")
             )
-            key = (ev_u1.session_id, "测试人格")
+            key = (ev_u1a.session_id, "测试人格")
             first_deadline = sched._inboxes[key].settle_deadline
             sched.submit(
                 ws,
-                PendingEntry(WakeItem(22, "100000002", "name", "hard", now[0] + 0.5), ev_u2, persona_name="测试人格"),
+                PendingEntry(WakeItem(22, "100000001", "name", "hard", now[0] + 0.3), ev_u1b, persona_name="测试人格"),
             )
-            assert sched._inboxes[key].settle_deadline > first_deadline
+            extended_deadline = sched._inboxes[key].settle_deadline
+            assert extended_deadline > first_deadline
+            sched.submit(
+                ws,
+                PendingEntry(WakeItem(23, "100000002", "name", "hard", now[0] + 0.5), ev_u2, persona_name="测试人格"),
+            )
+            assert sched._inboxes[key].settle_deadline == extended_deadline
             for _ in range(12):
                 await asyncio.sleep(0)
             await ws.queue.get_nowait().coro
-            assert len(batches) == 1 and [e.item.seq for e in batches[0].entries] == [21, 22]
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert len(batches) == 2
+            assert [e.item.seq for e in batches[0].entries] == [21, 22]
+            assert [e.item.seq for e in batches[1].entries] == [23]
 
             # 5) 同批全等折叠 + 跨轮零工具 +1 消解 + 有工具观测跨人放行（复刻在途复读场景）
             batches.clear()
@@ -672,7 +697,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             # 上一轮零工具调用，用户B 的 +1 全等消息在 _build_turn 直接消解，不起第 2 轮
             assert ws.queue.empty() and len(batches) == 1
 
-            # 同批去重只消解同说话人的连点重发；跨说话人同文保留在批内（支持 act_for 与 <reply #a #b>）
+            # 同批去重消解同说话人的连点重发；不同说话人自动拆到下一轮（有工具观测时跨人放行）
             ev_b1 = Event(
                 "OneBot", "900000001", "b1", "group", "70009", "100000001", {}, 6, raw_text="测试人格，领每日奖励"
             )
@@ -716,8 +741,11 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             for _ in range(12):
                 await asyncio.sleep(0)
             await ws.queue.get_nowait().coro
-            assert [e.item.seq for e in batches[1].entries] == [41, 43, 44]
-            assert batches[1].multi_target is True
+            assert [e.item.seq for e in batches[1].entries] == [41, 44]
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in batches[2].entries] == [43]
 
             # 上一轮产生了工具观测（emit_tool_obs=True）：同人重发仍消解，跨人 +1 正常放行
             sched_dup.submit(
@@ -737,7 +765,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             for _ in range(12):
                 await asyncio.sleep(0)
             await ws.queue.get_nowait().coro
-            assert [e.item.seq for e in batches[2].entries] == [46]
+            assert [e.item.seq for e in batches[3].entries] == [46]
 
             # at_bot 维度区分：无 @ 的软唤醒已答不应吞掉后续显式 @Bot 的同文呼叫；未应答项不写入去重缓存
             emit_tool_obs[0] = False

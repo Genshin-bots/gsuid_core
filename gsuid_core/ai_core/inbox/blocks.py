@@ -1,4 +1,4 @@
-"""收件箱当轮动态块：待你回应 / 工具身份 / 相关往来。
+"""收件箱当轮动态块：待你回应 / 相关往来。
 
 入史前由 _peel_ephemeral_system_lines 整块剥除；块头字面量只在 control/lines.py。
 H1 只做结构事实渲染；回执建议记忆 / 源码摘录等 DB 查询由 H2 补。
@@ -24,12 +24,10 @@ from gsuid_core.ai_core.thread_view import (
 from gsuid_core.ai_core.control.lines import (
     PENDING_BLOCK_HEAD,
     RELATED_BLOCK_HEAD,
-    IDENTITY_BLOCK_HEAD,
 )
 
 __all__ = [
     "render_pending_block",
-    "render_identity_block",
     "render_related_block",
     "quote_fact_lines",
 ]
@@ -70,9 +68,7 @@ def render_pending_block(turn: InboxTurn, records: Sequence[MessageRecord]) -> s
     """（待你回应）块：每条唤醒项一行，行尾给可核实的往来事实。"""
     seq_index = _index(records)
     ctx = _RenderCtx(seq_index=seq_index, persona_name=turn.persona_name)
-    uids = {e.item.user_id for e in turn.entries}
-    head = f"{PENDING_BLOCK_HEAD}本批 {len(uids)} 人"
-    out = [head]
+    out = [PENDING_BLOCK_HEAD]
     for entry in turn.entries:
         item = entry.item
         rec = seq_index[item.seq] if item.seq in seq_index else None
@@ -102,19 +98,6 @@ async def quote_fact_lines(turn: InboxTurn, records: Sequence[MessageRecord]) ->
         if hit is not None and hit.line:
             out.append(f"★#{entry.item.seq} {hit.line}")
     return out
-
-
-def render_identity_block(turn: InboxTurn, records: Sequence[MessageRecord]) -> str:
-    """（工具身份）块：只在本批多人时出现。"""
-    _ = records
-    if not turn.multi_target:
-        return ""
-    primary = turn.primary.item.seq
-    example = next((e.item.seq for e in turn.entries if e.item.seq != primary), primary)
-    return (
-        f'{IDENTITY_BLOCK_HEAD}本批有多人：调用非只读工具前必须先调 act_for("#{primary}")'
-        f' 或 act_for("#{example}") 声明替谁执行；换人再调一次。'
-    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -167,7 +167,7 @@ KIT = register_agent_kit(
 | `group_profile` | `gscore.group_profile` | 是 | 稳定前缀群画像（H29） |
 | `planning_context` | `gscore.planning_context` | 是 | 长任务文案 + `has_actionable` |
 | `classifier` | `gscore.classifier` | 是 | intent + `TurnRouter`（含 `soft_speak`） |
-| `inbox` | `gscore.inbox` | 是 | 收件箱待回应 / 工具身份 / 相关往来块 |
+| `inbox` | `gscore.inbox` | 是 | 收件箱待回应 / 相关往来块 |
 | `evidence` | `gscore.evidence` | 是 | 工具证据观测与实时凭据状态 |
 | `scaffold` | `gscore.scaffold` | 是 | TurnGraph 消费 / CheapGate / 脚手架 hints |
 | `session_mute` | `gscore.session_mute` | 是 | 静默窗 |

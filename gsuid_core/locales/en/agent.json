@@ -109,6 +109,7 @@
   "log.agent.pydanticai_run_fail": "[PydanticAI] Agent run error: {e}",
   "log.agent.pydanticai_run_fail_network": "[PydanticAI] Agent run error: network error {e}",
   "log.agent.pydanticai_run_fail_rate": "[PydanticAI] Agent run error: Rate Limit {e}",
+  "log.agent.pydanticai_pool_timeout_reset": "[PydanticAI] HTTP connection pool timed out; rotated pool for {cfg} and failing fast: {e}",
   "log.agent.pydanticai_run_fail_request": "[PydanticAI] Agent run error: request timeout {e}",
   "log.agent.pydanticai_tools_clean_retry_fail": "[PydanticAI] Tools {p0} were already executed before the failure; a clean retry may repeat their side effects",
   "log.agent.queue_wait_waited_exceeded": "[GsCoreAIAgent] Queue wait of {waited:.1f}s exceeded TTL; dropping expired request and releasing lock",

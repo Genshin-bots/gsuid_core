@@ -320,9 +320,11 @@ async def run_interactive_turn(
                 )
             )
 
-    # query：单目标 = 该项正文；多目标 = 各 pending 正文按行拼接。
-    if turn.multi_target:
+    # query：单条取原文；同说话人连发多条按行拼接供路由/工具检索完整读取。
+    if len(turn.entries) > 1:
         query = "\n".join(e.event.raw_text or "" for e in turn.entries if (e.event.raw_text or "").strip())
+        if not query:
+            query = turn.primary.event.raw_text or ""
     else:
         query = turn.primary.event.raw_text or ""
 

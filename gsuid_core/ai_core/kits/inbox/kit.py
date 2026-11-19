@@ -1,6 +1,6 @@
 """``gscore.inbox``：收件箱待回应块（H06）。
 
-当前 ``InboxTurn``（contextvar）存在时，把（待你回应）/（工具身份）/（相关往来）
+当前 ``InboxTurn``（contextvar）存在时，把（待你回应）/（相关往来）
 / 回执上下文合成 ``inbox_pending`` 命名块；无轮次（工具自跑 / 后台任务）不写块。
 """
 
@@ -20,7 +20,6 @@ class InboxKit(AgentKit):
             quote_fact_lines,
             render_pending_block,
             render_related_block,
-            render_identity_block,
         )
         from gsuid_core.ai_core.inbox.receipt import receipt_context_lines
 
@@ -36,7 +35,6 @@ class InboxKit(AgentKit):
 
         pieces = [
             pending,
-            render_identity_block(turn, records),
             render_related_block(turn, records),
             receipt_context_lines(turn, records),
             feedback_fact_line(str(ctx.ev.group_id)) if ctx.ev.group_id else "",

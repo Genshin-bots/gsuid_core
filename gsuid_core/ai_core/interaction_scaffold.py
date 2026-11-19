@@ -868,10 +868,8 @@ def scaffold_hints_from_graph(
 
 
 # 通道核：发现、回想、委派、发送、提醒，以及有媒体才露的读图/读视频。
-# act_for 常驻挂载；单目标轮由 visible_when 隐藏（多目标批要靠它切工具身份）。
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
-    "act_for",
     "create_subagent",
     "web_search_tool",
     "send_message_by_ai",

@@ -119,20 +119,19 @@ class InboxScheduler:
             self._spawn_settle(key)
             return
 
-        # settling：同说话人续发或群聊多人连发点名时顺延（受总上限约束）；软窗首次升 hard 收回起步值
+        # settling：仅同说话人续发时顺延（不跨人合批）；软窗首次升 hard 收回起步值
         had_hard = any(
             s != entry.item.seq and e.item.state == "pending" and e.item.strength == "hard"
             for s, e in inbox.items.items()
         )
-        is_group_multi_hard = entry.event.user_type != "direct" and had_hard and entry.item.strength == "hard"
-        if entry.item.user_id == inbox.last_speaker or is_group_multi_hard:
+        if entry.item.user_id == inbox.last_speaker:
             inbox.settle_deadline = min(
                 max(inbox.settle_deadline, now) + SAME_SPEAKER_EXTEND_S,
                 inbox.settle_started + self._settle_max_s(),
             )
         elif entry.item.strength == "hard" and not had_hard:
             inbox.settle_deadline = min(inbox.settle_deadline, now + self._initial_settle_s(entry))
-        inbox.last_speaker = entry.item.user_id
+            inbox.last_speaker = entry.item.user_id
 
     @staticmethod
     def _initial_read_seq(entry: PendingEntry) -> int:
@@ -297,17 +296,19 @@ class InboxScheduler:
         if not pending:
             return None
         ordered = sorted(pending, key=lambda e: (e.item.strength != "hard", e.item.seq))
+        # 单轮只合同一说话人的连发；其他说话人的 pending 留待下一轮独立处理
+        target_uid = ordered[0].item.user_id
+        same_speaker = [e for e in ordered if e.item.user_id == target_uid]
         kept: list[PendingEntry] = []
-        seen_batch: set[tuple[str, _ExactDedupKey]] = set()
-        for entry in ordered:
+        seen_batch: set[_ExactDedupKey] = set()
+        for entry in same_speaker:
             dkey = _exact_dedup_key(entry)
             if dkey is not None:
-                bkey = (entry.item.user_id, dkey)
-                if bkey in seen_batch:
+                if dkey in seen_batch:
                     entry.item.state = "dismissed"
                     logger.info(t("log.inbox.item_dedup", seq=entry.item.seq, reason="batch"))
                     continue
-                seen_batch.add(bkey)
+                seen_batch.add(dkey)
             kept.append(entry)
         entries = tuple(kept)
         from gsuid_core.message_history import get_history_manager
@@ -338,6 +339,11 @@ class InboxScheduler:
                 if seq not in inbox.items or inbox.items[seq].item.state != "pending":
                     continue
                 entry = inbox.items[seq]
+                if outcome.reached_model:
+                    # 模型层已走完内层重试与主备换路，不再整批重跑避免放大卡死时长
+                    entry.item.state = "expired"
+                    logger.warning(t("log.inbox.item_expired", seq=seq, kind=entry.item.kind, reason="model_error"))
+                    continue
                 entry.item.retries += 1
                 if entry.item.retries > _MAX_RETRIES:
                     entry.item.state = "expired"
@@ -360,10 +366,14 @@ class InboxScheduler:
         settled = [s for s, e in inbox.items.items() if e.item.state != "pending"]
         for seq in settled:
             del inbox.items[seq]
-        if any(e.item.state == "pending" for e in inbox.items.values()) or inbox.dirty:
+        remaining = [e for e in inbox.items.values() if e.item.state == "pending"]
+        if remaining or inbox.dirty:
             inbox.phase = "settling"
             inbox.settle_started = self._clock()
             inbox.settle_deadline = inbox.settle_started + self._resume_settle_s(inbox)
+            if remaining:
+                first_next = min(remaining, key=lambda e: (e.item.strength != "hard", e.item.seq))
+                inbox.last_speaker = first_next.item.user_id
             self._spawn_settle(key)
         else:
             self._drop(key)

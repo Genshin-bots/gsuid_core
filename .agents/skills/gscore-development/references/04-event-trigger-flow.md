@@ -141,11 +141,11 @@ if "提及应答" in ai_mode:
    → TurnRouter（群聊收件箱轮在 source=="llm" 时统一消费 soft_speak: bool 拦截复读/三方提及/软触发无关；
      离线退化 structural_fallback 保底放行 hard 项）
    → run_interactive_turn：render_delta 线程视图（含出站〔依据〕）作 B 轨输入
-   → InboxKit 注入（待你回应）/（工具身份）/（相关往来）/（本群近况）块
+   → InboxKit 注入（待你回应）/（相关往来）/（本群近况）块
    → turn.reached_model=True 紧邻 session.run
 5. 出站：send_chat_result 先 parse_reply_plan 解析 <reply #seq>，分组发送；
    OutboundBinding 写入 EventLink（in_reply_to_seqs/evidence），回执通道不拦截
-6. 结算：answered 集合只含 pending 项；未达模型不推进 read_seq，错误重试 1 次后过期
+6. 结算：answered 集合只含 pending 项；未达模型不推进 read_seq，模型前错误重试 1 次后过期，已达模型故障直接过期
 ```
 
 > `enable_ai` 在 `handle_ai.py` 仍是函数内动态读取——WebConsole 切总开关后无需重启（D-21）。

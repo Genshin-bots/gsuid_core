@@ -396,3 +396,64 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
     usage = extract_session_usage(log_entries)
     by_model = {u["model"]: u["input_tokens"] for u in usage["models"]}
     assert by_model == {"m-pre": 10, "m-run": 50}
+
+
+def test_model_http_proxy_pool_isolation_and_leak_guard() -> None:
+    """httpcore2 代理隧道在 start_tls 失败时不泄漏池槽；主备配置分池隔离且支持 PoolTimeout 轮换。"""
+    import httpx2
+
+    from gsuid_core.ai_core.gs_agent import _is_pool_timeout_error
+    from gsuid_core.ai_core.configs.models import (
+        _SafeProxyAsyncClient,
+        _shared_model_httpx2_client,
+        reset_shared_model_http_client_by_full_name,
+    )
+
+    async def _exercise_proxy_tunnel() -> None:
+        async def _fake_proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.read(4096)
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        srv = await asyncio.start_server(_fake_proxy, "127.0.0.1", 0)
+        try:
+            sock = srv.sockets[0]
+            port = int(sock.getsockname()[1])
+            hc = _SafeProxyAsyncClient(
+                proxy=f"http://127.0.0.1:{port}",
+                limits=httpx2.Limits(max_connections=2, max_keepalive_connections=2),
+                timeout=httpx2.Timeout(connect=2.0, read=2.0, write=2.0, pool=0.5),
+            )
+            try:
+                for _ in range(5):
+                    try:
+                        await hc.get("https://example.invalid/")
+                    except httpx2.PoolTimeout:
+                        raise AssertionError("proxy tunnel leaked pool slot after start_tls failure")
+                    except httpx2.HTTPError:
+                        pass
+            finally:
+                await hc.aclose()
+        finally:
+            srv.close()
+            await srv.wait_closed()
+
+    asyncio.run(_exercise_proxy_tunnel())
+
+    c1 = _shared_model_httpx2_client("openai", "test_primary_pool")
+    c2 = _shared_model_httpx2_client("openai", "test_backup_pool")
+    assert c1 is not c2
+    assert _shared_model_httpx2_client("openai", "test_primary_pool") is c1
+    assert reset_shared_model_http_client_by_full_name("openai++test_primary_pool") is True
+    c1_rebuilt = _shared_model_httpx2_client("openai", "test_primary_pool")
+    assert c1_rebuilt is not c1
+    assert _shared_model_httpx2_client("openai", "test_backup_pool") is c2
+    reset_shared_model_http_client_by_full_name("openai++test_primary_pool")
+    reset_shared_model_http_client_by_full_name("openai++test_backup_pool")
+
+    inner_pool_err = httpx2.PoolTimeout("pool exhausted")
+    wrapped = RuntimeError("Request timed out.")
+    wrapped.__cause__ = inner_pool_err
+    assert _is_pool_timeout_error(wrapped) is True
+    assert _is_pool_timeout_error(httpx2.ReadTimeout("read slow")) is False

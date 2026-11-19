@@ -401,7 +401,6 @@ def omitted_lines_marker(count: int) -> str:
 
 # 当轮动态块头（入史前剥除；正文组装在 inbox/blocks.py）
 PENDING_BLOCK_HEAD = "（待你回应）"
-IDENTITY_BLOCK_HEAD = "（工具身份）"
 RELATED_BLOCK_HEAD = "（相关往来）"
 RECEIPT_CONTEXT_HEAD = "（回执上下文）"
 GROUP_RECENT_BLOCK_HEAD = "（本群近况）"
@@ -411,9 +410,6 @@ ROUTER_PRINCIPLE = (
     "原则：被引用或含你名字不等于在叫你（叫别人、群友互聊提及、其他Bot播报均无关）；"
     "复读或起哄紧邻上文你刚公开答复过的同一件事（无替他人查的〔依据〕）无需再回。"
 )
-
-# act_for：多目标批次里的工具身份护栏
-ACT_FOR_REQUIRED_DENY = "本批有多人找你，请先调 act_for 指明替谁执行，再调其它工具。"
 
 # 群级反馈事实（§5.3）：kind → 渲染标签 + 一行格式。
 FEEDBACK_KIND_LABELS: Final[dict[str, str]] = {
@@ -442,14 +438,6 @@ EVIDENCE_OUTCOME_LABELS: Final[dict[str, str]] = {
     "error": "失败",
     "action_done": "已执行",
 }
-
-
-def act_for_confirm_line(seq: int, speaker: str) -> str:
-    return f"当前替 #{seq} {speaker} 执行工具"
-
-
-def act_for_unknown_ref_line(ref: str) -> str:
-    return f"act_for 失败：{ref} 不在本轮待回应项里"
 
 
 # ── 共享正则模式（纯叶子常量，供路由/护栏/检索复用）──────────────────────────

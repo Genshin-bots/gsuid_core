@@ -1,6 +1,6 @@
-"""收件箱轮次：一批 pending 项 + 本轮读到的时间线游标。
+"""收件箱轮次：同一说话人的一批 pending 项 + 本轮读到的时间线游标。
 
-contextvar 供出站绑定（send_chat_result）与工具身份（act_for）在
+contextvar 供出站绑定（send_chat_result）与证据捕获在
 本轮任意深处读到当前轮次，不经参数透传。
 """
 
@@ -37,12 +37,8 @@ class InboxTurn:
     reached_model: bool = False
 
     def __post_init__(self) -> None:
-        if self.active_seq is None and self.entries and not self.multi_target:
+        if self.active_seq is None and self.entries:
             self.active_seq = self.entries[0].item.seq
-
-    @property
-    def multi_target(self) -> bool:
-        return len({e.item.user_id for e in self.entries}) > 1
 
     @property
     def primary(self) -> PendingEntry:

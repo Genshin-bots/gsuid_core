@@ -17,16 +17,18 @@ pydantic-ai 升级: ModelProfile 在 2.0 起改 `TypedDict`, ``from_profile`` �
 改为 ``(default_profile) -> Profile``(框架把已解析的默认 profile 喂过来)。
 """
 
+import ssl
 import json
+import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Union, Literal, final
-from functools import lru_cache
 from dataclasses import dataclass
 from collections.abc import Callable, AsyncIterator
 from typing_extensions import override
 
 import httpx
 import httpx2
+import httpcore2
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionChunk
 from pydantic_ai.usage import RequestUsage
@@ -86,30 +88,173 @@ MODEL_REQUEST_TIMEOUT = httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool
 # openai 3.x / anthropic 1.x 的 HTTP 栈换成了 httpx2，与 httpx 不是同一套类、不可互传；
 # 只有 google-genai 仍吃 httpx，故按库分两套池（同 §23 墙钟）。
 MODEL_REQUEST_TIMEOUT_HTTPX2 = httpx2.Timeout(connect=15.0, read=180.0, write=60.0, pool=30.0)
+_MODEL_HTTPX2_LIMITS = httpx2.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0)
 
 
-@lru_cache(maxsize=None)
-def _shared_model_http_client(provider: str) -> httpx.AsyncClient:
-    """进程级共享 HTTP 客户端（按 provider 一池，进程生命周期不关闭）。
+class _SafeProxyConnection(httpcore2.AsyncConnectionInterface):
+    """代理连接在握手完成前失败或取消时关闭底层连接，修复 httpcore2 隧道槽永久泄漏。"""
 
-    每次建模型都 new 私有客户端会累积不被关闭的连接池、且丢失跨请求连接复用
-    （评审修复 F8）；provider 工厂统一从这里取池、统一吃 §23 墙钟超时。
-    """
-    # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
-    return httpx.AsyncClient(
-        timeout=MODEL_REQUEST_TIMEOUT,
-        event_hooks={"request": [capture_model_request_effort]},
-    )
+    def __init__(self, inner: httpcore2.AsyncConnectionInterface) -> None:
+        self._inner = inner
+        self._established = False
+
+    @override
+    async def handle_async_request(self, request: httpcore2.Request) -> httpcore2.Response:
+        try:
+            resp = await self._inner.handle_async_request(request)
+            self._established = True
+            return resp
+        except BaseException:
+            if not self._established:
+                await asyncio.shield(self._inner.aclose())
+            raise
+
+    @override
+    def can_handle_request(self, origin: httpcore2.Origin) -> bool:
+        return self._inner.can_handle_request(origin)
+
+    @override
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    @override
+    def is_available(self) -> bool:
+        return self._inner.is_available()
+
+    @override
+    def has_expired(self) -> bool:
+        return self._inner.has_expired()
+
+    @override
+    def is_idle(self) -> bool:
+        return self._inner.is_idle()
+
+    @override
+    def is_closed(self) -> bool:
+        return self._inner.is_closed()
+
+    @override
+    def is_connected(self) -> bool:
+        return self._inner.is_connected()
+
+    @override
+    def can_multiplex(self) -> bool:
+        return self._inner.can_multiplex()
+
+    @override
+    def info(self) -> str:
+        return self._inner.info()
 
 
-@lru_cache(maxsize=None)
-def _shared_model_httpx2_client(provider: str) -> httpx2.AsyncClient:
-    """已迁到 httpx2 的 SDK（openai 3.x / anthropic 1.x）用的共享池，语义同上。"""
-    # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
-    return httpx2.AsyncClient(
-        timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
-        event_hooks={"request": [capture_model_request_effort]},
-    )
+class _SafeAsyncHTTPProxy(httpcore2.AsyncHTTPProxy):
+    @override
+    def create_connection(self, origin: httpcore2.Origin) -> httpcore2.AsyncConnectionInterface:
+        return _SafeProxyConnection(super().create_connection(origin))
+
+
+class _SafeProxyAsyncClient(httpx2.AsyncClient):
+    """httpx2.AsyncClient 变体：HTTP/HTTPS 代理传输改用 _SafeAsyncHTTPProxy 防隧道泄漏。"""
+
+    @override
+    def _init_proxy_transport(
+        self,
+        proxy: httpx2.Proxy,
+        verify: ssl.SSLContext | str | bool = True,
+        cert: str | tuple[str, str] | tuple[str, str, str] | None = None,
+        trust_env: bool = True,
+        http1: bool = True,
+        http2: bool = False,
+        limits: httpx2.Limits = _MODEL_HTTPX2_LIMITS,
+    ) -> httpx2.AsyncBaseTransport:
+        transport = super()._init_proxy_transport(
+            proxy,
+            verify=verify,
+            cert=cert,
+            trust_env=trust_env,
+            http1=http1,
+            http2=http2,
+            limits=limits,
+        )
+        if isinstance(transport, httpx2.AsyncHTTPTransport) and proxy.url.scheme in ("http", "https"):
+            # 若 httpx2 升级改名 _pool，此处显式断言失败而非静默回退到漏槽实现。
+            assert isinstance(transport._pool, httpcore2.AsyncHTTPProxy)
+            ssl_context = httpx2.create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+            transport._pool = _SafeAsyncHTTPProxy(
+                proxy_url=httpcore2.URL(
+                    scheme=proxy.url.raw_scheme,
+                    host=proxy.url.raw_host,
+                    port=proxy.url.port,
+                    target=proxy.url.raw_path,
+                ),
+                proxy_auth=proxy.raw_auth,
+                proxy_headers=proxy.headers.raw,
+                proxy_ssl_context=proxy.ssl_context,
+                ssl_context=ssl_context,
+                max_connections=limits.max_connections,
+                max_keepalive_connections=limits.max_keepalive_connections,
+                keepalive_expiry=limits.keepalive_expiry,
+                http1=http1,
+                http2=http2,
+            )
+        return transport
+
+
+_MODEL_HTTP_CLIENTS: dict[tuple[str, str], httpx.AsyncClient] = {}
+_MODEL_HTTPX2_CLIENTS: dict[tuple[str, str], httpx2.AsyncClient] = {}
+_MODEL_CLIENT_GENERATIONS: dict[tuple[str, str], int] = {}
+
+
+def _shared_model_http_client(provider: str, config_name: str = "") -> httpx.AsyncClient:
+    """进程级共享 HTTP 客户端（按 (provider, config_name) 分池隔离，主备互不拖垮）。"""
+    key = (provider, config_name)
+    client = _MODEL_HTTP_CLIENTS[key] if key in _MODEL_HTTP_CLIENTS else None
+    if client is None or client.is_closed:
+        # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
+        client = httpx.AsyncClient(
+            timeout=MODEL_REQUEST_TIMEOUT,
+            event_hooks={"request": [capture_model_request_effort]},
+        )
+        _MODEL_HTTP_CLIENTS[key] = client
+    return client
+
+
+def _shared_model_httpx2_client(provider: str, config_name: str = "") -> httpx2.AsyncClient:
+    """已迁到 httpx2 的 SDK（openai 3.x / anthropic 1.x）共享池（按配置名分池隔离）。"""
+    key = (provider, config_name)
+    client = _MODEL_HTTPX2_CLIENTS[key] if key in _MODEL_HTTPX2_CLIENTS else None
+    if client is None or client.is_closed:
+        # 钩子从发出的 JSON 读思考档位，不读本地 model_effort。
+        client = _SafeProxyAsyncClient(
+            timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
+            limits=_MODEL_HTTPX2_LIMITS,
+            event_hooks={"request": [capture_model_request_effort]},
+        )
+        _MODEL_HTTPX2_CLIENTS[key] = client
+    return client
+
+
+def reset_shared_model_http_client(provider: str, config_name: str = "") -> bool:
+    """连接池耗尽时轮换对应 (provider, config_name) 共享池并递增代际触发会话重绑。"""
+    key = (provider, config_name)
+    reset = False
+    # 仅移出缓存不主动 aclose：可能有健康在途流仍引用旧池，待流结束由 GC 回收。
+    if key in _MODEL_HTTPX2_CLIENTS:
+        _MODEL_HTTPX2_CLIENTS.pop(key)
+        reset = True
+    if key in _MODEL_HTTP_CLIENTS:
+        _MODEL_HTTP_CLIENTS.pop(key)
+        reset = True
+    if reset:
+        _MODEL_CLIENT_GENERATIONS[key] = (_MODEL_CLIENT_GENERATIONS[key] if key in _MODEL_CLIENT_GENERATIONS else 0) + 1
+    return reset
+
+
+def reset_shared_model_http_client_by_full_name(full_name: str) -> bool:
+    """按 'provider++config_name' 重建对应配置的共享连接池。"""
+    if not full_name:
+        return False
+    provider, config_name = parse_provider_config_name(full_name)
+    return reset_shared_model_http_client(provider, config_name)
 
 
 def parse_provider_config_name(full_name: str) -> tuple[str, str]:
@@ -467,14 +612,13 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
     if fast:
         usage_stats_mode = "incremental"
 
-    # §23 墙钟 + 共享连接池（见 MODEL_REQUEST_TIMEOUT_HTTPX2 / _shared_model_httpx2_client）；
-    # timeout 显式传 SDK 保证逐请求生效，max_retries=1 收紧 SDK 内建重试。
+    # §23 墙钟 + 按配置分池；max_retries=0 禁 SDK 内建重试，避免与 _execute_run 叠乘。
     _client = AsyncOpenAI(
         api_key=api_key,
         base_url=base_url,
         timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
-        max_retries=1,
-        http_client=_shared_model_httpx2_client("openai"),
+        max_retries=0,
+        http_client=_shared_model_httpx2_client("openai", config_name),
     )
     provider = OpenAIProvider(openai_client=_client)
 
@@ -551,7 +695,7 @@ def make_anthropic_model(
         api_key=api_key,
         base_url=base_url,
         timeout=MODEL_REQUEST_TIMEOUT_HTTPX2,
-        max_retries=1,
+        max_retries=0,
         http_client=http_client,
     )
     learned = anthropic_profile_for_model(model_name)
@@ -591,7 +735,7 @@ def get_anthropic_chat_model_by_name(config_name: str, *, fast: bool = False) ->
         settings_effort,
         api_key=api_key,
         base_url=base_url,
-        http_client=_shared_model_httpx2_client("anthropic"),
+        http_client=_shared_model_httpx2_client("anthropic", config_name),
         profile_effort=configured_effort,
     )
 
@@ -659,7 +803,7 @@ def get_gemini_model_by_name(config_name: str, *, fast: bool = False) -> "Google
     # 官方地址走 SDK 内建默认;仅中转地址才显式传 base_url。
     # http_client 走共享池并携带 §23 墙钟超时（genai 内部转发给 httpx，评审修复 E13）
     normalized = normalize_gemini_base_url(base_url)
-    _http_client = _shared_model_http_client("gemini")
+    _http_client = _shared_model_http_client("gemini", config_name)
     provider = (
         GoogleProvider(api_key=api_key, base_url=normalized, http_client=_http_client)
         if normalized
@@ -917,8 +1061,11 @@ def get_model_fingerprint_for_task(task_level: TaskLevel, task_kind: str | None 
     else:
         config_dict = get_gemini_config_dict(config_name)
 
+    key = (provider, config_name)
+    gen = _MODEL_CLIENT_GENERATIONS[key] if key in _MODEL_CLIENT_GENERATIONS else 0
     if not isinstance(config_dict, dict):
-        return full_name
+        return f"{full_name}:gen={gen}" if gen else full_name
 
     payload = json.dumps(config_dict, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{digest}:gen={gen}" if gen else digest

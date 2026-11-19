@@ -1275,7 +1275,7 @@ fire_hooks(RETRIEVE_CONTEXT, ctx)        # 内核唯一动作
 | 10 | `chitchat_style` | `gscore.scaffold`（仅 intent=闲聊且无上轮工具且无活跃任务） |
 | 11 | `transaction_priority` | `gscore.scaffold`（intent∈{工具,问答}：优先调工具，困/懒不是跳过理由） |
 | 12 | `report_titles` | `gscore.scaffold`（上一轮资料图标题） |
-| 13 | `inbox_identity` / `inbox_related` / `evidence` | `gscore.inbox`（工具身份/相关往来）+ `gscore.evidence`（证据块） |
+| 13 | `inbox_related` / `evidence` | `gscore.inbox`（相关往来）+ `gscore.evidence`（证据块） |
 | 14 | `plugin_hints` | 第三方 H07 `append_user_hint` 汇入，**恒在最后** |
 
 > 历史注意：本节旧版写的顺序是「历史对话 → 情绪 → …」，与代码不符（代码里情绪在最前），

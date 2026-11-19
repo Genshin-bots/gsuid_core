@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, List, Tuple, Union, Literal, TypeVar, Cal
 from datetime import datetime
 
 import httpx
+import httpx2
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai.messages import (
@@ -66,6 +67,7 @@ from gsuid_core.ai_core.configs.models import (
     get_config_name_for_task,
     get_2nd_config_name_for_task,
     get_model_fingerprint_for_task,
+    reset_shared_model_http_client_by_full_name,
 )
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
@@ -1293,6 +1295,20 @@ class GsCoreAIAgent(RunOnceMixin):
                         self._session_logger.log_error("quota_exhausted", err_str)
                         return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
 
+                    if _is_pool_timeout_error(e):
+                        _cfg = self._active_config_name or self.model_config_name or ""
+                        reset_shared_model_http_client_by_full_name(_cfg)
+                        logger.warning(
+                            i18n_t(
+                                "log.agent.pydanticai_pool_timeout_reset",
+                                cfg=_cfg or "-",
+                                e=e,
+                            )
+                        )
+                        statistics_manager.record_error(error_type="timeout", message=err_str)
+                        self._session_logger.log_error("timeout", err_str)
+                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
+
                     # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast， 不再消耗剩余重试次数。
                     non_retryable = _is_non_retryable_model_error(e)
 
@@ -1314,6 +1330,8 @@ class GsCoreAIAgent(RunOnceMixin):
                                 e=e,
                             )
                         )
+                        self._session_logger.log_error("retry_attempt", err_str)
+                        self._session_logger.log_run_end()
                         await asyncio.sleep(retry_delay)
                         continue
 
@@ -1327,6 +1345,8 @@ class GsCoreAIAgent(RunOnceMixin):
                                 e=e,
                             )
                         )
+                        self._session_logger.log_error("retry_attempt", err_str)
+                        self._session_logger.log_run_end()
                         await asyncio.sleep(retry_delay)
                         continue
 
@@ -1357,12 +1377,12 @@ class GsCoreAIAgent(RunOnceMixin):
                         return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
 
                     # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
-                    if isinstance(e, httpx.TimeoutException):
+                    if isinstance(e, (httpx.TimeoutException, httpx2.TimeoutException)):
                         logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
                         statistics_manager.record_error(error_type="timeout", message=err_str)
                         self._session_logger.log_error("timeout", err_str)
                         return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
-                    if isinstance(e, httpx.HTTPError):
+                    if isinstance(e, (httpx.HTTPError, httpx2.HTTPError)):
                         low = err_str.lower()
                         if "rate" in low or "429" in low or "limit" in low:
                             logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
@@ -1960,6 +1980,8 @@ class GsCoreAIAgent(RunOnceMixin):
             )
         )
         for _attempt in range(2):
+            if _attempt > 0:
+                await self.refresh_model_if_changed()
             async with provider_router.slot(
                 self.task_level, session_id=self.session_id, task_kind=self.task_kind
             ) as routed_name:
@@ -2023,6 +2045,18 @@ class GsCoreAIAgent(RunOnceMixin):
                         self.model = orig_model
                     self._active_config_name = orig_active_cfg
         return "" if output_type is None else None
+
+
+def _is_pool_timeout_error(exc: BaseException) -> bool:
+    """沿异常链检查根因是否为 httpx/httpx2 连接池超时。"""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (httpx.PoolTimeout, httpx2.PoolTimeout)):
+            return True
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    return False
 
 
 # 工厂函数

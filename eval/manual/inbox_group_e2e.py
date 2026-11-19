@@ -32,10 +32,9 @@ from gsuid_core.models import Message, MessageSend, MessageReceive
 BOT_ID = "inbox_e2e"
 BOT_SELF = "900000001"
 WAKE = "sayu"
-ACT_FOR_DENY_HEAD = "本批有多人找你"
 # session log 空闲 60 秒才落盘：全部用例跑完后统一等这么久再判 log 类断言
 LOG_SETTLE_S = 75.0
-EXEMPT_TOOLS = frozenset({"act_for", "find_tools", "read_handle", "capability_map"})
+EXEMPT_TOOLS = frozenset({"find_tools", "read_handle", "capability_map"})
 USERS: dict[str, str] = {
     "A": "100000011",
     "B": "100000012",
@@ -267,12 +266,12 @@ async def case_c3(sim: Sim) -> Verdict:
         outs = sim.outs(gid, t0)
         n = runs(ents)
         checks = [
-            ("主模型轮数 ≤ 2", 1 <= n <= 2),
+            ("主模型轮数 1~3（同文零工具复读可省 1 轮）", 1 <= n <= 3),
             ("气泡数 ≤ 3 × 轮数", len(outs) <= 3 * max(1, n)),
             ("至少回了一个人", len(outs) >= 1),
             ("引用段只指向本批消息", all(set(o.reply_ids) <= set(ids) for o in outs)),
             ("@ 段只指向本批说话人", all(set(o.ats) <= set(USERS.values()) for o in outs)),
-            ("待回应块出现在 user 输入里", any("（待你回应）本批" in u for u in user_inputs(ents))),
+            ("待回应块出现在 user 输入里", any("（待你回应）" in u for u in user_inputs(ents))),
             ("无协议标签泄漏", no_tag_leak(outs)),
         ]
         return _finish("C3 多人同时找", checks, [f"runs={n} bubbles={len(outs)}"])
@@ -366,36 +365,6 @@ async def case_c1(sim: Sim) -> Verdict:
     return verdict
 
 
-async def case_act_for(sim: Sim) -> Verdict:
-    """多目标批次：A、D 同时要查个人订单；非豁免工具必须在 act_for 之后才执行成功。"""
-    gid = "100000906"
-    t0 = time.time()
-    await sim.say(gid, "A", f"{WAKE} 帮我看看我瑞幸最近的订单", at_bot=True)
-    await asyncio.sleep(0.5)
-    await sim.say(gid, "D", f"{WAKE} 也帮我看看我瑞幸最近的订单", at_bot=True)
-    await sim.wait_quiet(gid, first=240, idle=30)
-
-    def verdict() -> CaseResult:
-        ents = session_log_entries(gid, t0)
-        calls = tool_calls(ents)
-        rets = tool_returns(ents)
-        first_act = calls.index("act_for") if "act_for" in calls else -1
-        before = [n for n in (calls[:first_act] if first_act >= 0 else calls) if n not in EXEMPT_TOOLS]
-        denied = [n for n, body in rets if ACT_FOR_DENY_HEAD in body]
-        listed = any(e.kind == "tools_list" and "tools" in e.data and "act_for" in str(e.data["tools"]) for e in ents)
-        checks = [
-            ("同批两人进了一轮（工具身份块出现）", any("（工具身份）" in u for u in user_inputs(ents))),
-            ("act_for 在本轮工具列表里", listed),
-            ("act_for 之前的非豁免工具全部被拒", len(before) <= len(denied)),
-            ("得到回复", len(sim.outs(gid, t0)) >= 1),
-        ]
-        if any(n.startswith("mcp_") for n in calls):
-            checks.append(("MCP 工具在 act_for 之后调用", first_act >= 0))
-        return _finish("ACT 多目标工具身份", checks, [f"calls={calls}"])
-
-    return verdict
-
-
 CASES: dict[str, Callable[[Sim, int], Awaitable[Verdict]]] = {
     "C1": lambda s, n: case_c1(s),
     "C2": lambda s, n: case_c2(s),
@@ -403,7 +372,6 @@ CASES: dict[str, Callable[[Sim, int], Awaitable[Verdict]]] = {
     "C4a": lambda s, n: case_c4(s, n, "ask"),
     "C4b": lambda s, n: case_c4(s, n, "lurk"),
     "C5": lambda s, n: case_c5(s),
-    "ACT": lambda s, n: case_act_for(s),
 }
 
 

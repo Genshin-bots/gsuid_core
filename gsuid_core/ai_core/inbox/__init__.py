@@ -23,7 +23,6 @@ from gsuid_core.ai_core.inbox.state import (
 from gsuid_core.ai_core.inbox.blocks import (
     render_pending_block,
     render_related_block,
-    render_identity_block,
 )
 from gsuid_core.ai_core.inbox.scheduler import (
     TurnRunner,
@@ -52,7 +51,6 @@ __all__ = [
     "classify_wake",
     "current_turn",
     "get_inbox_scheduler",
-    "render_identity_block",
     "render_pending_block",
     "render_related_block",
     "reset_turn",

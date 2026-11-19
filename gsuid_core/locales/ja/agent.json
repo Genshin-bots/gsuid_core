@@ -109,6 +109,7 @@
   "log.agent.pydanticai_run_fail": "[PydanticAI] Agent 実行で異常が発生しました: {e}",
   "log.agent.pydanticai_run_fail_network": "[PydanticAI] Agent 実行異常: ネットワークエラー {e}",
   "log.agent.pydanticai_run_fail_rate": "[PydanticAI] Agent 実行異常: レートリミット {e}",
+  "log.agent.pydanticai_pool_timeout_reset": "[PydanticAI] HTTP コネクションプールがタイムアウトしました。{cfg} のプールを切り替え、高速フェイルオーバーします: {e}",
   "log.agent.pydanticai_run_fail_request": "[PydanticAI] Agent 実行異常: リクエストタイムアウト {e}",
   "log.agent.pydanticai_tools_clean_retry_fail": "[PydanticAI] 失敗前にツール {p0} がすでに実行されています。クリーンリトライでは副作用が繰り返される可能性があります",
   "log.agent.queue_wait_waited_exceeded": "[GsCoreAIAgent] キュー待機 {waited:.1f} 秒が TTL を超過しました。期限切れリクエストを破棄し、ロックを解放します",

@@ -1,4 +1,4 @@
-"""工具执行证据捕获：与 act_for 门同一条 wrap 链（§4.5）。
+"""工具执行证据捕获：挂载在 tool_safety wrap 链（§4.5）。
 
 调用工具前放一个可变 ``EvidenceMark`` 进 contextvar；MCP 包装函数在
 scope 裁决 / 调用结果各阶段往里写 service / 凭据归属 / outcome。
@@ -58,12 +58,14 @@ def _extract_handle(text: str) -> str:
     return m.group(0) if m else ""
 
 
+_EVIDENCE_EXEMPT_TOOLS = frozenset({"find_tools", "read_handle", "capability_map"})
+
+
 def record_tool_result(tool_name: str, result: object, mark: EvidenceMark | None) -> None:
     """执行成功后记录；异常路径由 ``record_tool_error`` 负责。"""
     from gsuid_core.ai_core.inbox.turn import current_turn
-    from gsuid_core.ai_core.buildin_tools.act_for import ACT_FOR_EXEMPT_TOOLS
 
-    if tool_name in ACT_FOR_EXEMPT_TOOLS:
+    if tool_name in _EVIDENCE_EXEMPT_TOOLS:
         return
     turn = current_turn()
     if turn is None:
@@ -90,9 +92,8 @@ def record_tool_result(tool_name: str, result: object, mark: EvidenceMark | None
 
 def record_tool_error(tool_name: str, error: Exception) -> None:
     from gsuid_core.ai_core.inbox.turn import current_turn
-    from gsuid_core.ai_core.buildin_tools.act_for import ACT_FOR_EXEMPT_TOOLS
 
-    if tool_name in ACT_FOR_EXEMPT_TOOLS:
+    if tool_name in _EVIDENCE_EXEMPT_TOOLS:
         return
     turn = current_turn()
     if turn is None:

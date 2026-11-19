@@ -756,7 +756,7 @@ class SettlePhase(RunOnceHost):
             sanitize_journal_summary,
         )
 
-        meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive", "act_for"})
+        meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive"})
         substantive_tools = [tn for tn in (st.tool_call_list or []) if tn not in meta_tools]
         ordered_bubbles: list[str] = [
             t_s.strip() for t_s in self._run_sent_order if t_s.strip() and "<SILENCE>" not in t_s

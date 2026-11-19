@@ -109,6 +109,7 @@
   "log.agent.pydanticai_run_fail": "[PydanticAI] Agent 运行异常: {e}",
   "log.agent.pydanticai_run_fail_network": "[PydanticAI] Agent 运行异常: 网络错误 {e}",
   "log.agent.pydanticai_run_fail_rate": "[PydanticAI] Agent 运行异常: Rate Limit {e}",
+  "log.agent.pydanticai_pool_timeout_reset": "[PydanticAI] HTTP 连接池超时，已轮换 {cfg} 连接池并快速切路: {e}",
   "log.agent.pydanticai_run_fail_request": "[PydanticAI] Agent 运行异常: 请求超时 {e}",
   "log.agent.pydanticai_tools_clean_retry_fail": "[PydanticAI] 失败前已执行工具 {p0}，干净重试可能重复其副作用",
   "log.agent.queue_wait_waited_exceeded": "[GsCoreAIAgent] 队列等待 {waited:.1f}s 超 TTL，丢弃过期请求，释放锁",
