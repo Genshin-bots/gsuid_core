@@ -3,6 +3,7 @@
 import asyncio
 from typing import TypedDict
 from urllib.parse import urlsplit
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 
 import httpx
 from mcp import McpError
@@ -56,6 +57,23 @@ def _is_source_url(url: str) -> bool:
         return False
 
 
+def _create_anonymous_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+    *,
+    follow_redirects: bool = False,
+) -> httpx.AsyncClient:
+    # 公开请求不保留或回送服务器设置的 Cookie。
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout if timeout is not None else _TIMEOUT_SECONDS,
+        auth=auth,
+        follow_redirects=follow_redirects,
+        cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
+    )
+
+
 async def parallel_search(query: str, max_results: int | None = None) -> list[ParallelSearchResult]:
     query = query.strip()
     if not query or (max_results is not None and max_results <= 0):
@@ -64,6 +82,7 @@ async def parallel_search(query: str, max_results: int | None = None) -> list[Pa
     transport = StreamableHttpTransport(
         _PARALLEL_MCP_URL,
         headers={"User-Agent": f"{_CLIENT_NAME}/{__version__}"},
+        httpx_client_factory=_create_anonymous_http_client,
     )
     client_info = Implementation(name=_CLIENT_NAME, version=__version__)
     try:

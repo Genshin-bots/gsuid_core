@@ -949,7 +949,6 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
     import httpx
     import fastmcp
     from mcp.types import LATEST_PROTOCOL_VERSION, JSONRPCMessage, JSONRPCRequest, CallToolRequestParams
-    from fastmcp.client.transports import http
 
     from gsuid_core.version import __version__
     from gsuid_core.ai_core.web_search import search
@@ -959,16 +958,21 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
     url = "https://docs.example.test/releases?q=python%203.12#notes"
     fallback_url = "https://fallback.example.test/"
     tool_requests = 0
+    requests_with_cookies: list[str] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         nonlocal tool_requests
         assert request.url == httpx.URL("https://mcp.parallel.ai/mcp")
         assert request.headers["User-Agent"] == f"gsuid-core/{__version__}"
         assert "authorization" not in request.headers
+        if "Cookie" in request.headers:
+            requests_with_cookies.append(request.method)
         rpc = JSONRPCMessage.model_validate_json(request.content).root
         if not isinstance(rpc, JSONRPCRequest):
             return httpx.Response(202)
+        headers: dict[str, str] = {}
         if rpc.method == "initialize":
+            headers["Set-Cookie"] = "edge=fixture; Path=/; Secure"
             payload = {
                 "protocolVersion": LATEST_PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
@@ -997,17 +1001,15 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
                     ]
                 )
             payload = {"content": [], "structuredContent": {"results": hits}}
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc.id, "result": payload})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc.id, "result": payload}, headers=headers)
 
-    def client_factory(
-        headers: dict[str, str], auth: httpx.Auth | None, timeout: httpx.Timeout | None = None
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(headers=headers, auth=auth, timeout=timeout, transport=httpx.MockTransport(respond))
+    def mock_transport(_client: httpx.AsyncClient, _url: httpx.URL) -> httpx.MockTransport:
+        return httpx.MockTransport(respond)
 
     async def fallback(query: str, max_results: int | None = None) -> list[dict[str, str]]:
         return [{"url": fallback_url}]
 
-    monkeypatch.setattr(http, "create_mcp_http_client", client_factory)
+    monkeypatch.setattr(httpx.AsyncClient, "_transport_for_url", mock_transport)
     monkeypatch.setattr(search, "anysearch_search", fallback)
     monkeypatch.setattr(ai_config.get_config("websearch_provider"), "data", "AnySearch")
     monkeypatch.setattr(ai_config.get_config("websearch_lb_strategy"), "data", "error_switch")
@@ -1022,6 +1024,7 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
         group_errors.setattr(fastmcp.settings, "client_raise_first_exceptiongroup_error", False)
         assert asyncio.run(search.web_search(query, 1)) == [{"url": fallback_url}] and tool_requests == 2
     assert asyncio.run(search.web_search(query, 1)) == [{"url": fallback_url}] and tool_requests == 3
+    assert not requests_with_cookies
 
 
 def test_websearch_keenable_opt_in_routing_and_wizard(
