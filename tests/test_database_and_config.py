@@ -140,6 +140,27 @@ def test_session_read_only_and_savepoint_isolation(tmp_path: Path, monkeypatch: 
                 # 另一任务纯读会话不占写闸门，写锁被占期间仍可直接完成
                 assert await asyncio.create_task(_reader()) == 1
             assert await Probe.outer_swallows() == 2
+
+            import gsuid_core.utils.database.startup as db_startup
+
+            warnings: list[str] = []
+            monkeypatch.setattr(db_startup, "async_maker", maker)
+            monkeypatch.setattr(
+                db_startup,
+                "exec_list",
+                [
+                    "ALTER TABLE probe ADD COLUMN n INTEGER",
+                    "ALTER TABLE probe ADD COLUMN tag TEXT DEFAULT ''",
+                ],
+            )
+            monkeypatch.setattr(db_startup, "_SLOW_MIGRATION_WARN_SECONDS", 0.0)
+            monkeypatch.setattr(db_startup.logger, "warning", lambda msg, *_a, **_kw: warnings.append(str(msg)))
+            await db_startup.trans_adapter()
+            async with maker() as check_session:
+                cols = (await check_session.execute(text("PRAGMA table_info(probe)"))).all()
+            assert "tag" in {str(row[1]) for row in cols}
+            assert any("ALTER TABLE probe ADD COLUMN tag" in msg for msg in warnings)
+            assert any("trans_adapter" in msg for msg in warnings)
         finally:
             await engine.dispose()
 

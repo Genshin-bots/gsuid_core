@@ -22,6 +22,7 @@ from datetime import datetime
 
 from sqlmodel import Field, SQLModel, col, select, update
 from sqlalchemy import Text, Column, or_, func
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.postgresql import JSON
@@ -463,8 +464,8 @@ class AIAgentTaskLog(_PlanCRUD, SQLModel, table=True):
         return list(result.scalars().all())
 
 
-# Artifact 类型；workspace_file 由命令执行后扫描 workspace 变更登记
-ARTIFACT_KINDS = ("output", "workspace_file", "log", "report", "patch")
+# Artifact 类型；workspace_file 由命令执行后扫描 workspace 变更登记；draft 为重渲作废草稿
+ARTIFACT_KINDS = ("output", "workspace_file", "log", "report", "patch", "draft")
 
 
 class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
@@ -506,19 +507,52 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
 
     @classmethod
     @with_read_session
-    async def list_for_root(cls, session: AsyncSession, root_task_id: str) -> List["AIAgentArtifact"]:
-        result = await session.execute(
-            select(cls).where(col(cls.root_task_id) == root_task_id).order_by(col(cls.created_at).asc())
-        )
+    async def list_for_root(
+        cls,
+        session: AsyncSession,
+        root_task_id: str,
+        *,
+        include_drafts: bool = False,
+    ) -> List["AIAgentArtifact"]:
+        stmt = select(cls).where(col(cls.root_task_id) == root_task_id)
+        if not include_drafts:
+            stmt = stmt.where(col(cls.artifact_kind) != "draft")
+        result = await session.execute(stmt.order_by(col(cls.created_at).asc()))
         return list(result.scalars().all())
 
     @classmethod
     @with_read_session
-    async def list_for_task(cls, session: AsyncSession, task_id: str) -> List["AIAgentArtifact"]:
-        result = await session.execute(
-            select(cls).where(col(cls.task_id) == task_id).order_by(col(cls.created_at).asc())
-        )
+    async def list_for_task(
+        cls,
+        session: AsyncSession,
+        task_id: str,
+        *,
+        include_drafts: bool = False,
+    ) -> List["AIAgentArtifact"]:
+        stmt = select(cls).where(col(cls.task_id) == task_id)
+        if not include_drafts:
+            stmt = stmt.where(col(cls.artifact_kind) != "draft")
+        result = await session.execute(stmt.order_by(col(cls.created_at).asc()))
         return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def demote_prior_image_outputs(cls, session: AsyncSession, task_id: str, keep_id: str) -> int:
+        """同任务重渲出图时，把先前 output 图片降级为 draft（保留落盘供复核，不参与交付）。"""
+        if not task_id or not keep_id:
+            return 0
+        stmt = (
+            update(cls)
+            .where(
+                col(cls.task_id) == task_id,
+                col(cls.id) != keep_id,
+                col(cls.artifact_kind) == "output",
+                col(cls.mime).like("image/%"),
+            )
+            .values(artifact_kind="draft")
+        )
+        result = await session.execute(stmt)
+        return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
     @with_read_session
@@ -562,11 +596,14 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
         session: AsyncSession,
         root_task_id: str,
         limit: int = 1,
+        *,
+        include_drafts: bool = False,
     ) -> List["AIAgentArtifact"]:
         """按 created_at 倒序拉最近 N 条 artifact——给主人格"追问溯源"用。"""
-        result = await session.execute(
-            select(cls).where(col(cls.root_task_id) == root_task_id).order_by(col(cls.created_at).desc()).limit(limit)
-        )
+        stmt = select(cls).where(col(cls.root_task_id) == root_task_id)
+        if not include_drafts:
+            stmt = stmt.where(col(cls.artifact_kind) != "draft")
+        result = await session.execute(stmt.order_by(col(cls.created_at).desc()).limit(limit))
         return list(result.scalars().all())
 
     @classmethod
@@ -590,7 +627,7 @@ class AIAgentArtifact(_PlanCRUD, SQLModel, table=True):
         owner_tasks = select(col(AIAgentTask.root_task_id)).where(col(AIAgentTask.owner_user_id) == owner_user_id)
         if group_id:
             owner_tasks = owner_tasks.where(col(AIAgentTask.group_id) == group_id)
-        stmt = select(cls).where(col(cls.root_task_id).in_(owner_tasks))
+        stmt = select(cls).where(col(cls.root_task_id).in_(owner_tasks), col(cls.artifact_kind) != "draft")
         kw = keyword.strip()
         if kw:
             stmt = stmt.where(col(cls.summary).contains(kw))

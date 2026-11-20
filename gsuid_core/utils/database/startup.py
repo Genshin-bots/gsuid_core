@@ -1,8 +1,10 @@
+import time
 import importlib
 from shutil import move
 from typing import List
 
 from sqlmodel import SQLModel
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import text
 
 from gsuid_core.i18n import t
@@ -256,15 +258,42 @@ async def create_core_tables():
     await ensure_core_database_tables()
 
 
+_SLOW_MIGRATION_WARN_SECONDS: float = 0.5
+
+
 @on_core_start_before(priority=-80)
-async def trans_adapter():
+async def trans_adapter() -> None:
+    started_all = time.perf_counter()
+    slow_count = 0
     async with async_maker() as session:
         for _t in exec_list:
+            started = time.perf_counter()
             try:
                 await session.execute(text(_t))
                 await session.commit()
-            except:  # noqa: E722
-                pass
+            except SQLAlchemyError:
+                await session.rollback()
+            elapsed = time.perf_counter() - started
+            if elapsed >= _SLOW_MIGRATION_WARN_SECONDS:
+                slow_count += 1
+                sql_preview = " ".join(_t.split())[:120]
+                logger.warning(
+                    t(
+                        "log.database.slow_migration_sql",
+                        elapsed=f"{elapsed:.2f}",
+                        sql=sql_preview,
+                    )
+                )
+    total_elapsed = time.perf_counter() - started_all
+    if total_elapsed >= _SLOW_MIGRATION_WARN_SECONDS:
+        logger.warning(
+            t(
+                "log.database.trans_adapter_slow",
+                elapsed=f"{total_elapsed:.2f}",
+                count=len(exec_list),
+                slow_count=slow_count,
+            )
+        )
 
 
 @on_core_start_before(priority=-60)

@@ -22,7 +22,7 @@
 import re
 import time
 import asyncio
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Sequence
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
@@ -296,10 +296,53 @@ async def _collect_upstream_artifacts(child: AIAgentTask) -> List[AIAgentArtifac
     for dep_id in deps:
         rows = await AIAgentArtifact.list_for_task(dep_id)
         for r in rows:
+            if r.artifact_kind == "draft":
+                continue
             if r.id not in seen:
                 bag.append(r)
                 seen.add(r.id)
     return bag
+
+
+def select_delivery_artifacts(
+    task: AIAgentTask,
+    arts: Sequence[AIAgentArtifact],
+) -> tuple[list[AIAgentArtifact], Optional[AIAgentArtifact]]:
+    """过滤重渲草稿并选定主产物：render_agent 同任务只交付最后一张定稿图。"""
+    from gsuid_core.ai_core.planning.tool_output_protocol import is_raster_image_mime
+
+    if not arts:
+        return [], None
+
+    active = [a for a in arts if a.artifact_kind != "draft"]
+    if not active:
+        active = [arts[-1]]
+
+    def _is_img(a: AIAgentArtifact) -> bool:
+        return bool(a.payload_path) and is_raster_image_mime(a.mime or "")
+
+    output_id = (task.output_artifact_id or "").strip()
+    imgs = [a for a in active if _is_img(a)]
+    primary_img: Optional[AIAgentArtifact] = None
+    if imgs:
+        if output_id:
+            primary_img = next((a for a in imgs if a.id == output_id), None)
+        if primary_img is None:
+            # 同时间戳按出现先后取最后一份（list_for_task 按 created_at 升序）
+            primary_img = max(enumerate(imgs), key=lambda pair: (pair[1].created_at, pair[0]))[1]
+
+    if task.agent_profile == "render_agent" and primary_img is not None and len(imgs) > 1:
+        selected = [a for a in active if not _is_img(a) or a.id == primary_img.id]
+    else:
+        selected = list(active)
+
+    primary: Optional[AIAgentArtifact] = primary_img
+    if primary is None:
+        if output_id:
+            primary = next((a for a in selected if a.id == output_id), None)
+        if primary is None and selected:
+            primary = max(enumerate(selected), key=lambda pair: (pair[1].created_at, pair[0]))[1]
+    return selected, primary
 
 
 async def _persona_relay(
@@ -341,7 +384,8 @@ async def _persona_relay(
     relay_logger: Optional[AISessionLogger] = None
 
     try:
-        arts = await AIAgentArtifact.list_for_task(task.id)
+        raw_arts = await AIAgentArtifact.list_for_task(task.id)
+        arts, primary_art = select_delivery_artifacts(task, raw_arts)
         artifact_block: str = ""
         if arts:
             from gsuid_core.ai_core.planning.tool_output_protocol import is_raster_image_mime
@@ -355,10 +399,14 @@ async def _persona_relay(
                 return 2
 
             sorted_arts = sorted(arts, key=lambda a: (_priority(a), -a.created_at.timestamp()))
-            recommended: Optional[AIAgentArtifact] = next(
-                (a for a in sorted_arts if a.payload_path and is_raster_image_mime(a.mime)),
-                None,
-            ) or next((a for a in sorted_arts if a.payload_path), None)
+            recommended: Optional[AIAgentArtifact] = (
+                primary_art
+                or next(
+                    (a for a in sorted_arts if a.payload_path and is_raster_image_mime(a.mime)),
+                    None,
+                )
+                or next((a for a in sorted_arts if a.payload_path), None)
+            )
 
             lines: List[str] = []
             for a in sorted_arts[:8]:
@@ -589,10 +637,9 @@ def _format_delivery_for_main_agent(
     _ = raw_result
     from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard, is_raster_image_mime
 
+    selected_arts, primary_art = select_delivery_artifacts(task, arts)
     cards: List[str] = []
-    primary = ""
-    primary_is_image = False
-    for a in arts[:8]:
+    for a in selected_arts[:8]:
         mime = a.mime or "text/plain"
         is_img = bool(a.payload_path) and is_raster_image_mime(mime)
         size = len((a.payload_inline or "").encode("utf-8")) if a.payload_inline else 0
@@ -608,12 +655,10 @@ def _format_delivery_for_main_agent(
             render_allowed=allow_render,
         )
         cards.append(card.format())
-        if is_img and not primary:
-            primary = a.id
-            primary_is_image = True
-    if not primary and arts:
-        primary = arts[0].id
-        primary_is_image = bool(arts[0].payload_path) and is_raster_image_mime(arts[0].mime or "")
+    primary = primary_art.id if primary_art is not None else ""
+    primary_is_image = (
+        primary_art is not None and bool(primary_art.payload_path) and is_raster_image_mime(primary_art.mime or "")
+    )
 
     owner = (task.owner_user_id or "").strip()
     parts = [
@@ -797,6 +842,10 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
             )
     finally:
         reset_delivery_root(root_token)
+    if (session.last_run_sent_visible_reply or session.last_run_sent_image) and owner and _user_type != "direct":
+        from gsuid_core.ai_core.followup_window import note_delivery_followup_from_config
+
+        note_delivery_followup_from_config(session_id or ev.session_id, owner)
     logger.info(t("log.ai.kanban_deferred_main_delivery_done", task=task.id[:8]))
 
 
@@ -1010,6 +1059,9 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             )
         else:
             await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
+            fresh.status = "completed"
+            if output_id:
+                fresh.output_artifact_id = output_id
             if no_broadcast:
                 logger.debug(
                     t(

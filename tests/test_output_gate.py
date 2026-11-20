@@ -206,6 +206,135 @@ def test_report_speech_and_allow_render_gate() -> None:
         wait_already_sent=False,
     )
     assert rw is not None and rw.reason_code == "report_speech"
+    # 本轮已发图时，report_speech 绝不再下发 render_agent 重渲义务
+    rw_post_img = rewrite_directive_for(
+        "report_speech",
+        allow_render=True,
+        tool_calls=1,
+        recited_report=True,
+        forbid_title="",
+        wait_already_sent=False,
+        image_sent=True,
+    )
+    assert rw_post_img is not None and rw_post_img.reason_code == "blocked_voice"
+    assert not any(ob.tool_name == "create_subagent" for ob in rw_post_img.obligations)
+
+    # send_message_by_ai 已向当前用户直发时，settle 策略环不得对被拦截的尾部复述触发二次纠偏/重渲
+    import asyncio
+    from collections.abc import Sequence
+
+    from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
+    from gsuid_core.ai_core.control.directive import Directive
+    from gsuid_core.ai_core.control.policy_ring import SettleRingInput, run_settle_policy_ring
+
+    class _NoCorrectionHost:
+        persona_name: str | None = "测试人格"
+        create_by: str = "Chat"
+        sent_texts: set[str] = {"已发送的正文"}
+        dispute_count: int = 0
+        attempt_tool_calls: Sequence[str] = ("send_message_by_ai",)
+        correction_calls: int = 0
+        scrubbed: list[set[str]] = []
+
+        def __init__(self) -> None:
+            self.scrubbed = []
+
+        def latest_dispute_preview(self) -> str:
+            return ""
+
+        def model_declares_video(self) -> bool:
+            return False
+
+        async def try_correction_pass(
+            self,
+            st: RunOnceState,
+            directives: tuple[Directive, ...],
+            *,
+            suppress_intermediate_text: bool = True,
+            return_mode: ReturnMode = "return",
+        ) -> object:
+            _ = (st, directives, suppress_intermediate_text, return_mode)
+            self.correction_calls += 1
+            return "<SILENCE>"
+
+        async def emit_unsent_reply(self, st: RunOnceState, text: str) -> None:
+            _ = (st, text)
+
+        async def run_inv3_correction(
+            self,
+            st: RunOnceState,
+            directive: Directive,
+            result_msg: str,
+            *,
+            scrub_replaced: bool = True,
+        ) -> str:
+            _ = (st, directive, result_msg, scrub_replaced)
+            self.correction_calls += 1
+            return "<SILENCE>"
+
+        def scrub_fake_done_history(self, fabricated: set[str]) -> None:
+            self.scrubbed.append(fabricated)
+
+        def note_output_block(self, st: RunOnceState, reason: str, body: str) -> None:
+            _ = (st, reason, body)
+
+    async def _noop_resend() -> None:
+        return None
+
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.agent_run.settle import _should_deliver_withheld
+
+    dummy_ev = Event(bot_id="onebot", user_id="100000001", group_id="group_1", user_type="group")
+    direct_st = RunOnceState(
+        user_message="[框架·任务完成]",
+        bot=Bot(_Bot("ws_test"), dummy_ev),
+        ev=dummy_ev,
+        rag_context=None,
+        tools=[],
+        return_mode="by_bot",
+        output_type=None,
+        intent=None,
+        has_active_task=True,
+        budget_gate=False,
+        suppress_intermediate_text=False,
+        fake_done_retry=False,
+        turn_graph=None,
+        is_framework_injection=True,
+        image_sent_this_run=False,
+        saw_structured_return=True,
+        presentation_withheld=[bullet_report],
+        fab_blocked=["我刚才已经发了"],
+        tool_call_list=["send_message_by_ai"],
+        run_extra={"direct_user_sent": True},
+    )
+    host = _NoCorrectionHost()
+    ring_out = asyncio.run(
+        run_settle_policy_ring(
+            host,
+            SettleRingInput(
+                st=direct_st,
+                result_msg=bullet_report,
+                match_msg=bullet_report,
+                allow_render=True,
+                resend_fab_blocked=_noop_resend,
+            ),
+        )
+    )
+    assert host.correction_calls == 0
+    assert ring_out.result_msg == "<SILENCE>"
+    assert ring_out.replacement_visible is True
+    assert direct_st.silence_reason == "already_sent_by_tool"
+    assert host.scrubbed == [{"我刚才已经发了"}]
+    # 纯文本工具直发场景下，INV-4 也不得把暂扣旧文再发一遍
+    assert (
+        _should_deliver_withheld(
+            direct_st,
+            skip_report_exit=ring_out.skip_report_exit,
+            replacement_visible=ring_out.replacement_visible,
+        )
+        is False
+    )
     assert (
         rewrite_directive_for(
             "ok",

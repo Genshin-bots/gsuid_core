@@ -652,6 +652,10 @@ async def send_message_by_ai(
                     note_thread_handle(tool_ctx, hid)
             if success_img_ids:
                 extra["image_sent_this_run"] = True
+            if _wake and ev is not None and ev.group_id and target_id and session_id:
+                from gsuid_core.ai_core.followup_window import note_delivery_followup_from_config
+
+                note_delivery_followup_from_config(session_id, target_id)
 
         if throttle_key is not None:
             _PER_TURN_SEND_MESSAGE_COUNT[throttle_key] = _PER_TURN_SEND_MESSAGE_COUNT.get(throttle_key, 0) + 1

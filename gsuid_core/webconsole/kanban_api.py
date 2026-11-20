@@ -204,12 +204,12 @@ async def get_kanban_task_detail(
     root_id = task.root_task_id or task.id
     root, children = await kanban.get_task_tree(root_id)
     logs = await AIAgentTaskLog.get_for_task(task_id, limit=log_limit)
-    artifacts = await AIAgentArtifact.list_for_task(task_id)
+    artifacts = await AIAgentArtifact.list_for_task(task_id, include_drafts=True)
     # 同时把根任务（仅 root） / 子任务列表（root 视角）下的全部 artifact 也拉出来——
     # 让前端在"根任务详情"页能一次性展示整棵树所有产物，避免点开每个子任务再请求。
     root_artifacts: List[AIAgentArtifact] = []
     if root and root.id != task_id:
-        root_artifacts = await AIAgentArtifact.list_for_root(root_id)
+        root_artifacts = await AIAgentArtifact.list_for_root(root_id, include_drafts=True)
     return {
         "status": 0,
         "msg": "ok",

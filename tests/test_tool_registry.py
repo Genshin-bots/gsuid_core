@@ -1251,14 +1251,20 @@ def test_subagent_read_image_vision_gate_large_slice_and_render_cap(
         saved_paths.append(file_path)
         return AIAgentArtifact(
             id=f"res_test_{art_counter['n']}",
-            root_task_id="root_render_cap",
-            task_id="task_render_cap",
+            root_task_id="root_render_cap_01",
+            task_id="task_render_cap_01",
             mime="image/png",
             artifact_kind="output",
             summary="test render",
             payload_path=str(file_path),
             size_bytes=len(small_bytes),
         )
+
+    demote_calls: list[tuple[str, str]] = []
+
+    async def _spy_demote_prior(task_id: str, keep_id: str) -> int:
+        demote_calls.append((task_id, keep_id))
+        return 0
 
     async def _noop_update(**_kw: object) -> None:
         return None
@@ -1269,6 +1275,7 @@ def test_subagent_read_image_vision_gate_large_slice_and_render_cap(
     from gsuid_core.ai_core.planning import models as plan_models, workspace as plan_workspace
 
     monkeypatch.setattr(plan_workspace, "put_artifact", _fake_put_artifact)
+    monkeypatch.setattr(plan_models.AIAgentArtifact, "demote_prior_image_outputs", _spy_demote_prior)
     monkeypatch.setattr(plan_models.AIAgentTask, "update_data_by_data", _noop_update)
     monkeypatch.setattr(hrt, "_summary_for_render", _noop_summary)
 
@@ -1291,9 +1298,186 @@ def test_subagent_read_image_vision_gate_large_slice_and_render_cap(
         assert isinstance(out_item, str)
         assert f"res_test_{idx + 1}" in out_item
     assert len(set(saved_paths)) == 4
+    assert demote_calls == [("task_render_cap_01", f"res_test_{i}") for i in range(1, 5)]
     out_fifth = outs[4]
     assert isinstance(out_fifth, str)
     assert "已成功出图 4 次" in out_fifth
+
+    # 非 render_agent 节点调渲染工具不降级先前图片
+    demote_calls.clear()
+    other_plan = PlanRunContext(
+        task_id="task_other_profile_01",
+        step_id=None,
+        root_task_id="root_other_profile_01",
+        artifact_workspace=tmp_path / "other_ws",
+        allowed_write_roots=[tmp_path / "other_ws"],
+        agent_profile="code_agent",
+    )
+    tok_other = bind_plan_context(other_plan)
+    try:
+        asyncio.run(hrt._finish_image(ctx_sub, small_bytes))
+    finally:
+        reset_plan_context(tok_other)
+    assert demote_calls == []
+
+    # 离线 SQLite 真执行 demote_prior_image_outputs 与 include_drafts 默认过滤
+    from datetime import datetime, timedelta
+
+    from sqlmodel import SQLModel
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    import gsuid_core.utils.database.base_models as base_models
+
+    monkeypatch.undo()
+    monkeypatch.setattr(hrt, "_RENDER_EMIT_COUNTS", {})
+
+    async def _verify_demote_sql() -> None:
+        db_path = tmp_path / "artifact-draft-test.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path.as_posix()}",
+            poolclass=NullPool,
+            connect_args={"check_same_thread": False, "timeout": 5.0},
+        )
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(base_models, "async_maker", maker)
+        monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+        monkeypatch.setattr(base_models, "_db_type", "sqlite")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(
+                    lambda sync_conn: SQLModel.metadata.create_all(
+                        sync_conn,
+                        tables=[SQLModel.metadata.tables["aiagentartifact"]],
+                    )
+                )
+            t0 = datetime(2026, 11, 20, 12, 0, 0)
+            async with maker() as sess:
+                sess.add_all(
+                    [
+                        AIAgentArtifact(
+                            id="res_sql_draft1",
+                            root_task_id="root_sql_1",
+                            task_id="task_sql_1",
+                            mime="image/png",
+                            artifact_kind="output",
+                            summary="测试渲染图",
+                            payload_path=str(saved_paths[0]),
+                            created_at=t0,
+                        ),
+                        AIAgentArtifact(
+                            id="res_sql_final",
+                            root_task_id="root_sql_1",
+                            task_id="task_sql_1",
+                            mime="image/png",
+                            artifact_kind="output",
+                            summary="测试渲染图",
+                            payload_path=str(saved_paths[1]),
+                            created_at=t0 + timedelta(seconds=5),
+                        ),
+                        AIAgentArtifact(
+                            id="res_sql_note",
+                            root_task_id="root_sql_1",
+                            task_id="task_sql_1",
+                            mime="text/plain",
+                            artifact_kind="output",
+                            summary="测试文本",
+                            payload_inline="ok",
+                            created_at=t0 + timedelta(seconds=2),
+                        ),
+                        AIAgentArtifact(
+                            id="res_sql_other",
+                            root_task_id="root_sql_2",
+                            task_id="task_sql_2",
+                            mime="image/png",
+                            artifact_kind="output",
+                            summary="其它任务图",
+                            payload_path=str(saved_paths[2]),
+                            created_at=t0 + timedelta(seconds=1),
+                        ),
+                    ]
+                )
+                await sess.commit()
+
+            changed = await AIAgentArtifact.demote_prior_image_outputs("task_sql_1", keep_id="res_sql_final")
+            assert changed == 1
+            draft_row = await AIAgentArtifact.get_by_id("res_sql_draft1")
+            final_row = await AIAgentArtifact.get_by_id("res_sql_final")
+            note_row = await AIAgentArtifact.get_by_id("res_sql_note")
+            other_row = await AIAgentArtifact.get_by_id("res_sql_other")
+            assert draft_row is not None and draft_row.artifact_kind == "draft"
+            assert final_row is not None and final_row.artifact_kind == "output"
+            assert note_row is not None and note_row.artifact_kind == "output"
+            assert other_row is not None and other_row.artifact_kind == "output"
+
+            # 默认查询不暴露 draft，控制台按需传 include_drafts=True 可见
+            assert [a.id for a in await AIAgentArtifact.list_for_task("task_sql_1")] == [
+                "res_sql_note",
+                "res_sql_final",
+            ]
+            assert [a.id for a in await AIAgentArtifact.list_for_task("task_sql_1", include_drafts=True)] == [
+                "res_sql_draft1",
+                "res_sql_note",
+                "res_sql_final",
+            ]
+            assert [a.id for a in await AIAgentArtifact.list_for_root("root_sql_1")] == [
+                "res_sql_note",
+                "res_sql_final",
+            ]
+            assert [a.id for a in await AIAgentArtifact.list_recent_for_root("root_sql_1", limit=5)] == [
+                "res_sql_final",
+                "res_sql_note",
+            ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_verify_demote_sql())
+
+    # 交付选图：旧数据未标 draft 时 render_agent 仍只交付最后一张定稿图，且主图指向定稿
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.kanban_executor import (
+        select_delivery_artifacts,
+        _format_delivery_for_main_agent,
+    )
+
+    legacy_arts = [
+        AIAgentArtifact(
+            id=f"res_legacy_{i}",
+            root_task_id="root_legacy",
+            task_id="task_legacy",
+            mime="image/png",
+            artifact_kind="output",
+            summary="测试渲染摘要",
+            payload_path=str(saved_paths[0]),
+        )
+        for i in (1, 2, 3)
+    ]
+    legacy_task = AIAgentTask(
+        id="task_legacy",
+        root_task_id="root_legacy",
+        goal="测试图表渲染",
+        display_name="测试图表渲染",
+        owner_user_id="100000001",
+        agent_profile="render_agent",
+    )
+    delivery_text = _format_delivery_for_main_agent(legacy_task, "ok", legacy_arts)
+    assert "res_legacy_3" in delivery_text
+    assert "res_legacy_1" not in delivery_text
+    assert "res_legacy_2" not in delivery_text
+    assert "主图：`res_legacy_3`" in delivery_text
+
+    # 非 render_agent（如 code_agent）多图产出保留全部有效图，主图取最新/output_artifact_id
+    code_task = AIAgentTask(
+        id="task_code_multi",
+        root_task_id="root_code_multi",
+        goal="测试脚本多图",
+        display_name="测试脚本多图",
+        owner_user_id="100000001",
+        agent_profile="code_agent",
+    )
+    code_selected, code_primary = select_delivery_artifacts(code_task, legacy_arts[:2])
+    assert [a.id for a in code_selected] == ["res_legacy_1", "res_legacy_2"]
+    assert code_primary is not None and code_primary.id == "res_legacy_2"
 
     # 主会话直发路径仍严格限 1 次防刷屏；render_agent 轮后契约允许 read_image 自检重渲
     from gsuid_core.ai_core.control.lines import (
