@@ -70,6 +70,7 @@ def _create_anonymous_http_client(
         timeout=timeout if timeout is not None else _TIMEOUT_SECONDS,
         auth=auth,
         follow_redirects=follow_redirects,
+        max_redirects=0,
         cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
     )
 

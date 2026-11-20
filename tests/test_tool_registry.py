@@ -988,6 +988,8 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
             tool_requests += 1
             if tool_requests == 2:
                 return httpx.Response(429)
+            if tool_requests == 4:
+                return httpx.Response(307, headers={"Location": "/mcp?login"})
             hits: list[dict[str, str | list[str]]] = [{"url": "https:///no-host", "excerpts": ["Invalid source"]}]
             if tool_requests == 1:
                 hits.extend(
@@ -1024,6 +1026,7 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
         group_errors.setattr(fastmcp.settings, "client_raise_first_exceptiongroup_error", False)
         assert asyncio.run(search.web_search(query, 1)) == [{"url": fallback_url}] and tool_requests == 2
     assert asyncio.run(search.web_search(query, 1)) == [{"url": fallback_url}] and tool_requests == 3
+    assert asyncio.run(search.web_search(query, 1)) == [{"url": fallback_url}] and tool_requests == 4
     assert not requests_with_cookies
 
 
