@@ -731,8 +731,10 @@ async def _register_image_artifact(image_bytes: bytes, *, summary: str = "render
     )
     if art is None:
         return ""
-    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
 
+    if plan.agent_profile == "render_agent":
+        await AIAgentArtifact.demote_prior_image_outputs(plan.task_id, keep_id=art.id)
     await AIAgentTask.update_data_by_data(
         select_data={"id": plan.task_id},
         update_data={"output_artifact_id": art.id},

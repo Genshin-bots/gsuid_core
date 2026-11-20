@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from gsuid_core.message_history import MessageRecord
 
 _GC_THRESHOLD = 512
+# 异步任务交付后的保底续聊窗口（秒）：给用户看图/读报告并回复留足时间，受 max_total 封顶
+DELIVERY_FOLLOWUP_MIN_WINDOW_S = 180
 
 
 class FollowupWindowState(StrEnum):
@@ -34,6 +36,10 @@ class _BurstState:
     last_hard_ts: float  # 最近一次硬触发时刻（窗口从此起算）
     soft_replies: int = 0  # 软触发已成功回复次数
     consecutive_silence: int = 0  # 连续被判定沉默次数
+    override_until_ts: float = 0.0  # 异步交付保底截止时间戳（单调不因后续硬触发缩窗）
+
+    def window_deadline(self, window_seconds: int) -> float:
+        return max(self.last_hard_ts + window_seconds, self.override_until_ts)
 
     def evaluate_state(
         self,
@@ -48,7 +54,7 @@ class _BurstState:
             return FollowupWindowState.REPLY_CAP_REACHED
         if (now - self.burst_start) > max_total_seconds:
             return FollowupWindowState.CEILING_EXPIRED
-        if (now - self.last_hard_ts) > window_seconds:
+        if now > self.window_deadline(window_seconds):
             return FollowupWindowState.WINDOW_EXPIRED
         return FollowupWindowState.ACTIVE
 
@@ -82,7 +88,7 @@ def _maybe_gc(window_seconds: int) -> None:
     if len(_states) < _GC_THRESHOLD:
         return
     now = time.time()
-    dead = [k for k, st in _states.items() if (now - st.last_hard_ts) > window_seconds]
+    dead = [k for k, st in _states.items() if now > st.window_deadline(window_seconds)]
     for k in dead:
         del _states[k]
 
@@ -94,13 +100,50 @@ def note_hard_trigger(session_id: str, user_id: str, window_seconds: int, max_to
     now = time.time()
     k = _key(session_id, user_id)
     st = _states[k] if k in _states else None
-    if st is None or (now - st.last_hard_ts) > window_seconds:
+    if st is None or now > st.window_deadline(window_seconds):
         _states[k] = _BurstState(burst_start=now, last_hard_ts=now, soft_replies=0, consecutive_silence=0)
     else:
         st.last_hard_ts = now
         st.consecutive_silence = 0
         st.soft_replies = 0
     _maybe_gc(window_seconds)
+
+
+def note_delivery_followup(
+    session_id: str,
+    user_id: str,
+    window_seconds: int,
+    max_total_seconds: int,
+    *,
+    min_window_seconds: int = DELIVERY_FOLLOWUP_MIN_WINDOW_S,
+) -> None:
+    """异步任务向发起人交付结果后，重开一轮续聊窗口（默认至少 180s，受 max_total 封顶）。"""
+    if window_seconds <= 0 or not session_id or not user_id:
+        return
+    now = time.time()
+    eff = max(window_seconds, min_window_seconds)
+    if max_total_seconds > 0:
+        eff = min(eff, max_total_seconds)
+    k = _key(session_id, user_id)
+    _states[k] = _BurstState(
+        burst_start=now,
+        last_hard_ts=now,
+        soft_replies=0,
+        consecutive_silence=0,
+        override_until_ts=now + eff,
+    )
+    _maybe_gc(window_seconds)
+
+
+def note_delivery_followup_from_config(session_id: str, user_id: str) -> None:
+    """按当前 AI 配置为异步交付的发起人重开续聊窗口。"""
+    if not session_id or not user_id:
+        return
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    fw = int(ai_config.get_config("follow_up_window").data or 0)
+    fmax = int(ai_config.get_config("follow_up_max_total").data or 0)
+    note_delivery_followup(session_id, user_id, fw, fmax)
 
 
 def record_soft_reply(session_id: str, user_id: str) -> None:
@@ -160,6 +203,7 @@ def list_active_windows(
         session_id, user_id = k.split("::", 1)
         age_hard = now - st.last_hard_ts
         age_burst = now - st.burst_start
+        deadline = st.window_deadline(window_seconds)
         state = st.evaluate_state(now, window_seconds, max_total_seconds, max_replies)
         active = state == FollowupWindowState.ACTIVE
         out.append(
@@ -170,7 +214,7 @@ def list_active_windows(
                 "last_hard_ts": st.last_hard_ts,
                 "age_since_hard": round(age_hard, 1),
                 "age_since_burst": round(age_burst, 1),
-                "remaining_window": max(0.0, round(window_seconds - age_hard, 1)),
+                "remaining_window": max(0.0, round(deadline - now, 1)) if window_seconds > 0 else 0.0,
                 "remaining_ceiling": max(0.0, round(max_total_seconds - age_burst, 1)),
                 "active": active,
                 "state": state.value,

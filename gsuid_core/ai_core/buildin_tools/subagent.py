@@ -875,10 +875,12 @@ async def _dispatch_via_kanban(
     if verdict is not None:
         return verdict
 
-    # 抓 artifact（最新一份用作产物展示）
-    arts = await AIAgentArtifact.list_for_task(final.id)
+    # 抓 artifact（过滤作废草稿，render_agent 只交付定稿图）
+    from gsuid_core.ai_core.planning.kanban_executor import select_delivery_artifacts
+
+    raw_arts = await AIAgentArtifact.list_for_task(final.id)
+    arts, primary_art = select_delivery_artifacts(final, raw_arts)
     art_lines = []
-    primary_handle = ""
     for a in arts[:5]:
         binary_tag = ""
         if a.payload_path and (a.mime or "").startswith("image/"):
@@ -886,10 +888,7 @@ async def _dispatch_via_kanban(
         elif a.payload_path:
             binary_tag = "（落盘文件/文本，文本类请 artifact_get 取原文再 render）"
         art_lines.append(f"  - {a.id} | {a.mime or 'text/plain'} | {a.summary[:80]}{binary_tag}")
-        if not primary_handle and a.payload_path and (a.mime or "").startswith("image/"):
-            primary_handle = a.id
-    if not primary_handle and arts:
-        primary_handle = arts[0].id
+    primary_handle = primary_art.id if primary_art is not None else ""
 
     _status_labels = {
         "completed": "✅ 已完成",

@@ -399,6 +399,11 @@ class GsCoreAIAgent(RunOnceMixin):
         return bool(self._run_sent_texts)
 
     @property
+    def last_run_sent_image(self) -> bool:
+        """本轮 run 是否已向用户发出过图片。"""
+        return self._last_attempt_image_sent
+
+    @property
     def last_run_visible_texts(self) -> tuple[str, ...]:
         """本轮已出站的可见台词（插入序）。评测 HTTP 在 SILENCE 返回时拼回这条。"""
         return tuple(self._run_sent_texts)

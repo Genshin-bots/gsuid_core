@@ -114,7 +114,10 @@ async def load_delegation(
         return None
     # 按 root 取：产物登记在**执行节点**上（多节点树是 child），list_for_task(root)
     # 只能命中叶子根模式，树模式会永远返回「暂无产物登记」。
-    arts = await AIAgentArtifact.list_for_root(task.root_task_id or task.id)
+    from gsuid_core.ai_core.planning.kanban_executor import select_delivery_artifacts
+
+    raw_arts = await AIAgentArtifact.list_for_root(task.root_task_id or task.id)
+    arts, _primary = select_delivery_artifacts(task, raw_arts)
     handles = tuple(a.id for a in arts)
     images = tuple(a.id for a in arts if bool(a.payload_path) and (a.mime or "").startswith("image/"))
     mapped = _STATUS_MAP[task.status] if task.status in _STATUS_MAP else "running"

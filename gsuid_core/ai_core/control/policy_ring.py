@@ -19,6 +19,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _RENDER_TOOL_NAMES,
     _SCHED_MUTATE_TOOLS,
     _INTERACTIVE_CREATE_BY,
+    _MAIN_PERSONA_CREATE_BY,
     _claims_fake_done,
     _claims_missing_offered_tool,
     _claims_inflight_without_backend,
@@ -77,6 +78,7 @@ class RewriteDirectiveArgs:
     recited_report: bool
     forbid_title: str
     wait_already_sent: bool
+    image_sent: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,8 @@ def _rw_blocked_voice(_a: RewriteDirectiveArgs) -> Directive:
 
 
 def _rw_report_speech(a: RewriteDirectiveArgs) -> Directive:
+    if a.image_sent:
+        return blocked_voice_directive()
     return render_obligation_directive(recited_report=True, tool_calls=a.tool_calls, allow_render=a.allow_render)
 
 
@@ -282,6 +286,7 @@ def rewrite_directive_for(
     recited_report: bool,
     forbid_title: str,
     wait_already_sent: bool,
+    image_sent: bool = False,
 ) -> Directive | None:
     """从同一策略表取出 ``reason`` 对应的重说 ``Directive``。"""
     builder = _REWRITE_BY_REASON[reason] if reason in _REWRITE_BY_REASON else None
@@ -294,6 +299,7 @@ def rewrite_directive_for(
             recited_report=recited_report,
             forbid_title=forbid_title,
             wait_already_sent=wait_already_sent,
+            image_sent=image_sent,
         )
     )
 
@@ -1070,6 +1076,22 @@ _SETTLE_PRE_RING: tuple[_SettlePreRule, ...] = (
 async def run_settle_policy_ring(host: SettleRingHost, inp: SettleRingInput) -> SettleRingOutcome:
     """执行回合结束策略环：前置结构纠偏（最多一次）→ 出口话术裁决 → 必要时单次重说。"""
     st = inp.st
+    # 发送工具已直接向当前用户交付，loop 层已拦截尾部复述；禁止再对弃文触发纠偏、二次出图或 INV-4 补发。
+    if (
+        host.create_by in _MAIN_PERSONA_CREATE_BY
+        and st.return_mode != "return"
+        and "direct_user_sent" in st.run_extra
+        and st.run_extra["direct_user_sent"] is True
+    ):
+        if st.fab_blocked:
+            host.scrub_fake_done_history({t.strip() for t in st.fab_blocked})
+        rs_direct = inp.result_msg.strip()
+        if rs_direct and not is_silence_marker(rs_direct) and rs_direct not in host.sent_texts:
+            if not st.silence_reason:
+                st.silence_reason = "already_sent_by_tool"
+            return SettleRingOutcome(result_msg="<SILENCE>", replacement_visible=True)
+        return SettleRingOutcome(result_msg=inp.result_msg, replacement_visible=True)
+
     render_obligation = needs_render_obligation(st, inp.match_msg, allow_render=inp.allow_render)
     post_fab_only = bool(st.fab_blocked and st.effectual_mutate and st.bot and st.return_mode in ("always", "by_bot"))
     if post_fab_only:
@@ -1140,6 +1162,7 @@ async def run_settle_policy_ring(host: SettleRingHost, inp: SettleRingInput) -> 
             recited_report=looks_like_report_speech(gate_body),
             forbid_title=forbid_title_for(st, host.persona_name),
             wait_already_sent=st.wait_comfort_sent,
+            image_sent=st.image_sent_this_run,
         )
         if rewrite is not None:
             disputes_before = host.dispute_count

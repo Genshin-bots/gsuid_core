@@ -203,6 +203,39 @@ def test_state_machine_contracts() -> None:
     burst.soft_replies = 0
     assert burst.evaluate_state(105.0, 30, 120, max_replies=2) == FollowupWindowState.ACTIVE
 
+    # 异步任务交付后开启独立续聊窗口：60s 常规窗外（如 68s）仍活跃，后续硬触发不缩窗，0 则关闭
+    from gsuid_core.ai_core.followup_window import (
+        _states as fw_states,
+        note_hard_trigger,
+        note_delivery_followup,
+        get_followup_window_state,
+    )
+
+    fw_sid = "ws:onebot:100000000:group:group_1"
+    fw_key = f"{fw_sid}::100000001"
+    fw_states.pop(fw_key, None)
+    try:
+        note_delivery_followup(fw_sid, "100000001", 0, 300)
+        assert fw_key not in fw_states
+
+        note_delivery_followup(fw_sid, "100000001", 60, 300)
+        st_deliv = fw_states[fw_key]
+        base_ts = st_deliv.last_hard_ts
+        assert st_deliv.evaluate_state(base_ts + 68.0, 60, 300) == FollowupWindowState.ACTIVE
+        assert st_deliv.evaluate_state(base_ts + 185.0, 60, 300) == FollowupWindowState.WINDOW_EXPIRED
+
+        # 交付后短时间内再 @ 一次（硬触发），单调截止戳不得把剩余 180s 窗缩回 60s
+        note_hard_trigger(fw_sid, "100000001", 60, 300)
+        st_after_hard = fw_states[fw_key]
+        assert st_after_hard.evaluate_state(base_ts + 100.0, 60, 300) == FollowupWindowState.ACTIVE
+
+        note_delivery_followup(fw_sid, "100000001", 60, 120)
+        st_capped = fw_states[fw_key]
+        assert st_capped.window_deadline(60) - st_capped.last_hard_ts == 120.0
+        assert get_followup_window_state(fw_sid, "100000001", 60, 120) == FollowupWindowState.ACTIVE
+    finally:
+        fw_states.pop(fw_key, None)
+
     @dataclass
     class _FakeLog:
         event_type: str
