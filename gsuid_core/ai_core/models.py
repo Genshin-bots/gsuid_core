@@ -32,8 +32,7 @@ class ToolContext:
     ev: Optional[Event] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     parent_session_id: Optional[str] = None
-    # 渐进式工具暴露：find_tools 本轮命中的工具名集合，RetrievableToolset 每 step 读它
-    # 解析成可调用工具。作用域为单次 run（ToolContext 每轮新建），轮末自然丢弃。
+    # 渐进式工具暴露：find_tools 本轮命中的工具名集合，供 call_tool 与轮内守卫引用。
     dynamic_tool_names: Set[str] = field(default_factory=set)
     # 主人格交互轮：能力代理专属工具名。find_tools 默认不回灌。
     blocked_tool_names: Set[str] = field(default_factory=set)
@@ -225,6 +224,7 @@ class ToolBase:
     category: str  # 注册分类；花名册按此跳过主人格调不到的族
     hide_from_main: bool  # visible_to_capability_only：主人格花名册/速览不列
     code_callable: bool  # 模型写的 Python 可否按名 await 本工具
+    check_in_wrapper: bool  # True 表示 wrapper 内部已执行 check_func，call_tool 无需重复执行
 
     def __init__(
         self,
@@ -241,6 +241,7 @@ class ToolBase:
         category: str = "",
         hide_from_main: bool = False,
         code_callable: bool = True,
+        check_in_wrapper: bool = False,
     ):
         self.name = name
         self.description = description
@@ -255,6 +256,7 @@ class ToolBase:
         self.category = category
         self.hide_from_main = hide_from_main
         self.code_callable = code_callable
+        self.check_in_wrapper = check_in_wrapper
 
     @property
     def retrieval_text(self) -> str:

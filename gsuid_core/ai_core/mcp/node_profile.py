@@ -132,12 +132,18 @@ def split_ident(name: str) -> List[str]:
     return [t.lower() for t in tokens if len(t) >= 3]
 
 
+def _market_chinese_name(config: MCPConfig) -> str:
+    meta = config.market_meta
+    raw = meta["chinese_name"] if "chinese_name" in meta else ""
+    return raw.strip() if isinstance(raw, str) else ""
+
+
 def gen_when_to_use(config: MCPConfig) -> str:
     """自动生成 when_to_use：能力短语 + 服务名 + 工具能力列表 + 描述余量。"""
     desc = effective_description(config)
     head = first_sentence(desc)
     if not head:
-        cn_name = config.market_meta.get("chinese_name", "")
+        cn_name = _market_chinese_name(config)
         head = f"{cn_name}相关能力" if cn_name else f"调用 {config.name} 的 MCP 工具"
     text = f"{head} · {config.name} MCP"
     if config.tools:
@@ -146,6 +152,23 @@ def gen_when_to_use(config: MCPConfig) -> str:
     if rest:
         text += "。" + rest
     return text[:300]
+
+
+def gen_brand_keywords(config_id: str, config: MCPConfig) -> List[str]:
+    """仅提取品牌/服务标识词（不含泛用类目或工具名拆词），供私有 MCP 预推门控使用。"""
+    out: List[str] = []
+
+    def push(keyword: str) -> None:
+        kw = (keyword or "").strip()
+        if len(kw) >= 2 and kw not in out:
+            out.append(kw)
+
+    push(config.name)
+    push(_market_chinese_name(config))
+    for token in split_ident(config.name) + split_ident(config_id):
+        if token not in _GENERIC_VERBS and token not in {"mcp", "server", "api", "tool", "tools", "client"}:
+            push(token)
+    return out[:8]
 
 
 def gen_match_keywords(config_id: str, config: MCPConfig) -> List[str]:
@@ -158,11 +181,14 @@ def gen_match_keywords(config_id: str, config: MCPConfig) -> List[str]:
             out.append(kw)
 
     push(config.name)
-    push(config.market_meta.get("chinese_name", ""))
+    push(_market_chinese_name(config))
     for token in split_ident(config.name) + split_ident(config_id):
         push(token)
-    for category in config.market_meta.get("categories", []):
-        push(category)
+    cats = config.market_meta["categories"] if "categories" in config.market_meta else []
+    if isinstance(cats, list):
+        for category in cats:
+            if isinstance(category, str):
+                push(category)
     profile = config.generated_profile
     if profile is not None:
         for keyword in profile["keywords"]:
@@ -175,11 +201,19 @@ def gen_match_keywords(config_id: str, config: MCPConfig) -> List[str]:
 
 
 def mcp_tool_covers(config: Optional[MCPConfig], tool_description: str) -> List[str]:
-    """单个 MCP 工具的检索短语：工具自身首行居首（供摘要区分），后接服务描述短语（≤3）。"""
+    """单个 MCP 工具的检索短语：强制前缀品牌/服务名，避免泛问跨品牌误召回。"""
     covers: List[str] = []
+    prefix = ""
+    if config is not None:
+        display = (_market_chinese_name(config) or config.name or "").strip()
+        if display:
+            prefix = f"[{display}] "
     line = first_line(tool_description)[:40]
     if line:
-        covers.append(line)
+        if prefix and prefix.strip("[] ") not in line:
+            covers.append(f"{prefix}{line}"[:48])
+        else:
+            covers.append(line)
     if config is not None:
         server_phrases = 0
         for phrase in re.split(r"[，,、；;。\n]", effective_description(config)):
@@ -192,9 +226,63 @@ def mcp_tool_covers(config: Optional[MCPConfig], tool_description: str) -> List[
     return covers
 
 
+async def mcp_hint_allowed_for_turn(
+    tool_name: str,
+    query: str,
+    *,
+    bot_id: str,
+    user_id: str,
+) -> bool:
+    """私有 MCP 预推门控：未绑凭据且当前句未提品牌关键词时，不主动推入 turn_seed_hint。"""
+    from gsuid_core.ai_core.mcp.config_manager import mcp_config_manager
+    from gsuid_core.ai_core.mcp.credential_store import resolve_user_creds
+
+    matched_cid = ""
+    matched_cfg: Optional[MCPConfig] = None
+    matched_tool_def = None
+    for cid, cfg in mcp_config_manager.list_config_items():
+        for td in cfg.tools:
+            if mcp_registered_tool_name(cid, td.name) == tool_name or f"mcp_{cid}_{td.name}" == tool_name:
+                matched_cid = cid
+                matched_cfg = cfg
+                matched_tool_def = td
+                break
+        if matched_cfg is not None:
+            break
+
+    if matched_cfg is None:
+        return True
+    is_private_tool = bool(
+        (matched_tool_def is not None and matched_tool_def.exposure == "private") or matched_cfg.user_env_keys
+    )
+    if not is_private_tool:
+        return True
+
+    # 1. 若句子本身显式提及了该 MCP 的纯品牌/服务标识词，允许预推（方便引导私聊绑定）
+    q_low = (query or "").lower()
+    brand_terms = gen_brand_keywords(matched_cid, matched_cfg)
+    for kw in brand_terms:
+        k = kw.strip().lower()
+        if len(k) >= 2 and k in q_low:
+            return True
+
+    # 2. 否则仅当该用户已绑定该 MCP 所需凭据时才允许预推
+    if not user_id:
+        return False
+    creds, _row = await resolve_user_creds(matched_cid, bot_id, user_id)
+    if not creds:
+        return False
+    if matched_cfg.user_env_keys:
+        return all(bool(creds[k]) for k in matched_cfg.user_env_keys if k in creds) and all(
+            k in creds for k in matched_cfg.user_env_keys
+        )
+    return True
+
+
 def build_mcp_node_base(config_id: str, config: MCPConfig, registered_names: List[str]) -> AgentNode:
     """不含用户覆盖层的自动生成节点。"""
-    display = config.market_meta.get("chinese_name") or config.name
+    cn_name = config.market_meta["chinese_name"] if "chinese_name" in config.market_meta else ""
+    display = cn_name or config.name
     return AgentNode(
         node_id=mcp_node_id(config_id),
         display_name=display,

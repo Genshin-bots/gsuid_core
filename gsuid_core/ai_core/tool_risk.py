@@ -128,6 +128,8 @@ async def block_high_risk_execute(
     ):
         return TOOLS_EXECUTION_GATED_DENY
     name = (call.tool_name or tool_def.name or "").strip()
+    if isinstance(ctx.deps, ToolContext) and name in ctx.deps.blocked_tool_names:
+        return f"⚠️ 工具 `{name}` 在当前会话被禁用。"
     denied = high_risk_block(_event_from_deps(ctx.deps), name)
     if denied is not None:
         return denied

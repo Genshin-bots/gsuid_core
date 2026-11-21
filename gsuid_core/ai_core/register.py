@@ -118,6 +118,44 @@ _IMAGE_ENTITIES: List[ImageEntity] = []  # 来自插件注册的图片
 _ALIASES: Dict[str, Dict[str, List[str]]] = {}
 
 
+async def run_tool_check_func(
+    check_func: CheckFunc,
+    ctx: RunContext[ToolContext],
+    check_kwargs: Optional[Dict[str, object]] = None,
+) -> Tuple[bool, str]:
+    """统一执行工具权限/前置检查函数，供 @ai_tools、MCP 包装与 call_tool 复用。"""
+    check_sig = inspect.signature(check_func)
+    check_call_kwargs: Dict[str, object] = {}
+    for pname, param in check_sig.parameters.items():
+        anno_str = str(param.annotation)
+        if "RunContext" in anno_str:
+            check_call_kwargs[pname] = ctx
+        elif "ToolContext" in anno_str:
+            check_call_kwargs[pname] = ctx.deps
+        elif "Event" in anno_str:
+            check_call_kwargs[pname] = ctx.deps.ev
+        elif "Bot" in anno_str:
+            check_call_kwargs[pname] = ctx.deps.bot
+        elif pname == "ctx":
+            check_call_kwargs[pname] = ctx
+        elif pname == "deps":
+            check_call_kwargs[pname] = ctx.deps
+        elif pname in ("ev", "event"):
+            check_call_kwargs[pname] = ctx.deps.ev
+        elif pname == "bot":
+            check_call_kwargs[pname] = ctx.deps.bot
+
+    final_check_kwargs = {**check_call_kwargs, **(check_kwargs or {})}
+    check_result = check_func(**final_check_kwargs)
+    if asyncio.iscoroutine(check_result):
+        is_passed, message = await check_result
+        return bool(is_passed), str(message)
+    if isinstance(check_result, Tuple):
+        return bool(check_result[0]), str(check_result[1])
+    logger.warning(t("log.register.ai_tools_decorator_check"))
+    return False, "@ai_tools 装饰器 check_func 存在问题, 请开发者检查"
+
+
 @overload
 def ai_tools(
     func: F,
@@ -132,6 +170,18 @@ def ai_tools(
     *,
     category: str = "default",
     check_func: Optional[CheckFunc] = None,
+    context_tags: Optional[List[str]] = None,
+    capability_domain: Optional[str] = None,
+    covers: Optional[List[str]] = None,
+    aliases: Optional[List[str]] = None,
+    visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
+    timeout: Optional[float] = 60.0,
+    approval: Optional[str] = None,
+    brief: str = "",
+    code_callable: bool = True,
+    track_health: bool = True,
+    raw_passthrough: bool = False,
+    hide_from_main: Optional[bool] = None,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 
@@ -151,6 +201,9 @@ def ai_tools(
     approval: Optional[str] = None,
     brief: str = "",
     code_callable: bool = True,
+    track_health: bool = True,
+    raw_passthrough: bool = False,
+    hide_from_main: Optional[bool] = None,
     **check_kwargs,
 ) -> Callable[[F], F] | F:
     """
@@ -238,37 +291,7 @@ def ai_tools(
         async def wrapped_tool(ctx: RunContext[ToolContext], *args, **kwargs):
             # 执行拦截器校验
             if check_func:
-                # 根据 check_func 的参数签名自动注入依赖
-                check_sig = inspect.signature(check_func)
-
-                # 构建调用参数
-                check_call_kwargs: Dict[str, object] = {}
-
-                for name, param in check_sig.parameters.items():
-                    # 获取类型注解的字符串表示
-                    anno_str = str(param.annotation)
-                    if "RunContext" in anno_str:
-                        check_call_kwargs[name] = ctx
-                    elif "ToolContext" in anno_str:
-                        check_call_kwargs[name] = ctx.deps
-                    elif "Event" in anno_str:
-                        check_call_kwargs[name] = ctx.deps.ev
-                    elif "Bot" in anno_str:
-                        check_call_kwargs[name] = ctx.deps.bot
-
-                # 合并用户传入的 check_kwargs
-                final_check_kwargs = {**check_call_kwargs, **check_kwargs}
-
-                # 支持同步和异步 check_func
-                check_result = check_func(**final_check_kwargs)
-                if asyncio.iscoroutine(check_result):
-                    is_passed, message = await check_result
-                elif isinstance(check_result, Tuple):
-                    is_passed, message = check_result[0], check_result[1]
-                else:
-                    logger.warning(t("log.register.ai_tools_decorator_check"))
-                    return "@ai_tools 装饰器 check_func 存在问题, 请开发者检查"
-
+                is_passed, message = await run_tool_check_func(check_func, ctx, check_kwargs)
                 if not is_passed:
                     return message
 
@@ -289,8 +312,8 @@ def ai_tools(
                 else:
                     return await fn(*args, **call_kwargs)
 
-            # 工具健康度（方案九）：冻结期内短路执行；第 2 次附替代名。
-            if is_tool_frozen(fn.__name__):
+            # 工具健康度（方案九）：冻结期内短路执行；第 2 次附替代名（meta 分派器可关）。
+            if track_health and is_tool_frozen(fn.__name__):
                 from gsuid_core.ai_core.tool_health import frozen_tool_reply
 
                 need = ""
@@ -344,18 +367,18 @@ def ai_tools(
                     _drop_running_task(_task)
                     raise
 
-            # 健康度记账（方案九）：❌ 开头视为失败信号，其余视为成功（成功清零连败）
-            if isinstance(raw_result, str) and raw_result.startswith("❌"):
-                record_tool_failure(fn.__name__, raw_result)
-                hint = _param_error_hint(fn.__name__, raw_result)
-                if hint:
-                    raw_result = f"{raw_result}\n{hint}"
-            else:
-                record_tool_success(fn.__name__)
+            # 健康度记账（方案九）：❌ 开头视为失败信号，其余视为成功（meta 分派器不重复记账）
+            if track_health:
+                if isinstance(raw_result, str) and raw_result.startswith("❌"):
+                    record_tool_failure(fn.__name__, raw_result)
+                    hint = _param_error_hint(fn.__name__, raw_result)
+                    if hint:
+                        raw_result = f"{raw_result}\n{hint}"
+                else:
+                    record_tool_success(fn.__name__)
 
-            # ToolReturn 原样透传给 pydantic_ai（多模态内容注入会话，如 read_image 直投图片）。
-            # 走 handle_tool_result 会被兜底 str() 成 dataclass repr——模型只会看到裸 base64 文本
-            if isinstance(raw_result, ToolReturn):
+            # ToolReturn 或 raw_passthrough 原样透传（内层工具已完成 handle_tool_result）
+            if raw_passthrough or isinstance(raw_result, ToolReturn):
                 return raw_result
 
             # 处理并返回结果
@@ -484,19 +507,24 @@ def ai_tools(
             )
 
         pred_name = getattr(visible_when, "__name__", "") if visible_when is not None else ""
+        resolved_hide_from_main = (
+            bool(hide_from_main) if hide_from_main is not None else (pred_name == "visible_to_capability_only")
+        )
         tool_base = ToolBase(
             name=fn.__name__,
             description=tool_description,
             plugin=plugin_name,
             tool=tool_obj,
+            check_func=check_func,
             context_tags=context_tags,
             capability_domain=capability_domain,
             covers=covers,
             aliases=aliases,
             schema_brief=schema_brief,
             category=reg_category,
-            hide_from_main=pred_name == "visible_to_capability_only",
+            hide_from_main=resolved_hide_from_main,
             code_callable=code_callable,
+            check_in_wrapper=True,
         )
 
         # 根据 category 分类注册工具
@@ -658,7 +686,7 @@ def get_tools_by_capability_domain(domain: str) -> List[ToolBase]:
 
     能力族 = 注册时 ``@ai_tools(capability_domain="定时任务")`` 声明的同名工具集合。
     用于"能力族整体召回（L4）"：召回族内任一工具时把整族一起加载，
-    保证"能创建就能改/删"（如召回 add_once_task 即带出 modify/cancel_scheduled_task）。
+    保证"能创建就能改/删"（如召回 schedule_task 即带出 modify/cancel_scheduled_task）。
     """
     if not domain:
         return []
