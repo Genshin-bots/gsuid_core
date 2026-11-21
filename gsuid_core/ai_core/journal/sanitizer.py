@@ -30,6 +30,7 @@ _BUILTIN_TOOL_LABELS: dict[str, str] = {
     "send_meme_card": "发表情",
     "create_subagent": "委派接单",
     "run_code": "数据计算",
+    "schedule_task": "设提醒",
     "add_once_task": "设提醒",
     "add_interval_task": "设周期提醒",
     "add_scheduled_task": "设提醒",

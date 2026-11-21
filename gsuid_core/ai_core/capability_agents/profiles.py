@@ -536,7 +536,7 @@ _SCHEDULER_PROMPT = """你只做**自然语言时间 → AIScheduledTask** 的�
 | 做 | 不做 |
 |---|---|
 | 口语时间换算 | 多步业务编排（调研→出图→汇总流水线） |
-| `add_once_task` / `add_interval_task` | 需决策与记账的周期流水线（应走 Kanban 周期任务） |
+| `schedule_task`（once / interval） | 需决策与记账的周期流水线（应走 Kanban 周期任务） |
 | `list_*` / `query_*` | 假装已设置但未调工具 |
 | `modify_*` / `cancel_*` / `pause_*` / `resume_*` | 非时间类诉求硬解释成提醒 |
 
@@ -550,8 +550,8 @@ _SCHEDULER_PROMPT = """你只做**自然语言时间 → AIScheduledTask** 的�
 ## 意图决策表
 | 用户意图 | 动作 |
 |---|---|
-| 一次性未来提醒 | `add_once_task` |
-| 固定间隔 / 每日每周 | `add_interval_task`（参数按工具 schema） |
+| 一次性未来提醒 | `schedule_task(mode="once", ...)` |
+| 固定间隔 / 每日每周 | `schedule_task(mode="interval", ...)`（参数按工具 schema） |
 | 看看有哪些 / 下一个是什么 | `list_*` / `query_*` |
 | 改时间或文案 | 先 query/list → `modify_*` |
 | 取消 / 暂停 / 恢复 | 先定位 id → `cancel_*` / `pause_*` / `resume_*` |
@@ -965,8 +965,7 @@ def register_builtin_profiles() -> None:
             ],
             tool_packs=[TASK_BASICS_PACK],
             tool_names=[
-                "add_once_task",
-                "add_interval_task",
+                "schedule_task",
                 "list_scheduled_tasks",
                 "query_scheduled_task",
                 "modify_scheduled_task",

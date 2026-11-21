@@ -1,6 +1,6 @@
 # 九、Scheduled Task 定时任务
 
-定时任务系统支持一次性任务和循环任务。**注意：与插件侧 APScheduler（[§6 of `gscore-plugin-development`](../gscore-plugin-development/references/06-scheduler-and-subscribe.md)）是两套独立系统**——本章节是 **AI Core 的定时任务工具**，由 LLM 通过 `add_once_task` / `add_interval_task` 等工具创建；插件侧的 APScheduler 是插件自己用 Python 调度器跑业务，与本章节无关。
+定时任务系统支持一次性任务和循环任务。**注意：与插件侧 APScheduler（[§6 of `gscore-plugin-development`](../gscore-plugin-development/references/06-scheduler-and-subscribe.md)）是两套独立系统**——本章节是 **AI Core 的定时任务工具**，由 LLM 通过 `schedule_task`（mode=`once`/`interval`）等工具创建；插件侧的 APScheduler 是插件自己用 Python 调度器跑业务，与本章节无关。
 
 ## 9.1 模块导入
 
@@ -9,8 +9,7 @@
 ```python
 # 定时任务工具（通过 buildin_tools 导入）
 from gsuid_core.ai_core.buildin_tools import (
-    add_once_task,
-    add_interval_task,
+    schedule_task,
     list_scheduled_tasks,
     query_scheduled_task,
     modify_scheduled_task,
@@ -28,8 +27,7 @@ from gsuid_core.ai_core.scheduled_task import AIScheduledTask
 完整工具签名（按 category 分组）见 [§7.1.1 定时任务管理工具](./07-builtin-tools.md)：
 
 - **Self 保底池（创建入口，口语化触发）**：
-  - `add_once_task` — [§7.1](./07-builtin-tools.md)
-  - `add_interval_task` — [§7.1](./07-builtin-tools.md)
+  - `schedule_task` — [§7.1](./07-builtin-tools.md)
 - **Common 向量池（管理类）**：
   - `list_scheduled_tasks` / `query_scheduled_task` / `modify_scheduled_task` /
   - `cancel_scheduled_task` / `pause_scheduled_task` / `resume_scheduled_task` —

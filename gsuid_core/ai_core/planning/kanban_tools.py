@@ -265,7 +265,7 @@ async def register_kanban_task(
     """创建一棵 Kanban 任务树（主任务 + N 个子任务节点）。
 
     **⚠️ 周期任务请直接传 `recurring_trigger`（cron / interval 两种格式），
-    不要枚举 add_once_task —— 后者一定撞 20 个待执行任务硬上限。**
+    不要枚举 schedule_task(mode="once") —— 后者一定撞 20 个待执行任务硬上限。**
 
     使用前必须先调用 evaluate_agent_mesh_capability，且最近一次评估 covered=true。
     每个子任务必须分配一个**已注册**的 agent_profile。
@@ -284,7 +284,7 @@ async def register_kanban_task(
        克隆出实例时**不复制 not_before**——周期 cron 已决定开火时间，子任务级
        再叠 not_before 没意义。
 
-    **周期触发示范**（最容易被错走 add_once_task 枚举的场景）：
+    **周期触发示范**（最容易被错走 schedule_task(mode=once) 枚举的场景）：
 
         # 「持久化状态 + 周期更新 + 最终汇总」三棵树模板（与具体业务无关）： ⓐ 一次性初始化主集合 → ⓑ
 
@@ -316,7 +316,7 @@ async def register_kanban_task(
             ],
         )
         # ⚠ 禁忌：① 把"初始化"塞进周期模板——每次开火都会清空主集合；
-        # ② 用 20 个 add_once_task 枚举每个触发点——撞 20 个任务硬上限；
+        # ② 用 20 个 schedule_task(mode=once) 枚举每个触发点——撞 20 个任务硬上限；
 
     Args:
         goal: 任务树总目标。
@@ -324,7 +324,7 @@ async def register_kanban_task(
         broadcast_to_group: 是否允许把进展播报到当前群。
         recurring_trigger: 周期触发规则，留空表示一次性任务。**只要用户描述含
             "每 / 每天 / 每隔 / 每工作日 / 持续 N 天"等周期意图，必须传本字段**——
-            不要外挂 add_once_task / add_interval_task。格式：
+            不要外挂 schedule_task（once / interval）。格式：
             - ``"interval:<seconds>"``（最小 60 秒，防过密）
             - ``"cron:<minute> <hour> <day> <month> <day_of_week>"``（标准 5 段 cron）
         recurring_until: 周期模式下的失效时间（ISO 字符串，如 "2026-06-21T15:00:00"）；

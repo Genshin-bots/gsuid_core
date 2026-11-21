@@ -620,8 +620,6 @@
   "log.ai.toolpack_capability_pack_neither": "[ToolPack] 不明な能力パック: {pack}（静的パックでも capability_domain でもない）",
   "log.ai.toolpack_invalid_capability_pack_skip": "[ToolPack] 不正な能力パック名: {pack_name}、スキップした",
   "log.ai.toolpack_registered_capability_pack_register": "[ToolPack] 能力パックを登録: {pack_name}（{p0} 個のツール）",
-  "log.ai.toolset_name_prepare_skipping": "[RetrievableToolset] ツール {name} の prepare に失敗しました。スキップします: {e}",
-  "log.ai.toolset_step_dynamically_exposed": "[RetrievableToolset] このステップで動的に {p0} 個のツールを公開しました: {p1}",
   "log.ai.train_intent_v5_optimizing": "[AI] 新しい意図モデルの学習を開始（v5 - 雑談誤判定を最適化）...",
   "log.ai.training_saved": "[AI] モデルの学習が完了した。保存先: {p0}",
   "log.ai.trigger_ai_func_name_primary": "[Trigger→AI] +{tool_func_name} ← [{primary_keyword}] {plugin_name}",
@@ -700,5 +698,6 @@
   "log.ai.websearch_tavily_api_key_trying": "[WebSearch][Tavily] api_key ...{p0} が失敗、次を試す",
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] すべての api_key が失敗",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] コンテキスト付き検索: {query}、{p0} 件の結果を返した",
+  "log.ai.call_tool_dispatch": "[AI] call_tool キャッシュ維持ディスパッチ実行: {name}",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した"
 }

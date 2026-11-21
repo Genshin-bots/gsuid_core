@@ -620,8 +620,6 @@
   "log.ai.toolpack_capability_pack_neither": "[ToolPack] 未知能力族: {pack}（既非静态族也非 capability_domain）",
   "log.ai.toolpack_invalid_capability_pack_skip": "[ToolPack] 非法能力族名: {pack_name}，已忽略",
   "log.ai.toolpack_registered_capability_pack_register": "[ToolPack] 注册能力族: {pack_name}（{p0} 个工具）",
-  "log.ai.toolset_name_prepare_skipping": "[RetrievableToolset] 工具 {name} prepare 失败，跳过: {e}",
-  "log.ai.toolset_step_dynamically_exposed": "[RetrievableToolset] 本步动态暴露 {p0} 个工具: {p1}",
   "log.ai.train_intent_v5_optimizing": "[AI] 开始训练新版意图模型 (v5 - 优化闲聊误判)...",
   "log.ai.training_saved": "[AI] 模型训练完成。保存至: {p0}",
   "log.ai.trigger_ai_func_name_primary": "[Trigger→AI] +{tool_func_name} ← [{primary_keyword}] {plugin_name}",
@@ -700,5 +698,6 @@
   "log.ai.websearch_tavily_api_key_trying": "[WebSearch][Tavily] api_key ...{p0} 失败，尝试下一个",
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] 所有 api_key 均失败",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] 带上下文搜索: {query}, 返回 {p0} 条结果",
+  "log.ai.call_tool_dispatch": "[AI] call_tool 零缓存击穿分派执行: {name}",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果"
 }

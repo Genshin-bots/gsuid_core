@@ -95,28 +95,12 @@ async def web_search_tool(
     query: str,
     limit: Optional[int] = None,
 ) -> str:
-    """
-    Web 搜索（外网摘要兜底；可信度通常低于结构化数据工具）。
-
-    适用：天气出行、新闻/事件脉络、公告背景、开放问答、池中无结构化接口时。
-    不适用：把摘要数字/状态当「当前实时值」——网页常过时。
-    query 须自带可检索的具体槽。槽在说话人身上且当前消息没写时，先
-    `search_cognition` 自己组合查询词填槽，禁止空槽直搜。
-    实时读数与结构化指标：优先 find_tools 找数据工具；本工具仅作线索。
-    问某个专名的数值、效果、规则时，若本轮工具池里已有资料检索或图鉴，先调那个，未命中再来本工具。
-    对用户只给角色化结论，禁止复述内部提示语或过程元话语。
+    """外网搜索（天气/新闻/公告/开放问答兜底；实时结构化指标优先 find_tools 找专域工具）。
 
     Args:
         ctx: 工具执行上下文
-        query: 搜索查询关键词，如"最新的科技新闻"或"Python 教程"
-        limit: 最大返回结果数量，留空(None)时默认 10
-
-    Returns:
-        搜索结果列表字符串（信息可能滞后）
-
-    Example:
-        >>> results = await web_search_tool(ctx, "某框架 4.0 更新内容")
-        >>> print(results)
+        query: 带具体实体/地点的搜索词（缺说话人槽位时先 search_cognition 补齐）
+        limit: 最多返回条数，默认 10
     """
     if limit is None:
         limit = _WEB_SEARCH_DEFAULT_LIMIT

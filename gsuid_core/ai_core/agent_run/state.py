@@ -147,11 +147,13 @@ class RunOnceState:
 
     # 工具
     expose_dynamic: bool = False
+    #: 本轮挂上永冻核心（ToolsPhase._frozen_core_active 唯一判定）：tools[] 不改，长尾经 call_tool
+    frozen_core: bool = False
     tool_names: list[str] = field(default_factory=list)
-    #: 渐进暴露下只提示不挂载的本轮种子（find_tools 可按名装回）
+    #: 只在 user 侧提示、不进 tools[] 的本轮种子（经 call_tool 调用）
     hinted_seed_names: list[str] = field(default_factory=list)
-    #: 本 run 已记入 tools_change 的 find_tools 挂载名
-    find_tools_logged: set[str] = field(default_factory=set)
+    #: tool_call_id → 生效工具名（call_tool 展开内层工具名，供下游闸门/证据/手账一致消费）
+    effective_tool_names: dict[str, str] = field(default_factory=dict)
 
     # 流式统计 / 模型
     req_start: float = 0.0

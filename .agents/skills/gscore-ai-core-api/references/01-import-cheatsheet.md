@@ -152,8 +152,7 @@ from gsuid_core.ai_core.buildin_tools import (
     # --- Self 工具 (category="self") --- 保底池，无条件全部加载
     # 只有主Agent能调用，用于核心操作；self 白名单再收敛到发送/定时创建
     send_message_by_ai,         # 发送消息给用户
-    add_once_task,              # 添加一次性定时任务（创建入口，口语化触发）
-    add_interval_task,          # 添加循环任务（创建入口，口语化触发）
+    schedule_task,              # 定时任务统一创建入口（mode="once"/"interval"）
 
     # --- Buildin 工具 (category="buildin") --- 保底池，无条件全部加载
     search_cognition,           # 回想（记忆/偏好/知识/落盘/产物）

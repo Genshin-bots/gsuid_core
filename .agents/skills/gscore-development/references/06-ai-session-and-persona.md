@@ -163,7 +163,7 @@ RESOURCE_PATH/persona/{persona_name}/
 | 层 | 内容 | 受 `enabled_tools` 收放 |
 |----|------|----------------------|
 | 常驻直装 | `MAIN_AGENT_CORE_TOOLS`（`send_message_by_ai` / `find_tools` / `create_subagent` …）+ persona `tool_names` | ❌ 框架能力，恒在场 |
-| 向量检索 | L3 语义召回 + `find_tools` 域检索 + `RetrievableToolset` 动态暴露 | ✅ 唯一受管辖的一层 |
+| 向量检索 | L3 语义召回产当轮 user 侧种子 + `find_tools` 域检索 + `call_tool` 按需执行 | ✅ 唯一受管辖的一层 |
 | 能力族静态挂载 | 仅能力代理节点仍可显式声明静态族（`task_basics` 等）；persona 侧已固定 `dynamic`，不再开放配置 | ❌ |
 
 判定口是 `ai_core/agent_node/tool_scope.py` 的 `ToolScope`（一次装配取一次快照，

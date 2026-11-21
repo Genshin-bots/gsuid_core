@@ -77,18 +77,19 @@ def _exposed_names(ctx: RunContext[ToolContext]) -> set[str]:
         for item in raw:
             if isinstance(item, str) and item:
                 names.add(item)
+    for dyn in ctx.deps.dynamic_tool_names:
+        if isinstance(dyn, str) and dyn:
+            names.add(dyn)
     return names
 
 
 def _host_allowed(ctx: RunContext[ToolContext], name: str, tb: ToolBase) -> bool:
     if name == "run_code" or not tb.code_callable:
         return False
-    if name in ctx.deps.blocked_tool_names:
-        return False
-    scope = ctx.deps.tool_scope
-    if scope is not None and not scope.tool_enabled(name):
-        return False
-    return True
+    from gsuid_core.ai_core.buildin_tools.call_tool import is_call_tool_allowed
+
+    allowed, _ = is_call_tool_allowed(tb, ctx.deps, caller_mode="run_code")
+    return allowed
 
 
 def _as_text(value: object) -> str:

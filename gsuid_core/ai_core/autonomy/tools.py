@@ -21,9 +21,11 @@ from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_
 USER_PM = 6
 MAX_SPEAK_ATTEMPTS = 2
 ARTIFACT_LIMIT_BYTES = 32 * 1024
+AUTONOMY_CALL_TOOL_GUARD_KEY = "autonomy_call_tool_guard"
 AUTONOMY_TOOL_ALLOWLIST = frozenset(
     {
         "find_tools",
+        "call_tool",
         "create_subagent",
         "read_handle",
         "web_search_tool",
@@ -692,6 +694,7 @@ def build_autonomy_tools() -> list[Tool[ToolContext]]:
     ]
     for name in (
         "find_tools",
+        "call_tool",
         "web_search_tool",
         "web_fetch_tool",
         "read_image",

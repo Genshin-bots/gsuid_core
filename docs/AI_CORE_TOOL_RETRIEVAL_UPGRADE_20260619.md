@@ -1,5 +1,10 @@
 # GsCore AI 工具检索三期升级说明（2026-06-19）
 
+> ⚠️ **已被取代（2026-11）**：本文档描述的 `RetrievableToolset` / `dynamic_toolset.py` /
+> `ENABLE_PROGRESSIVE_TOOLS` 开关已随「永冻核心 + `call_tool`」改造移除；主会话 tools[] 现
+> 线缆级冻结，长尾工具经 `call_tool` 执行。当前机制以源码及
+> `AI_AGENT_LIFECYCLE_SEQUENCE.md` / Skill 07 为准。以下仅作历史背景保留。
+
 > 本文档说明 2026-06-19 这一批针对 `ai_core` **工具检索 / 装配链路**的三期升级：
 > **要解决的问题、各期设计与实现、改动文件、取舍细节、风险与回滚、验证情况**。
 >

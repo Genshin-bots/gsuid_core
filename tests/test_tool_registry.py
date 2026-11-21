@@ -9,26 +9,35 @@ import zlib
 import base64
 import struct
 import asyncio
+from typing import Literal, Iterator
 from pathlib import Path
 from dataclasses import field, dataclass
 
 import pytest
 from PIL import Image
+from pydantic import BaseModel
+from pydantic_ai import RunContext
+from pydantic_ai.tools import Tool
+from pydantic_ai.usage import RunUsage
 from pydantic_ai.messages import (
     ImageUrl,
+    ModelMessage,
     ModelRequest,
     ToolCallPart,
     BinaryContent,
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models.test import TestModel
 
+from gsuid_core.models import Event
 from gsuid_core.ai_core.utils import (
     _is_image_payload_error,
     sanitize_error_for_user,
     _strip_remote_images_from_history,
     _canonicalize_tool_call_args_in_parts,
 )
+from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_safety import format_tool_execute_error
 from gsuid_core.utils.image.image_io import (
     sniff_image_mime,
@@ -262,7 +271,7 @@ def test_claims_inflight_without_backend() -> None:
 
     agent = GsCoreAIAgent(create_by="Autonomy", dynamic_tools=True)
     autonomy_tools = build_autonomy_tools()
-    stabilized = agent._stabilize_session_toolset(autonomy_tools, [], [])
+    stabilized = agent._stabilize_session_toolset(autonomy_tools, [])
     by_name = {t.name: t for t in stabilized}
     assert "list_plugin_commands" in by_name and "run_bot_command" in by_name
     assert by_name["send_message_by_ai"].function is autonomy_send
@@ -1432,3 +1441,730 @@ def test_subagent_read_image_vision_gate_large_slice_and_render_cap(
     main_second = asyncio.run(hrt._finish_image(ctx_main, small_bytes))
     assert isinstance(main_first, str) and "图片已发送" in main_first
     assert isinstance(main_second, str) and "不再重复直发" in main_second
+
+
+class _TestCallToolItem(BaseModel):
+    tag: str
+
+
+def _rctx(
+    *,
+    ev: Event | None = None,
+    extra: dict[str, object] | None = None,
+    blocked_tool_names: set[str] | None = None,
+    alias_callable_tools: set[str] | None = None,
+    allow_user_outbound: bool = True,
+) -> RunContext[ToolContext]:
+    return RunContext(
+        deps=ToolContext(
+            ev=ev,
+            extra=dict(extra or {}),
+            blocked_tool_names=set(blocked_tool_names or ()),
+            alias_callable_tools=set(alias_callable_tools or ()),
+            allow_user_outbound=allow_user_outbound,
+        ),
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+
+
+@pytest.fixture
+def scratch_tools() -> "Iterator[list[tuple[str, str]]]":
+    """测试内临时注册的工具（分类, 名）；用例结束统一从注册表摘除。"""
+    from gsuid_core.ai_core.register import _TOOL_REGISTRY
+
+    registered: list[tuple[str, str]] = []
+    yield registered
+    for category, name in registered:
+        if category in _TOOL_REGISTRY:
+            _TOOL_REGISTRY[category].pop(name, None)
+
+
+@pytest.fixture
+def add_tool(scratch_tools: list[tuple[str, str]]) -> str:
+    from gsuid_core.ai_core.register import ai_tools
+
+    @ai_tools(category="common", covers=["测试加法工具"])
+    async def _test_call_tool_add(
+        a: int,
+        b: int = 1,
+        mode: Literal["sum", "mul"] = "sum",
+        tags: list[str] | None = None,
+        item: _TestCallToolItem | None = None,
+    ) -> str:
+        """测试两数相加。"""
+        return f"sum={a + b}" if mode == "sum" else f"mul={a * b}"
+
+    scratch_tools.append(("common", "_test_call_tool_add"))
+    return "_test_call_tool_add"
+
+
+def test_core_tool_descriptions_within_prompt_budget() -> None:
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.interaction_scaffold import MAIN_AGENT_CORE_TOOLS
+
+    total = 0
+    for name in MAIN_AGENT_CORE_TOOLS:
+        tb = find_tool_base(name)
+        assert tb is not None, f"core tool missing: {name}"
+        total += len(tb.description or "")
+    # 永冻核心每轮都进前缀：描述膨胀直接吃掉缓存外的 token 预算
+    assert total < 3800, f"core docstrings bloated: {total}"
+
+
+def test_builtin_profile_tool_names_resolve() -> None:
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    import gsuid_core.ai_core.planning.kanban_tools  # noqa: F401
+    import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.agent_node import list_nodes
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+
+    register_builtin_profiles()
+    missing = {n.node_id: [t for t in n.tool_names if find_tool_base(t) is None] for n in list_nodes()}
+    assert {k: v for k, v in missing.items() if v} == {}
+
+
+def test_static_main_session_does_not_prefreeze_core() -> None:
+    from gsuid_core.ai_core.gs_agent import create_agent
+
+    agent = create_agent(system_prompt="test", create_by="Chat", dynamic_tools=False, session_id="test_no_dyn_tools")
+    assert asyncio.run(agent._restore_frozen_session_tools()) == []
+
+
+@pytest.mark.parametrize("group_id", ["group_1", None])
+def test_frozen_session_wire_tools_stable_across_turns(
+    group_id: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一主会话跨轮（无图/有图/检索命中/旁白/寻址门/hook 增删）发往模型的 tools[] 逐字节不变。"""
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import TextPart, ModelResponse
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    import gsuid_core.ai_core.hooks.dispatch as hook_dispatch
+    import gsuid_core.ai_core.agent_run.tools as tools_mod
+    import gsuid_core.ai_core.tool_state_signals as tool_state_signals
+    import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.skills import skills_toolset
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.rag.tools import ToolList
+    from gsuid_core.ai_core.entity_index import PluginLock
+    from gsuid_core.ai_core.agent_run.state import RunOnceState
+    from gsuid_core.ai_core.agent_run.tools import TurnSeedRecall
+    from gsuid_core.ai_core.command_aside.policy import bind_tool_policy, restore_tool_policy
+    from gsuid_core.ai_core.interaction_scaffold import TurnGraph
+    from gsuid_core.ai_core.command_aside.plugin_read import make_plugin_source_tool
+
+    long_tail = [tb.tool for name in ("web_fetch_tool", "list_scheduled_tasks") if (tb := find_tool_base(name))]
+    assert long_tail
+    recalled: list[ToolList] = [[]]
+
+    async def _fake_recall(**_kwargs: object) -> TurnSeedRecall:
+        return TurnSeedRecall(
+            found=list(recalled[0]),
+            seeds=list(recalled[0]),
+            lock=PluginLock(plugin="", explicit=False),
+            scan_text="",
+        )
+
+    async def _no_tags(_scope_key: str) -> list[str]:
+        return []
+
+    async def _no_schedules(_user_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(tools_mod, "recall_turn_seeds", _fake_recall)
+    monkeypatch.setattr(tools_mod, "get_scope_context_tags", _no_tags)
+    monkeypatch.setattr(tool_state_signals, "user_has_active_schedules", _no_schedules)
+    monkeypatch.setattr(hook_dispatch, "hooks_enabled", lambda: True)
+
+    plug_dir = tmp_path / "demo_plugin"
+    plug_dir.mkdir()
+    (plug_dir / "handler.py").write_text("VALUE = 42\n", encoding="utf-8")
+    aside_tool = make_plugin_source_tool(plug_dir)
+
+    agent = GsCoreAIAgent(create_by="Chat", dynamic_tools=True, session_id=f"test_wire_{group_id}")
+
+    async def _wire(
+        text: str,
+        *,
+        intent: str = "闲聊",
+        tome: bool = False,
+        images: list[str] | None = None,
+        addr_gated: bool = False,
+        aside: tuple[bool, tuple[Tool[ToolContext], ...]] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        ev = Event(
+            bot_id="b1",
+            user_id="100000001",
+            group_id=group_id,
+            user_type="group" if group_id else "direct",
+        )
+        ev.raw_text = text
+        ev.text = text
+        ev.image_id_list = list(images or [])
+        ctx = ToolContext(ev=ev, allow_user_outbound=True)
+        st = RunOnceState(
+            user_message=text,
+            bot=None,
+            ev=ev,
+            rag_context=None,
+            tools=[],
+            return_mode="return",
+            output_type=None,
+            intent=intent,
+            has_active_task=False,
+            budget_gate=False,
+            suppress_intermediate_text=False,
+            fake_done_retry=False,
+            turn_graph=TurnGraph(
+                user_type="group" if group_id else "direct",
+                message_text=text,
+                persona_name="",
+                is_tome=tome,
+                primary_speaker="100000001",
+                call_to_self=tome,
+            ),
+            is_framework_injection=False,
+            context=ctx,
+        )
+        st.tg = st.turn_graph
+        st.addr_gated = addr_gated
+        tokens = bind_tool_policy(*aside) if aside is not None else None
+        try:
+            await agent._run_once_assemble_tools(st)
+        finally:
+            if tokens is not None:
+                restore_tool_policy(tokens)
+
+        captured: list[list[tuple[str, str, str]]] = []
+
+        def _capture(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            captured.append(
+                [
+                    (td.name, td.description or "", json.dumps(td.parameters_json_schema, sort_keys=True))
+                    for td in info.function_tools
+                ]
+            )
+            return ModelResponse(parts=[TextPart(content="ok")])
+
+        await Agent(FunctionModel(_capture), deps_type=ToolContext, tools=st.tools, toolsets=[skills_toolset]).run(
+            "hi", deps=ctx
+        )
+        return captured[0]
+
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext, on_agent_hook
+
+    @on_agent_hook(AgentHookPoint.AFTER_ASSEMBLE_TOOLS)
+    def _test_mutate_hook(ctx: AgentHookContext) -> None:
+        ctx.ensure_tools("list_scheduled_tasks")
+        ctx.drop_tools("record_meme")
+
+    async def _scenario() -> None:
+        baseline = await _wire("你好呀")
+        names = [n for n, _, _ in baseline]
+        assert "find_tools" in names and "call_tool" in names
+        recalled[0] = long_tail
+        assert await _wire("帮我看看这张图", intent="工具", images=["img_00000001"]) == baseline
+        assert await _wire("帮我抓一下 https://example.com 的内容", intent="工具", tome=True) == baseline
+        assert await _wire("旁白点评一句", aside=(False, ())) == baseline
+        assert await _wire("看看插件源码", aside=(True, (aside_tool,))) == baseline
+        assert await _wire("@别人 你说呢", addr_gated=True) == baseline
+        assert await _wire("再查一下", intent="工具") == baseline
+
+    try:
+        asyncio.run(_scenario())
+    finally:
+        from gsuid_core.ai_core.hooks.registry import drop_hooks_for_module
+
+        drop_hooks_for_module(__name__)
+
+
+def test_call_tool_validates_arguments_against_contract(add_tool: str) -> None:
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool, format_compact_tool_schema
+
+    tb_add = find_tool_base(add_tool)
+    assert tb_add is not None
+    contract = format_compact_tool_schema(tb_add)
+    assert '"a": "integer(必填)' in contract and '"b": "integer(可选' in contract
+    assert "enum(sum/mul)" in contract and "array[string]" in contract and "object{" in contract
+
+    rctx = _rctx(allow_user_outbound=True)
+    assert asyncio.run(call_tool(rctx, add_tool, '{"a": 3, "b": 4}')) == "sum=7"
+    assert asyncio.run(call_tool(rctx, add_tool, {"a": 3, "b": 4, "mode": "mul"})) == "mul=12"
+    for bad_args, reason in (("{bad", "不是合法 JSON"), ("{}", "参数校验失败")):
+        reply = asyncio.run(call_tool(rctx, add_tool, bad_args))
+        assert isinstance(reply, str) and reason in reply and '"a":' in reply
+
+
+def test_call_tool_refuses_meta_blocked_and_gated(add_tool: str) -> None:
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY
+    from gsuid_core.ai_core.control.lines import TOOLS_EXECUTION_GATED_DENY
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+
+    # call_tool 自身不得出现在 run_code 脚本可调用面，否则递归套娃
+    tb_call = find_tool_base("call_tool")
+    assert tb_call is not None and tb_call.code_callable is False
+
+    rctx = _rctx(allow_user_outbound=True)
+    for core_name in ("call_tool", "find_tools", "create_subagent", "run_code", "send_message_by_ai"):
+        reply = asyncio.run(call_tool(rctx, core_name, "{}"))
+        assert isinstance(reply, str) and reply.startswith("⚠️")
+
+    blocked = _rctx(
+        allow_user_outbound=True,
+        blocked_tool_names={add_tool},
+        alias_callable_tools={add_tool},
+    )
+    reply = asyncio.run(call_tool(blocked, add_tool, '{"a": 1}'))
+    assert isinstance(reply, str) and "被禁用" in reply
+
+    gated = _rctx(allow_user_outbound=True, extra={TOOLS_EXECUTION_GATED_KEY: True})
+    assert asyncio.run(call_tool(gated, add_tool, '{"a": 1}')) == TOOLS_EXECUTION_GATED_DENY
+
+
+def test_call_tool_runs_ephemeral_aside_tool(tmp_path: Path) -> None:
+    from gsuid_core.ai_core.buildin_tools.call_tool import EPHEMERAL_TOOLS_EXTRA_KEY, call_tool
+    from gsuid_core.ai_core.command_aside.plugin_read import make_plugin_source_tool
+
+    plug_dir = tmp_path / "demo_plugin"
+    plug_dir.mkdir()
+    (plug_dir / "handler.py").write_text("VALUE = 42\n", encoding="utf-8")
+    eph_tool = make_plugin_source_tool(plug_dir)
+    rctx = _rctx(allow_user_outbound=True, extra={EPHEMERAL_TOOLS_EXTRA_KEY: {eph_tool.name: eph_tool}})
+    reply = asyncio.run(call_tool(rctx, eph_tool.name, {"relative_path": "handler.py"}))
+    assert isinstance(reply, str) and "VALUE = 42" in reply
+
+
+def test_call_tool_main_persona_boundaries(scratch_tools: list[tuple[str, str]]) -> None:
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.register import ai_tools, find_tool_base
+    from gsuid_core.ai_core.monty_exec import _host_allowed
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool, is_call_tool_allowed
+
+    @ai_tools(category="common", hide_from_main=True, covers=["测试内部能力工具"])
+    async def _test_internal_cap_tool() -> str:
+        """测试内部能力工具。"""
+        return "cap_ok"
+
+    @ai_tools(category="default", covers=["第三方插件默认工具"])
+    async def _test_ext_default_tool() -> str:
+        """第三方插件默认工具。"""
+        return "ext_ok"
+
+    @ai_tools(category="plugin_dev", covers=["测试插件开发工具"])
+    async def _test_pdev_tool() -> str:
+        """测试插件开发工具。"""
+        return "pdev_ok"
+
+    scratch_tools.extend(
+        [
+            ("common", "_test_internal_cap_tool"),
+            ("default", "_test_ext_default_tool"),
+            ("plugin_dev", "_test_pdev_tool"),
+        ]
+    )
+    rctx = _rctx(ev=Event(user_pm=6), allow_user_outbound=True)
+
+    for name, reason in (("render_html_to_image", "不允许在主人格"), ("_test_internal_cap_tool", "委派")):
+        reply = asyncio.run(call_tool(rctx, name, "{}"))
+        assert isinstance(reply, str) and reason in reply
+
+    tb_ext = find_tool_base("_test_ext_default_tool")
+    assert tb_ext is not None
+    tb_ext.plugin = "ThirdPartyPluginUID"
+    assert asyncio.run(call_tool(rctx, "_test_ext_default_tool", "{}")) == "ext_ok"
+    tb_ext.plugin = "unknown"
+    reply = asyncio.run(call_tool(rctx, "_test_ext_default_tool", "{}"))
+    assert isinstance(reply, str) and "不允许在主人格" in reply
+
+    tb_pdev = find_tool_base("_test_pdev_tool")
+    assert tb_pdev is not None
+    assert is_call_tool_allowed(tb_pdev, rctx.deps, caller_mode="call_tool")[0] is False
+
+    tb_persisted = find_tool_base("list_persisted_outputs")
+    assert tb_persisted is not None and _host_allowed(rctx, "list_persisted_outputs", tb_persisted) is False
+
+
+def test_call_tool_subagent_limited_to_exposed_tools(scratch_tools: list[tuple[str, str]]) -> None:
+    from gsuid_core.ai_core.register import ai_tools, find_tool_base
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool, is_call_tool_allowed
+    from gsuid_core.ai_core.control.outbound_detectors import EXPOSED_TOOLS_EXTRA_KEY
+
+    @ai_tools(category="common", hide_from_main=True, covers=["测试子代理能力工具"])
+    async def _test_sub_cap_tool() -> str:
+        """测试子代理能力工具。"""
+        return "cap_ok"
+
+    @ai_tools(category="plugin_dev", covers=["测试子代理插件开发工具"])
+    async def _test_sub_pdev_tool() -> str:
+        """测试子代理插件开发工具。"""
+        return "pdev_ok"
+
+    scratch_tools.extend([("common", "_test_sub_cap_tool"), ("plugin_dev", "_test_sub_pdev_tool")])
+
+    denied = asyncio.run(
+        call_tool(_rctx(allow_user_outbound=False, extra={EXPOSED_TOOLS_EXTRA_KEY: ["other"]}), "_test_sub_cap_tool")
+    )
+    assert isinstance(denied, str) and "不在当前子代理授权工具清单内" in denied
+    allowed = _rctx(allow_user_outbound=False, extra={EXPOSED_TOOLS_EXTRA_KEY: ["_test_sub_cap_tool"]})
+    assert asyncio.run(call_tool(allowed, "_test_sub_cap_tool", "{}")) == "cap_ok"
+
+    tb_pdev = find_tool_base("_test_sub_pdev_tool")
+    assert tb_pdev is not None
+    sub_deps = _rctx(allow_user_outbound=False, extra={EXPOSED_TOOLS_EXTRA_KEY: ["_test_sub_pdev_tool"]}).deps
+    assert is_call_tool_allowed(tb_pdev, sub_deps, caller_mode="call_tool")[0] is False
+    assert is_call_tool_allowed(tb_pdev, sub_deps, caller_mode="run_code")[0] is True
+
+
+def test_call_tool_enforces_check_func_on_unwrapped_tool() -> None:
+    from pydantic_ai.tools import Tool as PydanticTool
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolBase
+    from gsuid_core.ai_core.register import _TOOL_REGISTRY
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+
+    async def _raw_guarded_fn() -> str:
+        return "secret_ok"
+
+    async def _pm0_only(ev: Event | None) -> tuple[bool, str]:
+        return (False, "❌ 权限不足：仅主人可用") if (ev is None or ev.user_pm > 0) else (True, "")
+
+    _TOOL_REGISTRY.setdefault("common", {})["_test_raw_guarded"] = ToolBase(
+        name="_test_raw_guarded",
+        description="raw guarded tool",
+        plugin="test",
+        tool=PydanticTool(_raw_guarded_fn, takes_ctx=False, name="_test_raw_guarded"),
+        check_func=_pm0_only,
+        category="common",
+        check_in_wrapper=False,
+    )
+    try:
+        denied = asyncio.run(call_tool(_rctx(ev=Event(user_pm=6), allow_user_outbound=True), "_test_raw_guarded"))
+        assert isinstance(denied, str) and "权限不足" in denied
+        master = _rctx(ev=Event(user_pm=0), allow_user_outbound=True)
+        assert asyncio.run(call_tool(master, "_test_raw_guarded", "{}")) == "secret_ok"
+    finally:
+        _TOOL_REGISTRY["common"].pop("_test_raw_guarded", None)
+
+
+def test_call_tool_respects_autonomy_allowlist(add_tool: str) -> None:
+    import gsuid_core.ai_core.buildin_tools  # noqa: F401
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.autonomy.tools import AUTONOMY_CALL_TOOL_GUARD_KEY, build_autonomy_tools
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool, is_call_tool_allowed
+
+    assert any(t.name == "call_tool" for t in build_autonomy_tools())
+    rctx = _rctx(
+        ev=Event(user_id="autonomy:test", user_pm=6),
+        extra={AUTONOMY_CALL_TOOL_GUARD_KEY: True},
+        allow_user_outbound=True,
+    )
+    tb_read_handle = find_tool_base("read_handle")
+    tb_sched = find_tool_base("schedule_task")
+    assert tb_read_handle is not None and is_call_tool_allowed(tb_read_handle, rctx.deps)[0] is True
+    assert tb_sched is not None
+    ok, msg = is_call_tool_allowed(tb_sched, rctx.deps)
+    assert ok is False and "自主行动允许清单" in msg
+    reply = asyncio.run(call_tool(rctx, add_tool, '{"a": 1, "b": 2}'))
+    assert isinstance(reply, str) and "自主行动允许清单" in reply
+
+
+def test_call_tool_visibility_bypass_isolated_per_task(scratch_tools: list[tuple[str, str]]) -> None:
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.register import ai_tools
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+    from gsuid_core.ai_core.buildin_tools.visibility import context_has_url
+
+    @ai_tools(category="common", visible_when=context_has_url, covers=["并发可见性测试慢工具"])
+    async def _test_vis_slow() -> str:
+        """并发可见性测试慢工具。"""
+        await asyncio.sleep(0.02)
+        return "slow_ok"
+
+    @ai_tools(category="common", visible_when=context_has_url, covers=["并发可见性测试快工具"])
+    async def _test_vis_fast() -> str:
+        """并发可见性测试快工具。"""
+        return "fast_ok"
+
+    scratch_tools.extend([("common", "_test_vis_slow"), ("common", "_test_vis_fast")])
+    shared = _rctx(ev=Event(user_id="100000001", text="无链接"), allow_user_outbound=True)
+
+    async def _run_parallel() -> list[object]:
+        return list(
+            await asyncio.gather(
+                call_tool(shared, "_test_vis_slow", "{}"),
+                call_tool(shared, "_test_vis_fast", "{}"),
+                call_tool(shared, "_test_vis_slow", "{}"),
+            )
+        )
+
+    assert asyncio.run(_run_parallel()) == ["slow_ok", "fast_ok", "slow_ok"]
+    assert "_call_tool_direct_invoke" not in shared.deps.extra
+
+
+@pytest.fixture
+def clean_health() -> "Iterator[set[str]]":
+    from gsuid_core.ai_core.tool_health import _HEALTH
+
+    names: set[str] = {"call_tool"}
+    for name in names:
+        _HEALTH.pop(name, None)
+    yield names
+    for name in names:
+        _HEALTH.pop(name, None)
+
+
+def test_inner_tool_failures_freeze_inner_not_call_tool(
+    scratch_tools: list[tuple[str, str]],
+    clean_health: set[str],
+) -> None:
+    from pydantic_ai.tools import Tool as PydanticTool
+
+    from gsuid_core.ai_core.models import ToolBase
+    from gsuid_core.ai_core.register import _TOOL_REGISTRY, ai_tools
+    from gsuid_core.ai_core.tool_health import is_tool_frozen
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+
+    @ai_tools(category="common", covers=["测试失败熔断隔离"])
+    async def _test_always_fail_tool() -> str:
+        """测试返回失败前缀的工具。"""
+        return "❌ 查无此人"
+
+    async def _raw_fail_fn() -> str:
+        return "❌ 裸工具内部异常"
+
+    _TOOL_REGISTRY.setdefault("common", {})["_test_raw_fail_cb"] = ToolBase(
+        name="_test_raw_fail_cb",
+        description="raw fail tool",
+        plugin="test",
+        tool=PydanticTool(_raw_fail_fn, takes_ctx=False, name="_test_raw_fail_cb"),
+        category="common",
+        check_in_wrapper=False,
+    )
+    scratch_tools.extend([("common", "_test_always_fail_tool"), ("common", "_test_raw_fail_cb")])
+    clean_health.update({"_test_always_fail_tool", "_test_raw_fail_cb"})
+
+    rctx = _rctx(allow_user_outbound=True)
+    for name in ("_test_always_fail_tool", "_test_raw_fail_cb"):
+        for _ in range(4):
+            asyncio.run(call_tool(rctx, name, "{}"))
+        assert is_tool_frozen(name) is True
+    frozen_reply = asyncio.run(call_tool(rctx, "_test_raw_fail_cb", "{}"))
+    assert isinstance(frozen_reply, str) and "熔断" in frozen_reply
+    assert is_tool_frozen("call_tool") is False
+
+
+def test_call_tool_evidence_and_errors_name_inner_tool(
+    scratch_tools: list[tuple[str, str]],
+    clean_health: set[str],
+) -> None:
+    from pydantic_ai.tools import ToolDefinition
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.register import ai_tools
+    from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+    from gsuid_core.ai_core.tool_health import _HEALTH, is_tool_frozen
+    from gsuid_core.ai_core.tool_safety import _on_tool_execute_error, _evidence_capture_execute
+    from gsuid_core.ai_core.evidence.store import _stores, get_evidence_store
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+
+    @ai_tools(category="common", covers=["测试抛异常透传"])
+    async def _test_boom_tool() -> str:
+        """测试抛未捕获异常的工具。"""
+        raise RuntimeError("boom_inner")
+
+    scratch_tools.append(("common", "_test_boom_tool"))
+    clean_health.add("_test_boom_tool")
+    sid = "test_ev_call_tool_sid"
+    _stores.pop(sid, None)
+    turn_tok = bind_turn(
+        InboxTurn(
+            session_id=sid,
+            persona_name="test_persona",
+            entries=(
+                PendingEntry(
+                    item=WakeItem(seq=1, user_id="100000001", kind="private", strength="hard", created_at=0.0),
+                    event=Event(user_id="100000001"),
+                ),
+            ),
+            from_seq=0,
+            head_seq=1,
+        )
+    )
+    rctx = _rctx(allow_user_outbound=True)
+
+    def _call_part(inner: str) -> tuple[ToolCallPart, ToolDefinition, dict[str, object]]:
+        args: dict[str, object] = {"tool_name": inner, "arguments_json": "{}"}
+        return (
+            ToolCallPart(tool_name="call_tool", args=json.dumps(args)),
+            ToolDefinition(name="call_tool", description=""),
+            args,
+        )
+
+    try:
+        call, tdef, args = _call_part("render_html_to_image")
+
+        async def _run_rej(_a: dict[str, object]) -> object:
+            return await call_tool(rctx, "render_html_to_image", "{}")
+
+        asyncio.run(_evidence_capture_execute(rctx, call=call, tool_def=tdef, args=args, handler=_run_rej))
+        store = get_evidence_store(sid)
+        assert store.observations and store.observations[-1].outcome == "error"
+
+        prev_len = len(store.observations)
+        call, tdef, args = _call_part("_test_boom_tool")
+
+        async def _run_boom(_a: dict[str, object]) -> object:
+            return await call_tool(rctx, "_test_boom_tool", "{}")
+
+        with pytest.raises(RuntimeError, match="boom_inner"):
+            asyncio.run(_evidence_capture_execute(rctx, call=call, tool_def=tdef, args=args, handler=_run_boom))
+        assert len(store.observations) == prev_len
+
+        for _ in range(4):
+            reply = asyncio.run(
+                _on_tool_execute_error(rctx, call=call, tool_def=tdef, args=args, error=RuntimeError("boom_inner"))
+            )
+            assert "_test_boom_tool" in reply and "boom_inner" in reply
+        assert is_tool_frozen("_test_boom_tool") is True
+        assert "call_tool" not in _HEALTH
+    finally:
+        reset_turn(turn_tok)
+        _stores.pop(sid, None)
+
+
+def test_normalize_tool_output_keeps_tool_return_passthrough() -> None:
+    from pydantic_ai import ToolReturn
+
+    from gsuid_core.ai_core.buildin_tools.call_tool import _normalize_tool_output
+
+    tr = ToolReturn(return_value="ok", content=["binary_placeholder"])
+    assert _normalize_tool_output(tr) is tr
+
+
+def test_session_log_display_names_call_tool_inner() -> None:
+    from gsuid_core.webconsole.ai_session_logs_api import _format_entries_for_display
+
+    formatted = _format_entries_for_display(
+        [
+            {
+                "type": "tool_call",
+                "timestamp": 1.0,
+                "data": {
+                    "tool_name": "call_tool",
+                    "args": '{"tool_name": "send_guide_pic", "arguments_json": "{}"}',
+                    "tool_call_id": "tc1",
+                },
+            },
+            {
+                "type": "tool_return",
+                "timestamp": 2.0,
+                "data": {"tool_name": "call_tool", "content": "ok", "tool_call_id": "tc1"},
+            },
+        ]
+    )
+    assert [e["data"]["tool_name"] for e in formatted] == ["call_tool(send_guide_pic)"] * 2
+
+
+def test_count_query_detection_and_memory_cap() -> None:
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
+    from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_count_query
+
+    assert looks_like_count_query("给账本加几个零很简单") is False
+    assert looks_like_count_query("买几个苹果") is False
+    assert looks_like_count_query("之前一共买过几次咖啡") is True
+    assert inject_memory_cap("给账本加几个零", memory_intent="point_latest") <= 2000
+    assert inject_memory_cap("帮我对比一下走势", memory_intent="version_diff") <= 6000
+
+
+def test_lean_tool_returns_fold_only_readonly_tools() -> None:
+    from pydantic_ai.messages import ModelResponse
+
+    from gsuid_core.ai_core.utils import _lean_oversized_tool_returns
+
+    big_part = ToolReturnPart(tool_name="search_cognition", content="A" * 1600, tool_call_id="c1")
+    req = ModelRequest(parts=[big_part])
+    msgs: list[ModelRequest | ModelResponse] = [
+        req,
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="call_tool", args='{"tool_name":"read_chat_history"}', tool_call_id="c_ro")]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="call_tool", content="R" * 1600, tool_call_id="c_ro")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="call_tool", args='{"tool_name":"register_kanban_task"}', tool_call_id="c_mut")
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="call_tool", content="M" * 1600, tool_call_id="c_mut")]),
+    ]
+    _lean_oversized_tool_returns(msgs)
+    folded = msgs[0].parts[0]
+    assert isinstance(folded, ToolReturnPart) and isinstance(folded.content, str) and len(folded.content) < 500
+    assert req.parts[0] is big_part
+    ro_part = msgs[2].parts[0]
+    mut_part = msgs[4].parts[0]
+    assert isinstance(ro_part, ToolReturnPart) and isinstance(ro_part.content, str) and len(ro_part.content) < 500
+    assert isinstance(mut_part, ToolReturnPart) and mut_part.content == "M" * 1600
+
+
+def test_find_tools_plan_carries_call_contract() -> None:
+    from gsuid_core.ai_core.buildin_tools.find_tools_rank import FindToolsPlan, format_find_tools_plan
+
+    plan = FindToolsPlan(
+        dedicated_agents=(),
+        dedicated_tools=(RankedHit(name="web_search_tool", label="搜索网页"),),
+        generic_agents=(),
+        generic_tools=(),
+    )
+    text = format_find_tools_plan(plan, schemas={"web_search_tool": '{"query": "string(必填)"}'})
+    assert "call_tool" in text and "web_search_tool" in text and '"query"' in text
+
+
+def test_compact_history_keeps_prefix_bytes_and_folds_tail() -> None:
+    from pydantic_ai.messages import TextPart, ModelResponse
+
+    from gsuid_core.ai_core.utils import compact_session_history
+
+    head_big = "H" * 1500
+    tail_big = "T" * 1500
+    hist: list[ModelRequest | ModelResponse] = [
+        ModelRequest(parts=[UserPromptPart(content="u0")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="search_cognition", args="{}", tool_call_id="c_head")]),
+        ModelRequest(parts=[ToolReturnPart(tool_name="search_cognition", content=head_big, tool_call_id="c_head")]),
+        ModelResponse(parts=[TextPart(content="a0")]),
+    ]
+    for i in range(1, 10):
+        hist.append(ModelRequest(parts=[UserPromptPart(content=f"u{i}")]))
+        hist.append(ModelResponse(parts=[TextPart(content=f"a{i}")]))
+    hist.extend(
+        [
+            ModelRequest(parts=[UserPromptPart(content="u_last")]),
+            ModelResponse(parts=[ToolCallPart(tool_name="search_cognition", args="{}", tool_call_id="c_tail")]),
+            ModelRequest(parts=[ToolReturnPart(tool_name="search_cognition", content=tail_big, tool_call_id="c_tail")]),
+            ModelResponse(parts=[TextPart(content="a_last")]),
+        ]
+    )
+    compacted, did = compact_session_history(hist, max_history=16, trim_ratio=0.75)
+    assert did is True
+    head_ret = compacted[2]
+    assert isinstance(head_ret, ModelRequest) and isinstance(head_ret.parts[0], ToolReturnPart)
+    assert head_ret.parts[0].content == head_big
+    tail_ret = compacted[-2]
+    assert isinstance(tail_ret, ModelRequest) and isinstance(tail_ret.parts[0], ToolReturnPart)
+    assert isinstance(tail_ret.parts[0].content, str) and len(tail_ret.parts[0].content) < 500

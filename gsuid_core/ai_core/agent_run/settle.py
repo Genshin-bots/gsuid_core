@@ -471,29 +471,12 @@ class SettlePhase(RunOnceHost):
             _new_msgs = _dedupe_delivery_cards(_new_msgs)
             _new_msgs = _drop_unsent_text_from_tail(_new_msgs, st.unsent_texts)
 
-            # 证据：本轮工具观测前缀进 ToolReturnPart 正文（§4.6 B 轨）。
-            from gsuid_core.message_history import get_history_manager
-            from gsuid_core.ai_core.inbox.turn import current_turn
-            from gsuid_core.ai_core.evidence.render import prefix_tool_returns_with_evidence
-
-            _turn = current_turn()
-            if _turn is not None and st.ev is not None:
-                _records = get_history_manager().get_history(st.ev)
-                _nicks = {r.user_id: (r.user_name or r.user_id) for r in _records if r.user_id and r.role == "user"}
-                prefix_tool_returns_with_evidence(
-                    _new_msgs,
-                    _turn.observations,
-                    _turn.session_id,
-                    st.ev.bot_id,
-                    lambda uid: _nicks[uid] if uid in _nicks else uid,
-                )
+            # 前缀缓存红线（§1.7）：禁止事后改写已入缓存的 ToolReturnPart；
+            # 证据已留存 EvidenceStore，超大回执仅在 compact_session_history 截断尾段时折叠。
             self.history.extend(_new_msgs)
             _ctx_dyn = st.context
             if _ctx_dyn is not None:
                 self._last_run_find_tools_names = sorted(_ctx_dyn.dynamic_tool_names)
-                for _dn in _ctx_dyn.dynamic_tool_names:
-                    if _dn and _dn not in self._session_appended_tools:
-                        self._session_appended_tools.append(_dn)
 
             # 输出闸门收尾：尖括号熔断/补写/scrub；熔断后仍做独立 OOC 重说
             st.ab_abort = await self._resolve_output_gate_after_run(
@@ -757,7 +740,9 @@ class SettlePhase(RunOnceHost):
             sanitize_journal_summary,
         )
 
-        meta_tools = frozenset({"find_tools", "search_cognition", "read_handle", "dispute_directive"})
+        meta_tools = frozenset(
+            {"find_tools", "call_tool", "search_cognition", "read_handle", "read_life_journal", "dispute_directive"}
+        )
         substantive_tools = [tn for tn in (st.tool_call_list or []) if tn not in meta_tools]
         ordered_bubbles: list[str] = [
             t_s.strip() for t_s in self._run_sent_order if t_s.strip() and "<SILENCE>" not in t_s
@@ -826,6 +811,11 @@ class SettlePhase(RunOnceHost):
         gid = str(st.ev.group_id or "") if st.ev and st.ev.group_id else ""
         journal_turn = current_turn()
         journal_active = journal_turn.active_entry() if journal_turn is not None else None
+        req_uid = (
+            journal_active.item.user_id
+            if journal_active is not None and journal_active.item.user_id
+            else (str(st.ev.user_id).strip() if st.ev is not None and st.ev.user_id else "")
+        )
         entry = JournalEntry(
             timestamp=now.timestamp(),
             date_str=now.strftime("%Y-%m-%d"),
@@ -833,7 +823,7 @@ class SettlePhase(RunOnceHost):
             tag=j_tag,
             summary=clean_res,
             group_id=gid,
-            requested_by=journal_active.item.user_id if journal_active is not None else "",
+            requested_by=req_uid,
         )
         asyncio.create_task(
             record_journal_entry(
@@ -1226,7 +1216,7 @@ class SettlePhase(RunOnceHost):
         if st.user_turn_token is not None:
             reset_user_turn_id(st.user_turn_token)
             st.user_turn_token = None
-        # 清理本轮的单轮节流计数（scheduler.py add_once_task 等共享）， 防止内存中 key 无限累积。
+        # 清理本轮的单轮节流计数（scheduler.py schedule_task 等共享）， 防止内存中 key 无限累积。
         try:
             from gsuid_core.ai_core.buildin_tools.scheduler import (
                 clear_turn_throttle,

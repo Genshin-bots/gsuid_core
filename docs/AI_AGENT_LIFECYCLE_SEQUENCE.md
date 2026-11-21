@@ -201,7 +201,7 @@ C-3 寻址门的零工具硬约束。脚手架套件只负责把结构结论**�
 | DualRoute | `memory.retrieval.dual_route` | 双路记忆检索（读） |
 | CtxAsm | `context_assembly` | user 侧动态上下文顺序 |
 | GsAgent | `gs_agent.GsCoreAIAgent` + `agent_run/*` | 单次 run 编排；工具五层 + LLM 迭代 + 出站闸 |
-| Toolset | `register` / `dynamic_toolset` / `rag.tools` | 保底/状态/向量/find_tools |
+| Toolset | `register` / `rag.tools` / `buildin_tools.call_tool` | 永冻核心/find_tools 种子/call_tool 执行 |
 | LLM | pydantic-ai `Agent.iter` | 模型请求与 tool 循环 |
 | OutGate | `output_gate.pre_send_gate` | **统一发送前闸门**（尖括号 → OOC → 心想；本轮工具名集合防泄漏） |
 | SubAgent | `buildin_tools.subagent.create_subagent` | 通用子代理 / 能力代理入口 |
@@ -283,7 +283,7 @@ sequenceDiagram
 
         HandleAI->>GsAgent: run(..., turn_graph)
 
-        Note over GsAgent: ⑨ 工具 L1–L5 + exclusive 剥离<br/>find_tools 常挂；roster 在 system<br/>可 supersede 取消
+        Note over GsAgent: ⑨ 工具 L1–L5 + exclusive 剥离<br/>find_tools/call_tool 常挂；roster 在 system<br/>可 supersede 取消
 
         loop LLM 迭代
             Note over GsAgent: 节点间隙检查 cancel
@@ -580,7 +580,7 @@ sequenceDiagram
     Note over GsAgent: 交互脚手架 C-1 省略跟进 / C-2 漂移 / C-3 @别人→零工具
 
     GsAgent->>Toolset: 装配
-    Note over Toolset: L1 内核 find_tools/create_subagent/capability_map+履约/认知/建提醒<br/>L2 状态/跟进/补搜进尾槽，不进 frozen core<br/>L3 驻留族 append 进 core<br/>L4/L5 向量进尾槽；roster 在 system（工具族速览只进 find_tools/self_info）<br/>find_tools 常挂；check_delegation 不常挂<br/>主人格禁直调专域 exclusive（靠委派）
+    Note over Toolset: L1 内核 find_tools/create_subagent/capability_map+履约/认知/建提醒<br/>L2 状态/跟进/补搜进尾槽，不进 frozen core<br/>L3 会话快照首轮冻结后跨轮复用，不再 append<br/>L4/L5 向量只产当轮 user 侧种子；roster 在 system（工具族速览只进 find_tools/self_info）<br/>find_tools/call_tool 常挂；check_delegation 不常挂<br/>主人格禁直调专域 exclusive（靠委派）
 
     GsAgent->>SessLog: log_tools_list
 
@@ -689,8 +689,8 @@ sequenceDiagram
 ```
 
 **委派闭环（主人格池）**：交互 `create_by` 剥离能力代理 exclusive 工具 → 模型只能
-`create_subagent(agent_profile=真实 node_id)`；`find_tools` / `RetrievableToolset`
-同步 `blocked_tool_names` 禁止回灌。roster 固化在 **system**；工具族速览只进 `find_tools` / `get_self_persona_info`。
+`create_subagent(agent_profile=真实 node_id)`；`call_tool` 准入统一拦
+`blocked_tool_names` / exclusive / hide_from_main，禁止回灌。roster 固化在 **system**；工具族速览只进 `find_tools` / `get_self_persona_info`。
 `check_delegation` 不进群聊瘦保底，追问进度时经 `find_tools` 召回。
 `_build_event` 必须回填 `WS_BOT_ID`；`_get_bot` / `_resolve_active_bot` **禁止任意适配器兜底**。
 同 `(group_id, res_id)` 由 `DeliveryLedger` 原子占位，拦跨 session 二发。
@@ -1413,11 +1413,11 @@ session_logger.log_user_input(final_user_message)
 |----|------|------|
 | L1 保底 | 每轮 | 群聊瘦核 ∪ 钉核 `find_tools` / `create_subagent` / `capability_map` |
 | L2 状态 | 本群/本会话有持久实体，且群聊已点名/省略跟进（私聊始终） | `get_state_driven_family_tools` 补对应族、剥 exclusive；旁观不加。核内**非状态驱动**域首轮族闭合（跳过定时任务/Kanban/产物/record）。`send_*` extras 不进静态附加池。群聊 extras 不 L4 整族展开 |
-| L3 驻留 | 不写 core | 跨轮靠 `find_tools` 成功后 **append-only**（`_SESSION_TOOL_CEILING=24` 硬顶，超顶拒新名） |
+| L3 会话快照 | 不写 core | 首轮 `_stabilize_session_toolset` 拍定名单后**原样复用**（`_SESSION_TOOL_CEILING=24` 硬顶）；长尾工具只进当轮 user 侧种子提示 |
 | 语境 | 有 group | 群画像 tags → 附加池；**exclusive 永不进主会话**（无 shield） |
-| L4/L5 向量 | 非 in_flight 短轮 | 近文 + 本轮检索；新名字只 append，禁止删除/排序/热槽替换。点名/跟进不跳过（瘦核不含 web_search） |
+| L4/L5 向量 | 非 in_flight 短轮 | 近文 + 本轮检索产**种子**（`hinted_seed_names`，不进 tools[]），模型经 `call_tool` 调长尾。点名/跟进不跳过（瘦核不含 web_search） |
 | 委派 | 交互主人格 | exclusive 集合来自节点注册表；roster 在 **system** |
-| 渐进 | 每轮可挂 | `find_tools` 先节点后向量；RetrievableToolset 防 exclusive 回灌。发现/委派/回想不按点名硬拒（交给模型）。日程 create/mutate **PIN 恒可见**，管理形由 `check_func` 拒执行（拒绝文案 ≠ effectual write） |
+| 渐进 | 每轮常挂 | `find_tools` 先节点后向量产种子；`call_tool` 执行准入拦 exclusive/hide_from_main/blocked。发现/委派/回想不按点名硬拒（交给模型）。日程管理形由 `check_func` 拒执行（拒绝文案 ≠ effectual write） |
 | 出图 | **主路径** | **`create_subagent(agent_profile="render_agent")`** 自由 HTML → 图句柄；主人格 `send_message_by_ai(image_id=)` |
 | media 直调 | 能力/特例 | `render_html_to_image` 挂在 render_agent 白名单；主人格契约 **禁止自渲** |
 
@@ -1669,10 +1669,9 @@ session_log entries（磁盘，可稍后刷）：
 `run_start` → `user_input` → `tools_list` → `tools_change`? → `thinking_effort` → `thinking`* → (`tool_call`/`tool_return`/`tools_change`)* → `step_usage`* → `text_output`* → `result` → `token_usage` → `run_end`
 
 > `tools_change` 只在有变化时落：装配处记与上一轮名单的 added/removed 差分和 hinted
-> （本轮只提示未挂载的种子）；`find_tools` 返回处记本次新挂载名（`source=find_tools`，
-> 带 tool_call_id）。渐进式暴露开启时本轮种子不再进 schema——以 hinted 形式写进
-> 当轮 user 提示，由模型 `find_tools(need="确切工具名")` 挂载，保证工具列表稳定
-> （前缀缓存不失效、快照不超顶）。
+> （本轮只提示未挂载的种子）。永冻主会话 tools[] 首轮冻结后跨轮不变——本轮检索/
+> hook 种子一律以 hinted 形式写进当轮 user 提示，由模型
+> `call_tool(tool_name, arguments_json)` 调用，保证线缆层 tools[] 稳定（前缀缓存不失效）。
 >
 > `step_usage` 在每个 CallToolsNode 响应结算处（TTFT/TPS 算完、`first_event_at`
 > 复位前）落一条：该次模型请求的 input/output/cache_read/cache_write、model_name、
@@ -1925,7 +1924,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
    （`compact_session_history`），禁止砍头/锚点插头。
 2. **工具规程**：`TOOL_ORCHESTRATION` + **DELEGATION_FIRST** 在 system；重任务禁主人格长业务正文。
 3. **意图**：prior 拼接 + 省略/短句升工具；装配不因闲聊砍向量/状态族；intent=工具/问答 → user 侧事务优先级句。
-4. **工具池**：保底 self+buildin（含 `read_handle`）；recall 默认 3、extra max 默认 6；驻留 2 轮；exclusive 剥离 + find_tools 不回灌。
+4. **工具池**：永冻核心 13 项（含 `call_tool`/`find_tools`/`schedule_task`/`read_handle`）；recall 默认 3；长尾经 `call_tool` 执行；exclusive 剥离 + find_tools 不回灌。
    **召回阈值** `tool_recall_threshold`（0.38）；**知识库 dense** `knowledge_recall_threshold`（0.35）。
    检索文本 = **name+docstring+covers+aliases**（`ToolBase.retrieval_text`）。
 5. **find_tools 分流**：真无命中 / exclusive 剥离 / visible 隐藏 → 语义节点 + `owning_nodes_of_tools` 指路委派；

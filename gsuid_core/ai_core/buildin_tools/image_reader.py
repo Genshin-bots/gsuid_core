@@ -367,39 +367,18 @@ def _build_direct_image_return(
     )
 
 
-@ai_tools(category="buildin", visible_when=visible_when_read_image, timeout=120.0)
+@ai_tools(category="buildin", timeout=120.0)
 async def read_image(
     ctx: RunContext[ToolContext],
     image_id: str,
     question: str | None = None,
 ) -> str | ToolReturn:
-    """
-    查看（读取）一张图片的内容
-
-    群聊里上传或渲染/生成的图片不会直接进入你的视野，只会以「图片ID」(``img_xxxxxxxx``
-    或图片类产物 ``res_xxxxxxxx``) 出现。需要真正看清某张图时，调用本工具将其呈现给你：
-    支持原生识图的模型会直接看到高清原图（超长/超大渲染图会自动切分为多段清晰呈现）；
-    不支持原生识图的模型会转为客观文字描述。
-
-    适用场景：用户发了图问"这是什么/帮我看看/图里写了啥"、改图前看清原图、
-    渲染或生图完成后检视成图排版/细节质量等。
+    """查看一张图片内容（支持多模态直接呈现原图，否则转述为文字；文本类 res_ 请用 read_handle）。
 
     Args:
         ctx: 工具执行上下文
-        image_id: 图片资源ID。支持消息里出现的 ``img_xxxxxxxx``（用户上传图/AIGC成图）、
-            ``res_xxxxxxxx``（**仅图片类**能力代理产物，mime 以 image/ 开头）、
-            以及 ``http(s)://`` / ``base64://`` / ``data:image/`` 直链。
-            文本类 ``res_``（如 text/markdown）请用 ``artifact_get``，不要本工具。
-        question: 可选，你想从图里知道什么（如"图里的文字是什么""排版有无裁切重叠"）。
-            传入后描述会聚焦到你关心的点，不传则返回图片的通用客观描述。
-
-    Returns:
-        主模型支持多模态时返回 ``ToolReturn``（图片直接注入会话）；否则返回图片内容的
-        文字描述。图片不存在 / 已过期 / 非图片类资源时返回中文错误说明。
-
-    Example:
-        >>> await read_image(ctx, "img_1a2b3c4d")
-        >>> await read_image(ctx, "res_1a2b3c4d", question="检查文字有无裁切或表格错位")
+        image_id: 图片资源 ID（img_xxx / 图片类 res_xxx / 图片 URL）
+        question: 可选，想重点确认的细节或文字
     """
     raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id)
     if error:

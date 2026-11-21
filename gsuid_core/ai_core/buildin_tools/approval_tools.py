@@ -68,6 +68,8 @@ def _status_text(row: AIApprovalRequest) -> str:
 @ai_tools(
     category="buildin",
     capability_domain="审批交互",
+    covers=["检查审批状态", "查询主人审批结果", "核验待处理授权"],
+    aliases=["审批状态", "待审批"],
     visible_when=_this_session_pending,
     code_callable=False,
 )
@@ -104,7 +106,13 @@ async def check_approval(ctx: RunContext[ToolContext], request_ref: str = "") ->
     return f"{APPROVAL_HALT_MARK}\n" + "\n".join(lines) + "\n已在等主人。不要再安装，不要再派开发任务。"
 
 
-@ai_tools(category="buildin", capability_domain="审批交互", visible_when=_has_pending)
+@ai_tools(
+    category="buildin",
+    capability_domain="审批交互",
+    covers=["列出全部待审批请求", "查看当前等待主人批准的事项"],
+    aliases=["待审批列表"],
+    visible_when=_has_pending,
+)
 async def list_pending_approvals(ctx: RunContext[ToolContext]) -> str:
     """列出当前用户可裁决的全部待审批请求（多条时用于定位编号 request_ref）。"""
     ev = ctx.deps.ev

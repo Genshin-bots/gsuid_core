@@ -79,8 +79,8 @@ description: >
 - **Agent 发话合规**：插件一般不直接调 `pre_send_gate`；改 `send_message_by_ai` 或新增「模型台词出站」路径时须过 `tool_gate_feedback` / 主循环闸。见 [gscore-development §7.12](../gscore-development/references/07-tool-registry-and-agent.md)。
 - **`@ai_tools` 是入口装饰器**：必须 async；三种上下文模式；`Bot`/`Event` 自动注入不暴露给 LLM。
   **检索面** = name + docstring + **`covers`** + **`aliases`（须领域前缀）**。详见 [§2](./references/02-ai-tools-decorator.md)。
-- **`category` 决定加载方式**：`self` / `buildin` 是**框架保底工具池**（无条件全部加载进主Agent，不受向量搜索影响）；`common` / `media` / `mcp` / 自定义分类是**向量检索按需加载**；`default` 是**子Agent 工具**（需通过 `create_subagent` 调用）。详见 [§3.2](./references/03-tool-categories.md)。
-- **保底池由 category 决定，无硬编码名单**：`get_main_agent_tools()` 把 `self` + `buildin` 两个分类下的全部工具无条件加载；插件若希望某工具成为主 Agent 保底工具，注册时用 `category="buildin"` 即可。详见 [§3.2](./references/03-tool-categories.md)。
+- **主会话 tools[] 永冻（2026-11）**：主 Agent 线缆层 tools[] 首轮拍定后跨轮不变，固定 `MAIN_AGENT_CORE_TOOLS` 名单（`find_tools` / `call_tool` / `send_message_by_ai` / `schedule_task` 等）。插件工具与其他长尾工具**不再直接进 tools[]**：向量/检索命中的工具名以"种子提示"写进当轮 user 侧，模型经 `call_tool(tool_name, arguments_json)` 按需执行（准入统一校验权限/主人格边界/自主白名单）。对插件作者透明，但意味着工具 docstring / covers / aliases 是唯一召回面。
+- **`category` 决定归属而非直接挂载**：`self` / `buildin` 标记**框架侧**工具（仅核心名单内者才常驻主会话）；`common` / `media` / `mcp` / 自定义分类经向量召回 + `call_tool` 按需调用；`default` 是**子Agent 工具**（需通过 `create_subagent` 调用）。详见 [§3.2](./references/03-tool-categories.md)。
 - **`to_ai` 与 `@ai_tools` 冲突不可共存**：同一函数**只能选其一**。命令同时允许用户直接触发 → `to_ai`（一份代码服务用户命令 + AI 调用）；纯 AI 内部工具 → `@ai_tools`。详见 [§四 顶部警告](./references/04-trigger-bridge.md)。
 - **`MockBot` 拦截 `bot.send`**：AI 调用触发器时，真实 `Bot` 被 `MockBot` 代理——`bot.send(bytes)` / `bot.send("base64://...")` / `bot.send(Message(type="image"))` 都会通过 `RM.register()` 注册图片，**返回资源 ID**（如 `img_a1b2c3d4`），AI 据此决定是否调 `send_message_by_ai(image_id=...)` 发给用户；`Message(type="file")` 经 `RM.register_file()` 登记为 `fil_` 句柄（≤10MB），AI 用 `file_ids=[...]` 发出；纯文字 `bot.send(str)` 被自动收集返回给 AI。详见 [§4.4](./references/04-trigger-bridge.md)。
 - **`context_tags` 解决群聊语境失配**：插件可通过 `context_tags=["原神", "Genshin", "游戏"]` 声明工具适用语境，框架根据群组画像把匹配标签的工具自动加入该群（最多 8 个），不依赖向量搜索。详见 [§2.2](./references/02-ai-tools-decorator.md)。

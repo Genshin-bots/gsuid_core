@@ -51,7 +51,6 @@
 | `startup.py` | ai_core 的启动钩子聚合点，被 `gsuid_core.startup` 调用。 |
 | `self_cognition.py` | 自我认知（"你是谁、能做什么"）相关的辅助常量。 |
 | `wall_clock.py` | 墙钟软预算时钟（ask_user 挂起时段可排除）。 |
-| `dynamic_toolset.py` | 渐进式工具暴露（`find_tools` + RetrievableToolset）。 |
 | `tool_state_signals.py` | 工具池状态信号（意图/活跃任务驱动 L2 挂载）。 |
 
 ---
@@ -240,7 +239,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 |---|---|
 | `message_sender.py` | `send_message_by_ai`：入口 `tool_gate_feedback`，文本走 `send_chat_result`；支持 `img_xxx`/`res_xxx`/http/base64。 |
 | `subagent.py` | `create_subagent`：Kanban 叶子 / transient 能力代理；回执分【工具通道】/【聊天通道】；异步 ack 强制主人格 `<SILENCE>`。 |
-| `scheduler.py` | `add_once_task / add_interval_task / cancel_task / list_my_tasks`：定时任务工具集。 |
+| `scheduler.py` | `schedule_task / cancel_scheduled_task / list_scheduled_tasks`：定时任务工具集。 |
 | `meme_tools.py` | 表情包检索 / 触发。 |
 | `html_render_tools.py` | `render_html_to_image`（**buildin 保底**，自由 HTML）；`render_card` / `render_markdown_to_image`（media 按需）。 |
 | `web_search.py / web_fetch.py` | 联网。 |
