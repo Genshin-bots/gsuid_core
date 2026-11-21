@@ -22,11 +22,11 @@ _ENDPOINT = "/api/ai/tools/assemble_preview"
 
 # 问句来自 eval/agent 用例，期望是「种子或展开池」里至少命中一个。
 GOLD: list[tuple[str, frozenset[str]]] = [
-    ("明天下午3点提醒我开会，就一次就行", frozenset({"add_once_task"})),
-    ("3分钟后提醒我看一下锅里的汤", frozenset({"add_once_task"})),
-    ("帮我设置每天早上8点提醒我喝水", frozenset({"add_interval_task"})),
-    ("工作的时候每隔30分钟提醒我站起来活动一下", frozenset({"add_interval_task"})),
-    ("以后每周一早上9点提醒我交周报", frozenset({"add_interval_task"})),
+    ("明天下午3点提醒我开会，就一次就行", frozenset({"schedule_task", "add_once_task"})),
+    ("3分钟后提醒我看一下锅里的汤", frozenset({"schedule_task", "add_once_task"})),
+    ("帮我设置每天早上8点提醒我喝水", frozenset({"schedule_task", "add_interval_task"})),
+    ("工作的时候每隔30分钟提醒我站起来活动一下", frozenset({"schedule_task", "add_interval_task"})),
+    ("以后每周一早上9点提醒我交周报", frozenset({"schedule_task", "add_interval_task"})),
     ("我现在都设了哪些定时提醒？列给我看看", frozenset({"list_scheduled_tasks"})),
     (
         "把我那个每天吃药的提醒取消掉",

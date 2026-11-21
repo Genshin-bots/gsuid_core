@@ -29,6 +29,7 @@
   "log.webconsole.plugin_prefs_save_fail": "[WebConsole] Failed to save plugin preferences: {error}",
   "log.webconsole.chat_received_user": "[chat_with_history] received user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' does not exist; falling back to the general assistant prompt",
+  "log.webconsole.eval_session_log_flush_failed": "[eval] Failed to flush session log to disk: {err}",
   "log.webconsole.config_name_item_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {item_name}",
   "log.webconsole.config_name_key_write_exception": "[Framework Config][{config_name}] Exception while writing configuration item {key}: {e}",
   "log.webconsole.config_name_key_write_fail": "[Framework Config][{config_name}] Failed to write configuration item {key}",

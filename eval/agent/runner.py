@@ -24,7 +24,7 @@ from pathlib import Path
 import httpx
 
 from eval.agent.harness import Trace, ToolCall, parse_session_log, pick_user_visible, trace_awaits_delivery
-from eval.common.http_client import call_chat_with_history
+from eval.common.http_client import call_eval_inbox_turn, call_chat_with_history
 
 # 与 interaction_scaffold 说话人前缀同形，避免 runner 去 import 生产脚手架。
 _SPEAKER_HEAD_RE = re.compile(r"^[^：:（()）\n]{1,16}\(用户ID:[^)]{1,24}\)[：:]\s*")
@@ -110,13 +110,24 @@ def _prefer_log(current: dict | None, candidate: dict, cand_key: float) -> tuple
 def _find_log_by_session_id(session_id: str) -> Optional[dict]:
     best: dict | None = None
     best_key = -1.0
+    safe_sid = re.sub(r"[^0-9A-Za-z_.-]+", "_", session_id).strip("_")
+    fast_cands: list[Path] = []
     f = SESSION_LOG_DIR / f"{session_id}.json"
     if f.exists():
+        fast_cands.append(f)
+    if safe_sid:
+        for p in SESSION_LOG_DIR.glob(f"*{safe_sid}*.json"):
+            if p not in fast_cands:
+                fast_cands.append(p)
+    for p in fast_cands:
         try:
-            doc = json.loads(f.read_text(encoding="utf-8"))
-            best, best_key = _prefer_log(best, doc, _doc_sort_key(doc, f.stat().st_mtime))
+            doc = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            continue
+        if "session_id" in doc and doc["session_id"] == session_id:
+            best, best_key = _prefer_log(best, doc, _doc_sort_key(doc, p.stat().st_mtime))
+    if best is not None:
+        return best
     for p in SESSION_LOG_DIR.glob("*.json"):
         try:
             doc = json.loads(p.read_text(encoding="utf-8"))
@@ -212,70 +223,36 @@ async def run_once(
     # 允许 case 传 persona: null 显式关人格（judge/通用助手场景）。
     persona = case["persona"] if "persona" in case else "早柚"
     enable_tools = case["enable_tools"] if "enable_tools" in case else True
-    group_id = _case_group_id(case, run_tag=uid)
 
-    for setup_msg in _setup_messages(case):
-        await call_chat_with_history(
-            client,
-            base_url=base_url,
-            user_id=uid,
-            message=setup_msg,
-            history=[],
-            persona_name=persona,
-            enable_observer=False,
-            enable_tools=enable_tools,
-            max_history=0,
-            group_id=group_id,
-            timeout=timeout,
-        )
-
-    # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测用）
-    if case.get("warmup_turns"):
-        history = await _run_warmup_turns(
-            client,
-            base_url,
-            uid,
-            case,
-            persona,
-            timeout,
-            group_id=group_id,
-        )
-    else:
-        history = case.get("history", [])
-
-    resp = await call_chat_with_history(
+    resp, skip, injected_images = await _execute_case_http(
         client,
-        base_url=base_url,
-        user_id=uid,
-        message=case["message"],
-        history=history,
-        persona_name=persona,
-        enable_observer=False,
-        enable_tools=enable_tools,
-        max_history=int(case.get("max_history", AGENT_EVAL_MAX_HISTORY)),
-        group_id=group_id,
-        timeout=timeout,  # 评测隔离：默认不写记忆
+        base_url,
+        case,
+        uid,
+        persona,
+        enable_tools,
+        timeout,
     )
     latency = time.time() - since
     _raw_data: object = resp["data"] if "data" in resp else None
     delivered = _raw_data if isinstance(_raw_data, str) else ""
-    if resp.get("error"):
-        return Trace(error=f"api:{resp.get('error')}", latency=latency)
+    if "error" in resp and resp["error"]:
+        return Trace(error=f"api:{resp['error']}", latency=latency, injected_image_ids=injected_images)
 
     # A 模式：端点已返回 trace / session_id
-    skip = _prefix_run_count(case)
-    if isinstance(resp.get("trace"), dict):
+    if "trace" in resp and isinstance(resp["trace"], dict):
         tr = parse_session_log(resp["trace"], skip_runs=skip)
         tr.latency = latency
+        tr.injected_image_ids = injected_images
         log_last = tr.visible_texts[-1] if tr.visible_texts else tr.final_text
         tr.returned_text = pick_user_visible(delivered, log_last)
         return tr
     doc = None
-    session_id = resp.get("session_id")
+    session_id = str(resp["session_id"]) if "session_id" in resp and resp["session_id"] else ""
     if session_id:
         for _ in range(10):
             doc = _find_log_by_session_id(session_id)
-            if doc and any(e.get("type") in ("result", "run_end") for e in doc.get("entries", [])):
+            if doc and _log_complete(doc):
                 break
             await asyncio.sleep(1.5)
     if doc is None:  # B 模式兜底（阻塞轮询放线程池，避免卡事件循环）
@@ -283,10 +260,17 @@ async def run_once(
     if doc is None:
         # 拿不到日志但拿到了文本：退化成 HTTP-only Trace。端点 tool_calls 是工具名列表。
         if delivered:
-            return _http_text_trace(resp, delivered, latency)
-        return Trace(error="session_log_not_found（建议按 README 让端点返回 session_id/trace）", latency=latency)
+            tr = _http_text_trace(resp, delivered, latency)
+            tr.injected_image_ids = injected_images
+            return tr
+        return Trace(
+            error="session_log_not_found（建议按 README 让端点返回 session_id/trace）",
+            latency=latency,
+            injected_image_ids=injected_images,
+        )
     tr = parse_session_log(doc, skip_runs=skip)
     tr.latency = latency
+    tr.injected_image_ids = injected_images
     log_last = tr.visible_texts[-1] if tr.visible_texts else tr.final_text
     tr.returned_text = pick_user_visible(delivered, log_last)
     return tr
@@ -328,67 +312,230 @@ def _case_group_id(case: dict, run_tag: str = "") -> Optional[str]:
     return f"{gid}_{run_tag}" if run_tag else gid
 
 
+def _sub_run_tag(val: str, run_tag: str) -> str:
+    return val.replace("{run}", run_tag)
+
+
+def _format_step_group(raw_gid: object, run_tag: str) -> Optional[str]:
+    if raw_gid is None or raw_gid == "":
+        return None
+    s = _sub_run_tag(str(raw_gid), run_tag)
+    return s if run_tag in s else f"{s}_{run_tag}"
+
+
+async def _execute_case_http(
+    client: httpx.AsyncClient,
+    base_url: str,
+    case: dict,
+    uid: str,
+    persona: str | None,
+    enable_tools: bool,
+    timeout: float,
+) -> tuple[dict, int, list[str]]:
+    """统一执行 single / multi_turn_session / inbox_burst / multi_session，返回 (resp, skip_runs, image_ids)。"""
+    mode = str(case["mode"] if "mode" in case and case["mode"] else "single")
+    max_hist = int(case["max_history"] if "max_history" in case else AGENT_EVAL_MAX_HISTORY)
+    group_id = _case_group_id(case, run_tag=uid)
+    injected_images: list[str] = []
+
+    if mode == "multi_turn_session":
+        sid = f"eval_sess_{case['id']}_{uuid.uuid4().hex[:8]}"
+        turns = list(case["turns"] if "turns" in case and case["turns"] else [])
+        if "message" in case and case["message"]:
+            turns.append(
+                {
+                    "message": case["message"],
+                    "user_id": case["user_id"] if "user_id" in case else "",
+                    "images": case["images"] if "images" in case else [],
+                }
+            )
+        last_resp: dict = {"status_code": -1, "data": None, "error": "empty_turns"}
+        for t_item in turns:
+            raw_msg = t_item if isinstance(t_item, str) else str(t_item["message"] if "message" in t_item else "")
+            t_msg = _sub_run_tag(raw_msg, uid)
+            t_uid = (
+                _sub_run_tag(str(t_item["user_id"]), uid)
+                if isinstance(t_item, dict) and "user_id" in t_item and t_item["user_id"]
+                else uid
+            )
+            t_imgs = (
+                list(t_item["images"]) if isinstance(t_item, dict) and "images" in t_item and t_item["images"] else None
+            )
+            last_resp = await call_chat_with_history(
+                client,
+                base_url=base_url,
+                user_id=t_uid,
+                message=t_msg,
+                history=[],
+                persona_name=persona,
+                enable_observer=bool(case["enable_observer"]) if "enable_observer" in case else False,
+                enable_tools=enable_tools,
+                max_history=max_hist,
+                group_id=group_id,
+                session_id=sid,
+                images=t_imgs,
+                timeout=timeout,
+            )
+            if isinstance(last_resp.get("image_ids"), list):
+                injected_images.extend(str(x) for x in last_resp["image_ids"] if x)
+        return last_resp, 0, injected_images
+
+    if mode == "inbox_burst":
+        sid = f"eval_sess_ib_{case['id']}_{uuid.uuid4().hex[:8]}"
+        gid = group_id or f"eval_grp_{case['id']}_{uid}"
+        bursts: list[list[dict]] = []
+        if "bursts" in case and case["bursts"]:
+            bursts = [list(b) for b in case["bursts"]]
+        elif "burst" in case and case["burst"]:
+            bursts = [list(case["burst"])]
+        last_resp = {"status_code": -1, "data": None, "error": "empty_burst"}
+        for b_msgs in bursts:
+            norm_msgs: list[dict] = []
+            for m in b_msgs:
+                entry = dict(m)
+                if "user_id" in entry and entry["user_id"]:
+                    entry["user_id"] = _sub_run_tag(str(entry["user_id"]), uid)
+                if "text" in entry and entry["text"]:
+                    entry["text"] = _sub_run_tag(str(entry["text"]), uid)
+                norm_msgs.append(entry)
+            last_resp = await call_eval_inbox_turn(
+                client,
+                base_url=base_url,
+                group_id=gid,
+                messages=norm_msgs,
+                persona_name=persona,
+                session_id=sid,
+                enable_tools=enable_tools,
+                enable_observer=bool(case["enable_observer"]) if "enable_observer" in case else False,
+                max_history=max_hist,
+                timeout=timeout,
+            )
+            if isinstance(last_resp.get("image_ids"), list):
+                injected_images.extend(str(x) for x in last_resp["image_ids"] if x)
+        skip_n = (
+            0
+            if len(bursts) <= 1 or bool(case["score_all_turns"] if "score_all_turns" in case else False)
+            else len(bursts) - 1
+        )
+        return last_resp, skip_n, injected_images
+
+    if mode == "multi_session":
+        steps = list(case["steps"] if "steps" in case and case["steps"] else [])
+        last_resp = {"status_code": -1, "data": None, "error": "empty_steps"}
+        for st in steps:
+            s_uid = _sub_run_tag(str(st["user_id"] if "user_id" in st and st["user_id"] else uid), uid)
+            s_gid = _format_step_group(st["group_id"] if "group_id" in st else None, uid)
+            s_msg = _sub_run_tag(str(st["message"] if "message" in st else ""), uid)
+            s_role = str(st["role"] if "role" in st else "probe")
+            s_obs = bool(st["enable_observer"]) if "enable_observer" in st else (s_role == "seed")
+            s_tools = (
+                bool(st["enable_tools"]) if "enable_tools" in st else (enable_tools if s_role == "probe" else False)
+            )
+            s_imgs = list(st["images"]) if "images" in st and st["images"] else None
+            s_hist: list[dict[str, str]] = []
+            if "history" in st and st["history"]:
+                for h in st["history"]:
+                    if isinstance(h, dict):
+                        s_hist.append(
+                            {
+                                "role": str(h["role"] if "role" in h else "user"),
+                                "content": _sub_run_tag(str(h["content"] if "content" in h else ""), uid),
+                            }
+                        )
+            last_resp = await call_chat_with_history(
+                client,
+                base_url=base_url,
+                user_id=s_uid,
+                message=s_msg,
+                history=s_hist,
+                persona_name=persona,
+                enable_observer=s_obs,
+                enable_tools=s_tools,
+                max_history=max_hist if s_role == "probe" else 0,
+                group_id=s_gid,
+                images=s_imgs,
+                timeout=timeout,
+            )
+            if s_role == "probe" and isinstance(last_resp.get("image_ids"), list):
+                injected_images.extend(str(x) for x in last_resp["image_ids"] if x)
+        return last_resp, 0, injected_images
+
+    # single 模式
+    for setup_msg in _setup_messages(case):
+        await call_chat_with_history(
+            client,
+            base_url=base_url,
+            user_id=uid,
+            message=setup_msg,
+            history=[],
+            persona_name=persona,
+            enable_observer=False,
+            enable_tools=enable_tools,
+            max_history=0,
+            group_id=group_id,
+            timeout=timeout,
+        )
+    if case.get("warmup_turns"):
+        history = await _run_warmup_turns(
+            client,
+            base_url,
+            uid,
+            case,
+            persona,
+            timeout,
+            group_id=group_id,
+        )
+    else:
+        history = case.get("history", [])
+    case_imgs = list(case["images"]) if "images" in case and case["images"] else None
+    resp = await call_chat_with_history(
+        client,
+        base_url=base_url,
+        user_id=uid,
+        message=case["message"],
+        history=history,
+        persona_name=persona,
+        enable_observer=bool(case["enable_observer"]) if "enable_observer" in case else False,
+        enable_tools=enable_tools,
+        max_history=max_hist,
+        group_id=group_id,
+        images=case_imgs,
+        timeout=timeout,
+    )
+    if isinstance(resp.get("image_ids"), list):
+        injected_images.extend(str(x) for x in resp["image_ids"] if x)
+    return resp, _prefix_run_count(case), injected_images
+
+
 async def _fire_run(client, base_url, case, run_idx, sem, timeout) -> dict:
     uid = f"eval_{case['id']}_{run_idx}_{uuid.uuid4().hex[:6]}"
     queued = time.time()
     persona = case["persona"] if "persona" in case else "早柚"
     enable_tools = case["enable_tools"] if "enable_tools" in case else True
-    group_id = _case_group_id(case, run_tag=uid)
     async with sem:
-        # setup：跨轮修改与取消用例预先执行以落库真实任务，供主用例借状态池定位。
-        # 执行结果不参与评分。
-        for setup_msg in _setup_messages(case):
-            await call_chat_with_history(
-                client,
-                base_url=base_url,
-                user_id=uid,
-                message=setup_msg,
-                history=[],
-                persona_name=persona,
-                enable_observer=False,
-                enable_tools=enable_tools,
-                max_history=0,
-                group_id=group_id,
-                timeout=timeout,
-            )
-        # warmup_turns：逐轮真实对话积累上下文（长对话 OOC 评测）；
-        # 不计入 probe latency，仅为主消息构建多轮上下文。
-        if case.get("warmup_turns"):
-            history = await _run_warmup_turns(
-                client,
-                base_url,
-                uid,
-                case,
-                persona,
-                timeout,
-                group_id=group_id,
-            )
-        else:
-            history = case.get("history", [])
-        # 耗时自获取并发槽后开始计算，排除排队时间以准确评估单次 agent 运行延迟。
         call_start = time.time()
-        resp = await call_chat_with_history(
+        resp, skip_runs, injected_images = await _execute_case_http(
             client,
-            base_url=base_url,
-            user_id=uid,
-            message=case["message"],
-            history=history,
-            persona_name=persona,
-            enable_observer=False,
-            enable_tools=enable_tools,
-            max_history=int(case.get("max_history", AGENT_EVAL_MAX_HISTORY)),
-            group_id=group_id,
-            timeout=timeout,
+            base_url,
+            case,
+            uid,
+            persona,
+            enable_tools,
+            timeout,
         )
         latency = time.time() - call_start
     return {
         "case_id": case["id"],
         "run_idx": run_idx,
         "uid": uid,
+        "session_id": str(resp["session_id"])
+        if isinstance(resp, dict) and "session_id" in resp and resp["session_id"]
+        else "",
+        "image_ids": injected_images,
         "since": queued,
         "resp": resp,
         "latency": latency,
-        "skip_runs": _prefix_run_count(case),
+        "skip_runs": skip_runs,
     }
 
 
@@ -424,17 +571,21 @@ def _trace_from_fired(f: dict, doc) -> Trace:
     resp = f["resp"]
     delivered = resp.get("data") if isinstance(resp.get("data"), str) else ""
     skip = int(f["skip_runs"] if "skip_runs" in f else 0)
+    img_ids = [str(x) for x in (f["image_ids"] if "image_ids" in f and f["image_ids"] else [])]
     if doc is not None:
         tr = parse_session_log(doc, skip_runs=skip)
         tr.latency = f["latency"]
+        tr.injected_image_ids = img_ids
         log_last = tr.visible_texts[-1] if tr.visible_texts else tr.final_text
         tr.returned_text = pick_user_visible(delivered, log_last)
         return tr
     if resp.get("error"):
-        return Trace(error=f"api:{resp.get('error')}", latency=f["latency"])
+        return Trace(error=f"api:{resp.get('error')}", latency=f["latency"], injected_image_ids=img_ids)
     if delivered:
-        return _http_text_trace(resp, delivered, f["latency"])
-    return Trace(error="session_log_not_found", latency=f["latency"])
+        tr = _http_text_trace(resp, delivered, f["latency"])
+        tr.injected_image_ids = img_ids
+        return tr
+    return Trace(error="session_log_not_found", latency=f["latency"], injected_image_ids=img_ids)
 
 
 async def run_suite_batch(
@@ -488,24 +639,38 @@ async def run_suite_batch(
         return f
 
     fired = await asyncio.gather(*[_fire_and_tick(c, i) for c, i in specs])
-    print(f"[batch] all {total} fired; waiting {wait:.0f}s for session_log flush…", flush=True)
-
-    # 只等一次让日志 flush（空闲≥60s 才落盘），再一趟扫盘；缺失的补扫
-    await asyncio.sleep(wait)
-    all_uids = {f["uid"] for f in fired}
+    # A 模式快路径：端点已同步落盘并返回 session_id，直接按 session_id 秒级读取；缺失再走 B 模式等待
     docs: dict = {}
-    for i in range(1 + rescans):
-        found = await asyncio.to_thread(_scan_all_logs, all_uids, earliest)
-        for uid, doc in found.items():
-            if uid not in docs:
-                docs[uid] = doc
+    missing_uids: set[str] = set()
+    for f in fired:
+        sid = str(f["session_id"] if "session_id" in f else "")
+        if sid:
+            doc = await asyncio.to_thread(_find_log_by_session_id, sid)
+            if doc is not None and _log_complete(doc):
+                docs[f["uid"]] = doc
                 continue
-            chosen, _ = _prefer_log(docs[uid], doc, _doc_sort_key(doc, 0.0))
-            docs[uid] = chosen
-        if all(u in docs for u in all_uids):
-            break
-        if i < rescans:
-            await asyncio.sleep(rescan_gap)
+        missing_uids.add(f["uid"])
+
+    if missing_uids:
+        print(
+            f"[batch] {len(docs)}/{total} loaded by session_id; waiting {wait:.0f}s for {len(missing_uids)} remaining…",
+            flush=True,
+        )
+        await asyncio.sleep(wait)
+        for i in range(1 + rescans):
+            found = await asyncio.to_thread(_scan_all_logs, missing_uids, earliest)
+            for uid, doc in found.items():
+                if uid not in docs:
+                    docs[uid] = doc
+                    continue
+                chosen, _ = _prefer_log(docs[uid], doc, _doc_sort_key(doc, 0.0))
+                docs[uid] = chosen
+            if all(u in docs for u in missing_uids):
+                break
+            if i < rescans:
+                await asyncio.sleep(rescan_gap)
+    else:
+        print(f"[batch] all {total} session_logs loaded immediately via session_id", flush=True)
 
     per_case: dict = {}
     pending_delivery: list[dict] = []

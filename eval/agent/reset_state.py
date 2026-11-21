@@ -24,6 +24,8 @@ _EVAL_LIKE_ESCAPE = "\\"
 
 _EVAL_MEM_PREFIXES = (
     "group:eval_grp_",
+    "group:eval_group_",
+    "group:eval_priv_",
     "user_global:eval_",
     "user_in_group:eval_",
 )

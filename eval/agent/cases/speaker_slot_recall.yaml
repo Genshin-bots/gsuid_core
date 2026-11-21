@@ -140,6 +140,7 @@ cases:
   # ════════ 2. 上文已有所在地：必须沿用，禁止另猜 / 再问 ════════
   - id: slot_weather_history_city
     domain: speaker_slot_recall
+    tier: 1
     targets: [longmemeval, tau-bench]
     k: 1
     why_hard: 上文说过住杭州，本句只问天气，必须沿用杭州而不是另猜城市

@@ -72,6 +72,8 @@ def _import_webconsole_apis() -> None:
         workspace_api,
         # Agent 套件槽位 / Hook 总线 / 关系温度的只读治理
         agent_kits_api,
+        # 评测收件箱批次（仅 LOCAL_TEST_MODE 挂载）
+        eval_inbox_api,
         mcp_config_api,
         # MCP 广场（ModelScope 市场 + logo 本地代理）
         mcp_market_api,
