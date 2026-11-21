@@ -54,6 +54,12 @@ async def _init_persona_scope_migration():
     await migrate_legacy_persona_scopes()
 
 
+async def _init_cross_group_isolation_migration():
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import migrate_cross_group_isolation
+
+    await migrate_cross_group_isolation()
+
+
 async def _init_scheduled_task():
     from gsuid_core.ai_core.scheduled_task.startup import init_scheduled_tasks
 
@@ -276,6 +282,7 @@ _INIT_STEPS = [
     ("RAG", _init_rag),
     ("Persona", _init_persona),
     ("多人格隔离迁移", _init_persona_scope_migration),
+    ("跨群隐私隔离无损迁移", _init_cross_group_isolation_migration),
     ("审批中心", _init_approval),
     ("定时任务", _init_scheduled_task),
     ("长任务编排", _init_planning),

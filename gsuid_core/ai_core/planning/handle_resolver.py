@@ -173,21 +173,22 @@ async def kbdoc_char_offsets(doc_id: str) -> dict[int, int]:
 def _resolve_note_handle_sync(hid: str, pname: str, title: str) -> Optional[ResolvedHandle]:
     import json as _json
 
-    from gsuid_core.ai_core.autonomy.tools import artifact_dir, safe_filename
+    from gsuid_core.ai_core.autonomy.tools import artifact_dir, safe_filename, parse_note_scope_header
 
     base_dir = artifact_dir(pname)
     stem = safe_filename(title).removesuffix(".txt")
     for cand_path in (base_dir / f"{stem}.md", base_dir / f"{stem}.txt"):
         if cand_path.exists():
             text = cand_path.read_text(encoding="utf-8")
+            meta_scope, meta_owner = parse_note_scope_header(text)
             mime = "text/markdown" if cand_path.suffix == ".md" else "text/plain"
             return ResolvedHandle(
                 id=hid,
                 source="note",
                 mime=mime,
                 summary=f"{pname} 的笔记：{title}",
-                owner_user_id="",
-                scope_key="",
+                owner_user_id=meta_owner,
+                scope_key=meta_scope,
                 payload_inline=text,
                 payload_path=str(cand_path),
                 size_bytes=len(text.encode("utf-8")),
@@ -211,13 +212,26 @@ def _resolve_note_handle_sync(hid: str, pname: str, title: str) -> Optional[Reso
                         and isinstance(rec_obj["body"], str)
                     ):
                         body_txt = rec_obj["body"]
+                        hdr_sk, hdr_uid = parse_note_scope_header(body_txt)
+                        rec_sk = (
+                            rec_obj["scope_key"]
+                            if "scope_key" in rec_obj and isinstance(rec_obj["scope_key"], str) and rec_obj["scope_key"]
+                            else hdr_sk
+                        )
+                        rec_uid = (
+                            rec_obj["owner_user_id"]
+                            if "owner_user_id" in rec_obj
+                            and isinstance(rec_obj["owner_user_id"], str)
+                            and rec_obj["owner_user_id"]
+                            else hdr_uid
+                        )
                         return ResolvedHandle(
                             id=hid,
                             source="note",
                             mime="text/plain",
                             summary=f"{pname} 的历史归档笔记：{title}",
-                            owner_user_id="",
-                            scope_key="",
+                            owner_user_id=rec_uid,
+                            scope_key=rec_sk,
                             payload_inline=body_txt,
                             payload_path="",
                             size_bytes=len(body_txt.encode("utf-8")),

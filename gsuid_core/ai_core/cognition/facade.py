@@ -459,13 +459,28 @@ async def _search_memory(
     if CogKind.EPISODE in kinds:
         seed_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep}
         if ctx.episodes:
-            ctx.episodes = await _expand_time_neighbors(
-                ctx.episodes,
-                seed=8,
-                before=8,
-                after=8,
-                order_by_time=False,
+            # 私聊跨群命中不随意拉出同群他人邻条；仅群聊或本人私聊做时间邻条扩展
+            expandable = (
+                [ep for ep in ctx.episodes if not (ep["scope_key"] if "scope_key" in ep else "").startswith("group:")]
+                if scope.is_private
+                else ctx.episodes
             )
+            if expandable:
+                expanded = await _expand_time_neighbors(
+                    expandable,
+                    seed=8,
+                    before=8,
+                    after=8,
+                    order_by_time=False,
+                )
+                seen_ids = {str(ep["id"]) for ep in expanded if "id" in ep}
+                merged_eps = list(expanded)
+                for ep in ctx.episodes:
+                    eid = str(ep["id"]) if "id" in ep else ""
+                    if eid and eid not in seen_ids:
+                        seen_ids.add(eid)
+                        merged_eps.append(ep)
+                ctx.episodes = merged_eps
             neighbor_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep} - seed_ep_ids
         ctx.episodes = await expand_lexical_recall(
             ctx.episodes,
@@ -474,6 +489,17 @@ async def _search_memory(
             group_id=scope.group_id,
             clock=scope.clock_at,
             memory_intent=memory_intent,
+            bot_id=scope.bot_id,
+        )
+        # 邻条与词法扩展之后再过统一隐私裁决，防 ±8 邻条拉回水位线前的混群 self:*
+        from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
+        from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
+
+        await enforce_memory_privacy(
+            ctx,
+            group_id=scope.group_id,
+            user_id=scope.user_id,
+            watermark_ts=await ensure_isolation_watermark_ts(),
         )
         from gsuid_core.ai_core.memory.retrieval.lexical import (
             apply_query_episode_pack,
@@ -519,6 +545,8 @@ async def _search_memory(
                 )
             )
     if CogKind.EPISODE in kinds:
+        from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
         for i, ep in enumerate(ctx.episodes):
             content = str(ep["content"]) if "content" in ep else ""
             if not content:
@@ -534,18 +562,22 @@ async def _search_memory(
                 search_q, content
             ):
                 ep_score = round(ep_score * 0.5, 4)
+            ep_sk = ep["scope_key"] if "scope_key" in ep else ""
+            rendered_ep = prefix_group_tag(ep_sk, content) if scope.is_private else content
             _add(
                 CognitiveHit(
                     kind=CogKind.EPISODE,
                     id=f"ep_{ep['id']}" if "id" in ep else f"ep_{i}",
                     title="",
-                    summary=content,
+                    summary=rendered_ep,
                     score=ep_score,
                     as_of=str(ep["valid_at"])[:16] if "valid_at" in ep else "",
                     source="memory",
                 )
             )
     if CogKind.FACT in kinds:
+        from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
         # 点名说话人时只把「身上」的事实提前，不丢其它 S1 命中。
         # 地点类事实常是「住在杭州」，字面没有 user_id，整表过滤会变成零命中。
         primary: list[Edge] = []
@@ -564,11 +596,13 @@ async def _search_memory(
             as_of = ""
             if isinstance(ts, (int, float)) and 0 < ts <= 4_102_444_800:
                 as_of = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+            edge_sk = edge["scope_key"] if "scope_key" in edge else ""
+            rendered_fact = prefix_group_tag(edge_sk, fact) if scope.is_private else fact
             _add(
                 CognitiveHit(
                     kind=CogKind.FACT,
                     id=f"edge_{edge['id']}" if "id" in edge else f"edge_{i}",
-                    title=fact,
+                    title=rendered_fact,
                     summary="",
                     score=float(edge["score"]) if "score" in edge else 0.6,
                     as_of=as_of,
@@ -890,14 +924,19 @@ async def _search_nodes(
     limit: int,
 ) -> _BackendResult:
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_read_keys
+    from gsuid_core.ai_core.memory.privacy import resolve_user_group_scopes
     from gsuid_core.ai_core.cognition.nodes import AICogNode
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
 
     scope_keys: List[str] = []
     if scope.group_id:
         scope_keys.append(make_scope_key(ScopeType.GROUP, scope.group_id))
-    if scope.user_id:
-        scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, scope.user_id))
-    # self_note / 自身发言写在 self:{bot_self_id}:{persona}；漏这项则写入后永远召不回
+    else:
+        if scope.user_id:
+            scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, scope.user_id))
+            for gsk in await resolve_user_group_scopes(scope.user_id, bot_id=scope.bot_id):
+                if gsk not in scope_keys:
+                    scope_keys.append(gsk)
     if scope.bot_self_id:
         for key in self_scope_read_keys(scope.bot_self_id, scope.persona_name):
             if key not in scope_keys:
@@ -909,6 +948,8 @@ async def _search_nodes(
         owner_user_id=scope.user_id,  # 必填：只按 scope_key 会把 ACL 降成 group 级
         kinds=[k.value for k in kinds],
         limit=limit,
+        self_min_created_at=int(await ensure_isolation_watermark_ts()),
+        private_strict_owner_for_groups=scope.is_private,
     )
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}

@@ -61,7 +61,14 @@ class MoodKit(AgentKit):
         state, ribbon = await refresh_persona_state(ctx.persona_name, now)
         is_private = ctx.ev.user_type == "direct"
         target_key = f"private:{ctx.ev.user_id}" if is_private else str(ctx.ev.group_id or "")
-        text = render_presence(ribbon, homeostasis_hint(state), target_key=target_key, is_private=is_private, now=now)
+        text = render_presence(
+            ribbon,
+            homeostasis_hint(state),
+            target_key=target_key,
+            is_private=is_private,
+            now=now,
+            user_id=str(ctx.ev.user_id or ""),
+        )
         if text:
             ctx.set_context_block("presence", text)
 

@@ -204,10 +204,16 @@ async def _ingest_window_inner(
                     index = -1
                 if 0 <= index < len(threads):
                     existing_thread = threads[index].id
+            cluster_speakers: set[str] = {r.speaker_id for r in cluster_records if r.speaker_id}
+            for r in cluster_records:
+                if r.speaker_id.startswith("__assistant_"):
+                    for target_uid in r.at_targets:
+                        if target_uid.strip():
+                            cluster_speakers.add(target_uid.strip())
             episode = await AIMemEpisode.create_episode(
                 scope_key=scope_key,
                 content=content,
-                speaker_ids=list({r.speaker_id for r in cluster_records}),
+                speaker_ids=list(cluster_speakers),
                 valid_at=earliest,
                 thread_id=existing_thread,
             )
@@ -239,10 +245,16 @@ async def _ingest_window_inner(
     leftover = [i for i in range(len(records)) if i not in defer_indices and i not in settled_indices]
     if leftover and create_episodes:
         leftover_records = [records[i] for i in leftover]
+        leftover_speakers: set[str] = {r.speaker_id for r in leftover_records if r.speaker_id}
+        for r in leftover_records:
+            if r.speaker_id.startswith("__assistant_"):
+                for target_uid in r.at_targets:
+                    if target_uid.strip():
+                        leftover_speakers.add(target_uid.strip())
         await AIMemEpisode.create_episode(
             scope_key=scope_key,
             content="\n".join(format_pending_line(r) for r in leftover_records),
-            speaker_ids=list({r.speaker_id for r in leftover_records}),
+            speaker_ids=list(leftover_speakers),
             valid_at=min(r.timestamp for r in leftover_records),
             thread_id=None,
         )

@@ -699,5 +699,7 @@
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] すべての api_key が失敗",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] コンテキスト付き検索: {query}、{p0} 件の結果を返した",
   "log.ai.call_tool_dispatch": "[AI] call_tool キャッシュ維持ディスパッチ実行: {name}",
+  "log.ai.migrations_cross_group_isolation_done": "[AI] クロスグループ分離の無損失移行が完了（旧自己手帳 {archived} 件をアーカイブ）",
+  "log.ai.migrations_isolation_marker_read_failed": "[Migrations] クロスグループ分離の水位マーカー読み取り失敗: {e}（未移行として扱い、旧データは不開放）",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した"
 }

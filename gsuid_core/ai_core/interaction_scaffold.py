@@ -597,6 +597,7 @@ MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "create_subagent",
     "search_cognition",
     "read_handle",
+    "read_life_journal",
     "send_message_by_ai",
     "web_search_tool",
     "read_image",

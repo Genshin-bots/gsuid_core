@@ -96,18 +96,8 @@ def _pick_pin(drive: DriveKind, target: str, plan: DeliveryPlan) -> DeliveryPin 
                 return pin
         return None
     if drive == "self_explore":
-        for pin in plan.care:
-            if pin.is_master and pin.group_id:
-                return pin
-        for pin in plan.groups:
-            if pin.group_id:
-                return pin
-        for pin in plan.care:
-            if pin.is_master and (pin.group_id or pin.user_id):
-                return pin
-        for pin in plan.care:
-            if pin.user_id:
-                return pin
+        # 个人自主探索不绑定具体群，避免把个人习惯/探索写进群分片或向无关群推 staged_merge
+        return None
     return None
 
 

@@ -631,14 +631,15 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         # 7. Phase 3 个人笔记 Wiki 整编（零垂直词表 + 防止『关于_XX_笔记』误聚）+ 365 天休眠群归档与唤醒
         alpha_notes = notes_root / "alpha"
         alpha_notes.mkdir(parents=True, exist_ok=True)
+        scope_hdr = "<!-- gscore-scope: self:1:alpha | owner: 100000001 -->\n"
         for idx, suffix in enumerate(("小抄", "小笔记", "调查")):
             (alpha_notes / f"体态拉伸_{suffix}.txt").write_text(
-                f"第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。",
+                f"{scope_hdr}第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。",
                 encoding="utf-8",
             )
         for distinct_topic in ("睡眠规律", "饮水习惯", "桌面收纳"):
             (alpha_notes / f"关于_{distinct_topic}_笔记.txt").write_text(
-                f"独立主题记录：{distinct_topic}。",
+                f"{scope_hdr}独立主题记录：{distinct_topic}。",
                 encoding="utf-8",
             )
         old_snap = alpha_notes / "2026-10-01_日常速记.txt"

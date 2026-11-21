@@ -276,6 +276,9 @@ from gsuid_core.ai_core.buildin_tools.image_finder import (
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
 
+# 生活手账工具 - 按隐私边界读自我探索、昨日回顾与本群/本人行动流水
+from gsuid_core.ai_core.buildin_tools.life_journal import read_life_journal
+
 # 视频读取工具 - 通道核；有视频且模型声明 video 才露
 from gsuid_core.ai_core.buildin_tools.video_reader import read_video
 
@@ -432,6 +435,7 @@ __all__ = [
     # 动态工具发现与零缓存击穿执行器
     "find_tools",
     "call_tool",
+    "read_life_journal",
     "discover_tools",
     "list_available_tools",
     # 插件开发工具（plugin_developer_agent 专用）

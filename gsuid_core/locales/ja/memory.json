@@ -1,5 +1,6 @@
 {
   "log.memory.alias_expansion": "[Memory] エイリアス展開に失敗した: {e}",
+  "log.memory.observer_skip_dm_assistant_no_target": "[Memory] 対象ユーザーのないDMアシスタント発言をスキップ（グローバル self scope 汚染防止）",
   "log.memory.schema_v2_backup": "[Memory] schema_v2 旧データベースをバックアップしました: {path}",
   "log.memory.schema_v2_migrating": "[Memory] schema_v2 クリーンルーム移行を実行中...",
   "log.memory.schema_v2_non_sqlite_no_backup": "[Memory] 現在のデータベースは {db_type} です。schema_v2 は自動バックアップを作成しません。旧メモリテーブルを削除する前に手動でバックアップしてください。",

@@ -25,6 +25,8 @@ class _Pending:
     result: str
     bot_self_id: str
     persona_name: str
+    scope_key: str
+    owner_user_id: str
 
 
 _BUFFER: List[_Pending] = []
@@ -35,11 +37,14 @@ class DecisionDistillKit(AgentKit):
         on_agent_hook(AgentHookPoint.AFTER_RUN, priority=180, kit_id=self.kit_id)(self.collect)
 
     async def collect(self, ctx: AgentHookContext) -> None:
+        from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
+
         thinking = (ctx.thinking_text or "").strip()
         if not thinking and not ctx.tool_names_called:
             return
         if not ctx.tool_names_called and len(thinking) < 200:
             return
+        scope_key = scope_key_for_conversation(ctx.group_id, ctx.user_id) if (ctx.group_id or ctx.user_id) else ""
         _BUFFER.append(
             _Pending(
                 thinking=thinking[-800:],
@@ -47,6 +52,8 @@ class DecisionDistillKit(AgentKit):
                 result=(ctx.result_text or "")[:200],
                 bot_self_id=ctx.bot_self_id,
                 persona_name=ctx.persona_name or "",
+                scope_key=scope_key,
+                owner_user_id=ctx.user_id or "",
             )
         )
         if len(_BUFFER) >= _FLUSH_EVERY:
@@ -54,29 +61,43 @@ class DecisionDistillKit(AgentKit):
 
 
 async def flush_decision_buffer() -> None:
-    """攒批 flush：纯本地规则摘要写 SELF episode。"""
+    """攒批 flush：纯本地规则摘要按会话 scope 写入记忆，禁止跨群污染。"""
     batch = list(_BUFFER)
     _BUFFER.clear()
     for item in batch:
         decision = _rule_summary(item)
         if not decision:
             continue
-        await _persist_decision(item.bot_self_id, item.persona_name, decision)
+        await _persist_decision(
+            item.bot_self_id,
+            item.persona_name,
+            decision,
+            scope_key=item.scope_key,
+            owner_user_id=item.owner_user_id,
+        )
 
 
-async def _persist_decision(bot_self_id: str, persona_name: str, decision: str) -> None:
+async def _persist_decision(
+    bot_self_id: str,
+    persona_name: str,
+    decision: str,
+    *,
+    scope_key: str = "",
+    owner_user_id: str = "",
+) -> None:
     from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
     bid = bot_self_id or "default"
+    resolved_scope = scope_key or self_scope_key(bid, persona_name)
     try:
         await remember(
             MemoryWrite(
                 kind=CogKind.EPISODE,
                 ref=f"decision_{bid}_{hash(decision) & 0xFFFFFFFF:x}",
-                scope_key=self_scope_key(bid, persona_name),
-                owner_user_id="",
+                scope_key=resolved_scope,
+                owner_user_id=owner_user_id,
                 title="决策结论",
                 summary=decision,
                 source="decision_distill",
