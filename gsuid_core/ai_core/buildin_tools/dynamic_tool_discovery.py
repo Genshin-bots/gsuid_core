@@ -332,6 +332,9 @@ def _offered_dedicated_hits(
             continue
         covers = list(tb.covers)
         retrieval = tb.retrieval_text
+        # MCP 不做类别豁免（审查第 2 条）：豁免会让 MCP 工具以 3000 分在
+        # 一切不相关 find_tools 轮次常驻粘连、污染提示词；覆盖面靠
+        # _mcp_tool_covers 的并集（配置 covers ∪ 服务中文描述短语）正常过匹配。
         if not need_matches_tool_text(need, retrieval, covers):
             continue
         if (
