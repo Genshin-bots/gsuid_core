@@ -1,4 +1,13 @@
 {
+  "log.plugin.auto_reload_fail": "[更新][{plugin_name}] 自动重载失败: {result}",
+  "log.plugin.gscore_admin_models_unregistered": "[GsCore] 已清理插件 {plugin_name} 的 {count} 个后台管理模型",
+  "log.plugin.gscore_fail_admin_models": "[GsCore] 清理插件 {plugin_name} 的后台管理模型时异常: {e}",
+  "log.plugin.gscore_fail_running_shutdown_hook": "[GsCore] 插件 {plugin_name} 关闭 Hook {hook} 执行异常: {res}",
+  "log.plugin.gscore_running_shutdown_hook": "[GsCore] 执行插件 {plugin_name} 优先级 {priority} 的关闭 Hook: {hooks}",
+  "log.plugin.gscore_running_shutdown_hooks": "[GsCore] 重载前执行插件 {plugin_name} 的关闭 Hook ({count} 个)...",
+  "log.plugin.gscore_shutdown_hooks_done": "[GsCore] 插件 {plugin_name} 关闭 Hook 执行完成",
+  "log.plugin.gscore_shutdown_hooks_failed": "[GsCore] 插件 {plugin_name} 关闭 Hook 执行完成, {failed} 个异常",
+  "log.plugin.gscore_shutdown_hooks_timeout": "[GsCore] 插件 {plugin_name} 关闭 Hook 超时 ({timeout}s), 跳过等待",
   "log.plugin.uninstall_meta_warn": "正在卸载基础设施插件 {plugin_name}，其他插件可能依赖它",
   "log.plugin.command_chain_start": "[检测启动工具] 命令链: {command_chain}",
   "log.plugin.command_start": "[检测启动工具] 最终命令: {command}",
