@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 import asyncio
 from typing import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -1067,5 +1069,163 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             assert plan_ok.invalid_refs == () and plan_ok.groups[0].seqs == (72,)
         finally:
             hm.clear_history(base_ev)
+
+    asyncio.run(scenario())
+
+
+def test_reload_plugin_shutdown_before_start_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """热重载先跑旧插件 shutdown 再跑新 start，同步清理管理模型与触发器索引。"""
+    import gsuid_core.server as server_mod
+    from gsuid_core.sv import config_plugins
+    from gsuid_core.config import plugin_config_store
+    from gsuid_core.utils.plugins_update import reload_plugin as reload_mod
+    from gsuid_core.webconsole.mount_app import GsAdminModel, site
+
+    plugin_name = "TestReloadPlugin"
+    sv_name = "TestReloadSV"
+    plugins_dir = tmp_path / "plugins"
+    plugin_dir = plugins_dir / plugin_name
+    plugin_dir.mkdir(parents=True)
+    init_file = plugin_dir / "__init__.py"
+    events_file = tmp_path / "events.log"
+
+    def write_plugin(version: int, command: str, *, fail: bool = False) -> None:
+        if fail:
+            init_file.write_text('raise RuntimeError("reload_boom")\n', encoding="utf-8")
+            return
+        init_file.write_text(
+            "import asyncio\n"
+            "from pathlib import Path\n"
+            "from gsuid_core.sv import SV\n"
+            "from gsuid_core.server import on_core_start, on_core_shutdown\n"
+            f"_LOG = Path({str(events_file)!r})\n"
+            f"sv = SV({sv_name!r})\n"
+            f"@sv.on_fullmatch({command!r})\n"
+            "async def _cmd(bot, ev):\n"
+            "    return None\n"
+            "@on_core_start\n"
+            "async def _start():\n"
+            f'    with _LOG.open("a", encoding="utf-8") as f:\n'
+            f'        f.write("start:{version}\\n")\n'
+            "@on_core_shutdown\n"
+            "async def _stop():\n"
+            f'    with _LOG.open("a", encoding="utf-8") as f:\n'
+            f'        f.write("shutdown:{version}:begin\\n")\n'
+            "    await asyncio.sleep(0.01)\n"
+            f'    with _LOG.open("a", encoding="utf-8") as f:\n'
+            f'        f.write("shutdown:{version}:done\\n")\n',
+            encoding="utf-8",
+        )
+
+    def read_events() -> list[str]:
+        if not events_file.exists():
+            return []
+        return events_file.read_text(encoding="utf-8").splitlines()
+
+    def matches_command(cmd: str) -> bool:
+        ev = _make_event(cmd, pm=6)
+        idx = get_trigger_index()
+        return any(
+            (owner := idx.owner_of(trig)) is not None and owner.name == sv_name and trig.check_command(ev)
+            for trig in idx.candidates(ev)
+        )
+
+    class _DummyAdmin(GsAdminModel):
+        pass
+
+    monkeypatch.setattr(server_mod, "PLUGIN_PATH", plugins_dir)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    async def scenario() -> None:
+        try:
+            # 1) 首次重载：注册命令与启停钩子，验证索引可命中
+            write_plugin(1, "测重指令一")
+            res1 = reload_mod.reload_plugin(plugin_name)
+            assert res1.startswith("✨")
+            task1 = reload_mod._plugin_start_tasks[plugin_name]
+            await task1
+            assert read_events() == ["start:1"]
+            assert matches_command("测重指令一") is True
+
+            # 2) 二次重载：先跑完 v1 shutdown 再跑 v2 start，并清掉旧管理模型
+            site.plugins_page[plugin_name] = [_DummyAdmin]
+            write_plugin(2, "测重指令二")
+            res2 = reload_mod.reload_plugin(plugin_name)
+            assert res2.startswith("✨")
+            assert plugin_name not in site.plugins_page
+            task2 = reload_mod._plugin_start_tasks[plugin_name]
+            await task2
+            assert read_events() == [
+                "start:1",
+                "shutdown:1:begin",
+                "shutdown:1:done",
+                "start:2",
+            ]
+            assert matches_command("测重指令一") is False
+            assert matches_command("测重指令二") is True
+
+            # 3) 连续同步两次重载：未开始执行的 v2 shutdown 不能被丢弃
+            write_plugin(3, "测重指令三")
+            res3 = reload_mod.reload_plugin(plugin_name)
+            assert res3.startswith("✨")
+            write_plugin(4, "测重指令四")
+            res4 = reload_mod.reload_plugin(plugin_name)
+            assert res4.startswith("✨")
+            task4 = reload_mod._plugin_start_tasks[plugin_name]
+            await task4
+            assert read_events()[4:] == [
+                "shutdown:2:begin",
+                "shutdown:2:done",
+                "shutdown:3:begin",
+                "shutdown:3:done",
+                "start:4",
+            ]
+            assert matches_command("测重指令四") is True
+
+            # 4) 导入失败：返回 ❌、重置触发器索引、仍收尾 v4 shutdown 且不跑新 start
+            write_plugin(5, "测重指令五", fail=True)
+            res5 = reload_mod.reload_plugin(plugin_name)
+            assert res5.startswith("❌")
+            assert matches_command("测重指令四") is False
+            task5 = reload_mod._plugin_start_tasks[plugin_name]
+            await task5
+            assert read_events()[-2:] == ["shutdown:4:begin", "shutdown:4:done"]
+        finally:
+            pending_task = reload_mod._plugin_start_tasks.pop(plugin_name, None)
+            if pending_task is not None and not pending_task.done():
+                pending_task.cancel()
+                await asyncio.gather(pending_task, return_exceptions=True)
+            reload_mod._pending_shutdown_hooks.pop(plugin_name, None)
+            sv_obj = SL.lst.pop(sv_name, None)
+            if sv_obj is not None:
+                SL.detail_lst.pop(sv_obj.plugins, None)
+            SL.plugins.pop(plugin_name, None)
+            config_plugins.pop(plugin_name, None)
+            plugin_config_store._dirty.discard(plugin_name)
+            server_mod._import_memory_mb.pop(plugin_name, None)
+            server_mod._added_paths.discard(str(plugins_dir))
+            site.plugins_page.pop(plugin_name, None)
+            for mod_key in [k for k in sys.modules if reload_mod._belongs_to_plugin(k, plugin_name)]:
+                sys.modules.pop(mod_key, None)
+            for cache_key in [k for k in list(server_mod._module_cache) if plugin_name in k]:
+                server_mod._module_cache.pop(cache_key, None)
+            for hook_set in (
+                server_mod.core_start_def,
+                server_mod.core_start_before_def,
+                server_mod.core_shutdown_def,
+            ):
+                stale = {
+                    h
+                    for h in hook_set
+                    if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), plugin_name)
+                }
+                hook_set -= stale
+            plugins_dir_str = str(plugins_dir)
+            while plugins_dir_str in sys.path:
+                sys.path.remove(plugins_dir_str)
+            reset_trigger_index()
 
     asyncio.run(scenario())

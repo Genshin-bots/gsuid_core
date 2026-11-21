@@ -804,7 +804,10 @@ async def update_from_git_async(
     # 仅在「确实有新提交」或「强制更新(reset --hard 可能改动工作区, 且为显式操作)」时才重载,
     # 避免无更新的插件被无谓重载 —— 尤其凌晨自动更新会遍历全部插件。
     if (commits_diff or level >= 1) and plugin_name != "早柚核心" and is_reload:
-        reload_plugin(plugin_name)
+        reload_result = reload_plugin(plugin_name)
+        if reload_result.lstrip().startswith("❌"):
+            logger.warning(t("log.plugin.auto_reload_fail", plugin_name=plugin_name, result=reload_result))
+            log_list.append(reload_result)
     return log_list
 
 
