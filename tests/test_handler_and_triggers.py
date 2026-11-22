@@ -1110,7 +1110,22 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
     ) -> None:
         state_file.write_text(f"VERSION = {version}\n", encoding="utf-8")
         if fail:
-            init_file.write_text('raise RuntimeError("reload_boom")\n', encoding="utf-8")
+            half_body = [
+                "from pathlib import Path",
+                "from gsuid_core.sv import SV",
+                "from gsuid_core.server import on_core_shutdown",
+                f"_LOG = Path({str(events_file)!r})",
+                f"sv = SV({sv_name!r})",
+                f"@sv.on_fullmatch({command + '半残'!r})",
+                "async def _half_cmd(bot, ev):",
+                "    return None",
+                "@on_core_shutdown",
+                "async def _half_stop():",
+                '    with _LOG.open("a", encoding="utf-8") as f:',
+                f'        f.write("shutdown:{version}:half\\n")',
+                'raise RuntimeError("reload_boom")',
+            ]
+            init_file.write_text("\n".join(half_body) + "\n", encoding="utf-8")
             return
         body = [
             "import time",
@@ -1289,12 +1304,13 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             assert not any(ev.startswith("shutdown:5:") for ev in step4_events)
             assert matches_command("测重指令六") is True
 
-            # 5) 异步重载导入失败：先在旧模块存活期跑完 v6 shutdown，再失败返回 ❌ 并重置索引
+            # 5) 异步重载导入失败：先在旧模块存活期跑完 v6 shutdown，再回滚半导入状态并返回 ❌
             before_step5 = len(read_events())
             write_plugin(7, "测重指令七", fail=True)
             res7 = await reload_mod.reload_plugin_async(plugin_name)
             assert res7.startswith("❌")
             assert matches_command("测重指令六") is False
+            assert matches_command("测重指令七半残") is False
             assert read_events()[before_step5:] == [
                 "shutdown:6:state=6:begin",
                 "shutdown:6:state=6:done",
@@ -1337,7 +1353,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
 
             # 8) 同步阻塞关闭钩子超时：到点立即返回继续重载，不被线程池阻塞拖死
             before_step8 = len(read_events())
-            write_plugin(12, "测重指令十二", sync_shutdown_sleep=0.35)
+            write_plugin(12, "测重指令十二", sync_shutdown_sleep=0.5)
             res12 = await reload_mod.reload_plugin_async(plugin_name)
             assert res12.startswith("✨")
             await reload_mod._plugin_start_tasks[plugin_name]
@@ -1347,14 +1363,14 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             res13 = await reload_mod.reload_plugin_async(plugin_name)
             elapsed = time.monotonic() - t0
             assert res13.startswith("✨")
-            assert elapsed < 0.25
+            assert elapsed < 0.4
             assert matches_command("测重指令十三") is True
             await wait_for_event("shutdown:12:sync:done")
             assert "shutdown:12:sync:begin" in read_events()[before_step8:]
 
             # 9) 多优先级组关闭钩子共享整轮超时预算：前组耗尽后不叠加等待后续组
             before_step9 = len(read_events())
-            write_plugin(14, "测重指令十四", multi_priority_shutdown_sleep=0.25)
+            write_plugin(14, "测重指令十四", multi_priority_shutdown_sleep=0.5)
             res14 = await reload_mod.reload_plugin_async(plugin_name)
             assert res14.startswith("✨")
             await reload_mod._plugin_start_tasks[plugin_name]
@@ -1363,18 +1379,21 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             res15 = await reload_mod.reload_plugin_async(plugin_name)
             elapsed_mp = time.monotonic() - t0
             assert res15.startswith("✨")
-            assert elapsed_mp < 0.25
+            assert elapsed_mp < 0.4
             await reload_mod._plugin_start_tasks[plugin_name]
             step9_events = read_events()[before_step9:]
             assert "shutdown:14:p0:begin" in step9_events
             assert "shutdown:14:p1:begin" not in step9_events
             assert matches_command("测重指令十五") is True
 
-            # 10) 异步重载持锁在途时拒绝并发同步重载，不破坏在途异步流程
+            # 10) 异步重载创建同 tick 与持锁在途时均拒绝并发同步重载，不破坏在途异步流程
             monkeypatch.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 15.0)
             before_step10 = len(read_events())
             write_plugin(16, "测重指令十六")
             t16 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
+            await asyncio.sleep(0)
+            sync_rejected_early = reload_mod.reload_plugin(plugin_name)
+            assert sync_rejected_early.startswith("❌")
             await wait_for_event("shutdown:15:state=15:begin")
             sync_rejected = reload_mod.reload_plugin(plugin_name)
             assert sync_rejected.startswith("❌")
@@ -1398,7 +1417,6 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                     await asyncio.gather(pending_task, return_exceptions=True)
             reload_mod._start_task_meta.clear()
             reload_mod._pending_shutdown_hooks.pop(plugin_name, None)
-            reload_mod._plugin_reload_locks.pop(plugin_name, None)
             sv_obj = SL.lst.pop(sv_name, None)
             if sv_obj is not None:
                 SL.detail_lst.pop(sv_obj.plugins, None)

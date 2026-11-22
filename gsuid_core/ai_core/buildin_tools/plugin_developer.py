@@ -20,7 +20,7 @@
   ``plugin_developer_agent`` 画像在 ``tool_names`` 里显式引用时才装配
   （``runner._resolve_tools`` 走 ``get_all_tools`` 按名取、不经向量检索）。
 
-热加载复用框架既有的 ``reload_plugin()``——它对全新插件目录同样有效（清理阶段对
+热加载复用框架既有的 ``reload_plugin_async()``——它对全新插件目录同样有效（清理阶段对
 新插件 no-op，随后 ``gss.load_plugin`` 从 ``PLUGIN_PATH`` 发现新目录并导入、重跑
 ``@on_core_start`` 钩子）。
 """
@@ -959,7 +959,7 @@ async def load_plugin_into_core(
     代码 → load → test"循环每次都跑到最新代码，不会重载到旧 plugins/。同步仅在该插件
     已通过审批（copy_to_plugin_dir）后生效；未审批就有工作区改动会被拦下、提示先走审批。
 
-    复用框架的 reload_plugin：清理该插件旧的 SV / 模块 / 定时任务 / 路由，从 plugins/
+    复用框架的 reload_plugin_async：清理该插件旧的 SV / 模块 / 定时任务 / 路由，从 plugins/
     重新发现并 import，再重跑其 @on_core_start 钩子。若返回含 ❌ 即加载失败，按报错改代码后重调。
 
     Args:
@@ -967,7 +967,7 @@ async def load_plugin_into_core(
         plugin_name: 要加载的插件名
 
     Returns:
-        reload_plugin 的结果文本（成功 ✨ / 失败 ❌ 原样回传）
+        reload_plugin_async 的结果文本（成功 ✨ / 失败 ❌ 原样回传）
     """
     plugin_name = _existing_plugin_dirname(plugin_name)
 

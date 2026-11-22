@@ -4,6 +4,7 @@ import inspect
 from types import MethodType, FunctionType
 from typing import Optional
 from pathlib import Path
+from weakref import WeakKeyDictionary
 from itertools import groupby
 from dataclasses import dataclass
 
@@ -30,7 +31,8 @@ class _ShutdownBatch:
 # 后台生命周期任务与并发控制表：保证单插件串行重载、保护在途关闭钩子不被取消
 _plugin_start_tasks: dict[str, asyncio.Task[None]] = {}
 _start_task_meta: dict[asyncio.Task[None], _StartTaskMeta] = {}
-_plugin_reload_locks: dict[str, asyncio.Lock] = {}
+_plugin_reload_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
+_active_async_reloads: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, int]] = WeakKeyDictionary()
 _active_reload_tasks: set[asyncio.Task[str]] = set()
 _plugin_shutdown_tasks: dict[str, asyncio.Task[None]] = {}
 _pending_shutdown_hooks: dict[str, list[_ShutdownBatch]] = {}
@@ -224,12 +226,19 @@ def _clean_plugin_global_state(plugin_name: str) -> list[_DefHook]:
             from gsuid_core.webconsole.mount_app import site
 
             removed_admins = site.plugins_page.pop(plugin_name, None)
-            if removed_admins:
+            removed_count = len(removed_admins) if removed_admins else 0
+            stale_registered = [
+                cls for cls in site._registered if _belongs_to_plugin(_resolve_func_module(cls), plugin_name)
+            ]
+            for cls in stale_registered:
+                site._registered.pop(cls, None)
+            removed_count += len(stale_registered)
+            if removed_count:
                 logger.info(
                     i18n_t(
                         "log.plugin.gscore_admin_models_unregistered",
                         plugin_name=plugin_name,
-                        count=len(removed_admins),
+                        count=removed_count,
                     )
                 )
         except Exception as e:
@@ -338,21 +347,103 @@ def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> 
 
 
 def _get_reload_lock(plugin_name: str) -> asyncio.Lock:
-    if plugin_name not in _plugin_reload_locks:
-        _plugin_reload_locks[plugin_name] = asyncio.Lock()
-    return _plugin_reload_locks[plugin_name]
+    loop = asyncio.get_running_loop()
+    if loop not in _plugin_reload_locks:
+        _plugin_reload_locks[loop] = {}
+    locks = _plugin_reload_locks[loop]
+    if plugin_name not in locks:
+        locks[plugin_name] = asyncio.Lock()
+    return locks[plugin_name]
+
+
+def _enter_async_reload(loop: asyncio.AbstractEventLoop, plugin_name: str) -> None:
+    if loop not in _active_async_reloads:
+        _active_async_reloads[loop] = {}
+    counts = _active_async_reloads[loop]
+    counts[plugin_name] = (counts[plugin_name] if plugin_name in counts else 0) + 1
+
+
+def _leave_async_reload(loop: asyncio.AbstractEventLoop, plugin_name: str) -> None:
+    if loop not in _active_async_reloads:
+        return
+    counts = _active_async_reloads[loop]
+    if plugin_name not in counts:
+        return
+    remaining = counts[plugin_name] - 1
+    if remaining <= 0:
+        counts.pop(plugin_name, None)
+    else:
+        counts[plugin_name] = remaining
+
+
+def _is_async_reload_active(plugin_name: str) -> bool:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    if loop in _active_async_reloads:
+        counts = _active_async_reloads[loop]
+        if plugin_name in counts and counts[plugin_name] > 0:
+            return True
+    if loop in _plugin_reload_locks:
+        locks = _plugin_reload_locks[loop]
+        if plugin_name in locks and locks[plugin_name].locked():
+            return True
+    return False
+
+
+def _finish_reload_task(
+    loop: asyncio.AbstractEventLoop,
+    plugin_name: str,
+    task: asyncio.Task[str],
+) -> None:
+    _active_reload_tasks.discard(task)
+    _leave_async_reload(loop, plugin_name)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            i18n_t(
+                "log.plugin.gscore_reload_task_fail",
+                plugin_name=plugin_name,
+                res=repr(exc),
+            )
+        )
 
 
 def _discard_start_task(plugin_name: str, task: asyncio.Task[None]) -> None:
-    """启动 Hook 后台任务结束后, 从句柄表里摘除自己 (仅当还是当前这个任务时)。"""
+    """启动 Hook 后台任务结束后摘除句柄并消费未检索异常。"""
     _start_task_meta.pop(task, None)
     if plugin_name in _plugin_start_tasks and _plugin_start_tasks[plugin_name] is task:
         _plugin_start_tasks.pop(plugin_name, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            i18n_t(
+                "log.plugin.gscore_start_task_fail",
+                plugin_name=plugin_name,
+                res=repr(exc),
+            )
+        )
 
 
 def _discard_shutdown_task(plugin_name: str, task: asyncio.Task[None]) -> None:
     if plugin_name in _plugin_shutdown_tasks and _plugin_shutdown_tasks[plugin_name] is task:
         _plugin_shutdown_tasks.pop(plugin_name, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            i18n_t(
+                "log.plugin.gscore_shutdown_task_fail",
+                plugin_name=plugin_name,
+                res=repr(exc),
+            )
+        )
 
 
 async def _await_previous_task(plugin_name: str, prev_task: asyncio.Task[None] | None) -> None:
@@ -367,17 +458,6 @@ async def _await_previous_task(plugin_name: str, prev_task: asyncio.Task[None] |
                 timeout=_RELOAD_SHUTDOWN_TIMEOUT,
             )
         )
-        return
-    if not prev_task.cancelled():
-        exc = prev_task.exception()
-        if exc is not None:
-            logger.warning(
-                i18n_t(
-                    "log.plugin.gscore_prev_start_task_fail",
-                    plugin_name=plugin_name,
-                    res=repr(exc),
-                )
-            )
 
 
 def _cancel_start_task_sync(plugin_name: str) -> tuple[asyncio.Task[None] | None, bool]:
@@ -402,23 +482,6 @@ async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
     old.cancel()
     await _await_previous_task(plugin_name, old)
     return meta is not None and meta.has_start_hooks and not meta.started
-
-
-def _attach_prev_start_failure_logger(task: asyncio.Task[None], plugin_name: str) -> None:
-    def _on_done(done_task: asyncio.Task[None]) -> None:
-        if done_task.cancelled():
-            return
-        exc = done_task.exception()
-        if exc is not None:
-            logger.warning(
-                i18n_t(
-                    "log.plugin.gscore_prev_start_task_fail",
-                    plugin_name=plugin_name,
-                    res=repr(exc),
-                )
-            )
-
-    task.add_done_callback(_on_done)
 
 
 def _attach_late_failure_logger(task: asyncio.Task[object], plugin_name: str, hook: _DefHook) -> None:
@@ -465,7 +528,7 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
             failed += len(group_hooks)
             logger.warning(
                 i18n_t(
-                    "log.plugin.gscore_shutdown_hooks_timeout",
+                    "log.plugin.gscore_shutdown_hooks_budget_exhausted",
                     plugin_name=plugin_name,
                     timeout=_RELOAD_SHUTDOWN_TIMEOUT,
                     hooks=[_hook_label(h.func) for h in group_hooks],
@@ -749,7 +812,7 @@ def _import_plugin_modules(
     module_list: list[tuple[str, Path, str]],
     route_anchor: Optional[int],
 ) -> Optional[str]:
-    """重新导入插件模块并恢复路由位置；导入失败时重置索引并返回错误文案。"""
+    """重新导入插件模块并恢复路由位置；导入失败时回滚半导入状态并返回错误文案。"""
     import_error: Optional[str] = None
     for module_name, filepath, _type in module_list:
         try:
@@ -760,7 +823,9 @@ def _import_plugin_modules(
             break
 
     if import_error is not None:
-        reset_trigger_index()
+        # 回滚本次半导入已注册的 SV / Hook / 路由 / 管理模型与子模块，避免残留半残态
+        _detach_plugin_registrations(plugin_name, meta_info)
+        _purge_plugin_modules(plugin_name)
         return import_error
 
     if meta_info is not None:
@@ -804,9 +869,11 @@ async def reload_plugin_async(plugin_name: str) -> str:
     再清空模块缓存并重导新代码，最后后台调度新插件的 @on_ai_register 与 @on_core_start。
     外层 shield 防止调用方取消导致已断流的插件停留在半卸载状态。
     """
-    task = asyncio.create_task(_reload_plugin_locked(plugin_name))
+    loop = asyncio.get_running_loop()
+    _enter_async_reload(loop, plugin_name)
+    task = loop.create_task(_reload_plugin_locked(plugin_name))
     _active_reload_tasks.add(task)
-    task.add_done_callback(_active_reload_tasks.discard)
+    task.add_done_callback(lambda t: _finish_reload_task(loop, plugin_name, t))
     return await asyncio.shield(task)
 
 
@@ -817,8 +884,7 @@ def reload_plugin(plugin_name: str) -> str:
     后台串行队列执行，因此钩子内延迟导入可能命中新模块；需要完整隔离请用异步版本。
     """
     logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
-    lock = _plugin_reload_locks[plugin_name] if plugin_name in _plugin_reload_locks else None
-    if lock is not None and lock.locked():
+    if _is_async_reload_active(plugin_name):
         logger.warning(i18n_t("log.plugin.gscore_sync_reload_while_async_active", plugin_name=plugin_name))
         return f"❌ 插件 {plugin_name} 正在重载中，请稍后再试!"
 
@@ -836,13 +902,10 @@ def reload_plugin(plugin_name: str) -> str:
     if not skip_shutdown:
         queued_shutdown = _enqueue_shutdown_hooks(plugin_name, shutdown_hooks, wait_task=prev_start)
     if import_error is not None:
-        if prev_start is not None and not queued_shutdown:
-            _attach_prev_start_failure_logger(prev_start, plugin_name)
         return import_error
 
-    scheduled_start = _schedule_plugin_start_hooks(plugin_name, prev_start_task=prev_start)
-    if prev_start is not None and not queued_shutdown and not scheduled_start:
-        _attach_prev_start_failure_logger(prev_start, plugin_name)
+    # 若 shutdown 已入队，由关闭队列单点等待 prev_start，避免与启动任务重复等待和重复告警
+    _schedule_plugin_start_hooks(plugin_name, prev_start_task=None if queued_shutdown else prev_start)
 
     logger.success(i18n_t("log.plugin.plugin_name", plugin_name=plugin_name))
     return f"✨ 已重载插件 {plugin_name}!"

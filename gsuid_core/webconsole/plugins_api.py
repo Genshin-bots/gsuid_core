@@ -1309,7 +1309,7 @@ async def install_plugin(
     try:
         from gsuid_core.utils.plugins_update._plugins import install_plugin as _install_plugin
 
-        # install_plugin 内部已完成「安装 + reload_plugin 加载」，直接复用其返回信息，
+        # install_plugin 内部已完成「安装 + reload_plugin_async 加载」，直接复用其返回信息，
         # 不再在此处重复 reload。失败信息统一以 ❌ 前缀标识。
         result = await _install_plugin(plugin_id)
         if result.lstrip().startswith("❌"):
@@ -1329,7 +1329,7 @@ async def install_plugin_from_url_api(
     从 URL 安装插件（不走插件商店白名单）
 
     接受前端传来的 git 仓库 URL，后端执行 ``git clone`` 把仓库克隆到
-    ``plugins/`` 目录，并通过 ``reload_plugin`` 真正加载插件。
+    ``plugins/`` 目录，并通过 ``reload_plugin_async`` 真正加载插件。
 
     适用场景：
     - 安装未收录在插件商店中的自定义插件 / 内部仓库 / 第三方仓库
