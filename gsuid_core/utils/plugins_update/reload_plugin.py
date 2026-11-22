@@ -31,6 +31,7 @@ class _ShutdownBatch:
 _plugin_start_tasks: dict[str, asyncio.Task[None]] = {}
 _start_task_meta: dict[asyncio.Task[None], _StartTaskMeta] = {}
 _plugin_reload_locks: dict[str, asyncio.Lock] = {}
+_active_reload_tasks: set[asyncio.Task[str]] = set()
 _plugin_shutdown_tasks: dict[str, asyncio.Task[None]] = {}
 _pending_shutdown_hooks: dict[str, list[_ShutdownBatch]] = {}
 _RELOAD_SHUTDOWN_TIMEOUT: float = 15.0
@@ -403,6 +404,30 @@ async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
     return meta is not None and meta.has_start_hooks and not meta.started
 
 
+def _attach_late_failure_logger(task: asyncio.Task[object], plugin_name: str, hook: _DefHook) -> None:
+    def _on_done(done_task: asyncio.Task[object]) -> None:
+        if done_task.cancelled():
+            return
+        exc = done_task.exception()
+        if exc is not None:
+            logger.warning(
+                i18n_t(
+                    "log.plugin.gscore_fail_running_shutdown_hook",
+                    plugin_name=plugin_name,
+                    hook=_hook_label(hook.func),
+                    res=repr(exc),
+                )
+            )
+
+    task.add_done_callback(_on_done)
+
+
+async def _invoke_shutdown_hook(hook: _DefHook) -> object:
+    if inspect.iscoroutinefunction(hook.func):
+        return await hook.func()
+    return await asyncio.to_thread(hook.func)
+
+
 async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) -> None:
     if not shutdown_hooks:
         return
@@ -424,14 +449,16 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
                 hooks=[_hook_label(h.func) for h in group_hooks],
             )
         )
-        coros = [h.func() if inspect.iscoroutinefunction(h.func) else asyncio.to_thread(h.func) for h in group_hooks]
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(*coros, return_exceptions=True),
-                timeout=_RELOAD_SHUTDOWN_TIMEOUT,
-            )
-        except TimeoutError:
-            failed += len(group_hooks)
+        tasks: list[asyncio.Task[object]] = [asyncio.create_task(_invoke_shutdown_hook(h)) for h in group_hooks]
+        done, pending = await asyncio.wait(tasks, timeout=_RELOAD_SHUTDOWN_TIMEOUT)
+        if pending:
+            for h, t in zip(group_hooks, tasks):
+                if t in pending:
+                    _attach_late_failure_logger(t, plugin_name, h)
+                    t.cancel()
+            # 给可取消协程极短收尾窗口, 不死等不可取消的阻塞线程池任务
+            await asyncio.wait(pending, timeout=0.05)
+            failed += len(pending)
             logger.warning(
                 i18n_t(
                     "log.plugin.gscore_shutdown_hooks_timeout",
@@ -439,9 +466,11 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
                     timeout=_RELOAD_SHUTDOWN_TIMEOUT,
                 )
             )
-            continue
-        for h, res in zip(group_hooks, results):
-            if isinstance(res, BaseException) and not isinstance(res, asyncio.CancelledError):
+        for h, t in zip(group_hooks, tasks):
+            if t not in done or t.cancelled():
+                continue
+            res = t.exception()
+            if res is not None:
                 failed += 1
                 logger.warning(
                     i18n_t(
@@ -485,7 +514,7 @@ def _enqueue_shutdown_hooks(
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.warning(i18n_t("log.plugin.gscore_running_event_loop_ok", plugin_name=plugin_name))
+        logger.warning(i18n_t("log.plugin.gscore_shutdown_no_event_loop", plugin_name=plugin_name))
         return
 
     batch = _ShutdownBatch(hooks=list(shutdown_hooks), wait_task=wait_task)
@@ -702,12 +731,7 @@ def _import_plugin_modules(
     return None
 
 
-async def reload_plugin_async(plugin_name: str) -> str:
-    """异步热重载插件（推荐主入口）。
-
-    按单插件锁串行化：先断流并在旧 sys.modules 仍存活时等待旧 @on_core_shutdown 完成，
-    再清空模块缓存并重导新代码，最后后台调度新插件的 @on_ai_register 与 @on_core_start。
-    """
+async def _reload_plugin_locked(plugin_name: str) -> str:
     async with _get_reload_lock(plugin_name):
         logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
 
@@ -734,6 +758,19 @@ async def reload_plugin_async(plugin_name: str) -> str:
         return f"✨ 已重载插件 {plugin_name}!"
 
 
+async def reload_plugin_async(plugin_name: str) -> str:
+    """异步热重载插件（推荐主入口）。
+
+    按单插件锁串行化：先断流并在旧 sys.modules 仍存活时等待旧 @on_core_shutdown 完成，
+    再清空模块缓存并重导新代码，最后后台调度新插件的 @on_ai_register 与 @on_core_start。
+    外层 shield 防止调用方取消导致已断流的插件停留在半卸载状态。
+    """
+    task = asyncio.create_task(_reload_plugin_locked(plugin_name))
+    _active_reload_tasks.add(task)
+    task.add_done_callback(_active_reload_tasks.discard)
+    return await asyncio.shield(task)
+
+
 def reload_plugin(plugin_name: str) -> str:
     """同步热重载兼容入口（异步上下文请优先使用 ``await reload_plugin_async``）。
 
@@ -741,6 +778,9 @@ def reload_plugin(plugin_name: str) -> str:
     后台串行队列执行，因此钩子内延迟导入可能命中新模块；需要完整隔离请用异步版本。
     """
     logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
+    lock = _plugin_reload_locks[plugin_name] if plugin_name in _plugin_reload_locks else None
+    if lock is not None and lock.locked():
+        logger.warning(i18n_t("log.plugin.gscore_sync_reload_while_async_active", plugin_name=plugin_name))
 
     prepared = _prepare_reload(plugin_name)
     if isinstance(prepared, str):

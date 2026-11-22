@@ -10,6 +10,8 @@
   "log.plugin.gscore_shutdown_hooks_done": "[GsCore] 插件 {plugin_name} 关闭 Hook 执行完成",
   "log.plugin.gscore_shutdown_hooks_failed": "[GsCore] 插件 {plugin_name} 关闭 Hook 执行完成, {failed} 个异常",
   "log.plugin.gscore_shutdown_hooks_timeout": "[GsCore] 插件 {plugin_name} 关闭 Hook 超时 ({timeout}s), 跳过等待",
+  "log.plugin.gscore_shutdown_no_event_loop": "[GsCore] 无运行中的事件循环, 插件 {plugin_name} 的关闭 Hook 未执行",
+  "log.plugin.gscore_sync_reload_while_async_active": "[GsCore] 插件 {plugin_name} 正在进行异步重载, 同步重载入口不参与串行锁控制",
   "log.plugin.uninstall_meta_warn": "正在卸载基础设施插件 {plugin_name}，其他插件可能依赖它",
   "log.plugin.command_chain_start": "[检测启动工具] 命令链: {command_chain}",
   "log.plugin.command_start": "[检测启动工具] 最终命令: {command}",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 import asyncio
 from typing import Iterator
 from pathlib import Path
@@ -1102,6 +1103,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
         *,
         fail: bool = False,
         shutdown_delay: float = 0.01,
+        sync_shutdown_sleep: float = 0.0,
         slow_start: bool = False,
         with_hooks: bool = True,
     ) -> None:
@@ -1110,6 +1112,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             init_file.write_text('raise RuntimeError("reload_boom")\n', encoding="utf-8")
             return
         body = [
+            "import time",
             "import asyncio",
             "from pathlib import Path",
             "from gsuid_core.sv import SV",
@@ -1136,6 +1139,22 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         '        with _LOG.open("a", encoding="utf-8") as f:',
                         f'            f.write("start:{version}:cancelled\\n")',
                         "        raise",
+                    ]
+                )
+            elif sync_shutdown_sleep > 0:
+                body.extend(
+                    [
+                        "@on_core_start",
+                        "async def _start():",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("start:{version}:sync\\n")',
+                        "@on_core_shutdown",
+                        "def _stop_sync():",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("shutdown:{version}:sync:begin\\n")',
+                        f"    time.sleep({sync_shutdown_sleep})",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("shutdown:{version}:sync:done\\n")',
                     ]
                 )
             else:
@@ -1274,7 +1293,45 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                 "start:8:cancelled",
                 "import:9",
             ]
+
+            # 7) 异步重载期间调用方被取消时，外层 shield 保护重载体跑完，不留下半卸载态
+            before_step7 = len(read_events())
+            write_plugin(10, "测重指令十", shutdown_delay=0.05)
+            res10 = await reload_mod.reload_plugin_async(plugin_name)
+            assert res10.startswith("✨")
+            await reload_mod._plugin_start_tasks[plugin_name]
+            write_plugin(11, "测重指令十一")
+            t11 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
+            await wait_for_event("shutdown:10:state=10:begin")
+            t11.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t11
+            await wait_for_event("import:11")
+            await reload_mod._plugin_start_tasks[plugin_name]
+            step7_events = read_events()[before_step7:]
+            assert "shutdown:10:state=10:done" in step7_events
+            assert "start:11:state=11" in step7_events
+            assert matches_command("测重指令十一") is True
+
+            # 8) 同步阻塞关闭钩子超时：到点立即返回继续重载，不被线程池阻塞拖死
+            before_step8 = len(read_events())
+            write_plugin(12, "测重指令十二", sync_shutdown_sleep=0.35)
+            res12 = await reload_mod.reload_plugin_async(plugin_name)
+            assert res12.startswith("✨")
+            await reload_mod._plugin_start_tasks[plugin_name]
+            monkeypatch.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 0.08)
+            write_plugin(13, "测重指令十三", with_hooks=False)
+            t0 = time.monotonic()
+            res13 = await reload_mod.reload_plugin_async(plugin_name)
+            elapsed = time.monotonic() - t0
+            assert res13.startswith("✨")
+            assert elapsed < 0.25
+            assert matches_command("测重指令十三") is True
+            await wait_for_event("shutdown:12:sync:done")
+            assert "shutdown:12:sync:begin" in read_events()[before_step8:]
         finally:
+            if reload_mod._active_reload_tasks:
+                await asyncio.gather(*list(reload_mod._active_reload_tasks), return_exceptions=True)
             for task_map in (reload_mod._plugin_start_tasks, reload_mod._plugin_shutdown_tasks):
                 pending_task = task_map.pop(plugin_name, None)
                 if pending_task is not None and not pending_task.done():
