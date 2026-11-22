@@ -691,6 +691,7 @@
   "log.ai.websearch_keenable_api_key_trying": "[WebSearch][Keenable] api_key ...{p0} が失敗、次を試す",
   "log.ai.websearch_keenable_api_keys": "[WebSearch][Keenable] すべての試行が失敗",
   "log.ai.websearch_keenable_search_query": "[WebSearch][Keenable] 検索: {query}、{p0} 件の結果を返した",
+  "log.ai.websearch_parallel_search_query": "[WebSearch][Parallel] 検索: {query}、{p0} 件の結果を返した",
   "log.ai.websearch_mcp_non_json_return": "[WebSearch][MCP] 非 JSON レスポンス、原文のまま透過（{p0} 文字）",
   "log.ai.websearch_mcp_structured_return": "[WebSearch][MCP] 構造化レスポンス: {p0}...",
   "log.ai.websearch_provider_fail": "[WebSearch] プロバイダー {provider} 失敗（戦略={strategy}）: {e}",
