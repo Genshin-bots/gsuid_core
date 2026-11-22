@@ -228,6 +228,9 @@ def _check_websearch_config() -> Dict[str, Any]:
             result["note"] = f"已配置 {keyed} 个 Keenable API Key"
         else:
             result["note"] = "Keenable 可用公开搜索端点（未配置 API Key）"
+    elif provider == "Parallel":
+        result["configured"] = True
+        result["note"] = "Parallel 通过公开 MCP 端点搜索，无需 API Key"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:
@@ -567,7 +570,7 @@ def _analyze_missing_configs(wizard_data: Dict[str, Any]) -> List[Dict[str, Any]
                 "item": "网络搜索",
                 "severity": "warning",
                 "message": f"网络搜索未配置: {websearch.get('note', '未知错误')}",
-                "recommendation": "配置 Tavily/Jina/Exa/DeepSeek/AnySearch/Firecrawl/Keenable 或配置 MCP 搜索工具",
+                "recommendation": "在 AI 配置中选择网络搜索提供方，或配置 MCP 搜索工具",
             }
         )
 

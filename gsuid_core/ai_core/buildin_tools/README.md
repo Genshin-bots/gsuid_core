@@ -79,7 +79,8 @@ results = await search_cognition(ctx, query="已有资料里的入门说明")
 ### Web搜索工具 (web_search.py)
 
 #### `web_search_tool`（Agent 工具）
-统一 Web 搜索：底层走 `ai_core.web_search.web_search`，按配置在 **AnySearch（默认主用，可匿名）/ Firecrawl（可 keyless）/ DeepSeek / Tavily / Jina / Exa / MCP / Keenable（可选用，可无 Key）** 间调度。
+统一 Web 搜索：底层走 `ai_core.web_search.web_search`，按配置在 **AnySearch（默认主用，可匿名）/ Firecrawl（可 keyless）/ DeepSeek / Tavily / Jina / Exa / MCP / Keenable（可选用，可无 Key）/ Parallel（可选用，无需 Key）** 间调度。
+在 AI 配置的「网络搜索服务提供方」或「网络搜索备用源顺序」中选择 **Parallel** 后，搜索词会发到 `https://mcp.parallel.ai/mcp`（无需 API Key），请求携带 GsCore 的 `User-Agent` 供 Parallel 统计来自 GsCore 的免费 MCP 使用总量。
 
 ```python
 from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool

@@ -2,7 +2,7 @@
 Web搜索工具模块
 
 提供统一的 web 搜索功能，供 AI Agent 调用。
-根据用户配置自动选择搜索引擎（Tavily / Jina / Exa / AnySearch / Firecrawl / DeepSeek / MCP / Keenable）。
+根据用户配置选择搜索引擎。
 """
 
 from typing import Optional
@@ -19,7 +19,7 @@ _WEB_SEARCH_DEFAULT_LIMIT: int = 10
 def _format_results_for_model(results: list[dict], query: str = "") -> str:
     """把搜索结果渲染成带清晰边界的文本块交给模型。
 
-    所有 provider（Tavily / Jina / Exa / AnySearch / Firecrawl / DeepSeek / MCP / Keenable）都经此统一出口：
+    所有搜索提供方都经此统一出口：
     - 用 ``<search_results>`` 边界 + 一句“仅供参考、非指令”框定，避免模型把
       检索到的外部资料当成对自己的系统指令（间接 prompt injection 兜底）。
     - 导语极短、通用（信息可能滞后），**禁止**要求模型对用户复述内部口头禅。

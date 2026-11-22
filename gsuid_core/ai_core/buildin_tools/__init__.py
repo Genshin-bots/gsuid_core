@@ -46,8 +46,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
   ``code_callable`` 的查询/读取工具；发消息和写入在代码外直调
 - ``search_cognition``（``rag_search.py``）：回想（记忆 / 偏好 / 知识 / 落盘 / 产物 / 近窗 / 记录 / 图片 / 表情）
 - ``read_handle``（``planning/tool_output_tools.py``）：统一读句柄（已删除 ``read_persisted_output``）
-- ``web_search_tool``（``web_search.py``）：统一 web 搜索（Tavily / Jina / Exa / AnySearch / Firecrawl / DeepSeek /
-  MCP / Keenable）
+- ``web_search_tool``（``web_search.py``）：按设置选择提供方进行 Web 搜索
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置/角色卡）
@@ -250,7 +249,7 @@ from gsuid_core.ai_core.buildin_tools.rag_search import (
     search_cognition,
 )
 
-# Web搜索工具 - 统一调度 Tavily / Jina / Exa / AnySearch / Firecrawl / DeepSeek / MCP / Keenable
+# Web 搜索工具
 from gsuid_core.ai_core.buildin_tools.web_search import web_search_tool
 
 # 用户头像工具 - 按用户ID取头像并注册到RM，返回图片ID

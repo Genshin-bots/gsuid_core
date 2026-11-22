@@ -691,6 +691,7 @@
   "log.ai.websearch_keenable_api_key_trying": "[WebSearch][Keenable] api_key ...{p0} 失败，尝试下一个",
   "log.ai.websearch_keenable_api_keys": "[WebSearch][Keenable] 全部尝试均失败",
   "log.ai.websearch_keenable_search_query": "[WebSearch][Keenable] 搜索: {query}, 返回 {p0} 条结果",
+  "log.ai.websearch_parallel_search_query": "[WebSearch][Parallel] 搜索: {query}, 返回 {p0} 条结果",
   "log.ai.websearch_mcp_non_json_return": "[WebSearch][MCP] 非 JSON 返回，按原文透传 ({p0} 字)",
   "log.ai.websearch_mcp_structured_return": "[WebSearch][MCP] 结构化返回: {p0}...",
   "log.ai.websearch_provider_fail": "[WebSearch] 提供方 {provider} 失败（策略={strategy}）: {e}",

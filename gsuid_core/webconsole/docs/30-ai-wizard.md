@@ -184,7 +184,7 @@ AI 配置向导 API 用于帮助前端展示 AI 功能配置状态，提供配�
 | `memory.memory_mode` | array | 记忆路径列表（被动感知/主动会话） |
 | `memory.memory_session` | string | 被动感知范围（按人格配置/全部群聊） |
 | `embedding` | object | 嵌入模型配置 |
-| `web_search` | object | Web Search 配置；`provider` 为 `AnySearch`（默认，可匿名）/`Firecrawl`（可 keyless）/`DeepSeek`/`Tavily`/`Jina`/`Exa`/`MCP`/`Keenable`（可无 Key）。Jina/DeepSeek/Tavily/Exa 校验对应 `api_key`；AnySearch / Firecrawl / Keenable 无 Key 也视为已配置 |
+| `web_search` | object | Web Search 配置；`provider` 为 `AnySearch`（默认）、`Firecrawl`、`DeepSeek`、`Tavily`、`Jina`、`Exa`、`MCP`、`Keenable` 或 `Parallel`。AnySearch、Firecrawl、Keenable 和 Parallel 无 Key 也视为已配置。 |
 | `missing_configs` | array | 缺失配置项列表 |
 | `missing_configs[].category` | string | 问题分类 |
 | `missing_configs[].item` | string | 问题项名称 |
