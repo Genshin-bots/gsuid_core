@@ -44,7 +44,7 @@ from gsuid_core.utils.plugins_config.models import (
 )
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_plugin_commit, get_local_plugins_list
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
-from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
+from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin_async
 
 from ._api_tags import PLUGINS, FRAMEWORK_CONFIG
 
@@ -1040,7 +1040,7 @@ async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str,
         status: 0成功
         msg: 操作结果信息
     """
-    result = reload_plugin(plugin_name)
+    result = await reload_plugin_async(plugin_name)
     # 始终带 data 字段：前端 api.post 会解包 data；无 data 时成功路径拿到 undefined，
     # 再读 result.status 会报 Cannot read properties of undefined (reading 'status')。
     if result.lstrip().startswith("❌"):
@@ -1309,7 +1309,7 @@ async def install_plugin(
     try:
         from gsuid_core.utils.plugins_update._plugins import install_plugin as _install_plugin
 
-        # install_plugin 内部已完成「安装 + reload_plugin 加载」，直接复用其返回信息，
+        # install_plugin 内部已完成「安装 + reload_plugin_async 加载」，直接复用其返回信息，
         # 不再在此处重复 reload。失败信息统一以 ❌ 前缀标识。
         result = await _install_plugin(plugin_id)
         if result.lstrip().startswith("❌"):
@@ -1329,7 +1329,7 @@ async def install_plugin_from_url_api(
     从 URL 安装插件（不走插件商店白名单）
 
     接受前端传来的 git 仓库 URL，后端执行 ``git clone`` 把仓库克隆到
-    ``plugins/`` 目录，并通过 ``reload_plugin`` 真正加载插件。
+    ``plugins/`` 目录，并通过 ``reload_plugin_async`` 真正加载插件。
 
     适用场景：
     - 安装未收录在插件商店中的自定义插件 / 内部仓库 / 第三方仓库
@@ -1426,14 +1426,14 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] 
         msg: 操作结果信息
     """
     try:
-        from gsuid_core.utils.plugins_update._plugins import update_plugins
+        from gsuid_core.utils.plugins_update._plugins import update_plugins, extract_update_failure
 
         result = await update_plugins(plugin_id)
+        failure_msg = extract_update_failure(result)
+        if failure_msg is not None:
+            return {"status": 1, "msg": failure_msg}
 
-        if result:
-            return {"status": 0, "msg": "插件更新成功"}
-        else:
-            return {"status": 1, "msg": "插件更新失败"}
+        return {"status": 0, "msg": "插件更新成功"}
     except Exception as e:
         return {"status": 1, "msg": f"更新失败: {str(e)}"}
 

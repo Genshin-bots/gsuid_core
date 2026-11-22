@@ -26,12 +26,33 @@ from .git_async import (
     git_get_current_branch,
     git_get_current_commit,
 )
-from .reload_plugin import reload_plugin
+from .reload_plugin import reload_plugin_async
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
 # 插件 commit 版本信息（仅在运行时内部流转，不持久化）
 plugin_commit_versions: Dict[str, str] = {}
+AUTO_RELOAD_FAIL_PREFIX = "❌ [自动重载失败]"
+
+
+def extract_update_failure(result: str | list[str]) -> str | None:
+    """从 update_plugins / update_from_git_async 返回值中提取失败信息，成功返回 None。"""
+    if isinstance(result, str):
+        text = result.strip()
+        if not text:
+            return "插件更新失败"
+        if text.startswith("✅"):
+            return None
+        return text
+    if not result:
+        return "插件更新失败"
+    first = result[0].lstrip()
+    if first.startswith("❌") or first.startswith("更新失败"):
+        return "\n".join(result)
+    last = result[-1].lstrip()
+    if last.startswith(AUTO_RELOAD_FAIL_PREFIX):
+        return result[-1]
+    return None
 
 
 def _is_mirror_not_synced_error(message: str) -> bool:
@@ -546,8 +567,8 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         logger.info(t("log.plugin.plugin_name_github", plugin_name=plugin_name))
     else:
         logger.info(t("log.plugin.plugin_name_2", plugin_name=plugin_name))
-    # 安装完成后直接调用 reload_plugin 完成首次加载并触发启动钩子。
-    retcode = reload_plugin(plugin_name)
+    # 安装完成后直接调用 reload_plugin_async 完成首次加载并触发启动钩子。
+    retcode = await reload_plugin_async(plugin_name)
     if retcode.lstrip().startswith("❌"):
         return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[core重启]:\n{retcode}"
     return f"✅ 插件{plugin_name}安装并加载成功!"
@@ -804,7 +825,11 @@ async def update_from_git_async(
     # 仅在「确实有新提交」或「强制更新(reset --hard 可能改动工作区, 且为显式操作)」时才重载,
     # 避免无更新的插件被无谓重载 —— 尤其凌晨自动更新会遍历全部插件。
     if (commits_diff or level >= 1) and plugin_name != "早柚核心" and is_reload:
-        reload_plugin(plugin_name)
+        reload_result = await reload_plugin_async(plugin_name)
+        if reload_result.lstrip().startswith("❌"):
+            logger.warning(t("log.plugin.auto_reload_fail", plugin_name=plugin_name, result=reload_result))
+            detail = reload_result.lstrip().removeprefix("❌").strip()
+            log_list.append(f"{AUTO_RELOAD_FAIL_PREFIX}[{plugin_name}] {detail}")
     return log_list
 
 
@@ -838,7 +863,7 @@ async def update_plugins(
     level: int = 0,
     log_key: List[str] = [],
     log_limit: int = 10,
-) -> Union[str, List]:
+) -> Union[str, List[str]]:
     if not plugin_name:
         return "请后跟有效的插件名称！\n例如：core更新插件genshinuid"
 
