@@ -7,6 +7,7 @@ from http.cookiejar import CookieJar, DefaultCookiePolicy
 
 import httpx
 from mcp import McpError
+from anyio import EndOfStream, BrokenResourceError, ClosedResourceError
 from fastmcp import Client
 from pydantic import BaseModel, ValidationError
 from mcp.types import Implementation
@@ -26,7 +27,7 @@ class _ParallelHit(BaseModel):
     url: str
     title: str | None = None
     publish_date: str | None = None
-    excerpts: list[str]
+    excerpts: list[str] | None = None
 
 
 class _ParallelResponse(BaseModel):
@@ -64,12 +65,12 @@ def _create_anonymous_http_client(
     *,
     follow_redirects: bool = False,
 ) -> httpx.AsyncClient:
-    # 公开请求不保留或回送服务器设置的 Cookie。
+    # 公开请求不跟随重定向（fastmcp 会传 follow_redirects=True）且不保留 Cookie。
     return httpx.AsyncClient(
         headers=headers,
         timeout=timeout if timeout is not None else _TIMEOUT_SECONDS,
         auth=auth,
-        follow_redirects=follow_redirects,
+        follow_redirects=False,
         max_redirects=0,
         cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
     )
@@ -86,12 +87,30 @@ async def parallel_search(query: str, max_results: int | None = None) -> list[Pa
         httpx_client_factory=_create_anonymous_http_client,
     )
     client_info = Implementation(name=_CLIENT_NAME, version=__version__)
+    client = Client(
+        transport,
+        timeout=_TIMEOUT_SECONDS,
+        init_timeout=_TIMEOUT_SECONDS,
+        client_info=client_info,
+    )
     try:
         async with asyncio.timeout(_TIMEOUT_SECONDS):
-            async with Client(transport, client_info=client_info) as client:
+            async with client:
                 result = await client.call_tool_mcp("web_search", {"objective": query, "search_queries": [query]})
-    except* (httpx.HTTPError, McpError, RuntimeError) as exc:
+    except* (
+        httpx.HTTPError,
+        McpError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        RuntimeError,
+        BrokenResourceError,
+        ClosedResourceError,
+        EndOfStream,
+    ) as exc:
         raise RuntimeError("Parallel MCP search request failed") from exc
+    finally:
+        await client.close()
     if result.isError:
         raise RuntimeError("Parallel MCP web_search returned a tool error")
 
@@ -104,11 +123,12 @@ async def parallel_search(query: str, max_results: int | None = None) -> list[Pa
     for hit in response.results:
         if not _is_source_url(hit.url):
             continue
+        excerpts = [text for text in (hit.excerpts or []) if text]
         results.append(
             {
                 "title": _clean_result_text(hit.title or "", 300),
                 "url": hit.url,
-                "content": _clean_result_text("\n\n".join(hit.excerpts), 2000),
+                "content": _clean_result_text("\n\n".join(excerpts), 2000),
                 "published_date": normalize_published_date(hit.publish_date),
                 "score": 0.0,
             }
