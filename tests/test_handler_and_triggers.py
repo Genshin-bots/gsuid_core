@@ -1104,6 +1104,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
         fail: bool = False,
         shutdown_delay: float = 0.01,
         sync_shutdown_sleep: float = 0.0,
+        multi_priority_shutdown_sleep: float = 0.0,
         slow_start: bool = False,
         with_hooks: bool = True,
     ) -> None:
@@ -1155,6 +1156,27 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         f"    time.sleep({sync_shutdown_sleep})",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write("shutdown:{version}:sync:done\\n")',
+                    ]
+                )
+            elif multi_priority_shutdown_sleep > 0:
+                body.extend(
+                    [
+                        "@on_core_start",
+                        "async def _start():",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("start:{version}:mp\\n")',
+                        "@on_core_shutdown(priority=0)",
+                        "async def _stop_p0():",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("shutdown:{version}:p0:begin\\n")',
+                        f"    await asyncio.sleep({multi_priority_shutdown_sleep})",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("shutdown:{version}:p0:done\\n")',
+                        "@on_core_shutdown(priority=1)",
+                        "async def _stop_p1():",
+                        '    with _LOG.open("a", encoding="utf-8") as f:',
+                        f'        f.write("shutdown:{version}:p1:begin\\n")',
+                        f"    await asyncio.sleep({multi_priority_shutdown_sleep})",
                     ]
                 )
             else:
@@ -1329,6 +1351,43 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             assert matches_command("测重指令十三") is True
             await wait_for_event("shutdown:12:sync:done")
             assert "shutdown:12:sync:begin" in read_events()[before_step8:]
+
+            # 9) 多优先级组关闭钩子共享整轮超时预算：前组耗尽后不叠加等待后续组
+            before_step9 = len(read_events())
+            write_plugin(14, "测重指令十四", multi_priority_shutdown_sleep=0.25)
+            res14 = await reload_mod.reload_plugin_async(plugin_name)
+            assert res14.startswith("✨")
+            await reload_mod._plugin_start_tasks[plugin_name]
+            write_plugin(15, "测重指令十五", shutdown_delay=0.05)
+            t0 = time.monotonic()
+            res15 = await reload_mod.reload_plugin_async(plugin_name)
+            elapsed_mp = time.monotonic() - t0
+            assert res15.startswith("✨")
+            assert elapsed_mp < 0.25
+            await reload_mod._plugin_start_tasks[plugin_name]
+            step9_events = read_events()[before_step9:]
+            assert "shutdown:14:p0:begin" in step9_events
+            assert "shutdown:14:p1:begin" not in step9_events
+            assert matches_command("测重指令十五") is True
+
+            # 10) 异步重载持锁在途时拒绝并发同步重载，不破坏在途异步流程
+            monkeypatch.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 15.0)
+            before_step10 = len(read_events())
+            write_plugin(16, "测重指令十六")
+            t16 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
+            await wait_for_event("shutdown:15:state=15:begin")
+            sync_rejected = reload_mod.reload_plugin(plugin_name)
+            assert sync_rejected.startswith("❌")
+            res16 = await t16
+            assert res16.startswith("✨")
+            await reload_mod._plugin_start_tasks[plugin_name]
+            assert read_events()[before_step10:] == [
+                "shutdown:15:state=15:begin",
+                "shutdown:15:state=15:done",
+                "import:16",
+                "start:16:state=16",
+            ]
+            assert matches_command("测重指令十六") is True
         finally:
             if reload_mod._active_reload_tasks:
                 await asyncio.gather(*list(reload_mod._active_reload_tasks), return_exceptions=True)
@@ -1367,9 +1426,6 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                     if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), plugin_name)
                 }
                 hook_set -= stale
-            plugins_dir_str = str(plugins_dir)
-            while plugins_dir_str in sys.path:
-                sys.path.remove(plugins_dir_str)
             reset_trigger_index()
 
     asyncio.run(scenario())

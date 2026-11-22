@@ -404,6 +404,23 @@ async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
     return meta is not None and meta.has_start_hooks and not meta.started
 
 
+def _attach_prev_start_failure_logger(task: asyncio.Task[None], plugin_name: str) -> None:
+    def _on_done(done_task: asyncio.Task[None]) -> None:
+        if done_task.cancelled():
+            return
+        exc = done_task.exception()
+        if exc is not None:
+            logger.warning(
+                i18n_t(
+                    "log.plugin.gscore_prev_start_task_fail",
+                    plugin_name=plugin_name,
+                    res=repr(exc),
+                )
+            )
+
+    task.add_done_callback(_on_done)
+
+
 def _attach_late_failure_logger(task: asyncio.Task[object], plugin_name: str, hook: _DefHook) -> None:
     def _on_done(done_task: asyncio.Task[object]) -> None:
         if done_task.cancelled():
@@ -438,9 +455,23 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
             count=len(shutdown_hooks),
         )
     )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _RELOAD_SHUTDOWN_TIMEOUT
     failed = 0
     for priority, group in groupby(shutdown_hooks, key=lambda h: h.priority):
         group_hooks = list(group)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            failed += len(group_hooks)
+            logger.warning(
+                i18n_t(
+                    "log.plugin.gscore_shutdown_hooks_timeout",
+                    plugin_name=plugin_name,
+                    timeout=_RELOAD_SHUTDOWN_TIMEOUT,
+                    hooks=[_hook_label(h.func) for h in group_hooks],
+                )
+            )
+            continue
         logger.debug(
             i18n_t(
                 "log.plugin.gscore_running_shutdown_hook",
@@ -450,10 +481,12 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
             )
         )
         tasks: list[asyncio.Task[object]] = [asyncio.create_task(_invoke_shutdown_hook(h)) for h in group_hooks]
-        done, pending = await asyncio.wait(tasks, timeout=_RELOAD_SHUTDOWN_TIMEOUT)
+        done, pending = await asyncio.wait(tasks, timeout=remaining)
         if pending:
+            timed_out_hooks: list[str] = []
             for h, t in zip(group_hooks, tasks):
                 if t in pending:
+                    timed_out_hooks.append(_hook_label(h.func))
                     _attach_late_failure_logger(t, plugin_name, h)
                     t.cancel()
             # 给可取消协程极短收尾窗口, 不死等不可取消的阻塞线程池任务
@@ -464,6 +497,7 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
                     "log.plugin.gscore_shutdown_hooks_timeout",
                     plugin_name=plugin_name,
                     timeout=_RELOAD_SHUTDOWN_TIMEOUT,
+                    hooks=timed_out_hooks,
                 )
             )
         for h, t in zip(group_hooks, tasks):
@@ -508,14 +542,14 @@ def _enqueue_shutdown_hooks(
     plugin_name: str,
     shutdown_hooks: list[_DefHook],
     wait_task: asyncio.Task[None] | None = None,
-) -> None:
+) -> bool:
     if not shutdown_hooks:
-        return
+        return False
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         logger.warning(i18n_t("log.plugin.gscore_shutdown_no_event_loop", plugin_name=plugin_name))
-        return
+        return False
 
     batch = _ShutdownBatch(hooks=list(shutdown_hooks), wait_task=wait_task)
     if plugin_name in _pending_shutdown_hooks:
@@ -528,6 +562,7 @@ def _enqueue_shutdown_hooks(
         task = loop.create_task(_shutdown_worker(plugin_name))
         _plugin_shutdown_tasks[plugin_name] = task
         task.add_done_callback(lambda t: _discard_shutdown_task(plugin_name, t))
+    return True
 
 
 async def _drain_pending_shutdown_task(plugin_name: str) -> None:
@@ -542,7 +577,7 @@ async def _drain_pending_shutdown_task(plugin_name: str) -> None:
 def _schedule_plugin_start_hooks(
     plugin_name: str,
     prev_start_task: asyncio.Task[None] | None = None,
-) -> None:
+) -> bool:
     """后台调度新插件的 @on_ai_register 与 @on_core_start 钩子。"""
     try:
         from gsuid_core.server import core_start_def
@@ -554,17 +589,19 @@ def _schedule_plugin_start_hooks(
         has_ai_hooks = has_pending_ai_register_hooks(plugin_name)
         if not plugin_hooks and not has_ai_hooks:
             logger.debug(i18n_t("log.plugin.gscore_name_core_start", plugin_name=plugin_name))
-            return
+            return False
 
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.warning(i18n_t("log.plugin.gscore_running_event_loop_ok", plugin_name=plugin_name))
-            return
+            return False
 
         meta = _StartTaskMeta(has_start_hooks=bool(plugin_hooks))
 
         async def _runner() -> None:
+            # 让出一拍, 避免同 tick 已排队等待重载锁的下一轮重载被抢先打日志或抢跑
+            await asyncio.sleep(0)
             await _await_previous_task(plugin_name, prev_start_task)
             await _drain_pending_shutdown_task(plugin_name)
             if has_ai_hooks:
@@ -627,8 +664,10 @@ def _schedule_plugin_start_hooks(
         _plugin_start_tasks[plugin_name] = task
         _start_task_meta[task] = meta
         task.add_done_callback(lambda t: _discard_start_task(plugin_name, t))
+        return True
     except Exception as e:
         logger.warning(i18n_t("log.plugin.gscore_scheduling_startup_hooks_fail", plugin_name=plugin_name, e=e))
+        return False
 
 
 def _prepare_reload(plugin_name: str) -> tuple[PluginKindMeta | None, list[tuple[str, Path, str]]] | str:
@@ -720,12 +759,12 @@ def _import_plugin_modules(
             import_error = f"❌ 重载失败: {e}"
             break
 
-    if meta_info is not None:
-        gss.bind_loaded_meta_plugin(meta_info, module_list)
-
     if import_error is not None:
         reset_trigger_index()
         return import_error
+
+    if meta_info is not None:
+        gss.bind_loaded_meta_plugin(meta_info, module_list)
 
     _restore_plugin_routes_position(plugin_name, route_anchor)
     return None
@@ -781,6 +820,7 @@ def reload_plugin(plugin_name: str) -> str:
     lock = _plugin_reload_locks[plugin_name] if plugin_name in _plugin_reload_locks else None
     if lock is not None and lock.locked():
         logger.warning(i18n_t("log.plugin.gscore_sync_reload_while_async_active", plugin_name=plugin_name))
+        return f"❌ 插件 {plugin_name} 正在重载中，请稍后再试!"
 
     prepared = _prepare_reload(plugin_name)
     if isinstance(prepared, str):
@@ -792,12 +832,17 @@ def reload_plugin(plugin_name: str) -> str:
     _purge_plugin_modules(plugin_name)
 
     import_error = _import_plugin_modules(plugin_name, meta_info, module_list, route_anchor)
+    queued_shutdown = False
     if not skip_shutdown:
-        _enqueue_shutdown_hooks(plugin_name, shutdown_hooks, wait_task=prev_start)
+        queued_shutdown = _enqueue_shutdown_hooks(plugin_name, shutdown_hooks, wait_task=prev_start)
     if import_error is not None:
+        if prev_start is not None and not queued_shutdown:
+            _attach_prev_start_failure_logger(prev_start, plugin_name)
         return import_error
 
-    _schedule_plugin_start_hooks(plugin_name, prev_start_task=prev_start)
+    scheduled_start = _schedule_plugin_start_hooks(plugin_name, prev_start_task=prev_start)
+    if prev_start is not None and not queued_shutdown and not scheduled_start:
+        _attach_prev_start_failure_logger(prev_start, plugin_name)
 
     logger.success(i18n_t("log.plugin.plugin_name", plugin_name=plugin_name))
     return f"✨ 已重载插件 {plugin_name}!"
