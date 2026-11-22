@@ -26,7 +26,6 @@ from gsuid_core.ai_core.control.delegation import (
     await_delegation,
     format_delegation,
 )
-from gsuid_core.ai_core.buildin_tools.visibility import visible_when_directive_present
 
 _MAX_WAIT_SEC = 20.0
 
@@ -61,16 +60,11 @@ async def check_delegation(
 @ai_tools(
     category="buildin",
     capability_domain="产物",
-    visible_when=visible_when_directive_present,
+    brief="向框架提交内部校验误判申辩（仅在收到框架内部校验提醒且判断有误时调用）。",
     code_callable=False,
 )
 async def dispute_directive(ctx: RunContext[ToolContext], reason: str) -> str:
-    """当框架内部校验的观察与事实不符时写入申辩，而**不要**对用户解释。
-
-    典型场景：校验说「你把长信息念成了台词」但你写的是用户点名要的叙事文/代码；
-    或说「已有事实包未出图」但本轮根本没查数。申辩后你上一条回复照原样交付，
-    不必改写、不必道歉、不必向用户提这件事。
-    """
+    """向框架提交内部校验误判申辩（勿对用户解释；无内部校验提醒时无需调用）。"""
     body = (reason or "").strip()
     if not body:
         return "⚠️ 申辩需要给出理由（说明观察与事实哪里不符）。"

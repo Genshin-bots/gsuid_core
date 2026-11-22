@@ -151,14 +151,37 @@ async def import_bundle_dir(root: Path) -> BundleImportResult:
     if len(existing_binds) + new_binds > MAX_PACKS_PER_PERSONA:
         raise BundleError(f"一个人格最多挂载 {MAX_PACKS_PER_PERSONA} 个表情包")
 
+    from gsuid_core.ai_core.persona.config import (
+        EMPTY_CHANNEL_DEPLOYMENT,
+        ChannelDeploymentSnapshot,
+        persona_config_manager,
+        rewrite_config_bytes_with_deployment,
+    )
+
+    target_deployment: ChannelDeploymentSnapshot = (
+        EMPTY_CHANNEL_DEPLOYMENT if created else persona_config_manager.snapshot_channel_deployment(persona_name)
+    )
     content = persona_md.read_text(encoding="utf-8")
     await save_persona(persona_name, content)
     persona = Persona(persona_name)
+    wrote_sanitized_config = False
     for name in _OPTIONAL_NAMES:
         source = root / name
         if source.is_file():
             target = persona.dir_path / name
+            if name == "config.json":
+                # 内存中覆写部署字段后一次落盘，避免先触发旧 scope 伪迁移告警再二次覆盖
+                rewritten = rewrite_config_bytes_with_deployment(source.read_bytes(), target_deployment)
+                if rewritten is not None:
+                    target.write_bytes(rewritten)
+                    wrote_sanitized_config = True
+                    continue
             target.write_bytes(source.read_bytes())
+
+    if wrote_sanitized_config:
+        persona_config_manager.drop_cache(persona_name)
+    elif created or (root / "config.json").is_file():
+        persona_config_manager.restore_channel_deployment(persona_name, target_deployment)
     for audio in SUPPORTED_AUDIO_FORMATS:
         source = root / f"audio{audio}"
         if source.is_file():
@@ -240,9 +263,20 @@ async def export_persona_bundle(persona_name: str) -> bytes:
             ),
         )
         archive.write(persona.files.markdown_path, "persona.md")
+        from gsuid_core.ai_core.persona.config import (
+            EMPTY_CHANNEL_DEPLOYMENT,
+            rewrite_config_bytes_with_deployment,
+        )
+
         for name in _OPTIONAL_NAMES:
             path = persona.dir_path / name
             if path.is_file():
+                if name == "config.json":
+                    # 导出脱敏：清空本地部署范围与真实群/私聊用户 ID
+                    sanitized = rewrite_config_bytes_with_deployment(path.read_bytes(), EMPTY_CHANNEL_DEPLOYMENT)
+                    if sanitized is not None:
+                        archive.writestr(name, sanitized)
+                        continue
                 archive.write(path, name)
         audio = persona.files.get_audio_path()
         if audio is not None and audio.is_file():

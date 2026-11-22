@@ -459,6 +459,11 @@ class LoopPhase(RunOnceHost):
         for part in node.request.parts:
             if isinstance(part, ToolReturnPart):
                 _has_tool_return = True
+                _eff_name = (
+                    st.effective_tool_names[part.tool_call_id]
+                    if part.tool_call_id and part.tool_call_id in st.effective_tool_names
+                    else (part.tool_name or "")
+                )
                 if _tool_return_is_async_pending(part):
                     st.pending_async_delivery = True
                 # 如果工具返回b64图片或者bytes内容, 则调用RM实例上传
@@ -469,7 +474,7 @@ class LoopPhase(RunOnceHost):
                     logger.info(
                         i18n_t(
                             "log.agent.content_registered_resource_id",
-                            p0=part.tool_name,
+                            p0=_eff_name,
                             resource_id=resource_id,
                         )
                     )
@@ -477,12 +482,12 @@ class LoopPhase(RunOnceHost):
                     # 仅 ToolReturnPart 分支, 其他 part 类型跳过替换。
                     if type(part) is ToolReturnPart:
                         # 工具返回过长时写入短占位，避免污染上下文
-                        part.content = f"[工具 {part.tool_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
+                        part.content = f"[工具 {_eff_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
 
                 # FileOS：凡具备 read_handle 回读能力的循环统一过阈值落盘+折句柄卡
                 _fileos_folded = False
                 _raw_tr = part.content if isinstance(part.content, str) else None
-                record_run_tool_output(st.run_tool_outputs, part.tool_name or "", _raw_tr)
+                record_run_tool_output(st.run_tool_outputs, _eff_name, _raw_tr)
                 if type(part) is ToolReturnPart and _raw_tr is not None:
                     from gsuid_core.ai_core.planning.runtime import get_plan_context
                     from gsuid_core.ai_core.planning.tool_output_helper import (
@@ -504,7 +509,7 @@ class LoopPhase(RunOnceHost):
                         _is_group = bool(st.ev is not None and st.ev.group_id)
                         try:
                             _folded = await persist_and_fold_tool_return(
-                                tool_name=part.tool_name or "",
+                                tool_name=_eff_name,
                                 content=_raw_tr,
                                 ev=st.ev,
                                 session_id=self.session_id or "",
@@ -521,15 +526,15 @@ class LoopPhase(RunOnceHost):
                             _fileos_folded = True
                             # 折叠≠可出图：仅主人格且形态达标才武装 render nudge
                             if self.create_by in _MAIN_PERSONA_CREATE_BY and content_is_render_candidate(
-                                tool_name=part.tool_name or "",
+                                tool_name=_eff_name,
                                 content=_raw_tr or "",
                                 fileos_folded=True,
                             ):
                                 st.saw_structured_return = True
-                    elif is_searchish_tool(part.tool_name or ""):
+                    elif is_searchish_tool(_eff_name):
                         try:
                             await persist_tool_return(
-                                tool_name=part.tool_name or "",
+                                tool_name=_eff_name,
                                 content=_raw_tr,
                                 ev=st.ev,
                                 session_id=self.session_id or "",
@@ -540,7 +545,7 @@ class LoopPhase(RunOnceHost):
                             logger.debug(i18n_t("log.ai.tool_output_persist_skip", e=_fileos_e))
                     else:
                         schedule_persist_tool_return(
-                            tool_name=part.tool_name or "",
+                            tool_name=_eff_name,
                             content=_raw_tr,
                             ev=st.ev,
                             session_id=self.session_id or "",
@@ -565,7 +570,7 @@ class LoopPhase(RunOnceHost):
 
                         if _looks_like_structured_data(part.content):
                             if content_is_render_candidate(
-                                tool_name=part.tool_name or "",
+                                tool_name=_eff_name,
                                 content=part.content,
                                 fileos_folded=False,
                             ):
@@ -581,22 +586,22 @@ class LoopPhase(RunOnceHost):
                                 )
                             part.content = _summarize_structured_data(part.content) + _fold
                         elif content_is_render_candidate(
-                            tool_name=part.tool_name or "",
+                            tool_name=_eff_name,
                             content=part.content,
                             fileos_folded=False,
                         ):
                             st.saw_structured_return = True
                         # create_subagent：完成/异步 ack 确认在途；失败回滚抢先静默
-                        if (part.tool_name or "") == "create_subagent":
+                        if _eff_name == "create_subagent":
                             self._apply_create_subagent_return(st, part, part.content)
-                        if (part.tool_name or "") == "send_message_by_ai":
+                        if _eff_name == "send_message_by_ai":
                             self._apply_send_message_return(st)
-                elif type(part) is ToolReturnPart and (part.tool_name or "") == "create_subagent":
+                elif type(part) is ToolReturnPart and _eff_name == "create_subagent":
                     _body_raw = (
                         _raw_tr if isinstance(_raw_tr, str) else (part.content if isinstance(part.content, str) else "")
                     )
                     self._apply_create_subagent_return(st, part, _body_raw)
-                elif type(part) is ToolReturnPart and (part.tool_name or "") == "send_message_by_ai":
+                elif type(part) is ToolReturnPart and _eff_name == "send_message_by_ai":
                     self._apply_send_message_return(st)
 
                 # 返回的可能是对象也可能是字符串，这里为了打印转成 str
@@ -606,36 +611,19 @@ class LoopPhase(RunOnceHost):
                 logger.debug(
                     i18n_t(
                         "log.agent.tool_execution_compl_name_result_passed_ok",
-                        p0=part.tool_name,
+                        p0=_eff_name,
                         tool_result_str=tool_result_str,
                     )
                 )
                 self._session_logger.log_tool_return(part.tool_name, part.content, part.tool_call_id)
-                if (part.tool_name or "") == "find_tools":
-                    _new_mounted = [
-                        _n
-                        for _n in sorted(_require_context(st).dynamic_tool_names)
-                        if _n not in st.tool_names and _n not in st.find_tools_logged
-                    ]
-                    if _new_mounted:
-                        self._session_logger.log_tools_change(
-                            source="find_tools",
-                            added=_new_mounted,
-                            removed=[],
-                            hinted=[],
-                            total=len(st.tool_names) + len(st.find_tools_logged) + len(_new_mounted),
-                            from_find_tools=[],
-                            tool_call_id=part.tool_call_id,
-                        )
-                        st.find_tools_logged.update(_new_mounted)
                 _trace_out = part.content if isinstance(part.content, str) else str(part.content or "")
                 if _trace_out.startswith("base64://") or isinstance(part.content, bytes):
                     _trace_out = "[binary]"
                 if _trace_out.strip():
-                    self._emit_trace("tool_result", f"{part.tool_name or ''}|{_trace_out[:2000]}")
+                    self._emit_trace("tool_result", f"{_eff_name}|{_trace_out[:2000]}")
                 _ret_body = part.content if isinstance(part.content, str) else str(part.content or "")
                 if _tool_return_is_effectual_write(
-                    part.tool_name or "",
+                    _eff_name,
                     _ret_body,
                     failed=_tool_return_looks_failed(part),
                 ):
@@ -716,7 +704,11 @@ class LoopPhase(RunOnceHost):
             for _p in node.request.parts:
                 if type(_p) is not ToolReturnPart:
                     continue
-                _tname = _p.tool_name or ""
+                _tname = (
+                    st.effective_tool_names[_p.tool_call_id]
+                    if _p.tool_call_id and _p.tool_call_id in st.effective_tool_names
+                    else (_p.tool_name or "")
+                )
                 if not _tname or _tname == "run_code":
                     continue
                 _tb = find_tool_base(_tname)
@@ -850,6 +842,15 @@ class LoopPhase(RunOnceHost):
         _ab_attempt_counted_this_response = False
         # thrash：同响应内「工具名 + 参数」列表，结束本响应后按轮更新 streak
         _resp_tool_calls: list[str] = []
+        from gsuid_core.ai_core.tool_safety import WIRE_TOOLS_SNAPSHOTS_KEY
+
+        _wire_extra = _require_context(st).extra
+        if WIRE_TOOLS_SNAPSHOTS_KEY in _wire_extra and isinstance(_wire_extra[WIRE_TOOLS_SNAPSHOTS_KEY], list):
+            for _wsnap in _wire_extra[WIRE_TOOLS_SNAPSHOTS_KEY]:
+                if isinstance(_wsnap, list):
+                    self._session_logger.log_wire_tools_list([str(x) for x in _wsnap])
+            _wire_extra[WIRE_TOOLS_SNAPSHOTS_KEY].clear()
+
         for part in node.model_response.parts:
             # 拦截到模型即将调用工具
             if isinstance(part, ToolCallPart):
@@ -861,18 +862,30 @@ class LoopPhase(RunOnceHost):
                         p1=part.args,
                     )
                 )
-                st.tool_call_list.append(part.tool_name)
+                _call_eff_name = part.tool_name
+                _call_eff_args: object = part.args
+                if part.tool_name == "call_tool":
+                    _call_args_dict = part.args_as_dict()
+                    if "tool_name" in _call_args_dict and isinstance(_call_args_dict["tool_name"], str):
+                        _inner_tn = _call_args_dict["tool_name"].strip()
+                        if _inner_tn:
+                            _call_eff_name = _inner_tn
+                    if "arguments_json" in _call_args_dict:
+                        _call_eff_args = _call_args_dict["arguments_json"]
+                if part.tool_call_id:
+                    st.effective_tool_names[part.tool_call_id] = _call_eff_name
+                st.tool_call_list.append(_call_eff_name)
                 _resp_tool_calls.append(canonical_tool_call(part.tool_name, part.args))
-                if part.tool_name == "create_subagent" and _tool_call_targets_render_agent(part):
+                if _call_eff_name == "create_subagent" and _tool_call_targets_render_agent(part):
                     st.delegated_render = True
                     # 出图委派当下即在途：后续 TextPart 不得把事实包念进群聊。
                     st.pending_async_delivery = True
                     st.speech_policy = "silence_only"
-                if is_status_tool_name(part.tool_name):
+                if is_status_tool_name(_call_eff_name):
                     st.has_status_tool_call = True
                     _require_context(st).extra["has_status_tool"] = True
                 self._session_logger.log_tool_call(part.tool_name, part.args, part.tool_call_id)
-                self._emit_trace("tool", f"{part.tool_name}|{part.args_as_json_str()}")
+                self._emit_trace("tool", f"{_call_eff_name}|{part.args_as_json_str()}")
 
                 # 程序性记忆（默认开；关闭时零影响）：记一笔工具调用轨迹，
                 try:
@@ -881,7 +894,7 @@ class LoopPhase(RunOnceHost):
                     if _mem_cfg.enable_preference_memory and st.ev is not None:
                         from gsuid_core.ai_core.memory.ingestion.tool_trace import record_tool_call
 
-                        record_tool_call(str(st.ev.user_id), part.tool_name, part.args)
+                        record_tool_call(str(st.ev.user_id), _call_eff_name, _call_eff_args)
                 except Exception:
                     pass
 

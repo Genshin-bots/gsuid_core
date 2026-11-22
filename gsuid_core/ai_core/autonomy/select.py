@@ -104,6 +104,7 @@ def assemble_care_targets(
     now: float,
     allowed_groups: set[str] | None,
     allow_private: bool,
+    allowed_private_users: set[str] | None = None,
     preferences: dict[str, list[str]] | None = None,
     dm_paused: set[str] | None = None,
 ) -> list[CareTargetSnapshot]:
@@ -120,12 +121,13 @@ def assemble_care_targets(
     for uid in ordered:
         score = scores[uid] if uid in scores else 0
         zone = zone_of(score)
+        user_dm_allowed = allow_private and (allowed_private_users is None or uid in allowed_private_users)
         chosen = preferred_line(
             lines,
             uid,
             now=now,
             allowed_groups=allowed_groups,
-            allow_private=allow_private,
+            allow_private=user_dm_allowed,
         )
         group_id = chosen.group_id if chosen is not None else None
         recent = _care_recent_lines(
@@ -133,7 +135,7 @@ def assemble_care_targets(
             uid,
             now=now,
             allowed_groups=allowed_groups,
-            allow_private=allow_private,
+            allow_private=user_dm_allowed,
         )
         bot_id = chosen.bot_id if chosen is not None else ""
         bot_self_id = chosen.bot_self_id if chosen is not None else ""
@@ -158,7 +160,8 @@ def assemble_care_targets(
                 last_human_ts=last_ts,
                 last_assistant_ts=last_ai_ts,
                 preferences=preferences.get(uid, []) if preferences is not None else [],
-                allow_private_push=not (dm_paused and uid in dm_paused),
+                allow_private_push=user_dm_allowed and not (dm_paused and uid in dm_paused),
+                private_scope_allowed=user_dm_allowed,
             )
         )
     return targets
@@ -185,7 +188,7 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
         "发消息调用 send_message_by_ai。私聊把 target_type 设为 user，target_id 用用户 ID。",
         "回群把 target_type 设为 group，target_id 用这句前面标出的群号。要点名再传 user_id。",
         "run_bot_command 只能传观察名单里的用户 ID。",
-        "find_tools 这一轮不会装上新工具。查网页用已挂的搜索和抓取，看图用已挂的读图。",
+        "允许但未常驻的工具可用 call_tool 调用。查网页用已挂的搜索和抓取，看图用已挂的读图。",
         "已经带「[你]」回复过、或已在后台任务里推进的事项，不要重复查。",
         f"当前情绪强度约 {digest.mood_score:.2f}。",
         "想自己查什么，以你的人格自述为准。",
@@ -210,7 +213,12 @@ def render_digest(digest: ObservationDigest, *, now: float) -> str:
                 age = _age_label(target.last_human_ts, now)
                 time_hint = f"（最后发言在{age}）"
             pref_text = f"，偏好画像：{'；'.join(target.preferences)}" if target.preferences else ""
-            dm_note = "" if target.allow_private_push else "（私聊暂停：连续两次主动私聊未获回复）"
+            if not target.private_scope_allowed:
+                dm_note = "（私聊未开放：当前人格私聊范围未覆盖该用户）"
+            elif not target.allow_private_push:
+                dm_note = "（私聊暂停：连续两次主动私聊未获回复）"
+            else:
+                dm_note = ""
             desc = (
                 f"- {target.user_name}（ID {target.user_id}，{role}，好感 {target.score}，绑定 {bind_text}{pref_text}）"
             )

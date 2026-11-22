@@ -41,6 +41,7 @@ from gsuid_core.ai_core.journal.dream import (
     synthesize_shard_with_llm,
 )
 from gsuid_core.ai_core.persona.config import (
+    is_persona_enabled,
     read_autonomy_runtime,
     is_within_active_hours,
     persona_config_manager,
@@ -56,6 +57,7 @@ from gsuid_core.ai_core.journal.sanitizer import (
 
 JOURNAL_DIR: Path = AI_CORE_PATH / "journals"
 SELF_SHARD_ID: str = "__self__"
+USER_SHARD_PREFIX: str = "user:"
 _JOURNAL_STATE_FILE: str = ".journal_state.json"
 _JOB_ID: str = "ai_journal_hourly_compact"
 
@@ -146,6 +148,7 @@ class PersonaJournalStateEntry(TypedDict):
     dirty_shards: list[str]
     light_carry: dict[str, int]
     last_gc_month: str
+    schema_version: int
 
 
 class GroupShardPreview(TypedDict):
@@ -208,6 +211,21 @@ def _self_shard_path(persona_name: str) -> Path:
     root = _persona_root(persona_name)
     root.mkdir(parents=True, exist_ok=True)
     return root / "self.md"
+
+
+def _user_shard_id(user_id: str) -> str:
+    return f"{USER_SHARD_PREFIX}{user_id.strip()}"
+
+
+def _is_user_shard(shard_id: str) -> bool:
+    return shard_id.startswith(USER_SHARD_PREFIX) and bool(shard_id[len(USER_SHARD_PREFIX) :].strip())
+
+
+def _user_shard_path(persona_name: str, user_id: str) -> Path:
+    udir = _persona_root(persona_name) / "users"
+    udir.mkdir(parents=True, exist_ok=True)
+    raw_uid = user_id[len(USER_SHARD_PREFIX) :] if user_id.startswith(USER_SHARD_PREFIX) else user_id
+    return udir / f"{_safe_token(raw_uid, 'user')}.md"
 
 
 def _group_shard_path(persona_name: str, group_id: str) -> Path:
@@ -398,6 +416,29 @@ def render_shard_markdown(persona_name: str, doc: ShardDocument) -> str:
     pers = cap_bullet_slot(doc.persistent, max_items=GROUP_PERSISTENT_MAX_ITEMS, max_chars=GROUP_PERSISTENT_MAX_CHARS)
     mon = cap_bullet_slot(doc.monthly, max_items=GROUP_MONTHLY_MAX_ITEMS, max_chars=GROUP_MONTHLY_MAX_CHARS)
     yest = cap_bullet_slot(doc.yesterday, max_items=GROUP_YESTERDAY_MAX_ITEMS, max_chars=GROUP_YESTERDAY_MAX_CHARS)
+    if _is_user_shard(doc.shard_id):
+        raw_uid = doc.shard_id[len(USER_SHARD_PREFIX) :].strip()
+        m_hdr = f"## 私聊当月主线 ({doc.month_label})" if doc.month_label else "## 私聊当月主线"
+        y_hdr = f"## 私聊昨日记忆摘要 ({doc.yesterday_label})" if doc.yesterday_label else "## 私聊昨日记忆摘要"
+        t_hdr = f"## 私聊今日行动流水 ({doc.today_label})" if doc.today_label else "## 私聊今日行动流水"
+        lines = [
+            f"# {persona_name}的私聊手账 (用户:{raw_uid})",
+            "",
+            "## 私聊长期默契",
+            *(pers or ["- 日常回应对方私聊提问与个人委托。"]),
+            "",
+            m_hdr,
+            *(mon or ["- 本月日常话题平稳推进中。"]),
+            "",
+            y_hdr,
+            *(yest or ["- 昨日暂无归档摘要。"]),
+            "",
+            t_hdr,
+            *doc.timeline[-GROUP_TIMELINE_RING_CAP:],
+            "",
+        ]
+        return "\n".join(lines)
+
     m_hdr = f"## 本群当月主线与持续议题 ({doc.month_label})" if doc.month_label else "## 本群当月主线与持续议题"
     y_hdr = f"## 本群昨日记忆摘要 ({doc.yesterday_label})" if doc.yesterday_label else "## 本群昨日记忆摘要"
     t_hdr = f"## 本群今日行动流水 ({doc.today_label})" if doc.today_label else "## 本群今日行动流水"
@@ -494,6 +535,13 @@ def _load_shard_sync(persona_name: str, shard_id: str, *, create_if_missing: boo
             )
             text = render_shard_markdown(persona_name, init_doc)
             path.write_text(text, encoding="utf-8")
+    elif _is_user_shard(shard_id):
+        path = _user_shard_path(persona_name, shard_id)
+        if not path.exists():
+            if not create_if_missing:
+                return None
+            init_doc = ShardDocument(shard_id=shard_id)
+            path.write_text(render_shard_markdown(persona_name, init_doc), encoding="utf-8")
     else:
         gdir = _persona_root(persona_name) / "groups"
         path = gdir / f"{_safe_token(shard_id, 'group')}.md"
@@ -534,7 +582,12 @@ def _load_shard_sync(persona_name: str, shard_id: str, *, create_if_missing: boo
 
 def _save_shard_sync(persona_name: str, doc: ShardDocument, *, bump_ts: bool = True, ts_val: float = 0.0) -> Path:
     key = _safe_token(persona_name)
-    path = _self_shard_path(key) if doc.shard_id == SELF_SHARD_ID else _group_shard_path(key, doc.shard_id)
+    if doc.shard_id == SELF_SHARD_ID:
+        path = _self_shard_path(key)
+    elif _is_user_shard(doc.shard_id):
+        path = _user_shard_path(key, doc.shard_id)
+    else:
+        path = _group_shard_path(key, doc.shard_id)
     rendered = render_shard_markdown(persona_name, doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(rendered, encoding="utf-8")
@@ -734,13 +787,14 @@ def _get_journal_state_path() -> Path:
     return _ensure_journal_dir() / _JOURNAL_STATE_FILE
 
 
-def _empty_state_entry() -> PersonaJournalStateEntry:
+def _empty_state_entry(*, schema_version: int = 2) -> PersonaJournalStateEntry:
     return {
         "last_compact_ts": 0.0,
         "last_dream_date": "",
         "dirty_shards": [],
         "light_carry": {},
         "last_gc_month": "",
+        "schema_version": schema_version,
     }
 
 
@@ -758,7 +812,8 @@ def _load_full_state_unlocked() -> Dict[str, PersonaJournalStateEntry]:
     for k, v in raw.items():
         if not isinstance(k, str):
             continue
-        entry = _empty_state_entry()
+        # 旧版 state 文件缺 schema_version 时按 1 处理，触发一次无损迁移
+        entry = _empty_state_entry(schema_version=1)
         if isinstance(v, (int, float)):
             entry["last_compact_ts"] = float(v)
         elif isinstance(v, dict):
@@ -776,6 +831,10 @@ def _load_full_state_unlocked() -> Dict[str, PersonaJournalStateEntry]:
                 }
             if "last_gc_month" in v and isinstance(v["last_gc_month"], str):
                 entry["last_gc_month"] = v["last_gc_month"]
+            if "schema_version" in v:
+                sv_raw = v["schema_version"]
+                if isinstance(sv_raw, int) and not isinstance(sv_raw, bool):
+                    entry["schema_version"] = sv_raw
         out[k] = entry
     return out
 
@@ -853,7 +912,7 @@ def get_active_personas() -> List[str]:
     active: List[str] = []
     for name in persona_config_manager.list_available():
         cfg = persona_config_manager.get_config(name)
-        if cfg.get_config("scope").data != "disabled":
+        if is_persona_enabled(cfg):
             active.append(name)
     return active or ["default"]
 
@@ -869,7 +928,7 @@ def resolve_persona_for_group_or_session(
         cand = persona_name.strip()
         if cand in persona_config_manager.list_available():
             cfg = persona_config_manager.get_config(cand)
-            if cfg.get_config("scope").data != "disabled":
+            if is_persona_enabled(cfg):
                 return cand
 
     sid = session_id.strip()
@@ -928,7 +987,13 @@ async def record_journal_entry(
 
     if not targets:
         return
-    shard_id = entry.group_id.strip() if entry.group_id and entry.group_id.strip() else SELF_SHARD_ID
+    if entry.group_id and entry.group_id.strip():
+        shard_id = entry.group_id.strip()
+    elif entry.requested_by and entry.requested_by.strip():
+        # 私聊流水独立落盘到 users/{uid}.md，严禁混入公共 self.md
+        shard_id = _user_shard_id(entry.requested_by.strip())
+    else:
+        shard_id = SELF_SHARD_ID
     for name in targets:
         key = _safe_token(name)
         async with _get_shard_lock(key, shard_id):
@@ -944,6 +1009,7 @@ def _is_placeholder_bullet(line: str) -> bool:
         or "昨日无额外独立探索记录" in line
         or "昨日暂无归档摘要" in line
         or "本月日常话题平稳推进中" in line
+        or "日常回应对方私聊提问与个人委托" in line
     )
 
 
@@ -1059,39 +1125,61 @@ def _is_entry_newer_than_since(
     return True
 
 
+def _self_timeline_line_visible(ln: str, *, gid: str, uid: str) -> bool:
+    """判定 self.md 中单行流水的隐私可见性：他群行与私聊 (替:uid) 绝不跨群或跨人泄露。"""
+    parsed = parse_timeline_line(ln)
+    if parsed is None:
+        return True
+    if parsed.gid:
+        if gid:
+            return parsed.gid == gid
+        return bool(uid) and parsed.who == uid
+    if parsed.who:
+        if gid:
+            return False
+        return bool(uid) and parsed.who == uid
+    return True
+
+
 def read_journal_for_context(
     persona_name: str,
     *,
     current_group_id: str | None = None,
+    current_user_id: str | None = None,
     since_ts: float = 0.0,
     turn_target_uids: Sequence[str] | None = None,
 ) -> Tuple[str, float]:
     """按分片读取生活手账供上下文装配（物理级群隔离 + O(1) 严格 ≤880 字锚点预算）。"""
     key = _safe_token(persona_name)
     gid = (current_group_id or "").strip()
+    uid = (current_user_id or "").strip()
+    if not uid and turn_target_uids and len(turn_target_uids) == 1:
+        uid = (turn_target_uids[0] or "").strip()
 
-    # 极速增量短路：若本会话关联的两个分片内存时间戳均未推进且已缓存，零磁盘 I/O 直接返回
+    user_sid = _user_shard_id(uid) if (not gid and uid) else ""
+
+    # 极速增量短路：若本会话关联的分片内存时间戳均未推进且已缓存，零磁盘 I/O 直接返回
     if since_ts > 0.0:
         with _CACHE_LOCK:
             ts_self_mem = _SHARD_UPDATE_TS[(key, SELF_SHARD_ID)] if (key, SELF_SHARD_ID) in _SHARD_UPDATE_TS else -1.0
             ts_grp_mem = _SHARD_UPDATE_TS[(key, gid)] if (gid and (key, gid) in _SHARD_UPDATE_TS) else -1.0
-        if ts_self_mem > 0.0 and (not gid or ts_grp_mem > 0.0):
-            best_mem = max(ts_self_mem, ts_grp_mem)
+            ts_usr_mem = (
+                _SHARD_UPDATE_TS[(key, user_sid)] if (user_sid and (key, user_sid) in _SHARD_UPDATE_TS) else -1.0
+            )
+        if ts_self_mem > 0.0 and (not gid or ts_grp_mem > 0.0) and (not user_sid or ts_usr_mem > 0.0):
+            best_mem = max(ts_self_mem, ts_grp_mem, ts_usr_mem)
             if best_mem <= since_ts:
                 return "", best_mem
 
     self_doc = _load_shard_sync(key, SELF_SHARD_ID, create_if_missing=False)
     grp_doc = _load_shard_sync(key, gid, create_if_missing=False) if gid else None
+    usr_doc = _load_shard_sync(key, user_sid, create_if_missing=False) if user_sid else None
 
-    # 兼容直接往 self.md 手写带 (群:xxx) 行时的隐私过滤
+    # 过滤 self.md 中的 (群:xxx) 与私聊 (替:uid) 行，严防跨群与跨人泄露
     self_visible_timeline: List[str] = []
     if self_doc is not None:
         for ln in self_doc.timeline:
-            p = parse_timeline_line(ln)
-            if p is not None and p.gid:
-                if gid and p.gid == gid:
-                    self_visible_timeline.append(ln)
-            else:
+            if _self_timeline_line_visible(ln, gid=gid, uid=uid):
                 self_visible_timeline.append(ln)
 
     ts_self = _latest_ts_for_scope(key, SELF_SHARD_ID, self_doc, _persona_root(key) / "self.md")
@@ -1100,7 +1188,12 @@ def read_journal_for_context(
         if gid
         else 0.0
     )
-    latest_ts = max(ts_self, ts_grp)
+    ts_usr = (
+        _latest_ts_for_scope(key, user_sid, usr_doc, _persona_root(key) / "users" / f"{_safe_token(uid, 'user')}.md")
+        if user_sid
+        else 0.0
+    )
+    latest_ts = max(ts_self, ts_grp, ts_usr)
 
     if since_ts > 0.0:
         if latest_ts <= since_ts:
@@ -1111,6 +1204,9 @@ def read_journal_for_context(
         if grp_doc is not None and ts_grp > since_ts:
             for ln in _today_timeline_tail(grp_doc.timeline, today_label=grp_doc.today_label):
                 candidates.append((gid, grp_doc.today_label, ln))
+        if usr_doc is not None and ts_usr > since_ts:
+            for ln in _today_timeline_tail(usr_doc.timeline, today_label=usr_doc.today_label):
+                candidates.append((user_sid, usr_doc.today_label, ln))
         if self_doc is not None and self_visible_timeline and ts_self > since_ts:
             for ln in _today_timeline_tail(self_visible_timeline, today_label=self_doc.today_label):
                 candidates.append((SELF_SHARD_ID, self_doc.today_label, ln))
@@ -1154,10 +1250,21 @@ def read_journal_for_context(
         grp_yest = [x for x in grp_doc.yesterday[:3] if x.strip() and not _is_placeholder_bullet(x)]
         if grp_yest:
             blocks.append("【本群昨日记忆】\n" + "\n".join(grp_yest))
+    elif usr_doc is not None:
+        usr_standing = [
+            x for x in [*usr_doc.persistent[:2], *usr_doc.monthly[:3]] if x.strip() and not _is_placeholder_bullet(x)
+        ]
+        if usr_standing:
+            blocks.append("【私聊默契与近期主线】\n" + "\n".join(usr_standing))
+        usr_yest = [x for x in usr_doc.yesterday[:3] if x.strip() and not _is_placeholder_bullet(x)]
+        if usr_yest:
+            blocks.append("【私聊昨日记忆】\n" + "\n".join(usr_yest))
 
     combined_timeline: List[str] = []
     if self_doc is not None and self_visible_timeline:
         combined_timeline.extend(_today_timeline_tail(self_visible_timeline, today_label=self_doc.today_label)[-3:])
+    if usr_doc is not None and usr_doc.timeline:
+        combined_timeline.extend(_today_timeline_tail(usr_doc.timeline, today_label=usr_doc.today_label))
     if grp_doc is not None and grp_doc.timeline:
         combined_timeline.extend(_today_timeline_tail(grp_doc.timeline, today_label=grp_doc.today_label))
 
@@ -1170,6 +1277,219 @@ def read_journal_for_context(
     if len(full_text) > ANCHOR_TOTAL_MAX_CHARS:
         full_text = truncate_at_boundary(full_text, max_chars=ANCHOR_TOTAL_MAX_CHARS)
     return full_text, latest_ts
+
+
+def _archive_single_legacy_self_sync(persona_name: str, now_ts: float) -> bool:
+    """无损归档旧版 self.md 并清空可能含跨群任务的活跃槽位；幂等受 schema_version>=2 保护。"""
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import get_isolation_watermark_ts
+
+    key = _safe_token(persona_name)
+    with _STATE_LOCK:
+        state = _load_full_state_unlocked()
+        has_state = key in state
+        if has_state and state[key]["schema_version"] >= 2:
+            return False
+
+    legacy_root_path = JOURNAL_DIR / f"{key}.md"
+    migrated_from_v0 = legacy_root_path.exists() and legacy_root_path.is_file()
+    if migrated_from_v0:
+        _migrate_legacy_root_file_sync(persona_name)
+
+    self_path = _self_shard_path(persona_name)
+    watermark_ts = get_isolation_watermark_ts()
+    # 升级后新建人格（非 v0 迁入且 self.md 晚于水位线）仅含隔离后内容，直接标 v2 不清库
+    if (
+        not migrated_from_v0
+        and not has_state
+        and watermark_ts > 0.0
+        and self_path.exists()
+        and self_path.stat().st_mtime > watermark_ts
+    ):
+        with _STATE_LOCK:
+            state = _load_full_state_unlocked()
+            entry = state[key] if key in state else _empty_state_entry(schema_version=2)
+            entry["schema_version"] = 2
+            state[key] = entry
+            _save_full_state_unlocked(state)
+        return False
+
+    archived = False
+    if self_path.exists() and self_path.is_file():
+        raw = self_path.read_text(encoding="utf-8")
+        doc = parse_shard_markdown(raw, SELF_SHARD_ID)
+        legacy_lines: list[str] = []
+        for item in [*doc.persistent, *doc.monthly, *doc.yesterday, *doc.timeline]:
+            cleaned = item.strip()
+            if cleaned and not _is_placeholder_bullet(cleaned):
+                legacy_lines.append(cleaned)
+        if legacy_lines:
+            # 1) 保留原始备份 2) 写独立 legacy_v1 归档卷（不被 read_handle 回读）3) 清空活跃槽位
+            bak_path = _persona_root(persona_name) / "self.legacy_v1.bak"
+            if not bak_path.exists():
+                bak_path.write_text(raw, encoding="utf-8")
+            adir = _archives_dir(persona_name)
+            adir.mkdir(parents=True, exist_ok=True)
+            month_key = _dt.fromtimestamp(now_ts).strftime("%Y-%m")
+            date_str = _dt.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+            rec = {
+                "date": date_str,
+                "shard": SELF_SHARD_ID,
+                "kind": "legacy_self_v1_archive",
+                "entries": legacy_lines,
+                "ts": now_ts,
+            }
+            with (adir / f"legacy_v1_{month_key}.jsonl").open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            clean_doc = ShardDocument(
+                shard_id=SELF_SHARD_ID,
+                month_label=doc.month_label,
+                yesterday_label=doc.yesterday_label,
+                today_label=doc.today_label,
+            )
+            _save_shard_sync(persona_name, clean_doc, bump_ts=True, ts_val=now_ts)
+            archived = True
+
+    with _STATE_LOCK:
+        state = _load_full_state_unlocked()
+        entry = state[key] if key in state else _empty_state_entry()
+        entry["schema_version"] = 2
+        state[key] = entry
+        _save_full_state_unlocked(state)
+    return archived
+
+
+def _discover_persona_names_sync() -> list[str]:
+    names: list[str] = []
+    jdir = _ensure_journal_dir()
+    personas_root = jdir / "personas"
+    if personas_root.exists():
+        for child in sorted(personas_root.iterdir()):
+            if child.is_dir() and child.name and child.name not in names:
+                names.append(child.name)
+    for legacy_file in sorted(jdir.glob("*.md")):
+        if legacy_file.is_file() and legacy_file.stem and legacy_file.stem not in names:
+            names.append(legacy_file.stem)
+    return names
+
+
+async def archive_and_reset_legacy_self_shards() -> list[str]:
+    """扫描所有已有手账目录及旧版单文件的人格，加分片锁执行零删除无损迁移。"""
+    now_ts = time.time()
+    names = await to_thread(_discover_persona_names_sync)()
+    archived_names: list[str] = []
+    for pname in names:
+        async with _get_shard_lock(pname, SELF_SHARD_ID):
+            if await to_thread(_archive_single_legacy_self_sync)(pname, now_ts):
+                archived_names.append(pname)
+    return archived_names
+
+
+def _non_silent_lines(lines: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    for ln in lines:
+        parsed = parse_timeline_line(ln)
+        if parsed is None or not parsed.is_silent:
+            out.append(ln)
+    return out
+
+
+def read_life_journal_view(
+    persona_name: str,
+    *,
+    group_id: str | None = None,
+    user_id: str = "",
+    recent_limit: int = 12,
+    allowed_group_ids: Sequence[str] | None = None,
+) -> str:
+    """按严格隐私边界读取实时生活手账：群聊看 self+本群，私聊看 self+跨群替本人办的事。"""
+    key = _safe_token(persona_name)
+    gid = (group_id or "").strip()
+    uid = (user_id or "").strip()
+    cap = max(4, min(recent_limit, 24))
+
+    self_doc = _load_shard_sync(key, SELF_SHARD_ID, create_if_missing=False)
+    sections: List[str] = []
+    if self_doc is not None:
+        self_parts: List[str] = []
+        pers = [x for x in self_doc.persistent if x.strip() and not _is_placeholder_bullet(x)]
+        mon = [x for x in self_doc.monthly if x.strip() and not _is_placeholder_bullet(x)]
+        yest = [x for x in self_doc.yesterday if x.strip() and not _is_placeholder_bullet(x)]
+        tl_raw = _non_silent_lines(self_doc.timeline)
+        tl = [ln for ln in tl_raw if _self_timeline_line_visible(ln, gid=gid, uid=uid)]
+        if pers:
+            self_parts.append("【持久自我认知】\n" + "\n".join(pers))
+        if mon:
+            self_parts.append("【近期个人探索与习惯】\n" + "\n".join(mon))
+        if yest:
+            self_parts.append("【昨日自主回顾】\n" + "\n".join(yest))
+        if tl:
+            self_parts.append("【今日个人探索流水】\n" + "\n".join(tl[-cap:]))
+        if self_parts:
+            sections.append("== 个人生活手账 ==\n" + "\n\n".join(self_parts))
+
+    if gid:
+        grp_doc = _load_shard_sync(key, gid, create_if_missing=False)
+        if grp_doc is not None:
+            grp_parts: List[str] = []
+            pers = [x for x in grp_doc.persistent if x.strip() and not _is_placeholder_bullet(x)]
+            mon = [x for x in grp_doc.monthly if x.strip() and not _is_placeholder_bullet(x)]
+            yest = [x for x in grp_doc.yesterday if x.strip() and not _is_placeholder_bullet(x)]
+            tl = _non_silent_lines(grp_doc.timeline)
+            if pers:
+                grp_parts.append("【本群长期默契】\n" + "\n".join(pers))
+            if mon:
+                grp_parts.append("【本群当月主线】\n" + "\n".join(mon))
+            if yest:
+                grp_parts.append("【本群昨日记忆】\n" + "\n".join(yest))
+            if tl:
+                grp_parts.append("【本群今日行动流水】\n" + "\n".join(tl[-cap:]))
+            if grp_parts:
+                sections.append(f"== 本群驻群手账 (群:{gid}) ==\n" + "\n\n".join(grp_parts))
+    elif uid:
+        # 1) 读本人独立私聊分片 users/{uid}.md（完整展示四层记忆）
+        usr_doc = _load_shard_sync(key, _user_shard_id(uid), create_if_missing=False)
+        if usr_doc is not None:
+            usr_parts: List[str] = []
+            u_pers = [x for x in usr_doc.persistent if x.strip() and not _is_placeholder_bullet(x)]
+            u_mon = [x for x in usr_doc.monthly if x.strip() and not _is_placeholder_bullet(x)]
+            u_yest = [x for x in usr_doc.yesterday if x.strip() and not _is_placeholder_bullet(x)]
+            u_tl = _non_silent_lines(usr_doc.timeline)
+            if u_pers:
+                usr_parts.append("【私聊长期默契】\n" + "\n".join(u_pers))
+            if u_mon:
+                usr_parts.append("【私聊当月主线】\n" + "\n".join(u_mon))
+            if u_yest:
+                usr_parts.append("【私聊昨日记忆】\n" + "\n".join(u_yest))
+            if u_tl:
+                usr_parts.append("【私聊今日行动流水】\n" + "\n".join(u_tl[-cap:]))
+            if usr_parts:
+                sections.append("== 私聊手账 ==\n" + "\n\n".join(usr_parts))
+        # 2) 私聊跨群聚合：allowed_group_ids 非空时按所在群剪枝，为空则安全扫全部分片并严格按 parsed.who==uid 过滤
+        personal_rows: List[tuple[str, str, str]] = []
+        allowed_set = (
+            {g.strip() for g in allowed_group_ids if g and g.strip()} if allowed_group_ids is not None else None
+        )
+        shard_ids = _list_group_shard_ids_sync(key)
+        if allowed_set:
+            shard_ids = [g_shard for g_shard in shard_ids if g_shard in allowed_set]
+        for g_shard in shard_ids:
+            gdoc = _load_shard_sync(key, g_shard, create_if_missing=False)
+            if gdoc is None:
+                continue
+            doc_date = gdoc.today_label or ""
+            for ln in gdoc.timeline:
+                parsed = parse_timeline_line(ln)
+                if parsed is None or parsed.is_silent:
+                    continue
+                if parsed.who == uid:
+                    personal_rows.append((doc_date, parsed.time_str, f"[群:{g_shard}] {ln.lstrip('- ').strip()}"))
+        if personal_rows:
+            personal_rows.sort(key=lambda r: (r[0], r[1]))
+            sections.append("== 近期跨群替你办过的事 ==\n" + "\n".join(r[2] for r in personal_rows[-cap:]))
+
+    if not sections:
+        return "目前生活手账里还没有新的记录。"
+    return "\n\n".join(sections)
 
 
 def _list_group_shard_ids_sync(persona_name: str) -> List[str]:
@@ -1399,9 +1719,10 @@ async def _dream_one_shard(
         if doc is None or not doc.timeline:
             return 0, "none", light_carry_count
 
-        # 若 self.md 内混有手写的 (群:gid) 流水，立即分流落盘至对应群分片并保存 self.md
+        # 若 self.md 内混有 (群:gid) 或私聊 (替:uid) 流水，做梦前分流至对应群/私聊分片防广播
         if shard_id == SELF_SHARD_ID:
             stray_by_group: Dict[str, List[str]] = {}
+            stray_by_user: Dict[str, List[str]] = {}
             kept_self: List[str] = []
             for ln in doc.timeline:
                 p = parse_timeline_line(ln)
@@ -1409,9 +1730,13 @@ async def _dream_one_shard(
                     bucket = stray_by_group[p.gid] if p.gid in stray_by_group else []
                     bucket.append(ln)
                     stray_by_group[p.gid] = bucket
+                elif p is not None and p.who:
+                    ubucket = stray_by_user[p.who] if p.who in stray_by_user else []
+                    ubucket.append(ln)
+                    stray_by_user[p.who] = ubucket
                 else:
                     kept_self.append(ln)
-            if stray_by_group:
+            if stray_by_group or stray_by_user:
                 doc.timeline = kept_self
                 for gid, glines in stray_by_group.items():
                     gdoc = await to_thread(_load_shard_sync)(persona_name, gid, create_if_missing=True)
@@ -1419,6 +1744,13 @@ async def _dream_one_shard(
                         gdoc.timeline.extend(glines)
                         gdoc.timeline = gdoc.timeline[-GROUP_TIMELINE_RING_CAP:]
                         await to_thread(_save_shard_sync)(persona_name, gdoc, ts_val=now_ts)
+                for req_uid, ulines in stray_by_user.items():
+                    usid = _user_shard_id(req_uid)
+                    udoc = await to_thread(_load_shard_sync)(persona_name, usid, create_if_missing=True)
+                    if udoc is not None:
+                        udoc.timeline.extend(ulines)
+                        udoc.timeline = udoc.timeline[-SELF_TIMELINE_RING_CAP:]
+                        await to_thread(_save_shard_sync)(persona_name, udoc, ts_val=now_ts)
                 await to_thread(_save_shard_sync)(persona_name, doc, ts_val=now_ts)
                 if not doc.timeline:
                     return 0, "none", 0

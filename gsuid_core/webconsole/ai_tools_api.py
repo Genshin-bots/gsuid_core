@@ -303,6 +303,7 @@ class AssemblePreviewRequest(BaseModel):
     """工具装配预览请求（工具选择评测用）。"""
 
     query: str = ""
+    persona_name: Optional[str] = None
 
 
 @app.post(
@@ -314,33 +315,15 @@ async def assemble_tools_preview(
     body: AssemblePreviewRequest,
     _auth: Any = Depends(require_auth_or_local_test),
 ) -> Dict[str, Any]:
-    """跑真实的附加池装配链路（向量召回 → 能力族展开），返回本轮会给模型的工具。
+    """跑与生产主会话同一套装配函数，返回首轮 Chat 的工具视图。
 
-    供控制台诊断与 `eval/tool_selection` 量化 Pool Recall。
-    鉴权：webconsole Bearer **或** local-test 模式。
+    ``core`` 是永冻 tools[]；``seeds`` 是检索候选；``pool`` 是本轮 user 侧提示给模型、
+    经 ``call_tool`` 调用的工具（至多 ``max_extra`` 个）。供控制台诊断与
+    ``eval/tool_selection`` 量化召回。鉴权：webconsole Bearer **或** local-test 模式。
     """
-    from gsuid_core.ai_core.rag.tools import (
-        get_main_agent_tools,
-        expand_tools_to_families,
-        search_tools_with_entity_routing,
-    )
-    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.agent_run.tools import preview_main_turn_assembly
 
-    recall: int = ai_config.get_config("tool_search_recall").data
-    max_extra: int = ai_config.get_config("tool_extra_pool_max").data
-
-    core_tools = await get_main_agent_tools()
-    core_names = {t.name for t in core_tools}
-
-    # 必须与 gs_agent 走同一条装配路径（含 L0 实体路由），否则评测测的不是生产行为。
-    # 单轮预览没有历史，route_text 与 query 同为本条消息。
-    seeds = await search_tools_with_entity_routing(
-        query=body.query,
-        route_text=body.query,
-        limit=recall,
-        exclude_names=core_names,
-    )
-    pool = expand_tools_to_families(seeds, exclude_names=core_names, max_tools=max_extra)
+    preview = await preview_main_turn_assembly(body.query, body.persona_name)
 
     # 条目自描述：前端 tooltip 直接读这里的描述，不再回查分页的工具列表
     def _entry_of(name: str) -> Dict[str, str]:
@@ -359,12 +342,12 @@ async def assemble_tools_preview(
         "msg": "ok",
         "data": {
             "query": body.query,
-            "core": [_entry_of(t.name) for t in core_tools],
-            "seeds": [_entry_of(t.name) for t in seeds],
-            "pool": [_entry_of(t.name) for t in pool],
-            "core_pool_size": len(core_names),
-            "recall": recall,
-            "max_extra": max_extra,
+            "core": [_entry_of(t.name) for t in preview.core],
+            "seeds": [_entry_of(t.name) for t in preview.seeds],
+            "pool": [_entry_of(name) for name in preview.hinted],
+            "core_pool_size": len(preview.core),
+            "recall": preview.recall_limit,
+            "max_extra": preview.hint_cap,
         },
     }
 

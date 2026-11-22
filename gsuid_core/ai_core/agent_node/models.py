@@ -72,7 +72,10 @@ class AgentNode:
     # ── interaction（入口模式行为；spoke 时忽略）──
     ai_mode: List[str] = field(default_factory=lambda: ["提及应答"])
     scope: str = "disabled"
+    group_scope: str = "off"
+    private_scope: str = "off"
     target_groups: List[str] = field(default_factory=list)
+    target_users: List[str] = field(default_factory=list)
     inspect_interval: int = 60
     keywords: List[str] = field(default_factory=list)
     # ── meta ──

@@ -11,7 +11,7 @@ Scheduled Task 模块
 
 使用流程：
 1. 用户请求预约任务，如"明天早上6点帮我查一下天气"
-2. 主 Agent 调用 add_once_task / add_interval_task 工具（位于 buildin_tools/scheduler.py）
+2. 主 Agent 调用 schedule_task 工具（位于 buildin_tools/scheduler.py）
 3. 系统将任务存入数据库，并注册到 APScheduler
 4. 时间到达时，execute_scheduled_task 被触发
 5. 使用 get_ai_session(event) 加载 persona 和 session 执行任务
@@ -22,7 +22,7 @@ Scheduled Task 模块
 - executor.py: 定时执行器
 - README.md: 设计文档
 
-注意：定时任务的增删改查工具（add_once_task / add_interval_task /
+注意：定时任务的增删改查工具（schedule_task /
 modify_scheduled_task / cancel_scheduled_task 等）均位于 buildin_tools/scheduler.py
 """
 

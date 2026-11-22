@@ -631,14 +631,15 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         # 7. Phase 3 个人笔记 Wiki 整编（零垂直词表 + 防止『关于_XX_笔记』误聚）+ 365 天休眠群归档与唤醒
         alpha_notes = notes_root / "alpha"
         alpha_notes.mkdir(parents=True, exist_ok=True)
+        scope_hdr = "<!-- gscore-scope: self:1:alpha | owner: 100000001 -->\n"
         for idx, suffix in enumerate(("小抄", "小笔记", "调查")):
             (alpha_notes / f"体态拉伸_{suffix}.txt").write_text(
-                f"第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。",
+                f"{scope_hdr}第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。",
                 encoding="utf-8",
             )
         for distinct_topic in ("睡眠规律", "饮水习惯", "桌面收纳"):
             (alpha_notes / f"关于_{distinct_topic}_笔记.txt").write_text(
-                f"独立主题记录：{distinct_topic}。",
+                f"{scope_hdr}独立主题记录：{distinct_topic}。",
                 encoding="utf-8",
             )
         old_snap = alpha_notes / "2026-10-01_日常速记.txt"
@@ -966,60 +967,396 @@ def _setup_isolated_persona_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(dm_lease_mod, "_cached_leases", {})
 
 
-def _seed_persona(tmp_path: Path, name: str, scope: str, groups: list[str] | None = None) -> None:
+def _seed_persona(
+    tmp_path: Path,
+    name: str,
+    scope: str,
+    groups: list[str] | None = None,
+    *,
+    group_scope: str | None = None,
+    private_scope: str | None = None,
+    users: list[str] | None = None,
+) -> None:
     from gsuid_core.ai_core.persona.config import persona_config_manager
 
     pdir = tmp_path / name
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "persona.md").write_text(f"# {name}\n", encoding="utf-8")
-    cfg = persona_config_manager.get_config(name)
-    assert cfg.set_config("scope", scope)
-    assert cfg.set_config("target_groups", list(groups or []))
+    if group_scope is not None or private_scope is not None:
+        ok, msg = persona_config_manager.set_channel_scopes(
+            name,
+            group_scope=group_scope if group_scope is not None else "off",
+            private_scope=private_scope if private_scope is not None else "off",
+        )
+        assert ok, msg
+    else:
+        ok, msg = persona_config_manager.set_scope(name, scope)
+        assert ok, msg
+    ok_g, msg_g = persona_config_manager.set_target_groups(name, list(groups or []))
+    assert ok_g, msg_g
+    if users is not None:
+        ok_u, msg_u = persona_config_manager.set_target_users(name, list(users))
+        assert ok_u, msg_u
 
 
 def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from msgspec import json as msgjson
+
+    from gsuid_core.ai_core.persona.config import (
+        read_channel_scopes,
+        persona_config_manager,
+        persona_covers_session,
+    )
     from gsuid_core.ai_core.http_agent.persona import set_http_persona_override, clear_http_persona_override
 
     _setup_isolated_persona_env(tmp_path, monkeypatch)
-    _seed_persona(tmp_path, "alpha", "specific", ["group_1"])
-    _seed_persona(tmp_path, "beta", "specific", [])
-    _seed_persona(tmp_path, "global_p", "global")
-    _seed_persona(tmp_path, "only_dm", "global_private")
+
+    # 1. 旧配置方案 A 加载前原位迁移（用真实 msgspec GSC 线格式写盘，覆盖 5 种旧 scope）
+    legacy_cases = [
+        ("mig_global", "global", ["g_keep"], "all", "all"),
+        ("mig_gg", "global_group", [], "all", "off"),
+        ("mig_gp", "global_private", [], "off", "all"),
+        ("mig_spec", "specific", ["group_a", "group_b"], "specific", "off"),
+        ("mig_off", "disabled", ["g_old"], "off", "off"),
+    ]
+    for pname, old_scope, old_groups, exp_g, exp_p in legacy_cases:
+        pdir = tmp_path / pname
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "persona.md").write_text(f"# {pname}\n", encoding="utf-8")
+        legacy_payload = msgjson.encode(
+            {
+                "scope": GsStrConfig("启用范围", "", old_scope),
+                "target_groups": GsListStrConfig("目标群聊", "", old_groups),
+            }
+        )
+        (pdir / "config.json").write_bytes(legacy_payload)
+        cfg = persona_config_manager.get_config(pname)
+        scopes = read_channel_scopes(cfg)
+        assert scopes.group_scope == exp_g
+        assert scopes.private_scope == exp_p
+        assert cfg.get_config("target_groups").data == old_groups
+        assert cfg.get_config("target_users").data == []
+
+    # 清理迁移用例目录后测通道独立互斥与混合路由
+    for pname, *_ in legacy_cases:
+        persona_config_manager.delete_persona_config(pname)
+        (tmp_path / pname / "persona.md").unlink()
+        (tmp_path / pname).rmdir()
+    persona_config_manager.clear_cache()
+
+    # 2. 双通道独立互斥：全局私聊 + 指定群聊 与 全局群聊 可共存
+    _seed_persona(tmp_path, "dm_and_part_group", "specific", ["group_1"], group_scope="specific", private_scope="all")
+    _seed_persona(tmp_path, "all_group_p", "global_group")
+    _seed_persona(tmp_path, "beta", "specific", [], group_scope="specific", private_scope="specific")
     _seed_persona(tmp_path, "off", "disabled")
 
-    group_sid = "ws1:onebot:10001:group:group_1"
+    # 同通道全局互斥：再把 beta 设为全部私聊应被拒，但设为指定不影响
+    ok_dup_dm, _ = persona_config_manager.set_channel_scopes("beta", private_scope="all")
+    assert ok_dup_dm is False
+    ok_dup_grp, _ = persona_config_manager.set_channel_scopes("beta", group_scope="all")
+    assert ok_dup_grp is False
+
+    group_1_sid = "ws1:onebot:10001:group:group_1"
+    group_2_sid = "ws1:onebot:10001:group:group_2"
     dm_sid = "ws1:onebot:10001:private:100000001"
     http_sid = "HTTP_AGENT:onebot:s1:group:group_1"
 
-    assert persona_config_manager.get_persona_for_session(group_sid) == "alpha"
+    # group_1 命中指定群，group_2 回退全群兜底，私聊命中全私聊兜底
+    assert persona_config_manager.get_persona_for_session(group_1_sid) == "dm_and_part_group"
+    assert persona_config_manager.get_persona_for_session(group_2_sid) == "all_group_p"
+    assert persona_config_manager.get_persona_for_session(dm_sid) == "dm_and_part_group"
 
+    dm_cfg = persona_config_manager.get_config("dm_and_part_group")
+    assert persona_covers_session(dm_cfg, group_id="group_1") is True
+    assert persona_covers_session(dm_cfg, group_id="group_2") is False
+    assert persona_covers_session(dm_cfg, user_id="100000001") is True
+
+    # 群内切换目标到 beta
     ok, _ = persona_config_manager.assign_target_to_persona("beta", "group_1", is_private=False)
     assert ok is True
     persona_config_manager.clear_cache()
-    assert "group_1" not in persona_config_manager.get_config("alpha").get_config("target_groups").data
+    assert "group_1" not in persona_config_manager.get_config("dm_and_part_group").get_config("target_groups").data
     assert "group_1" in persona_config_manager.get_config("beta").get_config("target_groups").data
-    assert persona_config_manager.get_persona_for_session(group_sid) == "beta"
+    assert persona_config_manager.get_persona_for_session(group_1_sid) == "beta"
 
-    ok, _ = persona_config_manager.assign_target_to_persona("global_p", "group_1", is_private=False)
+    # 切回全群兜底人格会移出 beta 的特定绑定
+    ok, _ = persona_config_manager.assign_target_to_persona("all_group_p", "group_1", is_private=False)
     assert ok is True
-    assert persona_config_manager.get_config("global_p").get_config("scope").data == "global"
     assert "group_1" not in persona_config_manager.get_config("beta").get_config("target_groups").data
-    assert persona_config_manager.get_persona_for_session(group_sid) == "global_p"
+    assert persona_config_manager.get_persona_for_session(group_1_sid) == "all_group_p"
 
-    ok_dm, _ = persona_config_manager.assign_target_to_persona("only_dm", "group_1", is_private=False)
-    assert ok_dm is False
+    # 私聊切换绑定到 beta（走 target_users，且覆盖全局私聊）
+    ok_dm_bind, _ = persona_config_manager.assign_target_to_persona("beta", "100000001", is_private=True)
+    assert ok_dm_bind is True
+    assert "100000001" in persona_config_manager.get_config("beta").get_config("target_users").data
+    assert persona_config_manager.get_persona_for_session(dm_sid) == "beta"
+
+    # 仅群聊人格拒绝私聊绑定；停用人格拒绝任何绑定
+    ok_grp_only_dm, _ = persona_config_manager.assign_target_to_persona("all_group_p", "100000001", is_private=True)
+    assert ok_grp_only_dm is False
     ok_off, _ = persona_config_manager.assign_target_to_persona("off", "group_1", is_private=False)
     assert ok_off is False
 
     # HTTP_AGENT 专属覆盖仅作用于 HTTP_AGENT 会话，不干扰普通会话
-    set_http_persona_override(http_sid, "alpha")
+    set_http_persona_override(http_sid, "dm_and_part_group")
     try:
-        assert persona_config_manager.get_persona_for_session(http_sid) == "alpha"
-        assert persona_config_manager.get_persona_for_session(group_sid) == "global_p"
-        assert persona_config_manager.get_persona_for_session(dm_sid) == "global_p"
+        assert persona_config_manager.get_persona_for_session(http_sid) == "dm_and_part_group"
+        assert persona_config_manager.get_persona_for_session(group_1_sid) == "all_group_p"
+        assert persona_config_manager.get_persona_for_session(dm_sid) == "beta"
     finally:
         clear_http_persona_override(http_sid)
+
+    # 旧客户端回传有损派生 scope='specific' 不得抹除 private_scope='all'
+    ok_idem, _ = persona_config_manager.set_scope("dm_and_part_group", "specific")
+    assert ok_idem is True
+    idem_scopes = read_channel_scopes(persona_config_manager.get_config("dm_and_part_group"))
+    assert idem_scopes.group_scope == "specific"
+    assert idem_scopes.private_scope == "all"
+
+    # 原子抢占：仅关闭冲突人格的冲突通道，保留其另一通道
+    ok_takeover, _ = persona_config_manager.set_channel_scopes(
+        "beta",
+        private_scope="all",
+        takeover_conflicts=True,
+    )
+    assert ok_takeover is True
+    after_prev = read_channel_scopes(persona_config_manager.get_config("dm_and_part_group"))
+    assert after_prev.group_scope == "specific"
+    assert after_prev.private_scope == "off"
+    assert read_channel_scopes(persona_config_manager.get_config("beta")).private_scope == "all"
+
+    # WebConsole 整单两阶段校验：其它字段不合法时既不得提前释放冲突人格，也不得半写入 target_groups
+    from gsuid_core.webconsole.persona_api import update_persona_config
+
+    prev_beta_groups = list(persona_config_manager.get_config("beta").get_config("target_groups").data)
+    bad_resp = asyncio.run(
+        update_persona_config(
+            "beta",
+            {
+                "group_scope": "all",
+                "takeover_conflicts": True,
+                "target_groups": ["should_not_persist"],
+                "inspect_interval": 999,
+            },
+            {},
+        )
+    )
+    assert bad_resp["status"] == 1
+    assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
+    assert persona_config_manager.get_config("beta").get_config("target_groups").data == prev_beta_groups
+
+    # journal 活跃人格解析走双通道真值源
+    from gsuid_core.ai_core.journal.manager import get_active_personas
+
+    active_journal_personas = get_active_personas()
+    assert "beta" in active_journal_personas
+    assert "all_group_p" in active_journal_personas
+    assert "off" not in active_journal_personas
+
+    # 整包覆盖导入已有非 git 人格：保留本地双通道范围与目标，且不触发旧配置伪迁移告警
+    import io
+    import json
+    import zipfile
+
+    from gsuid_core.ai_core.persona import config as persona_cfg_mod, persona as persona_cls_mod
+    from gsuid_core.ai_core.persona.bundle import (
+        BUNDLE_FORMAT,
+        BUNDLE_VERSION,
+        import_bundle_dir,
+        export_persona_bundle,
+    )
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+
+    monkeypatch.setattr(persona_cls_mod, "PERSONA_PATH", tmp_path)
+
+    async def _empty_binds(_persona_name: str) -> list[str]:
+        return []
+
+    async def _noop_mount_default(_persona_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(PackStore, "pack_ids_for_persona", staticmethod(_empty_binds))
+    monkeypatch.setattr(PackStore, "mount_default_pack", staticmethod(_noop_mount_default))
+    bundle_dir = tmp_path / "_incoming_bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps({"format": BUNDLE_FORMAT, "version": BUNDLE_VERSION, "persona_name": "dm_and_part_group"}),
+        encoding="utf-8",
+    )
+    (bundle_dir / "persona.md").write_text("# updated bundle\n", encoding="utf-8")
+    (bundle_dir / "config.json").write_bytes(
+        msgjson.encode(
+            {
+                "scope": GsStrConfig("启用范围", "", "specific"),
+                "target_groups": GsListStrConfig("目标群聊", "", ["ext_group"]),
+                "target_users": GsListStrConfig("目标私聊用户", "", ["ext_user"]),
+            }
+        )
+    )
+    migrated_calls: list[Path] = []
+    orig_migrate = persona_cfg_mod._migrate_legacy_scope_file
+
+    def _spy_migrate(path: Path) -> bool:
+        did = orig_migrate(path)
+        if did:
+            migrated_calls.append(path)
+        return did
+
+    with monkeypatch.context() as mp:
+        mp.setattr(persona_cfg_mod, "_migrate_legacy_scope_file", _spy_migrate)
+        before_bundle = persona_config_manager.snapshot_channel_deployment("dm_and_part_group")
+        res_bundle = asyncio.run(import_bundle_dir(bundle_dir))
+        assert res_bundle.created is False
+        after_bundle = persona_config_manager.snapshot_channel_deployment("dm_and_part_group")
+        assert after_bundle == before_bundle
+
+        # 新导入整包：强制关闭双通道并清空外部作者自带的 target_groups / target_users
+        (bundle_dir / "manifest.json").write_text(
+            json.dumps({"format": BUNDLE_FORMAT, "version": BUNDLE_VERSION, "persona_name": "fresh_bundle_p"}),
+            encoding="utf-8",
+        )
+        res_fresh = asyncio.run(import_bundle_dir(bundle_dir))
+        assert res_fresh.created is True
+        fresh_snap = persona_config_manager.snapshot_channel_deployment("fresh_bundle_p")
+        assert fresh_snap.group_scope == "off"
+        assert fresh_snap.private_scope == "off"
+        assert fresh_snap.target_groups == ()
+        assert fresh_snap.target_users == ()
+        assert migrated_calls == []
+
+    # 整包导出脱敏：导出的 config.json 不得携带本地部署范围或真实群/私聊用户 ID
+    exported_bytes = asyncio.run(export_persona_bundle("beta"))
+    with zipfile.ZipFile(io.BytesIO(exported_bytes), "r") as zf:
+        exported_cfg = json.loads(zf.read("config.json").decode("utf-8"))
+    assert exported_cfg["group_scope"]["data"] == "off"
+    assert exported_cfg["private_scope"]["data"] == "off"
+    assert exported_cfg["scope"]["data"] == "disabled"
+    assert exported_cfg["target_groups"]["data"] == []
+    assert exported_cfg["target_users"]["data"] == []
+
+    # 复制人格强制关闭双通道并清空目标列表
+    from gsuid_core.ai_core.persona.resource import copy_persona
+
+    monkeypatch.setattr("gsuid_core.ai_core.persona.resource.PERSONA_PATH", tmp_path, raising=False)
+    monkeypatch.setattr("gsuid_core.ai_core.resource.PERSONA_PATH", tmp_path)
+    copied_name = asyncio.run(copy_persona("beta"))
+    copied_snap = persona_config_manager.snapshot_channel_deployment(copied_name)
+    assert copied_snap.group_scope == "off"
+    assert copied_snap.private_scope == "off"
+    assert copied_snap.target_groups == ()
+    assert copied_snap.target_users == ()
+
+    # 驱动参数越界与非法枚举前置拦截，不得触发半写入或抢占
+    bad_trait_resp = asyncio.run(
+        update_persona_config(
+            "beta",
+            {
+                "group_scope": "all",
+                "takeover_conflicts": True,
+                "social_initiative": 101,
+            },
+            {},
+        )
+    )
+    assert bad_trait_resp["status"] == 1
+    assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
+    bad_focus_resp = asyncio.run(
+        update_persona_config(
+            "beta",
+            {"curiosity_focus": "invalid_focus"},
+            {},
+        )
+    )
+    assert bad_focus_resp["status"] == 1
+
+    # 冲突抢占若写入目标人格失败，必须回滚已释放的旧全局兜底
+    orig_write_scopes = persona_cfg_mod._write_channel_scopes
+    beta_cfg = persona_config_manager.get_config("beta")
+
+    def _fail_target_write(cfg: StringConfig, gs: str, ps: str) -> bool:
+        if cfg is beta_cfg:
+            return False
+        return orig_write_scopes(cfg, gs, ps)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(persona_cfg_mod, "_write_channel_scopes", _fail_target_write)
+        ok_rb, _ = persona_config_manager.set_channel_scopes("beta", group_scope="all", takeover_conflicts=True)
+        assert ok_rb is False
+    assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
+
+    for child in bundle_dir.iterdir():
+        child.unlink()
+    bundle_dir.rmdir()
+
+    # group_scope=None 时不得吞掉显式传入的兼容 scope 字段
+    null_chan_resp = asyncio.run(
+        update_persona_config(
+            "fresh_bundle_p",
+            {"group_scope": None, "private_scope": None, "scope": "specific"},
+            {},
+        )
+    )
+    assert null_chan_resp["status"] == 0
+    assert read_channel_scopes(persona_config_manager.get_config("fresh_bundle_p")).group_scope == "specific"
+
+    # 旧配置迁移写盘失败时必须抛错，严禁吞掉 OSError 后让 reconcile_config 静默重置为 off
+    fail_mig_dir = tmp_path / "mig_io_err"
+    fail_mig_dir.mkdir(parents=True, exist_ok=True)
+    (fail_mig_dir / "persona.md").write_text("# mig_io_err\n", encoding="utf-8")
+    fail_cfg_path = fail_mig_dir / "config.json"
+    fail_cfg_path.write_bytes(msgjson.encode({"scope": GsStrConfig("启用范围", "", "global")}))
+
+    def _boom_atomic_save(*_args: object, **_kwargs: object) -> object:
+        raise OSError("disk locked")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(persona_cfg_mod, "atomic_save", _boom_atomic_save)
+        mp.setattr(persona_cfg_mod.time, "sleep", lambda _s: None)
+        with pytest.raises(OSError, match="disk locked"):
+            persona_cfg_mod._migrate_legacy_scope_file(fail_cfg_path)
+
+    # 自主行动私聊范围约束：private_scope=specific 仅对 target_users 放行私聊推送
+    from gsuid_core.ai_core.autonomy.models import ObservationDigest
+    from gsuid_core.ai_core.autonomy.select import render_digest, assemble_care_targets
+
+    care = assemble_care_targets(
+        ["100000001", "100000002"],
+        {"100000001": 90, "100000002": 90},
+        {"100000002"},
+        [],
+        {},
+        {"100000001": "测试用户A", "100000002": "测试用户B"},
+        now=1000.0,
+        allowed_groups=set(),
+        allow_private=True,
+        allowed_private_users={"100000001"},
+    )
+    by_uid = {item.user_id: item for item in care}
+    assert by_uid["100000001"].private_scope_allowed is True
+    assert by_uid["100000001"].allow_private_push is True
+    assert by_uid["100000002"].private_scope_allowed is False
+    assert by_uid["100000002"].allow_private_push is False
+    digest_text = render_digest(
+        ObservationDigest(
+            persona_name="beta",
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            mood_score=0.5,
+            curiosity_focus="balanced",
+            cooled_topics=[],
+            active_arc=None,
+            arc_max_hops=3,
+            care_targets=care,
+            group_digests=[],
+            available_plugins_summary=[],
+            recently_used_tools=[],
+            in_flight_tasks=[],
+            recent_proactive_records=[],
+        ),
+        now=1000.0,
+    )
+    assert "私聊未开放" in digest_text
 
 
 def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1040,7 +1377,7 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
 
     _setup_isolated_persona_env(tmp_path, monkeypatch)
     _seed_persona(tmp_path, "alpha", "global")
-    _seed_persona(tmp_path, "beta", "specific", [])
+    _seed_persona(tmp_path, "beta", "specific", [], group_scope="specific", private_scope="specific")
 
     assert sv_core_persona_control is not sv_core_ai_control
     assert sv_core_persona_control.name != sv_core_ai_control.name
@@ -1108,6 +1445,35 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
             assert get_active_dm_lease("100000001", "onebot") is None
             assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
             assert not registry.has_ai_session(dm_sid)
+
+            # dm_lease 双通道守卫：仅群聊人格拒绝点名签发租约；已有租约在通道不再覆盖该用户时失效
+            from gsuid_core.ai_core.proactive.dm_lease import maybe_switch_dm_lease
+
+            _seed_persona(
+                tmp_path, "group_only_p", "specific", ["group_1"], group_scope="specific", private_scope="off"
+            )
+            from gsuid_core.buildin_plugins.core_command.core_ai_control import _list_personas_by_status
+
+            grp_enabled, grp_disabled = _list_personas_by_status(is_private=False)
+            dm_enabled, dm_disabled = _list_personas_by_status(is_private=True)
+            assert "group_only_p" in grp_enabled and "group_only_p" not in grp_disabled
+            assert "group_only_p" in dm_disabled and "group_only_p" not in dm_enabled
+            assert maybe_switch_dm_lease("100000001", "onebot", "group_only_p 在吗", "beta") is None
+            assert maybe_switch_dm_lease("100000002", "onebot", "beta 在吗", "alpha") is None
+            assert maybe_switch_dm_lease("100000001", "onebot", "alpha 在吗", "beta") == "alpha"
+            ok_narrow, _ = persona_config_manager.set_channel_scopes("alpha", private_scope="specific")
+            assert ok_narrow is True
+            ok_users, _ = persona_config_manager.set_target_users("alpha", ["100000099"])
+            assert ok_users is True
+            # alpha 已切为指定私聊且不含 100000001，旧租约不得继续劫持该用户，且续期时主动清理
+            from gsuid_core.ai_core.proactive.dm_lease import renew_dm_lease
+
+            assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
+            assert renew_dm_lease("100000001", "onebot") is False
+            assert get_active_dm_lease("100000001", "onebot") is None
+            ok_off_dm, _ = persona_config_manager.set_channel_scopes("alpha", private_scope="off")
+            assert ok_off_dm is True
+            assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
         finally:
             registry.remove_ai_session(group_sid)
             registry.remove_ai_session(other_group_sid)

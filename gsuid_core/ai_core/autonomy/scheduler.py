@@ -17,6 +17,7 @@ from gsuid_core.ai_core.autonomy.gates import (
 )
 from gsuid_core.ai_core.persona.config import (
     AUTONOMY_MODE,
+    is_persona_enabled,
     normalize_ai_modes,
     read_autonomy_runtime,
     is_within_active_hours,
@@ -272,9 +273,25 @@ class AutonomyScheduler:
             if parsed.drive == "care_user":
                 from gsuid_core.ai_core.control.lines import OFFSCREEN_CARE_GENERIC
 
-                await record_offscreen(persona_name, OFFSCREEN_CARE_GENERIC, now)
+                care_scope = f"private:{pin.user_id}" if (pin is not None and pin.user_id) else "self"
+                care_uid = pin.user_id if pin is not None else ""
+                await record_offscreen(persona_name, OFFSCREEN_CARE_GENERIC, now, scope=care_scope, user_id=care_uid)
             elif take or parsed.fact:
-                await record_offscreen(persona_name, (take or parsed.fact)[:45], now)
+                off_scope = "self"
+                off_uid = ""
+                if pin is not None and pin.group_id:
+                    off_scope = str(pin.group_id)
+                    off_uid = pin.user_id or ""
+                elif pin is not None and pin.user_id:
+                    off_scope = f"private:{pin.user_id}"
+                    off_uid = pin.user_id
+                await record_offscreen(
+                    persona_name,
+                    (take or parsed.fact)[:45],
+                    now,
+                    scope=off_scope,
+                    user_id=off_uid,
+                )
             if mode == "staged_merge" and pin is not None and (parsed.fact or take):
                 get_dispatcher().stage_merge_context(
                     make_target_key(pin.group_id, pin.user_id or None),
@@ -338,14 +355,13 @@ class AutonomyScheduler:
         mode_list = (
             normalize_ai_modes([item for item in modes if isinstance(item, str)]) if isinstance(modes, list) else []
         )
-        scope = config.get_config("scope").data
         within = is_within_active_hours(list(runtime.active_hours), runtime.timezone)
         due = force or await self.due_at(persona_name) is not None
         enabled = ai_config.get_config("enable").data
         return gate_reason(
             ai_enabled=bool(enabled) if isinstance(enabled, bool) else False,
             mode_on=AUTONOMY_MODE in mode_list,
-            scope_enabled=scope != "disabled",
+            scope_enabled=is_persona_enabled(config),
             within_hours=within,
             chat_busy=interactive_llm_in_use() or has_pending_interactive_deliveries(),
             due=due,
@@ -503,7 +519,7 @@ async def _remember(
     facts: FactPack,
     activity_id: int,
 ) -> None:
-    from gsuid_core.ai_core.memory.scope import self_scope_key
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
@@ -517,12 +533,22 @@ async def _remember(
         summary = obs[:500]
     if not summary:
         return
+    if pin is not None and pin.group_id:
+        note_scope = make_scope_key(ScopeType.GROUP, str(pin.group_id))
+        note_owner = pin.user_id or ""
+    elif pin is not None and pin.user_id:
+        note_scope = make_scope_key(ScopeType.USER_GLOBAL, str(pin.user_id))
+        note_owner = str(pin.user_id)
+    else:
+        note_scope = self_scope_key(bot_self, persona_name)
+        note_owner = ""
     ref = f"autonomy:{activity_id}" if activity_id else f"autonomy:{persona_name}:{int(time.time())}"
     await remember(
         MemoryWrite(
             kind=CogKind.SELF_NOTE,
             ref=ref,
-            scope_key=self_scope_key(bot_self, persona_name),
+            scope_key=note_scope,
+            owner_user_id=note_owner,
             title=f"{persona_name} 自主行动",
             summary=summary,
             source="autonomy",
@@ -570,20 +596,24 @@ def _empty_facts() -> FactPack:
     return FactPack([], [], [], False)
 
 
-def _extract_note_handle_from_steps(persona_name: str, steps: list[AutonomyStepTrace]) -> str:
-    """若本轮自主行动成功调用了 artifact_put，优先从返回文本提取 note: 句柄（不受长正文 JSON 截断影响）。"""
+def _extract_note_handles_from_steps(persona_name: str, steps: list[AutonomyStepTrace]) -> list[str]:
+    """提取本轮自主行动成功调用 artifact_put 产出的全部 note: 句柄（去重保序，最新在前）。"""
     import re as _re
     import json as _json
 
     from gsuid_core.ai_core.autonomy.tools import safe_filename
 
     out_handle_re = _re.compile(r"(?:句柄\s*[:：]\s*)(note:[^\s）)]+)")
+    found: list[str] = []
     for step in reversed(steps):
         if step.tool_name != "artifact_put" or step.is_error or output_is_failed(step.output_text):
             continue
         m_out = out_handle_re.search(step.output_text or "")
         if m_out is not None:
-            return m_out.group(1).strip()
+            hid = m_out.group(1).strip()
+            if hid and hid not in found:
+                found.append(hid)
+            continue
         raw_args = step.args_summary.strip()
         if not raw_args:
             continue
@@ -602,8 +632,10 @@ def _extract_note_handle_from_steps(persona_name: str, steps: list[AutonomyStepT
             if title_val:
                 stem = safe_filename(title_val).removesuffix(".txt")
                 if stem:
-                    return f"note:{persona_name}:{stem}"
-    return ""
+                    hid = f"note:{persona_name}:{stem}"
+                    if hid not in found:
+                        found.append(hid)
+    return found
 
 
 async def _record_autonomy_journal(
@@ -641,6 +673,31 @@ async def _record_autonomy_journal(
     elif mode in ("immediate_push", "staged_merge") and pin is not None and pin.group_id:
         gid = pin.group_id
 
+    target_uid = last_sent_user_id or (pin.user_id if pin is not None and pin.user_id else "")
+    note_hids = _extract_note_handles_from_steps(persona_name, steps)
+    note_hid = note_hids[0] if note_hids else ""
+
+    # 无论群聊还是私聊关怀，先把本轮所有笔记回写至准确 scope，绝不滞留在 self:*
+    if note_hids and (gid or target_uid):
+        from gsuid_core.pool import to_thread
+        from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+        from gsuid_core.ai_core.autonomy.tools import stamp_note_scope_header
+        from gsuid_core.ai_core.cognition.nodes import AICogNode
+        from gsuid_core.ai_core.cognition.types import CogKind
+
+        re_scope = make_scope_key(ScopeType.GROUP, gid) if gid else make_scope_key(ScopeType.USER_GLOBAL, target_uid)
+        for nhid in note_hids:
+            parts = nhid.split(":", 2)
+            if len(parts) == 3 and parts[0] == "note":
+                note_ref = f"autonomy_note:{parts[1]}:{parts[2]}"
+                await to_thread(stamp_note_scope_header)(parts[1], parts[2], re_scope, target_uid)
+                await AICogNode.upsert(
+                    kind=CogKind.SELF_NOTE,
+                    ref=note_ref,
+                    scope_key=re_scope,
+                    owner_user_id=target_uid,
+                )
+
     # 私聊主动关怀绝不写入公共 self.md，防止通过首轮锚点泄露给所有群聊
     is_private_care = (
         (tool_sent and not last_sent_group_id and bool(last_sent_user_id))
@@ -673,7 +730,6 @@ async def _record_autonomy_journal(
     if not clean_summary:
         return
 
-    note_hid = _extract_note_handle_from_steps(persona_name, steps)
     now_dt = _dt.now()
     entry = JournalEntry(
         timestamp=now_dt.timestamp(),
@@ -683,5 +739,6 @@ async def _record_autonomy_journal(
         summary=clean_summary,
         handle_id=note_hid,
         group_id=gid,
+        requested_by=pin.user_id if (gid and pin is not None and pin.user_id) else "",
     )
     await record_journal_entry(entry, target_personas=[persona_name])

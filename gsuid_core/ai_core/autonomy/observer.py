@@ -10,11 +10,12 @@ from gsuid_core.ai_core.persona.mood import get_all_mood_states
 from gsuid_core.ai_core.autonomy.binds import collect_bound_uids
 from gsuid_core.ai_core.autonomy.codec import load_steps, load_str_list
 from gsuid_core.ai_core.persona.config import (
+    read_target_list,
     read_drive_traits,
-    scope_covers_session,
+    read_channel_scopes,
     read_autonomy_runtime,
     persona_config_manager,
-    persona_should_inspect_session,
+    persona_covers_session,
 )
 from gsuid_core.ai_core.autonomy.models import SpokenLine, GroupObservation, ObservationDigest
 from gsuid_core.ai_core.autonomy.select import (
@@ -30,6 +31,7 @@ from gsuid_core.ai_core.autonomy.select import (
 from gsuid_core.ai_core.database.models import UserFavorability, AIAutonomyActivity
 from gsuid_core.message_history.manager import get_history_manager
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 
 async def _user_preferences(user_ids: list[str]) -> dict[str, list[str]]:
@@ -56,12 +58,14 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     clock = time.time() if now is None else now
     config = persona_config_manager.get_config(persona_name)
     runtime = read_autonomy_runtime(config)
-    scope = _text(config.get_config("scope").data)
-    targets = _str_list(config.get_config("target_groups").data)
-    if scope == "disabled":
+    scopes = read_channel_scopes(config)
+    targets = read_target_list(config, "target_groups")
+    user_targets = read_target_list(config, "target_users")
+    if not scopes.is_enabled:
         return _empty(persona_name)
-    allowed = _allowed_groups(scope, targets)
-    allow_private = scope_covers_session(scope, is_private=True) or scope == "specific"
+    allowed = _allowed_groups(scopes.group_scope, targets)
+    allowed_private_users = _allowed_private_users(scopes.private_scope, user_targets)
+    allow_private = scopes.private_scope != "off"
     masters = _master_ids()
     floor = care_floor(runtime.care_min_zone)
     favor_rows = await UserFavorability.list_at_least(minimum_score_for(floor), persona_name=persona_name, limit=50)
@@ -95,7 +99,7 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         favor_bot[uid] = extra.bot_id
         if isinstance(extra.user_name, str) and extra.user_name.strip():
             names[uid] = extra.user_name.strip()
-    lines = _spoken_lines(scope, targets, clock)
+    lines = _spoken_lines(config, clock)
     binds: dict[str, dict[str, str]] = {}
     for uid in user_ids:
         bot_id = favor_bot[uid] if uid in favor_bot and favor_bot[uid] else _bot_for(lines, uid)
@@ -121,10 +125,11 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
         now=clock,
         allowed_groups=allowed,
         allow_private=allow_private,
+        allowed_private_users=allowed_private_users,
         preferences=user_prefs,
         dm_paused=dm_paused,
     )
-    groups = await _groups(lines, scope, targets, excluded_groups=active_groups)
+    groups = await _groups(lines, config, excluded_groups=active_groups)
     recent_tools = await _previous(persona_name, clock)
     bot_id, bot_self_id, ws_bot_id = _identity(lines, groups)
     proactive_records = await _recent_proactive_records(persona_name, clock)
@@ -155,17 +160,12 @@ async def build_observation(persona_name: str, *, now: float | None = None) -> O
     )
 
 
-def _spoken_lines(scope: str, target_groups: list[str], now: float) -> list[SpokenLine]:
+def _spoken_lines(config: StringConfig, now: float) -> list[SpokenLine]:
     history = get_history_manager()
     found: list[SpokenLine] = []
     for event in history.list_sessions():
         group_id = event.group_id if event.user_type != "direct" else None
-        if group_id:
-            if not persona_should_inspect_session(scope, group_id=group_id, target_groups=target_groups):
-                continue
-        elif not scope_covers_session(scope, is_private=True) and scope != "specific":
-            continue
-        elif scope == "specific" and event.user_id not in target_groups:
+        if not persona_covers_session(config, group_id=group_id, user_id=event.user_id):
             continue
         for record in history.get_history(event):
             if record.role not in ("user", "assistant"):
@@ -206,8 +206,7 @@ def _spoken_lines(scope: str, target_groups: list[str], now: float) -> list[Spok
 
 async def _groups(
     lines: list[SpokenLine],
-    scope: str,
-    target_groups: list[str],
+    config: StringConfig,
     *,
     excluded_groups: set[str] | None = None,
 ) -> list[GroupObservation]:
@@ -218,7 +217,7 @@ async def _groups(
             continue
         if excluded_groups and line.group_id in excluded_groups:
             continue
-        if not persona_should_inspect_session(scope, group_id=line.group_id, target_groups=target_groups):
+        if not persona_covers_session(config, group_id=line.group_id):
             continue
         if line.role == "assistant":
             prev_ai = latest_ai[line.group_id] if line.group_id in latest_ai else 0.0
@@ -361,10 +360,18 @@ def _master_ids() -> list[str]:
     return found
 
 
-def _allowed_groups(scope: str, target_groups: list[str]) -> set[str] | None:
-    if scope == "specific":
+def _allowed_groups(group_scope: str, target_groups: list[str]) -> set[str] | None:
+    if group_scope == "specific":
         return set(target_groups)
-    if scope in {"global", "global_group"}:
+    if group_scope == "all":
+        return None
+    return set()
+
+
+def _allowed_private_users(private_scope: str, target_users: list[str]) -> set[str] | None:
+    if private_scope == "specific":
+        return set(target_users)
+    if private_scope == "all":
         return None
     return set()
 
@@ -400,13 +407,3 @@ def _empty(persona_name: str) -> ObservationDigest:
         in_flight_tasks=[],
         recent_proactive_records=[],
     )
-
-
-def _text(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _str_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]

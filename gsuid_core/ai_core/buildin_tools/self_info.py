@@ -172,7 +172,7 @@ async def get_self_info(ctx: RunContext[ToolContext]) -> str:
     capability_lines = [
         roster,
         families,
-        "详情用 capability_map / find_tools。",
+        "详情用 find_tools 检索（可按需调用 capability_map）。",
     ]
 
     # 主人
@@ -244,6 +244,7 @@ async def update_self_note(
     Returns:
         记录结果说明
     """
+    from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
     from gsuid_core.ai_core.self_cognition import add_self_note
     from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
@@ -254,8 +255,22 @@ async def update_self_note(
     }
     # Bot.bot_id 是已声明字段；deps.bot 为 None 时退化为空串走 default scope
     bot_id = ctx.deps.bot.bot_id if ctx.deps.bot is not None else ""
+    ev = ctx.deps.ev
+    note_scope = ""
+    owner_uid = ""
+    if ev is not None:
+        owner_uid = str(ev.user_id or "").strip()
+        if ev.group_id or owner_uid:
+            note_scope = scope_key_for_conversation(ev.group_id, owner_uid)
 
-    ok = await add_self_note(bot_id, persona_name_from_event(ctx.deps.ev) or "", content, field_map[note_type])
+    ok = await add_self_note(
+        bot_id,
+        persona_name_from_event(ev) or "",
+        content,
+        field_map[note_type],
+        scope_key=note_scope,
+        owner_user_id=owner_uid,
+    )
     return "✅ 已记入我的自我认知" if ok else "⚠️ 自我认知记录失败"
 
 

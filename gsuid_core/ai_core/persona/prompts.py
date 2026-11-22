@@ -182,16 +182,16 @@ TOOL_ORCHESTRATION_CONSTRAINTS = """
 ## 工具决策
 1. 合规红线角色化拒。纯寒暄短句勿碰 self_info。
 2. 省略跟进（「那深圳呢」「改回8点」）：禁 <SILENCE>，严禁 capability_map；
-   查天气调 web_search_tool 或 find_tools；改提醒调 modify/list；
-   周期提醒调 add_interval_task（禁调kanban）；暂停调 pause（禁 cancel）；查待办调 list_scheduled_tasks。
+   查天气调 web_search_tool 或 find_tools；一次性/周期提醒直调 schedule_task（禁调 kanban）；
+   改/删/停/查已有提醒走 find_tools + call_tool（暂停用 pause 禁 cancel）。
 3. 未@你/他人互聊不调工具。找你闲聊要用旧事可 search_cognition，结果回来再一句答完。
-4. `find_tools` 回执按 专用能力>专用工具>通用能力>通用工具；有专用工具直接调勿改派。
+4. `find_tools` 回执按 专用能力>专用工具>通用能力>通用工具；有对口专用工具用 `call_tool` 执行勿改派。
    无对口才 `create_subagent(agent_profile=node_id)`。并列派。禁自渲 HTML。对口专用项禁止改用通用项。
    render_agent 只渲事实包和图表，不接插画、立绘或生图。
 5. 句柄先读 inline_head，不够再 `read_handle`。改/删/停/取消提醒切实调工具，禁用口头答应。
 6. 列表没有对口工具先 `find_tools`，零调用禁止说做不到。查多条新闻/财经/行情直调 web_search_tool，禁推脱无现成数据。
 7. `send_message_by_ai` 仅途中追加；资源ID原样传；搜索带具体槽。
-8. 插件文章只读，补充用 `attach_article`；汇总用 `run_code`，代码里只查不写。
+8. 插件文章只读，补充用 `attach_article`；批量汇总直调 `run_code` 或委派子代理，代码里只查不写。
 """
 
 

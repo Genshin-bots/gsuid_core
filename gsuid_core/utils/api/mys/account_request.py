@@ -16,6 +16,7 @@ from .api import (
     GET_AUTHKEY,
     CHECK_QRCODE,
     CREATE_QRCODE,
+    EXCHANGE_TOKEN,
     CHECK_QRCODE_HYP,
     GET_COOKIE_TOKEN,
     CREATE_QRCODE_HYP,
@@ -150,38 +151,161 @@ class AccountMysApi(PassMysApi):
             data = cast(CookieTokenInfo, data["data"])
         return data
 
+    @staticmethod
+    def _extract_exchange_token(raw: Dict[str, object]) -> tuple[str, str, str]:
+        data_obj = raw["data"] if "data" in raw else None
+        if not isinstance(data_obj, dict):
+            return "", "", ""
+        token_obj = data_obj["token"] if "token" in data_obj else None
+        token_val = token_obj["token"] if isinstance(token_obj, dict) and "token" in token_obj else ""
+        user_obj = data_obj["user_info"] if "user_info" in data_obj else None
+        aid = ""
+        mid = ""
+        if isinstance(user_obj, dict):
+            if "aid" in user_obj and isinstance(user_obj["aid"], str):
+                aid = user_obj["aid"]
+            if "mid" in user_obj and isinstance(user_obj["mid"], str):
+                mid = user_obj["mid"]
+        return token_val if isinstance(token_val, str) else "", aid, mid
+
+    async def _exchange_token_cn(
+        self,
+        stoken: str,
+        mid: str,
+        dst_token_type: int,
+        device_id: str,
+        device_fp: str,
+    ) -> Union[Dict[str, object], int]:
+        body: Dict[str, object] = {
+            "src_token": {
+                "token": stoken,
+                "token_type": 1,
+            },
+            "mid": mid,
+            "dst_token_type": dst_token_type,
+        }
+        header: Dict[str, str] = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-rpc-app_id": "bll8iq97cem8",
+            "x-rpc-client_type": "2",
+            "x-rpc-device_id": device_id,
+            "x-rpc-device_fp": device_fp,
+            "x-rpc-device_name": "OnePlus%20PHK110",
+            "x-rpc-device_model": "PHK110",
+            "x-rpc-sys_version": "16",
+            "x-rpc-game_biz": "bbs_cn",
+            "x-rpc-app_version": self.mysVersion,
+            "x-rpc-sdk_version": "2.44.0",
+            "x-rpc-lifecycle_id": str(uuid.uuid4()),
+            "x-rpc-account_version": "2.44.0",
+            "DS": generate_passport_ds(b=body),
+            "User-Agent": "okhttp/4.9.3",
+        }
+        return await self._mys_request(
+            url=EXCHANGE_TOKEN.get(),
+            method="POST",
+            header=header,
+            data=body,
+            game_name="account",
+        )
+
     async def get_cookie_token_by_stoken_cn(
         self,
         stoken: str,
         mys_id: str,
         full_sk: Optional[str] = None,
     ) -> Union[CookieTokenInfo, int]:
-        HEADER = deepcopy(self._HEADER)
-        params = {
-            "stoken": stoken,
-            "uid": mys_id,
-        }
+        mid = ""
         if full_sk:
-            HEADER["Cookie"] = full_sk
             simp_dict = SimpleCookie(full_sk)
             if not stoken:
-                if "stoken" in simp_dict:
-                    stoken = simp_dict["stoken"].value
-                elif "stoken_v2" in simp_dict:
-                    stoken = simp_dict["stoken_v2"].value
-                params["stoken"] = stoken
-            if "mid" in simp_dict:
-                params["mid"] = simp_dict["mid"].value
-        else:
-            HEADER["Cookie"] = f"stuid={mys_id};stoken={stoken}"
+                for key in ("stoken", "stoken_v2"):
+                    if key in simp_dict:
+                        stoken = simp_dict[key].value
+                        break
+            for key in ("mid", "stmid_v2", "stmid", "account_mid_v2", "ltmid_v2"):
+                if key in simp_dict:
+                    mid = simp_dict[key].value
+                    break
+            if not mys_id:
+                for key in ("stuid", "stuid_v2", "account_id_v2", "account_id", "ltuid_v2", "ltuid"):
+                    if key in simp_dict:
+                        mys_id = simp_dict[key].value
+                        break
+
+        if not stoken:
+            return -100
+
+        if mid:
+            device_id = self.generate_seed(16)
+            device_fp = self.generate_random_fp()
+            ck_res = await self._exchange_token_cn(stoken, mid, 4, device_id, device_fp)
+            if isinstance(ck_res, int):
+                return ck_res
+            cookie_token, aid, resp_mid = self._extract_exchange_token(ck_res)
+            if not cookie_token:
+                return -999
+            account_id = aid or str(mys_id)
+            resolved_mid = resp_mid or mid
+
+            lt_res = await self._exchange_token_cn(stoken, resolved_mid, 2, device_id, device_fp)
+            ltoken = ""
+            if isinstance(lt_res, dict):
+                ltoken, _, _ = self._extract_exchange_token(lt_res)
+
+            cookie_token_name = "cookie_token_v2" if cookie_token.startswith("v2_") else "cookie_token"
+            cookies: Dict[str, str] = {
+                "account_id": account_id,
+                "cookie_token": cookie_token,
+            }
+            if cookie_token_name == "cookie_token_v2":
+                cookies["account_id_v2"] = account_id
+                cookies["cookie_token_v2"] = cookie_token
+                if resolved_mid:
+                    cookies["account_mid_v2"] = resolved_mid
+            if ltoken:
+                cookies["ltuid"] = account_id
+                cookies["ltoken"] = ltoken
+                if ltoken.startswith("v2_"):
+                    cookies["ltuid_v2"] = account_id
+                    cookies["ltoken_v2"] = ltoken
+                    if resolved_mid:
+                        cookies["ltmid_v2"] = resolved_mid
+
+            result: CookieTokenInfo = {
+                "uid": account_id,
+                "cookie_token": cookie_token,
+                "cookie_token_name": cookie_token_name,
+                "cookies": cookies,
+            }
+            return result
+
+        if stoken.startswith("v2_"):
+            return -100
+
+        HEADER = deepcopy(self._HEADER)
+        HEADER["Cookie"] = full_sk if full_sk else f"stuid={mys_id};stoken={stoken}"
         data = await self._mys_request(
             url=GET_COOKIE_TOKEN.get(),
             method="GET",
             header=HEADER,
-            params=params,
+            params={
+                "stoken": stoken,
+                "uid": mys_id,
+            },
+            game_name="account",
         )
         if isinstance(data, Dict):
-            data = cast(CookieTokenInfo, data["data"])
+            raw_data = data["data"] if "data" in data else None
+            if isinstance(raw_data, dict) and "cookie_token" in raw_data and isinstance(raw_data["cookie_token"], str):
+                uid_val = raw_data["uid"] if "uid" in raw_data and isinstance(raw_data["uid"], str) else str(mys_id)
+                legacy_result: CookieTokenInfo = {
+                    "uid": uid_val,
+                    "cookie_token": raw_data["cookie_token"],
+                }
+                return legacy_result
+            return -999
         return data
 
     async def get_cookie_token_by_stoken(

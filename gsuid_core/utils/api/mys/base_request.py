@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ssl
 import copy
+import json
 import time
 import uuid
 import random
@@ -9,7 +10,7 @@ import asyncio
 import hashlib
 from abc import abstractmethod
 from string import digits
-from typing import Any, Dict, Tuple, Union, Literal, Optional, overload
+from typing import Any, Dict, Tuple, Union, Literal, Optional
 
 import aiohttp
 import certifi
@@ -35,7 +36,6 @@ from .tools import (
     get_ds_token,
     generate_os_ds,
     get_web_ds_token,
-    generate_passport_ds,
 )
 
 _DEAD_CODE = [10035, 5003, 10041, 1034]
@@ -64,13 +64,26 @@ _CHALLENGE_META: Dict[str, Dict[str, str]] = {
 }
 
 
+# Android 主版本到 API Level 映射，用于 deviceLogin 请求体 os_version
+_ANDROID_SDK_MAP: Dict[str, str] = {
+    "16": "36",
+    "15": "35",
+    "14": "34",
+    "13": "33",
+    "12L": "32",
+    "12": "31",
+    "11": "30",
+    "10": "29",
+}
+
+
 class BaseMysApi:
     mysVersion = mys_version
     _HEADER = {
         "x-rpc-app_version": mysVersion,
         "X-Requested-With": "com.mihoyo.hyperion",
         "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 13; PHK110 Build/SKQ1.221119.001; wv)"
+            "Mozilla/5.0 (Linux; Android 13; PHK110 Build/SKQ1.221119.001; wv) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/"
             f"126.0.6478.133 Mobile Safari/537.36 miHoYoBBS/{mysVersion}"
         ),
@@ -251,6 +264,20 @@ class BaseMysApi:
             seed_time,
         )
 
+    @staticmethod
+    def _parse_device_info(device_info: str) -> Tuple[str, str, str, str]:
+        """从设备指纹提取 (brand, model_name, sys_version, build_id)。"""
+        parts = [part.strip() for part in device_info.split("/")]
+        brand = parts[0] if len(parts) >= 1 and parts[0] else "OnePlus"
+        model_name = parts[1] if len(parts) >= 2 and parts[1] else "PHK110"
+        sys_version = "14"
+        if len(parts) >= 3 and ":" in parts[2]:
+            candidate = parts[2].split(":", 1)[1].strip()
+            if candidate:
+                sys_version = candidate
+        build_id = parts[3] if len(parts) >= 4 and parts[3] else "SKQ1.221119.001"
+        return brand, model_name, sys_version, build_id
+
     async def generate_fp(
         self,
         device_id: str,
@@ -263,12 +290,72 @@ class BaseMysApi:
         seed_id: str,
         seed_time: str,
     ) -> str:
-        device_brand = device_info.split("/")[0]
+        device_brand, parsed_model, sys_version, _ = self._parse_device_info(device_info)
+        model = model_name or parsed_model
+        sdk_version = _ANDROID_SDK_MAP[sys_version] if sys_version in _ANDROID_SDK_MAP else "34"
         random_data = random.randint(400000, 600000)
         random_data2 = random.randint(150000, 300000)
         time_diff = int(time.time() * 1000)
 
-        ext_fields = f"""{{"proxyStatus":0,"isRoot":1,"romCapacity":"512","deviceName":"私人手机","productName":"{device}","romRemain":"491","hostname":"dg02-pool06-kvm82","screenSize":"1264x2640","isTablet":0,"aaid":"{self.generate_ID()}","model":"{model_name}","brand":"{device_brand}","hardware":"qcom","deviceType":"{device_type}","devId":"REL","serialNumber":"unknown","sdCapacity":{random_data},"buildTime":"1717740969000","buildUser":"root","simState":5,"ramRemain":"{random_data2}","appUpdateTimeDiff":{time_diff},"deviceInfo":"{device_info}","vaid":"{self.generate_ID()}","buildType":"user","sdkVersion":"34","ui_mode":"UI_MODE_TYPE_NORMAL","isMockLocation":0,"cpuType":"arm64-v8a","isAirMode":0,"ringMode":1,"chargeStatus":1,"manufacturer":"{device_brand}","emulatorStatus":0,"appMemory":"512","osVersion":"14","vendor":"中国联通","accelerometer":"-1.3004991x6.38764x7.19103","sdRemain":{random_data2},"buildTags":"release-keys","packageName":"com.mihoyo.hyperion","networkType":"WiFi","oaid":"{oaid}","debugStatus":1,"ramCapacity":"{random_data}","magnetometer":"27.1084x-48.5804x-24.8758","display":"{model_name}_14.0.0.810(CN01)","appInstallTimeDiff":"{time_diff}","packageVersion":"2.20.2","gyroscope":"-0.02543317x0.005725792x0.003195791","batteryStatus":50,"hasKeyboard":0,"board":"{board}"}}"""  # noqa
+        ext_fields = json.dumps(
+            {
+                "proxyStatus": 0,
+                "isRoot": 1,
+                "romCapacity": "512",
+                "deviceName": "私人手机",
+                "productName": device,
+                "romRemain": "491",
+                "hostname": "dg02-pool06-kvm82",
+                "screenSize": "1264x2640",
+                "isTablet": 0,
+                "aaid": self.generate_ID(),
+                "model": model,
+                "brand": device_brand,
+                "hardware": "qcom",
+                "deviceType": device_type,
+                "devId": "REL",
+                "serialNumber": "unknown",
+                "sdCapacity": random_data,
+                "buildTime": "1717740969000",
+                "buildUser": "root",
+                "simState": 5,
+                "ramRemain": str(random_data2),
+                "appUpdateTimeDiff": time_diff,
+                "deviceInfo": device_info,
+                "vaid": self.generate_ID(),
+                "buildType": "user",
+                "sdkVersion": sdk_version,
+                "ui_mode": "UI_MODE_TYPE_NORMAL",
+                "isMockLocation": 0,
+                "cpuType": "arm64-v8a",
+                "isAirMode": 0,
+                "ringMode": 1,
+                "chargeStatus": 1,
+                "manufacturer": device_brand,
+                "emulatorStatus": 0,
+                "appMemory": "512",
+                "osVersion": sys_version,
+                "vendor": "中国联通",
+                "accelerometer": "-1.3004991x6.38764x7.19103",
+                "sdRemain": random_data2,
+                "buildTags": "release-keys",
+                "packageName": "com.mihoyo.hyperion",
+                "networkType": "WiFi",
+                "oaid": oaid,
+                "debugStatus": 1,
+                "ramCapacity": str(random_data),
+                "magnetometer": "27.1084x-48.5804x-24.8758",
+                "display": f"{model}_{sys_version}.0.0.810(CN01)",
+                "appInstallTimeDiff": str(time_diff),
+                "packageVersion": "2.20.2",
+                "gyroscope": "-0.02543317x0.005725792x0.003195791",
+                "batteryStatus": 50,
+                "hasKeyboard": 0,
+                "board": board,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
         body = {
             "device_id": self.generate_seed(16),
@@ -287,6 +374,7 @@ class BaseMysApi:
             method="POST",
             header=HEADER,
             data=body,
+            game_name="account",
         )
         if not isinstance(res, Dict):
             logger.error(t("log.mys.fp_res_connect_fail", res=res))
@@ -297,42 +385,63 @@ class BaseMysApi:
         else:
             return res["data"]["device_fp"]
 
-    async def device_login_and_save(self, device_id: str, device_fp: str, device_info: str, cookie: str):
-        info = device_info.split("/")
-        brand, model_name = info[0], info[1]
-        body = {
+    async def device_login_and_save(
+        self,
+        device_id: str,
+        device_fp: str,
+        device_info: str,
+        cookie: str,
+    ) -> Union[Dict[str, object], int]:
+        brand, model_name, sys_version, _ = self._parse_device_info(device_info)
+        os_version = _ANDROID_SDK_MAP[sys_version] if sys_version in _ANDROID_SDK_MAP else "34"
+        body: Dict[str, str] = {
             "app_version": self.mysVersion,
             "device_id": device_id,
             "device_name": f"{brand}{model_name}",
-            "os_version": "33",
+            "os_version": os_version,
             "platform": "Android",
             "registration_id": self.generate_seed(19),
         }
 
-        HEADER = copy.deepcopy(self._HEADER)
-        HEADER["x-rpc-device_id"] = device_id
-        HEADER["x-rpc-device_fp"] = device_fp
-        HEADER["x-rpc-device_name"] = f"{brand} {model_name}"
-        HEADER["x-rpc-device_model"] = model_name
-        HEADER["x-rpc-csm_source"] = "myself"
-        HEADER["Referer"] = "https://app.mihoyo.com"
-        HEADER["Host"] = "bbs-api.miyoushe.com"
-        HEADER["DS"] = generate_passport_ds("", body)
-        HEADER["Cookie"] = cookie
+        header: Dict[str, str] = {
+            "x-rpc-client_type": "2",
+            "x-rpc-app_version": self.mysVersion,
+            "x-rpc-sys_version": sys_version,
+            "x-rpc-channel": "miyousheluodi",
+            "x-rpc-device_id": device_id,
+            "x-rpc-device_fp": device_fp,
+            "x-rpc-device_name": f"{brand} {model_name}",
+            "x-rpc-device_model": model_name,
+            "x-rpc-h265_supported": "1",
+            "x-rpc-verify_key": "bll8iq97cem8",
+            "x-rpc-csm_source": "myself",
+            "Referer": "https://app.mihoyo.com",
+            "Host": "bbs-api.miyoushe.com",
+            "User-Agent": "okhttp/4.9.3",
+            "DS": get_web_ds_token(False),
+            "Cookie": cookie,
+        }
 
-        await self._mys_request(
+        login_res = await self._mys_request(
             url=DEVICE_LOGIN.get(),
             method="POST",
-            header=HEADER,
+            header=header,
             data=body,
+            game_name="account",
         )
+        if isinstance(login_res, int):
+            return login_res
 
-        await self._mys_request(
+        save_res = await self._mys_request(
             url=SAVE_DEVICE.get(),
             method="POST",
-            header=HEADER,
+            header=header,
             data=body,
+            game_name="account",
         )
+        if isinstance(save_res, int):
+            return save_res
+        return login_res
 
     async def endpoint_request(
         self,
@@ -530,46 +639,43 @@ class BaseMysApi:
         )
         return data
 
-    @overload
-    async def ck_in_new_device(
-        self,
-        uid: str,
-        app_cookie: str,
-        game_name: Optional[str] = None,
-    ) -> Tuple[str, str, str, str]: ...
-
-    @overload
     async def ck_in_new_device(
         self,
         uid: str,
         app_cookie: Optional[str] = None,
         game_name: Optional[str] = None,
-    ) -> Optional[Tuple[str, str, str, str]]: ...
+        mys_id: Optional[str] = None,
+    ) -> Tuple[str, str, str, str]:
+        data: Optional[GsUser] = None
+        if mys_id:
+            data = await GsUser.base_select_data(mys_id=mys_id)
+        if data is None and app_cookie:
+            data = await GsUser.base_select_data(stoken=app_cookie)
+        if data is None and uid and uid != "0":
+            data = await GsUser.select_data_by_uid(uid, game_name)
 
-    async def ck_in_new_device(
-        self,
-        uid: str,
-        app_cookie: Optional[str] = None,
-        game_name: Optional[str] = None,
-    ):
-        data = await GsUser.base_select_data(stoken=app_cookie)
-        device_id = self.get_device_id()
         seed_id, seed_time = self.get_seed()
         if data and data.device_info:
+            device_id = data.device_id or self.get_device_id()
             fp = data.fp
             device_info = data.device_info
         else:
-            fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
+            device_id = data.device_id if data and data.device_id else self.get_device_id()
+            fp = data.fp if data and data.fp else await self.generate_fake_fp(device_id, seed_id, seed_time)
             device_info = "OnePlus/PHK110/OP2020L1"
-        if app_cookie is None:
-            app_cookie = await self.get_stoken(uid, game_name)
-            if app_cookie is None:
-                return logger.warning(t("log.mys.device_login_flow_fail"))
+        if not app_cookie:
+            app_cookie = data.stoken if data and data.stoken else await self.get_stoken(uid, game_name)
 
         if fp is None:
             fp = await self.generate_fake_fp(device_id, seed_id, seed_time)
 
-        await self.device_login_and_save(device_id, fp, device_info, app_cookie)
+        if app_cookie:
+            res = await self.device_login_and_save(device_id, fp, device_info, app_cookie)
+            if isinstance(res, int):
+                logger.warning(t("log.mys.device_login_flow_fail"))
+        else:
+            logger.warning(t("log.mys.device_login_flow_fail"))
+
         if await GsUser.user_exists(uid, game_name):
             await GsUser.update_data_by_uid_without_bot_id(uid, game_name, fp=fp, device_id=device_id)
         return fp, device_id, seed_id, seed_time
@@ -651,15 +757,15 @@ class BaseMysApi:
                             "device_info",
                             game_name,
                         )
-                        if dfp is not None:
-                            df = dfp.split("/")
+                        existing_ua = header["User-Agent"] if "User-Agent" in header else ""
+                        if dfp is not None and not (
+                            isinstance(existing_ua, str) and existing_ua.startswith(("okhttp/", "HYPContainer/"))
+                        ):
+                            _, model_name, sys_version, build_id = self._parse_device_info(dfp)
                             header["User-Agent"] = (
-                                "Mozilla/5.0 (Linux; Android 13; "
-                                f"{df[1]} {df[3]} "
-                                "; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Version/4.0 Chrome/104.0.5112.97"
-                                "Mobile Safari/537.36 miHoYoBBS/2"
-                                f"{mys_version}"
+                                f"Mozilla/5.0 (Linux; Android {sys_version}; {model_name} Build/{build_id}; wv) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
+                                f"Chrome/126.0.6478.133 Mobile Safari/537.36 miHoYoBBS/{self.mysVersion}"
                             )
                 except asyncio.TimeoutError:
                     logger.warning(t("log.mys.mhy_request_timeout_obtaining_dfp_fail"))

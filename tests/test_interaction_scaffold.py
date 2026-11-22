@@ -99,7 +99,7 @@ def test_ellipsis_followup_and_speaker_isolation() -> None:
     )
     assert detect_ellipsis_followup("小明(用户ID:9001)：那明天呢", h_multi, recent_tool_call=True, speaker_id="9001")
 
-    assert has_recent_tool_call([ModelResponse(parts=[ToolCallPart(tool_name="add_once_task", args="{}")])])
+    assert has_recent_tool_call([ModelResponse(parts=[ToolCallPart(tool_name="schedule_task", args="{}")])])
     assert not has_recent_tool_call([ModelResponse(parts=[TextPart(content="好呀")])])
     h_plain = [("user", "帮我弄一下那个"), ("assistant", "弄好啦")]
     assert detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=True)

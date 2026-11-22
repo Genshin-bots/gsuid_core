@@ -15,7 +15,7 @@
 - 市场条目里的 `tags` / `alias` 只是展示元数据；真正决定可导入性的是仓库内的**固定整包结构**：`manifest.json`（`format=gsuid-persona-bundle`）+ `persona.md` + 可选资源（`avatar.png` / `image.png` / `config.json` / `persona.json` / `appearance.txt` / `voice_anchor.txt` / `audio.*`）+ `packs/<包名>/{图片,tags.json}`。
 - 整包根可以在仓库根，也可以在**一级子目录**（如 `persona_sayu/persona_sayu/`），导入时自动定位。
 - 克隆目录为 `data/ai_core/persona_repos/<repo名>`；导入后在人格目录写入 `persona_store.json` 来源标记（repo_url / branch / commit / packs）。
-- **git 导入的人格只读**：内容、资源、persona.json、行为配置、表情包挂载一律以仓库为准，修改接口返回 status=1；仅 `scope` / `target_groups`（启用范围）允许本地修改，同步时保留。仓库拥有的表情包本身（改名 / 删除 / 成员增删）同样只读。
+- **git 导入的人格只读**：内容、资源、persona.json、行为配置、表情包挂载一律以仓库为准，修改接口返回 status=1；仅双通道启用范围与目标列表（`group_scope` / `private_scope` / `target_groups` / `target_users` / 兼容 `scope`，以及抢占参数 `takeover_conflicts`）允许本地修改，同步时保留。仓库拥有的表情包本身（改名 / 删除 / 成员增删）同样只读。
 - 复制人格时摘除来源标记并带走表情包挂载，得到一份可自由编辑的独立副本。
 - 表情包向量是派生数据：导入新记录时补写 Qdrant，失败由启动回填兜底，不随仓库搬运。
 
@@ -101,7 +101,7 @@ POST /api/persona-store/check/{persona_name}   # → {"hasUpdate": bool}
 POST /api/persona-store/update/{persona_name}
 ```
 
-同步流程：`git pull` → 校验 manifest 人格名一致（改名拒绝同步）→ 重新导入 → 恢复本地 `scope`/`target_groups` → 删除仓库已移除的资源文件 → 解除已移除包的绑定、清理独占包内失效成员 → 更新来源标记 commit。
+同步流程：`git pull` → 校验 manifest 人格名一致（改名拒绝同步）→ 重新导入 → 恢复本地双通道范围与目标列表（`group_scope`/`private_scope`/`target_groups`/`target_users`/`scope`） → 删除仓库已移除的资源文件 → 解除已移除包的绑定、清理独占包内失效成员 → 更新来源标记 commit。
 
 ## 48.5 卸载
 

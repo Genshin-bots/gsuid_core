@@ -12,7 +12,9 @@ Chat With History API
     }
 """
 
+import io
 import uuid
+import base64
 from typing import TYPE_CHECKING, List, Union, Optional
 
 from fastapi import Depends
@@ -61,6 +63,135 @@ class ChatWithHistoryRequest(BaseModel):
     as_judge: bool = False  # 评测判分：跳过人设/脚手架/工具，只出 PASS/FAIL 或 rubric JSON
     clock_at: Optional[str] = None  # 评测墙上「今天」；整字段，禁止从 message 解析
     skip_memory: bool = False  # 本轮不检索记忆（同账号 U_full / 金标粘贴）
+    session_id: Optional[str] = None  # 以 eval_sess_ 开头时跨请求复用同一会话，实测前缀缓存与长程状态
+    images: List[str] = []  # 评测图片载荷（synthetic:<文本> 或 base64 PNG），注册进 RM 供 read_image 实测
+
+
+def _render_synthetic_png(label: str) -> bytes:
+    """生成带清晰文字标签的合成 PNG，供评测注入 RM 并由 VLM/read_image 真实识别。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (480, 180), color=(250, 250, 252))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((8, 8, 471, 171), outline=(40, 60, 120), width=3)
+    font = ImageFont.load_default()
+    for cand in (
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(cand, 26)
+            break
+        except OSError:
+            continue
+    lines = [ln.strip() for ln in (label or "EVAL IMAGE").split("|") if ln.strip()][:4]
+    y = 28
+    for ln in lines:
+        draw.text((24, y), ln[:36], fill=(20, 20, 30), font=font)
+        y += 34
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def register_eval_images(images: List[str]) -> List[str]:
+    """把评测图片 spec（synthetic:... 或 base64）注册到 RM，返回真实 img_id 列表。"""
+    if not images:
+        return []
+    from gsuid_core.utils.resource_manager import RM
+
+    out: List[str] = []
+    for raw in images:
+        spec = (raw or "").strip()
+        if not spec:
+            continue
+        if spec.startswith("synthetic:"):
+            png_bytes = _render_synthetic_png(spec[len("synthetic:") :].strip())
+            out.append(RM.register(png_bytes))
+            continue
+        b64 = spec.split(",", 1)[1] if spec.startswith("data:") and "," in spec else spec
+        try:
+            decoded = base64.b64decode(b64, validate=False)
+        except (ValueError, TypeError):
+            continue
+        if decoded:
+            out.append(RM.register(decoded))
+    return out
+
+
+async def _flush_eval_session_logger(agent: "GsCoreAIAgent") -> None:
+    """评测请求结束后异步刷盘 session_log，避免阻塞事件循环并供 runner 秒级读取。"""
+    if agent._session_logger is not None:
+        from gsuid_core.pool import to_thread
+
+        try:
+            await to_thread(agent._session_logger._persist_sync)()
+        except OSError as exc:
+            logger.warning(t("log.webconsole.eval_session_log_flush_failed", err=exc))
+
+
+async def early_silence_eval_response(
+    agent: "GsCoreAIAgent",
+    *,
+    query: str,
+    image_ids: List[str],
+) -> dict[str, object]:
+    """BEFORE_AI_CHAT 钩子早停 <SILENCE> 时补写完结日志并刷盘，避免评测批跑等待超时。"""
+    if agent._session_logger is not None:
+        agent._session_logger.log_run_start()
+        agent._session_logger.log_result("<SILENCE>", [], silence_reason="before_ai_chat_hook")
+        agent._session_logger.log_run_end()
+    await _flush_eval_session_logger(agent)
+    return {
+        "status_code": 200,
+        "data": "<SILENCE>",
+        "memory": "",
+        "tool_calls": [],
+        "session_id": agent.session_id,
+        "image_ids": image_ids,
+    }
+
+
+def _visible_eval_text(raw: str) -> str:
+    """与生产出站一致：<reply #n> 等协议标签不进用户可见文本。"""
+    from gsuid_core.ai_core.utils import strip_framework_user_leaks, remainder_after_protocol_tags
+
+    return remainder_after_protocol_tags(strip_framework_user_leaks(raw)).strip()
+
+
+async def finalize_eval_turn_response(
+    agent: "GsCoreAIAgent",
+    *,
+    silenced_early: bool,
+    is_silence: bool,
+    has_result: bool,
+    result_text: object,
+    memory_text: str,
+    image_ids: List[str],
+) -> tuple[str, dict[str, object]]:
+    """统一收口评测轮响应体与出站可见文本（供 chat_with_history 与 eval_inbox_turn 共用）。"""
+    from gsuid_core.ai_core.utils import is_silence_marker
+
+    tool_calls = list(agent._last_attempt_tool_calls)
+    await _flush_eval_session_logger(agent)
+    sent = "\n".join(txt for txt in agent.last_run_visible_texts if txt.strip())
+    if silenced_early and not sent:
+        data = "<SILENCE>"
+    else:
+        data = _visible_eval_text(result_text) if has_result and isinstance(result_text, str) else ""
+        if (not data or is_silence_marker(data) or is_silence) and sent:
+            data = _visible_eval_text(sent)
+        if not data or is_silence_marker(data):
+            data = "<SILENCE>"
+    return data, {
+        "status_code": 200,
+        "data": data,
+        "memory": memory_text,
+        "tool_calls": tool_calls,
+        "session_id": agent.session_id,
+        "image_ids": image_ids,
+    }
 
 
 def http_dynamic_tools(*, as_judge: bool, enable_tools: bool) -> bool:
@@ -104,6 +235,10 @@ async def chatWithHistory(
     event.raw_text = req.message
     event.text = req.message
     event.is_tome = is_addressed_to_self(req.message, persona_name or "", False) if group_id else True
+    img_ids = register_eval_images(req.images)
+    if img_ids:
+        event.image_id_list = list(img_ids)
+        event.image_id = img_ids[0]
 
     _guard_on = bool(ai_config.get_config("content_guard_enable").data)
     if req.as_judge:
@@ -143,20 +278,38 @@ async def chatWithHistory(
                     persona_name=persona_name,
                 )
             )
-    agent = create_agent(
-        system_prompt=_sys_prompt,
-        persona_name=persona_name,
-        create_by=_create_by,
-        max_history=0 if req.as_judge else req.max_history,
-        task_level="low" if req.as_judge else "high",
-        task_kind=TASK_EVAL_JUDGE if req.as_judge else TASK_CHAT,
-        session_id=(f"judge_{user_id}" if req.as_judge else f"test_{user_id}_{uuid.uuid4().hex[:8]}"),
-        dynamic_tools=http_dynamic_tools(as_judge=req.as_judge, enable_tools=req.enable_tools),
-        wall_clock_budget=60.0 if req.as_judge else None,
-    )
-    agent.turn_clock = clock
-    if not req.as_judge:
-        _load_request_history(agent, req.history, _guard_on)
+    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+    reuse_sid = (req.session_id or "").strip()
+    reused_agent: Optional["GsCoreAIAgent"] = None
+    if not req.as_judge and reuse_sid.startswith("eval_sess_"):
+        reused_agent = get_ai_session_registry().get_ai_session(reuse_sid)
+
+    if reused_agent is not None:
+        agent = reused_agent
+        agent.turn_clock = clock
+    else:
+        sid = (
+            f"judge_{user_id}"
+            if req.as_judge
+            else (reuse_sid if reuse_sid.startswith("eval_sess_") else f"test_{user_id}_{uuid.uuid4().hex[:8]}")
+        )
+        agent = create_agent(
+            system_prompt=_sys_prompt,
+            persona_name=persona_name,
+            create_by=_create_by,
+            max_history=0 if req.as_judge else req.max_history,
+            task_level="low" if req.as_judge else "high",
+            task_kind=TASK_EVAL_JUDGE if req.as_judge else TASK_CHAT,
+            session_id=sid,
+            dynamic_tools=http_dynamic_tools(as_judge=req.as_judge, enable_tools=req.enable_tools),
+            wall_clock_budget=60.0 if req.as_judge else None,
+        )
+        agent.turn_clock = clock
+        if not req.as_judge:
+            _load_request_history(agent, req.history, _guard_on)
+            if reuse_sid.startswith("eval_sess_"):
+                get_ai_session_registry().set_ai_session(reuse_sid, agent)
 
     _bot = _Bot("HTTP")
     bot = Bot(_bot, event)
@@ -178,7 +331,7 @@ async def chatWithHistory(
 
     try:
         if not req.as_judge and await fire_hooks(AgentHookPoint.BEFORE_AI_CHAT, hook_ctx) is not HookDecision.CONTINUE:
-            return {"status_code": 200, "data": "<SILENCE>", "memory": ""}
+            return await early_silence_eval_response(agent, query=req.message, image_ids=img_ids)
 
         if req.as_judge:
             # 声明是跳过人设/脚手架/工具；走 run_interactive_turn 会灌 suffix/闸门，判分常不成 PASS/FAIL。
@@ -198,34 +351,15 @@ async def chatWithHistory(
             history_context="",
         )
         memory_text = hook_ctx.retrieved["memory"] if "memory" in hook_ctx.retrieved else ""
-        from gsuid_core.ai_core.utils import (
-            is_silence_marker,
-            strip_framework_user_leaks,
-            remainder_after_protocol_tags,
+        _, out = await finalize_eval_turn_response(
+            agent,
+            silenced_early=outcome.silenced_early,
+            is_silence=outcome.is_silence,
+            has_result=bool(outcome.result),
+            result_text=outcome.result_text,
+            memory_text=memory_text,
+            image_ids=img_ids,
         )
-
-        tool_calls = list(agent._last_attempt_tool_calls)
-        sent = "\n".join(t for t in agent.last_run_visible_texts if t.strip())
-        if outcome.silenced_early and not sent:
-            return {"status_code": 200, "data": "<SILENCE>", "memory": memory_text, "tool_calls": tool_calls}
-
-        def _visible_text(raw: str) -> str:
-            # 与生产出站一致：<reply #n> 等协议标签不进用户可见文本。
-            return remainder_after_protocol_tags(strip_framework_user_leaks(raw)).strip()
-
-        data = outcome.result_text if outcome.result else ""
-        if isinstance(data, str):
-            data = _visible_text(data)
-        if (not data or is_silence_marker(data) or outcome.is_silence) and sent:
-            data = _visible_text(sent)
-        if not data or is_silence_marker(data):
-            return {"status_code": 200, "data": "<SILENCE>", "memory": memory_text, "tool_calls": tool_calls}
-        out: dict[str, object] = {
-            "status_code": 200,
-            "data": data,
-            "memory": memory_text,
-            "tool_calls": tool_calls,
-        }
         return out
     except Exception as e:
         logger.error(t("log.webconsole.gscore_exception_chat_history", e=e))
@@ -290,6 +424,7 @@ async def _ingest_request_history(
             message_type=msg_type,
             timestamp=parse_iso_or_unix_timestamp(turn.timestamp),
             persona_name=req.persona_name or "",
+            at_targets=(str(user_id),) if (not group_id and turn.role == "assistant") else (),
         )
     worker = get_ingestion_worker()
     if worker is not None:

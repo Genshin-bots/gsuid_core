@@ -516,7 +516,7 @@ Authorization: Bearer <token>
 }
 ```
 
-整目录复制（`persona.md`、头像/立绘/音频、`config.json`、`persona.json` 等）。新名称在源名后追加 `2`、`3`、… 直到不冲突。副本的 `scope` 强制为 `disabled`，避免把全局范围一并复制。
+整目录复制（`persona.md`、头像/立绘/音频、`config.json`、`persona.json` 等）。新名称在源名后追加 `2`、`3`、… 直到不冲突。副本双通道范围强制为 `off`（派生 `scope` 为 `disabled`）并清空 `target_groups` / `target_users`，避免把全局兜底或指定绑定一并复制出去。
 
 **错误响应**（源不存在）：
 ```json
@@ -581,8 +581,11 @@ Authorization: Bearer <token>
     "msg": "ok",
     "data": {
         "ai_mode": ["提及应答", "定时巡检"],
+        "group_scope": "specific",
+        "private_scope": "off",
         "scope": "specific",
         "target_groups": ["群聊ID1", "群聊ID2"],
+        "target_users": [],
         "inspect_interval": 30
     }
 }
@@ -596,8 +599,11 @@ Authorization: Bearer <token>
 | timezone | string | IANA 时区，默认 `Asia/Shanghai` |
 | autonomy_interval_minutes | int | 自主行动冷却，15–720，默认 45 |
 | autonomy_care_min_zone | string | `familiar` 或 `close`。主人始终在关心名单里 |
-| scope | string | 启用范围：`disabled` / `global`（全部群+私聊） / `global_group`（仅全部群聊） / `global_private`（仅全部私聊） / `specific`（仅指定群聊/用户） |
-| target_groups | array | 当 scope 为 "specific" 时，指定该人格对哪些群聊/角色启用 |
+| group_scope | string | 群聊通道启用范围：`off`（关闭）/ `specific`（仅指定群聊）/ `all`（全部群聊兜底，全系统唯一） |
+| private_scope | string | 私聊通道启用范围：`off`（关闭）/ `specific`（仅指定用户）/ `all`（全部私聊兜底，全系统唯一） |
+| target_groups | array | 当 `group_scope` 为 `"specific"` 时，指定该人格对哪些群聊启用 |
+| target_users | array | 当 `private_scope` 为 `"specific"` 时，指定该人格对哪些私聊用户启用 |
+| scope | string | 兼容派生字段：`disabled` / `global` / `global_group` / `global_private` / `specific`（由双通道自动派生，供旧客户端与回滚兼容） |
 | inspect_interval | integer | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时有效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 唤醒关键词列表，当 ai_mode 包含"提及应答"时有效，消息包含这些关键词也会触发AI响应 |
 | aside_image_probability | number | 命令补充：回复只有图片时补一句的概率，0 到 1。默认 0.2 |
@@ -643,8 +649,11 @@ Content-Type: application/json
 ```json
 {
     "ai_mode": ["提及应答", "定时巡检"],
-    "scope": "specific",
+    "group_scope": "specific",
+    "private_scope": "all",
     "target_groups": ["群聊ID1", "群聊ID2"],
+    "target_users": [],
+    "takeover_conflicts": false,
     "inspect_interval": 30,
     "keywords": ["关键词1", "关键词2"]
 }
@@ -654,8 +663,12 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | ai_mode | array | 否 | AI行动模式列表 |
-| scope | string | 否 | 启用范围：`disabled` / `global` / `specific` / `global_group` / `global_private` |
-| target_groups | array | 否 | 目标群聊/角色列表，当 scope 为 "specific" 时生效 |
+| group_scope | string | 否 | 群聊通道启用范围：`off` / `specific` / `all`（推荐） |
+| private_scope | string | 否 | 私聊通道启用范围：`off` / `specific` / `all`（推荐） |
+| target_groups | array | 否 | 目标群聊列表，当 `group_scope` 为 `"specific"` 时生效 |
+| target_users | array | 否 | 目标私聊用户列表，当 `private_scope` 为 `"specific"` 时生效 |
+| takeover_conflicts | boolean | 否 | 设为 `true` 时，先校验其余字段，再原子关闭冲突人格的对应通道（保留其另一通道） |
+| scope | string | 否 | 旧客户端兼容字段：`disabled` / `global` / `specific` / `global_group` / `global_private`（同时传双通道字段时以双通道为准） |
 | inspect_interval | integer | 否 | 定时巡检间隔（分钟），当 ai_mode 包含"定时巡检"时生效，可选值：5, 10, 15, 30, 60 |
 | keywords | array | 否 | 唤醒关键词列表，当 ai_mode 包含"提及应答"时生效，消息包含这些关键词也会触发AI响应 |
 | aside_image_probability | number | 否 | 命令补充只发图片时的概率，0 到 1 |
@@ -670,11 +683,14 @@ Content-Type: application/json
 ```json
 {
     "status": 0,
-    "msg": "已更新: scope: specific, target_groups: ['群聊ID1', '群聊ID2']",
+    "msg": "已更新: target_groups: ['群聊ID1', '群聊ID2'], group_scope: specific, private_scope: all",
     "data": {
         "ai_mode": ["提及应答", "定时巡检"],
+        "group_scope": "specific",
+        "private_scope": "all",
         "scope": "specific",
         "target_groups": ["群聊ID1", "群聊ID2"],
+        "target_users": [],
         "inspect_interval": 30,
         "keywords": ["关键词1", "关键词2"]
     }
@@ -690,27 +706,27 @@ Content-Type: application/json
 }
 ```
 
-**错误响应**（全局启用冲突）：
+**错误响应**（通道全局冲突）：
 ```json
 {
     "status": 1,
-    "msg": "无法设置为该启用范围，因为 '其他角色名' 已占用全局范围",
+    "msg": "无法设为全部群聊，因为 '其他角色名' 已占用群聊全局范围",
     "data": null
 }
 ```
 
 **⚠️ 重要提示**：
-> 全局互斥：`global` / `global_group` / `global_private` 只能有一个。
-> 群聊+私聊都要覆盖时用 `global`。冲突时后端返回错误。
+> 通道全局互斥：全系统最多 1 个人格占 `group_scope=all`，最多 1 个人格占 `private_scope=all`，两通道互不冲突。
 >
-> 前端在设置 `global` / `global_group` / `global_private` 时，应当：
-> 1. 对照已有人格的 scope，检查通道是否重叠
-> 2. 如果存在冲突，提示用户先取消冲突人格的对应范围
-> 3. 或者提供切换功能，自动将冲突人格的 scope 改为 `disabled`
+> 前端在将某通道设为 `all` 时，应当：
+> 1. 对照已有人格检查对应通道是否已有占用者
+> 2. 如果存在冲突，提示用户确认后传 `takeover_conflicts: true`，由后端校验整单并原子关闭冲突人格的对应通道（保留其另一通道）
 
 ---
 
 ## 13.16 获取全局启用的角色
+
+> **说明**：该兼容接口仅返回**同时**占用 `group_scope="all"` 与 `private_scope="all"` 的角色；单通道兜底角色请通过 `GET /api/persona/config/all` 按 `group_scope` / `private_scope` 查询。
 
 ```
 GET /api/persona/config/global
@@ -760,15 +776,21 @@ Authorization: Bearer <token>
     "data": {
         "角色名1": {
             "ai_mode": ["提及应答", "定时巡检"],
+            "group_scope": "all",
+            "private_scope": "all",
             "scope": "global",
             "target_groups": [],
+            "target_users": [],
             "inspect_interval": 30,
             "keywords": ["关键词1", "关键词2"]
         },
         "角色名2": {
             "ai_mode": ["提及应答"],
+            "group_scope": "specific",
+            "private_scope": "off",
             "scope": "specific",
             "target_groups": ["群聊ID1"],
+            "target_users": [],
             "inspect_interval": 15,
             "keywords": []
         }

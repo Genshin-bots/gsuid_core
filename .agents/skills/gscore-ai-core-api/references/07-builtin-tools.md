@@ -70,27 +70,19 @@ async def send_message_by_ai(
 > 通过后走 `send_chat_result(..., ooc_check=False)` 做呈现归一化。改造时不要绕过闸门，
 > 详见 [gscore-development §7.12 / §12.22](../../gscore-development/references/07-tool-registry-and-agent.md)。
 
-### `add_once_task` — 添加一次性定时任务
+### `schedule_task` — 定时任务统一创建入口
 
 ```python
 @ai_tools(category="self")
-async def add_once_task(
+async def schedule_task(
     ctx: RunContext[ToolContext],
-    run_time: str,               # 执行时间，格式 "YYYY-MM-DD HH:MM:SS"
-    task_prompt: str,            # 任务描述
-) -> str
-```
-
-### `add_interval_task` — 添加循环任务
-
-```python
-@ai_tools(category="self")
-async def add_interval_task(
-    ctx: RunContext[ToolContext],
-    interval_value: int,         # 间隔值
-    task_prompt: str,            # 任务描述
-    interval_type: str = "minutes",  # 间隔类型: "minutes"/"hours"/"days"
-    max_executions: int = 10,    # 最大执行次数（上限10）
+    mode: Literal["once", "interval"],  # "once" 一次性 / "interval" 循环
+    task_prompt: str,            # 到点要执行的提醒内容
+    run_time: str = "",          # mode="once" 的触发时间 "YYYY-MM-DD HH:MM:SS"
+    start_time: str = "",        # mode="interval" 的首次触发时间
+    interval_value: int = 0,     # mode="interval" 的间隔数值（最小等价 5 分钟）
+    interval_type: str = "minutes",  # "minutes"/"hours"/"days"
+    max_executions: int = 10,    # 循环最大执行次数（上限 150）
 ) -> str
 ```
 
@@ -105,7 +97,7 @@ async def add_interval_task(
 
 定时任务的"管理"类工具（列出/查询/修改/取消/暂停/恢复）**不属于保底池**，由 `search_tools()`
 按用户 query 向量检索按需加载——用户使用这些功能时通常会显式带任务 ID 或明确表达"取消任务""暂停任务"
-等需求，向量命中率高。而"创建"入口 `add_once_task` / `add_interval_task` 因口语化触发（"每天下午三点
+等需求，向量命中率高。而"创建"入口 `schedule_task` 因口语化触发（"每天下午三点
 半给我推送新闻"）向量难命中，故保留在 `self` 保底池。
 
 > 任务数据模型见 [§9 Scheduled Task](./09-scheduled-tasks.md)。
@@ -690,7 +682,7 @@ async def list_available_tools(
 - 真实 ID（`task_id` / `root_task_id`）由框架代管，**绝不作为 LLM 工具参数暴露**；
   任务引用一律走自然语言句柄 + 框架解析；artifact 用显式 `res_xxx` 句柄。
 - **没有定时器**：Kanban 纯事件驱动，需要"明天 6 点触发""每天复盘"这类时间
-  触发，请用 [§7.1](#71-self-工具categoryself) 的 `add_once_task` / `add_interval_task` 在那个时刻把主人格
+  触发，请用 [§7.1](#71-self-工具categoryself) 的 `schedule_task` 在那个时刻把主人格
   唤醒，再由主人格视情况调 `register_kanban_task`。
 - artifact 跨 `root_task_id` 严格隔离；同一任务树内才能通过 `artifact_get`
   互读。

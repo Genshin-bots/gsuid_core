@@ -3,20 +3,26 @@ Persona 配置管理模块
 
 提供每个 Persona 的独立配置管理，包括：
 - AI 行动模式 (ai_mode)
-- 启用范围 (scope: disabled/global/specific/global_group/global_private)
-- 目标群聊 (target_groups: 当 scope 为 specific 时使用)
+- 双通道启用范围 (group_scope / private_scope: off / specific / all)
+- 目标群聊与私聊用户 (target_groups / target_users)
+- 旧 scope 字段保留作单向派生兼容投影，运行时一律以双通道字段为准。
 
-全局范围互斥：``global`` / ``global_group`` / ``global_private`` 三者只能有一个。
-群聊+私聊都要覆盖时用 ``global``，不要拆成两个专属全局人格。
+通道全局互斥：全系统最多一人占 ``group_scope=all``，最多一人占 ``private_scope=all``，
+两通道互不冲突。
 """
 
 import re
-from typing import Dict, List, Optional, FrozenSet
+import json
+import time
+from typing import Dict, List, Optional
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass
 from collections.abc import Mapping
+
+from msgspec import to_builtins
+from boltons.fileutils import atomic_save
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -32,6 +38,7 @@ from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetMan
 
 from ..resource import PERSONA_PATH
 
+CHANNEL_SCOPE_VALUES: tuple[str, ...] = ("off", "specific", "all")
 PERSONA_SCOPE_VALUES = (
     "disabled",
     "global",
@@ -39,7 +46,37 @@ PERSONA_SCOPE_VALUES = (
     "global_group",
     "global_private",
 )
-GLOBAL_LIKE_SCOPES = frozenset({"global", "global_group", "global_private"})
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelScopes:
+    """群聊与私聊两个正交通道的启用范围。"""
+
+    group_scope: str = "off"
+    private_scope: str = "off"
+
+    @property
+    def is_enabled(self) -> bool:
+        return self.group_scope != "off" or self.private_scope != "off"
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelDeploymentSnapshot:
+    """部署态范围快照：用于整包/git 覆盖导入时保留本地启用范围与目标列表。"""
+
+    group_scope: str
+    private_scope: str
+    target_groups: tuple[str, ...]
+    target_users: tuple[str, ...]
+
+
+EMPTY_CHANNEL_DEPLOYMENT = ChannelDeploymentSnapshot(
+    group_scope="off",
+    private_scope="off",
+    target_groups=(),
+    target_users=(),
+)
+
 
 # 命令回复发出后，按概率用人设再补一句。默认不在 ai_mode 里，所以关闭。
 ASIDE_MODE = "命令补充"
@@ -84,7 +121,7 @@ class DriveTraits:
     arc_persistence: int = 2
 
 
-_CURIOSITY_VALUES = frozenset({"balanced", "people", "analytical", "whimsical"})
+CURIOSITY_FOCUS_VALUES = frozenset({"balanced", "people", "analytical", "whimsical"})
 
 
 def _clamped_int(raw: object, default: int, low: int, high: int) -> int:
@@ -96,7 +133,7 @@ def read_drive_traits(config: StringConfig) -> DriveTraits:
     initiative = _clamped_int(config.get_config("social_initiative").data, 50, 0, 100)
     endurance = _clamped_int(config.get_config("energy_endurance").data, 50, 0, 100)
     focus_raw = config.get_config("curiosity_focus").data
-    focus = focus_raw if isinstance(focus_raw, str) and focus_raw in _CURIOSITY_VALUES else "balanced"
+    focus = focus_raw if isinstance(focus_raw, str) and focus_raw in CURIOSITY_FOCUS_VALUES else "balanced"
     persistence = _clamped_int(config.get_config("arc_persistence").data, 2, 1, 3)
     return DriveTraits(
         social_initiative=initiative,
@@ -148,35 +185,94 @@ def is_within_active_hours(
     return False
 
 
-def global_channels_for_scope(scope: str) -> FrozenSet[str]:
-    """该 scope 占用的全局通道：group / private。"""
+def legacy_scope_to_channels(scope: str) -> ChannelScopes:
+    """将旧单字段 scope 映射为双通道策略（方案 A：specific 仅迁群聊，私聊置 off）。"""
     if scope == "global":
-        return frozenset({"group", "private"})
+        return ChannelScopes(group_scope="all", private_scope="all")
     if scope == "global_group":
-        return frozenset({"group"})
+        return ChannelScopes(group_scope="all", private_scope="off")
     if scope == "global_private":
-        return frozenset({"private"})
-    return frozenset()
-
-
-def scope_covers_session(scope: str, *, is_private: bool) -> bool:
-    """``global*`` 是否覆盖当前会话类型。specific / disabled 恒为 False。"""
-    channel = "private" if is_private else "group"
-    return channel in global_channels_for_scope(scope)
-
-
-def persona_should_inspect_session(
-    scope: str,
-    *,
-    group_id: Optional[str],
-    target_groups: List[str],
-) -> bool:
-    """巡检过滤器：该 persona 的 scope 是否覆盖此会话。"""
-    if scope == "disabled":
-        return False
+        return ChannelScopes(group_scope="off", private_scope="all")
     if scope == "specific":
-        return group_id in target_groups if group_id else False
-    return scope_covers_session(scope, is_private=not bool(group_id))
+        return ChannelScopes(group_scope="specific", private_scope="off")
+    return ChannelScopes(group_scope="off", private_scope="off")
+
+
+def derive_legacy_scope(group_scope: str, private_scope: str) -> str:
+    """从双通道策略派生兼容旧字段 scope（保留给旧客户端与版本回滚）。"""
+    if group_scope == "off" and private_scope == "off":
+        return "disabled"
+    if group_scope == "all" and private_scope == "all":
+        return "global"
+    if group_scope == "all" and private_scope == "off":
+        return "global_group"
+    if group_scope == "off" and private_scope == "all":
+        return "global_private"
+    return "specific"
+
+
+def _normalize_channel_scope(raw: object) -> str:
+    if isinstance(raw, str) and raw in CHANNEL_SCOPE_VALUES:
+        return raw
+    return "off"
+
+
+def read_channel_scopes(config: StringConfig) -> ChannelScopes:
+    """读取人格的双通道启用范围；无新键时回退旧 scope 推导。"""
+    has_group = "group_scope" in config.config
+    has_private = "private_scope" in config.config
+    if has_group or has_private:
+        raw_group = config.config["group_scope"].data if has_group else "off"
+        raw_private = config.config["private_scope"].data if has_private else "off"
+        return ChannelScopes(
+            group_scope=_normalize_channel_scope(raw_group),
+            private_scope=_normalize_channel_scope(raw_private),
+        )
+    raw_legacy = config.config["scope"].data if "scope" in config.config else "disabled"
+    legacy = raw_legacy if isinstance(raw_legacy, str) else "disabled"
+    return legacy_scope_to_channels(legacy)
+
+
+def read_target_list(config: StringConfig, key: str) -> list[str]:
+    """安全读取目标群聊/私聊列表并去重去空白。"""
+    if key not in config.config:
+        return []
+    raw = config.config[key].data
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            text = item.strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+    return cleaned
+
+
+def is_persona_enabled(config: StringConfig) -> bool:
+    """任一通道非 off 即视为人格已启用。"""
+    return read_channel_scopes(config).is_enabled
+
+
+def persona_covers_session(
+    config: StringConfig,
+    *,
+    group_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> bool:
+    """统一会话覆盖判定：路由、巡检与自主行动共用此真值源。"""
+    scopes = read_channel_scopes(config)
+    if group_id:
+        if scopes.group_scope == "all":
+            return True
+        if scopes.group_scope == "specific":
+            return group_id in read_target_list(config, "target_groups")
+        return False
+    if scopes.private_scope == "all":
+        return True
+    if scopes.private_scope == "specific":
+        return bool(user_id) and user_id in read_target_list(config, "target_users")
+    return False
 
 
 # 默认配置项
@@ -225,20 +321,35 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
         120.0,
         min_value=0.0,
     ),
-    "scope": GsStrConfig(
-        "启用范围",
-        "指定该人格的启用范围: disabled(不启用), "
-        "global(对所有群/私聊启用), global_group(仅全部群聊), "
-        "global_private(仅全部私聊), specific(仅指定群聊/用户)。"
-        "global / global_group / global_private 全局互斥，只能有一个",
-        "disabled",
-        options=list(PERSONA_SCOPE_VALUES),
+    "group_scope": GsStrConfig(
+        "群聊启用范围",
+        "群聊通道启用范围: off(关闭), specific(仅指定群聊), all(全部群聊，全系统仅允许一个人格)",
+        "off",
+        options=list(CHANNEL_SCOPE_VALUES),
     ),
     "target_groups": GsListStrConfig(
-        "目标群聊/角色",
-        "当启用范围为 'specific' 时，指定该人格对哪些群聊/角色启用",
+        "目标群聊",
+        "当群聊启用范围为 'specific' 时，指定该人格对哪些群聊启用",
         [],
         options=[],
+    ),
+    "private_scope": GsStrConfig(
+        "私聊启用范围",
+        "私聊通道启用范围: off(关闭), specific(仅指定用户), all(全部私聊，全系统仅允许一个人格)",
+        "off",
+        options=list(CHANNEL_SCOPE_VALUES),
+    ),
+    "target_users": GsListStrConfig(
+        "目标私聊用户",
+        "当私聊启用范围为 'specific' 时，指定该人格对哪些私聊用户启用",
+        [],
+        options=[],
+    ),
+    "scope": GsStrConfig(
+        "启用范围(兼容派生)",
+        "由 group_scope 与 private_scope 自动派生，仅作旧接口与版本回滚兼容。",
+        "disabled",
+        options=list(PERSONA_SCOPE_VALUES),
     ),
     "social_initiative": GsIntConfig(
         "社交主动度",
@@ -514,12 +625,137 @@ def _stored_int(config: StringConfig, key: str, default: int, low: int, high: in
     return raw
 
 
+def _gsc_dict(key: str, data: str | list[str]) -> dict[str, object]:
+    built: object = to_builtins(DEFAULT_PERSONA_CONFIG[key])
+    entry: dict[str, object] = dict(built) if isinstance(built, dict) else {}
+    entry["data"] = data
+    return entry
+
+
+def rewrite_config_bytes_with_deployment(
+    raw_bytes: bytes,
+    snapshot: ChannelDeploymentSnapshot,
+) -> bytes | None:
+    """在内存中改写 config.json 的部署态字段，供整包导入/导出一次落盘且避免伪迁移。"""
+    try:
+        raw_obj: object = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw_obj, dict):
+        return None
+    raw_obj["group_scope"] = _gsc_dict("group_scope", snapshot.group_scope)
+    raw_obj["private_scope"] = _gsc_dict("private_scope", snapshot.private_scope)
+    raw_obj["scope"] = _gsc_dict("scope", derive_legacy_scope(snapshot.group_scope, snapshot.private_scope))
+    raw_obj["target_groups"] = _gsc_dict("target_groups", list(snapshot.target_groups))
+    raw_obj["target_users"] = _gsc_dict("target_users", list(snapshot.target_users))
+    return json.dumps(raw_obj, indent=4, ensure_ascii=False).encode("utf-8")
+
+
+def _write_channel_scopes(config: StringConfig, group_scope: str, private_scope: str) -> bool:
+    """一次性写入双通道与派生旧 scope，单次落盘避免半写入。"""
+    if "group_scope" not in config.config or "private_scope" not in config.config or "scope" not in config.config:
+        return False
+    group_item = config.config["group_scope"]
+    private_item = config.config["private_scope"]
+    legacy_item = config.config["scope"]
+    if (
+        not isinstance(group_item, GsStrConfig)
+        or not isinstance(private_item, GsStrConfig)
+        or not isinstance(legacy_item, GsStrConfig)
+    ):
+        return False
+    group_item.data = group_scope
+    private_item.data = private_scope
+    legacy_item.data = derive_legacy_scope(group_scope, private_scope)
+    config.write_config()
+    return True
+
+
+def _migrate_legacy_scope_file(config_path: Path) -> bool:
+    """加载前原位迁移旧 scope 到双通道字段（方案 A），避免 reconcile_config 先补 off。"""
+    if not config_path.is_file():
+        return False
+    try:
+        raw_obj: object = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(raw_obj, dict):
+        return False
+    if "group_scope" in raw_obj or "private_scope" in raw_obj:
+        return False
+    if "scope" not in raw_obj:
+        return False
+
+    legacy_scope = "disabled"
+    scope_entry: object = raw_obj["scope"]
+    if isinstance(scope_entry, dict) and "data" in scope_entry and isinstance(scope_entry["data"], str):
+        legacy_scope = scope_entry["data"]
+
+    channels = legacy_scope_to_channels(legacy_scope)
+    raw_obj["group_scope"] = _gsc_dict("group_scope", channels.group_scope)
+    raw_obj["private_scope"] = _gsc_dict("private_scope", channels.private_scope)
+    if "target_users" not in raw_obj:
+        raw_obj["target_users"] = _gsc_dict("target_users", [])
+    raw_obj["scope"] = _gsc_dict("scope", derive_legacy_scope(channels.group_scope, channels.private_scope))
+
+    payload = json.dumps(raw_obj, indent=4, ensure_ascii=False).encode("utf-8")
+    # 复用 Windows 文件锁退避重试，写盘失败必须抛错，防止后续 reconcile_config 静默重置为 off
+    last_err: OSError | None = None
+    for attempt in range(5):
+        try:
+            with atomic_save(
+                str(config_path),
+                text_mode=False,
+                overwrite=True,
+                overwrite_part=True,
+                file_perms=0o644,
+            ) as handle:
+                if handle is None:
+                    raise OSError(f"atomic_save returned None for {config_path}")
+                handle.write(payload)
+                last_err = None
+                break
+        except OSError as exc:
+            last_err = exc
+            if attempt < 4:
+                time.sleep(0.25 * (attempt + 1))
+    if last_err is not None:
+        raise last_err
+
+    persona_name = config_path.parent.name
+    logger.info(
+        t(
+            "log.persona.scope_migrated",
+            persona_name=persona_name,
+            old_scope=legacy_scope,
+            group_scope=channels.group_scope,
+            private_scope=channels.private_scope,
+        )
+    )
+    if legacy_scope == "specific" and "target_groups" in raw_obj:
+        tg_entry: object = raw_obj["target_groups"]
+        if (
+            isinstance(tg_entry, dict)
+            and "data" in tg_entry
+            and isinstance(tg_entry["data"], list)
+            and tg_entry["data"]
+        ):
+            logger.warning(
+                t(
+                    "log.persona.scope_migrated_specific_dm_hint",
+                    persona_name=persona_name,
+                    count=len(tg_entry["data"]),
+                )
+            )
+    return True
+
+
 class PersonaConfigManager(ConfigSetManager):
     """
     Persona 配置管理器
 
     继承自 ConfigSetManager，使用 StringConfig 对象进行配置管理。
-    全局范围互斥：global / global_group / global_private 只能有一个。
+    通道全局互斥：group_scope=all 与 private_scope=all 各自全系统唯一，互不冲突。
     """
 
     def __init__(self):
@@ -534,6 +770,10 @@ class PersonaConfigManager(ConfigSetManager):
         from gsuid_core.utils.path_safety import safe_join
 
         return safe_join(self._base_path, config_name, "config.json")
+
+    def _create_string_config(self, config_name: str) -> StringConfig:
+        _migrate_legacy_scope_file(self._get_config_path(config_name))
+        return super()._create_string_config(config_name)
 
     def _list_configs(self) -> List[str]:
         """列出所有 Persona 配置"""
@@ -564,118 +804,315 @@ class PersonaConfigManager(ConfigSetManager):
         return configs
 
     def get_global_persona(self) -> Optional[str]:
-        """
-        获取当前配置为 "global" (对所有群/私聊启用) 的 Persona 名称
-
-        不含 ``global_group`` / ``global_private``。需要通道回退时用
-        ``get_fallback_persona``。
-
-        Returns:
-            Persona 名称，如果没有则返回 None
-        """
+        """获取同时占群聊与私聊全部通道的 Persona；单通道回退请用 get_fallback_persona。"""
         for persona_name, config in self.get_all_configs().items():
-            scope = config.get_config("scope").data
-            if scope == "global":
+            scopes = read_channel_scopes(config)
+            if scopes.group_scope == "all" and scopes.private_scope == "all":
                 return persona_name
         return None
 
     def get_fallback_persona(self, *, is_private: bool) -> Optional[str]:
-        """按会话类型取全局回退人格：优先 ``global``，否则通道专属。"""
-        global_persona: Optional[str] = None
-        channel_persona: Optional[str] = None
+        """按会话类型取通道全局回退人格（group_scope=all / private_scope=all）。"""
         for persona_name, config in self.get_all_configs().items():
-            scope = config.get_config("scope").data
-            if scope == "global":
-                global_persona = persona_name
-            elif scope_covers_session(scope, is_private=is_private):
-                channel_persona = persona_name
-        return global_persona or channel_persona
+            scopes = read_channel_scopes(config)
+            channel_scope = scopes.private_scope if is_private else scopes.group_scope
+            if channel_scope == "all":
+                return persona_name
+        return None
 
-    def find_conflicting_global_personas(self, persona_name: str, scope: str) -> List[str]:
-        """返回其他已占用任一全局范围（global / global_group / global_private）的人格。"""
-        if scope not in GLOBAL_LIKE_SCOPES:
-            return []
-        conflicts: List[str] = []
+    def find_channel_conflicts(
+        self,
+        persona_name: str,
+        *,
+        group_scope: str | None = None,
+        private_scope: str | None = None,
+    ) -> dict[str, list[str]]:
+        """按通道检查全局互斥：仅当某通道设为 all 时检查该通道占用者。"""
+        group_conflicts: list[str] = []
+        private_conflicts: list[str] = []
+        if group_scope != "all" and private_scope != "all":
+            return {"group": group_conflicts, "private": private_conflicts}
         for other_name, config in self.get_all_configs().items():
             if other_name == persona_name:
                 continue
-            other_scope = config.get_config("scope").data
-            if other_scope in GLOBAL_LIKE_SCOPES:
-                conflicts.append(other_name)
-        return conflicts
+            other = read_channel_scopes(config)
+            if group_scope == "all" and other.group_scope == "all":
+                group_conflicts.append(other_name)
+            if private_scope == "all" and other.private_scope == "all":
+                private_conflicts.append(other_name)
+        return {"group": group_conflicts, "private": private_conflicts}
 
-    def validate_global_uniqueness(self, persona_name: str, scope: str) -> tuple[bool, Optional[str]]:
-        """
-        验证全局范围互斥
+    def snapshot_channel_deployment(self, persona_name: str) -> ChannelDeploymentSnapshot:
+        """抓取人格本地部署态范围与目标列表，供覆盖导入前留底。"""
+        cfg = self.get_config(persona_name)
+        scopes = read_channel_scopes(cfg)
+        return ChannelDeploymentSnapshot(
+            group_scope=scopes.group_scope,
+            private_scope=scopes.private_scope,
+            target_groups=tuple(read_target_list(cfg, "target_groups")),
+            target_users=tuple(read_target_list(cfg, "target_users")),
+        )
 
-        Args:
-            persona_name: 要设置的 Persona 名称
-            scope: 启用范围
+    def restore_channel_deployment(
+        self,
+        persona_name: str,
+        snapshot: ChannelDeploymentSnapshot,
+    ) -> bool:
+        """一次性恢复双通道范围、派生旧 scope 与目标列表，单次写盘避免中间态。"""
+        self.drop_cache(persona_name)
+        cfg = self.get_config(persona_name)
+        keys_str = ("group_scope", "private_scope", "scope")
+        keys_list = ("target_groups", "target_users")
+        if any(k not in cfg.config for k in (*keys_str, *keys_list)):
+            return False
+        group_item = cfg.config["group_scope"]
+        private_item = cfg.config["private_scope"]
+        legacy_item = cfg.config["scope"]
+        groups_item = cfg.config["target_groups"]
+        users_item = cfg.config["target_users"]
+        if (
+            not isinstance(group_item, GsStrConfig)
+            or not isinstance(private_item, GsStrConfig)
+            or not isinstance(legacy_item, GsStrConfig)
+            or not isinstance(groups_item, GsListStrConfig)
+            or not isinstance(users_item, GsListStrConfig)
+        ):
+            return False
+        derived = derive_legacy_scope(snapshot.group_scope, snapshot.private_scope)
+        next_groups = list(snapshot.target_groups)
+        next_users = list(snapshot.target_users)
+        if (
+            group_item.data == snapshot.group_scope
+            and private_item.data == snapshot.private_scope
+            and legacy_item.data == derived
+            and groups_item.data == next_groups
+            and users_item.data == next_users
+        ):
+            return True
+        group_item.data = snapshot.group_scope
+        private_item.data = snapshot.private_scope
+        legacy_item.data = derived
+        groups_item.data = next_groups
+        users_item.data = next_users
+        cfg.write_config()
+        return True
 
-        Returns:
-            (是否有效, 冲突的 Persona 名称)
-            disabled/specific 总是 (True, None)
-        """
-        conflicts = self.find_conflicting_global_personas(persona_name, scope)
-        if conflicts:
-            return False, conflicts[0]
-        return True, None
+    def validate_channel_scopes(
+        self,
+        persona_name: str,
+        *,
+        group_scope: str | None = None,
+        private_scope: str | None = None,
+        legacy_scope: str | None = None,
+        takeover_conflicts: bool = False,
+    ) -> tuple[bool, str]:
+        """校验双通道或兼容旧 scope 的取值与通道全局互斥（不写盘）。"""
+        if group_scope is not None or private_scope is not None:
+            if group_scope is not None and group_scope not in CHANNEL_SCOPE_VALUES:
+                return False, f"无效的群聊启用范围: {group_scope}"
+            if private_scope is not None and private_scope not in CHANNEL_SCOPE_VALUES:
+                return False, f"无效的私聊启用范围: {private_scope}"
+            if takeover_conflicts:
+                return True, "ok"
+            conflicts = self.find_channel_conflicts(
+                persona_name,
+                group_scope=group_scope,
+                private_scope=private_scope,
+            )
+            if conflicts["group"]:
+                return False, f"无法设为全部群聊，因为 '{conflicts['group'][0]}' 已占用群聊全局范围"
+            if conflicts["private"]:
+                return False, f"无法设为全部私聊，因为 '{conflicts['private'][0]}' 已占用私聊全局范围"
+            return True, "ok"
 
-    def set_scope(self, persona_name: str, scope: str) -> tuple[bool, str]:
-        """
-        设置 Persona 的启用范围
+        if legacy_scope is not None:
+            if legacy_scope not in PERSONA_SCOPE_VALUES:
+                return False, f"无效的启用范围: {legacy_scope}"
+            if takeover_conflicts:
+                return True, "ok"
+            current = read_channel_scopes(self.get_config(persona_name))
+            if derive_legacy_scope(current.group_scope, current.private_scope) == legacy_scope:
+                return True, "ok"
+            mapped = legacy_scope_to_channels(legacy_scope)
+            conflicts = self.find_channel_conflicts(
+                persona_name,
+                group_scope=mapped.group_scope if mapped.group_scope == "all" else None,
+                private_scope=mapped.private_scope if mapped.private_scope == "all" else None,
+            )
+            if conflicts["group"]:
+                return False, f"无法设为全部群聊，因为 '{conflicts['group'][0]}' 已占用群聊全局范围"
+            if conflicts["private"]:
+                return False, f"无法设为全部私聊，因为 '{conflicts['private'][0]}' 已占用私聊全局范围"
+        return True, "ok"
 
-        会自动处理全局范围互斥
+    def set_channel_scopes(
+        self,
+        persona_name: str,
+        *,
+        group_scope: str | None = None,
+        private_scope: str | None = None,
+        takeover_conflicts: bool = False,
+    ) -> tuple[bool, str]:
+        """设置群聊/私聊通道范围，按通道独立校验全局互斥并同步派生旧 scope。"""
+        ok, err = self.validate_channel_scopes(
+            persona_name,
+            group_scope=group_scope,
+            private_scope=private_scope,
+            takeover_conflicts=takeover_conflicts,
+        )
+        if not ok:
+            return False, err
 
-        Args:
-            persona_name: Persona 名称
-            scope: 启用范围，见 ``PERSONA_SCOPE_VALUES``
+        config = self.get_config(persona_name)
+        current = read_channel_scopes(config)
+        final_group = group_scope if group_scope is not None else current.group_scope
+        final_private = private_scope if private_scope is not None else current.private_scope
 
-        Returns:
-            (是否成功, 消息)
-        """
+        released: list[tuple[StringConfig, str, str]] = []
+        if takeover_conflicts:
+            conflicts = self.find_channel_conflicts(
+                persona_name,
+                group_scope=final_group if group_scope is not None else None,
+                private_scope=final_private if private_scope is not None else None,
+            )
+            # 仅关闭冲突人格的对应通道，保留其另一通道配置
+            release_map: dict[str, set[str]] = {}
+            for name in conflicts["group"]:
+                release_map.setdefault(name, set()).add("group")
+            for name in conflicts["private"]:
+                release_map.setdefault(name, set()).add("private")
+            for other_name, channels in release_map.items():
+                other_cfg = self.get_config(other_name)
+                other_cur = read_channel_scopes(other_cfg)
+                next_g = "off" if "group" in channels else other_cur.group_scope
+                next_p = "off" if "private" in channels else other_cur.private_scope
+                if not _write_channel_scopes(other_cfg, next_g, next_p):
+                    for prev_cfg, prev_g, prev_p in reversed(released):
+                        _write_channel_scopes(prev_cfg, prev_g, prev_p)
+                    return False, f"释放 '{other_name}' 通道冲突失败"
+                released.append((other_cfg, other_cur.group_scope, other_cur.private_scope))
+                logger.info(
+                    t(
+                        "log.persona.personaconfig_updated_name_channels",
+                        persona_name=other_name,
+                        group_scope=next_g,
+                        private_scope=next_p,
+                    )
+                )
+
+        if _write_channel_scopes(config, final_group, final_private):
+            logger.info(
+                t(
+                    "log.persona.personaconfig_updated_name_channels",
+                    persona_name=persona_name,
+                    group_scope=final_group,
+                    private_scope=final_private,
+                )
+            )
+            return True, "ok"
+        # 目标写入失败时回滚已释放的旧兜底，避免全系统失去通道覆盖
+        for prev_cfg, prev_g, prev_p in reversed(released):
+            _write_channel_scopes(prev_cfg, prev_g, prev_p)
+        return False, "配置写入失败"
+
+    def apply_field_updates(
+        self,
+        persona_name: str,
+        updates: Mapping[str, str | int | float | bool | list[str]],
+    ) -> tuple[bool, str]:
+        """一次性写入多个非通道配置项并单次落盘，避免逐键多次写盘和半写入。"""
+        if not updates:
+            return True, "ok"
+        config = self.get_config(persona_name)
+        pending: list[tuple[GSC, str | int | float | bool | list[str]]] = []
+        for key, value in updates.items():
+            if key not in config.config:
+                return False, f"配置项不存在: {key}"
+            item = config.config[key]
+            if isinstance(item, GsBoolConfig) and isinstance(value, bool):
+                pending.append((item, value))
+            elif isinstance(item, GsIntConfig) and isinstance(value, int) and not isinstance(value, bool):
+                pending.append((item, value))
+            elif isinstance(item, GsFloatConfig) and isinstance(value, (int, float)) and not isinstance(value, bool):
+                pending.append((item, float(value)))
+            elif isinstance(item, GsStrConfig) and isinstance(value, str):
+                pending.append((item, value))
+            elif isinstance(item, GsListStrConfig) and isinstance(value, list):
+                pending.append((item, list(value)))
+            else:
+                return False, f"配置项类型不匹配: {key}"
+        for item, normalized in pending:
+            if isinstance(item, GsBoolConfig) and isinstance(normalized, bool):
+                item.data = normalized
+            elif isinstance(item, GsIntConfig) and isinstance(normalized, int) and not isinstance(normalized, bool):
+                item.data = normalized
+            elif isinstance(item, GsFloatConfig) and isinstance(normalized, float):
+                item.data = normalized
+            elif isinstance(item, GsStrConfig) and isinstance(normalized, str):
+                item.data = normalized
+            elif isinstance(item, GsListStrConfig) and isinstance(normalized, list):
+                item.data = normalized
+        config.write_config()
+        return True, "ok"
+
+    def set_scope(
+        self,
+        persona_name: str,
+        scope: str,
+        *,
+        takeover_conflicts: bool = False,
+    ) -> tuple[bool, str]:
+        """兼容接口：按旧单字段 scope 映射并写入双通道启用范围。"""
         if scope not in PERSONA_SCOPE_VALUES:
             return False, f"无效的启用范围: {scope}"
-
-        config = self.get_config(persona_name)
-
-        is_valid, conflict_persona = self.validate_global_uniqueness(persona_name, scope)
-        if not is_valid:
-            return False, f"无法设置为该启用范围，因为 '{conflict_persona}' 已占用全局范围"
-
-        # 设置配置
-        success = config.set_config("scope", scope)
-        if success:
-            logger.info(t("log.persona.personaconfig_updated_name_enabled", persona_name=persona_name, scope=scope))
+        # 有损投影幂等保护：旧客户端原样回传派生 scope 时不覆写双通道
+        current = read_channel_scopes(self.get_config(persona_name))
+        if derive_legacy_scope(current.group_scope, current.private_scope) == scope:
             return True, "ok"
-        else:
-            return False, "配置写入失败"
+        channels = legacy_scope_to_channels(scope)
+        ok, msg = self.set_channel_scopes(
+            persona_name,
+            group_scope=channels.group_scope,
+            private_scope=channels.private_scope,
+            takeover_conflicts=takeover_conflicts,
+        )
+        if ok:
+            logger.info(t("log.persona.personaconfig_updated_name_enabled", persona_name=persona_name, scope=scope))
+        return ok, msg
 
     def set_target_groups(self, persona_name: str, target_groups: List[str]) -> tuple[bool, str]:
-        """
-        设置 Persona 的目标群聊
-
-        Args:
-            persona_name: Persona 名称
-            target_groups: 目标群聊列表
-
-        Returns:
-            (是否成功, 消息)
-        """
+        """设置 Persona 的目标群聊列表。"""
+        cleaned = list(dict.fromkeys(str(item).strip() for item in target_groups if str(item).strip()))
         config = self.get_config(persona_name)
 
-        success = config.set_config("target_groups", target_groups)
+        success = config.set_config("target_groups", cleaned)
         if success:
             logger.info(
                 t(
                     "log.persona.personaconfig_updated_name_target",
                     persona_name=persona_name,
-                    target_groups=target_groups,
+                    target_groups=cleaned,
                 )
             )
             return True, "ok"
-        else:
-            return False, "配置写入失败"
+        return False, "配置写入失败"
+
+    def set_target_users(self, persona_name: str, target_users: List[str]) -> tuple[bool, str]:
+        """设置 Persona 的目标私聊用户列表。"""
+        cleaned = list(dict.fromkeys(str(item).strip() for item in target_users if str(item).strip()))
+        config = self.get_config(persona_name)
+
+        success = config.set_config("target_users", cleaned)
+        if success:
+            logger.info(
+                t(
+                    "log.persona.personaconfig_updated_name_target_users",
+                    persona_name=persona_name,
+                    target_users=cleaned,
+                )
+            )
+            return True, "ok"
+        return False, "配置写入失败"
 
     def set_ai_mode(self, persona_name: str, ai_mode: List[str]) -> tuple[bool, str]:
         """
@@ -994,16 +1431,11 @@ class PersonaConfigManager(ConfigSetManager):
 
         匹配规则：
         1. HTTP_AGENT 会话专属请求级钉选（仅 ``HTTP_AGENT:`` 前缀）
-        2. 私聊 dm_lease 亲和租约（若存在且未 disabled）
-        3. scope=specific 且 target_groups 含该 group_id / user_id
-        4. 回退：``global``，否则群聊用 ``global_group``、私聊用 ``global_private``
+        2. 私聊 dm_lease 亲和租约（若存在且人格私聊通道覆盖当前用户）
+        3. 当前通道精准匹配（群聊: group_scope=specific 且含 group_id；
+           私聊: private_scope=specific 且含 user_id）
+        4. 当前通道全局兜底（群聊: group_scope=all；私聊: private_scope=all）
         5. 没有则返回 None
-
-        Args:
-            session_id: Session ID
-
-        Returns:
-            Persona 名称，如果没有匹配的则返回 None
         """
         group_id: Optional[str] = None
         user_id: Optional[str] = None
@@ -1022,7 +1454,6 @@ class PersonaConfigManager(ConfigSetManager):
             else:
                 raise ValueError(f"Invalid session_id format: {session_id}")
         else:
-            # 无法解析格式
             raise ValueError(f"Invalid session_id format: {session_id}")
 
         all_configs = self.get_all_configs()
@@ -1034,25 +1465,23 @@ class PersonaConfigManager(ConfigSetManager):
             if override_persona and override_persona in all_configs:
                 return override_persona
 
-        # 私聊租约优先：主动私聊签约的人格承接后续私聊回复（回复黑洞修复）
+        # 私聊租约优先：主动私聊签约的人格承接后续私聊回复（私聊范围不再覆盖该用户时失效）
         if is_private_chat and user_id:
             from gsuid_core.ai_core.proactive.dm_lease import get_active_dm_lease
 
             bot_id = parts[1] if len(parts) > 1 else ""
             lease = get_active_dm_lease(user_id, bot_id)
             if lease is not None and lease.persona_name in all_configs:
-                lease_cfg = all_configs[lease.persona_name]
-                if lease_cfg.get_config("scope").data != "disabled":
+                if persona_covers_session(all_configs[lease.persona_name], user_id=user_id):
                     return lease.persona_name
 
         for persona_name, config in all_configs.items():
-            scope = config.get_config("scope").data
-            target_groups = config.get_config("target_groups").data
-
-            if scope == "specific":
-                if group_id and group_id in target_groups:
+            scopes = read_channel_scopes(config)
+            if group_id and scopes.group_scope == "specific":
+                if group_id in read_target_list(config, "target_groups"):
                     return persona_name
-                if user_id and user_id in target_groups:
+            if is_private_chat and user_id and scopes.private_scope == "specific":
+                if user_id in read_target_list(config, "target_users"):
                     return persona_name
 
         return self.get_fallback_persona(is_private=is_private_chat)
@@ -1064,7 +1493,7 @@ class PersonaConfigManager(ConfigSetManager):
         *,
         is_private: bool,
     ) -> tuple[bool, str]:
-        """将群聊或私聊目标切换绑定到指定人格（等价于控制台调整 target_groups）。"""
+        """将群聊或私聊目标切换绑定到指定人格（等价于控制台调整目标列表）。"""
         tid = target_id.strip()
         if not tid:
             return False, "未获取到当前群聊或用户 ID，无法切换人格。"
@@ -1074,32 +1503,36 @@ class PersonaConfigManager(ConfigSetManager):
             return False, f"未找到人格：{persona_name}"
 
         target_cfg = all_configs[persona_name]
-        target_scope = str(target_cfg.get_config("scope").data)
-        if target_scope == "disabled":
-            return False, f"人格「{persona_name}」当前未启用（scope=disabled），请先在控制台启用后再切换。"
-        if target_scope == "global_private" and not is_private:
-            return False, f"人格「{persona_name}」的启用范围为「仅全部私聊」(global_private)，无法在群聊中绑定。"
-        if target_scope == "global_group" and is_private:
-            return False, f"人格「{persona_name}」的启用范围为「仅全部群聊」(global_group)，无法在私聊中绑定。"
+        target_scopes = read_channel_scopes(target_cfg)
+        if not target_scopes.is_enabled:
+            return False, f"人格「{persona_name}」当前未启用，请先在控制台启用后再切换。"
+
+        channel_scope = target_scopes.private_scope if is_private else target_scopes.group_scope
+        if channel_scope == "off":
+            channel_label = "私聊" if is_private else "群聊"
+            return False, f"人格「{persona_name}」未在{channel_label}通道启用，无法在{channel_label}中绑定。"
+
+        target_key = "target_users" if is_private else "target_groups"
+        setter = self.set_target_users if is_private else self.set_target_groups
 
         for other_name, other_cfg in all_configs.items():
             if other_name == persona_name:
                 continue
-            if other_cfg.get_config("scope").data != "specific":
+            other_scopes = read_channel_scopes(other_cfg)
+            other_channel_scope = other_scopes.private_scope if is_private else other_scopes.group_scope
+            if other_channel_scope != "specific":
                 continue
-            raw_other = other_cfg.get_config("target_groups").data
-            current_other = [str(g) for g in raw_other] if isinstance(raw_other, list) else []
+            current_other = read_target_list(other_cfg, target_key)
             if tid in current_other:
                 cleaned_other = [g for g in current_other if g != tid]
-                ok, msg = self.set_target_groups(other_name, cleaned_other)
+                ok, msg = setter(other_name, cleaned_other)
                 if not ok:
                     return False, msg
 
-        if target_scope == "specific":
-            raw_target = target_cfg.get_config("target_groups").data
-            current_target = [str(g) for g in raw_target] if isinstance(raw_target, list) else []
+        if channel_scope == "specific":
+            current_target = read_target_list(target_cfg, target_key)
             if tid not in current_target:
-                ok, msg = self.set_target_groups(persona_name, [*current_target, tid])
+                ok, msg = setter(persona_name, [*current_target, tid])
                 if not ok:
                     return False, msg
 
@@ -1130,10 +1563,14 @@ class PersonaConfigManager(ConfigSetManager):
         shape = speech_shape_spec()
         autonomy = read_autonomy_runtime(config)
         traits = read_drive_traits(config)
+        scopes = read_channel_scopes(config)
         return {
             "ai_mode": normalize_ai_modes(list(config.get_config("ai_mode").data)),
-            "scope": config.get_config("scope").data,
-            "target_groups": config.get_config("target_groups").data,
+            "group_scope": scopes.group_scope,
+            "private_scope": scopes.private_scope,
+            "scope": derive_legacy_scope(scopes.group_scope, scopes.private_scope),
+            "target_groups": read_target_list(config, "target_groups"),
+            "target_users": read_target_list(config, "target_users"),
             "inspect_interval": config.get_config("inspect_interval").data,
             "keywords": config.get_config("keywords").data,
             "active_hours": list(autonomy.active_hours),

@@ -6,6 +6,7 @@ Persona APIs
 
 import base64
 from typing import Any, Dict, List, TypedDict
+from dataclasses import field, dataclass
 
 from fastapi import Body, Depends, HTTPException
 from pydantic import BaseModel
@@ -669,7 +670,7 @@ async def copy_persona_endpoint(
     persona_name: str,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """复制整个人格目录。新名称在源名后追加 2/3/…；副本启用范围强制 disabled。"""
+    """复制整个人格目录。新名称在源名后追加 2/3/…；副本双通道强制 off 并清空目标列表。"""
     persona = Persona(persona_name)
     if not persona.exists():
         return {
@@ -751,7 +752,7 @@ async def get_persona_config(
 
     Returns:
         status: 0成功，1失败
-        data: 配置对象，包含 ai_mode, scope, target_groups
+        data: 配置对象，包含 ai_mode / group_scope / private_scope / target_groups / target_users / scope 等
     """
     config = persona_config_manager.get_persona_config_dict(persona_name)
     if config is None:
@@ -768,164 +769,154 @@ async def get_persona_config(
     }
 
 
-@app.put("/api/persona/{persona_name}/config", summary="更新角色配置", tags=PERSONA)
-async def update_persona_config(
+def _parse_int_field(raw: object) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text and (text.isdigit() or (text[0] in "+-" and text[1:].isdigit())):
+            return int(text)
+    return None
+
+
+def _clean_unique_str_list(raw: list[object]) -> list[str]:
+    return list(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))
+
+
+@dataclass(slots=True)
+class _ParsedPersonaConfigUpdate:
+    field_updates: dict[str, str | int | float | bool | list[str]] = field(default_factory=dict)
+    meme_mirrors: dict[str, bool | int] = field(default_factory=dict)
+    results: list[str] = field(default_factory=list)
+    group_scope: str | None = None
+    private_scope: str | None = None
+    legacy_scope: str | None = None
+    ai_mode: list[str] | None = None
+    inspect_interval_updated: bool = False
+
+
+def _parse_persona_config_update(
     persona_name: str,
-    data: Dict[str, Any],
-    _: Dict[str, Any] = Depends(require_auth),
-) -> Dict[str, Any]:
-    """
-    更新指定 Persona 的配置
+    data: dict[str, object],
+    *,
+    takeover_conflicts: bool,
+) -> tuple[str | None, _ParsedPersonaConfigUpdate]:
+    """整单解析与前置校验：任一字段非法直接返回错误，保证无半写入或提前抢占。"""
+    from gsuid_core.ai_core.persona.config import (
+        AI_MODE_OPTIONS,
+        CURIOSITY_FOCUS_VALUES,
+        normalize_ai_modes,
+        autonomy_settings_error,
+        autonomy_settings_from_mapping,
+    )
+    from gsuid_core.ai_core.persona.chat_style import (
+        CHAT_STYLE_MAX,
+        CHAT_STYLE_MIN,
+        SPEECH_LEN_MAX,
+        SPEECH_LEN_MIN,
+    )
+    from gsuid_core.ai_core.persona.meme_style import MEME_FREQUENCY_MAX, MEME_FREQUENCY_MIN
+    from gsuid_core.ai_core.prompt_group.store import group_exists
 
-    Args:
-        persona_name: 角色名称
-        data: 配置对象，可包含 ai_mode, scope, target_groups
+    parsed = _ParsedPersonaConfigUpdate()
 
-    Returns:
-        status: 0成功，1失败
-        data: 更新后的配置对象
+    raw_group = data["group_scope"] if "group_scope" in data else None
+    raw_private = data["private_scope"] if "private_scope" in data else None
+    if raw_group is not None or raw_private is not None:
+        if raw_group is not None:
+            if not isinstance(raw_group, str):
+                return "group_scope 必须是字符串", parsed
+            parsed.group_scope = raw_group
+        if raw_private is not None:
+            if not isinstance(raw_private, str):
+                return "private_scope 必须是字符串", parsed
+            parsed.private_scope = raw_private
+        ok, msg = persona_config_manager.validate_channel_scopes(
+            persona_name,
+            group_scope=parsed.group_scope,
+            private_scope=parsed.private_scope,
+            takeover_conflicts=takeover_conflicts,
+        )
+        if not ok:
+            return msg, parsed
+    elif "scope" in data and data["scope"] is not None:
+        raw_scope = data["scope"]
+        if not isinstance(raw_scope, str):
+            return "scope 必须是字符串", parsed
+        parsed.legacy_scope = raw_scope
+        ok, msg = persona_config_manager.validate_channel_scopes(
+            persona_name,
+            legacy_scope=parsed.legacy_scope,
+            takeover_conflicts=takeover_conflicts,
+        )
+        if not ok:
+            return msg, parsed
 
-    注意：
-    - scope 可选值: disabled / global / specific / global_group / global_private
-    - global 覆盖群聊+私聊；global_group 仅群聊；global_private 仅私聊
-    - global / global_group / global_private 全局互斥，只能有一个
-    """
-    # 检查 persona 是否存在
-    persona = Persona(persona_name)
-    if not persona.exists():
-        return {
-            "status": 1,
-            "msg": f"角色 '{persona_name}' 不存在",
-            "data": None,
-        }
+    for key in ("target_groups", "target_users", "enabled_tools", "tool_names", "capability_agents"):
+        if key not in data:
+            continue
+        raw_list = data[key]
+        if not isinstance(raw_list, list):
+            return f"{key} 必须是列表", parsed
+        cleaned = _clean_unique_str_list(raw_list)
+        parsed.field_updates[key] = cleaned
+        parsed.results.append(f"{key}: {cleaned}")
 
-    # git 人格的行为配置由仓库拥有；启用范围是部署状态，仍然可改
-    from gsuid_core.ai_core.persona.store import LOCAL_OVERRIDE_KEYS, is_git_managed
-
-    if is_git_managed(persona_name):
-        blocked_keys = [k for k in data if k not in LOCAL_OVERRIDE_KEYS]
-        if blocked_keys:
-            allowed = ", ".join(LOCAL_OVERRIDE_KEYS)
-            rejected = ", ".join(sorted(blocked_keys))
-            return {
-                "status": 1,
-                "msg": f"该人格由人格市场管理，仅允许修改 {allowed}；被拒绝的字段: {rejected}",
-                "data": None,
-            }
-
-    results = []
-
-    # 更新 scope（如果提供）
-    if "scope" in data:
-        scope = data["scope"]
-        success, msg = persona_config_manager.set_scope(persona_name, scope)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"scope: {scope}")
-
-    # 更新 target_groups（如果提供）
-    if "target_groups" in data:
-        target_groups = data["target_groups"]
-        if not isinstance(target_groups, list):
-            return {
-                "status": 1,
-                "msg": "target_groups 必须是列表",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_target_groups(persona_name, target_groups)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"target_groups: {target_groups}")
-
-    # 更新 ai_mode（如果提供）
     if "ai_mode" in data:
-        ai_mode = data["ai_mode"]
-        if not isinstance(ai_mode, list):
-            return {
-                "status": 1,
-                "msg": "ai_mode 必须是列表",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_ai_mode(persona_name, ai_mode)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"ai_mode: {ai_mode}")
+        raw_modes = data["ai_mode"]
+        if not isinstance(raw_modes, list):
+            return "ai_mode 必须是列表", parsed
+        modes = normalize_ai_modes([str(item) for item in raw_modes])
+        for mode in modes:
+            if mode not in AI_MODE_OPTIONS:
+                return f"无效的 AI 行动模式: {mode}", parsed
+        parsed.field_updates["ai_mode"] = modes
+        parsed.ai_mode = modes
+        parsed.results.append(f"ai_mode: {modes}")
 
-        # 如果启用了定时巡检，启动该 persona 的巡检任务
-        if "定时巡检" in ai_mode:
-            from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
+    for trait_key, low, high in (
+        ("social_initiative", 0, 100),
+        ("energy_endurance", 0, 100),
+        ("arc_persistence", 1, 3),
+    ):
+        if trait_key not in data:
+            continue
+        raw_trait = data[trait_key]
+        if isinstance(raw_trait, bool) or not isinstance(raw_trait, int):
+            return f"{trait_key} 必须是整数", parsed
+        if raw_trait < low or raw_trait > high:
+            return f"{trait_key} 必须在 {low} 到 {high} 之间", parsed
+        parsed.field_updates[trait_key] = raw_trait
+        parsed.results.append(f"{trait_key}: {raw_trait}")
 
-            start_heartbeat_inspector()
-        if "自主行动" in ai_mode:
-            from gsuid_core.ai_core.autonomy.scheduler import autonomy_scheduler
+    if "curiosity_focus" in data:
+        raw_focus = data["curiosity_focus"]
+        if not isinstance(raw_focus, str):
+            return "curiosity_focus 必须是字符串", parsed
+        if raw_focus not in CURIOSITY_FOCUS_VALUES:
+            return f"无效的闲时关注点: {raw_focus}", parsed
+        parsed.field_updates["curiosity_focus"] = raw_focus
+        parsed.results.append(f"curiosity_focus: {raw_focus}")
 
-            await autonomy_scheduler.start()
-
-    # 驱动四参数（如果提供）
-    for _trait_key in ("social_initiative", "energy_endurance", "curiosity_focus", "arc_persistence"):
-        if _trait_key in data:
-            if not persona_config_manager.get_config(persona_name).set_config(_trait_key, data[_trait_key]):
-                return {"status": 1, "msg": f"{_trait_key} 写入失败", "data": None}
-            results.append(f"{_trait_key}: {data[_trait_key]}")
-
-    # 更新 inspect_interval（如果提供）
     if "inspect_interval" in data:
-        inspect_interval = data["inspect_interval"]
-        if not isinstance(inspect_interval, int):
-            return {
-                "status": 1,
-                "msg": "inspect_interval 必须是整数",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_inspect_interval(persona_name, inspect_interval)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"inspect_interval: {inspect_interval}")
+        raw_interval = data["inspect_interval"]
+        if isinstance(raw_interval, bool) or not isinstance(raw_interval, int):
+            return "inspect_interval 必须是整数", parsed
+        if raw_interval not in (5, 10, 15, 30, 60):
+            return "无效的巡检间隔，可选值: 5, 10, 15, 30, 60", parsed
+        parsed.field_updates["inspect_interval"] = raw_interval
+        parsed.inspect_interval_updated = True
+        parsed.results.append(f"inspect_interval: {raw_interval}")
 
-        # 如果该 persona 已启用定时巡检，重新启动以应用新间隔
-        config = persona_config_manager.get_config(persona_name)
-        if "定时巡检" in config.get_config("ai_mode").data:
-            from gsuid_core.ai_core.heartbeat.inspector import get_inspector
-
-            inspector = get_inspector()
-            inspector.stop_for_persona(persona_name)
-            inspector.start_for_persona(persona_name)
-
-    # 更新 keywords（如果提供）
     if "keywords" in data:
-        keywords = data["keywords"]
-        if not isinstance(keywords, list):
-            return {
-                "status": 1,
-                "msg": "keywords 必须是列表",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_keywords(persona_name, keywords)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"keywords: {keywords}")
-
-    from gsuid_core.ai_core.persona.config import autonomy_settings_from_mapping
+        raw_kw = data["keywords"]
+        if not isinstance(raw_kw, list):
+            return "keywords 必须是列表", parsed
+        keywords = [str(item) for item in raw_kw]
+        parsed.field_updates["keywords"] = keywords
+        parsed.results.append(f"keywords: {keywords}")
 
     autonomy_payload: dict[str, object] = {}
     for autonomy_key in (
@@ -938,186 +929,235 @@ async def update_persona_config(
             autonomy_payload[autonomy_key] = data[autonomy_key]
     autonomy_settings, autonomy_error = autonomy_settings_from_mapping(autonomy_payload)
     if autonomy_error:
-        return {"status": 1, "msg": autonomy_error, "data": None}
+        return autonomy_error, parsed
     if autonomy_settings is not None:
-        success, msg = persona_config_manager.set_autonomy_settings(persona_name, autonomy_settings)
-        if not success:
-            return {"status": 1, "msg": msg, "data": None}
-        results.append("autonomy")
+        settings_err = autonomy_settings_error(autonomy_settings)
+        if settings_err:
+            return settings_err, parsed
+        if autonomy_settings.active_hours is not None:
+            parsed.field_updates["active_hours"] = [item.strip() for item in autonomy_settings.active_hours]
+        if autonomy_settings.timezone is not None:
+            parsed.field_updates["timezone"] = autonomy_settings.timezone.strip()
+        if autonomy_settings.interval_minutes is not None:
+            parsed.field_updates["autonomy_interval_minutes"] = autonomy_settings.interval_minutes
+        if autonomy_settings.care_min_zone is not None:
+            parsed.field_updates["autonomy_care_min_zone"] = autonomy_settings.care_min_zone
+        parsed.results.append("autonomy")
 
-    aside_fields = (
+    for aside_field in (
         "aside_image_probability",
         "aside_text_probability",
         "aside_mixed_probability",
-    )
-    for aside_field in aside_fields:
+    ):
         if aside_field not in data:
             continue
-        raw_probability = data[aside_field]
-        if isinstance(raw_probability, bool) or not isinstance(raw_probability, (int, float)):
-            return {
-                "status": 1,
-                "msg": f"{aside_field} 必须是 0 到 1 的数字",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_aside_probability(
-            persona_name,
-            aside_field,
-            float(raw_probability),
-        )
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"{aside_field}: {raw_probability}")
+        raw_prob = data[aside_field]
+        if isinstance(raw_prob, bool) or not isinstance(raw_prob, (int, float)):
+            return f"{aside_field} 必须是 0 到 1 的数字", parsed
+        prob = float(raw_prob)
+        if prob < 0 or prob > 1:
+            return "命令补充概率必须在 0 到 1 之间", parsed
+        parsed.field_updates[aside_field] = prob
+        parsed.results.append(f"{aside_field}: {raw_prob}")
 
     if "aside_allow_tools" in data:
-        allow_tools = data["aside_allow_tools"]
-        if not isinstance(allow_tools, bool):
-            return {
-                "status": 1,
-                "msg": "aside_allow_tools 必须是布尔值",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_aside_allow_tools(persona_name, allow_tools)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"aside_allow_tools: {allow_tools}")
+        raw_allow_tools = data["aside_allow_tools"]
+        if not isinstance(raw_allow_tools, bool):
+            return "aside_allow_tools 必须是布尔值", parsed
+        parsed.field_updates["aside_allow_tools"] = raw_allow_tools
+        parsed.results.append(f"aside_allow_tools: {raw_allow_tools}")
 
-    # 表情三键同时镜像进 persona.json，保证整包导出时两文件一致
     if "allow_meme_reply" in data:
-        allow_meme = data["allow_meme_reply"]
-        if not isinstance(allow_meme, bool):
-            return {"status": 1, "msg": "allow_meme_reply 必须是布尔值", "data": None}
-        success, msg = persona_config_manager.set_allow_meme_reply(persona_name, allow_meme)
-        if not success:
-            return {"status": 1, "msg": msg, "data": None}
-        persona_settings_manager.get_config(persona_name).set_config("allow_meme_reply", allow_meme)
-        results.append(f"allow_meme_reply: {allow_meme}")
+        raw_allow_meme = data["allow_meme_reply"]
+        if not isinstance(raw_allow_meme, bool):
+            return "allow_meme_reply 必须是布尔值", parsed
+        parsed.field_updates["allow_meme_reply"] = raw_allow_meme
+        parsed.meme_mirrors["allow_meme_reply"] = raw_allow_meme
+        parsed.results.append(f"allow_meme_reply: {raw_allow_meme}")
 
     if "meme_frequency" in data:
-        raw_freq = data["meme_frequency"]
-        if isinstance(raw_freq, bool):
-            return {"status": 1, "msg": "meme_frequency 必须是整数", "data": None}
-        try:
-            meme_frequency = int(raw_freq)
-        except (ValueError, TypeError):
-            return {"status": 1, "msg": "meme_frequency 必须是整数", "data": None}
-        success, msg = persona_config_manager.set_meme_frequency(persona_name, meme_frequency)
-        if not success:
-            return {"status": 1, "msg": msg, "data": None}
-        persona_settings_manager.get_config(persona_name).set_config("meme_frequency", meme_frequency)
-        results.append(f"meme_frequency: {meme_frequency}")
+        parsed_freq = _parse_int_field(data["meme_frequency"])
+        if parsed_freq is None:
+            return "meme_frequency 必须是整数", parsed
+        if parsed_freq < MEME_FREQUENCY_MIN or parsed_freq > MEME_FREQUENCY_MAX:
+            return f"表情频率必须在 {MEME_FREQUENCY_MIN} 到 {MEME_FREQUENCY_MAX} 之间", parsed
+        parsed.field_updates["meme_frequency"] = parsed_freq
+        parsed.meme_mirrors["meme_frequency"] = parsed_freq
+        parsed.results.append(f"meme_frequency: {parsed_freq}")
 
     if "meme_send_cooldown_sec" in data:
-        raw_cd = data["meme_send_cooldown_sec"]
-        if isinstance(raw_cd, bool):
-            return {"status": 1, "msg": "meme_send_cooldown_sec 必须是整数", "data": None}
-        try:
-            meme_cooldown = int(raw_cd)
-        except (ValueError, TypeError):
-            return {"status": 1, "msg": "meme_send_cooldown_sec 必须是整数", "data": None}
-        success, msg = persona_config_manager.set_meme_send_cooldown_sec(persona_name, meme_cooldown)
-        if not success:
-            return {"status": 1, "msg": msg, "data": None}
-        persona_settings_manager.get_config(persona_name).set_config("meme_send_cooldown_sec", meme_cooldown)
-        results.append(f"meme_send_cooldown_sec: {meme_cooldown}")
-
-    # 更新 enabled_tools（如果提供）
-    if "enabled_tools" in data:
-        enabled_tools = data["enabled_tools"]
-        if not isinstance(enabled_tools, list):
-            return {
-                "status": 1,
-                "msg": "enabled_tools 必须是列表",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_enabled_tools(persona_name, [str(x) for x in enabled_tools])
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"enabled_tools: {enabled_tools}")
-
-    # 更新 tool_names（如果提供）
-    if "tool_names" in data:
-        tool_names = data["tool_names"]
-        if not isinstance(tool_names, list):
-            return {
-                "status": 1,
-                "msg": "tool_names 必须是列表",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_tool_names(persona_name, [str(x) for x in tool_names])
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"tool_names: {tool_names}")
-
-    if "capability_agents" in data:
-        capability_agents = data["capability_agents"]
-        if not isinstance(capability_agents, list):
-            return {
-                "status": 1,
-                "msg": "capability_agents 必须是列表",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_capability_agents(persona_name, [str(x) for x in capability_agents])
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"capability_agents: {capability_agents}")
+        parsed_cd = _parse_int_field(data["meme_send_cooldown_sec"])
+        if parsed_cd is None:
+            return "meme_send_cooldown_sec 必须是整数", parsed
+        if parsed_cd < 0 or parsed_cd > 3600:
+            return "表情发送冷却必须在 0 到 3600 秒之间", parsed
+        parsed.field_updates["meme_send_cooldown_sec"] = parsed_cd
+        parsed.meme_mirrors["meme_send_cooldown_sec"] = parsed_cd
+        parsed.results.append(f"meme_send_cooldown_sec: {parsed_cd}")
 
     if "prompt_group" in data:
-        prompt_group = data["prompt_group"]
-        if not isinstance(prompt_group, str):
-            return {
-                "status": 1,
-                "msg": "prompt_group 必须是字符串",
-                "data": None,
-            }
-        success, msg = persona_config_manager.set_prompt_group(persona_name, prompt_group)
-        if not success:
-            return {
-                "status": 1,
-                "msg": msg,
-                "data": None,
-            }
-        results.append(f"prompt_group: {prompt_group}")
+        raw_pg = data["prompt_group"]
+        if not isinstance(raw_pg, str):
+            return "prompt_group 必须是字符串", parsed
+        pg_name = raw_pg.strip()
+        if not group_exists(pg_name):
+            return "系统提示词组不存在", parsed
+        parsed.field_updates["prompt_group"] = pg_name
+        parsed.results.append(f"prompt_group: {pg_name}")
 
     if "chat_style" in data:
-        chat_style = data["chat_style"]
-        if isinstance(chat_style, bool) or not isinstance(chat_style, int):
-            return {"status": 1, "msg": "chat_style 必须是整数", "data": None}
-        success, msg = persona_config_manager.set_chat_style(persona_name, chat_style)
-        if not success:
-            return {"status": 1, "msg": msg, "data": None}
-        results.append(f"chat_style: {chat_style}")
+        raw_cs = data["chat_style"]
+        if isinstance(raw_cs, bool) or not isinstance(raw_cs, int):
+            return "chat_style 必须是整数", parsed
+        if raw_cs < CHAT_STYLE_MIN or raw_cs > CHAT_STYLE_MAX:
+            return f"说话强度必须在 {CHAT_STYLE_MIN} 到 {CHAT_STYLE_MAX} 之间", parsed
+        parsed.field_updates["chat_style"] = raw_cs
+        parsed.results.append(f"chat_style: {raw_cs}")
 
     if "speech_len_soft" in data:
-        speech_len_soft = data["speech_len_soft"]
-        if isinstance(speech_len_soft, bool) or not isinstance(speech_len_soft, int):
-            return {"status": 1, "msg": "speech_len_soft 必须是整数", "data": None}
-        success, msg = persona_config_manager.set_speech_len_soft(persona_name, speech_len_soft)
-        if not success:
-            return {"status": 1, "msg": msg, "data": None}
-        results.append(f"speech_len_soft: {speech_len_soft}")
+        raw_soft = data["speech_len_soft"]
+        if isinstance(raw_soft, bool) or not isinstance(raw_soft, int):
+            return "speech_len_soft 必须是整数", parsed
+        if raw_soft < SPEECH_LEN_MIN or raw_soft > SPEECH_LEN_MAX:
+            return f"字数必须在 {SPEECH_LEN_MIN} 到 {SPEECH_LEN_MAX} 之间", parsed
+        parsed.field_updates["speech_len_soft"] = raw_soft
+        parsed.results.append(f"speech_len_soft: {raw_soft}")
 
-    # 返回更新后的配置
+    return None, parsed
+
+
+def _mirror_meme_settings(persona_name: str, mirrors: dict[str, bool | int]) -> None:
+    """将表情三键一次性镜像到 persona.json，保证整包导出两文件一致。"""
+    if not mirrors:
+        return
+    from gsuid_core.utils.plugins_config.models import GsIntConfig, GsBoolConfig
+
+    settings_cfg = persona_settings_manager.get_config(persona_name)
+    changed = False
+    for key, value in mirrors.items():
+        if key not in settings_cfg.config:
+            continue
+        item = settings_cfg.config[key]
+        if isinstance(item, GsBoolConfig) and isinstance(value, bool):
+            item.data = value
+            changed = True
+        elif isinstance(item, GsIntConfig) and isinstance(value, int) and not isinstance(value, bool):
+            item.data = value
+            changed = True
+    if changed:
+        settings_cfg.write_config()
+
+
+@app.put("/api/persona/{persona_name}/config", summary="更新角色配置", tags=PERSONA)
+async def update_persona_config(
+    persona_name: str,
+    data: Dict[str, Any],
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    更新指定 Persona 的配置
+
+    Args:
+        persona_name: 角色名称
+        data: 配置对象，可包含 ai_mode / group_scope / private_scope / target_groups / target_users / scope /
+            takeover_conflicts
+
+    Returns:
+        status: 0成功，1失败
+        data: 更新后的配置对象
+
+    注意：
+    - 推荐使用 group_scope / private_scope (off / specific / all)，两通道全局互斥彼此独立
+    - 传 takeover_conflicts=true 时在所有字段校验通过后原子释放冲突人格的对应通道
+    - 仍兼容旧客户端仅传 scope (disabled / global / specific / global_group / global_private)
+    """
+    persona = Persona(persona_name)
+    if not persona.exists():
+        return {
+            "status": 1,
+            "msg": f"角色 '{persona_name}' 不存在",
+            "data": None,
+        }
+
+    # git 人格的行为配置由仓库拥有；启用范围是部署状态，仍然可改
+    from gsuid_core.ai_core.persona.store import LOCAL_OVERRIDE_KEYS, is_git_managed
+
+    if is_git_managed(persona_name):
+        allowed_git_keys = (*LOCAL_OVERRIDE_KEYS, "takeover_conflicts")
+        blocked_keys = [k for k in data if k not in allowed_git_keys]
+        if blocked_keys:
+            allowed = ", ".join(LOCAL_OVERRIDE_KEYS)
+            rejected = ", ".join(sorted(blocked_keys))
+            return {
+                "status": 1,
+                "msg": f"该人格由人格市场管理，仅允许修改 {allowed}；被拒绝的字段: {rejected}",
+                "data": None,
+            }
+
+    takeover_conflicts = False
+    if "takeover_conflicts" in data:
+        raw_takeover = data["takeover_conflicts"]
+        if not isinstance(raw_takeover, bool):
+            return {"status": 1, "msg": "takeover_conflicts 必须是布尔值", "data": None}
+        takeover_conflicts = raw_takeover
+
+    # 阶段 1：整单解析与前置校验（全程同步，任一非法直接返回，零半写入）
+    validation_error, parsed = _parse_persona_config_update(
+        persona_name,
+        data,
+        takeover_conflicts=takeover_conflicts,
+    )
+    if validation_error is not None:
+        return {"status": 1, "msg": validation_error, "data": None}
+
+    # 阶段 2：先同步完成全部磁盘写入（非通道单次落盘 → 表情镜像 → 通道范围提交），期间不 await
+    ok, msg = persona_config_manager.apply_field_updates(persona_name, parsed.field_updates)
+    if not ok:
+        return {"status": 1, "msg": msg, "data": None}
+    _mirror_meme_settings(persona_name, parsed.meme_mirrors)
+
+    results = list(parsed.results)
+    if parsed.group_scope is not None or parsed.private_scope is not None:
+        success, scope_msg = persona_config_manager.set_channel_scopes(
+            persona_name,
+            group_scope=parsed.group_scope,
+            private_scope=parsed.private_scope,
+            takeover_conflicts=takeover_conflicts,
+        )
+        if not success:
+            return {"status": 1, "msg": scope_msg, "data": None}
+        if parsed.group_scope is not None:
+            results.append(f"group_scope: {parsed.group_scope}")
+        if parsed.private_scope is not None:
+            results.append(f"private_scope: {parsed.private_scope}")
+    elif parsed.legacy_scope is not None:
+        success, scope_msg = persona_config_manager.set_scope(
+            persona_name,
+            parsed.legacy_scope,
+            takeover_conflicts=takeover_conflicts,
+        )
+        if not success:
+            return {"status": 1, "msg": scope_msg, "data": None}
+        results.append(f"scope: {parsed.legacy_scope}")
+
+    # 阶段 3：落盘全部完成后再启动/重载巡检与自主行动调度器
+    if parsed.ai_mode is not None and "定时巡检" in parsed.ai_mode:
+        from gsuid_core.ai_core.heartbeat import start_heartbeat_inspector
+
+        start_heartbeat_inspector()
+    if parsed.inspect_interval_updated:
+        current_modes = persona_config_manager.get_config(persona_name).get_config("ai_mode").data
+        if isinstance(current_modes, list) and "定时巡检" in current_modes:
+            from gsuid_core.ai_core.heartbeat.inspector import get_inspector
+
+            inspector = get_inspector()
+            inspector.stop_for_persona(persona_name)
+            inspector.start_for_persona(persona_name)
+    if parsed.ai_mode is not None and "自主行动" in parsed.ai_mode:
+        from gsuid_core.ai_core.autonomy.scheduler import autonomy_scheduler
+
+        await autonomy_scheduler.start()
+
     updated_config = persona_config_manager.get_persona_config_dict(persona_name)
     return {
         "status": 0,

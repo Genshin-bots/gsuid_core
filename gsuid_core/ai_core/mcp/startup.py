@@ -7,6 +7,7 @@ MCP 工具启动注册模块
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, TypedDict
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from gsuid_core.ai_core.mcp.config_manager import (
 )
 
 if TYPE_CHECKING:
+    from gsuid_core.ai_core.register import CheckFunc
     from gsuid_core.ai_core.mcp.client import MCPClient
 
 # 延迟导入 _TOOL_REGISTRY 避免循环依赖。
@@ -316,6 +318,9 @@ def _json_schema_type_to_python(json_type: str) -> type:
     return type_map.get(json_type, str)
 
 
+_MCP_CALL_TIMEOUT_S = 60.0
+
+
 def _build_mcp_tool_function(
     client: MCPClient,
     tool_name: str,
@@ -324,6 +329,8 @@ def _build_mcp_tool_function(
     config_id: str = "",
     config: "MCPConfig | None" = None,
     tool_def: "MCPToolDefinition | None" = None,
+    check_func: Optional["CheckFunc"] = None,
+    registered_name: str = "",
 ) -> Any:
     """
     为 MCP 工具动态创建包装函数。
@@ -395,9 +402,18 @@ def _build_mcp_tool_function(
         )
 
     # 创建包装函数
+    health_name = registered_name or tool_name
+
     async def mcp_tool_wrapper(ctx: RunContext[ToolContext], **kwargs: Any) -> str:
-        """MCP 工具包装函数：scope 裁决 → 凭据注入 → mutating 审批 → 调用。"""
+        """MCP 工具包装函数：权限校验 → 健康度熔断 → scope 裁决 → 凭据注入 → mutating 审批 → 超时调用。"""
         from gsuid_core.ai_core.mcp.pii import mask_pii
+        from gsuid_core.ai_core.register import run_tool_check_func
+        from gsuid_core.ai_core.tool_health import (
+            is_tool_frozen,
+            frozen_tool_reply,
+            record_tool_failure,
+            record_tool_success,
+        )
         from gsuid_core.ai_core.evidence.capture import current_evidence_mark
 
         ev = ctx.deps.ev if ctx.deps is not None else None
@@ -406,6 +422,21 @@ def _build_mcp_tool_function(
             mark.service = config_id or client.name
             mark.mutating = mutating
             mark.credential_owner = "shared" if exposure != "private" else (ev.user_id if ev is not None else "shared")
+
+        # 0. 权限检查（对齐 @ai_tools check_func，覆盖直调与 call_tool 两条路径）
+        if check_func is not None:
+            is_passed, deny_msg = await run_tool_check_func(check_func, ctx)
+            if not is_passed:
+                if mark is not None:
+                    mark.outcome_hint = "error"
+                return deny_msg
+
+        # 0.5 工具健康度熔断（与 @ai_tools 一致）
+        if is_tool_frozen(health_name):
+            if mark is not None:
+                mark.outcome_hint = "error"
+            need = ev.raw_text or "" if ev is not None else ""
+            return await frozen_tool_reply(health_name, ctx.deps.extra, need)
 
         # mutating + 无人执行体无条件拒（写操作必须有人确认）
         if mutating and ev is None:
@@ -459,7 +490,10 @@ def _build_mcp_tool_function(
                     if p in scope_creds:
                         inject_args[p] = scope_creds[p]
             try:
-                result = await run_client.call_tool(tool_name, inject_args)
+                result = await asyncio.wait_for(
+                    run_client.call_tool(tool_name, inject_args),
+                    timeout=_MCP_CALL_TIMEOUT_S,
+                )
                 if result.is_error:
                     error_text = result.text
                     logger.warning(
@@ -470,12 +504,20 @@ def _build_mcp_tool_function(
                             error_text=error_text,
                         )
                     )
+                    record_tool_failure(health_name, error_text)
                     if mark is not None:
                         mark.outcome_hint = "error"
                     return f"MCP 工具执行失败: {error_text}"
+                record_tool_success(health_name)
                 return result.text
+            except asyncio.TimeoutError:
+                record_tool_failure(health_name, "timeout")
+                if mark is not None:
+                    mark.outcome_hint = "error"
+                return f"⚠️ MCP 工具 {health_name} 执行超时（超过 {int(_MCP_CALL_TIMEOUT_S)} 秒），请稍后重试或换个方式"
             except Exception as e:
                 logger.error(t("log.mcp.mcp_tool_name_call_fail", p0=client.name, tool_name=tool_name, e=e))
+                record_tool_failure(health_name, type(e).__name__)
                 if mark is not None:
                     mark.outcome_hint = "error"
                 return f"MCP 工具调用异常: {e}"
@@ -503,7 +545,7 @@ def _build_mcp_tool_function(
 def _build_mcp_check_func(
     config: MCPConfig,
     tool_name: str,
-) -> Any:
+) -> Optional["CheckFunc"]:
     """根据 MCPConfig 的 tool_permissions 为工具生成权限检查函数。
 
     权限等级与 Event.user_pm 对比：
@@ -526,8 +568,10 @@ def _build_mcp_check_func(
     if required_pm >= 6:
         return None
 
-    async def _mcp_check_func(ev: Any) -> tuple[bool, str]:
+    async def _mcp_check_func(ev: Optional["Event"]) -> tuple[bool, str]:
         """MCP 工具权限检查函数"""
+        if ev is None:
+            return False, (f"❌ 权限不足：MCP 工具 '{tool_name}' 需要 pm<={required_pm}，当前无用户上下文。")
         if ev.user_pm > required_pm:
             return False, (
                 f"❌ 权限不足：MCP 工具 '{tool_name}' 需要 pm<={required_pm}，当前用户权限等级为 {ev.user_pm}。"
@@ -576,17 +620,6 @@ def _register_mcp_tool(
             if candidate.name == tool_name:
                 tool_def = candidate
                 break
-    wrapper_func = _build_mcp_tool_function(
-        client,
-        tool_name,
-        tool_description,
-        input_schema,
-        config_id=config_id,
-        config=config,
-        tool_def=tool_def,
-    )
-    wrapper_func.__name__ = registered_name
-
     # 根据 tool_permissions 生成权限检查函数
     check_func = None
     if config is not None:
@@ -600,11 +633,28 @@ def _register_mcp_tool(
                 )
             )
 
+    wrapper_func = _build_mcp_tool_function(
+        client,
+        tool_name,
+        tool_description,
+        input_schema,
+        config_id=config_id,
+        config=config,
+        tool_def=tool_def,
+        check_func=check_func,
+        registered_name=registered_name,
+    )
+    wrapper_func.__name__ = registered_name
+
     # 创建 PydanticAI Tool 对象（显式对齐注册名，避免裸名导致检索反查断链）
     tool_obj = Tool(wrapper_func, takes_ctx=True, name=registered_name)
 
     cn_name = ""
-    if config is not None and "chinese_name" in config.market_meta:
+    if (
+        config is not None
+        and "chinese_name" in config.market_meta
+        and isinstance(config.market_meta["chinese_name"], str)
+    ):
         cn_name = config.market_meta["chinese_name"].strip()
     header = f"[MCP:{client.name}/{cn_name}]" if cn_name and cn_name != client.name else f"[MCP:{client.name}]"
 
@@ -617,6 +667,7 @@ def _register_mcp_tool(
         check_func=check_func,
         category=MCP_CATEGORY,
         covers=covers or [],
+        check_in_wrapper=True,
     )
 
     if MCP_CATEGORY not in tool_registry:

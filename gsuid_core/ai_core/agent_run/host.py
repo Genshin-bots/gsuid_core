@@ -65,7 +65,6 @@ class RunOnceHost:
     _last_attempt_has_status_tool: bool
     _last_attempt_thinking: str
     _session_toolset_frozen: Optional[list[str]]
-    _session_appended_tools: list[str]
     #: 上一轮 log_tools_list 记下的装配名单，tools_change 的 diff 基线
     _last_logged_tool_names: Optional[list[str]]
     #: 上一轮 find_tools 挂出的工具名，标 tools_change.from_find_tools 用

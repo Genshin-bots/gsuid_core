@@ -42,5 +42,9 @@
   "log.persona.store_installed": "[PersonaStore] Imported persona {persona} (repo={repo}, packs={packs}, new memes {imported})",
   "log.persona.store_updated": "[PersonaStore] Synced persona {persona} -> {commit} (new memes {imported})",
   "log.persona.store_fetch_fail": "[PersonaStore] Failed to fetch persona market catalog: {e}",
-  "log.persona.meme_cooldown_set": "[PersonaConfig] Set the meme send cooldown of '{persona_name}' to {value} seconds"
+  "log.persona.meme_cooldown_set": "[PersonaConfig] Set the meme send cooldown of '{persona_name}' to {value} seconds",
+  "log.persona.scope_migrated": "[PersonaConfig] Migrated legacy scope of '{persona_name}': {old_scope} -> group={group_scope}, private={private_scope}",
+  "log.persona.scope_migrated_specific_dm_hint": "[PersonaConfig] '{persona_name}' was legacy 'specific' with {count} targets migrated to target_groups; move any DM user IDs to target_users and enable private_scope",
+  "log.persona.personaconfig_updated_name_channels": "[PersonaConfig] Updated channel scopes of '{persona_name}': group={group_scope}, private={private_scope}",
+  "log.persona.personaconfig_updated_name_target_users": "[PersonaConfig] Updated '{persona_name}' target private users: {target_users}"
 }

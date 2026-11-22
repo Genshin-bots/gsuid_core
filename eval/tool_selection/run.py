@@ -1,4 +1,6 @@
-"""工具选择评测：量化「正确插件的工具有没有进本轮工具池」（Pool Recall）。
+"""工具选择评测：量化「正确插件的工具有没有进本轮提示池」（Pool Recall）。
+
+池 = 主会话首轮提示给模型、经 call_tool 调用的工具（与生产 `preview_main_turn_assembly` 同源）。
 
 用例由 `ai_core/entity_index.py` 的实体身份索引**自动生成**（零人工标注）：
 插件注册的每个实体都带确定的插件归属，× 句式模板即得 ground truth。

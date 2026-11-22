@@ -1,5 +1,6 @@
 {
   "log.memory.alias_expansion": "[Memory] 别名展开失败: {e}",
+  "log.memory.observer_skip_dm_assistant_no_target": "[Memory] 跳过缺少目标用户的私聊助手消息，避免写入全局 self scope",
   "log.memory.schema_v2_backup": "[Memory] schema_v2 已备份旧库: {path}",
   "log.memory.schema_v2_migrating": "[Memory] 正在执行 schema_v2 净室迁移...",
   "log.memory.schema_v2_non_sqlite_no_backup": "[Memory] 当前数据库为 {db_type}，schema_v2 不会自动备份；即将删除旧记忆表，请先手动备份。",

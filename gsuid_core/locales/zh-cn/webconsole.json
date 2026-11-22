@@ -29,6 +29,7 @@
   "log.webconsole.plugin_prefs_save_fail": "[网页控制台] 保存插件最近使用偏好失败: {error}",
   "log.webconsole.chat_received_user": "[chat_with_history] 收到 user_id={user_id}",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' 不存在，回退通用助手提示词",
+  "log.webconsole.eval_session_log_flush_failed": "[eval] 刷新会话日志落盘失败: {err}",
   "log.webconsole.config_name_item_write_fail": "[框架配置][{config_name}] 配置项 {item_name} 写入失败",
   "log.webconsole.config_name_key_write_exception": "[框架配置][{config_name}] 配置项 {key} 写入异常: {e}",
   "log.webconsole.config_name_key_write_fail": "[框架配置][{config_name}] 配置项 {key} 写入失败",

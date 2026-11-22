@@ -101,28 +101,45 @@ def _judge_tool_evidence(tr: Trace) -> str:
     if not raw:
         return "本轮未调用任何工具。"
     last_ret: dict[str, str] = {}
+    ret_by_id: dict[str, str] = {}
     for ret in tr.tool_returns:
         name = str(ret["name"] if "name" in ret else "")
-        if not name:
-            continue
-        snap = str(ret["content"] if "content" in ret else "").replace("\n", " ")
-        last_ret[name] = snap[:160]
+        snap = str(ret["content"] if "content" in ret else "").replace("\n", " ")[:160]
+        if name:
+            last_ret[name] = snap
+        rid = str(ret["id"] if "id" in ret else "")
+        if rid:
+            ret_by_id[rid] = snap
     eff = tr.effectual_names
     lines: list[str] = []
     first_args: dict[str, str] = {}
+    first_ret: dict[str, str] = {}
+    chosen_ok: set[str] = set()
     for c in tr.tool_calls:
-        if c.name in first_args:
-            continue
         blob = c.raw_args if c.raw_args else json.dumps(c.args, ensure_ascii=False)
-        first_args[c.name] = blob.replace("\n", " ")[:160]
+        is_good = c.name != "call_tool" or not c.call_tool_error
+        for lname in _logical_names_for_call(c):
+            # 优先采用成功的重试参数与回执，避免把首次参数校验失败喂给判分器
+            should_set = lname not in first_args or (is_good and lname not in chosen_ok)
+            if should_set:
+                if c.name == "call_tool" and c.inner_args:
+                    first_args[lname] = json.dumps(c.inner_args, ensure_ascii=False).replace("\n", " ")[:160]
+                else:
+                    first_args[lname] = blob.replace("\n", " ")[:160]
+                if c.id and c.id in ret_by_id:
+                    first_ret[lname] = ret_by_id[c.id]
+                elif c.name in last_ret:
+                    first_ret[lname] = last_ret[c.name]
+                if is_good:
+                    chosen_ok.add(lname)
     if eff:
         lines.append("生效工具：")
         for n in eff:
-            snap = last_ret[n] if n in last_ret else "（尚无回执）"
+            snap = first_ret[n] if n in first_ret else (last_ret[n] if n in last_ret else "（尚无回执）")
             arg = first_args[n] if n in first_args else ""
             argbit = f" args={arg}" if arg else ""
             lines.append(f"- {n}{argbit} → {snap}")
-        skipped = [n for n in raw if n not in eff]
+        skipped = [n for n in raw if n != "call_tool" and n not in eff]
         if skipped:
             lines.append("闸门拒绝、未生效：" + "、".join(skipped))
     else:
@@ -137,6 +154,9 @@ class ToolCall:
     args: dict[str, Any]
     raw_args: str
     id: str = ""
+    inner_name: str = ""
+    inner_args: dict[str, object] = field(default_factory=dict)
+    call_tool_error: str = ""
 
 
 @dataclass
@@ -151,6 +171,11 @@ class Trace:
     """
 
     tools_offered: list[str] = field(default_factory=list)  # 装配/召回给模型的工具名（并集）
+    tools_list_snapshots: list[list[str]] = field(default_factory=list)
+    wire_tools_snapshots: list[list[str]] = field(default_factory=list)
+    tools_change_count: int = 0
+    prefix_breaks: list[dict[str, object]] = field(default_factory=list)
+    injected_image_ids: list[str] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_returns: list[dict] = field(default_factory=list)
     final_text: str = ""  # session_log 原始输出（pre-scrub）
@@ -163,6 +188,13 @@ class Trace:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    find_tools_calls: int = 0
+    find_tools_hits: int = 0
+    call_tool_total: int = 0
+    call_tool_ok: int = 0
+    call_tool_schema_errors: int = 0
+    call_tool_dispatch_errors: int = 0
+    call_tool_targets: list[str] = field(default_factory=list)
 
     @property
     def cache_rate(self) -> float:
@@ -244,14 +276,108 @@ _POLICY_REJECT_MARKERS: tuple[str, ...] = (
     "本轮未点名：不要",
 )
 
+_SCHEDULE_ACTION_MAP: dict[str, str] = {
+    "once": "add_once_task",
+    "interval": "add_interval_task",
+}
+
+_CALL_TOOL_ERR_PREFIXES: tuple[str, ...] = ("⚠️", "⛔", "🔒", "❌")
+
+_CALL_TOOL_SCHEMA_ERR_MARKERS: tuple[str, ...] = (
+    "arguments_json 不是合法 JSON",
+    "arguments_json 必须是 JSON 对象",
+    "参数校验失败",
+    "参数校验未通过",
+    "参数解析异常",
+)
+
+_CALL_TOOL_DISPATCH_ERR_MARKERS: tuple[str, ...] = (
+    "tool_name 不能为空",
+    "不能通过 call_tool 递归调用",
+    "不要通过 call_tool 包装调用",
+    "禁止执行工具",
+    "无需调用工具",
+    "未找到工具",
+    "不允许经 call_tool 直接调用",
+    "不允许在主人格直接调用",
+    "当前人格作用域未启用工具",
+    "不在自主行动允许清单内",
+    "属于能力代理专属工具",
+    "属于内部或能力代理专属工具",
+    "在当前会话被禁用",
+    "不在当前子代理授权工具清单内",
+    "在当前轮次或权限条件下不可用",
+    "暂时熔断",
+    "执行超时",
+    "高危操作",
+    "权限不足",
+    "需调整参数后重试",
+    "执行出错",
+    "执行失败",
+)
+
+_FIND_TOOLS_MISS_MARKERS: tuple[str, ...] = (
+    "本次没有对口的专用能力",
+    "没有对口的专用能力",
+    "工具加载失败",
+    "未找到",
+    "未启用",
+    "无法动态加载",
+    "没有找到",
+)
+
+
+def classify_call_tool_error(content: str) -> str:
+    """区分 call_tool 回执：""=成功 / "schema"=JSON或参数校验错 / "dispatch"=路由或权限错。
+
+    仅在回执以框架错误前缀（⚠️/⛔/🔒/❌）开头时判定，避免内层工具正常文本偶然包含子串误报。
+    """
+    stripped = (content or "").lstrip()
+    if not stripped.startswith(_CALL_TOOL_ERR_PREFIXES):
+        return ""
+    if any(m in stripped for m in _CALL_TOOL_SCHEMA_ERR_MARKERS):
+        return "schema"
+    if any(m in stripped for m in _CALL_TOOL_DISPATCH_ERR_MARKERS):
+        return "dispatch"
+    return ""
+
+
+def _logical_names_for_call(c: ToolCall) -> list[str]:
+    """展开单次工具调用的逻辑名：call_tool 展开目标工具，schedule_task 映射 action 别名。"""
+    if c.name == "call_tool":
+        target = c.inner_name or str(c.args["tool_name"] if "tool_name" in c.args else "").strip()
+        return [target] if target else ["call_tool"]
+    if c.name == "schedule_task":
+        raw_mode = c.args["mode"] if "mode" in c.args else (c.args["action"] if "action" in c.args else "")
+        mode = str(raw_mode).strip().lower()
+        mapped = _SCHEDULE_ACTION_MAP[mode] if mode in _SCHEDULE_ACTION_MAP else ""
+        return ["schedule_task", mapped] if mapped else ["schedule_task"]
+    return [c.name]
+
+
+def _logical_args_for_call(c: ToolCall) -> dict[str, object]:
+    if c.name == "call_tool":
+        if c.inner_args:
+            return c.inner_args
+        raw_inner: object = c.args["arguments_json"] if "arguments_json" in c.args else ""
+        parsed, _ = _parse_args(raw_inner)
+        return dict(parsed)
+    return dict(c.args)
+
 
 def tool_return_is_policy_reject(content: str) -> bool:
     """执行期闸门拒绝：PIN 工具仍在 schema 里，模型能点，世界未变。"""
     return any(m in content for m in _POLICY_REJECT_MARKERS)
 
 
+def _call_is_effectual(c: ToolCall, ok_names: set[str], seen_names: set[str]) -> bool:
+    if c.name == "call_tool":
+        return not c.call_tool_error
+    return c.name in ok_names or c.name not in seen_names
+
+
 def effectual_called_names(tr: Trace) -> list[str]:
-    """有非拒绝回执的工具名；尚无回执的调用仍计入（偏严，避免漏掉进行中的写入）。"""
+    """有非拒绝回执的逻辑工具名；call_tool 展开成功目标，schedule_task 附 action 别名。"""
     ok: set[str] = set()
     seen: set[str] = set()
     for ret in tr.tool_returns:
@@ -263,8 +389,8 @@ def effectual_called_names(tr: Trace) -> list[str]:
             ok.add(name)
     out: list[str] = []
     for c in tr.tool_calls:
-        if c.name in ok or c.name not in seen:
-            out.append(c.name)
+        if _call_is_effectual(c, ok, seen):
+            out.extend(_logical_names_for_call(c))
     return out
 
 
@@ -305,20 +431,86 @@ def parse_session_log(doc: dict, skip_runs: int = 0) -> Trace:
     tr = Trace()
     entries = _entries_for_scoring(list(doc.get("entries") or []), skip_runs=skip_runs)
     visible: list[str] = []
+    call_by_id: dict[str, ToolCall] = {}
+    pending_call_tools: list[ToolCall] = []
     for e in entries:
         t = e.get("type")
         d = e.get("data") or {}
         if t == "tools_list":
-            for name in d.get("tools", []) or []:
+            snap = [str(n) for n in (d.get("tools", []) or []) if n]
+            if snap:
+                tr.tools_list_snapshots.append(snap)
+            for name in snap:
                 if name not in tr.tools_offered:
                     tr.tools_offered.append(name)
+        elif t == "wire_tools_list":
+            wsnap = [str(n) for n in (d.get("tools", []) or []) if n]
+            if wsnap:
+                tr.wire_tools_snapshots.append(wsnap)
+            for name in wsnap:
+                if name not in tr.tools_offered:
+                    tr.tools_offered.append(name)
+        elif t == "prefix_break":
+            reason = str(d.get("reason", "") or "")
+            if reason and reason not in ("none", "session_new"):
+                tr.prefix_breaks.append({"reason": reason, "break_pos": d.get("break_pos")})
+        elif t == "tools_change":
+            added = d.get("added") or []
+            removed = d.get("removed") or []
+            if added or removed:
+                tr.tools_change_count += 1
         elif t == "tool_call":
             args, raw = _parse_args(d.get("args"))
-            tr.tool_calls.append(
-                ToolCall(name=d.get("tool_name", ""), args=args, raw_args=raw, id=d.get("tool_call_id", ""))
+            tname = str(d.get("tool_name", "") or "")
+            cid = str(d.get("tool_call_id", "") or "")
+            inner_name = ""
+            inner_args: dict[str, object] = {}
+            if tname == "call_tool":
+                inner_name = str(args["tool_name"] if "tool_name" in args else "").strip()
+                raw_inner: object = args["arguments_json"] if "arguments_json" in args else ""
+                parsed_inner, _ = _parse_args(raw_inner)
+                inner_args = dict(parsed_inner)
+                tr.call_tool_total += 1
+                if inner_name:
+                    tr.call_tool_targets.append(inner_name)
+            elif tname == "find_tools":
+                tr.find_tools_calls += 1
+            tc = ToolCall(
+                name=tname,
+                args=args,
+                raw_args=raw,
+                id=cid,
+                inner_name=inner_name,
+                inner_args=inner_args,
             )
+            tr.tool_calls.append(tc)
+            if cid:
+                call_by_id[cid] = tc
+            if tname == "call_tool":
+                pending_call_tools.append(tc)
         elif t == "tool_return":
-            tr.tool_returns.append({"name": d.get("tool_name", ""), "content": str(d.get("content", ""))})
+            rname = str(d.get("tool_name", "") or "")
+            rcontent = str(d.get("content", "") or "")
+            rcid = str(d.get("tool_call_id", "") or "")
+            tr.tool_returns.append({"name": rname, "content": rcontent, "id": rcid})
+            if rname == "find_tools":
+                if rcontent.strip() and not any(m in rcontent for m in _FIND_TOOLS_MISS_MARKERS):
+                    tr.find_tools_hits += 1
+            elif rname == "call_tool":
+                matched_tc: ToolCall | None = call_by_id[rcid] if rcid and rcid in call_by_id else None
+                if matched_tc is None and pending_call_tools:
+                    matched_tc = pending_call_tools.pop(0)
+                elif matched_tc is not None and matched_tc in pending_call_tools:
+                    pending_call_tools.remove(matched_tc)
+                err_kind = classify_call_tool_error(rcontent)
+                if matched_tc is not None:
+                    matched_tc.call_tool_error = err_kind
+                if err_kind == "schema":
+                    tr.call_tool_schema_errors += 1
+                elif err_kind == "dispatch":
+                    tr.call_tool_dispatch_errors += 1
+                else:
+                    tr.call_tool_ok += 1
         elif t == "text_output":
             chunk = str(d.get("content", ""))
             if chunk and not _is_eval_silence(chunk) and not chunk.startswith("[框架·"):
@@ -396,8 +588,11 @@ def _delegation_credits(tr: Trace, *, effectual_only: bool) -> set[str]:
 
 
 def _intent_names(tr: Trace) -> set[str]:
-    """模型点过的工具名（含闸门拒绝）。委派只按 task/profile 语义记目标族。"""
-    names = set(tr.called_names)
+    """模型点过的工具名（含 call_tool 展开目标与 schedule_task action 别名）。"""
+    names: set[str] = set()
+    for c in tr.tool_calls:
+        names.add(c.name)
+        names.update(_logical_names_for_call(c))
     names |= _delegation_credits(tr, effectual_only=False)
     if names & _WEATHER_TOOL_NAMES:
         names |= _WEATHER_TOOL_NAMES
@@ -441,7 +636,23 @@ _SPEECH_CHANNEL_TOOLS: frozenset[str] = frozenset({"send_message_by_ai"})
 
 
 def _work_tool_names(tr: Trace) -> list[str]:
-    return [n for n in tr.effectual_names if n not in _SPEECH_CHANNEL_TOOLS]
+    ok: set[str] = set()
+    seen: set[str] = set()
+    for ret in tr.tool_returns:
+        name = str(ret["name"] if "name" in ret else "")
+        if not name:
+            continue
+        seen.add(name)
+        if not tool_return_is_policy_reject(str(ret["content"] if "content" in ret else "")):
+            ok.add(name)
+    out: list[str] = []
+    for c in tr.tool_calls:
+        if c.name in _SPEECH_CHANNEL_TOOLS:
+            continue
+        if _call_is_effectual(c, ok, seen):
+            logical = _logical_names_for_call(c)
+            out.append(logical[0] if logical else c.name)
+    return out
 
 
 @_v("no_tool_calls")
@@ -478,20 +689,122 @@ def _must_not_call(tr, val, judge):
     return not bad, f"illegally_called={bad} effectual={names} raw={tr.called_names}"
 
 
+@_v("must_not_call_prefix")
+def _must_not_call_prefix(tr, val, judge):
+    prefixes = tuple(str(p) for p in val)
+    names = tr.effectual_names
+    bad = [n for n in names if any(n.startswith(p) for p in prefixes)]
+    return not bad, f"illegally_called_prefix={bad} prefixes={list(prefixes)}"
+
+
+@_v("call_tool_clean")
+def _call_tool_clean(tr, val, judge):
+    if not val:
+        return True, "skip"
+    if tr.call_tool_total == 0:
+        return True, "no_call_tool"
+    target_ok: dict[str, bool] = {}
+    for c in tr.tool_calls:
+        if c.name != "call_tool":
+            continue
+        tgt = c.inner_name or str(c.args["tool_name"] if "tool_name" in c.args else "").strip() or "?"
+        if not c.call_tool_error:
+            target_ok[tgt] = True
+        elif tgt not in target_ok:
+            target_ok[tgt] = False
+    unresolved = [t for t, ok in target_ok.items() if not ok]
+    return not unresolved, (
+        f"ok={tr.call_tool_ok}/{tr.call_tool_total} "
+        f"schema_err={tr.call_tool_schema_errors} dispatch_err={tr.call_tool_dispatch_errors} "
+        f"unresolved={unresolved}"
+    )
+
+
+@_v("tools_frozen")
+def _tools_frozen(tr, val, judge):
+    if not val:
+        return True, "skip"
+    if tr.tools_change_count > 0:
+        return False, f"tools_change_count={tr.tools_change_count}"
+    snaps = tr.wire_tools_snapshots if tr.wire_tools_snapshots else tr.tools_list_snapshots
+    src = "wire" if tr.wire_tools_snapshots else "assemble"
+    uniq = {tuple(s) for s in snaps if s}
+    return len(uniq) <= 1, f"src={src} snapshots={len(snaps)} unique={len(uniq)}"
+
+
+@_v("no_prefix_break")
+def _no_prefix_break(tr, val, judge):
+    if not val:
+        return True, "skip"
+    if isinstance(val, list):
+        forbidden = {str(x) for x in val}
+        hits = [b for b in tr.prefix_breaks if str(b["reason"]) in forbidden]
+    else:
+        hits = list(tr.prefix_breaks)
+    return not hits, f"prefix_breaks={hits}"
+
+
+@_v("min_cache_rate")
+def _min_cache_rate(tr, val, judge):
+    floor = float(val)
+    if tr.input_tokens <= 0:
+        return floor <= 0.0, f"input_tokens=0 floor={floor}"
+    return tr.cache_rate >= floor, f"cache_rate={tr.cache_rate:.2%} floor={floor:.2%}"
+
+
+@_v("must_silence")
+def _must_silence(tr, val, judge):
+    if not val:
+        return True, "skip"
+    ok = _is_eval_silence(tr.content_text)
+    return ok, f"delivered={tr.content_text[:80]!r}"
+
+
+@_v("image_id_bound")
+def _image_id_bound(tr, val, judge):
+    if not val:
+        return True, "skip"
+    calls = _matching_calls_for_tool(tr, "read_image")
+    if not calls:
+        return False, "read_image never called"
+    used_ids = [str(a["image_id"] if "image_id" in a else "") for a in calls]
+    if tr.injected_image_ids:
+        matched = [iid for iid in used_ids if iid in tr.injected_image_ids]
+        return bool(matched), f"used={used_ids} injected={tr.injected_image_ids}"
+    matched = [iid for iid in used_ids if iid.startswith("img_")]
+    return bool(matched), f"used={used_ids}"
+
+
+@_v("max_input_tokens")
+def _max_input_tokens(tr, val, judge):
+    cap = int(val)
+    if tr.input_tokens <= 0:
+        return True, "input_tokens=unknown"
+    return tr.input_tokens <= cap, f"input_tokens={tr.input_tokens} cap={cap}"
+
+
+def _matching_calls_for_tool(tr: Trace, tool: str) -> list[dict[str, object]]:
+    matched: list[dict[str, object]] = []
+    for c in tr.tool_calls:
+        if c.name == tool or tool in _logical_names_for_call(c):
+            matched.append(_logical_args_for_call(c))
+    return matched
+
+
 @_v("arg_equals")
 def _arg_equals(tr, val, judge):
     # val = {tool: {arg: expected}}
     blob = _create_subagent_blob(tr)
     credited = _intent_names(tr)
     for tool, kv in val.items():
-        calls = [c for c in tr.tool_calls if c.name == tool]
+        calls = _matching_calls_for_tool(tr, tool)
         if not calls:
             if tool in credited and blob and all(str(exp) in blob for _arg, exp in kv.items()):
                 continue
             return False, f"tool {tool} never called"
         for arg, exp in kv.items():
-            if not any(str(c.args[arg] if arg in c.args else "") == str(exp) for c in calls):
-                got = [c.args[arg] if arg in c.args else None for c in calls]
+            if not any(str(a[arg] if arg in a else "") == str(exp) for a in calls):
+                got = [a[arg] if arg in a else None for a in calls]
                 return False, f"{tool}.{arg} expected={exp} got={got}"
     return True, "ok"
 
@@ -501,13 +814,13 @@ def _arg_contains(tr, val, judge):
     blob = _create_subagent_blob(tr)
     credited = _intent_names(tr)
     for tool, kv in val.items():
-        calls = [c for c in tr.tool_calls if c.name == tool]
+        calls = _matching_calls_for_tool(tr, tool)
         if not calls:
             if tool in credited and blob and all(str(sub) in blob for _arg, sub in kv.items()):
                 continue
             return False, f"tool {tool} never called"
         for arg, sub in kv.items():
-            if not any(str(sub) in str(c.args[arg] if arg in c.args else "") for c in calls):
+            if not any(str(sub) in str(a[arg] if arg in a else "") for a in calls):
                 return False, f"{tool}.{arg} !contains {sub}"
     return True, "ok"
 
@@ -742,6 +1055,13 @@ def aggregate(results: list[dict]) -> dict:
     tot_out = sum(int(r.get("output_tokens") or 0) for r in results)
     tot_cr = sum(int(r.get("cache_read_tokens") or 0) for r in results)
     tot_cw = sum(int(r.get("cache_write_tokens") or 0) for r in results)
+    ft_calls = sum(int(r.get("find_tools_calls") or 0) for r in results)
+    ft_hits = sum(int(r.get("find_tools_hits") or 0) for r in results)
+    ct_total = sum(int(r.get("call_tool_total") or 0) for r in results)
+    ct_ok = sum(int(r.get("call_tool_ok") or 0) for r in results)
+    ct_schema_err = sum(int(r.get("call_tool_schema_errors") or 0) for r in results)
+    ct_dispatch_err = sum(int(r.get("call_tool_dispatch_errors") or 0) for r in results)
+    frozen_breaks = sum(int(r.get("tools_frozen_breaks") or 0) for r in results)
     return {
         "total_cases": len(results),
         "scored_cases": total,
@@ -750,8 +1070,18 @@ def aggregate(results: list[dict]) -> dict:
         "pass_rate": round(passed / total, 4) if total else 0.0,
         "by_domain": domain_rates,
         "input_tokens": tot_in,
+        "avg_input_tokens": round(tot_in / len(results), 1) if results else 0.0,
         "output_tokens": tot_out,
         "cache_read_tokens": tot_cr,
         "cache_write_tokens": tot_cw,
         "cache_rate": round(tot_cr / tot_in, 4) if tot_in else 0.0,
+        "find_tools_calls": ft_calls,
+        "find_tools_hits": ft_hits,
+        "find_tools_hit_rate": round(ft_hits / ft_calls, 4) if ft_calls else 0.0,
+        "call_tool_total": ct_total,
+        "call_tool_ok": ct_ok,
+        "call_tool_success_rate": round(ct_ok / ct_total, 4) if ct_total else 0.0,
+        "call_tool_schema_errors": ct_schema_err,
+        "call_tool_dispatch_errors": ct_dispatch_err,
+        "tools_frozen_breaks": frozen_breaks,
     }

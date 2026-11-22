@@ -1,5 +1,6 @@
 {
   "log.memory.alias_expansion": "[Memory] Alias expansion failed: {e}",
+  "log.memory.observer_skip_dm_assistant_no_target": "[Memory] Skipping private assistant message with no target user to prevent polluting global self scope",
   "log.memory.schema_v2_backup": "[Memory] schema_v2 backed up legacy database: {path}",
   "log.memory.schema_v2_migrating": "[Memory] Running schema_v2 clean-room migration...",
   "log.memory.schema_v2_non_sqlite_no_backup": "[Memory] Database is {db_type}; schema_v2 will not create an automatic backup. Legacy memory tables will be dropped, so back up first.",

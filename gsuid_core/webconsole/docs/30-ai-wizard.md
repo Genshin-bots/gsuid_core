@@ -72,28 +72,37 @@ AI 配置向导 API 用于帮助前端展示 AI 功能配置状态，提供配�
                     "ai_mode": ["提及应答", "定时巡检"],
                     "inspect_interval": 30,
                     "has_inspect": true,
+                    "group_scope": "all",
+                    "private_scope": "all",
                     "scope": "global",
                     "target_groups": [],
+                    "target_users": [],
                     "is_enabled": true,
-                    "scope_desc": "全部群聊"
+                    "scope_desc": "全部群聊与私聊"
                 },
                 {
                     "name": "神里绫人",
                     "ai_mode": ["提及应答"],
                     "inspect_interval": null,
                     "has_inspect": false,
+                    "group_scope": "specific",
+                    "private_scope": "off",
                     "scope": "specific",
                     "target_groups": ["123456789", "987654321"],
+                    "target_users": [],
                     "is_enabled": true,
-                    "scope_desc": "限定 2 个群聊 (specific)"
+                    "scope_desc": "2 个群聊"
                 },
                 {
                     "name": "禁用的人格",
                     "ai_mode": [],
                     "inspect_interval": null,
                     "has_inspect": false,
+                    "group_scope": "off",
+                    "private_scope": "off",
                     "scope": "disabled",
                     "target_groups": [],
+                    "target_users": [],
                     "is_enabled": false,
                     "scope_desc": "已禁用"
                 }
@@ -163,8 +172,11 @@ AI 配置向导 API 用于帮助前端展示 AI 功能配置状态，提供配�
 | `persona.personas[].ai_mode` | array | AI 行动模式列表 |
 | `persona.personas[].inspect_interval` | int/null | 定时巡检间隔（分钟） |
 | `persona.personas[].has_inspect` | bool | 是否启用了定时巡检 |
-| `persona.personas[].scope` | string | 启用范围：`disabled`/`global`/`global_group`/`global_private`/`specific` |
-| `persona.personas[].target_groups` | array | 限定的群聊 ID 列表（仅 scope=specific 时有效） |
+| `persona.personas[].group_scope` | string | 群聊启用范围：`off` / `specific` / `all` |
+| `persona.personas[].private_scope` | string | 私聊启用范围：`off` / `specific` / `all` |
+| `persona.personas[].scope` | string | 兼容派生启用范围：`disabled`/`global`/`global_group`/`global_private`/`specific` |
+| `persona.personas[].target_groups` | array | 限定的群聊 ID 列表（仅 `group_scope=specific` 时有效） |
+| `persona.personas[].target_users` | array | 限定的私聊用户 ID 列表（仅 `private_scope=specific` 时有效） |
 | `persona.personas[].is_enabled` | bool | 该人格是否启用 |
 | `persona.personas[].scope_desc` | string | 范围描述文本 |
 | `memory` | object | 记忆系统配置 |
@@ -359,18 +371,20 @@ AI 配置向导 API 用于帮助前端展示 AI 功能配置状态，提供配�
 
 ## 人格启用范围说明
 
-人格配置中每个人格都有独立的启用范围设置：
+人格配置按群聊（`group_scope`）与私聊（`private_scope`）两个正交通道独立控制：
 
-| scope 值 | 说明 | target_groups |
-|---------|------|---------------|
-| `disabled` | 该人格已禁用，不对任何群聊启用 | [] |
-| `global` | 对所有群聊/角色启用 | [] |
-| `specific` | 仅对指定群聊/角色启用 | [群ID列表] |
+| 通道值 | 说明 | 配套目标列表 |
+|--------|------|--------------|
+| `off` | 该通道禁用 | 不生效 |
+| `specific` | 仅对指定目标启用 | 群聊读 `target_groups`，私聊读 `target_users` |
+| `all` | 对该通道全部会话兜底（全系统每通道最多 1 人） | 不需要 |
+
+> 兼容字段 `scope`（`disabled` / `global` / `global_group` / `global_private` / `specific`）由双通道自动派生。
 
 **注意**：
 - `ai_enable_range`（用户级范围）是全局的，决定哪些用户可以使用 AI
-- 每个人格的 `scope` 是独立的，决定该人格在哪些群聊生效
-- AI 要在某个群聊生效，需要同时满足：用户级范围允许 + 该群聊有人格启用
+- 每个人格的双通道范围相互独立，决定该人格在哪些群聊/私聊生效
+- AI 要在某个会话生效，需要同时满足：用户级范围允许 + 该会话有对应通道覆盖的人格
 
 ---
 

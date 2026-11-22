@@ -174,6 +174,7 @@ SESSION_ENTRY_TYPES: frozenset[str] = frozenset(
         "tool_call",
         "tool_return",
         "tools_list",
+        "wire_tools_list",
         "tools_change",
         # 统计 / 节点 / 错误
         "token_usage",
@@ -1070,6 +1071,10 @@ class AISessionLogger:
     def log_tools_list(self, tools: List[str]) -> None:
         """记录本次传给 AI 的工具列表（去重后）"""
         self._add_entry("tools_list", {"tools": tools})
+
+    def log_wire_tools_list(self, tools: List[str]) -> None:
+        """记录实际发往模型的线缆层 function_tools 名单（经 prepare_tool_def 过滤后）。"""
+        self._add_entry("wire_tools_list", {"tools": tools})
 
     def log_tools_change(
         self,

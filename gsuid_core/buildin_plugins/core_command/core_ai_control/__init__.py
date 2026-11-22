@@ -70,25 +70,33 @@ def _list_persona_names() -> list[str]:
     return sorted(persona_config_manager.get_all_configs().keys())
 
 
-def _list_personas_by_status() -> tuple[list[str], list[str]]:
-    """返回 (已启用人格列表, 未启用人格列表)。"""
-    from gsuid_core.ai_core.persona.config import persona_config_manager
+def _list_personas_by_status(*, is_private: bool | None = None) -> tuple[list[str], list[str]]:
+    """返回 (当前通道可切换人格列表, 当前通道未启用人格列表)。"""
+    from gsuid_core.ai_core.persona.config import read_channel_scopes, persona_config_manager
 
     enabled: list[str] = []
     disabled: list[str] = []
     for name, cfg in sorted(persona_config_manager.get_all_configs().items()):
-        if cfg.get_config("scope").data == "disabled":
-            disabled.append(name)
+        scopes = read_channel_scopes(cfg)
+        if is_private is None:
+            available = scopes.is_enabled
         else:
+            channel_scope = scopes.private_scope if is_private else scopes.group_scope
+            available = channel_scope != "off"
+        if available:
             enabled.append(name)
+        else:
+            disabled.append(name)
     return enabled, disabled
 
 
-def _format_persona_choices() -> str:
-    enabled, disabled = _list_personas_by_status()
+def _format_persona_choices(*, is_private: bool | None = None) -> str:
+    enabled, disabled = _list_personas_by_status(is_private=is_private)
     lines = ["可切换人格：" + ("、".join(enabled) if enabled else "无")]
     if disabled:
-        lines.append("未启用人格（需先在控制台启用）：" + "、".join(disabled))
+        channel_hint = ("私聊" if is_private else "群聊") if is_private is not None else ""
+        prefix = f"当前{channel_hint}未启用人格" if channel_hint else "未启用人格"
+        lines.append(f"{prefix}（需先在控制台启用）：" + "、".join(disabled))
     return "\n".join(lines)
 
 
@@ -166,7 +174,7 @@ async def clear_ai_session(bot: Bot, ev: Event):
 
 @sv_core_persona_control.on_command(("persona", "人格切换"), block=True)
 async def switch_persona(bot: Bot, ev: Event):
-    """持久切换当前群或私聊的人格配置（等价于控制台修改 target_groups）。"""
+    """持久切换当前群或私聊的人格配置（等价于控制台修改 target_groups / target_users）。"""
     from gsuid_core.ai_core.persona.config import persona_config_manager
 
     session_id = ev.session_id
@@ -179,13 +187,15 @@ async def switch_persona(bot: Bot, ev: Event):
         scope_label = "私聊" if is_private else "群聊"
         await bot.send(
             f"📌 [Core AI人格控制] 当前{scope_label}生效人格：{current or '无'}\n"
-            f"用法：corepersona <人格名称>\n" + _format_persona_choices()
+            f"用法：corepersona <人格名称>\n" + _format_persona_choices(is_private=is_private)
         )
         return
 
     persona_name = _resolve_persona_name(raw_name)
     if persona_name is None:
-        await bot.send(f"❌ [Core AI人格控制] 未找到人格：{raw_name}\n" + _format_persona_choices())
+        await bot.send(
+            f"❌ [Core AI人格控制] 未找到人格：{raw_name}\n" + _format_persona_choices(is_private=is_private)
+        )
         return
 
     ok, err_msg = persona_config_manager.assign_target_to_persona(

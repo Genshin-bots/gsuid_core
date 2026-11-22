@@ -620,8 +620,6 @@
   "log.ai.toolpack_capability_pack_neither": "[ToolPack] Unknown capability pack: {pack} (neither static pack nor capability_domain)",
   "log.ai.toolpack_invalid_capability_pack_skip": "[ToolPack] Invalid capability pack name: {pack_name}, ignored",
   "log.ai.toolpack_registered_capability_pack_register": "[ToolPack] Registered capability pack: {pack_name} ({p0} tools)",
-  "log.ai.toolset_name_prepare_skipping": "[RetrievableToolset] Tool {name} prepare failed; skipping: {e}",
-  "log.ai.toolset_step_dynamically_exposed": "[RetrievableToolset] This step dynamically exposed {p0} tools: {p1}",
   "log.ai.train_intent_v5_optimizing": "[AI] Starting to train new intent model (v5 - optimizing chitchat misjudgment)...",
   "log.ai.training_saved": "[AI] Model training completed. Saved to: {p0}",
   "log.ai.trigger_ai_func_name_primary": "[Trigger→AI] +{tool_func_name} ← [{primary_keyword}] {plugin_name}",
@@ -700,5 +698,8 @@
   "log.ai.websearch_tavily_api_key_trying": "[WebSearch][Tavily] api_key ...{p0} failed, trying next",
   "log.ai.websearch_tavily_api_keys": "[WebSearch][Tavily] All api_keys failed",
   "log.ai.websearch_tavily_search_context": "[WebSearch][Tavily] Search with context: {query}, returned {p0} results",
+  "log.ai.call_tool_dispatch": "[AI] call_tool zero-cache-break dispatch: {name}",
+  "log.ai.migrations_cross_group_isolation_done": "[AI] Cross-group isolation lossless migration completed (archived {archived} legacy self journals)",
+  "log.ai.migrations_isolation_marker_read_failed": "[Migrations] Failed to read cross-group isolation watermark marker: {e} (treating as unmigrated)",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results"
 }

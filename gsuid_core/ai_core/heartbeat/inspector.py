@@ -26,9 +26,10 @@ from gsuid_core.ai_core.persona.config import (
     read_autonomy_runtime,
     is_within_active_hours,
     persona_config_manager,
-    persona_should_inspect_session,
+    persona_covers_session,
 )
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
+from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 # 并发控制：最多同时进行 5 个 LLM 调用
 MAX_CONCURRENT_LLM_CALLS = 5
@@ -154,10 +155,6 @@ class HeartbeatInspector:
 
         logger.info(t("log.ai.heartbeat_persona_name_periodic_start_2", persona_name=persona_name))
 
-        # 获取该 persona 配置的 target_groups
-        scope = config.get_config("scope").data
-        target_groups = config.get_config("target_groups").data
-
         # 获取所有活跃的会话
         sessions = self._history_manager.list_sessions()
 
@@ -170,8 +167,8 @@ class HeartbeatInspector:
         # 使用信号量控制并发 LLM 调用数量
         tasks = []
         for session_key in sessions:
-            # 根据 scope 检查是否应该巡检该会话
-            if not self._should_inspect_session(session_key, scope, target_groups, persona_name):
+            # 根据双通道启用范围检查是否应该巡检该会话
+            if not self._should_inspect_session(session_key, config):
                 continue
 
             # 前置规则过滤：快速判断是否需要巡检
@@ -286,15 +283,14 @@ class HeartbeatInspector:
     def _should_inspect_session(
         self,
         event: Event,
-        scope: str,
-        target_groups: List[str],
-        _persona_name: str,
+        config: StringConfig,
     ) -> bool:
         """检查是否应该巡检该会话"""
-        return persona_should_inspect_session(
-            scope,
-            group_id=event.group_id,
-            target_groups=target_groups,
+        group_id = event.group_id if event.user_type != "direct" else None
+        return persona_covers_session(
+            config,
+            group_id=group_id,
+            user_id=event.user_id,
         )
 
     async def _inspect_session(self, event: Event, persona_name: str) -> None:

@@ -266,7 +266,6 @@ class GsCoreAIAgent(RunOnceMixin):
         self._prefix_snapshot: Optional["PrefixSnapshot"] = None
         self._session_toolset_frozen: Optional[List[str]] = None
         self._session_toolset_tags: Optional[frozenset[str]] = None
-        self._session_appended_tools: List[str] = []
         self._last_logged_tool_names: Optional[List[str]] = None
         self._last_run_find_tools_names: List[str] = []
         self.max_history = _max_history

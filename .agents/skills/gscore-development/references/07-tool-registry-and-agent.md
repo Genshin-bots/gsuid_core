@@ -66,16 +66,16 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 
 | 分类 | 加载方式 | 典型工具 |
 |------|----------|----------|
-| `self` | 仅主 Agent 可执行；**不一定进通道核** | `send_message_by_ai`；`add_once_task`/`add_interval_task` 钉核，列出/改/删走 L2 或检索（白名单拦插件滥用 `self`） |
-| `buildin` | 可检索；核内只留通道能力 | 核：`search_cognition`、`read_handle`、`read_image`、`read_video`（有对应媒体才下发；视频默认还要本轮模型声明 video。未声明时 `find_tools` 仍能召回，召回后本轮可见）。`web_search_tool` / `get_self_info` / `state_*` 按需 |
+| `self` | 仅主 Agent 可执行；**不一定进通道核** | `send_message_by_ai`、`schedule_task`（一次性/周期创建统一入口）钉核，列出/改/删等经 `find_tools` + `call_tool` 按需调用（白名单拦插件滥用 `self`） |
+| `buildin` | 可检索；核内只留通道能力 | 核：`search_cognition`、`read_handle`、`read_life_journal`、`web_search_tool`、`read_image`、`run_code`、`record_meme`、`dispute_directive`。`web_fetch_tool` / `read_video` / `get_self_info` / `get_self_persona_info` / `state_*` 经 `find_tools` + `call_tool` 按需调用 |
 | `common` | 向量检索按需 | `create_subagent`、`collect_meme`、Kanban 管理类、`state_list`/`state_delete`/`state_append`。`search_image`/`search_meme`/`list_persisted_outputs`/`grep_persisted_outputs`/`artifact_get` 对主人格 `visible_to_capability_only`（回想走 `search_cognition`，深读走 `read_handle`） |
 | `media` | 向量检索按需；**主人格 exclusive 剥离** | `render_html_to_image`、`render_card`、`render_markdown_to_image`、**`render_chart_spec`**（声明式 SVG 图表；由 **`render_agent`** 白名单持有） |
 | `by_trigger` | 向量检索按需 | 插件 `to_ai` 自动注册的触发器工具 |
 | `mcp` | 启动按已保存清单注册，不连接；注册、注销、重载后用完整注册表同步向量。`find_tools` 的 `need` 等于工具名或插件名时直接挂上 | `mcp_{server}_{tool}`，插件名 `mcp_{server}` |
-| `default` | **子 Agent 专属**（`create_subagent` 调） | 文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
-| `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`（见 §7.5） |
+| `default` | 框架内置文件/系统工具为**子 Agent 专属**；第三方插件默认注册的 `default` 工具可由主人格经 `call_tool` 按需调用 | 框架内置：文件读写、`execute_file`、`execute_shell_command`、`_get_current_date` |
+| `meta` | **不被向量检索**，由 gs_agent 按门控显式注入 | `find_tools`、`call_tool`（见 §7.5） |
 
-> **通道核是固定名单**（`MAIN_AGENT_CORE_TOOLS`，群/私同一份）：发现、回想、委派、发送、一次性/周期提醒入口，以及 `read_image` / `read_video`。后两个靠 `visible_when` 隐藏：没图不发 `read_image`；没视频，或本轮模型未声明 video，默认不发 `read_video`。模型没声明 video 时，`find_tools` 仍能按名字或「查看/读取视频」召回它，召回后本轮 schema 打开。
+> **通道核是固定名单**（`MAIN_AGENT_CORE_TOOLS`，群/私同一份，含 `find_tools` / `call_tool` 共 13 项）：发现（`find_tools`）、按需执行（`call_tool`）、沙箱代码（`run_code`）、委派（`create_subagent`）、回想（`search_cognition`）、深读（`read_handle`）、手账（`read_life_journal`）、发送（`send_message_by_ai`）、联网搜索（`web_search_tool`）、识图（`read_image`）、定时创建（`schedule_task`）、表情收藏（`record_meme`）、指令申诉（`dispute_directive`）。主会话对这 13 项做**线缆级永冻**（无图轮也保持 schema 稳定，避免抖动打穿前缀缓存；`read_video`、`capability_map` 均不占冻结核席位；定时任务统一入口为 `schedule_task`）。
 > `get_main_agent_tools()` 按该名单装配，不再把整个 `self`+`buildin` 分类铺进 schema。
 > 定时任务仍注册为 `self`（仅主人格可执行）；创建入口钉核，列出/改/删经状态信号 / `find_tools` / 本句检索进入附加池。
 >
@@ -94,7 +94,7 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 |---|---|---|
 | L1 通道核 | `get_main_agent_tools()`：`MAIN_AGENT_CORE_TOOLS`（群/私同一份） | 发现/回想/委派/发送 + 一次性/周期提醒入口 |
 | L2 状态提示种子 | 在途任务/未完定时任务向 `turn_seeds` 注入查询/变更种子（渐进模式下仅当轮 user 侧提示 `find_tools`，不破冻结 schema） | 跨轮追问定时任务/Kanban 进度 |
-| L3 会话驻留 | `_recent_tool_families`（sticky 3 轮）+ `_session_appended_tools` 只增不减 | 刚用过的工具继续留在冻结池 |
+| L3 会话快照 | `_recent_tool_families`（sticky 3 轮）+ `_session_toolset_frozen` 首轮拍定后原样复用 | tools[] 跨轮不变 |
 | L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族（"能建就能改/删"） |
 | L5 本句检索 | 当前句向量召回未暴露工具（含 self/buildin）；省略跟进才拼上文 | 闲聊跳过；工具/问答必搜 |
 | 本轮种子 | 检索命中 + 触发词钉扎 + 在途状态种子，渐进模式下转 `turn_seed_hint_line` | 保住工具段前缀缓存；未点名/旁白轮复原冻结池并由执行门拦截 |
@@ -181,20 +181,33 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
 - **子 Agent**（`create_subagent`）：`search_tools(non_category="self")`，加载 `buildin`/`common`/
   `default`。**不调 `self`**。有 `max_iterations=3` 硬限制（防"思考→执行→报错→思考"死循环）。
 
-## 7.5 渐进式工具暴露：`find_tools` + `RetrievableToolset`（2026-06-19）
+> **2026-11 永冻核心 + `call_tool` 更新**：主会话（`Chat` / `Agent`，`_frozen_core_eligible()` 唯一判定）固定挂载 13 个核心工具（含 `find_tools`、`call_tool`、`run_code`、`read_life_journal`、`schedule_task`、`dispute_directive` 等），并在首轮拍快照后全程线缆级冻结 `tools[]`（不跨轮追加工具、不发虚假 `tools_change`），彻底消除 `tools[]` 变动造成的 KV 前缀缓存击穿。长尾工具由 `find_tools` 在回执里返回紧凑 JSON 参数契约，再经 `call_tool(tool_name, arguments_json)` 统一校验权限/主人格边界/自主行动白名单/参数并透传多模态 `ToolReturn` 执行；控制台日志 API 展示层自动标注为 `call_tool(原函数)`。`Autonomy` 同样挂载 `call_tool`（受 `AUTONOMY_TOOL_ALLOWLIST` 严格约束），旧 `RetrievableToolset` 与 `add_once_task` / `add_interval_task` 已彻底移除。
+
+## 7.5 渐进式工具暴露：`find_tools` + `call_tool`
 
 **要解决的问题**：每轮按本轮用户消息静态检索装配工具，**跨轮澄清会漏召回**——
 "帮我查天气"→AI 反问"哪个城市"→用户"广州"，这轮只拿"广州"去检索，召不回天气工具。
 
-**做法**：利用 pydantic-ai 1.x 原生支持的**运行时动态工具集**（`AbstractToolset.get_tools(ctx)`
-每个 step 重新调用），让模型"调一次检索工具→下一步那些工具就真的可调用"。
+**统一执行后端（`call_tool`）**：
 
-三个组成部分：
+`find_tools` 在回执里附带每个命中工具的紧凑参数契约（`format_compact_tool_schema`），不修改 `tools[]` schema；模型下一步通过 `call_tool(tool_name, arguments_json)`（支持对象或 JSON 字符串）直接分派执行。`call_tool` 统一校验工具边界（`is_call_tool_allowed`，与 `run_code` 共用；自主行动会话同时受 `AUTONOMY_TOOL_ALLOWLIST` 守卫）、权限 `check_func`、熔断状态与 Pydantic 参数校验，并透传多模态 `ToolReturn`。
+
+一次永冻主会话 run 的时间线：
+
+```
+step1  tools[] = 13 项永冻核心（含 find_tools / call_tool）
+       ToolCall: find_tools(need="查询某城市实时天气")
+       回执: 列出 get_weather 及紧凑参数契约 (city: str)
+step2  tools[] 完全不变（KV 前缀缓存零击穿）
+       ToolCall: call_tool(tool_name="get_weather", arguments_json={"city": "广州"})
+```
+
+两个核心组成部分：
 
 1. **`ToolContext.dynamic_tool_names: Set[str]`**（`models.py`）——单轮共享集合（`ToolContext`
    每轮新建，作用域天然是"单次 run"，轮末自然丢弃）。
-2. **`find_tools` meta-tool**（`buildin_tools/dynamic_tool_discovery.py`，`category="meta"`）——
-   模型发现缺工具时调用。**不声明 `capability_domain`**。
+2. **`find_tools` + `call_tool` meta-tools**（`buildin_tools/dynamic_tool_discovery.py`、`buildin_tools/call_tool.py`，`category="meta"`）——
+   模型发现缺工具时先调 `find_tools`，再由 `call_tool` 校验并执行。**不声明 `capability_domain`**。
    **分档一次返回（专用能力 > 专用工具 > 通用能力 > 通用工具）**：
    0. **始终检索**，禁止因「列表已有专用工具」提前 return。已暴露且 covers/retrieval
       真正命中的专用工具并入分档回执（提醒直调），短 cover（不足 3 字）不算命中。
@@ -209,34 +222,18 @@ def get_registered_tools() -> Dict[str, Dict[str, ToolBase]]: ...  # 按分类
    3. **专用节点入档前必须对口**（`need_matches_node_text`：when_to_use / covers / ≥4 字窗口）。
       短关键词或语义邻居不算命中。对口专用才丢掉通用档；不对口保留通用调研/网页搜索。
       缺口文案禁止教模型「做不到」。系统提示只陈述分档，不写「优先 subagent」。
-3. **`RetrievableToolset(AbstractToolset)`**（`dynamic_toolset.py`）——`get_tools(ctx)` 每个 step
-   读 `dynamic_tool_names`，逐名 `find_tool_base` + `prepare_tool_def` 解析成可调用工具；用
-   `exclude_names`（本轮静态已装配工具名）去重避免跨 toolset 重名冲突。
 
 **装配门控**（`gs_agent.py`）：
 
 ```python
-ENABLE_PROGRESSIVE_TOOLS = True
-# 意图门：仅在 intent not in _PROGRESSIVE_TOOLS_SKIP_INTENTS（即非「闲聊」）注入 find_tools
-#         + 挂 RetrievableToolset；闲聊轮完全跳过（零开销）
+# 主会话：`_frozen_core_eligible()` 判定后始终冻结 13 项核心工具（含 find_tools + call_tool）；
+# Autonomy：通过 AUTONOMY_TOOL_ALLOWLIST 同样挂载 find_tools + call_tool。
+# 冻结与否由 `_frozen_core_active()` 统一判定，无独立开关。
 ```
 
-`meta` 已加入 `NON_SEARCHABLE_TOOL_CATEGORIES`，`find_tools` **永不被向量检索召回**，只由
-gs_agent 按门控显式注入。
+`meta` 已加入 `NON_SEARCHABLE_TOOL_CATEGORIES`，`find_tools` 与 `call_tool` **永不被向量检索召回**，只由 gs_agent 显式装配。
 
-一次 run 的时间线：
-
-```
-step1  工具列表 = 静态召回(L1–L5) + find_tools     模型缺"查天气"工具
-       ToolCall: find_tools(need="查询某城市实时天气")
-       工具体: search_tools_by_domain → dynamic_tool_names |= {get_weather,...}
-step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
-       ToolCall: get_weather(city="广州")   ← 同一轮内完成，无需用户再补话
-```
-
-> `find_tools` 是**安全网而非替代**：静态召回（L1–L5）仍处理常见场景，模型只在"静态召回没
-> 给到所需工具"时才调它。它依赖模型主动意识到"我缺工具"，弱模型可能不触发——所以**不能纯靠
-> 它**，保底/状态驱动仍在。总开关 `ENABLE_PROGRESSIVE_TOOLS=False` 即完全回退。
+> `find_tools` + `call_tool` 既解决跨轮澄清漏召回，又把 `tools[]` 线缆协议完全冻结。冻结是主会话唯一装配形态，无回退开关。
 
 ## 7.6 条件隐藏：`visible_when`（2026-06-19）
 
@@ -283,7 +280,7 @@ step2  RetrievableToolset 读集合 → get_weather 本步"出现"并可调用
 `create_subagent` / `capability_map` / `search_cognition` **不再按点名硬拒**，是否调用交给
 模型（prompt 仍写「别人互聊就别调」）。调度新建/变更仍用 `sched_create_ok` /
 `sched_mutate_ok`（管理形藏新建，不要求 history 有 ToolCall）。装配层
-`snapshot_tool_allowed` 只按日程旗从本轮快照拿掉对应名。C-3 `@别人` 仍零工具。
+C-3 `@别人` 仍零工具。
 点名轮**不得**因误判闲聊跳过向量检索（瘦核已不含 `web_search_tool`）。
 
 ## 7.7 两段式 domain 检索（`search_tools_by_domain`）
@@ -514,7 +511,7 @@ HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 
 > 刷进群，且刚加的"长 markdown 出图"对它一次不生效。双修：① 文本改走 `send_chat_result(...,
 > ooc_check=False)`（入口已 `tool_gate_feedback` = `pre_send_gate(channel=tool)`，此处只做呈现），媒体
 > 仍 `bot.send`；② 加 `PER_TURN_SEND_MESSAGE_LIMIT`（=2）单轮节流（与 `scheduler.py`
-> `add_once_task` 同构，key=`(session_id, turn_id)`，`gs_agent` finally `clear_turn_send_throttle`），
+> `schedule_task` 同构，key=`(session_id, turn_id)`，`gs_agent` finally `clear_turn_send_throttle`），
 > 超限直接拒发并提示"改用正文输出"。回归锁 `tests/test_send_message_by_ai_guard.py`。
 
 > 🧹 **内部资源句柄不许泄漏给用户——且要"补发"而非"留断链"**（`_resolve_and_deliver_leaked_handles`，

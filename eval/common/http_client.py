@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import httpx
 
@@ -21,6 +21,7 @@ import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
 DEFAULT_CHAT_API = "/api/chat_with_history"
+DEFAULT_INBOX_API = "/api/eval/inbox_turn"
 DEFAULT_SEND_API = "/api/send_msg"
 DEFAULT_BATCH_OBSERVE_API = "/api/ai/memory/batch_observe"
 DEFAULT_TIMEOUT = 4000.0  # 单次请求超时（秒），长对话可能需要较长时间
@@ -31,7 +32,8 @@ _LOCAL_TEST_TOKEN = os.getenv("GSUID_LOCAL_TEST_TOKEN", "")
 
 def _auth_headers() -> Dict[str, str]:
     """评测请求统一附加的请求头：有 token 才带 ``X-Local-Test-Token``。"""
-    return {"X-Local-Test-Token": _LOCAL_TEST_TOKEN} if _LOCAL_TEST_TOKEN else {}
+    token = _LOCAL_TEST_TOKEN or os.getenv("GSUID_LOCAL_TEST_TOKEN", "")
+    return {"X-Local-Test-Token": token} if token else {}
 
 
 def _send_msg_headers() -> Dict[str, str]:
@@ -67,6 +69,8 @@ async def call_chat_with_history(
     as_judge: Optional[bool] = None,
     clock_at: Optional[str] = None,
     skip_memory: Optional[bool] = None,
+    session_id: Optional[str] = None,
+    images: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """调用 ``/api/chat_with_history`` 接口。
 
@@ -116,6 +120,10 @@ async def call_chat_with_history(
         payload["clock_at"] = clock_at
     if skip_memory is not None:
         payload["skip_memory"] = skip_memory
+    if session_id:
+        payload["session_id"] = session_id
+    if images:
+        payload["images"] = list(images)
 
     try:
         response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
@@ -129,6 +137,54 @@ async def call_chat_with_history(
         return {"status_code": e.response.status_code, "data": None, "error": str(e)}
     except Exception as e:
         print(f"  [WARN] 请求异常: {e}")
+        return {"status_code": -1, "data": None, "error": str(e)}
+
+
+async def call_eval_inbox_turn(
+    client: httpx.AsyncClient,
+    base_url: str,
+    group_id: str,
+    messages: Sequence[Mapping[str, object]],
+    persona_name: Optional[str] = "早柚",
+    timeout: float = DEFAULT_TIMEOUT,
+    bot_id: str = "HTTP",
+    session_id: Optional[str] = None,
+    enable_tools: bool = True,
+    enable_observer: bool = False,
+    max_history: int = 50,
+    clock_at: Optional[str] = None,
+    skip_memory: bool = False,
+) -> Dict[str, object]:
+    """调用 ``/api/eval/inbox_turn`` 驱动真实群聊收件箱连发/插话/引用路径。"""
+    url = f"{base_url}{DEFAULT_INBOX_API}"
+    payload: Dict[str, object] = {
+        "group_id": group_id,
+        "bot_id": bot_id,
+        "messages": [dict(m) for m in messages],
+        "enable_tools": enable_tools,
+        "enable_observer": enable_observer,
+        "max_history": max_history,
+        "skip_memory": skip_memory,
+    }
+    if persona_name is not None:
+        payload["persona_name"] = persona_name
+    if session_id:
+        payload["session_id"] = session_id
+    if clock_at is not None:
+        payload["clock_at"] = clock_at
+    try:
+        response = await client.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {"status_code": -1, "data": None, "error": "invalid_json"}
+    except httpx.TimeoutException:
+        print(f"  [WARN] inbox_turn 请求超时 ({timeout}s): group={group_id}")
+        return {"status_code": -1, "data": None, "error": "timeout"}
+    except httpx.HTTPStatusError as e:
+        print(f"  [WARN] inbox_turn HTTP 错误 {e.response.status_code}: group={group_id}")
+        return {"status_code": e.response.status_code, "data": None, "error": str(e)}
+    except Exception as e:
+        print(f"  [WARN] inbox_turn 请求异常: {e}")
         return {"status_code": -1, "data": None, "error": str(e)}
 
 

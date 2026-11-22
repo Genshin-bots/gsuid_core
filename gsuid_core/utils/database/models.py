@@ -282,6 +282,23 @@ class CoreUser(BaseBotIDModel, table=True):
         )
 
     @classmethod
+    @with_read_session
+    async def get_group_ids_for_user(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        bot_id: str = "",
+        cap: int = 50,
+    ) -> list[str]:
+        if not user_id or cap <= 0:
+            return []
+        stmt = select(col(cls.group_id)).where(col(cls.user_id) == user_id)
+        if bot_id:
+            stmt = stmt.where(col(cls.bot_id) == bot_id)
+        rows = (await session.execute(stmt.distinct().limit(cap))).all()
+        return [gid.strip() for (gid,) in rows if isinstance(gid, str) and gid.strip()]
+
+    @classmethod
     @with_session
     async def clean_repeat_user(cls, session: AsyncSession):
         # 1. 仅查询去重所需的必要字段，避免全量加载

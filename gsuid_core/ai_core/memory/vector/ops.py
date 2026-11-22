@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 import asyncio
 from typing import TYPE_CHECKING, Optional, TypedDict
 from collections.abc import Sequence
@@ -240,6 +241,7 @@ async def upsert_entity_vector(
     is_speaker: bool,
     user_id: Optional[str],
     tag: list[str],
+    created_at_ts: float | None = None,
 ):
     """写入 Entity 向量到 Qdrant
 
@@ -281,6 +283,7 @@ async def upsert_entity_vector(
                 "is_speaker": is_speaker,
                 "user_id": user_id,
                 "tag": tag,
+                "created_at_ts": float(created_at_ts) if created_at_ts is not None else time.time(),
             },
         )
         await client.upsert(
@@ -397,6 +400,9 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
                     "is_speaker": d.get("is_speaker", False),
                     "user_id": d.get("user_id"),
                     "tag": d.get("tag", []),
+                    "created_at_ts": float(d["created_at_ts"])
+                    if "created_at_ts" in d and isinstance(d["created_at_ts"], (int, float))
+                    else time.time(),
                 },
             )
         )
@@ -468,8 +474,12 @@ async def _hybrid_search_episodes(
     ts_range: Optional[tuple[float, float]] = None,
     score_threshold: float = 0.3,
     session_ids: Optional[list[str]] = None,
+    speaker_id: str | None = None,
 ) -> list["Episode"]:
     """搜索 Episode"""
+    extra_must: list[Condition] = []
+    if speaker_id:
+        extra_must.append(FieldCondition(key="speaker_ids", match=MatchValue(value=speaker_id)))
     results = await _hybrid_search_impl(
         MEMORY_EPISODES_COLLECTION,
         query,
@@ -478,6 +488,7 @@ async def _hybrid_search_episodes(
         score_threshold=score_threshold,
         ts_range=ts_range,
         session_ids=session_ids,
+        extra_must=extra_must or None,
     )
     episodes: list["Episode"] = []
     for r in results:
@@ -502,6 +513,9 @@ async def _hybrid_search_episodes(
         turn = r["turn_index"] if "turn_index" in r else None
         if isinstance(turn, int):
             ep["turn_index"] = turn
+        spks = r["speaker_ids"] if "speaker_ids" in r else None
+        if isinstance(spks, list):
+            ep["speaker_ids"] = [str(s) for s in spks if s is not None]
         episodes.append(ep)
     return episodes
 
@@ -518,16 +532,21 @@ async def _hybrid_search_entities(
     entities: list["Entity"] = []
     for r in results:
         tag = r["tag"] if "tag" in r else []
-        entities.append(
-            {
-                "id": r["id"],
-                "name": r["name"] if "name" in r else "",
-                "summary": r["summary"] if "summary" in r else "",
-                "entity_type": ",".join(tag) if isinstance(tag, list) else str(tag),
-                "layer": 0,
-                "score": r["score"] if "score" in r else 0.0,
-            }
-        )
+        ent: "Entity" = {
+            "id": r["id"],
+            "name": r["name"] if "name" in r else "",
+            "summary": r["summary"] if "summary" in r else "",
+            "entity_type": ",".join(tag) if isinstance(tag, list) else str(tag),
+            "layer": 0,
+            "score": r["score"] if "score" in r else 0.0,
+        }
+        sk = r["scope_key"] if "scope_key" in r else ""
+        if isinstance(sk, str) and sk:
+            ent["scope_key"] = sk
+        cts = r["created_at_ts"] if "created_at_ts" in r else None
+        if isinstance(cts, (int, float)):
+            ent["created_at_ts"] = float(cts)
+        entities.append(ent)
     return entities
 
 
@@ -535,9 +554,24 @@ async def _hybrid_search_edges(
     query: str,
     scope_keys: list[str],
     top_k: int = 20,
+    entity_ids_any: Sequence[str] | None = None,
 ) -> list["Edge"]:
     """搜索 Edge，并批量回填 source_name / target_name"""
-    results = await _hybrid_search_impl(MEMORY_EDGES_COLLECTION, query, scope_keys, top_k)
+    extra_should: list[Condition] | None = None
+    if entity_ids_any:
+        eids = [eid for eid in entity_ids_any if eid]
+        if eids:
+            extra_should = [
+                FieldCondition(key="source_entity_id", match=MatchAny(any=eids)),
+                FieldCondition(key="target_entity_id", match=MatchAny(any=eids)),
+            ]
+    results = await _hybrid_search_impl(
+        MEMORY_EDGES_COLLECTION,
+        query,
+        scope_keys,
+        top_k,
+        extra_should=extra_should,
+    )
 
     # Qdrant payload 字段可能因迁移或 patch 缺失。
     # 依 §1.4 使用 in 与 isinstance 守卫直接访问。
@@ -637,6 +671,8 @@ async def _hybrid_search_impl(
     dense_vector_name: str = "dense",
     ts_range: Optional[tuple[float, float]] = None,
     session_ids: Optional[list[str]] = None,
+    extra_must: Sequence[Condition] | None = None,
+    extra_should: Sequence[Condition] | None = None,
 ) -> list[dict]:
     """Qdrant Hybrid Search 实现：Dense + Sparse(BM25) 原生 RRF 融合
 
@@ -660,22 +696,21 @@ async def _hybrid_search_impl(
 
     scope_filter = _scope_filter(scope_keys)
 
-    # 时间范围过滤（valid_at_ts payload Range）：时间分桶语义检索用，
-    # 把"相关"和"落在指定时段"两个条件同时下推到 Qdrant。
+    # 时间范围与私聊属主过滤下推到 Qdrant，避免大群全员检索把本人条目挤出 top_k。
     extra_conds: list[Condition] = []
     if ts_range is not None:
         extra_conds.append(FieldCondition(key="valid_at_ts", range=Range(gte=ts_range[0], lte=ts_range[1])))
     if session_ids:
         extra_conds.append(FieldCondition(key="session_id", match=MatchAny(any=session_ids)))
-    if extra_conds:
-        if scope_filter is None:
-            scope_filter = Filter(must=extra_conds)
-        else:
-            raw_must = scope_filter.must
-            must: list[Condition] = []
-            if raw_must is not None:
-                must.extend(raw_must)
-            scope_filter = Filter(must=must + extra_conds)
+    if extra_must:
+        extra_conds.extend(extra_must)
+    should_conds: list[Condition] | None = list(extra_should) if extra_should else None
+    if extra_conds or should_conds:
+        must: list[Condition] = []
+        if scope_filter is not None and scope_filter.must is not None:
+            must.extend(scope_filter.must)
+        must.extend(extra_conds)
+        scope_filter = Filter(must=must or None, should=should_conds)
 
     # 余弦门仅下推至 dense 分支；混合检索 RRF 名次分不能作余弦硬筛。
     # 融合精排交由上层 dual_route 的 Reranker 处理。
@@ -698,9 +733,15 @@ async def search_episodes(
     top_k: int = 10,
     score_threshold: float = 0.3,
     session_ids: Optional[list[str]] = None,
+    speaker_id: str | None = None,
 ) -> list["Episode"]:
     return await _hybrid_search_episodes(
-        query, scope_keys, top_k, score_threshold=score_threshold, session_ids=session_ids
+        query,
+        scope_keys,
+        top_k,
+        score_threshold=score_threshold,
+        session_ids=session_ids,
+        speaker_id=speaker_id,
     )
 
 
@@ -756,9 +797,14 @@ async def search_entities(query: str, scope_keys: list[str], top_k: int = 20) ->
     return await _hybrid_search_entities(query, scope_keys, top_k)
 
 
-async def search_edges(query: str, scope_keys: list[str], top_k: int = 20) -> list["Edge"]:
+async def search_edges(
+    query: str,
+    scope_keys: list[str],
+    top_k: int = 20,
+    entity_ids_any: Sequence[str] | None = None,
+) -> list["Edge"]:
     """在 Edge Collection 中搜索相似向量"""
-    return await _hybrid_search_edges(query, scope_keys, top_k)
+    return await _hybrid_search_edges(query, scope_keys, top_k, entity_ids_any=entity_ids_any)
 
 
 async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> list["Entity"]:
@@ -801,16 +847,20 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         tag_text = ",".join(item for item in tag if isinstance(item, str)) if isinstance(tag, list) else ""
         name = payload["name"] if "name" in payload else ""
         summary = payload["summary"] if "summary" in payload else ""
-        entities.append(
-            {
-                "id": str(r.id),
-                "name": name if isinstance(name, str) else "",
-                "summary": summary if isinstance(summary, str) else "",
-                "entity_type": tag_text,
-                "layer": 0,
-                "score": 0.0,  # One-hop 邻居无相关性分数
-            }
-        )
+        ent_item: "Entity" = {
+            "id": str(r.id),
+            "name": name if isinstance(name, str) else "",
+            "summary": summary if isinstance(summary, str) else "",
+            "entity_type": tag_text,
+            "layer": 0,
+            "score": 0.0,  # One-hop 邻居无相关性分数
+        }
+        if entity_scope_key:
+            ent_item["scope_key"] = entity_scope_key
+        cts = payload["created_at_ts"] if "created_at_ts" in payload else None
+        if isinstance(cts, (int, float)):
+            ent_item["created_at_ts"] = float(cts)
+        entities.append(ent_item)
 
     return entities
 

@@ -1,6 +1,7 @@
 import random
 import asyncio
 from typing import Dict, List
+from http.cookies import SimpleCookie
 from collections.abc import Sequence
 
 from gsuid_core.i18n import t
@@ -10,6 +11,7 @@ from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.error_reply import get_error
 from gsuid_core.utils.database.models import GsUser
 from gsuid_core.utils.boardcast.models import BoardCastMsg, BoardCastMsgDict
+from gsuid_core.utils.cookie_manager.add_ck import serialize_cookie, build_cn_account_cookie
 from gsuid_core.utils.plugins_config.gs_config import pass_config
 
 GAME_NAME_MAP = {
@@ -17,6 +19,47 @@ GAME_NAME_MAP = {
     "sr": "崩铁",
     "zzz": "绝区零",
 }
+
+_COOKIE_EXPIRED_CODES = (-100, 10001)
+
+
+async def _try_refresh_cookie_for_sign(uid: str, game_name: str, is_os: bool) -> bool:
+    """Cookie 失效时尝试通过已绑定的 Stoken 自动换取新 Cookie 并落库。"""
+    stoken = await mys_api.get_stoken(uid, game_name)
+    if not stoken:
+        return False
+
+    main_uid = await mys_api.get_uid(uid, game_name)
+    mys_id = await GsUser.get_user_attr_by_uid(main_uid, "mys_id", game_name)
+    resolved_mys_id = str(mys_id) if mys_id else ""
+    if not resolved_mys_id:
+        simp = SimpleCookie(stoken)
+        for key in ("stuid", "stuid_v2", "account_id_v2", "account_id", "ltuid_v2", "ltuid"):
+            if key in simp:
+                resolved_mys_id = simp[key].value
+                break
+
+    ck_data = await mys_api.get_cookie_token_by_stoken("", resolved_mys_id, stoken, is_os=is_os)
+    if isinstance(ck_data, int):
+        return False
+
+    cookies_map = ck_data["cookies"] if "cookies" in ck_data else {}
+    if is_os:
+        new_cookie = (
+            serialize_cookie(cookies_map)
+            if cookies_map
+            else f"account_id={ck_data['uid']};cookie_token={ck_data['cookie_token']}"
+        )
+    else:
+        new_cookie = build_cn_account_cookie(ck_data["uid"], ck_data["cookie_token"], cookies_map)
+
+    await GsUser.update_data_by_uid_without_bot_id(
+        main_uid,
+        game_name,
+        cookie=new_cookie,
+        status=None,
+    )
+    return True
 
 
 async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
@@ -32,9 +75,10 @@ async def sign_error(uid: str, retcode: int, game_name: str = "gs") -> str:
         )
     )
     if retcode == 10001 or retcode == -100:
-        ck = await GsUser.get_user_cookie_by_uid(uid, game_name)
+        main_uid = await mys_api.get_uid(uid, game_name)
+        ck = await GsUser.get_user_cookie_by_uid(main_uid, game_name)
         if ck:
-            await GsUser.update_data_by_uid_without_bot_id(uid, game_name, status="error")
+            await GsUser.update_data_by_uid_without_bot_id(main_uid, game_name, status="error")
     return f"[{game_name}] 签到失败!{error_msg}"
 
 
@@ -43,8 +87,16 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
     sign_title = f"[{_gn}] [签到]"
     logger.info(t("log.sign.sign_title_uid", sign_title=sign_title, uid=uid))
     is_os = mys_api.check_os(uid, game_name)
+    cookie_refreshed = False
     # 获得签到信息
     sign_info = await mys_api.get_sign_info(uid, game_name)
+    if (
+        isinstance(sign_info, int)
+        and sign_info in _COOKIE_EXPIRED_CODES
+        and await _try_refresh_cookie_for_sign(uid, game_name, is_os)
+    ):
+        cookie_refreshed = True
+        sign_info = await mys_api.get_sign_info(uid, game_name)
     # 初步校验数据
     if isinstance(sign_info, int):
         return await sign_error(uid, sign_info, game_name)
@@ -57,10 +109,18 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
         return f"✅[{_gn}] UID{uid}今日已签到！\n🚨本月漏签次数：{sign_missed}"
 
     # 实际进行签到
-    Header = {}
+    Header: Dict[str, str] = {}
     for index in range(4):
         # 进行一次签到
         sign_data = await mys_api.mys_sign(uid, game_name, header=Header)
+        if (
+            isinstance(sign_data, int)
+            and sign_data in _COOKIE_EXPIRED_CODES
+            and not cookie_refreshed
+            and await _try_refresh_cookie_for_sign(uid, game_name, is_os)
+        ):
+            cookie_refreshed = True
+            sign_data = await mys_api.mys_sign(uid, game_name, header=Header)
         # 检测数据
         if isinstance(sign_data, int):
             return await sign_error(uid, sign_data, game_name)
@@ -71,7 +131,7 @@ async def sign_in(uid: str, game_name: str = "gs") -> str:
                     gt = sign_data["gt"]
                     ch = sign_data["challenge"]
                     vl, ch = await mys_api._pass(gt, ch, Header)
-                    if vl:
+                    if vl and ch:
                         delay = 1
                         Header["x-rpc-challenge"] = ch
                         Header["x-rpc-validate"] = vl

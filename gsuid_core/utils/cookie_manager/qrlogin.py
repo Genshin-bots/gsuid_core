@@ -3,7 +3,6 @@ import base64
 import asyncio
 from typing import Any, Tuple, Union, Literal
 from pathlib import Path
-from http.cookies import SimpleCookie
 
 import aiofiles
 
@@ -138,16 +137,17 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
 
         ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)
         if isinstance(ck, int):
-            return await send_msg("[登录]获取CK失败...")
+            return await send_msg(f"[登录]获取CK失败(retcode={ck})...")
 
-        return SimpleCookie(
-            {
-                "stoken_v2": stoken,
-                "stuid": account_id,
-                "mid": mid,
-                "cookie_token": ck["cookie_token"],
-            }
-        ).output(header="", sep=";")
+        cookie_fields: dict[str, str] = {
+            "stoken_v2": stoken,
+            "stuid": account_id,
+            "mid": mid,
+            "cookie_token": ck["cookie_token"],
+        }
+        if "cookies" in ck:
+            cookie_fields.update(ck["cookies"])
+        return ";".join(f"{key}={value}" for key, value in cookie_fields.items() if value)
     else:
         logger.warning(t("log.cookie.stoken_fail"))
         im = "[登录]stoken获取失败: 二维码已过期"

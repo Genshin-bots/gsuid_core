@@ -19,8 +19,8 @@ GENERIC_CAPABILITY_NODE_IDS: frozenset[str] = frozenset(
     }
 )
 
-_CORE_PLUGINS: frozenset[str] = frozenset({"", "core", "unknown"})
-_FOLD_CATEGORIES: frozenset[str] = frozenset({"media", "plugin_dev", "default", "meta"})
+_CORE_PLUGINS: frozenset[str] = frozenset({"", "core", "gsuid_core", "buildin", "unknown"})
+_ALWAYS_FOLD_CATEGORIES: frozenset[str] = frozenset({"media", "plugin_dev", "meta"})
 _CJK_MIN_WINDOW = 4
 _COVER_IN_NEED_MIN = 3
 _MAX_DEDICATED_AGENTS = 3
@@ -82,8 +82,9 @@ def classify_callable_tool(
     hide_from_main: bool,
     exclusive: set[str],
 ) -> ToolTier:
-    """主人格可调=dedicated/generic；exclusive/隐藏类=fold 成所属节点。"""
-    if name in exclusive or hide_from_main or category in _FOLD_CATEGORIES:
+    """主人格可调=dedicated/generic；exclusive/核心 default/隐藏类=fold 成所属节点。"""
+    is_core_default = category == "default" and plugin in _CORE_PLUGINS
+    if name in exclusive or hide_from_main or category in _ALWAYS_FOLD_CATEGORIES or is_core_default:
         return "fold"
     if category in {"by_trigger", "mcp"}:
         return "dedicated"
@@ -227,7 +228,7 @@ def need_matches_tool_text(need: str, retrieval_text: str, covers: list[str]) ->
     if not tokens or not hay:
         return False
     hits = sum(1 for t in tokens if t in hay)
-    return hits >= max(1, (len(tokens) + 1) // 2)
+    return hits >= min(3, max(1, (len(tokens) + 1) // 2))
 
 
 def covers_from_trigger_keywords(
@@ -295,29 +296,41 @@ def build_find_tools_plan(
     )
 
 
-def format_find_tools_plan(plan: FindToolsPlan) -> str:
-    """分组回执。空计划由调用方走缺口文案。"""
+def format_find_tools_plan(
+    plan: FindToolsPlan,
+    *,
+    schemas: dict[str, str] | None = None,
+) -> str:
+    """分组回执：附紧凑参数契约，引导经 call_tool 零缓存击穿调用。"""
     if plan.is_empty():
         return ""
+    schema_map = schemas if schemas is not None else {}
+
+    def _tool_line(h: RankedHit) -> str:
+        spec = schema_map[h.name] if h.name in schema_map else ""
+        if spec:
+            return f"- `{h.name}`：{h.label} | 参数: {spec}"
+        return f"- `{h.name}`：{h.label}"
+
     parts: list[str] = []
     if plan.dedicated_agents:
-        parts.append("【专用能力】有则 create_subagent(agent_profile=node_id)，不要自调渲染/代码工具")
+        parts.append("【专用能力】对象明确匹配时用 create_subagent(agent_profile=node_id)，勿自调渲染/代码工具")
         for h in plan.dedicated_agents:
             parts.append(f"- `{h.name}`：{h.label}")
     if plan.dedicated_tools:
-        parts.append("【专用工具】下一步直接调用，有则不要 create_subagent")
+        parts.append("【专用工具】若品牌与意图确切匹配，用 call_tool(tool_name, arguments_json) 调用；不符勿强用")
         for h in plan.dedicated_tools:
-            parts.append(f"- {h.name}：{h.label}")
+            parts.append(_tool_line(h))
     if plan.generic_agents:
         parts.append("【通用能力】仅当上面没有对口项时 create_subagent")
         for h in plan.generic_agents:
             parts.append(f"- `{h.name}`：{h.label}")
     if plan.generic_tools:
-        parts.append("【通用工具】仅当上面没有对口项时调用")
+        parts.append("【通用工具】仅当上面没有对口项且确需使用时，用 call_tool(tool_name, arguments_json) 调用")
         for h in plan.generic_tools:
-            parts.append(f"- {h.name}：{h.label}")
+            parts.append(_tool_line(h))
     if plan.has_dedicated():
-        parts.append("有专用项时禁止选通用项。")
+        parts.append("有对口专用项时禁止改用通用项。")
     return "\n".join(parts)
 
 

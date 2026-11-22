@@ -256,7 +256,16 @@ async def observe(
         stripped = content.strip()
         if not stripped or _is_system_or_error_echo(stripped):
             return
-        scope_key = self_scope_key(bot_self_id, persona_name)
+        # 群聊助手发言写回本群 scope，私聊助手发言写回对应用户 scope，不再污染全局 self:
+        if group_id:
+            scope_key = make_scope_key(ScopeType.GROUP, group_id)
+        elif at_targets and at_targets[0].strip():
+            scope_key = make_scope_key(ScopeType.USER_GLOBAL, at_targets[0].strip())
+        elif message_type == "private_msg":
+            logger.debug(t("log.memory.observer_skip_dm_assistant_no_target"))
+            return
+        else:
+            scope_key = self_scope_key(bot_self_id, persona_name)
         value_tier = "LOW"
     else:
         if force_scope_key is not None:
@@ -378,6 +387,7 @@ def pending_episodes_for_scopes(scope_keys: Sequence[str], *, cap: int = 8) -> l
                 "valid_at": valid_at,
                 "scope_key": rec.scope_key,
                 "embedding": [],
+                "speaker_ids": [str(rec.speaker_id)] if rec.speaker_id else [],
             }
         )
     return episodes

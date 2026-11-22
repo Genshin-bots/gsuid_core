@@ -291,12 +291,19 @@ def autonomy_merge_line(fact_summary: str) -> str:
     )
 
 
-def turn_seed_hint_line(items: str) -> str:
-    """items 是「`名`：简介」用分号接好的串。必须单行，入史前按前缀剥掉。"""
+def turn_seed_hint_line(items: str, *, direct_call: bool = False) -> str:
+    """items 是「`名`：简介/契约」用分号接好的串。必须单行，入史前按前缀剥掉。"""
+    if direct_call:
+        return (
+            "\n\n（系统提示：本轮高置信可用工具及参数契约："
+            + items
+            + "。要用时直接用 call_tool(tool_name, arguments_json) 调用，无需再查 find_tools；"
+            + "用不上就忽略，禁止对用户念工具名。）"
+        )
     return (
         "\n\n（系统提示：本轮检索到可能对口、但还没挂载的工具："
         + items
-        + '。要用时先调 find_tools(need="工具名") 挂上，下一步再调用；用不上就忽略，禁止对用户念工具名。）'
+        + '。要用时先调 find_tools(need="工具名") 查契约，再用 call_tool 调用；用不上就忽略，禁止对用户念工具名。）'
     )
 
 
@@ -443,7 +450,8 @@ INTERNAL_ARTIFACT_TOKEN_PATTERN: Final[str] = (
     r"\bsend_message_by_ai\b|\bcreate_subagent\b|\bartifact_get\b|\bartifact_put\b|"
     r"\bread_handle\b|\bsearch_handles\b|\bsearch_persisted_outputs\b|"
     r"\blist_persisted_outputs\b|\bgrep_persisted_outputs\b|\bweb_search_tool\b|"
-    r"\bweb_search\b|\bfind_tools\b|\brender_html_to_image\b|\brender_agent\b|"
+    r"\bweb_search\b|\bfind_tools\b|\bcall_tool\b|\bschedule_task\b|\bread_life_journal\b|"
+    r"\brender_html_to_image\b|\brender_agent\b|"
     r"\bresearch_agent\b|\bcheck_delegation\b|\bdispute_directive\b|"
     r"\bagent_profile\s*=|\bimage_ids?\s*=|"
     r"\bres_[0-9a-f]{6,}\b|\bimg_[0-9a-f]{6,}\b|\bto_[0-9a-f]{6,}\b|"

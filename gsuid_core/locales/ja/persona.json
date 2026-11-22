@@ -42,5 +42,9 @@
   "log.persona.store_installed": "[PersonaStore] 人格 {persona} をインポート (repo={repo}, packs={packs}, 新規表情 {imported})",
   "log.persona.store_updated": "[PersonaStore] 人格 {persona} を同期 -> {commit} (新規表情 {imported})",
   "log.persona.store_fetch_fail": "[PersonaStore] 人格マーケットのカタログ取得に失敗: {e}",
-  "log.persona.meme_cooldown_set": "[PersonaConfig] '{persona_name}' の表情送信クールダウンを {value} 秒にした"
+  "log.persona.meme_cooldown_set": "[PersonaConfig] '{persona_name}' の表情送信クールダウンを {value} 秒にした",
+  "log.persona.scope_migrated": "[PersonaConfig] '{persona_name}' の旧スコープを移行した: {old_scope} -> group={group_scope}, private={private_scope}",
+  "log.persona.scope_migrated_specific_dm_hint": "[PersonaConfig] '{persona_name}' は旧 specific の対象 {count} 件を target_groups に移行した。DM ユーザー ID が含まれる場合は target_users に移し private_scope を有効にしてほしい",
+  "log.persona.personaconfig_updated_name_channels": "[PersonaConfig] '{persona_name}' のチャネル範囲を更新した: group={group_scope}, private={private_scope}",
+  "log.persona.personaconfig_updated_name_target_users": "[PersonaConfig] '{persona_name}' の対象DMユーザーを更新した: {target_users}"
 }

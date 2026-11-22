@@ -248,6 +248,178 @@ def verifier_units():
     _assert("404 judge body is transient", judge_text_is_transient("执行出错: status_code: 404, model_name: x"))
     _assert("404 judge body is not FAIL", parse_judge_verdict("执行出错: status_code: 404 FAIL") is None)
 
+    # v3: call_tool 展开 + 重试自纠 + schedule_task action 映射 + tools_frozen + prefix 拦截
+    doc_v3 = {
+        "entries": [
+            {"type": "run_start", "data": {}},
+            {"type": "tools_list", "data": {"tools": ["find_tools", "call_tool", "schedule_task"]}},
+            {
+                "type": "tool_call",
+                "data": {"tool_name": "find_tools", "args": '{"query":"聊天记录"}', "tool_call_id": "c1"},
+            },
+            {
+                "type": "tool_return",
+                "data": {"tool_name": "find_tools", "content": "已找到 read_chat_history", "tool_call_id": "c1"},
+            },
+            {
+                "type": "tool_call",
+                "data": {
+                    "tool_name": "call_tool",
+                    "args": '{"tool_name":"read_chat_history","arguments_json":"{bad"}',
+                    "tool_call_id": "c2",
+                },
+            },
+            {
+                "type": "tool_return",
+                "data": {
+                    "tool_name": "call_tool",
+                    "content": "⚠️ arguments_json 不是合法 JSON",
+                    "tool_call_id": "c2",
+                },
+            },
+            {
+                "type": "tool_call",
+                "data": {
+                    "tool_name": "call_tool",
+                    "args": '{"tool_name":"read_chat_history","arguments_json":"{\\"query\\":\\"聚餐\\"}"}',
+                    "tool_call_id": "c3",
+                },
+            },
+            {
+                "type": "tool_return",
+                "data": {"tool_name": "call_tool", "content": "命中 1 条：火锅聚餐", "tool_call_id": "c3"},
+            },
+            {"type": "token_usage", "data": {"input_tokens": 4200, "output_tokens": 120, "cache_read_tokens": 3000}},
+            {"type": "result", "data": {"output": "刚才提过火锅聚餐。"}},
+        ]
+    }
+    tr_v3 = parse_session_log(doc_v3)
+    _assert("v3 find_tools hit counted", tr_v3.find_tools_calls == 1 and tr_v3.find_tools_hits == 1)
+    _assert(
+        "v3 call_tool retry metrics",
+        tr_v3.call_tool_total == 2 and tr_v3.call_tool_ok == 1 and tr_v3.call_tool_schema_errors == 1,
+    )
+    _assert(
+        "v3 call_tool unwraps inner tool",
+        score_trace(
+            tr_v3, {"must_call": ["read_chat_history"], "arg_contains": {"read_chat_history": {"query": "聚餐"}}}
+        )[0],
+    )
+    _assert(
+        "v3 call_tool_clean passes after retry",
+        score_trace(tr_v3, {"call_tool_clean": True, "tools_frozen": True, "max_input_tokens": 8000})[0],
+    )
+    _assert("v3 max_input_tokens catches bloat", not score_trace(tr_v3, {"max_input_tokens": 2000})[0])
+
+    tr_sched = T(calls=[("schedule_task", {"mode": "once", "task_prompt": "给猫喂药", "run_time": "21:30"})])
+    _assert(
+        "v3 schedule_task(once) maps to add_once_task & arg_contains",
+        score_trace(
+            tr_sched,
+            {
+                "must_call_any": ["add_once_task"],
+                "must_not_call": ["add_interval_task"],
+                "arg_contains": {"add_once_task": {"task_prompt": "喂药"}},
+            },
+        )[0],
+    )
+    _assert(
+        "v3 schedule_task(once) caught by must_not_call add_once_task",
+        not score_trace(tr_sched, {"must_not_call": ["add_once_task"]})[0],
+    )
+    tr_sched_bad = T(calls=[("schedule_task", {"mode": "list"})])
+    _assert(
+        "v3 schedule_task(list) does not satisfy list_scheduled_tasks",
+        not score_trace(tr_sched_bad, {"must_call_any": ["list_scheduled_tasks"]})[0],
+    )
+    from eval.agent.harness import classify_call_tool_error
+
+    _assert(
+        "v3 classify_call_tool_error matches real call_tool errors",
+        classify_call_tool_error("⚠️ arguments_json 必须是 JSON 对象（{...}）。") == "schema"
+        and classify_call_tool_error("⚠️ 工具 `x` 在当前轮次或权限条件下不可用。") == "dispatch"
+        and classify_call_tool_error("⚠️ 工具 `x` 不在自主行动允许清单内。") == "dispatch"
+        and classify_call_tool_error("⚠️ 工具 `x` 近期连续失败已暂时熔断。") == "dispatch"
+        and classify_call_tool_error("⚠️ 工具 `x` 执行超时（>60s）。") == "dispatch"
+        and classify_call_tool_error("⚠️ 当前人格作用域未启用工具 `x`。") == "dispatch"
+        and classify_call_tool_error("⚠️ 不能通过 call_tool 递归调用 find_tools") == "dispatch"
+        and classify_call_tool_error("⚠️ 工具 `x` 不允许在主人格直接调用。") == "dispatch"
+        and classify_call_tool_error("查询结果：上次测试执行失败，未找到高危漏洞。") == ""
+        and classify_call_tool_error("正常文本包含 arguments_json 字段说明") == "",
+    )
+    doc_miss = {
+        "entries": [
+            {"type": "run_start", "data": {}},
+            {"type": "tool_call", "data": {"tool_name": "find_tools", "args": '{"need":"未知"}', "tool_call_id": "m1"}},
+            {
+                "type": "tool_return",
+                "data": {"tool_name": "find_tools", "content": "⚠️ 本次没有对口的专用能力。", "tool_call_id": "m1"},
+            },
+            {"type": "result", "data": {"output": "暂时查不到。"}},
+        ]
+    }
+    tr_miss = parse_session_log(doc_miss)
+    _assert("v3 find_tools miss marker counted", tr_miss.find_tools_calls == 1 and tr_miss.find_tools_hits == 0)
+
+    doc_wire = {
+        "entries": [
+            {"type": "run_start", "data": {}},
+            {"type": "wire_tools_list", "data": {"tools": ["find_tools", "call_tool", "read_image"]}},
+            {"type": "wire_tools_list", "data": {"tools": ["find_tools", "call_tool", "read_image"]}},
+            {"type": "prefix_break", "data": {"reason": "session_new", "break_pos": 0}},
+            {
+                "type": "tool_call",
+                "data": {
+                    "tool_name": "call_tool",
+                    "args": {"tool_name": "read_image", "arguments_json": {"image_id": "img_abc123"}},
+                    "tool_call_id": "cw1",
+                },
+            },
+            {
+                "type": "tool_return",
+                "data": {"tool_name": "call_tool", "content": "图里写着 42", "tool_call_id": "cw1"},
+            },
+            {"type": "token_usage", "data": {"input_tokens": 5000, "output_tokens": 80, "cache_read_tokens": 3500}},
+            {"type": "result", "data": {"output": "图里是 42。"}},
+        ]
+    }
+    tr_wire = parse_session_log(doc_wire)
+    tr_wire.injected_image_ids = ["img_abc123"]
+    _assert(
+        "v4 wire_tools_list + no_prefix_break + min_cache_rate + image_id_bound pass",
+        score_trace(
+            tr_wire,
+            {
+                "tools_frozen": True,
+                "no_prefix_break": True,
+                "min_cache_rate": 0.5,
+                "image_id_bound": True,
+                "must_call": ["read_image"],
+            },
+        )[0],
+    )
+    doc_wire_break = {
+        "entries": [
+            {"type": "run_start", "data": {}},
+            {"type": "wire_tools_list", "data": {"tools": ["find_tools", "call_tool"]}},
+            {"type": "wire_tools_list", "data": {"tools": ["find_tools", "call_tool", "read_image"]}},
+            {"type": "prefix_break", "data": {"reason": "tool_return", "break_pos": 4}},
+            {"type": "result", "data": {"output": "<SILENCE>"}},
+        ]
+    }
+    tr_wbreak = parse_session_log(doc_wire_break)
+    _assert("v4 wire tools drift caught by tools_frozen", not score_trace(tr_wbreak, {"tools_frozen": True})[0])
+    _assert("v4 tool_return break caught by no_prefix_break", not score_trace(tr_wbreak, {"no_prefix_break": True})[0])
+    _assert("v4 must_silence passes on <SILENCE>", score_trace(tr_wbreak, {"must_silence": True})[0])
+    _assert("v4 must_silence fails on speech", not score_trace(tr_wire, {"must_silence": True})[0])
+    _assert(
+        "v3 must_not_call_prefix blocks mcp_",
+        not score_trace(
+            T(calls=[("call_tool", {"tool_name": "mcp_wallet_balance", "arguments_json": "{}"})]),
+            {"must_not_call_prefix": ["mcp_"]},
+        )[0],
+    )
+
     doc = {
         "entries": [
             {"type": "run_start", "data": {}},

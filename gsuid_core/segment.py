@@ -354,7 +354,7 @@ async def _convert_message_to_image(message: Message, bot_id: str, bot_self_id: 
                     image_b64 = URL_MAP[url]
                 else:
                     resp = await sget(url)
-                    image_b64 = b64encode(resp.content).decode("utf-8")
+                    image_b64 = f"base64://{b64encode(resp.content).decode('utf-8')}"
                     URL_MAP[url] = image_b64
                 return [Message(type="image", data=image_b64)]
             else:

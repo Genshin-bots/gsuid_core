@@ -6,7 +6,7 @@ Kanban 任务树本身是**一次性事件驱动**的——同一棵树跑完即
 但用户常有"每个工作日每半小时检查一次、30 天后结算"这种**周期性、
 跨多日的多步任务**。在过去框架只能退化为两条路：
 
-1. 主人格挂一个 ``add_interval_task``，每次唤醒手动 ``register_kanban_task``——
+1. 主人格挂一个 ``schedule_task``，每次唤醒手动 ``register_kanban_task``——
    重复的能力评估开销、易出现"忘记触发"的认知失误。
 2. 把任务塞进 ``state_set`` 的大 JSON 块——没有 Kanban 看板、没有 artifact、
    主人追问时无溯源原文。

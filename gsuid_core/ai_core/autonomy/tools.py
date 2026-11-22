@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from contextvars import Token, ContextVar
@@ -21,9 +22,11 @@ from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_
 USER_PM = 6
 MAX_SPEAK_ATTEMPTS = 2
 ARTIFACT_LIMIT_BYTES = 32 * 1024
+AUTONOMY_CALL_TOOL_GUARD_KEY = "autonomy_call_tool_guard"
 AUTONOMY_TOOL_ALLOWLIST = frozenset(
     {
         "find_tools",
+        "call_tool",
         "create_subagent",
         "read_handle",
         "web_search_tool",
@@ -332,6 +335,43 @@ async def run_bot_command(
     )
 
 
+_NOTE_SCOPE_HEADER_RE = re.compile(
+    r"^\s*<!--\s*gscore-scope:\s*(?P<scope>[^|\s>]+)(?:\s*\|\s*owner:\s*(?P<owner>[^\s>]*))?\s*-->\s*(?:\r?\n)?"
+)
+
+
+def parse_note_scope_header(text: str) -> tuple[str, str]:
+    """从笔记正文首行注释解析 ``(scope_key, owner_user_id)``；无头则返回空元组。"""
+    m = _NOTE_SCOPE_HEADER_RE.match(text or "")
+    if m is None:
+        return "", ""
+    return (m.group("scope") or "").strip(), (m.group("owner") or "").strip()
+
+
+def stamp_note_scope_header(
+    persona_name: str,
+    stem: str,
+    scope_key: str,
+    owner_user_id: str = "",
+    folder: Path | None = None,
+) -> None:
+    """将单行作用域头写入磁盘笔记首行（单一事实源，无需独立 JSON 侧车）。"""
+    sk = scope_key.strip()
+    if not stem.strip() or not sk:
+        return
+    base = folder if folder is not None else artifact_dir(persona_name)
+    header = f"<!-- gscore-scope: {sk} | owner: {owner_user_id.strip()} -->\n"
+    for ext in (".md", ".txt"):
+        path = base / f"{stem.strip()}{ext}"
+        if not path.exists():
+            continue
+        raw = path.read_text(encoding="utf-8")
+        stripped = _NOTE_SCOPE_HEADER_RE.sub("", raw, count=1)
+        if raw != header + stripped:
+            path.write_text(header + stripped, encoding="utf-8")
+        return
+
+
 async def index_note_node(
     persona_name: str,
     title: str,
@@ -339,21 +379,41 @@ async def index_note_node(
     handle: str,
     *,
     bot_self_id: str = "",
+    scope_key: str = "",
+    owner_user_id: str = "",
+    preserve_existing_scope: bool = False,
 ) -> None:
     """把自主行动产物登记到认知节点表，供 search_cognition 和 read_handle 回想。"""
     from datetime import datetime
 
+    from gsuid_core.pool import to_thread
     from gsuid_core.ai_core.memory.scope import self_scope_key
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
     ref = f"autonomy_note:{persona_name}:{title}"
-    summary = body.replace("\n", " ").strip()[:300]
+    clean_body = _NOTE_SCOPE_HEADER_RE.sub("", body or "", count=1)
+    summary = clean_body.replace("\n", " ").strip()[:300]
+    hdr_scope, hdr_owner = parse_note_scope_header(body)
+    resolved_scope = scope_key.strip() or hdr_scope
+    resolved_owner = owner_user_id.strip() or hdr_owner
+
+    if preserve_existing_scope and not resolved_scope:
+        existing = await AICogNode.get(CogKind.SELF_NOTE, ref)
+        if existing is not None and existing.scope_key:
+            resolved_scope = existing.scope_key
+            resolved_owner = resolved_owner or existing.owner_user_id
+
+    if not resolved_scope:
+        resolved_scope = self_scope_key(bot_self_id or "default", persona_name)
+    await to_thread(stamp_note_scope_header)(persona_name, title, resolved_scope, resolved_owner)
     await remember(
         MemoryWrite(
             kind=CogKind.SELF_NOTE,
             ref=ref,
-            scope_key=self_scope_key(bot_self_id, persona_name) if bot_self_id else "",
+            scope_key=resolved_scope,
+            owner_user_id=resolved_owner,
             title=title,
             summary=summary,
             as_of=datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -364,12 +424,17 @@ async def index_note_node(
 
 
 async def sync_persona_artifacts(persona_name: str, bot_self_id: str = "") -> int:
-    """把已有磁盘笔记同步进认知节点表，用于重启时补全索引。"""
+    """把已有磁盘笔记同步进认知节点表，严禁覆盖已有群/私聊 scope 或绕过水位线重登旧笔记。"""
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
+
     folder = artifact_dir(persona_name)
     if not folder.exists():
         return 0
+    watermark_ts = await ensure_isolation_watermark_ts()
     count = 0
-    for path_item in folder.glob("*.txt"):
+    for path_item in [*folder.glob("*.txt"), *folder.glob("*.md")]:
         stem = path_item.stem
         if not stem:
             continue
@@ -377,8 +442,31 @@ async def sync_persona_artifacts(persona_name: str, bot_self_id: str = "") -> in
             content = path_item.read_text(encoding="utf-8")
         except OSError:
             continue
+        scope_hint, owner_hint = parse_note_scope_header(content)
+        if not scope_hint and watermark_ts > 0.0:
+            try:
+                mtime = path_item.stat().st_mtime
+            except OSError:
+                continue
+            ref = f"autonomy_note:{persona_name}:{stem}"
+            existing = await AICogNode.get(CogKind.SELF_NOTE, ref)
+            if existing is not None and existing.scope_key:
+                scope_hint = existing.scope_key
+                owner_hint = existing.owner_user_id
+            elif mtime < watermark_ts:
+                # 升级前无归属旧笔记绝不再写入新 created_at 绕过水位线
+                continue
         handle = f"note:{persona_name}:{stem}"
-        await index_note_node(persona_name, stem, content, handle, bot_self_id=bot_self_id)
+        await index_note_node(
+            persona_name,
+            stem,
+            content,
+            handle,
+            bot_self_id=bot_self_id,
+            scope_key=scope_hint,
+            owner_user_id=owner_hint,
+            preserve_existing_scope=True,
+        )
         count += 1
     return count
 
@@ -409,7 +497,30 @@ async def artifact_put(
         stem = safe_filename(resolved_title).removesuffix(".txt")
         handle = f"note:{persona_name}:{stem}"
         bot_self_id = state.bot_self_id if state is not None else ""
-        await index_note_node(persona_name, stem, resolved_body, handle, bot_self_id=bot_self_id)
+        note_scope = ""
+        note_owner = ""
+        if state is not None:
+            if state.last_sent_group_id:
+                note_scope = f"group:{state.last_sent_group_id}"
+                note_owner = state.last_sent_user_id
+            elif len(state.allowed_groups) == 1 and not state.allowed_users:
+                note_scope = f"group:{next(iter(state.allowed_groups.keys()))}"
+            elif state.last_sent_user_id:
+                note_scope = f"user_global:{state.last_sent_user_id}"
+                note_owner = state.last_sent_user_id
+            elif len(state.allowed_users) == 1 and not state.allowed_groups:
+                only_uid = next(iter(state.allowed_users.keys()))
+                note_scope = f"user_global:{only_uid}"
+                note_owner = only_uid
+        await index_note_node(
+            persona_name,
+            stem,
+            resolved_body,
+            handle,
+            bot_self_id=bot_self_id,
+            scope_key=note_scope,
+            owner_user_id=note_owner,
+        )
         return f"已写入笔记《{stem}》（句柄: {handle}）"
     return res
 
@@ -565,6 +676,8 @@ async def send_message_by_ai(
     elif dest_user_id:
         # 快照上的群是这个人最近待过的地方，不是这条私聊的目的地。
         u_snap = state.allowed_users[dest_user_id]
+        if not u_snap.private_scope_allowed:
+            return "拒绝私聊发送：当前人格的私聊启用范围未覆盖该用户，请改在群内发言或转为笔记。"
         if not u_snap.allow_private_push:
             return "拒绝：对方连续两次未回复你的主动私聊，私聊推送已暂停。请改用笔记或等对方先开口。"
 
@@ -692,6 +805,7 @@ def build_autonomy_tools() -> list[Tool[ToolContext]]:
     ]
     for name in (
         "find_tools",
+        "call_tool",
         "web_search_tool",
         "web_fetch_tool",
         "read_image",

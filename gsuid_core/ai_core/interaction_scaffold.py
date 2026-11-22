@@ -589,20 +589,21 @@ def scaffold_hints_from_graph(
     return hints
 
 
-# 通道核：发现、回想、委派、发送、提醒，以及有媒体才露的读图/读视频。
+# 永冻通道核（13 个极简高频/控制面工具）：整会话 tools[] 线缆级不变，长尾工具走 find_tools + call_tool。
 MAIN_AGENT_CORE_TOOLS: tuple[str, ...] = (
     "find_tools",
+    "call_tool",
+    "run_code",
     "create_subagent",
-    "web_search_tool",
-    "send_message_by_ai",
     "search_cognition",
     "read_handle",
-    "run_code",
+    "read_life_journal",
+    "send_message_by_ai",
+    "web_search_tool",
     "read_image",
-    "read_video",
+    "schedule_task",
+    "record_meme",
     "dispute_directive",
-    "add_once_task",
-    "add_interval_task",
 )
 
 

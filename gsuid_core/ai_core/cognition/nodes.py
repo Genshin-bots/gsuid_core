@@ -141,6 +141,8 @@ class AICogNode(SQLModel, table=True):
         owner_user_id: str,
         kinds: Optional[List[str]] = None,
         limit: int = 12,
+        self_min_created_at: int = 0,
+        private_strict_owner_for_groups: bool = False,
     ) -> List["AICogNode"]:
         """按关键词 + scope + **属主**检索节点（过滤全部下推到 SQL，不做内存筛）。
 
@@ -174,6 +176,32 @@ class AICogNode(SQLModel, table=True):
             conds.append(col(cls.kind).in_(kinds))
         visible = ["", *scope_keys]
         conds.append(col(cls.scope_key).in_(visible))
+        if self_min_created_at > 0:
+            # 零删除水位线：群聊对 self:* 及历史无属主空 scope SELF_NOTE 均须过水位线
+            is_self_or_empty_note = or_(
+                col(cls.scope_key).startswith("self:"),
+                and_(col(cls.scope_key) == "", col(cls.kind) == CogKind.SELF_NOTE.value),
+            )
+            if private_strict_owner_for_groups and owner_user_id:
+                self_allowed = or_(
+                    ~is_self_or_empty_note,
+                    col(cls.created_at) >= self_min_created_at,
+                    col(cls.owner_user_id) == owner_user_id,
+                )
+            else:
+                self_allowed = or_(
+                    ~is_self_or_empty_note,
+                    col(cls.created_at) >= self_min_created_at,
+                )
+            conds.append(self_allowed)
+        if private_strict_owner_for_groups and owner_user_id:
+            # 私聊跨群节点仅放行 owner_user_id==本人，绝不泄露同群他人的群级节点
+            conds.append(
+                or_(
+                    ~col(cls.scope_key).startswith("group:"),
+                    col(cls.owner_user_id) == owner_user_id,
+                )
+            )
         public_row = and_(
             col(cls.owner_user_id) == "",
             col(cls.kind).notin_(sorted(OWNER_REQUIRED_KINDS)),

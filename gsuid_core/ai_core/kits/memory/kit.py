@@ -74,11 +74,15 @@ def _format_memory_catalog(mem: "MemoryContext", _query: str = "") -> str:
             low = raw.lstrip().lower()
             return low.startswith("assistant:") or raw.lstrip().startswith("[我此前说过]")
 
+        from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
         user_eps = [e for e in mem.episodes if not _asst(e["content"] or "")]
         asst_eps = [e for e in mem.episodes if _asst(e["content"] or "")]
         for ep in user_eps + asst_eps:
             ts = (ep["valid_at"] or "").strip()[:10]
             body = (ep["content"] or "").strip()
+            if mem.is_private and "scope_key" in ep and ep["scope_key"].startswith("group:"):
+                body = prefix_group_tag(ep["scope_key"], body)
             if not _add(f"{ts} {body}" if ts else body):
                 break
     if shown < cap:
@@ -86,11 +90,16 @@ def _format_memory_catalog(mem: "MemoryContext", _query: str = "") -> str:
             if not _add(item):
                 break
     if shown < cap:
+        from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
         for edge in mem.edges:
             fact = edge["fact"].replace("\n", " ").strip()
             if not fact:
                 continue
-            if not _add(fact.split("。", 1)[0]):
+            head = fact.split("。", 1)[0]
+            if mem.is_private and "scope_key" in edge and edge["scope_key"].startswith("group:"):
+                head = prefix_group_tag(edge["scope_key"], head)
+            if not _add(head):
                 break
     if shown == 0:
         return ""
@@ -418,6 +427,7 @@ class MemoryKit(AgentKit):
                 clock=ctx.clock_at,
                 reserved=reserved_turns,
                 memory_intent=memory_intent,
+                bot_id=scope.bot_id,
             )
             mem.reserved_episodes = reserved_turns
         if wants_evidence_injection(ctx):
@@ -427,12 +437,35 @@ class MemoryKit(AgentKit):
             )
 
             # 跨会话演进与时间线模态优先保留广度，不在单会话邻条上消耗预算。
+            # 私聊严禁对 group:* 条目做邻条展开，防把同群他人相邻发言拉进私聊上下文。
             if (
                 memory_intent not in ("timeline_order", "broad_summary")
                 and looks_like_count_query(search_q)
                 and not mem.temporal_mode
             ):
-                mem.episodes = await expand_episode_neighbors(mem.episodes)
+                if ctx.group_id:
+                    mem.episodes = await expand_episode_neighbors(mem.episodes)
+                else:
+                    non_grp = [
+                        ep
+                        for ep in mem.episodes
+                        if not (ep["scope_key"] if "scope_key" in ep else "").startswith("group:")
+                    ]
+                    grp_only = [
+                        ep for ep in mem.episodes if (ep["scope_key"] if "scope_key" in ep else "").startswith("group:")
+                    ]
+                    expanded = await expand_episode_neighbors(non_grp) if non_grp else []
+                    seen_ids = {ep["id"] for ep in expanded if "id" in ep}
+                    mem.episodes = [*expanded, *(ep for ep in grp_only if ("id" not in ep) or ep["id"] not in seen_ids)]
+        from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
+        from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
+
+        await enforce_memory_privacy(
+            mem,
+            group_id=ctx.group_id,
+            user_id=ctx.user_id,
+            watermark_ts=await ensure_isolation_watermark_ts(),
+        )
         text = format_retrieved_memory(ctx, mem)
         if text:
             ctx.stash_retrieved("memory", text)

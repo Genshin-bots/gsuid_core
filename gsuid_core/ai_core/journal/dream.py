@@ -75,6 +75,7 @@ _SELF_DREAM_PROMPT = (
     "对照【系统真值对账】及时销账已完结事项。\n"
     "3. yesterday（昨日自主回顾，1~2 条，总计 ≤110 字）："
     "简述昨日闲暇自主探索或全局周期事务的收获。\n"
+    "隐私硬红线：严禁将任何特定群聊的专属任务、私聊话题或特定用户个人事务写入自我手账。\n"
     '- 严格仅输出合法 JSON 对象：{"persistent": ["..."], "monthly": ["..."], "yesterday": ["..."]}，'
     "每个数组元素是不带 `- ` 前缀的单行纯文本，严禁输出额外解释。"
 )
@@ -103,6 +104,8 @@ class NoteArchiveRecord(TypedDict):
     title: str
     reason: str
     body: str
+    scope_key: str
+    owner_user_id: str
 
 
 class DreamSlots(TypedDict):
@@ -181,7 +184,13 @@ async def collect_ground_truth(
             col(AIAgentTask.updated_at),
             col(AIAgentTask.recurring_trigger),
         ).where(col(AIAgentTask.updated_at) >= cutoff_dt)
-        if shard_id != "__self__":
+        if shard_id.startswith("user:"):
+            uid_only = shard_id[len("user:") :].strip()
+            stmt = stmt.where(
+                col(AIAgentTask.owner_user_id) == uid_only,
+                (col(AIAgentTask.group_id).is_(None)) | (col(AIAgentTask.group_id) == ""),
+            )
+        elif shard_id != "__self__":
             stmt = stmt.where(
                 col(AIAgentTask.group_id) == shard_id,
                 (col(AIAgentTask.persona_name).is_(None))
@@ -189,9 +198,11 @@ async def collect_ground_truth(
                 | (col(AIAgentTask.persona_name) == persona_name),
             )
         else:
+            # 自我核严禁拉取特定用户的私聊任务，只对账无属主的全局自主任务
             stmt = stmt.where(
                 col(AIAgentTask.persona_name) == persona_name,
                 (col(AIAgentTask.group_id).is_(None)) | (col(AIAgentTask.group_id) == ""),
+                col(AIAgentTask.owner_user_id) == "",
             )
         rows = (await session.execute(stmt)).all()
         for disp_raw, status_raw, upd_raw, rec_raw in rows:
@@ -214,14 +225,15 @@ async def collect_ground_truth(
                 select(col(AIAutonomyActivity.summary), col(AIAutonomyActivity.drive_kind))
                 .where(
                     col(AIAutonomyActivity.persona_name) == persona_name,
+                    col(AIAutonomyActivity.drive_kind) == "self_explore",
                     col(AIAutonomyActivity.created_at) >= now_ts - 24 * 3600,
                 )
                 .order_by(col(AIAutonomyActivity.created_at).desc())
                 .limit(8)
             )
-            for summary_raw, drive_raw in (await session.execute(act_stmt)).all():
+            for summary_raw, _drive_raw in (await session.execute(act_stmt)).all():
                 s_txt = str(summary_raw or "").strip()
-                if s_txt and str(drive_raw or "") != "rest" and s_txt not in auto_facts:
+                if s_txt and s_txt not in auto_facts:
                     auto_facts.append(truncate_at_boundary(s_txt, max_chars=70))
 
     return GroundTruthDigest(
@@ -297,6 +309,8 @@ def read_journal_archive_sync(
             rec_shard = parsed["shard"] if "shard" in parsed and isinstance(parsed["shard"], str) else ""
             rec_date = parsed["date"] if "date" in parsed and isinstance(parsed["date"], str) else ""
             rec_kind = parsed["kind"] if "kind" in parsed and isinstance(parsed["kind"], str) else "daily"
+            if rec_kind == "legacy_self_v1_archive":
+                continue
             rec_entries = parsed["entries"] if "entries" in parsed and isinstance(parsed["entries"], list) else []
             if shard_id and rec_shard != shard_id:
                 continue
@@ -579,8 +593,15 @@ async def consolidate_persona_notes(
     allow_llm: bool = True,
     max_llm_merges: int = MAX_NOTE_CLUSTERS_PER_NIGHT,
 ) -> tuple[int, int]:
-    """Phase 3：整编个人笔记库（>7天单日快照归档 + >=3篇同题合并为 topic_*.md + 活跃上限30篇）。"""
-    from gsuid_core.ai_core.autonomy.tools import artifact_dir, index_note_node
+    """Phase 3：按 scope 隔离整编个人笔记库（同 scope+同题才合并，严禁跨群/私聊混编）。"""
+    import hashlib
+
+    from gsuid_core.ai_core.autonomy.tools import (
+        artifact_dir,
+        index_note_node,
+        parse_note_scope_header,
+    )
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
 
     clock = now_ts if now_ts is not None else time.time()
     folder = notes_dir if notes_dir is not None else artifact_dir(persona_name)
@@ -592,6 +613,7 @@ async def consolidate_persona_notes(
     raw_archive_file = folder / "archived_raw" / f"{month_str}.jsonl"
     archived_count = 0
     merged_topics = 0
+    watermark_ts = await ensure_isolation_watermark_ts()
 
     all_files = sorted(
         [p for p in list(folder.glob("*.txt")) + list(folder.glob("*.md")) if p.is_file()],
@@ -606,13 +628,16 @@ async def consolidate_persona_notes(
             body = await to_thread(p.read_text)(encoding="utf-8")
         except OSError:
             return
-        rec: NoteArchiveRecord = {
+        sk, uid = parse_note_scope_header(body)
+        rec_obj: NoteArchiveRecord = {
             "archived_at": now_local.strftime("%Y-%m-%d %H:%M"),
             "title": p.stem,
             "reason": reason,
             "body": body,
+            "scope_key": sk,
+            "owner_user_id": uid,
         }
-        await _append_jsonl_sync(raw_archive_file, json.dumps(rec, ensure_ascii=False))
+        await _append_jsonl_sync(raw_archive_file, json.dumps(rec_obj, ensure_ascii=False))
         try:
             await to_thread(p.unlink)(missing_ok=True)
             archived_count += 1
@@ -637,34 +662,47 @@ async def consolidate_persona_notes(
         else:
             remaining.append(fpath)
 
-    # 2. 聚类同词干散乱笔记（>= 3 篇，或已有 topic_{stem}.md 且新增 >= 1 篇）
-    clusters: dict[str, list[Path]] = {}
-    existing_topics: dict[str, Path] = {}
+    # 2. 按 (scope_key, owner_user_id, topic_stem) 聚类，严禁跨群/私聊混编
+    clusters: dict[tuple[str, str, str], list[Path]] = {}
+    existing_topics: dict[tuple[str, str, str], Path] = {}
     for fpath in remaining:
+        try:
+            head_txt = await to_thread(fpath.read_text)(encoding="utf-8")
+        except OSError:
+            continue
+        sk, uid = parse_note_scope_header(head_txt)
+        if not sk and watermark_ts > 0.0:
+            try:
+                if fpath.stat().st_mtime < watermark_ts:
+                    continue
+            except OSError:
+                continue
         if fpath.stem.startswith("topic_"):
             t_key = fpath.stem[len("topic_") :]
             if t_key:
-                existing_topics[t_key] = fpath
+                existing_topics[(sk, uid, t_key)] = fpath
             continue
         t_key = _note_topic_stem(fpath.stem)
         if t_key:
-            bucket = clusters[t_key] if t_key in clusters else []
+            ckey = (sk, uid, t_key)
+            bucket = clusters[ckey] if ckey in clusters else []
             bucket.append(fpath)
-            clusters[t_key] = bucket
+            clusters[ckey] = bucket
 
-    eligible: list[tuple[str, list[Path]]] = []
-    for t_key, members in clusters.items():
-        if len(members) >= 3 or (t_key in existing_topics and len(members) >= 1):
-            eligible.append((t_key, members))
+    eligible: list[tuple[tuple[str, str, str], list[Path]]] = []
+    for ckey, members in clusters.items():
+        if len(members) >= 3 or (ckey in existing_topics and len(members) >= 1):
+            eligible.append((ckey, members))
     eligible.sort(key=lambda item: len(item[1]), reverse=True)
 
     still_active_set = set(remaining)
     llm_merges_used = 0
-    for t_key, members in eligible[:MAX_NOTE_CLUSTERS_PER_NIGHT]:
+    for ckey, members in eligible[:MAX_NOTE_CLUSTERS_PER_NIGHT]:
+        c_scope, c_owner, t_key = ckey
         docs: list[tuple[str, str]] = []
-        if t_key in existing_topics and existing_topics[t_key].exists():
+        if ckey in existing_topics and existing_topics[ckey].exists():
             try:
-                old_topic_body = await to_thread(existing_topics[t_key].read_text)(encoding="utf-8")
+                old_topic_body = await to_thread(existing_topics[ckey].read_text)(encoding="utf-8")
                 docs.append((f"既有专题主稿_{t_key}", old_topic_body))
             except OSError:
                 pass
@@ -684,10 +722,21 @@ async def consolidate_persona_notes(
         if not merged_body:
             merged_body = _rule_merge_note_bodies(t_key, docs)
 
-        topic_stem = f"topic_{t_key}"
+        if c_scope and not c_scope.startswith("self:"):
+            shash = hashlib.sha1(f"{c_scope}|{c_owner}".encode("utf-8")).hexdigest()[:6]
+            topic_stem = f"topic_{shash}_{t_key}"
+        else:
+            topic_stem = f"topic_{t_key}"
         topic_path = folder / f"{topic_stem}.md"
         await to_thread(topic_path.write_text)(merged_body, encoding="utf-8")
-        await index_note_node(persona_name, topic_stem, merged_body, f"note:{persona_name}:{topic_stem}")
+        await index_note_node(
+            persona_name,
+            topic_stem,
+            merged_body,
+            f"note:{persona_name}:{topic_stem}",
+            scope_key=c_scope,
+            owner_user_id=c_owner,
+        )
 
         for m_path in members:
             await _archive_and_unlink(m_path, f"merged_into:{topic_stem}")

@@ -34,9 +34,11 @@
 | `USER_IN_GROUP` | `user_in_group:{user_id}@{group_id}` | 用户在特定群的局部档案 |
 | `SELF` | `self:{bot_id}` | Bot 自身情景记忆与自我模型 |
 
-> **`SELF` scope（C6）**：Bot 自身发言（`__assistant_*`）**不混入**群组事实图谱，改路由
-> `self:{bot_id}` 做轻量摄入（仅 Episode、不抽 Entity/Edge），杜绝"Bot 戏言污染群记忆"。
-> 隔离靠 SQL `WHERE scope_key = ?` + Qdrant payload filter。
+> **助手发言归属（2026-11 更新，反转 C6）**：Bot 自身发言（`__assistant_*`）与会话空闲摘要
+> 写回**本群 `group:` scope**（私聊写对应 `user_global:`），不再写 `self:`——避免跨群私聊
+> 检索时把群记忆带进私聊。`self:{bot_id}` 仅保留自我模型等 Bot 全局内容；升级前的旧 `self:*`
+> 记忆由水位线迁移隔离（见 `migrations/cross_group_isolation_v1.py`）。
+> 隔离靠 SQL `WHERE scope_key = ?` + Qdrant payload filter + `memory/privacy.py` 读取侧白名单。
 
 > **会话默认 scope 用 `scope_key_for_conversation(group_id, user_id)`**（2026-07-12 新增）：
 > "群→`group:` / 私聊→`user_global:`" 的三元式曾在 ai_router/subagent/kanban_tools/observer

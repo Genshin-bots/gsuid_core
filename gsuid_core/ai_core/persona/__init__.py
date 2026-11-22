@@ -22,7 +22,7 @@
    - §3.1  专业域强制委派：遇到清单内能力代理覆盖的专业问题必须
            走 ``create_subagent`` 或 ``register_kanban_task``，不允许自己用
            工具池 + ``web_search`` 拼答案。
-   - §3.4  ``scheduled_task`` ↔ ``Kanban`` 边界：单步周期用 ``add_interval_task``；
+   - §3.4  ``scheduled_task`` ↔ ``Kanban`` 边界：单步周期用 ``schedule_task``；
            多步周期 / 含决策记账用 ``register_kanban_task(recurring_trigger=...)``。
    - §3.5  复合多代理任务必经路径：``evaluate_agent_mesh_capability`` →
            ``register_kanban_task``。

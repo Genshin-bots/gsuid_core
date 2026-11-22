@@ -209,6 +209,49 @@ def serialize_cookie(cookie_data: Dict[str, str]) -> str:
     return ";".join(f"{key}={value}" for key, value in cookie_data.items() if value)
 
 
+def build_cn_account_cookie(
+    account_id: str,
+    cookie_token: str,
+    cookie_data: Dict[str, str],
+    mid: str = "",
+) -> str:
+    """构造国服持久化 Web Cookie，保留 v2 cookie_token/ltoken 与 mid 字段。"""
+    resolved_mid = mid
+    if not resolved_mid:
+        for key in ("account_mid_v2", "ltmid_v2", "mid", "stmid_v2", "stmid"):
+            if key in cookie_data and cookie_data[key]:
+                resolved_mid = cookie_data[key]
+                break
+
+    result: Dict[str, str] = {
+        "account_id": account_id,
+        "cookie_token": cookie_token,
+    }
+    if cookie_token.startswith("v2_") or ("cookie_token_v2" in cookie_data and cookie_data["cookie_token_v2"]):
+        ck_v2 = (
+            cookie_data["cookie_token_v2"]
+            if "cookie_token_v2" in cookie_data and cookie_data["cookie_token_v2"]
+            else cookie_token
+        )
+        result["account_id_v2"] = account_id
+        result["cookie_token_v2"] = ck_v2
+        if resolved_mid:
+            result["account_mid_v2"] = resolved_mid
+
+    ltoken_v2 = cookie_data["ltoken_v2"] if "ltoken_v2" in cookie_data else ""
+    ltoken = cookie_data["ltoken"] if "ltoken" in cookie_data else ltoken_v2
+    if ltoken:
+        result["ltuid"] = account_id
+        result["ltoken"] = ltoken
+    if ltoken_v2 or (ltoken and ltoken.startswith("v2_")):
+        result["ltuid_v2"] = account_id
+        result["ltoken_v2"] = ltoken_v2 or ltoken
+        if resolved_mid:
+            result["ltmid_v2"] = resolved_mid
+
+    return serialize_cookie(result)
+
+
 def get_persist_cookie_data(simp_dict: SimpleCookie) -> Dict[str, str]:
     return {key: morsel.value for key, morsel in simp_dict.items() if key in persist_cookie_keys and morsel.value}
 
@@ -292,7 +335,7 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                     status = False
                     break
                 else:
-                    return "返回值错误..."
+                    return f"返回值错误(retcode={cookie_token_data})..."
     if status:
         for lt in lt_list:
             if lt in simp_dict:
@@ -339,16 +382,15 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                 if not account_id:
                     return "该CK字段出错, 缺少login_uid或stuid或ltuid字段!"
                 cookie_token = simp_dict[ck].value
-                if is_os:
-                    if ck == "cookie_token_v2":
-                        cookie_data["cookie_token_v2"] = cookie_token
-                        cookie_data.setdefault("account_id_v2", account_id)
-                        mid = get_cookie_value(simp_dict, mid_list)
-                        if mid:
-                            cookie_data.setdefault("account_mid_v2", mid)
-                    else:
-                        cookie_data["cookie_token"] = cookie_token
-                        cookie_data.setdefault("account_id", account_id)
+                if ck == "cookie_token_v2" or cookie_token.startswith("v2_"):
+                    cookie_data["cookie_token_v2"] = cookie_token
+                    cookie_data.setdefault("account_id_v2", account_id)
+                    mid = get_cookie_value(simp_dict, mid_list)
+                    if mid:
+                        cookie_data.setdefault("account_mid_v2", mid)
+                else:
+                    cookie_data["cookie_token"] = cookie_token
+                    cookie_data.setdefault("account_id", account_id)
                 status = False
                 break
     if status:
@@ -357,7 +399,12 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
     if is_os:
         account_cookie = serialize_cookie(cookie_data)
     else:
-        account_cookie = f"account_id={account_id};cookie_token={cookie_token}"
+        account_cookie = build_cn_account_cookie(
+            account_id,
+            cookie_token,
+            cookie_data,
+            get_cookie_value(simp_dict, mid_list),
+        )
 
     mys_data = await mys_api.get_mihoyo_bbs_info(
         account_id,
@@ -439,31 +486,36 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
             "",
         )
     else:
-        nd = await mys_api.ck_in_new_device(uid, app_cookie)
+        nd = await mys_api.ck_in_new_device(uid, app_cookie, mys_id=account_id)
 
     zzz_region = None
     if zzz_uid_bind:
         if len(zzz_uid_bind) < 10:
             zzz_region = "prod_gf_cn"
         else:
-            zzz_region = ZZZ_SERVER.get(uid[:2], "prod_gf_jp")
+            zzz_region = ZZZ_SERVER.get(zzz_uid_bind[:2], "prod_gf_jp")
 
     if await GsUser.data_exist(mys_id=account_id):
+        update_fields: Dict[str, Optional[str]] = {
+            "bot_id": bot_id,
+            "cookie": account_cookie,
+            "status": None,
+            "sr_uid": sr_uid_bind,
+            "bb_uid": bb_uid_bind,
+            "bbb_uid": bbb_uid_bind,
+            "zzz_uid": zzz_uid_bind,
+            "wd_uid": wd_uid_bind,
+            "fp": nd[0],
+            "device_id": nd[1],
+            "region": SERVER.get(uid_bind[0], "cn_gf01") if uid_bind else None,
+            "sr_region": SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None,
+            "zzz_region": zzz_region,
+        }
+        if app_cookie:
+            update_fields["stoken"] = app_cookie
         await GsUser.update_data_by_xx(
             {"mys_id": account_id},
-            bot_id=bot_id,
-            cookie=account_cookie,
-            status=None,
-            stoken=app_cookie,
-            sr_uid=sr_uid_bind,
-            bb_uid=bb_uid_bind,
-            bbb_uid=bbb_uid_bind,
-            zzz_uid=zzz_uid_bind,
-            wd_uid=wd_uid_bind,
-            device_id=nd[1],
-            region=SERVER.get(uid_bind[0], "cn_gf01") if uid_bind else None,
-            sr_region=(SR_SERVER.get(sr_uid_bind[0], None) if sr_uid_bind else None),
-            zzz_region=zzz_region,
+            **update_fields,
         )
     else:
         await GsUser.insert_data(

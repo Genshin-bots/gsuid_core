@@ -29,6 +29,7 @@
   "log.webconsole.plugin_prefs_save_fail": "[WebConsole] プラグイン最近使用設定の保存に失敗しました: {error}",
   "log.webconsole.chat_received_user": "[chat_with_history] user_id={user_id} を受信しました",
   "log.webconsole.chat_with_history_persona_name_exist": "[chat_with_history] persona '{persona_name}' が存在しないため、汎用アシスタントのプロンプトにフォールバックする",
+  "log.webconsole.eval_session_log_flush_failed": "[eval] セッションログのディスク書き込みに失敗しました: {err}",
   "log.webconsole.config_name_item_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {item_name} の書き込みに失敗",
   "log.webconsole.config_name_key_write_exception": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込み中に例外が発生: {e}",
   "log.webconsole.config_name_key_write_fail": "[フレームワーク設定][{config_name}] 設定項目 {key} の書き込みに失敗",
