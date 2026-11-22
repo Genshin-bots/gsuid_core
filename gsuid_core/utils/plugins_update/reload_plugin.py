@@ -1,19 +1,38 @@
 import sys
 import asyncio
+import inspect
 from types import MethodType, FunctionType
 from typing import Optional
+from pathlib import Path
 from itertools import groupby
+from dataclasses import dataclass
 
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.server import GsServer, _DefHook, _module_cache
+from gsuid_core.server import GsServer, PluginKindMeta, _DefHook, _module_cache
 from gsuid_core.trigger_index import reset_trigger_index
 
-# 第五步后台生命周期任务句柄表：① 防任务被 GC ② 快速重载时取消上一轮未跑完的
+
+@dataclass
+class _StartTaskMeta:
+    has_start_hooks: bool
+    started: bool = False
+
+
+@dataclass(frozen=True)
+class _ShutdownBatch:
+    hooks: list[_DefHook]
+    wait_task: asyncio.Task[None] | None = None
+
+
+# 后台生命周期任务与并发控制表：保证单插件串行重载、保护在途关闭钩子不被取消
 _plugin_start_tasks: dict[str, asyncio.Task[None]] = {}
-_pending_shutdown_hooks: dict[str, list[list[_DefHook]]] = {}
+_start_task_meta: dict[asyncio.Task[None], _StartTaskMeta] = {}
+_plugin_reload_locks: dict[str, asyncio.Lock] = {}
+_plugin_shutdown_tasks: dict[str, asyncio.Task[None]] = {}
+_pending_shutdown_hooks: dict[str, list[_ShutdownBatch]] = {}
 _RELOAD_SHUTDOWN_TIMEOUT: float = 15.0
 
 
@@ -317,18 +336,71 @@ def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> 
         logger.warning(i18n_t("log.plugin.gscore_restoring_route_positions_fail", plugin_name=plugin_name, e=e))
 
 
+def _get_reload_lock(plugin_name: str) -> asyncio.Lock:
+    if plugin_name not in _plugin_reload_locks:
+        _plugin_reload_locks[plugin_name] = asyncio.Lock()
+    return _plugin_reload_locks[plugin_name]
+
+
 def _discard_start_task(plugin_name: str, task: asyncio.Task[None]) -> None:
     """启动 Hook 后台任务结束后, 从句柄表里摘除自己 (仅当还是当前这个任务时)。"""
+    _start_task_meta.pop(task, None)
     if plugin_name in _plugin_start_tasks and _plugin_start_tasks[plugin_name] is task:
         _plugin_start_tasks.pop(plugin_name, None)
 
 
-async def _await_previous_task(prev_task: asyncio.Task[None] | None) -> None:
+def _discard_shutdown_task(plugin_name: str, task: asyncio.Task[None]) -> None:
+    if plugin_name in _plugin_shutdown_tasks and _plugin_shutdown_tasks[plugin_name] is task:
+        _plugin_shutdown_tasks.pop(plugin_name, None)
+
+
+async def _await_previous_task(plugin_name: str, prev_task: asyncio.Task[None] | None) -> None:
     if prev_task is None or prev_task.done():
         return
     done, _ = await asyncio.wait({prev_task}, timeout=_RELOAD_SHUTDOWN_TIMEOUT)
-    if prev_task in done and not prev_task.cancelled():
-        prev_task.exception()
+    if prev_task not in done:
+        logger.warning(
+            i18n_t(
+                "log.plugin.gscore_prev_start_task_timeout",
+                plugin_name=plugin_name,
+                timeout=_RELOAD_SHUTDOWN_TIMEOUT,
+            )
+        )
+        return
+    if not prev_task.cancelled():
+        exc = prev_task.exception()
+        if exc is not None:
+            logger.warning(
+                i18n_t(
+                    "log.plugin.gscore_prev_start_task_fail",
+                    plugin_name=plugin_name,
+                    res=repr(exc),
+                )
+            )
+
+
+def _cancel_start_task_sync(plugin_name: str) -> tuple[asyncio.Task[None] | None, bool]:
+    """取消上一轮尚未跑完的启动任务, 返回 (旧任务, 旧版启动钩子是否从未开始执行)。"""
+    old = _plugin_start_tasks[plugin_name] if plugin_name in _plugin_start_tasks else None
+    if old is None or old.done():
+        return None, False
+    meta = _start_task_meta[old] if old in _start_task_meta else None
+    logger.debug(i18n_t("log.plugin.gscore_cancelling_unfinished_startup_ok", plugin_name=plugin_name))
+    old.cancel()
+    skip_shutdown = meta is not None and meta.has_start_hooks and not meta.started
+    return old, skip_shutdown
+
+
+async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
+    """取消并等待上一轮启动任务退出, 返回是否应跳过旧 shutdown（未启动过）。"""
+    old = _plugin_start_tasks[plugin_name] if plugin_name in _plugin_start_tasks else None
+    if old is None or old.done():
+        return False
+    meta = _start_task_meta[old] if old in _start_task_meta else None
+    logger.debug(i18n_t("log.plugin.gscore_cancelling_unfinished_startup_ok", plugin_name=plugin_name))
+    old.cancel()
+    await _await_previous_task(plugin_name, old)
+    return meta is not None and meta.has_start_hooks and not meta.started
 
 
 async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) -> None:
@@ -352,7 +424,7 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
                 hooks=[_hook_label(h.func) for h in group_hooks],
             )
         )
-        coros = [h.func() if asyncio.iscoroutinefunction(h.func) else asyncio.to_thread(h.func) for h in group_hooks]
+        coros = [h.func() if inspect.iscoroutinefunction(h.func) else asyncio.to_thread(h.func) for h in group_hooks]
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*coros, return_exceptions=True),
@@ -391,38 +463,68 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
         logger.success(i18n_t("log.plugin.gscore_shutdown_hooks_done", plugin_name=plugin_name))
 
 
-def _run_plugin_start_hooks(
-    plugin_name: str,
-    shutdown_hooks: list[_DefHook] | None = None,
-    *,
-    run_start: bool = True,
-) -> None:
-    """第 5 步: 先收尾旧插件的 @on_core_shutdown, 再重跑新插件的 @on_core_start。
+async def _shutdown_worker(plugin_name: str) -> None:
+    """受保护的单插件关闭串行队列：不被快速重载取消, 逐批出队确保不丢钩子。"""
+    while True:
+        batches = _pending_shutdown_hooks[plugin_name] if plugin_name in _pending_shutdown_hooks else None
+        if not batches:
+            _pending_shutdown_hooks.pop(plugin_name, None)
+            return
+        batch = batches.pop(0)
+        await _await_previous_task(plugin_name, batch.wait_task)
+        await _run_shutdown_hooks(plugin_name, batch.hooks)
 
-    补全 "reload = 插件卸载并重新加载" 的语义 —— 旧连接/后台任务先关干净再启动新实例。
-    只跑被重载插件的 hook (按 func.__module__ 过滤), 后台 create_task 不阻塞 reload_plugin。
-    """
+
+def _enqueue_shutdown_hooks(
+    plugin_name: str,
+    shutdown_hooks: list[_DefHook],
+    wait_task: asyncio.Task[None] | None = None,
+) -> None:
+    if not shutdown_hooks:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning(i18n_t("log.plugin.gscore_running_event_loop_ok", plugin_name=plugin_name))
+        return
+
+    batch = _ShutdownBatch(hooks=list(shutdown_hooks), wait_task=wait_task)
+    if plugin_name in _pending_shutdown_hooks:
+        _pending_shutdown_hooks[plugin_name].append(batch)
+    else:
+        _pending_shutdown_hooks[plugin_name] = [batch]
+
+    existing = _plugin_shutdown_tasks[plugin_name] if plugin_name in _plugin_shutdown_tasks else None
+    if existing is None or existing.done():
+        task = loop.create_task(_shutdown_worker(plugin_name))
+        _plugin_shutdown_tasks[plugin_name] = task
+        task.add_done_callback(lambda t: _discard_shutdown_task(plugin_name, t))
+
+
+async def _drain_pending_shutdown_task(plugin_name: str) -> None:
+    """等待该插件受保护的关闭队列排空；shield 防止取消启动任务时波及在途关闭。"""
+    while True:
+        task = _plugin_shutdown_tasks[plugin_name] if plugin_name in _plugin_shutdown_tasks else None
+        if task is None or task.done():
+            return
+        await asyncio.shield(task)
+
+
+def _schedule_plugin_start_hooks(
+    plugin_name: str,
+    prev_start_task: asyncio.Task[None] | None = None,
+) -> None:
+    """后台调度新插件的 @on_ai_register 与 @on_core_start 钩子。"""
     try:
         from gsuid_core.server import core_start_def
         from gsuid_core.ai_core.register import run_ai_register_hooks, has_pending_ai_register_hooks
 
-        new_shutdown = list(shutdown_hooks) if shutdown_hooks else []
-        has_queued_shutdown = bool(new_shutdown) or (
-            plugin_name in _pending_shutdown_hooks and bool(_pending_shutdown_hooks[plugin_name])
+        plugin_hooks = sorted(
+            h for h in core_start_def if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
         )
-        if run_start:
-            # 第 3.5 步②已清掉旧 hook、第四步重新 import 注册了 fresh hook, 这里过滤到的就是 fresh 的
-            plugin_hooks = sorted(
-                h for h in core_start_def if _belongs_to_plugin(_resolve_func_module(h.func), plugin_name)
-            )
-            has_ai_hooks = has_pending_ai_register_hooks(plugin_name)
-        else:
-            plugin_hooks = []
-            has_ai_hooks = False
-
-        if not has_queued_shutdown and not plugin_hooks and not has_ai_hooks:
-            if run_start:
-                logger.debug(i18n_t("log.plugin.gscore_name_core_start", plugin_name=plugin_name))
+        has_ai_hooks = has_pending_ai_register_hooks(plugin_name)
+        if not plugin_hooks and not has_ai_hooks:
+            logger.debug(i18n_t("log.plugin.gscore_name_core_start", plugin_name=plugin_name))
             return
 
         try:
@@ -431,29 +533,22 @@ def _run_plugin_start_hooks(
             logger.warning(i18n_t("log.plugin.gscore_running_event_loop_ok", plugin_name=plugin_name))
             return
 
-        if new_shutdown:
-            if plugin_name in _pending_shutdown_hooks:
-                _pending_shutdown_hooks[plugin_name].append(new_shutdown)
-            else:
-                _pending_shutdown_hooks[plugin_name] = [new_shutdown]
-
-        # 快速重载场景: 先取消上一轮还没跑完的任务, 在新 runner 里等它退完再收尾
-        old = _plugin_start_tasks[plugin_name] if plugin_name in _plugin_start_tasks else None
-        if old is not None and not old.done():
-            logger.debug(i18n_t("log.plugin.gscore_cancelling_unfinished_startup_ok", plugin_name=plugin_name))
-            old.cancel()
+        meta = _StartTaskMeta(has_start_hooks=bool(plugin_hooks))
 
         async def _runner() -> None:
-            await _await_previous_task(old)
-            queued_batches = _pending_shutdown_hooks.pop(plugin_name, [])
-            for batch in queued_batches:
-                await _run_shutdown_hooks(plugin_name, batch)
-            if not run_start:
-                return
+            await _await_previous_task(plugin_name, prev_start_task)
+            await _drain_pending_shutdown_task(plugin_name)
             if has_ai_hooks:
                 await run_ai_register_hooks(plugin_name)
             if not plugin_hooks:
                 return
+
+            async def _invoke_start(hook: _DefHook) -> object:
+                meta.started = True
+                if inspect.iscoroutinefunction(hook.func):
+                    return await hook.func()
+                return await asyncio.to_thread(hook.func)
+
             logger.info(
                 i18n_t(
                     "log.plugin.gscore_running_startup_hooks",
@@ -474,10 +569,7 @@ def _run_plugin_start_hooks(
                     )
                 )
                 results = await asyncio.gather(
-                    *[
-                        h.func() if asyncio.iscoroutinefunction(h.func) else asyncio.to_thread(h.func)
-                        for h in group_hooks
-                    ],
+                    *[_invoke_start(h) for h in group_hooks],
                     return_exceptions=True,
                 )
                 for h, res in zip(group_hooks, results):
@@ -503,40 +595,43 @@ def _run_plugin_start_hooks(
                 logger.success(i18n_t("log.plugin.gscore_startup_hooks_name_2", plugin_name=plugin_name))
 
         task = loop.create_task(_runner())
-        # 保留引用防止任务被 GC; 完成后从句柄表摘除
         _plugin_start_tasks[plugin_name] = task
+        _start_task_meta[task] = meta
         task.add_done_callback(lambda t: _discard_start_task(plugin_name, t))
     except Exception as e:
         logger.warning(i18n_t("log.plugin.gscore_scheduling_startup_hooks_fail", plugin_name=plugin_name, e=e))
 
 
-def reload_plugin(plugin_name: str) -> str:
-    logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
-
-    # 第 0 步：解析磁盘路径，必须在清理前完成以避免路径错误导致卸载后无法恢复。
+def _prepare_reload(plugin_name: str) -> tuple[PluginKindMeta | None, list[tuple[str, Path, str]]] | str:
+    """第 0 步：解析路径并预检可加载模块，失败时返回错误文案且不触碰运行时状态。"""
     plugin_path = GsServer.resolve_plugin_path(plugin_name)
     if plugin_path is None:
         return f"❌ 插件{plugin_name}不存在!"
 
     from gsuid_core.server import read_meta_plugin_info
-    from gsuid_core.meta_plugins import unregister_meta_plugin
 
     meta_info = read_meta_plugin_info(plugin_path)
-
-    # 预检可加载模块列表（不 import）；空列表或错误信息直接返回，不触碰运行时状态
     module_list = gss.load_plugin(plugin_path)
     if module_list is None:
         return f"❌ 未知的插件类型 {plugin_name}"
     if isinstance(module_list, str):
-        return module_list  # load_plugin 已经返回了错误信息
+        return module_list
     if not module_list:
         return f"❌ 插件{plugin_name}无可加载模块!"
+    return meta_info, module_list
 
-    # --- 第一步：收集该插件下所有 SV 和 Plugins 对象 ---
+
+def _detach_plugin_registrations(
+    plugin_name: str,
+    meta_info: PluginKindMeta | None,
+) -> tuple[Optional[int], list[_DefHook]]:
+    """断流并清理插件在全局单例上的注册，保留 sys.modules 供旧 shutdown 执行。"""
+    from gsuid_core.meta_plugins import unregister_meta_plugin
+    from gsuid_core.utils.backup.hints import unregister_backup_paths
+
     sv_names_to_del = [sv_name for sv_name, sv in SL.lst.items() if sv.self_plugin_name == plugin_name]
     plugins_to_del = {sv.plugins for sv in SL.lst.values() if sv.self_plugin_name == plugin_name}
 
-    # --- 第二步：清理 SL 三张表 ---
     for sv_name in sv_names_to_del:
         sv = SL.lst.pop(sv_name)
         # 清除 is_initialized，否则 SV.__init__ 重载时会被跳过
@@ -548,18 +643,21 @@ def reload_plugin(plugin_name: str) -> str:
     SL.plugins.pop(plugin_name, None)
     reset_trigger_index()
 
-    # 备份建议路径以 Plugins.name 为键登记，重载前按实际 name 与目录名一起注销
-    from gsuid_core.utils.backup.hints import unregister_backup_paths
-
     for plugins in plugins_to_del:
         if plugins.name:
             unregister_backup_paths(plugins.name)
     unregister_backup_paths(plugin_name)
 
-    # 第三步：清理 sys.modules 和 _module_cache
-    # 必须覆盖所有子模块，不能只清入口
     if meta_info is not None:
         unregister_meta_plugin(plugin_name)
+
+    route_anchor = _snapshot_plugin_route_anchor(plugin_name)
+    shutdown_hooks = _clean_plugin_global_state(plugin_name)
+    return route_anchor, shutdown_hooks
+
+
+def _purge_plugin_modules(plugin_name: str) -> None:
+    """清理插件及其全部子模块在 sys.modules 与 _module_cache 中的缓存。"""
     stale_modules = [k for k in sys.modules if _belongs_to_plugin(k, plugin_name)]
     for k in stale_modules:
         sys.modules.pop(k, None)
@@ -576,11 +674,14 @@ def reload_plugin(plugin_name: str) -> str:
         )
     )
 
-    # 第 3.5 步：清理注册到全局单例的定时任务、监听器与路由，避免重载冲突。
-    route_anchor = _snapshot_plugin_route_anchor(plugin_name)
-    shutdown_hooks = _clean_plugin_global_state(plugin_name)
 
-    # --- 第四步：重新加载（使用第 0 步已解析的 Path，避免仅查 plugins/ 漏掉内置插件） ---
+def _import_plugin_modules(
+    plugin_name: str,
+    meta_info: PluginKindMeta | None,
+    module_list: list[tuple[str, Path, str]],
+    route_anchor: Optional[int],
+) -> Optional[str]:
+    """重新导入插件模块并恢复路由位置；导入失败时重置索引并返回错误文案。"""
     import_error: Optional[str] = None
     for module_name, filepath, _type in module_list:
         try:
@@ -595,15 +696,68 @@ def reload_plugin(plugin_name: str) -> str:
 
     if import_error is not None:
         reset_trigger_index()
-        _run_plugin_start_hooks(plugin_name, shutdown_hooks=shutdown_hooks, run_start=False)
         return import_error
 
-    # 第 4.5 步：把刚 append 到末尾的新路由放回原 anchor 位置
-    # 保住与其它插件 (尤其是带 catch-all path 参数的) 的相对顺序
     _restore_plugin_routes_position(plugin_name, route_anchor)
+    return None
 
-    # --- 第五步：先收尾旧插件的 @on_core_shutdown，再重跑新插件的 @on_core_start ---
-    _run_plugin_start_hooks(plugin_name, shutdown_hooks=shutdown_hooks, run_start=True)
+
+async def reload_plugin_async(plugin_name: str) -> str:
+    """异步热重载插件（推荐主入口）。
+
+    按单插件锁串行化：先断流并在旧 sys.modules 仍存活时等待旧 @on_core_shutdown 完成，
+    再清空模块缓存并重导新代码，最后后台调度新插件的 @on_ai_register 与 @on_core_start。
+    """
+    async with _get_reload_lock(plugin_name):
+        logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
+
+        prepared = _prepare_reload(plugin_name)
+        if isinstance(prepared, str):
+            return prepared
+        meta_info, module_list = prepared
+
+        skip_shutdown = await _cancel_and_wait_start_task(plugin_name)
+        await _drain_pending_shutdown_task(plugin_name)
+
+        route_anchor, shutdown_hooks = _detach_plugin_registrations(plugin_name, meta_info)
+        if not skip_shutdown:
+            await _run_shutdown_hooks(plugin_name, shutdown_hooks)
+
+        _purge_plugin_modules(plugin_name)
+        import_error = _import_plugin_modules(plugin_name, meta_info, module_list, route_anchor)
+        if import_error is not None:
+            return import_error
+
+        _schedule_plugin_start_hooks(plugin_name)
+
+        logger.success(i18n_t("log.plugin.plugin_name", plugin_name=plugin_name))
+        return f"✨ 已重载插件 {plugin_name}!"
+
+
+def reload_plugin(plugin_name: str) -> str:
+    """同步热重载兼容入口（异步上下文请优先使用 ``await reload_plugin_async``）。
+
+    受同步签名限制，旧 @on_core_shutdown 会在清理 sys.modules 与重新导入之后由受保护的
+    后台串行队列执行，因此钩子内延迟导入可能命中新模块；需要完整隔离请用异步版本。
+    """
+    logger.info(i18n_t("log.plugin.plugin_name_3", plugin_name=plugin_name))
+
+    prepared = _prepare_reload(plugin_name)
+    if isinstance(prepared, str):
+        return prepared
+    meta_info, module_list = prepared
+
+    prev_start, skip_shutdown = _cancel_start_task_sync(plugin_name)
+    route_anchor, shutdown_hooks = _detach_plugin_registrations(plugin_name, meta_info)
+    _purge_plugin_modules(plugin_name)
+
+    import_error = _import_plugin_modules(plugin_name, meta_info, module_list, route_anchor)
+    if not skip_shutdown:
+        _enqueue_shutdown_hooks(plugin_name, shutdown_hooks, wait_task=prev_start)
+    if import_error is not None:
+        return import_error
+
+    _schedule_plugin_start_hooks(plugin_name, prev_start_task=prev_start)
 
     logger.success(i18n_t("log.plugin.plugin_name", plugin_name=plugin_name))
     return f"✨ 已重载插件 {plugin_name}!"

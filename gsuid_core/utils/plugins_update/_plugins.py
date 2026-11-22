@@ -26,7 +26,7 @@ from .git_async import (
     git_get_current_branch,
     git_get_current_commit,
 )
-from .reload_plugin import reload_plugin
+from .reload_plugin import reload_plugin_async
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
@@ -546,8 +546,8 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         logger.info(t("log.plugin.plugin_name_github", plugin_name=plugin_name))
     else:
         logger.info(t("log.plugin.plugin_name_2", plugin_name=plugin_name))
-    # 安装完成后直接调用 reload_plugin 完成首次加载并触发启动钩子。
-    retcode = reload_plugin(plugin_name)
+    # 安装完成后直接调用 reload_plugin_async 完成首次加载并触发启动钩子。
+    retcode = await reload_plugin_async(plugin_name)
     if retcode.lstrip().startswith("❌"):
         return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[core重启]:\n{retcode}"
     return f"✅ 插件{plugin_name}安装并加载成功!"
@@ -804,10 +804,11 @@ async def update_from_git_async(
     # 仅在「确实有新提交」或「强制更新(reset --hard 可能改动工作区, 且为显式操作)」时才重载,
     # 避免无更新的插件被无谓重载 —— 尤其凌晨自动更新会遍历全部插件。
     if (commits_diff or level >= 1) and plugin_name != "早柚核心" and is_reload:
-        reload_result = reload_plugin(plugin_name)
+        reload_result = await reload_plugin_async(plugin_name)
         if reload_result.lstrip().startswith("❌"):
             logger.warning(t("log.plugin.auto_reload_fail", plugin_name=plugin_name, result=reload_result))
-            log_list.append(reload_result)
+            detail = reload_result.lstrip().removeprefix("❌").strip()
+            log_list.append(f"❌ [{plugin_name}] {detail}")
     return log_list
 
 

@@ -17,7 +17,7 @@ from gsuid_core.utils.plugins_update._plugins import (
     update_from_git_async,
 )
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
-from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
+from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin_async
 
 sv_core_config = SV("Core管理", pm=0)
 
@@ -32,7 +32,7 @@ async def send_core_reload_msg(bot: Bot, ev: Event):
     plugin_name = await resolve_plugin_name(plugin_name)
     logger.info(t("log.core.plugin_name_start", plugin_name=plugin_name))
     await bot.send(await bot.t("🔔 正在尝试重载插件{plugin_name}...", plugin_name=plugin_name))
-    retcode = reload_plugin(plugin_name)
+    retcode = await reload_plugin_async(plugin_name)
     await bot.send(retcode)
 
 

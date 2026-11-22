@@ -3,6 +3,8 @@
   "log.plugin.gscore_admin_models_unregistered": "[GsCore] Cleared {count} admin models for plugin {plugin_name}",
   "log.plugin.gscore_fail_admin_models": "[GsCore] Exception while clearing admin models for plugin {plugin_name}: {e}",
   "log.plugin.gscore_fail_running_shutdown_hook": "[GsCore] Exception while running shutdown Hook {hook} for plugin {plugin_name}: {res}",
+  "log.plugin.gscore_prev_start_task_fail": "[GsCore] Previous startup task for plugin {plugin_name} exited with exception: {res}",
+  "log.plugin.gscore_prev_start_task_timeout": "[GsCore] Timed out ({timeout}s) waiting for previous startup task of plugin {plugin_name} to exit, continuing",
   "log.plugin.gscore_running_shutdown_hook": "[GsCore] Running shutdown Hook for plugin {plugin_name} at priority {priority}: {hooks}",
   "log.plugin.gscore_running_shutdown_hooks": "[GsCore] Running shutdown Hooks for plugin {plugin_name} before reload ({count})...",
   "log.plugin.gscore_shutdown_hooks_done": "[GsCore] Shutdown Hooks for plugin {plugin_name} completed",

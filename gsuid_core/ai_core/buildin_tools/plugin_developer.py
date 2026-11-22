@@ -987,12 +987,11 @@ async def load_plugin_into_core(
     if not plugin_dir.exists():
         return f"错误：插件目录不存在，请先 scaffold_plugin 并 copy_to_plugin_dir 安装：{plugin_name}"
 
-    from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
+    from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin_async
 
     logger.info(t("log.ai.plugindev_requesting_hot_reload_load", plugin_name=plugin_name))
-    # reload_plugin 内部用 get_running_loop().create_task 重跑启动 Hook
-    # 必须在 事件循环线程内同步调用（与 core重载插件 命令同链路），不可丢进 to_thread。
-    return reload_plugin(plugin_name)
+    # 必须在事件循环主线程 await（与 core重载插件 命令同链路），不可丢进 to_thread。
+    return await reload_plugin_async(plugin_name)
 
 
 @ai_tools(category="plugin_dev", check_func=check_pm, capability_domain="插件开发", code_callable=False)

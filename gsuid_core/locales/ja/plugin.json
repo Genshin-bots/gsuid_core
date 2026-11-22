@@ -3,6 +3,8 @@
   "log.plugin.gscore_admin_models_unregistered": "[GsCore] プラグイン {plugin_name} の管理モデル {count} 件をクリアした",
   "log.plugin.gscore_fail_admin_models": "[GsCore] プラグイン {plugin_name} の管理モデルのクリア中に例外が発生: {e}",
   "log.plugin.gscore_fail_running_shutdown_hook": "[GsCore] プラグイン {plugin_name} の終了 Hook {hook} の実行中に例外が発生: {res}",
+  "log.plugin.gscore_prev_start_task_fail": "[GsCore] プラグイン {plugin_name} の前回の起動タスクが例外で終了: {res}",
+  "log.plugin.gscore_prev_start_task_timeout": "[GsCore] プラグイン {plugin_name} の前回の起動タスク終了待機がタイムアウト ({timeout}s)、リロードを続行",
   "log.plugin.gscore_running_shutdown_hook": "[GsCore] プラグイン {plugin_name} の優先度 {priority} の終了 Hook を実行: {hooks}",
   "log.plugin.gscore_running_shutdown_hooks": "[GsCore] リロード前にプラグイン {plugin_name} の終了 Hook を実行（{count} 件）...",
   "log.plugin.gscore_shutdown_hooks_done": "[GsCore] プラグイン {plugin_name} の終了 Hook が完了",

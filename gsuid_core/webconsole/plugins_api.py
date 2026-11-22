@@ -44,7 +44,7 @@ from gsuid_core.utils.plugins_config.models import (
 )
 from gsuid_core.utils.plugins_update._plugins import PLUGINS_PATH, get_plugin_commit, get_local_plugins_list
 from gsuid_core.utils.plugins_config.gs_config import all_config_list
-from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin
+from gsuid_core.utils.plugins_update.reload_plugin import reload_plugin_async
 
 from ._api_tags import PLUGINS, FRAMEWORK_CONFIG
 
@@ -1040,7 +1040,7 @@ async def reload_plugin_api(request: Request, plugin_name: str, _user: Dict[str,
         status: 0成功
         msg: 操作结果信息
     """
-    result = reload_plugin(plugin_name)
+    result = await reload_plugin_async(plugin_name)
     # 始终带 data 字段：前端 api.post 会解包 data；无 data 时成功路径拿到 undefined，
     # 再读 result.status 会报 Cannot read properties of undefined (reading 'status')。
     if result.lstrip().startswith("❌"):
