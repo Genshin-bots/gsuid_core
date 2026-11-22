@@ -676,6 +676,8 @@ async def send_message_by_ai(
     elif dest_user_id:
         # 快照上的群是这个人最近待过的地方，不是这条私聊的目的地。
         u_snap = state.allowed_users[dest_user_id]
+        if not u_snap.private_scope_allowed:
+            return "拒绝私聊发送：当前人格的私聊启用范围未覆盖该用户，请改在群内发言或转为笔记。"
         if not u_snap.allow_private_push:
             return "拒绝：对方连续两次未回复你的主动私聊，私聊推送已暂停。请改用笔记或等对方先开口。"
 

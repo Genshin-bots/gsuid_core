@@ -41,6 +41,7 @@ from gsuid_core.ai_core.journal.dream import (
     synthesize_shard_with_llm,
 )
 from gsuid_core.ai_core.persona.config import (
+    is_persona_enabled,
     read_autonomy_runtime,
     is_within_active_hours,
     persona_config_manager,
@@ -911,7 +912,7 @@ def get_active_personas() -> List[str]:
     active: List[str] = []
     for name in persona_config_manager.list_available():
         cfg = persona_config_manager.get_config(name)
-        if cfg.get_config("scope").data != "disabled":
+        if is_persona_enabled(cfg):
             active.append(name)
     return active or ["default"]
 
@@ -927,7 +928,7 @@ def resolve_persona_for_group_or_session(
         cand = persona_name.strip()
         if cand in persona_config_manager.list_available():
             cfg = persona_config_manager.get_config(cand)
-            if cfg.get_config("scope").data != "disabled":
+            if is_persona_enabled(cfg):
                 return cand
 
     sid = session_id.strip()

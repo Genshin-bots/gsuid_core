@@ -350,7 +350,12 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
         - user_ai_range: 全局用户级别的AI启用范围（白名单/黑名单）
     """
     try:
-        from gsuid_core.ai_core.persona.config import persona_config_manager
+        from gsuid_core.ai_core.persona.config import (
+            read_target_list,
+            derive_legacy_scope,
+            read_channel_scopes,
+            persona_config_manager,
+        )
 
         all_personas = persona_config_manager.get_all_configs()
 
@@ -362,33 +367,36 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
             try:
                 ai_mode = config.get_config("ai_mode").data
                 inspect_interval = config.get_config("inspect_interval").data
-                scope = config.get_config("scope").data
-                target_groups = config.get_config("target_groups").data
+                scopes = read_channel_scopes(config)
+                target_groups = read_target_list(config, "target_groups")
+                target_users = read_target_list(config, "target_users")
+                scope = derive_legacy_scope(scopes.group_scope, scopes.private_scope)
 
                 has_inspect = "定时巡检" in ai_mode if ai_mode else False
                 if has_inspect:
                     inspect_enabled_count += 1
 
                 # 判断该人格是否启用
-                is_enabled = scope != "disabled"
+                is_enabled = scopes.is_enabled
                 if is_enabled:
                     enabled_count += 1
 
-                # 生成范围描述
-                if scope == "disabled":
+                # 生成双通道范围描述
+                if not is_enabled:
                     scope_desc = "已禁用"
-                elif scope == "global":
+                elif scopes.group_scope == "all" and scopes.private_scope == "all":
                     scope_desc = "全部群聊与私聊"
-                elif scope == "global_group":
-                    scope_desc = "全部群聊（不含私聊）"
-                elif scope == "global_private":
-                    scope_desc = "全部私聊（不含群聊）"
-                else:  # specific
-                    if target_groups and len(target_groups) > 0:
-                        scope_desc = f"限定 {len(target_groups)} 个群聊"
-                    else:
-                        scope_desc = "限定群聊（未配置）"
-                    scope_desc += f" ({(scope)})"
+                else:
+                    parts: list[str] = []
+                    if scopes.group_scope == "all":
+                        parts.append("全部群聊")
+                    elif scopes.group_scope == "specific":
+                        parts.append(f"{len(target_groups)} 个群聊" if target_groups else "限定群聊（未配置）")
+                    if scopes.private_scope == "all":
+                        parts.append("全部私聊")
+                    elif scopes.private_scope == "specific":
+                        parts.append(f"{len(target_users)} 位私聊用户" if target_users else "限定私聊（未配置）")
+                    scope_desc = " + ".join(parts)
 
                 persona_list.append(
                     {
@@ -397,7 +405,10 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
                         "inspect_interval": inspect_interval if has_inspect else None,
                         "has_inspect": has_inspect,
                         "scope": scope,
-                        "target_groups": target_groups if target_groups else [],
+                        "group_scope": scopes.group_scope,
+                        "private_scope": scopes.private_scope,
+                        "target_groups": target_groups,
+                        "target_users": target_users,
                         "is_enabled": is_enabled,
                         "scope_desc": scope_desc,
                     }
@@ -410,7 +421,10 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
                         "inspect_interval": None,
                         "has_inspect": False,
                         "scope": "unknown",
+                        "group_scope": "off",
+                        "private_scope": "off",
                         "target_groups": [],
+                        "target_users": [],
                         "is_enabled": False,
                         "scope_desc": f"获取配置失败: {str(e)}",
                     }

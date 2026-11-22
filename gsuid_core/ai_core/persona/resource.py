@@ -604,14 +604,14 @@ def allocate_copy_name(source_name: str, occupied: set[str]) -> str | None:
 async def copy_persona(source_name: str) -> str:
     """复制整个人格目录（含 md / 媒体 / config.json / persona.json）。
 
-    新目录名为 ``{源名}2`` 起的第一个空位。副本 ``scope`` 强制 ``disabled``，
-    避免把 global 范围一并复制出去。
+    新目录名为 ``{源名}2`` 起的第一个空位。副本双通道强制 ``off`` 且清空目标列表，
+    避免把全局兜底或指定绑定一并复制出去。
     """
     import shutil
 
     from gsuid_core.utils.path_safety import safe_join
 
-    from .config import persona_config_manager
+    from .config import EMPTY_CHANNEL_DEPLOYMENT, persona_config_manager
     from ..resource import PERSONA_PATH
 
     source = Persona(source_name)
@@ -645,8 +645,7 @@ async def copy_persona(source_name: str) -> str:
         if await PackStore.add_bind_if_missing(dest_name, pack_id):
             added += 1
 
-    cfg = persona_config_manager.get_config(dest_name)
-    if not cfg.set_config("scope", "disabled"):
+    if not persona_config_manager.restore_channel_deployment(dest_name, EMPTY_CHANNEL_DEPLOYMENT):
         logger.warning(t("log.persona.persona_copy_scope_fail", persona_name=dest_name))
     # 绑定数到顶时跳过默认包，避免副本突破单人格挂载上限
     if added < MAX_PACKS_PER_PERSONA:

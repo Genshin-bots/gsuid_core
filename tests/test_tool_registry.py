@@ -2082,9 +2082,18 @@ def test_session_log_display_names_call_tool_inner() -> None:
     assert [e["data"]["tool_name"] for e in formatted] == ["call_tool(send_guide_pic)"] * 2
 
 
-def test_count_query_detection_and_memory_cap() -> None:
+def test_count_query_detection_and_memory_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gsuid_core.ai_core.memory import config as memory_cfg_mod
     from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_count_query
+
+    class _StubMemoryConfig:
+        evidence_mode: bool = False
+        memory_inject_max_chars: int = 2000
+        memory_inject_wide_chars: int = 8000
+
+    # 隔离本地 data/ 下的运行配置，按默认基线验证上限策略
+    monkeypatch.setattr(memory_cfg_mod, "memory_config", _StubMemoryConfig())
 
     assert looks_like_count_query("给账本加几个零很简单") is False
     assert looks_like_count_query("买几个苹果") is False

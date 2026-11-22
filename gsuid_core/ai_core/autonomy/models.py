@@ -49,6 +49,8 @@ class CareTargetSnapshot:
     preferences: list[str] = field(default_factory=list)
     # 互惠退避：连续两次主动私聊未获回复时置 False，禁止继续主动私聊
     allow_private_push: bool = True
+    # 通道范围：当前人格的 private_scope/target_users 是否允许对该用户私聊
+    private_scope_allowed: bool = True
 
 
 @dataclass(slots=True)

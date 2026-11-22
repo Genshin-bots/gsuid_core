@@ -51,9 +51,15 @@ def _project(persona_name: str) -> Optional[AgentNode]:
     if not md_path.exists():
         return None
 
-    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config import (
+        read_target_list,
+        derive_legacy_scope,
+        read_channel_scopes,
+        persona_config_manager,
+    )
 
     cfg = persona_config_manager.get_config(persona_name)
+    scopes = read_channel_scopes(cfg)
     prompt = md_path.read_text(encoding="utf-8")
     return AgentNode(
         node_id=persona_name,
@@ -65,8 +71,11 @@ def _project(persona_name: str) -> Optional[AgentNode]:
         tool_packs=[DYNAMIC_PACK],
         tool_names=list(cfg.get_config("tool_names").data),
         ai_mode=list(cfg.get_config("ai_mode").data),
-        scope=str(cfg.get_config("scope").data),
-        target_groups=list(cfg.get_config("target_groups").data),
+        scope=derive_legacy_scope(scopes.group_scope, scopes.private_scope),
+        group_scope=scopes.group_scope,
+        private_scope=scopes.private_scope,
+        target_groups=read_target_list(cfg, "target_groups"),
+        target_users=read_target_list(cfg, "target_users"),
         inspect_interval=int(cfg.get_config("inspect_interval").data),
         keywords=list(cfg.get_config("keywords").data),
         source="persona",

@@ -30,27 +30,32 @@ def get_legacy_owner_persona() -> str:
     return _legacy_owner
 
 
-def _scope_of(config: StringConfig) -> str:
-    scope = config.get_config("scope").data
-    return str(scope) if isinstance(scope, str) else ""
-
-
-def _target_groups_of(config: StringConfig) -> list[str]:
-    raw = config.get_config("target_groups").data
-    return [str(g) for g in raw] if isinstance(raw, list) else []
-
-
 def pick_default_persona(configs: Mapping[str, StringConfig]) -> Optional[str]:
-    """选存量数据归属人格：global → global_group → global_private → 绑定群最多的 specific。"""
-    enabled = {name: cfg for name, cfg in configs.items() if _scope_of(cfg) != "disabled"}
-    for scope in ("global", "global_group", "global_private"):
-        for name in sorted(enabled):
-            if _scope_of(enabled[name]) == scope:
+    """选存量数据归属人格：双 all → 群 all → 私 all → 绑定目标最多的 specific。"""
+    from gsuid_core.ai_core.persona.config import read_target_list, read_channel_scopes
+
+    enabled = {name: read_channel_scopes(cfg) for name, cfg in configs.items()}
+    active = {name: sc for name, sc in enabled.items() if sc.is_enabled}
+    for cond in (
+        lambda sc: sc.group_scope == "all" and sc.private_scope == "all",
+        lambda sc: sc.group_scope == "all",
+        lambda sc: sc.private_scope == "all",
+    ):
+        for name in sorted(active):
+            if cond(active[name]):
                 return name
-    specific = [name for name in enabled if _scope_of(enabled[name]) == "specific"]
-    if specific:
-        specific.sort(key=lambda n: (-len(_target_groups_of(enabled[n])), n))
-        return specific[0]
+    if active:
+        ranked = sorted(
+            active,
+            key=lambda n: (
+                -(
+                    len(read_target_list(configs[n], "target_groups"))
+                    + len(read_target_list(configs[n], "target_users"))
+                ),
+                n,
+            ),
+        )
+        return ranked[0]
     return None
 
 

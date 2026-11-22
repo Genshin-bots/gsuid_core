@@ -1,7 +1,7 @@
 """Git 人格仓库：克隆整包、按 manifest 结构装成人格、跟随远端 commit 同步。
 
 仓库是真值源：人格目录里的 persona.md / 资源 / config.json 由仓库拥有，
-本地只允许改 scope / target_groups（启用范围是部署侧状态，同步时保留）。
+本地只允许改双通道启用范围与目标列表（同步时保留，不被仓库覆盖）。
 表情包向量视为派生数据，导入新记录时直接补写 Qdrant。
 """
 
@@ -39,7 +39,13 @@ PERSONA_STORE_LIB = "https://docs.sayu-bot.com/persona_list.json"
 SOURCE_MARKER = "persona_store.json"
 
 # 本地管理员仍可改的键：启用范围是部署状态，同步时保留不被仓库覆盖。
-LOCAL_OVERRIDE_KEYS = ("scope", "target_groups")
+LOCAL_OVERRIDE_KEYS = (
+    "scope",
+    "group_scope",
+    "private_scope",
+    "target_groups",
+    "target_users",
+)
 
 # config.json 之外的仓库托管文件；更新时仓库缺了就删掉本地的。
 _MANAGED_OPTIONAL_FILES = (
@@ -200,28 +206,6 @@ def _clone_target(url: str) -> tuple[str, Optional[str]]:
     if repo_name is None:
         return url, None
     return f"{git_mirror.rstrip('/')}/{repo_name}", url
-
-
-def _snapshot_overrides(persona_name: str) -> dict[str, str | list[str]]:
-    from gsuid_core.ai_core.persona.config import persona_config_manager
-
-    cfg = persona_config_manager.get_config(persona_name)
-    return {
-        "scope": cfg.get_config("scope").data,
-        "target_groups": list(cfg.get_config("target_groups").data),
-    }
-
-
-def _restore_overrides(persona_name: str, saved: dict[str, str | list[str]]) -> None:
-    """config.json 被仓库覆盖后，把本地的 scope / target_groups 写回去。"""
-    from gsuid_core.ai_core.persona.config import persona_config_manager
-
-    persona_config_manager.drop_cache(persona_name)
-    cfg = persona_config_manager.get_config(persona_name)
-    for key in LOCAL_OVERRIDE_KEYS:
-        value = saved.get(key)
-        if value is not None and cfg.get_config(key).data != value:
-            cfg.set_config(key, value)
 
 
 def _reconcile_files(persona: Persona, root: Path) -> None:
@@ -428,7 +412,6 @@ async def update_persona_from_git(persona_name: str) -> tuple[bool, str]:
     if repo is None or not (repo / ".git").exists():
         return False, "仓库目录不存在，请卸载后重新导入"
 
-    saved = _snapshot_overrides(persona_name)
     ok, message = await git_pull(repo)
     if not ok:
         return False, f"更新失败: {message}"
@@ -441,12 +424,12 @@ async def update_persona_from_git(persona_name: str) -> tuple[bool, str]:
             raise BundleError("manifest.json 不是对象")
         if manifest.get("persona_name") != persona_name:
             return False, "仓库人格名已变更，与已导入人格不一致，请卸载后重新导入"
+        # import_bundle_dir 覆盖已有人格时已自动保留本地双通道范围与目标列表
         result = await import_bundle_dir(root)
     except (BundleError, json.JSONDecodeError, OSError) as e:
         return False, f"仓库结构不符合人格整包格式: {e}"
 
     persona = Persona(persona_name)
-    _restore_overrides(persona_name, saved)
     _reconcile_files(persona, root)
     await _reconcile_packs(persona_name, src, root)
 

@@ -181,11 +181,14 @@ def renew_dm_lease(
         now = time.time()
         base = leases[matching_keys[0]]
 
-        from gsuid_core.ai_core.persona.config import persona_config_manager
+        from gsuid_core.ai_core.persona.config import persona_config_manager, persona_covers_session
 
         active_configs = persona_config_manager.get_all_configs()
-        if active_configs and base.persona_name not in active_configs:
-            # 人格已删除，主动清理僵尸租约，不予续期
+        if active_configs and (
+            base.persona_name not in active_configs
+            or not persona_covers_session(active_configs[base.persona_name], user_id=user_id)
+        ):
+            # 人格已删除或私聊范围不再覆盖该用户，主动清理僵尸租约，不予续期
             for k in matching_keys:
                 del leases[k]
             _save_locked(leases)
@@ -232,17 +235,17 @@ _ASCII_WORD_TAIL = re.compile(r"[A-Za-z0-9_]")
 
 
 def maybe_switch_dm_lease(user_id: str, bot_id: str, text: str, current_persona: str | None) -> str | None:
-    """私聊开头显式点名其他启用人格时切换租约。返回切换后的人格名，否则 None。
+    """私聊开头显式点名其他在私聊通道覆盖该用户的人格时切换租约。
 
     只对**消息开头**（剥掉前导空白/标点后）的人格目录名（长度 >= 2）生效；
-    命中者必须已启用（scope != "disabled"）且不是当前人格。
+    命中者必须私聊通道覆盖当前用户且不是当前人格。
     名字后紧跟 ASCII 字母/数字/下划线视为同词延续（Beta2 ≠ Beta）；
     中文不受此限——「早柚在吗」这种不带标点的称呼是常态用法。
     """
     body = _LEADING_STRIP_RE.sub("", text or "")
     if not body:
         return None
-    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config import persona_config_manager, persona_covers_session
 
     for name in sorted(persona_config_manager.get_all_configs(), key=lambda n: (-len(n), n)):
         if name == current_persona or len(name) < _PERSONA_NAME_MIN_LEN:
@@ -253,7 +256,7 @@ def maybe_switch_dm_lease(user_id: str, bot_id: str, text: str, current_persona:
         if tail and _ASCII_WORD_TAIL.match(tail[0]):
             continue
         config = persona_config_manager.get_config(name)
-        if config.get_config("scope").data == "disabled":
+        if not persona_covers_session(config, user_id=user_id):
             continue
         grant_dm_lease(user_id=user_id, persona_name=name, bot_id=bot_id)
         return name

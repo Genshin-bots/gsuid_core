@@ -42,5 +42,9 @@
   "log.persona.store_installed": "[PersonaStore] 已导入人格 {persona} (repo={repo}, packs={packs}, 新表情 {imported})",
   "log.persona.store_updated": "[PersonaStore] 已同步人格 {persona} → {commit} (新表情 {imported})",
   "log.persona.store_fetch_fail": "[PersonaStore] 拉取人格市场目录失败: {e}",
-  "log.persona.meme_cooldown_set": "[PersonaConfig] 已将 '{persona_name}' 的表情发送冷却设为 {value} 秒"
+  "log.persona.meme_cooldown_set": "[PersonaConfig] 已将 '{persona_name}' 的表情发送冷却设为 {value} 秒",
+  "log.persona.scope_migrated": "[PersonaConfig] 已迁移 '{persona_name}' 旧启用范围: {old_scope} -> group={group_scope}, private={private_scope}",
+  "log.persona.scope_migrated_specific_dm_hint": "[PersonaConfig] '{persona_name}' 原为 specific 且含 {count} 项绑定目标；已迁移至群聊目标，若其中包含私聊用户请手动迁到 target_users 并开启 private_scope",
+  "log.persona.personaconfig_updated_name_channels": "[PersonaConfig] 已更新 '{persona_name}' 通道启用范围: group={group_scope}, private={private_scope}",
+  "log.persona.personaconfig_updated_name_target_users": "[PersonaConfig] 已更新 '{persona_name}' 的目标私聊用户: {target_users}"
 }

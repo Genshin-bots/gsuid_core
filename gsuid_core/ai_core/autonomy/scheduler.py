@@ -17,6 +17,7 @@ from gsuid_core.ai_core.autonomy.gates import (
 )
 from gsuid_core.ai_core.persona.config import (
     AUTONOMY_MODE,
+    is_persona_enabled,
     normalize_ai_modes,
     read_autonomy_runtime,
     is_within_active_hours,
@@ -354,14 +355,13 @@ class AutonomyScheduler:
         mode_list = (
             normalize_ai_modes([item for item in modes if isinstance(item, str)]) if isinstance(modes, list) else []
         )
-        scope = config.get_config("scope").data
         within = is_within_active_hours(list(runtime.active_hours), runtime.timezone)
         due = force or await self.due_at(persona_name) is not None
         enabled = ai_config.get_config("enable").data
         return gate_reason(
             ai_enabled=bool(enabled) if isinstance(enabled, bool) else False,
             mode_on=AUTONOMY_MODE in mode_list,
-            scope_enabled=scope != "disabled",
+            scope_enabled=is_persona_enabled(config),
             within_hours=within,
             chat_busy=interactive_llm_in_use() or has_pending_interactive_deliveries(),
             due=due,

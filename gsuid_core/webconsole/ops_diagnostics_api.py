@@ -311,12 +311,10 @@ async def ops_trigger_replay(
         session_id = f"ops:{body.bot_id}:{body.bot_self_id}:group:{body.group_id}"
 
     persona_name = body.persona_name or persona_config_manager.get_persona_for_session(session_id)
-    # get_persona_for_session 可能依赖真实 group——若失败用 global persona
+    # get_persona_for_session 可能依赖真实 group——若失败回退当前通道全局人格
     if persona_name is None:
-        try:
-            persona_name = persona_config_manager.get_global_persona()
-        except Exception:
-            persona_name = None
+        is_private_probe = bool(body.is_private or not body.group_id)
+        persona_name = persona_config_manager.get_fallback_persona(is_private=is_private_probe)
     steps.append(
         {
             "step": "persona_match",
