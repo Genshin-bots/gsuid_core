@@ -207,31 +207,63 @@ async def send_add_ck_msg(bot: Bot, ev: Event):
 )
 async def send_add_device_msg(bot: Bot, ev: Event):
     try:
-        data: Dict[str, str] = json.loads(ev.text.strip())
-    except:  # noqa:E722
+        parsed = json.loads(ev.text.strip())
+    except json.JSONDecodeError:
         return await bot.send(await bot.t("绑定格式错误..."))
 
-    fp, device_id, device_info = await deal_fp(data)
+    if not isinstance(parsed, dict):
+        return await bot.send(await bot.t("绑定格式错误..."))
+
+    data: Dict[str, str] = {}
+    for key, val in parsed.items():
+        if isinstance(key, str) and isinstance(val, str):
+            data[key] = val
+
+    try:
+        fp, device_id, device_info = await deal_fp(data)
+    except ValueError:
+        return await bot.send(await bot.t("绑定格式错误..."))
 
     user_list = await GsUser.select_data_list(
         ev.user_id,
         ev.bot_id,
     )
-    if user_list:
-        for user in user_list:
-            if user.cookie:
-                await GsUser.update_data_by_data(
-                    {"uid": user.uid},
-                    {
-                        "fp": fp,
-                        "device_id": device_id,
-                        "device_info": device_info,
-                    },
-                )
-                await mys_api.device_login_and_save(
-                    device_id,
-                    fp,
-                    device_info,
-                    user.cookie,
-                )
-    await bot.send(await bot.t("设备绑定成功!"))
+    if not user_list:
+        return await bot.send(await bot.t("您还没有绑定Cookie/Stoken，请先使用【扫码登陆】绑定账号!"))
+
+    success_count = 0
+    failed_codes: List[int] = []
+    for user in user_list:
+        auth_cookie = user.stoken or user.cookie
+        if not auth_cookie or user.id is None:
+            continue
+        await GsUser.update_data_by_data(
+            {"id": user.id},
+            {
+                "fp": fp,
+                "device_id": device_id,
+                "device_info": device_info,
+            },
+        )
+        res = await mys_api.device_login_and_save(
+            device_id,
+            fp,
+            device_info,
+            auth_cookie,
+        )
+        if isinstance(res, int):
+            failed_codes.append(res)
+        else:
+            success_count += 1
+
+    if success_count > 0:
+        await bot.send(await bot.t("设备绑定成功!"))
+    elif failed_codes:
+        await bot.send(
+            await bot.t(
+                "设备信息已保存，但米游社设备注册失败(retcode={code})，请检查Stoken是否有效。",
+                code=failed_codes[0],
+            )
+        )
+    else:
+        await bot.send(await bot.t("您还没有绑定Cookie/Stoken，请先使用【扫码登陆】绑定账号!"))

@@ -3,12 +3,16 @@
 """
 
 from copy import deepcopy
-from typing import Dict, Union, cast
+from typing import Dict, Union, Optional, cast
+from urllib.parse import quote
+
+from gsuid_core.utils.database.models import GsUser
 
 from .api import (
     SIGN,
     GS_BASE,
     SIGN_SR,
+    SIGN_ZZZ,
     SIGN_INFO,
     SIGN_LIST,
     SIGN_BASE_OS,
@@ -16,6 +20,7 @@ from .api import (
     SIGN_LIST_SR,
     MONTHLY_AWARD,
     SIGN_INFO_ZZZ,
+    SIGN_LIST_ZZZ,
     SIGN_SR_BASE_OS,
     ApiEndpoint,
 )
@@ -63,7 +68,7 @@ _BASE_URL = {
 _SIGN_END_POINT: dict[str, ApiEndpoint] = {
     "gs": SIGN,
     "sr": SIGN_SR,
-    "zzz": SIGN,
+    "zzz": SIGN_ZZZ,
 }
 
 _SIGN_INFO_END_POINT: dict[str, ApiEndpoint] = {
@@ -75,11 +80,24 @@ _SIGN_INFO_END_POINT: dict[str, ApiEndpoint] = {
 _SIGN_LIST_END_POINT: dict[str, ApiEndpoint] = {
     "gs": SIGN_LIST,
     "sr": SIGN_LIST_SR,
-    "zzz": SIGN_LIST,
+    "zzz": SIGN_LIST_ZZZ,
 }
+
+_SIGN_ACT_ORIGIN = "https://act.mihoyo.com"
+_SIGN_ACT_REFERER = "https://act.mihoyo.com/"
 
 
 class SignMysApi(BBSMysApi):
+    def _cn_sign_base_header(self, ck: str, game_name: str) -> Dict[str, str]:
+        return {
+            "Cookie": ck,
+            "x-rpc-signgame": _GAME_NAME[game_name],
+            "Origin": _SIGN_ACT_ORIGIN,
+            "Referer": _SIGN_ACT_REFERER,
+            "X-Requested-With": "com.mihoyo.hyperion",
+            "User-Agent": self._HEADER["User-Agent"],
+        }
+
     async def get_sign_list(
         self,
         uid: str,
@@ -94,16 +112,16 @@ class SignMysApi(BBSMysApi):
         ck = await self.get_ck(uid, "OWNER", game_name)
         if ck is None:
             return -51
-        header = deepcopy(self._HEADER_OS) if is_os else {"Cookie": ck}
-        header["Cookie"] = ck
         params = {"act_id": act_id, "lang": "zh-cn"}
 
         if is_os:
+            header = deepcopy(self._HEADER_OS)
+            header["Cookie"] = ck
             header["DS"] = generate_os_ds()
             header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
             header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
         else:
-            header["x-rpc-signgame"] = _GAME_NAME[game_name]
+            header = self._cn_sign_base_header(ck, game_name)
 
         data = await self._mys_request(
             end_point,
@@ -129,8 +147,6 @@ class SignMysApi(BBSMysApi):
         ck = await self.get_ck(uid, "OWNER", game_name)
         if ck is None:
             return -51
-        header = deepcopy(self._HEADER_OS) if is_os else {"Cookie": ck}
-        header["Cookie"] = ck
         params = {
             "act_id": _ACT_ID[game_name][server_id],
             "lang": "zh-cn",
@@ -139,11 +155,13 @@ class SignMysApi(BBSMysApi):
         }
 
         if is_os:
+            header = deepcopy(self._HEADER_OS)
+            header["Cookie"] = ck
             header["DS"] = generate_os_ds()
             header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
             header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
         else:
-            header["x-rpc-signgame"] = _GAME_NAME[game_name]
+            header = self._cn_sign_base_header(ck, game_name)
 
         data = await self._mys_request(
             end_point,
@@ -162,7 +180,7 @@ class SignMysApi(BBSMysApi):
         self,
         uid: str,
         game_name: str = "gs",
-        header: Dict = {},
+        header: Optional[Dict[str, str]] = None,
     ) -> Union[MysSign, int]:
         is_os = self.check_os(uid, game_name)
         server_id = self.get_server_id(uid, game_name)
@@ -180,33 +198,43 @@ class SignMysApi(BBSMysApi):
             return -51
 
         if is_os:
-            HEADER = deepcopy(self._HEADER_OS)
-            HEADER["Cookie"] = ck
-            HEADER["DS"] = generate_os_ds()
-            HEADER.update(header)
+            req_header = deepcopy(self._HEADER_OS)
+            req_header["Cookie"] = ck
+            req_header["DS"] = generate_os_ds()
         else:
-            HEADER = deepcopy(self._HEADER)
-            HEADER["Cookie"] = ck
-            header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
-            header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
-            HEADER["x-rpc-client_type"] = "5"
-            HEADER["X_Requested_With"] = "com.mihoyo.hyperion"
-            HEADER["DS"] = get_web_ds_token(True)
-            header["x-rpc-signgame"] = _GAME_NAME[game_name]
-            HEADER.update(header)
+            req_header = deepcopy(self._HEADER)
+            req_header["Cookie"] = ck
+            req_header["x-rpc-device_id"] = await self.get_user_device_id(uid, game_name)
+            req_header["x-rpc-device_fp"] = await self.get_user_fp(uid, game_name)
+            req_header["x-rpc-platform"] = "2"
+            req_header["x-rpc-client_type"] = "5"
+            req_header["X-Requested-With"] = "com.mihoyo.hyperion"
+            req_header["Origin"] = _SIGN_ACT_ORIGIN
+            req_header["Referer"] = _SIGN_ACT_REFERER
+            req_header["DS"] = get_web_ds_token(True)
+            req_header["x-rpc-signgame"] = _GAME_NAME[game_name]
 
-        data = await self._mys_request(
+            main_uid = await self.get_uid(uid, game_name)
+            dfp = await GsUser.get_user_attr_by_uid(main_uid, "device_info", game_name)
+            brand, model_name, _, _ = self._parse_device_info(dfp or "OnePlus/PHK110/OP2020L1")
+            req_header["x-rpc-device_model"] = model_name
+            req_header["x-rpc-device_name"] = quote(f"{brand} {model_name}")
+
+        if header:
+            req_header.update(header)
+
+        res = await self._mys_request(
             url=end_point,
             method="POST",
-            header=HEADER,
+            header=req_header,
             data=data,
             base_url=base_url,
             game_name=game_name,
         )
 
-        if isinstance(data, Dict):
-            data = cast(MysSign, data["data"])
-        return data
+        if isinstance(res, Dict):
+            res = cast(MysSign, res["data"])
+        return res
 
     async def get_award(self, uid) -> Union[MonthlyAward, int]:
         server_id = self.RECOGNIZE_SERVER.get(str(uid)[0])
