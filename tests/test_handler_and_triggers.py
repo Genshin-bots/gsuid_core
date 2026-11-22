@@ -1074,48 +1074,58 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
     asyncio.run(scenario())
 
 
-def test_reload_plugin_shutdown_before_start_and_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """热重载先断流并在旧模块存活期跑完 shutdown，再导入新版与启动，兼顾并发与清理。"""
-    import gsuid_core.server as server_mod
-    from gsuid_core.sv import config_plugins
-    from gsuid_core.config import plugin_config_store
-    from gsuid_core.utils.plugins_update import reload_plugin as reload_mod
-    from gsuid_core.webconsole.mount_app import GsAdminModel, site
+class _ReloadPluginHarness:
+    """隔离构建与清理临时热重载插件的测试脚手架。"""
 
-    plugin_name = "TestReloadPlugin"
-    sv_name = "TestReloadSV"
-    plugins_dir = tmp_path / "plugins"
-    plugin_dir = plugins_dir / plugin_name
-    sub_dir = plugin_dir / "main"
-    sub_dir.mkdir(parents=True)
-    (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
-    (plugin_dir / "__full__.py").write_text("", encoding="utf-8")
-    init_file = sub_dir / "__init__.py"
-    state_file = plugin_dir / "state.py"
-    events_file = tmp_path / "events.log"
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str) -> None:
+        import gsuid_core.server as server_mod
+
+        self.plugin_name = f"TestReloadPlugin{suffix}"
+        self.meta_plugin_name = f"TestReloadMetaPlugin{suffix}"
+        self.sv_name = f"TestReloadSV{suffix}"
+        self.plugins_dir = tmp_path / "plugins"
+        self.plugin_dir = self.plugins_dir / self.plugin_name
+        self.sub_dir = self.plugin_dir / "main"
+        self.sub_dir.mkdir(parents=True)
+        (self.plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+        (self.plugin_dir / "__full__.py").write_text("", encoding="utf-8")
+        self.init_file = self.sub_dir / "__init__.py"
+        self.state_file = self.plugin_dir / "state.py"
+        self.events_file = tmp_path / f"events_{suffix}.log"
+        self.sync_gate = tmp_path / f"sync_gate_{suffix}"
+        self.orphan_gate = tmp_path / f"orphan_gate_{suffix}"
+
+        self.meta_dir = self.plugins_dir / self.meta_plugin_name
+        self.meta_sub = self.meta_dir / "main"
+        self.meta_api_dir = self.meta_dir / "api"
+        self.meta_marker = self.meta_dir / "__meta_plugin__.py"
+        self.meta_api_file = self.meta_api_dir / "__init__.py"
+        self.meta_init_file = self.meta_sub / "__init__.py"
+        self._extra_registered_admins: list[type] = []
+
+        monkeypatch.setattr(server_mod, "PLUGIN_PATH", self.plugins_dir)
+        monkeypatch.setattr(sys, "dont_write_bytecode", True)
 
     def write_plugin(
+        self,
         version: int,
         command: str,
         *,
         fail: bool = False,
         shutdown_delay: float = 0.01,
-        sync_shutdown_sleep: float = 0.0,
-        multi_priority_shutdown_sleep: float = 0.0,
+        sync_shutdown_gated: bool = False,
+        multi_priority_gated: bool = False,
         slow_start: bool = False,
         with_hooks: bool = True,
     ) -> None:
-        state_file.write_text(f"VERSION = {version}\n", encoding="utf-8")
+        self.state_file.write_text(f"VERSION = {version}\n", encoding="utf-8")
         if fail:
             half_body = [
                 "from pathlib import Path",
                 "from gsuid_core.sv import SV",
                 "from gsuid_core.server import on_core_shutdown",
-                f"_LOG = Path({str(events_file)!r})",
-                f"sv = SV({sv_name!r})",
+                f"_LOG = Path({str(self.events_file)!r})",
+                f"sv = SV({self.sv_name!r})",
                 f"@sv.on_fullmatch({command + '半残'!r})",
                 "async def _half_cmd(bot, ev):",
                 "    return None",
@@ -1125,7 +1135,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                 f'        f.write("shutdown:{version}:half\\n")',
                 'raise RuntimeError("reload_boom")',
             ]
-            init_file.write_text("\n".join(half_body) + "\n", encoding="utf-8")
+            self.init_file.write_text("\n".join(half_body) + "\n", encoding="utf-8")
             return
         body = [
             "import time",
@@ -1133,10 +1143,10 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             "from pathlib import Path",
             "from gsuid_core.sv import SV",
             "from gsuid_core.server import on_core_start, on_core_shutdown",
-            f"_LOG = Path({str(events_file)!r})",
+            f"_LOG = Path({str(self.events_file)!r})",
             'with _LOG.open("a", encoding="utf-8") as _f:',
             f'    _f.write("import:{version}\\n")',
-            f"sv = SV({sv_name!r})",
+            f"sv = SV({self.sv_name!r})",
             f"@sv.on_fullmatch({command!r})",
             "async def _cmd(bot, ev):",
             "    return None",
@@ -1157,9 +1167,10 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         "        raise",
                     ]
                 )
-            elif sync_shutdown_sleep > 0:
+            elif sync_shutdown_gated:
                 body.extend(
                     [
+                        f"_GATE = Path({str(self.sync_gate)!r})",
                         "@on_core_start",
                         "async def _start():",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
@@ -1168,14 +1179,17 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         "def _stop_sync():",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write("shutdown:{version}:sync:begin\\n")',
-                        f"    time.sleep({sync_shutdown_sleep})",
+                        "    deadline = time.monotonic() + 5.0",
+                        "    while not _GATE.exists() and time.monotonic() < deadline:",
+                        "        time.sleep(0.01)",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write("shutdown:{version}:sync:done\\n")',
                     ]
                 )
-            elif multi_priority_shutdown_sleep > 0:
+            elif multi_priority_gated:
                 body.extend(
                     [
+                        f"_GATE = Path({str(self.orphan_gate)!r})",
                         "@on_core_start",
                         "async def _start():",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
@@ -1185,16 +1199,18 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write("shutdown:{version}:p0:begin\\n")',
                         "    try:",
-                        f"        await asyncio.sleep({multi_priority_shutdown_sleep})",
+                        "        await asyncio.sleep(5.0)",
                         "    finally:",
-                        "        await asyncio.sleep(0.2)",
+                        "        deadline = time.monotonic() + 5.0",
+                        "        while not _GATE.exists() and time.monotonic() < deadline:",
+                        "            await asyncio.sleep(0.01)",
                         '        with _LOG.open("a", encoding="utf-8") as f:',
                         f'            f.write("shutdown:{version}:p0:finally_done\\n")',
                         "@on_core_shutdown(priority=1)",
                         "async def _stop_p1():",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write("shutdown:{version}:p1:begin\\n")',
-                        f"    await asyncio.sleep({multi_priority_shutdown_sleep})",
+                        "    await asyncio.sleep(5.0)",
                     ]
                 )
             else:
@@ -1202,12 +1218,12 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                     [
                         "@on_core_start",
                         "async def _start():",
-                        f"    from {plugin_name} import state",
+                        f"    from {self.plugin_name} import state",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write(f"start:{version}:state={{state.VERSION}}\\n")',
                         "@on_core_shutdown",
                         "async def _stop():",
-                        f"    from {plugin_name} import state",
+                        f"    from {self.plugin_name} import state",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write(f"shutdown:{version}:state={{state.VERSION}}:begin\\n")',
                         f"    await asyncio.sleep({shutdown_delay})",
@@ -1215,27 +1231,118 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         f'        f.write(f"shutdown:{version}:state={{state.VERSION}}:done\\n")',
                     ]
                 )
-        init_file.write_text("\n".join(body) + "\n", encoding="utf-8")
+        self.init_file.write_text("\n".join(body) + "\n", encoding="utf-8")
 
-    def read_events() -> list[str]:
-        if not events_file.exists():
+    def write_meta_plugin(self, version: int, *, is_meta: bool = True) -> None:
+        self.meta_sub.mkdir(parents=True, exist_ok=True)
+        self.meta_api_dir.mkdir(parents=True, exist_ok=True)
+        (self.meta_dir / "__init__.py").write_text("", encoding="utf-8")
+        (self.meta_dir / "__full__.py").write_text("", encoding="utf-8")
+        if is_meta:
+            self.meta_marker.write_text("", encoding="utf-8")
+        elif self.meta_marker.exists():
+            self.meta_marker.unlink()
+        self.meta_api_file.write_text(f"API_VERSION = {version}\n", encoding="utf-8")
+        meta_body = [
+            "from pathlib import Path",
+            "from gsuid_core import meta_plugins",
+            "from gsuid_core.server import on_core_shutdown",
+            f"_LOG = Path({str(self.events_file)!r})",
+            'with _LOG.open("a", encoding="utf-8") as _f:',
+            f'    _f.write("meta_import:{version}\\n")',
+            "@on_core_shutdown",
+            "async def _meta_stop():",
+            f"    from {self.meta_plugin_name}.api import API_VERSION",
+            f"    req = meta_plugins.require({self.meta_plugin_name!r})",
+            '    with _LOG.open("a", encoding="utf-8") as f:',
+            f'        f.write(f"meta_shutdown:{version}:api={{API_VERSION}}:req={{req.API_VERSION}}\\n")',
+        ]
+        self.meta_init_file.write_text("\n".join(meta_body) + "\n", encoding="utf-8")
+
+    def read_events(self) -> list[str]:
+        if not self.events_file.exists():
             return []
-        return events_file.read_text(encoding="utf-8").splitlines()
+        return self.events_file.read_text(encoding="utf-8").splitlines()
 
-    async def wait_for_event(marker: str) -> None:
+    async def wait_for_event(self, marker: str) -> None:
         for _ in range(200):
-            if marker in read_events():
+            if marker in self.read_events():
                 return
             await asyncio.sleep(0.005)
-        raise AssertionError(f"Timed out waiting for event {marker!r}; got {read_events()}")
+        raise AssertionError(f"Timed out waiting for event {marker!r}; got {self.read_events()}")
 
-    def matches_command(cmd: str) -> bool:
+    def matches_command(self, cmd: str) -> bool:
         ev = _make_event(cmd, pm=6)
         idx = get_trigger_index()
         return any(
-            (owner := idx.owner_of(trig)) is not None and owner.name == sv_name and trig.check_command(ev)
+            (owner := idx.owner_of(trig)) is not None and owner.name == self.sv_name and trig.check_command(ev)
             for trig in idx.candidates(ev)
         )
+
+    async def cleanup(self) -> None:
+        import gsuid_core.server as server_mod
+        from gsuid_core import meta_plugins
+        from gsuid_core.sv import config_plugins
+        from gsuid_core.config import plugin_config_store
+        from gsuid_core.utils.plugins_update import reload_plugin as reload_mod
+        from gsuid_core.webconsole.mount_app import site
+
+        self.sync_gate.write_text("release", encoding="utf-8")
+        self.orphan_gate.write_text("release", encoding="utf-8")
+        state = reload_mod._get_loop_state(asyncio.get_running_loop())
+        if state.active_reload_tasks:
+            await asyncio.gather(*list(state.active_reload_tasks), return_exceptions=True)
+        if state.orphaned_shutdown_tasks:
+            await asyncio.gather(*list(state.orphaned_shutdown_tasks), return_exceptions=True)
+        for pname in (self.plugin_name, self.meta_plugin_name):
+            for task_map in (state.start_tasks, state.shutdown_tasks):
+                pending_task = task_map.pop(pname, None)
+                if pending_task is not None and not pending_task.done():
+                    pending_task.cancel()
+                    await asyncio.gather(pending_task, return_exceptions=True)
+            state.pending_shutdown_hooks.pop(pname, None)
+            meta_plugins.unregister_meta_plugin(pname)
+            SL.plugins.pop(pname, None)
+            config_plugins.pop(pname, None)
+            plugin_config_store._dirty.discard(pname)
+            server_mod._import_memory_mb.pop(pname, None)
+            site.plugins_page.pop(pname, None)
+            site.plugins_page.pop(f"{pname}.py", None)
+            for mod_key in [k for k in sys.modules if reload_mod._belongs_to_plugin(k, pname)]:
+                sys.modules.pop(mod_key, None)
+            for cache_key in [k for k in list(server_mod._module_cache) if pname in k]:
+                server_mod._module_cache.pop(cache_key, None)
+            for hook_set in (
+                server_mod.core_start_def,
+                server_mod.core_start_before_def,
+                server_mod.core_shutdown_def,
+            ):
+                stale = {
+                    h for h in hook_set if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), pname)
+                }
+                hook_set -= stale
+        for admin_cls in self._extra_registered_admins:
+            site._registered.pop(admin_cls, None)
+        sv_obj = SL.lst.pop(self.sv_name, None)
+        if sv_obj is not None:
+            SL.detail_lst.pop(sv_obj.plugins, None)
+        for added in (str(self.plugins_dir), str(self.plugin_dir), str(self.meta_dir)):
+            server_mod._added_paths.discard(added)
+            while added in sys.path:
+                sys.path.remove(added)
+        reset_trigger_index()
+
+
+def test_reload_plugin_lifecycle_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证热重载基本生命周期：旧模块存活期跑 shutdown、清理管理模型、半导入回滚与 Meta 插件。"""
+    from gsuid_core import meta_plugins
+    from gsuid_core.utils.plugins_update import reload_plugin as reload_mod
+    from gsuid_core.webconsole.mount_app import GsAdminModel, site
+
+    harness = _ReloadPluginHarness(tmp_path, monkeypatch, "Lifecycle")
 
     class _DummyAdmin(GsAdminModel):
         pass
@@ -1243,76 +1350,37 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
     class _DummyRegisteredAdmin(GsAdminModel):
         pass
 
-    _DummyRegisteredAdmin.__module__ = f"plugins.{plugin_name}.models"
+    _DummyRegisteredAdmin.__module__ = f"plugins.{harness.plugin_name}.models"
+    harness._extra_registered_admins.append(_DummyRegisteredAdmin)
 
-    class _DummySingleFileAdmin(GsAdminModel):
+    class _DummyExternalSingleFileAdmin(GsAdminModel):
         pass
 
-    _DummySingleFileAdmin.__module__ = f"plugins.{plugin_name}"
-
-    meta_plugin_name = "TestReloadMetaPlugin"
-    meta_dir = plugins_dir / meta_plugin_name
-    meta_sub = meta_dir / "main"
-    meta_api_dir = meta_dir / "api"
-    meta_marker = meta_dir / "__meta_plugin__.py"
-    meta_api_file = meta_api_dir / "__init__.py"
-    meta_init_file = meta_sub / "__init__.py"
-
-    def write_meta_plugin(version: int, *, is_meta: bool = True) -> None:
-        meta_sub.mkdir(parents=True, exist_ok=True)
-        meta_api_dir.mkdir(parents=True, exist_ok=True)
-        (meta_dir / "__init__.py").write_text("", encoding="utf-8")
-        (meta_dir / "__full__.py").write_text("", encoding="utf-8")
-        if is_meta:
-            meta_marker.write_text("", encoding="utf-8")
-        elif meta_marker.exists():
-            meta_marker.unlink()
-        meta_api_file.write_text(f"API_VERSION = {version}\n", encoding="utf-8")
-        meta_body = [
-            "from pathlib import Path",
-            "from gsuid_core import meta_plugins",
-            "from gsuid_core.server import on_core_shutdown",
-            f"_LOG = Path({str(events_file)!r})",
-            'with _LOG.open("a", encoding="utf-8") as _f:',
-            f'    _f.write("meta_import:{version}\\n")',
-            "@on_core_shutdown",
-            "async def _meta_stop():",
-            f"    from {meta_plugin_name}.api import API_VERSION",
-            f"    req = meta_plugins.require({meta_plugin_name!r})",
-            '    with _LOG.open("a", encoding="utf-8") as f:',
-            f'        f.write(f"meta_shutdown:{version}:api={{API_VERSION}}:req={{req.API_VERSION}}\\n")',
-        ]
-        meta_init_file.write_text("\n".join(meta_body) + "\n", encoding="utf-8")
-
-    monkeypatch.setattr(server_mod, "PLUGIN_PATH", plugins_dir)
-    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    _DummyExternalSingleFileAdmin.__module__ = "external_pkg.shared_admin"
 
     async def scenario() -> None:
-        from gsuid_core import meta_plugins
-
         state = reload_mod._get_loop_state(asyncio.get_running_loop())
-
         try:
             # 1) 首次异步重载：注册命令与启停钩子，验证索引可命中
-            write_plugin(1, "测重指令一")
-            res1 = await reload_mod.reload_plugin_async(plugin_name)
+            harness.write_plugin(1, "测重指令一")
+            res1 = await reload_mod.reload_plugin_async(harness.plugin_name)
             assert res1.startswith("✨")
-            await state.start_tasks[plugin_name]
-            assert read_events() == ["import:1", "start:1:state=1"]
-            assert matches_command("测重指令一") is True
+            await state.start_tasks[harness.plugin_name]
+            assert harness.read_events() == ["import:1", "start:1:state=1"]
+            assert harness.matches_command("测重指令一") is True
 
-            # 2) 二次异步重载：旧 shutdown 延迟导入必须命中 v1 且先于 v2 import；同步清三类管理模型
-            site.plugins_page[plugin_name] = [_DummyAdmin]
-            site.plugins_page[f"{plugin_name}.py"] = [_DummySingleFileAdmin]
+            # 2) 二次异步重载：旧 shutdown 延迟导入命中 v1 且先于 v2 import；同步清三类管理模型
+            site.plugins_page[harness.plugin_name] = [_DummyAdmin]
+            site.plugins_page[f"{harness.plugin_name}.py"] = [_DummyExternalSingleFileAdmin]
             site._registered[_DummyRegisteredAdmin] = None
-            write_plugin(2, "测重指令二", shutdown_delay=0.04)
-            res2 = await reload_mod.reload_plugin_async(plugin_name)
+            harness.write_plugin(2, "测重指令二", shutdown_delay=0.03)
+            res2 = await reload_mod.reload_plugin_async(harness.plugin_name)
             assert res2.startswith("✨")
-            assert plugin_name not in site.plugins_page
-            assert f"{plugin_name}.py" not in site.plugins_page
+            assert harness.plugin_name not in site.plugins_page
+            assert f"{harness.plugin_name}.py" not in site.plugins_page
             assert _DummyRegisteredAdmin not in site._registered
-            await state.start_tasks[plugin_name]
-            assert read_events() == [
+            await state.start_tasks[harness.plugin_name]
+            assert harness.read_events() == [
                 "import:1",
                 "start:1:state=1",
                 "shutdown:1:state=1:begin",
@@ -1320,172 +1388,40 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                 "import:2",
                 "start:2:state=2",
             ]
-            assert matches_command("测重指令一") is False
-            assert matches_command("测重指令二") is True
+            assert harness.matches_command("测重指令一") is False
+            assert harness.matches_command("测重指令二") is True
 
-            # 3) 在途 shutdown 期间并发触发下一次异步重载：串行保底不断开 v2，未启动的中间版不误跑 shutdown
-            before_step3 = len(read_events())
-            write_plugin(4, "测重指令四", shutdown_delay=0.04)
-            t3 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
-            await wait_for_event("shutdown:2:state=2:begin")
-            t4 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
-            res3, res4 = await asyncio.gather(t3, t4)
-            assert res3.startswith("✨")
-            assert res4.startswith("✨")
-            await state.start_tasks[plugin_name]
-            step3_events = read_events()[before_step3:]
-            assert step3_events == [
+            # 3) 导入失败：旧模块存活期跑完 v2 shutdown，再回滚半导入状态并重置 TriggerIndex
+            before_fail = len(harness.read_events())
+            harness.write_plugin(3, "测重指令三", fail=True)
+            res3 = await reload_mod.reload_plugin_async(harness.plugin_name)
+            assert res3.startswith("❌")
+            assert harness.matches_command("测重指令二") is False
+            assert harness.matches_command("测重指令三半残") is False
+            assert harness.read_events()[before_fail:] == [
                 "shutdown:2:state=2:begin",
                 "shutdown:2:state=2:done",
-                "import:4",
-                "import:4",
-                "start:4:state=4",
-            ]
-            assert matches_command("测重指令四") is True
-
-            # 4) 同步兼容入口在途 shutdown 期间快速二次重载：受保护关闭队列不被取消，且在 start:6 前跑完
-            before_step4 = len(read_events())
-            write_plugin(5, "测重指令五")
-            res5 = reload_mod.reload_plugin(plugin_name)
-            assert res5.startswith("✨")
-            await wait_for_event("shutdown:4:state=5:begin")
-            write_plugin(6, "测重指令六")
-            res6 = reload_mod.reload_plugin(plugin_name)
-            assert res6.startswith("✨")
-            await state.start_tasks[plugin_name]
-            step4_events = read_events()[before_step4:]
-            assert "shutdown:4:state=5:done" in step4_events
-            assert step4_events.index("shutdown:4:state=5:done") < step4_events.index("start:6:state=6")
-            assert not any(ev.startswith("shutdown:5:") for ev in step4_events)
-            assert matches_command("测重指令六") is True
-
-            # 5) 异步重载导入失败：先在旧模块存活期跑完 v6 shutdown，再回滚半导入状态并返回 ❌
-            before_step5 = len(read_events())
-            write_plugin(7, "测重指令七", fail=True)
-            res7 = await reload_mod.reload_plugin_async(plugin_name)
-            assert res7.startswith("❌")
-            assert matches_command("测重指令六") is False
-            assert matches_command("测重指令七半残") is False
-            assert read_events()[before_step5:] == [
-                "shutdown:6:state=6:begin",
-                "shutdown:6:state=6:done",
             ]
 
-            # 6) 新版无启动钩子时，仍会取消并等待旧版在途 start 任务退出
-            before_step6 = len(read_events())
-            write_plugin(8, "测重指令八", slow_start=True)
-            res8 = await reload_mod.reload_plugin_async(plugin_name)
-            assert res8.startswith("✨")
-            await wait_for_event("start:8:begin")
-            write_plugin(9, "测重指令九", with_hooks=False)
-            res9 = await reload_mod.reload_plugin_async(plugin_name)
-            assert res9.startswith("✨")
-            assert read_events()[before_step6:] == [
-                "import:8",
-                "start:8:begin",
-                "start:8:cancelled",
-                "import:9",
-            ]
-
-            # 7) 异步重载期间调用方被取消时，外层 shield 保护重载体跑完，不留下半卸载态
-            before_step7 = len(read_events())
-            write_plugin(10, "测重指令十", shutdown_delay=0.05)
-            res10 = await reload_mod.reload_plugin_async(plugin_name)
-            assert res10.startswith("✨")
-            await state.start_tasks[plugin_name]
-            write_plugin(11, "测重指令十一")
-            t11 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
-            await wait_for_event("shutdown:10:state=10:begin")
-            t11.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await t11
-            await wait_for_event("import:11")
-            await state.start_tasks[plugin_name]
-            step7_events = read_events()[before_step7:]
-            assert "shutdown:10:state=10:done" in step7_events
-            assert "start:11:state=11" in step7_events
-            assert matches_command("测重指令十一") is True
-
-            # 8) 同步阻塞关闭钩子超时：到点立即返回继续重载，不被线程池阻塞拖死
-            before_step8 = len(read_events())
-            write_plugin(12, "测重指令十二", sync_shutdown_sleep=0.6)
-            res12 = await reload_mod.reload_plugin_async(plugin_name)
-            assert res12.startswith("✨")
-            await state.start_tasks[plugin_name]
-            monkeypatch.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 0.08)
-            write_plugin(13, "测重指令十三", with_hooks=False)
-            t0 = time.monotonic()
-            res13 = await reload_mod.reload_plugin_async(plugin_name)
-            elapsed = time.monotonic() - t0
-            assert res13.startswith("✨")
-            assert elapsed < 0.5
-            assert matches_command("测重指令十三") is True
-            await wait_for_event("shutdown:12:sync:done")
-            assert "shutdown:12:sync:begin" in read_events()[before_step8:]
-
-            # 9) 多优先级组关闭钩子共享整轮超时预算：前组耗尽后跳过后续组，悬空异步收尾任务受保活托管
-            before_step9 = len(read_events())
-            write_plugin(14, "测重指令十四", multi_priority_shutdown_sleep=0.6)
-            res14 = await reload_mod.reload_plugin_async(plugin_name)
-            assert res14.startswith("✨")
-            await state.start_tasks[plugin_name]
-            write_plugin(15, "测重指令十五", shutdown_delay=0.05)
-            t0 = time.monotonic()
-            res15 = await reload_mod.reload_plugin_async(plugin_name)
-            elapsed_mp = time.monotonic() - t0
-            assert res15.startswith("✨")
-            assert elapsed_mp < 0.5
-            assert len(state.orphaned_shutdown_tasks) == 1
-            await state.start_tasks[plugin_name]
-            await wait_for_event("shutdown:14:p0:finally_done")
-            await asyncio.gather(*list(state.orphaned_shutdown_tasks), return_exceptions=True)
-            assert not state.orphaned_shutdown_tasks
-            step9_events = read_events()[before_step9:]
-            assert "shutdown:14:p0:begin" in step9_events
-            assert "shutdown:14:p1:begin" not in step9_events
-            assert matches_command("测重指令十五") is True
-
-            # 10) 异步重载创建同 tick 与持锁在途时均拒绝并发同步重载，不破坏在途异步流程
-            monkeypatch.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 15.0)
-            before_step10 = len(read_events())
-            write_plugin(16, "测重指令十六")
-            t16 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
-            await asyncio.sleep(0)
-            sync_rejected_early = reload_mod.reload_plugin(plugin_name)
-            assert sync_rejected_early.startswith("❌")
-            await wait_for_event("shutdown:15:state=15:begin")
-            sync_rejected = reload_mod.reload_plugin(plugin_name)
-            assert sync_rejected.startswith("❌")
-            res16 = await t16
-            assert res16.startswith("✨")
-            await state.start_tasks[plugin_name]
-            assert read_events()[before_step10:] == [
-                "shutdown:15:state=15:begin",
-                "shutdown:15:state=15:done",
-                "import:16",
-                "start:16:state=16",
-            ]
-            assert matches_command("测重指令十六") is True
-
-            # 11) Meta 插件热重载：旧 shutdown 期间 <plugin>.api 与 require() 仍存活；降级为普通插件时清旧登记
-            before_step11 = len(read_events())
-            write_meta_plugin(1, is_meta=True)
-            res_m1 = await reload_mod.reload_plugin_async(meta_plugin_name)
+            # 4) Meta 插件热重载：旧 shutdown 期间 <plugin>.api 与 require() 存活；降级为普通插件时清旧登记
+            before_meta = len(harness.read_events())
+            harness.write_meta_plugin(1, is_meta=True)
+            res_m1 = await reload_mod.reload_plugin_async(harness.meta_plugin_name)
             assert res_m1.startswith("✨")
-            assert meta_plugins.provides_of(meta_plugin_name) == meta_plugin_name
-            assert meta_plugins.require(meta_plugin_name).API_VERSION == 1
+            assert meta_plugins.provides_of(harness.meta_plugin_name) == harness.meta_plugin_name
+            assert meta_plugins.require(harness.meta_plugin_name).API_VERSION == 1
 
-            write_meta_plugin(2, is_meta=True)
-            res_m2 = await reload_mod.reload_plugin_async(meta_plugin_name)
+            harness.write_meta_plugin(2, is_meta=True)
+            res_m2 = await reload_mod.reload_plugin_async(harness.meta_plugin_name)
             assert res_m2.startswith("✨")
-            assert meta_plugins.require(meta_plugin_name).API_VERSION == 2
+            assert meta_plugins.require(harness.meta_plugin_name).API_VERSION == 2
 
-            write_meta_plugin(3, is_meta=False)
-            res_m3 = await reload_mod.reload_plugin_async(meta_plugin_name)
+            harness.write_meta_plugin(3, is_meta=False)
+            res_m3 = await reload_mod.reload_plugin_async(harness.meta_plugin_name)
             assert res_m3.startswith("✨")
-            assert meta_plugins.provides_of(meta_plugin_name) is None
-            assert f"{meta_plugin_name}.api" not in sys.modules
-            assert read_events()[before_step11:] == [
+            assert meta_plugins.provides_of(harness.meta_plugin_name) is None
+            assert f"{harness.meta_plugin_name}.api" not in sys.modules
+            assert harness.read_events()[before_meta:] == [
                 "meta_import:1",
                 "meta_shutdown:1:api=1:req=1",
                 "meta_import:2",
@@ -1493,47 +1429,225 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                 "meta_import:3",
             ]
         finally:
-            if state.active_reload_tasks:
-                await asyncio.gather(*list(state.active_reload_tasks), return_exceptions=True)
-            if state.orphaned_shutdown_tasks:
-                await asyncio.gather(*list(state.orphaned_shutdown_tasks), return_exceptions=True)
-            for pname in (plugin_name, meta_plugin_name):
-                for task_map in (state.start_tasks, state.shutdown_tasks):
-                    pending_task = task_map.pop(pname, None)
-                    if pending_task is not None and not pending_task.done():
-                        pending_task.cancel()
-                        await asyncio.gather(pending_task, return_exceptions=True)
-                state.pending_shutdown_hooks.pop(pname, None)
-                meta_plugins.unregister_meta_plugin(pname)
-                SL.plugins.pop(pname, None)
-                config_plugins.pop(pname, None)
-                plugin_config_store._dirty.discard(pname)
-                server_mod._import_memory_mb.pop(pname, None)
-                site.plugins_page.pop(pname, None)
-                site.plugins_page.pop(f"{pname}.py", None)
-                for mod_key in [k for k in sys.modules if reload_mod._belongs_to_plugin(k, pname)]:
-                    sys.modules.pop(mod_key, None)
-                for cache_key in [k for k in list(server_mod._module_cache) if pname in k]:
-                    server_mod._module_cache.pop(cache_key, None)
-                for hook_set in (
-                    server_mod.core_start_def,
-                    server_mod.core_start_before_def,
-                    server_mod.core_shutdown_def,
-                ):
-                    stale = {
-                        h
-                        for h in hook_set
-                        if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), pname)
-                    }
-                    hook_set -= stale
-            site._registered.pop(_DummyRegisteredAdmin, None)
-            sv_obj = SL.lst.pop(sv_name, None)
-            if sv_obj is not None:
-                SL.detail_lst.pop(sv_obj.plugins, None)
-            for added in (str(plugins_dir), str(plugin_dir), str(meta_dir)):
-                server_mod._added_paths.discard(added)
-                while added in sys.path:
-                    sys.path.remove(added)
-            reset_trigger_index()
+            await harness.cleanup()
+
+    asyncio.run(scenario())
+
+
+def test_reload_plugin_concurrency_cancellation_and_timeouts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证热重载并发串行、取消隔离、同步兼容队列与超时预算（无时间窗竞态）。"""
+    from gsuid_core.utils.plugins_update import reload_plugin as reload_mod
+
+    harness = _ReloadPluginHarness(tmp_path, monkeypatch, "Concurrency")
+
+    async def scenario() -> None:
+        state = reload_mod._get_loop_state(asyncio.get_running_loop())
+        try:
+            # 1) 并发异步重载：串行保底不断开旧 shutdown，未启动的中间版不误跑 shutdown
+            harness.write_plugin(1, "并发指令一", shutdown_delay=0.04)
+            assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+
+            before_step1 = len(harness.read_events())
+            harness.write_plugin(2, "并发指令二", shutdown_delay=0.04)
+            t1 = asyncio.create_task(reload_mod.reload_plugin_async(harness.plugin_name))
+            await harness.wait_for_event("shutdown:1:state=1:begin")
+            t2 = asyncio.create_task(reload_mod.reload_plugin_async(harness.plugin_name))
+            r1, r2 = await asyncio.gather(t1, t2)
+            assert r1.startswith("✨") and r2.startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+            assert harness.read_events()[before_step1:] == [
+                "shutdown:1:state=1:begin",
+                "shutdown:1:state=1:done",
+                "import:2",
+                "import:2",
+                "start:2:state=2",
+            ]
+            assert harness.matches_command("并发指令二") is True
+
+            # 2) 同步兼容入口在途 shutdown 期间快速二次重载：关闭队列不被取消且先于新 start 完成
+            before_step2 = len(harness.read_events())
+            harness.write_plugin(3, "并发指令三")
+            assert reload_mod.reload_plugin(harness.plugin_name).startswith("✨")
+            await harness.wait_for_event("shutdown:2:state=3:begin")
+            harness.write_plugin(4, "并发指令四")
+            assert reload_mod.reload_plugin(harness.plugin_name).startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+            step2_events = harness.read_events()[before_step2:]
+            assert "shutdown:2:state=3:done" in step2_events
+            assert step2_events.index("shutdown:2:state=3:done") < step2_events.index("start:4:state=4")
+            assert not any(ev.startswith("shutdown:3:") for ev in step2_events)
+
+            # 3) 新版无启动钩子时仍会取消并等待旧版在途 start 任务退出
+            before_step3 = len(harness.read_events())
+            harness.write_plugin(5, "并发指令五", slow_start=True)
+            assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
+            await harness.wait_for_event("start:5:begin")
+            harness.write_plugin(6, "并发指令六", with_hooks=False)
+            assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
+            assert harness.read_events()[before_step3:] == [
+                "shutdown:4:state=4:begin",
+                "shutdown:4:state=4:done",
+                "import:5",
+                "start:5:begin",
+                "start:5:cancelled",
+                "import:6",
+            ]
+
+            # 4) 调用方取消时外层 shield 保护重载体跑完，不留半卸载态
+            harness.write_plugin(7, "并发指令七", shutdown_delay=0.04)
+            assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+            before_step4 = len(harness.read_events())
+            harness.write_plugin(8, "并发指令八", shutdown_delay=0.04)
+            t_cancel = asyncio.create_task(reload_mod.reload_plugin_async(harness.plugin_name))
+            await harness.wait_for_event("shutdown:7:state=7:begin")
+            t_cancel.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t_cancel
+            await harness.wait_for_event("import:8")
+            await state.start_tasks[harness.plugin_name]
+            step4_events = harness.read_events()[before_step4:]
+            assert "shutdown:7:state=7:done" in step4_events
+            assert "start:8:state=8" in step4_events
+            assert harness.matches_command("并发指令八") is True
+
+            # 5) 同步阻塞关闭钩子超时：用门控文件确定性阻断，到点即继续重载，放行后线程干净退出
+            harness.write_plugin(9, "并发指令九", sync_shutdown_gated=True)
+            assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+            before_step5 = len(harness.read_events())
+            with monkeypatch.context() as mp:
+                mp.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 0.06)
+                harness.write_plugin(10, "并发指令十", with_hooks=False)
+                t0 = time.monotonic()
+                res10 = await reload_mod.reload_plugin_async(harness.plugin_name)
+                elapsed = time.monotonic() - t0
+            assert res10.startswith("✨")
+            assert elapsed < 1.5
+            assert harness.matches_command("并发指令十") is True
+            harness.sync_gate.write_text("go", encoding="utf-8")
+            await harness.wait_for_event("shutdown:9:sync:done")
+            assert "shutdown:9:sync:begin" in harness.read_events()[before_step5:]
+
+            # 6) 多优先级组共享整轮超时预算 + 悬空任务保活（门控阻塞 finally，无竞态）
+            harness.write_plugin(11, "并发指令十一", multi_priority_gated=True)
+            assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+            before_step6 = len(harness.read_events())
+            with monkeypatch.context() as mp:
+                mp.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 0.06)
+                harness.write_plugin(12, "并发指令十二", shutdown_delay=0.04)
+                t0 = time.monotonic()
+                res12 = await reload_mod.reload_plugin_async(harness.plugin_name)
+                elapsed_mp = time.monotonic() - t0
+            assert res12.startswith("✨")
+            assert elapsed_mp < 1.5
+            assert len(state.orphaned_shutdown_tasks) == 1
+            await state.start_tasks[harness.plugin_name]
+            harness.orphan_gate.write_text("go", encoding="utf-8")
+            await harness.wait_for_event("shutdown:11:p0:finally_done")
+            await asyncio.gather(*list(state.orphaned_shutdown_tasks), return_exceptions=True)
+            await asyncio.sleep(0)
+            assert not state.orphaned_shutdown_tasks
+            step6_events = harness.read_events()[before_step6:]
+            assert "shutdown:11:p0:begin" in step6_events
+            assert "shutdown:11:p1:begin" not in step6_events
+
+            # 7) 异步重载同 tick 与持锁在途时均拒绝并发同步重载
+            before_step7 = len(harness.read_events())
+            harness.write_plugin(13, "并发指令十三")
+            t13 = asyncio.create_task(reload_mod.reload_plugin_async(harness.plugin_name))
+            await asyncio.sleep(0)
+            assert reload_mod.reload_plugin(harness.plugin_name).startswith("❌")
+            await harness.wait_for_event("shutdown:12:state=12:begin")
+            assert reload_mod.reload_plugin(harness.plugin_name).startswith("❌")
+            assert (await t13).startswith("✨")
+            await state.start_tasks[harness.plugin_name]
+            assert harness.read_events()[before_step7:] == [
+                "shutdown:12:state=12:begin",
+                "shutdown:12:state=12:done",
+                "import:13",
+                "start:13:state=13",
+            ]
+        finally:
+            await harness.cleanup()
+
+    asyncio.run(scenario())
+
+
+def test_update_plugin_failure_detection_and_auto_reload_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证自动更新重载失败上报与 extract_update_failure 不误判含 ❌ 的提交记录。"""
+    from gsuid_core.utils.plugins_update import _plugins as plugins_mod
+
+    # 1) 含 ❌ gitmoji 提交记录的正常更新不误判失败
+    ok_with_cross_commit = [
+        "✅本次插件 DemoPlugin , 更新内容如下：",
+        "❌ 移除废弃指令",
+    ]
+    assert plugins_mod.extract_update_failure(ok_with_cross_commit) is None
+
+    # 2) _parse_git_error 返回的完整原因与解决建议不被截断
+    git_err = [
+        "❌ 更新插件 DemoPlugin 失败",
+        "📋 原因：本地代码与远程代码存在合并冲突",
+        "💡 解决：使用「强制更新」覆盖本地修改",
+    ]
+    assert plugins_mod.extract_update_failure(git_err) == "\n".join(git_err)
+
+    # 3) 前置校验失败（无 ❌ 前缀）与空结果也能识别为失败
+    assert plugins_mod.extract_update_failure(["更新失败, 不存在该插件!"]) == "更新失败, 不存在该插件!"
+    assert plugins_mod.extract_update_failure([]) == "插件更新失败"
+    assert plugins_mod.extract_update_failure("请后跟有效的插件名称！") == "请后跟有效的插件名称！"
+
+    # 4) update_from_git_async 自动重载失败时写入带专用前缀的日志并可被精确识别
+    repo_dir = tmp_path / "DemoPlugin"
+    repo_dir.mkdir()
+
+    async def _true_repo(_path: Path) -> bool:
+        return True
+
+    async def _ok_fetch(_path: Path) -> tuple[bool, str]:
+        return True, ""
+
+    async def _branch(_path: Path) -> str:
+        return "main"
+
+    async def _diff(_path: Path, _base: str, _target: str, max_count: int = 40) -> list[str]:
+        return ["❌ 清理旧配置项"]
+
+    async def _ok_pull(_path: Path) -> tuple[bool, str]:
+        return True, "Updated"
+
+    async def _fail_reload(_name: str) -> str:
+        return "❌ 重载失败: boom"
+
+    async def _ok_reload(_name: str) -> str:
+        return "✨ 已重载插件 DemoPlugin!"
+
+    monkeypatch.setattr(plugins_mod, "is_reload", True)
+    monkeypatch.setattr(plugins_mod, "git_is_valid_repo", _true_repo)
+    monkeypatch.setattr(plugins_mod, "git_fetch", _ok_fetch)
+    monkeypatch.setattr(plugins_mod, "git_get_current_branch", _branch)
+    monkeypatch.setattr(plugins_mod, "git_diff_commits", _diff)
+    monkeypatch.setattr(plugins_mod, "git_pull", _ok_pull)
+
+    async def scenario() -> None:
+        monkeypatch.setattr(plugins_mod, "reload_plugin_async", _fail_reload)
+        fail_logs = await plugins_mod.update_from_git_async(0, repo_dir)
+        expected_line = f"{plugins_mod.AUTO_RELOAD_FAIL_PREFIX}[DemoPlugin] 重载失败: boom"
+        assert fail_logs[-1] == expected_line
+        assert plugins_mod.extract_update_failure(fail_logs) == expected_line
+
+        monkeypatch.setattr(plugins_mod, "reload_plugin_async", _ok_reload)
+        ok_logs = await plugins_mod.update_from_git_async(0, repo_dir)
+        assert "❌ 清理旧配置项" in ok_logs
+        assert plugins_mod.extract_update_failure(ok_logs) is None
 
     asyncio.run(scenario())

@@ -32,6 +32,27 @@ plugins_list: Dict[str, Dict[str, str]] = {}
 
 # 插件 commit 版本信息（仅在运行时内部流转，不持久化）
 plugin_commit_versions: Dict[str, str] = {}
+AUTO_RELOAD_FAIL_PREFIX = "❌ [自动重载失败]"
+
+
+def extract_update_failure(result: str | list[str]) -> str | None:
+    """从 update_plugins / update_from_git_async 返回值中提取失败信息，成功返回 None。"""
+    if isinstance(result, str):
+        text = result.strip()
+        if not text:
+            return "插件更新失败"
+        if text.startswith("✅"):
+            return None
+        return text
+    if not result:
+        return "插件更新失败"
+    first = result[0].lstrip()
+    if first.startswith("❌") or first.startswith("更新失败"):
+        return "\n".join(result)
+    last = result[-1].lstrip()
+    if last.startswith(AUTO_RELOAD_FAIL_PREFIX):
+        return result[-1]
+    return None
 
 
 def _is_mirror_not_synced_error(message: str) -> bool:
@@ -808,7 +829,7 @@ async def update_from_git_async(
         if reload_result.lstrip().startswith("❌"):
             logger.warning(t("log.plugin.auto_reload_fail", plugin_name=plugin_name, result=reload_result))
             detail = reload_result.lstrip().removeprefix("❌").strip()
-            log_list.append(f"❌ [{plugin_name}] {detail}")
+            log_list.append(f"{AUTO_RELOAD_FAIL_PREFIX}[{plugin_name}] {detail}")
     return log_list
 
 
@@ -842,7 +863,7 @@ async def update_plugins(
     level: int = 0,
     log_key: List[str] = [],
     log_limit: int = 10,
-) -> Union[str, List]:
+) -> Union[str, List[str]]:
     if not plugin_name:
         return "请后跟有效的插件名称！\n例如：core更新插件genshinuid"
 

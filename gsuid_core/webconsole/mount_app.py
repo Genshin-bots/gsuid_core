@@ -75,9 +75,10 @@ class Site:
         belongs_fn: Callable[[object], bool],
     ) -> int:
         removed_count = 0
-        removed_admins = self.plugins_page.pop(plugin_name, None)
-        if removed_admins:
-            removed_count += len(removed_admins)
+        for page_key in (plugin_name, f"{plugin_name}.py"):
+            removed_admins = self.plugins_page.pop(page_key, None)
+            if removed_admins:
+                removed_count += len(removed_admins)
         for key in list(self.plugins_page):
             entries = self.plugins_page[key]
             kept = [cls for cls in entries if not belongs_fn(cls)]

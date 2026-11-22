@@ -37,7 +37,7 @@ class _ReloadLoopState:
     active_reload_tasks: set[asyncio.Task[str]] = field(default_factory=set)
     shutdown_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     pending_shutdown_hooks: dict[str, list[_ShutdownBatch]] = field(default_factory=dict)
-    orphaned_shutdown_tasks: set[asyncio.Task[object]] = field(default_factory=set)
+    orphaned_shutdown_tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
 
 # 按事件循环隔离全部热重载后台任务与锁，循环销毁时随 WeakKeyDictionary 自动回收
@@ -474,7 +474,10 @@ async def _await_previous_task(plugin_name: str, prev_task: asyncio.Task[None] |
 
 
 def _cancel_start_task_sync(plugin_name: str) -> tuple[asyncio.Task[None] | None, bool]:
-    """取消上一轮尚未跑完的启动任务, 返回 (旧任务, 旧版启动钩子是否从未开始执行)。"""
+    """取消上一轮尚未跑完的启动任务, 返回 (旧任务, 旧版启动钩子是否从未开始执行)。
+
+    约定：若插件定义了 @on_core_start 且尚未进入执行阶段即被取消，则跳过本轮 shutdown。
+    """
     running = _get_running_loop_state()
     if running is None:
         return None, False
@@ -490,7 +493,7 @@ def _cancel_start_task_sync(plugin_name: str) -> tuple[asyncio.Task[None] | None
 
 
 async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
-    """取消并等待上一轮启动任务退出, 返回是否应跳过旧 shutdown（未启动过）。"""
+    """取消并等待上一轮启动任务退出, 返回是否应跳过旧 shutdown（启动钩子从未执行）。"""
     state = _get_loop_state(asyncio.get_running_loop())
     old = state.start_tasks[plugin_name] if plugin_name in state.start_tasks else None
     if old is None or old.done():
@@ -504,14 +507,14 @@ async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
 
 def _attach_late_failure_logger(
     state: _ReloadLoopState,
-    task: asyncio.Task[object],
+    task: asyncio.Task[None],
     plugin_name: str,
     hook: _DefHook,
 ) -> None:
     # 强引用保活超时悬空任务, 防止事件循环弱引用触发 GC 销毁告警
     state.orphaned_shutdown_tasks.add(task)
 
-    def _on_done(done_task: asyncio.Task[object]) -> None:
+    def _on_done(done_task: asyncio.Task[None]) -> None:
         state.orphaned_shutdown_tasks.discard(done_task)
         if done_task.cancelled():
             return
@@ -529,10 +532,11 @@ def _attach_late_failure_logger(
     task.add_done_callback(_on_done)
 
 
-async def _invoke_shutdown_hook(hook: _DefHook) -> object:
+async def _invoke_shutdown_hook(hook: _DefHook) -> None:
     if inspect.iscoroutinefunction(hook.func):
-        return await hook.func()
-    return await asyncio.to_thread(hook.func)
+        await hook.func()
+        return
+    await asyncio.to_thread(hook.func)
 
 
 async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) -> None:
@@ -571,8 +575,14 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
                 hooks=[_hook_label(h.func) for h in group_hooks],
             )
         )
-        tasks: list[asyncio.Task[object]] = [asyncio.create_task(_invoke_shutdown_hook(h)) for h in group_hooks]
-        done, pending = await asyncio.wait(tasks, timeout=remaining)
+        tasks: list[asyncio.Task[None]] = [asyncio.create_task(_invoke_shutdown_hook(h)) for h in group_hooks]
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=remaining)
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
         if pending:
             timed_out_hooks: list[str] = []
             for h, t in zip(group_hooks, tasks):
@@ -701,11 +711,12 @@ def _schedule_plugin_start_hooks(
             if not plugin_hooks:
                 return
 
-            async def _invoke_start(hook: _DefHook) -> object:
+            async def _invoke_start(hook: _DefHook) -> None:
                 meta.started = True
                 if inspect.iscoroutinefunction(hook.func):
-                    return await hook.func()
-                return await asyncio.to_thread(hook.func)
+                    await hook.func()
+                    return
+                await asyncio.to_thread(hook.func)
 
             logger.info(
                 i18n_t(

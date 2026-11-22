@@ -1426,21 +1426,14 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] 
         msg: 操作结果信息
     """
     try:
-        from gsuid_core.utils.plugins_update._plugins import update_plugins
+        from gsuid_core.utils.plugins_update._plugins import update_plugins, extract_update_failure
 
         result = await update_plugins(plugin_id)
+        failure_msg = extract_update_failure(result)
+        if failure_msg is not None:
+            return {"status": 1, "msg": failure_msg}
 
-        if isinstance(result, list):
-            failed_lines = [line for line in result if isinstance(line, str) and line.lstrip().startswith("❌")]
-            if failed_lines:
-                return {"status": 1, "msg": "\n".join(failed_lines)}
-        elif isinstance(result, str) and result.lstrip().startswith("❌"):
-            return {"status": 1, "msg": result}
-
-        if result:
-            return {"status": 0, "msg": "插件更新成功"}
-        else:
-            return {"status": 1, "msg": "插件更新失败"}
+        return {"status": 0, "msg": "插件更新成功"}
     except Exception as e:
         return {"status": 1, "msg": f"更新失败: {str(e)}"}
 
