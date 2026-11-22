@@ -1,6 +1,7 @@
 import sys
 from typing import Any, Dict, List, Type
 from pathlib import Path
+from collections.abc import Callable
 
 from pydantic import BaseModel
 
@@ -67,6 +68,31 @@ class Site:
                 self._registered = {**front, **back}
 
         return admin_cls[0]
+
+    def unregister_plugin_admins(
+        self,
+        plugin_name: str,
+        belongs_fn: Callable[[object], bool],
+    ) -> int:
+        removed_count = 0
+        removed_admins = self.plugins_page.pop(plugin_name, None)
+        if removed_admins:
+            removed_count += len(removed_admins)
+        for key in list(self.plugins_page):
+            entries = self.plugins_page[key]
+            kept = [cls for cls in entries if not belongs_fn(cls)]
+            diff = len(entries) - len(kept)
+            if diff:
+                removed_count += diff
+                if kept:
+                    self.plugins_page[key] = kept
+                else:
+                    self.plugins_page.pop(key, None)
+        stale_registered = [cls for cls in self._registered if belongs_fn(cls)]
+        for cls in stale_registered:
+            self._registered.pop(cls, None)
+        removed_count += len(stale_registered)
+        return removed_count
 
 
 class SubscribeAdmin(GsAdminModel):

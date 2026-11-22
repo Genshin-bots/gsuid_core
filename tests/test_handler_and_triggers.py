@@ -1184,9 +1184,12 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                         "async def _stop_p0():",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
                         f'        f.write("shutdown:{version}:p0:begin\\n")',
-                        f"    await asyncio.sleep({multi_priority_shutdown_sleep})",
-                        '    with _LOG.open("a", encoding="utf-8") as f:',
-                        f'        f.write("shutdown:{version}:p0:done\\n")',
+                        "    try:",
+                        f"        await asyncio.sleep({multi_priority_shutdown_sleep})",
+                        "    finally:",
+                        "        await asyncio.sleep(0.2)",
+                        '        with _LOG.open("a", encoding="utf-8") as f:',
+                        f'            f.write("shutdown:{version}:p0:finally_done\\n")',
                         "@on_core_shutdown(priority=1)",
                         "async def _stop_p1():",
                         '    with _LOG.open("a", encoding="utf-8") as f:',
@@ -1237,26 +1240,78 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
     class _DummyAdmin(GsAdminModel):
         pass
 
+    class _DummyRegisteredAdmin(GsAdminModel):
+        pass
+
+    _DummyRegisteredAdmin.__module__ = f"plugins.{plugin_name}.models"
+
+    class _DummySingleFileAdmin(GsAdminModel):
+        pass
+
+    _DummySingleFileAdmin.__module__ = f"plugins.{plugin_name}"
+
+    meta_plugin_name = "TestReloadMetaPlugin"
+    meta_dir = plugins_dir / meta_plugin_name
+    meta_sub = meta_dir / "main"
+    meta_api_dir = meta_dir / "api"
+    meta_marker = meta_dir / "__meta_plugin__.py"
+    meta_api_file = meta_api_dir / "__init__.py"
+    meta_init_file = meta_sub / "__init__.py"
+
+    def write_meta_plugin(version: int, *, is_meta: bool = True) -> None:
+        meta_sub.mkdir(parents=True, exist_ok=True)
+        meta_api_dir.mkdir(parents=True, exist_ok=True)
+        (meta_dir / "__init__.py").write_text("", encoding="utf-8")
+        (meta_dir / "__full__.py").write_text("", encoding="utf-8")
+        if is_meta:
+            meta_marker.write_text("", encoding="utf-8")
+        elif meta_marker.exists():
+            meta_marker.unlink()
+        meta_api_file.write_text(f"API_VERSION = {version}\n", encoding="utf-8")
+        meta_body = [
+            "from pathlib import Path",
+            "from gsuid_core import meta_plugins",
+            "from gsuid_core.server import on_core_shutdown",
+            f"_LOG = Path({str(events_file)!r})",
+            'with _LOG.open("a", encoding="utf-8") as _f:',
+            f'    _f.write("meta_import:{version}\\n")',
+            "@on_core_shutdown",
+            "async def _meta_stop():",
+            f"    from {meta_plugin_name}.api import API_VERSION",
+            f"    req = meta_plugins.require({meta_plugin_name!r})",
+            '    with _LOG.open("a", encoding="utf-8") as f:',
+            f'        f.write(f"meta_shutdown:{version}:api={{API_VERSION}}:req={{req.API_VERSION}}\\n")',
+        ]
+        meta_init_file.write_text("\n".join(meta_body) + "\n", encoding="utf-8")
+
     monkeypatch.setattr(server_mod, "PLUGIN_PATH", plugins_dir)
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
 
     async def scenario() -> None:
+        from gsuid_core import meta_plugins
+
+        state = reload_mod._get_loop_state(asyncio.get_running_loop())
+
         try:
             # 1) 首次异步重载：注册命令与启停钩子，验证索引可命中
             write_plugin(1, "测重指令一")
             res1 = await reload_mod.reload_plugin_async(plugin_name)
             assert res1.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             assert read_events() == ["import:1", "start:1:state=1"]
             assert matches_command("测重指令一") is True
 
-            # 2) 二次异步重载：旧 shutdown 延迟导入必须命中 v1 且先于 v2 import；同步清管理模型
+            # 2) 二次异步重载：旧 shutdown 延迟导入必须命中 v1 且先于 v2 import；同步清三类管理模型
             site.plugins_page[plugin_name] = [_DummyAdmin]
+            site.plugins_page[f"{plugin_name}.py"] = [_DummySingleFileAdmin]
+            site._registered[_DummyRegisteredAdmin] = None
             write_plugin(2, "测重指令二", shutdown_delay=0.04)
             res2 = await reload_mod.reload_plugin_async(plugin_name)
             assert res2.startswith("✨")
             assert plugin_name not in site.plugins_page
-            await reload_mod._plugin_start_tasks[plugin_name]
+            assert f"{plugin_name}.py" not in site.plugins_page
+            assert _DummyRegisteredAdmin not in site._registered
+            await state.start_tasks[plugin_name]
             assert read_events() == [
                 "import:1",
                 "start:1:state=1",
@@ -1277,7 +1332,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             res3, res4 = await asyncio.gather(t3, t4)
             assert res3.startswith("✨")
             assert res4.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             step3_events = read_events()[before_step3:]
             assert step3_events == [
                 "shutdown:2:state=2:begin",
@@ -1297,7 +1352,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             write_plugin(6, "测重指令六")
             res6 = reload_mod.reload_plugin(plugin_name)
             assert res6.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             step4_events = read_events()[before_step4:]
             assert "shutdown:4:state=5:done" in step4_events
             assert step4_events.index("shutdown:4:state=5:done") < step4_events.index("start:6:state=6")
@@ -1337,7 +1392,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             write_plugin(10, "测重指令十", shutdown_delay=0.05)
             res10 = await reload_mod.reload_plugin_async(plugin_name)
             assert res10.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             write_plugin(11, "测重指令十一")
             t11 = asyncio.create_task(reload_mod.reload_plugin_async(plugin_name))
             await wait_for_event("shutdown:10:state=10:begin")
@@ -1345,7 +1400,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             with pytest.raises(asyncio.CancelledError):
                 await t11
             await wait_for_event("import:11")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             step7_events = read_events()[before_step7:]
             assert "shutdown:10:state=10:done" in step7_events
             assert "start:11:state=11" in step7_events
@@ -1353,34 +1408,38 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
 
             # 8) 同步阻塞关闭钩子超时：到点立即返回继续重载，不被线程池阻塞拖死
             before_step8 = len(read_events())
-            write_plugin(12, "测重指令十二", sync_shutdown_sleep=0.5)
+            write_plugin(12, "测重指令十二", sync_shutdown_sleep=0.6)
             res12 = await reload_mod.reload_plugin_async(plugin_name)
             assert res12.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             monkeypatch.setattr(reload_mod, "_RELOAD_SHUTDOWN_TIMEOUT", 0.08)
             write_plugin(13, "测重指令十三", with_hooks=False)
             t0 = time.monotonic()
             res13 = await reload_mod.reload_plugin_async(plugin_name)
             elapsed = time.monotonic() - t0
             assert res13.startswith("✨")
-            assert elapsed < 0.4
+            assert elapsed < 0.5
             assert matches_command("测重指令十三") is True
             await wait_for_event("shutdown:12:sync:done")
             assert "shutdown:12:sync:begin" in read_events()[before_step8:]
 
-            # 9) 多优先级组关闭钩子共享整轮超时预算：前组耗尽后不叠加等待后续组
+            # 9) 多优先级组关闭钩子共享整轮超时预算：前组耗尽后跳过后续组，悬空异步收尾任务受保活托管
             before_step9 = len(read_events())
-            write_plugin(14, "测重指令十四", multi_priority_shutdown_sleep=0.5)
+            write_plugin(14, "测重指令十四", multi_priority_shutdown_sleep=0.6)
             res14 = await reload_mod.reload_plugin_async(plugin_name)
             assert res14.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             write_plugin(15, "测重指令十五", shutdown_delay=0.05)
             t0 = time.monotonic()
             res15 = await reload_mod.reload_plugin_async(plugin_name)
             elapsed_mp = time.monotonic() - t0
             assert res15.startswith("✨")
-            assert elapsed_mp < 0.4
-            await reload_mod._plugin_start_tasks[plugin_name]
+            assert elapsed_mp < 0.5
+            assert len(state.orphaned_shutdown_tasks) == 1
+            await state.start_tasks[plugin_name]
+            await wait_for_event("shutdown:14:p0:finally_done")
+            await asyncio.gather(*list(state.orphaned_shutdown_tasks), return_exceptions=True)
+            assert not state.orphaned_shutdown_tasks
             step9_events = read_events()[before_step9:]
             assert "shutdown:14:p0:begin" in step9_events
             assert "shutdown:14:p1:begin" not in step9_events
@@ -1399,7 +1458,7 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
             assert sync_rejected.startswith("❌")
             res16 = await t16
             assert res16.startswith("✨")
-            await reload_mod._plugin_start_tasks[plugin_name]
+            await state.start_tasks[plugin_name]
             assert read_events()[before_step10:] == [
                 "shutdown:15:state=15:begin",
                 "shutdown:15:state=15:done",
@@ -1407,43 +1466,74 @@ def test_reload_plugin_shutdown_before_start_and_cleanup(
                 "start:16:state=16",
             ]
             assert matches_command("测重指令十六") is True
+
+            # 11) Meta 插件热重载：旧 shutdown 期间 <plugin>.api 与 require() 仍存活；降级为普通插件时清旧登记
+            before_step11 = len(read_events())
+            write_meta_plugin(1, is_meta=True)
+            res_m1 = await reload_mod.reload_plugin_async(meta_plugin_name)
+            assert res_m1.startswith("✨")
+            assert meta_plugins.provides_of(meta_plugin_name) == meta_plugin_name
+            assert meta_plugins.require(meta_plugin_name).API_VERSION == 1
+
+            write_meta_plugin(2, is_meta=True)
+            res_m2 = await reload_mod.reload_plugin_async(meta_plugin_name)
+            assert res_m2.startswith("✨")
+            assert meta_plugins.require(meta_plugin_name).API_VERSION == 2
+
+            write_meta_plugin(3, is_meta=False)
+            res_m3 = await reload_mod.reload_plugin_async(meta_plugin_name)
+            assert res_m3.startswith("✨")
+            assert meta_plugins.provides_of(meta_plugin_name) is None
+            assert f"{meta_plugin_name}.api" not in sys.modules
+            assert read_events()[before_step11:] == [
+                "meta_import:1",
+                "meta_shutdown:1:api=1:req=1",
+                "meta_import:2",
+                "meta_shutdown:2:api=2:req=2",
+                "meta_import:3",
+            ]
         finally:
-            if reload_mod._active_reload_tasks:
-                await asyncio.gather(*list(reload_mod._active_reload_tasks), return_exceptions=True)
-            for task_map in (reload_mod._plugin_start_tasks, reload_mod._plugin_shutdown_tasks):
-                pending_task = task_map.pop(plugin_name, None)
-                if pending_task is not None and not pending_task.done():
-                    pending_task.cancel()
-                    await asyncio.gather(pending_task, return_exceptions=True)
-            reload_mod._start_task_meta.clear()
-            reload_mod._pending_shutdown_hooks.pop(plugin_name, None)
+            if state.active_reload_tasks:
+                await asyncio.gather(*list(state.active_reload_tasks), return_exceptions=True)
+            if state.orphaned_shutdown_tasks:
+                await asyncio.gather(*list(state.orphaned_shutdown_tasks), return_exceptions=True)
+            for pname in (plugin_name, meta_plugin_name):
+                for task_map in (state.start_tasks, state.shutdown_tasks):
+                    pending_task = task_map.pop(pname, None)
+                    if pending_task is not None and not pending_task.done():
+                        pending_task.cancel()
+                        await asyncio.gather(pending_task, return_exceptions=True)
+                state.pending_shutdown_hooks.pop(pname, None)
+                meta_plugins.unregister_meta_plugin(pname)
+                SL.plugins.pop(pname, None)
+                config_plugins.pop(pname, None)
+                plugin_config_store._dirty.discard(pname)
+                server_mod._import_memory_mb.pop(pname, None)
+                site.plugins_page.pop(pname, None)
+                site.plugins_page.pop(f"{pname}.py", None)
+                for mod_key in [k for k in sys.modules if reload_mod._belongs_to_plugin(k, pname)]:
+                    sys.modules.pop(mod_key, None)
+                for cache_key in [k for k in list(server_mod._module_cache) if pname in k]:
+                    server_mod._module_cache.pop(cache_key, None)
+                for hook_set in (
+                    server_mod.core_start_def,
+                    server_mod.core_start_before_def,
+                    server_mod.core_shutdown_def,
+                ):
+                    stale = {
+                        h
+                        for h in hook_set
+                        if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), pname)
+                    }
+                    hook_set -= stale
+            site._registered.pop(_DummyRegisteredAdmin, None)
             sv_obj = SL.lst.pop(sv_name, None)
             if sv_obj is not None:
                 SL.detail_lst.pop(sv_obj.plugins, None)
-            SL.plugins.pop(plugin_name, None)
-            config_plugins.pop(plugin_name, None)
-            plugin_config_store._dirty.discard(plugin_name)
-            server_mod._import_memory_mb.pop(plugin_name, None)
-            for added in (str(plugins_dir), str(plugin_dir)):
+            for added in (str(plugins_dir), str(plugin_dir), str(meta_dir)):
                 server_mod._added_paths.discard(added)
                 while added in sys.path:
                     sys.path.remove(added)
-            site.plugins_page.pop(plugin_name, None)
-            for mod_key in [k for k in sys.modules if reload_mod._belongs_to_plugin(k, plugin_name)]:
-                sys.modules.pop(mod_key, None)
-            for cache_key in [k for k in list(server_mod._module_cache) if plugin_name in k]:
-                server_mod._module_cache.pop(cache_key, None)
-            for hook_set in (
-                server_mod.core_start_def,
-                server_mod.core_start_before_def,
-                server_mod.core_shutdown_def,
-            ):
-                stale = {
-                    h
-                    for h in hook_set
-                    if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), plugin_name)
-                }
-                hook_set -= stale
             reset_trigger_index()
 
     asyncio.run(scenario())

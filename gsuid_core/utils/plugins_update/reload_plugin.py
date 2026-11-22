@@ -6,7 +6,7 @@ from typing import Optional
 from pathlib import Path
 from weakref import WeakKeyDictionary
 from itertools import groupby
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 from gsuid_core.sv import SL
 from gsuid_core.gss import gss
@@ -28,14 +28,20 @@ class _ShutdownBatch:
     wait_task: asyncio.Task[None] | None = None
 
 
-# 后台生命周期任务与并发控制表：保证单插件串行重载、保护在途关闭钩子不被取消
-_plugin_start_tasks: dict[str, asyncio.Task[None]] = {}
-_start_task_meta: dict[asyncio.Task[None], _StartTaskMeta] = {}
-_plugin_reload_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
-_active_async_reloads: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, int]] = WeakKeyDictionary()
-_active_reload_tasks: set[asyncio.Task[str]] = set()
-_plugin_shutdown_tasks: dict[str, asyncio.Task[None]] = {}
-_pending_shutdown_hooks: dict[str, list[_ShutdownBatch]] = {}
+@dataclass
+class _ReloadLoopState:
+    start_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    start_task_meta: dict[asyncio.Task[None], _StartTaskMeta] = field(default_factory=dict)
+    reload_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    active_async_reloads: dict[str, int] = field(default_factory=dict)
+    active_reload_tasks: set[asyncio.Task[str]] = field(default_factory=set)
+    shutdown_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    pending_shutdown_hooks: dict[str, list[_ShutdownBatch]] = field(default_factory=dict)
+    orphaned_shutdown_tasks: set[asyncio.Task[object]] = field(default_factory=set)
+
+
+# 按事件循环隔离全部热重载后台任务与锁，循环销毁时随 WeakKeyDictionary 自动回收
+_loop_states: WeakKeyDictionary[asyncio.AbstractEventLoop, _ReloadLoopState] = WeakKeyDictionary()
 _RELOAD_SHUTDOWN_TIMEOUT: float = 15.0
 
 
@@ -225,14 +231,10 @@ def _clean_plugin_global_state(plugin_name: str) -> list[_DefHook]:
         try:
             from gsuid_core.webconsole.mount_app import site
 
-            removed_admins = site.plugins_page.pop(plugin_name, None)
-            removed_count = len(removed_admins) if removed_admins else 0
-            stale_registered = [
-                cls for cls in site._registered if _belongs_to_plugin(_resolve_func_module(cls), plugin_name)
-            ]
-            for cls in stale_registered:
-                site._registered.pop(cls, None)
-            removed_count += len(stale_registered)
+            removed_count = site.unregister_plugin_admins(
+                plugin_name,
+                lambda cls: _belongs_to_plugin(_resolve_func_module(cls), plugin_name),
+            )
             if removed_count:
                 logger.info(
                     i18n_t(
@@ -346,27 +348,34 @@ def _restore_plugin_routes_position(plugin_name: str, anchor: Optional[int]) -> 
         logger.warning(i18n_t("log.plugin.gscore_restoring_route_positions_fail", plugin_name=plugin_name, e=e))
 
 
+def _get_loop_state(loop: asyncio.AbstractEventLoop) -> _ReloadLoopState:
+    if loop not in _loop_states:
+        _loop_states[loop] = _ReloadLoopState()
+    return _loop_states[loop]
+
+
+def _get_running_loop_state() -> tuple[asyncio.AbstractEventLoop, _ReloadLoopState] | None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    return loop, _get_loop_state(loop)
+
+
 def _get_reload_lock(plugin_name: str) -> asyncio.Lock:
-    loop = asyncio.get_running_loop()
-    if loop not in _plugin_reload_locks:
-        _plugin_reload_locks[loop] = {}
-    locks = _plugin_reload_locks[loop]
+    locks = _get_loop_state(asyncio.get_running_loop()).reload_locks
     if plugin_name not in locks:
         locks[plugin_name] = asyncio.Lock()
     return locks[plugin_name]
 
 
-def _enter_async_reload(loop: asyncio.AbstractEventLoop, plugin_name: str) -> None:
-    if loop not in _active_async_reloads:
-        _active_async_reloads[loop] = {}
-    counts = _active_async_reloads[loop]
+def _enter_async_reload(state: _ReloadLoopState, plugin_name: str) -> None:
+    counts = state.active_async_reloads
     counts[plugin_name] = (counts[plugin_name] if plugin_name in counts else 0) + 1
 
 
-def _leave_async_reload(loop: asyncio.AbstractEventLoop, plugin_name: str) -> None:
-    if loop not in _active_async_reloads:
-        return
-    counts = _active_async_reloads[loop]
+def _leave_async_reload(state: _ReloadLoopState, plugin_name: str) -> None:
+    counts = state.active_async_reloads
     if plugin_name not in counts:
         return
     remaining = counts[plugin_name] - 1
@@ -377,28 +386,24 @@ def _leave_async_reload(loop: asyncio.AbstractEventLoop, plugin_name: str) -> No
 
 
 def _is_async_reload_active(plugin_name: str) -> bool:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
+    running = _get_running_loop_state()
+    if running is None:
         return False
-    if loop in _active_async_reloads:
-        counts = _active_async_reloads[loop]
-        if plugin_name in counts and counts[plugin_name] > 0:
-            return True
-    if loop in _plugin_reload_locks:
-        locks = _plugin_reload_locks[loop]
-        if plugin_name in locks and locks[plugin_name].locked():
-            return True
+    _loop, state = running
+    if plugin_name in state.active_async_reloads and state.active_async_reloads[plugin_name] > 0:
+        return True
+    if plugin_name in state.reload_locks and state.reload_locks[plugin_name].locked():
+        return True
     return False
 
 
 def _finish_reload_task(
-    loop: asyncio.AbstractEventLoop,
+    state: _ReloadLoopState,
     plugin_name: str,
     task: asyncio.Task[str],
 ) -> None:
-    _active_reload_tasks.discard(task)
-    _leave_async_reload(loop, plugin_name)
+    state.active_reload_tasks.discard(task)
+    _leave_async_reload(state, plugin_name)
     if task.cancelled():
         return
     exc = task.exception()
@@ -412,11 +417,15 @@ def _finish_reload_task(
         )
 
 
-def _discard_start_task(plugin_name: str, task: asyncio.Task[None]) -> None:
+def _discard_start_task(
+    state: _ReloadLoopState,
+    plugin_name: str,
+    task: asyncio.Task[None],
+) -> None:
     """启动 Hook 后台任务结束后摘除句柄并消费未检索异常。"""
-    _start_task_meta.pop(task, None)
-    if plugin_name in _plugin_start_tasks and _plugin_start_tasks[plugin_name] is task:
-        _plugin_start_tasks.pop(plugin_name, None)
+    state.start_task_meta.pop(task, None)
+    if plugin_name in state.start_tasks and state.start_tasks[plugin_name] is task:
+        state.start_tasks.pop(plugin_name, None)
     if task.cancelled():
         return
     exc = task.exception()
@@ -430,9 +439,13 @@ def _discard_start_task(plugin_name: str, task: asyncio.Task[None]) -> None:
         )
 
 
-def _discard_shutdown_task(plugin_name: str, task: asyncio.Task[None]) -> None:
-    if plugin_name in _plugin_shutdown_tasks and _plugin_shutdown_tasks[plugin_name] is task:
-        _plugin_shutdown_tasks.pop(plugin_name, None)
+def _discard_shutdown_task(
+    state: _ReloadLoopState,
+    plugin_name: str,
+    task: asyncio.Task[None],
+) -> None:
+    if plugin_name in state.shutdown_tasks and state.shutdown_tasks[plugin_name] is task:
+        state.shutdown_tasks.pop(plugin_name, None)
     if task.cancelled():
         return
     exc = task.exception()
@@ -462,10 +475,14 @@ async def _await_previous_task(plugin_name: str, prev_task: asyncio.Task[None] |
 
 def _cancel_start_task_sync(plugin_name: str) -> tuple[asyncio.Task[None] | None, bool]:
     """取消上一轮尚未跑完的启动任务, 返回 (旧任务, 旧版启动钩子是否从未开始执行)。"""
-    old = _plugin_start_tasks[plugin_name] if plugin_name in _plugin_start_tasks else None
+    running = _get_running_loop_state()
+    if running is None:
+        return None, False
+    _loop, state = running
+    old = state.start_tasks[plugin_name] if plugin_name in state.start_tasks else None
     if old is None or old.done():
         return None, False
-    meta = _start_task_meta[old] if old in _start_task_meta else None
+    meta = state.start_task_meta[old] if old in state.start_task_meta else None
     logger.debug(i18n_t("log.plugin.gscore_cancelling_unfinished_startup_ok", plugin_name=plugin_name))
     old.cancel()
     skip_shutdown = meta is not None and meta.has_start_hooks and not meta.started
@@ -474,18 +491,28 @@ def _cancel_start_task_sync(plugin_name: str) -> tuple[asyncio.Task[None] | None
 
 async def _cancel_and_wait_start_task(plugin_name: str) -> bool:
     """取消并等待上一轮启动任务退出, 返回是否应跳过旧 shutdown（未启动过）。"""
-    old = _plugin_start_tasks[plugin_name] if plugin_name in _plugin_start_tasks else None
+    state = _get_loop_state(asyncio.get_running_loop())
+    old = state.start_tasks[plugin_name] if plugin_name in state.start_tasks else None
     if old is None or old.done():
         return False
-    meta = _start_task_meta[old] if old in _start_task_meta else None
+    meta = state.start_task_meta[old] if old in state.start_task_meta else None
     logger.debug(i18n_t("log.plugin.gscore_cancelling_unfinished_startup_ok", plugin_name=plugin_name))
     old.cancel()
     await _await_previous_task(plugin_name, old)
     return meta is not None and meta.has_start_hooks and not meta.started
 
 
-def _attach_late_failure_logger(task: asyncio.Task[object], plugin_name: str, hook: _DefHook) -> None:
+def _attach_late_failure_logger(
+    state: _ReloadLoopState,
+    task: asyncio.Task[object],
+    plugin_name: str,
+    hook: _DefHook,
+) -> None:
+    # 强引用保活超时悬空任务, 防止事件循环弱引用触发 GC 销毁告警
+    state.orphaned_shutdown_tasks.add(task)
+
     def _on_done(done_task: asyncio.Task[object]) -> None:
+        state.orphaned_shutdown_tasks.discard(done_task)
         if done_task.cancelled():
             return
         exc = done_task.exception()
@@ -519,6 +546,7 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
         )
     )
     loop = asyncio.get_running_loop()
+    state = _get_loop_state(loop)
     deadline = loop.time() + _RELOAD_SHUTDOWN_TIMEOUT
     failed = 0
     for priority, group in groupby(shutdown_hooks, key=lambda h: h.priority):
@@ -550,7 +578,7 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
             for h, t in zip(group_hooks, tasks):
                 if t in pending:
                     timed_out_hooks.append(_hook_label(h.func))
-                    _attach_late_failure_logger(t, plugin_name, h)
+                    _attach_late_failure_logger(state, t, plugin_name, h)
                     t.cancel()
             # 给可取消协程极短收尾窗口, 不死等不可取消的阻塞线程池任务
             await asyncio.wait(pending, timeout=0.05)
@@ -589,12 +617,12 @@ async def _run_shutdown_hooks(plugin_name: str, shutdown_hooks: list[_DefHook]) 
         logger.success(i18n_t("log.plugin.gscore_shutdown_hooks_done", plugin_name=plugin_name))
 
 
-async def _shutdown_worker(plugin_name: str) -> None:
+async def _shutdown_worker(state: _ReloadLoopState, plugin_name: str) -> None:
     """受保护的单插件关闭串行队列：不被快速重载取消, 逐批出队确保不丢钩子。"""
     while True:
-        batches = _pending_shutdown_hooks[plugin_name] if plugin_name in _pending_shutdown_hooks else None
+        batches = state.pending_shutdown_hooks[plugin_name] if plugin_name in state.pending_shutdown_hooks else None
         if not batches:
-            _pending_shutdown_hooks.pop(plugin_name, None)
+            state.pending_shutdown_hooks.pop(plugin_name, None)
             return
         batch = batches.pop(0)
         await _await_previous_task(plugin_name, batch.wait_task)
@@ -608,30 +636,31 @@ def _enqueue_shutdown_hooks(
 ) -> bool:
     if not shutdown_hooks:
         return False
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
+    running = _get_running_loop_state()
+    if running is None:
         logger.warning(i18n_t("log.plugin.gscore_shutdown_no_event_loop", plugin_name=plugin_name))
         return False
+    loop, state = running
 
     batch = _ShutdownBatch(hooks=list(shutdown_hooks), wait_task=wait_task)
-    if plugin_name in _pending_shutdown_hooks:
-        _pending_shutdown_hooks[plugin_name].append(batch)
+    if plugin_name in state.pending_shutdown_hooks:
+        state.pending_shutdown_hooks[plugin_name].append(batch)
     else:
-        _pending_shutdown_hooks[plugin_name] = [batch]
+        state.pending_shutdown_hooks[plugin_name] = [batch]
 
-    existing = _plugin_shutdown_tasks[plugin_name] if plugin_name in _plugin_shutdown_tasks else None
+    existing = state.shutdown_tasks[plugin_name] if plugin_name in state.shutdown_tasks else None
     if existing is None or existing.done():
-        task = loop.create_task(_shutdown_worker(plugin_name))
-        _plugin_shutdown_tasks[plugin_name] = task
-        task.add_done_callback(lambda t: _discard_shutdown_task(plugin_name, t))
+        task = loop.create_task(_shutdown_worker(state, plugin_name))
+        state.shutdown_tasks[plugin_name] = task
+        task.add_done_callback(lambda t: _discard_shutdown_task(state, plugin_name, t))
     return True
 
 
 async def _drain_pending_shutdown_task(plugin_name: str) -> None:
     """等待该插件受保护的关闭队列排空；shield 防止取消启动任务时波及在途关闭。"""
+    state = _get_loop_state(asyncio.get_running_loop())
     while True:
-        task = _plugin_shutdown_tasks[plugin_name] if plugin_name in _plugin_shutdown_tasks else None
+        task = state.shutdown_tasks[plugin_name] if plugin_name in state.shutdown_tasks else None
         if task is None or task.done():
             return
         await asyncio.shield(task)
@@ -654,11 +683,11 @@ def _schedule_plugin_start_hooks(
             logger.debug(i18n_t("log.plugin.gscore_name_core_start", plugin_name=plugin_name))
             return False
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
+        running = _get_running_loop_state()
+        if running is None:
             logger.warning(i18n_t("log.plugin.gscore_running_event_loop_ok", plugin_name=plugin_name))
             return False
+        loop, state = running
 
         meta = _StartTaskMeta(has_start_hooks=bool(plugin_hooks))
 
@@ -724,9 +753,9 @@ def _schedule_plugin_start_hooks(
                 logger.success(i18n_t("log.plugin.gscore_startup_hooks_name_2", plugin_name=plugin_name))
 
         task = loop.create_task(_runner())
-        _plugin_start_tasks[plugin_name] = task
-        _start_task_meta[task] = meta
-        task.add_done_callback(lambda t: _discard_start_task(plugin_name, t))
+        state.start_tasks[plugin_name] = task
+        state.start_task_meta[task] = meta
+        task.add_done_callback(lambda t: _discard_start_task(state, plugin_name, t))
         return True
     except Exception as e:
         logger.warning(i18n_t("log.plugin.gscore_scheduling_startup_hooks_fail", plugin_name=plugin_name, e=e))
@@ -752,12 +781,8 @@ def _prepare_reload(plugin_name: str) -> tuple[PluginKindMeta | None, list[tuple
     return meta_info, module_list
 
 
-def _detach_plugin_registrations(
-    plugin_name: str,
-    meta_info: PluginKindMeta | None,
-) -> tuple[Optional[int], list[_DefHook]]:
-    """断流并清理插件在全局单例上的注册，保留 sys.modules 供旧 shutdown 执行。"""
-    from gsuid_core.meta_plugins import unregister_meta_plugin
+def _detach_plugin_registrations(plugin_name: str) -> tuple[Optional[int], list[_DefHook]]:
+    """断流并清理插件在全局单例上的注册，保留 sys.modules 与 meta 别名供旧 shutdown 执行。"""
     from gsuid_core.utils.backup.hints import unregister_backup_paths
 
     sv_names_to_del = [sv_name for sv_name, sv in SL.lst.items() if sv.self_plugin_name == plugin_name]
@@ -779,16 +804,18 @@ def _detach_plugin_registrations(
             unregister_backup_paths(plugins.name)
     unregister_backup_paths(plugin_name)
 
-    if meta_info is not None:
-        unregister_meta_plugin(plugin_name)
-
     route_anchor = _snapshot_plugin_route_anchor(plugin_name)
     shutdown_hooks = _clean_plugin_global_state(plugin_name)
     return route_anchor, shutdown_hooks
 
 
 def _purge_plugin_modules(plugin_name: str) -> None:
-    """清理插件及其全部子模块在 sys.modules 与 _module_cache 中的缓存。"""
+    """注销 meta 别名并清理插件及其全部子模块在 sys.modules 与 _module_cache 中的缓存。"""
+    from gsuid_core.meta_plugins import unregister_meta_plugin
+
+    # 放在旧 shutdown 之后且无条件注销：既保住旧期 <plugin>.api，又覆盖 meta 降级为普通插件
+    unregister_meta_plugin(plugin_name)
+
     stale_modules = [k for k in sys.modules if _belongs_to_plugin(k, plugin_name)]
     for k in stale_modules:
         sys.modules.pop(k, None)
@@ -824,7 +851,7 @@ def _import_plugin_modules(
 
     if import_error is not None:
         # 回滚本次半导入已注册的 SV / Hook / 路由 / 管理模型与子模块，避免残留半残态
-        _detach_plugin_registrations(plugin_name, meta_info)
+        _detach_plugin_registrations(plugin_name)
         _purge_plugin_modules(plugin_name)
         return import_error
 
@@ -847,7 +874,7 @@ async def _reload_plugin_locked(plugin_name: str) -> str:
         skip_shutdown = await _cancel_and_wait_start_task(plugin_name)
         await _drain_pending_shutdown_task(plugin_name)
 
-        route_anchor, shutdown_hooks = _detach_plugin_registrations(plugin_name, meta_info)
+        route_anchor, shutdown_hooks = _detach_plugin_registrations(plugin_name)
         if not skip_shutdown:
             await _run_shutdown_hooks(plugin_name, shutdown_hooks)
 
@@ -870,10 +897,11 @@ async def reload_plugin_async(plugin_name: str) -> str:
     外层 shield 防止调用方取消导致已断流的插件停留在半卸载状态。
     """
     loop = asyncio.get_running_loop()
-    _enter_async_reload(loop, plugin_name)
+    state = _get_loop_state(loop)
+    _enter_async_reload(state, plugin_name)
     task = loop.create_task(_reload_plugin_locked(plugin_name))
-    _active_reload_tasks.add(task)
-    task.add_done_callback(lambda t: _finish_reload_task(loop, plugin_name, t))
+    state.active_reload_tasks.add(task)
+    task.add_done_callback(lambda t: _finish_reload_task(state, plugin_name, t))
     return await asyncio.shield(task)
 
 
@@ -894,7 +922,7 @@ def reload_plugin(plugin_name: str) -> str:
     meta_info, module_list = prepared
 
     prev_start, skip_shutdown = _cancel_start_task_sync(plugin_name)
-    route_anchor, shutdown_hooks = _detach_plugin_registrations(plugin_name, meta_info)
+    route_anchor, shutdown_hooks = _detach_plugin_registrations(plugin_name)
     _purge_plugin_modules(plugin_name)
 
     import_error = _import_plugin_modules(plugin_name, meta_info, module_list, route_anchor)

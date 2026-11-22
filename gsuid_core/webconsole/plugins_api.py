@@ -1430,6 +1430,13 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] 
 
         result = await update_plugins(plugin_id)
 
+        if isinstance(result, list):
+            failed_lines = [line for line in result if isinstance(line, str) and line.lstrip().startswith("❌")]
+            if failed_lines:
+                return {"status": 1, "msg": "\n".join(failed_lines)}
+        elif isinstance(result, str) and result.lstrip().startswith("❌"):
+            return {"status": 1, "msg": result}
+
         if result:
             return {"status": 0, "msg": "插件更新成功"}
         else:
