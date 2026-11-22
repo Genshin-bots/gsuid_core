@@ -292,3 +292,44 @@ def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
         assert current_turn() is turn
     finally:
         reset_turn(tok)
+
+
+def test_convert_message_link_image_to_base64_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """link:// 图片按 base64 模式转换时，首次下载与缓存命中均须带 base64:// 前缀。"""
+    import base64
+
+    from gsuid_core import segment
+
+    raw_bytes = b"\x89PNG\r\n\x1a\ntest-image"
+    expected = f"base64://{base64.b64encode(raw_bytes).decode('utf-8')}"
+    calls: List[str] = []
+
+    class _FakeResp:
+        content: bytes = raw_bytes
+
+    class _FakeCfg:
+        data: str = "base64"
+
+    class _FakeSendPicConfig:
+        def get_config(self, _bot_id: str, _default: str = "base64") -> _FakeCfg:
+            return _FakeCfg()
+
+    async def _fake_sget(url: str) -> _FakeResp:
+        calls.append(url)
+        return _FakeResp()
+
+    async def _fake_global_val(_bot_id: str, _bot_self_id: str) -> dict[str, int]:
+        return {"image": 0}
+
+    monkeypatch.setattr(segment, "URL_MAP", {})
+    monkeypatch.setattr(segment, "sget", _fake_sget)
+    monkeypatch.setattr(segment, "get_global_val", _fake_global_val)
+    monkeypatch.setattr(segment, "send_pic_config", _FakeSendPicConfig())
+
+    msg = Message(type="image", data="link://https://example.invalid/sample.png")
+    first = asyncio.run(segment.convert_message(msg, "onebot", "self1"))
+    second = asyncio.run(segment.convert_message(msg, "onebot", "self1"))
+
+    assert first == [Message(type="image", data=expected)]
+    assert second == [Message(type="image", data=expected)]
+    assert calls == ["https://example.invalid/sample.png"]

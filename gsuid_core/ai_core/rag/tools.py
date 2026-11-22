@@ -342,15 +342,6 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
 # 本常量只给注释/诊断对照，装配不再按它全量加载。
 GUARANTEED_TOOL_CATEGORIES: List[str] = ["self", "buildin"]
 
-# 允许进入通道核的 self 工具。调度整族仍是 self（仅主人格），但不进核、走检索。
-# 插件滥用 category="self" 的不进核；检索按「本轮未暴露」召回，不再按分类一刀切。
-_SELF_CATEGORY_WHITELIST: Set[str] = {
-    "send_message_by_ai",
-    "record_meme",
-    "add_once_task",
-    "add_interval_task",
-}
-
 
 # 族展开后，最多为"落选的种子"补多少个兜底席位（见 expand_tools_to_families）。
 _SEED_SEATS: int = 4
@@ -554,7 +545,7 @@ def expand_tools_to_families(
     """把召回到的"种子"工具按能力族（capability_domain）整族展开（L4）。
 
     召回某工具时，把它所属的整个能力族一并纳入，使"能创建就能改/删"——
-    例如检索命中 add_once_task，则 modify/cancel/query_scheduled_task 等同族工具一起加载，
+    例如检索命中 schedule_task，则 modify/cancel/query_scheduled_task 等同族工具一起加载，
     解决"单条消息语义召回只能捞到一个工具、后续追问改不了"的问题。
 
     规则：

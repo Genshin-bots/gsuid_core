@@ -34,8 +34,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 | 工具 | 来源 | 说明 |
 |---|---|---|
 | ``send_message_by_ai`` | ``message_sender.py`` | 主动以当前人格口吻发消息给主人（**仅主人格可用，能力代理禁用**） |
-| ``add_once_task`` | ``scheduler.py`` | 一次性定时任务（通道核入口） |
-| ``add_interval_task`` | ``scheduler.py`` | 周期定时任务（通道核入口） |
+| ``schedule_task`` | ``scheduler.py`` | 定时任务统一入口（once/interval/recurring，通道核入口） |
 
 > ``create_subagent`` / ``evaluate_agent_mesh_capability`` 为 ``common``。
 > 好感度由框架每轮结算，没有增量工具；绝对值覆盖仅主人 ``set_user_favorability``。
@@ -52,7 +51,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 - ``web_fetch_tool``（``web_fetch.py``）：抓取网页并转 Markdown
 - ``get_self_info``（``self_info.py``）：取完整自我认知（身份 / 能力 / 主人）
 - ``get_self_persona_info``（``self_info.py``）：查 Persona 资源（立绘/头像/音频/配置/角色卡）
-- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（通道核；``visible_when`` 有图才露）
+- ``read_image``（``image_reader.py``）：按图片ID取回群聊图片并转述（永冻通道核，常驻可见）
 - ``read_video``（``video_reader.py``）：按视频ID取回。通道核默认在有视频且模型声明
   video 时露出；未声明时 ``find_tools`` 仍能召回
 - ``state_get`` / ``state_set``（``state_store/tools.py``）：高频持久键值
@@ -213,13 +212,15 @@ from gsuid_core.ai_core.buildin_tools.run_code import run_code
 # Subagent工具 - 创建子Agent完成特定任务
 from gsuid_core.ai_core.buildin_tools.subagent import create_subagent
 
+# 元执行器 - 按名调用 find_tools 发现的非核心工具，不改会话 tools[]
+from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+
 # 声明式图表原语（方案八）：chart_spec → 内联 SVG，供 render_agent 出真图表
 from gsuid_core.ai_core.buildin_tools.chart_svg import render_chart_spec
 
 # 定时任务工具 - 管理定时/循环任务（增删改查启停）
 from gsuid_core.ai_core.buildin_tools.scheduler import (
-    add_once_task,
-    add_interval_task,
+    schedule_task,
     list_scheduled_tasks,
     pause_scheduled_task,
     query_scheduled_task,
@@ -274,6 +275,9 @@ from gsuid_core.ai_core.buildin_tools.image_finder import (
 
 # 图片读取工具 - 按图片ID取回群聊图片并转述为文字（保底）
 from gsuid_core.ai_core.buildin_tools.image_reader import read_image
+
+# 生活手账工具 - 按隐私边界读自我探索、昨日回顾与本群/本人行动流水
+from gsuid_core.ai_core.buildin_tools.life_journal import read_life_journal
 
 # 视频读取工具 - 通道核；有视频且模型声明 video 才露
 from gsuid_core.ai_core.buildin_tools.video_reader import read_video
@@ -419,8 +423,7 @@ __all__ = [
     "copy_file",
     "pack_to_zip",
     # 定时任务工具
-    "add_once_task",
-    "add_interval_task",
+    "schedule_task",
     "list_scheduled_tasks",
     "query_scheduled_task",
     "modify_scheduled_task",
@@ -429,8 +432,10 @@ __all__ = [
     "resume_scheduled_task",
     # 技能安装工具（限主人）
     "install_skill",
-    # 动态工具发现
+    # 动态工具发现与零缓存击穿执行器
     "find_tools",
+    "call_tool",
+    "read_life_journal",
     "discover_tools",
     "list_available_tools",
     # 插件开发工具（plugin_developer_agent 专用）

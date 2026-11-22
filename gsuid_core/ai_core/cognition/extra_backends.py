@@ -71,11 +71,10 @@ async def search_history(query: str, *, scope: CogScope, limit: int) -> _Backend
 async def search_records(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
     from gsuid_core.ai_core.state_store.store import state_get_value, state_list_keys
 
-    if not scope.user_id:
+    if not scope.user_id and not scope.group_id:
         return _EMPTY
-    scopes: List[str] = [f"user:{scope.user_id}"]
-    if scope.group_id:
-        scopes.append(f"group:{scope.group_id}")
+    # 群聊严禁把用户私聊 record 注入群上下文；仅私聊读 user:{uid}，群聊仅读 group:{gid}
+    scopes: List[str] = [f"group:{scope.group_id}"] if scope.group_id else [f"user:{scope.user_id}"]
     ids: List[str] = []
     hits: Dict[str, CognitiveHit] = {}
     q = query.strip().lower()

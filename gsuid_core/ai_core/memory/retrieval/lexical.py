@@ -700,9 +700,10 @@ async def expand_topic_session_turns(
 
 _COUNT_QUERY_RE = re.compile(
     r"\bhow many\b|"
-    r"(?:一共|总共|合计|共).{0,12}(?:多少|几)|"
-    r"(?:多少|几)(?:个|次|条|题|项|遍|件)|"
-    r"几次",
+    r"(?:一共|总共|合计|累计|总计|共).{0,12}(?:多少|几)|"
+    r"多少(?:个|次|条|题|项|遍|件)|"
+    r"(?:有|过|去过|买过|做过|聊过|提过|问过|发过|参加过|记录了?)几(?:个|次|条|题|项|遍|件)|"
+    r"几次\s*[？?]",
     re.IGNORECASE,
 )
 _COUNT_EXCLUDE_RE = re.compile(
@@ -3763,6 +3764,8 @@ async def expand_lexical_recall(
     clock: datetime | None = None,
     reserved: list[Episode] | None = None,
     memory_intent: str = "",
+    bot_id: str = "",
+    dm_group_scopes: tuple[str, ...] | list[str] | None = None,
 ) -> list[Episode]:
     """向量命中后再词面跨会话补齐；相对日窗口用显式 clock，缺省墙上时钟。"""
     from gsuid_core.ai_core.memory.retrieval.event_time import (
@@ -3808,6 +3811,53 @@ async def expand_lexical_recall(
         end=lex_end,
         user_only=in_win or count_q,
     )
+    if group_id is None and user_id:
+        # 私聊跨群词面补召回：只检索与本人直接相关的群聊 Episode，并附 [群:gid] 标注
+        import asyncio as _asyncio
+
+        from gsuid_core.ai_core.memory.privacy import (
+            parse_group_from_scope,
+            resolve_user_group_scopes,
+            filter_dm_episodes_for_user,
+        )
+        from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
+
+        dm_gscopes = (
+            tuple(dm_group_scopes)
+            if dm_group_scopes is not None
+            else await resolve_user_group_scopes(user_id, bot_id=bot_id)
+        )
+        gids_to_query = [gid_item for gsk in dm_gscopes[:12] if (gid_item := parse_group_from_scope(gsk))]
+        dm_group_extras: list[Episode] = []
+        if gids_to_query:
+            batches = await _asyncio.gather(
+                *(
+                    lexical_search_episodes(
+                        search_q,
+                        user_id=user_id,
+                        group_id=gid_item,
+                        hits=episodes,
+                        limit=max(4, limit // 4),
+                        start=lex_start,
+                        end=lex_end,
+                        user_only=in_win or count_q,
+                    )
+                    for gid_item in gids_to_query
+                )
+            )
+            for grp_hits in batches:
+                dm_group_extras.extend(grp_hits)
+        if dm_group_extras:
+            from gsuid_core.ai_core.memory.privacy import load_episode_speaker_map
+
+            sp_map = await load_episode_speaker_map([ep["id"] for ep in dm_group_extras if "id" in ep and ep["id"]])
+            filtered_dm = filter_dm_episodes_for_user(
+                dm_group_extras,
+                user_id=user_id,
+                watermark_ts=await ensure_isolation_watermark_ts(),
+                speaker_map=sp_map,
+            )
+            extras = merge_episode_lists(extras, filtered_dm, prefer_extras=False, limit=limit)
     merged = merge_episode_lists(episodes, extras, prefer_extras=False, limit=limit)
     if extras:
         names = extra_tokens_from_hits(extras, search_q, cap=_HOP_TOKEN_CAP)

@@ -10,7 +10,7 @@ import re
 import time
 import asyncio
 from typing import Optional, Sequence, TypedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import field, dataclass
 from concurrent.futures import ThreadPoolExecutor
 
@@ -183,6 +183,7 @@ class MemoryContext:
     covered: bool = False
     cover_ids: frozenset[str] = field(default_factory=frozenset)
     asker_id: str = ""
+    is_private: bool = False
     reserved_episodes: list[Episode] = field(default_factory=list)
     memory_intent: MemoryIntent = "point_latest"
 
@@ -268,13 +269,17 @@ class MemoryContext:
 
         if self.events:
             if intent in ("timeline_order", "broad_summary"):
+                from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
                 ev_lines: list[str] = []
                 for ev in self.events[:16]:
                     src = ev["source"] if "source" in ev else ""
                     if src not in ("llm", "milestone"):
                         continue
                     stamp = (ev["stated_at"] or ev["event_at"] or "")[:10]
-                    ev_lines.append(f"{len(ev_lines) + 1}. {stamp} · {ev['summary']}")
+                    ev_sk = ev["scope_key"] if "scope_key" in ev else ""
+                    ev_sum = prefix_group_tag(ev_sk, ev["summary"]) if self.is_private else ev["summary"]
+                    ev_lines.append(f"{len(ev_lines) + 1}. {stamp} · {ev_sum}")
                 if ev_lines:
                     parts.append(_speech("【事件线索】\n" + "\n".join(ev_lines)))
 
@@ -380,7 +385,13 @@ class MemoryContext:
                 _id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
                 _dt = _edge_date_prefix(e)
                 id_tag = "（记忆·待证）" if _id else ""
-                fact_lines.append(f"• [记录 #{i}{_edge_stamp(e)}] {_dt}{mark}{id_tag}{fact}")
+                if self.is_private and "scope_key" in e and e["scope_key"].startswith("group:"):
+                    from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
+                    rendered_fact = prefix_group_tag(e["scope_key"], fact)
+                else:
+                    rendered_fact = fact
+                fact_lines.append(f"• [记录 #{i}{_edge_stamp(e)}] {_dt}{mark}{id_tag}{rendered_fact}")
                 if len(fact_lines) >= memory_config.fact_max_inject:
                     break
 
@@ -522,9 +533,16 @@ class MemoryContext:
                             continue
                         seen_content.add(key)
                         prefix = "[我此前说过] " if self_mark else ""
+                        grp_prefix = ""
+                        if self.is_private and "scope_key" in ep and ep["scope_key"].startswith("group:"):
+                            from gsuid_core.ai_core.memory.privacy import parse_group_from_scope
+
+                            ep_gid = parse_group_from_scope(ep["scope_key"])
+                            if ep_gid:
+                                grp_prefix = f"[群:{ep_gid}] "
                         shown = raw[:ep_cap]
                         if is_ingested_document_episode(raw):
-                            undated.append(f"{prefix}{raw[:doc_cap]}")
+                            undated.append(f"{grp_prefix}{prefix}{raw[:doc_cap]}")
                             continue
                         if is_fact_sheet(ep):
                             shown = raw[:4800]
@@ -549,9 +567,9 @@ class MemoryContext:
                                 ev = event_at_from_text(raw, said)
                                 if ev.date() != said.date():
                                     stamp += f"[发生 {ev.strftime('%Y-%m-%d')}] "
-                            dated.append(f"{stamp}{prefix}{shown}")
+                            dated.append(f"{stamp}{grp_prefix}{prefix}{shown}")
                         else:
-                            undated.append(f"{prefix}{shown}")
+                            undated.append(f"{grp_prefix}{prefix}{shown}")
                     return dated + undated
 
                 if self.temporal_mode and self.time_range is not None:
@@ -824,6 +842,7 @@ async def _fts_episodes(query: str, scope_keys: list[str], limit: int) -> list[E
 
 
 def _edge_to_typed(row: object, names: dict[str, str]) -> Edge | None:
+    from gsuid_core.ai_core.memory.privacy import utc_timestamp
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
     if not isinstance(row, AIMemEdge):
@@ -837,9 +856,9 @@ def _edge_to_typed(row: object, names: dict[str, str]) -> Edge | None:
         "fact": row.fact,
         "weight": 1.0,
         "score": 0.0,
-        "valid_at_ts": row.valid_at.timestamp() if row.valid_at else None,
-        "invalid_at_ts": row.invalid_at.timestamp() if row.invalid_at else None,
-        "expired_at_ts": row.expired_at.timestamp() if row.expired_at else None,
+        "valid_at_ts": utc_timestamp(row.valid_at),
+        "invalid_at_ts": utc_timestamp(row.invalid_at),
+        "expired_at_ts": utc_timestamp(row.expired_at),
         "edge_kind": row.edge_kind,
         "slot_key": row.slot_key,
         "scope_key": row.scope_key,
@@ -847,7 +866,7 @@ def _edge_to_typed(row: object, names: dict[str, str]) -> Edge | None:
         "superseded_by_id": row.superseded_by_id,
         "contradicts_edge_id": row.contradicts_edge_id,
         "provenance_tier": "transcribed" if row.resolution_state == "staging" else "self",
-        "event_at_ts": row.event_at.timestamp() if row.event_at else None,
+        "event_at_ts": utc_timestamp(row.event_at),
     }
 
 
@@ -1338,6 +1357,11 @@ async def dual_route_retrieve(
     clock_at: datetime | None = None,
 ) -> MemoryContext:
     del enable_system2
+    from gsuid_core.ai_core.memory.privacy import (
+        enforce_memory_privacy,
+        resolve_user_entity_ids,
+        resolve_user_group_scopes,
+    )
     from gsuid_core.ai_core.memory.observer import pending_episodes_for_scopes
     from gsuid_core.ai_core.memory.database.models import AIMemEntity, AIMemPreference
     from gsuid_core.ai_core.memory.retrieval.lexical import (
@@ -1347,11 +1371,24 @@ async def dual_route_retrieve(
         looks_like_count_query,
         wants_parallel_document_coverage,
     )
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
 
+    watermark_ts = await ensure_isolation_watermark_ts()
+    is_private = not group_id
+    dm_group_scopes: tuple[str, ...] = ()
+    dm_user_eids: frozenset[str] = frozenset()
+    if is_private and user_id:
+        dm_group_scopes = await resolve_user_group_scopes(user_id, bot_id=bot_id)
+        if dm_group_scopes:
+            dm_user_eids = await resolve_user_entity_ids(user_id, dm_group_scopes)
+
+    # 群聊中偏好仍可读 user_global（沟通风格），但情景/事实边禁止把私聊原文拉进群
+    pref_scope_keys: list[str] = []
     scope_keys: list[str] = []
     if group_id:
         group_scope = make_scope_key(ScopeType.GROUP, group_id)
         scope_keys.append(group_scope)
+        pref_scope_keys.append(group_scope)
         try:
             from gsuid_core.ai_core.memory.group_profile import (
                 get_term_mappings,
@@ -1364,24 +1401,41 @@ async def dual_route_retrieve(
                 query = expanded
         except (OSError, RuntimeError, ValueError) as e:
             logger.debug(i18n_t("log.memory.alias_expansion", e=e))
-    if user_id and (not group_id or enable_user_global):
-        scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, user_id))
+        if user_id and enable_user_global:
+            ug_scope = make_scope_key(ScopeType.USER_GLOBAL, user_id)
+            if ug_scope not in pref_scope_keys:
+                pref_scope_keys.append(ug_scope)
+    else:
+        if user_id:
+            ug_scope = make_scope_key(ScopeType.USER_GLOBAL, user_id)
+            scope_keys.append(ug_scope)
+            pref_scope_keys.append(ug_scope)
+        for gsk in dm_group_scopes:
+            if gsk not in scope_keys:
+                scope_keys.append(gsk)
     if include_self and bot_self_id.strip():
         from gsuid_core.ai_core.memory.scope import self_scope_read_keys
 
         for self_scope in self_scope_read_keys(bot_self_id.strip(), persona_name):
             if self_scope not in scope_keys:
                 scope_keys.append(self_scope)
+            if self_scope not in pref_scope_keys:
+                pref_scope_keys.append(self_scope)
 
     preference_items: list[PreferencePrompt] = []
-    if memory_config.enable_preference_memory and scope_keys and inject_preferences:
+    if memory_config.enable_preference_memory and pref_scope_keys and inject_preferences:
         try:
             fetch_limit = (
                 memory_config.preference_max_inject * 3
                 if preference_contexts is not None
                 else memory_config.preference_max_inject
             )
-            pref_rows = await AIMemPreference.get_active(scope_keys, limit=fetch_limit)
+            self_cutoff = datetime.fromtimestamp(watermark_ts, tz=timezone.utc) if watermark_ts > 0.0 else None
+            pref_rows = await AIMemPreference.get_active(
+                pref_scope_keys,
+                limit=fetch_limit,
+                self_min_created_at=self_cutoff,
+            )
             pref_rows = [r for r in pref_rows if r.target_context not in ("possession", "location")]
             if preference_contexts is not None:
                 ctx_set = set(preference_contexts)
@@ -1429,16 +1483,27 @@ async def dual_route_retrieve(
                             "entity_type": "familiar",
                             "layer": 0,
                             "score": 0.0,
+                            "scope_key": scope_keys[0],
                         }
                         for n in names
                     ]
             except (OSError, RuntimeError, ValueError):
                 entity_cards = []
-        return MemoryContext(
+        none_mem = MemoryContext(
             preferences=preference_items,
             entities=entity_cards,
             retrieval_meta={"s1_episodes": 0, "s2_episodes": 0, "scope_keys": scope_keys},
+            asker_id=user_id if group_id else "",
+            is_private=is_private,
             memory_intent=memory_intent,
+        )
+        return await enforce_memory_privacy(
+            none_mem,
+            group_id=group_id,
+            user_id=user_id,
+            watermark_ts=watermark_ts,
+            dm_group_scopes_hint=dm_group_scopes,
+            dm_user_entity_ids=dm_user_eids if is_private else None,
         )
 
     time_range = query_explicit_time_range(query)
@@ -1457,7 +1522,15 @@ async def dual_route_retrieve(
         )
     )
 
-    s1_task = asyncio.create_task(system1_search(query, scope_keys, top_k=cand_k))
+    s1_task = asyncio.create_task(
+        system1_search(
+            query,
+            scope_keys,
+            top_k=cand_k,
+            dm_user_id=user_id if is_private else "",
+            dm_user_entity_ids=tuple(dm_user_eids) if is_private else (),
+        )
+    )
     fts_task = asyncio.create_task(_fts_episodes(query, scope_keys, limit=cand_k))
     cover_task = asyncio.create_task(_load_document_coverage(query, scope_keys)) if scope_keys else None
 
@@ -1533,21 +1606,26 @@ async def dual_route_retrieve(
         from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
         start, end = time_range
-        in_window: list[Episode] = []
-        for sk in scope_keys:
-            for row in await AIMemEpisode.search_by_valid_at_range(sk, start, end, limit=80, ascending=True):
-                in_window.append(
-                    {
-                        "id": row.id,
-                        "content": row.content,
-                        "valid_at": str(row.valid_at),
-                        "scope_key": row.scope_key,
-                        "embedding": [],
-                        "session_id": row.session_id or "",
-                        "thread_id": row.thread_id or "",
-                        "turn_index": row.turn_index,
-                    }
-                )
+        window_cap = max(80, min(len(scope_keys) * 40, 400))
+        in_window: list[Episode] = [
+            {
+                "id": row.id,
+                "content": row.content,
+                "valid_at": str(row.valid_at),
+                "scope_key": row.scope_key,
+                "embedding": [],
+                "session_id": row.session_id or "",
+                "thread_id": row.thread_id or "",
+                "turn_index": row.turn_index,
+            }
+            for row in await AIMemEpisode.search_by_valid_at_range_scopes(
+                scope_keys,
+                start,
+                end,
+                limit=window_cap,
+                ascending=True,
+            )
+        ]
         if in_window:
             episodes = _merge_episodes(episodes, in_window)
 
@@ -1592,6 +1670,8 @@ async def dual_route_retrieve(
             clock=clock_at,
             reserved=[],
             memory_intent=memory_intent,
+            bot_id=bot_id,
+            dm_group_scopes=dm_group_scopes,
         )
 
     stance_conflicts: list[str] = []
@@ -1601,13 +1681,48 @@ async def dual_route_retrieve(
     ranked_edges = await _apply_intent_edges(memory_intent, ranked_edges, scope_keys, clock_at=clock_at)
     ranked_edges = _cap_self_scope_edges(ranked_edges, scope_keys)
 
-    edge_ids = [e["id"] for e in ranked_edges if e["id"]]
+    # 统一由 privacy.enforce_memory_privacy 执行群聊水位线与私聊按人隔离，避免双处漂移
+    cover_ids = frozenset(str(ep["id"]) for ep in covered if "id" in ep) if covered else frozenset()
+    mem = MemoryContext(
+        episodes=episodes,
+        entities=ranked_entities,
+        edges=ranked_edges,
+        conflicts=stance_conflicts,
+        covered=bool(covered),
+        cover_ids=cover_ids,
+        preferences=preference_items,
+        retrieval_meta={
+            "s1_episodes": len(s1.episodes),
+            "s2_episodes": 0,
+            "scope_keys": scope_keys,
+        },
+        temporal_mode=time_range is not None,
+        time_range=time_range,
+        events=thread_cues,
+        order_stages=order_stages,
+        asker_id=user_id if group_id else "",
+        is_private=is_private,
+        reserved_episodes=reserved_episodes,
+        pool_ids=[],
+        memory_intent=memory_intent,
+    )
+    await enforce_memory_privacy(
+        mem,
+        group_id=group_id,
+        user_id=user_id,
+        watermark_ts=watermark_ts,
+        dm_group_scopes_hint=dm_group_scopes,
+        dm_user_entity_ids=dm_user_eids if is_private else None,
+    )
+    mem.pool_ids = [e["id"] for e in mem.episodes if "id" in e]
+
+    edge_ids = [e["id"] for e in mem.edges if e["id"]]
     if edge_ids:
         from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
         conf_inputs = await AIMemEdge.get_confidence_inputs(edge_ids)
         if conf_inputs:
-            for e in ranked_edges:
+            for e in mem.edges:
                 if e["id"] in conf_inputs:
                     mc, decay = conf_inputs[e["id"]]
                     e["weight"] = compute_edge_confidence(mc, decay)
@@ -1628,26 +1743,4 @@ async def dual_route_retrieve(
         task = asyncio.create_task(_touch_edges_accessed())
         task.add_done_callback(_on_task_done)
 
-    cover_ids = frozenset(str(ep["id"]) for ep in covered if "id" in ep) if covered else frozenset()
-    return MemoryContext(
-        episodes=episodes,
-        entities=ranked_entities,
-        edges=ranked_edges,
-        conflicts=stance_conflicts,
-        covered=bool(covered),
-        cover_ids=cover_ids,
-        preferences=preference_items,
-        retrieval_meta={
-            "s1_episodes": len(s1.episodes),
-            "s2_episodes": 0,
-            "scope_keys": scope_keys,
-        },
-        temporal_mode=time_range is not None,
-        time_range=time_range,
-        events=thread_cues,
-        order_stages=order_stages,
-        asker_id=user_id if group_id else "",
-        reserved_episodes=reserved_episodes,
-        pool_ids=[e["id"] for e in episodes if "id" in e],
-        memory_intent=memory_intent,
-    )
+    return mem

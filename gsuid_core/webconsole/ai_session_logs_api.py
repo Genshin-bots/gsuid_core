@@ -131,6 +131,62 @@ class SessionLogDetail(SessionLogSummary, total=False):
 # --- 辅助函数 ---
 
 
+def _extract_call_tool_inner_name(raw_args: object) -> str:
+    """从 call_tool 的 args 载荷提取真实内层工具名，供前端展示 call_tool(原函数)。"""
+    if isinstance(raw_args, dict):
+        tn = raw_args["tool_name"] if "tool_name" in raw_args else ""
+        return tn.strip() if isinstance(tn, str) else ""
+    if isinstance(raw_args, str) and raw_args.strip():
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError:
+            return ""
+        if isinstance(parsed, dict) and "tool_name" in parsed and isinstance(parsed["tool_name"], str):
+            return parsed["tool_name"].strip()
+    return ""
+
+
+def _format_entries_for_display(entries: List[SessionLogEntry]) -> List[SessionLogEntry]:
+    """API 展示层把 call_tool / 对应回执标注为 call_tool(原函数)，不改磁盘原始日志。"""
+    inner_by_cid: Dict[str, str] = {}
+    out: List[SessionLogEntry] = []
+    for entry in entries:
+        etype = entry["type"] if "type" in entry else ""
+        if etype not in ("tool_call", "tool_return"):
+            out.append(entry)
+            continue
+        data = entry["data"] if "data" in entry else {}
+        if not isinstance(data, dict):
+            out.append(entry)
+            continue
+        tname = data["tool_name"] if "tool_name" in data else ""
+        if tname != "call_tool":
+            out.append(entry)
+            continue
+        cid = str(data["tool_call_id"]) if "tool_call_id" in data and data["tool_call_id"] else ""
+        inner = ""
+        if etype == "tool_call":
+            inner = _extract_call_tool_inner_name(data["args"] if "args" in data else "")
+            if cid and inner:
+                inner_by_cid[cid] = inner
+        elif cid and cid in inner_by_cid:
+            inner = inner_by_cid[cid]
+        if not inner:
+            out.append(entry)
+            continue
+        new_data = dict(data)
+        new_data["tool_name"] = f"call_tool({inner})"
+        new_data["inner_tool_name"] = inner
+        out.append(
+            {
+                "type": entry["type"],
+                "timestamp": entry["timestamp"],
+                "data": new_data,
+            }
+        )
+    return out
+
+
 def _build_summary_from_memory(
     sid: str,
     session: "GsCoreAIAgent",
@@ -715,6 +771,8 @@ def _find_log_by_file_stem(file_stem: str) -> Optional[Dict[str, Any]]:
                 continue
             # 在原始文件结构上补充响应字段（source / is_active / 已 enrich 的 linked_agents）
             resp: Dict[str, Any] = dict(file_data)
+            if "entries" in resp and isinstance(resp["entries"], list):
+                resp["entries"] = _format_entries_for_display(resp["entries"])
             resp["source"] = "disk"
             # 修正 is_active：磁盘 ended_at 为 null 时需检查内存 registry
             disk_ended: Optional[float] = file_data.get("ended_at")
@@ -1110,7 +1168,7 @@ def _find_log_by_session_id_and_uuid(
                 "ended_at": mem_ended_at,
                 "is_active": mem_ended_at is None,
                 "entry_count": len(logger_obj.entries),
-                "entries": mem_entries,
+                "entries": _format_entries_for_display(mem_entries),
                 "linked_agents": _enrich_linked_agents_list(mem_linked),
                 "linked_agent_count": len(mem_linked),
                 "source": "memory" if logger_obj.has_unpersisted_data else "disk",
@@ -1128,6 +1186,8 @@ def _find_log_by_session_id_and_uuid(
 
     # 在原始文件结构上补充响应字段（source / is_active / 已 enrich 的 linked_agents）
     resp: Dict[str, Any] = dict(best_file)
+    if "entries" in resp and isinstance(resp["entries"], list):
+        resp["entries"] = _format_entries_for_display(resp["entries"])
     resp["source"] = "disk"
     # 修正 is_active：磁盘 ended_at 为 null 时需检查内存 registry
     disk_ended: Optional[float] = best_file.get("ended_at")
@@ -1459,6 +1519,8 @@ def _get_session_log_by_file_sync(file_name: str) -> Dict[str, Any]:
 
     # 在原始文件结构上 enrich linked_agents（type_counts / entry_count / is_active）
     resp: Dict[str, Any] = dict(file_data)
+    if "entries" in resp and isinstance(resp["entries"], list):
+        resp["entries"] = _format_entries_for_display(resp["entries"])
     file_linked = file_data.get("linked_agents", [])
     if file_linked:
         resp["linked_agents"] = _enrich_linked_agents_list(file_linked)

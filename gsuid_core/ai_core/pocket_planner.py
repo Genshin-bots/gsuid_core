@@ -49,7 +49,7 @@ def build_plan_hint(query: str, *, eval_summary: str = "") -> str:
     if node:
         return _plan_line(f'create_subagent(agent_profile="{node}")', query, via="")
     if should_plan_first(query):
-        return _plan_line("capability_map 或 find_tools", query, via="")
+        return _plan_line("find_tools 查能力或召回", query, via="")
     return _plan_line("find_tools 召回", query, via="")
 
 

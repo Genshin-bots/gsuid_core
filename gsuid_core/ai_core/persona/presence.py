@@ -40,6 +40,9 @@ class SocialEchoDict(TypedDict):
 class PresenceRibbon:
     offscreen_doing: str = ""
     offscreen_at: float = 0.0
+    # "self"=纯个人探索，"{gid}"=特定群，"private:{uid}"=特定私聊，""=旧版无归属
+    offscreen_scope: str = ""
+    offscreen_user_id: str = ""
     echoes: list[SocialEchoDict] = field(default_factory=list)
 
 
@@ -50,22 +53,28 @@ async def load_presence(persona_name: str) -> PresenceRibbon:
     ribbon = PresenceRibbon()
     if not isinstance(raw, dict):
         return ribbon
-    if isinstance(raw.get("offscreen_doing"), str):
+    if "offscreen_doing" in raw and isinstance(raw["offscreen_doing"], str):
         ribbon.offscreen_doing = raw["offscreen_doing"]
-    if isinstance(raw.get("offscreen_at"), (int, float)):
+    if "offscreen_at" in raw and isinstance(raw["offscreen_at"], (int, float)):
         ribbon.offscreen_at = float(raw["offscreen_at"])
-    echoes = raw.get("echoes")
+    if "offscreen_scope" in raw and isinstance(raw["offscreen_scope"], str):
+        ribbon.offscreen_scope = raw["offscreen_scope"]
+    if "offscreen_user_id" in raw and isinstance(raw["offscreen_user_id"], str):
+        ribbon.offscreen_user_id = raw["offscreen_user_id"]
+    echoes = raw["echoes"] if "echoes" in raw else None
     if isinstance(echoes, list):
         for item in echoes:
-            if isinstance(item, dict) and isinstance(item.get("target_key"), str):
+            if isinstance(item, dict) and "target_key" in item and isinstance(item["target_key"], str):
                 ribbon.echoes.append(
                     {
                         "target_key": item["target_key"],
-                        "is_private": bool(item.get("is_private")),
-                        "summary": str(item.get("summary") or ""),
-                        "emitted_at": float(item.get("emitted_at") or 0.0),
-                        "answered": bool(item.get("answered")),
-                        "settled": bool(item.get("settled")),
+                        "is_private": bool(item["is_private"]) if "is_private" in item else False,
+                        "summary": str(item["summary"]) if "summary" in item and item["summary"] else "",
+                        "emitted_at": float(item["emitted_at"])
+                        if "emitted_at" in item and isinstance(item["emitted_at"], (int, float))
+                        else 0.0,
+                        "answered": bool(item["answered"]) if "answered" in item else False,
+                        "settled": bool(item["settled"]) if "settled" in item else False,
                     }
                 )
     return ribbon
@@ -93,13 +102,22 @@ async def record_echo(persona_name: str, target_key: str, is_private: bool, summ
     await save_presence(persona_name, ribbon)
 
 
-async def record_offscreen(persona_name: str, text: str, now: float) -> None:
+async def record_offscreen(
+    persona_name: str,
+    text: str,
+    now: float,
+    *,
+    scope: str = "self",
+    user_id: str = "",
+) -> None:
     body = text.strip()[:_OFFSCREEN_MAX]
     if not body:
         return
     ribbon = await load_presence(persona_name)
     ribbon.offscreen_doing = body
     ribbon.offscreen_at = now
+    ribbon.offscreen_scope = scope.strip()
+    ribbon.offscreen_user_id = user_id.strip()
     await save_presence(persona_name, ribbon)
 
 
@@ -161,6 +179,23 @@ async def refresh_persona_state(persona_name: str, now: float) -> tuple[PersonaH
     return state, ribbon
 
 
+def _offscreen_visible(ribbon: PresenceRibbon, *, target_key: str, is_private: bool, user_id: str) -> bool:
+    """群聊只看 self 或本群；私聊只看 self、本人私聊或本人触发的记录。"""
+    scope = ribbon.offscreen_scope.strip()
+    if not scope:
+        return False
+    if scope == "self":
+        return True
+    if not is_private:
+        return scope == target_key
+    uid = user_id.strip()
+    if not uid and target_key.startswith("private:"):
+        uid = target_key[len("private:") :].strip()
+    if scope == target_key:
+        return True
+    return bool(uid and ribbon.offscreen_user_id == uid)
+
+
 def render_presence(
     ribbon: PresenceRibbon,
     hint: str,
@@ -168,15 +203,20 @@ def render_presence(
     target_key: str,
     is_private: bool,
     now: float,
+    user_id: str = "",
 ) -> str:
-    """≤120 字的存在感注入块。看不到别会话的 echo；没有内容返回空串。"""
+    """≤120 字的存在感注入块。看不到别会话的 echo 与跨群 offscreen；没有内容返回空串。"""
     from gsuid_core.ai_core.control.lines import presence_echo_line, presence_offscreen_line
     from gsuid_core.ai_core.autonomy.select import _age_label
 
     parts: list[str] = []
     if hint:
         parts.append(hint)
-    if ribbon.offscreen_doing and now - ribbon.offscreen_at < _OFFSCREEN_WINDOW:
+    if (
+        ribbon.offscreen_doing
+        and now - ribbon.offscreen_at < _OFFSCREEN_WINDOW
+        and _offscreen_visible(ribbon, target_key=target_key, is_private=is_private, user_id=user_id)
+    ):
         parts.append(presence_offscreen_line(_age_label(ribbon.offscreen_at, now), ribbon.offscreen_doing))
     for echo in reversed(ribbon.echoes):
         if echo["target_key"] != target_key or echo["is_private"] != is_private:

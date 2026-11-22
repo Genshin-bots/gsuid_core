@@ -19,6 +19,7 @@ from typing import (
     Protocol,
     Sequence,
 )
+from dataclasses import replace as _dc_replace
 
 import httpx2
 from PIL import Image
@@ -2260,17 +2261,81 @@ def _has_orphan_tool_returns(messages: Sequence[ModelMessage]) -> bool:
     return bool((return_ids - call_ids) or (call_ids - return_ids))
 
 
-def _truncate_history_keep_prefix(
+_LEAN_TOOL_RETURN_NAMES: frozenset[str] = frozenset(
+    {
+        "search_cognition",
+        "read_handle",
+        "find_tools",
+        "web_search_tool",
+        "web_fetch_tool",
+        "read_chat_history",
+        "read_life_journal",
+        "capability_map",
+    }
+)
+_LEAN_TOOL_RETURN_THRESHOLD = 900
+_LEAN_TOOL_RETURN_HEAD = 360
+
+
+def _call_tool_inner_name_from_part(part: ToolCallPart) -> str:
+    if part.tool_name != "call_tool":
+        return ""
+    args_dict = part.args_as_dict()
+    if "tool_name" in args_dict and isinstance(args_dict["tool_name"], str):
+        return args_dict["tool_name"].strip()
+    return ""
+
+
+def _lean_oversized_tool_returns(messages: List[ModelMessage]) -> None:
+    """compact 尾段瘦身：仅折叠只读/检索类超大回执，保留写操作/任务类 call_tool 完整 ID。"""
+    inner_by_cid: dict[str, str] = {}
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart) and part.tool_call_id and part.tool_name == "call_tool":
+                    inner = _call_tool_inner_name_from_part(part)
+                    if inner:
+                        inner_by_cid[part.tool_call_id] = inner
+
+    for msg_idx, msg in enumerate(messages):
+        if not isinstance(msg, ModelRequest):
+            continue
+        new_parts = list(msg.parts)
+        changed = False
+        for idx, part in enumerate(new_parts):
+            if not isinstance(part, ToolReturnPart):
+                continue
+            eff_name = (
+                inner_by_cid[part.tool_call_id]
+                if part.tool_name == "call_tool" and part.tool_call_id and part.tool_call_id in inner_by_cid
+                else (part.tool_name or "")
+            )
+            if eff_name not in _LEAN_TOOL_RETURN_NAMES:
+                continue
+            if not isinstance(part.content, str) or len(part.content) <= _LEAN_TOOL_RETURN_THRESHOLD:
+                continue
+            orig_len = len(part.content)
+            folded = (
+                part.content[:_LEAN_TOOL_RETURN_HEAD].rstrip()
+                + f"\n…（已入史折叠，原长 {orig_len} 字；需复查原文请重调对应句柄或检索）"
+            )
+            new_parts[idx] = _dc_replace(part, content=folded)
+            changed = True
+        if changed:
+            messages[msg_idx] = _dc_replace(msg, parts=new_parts)
+
+
+def _truncate_history_keep_prefix_with_split(
     history: List[ModelMessage],
     max_keep: int,
     *,
-    prefix_ratio: float = 0.35,
-) -> List[ModelMessage]:
-    """前缀稳定截断：永不丢头部，只裁中段，保留近期尾部。"""
+    prefix_ratio: float = 0.55,
+) -> tuple[List[ModelMessage], int]:
+    """前缀稳定截断：永不丢头部，只裁中段，保留近期尾部，同时返回保留前缀长度。"""
     if len(history) <= max_keep:
-        return history
+        return history, len(history)
     if max_keep <= 1:
-        return list(history[-1:])
+        return list(history[-1:]), 0
 
     prefix_n = max(2, int(max_keep * prefix_ratio))
     prefix_n = min(prefix_n, max_keep - 1)
@@ -2295,12 +2360,12 @@ def _truncate_history_keep_prefix(
                     truncate_index=tail_start,
                 )
             )
-            return retained
+            return retained, prefix_n
         tail_start -= 1
 
     if not _has_orphan_tool_returns(history):
         logger.warning(i18n_t("log.ai.cannot_safely_truncate_history", p0=len(history)))
-    return history
+    return history, len(history)
 
 
 def _extractive_middle_summary(dropped: Sequence[ModelMessage]) -> str:
@@ -2339,8 +2404,9 @@ def compact_session_history(
     max_history: int,
     *,
     trim_ratio: float = 0.6,
+    prefix_ratio: float = 0.55,
 ) -> tuple[List[ModelMessage], bool]:
-    """会话 history 高低水位 compact（保头裁中段 + 孤儿清理）。
+    """会话 history 高低水位 compact（保头裁中段 + 仅在压缩时折叠尾段超大回执）。
 
     Returns:
         (new_history, did_truncate) — did_truncate 表示因超水位主动丢过中段。
@@ -2351,7 +2417,16 @@ def compact_session_history(
     if before <= max_history:
         return _drop_orphan_tool_results(history), False
     low_target = max(1, int(max_history * trim_ratio))
-    trimmed = _truncate_history_keep_prefix(history, low_target)
+    trimmed, prefix_n = _truncate_history_keep_prefix_with_split(
+        history,
+        low_target,
+        prefix_ratio=prefix_ratio,
+    )
+    # 仅折叠截断点之后的旧超大回执，保留 prefix_n 前缀字节完全不变以保 KV 缓存
+    if prefix_n < len(trimmed):
+        tail = trimmed[prefix_n:]
+        _lean_oversized_tool_returns(tail)
+        trimmed = [*trimmed[:prefix_n], *tail]
     cleaned = _drop_orphan_tool_results(trimmed)
     return cleaned, len(cleaned) < before
 
@@ -2364,7 +2439,7 @@ def _truncate_history_with_tool_safety(
     安全截断 history，确保保留的消息中 ToolCallPart 和 ToolReturnPart 完全配对。
 
     .. deprecated::
-        主会话请用 ``_truncate_history_keep_prefix``（保头裁中段，前缀缓存友好）。
+        主会话请用 ``compact_session_history``（保头裁中段，前缀缓存友好）。
         本函数仍为「保留尾部」语义，供需要旧行为的调用方。
 
     问题：如果简单地从末尾截断 history，可能导致 ToolReturnPart 被保留

@@ -34,7 +34,7 @@ Kanban（`planning/`）不是"挂在 ai_core 边上的任务管理小工具"，�
 | 触发 | APScheduler（interval / cron / once） | APScheduler（interval / cron） |
 | 载荷 | 单条提醒 / 单代理动作 | 整棵任务树克隆 / 子任务实例克隆 |
 | 恢复 | 启动期重挂 | 启动期重挂 |
-| 入口 | `add_once_task` / `add_interval_task` | `register_kanban_task(recurring_trigger=)` |
+| 入口 | `schedule_task` | `register_kanban_task(recurring_trigger=)` |
 
 两者的边界目前**只靠 prompt 解释**：`scheduler_assistant` 的提示词里写着"多步周期
 任务请改用 register_kanban_task"，`_SCHEDULER_PROMPT` 里再解释一遍。需要在提示词里

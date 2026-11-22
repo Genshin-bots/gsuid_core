@@ -200,7 +200,39 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
         assert _re.fullmatch(r"[A-Za-z0-9_-]{1,64}", reg_name) is not None
         tb = find_tool_base(reg_name)
         assert tb is not None and tb.tool.name == reg_name and find_tool_base(tb.tool.name) is tb
-        assert "演示门店（中国）" in tb.description and tb.covers[0] == "自动领取当前可用优惠券"
+        assert "演示门店（中国）" in tb.description and tb.covers[0] == "[演示门店（中国）] 自动领取当前可用优惠券"
+        from gsuid_core.ai_core.mcp.node_profile import mcp_hint_allowed_for_turn
+
+        private_cfg = MCPConfig(
+            name="DemoBrand",
+            transport="http",
+            url="https://example.invalid/mcp",
+            enabled=True,
+            user_env_keys=["DEMO_TOKEN"],
+            market_meta={"chinese_name": "演示品牌"},
+            tools=[MCPToolDefinition(name="query-my-account", description="查询积分账户", exposure="private")],
+        )
+        manager._cache["demo_brand"] = private_cfg
+        monkeypatch.setattr("gsuid_core.ai_core.mcp.config_manager.mcp_config_manager", manager)
+
+        async def _no_creds(*_a: object, **_kw: object) -> tuple[None, None]:
+            return None, None
+
+        monkeypatch.setattr("gsuid_core.ai_core.mcp.credential_store.resolve_user_creds", _no_creds)
+        assert (
+            asyncio.run(
+                mcp_hint_allowed_for_turn("mcp_demo_brand_query-my-account", "我有多少钱", bot_id="b1", user_id="u1")
+            )
+            is False
+        )
+        assert (
+            asyncio.run(
+                mcp_hint_allowed_for_turn(
+                    "mcp_demo_brand_query-my-account", "查一下演示品牌积分", bot_id="b1", user_id="u1"
+                )
+            )
+            is True
+        )
         exclusive_names = _capability_exclusive_tool_names()
         assert reg_name not in exclusive_names
         assert (

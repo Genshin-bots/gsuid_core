@@ -12,7 +12,7 @@ Category / HierarchicalGraphMeta 已由 schema_v2 迁移物理移除。
 
 import uuid
 import asyncio
-from typing import List, TypeVar, Optional
+from typing import List, TypeVar, Optional, Sequence
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Field, SQLModel, Relationship, col, select, update, literal_column
@@ -417,6 +417,50 @@ class AIMemEpisode(SQLModel, table=True):
             stmt = stmt.offset(offset)
         result = await session.execute(stmt.limit(limit))
         return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def search_by_valid_at_range_scopes(
+        cls,
+        session: AsyncSession,
+        scope_keys: Sequence[str],
+        start: datetime,
+        end: datetime,
+        limit: int = 80,
+        ascending: bool = False,
+    ) -> list["AIMemEpisode"]:
+        keys = [sk for sk in scope_keys if sk]
+        if not keys or limit <= 0:
+            return []
+        c = _model_table(cls).c
+        conds: list[ColumnElement[bool]] = [
+            _as_bool_expr(c.scope_key.in_(keys)),
+            _as_bool_expr(c.valid_at >= _naive_utc(start)),
+            _as_bool_expr(c.valid_at < _naive_utc(end)),
+        ]
+        tie = literal_column("rowid") if _db_type == "sqlite" else c.id
+        order = (c.valid_at.asc(), tie.asc()) if ascending else (c.valid_at.desc(), tie.desc())
+        stmt = select(cls).where(*conds).order_by(*order).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def get_speaker_map_by_ids(
+        cls,
+        session: AsyncSession,
+        episode_ids: Sequence[str],
+    ) -> dict[str, list[str]]:
+        ids = [eid for eid in episode_ids if eid]
+        if not ids:
+            return {}
+        stmt = select(col(cls.id), col(cls.speaker_ids)).where(col(cls.id).in_(ids))
+        rows = (await session.execute(stmt)).all()
+        out: dict[str, list[str]] = {}
+        for eid_raw, spks_raw in rows:
+            if isinstance(eid_raw, str) and isinstance(spks_raw, list):
+                out[eid_raw] = [str(s) for s in spks_raw]
+        return out
 
     @classmethod
     @with_read_session
@@ -1298,6 +1342,65 @@ class AIMemEntity(SQLModel, table=True):
         )
         return list((await session.execute(stmt)).scalars().all())
 
+    @classmethod
+    @with_read_session
+    async def get_group_scopes_for_user(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        cap: int = 50,
+    ) -> list[str]:
+        if not user_id or cap <= 0:
+            return []
+        stmt = (
+            select(col(cls.scope_key))
+            .where(
+                col(cls.user_id) == user_id,
+                col(cls.scope_key).startswith("group:"),
+            )
+            .distinct()
+            .limit(cap)
+        )
+        rows = (await session.execute(stmt)).all()
+        return [sk for (sk,) in rows if isinstance(sk, str) and sk]
+
+    @classmethod
+    @with_read_session
+    async def get_ids_for_user_in_scopes(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        scope_keys: Sequence[str],
+    ) -> frozenset[str]:
+        keys = [sk for sk in scope_keys if sk]
+        if not user_id or not keys:
+            return frozenset()
+        stmt = select(col(cls.id)).where(
+            col(cls.user_id) == user_id,
+            col(cls.scope_key).in_(keys),
+        )
+        rows = (await session.execute(stmt)).all()
+        return frozenset(eid for (eid,) in rows if isinstance(eid, str) and eid)
+
+    @classmethod
+    @with_read_session
+    async def get_created_ts_map(
+        cls,
+        session: AsyncSession,
+        entity_ids: Sequence[str],
+    ) -> dict[str, float]:
+        ids = [eid for eid in entity_ids if eid]
+        if not ids:
+            return {}
+        stmt = select(col(cls.id), col(cls.created_at)).where(col(cls.id).in_(ids))
+        rows = (await session.execute(stmt)).all()
+        out: dict[str, float] = {}
+        for eid_raw, dt_raw in rows:
+            if isinstance(eid_raw, str) and isinstance(dt_raw, datetime):
+                dt = dt_raw if dt_raw.tzinfo is not None else dt_raw.replace(tzinfo=timezone.utc)
+                out[eid_raw] = dt.timestamp()
+        return out
+
 
 class AIMemThread(SQLModel, table=True):
     """跨 session 的主题线程；里程碑边按 (valid_at, turn_index) 追加。"""
@@ -1833,12 +1936,20 @@ class AIMemPreference(SQLModel, table=True):
         scope_keys: list[str],
         target_contexts: Optional[list[str]] = None,
         limit: int = 12,
+        self_min_created_at: Optional[datetime] = None,
     ) -> list["AIMemPreference"]:
         if not scope_keys:
             return []
         stmt = select(cls).where(col(cls.scope_key).in_(scope_keys), col(cls.is_active).is_(True))
         if target_contexts:
             stmt = stmt.where(col(cls.target_context).in_(target_contexts))
+        if self_min_created_at is not None:
+            cutoff = (
+                self_min_created_at.astimezone(timezone.utc).replace(tzinfo=None)
+                if self_min_created_at.tzinfo is not None
+                else self_min_created_at
+            )
+            stmt = stmt.where(or_(~col(cls.scope_key).startswith("self:"), col(cls.created_at) >= cutoff))
         stmt = stmt.order_by(
             desc(col(cls.is_correction)),
             desc(col(cls.mention_count)),

@@ -311,36 +311,16 @@ async def create_subagent(
     agent_profile: str = "",
     transient: bool = False,
 ) -> str:
-    """
-    委派专职能力代理（或通用 Plan-and-Solve 子 Agent）执行多步任务。
+    """委派专职能力代理执行多步任务（agent_profile 填 system 能力清单中的准确 node_id）。
 
-    ## 路由（agent_profile 填 node_id，禁止自造名）
-    - ``research_agent``：外部检索 / 综合分析 → **只交事实包**（来源+时点）
-    - ``render_agent``：把**已有**事实包渲成信息图（花名册启用时多项数据交给它；主人格禁自渲）
-    - ``code_agent``：写代码 / PIL·脚本真文件产物（不是 HTML 信息卡；仅主人可委派）
-    - ``internal_reporter`` / ``memory_curator`` / ``scheduler_assistant`` / …
-      见本轮 system 能力清单
-
-    ## task 合同
-    - 写清意图 + 交付物；执行体身份按当前会话 persona 与 get_self_persona_info，不在此写角色设定。
-    - 检索综合：目标 + 范围；交付须含条目/数字/**来源**/**时点**。
-    - 出图：传完整事实包（或 res_ 句柄）与用户原话诉求，写明**禁止再检索**；
-      除非用户原话点名配色/底色，否则视觉深浅色板与版式交由 render_agent 自主决定，勿硬编码浅色/深色底或拆多张图。
-    - 禁止把「漂亮出图」派给 research；禁止主人格自己写 HTML 调 render_*。
-    - 开场句和本工具写在同一次回复里，派发成功后框架替你发出；没写就看回执再说。
-    - 多个互不依赖的对象：同一次回复并列多次调用，各写各的 task；不要等上一个回执再派下一个。
-    - 下一步要看本次结果才能选（自己答 / render_agent）：只派当前这步，等回灌。
-      不要提前派 render，也不要在等待时逐个补派。
+    常见节点：research_agent（检索交事实包）、render_agent（已有事实包出信息图，须写明禁再检索）、
+    code_agent（写代码/脚本真文件，限主人）。多个独立对象可并列派发；周期/多代理接力走 register_kanban_task。
 
     Args:
         ctx: 工具执行上下文
-        task: 任务全文（事实包请直接写进 task，勿只写「帮我出图」）。
-        agent_profile: 必填 node_id（或可 resolve 的自然语言）；禁止空、禁止自造名。
-        transient: 仅 lookup 白名单节点生效。交互主人格传入 True 也会改走看板后台。
-
-    **何时不要用 create_subagent**：
-    - ≥2 能力接力或周期任务 → ``register_kanban_task``。
-    - 要事后追溯产物 → 默认 transient=False。
+        task: 完整任务要求（出图时直接附事实包或 res_ 句柄与用户诉求）
+        agent_profile: 目标能力代理 node_id，禁止留空或自造名
+        transient: 仅 lookup 白名单生效；交互会话默认走看板后台
     """
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
         PENDING_DELEGATION_HOLD,

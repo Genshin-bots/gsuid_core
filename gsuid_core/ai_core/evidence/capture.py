@@ -26,12 +26,13 @@ _SUMMARY_MAX = 80
 
 @dataclass(slots=True)
 class EvidenceMark:
-    """MCP 侧在调用途中填；非 MCP 工具保持默认字段。"""
+    """MCP/call_tool 在调用途中填；非 MCP 工具保持默认字段。"""
 
     service: str = ""
     credential_owner: str | None = None
     mutating: bool = False
     outcome_hint: Literal["ok", "auth_required", "error"] = "ok"
+    error_recorded: bool = False
 
 
 def reset_evidence_mark() -> Token[EvidenceMark | None]:
@@ -58,7 +59,7 @@ def _extract_handle(text: str) -> str:
     return m.group(0) if m else ""
 
 
-_EVIDENCE_EXEMPT_TOOLS = frozenset({"find_tools", "read_handle", "capability_map"})
+_EVIDENCE_EXEMPT_TOOLS = frozenset({"find_tools", "call_tool", "read_handle", "read_life_journal", "capability_map"})
 
 
 def record_tool_result(tool_name: str, result: object, mark: EvidenceMark | None) -> None:
@@ -104,6 +105,9 @@ def record_tool_error(tool_name: str, error: Exception) -> None:
     if turn is None:
         return
     mark = _MARK.get()
+    if mark is not None:
+        mark.error_recorded = True
+        mark.outcome_hint = "error"
     obs = Observation(
         obs_id=make_obs_id(tool_name, _requested_by(turn), time.time()),
         session_id=turn.session_id,

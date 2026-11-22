@@ -253,7 +253,6 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
     from gsuid_core.i18n import t
     from gsuid_core.logger import logger
     from gsuid_core.ai_core.utils import _extractive_middle_summary
-    from gsuid_core.ai_core.memory.scope import self_scope_key
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.memory.observer import observe
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
@@ -265,15 +264,29 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
         return
     bot_self_id, _kind, _sid = parse_session_scope(session.session_id)
     bid = bot_self_id or "default"
-    # 只写 SELF：助手摘要进群 scope 会绕开 C6，污染群记忆。
-    scope_key = self_scope_key(bid, session.persona_name or "")
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+
+    if _kind == "group" and _sid:
+        scope_key = make_scope_key(ScopeType.GROUP, _sid)
+        owner_uid = ""
+        obs_gid: Optional[str] = _sid
+        obs_msg_type = "group_msg"
+        obs_targets: tuple[str, ...] = ()
+    elif _kind == "private" and _sid:
+        scope_key = make_scope_key(ScopeType.USER_GLOBAL, _sid)
+        owner_uid = _sid
+        obs_gid = None
+        obs_msg_type = "private_msg"
+        obs_targets = (_sid,)
+    else:
+        return
     try:
         await remember(
             MemoryWrite(
                 kind=CogKind.EPISODE,
                 ref=f"gc_{hash(session.session_id) & 0xFFFFFFFF:x}",
                 scope_key=scope_key,
-                owner_user_id="",
+                owner_user_id=owner_uid,
                 title="会话空闲回收摘要",
                 summary=summary[:300],
                 source="session_gc",
@@ -286,11 +299,12 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
         await observe(
             content=f"[会话摘要] {summary[:400]}",
             speaker_id=f"__assistant_{bid}__",
-            group_id=None,
+            group_id=obs_gid,
             bot_self_id=bid,
             persona_name=session.persona_name or "",
             observer_blacklist=[],
-            message_type="private_msg",
+            message_type=obs_msg_type,
+            at_targets=obs_targets,
         )
     except Exception as e:
         logger.debug(t("log.ai.session_gc_observe_fail", e=e))

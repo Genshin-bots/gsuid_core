@@ -9,8 +9,7 @@
 _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
     "self": {
         "send_message_by_ai": ToolBase(...),
-        "add_once_task": ToolBase(...),       # 定时任务"创建"入口，口语化触发
-        "add_interval_task": ToolBase(...),   # 定时任务"创建"入口，口语化触发
+        "schedule_task": ToolBase(...),       # 定时任务统一"创建"入口（mode=once/interval）
     },
     "buildin": {
         "search_cognition": ToolBase(...),
@@ -88,7 +87,7 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {
 │                                                     │
 │  Self工具（保底，全部加载；另经白名单收敛）:            │
 │  - send_message_by_ai                               │
-│  - add_once_task          - add_interval_task        │
+│  - schedule_task                                    │
 │                                                     │
 │  Buildin工具（保底，全部加载）:                       │
 │  - search_cognition       - web_search_tool          │

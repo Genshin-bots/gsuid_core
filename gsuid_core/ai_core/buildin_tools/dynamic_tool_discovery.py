@@ -408,19 +408,14 @@ async def find_tools(
     ctx: RunContext[ToolContext],
     need: str,
 ) -> str:
-    """列表没有的能力必须先调：用一句话描述所缺能力。未调用前禁止说做不到/没装。
+    """查找非核心工具或能力代理（未调用前禁说做不到）。
 
-    每次都会检索，不因列表里已有工具而跳过。已暴露且真正对口的专用工具并入回执。
-    need 等于已注册工具名，或等于插件名（工具名前缀）时，直接挂上该工具。
-    一次返回专用能力 / 专用工具 / 通用能力 / 通用工具；有专用项时禁止改用通用项。
-    专用工具下一步可直接调；专用能力用 create_subagent(agent_profile=node_id)。
+    返回分档名单与参数契约：对口专用工具用 call_tool(tool_name, arguments_json) 执行；
+    专用能力用 create_subagent(agent_profile=node_id)；品牌/对象不符勿强行调用。
 
     Args:
-        ctx: 工具执行上下文。
-        need: 所缺能力的一句话描述。
-
-    Returns:
-        分档清单；对不上当此刻没这项能力（≠「资料不存在」）。
+        ctx: 工具执行上下文
+        need: 所缺能力的一句话描述、精确工具名或插件名
     """
     try:
         from gsuid_core.ai_core.register import find_tool_base
@@ -431,6 +426,8 @@ async def find_tools(
         offered_raw = ctx.deps.extra[EXPOSED_TOOLS_EXTRA_KEY] if EXPOSED_TOOLS_EXTRA_KEY in ctx.deps.extra else None
         offered: list[str] = [n for n in offered_raw if isinstance(n, str)] if isinstance(offered_raw, list) else []
         offered_set = set(offered)
+        # dynamic_tool_names 不进线缆表，同轮二次检索不得排除已查过的长尾工具
+        search_exclude = offered_set - ctx.deps.dynamic_tool_names
 
         # 已加载命中不短路：短 cover 会误把列表里的工具当对口，真正缺的就搜不到。
         offered_hits = _offered_dedicated_hits(names=offered, need=need, exclusive=exclusive)
@@ -456,7 +453,7 @@ async def find_tools(
                 query=need,
                 domain_limit=3,
                 per_domain_limit=6,
-                exclude_names=offered_set,
+                exclude_names=search_exclude,
                 scope=ctx.deps.tool_scope,
             )
         except RuntimeError as e:
@@ -546,7 +543,7 @@ async def find_tools(
                 continue
             if tier == "dedicated":
                 dedicated_tools.append(hit)
-            elif tool.name not in offered_set:
+            elif tool.name not in search_exclude:
                 generic_tools.append(hit)
 
         if hidden_names:
@@ -661,7 +658,15 @@ async def find_tools(
                 loaded_names=loaded_names,
             )
         )
-        msg = format_find_tools_plan(plan)
+        from gsuid_core.ai_core.register import find_tool_base as _find_tb
+        from gsuid_core.ai_core.buildin_tools.call_tool import format_compact_tool_schema
+
+        schemas: dict[str, str] = {}
+        for lname in loaded_names:
+            ltb = _find_tb(lname)
+            if ltb is not None:
+                schemas[lname] = format_compact_tool_schema(ltb)
+        msg = format_find_tools_plan(plan, schemas=schemas)
         if stale:
             return f"{msg}\n{FIND_TOOLS_GAP_NOTE}"
         return msg
@@ -674,7 +679,11 @@ async def find_tools(
         return f"⚠️ 工具加载失败: {str(e)}"
 
 
-@ai_tools(category="meta")
+@ai_tools(
+    category="common",
+    capability_domain="能力目录",
+    covers=["查看能力目录", "列出已挂载的功能模块与可委派代理"],
+)
 async def capability_map(
     ctx: RunContext[ToolContext],
     scope: str = "all",

@@ -14,7 +14,7 @@
 - 单用户最多 20 个待执行任务
 - 循环任务最大执行次数为 150 次
 - 循环任务最小间隔为 5 分钟
-- 单轮对话内 `add_once_task` 调用上限：2 次（防"逐时间点枚举"工具误用）
+- 单轮对话内 `schedule_task(mode="once")` 调用上限：2 次（防"逐时间点枚举"工具误用）
 
 ## 状态说明
 
@@ -26,7 +26,7 @@
 """
 
 import uuid
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Literal, Optional
 from datetime import datetime, timedelta
 
 from pytz import timezone
@@ -55,7 +55,7 @@ MAX_EXECUTION_LIMIT = 150
 _LIST_TASKS_MAX_SHOWN = 20
 MIN_INTERVAL_SECONDS = 300
 
-# 单轮节流：防止主人格用 add_once_task 逐时间点枚举周期任务。
+# 单轮节流：防止主人格用 schedule_task(mode=once) 逐时间点枚举周期任务。
 # Key: (session_id, turn_id) — turn_id 由 gs_agent._execute_run 写入
 PER_TURN_ONCE_TASK_LIMIT = 2
 _PER_TURN_ONCE_TASK_COUNT: Dict[Tuple[str, str], int] = {}
@@ -106,62 +106,54 @@ def _get_execute_scheduled_task():
     capability_domain="定时任务",
     visible_when=visible_when_sched_create,
     check_func=check_sched_create,
-    covers=["一次性定时提醒、几分钟后、明天某点叫我、就这一次"],
-    aliases=["定时任务·一次性提醒", "定时任务·几分钟后", "定时任务·明天叫我"],
+    covers=["定时提醒、一次性提醒、循环提醒、明天叫我、每隔N分钟/每天/每周提醒"],
+    aliases=["定时任务", "设提醒", "闹钟", "循环提醒"],
     code_callable=False,
 )
-async def add_once_task(
+async def schedule_task(
+    ctx: RunContext[ToolContext],
+    mode: Literal["once", "interval"],
+    task_prompt: str,
+    run_time: str = "",
+    start_time: str = "",
+    interval_value: int = 0,
+    interval_type: str = "minutes",
+    max_executions: int = 10,
+) -> str:
+    """新建一次性或循环定时提醒（只新建；查/改/取消已有提醒先 find_tools 调同族管理工具）。
+
+    多步分析/复盘/记账走 register_kanban_task，不塞进本工具。
+
+    Args:
+        ctx: 工具执行上下文
+        mode: "once"（一次性，必填 run_time）或 "interval"（循环，必填 start_time 与 interval_value）
+        task_prompt: 到点要执行的清晰提醒内容
+        run_time: mode="once" 时的触发时间 "YYYY-MM-DD HH:MM:SS"
+        start_time: mode="interval" 时的首次触发时间 "YYYY-MM-DD HH:MM:SS"
+        interval_value: mode="interval" 时的间隔数值（最小等价 5 分钟）
+        interval_type: "minutes" / "hours" / "days"，默认 "minutes"
+        max_executions: 循环最大次数，默认 10（上限 150）
+    """
+    kind = (mode or "").strip().lower()
+    if kind == "once":
+        return await _add_once_task_impl(ctx, run_time=run_time or start_time, task_prompt=task_prompt)
+    if kind == "interval":
+        return await _add_interval_task_impl(
+            ctx,
+            interval_value=interval_value,
+            task_prompt=task_prompt,
+            start_time=start_time or run_time,
+            interval_type=interval_type,
+            max_executions=max_executions,
+        )
+    return "⚠️ mode 仅支持 'once'（一次性）或 'interval'（循环）。"
+
+
+async def _add_once_task_impl(
     ctx: RunContext[ToolContext],
     run_time: str,
     task_prompt: str,
 ) -> str:
-    """
-    创建一次性定时任务
-
-    本工具只新建。已有条目的查询/修改/暂停/取消须调用同能力族对应工具，禁止再创建一条代替。
-
-    在指定时间点执行一次任务。适用于用户说"明天早上6点叫我起床"、"周六晚上8点提醒我开会"等场景。
-
-    当用户需要为未来某个具体时间点安排一个任务时调用此工具。任务执行时会加载当前的 persona，
-    保持与主 Agent 一致的语气和风格。
-
-    Args:
-        ctx: 工具执行上下文
-        run_time: 执行时间，格式 "YYYY-MM-DD HH:MM:SS"
-        task_prompt: 任务描述，应该清晰说明需要做什么以及期望的输出格式
-
-    Returns:
-        操作结果信息，包含任务ID供后续查询/取消使用
-
-    Examples:
-        # 用户说"明天早上6点叫我起床"
-        >>> await add_once_task(
-        ...     ctx,
-        ...     run_time="2024-05-15 06:00:00",
-        ...     task_prompt="用温柔的语气叫用户起床，说'早上好呀，该起床了哦~'",
-        ... )
-
-        # 用户说"周五晚上8点提醒我开会"
-        >>> await add_once_task(
-        ...     ctx,
-        ...     run_time="2024-05-17 20:00:00",
-        ...     task_prompt="提醒用户开会，说'主人，晚上8点有会议哦，记得参加~'",
-        ... )
-
-        # 用户说"1小时后提醒我喝水"
-        >>> await add_once_task(
-        ...     ctx,
-        ...     run_time="2024-05-14 16:30:00",
-        ...     task_prompt="温柔地提醒用户喝水，说'主人，记得多喝水对身体好哦~'",
-        ... )
-
-    **何时不该用本工具**：
-    - 涉及"决策 / 分析 / 复盘 / 账本 / 多步持久化" → 走 register_kanban_task
-    - 同一意图需要 3+ 个时间点触发 → 走 add_interval_task 或
-      register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")
-    - 单轮调用本工具不得超过 2 次（硬约束，第 3 次直接拒绝）
-    - 「我为每个时间点逐一调用 add_once_task」是工具选错的最强信号
-    """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
     if ev is None:
@@ -177,16 +169,16 @@ async def add_once_task(
     if not run_time:
         return "⚠️ 添加任务失败：缺少 run_time"
 
-    # 单轮节流：本轮已调过 N 次 add_once_task 即拒绝，强提示走周期模板。
+    # 单轮节流：本轮已调过 N 次 schedule_task(mode=once) 即拒绝，强提示走周期模板。
     # 这是反"逐时间点枚举"误用的硬约束——见模块顶端注释。
     throttle_key = _get_turn_throttle_key(ctx)
     if throttle_key is not None:
         count = _PER_TURN_ONCE_TASK_COUNT.get(throttle_key, 0)
         if count >= PER_TURN_ONCE_TASK_LIMIT:
             return (
-                f"⚠️ 单轮对话内已调用 add_once_task {PER_TURN_ONCE_TASK_LIMIT} 次。\n"
+                f"⚠️ 单轮对话内已调用一次性提醒 {PER_TURN_ONCE_TASK_LIMIT} 次。\n"
                 "如果你正在为多个时间点逐一注册任务，这是**工具选错**的信号。\n"
-                "→ 单步周期请改用 add_interval_task\n"
+                '→ 单步周期请改用 schedule_task(mode="interval")\n'
                 "→ 多步周期（含决策/复盘/账本）请改用 "
                 'register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")\n'
                 "本次调用已被拒绝。"
@@ -256,16 +248,7 @@ async def add_once_task(
         return f"⚠️ 添加任务失败: {str(e)}"
 
 
-@ai_tools(
-    category="self",
-    capability_domain="定时任务",
-    visible_when=visible_when_sched_create,
-    check_func=check_sched_create,
-    covers=["每天/每周/每隔N分钟/工作日的循环提醒"],
-    aliases=["定时任务·每天提醒", "定时任务·每隔几分钟", "定时任务·每周", "定时任务·工作日"],
-    code_callable=False,
-)
-async def add_interval_task(
+async def _add_interval_task_impl(
     ctx: RunContext[ToolContext],
     interval_value: int,
     task_prompt: str,
@@ -273,77 +256,6 @@ async def add_interval_task(
     interval_type: str = "minutes",
     max_executions: int = 10,
 ) -> str:
-    """
-    创建循环定时任务
-
-    本工具只新建。已有条目的查询/修改/暂停/取消须调用同能力族对应工具，禁止再创建一条代替。
-
-    按固定间隔重复执行任务。当用户需要定期执行某个任务时调用此工具，
-    例如"每半小时提醒我喝水"、"每天早上发天气预报"、"每天下午3点30分查xxx"。
-
-    循环任务会按照设定的时间间隔重复执行，达到最大执行次数后自动结束。
-    系统安全限制：最大执行 150 次，最小间隔 5 分钟。
-
-    **何时不该用本工具**：
-    - 任务包含"决策 / 多代理协作 / 周期复盘 / 持久化记账"——这些属于多步任务，
-      应走 register_kanban_task(recurring_trigger="cron:..." 或 "interval:N")，
-      而不是把多步流程塞进 task_prompt。
-    - task_prompt 写得超过 2 个步骤（"先 A 再 B 再 C 再写日志再汇报"），
-      这是**工具选错**的强信号。
-    - task_prompt 含 if-then-else 多步判断（"如果是工作日就 A 否则 B"），
-      也是工具选错——多步逻辑由 Kanban 子任务树承载。
-
-    Args:
-        ctx: 工具执行上下文
-        interval_value: 间隔值，配合 interval_type 使用
-        task_prompt: 任务描述，应该清晰说明需要做什么
-        interval_type: 间隔类型，"minutes"(分钟)/"hours"(小时)/"days"(天)，默认 "minutes"
-        max_executions: 最大执行次数，默认 10 次（安全限制，不可超过）
-        start_time: 首次执行的时间，格式 "YYYY-MM-DD HH:MM:SS"
-                    例如用户说"每天下午3点30分"，则 start_time="2024-05-15 15:30:00"
-
-    Returns:
-        操作结果信息，包含任务ID供后续查询/暂停/取消使用
-
-    Examples:
-        # 用户说"每半小时提醒我站起来活动一下"
-        >>> await add_interval_task(
-        ...     ctx,
-        ...     interval_value=30,
-        ...     interval_type="minutes",
-        ...     task_prompt="提醒用户站起来活动一下，语气简短友好。",
-        ...     max_executions=10,
-        ... )
-
-        # 用户说"每天早上8点给我发天气预报"
-        >>> await add_interval_task(
-        ...     ctx,
-        ...     interval_value=1,
-        ...     task_prompt="查询今天的天气预报，以简洁友好的语气回复，格式如'今天天气XX度，XX天气，记得带伞哦~'",
-        ...     interval_type="days",
-        ...     max_executions=10,
-        ...     start_time="2024-05-15 08:00:00",
-        ... )
-
-        # 用户说"每天下午3点30分查xxx"
-        >>> await add_interval_task(
-        ...     ctx,
-        ...     interval_value=1,
-        ...     task_prompt="查询xxx的最新信息",
-        ...     interval_type="days",
-        ...     max_executions=10,
-        ...     start_time="2024-05-15 15:30:00",
-        ... )
-
-        # 用户说"每2小时提醒我站起来活动一下"
-        >>> await add_interval_task(
-        ...     ctx,
-        ...     interval_value=2,
-        ...     interval_type="hours",
-        ...     task_prompt="用关心的语气提醒用户站起来活动一下，说'主人，久坐对身体不好哦，起来动一动吧~'",
-        ...     max_executions=10,
-        ... )
-    """
     tool_ctx: ToolContext = ctx.deps
     ev = tool_ctx.ev
     if ev is None:

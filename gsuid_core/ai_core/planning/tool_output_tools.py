@@ -68,14 +68,41 @@ async def _handle_access_allowed(
 ) -> bool:
     if resolved.source == "tool_output":
         return _tool_output_access_allowed(resolved, ctx)
-    if resolved.source in ("knowledge", "note"):
+    if resolved.source == "knowledge":
         return True
+    if resolved.source == "note":
+        ev = ctx.deps.ev
+        if ev is None:
+            return True
+        sk = (resolved.scope_key or "").strip()
+        owner = (resolved.owner_user_id or "").strip()
+        cur_gid = str(ev.group_id).strip() if ev.group_id else ""
+        cur_uid = str(ev.user_id).strip() if ev.user_id else ""
+        if not sk:
+            # 历史无归属旧笔记：已开启跨群隔离水位线时按 fail-closed 拒读，防跨群泄露
+            from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
+
+            return await ensure_isolation_watermark_ts() <= 0.0
+        if sk.startswith("self:"):
+            return True
+        if sk.startswith("group:"):
+            target_gid = sk[len("group:") :].strip()
+            if cur_gid:
+                return cur_gid == target_gid
+            return bool(cur_uid and owner and cur_uid == owner)
+        if sk.startswith("user_global:"):
+            target_uid = sk[len("user_global:") :].strip()
+            return not cur_gid and bool(cur_uid) and (cur_uid == target_uid or cur_uid == owner)
+        return False
     if resolved.source == "journal":
         if not resolved.scope_key:
             return True
         ev = ctx.deps.ev
         if ev is None:
             return True
+        if resolved.scope_key.startswith("user:"):
+            target_uid = resolved.scope_key[len("user:") :].strip()
+            return not ev.group_id and bool(ev.user_id) and str(ev.user_id).strip() == target_uid
         return bool(ev.group_id) and str(ev.group_id) == resolved.scope_key
     if resolved.source == "image" and resolved.id.startswith("img_"):
         return True

@@ -23,12 +23,11 @@ def _scope_keys(ctx: ToolContext) -> list[str]:
     keys: list[str] = []
     if not user_id:
         return keys
-    from gsuid_core.ai_core.memory.config import memory_config
-
     conv = scope_key_for_conversation(group_id, str(user_id))
     if conv:
         keys.append(conv)
-    if not group_id or memory_config.enable_user_global_memory:
+    # 群聊严禁拉取私聊 user_global 原文，仅私聊场景才加入 user_global
+    if not group_id:
         ug = make_scope_key(ScopeType.USER_GLOBAL, user_id)
         if ug not in keys:
             keys.append(ug)

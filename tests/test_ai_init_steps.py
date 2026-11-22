@@ -52,6 +52,7 @@ def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch, tm
         "RAG",
         "Persona",
         "多人格隔离迁移",
+        "跨群隐私隔离无损迁移",
         "审批中心",
         "定时任务",
         "长任务编排",

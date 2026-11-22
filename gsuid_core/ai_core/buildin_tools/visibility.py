@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from typing import Iterator, Protocol, Sequence
+from contextvars import Token, ContextVar
 
 from pydantic_ai import RunContext
 
@@ -50,7 +51,9 @@ def _iter_context_texts(ctx: VisibilityScanCtx) -> Iterator[str]:
 
 
 def context_has_url(ctx: VisibilityScanCtx) -> bool:
-    """``web_fetch_tool`` 的 visible_when：上下文里出现可抓取 URL 时才暴露。"""
+    """``web_fetch_tool`` 的 visible_when：上下文里出现可抓取 URL 时才暴露（call_tool 直调放行）。"""
+    if _is_call_tool_direct_invoke():
+        return True
     ev = ctx.deps.ev if ctx.deps is not None else None
     if ev is None:
         return True  # 后台 / 能力代理无 ev：不隐藏，交调用方与执行期兜底
@@ -90,6 +93,21 @@ SCHED_CREATE_OK_KEY = "sched_create_ok"
 SCHED_MUTATE_OK_KEY = "sched_mutate_ok"
 MODEL_DECLARES_VIDEO_KEY = "model_declares_video"
 FIND_TOOLS_RECALLED_KEY = "find_tools_recalled"
+
+# 并发安全的任务级标记：call_tool 调 prepare_tool_def 时隔离放行纯降噪 visible_when
+_CALL_TOOL_DIRECT_INVOKE: ContextVar[bool] = ContextVar("gs_call_tool_direct_invoke", default=False)
+
+
+def enter_call_tool_direct_invoke() -> Token[bool]:
+    return _CALL_TOOL_DIRECT_INVOKE.set(True)
+
+
+def exit_call_tool_direct_invoke(token: Token[bool]) -> None:
+    _CALL_TOOL_DIRECT_INVOKE.reset(token)
+
+
+def _is_call_tool_direct_invoke() -> bool:
+    return _CALL_TOOL_DIRECT_INVOKE.get()
 
 
 def mark_find_tools_recalled(deps: ToolContext, name: str) -> None:
@@ -199,7 +217,9 @@ def visibility_user_hint(
 
 
 def visible_when_timeline_query(ctx: VisibilityScanCtx) -> bool:
-    """排序/摘要/版本对比问句才暴露 search_turns / read_session / timeline。"""
+    """排序/摘要/版本对比问句才暴露 search_turns / read_session / timeline（call_tool 直调放行）。"""
+    if _is_call_tool_direct_invoke():
+        return True
     deps = ctx.deps
     if deps is None or "memory_intent" not in deps.extra:
         return False
@@ -222,9 +242,9 @@ def context_has_image(ctx: VisibilityScanCtx) -> bool:
 
 
 def context_has_video(ctx: VisibilityScanCtx) -> bool:
-    """有视频且模型声明 video 才默认暴露。find_tools 召回后本轮保持可见。"""
+    """有视频且模型声明 video 才默认暴露。find_tools 召回或 call_tool 直调时放行。"""
     deps = ctx.deps
-    if deps is None:
+    if deps is None or _is_call_tool_direct_invoke():
         return True
     if find_tools_recalled(deps, "read_video"):
         return True
@@ -238,16 +258,5 @@ def context_has_video(ctx: VisibilityScanCtx) -> bool:
         return True
     for text in _iter_context_texts(ctx):
         if "vid_" in text or "视频ID" in text:
-            return True
-    return False
-
-
-def visible_when_directive_present(ctx: VisibilityScanCtx) -> bool:
-    """内部校验/纠偏指令出现时才暴露 dispute_directive。"""
-    deps = ctx.deps
-    if deps is not None and "dispute_extra" in deps.extra:
-        return True
-    for text in _iter_context_texts(ctx):
-        if "系统校验" in text or "[框架·" in text:
             return True
     return False

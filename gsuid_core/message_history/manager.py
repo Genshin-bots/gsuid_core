@@ -428,36 +428,50 @@ class HistoryManager:
             return []
         tokens = [tok for tok in re.findall(r"[^\s，。！？、；：,.!?;:]{2,}", q)]
         picked: List[tuple[MessageRecord, float]] = []
+        from gsuid_core.ai_core.memory.privacy import filter_records_for_user
+
+        # 锁内仅拷贝快照，O(N) 过滤与打分移到锁外避免阻塞并发写路径
+        snapshots: List[tuple[bool, str, List[MessageRecord]]] = []
         with self._lock:
             for ev, meta in self._session_metadata.items():
                 bot_meta = str(meta["bot_id"]) if "bot_id" in meta else ev.bot_id
                 if bot_id and bot_meta != bot_id:
                     continue
                 gid_meta = meta["group_id"] if "group_id" in meta else ev.group_id
+                is_group_session = bool(gid_meta or ev.group_id)
                 if group_id:
                     if str(gid_meta or "") != str(group_id):
                         continue
                 else:
-                    if gid_meta or ev.group_id:
-                        continue
-                    uid_meta = str(meta["user_id"]) if "user_id" in meta else ev.user_id
-                    if uid_meta != user_id:
-                        continue
+                    if not is_group_session:
+                        uid_meta = str(meta["user_id"]) if "user_id" in meta else ev.user_id
+                        if uid_meta != user_id:
+                            continue
                 history = self._histories.get(ev)
                 if history is None:
                     continue
-                for rec in history:
-                    body = (rec.content or "").lower()
-                    if not body:
-                        continue
-                    if q in body:
-                        score = 1.0
-                    elif tokens:
-                        score = sum(1 for tok in tokens if tok in body) / len(tokens)
-                    else:
-                        score = 0.0
-                    if score <= 0:
-                        continue
+                gid_str = str(gid_meta or ev.group_id or "")
+                snapshots.append((is_group_session, gid_str, list(history)))
+
+        for is_group_session, gid_str, records_list in snapshots:
+            visible = (
+                filter_records_for_user(records_list, user_id) if (not group_id and is_group_session) else records_list
+            )
+            for rec in visible:
+                body = (rec.content or "").lower()
+                if not body:
+                    continue
+                if q in body:
+                    score = 1.0
+                elif tokens:
+                    score = sum(1 for tok in tokens if tok in body) / len(tokens)
+                else:
+                    score = 0.0
+                if score <= 0:
+                    continue
+                if not group_id and is_group_session and gid_str:
+                    picked.append((replace(rec, content=f"[群:{gid_str}] {rec.content}"), score))
+                else:
                     picked.append((rec, score))
         picked.sort(key=lambda item: item[1], reverse=True)
         return picked[: max(1, limit)]

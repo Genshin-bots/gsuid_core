@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 
 # 单轮节流：弱模型常把 send_message_by_ai 当回复通道一轮连发好几条刷屏。与 scheduler.py
-# add_once_task 同构，key=(session_id, turn_id)，超限直接拒发、提示改用正文输出。
+# schedule_task 同构，key=(session_id, turn_id)，超限直接拒发、提示改用正文输出。
 PER_TURN_SEND_MESSAGE_LIMIT = 2
 _PER_TURN_SEND_MESSAGE_COUNT: Dict[Tuple[str, str], int] = {}
 
@@ -210,34 +210,19 @@ async def send_message_by_ai(
     image_id: Optional[Union[List[str], str]] = None,
     file_ids: Optional[Union[List[str], str]] = None,
 ) -> str:
-    """
-    主动发送消息给用户
+    """主动发送图文/音视频/文件消息给用户（普通纯文字直接作为回复正文输出，勿滥用本工具）。
 
-    支持发送文本消息、图片消息（单张或多张组合）、视频消息、音频消息、文件消息。
-    AI 可以传入 text 和/或 image_ids 和/或 video_id 和/或 audio_id 和/或 file_ids，系统会组合发送。
-
-    **重要**：当其他工具返回 `[视频消息]`/`[图片消息]`/`[语音消息]` 等标记时，
-    表示该媒体已由框架自动发送给用户，**无需再调用本工具重复发送**。
-    本工具仅用于主动补充发送文字说明或追加媒体时使用。
-
-    **资源 ID 必须来自上下文**：image_ids / video_id / audio_id / file_ids 只能填
-    本轮对话中实际出现过的 ID（如 `img_xxxxxxxx`、`res_xxxxxxxx`、`fil_xxxxxxxx`）
-    或图片 URL，**禁止自行构造或猜测**。没有可用资源就只发 text。
+    其他工具已返回 `[图片消息]`/`[视频消息]` 时勿重复发；所有资源 ID 须来自上下文，禁臆造。
 
     Args:
-        ctx: 工具执行上下文（包含bot和ev对象）
-        text: 文本内容，可选
-        image_ids: 图片资源ID或URL列表，可选。支持单个ID（如"img_123"）或列表（如["img_1", "img_2"]）
-        video_id: 视频资源ID，可选，格式通常为"video_xxxxxx"或"img_xxxxxx"
-        audio_id: 音频资源ID，可选，格式通常为"aud_xxxxxxxx"
-        user_id: 可选，目标用户ID，默认为事件关联的用户
-        image_id: 可选，兼容旧参数（单个或多个图片资源ID，等同于 image_ids）
-        file_ids: 文件资源ID列表，可选，单次最多 3 个，单个文件 ≤10MB。
-            只接受 ``fil_xxxxxxxx``（插件经 to_ai 发出登记的原始文件）或
-            ``res_xxxxxxxx``（Kanban 落盘文件 artifact；图片请用 image_ids）。
-
-    Returns:
-        发送结果描述字符串
+        ctx: 工具执行上下文
+        text: 可选文本内容
+        image_ids: 图片资源 ID（img_/res_/URL）或列表，最多 9 张
+        video_id: 视频资源 ID
+        audio_id: 音频资源 ID（aud_）
+        user_id: 可选目标用户 ID
+        image_id: 兼容旧参，等同 image_ids
+        file_ids: 文件句柄列表（fil_/res_），最多 3 个
     """
     tool_ctx: ToolContext = ctx.deps
     bot: Optional[Bot] = tool_ctx.bot

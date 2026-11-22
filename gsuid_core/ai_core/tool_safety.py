@@ -47,10 +47,13 @@ async def _on_tool_execute_error(
     args: dict[str, object],
     error: Exception,
 ) -> str:
-    _ = ctx, args
-    name = call.tool_name or tool_def.name or "unknown"
+    _ = ctx
+    raw_name = call.tool_name or tool_def.name or "unknown"
+    name = _effective_call_name(raw_name, args)
+    from gsuid_core.ai_core.tool_health import record_tool_failure
     from gsuid_core.ai_core.evidence.capture import record_tool_error
 
+    record_tool_failure(name, type(error).__name__)
     record_tool_error(name, error)
     msg = format_tool_execute_error(name, error)
     logger.warning(
@@ -64,16 +67,34 @@ async def _on_tool_execute_error(
     return msg
 
 
+WIRE_TOOLS_SNAPSHOTS_KEY = "_wire_tools_snapshots"
+
+
 async def _prepare_model_request_images(
     ctx: RunContext[ToolContext],
     request_context: ModelRequestContext,
 ) -> ModelRequestContext:
-    """发往模型前将内联图片块适配到当前实际模型的协议（Google/Anthropic 禁 data: URL）。"""
-    _ = ctx
+    """发往模型前记录线缆层 function_tools 快照并适配内联图片协议。"""
+    params = request_context.model_request_parameters
+    wire_names = [td.name for td in params.function_tools]
+    extra = ctx.deps.extra
+    snaps = extra[WIRE_TOOLS_SNAPSHOTS_KEY] if WIRE_TOOLS_SNAPSHOTS_KEY in extra else None
+    if isinstance(snaps, list):
+        snaps.append(wire_names)
+    else:
+        extra[WIRE_TOOLS_SNAPSHOTS_KEY] = [wire_names]
     adapted = adapt_messages_images_for_model(request_context.messages, request_context.model)
     if all(a is b for a, b in zip(adapted, request_context.messages, strict=True)):
         return request_context
     return dataclasses.replace(request_context, messages=adapted)
+
+
+def _effective_call_name(call_name: str, args: object) -> str:
+    if call_name == "call_tool" and isinstance(args, dict) and "tool_name" in args:
+        inner = str(args["tool_name"] or "").strip()
+        if inner:
+            return inner
+    return call_name
 
 
 async def _evidence_capture_execute(
@@ -84,18 +105,22 @@ async def _evidence_capture_execute(
     args: ValidatedToolArgs,
     handler: WrapToolExecuteHandler,
 ) -> object:
-    """工具证据捕获：入链时放 outcome 槽，MCP 包装填写；返回后入观测库（§4.5）。"""
+    """工具证据捕获：call_tool 展开真实内层工具名后入观测库（§4.5）。"""
     from gsuid_core.ai_core.evidence.capture import (
         record_tool_result,
         take_evidence_mark,
         reset_evidence_mark,
     )
 
-    name = (call.tool_name or tool_def.name or "").strip()
+    raw_name = (call.tool_name or tool_def.name or "").strip()
+    eff_name = _effective_call_name(raw_name, args)
     token = reset_evidence_mark()
-    result = await block_high_risk_execute(ctx, call=call, tool_def=tool_def, args=args, handler=handler)
-    mark = take_evidence_mark(token)
-    record_tool_result(name, result, mark)
+    try:
+        result = await block_high_risk_execute(ctx, call=call, tool_def=tool_def, args=args, handler=handler)
+    finally:
+        mark = take_evidence_mark(token)
+    if mark is None or not mark.error_recorded:
+        record_tool_result(eff_name, result, mark)
     return result
 
 

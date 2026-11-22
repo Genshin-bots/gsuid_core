@@ -74,6 +74,9 @@ def count_document_sources(text: str) -> int:
     return len(seen)
 
 
+_MEMORY_CHAT_WIDE_CAP = 6000
+
+
 def inject_memory_cap(
     query: str,
     *,
@@ -94,13 +97,16 @@ def inject_memory_cap(
     if memory_config.evidence_mode:
         return wide
     multi_source = n_doc_sources >= _MEMORY_WIDE_MIN_DOC_SOURCES
+    if covered or multi_source or wants_parallel_document_coverage(query, memory_intent=memory_intent):
+        return wide
     timeline = (
         memory_intent in ("timeline_order", "version_diff", "broad_summary")
         or looks_like_count_query(query)
         or looks_like_sum_query(query, memory_intent=memory_intent)
     )
-    if covered or multi_source or timeline or wants_parallel_document_coverage(query, memory_intent=memory_intent):
-        return wide
+    if timeline:
+        # 常规对话宽档收口至 6k，防止普通群聊单轮塞爆 32k–48k 字符
+        return min(wide, max(default, _MEMORY_CHAT_WIDE_CAP))
     return default
 
 

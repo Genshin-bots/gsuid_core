@@ -50,13 +50,32 @@ def _is_private(ev: Event) -> bool:
 
 
 def _may_read(current: Event, target: Event, *, is_master: bool) -> bool:
+    """群聊锁死仅当前群；私聊只可读本人私聊，以及各群中与本人相关的消息片段。"""
+    del is_master
     if not _same_bot(current, target):
         return False
-    if not _is_private(target):
-        return True
-    if is_master:
-        return True
-    return str(target.user_id) == str(current.user_id)
+    if not _is_private(current):
+        return target.session_id == current.session_id
+    if _is_private(target):
+        return str(target.user_id) == str(current.user_id)
+    return True
+
+
+def _visible_records_for_caller(
+    manager: HistoryManager,
+    current: Event,
+    target: Event,
+) -> list[MessageRecord]:
+    """群聊读本群全量；私聊读群会话时仅保留与当前用户直接相关的消息行。"""
+    records = manager.get_history(target)
+    if not records:
+        return []
+    if _is_private(current) and not _is_private(target):
+        from gsuid_core.ai_core.memory.privacy import filter_records_for_user
+
+        uid = str(current.user_id or "")
+        return filter_records_for_user(records, uid)
+    return records
 
 
 def _find_session(manager: HistoryManager, current: Event, ref: str) -> Event | None:
@@ -78,7 +97,7 @@ def _list_sessions(manager: HistoryManager, current: Event, *, is_master: bool) 
     for ev in manager.list_sessions():
         if not _may_read(current, ev, is_master=is_master):
             continue
-        records = manager.get_history(ev)
+        records = _visible_records_for_caller(manager, current, ev)
         if not records:
             continue
         lines.append(f"{_session_label(ev)} · {len(records)}条")
@@ -236,8 +255,8 @@ def read_chat_history_text(
     if target is None:
         return "没有这个会话的发言记录。session_id 用 list、group:群号 或 private:用户ID。"
     if not _may_read(current, target, is_master=is_master):
-        return "别人的私聊记录不能读。"
-    records = manager.get_history(target)
+        return "无权读取其他群聊或他人的私聊记录。"
+    records = _visible_records_for_caller(manager, current, target)
     label = _session_label(target)
     if not records:
         return f"{label} 最近12小时没有留下发言。"
@@ -271,7 +290,11 @@ def read_chat_history_text(
     return f"{head}（发言文本，不含图片内容）\n{body}"
 
 
-@ai_tools(category="buildin")
+@ai_tools(
+    category="buildin",
+    capability_domain="聊天记录",
+    covers=["查询聊天记录", "翻群聊历史消息", "按关键词搜索过往消息", "回看最近对话"],
+)
 async def read_chat_history(
     ctx: RunContext[ToolContext],
     session_id: str = "",
@@ -283,7 +306,7 @@ async def read_chat_history(
     """在最近 12 小时的群或私聊记录里搜索，不一次读出全部。
 
     session_id 留空是当前会话。``list`` 只列会话和条数。
-    ``group:群号`` / ``private:用户ID`` 指定会话。别人的私聊只有主人能读。
+    ``group:群号`` / ``private:用户ID`` 指定会话。群聊仅查本群，私聊仅查本人私聊及各群与本人相关片段。
     query 按原文搜；at 用 HH:MM 或 YYYY-MM-DD HH:MM，看该时刻前后 radius_minutes 分钟。
     两者都空时只告诉条数。返回发言文本，不含图片内容。
 

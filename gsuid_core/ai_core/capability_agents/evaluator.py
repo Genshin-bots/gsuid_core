@@ -243,7 +243,7 @@ _EVALUATOR_PROMPT = """你是「能力评估代理（capability_evaluator）」�
        ③ 一次性 **final 子任务**（`depends_on=[]`，**严禁 depends_on 周期子任务**——
           周期永不 completed = 死锁）：带 `not_before="<结算时刻 ISO>"`，到点自动
           派出，调 `record_list` 把流水拉回来汇总并出报告。
-     时间触发条件**严禁**走 add_interval_task 在主人格侧自己写循环——必须把
+     时间触发条件**严禁**走 schedule_task 在主人格侧自己写循环——必须把
      `recurring_trigger` 写在 ② 那个 suggested_subtask 的字段里让 Kanban 自己
      克隆执行实例；任何"等到某个绝对时间再执行一次"语义请用 ③ 子任务的
      `not_before` 字段。
@@ -274,7 +274,7 @@ _EVALUATOR_PROMPT = """你是「能力评估代理（capability_evaluator）」�
    有上下游的子任务显式给 depends_on（引用本数组下标）。Kanban 本身不持有定时器
    （周期触发由 `recurring_trigger` 字段 + APScheduler 桥接）——若任务带
    "明天/每天/N 小时后"等时间触发条件，请在 risk_notes 里提示主人格根据情况
-   选择 `add_once_task` / `add_interval_task` 唤醒，或在 `register_kanban_task`
+   选择 `schedule_task`（once / interval）唤醒，或在 `register_kanban_task`
    时直接传 `recurring_trigger`。
 5. **不要**在 suggested_subtasks 里写"先用 web_search 查一下"这种万能兜底——那是
    research_agent 自己规划的事，不是你的拆解。
@@ -546,7 +546,7 @@ async def evaluate_capability(
     标题 / 代码围栏，或干脆截断；`_parse_evaluator_output` 已有强容错，但若仍
     解析失败，本函数会自动重试一次并在 system prompt 顶部追加更严格的"裸 JSON"
     口令——只有重试也失败才返回 covered=false。**严禁**直接放过解析失败让主人格
-    走旁路（旧版行为，导致主人格在评估失败后自行 `record_put` + `add_interval_task`，
+    走旁路（旧版行为，导致主人格在评估失败后自行 `record_put` + `schedule_task`，
     完全绕过 Kanban / 能力代理体系）。
     """
     # 短期内重复评估，直接复用上一次结果（避免主人格刷工具刷出无意义评估）

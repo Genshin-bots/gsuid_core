@@ -176,7 +176,15 @@ async def distill_task_terminal(
     return episode_id
 
 
-async def distill_self_note(*, note: str, note_type: str, bot_id: str, persona_name: str) -> Optional[int]:
+async def distill_self_note(
+    *,
+    note: str,
+    note_type: str,
+    bot_id: str,
+    persona_name: str,
+    scope_key: str = "",
+    owner_user_id: str = "",
+) -> Optional[int]:
     """``update_self_note`` 写入后同步 ``self_note`` 节点。
 
     与 ``AIMemPreference`` 的去重方向：**称呼/禁忌类规则优先落 preference**，
@@ -186,13 +194,15 @@ async def distill_self_note(*, note: str, note_type: str, bot_id: str, persona_n
 
     # 必须用**稳定**摘要：Python 的 str.__hash__ 带 PYTHONHASHSEED 随机化，进程重启后
     # 同一条 note 会算出不同 ref，(kind, ref) 幂等键失效 → 每次重启都堆一份重复节点。
-    digest = hashlib.sha1(note.encode("utf-8")).hexdigest()[:16]
+    resolved_scope = scope_key.strip() or self_scope_key(bot_id or "default", persona_name)
+    digest = hashlib.sha1(f"{resolved_scope}|{owner_user_id}|{note}".encode("utf-8")).hexdigest()[:16]
     ref = f"self:{bot_id}:{note_type}:{digest}"
     return await remember(
         MemoryWrite(
             kind=CogKind.SELF_NOTE,
             ref=ref,
-            scope_key=self_scope_key(bot_id or "default", persona_name),
+            scope_key=resolved_scope,
+            owner_user_id=owner_user_id,
             title=note_type,
             summary=_clip(note),
             source="self_action",

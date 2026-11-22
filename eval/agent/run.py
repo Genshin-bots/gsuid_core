@@ -179,6 +179,19 @@ def _case_score_row(cid: str, case: dict, traces: list[Trace], r: dict) -> dict:
     cr_tok = sum(t.cache_read_tokens for t in traces)
     cw_tok = sum(t.cache_write_tokens for t in traces)
     case_cache = round(cr_tok / in_tok, 4) if in_tok else 0.0
+    ft_calls = sum(t.find_tools_calls for t in traces)
+    ft_hits = sum(t.find_tools_hits for t in traces)
+    ct_total = sum(t.call_tool_total for t in traces)
+    ct_ok = sum(t.call_tool_ok for t in traces)
+    ct_schema_err = sum(t.call_tool_schema_errors for t in traces)
+    ct_dispatch_err = sum(t.call_tool_dispatch_errors for t in traces)
+    frozen_breaks = sum(
+        1
+        for t in traces
+        if t.tools_change_count > 0
+        or len({tuple(s) for s in (t.wire_tools_snapshots or t.tools_list_snapshots) if s}) > 1
+    )
+    prefix_breaks_cnt = sum(len(t.prefix_breaks) for t in traces)
     return {
         "id": cid,
         "domain": case["domain"] if "domain" in case else "?",
@@ -196,6 +209,14 @@ def _case_score_row(cid: str, case: dict, traces: list[Trace], r: dict) -> dict:
         "cache_read_tokens": cr_tok,
         "cache_write_tokens": cw_tok,
         "cache_rate": case_cache,
+        "find_tools_calls": ft_calls,
+        "find_tools_hits": ft_hits,
+        "call_tool_total": ct_total,
+        "call_tool_ok": ct_ok,
+        "call_tool_schema_errors": ct_schema_err,
+        "call_tool_dispatch_errors": ct_dispatch_err,
+        "tools_frozen_breaks": frozen_breaks,
+        "prefix_breaks": prefix_breaks_cnt,
         "firewall_saved_runs": fw_saved,
         "sample": sample,
     }
@@ -327,6 +348,12 @@ def main() -> int:
     ap.add_argument(
         "--only", default="", help="只跑 id 含这些子串(逗号分隔任一匹配)的用例（冒烟用，如 --only ooc_,args_）"
     )
+    ap.add_argument(
+        "--tier",
+        choices=["all", "1", "2"],
+        default="all",
+        help="分层筛选：1=PR快速门禁与高难混沌核心集 / 2=扩展回归 / all=全部",
+    )
     ap.add_argument("--limit", type=int, default=0, help="只跑 N 例（冒烟/分块用，0=不限）")
     ap.add_argument("--offset", type=int, default=0, help="跳过前 N 例（配合 --limit 做可续跑的分块全量）")
     ap.add_argument("--out", default=str(Path(__file__).parent / "results" / "report.json"))
@@ -347,6 +374,8 @@ def main() -> int:
         extra_paths.append(cases_dir / "speaker_slot_recall.yaml")
         extra_paths.append(cases_dir / "run_code_fanout.yaml")
         extra_paths.append(cases_dir / "group_chat_meme.yaml")
+        extra_paths.append(cases_dir / "tool_search_call_tool_v3.yaml")
+        extra_paths.append(cases_dir / "group_chaos_beyond_baseline.yaml")
     if args.extra_cases:
         for p in args.extra_cases.split(","):
             p = p.strip()
@@ -360,6 +389,9 @@ def main() -> int:
 
     skipped = [c for c in cases if c.get("needs_fixture") and not args.with_fixtures]
     active = [c for c in cases if c not in skipped]
+    if args.tier != "all":
+        want_tier = int(args.tier)
+        active = [c for c in active if int(c.get("tier", 2)) == want_tier]
     if args.only:
         subs = [s.strip() for s in args.only.split(",") if s.strip()]
         active = [c for c in active if any(s in c["id"] for s in subs)]
@@ -399,7 +431,9 @@ def main() -> int:
     all_lat = [r["avg_latency"] for r in results if r["avg_latency"]]
     agg["avg_tools_per_case"] = round(sum(all_tools) / len(all_tools), 2) if all_tools else 0.0
     agg["avg_latency_s"] = round(sum(all_lat) / len(all_lat), 1) if all_lat else 0.0
-    Path(args.out).write_text(
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
         json.dumps({"summary": agg, "results": results}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print("\n===== 汇总 (pass^k) =====")
@@ -411,9 +445,19 @@ def main() -> int:
     )
     print(f"平均工具数/例: {agg['avg_tools_per_case']}   平均延迟: {agg['avg_latency_s']}s")
     print(
-        f"token input={agg.get('input_tokens', 0)}  output={agg.get('output_tokens', 0)}  "
+        f"token input={agg.get('input_tokens', 0)} (avg={agg.get('avg_input_tokens', 0)}/case)  "
+        f"output={agg.get('output_tokens', 0)}  "
         f"cache_read={agg.get('cache_read_tokens', 0)}  cache_write={agg.get('cache_write_tokens', 0)}  "
         f"cache_rate={float(agg.get('cache_rate') or 0) * 100:.1f}%"
+    )
+    print(
+        f"工具搜索/执行: find_tools={agg.get('find_tools_hits', 0)}/{agg.get('find_tools_calls', 0)} "
+        f"({float(agg.get('find_tools_hit_rate') or 0) * 100:.1f}%)  "
+        f"call_tool={agg.get('call_tool_ok', 0)}/{agg.get('call_tool_total', 0)} "
+        f"({float(agg.get('call_tool_success_rate') or 0) * 100:.1f}%, "
+        f"schema_err={agg.get('call_tool_schema_errors', 0)}, "
+        f"dispatch_err={agg.get('call_tool_dispatch_errors', 0)})  "
+        f"tools_frozen_breaks={agg.get('tools_frozen_breaks', 0)}"
     )
     for d, v in agg["by_domain"].items():
         print(f"  {d:20s} {v['pass']}/{v['total']}  ({v['rate'] * 100:.0f}%)")

@@ -322,6 +322,9 @@ async def recall_span_threads(
                         "turn_episode_id": edge.source_episode_id or "",
                         "thread_id": th.id,
                         "source": "milestone",
+                        "scope_key": edge.scope_key,
+                        "source_id": edge.source_entity_id or "",
+                        "target_id": edge.target_entity_id or "",
                     }
                 )
                 if not edge.source_episode_id:

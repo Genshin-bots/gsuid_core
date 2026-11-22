@@ -99,6 +99,10 @@ GET_COOKIE_TOKEN = ApiEndpoint(
     os=f"{ACCOUNT_URL_OS}/account/auth/api/getCookieAccountInfoBySToken",
     name="GET_COOKIE_TOKEN",
 )
+EXCHANGE_TOKEN = ApiEndpoint(
+    cn=f"{PASSPORT_URL}/account/ma-cn-session/app/exchange",
+    name="EXCHANGE_TOKEN",
+)
 GET_ALL_TOKEN_BY_STOKEN = ApiEndpoint(
     os=f"{PUBLIC_API_OS}/account/ma-passport/token/getBySToken",
     name="GET_ALL_TOKEN_BY_STOKEN",
@@ -139,16 +143,26 @@ GET_COOKIE_TOKEN_BY_GAME_TOKEN = ApiEndpoint(
 )
 
 # --- Sign paths (relative to sign base host) ---
-SIGN_LIST = ApiEndpoint(cn="/event/luna/home", os="/event/sol/home", name="SIGN_LIST")
-SIGN_INFO = ApiEndpoint(cn="/event/luna/info", os="/event/sol/info", name="SIGN_INFO")
-SIGN = ApiEndpoint(cn="/event/luna/sign", os="/event/sol/sign", name="SIGN")
+SIGN_LIST = ApiEndpoint(cn="/event/luna/hk4e/home", os="/event/sol/home", name="SIGN_LIST")
+SIGN_INFO = ApiEndpoint(cn="/event/luna/hk4e/info", os="/event/sol/info", name="SIGN_INFO")
+SIGN = ApiEndpoint(cn="/event/luna/hk4e/sign", os="/event/sol/sign", name="SIGN")
 SIGN_LIST_SR = ApiEndpoint(cn="/event/luna/home", os="/event/luna/os/home", name="SIGN_LIST_SR")
 SIGN_INFO_SR = ApiEndpoint(cn="/event/luna/info", os="/event/luna/os/info", name="SIGN_INFO_SR")
 SIGN_SR = ApiEndpoint(cn="/event/luna/sign", os="/event/luna/os/sign", name="SIGN_SR")
+SIGN_LIST_ZZZ = ApiEndpoint(
+    cn="/event/luna/zzz/home",
+    os="/event/sol/home",
+    name="SIGN_LIST_ZZZ",
+)
 SIGN_INFO_ZZZ = ApiEndpoint(
     cn="/event/luna/zzz/info",
     os="/event/sol/info",
     name="SIGN_INFO_ZZZ",
+)
+SIGN_ZZZ = ApiEndpoint(
+    cn="/event/luna/zzz/sign",
+    os="/event/sol/sign",
+    name="SIGN_ZZZ",
 )
 
 # --- Genshin ---

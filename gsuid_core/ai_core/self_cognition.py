@@ -140,20 +140,15 @@ async def add_self_note(
     persona_name: str,
     content: str,
     field: str = "self_notes",
+    *,
+    scope_key: str = "",
+    owner_user_id: str = "",
 ) -> bool:
-    """向自我模型的指定字段追加一条记录（C3-a 实时偏好写入补丁）。
+    """向自我模型的指定字段追加一条记录（会话级 scope 隔离，防止跨群广播）。
 
     走 state_mutate 乐观锁完成读-改-写，并做写入限流：单条截断、列表去重、
     每字段最多保留 ``_MAX_ITEMS_PER_FIELD`` 条（超出丢弃最早条目），
     避免用户玩笑刷爆 self_model。
-
-    Args:
-        bot_id:  机器人 ID
-        content: 笔记内容
-        field:   目标字段，须为 _FIELDS 之一，默认 "self_notes"
-
-    Returns:
-        是否写入成功
     """
     from gsuid_core.ai_core.state_store import state_mutate
 
@@ -172,30 +167,47 @@ async def add_self_note(
         logger.warning(i18n_t("log.ai.selfcog_refused_persist_persistent_inject", p0=content[:60]))
         return False
 
+    resolved_scope = scope_key.strip()
+    owner_uid = owner_user_id.strip()
+    stored_text = content
+    if field == "preferences_learned" and owner_uid and owner_uid not in content:
+        stored_text = f"用户({owner_uid})：{content}"[:_MAX_NOTE_CHARS]
+
     def _mutate(current: Any) -> Dict[str, object]:
         model = _self_model_state(current)
         raw_items = model[field]
         items: list[str] = [x for x in raw_items if isinstance(x, str)] if isinstance(raw_items, list) else []
-        if content in items:
-            items.remove(content)
-        items.append(content)
+        if stored_text in items:
+            items.remove(stored_text)
+        items.append(stored_text)
         if len(items) > _MAX_ITEMS_PER_FIELD:
             items = items[-_MAX_ITEMS_PER_FIELD:]
         model[field] = items
         return model
 
-    await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate)
-    # 同步认知节点：让「我记过什么」能被 search_cognition 命中，而不是只能等
-    # 下一轮稳定前缀。称呼/禁忌这类**规则**优先落 AIMemPreference，此处只留非规则反思。
+    # 群/私聊会话内写入的承诺与反思落在本会话 scope，不污染全局 self:{bot}:{persona}
+    target_state_scope = (
+        resolved_scope
+        if (resolved_scope and field in ("commitments", "self_notes"))
+        else _self_scope(bot_id, persona_name)
+    )
+    await state_mutate(target_state_scope, _SELF_MODEL_KEY, _mutate)
     from gsuid_core.ai_core.cognition.distill import distill_self_note
 
-    await distill_self_note(note=content, note_type=field, bot_id=bot_id, persona_name=persona_name)
+    await distill_self_note(
+        note=stored_text,
+        note_type=field,
+        bot_id=bot_id,
+        persona_name=persona_name,
+        scope_key=resolved_scope,
+        owner_user_id=owner_uid,
+    )
     logger.debug(
         i18n_t(
             "log.ai.selfcog_bot_id_self_model_field",
             bot_id=bot_id,
             field=field,
-            content=content,
+            content=stored_text,
         )
     )
     return True
@@ -262,20 +274,24 @@ async def retrieve_self_episodes(bot_id: str, persona_name: str, limit: int = 3)
     Returns:
         以 `【我之前说过/做过】` 开头的文本块；无记录时返回空串。
     """
+    from datetime import datetime, timezone
+
     from sqlmodel import col, select
 
     from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
 
     scope_keys = self_scope_read_keys(bot_id or "default", persona_name)
+    watermark_ts = await ensure_isolation_watermark_ts()
     try:
         async with async_maker() as session:
-            result = await session.execute(
-                select(AIMemEpisode)
-                .where(col(AIMemEpisode.scope_key).in_(scope_keys))
-                .order_by(col(AIMemEpisode.valid_at).desc())
-                .limit(limit)
-            )
+            stmt = select(AIMemEpisode).where(col(AIMemEpisode.scope_key).in_(scope_keys))
+            if watermark_ts > 0.0:
+                # AIMemEpisode.valid_at 以 UTC naive 落库，必须转 UTC 避免东八区 8 小时错位
+                wm_utc_naive = datetime.fromtimestamp(watermark_ts, tz=timezone.utc).replace(tzinfo=None)
+                stmt = stmt.where(col(AIMemEpisode.valid_at) >= wm_utc_naive)
+            result = await session.execute(stmt.order_by(col(AIMemEpisode.valid_at).desc()).limit(limit))
             rows = list(result.scalars().all())
     except Exception as e:
         logger.debug(i18n_t("log.ai.selfcog_self_episodic_memory_fail", e=e))
@@ -347,14 +363,24 @@ async def build_self_cognition_context(
         可直接注入的文本块；无任何可注入内容时返回空串。
     """
     model = await get_self_model(bot_id, persona_name)
+    scoped_commitments: list[str] = list(model["commitments"])
+    scoped_notes: list[str] = list(model["self_notes"])
+    if scope_key and not scope_key.startswith("self:"):
+        from gsuid_core.ai_core.state_store import state_get_value
+
+        scoped_raw = await state_get_value(scope_key, _SELF_MODEL_KEY)
+        if isinstance(scoped_raw, dict):
+            sm = _normalize_self_model(scoped_raw)
+            scoped_commitments.extend(x for x in sm["commitments"] if x not in scoped_commitments)
+            scoped_notes.extend(x for x in sm["self_notes"] if x not in scoped_notes)
     lines: List[str] = ["【关于我自己（仅供参考）】"]
     ontology = await ensure_self_ontology(bot_id, persona_name)
     if ontology:
         lines.append("【我是什么】")
         lines.append(ontology)
 
-    if model["commitments"]:
-        lines.append(f"我的承诺: {'；'.join(model['commitments'][-5:])}")
+    if scoped_commitments:
+        lines.append(f"我的承诺: {'；'.join(scoped_commitments[-5:])}")
     # 学到的偏好按当前说话人放在 user 尾，不进共享 system（换人会打掉前缀缓存）。
 
     # recurring_topics：优先使用群画像累计标签，缺失时回退至静态配置。
@@ -364,8 +390,8 @@ async def build_self_cognition_context(
     final_topics = [t for t in (live_topics or model["recurring_topics"][-5:]) if t not in _SCHEMA_TAGS]
     if final_topics:
         lines.append(f"反复出现的话题: {'、'.join(final_topics)}")
-    if model["self_notes"]:
-        lines.append(f"我最近的反思: {'；'.join(model['self_notes'][-3:])}")
+    if scoped_notes:
+        lines.append(f"我最近的反思: {'；'.join(scoped_notes[-3:])}")
 
     if include_relationship and rel is not None:
         lines.append(rel.line)

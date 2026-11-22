@@ -47,8 +47,7 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
 # 写入类日程/看板工具：PIN 拒绝或失败不算生效。list/evaluate 只读，不算。
 _EFFECTUAL_WRITE_TOOLS: frozenset[str] = frozenset(
     {
-        "add_once_task",
-        "add_interval_task",
+        "schedule_task",
         "modify_scheduled_task",
         "cancel_scheduled_task",
         "pause_scheduled_task",
@@ -195,6 +194,7 @@ def _ensure_session_anchor_on_first_user(
     *,
     persona_name: str = "",
     group_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     marker: str = "",
     is_framework: bool = False,
 ) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere, float]:
@@ -219,6 +219,7 @@ def _ensure_session_anchor_on_first_user(
         journal_text, latest_ts = read_journal_for_context(
             persona_name,
             current_group_id=group_id,
+            current_user_id=user_id,
             since_ts=0.0,
         )
         if journal_text:

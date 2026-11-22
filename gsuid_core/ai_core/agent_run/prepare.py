@@ -439,12 +439,14 @@ class PreparePhase(RunOnceHost):
         marker = INNER_OS_MARKER if ai_config.get_config("enable_deepseek_rp").data else ""
         persona_name = self.persona_name or ""
         group_id = st.ev.group_id if st.ev is not None else None
+        user_id = st.ev.user_id if st.ev is not None else None
         st.final_user_message, st.lean_user_message, where, latest_ts = _ensure_session_anchor_on_first_user(
             self.history,
             st.final_user_message,
             st.lean_user_message,
             persona_name=persona_name,
             group_id=group_id,
+            user_id=user_id,
             marker=marker,
             is_framework=st.fw_msg,
         )
@@ -464,6 +466,7 @@ class PreparePhase(RunOnceHost):
             delta_text, latest_ts = read_journal_for_context(
                 persona_name,
                 current_group_id=group_id,
+                current_user_id=user_id,
                 since_ts=since_ts,
                 turn_target_uids=_targets,
             )

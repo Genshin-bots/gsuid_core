@@ -18,7 +18,7 @@
 子任务完成 / 失败后再自动 kick 下游。Kanban **不支持子任务级等待字段**（没有
 `not_before` / 节点级延时），但支持根任务 `recurring_trigger` 周期模板：模板由
 `planning/recurring.py` 桥接 APScheduler 到点克隆一次性实例树，再交给 `kick_root`
-事件驱动执行。单步提醒仍走 `add_once_task` / `add_interval_task`。
+事件驱动执行。单步提醒仍走 `schedule_task`。
 
 ---
 

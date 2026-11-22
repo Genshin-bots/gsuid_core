@@ -14,6 +14,7 @@ class Episode(TypedDict):
     turn_index: NotRequired[int]
     event_at: NotRequired[str]
     speaker_summary: NotRequired[str]
+    speaker_ids: NotRequired[list[str]]
     kind: NotRequired[str]
     score: NotRequired[float]
 
@@ -25,6 +26,8 @@ class Entity(TypedDict):
     entity_type: str
     layer: int
     score: float
+    scope_key: NotRequired[str]
+    created_at_ts: NotRequired[float]
 
 
 class Edge(TypedDict):
@@ -66,6 +69,9 @@ class MemoryEventCue(TypedDict):
     turn_episode_id: str
     thread_id: str
     source: NotRequired[str]
+    scope_key: NotRequired[str]
+    source_id: NotRequired[str]
+    target_id: NotRequired[str]
 
 
 class Category(TypedDict):
