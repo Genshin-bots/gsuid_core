@@ -72,6 +72,11 @@ class RunOnceState:
     same_tool_streak: int = 0
     same_tool_name: str = ""
     thrash_fused: bool = False
+    tool_fail_streaks: dict[str, int] = field(default_factory=dict)
+    total_tool_failures: int = 0
+    succeeded_tools: set[str] = field(default_factory=set)
+    failed_tools: set[str] = field(default_factory=set)
+    fail_fuse_nudged: bool = False
     thinking_segments: list[str] = field(default_factory=list)
     #: 本 ModelRequest 已从流式 event 推过 thinking_delta，CallTools 勿再整段重放
     thinking_streamed: bool = False

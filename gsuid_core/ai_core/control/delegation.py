@@ -112,15 +112,16 @@ async def load_delegation(
             )
     if task is None:
         return None
-    # 按 root 取：产物登记在**执行节点**上（多节点树是 child），list_for_task(root)
-    # 只能命中叶子根模式，树模式会永远返回「暂无产物登记」。
-    from gsuid_core.ai_core.planning.kanban_executor import select_delivery_artifacts
-
-    raw_arts = await AIAgentArtifact.list_for_root(task.root_task_id or task.id)
-    arts, _primary = select_delivery_artifacts(task, raw_arts)
-    handles = tuple(a.id for a in arts)
-    images = tuple(a.id for a in arts if bool(a.payload_path) and (a.mime or "").startswith("image/"))
     mapped = _STATUS_MAP[task.status] if task.status in _STATUS_MAP else "running"
+    handles: tuple[str, ...] = ()
+    images: tuple[str, ...] = ()
+    if mapped in _TERMINAL:
+        from gsuid_core.ai_core.planning.kanban_executor import select_delivery_artifacts
+
+        raw_arts = await AIAgentArtifact.list_for_root(task.root_task_id or task.id)
+        arts, _primary = select_delivery_artifacts(task, raw_arts)
+        handles = tuple(a.id for a in arts)
+        images = tuple(a.id for a in arts if bool(a.payload_path) and (a.mime or "").startswith("image/"))
     return Delegation(
         id=delegation_handle(task.id),
         root_task_id=task.id,
@@ -190,10 +191,12 @@ def format_delegation(d: Delegation) -> str:
     text_arts = [a for a in d.artifacts if a not in d.image_artifacts]
     if text_arts:
         lines.append("文本产物: " + ", ".join(text_arts[:5]) + "（artifact_get 取原文）")
-    if not d.artifacts:
+    if d.is_terminal and not d.artifacts and not d.failure_reason:
         lines.append("（暂无产物登记）")
     if d.status == "paused":
         lines.append("当前已暂停：可用 resume_my_kanban_tree 恢复，或用 respawn_subtask 修改描述重派。")
     elif not d.is_terminal:
-        lines.append("尚未完成：完成后框架会自动回灌交付包，不要重复委派同一任务。")
+        lines.append(
+            "尚未完成：中间草稿未定稿，完成后框架会自动回灌交付包；请简短安抚或回应一句，勿重复委派或提前声称已完成。"
+        )
     return "\n".join(lines)

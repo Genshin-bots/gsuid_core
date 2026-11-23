@@ -616,7 +616,9 @@ class SettlePhase(RunOnceHost):
             # 人格花名册无 render_agent 时，出图义务/文案整体降级为口头交付
             from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
-            _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
+            _allow_render = (
+                not ("delivery_failed" in st.run_extra and st.run_extra["delivery_failed"] is True)
+            ) and persona_allows_capability_agent(self.persona_name, "render_agent")
 
             async def _resend_fab_blocked() -> None:
                 for _bt in st.fab_blocked:
@@ -1205,6 +1207,7 @@ class SettlePhase(RunOnceHost):
         self._last_attempt_pending_async = st.pending_async_delivery
         self._last_attempt_effectual_mutate = st.effectual_mutate
         self._last_attempt_has_status_tool = st.has_status_tool_call
+        self._last_attempt_tool_outcomes = (frozenset(st.succeeded_tools), frozenset(st.failed_tools))
         from gsuid_core.ai_core.const import THINKING_TEXT_MAX
 
         thinking_blob = "\n".join(s for s in st.thinking_segments if s)

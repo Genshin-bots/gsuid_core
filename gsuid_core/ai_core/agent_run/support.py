@@ -541,19 +541,28 @@ def _tool_call_targets_render_agent(part: ToolCallPart) -> bool:
     )
 
 
+def tool_output_is_error(content: object) -> bool:
+    """结构判据：识别全框架统一的 ❌ / ⚠️ 工具报错回执。不扫业务词。"""
+    if not isinstance(content, str):
+        return False
+    return content.lstrip().startswith(("❌", "⚠️"))
+
+
+def tool_return_is_hard_error(part: ToolReturnPart) -> bool:
+    """工具调用本身报错（非正常空数据集）：用于单轮连错熔断与子代理全败守卫。"""
+    return part.outcome != "success" or tool_output_is_error(part.content)
+
+
 def _tool_return_looks_failed(part: ToolReturnPart) -> bool:
-    """结构判据：outcome 非 success，或内容为空/空容器。不扫正文业务词。"""
-    if part.outcome != "success":
+    """结构判据：outcome 非 success、❌/⚠️ 报错前缀、或内容为空/空容器。不扫正文业务词。"""
+    if tool_return_is_hard_error(part):
         return True
     content = part.content
     if content is None:
         return True
     if isinstance(content, str):
         s = content.strip()
-        if not s:
-            return True
-        # 结构化空结果：list/dict/null 字面量（record_list 等常返回 "[]"）
-        if s in ("[]", "{}", "null", "None", "none"):
+        if not s or s in ("[]", "{}", "null", "None", "none"):
             return True
     if isinstance(content, (list, tuple, set, dict)) and len(content) == 0:
         return True

@@ -440,7 +440,7 @@ generated_profile 由 `mcp/profile_generator.py` 用 `task_level="high"` 异步�
    - **软出戏**（`model_identity` / `ai_selfref` 等）：主/工具同一套——命中不强制剥模型名、
      不二次发送放行。注入 `（系统校验：…可能出戏）` 让模型自判；提醒送达后只放行**主路径
      下一句正文**。无下一轮请求时 run 末 `_ooc_rewrite_and_send` 按自判结果发送（可保持原文）。
-   - 工具路径（`tool_gate_feedback`）：软出戏持续打回，要求改用正文；资金 / 机器腔
+   - 工具路径（`pre_send_gate(channel="tool")`）：软出戏持续打回，要求改用正文；资金 / 机器腔
      **never-release** 持续打回。
    - OOC 类目：`model_identity` / `ai_selfref` / `system_term` / `fund_claim` /
      `machine_dump` / **`delivery_narration`** / **`capability_absence`**（工具/接口+没挂没装，
@@ -463,7 +463,7 @@ hosted 搜索不当函数工具。闲聊可以先 `search_cognition` 再答，�
 **委派开场句**：重任务例外，开工前先应一声。loop 在 CallToolsNode 用
 `agent_run/opening_line.arm_opening_line` 暂存同一次回复里的第一段文字（只在真人发起的
 交互主人格轮、本轮还没开口时）。`create_subagent` 派发成功、`kick_root` 之后调
-`release_opening_line`：过 `should_block`（silence_only 首句额度）与 `tool_gate_feedback`，
+`release_opening_line`：过 `should_block`（silence_only 首句额度）与 `pre_send_gate(channel="tool")`，
 通过才经 `send_chat_result` 发出，记进 `run_sent_texts`。槽被第一个调用取走，并列的第二个
 `create_subagent` 拿不到；校验被拒的派发不开口。回执 `format_deferred_subagent_ack` 写明
 「开场句已发：……，只输出 <SILENCE>」；没写或被闸拦时改为允许当前人格补一句，
@@ -471,8 +471,7 @@ hosted 搜索不当函数工具。闲聊可以先 `search_cognition` 再答，�
 `_absorb_opening_line` 记账（`main_channel_sends` / `wait_comfort_sent`）。
 框架不代写开场句：`persona.json` 的 `task_ack` 与 `ModelRetry` 打回重写都已删除。
 return 模式（网页对话 / 评测）只记账不经 bot 发送。轻工具（回想 / 网页检索）不开口。
-交互主人格 `create_subagent(..., transient=true)` 会被忽略（lookup 白名单除外），改走看板后台；
-transient 同步路径不发开场句。
+内部轻量节点（`memory_curator` / `scheduler_assistant` / `internal_reporter`）同步直跑不发开场句，其余节点一律走看板后台。
 **委派并列（2026-09-25）**：同一次模型回复里的多个 `create_subagent` 由运行时一起开工。
 框架不会把一条任务自动拆成多次调用；模型没在这一次里并列发出的，deferred 回执之后
 同 run 再补会被挡住，等回灌再决定自己答还是 `render_agent`。
@@ -509,7 +508,7 @@ HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 
 > ...914411529 早柚"狂飙 + 刷 markdown"）。此工具原来是**裸 `bot.send(MessageSegment.text)`**，
 > 绕过整条归一化——弱模型把它当**回复通道**一轮连发 3-4 条，`**加粗**` / 研报排版 / emoji 原样
 > 刷进群，且刚加的"长 markdown 出图"对它一次不生效。双修：① 文本改走 `send_chat_result(...,
-> ooc_check=False)`（入口已 `tool_gate_feedback` = `pre_send_gate(channel=tool)`，此处只做呈现），媒体
+> ooc_check=False)`（入口已 `pre_send_gate(channel="tool")`，此处只做呈现），媒体
 > 仍 `bot.send`；② 加 `PER_TURN_SEND_MESSAGE_LIMIT`（=2）单轮节流（与 `scheduler.py`
 > `schedule_task` 同构，key=`(session_id, turn_id)`，`gs_agent` finally `clear_turn_send_throttle`），
 > 超限直接拒发并提示"改用正文输出"。回归锁 `tests/test_send_message_by_ai_guard.py`。

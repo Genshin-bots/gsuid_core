@@ -73,12 +73,14 @@ def fold_threshold(*, is_group: bool = False, is_capability: bool = False) -> in
 
 
 def should_persist_tool_return(tool_name: str, content: str) -> bool:
-    """结构门：过短 / 挂起 ack / 只读回读工具 / 已是句柄卡 不落盘。"""
+    """结构门：过短 / 报错回执 / 挂起 ack / 只读回读工具 / 已是句柄卡 不落盘。"""
+    from gsuid_core.ai_core.agent_run.support import tool_output_is_error
+
     tn = (tool_name or "").strip()
     if tn in _SKIP_PERSIST_TOOLS:
         return False
     body = (content or "").strip()
-    if looks_like_handle_card(body):
+    if tool_output_is_error(body) or looks_like_handle_card(body):
         return False
     if "后台执行" in body and "自动回灌" in body:
         return False
@@ -141,10 +143,6 @@ def payload_is_long_structured(content: str) -> bool:
     from gsuid_core.ai_core.capability_agents.delegation_contracts import fact_pack_is_multi_point
 
     return fact_pack_is_multi_point(body)
-
-
-def _searchish_tool(name: str) -> bool:
-    return is_searchish_tool(name)
 
 
 def _persona_name_for_session(session_id: str) -> str:
@@ -237,7 +235,7 @@ async def persist_tool_return(
         tool_name=tool_name or "",
         profile="",
         res_handle="",
-        long_structured=(not _searchish_tool(tool_name)) or payload_is_long_structured(content),
+        long_structured=(not is_searchish_tool(tool_name)) or payload_is_long_structured(content),
     )
 
 
@@ -325,8 +323,10 @@ _REMEMBER_FACT_TRUNC: int = 200
 
 
 async def _remember_short_tool_fact(tool_name: str, content: str, ev: Optional[Event], session_id: str) -> None:
+    from gsuid_core.ai_core.agent_run.support import tool_output_is_error
+
     body = (content or "").strip()
-    if not body or looks_like_handle_card(body):
+    if not body or tool_output_is_error(body) or looks_like_handle_card(body):
         return
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember

@@ -451,7 +451,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 | 路径 | 检测点 | 命中行为 |
 |------|--------|----------|
 | 主输出（`gs_agent` TextPart） | `pre_send_gate(channel="main")` | 尖括号 REWRITE/FUSE；软 OOC 注入系统提醒，提醒后放行下一句；无下一轮 → 自判发送；machine_dump → REWRITE+defer（同 never-release 走人格重说）；delivery_narration → FUSE |
-| 工具发送（`send_message_by_ai`） | `tool_gate_feedback` | 软 OOC 系统提醒、不二次放行（改用正文）；尖括号与 never-release 持续打回 |
+| 工具发送（`send_message_by_ai`） | `pre_send_gate(channel="tool")` | 软 OOC 系统提醒、不二次放行（改用正文）；尖括号与 never-release 持续打回 |
 | 无重说通道（proactive 等默认 `send_chat_result`） | 末端 `inspect_outbound_ooc` + 尖括号 sanitize | 丢弃台词 / 删非法标签，**不发罐头** |
 | run 末 never-release 恢复 | `_ooc_recover_persona_voice` | 当前人格重说一句 → 复检 → 再给一次「只许结论」；两次都不干净：人格/一致性类**原样发送**（`LAST_RESORT_SEND_ORIGINAL_CATEGORIES`），`fund_claim`/`machine_dump` 与模型主动沉默才丢弃（`_ooc_safe_outbound` / settle return 出口同此口径） |
 

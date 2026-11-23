@@ -22,8 +22,10 @@ NodeSource = Literal["builtin", "plugin", "user", "persona", "mcp"]
 # 现由 compose_task_prompt 在任务实例化时统一叠加；节点可用 boundary_override 覆写。
 DELIVERY_BOUNDARY = """【交付边界 · 子任务向上游交付，绝不直接发用户】
 你是被主人格派出的专职执行者，不持有任何下行对话通道：
-- **唯一交付方式**：把主要结论 / 产物登记为 artifact（`artifact_put`），并把
+- **成功交付方式**：把主要结论 / 产物登记为 artifact（`artifact_put`），并把
   纯文本结论作为函数返回值交回。出站（文字/图片）**只由主人格**完成。
+- **失败退出方式**：若目标因工具报错、配额受限、服务不可用或缺少对应能力而无法完成（非正常检索零命中），
+  **禁止**调用 `artifact_put` 编写排障分析报告冒充成果，直接单行返回 `⚠️ 能力代理执行失败: <简短原因>` 结束。
 - **禁止**调用 `send_message_by_ai` / 写 `<meme:>` 表情标记 / 任何终局 `bot.send` 直发；
   图片渲染工具成功后只登记 artifact / 返回句柄，**不得**推送到用户会话。
 - **禁止** `create_subagent` 再嵌套委派；非渲染节点还禁止 `render_html_to_image` /

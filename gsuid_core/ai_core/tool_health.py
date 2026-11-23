@@ -82,16 +82,21 @@ _FROZEN_CALLS: Dict[str, int] = {}
 
 def frozen_tool_message(tool_name: str) -> str:
     """冻结期的统一短路文案（不泄漏内部机制，给模型换路指引）。"""
-    return f"⚠️ {tool_name} 已临时停用（连续失败，稍后自动恢复）。请换其他工具；不要再硬调这个工具。"
+    return f"⚠️ {tool_name} 已临时停用（连续失败已暂时熔断，稍后自动恢复）。请换其他工具；不要再硬调这个工具。"
 
 
 async def frozen_tool_reply(tool_name: str, extra: Dict[str, Any], need: str) -> str:
     """第 1 次只回停用；第 2 次框架代查替代，无命中则登记缺口并止损。"""
-    n = _FROZEN_CALLS.get(tool_name, 0) + 1
+    _ = extra
+    n = _FROZEN_CALLS[tool_name] + 1 if tool_name in _FROZEN_CALLS else 1
     _FROZEN_CALLS[tool_name] = n
     base = frozen_tool_message(tool_name)
     if n < 2:
         return base + "可用 find_tools 找替代。"
+    from gsuid_core.ai_core.rag.base import client, embedding_model
+
+    if client is None or embedding_model is None:
+        return base
     from gsuid_core.ai_core.rag.tools import search_tools_with_entity_routing
 
     query = (need or tool_name).strip() or tool_name

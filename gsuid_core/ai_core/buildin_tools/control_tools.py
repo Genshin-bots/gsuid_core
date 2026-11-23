@@ -54,6 +54,22 @@ async def check_delegation(
     deleg = await await_delegation(delegation_id, wait_sec=wait, owner_user_id=owner, session_id=sid)
     if deleg is None:
         return f"⚠️ 委派不存在或已过期: {delegation_id}"
+    if deleg.is_terminal:
+        from gsuid_core.ai_core.planning.models import AIAgentTask
+        from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
+        from gsuid_core.ai_core.planning.kanban_executor import (
+            claim_inline_delivery,
+            format_task_delivery_receipt,
+            is_delivery_in_flight_or_just_sent,
+        )
+
+        if claim_inline_delivery(deleg.root_task_id):
+            task_row = await AIAgentTask.get_by_id(deleg.root_task_id)
+            if task_row is not None:
+                allow_render = persona_allows_capability_agent(task_row.persona_name, "render_agent")
+                return await format_task_delivery_receipt(task_row, allow_render=allow_render)
+        elif is_delivery_in_flight_or_just_sent(deleg.root_task_id):
+            return f"✅ 任务#{deleg.ordinal} 已完成并正由交付通道发送给用户，本轮勿重复下发同一产物。"
     return format_delegation(deleg)
 
 

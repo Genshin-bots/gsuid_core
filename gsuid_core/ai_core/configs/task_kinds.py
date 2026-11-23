@@ -139,9 +139,6 @@ def parent_task_kind(task_kind: str) -> str | None:
 TASK_CAPABILITY_EVAL: Final = _builtin(
     "capability_eval", "能力代理评估", "评估能力代理的产出是否达标。", "agent", "low", stats=("capabilityevaluator",)
 )
-TASK_KANBAN_RELAY: Final = _builtin(
-    "kanban_relay", "看板转述", "把长任务结果转述成人格口吻发出。", "agent", "low", stats=("kanban_relay",)
-)
 TASK_SCHEDULED: Final = _builtin(
     "scheduled_task", "定时任务", "到点执行用户预约的任务。", "agent", "high", stats=("scheduledtask_exec",)
 )

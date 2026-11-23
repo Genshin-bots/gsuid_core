@@ -89,6 +89,7 @@ _FOLLOWUP_VERB_RE = re.compile(
     rf"改[成到为回]|换个|挪到|往[前后]挪|{_SCHED_MUTATE_VERBS}|不要了|不用了|"
     r"删[掉了]|别删|停了?|停一?下|别提醒|暂停|再查|再看|重新查"
 )
+_PURE_STOP_ELLIPSIS_RE = re.compile(r"^(?:不要了|不用了|算了|停了?|停一?下|暂停)[吧啦呀嘛啊。！!～~]*$")
 _FOLLOWUP_THAT_RE = re.compile(r"^那[^。！？，,]{1,8}呢[？?]?$")
 # 群聊消息说话人锚点：与 history_format / 评测合成前缀一致
 _SPEAKER_ID_RE = re.compile(r"用户ID:([^)）\s，,]+)")
@@ -140,6 +141,12 @@ def is_manage_ellipsis_form(current_text: str, *, max_len: int = FOLLOWUP_MAXLEN
     if _INTERPERSONAL_REWRITE_RE.search(t) and not _TASK_NOUN_RE.search(t):
         return False
     return bool(_FOLLOWUP_VERB_RE.search(t) or _FOLLOWUP_THAT_RE.match(t))
+
+
+def is_pure_stop_ellipsis(current_text: str) -> bool:
+    """纯叫停/谢绝短句（无对象名词、无重查/改写）：无在途任务或日程时不构成工具调用义务。"""
+    t = extract_message_body(current_text).strip()
+    return bool(t and _PURE_STOP_ELLIPSIS_RE.match(t))
 
 
 def detect_ellipsis_followup(

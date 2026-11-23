@@ -22,7 +22,6 @@ from gsuid_core.ai_core.control.lines import (
     POST_TOOL_FAIL_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
     POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
-    POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED,
     capability_hit_line,
 )
 
@@ -37,7 +36,6 @@ __all__ = (
     "POST_TOOL_OUTPUT_CONTRACT",
     "POST_TOOL_OUTPUT_CONTRACT_CAPABILITY",
     "POST_TOOL_OUTPUT_CONTRACT_RENDER",
-    "POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED",
 )
 
 # 同一次 run 里 deferred 回执已发出。之后再 create_subagent 只会串行补派。
@@ -80,22 +78,12 @@ def format_deferred_subagent_ack(
     )
 
 
-# send_message_by_ai 成功回执唯一形态（工具协议的一部分，属结构信号非业务词）。
-# loop 侧经 tool_return_is_delivery_success() 消费：交付终局置位 + 终局契约分发。
-DELIVERY_SUCCESS_MARK = "消息已发送给用户"
-
 # 低时效契约：返回内容含气候或历史均值口径时，禁止台词冒充当前实时读数。
 _TIMELESS_AGGREGATE_RE = re.compile(
     r"(月均|月度|气候|氣候|常年|历史平均|歷史平均|平均值|多年平均|同期平均|月平均|平均氣溫|平均气温)"
 )
 # 逐日/逐时读数形态（真表 + 日期列）不算低时效聚合
 _DAILY_SERIES_RE = re.compile(r"\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}-\d{2}-\d{2}")
-
-
-def tool_return_is_delivery_success(content: Any) -> bool:
-    """ToolReturn 是否为 send_message_by_ai 的成功交付回执。"""
-    return isinstance(content, str) and DELIVERY_SUCCESS_MARK in content
-
 
 # create_subagent 派发前拒绝的统一前缀（对齐工具层软失败文案口径）。
 # 在途 HOLD 以「（系统：」开头，不在此列——那时真有子任务在跑。
@@ -145,8 +133,9 @@ def fact_pack_is_multi_point(content: str, *, threshold: int = 3) -> bool:
     return _count_fact_items((content or "").strip()) >= threshold
 
 
-# 与 subagent._main_persona_receipt_hint(image_likely=True) 对齐（仅真实图片 artifact）
-RENDER_DONE_RECEIPT_MARK = "有真实图片产物时用发送工具把图发出（参数里用句柄，勿写入台词）"
+def receipt_has_rendered_image(body: str) -> bool:
+    """内联交付收据是否已携带真实图片产物（对齐 PersistedHandleCard 与 format_task_delivery_receipt）。"""
+    return "kind=image" in body or "image=true" in body or "send_message_by_ai(image_id=" in body
 
 
 def is_render_capability_agent(
@@ -164,12 +153,6 @@ def is_render_capability_agent(
         return nid == "render_agent"
     sid = session_id or ""
     return sid == "capagent_render_agent" or sid.startswith("capagent_render_agent_")
-
-
-def receipt_image_likely(*, pid: str, has_image_art: bool) -> bool:
-    """Kanban/transient 回执是否走「可发图」口吻（必须有 image/* artifact）。"""
-    _ = pid  # 保留关键字兼容；是否可发图只看 has_image_art
-    return has_image_art
 
 
 def _agent_profile_from_tool_args(

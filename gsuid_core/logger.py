@@ -1137,7 +1137,8 @@ def _build_console_renderer() -> ConsoleRenderer:
         postfix="]",
     )
     return ConsoleRenderer(
-        exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False),
+        # 禁 RichTracebackFormatter：同步读源码 + Pygments 高亮会把事件循环冻住 2s+
+        exception_formatter=structlog.dev.plain_traceback,
         columns=[
             Column(
                 "timestamp",

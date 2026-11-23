@@ -358,120 +358,68 @@ def _register_trigger_as_ai_tool(
     # 工具函数名：使用原函数名
     tool_func_name = func.__name__
 
-    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "", audio_id: str = "") -> str:
-        real_bot = ctx.deps.bot
+    def _check_sv_access(ctx: RunContext[ToolContext]) -> Tuple[bool, str]:
         ev = ctx.deps.ev
-        assert real_bot is not None, "触发器 AI 工具调用时 bot 不能为 None"
-        assert ev is not None, "触发器 AI 工具调用时 ev 不能为 None"
-
-        # 权限检查：AI 调用时也需要遵守与用户直接触发相同的权限限制
-        # 注意：运行时读取 sv/plugins 的当前状态，而非注册时快照
-        if not sv.plugins.enabled:
-            return "❌ 该插件已禁用。"
+        if ev is None:
+            return False, "❌ 无法获取事件上下文。"
+        if sv.plugins is not None and not sv.plugins.enabled:
+            return False, "❌ 该插件已禁用。"
         if not sv.enabled:
-            return "❌ 该功能已禁用。"
-        if ev.user_pm > sv.plugins.pm:
-            return f"❌ 权限不足：该插件需要权限等级 {sv.plugins.pm}，当前用户权限等级为 {ev.user_pm}。"
+            return False, "❌ 该功能已禁用。"
+        if sv.plugins is not None and ev.user_pm > sv.plugins.pm:
+            return False, f"❌ 权限不足：该插件需要权限等级 {sv.plugins.pm}，当前用户权限等级为 {ev.user_pm}。"
         if ev.user_pm > sv.pm:
-            return f"❌ 权限不足：该功能需要权限等级 {sv.pm}，当前用户权限等级为 {ev.user_pm}。"
+            return False, f"❌ 权限不足：该功能需要权限等级 {sv.pm}，当前用户权限等级为 {ev.user_pm}。"
+        return True, ""
 
-        # 模拟 ev：深拷贝 event 后修改 text 和 command
-        fake_ev = deepcopy(ev)
-        fake_ev.text = text
-        fake_ev.command = primary_keyword
-        # raw_text 也要对齐，保证 trigger 内部逻辑一致
-        fake_ev.raw_text = f"{primary_keyword} {text}".strip()
-        # 允许 AI 传入已有的 RM 资源 ID（如之前生成的图片），供触发器做图生图/图生视频
-        if image_id:
-            fake_ev.image_id = image_id
-        # 允许 AI 传入已有的 RM 音频资源 ID（如之前生成的语音），供触发器做语音克隆等
-        if audio_id:
-            fake_ev.audio_id = audio_id
+    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "", audio_id: str = "") -> str:
+        from gsuid_core.ai_core.register import execute_guarded_tool
 
-        # 如果触发器类型是 regex，需要模拟 regex 匹配
-        if trigger_type == "regex":
-            match = re.search(primary_keyword, text)
-            if match:
-                fake_ev.regex_dict = match.groupdict()
-                fake_ev.regex_group = match.groups()
-                fake_ev.command = "|".join(g if g is not None else "" for g in match.groups())
-            else:
-                fake_ev.regex_dict = {}
-                fake_ev.regex_group = ()
-                fake_ev.command = text
+        async def _call() -> str:
+            real_bot = ctx.deps.bot
+            ev = ctx.deps.ev
+            assert real_bot is not None, "触发器 AI 工具调用时 bot 不能为 None"
+            assert ev is not None, "触发器 AI 工具调用时 ev 不能为 None"
 
-        # 准备收集上下文
-        call_ctx: Dict[str, Any] = {
-            "texts": [],  # ai_return() 写入的文字
-            "image_ids": [],  # bot.send 拦截到的图片，通过 RM 注册后的资源 ID
-            "audio_ids": [],  # bot.send 拦截到的音频，通过 RM 注册后的资源 ID
-            "video_ids": [],  # bot.send 拦截到的视频，通过 RM 注册后的资源 ID
-            "file_ids": [],  # bot.send 拦截到的文件，通过 RM.register_file 登记的资源 ID
-            "bot_messages": [],  # bot.send(str/Message(text)) 拦截到的文字
-        }
+            fake_ev = deepcopy(ev)
+            fake_ev.text = text
+            fake_ev.command = primary_keyword
+            fake_ev.raw_text = f"{primary_keyword} {text}".strip()
+            if image_id:
+                fake_ev.image_id = image_id
+            if audio_id:
+                fake_ev.audio_id = audio_id
 
-        token = _AI_CALL_CONTEXT.set(call_ctx)
-        mock_bot = MockBot(real_bot, call_ctx)
+            if trigger_type == "regex":
+                match = re.search(primary_keyword, text)
+                if match:
+                    fake_ev.regex_dict = match.groupdict()
+                    fake_ev.regex_group = match.groups()
+                    fake_ev.command = "|".join(g if g is not None else "" for g in match.groups())
+                else:
+                    fake_ev.regex_dict = {}
+                    fake_ev.regex_group = ()
+                    fake_ev.command = text
 
-        try:
-            await func(mock_bot, fake_ev)
-        except Exception as e:
-            logger.exception(t("log.ai.trigger_ai_primary_keyword_fail", primary_keyword=primary_keyword, e=e))
-            return f"❌ 执行命令 [{primary_keyword}] 时发生错误: {e}。请尝试其他方式或检查输入参数。"
-        finally:
-            _AI_CALL_CONTEXT.reset(token)
+            try:
+                out = await run_trigger_via_mockbot(real_bot, fake_ev, func, ctx.deps.extra)
+            except Exception as e:
+                logger.exception(t("log.ai.trigger_ai_primary_keyword_fail", primary_keyword=primary_keyword, e=e))
+                return f"❌ 执行命令 [{primary_keyword}] 时发生错误: {e}。请尝试其他方式或检查输入参数。"
+            if out:
+                return out
+            return f"命令 [{primary_keyword}] 已执行，但没有产出可发送的文本或图片。不要对用户说已经发出。"
 
-        # 组装返回值（只包含纯文本 + 资源 ID，图片数据绝不进入返回值）
-        parts: List[str] = []
-        parts.extend(call_ctx["texts"])
-        parts.extend(call_ctx["bot_messages"])
-
-        image_ids = _ctx_str_list(call_ctx, "image_ids")
-        audio_ids = _ctx_str_list(call_ctx, "audio_ids")
-        video_ids = _ctx_str_list(call_ctx, "video_ids")
-        file_ids = _ctx_str_list(call_ctx, "file_ids")
-        if _is_mcp_extra(ctx.deps.extra):
-            # 是否真的附上要等字节校验。这里先不说「已附带」，避免外链失败时模型不再去取图。
-            _remember_mcp_image_ids(ctx.deps.extra, image_ids)
-            _append_mcp_av_notes(parts, audio_ids, video_ids, file_ids)
-        else:
-            if image_ids:
-                image_count = len(image_ids)
-                id_list = ", ".join(image_ids)
-                parts.append(
-                    f"[已生成 {image_count} 张图片，资源ID: {id_list}。"
-                    f"请调用 send_message_by_ai 工具传入 image_ids 将图片发送给用户，"
-                    f"或根据用户意图决定是否发送。]"
-                )
-            if audio_ids:
-                audio_count = len(audio_ids)
-                id_list = ", ".join(audio_ids)
-                parts.append(
-                    f"[已生成 {audio_count} 个音频，资源ID: {id_list}。"
-                    f"请调用 send_message_by_ai 工具传入 audio_id 将音频发送给用户，"
-                    f"或根据用户意图决定是否发送。]"
-                )
-            if video_ids:
-                video_count = len(video_ids)
-                id_list = ", ".join(video_ids)
-                parts.append(
-                    f"[已生成 {video_count} 个视频，资源ID: {id_list}。"
-                    f"请调用 send_message_by_ai 工具传入 video_id 将视频发送给用户，"
-                    f"或根据用户意图决定是否发送。]"
-                )
-            if file_ids:
-                id_list = ", ".join(file_ids)
-                parts.append(
-                    f"[已生成 {len(file_ids)} 个文件，资源ID: {id_list}。"
-                    f"请调用 send_message_by_ai 工具传入 file_ids 将文件发送给用户，"
-                    f"或根据用户意图决定是否发送。]"
-                )
-
-        if parts:
-            return "\n".join(parts)
-
-        # 没有拦截到文本或图片。禁止谎称已经发给用户。
-        return f"命令 [{primary_keyword}] 已执行，但没有产出可发送的文本或图片。不要对用户说已经发出。"
+        res = await execute_guarded_tool(
+            tool_func_name,
+            ctx,
+            _call,
+            check_func=_check_sv_access,
+            timeout=60.0,
+            track_health=True,
+            raw_passthrough=True,
+        )
+        return res if isinstance(res, str) else str(res)
 
     # 手动设置元数据，使 PydanticAI 能正确解析
     _ai_tool_wrapper.__name__ = tool_func_name
@@ -538,6 +486,8 @@ def _register_trigger_as_ai_tool(
         category="by_trigger",
         covers=merged_covers,
         aliases=aliases,
+        check_func=_check_sv_access,
+        check_in_wrapper=True,
     )
 
     if "by_trigger" not in _TOOL_REGISTRY:

@@ -31,7 +31,7 @@
 | `gs_agent.py` | **`GsCoreAIAgent`**：会话类 + 重试 / history 裁剪 / 闸门收尾 / 工厂。**单次 run 主路径已拆到 `agent_run/`**（见下）。 |
 | `agent_run/` | **单次 `_execute_run_once` 阶段包**（2026-08）：prepare → tools → loop → settle；`speech_policy` 提供检测原语，裁决表收敛于 `control/policy_ring.py`。详见 §`agent_run/`。 |
 | `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
-| `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）；`tool_gate_feedback`。 |
+| `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）。 |
 | `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
 | `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语与数据驱动 `_OOC_RING` 规则表；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
@@ -150,7 +150,7 @@
 | 文件 | 职责 |
 |---|---|
 | `kanban.py` | 任务树的数据访问层（CRUD + 状态机），所有 SQL 操作集中在这里。 |
-| `kanban_executor.py` | 并发调度引擎：`execute_ready_tasks` / `kick_root` / `_run_one_task_node` / `_persona_relay`（人格转译）/ `_notify` / `_notify_failure`。**转译 + 失败播报全部走 emitter（source="kanban"）。** |
+| `kanban_executor.py` | 并发调度引擎：`execute_ready_tasks` / `kick_root` / `_run_one_task_node` / `_wake_main_agent_for_delivery`（回灌主人格）/ `_notify` / `_notify_failure`。 |
 | `kanban_tools.py` | 给主人格的 Kanban LLM 工具集：`register_kanban_task`、`list_my_kanban_tasks`（含 **user_safe_summary** 人话状态行）、`respawn_subtask`、`fail_task_tree` 等。 |
 | `recurring.py` | 周期任务模板的"to APScheduler"层：`arm` / `disarm` / `_fire_template` / `_fire_subtask_template`，每次到点 clone 一个执行实例并 `kick_root`。 |
 | `models.py` | `AIAgentTask` / `AIAgentArtifact` / `AIAgentTaskLog` 表。 |
@@ -237,8 +237,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 文件 | 用途 |
 |---|---|
-| `message_sender.py` | `send_message_by_ai`：入口 `tool_gate_feedback`，文本走 `send_chat_result`；支持 `img_xxx`/`res_xxx`/http/base64。 |
-| `subagent.py` | `create_subagent`：Kanban 叶子 / transient 能力代理；回执分【工具通道】/【聊天通道】；异步 ack 强制主人格 `<SILENCE>`。 |
+| `message_sender.py` | `send_message_by_ai`：入口 `pre_send_gate(channel="tool")`，文本走 `send_chat_result`；支持 `img_xxx`/`res_xxx`/http/base64，单点拦截草稿/在途 `res_`。 |
+| `subagent.py` | `create_subagent`：内部轻量节点同步直跑，其余转 Kanban 叶子根异步回灌主人格；异步 ack 期间主人格默认 `<SILENCE>`。 |
 | `scheduler.py` | `schedule_task / cancel_scheduled_task / list_scheduled_tasks`：定时任务工具集。 |
 | `meme_tools.py` | 表情包检索 / 触发。 |
 | `html_render_tools.py` | `render_html_to_image`（**buildin 保底**，自由 HTML）；`render_card` / `render_markdown_to_image`（media 按需）。 |

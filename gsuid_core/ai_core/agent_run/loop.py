@@ -40,7 +40,7 @@ from gsuid_core.ai_core.utils import (
     _sanitize_tool_call_artifacts_in_parts,
     normalize_escaped_control_tags_in_parts,
 )
-from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE
+from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE, TOOL_FAIL_FUSE_NUDGE
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
 from gsuid_core.utils.resource_manager import RM
@@ -62,6 +62,7 @@ from gsuid_core.ai_core.agent_run.support import (
     turn_reply_metadata,
     record_run_tool_output,
     _tool_return_looks_failed,
+    tool_return_is_hard_error,
     absorb_run_image_delivered,
     _tool_return_is_async_pending,
     _tool_call_targets_render_agent,
@@ -93,7 +94,6 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     DELEGATION_INFLIGHT_KEY as _DELEGATION_INFLIGHT_KEY,
     PENDING_DELEGATION_HOLD as _PENDING_DELEGATION_HOLD,
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
-    RENDER_DONE_RECEIPT_MARK as _RENDER_DONE_RECEIPT_MARK,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
     PENDING_DELEGATION_OPENING as _PENDING_DELEGATION_OPENING,
     POST_DISPUTE_SILENCE_CONTRACT as _POST_DISPUTE_SILENCE_CONTRACT,
@@ -104,6 +104,7 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED as _POST_TOOL_OUTPUT_CONTRACT_RENDER_NO_EMBED,
     post_tool_contracts_for as _post_tool_contracts_for,
     web_search_delegate_line as _web_search_delegate_line,
+    receipt_has_rendered_image as _receipt_has_rendered_image,
     tool_return_is_delegation_refusal as _tool_return_is_delegation_refusal,
     inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
@@ -327,11 +328,12 @@ class LoopPhase(RunOnceHost):
         """create_subagent 回执：ack 确认在途，失败且未 ack 则回滚抢先静默。"""
         async_ack = bool(_tool_return_is_async_pending(part) or ("后台执行" in body) or ("自动回灌" in body))
         _refused = _tool_return_is_delegation_refusal(body)
+        _render_done = _receipt_has_rendered_image(body)
         pending, delegated, policy, ack = _inflight_after_create_subagent_return(
             failed=_tool_return_looks_failed(part),
             refused=_refused,
             async_ack=async_ack,
-            render_done=_RENDER_DONE_RECEIPT_MARK in body,
+            render_done=_render_done,
             ack_seen=st.render_ack_seen,
             pending_async=st.pending_async_delivery,
             delegated_render=st.delegated_render,
@@ -349,7 +351,7 @@ class LoopPhase(RunOnceHost):
             not _tool_return_looks_failed(part)
             and not _refused
             and not async_ack
-            and _RENDER_DONE_RECEIPT_MARK not in body
+            and not _render_done
             and content_is_render_candidate(
                 tool_name="create_subagent",
                 content=body,
@@ -456,6 +458,8 @@ class LoopPhase(RunOnceHost):
             )
 
         _has_tool_return = False
+        _tripped_fail_tool = ""
+        _tripped_fail_streak = 0
         for part in node.request.parts:
             if isinstance(part, ToolReturnPart):
                 _has_tool_return = True
@@ -464,8 +468,21 @@ class LoopPhase(RunOnceHost):
                     if part.tool_call_id and part.tool_call_id in st.effective_tool_names
                     else (part.tool_name or "")
                 )
-                if _tool_return_is_async_pending(part):
+                if _eff_name == "create_subagent" and _tool_return_is_async_pending(part):
                     st.pending_async_delivery = True
+                elif not _tool_return_is_async_pending(part):
+                    if tool_return_is_hard_error(part):
+                        _nxt = (st.tool_fail_streaks[_eff_name] if _eff_name in st.tool_fail_streaks else 0) + 1
+                        st.tool_fail_streaks[_eff_name] = _nxt
+                        st.total_tool_failures += 1
+                        if _eff_name:
+                            st.failed_tools.add(_eff_name)
+                        if _nxt >= 4 and _nxt > _tripped_fail_streak:
+                            _tripped_fail_tool = _eff_name
+                            _tripped_fail_streak = _nxt
+                    elif _eff_name:
+                        st.tool_fail_streaks[_eff_name] = 0
+                        st.succeeded_tools.add(_eff_name)
                 # 如果工具返回b64图片或者bytes内容, 则调用RM实例上传
                 if (isinstance(part.content, str) and part.content.startswith("base64://")) or isinstance(
                     part.content, bytes
@@ -630,6 +647,23 @@ class LoopPhase(RunOnceHost):
                     st.effectual_mutate = True
 
         self._absorb_opening_line(st)
+
+        _cap_exhausted = self.create_by == "CapabilityAgent" and st.total_tool_failures >= 8
+        if (_tripped_fail_streak >= 4 or _cap_exhausted) and self.create_by in _INTERACTIVE_CREATE_BY:
+            if not st.fail_fuse_nudged:
+                node.request.parts = [*node.request.parts, UserPromptPart(content=TOOL_FAIL_FUSE_NUDGE)]
+                st.fail_fuse_nudged = True
+                logger.warning(
+                    i18n_t(
+                        "log.agent.tool_thrash_fuse",
+                        tool_name=_tripped_fail_tool or "capability_batch",
+                        streak=_tripped_fail_streak or st.total_tool_failures,
+                    )
+                )
+            if self.create_by == "CapabilityAgent" and (_tripped_fail_streak >= 6 or _cap_exhausted):
+                from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY
+
+                _require_context(st).extra[TOOLS_EXECUTION_GATED_KEY] = True
 
         # 事件驱动输出契约：仅终态工具返回才注入（异步 ack 不触发）
         if _has_tool_return and self.create_by in _INTERACTIVE_CREATE_BY:
@@ -971,7 +1005,9 @@ class LoopPhase(RunOnceHost):
                         _addr = str(st.ev.user_id)
                     from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
-                    _allow_render = persona_allows_capability_agent(self.persona_name, "render_agent")
+                    _allow_render = (
+                        not ("delivery_failed" in st.run_extra and st.run_extra["delivery_failed"] is True)
+                    ) and persona_allows_capability_agent(self.persona_name, "render_agent")
                     _user_q = (
                         st.ev.raw_text
                         if st.ev is not None and st.ev.raw_text

@@ -459,24 +459,6 @@ def pre_send_gate(
     )
 
 
-def tool_gate_feedback(
-    text: str,
-    extra: Dict[str, Any],
-    *,
-    user_text: str = "",
-    is_group: bool = False,
-    speech_ctx: "SpeechContext | None" = None,
-) -> "tuple[Optional[str], str]":
-    """工具路径：``(feedback, 生效文本)``——feedback 非 None 打回；
-    放行时第二元为生效文本（群聊可能已打码），调用方须用之发送。"""
-    r = pre_send_gate(text, extra, user_text=user_text, channel="tool", is_group=is_group, speech_ctx=speech_ctx)
-    if r.decision is GateDecision.ALLOW:
-        return None, r.send_text or text
-    if r.decision is GateDecision.FALLBACK:
-        return r.feedback or r.send_text, ""
-    return r.feedback or None, ""
-
-
 # 历史裁剪认打回前缀。全文在 control/lines.py 的 GATE_NUDGE_MARKERS。
 
 # 通道泄漏：长「心想」段（可在句中）。短舞台指示不含该开场。

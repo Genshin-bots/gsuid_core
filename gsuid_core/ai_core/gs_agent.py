@@ -359,6 +359,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._last_attempt_image_sent: bool = False
         self._last_attempt_pending_async: bool = False
         self._last_attempt_has_status_tool: bool = False
+        self._last_attempt_tool_outcomes: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())
         self._last_attempt_thinking: str = ""
         # C-2 漂移预算的上轮计数：只在计数**增加**时注入提醒，防一次 push 滞留
         # recent 窗口导致后续每轮重复唠叨（会话级状态，正是"预算"的容器）。
@@ -401,6 +402,11 @@ class GsCoreAIAgent(RunOnceMixin):
     def last_run_sent_image(self) -> bool:
         """本轮 run 是否已向用户发出过图片。"""
         return self._last_attempt_image_sent
+
+    @property
+    def last_run_tool_outcomes(self) -> tuple[frozenset[str], frozenset[str]]:
+        """本轮成功与报错的工具名集合 ``(succeeded, failed)``。"""
+        return self._last_attempt_tool_outcomes
 
     @property
     def last_run_visible_texts(self) -> tuple[str, ...]:

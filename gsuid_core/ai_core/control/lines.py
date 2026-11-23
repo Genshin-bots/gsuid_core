@@ -67,6 +67,11 @@ THRASH_FUSE_NUDGE = (
     "停止再发这一次完全相同的调用。可以改参数，或基于已有结果交付结论。）"
 )
 
+TOOL_FAIL_FUSE_NUDGE = (
+    "（系统校验：当前工具在本轮已连续多次报错，微调参数不会恢复。"
+    "立即停止重试该报错工具：已有有效结果则直接整理交付；目标确实无法完成则直接结束说明受阻。）"
+)
+
 PTC_BATCH_NUDGE = (
     "（系统：检测到单步直接并发调用了多个工具；后续若仍有批量查询或批量记录写入，"
     "请合并在单次 run_code 中执行（查询用 await asyncio.gather(...)，"
@@ -110,8 +115,6 @@ POST_TOOL_OUTPUT_CONTRACT = (
     "不要自写 HTML / 直调 render_* / 输出 <report>；"
     "委派出图时不必对用户说话；不要把整表当台词念。）"
 )
-
-POST_TOOL_OUTPUT_CONTRACT_RENDER_REQUIRED = POST_TOOL_OUTPUT_CONTRACT
 
 POST_DISPUTE_SILENCE_CONTRACT = "（系统：申辩已记录，本轮控制面结束。只输出 <SILENCE>。禁止再调工具，禁止对用户说话。）"
 
@@ -179,7 +182,9 @@ POST_TOOL_FAIL_CONTRACT = (
 
 POST_TOOL_FAIL_CONTRACT_CAPABILITY = (
     "（系统：本轮工具返回失败或空结果。禁止只回过程句结束。"
-    "立刻换路：换 query / 换工具再取数；仍无果则在事实包里明确写「无检索结果：原因=…」。"
+    "先换 query 或换备选工具尝试；若仅检索无命中则在事实包写明「无检索结果：原因=…」；"
+    "若目标因工具报错/受限根本无法完成，禁止调 artifact_put 写报错排查报告，"
+    "直接单行返回「⚠️ 能力代理执行失败: 简短原因」结束。"
     "禁止 create_subagent / render_html_* / 插件终局直发出图（出图归 render_agent）。）"
 )
 
@@ -231,6 +236,15 @@ def delivery_wake_line(delivery: str, at_hint: str, title_ban: str, allow_render
         f"[框架·任务完成]\n{delivery}\n"
         f"（系统：一句收尾；有图就发出；配文严禁脱离产物摘要臆造细节，未知结论只引导看图；"
         f"{render_hint}{at_hint}{title_ban}）"
+    )
+
+
+def failure_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
+    """子任务失败回灌：禁出图、禁泄内部细节，由当前人设自然带过。"""
+    return (
+        f"[框架·任务未完成]\n{delivery}\n"
+        "（系统：内部受阻原因仅供你知情，严禁向用户复述报错文本、接口/配置/额度/通道/工作流等内部实现词，"
+        f"严禁委派 render_agent 出图；请直接用当前角色口吻自然或俏皮地简短带过一两句即可。{at_hint}{title_ban}）"
     )
 
 

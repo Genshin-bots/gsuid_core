@@ -105,6 +105,37 @@ def test_ellipsis_followup_and_speaker_isolation() -> None:
     assert detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=True)
     assert not detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=False)
 
+    # 结案后纯谢绝/叫停短句（「不用了」）无活跃任务与日程时不误触 structural_zero_tool；有在途事项时仍触发
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.agent_run.state import RunOnceState
+    from gsuid_core.ai_core.control.policy_ring import _zero_tool_needs_correction
+
+    msg_stop = "测试用户A(用户ID:100000001)：不用了"
+    tg_stop = build_turn_graph(
+        msg_stop, persona_name="测试人格", is_tome=True, user_type="group", primary_speaker="100000001"
+    )
+    st_idle = RunOnceState(
+        msg_stop,
+        None,
+        Event(user_id="100000001", raw_text="不用了"),
+        None,
+        [],
+        "by_bot",
+        None,
+        "工具",
+        False,
+        False,
+        False,
+        False,
+        tg_stop,
+        False,
+        followup_detected=True,
+        tg=tg_stop,
+    )
+    assert _zero_tool_needs_correction(st_idle, video_readable=False) is False
+    st_idle.has_active_task = True
+    assert _zero_tool_needs_correction(st_idle, video_readable=False) is True
+
 
 def test_turn_router_and_scaffold_kit_contract() -> None:
     empty = structural_route("")

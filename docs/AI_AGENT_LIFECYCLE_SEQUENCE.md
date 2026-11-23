@@ -1474,7 +1474,7 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
                     才抢先静默（看 profile 字段，不扫 task 正文）
                     send_message_by_ai → image_sent，解除异步静默
                     （工具本体由 pydantic-ai 执行；send_message_by_ai 入口
-                     tool_gate_feedback = pre_send_gate(channel=tool)；
+                     pre_send_gate(channel="tool")；
                      带台词成功交付 → extra["delivered_with_speech"]）
         ToolReturn create_subagent → inflight_after_create_subagent_return：
                     异步 ack / 完成回执确认在途；失败且未 ack 则回滚抢先静默
@@ -1693,13 +1693,12 @@ session_log entries（磁盘，可稍后刷）：
 | 同上 | 仅 `is_tech_dump` → 替换为短错误摘要 | 仍防堆栈回灌 |
 | 其它 Chat 等 return 消费方 | 仍可 scrub（`_ooc_recover_persona_voice` 让人格重说一句，两次不行就原样返回） | 对用户可见出口保持防火墙 |
 
-`create_subagent` 对 capability 回执：
+`settle._salvage_capability_delivery` 轮数耗尽兜底判空：
 
 1. `looks_like_incomplete_subagent_delivery(raw)`
    - 有 `\bres_[0-9a-f]{6,}\b` 或「已登记 artifact / 事实包已登记」→ **完整**
-   - 否则：过程口癖 / 过短无结构 → incomplete
-2. incomplete 时 **最多催收 1 次**（`_delivery_followup_task`）
-3. 仍 incomplete → 回执标明失败，主人格可 web 换路或重委派
+   - 否则：过程口癖 / 过短无结构 → incomplete，返回 `None` 走失败路径
+2. 业务工具全败且无真实落盘文件时，`run_capability_agent` 统一标 `⚠️ 能力代理执行失败`，由 `kanban_executor` 置 `failed` 并以 `[框架·任务未完成]` 回灌主人格口语化致歉（禁出图）
 
 **理想重任务流水线**（长信息 / 多跳事实 / 长对比，域无关）：
 

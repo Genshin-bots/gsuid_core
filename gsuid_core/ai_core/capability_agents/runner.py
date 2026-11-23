@@ -34,6 +34,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.rag.tools import ToolList
 from gsuid_core.ai_core.agent_node import (
+    TASK_BASICS_PACK,
     AgentNode,
     get_node,
     has_dynamic_pack,
@@ -54,12 +55,52 @@ CAPABILITY_AGENT_ERROR_PREFIX = "⚠️ 能力代理执行失败"
 _NON_RENDER_CAP_DENY_TOOLS = frozenset(
     {
         "create_subagent",
+        "check_delegation",
+        "register_kanban_task",
+        "evaluate_agent_mesh_capability",
+        "respawn_subtask",
+        "fail_task_tree",
+        "pause_my_kanban_tree",
+        "resume_my_kanban_tree",
+        "disarm_my_recurring_template",
+        "send_message_by_ai",
         "render_html_to_image",
         "render_card",
         "render_markdown_to_image",
         "find_images",
     }
 )
+
+
+_CAP_PLUMBING_TOOLS = frozenset(
+    {
+        "artifact_put",
+        "artifact_get",
+        "artifact_list",
+        "state_get",
+        "state_list",
+        "read_handle",
+        "list_persisted_outputs",
+        "get_self_persona_info",
+        "find_tools",
+        "call_tool",
+        "run_code",
+    }
+)
+
+
+def _node_primary_tools_all_failed(
+    node: AgentNode,
+    outcomes: tuple[frozenset[str], frozenset[str]],
+) -> bool:
+    """节点声明的专属业务工具（无专属声明则取非基建工具）被调用过但 0 成功。"""
+    ok_set, err_set = outcomes
+    if not err_set:
+        return False
+    domain_packs = [p for p in node.tool_packs if p != TASK_BASICS_PACK]
+    owned = (set(resolve_pack_tool_names(domain_packs)) | set(node.tool_names)) - _CAP_PLUMBING_TOOLS
+    target = owned if owned else ((ok_set | err_set) - _CAP_PLUMBING_TOOLS)
+    return bool(err_set & target) and not bool(ok_set & target)
 
 
 def _resolve_tools(node: AgentNode) -> ToolList:
@@ -162,17 +203,19 @@ async def task_system_prompt(node: AgentNode, ev: Optional[Event], persona_name:
     return f"{base.rstrip()}\n\n{block}"
 
 
-async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional[Event]) -> Optional["GsCoreAIAgent"]:
-    """进程重启后用同一个 session_id 拉起。不发送原来的任务书。"""
-    node = get_node(profile_id)
-    if node is None:
-        return None
+async def _build_capability_session(
+    node: AgentNode,
+    session_id: str,
+    ev: Optional[Event],
+    persona_name: str = "",
+) -> "GsCoreAIAgent":
+    """构建能力代理实例并注册到会话表与父会话日志。"""
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     agent = create_agent(
-        system_prompt=await task_system_prompt(node, ev),
+        system_prompt=await task_system_prompt(node, ev, persona_name),
         max_tokens=ai_config.get_config("task_max_tokens").data,
         create_by="CapabilityAgent",
         task_kind=capability_agent_task_kind(node.node_id),
@@ -186,6 +229,14 @@ async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional
     get_ai_session_registry().set_ai_session(session_id, agent)
     _link_capability_loggers(ev, agent, session_id)
     return agent
+
+
+async def reopen_capability_agent(profile_id: str, session_id: str, ev: Optional[Event]) -> Optional["GsCoreAIAgent"]:
+    """进程重启后用同一个 session_id 拉起。不发送原来的任务书。"""
+    node = get_node(profile_id)
+    if node is None:
+        return None
+    return await _build_capability_session(node, session_id, ev)
 
 
 @asynccontextmanager
@@ -301,7 +352,6 @@ async def run_capability_agent(
       审批通知）仍生效。
     - **workspace 沙盒**：执行体一定有 ``PlanRunContext.artifact_workspace`` 绑定。
     """
-    from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     node = get_node(profile_id)
@@ -330,8 +380,11 @@ async def run_capability_agent(
                     limit=max(recall, 8),
                     non_category="self",
                 )
-                # 种子与族展开后都会再 strip：避免整族带回 create_subagent/render_*
-                seeds = [t for t in seeds if t.name not in _NON_RENDER_CAP_DENY_TOOLS]
+                from gsuid_core.ai_core.register import is_core_only_category
+
+                seeds = [
+                    t for t in seeds if t.name not in _NON_RENDER_CAP_DENY_TOOLS and not is_core_only_category(t.name)
+                ]
                 seen = {t.name for t in tools}
                 extra = expand_tools_to_families(
                     seeds,
@@ -362,18 +415,7 @@ async def run_capability_agent(
     # ad-hoc workspace 包住整段 agent.run——Kanban 路径下是透传，开销忽略。
     async with _ensure_adhoc_workspace(node.node_id, ev) as plan_ctx:
         ws_label = plan_ctx.artifact_workspace if plan_ctx else "FILE_PATH-fallback"
-        agent = create_agent(
-            system_prompt=await task_system_prompt(node, ev, persona_name),
-            max_tokens=ai_config.get_config("task_max_tokens").data,
-            create_by="CapabilityAgent",  # 不在工具自动装配白名单，配合显式 tools
-            task_kind=capability_agent_task_kind(node.node_id),
-            task_level="high",
-            session_id=session_id,
-            is_subagent=True,
-            dynamic_tools=True if has_dynamic_pack(node.tool_packs) else None,
-            wall_clock_budget=420.0,  # 留 80s 余量给外层 500s 硬超时，420s 时注入收敛提示
-            capability_node_id=node.node_id,
-        )
+        agent = await _build_capability_session(node, session_id, ev, persona_name)
         logger.info(
             i18n_t(
                 "log.ai.cap_tools_workspace_ws_label",
@@ -385,18 +427,27 @@ async def run_capability_agent(
             )
         )
         try:
-            from gsuid_core.ai_core.session_registry import get_ai_session_registry
-
-            get_ai_session_registry().set_ai_session(session_id, agent)
-            _link_capability_loggers(ev, agent, session_id)
             result = await agent.run(
                 user_message=task,
                 bot=bot,
                 ev=ev,
-                tools=tools,  # 显式传入；dynamic 节点由 gs_agent 合并五层装配
-                return_mode="return",  # 文本不下发，作为返回值交回
+                tools=tools,
+                return_mode="return",
             )
-            return str(result)
+            out_str = str(result)
+            if not out_str.lstrip().startswith(CAPABILITY_AGENT_ERROR_PREFIX) and _node_primary_tools_all_failed(
+                node, agent.last_run_tool_outcomes
+            ):
+                has_real_file = False
+                if plan_ctx is not None and plan_ctx.task_id:
+                    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+                    arts = await AIAgentArtifact.list_for_task(plan_ctx.task_id)
+                    has_real_file = any(bool(a.payload_path) and not (a.mime or "").startswith("text/") for a in arts)
+                if not has_real_file:
+                    summary = " ".join(out_str.split())[:180] or "业务工具调用均报错"
+                    return f"{CAPABILITY_AGENT_ERROR_PREFIX}: {summary}"
+            return out_str
         except Exception as e:
             logger.error(i18n_t("log.ai.cap_agent_fail_execution_failed", p0=node.node_id, e=e))
             return f"{CAPABILITY_AGENT_ERROR_PREFIX}: {e}"

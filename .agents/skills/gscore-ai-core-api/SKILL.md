@@ -76,7 +76,7 @@ description: >
 
 - **AI Core 入口模块统一前缀**：`gsuid_core.ai_core.*`，包括 `register` / `trigger_bridge` / `gs_agent` / `output_gate` / `buildin_tools` / `rag` / `mcp` / `persona` / `memory` / `agent_node` / `approval` / `handle_ai` 等。详见 [§1](./references/01-import-cheatsheet.md)、[§7](./references/07-builtin-tools.md)。
 - **多项出图**：`create_subagent(agent_profile="render_agent")`；`render_*` 在 **media**，不在主人格 buildin 保底。业务长报告用插件能力代理 + 出图工具（见 [gscore-plugin-development §14](../gscore-plugin-development/references/14-ai-capability-profile.md)）。
-- **Agent 发话合规**：插件一般不直接调 `pre_send_gate`；改 `send_message_by_ai` 或新增「模型台词出站」路径时须过 `tool_gate_feedback` / 主循环闸。见 [gscore-development §7.12](../gscore-development/references/07-tool-registry-and-agent.md)。
+- **Agent 发话合规**：插件一般不直接调 `pre_send_gate`；改 `send_message_by_ai` 或新增「模型台词出站」路径时须过 `pre_send_gate(channel="tool")` / 主循环闸。见 [gscore-development §7.12](../gscore-development/references/07-tool-registry-and-agent.md)。
 - **`@ai_tools` 是入口装饰器**：必须 async；三种上下文模式；`Bot`/`Event` 自动注入不暴露给 LLM。
   **检索面** = name + docstring + **`covers`** + **`aliases`（须领域前缀）**。详见 [§2](./references/02-ai-tools-decorator.md)。
 - **主会话 tools[] 永冻（2026-11）**：主 Agent 线缆层 tools[] 首轮拍定后跨轮不变，固定 `MAIN_AGENT_CORE_TOOLS` 名单（`find_tools` / `call_tool` / `send_message_by_ai` / `schedule_task` 等）。插件工具与其他长尾工具**不再直接进 tools[]**：向量/检索命中的工具名以"种子提示"写进当轮 user 侧，模型经 `call_tool(tool_name, arguments_json)` 按需执行（准入统一校验权限/主人格边界/自主白名单）。对插件作者透明，但意味着工具 docstring / covers / aliases 是唯一召回面。

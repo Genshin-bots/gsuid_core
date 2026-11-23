@@ -87,41 +87,29 @@ def _is_textish_mime(mime: str) -> bool:
 
 
 async def _resolve_kanban_artifact(res_id: str) -> Optional[Union[bytes, str]]:
-    """解析 ``res_xxx``。bytes=仅图片；str=文本/非图片；None=不存在。
-
-    2026-08-04：text/markdown 落盘被当图片塞多模态 → MiniMax unknown format 整轮 400。
-    """
+    """解析 ``res_xxx``。bytes=仅图片；str=文本/非图片；None=不存在。"""
     if not res_id.startswith("res_"):
         return None
-    try:
-        from gsuid_core.ai_core.planning.models import AIAgentArtifact
-    except ImportError:
-        return None
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
     art = await AIAgentArtifact.get_by_id(res_id)
     if art is None:
         return None
 
     mime = (art.mime or "").lower().strip()
-    is_image_mime = mime.startswith("image/")
-
     if art.payload_path:
         p = Path(art.payload_path)
         if not await asyncio.to_thread(p.exists):
             logger.debug(t("log.ai.buildintools_kanban_artifact_res", res_id=res_id, p0=art.payload_path))
             return None
         data = await asyncio.to_thread(p.read_bytes)
-        # 以魔数为准：只有真图返回 bytes（mime 标 image/* 内容却是 md 时也拒）
         if _looks_like_image_bytes(data):
             return data
-        # 非图：textish / 无 mime → 文本；否则标记串（供上层 str 分支拒绝当图）
-        if _is_textish_mime(mime) or is_image_mime:
+        if _is_textish_mime(mime) or mime.startswith("image/"):
             return data.decode("utf-8", errors="replace")
         return f"[binary non-image artifact mime={mime or 'unknown'} size={len(data)} path={art.payload_path}]"
 
-    if art.payload_inline:
-        # inline 存不了真图，一律当文本
-        return art.payload_inline
-    return None
+    return art.payload_inline or None
 
 
 async def _resolve_file_artifact(res_id: str) -> Tuple[Optional[Path], Optional[str]]:
@@ -350,13 +338,14 @@ async def send_message_by_ai(
             )
 
     occupied_res_ids: list[str] = []
+    res_root_map: dict[str, str] = {}
     failed_notes: list[str] = []
     file_failed_notes: list[str] = []
     valid_image_ids: list[str] = []
     valid_file_ids: list[str] = []
 
     async def _claim_res_handle(rid: str, notes: list[str]) -> bool:
-        """res_ 归属 + 二发占位校验；非 res_ 恒放行。拒绝原因写进 notes。"""
+        """res_ 定稿态 + 归属 + 二发占位统一把关；非 res_ 恒放行。"""
         if not rid.startswith("res_"):
             return True
         from gsuid_core.ai_core.outbound import (
@@ -367,6 +356,12 @@ async def send_message_by_ai(
         )
 
         looked = await lookup_res_owner(rid)
+        if looked.is_draft:
+            notes.append(f"⚠️ 句柄 {rid} 是已被重渲覆盖的中间草稿，未发送；请改发最终定稿句柄。")
+            return False
+        if looked.task_running:
+            notes.append(f"⚠️ 句柄 {rid} 所属子任务仍在运行自检尚未定稿，完成后框架会自动交付，请勿提前发送半成品。")
+            return False
         speaker = str(ev.user_id) if ev is not None and ev.user_id else ""
         if not speaker_may_take_res(looked, speaker):
             logger.warning(
@@ -386,6 +381,8 @@ async def send_message_by_ai(
             return False
         if claim.occupied:
             occupied_res_ids.append(rid)
+        if looked.root_task_id:
+            res_root_map[rid] = looked.root_task_id
         return True
 
     for img_id in target_image_ids:
@@ -463,8 +460,8 @@ async def send_message_by_ai(
                         await release_image_delivery(ev, img_id)
                         occupied_res_ids.remove(img_id)
                     # 仍有本调用认领的待发图片占用时保留旗标，禁止借文本句柄提前解锁委派
-                    if ctx.deps is not None and not occupied_res_ids:
-                        ctx.deps.extra["delivery_has_image"] = False
+                    if not occupied_res_ids:
+                        tool_ctx.extra["delivery_has_image"] = False
                     failed_notes.append(
                         f"❌ 资源ID: {img_id} 是文本类 Kanban artifact（非光栅图片字节），"
                         f'请委派 create_subagent(agent_profile="render_agent", task=传入该句柄与事实包) 出图，'
@@ -631,10 +628,13 @@ async def send_message_by_ai(
 
         if sent:
             from gsuid_core.ai_core.history_format import note_thread_handle
+            from gsuid_core.ai_core.planning.kanban_executor import claim_inline_delivery
 
             for hid in (*success_img_ids, video_id, audio_id, *success_file_ids):
                 if hid:
                     note_thread_handle(tool_ctx, hid)
+                    if hid in res_root_map:
+                        claim_inline_delivery(res_root_map[hid])
             if success_img_ids:
                 extra["image_sent_this_run"] = True
             if _wake and ev is not None and ev.group_id and target_id and session_id:
@@ -681,63 +681,42 @@ async def send_message_by_ai(
                 _tname = raw_card
 
         _bot_self = str(ev.bot_self_id) if ev is not None and ev.bot_self_id else ""
-        if success_img_ids:
-            for idx, _iid in enumerate(success_img_ids):
-                await record_outbound(
-                    ev=ev,
-                    session_id=session_id,
-                    text=text if idx == 0 else "",
-                    image_id=_iid,
-                    topic=_topic,
-                    target_user=target_id,
-                    target_name=_tname,
-                )
-                if tool_ctx.parent_session_id:
-                    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+        _group_str = str(ev.group_id) if ev is not None and ev.group_id else ""
+        _parent_sess = None
+        if tool_ctx.parent_session_id:
+            from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-                    _sess = get_ai_session_registry().get_ai_session(tool_ctx.parent_session_id)
-                    if _sess is not None and _sess._session_logger is not None:
-                        _sess._session_logger.log_outbound_audit(
-                            group_id=str(ev.group_id) if ev is not None and ev.group_id else "",
-                            text=text if idx == 0 else "",
-                            image_id=_iid,
-                            topic=_topic,
-                            target_user=target_id,
-                        )
-                await write_decision_memo(
-                    bot_self_id=_bot_self,
-                    text=f"已发 {(_topic or '图')[:12]} {_iid}".strip(),
-                    ref=f"decision:send:{session_id}:{_iid}"[:160],
-                    handle=_iid,
-                    owner_user_id=target_id,
-                )
-        else:
+            _parent_sess = get_ai_session_registry().get_ai_session(tool_ctx.parent_session_id)
+
+        audit_entries = (
+            [(idx == 0, iid) for idx, iid in enumerate(success_img_ids)] if success_img_ids else [(True, "")]
+        )
+        for include_text, _iid in audit_entries:
+            _entry_text = text if include_text else ""
             await record_outbound(
                 ev=ev,
                 session_id=session_id,
-                text=text,
-                image_id="",
+                text=_entry_text,
+                image_id=_iid,
                 topic=_topic,
                 target_user=target_id,
                 target_name=_tname,
             )
-            if tool_ctx.parent_session_id:
-                from gsuid_core.ai_core.session_registry import get_ai_session_registry
-
-                _sess = get_ai_session_registry().get_ai_session(tool_ctx.parent_session_id)
-                if _sess is not None and _sess._session_logger is not None:
-                    _sess._session_logger.log_outbound_audit(
-                        group_id=str(ev.group_id) if ev is not None and ev.group_id else "",
-                        text=text,
-                        image_id="",
-                        topic=_topic,
-                        target_user=target_id,
-                    )
+            if _parent_sess is not None and _parent_sess._session_logger is not None:
+                _parent_sess._session_logger.log_outbound_audit(
+                    group_id=_group_str,
+                    text=_entry_text,
+                    image_id=_iid,
+                    topic=_topic,
+                    target_user=target_id,
+                )
+            _memo_tail = _iid or text[:20]
+            _memo_ref = f"decision:send:{session_id}:{_iid or 't'}"[:160]
             await write_decision_memo(
                 bot_self_id=_bot_self,
-                text=f"已发 {(_topic or '图')[:12]} {text[:20]}".strip(),
-                ref=f"decision:send:{session_id}:t"[:160],
-                handle="",
+                text=f"已发 {(_topic or '图')[:12]} {_memo_tail}".strip(),
+                ref=_memo_ref,
+                handle=_iid,
                 owner_user_id=target_id,
             )
 

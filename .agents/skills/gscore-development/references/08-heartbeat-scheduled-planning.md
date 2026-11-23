@@ -173,14 +173,13 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 
 调度器派活时**绕过主人格会话**，不把主会话的框架约束抄进执行体。系统提示词只附
 委派人的人格 ID。需要替这个人做选择或答题时，再读取 persona.md。
-结果经 `_persona_relay` 用人格口吻转译后通知主人。
+有绑定主会话时完成后经 `_wake_main_agent_for_delivery` 回灌主人格交付；无主会话的纯后台任务经去代码清洗后推群。
 
 > 🔁 **交互式 `create_subagent` 不许双份播报**（2026-07-15 修；2026-10 群聊改为派完即走）。
 > `create_subagent(agent_profile=...)` 走 `_dispatch_via_kanban` 建**叶子根**、`kick_root` 后
 > **立刻返回 deferred ack**，主 session 放锁，群里其他人可以继续说话或再委派。结论只走
 > `_wake_main_agent_for_delivery` 回灌主人格，由主人格转述/发图。执行体把 leaf-root 登进
-> `_INTERACTIVE_RELAY_ROOTS` + `_DEFERRED_MAIN_DELIVERY_ROOTS`；终态时消费 deferred 才唤醒，
-> 不再 `_persona_relay` 推群。`create_by` 为 TEST 时同步等到终态，因为该入口等不到回灌。
+> `_INTERACTIVE_RELAY_ROOTS` + `_DEFERRED_MAIN_DELIVERY_ROOTS`；终态时消费 deferred 才唤醒，内联或出站已认领（`claim_inline_delivery`）则自动拦截回灌防双发。`create_by` 为 TEST 时同步等到终态，因为该入口等不到回灌。
 > 回灌帧带发起人。任何轮次发 `res_` 都跟当前 `ev.user_id` 对发起人，对不上、没有说话人或没有发起人记录就拒发；
 > 模型传入的 `user_id` 不能改收件人。回灌轮仍把 C 端 @ 钉在 `ev.user_id`。本帧已有主图则禁止再委派；
 > 同一条任务根在 180 秒内第 2 次回灌禁止再委派。同一发起人的另一条任务各自回灌，次数不共用。没有主会话的兜底通知不算回灌次数。群/频道排队**不受** `STALE_CHAT_REQUEST_TTL`（8s）丢弃：

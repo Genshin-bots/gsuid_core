@@ -28,10 +28,7 @@
 async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
-    max_tokens: int = 35000,
-    max_iterations: int = 15,
     agent_profile: str = "",   # node_id 或可 resolve 的自然语言
-    transient: bool = False,   # True 仅 lookup；出图/落盘保持 False
 ) -> str
 ```
 
@@ -64,9 +61,8 @@ async def send_message_by_ai(
 ) -> str
 ```
 
-> **统一输出闸门（2026-08）**：`text` 发送前过 `output_gate.tool_gate_feedback`
-> （= `pre_send_gate(channel="tool")`；历史别名 `gate_warn_once`）——**尖括号**非法标签
-> （含 `<br>` / `<bubble/>`）打回直至熔断；**OOC** 同轮首次警告、再命中非 never-release 放行。
+> **统一输出闸门（2026-08）**：`text` 发送前过 `output_gate.pre_send_gate(channel="tool")`
+> ——**尖括号**非法标签（含 `<br>` / `<bubble/>`）打回直至熔断；**OOC** 同轮首次警告、再命中非 never-release 放行。
 > 通过后走 `send_chat_result(..., ooc_check=False)` 做呈现归一化。改造时不要绕过闸门，
 > 详见 [gscore-development §7.12 / §12.22](../../gscore-development/references/07-tool-registry-and-agent.md)。
 
@@ -688,7 +684,7 @@ async def list_available_tools(
   互读。
 
 **能力代理推进**：Kanban 调度器把每个子任务派给画像对应的**无人格能力代理**
-（`run_capability_agent`）执行，结果再经主人格 `_persona_relay` 转译后通知主人。
+（`run_capability_agent`）执行，结果回灌主人格会话交付（无主会话后台任务经去代码清洗后推群）。
 `create_subagent` 也支持 `agent_profile` 参数（即时委派单步任务），见下方 [§7.8](#78-能力代理agentnode-task-mode-节点)。
 
 ---
@@ -704,8 +700,7 @@ Persona 与能力代理**同构为一个 `AgentNode` 定义**（`gsuid_core.ai_c
 
 多步任务统一由 Kanban 任务树承载：主人格先调 `evaluate_agent_mesh_capability`
 评估节点覆盖，再调 `register_kanban_task` 创建根 + 子任务；每个子任务由
-`agent_profile`（即 `node_id`）指定的节点推进，结果经 `_persona_relay` 用人格
-口吻回告。
+`agent_profile`（即 `node_id`）指定的节点推进，完成后回灌主人格会话统一交付。
 
 框架内置 **7** 个通用节点：`research_agent` / **`render_agent`** / `code_agent` /
 `internal_reporter` / `memory_curator` / `scheduler_assistant` / `plugin_developer_agent`。

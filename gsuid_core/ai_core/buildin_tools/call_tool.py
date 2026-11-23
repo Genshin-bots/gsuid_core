@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import asyncio
 import inspect
 from typing import Literal
 from dataclasses import replace
@@ -20,7 +19,7 @@ from pydantic_ai.tools import Tool
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolBase, ToolContext
-from gsuid_core.ai_core.register import ai_tools, find_tool_base
+from gsuid_core.ai_core.register import ai_tools, find_tool_base, _mark_evidence_error
 
 _FORBIDDEN_DIRECT_NAMES: frozenset[str] = frozenset(
     {"call_tool", "find_tools", "create_subagent", "run_code", "send_message_by_ai"}
@@ -29,14 +28,6 @@ _CORE_PLUGINS: frozenset[str] = frozenset({"", "core", "gsuid_core", "buildin", 
 _MAIN_FORBIDDEN_CATEGORIES: frozenset[str] = frozenset({"media", "plugin_dev", "meta"})
 _FALLBACK_INNER_TIMEOUT_S: float = 60.0
 EPHEMERAL_TOOLS_EXTRA_KEY = "ephemeral_call_tools"
-
-
-def _mark_evidence_error() -> None:
-    from gsuid_core.ai_core.evidence.capture import current_evidence_mark
-
-    mark = current_evidence_mark()
-    if mark is not None:
-        mark.outcome_hint = "error"
 
 
 def _resolve_ref(prop: dict[str, object], defs: dict[str, object]) -> dict[str, object]:
@@ -291,15 +282,6 @@ async def call_tool(
         _mark_evidence_error()
         return f"⚠️ 工具 `{name}` 在当前轮次或权限条件下不可用。"
 
-    # 纵深兜底：非 @ai_tools/MCP 包装的自定义 ToolBase 仍统一执行 check_func
-    if tb.check_func is not None and not tb.check_in_wrapper:
-        from gsuid_core.ai_core.register import run_tool_check_func
-
-        is_passed, check_msg = await run_tool_check_func(tb.check_func, sub_ctx)
-        if not is_passed:
-            _mark_evidence_error()
-            return check_msg
-
     from pydantic_core import ValidationError
 
     try:
@@ -323,48 +305,22 @@ async def call_tool(
             _mark_evidence_error()
             return f"⚠️ 调用 `{name}` 参数校验未通过：{exc.message}"
 
-    if not tb.check_in_wrapper:
-        from gsuid_core.ai_core.tool_health import is_tool_frozen
-
-        if is_tool_frozen(name):
-            _mark_evidence_error()
-            return f"⚠️ 工具 `{name}` 近期连续失败已暂时熔断，请稍后再试或换个方式。"
-
     logger.debug(t("log.ai.call_tool_dispatch", name=name))
     try:
         if tb.check_in_wrapper:
-            # @ai_tools / MCP 内层自带独立超时与健康度；未捕获异常直抛给 tool_safety 统一收口
             result = await tool.function_schema.call(validated, sub_ctx)
-        else:
-            # to_ai / 自定义裸 ToolBase 无内层超时与健康度，由元执行器补齐闭环
-            inner_timeout = tool_def.timeout if tool_def.timeout is not None else _FALLBACK_INNER_TIMEOUT_S
-            result = await asyncio.wait_for(tool.function_schema.call(validated, sub_ctx), timeout=inner_timeout)
+            return _normalize_tool_output(result)
+        from gsuid_core.ai_core.register import execute_guarded_tool
+
+        inner_timeout = tool_def.timeout if tool_def.timeout is not None else _FALLBACK_INNER_TIMEOUT_S
+        return await execute_guarded_tool(
+            name,
+            sub_ctx,
+            lambda: tool.function_schema.call(validated, sub_ctx),
+            check_func=tb.check_func,
+            timeout=inner_timeout,
+            track_health=True,
+        )
     except ModelRetry as exc:
         _mark_evidence_error()
         return f"⚠️ 调用 `{name}` 需调整参数后重试：{exc.message}"
-    except asyncio.TimeoutError:
-        _mark_evidence_error()
-        from gsuid_core.ai_core.tool_health import record_tool_failure
-
-        record_tool_failure(name, "timeout")
-        return f"⚠️ 工具 {name} 执行超时，请稍后重试或换个方式"
-
-    if not tb.check_in_wrapper:
-        from gsuid_core.ai_core.tool_health import record_tool_failure, record_tool_success
-
-        if not isinstance(result, (str, ToolReturn, type(None))):
-            from gsuid_core.ai_core.utils import handle_tool_result
-
-            out_str = await handle_tool_result(ctx.deps.bot, result)
-            if out_str.lstrip().startswith("❌"):
-                record_tool_failure(name, "error_prefix")
-            else:
-                record_tool_success(name)
-            return out_str
-        norm_out = _normalize_tool_output(result)
-        if isinstance(norm_out, str) and norm_out.lstrip().startswith("❌"):
-            record_tool_failure(name, "error_prefix")
-        else:
-            record_tool_success(name)
-        return norm_out
-    return _normalize_tool_output(result)

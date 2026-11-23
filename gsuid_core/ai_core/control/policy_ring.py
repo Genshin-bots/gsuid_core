@@ -669,11 +669,17 @@ def _utterance_cover_hit(st: RunOnceState) -> bool:
 def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool) -> bool:
     if _has_unread_attachment(st, video_readable=video_readable):
         return True
-    if st.followup_detected:
+    if st.tg is not None and st.tg.call_to_self and st.tg.task_management:
         return True
-    if st.tg is not None and st.tg.ellipsis_followup:
+    if st.followup_detected or (st.tg is not None and st.tg.ellipsis_followup):
+        sched_ok = "sched_mutate_ok" in st.run_extra and st.run_extra["sched_mutate_ok"] is True
+        if not st.has_active_task and not sched_ok:
+            from gsuid_core.ai_core.interaction_scaffold import is_pure_stop_ellipsis
+
+            if is_pure_stop_ellipsis(turn_user_text(st)):
+                return False
         return True
-    return bool(st.tg is not None and st.tg.call_to_self and st.tg.task_management)
+    return False
 
 
 def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
@@ -997,6 +1003,7 @@ _SETTLE_PRE_RING: tuple[_SettlePreRule, ...] = (
         lambda ctx: (
             not ctx.non_silence_msg
             and not ctx.host.sent_texts
+            and not ctx.st.pending_async_delivery
             and ctx.non_capability_interactive
             and ctx.st.tg is not None
             and ctx.st.tg.call_to_self

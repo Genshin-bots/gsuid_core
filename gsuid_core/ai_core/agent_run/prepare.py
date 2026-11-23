@@ -123,6 +123,7 @@ class PreparePhase(RunOnceHost):
         self._last_attempt_pending_async = False
         self._last_attempt_effectual_mutate = False
         self._last_attempt_has_status_tool = False
+        self._last_attempt_tool_outcomes = (frozenset(), frozenset())
         self._last_attempt_thinking = ""
         # 出戏防火墙拦下的文本段（§D.4）：iter 结束后走"提醒→重说→放行"闭环
         st.ooc_blocked = []
@@ -254,6 +255,8 @@ class PreparePhase(RunOnceHost):
             from gsuid_core.ai_core.outbound import remember_outbound_topic
 
             st.run_extra["delivery_wake"] = True
+            if _probe_for_policy.lstrip().startswith("[框架·任务未完成]"):
+                st.run_extra["delivery_failed"] = True
             remember_outbound_topic(st.run_extra, _probe_for_policy)
             if "主图：`" in _probe_for_policy:
                 st.run_extra["delivery_has_image"] = True

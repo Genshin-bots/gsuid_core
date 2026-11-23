@@ -457,10 +457,13 @@ class ImageClaim:
 class ResOwner(NamedTuple):
     found: bool
     owner_user_id: str
+    root_task_id: str = ""
+    is_draft: bool = False
+    task_running: bool = False
 
 
 async def lookup_res_owner(res_id: str) -> ResOwner:
-    """res_ 是否存在，以及任务树发起人。找不到产物与产物没有发起人分开。"""
+    """res_ 存在性、归属人与定稿态（单次查询供出站汇点把关在途草稿与反向销账）。"""
     rid = (res_id or "").strip()
     if not rid.startswith("res_"):
         return ResOwner(False, "")
@@ -469,10 +472,13 @@ async def lookup_res_owner(res_id: str) -> ResOwner:
     art = await AIAgentArtifact.get_by_id(rid)
     if art is None:
         return ResOwner(False, "")
+    is_draft = art.artifact_kind == "draft"
     source = await AIAgentTask.get_by_id(art.root_task_id)
     if source is None:
-        return ResOwner(True, "")
-    return ResOwner(True, (source.owner_user_id or "").strip())
+        return ResOwner(True, "", art.root_task_id or "", is_draft, False)
+    node = source if art.task_id == art.root_task_id else await AIAgentTask.get_by_id(art.task_id)
+    running = (node is not None and node.status == "running") or source.status == "running"
+    return ResOwner(True, (source.owner_user_id or "").strip(), source.id, is_draft, running)
 
 
 def speaker_may_take_res(owner: ResOwner, speaker_user_id: str) -> bool:
@@ -544,11 +550,6 @@ async def release_image_delivery(ev: Event | None, image_id: str) -> None:
         await DeliveryLedger.release(gid, rid)
     except (OperationalError, ProgrammingError) as e:
         logger.debug(i18n_t("log.ai.outbound_read_skip", e=e))
-
-
-async def claim_image_delivery(ev: Event | None, image_id: str, *, session_id: str) -> Optional[str]:
-    """同 res_id 二发则返回拒发文案。兼容旧调用。"""
-    return (await try_claim_image_delivery(ev, image_id, session_id=session_id)).refuse
 
 
 async def write_decision_memo(

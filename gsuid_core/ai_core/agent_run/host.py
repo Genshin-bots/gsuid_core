@@ -63,6 +63,7 @@ class RunOnceHost:
     _last_attempt_pending_async: bool
     _last_attempt_effectual_mutate: bool
     _last_attempt_has_status_tool: bool
+    _last_attempt_tool_outcomes: tuple[frozenset[str], frozenset[str]]
     _last_attempt_thinking: str
     _session_toolset_frozen: Optional[list[str]]
     #: 上一轮 log_tools_list 记下的装配名单，tools_change 的 diff 基线

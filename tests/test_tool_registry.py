@@ -631,8 +631,33 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
         runner1 = asyncio.create_task(kanban_executor.kick_root(root1.id))
         await asyncio.wait_for(started.wait(), timeout=2.0)
 
+        # 在途草稿隔离：render_agent 运行期未定稿图不得被 check_delegation 暴露导致双发
+        draft_img = base_dir / "draft_1.png"
+        draft_img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        draft_row = kanban.AIAgentArtifact(
+            id="res_draft_inflight",
+            root_task_id=root1.id,
+            task_id=root1.id,
+            mime="image/png",
+            artifact_kind="output",
+            summary="未定稿草稿",
+            payload_path=str(draft_img),
+        )
+        await kanban.AIAgentArtifact.batch_insert_data([draft_row])
         status_card = await check_delegation(ctx, f"#{root1.ordinal}")
         assert "⏳ 仍在后台执行" in status_card and f"dlg_{root1.id}" in status_card
+        assert "res_draft_inflight" not in status_card and "send_message_by_ai" not in status_card
+        from gsuid_core.ai_core.outbound import lookup_res_owner
+        from gsuid_core.ai_core.buildin_tools.message_sender import send_message_by_ai
+
+        assert (await lookup_res_owner("res_draft_inflight")).task_running is True
+        send_ctx = RunContext(
+            deps=ToolContext(ev=ev, bot=Bot(_Bot("ws1"), ev), allow_user_outbound=True),
+            model=TestModel(),
+            usage=RunUsage(),
+        )
+        refused_draft = await send_message_by_ai(send_ctx, image_id="res_draft_inflight")
+        assert "尚未定稿" in refused_draft
         task_ctx_text = await build_task_context("100000001", current_group_id="group_1")
         assert f"事项#{root1.ordinal} (dlg_{root1.id})" in task_ctx_text
 
@@ -752,6 +777,101 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
         )
         assert await kanban.disarm_template(tpl.id) is True
         assert unscheduled == [tpl.id]
+
+        # 5) 终态单次原子认领防双发 + 子代理失败终态收口（禁止包装为 completed 催出图）
+        async def _mk_leaf(goal_text: str) -> AIAgentTask:
+            r, _ = await kanban.create_kanban_tree(
+                goal=goal_text,
+                owner_user_id="100000001",
+                scope_key="group:group_1",
+                bot_id="OneBot",
+                persona_name="测试人格",
+                subtasks=[],
+                root_agent_profile="research_agent",
+                group_id="group_1",
+                user_type="group",
+                session_id=ev.session_id,
+            )
+            kanban_executor.mark_deferred_main_delivery(r.id)
+            return r
+
+        wakes_before_claim = len(wakes)
+        started.clear()
+        release.set()
+        root4 = await _mk_leaf("测试并发认领防双发")
+        assert kanban_executor.claim_inline_delivery(root4.id) is True
+        assert kanban_executor.claim_inline_delivery(root4.id) is False
+        await kanban_executor.kick_root(root4.id)
+        assert len(wakes) == wakes_before_claim
+
+        async def _fail_cap(_pid: str, _task: str, ev: Event | None = None, **_kw: object) -> str:
+            _ = ev
+            return "⚠️ 能力代理执行失败: 后端服务配额不足"
+
+        monkeypatch.setattr("gsuid_core.ai_core.capability_agents.runner.run_capability_agent", _fail_cap)
+        root_fail = await _mk_leaf("测试音频生成受阻")
+        await kanban_executor.kick_root(root_fail.id)
+        fail_row = await AIAgentTask.get_by_id(root_fail.id)
+        assert fail_row is not None and fail_row.status == "failed"
+        assert await kanban.AIAgentArtifact.list_for_task(root_fail.id) == []
+        fail_receipt = await kanban_executor.format_task_delivery_receipt(fail_row)
+        assert "【子任务未完成】" in fail_receipt and "render_agent" not in fail_receipt
+
+        from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode
+        from gsuid_core.ai_core.buildin_tools.subagent import _dispatch_transient_capability_agent
+        from gsuid_core.ai_core.capability_agents.runner import _node_primary_tools_all_failed
+        from gsuid_core.ai_core.capability_agents.delegation_contracts import receipt_has_rendered_image
+
+        transient_calls = 0
+
+        async def _short_ok_cap(profile_id: str, task: str, ev: Event | None = None, **_kw: object) -> str:
+            nonlocal transient_calls
+            _ = (profile_id, task, ev)
+            transient_calls += 1
+            return "已记录偏好：喜欢简洁回答。"
+
+        monkeypatch.setattr("gsuid_core.ai_core.capability_agents.runner.run_capability_agent", _short_ok_cap)
+        tr_out = await _dispatch_transient_capability_agent(_rctx(ev=ev), "记一下偏好", "memory_curator", "测试人格")
+        assert transient_calls == 1
+        assert "【memory_curator 已完成】" in tr_out and "未交付可用事实包" not in tr_out
+        assert receipt_has_rendered_image("[persisted id=res_12345678 kind=image mime=image/png size=128]") is True
+        assert receipt_has_rendered_image("💡 主图：`res_12345678` → send_message_by_ai(image_id=)。") is True
+        assert receipt_has_rendered_image(fail_receipt) is False
+
+        from gsuid_core.ai_core.utils import _resolve_and_deliver_leaked_handles
+        from gsuid_core.ai_core.planning import workspace as ws_mod
+
+        root_draft = await _mk_leaf("测试泄漏草稿拦截")
+        ws_dir = ws_mod.ensure_workspace(root_draft.id, root_draft.id)
+        draft_art = await ws_mod.put_artifact(
+            payload="草稿正文不应随泄漏句柄补发",
+            summary="草稿",
+            mime="text/plain",
+            artifact_kind="draft",
+            plan_ctx=ws_mod.PlanRunContext(
+                task_id=root_draft.id,
+                step_id=None,
+                root_task_id=root_draft.id,
+                artifact_workspace=ws_dir,
+                allowed_write_roots=[ws_dir],
+            ),
+        )
+        assert draft_art is not None
+        stripped_leak = await _resolve_and_deliver_leaked_handles(
+            f"看这里 {draft_art.id}",
+            bot=Bot(_Bot("ws_leak"), ev),
+            ev=ev,
+        )
+        assert draft_art.id not in stripped_leak and "草稿正文" not in stripped_leak
+
+        spec_node = AgentNode("aigc_stub", "生成代理", "p", tool_packs=[TASK_BASICS_PACK], tool_names=["gen_audio"])
+        gen_node = AgentNode("res_stub", "调研代理", "p", tool_packs=[TASK_BASICS_PACK], tool_names=[])
+        assert _node_primary_tools_all_failed(spec_node, (frozenset({"run_code"}), frozenset({"gen_audio"}))) is True
+        assert _node_primary_tools_all_failed(spec_node, (frozenset({"gen_audio"}), frozenset({"gen_audio"}))) is False
+        assert (
+            _node_primary_tools_all_failed(gen_node, (frozenset({"web_search_tool"}), frozenset({"web_fetch_tool"})))
+            is False
+        )
 
         await engine.dispose()
 
@@ -2113,6 +2233,61 @@ def test_inner_tool_failures_freeze_inner_not_call_tool(
     frozen_reply = asyncio.run(call_tool(rctx, "_test_raw_fail_cb", "{}"))
     assert isinstance(frozen_reply, str) and "熔断" in frozen_reply
     assert is_tool_frozen("call_tool") is False
+
+    # to_ai 桥接工具直调（CapabilityAgent / run_code 路径）共享 3 次连续 ❌ 熔断，且报错不落盘
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.trigger_bridge import _MCP_TRIGGER_REGISTRY, MockBot, _register_trigger_as_ai_tool
+    from gsuid_core.ai_core.agent_run.support import tool_return_is_hard_error
+    from gsuid_core.ai_core.planning.tool_output_helper import should_persist_tool_return
+
+    @dataclass
+    class _StubSV:
+        enabled: bool = True
+        pm: int = 6
+        plugins: _StubSV | None = None
+
+    sv_stub = _StubSV()
+    sv_stub.plugins = _StubSV()
+
+    async def _test_to_ai_fail_cmd(bot: Bot | MockBot, ev: Event) -> None:
+        _ = ev
+        await bot.send("❌ 外部通道异常")
+
+    _register_trigger_as_ai_tool(_test_to_ai_fail_cmd, "测试触发失败", "测试触发器熔断。", sv_stub, "command")
+    scratch_tools.append(("by_trigger", "_test_to_ai_fail_cmd"))
+    clean_health.add("_test_to_ai_fail_cmd")
+    try:
+        tb_trig = find_tool_base("_test_to_ai_fail_cmd")
+        assert tb_trig is not None and tb_trig.check_in_wrapper is True
+        ev_trig = Event(user_id="100000001", user_pm=6)
+        direct_ctx = _rctx(ev=ev_trig, allow_user_outbound=False)
+        direct_ctx.deps.bot = Bot(_Bot("ws_trig"), ev_trig)
+        for _ in range(3):
+            assert str(asyncio.run(tb_trig.tool.function(direct_ctx, "参数"))).startswith("❌")
+        assert is_tool_frozen("_test_to_ai_fail_cmd") is True
+        assert "熔断" in str(asyncio.run(tb_trig.tool.function(direct_ctx, "参数")))
+
+        sv_admin = _StubSV(pm=1)
+        sv_admin.plugins = _StubSV(pm=6)
+        _register_trigger_as_ai_tool(_test_to_ai_fail_cmd, "测试管理命令", "测试越权不冻结。", sv_admin, "command")
+        clean_health.discard("_test_to_ai_fail_cmd")
+        from gsuid_core.ai_core.tool_health import _HEALTH
+
+        _HEALTH.pop("_test_to_ai_fail_cmd", None)
+        clean_health.add("_test_to_ai_fail_cmd")
+        tb_admin = find_tool_base("_test_to_ai_fail_cmd")
+        assert tb_admin is not None
+        for _ in range(4):
+            denied_out = str(asyncio.run(tb_admin.tool.function(direct_ctx, "参数")))
+            assert "权限不足" in denied_out
+        assert is_tool_frozen("_test_to_ai_fail_cmd") is False
+    finally:
+        _MCP_TRIGGER_REGISTRY.pop("_test_to_ai_fail_cmd", None)
+
+    assert tool_return_is_hard_error(ToolReturnPart(tool_name="t", content="❌ 异常", tool_call_id="c1")) is True
+    assert tool_return_is_hard_error(ToolReturnPart(tool_name="t", content="[]", tool_call_id="c2")) is False
+    assert should_persist_tool_return("web_search_tool", "❌ 搜索异常" * 20) is False
 
 
 def test_call_tool_evidence_and_errors_name_inner_tool(

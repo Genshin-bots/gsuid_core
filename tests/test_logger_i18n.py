@@ -622,3 +622,13 @@ def test_emoji_assembly_and_plugin_locale_isolation(tmp_path: Path) -> None:
     resolved = t(sample_key, lang="zh-cn", name="world")
     assert "hello" in resolved and "world" in resolved and sample_key not in resolved
     unregister_plugin_locales(plugin_name)
+
+
+def test_console_renderer_avoids_rich_traceback() -> None:
+    """控制台异常渲染禁止启用 RichTracebackFormatter（同步读盘 + Pygments 会冻住事件循环）。"""
+    import structlog.dev
+
+    from gsuid_core import logger as core_logger
+
+    renderer = core_logger._build_console_renderer()
+    assert renderer._exception_formatter is structlog.dev.plain_traceback
