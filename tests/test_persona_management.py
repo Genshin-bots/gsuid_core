@@ -934,9 +934,34 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert not any("没能执行成功" in ln for ln in tl_after_proactive)
         assert any("定时提醒" in ln and "大家早上好" in ln and "定时任务" not in ln for ln in tl_after_proactive)
 
+        await jm.record_journal_entry(
+            jm.JournalEntry(
+                timestamp=now,
+                date_str="2026-11-22",
+                time_str="08:00",
+                tag="查资料",
+                summary="私聊核查个人体检日程安排",
+                group_id="",
+                requested_by="100000001",
+            ),
+            target_personas=["alpha"],
+        )
+        arch_dir = jm._archives_dir("alpha")
+        (arch_dir / "legacy_v1_2026-10.jsonl").write_text('{"date":"2026-10-01"}\n', encoding="utf-8")
+        (arch_dir / "noise.jsonl").write_text("{}", encoding="utf-8")
         structured_view = jm.get_journal_structured("alpha")
         assert any(gs["group_id"] == "group_1" and gs["timeline_count"] >= 1 for gs in structured_view["group_shards"])
+        assert any(
+            u["user_id"] == "100000001" and u["shard_id"] == "user:100000001" for u in structured_view["user_shards"]
+        )
         assert len(structured_view["archive_months"]) >= 1
+        assert "noise" not in structured_view["archive_months"]
+        assert not structured_view["archive_months"][0].startswith("legacy_v1_")
+        arch_recs, arch_months, arch_sel = jm.get_journal_archive_records("alpha", shard_id="group_1")
+        assert arch_months == structured_view["archive_months"]
+        assert arch_months and arch_sel and any(r["shard"] == "group_1" and r["entries"] for r in arch_recs)
+        bad_recs, _, bad_sel = jm.get_journal_archive_records("alpha", month="../evil")
+        assert bad_recs == [] and bad_sel == ""
         compat_md = jm.get_journal_content("alpha")
         compat_standing, compat_tl = jm._read_sections(compat_md)
         assert compat_standing and any("(群:group_1)" in ln for ln in compat_tl)

@@ -28,6 +28,7 @@ from gsuid_core.ai_core.journal.dream import (
     MAX_NOTE_CLUSTERS_PER_NIGHT,
     DREAM_MAX_HEAVY_SHARDS_PER_NIGHT,
     DreamSlots,
+    ArchiveRecord,
     DreamLLMOutcome,
     GroundTruthDigest,
     current_month_str,
@@ -91,6 +92,9 @@ _LINE_PARSER = re.compile(
 _HEADER_DATE_RE = re.compile(r"\((?P<label>\d{4}-\d{2}(?:-\d{2})?)\)")
 _GROUP_HEADER_RE = re.compile(r"^###\s+驻群分片\s+\[群:(?P<gid>[^\]]+)\]")
 _SHARD_TITLE_GID_RE = re.compile(r"\(群:(?P<gid>[^)]+)\)\s*$")
+_SHARD_TITLE_UID_RE = re.compile(r"\(用户:(?P<uid>[^)]+)\)\s*$")
+_ARCHIVE_MONTH_STEM_RE = re.compile(r"^(?:legacy_v1_)?\d{4}-\d{2}$")
+_ARCHIVE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SAFE_NAME_RE = re.compile(r'[\\/*?:"<>|]')
 
 _SHARD_LOCKS: Dict[Tuple[str, str], asyncio.Lock] = {}
@@ -163,6 +167,19 @@ class GroupShardPreview(TypedDict):
     timeline_count: int
 
 
+class UserShardPreview(TypedDict):
+    user_id: str
+    shard_id: str
+    content: str
+    persistent: list[str]
+    monthly: list[str]
+    yesterday: list[str]
+    month_label: str
+    yesterday_label: str
+    timeline: list[str]
+    timeline_count: int
+
+
 class PersonaJournalStructured(TypedDict):
     self_content: str
     self_persistent: list[str]
@@ -174,6 +191,7 @@ class PersonaJournalStructured(TypedDict):
     monthly_summary: str
     yesterday_summary: str
     group_shards: list[GroupShardPreview]
+    user_shards: list[UserShardPreview]
     archive_months: list[str]
 
 
@@ -1515,6 +1533,29 @@ def _list_group_shard_ids_sync(persona_name: str) -> List[str]:
     return out
 
 
+def _list_user_shard_ids_sync(persona_name: str) -> List[str]:
+    udir = _persona_root(persona_name) / "users"
+    if not udir.exists():
+        return []
+    files = sorted(udir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    out: List[str] = []
+    for f in files:
+        if not f.is_file() or not f.stem:
+            continue
+        real_uid = f.stem
+        try:
+            with f.open("r", encoding="utf-8") as fp:
+                first_line = fp.readline().strip()
+            m_uid = _SHARD_TITLE_UID_RE.search(first_line)
+            if m_uid is not None and m_uid.group("uid").strip():
+                real_uid = m_uid.group("uid").strip()
+        except OSError:
+            pass
+        if real_uid not in out:
+            out.append(real_uid)
+    return out
+
+
 def get_journal_content(persona_name: str) -> str:
     """读取指定人格手账全景视图（self.md + 最近活跃的驻群分片，兼容 WebConsole 单页展示）。"""
     _migrate_legacy_root_file_sync(persona_name)
@@ -1555,8 +1596,27 @@ def get_journal_structured(persona_name: str) -> PersonaJournalStructured:
                 "timeline_count": len(gdoc.timeline),
             }
         )
-    adir = _archives_dir(persona_name)
-    months = sorted([p.stem for p in adir.glob("*.jsonl")], reverse=True) if adir.exists() else []
+    users_out: List[UserShardPreview] = []
+    for uid in _list_user_shard_ids_sync(persona_name)[:32]:
+        usid = _user_shard_id(uid)
+        udoc = _load_shard_sync(persona_name, usid, create_if_missing=False)
+        if udoc is None:
+            continue
+        users_out.append(
+            {
+                "user_id": uid,
+                "shard_id": usid,
+                "content": render_shard_markdown(persona_name, udoc),
+                "persistent": [x for x in udoc.persistent if not _is_placeholder_bullet(x)],
+                "monthly": [x for x in udoc.monthly if not _is_placeholder_bullet(x)],
+                "yesterday": [x for x in udoc.yesterday if not _is_placeholder_bullet(x)],
+                "month_label": udoc.month_label,
+                "yesterday_label": udoc.yesterday_label,
+                "timeline": list(udoc.timeline),
+                "timeline_count": len(udoc.timeline),
+            }
+        )
+    months = _list_archive_months_sync(persona_name)
     self_pers = [x for x in self_doc.persistent if not _is_placeholder_bullet(x)]
     self_mon = [x for x in self_doc.monthly if not _is_placeholder_bullet(x)]
     self_yest = [x for x in self_doc.yesterday if not _is_placeholder_bullet(x)]
@@ -1571,6 +1631,7 @@ def get_journal_structured(persona_name: str) -> PersonaJournalStructured:
         "monthly_summary": "\n".join(self_doc.monthly),
         "yesterday_summary": "\n".join(self_doc.yesterday),
         "group_shards": groups_out,
+        "user_shards": users_out,
         "archive_months": months,
     }
 
@@ -1626,6 +1687,84 @@ async def save_journal_content_async(persona_name: str, content: str, *, shard_i
 
     async with _get_shard_lock(key, SELF_SHARD_ID):
         await to_thread(save_journal_content)(key, content, shard_id=SELF_SHARD_ID)
+
+
+def _list_archive_months_sync(persona_name: str) -> List[str]:
+    adir = _archives_dir(persona_name)
+    if not adir.exists():
+        return []
+    stems = [p.stem for p in adir.glob("*.jsonl") if _ARCHIVE_MONTH_STEM_RE.match(p.stem) is not None]
+    regular = sorted([s for s in stems if not s.startswith("legacy_v1_")], reverse=True)
+    legacy = sorted([s for s in stems if s.startswith("legacy_v1_")], reverse=True)
+    return regular + legacy
+
+
+def get_journal_archive_records(
+    persona_name: str,
+    *,
+    month: str = "",
+    shard_id: str = "",
+    date: str = "",
+) -> Tuple[List[ArchiveRecord], List[str], str]:
+    """供 WebConsole 按月/分片/日期读取无损 JSONL 归档流水（含昨日流水与历史冷归档）。"""
+    adir = _archives_dir(persona_name)
+    available = _list_archive_months_sync(persona_name)
+    if not available:
+        return [], [], ""
+
+    req_month = month.strip()
+    req_date = date.strip()
+    req_shard = shard_id.strip()
+
+    if req_date and _ARCHIVE_DATE_RE.match(req_date) is None:
+        return [], available, ""
+    if req_month and _ARCHIVE_MONTH_STEM_RE.match(req_month) is None:
+        return [], available, ""
+
+    target_month = req_month
+    if not target_month:
+        target_month = req_date[:7] if req_date else available[0]
+
+    target_file = adir / f"{target_month}.jsonl"
+    if not target_file.exists():
+        return [], available, target_month
+
+    records: List[ArchiveRecord] = []
+    with target_file.open("r", encoding="utf-8", errors="replace") as fp:
+        for raw_line in fp:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            rec_date = parsed["date"] if "date" in parsed and isinstance(parsed["date"], str) else ""
+            rec_shard = parsed["shard"] if "shard" in parsed and isinstance(parsed["shard"], str) else ""
+            rec_kind = parsed["kind"] if "kind" in parsed and isinstance(parsed["kind"], str) else "daily"
+            raw_entries = parsed["entries"] if "entries" in parsed and isinstance(parsed["entries"], list) else []
+            entries = [str(item) for item in raw_entries if isinstance(item, str) and item.strip()]
+            raw_ts = parsed["ts"] if "ts" in parsed else 0.0
+            rec_ts = float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0
+            if not entries:
+                continue
+            if req_shard and rec_shard != req_shard:
+                continue
+            if req_date and rec_date != req_date:
+                continue
+            records.append(
+                {
+                    "date": rec_date,
+                    "shard": rec_shard,
+                    "kind": rec_kind,
+                    "entries": entries,
+                    "ts": rec_ts,
+                }
+            )
+    records.sort(key=lambda r: (r["date"], r["ts"]), reverse=True)
+    return records, available, target_month
 
 
 async def read_archived_journal_handle(
@@ -1890,7 +2029,8 @@ async def compact_journal(
             candidate_shards.append((SELF_SHARD_ID, len(self_doc.timeline)))
             seen_sids.add(SELF_SHARD_ID)
 
-        all_gids = set(st_entry["dirty_shards"]) | set(await to_thread(_list_group_shard_ids_sync)(key))
+        user_sids = {_user_shard_id(uid) for uid in await to_thread(_list_user_shard_ids_sync)(key)}
+        all_gids = set(st_entry["dirty_shards"]) | set(await to_thread(_list_group_shard_ids_sync)(key)) | user_sids
         all_gids.discard(SELF_SHARD_ID)
         for gid in all_gids:
             gdoc = await to_thread(_load_shard_sync)(key, gid, create_if_missing=False)

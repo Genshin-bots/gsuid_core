@@ -1421,6 +1421,40 @@ class PersonaJournalGroupShardItem(TypedDict):
     timeline_count: int
 
 
+class PersonaJournalUserShardItem(TypedDict):
+    user_id: str
+    shard_id: str
+    content: str
+    persistent: List[str]
+    monthly: List[str]
+    yesterday: List[str]
+    month_label: str
+    yesterday_label: str
+    timeline: List[str]
+    timeline_count: int
+
+
+class PersonaJournalArchiveRecordItem(TypedDict):
+    date: str
+    shard: str
+    kind: str
+    entries: List[str]
+    ts: float
+
+
+class PersonaJournalArchivesData(TypedDict):
+    persona_name: str
+    selected_month: str
+    available_months: List[str]
+    records: List[PersonaJournalArchiveRecordItem]
+
+
+class PersonaJournalArchivesResponse(TypedDict):
+    status: int
+    msg: str
+    data: PersonaJournalArchivesData
+
+
 class PersonaJournalData(TypedDict):
     persona_name: str
     content: str
@@ -1435,6 +1469,7 @@ class PersonaJournalData(TypedDict):
     monthly_summary: str
     yesterday_summary: str
     group_shards: List[PersonaJournalGroupShardItem]
+    user_shards: List[PersonaJournalUserShardItem]
     archive_months: List[str]
     timeline: List[str]
     timeline_count: int
@@ -1509,9 +1544,50 @@ async def get_persona_journal(
             "monthly_summary": structured["monthly_summary"],
             "yesterday_summary": structured["yesterday_summary"],
             "group_shards": structured["group_shards"],
+            "user_shards": structured["user_shards"],
             "archive_months": structured["archive_months"],
             "timeline": timeline,
             "timeline_count": len(timeline),
+        },
+    }
+
+
+@app.get("/api/persona/{persona_name}/journal/archives", summary="读取指定人格的历史归档手账流水", tags=PERSONA)
+async def get_persona_journal_archives(
+    persona_name: str,
+    month: str = "",
+    shard_id: str = "",
+    date: str = "",
+    _: SessionRecord = Depends(require_auth),
+) -> PersonaJournalArchivesResponse:
+    """按月/分片/日期读取无损 JSONL 归档流水（含昨日流水与历史冷归档）。"""
+    from gsuid_core.pool import to_thread
+    from gsuid_core.ai_core.journal.manager import get_journal_archive_records
+
+    records, available_months, selected_month = await to_thread(get_journal_archive_records)(
+        persona_name,
+        month=month,
+        shard_id=shard_id,
+        date=date,
+    )
+    items: List[PersonaJournalArchiveRecordItem] = [
+        {
+            "date": rec["date"],
+            "shard": rec["shard"],
+            "kind": rec["kind"],
+            "entries": list(rec["entries"]),
+            "ts": rec["ts"],
+        }
+        for rec in records
+    ]
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "persona_name": persona_name,
+            "selected_month": selected_month,
+            "available_months": available_months,
+            "records": items,
         },
     }
 
