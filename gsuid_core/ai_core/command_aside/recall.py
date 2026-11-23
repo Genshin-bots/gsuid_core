@@ -41,10 +41,6 @@ def skeleton_receipt(text: str) -> str:
     return " ".join(s.split())[:600]
 
 
-def normalize_receipt(text: str) -> str:
-    return skeleton_receipt(text)
-
-
 def _key(plugin: str, trigger_id: str, receipt: str, persona_name: str = "") -> str:
     pfx = f"{persona_name}::" if persona_name else ""
     return f"{pfx}{plugin}\n{trigger_id}\n{skeleton_receipt(receipt)}"

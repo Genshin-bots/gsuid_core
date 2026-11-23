@@ -305,9 +305,3 @@ def get_key_store() -> HttpAgentKeyStore:
     if _store is None:
         _store = HttpAgentKeyStore()
     return _store
-
-
-def reset_key_store_for_tests(path: Path | None = None) -> HttpAgentKeyStore:
-    global _store
-    _store = HttpAgentKeyStore(path)
-    return _store

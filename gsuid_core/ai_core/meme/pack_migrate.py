@@ -133,12 +133,6 @@ async def finish_pack_payload() -> None:
         await AiMemePackMigration.mark(2)
 
 
-async def run_pack_migration() -> None:
-    """测试与手工入口：SQL 与 payload 连着跑。启动路径把二者拆开。"""
-    await migrate_pack_sql()
-    await finish_pack_payload()
-
-
 async def _backfill_pack_payload() -> bool:
     """点缺失只记日志。set_payload 抛错则不写 version 2。client 为空时返回 False。"""
     from gsuid_core.ai_core.rag.base import client

@@ -152,36 +152,12 @@ def classify_prefix_break_with_pos(
     return "none", None, None
 
 
-def classify_prefix_break(
-    prev: Optional[PrefixSnapshot],
-    *,
-    history_hashes: Sequence[str],
-    tools_hash: str,
-    system_hash: str,
-    prev_payloads: Sequence[str] = (),
-    curr_payloads: Sequence[str] = (),
-) -> PrefixBreakReason:
-    reason, _, _ = classify_prefix_break_with_pos(
-        prev,
-        history_hashes=history_hashes,
-        tools_hash=tools_hash,
-        system_hash=system_hash,
-        prev_payloads=prev_payloads,
-        curr_payloads=curr_payloads,
-    )
-    return reason
-
-
 def record_prefix_break(reason: PrefixBreakReason) -> None:
     _PREFIX_BREAK_COUNTS[reason] = _PREFIX_BREAK_COUNTS.get(reason, 0) + 1
 
 
 def get_prefix_break_counts() -> dict[str, int]:
     return dict(_PREFIX_BREAK_COUNTS)
-
-
-def reset_prefix_break_counts() -> None:
-    _PREFIX_BREAK_COUNTS.clear()
 
 
 def history_payloads(messages: Sequence[ModelMessage], limit: int = 32) -> List[str]:

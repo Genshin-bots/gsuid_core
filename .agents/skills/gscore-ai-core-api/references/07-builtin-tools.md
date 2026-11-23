@@ -19,7 +19,7 @@
 | `query_user_memory` | `search_cognition` |
 | `update_user_favorability` | 框架 `settle_turn`；主人绝对值用 `set_user_favorability` |
 | `read_persisted_output` | 保底 `read_handle` |
-| `set_session_reply_mute` / `clear_session_reply_mute` | 框架套件 `gscore.session_mute`（主人指令），不是 agent 工具 |
+| `set_session_reply_mute` / `clear_session_reply_mute` | 主人命令 `ban` / `禁言`（`core_ai_control`），不是 agent 工具 |
 
 ### `create_subagent` — 委派子 Agent / 能力代理
 
@@ -789,10 +789,10 @@ register_finance_agent()
 > `task_max_iterations` / `task_max_tokens`（全局任务档）。Token 消耗经预算 scope
 > 自动上溯到来源会话记账，受统一预算规则约束。
 >
-> **旧 API 兼容**：`register_capability_agent(CapabilityAgentProfile(...))`
-> （`profile_id` / `system_prompt` / `max_*` 旧字段名）仍可用——自动转换为
-> AgentNode 注册并打废弃 warning，`max_*` 被忽略；**将在下个大版本移除**，
-> 新代码请直接用上例的 `register_agent_node(AgentNode(...))`。
+> **旧 API 兼容与迁移**：`register_capability_agent(CapabilityAgentProfile(...))`
+> 仍保留兼容（自动转换为 `AgentNode` 并打废弃警告，**将在下个大版本移除**）。
+> 迁移时 `profile_id` 改为 `node_id`，`system_prompt` 改为 `prompt`，`max_*` 字段删掉，
+> 再补上 `tool_packs=[TASK_BASICS_PACK]`，改用上例的 `register_agent_node(AgentNode(...))`。
 
 ### 7.8.3 与 Kanban / `create_subagent` 的关系
 

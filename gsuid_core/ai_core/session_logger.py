@@ -300,7 +300,7 @@ def normalize_user_message_to_text(user_message: object) -> str:
 
 def _attach_reason_text(data: dict[str, str], reason: str) -> None:
     """有原因码才写入当时的中文。没有中文的旧日志不补这个字段。"""
-    from gsuid_core.ai_core.control.reason_text import reason_text
+    from gsuid_core.ai_core.control.directive import reason_text
 
     text = reason_text(reason)
     if text:
@@ -431,7 +431,7 @@ def extract_session_usage(entries: List["SessionLogEntry"]) -> "SessionUsageStat
 
 
 def _silence_result_data(output: str, tool_calls: list[str], silence_reason: str) -> dict[str, str | list[str]]:
-    from gsuid_core.ai_core.control.reason_text import reason_text
+    from gsuid_core.ai_core.control.directive import reason_text
 
     data: dict[str, str | list[str]] = {
         "output": output,

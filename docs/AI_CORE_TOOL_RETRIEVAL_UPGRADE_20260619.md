@@ -67,7 +67,7 @@
 | L1 保底池 | `get_main_agent_tools()`：`self`(白名单) + `buildin` 无条件加载 | 框架基础能力常驻 |
 | L2 状态驱动 | `get_state_driven_family_tools()`：按用户持久实体补能力族 | 跨轮追问定时任务 / Kanban / record |
 | L3 会话驻留 | `_recent_tool_families`（sticky 3 轮） | 刚用过的族继续常驻数轮 |
-| 语境池 | `get_tools_by_context_tags()` | 群画像标签匹配工具 |
+| 语境池 | `get_tools_by_context_tags()`（`27aa5780` 起移除） | 群画像标签匹配工具 |
 | L4 族展开 | `expand_tools_to_families()` | 召回任一工具即带出整族 |
 | L5 上文增强检索 | `_recent_user_texts` 拼进检索 query | 「改成后天吧」借上文召回 |
 

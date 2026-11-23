@@ -14,7 +14,7 @@
 2. **数据/渲染层**：在生成图片/结果前，调用 `ai_return()` 将结构化文本数据注入给 AI
 
 如果插件提供的是金融、天气、游戏数据、运维、绘图等**专业业务能力**，还需要做第三层：
-3. **能力代理画像层**：在插件启动入口注册 `CapabilityAgentProfile`，让 Kanban 多步任务和 `create_subagent(agent_profile="...")` 能把复杂任务派给插件自己的无人格专职代理。
+3. **能力代理画像层**：在插件启动入口用 `register_agent_node(AgentNode(...))` 注册能力代理，让 Kanban 多步任务和 `create_subagent(agent_profile="...")` 能把复杂任务派给插件自己的无人格专职代理。
 
 ---
 
@@ -213,11 +213,11 @@ available = get_plugin_available_prefix("插件名")
 `evaluate_agent_mesh_capability` / `register_kanban_task` / `create_subagent` 中选择它。
 
 **注册位置**：插件启动入口、`startup.py`、或会随插件加载导入的模块。注册表是进程内存数据，
-晚于核心 `init_planning` 注册也可生效；同名 `profile_id` 后写覆盖前写。
+晚于核心 `init_planning` 注册也可生效；同名 `node_id` 后写覆盖前写。
 
 **字段详细说明**与 [十四、能力代理画像](./references/14-ai-capability-profile.md) 一致——务必先读
-那章的 §14.1 ~ §14.4（特别是 `_DELIVERY_BOUNDARY` 必拼、`record_*` 持久化、诚
-实底线、`max_iterations` 等硬约束）。
+那章的 §14.1 到 §14.4（特别是工具优先级硬门、`record_*` 持久化、诚实底线）。
+交付边界由框架叠加，`prompt` 里不用手写；预算走全局任务档，节点上没有 `max_iterations`。
 
 ### Step 1：阅读插件代码，识别所有触发器
 
@@ -862,8 +862,8 @@ def _ai_return_fortune(result: dict):
 - [ ] 已用 `search_files` 批量定位所有触发器
 - [ ] 已检查并移除与触发器功能重复的手动 `@ai_tools` 函数
 - [ ] 已判断插件是否需要 Capability Agent 画像
-- [ ] 专业业务插件已注册 `CapabilityAgentProfile`
-- [ ] 画像 `system_prompt` 是无人格纯职能提示词，包含工具优先级、数据依据、Artifact、风险动作约束
+- [ ] 专业业务插件已用 `register_agent_node(AgentNode(...))` 注册能力代理
+- [ ] 画像 `prompt` 是无人格纯职能提示词，包含工具优先级、数据依据、Artifact、风险动作约束
 - [ ] 画像 `tool_names` 只列插件专业工具，不重复列框架永远工具
 - [ ] 画像 `match_keywords` 能覆盖用户自然语言 hint
 - [ ] 已用 `get_plugin_prefixs()` 确认插件的实际命令前缀格式
@@ -966,7 +966,7 @@ A：**不会**。实践中发现，AI（包括高级模型）在改造触发器�
 A：`to_ai` 只解决"AI 能不能调用某个命令"的问题；Capability Agent 画像解决"复杂任务该由哪个无人格专业执行者、按什么流程、用哪些专业工具组合完成"的问题。没有画像时，Kanban 的能力评估可能认为专业能力缺失，或者回退到 `research_agent`，在金融、医疗、法律等强专业域会触发诚实底线而拒绝给具体建议。
 
 **Q：注册画像后，主人格会自动使用吗？**
-A：会在两条链路中被使用：复合任务由主人格先调 `evaluate_agent_mesh_capability`，通过后 `register_kanban_task` 的子任务会带上 `agent_profile`；即时单步委派可由 `create_subagent(agent_profile="...")` 选择画像。前提是 `profile_id` / `match_keywords` 写得稳定且覆盖用户说法。
+A：会在两条链路中被使用：复合任务由主人格先调 `evaluate_agent_mesh_capability`，通过后 `register_kanban_task` 的子任务会带上 `agent_profile`；即时单步委派可由 `create_subagent(agent_profile="...")` 选择画像。前提是 `node_id` / `match_keywords` 写得稳定且覆盖用户说法。
 
 **Q：画像的 `tool_names` 要不要把 `artifact_put`、`web_search_tool`、`state_get` 都写进去？**
 A：不要。插件只写业务专业工具；框架会自动附加 Artifact、state、知识检索和 web 兜底等永远工具。重复写不会增加能力，反而让画像维护变乱。

@@ -739,7 +739,12 @@ async def mark_subtask_running(task: AIAgentTask) -> bool:
         )
         result = await session.execute(stmt)
         await session.commit()
-        return (result.rowcount if isinstance(result, CursorResult) else 0) > 0
+        won = (result.rowcount if isinstance(result, CursorResult) else 0) > 0
+        if won:
+            task.status = "running"
+            task.last_heartbeat_at = now
+            task.updated_at = now
+        return won
 
 
 async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = "") -> None:
@@ -748,6 +753,11 @@ async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = ""
     if output_artifact_id:
         update_data["output_artifact_id"] = output_artifact_id
     await AIAgentTask.update_data_by_data(select_data={"id": task.id}, update_data=update_data)
+    task.status = "completed"
+    task.updated_at = now
+    task.last_heartbeat_at = now
+    if output_artifact_id:
+        task.output_artifact_id = output_artifact_id
     await AIAgentTaskLog.add_log(task.id, "step_done", f"子任务完成 | output_artifact={output_artifact_id or '-'}")
     _drop_not_before_job(task.id)
     if task.root_task_id:
@@ -756,14 +766,18 @@ async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = ""
 
 async def mark_subtask_failed(task: AIAgentTask, reason: str) -> None:
     now = datetime.now()
+    trimmed = reason[:4000]
     await AIAgentTask.update_data_by_data(
         select_data={"id": task.id},
         update_data={
             "status": "failed",
-            "failure_reason": reason[:4000],
+            "failure_reason": trimmed,
             "updated_at": now,
         },
     )
+    task.status = "failed"
+    task.failure_reason = trimmed
+    task.updated_at = now
     await AIAgentTaskLog.add_log(task.id, "step_failed", f"子任务失败：{reason[:400]}")
     _drop_not_before_job(task.id)
     if task.root_task_id:

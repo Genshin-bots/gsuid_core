@@ -119,8 +119,8 @@ async def get_main_agent_tools(query: str = "") -> ToolList
 返回**框架保底工具池**——即 `category="self"` 和 `category="buildin"` 两个分类下的**全部**工具，
 无条件加载、不受向量搜索影响。`query` 参数已废弃保留（仅作签名兼容），保底工具不再依赖 query 筛选。
 
-主Agent 的完整工具列表 = 保底工具池（本函数）+ 语境工具池（`get_tools_by_context_tags`）
-+ 查询工具池（`search_tools`），后两者合并去重后受附加数量上限约束。
+主Agent 的完整工具列表 = 保底工具池（本函数）+ 状态驱动工具 + 查询工具池（`search_tools`），
+查询池族展开后受附加数量上限约束。语境工具池已于 `27aa5780`（2026-09-24）移除。
 
 > 保底池加载机制与 category 关系详见 [§3.2 分类说明](./03-tool-categories.md)。
 

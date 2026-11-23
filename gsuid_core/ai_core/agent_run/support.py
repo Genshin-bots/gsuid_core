@@ -610,6 +610,27 @@ def collect_run_thinking(segments: Sequence[str]) -> str:
 #: 墙钟软预算到期后留给模型收口的宽限上限（秒）与最多额外请求轮数。
 WALL_CLOCK_HARD_GRACE_SEC = 180.0
 WALL_CLOCK_POST_NUDGE_MAX_REQUESTS = 2
+#: 能力代理单次任务累计 Token 硬护栏（防高速推理绕过墙钟持续烧钱）。
+CAPABILITY_MAX_INPUT_TOKENS = 4_000_000
+CAPABILITY_MAX_OUTPUT_TOKENS = 200_000
+
+
+def request_limit_for(create_by: str) -> int:
+    """思考轮上限只看 create_by。调用方传入的 max_iterations 不再生效。"""
+    from gsuid_core.ai_core.const import (
+        SHORT_RUN_CREATE_BY,
+        TASK_TURN_CREATE_BY,
+        SHORT_RUN_MAX_ITERATIONS,
+    )
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    if create_by in TASK_TURN_CREATE_BY:
+        task_limit: int = ai_config.get_config("task_max_iterations").data
+        return task_limit
+    if create_by in SHORT_RUN_CREATE_BY:
+        return SHORT_RUN_MAX_ITERATIONS
+    main_limit: int = ai_config.get_config("multi_agent_lenth").data
+    return main_limit
 
 
 def wall_clock_budget_action(
@@ -618,18 +639,67 @@ def wall_clock_budget_action(
     elapsed_sec: float,
     requests_started: int,
     nudge_request: int,
-) -> Literal["ok", "nudge", "hard_stop"]:
-    """显式设置 wall_clock_budget (>0) 时的墙钟门控：到期先软收口，超宽限硬截断。"""
-    if wall_clock_budget is None or wall_clock_budget <= 0 or elapsed_sec < wall_clock_budget:
+    create_by: str = "",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> Literal["ok", "nudge", "hard_stop", "token_nudge", "token_hard_stop"]:
+    """墙钟 / 能力代理累计 Token 门控：超阈先软收口，宽限用尽硬截断。
+
+    两套预算共用一个 ``nudge_request`` 宽限窗：任一先触发收口提示后不二次催促，
+    宽限耗尽时若墙钟已超时则按 ``hard_stop`` 归因。
+    """
+    wall_over = wall_clock_budget is not None and wall_clock_budget > 0 and elapsed_sec >= wall_clock_budget
+    token_over = create_by == "CapabilityAgent" and (
+        input_tokens >= CAPABILITY_MAX_INPUT_TOKENS or output_tokens >= CAPABILITY_MAX_OUTPUT_TOKENS
+    )
+    if not wall_over and not token_over:
         return "ok"
     if nudge_request <= 0:
-        return "nudge"
-    if (
-        requests_started - nudge_request >= WALL_CLOCK_POST_NUDGE_MAX_REQUESTS
-        or elapsed_sec >= wall_clock_budget + WALL_CLOCK_HARD_GRACE_SEC
+        return "nudge" if wall_over else "token_nudge"
+    if requests_started - nudge_request >= WALL_CLOCK_POST_NUDGE_MAX_REQUESTS or (
+        wall_over and wall_clock_budget is not None and elapsed_sec >= wall_clock_budget + WALL_CLOCK_HARD_GRACE_SEC
     ):
-        return "hard_stop"
+        return "hard_stop" if wall_over else "token_hard_stop"
     return "ok"
+
+
+_STALE_TOOL_FOLD_MARK = "…[前轮长输出已折叠"
+
+
+def fold_stale_capability_tool_returns(
+    messages: Sequence[ModelMessage],
+    *,
+    keep_tail: int = 6,
+    trigger_chars: int = 120_000,
+    item_cap: int = 1200,
+) -> int:
+    """能力代理长跑的 §1.7 显式豁免：仅统计可折叠旧段，达高水位时成批折叠防雪球。
+
+    只计 ``messages[:-keep_tail]`` 中未折叠且超 ``item_cap`` 的 ``ToolReturnPart``；
+    ``keep_tail`` 不计入触发水位，折叠后可折叠总量为 0，避免每轮重建缓存。
+    """
+    if len(messages) <= keep_tail:
+        return 0
+    head = messages[:-keep_tail]
+    foldable_parts: list[ToolReturnPart] = []
+    foldable_total = 0
+    for msg in head:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if type(part) is not ToolReturnPart or not isinstance(part.content, str):
+                continue
+            raw = part.content
+            if len(raw) <= item_cap or _STALE_TOOL_FOLD_MARK in raw:
+                continue
+            foldable_parts.append(part)
+            foldable_total += len(raw)
+    if foldable_total <= trigger_chars:
+        return 0
+    for part in foldable_parts:
+        raw = str(part.content)
+        part.content = f"{raw[:500]}\n{_STALE_TOOL_FOLD_MARK}，原长 {len(raw)} 字符]…\n{raw[-200:]}"
+    return len(foldable_parts)
 
 
 def iter_wrap_due(

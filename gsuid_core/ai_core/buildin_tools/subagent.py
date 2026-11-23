@@ -179,7 +179,7 @@ async def create_subagent(
 
     Args:
         ctx: 工具执行上下文
-        task: 完整任务要求（出图时直接附事实包或 res_ 句柄与用户诉求）
+        task: 完整任务要求（非渲染节点只写调研/计算，勿要求出图；出图时附事实包或 res_ 句柄）
         agent_profile: 目标能力代理 node_id，禁止留空或自造名
     """
     from gsuid_core.ai_core.outbound import write_decision_memo, remember_outbound_topic

@@ -87,8 +87,3 @@ async def cancel_session_runs(
             continue
         await cancel_run(run)
         discard_run(run.run_id)
-
-
-def reset_runtime_for_tests() -> None:
-    _runs.clear()
-    _by_session.clear()

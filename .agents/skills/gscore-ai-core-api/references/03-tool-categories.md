@@ -137,4 +137,4 @@ async def genshin_query(ctx: RunContext[ToolContext], character: str) -> str:
     ...
 ```
 
-关于保底池的"主Agent 工具集 = 保底池 + 语境池 + 查询池"组合详见 [§5.3 `get_main_agent_tools`](./05-create-agent.md)。
+关于保底池的"主Agent 工具集 = 保底池 + 状态驱动 + 查询池"组合详见 [§5.3 `get_main_agent_tools`](./05-create-agent.md)。

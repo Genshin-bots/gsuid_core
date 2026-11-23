@@ -33,15 +33,18 @@ from gsuid_core.ai_core.agent_run.support import (
     _STATUS_INQUIRY_HINT,
     _INTERACTIVE_CREATE_BY,
     _append_user_text,
+    request_limit_for,
     _capability_exclusive_tool_names,
     _ensure_session_anchor_on_first_user,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.control.directive import DISPUTE_EXTRA_KEY, is_control_envelope
-from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
-from gsuid_core.ai_core.agent_run.request_limit import request_limit_for
+from gsuid_core.ai_core.agent_run.budget_ctx import (
+    get_user_turn_id,
+    set_user_turn_id,
+    _current_budget_scope,
+)
 from gsuid_core.ai_core.agent_run.speech_policy import resolve_speech_policy
-from gsuid_core.ai_core.agent_run.user_turn_ctx import get_user_turn_id, set_user_turn_id
 from gsuid_core.ai_core.control.outbound_detectors import (
     spoken_user_body_len,
     looks_like_status_inquiry,

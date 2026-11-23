@@ -196,13 +196,6 @@ def visual_fingerprint(data: bytes) -> tuple[int, int] | None:
     return bits, mean
 
 
-def dhash64(data: bytes) -> int | None:
-    fp = visual_fingerprint(data)
-    if fp is None:
-        return None
-    return fp[0]
-
-
 def _fingerprint_path(path: Path) -> tuple[int, int] | None:
     try:
         data = path.read_bytes()

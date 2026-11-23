@@ -551,8 +551,9 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
         asyncio.run(hang.list_tools())
 
 
-def test_evidence_block_groups_and_credential_invalidation() -> None:
+def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.MonkeyPatch) -> None:
     """证据块：替别人查的观测、实时凭据状态、失效标记（§4.6）。"""
+    from gsuid_core.ai_core.evidence import providers
     from gsuid_core.ai_core.evidence.kit import render_evidence_block
     from gsuid_core.ai_core.evidence.store import (
         LiveState,
@@ -561,7 +562,6 @@ def test_evidence_block_groups_and_credential_invalidation() -> None:
         notify_credential_changed,
     )
     from gsuid_core.message_history.manager import MessageRecord
-    from gsuid_core.ai_core.evidence.providers import _PROVIDERS
 
     class _StubProvider:
         def __init__(self, bound: set) -> None:
@@ -581,7 +581,8 @@ def test_evidence_block_groups_and_credential_invalidation() -> None:
     store = get_evidence_store(sid)
     store.observations.clear()
     store.invalidations.clear()
-    _PROVIDERS[svc] = _StubProvider({"100000002"})
+    stub = _StubProvider({"100000002"})
+    monkeypatch.setattr(providers, "get_state_provider", lambda service: stub if service == svc else None)
 
     store.append(
         Observation(

@@ -237,11 +237,6 @@ def get_vector_size(vectors_config: Any, vector_name: Optional[str] = None) -> O
         return None
 
 
-def is_vector_size_matched(vectors_config: Any, expected_size: int, vector_name: Optional[str] = None) -> bool:
-    """判断目标向量维度是否匹配当前嵌入模型。"""
-    return get_vector_size(vectors_config, vector_name) == expected_size
-
-
 async def force_recreate_collection(
     collection_name: str,
     vectors_config: Any,

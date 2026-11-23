@@ -68,6 +68,12 @@ WALL_CLOCK_WRAP_NUDGE = (
     "直接基于已经拿到的材料整理交付；材料不全就写明缺口，禁止编造。）"
 )
 
+# 能力代理累计 Token 预算到期时插入。入史前按「（系统提示：」剥掉。
+TOKEN_BUDGET_WRAP_NUDGE = (
+    "（系统提示：本次任务 Token 预算已耗尽。立即停止检索、抓取、探测或重试，"
+    "直接基于已经拿到的材料整理交付；材料不全就写明缺口，禁止编造。）"
+)
+
 THRASH_FUSE_NUDGE = (
     "（系统校验：同一工具、同一参数已连续调用超过 10 次。"
     "停止再发这一次完全相同的调用。可以改参数，或基于已有结果交付结论。）"
@@ -201,10 +207,10 @@ POST_TOOL_FAIL_CONTRACT_RENDER = (
 
 
 def capability_hit_line(node_id: str) -> str:
-    """网页检索命中能力节点时，要求改委派。"""
+    """网页检索命中能力节点时，建议改委派。"""
     return (
-        f"（系统：当前问题已命中能力节点 `{node_id}`，"
-        f'请 create_subagent(agent_profile="{node_id}", task=...) 委派，不要继续网页检索。）'
+        f"（系统：当前问题命中能力节点 `{node_id}`，"
+        f'若确属该节点职责请优先 create_subagent(agent_profile="{node_id}", task=...) 委派；不相关则忽略并继续。）'
     )
 
 

@@ -155,5 +155,7 @@
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] Failed to write token usage log: {_le}",
   "log.agent.pydanticai_quota_exhausted": "[PydanticAI] Model plan quota exhausted, not retrying this run: {e}",
   "log.agent.usage_limit_salvage_fail": "[GsCoreAIAgent] Failed to salvage capability delivery: {e}",
-  "log.agent.wall_clock_hard_stop": "[GsCoreAIAgent] Wall-clock budget hard stop reached ({p0}s); forcing delivery wrap-up"
+  "log.agent.wall_clock_hard_stop": "[GsCoreAIAgent] Wall-clock budget hard stop reached ({p0}s); forcing delivery wrap-up",
+  "log.agent.token_budget_soft_cap": "[GsCoreAIAgent] Capability agent cumulative token budget exceeded (in={p0}, out={p1}); injecting convergence hint",
+  "log.agent.token_budget_hard_stop": "[GsCoreAIAgent] Capability agent cumulative token hard stop reached (in={p0}, out={p1}); forcing delivery wrap-up"
 }

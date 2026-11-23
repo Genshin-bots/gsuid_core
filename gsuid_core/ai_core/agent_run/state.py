@@ -109,7 +109,7 @@ class RunOnceState:
     wait_comfort_sent: bool = False
     # 委派已派出，开场句却没说出去（没写或被闸拦）：回执后允许人格补一句
     opening_missed: bool = False
-    # 有活跃任务且本轮真人句很短：瘦检索/语境池，保住委派查询工具。
+    # 有活跃任务且本轮真人句很短：瘦检索、跳过群画像标签，保住委派查询工具。
     in_flight_short: bool = False
     # 点名且本轮检索装上了查询工具：零工具事实回答要拦。
     entity_routed: bool = False
@@ -131,6 +131,7 @@ class RunOnceState:
     wall_token: Token[wall_clock.Clock | None] | None = None
     wall_nudge_request: int = 0
     wall_timed_out: bool = False
+    token_budget_exceeded: bool = False
     turn_id: str = ""
     # 用户回合：root 主人格生成并写入 contextvar；嵌套 run 继承。
     user_turn_id: str = ""

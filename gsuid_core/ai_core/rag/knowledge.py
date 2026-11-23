@@ -1552,50 +1552,6 @@ async def query_knowledge(
     return results
 
 
-async def sync_manual_knowledge():
-    """同步手动添加的知识到向量库
-
-    将手动添加的知识实体同步到Qdrant向量数据库。
-    这些知识不会被插件同步流程检查、修改或删除。
-    """
-    from gsuid_core.ai_core.rag.base import client, embedding_model
-    from gsuid_core.ai_core.register import get_manual_entities
-
-    if client is None or embedding_model is None:
-        logger.debug(i18n_t("log.rag.kb_ai_feature_enabled_skipping"))
-        return
-
-    logger.info(i18n_t("log.rag.kb_sync_manually_added_knowledge"))
-
-    manual_entities = get_manual_entities()
-    if not manual_entities:
-        logger.info(i18n_t("log.rag.kb_manually_added_knowledge_sync"))
-        return
-
-    items: list[tuple] = []
-    for knowledge in manual_entities:
-        id_str = knowledge["id"]
-        content_hash = calculate_hash(dict(knowledge))
-        pieces = pieces_for_embed(knowledge["content"], title=knowledge["title"], tags=list(knowledge["tags"]))
-        stamped = chunk_method_hash(content_hash)
-        for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(id_str, len(pieces)), pieces)):
-            payload: dict = dict(knowledge)
-            payload["id"] = logical
-            payload["doc_id"] = id_str
-            payload["chunk_index"] = idx
-            payload["content"] = piece.body
-            payload["_hash"] = stamped
-            payload["_src"] = content_hash
-            payload["source"] = "manual"
-            items.append((get_point_id(logical), payload, piece.embed_text))
-
-    # dense + BM25 稀疏命名向量（与集合结构一致）
-    points_to_upsert = await _compute_knowledge_points(items)
-    if points_to_upsert:
-        logger.info(i18n_t("log.rag.kb_writing_manual_knowledge", p0=len(points_to_upsert)))
-        await _upsert_knowledge_points(points_to_upsert)
-
-
 async def add_manual_knowledge_to_db(knowledge: Dict[str, Any]) -> bool:
     """添加手动知识到向量数据库（同时落 SQL 真值源）。
 

@@ -25,6 +25,7 @@ import asyncio
 from typing import List, Tuple, Optional, Sequence
 from datetime import datetime
 from contextlib import suppress
+from dataclasses import field, dataclass
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
@@ -36,8 +37,6 @@ from gsuid_core.ai_core.control.lines import (
     MEDIA_HANDLE_RE,
     INTERNAL_ARTIFACT_TOKEN_PATTERN,
 )
-from gsuid_core.ai_core.control.mailbox import drain_one, post_to_session
-from gsuid_core.ai_core.control.directive import Directive
 
 from . import kanban
 from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact, RecurringStatus
@@ -385,19 +384,36 @@ def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
     return stripped.strip(), True
 
 
-_INTERACTIVE_RELAY_ROOTS: set[str] = set()
-_DEFERRED_MAIN_DELIVERY_ROOTS: set[str] = set()
-_ACTIVE_DELIVERY_WAKES: set[str] = set()
-_RECENT_DELIVERY_WAKE_DONE: dict[str, float] = {}
 _RECENT_WAKE_DEDUP_SEC = 30.0
 _KANBAN_NODE_HARD_TIMEOUT_SEC = 900.0
-_RUNNING_NODE_TASKS: dict[str, asyncio.Task[str]] = {}
-_ROOT_RUNNING_NODES: dict[str, set[str]] = {}
+_DELIVERY_COALESCE_SEC = 0.45
+_DELIVERY_WAKE_WINDOW_SEC = 180.0
+_DELIVERY_WAKE_MAX = 4
+# 交互式一次性群聊任务超过此时长后静默归档，避免数小时后突兀打扰群聊
+_STALE_INTERACTIVE_GROUP_DELIVERY_SEC = 1800.0
+
+
+@dataclass
+class _KanbanRuntime:
+    """进程内 Kanban 调度与回灌运行时态（单实例收口，取代分散全局集合）。"""
+
+    interactive_relay_roots: set[str] = field(default_factory=set)
+    deferred_delivery_roots: set[str] = field(default_factory=set)
+    active_delivery_wakes: set[str] = field(default_factory=set)
+    recent_wake_done: dict[str, float] = field(default_factory=dict)
+    running_node_tasks: dict[str, asyncio.Task[str]] = field(default_factory=dict)
+    root_running_nodes: dict[str, set[str]] = field(default_factory=dict)
+    delivery_pending: dict[str, tuple[AIAgentTask, str]] = field(default_factory=dict)
+    delivery_flush_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    delivery_wake_hits: dict[str, list[float]] = field(default_factory=dict)
+
+
+_rt = _KanbanRuntime()
 
 
 def cancel_running_node(task_id: str) -> bool:
     """取消指定任务节点正在运行的能力代理协程。"""
-    running = _RUNNING_NODE_TASKS.pop(task_id, None)
+    running = _rt.running_node_tasks.pop(task_id, None)
     if running is not None and not running.done():
         running.cancel()
         return True
@@ -408,26 +424,21 @@ def _cancel_queued_delivery_wake(root_task_id: str) -> bool:
     """取消尚未进入 session.run 的合并等待回灌，返回是否拦截到了排队项。"""
     suffix = f"|{root_task_id}"
     intercepted = False
-    for key in [k for k in list(_delivery_pending) if k.endswith(suffix)]:
-        sid = key.rsplit("|", 1)[0]
-        if key in _delivery_pending:
-            _delivery_pending.pop(key, None)
+    for key in [k for k in list(_rt.delivery_pending) if k.endswith(suffix)]:
+        if key in _rt.delivery_pending:
+            _rt.delivery_pending.pop(key, None)
             intercepted = True
-        ft = _delivery_flush_tasks.pop(key, None)
+        ft = _rt.delivery_flush_tasks.pop(key, None)
         if ft is not None and not ft.done():
             ft.cancel()
-        drain_one(sid, "delivery", root_task_id)
     return intercepted
 
 
 def cancel_running_root(root_task_id: str, *, clear_delivery: bool = True) -> int:
     """取消整棵任务树下所有在途协程，并清理待回灌队列。"""
-    node_ids = set(_ROOT_RUNNING_NODES.pop(root_task_id, set()))
+    node_ids = set(_rt.root_running_nodes.pop(root_task_id, set()))
     node_ids.add(root_task_id)
-    cancelled = 0
-    for nid in node_ids:
-        if cancel_running_node(nid):
-            cancelled += 1
+    cancelled = sum(1 for nid in node_ids if cancel_running_node(nid))
     if clear_delivery:
         discard_interactive_relay_root(root_task_id)
         _cancel_queued_delivery_wake(root_task_id)
@@ -436,19 +447,19 @@ def cancel_running_root(root_task_id: str, *, clear_delivery: bool = True) -> in
 
 def has_pending_interactive_deliveries() -> bool:
     """进程内是否仍有等待回灌给主人格的交互式子任务。"""
-    return bool(_DEFERRED_MAIN_DELIVERY_ROOTS or _delivery_pending or _delivery_flush_tasks)
+    return bool(_rt.deferred_delivery_roots or _rt.delivery_pending or _rt.delivery_flush_tasks)
 
 
 def discard_interactive_relay_root(root_id: str) -> None:
     """撤销 interactive + deferred 登记。"""
-    _INTERACTIVE_RELAY_ROOTS.discard(root_id)
-    _DEFERRED_MAIN_DELIVERY_ROOTS.discard(root_id)
+    _rt.interactive_relay_roots.discard(root_id)
+    _rt.deferred_delivery_roots.discard(root_id)
 
 
 def mark_deferred_main_delivery(root_id: str) -> None:
     """超时后保持静默，完成后改走 ``_wake_main_agent_for_delivery``。"""
-    _INTERACTIVE_RELAY_ROOTS.add(root_id)
-    _DEFERRED_MAIN_DELIVERY_ROOTS.add(root_id)
+    _rt.interactive_relay_roots.add(root_id)
+    _rt.deferred_delivery_roots.add(root_id)
 
 
 def claim_inline_delivery(root_id: str) -> bool:
@@ -456,8 +467,8 @@ def claim_inline_delivery(root_id: str) -> bool:
     rid = (root_id or "").strip()
     if not rid:
         return False
-    if rid in _DEFERRED_MAIN_DELIVERY_ROOTS:
-        _DEFERRED_MAIN_DELIVERY_ROOTS.discard(rid)
+    if rid in _rt.deferred_delivery_roots:
+        _rt.deferred_delivery_roots.discard(rid)
         _cancel_queued_delivery_wake(rid)
         return True
     return _cancel_queued_delivery_wake(rid)
@@ -468,26 +479,26 @@ def is_delivery_in_flight_or_just_sent(root_id: str, *, now: float | None = None
     rid = (root_id or "").strip()
     if not rid:
         return False
-    if rid in _ACTIVE_DELIVERY_WAKES:
+    if rid in _rt.active_delivery_wakes:
         return True
     ts_now = now if now is not None else time.time()
-    for k in [k for k, ts in _RECENT_DELIVERY_WAKE_DONE.items() if ts_now - ts > _RECENT_WAKE_DEDUP_SEC]:
-        _RECENT_DELIVERY_WAKE_DONE.pop(k, None)
-    return rid in _RECENT_DELIVERY_WAKE_DONE
+    for k in [k for k, ts in _rt.recent_wake_done.items() if ts_now - ts > _RECENT_WAKE_DEDUP_SEC]:
+        _rt.recent_wake_done.pop(k, None)
+    return rid in _rt.recent_wake_done
 
 
 def _consume_interactive_relay(root_id: str) -> bool:
     """读即弃：是否 interactive 静默。"""
-    if root_id in _INTERACTIVE_RELAY_ROOTS:
-        _INTERACTIVE_RELAY_ROOTS.discard(root_id)
+    if root_id in _rt.interactive_relay_roots:
+        _rt.interactive_relay_roots.discard(root_id)
         return True
     return False
 
 
 def _consume_deferred_main_delivery(root_id: str) -> bool:
     """读即弃：是否需唤醒主人格。"""
-    if root_id in _DEFERRED_MAIN_DELIVERY_ROOTS:
-        _DEFERRED_MAIN_DELIVERY_ROOTS.discard(root_id)
+    if root_id in _rt.deferred_delivery_roots:
+        _rt.deferred_delivery_roots.discard(root_id)
         return True
     return False
 
@@ -611,17 +622,7 @@ async def format_task_delivery_receipt(
     return _format_delivery_for_main_agent(task, raw_result, resolved_arts, allow_render=allow_render)
 
 
-# 回灌合并：payload 按 session|root 存最新，邮箱记「有消息」，flush 控节奏
-_delivery_pending: dict[str, tuple[AIAgentTask, str]] = {}
-_delivery_flush_tasks: dict[str, asyncio.Task] = {}
-_DELIVERY_COALESCE_SEC = 0.45
-_DELIVERY_WAKE_WINDOW_SEC = 180.0
-_DELIVERY_WAKE_MAX = 4
-# 交互式一次性群聊任务超过此时长后静默归档，避免数小时后突兀打扰群聊
-_STALE_INTERACTIVE_GROUP_DELIVERY_SEC = 1800.0
-_delivery_wake_hits: dict[str, list[float]] = {}
-
-
+# 回灌合并：payload 按 session|root 存最新，延迟 task 控唤醒合并节奏
 def stale_interactive_group_minutes(task: AIAgentTask, *, now: Optional[datetime] = None) -> int:
     """一次性群聊交互子任务超时则返回已耗时分钟数，否则返回 0。"""
     if task.parent_task_id or task.recurring_trigger or task.template_root_id or task.template_subtask_id:
@@ -640,12 +641,12 @@ def _delivery_wake_key(session_id: str, root_id: str) -> str:
 
 
 def _prune_delivery_wake_hits(key: str, now: float) -> list[float]:
-    hits = _delivery_wake_hits[key] if key in _delivery_wake_hits else []
+    hits = _rt.delivery_wake_hits[key] if key in _rt.delivery_wake_hits else []
     kept = [ts for ts in hits if now - ts <= _DELIVERY_WAKE_WINDOW_SEC]
     if kept:
-        _delivery_wake_hits[key] = kept
-    elif key in _delivery_wake_hits:
-        del _delivery_wake_hits[key]
+        _rt.delivery_wake_hits[key] = kept
+    elif key in _rt.delivery_wake_hits:
+        del _rt.delivery_wake_hits[key]
     return kept
 
 
@@ -659,7 +660,7 @@ def record_delivery_wake(session_id: str, root_id: str, *, now: float | None = N
     key = _delivery_wake_key(sid, rid)
     kept = _prune_delivery_wake_hits(key, ts)
     kept.append(ts)
-    _delivery_wake_hits[key] = kept
+    _rt.delivery_wake_hits[key] = kept
     return len(kept)
 
 
@@ -680,44 +681,29 @@ def delivery_wake_blocks_new_delegate(session_id: str) -> bool:
 
 
 async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> None:
-    """能力代理完成后回灌主 session；同 root 短窗合并为一次。
-
-    payload 与「有消息」分开存：邮箱槽位按 (kind, root) 精确消费，绝不用会话级
-    drain 当布尔量——那会把兄弟 root 的待投递一并抽走，后到 flush 就静默丢单。
-    """
+    """能力代理完成后回灌主 session；同 root 短窗合并为一次。"""
     session_id = (task.session_id or "").strip()
     root_id = task.root_task_id or task.id
     key = f"{session_id}|{root_id}"
     # 同 root 二次完成：payload 覆盖为最新，避免 wake 用过期结果
-    _delivery_pending[key] = (task, raw_result)
-    post_to_session(
-        session_id,
-        Directive(
-            kind="delivery",
-            reason_code="kanban_delivery",
-            observation=f"子任务 {task.display_name or root_id} 已结束。",
-        ),
-        merge_key=root_id,
-    )
-    existing = _delivery_flush_tasks.get(key)
+    _rt.delivery_pending[key] = (task, raw_result)
+    existing = _rt.delivery_flush_tasks[key] if key in _rt.delivery_flush_tasks else None
     if existing is not None and not existing.done():
         return
 
     async def _flush() -> None:
         try:
             await asyncio.sleep(_DELIVERY_COALESCE_SEC)
-            _delivery_flush_tasks.pop(key, None)
-            item = _delivery_pending.pop(key, None)
-            # 邮箱只作顾问记录（prepare 尚未 drain）。唤醒只看 payload，避免 AND 闩丢单。
-            drain_one(session_id, "delivery", root_id)
+            _rt.delivery_flush_tasks.pop(key, None)
+            item = _rt.delivery_pending.pop(key, None)
             if item is not None:
                 await _wake_main_agent_for_delivery_now(item[0], item[1])
         except Exception as e:
             logger.warning(t("log.ai.delivery_coalesce_flush_skip", e=e))
-            _delivery_flush_tasks.pop(key, None)
-            _delivery_pending.pop(key, None)
+            _rt.delivery_flush_tasks.pop(key, None)
+            _rt.delivery_pending.pop(key, None)
 
-    _delivery_flush_tasks[key] = asyncio.create_task(_flush())
+    _rt.delivery_flush_tasks[key] = asyncio.create_task(_flush())
 
 
 async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) -> None:
@@ -785,7 +771,7 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
 
     record_delivery_wake(session_id, root_id)
     root_token = bind_delivery_root(root_id)
-    _ACTIVE_DELIVERY_WAKES.add(root_id)
+    _rt.active_delivery_wakes.add(root_id)
     try:
         with detached_turn_scope():
             await session.run(
@@ -797,8 +783,8 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
                 is_framework_injection=True,
             )
     finally:
-        _ACTIVE_DELIVERY_WAKES.discard(root_id)
-        _RECENT_DELIVERY_WAKE_DONE[root_id] = time.time()
+        _rt.active_delivery_wakes.discard(root_id)
+        _rt.recent_wake_done[root_id] = time.time()
         reset_delivery_root(root_token)
     if (session.last_run_sent_visible_reply or session.last_run_sent_image) and owner and _user_type != "direct":
         from gsuid_core.ai_core.followup_window import note_delivery_followup_from_config
@@ -859,7 +845,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
     """派活单个子任务节点。"""
     lock = kanban.get_task_node_lock(child.id)
     if lock.locked():
-        active_cap = _RUNNING_NODE_TASKS[child.id] if child.id in _RUNNING_NODE_TASKS else None
+        active_cap = _rt.running_node_tasks[child.id] if child.id in _rt.running_node_tasks else None
         if active_cap is not None and not active_cap.done() and not active_cap.cancelled():
             return
     async with lock:
@@ -885,11 +871,10 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             )
             return
 
-        # 1) 条件 SQL 抢锁
+        # 1) 条件 SQL 抢锁（同步回写 fresh.status）
         won = await kanban.mark_subtask_running(fresh)
         if not won:
             return
-        fresh.status = "running"
 
         # 2) 绑定工作区 + 上下文
         workspace = ensure_workspace(root.id, fresh.id, agent_profile=fresh.agent_profile)
@@ -912,9 +897,9 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         # 3) 让能力代理执行（登记在途协程供暂停/终结/改派即时中断）
         raw_result: str = ""
         cap_task: asyncio.Task[str] | None = None
-        if root.id not in _ROOT_RUNNING_NODES:
-            _ROOT_RUNNING_NODES[root.id] = set()
-        _ROOT_RUNNING_NODES[root.id].add(fresh.id)
+        if root.id not in _rt.root_running_nodes:
+            _rt.root_running_nodes[root.id] = set()
+        _rt.root_running_nodes[root.id].add(fresh.id)
         try:
             from gsuid_core.ai_core.capability_agents.runner import run_capability_agent
 
@@ -929,7 +914,7 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                     persona_name=fresh.persona_name or root.persona_name or "",
                 )
             )
-            _RUNNING_NODE_TASKS[fresh.id] = cap_task
+            _rt.running_node_tasks[fresh.id] = cap_task
             async with asyncio.timeout(_KANBAN_NODE_HARD_TIMEOUT_SEC) as _hard_to:
                 raw_result = await cap_task
         except TimeoutError as e:
@@ -946,8 +931,6 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                 logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
                 reason = f"{type(e).__name__}: {e}"
             await kanban.mark_subtask_failed(fresh, reason)
-            fresh.status = "failed"
-            fresh.failure_reason = reason
             await _finish_capability_delivery(
                 root=root,
                 child=fresh,
@@ -968,8 +951,6 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
             err_reason = f"{type(e).__name__}: {e}"
             await kanban.mark_subtask_failed(fresh, err_reason)
-            fresh.status = "failed"
-            fresh.failure_reason = err_reason
             await _finish_capability_delivery(
                 root=root,
                 child=fresh,
@@ -979,12 +960,12 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             )
             return
         finally:
-            if fresh.id in _RUNNING_NODE_TASKS and _RUNNING_NODE_TASKS[fresh.id] is cap_task:
-                _RUNNING_NODE_TASKS.pop(fresh.id, None)
-            if root.id in _ROOT_RUNNING_NODES:
-                _ROOT_RUNNING_NODES[root.id].discard(fresh.id)
-                if not _ROOT_RUNNING_NODES[root.id]:
-                    _ROOT_RUNNING_NODES.pop(root.id, None)
+            if fresh.id in _rt.running_node_tasks and _rt.running_node_tasks[fresh.id] is cap_task:
+                _rt.running_node_tasks.pop(fresh.id, None)
+            if root.id in _rt.root_running_nodes:
+                _rt.root_running_nodes[root.id].discard(fresh.id)
+                if not _rt.root_running_nodes[root.id]:
+                    _rt.root_running_nodes.pop(root.id, None)
             reset_plan_context(token)
 
         # 3.5) 剥离静默标记：能力代理声明"本轮无值得播报"时，完成+归档但不推群
@@ -1005,8 +986,6 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         if (raw_result or "").lstrip().startswith(CAPABILITY_AGENT_ERROR_PREFIX):
             err_body = (raw_result or "").strip()[:1000]
             await kanban.mark_subtask_failed(fresh, err_body)
-            fresh.status = "failed"
-            fresh.failure_reason = err_body
             await _finish_capability_delivery(
                 root=root,
                 child=fresh,
@@ -1042,9 +1021,6 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             logger.debug(t("log.ai.persist_subagent_result_skip", e=_pe))
 
         await kanban.mark_subtask_completed(fresh, output_artifact_id=output_id)
-        fresh.status = "completed"
-        if output_id:
-            fresh.output_artifact_id = output_id
         if no_broadcast:
             logger.debug(
                 t(

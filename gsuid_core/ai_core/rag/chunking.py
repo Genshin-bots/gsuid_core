@@ -58,11 +58,6 @@ def chunker_stamp() -> str:
     return f"{CHUNKER_ID}@{current_max_input_tokens()}"
 
 
-def clamp_chunk_size(value: int, max_tokens: int | None = None) -> int:
-    """调用方可以要更小的片，但不能超过当前模型的预算。"""
-    return _clamp(int(value), MIN_CHUNK_SIZE, embed_char_budget(max_tokens))
-
-
 @dataclass(frozen=True)
 class EmbedPiece:
     """正文片，以及真正送进嵌入模型的整串（含标题、标签前缀）。"""

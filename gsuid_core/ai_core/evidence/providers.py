@@ -27,22 +27,11 @@ class McpCredentialProvider:
 
 
 _MCP_PRIVATE_SERVICES: set[str] = set()
-_PROVIDERS: dict[str, StateProvider] = {}
 
 
 def register_private_mcp_service(config_id: str) -> None:
     _MCP_PRIVATE_SERVICES.add(config_id)
 
 
-def is_private_mcp_service(config_id: str) -> bool:
-    return config_id in _MCP_PRIVATE_SERVICES
-
-
-def register_state_provider(service: str, provider: StateProvider) -> None:
-    _PROVIDERS[service] = provider
-
-
 def get_state_provider(service: str) -> StateProvider | None:
-    if service in _PROVIDERS:
-        return _PROVIDERS[service]
     return McpCredentialProvider() if service in _MCP_PRIVATE_SERVICES else None

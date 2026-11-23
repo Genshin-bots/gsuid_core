@@ -6,7 +6,6 @@ import math
 import uuid
 from typing import TypedDict
 from datetime import datetime, timezone
-from collections import deque
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -15,8 +14,6 @@ from gsuid_core.logger import logger
 
 _THREAD_COSINE = 0.92
 _SLEEP_BATCH = 8
-_backlog: deque[str] = deque()
-_seen: set[str] = set()
 
 
 class _OpenerRow(TypedDict):
@@ -39,13 +36,6 @@ def cosine_dense(a: list[float], b: list[float]) -> float:
     if na <= 0.0 or nb <= 0.0:
         return 0.0
     return dot / math.sqrt(na * nb)
-
-
-def enqueue_session(session_id: str) -> None:
-    if not session_id or session_id in _seen:
-        return
-    _seen.add(session_id)
-    _backlog.append(session_id)
 
 
 def _title_from_opener(raw: str) -> str:
@@ -178,29 +168,14 @@ async def extract_aspects_for_scope(scope_key: str, limit: int = 8) -> int:
 
 
 async def run_sleep_extract_tick(limit: int = _SLEEP_BATCH) -> int:
-    """先消化 backlog，再扫未挂 thread 的 session。永不阻塞热路径。"""
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    """扫未挂 thread 的 session 并聚成故事线。永不阻塞热路径。"""
+    if limit <= 0:
+        return 0
+    from gsuid_core.ai_core.memory.database.models import AIMemEntity, AIMemEpisode
 
     done = 0
-    seen_scope: set[str] = set()
-    while done < limit and _backlog:
-        sid = _backlog.popleft()
-        _seen.discard(sid)
-        rows = await AIMemEpisode.get_session(sid)
-        if not rows:
-            continue
-        seen_scope.add(rows[0].scope_key)
-        try:
-            done += await ensure_scope_threads(rows[0].scope_key)
-        except (OSError, SQLAlchemyError) as e:
-            logger.debug(i18n_t("log.memory.sleep_extract_fail", scope_key=rows[0].scope_key, e=e))
-    if done >= limit:
-        return done
-    from gsuid_core.ai_core.memory.database.models import AIMemEntity
 
     for scope_key in await AIMemEntity.list_distinct_scope_keys():
-        if scope_key in seen_scope:
-            continue
         if await AIMemEpisode.list_threadless_sessions(scope_key, limit=1):
             try:
                 done += await ensure_scope_threads(scope_key)

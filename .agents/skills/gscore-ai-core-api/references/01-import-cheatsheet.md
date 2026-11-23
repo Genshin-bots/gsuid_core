@@ -285,12 +285,14 @@ from gsuid_core.ai_core.agent_node import (
 # task-mode 运行入口（Kanban 调度器调用；插件一般不直接调）
 from gsuid_core.ai_core.capability_agents import run_capability_agent
 
-# 旧 API 兼容层（下个大版本移除，勿在新代码使用）
+# 旧 API 兼容层（已废弃，下个大版本移除，勿在新代码使用）
 from gsuid_core.ai_core.capability_agents import (
     CapabilityAgentProfile,     # 【废弃】旧画像 dataclass（自动转 AgentNode）
     register_capability_agent,  # 【废弃】兼容注册入口
 )
 ```
+
+> 新代码请统一用 `AgentNode` + `register_agent_node`。
 
 ## 1.12 统一审批中心
 

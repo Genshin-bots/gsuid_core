@@ -53,7 +53,7 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
 `gsuid_core/ai_core/classifier/turn_router.py`
 
 - CLASSIFY 点位**只调用一次** `route_turn()`，结果写入 `AgentHookContext.route_decision`。
-- 模型必须是低档无思考通道：`get_fast_model_for_task("low")`，隔离用户为 `max` 通道配置。
+- 模型走 `task_kind=TASK_TURN_ROUTER`（低档，可在控制台按任务覆盖），并以 `thinking=False` 运行，隔离用户为聊天配置的 `max` 思考档。
 - 输出：`intent`、`memory_intent`、`soft_speak`、`is_live_lookup`、`needs_committed_work`、`time_start/end`。
 - 离线 / 超时 / 非法 JSON → `structural_route()`：
   - 空串 → `闲聊 / none`

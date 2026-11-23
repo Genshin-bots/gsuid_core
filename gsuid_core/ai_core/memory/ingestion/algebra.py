@@ -397,13 +397,13 @@ async def extract_cluster(
     if not lines:
         return {"entities": 0, "edges": 0, "preferences": 0, "thread_id": ""}
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.memory.prompts import ALGEBRA_USER, ALGEBRA_SYSTEM
     from gsuid_core.ai_core.memory.vector.ops import (
         EdgeLifecycleUpdate,
         upsert_edge_vectors_batch,
         upsert_entity_vectors_batch,
         update_edge_lifecycle_payloads,
     )
-    from gsuid_core.ai_core.memory.prompts.extraction import ALGEBRA_USER, ALGEBRA_SYSTEM
 
     thread_list = threads if threads is not None else []
     _, known_edges, names = await _prefetch(scope_key, records)

@@ -7,8 +7,6 @@ Gemini 配置管理器模块
 
 from typing import Any, Dict, List
 
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import GEMINI_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
     GSC,
@@ -131,48 +129,6 @@ class GeminiConfigManager(ConfigSetManager):
         for key in self._config_template.keys():
             result[key] = config.get_config(key).data
         return result
-
-    def rename(self, old_name: str, new_name: str) -> tuple[bool, str]:
-        """
-        重命名配置文件
-
-        Args:
-            old_name: 原配置文件名（不含扩展名）
-            new_name: 新配置文件名（不含扩展名）
-
-        Returns:
-            (是否成功, 消息)
-        """
-
-        # 检查原配置文件是否存在
-        old_path = self._get_config_path(old_name)
-        if not old_path.exists():
-            return False, f"配置文件 '{old_name}' 不存在"
-
-        # 检查新配置文件名是否已存在
-        if self.exists(new_name):
-            return False, f"配置文件 '{new_name}' 已存在"
-
-        try:
-            # 获取配置数据
-            config = self.get_config(old_name)
-            config_data = {}
-            for key in self._config_template.keys():
-                config_data[key] = config.get_config(key).data
-
-            # 删除旧配置
-            self.delete(old_name)
-
-            # 创建新配置（使用 get_config 会自动创建）
-            new_config = self.get_config(new_name)
-            for key, value in config_data.items():
-                new_config.set_config(key, value)
-
-            logger.info(t("log.ai.gemini_old_name_new", old_name=old_name, new_name=new_name))
-            return True, "ok"
-        except Exception as e:
-            logger.error(t("log.ai.gemini_fail", e=e))
-            return False, str(e)
 
 
 # 全局单例

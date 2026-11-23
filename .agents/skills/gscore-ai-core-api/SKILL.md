@@ -83,7 +83,7 @@ description: >
 - **`category` 决定归属而非直接挂载**：`self` / `buildin` 标记**框架侧**工具（仅核心名单内者才常驻主会话）；`common` / `media` / `mcp` / 自定义分类经向量召回 + `call_tool` 按需调用；`default` 是**子Agent 工具**（需通过 `create_subagent` 调用）。详见 [§3.2](./references/03-tool-categories.md)。
 - **`to_ai` 与 `@ai_tools` 冲突不可共存**：同一函数**只能选其一**。命令同时允许用户直接触发 → `to_ai`（一份代码服务用户命令 + AI 调用）；纯 AI 内部工具 → `@ai_tools`。详见 [§四 顶部警告](./references/04-trigger-bridge.md)。
 - **`MockBot` 拦截 `bot.send`**：AI 调用触发器时，真实 `Bot` 被 `MockBot` 代理——`bot.send(bytes)` / `bot.send("base64://...")` / `bot.send(Message(type="image"))` 都会通过 `RM.register()` 注册图片，**返回资源 ID**（如 `img_a1b2c3d4`），AI 据此决定是否调 `send_message_by_ai(image_id=...)` 发给用户；`Message(type="file")` 经 `RM.register_file()` 登记为 `fil_` 句柄（≤10MB），AI 用 `file_ids=[...]` 发出；纯文字 `bot.send(str)` 被自动收集返回给 AI。详见 [§4.4](./references/04-trigger-bridge.md)。
-- **`context_tags` 解决群聊语境失配**：插件可通过 `context_tags=["原神", "Genshin", "游戏"]` 声明工具适用语境，框架根据群组画像把匹配标签的工具自动加入该群（最多 8 个），不依赖向量搜索。详见 [§2.2](./references/02-ai-tools-decorator.md)。
+- **`context_tags` 当前不生效**：语境工具池已于 `27aa5780`（2026-09-24）移除，`context_tags` 目前不影响工具装配（参数仍可传，不报错）。插件工具要被稳定召回，写好 docstring 并声明 `covers` / `aliases`。详见 [§2.2](./references/02-ai-tools-decorator.md)。
 - **`create_agent` 复用 Agent 实例**：在模块级调用一次，拿到 `GsCoreAIAgent` 后反复 `.run(user_message=...)`；支持 Pydantic 结构化输出（`output_type=BaseModel`）。详见 [§5.1](./references/05-create-agent.md)。
 - **`ai_entity` 自动同步 vs `add_manual_knowledge` 手动管理**：前者启动时自动同步到向量库、`_hash` 检测增量更新；后者不自动同步、需手动调向量库 API。详见 [§6.2](./references/06-knowledge-and-alias.md)。
 - **`ai_alias` 已接入记忆摄入链路（C2）**：注册的别名在实体抽取时作为"本群已知别名"注入提取提示词，指导 LLM 把别名对齐到正式名；检索期用于查询展开与动态实体链接消歧。`scope="Genshin"` 等可隔离跨游戏同名别名。详见 [§6](./references/06-knowledge-and-alias.md)。

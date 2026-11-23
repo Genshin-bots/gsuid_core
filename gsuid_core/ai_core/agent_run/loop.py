@@ -46,6 +46,7 @@ from gsuid_core.ai_core.control.lines import (
     ITER_WRAP_NUDGE,
     TOOL_FAIL_FUSE_NUDGE,
     WALL_CLOCK_WRAP_NUDGE,
+    TOKEN_BUDGET_WRAP_NUDGE,
 )
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
@@ -75,6 +76,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _tool_call_targets_render_agent,
     _tool_return_is_effectual_write,
     _update_thrash_streak_for_response,
+    fold_stale_capability_tool_returns,
 )
 from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
 from gsuid_core.ai_core.agent_run.opening_line import (
@@ -386,21 +388,37 @@ class LoopPhase(RunOnceHost):
         logger.info(i18n_t("log.agent.iter_wrap_nudge", p0=st.model_requests, p1=limit))
 
     def _maybe_enforce_wall_clock(self, st: RunOnceState, node: Any) -> None:
-        """显式墙钟预算门控：到期先软收敛，超宽限抛 UsageLimitExceeded 走兜底收口。"""
+        """墙钟与能力代理累计 Token 门控：超阈先软收敛，宽限用尽抛 UsageLimitExceeded。"""
         elapsed = time.time() - st.start_time - wall_clock.excluded_seconds(st.wall_acc)
         action = wall_clock_budget_action(
             wall_clock_budget=self.wall_clock_budget,
             elapsed_sec=elapsed,
             requests_started=st.model_requests,
             nudge_request=st.wall_nudge_request,
+            create_by=self.create_by,
+            input_tokens=st.usage_input_tokens,
+            output_tokens=st.usage_output_tokens,
         )
         if action == "nudge":
             node.request.parts = [*node.request.parts, UserPromptPart(content=WALL_CLOCK_WRAP_NUDGE)]
             st.wall_nudge_request = st.model_requests
             logger.info(i18n_t("log.agent.wall_clock_soft_budget", p0=elapsed))
+        elif action == "token_nudge":
+            node.request.parts = [*node.request.parts, UserPromptPart(content=TOKEN_BUDGET_WRAP_NUDGE)]
+            st.wall_nudge_request = st.model_requests
+            logger.info(
+                i18n_t(
+                    "log.agent.token_budget_soft_cap",
+                    p0=st.usage_input_tokens,
+                    p1=st.usage_output_tokens,
+                )
+            )
         elif action == "hard_stop":
             st.wall_timed_out = True
             raise UsageLimitExceeded("wall_clock_budget_exceeded")
+        elif action == "token_hard_stop":
+            st.token_budget_exceeded = True
+            raise UsageLimitExceeded("token_budget_exceeded")
 
     async def _run_once_on_model_request(
         self,
@@ -413,6 +431,9 @@ class LoopPhase(RunOnceHost):
 
         self._maybe_inject_iter_wrap(st, node)
         self._maybe_enforce_wall_clock(st, node)
+        # §1.7 显式豁免：仅 CapabilityAgent 单次长跑、且旧段可折叠总量超 120k 才成批折叠
+        if self.create_by == "CapabilityAgent":
+            fold_stale_capability_tool_returns(agent_run.ctx.state.message_history)
         if st.saw_final_response:
             st.post_final_requests += 1
             if st.post_final_requests > 1:
@@ -1339,7 +1360,7 @@ class LoopPhase(RunOnceHost):
                         self._session_logger.log_node_transition("End")
 
             # A: 被 supersede 打断 → 不写 history、不 OOC 重说，让后到 run 用完整上下文重生成。
-            # 在途委派不丢：根任务在库里，下轮由 build_task_context 注入，产物经邮箱回灌。
+            # 在途委派不丢：根任务在库里，下轮由 build_task_context 注入，完成后自动回灌主会话。
             if st.generation_cancelled:
                 logger.info(i18n_t("log.agent.generation_aborted_no_history"))
                 return "" if st.output_type is None else None

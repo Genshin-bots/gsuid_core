@@ -317,8 +317,7 @@ def ai_tools(
             self/buildin/meta 为框架特权分类，仅核心代码可用；插件声明时会被
             自动重定向到 common 注册（见 _CORE_ONLY_CATEGORIES）。
         check_func: 可选的权限校验函数
-        context_tags: 可选的语境标签列表，如 ["游戏", "资讯"]。
-            声明后，框架会在匹配该语境的群聊中自动加载本工具（语境工具池）。
+        context_tags: 语境标签列表。语境工具池已移除，当前不影响工具装配，仅为兼容保留。
         capability_domain: 可选的能力域名称，如 "网络搜索"、插件自定的域名。
             声明后，框架会按 domain 聚合成自然语言能力清单注入自我认知（C3-d），
             替代生硬的函数名罗列。未声明时按 category 兜底。

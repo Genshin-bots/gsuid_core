@@ -27,7 +27,7 @@ history 红线，以及在固定锚点 `fire_hooks`。记忆、关系温度、�
 | ID | 枚举 | 时机（内核锚点） | 默认套件 |
 |----|------|------------------|----------|
 | H00 | `ON_INBOUND` | `handler.handle_event`，Event 建完、**不挡**命令/AI 分流 | `gscore.memory` 观察、`gscore.meme` |
-| H01 | `BEFORE_AI_CHAT` | 预算通过之后、session 之前 | `gscore.session_mute` |
+| H01 | `BEFORE_AI_CHAT` | 预算通过之后、session 之前 | （无第一方套件；第三方用 `ctx.abort` 拦整轮） |
 | H02 | `AFTER_SESSION` | `get_ai_session` 之后 | `gscore.favorability`（读 View）、`gscore.memory`（主动会话 observe） |
 | H03 | `CLASSIFY` | 内核只给 prior；**intent 与 `route_decision` 由占用者写入** | `gscore.classifier`、`gscore.statistics` |
 | H05 | `RETRIEVE_CONTEXT` | compose 之前的「贵检索」窗 | `gscore.memory`（**唯一 15s 长超时**） |
@@ -142,7 +142,6 @@ KIT = register_agent_kit(
 | `inbox` | `gscore.inbox` | 是 | 收件箱待回应 / 相关往来块 |
 | `evidence` | `gscore.evidence` | 是 | 工具证据观测与实时凭据状态 |
 | `scaffold` | `gscore.scaffold` | 是 | TurnGraph 消费 / 脚手架 hints |
-| `session_mute` | `gscore.session_mute` | 是 | 静默窗 |
 | `statistics` | `gscore.statistics` | 是 | 统计（**只上报，不扣减**） |
 | `decision_distill` | `gscore.decision_distill` | 否 | thinking 决策蒸馏（H08，可关） |
 | `persona_identity` | `gscore.identity` | **密封** | 身份锚：不可关 |
@@ -158,7 +157,7 @@ KIT = register_agent_kit(
 3. `self` / `buildin` / `meta` 是特权分类，`ensure_tools` **拒绝**；也不许 drop
    `create_subagent`。
 
-> **在途短轮**：内核 `in_flight_short` 会在 H14 默认装配里跳过语境池/向量检索。换套件时
+> **在途短轮**：内核 `in_flight_short` 会在 H14 默认装配里跳过群画像标签与向量检索。换套件时
 > 应继续尊重 `ctx` / extra 里的短轮信号，不要在催进度的短句上灌满 40+ 工具（毁前缀缓存）。
 
 > 本槽 `off` 时 `find_tools` 一并消失（它是 `meta` 分类、由装配层注入，用户套件无权

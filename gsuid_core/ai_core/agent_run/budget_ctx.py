@@ -28,3 +28,22 @@ def set_budget_scope_context(scope: Optional[BudgetScope]) -> contextvars.Token:
 def reset_budget_scope_context(token: contextvars.Token) -> None:
     """还原 set_budget_scope_context 设置的 contextvar。"""
     _current_budget_scope.reset(token)
+
+
+# 当前用户回合 id；None 表示不在任何用户回合树内（后台/巡检等）
+_current_user_turn_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("gs_user_turn_id", default=None)
+
+
+def get_user_turn_id() -> Optional[str]:
+    """读取当前 task 上的用户回合 id（无则 None）。"""
+    return _current_user_turn_id.get()
+
+
+def set_user_turn_id(turn_id: Optional[str]) -> contextvars.Token:
+    """绑定用户回合；结束时须 ``reset_user_turn_id``。"""
+    return _current_user_turn_id.set(turn_id)
+
+
+def reset_user_turn_id(token: contextvars.Token) -> None:
+    """还原 ``set_user_turn_id``。"""
+    _current_user_turn_id.reset(token)

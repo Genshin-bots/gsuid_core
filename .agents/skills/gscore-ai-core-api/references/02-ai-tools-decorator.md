@@ -31,7 +31,7 @@ def ai_tools(
 |------|------|--------|------|
 | `category` | `str` | `"default"` | 工具分类，决定工具放入哪个分类字典。`"self"` 为主Agent核心工具，`"buildin"` 为内置工具，`"common"` 为通用工具，`"default"` 为子Agent工具。详见 [§3 工具分类系统](./03-tool-categories.md) |
 | `check_func` | `Callable` | `None` | 可选的权限校验函数，签名为 `async def check(ev: Event) -> Tuple[bool, str]` |
-| `context_tags` | `List[str]` | `None` | 语境标签。声明后，框架会在匹配该语境的群聊中通过**语境工具池**自动加载本工具，无需依赖向量搜索命中 |
+| `context_tags` | `List[str]` | `None` | 语境标签。语境工具池已于 `27aa5780`（2026-09-24）移除，`context_tags` 目前不影响工具装配；参数保留只为兼容，不报错 |
 | `capability_domain` | `str` | `None` | 能力域名称（如 `"原神数据"`）。声明后框架会按 domain 聚合成自然语言能力清单，注入 Bot 的自我认知；未声明时按 `category` 兜底。同时它也是一个可整族挂载的**工具能力族**名（AgentNode 的 `tool_packs` 可按此名整族装配） |
 | `covers` | `List[str]` | `None` | **数据/能力覆盖面**（2026-08）。如 `["A股/港股/美股/指数/期货/现货贵金属/外汇的报价与K线"]`。拼进向量检索文本（`ToolBase.retrieval_text`），是跨措辞召回的关键面；能力节点 roster 的「数据覆盖」行也由本字段聚合。插件工具应如实声明能解析什么标的/数据域/时效 |
 | `aliases` | `List[str]` | `None` | **领域内同义表述**（2026-08）。**必须带领域前缀**，如 `["原神·深渊阵容查询"]`；禁止裸写通用词（`"深渊查询"`），否则与同名能力的其它插件撞车。撞车时由语境标签 + 语义路由裁决 |
@@ -78,14 +78,8 @@ async def search_stock(ctx: RunContext[ToolContext], query: str) -> str:
 实时结构化读数建议在返回体带 **`[as_of=YYYY-MM-DD HH:MM|source=…]`** 或 JSON `"as_of"` 字段，
 供时效账本识别（见 [gscore-development §7](../../gscore-development/references/07-tool-registry-and-agent.md)）。
 
-> **语境工具池**：插件可通过 `context_tags` 声明工具的适用语境，例如：
-> ```python
-> @ai_tools(category="genshin", context_tags=["原神", "Genshin", "游戏"])
-> async def get_genshin_characters(ctx: RunContext[ToolContext], user_id: str) -> str:
->     """获取指定用户的原神角色列表及练度信息"""
->     ...
-> ```
-> 当框架通过群组画像判定当前群聊语境为"原神"时，该群内所有声明了 `原神` 标签的工具会被自动加入工具列表（最多 8 个），解决"群里问游戏问题但向量搜索命中不到游戏工具"的问题。语境标签由记忆系统在摄入群组对话时自动维护，无需人工配置。
+> **语境工具池（已移除）**：语境工具池已于 `27aa5780`（2026-09-24）移除，`context_tags` 目前不影响工具装配。主会话工具快照不再随群画像标签变化，以保住前缀缓存；
+> 群画像标签只在省略跟进时拼进检索 query。插件工具靠 docstring、`covers`、`aliases` 被向量检索召回。
 
 ## 2.3 被装饰函数要求
 

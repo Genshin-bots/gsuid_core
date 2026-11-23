@@ -268,23 +268,21 @@ def owning_nodes_of_tools(tool_names: List[str]) -> Dict[str, List[str]]:
 
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
-_ASCII_TOKEN_RE = re.compile(r"^[a-z0-9_-]+$")
+_ASCII_TOKEN_RE = re.compile(r"^[a-z0-9 _-]+$")
 
 
-def _weak_token_hits(token: str, weak_blob: str) -> bool:
-    if _ASCII_TOKEN_RE.fullmatch(token):
-        if len(token) < 3:
-            return False
-        return re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", weak_blob) is not None
-    return token in weak_blob
+def _keyword_hits(kw: str, text: str) -> bool:
+    if _ASCII_TOKEN_RE.fullmatch(kw):
+        # ASCII 词/短语要求前后词边界，防止 "code" 误命中 "unicode" / "decode"。
+        return re.search(rf"(?<![a-z0-9_]){re.escape(kw)}(?![a-z0-9_])", text) is not None
+    return kw in text
 
 
 def match_capability_node(hint: str) -> str:
     """自然语言 hint → node_id；无命中返回空串（不回退默认画像）。
 
-    1. hint 就是已注册 node_id → 直接返回；
-    2. 命中 match_keywords 或 when_to_use / display_name 子串 → 最长关键词优先；
-    3. 都不命中 → ``""``。
+    只做高置信精确匹配：1. 精确 node_id / persona；2. 去 URL 后的显式 match_keywords 或
+    完整 display_name（最长优先）。不再扫 when_to_use 任意子串，模糊语义交 semantic_routing。
     """
     h = (hint or "").strip().lower()
     if not h:
@@ -294,34 +292,22 @@ def match_capability_node(hint: str) -> str:
     if get_persona_node(h) is not None:
         return h
     h_no_url = _URL_RE.sub(" ", h)
-    weak_tokens = [tok for tok in re.split(r"[\s,，、；;。！？!?/|]+", h_no_url) if len(tok) >= 2]
-    other_ids = [nid.lower() for nid in _NODES if len(nid) >= 4]
     best_id = ""
     best_score = 0
     for node in _NODES.values():
         if node.source == "persona" or node.node_id == "capability_evaluator":
             continue
-        for kw in node.match_keywords:
+        dn = (node.display_name or "").strip().lower()
+        # 仅 ≥4 字的完整 display_name 参与命中，防止短泛词（如「分析」）误触发。
+        candidates = (*node.match_keywords, dn) if len(dn) >= 4 else tuple(node.match_keywords)
+        for kw in candidates:
             k = (kw or "").strip().lower()
-            if not k or k not in h_no_url:
+            if not k or not _keyword_hits(k, h_no_url):
                 continue
             score = len(k)
             if score > best_score:
                 best_score = score
                 best_id = node.node_id
-        # 弱匹配：剥离 URL 与 when_to_use 中对其他 node_id 的交叉引用，ASCII 词要求词边界
-        when_text = node.when_to_use.lower()
-        self_id = node.node_id.lower()
-        for other_id in other_ids:
-            if other_id != self_id and other_id in when_text:
-                when_text = when_text.replace(other_id, " ")
-        weak_blob = f"{self_id} {node.display_name.lower()} {when_text}"
-        for token in weak_tokens:
-            if _weak_token_hits(token, weak_blob):
-                score = min(len(token), 8)
-                if score > best_score:
-                    best_score = score
-                    best_id = node.node_id
     return best_id
 
 

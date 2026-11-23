@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 import asyncio
 import hashlib
@@ -16,7 +17,6 @@ from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
 from gsuid_core.ai_core.planning.models import AIAgentTask
 from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
 from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-from gsuid_core.ai_core.planning.tool_output_metrics import fileos_metrics
 from gsuid_core.ai_core.planning.tool_output_protocol import (
     PersistedHandleCard,
     extract_inline_head,
@@ -24,7 +24,29 @@ from gsuid_core.ai_core.planning.tool_output_protocol import (
     extract_persist_title,
     looks_like_handle_card,
 )
-from gsuid_core.ai_core.planning.tool_output_sanitize import sanitize_for_persist
+
+# 落盘前脱敏（密钥/令牌/Cookie/巨型 data-uri），无业务域词
+_SECRET_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b", re.I),
+    re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"),
+    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|secret|password|passwd)\s*[:=]\s*['\"]?[^\s'\"]{8,}"),
+    re.compile(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*[^\n]{12,}"),
+    re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd)\s*[:=]\s*['\"]?[A-Fa-f0-9]{32,}\b"),
+    re.compile(r"(?i)\b(sha256|checksum|digest)\s*[:=]\s*['\"]?[A-Fa-f0-9]{64}\b"),
+    re.compile(r"data:image/[^;]+;base64,[A-Za-z0-9+/]{200,}={0,2}"),
+)
+
+
+def sanitize_for_persist(text: str) -> str:
+    """落盘前脱敏敏感凭据与巨型 data-uri。"""
+    if not text:
+        return text
+    out = text
+    for pat in _SECRET_RES:
+        out = pat.sub("[REDACTED]", out)
+    return out
+
 
 _MIN_PERSIST_CHARS = 800
 _MIN_SEARCH_PERSIST_CHARS = 40
@@ -400,7 +422,6 @@ async def persist_and_fold_tool_return(
     )
     if card is None:
         return None
-    fileos_metrics.inc_fold()
     if is_cap:
         return fold_card_for_main_prompt(
             replace(card, long_structured=False),
@@ -434,7 +455,7 @@ async def _write_record(
     res_handle: str,
     long_structured: bool = False,
 ) -> Optional[PersistedHandleCard]:
-    clean, n_redact = sanitize_for_persist(content)
+    clean = sanitize_for_persist(content)
     chash = content_sha256(clean)
     # 去重：owner+scope+hash+tool_name（tool 空时只按 hash）
     existing = await AIToolOutputRecord.get_by_hash(
@@ -444,7 +465,6 @@ async def _write_record(
         tool_name=tool_name or "",
     )
     if existing is not None:
-        fileos_metrics.inc_dedup()
         return _card_for_record(existing, long_structured=long_structured)
 
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -495,10 +515,8 @@ async def _write_record(
         if payload_path:
             await asyncio.to_thread(Path(payload_path).unlink, missing_ok=True)
         if existing2 is not None:
-            fileos_metrics.inc_dedup()
             return _card_for_record(existing2, long_structured=long_structured)
         raise
-    fileos_metrics.inc_write(size, redacted=n_redact)
     asyncio.create_task(
         _index_chunks_safe(rid, clean, scope_key, cog_scope_key, owner_user_id, tool_name or profile, date_str)
     )
@@ -533,7 +551,6 @@ async def _index_chunks_safe(
     for attempt in range(retries + 1):
         try:
             await index_tool_output_chunks(chunks, payload=payload)
-            fileos_metrics.inc_index(True)
             # 回流认知层：只登记节点 + 摘要，正文仍住 FileOS（索引层，不是第二份正文）
             await _distill_to_cognition(rid, payload, cog_scope_key, owner_user_id, tool_name, date_str)
             return
@@ -541,7 +558,6 @@ async def _index_chunks_safe(
             last_err = e
             if attempt < retries:
                 await asyncio.sleep(0.3 * (attempt + 1))
-    fileos_metrics.inc_index(False)
     logger.debug(t("log.ai.tool_output_index_skip_after_retry", e=last_err))
 
 

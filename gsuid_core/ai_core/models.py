@@ -216,7 +216,7 @@ class ToolBase:
     plugin: str  # 插件名称，core表示核心模块
     tool: "Tool[ToolContext]"
     check_func: Any  # 可选的权限检查函数
-    context_tags: List[str]  # 语境标签，用于语境工具池自动加载
+    context_tags: List[str]  # 语境工具池已移除，仅为兼容保留
     capability_domain: Optional[str]  # C3-d 能力域，用于聚合成自然语言能力清单
     covers: List[str]  # 数据/能力覆盖面陈述，进向量检索文本，供召回与 roster 聚合
     aliases: List[str]  # 领域内同义表述（须带领域前缀，如「领域A·能力X」）

@@ -53,7 +53,7 @@ register_agent_node(
 | `match_keywords` | `resolve_node` **按注册序首个命中**；勿与兄弟节点抢词 |
 | `boundary_override` | 仅特殊通道（如允许渲染工具发图）时覆写 |
 
-> 旧 `CapabilityAgentProfile` / `register_capability_agent` 仍兼容但废弃；新代码只用 `AgentNode`。
+> 旧 `CapabilityAgentProfile` / `register_capability_agent` 仍兼容但已废弃（下个大版本移除）；新代码只用 `AgentNode`。
 > 预算不在节点上：全局 `task_max_iterations` / `task_max_tokens`。
 
 ## 14.3 框架内置节点（7 通用 + 内部评估器）
@@ -230,15 +230,18 @@ create_subagent(agent_profile="render_agent", task=事实包)  # 通用美观出
 7. **交付边界**：默认禁止直发用户；长文出图一律主人格→`render_agent`，勿让业务节点
    自渲或 `send_message_by_ai` 念长文。
 
-## 14.9 旧 API import（勿用于新代码）
+## 14.9 从旧 API 迁移
 
-```python
-# 废弃兼容
-from gsuid_core.ai_core.capability_agents import (
-    CapabilityAgentProfile,
-    register_capability_agent,
-)
-```
+`CapabilityAgentProfile` / `register_capability_agent` 已废弃（兼容入口将在下个大版本移除）。
+旧插件请按下表改写为 `register_agent_node(AgentNode(...))`：
+
+| 旧字段 | 新写法 |
+|------|------|
+| `profile_id` | `node_id` |
+| `system_prompt` | `prompt`（删掉手写的交付边界段，框架会叠加） |
+| `display_name` / `when_to_use` / `match_keywords` / `tool_names` / `tool_query` | 同名字段，原样保留 |
+| `max_iterations` / `max_tokens` | 删除。预算走全局 `task_max_iterations` / `task_max_tokens` |
+| （无） | 补 `tool_packs=[TASK_BASICS_PACK]`，与旧兼容层的默认装配一致 |
 
 ## 十四附、`plugin_developer_agent`
 

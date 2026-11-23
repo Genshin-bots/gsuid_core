@@ -2528,7 +2528,10 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
 
     from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, registry as node_reg
     from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
-    from gsuid_core.ai_core.agent_run.support import wall_clock_budget_action
+    from gsuid_core.ai_core.agent_run.support import (
+        wall_clock_budget_action,
+        fold_stale_capability_tool_returns,
+    )
     from gsuid_core.ai_core.planning.kanban_executor import (
         _format_subtask_prompt,
         _format_delivery_for_main_agent,
@@ -2536,13 +2539,19 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
         _wake_main_agent_for_delivery_now,
     )
 
-    for budget, elapsed, reqs, nudged_at, expected in (
-        (None, 9999.0, 5, 0, "ok"),
-        (420.0, 419.0, 5, 0, "ok"),
-        (420.0, 425.0, 5, 0, "nudge"),
-        (420.0, 450.0, 6, 5, "ok"),
-        (420.0, 460.0, 7, 5, "hard_stop"),
-        (420.0, 605.0, 6, 5, "hard_stop"),
+    for budget, elapsed, reqs, nudged_at, cb, in_tok, out_tok, expected in (
+        (None, 9999.0, 5, 0, "Chat", 0, 0, "ok"),
+        (420.0, 419.0, 5, 0, "CapabilityAgent", 100_000, 10_000, "ok"),
+        (420.0, 425.0, 5, 0, "CapabilityAgent", 100_000, 10_000, "nudge"),
+        (420.0, 450.0, 6, 5, "CapabilityAgent", 100_000, 10_000, "ok"),
+        (420.0, 460.0, 7, 5, "CapabilityAgent", 100_000, 10_000, "hard_stop"),
+        (420.0, 605.0, 6, 5, "CapabilityAgent", 100_000, 10_000, "hard_stop"),
+        (420.0, 60.0, 10, 0, "CapabilityAgent", 4_100_000, 10_000, "token_nudge"),
+        (420.0, 65.0, 12, 10, "CapabilityAgent", 4_200_000, 10_000, "token_hard_stop"),
+        (420.0, 60.0, 10, 0, "CapabilityAgent", 500_000, 210_000, "token_nudge"),
+        # 共用 nudge_request 窗：token 先催收口后墙钟再到期，不二次催促，宽限满按墙钟 hard_stop
+        (420.0, 425.0, 11, 10, "CapabilityAgent", 4_100_000, 10_000, "ok"),
+        (420.0, 425.0, 12, 10, "CapabilityAgent", 4_100_000, 10_000, "hard_stop"),
     ):
         assert (
             wall_clock_budget_action(
@@ -2550,9 +2559,37 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
                 elapsed_sec=elapsed,
                 requests_started=reqs,
                 nudge_request=nudged_at,
+                create_by=cb,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
             )
             == expected
         )
+
+    # 环内旧工具返回高水位折叠：保尾段、折前段、不重复折
+    big_old = "A" * 2000
+    big_new = "B" * 2000
+    cap_hist = [ModelRequest(parts=[ToolReturnPart(tool_name="run_code", content=big_old, tool_call_id="c0")])]
+    for i in range(1, 8):
+        cap_hist.append(
+            ModelRequest(parts=[ToolReturnPart(tool_name="run_code", content=big_new, tool_call_id=f"c{i}")])
+        )
+    assert fold_stale_capability_tool_returns(cap_hist, keep_tail=4, trigger_chars=5000, item_cap=1200) == 4
+    assert fold_stale_capability_tool_returns(cap_hist, keep_tail=4, trigger_chars=5000, item_cap=1200) == 0
+    first_part = cap_hist[0].parts[0]
+    last_part = cap_hist[-1].parts[0]
+    assert isinstance(first_part, ToolReturnPart) and "前轮长输出已折叠" in str(first_part.content)
+    assert isinstance(last_part, ToolReturnPart) and last_part.content == big_new
+
+    # 仅尾段 keep_tail 超阈值而旧段未超阈值时，不得触发折叠
+    tail_heavy = [ModelRequest(parts=[ToolReturnPart(tool_name="run_code", content=big_old, tool_call_id="h0")])]
+    for i in range(1, 5):
+        tail_heavy.append(
+            ModelRequest(parts=[ToolReturnPart(tool_name="run_code", content="Z" * 3000, tool_call_id=f"t{i}")])
+        )
+    assert fold_stale_capability_tool_returns(tail_heavy, keep_tail=4, trigger_chars=5000, item_cap=1200) == 0
+    head_untouched = tail_heavy[0].parts[0]
+    assert isinstance(head_untouched, ToolReturnPart) and head_untouched.content == big_old
 
     fake_nodes = {
         "alpha_agent": AgentNode(
@@ -2571,11 +2608,30 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
             match_keywords=["专题长文"],
             tool_packs=[TASK_BASICS_PACK],
         ),
+        "short_dn_agent": AgentNode(
+            node_id="short_dn_agent",
+            display_name="分析",
+            when_to_use="通用短名测试节点。",
+            prompt="p",
+            match_keywords=[],
+            tool_packs=[TASK_BASICS_PACK],
+        ),
+        "code_dn_agent": AgentNode(
+            node_id="code_dn_agent",
+            display_name="code",
+            when_to_use="英文短名词边界测试节点。",
+            prompt="p",
+            match_keywords=[],
+            tool_packs=[TASK_BASICS_PACK],
+        ),
     }
     monkeypatch.setattr(node_reg, "_NODES", fake_nodes)
     assert node_reg.match_capability_node("测试提问 https://example.test/report/city/2026-10.html") == ""
-    assert node_reg.match_capability_node("聊聊 report 吧") == ""
-    assert node_reg.match_capability_node("帮我看下 XAU 走势") == "alpha_agent"
+    assert node_reg.match_capability_node("聊聊 report 或 XAU 吧") == ""
+    assert node_reg.match_capability_node("帮我分析一下今天天气") == ""
+    assert node_reg.match_capability_node("帮我处理 unicode 编码") == ""
+    assert node_reg.match_capability_node("run code to test") == "code_dn_agent"
+    assert node_reg.match_capability_node("请调用指标分析代理") == "alpha_agent"
     assert node_reg.match_capability_node("做一次专项指标分析") == "alpha_agent"
 
     now = datetime(2026, 11, 23, 13, 30, 0)

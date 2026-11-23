@@ -80,7 +80,6 @@ def _import_builtin_kits() -> None:
     from gsuid_core.ai_core.kits.classifier import kit as classifier_kit
     from gsuid_core.ai_core.kits.statistics import kit as statistics_kit
     from gsuid_core.ai_core.kits.favorability import kit as favorability_kit
-    from gsuid_core.ai_core.kits.session_mute import kit as session_mute_kit
     from gsuid_core.ai_core.kits.group_profile import kit as group_profile_kit
     from gsuid_core.ai_core.kits.self_cognition import kit as self_cognition_kit
     from gsuid_core.ai_core.kits.decision_distill import kit as decision_distill_kit
@@ -99,7 +98,6 @@ def _import_builtin_kits() -> None:
         inbox_kit,
         evidence_kit,
         scaffold_kit,
-        session_mute_kit,
         statistics_kit,
         identity_kit,
     ):

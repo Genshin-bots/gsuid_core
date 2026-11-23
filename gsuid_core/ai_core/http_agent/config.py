@@ -250,9 +250,3 @@ def load_http_agent_settings() -> HttpAgentSettings:
 
 def is_http_agent_enabled() -> bool:
     return load_http_agent_settings().enable
-
-
-def reset_settings_cache_for_tests() -> None:
-    global _cached_mtime, _cached_settings
-    _cached_mtime = -1.0
-    _cached_settings = None

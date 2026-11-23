@@ -91,7 +91,3 @@ def authenticate_bearer(authorization: str | None) -> HttpAgentKeyRecord | None:
     store = get_key_store()
     token = extract_bearer(authorization)
     return store.verify_token(token)
-
-
-def reset_auth_bans_for_tests() -> None:
-    _ip_state.clear()

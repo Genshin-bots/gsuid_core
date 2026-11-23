@@ -60,8 +60,7 @@ from gsuid_core.ai_core.control.policy_ring import (
     corrected_or_original,
     run_settle_policy_ring,
 )
-from gsuid_core.ai_core.agent_run.budget_ctx import _current_budget_scope
-from gsuid_core.ai_core.agent_run.user_turn_ctx import reset_user_turn_id
+from gsuid_core.ai_core.agent_run.budget_ctx import reset_user_turn_id, _current_budget_scope
 from gsuid_core.ai_core.control.outbound_detectors import (
     is_tech_dump,
     inspect_outbound_ooc,
@@ -471,8 +470,9 @@ class SettlePhase(RunOnceHost):
             _new_msgs = _dedupe_delivery_cards(_new_msgs)
             _new_msgs = _drop_unsent_text_from_tail(_new_msgs, st.unsent_texts)
 
-            # 前缀缓存红线（§1.7）：禁止事后改写已入缓存的 ToolReturnPart；
-            # 证据已留存 EvidenceStore，超大回执仅在 compact_session_history 截断尾段时折叠。
+            # 前缀缓存红线（§1.7）：主会话禁止事后改写已入缓存的 ToolReturnPart；
+            # 超大回执仅在 compact_session_history 截断尾段，或 CapabilityAgent 长跑
+            # 触发 fold_stale_capability_tool_returns（仅计可折叠旧段）成批折叠。
             self.history.extend(_new_msgs)
             _ctx_dyn = st.context
             if _ctx_dyn is not None:
@@ -982,6 +982,16 @@ class SettlePhase(RunOnceHost):
             budget_s = int(self.wall_clock_budget or 0)
             logger.warning(i18n_t("log.agent.wall_clock_hard_stop", p0=budget_s))
             err_type, err_msg = "wall_clock_timeout", f"达到墙钟预算硬上限 {budget_s}s"
+        elif st.token_budget_exceeded:
+            logger.warning(
+                i18n_t(
+                    "log.agent.token_budget_hard_stop",
+                    p0=st.usage_input_tokens,
+                    p1=st.usage_output_tokens,
+                )
+            )
+            err_type = "token_budget_exceeded"
+            err_msg = f"达到能力代理累计 Token 硬上限 in={st.usage_input_tokens} out={st.usage_output_tokens}"
         else:
             req_lim = _require_limits(st).request_limit
             logger.warning(i18n_t("log.agent.pydanticai_reached_maximum_thinking", p0=req_lim))

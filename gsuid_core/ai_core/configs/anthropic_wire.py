@@ -43,11 +43,6 @@ class AnthropicWireFacts:
 _FACTS: dict[str, AnthropicWireFacts] = {}
 
 
-def clear_anthropic_wire_facts() -> None:
-    """清空本进程学到的事实。测试用来隔离用例。"""
-    _FACTS.clear()
-
-
 def anthropic_wire_key(model_name: str) -> str:
     """同一模型的 `anthropic.` 前缀与原名共用一份事实。"""
     name = model_name.lower()

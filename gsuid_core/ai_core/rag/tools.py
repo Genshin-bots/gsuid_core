@@ -815,35 +815,6 @@ async def search_tools_by_domain(
     return out
 
 
-def get_tools_by_context_tags(tags: List[str], max_count: int = 8) -> ToolList:
-    """根据语境标签匹配工具（语境工具池）。
-
-    工具在注册时可通过 @ai_tools(context_tags=[...]) 声明适用语境，
-    当当前会话语境（群组画像标签）与之匹配时，自动加载该工具集。
-
-    Args:
-        tags: 当前会话的语境标签，如 ["游戏", "资讯"]
-        max_count: 返回工具数量上限
-
-    Returns:
-        匹配到的 Tool 对象列表（按匹配标签数降序）
-    """
-    if not tags:
-        return []
-
-    tag_set = {t.lower() for t in tags if t}
-    scored: List[tuple[int, Any]] = []
-    for tool_base in get_all_tools().values():
-        if not tool_base.context_tags:
-            continue
-        overlap = len({t.lower() for t in tool_base.context_tags} & tag_set)
-        if overlap > 0:
-            scored.append((overlap, tool_base.tool))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [tool for _, tool in scored[:max_count]]
-
-
 async def get_scope_context_tags(scope_key: str) -> List[str]:
     """读取某个群组 scope 的语境标签（来自群组画像）。
 

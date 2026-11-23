@@ -15,11 +15,11 @@ import time
 from typing import Any, NamedTuple
 from collections import deque
 
-from sqlmodel import Field, col, delete, select
+from sqlmodel import Field, col, delete
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gsuid_core.utils.database.base_models import BaseModel, with_session, with_read_session
+from gsuid_core.utils.database.base_models import BaseModel, with_session
 
 # 每用户保留最近 N 笔工具调用
 _MAX_PER_USER = 8
@@ -45,9 +45,6 @@ class ToolCallRecord(NamedTuple):
 
 # {user_id: deque[ToolCallRecord]}
 _recent: dict[str, deque[ToolCallRecord]] = {}
-
-
-_SQL_TTL_DAYS = 7
 
 
 class AIToolTrace(BaseModel, table=True):
@@ -78,28 +75,6 @@ class AIToolTrace(BaseModel, table=True):
                 created_at=created_at,
             )
         )
-
-    @classmethod
-    @with_read_session
-    async def recent_for_users(
-        cls,
-        session: AsyncSession,
-        user_ids: list[str],
-        *,
-        since_ts: int,
-        limit: int = 6,
-    ) -> list[str]:
-        if not user_ids:
-            return []
-        stmt = (
-            select(cls)
-            .where(col(cls.user_id).in_(user_ids), col(cls.created_at) >= since_ts)
-            .order_by(col(cls.created_at).desc())
-            .limit(limit)
-        )
-        result = await session.execute(stmt)
-        rows = list(result.scalars().all())
-        return [f"{r.tool_name}(args={r.args_summary})" for r in rows]
 
     @classmethod
     @with_session
@@ -172,9 +147,3 @@ def get_recent_tool_calls(user_ids: list[str], limit: int = 6) -> list[str]:
                 collected.append((rec.timestamp, f"{rec.tool_name}(args={rec.args_summary})"))
     collected.sort(key=lambda x: x[0], reverse=True)
     return [s for _, s in collected[:limit]]
-
-
-async def get_recent_tool_calls_persisted(user_ids: list[str], limit: int = 6) -> list[str]:
-    """重启后从 SQL 补 ring buffer 的空窗。"""
-    since = int(time.time()) - _SQL_TTL_DAYS * 86400
-    return await AIToolTrace.recent_for_users(user_ids, since_ts=since, limit=limit)

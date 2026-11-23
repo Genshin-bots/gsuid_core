@@ -130,11 +130,6 @@ def get_ingestion_worker():
     return _ingestion_worker
 
 
-def get_ingestion_worker_or_none() -> Optional["IngestionWorker"]:
-    """检索/观察热路径用：worker 未启动时返回 None，不打 warning。"""
-    return _ingestion_worker
-
-
 def peek_ingestion_buffers(scope_keys: Collection[str]) -> list["ObservationRecord"]:
     """只读复制尚未 flush 的缓冲；worker 未启动则空列表。"""
     if _ingestion_worker is None:

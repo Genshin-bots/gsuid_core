@@ -182,7 +182,7 @@ def _note_send_block(tool_ctx: ToolContext, reason: str, content: str, *, tool_c
 
 def _refuse_outbound(reason: str) -> str:
     """把拒发原因退回给模型，让它改写后再发。图和字都还没出去。"""
-    from gsuid_core.ai_core.control.reason_text import reason_text
+    from gsuid_core.ai_core.control.directive import reason_text
 
     return f"未发送。{reason_text(reason)}改写后再发。这次的图和字都没有出去。"
 

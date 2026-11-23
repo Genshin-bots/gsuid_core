@@ -25,7 +25,7 @@
 | Source | 来源 | 是否可写 |
 |--------|------|---------|
 | `builtin` | 框架内置（v3 收敛为 5 个：`research_agent` / `code_agent` / `internal_reporter` / `memory_curator` / `scheduler_assistant`） | **只读**，前端不允许改 / 删 |
-| `plugin`  | 其他插件用 `register_capability_agent` 注册 | **只读** |
+| `plugin`  | 其他插件用 `register_agent_node` 注册 | **只读** |
 | `user`    | 管理员在 webconsole 上手工新建 | 可 PATCH / DELETE |
 
 落盘路径：`data/ai_core/capability_agents/<profile_id>.json`。框架启动时

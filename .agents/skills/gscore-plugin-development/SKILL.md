@@ -95,7 +95,7 @@ description: >
 - **唯一允许 `try/except` 的地方**：`_ai_return_xxx()` 辅助函数。详见 [§17.3](./references/17-code-redlines.md#173-ai_return-辅助函数的特殊说明)。
 - **图片渲染优先级**：PIL（首选）→ pytakumi（推荐）→ playwright（兜底）。详见 [§9.1](./references/09-image-rendering.md#91-三档渲染方案优先级从高到低)。
 - **能力代理用 `AgentNode` + `register_agent_node`**：交付边界默认框架叠加；出图派 `render_agent`；业务强制「插件工具 > web」。详见 [§14](./references/14-ai-capability-profile.md)。
-- **`to_ai` 改造三层**：触发器层 `to_ai="..."` + 数据/渲染层 `ai_return()` + 业务画像 `CapabilityAgentProfile`；详见 [§18.1](./references/18-ai-trigger-migration.md#181-背景你要做的事) 与 [§18.3 Step 0.4](./references/18-ai-trigger-migration.md#step-04-判断是否需要注册-capability-agent-画像)。
+- **`to_ai` 改造三层**：触发器层 `to_ai="..."` + 数据/渲染层 `ai_return()` + 业务能力代理 `AgentNode`（`register_agent_node`）；详见 [§18.1](./references/18-ai-trigger-migration.md#181-背景你要做的事) 与 [§18.3 Step 0.4](./references/18-ai-trigger-migration.md#step-04-判断是否需要注册-capability-agent-画像)。
 - **`ai_return` 注入点 = 数据已拿到 / 图片未生成**：必须在数据层函数里，不能只在触发器层。详见 [§18.3 Step 3](./references/18-ai-trigger-migration.md#step-3逐层分析调用链找出数据层注入-ai_return)。
 - **插件 FastAPI = 共享 app + `Depends(require_auth)`**：从 `gsuid_core.webconsole.app_app import app` 即可挂自己的 `/api/<插件名>/...` 路由；详见 [§19.2](./references/19-fastapi-plugin-api.md#192-最简示例3-行代码加一个-get-接口) 与 [§19.3](./references/19-fastapi-plugin-api.md#193-加鉴权推荐-复用-require_auth)。
 - **插件前端页 = `register_plugin_page` + `web/` 静态目录**：Hub `/plugins` 右侧按钮打开 iframe；页面 i18n 放 `web/locales/{zh-CN,en-US,ja-JP}.json`，引入 `/plugin-pages/_sdk/gshub-plugin.js`。API 用 `PluginAPI()` 前缀 `/api/<plugin_id>`。详见 [§22](./references/22-plugin-pages.md)。

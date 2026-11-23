@@ -91,11 +91,6 @@ def _tier_for(value: int) -> tuple[int, int, str]:
     return first[0], first[1], first[2]
 
 
-def meme_frequency_line_for(value: int) -> str:
-    """把 0–100 的整数落到一档频率句。"""
-    return _tier_for(value)[2]
-
-
 def _explicit_or_cooldown(cfg: StringConfig, derived: int) -> int:
     """若显式配置了大于 0 的秒数，则以配置为准；为 0 或未配置时跟随档位派生值。"""
     current = stored_int(cfg, "meme_send_cooldown_sec", 0)

@@ -7,8 +7,6 @@ OpenAI 配置管理器模块
 
 from typing import Any, Dict, Optional
 
-from gsuid_core.i18n import t
-from gsuid_core.logger import logger
 from gsuid_core.ai_core.resource import OPENAI_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
     GSC,
@@ -272,57 +270,6 @@ class OpenAIConfigManager(ConfigSetManager):
         for key in self._config_template.keys():
             result[key] = config.get_config(key).data
         return result
-
-    def rename(self, old_name: str, new_name: str) -> tuple[bool, str]:
-        """
-        重命名配置文件
-
-        Args:
-            old_name: 原配置文件名（不含扩展名）
-            new_name: 新配置文件名（不含扩展名）
-
-        Returns:
-            (是否成功, 消息)
-        """
-
-        # 检查原配置文件是否存在
-        old_path = self._get_config_path(old_name)
-        if not old_path.exists():
-            return False, f"配置文件 '{old_name}' 不存在"
-
-        # 检查新配置文件名是否已存在
-        if self.exists(new_name):
-            return False, f"配置文件 '{new_name}' 已存在"
-
-        try:
-            # 获取配置数据
-            config = self.get_config(old_name)
-            config_data = {}
-            for key in self._config_template.keys():
-                config_data[key] = config.get_config(key).data
-
-            # 创建新配置文件
-            new_path = self._get_config_path(new_name)
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # 写入新文件
-            import json
-
-            with open(new_path, "w", encoding="UTF-8") as f:
-                json.dump(config_data, f, indent=4, ensure_ascii=False)
-
-            # 删除旧文件
-            old_path.unlink()
-
-            # 清除缓存
-            if old_name in self._cache:
-                del self._cache[old_name]
-
-            logger.info(t("log.ai.openaiconfig_config_file_renamed", old_name=old_name, new_name=new_name))
-            return True, "ok"
-        except Exception as e:
-            logger.error(t("log.ai.openaiconfig_rename_config_file", e=e))
-            return False, str(e)
 
 
 # 全局单例

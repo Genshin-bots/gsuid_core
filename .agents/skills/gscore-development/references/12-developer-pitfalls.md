@@ -691,7 +691,7 @@ gate 误判的代价只能是"本该有工具却没给"，绝不能是"本该沉
 
 `self`/`buildin`/`meta` 是**框架特权分类**，插件声明时 `register.py` 会重定向到 `common`
 （见 `_CORE_ONLY_CATEGORIES`）。插件工具因此**必须**靠向量检索召回——一旦踩了坑一，
-就彻底没救。插件想被稳定召回，靠的是**好 docstring + `capability_domain` + `context_tags`**，
+就彻底没救。插件想被稳定召回，靠的是**好 docstring + `capability_domain` + `covers` / `aliases`**，
 不是抢 `self`。
 
 **🔴 三、能力族展开曾是"赢家通吃"**

@@ -1358,7 +1358,7 @@ gs_agent.GsCoreAIAgent.run
 | `settle` | history/闸门收尾/假完成/UsageLimit/finally | `_run_once_settle_result` / `_run_once_usage_limit_fallback` / `_run_once_cleanup` |
 | `support` | 假完成/thrash/委派纯函数 | `_claims_fake_done`、`_capability_exclusive_tool_names`… |
 | `budget_ctx` | 预算 scope contextvar | `set/reset_budget_scope_context` |
-| `host` / `mixin` | 类型槽 + Phase 组合 | `RunOnceHost` / `RunOnceMixin` |
+| `host` / `__init__` | 类型槽 + 惰性 Phase 组合 | `RunOnceHost` / `_build_run_once_mixin` |
 
 **仍在 `gs_agent.py`**：锁与抢答、`_execute_run` 重试、`_resolve_output_gate_after_run` /
 `_ooc_rewrite_and_send`、history 裁剪、工厂 `create_agent`。测试可继续
@@ -1537,9 +1537,8 @@ agent.iter(message_history=self.history + 本轮 user)   # loop.py
 `root.id[:8]`，而 `list_persisted_outputs` 是 SQL 等值 → 模型怎么查都是空）。`dlg_` 已接进
 `handle_resolver`，`read_handle` 与 `check_delegation(id, wait_sec=)` 均可消费；生产 Chat
 立刻 deferred（`wait_sec=0`），TEST 内联等到 90s。产物按 **root** 取
-（`list_for_root`：多节点树的产物挂在 child 上）。执行体完成先 `mailbox.post_to_session`，
-再由短窗 flush 用 `drain_one(session, "delivery", root)` 精确消费——会话级 drain 会抽走
-兄弟 root 的投递。
+（`list_for_root`：多节点树的产物挂在 child 上）。执行体完成后按 root 合批入
+`_rt.delivery_pending`，经短窗 flush 精确唤醒对应会话回灌，避免跨 root 串扰。
 
 **出图在途静默（2026-08-16）**：群聊里「先念完整事实包、再 `create_subagent(render_agent)`」
 会把图上的信息误解成气泡正文。修复是**结构通道**，不是业务词表：
@@ -1878,7 +1877,7 @@ hook 总线在整个启动窗口内空转：那段时间里所有请求**零工�
 默认 ad-hoc：`research_agent` / `internal_reporter` / `memory_curator` / `scheduler_assistant`。
 `render_agent` / `stock_report_agent` / code / plugin_dev 等需要产物与审批的通常走看板。
 常量：生产 Chat `wait_sec=0`；`create_by="TEST"` 时 `_KANBAN_TEST_WAIT_TIMEOUT_SEC = 90`。
-该入口等不到 mailbox 回灌，故同步等到 90s；不要把 90s 抄进生产 Chat。
+该入口等不到异步交付回灌，故同步等到 90s；不要把 90s 抄进生产 Chat。
 
 ### 16.2 能力代理工具回填与 web 降权
 

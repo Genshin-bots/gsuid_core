@@ -159,7 +159,7 @@ async def route_window(
 
     from datetime import datetime, timezone
 
-    from gsuid_core.ai_core.memory.prompts.extraction import (
+    from gsuid_core.ai_core.memory.prompts import (
         WINDOW_ROUTE_USER,
         WINDOW_ROUTE_SYSTEM,
     )

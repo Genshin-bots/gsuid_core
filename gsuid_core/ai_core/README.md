@@ -45,7 +45,7 @@
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
 | `utils.py` | `send_chat_result`（**呈现层**：report/meme/长文出图/拆条/漏网 sanitize）、`SILENCE_MARKERS`、`extract_json_from_text`。合规打回不在此。 |
 | `history_format.py` | `history_to_prompt` / `history_to_messages` / `outbound_history_fields` 等 MessageRecord 格式化辅助；群聊与私聊线程视图统一在 `thread_view.py`。 |
-| `normalize.py` / `content_guard.py` | 文本归一化与内容安全辅助。 |
+| `content_guard.py` | 不可信内容包裹与词库匹配前的文本规范化。 |
 | `check_func.py` | 通用权限 / 状态检查工具。 |
 | `trigger_bridge.py` | 把"主人格 LLM 决定要调一个具体命令"桥接到 GsCore 触发器系统。 |
 | `startup.py` | ai_core 的启动钩子聚合点，被 `gsuid_core.startup` 调用。 |
@@ -80,7 +80,7 @@
 | `speech_policy.py` | **单表面出站策略**：`free` / `silence_only` / `status_ok` / `framework_nudge` / `framework_deliver` |
 | `support.py` | 假完成 / thrash / 委派纯函数与常量（无循环依赖） |
 | `state.py` | `RunOnceState` 可变状态袋（含 `speech_policy` / `pending_async_delivery` / `image_sent_this_run`） |
-| `host.py` / `mixin.py` | 宿主协议 + 阶段 mixin 组合到 `GsCoreAIAgent` |
+| `host.py` / `__init__.py` | 宿主协议 + 惰性阶段 mixin 组合到 `GsCoreAIAgent` |
 | `budget_ctx.py` | 预算 scope contextvar |
 
 **话术策略（对外单一表面）**：
@@ -180,7 +180,6 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 
 | 文件 | 职责 |
 |---|---|
-| `registry.py` | **插件兼容层**：旧 `CapabilityAgentProfile` dataclass + `register_capability_agent`（转注册到 agent_node，下个大版本移除）。 |
 | `profiles.py` | 内置节点（`research_agent` / `render_agent` / `code_agent` / `internal_reporter` / `memory_curator` / `scheduler_assistant` / `plugin_developer_agent` 等）。 |
 | `runner.py` | **`run_capability_agent(profile_id, task, ev, bot, session_id_suffix)`**：task-mode 实例化——身份核+交付边界叠加、packs+白名单装配、全局任务档预算（`task_max_iterations/tokens`）、绑 PlanRunContext、写 capability_agent 日志。 |
 | `delegation_contracts.py` | 主人格 / 能力代理 / render 的 **POST_TOOL 契约**（工具通道 vs 聊天通道）与 `tool_call_targets_render_agent`。 |
@@ -216,7 +215,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `knowledge.py` | 知识点 CRUD + 检索。 |
 | `image_rag.py` | 图片实体的注册与语义检索（落 `data/ai_core/local_embedding_images/`）。 |
 | `reranker.py` | 二阶段重排（BAAI/bge-reranker-base，模型缓存在 `data/ai_core/rerank_models_cache/`）。 |
-| `tools.py` | **`search_tools / get_main_agent_tools / get_scope_context_tags / get_tools_by_context_tags`**：`GsCoreAIAgent._execute_run` 装工具池靠这一组。 |
+| `tools.py` | **`search_tools / get_main_agent_tools / get_scope_context_tags`**：`GsCoreAIAgent._execute_run` 装工具池靠这一组。 |
 | `startup.py` | 索引初始化。 |
 
 ### `persona/` — 人格系统

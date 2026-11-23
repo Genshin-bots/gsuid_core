@@ -158,8 +158,7 @@ def ai_alias(name: str, alias: Union[str, List[str]], scope: str = "global") -> 
 > **C2 变更（2026-05-19）**：别名注册表已**接入 AI 记忆摄入链路**。注册的别名会在
 > 实体抽取时作为"本群已知别名"注入提取提示词，指导 LLM 把别名对齐到正式名（C2-a/c）；
 > 检索期也用于查询展开与动态实体链接消歧（C2-e）。原先 `ai_alias` 的唯一消费者
-> `normalize_query` 是 dead code，现已降级为命令层非 LLM fallback（R1），
-> 不再参与 AI 推理链路。
+> `normalize_query` 是 dead code，已随 `ai_core/normalize.py` 一起删除。
 
 ### 参数说明
 

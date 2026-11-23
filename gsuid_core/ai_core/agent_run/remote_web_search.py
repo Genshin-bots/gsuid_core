@@ -22,7 +22,6 @@ from gsuid_core.ai_core.configs.openai_config import get_openai_config
 from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
 
 LOCAL_WEB_SEARCH_TOOL = "web_search_tool"
-HOSTED_WEB_SEARCH_TOOL = "web_search"
 # Anthropic 没有 Chat/Responses 分叉，Messages API 本身就能挂 hosted 工具
 ANTHROPIC_NATIVE_METHOD = "native"
 
@@ -59,10 +58,6 @@ def read_remote_web_search_flag(config_full_name: str | None) -> tuple[bool, str
         enabled = str(aconfig.get_config("remote_web_search").data).strip().lower() == "on"
         return enabled, ANTHROPIC_NATIVE_METHOD
     return False, "chat_completions"
-
-
-def is_hosted_web_search_name(tool_name: str | None) -> bool:
-    return (tool_name or "") == HOSTED_WEB_SEARCH_TOOL
 
 
 def attach_remote_web_search(st: RunOnceState, config_full_name: str | None) -> Optional[WebSearch[Any]]:

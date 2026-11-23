@@ -146,14 +146,13 @@ def test_slot_exclusivity_sealing_and_config(isolated) -> None:
 
 def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
     enabled = _run(load_enabled_kits(run_init_steps=False))
-    assert len(enabled) == 15, enabled
+    assert len(enabled) == 14, enabled
     empty = [name for name, occ in slot_health().items() if not occ]
     assert not empty, f"这些槽没有占用者: {empty}"
 
     wired = list_hooks()
     required: List[str] = [
         "ON_INBOUND",
-        "BEFORE_AI_CHAT",
         "AFTER_SESSION",
         "CLASSIFY",
         "RETRIEVE_CONTEXT",

@@ -2,8 +2,8 @@
 
 一个 pack = 一组可整体挂载到 AgentNode 的工具。三类来源：
 
-- ``dynamic``：**标记族**——运行时五层自动装配（保底池 + 状态池 + 驻留池 +
-  语境池 + 向量检索 + find_tools 渐进暴露），由 gs_agent 逐轮执行，不在此解析。
+- ``dynamic``：**标记族**——运行时分层自动装配（保底池 + 状态池 + 驻留池 +
+  向量检索 + find_tools 渐进暴露），由 gs_agent 逐轮执行，不在此解析。
 - 静态族：``register_tool_pack`` 显式注册的名单（框架内置 ``task_basics``）。
 - capability_domain 族：pack 名命中某 ``@ai_tools(capability_domain=...)`` 时
   整族解析（如 "定时任务"）。
