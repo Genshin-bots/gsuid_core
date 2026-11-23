@@ -22,11 +22,13 @@ from pydantic_ai.messages import (
     NativeToolReturnPart,
     ModelResponseStreamEvent,
 )
+from pydantic_ai.exceptions import UsageLimitExceeded
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import (
+    wall_clock,
     output_gate,
     angle_bracket_guard,
 )
@@ -40,7 +42,11 @@ from gsuid_core.ai_core.utils import (
     _sanitize_tool_call_artifacts_in_parts,
     normalize_escaped_control_tags_in_parts,
 )
-from gsuid_core.ai_core.control.lines import ITER_WRAP_NUDGE, TOOL_FAIL_FUSE_NUDGE
+from gsuid_core.ai_core.control.lines import (
+    ITER_WRAP_NUDGE,
+    TOOL_FAIL_FUSE_NUDGE,
+    WALL_CLOCK_WRAP_NUDGE,
+)
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
 from gsuid_core.utils.resource_manager import RM
@@ -61,6 +67,7 @@ from gsuid_core.ai_core.agent_run.support import (
     record_output_block,
     turn_reply_metadata,
     record_run_tool_output,
+    wall_clock_budget_action,
     _tool_return_looks_failed,
     tool_return_is_hard_error,
     absorb_run_image_delivered,
@@ -378,6 +385,23 @@ class LoopPhase(RunOnceHost):
         st.iter_nudged = True
         logger.info(i18n_t("log.agent.iter_wrap_nudge", p0=st.model_requests, p1=limit))
 
+    def _maybe_enforce_wall_clock(self, st: RunOnceState, node: Any) -> None:
+        """显式墙钟预算门控：到期先软收敛，超宽限抛 UsageLimitExceeded 走兜底收口。"""
+        elapsed = time.time() - st.start_time - wall_clock.excluded_seconds(st.wall_acc)
+        action = wall_clock_budget_action(
+            wall_clock_budget=self.wall_clock_budget,
+            elapsed_sec=elapsed,
+            requests_started=st.model_requests,
+            nudge_request=st.wall_nudge_request,
+        )
+        if action == "nudge":
+            node.request.parts = [*node.request.parts, UserPromptPart(content=WALL_CLOCK_WRAP_NUDGE)]
+            st.wall_nudge_request = st.model_requests
+            logger.info(i18n_t("log.agent.wall_clock_soft_budget", p0=elapsed))
+        elif action == "hard_stop":
+            st.wall_timed_out = True
+            raise UsageLimitExceeded("wall_clock_budget_exceeded")
+
     async def _run_once_on_model_request(
         self,
         st: RunOnceState,
@@ -388,6 +412,7 @@ class LoopPhase(RunOnceHost):
         logger.debug(i18n_t("log.agent.trigger_node_modelrequestnode"))
 
         self._maybe_inject_iter_wrap(st, node)
+        self._maybe_enforce_wall_clock(st, node)
         if st.saw_final_response:
             st.post_final_requests += 1
             if st.post_final_requests > 1:
@@ -698,10 +723,17 @@ class LoopPhase(RunOnceHost):
                     capability_node_id=self.capability_node_id,
                 )
                 _contract = _fail_c if _any_fail else _ok_c
+                from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+
+                _delegate_question = (
+                    st.ev.raw_text.strip()
+                    if st.ev is not None and isinstance(st.ev.raw_text, str) and st.ev.raw_text.strip()
+                    else extract_message_body(st.last_user_question)
+                )
                 _delegate = _web_search_delegate_line(
                     create_by=self.create_by,
                     capability_node_id=self.capability_node_id,
-                    question=st.last_user_question,
+                    question=_delegate_question,
                     first_tool=st.tool_call_list[0] if st.tool_call_list else "",
                     already_nudged=st.web_search_delegate_nudged,
                     any_fail=_any_fail,

@@ -154,5 +154,6 @@
   "log.agent.wall_clock_soft_budget": "[GsCoreAIAgent] 壁時計のソフト予算を超過しました（{p0:.0f} 秒）。収束ヒントを注入します",
   "log.agent.write_token_usage_log": "[GsCoreAIAgent] トークン使用量ログの書き込みに失敗しました: {_le}",
   "log.agent.pydanticai_quota_exhausted": "[PydanticAI] モデルの利用上限に達しました。再試行せず終了します: {e}",
-  "log.agent.usage_limit_salvage_fail": "[GsCoreAIAgent] 成果物のまとめに失敗しました: {e}"
+  "log.agent.usage_limit_salvage_fail": "[GsCoreAIAgent] 成果物のまとめに失敗しました: {e}",
+  "log.agent.wall_clock_hard_stop": "[GsCoreAIAgent] 壁時計予算の上限に達しました（{p0} 秒）。強制収束します"
 }

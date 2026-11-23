@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Union, Literal, Sequence
+from contextvars import Token
 from dataclasses import field, dataclass
 
 from pydantic_ai.usage import UsageLimits
@@ -10,6 +11,7 @@ from pydantic_ai.messages import UserContent
 
 from gsuid_core.bot import Bot
 from gsuid_core.models import Event
+from gsuid_core.ai_core import wall_clock
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.rag.tools import ToolList
 from gsuid_core.ai_core.control.outbound_detectors import FirewallHit
@@ -125,6 +127,10 @@ class RunOnceState:
     # 时钟 / 限额
     limits: UsageLimits | None = None
     start_time: float = 0.0
+    wall_acc: wall_clock.Clock | None = None
+    wall_token: Token[wall_clock.Clock | None] | None = None
+    wall_nudge_request: int = 0
+    wall_timed_out: bool = False
     turn_id: str = ""
     # 用户回合：root 主人格生成并写入 contextvar；嵌套 run 继承。
     user_turn_id: str = ""

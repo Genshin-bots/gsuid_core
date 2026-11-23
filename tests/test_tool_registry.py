@@ -603,7 +603,7 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
             return f"已完成产出：{task[:30]}"
 
         async def fake_wake(task_row: AIAgentTask, raw: str) -> None:
-            wakes.append(f"{task_row.id}:{raw[:20]}")
+            wakes.append(f"{task_row.id}:{task_row.status}:{raw[:20]}")
 
         from gsuid_core.bot import Bot, _Bot
 
@@ -813,6 +813,7 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
         await kanban_executor.kick_root(root_fail.id)
         fail_row = await AIAgentTask.get_by_id(root_fail.id)
         assert fail_row is not None and fail_row.status == "failed"
+        assert wakes[-1].startswith(f"{root_fail.id}:failed:")
         assert await kanban.AIAgentArtifact.list_for_task(root_fail.id) == []
         fail_receipt = await kanban_executor.format_task_delivery_receipt(fail_row)
         assert "【子任务未完成】" in fail_receipt and "render_agent" not in fail_receipt
@@ -872,6 +873,25 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
             _node_primary_tools_all_failed(gen_node, (frozenset({"web_search_tool"}), frozenset({"web_fetch_tool"})))
             is False
         )
+
+        # 6) 节点硬超时：挂死能力代理会被 asyncio.wait_for 中断并标失败，不会无限悬挂数小时
+        async def _hang_cap(
+            profile_id: str,
+            task: str,
+            ev: Event | None = None,
+            **_kw: object,
+        ) -> str:
+            _ = (profile_id, task, ev)
+            await asyncio.sleep(10.0)
+            return "unreachable"
+
+        monkeypatch.setattr("gsuid_core.ai_core.capability_agents.runner.run_capability_agent", _hang_cap)
+        monkeypatch.setattr(kanban_executor, "_KANBAN_NODE_HARD_TIMEOUT_SEC", 0.05)
+        root_timeout = await _mk_leaf("测试硬超时熔断")
+        await kanban_executor.kick_root(root_timeout.id)
+        to_row = await AIAgentTask.get_by_id(root_timeout.id)
+        assert to_row is not None and to_row.status == "failed"
+        assert to_row.failure_reason is not None and "执行超时" in to_row.failure_reason
 
         await engine.dispose()
 
@@ -2498,3 +2518,142 @@ def test_compact_history_keeps_prefix_bytes_and_folds_tail() -> None:
     tail_ret = compacted[-2]
     assert isinstance(tail_ret, ModelRequest) and isinstance(tail_ret.parts[0], ToolReturnPart)
     assert isinstance(tail_ret.parts[0].content, str) and len(tail_ret.parts[0].content) < 500
+
+
+def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """墙钟门控、弱匹配防 URL/跨节点误触、产物超限最新优先与过期群聊回灌拦截。"""
+    from datetime import datetime, timedelta
+
+    from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, registry as node_reg
+    from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
+    from gsuid_core.ai_core.agent_run.support import wall_clock_budget_action
+    from gsuid_core.ai_core.planning.kanban_executor import (
+        _format_subtask_prompt,
+        _format_delivery_for_main_agent,
+        stale_interactive_group_minutes,
+        _wake_main_agent_for_delivery_now,
+    )
+
+    for budget, elapsed, reqs, nudged_at, expected in (
+        (None, 9999.0, 5, 0, "ok"),
+        (420.0, 419.0, 5, 0, "ok"),
+        (420.0, 425.0, 5, 0, "nudge"),
+        (420.0, 450.0, 6, 5, "ok"),
+        (420.0, 460.0, 7, 5, "hard_stop"),
+        (420.0, 605.0, 6, 5, "hard_stop"),
+    ):
+        assert (
+            wall_clock_budget_action(
+                wall_clock_budget=budget,
+                elapsed_sec=elapsed,
+                requests_started=reqs,
+                nudge_request=nudged_at,
+            )
+            == expected
+        )
+
+    fake_nodes = {
+        "alpha_agent": AgentNode(
+            node_id="alpha_agent",
+            display_name="指标分析代理",
+            when_to_use="分析单项指标（代号XAU）；写完整长文请用 alpha_report_agent。",
+            prompt="p",
+            match_keywords=["专项指标分析"],
+            tool_packs=[TASK_BASICS_PACK],
+        ),
+        "alpha_report_agent": AgentNode(
+            node_id="alpha_report_agent",
+            display_name="指标长文代理",
+            when_to_use="撰写完整专题长文。",
+            prompt="p",
+            match_keywords=["专题长文"],
+            tool_packs=[TASK_BASICS_PACK],
+        ),
+    }
+    monkeypatch.setattr(node_reg, "_NODES", fake_nodes)
+    assert node_reg.match_capability_node("测试提问 https://example.test/report/city/2026-10.html") == ""
+    assert node_reg.match_capability_node("聊聊 report 吧") == ""
+    assert node_reg.match_capability_node("帮我看下 XAU 走势") == "alpha_agent"
+    assert node_reg.match_capability_node("做一次专项指标分析") == "alpha_agent"
+
+    now = datetime(2026, 11, 23, 13, 30, 0)
+
+    def _mk_task(
+        tid: str,
+        *,
+        profile: str = "alpha_agent",
+        user_type: str = "group",
+        age: timedelta = timedelta(minutes=1),
+        recurring: str | None = None,
+    ) -> AIAgentTask:
+        return AIAgentTask(
+            id=tid,
+            root_task_id=tid,
+            goal="测试任务",
+            display_name="测试任务",
+            owner_user_id="100000001",
+            group_id="group_1" if user_type == "group" else None,
+            user_type=user_type,
+            agent_profile=profile,
+            recurring_trigger=recurring,
+            created_at=now - age,
+        )
+
+    many_arts = [
+        AIAgentArtifact(
+            id=f"res_probe_{i:02d}",
+            root_task_id="root_many",
+            task_id="root_many",
+            mime="image/png",
+            artifact_kind="log",
+            summary=f"probe {i}",
+            payload_inline="dummy",
+            created_at=now + timedelta(seconds=i),
+        )
+        for i in range(10)
+    ] + [
+        AIAgentArtifact(
+            id="res_final_fact",
+            root_task_id="root_many",
+            task_id="root_many",
+            mime="text/markdown",
+            artifact_kind="output",
+            summary="最终核实事实包",
+            payload_inline="最终结论正文",
+            created_at=now + timedelta(seconds=99),
+        )
+    ]
+    many_task = _mk_task("root_many")
+    formatted = _format_delivery_for_main_agent(many_task, "已完成最终事实包 res_final_fact", many_arts)
+    assert "res_final_fact" in formatted and "res_probe_00" not in formatted
+    assert "结论摘要: 已完成最终事实包 res_final_fact" in formatted
+
+    no_write_prompt = _format_subtask_prompt(many_task, many_task, [])
+    assert "无本地文件写入与 HTML 出图能力" in no_write_prompt
+    assert "唯一可写目录是框架绑定的 Artifact Workspace" not in no_write_prompt
+    assert 'artifact_put(file_path="workspace 内文件名"' in _format_subtask_prompt(
+        _mk_task("root_ren", profile="render_agent"), _mk_task("root_ren", profile="render_agent"), []
+    )
+
+    stale_group = _mk_task("task_stale_g", age=timedelta(hours=3, minutes=23))
+    assert stale_interactive_group_minutes(stale_group, now=now) >= 200
+    assert stale_interactive_group_minutes(_mk_task("task_fresh_g", age=timedelta(minutes=8)), now=now) == 0
+    assert (
+        stale_interactive_group_minutes(_mk_task("task_dm", user_type="direct", age=timedelta(hours=2)), now=now) == 0
+    )
+    assert (
+        stale_interactive_group_minutes(
+            _mk_task("task_rec", age=timedelta(hours=4), recurring="cron:0 9 * * *"), now=now
+        )
+        == 0
+    )
+
+    touched: list[str] = []
+    monkeypatch.setattr(
+        "gsuid_core.ai_core.planning.kanban_executor.format_task_delivery_receipt",
+        lambda *_a, **_kw: touched.append("called"),
+    )
+    asyncio.run(_wake_main_agent_for_delivery_now(stale_group, "延迟结果"))
+    assert touched == []

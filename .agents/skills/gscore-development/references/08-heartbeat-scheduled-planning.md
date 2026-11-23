@@ -184,6 +184,7 @@ current_task；引用类工具用自然语言句柄（`resolver.resolve_task_ref
 > 模型传入的 `user_id` 不能改收件人。回灌轮仍把 C 端 @ 钉在 `ev.user_id`。本帧已有主图则禁止再委派；
 > 同一条任务根在 180 秒内第 2 次回灌禁止再委派。同一发起人的另一条任务各自回灌，次数不共用。没有主会话的兜底通知不算回灌次数。群/频道排队**不受** `STALE_CHAT_REQUEST_TTL`（8s）丢弃：
 > 后到说话人只是在等共享 `_run_lock`，晚回优于静默；私聊同用户连发仍按 TTL 丢过期请求。
+> **超期与硬超时保护**：单个 Kanban 节点带 `asyncio.timeout(900s)` 硬上限（配合能力代理 `wall_clock_budget=420s` 软收敛 + 宽限硬截断）；一次性群聊交互子任务耗时超过 30 分钟时，`_wake_main_agent_for_delivery_now` 静默归档不突兀回灌（私聊 / 周期 / 多步任务树不受影响）。
 > **后台 kanban 定时 tick**（无主人格在场）从不登记 → 照常自动播报。句柄禁止写进给用户看的话
 > （配合 `send_chat_result._strip_resource_handles`，见 [§7.13](./07-tool-registry-and-agent.md)）。
 

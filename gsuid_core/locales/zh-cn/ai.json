@@ -696,5 +696,7 @@
   "log.ai.call_tool_dispatch": "[AI] call_tool 零缓存击穿分派执行: {name}",
   "log.ai.migrations_cross_group_isolation_done": "[AI] 跨群隐私隔离无损迁移完成（归档旧自我手账 {archived} 份）",
   "log.ai.migrations_isolation_marker_read_failed": "[Migrations] 跨群隔离水位线标记读取失败：{e}（按迁移未完成处理，旧数据不放行）",
-  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果"
+  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果",
+  "log.ai.kanban_node_hard_timeout": "[Kanban] 子任务节点硬超时终止 task={task} ({mins}min)",
+  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 交互式群聊子任务已过期，静默归档不回灌打扰 task={task} elapsed={mins}min"
 }

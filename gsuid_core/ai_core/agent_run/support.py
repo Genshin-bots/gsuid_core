@@ -607,6 +607,31 @@ def collect_run_thinking(segments: Sequence[str]) -> str:
     return "…[前略]" + body[-RUN_THINKING_BUDGET:]
 
 
+#: 墙钟软预算到期后留给模型收口的宽限上限（秒）与最多额外请求轮数。
+WALL_CLOCK_HARD_GRACE_SEC = 180.0
+WALL_CLOCK_POST_NUDGE_MAX_REQUESTS = 2
+
+
+def wall_clock_budget_action(
+    *,
+    wall_clock_budget: float | None,
+    elapsed_sec: float,
+    requests_started: int,
+    nudge_request: int,
+) -> Literal["ok", "nudge", "hard_stop"]:
+    """显式设置 wall_clock_budget (>0) 时的墙钟门控：到期先软收口，超宽限硬截断。"""
+    if wall_clock_budget is None or wall_clock_budget <= 0 or elapsed_sec < wall_clock_budget:
+        return "ok"
+    if nudge_request <= 0:
+        return "nudge"
+    if (
+        requests_started - nudge_request >= WALL_CLOCK_POST_NUDGE_MAX_REQUESTS
+        or elapsed_sec >= wall_clock_budget + WALL_CLOCK_HARD_GRACE_SEC
+    ):
+        return "hard_stop"
+    return "ok"
+
+
 def iter_wrap_due(
     *,
     requests_started: int,

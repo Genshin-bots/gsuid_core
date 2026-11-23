@@ -12,7 +12,7 @@ from pydantic_ai.messages import TextPart, ModelMessage, ModelResponse
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core import interaction_scaffold
+from gsuid_core.ai_core import wall_clock, interaction_scaffold
 from gsuid_core.ai_core.const import (
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
@@ -162,8 +162,11 @@ class PreparePhase(RunOnceHost):
         # 思考轮只看 create_by。max_iterations 参数不再改这一限。
         st.limits = UsageLimits(request_limit=request_limit_for(self.create_by))
 
-        # 记录开始时间用于延迟统计
+        # 记录开始时间用于延迟统计与墙钟预算
         st.start_time = time.time()
+        st.wall_acc, st.wall_token = wall_clock.install_clock()
+        st.wall_nudge_request = 0
+        st.wall_timed_out = False
 
         logger.info(i18n_t("log.agent.run_start_started"))
         # st.turn_id：本轮 Agent Run 的唯一标识（= agent_run_id），写入 ToolContext.extra

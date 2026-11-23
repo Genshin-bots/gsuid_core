@@ -23,6 +23,8 @@ import re
 import time
 import asyncio
 from typing import List, Tuple, Optional, Sequence
+from datetime import datetime
+from contextlib import suppress
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
@@ -50,6 +52,29 @@ from .runtime import (
 from .workspace import put_artifact, ensure_workspace
 
 _VALID_USER_TYPES = ("group", "direct", "channel", "sub_channel")
+
+_WORKSPACE_FILE_WRITE_TOOLS = frozenset(
+    {
+        "write_file_content",
+        "execute_shell_command",
+        "render_html_to_image",
+        "render_chart_spec",
+        "render_card",
+        "render_markdown_to_image",
+    }
+)
+
+
+def _node_tool_names(profile: Optional[str]) -> set[str]:
+    """解析能力节点声明的全部工具名（packs + 显式名单）。"""
+    if not profile:
+        return set()
+    from gsuid_core.ai_core.agent_node import get_node, resolve_pack_tool_names
+
+    node = get_node(profile)
+    if node is None:
+        return set()
+    return set(resolve_pack_tool_names(node.tool_packs)) | set(node.tool_names)
 
 
 _RELAY_META_LINE_RE = re.compile(rf"(?im)^.*(?:artifact|{INTERNAL_ARTIFACT_TOKEN_PATTERN}|主人格|句柄|Kanban).*$")
@@ -105,15 +130,7 @@ def _get_bot(task: AIAgentTask, ev: Event) -> Optional[Bot]:
 def _persona_resource_hint(profile: Optional[str], persona_name: Optional[str]) -> str:
     """委派人人格资源提示：仅当画像持有 get_self_persona_info 时注入，
     避免给无该工具的节点留悬空指令；是否拉取由执行体按任务语义判断。"""
-    if not profile or not persona_name:
-        return ""
-    from gsuid_core.ai_core.agent_node import get_node, resolve_pack_tool_names
-
-    node = get_node(profile)
-    if node is None:
-        return ""
-    names = set(resolve_pack_tool_names(node.tool_packs)) | set(node.tool_names)
-    if "get_self_persona_info" not in names:
+    if not profile or not persona_name or "get_self_persona_info" not in _node_tool_names(profile):
         return ""
     return (
         f"【委派人人格】{persona_name}\n"
@@ -187,23 +204,29 @@ def _format_subtask_prompt(
             parts.append(f"- [{art.id}] kind={art.artifact_kind} from={art.from_profile or '-'} | {art.summary[:120]}")
             if preview:
                 parts.append(f"  preview: {preview}")
+    can_write_files = child.agent_profile == "render_agent" or bool(
+        _node_tool_names(child.agent_profile) & _WORKSPACE_FILE_WRITE_TOOLS
+    )
+    if can_write_files:
+        file_rule = (
+            "\n- 真实文件落地产物（PNG / PDF / CSV / 二进制等）必须用"
+            ' `artifact_put(file_path="workspace 内文件名", summary=...)` 登记；'
+            '**不要**用 `artifact_put(payload=\'{"file": "..."}\')` 这种 JSON 元数据冒充文件——'
+            "只有真实文件 artifact 才能被主人格经 `send_message_by_ai` 作为图片/文件发出"
+            "（图片用 image_ids，文件用 file_ids，单文件 ≤10MB）。"
+        )
+    else:
+        file_rule = (
+            "\n- 本节点无本地文件写入与 HTML 出图能力：**禁止**尝试生成 PNG/图片、"
+            "探测本地目录路径或借网页抓取调外部截图接口；即使任务描述提及排版或信息图，"
+            "也只负责采集/计算并用 `artifact_put(payload=...)` 交付纯文本/Markdown 事实包，出图由上游另派。"
+        )
     parts.append(
-        "【交付要求】"
-        "\n- 真实文件落地产物（PNG / PDF / CSV / 二进制等）必须用"
-        ' `artifact_put(file_path="workspace 内文件名", summary=...)` 登记；'
-        '**不要**用 `artifact_put(payload=\'{"file": "..."}\')` 这种 JSON 元数据冒充文件——'
-        "只有真实文件 artifact 才能被主人格经 `send_message_by_ai` 作为图片/文件发出"
-        "（图片用 image_ids，文件用 file_ids，单文件 ≤10MB）。"
-        "\n- 媒体生成产物（调用工具直接返回的 img_ / aud_ / vid_ 资源 ID）："
+        "【交付要求】" + file_rule + "\n- 媒体生成产物（调用工具直接返回的 img_ / aud_ / vid_ 资源 ID）："
         "内存已登记就绪，直接在返回值结论中附带该 ID（如 img_xxxxxxxx），"
         "由上游直接发送；无需也不强制用 artifact_put 登记文件。"
         '\n- 纯文本结论 / 报告正文：`artifact_put(payload="...", summary="...")`'
-        + (
-            "（即使任务描述提及排版或信息图，本节点也只负责采集/计算并交文本事实包，"
-            "严禁编造假图片文件路径，视觉渲染由上游另派）。"
-            if child.agent_profile != "render_agent"
-            else "。"
-        )
+        + ("（严禁编造假图片文件路径，视觉渲染由上游另派）。" if child.agent_profile != "render_agent" else "。")
         + "\n- 持久化业务数据（签到名单、流水、任务条目等）：用 `record_put` / "
         "`record_append` / `record_update` 写入框架统一的 `record:<集合名>` 集合，"
         "**不要**只塞进 state_set 大 JSON 块或自己写文件——其它子任务读不到。"
@@ -212,9 +235,11 @@ def _format_subtask_prompt(
         "\n- 若本轮确实没有值得向主人播报的新进展（如决策全为观望/无变化），请在返回"
         f"结论开头单独一行写 {KANBAN_NO_BROADCAST_MARK}——任务照常完成归档，但不推群打扰。"
     )
-    parts.append(
-        "【工作区】你的唯一可写目录是框架绑定的 Artifact Workspace，禁止写入项目根目录、系统临时目录或其它任务目录。"
-    )
+    if can_write_files:
+        parts.append(
+            "【工作区】你的唯一可写目录是框架绑定的 Artifact Workspace，"
+            "禁止写入项目根目录、系统临时目录或其它任务目录。"
+        )
     return "\n".join(parts)
 
 
@@ -365,6 +390,7 @@ _DEFERRED_MAIN_DELIVERY_ROOTS: set[str] = set()
 _ACTIVE_DELIVERY_WAKES: set[str] = set()
 _RECENT_DELIVERY_WAKE_DONE: dict[str, float] = {}
 _RECENT_WAKE_DEDUP_SEC = 30.0
+_KANBAN_NODE_HARD_TIMEOUT_SEC = 900.0
 _RUNNING_NODE_TASKS: dict[str, asyncio.Task[str]] = {}
 _ROOT_RUNNING_NODES: dict[str, set[str]] = {}
 
@@ -466,6 +492,9 @@ def _consume_deferred_main_delivery(root_id: str) -> bool:
     return False
 
 
+_DELIVERY_CARD_LIMIT = 8
+
+
 def _format_delivery_for_main_agent(
     task: AIAgentTask,
     raw_result: str,
@@ -491,9 +520,23 @@ def _format_delivery_for_main_agent(
         return "\n".join(parts)
 
     selected_arts, primary_art = select_delivery_artifacts(task, arts)
+    truncated_cards = len(selected_arts) > _DELIVERY_CARD_LIMIT
+    if truncated_cards:
+        # 超限时优先保留主产物与最新非日志产物，防止早期探针挤掉终稿
+        ordered = sorted(
+            enumerate(selected_arts),
+            key=lambda pair: (
+                0 if (primary_art is not None and pair[1].id == primary_art.id) else 1,
+                1 if pair[1].artifact_kind == "log" else 0,
+                -pair[0],
+            ),
+        )
+        picked_arts = [a for _, a in ordered[:_DELIVERY_CARD_LIMIT]]
+    else:
+        picked_arts = selected_arts
     cards: List[str] = []
     seen_ids: set[str] = set()
-    for a in selected_arts[:8]:
+    for a in picked_arts:
         seen_ids.add(a.id)
         mime = a.mime or "text/plain"
         is_img = bool(a.payload_path) and is_raster_image_mime(mime)
@@ -539,6 +582,8 @@ def _format_delivery_for_main_agent(
         parts.extend(cards)
         if primary and primary_is_image:
             parts.append(f"💡 主图：`{primary}` → send_message_by_ai(image_id=)。")
+        if truncated_cards and raw_result.strip():
+            parts.append(f"结论摘要: {raw_result.strip()[:400]}")
     elif raw_result.strip():
         parts.append(f"结论摘要: {raw_result.strip()[:400]}")
     if direct_media:
@@ -572,7 +617,22 @@ _delivery_flush_tasks: dict[str, asyncio.Task] = {}
 _DELIVERY_COALESCE_SEC = 0.45
 _DELIVERY_WAKE_WINDOW_SEC = 180.0
 _DELIVERY_WAKE_MAX = 4
+# 交互式一次性群聊任务超过此时长后静默归档，避免数小时后突兀打扰群聊
+_STALE_INTERACTIVE_GROUP_DELIVERY_SEC = 1800.0
 _delivery_wake_hits: dict[str, list[float]] = {}
+
+
+def stale_interactive_group_minutes(task: AIAgentTask, *, now: Optional[datetime] = None) -> int:
+    """一次性群聊交互子任务超时则返回已耗时分钟数，否则返回 0。"""
+    if task.parent_task_id or task.recurring_trigger or task.template_root_id or task.template_subtask_id:
+        return 0
+    if (task.user_type if task.user_type in _VALID_USER_TYPES else "direct") == "direct":
+        return 0
+    created = task.created_at
+    if not isinstance(created, datetime):
+        return 0
+    elapsed = ((now or datetime.now(tz=created.tzinfo)) - created).total_seconds()
+    return max(1, int(elapsed // 60)) if elapsed >= _STALE_INTERACTIVE_GROUP_DELIVERY_SEC else 0
 
 
 def _delivery_wake_key(session_id: str, root_id: str) -> str:
@@ -662,6 +722,10 @@ async def _wake_main_agent_for_delivery(task: AIAgentTask, raw_result: str) -> N
 
 async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) -> None:
     """实际唤醒主人格（合并后单次）。"""
+    stale_mins = stale_interactive_group_minutes(task)
+    if stale_mins > 0:
+        logger.warning(t("log.ai.kanban_stale_delivery_suppressed", task=task.id[:8], mins=stale_mins))
+        return
     is_failed = task.status == "failed"
     from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
@@ -866,7 +930,32 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
                 )
             )
             _RUNNING_NODE_TASKS[fresh.id] = cap_task
-            raw_result = await cap_task
+            async with asyncio.timeout(_KANBAN_NODE_HARD_TIMEOUT_SEC) as _hard_to:
+                raw_result = await cap_task
+        except TimeoutError as e:
+            if _hard_to.expired():
+                if cap_task is not None:
+                    if not cap_task.done():
+                        cap_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await cap_task
+                mins = max(1, int(_KANBAN_NODE_HARD_TIMEOUT_SEC // 60))
+                reason = f"执行超时（超过 {mins} 分钟）"
+                logger.warning(t("log.ai.kanban_node_hard_timeout", task=fresh.id[:8], mins=mins))
+            else:
+                logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
+                reason = f"{type(e).__name__}: {e}"
+            await kanban.mark_subtask_failed(fresh, reason)
+            fresh.status = "failed"
+            fresh.failure_reason = reason
+            await _finish_capability_delivery(
+                root=root,
+                child=fresh,
+                raw_result=reason,
+                bot=bot,
+                is_failure=True,
+            )
+            return
         except asyncio.CancelledError:
             cur_node = await AIAgentTask.get_by_id(fresh.id)
             cur_root = await AIAgentTask.get_by_id(root.id) if root.id != fresh.id else cur_node
@@ -877,11 +966,14 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
             raise
         except Exception as e:
             logger.exception(t("log.ai.kanban_subtask_raised_fail", e=e))
-            await kanban.mark_subtask_failed(fresh, f"{type(e).__name__}: {e}")
+            err_reason = f"{type(e).__name__}: {e}"
+            await kanban.mark_subtask_failed(fresh, err_reason)
+            fresh.status = "failed"
+            fresh.failure_reason = err_reason
             await _finish_capability_delivery(
                 root=root,
                 child=fresh,
-                raw_result=f"{type(e).__name__}: {e}",
+                raw_result=err_reason,
                 bot=bot,
                 is_failure=True,
             )

@@ -696,5 +696,7 @@
   "log.ai.call_tool_dispatch": "[AI] call_tool zero-cache-break dispatch: {name}",
   "log.ai.migrations_cross_group_isolation_done": "[AI] Cross-group isolation lossless migration completed (archived {archived} legacy self journals)",
   "log.ai.migrations_isolation_marker_read_failed": "[Migrations] Failed to read cross-group isolation watermark marker: {e} (treating as unmigrated)",
-  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results"
+  "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results",
+  "log.ai.kanban_node_hard_timeout": "[Kanban] Subtask node hit hard timeout task={task} ({mins}min)",
+  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] Stale interactive group task archived silently without waking chat task={task} elapsed={mins}min"
 }

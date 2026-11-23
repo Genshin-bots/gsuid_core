@@ -293,8 +293,7 @@ class GsCoreAIAgent(RunOnceMixin):
         )
         # 思考轮由 request_limit_for(create_by) 决定，此参数不再生效。
         self.max_iterations = max_iterations
-        # C-4 墙钟软预算(秒)覆写：None=沿用全局 scaffold_wall_clock_budget；<=0=本 Agent 关闭软预算。
-        # 长流程入口（编排 / 多轮工具 + 等人确认）必须放宽，否则永远跑不到终态。
+        # 墙钟预算(秒)：None 或 <=0 表示不启用；显式 >0 时到期先软收敛，超宽限硬截断。
         self.wall_clock_budget = wall_clock_budget
         # 轨迹观察者：让宿主前端看见模型推理与工具调用，不必去翻 session log。
         # 契约见 _emit_trace。
@@ -2076,9 +2075,8 @@ def create_agent(
         dynamic_tools: dynamic 能力族开关；None 沿用旧门（agentic 且未传 tools 才装配）
         scope_key: 记忆 scope（group:xxx / user_global:xxx 等）。仅在未显式给 session_id 的
             后台调用时生效——把"针对哪个群/用户"编进自动派生的 auto_ session_id，供 webconsole 展示指向
-        wall_clock_budget: C-4 墙钟软预算(秒)覆写。None=沿用全局 scaffold_wall_clock_budget(默认 45s，
-            按聊天回复标定)；<=0=关闭软预算。长流程编排入口（一轮几十次工具调用、还要等人确认）
-            必须显式放宽，否则会在半途被"停止新工具轮"提示逼停
+        wall_clock_budget: 墙钟预算(秒)。None 或 <=0 表示不启用；显式 >0（如能力代理 420s、
+            自主行动 180s）时，到期注入软收敛提示，超宽限（+2 轮或 +180s）硬截断走兜底收口
         on_trace: 轨迹观察者 `on_trace(kind, text)`，kind ∈ TraceKind
             ``thinking`` / ``thinking_delta`` / ``tool`` / ``tool_result``。
             ``tool`` 的 text 为 ``"<工具名>|<参数JSON>"``。旁路钩子，异常不影响 run

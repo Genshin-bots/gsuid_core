@@ -646,10 +646,10 @@ v9 评测驱动的一批防线（编码注入中和 / 假完成闸 / 防火墙�
   **寻址记号唯一定义在 `control/lines.py` 的 `AT_OTHER_MARKER`**。
   `interaction_scaffold` 再导出同一对象；utils / history_format 只 import，不抄字面量。
   再抄一份，C-3 寻址门对不上，静默失效（`test_at_marker_single_source`）。
-- **C-4 墙钟软预算**（`gs_agent` ModelRequestNode 前）：交互式 run 墙钟超预算后，请求前注入一次
-  "停止发起新工具轮、用已有信息收敛作答"，治多步任务的延迟长尾。与 token 预算正交。
-  nudge 挂在 run 中途的后续 ModelRequest 上，**由 `_relean_user_turn(strip_hint_texts=…)` 从
-  持久历史剥离**，不跨轮累积。
+- **墙钟预算门控**（`agent_run/loop.py` + `wall_clock.py`）：仅对显式传入 `wall_clock_budget > 0`
+  的 run（如能力代理 `420s`、自主行动 `180s`、HTTP Agent）生效，主聊默认 `None` 不启用。墙钟超预算
+  （扣除 `pause_wall_clock()` 等人时间）后先注入一次 `WALL_CLOCK_WRAP_NUDGE`（入史前剥离）；
+  宽限超过 `+2` 轮请求或 `+180s` 则硬截断抛 `UsageLimitExceeded` 走兜底收口，防止失控子代理烧空预算。
 
 **阈值按评测分布标定为常量**（`FOLLOWUP_MAXLEN_DEFAULT=24` / `HISTORY_MERGE_WINDOW_S=120.0`），
 后续如按 `[Scaffold]` 日志生产分布调整，请统一修改 `ai_core/const.py`。

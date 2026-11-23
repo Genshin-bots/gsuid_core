@@ -20,7 +20,7 @@ from pydantic_ai.settings import ModelSettings
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core import output_gate
+from gsuid_core.ai_core import wall_clock, output_gate
 from gsuid_core.ai_core.const import (
     _STICKY_FAMILY_TURNS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
@@ -978,12 +978,16 @@ class SettlePhase(RunOnceHost):
     ) -> Any:
         """UsageLimitExceeded 专属兜底总结。"""
         # 达到限制后的处理逻辑
-        logger.warning(i18n_t("log.agent.pydanticai_reached_maximum_thinking", p0=_require_limits(st).request_limit))
-        statistics_manager.record_error(
-            error_type="usage_limit",
-            message=f"达到最高思考轮数限制 {_require_limits(st).request_limit}",
-        )
-        self._session_logger.log_error("usage_limit", f"达到最高思考轮数限制 {_require_limits(st).request_limit}")
+        if st.wall_timed_out:
+            budget_s = int(self.wall_clock_budget or 0)
+            logger.warning(i18n_t("log.agent.wall_clock_hard_stop", p0=budget_s))
+            err_type, err_msg = "wall_clock_timeout", f"达到墙钟预算硬上限 {budget_s}s"
+        else:
+            req_lim = _require_limits(st).request_limit
+            logger.warning(i18n_t("log.agent.pydanticai_reached_maximum_thinking", p0=req_lim))
+            err_type, err_msg = "usage_limit", f"达到最高思考轮数限制 {req_lim}"
+        statistics_manager.record_error(error_type=err_type, message=err_msg)
+        self._session_logger.log_error(err_type, err_msg)
 
         salvaged = None
         if st.return_mode == "return":
@@ -1215,6 +1219,10 @@ class SettlePhase(RunOnceHost):
         # 还原预算 scope contextvar，避免本次绑定泄漏到上层调用栈。
         if st.budget_scope_token is not None:
             _current_budget_scope.reset(st.budget_scope_token)
+        # 还原墙钟上下文（嵌套 run 不破坏父 run 时钟）
+        if st.wall_token is not None:
+            wall_clock.uninstall_clock(st.wall_token)
+            st.wall_token = None
         # 仅 root 主人格绑定了 user_turn contextvar；嵌套 run 不 reset，避免提前清空父树。
         if st.user_turn_token is not None:
             reset_user_turn_id(st.user_turn_token)

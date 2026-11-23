@@ -267,6 +267,18 @@ def owning_nodes_of_tools(tool_names: List[str]) -> Dict[str, List[str]]:
     return owners
 
 
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_ASCII_TOKEN_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
+def _weak_token_hits(token: str, weak_blob: str) -> bool:
+    if _ASCII_TOKEN_RE.fullmatch(token):
+        if len(token) < 3:
+            return False
+        return re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", weak_blob) is not None
+    return token in weak_blob
+
+
 def match_capability_node(hint: str) -> str:
     """自然语言 hint → node_id；无命中返回空串（不回退默认画像）。
 
@@ -281,6 +293,9 @@ def match_capability_node(hint: str) -> str:
         return h
     if get_persona_node(h) is not None:
         return h
+    h_no_url = _URL_RE.sub(" ", h)
+    weak_tokens = [tok for tok in re.split(r"[\s,，、；;。！？!?/|]+", h_no_url) if len(tok) >= 2]
+    other_ids = [nid.lower() for nid in _NODES if len(nid) >= 4]
     best_id = ""
     best_score = 0
     for node in _NODES.values():
@@ -288,18 +303,21 @@ def match_capability_node(hint: str) -> str:
             continue
         for kw in node.match_keywords:
             k = (kw or "").strip().lower()
-            if not k or k not in h:
+            if not k or k not in h_no_url:
                 continue
             score = len(k)
             if score > best_score:
                 best_score = score
                 best_id = node.node_id
-        # 弱匹配：when_to_use / display_name / node_id 出现在 hint 中（低于关键词分）
-        weak_blob = f"{node.node_id} {node.display_name} {node.when_to_use}".lower()
-        for token in re.split(r"[\s,，、；;。！？!?/|]+", h):
-            if len(token) < 2:
-                continue
-            if token in weak_blob:
+        # 弱匹配：剥离 URL 与 when_to_use 中对其他 node_id 的交叉引用，ASCII 词要求词边界
+        when_text = node.when_to_use.lower()
+        self_id = node.node_id.lower()
+        for other_id in other_ids:
+            if other_id != self_id and other_id in when_text:
+                when_text = when_text.replace(other_id, " ")
+        weak_blob = f"{self_id} {node.display_name.lower()} {when_text}"
+        for token in weak_tokens:
+            if _weak_token_hits(token, weak_blob):
                 score = min(len(token), 8)
                 if score > best_score:
                     best_score = score
