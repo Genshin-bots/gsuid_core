@@ -37,13 +37,13 @@ from gsuid_core.ai_core.memory.database.models import (
     AIMemEntity,
     AIMemThread,
     AIMemEpisode,
-    AIMemPreference,
 )
 from gsuid_core.ai_core.memory.database.clear_ops import (
     clear_group_memories,
     clear_user_global_memories,
     clear_memories_for_scope_async,
 )
+from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
 from ._api_tags import AI_MEMORY
 

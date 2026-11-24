@@ -181,7 +181,8 @@ def renew_dm_lease(
         now = time.time()
         base = leases[matching_keys[0]]
 
-        from gsuid_core.ai_core.persona.config import persona_config_manager, persona_covers_session
+        from gsuid_core.ai_core.persona.config import persona_config_manager
+        from gsuid_core.ai_core.persona.config_rules import persona_covers_session
 
         active_configs = persona_config_manager.get_all_configs()
         if active_configs and (
@@ -245,7 +246,8 @@ def maybe_switch_dm_lease(user_id: str, bot_id: str, text: str, current_persona:
     body = _LEADING_STRIP_RE.sub("", text or "")
     if not body:
         return None
-    from gsuid_core.ai_core.persona.config import persona_config_manager, persona_covers_session
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config_rules import persona_covers_session
 
     for name in sorted(persona_config_manager.get_all_configs(), key=lambda n: (-len(n), n)):
         if name == current_persona or len(name) < _PERSONA_NAME_MIN_LEN:

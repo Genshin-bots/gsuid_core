@@ -18,15 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.utils import extract_json_from_text
+from gsuid_core.utils.database.write_gate import sqlite_write_gate
 from gsuid_core.ai_core.configs.task_kinds import TASK_MEMORY_ALGEBRA
 from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.memory.database.models import (
     AIMemEdge,
     AIMemEntity,
     AIMemThread,
-    AIMemPreference,
 )
-from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.observer import ObservationRecord
@@ -459,7 +459,7 @@ async def extract_cluster(
     latest_valid_at = datetime.now(timezone.utc)
     is_group_scope = scope_key.startswith("group:")
 
-    async with db_write_guard(), async_maker() as session:
+    async with sqlite_write_gate, async_maker() as session:
         thread_id = await _resolve_thread(session, scope_key, thread_list, thread_ref, topic_title)
         cluster_recs = [records[i] for i in lines if 0 <= i < len(records)]
         window_speaker_ids = {

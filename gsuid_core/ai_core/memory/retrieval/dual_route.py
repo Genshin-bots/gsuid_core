@@ -132,7 +132,7 @@ async def _fetch_user_preferences(
     preference_contexts: Optional[list[str]],
     watermark_ts: float,
 ) -> list[PreferencePrompt]:
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     if not (memory_config.enable_preference_memory and pref_scope_keys and inject_preferences):
         return []

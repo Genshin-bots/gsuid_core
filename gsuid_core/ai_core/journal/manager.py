@@ -13,10 +13,7 @@ from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.journal import storage
 from gsuid_core.ai_core.journal.dream import ArchiveRecord, read_journal_archive_sync
-from gsuid_core.ai_core.persona.config import (
-    is_persona_enabled,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.journal.storage import (
     _CACHE_LOCK,
     _STATE_LOCK,
@@ -69,6 +66,7 @@ from gsuid_core.ai_core.journal.sanitizer import (
     is_rejected_journal_body,
     sanitize_journal_summary,
 )
+from gsuid_core.ai_core.persona.config_rules import is_persona_enabled
 
 
 def get_journal_path(persona_name: str, group_id: str = "") -> Path:

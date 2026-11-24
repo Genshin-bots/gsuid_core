@@ -61,12 +61,12 @@ async def _consolidate() -> int:
     from sqlmodel import col, select
     from sqlalchemy import update as _update
 
+    from gsuid_core.utils.database.write_gate import sqlite_write_gate
     from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
     count = 0
-    async with db_write_guard(), async_maker() as session:
+    async with sqlite_write_gate, async_maker() as session:
         result = await session.execute(
             select(AIMemEdge.id).where(
                 col(AIMemEdge.mention_count) >= PROTECT_MENTION_COUNT,
@@ -297,7 +297,7 @@ async def _maintain_preferences() -> int:
     """程序性/偏好记忆生命周期（默认开）：每个 (scope, user, target_context) 仅保留 salience
     最高的 N 条活跃规则，其余**非纠错**规则软停用（纠错类受保护、衰减更慢）。纯规则、零 LLM。"""
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     if not memory_config.enable_preference_memory:
         return 0

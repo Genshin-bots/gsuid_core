@@ -348,11 +348,11 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
         - user_ai_range: 全局用户级别的AI启用范围（白名单/黑名单）
     """
     try:
-        from gsuid_core.ai_core.persona.config import (
+        from gsuid_core.ai_core.persona.config import persona_config_manager
+        from gsuid_core.ai_core.persona.config_rules import (
             read_target_list,
             derive_legacy_scope,
             read_channel_scopes,
-            persona_config_manager,
         )
 
         all_personas = persona_config_manager.get_all_configs()

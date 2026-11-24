@@ -15,14 +15,7 @@ from gsuid_core.ai_core.autonomy.gates import (
     autonomy_is_due,
     should_skip_model,
 )
-from gsuid_core.ai_core.persona.config import (
-    AUTONOMY_MODE,
-    is_persona_enabled,
-    normalize_ai_modes,
-    read_autonomy_runtime,
-    is_within_active_hours,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.autonomy.models import (
     FactPack,
     DriveKind,
@@ -47,6 +40,13 @@ from gsuid_core.ai_core.autonomy.verifier import (
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
+from gsuid_core.ai_core.persona.config_rules import (
+    AUTONOMY_MODE,
+    is_persona_enabled,
+    normalize_ai_modes,
+    read_autonomy_runtime,
+    is_within_active_hours,
+)
 from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 _JOB_ID = "ai_autonomy_tick"
@@ -185,7 +185,6 @@ class AutonomyScheduler:
         )
         parsed = parse_footer(report.text)
         facts = extract_facts(report.steps)
-        from gsuid_core.ai_core.persona.config import read_drive_traits
         from gsuid_core.ai_core.persona.presence import record_offscreen
         from gsuid_core.ai_core.autonomy.verifier import take_is_grounded
         from gsuid_core.ai_core.autonomy.micro_arc import (
@@ -198,6 +197,7 @@ class AutonomyScheduler:
         )
         from gsuid_core.ai_core.persona.homeostasis import touch_topic, load_homeostasis, save_homeostasis
         from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
+        from gsuid_core.ai_core.persona.config_rules import read_drive_traits
 
         decision = route_delivery(
             _plan(

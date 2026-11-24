@@ -12,10 +12,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import field, asdict, dataclass
 
-from gsuid_core.ai_core.persona.config import parse_active_window
+from gsuid_core.ai_core.persona.config_rules import parse_active_window
 
 if TYPE_CHECKING:
-    from gsuid_core.ai_core.persona.config import DriveTraits
+    from gsuid_core.ai_core.persona.config_rules import DriveTraits
 
 _PERSONA_SCOPE_PREFIX = "persona:"
 _HOMEOSTASIS_KEY = "homeostasis"

@@ -605,7 +605,7 @@ async def load_speaker_preference_tail(
     model = await get_self_model(bot_id, persona_name)
     scoped: list[tuple[str, str, bool, Optional[datetime], str]] = []
     if memory_config.enable_preference_memory:
-        from gsuid_core.ai_core.memory.database.models import AIMemPreference
+        from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
         scope = make_scope_key(ScopeType.USER_GLOBAL, speaker)
         cap = int(memory_config.preference_max_inject)

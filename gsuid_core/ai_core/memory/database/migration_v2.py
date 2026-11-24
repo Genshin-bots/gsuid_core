@@ -169,7 +169,7 @@ async def _clear_legacy_qdrant() -> None:
 async def ensure_memory_schema_v2() -> None:
     """幂等入口：非 v2 执行净室迁移，v2 确保 FTS 虚表与查询索引存在。"""
     from gsuid_core.ai_core.memory.database.fts import ensure_fts_table
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     if _read_version() >= _SCHEMA_VERSION:
         async with async_maker() as session:

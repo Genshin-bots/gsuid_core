@@ -9,14 +9,7 @@ from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.persona.mood import get_all_mood_states
 from gsuid_core.ai_core.autonomy.binds import collect_bound_uids
 from gsuid_core.ai_core.autonomy.codec import load_steps, load_str_list
-from gsuid_core.ai_core.persona.config import (
-    read_target_list,
-    read_drive_traits,
-    read_channel_scopes,
-    read_autonomy_runtime,
-    persona_config_manager,
-    persona_covers_session,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.autonomy.models import SpokenLine, GroupObservation, ObservationDigest
 from gsuid_core.ai_core.autonomy.select import (
     GROUP_CAP,
@@ -31,6 +24,13 @@ from gsuid_core.ai_core.autonomy.select import (
 from gsuid_core.ai_core.database.models import UserFavorability, AIAutonomyActivity
 from gsuid_core.message_history.manager import get_history_manager
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+from gsuid_core.ai_core.persona.config_rules import (
+    read_target_list,
+    read_drive_traits,
+    read_channel_scopes,
+    read_autonomy_runtime,
+    persona_covers_session,
+)
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 
@@ -40,7 +40,7 @@ async def _user_preferences(user_ids: list[str]) -> dict[str, list[str]]:
         return {}
     try:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
-        from gsuid_core.ai_core.memory.database.models import AIMemPreference
+        from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
         result: dict[str, list[str]] = {}
         for uid in user_ids:

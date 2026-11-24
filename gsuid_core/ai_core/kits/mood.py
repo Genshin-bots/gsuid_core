@@ -84,8 +84,9 @@ class MoodKit(AgentKit):
         text = ctx.result_text
         if not text or is_silence_marker(text) or is_agent_error_text(text):
             return
-        from gsuid_core.ai_core.persona.config import read_drive_traits, persona_config_manager
+        from gsuid_core.ai_core.persona.config import persona_config_manager
         from gsuid_core.ai_core.persona.homeostasis import apply_turn_shock, load_homeostasis, save_homeostasis
+        from gsuid_core.ai_core.persona.config_rules import read_drive_traits
 
         traits = read_drive_traits(persona_config_manager.get_config(ctx.persona_name))
         state = await load_homeostasis(ctx.persona_name)

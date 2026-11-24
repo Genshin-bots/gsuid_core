@@ -160,7 +160,8 @@ def history_has_human_after(target_key: str, ts: float) -> bool:
 async def refresh_persona_state(persona_name: str, now: float) -> tuple[PersonaHomeostasis, PresenceRibbon]:
     """读两边状态 → 时间推进 → 结算 echo（无人接的喂冷肩 + 冷淡情绪）→ 存回。"""
     from gsuid_core.ai_core.persona.mood import update_mood
-    from gsuid_core.ai_core.persona.config import read_drive_traits, read_autonomy_runtime, persona_config_manager
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config_rules import read_drive_traits, read_autonomy_runtime
 
     config = persona_config_manager.get_config(persona_name)
     traits = read_drive_traits(config)

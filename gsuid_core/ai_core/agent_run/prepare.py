@@ -20,7 +20,6 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.agent_errors import notify_master_of_budget_block
 from gsuid_core.ai_core.control.lines import UNMET_TOOL_REMINDER
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
-from gsuid_core.ai_core.persona.config import ASIDE_MODE
 from gsuid_core.ai_core.agent_run.state import (
     BUDGET_GATE_PASS,
     RunOnceState,
@@ -42,6 +41,7 @@ from gsuid_core.ai_core.agent_run.budget_ctx import (
     set_user_turn_id,
     _current_budget_scope,
 )
+from gsuid_core.ai_core.persona.config_rules import ASIDE_MODE
 from gsuid_core.ai_core.agent_run.speech_policy import resolve_speech_policy
 from gsuid_core.ai_core.control.outbound_detectors import (
     spoken_user_body_len,

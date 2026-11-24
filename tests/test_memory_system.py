@@ -173,7 +173,8 @@ def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(tmp_path: Pat
     from gsuid_core.ai_core.database.models import UserFavorability
     from gsuid_core.ai_core.memory.database import migration_v2
     from gsuid_core.ai_core.memory.database.fts import match_episode_ids
-    from gsuid_core.ai_core.memory.database.models import AIMemEpisode, AIMemPreference
+    from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     test_engine = _sqlite_engine(tmp_path / "memory_v2.db")
     maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
@@ -1635,7 +1636,7 @@ def test_note_scope_header_roundtrip(tmp_path: Path) -> None:
 def test_preference_self_watermark_pushed_to_sql(tmp_path: Path, monkeypatch) -> None:
     """self:* 水位线在 SQL 层先过滤再 LIMIT：旧规则不占限额，user_global 不受影响。"""
     import gsuid_core.utils.database.base_models as base_models
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     test_engine = _sqlite_engine(tmp_path / "pref_wm.db")
     maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)

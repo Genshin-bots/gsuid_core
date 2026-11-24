@@ -51,11 +51,11 @@ def _project(persona_name: str) -> Optional[AgentNode]:
     if not md_path.exists():
         return None
 
-    from gsuid_core.ai_core.persona.config import (
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config_rules import (
         read_target_list,
         derive_legacy_scope,
         read_channel_scopes,
-        persona_config_manager,
     )
 
     cfg = persona_config_manager.get_config(persona_name)

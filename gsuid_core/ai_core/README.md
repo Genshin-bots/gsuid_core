@@ -202,7 +202,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `ingestion/` | `window_router.py`（Pass 1 话题分诊）、`algebra.py`（Pass 2 四态代数）、`worker.py`（窗口编排）。 |
 | `retrieval/` | 五模态意图检索（Dense + FTS5 + Thread 时间轴）。 |
 | `vector/` | 四个 Qdrant 记忆集合（episodes / entities / edges / threads）。 |
-| `database/` | schema_v2 四表 + 偏好 ORM、FTS5、净室迁移。 |
+| `database/` | schema_v2 四表（`models.py`）+ 偏好表（`preference.py`）、FTS5、净室迁移。 |
 | `prompts/` | 两阶段摄入 prompt（`extraction.py`）。 |
 | `lifecycle/` | 线程补挂、衰减、遗忘与容量维护。 |
 | `scope.py` | `ScopeType.GROUP / USER / GLOBAL` + `make_scope_key`，所有记忆都按 scope_key 隔离。 |
@@ -231,7 +231,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `prompts.py` | `SYSTEM_CONSTRAINTS` / `TOOL_ORCHESTRATION_*` / 人设模板；含**对外单一表面**与**长任务/在途**纪律。 |
 | `resource.py` | `load_persona / extract_compact_persona`（Heartbeat 决策阶段用压缩版 persona 节省 token）。 |
 | `mood.py` | 情绪状态机（per `mood_key` 隔离）。 |
-| `config.py` | `persona_config_manager`：每个 persona 一份 config.json，含 `ai_mode / inspect_interval / scope / target_groups / tool_packs / tool_names` 等。 |
+| `config.py` | `persona_config_manager`：每个 persona 一份 config.json 的模板、持久化与通道互斥管理。 |
+| `config_rules.py` | 人格配置的纯无状态规则、值对象与解析校验（双通道范围、AI 模式归一化、驱动参数与作息校验）。 |
 | `group_context.py` | 群聊场景的群组画像注入。 |
 | `models.py` | `PersonaFiles / PersonaMetadata` dataclass。 |
 | `startup.py` | 把所有 persona 启动期注入。 |

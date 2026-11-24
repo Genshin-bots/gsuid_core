@@ -20,11 +20,7 @@ from dataclasses import dataclass
 from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.persona.config import (
-    read_autonomy_runtime,
-    is_within_active_hours,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.journal.storage import (
     SELF_SHARD_ID,
     SELF_MONTHLY_MAX_CHARS,
@@ -64,6 +60,7 @@ from gsuid_core.ai_core.journal.storage import (
 )
 from gsuid_core.ai_core.journal.sanitizer import truncate_at_boundary
 from gsuid_core.ai_core.configs.task_kinds import TASK_JOURNAL_COMPACT
+from gsuid_core.ai_core.persona.config_rules import read_autonomy_runtime, is_within_active_hours
 from gsuid_core.ai_core.journal.notes_consolidate import (
     MAX_NOTE_CLUSTERS_PER_NIGHT,
     consolidate_persona_notes,

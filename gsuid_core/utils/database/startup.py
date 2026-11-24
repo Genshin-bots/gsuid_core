@@ -34,6 +34,7 @@ AI_DATABASE_MODEL_MODULES = (
     "gsuid_core.ai_core.approval.models",
     "gsuid_core.ai_core.budget.models",
     "gsuid_core.ai_core.memory.database.models",
+    "gsuid_core.ai_core.memory.database.preference",
     "gsuid_core.ai_core.meme.database_model",
     "gsuid_core.ai_core.meme.pack_model",
     "gsuid_core.ai_core.cognition.nodes",

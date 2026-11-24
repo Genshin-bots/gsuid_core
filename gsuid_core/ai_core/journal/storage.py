@@ -17,15 +17,13 @@ from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
-from gsuid_core.ai_core.persona.config import (
-    is_persona_enabled,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.journal.sanitizer import (
     SILENT_CHECK_SUMMARY,
     is_silent_payload,
     truncate_at_boundary,
 )
+from gsuid_core.ai_core.persona.config_rules import is_persona_enabled
 
 JOURNAL_DIR: Path = AI_CORE_PATH / "journals"
 

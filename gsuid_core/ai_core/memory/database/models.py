@@ -6,14 +6,14 @@
 - ``AIMemEntity``  : 具名实体节点
 - ``AIMemEdge``    : 属性 / 关系 / 里程碑，四态代数（ADD/MERGE/SUPERSEDE/CONTRADICT）
 
-``AIMemPreference`` 原样保留；旧版 Session / TurnGist / Event / Conflict /
-Category / HierarchicalGraphMeta 已由 schema_v2 迁移物理移除。
+偏好表 ``AIMemPreference`` 独立位于 ``gsuid_core.ai_core.memory.database.preference``。
 """
 
 import uuid
 import asyncio
 from typing import List, TypeVar, Optional, Sequence
 from datetime import datetime, timezone, timedelta
+from collections.abc import Mapping
 
 from sqlmodel import Field, SQLModel, Relationship, col, select, update, literal_column
 from sqlalchemy import (
@@ -30,18 +30,20 @@ from sqlalchemy import (
     func,
     not_,
     union as sql_union,
+    delete,
     exists,
     insert,
 )
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.elements import ColumnElement, UnaryExpression
 from sqlalchemy.sql.selectable import Select
 from sqlalchemy.dialects.postgresql import JSON
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.vector.ops import upsert_episode_vector
+from gsuid_core.utils.database.write_gate import sqlite_write_gate
 from gsuid_core.utils.database.base_models import (
     _db_type,
     async_maker,
@@ -55,6 +57,14 @@ from gsuid_core.ai_core.memory.database.session_split import SessionCursor, cont
 def _like_contains(token: str) -> str:
     escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def _dict_str(data: Mapping[str, object], key: str, default: str = "") -> str:
+    if key in data:
+        raw = data[key]
+        if isinstance(raw, str):
+            return raw
+    return default
 
 
 def _model_table(model: type[SQLModel]) -> Table:
@@ -81,6 +91,25 @@ def _as_bool_expr(field: object) -> ColumnElement[bool]:
 
 def _naive_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _user_only_like_conds(content: ColumnElement[str]) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
+    return (_as_bool_expr(~content.like("assistant:%")), _as_bool_expr(~content.like("[我此前说过]%")))
+
+
+_TCol = TypeVar("_TCol")
+
+
+def _time_order(
+    at_col: ColumnElement[datetime],
+    id_col: ColumnElement[str],
+    *,
+    ascending: bool,
+) -> tuple[UnaryExpression[datetime], UnaryExpression[object]] | tuple[UnaryExpression[datetime], UnaryExpression[str]]:
+    if _db_type == "sqlite":
+        tie = literal_column("rowid")
+        return (at_col.asc(), tie.asc()) if ascending else (at_col.desc(), tie.desc())
+    return (at_col.asc(), id_col.asc()) if ascending else (at_col.desc(), id_col.desc())
 
 
 def _ids_matching_tokens(
@@ -203,9 +232,7 @@ class AIMemEpisode(SQLModel, table=True):
         thread_id: str | None = None,
     ) -> "AIMemEpisode":
         episode_id = str(uuid.uuid4())
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
-
-        async with db_write_guard(), async_maker() as session:
+        async with sqlite_write_gate, async_maker() as session:
             cursor = await _cursor_in_tx(session, scope_key)
             assignment = continue_session(cursor, valid_at, _session_gap_seconds(), str(uuid.uuid4()))
             episode = AIMemEpisode(
@@ -260,9 +287,7 @@ class AIMemEpisode(SQLModel, table=True):
 
         gap = _session_gap_seconds()
         episodes: list["AIMemEpisode"] = []
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
-
-        async with db_write_guard(), async_maker() as session:
+        async with sqlite_write_gate, async_maker() as session:
             cursor = await _cursor_in_tx(session, scope_key)
             for content, valid_at, speakers in prepared:
                 assignment = continue_session(cursor, valid_at, gap, str(uuid.uuid4()))
@@ -329,8 +354,7 @@ class AIMemEpisode(SQLModel, table=True):
         if end is not None:
             extra.append(_as_bool_expr(c.valid_at < _naive_utc(end)))
         if user_only:
-            extra.append(_as_bool_expr(~c.content.like("assistant:%")))
-            extra.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
+            extra.extend(_user_only_like_conds(_as_str_col(c.content)))
         id_q = _ids_matching_tokens(
             _as_str_col(c.id),
             _as_str_col(c.scope_key),
@@ -367,8 +391,7 @@ class AIMemEpisode(SQLModel, table=True):
                 return []
             conds.append(_as_bool_expr(c.content.like(_like_contains(tok), escape="\\")))
         if user_only:
-            conds.append(_as_bool_expr(~c.content.like("assistant:%")))
-            conds.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
+            conds.extend(_user_only_like_conds(_as_str_col(c.content)))
         if speaker:
             conds.append(
                 _as_bool_expr(
@@ -378,8 +401,7 @@ class AIMemEpisode(SQLModel, table=True):
                     )
                 )
             )
-        tie = literal_column("rowid") if _db_type == "sqlite" else c.id
-        order = (c.valid_at.asc(), tie.asc()) if ascending else (c.valid_at.desc(), tie.desc())
+        order = _time_order(_as_dt_col(c.valid_at), _as_str_col(c.id), ascending=ascending)
         stmt = select(cls).where(*conds).order_by(*order)
         if offset > 0:
             stmt = stmt.offset(offset)
@@ -408,10 +430,8 @@ class AIMemEpisode(SQLModel, table=True):
             _as_bool_expr(c.valid_at < _naive_utc(end)),
         ]
         if user_only:
-            conds.append(_as_bool_expr(~c.content.like("assistant:%")))
-            conds.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
-        tie = literal_column("rowid") if _db_type == "sqlite" else c.id
-        order = (c.valid_at.asc(), tie.asc()) if ascending else (c.valid_at.desc(), tie.desc())
+            conds.extend(_user_only_like_conds(_as_str_col(c.content)))
+        order = _time_order(_as_dt_col(c.valid_at), _as_str_col(c.id), ascending=ascending)
         stmt = select(cls).where(*conds).order_by(*order)
         if offset > 0:
             stmt = stmt.offset(offset)
@@ -438,8 +458,7 @@ class AIMemEpisode(SQLModel, table=True):
             _as_bool_expr(c.valid_at >= _naive_utc(start)),
             _as_bool_expr(c.valid_at < _naive_utc(end)),
         ]
-        tie = literal_column("rowid") if _db_type == "sqlite" else c.id
-        order = (c.valid_at.asc(), tie.asc()) if ascending else (c.valid_at.desc(), tie.desc())
+        order = _time_order(_as_dt_col(c.valid_at), _as_str_col(c.id), ascending=ascending)
         stmt = select(cls).where(*conds).order_by(*order).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
@@ -456,11 +475,11 @@ class AIMemEpisode(SQLModel, table=True):
             return {}
         stmt = select(col(cls.id), col(cls.speaker_ids)).where(col(cls.id).in_(ids))
         rows = (await session.execute(stmt)).all()
-        out: dict[str, list[str]] = {}
-        for eid_raw, spks_raw in rows:
-            if isinstance(eid_raw, str) and isinstance(spks_raw, list):
-                out[eid_raw] = [str(s) for s in spks_raw]
-        return out
+        return {
+            eid_raw: [str(s) for s in spks_raw]
+            for eid_raw, spks_raw in rows
+            if isinstance(eid_raw, str) and isinstance(spks_raw, list)
+        }
 
     @classmethod
     @with_read_session
@@ -481,10 +500,37 @@ class AIMemEpisode(SQLModel, table=True):
             _as_bool_expr(c.valid_at < _naive_utc(end)),
         ]
         if user_only:
-            conds.append(_as_bool_expr(~c.content.like("assistant:%")))
-            conds.append(_as_bool_expr(~c.content.like("[我此前说过]%")))
+            conds.extend(_user_only_like_conds(_as_str_col(c.content)))
         result = await session.execute(select(func.count()).select_from(cls).where(*conds))
         return int(result.scalar_one() or 0)
+
+    @classmethod
+    async def _query_group_openers(
+        cls,
+        session: AsyncSession,
+        group_expr: ColumnElement[_TCol],
+        conds: Sequence[ColumnElement[bool]],
+        limit: int,
+    ) -> list["AIMemEpisode"]:
+        c = _model_table(cls).c
+        if _db_type == "sqlite":
+            firsts = (
+                select(group_expr.label("gk"), func.min(literal_column("rowid")).label("rid"))
+                .where(*conds)
+                .group_by(group_expr)
+                .subquery()
+            )
+            key_cond = literal_column("aimemepisode.rowid").in_(select(firsts.c.rid))
+        else:
+            firsts = (
+                select(group_expr.label("gk"), func.min(c.valid_at).label("t0"))
+                .where(*conds)
+                .group_by(group_expr)
+                .subquery()
+            )
+            key_cond = c.valid_at.in_(select(firsts.c.t0))
+        stmt = select(cls).where(key_cond, *conds).order_by(c.valid_at.asc()).limit(limit)
+        return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
     @with_read_session
@@ -503,28 +549,9 @@ class AIMemEpisode(SQLModel, table=True):
             _as_bool_expr(c.scope_key == scope_key),
             _as_bool_expr(c.valid_at >= _naive_utc(start)),
             _as_bool_expr(c.valid_at < _naive_utc(end)),
-            _as_bool_expr(~c.content.like("assistant:%")),
-            _as_bool_expr(~c.content.like("[我此前说过]%")),
+            *_user_only_like_conds(_as_str_col(c.content)),
         ]
-        day_col = func.date(c.valid_at)
-        if _db_type == "sqlite":
-            rowid = literal_column("rowid")
-            firsts = select(day_col.label("d"), func.min(rowid).label("rid")).where(*conds).group_by(day_col).subquery()
-            stmt = (
-                select(cls)
-                .where(literal_column("aimemepisode.rowid").in_(select(firsts.c.rid)), *conds)
-                .order_by(c.valid_at.asc())
-                .limit(limit)
-            )
-        else:
-            firsts = (
-                select(day_col.label("d"), func.min(c.valid_at).label("t0")).where(*conds).group_by(day_col).subquery()
-            )
-            stmt = (
-                select(cls).where(c.valid_at.in_(select(firsts.c.t0)), *conds).order_by(c.valid_at.asc()).limit(limit)
-            )
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return await cls._query_group_openers(session, func.date(c.valid_at), conds, limit)
 
     @classmethod
     @with_read_session
@@ -567,6 +594,13 @@ class AIMemEpisode(SQLModel, table=True):
             return list(res.scalars().all())
         rows: list["AIMemEpisode"] = []
         seen: set[str] = set()
+
+        def _append_unique(items: Sequence["AIMemEpisode"]) -> None:
+            for row in items:
+                if row.id not in seen:
+                    seen.add(row.id)
+                    rows.append(row)
+
         if before > 0:
             stmt_b = (
                 select(cls)
@@ -574,11 +608,7 @@ class AIMemEpisode(SQLModel, table=True):
                 .order_by(col(cls.valid_at).desc())
                 .limit(before + 1)
             )
-            for row in reversed(list((await session.execute(stmt_b)).scalars().all())):
-                if row.id in seen:
-                    continue
-                seen.add(row.id)
-                rows.append(row)
+            _append_unique(list(reversed(list((await session.execute(stmt_b)).scalars().all()))))
         if after > 0:
             stmt_a = (
                 select(cls)
@@ -586,11 +616,7 @@ class AIMemEpisode(SQLModel, table=True):
                 .order_by(col(cls.valid_at).asc())
                 .limit(after)
             )
-            for row in (await session.execute(stmt_a)).scalars().all():
-                if row.id in seen:
-                    continue
-                seen.add(row.id)
-                rows.append(row)
+            _append_unique(list((await session.execute(stmt_a)).scalars().all()))
         return rows
 
     @classmethod
@@ -702,29 +728,21 @@ class AIMemEpisode(SQLModel, table=True):
         )
         where = and_(col(cls.scope_key) == scope_key, cond)
         head_n = min(8, limit)
-        head: list[AIMemEpisode] = []
-        for row in (
+        head: list[AIMemEpisode] = list(
             (await session.execute(select(cls).where(where).order_by(col(cls.valid_at).asc()).limit(head_n)))
             .scalars()
             .all()
-        ):
-            head.append(row)
+        )
         tail_n = limit - head_n
         if tail_n <= 0:
             return head
-        tail: list[AIMemEpisode] = []
-        for row in (
+        tail: list[AIMemEpisode] = list(
             (await session.execute(select(cls).where(where).order_by(col(cls.valid_at).desc()).limit(tail_n)))
             .scalars()
             .all()
-        ):
-            tail.append(row)
+        )
         seen = {row.id for row in head}
-        for row in reversed(tail):
-            if row.id in seen:
-                continue
-            seen.add(row.id)
-            head.append(row)
+        head.extend(row for row in reversed(tail) if row.id not in seen)
         return head
 
     @classmethod
@@ -841,73 +859,41 @@ class AIMemEpisode(SQLModel, table=True):
             _as_bool_expr(c.session_id.is_not(None)),
             _as_bool_expr(c.thread_id.is_(None)),
         ]
-        if _db_type == "sqlite":
-            firsts = (
-                select(c.session_id.label("sid"), func.min(literal_column("rowid")).label("rid"))
-                .where(*conds)
-                .group_by(c.session_id)
-                .subquery()
-            )
-            stmt = (
-                select(cls)
-                .where(literal_column("aimemepisode.rowid").in_(select(firsts.c.rid)), *conds)
-                .order_by(c.valid_at.asc())
-                .limit(limit)
-            )
-        else:
-            firsts = (
-                select(c.session_id.label("sid"), func.min(c.valid_at).label("t0"))
-                .where(*conds)
-                .group_by(c.session_id)
-                .subquery()
-            )
-            stmt = (
-                select(cls).where(c.valid_at.in_(select(firsts.c.t0)), *conds).order_by(c.valid_at.asc()).limit(limit)
-            )
-        rows = list((await session.execute(stmt)).scalars().all())
+        rows = await cls._query_group_openers(session, _as_str_col(c.session_id), conds, limit)
         out: list[tuple[str, datetime, str]] = []
         seen: set[str] = set()
         for row in rows:
             sid = row.session_id or ""
-            if not sid or sid in seen:
-                continue
-            seen.add(sid)
-            out.append((sid, row.valid_at, row.id))
+            if sid and sid not in seen:
+                seen.add(sid)
+                out.append((sid, row.valid_at, row.id))
         return out
 
     @classmethod
     async def assign_session_thread(cls, session_id: str, thread_id: str) -> None:
         if not session_id or not thread_id:
             return
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        async def _write() -> None:
-            async with async_maker() as session:
-                await session.execute(update(cls).where(col(cls.session_id) == session_id).values(thread_id=thread_id))
-                await session.commit()
-
-        await under_db_write(_write)
+        async with sqlite_write_gate, async_maker() as session:
+            await session.execute(update(cls).where(col(cls.session_id) == session_id).values(thread_id=thread_id))
+            await session.commit()
 
     @classmethod
     async def purge_episodes_by_ids(cls, episode_ids: list[str]) -> int:
         if not episode_ids:
             return 0
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        return await under_db_write(lambda: cls._purge_episodes_by_ids_db(episode_ids))
+        async with sqlite_write_gate:
+            return await cls._purge_episodes_by_ids_db(episode_ids)
 
     @classmethod
     @with_session
     async def _purge_episodes_by_ids_db(cls, session: AsyncSession, episode_ids: list[str]) -> int:
-        from sqlalchemy import delete as _delete
-
         from gsuid_core.ai_core.memory.database.fts import delete_episode_ids
 
         await session.execute(
             mem_episode_entity_mentions.delete().where(mem_episode_entity_mentions.c.episode_id.in_(episode_ids))
         )
         await delete_episode_ids(session, episode_ids)
-        await session.execute(_delete(cls).where(col(cls.id).in_(episode_ids)))
+        await session.execute(delete(cls).where(col(cls.id).in_(episode_ids)))
         return len(episode_ids)
 
     @classmethod
@@ -1015,29 +1001,44 @@ class AIMemEntity(SQLModel, table=True):
         return None
 
     @classmethod
-    def _normalize_entity_data_names(cls, entities_data: list[dict]) -> None:
+    def _normalize_entity_data_names(cls, entities_data: list[dict[str, object]]) -> None:
         for ed in entities_data:
-            if "is_speaker" in ed or "Speaker" in (ed["tag"] if "tag" in ed else []):
-                name = ed["name"] if "name" in ed else ""
+            raw_tag = ed["tag"] if "tag" in ed and isinstance(ed["tag"], list) else []
+            if "is_speaker" in ed or "Speaker" in raw_tag:
+                name = _dict_str(ed, "name")
                 if name.startswith("user_"):
                     ed["name"] = name[len("user_") :]
+
+    @classmethod
+    async def _hybrid_match_names(cls, scope_key: str, names: Sequence[str]) -> list[tuple[str, str]]:
+        """并发向量+词法匹配未命中精确名称的实体，返回 ``(name, candidate_entity_id)``。"""
+        from gsuid_core.ai_core.memory.config import memory_config as _mc
+        from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
+
+        async def _one(uname: str) -> tuple[str, Sequence[Mapping[str, object]]]:
+            return uname, await _hybrid_search_entities(query=uname, scope_keys=[scope_key], top_k=3)
+
+        search_results = await asyncio.gather(*(_one(n) for n in names))
+        threshold = _mc.dedup_similarity_threshold
+        pairs: list[tuple[str, str]] = []
+        for uname, similar in search_results:
+            if not similar:
+                continue
+            top = similar[0]
+            score = top["score"] if "score" in top else 0.0
+            sid = top["id"] if "id" in top else ""
+            if isinstance(score, (int, float)) and score >= threshold and isinstance(sid, str) and sid:
+                pairs.append((uname, sid))
+        return pairs
 
     @classmethod
     async def prefetch_hybrid_name_ids(
         cls,
         scope_key: str,
-        entities_data: list[dict],
+        entities_data: list[dict[str, object]],
     ) -> dict[str, str]:
-        from gsuid_core.ai_core.memory.config import memory_config as _mc
-
         cls._normalize_entity_data_names(entities_data)
-        all_names = list(
-            {
-                (ed["name"] if "name" in ed else "").strip()
-                for ed in entities_data
-                if (ed["name"] if "name" in ed else "").strip()
-            }
-        )
+        all_names = list({n for ed in entities_data if (n := _dict_str(ed, "name").strip())})
         if not all_names:
             return {}
         async with async_maker() as session:
@@ -1049,96 +1050,78 @@ class AIMemEntity(SQLModel, table=True):
         if not unmatched:
             return {}
 
-        from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
-
-        async def _hybrid_one(uname: str) -> tuple[str, list]:
-            similar = await _hybrid_search_entities(query=uname, scope_keys=[scope_key], top_k=3)
-            return uname, similar
-
-        search_results = await asyncio.gather(*[_hybrid_one(n) for n in unmatched])
-        hits: dict[str, str] = {}
+        matched_pairs = await cls._hybrid_match_names(scope_key, unmatched)
+        if not matched_pairs:
+            return {}
+        cand_ids = list({sid for _, sid in matched_pairs})
         async with async_maker() as session:
-            for uname, similar in search_results:
-                if similar and similar[0]["score"] >= _mc.dedup_similarity_threshold:
-                    sid = similar[0]["id"]
-                    r = await session.execute(select(cls.id).where(cls.id == sid, cls.scope_key == scope_key))
-                    matched_id = r.scalar_one_or_none()
-                    if matched_id:
-                        hits[uname] = matched_id
-        return hits
+            rows = (
+                await session.execute(select(cls.id).where(col(cls.id).in_(cand_ids), cls.scope_key == scope_key))
+            ).all()
+            valid_ids = {str(r[0]) for r in rows}
+        return {uname: sid for uname, sid in matched_pairs if sid in valid_ids}
 
     @classmethod
     async def extract_and_upsert(
         cls,
         session: AsyncSession,
         scope_key: str,
-        entities_data: list[dict],
+        entities_data: list[dict[str, object]],
         episode_id: str,
         speaker_ids: list[str],
         *,
         hybrid_name_ids: dict[str, str] | None = None,
-    ) -> tuple[dict[str, str], list[dict], int]:
+    ) -> tuple[dict[str, str], list[dict[str, object]], int]:
         name_to_id: dict[str, str] = {}
-        vector_payloads: list[dict] = []
+        vector_payloads: list[dict[str, object]] = []
         new_entity_count = 0
         cls._normalize_entity_data_names(entities_data)
 
         existing_map: dict[str, AIMemEntity] = {}
-        all_names = [
-            (ed["name"] if "name" in ed else "").strip() for ed in entities_data if (ed["name"] if "name" in ed else "")
-        ]
+        all_names = [n for ed in entities_data if (n := _dict_str(ed, "name").strip())]
         if all_names:
             result = await session.execute(select(cls).where(cls.scope_key == scope_key, col(cls.name).in_(all_names)))
             existing_map = {e.name: e for e in result.scalars().all()}
 
         unmatched_names = [n for n in all_names if n not in existing_map]
-        from gsuid_core.ai_core.memory.config import memory_config as _mc
-
-        if unmatched_names and hybrid_name_ids is not None:
-            for uname in unmatched_names:
-                if uname not in hybrid_name_ids:
-                    continue
-                sid = hybrid_name_ids[uname]
-                r = await session.execute(select(cls).where(cls.id == sid, cls.scope_key == scope_key))
-                matched = r.scalar_one_or_none()
-                if matched:
-                    existing_map[uname] = matched
-        elif unmatched_names:
-            from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
-
-            async def _hybrid_search_for_name(uname: str) -> tuple[str, list]:
-                similar = await _hybrid_search_entities(query=uname, scope_keys=[scope_key], top_k=3)
-                return uname, similar
-
-            search_results = await asyncio.gather(*[_hybrid_search_for_name(n) for n in unmatched_names])
-            for uname, similar in search_results:
-                if similar and similar[0]["score"] >= _mc.dedup_similarity_threshold:
-                    sid = similar[0]["id"]
-                    r = await session.execute(select(cls).where(cls.id == sid, cls.scope_key == scope_key))
-                    matched = r.scalar_one_or_none()
-                    if matched:
-                        existing_map[uname] = matched
+        if unmatched_names:
+            matched_pairs = (
+                [(u, hybrid_name_ids[u]) for u in unmatched_names if u in hybrid_name_ids]
+                if hybrid_name_ids is not None
+                else await cls._hybrid_match_names(scope_key, unmatched_names)
+            )
+            if matched_pairs:
+                cand_ids = list({sid for _, sid in matched_pairs})
+                rows = (
+                    (await session.execute(select(cls).where(col(cls.id).in_(cand_ids), cls.scope_key == scope_key)))
+                    .scalars()
+                    .all()
+                )
+                by_id = {e.id: e for e in rows}
+                for uname, sid in matched_pairs:
+                    if sid in by_id:
+                        existing_map[uname] = by_id[sid]
 
         _MAX_SUMMARY_CHARS = 2000
         speaker_id_set = {s for s in speaker_ids if s}
         for entity_data in entities_data:
-            name = (entity_data["name"] if "name" in entity_data else "").strip()
+            name = _dict_str(entity_data, "name").strip()
             if not name:
                 continue
             existing = existing_map[name] if name in existing_map else None
-            tag_list = entity_data["tag"] if "tag" in entity_data else []
-            raw_uid = entity_data["user_id"] if "user_id" in entity_data else None
-            uid = raw_uid if isinstance(raw_uid, str) and raw_uid.strip() else None
+            raw_tags = entity_data["tag"] if "tag" in entity_data and isinstance(entity_data["tag"], list) else []
+            tag_list: list[object] = list(raw_tags)
+            uid = _dict_str(entity_data, "user_id").strip() or None
             is_spk = bool(entity_data["is_speaker"]) if "is_speaker" in entity_data else False
             if not is_spk and uid is not None and uid in speaker_id_set:
                 is_spk = True
-            raw_kind = entity_data["kind"] if "kind" in entity_data else "person"
-            kind = raw_kind if isinstance(raw_kind, str) else "person"
+            kind = _dict_str(entity_data, "kind", "person")
             if is_spk:
                 if kind == "person":
                     kind = "speaker"
                 if "speaker" not in tag_list:
-                    tag_list = list(tag_list) + ["speaker"]
+                    tag_list.append("speaker")
+            summary_piece = _dict_str(entity_data, "summary")
             if existing:
                 if is_spk and not existing.is_speaker:
                     existing.is_speaker = True
@@ -1146,9 +1129,8 @@ class AIMemEntity(SQLModel, table=True):
                     existing.entity_kind = "speaker"
                 if uid and not existing.user_id:
                     existing.user_id = uid
-                new_summary = entity_data["summary"] if "summary" in entity_data else ""
-                if new_summary and new_summary not in existing.summary:
-                    combined = f"{existing.summary}\n{new_summary}".strip()
+                if summary_piece and summary_piece not in existing.summary:
+                    combined = f"{existing.summary}\n{summary_piece}".strip()
                     if len(combined) > _MAX_SUMMARY_CHARS:
                         combined = combined[:_MAX_SUMMARY_CHARS] + "\n[...早期记忆已截断...]"
                     existing.summary = combined
@@ -1158,46 +1140,36 @@ class AIMemEntity(SQLModel, table=True):
                     merged_tags.append("speaker")
                 existing.tag = merged_tags
                 existing.updated_at = datetime.now(timezone.utc)
-                session.add(existing)
-                vector_payloads.append(
-                    {
-                        "entity_id": existing.id,
-                        "name": existing.name,
-                        "summary": existing.summary,
-                        "scope_key": scope_key,
-                        "is_speaker": existing.is_speaker,
-                        "user_id": existing.user_id,
-                        "tag": merged_tags,
-                    }
-                )
-                name_to_id[name] = existing.id
+                target_entity = existing
+                payload_tags: list[object] = merged_tags
             else:
                 entity_id = str(uuid.uuid4())
                 new_entity_count += 1
-                new_entity = cls(
+                target_entity = cls(
                     id=entity_id,
                     scope_key=scope_key,
                     name=name,
-                    summary=entity_data["summary"] if "summary" in entity_data else "",
+                    summary=summary_piece,
                     tag=tag_list,
                     is_speaker=is_spk,
                     entity_kind=kind,
                     user_id=uid,
                     qdrant_id=entity_id,
                 )
-                session.add(new_entity)
-                vector_payloads.append(
-                    {
-                        "entity_id": entity_id,
-                        "name": name,
-                        "summary": entity_data["summary"] if "summary" in entity_data else "",
-                        "scope_key": scope_key,
-                        "is_speaker": is_spk,
-                        "user_id": uid,
-                        "tag": tag_list,
-                    }
-                )
-                name_to_id[name] = entity_id
+                payload_tags = tag_list
+            session.add(target_entity)
+            vector_payloads.append(
+                {
+                    "entity_id": target_entity.id,
+                    "name": target_entity.name,
+                    "summary": target_entity.summary,
+                    "scope_key": scope_key,
+                    "is_speaker": target_entity.is_speaker,
+                    "user_id": target_entity.user_id,
+                    "tag": payload_tags,
+                }
+            )
+            name_to_id[name] = target_entity.id
 
         if episode_id and name_to_id:
             existing_mentions = await session.execute(
@@ -1217,6 +1189,10 @@ class AIMemEntity(SQLModel, table=True):
         return name_to_id, vector_payloads, new_entity_count
 
     @classmethod
+    def _has_edge_expr(cls) -> ColumnElement[bool]:
+        return exists().where(or_(col(AIMemEdge.source_entity_id) == cls.id, col(AIMemEdge.target_entity_id) == cls.id))
+
+    @classmethod
     @with_session
     async def collect_orphans(
         cls,
@@ -1224,17 +1200,11 @@ class AIMemEntity(SQLModel, table=True):
         ttl_days: int = 10,
     ) -> list[tuple[str, str, str]]:
         cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-        has_edge = exists().where(
-            or_(
-                col(AIMemEdge.source_entity_id) == cls.id,
-                col(AIMemEdge.target_entity_id) == cls.id,
-            )
-        )
         result = await session.execute(
             select(cls.id, cls.scope_key, cls.qdrant_id).where(
                 col(cls.is_speaker).is_(False),
                 col(cls.updated_at) < cutoff,
-                ~has_edge,
+                ~cls._has_edge_expr(),
             )
         )
         return [(row[0], row[1], row[2] or row[0]) for row in result.all()]
@@ -1243,19 +1213,16 @@ class AIMemEntity(SQLModel, table=True):
     async def purge_orphans_by_ids(cls, entity_ids: list[str]) -> int:
         if not entity_ids:
             return 0
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        return await under_db_write(lambda: cls._purge_orphans_by_ids_db(entity_ids))
+        async with sqlite_write_gate:
+            return await cls._purge_orphans_by_ids_db(entity_ids)
 
     @classmethod
     @with_session
     async def _purge_orphans_by_ids_db(cls, session: AsyncSession, entity_ids: list[str]) -> int:
-        from sqlalchemy import delete as _delete
-
         await session.execute(
             mem_episode_entity_mentions.delete().where(mem_episode_entity_mentions.c.entity_id.in_(entity_ids))
         )
-        await session.execute(_delete(cls).where(col(cls.id).in_(entity_ids)))
+        await session.execute(delete(cls).where(col(cls.id).in_(entity_ids)))
         return len(entity_ids)
 
     @classmethod
@@ -1273,12 +1240,7 @@ class AIMemEntity(SQLModel, table=True):
         over_scopes = [(row[0], row[1]) for row in scope_rows.all()]
         if not over_scopes:
             return []
-        has_edge = exists().where(
-            or_(
-                col(AIMemEdge.source_entity_id) == cls.id,
-                col(AIMemEdge.target_entity_id) == cls.id,
-            )
-        )
+        has_edge = cls._has_edge_expr()
         victims: list[tuple[str, str, str]] = []
         for scope_key, count in over_scopes:
             to_remove = count - max_per_scope
@@ -1690,9 +1652,8 @@ class AIMemEdge(SQLModel, table=True):
     async def touch_accessed(cls, edge_ids: list[str]) -> None:
         if not edge_ids:
             return
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        await under_db_write(lambda: cls._touch_accessed_db(edge_ids))
+        async with sqlite_write_gate:
+            await cls._touch_accessed_db(edge_ids)
 
     @classmethod
     @with_session
@@ -1709,16 +1670,13 @@ class AIMemEdge(SQLModel, table=True):
         protect_mention_count: int = 2,
         scope_prefix: Optional[str] = None,
     ) -> int:
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        return await under_db_write(
-            lambda: cls._apply_decay_db(
+        async with sqlite_write_gate:
+            return await cls._apply_decay_db(
                 stale_days=stale_days,
                 decay_factor=decay_factor,
                 protect_mention_count=protect_mention_count,
                 scope_prefix=scope_prefix,
             )
-        )
 
     @classmethod
     @with_session
@@ -1761,20 +1719,17 @@ class AIMemEdge(SQLModel, table=True):
     async def purge_by_ids(cls, edge_ids: list[str]) -> int:
         if not edge_ids:
             return 0
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        return await under_db_write(lambda: cls._purge_by_ids_db(edge_ids))
+        async with sqlite_write_gate:
+            return await cls._purge_by_ids_db(edge_ids)
 
     @classmethod
     @with_session
     async def _purge_by_ids_db(cls, session: AsyncSession, edge_ids: list[str]) -> int:
-        from sqlalchemy import delete as _delete
-
         thread_rows = await session.execute(
             select(cls.thread_id).where(col(cls.qdrant_id).in_(edge_ids), col(cls.thread_id).is_not(None))
         )
         affected_threads = {str(r[0]) for r in thread_rows.all() if r[0]}
-        await session.execute(_delete(cls).where(col(cls.qdrant_id).in_(edge_ids)))
+        await session.execute(delete(cls).where(col(cls.qdrant_id).in_(edge_ids)))
         for tid in affected_threads:
             cnt_res = await session.execute(
                 select(func.count())
@@ -1823,264 +1778,10 @@ class AIMemEdge(SQLModel, table=True):
         return victims
 
 
-class AIMemPreference(SQLModel, table=True):
-    """程序性/偏好记忆规则。主存 USER_GLOBAL scope；SQL-only，不写向量。"""
-
-    __table_args__ = (
-        Index("ix_mem_pref_scope_target", "scope_key", "target_context"),
-        Index("ix_mem_pref_scope_user", "scope_key", "user_id"),
-    )
-
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    scope_key: str = Field(index=True, max_length=128)
-    user_id: Optional[str] = Field(default=None, index=True, max_length=64)
-    target_context: str = Field(default="general", index=True, max_length=128)
-    preference_rule: str = Field(sa_column=Column(Text, nullable=False))
-    polarity: str = Field(default="do", max_length=8)
-    is_correction: bool = Field(default=False)
-    is_active: bool = Field(default=True)
-    source_episode_id: Optional[str] = Field(default=None, max_length=36)
-    mention_count: int = Field(default=1)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_applied_at: Optional[datetime] = Field(default=None)
-
-    @staticmethod
-    def _norm_rule(rule: str) -> str:
-        return rule.strip().lower().replace(" ", "")[:64]
-
-    @classmethod
-    async def upsert(
-        cls,
-        scope_key: str,
-        user_id: Optional[str],
-        target_context: str,
-        preference_rule: str,
-        polarity: str,
-        is_correction: bool,
-        source_episode_id: Optional[str] = None,
-    ) -> tuple[str, bool]:
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        return await under_db_write(
-            lambda: cls._upsert_db(
-                scope_key=scope_key,
-                user_id=user_id,
-                target_context=target_context,
-                preference_rule=preference_rule,
-                polarity=polarity,
-                is_correction=is_correction,
-                source_episode_id=source_episode_id,
-            )
-        )
-
-    @classmethod
-    @with_session
-    async def _upsert_db(
-        cls,
-        session: AsyncSession,
-        scope_key: str,
-        user_id: Optional[str],
-        target_context: str,
-        preference_rule: str,
-        polarity: str,
-        is_correction: bool,
-        source_episode_id: Optional[str] = None,
-    ) -> tuple[str, bool]:
-        polarity = "dont" if polarity == "dont" else "do"
-        rule = (preference_rule or "").strip()
-        if not rule:
-            return "", False
-        sig = cls._norm_rule(rule)
-        result = await session.execute(
-            select(cls).where(
-                cls.scope_key == scope_key,
-                cls.target_context == target_context,
-                col(cls.is_active).is_(True),
-            )
-        )
-        existing = list(result.scalars().all())
-        for row in existing:
-            if row.polarity == polarity and cls._norm_rule(row.preference_rule) == sig:
-                row.mention_count += 1
-                row.updated_at = datetime.now(timezone.utc)
-                if is_correction:
-                    row.is_correction = True
-                session.add(row)
-                return row.id, False
-        for row in existing:
-            if row.polarity != polarity and cls._norm_rule(row.preference_rule) == sig:
-                row.is_active = False
-                row.updated_at = datetime.now(timezone.utc)
-                session.add(row)
-        new_id = str(uuid.uuid4())
-        session.add(
-            cls(
-                id=new_id,
-                scope_key=scope_key,
-                user_id=user_id,
-                target_context=target_context or "general",
-                preference_rule=rule,
-                polarity=polarity,
-                is_correction=is_correction,
-                source_episode_id=source_episode_id,
-            )
-        )
-        return new_id, True
-
-    @classmethod
-    @with_read_session
-    async def get_active(
-        cls,
-        session: AsyncSession,
-        scope_keys: list[str],
-        target_contexts: Optional[list[str]] = None,
-        limit: int = 12,
-        self_min_created_at: Optional[datetime] = None,
-    ) -> list["AIMemPreference"]:
-        if not scope_keys:
-            return []
-        stmt = select(cls).where(col(cls.scope_key).in_(scope_keys), col(cls.is_active).is_(True))
-        if target_contexts:
-            stmt = stmt.where(col(cls.target_context).in_(target_contexts))
-        if self_min_created_at is not None:
-            cutoff = (
-                self_min_created_at.astimezone(timezone.utc).replace(tzinfo=None)
-                if self_min_created_at.tzinfo is not None
-                else self_min_created_at
-            )
-            stmt = stmt.where(or_(~col(cls.scope_key).startswith("self:"), col(cls.created_at) >= cutoff))
-        stmt = stmt.order_by(
-            desc(col(cls.is_correction)),
-            desc(col(cls.mention_count)),
-            desc(col(cls.updated_at)),
-        ).limit(limit)
-        return list((await session.execute(stmt)).scalars().all())
-
-    @classmethod
-    async def touch_applied(cls, pref_ids: list[str]) -> None:
-        if not pref_ids:
-            return
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        await under_db_write(lambda: cls._touch_applied_db(pref_ids))
-
-    @classmethod
-    @with_session
-    async def _touch_applied_db(cls, session: AsyncSession, pref_ids: list[str]) -> None:
-        await session.execute(
-            update(cls).where(col(cls.id).in_(pref_ids)).values(last_applied_at=datetime.now(timezone.utc))
-        )
-
-    @classmethod
-    @with_read_session
-    async def count_active(cls, session: AsyncSession, scope_keys: Optional[list[str]] = None) -> int:
-        stmt = select(func.count()).select_from(cls).where(col(cls.is_active).is_(True))
-        if scope_keys:
-            stmt = stmt.where(col(cls.scope_key).in_(scope_keys))
-        return (await session.execute(stmt)).scalar() or 0
-
-    @classmethod
-    @with_session
-    async def delete_by_scope_keys(cls, session: AsyncSession, scope_keys: list[str]) -> int:
-        if not scope_keys:
-            return 0
-        from sqlalchemy import delete as _delete
-
-        result = await session.execute(_delete(cls).where(col(cls.scope_key).in_(scope_keys)))
-        return result.rowcount if isinstance(result, CursorResult) else 0
-
-    @classmethod
-    async def cleanup_polluted_scopes_in_session(cls, session: AsyncSession) -> int:
-        """清理误写进 user_global 的助手自 ID 与群号偏好行（幂等）。"""
-        from sqlalchemy import or_ as _or, delete as _delete, inspect as _inspect
-
-        from gsuid_core.utils.database.models import CoreGroup
-
-        conn = await session.connection()
-        table_names = await conn.run_sync(lambda sync_conn: set(_inspect(sync_conn).get_table_names()))
-        if "aimempreference" not in table_names:
-            return 0
-        known_gids: set[str] = set()
-        if "coregroup" in table_names:
-            cg_rows = await session.execute(select(CoreGroup.group_id).distinct())
-            for row in cg_rows.fetchall():
-                gid = str(row[0] or "").strip()
-                if gid and gid != "1":
-                    known_gids.add(gid)
-        for table_name, model in (
-            ("aimemepisode", AIMemEpisode),
-            ("aimementity", AIMemEntity),
-            ("aimemedge", AIMemEdge),
-            ("aimemthread", AIMemThread),
-        ):
-            if table_name not in table_names:
-                continue
-            sk_rows = await session.execute(
-                select(model.scope_key).where(col(model.scope_key).startswith("group:")).distinct()
-            )
-            for row in sk_rows.fetchall():
-                sk = str(row[0] or "").strip()
-                if sk.startswith("group:"):
-                    gid = sk[len("group:") :].strip()
-                    if gid:
-                        known_gids.add(gid)
-
-        conds = [
-            col(cls.user_id).startswith("__assistant_"),
-            col(cls.scope_key).startswith("user_global:__assistant_"),
-            col(cls.scope_key).startswith("user_global:group:"),
-            col(cls.scope_key).startswith("user_global:self:"),
-        ]
-        if known_gids:
-            bogus_scopes = [f"user_global:{gid}" for gid in known_gids]
-            conds.append(col(cls.scope_key).in_(bogus_scopes))
-
-        result = await session.execute(_delete(cls).where(_or(*conds)))
-        return result.rowcount if isinstance(result, CursorResult) else 0
-
-    @classmethod
-    async def prune_per_context(cls, max_per_context: int) -> int:
-        if max_per_context <= 0:
-            return 0
-        from gsuid_core.ai_core.memory.ingestion.eval_write_lock import under_db_write
-
-        return await under_db_write(lambda: cls._prune_per_context_db(max_per_context))
-
-    @classmethod
-    @with_session
-    async def _prune_per_context_db(cls, session: AsyncSession, max_per_context: int) -> int:
-        result = await session.execute(
-            select(cls)
-            .where(col(cls.is_active).is_(True))
-            .order_by(
-                col(cls.scope_key),
-                col(cls.target_context),
-                desc(col(cls.is_correction)),
-                desc(col(cls.mention_count)),
-                desc(col(cls.updated_at)),
-            )
-        )
-        rows = list(result.scalars().all())
-        seen: dict[tuple[str, Optional[str], str], int] = {}
-        deactivated = 0
-        for row in rows:
-            key = (row.scope_key, row.user_id, row.target_context)
-            rank = seen[key] if key in seen else 0
-            seen[key] = rank + 1
-            if rank >= max_per_context and not row.is_correction:
-                row.is_active = False
-                row.updated_at = datetime.now(timezone.utc)
-                session.add(row)
-                deactivated += 1
-        return deactivated
-
-
 __all__ = [
     "AIMemEpisode",
     "AIMemEntity",
     "AIMemEdge",
     "AIMemThread",
-    "AIMemPreference",
     "mem_episode_entity_mentions",
 ]

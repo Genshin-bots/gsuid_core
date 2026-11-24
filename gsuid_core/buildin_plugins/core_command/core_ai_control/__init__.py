@@ -72,7 +72,8 @@ def _list_persona_names() -> list[str]:
 
 def _list_personas_by_status(*, is_private: bool | None = None) -> tuple[list[str], list[str]]:
     """返回 (当前通道可切换人格列表, 当前通道未启用人格列表)。"""
-    from gsuid_core.ai_core.persona.config import read_channel_scopes, persona_config_manager
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config_rules import read_channel_scopes
 
     enabled: list[str] = []
     disabled: list[str] = []

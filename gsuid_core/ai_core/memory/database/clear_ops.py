@@ -19,9 +19,9 @@ from gsuid_core.ai_core.memory.database.models import (
     AIMemEntity,
     AIMemThread,
     AIMemEpisode,
-    AIMemPreference,
     mem_episode_entity_mentions,
 )
+from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
 _IN_CHUNK = 400
 

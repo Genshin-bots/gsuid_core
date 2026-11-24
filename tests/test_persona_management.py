@@ -1029,12 +1029,9 @@ def _seed_persona(
 def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from msgspec import json as msgjson
 
-    from gsuid_core.ai_core.persona.config import (
-        read_channel_scopes,
-        persona_config_manager,
-        persona_covers_session,
-    )
+    from gsuid_core.ai_core.persona.config import persona_config_manager
     from gsuid_core.ai_core.http_agent.persona import set_http_persona_override, clear_http_persona_override
+    from gsuid_core.ai_core.persona.config_rules import read_channel_scopes, persona_covers_session
 
     _setup_isolated_persona_env(tmp_path, monkeypatch)
 

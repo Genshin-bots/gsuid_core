@@ -804,13 +804,6 @@ def _parse_persona_config_update(
     takeover_conflicts: bool,
 ) -> tuple[str | None, _ParsedPersonaConfigUpdate]:
     """整单解析与前置校验：任一字段非法直接返回错误，保证无半写入或提前抢占。"""
-    from gsuid_core.ai_core.persona.config import (
-        AI_MODE_OPTIONS,
-        CURIOSITY_FOCUS_VALUES,
-        normalize_ai_modes,
-        autonomy_settings_error,
-        autonomy_settings_from_mapping,
-    )
     from gsuid_core.ai_core.persona.chat_style import (
         CHAT_STYLE_MAX,
         CHAT_STYLE_MIN,
@@ -819,6 +812,13 @@ def _parse_persona_config_update(
     )
     from gsuid_core.ai_core.persona.meme_style import MEME_FREQUENCY_MAX, MEME_FREQUENCY_MIN
     from gsuid_core.ai_core.prompt_group.store import group_exists
+    from gsuid_core.ai_core.persona.config_rules import (
+        AI_MODE_OPTIONS,
+        CURIOSITY_FOCUS_VALUES,
+        normalize_ai_modes,
+        autonomy_settings_error,
+        autonomy_settings_from_mapping,
+    )
 
     parsed = _ParsedPersonaConfigUpdate()
 

@@ -152,10 +152,12 @@ async def import_bundle_dir(root: Path) -> BundleImportResult:
         raise BundleError(f"一个人格最多挂载 {MAX_PACKS_PER_PERSONA} 个表情包")
 
     from gsuid_core.ai_core.persona.config import (
-        EMPTY_CHANNEL_DEPLOYMENT,
-        ChannelDeploymentSnapshot,
         persona_config_manager,
         rewrite_config_bytes_with_deployment,
+    )
+    from gsuid_core.ai_core.persona.config_rules import (
+        EMPTY_CHANNEL_DEPLOYMENT,
+        ChannelDeploymentSnapshot,
     )
 
     target_deployment: ChannelDeploymentSnapshot = (
@@ -263,10 +265,8 @@ async def export_persona_bundle(persona_name: str) -> bytes:
             ),
         )
         archive.write(persona.files.markdown_path, "persona.md")
-        from gsuid_core.ai_core.persona.config import (
-            EMPTY_CHANNEL_DEPLOYMENT,
-            rewrite_config_bytes_with_deployment,
-        )
+        from gsuid_core.ai_core.persona.config import rewrite_config_bytes_with_deployment
+        from gsuid_core.ai_core.persona.config_rules import EMPTY_CHANNEL_DEPLOYMENT
 
         for name in _OPTIONAL_NAMES:
             path = persona.dir_path / name

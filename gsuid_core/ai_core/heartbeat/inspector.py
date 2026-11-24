@@ -22,13 +22,13 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.persona.config import (
+from gsuid_core.ai_core.persona.config import persona_config_manager
+from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
+from gsuid_core.ai_core.persona.config_rules import (
     read_autonomy_runtime,
     is_within_active_hours,
-    persona_config_manager,
     persona_covers_session,
 )
-from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 # 并发控制：最多同时进行 5 个 LLM 调用

@@ -312,9 +312,10 @@ async def emit_proactive_message(
     # echo 只记 heartbeat/autonomy——定时任务与 Kanban 播报是通知而非搭话，
     # 没人回复不该喂冷肩冲击。
     if pname:
-        from gsuid_core.ai_core.persona.config import read_drive_traits, persona_config_manager as _pcm
+        from gsuid_core.ai_core.persona.config import persona_config_manager as _pcm
         from gsuid_core.ai_core.persona.presence import record_echo
         from gsuid_core.ai_core.persona.homeostasis import apply_turn_shock, load_homeostasis, save_homeostasis
+        from gsuid_core.ai_core.persona.config_rules import read_drive_traits
 
         if source in ("heartbeat", "autonomy"):
             _is_priv = event.user_type == "direct"

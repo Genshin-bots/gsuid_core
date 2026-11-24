@@ -97,8 +97,8 @@ async def state_set_value(
     Returns:
         写入后的版本号
     """
+    from gsuid_core.utils.database.write_gate import sqlite_write_gate
     from gsuid_core.utils.database.base_models import async_maker
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
     await _ensure_table()
 
@@ -108,7 +108,7 @@ async def state_set_value(
     # set 语义为"存在则覆盖"，并发写入按 last-write-wins 处理；
     # 唯一约束下的并发首次插入会触发 IntegrityError，回退为 UPDATE 重试。
     for _ in range(_APPEND_MAX_RETRY):
-        async with db_write_guard(), async_maker() as session:
+        async with sqlite_write_gate, async_maker() as session:
             stmt = select(AIPersistentState).where(
                 and_(
                     AIPersistentState.scope == scope,
@@ -169,12 +169,12 @@ async def state_get_value(scope: str, state_key: str) -> Optional[Any]:
 
 async def state_delete_value(scope: str, state_key: str) -> bool:
     """删除一个键，返回是否确实删除了记录。"""
+    from gsuid_core.utils.database.write_gate import sqlite_write_gate
     from gsuid_core.utils.database.base_models import async_maker
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
     await _ensure_table()
 
-    async with db_write_guard(), async_maker() as session:
+    async with sqlite_write_gate, async_maker() as session:
         stmt = select(AIPersistentState).where(
             and_(
                 AIPersistentState.scope == scope,
@@ -249,15 +249,15 @@ async def state_mutate(
     Returns:
         最终成功写入的新值。
     """
+    from gsuid_core.utils.database.write_gate import sqlite_write_gate
     from gsuid_core.utils.database.base_models import async_maker
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
 
     await _ensure_table()
 
     expire_at = _now() + timedelta(days=ttl_days) if ttl_days else None
 
     for attempt in range(_APPEND_MAX_RETRY):
-        async with db_write_guard(), async_maker() as session:
+        async with sqlite_write_gate, async_maker() as session:
             stmt = select(AIPersistentState).where(
                 and_(
                     AIPersistentState.scope == scope,

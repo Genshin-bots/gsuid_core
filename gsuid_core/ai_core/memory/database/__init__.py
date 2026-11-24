@@ -5,9 +5,9 @@ from .models import (
     AIMemEntity,
     AIMemThread,
     AIMemEpisode,
-    AIMemPreference,
     mem_episode_entity_mentions,
 )
+from .preference import AIMemPreference
 
 __all__ = [
     "AIMemEpisode",
