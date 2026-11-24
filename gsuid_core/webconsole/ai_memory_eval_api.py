@@ -132,7 +132,7 @@ async def eval_list_user_episodes(
     _gate: None = Depends(require_local_test),
 ) -> EvalEpisodesOut:
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _assistant_turn, _speaker_stripped
+    from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import _assistant_turn, _speaker_stripped
 
     scope_key = make_scope_key(ScopeType.USER_GLOBAL, req.user_id)
     rows = await AIMemEpisode.list_by_scope(scope_key, limit=req.limit)

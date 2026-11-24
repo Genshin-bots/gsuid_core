@@ -61,9 +61,13 @@ gsuid_core/ai_core/
 ├── models.py            # ToolContext / ToolBase / 数据模型（含 dynamic_tool_names）
 ├── trigger_bridge.py    # 触发器→AI 工具桥接（MockBot / ai_return / send_message_by_ai）
 ├── followup_window.py   # 免唤醒续聊软触发窗口（进程内存 + TTL 惰性清理）
-├── utils.py             # extract_json_from_text / _is_master_user（拆分至 protocol_text / agent_errors / thinking / delivery 等）
+├── utils.py             # extract_json_from_text / _is_master_user（契约导出）
 ├── protocol_text.py     # 沉默标记与协议剥离（叶子层）
-├── delivery.py          # send_chat_result 等出站发送呈现层
+├── thinking.py          # 思考标签流式拆分与内嵌思考去重（叶子层）
+├── agent_errors.py      # Agent 错误分类、脱敏与主人 DM 告警
+├── history_compact.py   # 会话历史压缩、工具返回瘦身与入史清理
+├── delivery.py          # send_chat_result 出站拆条、@ 与表情包发送协调
+├── delivery_present.py  # 泄漏句柄补发、结构块分离与 Markdown/render_agent 出图
 ├── self_cognition.py    # 自我认知 self_model 演化层（自述块随 session 进稳定前缀；关系行每轮注入，见 §06）
 ├── interaction_scaffold.py  # 交互脚手架 C-1 到 C-3：省略跟进/漂移预算/寻址前置门 + extract_message_body（见 §12.22d）
 ├── context_assembly.py  # 上下文装配共享层：session system prompt + 每轮动态注入的唯一定义（生产/评测端点同源，见 §06/§11）

@@ -10,7 +10,7 @@ import inspect
 import pytest
 from pydantic_ai.messages import TextPart, ToolCallPart, ModelResponse
 
-from gsuid_core.ai_core import utils, delivery, history_format, interaction_scaffold
+from gsuid_core.ai_core import utils, delivery, history_format, delivery_present, interaction_scaffold
 from gsuid_core.ai_core.control import lines
 from gsuid_core.ai_core.hooks.models import AgentHookContext
 from gsuid_core.ai_core.hooks.points import AgentHookPoint
@@ -611,7 +611,7 @@ def test_style_push_address_and_ambient_gates() -> None:
 
     assert lines.AT_OTHER_MARKER == "（@的是这位用户，不是你）"
     assert interaction_scaffold.AT_OTHER_MARKER is lines.AT_OTHER_MARKER
-    for mod in (interaction_scaffold, utils, delivery, history_format):
+    for mod in (interaction_scaffold, utils, delivery, delivery_present, history_format):
         src = inspect.getsource(mod)
         assert "@的是这位用户，不是你" not in src and "直接找你说的" not in src
 

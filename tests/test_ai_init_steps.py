@@ -157,7 +157,8 @@ def test_init_steps_and_master_switch_gating(monkeypatch: pytest.MonkeyPatch, tm
         "import sys; "
         "import gsuid_core.bot; "
         "leaked = [m for m in ('pydantic_ai','fastembed','onnxruntime',"
-        "'gsuid_core.ai_core.utils','gsuid_core.ai_core.delivery') if m in sys.modules]; "
+        "'gsuid_core.ai_core.utils','gsuid_core.ai_core.delivery',"
+        "'gsuid_core.ai_core.delivery_present') if m in sys.modules]; "
         "assert not leaked, f'leaked: {leaked}'"
     )
     bot_proc = subprocess.run([sys.executable, "-c", bot_probe], capture_output=True, text=True, check=False)

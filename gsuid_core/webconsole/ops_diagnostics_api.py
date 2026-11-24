@@ -425,14 +425,14 @@ async def ops_output_preview(
     body: OutputPreviewRequest,
     _user: Dict = Depends(require_auth),
 ) -> Dict[str, Any]:
-    from gsuid_core.ai_core.delivery import (
-        _strip_persona_markdown,
-        _normalize_html_linebreaks,
-    )
     from gsuid_core.ai_core.protocol_text import (
         _strip_resource_handles,
         _strip_tool_call_artifacts,
         _strip_special_control_tokens,
+    )
+    from gsuid_core.ai_core.delivery_present import (
+        _strip_persona_markdown,
+        _normalize_html_linebreaks,
     )
     from gsuid_core.ai_core.control.outbound_detectors import (
         inspect_outbound_ooc,

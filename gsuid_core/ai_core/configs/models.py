@@ -23,7 +23,7 @@ import ssl
 import json
 import asyncio
 import hashlib
-from typing import TYPE_CHECKING, Union, Literal
+from typing import TYPE_CHECKING, Union, Literal, Protocol
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing_extensions import override
@@ -42,7 +42,7 @@ from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 from .ai_config import ai_config
 from .task_kinds import TaskLevel, parent_task_kind
-from .provider_config_manager import provider_manager
+from .provider_config_manager import ProviderType, is_provider_type, provider_manager
 
 if TYPE_CHECKING:
     import httpx
@@ -845,14 +845,27 @@ def _get_provider_string_config(provider: str, config_name: str) -> StringConfig
     return provider_manager(provider).get_config(config_name)
 
 
+class _ModelBuilder(Protocol):
+    def __call__(self, config_name: str, *, fast: bool = False) -> AnyModel: ...
+
+
+_MODEL_BUILDERS: dict[ProviderType, _ModelBuilder] = {
+    "openai": get_openai_model_by_name,
+    "anthropic": get_anthropic_chat_model_by_name,
+    "gemini": get_gemini_model_by_name,
+}
+
+
+def _build_model_by_full_name(full_name: str, *, fast: bool) -> AnyModel:
+    provider, config_name = parse_provider_config_name(full_name)
+    if not is_provider_type(provider):
+        raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
+    return _MODEL_BUILDERS[provider](config_name, fast=fast)
+
+
 def get_model_by_full_name(full_name: str) -> AnyModel:
     """按 provider++name 全名直接构建模型（供 provider 路由按需构建主/备模型）"""
-    provider, config_name = parse_provider_config_name(full_name)
-    if provider == "openai":
-        return get_openai_model_by_name(config_name)
-    if provider == "anthropic":
-        return get_anthropic_chat_model_by_name(config_name)
-    return get_gemini_model_by_name(config_name)
+    return _build_model_by_full_name(full_name, fast=False)
 
 
 def get_fast_model_by_full_name(full_name: str) -> AnyModel:
@@ -861,12 +874,7 @@ def get_fast_model_by_full_name(full_name: str) -> AnyModel:
     前置路由、后台分诊与两阶段摄入统一走这条通道，避免用户为聊天配置的
     ``model_effort="max"`` 让每次轻量调用吐出数千推理 Token。
     """
-    provider, config_name = parse_provider_config_name(full_name)
-    if provider == "openai":
-        return get_openai_model_by_name(config_name, fast=True)
-    if provider == "anthropic":
-        return get_anthropic_chat_model_by_name(config_name, fast=True)
-    return get_gemini_model_by_name(config_name, fast=True)
+    return _build_model_by_full_name(full_name, fast=True)
 
 
 def get_fast_model_for_task(task_level: TaskLevel = "low", task_kind: str | None = None) -> AnyModel:

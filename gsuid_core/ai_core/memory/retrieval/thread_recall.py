@@ -23,8 +23,8 @@ def session_aggregate_score(hits: list[float]) -> float:
 
 
 def _content_tokens(ep: Episode) -> set[str]:
-    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _speaker_stripped
     from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
+    from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import _speaker_stripped
 
     raw = _speaker_stripped(ep["content"] or "")
     return {t.lower() for t in query_tokens(raw) if len(t) >= 4}
@@ -50,7 +50,7 @@ def chrono_diverse_episodes(episodes: list[Episode], cap: int) -> list[Episode]:
     """按 session 轮询取词面不重复的 turn，避免第一段套话占满 N 栏。"""
     if cap <= 0 or not episodes:
         return []
-    from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
+    from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import (
         _assistant_turn,
         _skip_order_noise,
         _speaker_stripped,
@@ -243,7 +243,7 @@ async def recall_thread_candidates(
             if sid not in keep:
                 keep.append(sid)
     per_sess = max(8, cap_n * 2)
-    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _assistant_turn
+    from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import _assistant_turn
 
     rows = await AIMemEpisode.list_by_sessions(keep, limit=8000)
     by_sid: dict[str, list[Episode]] = {}

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -107,9 +108,9 @@ def __getattr__(name: str) -> object:
     mod_path = _EXPORTS[name] if name in _EXPORTS else None
     if mod_path is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-
     mod = importlib.import_module(mod_path)
     if name not in mod.__dict__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return mod.__dict__[name]
+    val = mod.__dict__[name]
+    globals()[name] = val
+    return val

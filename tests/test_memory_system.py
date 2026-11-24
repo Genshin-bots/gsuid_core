@@ -122,7 +122,7 @@ def test_memory_scope_and_private_isolation() -> None:
 
 
 def test_session_split_and_episode_clustering() -> None:
-    from gsuid_core.ai_core.memory.retrieval.lexical_pack import cluster_episodes_by_time
+    from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import cluster_episodes_by_time
 
     t0 = datetime(2024, 3, 1, 10, 0, 0)
     rows = [("c", t0 + timedelta(hours=2)), ("a", t0), ("b", t0 + timedelta(minutes=10))]
@@ -264,7 +264,7 @@ def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> N
     from gsuid_core.ai_core.memory.retrieval import dual_route
     from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
     from gsuid_core.ai_core.memory.retrieval.system1 import System1Result
-    from gsuid_core.ai_core.memory.retrieval.lexical_pack import states_a_value
+    from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import states_a_value
 
     assert states_a_value("I bought a bookshelf from IKEA.")
     assert not states_a_value("I went to the store yesterday.")

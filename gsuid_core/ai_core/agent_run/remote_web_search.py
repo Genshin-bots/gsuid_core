@@ -45,18 +45,13 @@ def read_remote_web_search_flag(config_full_name: str | None) -> tuple[bool, str
     if not config_full_name:
         return False, "chat_completions"
     provider, config_name = split_provider_config_name(config_full_name)
-    if not config_name:
+    if not config_name or provider not in ("openai", "anthropic"):
         return False, "chat_completions"
+    cfg = provider_manager(provider).get_config(config_name)
+    enabled = str(cfg.get_config("remote_web_search").data).strip().lower() == "on"
     if provider == "openai":
-        oconfig = provider_manager("openai").get_config(config_name)
-        enabled = str(oconfig.get_config("remote_web_search").data).strip().lower() == "on"
-        method = to_request_method(str(oconfig.get_config("request_method").data))
-        return enabled, method
-    if provider == "anthropic":
-        aconfig = provider_manager("anthropic").get_config(config_name)
-        enabled = str(aconfig.get_config("remote_web_search").data).strip().lower() == "on"
-        return enabled, ANTHROPIC_NATIVE_METHOD
-    return False, "chat_completions"
+        return enabled, to_request_method(str(cfg.get_config("request_method").data))
+    return enabled, ANTHROPIC_NATIVE_METHOD
 
 
 def attach_remote_web_search(st: RunOnceState, config_full_name: str | None) -> Optional[WebSearch[Any]]:

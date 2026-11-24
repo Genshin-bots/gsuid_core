@@ -22,13 +22,13 @@ PROVIDER_MANAGERS: dict[ProviderType, ConfigSetManager] = {
 }
 
 
-def _is_provider_type(provider: str) -> TypeGuard[ProviderType]:
+def is_provider_type(provider: str) -> TypeGuard[ProviderType]:
     return provider in PROVIDER_MANAGERS
 
 
 def provider_manager(provider: str) -> ConfigSetManager:
     """根据 provider 类型获取对应的配置管理器。"""
-    if _is_provider_type(provider):
+    if is_provider_type(provider):
         return PROVIDER_MANAGERS[provider]
     raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 

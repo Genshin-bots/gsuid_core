@@ -115,7 +115,7 @@ def has_raw_artifact_leak(text: str) -> bool:
 
 def simulate_send_pipeline(text: str) -> str:
     """模拟 send 侧两通道分离后的用户可见台词。"""
-    from gsuid_core.ai_core.delivery import _split_speech_and_artifacts
+    from gsuid_core.ai_core.delivery_present import _split_speech_and_artifacts
 
     speech, _ = _split_speech_and_artifacts(text)
     return speech.strip()

@@ -839,8 +839,8 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
         assert receipt_has_rendered_image("💡 主图：`res_12345678` → send_message_by_ai(image_id=)。") is True
         assert receipt_has_rendered_image(fail_receipt) is False
 
-        from gsuid_core.ai_core.delivery import _resolve_and_deliver_leaked_handles
         from gsuid_core.ai_core.planning import workspace as ws_mod
+        from gsuid_core.ai_core.delivery_present import _resolve_and_deliver_leaked_handles
 
         root_draft = await _mk_leaf("测试泄漏草稿拦截")
         ws_dir = ws_mod.ensure_workspace(root_draft.id, root_draft.id)

@@ -12,25 +12,7 @@ from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
 
 from gsuid_core.ai_core.memory.retrieval.types import Episode
-from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
-    _SENT_SPLIT_RE,
-    _FACT_SHEET_KIND,
-    _extra_names,
-    is_fact_sheet,
-    states_a_value,
-    _assistant_turn,
-    keep_sum_values,
-    _topic_hit_count,
-    diversify_episodes,
-    prefer_named_lines,
-    merge_episode_lists,
-    merge_strided_groups,
-    spread_value_episodes,
-    pack_timeline_episodes,
-    parse_episode_valid_at,
-    sentence_has_extra_name,
-    episode_mentions_speaker,
-)
+from gsuid_core.ai_core.memory.retrieval.lexical_pack import pack_timeline_episodes
 from gsuid_core.ai_core.memory.retrieval.lexical_query import (
     _HIT_GENERIC,
     _HAS_DIGIT_RE,
@@ -45,6 +27,24 @@ from gsuid_core.ai_core.memory.retrieval.lexical_query import (
     looks_like_sum_query,
     looks_like_count_query,
     attribute_content_tokens,
+)
+from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import (
+    _SENT_SPLIT_RE,
+    _FACT_SHEET_KIND,
+    _extra_names,
+    is_fact_sheet,
+    states_a_value,
+    _assistant_turn,
+    keep_sum_values,
+    _topic_hit_count,
+    diversify_episodes,
+    prefer_named_lines,
+    merge_episode_lists,
+    merge_strided_groups,
+    spread_value_episodes,
+    parse_episode_valid_at,
+    sentence_has_extra_name,
+    episode_mentions_speaker,
 )
 
 

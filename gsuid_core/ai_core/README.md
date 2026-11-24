@@ -43,7 +43,7 @@
 | `models.py` | `ToolContext`（包含 `bot / ev / extra / parent_session_id`）、`ToolBase`、`KnowledgeBase` 等 TypedDict。 |
 | `register.py` | `@ai_tools` 装饰器，把工具按 category（`self / buildin / 插件名`）登记到全局工具表。 |
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
-| `utils.py` | `extract_json_from_text`、`_is_master_user` 与契约转出（正文已拆至 `protocol_text.py` / `agent_errors.py` / `history_compact.py` / `thinking.py` / `delivery.py` / `multimodal/payload.py`）。 |
+| `utils.py` | `extract_json_from_text`、`_is_master_user` 与契约转出（正文已拆至 `protocol_text.py` / `agent_errors.py` / `history_compact.py` / `thinking.py` / `delivery.py` / `delivery_present.py` / `multimodal/payload.py`）。 |
 | `history_format.py` | `history_to_prompt` / `history_to_messages` / `outbound_history_fields` 等 MessageRecord 格式化辅助；群聊与私聊线程视图统一在 `thread_view.py`。 |
 | `content_guard.py` | 不可信内容包裹与词库匹配前的文本规范化。 |
 | `tool_risk.py` | 工具风险分级与通用权限检查工具（含 `check_pm`）。 |

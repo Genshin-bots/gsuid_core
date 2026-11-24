@@ -9,9 +9,12 @@ import asyncio
 import threading
 from typing import Dict, List, Tuple, Mapping, Sequence, TypedDict
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import field, dataclass
 
 from gsuid_core.i18n import t
+from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
 from gsuid_core.ai_core.persona.config import (
@@ -34,6 +37,27 @@ USER_SHARD_PREFIX: str = "user:"
 
 
 _JOURNAL_STATE_FILE: str = ".journal_state.json"
+
+ARCHIVE_RETENTION_MONTHS = 12
+
+
+def _resolve_tz(tz_name: str) -> ZoneInfo:
+    zone_str = (tz_name or "Asia/Shanghai").strip()
+    try:
+        return ZoneInfo(zone_str)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Asia/Shanghai")
+
+
+def _tz_dt(tz_name: str, now_ts: float) -> datetime:
+    return datetime.fromtimestamp(now_ts, tz=_resolve_tz(tz_name))
+
+
+@to_thread
+def _append_jsonl_sync(path: Path, line_json: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line_json + "\n")
 
 
 # 定长容量硬约束（保证 365 天后单文件字节数恒定 O(1)）
