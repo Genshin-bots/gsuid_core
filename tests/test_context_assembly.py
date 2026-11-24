@@ -216,6 +216,9 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
     from gsuid_core.ai_core.configs.models import openai_user_thinking_profile
     from gsuid_core.ai_core.history_compact import _relean_user_turn
     from gsuid_core.ai_core.configs.openai_wire import (
+        AutoUsageOpenAIChatModel,
+        RecoveringOpenAIChatModel,
+        RecoveringOpenAIResponsesModel,
         revise_openai_attempt,
         clear_openai_wire_facts,
         openai_profile_for_model,
@@ -279,6 +282,14 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
 
     clear_openai_wire_facts()
     try:
+        import json as _json
+
+        import httpx2
+        from openai import AsyncOpenAI
+        from pydantic_ai.tools import ToolDefinition
+        from pydantic_ai.messages import TextPart, ModelMessage
+        from pydantic_ai.providers.openai import OpenAIProvider
+
         base_prof = openai_user_thinking_profile("max")(openai_model_profile("MiniMax-M3.1-Flash"))
         assert "supports_thinking" in base_prof and base_prof["supports_thinking"] is True
         err_none = ModelHTTPError(
@@ -297,6 +308,188 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
         learned_prof = openai_profile_for_model("https://api.minimaxi.com/v1", "MiniMax-M3.1-Flash")(base_prof)
         assert "openai_reasoning_efforts" in learned_prof
         assert learned_prof["openai_reasoning_efforts"] == frozenset({"low", "medium", "high", "max"})
+
+        # "strictly positive" 不得误判为 strict 工具错误
+        err_strictly = ModelHTTPError(
+            status_code=400,
+            model_name="test/model-flash",
+            body={"error": {"message": "temperature must be strictly positive"}},
+        )
+        assert (
+            revise_openai_attempt(
+                "https://gateway.invalid/v1",
+                "test/model-flash",
+                err_strictly,
+                None,
+                ModelRequestParameters(),
+            )
+            is None
+        )
+
+        # 端到端校验：混传 strict/non-strict 工具触发 400 后就地去 strict 重试，且跨实例失效旧 profile 缓存
+        sent_tools_strict: list[tuple[str, dict[str, bool]]] = []
+
+        def _strict_handler(request: httpx2.Request) -> httpx2.Response:
+            payload = _json.loads(request.content.decode("utf-8"))
+            assert isinstance(payload, dict) and "tools" in payload and isinstance(payload["tools"], list)
+            path = request.url.path
+            flags: dict[str, bool] = {}
+            for item in payload["tools"]:
+                assert isinstance(item, dict)
+                if path.endswith("/responses"):
+                    assert isinstance(item["name"], str)
+                    flags[item["name"]] = "strict" in item and bool(item["strict"])
+                else:
+                    assert "function" in item and isinstance(item["function"], dict)
+                    fn = item["function"]
+                    assert isinstance(fn["name"], str)
+                    flags[fn["name"]] = "strict" in fn and bool(fn["strict"])
+            sent_tools_strict.append((path, flags))
+            if any(flags.values()) and not all(flags.values()):
+                nested = _json.dumps(
+                    {
+                        "error": {
+                            "message": (
+                                'Prefill server error (400 Bad Request): {"object":"error",'
+                                '"message":"Cannot use strict tool with non-strict tool in the same request",'
+                                '"type":"BadRequest","param":null,"code":400}'
+                            ),
+                            "type": "invalid_request_error",
+                        }
+                    }
+                )
+                return httpx2.Response(
+                    400,
+                    json={"message": nested, "type": "invalid_request_error"},
+                )
+            if path.endswith("/responses"):
+                return httpx2.Response(
+                    200,
+                    json={
+                        "id": "resp-test",
+                        "object": "response",
+                        "created_at": 1700000000,
+                        "status": "completed",
+                        "model": "test/model-flash",
+                        "output": [
+                            {
+                                "id": "msg-test",
+                                "type": "message",
+                                "status": "completed",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "ok-resp", "annotations": []}],
+                            }
+                        ],
+                        "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                    },
+                )
+            if "stream" in payload and payload["stream"] is True:
+                chunk = {
+                    "id": "chatcmpl-stream",
+                    "object": "chat.completion.chunk",
+                    "created": 1700000000,
+                    "model": "test/model-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "ok-stream"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                }
+                sse = f"data: {_json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode("utf-8")
+                return httpx2.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+            return httpx2.Response(
+                200,
+                json={
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1700000000,
+                    "model": "test/model-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                },
+            )
+
+        gw_url = "https://gateway.invalid/v1"
+        gw_model = "test/model-flash"
+        wire_prof = openai_profile_for_model(gw_url, gw_model)
+
+        async def _run_strict_recovery() -> None:
+            async with httpx2.AsyncClient(transport=httpx2.MockTransport(_strict_handler)) as hc:
+                client = AsyncOpenAI(api_key="k", base_url=gw_url, max_retries=0, http_client=hc)
+                provider = OpenAIProvider(openai_client=client)
+                stream_m = AutoUsageOpenAIChatModel(gw_model, provider=provider, profile=wire_prof)
+                # 另一个在 400 之前就缓存过 profile 的同网关模型实例（Chat 与 Responses）
+                sibling_m = RecoveringOpenAIChatModel(gw_model, provider=provider, profile=wire_prof)
+                _ = sibling_m.profile
+                resp_m = RecoveringOpenAIResponsesModel(gw_model, provider=provider, profile=wire_prof)
+                _ = resp_m.profile
+
+                mixed_tools = [
+                    ToolDefinition(
+                        name="all_required_tool",
+                        description="all params required",
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}},
+                            "required": ["q"],
+                        },
+                    ),
+                    ToolDefinition(
+                        name="optional_param_tool",
+                        description="has optional param",
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}, "limit": {"type": "integer"}},
+                            "required": ["q"],
+                        },
+                    ),
+                ]
+                req_params = ModelRequestParameters(function_tools=mixed_tools)
+                msg: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content="hi")])]
+
+                # 1) 生产主路径 request_stream：首包混传 400 → 就地去 strict 重试成功
+                prepped_settings, prepped_params = stream_m.prepare_request(None, req_params)
+                async with stream_m.request_stream(msg, prepped_settings, prepped_params) as stream:
+                    async for _ in stream:
+                        pass
+                    streamed = stream.get()
+                assert streamed.parts and isinstance(streamed.parts[0], TextPart)
+                assert streamed.parts[0].content == "ok-stream"
+
+                # 2) 跨实例验证：sibling_m 与 resp_m 的旧 profile 缓存自动失效，首包即零 400
+                sib_settings, sib_params = sibling_m.prepare_request(None, req_params)
+                sib_res = await sibling_m.request(msg, sib_settings, sib_params)
+                assert sib_res.parts and isinstance(sib_res.parts[0], TextPart) and sib_res.parts[0].content == "ok"
+
+                resp_settings, resp_params = resp_m.prepare_request(None, req_params)
+                resp_res = await resp_m.request(msg, resp_settings, resp_params)
+                assert resp_res.parts and isinstance(resp_res.parts[0], TextPart)
+                assert resp_res.parts[0].content == "ok-resp"
+
+        asyncio.run(_run_strict_recovery())
+        assert sent_tools_strict == [
+            ("/v1/chat/completions", {"all_required_tool": True, "optional_param_tool": False}),
+            ("/v1/chat/completions", {"all_required_tool": False, "optional_param_tool": False}),
+            ("/v1/chat/completions", {"all_required_tool": False, "optional_param_tool": False}),
+            ("/v1/responses", {"all_required_tool": False, "optional_param_tool": False}),
+        ]
+
+        # 已学到 disable_strict_tools 后再次收到同错不得无限重试
+        err_strict_again = ModelHTTPError(
+            status_code=400,
+            model_name=gw_model,
+            body={"error": {"message": "Cannot use strict tool with non-strict tool in the same request"}},
+        )
+        assert revise_openai_attempt(gw_url, gw_model, err_strict_again, None, ModelRequestParameters()) is None
     finally:
         clear_openai_wire_facts()
 

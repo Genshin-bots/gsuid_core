@@ -1,11 +1,13 @@
 """OpenAI 兼容接口 400 的通用改写。
 
 按上游错误正文自动学习思考下限（如拒绝 reasoning_effort=none 时退到 low、
-不支持思考字段时剥离）与 max_completion_tokens 兼容，进程内记忆复用。
+不支持思考字段时剥离）、max_completion_tokens 兼容与 strict 工具定义支持，
+进程内记忆复用。
 """
 
 from __future__ import annotations
 
+import re
 from typing import final
 from contextlib import asynccontextmanager
 from dataclasses import replace, dataclass
@@ -21,7 +23,11 @@ from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.models.openai import OpenAIStreamedResponse, OpenAIChatModelSettings
+from pydantic_ai.models.openai import (
+    OpenAIResponsesModel,
+    OpenAIStreamedResponse,
+    OpenAIChatModelSettings,
+)
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 
 from gsuid_core.i18n import t
@@ -38,6 +44,21 @@ _UNKNOWN_HINTS = (
     "not support",
     "unsupported parameter",
 )
+_STRICT_TOOL_HINTS = (
+    "strict tool",
+    "non-strict tool",
+    "function.strict",
+    "tools.strict",
+)
+_STRICT_WORD_RE = re.compile(r"\bstrict\b")
+_STRICT_TOOL_REJECT_HINTS = (
+    *_UNKNOWN_HINTS,
+    "cannot",
+    "invalid",
+    "not allowed",
+    "disallowed",
+    "incompatible",
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +69,7 @@ class OpenAIWireFacts:
     drop_effort: bool = False
     legacy_max_tokens: bool = False
     drop_max_tokens: bool = False
+    disable_strict_tools: bool = False
 
 
 _FACTS: dict[tuple[str, str], OpenAIWireFacts] = {}
@@ -88,6 +110,8 @@ def openai_profile_for_model(base_url: str, model_name: str) -> Callable[[ModelP
             )
         if facts.legacy_max_tokens:
             parts.append(OpenAIModelProfile(openai_chat_supports_max_completion_tokens=False))
+        if facts.disable_strict_tools:
+            parts.append(OpenAIModelProfile(openai_supports_strict_tool_definition=False))
         if not parts:
             return default
         return merge_profile(default, *parts)
@@ -124,6 +148,16 @@ def _looks_unsupported_field(text: str) -> bool:
     return any(h in text for h in _UNKNOWN_HINTS)
 
 
+def _mentions_strict_tools(text: str) -> bool:
+    if any(h in text for h in _STRICT_TOOL_HINTS):
+        return True
+    if not _STRICT_WORD_RE.search(text):
+        return False
+    if "tool" not in text and "function" not in text:
+        return False
+    return any(h in text for h in _STRICT_TOOL_REJECT_HINTS)
+
+
 def _strip_effort_settings(settings: ModelSettings | None) -> ModelSettings | None:
     if settings is None:
         return None
@@ -151,7 +185,7 @@ def revise_openai_attempt(
     settings: ModelSettings | None,
     params: ModelRequestParameters,
 ) -> tuple[ModelSettings | None, ModelRequestParameters] | None:
-    """400 正文可归因到思考档位或 max_tokens 字段时，更新事实并返回重试入参。"""
+    """400 正文可归因到思考档位、max_tokens 或 strict 工具定义时，更新事实并返回重试入参。"""
     if error.status_code != 400:
         return None
     text = _error_text(error.body).lower()
@@ -164,6 +198,7 @@ def revise_openai_attempt(
     drop_effort = prev.drop_effort
     legacy_max = prev.legacy_max_tokens
     drop_max = prev.drop_max_tokens
+    disable_strict = prev.disable_strict_tools
     reasons: list[str] = []
 
     if _mentions_effort(text):
@@ -181,36 +216,61 @@ def revise_openai_attempt(
         drop_max = True
         reasons.append("drop_max_tokens")
 
+    if _mentions_strict_tools(text) and not prev.disable_strict_tools:
+        disable_strict = True
+        reasons.append("disable_strict_tools")
+
     updated = OpenAIWireFacts(
         always_thinking=always_thinking,
         drop_effort=drop_effort,
         legacy_max_tokens=legacy_max,
         drop_max_tokens=drop_max,
+        disable_strict_tools=disable_strict,
     )
     if updated == prev or not reasons:
         return None
 
     _FACTS[key] = updated
     logger.warning(t("log.ai.gscore_openai_wire_retry", model_name=model_name, reason=",".join(reasons)))
+    return _apply_wire_facts(updated, settings, params)
 
+
+def _provider_base_url_of(client: object) -> str:
+    if isinstance(client, AsyncOpenAI):
+        return str(client.base_url)
+    return ""
+
+
+def _apply_wire_facts(
+    facts: OpenAIWireFacts,
+    settings: ModelSettings | None,
+    params: ModelRequestParameters,
+) -> tuple[ModelSettings | None, ModelRequestParameters]:
     next_settings = settings
     next_params = params
-    if updated.drop_effort:
+    if facts.drop_effort:
         next_settings = _strip_effort_settings(next_settings)
         next_params = replace(next_params, thinking=None)
-    if updated.drop_max_tokens:
+    if facts.drop_max_tokens:
         next_settings = _strip_max_tokens_settings(next_settings)
     return next_settings, next_params
 
 
 class RecoveringOpenAIChatModel(OpenAIChatModelWithVideo):
-    """OpenAI 兼容 ChatModel：遇思考档位或 max_tokens 400 时自愈重试。"""
+    """OpenAI 兼容 ChatModel：遇思考档位、max_tokens 或 strict 工具 400 时自愈重试。"""
+
+    _applied_facts: OpenAIWireFacts | None = None
 
     def _provider_base_url(self) -> str:
-        client = self.client
-        if isinstance(client, AsyncOpenAI):
-            return str(client.base_url)
-        return ""
+        return _provider_base_url_of(self.client)
+
+    def _sync_profile_facts(self) -> OpenAIWireFacts:
+        facts = get_openai_wire_facts(self._provider_base_url(), self.model_name)
+        if self._applied_facts != facts:
+            if "profile" in self.__dict__:
+                delattr(self, "profile")
+            self._applied_facts = facts
+        return facts
 
     @override
     def prepare_request(
@@ -218,14 +278,9 @@ class RecoveringOpenAIChatModel(OpenAIChatModelWithVideo):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> tuple[ModelSettings | None, ModelRequestParameters]:
-        facts = get_openai_wire_facts(self._provider_base_url(), self.model_name)
+        facts = self._sync_profile_facts()
         merged_settings, params = super().prepare_request(model_settings, model_request_parameters)
-        if facts.drop_effort:
-            merged_settings = _strip_effort_settings(merged_settings)
-            params = replace(params, thinking=None)
-        if facts.drop_max_tokens:
-            merged_settings = _strip_max_tokens_settings(merged_settings)
-        return merged_settings, params
+        return _apply_wire_facts(facts, merged_settings, params)
 
     @override
     async def request(
@@ -282,8 +337,92 @@ class RecoveringOpenAIChatModel(OpenAIChatModelWithVideo):
         revised = revise_openai_attempt(self._provider_base_url(), self.model_name, error, settings, params)
         if revised is None:
             return None
-        if "profile" in self.__dict__:
-            delattr(self, "profile")
+        self._sync_profile_facts()
+        return revised
+
+
+class RecoveringOpenAIResponsesModel(OpenAIResponsesModel):
+    """OpenAI 兼容 ResponsesModel：遇思考档位、max_tokens 或 strict 工具 400 时自愈重试。"""
+
+    _applied_facts: OpenAIWireFacts | None = None
+
+    def _provider_base_url(self) -> str:
+        return _provider_base_url_of(self.client)
+
+    def _sync_profile_facts(self) -> OpenAIWireFacts:
+        facts = get_openai_wire_facts(self._provider_base_url(), self.model_name)
+        if self._applied_facts != facts:
+            if "profile" in self.__dict__:
+                delattr(self, "profile")
+            self._applied_facts = facts
+        return facts
+
+    @override
+    def prepare_request(
+        self,
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> tuple[ModelSettings | None, ModelRequestParameters]:
+        facts = self._sync_profile_facts()
+        merged_settings, params = super().prepare_request(model_settings, model_request_parameters)
+        return _apply_wire_facts(facts, merged_settings, params)
+
+    @override
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        settings = model_settings
+        params = model_request_parameters
+        while True:
+            try:
+                return await super().request(messages, settings, params)
+            except ModelHTTPError as error:
+                recovered = self._recover(error, settings, params)
+                if recovered is None:
+                    raise
+                settings, params = recovered
+
+    @override
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: object | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        settings = model_settings
+        params = model_request_parameters
+        while True:
+            context = run_context if isinstance(run_context, RunContext) else None
+            stream_cm = super().request_stream(messages, settings, params, context)
+            try:
+                response = await stream_cm.__aenter__()
+            except ModelHTTPError as error:
+                recovered = self._recover(error, settings, params)
+                if recovered is None:
+                    raise
+                settings, params = recovered
+                continue
+            try:
+                yield response
+            finally:
+                await stream_cm.__aexit__(None, None, None)
+            return
+
+    def _recover(
+        self,
+        error: ModelHTTPError,
+        settings: ModelSettings | None,
+        params: ModelRequestParameters,
+    ) -> tuple[ModelSettings | None, ModelRequestParameters] | None:
+        revised = revise_openai_attempt(self._provider_base_url(), self.model_name, error, settings, params)
+        if revised is None:
+            return None
+        self._sync_profile_facts()
         return revised
 
 

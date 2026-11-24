@@ -479,12 +479,17 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
         config_name: 配置文件名（不含扩展名）
     """
     from openai import AsyncOpenAI
-    from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIChatModelSettings
+    from pydantic_ai.models.openai import OpenAIChatModelSettings
     from pydantic_ai.providers.openai import OpenAIProvider
 
     from gsuid_core.ai_core.multimodal.openai_files import parse_video_part_extra
 
-    from .openai_wire import AutoUsageOpenAIChatModel, RecoveringOpenAIChatModel, openai_profile_for_model
+    from .openai_wire import (
+        AutoUsageOpenAIChatModel,
+        RecoveringOpenAIChatModel,
+        RecoveringOpenAIResponsesModel,
+        openai_profile_for_model,
+    )
 
     base_url, api_key, model_name, configured_effort, request_method, continuous_usage, usage_stats_mode = (
         get_openai_config_by_name(config_name)
@@ -528,7 +533,7 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
 
     if request_method == "responses":
         # 视频走 /v1/files UploadedFile，不覆写 pydantic_ai 父类静态 mapper
-        return OpenAIResponsesModel(
+        return RecoveringOpenAIResponsesModel(
             model_name=model_name,
             provider=provider,
             profile=_responses_profile,
