@@ -96,7 +96,7 @@ async def _forget_ids(forgotten_ids: list[str]) -> int:
 
         from gsuid_core.ai_core.rag.base import client as qdrant_client
         from gsuid_core.ai_core.rag.qmodels import PointIdsList
-        from gsuid_core.ai_core.memory.vector.collections import MEMORY_EDGES_COLLECTION
+        from gsuid_core.ai_core.memory.vector.ops import MEMORY_EDGES_COLLECTION
 
         qdrant_point_ids: list[int | str | UUID] = [point_id for point_id in forgotten_ids]
         if qdrant_client is not None:
@@ -144,7 +144,7 @@ async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
 
             from gsuid_core.ai_core.rag.base import client as qdrant_client
             from gsuid_core.ai_core.rag.qmodels import PointIdsList
-            from gsuid_core.ai_core.memory.vector.collections import MEMORY_ENTITIES_COLLECTION
+            from gsuid_core.ai_core.memory.vector.ops import MEMORY_ENTITIES_COLLECTION
 
             if qdrant_client is not None:
                 point_ids: list[int | str | UUID] = [pid for pid in qdrant_ids]
@@ -178,8 +178,7 @@ async def _trim_edge_capacity() -> int:
     if not victims:
         return 0
 
-    from gsuid_core.ai_core.memory.vector.ops import delete_points_by_ids
-    from gsuid_core.ai_core.memory.vector.collections import MEMORY_EDGES_COLLECTION
+    from gsuid_core.ai_core.memory.vector.ops import MEMORY_EDGES_COLLECTION, delete_points_by_ids
 
     CHUNK = 500
     total = 0
@@ -209,10 +208,9 @@ async def _retain_episodes() -> tuple[int, int]:
     """
     from sqlmodel import col, func, select
 
-    from gsuid_core.ai_core.memory.vector.ops import delete_points_by_ids
+    from gsuid_core.ai_core.memory.vector.ops import MEMORY_EPISODES_COLLECTION, delete_points_by_ids
     from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.vector.collections import MEMORY_EPISODES_COLLECTION
 
     purged = 0
     async with async_maker() as session:
@@ -259,13 +257,14 @@ async def _reconcile_dangling_vectors() -> int:
     悬空向量只来自删除半失败。为避免删除影响 scroll 游标，按 Collection 先收集后删除。
     episodes 的热集合与冷集合都对账 AIMemEpisode（其 id 集合是两者的并集真值）。返回清理向量数。
     """
-    from gsuid_core.ai_core.memory.vector.ops import scroll_point_ids, delete_points_by_ids
-    from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemEpisode
-    from gsuid_core.ai_core.memory.vector.collections import (
+    from gsuid_core.ai_core.memory.vector.ops import (
         MEMORY_EDGES_COLLECTION,
         MEMORY_ENTITIES_COLLECTION,
         MEMORY_EPISODES_COLLECTION,
+        scroll_point_ids,
+        delete_points_by_ids,
     )
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemEpisode
 
     targets = [
         (MEMORY_EPISODES_COLLECTION, AIMemEpisode),

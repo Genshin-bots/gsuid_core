@@ -5,6 +5,9 @@
 """
 
 from .ops import (
+    MEMORY_EDGES_COLLECTION,
+    MEMORY_ENTITIES_COLLECTION,
+    MEMORY_EPISODES_COLLECTION,
     search_edges,
     search_entities,
     search_episodes,
@@ -13,11 +16,6 @@ from .ops import (
     upsert_episode_vector,
 )
 from .startup import ensure_memory_collections
-from .collections import (
-    MEMORY_EDGES_COLLECTION,
-    MEMORY_ENTITIES_COLLECTION,
-    MEMORY_EPISODES_COLLECTION,
-)
 
 __all__ = [
     "MEMORY_EPISODES_COLLECTION",

@@ -16,7 +16,7 @@ import tarfile
 import zipfile
 import platform
 import tempfile
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Tuple, Optional
 from pathlib import Path
 from dataclasses import field, dataclass
 
@@ -26,7 +26,7 @@ import aiofiles
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.command_exec.config import cfg_get
+from gsuid_core.ai_core.command_exec.models import cfg_bool, cfg_dict_str_list
 
 # 键=<tool>-<version>,防同进程并发装同一工具版本。
 _PROVISION_LOCKS: Dict[str, asyncio.Lock] = {}
@@ -100,8 +100,8 @@ def _lock_for(key: str) -> asyncio.Lock:
 
 
 def _build_url(recipe: Recipe, os_norm: str, arch: str, ext: str) -> str:
-    mirrors = cfg_get("provision_mirror_urls") or {}
-    base_list: List[str] = mirrors.get(recipe.mirror_key) or []
+    mirrors = cfg_dict_str_list("provision_mirror_urls")
+    base_list = mirrors[recipe.mirror_key] if recipe.mirror_key in mirrors else []
     if base_list:
         # 镜像只改「从哪下」；sha256 仍取自官方配方,校验不变。
         filename = f"node-v{recipe.version}-{os_norm}-{arch}.{ext}"
@@ -119,9 +119,9 @@ async def ensure(exe: str, approver_ev: Optional[Event]) -> Tuple[bool, str, Opt
     if recipe is None:
         return False, f"没有 '{name}' 的自动安装配方,请手动安装", None
 
-    if not cfg_get("allow_auto_provision"):
+    if not cfg_bool("allow_auto_provision"):
         return False, "自动安装缺失工具未开启(allow_auto_provision=False)", None
-    if not cfg_get("allow_network"):
+    if not cfg_bool("allow_network"):
         return False, "自动安装需要联网,但'允许联网命令'未开启", None
 
     os_norm, arch, ext = detect_platform()

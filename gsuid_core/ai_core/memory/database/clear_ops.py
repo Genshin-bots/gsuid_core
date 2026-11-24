@@ -72,7 +72,7 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
     try:
         from gsuid_core.ai_core.rag.base import client
         from gsuid_core.ai_core.rag.qmodels import Filter, MatchAny, FieldCondition
-        from gsuid_core.ai_core.memory.vector.collections import MEMORY_COLLECTIONS
+        from gsuid_core.ai_core.memory.vector.ops import MEMORY_COLLECTIONS
 
         if client is None:
             return

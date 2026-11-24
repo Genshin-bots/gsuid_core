@@ -333,3 +333,39 @@ def test_convert_message_link_image_to_base64_prefix(monkeypatch: pytest.MonkeyP
     assert first == [Message(type="image", data=expected)]
     assert second == [Message(type="image", data=expected)]
     assert calls == ["https://example.invalid/sample.png"]
+
+
+def test_prepare_video_without_image_support_never_extracts_frames() -> None:
+    """模型未声明 image 能力时，视频投喂与超限回退均不得抽帧，须返回文本占位。"""
+    from pydantic_ai.messages import BinaryContent
+
+    from gsuid_core.ai_core.multimodal.openai_files import video_delivery_mode
+    from gsuid_core.ai_core.multimodal.inbound_prepare import (
+        InboundMediaContext,
+        prepare_video_content,
+    )
+
+    for prov in ("openai", "gemini", "anthropic"):
+        assert video_delivery_mode(supports_video=False, supports_image=False, provider=prov) == "unavailable"
+
+    sample = BinaryContent(data=b"0" * 16, media_type="video/mp4")
+    no_media_ctx = InboundMediaContext(
+        model=None,
+        provider="openai",
+        model_support=["text"],
+        task_level="high",
+        task_kind=None,
+        openai_video_settings=("file", 12, "off"),
+    )
+    oversize_video_only_ctx = InboundMediaContext(
+        model=None,
+        provider="openai",
+        model_support=["text", "video"],
+        task_level="high",
+        task_kind=None,
+        openai_video_settings=("video_url", 0, "off"),
+    )
+    for ctx in (no_media_ctx, oversize_video_only_ctx):
+        out = asyncio.run(prepare_video_content([sample], ctx))
+        assert len(out) == 1 and isinstance(out[0], str)
+        assert "无法读取该视频内容" in out[0]

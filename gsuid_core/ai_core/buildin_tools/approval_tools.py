@@ -25,9 +25,13 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core import approval as approval_center
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.approval.halt import APPROVAL_HALT_MARK, halt_line
-from gsuid_core.ai_core.approval.models import AIApprovalRequest
-from gsuid_core.ai_core.approval.session_ctx import session_has_pending, current_caller_session_id
+from gsuid_core.ai_core.approval.models import (
+    APPROVAL_HALT_MARK,
+    AIApprovalRequest,
+    halt_line,
+    session_has_pending,
+    current_caller_session_id,
+)
 
 
 def _has_pending(ctx: "RunContext[ToolContext]") -> bool:

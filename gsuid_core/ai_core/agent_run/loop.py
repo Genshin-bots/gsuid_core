@@ -737,7 +737,7 @@ def _record_call_tools_metrics(
 
 
 def _model_request_is_approval_halt(node: ModelRequestNode[Any]) -> bool:
-    from gsuid_core.ai_core.approval.halt import text_is_approval_halt
+    from gsuid_core.ai_core.approval.models import text_is_approval_halt
 
     for part in node.request.parts:
         if type(part) is not ToolReturnPart:

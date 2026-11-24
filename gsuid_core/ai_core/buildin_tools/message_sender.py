@@ -280,7 +280,7 @@ async def send_message_by_ai(
         )
 
         _ev_text = ev.raw_text if ev is not None and ev.raw_text else ""
-        from gsuid_core.ai_core.angle_bracket_guard import (
+        from gsuid_core.ai_core.control.angle_guard import (
             has_illegal_angle_tags,
             sanitize_illegal_angle_tags,
         )

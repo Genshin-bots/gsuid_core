@@ -440,7 +440,7 @@ def test_render_chart_and_html_self_healing() -> None:
     assert float(neg_m.group(1)) - float(cat_m.group(1)) >= 75.0
 
     from gsuid_core.ai_core.planning.handle_resolver import ResolvedHandle, format_resolved
-    from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard, is_raster_image_mime
+    from gsuid_core.ai_core.planning.tool_output_store import PersistedHandleCard, is_raster_image_mime
 
     assert is_raster_image_mime("image/png") and is_raster_image_mime("image/jpeg")
     assert not is_raster_image_mime("image/svg+xml")
@@ -1831,10 +1831,10 @@ def test_frozen_session_wire_tools_stable_across_turns(
     from pydantic_ai.messages import TextPart, ModelResponse
     from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+    import gsuid_core.ai_core.tool_health as tool_state_signals
     import gsuid_core.ai_core.buildin_tools  # noqa: F401
     import gsuid_core.ai_core.hooks.dispatch as hook_dispatch
     import gsuid_core.ai_core.agent_run.tools as tools_mod
-    import gsuid_core.ai_core.tool_state_signals as tool_state_signals
     import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
     from gsuid_core.models import Event
     from gsuid_core.ai_core.models import ToolContext

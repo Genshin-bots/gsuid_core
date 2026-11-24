@@ -1,12 +1,11 @@
-"""命令执行器 @ai_tools 注册入口（category="buildin",主人专属）。
+"""命令执行器 @ai_tools 注册与启动接入（category="buildin", 主人专属）。"""
 
-run_command（主入口）/ check_command_available。需要审批时本轮结束，主人用私聊
-确认码或审批中心批准。靠 visible_when 对非主人隐藏 schema、check_func 执行期兜底。
-"""
+from __future__ import annotations
 
 import uuid
 import shutil
 from typing import Tuple, Optional
+from pathlib import Path
 
 from pydantic_ai import RunContext
 
@@ -15,11 +14,20 @@ from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.command_exec import audit, approval
-from gsuid_core.ai_core.command_exec.config import cfg_get
-from gsuid_core.ai_core.command_exec.policy import Decision, decide
-from gsuid_core.ai_core.command_exec.runner import run_resolved
-from gsuid_core.ai_core.command_exec.analyzer import CommandPlan, analyze
+from gsuid_core.ai_core.command_exec.models import (
+    cfg_bool,
+    audit_log,
+    cfg_str_list,
+)
+from gsuid_core.ai_core.command_exec.policy import (
+    Decision,
+    CommandPlan,
+    decide,
+    analyze,
+    submit_approval,
+    format_command_result,
+)
+from gsuid_core.ai_core.command_exec.executor import run_resolved
 
 
 def _is_authorized(ev: Optional[Event]) -> bool:
@@ -29,44 +37,36 @@ def _is_authorized(ev: Optional[Event]) -> bool:
 
     if _is_master_user(str(ev.user_id)) or ev.user_pm == 0:
         return True
-    return str(ev.user_id) in set(cfg_get("operator_user_ids") or [])
+    return str(ev.user_id) in set(cfg_str_list("operator_user_ids"))
 
 
 def _cmd_visible_to_master(ctx: "RunContext[ToolContext]") -> bool:
-    if not cfg_get("enable"):
+    if not cfg_bool("enable"):
         return False
     ev = ctx.deps.ev if ctx.deps else None
     if ev is None:
-        return True  # 不隐藏,交 check_func 兜底(不误伤能力代理)
+        return True
     return _is_authorized(ev)
 
 
 def _master_and_enabled(ev: Optional[Event]) -> Tuple[bool, str]:
-    if not cfg_get("enable"):
+    if not cfg_bool("enable"):
         return False, "🚫 命令执行器未启用(可在 WebConsole 开启)"
     if not _is_authorized(ev):
         return False, "🚫 仅主人可使用命令执行器"
     return True, "✅"
 
 
-def _format_result(command: str, result) -> str:
-    body = result.stdout or "（无输出）"
-    if result.truncated:
-        body += "\n[输出已截断]"
-    head = f"✅ 已执行 `{command}`" if result.returncode == 0 else f"⚠️ `{command}` 返回码 {result.returncode}"
-    return f"{head}\n```\n{body}\n```"
-
-
 async def _execute_and_report(ev: Optional[Event], plan: CommandPlan, timeout: int, work_dir: Optional[str]) -> str:
     argv = plan.commands[0].argv
     result, err = await run_resolved(ev, argv, timeout, work_dir)
     if result is None:
-        await audit.log(ev, plan, Decision.ALLOW, f"执行失败: {err}")
+        await audit_log(ev, plan, Decision.ALLOW, f"执行失败: {err}")
         return f"❌ 执行失败：{err}"
-    await audit.log(ev, plan, Decision.ALLOW, "", result=result)
-    if cfg_get("notify_master_on_exec"):
+    await audit_log(ev, plan, Decision.ALLOW, "", result=result)
+    if cfg_bool("notify_master_on_exec"):
         logger.info(t("log.ai.commandexec_auto_allow", p0=plan.raw))
-    return _format_result(plan.raw, result)
+    return format_command_result(plan.raw, result)
 
 
 # 配置 max_timeout 默认上限 600s，外层包装需 ≥ 该上限，避免被默认 60s 误杀。
@@ -103,15 +103,15 @@ async def run_command(
     decision, why = decide(plan)
 
     if decision is Decision.DENY:
-        await audit.log(ev, plan, decision, why)
+        await audit_log(ev, plan, decision, why)
         return f"🚫 拒绝执行：{why}"
 
     if decision is Decision.APPROVAL:
         request_id = uuid.uuid4().hex
-        req = await approval.submit(ev, plan, why, request_id)
-        await audit.log(ev, plan, decision, why, request_id=request_id)
+        req = await submit_approval(ev, plan, why, request_id)
+        await audit_log(ev, plan, decision, why, request_id=request_id)
         from gsuid_core.ai_core.approval import submit_meta
-        from gsuid_core.ai_core.approval.halt import halt_line
+        from gsuid_core.ai_core.approval.models import halt_line
 
         delivered, reused = submit_meta(req.request_id)
         return halt_line(req.short_id, delivered=delivered, reused=reused)
@@ -126,8 +126,6 @@ async def check_command_available(ctx: RunContext[ToolContext], name: str) -> st
     Args:
         name: 可执行文件名,如 "node" / "npm" / "git"。
     """
-    from pathlib import Path
-
     resolved = shutil.which(Path(name).name)
     if resolved is None:
         return f"❌ 未找到 '{name}'（不在 PATH 中）。"

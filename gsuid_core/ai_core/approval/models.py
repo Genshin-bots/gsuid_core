@@ -7,6 +7,7 @@ payload 是提交时冻结的快照，裁决后 category handler 只作用于快
 
 import time
 from typing import List, Optional
+from contextvars import Token, ContextVar
 
 from sqlmodel import Field, col, desc, select, update
 from sqlalchemy.engine import CursorResult
@@ -251,3 +252,64 @@ class AIApprovalRequest(BaseIDModel, table=True):
         stmt = select(cls).order_by(desc(col(cls.created_at))).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+
+# ── 运行器停机标记（不是人格句子，不进 control/lines.py）──────────
+
+APPROVAL_HALT_MARK = "[[APPROVAL_HALT]]"
+# 回调已另开下一张票：裁决函数看到这个开头就不回灌。
+APPROVAL_HOLD_MARK = "[[APPROVAL_HOLD]]"
+DEFAULT_APPROVAL_TTL = 600
+
+
+def text_is_approval_halt(text: str) -> bool:
+    return text.startswith(APPROVAL_HALT_MARK)
+
+
+def action_failed(text: str) -> bool:
+    """领域回调或续作正文表示这一步没有做成。"""
+    body = text.strip()
+    return body.startswith(("安装失败", "❌", "🚫", "⚠️ 能力代理执行失败"))
+
+
+def halt_line(short_id: str, *, delivered: bool, reused: bool) -> str:
+    """工具返回值。不含确认码。运行器见到开头标记就结束本轮。"""
+    if reused:
+        note = "仍在等原先那条确认，没有新开审批。"
+    elif delivered:
+        note = "确认码已私聊送出。"
+    else:
+        note = "私聊没发出，请到审批中心处理。"
+    return f"{APPROVAL_HALT_MARK}\n已挂起审批 #{short_id}。{note}不要再安装，不要再派开发任务。"
+
+
+# ── 调用会话上下文（提交审批时正在跑的 agent 会话）────────────────
+
+_CALLER: ContextVar[str] = ContextVar("approval_caller_session", default="")
+_PENDING_SESSIONS: set[str] = set()
+
+
+def bind_caller_session(session_id: str) -> Token[str]:
+    return _CALLER.set(session_id or "")
+
+
+def reset_caller_session(token: Token[str]) -> None:
+    _CALLER.reset(token)
+
+
+def current_caller_session_id() -> str:
+    return _CALLER.get()
+
+
+def note_pending_session(session_id: str) -> None:
+    if session_id:
+        _PENDING_SESSIONS.add(session_id)
+
+
+def clear_pending_session(session_id: str) -> None:
+    if session_id:
+        _PENDING_SESSIONS.discard(session_id)
+
+
+def session_has_pending(session_id: str) -> bool:
+    return bool(session_id) and session_id in _PENDING_SESSIONS

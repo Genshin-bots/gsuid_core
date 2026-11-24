@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, Sequence
+import re
+from typing import Mapping, Optional, Protocol, Sequence
 from dataclasses import dataclass
 from collections.abc import Callable, Awaitable
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.control import angle_guard as _ab
+from gsuid_core.ai_core.control.lines import INNER_OS_NUDGE
 from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
 from gsuid_core.ai_core.agent_run.support import (
@@ -24,27 +27,13 @@ from gsuid_core.ai_core.agent_run.support import (
     _claims_inflight_without_backend,
 )
 from gsuid_core.ai_core.control.directive import (
+    Evidence,
     Directive,
     GateResult,
+    Obligation,
     GateDecision,
+    ObligationKind,
     obligation_satisfied,
-)
-from gsuid_core.ai_core.control.corrections import (
-    fake_done_directive,
-    master_title_directive,
-    blocked_voice_directive,
-    inflight_wait_directive,
-    premature_claim_directive,
-    entity_zero_tool_directive,
-    status_zero_tool_directive,
-    addressed_silence_directive,
-    render_obligation_directive,
-    numeric_recitation_directive,
-    cover_hit_zero_tool_directive,
-    missing_offered_tool_directive,
-    structural_zero_tool_directive,
-    framework_idle_deliver_directive,
-    unbacked_inflight_promise_directive,
 )
 from gsuid_core.ai_core.agent_run.speech_policy import (
     ZERO_OUTPUT_VOICE_REASONS,
@@ -52,6 +41,7 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     non_master_title,
 )
 from gsuid_core.ai_core.control.outbound_detectors import (
+    OutboundTextView,
     ooc_rule_for,
     keeps_working,
     title_mentioned,
@@ -67,6 +57,235 @@ from gsuid_core.ai_core.control.outbound_detectors import (
     looks_like_task_accept_speech,
     looks_like_delivery_status_narration,
 )
+
+# ── 0. 纠正指令构造器（观察只陈述确知事实，义务恒可申辩）────────────────────
+
+
+def _correction(
+    reason_code: str,
+    observation: str,
+    *,
+    must: ObligationKind,
+    satisfied_by: tuple[str, ...],
+    tool_name: str = "",
+    tool_args_match: Mapping[str, str] | None = None,
+    tool_calls: int = 0,
+    structured_returns: int = 0,
+    detail: str = "",
+) -> Directive:
+    return Directive(
+        kind="correction",
+        reason_code=reason_code,
+        observation=observation,
+        obligations=(
+            Obligation(
+                must=must,
+                tool_name=tool_name,
+                tool_args_match=tool_args_match if tool_args_match is not None else {},
+                satisfied_by=satisfied_by,
+            ),
+        ),
+        evidence=Evidence(tool_calls=tool_calls, structured_returns=structured_returns, detail=detail),
+    )
+
+
+def fake_done_directive(*, tool_pool_size: int) -> Directive:
+    return _correction(
+        "fake_done",
+        "你上一条回复声称已完成某个操作，但本轮没有任何工具调用记录——该声明没有执行支撑。"
+        "现在真正调用对应工具执行；若确实做不到，就如实告诉用户「刚才说错了，还没有做」。",
+        must="call_tool",
+        satisfied_by=("any_tool_called",),
+        detail=f"可用工具 {tool_pool_size} 个",
+    )
+
+
+def unbacked_inflight_promise_directive(*, tool_calls: int) -> Directive:
+    return _correction(
+        "unbacked_inflight_promise",
+        "你上一条回复向用户承诺正在后台处理或完成后通知，但本轮既没有成功派出后台子任务"
+        "（create_subagent），也没有完成任何生效的任务/日程写入——后台没有任何任务在跑。"
+        "现在立即调用 create_subagent、register_kanban_task 或对应执行工具把任务真正挂上去；"
+        "若确实缺少能力或卡在某一步，就如实向用户说明，禁止留空头在途承诺。",
+        must="call_tool",
+        satisfied_by=("async_delegated", "effectual_mutated", "image_sent"),
+        tool_calls=tool_calls,
+        detail="无后台在途子任务且无生效写入",
+    )
+
+
+def missing_offered_tool_directive(*, tool_pool_size: int) -> Directive:
+    return _correction(
+        "missing_offered_tool",
+        "你声称没有对应工具，但本轮主会话已经装配了查询/修改/取消类工具。"
+        "先用列表类工具定位目标，再修改或取消。禁止再说没有工具，禁止为此 create_subagent。",
+        must="call_tool",
+        satisfied_by=("any_tool_called",),
+        detail=f"可用工具 {tool_pool_size} 个",
+    )
+
+
+def addressed_silence_directive() -> Directive:
+    return _correction(
+        "addressed_silence",
+        "本轮你被直接呼叫，却只输出了沉默。该拒就短拒，该办事就调工具，该闲聊就短回；不要只沉默。",
+        must="deliver",
+        satisfied_by=("any_tool_called",),
+    )
+
+
+def cover_hit_zero_tool_directive() -> Directive:
+    return _correction(
+        "cover_hit_zero_tool",
+        "用户原话命中了已注册工具的覆盖句，但本轮没有调用任何工具，刚才的答案是空口编的。"
+        "现在调用 find_tools 或对口工具。禁止用 dispute_directive 把空口建议留住。不要重复刚才那句。",
+        must="call_tool",
+        satisfied_by=("any_tool_called",),
+        detail="原话命中工具 cover",
+    )
+
+
+def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
+    return _correction(
+        "structural_zero_tool",
+        "本轮有未处理的附件，或可继承的上轮工具任务，但没有调用任何工具。"
+        "现在调用对应工具；缺参数先用上文实体试一次。"
+        "若附件或跟进并不需要工具，调用 dispute_directive 申辩，不要重复原答。",
+        must="call_tool",
+        satisfied_by=("any_tool_called",),
+        detail=f"可用工具 {tool_pool_size} 个",
+    )
+
+
+def framework_idle_deliver_directive(*, allow_render: bool = True) -> Directive:
+    render_hint = (
+        '只有复杂长表格/大对照表才必须 create_subagent(agent_profile="render_agent") 出图。'
+        if allow_render
+        else "当前人格未启用出图委派：长结果直接用角色口吻概括交付给用户，禁止委派 render_agent。"
+    )
+    return _correction(
+        "framework_idle_deliver",
+        "这是任务交付回灌。简短事实（如版本号、轻量状态）可以直接用角色口吻概括交付给用户；"
+        f"{render_hint}有图就 send_message_by_ai 发出。切勿只输出「在查/别催」等废话进度句。",
+        must="call_tool",
+        satisfied_by=("any_tool_called",),
+        detail="交付回灌未完成出图或交付",
+    )
+
+
+def master_title_directive(title: str) -> Directive:
+    return _correction(
+        "master_title",
+        (
+            f"接收人不是主人，上一段含有「{title}」，用户看不到。"
+            "改写成不含这个称呼的一句再发给用户。不要只输出 <SILENCE>。"
+        ),
+        must="deliver",
+        satisfied_by=("user_visible_sent",),
+        detail="主人称呼",
+    )
+
+
+def entity_zero_tool_directive() -> Directive:
+    return _correction(
+        "entity_without_tool",
+        "本轮已经为这句装上了查询工具，但没有调用任何工具就回答了。"
+        "先调用能回答这句的查询工具，再按工具结果用角色口吻回答。"
+        "若这句只是闲聊、不需要查数据，调用 dispute_directive 申辩。",
+        must="call_tool",
+        satisfied_by=("any_tool_called",),
+    )
+
+
+def status_zero_tool_directive() -> Directive:
+    return _correction(
+        "status_without_tool",
+        "用户在追问进行中事项的进度，但你本轮没有调用任何查询工具就报了状态。"
+        "先核实真实状态（在途委派用 check_delegation，看板用 list_my_kanban_tasks，"
+        "产物用 artifact_get_recent），再用角色短句说明还在弄/弄好了/翻砸了。不要空口说「快好了」。",
+        must="check_delegation",
+        satisfied_by=("status_tool_called", "delegation_checked"),
+    )
+
+
+def premature_claim_directive() -> Directive:
+    return _correction(
+        "premature_delivery",
+        "你上一段被拦下了，用户没看到。图还没发出，回复却是完成态。"
+        "用当前人格改成一句短话，不要宣称已经做好或已经发出。不要委派出图，不要只输出 <SILENCE>。",
+        must="deliver",
+        satisfied_by=("user_visible_sent",),
+        detail="出站话术闸拦下了完成态",
+    )
+
+
+def inflight_wait_directive() -> Directive:
+    return _correction(
+        "silence_only_or_async",
+        "任务还在进行，你上一段没有发出。改成一句等待，不要讲进度、结果或内部步骤。不要只输出 <SILENCE>。",
+        must="deliver",
+        satisfied_by=("user_visible_sent",),
+        detail="在途台词被拦，还没有放过等待",
+    )
+
+
+def blocked_voice_directive() -> Directive:
+    return _correction(
+        "blocked_voice",
+        "你上一段被拦下了，用户没看到：过程说明或内部编排不能当对用户的话。"
+        "用当前人格改成一句短话再说。不要委派出图，不要只输出 <SILENCE>。",
+        must="deliver",
+        satisfied_by=("user_visible_sent",),
+        detail="出站话术闸拦下了过程或编排",
+    )
+
+
+def numeric_recitation_directive(*, allow_render: bool = True) -> Directive:
+    if not allow_render:
+        return _correction(
+            "numeric_recitation",
+            "你上一段给用户的回复被拦下了，没有发出去：多点数字对照不能当群聊台词。"
+            "用一两句短话说明结论，或如实说明当前不能出图。不要委派 render_agent，不要只输出 <SILENCE>。",
+            must="deliver",
+            satisfied_by=("user_visible_sent",),
+            detail="出站话术闸拦下了念数，且当前人格未启用出图",
+        )
+    return _correction(
+        "numeric_recitation",
+        "你上一段给用户的回复被拦下了，没有发出去：多点数字对照不能当群聊台词。"
+        '把那段改委派 create_subagent(agent_profile="render_agent") 出图。'
+        "不要再把数字念进气泡，不要只输出 <SILENCE>。",
+        must="call_tool",
+        tool_name="create_subagent",
+        tool_args_match={"agent_profile": "render_agent"},
+        satisfied_by=("render_delegated", "image_sent"),
+        detail="出站话术闸拦下了念数",
+    )
+
+
+def render_obligation_directive(*, recited_report: bool, tool_calls: int, allow_render: bool = True) -> Directive:
+    observation = "本轮工具返回里有较长结构，你把它整段念出来了。" if recited_report else "本轮工具返回里有较长结构。"
+    reason = "report_speech" if recited_report else "render_pending"
+    if not allow_render:
+        return _correction(
+            reason,
+            observation + "一两句能说清就保持原答或申辩；当前人格未启用出图，不要委派 render_agent，不要自己写 HTML。",
+            must="deliver",
+            satisfied_by=("user_visible_sent",),
+            tool_calls=tool_calls,
+            structured_returns=1,
+        )
+    return _correction(
+        reason,
+        observation + "一两句能说清就保持原答或申辩；只有对照/多日/多项才值得委派 render_agent 出图，不要自己写 HTML。",
+        must="call_tool",
+        tool_name="create_subagent",
+        tool_args_match={"agent_profile": "render_agent"},
+        satisfied_by=("render_delegated", "image_sent"),
+        tool_calls=tool_calls,
+        structured_returns=1,
+    )
+
 
 # ── A. 话术策略规则 + 配套重说指令（单表合一） ─────────────────────────
 
@@ -313,11 +532,11 @@ def rewrite_directive_for(
 
 @dataclass(frozen=True, slots=True)
 class OutboundEvaluators:
-    """由 ``output_gate`` 提供的状态化检测器回调（避免策略表直接持有可变包）。"""
+    """由 ``output_gate`` 提供的状态化检测器回调（共享同一份 ``OutboundTextView``）。"""
 
-    angle_bracket: Callable[[str], Optional[GateResult]]
-    ooc: Callable[[str], Optional[GateResult]]
-    inner_os: Callable[[str], Optional[GateResult]]
+    angle_bracket: Callable[[OutboundTextView], Optional[GateResult]]
+    ooc: Callable[[OutboundTextView], Optional[GateResult]]
+    inner_os: Callable[[OutboundTextView], Optional[GateResult]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,17 +544,17 @@ class OutboundGateRule:
     """单条发送前策略条目，非 ALLOW 即短路。"""
 
     name: str
-    evaluate: Callable[[str, Optional[SpeechContext], OutboundEvaluators], Optional[GateResult]]
+    evaluate: Callable[[OutboundTextView, Optional[SpeechContext], OutboundEvaluators], Optional[GateResult]]
 
 
 def _eval_outbound_speech_rule(
-    text: str,
+    view: OutboundTextView,
     speech_ctx: Optional[SpeechContext],
     _evaluators: OutboundEvaluators,
 ) -> Optional[GateResult]:
     if speech_ctx is None:
         return None
-    blocked, reason = evaluate_speech_ring(speech_ctx, text)
+    blocked, reason = evaluate_speech_ring(speech_ctx, view.raw)
     if blocked:
         return GateResult(decision=GateDecision.REWRITE, policy="speech_policy", detail=reason)
     return None
@@ -343,9 +562,9 @@ def _eval_outbound_speech_rule(
 
 _OUTBOUND_RING: tuple[OutboundGateRule, ...] = (
     OutboundGateRule("speech_policy", _eval_outbound_speech_rule),
-    OutboundGateRule("angle_bracket", lambda t, _sc, ev: ev.angle_bracket(t)),
-    OutboundGateRule("ooc", lambda t, _sc, ev: ev.ooc(t)),
-    OutboundGateRule("inner_os", lambda t, _sc, ev: ev.inner_os(t)),
+    OutboundGateRule("angle_bracket", lambda v, _sc, ev: ev.angle_bracket(v)),
+    OutboundGateRule("ooc", lambda v, _sc, ev: ev.ooc(v)),
+    OutboundGateRule("inner_os", lambda v, _sc, ev: ev.inner_os(v)),
 )
 
 
@@ -357,7 +576,7 @@ def run_outbound_gate(
     speech_ctx: Optional[SpeechContext],
     evaluators: OutboundEvaluators,
 ) -> GateResult:
-    """出站单句统一闸门环：空值跳过 → 群 PII 脱敏 → 按 ``_OUTBOUND_RING`` 短路裁决。"""
+    """出站单句统一闸门环：空值跳过 → 群 PII 脱敏 → 单次构建视图 → 按 ``_OUTBOUND_RING`` 裁决。"""
     if not text or not str(text).strip():
         return GateResult(decision=GateDecision.ALLOW)
     if channel not in ("main", "tool"):
@@ -370,11 +589,126 @@ def run_outbound_gate(
         if hits:
             text = mask_pii(text)
             logger.warning(i18n_t("log.ai.output_gate_pii_masked", hits=",".join(hits)))
+    view = OutboundTextView(text)
     for rule in _OUTBOUND_RING:
-        res = rule.evaluate(text, speech_ctx, evaluators)
+        res = rule.evaluate(view, speech_ctx, evaluators)
         if res is not None and res.decision is not GateDecision.ALLOW:
             return res
     return GateResult(decision=GateDecision.ALLOW, send_text=text if is_group else "")
+
+
+# ── B1. 尖括号与内心戏策略裁决（纯逻辑，状态读写通过 hooks 注入）─────────────
+
+_INNER_OS_RE = re.compile(r"（心想[:：].{20,}?）", re.DOTALL)
+
+
+def _strip_inner_os_spans(text: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", _INNER_OS_RE.sub("", text)).strip()
+
+
+@dataclass(frozen=True, slots=True)
+class AngleGateHooks:
+    is_fused: Callable[[], bool]
+    record_block: Callable[[str], int]
+    set_abort: Callable[[], None]
+
+
+def evaluate_angle_bracket_gate(
+    view: OutboundTextView,
+    *,
+    channel: str,
+    hooks: AngleGateHooks,
+) -> Optional[GateResult]:
+    if hooks.is_fused():
+        return GateResult(
+            decision=GateDecision.FUSE,
+            policy="angle_bracket",
+            feedback=_ab.build_fuse_warning(),
+            fused=True,
+            detail="already_fused",
+        )
+    tags = _ab.find_illegal_angle_tags(view.raw, pre_masked=view.code_masked)
+    if not tags:
+        return None
+    if _ab.looks_like_dated_or_ordered_answer(view.raw):
+        cleaned = _ab.sanitize_illegal_angle_tags(view.raw)
+        if cleaned and not _ab.has_illegal_angle_tags(cleaned):
+            logger.warning(
+                i18n_t(
+                    "log.ai.output_gate_angle_bracket_rewrite",
+                    attempts=0,
+                    max_retries=_ab.MAX_RETRIES,
+                    channel=channel,
+                    tags=repr(tags[:4]),
+                    preview=repr(view.raw[:80]),
+                )
+            )
+            return GateResult(
+                decision=GateDecision.FALLBACK,
+                policy="angle_bracket",
+                send_text=cleaned,
+                detail="sanitized_list",
+            )
+    attempts = hooks.record_block(view.raw)
+    if attempts >= _ab.MAX_RETRIES:
+        hooks.set_abort()
+        logger.warning(
+            i18n_t(
+                "log.ai.output_gate_angle_bracket_fuse",
+                attempts=attempts,
+                channel=channel,
+                tags=repr(tags[:4]),
+                preview=repr(view.raw[:80]),
+            )
+        )
+        return GateResult(
+            decision=GateDecision.FUSE,
+            policy="angle_bracket",
+            feedback=_ab.build_fuse_warning(),
+            fused=True,
+            detail=",".join(tags[:6]),
+        )
+    logger.warning(
+        i18n_t(
+            "log.ai.output_gate_angle_bracket_rewrite",
+            attempts=attempts,
+            max_retries=_ab.MAX_RETRIES,
+            channel=channel,
+            tags=repr(tags[:4]),
+            preview=repr(view.raw[:80]),
+        )
+    )
+    return GateResult(
+        decision=GateDecision.REWRITE,
+        policy="angle_bracket",
+        feedback=_ab.build_rewrite_warning(tags, view.raw),
+        detail=",".join(tags[:6]),
+    )
+
+
+def evaluate_inner_os_gate(
+    view: OutboundTextView,
+    *,
+    record_attempt: Callable[[str], int],
+    recheck_rest: Callable[[OutboundTextView], Optional[GateResult]],
+) -> Optional[GateResult]:
+    body = view.stripped
+    if not body:
+        return None
+    spans = [m.group(0) for m in _INNER_OS_RE.finditer(body) if len(m.group(0)) >= 30]
+    if not spans:
+        return None
+    attempts = record_attempt(body)
+    if attempts >= 2:
+        rest = _strip_inner_os_spans(body)
+        if not rest:
+            return GateResult(decision=GateDecision.FUSE, policy="inner_os", fused=True, detail="empty_after_strip")
+        rechecked = recheck_rest(OutboundTextView(rest))
+        if rechecked is not None and rechecked.decision is not GateDecision.ALLOW:
+            return rechecked
+        return GateResult(decision=GateDecision.FALLBACK, policy="inner_os", send_text=rest, detail="stripped")
+    logger.warning(i18n_t("log.ai.output_gate_inner_os_rewrite", preview=repr(body[:80])))
+    return GateResult(decision=GateDecision.REWRITE, policy="inner_os", feedback=INNER_OS_NUDGE, detail="inner_os")
 
 
 # ── B2. 数据驱动 OOC 防火墙裁决环（规则表定义在 control.outbound_detectors） ───
@@ -396,9 +730,10 @@ def evaluate_ooc_gate(
     channel: str,
     exposed_tool_names: Sequence[str],
     hooks: OocGateHooks,
+    view: Optional[OutboundTextView] = None,
 ) -> Optional[GateResult]:
     """按 ``_OOC_RING`` 裁决单条出站台词的 OOC 放行 / 重写 / 熔断。"""
-    hit = inspect_outbound_ooc(text, user_text=user_text, exposed_tool_names=exposed_tool_names)
+    hit = inspect_outbound_ooc(text, user_text=user_text, exposed_tool_names=exposed_tool_names, view=view)
     if hit is None:
         return None
     rule = ooc_rule_for(hit.category)

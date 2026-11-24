@@ -1224,7 +1224,7 @@ class AISessionLogger:
         if self._closed:
             return
 
-        from gsuid_core.ai_core.session_log_path import relative_session_log_path
+        from gsuid_core.ai_core.resource import relative_session_log_path
 
         stored = relative_session_log_path(log_file) if log_file else log_file
         link_record: LinkedAgentRecord = {

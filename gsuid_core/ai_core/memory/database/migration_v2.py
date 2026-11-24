@@ -140,7 +140,7 @@ async def _ensure_query_indexes() -> None:
 
 
 async def _clear_legacy_qdrant() -> None:
-    from gsuid_core.ai_core.memory.vector.collections import LEGACY_MEMORY_COLLECTIONS
+    from gsuid_core.ai_core.memory.vector.ops import LEGACY_MEMORY_COLLECTIONS
 
     try:
         from gsuid_core.ai_core.rag.base import client

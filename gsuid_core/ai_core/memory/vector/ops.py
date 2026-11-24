@@ -27,10 +27,29 @@ from gsuid_core.ai_core.rag.qmodels import (
     FieldCondition,
 )
 
-from .collections import (
-    MEMORY_EDGES_COLLECTION,
-    MEMORY_ENTITIES_COLLECTION,
+MEMORY_EPISODES_COLLECTION = "memory_episodes"
+MEMORY_ENTITIES_COLLECTION = "memory_entities"
+MEMORY_EDGES_COLLECTION = "memory_edges"
+
+MEMORY_COLLECTIONS: tuple[str, ...] = (
     MEMORY_EPISODES_COLLECTION,
+    MEMORY_ENTITIES_COLLECTION,
+    MEMORY_EDGES_COLLECTION,
+)
+
+# 迁移时删除 + 清备份：旧集合 + 三个活跃集合与历史 memory_threads（净室重建）。
+LEGACY_MEMORY_COLLECTIONS: tuple[str, ...] = (
+    "memory_sessions",
+    "memory_gists",
+    "memory_events",
+    "memory_categories",
+    "memory_hiergraph",
+    "memory_conflicts",
+    "memory_episodes_cold",
+    "memory_episodes",
+    "memory_entities",
+    "memory_edges",
+    "memory_threads",
 )
 
 if TYPE_CHECKING:
@@ -799,7 +818,6 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         return []
 
     from gsuid_core.ai_core.rag.base import client as qdrant_client
-    from gsuid_core.ai_core.memory.vector.collections import MEMORY_ENTITIES_COLLECTION
 
     if qdrant_client is None:
         return []

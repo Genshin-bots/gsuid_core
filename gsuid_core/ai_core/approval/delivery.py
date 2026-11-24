@@ -1,17 +1,27 @@
-"""批准后把续作卡回灌进提交时的那个 agent。不调用 run_capability_agent。"""
+"""审批通知与批准后续作回灌（私聊确认码 / 关单通知 / 回灌原会话）。"""
+
+from __future__ import annotations
 
 import re
+import json
+import time
 from typing import TYPE_CHECKING, Optional
 
-from gsuid_core.bot import Bot
+from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
+from gsuid_core.config import core_config
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.control.lines import approval_resume_line
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
 
-from .halt import action_failed, text_is_approval_halt
-from .models import AIApprovalRequest
+from .models import (
+    DEFAULT_APPROVAL_TTL,
+    AIApprovalRequest,
+    action_failed,
+    session_has_pending,
+    text_is_approval_halt,
+)
 
 if TYPE_CHECKING:
     from contextvars import Token
@@ -19,19 +29,159 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
     from gsuid_core.ai_core.planning.runtime import PlanRunContext
 
+WAITING_GROUP_TEXT = ""
 _RES = re.compile(r"res_[0-9a-fA-F]{3,}")
 
 
 def _payload_str(raw: str, key: str) -> str:
-    import json
-
-    data = json.loads(raw or "{}")
+    data: object = json.loads(raw or "{}")
     if not isinstance(data, dict) or key not in data:
         return ""
     val = data[key]
-    if isinstance(val, str):
-        return val
-    return ""
+    return val if isinstance(val, str) else ""
+
+
+def _window_phrase(seconds: int) -> str:
+    left = seconds if seconds > 0 else DEFAULT_APPROVAL_TTL
+    if left % 60 == 0:
+        return f"{left // 60} 分钟"
+    if left >= 60:
+        return f"{(left + 30) // 60} 分钟"
+    return f"{left} 秒"
+
+
+def format_confirm_dm(title: str, effect: str, code: str, short_id: str, ttl_seconds: int) -> str:
+    shown = effect.strip() or "（调用方没有写批准后会发生什么）"
+    window = _window_phrase(ttl_seconds)
+    return (
+        f"需要你确认一件事，{window}内有效。\n"
+        "\n"
+        f"事项：{title}\n"
+        f"批准后会发生：{shown}\n"
+        "\n"
+        f"只回复这 6 位确认码：{code}\n"
+        f"或打开网页控制台 → 审批中心 → 找到 #{short_id} → 批准 / 拒绝。\n"
+        "\n"
+        "超时未确认则此事取消，不会自动重做。"
+    )
+
+
+def _pick_ws_bot(ws_bot_id: str, bot_id: str, *, fallback_any: bool = True) -> Optional[_Bot]:
+    from gsuid_core.gss import gss
+
+    bot = gss.active_bot[ws_bot_id] if ws_bot_id and ws_bot_id in gss.active_bot else None
+    if bot is None and bot_id in gss.active_bot:
+        bot = gss.active_bot[bot_id]
+    if bot is None and fallback_any and gss.active_bot:
+        bot = next(iter(gss.active_bot.values()))
+    return bot
+
+
+async def _dm_user(bot_id: str, bot_self_id: str, user_id: str, ws_bot_id: str, text: str) -> bool:
+    if not user_id:
+        return False
+    bot = _pick_ws_bot(ws_bot_id, bot_id, fallback_any=True)
+    if bot is None:
+        return False
+    await bot.target_send(text, "direct", user_id, bot_id or bot.bot_id, bot_self_id or "")
+    return True
+
+
+async def _dm_master(row: AIApprovalRequest, text: str) -> bool:
+    """主人级审批：直接私聊发给 masters 名单中的主人，不依赖订阅表。"""
+    masters = core_config.get_config("masters")
+    if not masters:
+        return False
+    ws_bot_id = _payload_str(row.payload_json, "ws_bot_id")
+    bot = _pick_ws_bot(ws_bot_id, row.bot_id, fallback_any=True)
+    if bot is None:
+        return False
+    bot_id = row.bot_id or bot.bot_id
+    bot_self_id = row.bot_self_id or ""
+    sent = 0
+    for master_id in masters:
+        uid = str(master_id).strip()
+        if not uid:
+            continue
+        try:
+            await bot.target_send(text, "direct", uid, bot_id, bot_self_id)
+            sent += 1
+        except Exception:
+            logger.warning(t("log.ai.approval_confirm_dm_missing", p0=row.short_id))
+    return sent > 0
+
+
+async def send_confirm_dm(row: AIApprovalRequest, code: str) -> bool:
+    """把确认码私聊给裁决人（用户级发给发起人，主人级发给主人）。"""
+    left = max(1, int(row.expires_at) - int(time.time())) if row.expires_at else DEFAULT_APPROVAL_TTL
+    text = format_confirm_dm(row.title, row.effect, code, row.short_id, left)
+    if row.audience == "user":
+        ok = await _dm_user(
+            row.bot_id,
+            row.bot_self_id,
+            row.operator_user_id,
+            _payload_str(row.payload_json, "ws_bot_id"),
+            text,
+        )
+    else:
+        ok = await _dm_master(row, text)
+    if ok:
+        logger.info(t("log.ai.approval_confirm_dm_sent", p0=row.short_id))
+    else:
+        logger.info(t("log.ai.approval_confirm_dm_missing", p0=row.short_id))
+    return ok
+
+
+async def notify_parent_group(row: AIApprovalRequest, text: str) -> None:
+    """群里一句固定事实。若 text 为空则不发送，避免打扰群聊。"""
+    if not text or not text.strip():
+        return
+    if row.user_type not in ("group", "channel", "sub_channel"):
+        return
+    target = row.group_id or ""
+    if not target:
+        return
+    if row.user_type == "group":
+        target_type = "group"
+    elif row.user_type == "channel":
+        target_type = "channel"
+    else:
+        target_type = "sub_channel"
+    ws_bot_id = _payload_str(row.payload_json, "ws_bot_id")
+    bot = _pick_ws_bot(ws_bot_id, row.bot_id, fallback_any=False)
+    if bot is None:
+        return
+    await bot.target_send(
+        text,
+        target_type,
+        target,
+        row.bot_id,
+        row.bot_self_id or "",
+        group_id=row.group_id,
+    )
+
+
+async def notify_closed(row: AIApprovalRequest, *, expired: bool) -> None:
+    """拒绝或超时：私聊告知裁决人，不发群。"""
+    text = f"#{row.short_id} 已超时，未执行。" if expired else f"#{row.short_id} 已拒绝，未执行。"
+    if row.audience == "user":
+        await _dm_user(
+            row.bot_id,
+            row.bot_self_id,
+            row.operator_user_id,
+            _payload_str(row.payload_json, "ws_bot_id"),
+            text,
+        )
+    else:
+        await _dm_master(row, text)
+    logger.info(t("log.ai.approval_expired_stop", p0=row.short_id, status="expired" if expired else "rejected"))
+
+
+async def ack_direct(bot_id: str, bot_self_id: str, user_id: str, ws_bot_id: str, text: str) -> None:
+    await _dm_user(bot_id, bot_self_id, user_id, ws_bot_id, text)
+
+
+# ── 批准后续作回灌（把续作卡回灌进提交时的 agent）────────────────
 
 
 def _event_for(row: AIApprovalRequest) -> Event:
@@ -80,17 +230,10 @@ async def reinject_approved(row: AIApprovalRequest, result_text: str) -> None:
     if agent is None:
         logger.warning(t("log.ai.approval_resume_missing_session", p0=row.short_id, p1=row.origin_session_id))
         await _fail_task(row, "原来的会话不在了")
-        from .notify import notify_parent_group
-
         await notify_parent_group(row, (result_text or "已批准，原来的会话不在了。")[:800])
         return
     card = await _card(row, result_text)
-    from gsuid_core.gss import gss
-
-    ws = _payload_str(row.payload_json, "ws_bot_id")
-    raw_bot = gss.active_bot[ws] if ws in gss.active_bot else None
-    if raw_bot is None and row.bot_id in gss.active_bot:
-        raw_bot = gss.active_bot[row.bot_id]
+    raw_bot = _pick_ws_bot(_payload_str(row.payload_json, "ws_bot_id"), row.bot_id, fallback_any=False)
     bot = Bot(raw_bot, ev) if raw_bot is not None else None
     return_mode = "return" if (row.origin_session_id or "").startswith("capagent_") else "by_bot"
     tools = None
@@ -172,10 +315,7 @@ async def _bind_task(row: AIApprovalRequest) -> "Token[PlanRunContext | None] | 
     if task is None:
         return None
     if task.status == "waiting_approval":
-        await AIAgentTask.update_data_by_data(
-            select_data={"id": task.id},
-            update_data={"status": "running"},
-        )
+        await AIAgentTask.update_data_by_data(select_data={"id": task.id}, update_data={"status": "running"})
     root_id = task.root_task_id or task.id
     workspace = ensure_workspace(root_id, task.id, agent_profile=task.agent_profile or "")
     ctx = PlanRunContext(
@@ -196,18 +336,14 @@ async def _fail_task(row: AIApprovalRequest, reason: str) -> None:
     from gsuid_core.ai_core.planning.models import AIAgentTask
 
     task = await AIAgentTask.get_by_id(row.ref_key)
-    if task is None:
-        return
-    await kanban.mark_subtask_failed(task, reason[:1000])
+    if task is not None:
+        await kanban.mark_subtask_failed(task, reason[:1000])
 
 
 async def _pause_task(task_id: str) -> None:
     from gsuid_core.ai_core.planning.models import AIAgentTask
 
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task_id},
-        update_data={"status": "waiting_approval"},
-    )
+    await AIAgentTask.update_data_by_data(select_data={"id": task_id}, update_data={"status": "waiting_approval"})
 
 
 async def _settle_capability(row: AIApprovalRequest, raw: str, bot: Optional[Bot]) -> None:
@@ -215,7 +351,6 @@ async def _settle_capability(row: AIApprovalRequest, raw: str, bot: Optional[Bot
         return
     from gsuid_core.ai_core.planning import kanban
     from gsuid_core.ai_core.planning.models import AIAgentTask
-    from gsuid_core.ai_core.approval.session_ctx import session_has_pending
     from gsuid_core.ai_core.planning.kanban_executor import _finish_capability_delivery
 
     task = await AIAgentTask.get_by_id(row.ref_key)

@@ -195,7 +195,7 @@ async def _init_agent_kits():
 
 
 async def _init_command_exec():
-    from gsuid_core.ai_core.command_exec.startup import init_command_exec
+    from gsuid_core.ai_core.command_exec import init_command_exec
 
     await init_command_exec()
 

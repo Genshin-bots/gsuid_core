@@ -390,14 +390,12 @@ async def _reconcile_scope_index(scope_key: str) -> Dict[str, Any]:
 
         from gsuid_core.ai_core.rag.base import client
         from gsuid_core.ai_core.memory.vector.ops import (
-            upsert_edge_vectors_batch,
-            upsert_entity_vectors_batch,
-            upsert_episode_vectors_batch,
-        )
-        from gsuid_core.ai_core.memory.vector.collections import (
             MEMORY_EDGES_COLLECTION,
             MEMORY_ENTITIES_COLLECTION,
             MEMORY_EPISODES_COLLECTION,
+            upsert_edge_vectors_batch,
+            upsert_entity_vectors_batch,
+            upsert_episode_vectors_batch,
         )
 
         del _inspect
@@ -652,7 +650,7 @@ async def batch_observe(
             if turn.timestamp is not None and ts_obj is None:
                 ts_failures += 1
             raw_ts.append(ts_obj)
-        from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+        from gsuid_core.ai_core.memory.retrieval.event_time import spread_datetimes
 
         spread_ts = spread_datetimes(raw_ts)
         for turn, ts_obj in zip(req.turns, spread_ts):
@@ -900,7 +898,7 @@ async def delete_episode(
             # 删除 Qdrant 向量
             try:
                 from gsuid_core.ai_core.rag.base import client
-                from gsuid_core.ai_core.memory.vector.collections import MEMORY_EPISODES_COLLECTION
+                from gsuid_core.ai_core.memory.vector.ops import MEMORY_EPISODES_COLLECTION
 
                 if client is not None:
                     await client.delete(
@@ -1132,7 +1130,7 @@ async def delete_entity(
             # 删除 Qdrant 向量
             try:
                 from gsuid_core.ai_core.rag.base import client
-                from gsuid_core.ai_core.memory.vector.collections import MEMORY_ENTITIES_COLLECTION
+                from gsuid_core.ai_core.memory.vector.ops import MEMORY_ENTITIES_COLLECTION
 
                 if client is not None:
                     await client.delete(
@@ -1372,7 +1370,7 @@ async def delete_edge(
             # 删除 Qdrant 向量
             try:
                 from gsuid_core.ai_core.rag.base import client
-                from gsuid_core.ai_core.memory.vector.collections import MEMORY_EDGES_COLLECTION
+                from gsuid_core.ai_core.memory.vector.ops import MEMORY_EDGES_COLLECTION
 
                 if client is not None:
                     await client.delete(

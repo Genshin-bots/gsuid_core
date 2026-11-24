@@ -712,7 +712,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert any("读书摘要" in x for x in gt_self.autonomy_facts)
 
         # 9. persist_subagent_result 在 persona_name=None 时按 group_id 路由至 alpha，不落 default
-        from gsuid_core.ai_core.planning.tool_output_protocol import PersistedHandleCard
+        from gsuid_core.ai_core.planning.tool_output_store import PersistedHandleCard
 
         async def _fake_write_rec(**kwargs: object) -> PersistedHandleCard:
             del kwargs
@@ -1030,7 +1030,7 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
     from msgspec import json as msgjson
 
     from gsuid_core.ai_core.persona.config import persona_config_manager
-    from gsuid_core.ai_core.http_agent.persona import set_http_persona_override, clear_http_persona_override
+    from gsuid_core.ai_core.http_agent.runtime import set_http_persona_override, clear_http_persona_override
     from gsuid_core.ai_core.persona.config_rules import read_channel_scopes, persona_covers_session
 
     _setup_isolated_persona_env(tmp_path, monkeypatch)

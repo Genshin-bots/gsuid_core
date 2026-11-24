@@ -17,7 +17,8 @@ from pydantic_ai.messages import (
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core import output_gate, angle_bracket_guard
+from gsuid_core.ai_core import output_gate
+from gsuid_core.ai_core.control import angle_guard as angle_bracket_guard
 from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.thinking import _split_embedded_thinking
 from gsuid_core.ai_core.control.lines import TOOL_FAIL_FUSE_NUDGE

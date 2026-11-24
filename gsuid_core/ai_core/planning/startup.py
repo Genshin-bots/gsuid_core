@@ -28,7 +28,6 @@ async def init_planning() -> None:
     # 导入即注册 Kanban LLM 工具 + 落盘检索工具
     import gsuid_core.ai_core.planning.kanban_tools  # noqa: F401
     import gsuid_core.ai_core.planning.handle_resolver  # noqa: F401
-    import gsuid_core.ai_core.planning.tool_output_index  # noqa: F401
     import gsuid_core.ai_core.planning.tool_output_store  # noqa: F401
     import gsuid_core.ai_core.planning.tool_output_tools  # noqa: F401
 
@@ -107,8 +106,10 @@ async def init_planning() -> None:
     try:
         import asyncio as _asyncio
 
-        from gsuid_core.ai_core.planning.artifact_index import ensure_artifact_collection
-        from gsuid_core.ai_core.planning.tool_output_index import ensure_tool_output_collection
+        from gsuid_core.ai_core.planning.tool_output_store import (
+            ensure_artifact_collection,
+            ensure_tool_output_collection,
+        )
 
         _asyncio.create_task(ensure_tool_output_collection())
         _asyncio.create_task(ensure_artifact_collection())
@@ -222,12 +223,10 @@ def _schedule_artifact_ttl_cleanup() -> None:
 def _schedule_tool_output_ttl_cleanup() -> None:
     from gsuid_core.aps import scheduler
 
-    from .tool_output_store import AIToolOutputRecord
+    from .tool_output_store import AIToolOutputRecord, delete_tool_output_index
 
     async def _job2() -> None:
         try:
-            from .tool_output_index import delete_tool_output_index
-
             n, rids = await AIToolOutputRecord.delete_expired()
             if rids:
                 await delete_tool_output_index(rids)

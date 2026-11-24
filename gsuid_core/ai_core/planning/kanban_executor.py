@@ -297,7 +297,7 @@ def select_delivery_artifacts(
     arts: Sequence[AIAgentArtifact],
 ) -> tuple[list[AIAgentArtifact], Optional[AIAgentArtifact]]:
     """过滤重渲草稿并选定主产物：render_agent 同任务只交付最后一张定稿图。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import is_raster_image_mime
+    from gsuid_core.ai_core.planning.tool_output_store import is_raster_image_mime
 
     if not arts:
         return [], None
@@ -612,12 +612,12 @@ def _format_delivery_for_main_agent(
     allow_render: bool = True,
 ) -> str:
     """统一终态交付收据格式化（同步纯计算核心）。"""
-    from gsuid_core.ai_core.planning.tool_output_helper import payload_is_long_structured
-    from gsuid_core.ai_core.planning.tool_output_protocol import (
+    from gsuid_core.ai_core.planning.tool_output_store import (
         PersistedHandleCard,
         load_payload_text,
         is_raster_image_mime,
     )
+    from gsuid_core.ai_core.planning.tool_output_helper import payload_is_long_structured
 
     owner = (task.owner_user_id or "").strip()
     attr_bits = _task_attribution_bits(task, owner)

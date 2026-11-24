@@ -45,7 +45,7 @@ from gsuid_core.ai_core.delivery_present import (
     _try_present_via_render_agent,
     _resolve_and_deliver_leaked_handles,
 )
-from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
+from gsuid_core.ai_core.control.angle_guard import MEME_TAG_PATTERN
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.inbox.turn import InboxTurn
@@ -320,7 +320,7 @@ async def send_chat_result(
     text = await _resolve_and_deliver_leaked_handles(text, bot, extra_metadata, ev=ev)
     text, report_blocks = _split_speech_and_artifacts(text)
 
-    from gsuid_core.ai_core.angle_bracket_guard import (
+    from gsuid_core.ai_core.control.angle_guard import (
         find_illegal_angle_tags,
         sanitize_illegal_angle_tags,
     )

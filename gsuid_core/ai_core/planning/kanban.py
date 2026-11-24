@@ -1025,7 +1025,7 @@ async def request_subtask_approval(
     await AIAgentTaskLog.add_log(task.id, "approval", f"请求审批：{approval_prompt[:400]}")
     from gsuid_core.ai_core import approval as approval_center
     from gsuid_core.ai_core.approval.center import ApprovalPayload
-    from gsuid_core.ai_core.approval.session_ctx import current_caller_session_id
+    from gsuid_core.ai_core.approval.models import current_caller_session_id
 
     caller = current_caller_session_id()
     payload: ApprovalPayload = {
@@ -1254,8 +1254,7 @@ async def hard_delete_task_tree(
 
     # FileOS 级联：按 root 删 SQL/payload，并清理 Qdrant 悬空点
     try:
-        from .tool_output_index import delete_tool_output_index
-        from .tool_output_store import AIToolOutputRecord
+        from .tool_output_store import AIToolOutputRecord, delete_tool_output_index
 
         _n_fileos, _paths_fileos, fileos_ids = await AIToolOutputRecord.delete_by_root_task_ids(root_ids)
         stats["fileos_deleted"] = _n_fileos

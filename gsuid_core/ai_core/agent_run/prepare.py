@@ -359,7 +359,7 @@ class PreparePhase:
 
             _has_sched = False
             if st.ev is not None and st.ev.user_id:
-                from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
+                from gsuid_core.ai_core.tool_health import user_has_active_schedules
 
                 _has_sched = await user_has_active_schedules(st.ev.user_id)
             _manage_form = interaction_scaffold.is_manage_ellipsis_form(st.tg.message_text)

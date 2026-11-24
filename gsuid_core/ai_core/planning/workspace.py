@@ -517,7 +517,7 @@ async def _remember_and_index_artifact(
             return
 
         async def _index() -> None:
-            from gsuid_core.ai_core.planning.artifact_index import index_artifact
+            from gsuid_core.ai_core.planning.tool_output_store import index_artifact
 
             try:
                 await index_artifact(

@@ -77,7 +77,7 @@ def _mapping_str(data: Mapping[str, object], key: str, default: str = "") -> str
 
 def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
     """回想卡片标题：``query:`` 优先，其次工具名。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import extract_persist_title
+    from gsuid_core.ai_core.planning.tool_output_store import extract_persist_title
 
     body = (summary or "").lstrip()
     if body.lower().startswith("query:"):
@@ -300,7 +300,7 @@ def _fuse_ids(
     query: str,
 ) -> List[str]:
     """记忆在前。专名对得上的知识留名额，避免片段占满后知识整路消失。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
+    from gsuid_core.ai_core.planning.tool_output_store import rrf_fuse
 
     memory_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab == "memory"]
     other_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab != "memory"]
@@ -797,9 +797,11 @@ async def _collect_hybrid_hits(
 
 
 async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.planning.tool_output_index import search_tool_outputs
-    from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
+    from gsuid_core.ai_core.planning.tool_output_store import (
+        AIToolOutputRecord,
+        rrf_fuse,
+        search_tool_outputs,
+    )
 
     if not scope.user_id:
         # fail-closed：无 owner 不许全局扫表
@@ -859,8 +861,7 @@ async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _Backend
 
 async def _search_artifacts(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
     from gsuid_core.ai_core.planning.models import AIAgentArtifact
-    from gsuid_core.ai_core.planning.artifact_index import search_artifacts_hybrid
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
+    from gsuid_core.ai_core.planning.tool_output_store import rrf_fuse, search_artifacts_hybrid
 
     if not scope.user_id:
         return _EMPTY_RESULT

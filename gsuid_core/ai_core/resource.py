@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from gsuid_core.data_store import AI_CORE_PATH, get_res_path
 
 local_embedding_images = get_res_path(AI_CORE_PATH / "local_embedding_images")
@@ -33,3 +35,20 @@ AI_SESSION_IMAGES_PATH = get_res_path(AI_CORE_PATH / "session_logs" / "images")
 COMMAND_EXEC_PATH = get_res_path(AI_CORE_PATH / "command_exec")
 # 命令执行器受管工具链目录（自动补全装到这里,不动系统 PATH）
 TOOLCHAIN_PATH = get_res_path(AI_CORE_PATH / "command_exec" / "toolchain")
+
+
+def relative_session_log_path(path: Path | str) -> str:
+    """把日志路径收成相对 ``session_logs/`` 的 POSIX 串。"""
+    p = Path(path)
+    root = AI_SESSION_LOGS_PATH.resolve()
+    try:
+        resolved = p.resolve()
+    except OSError:
+        resolved = p
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        if p.is_absolute() and p.exists():
+            return str(p)
+        parent = p.parent.name
+        return f"{parent}/{p.name}" if parent else p.name

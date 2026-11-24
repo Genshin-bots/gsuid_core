@@ -20,7 +20,7 @@
 import re
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Mapping, Optional
 from dataclasses import field, asdict, dataclass
 
 from gsuid_core.i18n import t
@@ -42,7 +42,7 @@ _FUZZY_MIN_OVERLAP = 0.30
 _RECENT_EVALUATIONS_BY_OWNER: Dict[str, List["CapabilityEvaluationResult"]] = {}
 
 # 中文 stopwords（高频 / 无信息含量；防"主人 / 任务 / 需要"这种词导致虚假重叠）
-_FUZZY_STOPWORDS: frozenset = frozenset(
+_FUZZY_STOPWORDS: frozenset[str] = frozenset(
     {
         "主人",
         "用户",
@@ -74,7 +74,7 @@ class SuggestedSubtask:
     required_capability: str
     agent_profile: str
     depends_on: List[int] = field(default_factory=list)
-    params_hint: Dict[str, Any] = field(default_factory=dict)
+    params_hint: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,11 +92,11 @@ class CapabilityEvaluationResult:
     user_goal: str = ""
     created_at: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> Dict[str, object]:
         return asdict(self)
 
 
-def _tokenize_for_overlap(text: str) -> set:
+def _tokenize_for_overlap(text: str) -> set[str]:
     """中英数字混合分词——按字符类切，中文按双字粒度。
 
     用于 ``get_recent_evaluation`` 的模糊匹配：让同一组任务的两种表述
@@ -138,7 +138,7 @@ def list_recent_evaluations_for_owner(
 
     供 ``register_kanban_task`` 在拒绝时给主人格回头线索使用。
     """
-    lst = _RECENT_EVALUATIONS_BY_OWNER.get(owner_user_id, [])
+    lst = _RECENT_EVALUATIONS_BY_OWNER[owner_user_id] if owner_user_id in _RECENT_EVALUATIONS_BY_OWNER else []
     now = time.time()
     valid = [r for r in lst if now - r.created_at <= _EVAL_TTL_SECONDS]
     if len(valid) != len(lst):
@@ -382,7 +382,7 @@ def _build_evaluator_context(
     for cat, tools in cat_map.items():
         for _name, base in tools.items():
             dom = base.capability_domain or cat
-            domains[dom] = domains.get(dom, 0) + 1
+            domains[dom] = (domains[dom] if dom in domains else 0) + 1
     lines.append("【框架可用能力域（工具数）】")
     lines.append(", ".join(f"{k}×{v}" for k, v in sorted(domains.items(), key=lambda x: -x[1])[:20]))
     return "\n".join(lines)
@@ -417,25 +417,22 @@ def _extract_first_json_object(text: str) -> Optional[str]:
     return None
 
 
+def _field_str(data: Mapping[str, object], key: str) -> str:
+    val = data[key] if key in data else ""
+    return str(val).strip() if val is not None else ""
+
+
+def _field_str_list(data: Mapping[str, object], key: str) -> List[str]:
+    raw = data[key] if key in data else None
+    return [str(x) for x in raw] if isinstance(raw, list) else []
+
+
 def _parse_evaluator_output(
     raw: str,
     owner_user_id: str,
     user_goal: str,
 ) -> CapabilityEvaluationResult:
-    """解析 evaluator 返回的 JSON。失败时返回 covered=false + risk_notes 标注。
-
-    **容错点（实测会话 17ed4f85 / e05e495b 暴露）**：
-
-    1. 某些模型偶尔会在 JSON 前面加 markdown 标题（如 ``**Capability Evaluation
-       — Virtual Stock Trading Simulation**\\n\\n```json\\n{...}```）——纯 strip
-       看不到结构，``json.loads`` 直接报 ``Expecting value: line 1 column 1
-       (char 0)``。``_extract_first_json_object`` 通用兜底：先抓 ```json 围栏，
-       否则从第一个 ``{`` 截起。
-    2. 同一份 JSON 输出两次（字段顺序换、内容略变）——``json.loads`` 抛
-       ``Extra data``；``json.JSONDecoder.raw_decode`` 解析到第一个对象结束就停。
-
-    两条兜底叠加，覆盖绝大多数 LLM 输出"格式漂移"。
-    """
+    """解析 evaluator 返回的 JSON（先围栏/首 `{` 再 `raw_decode` 容错冗余文本）。"""
     text = (raw or "").strip()
     candidate = _extract_first_json_object(text)
     if candidate is None:
@@ -449,12 +446,10 @@ def _parse_evaluator_output(
             user_goal=user_goal,
         )
     try:
-        data = json.loads(candidate)
+        data: object = json.loads(candidate)
     except json.JSONDecodeError as e:
-        # 多 JSON 拼接 / 后置闲话兜底：raw_decode 取第一个完整对象，剩下的丢弃。
         try:
-            decoder = json.JSONDecoder()
-            data, end_idx = decoder.raw_decode(candidate)
+            data, end_idx = json.JSONDecoder().raw_decode(candidate)
             logger.warning(
                 t(
                     "log.ai.kanban_evaluator_output_redundant_fail",
@@ -472,26 +467,42 @@ def _parse_evaluator_output(
                 user_goal=user_goal,
             )
 
-    subtasks: List[SuggestedSubtask] = []
-    for item in data.get("suggested_subtasks") or []:
-        if not isinstance(item, dict):
-            continue
-        subtasks.append(
-            SuggestedSubtask(
-                description=str(item.get("description", "")).strip(),
-                required_capability=str(item.get("required_capability", "")).strip(),
-                agent_profile=str(item.get("agent_profile", "")).strip(),
-                depends_on=[int(x) for x in (item.get("depends_on") or []) if isinstance(x, int)],
-                params_hint=item.get("params_hint") or {},
-            )
+    if not isinstance(data, dict):
+        return CapabilityEvaluationResult(
+            covered=False,
+            risk_notes=[f"评估代理返回非 JSON 对象，已拒绝。原始片段：{candidate[:200]!r}"],
+            summary="评估失败（输出无法解析）",
+            owner_user_id=owner_user_id,
+            user_goal=user_goal,
         )
+
+    subtasks: List[SuggestedSubtask] = []
+    raw_subtasks = data["suggested_subtasks"] if "suggested_subtasks" in data else None
+    if isinstance(raw_subtasks, list):
+        for item in raw_subtasks:
+            if not isinstance(item, dict):
+                continue
+            raw_deps = item["depends_on"] if "depends_on" in item else None
+            deps = [int(x) for x in raw_deps if isinstance(x, int)] if isinstance(raw_deps, list) else []
+            raw_hint = item["params_hint"] if "params_hint" in item else None
+            hint: Dict[str, object] = {str(k): v for k, v in raw_hint.items()} if isinstance(raw_hint, dict) else {}
+            subtasks.append(
+                SuggestedSubtask(
+                    description=_field_str(item, "description"),
+                    required_capability=_field_str(item, "required_capability"),
+                    agent_profile=_field_str(item, "agent_profile"),
+                    depends_on=deps,
+                    params_hint=hint,
+                )
+            )
+    covered_val = data["covered"] if "covered" in data else False
     return CapabilityEvaluationResult(
-        covered=bool(data.get("covered", False)),
-        missing_capabilities=[str(x) for x in (data.get("missing_capabilities") or [])],
-        available_profiles=[str(x) for x in (data.get("available_profiles") or [])],
+        covered=bool(covered_val),
+        missing_capabilities=_field_str_list(data, "missing_capabilities"),
+        available_profiles=_field_str_list(data, "available_profiles"),
         suggested_subtasks=subtasks,
-        risk_notes=[str(x) for x in (data.get("risk_notes") or [])],
-        summary=str(data.get("summary", "")).strip(),
+        risk_notes=_field_str_list(data, "risk_notes"),
+        summary=_field_str(data, "summary"),
         owner_user_id=owner_user_id,
         user_goal=user_goal,
     )

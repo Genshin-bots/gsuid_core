@@ -10,13 +10,14 @@ import shutil
 import asyncio
 import platform
 import subprocess
-from typing import Dict, List, Optional
+from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 from dataclasses import dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.command_exec.config import cfg_get
+from gsuid_core.models import Event
+from gsuid_core.ai_core.command_exec.models import cfg_int, cfg_str
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -82,7 +83,7 @@ def get_sandbox_dir() -> Path:
     """命令默认 cwd：配置 sandbox_dir，留空则 FILE_PATH（data/ai_core/file）。"""
     from gsuid_core.ai_core.resource import FILE_PATH
 
-    configured = str(cfg_get("sandbox_dir") or "").strip()
+    configured = cfg_str("sandbox_dir").strip()
     if configured:
         return Path(configured)
     return FILE_PATH
@@ -220,7 +221,7 @@ async def run_argv(
     max_output: int,
     extra_path: Optional[str] = None,
 ) -> ExecResult:
-    timeout = max(1, min(timeout, cfg_get("max_timeout")))
+    timeout = max(1, min(timeout, cfg_int("max_timeout", 600)))
     env = build_safe_env(extra_path)
     resolved_argv, is_batch = resolve_argv0(argv, env)
     logger.info(t("log.ai.commandexec_cwd_batch_is", p0=resolved_argv[0], cwd=cwd, is_batch=is_batch))
@@ -272,3 +273,52 @@ def _resolve_workspace_cwd() -> Optional[Path]:
     if plan_ctx is None or plan_ctx.artifact_workspace is None:
         return None
     return plan_ctx.artifact_workspace
+
+
+async def run_resolved(
+    ev: Optional[Event],
+    argv: List[str],
+    timeout: int,
+    work_dir: Optional[str] = None,
+) -> Tuple[Optional[ExecResult], str]:
+    """执行 argv 快照，缺工具时受控补全后重试。返回 (result, error)。"""
+    if not argv:
+        return None, "空命令"
+
+    cwd, err = resolve_cwd(work_dir)
+    if err or cwd is None:
+        return None, err or "工作目录解析失败"
+
+    timeout = timeout if timeout > 0 else cfg_int("default_timeout", 60)
+    max_output = cfg_int("max_output_bytes", 1024 * 1024)
+
+    try:
+        return await run_argv(argv, str(cwd), timeout, max_output), ""
+    except FileNotFoundError as e:
+        return await _provision_and_retry(ev, argv, str(cwd), timeout, max_output, str(e))
+    except asyncio.TimeoutError:
+        return None, f"命令超时(超过 {timeout} 秒)"
+    except PermissionError:
+        return None, "权限不足"
+
+
+async def _provision_and_retry(
+    ev: Optional[Event],
+    argv: List[str],
+    cwd: str,
+    timeout: int,
+    max_output: int,
+    missing: str,
+) -> Tuple[Optional[ExecResult], str]:
+    from gsuid_core.ai_core.command_exec.provisioner import ensure
+
+    ok, msg, bin_path = await ensure(missing, ev)
+    if not ok or bin_path is None:
+        return None, f"命令未找到 '{missing}'：{msg}"
+    logger.info(t("log.ai.commandexec_resolved_missing_bin_retry", missing=missing, bin_path=bin_path))
+    try:
+        return await run_argv(argv, cwd, timeout, max_output, extra_path=str(bin_path)), ""
+    except FileNotFoundError:
+        return None, f"命令 '{missing}' 安装后仍未找到"
+    except asyncio.TimeoutError:
+        return None, f"命令超时(超过 {timeout} 秒)"

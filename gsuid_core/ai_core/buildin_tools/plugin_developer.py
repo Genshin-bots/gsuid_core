@@ -595,7 +595,7 @@ def _install_state(logs: list, plugin_name: str) -> Tuple[str, Optional[str]]:
 
 async def _halt_for_dedupe(dedupe: str) -> str:
     from gsuid_core.ai_core import approval as approval_center
-    from gsuid_core.ai_core.approval.halt import halt_line
+    from gsuid_core.ai_core.approval.models import halt_line
 
     row = await approval_center.AIApprovalRequest.get_pending_by_dedupe(dedupe)
     if row is None:
@@ -606,7 +606,7 @@ async def _halt_for_dedupe(dedupe: str) -> str:
 
 async def perform_approved_install(task: "AIAgentTask", plugin_name: str, action: str) -> str:
     """批准回调里复制文件。计划上下文在这里绑上，因为执行器当时已经退出。"""
-    from gsuid_core.ai_core.approval.halt import APPROVAL_HOLD_MARK
+    from gsuid_core.ai_core.approval.models import APPROVAL_HOLD_MARK
     from gsuid_core.ai_core.planning.runtime import PlanRunContext, bind_plan_context, reset_plan_context
     from gsuid_core.ai_core.planning.workspace import ensure_workspace
 
@@ -640,7 +640,7 @@ async def _perform_install_new(plugin_name: str) -> str:
         return f"安装失败：{err}"
     dest = (_plugin_root() / plugin_name).resolve()
     if dest.exists():
-        from gsuid_core.ai_core.approval.halt import APPROVAL_HOLD_MARK
+        from gsuid_core.ai_core.approval.models import APPROVAL_HOLD_MARK
 
         text = await _perform_stage_body(plugin_name)
         if text.startswith("安装失败"):

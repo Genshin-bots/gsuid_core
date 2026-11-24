@@ -965,7 +965,7 @@ class PersonaConfigManager(ConfigSetManager):
         all_configs = self.get_all_configs()
 
         if parts[0] == "HTTP_AGENT":
-            from gsuid_core.ai_core.http_agent.persona import get_http_persona_override
+            from gsuid_core.ai_core.http_agent.runtime import get_http_persona_override
 
             override_persona = get_http_persona_override(session_id)
             if override_persona and override_persona in all_configs:

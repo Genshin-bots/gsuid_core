@@ -16,7 +16,7 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
         merge_rewrite_feedbacks,
     )
     from gsuid_core.ai_core.control.directive import GateDecision
-    from gsuid_core.ai_core.angle_bracket_guard import MAX_RETRIES
+    from gsuid_core.ai_core.control.angle_guard import MAX_RETRIES
 
     assert pre_send_gate("呼…困了zzz", {}, channel="main").decision is GateDecision.ALLOW
     assert merge_rewrite_feedbacks([]) == ""
@@ -47,7 +47,7 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
 
 
 def test_angle_bracket_guard_detection_and_sanitization() -> None:
-    from gsuid_core.ai_core.angle_bracket_guard import (
+    from gsuid_core.ai_core.control.angle_guard import (
         strip_protocol_tags,
         has_illegal_angle_tags,
         find_illegal_angle_tags,
@@ -89,7 +89,7 @@ def test_angle_bracket_guard_detection_and_sanitization() -> None:
 def test_parse_reply_plan_table() -> None:
     """回复计划：无标签回落缺省、多目标合并、非法 #seq 丢弃、max_targets 截断、<SILENCE>。"""
     from gsuid_core.ai_core.reply_plan import parse_reply_plan
-    from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags, find_illegal_angle_tags
+    from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags, find_illegal_angle_tags
 
     cases = [
         # (正文, valid_seqs, default, max_targets, 期望组, 期望 invalid, 期望 silence)

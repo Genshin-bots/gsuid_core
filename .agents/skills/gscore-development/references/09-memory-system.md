@@ -121,7 +121,7 @@ Flush：`create_episode()` → `_llm_extract()` → `extract_and_upsert_entities
   `AIMemConflict.attach` **同事务**（勿再 `@with_session` 嵌套）。极性中英双语
   （`_NEGATION_MARKERS` + `_NEGATION_RE_EN`）。语义等价只 `mention_count++`，**不刷
   `valid_at`**；其余同 src/tgt 只追加（版本更新两条并存）。
-- **SQLite 写队列**（`ingestion/eval_write_lock.py`）：`db_write_guard` 串行化 Episode / Entity /
+- **SQLite 写队列**（`utils/database/write_gate.py`）：`sqlite_write_gate` 串行化 Episode / Entity /
   Edge / Preference / 检索 touch / 生命周期写；LLM 与向量在锁外。
 
 > 🟡 **大语料回灌 / 图谱评测走的是另一条摄入路径**（`batch_observe` 的 granular Episode + 窗口化

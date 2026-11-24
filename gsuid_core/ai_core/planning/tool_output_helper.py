@@ -16,8 +16,8 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
 from gsuid_core.ai_core.planning.models import AIAgentTask
 from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
-from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-from gsuid_core.ai_core.planning.tool_output_protocol import (
+from gsuid_core.ai_core.planning.tool_output_store import (
+    AIToolOutputRecord,
     PersistedHandleCard,
     extract_inline_head,
     extract_info_summary,
@@ -535,7 +535,7 @@ async def _index_chunks_safe(
     retries: int = 2,
 ) -> None:
     from gsuid_core.ai_core.rag.chunking import split_text
-    from gsuid_core.ai_core.planning.tool_output_index import index_tool_output_chunks
+    from gsuid_core.ai_core.planning.tool_output_store import index_tool_output_chunks
 
     chunks = split_text(content, max_chars=400, overlap=60)
     payload = {

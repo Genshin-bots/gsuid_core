@@ -7,7 +7,7 @@
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
-from .collections import MEMORY_COLLECTIONS, MEMORY_ENTITIES_COLLECTION
+from .ops import MEMORY_COLLECTIONS, MEMORY_ENTITIES_COLLECTION
 
 
 def _vector_names_for_collection(collection_name: str) -> tuple[str, ...]:

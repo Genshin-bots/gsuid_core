@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key, self_scope_read_keys
-from gsuid_core.ai_core.memory.relative_schedule import (
+from gsuid_core.ai_core.memory.retrieval.event_time import (
     preference_written_on,
     one_off_schedule_expired,
     looks_like_one_off_relative_schedule,

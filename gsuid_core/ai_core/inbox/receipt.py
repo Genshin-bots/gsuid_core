@@ -62,7 +62,7 @@ def receipt_tool_policy(turn: "InboxTurn") -> tuple[bool, tuple[Tool[ToolContext
 
 def settle_receipt_entries(turn: "InboxTurn", advice: str, persona_name: str) -> None:
     """回执项被回答且回执像失败/用法 → 存建议记忆；实际作答即记点评冷却。"""
-    from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
+    from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags
     from gsuid_core.ai_core.command_aside.recall import save_advice
     from gsuid_core.ai_core.command_aside.runner import _last_aside_comment_ts, _is_failure_or_usage_receipt
 

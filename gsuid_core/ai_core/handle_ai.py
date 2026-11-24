@@ -69,7 +69,7 @@ from gsuid_core.ai_core.multimodal.payload import (
     prepare_media_payload,
     has_model_visible_content,
 )
-from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
+from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
     admit_pre_router,

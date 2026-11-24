@@ -1,36 +1,19 @@
-"""发送前统一输出闸门（pre_send_gate）。
+"""发送前输出闸门执行态容器（GateBag）与统一入口 ``pre_send_gate``。
 
-把「能不能给用户看 / 要不要打回模型」集中在一处编排；各策略仍独立可测。
-
-策略顺序（短路）：
-1. ``angle_bracket`` — 非法 ``<>`` 标签（含 ``<br>`` / ``<bubble/>``）
-2. ``ooc`` — 出戏防火墙（模型名 / AI 自指 / 系统术语 / 资金 / 机器腔）
-
-``send_chat_result`` 仍负责呈现层（拆条 / meme / 长文出图 / sanitize 兜底），
-不在此重复做通道变换。
-
-状态：仅 ``ToolContext.extra["output_gate"]`` → ``GateBag``（会话重启即丢，无旧键）。
-
-用法::
-
-    from gsuid_core.ai_core.output_gate import pre_send_gate
-    from gsuid_core.ai_core.control.directive import GateDecision
-
-    r = pre_send_gate(text, extra, user_text=..., channel="main")
-    if r.decision is GateDecision.FUSE:
-        ...
+所有策略判定与重说规则均单向收口于 ``control/policy_ring.py``；本模块只持有会话内
+可变计数/熔断状态包（挂在 ``ToolContext.extra["output_gate"]``）、收尾替换规划与薄入口。
 """
 
 from __future__ import annotations
 
-import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, List, Optional, Sequence
 from dataclasses import field, dataclass
+from collections.abc import MutableMapping
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.control import angle_guard as _ab
 from gsuid_core.ai_core.control.lines import (
-    INNER_OS_NUDGE,
     OOC_JUDGE_MARKER,
     FUND_CLAIM_PREFIX,
     GATE_NUDGE_MARKERS as GATE_NUDGE_MARKERS,
@@ -38,15 +21,24 @@ from gsuid_core.ai_core.control.lines import (
 from gsuid_core.ai_core.control.directive import GateResult, GateDecision
 from gsuid_core.ai_core.control.policy_ring import (
     OocGateHooks,
+    AngleGateHooks,
     OutboundEvaluators,
     evaluate_ooc_gate,
     run_outbound_gate,
+    evaluate_inner_os_gate,
+    evaluate_angle_bracket_gate,
+)
+from gsuid_core.ai_core.control.outbound_detectors import (
+    EXPOSED_TOOLS_EXTRA_KEY,
+    OutboundTextView,
+    is_ooc_firewall_enabled,
 )
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext
 
-# ── 类型化状态（挂在 extra["output_gate"]） ─────────────────────────
+ExtraMap = MutableMapping[str, object]
+_STATE_KEY = "output_gate"
 
 
 @dataclass
@@ -67,20 +59,24 @@ class GateBag:
     ooc_warned_turn_ids: set[str] = field(default_factory=set)
 
 
-_STATE_KEY = "output_gate"
+def _get_bag(extra: ExtraMap) -> Optional[GateBag]:
+    if _STATE_KEY not in extra:
+        return None
+    raw = extra[_STATE_KEY]
+    return raw if isinstance(raw, GateBag) else None
 
 
-def ensure_gate_bag(extra: Dict[str, Any]) -> GateBag:
+def ensure_gate_bag(extra: ExtraMap) -> GateBag:
     """取得或创建 ``GateBag``；非 bag 实例时覆盖写入。"""
-    raw = extra[_STATE_KEY] if _STATE_KEY in extra else None
-    if isinstance(raw, GateBag):
-        return raw
+    existing = _get_bag(extra)
+    if existing is not None:
+        return existing
     bag = GateBag()
     extra[_STATE_KEY] = bag
     return bag
 
 
-def begin_response_batch(extra: Dict[str, Any]) -> None:
+def begin_response_batch(extra: ExtraMap) -> None:
     """每个 ModelResponse 处理 TextPart 前调用：重置「本批已计数」。"""
     bag = ensure_gate_bag(extra)
     bag.angle_bracket.batch_counted = False
@@ -95,61 +91,38 @@ def _policy(bag: GateBag, name: str) -> PolicyState:
         return bag.ooc
     if name == "inner_os":
         return bag.inner_os
-    # 未知名勿返回 throwaway：否则 attempts/blocked 静默丢状态
     raise ValueError(f"unknown output_gate policy: {name!r}")
 
 
-def is_fused(extra: Dict[str, Any]) -> bool:
+def is_fused(extra: ExtraMap) -> bool:
     """任一策略熔断。"""
-    if _STATE_KEY not in extra:
-        return False
-    raw = extra[_STATE_KEY]
-    if not isinstance(raw, GateBag):
-        return False
-    return raw.angle_bracket.abort or raw.ooc.abort
+    bag = _get_bag(extra)
+    return bag is not None and (bag.angle_bracket.abort or bag.ooc.abort)
 
 
-def mark_fuse_injected(extra: Dict[str, Any]) -> None:
+def mark_fuse_injected(extra: ExtraMap) -> None:
     ensure_gate_bag(extra).angle_bracket.fuse_injected = True
 
 
-def fuse_already_injected(extra: Dict[str, Any]) -> bool:
-    if _STATE_KEY not in extra:
-        return False
-    raw = extra[_STATE_KEY]
-    if not isinstance(raw, GateBag):
-        return False
-    return raw.angle_bracket.fuse_injected
+def fuse_already_injected(extra: ExtraMap) -> bool:
+    bag = _get_bag(extra)
+    return bag is not None and bag.angle_bracket.fuse_injected
 
 
-def blocked_texts(extra: Dict[str, Any], policy: str = "angle_bracket") -> List[str]:
+def blocked_texts(extra: ExtraMap, policy: str = "angle_bracket") -> List[str]:
     """被某策略拦下的原文列表（历史裁剪用）。"""
-    if _STATE_KEY not in extra:
+    bag = _get_bag(extra)
+    if bag is None:
         return []
-    raw = extra[_STATE_KEY]
-    if not isinstance(raw, GateBag):
-        return []
-    ps = _policy(raw, policy)
-    return [x.strip() for x in ps.blocked if x.strip()]
+    return [x.strip() for x in _policy(bag, policy).blocked if x.strip()]
 
 
-def attempt_count(extra: Dict[str, Any], policy: str = "angle_bracket") -> int:
-    if _STATE_KEY not in extra:
-        return 0
-    raw = extra[_STATE_KEY]
-    if not isinstance(raw, GateBag):
-        return 0
-    return _policy(raw, policy).attempts
+def attempt_count(extra: ExtraMap, policy: str = "angle_bracket") -> int:
+    bag = _get_bag(extra)
+    return _policy(bag, policy).attempts if bag is not None else 0
 
 
-def _record_block(
-    extra: Dict[str, Any],
-    policy: str,
-    text: str,
-    *,
-    count_attempt: bool,
-) -> int:
-    """累计 blocked；可选 +1 attempts。返回当前 attempts。"""
+def _record_block(extra: ExtraMap, policy: str, text: str, *, count_attempt: bool) -> int:
     bag = ensure_gate_bag(extra)
     ps = _policy(bag, policy)
     stripped = text.strip()
@@ -161,157 +134,31 @@ def _record_block(
     return ps.attempts
 
 
-def _set_abort(extra: Dict[str, Any], policy: str) -> None:
-    bag = ensure_gate_bag(extra)
-    _policy(bag, policy).abort = True
-
-
-def set_fused(extra: Dict[str, Any], policy: str = "angle_bracket") -> None:
+def set_fused(extra: ExtraMap, policy: str = "angle_bracket") -> None:
     """收尾路径显式熔断（与环内 FUSE 对齐）。"""
-    _set_abort(extra, policy)
+    _policy(ensure_gate_bag(extra), policy).abort = True
 
 
-# ── 策略：angle_bracket ─────────────────────────────────────────────
-
-
-def _eval_angle_bracket(
-    text: str,
-    extra: Dict[str, Any],
-    *,
-    channel: str,
-    count_attempt: bool,
-) -> Optional[GateResult]:
-    from gsuid_core.ai_core import angle_bracket_guard as ab
-
-    if is_fused(extra):
-        return GateResult(
-            decision=GateDecision.FUSE,
-            policy="angle_bracket",
-            feedback=ab.build_fuse_warning(),
-            fused=True,
-            detail="already_fused",
-        )
-
-    tags = ab.find_illegal_angle_tags(text)
-    if not tags:
-        return None
-
-    if ab.looks_like_dated_or_ordered_answer(text):
-        cleaned = ab.sanitize_illegal_angle_tags(text)
-        if cleaned and not ab.has_illegal_angle_tags(cleaned):
-            logger.warning(
-                i18n_t(
-                    "log.ai.output_gate_angle_bracket_rewrite",
-                    attempts=0,
-                    max_retries=ab.MAX_RETRIES,
-                    channel=channel,
-                    tags=repr(tags[:4]),
-                    preview=repr(text[:80]),
-                )
-            )
-            return GateResult(
-                decision=GateDecision.FALLBACK,
-                policy="angle_bracket",
-                send_text=cleaned,
-                detail="sanitized_list",
-            )
-
-    attempts = _record_block(extra, "angle_bracket", text, count_attempt=count_attempt)
-    if attempts >= ab.MAX_RETRIES:
-        _set_abort(extra, "angle_bracket")
-        logger.warning(
-            i18n_t(
-                "log.ai.output_gate_angle_bracket_fuse",
-                attempts=attempts,
-                channel=channel,
-                tags=repr(tags[:4]),
-                preview=repr(text[:80]),
-            )
-        )
-        return GateResult(
-            decision=GateDecision.FUSE,
-            policy="angle_bracket",
-            feedback=ab.build_fuse_warning(),
-            fused=True,
-            detail=",".join(tags[:6]),
-        )
-
-    logger.warning(
-        i18n_t(
-            "log.ai.output_gate_angle_bracket_rewrite",
-            attempts=attempts,
-            max_retries=ab.MAX_RETRIES,
-            channel=channel,
-            tags=repr(tags[:4]),
-            preview=repr(text[:80]),
-        )
-    )
-    return GateResult(
-        decision=GateDecision.REWRITE,
-        policy="angle_bracket",
-        feedback=ab.build_rewrite_warning(tags, text),
-        detail=",".join(tags[:6]),
-    )
-
-
-# ── 策略：ooc ───────────────────────────────────────────────────────
-
-
-def _extra_turn_id(extra: Dict[str, Any]) -> str:
+def _extra_turn_id(extra: ExtraMap) -> str:
     if "turn_id" not in extra or extra["turn_id"] is None:
         return ""
     return str(extra["turn_id"])
 
 
-def mark_ooc_reminded(extra: Dict[str, Any]) -> None:
+def mark_ooc_reminded(extra: ExtraMap) -> None:
     """系统提醒已交给模型（注入下一轮或工具 return）后调用。"""
     turn_id = _extra_turn_id(extra)
-    if not turn_id:
-        return
-    ensure_gate_bag(extra).ooc_warned_turn_ids.add(turn_id)
+    if turn_id:
+        ensure_gate_bag(extra).ooc_warned_turn_ids.add(turn_id)
 
 
-def ooc_reminder_delivered(extra: Dict[str, Any]) -> bool:
+def ooc_reminder_delivered(extra: ExtraMap) -> bool:
     turn_id = _extra_turn_id(extra)
-    if not turn_id:
-        return False
-    return turn_id in ensure_gate_bag(extra).ooc_warned_turn_ids
+    return bool(turn_id) and turn_id in ensure_gate_bag(extra).ooc_warned_turn_ids
 
 
 def is_ooc_judge_feedback(text: str) -> bool:
     return bool(text) and (OOC_JUDGE_MARKER in text or text.startswith(FUND_CLAIM_PREFIX))
-
-
-def _eval_ooc(
-    text: str,
-    extra: Dict[str, Any],
-    *,
-    user_text: str,
-    channel: str,
-) -> Optional[GateResult]:
-    from gsuid_core.ai_core.control.outbound_detectors import (
-        EXPOSED_TOOLS_EXTRA_KEY,
-        is_ooc_firewall_enabled,
-    )
-
-    if not is_ooc_firewall_enabled():
-        return None
-    names: list[str] = []
-    if EXPOSED_TOOLS_EXTRA_KEY in extra:
-        raw_names = extra[EXPOSED_TOOLS_EXTRA_KEY]
-        if isinstance(raw_names, (list, tuple, set, frozenset)):
-            names = [str(x) for x in raw_names if str(x)]
-    return evaluate_ooc_gate(
-        text,
-        user_text=user_text,
-        channel=channel,
-        exposed_tool_names=names,
-        hooks=OocGateHooks(
-            is_reminded=lambda: ooc_reminder_delivered(extra),
-            mark_reminded=lambda: mark_ooc_reminded(extra),
-            set_abort_ooc=lambda: _set_abort(extra, "ooc"),
-        ),
-    )
 
 
 # ── 收尾规划 ─────────────────────────────────────────────────────────
@@ -324,21 +171,12 @@ class AfterRunAnglePlan:
     fused: bool
     blocked: list[str]
     attempts: int
-    # 脏 TextPart → 干净文案的 1:1/安全映射（禁止多脏→同一条干净）
     replace_map: dict[str, str] = field(default_factory=dict)
-    # 否则需要补轻量重写（仅最后一条 blocked）
     rewrite_original: str = ""
-    # 需要 scrub nudge
     scrub_nudges: bool = True
 
 
 def _build_angle_replace_map(blocked: Sequence[str], cleaned: Sequence[str]) -> dict[str, str]:
-    """把 blocked 脏文映射到干净文案，避免「多脏 → 最后一条干净」污染 history。
-
-    - 单脏：用最后一条干净文替换
-    - 等长：按顺序 zip
-    - 否则：只替换最后一条脏文，其余留给 scrub/保留
-    """
     if not blocked or not cleaned:
         return {}
     clean_last = cleaned[-1]
@@ -349,35 +187,16 @@ def _build_angle_replace_map(blocked: Sequence[str], cleaned: Sequence[str]) -> 
     return {blocked[-1]: clean_last}
 
 
-def plan_angle_after_run(
-    extra: Dict[str, Any],
-    *,
-    clean_sent: Sequence[str],
-) -> AfterRunAnglePlan:
-    """根据 GateBag 与本轮已发干净文本，规划尖括号收尾。
-
-    不变量：尖括号熔断只 scrub 脏尖括号文，**不**取消本轮已 defer 的 OOC 重说。
-    """
-    from gsuid_core.ai_core import angle_bracket_guard as ab
-
+def plan_angle_after_run(extra: ExtraMap, *, clean_sent: Sequence[str]) -> AfterRunAnglePlan:
+    """根据 GateBag 与本轮已发干净文本，规划尖括号收尾。"""
     fused = is_fused(extra)
     blocked = blocked_texts(extra, "angle_bracket")
     attempts = attempt_count(extra, "angle_bracket")
     if fused:
-        return AfterRunAnglePlan(
-            fused=True,
-            blocked=blocked,
-            attempts=attempts,
-            scrub_nudges=True,
-        )
+        return AfterRunAnglePlan(fused=True, blocked=blocked, attempts=attempts, scrub_nudges=True)
     if not blocked:
-        return AfterRunAnglePlan(
-            fused=False,
-            blocked=[],
-            attempts=attempts,
-            scrub_nudges=bool(attempts),
-        )
-    cleaned = [t for t in clean_sent if t and not ab.has_illegal_angle_tags(t)]
+        return AfterRunAnglePlan(fused=False, blocked=[], attempts=attempts, scrub_nudges=bool(attempts))
+    cleaned = [t for t in clean_sent if t and not _ab.has_illegal_angle_tags(t)]
     if cleaned:
         return AfterRunAnglePlan(
             fused=False,
@@ -400,17 +219,66 @@ def merge_rewrite_feedbacks(feedbacks: Sequence[str]) -> str:
     parts = [f.strip() for f in feedbacks if f and f.strip()]
     if not parts:
         return ""
-    if len(parts) == 1:
-        return parts[0]
-    return "\n\n---\n\n".join(parts)
+    return parts[0] if len(parts) == 1 else "\n\n---\n\n".join(parts)
 
 
-# ── 公开入口（委托统一策略环） ─────────────────────────────────────────
+# ── 公开入口（将 GateBag 状态钩子接到 control.policy_ring）────────────────
+
+
+def _eval_angle(view: OutboundTextView, extra: ExtraMap, *, channel: str, count_attempt: bool) -> Optional[GateResult]:
+    return evaluate_angle_bracket_gate(
+        view,
+        channel=channel,
+        hooks=AngleGateHooks(
+            is_fused=lambda: is_fused(extra),
+            record_block=lambda raw: _record_block(extra, "angle_bracket", raw, count_attempt=count_attempt),
+            set_abort=lambda: set_fused(extra, "angle_bracket"),
+        ),
+    )
+
+
+def _eval_ooc(view: OutboundTextView, extra: ExtraMap, *, user_text: str, channel: str) -> Optional[GateResult]:
+    if not is_ooc_firewall_enabled():
+        return None
+    names: list[str] = []
+    if EXPOSED_TOOLS_EXTRA_KEY in extra:
+        raw_names = extra[EXPOSED_TOOLS_EXTRA_KEY]
+        if isinstance(raw_names, (list, tuple, set, frozenset)):
+            names = [str(x) for x in raw_names if str(x)]
+    return evaluate_ooc_gate(
+        view.raw,
+        user_text=user_text,
+        channel=channel,
+        exposed_tool_names=names,
+        view=view,
+        hooks=OocGateHooks(
+            is_reminded=lambda: ooc_reminder_delivered(extra),
+            mark_reminded=lambda: mark_ooc_reminded(extra),
+            set_abort_ooc=lambda: set_fused(extra, "ooc"),
+        ),
+    )
+
+
+def _eval_inner_os(view: OutboundTextView, extra: ExtraMap, *, channel: str, user_text: str) -> Optional[GateResult]:
+    def _record_inner(body: str) -> int:
+        bag = ensure_gate_bag(extra)
+        bag.inner_os.attempts += 1
+        if body:
+            bag.inner_os.blocked.append(body)
+        return bag.inner_os.attempts
+
+    def _recheck(rest_view: OutboundTextView) -> Optional[GateResult]:
+        r = _eval_angle(rest_view, extra, channel=channel, count_attempt=False)
+        if r is not None and r.decision is not GateDecision.ALLOW:
+            return r
+        return _eval_ooc(rest_view, extra, user_text=user_text, channel=channel)
+
+    return evaluate_inner_os_gate(view, record_attempt=_record_inner, recheck_rest=_recheck)
 
 
 def pre_send_gate(
     text: str,
-    extra: Optional[Dict[str, Any]] = None,
+    extra: Optional[ExtraMap] = None,
     *,
     user_text: str = "",
     channel: str = "main",
@@ -422,69 +290,15 @@ def pre_send_gate(
     if channel not in ("main", "tool"):
         logger.warning(i18n_t("log.ai.output_gate_unknown_channel", channel=repr(channel)))
         channel = "main"
-    bag_extra: Dict[str, Any] = extra if extra is not None else {}
+    bag_extra: ExtraMap = extra if extra is not None else {}
     return run_outbound_gate(
         text,
         channel=channel,
         is_group=is_group,
         speech_ctx=speech_ctx,
         evaluators=OutboundEvaluators(
-            angle_bracket=lambda t: _eval_angle_bracket(t, bag_extra, channel=channel, count_attempt=count_attempt),
-            ooc=lambda t: _eval_ooc(t, bag_extra, user_text=user_text, channel=channel),
-            inner_os=lambda t: _eval_inner_os(t, bag_extra, channel=channel, user_text=user_text),
+            angle_bracket=lambda v: _eval_angle(v, bag_extra, channel=channel, count_attempt=count_attempt),
+            ooc=lambda v: _eval_ooc(v, bag_extra, user_text=user_text, channel=channel),
+            inner_os=lambda v: _eval_inner_os(v, bag_extra, channel=channel, user_text=user_text),
         ),
-    )
-
-
-# 历史裁剪认打回前缀。全文在 control/lines.py 的 GATE_NUDGE_MARKERS。
-
-# 通道泄漏：长「心想」段（可在句中）。短舞台指示不含该开场。
-_INNER_OS_RE = re.compile(r"（心想[:：].{20,}?）", re.DOTALL)
-
-
-def _strip_inner_os_spans(text: str) -> str:
-    out = _INNER_OS_RE.sub("", text)
-    return re.sub(r"\n{3,}", "\n\n", out).strip()
-
-
-def _eval_inner_os(
-    text: str,
-    extra: Dict[str, Any],
-    *,
-    channel: str,
-    user_text: str = "",
-) -> Optional[GateResult]:
-    body = (text or "").strip()
-    if not body:
-        return None
-    spans = [m.group(0) for m in _INNER_OS_RE.finditer(body) if len(m.group(0)) >= 30]
-    if not spans:
-        return None
-    bag = ensure_gate_bag(extra)
-    bag.inner_os.attempts += 1
-    if body.strip():
-        bag.inner_os.blocked.append(body.strip())
-    attempts = bag.inner_os.attempts
-    if attempts >= 2:
-        rest = _strip_inner_os_spans(body)
-        if not rest:
-            return GateResult(decision=GateDecision.FUSE, policy="inner_os", fused=True, detail="empty_after_strip")
-        r = _eval_angle_bracket(rest, extra, channel=channel, count_attempt=False)
-        if r is not None and r.decision is not GateDecision.ALLOW:
-            return r
-        r = _eval_ooc(rest, extra, user_text=user_text, channel=channel)
-        if r is not None and r.decision is not GateDecision.ALLOW:
-            return r
-        return GateResult(
-            decision=GateDecision.FALLBACK,
-            policy="inner_os",
-            send_text=rest,
-            detail="stripped",
-        )
-    logger.warning(i18n_t("log.ai.output_gate_inner_os_rewrite", preview=repr(body[:80])))
-    return GateResult(
-        decision=GateDecision.REWRITE,
-        policy="inner_os",
-        feedback=INNER_OS_NUDGE,
-        detail="inner_os",
     )

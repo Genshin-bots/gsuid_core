@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.protocol_text import is_silence_marker, remainder_after_protocol_tags
-from gsuid_core.ai_core.angle_bracket_guard import _REPLY_TAG_RE
+from gsuid_core.ai_core.control.angle_guard import _REPLY_TAG_RE
 
 # 标签行：行首 <reply ...>，可独占一行或后接同组首句正文
 _REPLY_LINE_RE = re.compile(

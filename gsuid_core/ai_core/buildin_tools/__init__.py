@@ -15,7 +15,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
                                    本句检索或 ``find_tools`` 补上。
 - ``search_tools(query=...)``    → 在未暴露工具里做向量检索（含未进核的 self/buildin）；
                                    ``meta`` / ``plugin_dev`` 永不被检索。
-- ``tool_state_signals``         → 按"用户名下持久实体"把能力族精确补进工具列表。
+- ``tool_health``                → 按"用户名下持久实体"把能力族精确补进工具列表。
 - ``create_subagent`` 默认子代理 → 默认装配 ``default`` 分类 + ``buildin`` 部分。
 
 要让一个新工具进入通道核，把它的名字加进 ``MAIN_AGENT_CORE_TOOLS``（并想清楚 schema 税）。
@@ -58,7 +58,7 @@ Buildin Tools 模块 —— 框架内置 AI 工具集中入口
 
 ### 2.2.1 ``category="planning"`` —— 状态驱动 + 向量检索按需（**非保底**）
 长任务编排 / 产物 / 结构化集合工具。**刻意不进保底池**——这 15 个重型 schema 每轮常驻会
-显著抬高 Token 并稀释工具选择精度。改由 ``tool_state_signals`` 按"用户名下的持久实体"
+显著抬高 Token 并稀释工具选择精度。改由 ``tool_health`` 按"用户名下的持久实体"
 精确召回 + ``search_tools()`` 向量检索按需加载（命中后按 ``capability_domain`` 整族展开）：
 
 - ``register_kanban_task`` / ``respawn_subtask`` / ``fail_task_tree``

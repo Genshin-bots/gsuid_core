@@ -1295,7 +1295,7 @@ def _is_public_article_handle(handle: str) -> bool:
 
 async def _read_article(handle: str, limit: int = FULLTEXT_CHAR_LIMIT) -> str:
     from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
-    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text, format_paginated_body
+    from gsuid_core.ai_core.planning.tool_output_store import load_payload_text, format_paginated_body
 
     if not _is_public_article_handle(handle):
         return ""

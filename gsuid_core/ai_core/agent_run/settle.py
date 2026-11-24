@@ -54,7 +54,7 @@ from gsuid_core.ai_core.control.directive import (
     Directive,
     render_control_envelope,
 )
-from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
+from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags
 from gsuid_core.ai_core.control.policy_ring import (
     SettleRingHost,
     SettleRingInput,
@@ -213,8 +213,7 @@ async def load_session_salvage_material(session_id: str) -> str:
 
 
 async def _read_session_salvage_material(session_id: str) -> str:
-    from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+    from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord, load_payload_text
 
     rows = await AIToolOutputRecord.list_recent(session_id=session_id, limit=_SALVAGE_ROW_LIMIT)
     chunks: list[str] = []

@@ -30,10 +30,10 @@
 |---|---|
 | `gs_agent.py` | **`GsCoreAIAgent`**：会话类 + 重试 / history 裁剪 / 闸门收尾 / 工厂。**单次 run 主路径已拆到 `agent_run/`**（见下）。 |
 | `agent_run/` | **单次 `_execute_run_once` 阶段包**（2026-08）：prepare → tools → loop → settle；`speech_policy` 提供检测原语，裁决表收敛于 `control/policy_ring.py`。详见 §`agent_run/`。 |
-| `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
+| `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门与纠正目录）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
 | `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）。 |
-| `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
-| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语与数据驱动 `_OOC_RING` 规则表；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
+| `control/angle_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
+| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语、`OutboundTextView` 单遍视图与数据驱动 `_OOC_RING` 规则表；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
 | `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
 | `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |
@@ -51,7 +51,7 @@
 | `startup.py` | ai_core 的启动钩子聚合点，被 `gsuid_core.startup` 调用。 |
 | `self_cognition.py` | 自我认知（"你是谁、能做什么"）相关的辅助常量。 |
 | `wall_clock.py` | 墙钟软预算时钟（ask_user 挂起时段可排除）。 |
-| `tool_state_signals.py` | 工具池状态信号（意图/活跃任务驱动 L2 挂载）。 |
+| `tool_health.py` | 工具健康熔断与工具池状态信号（意图/活跃任务驱动 L2 挂载）。 |
 
 ---
 
@@ -162,7 +162,8 @@
 | `workspace.py` | Artifact Workspace 沙盒（`ensure_workspace / put_artifact / list_artifacts`）。 |
 | `resolver.py` / `handle_resolver.py` | 工件 ID（`res_xxx`）解析与 RM 资源桥接。 |
 | `context.py` | 每轮注入「正在推进的事项」摘要（**脱敏**：不注入 agent_profile，附对外人话提示）。 |
-| `tool_output_*.py` | FileOS：工具长输出落盘 / 折叠卡 / 索引 / 协议（主人格防 OOC）。 |
+| `tool_output_store.py` | FileOS + Artifact 统一层：SQL 真身、句柄卡与分页读协议、Qdrant dense+sparse 混合索引。 |
+| `tool_output_helper.py` / `tool_output_tools.py` | FileOS 落盘脱敏折叠与 agent 检索 / `read_handle` 工具。 |
 | `startup.py` | 启动期把数据库里 `armed` 的周期模板重新挂回 APScheduler。 |
 
 ⚠️ Kanban 转译子 Agent **必须**启用 SubAgent 日志（`is_subagent=True`）；早期为避免噪声曾经禁用，但归一到 emitter 后必须保留以供审计——日志路径会通过 `generator_log_files` 挂到主 session 的 `linked_agents`。
@@ -282,8 +283,9 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | 目录 | 用途 |
 |---|---|
 | `budget/` | 用量预算规则 + `budget_manager` 闸门（交互/自主 scope）。 |
-| `approval/` | 统一审批中心（`AIApprovalRequest` + submit/resolve）。 |
-| `command_exec/` | 主人 shell 审批执行链（policy / runner / audit）。 |
+| `approval/` | 统一审批中心（`models` / `center` / `delivery`：审批表、submit/resolve 与通知续跑）。 |
+| `command_exec/` | 主人 shell 审批执行链（`models` / `policy` / `executor` / `provisioner` / `tools`）。 |
+| `http_agent/` | OpenAI/SSE 对外 HTTP 代理（`protocol` / `auth` / `runtime` / `capture_bot` / `routes`）。 |
 | `multimodal/` | ASR / 文档 / 视频帧 / Gemini Files / OpenAI file 视频 等。 |
 | `image_understand/` | 图片理解入口（可被 run 内嵌调用）。 |
 

@@ -1,13 +1,7 @@
-"""非法尖括号标签检测与文案（策略实现，编排见 ``output_gate``）。
+"""非法尖括号标签检测、清洗与重写文案（控制面叶子守卫，编排见 ``control/policy_ring``）。
 
-模型常自创 ``<bubble/>`` / ``<br>`` 等控制标记。框架协议标签仅：
-``<SILENCE>`` / ``<meme:…>``。整段 ``<沉默>`` 当作 ``<SILENCE>`` 的别名剥掉。
-``<br>`` / ``<report>`` **不是**协议——视为非法，须打回重写。
-多项资料出图走 ``create_subagent(render_agent)``，不靠尖括号标签。
-
-检测启发式：形如 XML/HTML 的 ``</?Name …>``；紧贴左侧标识符的泛型
-（``List<str>``）与含 ``@`` 的伪标签（邮箱）跳过，降低假阳性。
-代码块 / 行内代码内标签不检测（与 linebreak 规范化一致）。
+框架协议标签仅：``<SILENCE>`` / ``<meme:…>`` / ``<reply …>``。``<br>`` / ``<report>`` 等
+均视为非法尖括号标签。代码区、邮箱与 PascalCase 泛型类型参数（``List<str>``）自动豁免。
 """
 
 from __future__ import annotations
@@ -24,7 +18,6 @@ from gsuid_core.ai_core.control.lines import (
 MAX_RETRIES = 3
 
 # 协议标签，检测前剥掉。<br> / <report> 不在此列。尖括号与冒号旁的空格也认。
-# 全角括号与 &lt; 同样认。捕获组是情绪正文，发送时再拆情绪和场景。
 MEME_TAG_PATTERN = re.compile(
     r"`*(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*"
     r"meme\s*[：:]\s*([^>＞]+?)\s*"
@@ -36,16 +29,13 @@ _REPLY_TAG_RE = re.compile(
     r"`*(?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*/?\s*reply(?:\s+[#\d,\s]*?)?\s*/?\s*(?:>|&gt;|&#62;|&#x3e;|＞|\\>)`*",
     re.IGNORECASE,
 )
-
 _SILENCE_TAG_RE = re.compile(
     r"(?:<|&lt;|&#60;|＜|\\<)/?(?:SILENCE|沉默)\s*/?(?:>|&gt;|&#62;|＞|\\>)",
     re.IGNORECASE,
 )
 
 # 形如标签：以字母开头的名 + 可选属性/自闭合（不含「< 数字」比较）
-_ANGLE_TAG_RE = re.compile(
-    r"</?[A-Za-z][\w:.-]*(?:\s[^<>]*?)?/?>",
-)
+_ANGLE_TAG_RE = re.compile(r"</?[A-Za-z][\w:.-]*(?:\s[^<>]*?)?/?>")
 # 模型自造中文控制标签：`<要求用其他语言…>`。比较符 `1 < 2` 不含 CJK 名。
 _CJK_ANGLE_TAG_RE = re.compile(r"</?[\u4e00-\u9fff][^<>]{0,80}>")
 
@@ -133,7 +123,7 @@ _HTML_OR_CONTROL_TAG_NAMES: frozenset[str] = frozenset(
         "pre",
         "progress",
         "q",
-        "report",  # 已废止的资料标签，按非法尖括号打回
+        "report",
         "rp",
         "rt",
         "ruby",
@@ -172,6 +162,12 @@ _HTML_OR_CONTROL_TAG_NAMES: frozenset[str] = frozenset(
     }
 )
 
+_MONTH_NAME_RE = re.compile(
+    r"\b(?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\b",
+    re.IGNORECASE,
+)
+
 
 def strip_protocol_tags(text: str) -> str:
     """剥掉框架协议标签，便于检测「非法残留」。不含 ``<br>`` / ``<report>``。"""
@@ -183,13 +179,12 @@ def strip_protocol_tags(text: str) -> str:
     return out
 
 
-def _mask_code_spans(text: str) -> str:
+def mask_code_spans(text: str) -> str:
     """代码区替换为空格，避免 `` `<br>` `` / fenced HTML 被当非法标签。"""
     return CODE_SPAN_RE.sub(lambda m: " " * (m.end() - m.start()), text)
 
 
 def _tag_name(raw: str) -> str:
-    """从 ``<br/>`` / ``</div>`` / ``<span class=x>`` 抽出小写标签名。"""
     s = raw.strip()
     if s.startswith("</"):
         s = s[2:]
@@ -201,26 +196,11 @@ def _tag_name(raw: str) -> str:
         s = s[:-1]
     if not s:
         return ""
-    name = s.split(None, 1)[0]
-    return name.rstrip("/").lower()
+    return s.split(None, 1)[0].rstrip("/").lower()
 
 
 def _looks_like_markup_tag(raw: str) -> bool:
-    """自闭合 / 带属性 / 闭合标签 → 一定当 markup，不做泛型豁免。"""
-    if raw.startswith("</"):
-        return True
-    if "/" in raw:
-        return True
-    if "=" in raw:
-        return True
-    return False
-
-
-_MONTH_NAME_RE = re.compile(
-    r"\b(?:January|February|March|April|May|June|July|August|September|"
-    r"October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\b",
-    re.IGNORECASE,
-)
+    return raw.startswith("</") or "/" in raw or "=" in raw
 
 
 def _looks_like_prose_angle(raw: str) -> bool:
@@ -235,33 +215,23 @@ def _looks_like_prose_angle(raw: str) -> bool:
         return False
     if _MONTH_NAME_RE.search(inner) and re.search(r"\d", inner):
         return True
-    if re.fullmatch(r"v?\d[\w.+-]*", inner, re.I):
-        return True
-    return False
+    return re.fullmatch(r"v?\d[\w.+-]*", inner, re.I) is not None
 
 
 def _looks_like_type_arg_body(raw: str) -> bool:
-    """``<str>`` / ``<T>`` 像类型参数；``<br>`` / ``<div>`` 不是。"""
     if _looks_like_markup_tag(raw):
         return False
     name = _tag_name(raw)
     if not name or name in _HTML_OR_CONTROL_TAG_NAMES:
         return False
-    # 单字母：T/U/K 等类型参数
     if len(name) == 1:
         return name.isalpha()
-    # 多字符：须为简单标识（str/int/Any），排除带连字符的伪标签
     return bool(re.fullmatch(r"[A-Za-z_][\w]*", name))
 
 
 def _is_generic_type_arg_context(text: str, start: int, raw: str) -> bool:
-    """``List<str>`` / ``Map<T>``：PascalCase 容器紧贴 ``<类型>`` 时跳过。
-
-    ``Hello<br>world`` / ``OK<br>next`` 左侧虽像标识，但 body 是 HTML 名 → 不豁免。
-    """
-    if not _looks_like_type_arg_body(raw):
-        return False
-    if start <= 0:
+    """``List<str>`` / ``Map<T>``：PascalCase 容器紧贴 ``<类型>`` 时跳过。"""
+    if not _looks_like_type_arg_body(raw) or start <= 0:
         return False
     i = start - 1
     if not (text[i].isalnum() or text[i] == "_"):
@@ -271,30 +241,24 @@ def _is_generic_type_arg_context(text: str, start: int, raw: str) -> bool:
     ident = text[i:start]
     if not ident:
         return False
-    # 单字母类型参数习惯大写（T/U）；小写 a/x 后的 <br> 当标签
-    if len(ident) == 1:
-        return ident.isupper()
-    # 容器/类型名：PascalCase 或全大写缩写
-    return ident[0].isupper()
+    return ident.isupper() if len(ident) == 1 else ident[0].isupper()
 
 
-def find_illegal_angle_tags(text: str) -> List[str]:
+def find_illegal_angle_tags(text: str, *, pre_masked: str | None = None) -> List[str]:
     """返回用户可见正文中非法尖括号标签列表（已忽略协议标签与代码区）。"""
-    if not text or "<" not in text:
-        return []
-    residual = strip_protocol_tags(text)
-    residual = _mask_code_spans(residual)
+    if pre_masked is None:
+        if not text or "<" not in text:
+            return []
+        residual = mask_code_spans(strip_protocol_tags(text))
+    else:
+        residual = pre_masked
     if "<" not in residual:
         return []
     seen: set[str] = set()
     out: list[str] = []
     for m in _ANGLE_TAG_RE.finditer(residual):
         raw = m.group(0)
-        if "@" in raw:
-            continue
-        if _looks_like_prose_angle(raw):
-            continue
-        if _is_generic_type_arg_context(residual, m.start(), raw):
+        if "@" in raw or _looks_like_prose_angle(raw) or _is_generic_type_arg_context(residual, m.start(), raw):
             continue
         if raw not in seen:
             seen.add(raw)
@@ -322,13 +286,7 @@ def has_illegal_angle_tags(text: str) -> bool:
 
 def _is_protocol_tag_raw(raw: str) -> bool:
     low = raw.lower().replace(" ", "")
-    if low.startswith("<meme") or low.startswith("</meme"):
-        return True
-    if "silence" in low:
-        return True
-    if low.startswith("<reply"):
-        return True
-    return False
+    return low.startswith(("<meme", "</meme", "<reply")) or "silence" in low
 
 
 def _sanitize_region(text: str) -> str:
@@ -338,24 +296,19 @@ def _sanitize_region(text: str) -> str:
 
     def _sub(m: re.Match[str]) -> str:
         raw = m.group(0)
-        if "@" in raw:
+        if (
+            "@" in raw
+            or _looks_like_prose_angle(raw)
+            or _is_generic_type_arg_context(text, m.start(), raw)
+            or _is_protocol_tag_raw(raw)
+        ):
             return raw
-        if _looks_like_prose_angle(raw):
-            return raw
-        if _is_generic_type_arg_context(text, m.start(), raw):
-            return raw
-        if _is_protocol_tag_raw(raw):
-            return raw
-        # br 非法但出站时落成换行，避免词粘连
         low = re.sub(r"\s+", "", raw.lower())
-        if low in ("<br>", "<br/>", "</br>"):
-            return "\n"
-        return ""
+        return "\n" if low in ("<br>", "<br/>", "</br>") else ""
 
     cleaned = _ANGLE_TAG_RE.sub(_sub, text)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r" *\n *", "\n", cleaned)
-    return cleaned
+    return re.sub(r" *\n *", "\n", cleaned)
 
 
 def sanitize_illegal_angle_tags(text: str) -> str:

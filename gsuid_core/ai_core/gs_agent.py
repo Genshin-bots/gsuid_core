@@ -29,12 +29,13 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core import output_gate, angle_bracket_guard
+from gsuid_core.ai_core import output_gate
 from gsuid_core.ai_core.const import (
     ERROR_QUOTA_EXHAUSTED,
     STALE_CHAT_REQUEST_TTL,
 )
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.control import angle_guard as angle_bracket_guard
 from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.rag.tools import (
     ToolList,
@@ -1448,7 +1449,7 @@ class GsCoreAIAgent(RunOnceMixin):
             # 本 generation 独立 cancel 事件；上轮 set 过的不得污染本轮
             self._cancel_generation = asyncio.Event()
             self._running_framework = bool(is_framework_injection)
-            from gsuid_core.ai_core.approval.session_ctx import bind_caller_session, reset_caller_session
+            from gsuid_core.ai_core.approval.models import bind_caller_session, reset_caller_session
 
             caller_token = bind_caller_session(self.session_id)
             try:

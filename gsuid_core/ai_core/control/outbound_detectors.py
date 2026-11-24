@@ -27,9 +27,57 @@ from gsuid_core.ai_core.control.lines import (
     CAPABILITY_OR_DEV_LEAK_RE,
 )
 from gsuid_core.ai_core.protocol_text import is_silence_marker
+from gsuid_core.ai_core.control.angle_guard import (
+    MEME_TAG_PATTERN,
+    mask_code_spans,
+    strip_protocol_tags,
+)
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     fact_pack_is_multi_point as _fact_lines_multi_point,
 )
+
+
+@dataclass(slots=True)
+class OutboundTextView:
+    """单次出站文本预处理视图：惰性缓存剥壳、代码掩码与规范化文本，避免跨闸门重复扫描。"""
+
+    raw: str
+    _stripped: Optional[str] = None
+    _protocol_stripped: Optional[str] = None
+    _code_masked: Optional[str] = None
+    _fence_stripped: Optional[str] = None
+    _norm: Optional[str] = None
+
+    @property
+    def stripped(self) -> str:
+        if self._stripped is None:
+            self._stripped = (self.raw or "").strip()
+        return self._stripped
+
+    @property
+    def protocol_stripped(self) -> str:
+        if self._protocol_stripped is None:
+            self._protocol_stripped = strip_protocol_tags(self.raw)
+        return self._protocol_stripped
+
+    @property
+    def code_masked(self) -> str:
+        if self._code_masked is None:
+            self._code_masked = mask_code_spans(self.protocol_stripped) if "<" in self.raw else self.protocol_stripped
+        return self._code_masked
+
+    @property
+    def fence_stripped(self) -> str:
+        if self._fence_stripped is None:
+            self._fence_stripped = CODE_FENCE_RE.sub(" ", self.raw) if "```" in self.raw else self.raw
+        return self._fence_stripped
+
+    @property
+    def norm(self) -> str:
+        if self._norm is None:
+            self._norm = normalize_for_match(self.raw)
+        return self._norm
+
 
 # ── A. 出站话术无状态检测器 ────────────────────────────────────────────────
 
@@ -169,8 +217,6 @@ _CALENDAR_YEAR_RE = re.compile(r"(?<![\d.])20\d{2}(?=\s*年|[-/.]\d{1,2})")
 
 def looks_like_numeric_recitation(text: str) -> bool:
     """台词是否在念多点读数（多行数字对照表或高密度小数/百分号）。"""
-    from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
-
     body = strip_protocol_tags(text or "").strip()
     if not body or is_silence_marker(body):
         return False
@@ -360,8 +406,6 @@ def keeps_working(body: str) -> bool:
 
 def _accept_lines(body: str) -> list[str]:
     """接话行数。单独一行的表情标记不是第二段正文。"""
-    from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
-
     lines: list[str] = []
     for raw in body.splitlines():
         line = raw.strip()
@@ -764,20 +808,29 @@ def is_tech_dump(text: str) -> bool:
 
 @dataclass(slots=True)
 class OocScanContext:
-    """单次 OOC 检测上下文：惰性缓存规范化文本、扩展词表与身份追问标志。"""
+    """单次 OOC 检测上下文：复用 ``OutboundTextView`` 并惰性缓存扩展词表与身份追问标志。"""
 
     text: str
     user_text: str = ""
     exposed_tool_names: Sequence[str] = ()
+    view: Optional[OutboundTextView] = None
     _norm: Optional[str] = None
     _extra: Optional[Tuple[str, ...]] = None
     _probing: Optional[bool] = None
 
     @property
     def norm(self) -> str:
+        if self.view is not None:
+            return self.view.norm
         if self._norm is None:
             self._norm = normalize_for_match(self.text)
         return self._norm
+
+    @property
+    def fence_stripped(self) -> str:
+        if self.view is not None:
+            return self.view.fence_stripped
+        return CODE_FENCE_RE.sub(" ", self.text) if "```" in self.text else self.text
 
     @property
     def extra_terms(self) -> Tuple[str, ...]:
@@ -824,7 +877,7 @@ def match_ooc_fund_claim(ctx: OocScanContext) -> list[str] | None:
 
 
 def match_ooc_machine_dump(ctx: OocScanContext) -> list[str] | None:
-    if _TECH_DUMP_RE.search(CODE_FENCE_RE.sub(" ", ctx.text)):
+    if _TECH_DUMP_RE.search(ctx.fence_stripped):
         return ["技术堆栈/状态码"]
     return None
 
@@ -1024,6 +1077,7 @@ def inspect_outbound_ooc(
     tier: str = "roleplay",
     user_text: str = "",
     exposed_tool_names: Sequence[str] = (),
+    view: Optional[OutboundTextView] = None,
 ) -> Optional[FirewallHit]:
     """按 ``_OOC_RING`` 单表顺序检测 OOC。``tier="plain"`` 直接放行。
 
@@ -1033,7 +1087,7 @@ def inspect_outbound_ooc(
     """
     if not text or tier == "plain":
         return None
-    ctx = OocScanContext(text=text, user_text=user_text, exposed_tool_names=exposed_tool_names)
+    ctx = OocScanContext(text=text, user_text=user_text, exposed_tool_names=exposed_tool_names, view=view)
     for rule in _OOC_RING:
         matched = rule.match(ctx)
         if matched is not None:
