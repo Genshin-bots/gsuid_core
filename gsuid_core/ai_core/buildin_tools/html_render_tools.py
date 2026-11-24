@@ -10,7 +10,7 @@ import uuid
 import base64
 import asyncio
 import datetime
-from typing import TYPE_CHECKING, Any, Tuple, Literal, Optional
+from typing import TYPE_CHECKING, Tuple, Literal, Mapping, TypeVar, Optional
 from pathlib import Path
 
 import httpx2
@@ -793,104 +793,108 @@ async def _finish_image(ctx: RunContext[ToolContext], image_bytes: bytes) -> str
     return image_bytes
 
 
-def _parse_payload(payload: str) -> dict[str, Any]:
+_CacheV = TypeVar("_CacheV")
+
+
+def _put_bounded(cache: dict[str, _CacheV], key: str, value: _CacheV, max_size: int) -> None:
+    if len(cache) >= max_size:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
+def _parse_payload(payload: str) -> dict[str, object]:
     raw = (payload or "").strip()
     if not raw:
         return {}
-    data = json.loads(raw)
+    data: object = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("payload 必须是 JSON 对象")
     return data
 
 
-def _as_str_list(items: Any) -> list[str]:
-    if not isinstance(items, list):
+def _as_str_list(items: object) -> list[str]:
+    return [str(x) for x in items] if isinstance(items, list) else []
+
+
+def _first_str(d: Mapping[str, object], keys: tuple[str, ...], default: str = "") -> str:
+    for k in keys:
+        if k in d:
+            return str(d[k])
+    return default
+
+
+def _dict_int(d: Mapping[str, object], key: str, default: int) -> int:
+    if key in d:
+        val = d[key]
+        if isinstance(val, int):
+            return val
+    return default
+
+
+_RowFieldSpec = tuple[tuple[tuple[str, ...], str], ...]
+
+
+def _extract_rows(raw: object, spec: _RowFieldSpec, *, min_seq_len: int) -> list[list[str]]:
+    if not isinstance(raw, list):
         return []
-    return [str(x) for x in items]
+    width = len(spec)
+    rows: list[list[str]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            rows.append([_first_str(item, keys, default) for keys, default in spec])
+        elif isinstance(item, (list, tuple)) and len(item) >= min_seq_len:
+            rows.append([str(item[i]) if i < len(item) else "" for i in range(width)])
+    return rows
 
 
-def _build_card_html(card_type: str, title: str, meta: str, payload: dict[str, Any]) -> str:
+def _rows_2(raw: object, spec: _RowFieldSpec, *, min_seq_len: int = 2) -> list[tuple[str, str]]:
+    return [(r[0], r[1]) for r in _extract_rows(raw, spec, min_seq_len=min_seq_len)]
+
+
+def _rows_3(raw: object, spec: _RowFieldSpec, *, min_seq_len: int = 2) -> list[tuple[str, str, str]]:
+    return [(r[0], r[1], r[2]) for r in _extract_rows(raw, spec, min_seq_len=min_seq_len)]
+
+
+def _rows_4(raw: object, spec: _RowFieldSpec, *, min_seq_len: int = 2) -> list[tuple[str, str, str, str]]:
+    return [(r[0], r[1], r[2], r[3]) for r in _extract_rows(raw, spec, min_seq_len=min_seq_len)]
+
+
+def _rows_5(raw: object, spec: _RowFieldSpec, *, min_seq_len: int = 4) -> list[tuple[str, str, str, str, str]]:
+    return [(r[0], r[1], r[2], r[3], r[4]) for r in _extract_rows(raw, spec, min_seq_len=min_seq_len)]
+
+
+_WEATHER_METRIC_SPEC: _RowFieldSpec = ((("label",), ""), (("value",), ""), (("sub",), ""))
+_WEATHER_DAY_SPEC: _RowFieldSpec = (
+    (("day",), ""),
+    (("icon",), "云"),
+    (("weather",), ""),
+    (("high",), ""),
+    (("low",), ""),
+)
+_WEATHER_TIP_SPEC: _RowFieldSpec = ((("icon",), "防"), (("title",), ""), (("desc",), ""))
+_NEWS_ITEM_SPEC: _RowFieldSpec = ((("icon",), "要"), (("title",), ""), (("desc",), ""), (("tag",), ""))
+_RANKING_ROW_SPEC: _RowFieldSpec = ((("name",), ""), (("value",), ""))
+_STEPS_ROW_SPEC: _RowFieldSpec = ((("title",), ""), (("desc",), ""))
+_BOARD_METRIC_SPEC: _RowFieldSpec = ((("label",), ""), (("value",), ""), (("sub", "delta"), ""))
+_BOARD_ROW_SPEC: _RowFieldSpec = ((("left", "name"), ""), (("mid", "desc"), ""), (("right", "value"), ""))
+
+
+def _build_card_html(card_type: str, title: str, meta: str, payload: Mapping[str, object]) -> str:
     from gsuid_core.utils.html_render import im_templates
 
-    footer = str(payload["footer"]) if "footer" in payload else "数据可能滞后 · 仅供参考"
+    footer = _first_str(payload, ("footer",), "数据可能滞后 · 仅供参考")
     if card_type == "weather":
-        metrics_raw = payload["metrics"] if "metrics" in payload else []
-        days_raw = payload["days"] if "days" in payload else []
-        tips_raw = payload["tips"] if "tips" in payload else []
-        metrics: list[tuple[str, str, str]] = []
-        if isinstance(metrics_raw, list):
-            for m in metrics_raw:
-                if isinstance(m, dict):
-                    metrics.append(
-                        (
-                            str(m["label"] if "label" in m else ""),
-                            str(m["value"] if "value" in m else ""),
-                            str(m["sub"] if "sub" in m else ""),
-                        )
-                    )
-                elif isinstance(m, (list, tuple)) and len(m) >= 2:
-                    metrics.append((str(m[0]), str(m[1]), str(m[2]) if len(m) > 2 else ""))
-        days: list[tuple[str, str, str, str, str]] = []
-        if isinstance(days_raw, list):
-            for d in days_raw:
-                if isinstance(d, dict):
-                    days.append(
-                        (
-                            str(d["day"] if "day" in d else ""),
-                            str(d["icon"] if "icon" in d else "云"),
-                            str(d["weather"] if "weather" in d else ""),
-                            str(d["high"] if "high" in d else ""),
-                            str(d["low"] if "low" in d else ""),
-                        )
-                    )
-                elif isinstance(d, (list, tuple)) and len(d) >= 4:
-                    days.append(
-                        (
-                            str(d[0]),
-                            str(d[1]),
-                            str(d[2]),
-                            str(d[3]),
-                            str(d[4]) if len(d) > 4 else "",
-                        )
-                    )
-        tips: list[tuple[str, str, str]] = []
-        if isinstance(tips_raw, list):
-            for tip in tips_raw:
-                if isinstance(tip, dict):
-                    tips.append(
-                        (
-                            str(tip["icon"] if "icon" in tip else "防"),
-                            str(tip["title"] if "title" in tip else ""),
-                            str(tip["desc"] if "desc" in tip else ""),
-                        )
-                    )
-                elif isinstance(tip, (list, tuple)) and len(tip) >= 2:
-                    tips.append((str(tip[0]), str(tip[1]), str(tip[2]) if len(tip) > 2 else ""))
-        return im_templates.weather_card(title, meta=meta, metrics=metrics, days=days, tips=tips, footer=footer)
+        return im_templates.weather_card(
+            title,
+            meta=meta,
+            metrics=_rows_3(payload["metrics"] if "metrics" in payload else [], _WEATHER_METRIC_SPEC),
+            days=_rows_5(payload["days"] if "days" in payload else [], _WEATHER_DAY_SPEC, min_seq_len=4),
+            tips=_rows_3(payload["tips"] if "tips" in payload else [], _WEATHER_TIP_SPEC),
+            footer=footer,
+        )
 
     if card_type == "news":
-        items_raw = payload["items"] if "items" in payload else []
-        items: list[tuple[str, str, str, str]] = []
-        if isinstance(items_raw, list):
-            for it in items_raw:
-                if isinstance(it, dict):
-                    items.append(
-                        (
-                            str(it["icon"] if "icon" in it else "要"),
-                            str(it["title"] if "title" in it else ""),
-                            str(it["desc"] if "desc" in it else ""),
-                            str(it["tag"] if "tag" in it else ""),
-                        )
-                    )
-                elif isinstance(it, (list, tuple)) and len(it) >= 2:
-                    items.append(
-                        (
-                            str(it[0]),
-                            str(it[1]),
-                            str(it[2]) if len(it) > 2 else "",
-                            str(it[3]) if len(it) > 3 else "",
-                        )
-                    )
+        items = _rows_4(payload["items"] if "items" in payload else [], _NEWS_ITEM_SPEC)
         return im_templates.news_card(title, items, meta=meta, footer=footer)
 
     if card_type == "metrics":
@@ -900,13 +904,8 @@ def _build_card_html(card_type: str, title: str, meta: str, payload: dict[str, A
         if isinstance(metrics_raw, list):
             for m in metrics_raw:
                 if isinstance(m, dict):
-                    pairs.append(
-                        (
-                            str(m["value"] if "value" in m else ""),
-                            str(m["label"] if "label" in m else ""),
-                        )
-                    )
-                    deltas.append(str(m["delta"] if "delta" in m else m["sub"] if "sub" in m else ""))
+                    pairs.append((_first_str(m, ("value",)), _first_str(m, ("label",))))
+                    deltas.append(_first_str(m, ("delta", "sub")))
                 elif isinstance(m, (list, tuple)) and len(m) >= 2:
                     # 允许 [label, value, delta] 或 [value, label]
                     if len(m) >= 3:
@@ -918,19 +917,7 @@ def _build_card_html(card_type: str, title: str, meta: str, payload: dict[str, A
         return im_templates.metrics_card(title, pairs, eyebrow=meta, deltas=deltas or None, footer=footer)
 
     if card_type == "ranking":
-        rows_raw = payload["rows"] if "rows" in payload else []
-        rows: list[tuple[str, str]] = []
-        if isinstance(rows_raw, list):
-            for r in rows_raw:
-                if isinstance(r, dict):
-                    rows.append(
-                        (
-                            str(r["name"] if "name" in r else ""),
-                            str(r["value"] if "value" in r else ""),
-                        )
-                    )
-                elif isinstance(r, (list, tuple)) and len(r) >= 2:
-                    rows.append((str(r[0]), str(r[1])))
+        rows = _rows_2(payload["rows"] if "rows" in payload else [], _RANKING_ROW_SPEC)
         return im_templates.ranking_card(title, rows, eyebrow=meta, footer=footer)
 
     if card_type == "summary":
@@ -938,68 +925,28 @@ def _build_card_html(card_type: str, title: str, meta: str, payload: dict[str, A
         return im_templates.summary_card(title, points, eyebrow=meta, footer=footer)
 
     if card_type == "steps":
-        steps_raw = payload["steps"] if "steps" in payload else []
-        steps: list[tuple[str, str]] = []
-        if isinstance(steps_raw, list):
-            for s in steps_raw:
-                if isinstance(s, dict):
-                    steps.append(
-                        (
-                            str(s["title"] if "title" in s else ""),
-                            str(s["desc"] if "desc" in s else ""),
-                        )
-                    )
-                elif isinstance(s, (list, tuple)) and len(s) >= 1:
-                    steps.append((str(s[0]), str(s[1]) if len(s) > 1 else ""))
+        steps = _rows_2(payload["steps"] if "steps" in payload else [], _STEPS_ROW_SPEC, min_seq_len=1)
         return im_templates.steps_card(title, steps, eyebrow=meta, footer=footer)
 
     if card_type == "comparison":
         headers = _as_str_list(payload["headers"] if "headers" in payload else [])
         rows_raw = payload["rows"] if "rows" in payload else []
-        rows2: list[list[str]] = []
-        if isinstance(rows_raw, list):
-            for r in rows_raw:
-                if isinstance(r, (list, tuple)):
-                    rows2.append([str(x) for x in r])
+        rows2 = (
+            [[str(x) for x in r] for r in rows_raw if isinstance(r, (list, tuple))]
+            if isinstance(rows_raw, list)
+            else []
+        )
         return im_templates.comparison_card(title, headers, rows2, eyebrow=meta, footer=footer)
 
     if card_type == "board":
-        metrics_raw = payload["metrics"] if "metrics" in payload else []
+        metrics_b = _rows_3(payload["metrics"] if "metrics" in payload else [], _BOARD_METRIC_SPEC)
         sections_raw = payload["sections"] if "sections" in payload else []
-        metrics_b: list[tuple[str, str, str]] = []
-        if isinstance(metrics_raw, list):
-            for m in metrics_raw:
-                if isinstance(m, dict):
-                    metrics_b.append(
-                        (
-                            str(m["label"] if "label" in m else ""),
-                            str(m["value"] if "value" in m else ""),
-                            str(m["sub"] if "sub" in m else m["delta"] if "delta" in m else ""),
-                        )
-                    )
-                elif isinstance(m, (list, tuple)) and len(m) >= 2:
-                    metrics_b.append((str(m[0]), str(m[1]), str(m[2]) if len(m) > 2 else ""))
         sections: list[tuple[str, list[tuple[str, str, str]]]] = []
         if isinstance(sections_raw, list):
             for sec in sections_raw:
-                if not isinstance(sec, dict):
-                    continue
-                sec_title = str(sec["title"] if "title" in sec else "")
-                rows_s: list[tuple[str, str, str]] = []
-                rows_raw = sec["rows"] if "rows" in sec else []
-                if isinstance(rows_raw, list):
-                    for r in rows_raw:
-                        if isinstance(r, dict):
-                            rows_s.append(
-                                (
-                                    str(r["left"] if "left" in r else r["name"] if "name" in r else ""),
-                                    str(r["mid"] if "mid" in r else r["desc"] if "desc" in r else ""),
-                                    str(r["right"] if "right" in r else r["value"] if "value" in r else ""),
-                                )
-                            )
-                        elif isinstance(r, (list, tuple)) and len(r) >= 2:
-                            rows_s.append((str(r[0]), str(r[1]), str(r[2]) if len(r) > 2 else ""))
-                sections.append((sec_title, rows_s))
+                if isinstance(sec, dict):
+                    sec_rows = _rows_3(sec["rows"] if "rows" in sec else [], _BOARD_ROW_SPEC)
+                    sections.append((_first_str(sec, ("title",)), sec_rows))
         return im_templates.board_card(title, meta=meta, metrics=metrics_b, sections=sections, footer=footer)
 
     raise ValueError(f"未知 card_type: {card_type}，可选: {', '.join(sorted(_CARD_TYPES))}")
@@ -1183,15 +1130,7 @@ def _iconify_url(prefix: str, name: str, color: Optional[str], *, host: str = "h
 
 
 def _normalize_icon_name(prefix: str, name: str) -> str:
-    if prefix == "mdi" and name in _ICON_NAME_FALLBACKS:
-        return _ICON_NAME_FALLBACKS[name]
-    return name
-
-
-def _store_iconify_raw(key: str, entry: tuple[int, int, int, int, str]) -> None:
-    if len(_ICONIFY_RAW_CACHE) >= _ICONIFY_CACHE_MAX:
-        _ICONIFY_RAW_CACHE.pop(next(iter(_ICONIFY_RAW_CACHE)))
-    _ICONIFY_RAW_CACHE[key] = entry
+    return _ICON_NAME_FALLBACKS[name] if prefix == "mdi" and name in _ICON_NAME_FALLBACKS else name
 
 
 def _render_iconify_svg(entry: tuple[int, int, int, int, str], color: str | None) -> bytes:
@@ -1251,8 +1190,8 @@ async def _prefetch_iconify_batch(sources: list[str], client: httpx2.AsyncClient
                     continue
             if payload is None:
                 continue
-            def_w = payload["width"] if "width" in payload and isinstance(payload["width"], int) else 24
-            def_h = payload["height"] if "height" in payload and isinstance(payload["height"], int) else 24
+            def_w = _dict_int(payload, "width", 24)
+            def_h = _dict_int(payload, "height", 24)
             icons_map = payload["icons"] if "icons" in payload and isinstance(payload["icons"], dict) else {}
             aliases_map = payload["aliases"] if "aliases" in payload and isinstance(payload["aliases"], dict) else {}
             for req_name in chunk:
@@ -1266,11 +1205,14 @@ async def _prefetch_iconify_batch(sources: list[str], client: httpx2.AsyncClient
                 ic_obj = icons_map[target]
                 if not isinstance(ic_obj, dict) or "body" not in ic_obj or not isinstance(ic_obj["body"], str):
                     continue
-                left = ic_obj["left"] if "left" in ic_obj and isinstance(ic_obj["left"], int) else 0
-                top = ic_obj["top"] if "top" in ic_obj and isinstance(ic_obj["top"], int) else 0
-                iw = ic_obj["width"] if "width" in ic_obj and isinstance(ic_obj["width"], int) else def_w
-                ih = ic_obj["height"] if "height" in ic_obj and isinstance(ic_obj["height"], int) else def_h
-                _store_iconify_raw(f"{prefix}/{req_name}", (left, top, iw, ih, ic_obj["body"]))
+                entry = (
+                    _dict_int(ic_obj, "left", 0),
+                    _dict_int(ic_obj, "top", 0),
+                    _dict_int(ic_obj, "width", def_w),
+                    _dict_int(ic_obj, "height", def_h),
+                    ic_obj["body"],
+                )
+                _put_bounded(_ICONIFY_RAW_CACHE, f"{prefix}/{req_name}", entry, _ICONIFY_CACHE_MAX)
 
 
 async def _resolve_embed_source_bytes(
@@ -1307,9 +1249,7 @@ async def _resolve_embed_source_bytes(
         for host in _ICONIFY_API_HOSTS:
             data, err = await _download_url_bytes(_iconify_url(prefix, name, color, host=host), client=client)
             if err is None and data is not None and b"<svg" in data[:800].lower():
-                if len(_ICONIFY_SVG_CACHE) >= _ICONIFY_CACHE_MAX:
-                    _ICONIFY_SVG_CACHE.pop(next(iter(_ICONIFY_SVG_CACHE)))
-                _ICONIFY_SVG_CACHE[cache_url] = data
+                _put_bounded(_ICONIFY_SVG_CACHE, cache_url, data, _ICONIFY_CACHE_MAX)
                 return data, "image/svg+xml", None
         return _fallback_icon_svg(color), "image/svg+xml", None
 

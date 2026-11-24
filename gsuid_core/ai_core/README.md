@@ -259,7 +259,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | 文件 | 用途 |
 |---|---|
 | `client.py` | MCP 客户端核心。 |
-| `server.py` | MCP server 实现。 |
+| `server.py` | MCP server 主入口（鉴权、插件钩子、工具导出与生命周期编排）。 |
+| `server_http.py` | Streamable HTTP ASGI 运行时、取消隔离与无斜杠挂载原语。 |
 | `mcp_tool_caller.py` | 把 MCP 工具桥接为 pydantic_ai Tool。 |
 | `utils.py` | MCP 复用函数层（`build_mcp_arguments` / `is_mcp_provider` 等），含 **details 参数映射**。 |
 | `mcp_tools_config.py / mcp_presets.py / config_manager.py` | 配置层。`mcp_tools_config` 支持 `details` 字段实现参数名映射。 |
@@ -338,6 +339,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `asr.py` | 语音转文字。 |
 | `video.py` | 视频生成 / 处理。 |
 | `document.py` | 文档解析（PDF / DOCX 等）。 |
+| `payload.py` | 图片/视频媒体载荷构造与物化。 |
+| `inbound_prepare.py` | 入站用户消息的视频/图片适配预处理。 |
 
 ### `image_understand/` — 图片理解（视觉模型）
 

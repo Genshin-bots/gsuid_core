@@ -3,26 +3,22 @@ PydanticAI Agent 核心模块
 基于 pydantic_ai 实现的轻量级 Agent
 """
 
-import re
 import sys
 import time
 import uuid
 import asyncio
 from typing import TYPE_CHECKING, Any, List, Tuple, Union, Literal, TypeVar, Callable, Optional, Sequence, overload
 from datetime import datetime
+from dataclasses import dataclass
 
 import httpx2
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai.messages import (
-    ImageUrl,
     TextPart,
-    VideoUrl,
     UserContent,
     ModelMessage,
     ModelRequest,
-    UploadedFile,
-    BinaryContent,
     ModelResponse,
     UserPromptPart,
 )
@@ -53,7 +49,6 @@ from gsuid_core.ai_core.agent_errors import (
     _is_non_retryable_model_error,
 )
 from gsuid_core.ai_core.prefix_probe import PrefixSnapshot
-from gsuid_core.ai_core.control.lines import THREAD_VIEW_PREFIXES
 from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.configs.models import (
     AnyModel,
@@ -71,11 +66,46 @@ from gsuid_core.ai_core.history_compact import (
     _strip_remote_images_from_history,
 )
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
+
+# 兼容 re-export：单测 / 外部仍从 gs_agent 取 run-once 共享符号
+from gsuid_core.ai_core.agent_run.support import (
+    _FAKE_DONE_RE as _FAKE_DONE_RE,
+    _FAKE_DONE_NUDGE as _FAKE_DONE_NUDGE,
+    _RENDER_TOOL_NAMES as _RENDER_TOOL_NAMES,
+    _THRASH_FUSE_NUDGE as _THRASH_FUSE_NUDGE,
+    _FAKE_DONE_CASUAL_RE as _FAKE_DONE_CASUAL_RE,
+    _SEARCHISH_TOOL_HINTS as _SEARCHISH_TOOL_HINTS,
+    _FAKE_DONE_QUESTION_RE as _FAKE_DONE_QUESTION_RE,
+    _INTERACTIVE_CREATE_BY as _INTERACTIVE_CREATE_BY,
+    _RENDER_DELEGATE_NUDGE as _RENDER_DELEGATE_NUDGE,
+    _FAKE_DONE_TASK_NOUN_RE as _FAKE_DONE_TASK_NOUN_RE,
+    _MAIN_PERSONA_CREATE_BY as _MAIN_PERSONA_CREATE_BY,
+    _THRASH_SAME_TOOL_LIMIT as _THRASH_SAME_TOOL_LIMIT,
+    _FAKE_DONE_THIRD_SUBJ_RE as _FAKE_DONE_THIRD_SUBJ_RE,
+    _STRUCTURAL_ZERO_TOOL_NUDGE as _STRUCTURAL_ZERO_TOOL_NUDGE,
+    TraceKind as TraceKind,
+    _append_user_text as _append_user_text,
+    _claims_fake_done as _claims_fake_done,
+    turn_reply_metadata as turn_reply_metadata,
+    _correction_nudge_markers as _correction_nudge_markers,
+    _format_capability_roster as _format_capability_roster,
+    _tool_return_looks_failed as _tool_return_looks_failed,
+    usage_limit_return_payload as usage_limit_return_payload,
+    _tool_return_is_async_pending as _tool_return_is_async_pending,
+    _pool_overlaps_capability_agent as _pool_overlaps_capability_agent,
+    _tool_call_targets_render_agent as _tool_call_targets_render_agent,
+    _tool_return_is_effectual_write as _tool_return_is_effectual_write,
+    _capability_exclusive_tool_names as _capability_exclusive_tool_names,
+    _matched_delegation_only_profile as _matched_delegation_only_profile,
+    _update_thrash_streak_for_response as _update_thrash_streak_for_response,
+)
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER, TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
-from gsuid_core.ai_core.multimodal.payload import (
-    fetch_video_bytes,
-    materialize_image_url,
+from gsuid_core.ai_core.configs.task_kinds import TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
+from gsuid_core.ai_core.agent_run.budget_ctx import (
+    _current_budget_scope as _current_budget_scope,
+    budget_scope_from_event as _budget_scope_from_event,
+    set_budget_scope_context as set_budget_scope_context,
+    reset_budget_scope_context as reset_budget_scope_context,
 )
 from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
@@ -92,7 +122,14 @@ from gsuid_core.ai_core.control.outbound_detectors import (
     inspect_outbound_ooc,
     is_ooc_firewall_enabled,
 )
-from gsuid_core.ai_core.capability_agents.delegation_contracts import (
+from gsuid_core.ai_core.multimodal.inbound_prepare import (
+    InboundMediaContext,
+    is_video_item,
+    prepare_user_message,
+    extract_model_support,
+    prepare_video_content,
+)
+from gsuid_core.ai_core.capability_agents.delegation_contracts import (  # noqa: F401
     POST_TOOL_FAIL_CONTRACT as _POST_TOOL_FAIL_CONTRACT,
     POST_TOOL_OUTPUT_CONTRACT as _POST_TOOL_OUTPUT_CONTRACT,
     POST_TOOL_FAIL_CONTRACT_RENDER as _POST_TOOL_FAIL_CONTRACT_RENDER,
@@ -102,112 +139,11 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     post_tool_contracts_for as _post_tool_contracts_for,
 )
 
-# 兼容 re-export：单测 / 外部仍从 gs_agent 取 POST_TOOL 契约常量
-_ = (
-    _POST_TOOL_FAIL_CONTRACT,
-    _POST_TOOL_FAIL_CONTRACT_CAPABILITY,
-    _POST_TOOL_FAIL_CONTRACT_RENDER,
-    _POST_TOOL_OUTPUT_CONTRACT,
-    _POST_TOOL_OUTPUT_CONTRACT_CAPABILITY,
-    _POST_TOOL_OUTPUT_CONTRACT_RENDER,
-    _post_tool_contracts_for,
-)
-
 _T = TypeVar("_T")
-
-# 超过 max_history 时裁到 max_history * 该比例；越低则单次腾出越多、compact 越稀。
-# compact 活跃窗走 keep_prefix（保头裁中段）；超 TTL 过期前缀整块滚出防陈旧上下文回流。
 _HISTORY_TRIM_RATIO = 0.6
 _MAIN_SESSION_PREFIX_TTL_S = 1800.0
 
-# 预算 scope + run-once 共享符号（实现在 agent_run；此处 re-export 保持 import 稳定）
-from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
-    _FAKE_DONE_RE,
-    _FAKE_DONE_NUDGE,
-    _RENDER_TOOL_NAMES,
-    _THRASH_FUSE_NUDGE,
-    _FAKE_DONE_CASUAL_RE,
-    _SEARCHISH_TOOL_HINTS,
-    _FAKE_DONE_QUESTION_RE,
-    _INTERACTIVE_CREATE_BY,
-    _RENDER_DELEGATE_NUDGE,
-    _FAKE_DONE_TASK_NOUN_RE,
-    _MAIN_PERSONA_CREATE_BY,
-    _THRASH_SAME_TOOL_LIMIT,
-    _FAKE_DONE_THIRD_SUBJ_RE,
-    _STRUCTURAL_ZERO_TOOL_NUDGE,
-    TraceKind,
-    _append_user_text,
-    _claims_fake_done,
-    turn_reply_metadata,
-    _correction_nudge_markers,
-    _format_capability_roster,
-    _tool_return_looks_failed,
-    usage_limit_return_payload,
-    _tool_return_is_async_pending,
-    _pool_overlaps_capability_agent,
-    _tool_call_targets_render_agent,
-    _tool_return_is_effectual_write,
-    _capability_exclusive_tool_names,
-    _matched_delegation_only_profile,
-    _update_thrash_streak_for_response,
-)
-from gsuid_core.ai_core.agent_run.budget_ctx import (  # noqa: E402
-    _current_budget_scope,
-    budget_scope_from_event as _budget_scope_from_event,
-    set_budget_scope_context,
-    reset_budget_scope_context,
-)
-
-# 阻止 ruff F401 删掉仅被测试 import 的 re-export
-_ = (
-    TraceKind,
-    _FAKE_DONE_CASUAL_RE,
-    _FAKE_DONE_NUDGE,
-    _FAKE_DONE_QUESTION_RE,
-    _FAKE_DONE_RE,
-    _FAKE_DONE_TASK_NOUN_RE,
-    _FAKE_DONE_THIRD_SUBJ_RE,
-    _INTERACTIVE_CREATE_BY,
-    _MAIN_PERSONA_CREATE_BY,
-    _RENDER_DELEGATE_NUDGE,
-    _RENDER_TOOL_NAMES,
-    _SEARCHISH_TOOL_HINTS,
-    _STRUCTURAL_ZERO_TOOL_NUDGE,
-    _THRASH_FUSE_NUDGE,
-    _THRASH_SAME_TOOL_LIMIT,
-    _append_user_text,
-    _capability_exclusive_tool_names,
-    _claims_fake_done,
-    _correction_nudge_markers,
-    _format_capability_roster,
-    _matched_delegation_only_profile,
-    _pool_overlaps_capability_agent,
-    _tool_call_targets_render_agent,
-    _tool_return_is_async_pending,
-    _tool_return_is_effectual_write,
-    usage_limit_return_payload,
-    _tool_return_looks_failed,
-    _update_thrash_streak_for_response,
-    reset_budget_scope_context,
-    set_budget_scope_context,
-    _current_budget_scope,
-    _budget_scope_from_event,
-)
-
-# OOC 修复 5.5：角色锚定消息提取
-# 结构化格式特征（markdown 表格、编号列表、加粗标题）——命中即非"在角色内"
-_STRUCTURED_FORMAT_RE = re.compile(
-    r"^\s*\|.*\|.*\|"  # markdown 表格行
-    r"|^\s*\d+[\.\)、]\s"  # 编号列表
-    r"|^\s*\*\*[^*]+\*\*\s*[:：]?"  # 加粗标题
-    r"|^\s*[-•]\s+\*\*",  # 加粗列表项
-    re.MULTILINE,
-)
-
-
-# scope_key（记忆 scope，见 memory/scope.py）→ 可嵌进 session_id 的一段指向标识： group:789012 →
-# group-789012 / user_global:12345 → uglobal-12345 /
+# scope_key（记忆 scope，见 memory/scope.py）→ 可嵌进 session_id 的一段指向标识
 _SCOPE_SEG_CODE: dict[str, str] = {
     "group": "group",
     "user_global": "uglobal",
@@ -221,10 +157,50 @@ def _scope_id_segment(scope_key: Optional[str]) -> str:
     if not scope_key:
         return ""
     prefix, _, rest = scope_key.partition(":")
-    code = _SCOPE_SEG_CODE.get(prefix)
-    if not code or not rest:
-        return ""
-    return f"{code}-{rest}"
+    code = _SCOPE_SEG_CODE[prefix] if prefix in _SCOPE_SEG_CODE else ""
+    return f"{code}-{rest}" if code and rest else ""
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminalErrorSpec:
+    """终局失败的统一记账规格（统计类目 / 返回详情 / 日志文案 / 可选日志类目）。"""
+
+    stats_type: str
+    fail_detail: str
+    log_message: str
+    session_type: str | None = None
+    is_unexpected: bool = False
+
+
+def _classify_terminal_error(exc: Exception, err_str: str, *, non_retryable: bool) -> _TerminalErrorSpec:
+    """把不可重试或重试耗尽后的异常映射为统一的记账与日志规格。"""
+    if non_retryable:
+        assert isinstance(exc, ModelHTTPError)
+        if _is_content_rejected(exc):
+            return _TerminalErrorSpec(
+                "content_rejected",
+                ERROR_CONTENT_REJECTED,
+                i18n_t("log.agent.pydanticai_refused_process_input", p0=exc.status_code, err_str=err_str),
+            )
+        return _TerminalErrorSpec(
+            "client_error",
+            err_str,
+            i18n_t("log.agent.pydanticai_client_fail_retry_err", p0=exc.status_code, err_str=err_str),
+        )
+    if _is_http_timeout_error(exc):
+        return _TerminalErrorSpec("timeout", ERROR_TIMEOUT_TEXT, i18n_t("log.agent.pydanticai_run_fail_request", e=exc))
+    if _is_http_transport_error(exc):
+        low = err_str.lower()
+        if "rate" in low or "429" in low or "limit" in low:
+            return _TerminalErrorSpec("rate_limit", err_str, i18n_t("log.agent.pydanticai_run_fail_rate", e=exc))
+        return _TerminalErrorSpec("network_error", err_str, i18n_t("log.agent.pydanticai_run_fail_network", e=exc))
+    return _TerminalErrorSpec(
+        "api_529_error" if "529" in err_str else "agent_error",
+        err_str,
+        i18n_t("log.agent.pydanticai_run_fail", e=exc),
+        session_type="agent_error",
+        is_unexpected=True,
+    )
 
 
 from gsuid_core.ai_core.agent_run import RunOnceMixin  # noqa: E402
@@ -599,24 +575,6 @@ class GsCoreAIAgent(RunOnceMixin):
         )
         return True
 
-    @staticmethod
-    def _is_video_item(item: UserContent) -> bool:
-        """内容项是否为视频（VideoUrl 或视频类 BinaryContent）。"""
-        if isinstance(item, VideoUrl):
-            return True
-        return isinstance(item, BinaryContent) and str(item.media_type or "").startswith("video/")
-
-    @staticmethod
-    def _is_native_video_part(item: UserContent) -> bool:
-        """已转成可直投模型的视频 file/url（不含图片 BinaryContent）。"""
-        if isinstance(item, VideoUrl):
-            return True
-        if isinstance(item, BinaryContent):
-            return str(item.media_type or "").startswith("video/")
-        if isinstance(item, UploadedFile):
-            return str(item.media_type or "").startswith("video/")
-        return False
-
     def _routed_provider(self) -> str:
         """本轮实际模型的 provider，不用任务主配置（failover 后会不同）。"""
         from pydantic_ai.models import Model
@@ -656,12 +614,8 @@ class GsCoreAIAgent(RunOnceMixin):
         name = self._active_config_name or self.model_config_name
         if not name:
             return fallback
-        data = get_model_config_by_full_name(name).get_config("model_support").data
-        if isinstance(data, list):
-            return [str(x) for x in data]
-        if isinstance(data, str):
-            return data
-        return fallback
+        data: object = get_model_config_by_full_name(name).get_config("model_support").data
+        return extract_model_support(data, fallback)
 
     def _model_declares_video(self) -> bool:
         """当前路由配置是否声明 video。无配置文件时偏可见（True）。"""
@@ -706,367 +660,47 @@ class GsCoreAIAgent(RunOnceMixin):
                 )
         return "file", 12, "off"
 
-    async def _video_item_to_bytes(self, item: UserContent) -> tuple[bytes, str]:
-        """视频内容项 → (字节, mime)。"""
-        if isinstance(item, BinaryContent):
-            return item.data, str(item.media_type or "video/mp4")
-        assert isinstance(item, VideoUrl)
-        return await fetch_video_bytes(item.url)
-
-    async def _frames_from_video_bytes(self, data: bytes, mime: str, video_idx: int) -> list[UserContent]:
-        from gsuid_core.utils.image.image_io import image_bytes_to_provider_part
-        from gsuid_core.ai_core.multimodal.frame_extract import extract_frames_ffmpeg
-
-        provider = self._routed_provider()
-        video_format = mime.split("/")[-1] or "mp4"
-        frames = await extract_frames_ffmpeg(data, video_format=video_format, interval_seconds=2.0)
-        result: list[UserContent] = [
-            f"--- 视频{video_idx} 抽帧（每 2 秒 1 帧，共 {len(frames)} 帧，按时间顺序排列）---"
-        ]
-        for frame in frames:
-            result.append(image_bytes_to_provider_part(frame, "image/jpeg", provider))
-        logger.info(
-            i18n_t(
-                "log.agent.video_frame_sampled_images",
-                p0=video_idx,
-                p1=len(frames),
-            )
+    def _media_context(
+        self,
+        model_support: str | list[str],
+        *,
+        include_video_settings: bool,
+    ) -> InboundMediaContext:
+        return InboundMediaContext(
+            model=self.model,
+            provider=self._routed_provider(),
+            model_support=self._routed_model_support(model_support),
+            task_level=self.task_level,
+            task_kind=self.task_kind,
+            openai_video_settings=self._routed_openai_video_settings()
+            if include_video_settings
+            else ("file", 12, "off"),
+            session_id=self.session_id,
+            persona_name=self.persona_name,
+            disable_direct_image=self._disable_direct_image_in_run,
         )
-        return result
 
     async def _prepare_video_content(
         self,
         content_list: list[UserContent],
         model_support: str | list[str],
     ) -> list[UserContent]:
-        """视频内容项转换（在图片分支**之前**执行）。
-
-        IM 视频不要喂 VideoUrl（Gemini 只认 YouTube / Files URI）。字节按实际
-        路由模型投递：gemini Files API、openai ``type=file``、否则抽帧或文本占位。
-        ``/v1/files`` 缺失时禁止无界 base64。
-        """
-        if not any(self._is_video_item(item) for item in content_list):
+        """薄转发到 ``multimodal.inbound_prepare.prepare_video_content``。"""
+        if not any(is_video_item(item) for item in content_list):
             return content_list
-
-        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
-
-        from gsuid_core.ai_core.multimodal.gemini_files import (
-            is_gemini_file_uri,
-            upload_media_for_task,
-        )
-        from gsuid_core.ai_core.multimodal.openai_files import (
-            video_filename,
-            video_delivery_mode,
-            video_bytes_to_openai_content,
-            openai_files_client_from_model,
+        return await prepare_video_content(
+            content_list, self._media_context(model_support, include_video_settings=True)
         )
 
-        model_support = self._routed_model_support(model_support)
-        provider = self._routed_provider()
-        supports_video = "video" in model_support
-        supports_image = "image" in model_support
-        openai_format, video_inline_max_mb, video_url_passthrough = self._routed_openai_video_settings()
-        if isinstance(self.model, OpenAIResponsesModel) and openai_format == "video_url":
-            logger.warning(i18n_t("log.agent.video_openai_responses_fallback"))
-            openai_format = "file"
-        mode = video_delivery_mode(
-            supports_video=supports_video,
-            supports_image=supports_image,
-            provider=provider,
-            openai_format=openai_format,
-        )
-
-        result: list[UserContent] = []
-        video_idx = 0
-        for item in content_list:
-            if not self._is_video_item(item):
-                result.append(item)
-                continue
-            video_idx += 1
-
-            if mode == "unavailable":
-                if supports_video:
-                    logger.warning(i18n_t("log.agent.declared_video_image_frame"))
-                    result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
-                else:
-                    logger.warning(i18n_t("log.agent.declare_video_analysis_capability"))
-                    result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
-                continue
-
-            try:
-                if mode == "gemini":
-                    # media_type 必传：Files API URI 无扩展名，缺 mime 会 400
-                    if isinstance(item, VideoUrl) and is_gemini_file_uri(item.url):
-                        result.append(
-                            UploadedFile(file_id=item.url, provider_name="google-gla", media_type="video/mp4")
-                        )
-                        continue
-                    data, mime = await self._video_item_to_bytes(item)
-                    file_uri = await upload_media_for_task(data, mime, self.task_level, self.task_kind)
-                    result.append(UploadedFile(file_id=file_uri, provider_name="google-gla", media_type=mime))
-                    continue
-
-                if mode == "openai_file":
-                    data, mime = await self._video_item_to_bytes(item)
-                    client = None
-                    if isinstance(self.model, (OpenAIChatModel, OpenAIResponsesModel)):
-                        client = openai_files_client_from_model(self.model)
-                    # Responses 父类不 map video BinaryContent，禁止 inline
-                    allow_inline = not isinstance(self.model, OpenAIResponsesModel)
-                    converted, how = await video_bytes_to_openai_content(data, mime, client, allow_inline=allow_inline)
-                    size_mb = len(data) / 1024 / 1024
-                    if how == "files_missing" or converted is None:
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.video_openai_files_missing",
-                                p0=video_idx,
-                                size=size_mb,
-                            )
-                        )
-                        if supports_image:
-                            result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
-                        else:
-                            result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
-                        continue
-                    result.append(converted)
-                    if how == "uploaded" and isinstance(converted, UploadedFile):
-                        logger.info(
-                            i18n_t(
-                                "log.agent.video_openai_file_uploaded",
-                                p0=video_idx,
-                                file_id=converted.file_id,
-                            )
-                        )
-                    else:
-                        logger.info(
-                            i18n_t(
-                                "log.agent.video_openai_file_inline",
-                                p0=video_idx,
-                                size=size_mb,
-                            )
-                        )
-                    continue
-
-                if mode == "openai_video_url":
-                    if video_url_passthrough == "on":
-                        raw_url: str | None = None
-                        if isinstance(item, VideoUrl) and item.url.startswith(("http://", "https://")):
-                            raw_url = item.url
-                        elif (
-                            isinstance(item, BinaryContent)
-                            and item.identifier
-                            and item.identifier.startswith(("http://", "https://"))
-                        ):
-                            raw_url = item.identifier
-                        if raw_url is not None:
-                            result.append(VideoUrl(url=raw_url))
-                            logger.info(
-                                i18n_t(
-                                    "log.agent.video_openai_url_passthrough",
-                                    p0=video_idx,
-                                    url=raw_url,
-                                )
-                            )
-                            continue
-
-                    data, mime = await self._video_item_to_bytes(item)
-                    size_mb = len(data) / 1024 / 1024
-                    if size_mb <= video_inline_max_mb:
-                        filename = video_filename(mime)
-                        result.append(BinaryContent(data=data, media_type=mime, identifier=filename))
-                        logger.info(
-                            i18n_t(
-                                "log.agent.video_openai_url_inline",
-                                p0=video_idx,
-                                size=size_mb,
-                            )
-                        )
-                    else:
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.video_openai_url_oversize",
-                                p0=video_idx,
-                                size=size_mb,
-                                limit=video_inline_max_mb,
-                            )
-                        )
-                        if supports_image:
-                            result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
-                        else:
-                            result.append(f"--- 视频{video_idx}: [当前模型无法读取该视频内容] ---")
-                    continue
-
-                data, mime = await self._video_item_to_bytes(item)
-                result.extend(await self._frames_from_video_bytes(data, mime, video_idx))
-            except Exception as e:
-                logger.error(i18n_t("log.agent.process_video", p0=video_idx, e=e))
-                result.append(f"--- 视频{video_idx}: [视频处理失败: {e}] ---")
-        return result
-
-    def _user_speech_shell(self, text: str) -> str:
-        """套 ``[用户发言]`` 壳；线程视图与 TurnRouter 的机器提示不套。"""
-        if text.startswith(THREAD_VIEW_PREFIXES) or self.task_kind == TASK_TURN_ROUTER:
-            return text
-        return f"[用户发言]\n{text}"
-
-    async def _prepare_user_message(
-        self,
-        content_list: list[UserContent],
-    ) -> Union[str, list[UserContent]]:
-        """处理用户消息中的图片/视频内容
-
-        当 user_message 为 Sequence[UserContent] 时，检查其中是否包含多模态内容。
-        视频项先经 :meth:`_prepare_video_content` 转换（gemini / openai file /
-        抽帧 / 占位）；随后根据当前模型的 model_support 配置处理图片：
-        - 模型支持图片：保留 ImageUrl，返回 list[UserContent]
-        - 模型不支持图片：图片转述为文本；只保留视频 file，图片 BinaryContent 丢弃；
-          无法投喂的视频改成「无法读取」文本。
-
-        Args:
-            content_list: 用户消息内容列表
-
-        Returns:
-            处理后的消息，可能是 str 或 list[UserContent]
-        """
-        from gsuid_core.utils.image.image_io import (
-            bytes_to_data_uri,
-            to_provider_image_content,
-            bytes_from_inline_image_ref,
-            image_bytes_to_provider_part,
-        )
+    async def _prepare_user_message(self, content_list: list[UserContent]) -> Union[str, list[UserContent]]:
+        """薄转发到 ``multimodal.inbound_prepare.prepare_user_message``。"""
         from gsuid_core.ai_core.configs.models import get_model_config_for_task
-        from gsuid_core.ai_core.image_understand import understand_image
 
-        model_config = get_model_config_for_task(self.task_level, self.task_kind)
-        raw_support: object = model_config.get_config("model_support").data
-        fallback_support: str | list[str]
-        if isinstance(raw_support, list):
-            fallback_support = [str(x) for x in raw_support]
-        elif isinstance(raw_support, str):
-            fallback_support = raw_support
-        else:
-            fallback_support = ""
-        model_support = self._routed_model_support(fallback_support)
-        provider = self._routed_provider()
-
-        # 视频先行转换——OpenAI/Anthropic 模型不接受 VideoUrl，必须在入历史前处理掉
-        content_list = await self._prepare_video_content(content_list, model_support)
-
-        # 分离文本和图片（同时兼容 ImageUrl 与图片类 BinaryContent）
-        text_parts: list[str] = []
-        image_urls: list[str] = []
-        for item in content_list:
-            if isinstance(item, ImageUrl):
-                image_urls.append(item.url)
-            elif isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/"):
-                uri, _, _ = bytes_to_data_uri(item.data, fallback_mime=str(item.media_type or "image/png"))
-                assert uri is not None
-                image_urls.append(uri)
-            elif isinstance(item, str):
-                text_parts.append(item)
-
-        if "image" in model_support and not self._disable_direct_image_in_run:
-            # 模型支持图片，按实际激活 provider 输出 BinaryContent / ImageUrl；动图收成静图序列
-            from gsuid_core.ai_core.persona.appearance import format_look_identity_note
-            from gsuid_core.ai_core.buildin_tools.image_reader import wants_self_visual
-            from gsuid_core.ai_core.multimodal.animated_frames import render_animation_sheets
-
-            ask_self = wants_self_visual("\n".join(text_parts).strip())
-            result: list[UserContent] = []
-            notes: list[str] = []
-            seen_notes: set[str] = set()
-            for item in content_list:
-                if isinstance(item, str):
-                    result.append(self._user_speech_shell(item))
-                elif isinstance(item, ImageUrl) or (
-                    isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/")
-                ):
-                    raw: bytes | None
-                    source_for_inject: str | bytes
-                    if isinstance(item, BinaryContent):
-                        raw = item.data
-                        source_for_inject = item.data
-                    else:
-                        url = await materialize_image_url(item.url)
-                        if url.startswith(("http://", "https://")):
-                            logger.warning(i18n_t("log.agent.image_materialization_adding_history", p0=item.url[:120]))
-                            continue
-                        raw = bytes_from_inline_image_ref(url)
-                        source_for_inject = url
-                    sheets = await asyncio.to_thread(render_animation_sheets, raw) if raw else None
-                    if sheets is not None:
-                        result.append(sheets.note)
-                        for blob in sheets.images:
-                            result.append(image_bytes_to_provider_part(blob, "image/jpeg", provider))
-                    else:
-                        injected, inject_err = to_provider_image_content(source_for_inject, provider_or_model=provider)
-                        if injected:
-                            result.extend(injected)
-                        elif inject_err:
-                            logger.warning(i18n_t("log.ai.unable_process_image_id_err", i="user_message", e=inject_err))
-                            continue
-                    if self.persona_name:
-                        note = format_look_identity_note(self.persona_name, raw, allow_card_fallback=ask_self)
-                        if note and note not in seen_notes:
-                            seen_notes.add(note)
-                            notes.append(note)
-                else:
-                    result.append(item)
-            if notes:
-                joined = "\n".join(notes)
-                if result and isinstance(result[0], str):
-                    result[0] = f"{result[0]}\n{joined}"
-                else:
-                    result.insert(0, joined)
-            return result
-
-        # 模型不支持图片，调用图片理解模块转述
-        if image_urls:
-            logger.info(i18n_t("log.agent.imgund_images_image_paraphrasing", p0=len(image_urls)))
-            user_question = "\n".join(text_parts).strip()
-            from gsuid_core.ai_core.persona.appearance import format_look_identity_note
-            from gsuid_core.ai_core.buildin_tools.image_reader import wants_self_visual
-
-            ask_self = wants_self_visual(user_question)
-            descriptions: list[str] = []
-            for idx, url in enumerate(image_urls):
-                try:
-                    description = await understand_image(
-                        image_url=url,
-                        parent_session_id=self.session_id,
-                        persona_name=self.persona_name if ask_self else None,
-                    )
-                    description = await self._summarize_image_description(description, user_question)
-                    line = f"图片{idx + 1}: {description}"
-                    if self.persona_name:
-                        note = format_look_identity_note(
-                            self.persona_name,
-                            bytes_from_inline_image_ref(url),
-                            allow_card_fallback=ask_self,
-                        )
-                        if note:
-                            line = f"{line}\n{note}"
-                    descriptions.append(line)
-                except Exception as e:
-                    logger.error(i18n_t("log.agent.imgund_understand_image", p0=idx + 1, e=e))
-                    descriptions.append(f"图片{idx + 1}: [图片理解失败]")
-
-            if descriptions:
-                image_text = "--- 图片内容描述 ---\n" + "\n".join(descriptions)
-                text_parts.append(image_text)
-
-        combined = "\n".join(text_parts) if text_parts else ""
-        native_videos = [item for item in content_list if self._is_native_video_part(item)]
-        if not native_videos:
-            if any(self._is_video_item(item) for item in content_list):
-                if combined:
-                    combined = f"{combined}\n用户发送了视频，但当前模型无法读取视频内容。"
-                else:
-                    combined = "用户发送了视频，但当前模型无法读取视频内容。"
-            return self._user_speech_shell(combined)
-        mixed: list[UserContent] = [self._user_speech_shell(combined)]
-        mixed.extend(native_videos)
-        return mixed
+        fallback = extract_model_support(
+            get_model_config_for_task(self.task_level, self.task_kind).get_config("model_support").data, ""
+        )
+        ctx = self._media_context(fallback, include_video_settings=any(is_video_item(item) for item in content_list))
+        return await prepare_user_message(content_list, ctx, summarize_description=self._summarize_image_description)
 
     async def _summarize_image_description(
         self,
@@ -1226,6 +860,22 @@ class GsCoreAIAgent(RunOnceMixin):
             self._session_logger.log_result(text, [])
             return text
 
+        def _record_and_fail(
+            stats_type: str,
+            err_msg: str,
+            fail_detail: str,
+            *,
+            session_type: str | None = None,
+        ) -> str:
+            statistics_manager.record_error(error_type=stats_type, message=err_msg)
+            self._session_logger.log_error(session_type or stats_type, err_msg)
+            return _fail(f"{ERROR_RESULT_PREFIX}: {fail_detail}")
+
+        async def _schedule_retry(err_msg: str) -> None:
+            self._session_logger.log_error("retry_attempt", err_msg)
+            self._session_logger.log_run_end()
+            await asyncio.sleep(retry_delay)
+
         attempt = 0
         total_attempts = max_attempts
         try:
@@ -1234,9 +884,7 @@ class GsCoreAIAgent(RunOnceMixin):
                 # 闸开着别再打上游；套餐打满重试必复现。
                 _qkey = self._quota_breaker_key()
                 if quota_breaker.is_open(_qkey):
-                    statistics_manager.record_error(error_type="quota_breaker_open", message="breaker_open")
-                    self._session_logger.log_error("quota_breaker_open", "breaker_open")
-                    return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
+                    return _record_and_fail("quota_breaker_open", "breaker_open", ERROR_QUOTA_EXHAUSTED)
                 try:
                     return await self._execute_run_once(
                         user_message=user_message,
@@ -1258,45 +906,28 @@ class GsCoreAIAgent(RunOnceMixin):
                     # 自愈：图片下载失败或 base64/格式被上游 400 拒绝时，剥离历史图片并在重试时降级走文字转述
                     if _is_image_payload_error(err_str):
                         self._disable_direct_image_in_run = True
-                        include_inline = "download image" not in err_str.lower()
                         stripped = _strip_remote_images_from_history(
                             self.history,
-                            include_inline=include_inline,
+                            include_inline="download image" not in err_str.lower(),
                         )
                         if stripped:
-                            logger.warning(
-                                i18n_t(
-                                    "log.agent.image_download_stripped_expired",
-                                    stripped=stripped,
-                                )
-                            )
+                            logger.warning(i18n_t("log.agent.image_download_stripped_expired", stripped=stripped))
 
                     # 只按本次异常分类走配额文案，别把超时/审核改写成套餐打满。
                     _qkind = classify_provider_error(e)
                     quota_breaker.note_hit(_qkey, _qkind)
                     if _qkind == "quota":
                         logger.warning(i18n_t("log.agent.pydanticai_quota_exhausted", e=e))
-                        statistics_manager.record_error(error_type="quota_exhausted", message=err_str)
-                        self._session_logger.log_error("quota_exhausted", err_str)
-                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_QUOTA_EXHAUSTED}")
+                        return _record_and_fail("quota_exhausted", err_str, ERROR_QUOTA_EXHAUSTED)
 
                     if _is_pool_timeout_error(e):
                         _cfg = self._active_config_name or self.model_config_name or ""
                         reset_shared_model_http_client_by_full_name(_cfg)
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.pydanticai_pool_timeout_reset",
-                                cfg=_cfg or "-",
-                                e=e,
-                            )
-                        )
-                        statistics_manager.record_error(error_type="timeout", message=err_str)
-                        self._session_logger.log_error("timeout", err_str)
-                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
+                        logger.warning(i18n_t("log.agent.pydanticai_pool_timeout_reset", cfg=_cfg or "-", e=e))
+                        return _record_and_fail("timeout", err_str, ERROR_TIMEOUT_TEXT)
 
-                    # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast， 不再消耗剩余重试次数。
+                    # 永久性 4xx（内容审核拦截 / 请求非法等）：重试必复现，直接 fail-fast。
                     non_retryable = _is_non_retryable_model_error(e)
-
                     # 例外：非内容审核的 4xx 给一次干净历史重试（模型退化畸形请求是随机性的）
                     if non_retryable and not client_error_retry_used and _is_retryable_client_error(e):
                         client_error_retry_used = True
@@ -1309,15 +940,8 @@ class GsCoreAIAgent(RunOnceMixin):
                                     p0=", ".join(self._last_attempt_tool_calls),
                                 )
                             )
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.pydanticai_client_suspected_degraded_fail",
-                                e=e,
-                            )
-                        )
-                        self._session_logger.log_error("retry_attempt", err_str)
-                        self._session_logger.log_run_end()
-                        await asyncio.sleep(retry_delay)
+                        logger.warning(i18n_t("log.agent.pydanticai_client_suspected_degraded_fail", e=e))
+                        await _schedule_retry(err_str)
                         continue
 
                     if attempt < total_attempts and not non_retryable:
@@ -1330,63 +954,16 @@ class GsCoreAIAgent(RunOnceMixin):
                                 e=e,
                             )
                         )
-                        self._session_logger.log_error("retry_attempt", err_str)
-                        self._session_logger.log_run_end()
-                        await asyncio.sleep(retry_delay)
+                        await _schedule_retry(err_str)
                         continue
 
-                    # 永久性客户端错误是上游对本次输入的明确拒绝（非本服务 bug）：只打一行
-                    # warning（不刷 traceback），按内容审核 / 其他客户端错误分类记账并返回友好文案。
-                    if non_retryable:
-                        assert isinstance(e, ModelHTTPError)  # 见 _is_non_retryable_model_error
-                        if _is_content_rejected(e):
-                            logger.warning(
-                                i18n_t(
-                                    "log.agent.pydanticai_refused_process_input",
-                                    p0=e.status_code,
-                                    err_str=err_str,
-                                )
-                            )
-                            statistics_manager.record_error(error_type="content_rejected", message=err_str)
-                            self._session_logger.log_error("content_rejected", err_str)
-                            return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_CONTENT_REJECTED}")
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.pydanticai_client_fail_retry_err",
-                                p0=e.status_code,
-                                err_str=err_str,
-                            )
-                        )
-                        statistics_manager.record_error(error_type="client_error", message=err_str)
-                        self._session_logger.log_error("client_error", err_str)
-                        return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
-
-                    # 已达最大尝试次数：按异常类型记录统计 + 写 session 日志并返回错误文案
-                    if _is_http_timeout_error(e):
-                        logger.warning(i18n_t("log.agent.pydanticai_run_fail_request", e=e))
-                        statistics_manager.record_error(error_type="timeout", message=err_str)
-                        self._session_logger.log_error("timeout", err_str)
-                        return _fail(f"{ERROR_RESULT_PREFIX}: {ERROR_TIMEOUT_TEXT}")
-                    if _is_http_transport_error(e):
-                        low = err_str.lower()
-                        if "rate" in low or "429" in low or "limit" in low:
-                            logger.warning(i18n_t("log.agent.pydanticai_run_fail_rate", e=e))
-                            statistics_manager.record_error(error_type="rate_limit", message=err_str)
-                            self._session_logger.log_error("rate_limit", err_str)
-                        else:
-                            logger.warning(i18n_t("log.agent.pydanticai_run_fail_network", e=e))
-                            statistics_manager.record_error(error_type="network_error", message=err_str)
-                            self._session_logger.log_error("network_error", err_str)
-                        return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
-
-                    logger.error(i18n_t("log.agent.pydanticai_run_fail", e=e))
-                    logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
-                    if "529" in err_str:
-                        statistics_manager.record_error(error_type="api_529_error", message=err_str)
+                    spec = _classify_terminal_error(e, err_str, non_retryable=non_retryable)
+                    if spec.is_unexpected:
+                        logger.error(spec.log_message)
+                        logger.exception(i18n_t("log.agent.pydanticai_exception_error_details"))
                     else:
-                        statistics_manager.record_error(error_type="agent_error", message=err_str)
-                    self._session_logger.log_error("agent_error", err_str)
-                    return _fail(f"{ERROR_RESULT_PREFIX}: {err_str}")
+                        logger.warning(spec.log_message)
+                    return _record_and_fail(spec.stats_type, err_str, spec.fail_detail, session_type=spec.session_type)
 
             # while 至少执行一次循环，正常不可达；兜底也必须闭合 run（评审修复 F6）
             return _fail(f"{ERROR_RESULT_PREFIX}: 未知错误")

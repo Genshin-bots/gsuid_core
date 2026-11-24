@@ -11,9 +11,12 @@ import re
 import uuid
 import asyncio
 import hashlib
-from typing import Any, Dict, List, Tuple, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Mapping, Optional
 from datetime import date, datetime
 from dataclasses import field, dataclass
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.database.models import AIKnowledgeChunk
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -644,9 +647,6 @@ async def _mount_plugin_item(item: Mapping[str, Any], stats: MountStats) -> None
     if _skip_skill_doc(source):
         stats.skipped_skill_doc += 1
         return
-    if "title" not in item:
-        stats.skipped_image += 1
-        return
     title = _mapping_str(item, "title")
     if not title:
         stats.skipped_image += 1
@@ -684,43 +684,41 @@ async def _mount_plugin_item(item: Mapping[str, Any], stats: MountStats) -> None
     stats.attachments += 1
 
 
-async def _mount_agent_doc(
-    doc_id: str,
-    ordered: List[Any],
-    first: Any,
+async def _resolve_doc_hub(
+    *,
+    src: str,
+    first: AIKnowledgeChunk,
     title: str,
     tags: List[str],
+    as_of: str,
     stats: MountStats,
-) -> None:
-    """Agent 文只挂已有公共枢纽，禁止自己新建 ``world:``。"""
-    plugin = str(getattr(first, "plugin", "") or "")
-    formal = formal_from_hub_tag(tags) or resolve_canonical_from_knowledge(title, tags, plugin=plugin)
+) -> Optional[AICogNode]:
+    if src == "agent":
+        # Agent 文只挂已有公共枢纽，禁止自己新建 world:
+        plugin = first.plugin or ""
+        formal = formal_from_hub_tag(tags) or resolve_canonical_from_knowledge(title, tags, plugin=plugin)
+        if formal is None:
+            stats.skipped_unresolved += 1
+            return None
+        hubs = await AICogNode.list_world_hubs_by_title(formal)
+        if len(hubs) != 1:
+            stats.skipped_unresolved += 1
+            return None
+        return hubs[0]
+
+    plugin = first.plugin or "manual"
+    if _surface_is_ambiguous(title, tags, plugin=plugin):
+        stats.skipped_ambiguous += 1
+        logger.debug(i18n_t("log.ai.cognition_hub_ambiguous", title=title[:80]))
+        return None
+    formal = resolve_canonical_from_knowledge(title, tags, plugin=plugin)
     if formal is None:
         stats.skipped_unresolved += 1
-        return
-    hubs = await AICogNode.list_world_hubs_by_title(formal)
-    if len(hubs) != 1:
-        stats.skipped_unresolved += 1
-        return
-    hub = hubs[0]
-    as_of = (first.content_hash or "")[:8]
-    body = "\n".join(c.content for c in ordered)
-    slot = classify_slot(title, tags, [], source="agent")
-    await _attach(
-        hub,
-        slot=slot,
-        title=title,
-        summary=body[:200],
-        as_of=as_of,
-        source="agent",
-        writable=True,
-        ref=f"{KBDOC_REF_PREFIX}{doc_id}",
-        handle=f"kb_kbdoc:{doc_id}",
-    )
-    stats.attachments += 1
+        return None
+    return await _ensure_world_hub(plugin, formal, as_of, source=src)
 
 
-async def _mount_manual_doc(doc_id: str, chunks: List[Any], stats: MountStats) -> None:
+async def _mount_manual_doc(doc_id: str, chunks: List[AIKnowledgeChunk], stats: MountStats) -> None:
     if not chunks:
         return
     ordered = sorted(chunks, key=lambda r: int(r.chunk_index))
@@ -731,33 +729,19 @@ async def _mount_manual_doc(doc_id: str, chunks: List[Any], stats: MountStats) -
         return
     title = article_title_from_chunk_title(first.title or "", doc_id)
     tags = first.tags_list()
-    extra: List[str] = []
-    if src == "agent":
-        await _mount_agent_doc(doc_id, ordered, first, title, tags, stats)
-        return
-    plugin = first.plugin or "manual"
-    if _surface_is_ambiguous(title, tags, plugin=plugin):
-        stats.skipped_ambiguous += 1
-        logger.debug(i18n_t("log.ai.cognition_hub_ambiguous", title=title[:80]))
-        return
-    formal = resolve_canonical_from_knowledge(title, tags, plugin=plugin)
-    if formal is None:
-        stats.skipped_unresolved += 1
-        return
     as_of = (first.content_hash or "")[:8]
-    hub = await _ensure_world_hub(plugin, formal, as_of, source=src)
+    hub = await _resolve_doc_hub(src=src, first=first, title=title, tags=tags, as_of=as_of, stats=stats)
     if hub is None:
         return
     body = "\n".join(c.content for c in ordered)
-    slot = classify_slot(title, tags, extra, source=src)
     await _attach(
         hub,
-        slot=slot,
+        slot=classify_slot(title, tags, [], source=src),
         title=title,
         summary=body[:200],
         as_of=as_of,
         source=src,
-        writable=False,
+        writable=src == "agent",
         ref=f"{KBDOC_REF_PREFIX}{doc_id}",
         handle=f"kb_kbdoc:{doc_id}",
     )
@@ -845,7 +829,7 @@ async def mount_plugin_and_manual() -> MountStats:
     # 手动文可建枢纽；Agent 文只挂已有枢纽，必须后扫。
     for source in ("manual", "agent"):
         rows = await AIKnowledgeChunk.iter_all(source=source)
-        by_doc: Dict[str, List[Any]] = {}
+        by_doc: Dict[str, List[AIKnowledgeChunk]] = {}
         for row in rows:
             key = row.doc_id or row.id
             if key not in by_doc:
@@ -1456,49 +1440,35 @@ async def attach_article_to_hub(
         if existing.source != "agent" or not existing.ref.startswith(KBDOC_REF_PREFIX):
             return "⚠️ 该标题不是可覆盖的 Agent 文。请换标题新建。"
         doc_id = existing.ref[len(KBDOC_REF_PREFIX) :]
-        await add_knowledge_document(
-            doc_id=doc_id,
-            title=title_s,
-            full_text=body,
-            plugin=plugin,
-            source="agent",
-            tags=[f"{HUB_TAG_PREFIX}{hub.title}"],
-            replace=True,
-        )
-        await _attach(
-            hub,
-            slot=existing.slot or slot or "补充",
-            title=title_s,
-            summary=body[:200],
-            as_of=as_of,
-            source="agent",
-            writable=True,
-            ref=existing.ref,
-            handle=existing.handle,
-        )
+        target_slot = existing.slot or slot or "补充"
+        target_ref = existing.ref
+        target_handle = existing.handle
     else:
         digest = hashlib.sha1(f"{hub.ref}:{title_s}".encode("utf-8")).hexdigest()[:16]
         doc_id = f"agent-{uuid.uuid4().hex[:8]}-{digest}"
-        await add_knowledge_document(
-            doc_id=doc_id,
-            title=title_s,
-            full_text=body,
-            plugin=plugin,
-            source="agent",
-            tags=[f"{HUB_TAG_PREFIX}{hub.title}"],
-            replace=True,
-        )
-        await _attach(
-            hub,
-            slot=slot or "补充",
-            title=title_s,
-            summary=body[:200],
-            as_of=as_of,
-            source="agent",
-            writable=True,
-            ref=f"{KBDOC_REF_PREFIX}{doc_id}",
-            handle=f"kb_kbdoc:{doc_id}",
-        )
+        target_slot = slot or "补充"
+        target_ref = f"{KBDOC_REF_PREFIX}{doc_id}"
+        target_handle = f"kb_kbdoc:{doc_id}"
+    await add_knowledge_document(
+        doc_id=doc_id,
+        title=title_s,
+        full_text=body,
+        plugin=plugin,
+        source="agent",
+        tags=[f"{HUB_TAG_PREFIX}{hub.title}"],
+        replace=True,
+    )
+    await _attach(
+        hub,
+        slot=target_slot,
+        title=title_s,
+        summary=body[:200],
+        as_of=as_of,
+        source="agent",
+        writable=True,
+        ref=target_ref,
+        handle=target_handle,
+    )
     atts = await AICogAttachment.list_for_node(hub.id)
     expansion = ExpandResult(
         cards=[

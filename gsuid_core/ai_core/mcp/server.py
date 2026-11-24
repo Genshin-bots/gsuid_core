@@ -30,20 +30,7 @@ import base64
 import asyncio
 import inspect
 import contextlib
-import contextvars
-from typing import (
-    Any,
-    Dict,
-    List,
-    Literal,
-    Callable,
-    Optional,
-    Protocol,
-    Awaitable,
-    TypedDict,
-    TypeGuard,
-    runtime_checkable,
-)
+from typing import Dict, List, Literal, Mapping, Callable, Optional, Awaitable, TypeGuard
 from urllib.parse import urljoin
 
 import anyio
@@ -51,13 +38,10 @@ import httpx2
 import mcp.types as mcp_types
 from fastmcp import FastMCP
 from pydantic_ai import RunContext, ToolReturn
-from starlette.types import Send, Scope, ASGIApp, Message, Receive
+from starlette.types import Send, Scope, ASGIApp, Receive
 from pydantic_ai.usage import RunUsage
-from starlette.routing import Match, Mount
 from fastmcp.tools.base import ToolResult
 from fastmcp.server.auth import AccessToken, AuthProvider
-from fastmcp.server.http import StarletteWithLifespan
-from starlette.responses import JSONResponse
 from pydantic_ai.messages import BinaryContent
 from fastmcp.utilities.types import Image as FastMcpImage
 from pydantic_ai.models.test import TestModel
@@ -69,7 +53,21 @@ from gsuid_core.models import Event, Message as GsMessage
 from gsuid_core.server import on_core_shutdown
 from gsuid_core.ai_core.models import ToolBase, ToolContext
 from gsuid_core.utils.path_safety import reject_outbound_http_url
+from gsuid_core.utils.image.image_io import unwrap_image_url
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.mcp.server_http import (
+    _ASGICallable,
+    _HttpExchange,
+    _is_fresh_asgi,
+    _McpSlashMount,
+    _McpHttpRuntime as _McpHttpRuntime,
+    _snapshot_inner,
+    _close_lifespan_cm,
+    _capture_mcp_failure,
+    _remove_mounted_path,
+    _respond_mcp_unavailable,
+    _finish_open_http_response,
+)
 
 # ─── 常量 ───────────────────────────────────────────────────────────────────
 
@@ -87,9 +85,20 @@ _DEFAULT_MCP_PATH = "/api/mcp"
 _DEFAULT_USER_PM = 6
 
 _SYSTEM_MCP_USER_IDS: frozenset[str] = frozenset({"", "mcp_client", "mcp_service", "mcp_anonymous"})
+_HTTP_SESSION_HEADERS: tuple[tuple[str, str], ...] = (
+    ("x-mcp-group-id", "group_id"),
+    ("x-mcp-bot-id", "bot_id"),
+    ("x-mcp-user-id", "user_id"),
+)
+_MSG_TYPE_LABELS: Dict[str, str] = {
+    "record": "[语音]",
+    "video": "[视频]",
+    "file": "[文件]",
+    "node": "[合并转发]",
+}
 
 # 插件注册的 Bearer 校验器：成功返回 claims（须含 user_id），失败返回 None。
-McpTokenVerifier = Callable[[str], Awaitable[Optional[Dict[str, Any]]]]
+McpTokenVerifier = Callable[[str], Awaitable[Optional[Mapping[str, object]]]]
 _mcp_token_verifiers: List[McpTokenVerifier] = []
 
 #: 插件在构造 MCP Event 后补会话字段（如 group_id / user_pm）。同步、廉价。
@@ -101,7 +110,7 @@ McpExportFilter = Callable[[str, str, ToolBase], bool]
 _mcp_export_filters: List[McpExportFilter] = []
 
 
-def _callable_label(fn: Callable[..., Any]) -> str:
+def _callable_label(fn: Callable[..., object]) -> str:
     """日志用短名；避免 getattr 兜底。"""
     if inspect.isfunction(fn) or inspect.ismethod(fn):
         return fn.__name__
@@ -113,12 +122,7 @@ def register_mcp_token_verifier(verifier: McpTokenVerifier) -> None:
     if verifier in _mcp_token_verifiers:
         return
     _mcp_token_verifiers.append(verifier)
-    logger.info(
-        t(
-            "log.mcp.mcp_server_token_verifier_register",
-            p0=_callable_label(verifier),
-        )
-    )
+    logger.info(t("log.mcp.mcp_server_token_verifier_register", p0=_callable_label(verifier)))
 
 
 def unregister_mcp_token_verifier(verifier: McpTokenVerifier) -> None:
@@ -137,12 +141,7 @@ def register_mcp_event_enricher(fn: McpEventEnricher) -> None:
     if fn in _mcp_event_enrichers:
         return
     _mcp_event_enrichers.append(fn)
-    logger.info(
-        t(
-            "log.mcp.mcp_server_event_enricher_register",
-            p0=_callable_label(fn),
-        )
-    )
+    logger.info(t("log.mcp.mcp_server_event_enricher_register", p0=_callable_label(fn)))
 
 
 def unregister_mcp_event_enricher(fn: McpEventEnricher) -> None:
@@ -155,12 +154,7 @@ def register_mcp_export_filter(fn: McpExportFilter) -> None:
     if fn in _mcp_export_filters:
         return
     _mcp_export_filters.append(fn)
-    logger.info(
-        t(
-            "log.mcp.mcp_server_export_filter_register",
-            p0=_callable_label(fn),
-        )
-    )
+    logger.info(t("log.mcp.mcp_server_export_filter_register", p0=_callable_label(fn)))
 
 
 def unregister_mcp_export_filter(fn: McpExportFilter) -> None:
@@ -171,24 +165,21 @@ def unregister_mcp_export_filter(fn: McpExportFilter) -> None:
 def _should_export_tool(export_name: str, category: str, tool_base: ToolBase) -> bool:
     if not _mcp_export_filters:
         return True
-    for fn in _mcp_export_filters:
-        if fn(export_name, category, tool_base):
-            return True
-    return False
+    return any(fn(export_name, category, tool_base) for fn in _mcp_export_filters)
 
 
-def _json_schema_type_to_python(param_schema: Dict[str, Any]) -> type:
+def _json_schema_type_to_python(param_schema: Mapping[str, object]) -> type:
     """JSON Schema 属性 → Python 注解；复杂联合类型退回 object。"""
-    if "type" in param_schema:
-        raw = param_schema["type"]
-        if isinstance(raw, list):
-            non_null = [x for x in raw if x != "null"]
-            if non_null and isinstance(non_null[0], str) and non_null[0] in _JSON_TYPE_MAP:
-                return _JSON_TYPE_MAP[non_null[0]]
-            return object
-        if isinstance(raw, str) and raw in _JSON_TYPE_MAP:
-            return _JSON_TYPE_MAP[raw]
+    if "type" not in param_schema:
         return object
+    raw = param_schema["type"]
+    if isinstance(raw, list):
+        non_null = [x for x in raw if x != "null"]
+        if non_null and isinstance(non_null[0], str) and non_null[0] in _JSON_TYPE_MAP:
+            return _JSON_TYPE_MAP[non_null[0]]
+        return object
+    if isinstance(raw, str) and raw in _JSON_TYPE_MAP:
+        return _JSON_TYPE_MAP[raw]
     return object
 
 
@@ -198,9 +189,7 @@ def _token_matches_api_key(token: str, api_key: str) -> bool:
         return False
     left = token.encode("utf-8")
     right = api_key.encode("utf-8")
-    if len(left) != len(right):
-        return False
-    return hmac.compare_digest(left, right)
+    return len(left) == len(right) and hmac.compare_digest(left, right)
 
 
 def _auth_is_required(api_key: str) -> bool:
@@ -227,31 +216,21 @@ class BearerTokenAuth(AuthProvider):
             token=token,
             client_id="mcp_anonymous",
             scopes=["mcp:tools"],
-            claims={
-                "auth": "anonymous",
-                "user_id": "mcp_anonymous",
-                "user_pm": _DEFAULT_USER_PM,
-            },
+            claims={"auth": "anonymous", "user_id": "mcp_anonymous", "user_pm": _DEFAULT_USER_PM},
         )
 
     async def verify_token(self, token: str) -> Optional[AccessToken]:
         required = _auth_is_required(self._api_key)
 
         if not token:
-            if not required:
-                return self._anonymous_token("")
-            return None
+            return None if required else self._anonymous_token("")
 
         if _token_matches_api_key(token, self._api_key):
             return AccessToken(
                 token=token,
                 client_id="mcp_service",
                 scopes=["mcp:tools"],
-                claims={
-                    "auth": "api_key",
-                    "user_id": "mcp_service",
-                    "user_pm": 0,
-                },
+                claims={"auth": "api_key", "user_id": "mcp_service", "user_pm": 0},
             )
 
         for verifier in list(_mcp_token_verifiers):
@@ -259,13 +238,7 @@ class BearerTokenAuth(AuthProvider):
                 claims = await verifier(token)
             except Exception as e:
                 # 插件校验器异常不得拖垮鉴权链；记日志后试下一个
-                logger.warning(
-                    t(
-                        "log.mcp.mcp_server_token_verifier_fail",
-                        p0=_callable_label(verifier),
-                        e=e,
-                    )
-                )
+                logger.warning(t("log.mcp.mcp_server_token_verifier_fail", p0=_callable_label(verifier), e=e))
                 continue
             if not isinstance(claims, dict):
                 continue
@@ -273,22 +246,14 @@ class BearerTokenAuth(AuthProvider):
                 logger.warning(t("log.mcp.mcp_server_token_verifier_missing_user_id"))
                 continue
             user_id = str(claims["user_id"])
-            if "client_id" in claims:
-                client_id = str(claims["client_id"])
-            else:
-                client_id = f"user:{user_id}"
-            out_claims: Dict[str, Any] = dict(claims)
+            client_id = str(claims["client_id"]) if "client_id" in claims else f"user:{user_id}"
+            out_claims: Dict[str, object] = dict(claims)
             if "auth" not in out_claims:
                 out_claims["auth"] = "plugin"
             # 缺 user_pm 时写入最低权限，避免隐式 master
             if "user_pm" not in out_claims:
                 out_claims["user_pm"] = _DEFAULT_USER_PM
-            return AccessToken(
-                token=token,
-                client_id=client_id,
-                scopes=["mcp:tools"],
-                claims=out_claims,
-            )
+            return AccessToken(token=token, client_id=client_id, scopes=["mcp:tools"], claims=out_claims)
 
         if not required:
             return self._anonymous_token(token)
@@ -316,24 +281,12 @@ def _identity_from_access_token() -> Dict[str, object]:
     try:
         at = get_access_token()
     except (LookupError, RuntimeError):
-        return {
-            "auth": "none",
-            "user_id": "mcp_client",
-            "user_pm": _DEFAULT_USER_PM,
-        }
+        at = None
 
     if at is None:
-        return {
-            "auth": "none",
-            "user_id": "mcp_client",
-            "user_pm": _DEFAULT_USER_PM,
-        }
+        return {"auth": "none", "user_id": "mcp_client", "user_pm": _DEFAULT_USER_PM}
 
-    if isinstance(at.claims, dict):
-        claims = at.claims
-    else:
-        claims = {}
-    out: Dict[str, object] = dict(claims)
+    out: Dict[str, object] = dict(at.claims) if isinstance(at.claims, dict) else {}
     if "auth" not in out:
         out["auth"] = "unknown"
     if "user_id" not in out:
@@ -362,12 +315,9 @@ def _http_session_overrides() -> Dict[str, str]:
         return out
     headers = req.headers
     # Starlette Headers 大小写不敏感；用 in + [] 避免 .get 兜底风格
-    if "x-mcp-group-id" in headers:
-        out["group_id"] = str(headers["x-mcp-group-id"])
-    if "x-mcp-bot-id" in headers:
-        out["bot_id"] = str(headers["x-mcp-bot-id"])
-    if "x-mcp-user-id" in headers:
-        out["user_id"] = str(headers["x-mcp-user-id"])
+    for hdr, field in _HTTP_SESSION_HEADERS:
+        if hdr in headers:
+            out[field] = str(headers[hdr])
     return out
 
 
@@ -451,21 +401,11 @@ class _McpImageRejected(Exception):
         self.ref = ref
 
 
-def _unwrap_image_ref(text: str) -> str:
-    # MessageSegment.image(http) 写成 link://URL，协议只包一层
-    stripped = text.strip()
-    if stripped.startswith("link://"):
-        return stripped.removeprefix("link://").strip()
-    return stripped
-
-
 def _short_image_ref(ref: str) -> str:
-    text = _unwrap_image_ref(ref)
+    text = unwrap_image_url(ref)
     if text.startswith("data:image/"):
         return "data:image"
-    if len(text) > 120:
-        return text[:117] + "..."
-    return text
+    return text[:117] + "..." if len(text) > 120 else text
 
 
 def _decode_data_image(uri: str) -> bytes:
@@ -473,6 +413,14 @@ def _decode_data_image(uri: str) -> bytes:
     if sep != "," or ";base64" not in header.lower():
         raise ValueError("data uri 缺少 base64 载荷")
     return base64.b64decode(payload)
+
+
+def _extra_str_list(extra: Mapping[str, object], key: str) -> List[str]:
+    if key in extra:
+        raw = extra[key]
+        if isinstance(raw, list):
+            return [str(x) for x in raw]
+    return []
 
 
 def _mutable_extra_list(extra: Dict[str, object], key: str) -> List[object]:
@@ -508,8 +456,7 @@ async def _fetch_mcp_image(url: str) -> bytes:
     timeout = httpx2.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
     async with httpx2.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         for _hop in range(4):
-            reason = reject_outbound_http_url(current)
-            if reason is not None:
+            if reject_outbound_http_url(current) is not None:
                 raise _McpImageRejected(current)
             try:
                 async with asyncio.timeout(_FETCH_TIMEOUT_SECONDS):
@@ -532,35 +479,33 @@ async def _fetch_mcp_image(url: str) -> bytes:
 async def _load_registered_image(resource_id: str) -> tuple[bytes, str]:
     """返回字节和可展示的引用。引用为空表示登记的就是字节或 base64。"""
     raw = RM.peek(resource_id)
+    ref = ""
     if isinstance(raw, bytes):
-        if len(raw) > MAX_MCP_IMAGE_BYTES:
-            raise _McpImageTooLarge()
-        return raw, ""
-    text = _unwrap_image_ref(raw)
-    if text.startswith("file://"):
-        raise _McpImageRejected(text)
-    if text.startswith("base64://"):
-        data = base64.b64decode(text[len("base64://") :])
-        if len(data) > MAX_MCP_IMAGE_BYTES:
-            raise _McpImageTooLarge()
-        return data, ""
-    if text.startswith("data:image/"):
-        data = _decode_data_image(text)
-        if len(data) > MAX_MCP_IMAGE_BYTES:
-            raise _McpImageTooLarge()
-        return data, ""
-    if text.startswith(("http://", "https://")):
-        if reject_outbound_http_url(text) is not None:
+        data = raw
+    else:
+        text = unwrap_image_url(raw)
+        if text.startswith("file://"):
             raise _McpImageRejected(text)
-        try:
-            data = await _fetch_mcp_image(text)
-        except _McpImageRejected:
-            raise
-        except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL) as exc:
-            # 拉取函数被中断时仍把原地址写进结果，不退回资源 ID
-            raise _McpImageRejected(text) from exc
-        return data, text
-    raise _McpImageRejected(text)
+        if text.startswith("base64://"):
+            data = base64.b64decode(text[len("base64://") :])
+        elif text.startswith("data:image/"):
+            data = _decode_data_image(text)
+        elif text.startswith(("http://", "https://")):
+            if reject_outbound_http_url(text) is not None:
+                raise _McpImageRejected(text)
+            try:
+                data = await _fetch_mcp_image(text)
+            except _McpImageRejected:
+                raise
+            except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL) as exc:
+                # 拉取函数被中断时仍把原地址写进结果，不退回资源 ID
+                raise _McpImageRejected(text) from exc
+            ref = text
+        else:
+            raise _McpImageRejected(text)
+    if len(data) > MAX_MCP_IMAGE_BYTES:
+        raise _McpImageTooLarge()
+    return data, ref
 
 
 def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str]]:
@@ -583,14 +528,8 @@ def _extract_messages_for_mcp(message: MessageType) -> tuple[List[str], List[str
                 texts.append(str(item.data))
             elif item.type == "at":
                 texts.append(f"@{item.data}")
-            elif item.type == "record":
-                texts.append("[语音]")
-            elif item.type == "video":
-                texts.append("[视频]")
-            elif item.type == "file":
-                texts.append("[文件]")
-            elif item.type == "node":
-                texts.append("[合并转发]")
+            elif item.type in _MSG_TYPE_LABELS:
+                texts.append(_MSG_TYPE_LABELS[item.type])
 
     if isinstance(message, (list, tuple)):
         for sub in message:
@@ -779,15 +718,10 @@ async def _build_tool_result(
     """构建标准 MCP ToolResult 或纯文本字符串。若无图片则保持旧行为返回纯文本，有图片则返回 ToolResult。"""
     text = _format_tool_result(raw)
 
-    extra_texts: List[str] = []
-    if run_ctx is not None and "mcp_texts" in run_ctx.deps.extra:
-        raw_extra_texts = run_ctx.deps.extra["mcp_texts"]
-        if isinstance(raw_extra_texts, list):
-            extra_texts = [str(x) for x in raw_extra_texts]
-
     all_texts: List[str] = []
-    for t_str in extra_texts:
-        _append_distinct(all_texts, t_str)
+    if run_ctx is not None:
+        for t_str in _extra_str_list(run_ctx.deps.extra, "mcp_texts"):
+            _append_distinct(all_texts, t_str)
     _append_distinct(all_texts, text)
 
     loaded: List[tuple[bytes, str]] = []
@@ -836,24 +770,15 @@ async def _build_tool_result(
                 continue
             except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL, ValueError, _McpImageRejected) as e:
                 # 外链超时、拒绝或解码失败都是外部输入，不能丢掉已经拿到的文本和图片
-                logger.warning(
-                    t(
-                        "log.mcp.mcp_server_retrieve_image_resource_fail",
-                        rid=iid,
-                        e=e,
-                    )
-                )
+                logger.warning(t("log.mcp.mcp_server_retrieve_image_resource_fail", rid=iid, e=e))
                 shown = e.ref if isinstance(e, _McpImageRejected) else iid
                 failed_refs.append(_short_image_ref(shown))
                 continue
             _take(data, ref)
 
     if skipped_binary:
-        if skipped_refs:
-            joined = ", ".join(skipped_refs)
-            all_texts.append(f"[{skipped_binary} 份非图片二进制未附带: {joined}]")
-        else:
-            all_texts.append(f"[{skipped_binary} 份非图片二进制未附带]")
+        suffix = f": {', '.join(skipped_refs)}" if skipped_refs else ""
+        all_texts.append(f"[{skipped_binary} 份非图片二进制未附带{suffix}]")
     if failed_refs:
         all_texts.append("[取回失败未附带: " + ", ".join(failed_refs) + "]")
     if has_oversized:
@@ -870,10 +795,8 @@ async def _build_tool_result(
     contents: list[mcp_types.TextContent | mcp_types.ImageContent] = []
     if final_text:
         contents.append(mcp_types.TextContent(type="text", text=final_text))
-
     for img_bytes, fmt in valid_images:
-        img_content = FastMcpImage(data=img_bytes, format=fmt).to_image_content()
-        contents.append(img_content)
+        contents.append(FastMcpImage(data=img_bytes, format=fmt).to_image_content())
 
     # 注解仍声明为 str，outputSchema 就还在；带图返回时必须补上 structuredContent，否则客户端校验 schema 失败
     return ToolResult(content=contents, structured_content={"result": final_text})
@@ -912,50 +835,33 @@ def _build_ai_tool_handler(
     description = tool_base.description or tool_name
     json_schema = tool.function_schema.json_schema
 
-    properties: Dict[str, Any]
-    if isinstance(json_schema, dict) and "properties" in json_schema:
-        raw_props = json_schema["properties"]
-        properties = raw_props if isinstance(raw_props, dict) else {}
-    else:
-        properties = {}
+    raw_props = json_schema["properties"] if isinstance(json_schema, dict) and "properties" in json_schema else None
+    properties: Dict[str, object] = raw_props if isinstance(raw_props, dict) else {}
+    raw_req = json_schema["required"] if isinstance(json_schema, dict) and "required" in json_schema else None
+    required_fields = [x for x in raw_req if isinstance(x, str)] if isinstance(raw_req, list) else []
 
-    required_fields: List[str] = []
-    if isinstance(json_schema, dict) and "required" in json_schema:
-        raw_req = json_schema["required"]
-        if isinstance(raw_req, list):
-            required_fields = [x for x in raw_req if isinstance(x, str)]
-
-    annotations: Dict[str, Any] = {}
+    annotations: Dict[str, object] = {}
     params: List[inspect.Parameter] = []
 
-    for param_name, param_schema in properties.items():
-        if not isinstance(param_schema, dict):
-            param_schema = {}
+    for param_name, raw_schema in properties.items():
+        param_schema: Mapping[str, object] = raw_schema if isinstance(raw_schema, dict) else {}
         py_type = _json_schema_type_to_python(param_schema)
         has_default = "default" in param_schema
-        is_required = param_name in required_fields
-
-        if is_required and not has_default:
-            annotations[param_name] = py_type
-            params.append(
-                inspect.Parameter(
-                    param_name,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    annotation=py_type,
-                )
-            )
+        if param_name in required_fields and not has_default:
+            ann: object = py_type
+            default_val: object = inspect.Parameter.empty
         else:
-            default_val: Any = param_schema["default"] if has_default else None
-            opt_type = Optional[py_type]
-            annotations[param_name] = opt_type
-            params.append(
-                inspect.Parameter(
-                    param_name,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    annotation=opt_type,
-                    default=default_val,
-                )
+            ann = Optional[py_type]
+            default_val = param_schema["default"] if has_default else None
+        annotations[param_name] = ann
+        params.append(
+            inspect.Parameter(
+                param_name,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=ann,
+                default=default_val,
             )
+        )
 
     inject_user_id = "user_id" not in properties and _docstring_declares_user_id(description)
     if inject_user_id:
@@ -969,7 +875,7 @@ def _build_ai_tool_handler(
             )
         )
 
-    async def handler(**kwargs: Any) -> ToolResult | str:
+    async def handler(**kwargs: object) -> ToolResult | str:
         call_args = dict(kwargs)
         arg_user_id = ""
         if inject_user_id:
@@ -988,21 +894,10 @@ def _build_ai_tool_handler(
         try:
             raw = await tool.function(run_ctx, **call_args)
         except Exception as e:
-            logger.error(
-                t(
-                    "log.mcp.mcp_server_ai_tool_call_fail",
-                    tool_name=tool_name,
-                    e=e,
-                )
-            )
+            logger.error(t("log.mcp.mcp_server_ai_tool_call_fail", tool_name=tool_name, e=e))
             # 工具中途抛错时前面 bot.send 的图已经生成，直接丢弃等于白跑一趟
             raw = f"❌ 工具 [{tool_name}] 执行异常: {e}"
-        extra = run_ctx.deps.extra
-        image_ids: List[str] = []
-        if "mcp_image_ids" in extra:
-            raw_img_ids = extra["mcp_image_ids"]
-            if isinstance(raw_img_ids, list):
-                image_ids = [str(x) for x in raw_img_ids]
+        image_ids = _extra_str_list(run_ctx.deps.extra, "mcp_image_ids")
         return await _build_tool_result(raw, image_ids, run_ctx)
 
     handler.__name__ = tool_name
@@ -1081,22 +976,10 @@ def _create_mcp_server(auth: Optional[BearerTokenAuth] = None) -> FastMCP:
                 )
             )
         except Exception as e:
-            logger.error(
-                t(
-                    "log.mcp.mcp_server_register_name_tool_fail",
-                    tool_name=export_name,
-                    e=e,
-                )
-            )
+            logger.error(t("log.mcp.mcp_server_register_name_tool_fail", tool_name=export_name, e=e))
 
     _exported_tool_count = registered_count
-    logger.info(
-        t(
-            "log.mcp.mcp_server_registered_ai_tools_register",
-            registered_count=registered_count,
-            p0=len(tools),
-        )
-    )
+    logger.info(t("log.mcp.mcp_server_registered_ai_tools_register", registered_count=registered_count, p0=len(tools)))
     # 导出面是启动快照；热注册工具不会自动出现在 MCP 列表
     logger.info(t("log.mcp.mcp_server_export_snapshot_at_start", p0=registered_count))
     return server
@@ -1131,40 +1014,6 @@ _mcp_rebuild_lock = asyncio.Lock()
 _mcp_last_rebuild: float = 0.0
 
 
-class _JsonRpcError(TypedDict):
-    code: int
-    message: str
-
-
-class _JsonRpcErrorBody(TypedDict):
-    jsonrpc: str
-    id: None
-    error: _JsonRpcError
-
-
-def _body_more(message: Message) -> bool:
-    """``http.response.body`` / ``http.request`` 是否还有后续块。缺省表示本块结束。"""
-    if "more_body" not in message:
-        return False
-    return message["more_body"] is True
-
-
-@runtime_checkable
-class _ASGICallable(Protocol):
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None: ...
-
-
-def _is_fresh_asgi(app: object) -> TypeGuard[_ASGICallable]:
-    return isinstance(app, _ASGICallable)
-
-
-def _snapshot_inner(app: ASGIApp) -> object:
-    """这一次请求开始时的内层应用。护栏包着 runtime 时，重放不能再打护栏。"""
-    if isinstance(app, _McpHttpRuntime):
-        return app.current_app()
-    return app
-
-
 def _replacement_mcp_app(used_inner: object) -> _ASGICallable | None:
     """重建之后的内层应用。仍是这一次用的那个，或还不是 ASGI，则不能重放。"""
     runtime = _mcp_lifespan_cm
@@ -1174,247 +1023,6 @@ def _replacement_mcp_app(used_inner: object) -> _ASGICallable | None:
     if fresh is None or fresh is used_inner or not _is_fresh_asgi(fresh):
         return None
     return fresh
-
-
-def _release_task_cancellation() -> None:
-    """anyio 取消宿主任务后，不把取消计数留到下一次 await。"""
-    task = asyncio.current_task()
-    if task is None:
-        return
-    while task.cancelling():
-        task.uncancel()
-
-
-class _McpHttpRuntime:
-    """由常驻任务按顺序进入和退出每代 HTTP lifespan。"""
-
-    def __init__(self, server: FastMCP) -> None:
-        self._server = server
-        self._app: StarletteWithLifespan | None = None
-        self._pending_app: StarletteWithLifespan | None = None
-        self._task: asyncio.Task[None] | None = None
-        self._changed = asyncio.Event()
-        self._ready = asyncio.Event()
-        self._error: Exception | None = None
-        self._stopping = False
-
-    def current_app(self) -> StarletteWithLifespan | None:
-        return self._app
-
-    async def start(self) -> None:
-        await self.restart()
-
-    def _spawn(self) -> asyncio.Task[None]:
-        # 不继承触发这次恢复的请求上下文。
-        return asyncio.create_task(
-            self._run(),
-            name="mcp-http-lifespan",
-            context=contextvars.Context(),
-        )
-
-    def _drain_task(self) -> None:
-        """取走已结束任务的异常，避免 CancelledError 漏给这次请求。"""
-        task = self._task
-        if task is None or not task.done():
-            return
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception as error:
-            logger.debug(t("log.mcp.mcp_server_http_owner_task_fail", e=error))
-
-    async def restart(self) -> None:
-        if self._stopping:
-            raise RuntimeError("MCP HTTP runtime is stopping")
-        app = self._server.http_app(path="/", transport="streamable-http", stateless_http=True)
-        self._pending_app = app
-        self._ready.clear()
-        if self._task is None or self._task.done():
-            self._drain_task()
-            self._task = self._spawn()
-        else:
-            self._changed.set()
-        await self._ready.wait()
-        if self._stopping:
-            raise RuntimeError("MCP HTTP runtime is stopping")
-        # 旧一代把宿主任务打死时，同一次 restart 再拉起，不把取消抛给请求。
-        if self._task is not None and self._task.done() and self._app is None and self._error is None:
-            self._drain_task()
-            self._ready.clear()
-            self._task = self._spawn()
-            await self._ready.wait()
-        if self._stopping:
-            raise RuntimeError("MCP HTTP runtime is stopping")
-        if self._error is not None:
-            raise self._error
-        if self._task is not None and self._task.done():
-            self._drain_task()
-        if self._app is None:
-            raise RuntimeError("MCP HTTP lifespan did not initialize")
-
-    async def close(self) -> None:
-        self._stopping = True
-        self._changed.set()
-        if self._task is not None:
-            if self._app is None and not self._ready.is_set():
-                self._task.cancel()
-            self._ready.set()
-            try:
-                await asyncio.shield(self._task)
-            except asyncio.CancelledError:
-                task = asyncio.current_task()
-                if task is None or task.cancelling():
-                    raise
-
-    async def _park_until_next(self, error: BaseException | None, *, entered: bool) -> None:
-        """进入失败告诉 restart。已进入的一代退出失败时，不挡住待进入的新会话。"""
-        self._app = None
-        if not entered:
-            if isinstance(error, Exception):
-                self._error = error
-            else:
-                self._error = RuntimeError("MCP HTTP lifespan did not initialize")
-            self._ready.set()
-            self._changed.clear()
-            if self._stopping:
-                return
-            try:
-                await self._changed.wait()
-            except asyncio.CancelledError:
-                _release_task_cancellation()
-                if not self._stopping:
-                    raise
-            return
-        self._error = None
-        self._ready.clear()
-        if self._pending_app is not None or self._stopping:
-            return
-        try:
-            await self._changed.wait()
-        except asyncio.CancelledError:
-            _release_task_cancellation()
-            if not self._stopping:
-                raise
-
-    async def _run(self) -> None:
-        try:
-            while not self._stopping:
-                self._ready.clear()
-                self._changed.clear()
-                entered = False
-                scope_cancelled = False
-                try:
-                    app = self._pending_app
-                    self._pending_app = None
-                    if app is None:
-                        app = self._server.http_app(
-                            path="/",
-                            transport="streamable-http",
-                            stateless_http=True,
-                        )
-                    async with app.lifespan(app):
-                        self._app = app
-                        self._error = None
-                        entered = True
-                        self._ready.set()
-                        try:
-                            await self._changed.wait()
-                        except asyncio.CancelledError:
-                            # task group 取消会打到宿主。先清计数，退出回调才能跑完。
-                            if self._stopping:
-                                raise
-                            _release_task_cancellation()
-                            scope_cancelled = True
-                        finally:
-                            self._app = None
-                except asyncio.CancelledError:
-                    _release_task_cancellation()
-                    if self._stopping:
-                        raise
-                    await self._park_until_next(None, entered=entered)
-                except BaseExceptionGroup as error:
-                    _release_task_cancellation()
-                    if self._stopping:
-                        break
-                    await self._park_until_next(error, entered=entered)
-                except Exception as error:
-                    if self._stopping:
-                        break
-                    await self._park_until_next(error, entered=entered)
-                else:
-                    # 退出没抛错时也不能自己再开一代，要等这次重建交来的新会话。
-                    if scope_cancelled:
-                        await self._park_until_next(None, entered=True)
-        finally:
-            self._app = None
-            self._ready.set()
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        app = self._app
-        if app is None:
-            return
-        await app(scope, receive, send)
-
-
-class _HttpExchange:
-    """一次请求上的收发：扣住未提交的状态码，并记下已读走的请求体。"""
-
-    def __init__(self, receive: Receive, send: Send) -> None:
-        self._receive = receive
-        self._send = send
-        self._recorded: list[Message] = []
-        self._replay_at = 0
-        self._replaying = False
-        self._pending_start: Message | None = None
-        self.committed = False
-        self.finished = False
-        self.client_gone = False
-
-    async def receive(self) -> Message:
-        if self._replaying and self._replay_at < len(self._recorded):
-            message = self._recorded[self._replay_at]
-            self._replay_at += 1
-            return message
-        # 记录用尽后走原 receive。SSE 要在这里等断开，不能合成 disconnect
-        message = await self._receive()
-        if not self._replaying:
-            self._recorded.append(message)
-        return message
-
-    def begin_replay(self) -> None:
-        self._replaying = True
-        self._replay_at = 0
-        self._pending_start = None
-        self.committed = False
-        self.finished = False
-
-    async def send(self, message: Message) -> None:
-        if self.client_gone:
-            return
-        kind = message["type"]
-        if kind == "http.response.start" and not self.committed:
-            # 状态码先扣住。毒化请求往往只有 start，还没到客户端就能丢掉并重试。
-            self._pending_start = message
-            return
-        if not self.committed:
-            self.committed = True
-            start = self._pending_start
-            self._pending_start = None
-            if start is not None:
-                await self._emit(start)
-            if self.client_gone:
-                return
-        await self._emit(message)
-        if kind == "http.response.body" and not _body_more(message) and not self.client_gone:
-            self.finished = True
-
-    async def _emit(self, message: Message) -> None:
-        # 客户端断开时 send 失败不得进 SDK，否则会毒化终身 task group
-        try:
-            await self._send(message)
-        except Exception:
-            self.client_gone = True
 
 
 class McpHttpGuard:
@@ -1483,60 +1091,6 @@ class McpHttpGuard:
                 logger.debug(t("log.mcp.mcp_server_http_503_fail", e=e))
 
 
-async def _capture_mcp_failure(run: Callable[[], Awaitable[None]]) -> bool:
-    """跑一轮子应用。子应用抛错时返回 True，不在这里改响应。
-
-    调用方自己的取消继续抛出。子应用里外来的取消按这一轮失败交给护栏。
-    """
-    try:
-        await run()
-    except anyio.get_cancelled_exc_class() as error:
-        task = asyncio.current_task()
-        if task is None or task.cancelling():
-            raise
-        logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=error))
-        return True
-    except BaseExceptionGroup as error:
-        task = asyncio.current_task()
-        if task is not None and task.cancelling():
-            raise
-        logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=error))
-        return True
-    except Exception as e:
-        logger.warning(t("log.mcp.mcp_server_http_inner_fail", e=e))
-        return True
-    return False
-
-
-async def _finish_open_http_response(send: Send) -> None:
-    """start 已写出时补一个空 body，让外层 middleware 能结束这次响应。"""
-    try:
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-    except Exception as e:
-        logger.debug(t("log.mcp.mcp_server_http_503_fail", e=e))
-
-
-async def _respond_mcp_unavailable(scope: Scope, receive: Receive, send: Send) -> None:
-    """子应用没写响应时的兜底：显式回 503，别让上层 middleware 抛 RuntimeError。"""
-    body: _JsonRpcErrorBody = {
-        "jsonrpc": "2.0",
-        "id": None,
-        "error": {"code": -32603, "message": "MCP transport unavailable, please retry"},
-    }
-    response = JSONResponse(body, status_code=503, headers={"Retry-After": "1"})
-    await response(scope, receive, send)
-
-
-async def _close_lifespan_cm(runtime: _McpHttpRuntime | None) -> None:
-    """让 lifespan 的所属任务完成退出。"""
-    if runtime is None:
-        return
-    try:
-        await runtime.close()
-    except Exception as error:
-        logger.debug(t("log.mcp.mcp_server_lifespan_exit_fail", e=error))
-
-
 async def _rebuild_http_mcp_session() -> None:
     """保留挂载与工具，由所属任务顺序关闭旧会话并启动新会话。"""
     global _mcp_last_rebuild
@@ -1557,80 +1111,6 @@ async def _rebuild_http_mcp_session() -> None:
                 logger.error(t("log.mcp.mcp_server_http_rebuild_fail", e=error))
             return
         logger.warning(t("log.mcp.mcp_server_http_rebuilt"))
-
-
-def _request_route_path(scope: Scope) -> str:
-    """Starlette 的 get_route_path 不在公开导出里，这里按同样规则取路由路径。"""
-    path = scope["path"]
-    if not isinstance(path, str):
-        return ""
-    root_path = scope["root_path"] if "root_path" in scope else ""
-    if not isinstance(root_path, str) or not root_path:
-        return path
-    if not path.startswith(root_path):
-        return path
-    if path == root_path:
-        return ""
-    if path[len(root_path)] == "/":
-        return path[len(root_path) :]
-    return path
-
-
-def _directory_form(scope: Scope, mount_path: str) -> str:
-    """把挂载前缀补成目录形式，保留已有 root_path。"""
-    root = scope["root_path"] if "root_path" in scope else ""
-    if not isinstance(root, str):
-        root = ""
-    return root + mount_path + "/"
-
-
-def _raw_path_with_directory_slash(raw_path: bytes, old_path: str, new_path: str) -> bytes:
-    """raw_path 在 ``?`` 前补斜杠；对不上原 path 时保持原样。"""
-    if not old_path.isascii() or not new_path.isascii():
-        return raw_path
-    old = old_path.encode("ascii")
-    new = new_path.encode("ascii")
-    if raw_path == old:
-        return new
-    if raw_path.startswith(old + b"?"):
-        return new + raw_path[len(old) :]
-    return raw_path
-
-
-class _McpSlashMount(Mount):
-    """同一挂载同时接住无斜杠路径，不发 307。
-
-    客户端跟随 307 会丢掉 Authorization，MCP 初始化变成 401。
-    """
-
-    def matches(self, scope: Scope) -> tuple[Match, Scope]:
-        # 父路由对未匹配路径发 307。匹配前补斜杠，请求不离开原 URL。
-        if scope["type"] not in ("http", "websocket") or _request_route_path(scope) != self.path:
-            return super().matches(scope)
-        old_path = scope["path"]
-        if not isinstance(old_path, str):
-            return super().matches(scope)
-        new_path = _directory_form(scope, self.path)
-        old_raw = scope["raw_path"] if "raw_path" in scope else None
-        scope["path"] = new_path
-        if isinstance(old_raw, (bytes, bytearray)):
-            scope["raw_path"] = _raw_path_with_directory_slash(bytes(old_raw), old_path, new_path)
-        match, child = super().matches(scope)
-        if match == Match.NONE:
-            scope["path"] = old_path
-            if isinstance(old_raw, (bytes, bytearray)):
-                scope["raw_path"] = bytes(old_raw)
-        return match, child
-
-
-def _remove_mounted_path(main_app: Any, path: str) -> None:
-    """从主 FastAPI 路由表移除指定 mount path。"""
-    kept: List[Any] = []
-    for route in main_app.router.routes:
-        if isinstance(route, Mount) and route.path == path:
-            continue
-        kept.append(route)
-    main_app.router.routes = kept
 
 
 async def _mount_http_mcp(server: FastMCP, path: str) -> None:
@@ -1679,21 +1159,11 @@ def _log_auth_mode(api_key: str) -> None:
     has_key = bool(api_key)
     has_verifiers = bool(_mcp_token_verifiers)
     if has_key and has_verifiers:
-        logger.info(
-            t(
-                "log.mcp.mcp_server_auth_static_and_plugin",
-                p0=len(_mcp_token_verifiers),
-            )
-        )
+        logger.info(t("log.mcp.mcp_server_auth_static_and_plugin", p0=len(_mcp_token_verifiers)))
     elif has_key:
         logger.info(t("log.mcp.mcp_server_bearer_token_authentication_ok"))
     elif has_verifiers:
-        logger.info(
-            t(
-                "log.mcp.mcp_server_auth_plugin_only",
-                p0=len(_mcp_token_verifiers),
-            )
-        )
+        logger.info(t("log.mcp.mcp_server_auth_plugin_only", p0=len(_mcp_token_verifiers)))
     else:
         logger.warning(t("log.mcp.mcp_server_auth_open"))
 
