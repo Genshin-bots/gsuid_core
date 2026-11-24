@@ -66,6 +66,7 @@ from gsuid_core.ai_core.journal.sanitizer import (
     is_rejected_journal_body,
     sanitize_journal_summary,
 )
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.persona.config_rules import is_persona_enabled
 
 
@@ -270,6 +271,7 @@ async def record_journal_entry(
     else:
         targets = ["default"]
 
+    targets = [name for name in targets if not is_persona_frozen(name)]
     if not targets:
         return
     if entry.group_id and entry.group_id.strip():

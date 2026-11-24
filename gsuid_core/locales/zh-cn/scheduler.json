@@ -20,6 +20,7 @@
   "log.scheduler.sched_task_exist_id": "[ScheduledTask] 任务不存在: {task_id}",
   "log.scheduler.sched_task_id_exec": "[ScheduledTask] 循环任务执行完毕（已达最大次数）: task_id={task_id}, 执行了 {current_exec} 次",
   "log.scheduler.sched_task_id_fail": "[ScheduledTask] 任务执行失败: {task_id}, error={e}",
+  "log.scheduler.sched_task_persona_frozen": "[ScheduledTask] 人格正在重置/还原，任务延后执行: task_id={task_id}, persona={persona}",
   "log.scheduler.sched_task_result_empty_pushed": "[ScheduledTask] 任务结果为空，未推送: task_id={task_id}",
   "log.scheduler.sched_task_result_pushed_id": "[ScheduledTask] 任务执行成功并已推送: task_id={task_id}",
   "log.scheduler.sched_task_result_suppressed_bot": "[ScheduledTask] 任务结果发送被抑制 / Bot 不可用: task_id={task_id}",

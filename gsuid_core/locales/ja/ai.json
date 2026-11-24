@@ -692,5 +692,13 @@
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した",
   "log.ai.kanban_node_hard_timeout": "[Kanban] サブタスクノードがハードタイムアウトで終了 task={task} ({mins}分)",
   "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 期限切れの対話グループタスクを無言アーカイブ task={task} elapsed={mins}分",
-  "log.ai.artifact_index_drain_fail": "[Artifact] シャットダウン前の在途成果物インデックスタスク収束失敗: {e}"
+  "log.ai.artifact_index_drain_fail": "[Artifact] シャットダウン前の在途成果物インデックスタスク収束失敗: {e}",
+  "log.ai.persona_reset_start": "[PersonaReset] ペルソナ {persona} の記憶クリアを開始（項目: {items}）",
+  "log.ai.persona_reset_done": "[PersonaReset] ペルソナ {persona} の記憶クリアが完了（件数: {counts}）",
+  "log.ai.persona_reset_fail": "[PersonaReset] ペルソナ {persona} の記憶クリアに失敗: {e}",
+  "log.ai.persona_reset_tps_fail": "[PersonaReset] 埋め込みスループット計測に失敗、ETA 推定をスキップ: {e}",
+  "log.ai.persona_restore_start": "[PersonaRestore] ペルソナ {persona} のバックアップ {file} を復元開始（項目: {items}）",
+  "log.ai.persona_restore_done": "[PersonaRestore] ペルソナ {persona} のバックアップ復元が完了（件数: {counts}）",
+  "log.ai.persona_restore_fail": "[PersonaRestore] ペルソナ {persona} のバックアップ復元に失敗: {e}",
+  "log.ai.persona_restore_vectors_fail": "[PersonaRestore] ペルソナ {persona} のベクトル再構築が中断（カーソル保存済み、再開可能）: {e}"
 }

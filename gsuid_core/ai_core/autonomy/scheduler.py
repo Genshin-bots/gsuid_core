@@ -46,6 +46,7 @@ from gsuid_core.ai_core.autonomy.delivery import (
 from gsuid_core.ai_core.autonomy.observer import build_observation
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.persona.config_rules import (
     AUTONOMY_MODE,
     is_persona_enabled,
@@ -154,6 +155,8 @@ class AutonomyScheduler:
         return first
 
     async def run_persona(self, persona_name: str, *, force: bool) -> str:
+        if is_persona_frozen(persona_name):
+            return "resetting"
         reason = await self._blocked(persona_name, force=force)
         if reason:
             logger.info(t("log.ai.autonomy_tick_skip", persona_name=persona_name, reason=reason))

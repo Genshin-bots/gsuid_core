@@ -15,12 +15,12 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
-
-
-def _escape_like(text: str) -> str:
-    """转义 LIKE 模式中的特殊字符（配合 escape='\\\\' 使用）"""
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+from gsuid_core.utils.database.base_models import (
+    BaseBotIDModel,
+    escape_like,
+    with_session,
+    with_read_session,
+)
 
 
 def _keyword_like_patterns(keyword: str) -> List[str]:
@@ -30,10 +30,10 @@ def _keyword_like_patterns(keyword: str) -> List[str]:
     会把中文存成 \\uXXXX 转义；部分后端（如 PostgreSQL jsonb）存原文。
     两种形态都生成模式，保证预过滤不漏。
     """
-    patterns = [f"%{_escape_like(keyword)}%"]
+    patterns = [f"%{escape_like(keyword)}%"]
     escaped = json.dumps(keyword, ensure_ascii=True)[1:-1]
     if escaped != keyword:
-        patterns.append(f"%{_escape_like(escaped)}%")
+        patterns.append(f"%{escape_like(escaped)}%")
     return patterns
 
 
@@ -629,7 +629,7 @@ class AiMemeRecord(SQLModel, table=True):
         # JSON 标签列匹配原文与 \uXXXX 转义两种存储形态
         like_conditions = []
         for kw in tags:
-            raw_pattern = f"%{_escape_like(kw)}%"
+            raw_pattern = f"%{escape_like(kw)}%"
             like_conditions.append(col(cls.description).like(raw_pattern, escape="\\"))
             for tag_col in (cls.emotion_tags, cls.scene_tags, cls.custom_tags):
                 for pattern in _keyword_like_patterns(kw):

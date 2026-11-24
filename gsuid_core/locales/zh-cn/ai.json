@@ -692,5 +692,13 @@
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果",
   "log.ai.kanban_node_hard_timeout": "[Kanban] 子任务节点硬超时终止 task={task} ({mins}min)",
   "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 交互式群聊子任务已过期，静默归档不回灌打扰 task={task} elapsed={mins}min",
-  "log.ai.artifact_index_drain_fail": "[Artifact] 关闭前收敛在途产物索引任务失败: {e}"
+  "log.ai.artifact_index_drain_fail": "[Artifact] 关闭前收敛在途产物索引任务失败: {e}",
+  "log.ai.persona_reset_start": "[PersonaReset] 开始清空人格 {persona} 的记忆（项: {items}）",
+  "log.ai.persona_reset_done": "[PersonaReset] 人格 {persona} 清空完成（统计: {counts}）",
+  "log.ai.persona_reset_fail": "[PersonaReset] 人格 {persona} 清空失败: {e}",
+  "log.ai.persona_reset_tps_fail": "[PersonaReset] 实测嵌入吞吐失败，跳过预估: {e}",
+  "log.ai.persona_restore_start": "[PersonaRestore] 开始还原人格 {persona} 备份 {file}（项: {items}）",
+  "log.ai.persona_restore_done": "[PersonaRestore] 人格 {persona} 还原完成（统计: {counts}）",
+  "log.ai.persona_restore_fail": "[PersonaRestore] 人格 {persona} 还原失败: {e}",
+  "log.ai.persona_restore_vectors_fail": "[PersonaRestore] 人格 {persona} 向量重建中断（游标已保留，可继续）: {e}"
 }

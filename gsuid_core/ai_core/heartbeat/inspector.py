@@ -33,6 +33,7 @@ from gsuid_core.ai_core.proactive.policy import (
     is_dm_reciprocity_blocked,
 )
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.persona.config_rules import (
     read_autonomy_runtime,
     is_within_active_hours,
@@ -161,7 +162,7 @@ class HeartbeatInspector:
         """巡检所有与指定 persona 相关的会话"""
         from gsuid_core.ai_core.configs.ai_config import ai_config
 
-        if not ai_config.get_config("enable").data:
+        if not ai_config.get_config("enable").data or is_persona_frozen(persona_name):
             return
         config = persona_config_manager.get_config(persona_name)
         runtime = read_autonomy_runtime(config)

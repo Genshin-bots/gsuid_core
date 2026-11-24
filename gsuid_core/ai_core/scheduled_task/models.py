@@ -10,12 +10,13 @@ AIScheduledTask 数据库模型
 - interval: 循环任务，按固定间隔重复执行
 """
 
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 
-from sqlmodel import Field
+from sqlmodel import Field, col, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from gsuid_core.utils.database.base_models import BaseBotIDModel
+from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
 
 
 class AIScheduledTask(BaseBotIDModel, table=True):
@@ -103,3 +104,28 @@ class AIScheduledTask(BaseBotIDModel, table=True):
     current_executions: Optional[int] = Field(title="当前执行次数", default=0)
     start_time: Optional[datetime] = Field(title="开始时间", default=None)
     next_run_time: Optional[datetime] = Field(title="下次执行时间", default=None, index=True)
+
+    @classmethod
+    @with_read_session
+    async def list_live_by_persona(cls, session: AsyncSession, persona_name: str) -> List["AIScheduledTask"]:
+        """该人格创建、仍会执行的任务（待执行 / 已暂停）。"""
+        stmt = select(cls).where(
+            col(cls.persona_name) == persona_name,
+            col(cls.status).in_(LIVE_TASK_STATUSES),
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def get_by_task_id(cls, session: AsyncSession, task_id: str) -> Optional["AIScheduledTask"]:
+        stmt = select(cls).where(col(cls.task_id) == task_id)
+        return (await session.execute(stmt)).scalars().first()
+
+    @classmethod
+    @with_session
+    async def set_status(cls, session: AsyncSession, task_id: str, status: str) -> None:
+        await session.execute(update(cls).where(col(cls.task_id) == task_id).values(status=status))
+        await session.commit()
+
+
+LIVE_TASK_STATUSES: tuple[str, ...] = ("pending", "paused")

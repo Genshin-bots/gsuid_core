@@ -12,6 +12,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import field, asdict, dataclass
 
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.persona.config_rules import parse_active_window
 
 if TYPE_CHECKING:
@@ -196,4 +197,6 @@ async def load_homeostasis(persona_name: str) -> PersonaHomeostasis:
 async def save_homeostasis(persona_name: str, state: PersonaHomeostasis) -> None:
     from gsuid_core.ai_core.state_store import state_set_value
 
+    if is_persona_frozen(persona_name):
+        return
     await state_set_value(persona_scope(persona_name), _HOMEOSTASIS_KEY, asdict(state))

@@ -18,7 +18,7 @@ execute_scheduled_task 定时执行器
 
 import time
 import random
-from typing import Optional
+from typing import Callable, Optional
 from datetime import datetime, timedelta
 
 from pytz import timezone
@@ -28,6 +28,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.configs.task_kinds import TASK_SCHEDULED
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 from .models import AIScheduledTask
 from ..base_prompts import join_framework_constraints
@@ -117,6 +118,15 @@ async def execute_scheduled_task(task_id: str) -> None:
                 p0=task.status,
             )
         )
+        return
+
+    # 人格重置/还原期间不点火：interval job 还在就跳过本拍；补偿用的 date job 已被消费，
+    # 不顺延的话循环任务会一直丢到下次重启。
+    if is_persona_frozen(task.persona_name):
+        logger.info(t("log.scheduler.sched_task_persona_frozen", task_id=task_id, persona=task.persona_name))
+        if task.task_type == "interval" and scheduler.get_job(task_id) is not None:
+            return
+        _schedule_overdue_job(task.task_id, "循环任务" if task.task_type == "interval" else "一次性任务", 0)
         return
 
     # 2. 构建 Event 对象
@@ -365,8 +375,6 @@ async def reload_pending_tasks() -> int:
     Returns:
         加载的任务数量
     """
-    from gsuid_core.aps import scheduler
-
     # 查询所有 pending 状态的任务
     tasks = await AIScheduledTask.select_rows(status="pending")
 
@@ -374,88 +382,15 @@ async def reload_pending_tasks() -> int:
     overdue_idx = 0  # 已过期任务的补偿序号——用于错峰排期，防启动惊群（B1）
 
     def _schedule_overdue(task_id: str, kind: str) -> None:
-        """把一个已过期任务排进近未来的错峰 + 抖动补偿窗口（不再立即执行）。"""
         nonlocal overdue_idx, count
-        # 超出窗口的序号取模回卷——min 截断会把 idx≥222 的任务全钉在 1800s 同一时刻重造惊群
-        spread = (overdue_idx * _OVERDUE_SPACING) % (_OVERDUE_MAX_WINDOW - _OVERDUE_BASE_DELAY)
-        delay = _OVERDUE_BASE_DELAY + spread + random.uniform(0, _OVERDUE_JITTER)
-        run_date = datetime.now(TZ_SHANGHAI) + timedelta(seconds=delay)
-        scheduler.add_job(
-            func=execute_scheduled_task,
-            trigger="date",
-            run_date=run_date,
-            args=[task_id],
-            id=task_id,
-            replace_existing=True,
-            # 全局默认 misfire_grace_time=90s：启动卡顿>90s 会静默丢弃补偿 job（任务永滞 pending）
-            misfire_grace_time=None,
-        )
+        _schedule_overdue_job(task_id, kind, overdue_idx)
         overdue_idx += 1
         count += 1
-        logger.info(
-            t(
-                "log.scheduler.sched_overdue_kind_queued",
-                kind=kind,
-                task_id=task_id,
-                delay=delay,
-            )
-        )
 
     for task_data in tasks:
         task = task_data if isinstance(task_data, AIScheduledTask) else AIScheduledTask(**task_data)
-
-        # 根据任务类型处理
-        if task.task_type == "interval":
-            # 循环任务
-            next_run = _ensure_aware(task.next_run_time)
-            if next_run and next_run > datetime.now(TZ_SHANGHAI):
-                # 重新注册到调度器
-                interval_sec = task.interval_seconds or 0
-                scheduler.add_job(
-                    func=execute_scheduled_task,
-                    trigger="interval",
-                    seconds=interval_sec,
-                    start_date=task.next_run_time,
-                    args=[task.task_id],
-                    id=task.task_id,
-                    replace_existing=True,
-                )
-                count += 1
-                logger.info(
-                    t(
-                        "log.scheduler.sched_reloaded_recurring_task_load",
-                        p0=task.task_id,
-                        p1=task.next_run_time,
-                    )
-                )
-            else:
-                # 已到执行时间或未设置：排进错峰补偿窗口（而非立即执行，防惊群 B1）
-                _schedule_overdue(task.task_id, "循环任务")
-
-        else:
-            # 一次性任务
-            trigger = _ensure_aware(task.trigger_time)
-            if trigger and trigger <= datetime.now(TZ_SHANGHAI):
-                # 已到期：排进错峰补偿窗口（而非立即执行，防惊群 B1）
-                _schedule_overdue(task.task_id, "一次性任务")
-            elif trigger:
-                # 重新注册到调度器
-                scheduler.add_job(
-                    func=execute_scheduled_task,
-                    trigger="date",
-                    run_date=trigger,
-                    args=[task.task_id],
-                    id=task.task_id,
-                    replace_existing=True,
-                )
-                count += 1
-                logger.info(
-                    t(
-                        "log.scheduler.sched_reloaded_one_time_task",
-                        p0=task.task_id,
-                        p1=task.trigger_time,
-                    )
-                )
+        if _register_pending_task(task, _schedule_overdue):
+            count += 1
 
     logger.info(
         t(
@@ -465,6 +400,84 @@ async def reload_pending_tasks() -> int:
         )
     )
     return count
+
+
+def _schedule_overdue_job(task_id: str, kind: str, overdue_idx: int) -> None:
+    """把一个已过期任务排进近未来的错峰 + 抖动补偿窗口（不再立即执行）。"""
+    from gsuid_core.aps import scheduler
+
+    # 超出窗口的序号取模回卷——min 截断会把 idx≥222 的任务全钉在 1800s 同一时刻重造惊群
+    spread = (overdue_idx * _OVERDUE_SPACING) % (_OVERDUE_MAX_WINDOW - _OVERDUE_BASE_DELAY)
+    delay = _OVERDUE_BASE_DELAY + spread + random.uniform(0, _OVERDUE_JITTER)
+    run_date = datetime.now(TZ_SHANGHAI) + timedelta(seconds=delay)
+    scheduler.add_job(
+        func=execute_scheduled_task,
+        trigger="date",
+        run_date=run_date,
+        args=[task_id],
+        id=task_id,
+        replace_existing=True,
+        # 全局默认 misfire_grace_time=90s：启动卡顿>90s 会静默丢弃补偿 job（任务永滞 pending）
+        misfire_grace_time=None,
+    )
+    logger.info(t("log.scheduler.sched_overdue_kind_queued", kind=kind, task_id=task_id, delay=delay))
+
+
+def register_restored_task(task: AIScheduledTask, overdue_idx: int) -> None:
+    """还原人格备份后把一条 pending 任务重新挂回调度器（已过期的排进补偿窗口）。"""
+    _register_pending_task(task, lambda tid, kind: _schedule_overdue_job(tid, kind, overdue_idx))
+
+
+def _register_pending_task(task: AIScheduledTask, schedule_overdue: Callable[[str, str], None]) -> bool:
+    """按任务类型挂 APScheduler job；返回是否按原计划时间直接挂上（过期的走 ``schedule_overdue``）。"""
+    from gsuid_core.aps import scheduler
+
+    if task.task_type == "interval":
+        next_run = _ensure_aware(task.next_run_time)
+        if next_run and next_run > datetime.now(TZ_SHANGHAI):
+            scheduler.add_job(
+                func=execute_scheduled_task,
+                trigger="interval",
+                seconds=task.interval_seconds or 0,
+                start_date=task.next_run_time,
+                args=[task.task_id],
+                id=task.task_id,
+                replace_existing=True,
+            )
+            logger.info(
+                t(
+                    "log.scheduler.sched_reloaded_recurring_task_load",
+                    p0=task.task_id,
+                    p1=task.next_run_time,
+                )
+            )
+            return True
+        # 已到执行时间或未设置：排进错峰补偿窗口（而非立即执行，防惊群 B1）
+        schedule_overdue(task.task_id, "循环任务")
+        return False
+
+    trigger = _ensure_aware(task.trigger_time)
+    if trigger and trigger <= datetime.now(TZ_SHANGHAI):
+        schedule_overdue(task.task_id, "一次性任务")
+        return False
+    if trigger:
+        scheduler.add_job(
+            func=execute_scheduled_task,
+            trigger="date",
+            run_date=trigger,
+            args=[task.task_id],
+            id=task.task_id,
+            replace_existing=True,
+        )
+        logger.info(
+            t(
+                "log.scheduler.sched_reloaded_one_time_task",
+                p0=task.task_id,
+                p1=task.trigger_time,
+            )
+        )
+        return True
+    return False
 
 
 async def cleanup_completed_tasks() -> int:

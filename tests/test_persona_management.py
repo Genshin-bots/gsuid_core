@@ -2186,3 +2186,601 @@ def test_proactive_policy_unified_gates_and_persona_rate_key(monkeypatch: pytest
             assert "配额已达上限" in msg
     finally:
         auto_tools.reset_guard(tok)
+
+
+def test_persona_reset_guard_and_archive_safety(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import zipfile
+
+    from gsuid_core.ai_core.persona_reset import guard, archive
+
+    # 1. 冻结标记可重入 + self scope 按人格隔离 + 非 self 看共享标记
+    guard.freeze(["alpha"], shared=False, scope_keys=["self:10001"])
+    try:
+        assert guard.is_persona_frozen("alpha") is True
+        assert guard.is_persona_frozen("beta") is False
+        assert guard.is_scope_frozen("self:10001:alpha") is True
+        assert guard.is_scope_frozen("self:10001:beta") is False
+        assert guard.is_scope_frozen("self:10001") is True
+        assert guard.is_scope_frozen("group:group_1") is False
+
+        guard.freeze(["alpha"], shared=True)
+        assert guard.is_scope_frozen("group:group_1") is True
+        assert guard.is_scope_frozen("user_global:100000001") is True
+        guard.unfreeze(["alpha"], shared=True)
+        assert guard.is_persona_frozen("alpha") is True
+        assert guard.is_scope_frozen("group:group_1") is False
+    finally:
+        guard.unfreeze(["alpha"], shared=False, scope_keys=["self:10001"])
+    assert not guard.is_persona_frozen("alpha")
+    assert not guard.is_scope_frozen("self:10001")
+    assert not guard.is_scope_frozen("group:group_1")
+
+    # 2. zip-slip 越界条目拒绝 + 损坏 zip 安全返回 None + 仅保留最近 5 份
+    evil_zip = tmp_path / "evil.zip"
+    with zipfile.ZipFile(evil_zip, "w") as zf:
+        zf.writestr("../escape.txt", "boom")
+    with pytest.raises(ValueError, match="unsafe zip entry"):
+        archive.extract_sync(evil_zip)
+
+    bad_zip = tmp_path / "corrupt.zip"
+    bad_zip.write_bytes(b"not-a-zip")
+    assert archive.read_manifest_sync(bad_zip) is None
+
+    monkeypatch.setattr(archive, "BACKUP_ROOT", tmp_path / "backups")
+    out_dir = tmp_path / "backups" / "personas" / "alpha"
+    out_dir.mkdir(parents=True)
+    for idx in range(7):
+        (out_dir / f"20261125_00000{idx}.zip").write_bytes(b"x")
+    archive._prune_sync(out_dir, archive.KEEP_BACKUPS)
+    kept = sorted(p.name for p in out_dir.glob("*.zip"))
+    assert len(kept) == 5 and kept[0] == "20261125_000002.zip"
+
+
+def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """端到端覆盖：预览 → 重置（含备份）→ 跨人格隔离 → 还原（含认知节点与边）→ 向量断点续跑。"""
+    import time
+    from datetime import datetime, timezone, timedelta
+
+    from sqlmodel import select
+    from sqlalchemy import delete as sql_delete
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.rag import base as rag_base
+    from gsuid_core.ai_core.memory import startup as mem_startup
+    from gsuid_core.ai_core.journal import storage as jstorage
+    from gsuid_core.ai_core.persona import mood as mood_mod
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.autonomy import tools as auto_tools
+    from gsuid_core.ai_core.state_store import state_get_value, state_set_value
+    from gsuid_core.ai_core.memory.vector import ops as vec_ops
+    from gsuid_core.ai_core.persona_reset import jobs, guard, archive, service
+    from gsuid_core.ai_core.scheduled_task import executor as sched_exec
+    from gsuid_core.ai_core.cognition.nodes import AICogEdge, AICogNode, CogEdgeKind, AICogAttachment
+    from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.database.models import UserFavorability, AIAutonomyActivity
+    from gsuid_core.ai_core.memory.database import fts as fts_mod, models as mem_models
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+    from gsuid_core.ai_core.memory.ingestion import algebra, window_router
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+    from gsuid_core.ai_core.persona.homeostasis import persona_scope
+    from gsuid_core.ai_core.persona_reset.types import ALL_ITEMS
+    from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
+    from gsuid_core.ai_core.memory.database.models import (
+        AIMemEdge,
+        AIMemEntity,
+        AIMemThread,
+        AIMemEpisode,
+        mem_episode_entity_mentions,
+    )
+    from gsuid_core.ai_core.memory.ingestion.worker import ingest_window
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
+
+    _setup_isolated_persona_env(tmp_path / "personas", monkeypatch)
+    _seed_persona(tmp_path / "personas", "alpha", "specific", ["group_1"], group_scope="specific", private_scope="all")
+    _seed_persona(tmp_path / "personas", "beta", "specific", ["group_2"], group_scope="specific", private_scope="off")
+
+    journal_root = tmp_path / "journals"
+    notes_root = tmp_path / "notes"
+    backup_root = tmp_path / "persona_backups"
+    monkeypatch.setattr(jstorage, "JOURNAL_DIR", journal_root)
+    monkeypatch.setattr(auto_tools, "artifact_dir", lambda name, root=None: notes_root / name)
+    monkeypatch.setattr(archive, "BACKUP_ROOT", backup_root)
+    monkeypatch.setattr(archive, "JOBS_DIR", backup_root / "_jobs")
+    jstorage._SHARD_CACHE.clear()
+    jstorage._SHARD_UPDATE_TS.clear()
+    jstorage._RECENT_ENTRY_TS.clear()
+    jobs._jobs.clear()
+    jobs._active_job_id = ""
+    mood_mod._mood_states.clear()
+
+    class _FakeQdrant:
+        def __init__(self) -> None:
+            self.deleted_collections: list[str] = []
+
+        async def collection_exists(self, collection_name: str) -> bool:
+            del collection_name
+            return True
+
+        async def delete(self, collection_name: str, points_selector: object) -> None:
+            del points_selector
+            self.deleted_collections.append(collection_name)
+
+    class _FakeEmbedder:
+        dimension: int = 4
+
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+
+    fake_qdrant = _FakeQdrant()
+    monkeypatch.setattr(rag_base, "client", fake_qdrant)
+    monkeypatch.setattr(rag_base, "embedding_provider", _FakeEmbedder())
+    monkeypatch.setattr(fts_mod, "_FTS_READY", None)
+
+    upserted: dict[str, list[str]] = {"episode": [], "entity": [], "edge": []}
+    fail_once = {"entity": True}
+
+    async def _fake_upsert_ep(rows: list[dict[str, object]]) -> None:
+        upserted["episode"].extend(str(r["episode_id"]) for r in rows)
+
+    async def _fake_upsert_ent(rows: list[dict[str, object]]) -> None:
+        if fail_once["entity"]:
+            fail_once["entity"] = False
+            raise RuntimeError("simulated embed outage")
+        upserted["entity"].extend(str(r["entity_id"]) for r in rows)
+
+    async def _fake_upsert_edge(rows: list[dict[str, object]]) -> None:
+        upserted["edge"].extend(str(r["edge_id"]) for r in rows)
+
+    embed_calls = {"n": 0}
+
+    async def _fake_embed_dense(texts: list[str]) -> list[list[float]]:
+        embed_calls["n"] += 1
+        return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+
+    service._tps_cache.clear()
+    monkeypatch.setattr(vec_ops, "upsert_episode_vectors_batch", _fake_upsert_ep)
+    monkeypatch.setattr(vec_ops, "upsert_entity_vectors_batch", _fake_upsert_ent)
+    monkeypatch.setattr(vec_ops, "upsert_edge_vectors_batch", _fake_upsert_edge)
+    monkeypatch.setattr(vec_ops, "embed_texts_dense", _fake_embed_dense)
+
+    registered_jobs: list[str] = []
+    monkeypatch.setattr(
+        sched_exec,
+        "register_restored_task",
+        lambda task, overdue_idx: registered_jobs.append(task.task_id),
+    )
+
+    async def _wait_job(job_id: str) -> service.JobView:
+        for _ in range(200):
+            view = await service.job_view(job_id)
+            if view is not None and view["status"] != "running":
+                return view
+            await asyncio.sleep(0.02)
+        raise AssertionError(f"job {job_id} timed out")
+
+    async def scenario() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'reset_e2e.db'}", poolclass=NullPool)
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(base_models, "async_maker", maker)
+        monkeypatch.setattr(mem_models, "async_maker", maker)
+        monkeypatch.setattr(base_models, "_db_type", "sqlite")
+        monkeypatch.setattr(base_models, "engine", engine)
+
+        now_dt = datetime.now(timezone.utc)
+        # 1. 灌入 alpha、beta 与共享测试数据（全脱敏虚拟数据）
+        async with maker() as s:
+            await fts_mod.ensure_fts_table(s)
+            ent_a = AIMemEntity(id="ent-a1", scope_key="self:10001:alpha", name="角色自述", qdrant_id="ent-a1")
+            ent_b = AIMemEntity(id="ent-b1", scope_key="self:10001:beta", name="他人格实体", qdrant_id="ent-b1")
+            ent_g1 = AIMemEntity(id="ent-g1", scope_key="group:group_1", name="测试用户A", qdrant_id="ent-g1")
+            ent_g2 = AIMemEntity(id="ent-g2", scope_key="group:group_1", name="测试项目", qdrant_id="ent-g2")
+            ent_u1 = AIMemEntity(id="ent-u1", scope_key="user_global:100000001", name="测试用户A", qdrant_id="ent-u1")
+            th_g = AIMemThread(id="th-g1", scope_key="group:group_1", title="测试项目讨论")
+            ep_a = AIMemEpisode(
+                id="ep-a1",
+                scope_key="self:10001:alpha",
+                content="alpha 自我回忆",
+                speaker_ids=["alpha"],
+                qdrant_id="ep-a1",
+            )
+            ep_b = AIMemEpisode(
+                id="ep-b1",
+                scope_key="self:10001:beta",
+                content="beta 自我回忆",
+                speaker_ids=["beta"],
+                qdrant_id="ep-b1",
+            )
+            ep_g = AIMemEpisode(
+                id="ep-g1",
+                scope_key="group:group_1",
+                content="群里讨论测试项目进展",
+                speaker_ids=["100000001"],
+                qdrant_id="ep-g1",
+                thread_id="th-g1",
+            )
+            edge_g = AIMemEdge(
+                id="edge-g1",
+                scope_key="group:group_1",
+                fact="测试用户A负责测试项目",
+                source_entity_id="ent-g1",
+                target_entity_id="ent-g2",
+                source_episode_id="ep-g1",
+                thread_id="th-g1",
+                qdrant_id="edge-g1",
+            )
+            pref_u = AIMemPreference(
+                id="pref-u1",
+                scope_key="user_global:100000001",
+                user_id="100000001",
+                preference_rule="回答简洁",
+            )
+            s.add_all([ent_a, ent_b, ent_g1, ent_g2, ent_u1, th_g, ep_a, ep_b, ep_g, edge_g, pref_u])
+            await s.flush()
+            await s.execute(mem_episode_entity_mentions.insert().values(episode_id="ep-g1", entity_id="ent-g1"))
+            await fts_mod.index_episodes(s, [ep_a, ep_b, ep_g])
+
+            hub = AICogNode(kind=CogKind.ENTITY.value, ref="world:test_hub", scope_key="", title="公共枢纽")
+            env_node = AICogNode(
+                kind=CogKind.ENTITY.value,
+                ref="env:ent-g2",
+                scope_key="group:group_1",
+                title="测试项目",
+                canon="world:test_hub",
+            )
+            self_note = AICogNode(
+                kind=CogKind.SELF_NOTE.value, ref="self:10001:note:1", scope_key="self:10001:alpha", title="自我反思"
+            )
+            s.add_all([hub, env_node, self_note])
+            await s.flush()
+            assert hub.id is not None and env_node.id is not None and self_note.id is not None
+            s.add(AICogEdge(src_id=env_node.id, dst_id=hub.id, edge_kind=CogEdgeKind.RELATED.value))
+            s.add(AICogAttachment(node_id=self_note.id, slot="备注", title="附注", ref="att:1", handle="h:1"))
+
+            s.add(UserFavorability(user_id="100000001", bot_id="onebot", persona_name="alpha", favorability=42))
+            s.add(UserFavorability(user_id="100000001", bot_id="onebot", persona_name="beta", favorability=88))
+            s.add(AIAutonomyActivity(persona_name="alpha", summary="alpha 自主记录", created_at=time.time()))
+            s.add(AIAutonomyActivity(persona_name="beta", summary="beta 自主记录", created_at=time.time()))
+            s.add(
+                AIScheduledTask(
+                    bot_id="onebot",
+                    task_id="task-alpha-1",
+                    user_id="100000001",
+                    persona_name="alpha",
+                    task_prompt="测试提醒",
+                    status="pending",
+                    trigger_time=now_dt + timedelta(hours=1),
+                )
+            )
+            await s.commit()
+
+        # 手账、笔记、状态、心情、会话
+        j_alpha = jstorage.persona_journal_dir("alpha") / "self.md"
+        j_alpha.parent.mkdir(parents=True, exist_ok=True)
+        j_alpha.write_text("# alpha 手账\n", encoding="utf-8")
+        j_beta = jstorage.persona_journal_dir("beta") / "self.md"
+        j_beta.parent.mkdir(parents=True, exist_ok=True)
+        j_beta.write_text("# beta 手账\n", encoding="utf-8")
+        (notes_root / "alpha").mkdir(parents=True, exist_ok=True)
+        (notes_root / "alpha" / "n1.txt").write_text("alpha 笔记", encoding="utf-8")
+        jstorage.put_journal_state_sync(
+            "alpha",
+            {
+                "last_compact_ts": 123.0,
+                "last_dream_date": "2026-11-24",
+                "dirty_shards": [],
+                "light_carry": {},
+                "last_gc_month": "",
+                "schema_version": 2,
+            },
+        )
+        await state_set_value(persona_scope("alpha"), "homeostasis", {"energy": 0.5})
+        await state_set_value(persona_scope("beta"), "homeostasis", {"energy": 0.9})
+        await state_set_value("__gscore_group_profile__", "group:group_1", {"tags": ["测试"]})
+        await mood_mod.update_mood("alpha", "group_1", "praise")
+
+        ev_g1 = Event(bot_id="onebot", bot_self_id="10001", user_id="100000001", group_id="group_1", user_type="group")
+        get_history_manager().add_message(ev_g1, "user", "测试消息")
+
+        # 2. 预览校验
+        prev = await service.preview_reset("alpha")
+        assert prev["other_personas"] == ["beta"]
+        by_key = {item["key"]: item for item in prev["items"]}
+        assert by_key["self_memory"]["default_checked"] is True and by_key["self_memory"]["count"] == 3
+        assert by_key["global_group"]["default_checked"] is False and by_key["global_group"]["count"] == 6
+        assert by_key["global_user"]["default_checked"] is False and by_key["global_user"]["count"] == 2
+        assert by_key["scheduled_tasks"]["default_checked"] is False and by_key["scheduled_tasks"]["count"] == 1
+        assert by_key["session_history"]["backup_supported"] is False and by_key["session_history"]["count"] >= 1
+
+        # 错误确认名被拒
+        bad = await service.start_reset("alpha", ["journal"], "wrong", False, False)
+        assert bad["error"]
+
+        # 全局图谱项未二次确认被拒
+        no_global = await service.start_reset("alpha", ["global_group"], "alpha", False, False)
+        assert no_global["error"]
+
+        # 摄入 flush 等不到空闲 → 任务失败、手账未删、人格解冻（异常经 done-callback 收口）
+        class _StuckWorker:
+            async def wait_frozen_flush_idle(self, timeout: float) -> bool:
+                del timeout
+                return False
+
+            def drop_frozen_buffers(self) -> int:
+                return 0
+
+        orig_worker_getter = mem_startup.get_ingestion_worker
+        monkeypatch.setattr(mem_startup, "get_ingestion_worker", lambda: _StuckWorker())
+        try:
+            stuck = await service.start_reset("alpha", ["journal"], "alpha", False, False)
+            assert not stuck["error"] and stuck["job_id"]
+            stuck_view = await _wait_job(stuck["job_id"])
+            assert stuck_view["status"] == "failed"
+            assert j_alpha.exists()
+            assert guard.is_persona_frozen("alpha") is False
+        finally:
+            monkeypatch.setattr(mem_startup, "get_ingestion_worker", orig_worker_getter)
+
+        # 冻结人格的一次性定时任务不点火：顺延补跑一次后返回
+        overdue_calls: list[tuple[str, str, int]] = []
+        monkeypatch.setattr(
+            sched_exec,
+            "_schedule_overdue_job",
+            lambda task_id, kind, overdue_idx: overdue_calls.append((task_id, kind, overdue_idx)),
+        )
+        monkeypatch.setattr(ai_config.get_config("enable"), "data", True)
+        guard.freeze(["alpha"], shared=False)
+        try:
+            await sched_exec.execute_scheduled_task("task-alpha-1")
+        finally:
+            guard.unfreeze(["alpha"], shared=False)
+        assert overdue_calls == [("task-alpha-1", "一次性任务", 0)]
+
+        # 3. 执行全量重置（含备份）
+        started = await service.start_reset("alpha", list(ALL_ITEMS), "alpha", True, True)
+        assert not started["error"] and started["job_id"]
+        done_view = await _wait_job(started["job_id"])
+        assert done_view["status"] == "done", done_view
+        assert done_view["backup_file"].endswith(".zip")
+        backup_file = done_view["backup_file"]
+
+        # 备份人格不匹配：拷进 beta 备份目录后预览还原直接拒绝
+        import shutil
+
+        beta_backup_dir = archive.persona_backup_dir("beta")
+        beta_backup_dir.mkdir(parents=True, exist_ok=True)
+        copied = beta_backup_dir / backup_file
+        shutil.copy2(archive.persona_backup_dir("alpha") / backup_file, copied)
+        try:
+            assert await service.preview_restore("beta", backup_file) == "备份不属于该人格"
+        finally:
+            copied.unlink(missing_ok=True)
+
+        # 校验清空结果 & beta / 公共枢纽完好无损
+        assert not j_alpha.exists() and j_beta.exists()
+        assert not (notes_root / "alpha").exists()
+        assert jstorage.read_journal_state_sync("alpha") is None
+        assert await state_get_value(persona_scope("alpha"), "homeostasis") is None
+        assert await state_get_value(persona_scope("beta"), "homeostasis") == {"energy": 0.9}
+        assert await state_get_value("__gscore_group_profile__", "group:group_1") is None
+        assert mood_mod.count_mood_states("alpha") == 0
+        assert fake_qdrant.deleted_collections
+
+        async with maker() as s:
+            eps = (await s.execute(select(AIMemEpisode))).scalars().all()
+            assert [e.id for e in eps] == ["ep-b1"]
+            favs = (await s.execute(select(UserFavorability))).scalars().all()
+            assert [(f.persona_name, f.favorability) for f in favs] == [("beta", 88)]
+            acts = (await s.execute(select(AIAutonomyActivity))).scalars().all()
+            assert [a.persona_name for a in acts] == ["beta"]
+            cogs = (await s.execute(select(AICogNode))).scalars().all()
+            assert [c.ref for c in cogs] == ["world:test_hub"]
+            task_row = (await s.execute(select(AIScheduledTask))).scalars().first()
+            assert task_row is not None and task_row.status == "cancelled"
+
+        # 4. 还原预览（验证吞吐缓存，重复打开不重复调嵌入）+ 还原（模拟向量中途失败 → 断点续跑）
+        rprev = await service.preview_restore("alpha", backup_file)
+        assert not isinstance(rprev, str)
+        assert rprev["overwrite_counts"]["scheduled_tasks"] == 0
+        assert rprev["vector_texts"] == 11 and rprev["throughput_per_sec"] > 0
+        rprev_cached = await service.preview_restore("alpha", backup_file)
+        assert not isinstance(rprev_cached, str) and embed_calls["n"] == 1
+
+        # 重置后再写入一条新记录，验证覆盖还原会先清掉它
+        await UserFavorability.restore_rows(
+            [UserFavorability(user_id="100000002", bot_id="onebot", persona_name="alpha", favorability=5)]
+        )
+
+        rstart = await service.start_restore("alpha", backup_file, list(rprev["items"]), "alpha")
+        assert not rstart["error"] and rstart["job_id"]
+        interrupted = await _wait_job(rstart["job_id"])
+        assert interrupted["status"] == "resumable", interrupted
+        vec_step = [st for st in interrupted["steps"] if st["key"] == "vectors"][0]
+        assert vec_step["status"] == "failed"
+
+        # SQL / 认知节点 / 边 / 挂件 / 手账 / 好感 / 状态 / 定时任务均已立即恢复
+        assert j_alpha.read_text(encoding="utf-8") == "# alpha 手账\n"
+        assert (notes_root / "alpha" / "n1.txt").read_text(encoding="utf-8") == "alpha 笔记"
+        assert jstorage.read_journal_state_sync("alpha") is not None
+        assert await state_get_value(persona_scope("alpha"), "homeostasis") == {"energy": 0.5}
+        assert await state_get_value("__gscore_group_profile__", "group:group_1") == {"tags": ["测试"]}
+        assert "task-alpha-1" in registered_jobs
+
+        async with maker() as s:
+            eps = sorted(e.id for e in (await s.execute(select(AIMemEpisode))).scalars().all())
+            assert eps == ["ep-a1", "ep-b1", "ep-g1"]
+            favs = sorted(
+                (f.persona_name, f.user_id, f.favorability)
+                for f in (await s.execute(select(UserFavorability))).scalars().all()
+            )
+            assert favs == [("alpha", "100000001", 42), ("beta", "100000001", 88)]
+            cogs = sorted(c.ref for c in (await s.execute(select(AICogNode))).scalars().all())
+            assert cogs == ["env:ent-g2", "self:10001:note:1", "world:test_hub"]
+            edges_cog = (await s.execute(select(AICogEdge))).scalars().all()
+            atts_cog = (await s.execute(select(AICogAttachment))).scalars().all()
+            assert len(edges_cog) == 1 and len(atts_cog) == 1
+            task_row = (await s.execute(select(AIScheduledTask))).scalars().first()
+            assert task_row is not None and task_row.status == "pending"
+
+        # 模拟进程重启：清掉内存任务表，仍能从磁盘游标发现 resumable 并续跑完成
+        jobs._jobs.clear()
+        jobs._active_job_id = ""
+        active = await service.active_job_view("alpha")
+        assert active is not None and active["status"] == "resumable" and active["job_id"] == rstart["job_id"]
+
+        resumed = await service.resume_job(rstart["job_id"])
+        assert not resumed["error"]
+        final_view = await _wait_job(resumed["job_id"])
+        assert final_view["status"] == "done", final_view
+        assert await service.active_job_view("alpha") is None
+        assert sorted(upserted["episode"]) == ["ep-a1", "ep-g1"]
+        assert sorted(upserted["entity"]) == ["ent-a1", "ent-g1", "ent-g2", "ent-u1"]
+        assert sorted(upserted["edge"]) == ["edge-g1"]
+
+        # 摄入循环在 extract 前复查冻结：首个 cluster 冻结后，第二个 cluster 不再落库
+        extract_calls = {"n": 0}
+
+        async def _two_extract_route(
+            scope_key: str,
+            records: list[ObservationRecord],
+            threads: list[AIMemThread],
+            *,
+            force_settle: bool = False,
+        ) -> window_router.WindowRouteOutput:
+            del scope_key, records, threads, force_settle
+            return {
+                "clusters": [
+                    {"lines": [0], "action": "extract", "thread_ref": None, "topic_title": ""},
+                    {"lines": [1], "action": "extract", "thread_ref": None, "topic_title": ""},
+                ],
+                "open_lines": [],
+            }
+
+        async def _freeze_on_extract(
+            scope_key: str,
+            records: list[ObservationRecord],
+            lines: list[int],
+            *,
+            thread_ref: str | None,
+            topic_title: str,
+            episode_id: str,
+            threads: list[AIMemThread] | None = None,
+        ) -> algebra.AlgebraStats:
+            del records, lines, thread_ref, topic_title, episode_id, threads
+            extract_calls["n"] += 1
+            guard.freeze(["alpha"], shared=False)
+            assert guard.is_scope_frozen(scope_key)
+            return {"entities": 0, "edges": 0, "preferences": 0, "thread_id": ""}
+
+        monkeypatch.setattr(window_router, "route_window", _two_extract_route)
+        monkeypatch.setattr(algebra, "extract_cluster", _freeze_on_extract)
+
+        async def _noop_upsert_ep(**kwargs: object) -> None:
+            del kwargs
+
+        monkeypatch.setattr(mem_models, "upsert_episode_vector", _noop_upsert_ep)
+        recs = [
+            ObservationRecord(
+                raw_content=f"窗口消息{idx}",
+                speaker_id="100000001",
+                group_id="group_1",
+                scope_key="self:10001:alpha",
+                timestamp=now_dt,
+                message_type="text",
+            )
+            for idx in (1, 2)
+        ]
+        try:
+            w_stats = await ingest_window(recs, "self:10001:alpha")
+        finally:
+            guard.unfreeze(["alpha"], shared=False)
+        assert extract_calls["n"] == 1
+        assert w_stats["episodes"] == 1
+
+        # 5. FastAPI HTTP 契约端到端验证（路由无遮蔽 + 预览 / 备份列表 / 下载 / 删除 / 任务进度）
+        import httpx
+
+        from gsuid_core.webconsole import persona_api as _persona_api  # noqa: F401
+        from gsuid_core.webconsole.app_app import app as web_app
+        from gsuid_core.webconsole.web_api import require_admin
+        from gsuid_core.webconsole.session_store import SessionRecord
+
+        admin_rec: SessionRecord = {
+            "user": {"id": "admin", "email": "admin@example.com", "name": "admin", "role": "admin", "avatar": None},
+            "email": "admin@example.com",
+            "created": now_dt.isoformat(),
+            "expires": (now_dt + timedelta(hours=1)).isoformat(),
+        }
+        web_app.dependency_overrides[require_admin] = lambda: admin_rec
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=web_app), base_url="http://testserver"
+            ) as http:
+                resp_prev = await http.get("/api/persona/alpha/reset/preview")
+                assert resp_prev.status_code == 200 and resp_prev.json()["status"] == 0
+                assert resp_prev.json()["data"]["persona"] == "alpha"
+
+                resp_job = await http.get(f"/api/persona-reset/jobs/{final_view['job_id']}")
+                assert resp_job.status_code == 200 and resp_job.json()["data"]["status"] == "done"
+
+                resp_list = await http.get("/api/persona/alpha/backups")
+                assert resp_list.status_code == 200
+                listed = resp_list.json()["data"]
+                assert len(listed) == 1 and listed[0]["file"] == backup_file
+
+                resp_dl = await http.get(f"/api/persona/alpha/backups/{backup_file}/download")
+                assert resp_dl.status_code == 200 and resp_dl.content[:2] == b"PK"
+
+                resp_del = await http.delete(f"/api/persona/alpha/backups/{backup_file}")
+                assert resp_del.status_code == 200 and resp_del.json()["status"] == 0
+                assert await service.list_backups("alpha") == []
+        finally:
+            web_app.dependency_overrides.pop(require_admin, None)
+
+        # 6. 回归防线：prepare 阶段异常不锁死全局任务，且新一轮记忆重置会清理旧 resumable 游标
+        orig_scope_map = service._scope_map
+
+        async def _boom_scope_map(
+            persona: str, items: list[service.ResetItemKey]
+        ) -> tuple[dict[service.ResetItemKey, list[str]], list[str]]:
+            del persona, items
+            raise RuntimeError("simulated db error before freeze")
+
+        monkeypatch.setattr(service, "_scope_map", _boom_scope_map)
+        try:
+            fail_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
+            assert not fail_start["error"] and fail_start["job_id"]
+            fail_view = await _wait_job(fail_start["job_id"])
+            assert fail_view["status"] == "failed" and jobs.active_job() is None
+        finally:
+            monkeypatch.setattr(service, "_scope_map", orig_scope_map)
+
+        stale_cursor = archive.JOBS_DIR / "stale_alpha_job.json"
+        service._save_cursor_sync(
+            {
+                "job_id": "stale_alpha_job",
+                "persona": "alpha",
+                "file": "dummy.zip",
+                "scope_keys": ["self:10001:alpha"],
+                "kind_index": 1,
+                "chunk_index": 0,
+                "last_id": "",
+                "done": 1,
+                "total": 3,
+            }
+        )
+        assert stale_cursor.exists()
+        fresh_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
+        assert not fresh_start["error"] and fresh_start["job_id"]
+        fresh_view = await _wait_job(fresh_start["job_id"])
+        assert fresh_view["status"] == "done" and not stale_cursor.exists()
+
+        # 清理内存会话，避免污染其他用例
+        get_history_manager().delete_session(ev_g1)
+        async with maker() as s:
+            await s.execute(sql_delete(AIMemEdge))
+            await s.commit()
+        await engine.dispose()
+
+    asyncio.run(scenario())

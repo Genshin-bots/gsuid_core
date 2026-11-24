@@ -18,12 +18,13 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.utils.database.base_models import BaseModel, BaseIDModel, with_session, with_read_session
-
-
-def _escape_like(text: str) -> str:
-    # LIKE 的 % 和 _ 必须按字面量匹配，不能变成通配符。
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+from gsuid_core.utils.database.base_models import (
+    BaseModel,
+    BaseIDModel,
+    escape_like,
+    with_session,
+    with_read_session,
+)
 
 
 class UserFavorability(BaseModel, table=True):
@@ -164,7 +165,7 @@ class UserFavorability(BaseModel, table=True):
             conds.append(col(cls.persona_name) == pname)
         kw = keyword.strip()
         if kw:
-            pattern = f"%{_escape_like(kw)}%"
+            pattern = f"%{escape_like(kw)}%"
             conds.append(
                 or_(
                     col(cls.user_id).like(pattern, escape="\\"),
@@ -468,6 +469,36 @@ class UserFavorability(BaseModel, table=True):
             .values(**values)
         )
         await session.execute(stmt)
+
+    @classmethod
+    @with_read_session
+    async def list_by_persona(cls, session: AsyncSession, persona_name: str) -> List["UserFavorability"]:
+        stmt = select(cls).where(col(cls.persona_name) == persona_name).order_by(col(cls.id))
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def count_by_persona(cls, session: AsyncSession, persona_name: str) -> int:
+        stmt = select(func.count()).select_from(cls).where(col(cls.persona_name) == persona_name)
+        raw = (await session.execute(stmt)).scalar_one()
+        return raw if isinstance(raw, int) else 0
+
+    @classmethod
+    @with_session
+    async def delete_by_persona(cls, session: AsyncSession, persona_name: str) -> int:
+        """人格重置：删掉该人格对所有用户、所有 bot 的关系行（含相处契约）。"""
+        result = await session.execute(delete(cls).where(col(cls.persona_name) == persona_name))
+        await session.commit()
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+    @classmethod
+    @with_session
+    async def restore_rows(cls, session: AsyncSession, rows: List["UserFavorability"]) -> int:
+        """还原备份行。自增 id 交给数据库重新分配，避免撞上其他人格新写入的行。"""
+        fresh = [cls.model_validate(row.model_dump(exclude={"id"})) for row in rows]
+        session.add_all(fresh)
+        await session.commit()
+        return len(fresh)
 
     @classmethod
     @with_session
@@ -1049,6 +1080,35 @@ class AIAutonomyActivity(BaseIDModel, table=True):
         latest = await _latest_activity_rows(session, name)
         names = await _activity_persona_names(session)
         return items, total, latest, names
+
+    @classmethod
+    @with_read_session
+    async def list_by_persona(cls, session: AsyncSession, persona_name: str) -> List["AIAutonomyActivity"]:
+        stmt = select(cls).where(col(cls.persona_name) == persona_name).order_by(col(cls.id))
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def count_by_persona(cls, session: AsyncSession, persona_name: str) -> int:
+        stmt = select(func.count()).select_from(cls).where(col(cls.persona_name) == persona_name)
+        raw = (await session.execute(stmt)).scalar_one()
+        return raw if isinstance(raw, int) else 0
+
+    @classmethod
+    @with_session
+    async def delete_by_persona(cls, session: AsyncSession, persona_name: str) -> int:
+        result = await session.execute(delete(cls).where(col(cls.persona_name) == persona_name))
+        await session.commit()
+        return result.rowcount if isinstance(result, CursorResult) else 0
+
+    @classmethod
+    @with_session
+    async def restore_rows(cls, session: AsyncSession, rows: List["AIAutonomyActivity"]) -> int:
+        """还原备份行。自增 id 交给数据库重新分配，避免撞上重置后新写入的行。"""
+        fresh = [cls.model_validate(row.model_dump(exclude={"id"})) for row in rows]
+        session.add_all(fresh)
+        await session.commit()
+        return len(fresh)
 
 
 def first_row_per_persona(rows: Sequence[AIAutonomyActivity]) -> List[AIAutonomyActivity]:

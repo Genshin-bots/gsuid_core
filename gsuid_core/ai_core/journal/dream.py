@@ -60,6 +60,7 @@ from gsuid_core.ai_core.journal.storage import (
 )
 from gsuid_core.ai_core.journal.sanitizer import truncate_at_boundary
 from gsuid_core.ai_core.configs.task_kinds import TASK_JOURNAL_COMPACT
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.persona.config_rules import read_autonomy_runtime, is_within_active_hours
 from gsuid_core.ai_core.journal.notes_consolidate import (
     MAX_NOTE_CLUSTERS_PER_NIGHT,
@@ -711,6 +712,8 @@ async def compact_journal(
     max_llm_shards: int | None = None,
 ) -> bool:
     """对指定人格执行做梦整理（支持 target_shard 单分片速整与 max_llm_shards 配额防阻塞）。"""
+    if is_persona_frozen(persona_name):
+        return False
     key = _safe_token(persona_name)
     await to_thread(_migrate_legacy_root_file_sync)(key)
 

@@ -14,6 +14,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.configs.task_kinds import TASK_RELATIONSHIP_DISTILL
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 _TRIGGER_MIN_SCORE = 35
 _TRIGGER_MIN_NEW_INTERACTIONS = 15
@@ -49,7 +50,7 @@ async def maybe_schedule_dyadic_distill(
     score_after: int,
 ) -> None:
     """结算后钩子：满足阈值且同键无在途任务时，后台蒸馏一轮。"""
-    if not persona_name or score_after < _TRIGGER_MIN_SCORE:
+    if not persona_name or score_after < _TRIGGER_MIN_SCORE or is_persona_frozen(persona_name):
         return
     from gsuid_core.ai_core.database.models import UserFavorability
 

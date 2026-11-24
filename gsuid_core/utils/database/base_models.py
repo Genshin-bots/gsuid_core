@@ -204,6 +204,11 @@ def is_live_sqlite(path: Path) -> bool:
     return path.resolve() == DB_PATH.resolve()
 
 
+def escape_like(text: str) -> str:
+    # LIKE 的 % 和 _ 必须按字面量匹配，不能变成通配符（配合 escape="\\" 使用）。
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _sqlite_sidecars(dest: Path) -> tuple[Path, Path]:
     return Path(str(dest) + "-wal"), Path(str(dest) + "-shm")
 

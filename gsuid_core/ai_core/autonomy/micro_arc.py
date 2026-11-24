@@ -11,6 +11,7 @@ import re
 from typing import Literal, TypedDict
 
 from gsuid_core.ai_core.persona.homeostasis import persona_scope
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 ArcOrigin = Literal["care_user", "group_topic", "self_explore"]
 ArcStage = Literal["seed", "attempt", "ready_to_share", "consolidated", "abandoned"]
@@ -218,4 +219,6 @@ async def load_micro_arcs(persona_name: str) -> list[MicroArcDict]:
 async def save_micro_arcs(persona_name: str, arcs: list[MicroArcDict]) -> None:
     from gsuid_core.ai_core.state_store import state_set_value
 
+    if is_persona_frozen(persona_name):
+        return
     await state_set_value(persona_scope(persona_name), _ARC_KEY, arcs)

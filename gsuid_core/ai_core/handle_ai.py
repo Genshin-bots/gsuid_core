@@ -70,6 +70,7 @@ from gsuid_core.ai_core.multimodal.payload import (
     has_model_visible_content,
 )
 from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
     admit_pre_router,
@@ -180,8 +181,9 @@ async def run_passive_interactive_chat(
         logger.info(t("log.ai.gscore_empty_content_visible"))
         return PassiveChatResult("silence")
 
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
+
     if not event.group_id and event.user_id:
-        from gsuid_core.ai_core.persona.settings import persona_name_from_event
         from gsuid_core.ai_core.proactive.dm_lease import renew_dm_lease, maybe_switch_dm_lease
 
         # 私聊开头显式点名其他启用人格 → 租约平滑切换（在 renew 与建 session 之前）
@@ -190,7 +192,14 @@ async def run_passive_interactive_chat(
         )
         renew_dm_lease(user_id=event.user_id, bot_id=event.bot_id or "")
 
+    # 重置期间该人格的会话直接早退，不新建或唤醒 AI 会话对象。
+    # 放在租约切换之后：私聊显式换人格时以切换后的目标人格判定冻结。
+    if is_persona_frozen(persona_name_from_event(event)):
+        return PassiveChatResult("silence")
+
     session = await get_ai_session(event)
+    if is_persona_frozen(session.persona_name):
+        return PassiveChatResult("silence")
 
     from gsuid_core.ai_core.persona.speaking_ctx import set_speaking_persona, reset_speaking_persona
 

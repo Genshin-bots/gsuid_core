@@ -12,6 +12,7 @@ from fastapi import Body, Depends, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
+import gsuid_core.webconsole.persona_reset_api  # noqa: F401
 import gsuid_core.webconsole.persona_store_api  # noqa: F401
 import gsuid_core.webconsole.persona_bundle_api  # noqa: F401
 from gsuid_core.ai_core.persona import (
@@ -40,6 +41,7 @@ from gsuid_core.ai_core.persona.settings import (
     persona_settings_manager,
 )
 from gsuid_core.webconsole.session_store import SessionRecord
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.utils.plugins_config.models import GsDivider
 
 from ._api_tags import PERSONA
@@ -1601,6 +1603,8 @@ async def update_persona_journal(
     """保存生活手账 Markdown（支持单分片加锁写回或全景写回）。"""
     from gsuid_core.ai_core.journal.manager import save_journal_content_async
 
+    if is_persona_frozen(persona_name):
+        return {"status": 1, "msg": "人格正在重置或还原，暂时不能保存手账", "data": {"persona_name": persona_name}}
     await save_journal_content_async(persona_name, data.content, shard_id=data.shard_id)
     return {
         "status": 0,

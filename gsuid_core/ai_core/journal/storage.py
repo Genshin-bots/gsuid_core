@@ -930,3 +930,50 @@ def get_all_journal_personas() -> List[str]:
                 if sub.is_dir() and not sub.name.startswith("."):
                     names.add(sub.name)
     return sorted(names)
+
+
+def persona_journal_dir(persona_name: str) -> Path:
+    """人格手账根目录（不自动创建）。人格重置 / 备份还原整体处理这一层。"""
+    return _persona_root(persona_name)
+
+
+def legacy_journal_file(persona_name: str) -> Path:
+    return JOURNAL_DIR / f"{_safe_token(persona_name)}.md"
+
+
+def pop_journal_state_sync(persona_name: str) -> PersonaJournalStateEntry | None:
+    key = _safe_token(persona_name)
+    with _STATE_LOCK:
+        state = _load_full_state_unlocked()
+        if key not in state:
+            return None
+        entry = state.pop(key)
+        _save_full_state_unlocked(state)
+        return entry
+
+
+def put_journal_state_sync(persona_name: str, entry: PersonaJournalStateEntry) -> None:
+    key = _safe_token(persona_name)
+    with _STATE_LOCK:
+        state = _load_full_state_unlocked()
+        state[key] = entry
+        _save_full_state_unlocked(state)
+
+
+def forget_persona_cache_sync(persona_name: str) -> None:
+    """目录被整体删除 / 覆盖后丢掉分片缓存与时间戳，防止旧文档被写回。"""
+    key = _safe_token(persona_name)
+    root = _persona_root(persona_name)
+    with _CACHE_LOCK:
+        for path in [p for p in _SHARD_CACHE if root in p.parents]:
+            del _SHARD_CACHE[path]
+        for ts_key in [k for k in _SHARD_UPDATE_TS if k[0] == key]:
+            del _SHARD_UPDATE_TS[ts_key]
+        for recent_key in [k for k in _RECENT_ENTRY_TS if k[0] == key]:
+            del _RECENT_ENTRY_TS[recent_key]
+
+
+def read_journal_state_sync(persona_name: str) -> PersonaJournalStateEntry | None:
+    key = _safe_token(persona_name)
+    state = _load_full_state()
+    return state[key] if key in state else None

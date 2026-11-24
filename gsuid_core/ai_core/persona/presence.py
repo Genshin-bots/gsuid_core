@@ -18,6 +18,7 @@ from gsuid_core.ai_core.persona.homeostasis import (
     advance_homeostasis,
     apply_cold_shoulder,
 )
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 _ECHO_AGE_SECONDS = 900.0
 _OFFSCREEN_WINDOW = 21600.0
@@ -83,6 +84,8 @@ async def load_presence(persona_name: str) -> PresenceRibbon:
 async def save_presence(persona_name: str, ribbon: PresenceRibbon) -> None:
     from gsuid_core.ai_core.state_store import state_set_value
 
+    if is_persona_frozen(persona_name):
+        return
     await state_set_value(persona_scope(persona_name), _PRESENCE_KEY, asdict(ribbon))
 
 

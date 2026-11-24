@@ -692,5 +692,13 @@
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results",
   "log.ai.kanban_node_hard_timeout": "[Kanban] Subtask node hit hard timeout task={task} ({mins}min)",
   "log.ai.kanban_stale_delivery_suppressed": "[Kanban] Stale interactive group task archived silently without waking chat task={task} elapsed={mins}min",
-  "log.ai.artifact_index_drain_fail": "[Artifact] Failed to drain in-flight artifact index tasks before shutdown: {e}"
+  "log.ai.artifact_index_drain_fail": "[Artifact] Failed to drain in-flight artifact index tasks before shutdown: {e}",
+  "log.ai.persona_reset_start": "[PersonaReset] Starting memory reset for persona {persona} (items: {items})",
+  "log.ai.persona_reset_done": "[PersonaReset] Memory reset completed for persona {persona} (counts: {counts})",
+  "log.ai.persona_reset_fail": "[PersonaReset] Memory reset failed for persona {persona}: {e}",
+  "log.ai.persona_reset_tps_fail": "[PersonaReset] Failed to benchmark embedding throughput, skipping ETA: {e}",
+  "log.ai.persona_restore_start": "[PersonaRestore] Starting backup restore for persona {persona} from {file} (items: {items})",
+  "log.ai.persona_restore_done": "[PersonaRestore] Backup restore completed for persona {persona} (counts: {counts})",
+  "log.ai.persona_restore_fail": "[PersonaRestore] Backup restore failed for persona {persona}: {e}",
+  "log.ai.persona_restore_vectors_fail": "[PersonaRestore] Vector rebuild interrupted for persona {persona} (cursor saved for resume): {e}"
 }
