@@ -120,15 +120,13 @@ class AISessionRegistry:
         Returns:
             清理的Session数量
         """
-        from gsuid_core.ai_core.history_compact import compact_session_history
-
         cleaned = 0
         for session in self._ai_sessions.values():
             limit = session.max_history
             if limit > 0 and len(session.history) > limit:
-                # 保头裁中段：按会话自身的 max_history（即 agent_max_history 配置）裁剪。
-                session.history, did = compact_session_history(session.history, limit)
-                if did:
+                before = len(session.history)
+                session.extract_history()
+                if len(session.history) < before:
                     cleaned += 1
         return cleaned
 

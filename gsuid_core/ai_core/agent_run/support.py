@@ -197,13 +197,14 @@ def _ensure_session_anchor_on_first_user(
     user_id: Optional[str] = None,
     marker: str = "",
     is_framework: bool = False,
+    force_reanchor: bool = False,
 ) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere, float]:
     """会话首轮锚点（生活手账 + INNER_OS），只往当前 request 追加，持久后进入 history[0]。"""
     if is_framework:
         return current, lean, "skipped", 0.0
 
     first = _first_real_user_prompt_part(history)
-    if first is not None:
+    if first is not None and not force_reanchor:
         return current, lean, "already", 0.0
 
     if _user_content_contains(current, _SESSION_ANCHOR_NEEDLE) or (

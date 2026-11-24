@@ -2957,3 +2957,407 @@ def test_phase1_routing_exclusivity_breaker_and_xml_normalization(monkeypatch: p
         mp.setattr("gsuid_core.ai_core.inbox.scheduler.get_inbox_scheduler", lambda: sched)
         should_run, reason = inspector._pre_check_session(ev)
         assert should_run is False and "活跃处理中" in reason
+
+
+def test_phase2a_delegation_three_state_attribution_and_soft_latency_ack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """PR 2A：check_delegation 交付三态 + 溯源帧头 + 直调工具 10s Soft-Latency ACK 快慢双路径。"""
+    import time
+    from datetime import datetime
+
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.ai_core.planning import kanban_executor as ke
+    from gsuid_core.ai_core.agent_run import opening_line as ol
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.control.delegation import Delegation
+    from gsuid_core.ai_core.buildin_tools.control_tools import check_delegation
+
+    monkeypatch.setattr("gsuid_core.ai_core.session_logger.AI_SESSION_LOGS_PATH", tmp_path)
+
+    # 1. P2-4：交付三态区分 + [框架·任务完成] 溯源头
+    rid = "root_phase2a_demo_001"
+    ke._rt.active_delivery_wakes.discard(rid)
+    ke._rt.deferred_delivery_roots.discard(rid)
+    ke._rt.inline_claimed_roots.pop(rid, None)
+    ke._rt.delivered_roots.pop(rid, None)
+
+    assert ke.get_delivery_phase(rid) == "running"
+    ke.mark_deferred_main_delivery(rid)
+    t_claim = time.time()
+    assert ke.claim_inline_delivery(rid, now=t_claim) is True
+    assert ke.get_delivery_phase(rid, now=t_claim + 5.0) == "completed_queued"
+    ke._rt.inline_claimed_roots.pop(rid, None)
+    ke._rt.interactive_relay_roots.discard(rid)
+    ke._rt.active_delivery_wakes.add(rid)
+    assert ke.get_delivery_phase(rid) == "completed_queued"
+
+    ev = Event("OneBot", "900000001", "k2a", "group", "group_1", "100000001", {}, 6, raw_text="好了没")
+    rc = RunContext(deps=ToolContext(ev=ev), model=TestModel(), usage=RunUsage())
+
+    async def _fake_await_done(*_a: object, **_kw: object) -> Delegation:
+        return Delegation(
+            id=f"dlg_{rid}",
+            root_task_id=rid,
+            ordinal=7,
+            profile="render_agent",
+            goal="帮我核对未满级角色缺口清单",
+            status="done",
+            image_artifacts=("res_12345678",),
+        )
+
+    with monkeypatch.context() as mp:
+        mp.setattr("gsuid_core.ai_core.buildin_tools.control_tools.await_delegation", _fake_await_done)
+        queued_msg = asyncio.run(check_delegation(rc, "#7"))
+        assert "delivery_state=completed_queued" in queued_msg
+        assert "严禁声称「已发出」" in queued_msg
+
+        ke._rt.active_delivery_wakes.discard(rid)
+        t_now = time.time()
+        ke.mark_root_delivered(rid, now=t_now)
+        assert ke.get_delivery_phase(rid, now=t_now + 60.0) == "delivered"
+        delivered_msg = asyncio.run(check_delegation(rc, "#7"))
+        assert "delivery_state=delivered" in delivered_msg
+
+        # 运行期未追踪（如过期 TTL / 跨重启 / 前序静默释放）时不伪报 delivered，显式标 untracked 并提示核对记录
+        ke._rt.delivered_roots.pop(rid, None)
+        untracked_msg = asyncio.run(check_delegation(rc, "#7"))
+        assert "delivery_state=completed_untracked" in untracked_msg
+
+        # 认领成功但任务行已不存在时：立即释放 inline_claimed 记号并回落到 format_delegation，不伪报排队交付
+        ke._rt.delivered_roots.pop(rid, None)
+        ke.mark_deferred_main_delivery(rid)
+
+        async def _missing_task_row(_tid: str) -> AIAgentTask | None:
+            return None
+
+        mp.setattr(AIAgentTask, "get_by_id", _missing_task_row)
+        missing_row_msg = asyncio.run(check_delegation(rc, "#7"))
+        assert "delivery_state=completed_queued" not in missing_row_msg
+        assert "res_12345678" in missing_row_msg
+        assert ke.get_delivery_phase(rid) == "running"
+
+        # 失败 / 取消 / 待审批终态绝不能谎报「已完成并已送达」或写入 inline_claimed_roots
+        async def _fake_await_failed(*_a: object, **_kw: object) -> Delegation:
+            return Delegation(
+                id=f"dlg_{rid}",
+                root_task_id=rid,
+                ordinal=7,
+                profile="research_agent",
+                goal="测试失败任务状态展示",
+                status="failed",
+                failure_reason="上游接口 502",
+            )
+
+        ke.mark_root_delivered(rid, now=t_now)
+        mp.setattr("gsuid_core.ai_core.buildin_tools.control_tools.await_delegation", _fake_await_failed)
+        failed_poll_msg = asyncio.run(check_delegation(rc, "#7"))
+        assert "❌ 失败" in failed_poll_msg and "已通知过用户" in failed_poll_msg
+        assert "已完成并已送达" not in failed_poll_msg and "delivery_state=delivered" not in failed_poll_msg
+
+        ke._rt.delivered_roots.pop(rid, None)
+        ke.mark_deferred_main_delivery(rid)
+        assert ke.claim_inline_delivery(rid, track_delivery=False) is True
+        assert rid not in ke._rt.inline_claimed_roots
+        ke.mark_deferred_main_delivery(rid)
+        assert ke.claim_inline_delivery(rid, track_delivery=True) is True
+        extra_cleanup: dict[str, object] = {}
+        ke.record_inline_claimed_root(extra_cleanup, rid)
+        ke.release_inline_claimed_roots(extra_cleanup)
+        assert rid not in ke._rt.inline_claimed_roots
+
+    ke._rt.delivered_roots.pop(rid, None)
+    ke._rt.inline_claimed_roots.pop(rid, None)
+
+    # 无主 session 兜底通知发送失败时严禁提前打 delivered；发送成功才打 delivered
+    fallback_rid = "root_phase2a_notify_002"
+    fallback_task = AIAgentTask(
+        id=fallback_rid,
+        root_task_id=fallback_rid,
+        ordinal=9,
+        display_name="后台汇总任务",
+        goal="测试兜底播报发送门控",
+        owner_user_id="100000001",
+        status="completed",
+    )
+    ke._rt.delivered_roots.pop(fallback_rid, None)
+    with monkeypatch.context() as mp:
+
+        async def _emit_false(**_kw: object) -> bool:
+            return False
+
+        async def _emit_true(**_kw: object) -> bool:
+            return True
+
+        mp.setattr(ke, "emit_proactive_message", _emit_false)
+        asyncio.run(
+            ke._finish_capability_delivery(root=fallback_task, child=fallback_task, raw_result="汇总结论", bot=None)
+        )
+        assert ke.get_delivery_phase(fallback_rid) == "running"
+        asyncio.run(
+            ke._finish_capability_delivery(
+                root=fallback_task, child=fallback_task, raw_result="执行受阻", bot=None, is_failure=True
+            )
+        )
+        assert ke.get_delivery_phase(fallback_rid) == "running"
+
+        mp.setattr(ke, "emit_proactive_message", _emit_true)
+        asyncio.run(
+            ke._finish_capability_delivery(root=fallback_task, child=fallback_task, raw_result="汇总结论", bot=None)
+        )
+        assert ke.get_delivery_phase(fallback_rid) == "delivered"
+    ke._rt.delivered_roots.pop(fallback_rid, None)
+
+    task_obj = AIAgentTask(
+        id=rid,
+        root_task_id=rid,
+        ordinal=7,
+        display_name="测试专职代理",
+        goal="帮我看看还有多少测试项目没有完成，并统计每项缺口与处理顺序以便安排后续计划",
+        owner_user_id="100000001",
+        status="completed",
+        created_at=datetime(2026, 11, 24, 11, 27, 6),
+    )
+    receipt = ke._format_delivery_for_main_agent(task_obj, "完成摘要", ())
+    assert "发起人：`@100000001`" in receipt
+    assert "发起时间：11:27:06" in receipt
+    assert "原提问：帮我看看还有多少测试项目没有完成" in receipt
+
+    failed_obj = AIAgentTask(
+        id=rid,
+        root_task_id=rid,
+        ordinal=8,
+        display_name="测试专职代理",
+        goal="帮我核对失败任务的溯源上下文信息",
+        owner_user_id="100000001",
+        status="failed",
+        failure_reason="上游超时",
+        created_at=datetime(2026, 11, 24, 11, 29, 10),
+    )
+    fail_receipt = ke._format_delivery_for_main_agent(failed_obj, "", ())
+    assert "发起人：`@100000001`" in fail_receipt
+    assert "发起时间：11:29:10" in fail_receipt
+    assert "原提问：帮我核对失败任务的溯源上下文信息" in fail_receipt
+
+    inline_receipt = asyncio.run(ke.format_task_delivery_receipt(task_obj, "完成摘要", (), inline_claimed=True))
+    assert "delivery_state=completed_queued" in inline_receipt
+    approval_obj = AIAgentTask(
+        id=rid,
+        root_task_id=rid,
+        ordinal=10,
+        display_name="测试审批任务",
+        goal="等待主人确认",
+        owner_user_id="100000001",
+        status="waiting_approval",
+    )
+    approval_receipt = asyncio.run(ke.format_task_delivery_receipt(approval_obj, "等待审批", (), inline_claimed=True))
+    assert "delivery_state=completed_queued" not in approval_receipt
+
+    # 2. P2-5：直调工具 Soft-Latency ACK（快路径取消 / 慢路径仅发 1 次 / 空台词永不调度）
+    async def _check_soft_ack() -> None:
+        sent: list[str] = []
+
+        async def _fake_deliver(_tc: ToolContext, text: str) -> bool:
+            sent.append(text)
+            return True
+
+        with monkeypatch.context() as mp:
+            mp.setattr(ol, "_deliver", _fake_deliver)
+            mp.setattr(ol, "_gated_opening", lambda text, _tc, **_kw: text.strip())
+
+            # 空台词不调度定时任务（严守 §1.9 无罐头文案）
+            tc_empty = ToolContext(ev=ev)
+            ol.arm_opening_line(tc_empty.extra, text="", deliver=True)
+            assert ol.arm_soft_latency_ack(tc_empty, delay_sec=0.01) is None
+
+            # 快路径：定时到期前 disarm 取消，0 发送
+            tc_fast = ToolContext(ev=ev)
+            ol.arm_opening_line(tc_fast.extra, text="收到，稍等我查一下。", deliver=True)
+            t_fast = ol.arm_soft_latency_ack(tc_fast, delay_sec=0.1)
+            assert t_fast is not None
+            ol.disarm_opening_line(tc_fast.extra)
+            await asyncio.sleep(0.02)
+            assert sent == []
+
+            # 慢路径：到期自动释放，记入 run_sent_order，且 absorb 后移出 unsent_texts 并补回尾响应 TextPart
+            from pydantic_ai.messages import TextPart, ToolCallPart, ModelResponse
+
+            from gsuid_core.ai_core.agent_run.loop import _push_stream_text_delta
+            from gsuid_core.ai_core.session_logger import AISessionLogger
+            from gsuid_core.ai_core.agent_run.state import RunOnceState
+            from gsuid_core.ai_core.agent_run.guards import DeliveryGuard
+
+            tc_slow = ToolContext(ev=ev)
+            sent_order: list[str] = []
+            tc_slow.extra["run_sent_texts"] = set()
+            tc_slow.extra["run_sent_order"] = sent_order
+            ol.arm_opening_line(tc_slow.extra, text="先帮你瞅瞅，稍等片刻。", deliver=True)
+            t_slow = ol.arm_soft_latency_ack(tc_slow, delay_sec=0.02)
+            assert t_slow is not None
+            await t_slow
+            assert sent == ["先帮你瞅瞅，稍等片刻。"]
+            assert sent_order == ["先帮你瞅瞅，稍等片刻。"]
+            st_absorb = RunOnceState(
+                user_message="测试",
+                bot=None,
+                ev=ev,
+                rag_context=None,
+                tools=[],
+                return_mode="by_bot",
+                output_type=None,
+                intent=None,
+                has_active_task=False,
+                budget_gate=False,
+                suppress_intermediate_text=True,
+                fake_done_retry=False,
+                turn_graph=None,
+                is_framework_injection=False,
+            )
+            st_absorb.context = tc_slow
+            st_absorb.unsent_texts = ["先帮你瞅瞅，稍等片刻。"]
+            tail_resp = ModelResponse(parts=[ToolCallPart(tool_name="demo_slow", args={}, tool_call_id="t1")])
+            DeliveryGuard.absorb_opening_line(
+                st_absorb,
+                session_logger=AISessionLogger(session_id="test_ack_absorb"),
+                run_history=[tail_resp],
+            )
+            assert st_absorb.unsent_texts == []
+            assert st_absorb.main_channel_sends == 1
+            assert any(isinstance(p, TextPart) and p.content == "先帮你瞅瞅，稍等片刻。" for p in tail_resp.parts)
+            assert await ol.release_opening_line(tc_slow) is None
+            assert len(sent) == 1
+
+            # 非流式适配器下 _push_stream_text_delta 不得误杀 10s 定时器；流式适配器仅在可见非空字入流时取消
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.providers.openai import OpenAIProvider
+
+            from gsuid_core.bot import Bot, _Bot
+            from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+
+            stream_host = GsCoreAIAgent(
+                openai_chat_model=OpenAIChatModel("test-offline", provider=OpenAIProvider(api_key="test")),
+                system_prompt="s",
+                create_by="Chat",
+            )
+            tc_nonstream = ToolContext(ev=ev)
+            ol.arm_opening_line(tc_nonstream.extra, text="稍等我查一下。", deliver=True)
+            t_nonstream = ol.arm_soft_latency_ack(tc_nonstream, delay_sec=1.0)
+            assert t_nonstream is not None
+            st_ns = RunOnceState(
+                user_message="测试",
+                bot=Bot(_Bot("OneBot"), ev),
+                ev=ev,
+                rag_context=None,
+                tools=[],
+                return_mode="by_bot",
+                output_type=None,
+                intent=None,
+                has_active_task=False,
+                budget_gate=False,
+                suppress_intermediate_text=True,
+                fake_done_retry=False,
+                turn_graph=None,
+                is_framework_injection=False,
+                outbound_stream=False,
+            )
+            st_ns.context = tc_nonstream
+            await _push_stream_text_delta(stream_host, st_ns, "嗯...", None)
+            assert ol.OPENING_TIMER_KEY in tc_nonstream.extra and not t_nonstream.cancelled()
+            st_ns.outbound_stream = True
+            await _push_stream_text_delta(stream_host, st_ns, "   \n", None)
+            assert ol.OPENING_TIMER_KEY in tc_nonstream.extra and not t_nonstream.cancelled()
+            await _push_stream_text_delta(stream_host, st_ns, "正式正文", None)
+            assert ol.OPENING_TIMER_KEY not in tc_nonstream.extra
+            await asyncio.sleep(0)
+            assert t_nonstream.cancelled()
+
+        # 竞态协调：定时器正在 await _deliver 时 disarm 不会中断发送，wait_inflight 等落账
+        deliver_started = asyncio.Event()
+        release_deliver = asyncio.Event()
+
+        async def _slow_deliver(_tc: ToolContext, text: str) -> bool:
+            deliver_started.set()
+            await release_deliver.wait()
+            sent.append(text)
+            return True
+
+        with monkeypatch.context() as mp:
+            mp.setattr(ol, "_deliver", _slow_deliver)
+            tc_race = ToolContext(ev=ev)
+            tc_race.extra["run_sent_texts"] = set()
+            ol.arm_opening_line(tc_race.extra, text="马上帮你看一眼。", deliver=True)
+            t_race = ol.arm_soft_latency_ack(tc_race, delay_sec=0.01)
+            assert t_race is not None
+            await deliver_started.wait()
+            ol.disarm_opening_line(tc_race.extra)
+            release_deliver.set()
+            await ol.wait_inflight_opening_line(tc_race.extra)
+            race_res = ol.take_opening_result(tc_race.extra)
+            assert race_res is not None and race_res.delivered is True
+            assert sent[-1] == "马上帮你看一眼。"
+
+            # 多跳工具调用时若上一跳定时器正在 _deliver，CallToolsNode 仍须等落账后再吸收，严防双开场句
+            deliver_started.clear()
+            release_deliver.clear()
+            mp.setattr(ol, "_gated_opening", lambda text, _tc, **_kw: text.strip())
+
+            class _StatsStub:
+                def record_hourly_performance(self, **_kw: object) -> None:
+                    return None
+
+            class _CallNodeStub:
+                def __init__(self, resp: ModelResponse) -> None:
+                    self.model_response = resp
+
+            tc_hop2 = ToolContext(ev=ev)
+            tc_hop2.extra["run_sent_texts"] = set()
+            st_hop2 = RunOnceState(
+                user_message="测试",
+                bot=Bot(_Bot("OneBot"), ev),
+                ev=ev,
+                rag_context=None,
+                tools=[],
+                return_mode="by_bot",
+                output_type=None,
+                intent=None,
+                has_active_task=False,
+                budget_gate=False,
+                suppress_intermediate_text=True,
+                fake_done_retry=False,
+                turn_graph=None,
+                is_framework_injection=False,
+            )
+            st_hop2.context = tc_hop2
+            ol.arm_opening_line(tc_hop2.extra, text="先查一下稍等。", deliver=True)
+            t_hop2 = ol.arm_soft_latency_ack(tc_hop2, delay_sec=0.01)
+            assert t_hop2 is not None
+            await deliver_started.wait()
+
+            hop2_resp = ModelResponse(
+                parts=[
+                    TextPart(content="再核对一下。"),
+                    ToolCallPart(tool_name="demo_tool", args={}, tool_call_id="c2"),
+                ]
+            )
+            call_tools_task = asyncio.create_task(
+                stream_host._run_once_on_call_tools(st_hop2, _CallNodeStub(hop2_resp), _StatsStub())
+            )
+            await asyncio.sleep(0)
+            assert not call_tools_task.done()
+            release_deliver.set()
+            await call_tools_task
+            assert st_hop2.main_channel_sends == 1
+            assert st_hop2.wait_comfort_sent is True
+            assert ol.OPENING_SLOT_KEY not in tc_hop2.extra
+            assert ol.OPENING_TIMER_KEY not in tc_hop2.extra
+            assert sent[-1] == "先查一下稍等。"
+
+        # 真实 _gated_opening 对 soft_latency_ack 接单话术放行
+        assert (
+            ol._gated_opening("收到，稍等我查一下。", ToolContext(ev=ev), source="soft_latency_ack")
+            == "收到，稍等我查一下。"
+        )
+
+    asyncio.run(_check_soft_ack())

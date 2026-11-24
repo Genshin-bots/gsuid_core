@@ -116,8 +116,9 @@ _ = (
 _T = TypeVar("_T")
 
 # 超过 max_history 时裁到 max_history * 该比例；越低则单次腾出越多、compact 越稀。
-# compact 走 keep_prefix（保头裁中段），绝不砍头部字节——前缀缓存的前提。
+# compact 活跃窗走 keep_prefix（保头裁中段）；超 TTL 过期前缀整块滚出防陈旧上下文回流。
 _HISTORY_TRIM_RATIO = 0.6
+_MAIN_SESSION_PREFIX_TTL_S = 1800.0
 
 # 预算 scope + run-once 共享符号（实现在 agent_run；此处 re-export 保持 import 稳定）
 from gsuid_core.ai_core.agent_run.support import (  # noqa: E402
@@ -264,8 +265,10 @@ class GsCoreAIAgent(RunOnceMixin):
         thinking: Optional[ThinkingLevel] = None,
         task_kind: Optional[str] = None,
     ):
-        # max_tokens / max_history 未显式传入时落到全局配置（主对话等走默认的路径据此可调）
-        _max_history: int = max_history if max_history is not None else ai_config.get_config("agent_max_history").data
+        # max_tokens / max_history 未显式传入时落到全局配置
+        _max_history: int = (
+            max_history if max_history is not None else int(ai_config.get_config("agent_max_history").data)
+        )
         _max_tokens: int = max_tokens if max_tokens is not None else ai_config.get_config("agent_max_tokens").data
         self.history: List[ModelMessage] = []
         self._prefix_snapshot: Optional["PrefixSnapshot"] = None
@@ -337,6 +340,8 @@ class GsCoreAIAgent(RunOnceMixin):
         # 显式绑定，使 Token 记入对应 Session 额度并受闸门约束；None=未绑定，回退 contextvar。
         self._budget_scope: Optional[Tuple[str, str, str]] = None
         self._anchor_journal_ts: float = 0.0
+        # 过期前缀滚出原首轮后，下一真人轮需补挂生活手账与角色沉浸锚点
+        self._session_anchor_due: bool = False
 
         # 连续无工具轮数只做计数。催工具只在上一轮思考点了已装配工具却没调用时。
         self._consecutive_no_tool_rounds: int = 0
@@ -510,16 +515,24 @@ class GsCoreAIAgent(RunOnceMixin):
         if self._history_iter_active:
             return
         before: int = len(self.history)
+        from gsuid_core.ai_core.agent_run.support import _first_real_user_prompt_part
+
+        old_first_user = _first_real_user_prompt_part(self.history)
         self.history, did_truncate = compact_session_history(
             self.history,
             self.max_history,
             trim_ratio=_HISTORY_TRIM_RATIO,
+            max_prefix_age_s=_MAIN_SESSION_PREFIX_TTL_S if self.create_by in _MAIN_PERSONA_CREATE_BY else None,
         )
         self._ensure_system_prompt_in_history()
         after: int = len(self.history)
         # 仅「因超长主动裁剪且确有条目被丢弃」才打 auto_compact（供 webconsole 画独立色块）
         if did_truncate and after < before:
             self.thread_backfill_due = True
+            new_first_user = _first_real_user_prompt_part(self.history)
+            if old_first_user is not None and new_first_user is not old_first_user:
+                self._session_anchor_due = True
+                self._anchor_journal_ts = 0.0
             self._session_logger.log_history_reset("auto_compact", {"before": before, "after": after})
         logger.debug(i18n_t("log.agent.history_processed_entries", p0=len(self.history)))
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import json
+import unicodedata
 from typing import Optional
 
 from json_repair import repair_json
@@ -86,6 +87,29 @@ def _is_master_user(user_id: str) -> bool:
     return str(user_id) in [str(m) for m in masters]
 
 
+_INVISIBLE_NAME_CHARS: frozenset[str] = frozenset(
+    {"\u3164", "\u115f", "\u1160", "\u2800", "\uffa0", "\u034f", "\u180e"}
+)
+_STRIP_UNICODE_CATS: frozenset[str] = frozenset({"Cf", "Cc", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def sanitize_display_name(raw_name: Optional[str], user_id: str) -> str:
+    """清洗昵称中的不可见格式与空白字符；纯隐形字符伪装回落为「群友_尾号」。"""
+    uid = str(user_id or "").strip()
+    if not raw_name:
+        return ""
+    chars = [
+        " " if unicodedata.category(ch) == "Zs" else ch
+        for ch in raw_name
+        if ch not in _INVISIBLE_NAME_CHARS and unicodedata.category(ch) not in _STRIP_UNICODE_CATS
+    ]
+    cleaned = " ".join("".join(chars).split())
+    if cleaned:
+        return "" if cleaned == uid else cleaned
+    suffix = uid[-4:] if len(uid) >= 4 else uid
+    return f"群友_{suffix}" if suffix else ""
+
+
 def _build_relationship_description(
     user_name: Optional[str],
     user_id: str,
@@ -99,8 +123,9 @@ def _build_relationship_description(
     关系温度（熟/不熟）由 ``assemble_dynamic_context`` 的 ``relationship`` 块统一注入，
     此处不重复，避免同一信息双写浪费 token。主人标记保留（权限正交，不可省略）。
     """
-    if user_name and user_name.strip() and user_name.strip() != str(user_id):
-        speaker = f"{user_name.strip()}(用户ID:{user_id})"
+    clean_name = sanitize_display_name(user_name, user_id)
+    if clean_name:
+        speaker = f"{clean_name}(用户ID:{user_id})"
     else:
         speaker = f"用户ID:{user_id}"
 

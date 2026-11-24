@@ -197,6 +197,7 @@ def format_delegation(d: Delegation) -> str:
         lines.append("当前已暂停：可用 resume_my_kanban_tree 恢复，或用 respawn_subtask 修改描述重派。")
     elif not d.is_terminal:
         lines.append(
-            "尚未完成：中间草稿未定稿，完成后框架会自动回灌交付包；请简短安抚或回应一句，勿重复委派或提前声称已完成。"
+            "[delivery_state=running] 尚未完成：中间草稿未定稿，完成后框架会自动回灌交付包；"
+            "请简短安抚或回应一句，勿重复委派或提前声称已完成。"
         )
     return "\n".join(lines)

@@ -246,7 +246,7 @@ AI_CONFIG: Dict[str, GSC] = {
         "几乎每轮触发 compact、provider 前缀缓存反复失效(方案五); 调大可记住更多上文、"
         "减少 compact, 但更费 Token、也更易超出模型上下文",
         50,
-        options=[10, 15, 20, 30, 50, 80],
+        options=[10, 15, 20, 30, 40, 50, 80, 120],
     ),
     "suppress_intermediate_text": GsBoolConfig(
         "抑制中间文本",

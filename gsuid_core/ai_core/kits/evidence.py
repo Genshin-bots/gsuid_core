@@ -68,7 +68,13 @@ async def render_evidence_block(
     if not obs_list:
         return ""
 
-    nicks = {rec.user_id: (rec.user_name or rec.user_id) for rec in records if rec.user_id and rec.role == "user"}
+    from gsuid_core.ai_core.utils import sanitize_display_name
+
+    nicks = {
+        rec.user_id: (sanitize_display_name(rec.user_name, str(rec.user_id)) or rec.user_id)
+        for rec in records
+        if rec.user_id and rec.role == "user"
+    }
     target_set = set(target_uids)
     for_targets = [o for o in obs_list if o.requested_by in target_set]
     for_others = [o for o in obs_list if o.requested_by not in target_set]

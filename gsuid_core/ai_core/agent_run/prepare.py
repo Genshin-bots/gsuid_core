@@ -456,7 +456,10 @@ class PreparePhase:
             user_id=user_id,
             marker=marker,
             is_framework=st.fw_msg,
+            force_reanchor=self._session_anchor_due,
         )
+        if not st.fw_msg and self._session_anchor_due:
+            self._session_anchor_due = False
         if where in ("history", "current"):
             if latest_ts > 0.0:
                 self._anchor_journal_ts = latest_ts

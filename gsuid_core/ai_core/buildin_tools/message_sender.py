@@ -629,13 +629,20 @@ async def send_message_by_ai(
 
         if sent:
             from gsuid_core.ai_core.history_format import note_thread_handle
-            from gsuid_core.ai_core.planning.kanban_executor import claim_inline_delivery
+            from gsuid_core.ai_core.planning.kanban_executor import (
+                mark_root_delivered,
+                claim_inline_delivery,
+                mark_inline_claimed_roots_delivered,
+            )
 
             for hid in (*success_img_ids, video_id, audio_id, *success_file_ids):
                 if hid:
                     note_thread_handle(tool_ctx, hid)
                     if hid in res_root_map:
                         claim_inline_delivery(res_root_map[hid])
+                        mark_root_delivered(res_root_map[hid])
+            if text:
+                mark_inline_claimed_roots_delivered(tool_ctx.extra)
             if success_img_ids:
                 extra["image_sent_this_run"] = True
             if _wake and ev is not None and ev.group_id and target_id and session_id:

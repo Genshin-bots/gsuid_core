@@ -98,7 +98,10 @@ async def _resolve_and_deliver_leaked_handles(
                     try_claim_image_delivery,
                 )
                 from gsuid_core.ai_core.planning.models import AIAgentArtifact
-                from gsuid_core.ai_core.planning.kanban_executor import claim_inline_delivery
+                from gsuid_core.ai_core.planning.kanban_executor import (
+                    mark_root_delivered,
+                    claim_inline_delivery,
+                )
 
                 art = await AIAgentArtifact.get_by_id(h)
                 if art is None:
@@ -135,6 +138,7 @@ async def _resolve_and_deliver_leaked_handles(
                         continue
                     if looked.root_task_id:
                         claim_inline_delivery(looked.root_task_id)
+                        mark_root_delivered(looked.root_task_id)
                     note_run_image_delivered()
                     logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
                 elif art.payload_inline and art.payload_inline.strip():

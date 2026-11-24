@@ -22,10 +22,11 @@
 import re
 import time
 import asyncio
-from typing import List, Tuple, Optional, Sequence
+from typing import List, Tuple, Literal, Optional, Sequence
 from datetime import datetime
 from contextlib import suppress
 from dataclasses import field, dataclass
+from collections.abc import MutableMapping
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
@@ -337,8 +338,8 @@ async def _notify(
     message: str,
     trigger_reason: str,
     generator_log_files: Optional[List[str]] = None,
-) -> None:
-    """通过统一主动消息出口把转译 / 失败播报送给主人。
+) -> bool:
+    """通过统一主动消息出口把转译 / 失败播报送给主人，返回是否实际送出。
 
     替代旧 ``bot.send`` 直发的写法——经过 ``emit_proactive_message`` 后会自动：
     1. 在主用户 session 的 pydantic_ai history 里追加一条 assistant-only turn；
@@ -357,6 +358,7 @@ async def _notify(
     )
     if not sent:
         logger.warning(t("log.ai.kanban_fail_send_msg_task_failed", p0=task.ordinal))
+    return bool(sent)
 
 
 # 子任务播报静默信号 能力代理在最终输出里以本标记单独成段/作行首前缀，声明"本轮没有值得播报的
@@ -384,7 +386,7 @@ def _strip_no_broadcast(raw: str) -> Tuple[str, bool]:
     return stripped.strip(), True
 
 
-_RECENT_WAKE_DEDUP_SEC = 30.0
+_DELIVERED_ROOT_TTL_SEC = 1800.0
 _KANBAN_NODE_HARD_TIMEOUT_SEC = 900.0
 _DELIVERY_COALESCE_SEC = 0.45
 _DELIVERY_WAKE_WINDOW_SEC = 180.0
@@ -400,7 +402,8 @@ class _KanbanRuntime:
     interactive_relay_roots: set[str] = field(default_factory=set)
     deferred_delivery_roots: set[str] = field(default_factory=set)
     active_delivery_wakes: set[str] = field(default_factory=set)
-    recent_wake_done: dict[str, float] = field(default_factory=dict)
+    inline_claimed_roots: dict[str, float] = field(default_factory=dict)
+    delivered_roots: dict[str, float] = field(default_factory=dict)
     running_node_tasks: dict[str, asyncio.Task[str]] = field(default_factory=dict)
     root_running_nodes: dict[str, set[str]] = field(default_factory=dict)
     delivery_pending: dict[str, tuple[AIAgentTask, str]] = field(default_factory=dict)
@@ -454,6 +457,7 @@ def discard_interactive_relay_root(root_id: str) -> None:
     """撤销 interactive + deferred 登记。"""
     _rt.interactive_relay_roots.discard(root_id)
     _rt.deferred_delivery_roots.discard(root_id)
+    _rt.inline_claimed_roots.pop(root_id, None)
 
 
 def mark_deferred_main_delivery(root_id: str) -> None:
@@ -462,29 +466,106 @@ def mark_deferred_main_delivery(root_id: str) -> None:
     _rt.deferred_delivery_roots.add(root_id)
 
 
-def claim_inline_delivery(root_id: str) -> bool:
+def claim_inline_delivery(root_id: str, *, track_delivery: bool = True, now: float | None = None) -> bool:
     """内联/轮询原子认领终态交付权：拦截未触发或排队中的后台回灌，严防双发。"""
     rid = (root_id or "").strip()
     if not rid:
         return False
+    claimed = False
     if rid in _rt.deferred_delivery_roots:
         _rt.deferred_delivery_roots.discard(rid)
         _cancel_queued_delivery_wake(rid)
-        return True
-    return _cancel_queued_delivery_wake(rid)
+        claimed = True
+    elif _cancel_queued_delivery_wake(rid):
+        claimed = True
+    if claimed and track_delivery and rid not in _rt.delivered_roots:
+        _rt.inline_claimed_roots[rid] = now if now is not None else time.time()
+    return claimed
 
 
-def is_delivery_in_flight_or_just_sent(root_id: str, *, now: float | None = None) -> bool:
-    """该根任务是否正由后台交付唤醒发送中、或刚在短窗内发送完毕。"""
+def release_inline_claim(root_id: str) -> None:
+    """认领后查无任务行时回滚内联认领记号，避免长期滞留 completed_queued。"""
+    rid = (root_id or "").strip()
+    if rid:
+        _rt.inline_claimed_roots.pop(rid, None)
+
+
+def release_inline_claimed_roots(extra: MutableMapping[str, object]) -> None:
+    """主通道异常中断或静默结束时清理本轮未送达的内联认领记号，防残留 completed_queued。"""
+    raw = extra[_INLINE_CLAIMED_EXTRA_KEY] if _INLINE_CLAIMED_EXTRA_KEY in extra else None
+    if not isinstance(raw, list):
+        return
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            release_inline_claim(item)
+    raw.clear()
+
+
+_INLINE_CLAIMED_EXTRA_KEY = "inline_claimed_roots"
+
+
+def record_inline_claimed_root(extra: MutableMapping[str, object], root_id: str) -> None:
+    """记录本轮内联认领但尚未确认发出的根任务，供收尾发送后统一打 delivered。"""
     rid = (root_id or "").strip()
     if not rid:
-        return False
-    if rid in _rt.active_delivery_wakes:
-        return True
+        return
+    raw = extra[_INLINE_CLAIMED_EXTRA_KEY] if _INLINE_CLAIMED_EXTRA_KEY in extra else None
+    if isinstance(raw, list):
+        if rid not in raw:
+            raw.append(rid)
+        return
+    extra[_INLINE_CLAIMED_EXTRA_KEY] = [rid]
+
+
+def mark_inline_claimed_roots_delivered(extra: MutableMapping[str, object]) -> None:
+    """主通道完成可见回复后，将本轮内联认领的根任务标为已送达。"""
+    raw = extra[_INLINE_CLAIMED_EXTRA_KEY] if _INLINE_CLAIMED_EXTRA_KEY in extra else None
+    if not isinstance(raw, list):
+        return
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            mark_root_delivered(item)
+    raw.clear()
+
+
+DeliveryPhase = Literal["running", "completed_queued", "delivered"]
+
+
+def _prune_delivery_timestamps(ts_now: float) -> None:
+    for store in (_rt.inline_claimed_roots, _rt.delivered_roots):
+        for k in [k for k, ts in store.items() if ts_now - ts > _DELIVERED_ROOT_TTL_SEC]:
+            store.pop(k, None)
+
+
+def mark_root_delivered(root_id: str, *, now: float | None = None) -> None:
+    """标记该根任务已实际通过主通道或兜底通道送达用户。"""
+    rid = (root_id or "").strip()
+    if not rid:
+        return
     ts_now = now if now is not None else time.time()
-    for k in [k for k, ts in _rt.recent_wake_done.items() if ts_now - ts > _RECENT_WAKE_DEDUP_SEC]:
-        _rt.recent_wake_done.pop(k, None)
-    return rid in _rt.recent_wake_done
+    _prune_delivery_timestamps(ts_now)
+    _rt.inline_claimed_roots.pop(rid, None)
+    _rt.delivered_roots[rid] = ts_now
+
+
+def get_delivery_phase(root_id: str, *, now: float | None = None) -> DeliveryPhase:
+    """区分终态任务的真实出站阶段：running / completed_queued（待主通道发出）/ delivered（已送达）。"""
+    rid = (root_id or "").strip()
+    if not rid:
+        return "running"
+    ts_now = now if now is not None else time.time()
+    _prune_delivery_timestamps(ts_now)
+    if rid in _rt.delivered_roots:
+        return "delivered"
+    suffix = f"|{rid}"
+    if (
+        rid in _rt.active_delivery_wakes
+        or rid in _rt.deferred_delivery_roots
+        or rid in _rt.inline_claimed_roots
+        or any(key.endswith(suffix) for key in _rt.delivery_pending)
+    ):
+        return "completed_queued"
+    return "running"
 
 
 def _consume_interactive_relay(root_id: str) -> bool:
@@ -506,6 +587,23 @@ def _consume_deferred_main_delivery(root_id: str) -> bool:
 _DELIVERY_CARD_LIMIT = 8
 
 
+_INLINE_CLAIM_DELIVERY_NOTE = (
+    "[delivery_state=completed_queued]（产物尚未发给用户，须由你本轮发出；未发出前严禁声称已送达）"
+)
+
+
+def _task_attribution_bits(task: AIAgentTask, owner: str) -> list[str]:
+    bits: list[str] = []
+    if owner:
+        bits.append(f"发起人：`@{owner}`")
+    if isinstance(task.created_at, datetime):
+        bits.append(f"发起时间：{task.created_at.strftime('%H:%M:%S')}")
+    goal_brief = " ".join((task.goal or "").split())[:40]
+    if goal_brief:
+        bits.append(f"原提问：{goal_brief}")
+    return bits
+
+
 def _format_delivery_for_main_agent(
     task: AIAgentTask,
     raw_result: str,
@@ -522,11 +620,12 @@ def _format_delivery_for_main_agent(
     )
 
     owner = (task.owner_user_id or "").strip()
+    attr_bits = _task_attribution_bits(task, owner)
     if task.status == "failed":
         reason = (task.failure_reason or raw_result or "执行受阻").strip()[:360]
         parts = [f"【子任务未完成】任务#{task.ordinal}「{task.display_name}」未能完成。"]
-        if owner:
-            parts.append(f"发起人：`@{owner}`。")
+        if attr_bits:
+            parts.append("｜".join(attr_bits) + "。")
         parts.append(f"内部受阻原因（仅供知情，勿对用户复述内部细节，禁止为此出图）: {reason}")
         return "\n".join(parts)
 
@@ -586,8 +685,9 @@ def _format_delivery_for_main_agent(
     else:
         status_word = "已完成"
     parts = [f"【子任务交付】任务#{task.ordinal}「{task.display_name}」{status_word}。"]
-    if owner:
-        parts.append(f"发起人：`@{owner}`。本帧产物只发给该发起人，禁止改 user_id，禁止发送其它任务的句柄。")
+    if attr_bits:
+        tail_rule = "。本帧产物只发给该发起人，禁止改 user_id，禁止发送其它任务的句柄。" if owner else "。"
+        parts.append("｜".join(attr_bits) + tail_rule)
     if cards:
         parts.append("产物句柄卡：")
         parts.extend(cards)
@@ -609,6 +709,7 @@ async def format_task_delivery_receipt(
     arts: Optional[Sequence[AIAgentArtifact]] = None,
     *,
     allow_render: bool = True,
+    inline_claimed: bool = False,
 ) -> str:
     """统一终态交付收据（子节点按节点取产物防上游污染，根节点按整树汇总）。"""
     if task.status == "failed":
@@ -619,7 +720,10 @@ async def format_task_delivery_receipt(
         resolved_arts = await AIAgentArtifact.list_for_task(task.id)
     else:
         resolved_arts = await AIAgentArtifact.list_for_root(task.root_task_id or task.id)
-    return _format_delivery_for_main_agent(task, raw_result, resolved_arts, allow_render=allow_render)
+    receipt = _format_delivery_for_main_agent(task, raw_result, resolved_arts, allow_render=allow_render)
+    if inline_claimed and task.status == "completed":
+        return f"{receipt}\n{_INLINE_CLAIM_DELIVERY_NOTE}"
+    return receipt
 
 
 # 回灌合并：payload 按 session|root 存最新，延迟 task 控唤醒合并节奏
@@ -739,12 +843,12 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
         )
         if bot is not None and not is_failed:
             short = _sanitize_fallback_spoken(raw_result or "")
-            if short:
-                await _notify(
-                    task,
-                    short,
-                    trigger_reason=f"delivery_no_session:{task.display_name}",
-                )
+            if short and await _notify(
+                task,
+                short,
+                trigger_reason=f"delivery_no_session:{task.display_name}",
+            ):
+                mark_root_delivered((task.root_task_id or task.id).strip())
         return
 
     root_id = (task.root_task_id or task.id).strip()
@@ -784,8 +888,9 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
             )
     finally:
         _rt.active_delivery_wakes.discard(root_id)
-        _rt.recent_wake_done[root_id] = time.time()
         reset_delivery_root(root_token)
+    if session.last_run_sent_visible_reply or session.last_run_sent_image:
+        mark_root_delivered(root_id)
     if (session.last_run_sent_visible_reply or session.last_run_sent_image) and owner and _user_type != "direct":
         from gsuid_core.ai_core.followup_window import note_delivery_followup_from_config
 
@@ -827,18 +932,19 @@ async def _finish_capability_delivery(
 
     # 无主 session 的纯后台：失败/审批/结论走 notify，不跑 Kanban_Relay LLM
     if is_failure:
-        await _notify_failure(root, child, raw_result)
+        if await _notify_failure(root, child, raw_result):
+            mark_root_delivered(root.id)
         return
     if is_approval or (raw_result and not no_broadcast):
         short = _sanitize_fallback_spoken(raw_result)
-        if short:
-            await _notify(
-                child,
-                short,
-                trigger_reason=(
-                    f"approval_request:{child.display_name}" if is_approval else f"subtask={child.display_name}"
-                ),
-            )
+        if short and await _notify(
+            child,
+            short,
+            trigger_reason=(
+                f"approval_request:{child.display_name}" if is_approval else f"subtask={child.display_name}"
+            ),
+        ):
+            mark_root_delivered(root.id)
 
 
 async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
@@ -1038,8 +1144,8 @@ async def _run_one_task_node(root: AIAgentTask, child: AIAgentTask) -> None:
         )
 
 
-async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) -> None:
-    """子任务失败时按 failure_policy 通知主人格。默认 notify_persona。
+async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) -> bool:
+    """子任务失败时按 failure_policy 通知主人格，返回是否实际送出。默认 notify_persona。
 
     §8.1 改造：失败播报同样走 ``emit_proactive_message``——否则主 session 不知道
     任务失败发生过，用户追问"刚那条警告是啥意思"时主人格会失忆。
@@ -1047,19 +1153,18 @@ async def _notify_failure(root: AIAgentTask, child: AIAgentTask, reason: str) ->
     policy = root.failure_policy or "notify_persona"
     if policy == "auto_abort":
         await kanban.fail_task_tree(root.id, f"子任务 {child.display_name} 失败：{reason[:200]}")
-        await _notify(
+        return await _notify(
             child,
             f"⚠️ 任务「{root.display_name}」整树终止：{reason[:200]}",
             trigger_reason=f"failure_abort:{child.display_name}",
         )
-        return
     # notify_persona：把失败原因转告人格，让主人格走 respawn / fail 决策
     spoken = (
         f"⚠️ 子任务「{child.display_name}」失败：{reason[:300]}\n"
         f"请用 respawn_subtask 修参数重派（达上限会自动转 waiting_approval）；"
         f"或 fail_task_tree 终结整树。"
     )
-    await _notify(
+    return await _notify(
         child,
         spoken,
         trigger_reason=f"failure:{child.display_name}",

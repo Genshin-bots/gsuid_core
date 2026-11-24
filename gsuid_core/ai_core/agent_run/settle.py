@@ -97,6 +97,7 @@ async def _deliver_withheld(st: RunOnceState, sent: set[str], sent_order: list[s
         sent.add(body)
         if sent_order is not None and body not in sent_order:
             sent_order.append(body)
+        st.main_channel_sends += 1
         return
 
 
@@ -789,6 +790,7 @@ async def _finalize_settle_text(
                 host._run_sent_texts.add(bt)
                 if bt not in host._run_sent_order:
                     host._run_sent_order.append(bt)
+                st.main_channel_sends += 1
             except Exception as se:
                 logger.debug(i18n_t("log.agent.fakedone_se", _se=se))
 
@@ -812,6 +814,10 @@ async def _finalize_settle_text(
         await _deliver_withheld(st, host._run_sent_texts, host._run_sent_order)
 
     if st.return_mode in ["by_bot"] and st.bot and st.ev:
+        if st.main_channel_sends > 0 or st.image_sent_this_run:
+            from gsuid_core.ai_core.planning.kanban_executor import mark_inline_claimed_roots_delivered
+
+            mark_inline_claimed_roots_delivered(st.run_extra)
         _record_settle_journal_for(host, st, result_msg)
         _log_run_result_for(host, st, result_msg)
         return ""
@@ -848,6 +854,18 @@ async def _finalize_settle_text(
             result_msg = "<SILENCE>"
 
     if isinstance(result_msg, str):
+        if (
+            st.main_channel_sends > 0
+            or st.image_sent_this_run
+            or (
+                st.return_mode in ("return", "always")
+                and bool(result_msg.strip())
+                and not is_silence_marker(result_msg.strip())
+            )
+        ):
+            from gsuid_core.ai_core.planning.kanban_executor import mark_inline_claimed_roots_delivered
+
+            mark_inline_claimed_roots_delivered(st.run_extra)
         _record_settle_journal_for(host, st, result_msg)
     result_msg = _attach_unfinished_tool_return_for(host, st, result_msg)
     _log_run_result_for(host, st, result_msg)

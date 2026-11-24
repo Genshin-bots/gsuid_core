@@ -21,6 +21,7 @@ from gsuid_core.ai_core.control.lines import (
     ROUTER_TIMELINE_HEAD,
     thread_view_header,
     omitted_lines_marker,
+    pending_later_delivery_note,
 )
 from gsuid_core.ai_core.protocol_text import is_silence_marker, _strip_resource_handles
 from gsuid_core.ai_core.history_format import (
@@ -57,8 +58,10 @@ class _Line:
 
 
 def _plain_name(record: MessageRecord) -> str:
-    name = record.user_name.strip() if record.user_name else ""
-    if name and name != str(record.user_id):
+    from gsuid_core.ai_core.utils import sanitize_display_name
+
+    name = sanitize_display_name(record.user_name, str(record.user_id))
+    if name:
         return name
     return f"用户ID:{record.user_id}"
 
@@ -176,7 +179,12 @@ def _reply_target_name(record: MessageRecord, seq_index: dict[int, MessageRecord
             return name
     meta = record.metadata
     if "reply_to_user_name" in meta and str(meta["reply_to_user_name"]):
-        return str(meta["reply_to_user_name"])
+        from gsuid_core.ai_core.utils import sanitize_display_name
+
+        uid = str(meta["reply_to_user_id"]) if "reply_to_user_id" in meta and meta["reply_to_user_id"] else ""
+        cleaned = sanitize_display_name(str(meta["reply_to_user_name"]), uid)
+        if cleaned:
+            return cleaned
     if "reply_to_user_id" in meta and str(meta["reply_to_user_id"]):
         return _name_by_uid(seq_index, str(meta["reply_to_user_id"]))
     return ""
@@ -386,6 +394,16 @@ def _select_group_slice(
                 quote_seqs.add(cur)
 
     keep_seqs: set[int] = set(pending_seqs) | quote_seqs
+    later_delivery_seqs: set[int] = set()
+    # 滞后追问之后已发给同用户的出站交付必须保留在切片内，防模型误判未送达
+    if pending_seqs and target_uids:
+        min_pending_seq = min(pending_seqs)
+        for r in delta:
+            if r.link is None or r.link.seq <= min_pending_seq or r.role != "assistant":
+                continue
+            if any(_assistant_targets_uid(r, seq_index, uid) for uid in target_uids):
+                later_delivery_seqs.add(r.link.seq)
+                keep_seqs.add(r.link.seq)
     cutoff_recent = anchor_ts - _SLICE_RECENT_WINDOW_S
     if target_uids:
         self_pre = [
@@ -416,7 +434,12 @@ def _select_group_slice(
         r
         for seq, r in sorted(by_seq.items())
         if seq in keep_seqs
-        and (seq in pending_seqs or seq in quote_seqs or anchor_ts - r.timestamp <= _SLICE_MAX_AGE_S)
+        and (
+            seq in pending_seqs
+            or seq in quote_seqs
+            or seq in later_delivery_seqs
+            or anchor_ts - r.timestamp <= _SLICE_MAX_AGE_S
+        )
     ]
     return selected, sum(1 for r in delta if r.link is not None and r.link.seq not in keep_seqs)
 
@@ -552,18 +575,51 @@ def render_window(
     return "\n".join([head, *[line.text for line in lines]])
 
 
+def _assistant_targets_uid(rec: MessageRecord, seq_index: dict[int, MessageRecord], uid: str) -> bool:
+    """出站 assistant 消息是否明确面向 uid（忽略纯静默与无正文工具占位）。"""
+    link = rec.link
+    if rec.role != "assistant" or link is None or not uid:
+        return False
+    if is_silence_marker(rec.content.strip()):
+        return False
+    if _speech_channel(rec) == "tool_delivery" and not _strip_resource_handles(rec.content).strip():
+        return False
+    meta = rec.metadata
+    if "reply_to_user_id" in meta and str(meta["reply_to_user_id"]) == uid:
+        return True
+    for ref_seq in link.in_reply_to_seqs:
+        if ref_seq in seq_index and str(seq_index[ref_seq].user_id) == uid:
+            return True
+    return False
+
+
 def _last_reply_to(seq_index: dict[int, MessageRecord], uid: str) -> int | None:
     """最后一次回给 uid 的出站 seq。"""
     best: int | None = None
     for rec in seq_index.values():
         link = rec.link
-        if rec.role != "assistant" or link is None:
+        if link is None or not _assistant_targets_uid(rec, seq_index, uid):
             continue
-        meta = rec.metadata
-        if "reply_to_user_id" in meta and str(meta["reply_to_user_id"]) == uid:
-            if best is None or link.seq > best:
-                best = link.seq
+        if best is None or link.seq > best:
+            best = link.seq
     return best
+
+
+def _replies_around(seq_index: dict[int, MessageRecord], uid: str, entry_seq: int) -> tuple[int | None, int | None]:
+    """分别返回 entry_seq 之前与之后最后一次回给 uid 的出站 seq。"""
+    before: int | None = None
+    after: int | None = None
+    for rec in seq_index.values():
+        link = rec.link
+        if link is None or not _assistant_targets_uid(rec, seq_index, uid):
+            continue
+        if link.seq < entry_seq:
+            if before is None or link.seq > before:
+                before = link.seq
+        elif link.seq > entry_seq:
+            if after is None or link.seq > after:
+                after = link.seq
+    return before, after
 
 
 def _activity_after(seq_index: dict[int, MessageRecord], seq: int, target_uid: str, speaker_uid: str) -> str:
@@ -584,9 +640,10 @@ def _activity_after(seq_index: dict[int, MessageRecord], seq: int, target_uid: s
 
 
 def _pending_fact(entry_item_uid: str, entry_seq: int, seq_index: dict[int, MessageRecord]) -> str:
-    """待判断项行尾事实：有无往来；引用自己的显式标出引用归属与活跃度。"""
-    last = _last_reply_to(seq_index, entry_item_uid)
-    contact = f"你上次回他是 #{last}" if last is not None else "之前未与你往来"
+    """待判断项行尾事实：区分该条之前往来与该条之后已发生交付，并标注引用归属。"""
+    prior, later = _replies_around(seq_index, entry_item_uid, entry_seq)
+    contact = f"你上次回他是 #{prior}" if prior is not None else "之前未与你往来"
+    later_note = f"；{pending_later_delivery_note(entry_seq, later)}" if later is not None else ""
     rec = seq_index[entry_seq] if entry_seq in seq_index else None
     extra = ""
     if rec is not None and rec.link is not None and rec.link.reply_to_seq is not None:
@@ -606,7 +663,7 @@ def _pending_fact(entry_item_uid: str, entry_seq: int, seq_index: dict[int, Mess
                 who = _name_by_uid(seq_index, target_uid) if target_uid else "未知"
                 quote_tag = f"引用对象=你→他人({who}·{ago})"
             extra = f"；{quote_tag}；{_activity_after(seq_index, rec.link.reply_to_seq, target_uid, entry_item_uid)}"
-    return f"{contact}{extra}"
+    return f"{contact}{later_note}{extra}"
 
 
 def format_pending_entry_line(

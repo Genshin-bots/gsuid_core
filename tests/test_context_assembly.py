@@ -999,3 +999,276 @@ def test_render_delta_quote_edges_and_merge() -> None:
     finally:
         reset_turn(tok_ev)
         empty_store.observations.clear()
+
+
+def test_phase2a_history_roll_invisible_name_and_later_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR 2A：过期前缀阶梯滚出 + 主会话 max_history 护栏 + 隐形昵称清洗 + 滞后追问已交付标注。"""
+    from datetime import datetime, timezone, timedelta
+
+    from pydantic_ai.messages import (
+        TextPart,
+        ModelRequest,
+        ModelResponse,
+        UserPromptPart,
+        SystemPromptPart,
+    )
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.utils import sanitize_display_name, _build_relationship_description
+    from gsuid_core.message_history import MessageRecord
+    from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+    from gsuid_core.ai_core.thread_view import render_delta
+    from gsuid_core.ai_core.inbox.blocks import render_pending_block
+    from gsuid_core.message_history.link import EventLink
+    from gsuid_core.ai_core.history_compact import compact_session_history
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    # 1. P2-1：活跃窗内严格保头；3 小时过期前缀阶梯滚出但原样保留 SystemPromptPart
+    now_dt = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+    old_dt = now_dt - timedelta(hours=3)
+    fresh_dt = now_dt - timedelta(minutes=2)
+
+    def _make_hist(head_dt: datetime) -> list[ModelRequest | ModelResponse]:
+        msgs: list[ModelRequest | ModelResponse] = [
+            ModelRequest(
+                parts=[
+                    SystemPromptPart(content="固定系统提示词", timestamp=head_dt),
+                    UserPromptPart(content="三小时前大盘走势", timestamp=head_dt),
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content="三小时前大盘回复")], timestamp=head_dt),
+        ]
+        for i in range(1, 10):
+            ts = fresh_dt + timedelta(seconds=i * 5)
+            msgs.append(ModelRequest(parts=[UserPromptPart(content=f"近期提问{i}", timestamp=ts)]))
+            msgs.append(ModelResponse(parts=[TextPart(content=f"近期回复{i}")], timestamp=ts))
+        return msgs
+
+    # 活跃期内：保头裁中段（首轮仍在）
+    fresh_compacted, did_fresh = compact_session_history(
+        _make_hist(fresh_dt), max_history=12, trim_ratio=0.6, max_prefix_age_s=1800.0, now_ts=now_dt.timestamp()
+    )
+    assert did_fresh is True
+    assert isinstance(fresh_compacted[0], ModelRequest)
+    assert any(isinstance(p, UserPromptPart) and p.content == "三小时前大盘走势" for p in fresh_compacted[0].parts)
+
+    # 超 30 分钟过期前缀：阶梯滚出三小时前旧题，但保留字节一致的 SystemPromptPart
+    rolled, did_roll = compact_session_history(
+        _make_hist(old_dt), max_history=12, trim_ratio=0.6, max_prefix_age_s=1800.0, now_ts=now_dt.timestamp()
+    )
+    assert did_roll is True
+    assert isinstance(rolled[0], ModelRequest)
+    assert any(isinstance(p, SystemPromptPart) and p.content == "固定系统提示词" for p in rolled[0].parts)
+    assert not any(
+        isinstance(m, ModelRequest)
+        and any(isinstance(p, UserPromptPart) and p.content == "三小时前大盘走势" for p in m.parts)
+        for m in rolled
+    )
+    assert any(
+        isinstance(m, ModelRequest) and any(isinstance(p, UserPromptPart) and p.content == "近期提问9" for p in m.parts)
+        for m in rolled
+    )
+
+    # 无时区 naive 时间戳按 UTC 归一化，不因本地时区偏移误触发或漏触发滚出
+    naive_fresh, _ = compact_session_history(
+        _make_hist(datetime(2026, 11, 24, 11, 58, 0)),
+        max_history=12,
+        trim_ratio=0.6,
+        max_prefix_age_s=1800.0,
+        now_ts=now_dt.timestamp(),
+    )
+    assert isinstance(naive_fresh[0], ModelRequest)
+    assert any(isinstance(p, UserPromptPart) and p.content == "三小时前大盘走势" for p in naive_fresh[0].parts)
+    naive_old, _ = compact_session_history(
+        _make_hist(datetime(2026, 11, 24, 9, 0, 0)),
+        max_history=12,
+        trim_ratio=0.6,
+        max_prefix_age_s=1800.0,
+        now_ts=now_dt.timestamp(),
+    )
+    assert not any(
+        isinstance(m, ModelRequest)
+        and any(isinstance(p, UserPromptPart) and p.content == "三小时前大盘走势" for p in m.parts)
+        for m in naive_old
+    )
+
+    # 极端单轮长工具链（无第二条干净 UserPrompt）：不产出 SystemPrompt -> ModelResponse(ToolCall)
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    single_turn_tools: list[ModelRequest | ModelResponse] = [
+        ModelRequest(
+            parts=[
+                SystemPromptPart(content="固定系统提示词", timestamp=old_dt),
+                UserPromptPart(content="超长单轮工具提问", timestamp=old_dt),
+            ]
+        )
+    ]
+    for i in range(8):
+        ts = fresh_dt + timedelta(seconds=i * 2)
+        single_turn_tools.append(
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="demo_tool", args={"i": i}, tool_call_id=f"c{i}")], timestamp=ts
+            )
+        )
+        single_turn_tools.append(
+            ModelRequest(
+                parts=[ToolReturnPart(tool_name="demo_tool", content=f"ok{i}", tool_call_id=f"c{i}", timestamp=ts)]
+            )
+        )
+    safe_tools_hist, _ = compact_session_history(
+        single_turn_tools, max_history=10, trim_ratio=0.6, max_prefix_age_s=1800.0, now_ts=now_dt.timestamp()
+    )
+    assert isinstance(safe_tools_hist[0], ModelRequest)
+    assert any(isinstance(p, UserPromptPart) for p in safe_tools_hist[0].parts)
+
+    # 滚出过期首轮后若靠前切点仍超 max_history，必须继续保头裁中段压回上限以内
+    oversized_after_roll: list[ModelRequest | ModelResponse] = [
+        ModelRequest(
+            parts=[
+                SystemPromptPart(content="固定系统提示词", timestamp=old_dt),
+                UserPromptPart(content="过期旧提问", timestamp=old_dt),
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="过期旧回复")], timestamp=old_dt),
+        ModelRequest(parts=[UserPromptPart(content="后续唯一干净提问", timestamp=fresh_dt)]),
+    ]
+    for i in range(10):
+        ts = fresh_dt + timedelta(seconds=i * 2)
+        oversized_after_roll.append(
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="demo_tool", args={"i": i}, tool_call_id=f"r{i}")],
+                timestamp=ts,
+            )
+        )
+        oversized_after_roll.append(
+            ModelRequest(
+                parts=[ToolReturnPart(tool_name="demo_tool", content=f"ok{i}", tool_call_id=f"r{i}", timestamp=ts)]
+            )
+        )
+    capped_rolled, did_cap_roll = compact_session_history(
+        oversized_after_roll, max_history=12, trim_ratio=0.6, max_prefix_age_s=1800.0, now_ts=now_dt.timestamp()
+    )
+    assert did_cap_roll is True and len(capped_rolled) <= 12
+    assert not any(
+        isinstance(m, ModelRequest)
+        and any(isinstance(p, UserPromptPart) and p.content == "过期旧提问" for p in m.parts)
+        for m in capped_rolled
+    )
+    assert any(
+        isinstance(m, ModelRequest)
+        and any(isinstance(p, UserPromptPart) and p.content == "后续唯一干净提问" for p in m.parts)
+        for m in capped_rolled
+    )
+
+    # 主对话尊重配置 agent_max_history（不强行抬高到 40），显式入参照常生效；滚出过期首轮时置位补锚
+    from gsuid_core.ai_core.agent_run.support import _ensure_session_anchor_on_first_user
+
+    monkeypatch.setattr(ai_config.get_config("agent_max_history"), "data", 15)
+    dummy_model = OpenAIChatModel("test-offline", provider=OpenAIProvider(api_key="test"))
+    agent_main = GsCoreAIAgent(openai_chat_model=dummy_model, system_prompt="固定系统提示词", create_by="Chat")
+    assert agent_main.max_history == 15
+    agent_explicit = GsCoreAIAgent(openai_chat_model=dummy_model, system_prompt="s", create_by="Chat", max_history=12)
+    assert agent_explicit.max_history == 12
+    agent_main.history = _make_hist(old_dt)
+    agent_main.thread_backfill_due = False
+    agent_main._session_anchor_due = False
+    agent_main.extract_history()
+    assert agent_main.thread_backfill_due is True
+    assert agent_main._session_anchor_due is True
+    re_cur, re_lean, re_where, _ = _ensure_session_anchor_on_first_user(
+        agent_main.history,
+        "新回合消息",
+        "新回合消息",
+        persona_name="",
+        marker="【角色沉浸要求】测试",
+        force_reanchor=agent_main._session_anchor_due,
+    )
+    assert re_where == "current" and "【角色沉浸要求】测试" in re_cur and "【角色沉浸要求】测试" in re_lean
+
+    # 2. P2-2：隐形字符昵称清洗（正常带零宽洗干净；纯隐形回落群友_尾号；UID+零宽与纯空均保留用户ID契约）
+    assert sanitize_display_name("小\u200b明\ufeff", "100000001") == "小明"
+    assert sanitize_display_name("\u200b\u3164\u2800", "100000001") == "群友_0001"
+    assert sanitize_display_name("100000001\u200b", "100000001") == ""
+    assert sanitize_display_name("", "100000001") == ""
+    assert "群友_0001(用户ID:100000001)" in _build_relationship_description("\u200b\u3164", "100000001")
+
+    # 3. P2-3：滞后追问之后已有针对同用户的出站交付，待回应块显式标注且切片保留该出站行
+    t0 = 1_760_000_000.0
+    recs = [
+        MessageRecord(
+            role="user",
+            content="查一下测试数据",
+            user_id="100000001",
+            user_name="\u200b\u3164",
+            timestamp=t0,
+            metadata={},
+            link=EventLink(seq=10, msg_id="m10"),
+        ),
+        MessageRecord(
+            role="user",
+            content="好了没",
+            user_id="100000001",
+            user_name="\u200b\u3164",
+            timestamp=t0 + 20,
+            metadata={},
+            link=EventLink(seq=11, msg_id="m11"),
+        ),
+        MessageRecord(
+            role="assistant",
+            content="测试数据图已发给你啦",
+            user_id="bot",
+            user_name="测试人格",
+            timestamp=t0 + 30,
+            metadata={"reply_to_user_id": "100000001", "persona_name": "测试人格"},
+            link=EventLink(seq=12, msg_id="m12", in_reply_to_seqs=(10,)),
+        ),
+    ]
+    ev_lag = Event("OneBot", "900000001", "m11", "group", "group_1", "100000001", {}, 6, raw_text="好了没")
+    turn_lag = InboxTurn(
+        session_id="OneBot:onebot:900000001:group:group_1",
+        persona_name="测试人格",
+        entries=(PendingEntry(WakeItem(11, "100000001", "mention", "hard", t0 + 20), ev_lag, persona_name="测试人格"),),
+        from_seq=9,
+        head_seq=12,
+    )
+    pending_txt = render_pending_block(turn_lag, recs)
+    assert "群友_0001(用户ID:100000001)" in pending_txt
+    assert "在该条(#11)之后你已于 #12 向其发过回复/交付" in pending_txt
+    assert "你上次回他是 #12" not in pending_txt
+
+    delta_txt = render_delta(
+        recs,
+        from_seq=9,
+        head_seq=12,
+        backfill=False,
+        pending_seqs=frozenset({11}),
+        persona_name="测试人格",
+        private=False,
+    )
+    assert "群友_0001(用户ID:100000001)" in delta_txt
+    assert "#12 " in delta_txt
+
+    # 同批存在更晚消息拉高 anchor_ts 超过 30 分钟时，已标注的交付行 #12 仍不得被 _SLICE_MAX_AGE_S 滤掉
+    late_rec = MessageRecord(
+        role="user",
+        content="一小时后的新追问",
+        user_id="100000002",
+        user_name="测试用户B",
+        timestamp=t0 + 3600,
+        metadata={},
+        link=EventLink(seq=13, msg_id="m13"),
+    )
+    delta_late = render_delta(
+        [*recs, late_rec],
+        from_seq=9,
+        head_seq=13,
+        backfill=False,
+        pending_seqs=frozenset({11, 13}),
+        persona_name="测试人格",
+        private=False,
+    )
+    assert "#12 " in delta_late and "#13 " in delta_late

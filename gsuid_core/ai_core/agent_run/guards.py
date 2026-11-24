@@ -6,6 +6,8 @@ from typing import Literal, Callable, Sequence, Awaitable
 from dataclasses import dataclass
 
 from pydantic_ai.messages import (
+    TextPart,
+    ModelMessage,
     ModelRequest,
     ToolCallPart,
     ModelResponse,
@@ -196,19 +198,42 @@ class DeliveryGuard:
             st.saw_structured_return = True
 
     @staticmethod
-    def absorb_opening_line(st: RunOnceState, *, session_logger: AISessionLogger) -> None:
+    def absorb_opening_line(
+        st: RunOnceState,
+        *,
+        session_logger: AISessionLogger,
+        run_history: Sequence[ModelMessage] | None = None,
+    ) -> str:
         """工具代发的开场句记进本轮出站账；未发出则标 opening_missed 供后续补一句。"""
         result = take_opening_result(_require_context(st).extra)
         if result is None:
-            return
+            return ""
         if not result.text:
-            st.opening_missed = True
-            return
+            if result.source == "create_subagent":
+                st.opening_missed = True
+            return ""
+        restored = ""
         if result.delivered:
             st.main_channel_sends += 1
+            delivered_text = result.text.strip()
+            for idx, item in enumerate(st.unsent_texts):
+                if item.strip() == delivered_text:
+                    st.unsent_texts.pop(idx)
+                    break
+            # soft_latency_ack 发出时仅往尚未送出过的尾响应补回 TextPart，既保 §1.7 又不丢历史上下文
+            if result.source == "soft_latency_ack":
+                if run_history:
+                    tail = run_history[-1]
+                    if isinstance(tail, ModelResponse) and not any(
+                        isinstance(p, TextPart) and p.content.strip() == delivered_text for p in tail.parts
+                    ):
+                        tail.parts = [TextPart(content=result.text), *tail.parts]
+                else:
+                    restored = result.text
         st.wait_comfort_sent = True
         st.ooc_blocked.clear()
-        session_logger.log_task_ack(result.text, source="create_subagent")
+        session_logger.log_task_ack(result.text, source=result.source)
+        return restored
 
     @staticmethod
     def prescan_render_delegation(st: RunOnceState, parts: Sequence[object]) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 from typing import Any, Sequence
 
 from pydantic_graph import End
@@ -60,7 +61,11 @@ from gsuid_core.ai_core.agent_run.support import (
 from gsuid_core.ai_core.agent_run.opening_line import (
     arm_opening_line,
     disarm_opening_line,
+    arm_soft_latency_ack,
+    cancel_opening_timer,
     turn_expects_opening,
+    has_armed_opening_text,
+    wait_inflight_opening_line,
 )
 from gsuid_core.ai_core.agent_run.speech_policy import (
     SpeechContext,
@@ -131,7 +136,13 @@ class LoopPhase:
             session_logger=self._session_logger,
             emit_trace=self._emit_trace,
         )
-        DeliveryGuard.absorb_opening_line(st, session_logger=self._session_logger)
+        opening_extra = _require_context(st).extra
+        await wait_inflight_opening_line(opening_extra)
+        DeliveryGuard.absorb_opening_line(
+            st,
+            session_logger=self._session_logger,
+            run_history=agent_run.ctx.state.message_history,
+        )
         ToolCircuitBreaker.inject_post_return_nudges(
             st,
             node.request,
@@ -200,8 +211,12 @@ class LoopPhase:
 
         ToolCircuitBreaker.sanitize_and_cap_response(st, node.model_response, create_by=self.create_by)
         DeliveryGuard.prescan_render_delegation(st, node.model_response.parts)
-
+        opening_extra = _require_context(st).extra
         saw_tool_call_this_turn = _response_has_function_tool_call(node.model_response.parts)
+        if not saw_tool_call_this_turn:
+            disarm_opening_line(opening_extra)
+        await wait_inflight_opening_line(opening_extra)
+        ack_to_restore = DeliveryGuard.absorb_opening_line(st, session_logger=self._session_logger)
         resp_unsent: list[str] = []
         output_gate.begin_response_batch(_require_context(st).extra)
         ab_attempt_counted = False
@@ -299,8 +314,6 @@ class LoopPhase:
                 if thinking and not st.thinking_streamed:
                     self._emit_trace("thinking", thinking)
 
-        opening_extra = _require_context(st).extra
-        disarm_opening_line(opening_extra)
         if (
             saw_tool_call_this_turn
             and st.main_channel_sends == 0
@@ -313,11 +326,20 @@ class LoopPhase:
                 is_status_inquiry=st.status_inquiry,
             )
         ):
-            arm_opening_line(
-                opening_extra,
-                text=resp_unsent[0] if resp_unsent else "",
-                deliver=st.bot is not None and st.return_mode in ("always", "by_bot"),
-            )
+            deliver_flag = st.bot is not None and st.return_mode in ("always", "by_bot")
+            if resp_unsent:
+                disarm_opening_line(opening_extra)
+                arm_opening_line(opening_extra, text=resp_unsent[0], deliver=deliver_flag)
+                if deliver_flag:
+                    arm_soft_latency_ack(
+                        _require_context(st),
+                        cancel_ev=st.cancel_ev if isinstance(st.cancel_ev, asyncio.Event) else None,
+                    )
+            elif not has_armed_opening_text(opening_extra):
+                disarm_opening_line(opening_extra)
+                arm_opening_line(opening_extra, text="", deliver=deliver_flag)
+        else:
+            disarm_opening_line(opening_extra)
 
         if resp_unsent:
             st.unsent_texts.extend(resp_unsent)
@@ -329,6 +351,10 @@ class LoopPhase:
                     continue
                 kept_parts.append(p)
             node.model_response.parts = kept_parts
+        if ack_to_restore and not any(
+            isinstance(p, TextPart) and p.content.strip() == ack_to_restore.strip() for p in node.model_response.parts
+        ):
+            node.model_response.parts = [TextPart(content=ack_to_restore), *node.model_response.parts]
 
         ToolCircuitBreaker.record_response_thrash(st, resp_tool_calls)
         _record_call_tools_metrics(self, st, node, statistics_manager)
@@ -370,6 +396,14 @@ class LoopPhase:
                     elif isinstance(node, CallToolsNode):
                         await self._run_once_on_call_tools(st, node, statistics_manager)
                     elif isinstance(node, End):
+                        if st.context is not None:
+                            disarm_opening_line(st.context.extra)
+                            await wait_inflight_opening_line(st.context.extra)
+                            DeliveryGuard.absorb_opening_line(
+                                st,
+                                session_logger=self._session_logger,
+                                run_history=agent_run.ctx.state.message_history,
+                            )
                         logger.debug(i18n_t("log.agent.node_trigger_end"))
                         logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
                         self._session_logger.log_node_transition("End")
@@ -384,6 +418,11 @@ class LoopPhase:
 
             return await self._run_once_settle_result(st, agent_run, statistics_manager)
         finally:
+            if st.context is not None:
+                disarm_opening_line(st.context.extra)
+            from gsuid_core.ai_core.planning.kanban_executor import release_inline_claimed_roots
+
+            release_inline_claimed_roots(st.run_extra)
             self._history_iter_active = False
 
 
@@ -407,6 +446,8 @@ async def _push_stream_text_delta(
         return
     bot = st.bot if st.outbound_stream else None
     if bot is not None:
+        if st.context is not None and visible.strip():
+            cancel_opening_timer(st.context.extra)
         bot.enqueue_text_delta(visible)
 
 

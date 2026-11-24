@@ -411,7 +411,9 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                         target="当前说话人",
                     )
                 else:
-                    speaker = rec.user_name or f"用户{rec.user_id}"
+                    from gsuid_core.ai_core.utils import sanitize_display_name
+
+                    speaker = sanitize_display_name(rec.user_name, str(rec.user_id)) or f"用户{rec.user_id}"
                     return QuoteResolve(
                         line=quote_other_line(speaker, time_str),
                         topic="群友发言",

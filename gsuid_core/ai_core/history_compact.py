@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import json
+import time
 from typing import Set, Dict, List, Tuple, Union, Optional, Sequence
+from datetime import datetime, timezone
 from dataclasses import replace as _dc_replace
 
 from pydantic_ai.messages import (
@@ -19,6 +21,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
     RetryPromptPart,
+    SystemPromptPart,
     ModelResponsePart,
 )
 
@@ -220,17 +223,95 @@ def _extractive_middle_summary(dropped: Sequence[ModelMessage]) -> str:
     return f"（更早对话摘要：{body}）"
 
 
+def _to_utc_timestamp(dt: datetime) -> float:
+    return dt.replace(tzinfo=timezone.utc).timestamp() if dt.tzinfo is None else dt.timestamp()
+
+
+def _first_turn_timestamp(messages: Sequence[ModelMessage]) -> float | None:
+    """返回首条非纯系统提示消息的 Unix 时间戳，用于判定钉住前缀是否已过期。"""
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            return _to_utc_timestamp(msg.timestamp)
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, (UserPromptPart, ToolReturnPart, RetryPromptPart)):
+                    return _to_utc_timestamp(part.timestamp)
+    return None
+
+
+def _extract_leading_system_parts(messages: Sequence[ModelMessage]) -> list[SystemPromptPart]:
+    if not messages or not isinstance(messages[0], ModelRequest):
+        return []
+    return [part for part in messages[0].parts if isinstance(part, SystemPromptPart)]
+
+
+def _starts_clean_user_turn(msg: ModelMessage) -> bool:
+    if not isinstance(msg, ModelRequest):
+        return False
+    has_user = any(isinstance(p, UserPromptPart) for p in msg.parts)
+    has_tool_ret = any(isinstance(p, ToolReturnPart) for p in msg.parts)
+    return has_user and not has_tool_ret
+
+
+def _roll_expired_prefix(history: List[ModelMessage], max_keep: int) -> List[ModelMessage]:
+    """前缀 KV 缓存已过期的阶梯滚动：仅保 SystemPromptPart，整块轮替出清陈旧首段。"""
+    if len(history) <= max_keep:
+        return history
+    sys_parts = _extract_leading_system_parts(history)
+    start = max(1, len(history) - max(1, max_keep))
+    min_retain = max(2, max_keep // 2)
+    forward_limit = max(start, len(history) - min_retain + 1)
+    chosen: int | None = None
+    for candidate in range(start, forward_limit):
+        if _starts_clean_user_turn(history[candidate]) and not _has_orphan_tool_returns(history[candidate:]):
+            chosen = candidate
+            break
+    if chosen is None:
+        for candidate in range(start, 0, -1):
+            if _starts_clean_user_turn(history[candidate]) and not _has_orphan_tool_returns(history[candidate:]):
+                chosen = candidate
+                break
+    if chosen is None:
+        for candidate in range(forward_limit, len(history)):
+            if _starts_clean_user_turn(history[candidate]) and not _has_orphan_tool_returns(history[candidate:]):
+                chosen = candidate
+                break
+    # 找不到干净 UserPrompt 切点时不强切，交给保头裁中段兜底，避免产出 SystemPrompt -> ModelResponse
+    if chosen is None:
+        return history
+
+    tail = list(history[chosen:])
+    _lean_oversized_tool_returns(tail)
+    if sys_parts:
+        if tail and isinstance(tail[0], ModelRequest):
+            non_sys = [p for p in tail[0].parts if not isinstance(p, SystemPromptPart)]
+            tail[0] = _dc_replace(tail[0], parts=[*sys_parts, *non_sys])
+        else:
+            tail.insert(0, ModelRequest(parts=list(sys_parts)))
+    logger.debug(
+        i18n_t(
+            "log.ai.safe_truncation_history_cutoff",
+            p0=len(history),
+            p1=len(tail),
+            truncate_index=chosen,
+        )
+    )
+    return tail
+
+
 def compact_session_history(
     history: List[ModelMessage],
     max_history: int,
     *,
     trim_ratio: float = 0.6,
     prefix_ratio: float = 0.55,
+    max_prefix_age_s: float | None = None,
+    now_ts: float | None = None,
 ) -> tuple[List[ModelMessage], bool]:
-    """会话 history 高低水位 compact（保头裁中段 + 仅在压缩时折叠尾段超大回执）。
+    """会话 history 高低水位 compact（活跃窗保头裁中段，陈旧前缀超 TTL 时阶梯滚出）。
 
     Returns:
-        (new_history, did_truncate) — did_truncate 表示因超水位主动丢过中段。
+        (new_history, did_truncate) — did_truncate 表示因超水位主动丢过历史轮次。
     """
     if max_history <= 0:
         return [], True
@@ -238,8 +319,19 @@ def compact_session_history(
     if before <= max_history:
         return _drop_orphan_tool_results(history), False
     low_target = max(1, int(max_history * trim_ratio))
+    base = history
+    if max_prefix_age_s is not None and max_prefix_age_s > 0:
+        first_ts = _first_turn_timestamp(history)
+        ref_now = now_ts if now_ts is not None else time.time()
+        if first_ts is not None and (ref_now - first_ts) > max_prefix_age_s:
+            rolled = _roll_expired_prefix(history, low_target)
+            cleaned_rolled = _drop_orphan_tool_results(rolled)
+            if len(cleaned_rolled) <= max_history:
+                return cleaned_rolled, len(cleaned_rolled) < before
+            if len(cleaned_rolled) < before:
+                base = cleaned_rolled
     trimmed, prefix_n = _truncate_history_keep_prefix_with_split(
-        history,
+        base,
         low_target,
         prefix_ratio=prefix_ratio,
     )

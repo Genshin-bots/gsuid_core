@@ -428,6 +428,11 @@ def omitted_lines_marker(count: int) -> str:
     return f"（中间省略 {count} 条）"
 
 
+def pending_later_delivery_note(entry_seq: int, delivered_seq: int) -> str:
+    """待回应项排队期间已向同用户送达更晚的出站回复/交付，防止误将旧追问当新质疑。"""
+    return f"注意：在该条(#{entry_seq})之后你已于 #{delivered_seq} 向其发过回复/交付（本条为更早排队的旧追问）"
+
+
 # 当轮动态块头（入史前剥除；正文组装在 inbox/blocks.py）
 PENDING_BLOCK_HEAD = "（待你回应）"
 RECEIPT_CONTEXT_HEAD = "（回执上下文）"
