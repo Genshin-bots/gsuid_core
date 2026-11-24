@@ -444,10 +444,10 @@ def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch) -> None:
     from gsuid_core.models import Event
     from gsuid_core.utils.database import base_models
     from gsuid_core.ai_core.thread_view import render_window
-    from gsuid_core.ai_core.autonomy.gates import dm_allowed
     from gsuid_core.ai_core.database.models import UserFavorability  # noqa: F401
     from gsuid_core.ai_core.memory.observer import ObservationRecord
     from gsuid_core.message_history.manager import HistoryManager
+    from gsuid_core.ai_core.proactive.policy import dm_allowed
     from gsuid_core.ai_core.relationship.engine import _DAILY_LOSS_CAP, settle_semantic
     from gsuid_core.ai_core.relationship.signals import NEG_WEIGHTS, NegSignal
     from gsuid_core.ai_core.memory.ingestion.worker import _ScopeWindowBuffer

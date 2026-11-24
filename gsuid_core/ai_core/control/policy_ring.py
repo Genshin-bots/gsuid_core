@@ -731,9 +731,16 @@ def evaluate_ooc_gate(
     exposed_tool_names: Sequence[str],
     hooks: OocGateHooks,
     view: Optional[OutboundTextView] = None,
+    only_always_enforced: bool = False,
 ) -> Optional[GateResult]:
     """按 ``_OOC_RING`` 裁决单条出站台词的 OOC 放行 / 重写 / 熔断。"""
-    hit = inspect_outbound_ooc(text, user_text=user_text, exposed_tool_names=exposed_tool_names, view=view)
+    hit = inspect_outbound_ooc(
+        text,
+        user_text=user_text,
+        exposed_tool_names=exposed_tool_names,
+        view=view,
+        only_always_enforced=only_always_enforced,
+    )
     if hit is None:
         return None
     rule = ooc_rule_for(hit.category)

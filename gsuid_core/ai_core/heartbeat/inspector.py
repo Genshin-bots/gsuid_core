@@ -11,8 +11,9 @@
 
 from __future__ import annotations
 
+import time
 import asyncio
-from typing import Any, List, Tuple, Optional
+from typing import TYPE_CHECKING, List, Tuple, Optional
 from datetime import datetime, timedelta
 
 from gsuid_core.i18n import t
@@ -23,6 +24,14 @@ from gsuid_core.models import Event
 from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.persona.config import persona_config_manager
+from gsuid_core.ai_core.proactive.policy import (
+    ProactiveGateInput,
+    is_session_busy,
+    evaluate_proactive_gate,
+    is_session_scope_banned,
+    check_target_rate_and_gap,
+    is_dm_reciprocity_blocked,
+)
 from gsuid_core.ai_core.heartbeat.decision import run_heartbeat
 from gsuid_core.ai_core.persona.config_rules import (
     read_autonomy_runtime,
@@ -30,6 +39,9 @@ from gsuid_core.ai_core.persona.config_rules import (
     persona_covers_session,
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
+
+if TYPE_CHECKING:
+    from gsuid_core.message_history.manager import MessageRecord
 
 # 并发控制：最多同时进行 5 个 LLM 调用
 MAX_CONCURRENT_LLM_CALLS = 5
@@ -147,6 +159,10 @@ class HeartbeatInspector:
 
     async def _inspect_all_sessions_for_persona(self, persona_name: str) -> None:
         """巡检所有与指定 persona 相关的会话"""
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        if not ai_config.get_config("enable").data:
+            return
         config = persona_config_manager.get_config(persona_name)
         runtime = read_autonomy_runtime(config)
         if not is_within_active_hours(list(runtime.active_hours), runtime.timezone):
@@ -235,45 +251,43 @@ class HeartbeatInspector:
             return False, "最后消息来自 AI，不继续发言"
 
         # 检查最后一条消息的时间
-        if hasattr(last_message, "timestamp"):
-            last_time = last_message.timestamp
-            if isinstance(last_time, (int, float)):
-                last_time = datetime.fromtimestamp(last_time)
+        last_time = _timestamp_to_datetime(last_message.timestamp)
+        time_diff = datetime.now() - last_time
+        if time_diff > timedelta(hours=INACTIVE_THRESHOLD_HOURS):
+            return False, f"群已 {INACTIVE_THRESHOLD_HOURS} 小时不活跃"
 
-            time_diff = datetime.now() - last_time
-            if time_diff > timedelta(hours=INACTIVE_THRESHOLD_HOURS):
-                return False, f"群已 {INACTIVE_THRESHOLD_HOURS} 小时不活跃"
-
-        # 前置并发互斥：会话正在运行或收件箱有待处理唤醒项时直接跳过
-        if self._is_session_busy(event):
-            return False, "会话正在活跃处理中（防与被动回复撞车）"
-
-        # 检查最后消息是否是 AI 主动发的（防刷屏）
-        if self._has_recent_ai_response(history):
-            return False, "AI 最近已发言（防刷屏）"
-
-        # C8：统一主动网关——同一目标刚有主动输出（含定时任务播报）则抑制本次巡检
         from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         target_key = self._target_key(event, history)
-        if dispatcher.should_suppress_heartbeat(target_key):
-            return False, "C8 网关抑制（近期已有主动输出，防撞车）"
-
-        # C-3：主动发言频率硬上限（每小时/每天），超限直接跳过，连决策 LLM 都不调
         session_persona = persona_config_manager.get_persona_for_session(event.session_id) or persona_name
-        if dispatcher.should_suppress_by_rate(target_key, persona_name=session_persona):
-            return False, "C-3 频率上限（近期主动发言已达上限）"
+        gap_blocked, rate_blocked = check_target_rate_and_gap(dispatcher, target_key, persona_name=session_persona)
+        decision = evaluate_proactive_gate(
+            ProactiveGateInput(
+                channel="heartbeat",
+                persona_name=session_persona,
+                target_key=target_key,
+                is_direct=event.user_type == "direct",
+                scope_banned=is_session_scope_banned(event.session_id),
+                session_busy=self._is_session_busy(event),
+                last_ai_age_sec=self._last_ai_age_sec(history),
+                ai_cooldown_sec=float(RECENT_AI_COOLDOWN_MINUTES * 60),
+                check_c8_gap=True,
+                c8_gap_blocked=gap_blocked,
+                check_rate=True,
+                rate_blocked=rate_blocked,
+            )
+        )
+        if not decision.allowed:
+            return False, decision.reason
 
         return True, ""
 
-    def _target_key(self, event: Event, history: List[Any]) -> str:
+    def _target_key(self, event: Event, history: List[MessageRecord]) -> str:
         """统一主动网关的目标标识：群聊用群号，私聊用用户号。
 
         与 emitter / decision 共用 ``make_target_key`` 口径（登记/限流/计数必须同键）。
-        仅当 event 未带 user_id 时，才退回最后一条消息的发送者兜底——history 元素由
-        ``message_history.manager.MessageRecord`` 落盘，``user_id`` 是已声明字段（见
-        manager.py:63），可直接访问；type 标注为 ``Any`` 仅为避免与该模块循环依赖。
+        仅当 event 未带 user_id 时，才退回最后一条消息的发送者兜底。
         """
         from gsuid_core.ai_core.proactive.dispatcher import make_target_key
 
@@ -299,20 +313,20 @@ class HeartbeatInspector:
 
     async def _inspect_session(self, event: Event, persona_name: str) -> None:
         """处理单个会话的核心逻辑流水线"""
-        from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
-
-        if is_scope_banned(event.session_id):
+        if is_session_scope_banned(event.session_id):
             logger.debug(t("log.ai.heartbeat_session_muted_skipping", p0=event.session_id))
             return
 
         # 1. 获取历史记录（使用 history 模块的全部消息，不再限制时间窗口）
         history = self._get_history(event)
+        if not history:
+            return
 
         last_message = history[-1]
         user_id = last_message.user_id
         group_id: Optional[str] = event.group_id
 
-        if not history or self._has_recent_ai_response(history):
+        if self._has_recent_ai_response(history):
             statistics_manager.record_heartbeat_decision(
                 group_id=group_id or "",
                 should_speak=False,
@@ -329,7 +343,16 @@ class HeartbeatInspector:
             logger.debug(t("log.ai.heartbeat_session_event_persona", event=event))
             return
 
-        import time
+        if event.user_type == "direct" and await is_dm_reciprocity_blocked(str(user_id), session_persona_name):
+            logger.debug(
+                t(
+                    "log.ai.heartbeat_skipping_session_key_skip",
+                    session_key=event,
+                    skip_reason="私聊互惠退避（对方连续两次未回复主动私聊）",
+                )
+            )
+            statistics_manager.record_heartbeat_decision(group_id="", should_speak=False)
+            return
 
         from gsuid_core.ai_core.persona.presence import refresh_persona_state
         from gsuid_core.ai_core.persona.homeostasis import heartbeat_should_skip
@@ -358,7 +381,8 @@ class HeartbeatInspector:
             return
 
         human_sig = f"{last_human.timestamp}:{last_human.user_id}:{len(history)}"
-        if self._last_decision_human_sig.get(target_key) == human_sig and not merge_ctx:
+        prev_sig = self._last_decision_human_sig[target_key] if target_key in self._last_decision_human_sig else None
+        if prev_sig == human_sig and not merge_ctx:
             logger.debug(t("log.ai.heartbeat_session_history_unchanged_skip", target_key=target_key))
             statistics_manager.record_heartbeat_decision(
                 group_id=group_id or "",
@@ -441,35 +465,33 @@ class HeartbeatInspector:
 
     def _is_session_busy(self, event: Event) -> bool:
         """会话正在执行 run、或收件箱处于待收敛/运行中时返回 True。"""
-        from gsuid_core.ai_core.inbox.scheduler import get_inbox_scheduler
-        from gsuid_core.ai_core.session_registry import get_ai_session_registry
+        return is_session_busy(event.session_id)
 
-        sid = event.session_id
-        session = get_ai_session_registry().get_ai_session(sid)
-        if session is not None and session.is_running:
-            return True
-        return get_inbox_scheduler().has_active_session(sid)
-
-    def _get_history(self, event: Event) -> List[Any]:
+    def _get_history(self, event: Event) -> List[MessageRecord]:
         """获取会话的全部历史记录"""
-        return list(self._history_manager._histories.get(event, []))
+        histories = self._history_manager._histories
+        return list(histories[event]) if event in histories else []
 
-    def _has_recent_ai_response(self, history: List[Any]) -> bool:
-        """最近一条 AI 消息（主动或被动）若在冷却窗口内，就不再主动发言。
-
-        旧逻辑只看最近 5 条里的 ``proactive`` 标记，导致刚结束的密集被动对话后
-        仍会立刻插话。改为：找到最近一条 assistant 消息，只要它在
-        ``RECENT_AI_COOLDOWN_MINUTES`` 内（无论主动/被动）就抑制本次主动发言。
-        """
-        now = datetime.now()
+    def _last_ai_age_sec(self, history: List[MessageRecord]) -> float | None:
+        now_ts = time.time()
         for record in reversed(history):
             if record.role != "assistant":
                 continue
-            # MessageRecord.timestamp 是已声明字段（float，default_factory=time.time），
-            # 与 _target_key 中直接访问 user_id 同理，无需 getattr 兜底。
-            last_time = datetime.fromtimestamp(record.timestamp)
-            return (now - last_time) < timedelta(minutes=RECENT_AI_COOLDOWN_MINUTES)
-        return False
+            return max(0.0, now_ts - _timestamp_to_seconds(record.timestamp))
+        return None
+
+    def _has_recent_ai_response(self, history: List[MessageRecord]) -> bool:
+        """最近一条 AI 消息（主动或被动）若在冷却窗口内，就不再主动发言。"""
+        age = self._last_ai_age_sec(history)
+        return age is not None and age < float(RECENT_AI_COOLDOWN_MINUTES * 60)
+
+
+def _timestamp_to_datetime(ts: float | int | datetime) -> datetime:
+    return ts if isinstance(ts, datetime) else datetime.fromtimestamp(float(ts))
+
+
+def _timestamp_to_seconds(ts: float | int | datetime) -> float:
+    return ts.timestamp() if isinstance(ts, datetime) else float(ts)
 
 
 _inspector = HeartbeatInspector()

@@ -325,7 +325,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
     from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage, sanitizer as js
     from gsuid_core.ai_core.autonomy.models import FactPack, DeliveryPin, DeliveryDecision, AutonomyStepTrace
-    from gsuid_core.ai_core.autonomy.verifier import parse_footer
+    from gsuid_core.ai_core.autonomy.delivery import parse_footer
     from gsuid_core.ai_core.autonomy.scheduler import _record_autonomy_journal
     from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
     from gsuid_core.ai_core.planning.tool_output_tools import _handle_access_allowed
@@ -1587,10 +1587,9 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
         ObservationDigest,
         CareTargetSnapshot,
     )
-    from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
-    from gsuid_core.ai_core.autonomy.runner import AutonomyReport
+    from gsuid_core.ai_core.autonomy.runner import AUTONOMY_SYSTEM_GUIDE, AutonomyReport
     from gsuid_core.ai_core.database.models import AIAutonomyActivity
-    from gsuid_core.ai_core.autonomy.verifier import extract_facts, output_is_failed, output_is_skipped
+    from gsuid_core.ai_core.autonomy.delivery import extract_facts, output_is_failed, output_is_skipped
     from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
     from gsuid_core.ai_core.prompt_group.catalog import spec_keys
 
@@ -2078,3 +2077,112 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
         await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_proactive_policy_unified_gates_and_persona_rate_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """统一主动门控：禁言拦截搭话但放行定时/看板，且 autonomy 发信按人格维度执行频次上限。"""
+    import time
+
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.autonomy import tools as auto_tools
+    from gsuid_core.ai_core.autonomy.models import GroupObservation
+    from gsuid_core.ai_core.proactive.policy import (
+        ProactiveGateInput,
+        evaluate_proactive_gate,
+        check_target_rate_and_gap,
+    )
+    from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
+
+    # 1. 禁言策略：heartbeat / autonomy_send 被拦，scheduled_task / kanban 放行
+    for ch in ("heartbeat", "autonomy_send"):
+        res = evaluate_proactive_gate(
+            ProactiveGateInput(
+                channel=ch, persona_name="alpha", target_key="group_1", is_direct=False, scope_banned=True
+            )
+        )
+        assert not res.allowed and res.code == "scope_banned"
+    for ch in ("scheduled_task", "kanban"):
+        res = evaluate_proactive_gate(
+            ProactiveGateInput(
+                channel=ch, persona_name="alpha", target_key="group_1", is_direct=False, scope_banned=True
+            )
+        )
+        assert res.allowed
+
+    # 2. 会话忙闲与私聊互惠退避（互惠退避仅约束私聊）
+    busy_res = evaluate_proactive_gate(
+        ProactiveGateInput(
+            channel="autonomy_send", persona_name="alpha", target_key="group_1", is_direct=False, session_busy=True
+        )
+    )
+    assert not busy_res.allowed and busy_res.code == "session_busy"
+    dm_res = evaluate_proactive_gate(
+        ProactiveGateInput(
+            channel="heartbeat",
+            persona_name="alpha",
+            target_key="100000001",
+            is_direct=True,
+            dm_reciprocity_blocked=True,
+        )
+    )
+    assert not dm_res.allowed and dm_res.code == "dm_reciprocity_backoff"
+    grp_res = evaluate_proactive_gate(
+        ProactiveGateInput(
+            channel="heartbeat",
+            persona_name="alpha",
+            target_key="group_1",
+            is_direct=False,
+            dm_reciprocity_blocked=True,
+        )
+    )
+    assert grp_res.allowed
+
+    # 3. 回归验证：autonomy send_message_by_ai 必须按 persona_name 查频率配额（修复漏传 persona_name 漏洞）
+    disp = UnifiedProactiveDispatcher()
+    disp.register_send("group_1", "autonomy", "测试问候一", persona_name="alpha")
+    disp.register_send("group_1", "autonomy", "测试问候二", persona_name="alpha")
+    # 拨回 _last_send 时间绕过 C8 120s 间隔，纯测每小时配额
+    disp._last_send["group_1"] = (time.time() - 600.0, "autonomy")
+    _gap_a, rate_a = check_target_rate_and_gap(disp, "group_1", persona_name="alpha", max_per_hour=2, max_per_day=8)
+    _gap_b, rate_b = check_target_rate_and_gap(disp, "group_1", persona_name="beta", max_per_hour=2, max_per_day=8)
+    assert rate_a is True and rate_b is False
+
+    now = time.time()
+    g_obs = GroupObservation(
+        group_id="group_1",
+        summary="",
+        recent_lines=[],
+        last_human_ts=now - 300.0,
+        bot_id="onebot",
+        bot_self_id="10001",
+        ws_bot_id="ws1",
+        session_key="group:group_1",
+    )
+    guard = auto_tools.GuardState(
+        persona_name="alpha",
+        whitelist=frozenset(),
+        sessions={},
+        bot_id="onebot",
+        bot_self_id="10001",
+        ws_bot_id="ws1",
+        allowed_groups={"group_1": g_obs},
+        allowed_users={},
+        now=now,
+        hour_cap=2,
+        day_cap=8,
+    )
+    ctx = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+    tok = auto_tools.bind_guard(guard)
+    try:
+        with monkeypatch.context() as mp:
+            mp.setattr(auto_tools, "get_dispatcher", lambda: disp)
+            mp.setattr(auto_tools, "is_session_scope_banned", lambda _sid: False)
+            mp.setattr(auto_tools, "is_session_busy", lambda _sid: False)
+            msg = asyncio.run(auto_tools.send_message_by_ai(ctx, "顺口打个招呼", target_id="group_1"))
+            assert "配额已达上限" in msg
+    finally:
+        auto_tools.reset_guard(tok)

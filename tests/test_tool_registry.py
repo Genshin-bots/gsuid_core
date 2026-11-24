@@ -261,7 +261,7 @@ def test_claims_inflight_without_backend() -> None:
         send_message_by_ai as autonomy_send,
         build_autonomy_tools,
     )
-    from gsuid_core.ai_core.autonomy.verifier import output_is_failed
+    from gsuid_core.ai_core.autonomy.delivery import output_is_failed
 
     assert output_is_failed("[{'type': 'extra_forbidden', 'loc': ('target_id',)}]")
     assert output_is_failed("发送被拦截：目标当前处于防打扰冷静期。")

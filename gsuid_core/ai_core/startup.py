@@ -118,7 +118,7 @@ async def _init_statistics():
 
 
 async def _init_autonomy() -> None:
-    from gsuid_core.ai_core.autonomy.startup import init_autonomy
+    from gsuid_core.ai_core.autonomy.scheduler import init_autonomy
 
     await init_autonomy()
 

@@ -25,6 +25,11 @@ TOOL_NAME_LEAK_NUDGE = (
     "请判断后用角色口吻只说结论；不要对用户念工具、句柄或内部提示。"
     "直接输出你决定发给用户的正文，不要再调用发送工具重复同一句。）"
 )
+HANDLE_IMAGE_LEAK_NUDGE = (
+    TOOL_NAME_LEAK_PREFIX + " / 图片资源句柄。"
+    "不要把 img_/res_ 等资源 ID 写进回复正文；图片请用 send_message_by_ai(image_ids=[...]) 发送，"
+    "正文只用角色口吻简短回应，直接输出重写后的内容。）"
+)
 INNER_OS_NUDGE = INNER_OS_PREFIX + "…）段落，只保留角色台词）"
 
 GATE_NUDGE_MARKERS: tuple[str, ...] = (
@@ -483,6 +488,28 @@ PROCESS_META_CORE_PATTERN: Final[str] = (
     r"回炉了?你再|回炉|系统校验|框架[·・.]任务|产物句柄|"
     r"交给主人格|主人格发|（系统提示|\[框架[·・.]|禁止再检索|禁止把句柄|禁止念"
 )
+INTERNAL_HANDLE_HINTS: Final[tuple[str, ...]] = (
+    "res_",
+    "img_",
+    "aud_",
+    "vid_",
+    "fil_",
+    "to_",
+    "sa_",
+    "dlg_",
+    "note:",
+    "kb_plugin:",
+    "kb_kbdoc:",
+    "journal:",
+)
+INTERNAL_HANDLE_PATTERN: Final[str] = (
+    r"(?<![A-Za-z0-9_])(?:res|img|aud|vid|fil|to|sa)_[0-9a-fA-F]{6,}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])dlg_[0-9a-fA-F-]{8,}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])note:[^\s:：,，。；;、？！!?）)\]】」』`\"'<>]+:[^\s:：,，。；;、？！!?）)\]】」』`\"'<>]+"
+    r"|(?<![A-Za-z0-9_])(?:kb_plugin|kb_kbdoc):[^\s：,，。；;、？！!?）)\]】」』`\"'<>]+"
+    r"|(?<![A-Za-z0-9_])journal:[^\s:：,，。；;、？！!?）)\]】」』`\"'<>]+:[^\s：,，。；;、？！!?）)\]】」』`\"'<>]*\d{4}-\d{2}(?:-\d{2})?"
+)
+INTERNAL_HANDLE_RE: Final[re.Pattern[str]] = re.compile(INTERNAL_HANDLE_PATTERN, re.IGNORECASE)
 INTERNAL_ARTIFACT_TOKEN_PATTERN: Final[str] = (
     r"\bsend_message_by_ai\b|\bcreate_subagent\b|\bartifact_get\b|\bartifact_put\b|"
     r"\bread_handle\b|\bsearch_handles\b|\bsearch_persisted_outputs\b|"
@@ -491,9 +518,8 @@ INTERNAL_ARTIFACT_TOKEN_PATTERN: Final[str] = (
     r"\brender_html_to_image\b|\brender_agent\b|"
     r"\bresearch_agent\b|\bcheck_delegation\b|\bdispute_directive\b|"
     r"\bagent_profile\s*=|\bimage_ids?\s*=|"
-    r"\bres_[0-9a-f]{6,}\b|\bimg_[0-9a-f]{6,}\b|\bto_[0-9a-f]{6,}\b|"
-    r"\bsa_[0-9a-f]{6,}\b|\bdlg_[0-9a-f-]{8,}\b|"
-    r"persisted\s+id|\btool_return\b|\blong_structured\b|\binline_head\b|"
+    + INTERNAL_HANDLE_PATTERN
+    + r"|persisted\s+id|\btool_return\b|\blong_structured\b|\binline_head\b|"
     r"\bhow_to_read\b|\bKanban\b|artifact\s*:|资源ID\s*:|产物句柄"
 )
 INTERNAL_LEAK_RE: Final[re.Pattern[str]] = re.compile(

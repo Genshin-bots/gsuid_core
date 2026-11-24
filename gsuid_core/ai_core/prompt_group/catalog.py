@@ -256,7 +256,7 @@ def default_body(key: str) -> str:
     if key == "scheduled_executor":
         return SCHEDULED_TASK_EXECUTOR_PROMPT
     if key == "autonomy_system_guide":
-        from gsuid_core.ai_core.autonomy.prompt import AUTONOMY_SYSTEM_GUIDE
+        from gsuid_core.ai_core.autonomy.runner import AUTONOMY_SYSTEM_GUIDE
 
         return AUTONOMY_SYSTEM_GUIDE
     if key == "autonomy_speak":

@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from gsuid_core.ai_core.control.lines import CODE_SPAN_RE
+from gsuid_core.ai_core.control.lines import (
+    CODE_SPAN_RE,
+    INTERNAL_HANDLE_HINTS,
+    INTERNAL_HANDLE_PATTERN,
+)
 
 # 模型输出的沉默/控制标记：命中时跳过发送。散落多处应引用此常量。
 # 集合只放带括号的 CJK 别名：裸「沉默」做子串会误伤「我选择沉默」。
@@ -315,27 +319,23 @@ def _strip_special_control_tokens(text: str) -> str:
     return cleaned
 
 
-_RESOURCE_HANDLE_RE = re.compile(
-    r"`*\b(?:res|img|aud|vid|fil)_[0-9a-fA-F]{6,}\b`*"
-    r"|`*\bdlg_[0-9a-fA-F-]{8,}\b`*"
+_RESOURCE_HANDLE_RE = re.compile(rf"`*(?:{INTERNAL_HANDLE_PATTERN})`*", re.IGNORECASE)
+_RESOURCE_HANDLE_HINTS = INTERNAL_HANDLE_HINTS
+_HANDLE_UNIT = rf"(?:(?:内部句柄|产物句柄|资源\s*ID|句柄)\s*[:：]\s*)?`*(?:{INTERNAL_HANDLE_PATTERN})`*"
+_HANDLE_STRIP_RE = re.compile(
+    rf"(?:\(\s*{_HANDLE_UNIT}\s*\)|（\s*{_HANDLE_UNIT}\s*）|\[\s*{_HANDLE_UNIT}\s*\]|【\s*{_HANDLE_UNIT}\s*】|{_HANDLE_UNIT})",
+    re.IGNORECASE,
 )
-_RESOURCE_HANDLE_HINTS = ("res_", "img_", "aud_", "vid_", "fil_", "dlg_")
 
 
 def _strip_resource_handles(text: str) -> str:
-    """剥离泄漏进用户可见文本里的内部资源句柄（``res_xxx`` / ``img_xxx`` 等）。
-
-    ``create_subagent`` / kanban 完成回执会带 ``res_deb5b2e0d2a4`` 这类句柄，供主人格用
-    ``send_message_by_ai(image_ids=res_xxx)`` 发图 / ``file_ids=res_xxx`` 发文件。弱模型有时不发内容、反而把
-    **句柄本身**写进正文（"详细的放那里面了 res_xxx 自己看吧"）——用户看到一串没意义的
-    内部 ID，既无用又出戏。这些句柄是纯内部寻址、用户永远不该看到，命中即抹掉。
-
-    带特征子串快路径：正常消息（不含 ``res_``/``img_`` 等前缀）零正则开销。
-    """
-    if not any(h in text for h in _RESOURCE_HANDLE_HINTS):
+    """剥离泄漏进用户可见文本里的内部句柄（res_/img_/to_/sa_/dlg_/note:/kb_*/journal:）。"""
+    lower = text.lower()
+    if not any(h in lower for h in _RESOURCE_HANDLE_HINTS):
         return text
-    cleaned = _RESOURCE_HANDLE_RE.sub("", text)
+    cleaned = _HANDLE_STRIP_RE.sub("", text)
     if cleaned != text:
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
         from gsuid_core.i18n import t as i18n_t
         from gsuid_core.logger import logger
 

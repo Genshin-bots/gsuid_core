@@ -597,6 +597,7 @@ async def send_message_by_ai(
         if media_parts:
             from gsuid_core.ai_core.outbound import (
                 topic_from_extra,
+                note_run_image_delivered,
                 set_outbound_image_label,
                 reset_outbound_image_label,
                 format_outbound_image_placeholder,
@@ -614,6 +615,8 @@ async def send_message_by_ai(
             try:
                 await bot.send(_out if len(_out) > 1 else _out[0], extra_metadata=_meta)
                 sent = True
+                for _iid in success_img_ids:
+                    note_run_image_delivered(_iid)
             finally:
                 reset_outbound_image_label(_tok)
         elif text:

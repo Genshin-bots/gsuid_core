@@ -359,6 +359,7 @@ def test_report_speech_and_allow_render_gate() -> None:
         "fund_claim",
         "machine_dump",
         "model_identity",
+        "internal_handle_leak",
         "system_term",
     ]
     assert NEVER_RELEASE_CATEGORIES == {
@@ -503,3 +504,102 @@ def test_agent_run_guards_state_machine(monkeypatch: pytest.MonkeyPatch) -> None
     st.thrash_fused = True
     ToolCircuitBreaker.sanitize_and_cap_response(st, dup_resp, create_by="Chat")
     assert [p.tool_name for p in dup_resp.parts if isinstance(p, ToolCallPart)] == ["other"]
+
+
+def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """内部句柄门控独立于软 OOC 开关，全前缀清洗空括号，且 >=120 字正文仍补发未发送过的图片并去重。"""
+    import asyncio
+    from typing import Mapping, Optional
+
+    from gsuid_core.ai_core import output_gate
+    from gsuid_core.segment import Message
+    from gsuid_core.ai_core.outbound import (
+        note_run_image_delivered,
+        reset_run_image_delivered,
+    )
+    from gsuid_core.ai_core.protocol_text import _strip_resource_handles
+    from gsuid_core.utils.resource_manager import RM
+    from gsuid_core.ai_core.delivery_present import _resolve_and_deliver_leaked_handles
+    from gsuid_core.ai_core.control.directive import GateDecision
+
+    # 1. 软 OOC 防火墙关闭时，软出戏放行，但 internal_handle_leak 仍强制拦截
+    monkeypatch.setattr(output_gate, "is_ooc_firewall_enabled", lambda: False)
+    assert output_gate.pre_send_gate("我是语言模型。", {}, channel="main").decision is GateDecision.ALLOW
+    hit_to = output_gate.pre_send_gate("详见 to_a1b2c3d4e5f6", {}, channel="main")
+    assert hit_to.decision is GateDecision.REWRITE and hit_to.ooc_hit is not None
+    assert hit_to.ooc_hit.category == "internal_handle_leak"
+    hit_img = output_gate.pre_send_gate("图在这里 img_abcdef012345", {}, channel="main")
+    assert hit_img.decision is GateDecision.REWRITE and "send_message_by_ai" in hit_img.feedback
+
+    # 2. 全前缀剥离 + 前置标签/空括号清理 + 贴中文无空格命中 + 正常英文与 foo() 不误杀
+    dirty = (
+        "结果已整理好（资源ID: to_a1b2c3d4e5f6），"
+        "补充（句柄: note:测试人格:每日记录）与 sa_1234abcd5678、"
+        "【kb_plugin:demo_doc】、kb_kbdoc:doc_001、journal:测试人格:2026-11-25，"
+        "贴中文img_cafebabe啦，同时保留 foo()。"
+    )
+    cleaned = _strip_resource_handles(dirty)
+    for leaked in (
+        "to_a1b2c3d4e5f6",
+        "note:测试人格:每日记录",
+        "sa_1234abcd5678",
+        "kb_plugin:",
+        "kb_kbdoc:",
+        "journal:",
+        "img_cafebabe",
+    ):
+        assert leaked not in cleaned
+    assert "（）" not in cleaned and "【】" not in cleaned and "资源ID" not in cleaned
+    assert "结果已整理好" in cleaned and "foo()" in cleaned
+    benign = "Note: please check journal:daily and foo() in prose."
+    assert _strip_resource_handles(benign) == benign
+
+    # 3. >=120 字正文带 img_ 句柄：未发过则补发真实图片，已发过则去重不重发
+    sent_payloads: list[object] = []
+
+    class _FakeSender:
+        async def send(
+            self,
+            message: Message | list[Message] | str | bytes | list[str],
+            *,
+            extra_metadata: Optional[Mapping[str, object]] = None,
+        ) -> Optional[list[str]]:
+            del extra_metadata
+            sent_payloads.append(message)
+            return None
+
+    img_id = RM.register(b"\x89PNG\r\n\x1a\nfake")
+    long_prose = (
+        "这是一段超过一百二十字的详细分析结论正文，用来验证即使回复正文已经很长且包含了完整的分段说明与背景交代，"
+        "当模型忘记调用发图工具而在文末顺带附了图片资源句柄时，出站呈现层依然会把尚未发送过的真实光栅图片补发给用户，"
+        "同时彻底清理残留句柄与标签，而不会因为正文较长而静默丢图。"
+    )
+    assert len(long_prose) >= 120
+    text_with_img = f"{long_prose}（资源ID: {img_id}）"
+
+    async def _verify_dedup() -> None:
+        reset_run_image_delivered()
+        try:
+            out_first = await _resolve_and_deliver_leaked_handles(text_with_img, _FakeSender())
+            assert img_id not in out_first and "（）" not in out_first
+            assert len(sent_payloads) == 1
+
+            # 本轮已记录发过该 img_id → 二次调用不得重复发图
+            out_second = await _resolve_and_deliver_leaked_handles(text_with_img, _FakeSender())
+            assert img_id not in out_second
+            assert len(sent_payloads) == 1
+
+            # 子 Task 内模拟 send_message_by_ai 发送另一个 img_id → 父协程呈现层必须可见并去重
+            img_id_2 = RM.register(b"\x89PNG\r\n\x1a\nfake2")
+
+            async def _child_tool_send() -> None:
+                note_run_image_delivered(img_id_2)
+
+            await asyncio.create_task(_child_tool_send())
+            out_third = await _resolve_and_deliver_leaked_handles(f"{long_prose} {img_id_2}", _FakeSender())
+            assert img_id_2 not in out_third
+            assert len(sent_payloads) == 1
+        finally:
+            reset_run_image_delivered()
+
+    asyncio.run(_verify_dedup())

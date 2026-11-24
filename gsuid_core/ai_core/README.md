@@ -33,7 +33,7 @@
 | `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门与纠正目录）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
 | `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）。 |
 | `control/angle_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
-| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语、`OutboundTextView` 单遍视图与数据驱动 `_OOC_RING` 规则表；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
+| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语、`OutboundTextView` 单遍视图与数据驱动 `_OOC_RING` 规则表；含独立于软开关的 `internal_handle_leak` 与框架泄漏检测。 |
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
 | `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
 | `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |
@@ -101,8 +101,10 @@
 
 | 文件 | 职责 |
 |---|---|
-| `emitter.py` | 唯一发送出口 `emit_proactive_message`：串联 C8 抑制、`send_chat_result`、主 session 同步与网关登记。 |
+| `emitter.py` | 唯一发送出口 `emit_proactive_message`：串联统一门控、`send_chat_result`、主 session 同步与网关登记。 |
+| `policy.py` | 主动触达统一准入策略门（`evaluate_proactive_gate` / `is_session_busy` / `is_session_scope_banned` / `dm_allowed` / `check_target_rate_and_gap`）。 |
 | `dispatcher.py` | `UnifiedProactiveDispatcher`：C8 网关单例（`should_suppress_heartbeat / consume_merge_context / register_send`，原 `heartbeat/dispatcher.py` 迁入）。 |
+| `speak.py` / `dm_lease.py` | Heartbeat/Autonomy 共享发声表达层与 72 小时私聊亲和租约。 |
 
 **唯一入口**：`emit_proactive_message(event, message, *, source, trigger_reason, generator_log_files=None, bot=None, suppress_when_heartbeat_recent=True)`。
 
@@ -137,6 +139,17 @@
 | `decision.py` | `run_heartbeat(event, history, persona_name, extra_context="")`：决策 + 发言两阶段子 agent。**入参直接收 `persona_name: str`，不再要求传 GsCoreAIAgent**——避免每次心跳给"用户没跟 AI 说过话"的会话凭空创建 2-entry 的空壳 session_logger 文件。**返回 `(mood, message, generator_log_files)` 三元组**，由 inspector 交给 emitter。 |
 
 ⚠️ 巡检入口 `_inspect_session` 不再调 `_send_proactive_message`，而是 `await emit_proactive_message(event=event, message=message, source="heartbeat", trigger_reason=mood, generator_log_files=generator_log_files)`。
+
+### `autonomy/` — 自主行动（已收敛为 9 文件）
+
+| 文件 | 职责 |
+|---|---|
+| `scheduler.py` | `AutonomyScheduler` 调度循环 + `init_autonomy` / `stop_autonomy` 启停钩子。 |
+| `observer.py` / `select.py` | 阶段一观察底片采集（含插件 Bind UID 反射）与纯选人/渲染规则。 |
+| `runner.py` | 阶段二无状态行动执行器 + `AUTONOMY_SYSTEM_GUIDE` + 调度级冷却门控。 |
+| `delivery.py` | 工具轨迹事实验证、6 行尾块解析、交付路径裁决与合并槽读写（原 `verifier` + `dispatch`）。 |
+| `tools.py` | 自主行动专用工具闭包、笔记 scope 头与经 `proactive/policy.py` 门控的 `send_message_by_ai`。 |
+| `models.py` / `micro_arc.py` | 数据结构与审计 JSON 编解码（原 `models` + `codec`）+ 微弧话题跟进状态机。 |
 
 ### `scheduled_task/` — 用户预约的定时唤醒
 

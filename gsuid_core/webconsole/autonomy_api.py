@@ -9,7 +9,7 @@ from gsuid_core.logger import logger
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import SessionRecord, require_auth, require_admin
 from gsuid_core.webconsole._api_tags import AUTONOMY as _TAG
-from gsuid_core.ai_core.autonomy.codec import FactView, StepView, load_fact, load_steps, load_str_list
+from gsuid_core.ai_core.autonomy.models import FactView, StepView, load_fact, load_steps, load_str_list
 from gsuid_core.ai_core.database.models import AIAutonomyActivity
 
 

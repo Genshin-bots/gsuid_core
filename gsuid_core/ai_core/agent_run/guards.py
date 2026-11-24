@@ -587,7 +587,10 @@ class ToolCircuitBreaker:
                     )
                 )
                 if type(part) is ToolReturnPart:
-                    part.content = f"[工具 {eff_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
+                    part.content = (
+                        f"[工具 {eff_name} 已生成内容，未发送给用户，资源ID: {resource_id}；"
+                        "如需发送请调用 send_message_by_ai，严禁把资源ID写入回复正文]"
+                    )
 
             fileos_folded = False
             raw_tr = part.content if isinstance(part.content, str) else None

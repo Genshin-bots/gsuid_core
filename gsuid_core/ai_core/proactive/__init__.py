@@ -18,6 +18,16 @@ from gsuid_core.ai_core.proactive.speak import (
     run_proactive_speak_agent,
     build_proactive_speak_system_prompt,
 )
+from gsuid_core.ai_core.proactive.policy import (
+    ProactiveGateInput,
+    ProactiveGateDecision,
+    dm_allowed,
+    is_session_busy,
+    evaluate_proactive_gate,
+    is_session_scope_banned,
+    check_target_rate_and_gap,
+    is_dm_reciprocity_blocked,
+)
 from gsuid_core.ai_core.proactive.emitter import (
     emit_proactive_message,
     resolve_event_session_identity,
@@ -31,11 +41,19 @@ from gsuid_core.ai_core.proactive.dm_lease import (
 
 __all__ = [
     "ComposeOutcome",
+    "ProactiveGateDecision",
+    "ProactiveGateInput",
     "build_proactive_speak_system_prompt",
+    "check_target_rate_and_gap",
     "compose_autonomy_message",
+    "dm_allowed",
     "emit_proactive_message",
+    "evaluate_proactive_gate",
     "grant_dm_lease",
     "get_active_dm_lease",
+    "is_dm_reciprocity_blocked",
+    "is_session_busy",
+    "is_session_scope_banned",
     "renew_dm_lease",
     "resolve_event_session_identity",
     "revoke_dm_lease",

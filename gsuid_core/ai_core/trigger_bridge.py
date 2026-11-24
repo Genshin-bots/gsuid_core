@@ -257,25 +257,25 @@ def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> 
         id_list = ", ".join(image_ids)
         parts.append(
             f"[已生成 {len(image_ids)} 张图片，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 image_ids。]"
+            "如需发送给用户，请调用 send_message_by_ai 传入 image_ids；严禁把资源ID写入回复正文。]"
         )
     if audio_ids:
         id_list = ", ".join(audio_ids)
         parts.append(
             f"[已生成 {len(audio_ids)} 个音频，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 audio_id。]"
+            "如需发送给用户，请调用 send_message_by_ai 传入 audio_id；严禁把资源ID写入回复正文。]"
         )
     if video_ids:
         id_list = ", ".join(video_ids)
         parts.append(
             f"[已生成 {len(video_ids)} 个视频，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 video_id。]"
+            "如需发送给用户，请调用 send_message_by_ai 传入 video_id；严禁把资源ID写入回复正文。]"
         )
     if file_ids:
         id_list = ", ".join(file_ids)
         parts.append(
             f"[已生成 {len(file_ids)} 个文件，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 file_ids。]"
+            "如需发送给用户，请调用 send_message_by_ai 传入 file_ids；严禁把资源ID写入回复正文。]"
         )
     return "\n".join(parts)
 

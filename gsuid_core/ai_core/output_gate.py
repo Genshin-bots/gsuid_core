@@ -238,10 +238,9 @@ def _eval_angle(view: OutboundTextView, extra: ExtraMap, *, channel: str, count_
 
 
 def _eval_ooc(view: OutboundTextView, extra: ExtraMap, *, user_text: str, channel: str) -> Optional[GateResult]:
-    if not is_ooc_firewall_enabled():
-        return None
+    fw_on = is_ooc_firewall_enabled()
     names: list[str] = []
-    if EXPOSED_TOOLS_EXTRA_KEY in extra:
+    if fw_on and EXPOSED_TOOLS_EXTRA_KEY in extra:
         raw_names = extra[EXPOSED_TOOLS_EXTRA_KEY]
         if isinstance(raw_names, (list, tuple, set, frozenset)):
             names = [str(x) for x in raw_names if str(x)]
@@ -251,6 +250,7 @@ def _eval_ooc(view: OutboundTextView, extra: ExtraMap, *, user_text: str, channe
         channel=channel,
         exposed_tool_names=names,
         view=view,
+        only_always_enforced=not fw_on,
         hooks=OocGateHooks(
             is_reminded=lambda: ooc_reminder_delivered(extra),
             mark_reminded=lambda: mark_ooc_reminded(extra),

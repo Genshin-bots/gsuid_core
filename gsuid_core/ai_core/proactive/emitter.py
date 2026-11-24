@@ -24,7 +24,7 @@ Kanban 子任务转译 / Kanban 失败播报 / 工具主动发送等）。它在
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pathlib import Path
 
 from gsuid_core.bot import Bot, _Bot
@@ -34,6 +34,12 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.session_logger import ProactiveSource
+from gsuid_core.ai_core.proactive.policy import (
+    ProactiveChannel,
+    ProactiveGateInput,
+    evaluate_proactive_gate,
+    is_session_scope_banned,
+)
 
 # 主动消息统一网关（proactive/dispatcher.py），本模块直接复用其单例，
 # 不重复实现"防撞车 + 合并语境"语义。
@@ -41,6 +47,18 @@ from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_
 
 # 旧 dispatcher.register_send 兼容字面量集合。
 LegacyDispatcherSource = Literal["heartbeat", "task", "autonomy"]
+
+
+def _channel_of_source(source: ProactiveSource) -> ProactiveChannel:
+    if source == "heartbeat":
+        return "heartbeat"
+    if source == "autonomy":
+        return "autonomy_send"
+    if source == "scheduled_task":
+        return "scheduled_task"
+    if source == "kanban":
+        return "kanban"
+    return "tool"
 
 
 def _resolve_active_bot(event: Event) -> Optional["_Bot"]:
@@ -182,15 +200,29 @@ async def emit_proactive_message(
     target_key: str = _target_key(event)
     dispatcher = get_dispatcher()
 
-    # 1) C8 防撞车——仅 Heartbeat 自己受抑制；task / kanban / tool 不在乎上次刚发过什么。
-    if suppress_when_heartbeat_recent and dispatcher.should_suppress_heartbeat(target_key):
-        logger.debug(
-            t(
-                "log.ai.proactiveemitter_c8_suppressed_source",
-                source=source,
-                target_key=target_key,
-            )
+    # 1) 统一主动策略门：禁言拦截（heartbeat/autonomy；放行 scheduled_task/kanban）与 C8 防撞车。
+    gate = evaluate_proactive_gate(
+        ProactiveGateInput(
+            channel=_channel_of_source(source),
+            persona_name=persona_name or "",
+            target_key=target_key,
+            is_direct=not event.group_id,
+            scope_banned=is_session_scope_banned(event.session_id),
+            check_c8_gap=suppress_when_heartbeat_recent,
+            c8_gap_blocked=suppress_when_heartbeat_recent and dispatcher.should_suppress_heartbeat(target_key),
         )
+    )
+    if not gate.allowed:
+        if gate.code == "scope_banned":
+            logger.debug(t("log.ai.heartbeat_session_muted_skipping", p0=event.session_id))
+        else:
+            logger.debug(
+                t(
+                    "log.ai.proactiveemitter_c8_suppressed_source",
+                    source=source,
+                    target_key=target_key,
+                )
+            )
         return False
 
     # 2) 解析 Bot 实例
@@ -208,7 +240,7 @@ async def emit_proactive_message(
         bot = Bot(_bot, event)
 
     # 3) 实际发送；外层调用入口已处理异常上下文，此层依 §1.1 不做额外兜底。
-    extra_metadata: Dict[str, Any] = {
+    extra_metadata: dict[str, object] = {
         "proactive": True,
         "proactive_source": source,
         "trigger_reason": trigger_reason,

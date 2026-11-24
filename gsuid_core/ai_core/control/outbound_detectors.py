@@ -23,7 +23,10 @@ from gsuid_core.ai_core.control.lines import (
     MSG_SECTION_MARK,
     OOC_JUDGE_MARKER,
     FUND_CLAIM_PREFIX,
+    INTERNAL_HANDLE_RE,
     TOOL_NAME_LEAK_NUDGE,
+    INTERNAL_HANDLE_HINTS,
+    HANDLE_IMAGE_LEAK_NUDGE,
     CAPABILITY_OR_DEV_LEAK_RE,
 )
 from gsuid_core.ai_core.protocol_text import is_silence_marker
@@ -896,6 +899,17 @@ def match_ooc_model_identity(ctx: OocScanContext) -> list[str] | None:
     return None
 
 
+def match_ooc_internal_handle_leak(ctx: OocScanContext) -> list[str] | None:
+    """内部资源/落盘/笔记句柄永远不属于用户台词，独立于软出戏开关始终拦截。"""
+    lower = ctx.text.lower()
+    if not any(h in lower for h in INTERNAL_HANDLE_HINTS):
+        return None
+    found = INTERNAL_HANDLE_RE.findall(ctx.text)
+    if not found:
+        return None
+    return [f"内部句柄:{h[:40]}" for h in found[:4]]
+
+
 def match_ooc_system_term(ctx: OocScanContext) -> list[str] | None:
     system_hits = [w for w in _SYSTEM_TERMS if normalize_for_match(w) in ctx.norm]
     if _CTX_TECH_SELF_RE.search(ctx.text):
@@ -935,6 +949,7 @@ class OocRule:
     is_soft_judge: bool
     match: Callable[[OocScanContext], list[str] | None]
     warning: str | Callable[[FirewallHit], str]
+    always_enforce: bool = False
 
     def render_warning(self, hit: FirewallHit) -> str:
         """按命中上下文渲染本规则的重写提示。"""
@@ -957,6 +972,12 @@ def _warn_soft_judge(hit: FirewallHit) -> str:
         "若是在承认自己是某个模型或 AI，才改成角色口吻。"
         "直接输出你决定发给用户的正文，不要再调用发送工具重复同一句。）"
     )
+
+
+def _warn_internal_handle_leak(hit: FirewallHit) -> str:
+    if any(m.lower().startswith(("内部句柄:img_", "内部句柄:res_")) for m in hit.matched):
+        return HANDLE_IMAGE_LEAK_NUDGE
+    return TOOL_NAME_LEAK_NUDGE
 
 
 def _warn_system_term(hit: FirewallHit) -> str:
@@ -1049,6 +1070,15 @@ _OOC_RING: tuple[OocRule, ...] = (
         warning=_warn_soft_judge,
     ),
     OocRule(
+        "internal_handle_leak",
+        severity="remind_then_release",
+        last_resort_send_original=False,
+        is_soft_judge=False,
+        always_enforce=True,
+        match=match_ooc_internal_handle_leak,
+        warning=_warn_internal_handle_leak,
+    ),
+    OocRule(
         "system_term",
         severity="remind_then_release",
         last_resort_send_original=False,
@@ -1078,6 +1108,7 @@ def inspect_outbound_ooc(
     user_text: str = "",
     exposed_tool_names: Sequence[str] = (),
     view: Optional[OutboundTextView] = None,
+    only_always_enforced: bool = False,
 ) -> Optional[FirewallHit]:
     """按 ``_OOC_RING`` 单表顺序检测 OOC。``tier="plain"`` 直接放行。
 
@@ -1089,6 +1120,8 @@ def inspect_outbound_ooc(
         return None
     ctx = OocScanContext(text=text, user_text=user_text, exposed_tool_names=exposed_tool_names, view=view)
     for rule in _OOC_RING:
+        if only_always_enforced and not rule.always_enforce:
+            continue
         matched = rule.match(ctx)
         if matched is not None:
             return FirewallHit(category=rule.category, matched=matched)

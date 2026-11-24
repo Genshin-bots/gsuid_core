@@ -551,7 +551,7 @@ async def run_interactive_turn(
         hook_ctx=hook_ctx,
     )
 
-    from gsuid_core.ai_core.autonomy.dispatch import ack_autonomy_merge, peek_autonomy_merge
+    from gsuid_core.ai_core.autonomy.delivery import ack_autonomy_merge, peek_autonomy_merge
 
     merge_line = peek_autonomy_merge(event, session.persona_name or "")
     if merge_line:
