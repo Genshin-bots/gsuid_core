@@ -2529,9 +2529,18 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
     from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, registry as node_reg
     from gsuid_core.ai_core.planning.models import AIAgentTask, AIAgentArtifact
     from gsuid_core.ai_core.agent_run.support import (
+        request_limit_for,
         wall_clock_budget_action,
         fold_stale_capability_tool_returns,
     )
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    monkeypatch.setattr(ai_config.get_config("multi_agent_lenth"), "data", 15)
+    assert request_limit_for("Chat") == 15
+    assert request_limit_for("Chat", max_iterations=1) == 1
+    assert request_limit_for("Chat", max_iterations=100) == 15
+    assert request_limit_for("Chat", max_iterations=0) == 15
+    assert request_limit_for("Chat", max_iterations=None) == 15
     from gsuid_core.ai_core.planning.kanban_executor import (
         _format_subtask_prompt,
         _format_delivery_for_main_agent,

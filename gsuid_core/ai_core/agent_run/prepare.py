@@ -162,8 +162,8 @@ class PreparePhase(RunOnceHost):
         st.in_flight_short = False
         st.render_ack_seen = False
 
-        # 思考轮只看 create_by。max_iterations 参数不再改这一限。
-        st.limits = UsageLimits(request_limit=request_limit_for(self.create_by))
+        # 思考轮按 create_by 分档；传入正整数 max_iterations 时仅收紧上限（不放宽）。
+        st.limits = UsageLimits(request_limit=request_limit_for(self.create_by, self.max_iterations))
 
         # 记录开始时间用于延迟统计与墙钟预算
         st.start_time = time.time()

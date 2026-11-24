@@ -291,7 +291,7 @@ class GsCoreAIAgent(RunOnceMixin):
         self._wire_max_tokens: Optional[int] = (
             max_tokens if (max_tokens is not None and 0 < max_tokens <= 8192) else None
         )
-        # 思考轮由 request_limit_for(create_by) 决定，此参数不再生效。
+        # 思考轮按 create_by 分档；正整数 max_iterations 仅收紧上限，不放宽全局配置。
         self.max_iterations = max_iterations
         # 墙钟预算(秒)：None 或 <=0 表示不启用；显式 >0 时到期先软收敛，超宽限硬截断。
         self.wall_clock_budget = wall_clock_budget
@@ -2065,7 +2065,7 @@ def create_agent(
         model_name: 模型名称
         system_prompt: 系统提示词
         max_tokens: 最大输出 token 数，None 时使用全局配置默认值
-        max_iterations: 已忽略。思考轮按 create_by 分档，见 request_limit_for。
+        max_iterations: 思考轮上限（可选）。传入正整数时仅收紧 ``request_limit_for(create_by)`` 上限，不放宽全局配置。
         persona_name: Persona 名称（用于热重载检测）
         task_level: 任务级别，"high"表示高级任务，"low"表示低级任务
         task_kind: 任务类型 ID（见 ``configs/task_kinds``）。给了才能被用户按任务覆盖模型；
