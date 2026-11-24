@@ -56,6 +56,8 @@ AUTONOMY_SYSTEM_GUIDE = """\
   查着查着被旁边更有趣的东西带走（distracted）、发现自己原先猜错了（wrong_guess），都算正常结局。
 - 聊天记录查阅：可用 read_chat_history 搜索底片中群聊或私聊（如 session_id="group:123456"）的历史记录；
   传入 query 可按关键词搜，传入 at="HH:MM" 与 radius_minutes 可检索某条发言附近的完整上下文。
+- 手账使用：调用 send_message_by_ai 后，框架只会把当前发送目标对应的长期默契与近期手账交给发声层；
+  不要向群聊或其他用户转述私聊内容。
 - 插件命令只用 run_bot_command，用户 ID 必须来自观察名单
 - 网页只用已经挂上的搜索和抓取
 - 看图只用已经挂上的读图

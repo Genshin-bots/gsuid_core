@@ -434,7 +434,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             tool_sent=False,
             last_sent_group_id="",
         )
-        # 私聊主动关怀（care_user）不得写入公共 self.md
+        # 私聊主动关怀（care_user）写入独立 users/{uid}.md，绝不写入公共 self.md；空 uid 须 fail-closed 丢弃
         dm_pin = DeliveryPin(
             user_id="100000001",
             group_id="",
@@ -462,7 +462,27 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             last_sent_group_id="",
             last_sent_user_id="100000001",
         )
+        await _record_autonomy_journal(
+            persona_name="alpha",
+            raw_text="缺少目标用户的私聊关怀不应污染公共手账",
+            steps=[],
+            spoken_text="缺少目标用户的私聊关怀不应污染公共手账",
+            topic="空目标",
+            fact="",
+            take="",
+            decision=DeliveryDecision("care_user", "silent_only", None, "空目标测试"),
+            facts=FactPack(["web_search_tool"], ["ok"], [], True),
+            pin=None,
+            mode="silent_only",
+            tool_sent=False,
+            last_sent_group_id="",
+            last_sent_user_id="",
+        )
         assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+        u1_auto_path = jstorage._user_shard_path("alpha", "100000001")
+        assert u1_auto_path.exists()
+        u1_auto_raw = u1_auto_path.read_text(encoding="utf-8")
+        assert "自主探索" in u1_auto_raw and "给你带了一句私聊提醒" in u1_auto_raw
         await _record_autonomy_journal(
             persona_name="alpha",
             raw_text="执行出错: 模型套餐用量已达上限",
@@ -660,17 +680,37 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert await resolve_handle("note:alpha:topic_体态拉伸") is not None
         assert await resolve_handle("note:alpha:体态拉伸_小抄") is not None
 
-        # 超 60 天未活跃群自动迁入 dormant_groups，再次读取时无缝唤醒
+        # 超 60 天未活跃群与私聊分片自动迁入 dormant_*，再次读取时无缝唤醒
         g1_file = jm.get_journal_path("alpha", "group_1")
+        u1_file = jstorage._user_shard_path("alpha", "100000001")
         ancient_ts = now - 70 * 86400
         os.utime(g1_file, (ancient_ts, ancient_ts))
+        os.utime(u1_file, (ancient_ts, ancient_ts))
         jstorage._SHARD_CACHE.clear()
         dormant_cnt, _ = await jd.run_storage_gc_sync(jstorage._persona_root("alpha"), now)
-        assert dormant_cnt >= 1 and not g1_file.exists()
+        assert dormant_cnt >= 2 and not g1_file.exists() and not u1_file.exists()
+        assert jstorage._dormant_user_path("alpha", "100000001").exists()
         woken_text, _ = jm.read_journal_for_context("alpha", current_group_id="group_1")
         assert "三大指数回落" in woken_text and g1_file.exists()
+        woken_dm, _ = jm.read_journal_for_context("alpha", current_group_id=None, current_user_id="100000001")
+        assert "给你带了一句私聊提醒" in woken_dm and u1_file.exists()
 
-        # 8. 实库验证 Phase 1 真值对账（completed 入已完结，>24h 僵尸审批项不进 in_flight）
+        # 私聊归档句柄解析回填 owner_user_id，且私聊规则跨日不混入「群聊」口吻
+        dm_arch_hid = f"journal:alpha:user:100000001:{sleep_day}"
+        resolved_dm_arch = await resolve_handle(dm_arch_hid)
+        assert resolved_dm_arch is not None
+        assert resolved_dm_arch.scope_key == "user:100000001"
+        assert resolved_dm_arch.owner_user_id == "100000001"
+        dm_rule_slots = jd.rule_rollover_shard(
+            jstorage.ShardDocument(shard_id="user:100000001", timeline=["- [10:00 | 自主探索] 提醒休息"]),
+            persona_name="alpha",
+            sleep_date=sleep_day,
+            current_month=sleep_day[:7],
+            ground_truth=jd.GroundTruthDigest(),
+        )
+        assert all("群聊" not in item for item in dm_rule_slots["persistent"])
+
+        # 8. 实库验证 Phase 1 真值对账（completed 入已完结，>24h 僵尸审批项不进 in_flight，私聊关联 care_user）
         now_dt = datetime.fromtimestamp(now)
         async with maker() as s:
             s.add(
@@ -694,6 +734,30 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 )
             )
             s.add(
+                AIAgentTask(
+                    id="t_dm_alpha",
+                    goal="私聊跟进",
+                    display_name="本人格私聊事项",
+                    status="completed",
+                    persona_name="alpha",
+                    owner_user_id="100000001",
+                    group_id=None,
+                    updated_at=now_dt - timedelta(hours=1),
+                )
+            )
+            s.add(
+                AIAgentTask(
+                    id="t_dm_beta",
+                    goal="私聊跟进",
+                    display_name="他人格私聊事项",
+                    status="completed",
+                    persona_name="beta",
+                    owner_user_id="100000001",
+                    group_id=None,
+                    updated_at=now_dt - timedelta(hours=1),
+                )
+            )
+            s.add(
                 AIAutonomyActivity(
                     persona_name="alpha",
                     bot_id="onebot",
@@ -703,6 +767,30 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                     created_at=now - 600,
                 )
             )
+            s.add(
+                AIAutonomyActivity(
+                    persona_name="alpha",
+                    bot_id="onebot",
+                    bot_self_id="1",
+                    drive_kind="care_user",
+                    target_user_id="100000001",
+                    target_session_key="private:100000001",
+                    summary="私下问候作息进展",
+                    created_at=now - 300,
+                )
+            )
+            s.add(
+                AIAutonomyActivity(
+                    persona_name="alpha",
+                    bot_id="onebot",
+                    bot_self_id="1",
+                    drive_kind="care_user",
+                    target_user_id="100000001",
+                    target_session_key="group:group_1",
+                    summary="群里提过的公共事项",
+                    created_at=now - 200,
+                )
+            )
             await s.commit()
 
         gt_g1 = await jd.collect_ground_truth("alpha", "group_1", now)
@@ -710,6 +798,11 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert "过期十天审批单" not in gt_g1.in_flight
         gt_self = await jd.collect_ground_truth("alpha", "__self__", now)
         assert any("读书摘要" in x for x in gt_self.autonomy_facts)
+        gt_dm = await jd.collect_ground_truth("alpha", "user:100000001", now)
+        assert any("私下问候作息进展" in x for x in gt_dm.autonomy_facts)
+        assert all("群里提过的公共事项" not in x for x in gt_dm.autonomy_facts)
+        assert "本人格私聊事项" in gt_dm.completed
+        assert "他人格私聊事项" not in gt_dm.completed
 
         # 9. persist_subagent_result 在 persona_name=None 时按 group_id 路由至 alpha，不落 default
         from gsuid_core.ai_core.planning.tool_output_store import PersistedHandleCard
@@ -766,6 +859,45 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         tl_after_sub = await _wait_timeline_has(g1_shard_path, "sa_test0001")
         assert any("sa_test0001" in ln for ln in tl_after_sub)
         assert not (journal_dir / "personas" / "default" / "groups" / "group_1.md").exists()
+
+        # 私聊子代理产出路由至 users/{uid}.md，缺 uid 时 fail-closed 不落 self.md
+        dm_sub_task = AIAgentTask(
+            id="t_sub_dm",
+            goal="私聊调研",
+            display_name="私聊调研子任务",
+            persona_name="alpha",
+            group_id=None,
+            scope_key="user_global:100000001",
+            owner_user_id="100000001",
+        )
+        await toh.persist_subagent_result(
+            profile="research_agent",
+            content=(
+                "私聊专属调研结论汇总，涵盖核心数据交叉对比、阶段进展评估与后续跟进建议，"
+                "总字符数超过四十个字符门槛以便触发私聊手账自动回流。"
+            ),
+            task=dm_sub_task,
+            res_handle="res_test_dm",
+        )
+        tl_dm_sub = await _wait_timeline_has(u1_file, "sa_test0001")
+        assert any("sa_test0001" in ln and "私聊专属调研结论" in ln for ln in tl_dm_sub)
+        bad_dm_task = AIAgentTask(
+            id="t_sub_dm_nouid",
+            goal="缺失属主",
+            display_name="无属主私聊任务",
+            persona_name="alpha",
+            group_id=None,
+            scope_key="user_global:",
+            owner_user_id="",
+        )
+        await toh.persist_subagent_result(
+            profile="research_agent",
+            content="这条缺少属主用户编号的私聊子任务结果绝对不能回退写入公共自我手账文件。",
+            task=bad_dm_task,
+            res_handle="res_bad_dm",
+        )
+        await asyncio.sleep(0.03)
+        assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
 
         # 10. 主 Agent settle 回流边界：看板回灌结单入账，Aside 旁白与无 ev 调用隔离不入账
         from gsuid_core.ai_core import session_logger as sl_mod
@@ -832,6 +964,38 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         tl_after_wake = await _wait_timeline_has(g1_shard_path, "交付完结")
         assert any("交付完结" in ln and "年度报表核查结果" in ln for ln in tl_after_wake)
         assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+
+        # 日常私聊结算（>=60 字）写入 users/{uid}.md 并标「私聊答疑」，绝不污染群手账或 self.md
+        dm_long_model = TestModel(
+            call_tools=[],
+            custom_output_text=(
+                "这是私聊里超过六十个字符的详细答疑说明，梳理了今天与明天的个人日程安排、"
+                "优先事项清单与关键注意事项，另外留好了晚间复盘时间，按节奏慢慢推进即可。"
+            ),
+        )
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _l, _k=None: dm_long_model)
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_by_full_name", lambda _n: dm_long_model)
+        dm_chat_agent = create_agent(
+            system_prompt="测试角色",
+            persona_name="alpha",
+            create_by="Chat",
+            session_id="ws1:onebot:1:private:100000001",
+            dynamic_tools=False,
+        )
+        try:
+            await dm_chat_agent.run(
+                "帮我理一下这两天私聊安排",
+                ev=ev_dm,
+                tools=[],
+                return_mode="return",
+                budget_gate=False,
+            )
+        finally:
+            dm_chat_agent._session_logger.close()
+        tl_dm_chat = await _wait_timeline_has(u1_file, "私聊答疑")
+        assert any("私聊答疑" in ln and "个人日程安排" in ln for ln in tl_dm_chat)
+        assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+        assert not any("个人日程安排" in ln for ln in _read_timeline_now(g1_shard_path))
 
         # 验证 send_message_by_ai 发送正文后无论是返回 <SILENCE> 还是短收尾语（如“发好啦”），均保序保留真实已发正文
         from pydantic_ai.tools import Tool
@@ -904,6 +1068,10 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
 
         # 11. 主动出口（scheduled_task / heartbeat）异步入账、拦截失败兜底文案 + WebConsole 占位符过滤与单分片整理
         from gsuid_core.ai_core.proactive import emitter as emitter_mod
+        from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
+
+        isolated_dispatcher = UnifiedProactiveDispatcher()
+        monkeypatch.setattr(emitter_mod, "get_dispatcher", lambda: isolated_dispatcher)
 
         async def _noop_send_chat(*_a: object, **_kw: object) -> None:
             return None
@@ -935,6 +1103,20 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         tl_after_proactive = await _wait_timeline_has(g1_shard_path, "定时提醒")
         assert not any("没能执行成功" in ln for ln in tl_after_proactive)
         assert any("定时提醒" in ln and "大家早上好" in ln and "定时任务" not in ln for ln in tl_after_proactive)
+
+        sent_dm_ok = await emitter_mod.emit_proactive_message(
+            event=ev_dm,
+            message="私聊晚间提醒：记得按时休息呀。\n⏰ 定时任务: 晚间提醒",
+            source="scheduled_task",
+            trigger_reason="task_evening_dm",
+            bot=Bot(_Bot("onebot"), ev_dm),
+            persona_name="alpha",
+            suppress_when_heartbeat_recent=False,
+        )
+        assert sent_dm_ok is True
+        tl_dm_proactive = await _wait_timeline_has(u1_file, "定时提醒")
+        assert any("定时提醒" in ln and "私聊晚间提醒" in ln for ln in tl_dm_proactive)
+        assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
 
         await jm.record_journal_entry(
             jstorage.JournalEntry(
@@ -1758,6 +1940,8 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
             pro_speak.ComposeOutcome(status="ok", text="今天这话题挺好玩呀", log_files=["autonomy_output_ok.json"]),
         ]
 
+        compose_contexts: list[tuple[bool, str, str]] = []
+
         async def _fake_compose(
             *,
             persona_name: str,
@@ -1771,14 +1955,12 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
         ) -> pro_speak.ComposeOutcome:
             del (
                 persona_name,
-                event,
                 draft,
-                recent_context,
                 target_is_master,
                 target_name,
                 target_zone_label,
-                context_header,
             )
+            compose_contexts.append((bool(event.group_id), recent_context, context_header))
             return compose_reply.pop(0)
 
         g_obs = GroupObservation(
@@ -1815,7 +1997,9 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
             now=now,
         )
         auto_ctx = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+        ab_dispatcher = UnifiedProactiveDispatcher()
         with monkeypatch.context() as mp:
+            mp.setattr(auto_tools, "get_dispatcher", lambda: ab_dispatcher)
             mp.setattr(pro_emitter, "emit_proactive_message", _fake_emit)
             mp.setattr(pro_speak, "compose_autonomy_message", _fake_compose)
             tok = auto_tools.bind_guard(guard)
@@ -1880,6 +2064,103 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
                 assert emitted_calls == [("今天这话题挺好玩呀", ["autonomy_output_ok.json"])]
             finally:
                 auto_tools.reset_guard(tok)
+
+        # 4b. 共享规划底片不承载分片手账原文；发声轮只在目标确定后做单目标物理隔离注入
+        from gsuid_core.ai_core.journal import manager as j_mgr, storage as j_store
+        from gsuid_core.ai_core.autonomy.select import render_digest
+
+        monkeypatch.setattr(j_store, "JOURNAL_DIR", tmp_path / "autonomy_journals")
+        j_store._SHARD_CACHE.clear()
+        j_store._save_shard_sync(
+            "alpha",
+            j_store.ShardDocument(
+                shard_id="user:100000001",
+                persistent=["- 私聊喜欢直截了当的结论"],
+                monthly=["- 本月持续跟进周末复盘计划"],
+                yesterday=["- 昨日私聊约定周末整理书单（归档: journal:alpha:user:100000001:2026-11-24）。"],
+            ),
+        )
+        j_store._save_shard_sync(
+            "alpha",
+            j_store.ShardDocument(
+                shard_id="user:100000002",
+                yesterday=["- 测试用户B的私密健康记录"],
+            ),
+        )
+        j_store._save_shard_sync(
+            "alpha",
+            j_store.ShardDocument(
+                shard_id="group_speak_1",
+                persistent=["- 本群常聊架构设计与工具链"],
+                yesterday=["- 昨日群里完成模块拆分讨论"],
+            ),
+        )
+        dm_brief = j_mgr.read_shard_brief("alpha", user_id="100000001", max_chars=80, include_persistent=False)
+        assert "周末整理书单" in dm_brief and "journal:" not in dm_brief
+        grp_brief = j_mgr.read_shard_brief("alpha", group_id="group_speak_1", max_chars=80, include_persistent=False)
+        assert "模块拆分讨论" in grp_brief
+        rendered_digest = render_digest(
+            ObservationDigest(
+                persona_name="alpha",
+                bot_id="onebot",
+                bot_self_id="10001",
+                ws_bot_id="ws1",
+                mood_score=0.5,
+                care_targets=[dm_snap],
+                group_digests=[g_obs],
+            ),
+            now=now,
+        )
+        assert "周末整理书单" not in rendered_digest and "模块拆分讨论" not in rendered_digest
+        assert "手账线索" not in rendered_digest
+
+        assert "read_target_journal" not in auto_tools.AUTONOMY_TOOL_ALLOWLIST
+        assert all(t_item.name != "read_target_journal" for t_item in auto_tools.build_autonomy_tools())
+        ab_guard = auto_tools.GuardState(
+            persona_name="alpha",
+            whitelist=frozenset({"100000001"}),
+            sessions={},
+            bot_id="onebot",
+            bot_self_id="10001",
+            ws_bot_id="ws1",
+            allowed_groups={"group_speak_1": g_obs},
+            allowed_users={"100000001": dm_snap},
+            now=now,
+        )
+        compose_contexts.clear()
+        compose_reply.extend(
+            [
+                pro_speak.ComposeOutcome(status="ok", text="群里模块拆分推进得挺顺"),
+                pro_speak.ComposeOutcome(status="ok", text="周末书单准备好了没"),
+            ]
+        )
+        ab_dispatcher = UnifiedProactiveDispatcher()
+        with monkeypatch.context() as mp:
+            mp.setattr(auto_tools, "get_dispatcher", lambda: ab_dispatcher)
+            mp.setattr(pro_emitter, "emit_proactive_message", _fake_emit)
+            mp.setattr(pro_speak, "compose_autonomy_message", _fake_compose)
+            tok_ab = auto_tools.bind_guard(ab_guard)
+            try:
+                # 群发声轮仅注入本群手账，绝不混入私聊手账；私聊发声轮仅注入本人手账，绝不混入群或他人手账
+                await auto_tools.send_message_by_ai(
+                    auto_ctx, text="跟进模块拆分", target_id="group_speak_1", target_type="group"
+                )
+                ab_guard.sent_count = 0
+                ab_guard.speak_attempts = 0
+                await auto_tools.send_message_by_ai(
+                    auto_ctx, text="问问周末书单", target_id="100000001", target_type="user"
+                )
+            finally:
+                auto_tools.reset_guard(tok_ab)
+        assert len(compose_contexts) == 2
+        grp_is_g, grp_speak_ctx, _ = compose_contexts[0]
+        dm_is_g, dm_speak_ctx, _ = compose_contexts[1]
+        assert grp_is_g is True and "[本群长期默契与近期手账]" in grp_speak_ctx and "模块拆分讨论" in grp_speak_ctx
+        assert "周末整理书单" not in grp_speak_ctx and "私密健康记录" not in grp_speak_ctx
+        assert (
+            dm_is_g is False and "[你与对方的私聊默契与近期手账]" in dm_speak_ctx and "私聊喜欢直截了当" in dm_speak_ctx
+        )
+        assert "私密健康记录" not in dm_speak_ctx and "模块拆分讨论" not in dm_speak_ctx
 
         # 5. 共用执行收口 run_proactive_speak_agent：引号/沉默/错误/超时均关闭 logger 并保留日志路径
         assert pro_speak.strip_message_quotes("“外层中文引号”") == "外层中文引号"

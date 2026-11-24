@@ -188,6 +188,29 @@ def test_auth_password_roles_and_ecdh_crypto() -> None:
         maybe_decrypt_auth_body(_frontend_encrypt({"email": "x", "password": "y"}, tamper_ct=True))
 
 
+def test_persona_journal_read_routes_require_admin() -> None:
+    from fastapi.testclient import TestClient
+
+    import gsuid_core.webconsole.persona_api  # noqa: F401
+    from gsuid_core.webconsole.app_app import app
+    from gsuid_core.webconsole.web_api import require_auth
+    from gsuid_core.webconsole.session_store import SessionRecord
+
+    user_session: SessionRecord = {
+        "user": {"id": "1", "email": "user@example.com", "name": "测试用户A", "role": "user", "avatar": None},
+        "email": "user@example.com",
+        "created": "t",
+        "expires": "t",
+    }
+    app.dependency_overrides[require_auth] = lambda: user_session
+    try:
+        client = TestClient(app)
+        assert client.get("/api/persona/tester/journal").status_code == 403
+        assert client.get("/api/persona/tester/journal/archives").status_code == 403
+    finally:
+        del app.dependency_overrides[require_auth]
+
+
 def test_plugin_prefs_recent_mru_and_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import gsuid_core.webconsole.plugin_prefs as plugin_prefs
 

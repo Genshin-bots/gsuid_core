@@ -445,7 +445,7 @@ class PreparePhase:
             return
         marker = INNER_OS_MARKER if ai_config.get_config("enable_deepseek_rp").data else ""
         persona_name = self.persona_name or ""
-        group_id = st.ev.group_id if st.ev is not None else None
+        group_id = st.ev.group_id if (st.ev is not None and st.ev.user_type != "direct") else None
         user_id = st.ev.user_id if st.ev is not None else None
         st.final_user_message, st.lean_user_message, where, latest_ts = _ensure_session_anchor_on_first_user(
             self.history,

@@ -1516,7 +1516,7 @@ class PersonaJournalCompactResponse(TypedDict):
 @app.get("/api/persona/{persona_name}/journal", summary="获取指定人格的生活手账", tags=PERSONA)
 async def get_persona_journal(
     persona_name: str,
-    _: SessionRecord = Depends(require_auth),
+    _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalResponse:
     """获取指定人格的生活手账全文及解析后的多尺度分片结构。"""
     from gsuid_core.pool import to_thread
@@ -1560,7 +1560,7 @@ async def get_persona_journal_archives(
     month: str = "",
     shard_id: str = "",
     date: str = "",
-    _: SessionRecord = Depends(require_auth),
+    _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalArchivesResponse:
     """按月/分片/日期读取无损 JSONL 归档流水（含昨日流水与历史冷归档）。"""
     from gsuid_core.pool import to_thread

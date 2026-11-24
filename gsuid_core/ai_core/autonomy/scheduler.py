@@ -704,14 +704,17 @@ async def _record_autonomy_journal(
                     owner_user_id=target_uid,
                 )
 
-    # 私聊主动关怀绝不写入公共 self.md，防止通过首轮锚点泄露给所有群聊
+    # 私聊主动关怀强制落盘到 users/{uid}.md；无明确 uid 时拒绝写手账，严禁落入 self.md
     is_private_care = (
         (tool_sent and not last_sent_group_id and bool(last_sent_user_id))
         or (pin is not None and bool(pin.user_id) and not pin.group_id)
         or (decision.drive == "care_user" and not gid)
     )
+    clean_uid = target_uid.strip()
     if is_private_care:
-        return
+        if not clean_uid:
+            return
+        gid = ""
 
     candidates: list[str] = []
     if spoken_text and not is_rejected_journal_body(spoken_text):
@@ -736,6 +739,7 @@ async def _record_autonomy_journal(
     if not clean_summary:
         return
 
+    entry_requested_by = clean_uid if (is_private_care or (gid and clean_uid)) else ""
     now_dt = _dt.now()
     entry = JournalEntry(
         timestamp=now_dt.timestamp(),
@@ -745,6 +749,6 @@ async def _record_autonomy_journal(
         summary=clean_summary,
         handle_id=note_hid,
         group_id=gid,
-        requested_by=pin.user_id if (gid and pin is not None and pin.user_id) else "",
+        requested_by=entry_requested_by,
     )
     await record_journal_entry(entry, target_personas=[persona_name])

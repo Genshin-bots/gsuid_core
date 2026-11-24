@@ -292,6 +292,7 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
         from gsuid_core.ai_core.journal.storage import SELF_SHARD_ID
 
         eff_shard = shard_id or SELF_SHARD_ID
+        owner_uid = eff_shard[len("user:") :].strip() if eff_shard.startswith("user:") else ""
         text = await read_archived_journal_handle(pname, eff_shard, date_key)
         if text:
             return ResolvedHandle(
@@ -299,7 +300,7 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
                 source="journal",
                 mime="text/markdown",
                 summary=f"{pname} 的手账归档 ({date_key})",
-                owner_user_id="",
+                owner_user_id=owner_uid,
                 scope_key="" if eff_shard == SELF_SHARD_ID else eff_shard,
                 payload_inline=text,
                 payload_path="",

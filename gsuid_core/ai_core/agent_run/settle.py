@@ -594,9 +594,10 @@ async def _record_settle_usage_and_latency(
 
 
 def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: str) -> None:
-    """在策略环、OOC 防火墙与协议泄漏剥离全部通过后，把合规实质行动写入驻群手账。"""
-    if st.ab_abort or st.ev is None or st.ev.user_type == "direct" or not st.ev.group_id:
+    """在策略环、OOC 防火墙与协议泄漏剥离全部通过后，把合规实质行动写入群聊或私聊手账。"""
+    if st.ab_abort or st.ev is None:
         return
+    is_direct = st.ev.user_type == "direct" or not st.ev.group_id
     skip_role = host.is_subagent or host.create_by in (
         "Aside",
         "Autonomy",
@@ -613,13 +614,28 @@ def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: s
 
     from gsuid_core.message_history import get_history_manager
     from gsuid_core.ai_core.inbox.turn import current_turn
-    from gsuid_core.ai_core.journal.manager import record_journal_entry
+    from gsuid_core.ai_core.journal.manager import (
+        record_journal_entry,
+        resolve_persona_for_group_or_session,
+    )
     from gsuid_core.ai_core.journal.storage import JournalEntry
     from gsuid_core.ai_core.journal.sanitizer import (
         clean_journal_tag,
         is_rejected_journal_body,
         sanitize_journal_summary,
     )
+
+    gid = "" if is_direct else str(st.ev.group_id).strip()
+    journal_turn = current_turn()
+    journal_active = journal_turn.active_entry() if journal_turn is not None else None
+    req_uid = (
+        journal_active.item.user_id.strip()
+        if journal_active is not None and journal_active.item.user_id
+        else (str(st.ev.user_id).strip() if st.ev.user_id else "")
+    )
+    # 私聊无明确 user_id 时 fail-closed 丢弃，防止落入公共 self.md
+    if is_direct and not req_uid:
+        return
 
     meta_tools = frozenset(
         {"find_tools", "call_tool", "search_cognition", "read_handle", "read_life_journal", "dispute_directive"}
@@ -631,11 +647,12 @@ def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: s
         if clean_extra and "<SILENCE>" not in clean_extra and clean_extra not in ordered_bubbles:
             ordered_bubbles.append(clean_extra)
 
+    img_delivery_text = "已完成私聊图片交付" if is_direct else "已完成群内图片交付"
     if st.return_mode in ("by_bot",) and st.bot is not None:
         if ordered_bubbles:
             raw_out = "；".join(ordered_bubbles)
         elif st.image_sent_this_run:
-            raw_out = "已完成群内图片交付"
+            raw_out = img_delivery_text
         else:
             return
     else:
@@ -654,7 +671,7 @@ def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: s
         elif valid_tail:
             raw_out = tail_msg
         elif st.image_sent_this_run:
-            raw_out = "已完成群内图片交付"
+            raw_out = img_delivery_text
         else:
             return
 
@@ -662,9 +679,8 @@ def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: s
         return
 
     nicks_for_j: dict[str, str] = {}
-    if st.ev is not None:
-        j_recs = get_history_manager().get_history(st.ev)
-        nicks_for_j = {r.user_id: (r.user_name or r.user_id) for r in j_recs if r.user_id and r.role == "user"}
+    j_recs = get_history_manager().get_history(st.ev)
+    nicks_for_j = {r.user_id: (r.user_name or r.user_id) for r in j_recs if r.user_id and r.role == "user"}
 
     clean_res = sanitize_journal_summary(raw_out, max_chars=110, nicks=nicks_for_j)
     is_delivery_wake = "delivery_wake" in st.run_extra and bool(st.run_extra["delivery_wake"])
@@ -681,17 +697,19 @@ def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: s
     elif st.image_sent_this_run:
         j_tag = "图文交付"
     else:
-        j_tag = "群聊答疑"
+        j_tag = "私聊答疑" if is_direct else "群聊答疑"
+
+    target_persona = host.persona_name.strip() if host.persona_name else ""
+    if not target_persona:
+        resolved_persona = resolve_persona_for_group_or_session(
+            session_id=st.ev.session_id,
+            group_id=gid or None,
+        )
+        target_persona = resolved_persona or ""
+    if is_direct and not target_persona:
+        return
 
     now = datetime.now()
-    gid = str(st.ev.group_id or "") if st.ev and st.ev.group_id else ""
-    journal_turn = current_turn()
-    journal_active = journal_turn.active_entry() if journal_turn is not None else None
-    req_uid = (
-        journal_active.item.user_id
-        if journal_active is not None and journal_active.item.user_id
-        else (str(st.ev.user_id).strip() if st.ev is not None and st.ev.user_id else "")
-    )
     entry = JournalEntry(
         timestamp=now.timestamp(),
         date_str=now.strftime("%Y-%m-%d"),
@@ -704,7 +722,7 @@ def _record_settle_journal_for(host: RunOnceHost, st: RunOnceState, final_msg: s
     asyncio.create_task(
         record_journal_entry(
             entry,
-            target_personas=[host.persona_name] if host.persona_name else None,
+            target_personas=[target_persona] if target_persona else None,
         )
     )
 

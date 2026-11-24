@@ -358,28 +358,33 @@ async def emit_proactive_message(
         apply_turn_shock(_hs, _traits, time.time())
         await save_homeostasis(pname, _hs)
 
-        if source in ("heartbeat", "scheduled_task") and event.group_id and event.user_type != "direct":
-            import asyncio as _asyncio
-            from datetime import datetime as _dt
+        if source in ("heartbeat", "scheduled_task"):
+            _is_priv_j = event.user_type == "direct" or not event.group_id
+            _j_gid = "" if _is_priv_j else str(event.group_id).strip()
+            _j_uid = str(event.user_id or "").strip() if _is_priv_j else ""
+            if _j_gid or _j_uid:
+                import asyncio as _asyncio
+                from datetime import datetime as _dt
 
-            from gsuid_core.ai_core.journal.manager import record_journal_entry
-            from gsuid_core.ai_core.journal.storage import JournalEntry
-            from gsuid_core.ai_core.journal.sanitizer import is_rejected_journal_body, sanitize_journal_summary
+                from gsuid_core.ai_core.journal.manager import record_journal_entry
+                from gsuid_core.ai_core.journal.storage import JournalEntry
+                from gsuid_core.ai_core.journal.sanitizer import is_rejected_journal_body, sanitize_journal_summary
 
-            _body_no_foot = out_msg.split("\n⏰ 定时任务", 1)[0].strip()
-            if _body_no_foot and not is_rejected_journal_body(_body_no_foot):
-                _j_summary = sanitize_journal_summary(_body_no_foot, max_chars=110)
-                if _j_summary:
-                    _now_dt = _dt.now()
-                    _p_entry = JournalEntry(
-                        timestamp=_now_dt.timestamp(),
-                        date_str=_now_dt.strftime("%Y-%m-%d"),
-                        time_str=_now_dt.strftime("%H:%M"),
-                        tag="主动搭话" if source == "heartbeat" else "定时提醒",
-                        summary=_j_summary,
-                        group_id=str(event.group_id),
-                    )
-                    _asyncio.create_task(record_journal_entry(_p_entry, target_personas=[pname]))
+                _body_no_foot = out_msg.split("\n⏰ 定时任务", 1)[0].strip()
+                if _body_no_foot and not is_rejected_journal_body(_body_no_foot):
+                    _j_summary = sanitize_journal_summary(_body_no_foot, max_chars=110)
+                    if _j_summary:
+                        _now_dt = _dt.now()
+                        _p_entry = JournalEntry(
+                            timestamp=_now_dt.timestamp(),
+                            date_str=_now_dt.strftime("%Y-%m-%d"),
+                            time_str=_now_dt.strftime("%H:%M"),
+                            tag="主动搭话" if source == "heartbeat" else "定时提醒",
+                            summary=_j_summary,
+                            group_id=_j_gid,
+                            requested_by=_j_uid,
+                        )
+                        _asyncio.create_task(record_journal_entry(_p_entry, target_personas=[pname]))
 
     logger.info(
         t(

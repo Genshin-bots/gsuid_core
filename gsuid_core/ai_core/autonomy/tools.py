@@ -604,6 +604,25 @@ def _recent_chat_context_for_send(
     return "", ""
 
 
+def _attach_target_journal_context(
+    recent_context: str,
+    context_header: str,
+    journal_header: str,
+    journal_brief: str,
+) -> tuple[str, str]:
+    brief = journal_brief.strip()
+    if not brief:
+        return recent_context, context_header
+    parts = [f"{journal_header}\n{brief}"]
+    body = recent_context.strip()
+    if body:
+        if context_header.strip():
+            parts.append(f"{context_header.strip()}\n{body}")
+        else:
+            parts.append(body)
+    return "\n\n".join(parts), ""
+
+
 def _target_addressing(
     state: GuardState,
     dest_user_id: str,
@@ -781,6 +800,31 @@ async def send_message_by_ai(
         return f"发送被拦截：{gate.reason}。可将要点用 artifact_put 存为个人笔记。"
     target_is_master, target_name, target_zone_label = _target_addressing(state, dest_user_id)
     recent_context, context_header = _recent_chat_context_for_send(event, state, dest_group_id, dest_user_id)
+    from gsuid_core.pool import to_thread
+    from gsuid_core.ai_core.journal.manager import read_shard_brief
+
+    if dest_group_id:
+        journal_brief = await to_thread(read_shard_brief)(
+            state.persona_name,
+            group_id=dest_group_id,
+            max_chars=220,
+            include_persistent=True,
+        )
+        journal_header = "[本群长期默契与近期手账]"
+    else:
+        journal_brief = await to_thread(read_shard_brief)(
+            state.persona_name,
+            user_id=dest_user_id,
+            max_chars=220,
+            include_persistent=True,
+        )
+        journal_header = "[你与对方的私聊默契与近期手账]"
+    recent_context, context_header = _attach_target_journal_context(
+        recent_context,
+        context_header,
+        journal_header,
+        journal_brief,
+    )
     state.speak_attempts += 1
     outcome = await compose_autonomy_message(
         persona_name=state.persona_name,

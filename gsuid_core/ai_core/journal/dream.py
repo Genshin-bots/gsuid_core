@@ -42,6 +42,7 @@ from gsuid_core.ai_core.journal.storage import (
     _safe_token,
     _archives_dir,
     _persona_root,
+    _is_user_shard,
     _user_shard_id,
     _get_shard_lock,
     cap_bullet_slot,
@@ -110,6 +111,24 @@ _SELF_DREAM_PROMPT = (
     "隐私硬红线：严禁将任何特定群聊的专属任务、私聊话题或特定用户个人事务写入自我手账。\n"
     '- 严格仅输出合法 JSON 对象：{"persistent": ["..."], "monthly": ["..."], "yesterday": ["..."]}，'
     "每个数组元素是不带 `- ` 前缀的单行纯文本，严禁输出额外解释。"
+)
+
+_USER_DREAM_PROMPT = (
+    "你正在执行夜间离线记忆巩固（Dreaming），负责维护你与当前私聊对象的四层定长私聊手账。\n"
+    "手账用于未来私聊唤醒时快速恢复你们之间的专属语境，各分区均为【原地覆写定长槽位】，严禁无限累加：\n"
+    "1. persistent（私聊长期默契，1~3 条，总计 ≤150 字）："
+    "仅保留跨周稳定成立的相处默契、对方长期偏好与反复验证过的交流口径。单日临时数据严禁写入。\n"
+    "2. monthly（私聊当月主线与持续事项，1~4 条，总计 ≤200 字）："
+    "记录本月私聊里跨天推进的个人事项、委托与阶段成果。必须对照【系统真值对账】："
+    "凡已在「已完结交付」出现或超过一天无后续的一次性查询，必须标为「已完成…」或淘汰，"
+    "严禁继续写成未完假象！\n"
+    "3. yesterday（私聊昨日记忆摘要，1~3 条，总计 ≤150 字）："
+    "以第一人称自然回顾昨日与对方在私聊里聊过或办成的关键事项、核心结论与留下的话头。\n"
+    "硬性格式与隐私要求：\n"
+    "- 保持角色自身语气与自称，严禁出现「本群」字样，严禁暴露内部工具函数名或协议符号。\n"
+    "- 若保留已有句柄（如 note:xxx 或 sa_xxx），原样保留在括号内。\n"
+    '- 严格仅输出合法 JSON 对象：{"persistent": ["..."], "monthly": ["..."], "yesterday": ["..."]}，'
+    "每个数组元素是不带 `- ` 前缀的单行纯文本。"
 )
 
 
@@ -190,6 +209,9 @@ async def collect_ground_truth(
             stmt = stmt.where(
                 col(AIAgentTask.owner_user_id) == uid_only,
                 (col(AIAgentTask.group_id).is_(None)) | (col(AIAgentTask.group_id) == ""),
+                (col(AIAgentTask.persona_name).is_(None))
+                | (col(AIAgentTask.persona_name) == "")
+                | (col(AIAgentTask.persona_name) == persona_name),
             )
         elif shard_id != "__self__":
             stmt = stmt.where(
@@ -233,6 +255,28 @@ async def collect_ground_truth(
                 .limit(8)
             )
             for summary_raw, _drive_raw in (await session.execute(act_stmt)).all():
+                s_txt = str(summary_raw or "").strip()
+                if s_txt and s_txt not in auto_facts:
+                    auto_facts.append(truncate_at_boundary(s_txt, max_chars=70))
+        elif _is_user_shard(shard_id):
+            uid_only = shard_id[len("user:") :].strip()
+            dm_act_stmt = (
+                select(
+                    col(AIAutonomyActivity.summary),
+                    col(AIAutonomyActivity.target_session_key),
+                )
+                .where(
+                    col(AIAutonomyActivity.persona_name) == persona_name,
+                    col(AIAutonomyActivity.drive_kind) == "care_user",
+                    col(AIAutonomyActivity.target_user_id) == uid_only,
+                    col(AIAutonomyActivity.created_at) >= now_ts - 24 * 3600,
+                )
+                .order_by(col(AIAutonomyActivity.created_at).desc())
+                .limit(8)
+            )
+            for summary_raw, skey_raw in (await session.execute(dm_act_stmt)).all():
+                if str(skey_raw or "").strip().startswith("group:"):
+                    continue
                 s_txt = str(summary_raw or "").strip()
                 if s_txt and s_txt not in auto_facts:
                     auto_facts.append(truncate_at_boundary(s_txt, max_chars=70))
@@ -322,16 +366,17 @@ def run_storage_gc_sync(persona_root: Path, now_ts: float, tz_name: str = "Asia/
     dormant_moved = 0
     purged_archives = 0
 
-    groups_dir = persona_root / "groups"
-    dormant_dir = persona_root / "dormant_groups"
-    if groups_dir.exists():
-        cutoff_dormant = now_ts - DORMANT_GROUP_DAYS * 86400
-        for gfile in list(groups_dir.glob("*.md")):
+    cutoff_dormant = now_ts - DORMANT_GROUP_DAYS * 86400
+    for active_name, dormant_name in (("groups", "dormant_groups"), ("users", "dormant_users")):
+        active_dir = persona_root / active_name
+        dormant_dir = persona_root / dormant_name
+        if not active_dir.exists():
+            continue
+        for shard_file in list(active_dir.glob("*.md")):
             try:
-                if gfile.stat().st_mtime < cutoff_dormant:
+                if shard_file.stat().st_mtime < cutoff_dormant:
                     dormant_dir.mkdir(parents=True, exist_ok=True)
-                    dest = dormant_dir / gfile.name
-                    gfile.replace(dest)
+                    shard_file.replace(dormant_dir / shard_file.name)
                     dormant_moved += 1
             except OSError:
                 continue
@@ -414,8 +459,12 @@ async def synthesize_shard_with_llm(
         raw_card = await persona_obj.load_content()
         card = extract_compact_persona(raw_card) or raw_card
 
-    is_self = doc.shard_id == "__self__"
-    guide = _SELF_DREAM_PROMPT if is_self else _GROUP_DREAM_PROMPT
+    if doc.shard_id == SELF_SHARD_ID:
+        guide = _SELF_DREAM_PROMPT
+    elif _is_user_shard(doc.shard_id):
+        guide = _USER_DREAM_PROMPT
+    else:
+        guide = _GROUP_DREAM_PROMPT
     system_prompt = f"{card}\n\n{guide}" if card else guide
 
     pers_block = "\n".join(doc.persistent) if doc.persistent else "（暂无）"
@@ -512,7 +561,10 @@ def rule_rollover_shard(
         yest.append(f"{sleep_date} 共完成了 {len(doc.timeline)} 项日常与委派行动{tag_desc}。")
 
     if not pers:
-        pers = ["日常跟进群聊协作、查证与委派交付，未知信息核实后再作答。"]
+        if _is_user_shard(doc.shard_id):
+            pers = ["日常跟进私聊提问、查证与个人委派，未知信息核实后再作答。"]
+        else:
+            pers = ["日常跟进群聊协作、查证与委派交付，未知信息核实后再作答。"]
     return {"persistent": pers, "monthly": mon, "yesterday": yest}
 
 
@@ -843,13 +895,15 @@ async def compact_journal(
             force=force,
         )
         if sid == SELF_SHARD_ID and not req_sid:
-            # 检查 self.md 拆分后是否有新落入的群分片需要紧接着整理
-            for new_gid in await to_thread(_list_group_shard_ids_sync)(key):
-                if new_gid not in processed_this_run and new_gid not in seen_sids:
-                    gdoc = await to_thread(_load_shard_sync)(key, new_gid, create_if_missing=False)
-                    if gdoc is not None and gdoc.timeline:
-                        candidate_shards.append((new_gid, len(gdoc.timeline)))
-                        seen_sids.add(new_gid)
+            # 检查 self.md 拆分后是否有新落入的群/私聊分片需要紧接着整理
+            split_sids = list(await to_thread(_list_group_shard_ids_sync)(key))
+            split_sids.extend(_user_shard_id(u) for u in await to_thread(_list_user_shard_ids_sync)(key))
+            for new_sid in split_sids:
+                if new_sid not in processed_this_run and new_sid not in seen_sids:
+                    ndoc = await to_thread(_load_shard_sync)(key, new_sid, create_if_missing=False)
+                    if ndoc is not None and ndoc.timeline:
+                        candidate_shards.append((new_sid, len(ndoc.timeline)))
+                        seen_sids.add(new_sid)
 
         if merged_n > 0:
             total_merged_entries += merged_n

@@ -310,6 +310,11 @@ def _dormant_group_path(persona_name: str, group_id: str) -> Path:
     return _persona_root(persona_name) / "dormant_groups" / f"{_safe_token(group_id, 'group')}.md"
 
 
+def _dormant_user_path(persona_name: str, user_id: str) -> Path:
+    raw_uid = user_id[len(USER_SHARD_PREFIX) :] if user_id.startswith(USER_SHARD_PREFIX) else user_id
+    return _persona_root(persona_name) / "dormant_users" / f"{_safe_token(raw_uid, 'user')}.md"
+
+
 def _archives_dir(persona_name: str) -> Path:
     return _persona_root(persona_name) / "archives"
 
@@ -600,12 +605,24 @@ def _load_shard_sync(persona_name: str, shard_id: str, *, create_if_missing: boo
             text = render_shard_markdown(persona_name, init_doc)
             path.write_text(text, encoding="utf-8")
     elif _is_user_shard(shard_id):
-        path = _user_shard_path(persona_name, shard_id)
+        udir = _persona_root(persona_name) / "users"
+        raw_uid = shard_id[len(USER_SHARD_PREFIX) :]
+        path = udir / f"{_safe_token(raw_uid, 'user')}.md"
         if not path.exists():
-            if not create_if_missing:
+            # 超 60 天静默移入休眠目录的私聊分片，在读取或写入时无缝唤醒
+            dormant = _dormant_user_path(persona_name, shard_id)
+            if dormant.exists():
+                udir.mkdir(parents=True, exist_ok=True)
+                try:
+                    dormant.replace(path)
+                except OSError:
+                    path = dormant
+            elif create_if_missing:
+                udir.mkdir(parents=True, exist_ok=True)
+                init_doc = ShardDocument(shard_id=shard_id)
+                path.write_text(render_shard_markdown(persona_name, init_doc), encoding="utf-8")
+            else:
                 return None
-            init_doc = ShardDocument(shard_id=shard_id)
-            path.write_text(render_shard_markdown(persona_name, init_doc), encoding="utf-8")
     else:
         gdir = _persona_root(persona_name) / "groups"
         path = gdir / f"{_safe_token(shard_id, 'group')}.md"
