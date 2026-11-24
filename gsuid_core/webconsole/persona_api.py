@@ -1519,10 +1519,10 @@ async def get_persona_journal(
     """获取指定人格的生活手账全文及解析后的多尺度分片结构。"""
     from gsuid_core.pool import to_thread
     from gsuid_core.ai_core.journal.manager import (
-        _read_sections,
         get_journal_content,
         get_journal_structured,
     )
+    from gsuid_core.ai_core.journal.storage import _read_sections
 
     content = await to_thread(get_journal_content)(persona_name)
     standing, timeline = _read_sections(content)
@@ -1616,7 +1616,7 @@ async def compact_persona_journal(
     _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalCompactResponse:
     """触发手账整理压缩（支持指定单分片速整，全景手动整理限制同步重度 LLM 次数防网关超时）。"""
-    from gsuid_core.ai_core.journal.manager import compact_journal
+    from gsuid_core.ai_core.journal.dream import compact_journal
 
     req_shard = body.shard_id.strip() if body is not None and body.shard_id else ""
     compacted = await compact_journal(

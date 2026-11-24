@@ -5,80 +5,44 @@ Provider 配置管理器模块
 提供通用的接口来获取不同 provider 的配置。
 """
 
-from typing import Any, Literal
+from typing import Literal, TypeGuard
 
 from gsuid_core.i18n import t
-from gsuid_core.ai_core.configs.gemini_config import (
-    get_gemini_config as _get_gemini_config,
-    gemini_config_manager as _gemini_config_manager,
-)
-from gsuid_core.ai_core.configs.openai_config import (
-    get_openai_config as _get_openai_config,
-    openai_config_manager as _openai_config_manager,
-)
-from gsuid_core.ai_core.configs.anthropic_config import (
-    get_anthropic_config as _get_anthropic_config,
-    anthropic_config_manager as _anthropic_config_manager,
-)
+from gsuid_core.ai_core.configs.gemini_config import gemini_config_manager
+from gsuid_core.ai_core.configs.openai_config import openai_config_manager
+from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetManager
+from gsuid_core.ai_core.configs.anthropic_config import anthropic_config_manager
 
-ProviderType = Literal["openai", "anthropic", "gemini"]  # 供调用方类型标注;函数参数收 str,运行时校验
+ProviderType = Literal["openai", "anthropic", "gemini"]
+
+PROVIDER_MANAGERS: dict[ProviderType, ConfigSetManager] = {
+    "openai": openai_config_manager,
+    "anthropic": anthropic_config_manager,
+    "gemini": gemini_config_manager,
+}
 
 
-def get_provider_config_manager(provider: str):
-    """
-    根据 provider 类型获取对应的配置管理器
+def _is_provider_type(provider: str) -> TypeGuard[ProviderType]:
+    return provider in PROVIDER_MANAGERS
 
-    Args:
-        provider: 提供方类型
 
-    Returns:
-        对应的配置管理器
-    """
-    if provider == "openai":
-        return _openai_config_manager
-    elif provider == "anthropic":
-        return _anthropic_config_manager
-    elif provider == "gemini":
-        return _gemini_config_manager
-    else:
-        raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
+def provider_manager(provider: str) -> ConfigSetManager:
+    """根据 provider 类型获取对应的配置管理器。"""
+    if _is_provider_type(provider):
+        return PROVIDER_MANAGERS[provider]
+    raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
 
 
 def get_provider_config(
     provider: str,
     config_name: str,
-) -> Any:
-    """
-    获取指定 provider 的配置
-
-    Args:
-        provider: 提供方类型
-        config_name: 配置文件名（不含扩展名）
-
-    Returns:
-        StringConfig 实例
-    """
-    if provider == "openai":
-        return _get_openai_config(config_name)
-    elif provider == "anthropic":
-        return _get_anthropic_config(config_name)
-    elif provider == "gemini":
-        return _get_gemini_config(config_name)
-    else:
-        raise ValueError(t("不支持的 provider 类型: {provider}", provider=provider))
+) -> StringConfig:
+    """获取指定 provider 的 StringConfig 实例。"""
+    return provider_manager(provider).get_config(config_name)
 
 
 def list_available_provider_configs(
     provider: str,
 ) -> list[str]:
-    """
-    列出所有可用的 provider 配置文件
-
-    Args:
-        provider: 提供方类型
-
-    Returns:
-        配置文件名列表（不含扩展名）
-    """
-    manager = get_provider_config_manager(provider)
-    return manager.list_available()
+    """列出所有可用的 provider 配置文件名（不含扩展名）。"""
+    return provider_manager(provider).list_available()

@@ -13,7 +13,8 @@
 
 用法::
 
-    from gsuid_core.ai_core.output_gate import pre_send_gate, GateDecision
+    from gsuid_core.ai_core.output_gate import pre_send_gate
+    from gsuid_core.ai_core.control.directive import GateDecision
 
     r = pre_send_gate(text, extra, user_text=..., channel="main")
     if r.decision is GateDecision.FUSE:
@@ -23,7 +24,6 @@
 from __future__ import annotations
 
 import re
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from dataclasses import field, dataclass
 
@@ -35,36 +35,16 @@ from gsuid_core.ai_core.control.lines import (
     FUND_CLAIM_PREFIX,
     GATE_NUDGE_MARKERS as GATE_NUDGE_MARKERS,
 )
+from gsuid_core.ai_core.control.directive import GateResult, GateDecision
+from gsuid_core.ai_core.control.policy_ring import (
+    OocGateHooks,
+    OutboundEvaluators,
+    evaluate_ooc_gate,
+    run_outbound_gate,
+)
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext
-
-# ── 结果类型 ────────────────────────────────────────────────────────
-
-
-class GateDecision(str, Enum):
-    ALLOW = "allow"
-    """放行原文。"""
-    REWRITE = "rewrite"
-    """不发送原文；``feedback`` 打回模型。"""
-    FALLBACK = "fallback"
-    """立即发送 ``send_text``（安全兜底句）。"""
-    FUSE = "fuse"
-    """本轮熔断静默；``feedback`` 可提示模型只输出 SILENCE。"""
-
-
-@dataclass
-class GateResult:
-    decision: GateDecision
-    policy: str = ""
-    feedback: str = ""
-    send_text: str = ""
-    # OOC 主路径：收集后在 run 末尾请模型自主判断（无下一轮请求时）
-    defer_ooc: bool = False
-    ooc_hit: Any = None
-    fused: bool = False
-    detail: str = ""
-
 
 # ── 类型化状态（挂在 extra["output_gate"]） ─────────────────────────
 
@@ -309,7 +289,6 @@ def _eval_ooc(
     user_text: str,
     channel: str,
 ) -> Optional[GateResult]:
-    from gsuid_core.ai_core.control.policy_ring import OocGateHooks, evaluate_ooc_gate
     from gsuid_core.ai_core.control.outbound_detectors import (
         EXPOSED_TOOLS_EXTRA_KEY,
         is_ooc_firewall_enabled,
@@ -440,8 +419,6 @@ def pre_send_gate(
     speech_ctx: "SpeechContext | None" = None,
 ) -> GateResult:
     """对即将发出的 agent 台词做发送前闸门（由 ``control.policy_ring`` 单表执行）。"""
-    from gsuid_core.ai_core.control.policy_ring import OutboundEvaluators, run_outbound_gate
-
     if channel not in ("main", "tool"):
         logger.warning(i18n_t("log.ai.output_gate_unknown_channel", channel=repr(channel)))
         channel = "main"

@@ -39,7 +39,7 @@ def cosine_dense(a: list[float], b: list[float]) -> float:
 
 
 def _title_from_opener(raw: str) -> str:
-    from gsuid_core.ai_core.memory.retrieval.lexical import _speaker_stripped, _prose_without_markup
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _speaker_stripped, _prose_without_markup
 
     for line in (raw or "").splitlines():
         text = " ".join(_prose_without_markup(_speaker_stripped(line)).split())

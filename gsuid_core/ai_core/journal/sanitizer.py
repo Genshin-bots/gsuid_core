@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Mapping
 
-from gsuid_core.ai_core.utils import is_agent_error_text
+from gsuid_core.ai_core.agent_errors import is_agent_error_text
 from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
 
 SILENT_CHECK_SUMMARY = "例行静默巡检无异动"

@@ -25,14 +25,13 @@ from gsuid_core.ai_core.const import (
     _STICKY_FAMILY_TURNS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
-from gsuid_core.ai_core.utils import (
+from gsuid_core.ai_core.delivery import send_chat_result
+from gsuid_core.ai_core.register import find_tool_base
+from gsuid_core.ai_core.agent_errors import (
     NO_RESULT_TEXT,
-    send_chat_result,
-    _relean_user_turn,
-    is_silence_marker,
     strip_framework_user_leaks,
 )
-from gsuid_core.ai_core.register import find_tool_base
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.agent_run.state import (
     ReturnMode,
@@ -40,6 +39,7 @@ from gsuid_core.ai_core.agent_run.state import (
     _require_limits,
     _require_context,
 )
+from gsuid_core.ai_core.history_compact import _relean_user_turn
 from gsuid_core.ai_core.agent_run.support import (
     _THRASH_FUSE_NUDGE,
     record_output_block,
@@ -735,7 +735,8 @@ class SettlePhase(RunOnceHost):
         from gsuid_core.message_history import get_history_manager
         from gsuid_core.ai_core.register import find_tool_base
         from gsuid_core.ai_core.inbox.turn import current_turn
-        from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+        from gsuid_core.ai_core.journal.manager import record_journal_entry
+        from gsuid_core.ai_core.journal.storage import JournalEntry
         from gsuid_core.ai_core.journal.sanitizer import (
             clean_journal_tag,
             is_rejected_journal_body,

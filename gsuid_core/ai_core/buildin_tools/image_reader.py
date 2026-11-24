@@ -293,7 +293,7 @@ def wants_self_visual(question: str | None) -> bool:
 
 async def _animation_sheets(image_url: str) -> AnimationSheets | None:
     """动图收成静图。单帧或读不出时返回 None。"""
-    from gsuid_core.ai_core.utils import materialize_image_url
+    from gsuid_core.ai_core.multimodal.payload import materialize_image_url
     from gsuid_core.ai_core.persona.appearance import bytes_from_image_ref
 
     url = await materialize_image_url(image_url)
@@ -461,7 +461,7 @@ async def read_image(
             return _not_image_error(image_id[:48], raw_bytes)
 
     # 不支持多模态 / 无法内联 → 文字转述
-    from gsuid_core.ai_core.utils import _is_image_payload_error
+    from gsuid_core.ai_core.history_compact import _is_image_payload_error
     from gsuid_core.ai_core.image_understand import understand_image
 
     # 仅吞 RuntimeError / HTTPError / TimeoutError 并重试一次；其它上抛

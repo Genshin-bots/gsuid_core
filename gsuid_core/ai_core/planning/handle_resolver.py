@@ -278,7 +278,8 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
             or _re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", date_key) is None
         ):
             return None
-        from gsuid_core.ai_core.journal.manager import SELF_SHARD_ID, read_archived_journal_handle
+        from gsuid_core.ai_core.journal.manager import read_archived_journal_handle
+        from gsuid_core.ai_core.journal.storage import SELF_SHARD_ID
 
         eff_shard = shard_id or SELF_SHARD_ID
         text = await read_archived_journal_handle(pname, eff_shard, date_key)

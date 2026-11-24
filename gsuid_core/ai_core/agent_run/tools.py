@@ -19,10 +19,10 @@ from gsuid_core.ai_core.const import (
     _SKILLS_CREATE_BY,
     _AGENTIC_CREATE_BY,
 )
-from gsuid_core.ai_core.utils import _normalize_thinking_tags
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.skills import skills_toolset
 from gsuid_core.ai_core.register import find_tool_base, get_tools_by_capability_domain
+from gsuid_core.ai_core.thinking import _normalize_thinking_tags
 from gsuid_core.ai_core.rag.tools import (
     ToolList,
     get_main_agent_tools,

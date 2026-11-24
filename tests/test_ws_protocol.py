@@ -100,3 +100,13 @@ def test_gs_logger_and_disconnect_lifecycle() -> None:
         assert any(m["type"] == "websocket.close" for m in fresh_sent)
 
     asyncio.run(scenario())
+
+
+def test_console_renderer_avoids_rich_traceback() -> None:
+    """控制台异常渲染禁止启用 RichTracebackFormatter（同步读盘 + Pygments 会冻住事件循环）。"""
+    import structlog.dev
+
+    from gsuid_core import logger as core_logger
+
+    renderer = core_logger._build_console_renderer()
+    assert renderer._exception_formatter is structlog.dev.plain_traceback

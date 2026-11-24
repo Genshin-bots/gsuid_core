@@ -5,7 +5,7 @@ Anthropic 配置管理器模块
 使用 StringConfig 对象进行配置管理。
 """
 
-from typing import Any, Dict, List
+from typing import Dict
 
 from gsuid_core.ai_core.resource import ANTHROPIC_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
@@ -128,33 +128,6 @@ class AnthropicConfigManager(ConfigSetManager):
             config_template=ANTHROPIC_CONFIG_TEMPLATE,
             name_suffix="Anthropic",
         )
-
-    def _list_configs(self) -> List[str]:
-        """列出所有配置文件"""
-        if not self._base_path.exists():
-            return []
-
-        configs = []
-        for file in self._base_path.iterdir():
-            if file.is_file() and file.suffix == ".json":
-                configs.append(file.stem)
-        return sorted(configs)
-
-    def get_config_dict(self, config_name: str) -> Dict[str, Any] | None:
-        """
-        获取配置的字典形式
-
-        Args:
-            config_name: 配置文件名
-
-        Returns:
-            配置字典
-        """
-        config = self.get_config(config_name)
-        result = {}
-        for key in self._config_template.keys():
-            result[key] = config.get_config(key).data
-        return result
 
 
 # 全局单例

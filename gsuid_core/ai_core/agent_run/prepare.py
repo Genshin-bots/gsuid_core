@@ -16,11 +16,8 @@ from gsuid_core.ai_core import wall_clock, interaction_scaffold
 from gsuid_core.ai_core.const import (
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
-from gsuid_core.ai_core.utils import (
-    _truncate_message_for_log,
-    notify_master_of_budget_block,
-)
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.agent_errors import notify_master_of_budget_block
 from gsuid_core.ai_core.control.lines import UNMET_TOOL_REMINDER
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.persona.config import ASIDE_MODE
@@ -28,6 +25,7 @@ from gsuid_core.ai_core.agent_run.state import (
     BUDGET_GATE_PASS,
     RunOnceState,
 )
+from gsuid_core.ai_core.history_compact import _truncate_message_for_log
 from gsuid_core.ai_core.persona.prompts import INNER_OS_MARKER
 from gsuid_core.ai_core.agent_run.support import (
     _STATUS_INQUIRY_HINT,
@@ -282,7 +280,7 @@ class PreparePhase(RunOnceHost):
 
     async def _run_once_prepare_user_message(self, st: RunOnceState) -> None:
         """用户消息外壳 / RAG / DS / 无工具提醒 / 脚手架 hints / session log。"""
-        from gsuid_core.ai_core.utils import mention_names_in_text
+        from gsuid_core.ai_core.delivery import mention_names_in_text
 
         st.run_extra["mention_names"] = mention_names_in_text(st.last_user_question)
 
@@ -297,7 +295,7 @@ class PreparePhase(RunOnceHost):
         # history：框架注入的 UserPrompt 整段剥掉（不进 B 轨，避免被当成群友）
         # 真人轮才 lean 成精简发言
         if st.fw_msg:
-            from gsuid_core.ai_core.utils import lean_delivery_frame
+            from gsuid_core.ai_core.history_compact import lean_delivery_frame
 
             st.lean_user_message = lean_delivery_frame(st.user_message) if isinstance(st.user_message, str) else ""
         else:

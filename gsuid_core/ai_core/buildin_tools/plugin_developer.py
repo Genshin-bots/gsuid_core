@@ -39,7 +39,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.check_func import check_pm
+from gsuid_core.ai_core.tool_risk import check_pm
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.planning.models import AIAgentTask

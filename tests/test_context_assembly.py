@@ -138,10 +138,10 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
     from pydantic_ai.messages import ModelRequest, SystemPromptPart
     from pydantic_ai.models.test import TestModel
 
-    from gsuid_core.ai_core.utils import _peel_ephemeral_system_lines
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.entity_index import clear_entity_index, register_entity_surface
     from gsuid_core.ai_core.control.lines import journal_delta_line
+    from gsuid_core.ai_core.history_compact import _peel_ephemeral_system_lines
     from gsuid_core.ai_core.context_assembly import assemble_dynamic_context, history_line_is_assistant
     from gsuid_core.ai_core.agent_run.support import _ensure_session_anchor_on_first_user
     from gsuid_core.webconsole.chat_with_history_api import ChatHistoryTurn, _load_request_history
@@ -212,9 +212,9 @@ def test_alias_and_session_anchor_contracts(monkeypatch: pytest.MonkeyPatch) -> 
     from pydantic_ai.exceptions import ModelHTTPError
     from pydantic_ai.profiles.openai import openai_model_profile
 
-    from gsuid_core.ai_core.utils import _relean_user_turn
     from gsuid_core.ai_core.control.lines import TOOLS_EXECUTION_GATED_DENY
     from gsuid_core.ai_core.configs.models import openai_user_thinking_profile
+    from gsuid_core.ai_core.history_compact import _relean_user_turn
     from gsuid_core.ai_core.configs.openai_wire import (
         revise_openai_attempt,
         clear_openai_wire_facts,

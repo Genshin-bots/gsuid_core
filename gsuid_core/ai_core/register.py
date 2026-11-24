@@ -180,7 +180,7 @@ async def execute_guarded_tool(
     """统一工具执行脊柱：check_func → 熔断门 → 审批闸 → 超时控制 → 健康度与结果归一化。"""
     from pydantic_ai import ToolReturn
 
-    from gsuid_core.ai_core.utils import handle_tool_result
+    from gsuid_core.ai_core.delivery import handle_tool_result
 
     if check_func is not None:
         is_passed, message = await run_tool_check_func(check_func, ctx, check_kwargs)

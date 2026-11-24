@@ -14,7 +14,8 @@ from collections.abc import MutableMapping
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.models import ToolContext
-from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+from gsuid_core.ai_core.output_gate import pre_send_gate
+from gsuid_core.ai_core.control.directive import GateDecision
 from gsuid_core.ai_core.agent_run.speech_policy import (
     SpeechContext,
     non_master_title,
@@ -158,7 +159,7 @@ def _gated_opening(text: str, tool_ctx: ToolContext) -> str:
 
 
 async def _deliver(tool_ctx: ToolContext, text: str) -> bool:
-    from gsuid_core.ai_core.utils import send_chat_result
+    from gsuid_core.ai_core.delivery import send_chat_result
     from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
 
     bot = tool_ctx.bot

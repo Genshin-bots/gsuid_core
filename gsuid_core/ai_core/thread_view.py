@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Sequence
 from datetime import datetime
 from dataclasses import dataclass
 
-from gsuid_core.ai_core.utils import is_silence_marker, _strip_resource_handles
 from gsuid_core.message_history import MessageRecord
 from gsuid_core.ai_core.control.lines import (
     THREAD_AT_MARK,
@@ -23,6 +22,7 @@ from gsuid_core.ai_core.control.lines import (
     thread_view_header,
     omitted_lines_marker,
 )
+from gsuid_core.ai_core.protocol_text import is_silence_marker, _strip_resource_handles
 from gsuid_core.ai_core.history_format import (
     _RECEIPT_CHANNELS,
     _speech_channel,

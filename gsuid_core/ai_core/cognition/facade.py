@@ -20,6 +20,7 @@ from dataclasses import replace
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.control.lines import SPEECH_ACT_HINT
 from gsuid_core.ai_core.cognition.types import (
     WORK_KINDS,
     MEDIA_KINDS,
@@ -32,11 +33,10 @@ from gsuid_core.ai_core.cognition.types import (
     CognitiveHit,
 )
 from gsuid_core.ai_core.memory.retrieval.types import Episode
-from gsuid_core.ai_core.memory.retrieval.lexical import (
-    SPEECH_ACT_HINT,
+from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
+from gsuid_core.ai_core.memory.retrieval.lexical_query import (
     strip_clock_lines,
     query_overlaps_text,
-    expand_lexical_recall,
     query_required_needles,
     text_has_query_needles,
 )
@@ -501,7 +501,7 @@ async def _search_memory(
             user_id=scope.user_id,
             watermark_ts=await ensure_isolation_watermark_ts(),
         )
-        from gsuid_core.ai_core.memory.retrieval.lexical import (
+        from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
             apply_query_episode_pack,
             collapse_document_episodes,
         )
@@ -1114,7 +1114,7 @@ def _coverage_token_worth_reporting(tok: str) -> bool:
 
 def _coverage_token_covered(tok: str, blob: str) -> bool:
     """短语按每个词都在判定。整串子串会把语序不同误报成缺失。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import token_in_text
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import token_in_text
 
     if " " in tok:
         return all(token_in_text(w, blob) for w in tok.split())
@@ -1143,7 +1143,7 @@ def _cjk_content_terms(span: str) -> list[str]:
 
 def _coverage_terms(query: str) -> list[str]:
     """覆盖提示用的实词。中文走分词，不按定长切。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
     terms: list[str] = []
     seen: set[str] = set()

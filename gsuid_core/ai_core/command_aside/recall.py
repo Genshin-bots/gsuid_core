@@ -52,7 +52,7 @@ def _legacy_whitespace_key(plugin: str, receipt: str) -> str:
 
 
 def _is_polluted(receipt: str, advice: str) -> bool:
-    from gsuid_core.ai_core.utils import is_agent_error_text
+    from gsuid_core.ai_core.agent_errors import is_agent_error_text
 
     if _LEGACY_PLACEHOLDER in receipt or _LEGACY_PLACEHOLDER in advice:
         return True

@@ -7,14 +7,16 @@ from datetime import datetime
 from gsuid_core.i18n import t
 from gsuid_core.config import core_config
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import is_silence_marker, is_agent_error_text, extract_json_from_text
+from gsuid_core.ai_core.utils import extract_json_from_text
 from gsuid_core.ai_core.models import Event
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
 from gsuid_core.ai_core.statistics import statistics_manager
 from gsuid_core.ai_core.thread_view import render_window
+from gsuid_core.ai_core.agent_errors import is_agent_error_text
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.relationship import Zone, zone_of, zone_level_name
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.database.models import UserFavorability
 from gsuid_core.ai_core.proactive.speak import (
     run_proactive_speak_agent,
@@ -24,8 +26,8 @@ from gsuid_core.message_history.manager import MessageRecord
 from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
 from gsuid_core.ai_core.persona.settings import get_master_title
 from gsuid_core.ai_core.configs.task_kinds import TASK_HEARTBEAT_DECISION
-from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
 from gsuid_core.ai_core.interaction_scaffold import extract_message_body
+from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 
 def _render_prompt(persona_name: str | None, key: str, **values: str) -> str:

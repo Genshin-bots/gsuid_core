@@ -155,7 +155,8 @@ async def early_silence_eval_response(
 
 def _visible_eval_text(raw: str) -> str:
     """与生产出站一致：<reply #n> 等协议标签不进用户可见文本。"""
-    from gsuid_core.ai_core.utils import strip_framework_user_leaks, remainder_after_protocol_tags
+    from gsuid_core.ai_core.agent_errors import strip_framework_user_leaks
+    from gsuid_core.ai_core.protocol_text import remainder_after_protocol_tags
 
     return remainder_after_protocol_tags(strip_framework_user_leaks(raw)).strip()
 
@@ -171,7 +172,7 @@ async def finalize_eval_turn_response(
     image_ids: List[str],
 ) -> tuple[str, dict[str, object]]:
     """统一收口评测轮响应体与出站可见文本（供 chat_with_history 与 eval_inbox_turn 共用）。"""
-    from gsuid_core.ai_core.utils import is_silence_marker
+    from gsuid_core.ai_core.protocol_text import is_silence_marker
 
     tool_calls = list(agent._last_attempt_tool_calls)
     await _flush_eval_session_logger(agent)

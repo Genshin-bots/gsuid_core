@@ -219,7 +219,7 @@ def ctx_for_turn(needle: str, after_ts: float, sent_text: str, tries: int = 10) 
 
 def is_err_reply(texts: list[str]) -> bool:
     """LLM 不可达时网关回的执行失败兜底文案（两种形态都认）。"""
-    from gsuid_core.ai_core.utils import is_agent_error_text
+    from gsuid_core.ai_core.agent_errors import is_agent_error_text
 
     marks = ("处理失败", "[AI 执行失败]")
     if not texts:

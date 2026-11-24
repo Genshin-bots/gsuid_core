@@ -161,18 +161,18 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
     import time
     from typing import Sequence
 
-    from gsuid_core.ai_core.journal import dream as jd, manager as jm
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage
 
     journal_dir = tmp_path / "journals"
-    monkeypatch.setattr(jm, "JOURNAL_DIR", journal_dir)
-    jm._SHARD_CACHE.clear()
-    jm._SHARD_UPDATE_TS.clear()
+    monkeypatch.setattr(jstorage, "JOURNAL_DIR", journal_dir)
+    jstorage._SHARD_CACHE.clear()
+    jstorage._SHARD_UPDATE_TS.clear()
 
     async def _no_gt(persona_name: str, shard_id: str, now_ts: float) -> jd.GroundTruthDigest:
         del persona_name, shard_id, now_ts
         return jd.GroundTruthDigest(completed=("测试项目报告",))
 
-    monkeypatch.setattr(jm, "collect_ground_truth", _no_gt)
+    monkeypatch.setattr(jd, "collect_ground_truth", _no_gt)
     monkeypatch.setattr(
         "gsuid_core.ai_core.autonomy.tools.artifact_dir",
         lambda pname, root=None: tmp_path / "notes" / pname,
@@ -183,7 +183,7 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
 
         async def _stub_summarize(
             persona_name: str,
-            doc: jm.ShardDocument,
+            doc: jstorage.ShardDocument,
             gt: jd.GroundTruthDigest,
             prev_month_rollover: Sequence[str] = (),
         ) -> jd.DreamLLMOutcome:
@@ -196,9 +196,9 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
                 "yesterday": ["做梦整理：已跟进各项事务。"],
             }
 
-        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _stub_summarize)
+        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _stub_summarize)
 
-        assert await jm.compact_journal("tester") is False
+        assert await jd.compact_journal("tester") is False
 
         # 旧版单文件写盘 → 自动无损拆迁至 self.md 与 groups/group_1001.md
         legacy_file = journal_dir / "tester.md"
@@ -213,7 +213,7 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
             encoding="utf-8",
         )
 
-        compacted = await jm.compact_journal("tester", force=True)
+        compacted = await jd.compact_journal("tester", force=True)
         assert compacted is True
         assert not legacy_file.exists()
 
@@ -221,15 +221,15 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
         grp_path = jm.get_journal_path("tester", group_id="group_1001")
         assert self_path.exists() and grp_path.exists()
 
-        standing, timeline = jm._read_sections(jm.get_journal_content("tester"))
+        standing, timeline = jstorage._read_sections(jm.get_journal_content("tester"))
         assert len(timeline) == 0
         assert "做梦整理：已跟进各项事务" in standing
         assert "[已完结] 测试项目报告" in grp_path.read_text(encoding="utf-8")
-        assert jm.get_last_compact_ts("tester") > 0.0
+        assert jstorage.get_last_compact_ts("tester") > 0.0
 
         # 验证 429 临时故障保护：非强制夜间巡检遇 transient_error 绝不清空流水
         await jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 timestamp=time.time(),
                 date_str="2026-11-17",
                 time_str="14:00",
@@ -242,38 +242,38 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
 
         async def _stub_transient(
             persona_name: str,
-            doc: jm.ShardDocument,
+            doc: jstorage.ShardDocument,
             gt: jd.GroundTruthDigest,
             prev_month_rollover: Sequence[str] = (),
         ) -> jd.DreamLLMOutcome:
             del persona_name, doc, gt, prev_month_rollover
             return "transient_error"
 
-        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _stub_transient)
-        assert await jm.compact_journal("tester", force=False) is False
-        _, kept_lines = jm._read_sections(grp_path.read_text(encoding="utf-8"))
+        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _stub_transient)
+        assert await jd.compact_journal("tester", force=False) is False
+        _, kept_lines = jstorage._read_sections(grp_path.read_text(encoding="utf-8"))
         assert len(kept_lines) == 1
 
         # LLM 未启用返回 None 时走确定性规则跨日兜底，同时写入月度归档
         async def _stub_none(
             persona_name: str,
-            doc: jm.ShardDocument,
+            doc: jstorage.ShardDocument,
             gt: jd.GroundTruthDigest,
             prev_month_rollover: Sequence[str] = (),
         ) -> jd.DreamLLMOutcome:
             del persona_name, doc, gt, prev_month_rollover
             return None
 
-        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _stub_none)
-        assert await jm.compact_journal("tester", force=True) is True
-        standing_fb, tl_fb = jm._read_sections(grp_path.read_text(encoding="utf-8"))
+        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _stub_none)
+        assert await jd.compact_journal("tester", force=True) is True
+        standing_fb, tl_fb = jstorage._read_sections(grp_path.read_text(encoding="utf-8"))
         assert len(tl_fb) == 0
         assert "核对了第一份数据" in standing_fb and "journal:tester:group_1001:" in standing_fb
-        assert await jm.compact_journal("tester") is False
+        assert await jd.compact_journal("tester") is False
 
         # 测试作息窗口门禁与自然睡眠日去重（消除 24h 时间戳漂移）
         await jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 timestamp=time.time(),
                 date_str="2026-11-17",
                 time_str="20:10",
@@ -282,9 +282,9 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
             ),
             target_personas=["tester"],
         )
-        monkeypatch.setattr(jm, "is_within_active_hours", lambda *args, **kwargs: True)
-        await jm.check_and_compact_all_journals()
-        assert len(jm.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 1
+        monkeypatch.setattr(jd, "is_within_active_hours", lambda *args, **kwargs: True)
+        await jd.check_and_compact_all_journals()
+        assert len(jstorage.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 1
 
         import json
 
@@ -297,14 +297,14 @@ def test_journal_compaction_and_active_hours_gating(tmp_path: Path, monkeypatch:
             st_data["tester"] = entry
             st_file.write_text(json.dumps(st_data, ensure_ascii=False), encoding="utf-8")
 
-        monkeypatch.setattr(jm, "is_within_active_hours", lambda *args, **kwargs: False)
+        monkeypatch.setattr(jd, "is_within_active_hours", lambda *args, **kwargs: False)
         _write_test_compact_ts(time.time() - 3600)
-        await jm.check_and_compact_all_journals()
-        assert len(jm.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 1
+        await jd.check_and_compact_all_journals()
+        assert len(jstorage.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 1
 
         _write_test_compact_ts(time.time() - 90000)
-        await jm.check_and_compact_all_journals()
-        assert len(jm.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 0
+        await jd.check_and_compact_all_journals()
+        assert len(jstorage.parse_shard_markdown(self_path.read_text(encoding="utf-8")).timeline) == 0
 
     asyncio.run(scenario())
 
@@ -323,7 +323,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
 
     from gsuid_core.models import Event
     from gsuid_core.ai_core.models import ToolContext
-    from gsuid_core.ai_core.journal import dream as jd, manager as jm, sanitizer as js
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage, sanitizer as js
     from gsuid_core.ai_core.autonomy.models import FactPack, DeliveryPin, DeliveryDecision, AutonomyStepTrace
     from gsuid_core.ai_core.autonomy.verifier import parse_footer
     from gsuid_core.ai_core.autonomy.scheduler import _record_autonomy_journal
@@ -340,14 +340,14 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
 
     journal_dir = tmp_path / "journals"
     notes_root = tmp_path / "autonomy_notes"
-    monkeypatch.setattr(jm, "JOURNAL_DIR", journal_dir)
+    monkeypatch.setattr(jstorage, "JOURNAL_DIR", journal_dir)
     monkeypatch.setattr(
         "gsuid_core.ai_core.autonomy.tools.artifact_dir",
         lambda pname, root=None: notes_root / pname,
     )
-    jm._SHARD_CACHE.clear()
-    jm._SHARD_UPDATE_TS.clear()
-    jm._RECENT_ENTRY_TS.clear()
+    jstorage._SHARD_CACHE.clear()
+    jstorage._SHARD_UPDATE_TS.clear()
+    jstorage._RECENT_ENTRY_TS.clear()
 
     # 1. 句界与 ASCII 词元边界保护（复现截图 148%，R 与 Markd 腰斩 + 多行吃字 + 报错拦截）
     raw_rsi = (
@@ -389,7 +389,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert jm.resolve_persona_for_group_or_session(persona_name=None, group_id="group_1") == "alpha"
         assert jm.resolve_persona_for_group_or_session(persona_name="deleted_ghost", group_id="group_1") == "alpha"
         await jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 now, "2026-11-18", "09:00", "查资料", "未绑定群的流水不应污染其它人格", group_id="group_unassigned"
             )
         )
@@ -485,16 +485,18 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
 
         # 4. 跨行静默巡检折叠（中间夹杂普通行动时仍能原位合并为 ×2，不泄漏 <<NO_BROADCAST>>）
         await jm.record_journal_entry(
-            jm.JournalEntry(now, "2026-11-18", "09:30", "周期巡检", "<<NO_BROADCAST>>", group_id="group_quiet"),
+            jstorage.JournalEntry(now, "2026-11-18", "09:30", "周期巡检", "<<NO_BROADCAST>>", group_id="group_quiet"),
             target_personas=["alpha"],
         )
         await jm.record_journal_entry(
-            jm.JournalEntry(now + 1, "2026-11-18", "10:00", "查资料", "帮群友查了测试条目。", group_id="group_quiet"),
+            jstorage.JournalEntry(
+                now + 1, "2026-11-18", "10:00", "查资料", "帮群友查了测试条目。", group_id="group_quiet"
+            ),
             target_personas=["alpha"],
         )
         _, ts_after_substantive = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
         await jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 now + 2, "2026-11-18", "10:30", "周期巡检", "（本轮无值得播报的进展）", group_id="group_quiet"
             ),
             target_personas=["alpha"],
@@ -503,7 +505,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             "alpha", current_group_id="group_quiet", since_ts=ts_after_substantive
         )
         assert delta_after_silent == ""
-        gq_doc = jm.parse_shard_markdown(jm.get_journal_path("alpha", "group_quiet").read_text(encoding="utf-8"))
+        gq_doc = jstorage.parse_shard_markdown(jm.get_journal_path("alpha", "group_quiet").read_text(encoding="utf-8"))
         assert len(gq_doc.timeline) == 2
         assert "<<NO_BROADCAST>>" not in "\n".join(gq_doc.timeline)
         assert "(×2)" in gq_doc.timeline[-1] and "09:30~10:30" in gq_doc.timeline[-1]
@@ -523,9 +525,9 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             f"- [{cur_hhmm} | 查资料] 今日当前已完成记录。\n",
             encoding="utf-8",
         )
-        jm._SHARD_CACHE.pop(stale_path, None)
-        jm._SHARD_UPDATE_TS.pop(("alpha", "group_rollover"), None)
-        jm._RECENT_ENTRY_TS.pop(("alpha", "group_rollover"), None)
+        jstorage._SHARD_CACHE.pop(stale_path, None)
+        jstorage._SHARD_UPDATE_TS.pop(("alpha", "group_rollover"), None)
+        jstorage._RECENT_ENTRY_TS.pop(("alpha", "group_rollover"), None)
         delta_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover", since_ts=now - 30.0)
         assert "昨夜遗留的旧播报内容" not in delta_roll
         anchor_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover")
@@ -534,7 +536,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         # 5. 超大群突发洪峰环形定长（单日写入 75 条仍严格 <= 50 行，锚点严格 <= 880 字，且零污染其它群）
         for i in range(75):
             await jm.record_journal_entry(
-                jm.JournalEntry(
+                jstorage.JournalEntry(
                     now + 10 + i,
                     "2026-11-18",
                     f"11:{i % 60:02d}",
@@ -544,18 +546,18 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 ),
                 target_personas=["alpha"],
             )
-        gh_doc = jm.parse_shard_markdown(jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"))
-        assert len(gh_doc.timeline) <= jm.GROUP_TIMELINE_RING_CAP
+        gh_doc = jstorage.parse_shard_markdown(jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"))
+        assert len(gh_doc.timeline) <= jstorage.GROUP_TIMELINE_RING_CAP
         hot_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_hot")
         quiet_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
         dm_anchor, _ = jm.read_journal_for_context("alpha", current_group_id=None)
-        assert len(hot_anchor) <= jm.ANCHOR_TOTAL_MAX_CHARS
+        assert len(hot_anchor) <= jstorage.ANCHOR_TOTAL_MAX_CHARS
         assert "早先概览" in hot_anchor
         assert "高频资料核验" not in quiet_anchor and "高频资料核验" not in dm_anchor
 
         # 6. 做梦三级阀门 + 双 ID 平台群号 (:) + 长摘要归档句柄防截断 + 并发 dirty_shards 防丢失 + 路径穿越拦截
         await jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 now + 90, "2026-11-18", "12:00", "查资料", "核查了双ID房间的测试配置。", group_id="villa_1:room_9"
             ),
             target_personas=["alpha"],
@@ -564,7 +566,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
 
         async def _track_llm(
             persona_name: str,
-            doc: jm.ShardDocument,
+            doc: jstorage.ShardDocument,
             gt: jd.GroundTruthDigest,
             prev_month_rollover: Sequence[str] = (),
         ) -> jd.DreamLLMOutcome:
@@ -572,7 +574,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             heavy_llm_shards.append(doc.shard_id)
             if doc.shard_id == "group_hot":
                 # 模拟做梦耗时期间另一人格 beta 并发写入 dirty_shards，验证不会被覆盖抹掉
-                jm._mark_shard_dirty_sync("beta", "group_concurrent")
+                jstorage._mark_shard_dirty_sync("beta", "group_concurrent")
             return {
                 "persistent": ["高频核查保持结论先行。"],
                 "monthly": ["本月持续跟进大群高频测试专题。"],
@@ -581,15 +583,15 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 ],
             }
 
-        monkeypatch.setattr(jm, "_summarize_journal_with_llm", _track_llm)
+        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _track_llm)
         # group_1 / villa_1:room_9 仅 1 条（轻度分片）→ 0 LLM；group_hot 50 条（重度分片）→ 触发 LLM
-        assert await jm.compact_journal("alpha", force=False) is True
+        assert await jd.compact_journal("alpha", force=False) is True
         assert "group_hot" in heavy_llm_shards
         assert "group_1" not in heavy_llm_shards
         assert "villa_1:room_9" not in heavy_llm_shards
-        assert "group_concurrent" in jm._load_full_state()["beta"]["dirty_shards"]
+        assert "group_concurrent" in jstorage._load_full_state()["beta"]["dirty_shards"]
 
-        gh_after = jm.parse_shard_markdown(
+        gh_after = jstorage.parse_shard_markdown(
             jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"), "group_hot"
         )
         sleep_day = gh_after.yesterday_label
@@ -603,7 +605,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert await resolve_handle("journal:..:self:2026-11-18") is None
         assert await resolve_handle("journal:alpha:group_1:../../etc") is None
 
-        g1_after = jm.parse_shard_markdown(
+        g1_after = jstorage.parse_shard_markdown(
             jm.get_journal_path("alpha", "group_1").read_text(encoding="utf-8"), "group_1"
         )
         assert len(g1_after.yesterday) >= 1 and len(g1_after.timeline) == 0
@@ -662,8 +664,8 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         g1_file = jm.get_journal_path("alpha", "group_1")
         ancient_ts = now - 70 * 86400
         os.utime(g1_file, (ancient_ts, ancient_ts))
-        jm._SHARD_CACHE.clear()
-        dormant_cnt, _ = await jd.run_storage_gc_sync(jm._persona_root("alpha"), now)
+        jstorage._SHARD_CACHE.clear()
+        dormant_cnt, _ = await jd.run_storage_gc_sync(jstorage._persona_root("alpha"), now)
         assert dormant_cnt >= 1 and not g1_file.exists()
         woken_text, _ = jm.read_journal_for_context("alpha", current_group_id="group_1")
         assert "三大指数回落" in woken_text and g1_file.exists()
@@ -742,7 +744,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             return p.read_text(encoding="utf-8")
 
         def _read_timeline_now(p: Path) -> list[str]:
-            return jm.parse_shard_markdown(_read_raw_text(p)).timeline if p.exists() else []
+            return jstorage.parse_shard_markdown(_read_raw_text(p)).timeline if p.exists() else []
 
         async def _wait_timeline_has(shard_path: Path, needle: str, timeout: float = 1.5) -> list[str]:
             deadline = time.monotonic() + timeout
@@ -798,7 +800,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         finally:
             aside_agent._session_logger.close()
         await asyncio.sleep(0.03)
-        g1_after_aside = jm.parse_shard_markdown(g1_shard_path.read_text(encoding="utf-8"))
+        g1_after_aside = jstorage.parse_shard_markdown(g1_shard_path.read_text(encoding="utf-8"))
         assert not any("年度报表核查结果" in ln for ln in g1_after_aside.timeline)
 
         chat_agent = create_agent(
@@ -897,7 +899,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             finally:
                 leak_agent._session_logger.close()
         await asyncio.sleep(0.03)
-        g1_after_leak = jm.parse_shard_markdown(_read_raw_text(g1_shard_path))
+        g1_after_leak = jstorage.parse_shard_markdown(_read_raw_text(g1_shard_path))
         assert not any("内部系统提醒泄露" in ln for ln in g1_after_leak.timeline)
 
         # 11. 主动出口（scheduled_task / heartbeat）异步入账、拦截失败兜底文案 + WebConsole 占位符过滤与单分片整理
@@ -935,7 +937,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         assert any("定时提醒" in ln and "大家早上好" in ln and "定时任务" not in ln for ln in tl_after_proactive)
 
         await jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 timestamp=now,
                 date_str="2026-11-22",
                 time_str="08:00",
@@ -946,7 +948,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             ),
             target_personas=["alpha"],
         )
-        arch_dir = jm._archives_dir("alpha")
+        arch_dir = jstorage._archives_dir("alpha")
         (arch_dir / "legacy_v1_2026-10.jsonl").write_text('{"date":"2026-10-01"}\n', encoding="utf-8")
         (arch_dir / "noise.jsonl").write_text("{}", encoding="utf-8")
         structured_view = jm.get_journal_structured("alpha")
@@ -963,14 +965,14 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         bad_recs, _, bad_sel = jm.get_journal_archive_records("alpha", month="../evil")
         assert bad_recs == [] and bad_sel == ""
         compat_md = jm.get_journal_content("alpha")
-        compat_standing, compat_tl = jm._read_sections(compat_md)
+        compat_standing, compat_tl = jstorage._read_sections(compat_md)
         assert compat_standing and any("(群:group_1)" in ln for ln in compat_tl)
 
         # WebConsole 保存往返不会将占位文案固化进槽位，且单分片手动整理仅压缩指定群分片
         await jm.save_journal_content_async("alpha", _read_raw_text(g1_shard_path), shard_id="group_1")
-        assert jm.parse_shard_markdown(_read_raw_text(g1_shard_path), "group_1").monthly == []
-        assert await jm.compact_journal("alpha", force=True, target_shard="group_1", max_llm_shards=1) is True
-        assert len(jm.parse_shard_markdown(_read_raw_text(g1_shard_path)).timeline) == 0
+        assert jstorage.parse_shard_markdown(_read_raw_text(g1_shard_path), "group_1").monthly == []
+        assert await jd.compact_journal("alpha", force=True, target_shard="group_1", max_llm_shards=1) is True
+        assert len(jstorage.parse_shard_markdown(_read_raw_text(g1_shard_path)).timeline) == 0
 
         await engine.dispose()
 
@@ -1171,7 +1173,7 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
     assert persona_config_manager.get_config("beta").get_config("target_groups").data == prev_beta_groups
 
     # journal 活跃人格解析走双通道真值源
-    from gsuid_core.ai_core.journal.manager import get_active_personas
+    from gsuid_core.ai_core.journal.storage import get_active_personas
 
     active_journal_personas = get_active_personas()
     assert "beta" in active_journal_personas
@@ -1572,7 +1574,6 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
 
     from gsuid_core.models import Event
     from gsuid_core.ai_core import gs_agent as gs_agent_mod
-    from gsuid_core.ai_core.utils import NO_RESULT_TEXT
     from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.utils.database import base_models as db_base
     from gsuid_core.ai_core.persona import persona as persona_cls_mod
@@ -1582,6 +1583,7 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
         scheduler as auto_sched,
     )
     from gsuid_core.ai_core.proactive import speak as pro_speak, emitter as pro_emitter
+    from gsuid_core.ai_core.agent_errors import NO_RESULT_TEXT
     from gsuid_core.ai_core.autonomy.models import (
         GroupObservation,
         AutonomyStepTrace,
@@ -1592,7 +1594,7 @@ def test_proactive_speak_layer_and_autonomy_send(tmp_path: Path, monkeypatch: py
     from gsuid_core.ai_core.autonomy.runner import AutonomyReport
     from gsuid_core.ai_core.database.models import AIAutonomyActivity
     from gsuid_core.ai_core.autonomy.verifier import extract_facts, output_is_failed, output_is_skipped
-    from gsuid_core.ai_core.heartbeat.dispatcher import UnifiedProactiveDispatcher
+    from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
     from gsuid_core.ai_core.prompt_group.catalog import spec_keys
 
     _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)

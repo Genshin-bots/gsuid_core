@@ -249,7 +249,7 @@ class MemoryContext:
                 used += ln
             return [items[k] for k in range(n) if k in keep]
 
-        from gsuid_core.ai_core.memory.retrieval.lexical import SPEECH_ACT_HINT
+        from gsuid_core.ai_core.control.lines import SPEECH_ACT_HINT
 
         parts: list[str] = []
         pref_block: Optional[str] = None
@@ -340,7 +340,7 @@ class MemoryContext:
                 # 语义相关性防线：剔除仅因同日期/低分召回且与问句实体完全无关的边
                 sc = float(e["score"] or 0.0) if "score" in e else 0.0
                 if sc < 0.35 and query.strip():
-                    from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+                    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
                     _stop_words = (
                         "今天",
@@ -429,24 +429,28 @@ class MemoryContext:
             used = sum(len(p) for p in parts) + 2 * len(parts) + _pref_used + _UNTRUSTED_WRAP_OVERHEAD
             ep_budget = max_chars - used
             if ep_budget > 120:
-                from gsuid_core.ai_core.memory.retrieval.lexical import (
+                from gsuid_core.ai_core.memory.retrieval.event_time import query_only_item_cap
+                from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
                     is_fact_sheet,
+                    apply_query_episode_pack,
+                    collapse_document_episodes,
+                )
+                from gsuid_core.ai_core.memory.retrieval.lexical_cover import (
+                    is_ingested_document_episode,
+                )
+                from gsuid_core.ai_core.memory.retrieval.lexical_query import (
                     looks_like_set_query,
                     looks_like_sum_query,
                     looks_like_count_query,
-                    apply_query_episode_pack,
-                    collapse_document_episodes,
-                    is_ingested_document_episode,
                     wants_parallel_document_coverage,
                 )
-                from gsuid_core.ai_core.memory.retrieval.event_time import query_only_item_cap
 
                 cross_session = (
                     intent in ("timeline_order", "broad_summary")
                     or looks_like_count_query(query)
                     or looks_like_sum_query(query, memory_intent=intent)
                 )
-                from gsuid_core.ai_core.memory.retrieval.lexical import (
+                from gsuid_core.ai_core.memory.retrieval.lexical_query import (
                     query_tokens,
                     token_in_text,
                 )
@@ -510,7 +514,7 @@ class MemoryContext:
                     return low.startswith("assistant:") or raw.lstrip().startswith("[我此前说过]")
 
                 def _ep_lines(items: list[Episode], *, self_mark: bool) -> list[str]:
-                    from gsuid_core.ai_core.memory.retrieval.lexical import parse_episode_valid_at
+                    from gsuid_core.ai_core.memory.retrieval.lexical_pack import parse_episode_valid_at
 
                     dated: list[str] = []
                     undated: list[str] = []
@@ -520,7 +524,7 @@ class MemoryContext:
                         if len(raw) < 4:
                             continue
                         if self_mark:
-                            from gsuid_core.ai_core.memory.retrieval.lexical import (
+                            from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
                                 parse_episode_valid_at as _parse_ts,
                             )
 
@@ -547,7 +551,7 @@ class MemoryContext:
                         if is_fact_sheet(ep):
                             shown = raw[:4800]
                         elif _assistant_turn(raw) and len(raw) > ep_cap:
-                            from gsuid_core.ai_core.memory.retrieval.lexical import (
+                            from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
                                 excerpt_keep_numbers,
                                 excerpt_around_ordinal,
                             )
@@ -556,7 +560,7 @@ class MemoryContext:
                             if not shown:
                                 shown = excerpt_keep_numbers(raw, ep_cap)
                         if intent == "broad_summary" and _assistant_turn(raw):
-                            from gsuid_core.ai_core.memory.retrieval.lexical import excerpt_around_tokens
+                            from gsuid_core.ai_core.memory.retrieval.lexical_pack import excerpt_around_tokens
 
                             shown = excerpt_around_tokens(raw, query, 480) or shown
                         ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
@@ -573,7 +577,7 @@ class MemoryContext:
                     return dated + undated
 
                 if self.temporal_mode and self.time_range is not None:
-                    from gsuid_core.ai_core.memory.retrieval.lexical import parse_episode_valid_at
+                    from gsuid_core.ai_core.memory.retrieval.lexical_pack import parse_episode_valid_at
 
                     _t0, _t1 = self.time_range
 
@@ -617,7 +621,7 @@ class MemoryContext:
                     packed = core_packed + sheet_tail
 
                 if intent == "timeline_order":
-                    from gsuid_core.ai_core.memory.retrieval.lexical import (
+                    from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
                         pack_order_dialogue,
                         format_order_skeleton,
                     )
@@ -655,7 +659,7 @@ class MemoryContext:
                     and not looks_like_count_query(query)
                     and not looks_like_sum_query(query, memory_intent=intent)
                 ):
-                    from gsuid_core.ai_core.memory.retrieval.lexical import render_value_timeline
+                    from gsuid_core.ai_core.memory.retrieval.lexical_pack import render_value_timeline
 
                     reserve_budget = min(3600, max(0, other_budget // 2))
                     reserved_block = render_value_timeline(self.reserved_episodes, query, reserve_budget)
@@ -813,7 +817,7 @@ async def _fts_episodes(query: str, scope_keys: list[str], limit: int) -> list[E
     from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.fts import match_episode_ids
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
     ids = await match_episode_ids(scope_keys, query_tokens(query), limit)
     if not ids or async_maker is None:
@@ -1047,7 +1051,7 @@ async def _parallel_document_sources(scope_keys: list[str]) -> int:
     from sqlalchemy.exc import SQLAlchemyError
 
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import episode_source_key, is_ingested_document_episode
+    from gsuid_core.ai_core.memory.retrieval.lexical_cover import episode_source_key, is_ingested_document_episode
 
     seen: set[str] = set()
     for sk in scope_keys:
@@ -1071,7 +1075,7 @@ async def _load_document_coverage(query: str, scope_keys: list[str]) -> list[Epi
     from sqlalchemy.exc import SQLAlchemyError
 
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
+    from gsuid_core.ai_core.memory.retrieval.lexical_cover import (
         DOC_COVER_EXTRACT_BUDGET,
         cover_document_excerpts,
         has_document_coverage_tokens,
@@ -1099,10 +1103,10 @@ async def _expand_document_siblings(hits: list[Episode], scope_keys: list[str]) 
     from sqlalchemy.exc import SQLAlchemyError
 
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import merge_document_sibling_episodes
+    from gsuid_core.ai_core.memory.retrieval.lexical_cover import (
         episode_source_key,
         is_ingested_document_episode,
-        merge_document_sibling_episodes,
     )
 
     titles: list[str] = []
@@ -1178,7 +1182,8 @@ async def _fetch_temporal_episodes(
 
 
 async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> list[Episode]:
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
+    from gsuid_core.ai_core.memory.retrieval.event_time import temporal_search_query
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
         _embedding_map,
         _assistant_turn,
         _topic_hit_count,
@@ -1186,7 +1191,6 @@ async def _select_order_stages(query: str, episodes: list[Episode], n: int) -> l
         _speaker_stripped,
         pack_first_mention_episodes,
     )
-    from gsuid_core.ai_core.memory.retrieval.event_time import temporal_search_query
     from gsuid_core.ai_core.memory.retrieval.order_reconstruct import select_by_topic_scores
 
     if n <= 0 or not episodes:
@@ -1273,12 +1277,9 @@ def _filter_point_lookup_episodes(
     """点查/闲聊剥离低相关纯稠密凑数片段，保留双路/词面命中与至多 2 条顶部语义锚点。"""
     if not episodes or not query.strip():
         return episodes[: max(dense_anchor_cap, 2)]
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
-        query_tokens,
-        is_fact_sheet,
-        token_in_text,
-        is_ingested_document_episode,
-    )
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import is_fact_sheet
+    from gsuid_core.ai_core.memory.retrieval.lexical_cover import is_ingested_document_episode
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens, token_in_text
 
     substantive = [tok for tok in query_tokens(query) if tok not in _EPISODE_STOP_WORDS and len(tok) >= 2]
     direct_hits: list[Episode] = []
@@ -1312,7 +1313,7 @@ def _rrf_fuse_episodes(
     fts_eps: list[Episode],
     keep_assistant: bool,
 ) -> list[Episode]:
-    from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _assistant_turn
 
     scores: dict[str, float] = {}
     ep_map: dict[str, Episode] = {}
@@ -1364,10 +1365,10 @@ async def dual_route_retrieve(
     )
     from gsuid_core.ai_core.memory.observer import pending_episodes_for_scopes
     from gsuid_core.ai_core.memory.database.models import AIMemEntity, AIMemPreference
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
+    from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import (
         token_in_text,
         looks_like_sum_query,
-        expand_lexical_recall,
         looks_like_count_query,
         wants_parallel_document_coverage,
     )
@@ -1568,7 +1569,7 @@ async def dual_route_retrieve(
 
     pending = pending_episodes_for_scopes(scope_keys, cap=16)
     if pending:
-        from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens
+        from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
         q_stripped = query.strip()
         q_toks = query_tokens(query)
@@ -1630,7 +1631,7 @@ async def dual_route_retrieve(
             episodes = _merge_episodes(episodes, in_window)
 
     if covered:
-        from gsuid_core.ai_core.memory.retrieval.lexical import merge_coverage_with_metric_hits
+        from gsuid_core.ai_core.memory.retrieval.lexical_cover import merge_coverage_with_metric_hits
 
         episodes = merge_coverage_with_metric_hits(covered, episodes)
 

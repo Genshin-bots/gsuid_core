@@ -31,14 +31,9 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.test import TestModel
 
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import (
-    _is_image_payload_error,
-    sanitize_error_for_user,
-    _strip_remote_images_from_history,
-    _canonicalize_tool_call_args_in_parts,
-)
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_safety import format_tool_execute_error
+from gsuid_core.ai_core.agent_errors import sanitize_error_for_user
 from gsuid_core.utils.image.image_io import (
     sniff_image_mime,
     unwrap_image_url,
@@ -47,6 +42,11 @@ from gsuid_core.utils.image.image_io import (
     adapt_messages_images_for_model,
 )
 from gsuid_core.utils.resource_manager import ResourceManager
+from gsuid_core.ai_core.history_compact import (
+    _is_image_payload_error,
+    _strip_remote_images_from_history,
+    _canonicalize_tool_call_args_in_parts,
+)
 from gsuid_core.ai_core.persona.prompts import TOOL_ORCHESTRATION_CONSTRAINTS
 from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
 from gsuid_core.ai_core.agent_run.support import _claims_inflight_without_backend
@@ -839,7 +839,7 @@ def test_subagent_kanban_lifecycle_and_seed_integrity(
         assert receipt_has_rendered_image("💡 主图：`res_12345678` → send_message_by_ai(image_id=)。") is True
         assert receipt_has_rendered_image(fail_receipt) is False
 
-        from gsuid_core.ai_core.utils import _resolve_and_deliver_leaked_handles
+        from gsuid_core.ai_core.delivery import _resolve_and_deliver_leaked_handles
         from gsuid_core.ai_core.planning import workspace as ws_mod
 
         root_draft = await _mk_leaf("测试泄漏草稿拦截")
@@ -2426,7 +2426,7 @@ def test_session_log_display_names_call_tool_inner() -> None:
 def test_count_query_detection_and_memory_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     from gsuid_core.ai_core.memory import config as memory_cfg_mod
     from gsuid_core.ai_core.kits.base import inject_memory_cap
-    from gsuid_core.ai_core.memory.retrieval.lexical import looks_like_count_query
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import looks_like_count_query
 
     class _StubMemoryConfig:
         evidence_mode: bool = False
@@ -2446,7 +2446,7 @@ def test_count_query_detection_and_memory_cap(monkeypatch: pytest.MonkeyPatch) -
 def test_lean_tool_returns_fold_only_readonly_tools() -> None:
     from pydantic_ai.messages import ModelResponse
 
-    from gsuid_core.ai_core.utils import _lean_oversized_tool_returns
+    from gsuid_core.ai_core.history_compact import _lean_oversized_tool_returns
 
     big_part = ToolReturnPart(tool_name="search_cognition", content="A" * 1600, tool_call_id="c1")
     req = ModelRequest(parts=[big_part])
@@ -2489,7 +2489,7 @@ def test_find_tools_plan_carries_call_contract() -> None:
 def test_compact_history_keeps_prefix_bytes_and_folds_tail() -> None:
     from pydantic_ai.messages import TextPart, ModelResponse
 
-    from gsuid_core.ai_core.utils import compact_session_history
+    from gsuid_core.ai_core.history_compact import compact_session_history
 
     head_big = "H" * 1500
     tail_big = "T" * 1500

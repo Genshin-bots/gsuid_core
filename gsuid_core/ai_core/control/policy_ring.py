@@ -12,8 +12,7 @@ from collections.abc import Callable, Awaitable
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import is_silence_marker
-from gsuid_core.ai_core.output_gate import GateResult, GateDecision
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
 from gsuid_core.ai_core.agent_run.support import (
     _RENDER_TOOL_NAMES,
@@ -24,7 +23,12 @@ from gsuid_core.ai_core.agent_run.support import (
     _claims_missing_offered_tool,
     _claims_inflight_without_backend,
 )
-from gsuid_core.ai_core.control.directive import Directive, obligation_satisfied
+from gsuid_core.ai_core.control.directive import (
+    Directive,
+    GateResult,
+    GateDecision,
+    obligation_satisfied,
+)
 from gsuid_core.ai_core.control.corrections import (
     fake_done_directive,
     master_title_directive,

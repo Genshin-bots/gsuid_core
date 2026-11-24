@@ -42,9 +42,7 @@ from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 from .ai_config import ai_config
 from .task_kinds import TaskLevel, parent_task_kind
-from .gemini_config import get_gemini_config, gemini_config_manager, get_gemini_config_dict
-from .openai_config import get_openai_config, openai_config_manager, get_openai_config_dict
-from .anthropic_config import get_anthropic_config, anthropic_config_manager, get_anthropic_config_dict
+from .provider_config_manager import provider_manager
 
 if TYPE_CHECKING:
     import httpx
@@ -424,7 +422,7 @@ def _resolve_continuous_usage(base_url: str, mode: str) -> bool:
 def get_openai_config_by_name(
     config_name: str,
 ) -> tuple[str, str, str, OpenAIConfiguredEffort | None, RequestMethod, bool, str]:
-    oconfig = get_openai_config(config_name)
+    oconfig = provider_manager("openai").get_config(config_name)
     base_url, api_key, model_name, model_effort, request_method = (
         oconfig.get_config("base_url").data,
         oconfig.get_config("api_key").data[0],
@@ -449,7 +447,7 @@ def get_openai_config_by_name(
 
 
 def get_anthropic_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel | None]:
-    aconfig = get_anthropic_config(config_name)
+    aconfig = provider_manager("anthropic").get_config(config_name)
     base_url, api_key, model_name, model_effort = (
         aconfig.get_config("base_url").data,
         aconfig.get_config("api_key").data[0],
@@ -505,7 +503,7 @@ def get_openai_model_by_name(config_name: str, *, fast: bool = False) -> OpenAIM
     )
     provider = OpenAIProvider(openai_client=_client)
 
-    oconfig = get_openai_config(config_name)
+    oconfig = provider_manager("openai").get_config(config_name)
     send_back_thinking = str(oconfig.get_config("send_back_thinking").data)
     video_input_format_val = str(oconfig.get_config("video_input_format").data)
     video_input_format: OpenAIVideoInputFormat = "video_url" if video_input_format_val == "video_url" else "file"
@@ -639,7 +637,7 @@ def normalize_gemini_base_url(base_url: str) -> str:
 
 
 def get_gemini_config_by_name(config_name: str) -> tuple[str, str, str, ThinkingLevel | None]:
-    gconfig = get_gemini_config(config_name)
+    gconfig = provider_manager("gemini").get_config(config_name)
     api_keys = gconfig.get_config("api_key").data
     if not api_keys or not str(api_keys[0]).strip():
         raise ValueError(t("log.ai.gscore_gemini_config_name_api", config_name=config_name))
@@ -769,11 +767,7 @@ def provider_config_exists(full_name: str) -> bool:
     provider, config_name = parse_provider_config_name(full_name)
     if not config_name or not is_safe_filename(config_name):
         return False
-    if provider == "openai":
-        return openai_config_manager.exists(config_name)
-    if provider == "anthropic":
-        return anthropic_config_manager.exists(config_name)
-    return gemini_config_manager.exists(config_name)
+    return provider_manager(provider).exists(config_name)
 
 
 def get_task_model_overrides() -> dict[str, TaskModelOverride]:
@@ -848,11 +842,7 @@ def get_max_concurrency_for_config(full_name: str) -> int:
 
 def _get_provider_string_config(provider: str, config_name: str) -> StringConfig:
     """按 provider 取对应配置文件的 StringConfig（三 provider 唯一分派点）"""
-    if provider == "openai":
-        return get_openai_config(config_name)
-    if provider == "anthropic":
-        return get_anthropic_config(config_name)
-    return get_gemini_config(config_name)
+    return provider_manager(provider).get_config(config_name)
 
 
 def get_model_by_full_name(full_name: str) -> AnyModel:
@@ -947,16 +937,11 @@ def get_model_fingerprint_for_task(task_level: TaskLevel, task_kind: str | None 
         return ""
 
     provider, config_name = parse_provider_config_name(full_name)
-    if provider == "openai":
-        config_dict = get_openai_config_dict(config_name)
-    elif provider == "anthropic":
-        config_dict = get_anthropic_config_dict(config_name)
-    else:
-        config_dict = get_gemini_config_dict(config_name)
+    config_dict = provider_manager(provider).get_config_dict(config_name)
 
     key = (provider, config_name)
     gen = _MODEL_CLIENT_GENERATIONS[key] if key in _MODEL_CLIENT_GENERATIONS else 0
-    if not isinstance(config_dict, dict):
+    if not config_dict:
         return f"{full_name}:gen={gen}" if gen else full_name
 
     payload = json.dumps(config_dict, sort_keys=True, ensure_ascii=False, default=str)

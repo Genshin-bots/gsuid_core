@@ -55,9 +55,9 @@ class SelfCognitionKit(AgentKit):
         if ctx.ev is None:
             return ""
         from gsuid_core.message_history import get_history_manager
-        from gsuid_core.ai_core.self_repetition import self_repetition_hint
         from gsuid_core.ai_core.persona.settings import get_master_title
         from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+        from gsuid_core.ai_core.persona.self_repetition import self_repetition_hint
 
         return self_repetition_hint(
             get_history_manager().get_history(ctx.ev),

@@ -14,8 +14,9 @@
 ```
 heartbeat/
 ├── inspector.py     # HeartbeatInspector 巡检器
-├── decision.py      # LLM 决策（巡检唤醒判断；软路由由 inbox TurnRouter 承担）
-└── dispatcher.py    # 主动消息统一网关（防撞车 + 任务结果合并进 Heartbeat 语境）
+└── decision.py      # LLM 决策（巡检唤醒判断；软路由由 inbox TurnRouter 承担）
+
+（主动消息统一网关在 `proactive/dispatcher.py`：防撞车 + 任务结果合并进 Heartbeat 语境）
 ```
 
 ```python

@@ -509,8 +509,7 @@ class _Bot:
 
             # 构造 Event 对象用于记录历史（WS_BOT_ID 即 self.bot_id）
             if content and _hist_user_id:
-                # utils 顶层 import Bot，提到模块顶会和本文件成环。
-                from gsuid_core.ai_core.utils import is_silence_marker
+                from gsuid_core.ai_core.protocol_text import is_silence_marker
 
                 if not is_silence_marker(content):
                     ev = Event(

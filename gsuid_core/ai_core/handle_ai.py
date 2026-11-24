@@ -29,7 +29,6 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.hooks import HookDecision, AgentHookPoint, AgentHookContext, fire_hooks
-from gsuid_core.ai_core.utils import prepare_media_payload, has_model_visible_content
 from gsuid_core.ai_core.startup import is_ai_core_ready, wait_ai_core_ready
 from gsuid_core.message_history import MessageRecord, get_history_manager
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
@@ -66,6 +65,10 @@ from gsuid_core.ai_core.followup_window import (
 from gsuid_core.ai_core.inbox.scheduler import TurnOutcome, set_turn_runner
 from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.multimodal.payload import (
+    prepare_media_payload,
+    has_model_visible_content,
+)
 from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
@@ -726,7 +729,7 @@ async def _settle_silent_turn(
     )
 
 
-# 情绪更新已迁至 ``kits/mood/kit.py``（H08）：六张关键词表在 relationship/signals.py，
+# 情绪更新已迁至 ``kits/mood.py``（H08）：六张关键词表在 relationship/signals.py，
 # mood 与关系温度一次扫描两用，结论不会再各说各话。
 
 # 模块加载即登记，保证首个 WS 事件到达前 runner 已就位。

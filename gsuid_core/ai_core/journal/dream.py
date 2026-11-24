@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import json
 import time
-from typing import TYPE_CHECKING, Literal, Sequence, TypedDict
+from typing import TYPE_CHECKING, Dict, List, Tuple, Literal, Sequence, TypedDict
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -21,11 +21,50 @@ from dataclasses import dataclass
 from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.persona.config import (
+    read_autonomy_runtime,
+    is_within_active_hours,
+    persona_config_manager,
+)
+from gsuid_core.ai_core.journal.storage import (
+    SELF_SHARD_ID,
+    SELF_MONTHLY_MAX_CHARS,
+    SELF_MONTHLY_MAX_ITEMS,
+    SELF_TIMELINE_RING_CAP,
+    GROUP_MONTHLY_MAX_CHARS,
+    GROUP_MONTHLY_MAX_ITEMS,
+    GROUP_TIMELINE_RING_CAP,
+    SELF_YESTERDAY_MAX_CHARS,
+    SELF_YESTERDAY_MAX_ITEMS,
+    GROUP_YESTERDAY_MAX_CHARS,
+    GROUP_YESTERDAY_MAX_ITEMS,
+    SELF_PERSISTENT_MAX_CHARS,
+    SELF_PERSISTENT_MAX_ITEMS,
+    GROUP_PERSISTENT_MAX_CHARS,
+    GROUP_PERSISTENT_MAX_ITEMS,
+    _safe_token,
+    _archives_dir,
+    _persona_root,
+    _user_shard_id,
+    _get_shard_lock,
+    cap_bullet_slot,
+    _load_full_state,
+    _load_shard_sync,
+    _save_shard_sync,
+    _empty_state_entry,
+    parse_timeline_line,
+    _is_placeholder_bullet,
+    get_all_journal_personas,
+    _list_user_shard_ids_sync,
+    _commit_compact_state_sync,
+    _list_group_shard_ids_sync,
+    _migrate_legacy_root_file_sync,
+)
 from gsuid_core.ai_core.journal.sanitizer import truncate_at_boundary
 from gsuid_core.ai_core.configs.task_kinds import TASK_JOURNAL_COMPACT
 
 if TYPE_CHECKING:
-    from gsuid_core.ai_core.journal.manager import ShardDocument
+    from gsuid_core.ai_core.journal.storage import ShardDocument
 
 DREAM_HEAVY_MIN_ENTRIES = 3
 DREAM_LIGHT_CARRY_MAX = 3
@@ -409,8 +448,8 @@ async def synthesize_shard_with_llm(
     if not ai_config.get_config("enable").data or not get_config_name_for_task("high", TASK_JOURNAL_COMPACT):
         return None
 
-    from gsuid_core.ai_core.utils import is_agent_error_text
     from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.agent_errors import is_agent_error_text
     from gsuid_core.ai_core.persona.persona import Persona
     from gsuid_core.ai_core.persona.resource import extract_compact_persona
 
@@ -475,7 +514,7 @@ def rule_rollover_shard(
     ground_truth: GroundTruthDigest,
 ) -> DreamSlots:
     """轻度分片零 LLM 规则跨日（或离线降级兜底）：保留持久与当月脉络，将流水凝练入昨日摘要。"""
-    from gsuid_core.ai_core.journal.manager import parse_timeline_line, _is_placeholder_bullet
+    from gsuid_core.ai_core.journal.storage import parse_timeline_line, _is_placeholder_bullet
 
     pers = [ln.lstrip("-*• ").strip() for ln in doc.persistent if ln.strip() and not _is_placeholder_bullet(ln)]
     # 跨月时旧当月主线已封存，新月从空起步；同月保留并标记已完结任务
@@ -556,8 +595,8 @@ async def _llm_merge_notes(persona_name: str, topic: str, docs: Sequence[tuple[s
 
     if not ai_config.get_config("enable").data or not get_config_name_for_task("high", TASK_JOURNAL_COMPACT):
         return None
-    from gsuid_core.ai_core.utils import is_agent_error_text
     from gsuid_core.ai_core.gs_agent import create_agent
+    from gsuid_core.ai_core.agent_errors import is_agent_error_text
 
     joined = "\n\n".join(f"### 原笔记：{title}\n{body[:1200]}" for title, body in docs[:8])
     user_prompt = f"专题名称：{topic}\n\n{joined}"
@@ -774,3 +813,416 @@ async def consolidate_persona_notes(
             )
         )
     return merged_topics, archived_count
+
+
+_JOB_ID: str = "ai_journal_hourly_compact"
+
+
+async def _summarize_journal_with_llm(
+    persona_name: str,
+    doc: ShardDocument,
+    ground_truth: GroundTruthDigest,
+    prev_month_rollover: Sequence[str] = (),
+) -> DreamLLMOutcome:
+    """委托做梦引擎调用 high 档模型生成三层覆写槽位。"""
+    return await synthesize_shard_with_llm(
+        persona_name,
+        doc,
+        ground_truth=ground_truth,
+        prev_month_rollover=prev_month_rollover,
+    )
+
+
+def _apply_slots_to_doc(
+    doc: ShardDocument,
+    slots: DreamSlots,
+    *,
+    persona_name: str,
+    sleep_date: str,
+    current_month: str,
+) -> None:
+    is_self = doc.shard_id == SELF_SHARD_ID
+    doc.persistent = cap_bullet_slot(
+        slots["persistent"] or doc.persistent,
+        max_items=SELF_PERSISTENT_MAX_ITEMS if is_self else GROUP_PERSISTENT_MAX_ITEMS,
+        max_chars=SELF_PERSISTENT_MAX_CHARS if is_self else GROUP_PERSISTENT_MAX_CHARS,
+    )
+    doc.monthly = cap_bullet_slot(
+        slots["monthly"],
+        max_items=SELF_MONTHLY_MAX_ITEMS if is_self else GROUP_MONTHLY_MAX_ITEMS,
+        max_chars=SELF_MONTHLY_MAX_CHARS if is_self else GROUP_MONTHLY_MAX_CHARS,
+    )
+    yest_raw = [x for x in slots["yesterday"] if x and x.strip()]
+    archive_handle = f"journal:{persona_name}:{doc.shard_id}:{sleep_date}"
+    if yest_raw and archive_handle not in yest_raw[-1]:
+        yest_raw[-1] = f"{yest_raw[-1].rstrip('。.')}（归档: {archive_handle}）。"
+    doc.yesterday = cap_bullet_slot(
+        yest_raw,
+        max_items=SELF_YESTERDAY_MAX_ITEMS if is_self else GROUP_YESTERDAY_MAX_ITEMS,
+        max_chars=SELF_YESTERDAY_MAX_CHARS if is_self else GROUP_YESTERDAY_MAX_CHARS,
+    )
+    doc.month_label = "" if is_self else current_month
+    doc.yesterday_label = sleep_date
+    doc.today_label = ""
+    doc.timeline = []
+
+
+async def _dream_one_shard(
+    persona_name: str,
+    shard_id: str,
+    *,
+    sleep_date: str,
+    current_month: str,
+    tz_name: str = "Asia/Shanghai",
+    now_ts: float,
+    allow_heavy_llm: bool,
+    light_carry_count: int,
+    force: bool,
+) -> Tuple[int, str, int]:
+    """整理单个分片。返回 (归并流水条数, 模式 'llm'|'rule'|'none', 更新后的 light_carry)。"""
+    async with _get_shard_lock(persona_name, shard_id):
+        doc = await to_thread(_load_shard_sync)(persona_name, shard_id, create_if_missing=False)
+        if doc is None or not doc.timeline:
+            return 0, "none", light_carry_count
+
+        # 若 self.md 内混有 (群:gid) 或私聊 (替:uid) 流水，做梦前分流至对应群/私聊分片防广播
+        if shard_id == SELF_SHARD_ID:
+            stray_by_group: Dict[str, List[str]] = {}
+            stray_by_user: Dict[str, List[str]] = {}
+            kept_self: List[str] = []
+            for ln in doc.timeline:
+                p = parse_timeline_line(ln)
+                if p is not None and p.gid:
+                    bucket = stray_by_group[p.gid] if p.gid in stray_by_group else []
+                    bucket.append(ln)
+                    stray_by_group[p.gid] = bucket
+                elif p is not None and p.who:
+                    ubucket = stray_by_user[p.who] if p.who in stray_by_user else []
+                    ubucket.append(ln)
+                    stray_by_user[p.who] = ubucket
+                else:
+                    kept_self.append(ln)
+            if stray_by_group or stray_by_user:
+                doc.timeline = kept_self
+                for gid, glines in stray_by_group.items():
+                    gdoc = await to_thread(_load_shard_sync)(persona_name, gid, create_if_missing=True)
+                    if gdoc is not None:
+                        gdoc.timeline.extend(glines)
+                        gdoc.timeline = gdoc.timeline[-GROUP_TIMELINE_RING_CAP:]
+                        await to_thread(_save_shard_sync)(persona_name, gdoc, ts_val=now_ts)
+                for req_uid, ulines in stray_by_user.items():
+                    usid = _user_shard_id(req_uid)
+                    udoc = await to_thread(_load_shard_sync)(persona_name, usid, create_if_missing=True)
+                    if udoc is not None:
+                        udoc.timeline.extend(ulines)
+                        udoc.timeline = udoc.timeline[-SELF_TIMELINE_RING_CAP:]
+                        await to_thread(_save_shard_sync)(persona_name, udoc, ts_val=now_ts)
+                await to_thread(_save_shard_sync)(persona_name, doc, ts_val=now_ts)
+                if not doc.timeline:
+                    return 0, "none", 0
+
+        entry_count = len(doc.timeline)
+        gt = await collect_ground_truth(persona_name, shard_id, now_ts)
+        archives_dir = _archives_dir(persona_name)
+
+        # 跨月边界：先将上月主线封存进月卷，把上月条目交给做梦模型提取持久精华后清空新月槽位
+        prev_month_rollover: List[str] = []
+        if doc.month_label and doc.month_label != current_month and doc.monthly:
+            prev_month_rollover = [x for x in doc.monthly if not _is_placeholder_bullet(x)]
+            if prev_month_rollover:
+                await archive_shard_entries(
+                    archives_dir,
+                    date_str=doc.month_label,
+                    shard_id=shard_id,
+                    kind="monthly_rollup",
+                    entries=prev_month_rollover,
+                    now_ts=now_ts,
+                    tz_name=tz_name,
+                )
+
+        is_heavy = (
+            force
+            or entry_count >= DREAM_HEAVY_MIN_ENTRIES
+            or bool(gt.completed)
+            or bool(prev_month_rollover)
+            or light_carry_count >= DREAM_LIGHT_CARRY_MAX
+        )
+
+        slots: DreamSlots | None = None
+        mode = "rule"
+        if allow_heavy_llm and is_heavy:
+            outcome = await _summarize_journal_with_llm(
+                persona_name,
+                doc,
+                gt,
+                prev_month_rollover=prev_month_rollover,
+            )
+            if outcome == "transient_error":
+                if not force:
+                    return 0, "none", light_carry_count
+            elif outcome is not None:
+                slots = outcome
+                mode = "llm"
+
+        if slots is None:
+            slots = rule_rollover_shard(
+                doc,
+                persona_name=persona_name,
+                sleep_date=sleep_date,
+                current_month=current_month,
+                ground_truth=gt,
+            )
+
+        await archive_shard_entries(
+            archives_dir,
+            date_str=sleep_date,
+            shard_id=shard_id,
+            kind="daily",
+            entries=doc.timeline,
+            now_ts=now_ts,
+            tz_name=tz_name,
+        )
+        _apply_slots_to_doc(
+            doc,
+            slots,
+            persona_name=persona_name,
+            sleep_date=sleep_date,
+            current_month=current_month,
+        )
+        await to_thread(_save_shard_sync)(persona_name, doc)
+        new_carry = 0 if mode == "llm" else (light_carry_count + 1)
+        logger.info(
+            t(
+                "log.ai.journal_dream_shard_done",
+                persona_name=persona_name,
+                shard=shard_id,
+                mode=mode,
+                count=entry_count,
+            )
+        )
+        return entry_count, mode, new_carry
+
+
+async def compact_journal(
+    persona_name: str,
+    *,
+    force: bool = False,
+    target_shard: str | None = None,
+    max_llm_shards: int | None = None,
+) -> bool:
+    """对指定人格执行做梦整理（支持 target_shard 单分片速整与 max_llm_shards 配额防阻塞）。"""
+    key = _safe_token(persona_name)
+    await to_thread(_migrate_legacy_root_file_sync)(key)
+
+    now_ts = time.time()
+    cfg = persona_config_manager.get_config(key)
+    runtime = read_autonomy_runtime(cfg)
+    sleep_date = logical_sleep_date(runtime.timezone, now_ts)
+    cur_month = current_month_str(runtime.timezone, now_ts)
+    eff_llm_cap = max_llm_shards if max_llm_shards is not None else DREAM_MAX_HEAVY_SHARDS_PER_NIGHT
+
+    state_all = await to_thread(_load_full_state)()
+    st_entry = state_all[key] if key in state_all else _empty_state_entry()
+
+    candidate_shards: List[Tuple[str, int]] = []
+    seen_sids: set[str] = set()
+    req_sid = target_shard.strip() if target_shard and target_shard.strip() else ""
+
+    if req_sid:
+        eff_req = SELF_SHARD_ID if req_sid == SELF_SHARD_ID else req_sid
+        sdoc = await to_thread(_load_shard_sync)(key, eff_req, create_if_missing=False)
+        if sdoc is not None and sdoc.timeline:
+            candidate_shards.append((eff_req, len(sdoc.timeline)))
+            seen_sids.add(eff_req)
+        note_llm_budget = (
+            MAX_NOTE_CLUSTERS_PER_NIGHT if max_llm_shards is None else max(0, eff_llm_cap - len(candidate_shards))
+        )
+        notes_merged, notes_archived = (
+            await consolidate_persona_notes(
+                key,
+                now_ts=now_ts,
+                tz_name=runtime.timezone,
+                allow_llm=note_llm_budget > 0,
+                max_llm_merges=note_llm_budget,
+            )
+            if eff_req == SELF_SHARD_ID
+            else (0, 0)
+        )
+        gc_ran = False
+    else:
+        # 收集所有待检查分片：脏标记 ∪ 磁盘上有非空 timeline 的分片（兼容外部编辑与测试直写）
+        self_doc = await to_thread(_load_shard_sync)(key, SELF_SHARD_ID, create_if_missing=False)
+        if self_doc is not None and self_doc.timeline:
+            candidate_shards.append((SELF_SHARD_ID, len(self_doc.timeline)))
+            seen_sids.add(SELF_SHARD_ID)
+
+        user_sids = {_user_shard_id(uid) for uid in await to_thread(_list_user_shard_ids_sync)(key)}
+        all_gids = set(st_entry["dirty_shards"]) | set(await to_thread(_list_group_shard_ids_sync)(key)) | user_sids
+        all_gids.discard(SELF_SHARD_ID)
+        for gid in all_gids:
+            gdoc = await to_thread(_load_shard_sync)(key, gid, create_if_missing=False)
+            if gdoc is not None and gdoc.timeline and gid not in seen_sids:
+                candidate_shards.append((gid, len(gdoc.timeline)))
+                seen_sids.add(gid)
+
+        # Phase 3：整编个人散乱笔记库（受总重度 LLM 配额统一约束）
+        note_llm_budget = (
+            MAX_NOTE_CLUSTERS_PER_NIGHT if max_llm_shards is None else max(0, eff_llm_cap - len(candidate_shards))
+        )
+        notes_merged, notes_archived = await consolidate_persona_notes(
+            key,
+            now_ts=now_ts,
+            tz_name=runtime.timezone,
+            allow_llm=note_llm_budget > 0,
+            max_llm_merges=note_llm_budget,
+        )
+
+        # 月度存储维护 GC（休眠群归档 + 过期月卷清理）
+        gc_ran = False
+        if st_entry["last_gc_month"] != cur_month:
+            dormant_cnt, purged_cnt = await run_storage_gc_sync(_persona_root(key), now_ts, runtime.timezone)
+            gc_ran = True
+            if dormant_cnt or purged_cnt:
+                logger.info(t("log.ai.journal_gc_done", dormant=dormant_cnt, purged=purged_cnt))
+
+    if not candidate_shards:
+        if notes_merged or notes_archived:
+            await to_thread(_commit_compact_state_sync)(
+                key,
+                cleared_shards=(),
+                still_dirty=(),
+                updated_carries={},
+                gc_month=cur_month if gc_ran else "",
+                compact_ts=now_ts if not req_sid else None,
+                dream_date=sleep_date if not req_sid else None,
+            )
+            return True
+        if gc_ran:
+            await to_thread(_commit_compact_state_sync)(
+                key,
+                cleared_shards=(),
+                still_dirty=(),
+                updated_carries={},
+                gc_month=cur_month,
+            )
+        return False
+
+    # 按当日行动数降序排列，SELF 优先，重度 LLM 调用受 eff_llm_cap 配额保护
+    candidate_shards.sort(key=lambda item: (1 if item[0] == SELF_SHARD_ID else 0, item[1]), reverse=True)
+
+    # 若在 self_doc 分流后产生了新的群分片，动态追加进队列
+    total_merged_entries = 0
+    llm_used = min(notes_merged, note_llm_budget) if max_llm_shards is not None else 0
+    cleared_sids: List[str] = []
+    still_dirty: List[str] = []
+    updated_carries: Dict[str, int] = {}
+
+    idx = 0
+    processed_this_run: set[str] = set()
+    while idx < len(candidate_shards):
+        sid, _ = candidate_shards[idx]
+        idx += 1
+        if sid in processed_this_run:
+            continue
+        processed_this_run.add(sid)
+
+        carry = st_entry["light_carry"][sid] if sid in st_entry["light_carry"] else 0
+        allow_llm = llm_used < eff_llm_cap
+        merged_n, mode, new_carry = await _dream_one_shard(
+            key,
+            sid,
+            sleep_date=sleep_date,
+            current_month=cur_month,
+            tz_name=runtime.timezone,
+            now_ts=now_ts,
+            allow_heavy_llm=allow_llm,
+            light_carry_count=carry,
+            force=force,
+        )
+        if sid == SELF_SHARD_ID and not req_sid:
+            # 检查 self.md 拆分后是否有新落入的群分片需要紧接着整理
+            for new_gid in await to_thread(_list_group_shard_ids_sync)(key):
+                if new_gid not in processed_this_run and new_gid not in seen_sids:
+                    gdoc = await to_thread(_load_shard_sync)(key, new_gid, create_if_missing=False)
+                    if gdoc is not None and gdoc.timeline:
+                        candidate_shards.append((new_gid, len(gdoc.timeline)))
+                        seen_sids.add(new_gid)
+
+        if merged_n > 0:
+            total_merged_entries += merged_n
+            cleared_sids.append(sid)
+            updated_carries[sid] = new_carry
+            if mode == "llm":
+                llm_used += 1
+        else:
+            # 若因 LLM 临时故障保留了流水，维持 dirty 标记以便下一窗口续跑
+            rem_doc = await to_thread(_load_shard_sync)(key, sid, create_if_missing=False)
+            if rem_doc is not None and rem_doc.timeline:
+                still_dirty.append(sid)
+            else:
+                cleared_sids.append(sid)
+
+    did_work = total_merged_entries > 0 or notes_merged > 0 or notes_archived > 0
+    full_run_done = did_work and not still_dirty and not req_sid
+    await to_thread(_commit_compact_state_sync)(
+        key,
+        cleared_shards=cleared_sids,
+        still_dirty=still_dirty,
+        updated_carries=updated_carries,
+        gc_month=cur_month if gc_ran else "",
+        compact_ts=now_ts if full_run_done else None,
+        dream_date=sleep_date if full_run_done else None,
+    )
+    if did_work:
+        logger.info(t("log.ai.journal_compact_success", persona_name=key, count=total_merged_entries))
+        return True
+    return False
+
+
+async def check_and_compact_all_journals() -> None:
+    """定时巡检：在人格非活跃休息窗口内，按睡眠自然日（无 24h 漂移）执行每日做梦巩固。"""
+    now = time.time()
+    state_all = await to_thread(_load_full_state)()
+
+    for persona_name in get_all_journal_personas():
+        key = _safe_token(persona_name)
+        cfg = persona_config_manager.get_config(key)
+        runtime = read_autonomy_runtime(cfg)
+        if is_within_active_hours(list(runtime.active_hours), runtime.timezone):
+            continue
+
+        sleep_date = logical_sleep_date(runtime.timezone, now)
+        st_entry = state_all[key] if key in state_all else _empty_state_entry()
+        if st_entry["last_dream_date"] == sleep_date:
+            continue
+        if st_entry["last_compact_ts"] > 0.0 and (now - st_entry["last_compact_ts"]) < 43200.0:
+            continue
+
+        try:
+            await compact_journal(key, force=False)
+        except Exception as e:
+            logger.exception(t("log.ai.journal_compact_fail", persona_name=key, e=e))
+
+
+async def init_journal_scheduler() -> None:
+    """注册每 30 分钟生活手账休息窗做梦巡检任务。"""
+    from gsuid_core.aps import scheduler
+
+    scheduler.add_job(
+        func=check_and_compact_all_journals,
+        trigger="interval",
+        minutes=30,
+        id=_JOB_ID,
+        name="生活手账做梦整理",
+        replace_existing=True,
+    )
+    logger.info(t("log.ai.journal_scheduler_start"))
+
+
+async def stop_journal_scheduler() -> None:
+    """停止生活手账定时整理任务。"""
+    from gsuid_core.aps import scheduler
+
+    job = scheduler.get_job(_JOB_ID)
+    if job is not None:
+        scheduler.remove_job(_JOB_ID)

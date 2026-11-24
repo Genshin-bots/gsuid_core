@@ -313,8 +313,8 @@ async def _sse_run(
     heartbeat_sec: int,
     queue_max: int,
 ) -> AsyncIterator[str]:
-    from gsuid_core.ai_core.utils import sanitize_error_for_user
     from gsuid_core.ai_core.handle_ai import PassiveChatResult
+    from gsuid_core.ai_core.agent_errors import sanitize_error_for_user
     from gsuid_core.ai_core.http_agent.bridge import make_capture_bot, run_http_agent_turn
     from gsuid_core.ai_core.http_agent.capture_bot import CaptureItem
 

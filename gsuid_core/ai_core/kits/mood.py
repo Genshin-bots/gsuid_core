@@ -78,7 +78,8 @@ class MoodKit(AgentKit):
             return
         import time
 
-        from gsuid_core.ai_core.utils import is_silence_marker, is_agent_error_text
+        from gsuid_core.ai_core.agent_errors import is_agent_error_text
+        from gsuid_core.ai_core.protocol_text import is_silence_marker
 
         text = ctx.result_text
         if not text or is_silence_marker(text) or is_agent_error_text(text):

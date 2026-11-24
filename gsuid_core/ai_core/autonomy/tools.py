@@ -17,7 +17,7 @@ from gsuid_core.data_store import get_res_path
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_risk import HIGH_RISK_TOOL_NAMES
 from gsuid_core.ai_core.autonomy.models import GroupObservation, CareTargetSnapshot
-from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
+from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 USER_PM = 6
 MAX_SPEAK_ATTEMPTS = 2

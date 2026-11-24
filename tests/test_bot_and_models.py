@@ -16,7 +16,7 @@ from gsuid_core.bot import (
     _Bot,
 )
 from gsuid_core.models import Event
-from gsuid_core.ai_core import utils as ai_utils
+from gsuid_core.ai_core import delivery as ai_delivery, agent_errors as ai_agent_errors
 from gsuid_core.segment import Message
 from gsuid_core.ai_core.trigger_bridge import MockBot
 from gsuid_core.ai_core.persona.chat_style import DEFAULT_CHAT_STYLE, ChatStyle, _tier_for
@@ -55,12 +55,12 @@ def _drive(
     ) -> None:
         sent.append(message)
 
-    monkeypatch.setattr(ai_utils.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(ai_delivery.asyncio, "sleep", _no_sleep)
     monkeypatch.setattr("gsuid_core.ai_core.control.outbound_detectors.is_ooc_firewall_enabled", lambda: False)
     monkeypatch.setattr(Bot, "send", _fake_send)
     if bubbles is not None:
-        monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda ev: bubbles)
-    asyncio.run(ai_utils.send_chat_result(Bot.__new__(Bot), text, ev=None, ooc_check=False))
+        monkeypatch.setattr(ai_delivery, "_persona_max_bubbles", lambda ev: bubbles)
+    asyncio.run(ai_delivery.send_chat_result(Bot.__new__(Bot), text, ev=None, ooc_check=False))
     return sent
 
 
@@ -101,7 +101,7 @@ def test_bot_wrapper_and_chat_style_contract() -> None:
 
     mock = MockBot(high, {"image_ids": []})
     assert object.__getattribute__(mock, "_real_bot") is high
-    assert ai_utils.strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
+    assert ai_agent_errors.strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
 
     assert _tier_for(0)[0] == 1 and _tier_for(DEFAULT_CHAT_STYLE)[0] == 2 and _tier_for(100)[0] >= 3
     banned = ("唔", "呼", "zzz", "早柚", "貉", "股票", "黄金", "原神", "提瓦特")
@@ -170,14 +170,14 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
         ) -> None:
             captured.append(message)
 
-        monkeypatch.setattr(ai_utils.asyncio, "sleep", _interject_on_sleep)
+        monkeypatch.setattr(ai_delivery.asyncio, "sleep", _interject_on_sleep)
         monkeypatch.setattr("gsuid_core.ai_core.control.outbound_detectors.is_ooc_firewall_enabled", lambda: False)
         monkeypatch.setattr(Bot, "send", _capture_send)
-        monkeypatch.setattr(ai_utils, "_persona_max_bubbles", lambda _ev: 2)
+        monkeypatch.setattr(ai_delivery, "_persona_max_bubbles", lambda _ev: 2)
         tok = bind_turn(turn)
         try:
             asyncio.run(
-                ai_utils.send_chat_result(
+                ai_delivery.send_chat_result(
                     Bot(_Bot("ws_p1"), ev_u1),
                     f"<reply #{rec1.link.seq}>\n第一段回应。\n\n第二段回应。",
                     ev=ev_u1,
@@ -275,7 +275,7 @@ def test_event_link_seq_reply_and_at_self() -> None:
 
 def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
     """超限分段无损合入末条气泡，detached_turn_scope 隔离前台轮次上下文。"""
-    from gsuid_core.ai_core.utils import pack_outbound_bubbles
+    from gsuid_core.ai_core.delivery import pack_outbound_bubbles
     from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn, current_turn, detached_turn_scope
 
     packed = pack_outbound_bubbles(["第一段", "第二段", "第三段", "第四段"], 2)

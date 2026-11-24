@@ -35,7 +35,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .models import PROVIDER_CONFIG_SEPARATOR
-from .openai_config import get_openai_config
+from .provider_config_manager import provider_manager
 
 #: ``forward_end_user_id`` 的合法取值
 FORWARD_OFF = "off"
@@ -128,7 +128,7 @@ def split_provider_config_name(full_name: str) -> Tuple[str, str]:
 
 def read_forward_config(config_name: str) -> Tuple[str, str]:
     """读取 (forward_mode, salt)；旧配置文件缺 key 时 get_config 自动补模板默认值。"""
-    oconfig = get_openai_config(config_name)
+    oconfig = provider_manager("openai").get_config(config_name)
     mode = str(oconfig.get_config("forward_end_user_id").data).strip().lower()
     salt = str(oconfig.get_config("end_user_id_salt").data)
     return (mode if mode in FORWARD_MODES else FORWARD_OFF), salt

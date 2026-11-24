@@ -290,10 +290,10 @@ async def persist_subagent_result(
     )
     if card is not None:
         from gsuid_core.ai_core.journal.manager import (
-            JournalEntry,
             record_journal_entry,
             resolve_persona_for_group_or_session,
         )
+        from gsuid_core.ai_core.journal.storage import JournalEntry
         from gsuid_core.ai_core.journal.sanitizer import (
             SILENT_CHECK_SUMMARY,
             clean_journal_tag,

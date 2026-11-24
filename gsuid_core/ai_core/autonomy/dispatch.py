@@ -17,7 +17,7 @@ from gsuid_core.ai_core.autonomy.select import (
 )
 from gsuid_core.ai_core.autonomy.verifier import fact_summary
 from gsuid_core.ai_core.relationship.zones import Zone
-from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
+from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 STAGE_TTL_SECONDS = 86400.0
 

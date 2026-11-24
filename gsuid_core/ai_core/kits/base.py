@@ -86,7 +86,7 @@ def inject_memory_cap(
 ) -> int:
     """记忆整块总帽的**唯一**出口：pack 与 join 都调这里，两边不会各抬一个数。"""
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.retrieval.lexical import (
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import (
         looks_like_sum_query,
         looks_like_count_query,
         wants_parallel_document_coverage,

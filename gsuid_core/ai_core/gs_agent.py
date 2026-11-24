@@ -38,28 +38,23 @@ from gsuid_core.ai_core.const import (
     ERROR_QUOTA_EXHAUSTED,
     STALE_CHAT_REQUEST_TTL,
 )
-from gsuid_core.ai_core.utils import (
-    ERROR_TIMEOUT_TEXT,
-    ERROR_RESULT_PREFIX,
-    ERROR_CONTENT_REJECTED,
-    send_chat_result,
-    fetch_video_bytes,
-    is_silence_marker,
-    _is_content_rejected,
-    materialize_image_url,
-    _is_image_payload_error,
-    compact_session_history,
-    _is_retryable_client_error,
-    _is_non_retryable_model_error,
-    _strip_remote_images_from_history,
-)
 from gsuid_core.ai_core.models import ToolContext
+from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.rag.tools import (
     ToolList,
 )
 from gsuid_core.ai_core.quota_guard import quota_breaker, classify_provider_error
+from gsuid_core.ai_core.agent_errors import (
+    ERROR_TIMEOUT_TEXT,
+    ERROR_RESULT_PREFIX,
+    ERROR_CONTENT_REJECTED,
+    _is_content_rejected,
+    _is_retryable_client_error,
+    _is_non_retryable_model_error,
+)
 from gsuid_core.ai_core.prefix_probe import PrefixSnapshot
 from gsuid_core.ai_core.control.lines import THREAD_VIEW_PREFIXES
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.configs.models import (
     AnyModel,
     get_model_for_task,
@@ -70,9 +65,18 @@ from gsuid_core.ai_core.configs.models import (
     reset_shared_model_http_client_by_full_name,
 )
 from gsuid_core.ai_core.session_logger import AISessionLogger, ProactiveSource
+from gsuid_core.ai_core.history_compact import (
+    _is_image_payload_error,
+    compact_session_history,
+    _strip_remote_images_from_history,
+)
 from gsuid_core.ai_core.persona.prompts import CHARACTER_BUILDING_TEMPLATE
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER, TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
+from gsuid_core.ai_core.multimodal.payload import (
+    fetch_video_bytes,
+    materialize_image_url,
+)
 from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,

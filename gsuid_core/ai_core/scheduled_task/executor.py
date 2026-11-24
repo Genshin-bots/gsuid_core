@@ -146,14 +146,10 @@ async def execute_scheduled_task(task_id: str) -> None:
 
     # 4. 派发 SubAgent 执行体完成任务，避免任务指令作为伪 user_input 污染用户主会话。
     try:
-        from gsuid_core.ai_core.utils import (
-            NO_RESULT_TEXT,
-            SILENCE_MARKERS,
-            ERROR_RESULT_PREFIX,
-            is_silence_marker,
-        )
         from gsuid_core.ai_core.gs_agent import GsCoreAIAgent, create_agent
         from gsuid_core.ai_core.proactive import emit_proactive_message
+        from gsuid_core.ai_core.agent_errors import NO_RESULT_TEXT, ERROR_RESULT_PREFIX
+        from gsuid_core.ai_core.protocol_text import SILENCE_MARKERS, is_silence_marker
         from gsuid_core.ai_core.statistics.manager import statistics_manager
 
         logger.info(

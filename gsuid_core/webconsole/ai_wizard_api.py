@@ -42,25 +42,20 @@ def _check_model_vision_support(provider: str, config_name: str) -> Dict[str, An
             "note": "模型未配置",
         }
 
+    from gsuid_core.ai_core.configs.provider_config_manager import (
+        PROVIDER_MANAGERS,
+        provider_manager,
+    )
+
+    if provider not in PROVIDER_MANAGERS:
+        return {
+            "supported": False,
+            "model_name": "未知",
+            "note": f"不支持的 provider: {provider}",
+        }
+
     try:
-        if provider == "openai":
-            from gsuid_core.ai_core.configs.openai_config import get_openai_config
-
-            config = get_openai_config(config_name)
-        elif provider == "anthropic":
-            from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
-
-            config = get_anthropic_config(config_name)
-        elif provider == "gemini":
-            from gsuid_core.ai_core.configs.gemini_config import get_gemini_config
-
-            config = get_gemini_config(config_name)
-        else:
-            return {
-                "supported": False,
-                "model_name": "未知",
-                "note": f"不支持的 provider: {provider}",
-            }
+        config = provider_manager(provider).get_config(config_name)
 
         if not config:
             return {

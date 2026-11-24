@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from gsuid_core.ai_core.control.lines import plan_hint_line
+
 # 通用结构信号：并列/承接/时间跨度/清单形态，不绑定业务域。
 _MULTI_TASK_RE = re.compile(r"(并且|然后|顺便|同时|另外)")
 _CLAUSE_SPLIT_RE = re.compile(r"[，。；、]|并且|然后|顺便|同时|另外")
@@ -34,8 +36,7 @@ def _wants_render(query: str) -> bool:
 
 
 def _plan_line(head: str, query: str, *, via: str) -> str:
-    render_bit = " → 长结构则 render 出图" if _wants_render(query) else ""
-    return f"计划：{head}{via}{render_bit} → 短句交付"
+    return plan_hint_line(head, via=via, wants_render=_wants_render(query))
 
 
 def build_plan_hint(query: str, *, eval_summary: str = "") -> str:

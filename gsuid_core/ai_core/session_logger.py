@@ -962,7 +962,7 @@ class AISessionLogger:
     ) -> None:
         """记录单次 run 的最终结果"""
         out_str = str(output).strip()
-        from gsuid_core.ai_core.utils import is_silence_marker
+        from gsuid_core.ai_core.protocol_text import is_silence_marker
 
         if is_silence_marker(out_str) or not out_str:
             why = silence_reason or "model_voluntary"

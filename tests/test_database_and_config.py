@@ -19,6 +19,7 @@ import gsuid_core.buildin_plugins.core_command.core_restart.restart as restart_m
 from gsuid_core.supervisor import RESTART_EXIT_CODE, Supervisor, dependency_sync_command
 from gsuid_core.utils.database.write_gate import SqliteWriteGate
 from gsuid_core.utils.database.base_models import with_session, with_read_session
+from gsuid_core.utils.plugins_config.gs_config import ConfigSetManager
 from gsuid_core.buildin_plugins.core_command.core_restart.restart import (
     RESTART_GUARD_MAX_IN_WINDOW,
     can_spawn_restart,
@@ -286,8 +287,9 @@ def test_estimate_model_cost_endpoints() -> None:
     assert res_batch["data"]["total_cost"] == pytest.approx(sum(costs), abs=1e-6)
 
 
-class _StubConfigManager:
+class _StubConfigManager(ConfigSetManager):
     def __init__(self, names: set[str]) -> None:
+        super().__init__(base_path=Path("."), config_template={})
         self.names = names
 
     def exists(self, config_name: str) -> bool:
@@ -296,10 +298,17 @@ class _StubConfigManager:
 
 def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
     """按任务覆盖：改档、指定配置、层级回退（子代理→能力代理→默认档）与失效配置兜底。"""
-    from gsuid_core.ai_core.configs import models
+    from gsuid_core.ai_core.configs import models, provider_config_manager
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
-    monkeypatch.setattr(models, "openai_config_manager", _StubConfigManager({"High", "Low", "Vision"}))
+    monkeypatch.setitem(
+        provider_config_manager.PROVIDER_MANAGERS,
+        "openai",
+        _StubConfigManager({"High", "Low", "Vision"}),
+    )
+    assert provider_config_manager.provider_manager("openai").exists("High")
+    with pytest.raises(ValueError):
+        provider_config_manager.provider_manager("unknown")
     values = {
         "high_level_provider_config_name": "openai++High",
         "low_level_provider_config_name": "openai++Low",
@@ -386,7 +395,7 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
     from pydantic_ai.models.test import TestModel
 
     from gsuid_core.ai_core import gs_agent as gs_agent_mod
-    from gsuid_core.ai_core.configs import models
+    from gsuid_core.ai_core.configs import models, provider_config_manager
     from gsuid_core.ai_core.agent_node import AgentNode, get_node, register_agent_node, unregister_agent_node
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
     from gsuid_core.webconsole.session_store import SessionRecord
@@ -400,7 +409,11 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
     )
     from gsuid_core.ai_core.capability_agents.runner import reopen_capability_agent
 
-    monkeypatch.setattr(models, "openai_config_manager", _StubConfigManager({"MiniMAX", "Backup", "RenderCfg"}))
+    monkeypatch.setitem(
+        provider_config_manager.PROVIDER_MANAGERS,
+        "openai",
+        _StubConfigManager({"MiniMAX", "Backup", "RenderCfg"}),
+    )
     stored: dict[str, list[str]] = {}
     monkeypatch.setattr(ai_config.get_config("high_level_provider_config_name"), "data", "openai++MiniMAX")
     monkeypatch.setattr(ai_config.get_config("low_level_provider_config_name"), "data", "openai++MiniMAX")

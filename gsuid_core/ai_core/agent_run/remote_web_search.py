@@ -18,8 +18,7 @@ from gsuid_core.ai_core.register import find_tool_base
 from gsuid_core.ai_core.configs.models import to_request_method
 from gsuid_core.ai_core.agent_run.state import RunOnceState, _require_context
 from gsuid_core.ai_core.configs.attribution import split_provider_config_name
-from gsuid_core.ai_core.configs.openai_config import get_openai_config
-from gsuid_core.ai_core.configs.anthropic_config import get_anthropic_config
+from gsuid_core.ai_core.configs.provider_config_manager import provider_manager
 
 LOCAL_WEB_SEARCH_TOOL = "web_search_tool"
 # Anthropic 没有 Chat/Responses 分叉，Messages API 本身就能挂 hosted 工具
@@ -49,12 +48,12 @@ def read_remote_web_search_flag(config_full_name: str | None) -> tuple[bool, str
     if not config_name:
         return False, "chat_completions"
     if provider == "openai":
-        oconfig = get_openai_config(config_name)
+        oconfig = provider_manager("openai").get_config(config_name)
         enabled = str(oconfig.get_config("remote_web_search").data).strip().lower() == "on"
         method = to_request_method(str(oconfig.get_config("request_method").data))
         return enabled, method
     if provider == "anthropic":
-        aconfig = get_anthropic_config(config_name)
+        aconfig = provider_manager("anthropic").get_config(config_name)
         enabled = str(aconfig.get_config("remote_web_search").data).strip().lower() == "on"
         return enabled, ANTHROPIC_NATIVE_METHOD
     return False, "chat_completions"

@@ -43,10 +43,10 @@
 | `models.py` | `ToolContext`（包含 `bot / ev / extra / parent_session_id`）、`ToolBase`、`KnowledgeBase` 等 TypedDict。 |
 | `register.py` | `@ai_tools` 装饰器，把工具按 category（`self / buildin / 插件名`）登记到全局工具表。 |
 | `resource.py` | 路径常量：`AI_SESSION_LOGS_PATH` / `AI_SUBAGENT_LOGS_PATH` / `PERSONA_PATH` / `RAG_DATA_PATH` 等。 |
-| `utils.py` | `send_chat_result`（**呈现层**：report/meme/长文出图/拆条/漏网 sanitize）、`SILENCE_MARKERS`、`extract_json_from_text`。合规打回不在此。 |
+| `utils.py` | `extract_json_from_text`、`_is_master_user` 与契约转出（正文已拆至 `protocol_text.py` / `agent_errors.py` / `history_compact.py` / `thinking.py` / `delivery.py` / `multimodal/payload.py`）。 |
 | `history_format.py` | `history_to_prompt` / `history_to_messages` / `outbound_history_fields` 等 MessageRecord 格式化辅助；群聊与私聊线程视图统一在 `thread_view.py`。 |
 | `content_guard.py` | 不可信内容包裹与词库匹配前的文本规范化。 |
-| `check_func.py` | 通用权限 / 状态检查工具。 |
+| `tool_risk.py` | 工具风险分级与通用权限检查工具（含 `check_pm`）。 |
 | `trigger_bridge.py` | 把"主人格 LLM 决定要调一个具体命令"桥接到 GsCore 触发器系统。 |
 | `startup.py` | ai_core 的启动钩子聚合点，被 `gsuid_core.startup` 调用。 |
 | `self_cognition.py` | 自我认知（"你是谁、能做什么"）相关的辅助常量。 |
@@ -99,11 +99,16 @@
 
 > 详细设计：`plans/proactive_message_session_unification_20260529.md`
 
+| 文件 | 职责 |
+|---|---|
+| `emitter.py` | 唯一发送出口 `emit_proactive_message`：串联 C8 抑制、`send_chat_result`、主 session 同步与网关登记。 |
+| `dispatcher.py` | `UnifiedProactiveDispatcher`：C8 网关单例（`should_suppress_heartbeat / consume_merge_context / register_send`，原 `heartbeat/dispatcher.py` 迁入）。 |
+
 **唯一入口**：`emit_proactive_message(event, message, *, source, trigger_reason, generator_log_files=None, bot=None, suppress_when_heartbeat_recent=True)`。
 
 内部按序：
 
-1. **C8 防撞车**——复用 `heartbeat/dispatcher.py` 的 `UnifiedProactiveDispatcher.should_suppress_heartbeat`。`source="heartbeat"` 默认开启抑制；其它来源（`task / kanban / tool`）默认 `False`，避免关键播报被刚发完的 Heartbeat 误杀。
+1. **C8 防撞车**——复用 `proactive/dispatcher.py` 的 `UnifiedProactiveDispatcher.should_suppress_heartbeat`。`source="heartbeat"` 默认开启抑制；其它来源（`task / kanban / tool`）默认 `False`，避免关键播报被刚发完的 Heartbeat 误杀。
 2. **bot.send**——通过 `send_chat_result(bot, message, extra_metadata={"proactive": True, "proactive_source": source, "trigger_reason": ...})`。`message_history` 由 `_Bot.target_send` 内部写入一次。**禁止**调用方再手动 `history_manager.add_message`，否则同一条消息会落库两次。
 3. **主 session 同步**——通过 `session_registry.get_ai_session(event.session_id)` 找到用户绑定的 `GsCoreAIAgent`，调 `append_proactive_assistant_turn(...)` 把消息塞进 `self.history`，并在 `AISessionLogger` 写 `proactive_emission` entry；`generator_log_files` 会通过 `link_agent("proactive_generator", ..., log_file=...)` 挂到 `linked_agents` 上，webconsole 可点跳子 agent 日志。**主 session 不在内存时**（已被空闲清理 / 用户从未对话）走 `AISessionLogger.log_standalone_proactive` —— 用临时 logger 复用统一的会话窗口续写 + `_build_data` 写盘，格式与活跃 session 完全一致（详见 `docs/AI_SESSION_LOGGING.md`）。
 4. **C8 网关登记**——`dispatcher.register_send(target_key, legacy_source, summary)`。
@@ -130,7 +135,6 @@
 |---|---|
 | `inspector.py` | APScheduler 钩子；启停 `start_heartbeat_inspector / stop_heartbeat_inspector`；前置规则过滤（30 分钟冷场判定 / 防刷屏 / C8 抑制）；信号量限流 5 路 LLM 调用。 |
 | `decision.py` | `run_heartbeat(event, history, persona_name, extra_context="")`：决策 + 发言两阶段子 agent。**入参直接收 `persona_name: str`，不再要求传 GsCoreAIAgent**——避免每次心跳给"用户没跟 AI 说过话"的会话凭空创建 2-entry 的空壳 session_logger 文件。**返回 `(mood, message, generator_log_files)` 三元组**，由 inspector 交给 emitter。 |
-| `dispatcher.py` | `UnifiedProactiveDispatcher`：C8 网关单例（`should_suppress_heartbeat / consume_merge_context / register_send`）。本身只做协调，不做发送——发送闭包在 `proactive/emitter.py` 中。**proactive/emitter.py 复用本文件的单例**。 |
 
 ⚠️ 巡检入口 `_inspect_session` 不再调 `_send_proactive_message`，而是 `await emit_proactive_message(event=event, message=message, source="heartbeat", trigger_reason=mood, generator_log_files=generator_log_files)`。
 

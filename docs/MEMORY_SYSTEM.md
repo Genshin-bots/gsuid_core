@@ -181,8 +181,8 @@ SQLite 另有 FTS5 虚表 `aimemepisode_fts`（`unicode61`），用于 Episode �
 |------|------|
 | `classifier/turn_router.py` | `TurnRouteDecision` + 唯一前置路由调用 + 结构退化 |
 | `hooks/models.py` | `AgentHookContext.route_decision` |
-| `kits/classifier/kit.py` | CLASSIFY 点位调用 TurnRouter（含 `soft_speak`） |
-| `kits/decision_distill/kit.py` | 缓冲 + 规则摘要，零 LLM |
+| `kits/classifier.py` | CLASSIFY 点位调用 TurnRouter（含 `soft_speak`） |
+| `kits/decision_distill.py` | 缓冲 + 规则摘要，零 LLM |
 | `memory/observer.py` | 富元数据观察、噪声/命令门控、环形窗口 |
 | `memory/ingestion/window_router.py` | Pass 1 话题分诊 |
 | `memory/ingestion/algebra.py` | Pass 2 四态代数 + 偏好 + 线程里程碑 |

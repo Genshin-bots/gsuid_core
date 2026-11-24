@@ -94,6 +94,13 @@ def check_high_risk_operator(ev: Optional[Event]) -> tuple[bool, str]:
     return False, _log_high_risk_refuse(ev)
 
 
+def check_pm(ev: Event) -> tuple[bool, str]:
+    """检查用户是否为管理员。"""
+    if ev.user_pm == 0:
+        return True, "✅ 您是管理员，为你进行操作！"
+    return False, "🚫 您不是管理员，权限不足，无法执行此操作！"
+
+
 def high_risk_block(ev: Optional[Event], tool_name: str) -> Optional[str]:
     """高危工具且调用人不是主人时返回拒绝文案，否则 None。"""
     if tool_name not in HIGH_RISK_TOOL_NAMES or event_is_master(ev):

@@ -13,10 +13,10 @@ from pydantic_ai.messages import VideoUrl, UserContent, BinaryContent
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.utils import VIDEO_MAX_MB, fetch_video_bytes
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
 from gsuid_core.utils.resource_manager import RM
+from gsuid_core.ai_core.multimodal.payload import VIDEO_MAX_MB, fetch_video_bytes
 from gsuid_core.ai_core.buildin_tools.visibility import context_has_video
 
 if TYPE_CHECKING:

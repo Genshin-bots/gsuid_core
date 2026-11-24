@@ -12,7 +12,7 @@ from pydantic_ai import RunContext
 
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.register import ai_tools
-from gsuid_core.ai_core.check_func import check_pm
+from gsuid_core.ai_core.tool_risk import check_pm
 from gsuid_core.ai_core.skills.operations import install_skill as _do_install
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_admin
 

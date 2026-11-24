@@ -123,9 +123,9 @@ async def _understand_image_native(
             内存注册表时，把本次图片理解的 subagent 日志 link 到调用方 session 的
             linked_agents，便于 webconsole 下钻（"附到调用方 session"策略）。
     """
-    from gsuid_core.ai_core.utils import materialize_image_url
     from gsuid_core.ai_core.gs_agent import create_agent
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
+    from gsuid_core.ai_core.multimodal.payload import materialize_image_url
 
     agent = create_agent(
         # §21 不确定性表述：主体/动作/方向类判断易反（生产实录把"狗打猫"读成"猫踩狗"

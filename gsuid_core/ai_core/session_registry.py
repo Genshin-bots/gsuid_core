@@ -120,7 +120,7 @@ class AISessionRegistry:
         Returns:
             清理的Session数量
         """
-        from gsuid_core.ai_core.utils import compact_session_history
+        from gsuid_core.ai_core.history_compact import compact_session_history
 
         cleaned = 0
         for session in self._ai_sessions.values():
@@ -252,8 +252,8 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
     """GC 前把 B 轨中段抽成摘要写入记忆；失败只 warning，不挡回收。"""
     from gsuid_core.i18n import t
     from gsuid_core.logger import logger
-    from gsuid_core.ai_core.utils import _extractive_middle_summary
     from gsuid_core.ai_core.cognition.types import CogKind
+    from gsuid_core.ai_core.history_compact import _extractive_middle_summary
     from gsuid_core.ai_core.memory.observer import observe
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 

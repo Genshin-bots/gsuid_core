@@ -11,13 +11,13 @@ from dataclasses import field, dataclass
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import (
+from gsuid_core.ai_core.agent_errors import (
     NO_RESULT_TEXT,
-    is_silence_marker,
     is_agent_error_text,
     strip_framework_user_leaks,
 )
 from gsuid_core.ai_core.base_prompts import join_framework_constraints
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.persona.persona import Persona
 from gsuid_core.ai_core.persona.resource import load_persona
 from gsuid_core.ai_core.persona.settings import get_master_title

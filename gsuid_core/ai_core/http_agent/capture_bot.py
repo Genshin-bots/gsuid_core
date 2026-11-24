@@ -99,7 +99,7 @@ class CaptureBot(Bot):
         """把模型可见文本增量推进 SSE 队列（不写 history）。"""
         if not piece:
             return
-        from gsuid_core.ai_core.utils import split_protocol_hold
+        from gsuid_core.ai_core.protocol_text import split_protocol_hold
 
         visible, self._hold = split_protocol_hold(self._hold + piece, force=False)
         if not visible:
@@ -122,7 +122,7 @@ class CaptureBot(Bot):
 
     async def flush_text_delta(self) -> None:
         """流结束时把合批残余推进队列；队列满则背压等待。"""
-        from gsuid_core.ai_core.utils import split_protocol_hold
+        from gsuid_core.ai_core.protocol_text import split_protocol_hold
 
         vis, _ = split_protocol_hold(self._hold, force=True)
         self._hold = ""
@@ -259,7 +259,7 @@ class CaptureBot(Bot):
             self._overflow = True
 
     async def _enqueue_visible(self, message: Union[Message, List[Message], str, bytes, List[str]]) -> None:
-        from gsuid_core.ai_core.utils import is_silence_marker
+        from gsuid_core.ai_core.protocol_text import is_silence_marker
 
         parts: List[Union[Message, str, bytes]]
         if isinstance(message, list):
@@ -341,9 +341,9 @@ class CaptureBot(Bot):
         message: Union[Message, List[Message], str, bytes, List[str]],
         extra_metadata: Optional[Mapping[str, object]],
     ) -> None:
-        from gsuid_core.ai_core.utils import is_silence_marker
         from gsuid_core.message_history import get_history_manager
         from gsuid_core.ai_core.outbound import get_outbound_image_label
+        from gsuid_core.ai_core.protocol_text import is_silence_marker
 
         content = ""
         metadata: Dict[str, object] = {}

@@ -61,7 +61,9 @@ gsuid_core/ai_core/
 ├── models.py            # ToolContext / ToolBase / 数据模型（含 dynamic_tool_names）
 ├── trigger_bridge.py    # 触发器→AI 工具桥接（MockBot / ai_return / send_message_by_ai）
 ├── followup_window.py   # 免唤醒续聊软触发窗口（进程内存 + TTL 惰性清理）
-├── utils.py             # extract_json_from_text / send_chat_result（呈现层）/ SILENCE_MARKERS …
+├── utils.py             # extract_json_from_text / _is_master_user（拆分至 protocol_text / agent_errors / thinking / delivery 等）
+├── protocol_text.py     # 沉默标记与协议剥离（叶子层）
+├── delivery.py          # send_chat_result 等出站发送呈现层
 ├── self_cognition.py    # 自我认知 self_model 演化层（自述块随 session 进稳定前缀；关系行每轮注入，见 §06）
 ├── interaction_scaffold.py  # 交互脚手架 C-1 到 C-3：省略跟进/漂移预算/寻址前置门 + extract_message_body（见 §12.22d）
 ├── context_assembly.py  # 上下文装配共享层：session system prompt + 每轮动态注入的唯一定义（生产/评测端点同源，见 §06/§11）
@@ -71,7 +73,7 @@ gsuid_core/ai_core/
 ├── skills/              # 运行时 Skill 系统（list_skills / run_skill_script + install_skill 统一安装/热重载）
 ├── classifier/          # 意图分类器（闲聊/工具/问答）
 ├── persona/             # Persona 角色系统（config/processor/prompts/mood/group_context）
-├── heartbeat/           # 定时巡检（inspector + decision + dispatcher 主动消息网关）
+├── heartbeat/           # 定时巡检（inspector + decision）与 proactive/dispatcher 主动消息网关
 ├── scheduled_task/      # 定时任务（models/executor/scheduler/startup）
 ├── planning/            # Kanban 长任务编排层（任务树三表 + 执行器 + Artifact Hub）
 ├── capability_agents/   # 能力代理层（无人格专职执行体 + 画像注册表）

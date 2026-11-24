@@ -223,8 +223,8 @@ Agent 达 `UsageLimitExceeded`（思考轮数上限）时的 fallback 不能让 
 
 ## 12.13 沉默标记统一常量
 
-`utils.py` 的 `is_silence_marker` / `remainder_after_protocol_tags` 是**唯一**沉默解析入口
-（含开闭标签对；`SILENCE_MARKERS` 仍是字面集合）。`gs_agent.py`、`handle_ai.py`、
+`protocol_text.py` 的 `is_silence_marker` / `remainder_after_protocol_tags` 是**唯一**沉默解析入口
+（含开闭标签对；`SILENCE_MARKERS` 仍在 `utils.py` 对插件兼容导出）。`gs_agent.py`、`handle_ai.py`、
 `heartbeat/decision.py`、`send_chat_result`、`extract_json_from_text` 全部引用解析函数。
 **不要**再散落硬编码列表或只认单枚 token（曾把 `<silence></silence>` 当台词下发）。
 

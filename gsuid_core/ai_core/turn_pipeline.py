@@ -20,20 +20,20 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.const import ERROR_QUOTA_EXHAUSTED
-from gsuid_core.ai_core.utils import (
+from gsuid_core.ai_core.models import PendingImage
+from gsuid_core.message_history import get_history_manager
+from gsuid_core.ai_core.delivery import send_chat_result
+from gsuid_core.ai_core.quota_guard import quota_breaker
+from gsuid_core.ai_core.agent_errors import (
     NO_RESULT_TEXT,
     ERROR_RESULT_PREFIX,
-    send_chat_result,
-    is_silence_marker,
     classify_error_type,
     sanitize_error_for_user,
     notify_master_of_agent_error,
     notify_master_of_budget_block,
 )
-from gsuid_core.ai_core.models import PendingImage
-from gsuid_core.message_history import get_history_manager
-from gsuid_core.ai_core.quota_guard import quota_breaker
 from gsuid_core.ai_core.control.lines import MSG_SECTION_HEAD
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.persona.settings import persona_name_from_event
 
 if TYPE_CHECKING:

@@ -128,7 +128,7 @@ async def _init_journal() -> None:
 
     if not ai_config.get_config("enable").data:
         return
-    from gsuid_core.ai_core.journal.manager import init_journal_scheduler
+    from gsuid_core.ai_core.journal.dream import init_journal_scheduler
 
     await init_journal_scheduler()
 
@@ -446,7 +446,7 @@ async def flush_ai_sessions_on_shutdown() -> None:
 async def stop_journal_scheduler_on_shutdown() -> None:
     """框架关闭时停止生活手账每小时定时整理任务。"""
     try:
-        from gsuid_core.ai_core.journal.manager import stop_journal_scheduler
+        from gsuid_core.ai_core.journal.dream import stop_journal_scheduler
 
         await stop_journal_scheduler()
     except Exception as e:  # noqa: BLE001

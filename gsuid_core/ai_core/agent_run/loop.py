@@ -32,21 +32,20 @@ from gsuid_core.ai_core import (
     output_gate,
     angle_bracket_guard,
 )
-from gsuid_core.ai_core.utils import (
+from gsuid_core.ai_core.delivery import send_chat_result
+from gsuid_core.ai_core.thinking import (
     ThinkTagSplitter,
-    send_chat_result,
-    is_silence_marker,
     _split_embedded_thinking,
-    remainder_after_protocol_tags,
-    _canonicalize_tool_call_args_in_parts,
-    _sanitize_tool_call_artifacts_in_parts,
-    normalize_escaped_control_tags_in_parts,
 )
 from gsuid_core.ai_core.control.lines import (
     ITER_WRAP_NUDGE,
     TOOL_FAIL_FUSE_NUDGE,
     WALL_CLOCK_WRAP_NUDGE,
     TOKEN_BUDGET_WRAP_NUDGE,
+)
+from gsuid_core.ai_core.protocol_text import (
+    is_silence_marker,
+    remainder_after_protocol_tags,
 )
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
 from gsuid_core.ai_core.request_effort import EffortCapture, effort_capture, take_request_effort
@@ -55,6 +54,11 @@ from gsuid_core.ai_core.agent_run.state import (
     RunOnceState,
     _require_limits,
     _require_context,
+)
+from gsuid_core.ai_core.history_compact import (
+    _canonicalize_tool_call_args_in_parts,
+    _sanitize_tool_call_artifacts_in_parts,
+    normalize_escaped_control_tags_in_parts,
 )
 from gsuid_core.ai_core.agent_run.support import (
     _THRASH_FUSE_NUDGE,
@@ -78,7 +82,7 @@ from gsuid_core.ai_core.agent_run.support import (
     _update_thrash_streak_for_response,
     fold_stale_capability_tool_returns,
 )
-from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
+from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY, GateDecision
 from gsuid_core.ai_core.agent_run.opening_line import (
     arm_opening_line,
     disarm_opening_line,
@@ -626,7 +630,7 @@ class LoopPhase(RunOnceHost):
                     if is_tech_dump(part.content):
                         part.content = TECH_DUMP_TOOL_SHIELD
                     else:
-                        from gsuid_core.ai_core.utils import (
+                        from gsuid_core.ai_core.history_compact import (
                             _summarize_structured_data,
                             _looks_like_structured_data,
                         )
@@ -1101,7 +1105,7 @@ class LoopPhase(RunOnceHost):
                         is_group=bool(st.ev is not None and st.ev.group_id),
                         speech_ctx=_speech_ctx,
                     )
-                    if _gr.decision is output_gate.GateDecision.FUSE:
+                    if _gr.decision is GateDecision.FUSE:
                         st.ab_abort = True
                         st.last_block_reason = "output_gate_fuse"
                         record_output_block(st, self._session_logger, "output_gate_fuse", _text)
@@ -1115,7 +1119,7 @@ class LoopPhase(RunOnceHost):
                         )
                         self._discard_stream_preview(st, _text)
                         continue
-                    if _gr.decision is output_gate.GateDecision.REWRITE:
+                    if _gr.decision is GateDecision.REWRITE:
                         if _gr.policy == "speech_policy":
                             self._record_speech_block(st, _gr.detail or "speech_policy", _text)
                             continue
@@ -1147,7 +1151,7 @@ class LoopPhase(RunOnceHost):
                                 st.ab_abort = True
                         self._discard_stream_preview(st, _text)
                         continue
-                    if _gr.decision is output_gate.GateDecision.FALLBACK:
+                    if _gr.decision is GateDecision.FALLBACK:
                         if _gr.send_text.strip() != _text.strip():
                             st.last_block_reason = "output_gate_fallback"
                             record_output_block(st, self._session_logger, "output_gate_fallback", _text)
@@ -1177,7 +1181,7 @@ class LoopPhase(RunOnceHost):
                             st.wait_comfort_sent = True
                         continue
                     # 群聊放行文本可能已被 mask_pii 打码：用 send_text 替换原文再入后续闸
-                    if _gr.decision is output_gate.GateDecision.ALLOW and _gr.send_text:
+                    if _gr.decision is GateDecision.ALLOW and _gr.send_text:
                         _text = _gr.send_text
                     # 假完成预检：完成声明 + 本轮没有生效的写入（含 PIN 拒绝）
                     _fab_gate_on = not st.fake_done_retry and not st.effectual_mutate and bool(st.tool_names)

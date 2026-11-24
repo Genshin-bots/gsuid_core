@@ -231,3 +231,19 @@ GSC = Union[
     GsRepeatGroupConfig,
     GsTimeConfig,
 ]
+
+GSCData = Union[
+    str,
+    bool,
+    int,
+    float,
+    None,
+    List[str],
+    List[int],
+    Dict[str, List[object]],
+    Tuple[int, int],
+    Tuple[Tuple[int, int], Tuple[int, int]],
+    datetime.date,
+    ButtonState,
+    List[Dict[str, GSC]],
+]

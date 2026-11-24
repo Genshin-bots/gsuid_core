@@ -86,7 +86,8 @@ async def search_turns(
         k: 最多返回条数，默认 20
     """
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import query_tokens, _speaker_stripped
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _speaker_stripped
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
     keys = _scope_keys(ctx.deps)
     toks = [t for t in keywords if t.strip()] if keywords else []
@@ -158,7 +159,7 @@ async def read_session(
         radius: 展开半径，默认 6
     """
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
-    from gsuid_core.ai_core.memory.retrieval.lexical import _assistant_turn, _speaker_stripped
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import _assistant_turn, _speaker_stripped
 
     sid = (session_id or "").strip()
     if not sid:

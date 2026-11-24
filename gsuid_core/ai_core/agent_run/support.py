@@ -19,7 +19,6 @@ from pydantic_ai.messages import (
 )
 
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import _is_framework_prompt_content
 from gsuid_core.ai_core.rag.tools import NON_SEARCHABLE_TOOL_CATEGORIES
 from gsuid_core.ai_core.control.lines import (
     THRASH_FUSE_NUDGE as _THRASH_FUSE_NUDGE,  # noqa: F401
@@ -28,6 +27,7 @@ from gsuid_core.ai_core.control.lines import (
 )
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
+from gsuid_core.ai_core.history_compact import _is_framework_prompt_content
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
 
 # re-export：settle / prepare / gs_agent 与测试共用
@@ -362,7 +362,7 @@ _UNFINISHED_CAPABILITY_BANNER = "【未写成结论】执行体停在中途。�
 
 def result_silence_reason(text: str, *, existing: str, blocked: str) -> str | None:
     """空正文和沉默标签分开记。模型没打沉默标签时，不写成自己选择沉默。"""
-    from gsuid_core.ai_core.utils import is_silence_marker
+    from gsuid_core.ai_core.protocol_text import is_silence_marker
 
     body = text.strip()
     if is_silence_marker(body):

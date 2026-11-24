@@ -269,8 +269,9 @@ async def send_message_by_ai(
 
     # 统一输出闸门（话术策略 + 称呼 + 尖括号 + OOC）：打回则 return feedback，放行继续发
     if text:
-        from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+        from gsuid_core.ai_core.output_gate import pre_send_gate
         from gsuid_core.ai_core.persona.settings import persona_name_from_event
+        from gsuid_core.ai_core.control.directive import GateDecision
         from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
         from gsuid_core.ai_core.agent_run.speech_policy import (
             SpeechContext,
@@ -561,7 +562,7 @@ async def send_message_by_ai(
                 if "reply_to_user_name" in _meta:
                     del _meta["reply_to_user_name"]
         if text:
-            from gsuid_core.ai_core.utils import send_chat_result
+            from gsuid_core.ai_core.delivery import send_chat_result
 
             _sent_registry = tool_ctx.extra["run_sent_texts"] if "run_sent_texts" in tool_ctx.extra else None
             if isinstance(_sent_registry, set) and text.strip() in _sent_registry:

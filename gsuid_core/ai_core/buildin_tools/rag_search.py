@@ -416,7 +416,7 @@ async def search_cognition(
         )
 
     search_q = strip_speaker_from_query(query, scope.user_id)
-    from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import strip_clock_lines
 
     search_q = strip_clock_lines(search_q) or search_q
     persona_name = ""

@@ -31,12 +31,13 @@ from gsuid_core.bot import Bot, _Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.utils import send_chat_result, is_silence_marker
+from gsuid_core.ai_core.delivery import send_chat_result
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.session_logger import ProactiveSource
 
-# 旧路径仍保留（heartbeat/dispatcher.py），本模块直接复用其单例，
+# 主动消息统一网关（proactive/dispatcher.py），本模块直接复用其单例，
 # 不重复实现"防撞车 + 合并语境"语义。
-from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
+from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 # 旧 dispatcher.register_send 兼容字面量集合。
 LegacyDispatcherSource = Literal["heartbeat", "task", "autonomy"]
@@ -213,8 +214,9 @@ async def emit_proactive_message(
         "trigger_reason": trigger_reason,
     }
     from gsuid_core.ai_core.outbound import rewrite_cq_at, record_outbound, proactive_directed_target
-    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+    from gsuid_core.ai_core.output_gate import pre_send_gate
     from gsuid_core.ai_core.persona.settings import persona_name_from_event
+    from gsuid_core.ai_core.control.directive import GateDecision
 
     pname = persona_name or persona_name_from_event(event)
     out_msg = rewrite_cq_at(message)
@@ -327,7 +329,8 @@ async def emit_proactive_message(
             import asyncio as _asyncio
             from datetime import datetime as _dt
 
-            from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+            from gsuid_core.ai_core.journal.manager import record_journal_entry
+            from gsuid_core.ai_core.journal.storage import JournalEntry
             from gsuid_core.ai_core.journal.sanitizer import is_rejected_journal_body, sanitize_journal_summary
 
             _body_no_foot = out_msg.split("\n⏰ 定时任务", 1)[0].strip()

@@ -5,7 +5,7 @@ OpenAI 配置管理器模块
 使用 StringConfig 对象进行配置管理。
 """
 
-from typing import Any, Dict, Optional
+from typing import Dict
 
 from gsuid_core.ai_core.resource import OPENAI_CONFIGS_PATH
 from gsuid_core.utils.plugins_config.models import (
@@ -254,22 +254,6 @@ class OpenAIConfigManager(ConfigSetManager):
             config_template=OPENAI_CONFIG_TEMPLATE,
             name_suffix="OpenAI",
         )
-
-    def get_config_dict(self, config_name: str) -> Optional[Dict[str, Any]]:
-        """
-        获取配置的字典形式
-
-        Args:
-            config_name: 配置文件名
-
-        Returns:
-            配置字典
-        """
-        config = self.get_config(config_name)
-        result = {}
-        for key in self._config_template.keys():
-            result[key] = config.get_config(key).data
-        return result
 
 
 # 全局单例

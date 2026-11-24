@@ -383,6 +383,12 @@ def quote_bystander_line(time_str: str, target_desc: str) -> str:
     return f"（被引用的是你于 {time_str} 回复 {target_desc} 的发言；当前说话人属于旁观借楼）"
 
 
+def plan_hint_line(head: str, *, via: str, wants_render: bool) -> str:
+    """结构化袖珍规划提示行（user 侧注入，入史前剥除）。"""
+    render_bit = " → 长结构则 render 出图" if wants_render else ""
+    return f"计划：{head}{via}{render_bit} → 短句交付"
+
+
 def quote_stale_line(time_str: str, minutes: int) -> str:
     """说话人引用了你较早前的发言（翻旧账借楼）。"""
     return f"（被引用的是你于 {time_str} 发送的较早发言（距今已超 {minutes} 分钟））"

@@ -59,7 +59,7 @@ def test_memory_scope_and_private_isolation() -> None:
     from gsuid_core.models import Event
     from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
     from gsuid_core.ai_core.cognition import CogScope
-    from gsuid_core.ai_core.kits.memory.kit import _in_observe_scope, cog_scope_from_ctx
+    from gsuid_core.ai_core.kits.memory import _in_observe_scope, cog_scope_from_ctx
     from gsuid_core.ai_core.memory.observer import ObservationRecord
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.memory.ingestion.algebra import _resolve_preference_user_id
@@ -122,7 +122,7 @@ def test_memory_scope_and_private_isolation() -> None:
 
 
 def test_session_split_and_episode_clustering() -> None:
-    from gsuid_core.ai_core.memory.retrieval.lexical import cluster_episodes_by_time
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import cluster_episodes_by_time
 
     t0 = datetime(2024, 3, 1, 10, 0, 0)
     rows = [("c", t0 + timedelta(hours=2)), ("a", t0), ("b", t0 + timedelta(minutes=10))]
@@ -263,8 +263,8 @@ def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> N
     import gsuid_core.utils.database.base_models as base_models
     from gsuid_core.ai_core.memory.retrieval import dual_route
     from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
-    from gsuid_core.ai_core.memory.retrieval.lexical import states_a_value
     from gsuid_core.ai_core.memory.retrieval.system1 import System1Result
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import states_a_value
 
     assert states_a_value("I bought a bookshelf from IKEA.")
     assert not states_a_value("I went to the store yesterday.")
@@ -544,8 +544,8 @@ def test_observer_gate_and_memory_invariants(monkeypatch) -> None:
     """拦截同行 bot 与报错回声，过滤残缺事实、限制自我边配额并剥离唤醒词。"""
     import asyncio
 
+    from gsuid_core.ai_core.kits import memory as mem_kit
     from gsuid_core.ai_core.memory import group_profile
-    from gsuid_core.ai_core.kits.memory import kit as mem_kit
     from gsuid_core.ai_core.control.lines import SYSTEM_ECHO_PREFIXES
     from gsuid_core.ai_core.memory.observer import _gate, observe
     from gsuid_core.ai_core.persona.settings import DEFAULT_ERROR_GENERIC
@@ -1450,23 +1450,22 @@ def test_filter_records_for_user() -> None:
 
 @pytest.fixture
 def journal_tmp(tmp_path: Path, monkeypatch) -> "Iterator[Path]":
-    import gsuid_core.ai_core.journal.manager as jm
+    import gsuid_core.ai_core.journal.storage as jstorage
 
-    monkeypatch.setattr(jm, "JOURNAL_DIR", tmp_path / "journals")
-    jm._SHARD_CACHE.clear()
-    jm._SHARD_UPDATE_TS.clear()
+    monkeypatch.setattr(jstorage, "JOURNAL_DIR", tmp_path / "journals")
+    jstorage._SHARD_CACHE.clear()
+    jstorage._SHARD_UPDATE_TS.clear()
     yield tmp_path / "journals"
-    jm._SHARD_CACHE.clear()
-    jm._SHARD_UPDATE_TS.clear()
+    jstorage._SHARD_CACHE.clear()
+    jstorage._SHARD_UPDATE_TS.clear()
 
 
 def test_self_shard_archive_and_reset_idempotent(journal_tmp: Path, monkeypatch) -> None:
     """零删除手账迁移：旧 self.md 归档 + 清空活跃槽；重跑不再归档；水位线后新人格不动。"""
     import gsuid_core.ai_core.migrations.cross_group_isolation_v1 as mig_v1
-    from gsuid_core.ai_core.journal import manager as jm
-    from gsuid_core.ai_core.journal.dream import read_journal_archive_sync
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage
 
-    self_path = jm._self_shard_path("test_persona")
+    self_path = jstorage._self_shard_path("test_persona")
     self_path.parent.mkdir(parents=True, exist_ok=True)
     self_path.write_text(
         "# test_persona 生活手账 (全局自我核)\n\n## 持久自我认知与通用经验\n- 旧跨群遗留任务\n",
@@ -1479,14 +1478,14 @@ def test_self_shard_archive_and_reset_idempotent(journal_tmp: Path, monkeypatch)
     month_key = legacy_files[0].stem.removeprefix("legacy_v1_")
 
     async def _read_archive() -> str:
-        return await read_journal_archive_sync(self_path.parent / "archives", jm.SELF_SHARD_ID, month_key)
+        return await jd.read_journal_archive_sync(self_path.parent / "archives", jstorage.SELF_SHARD_ID, month_key)
 
     assert asyncio.run(_read_archive()) == ""
     assert "旧跨群遗留任务" not in self_path.read_text(encoding="utf-8")
     assert asyncio.run(jm.archive_and_reset_legacy_self_shards()) == []
 
     monkeypatch.setattr(mig_v1, "get_isolation_watermark_ts", lambda: 1_000_000.0)
-    fresh_path = jm._self_shard_path("brand_new_persona")
+    fresh_path = jstorage._self_shard_path("brand_new_persona")
     fresh_path.parent.mkdir(parents=True, exist_ok=True)
     fresh_path.write_text(
         "# brand_new_persona 生活手账 (全局自我核)\n\n## 持久自我认知与通用经验\n- 全新纯净个人经验\n",
@@ -1498,12 +1497,12 @@ def test_self_shard_archive_and_reset_idempotent(journal_tmp: Path, monkeypatch)
 
 def test_user_shard_private_view(journal_tmp: Path) -> None:
     """私聊记录写 users/{uid}.md 独立分片；私聊四层视图只给本人，群聊/他人一律不见。"""
-    from gsuid_core.ai_core.journal import manager as jm
+    from gsuid_core.ai_core.journal import manager as jm, storage as jstorage
 
     now = 1_800_000_000.0
     asyncio.run(
         jm.record_journal_entry(
-            jm.JournalEntry(
+            jstorage.JournalEntry(
                 timestamp=now,
                 date_str="2026-11-21",
                 time_str="10:30",
@@ -1515,18 +1514,18 @@ def test_user_shard_private_view(journal_tmp: Path) -> None:
             target_personas=["test_persona"],
         )
     )
-    u_path = jm._user_shard_path("test_persona", "100000001")
+    u_path = jstorage._user_shard_path("test_persona", "100000001")
     u_raw = u_path.read_text(encoding="utf-8")
     assert "的私聊手账 (用户:100000001)" in u_raw and "驻群手账" not in u_raw
-    self_path = jm._self_shard_path("test_persona")
+    self_path = jstorage._self_shard_path("test_persona")
     if self_path.exists():
         assert "私聊专属健康清单" not in self_path.read_text(encoding="utf-8")
 
-    u_doc = jm.parse_shard_markdown(u_raw, jm._user_shard_id("100000001"))
+    u_doc = jstorage.parse_shard_markdown(u_raw, jstorage._user_shard_id("100000001"))
     u_doc.yesterday = ["- 昨日私聊整理了体检报告"]
     u_doc.monthly = ["- 本月私聊持续跟进健身计划"]
-    jm._save_shard_sync("test_persona", u_doc)
-    jm._SHARD_CACHE.clear()
+    jstorage._save_shard_sync("test_persona", u_doc)
+    jstorage._SHARD_CACHE.clear()
 
     dm_view = jm.read_life_journal_view("test_persona", group_id=None, user_id="100000001")
     assert "私聊专属健康清单" in dm_view and "昨日私聊整理了体检报告" in dm_view and "跟进健身计划" in dm_view
@@ -1538,9 +1537,9 @@ def test_user_shard_private_view(journal_tmp: Path) -> None:
 
 def test_journal_group_shard_and_self_timeline_user_isolation(journal_tmp: Path) -> None:
     """群手账逐行按 (替:uid) 归属裁剪；self 时间线含他人代办条目私聊不可见。"""
-    from gsuid_core.ai_core.journal import manager as jm
+    from gsuid_core.ai_core.journal import manager as jm, storage as jstorage
 
-    g_path = jm._group_shard_path("test_persona", "group_a")
+    g_path = jstorage._group_shard_path("test_persona", "group_a")
     g_path.parent.mkdir(parents=True, exist_ok=True)
     g_path.write_text(
         "# test_persona 驻群手账 (群:group_a)\n\n## 今日行动流水 (2026-11-21)\n"
@@ -1553,14 +1552,14 @@ def test_journal_group_shard_and_self_timeline_user_isolation(journal_tmp: Path)
     gb_journal = jm.read_life_journal_view("test_persona", group_id="group_b", user_id="100000001")
     assert "帮A查了天气" not in gb_journal and "私密账本" not in gb_journal
 
-    self_path = jm._self_shard_path("test_persona")
+    self_path = jstorage._self_shard_path("test_persona")
     self_path.write_text(
         "# test_persona 生活手账 (全局自我核)\n\n## 今日行动流水 (2026-11-21)\n"
         "- [11:00 | 自主探索] 自己看了一会书\n"
         "- [11:10 | 查资料] 帮用户A整理私密清单 (替:100000001)\n",
         encoding="utf-8",
     )
-    jm._SHARD_CACHE.clear()
+    jstorage._SHARD_CACHE.clear()
     assert "私密清单" not in jm.read_life_journal_view("test_persona", group_id="group_a", user_id="100000001")
     assert "私密清单" not in jm.read_life_journal_view("test_persona", group_id=None, user_id="100000002")
     assert "私密清单" in jm.read_life_journal_view("test_persona", group_id=None, user_id="100000001")

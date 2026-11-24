@@ -11,11 +11,40 @@
 
 from __future__ import annotations
 
-from typing import Literal, Mapping, Sequence
+from enum import Enum
+from typing import TYPE_CHECKING, Literal, Mapping, Sequence
 from dataclasses import field, dataclass
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.control.outbound_detectors import FirewallHit
 
 DirectiveKind = Literal["correction", "delivery", "advisory", "terminal"]
 ObligationKind = Literal["call_tool", "deliver", "check_delegation"]
+
+
+class GateDecision(str, Enum):
+    ALLOW = "allow"
+    """放行原文。"""
+    REWRITE = "rewrite"
+    """不发送原文；``feedback`` 打回模型。"""
+    FALLBACK = "fallback"
+    """立即发送 ``send_text``（安全兜底句）。"""
+    FUSE = "fuse"
+    """本轮熔断静默；``feedback`` 可提示模型只输出 SILENCE。"""
+
+
+@dataclass
+class GateResult:
+    decision: GateDecision
+    policy: str = ""
+    feedback: str = ""
+    send_text: str = ""
+    # OOC 主路径：收集后在 run 末尾请模型自主判断（无下一轮请求时）
+    defer_ooc: bool = False
+    ooc_hit: FirewallHit | None = None
+    fused: bool = False
+    detail: str = ""
+
 
 # 信封标签：与 read_image 的 <untrusted source=…> 对称——入站不可信内容已有边界，
 # 入站**权威**内容也须有；模型据此区分控制面与群友发言。

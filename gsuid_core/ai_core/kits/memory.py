@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 def _format_memory_catalog(mem: "MemoryContext", _query: str = "") -> str:
     """标题目录卡：偏好极性 + episode 标题 + 边摘要，不灌 dual_route 正文。"""
-    from gsuid_core.ai_core.memory.retrieval.lexical import query_overlaps_text
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_overlaps_text
 
     lines = ["[记忆目录]"]
     shown = 0
@@ -112,7 +112,7 @@ def retrieve_query_for_search(query: str, persona_name: str = "") -> str:
     from gsuid_core.ai_core.entity_index import strip_surfaces
     from gsuid_core.ai_core.interaction_scaffold import extract_message_body
     from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
-    from gsuid_core.ai_core.memory.retrieval.lexical import strip_clock_lines
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import strip_clock_lines
 
     body = strip_clock_lines(extract_message_body(query))
     if persona_name and body:
@@ -431,10 +431,8 @@ class MemoryKit(AgentKit):
             )
             mem.reserved_episodes = reserved_turns
         if wants_evidence_injection(ctx):
-            from gsuid_core.ai_core.memory.retrieval.lexical import (
-                looks_like_count_query,
-                expand_episode_neighbors,
-            )
+            from gsuid_core.ai_core.memory.retrieval.lexical import expand_episode_neighbors
+            from gsuid_core.ai_core.memory.retrieval.lexical_query import looks_like_count_query
 
             # 跨会话演进与时间线模态优先保留广度，不在单会话邻条上消耗预算。
             # 私聊严禁对 group:* 条目做邻条展开，防把同群他人相邻发言拉进私聊上下文。

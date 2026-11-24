@@ -249,7 +249,7 @@ class HeartbeatInspector:
             return False, "AI 最近已发言（防刷屏）"
 
         # C8：统一主动网关——同一目标刚有主动输出（含定时任务播报）则抑制本次巡检
-        from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+        from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         target_key = self._target_key(event, history)
@@ -271,7 +271,7 @@ class HeartbeatInspector:
         ``message_history.manager.MessageRecord`` 落盘，``user_id`` 是已声明字段（见
         manager.py:63），可直接访问；type 标注为 ``Any`` 仅为避免与该模块循环依赖。
         """
-        from gsuid_core.ai_core.heartbeat.dispatcher import make_target_key
+        from gsuid_core.ai_core.proactive.dispatcher import make_target_key
 
         key = make_target_key(event.group_id, event.user_id)
         if key:
@@ -337,7 +337,7 @@ class HeartbeatInspector:
             return
 
         # 决策阶段：从网关取近期定时任务摘要合并进决策语境。
-        from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher
+        from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher
 
         dispatcher = get_dispatcher()
         target_key = self._target_key(event, history)
@@ -399,7 +399,7 @@ class HeartbeatInspector:
                     topic_mentioned,
                     consolidate_for_target,
                 )
-                from gsuid_core.ai_core.heartbeat.dispatcher import ngram_jaccard
+                from gsuid_core.ai_core.proactive.dispatcher import ngram_jaccard
 
                 _gid = str(event.group_id or "")
                 _uid = str(event.user_id or "") if event.user_type == "direct" else ""

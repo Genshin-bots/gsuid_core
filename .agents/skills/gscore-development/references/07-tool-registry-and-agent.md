@@ -492,7 +492,7 @@ HTTP SSE 的 `: ping` 不是开场句。只有图、模型没写字时直接出 
 > 已整体移除：耗时工具前的告知由 prompt 条款驱动 Agent 自行组织语言，框架不再替 AI 说
 > 固定话（历史上两次硬编码人格台词事故的根治，见 §12.22）。
 
-## 7.13 `send_chat_result` 的文本归一化链（`ai_core/utils.py`）
+## 7.13 `send_chat_result` 的文本归一化链（`ai_core/delivery.py`，`utils.py` 保留契约重导出）
 
 **呈现层**：在主路径 / `send_message_by_ai` 已过 `pre_send_gate`（或 proactive 无反馈通道）之后调用。
 **所有**下发给用户的 AI 文本都经此函数。按序大致为：

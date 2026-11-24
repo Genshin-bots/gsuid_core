@@ -47,7 +47,7 @@ from gsuid_core.ai_core.autonomy.verifier import (
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
-from gsuid_core.ai_core.heartbeat.dispatcher import get_dispatcher, make_target_key
+from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 _JOB_ID = "ai_autonomy_tick"
 # 主动发言额度不进人格页，和巡检共用同一条频率账。
@@ -658,8 +658,9 @@ async def _record_autonomy_journal(
     """在 parse_footer 之后写入干净的自主探索手账，杜绝 DRIVE: 协议行、429 报错与私聊关怀泄漏。"""
     from datetime import datetime as _dt
 
-    from gsuid_core.ai_core.utils import is_agent_error_text
-    from gsuid_core.ai_core.journal.manager import JournalEntry, record_journal_entry
+    from gsuid_core.ai_core.agent_errors import is_agent_error_text
+    from gsuid_core.ai_core.journal.manager import record_journal_entry
+    from gsuid_core.ai_core.journal.storage import JournalEntry
     from gsuid_core.ai_core.journal.sanitizer import is_rejected_journal_body, sanitize_journal_summary
 
     if not raw_text or not raw_text.strip() or is_agent_error_text(raw_text):

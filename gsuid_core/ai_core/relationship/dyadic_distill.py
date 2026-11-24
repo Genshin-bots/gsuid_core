@@ -111,8 +111,9 @@ async def _run_dyadic_distill(
 
     new_count = row.interaction_count
     try:
-        from gsuid_core.ai_core.utils import is_agent_error_text, extract_json_from_text
+        from gsuid_core.ai_core.utils import extract_json_from_text
         from gsuid_core.ai_core.gs_agent import create_agent
+        from gsuid_core.ai_core.agent_errors import is_agent_error_text
         from gsuid_core.ai_core.persona.resource import load_persona, extract_compact_persona
         from gsuid_core.ai_core.autonomy.micro_arc import strip_markup
         from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule

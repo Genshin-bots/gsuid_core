@@ -442,12 +442,12 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
     from gsuid_core.bot import _Bot
     from gsuid_core.models import Message, MessageReceive
     from gsuid_core.handler import msg_process, _record_inbound_history
-    from gsuid_core.ai_core.utils import prepare_media_payload
     from gsuid_core.message_history import get_history_manager
     from gsuid_core.ai_core.inbox.turn import InboxTurn
     from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
     from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
     from gsuid_core.ai_core.inbox.scheduler import TurnOutcome, InboxScheduler
+    from gsuid_core.ai_core.multimodal.payload import prepare_media_payload
 
     async def scenario() -> None:
         hm = get_history_manager()

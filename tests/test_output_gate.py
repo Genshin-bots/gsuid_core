@@ -7,13 +7,13 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
     from gsuid_core.ai_core.output_gate import (
         _STATE_KEY,
         GateBag,
-        GateDecision,
         is_fused,
         pre_send_gate,
         begin_response_batch,
         plan_angle_after_run,
         merge_rewrite_feedbacks,
     )
+    from gsuid_core.ai_core.control.directive import GateDecision
     from gsuid_core.ai_core.angle_bracket_guard import MAX_RETRIES
 
     assert pre_send_gate("呼…困了zzz", {}, channel="main").decision is GateDecision.ALLOW
@@ -156,7 +156,8 @@ def test_report_speech_and_allow_render_gate() -> None:
     assert blocked_no_render is False
 
     # 收敛话术策略表：pre_send_gate(speech_ctx=...) 与 settle 出口共享同一评价器
-    from gsuid_core.ai_core.output_gate import GateDecision, pre_send_gate
+    from gsuid_core.ai_core.output_gate import pre_send_gate
+    from gsuid_core.ai_core.control.directive import GateDecision
     from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext, evaluate_speech_policy
 
     ctx_inline = SpeechContext(

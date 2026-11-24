@@ -554,7 +554,7 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
 def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.MonkeyPatch) -> None:
     """证据块：替别人查的观测、实时凭据状态、失效标记（§4.6）。"""
     from gsuid_core.ai_core.evidence import providers
-    from gsuid_core.ai_core.evidence.kit import render_evidence_block
+    from gsuid_core.ai_core.kits.evidence import render_evidence_block
     from gsuid_core.ai_core.evidence.store import (
         LiveState,
         Observation,

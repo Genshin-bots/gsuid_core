@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from collections.abc import Callable
 
 from gsuid_core.config import core_config
-from gsuid_core.ai_core.utils import is_silence_marker
 from gsuid_core.ai_core.content_guard import normalize_for_match
 from gsuid_core.ai_core.control.lines import (
     CODE_FENCE_RE,
@@ -27,6 +26,7 @@ from gsuid_core.ai_core.control.lines import (
     TOOL_NAME_LEAK_NUDGE,
     CAPABILITY_OR_DEV_LEAK_RE,
 )
+from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     fact_pack_is_multi_point as _fact_lines_multi_point,
 )

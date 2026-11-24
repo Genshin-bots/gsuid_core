@@ -25,24 +25,7 @@ from gsuid_core.ai_core.configs.models import (
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.models import GsIntConfig, GsStrConfig, GsListStrConfig
-from gsuid_core.ai_core.configs.gemini_config import (
-    get_gemini_config,
-    gemini_config_manager as gemini_manager,
-    create_default_gemini_config,
-    list_available_gemini_configs,
-)
-from gsuid_core.ai_core.configs.openai_config import (
-    get_openai_config,
-    openai_config_manager as openai_manager,
-    create_default_openai_config,
-    list_available_openai_configs,
-)
-from gsuid_core.ai_core.configs.anthropic_config import (
-    get_anthropic_config,
-    anthropic_config_manager as anthropic_manager,
-    create_default_anthropic_config,
-    list_available_anthropic_configs,
-)
+from gsuid_core.ai_core.configs.provider_config_manager import provider_manager
 
 from ._api_tags import PROVIDER_CONFIG
 
@@ -60,16 +43,6 @@ def _string_config_to_dict(config: Any) -> Dict[str, Any]:
         if config.secret:
             out["secret"] = True
     return out
-
-
-def _get_manager_and_config(provider: str) -> tuple[Any, Any]:
-    """根据 provider 类型获取对应的 manager 和 config 获取函数"""
-    if provider == "openai":
-        return openai_manager, get_openai_config
-    elif provider == "gemini":
-        return gemini_manager, get_gemini_config
-    else:
-        return anthropic_manager, get_anthropic_config
 
 
 def _unsupported_provider_error(provider: str) -> Dict[str, Any]:
@@ -115,11 +88,11 @@ def _build_all_configs_summary() -> Dict[str, Any]:
     all_summaries: list[Dict[str, Any]] = []
 
     for provider in SUPPORTED_PROVIDERS:
-        manager, config_func = _get_manager_and_config(provider)
+        manager = provider_manager(provider)
         for name in manager.list_available():
             full_name = format_provider_config_name(provider, name)
             try:
-                config = config_func(name)
+                config = manager.get_config(name)
                 model_name = config.get_config("model_name").data
                 base_url = config.get_config("base_url").data
                 all_summaries.append(
@@ -161,9 +134,9 @@ async def get_provider_list(_: Dict[str, Any] = Depends(require_auth)) -> Dict[s
         status: 0成功
         data: provider 列表及各 provider 下的配置统计
     """
-    openai_configs = list_available_openai_configs()
-    anthropic_configs = list_available_anthropic_configs()
-    gemini_configs = list_available_gemini_configs()
+    openai_configs = provider_manager("openai").list_available()
+    anthropic_configs = provider_manager("anthropic").list_available()
+    gemini_configs = provider_manager("gemini").list_available()
 
     # 返回 provider++name 格式的配置名称列表
     openai_full_names = [format_provider_config_name("openai", name) for name in openai_configs]
@@ -235,9 +208,9 @@ async def get_task_config(
 
         # 获取配置的详细信息
         config_detail = None
-        manager, config_func = _get_manager_and_config(provider)
+        manager = provider_manager(provider)
         if manager.exists(config_name):
-            config = config_func(config_name)
+            config = manager.get_config(config_name)
             config_dict = {}
             for key in manager._config_template.keys():
                 cfg = config.get_config(key)
@@ -312,7 +285,7 @@ async def set_task_config(
         }
 
     # 验证配置文件是否存在
-    manager, _ = _get_manager_and_config(provider)
+    manager = provider_manager(provider)
     if not manager.exists(actual_config_name):
         return {
             "status": 1,
@@ -441,7 +414,7 @@ async def get_config_options(
     if provider not in SUPPORTED_PROVIDERS:
         return _unsupported_provider_error(provider)
 
-    manager, _ = _get_manager_and_config(provider)
+    manager = provider_manager(provider)
 
     # 返回模板中的 options
     options = {}
@@ -483,7 +456,7 @@ async def get_config_detail(
         return _unsupported_provider_error(provider)
 
     try:
-        manager, config_func = _get_manager_and_config(provider)
+        manager = provider_manager(provider)
 
         if not manager.exists(config_name):
             return {
@@ -492,7 +465,7 @@ async def get_config_detail(
                 "data": None,
             }
 
-        config = config_func(config_name)
+        config = manager.get_config(config_name)
         config_dict = {}
         for key in manager._config_template.keys():
             cfg = config.get_config(key)
@@ -547,10 +520,10 @@ async def create_or_update_config(
     config_data = data.get("config", {})
 
     try:
-        manager, config_func = _get_manager_and_config(provider)
+        manager = provider_manager(provider)
 
         # 获取或创建配置
-        config = config_func(config_name)
+        config = manager.get_config(config_name)
 
         # 只更新模板中存在的字段
         valid_keys = set(manager._config_template.keys())
@@ -616,12 +589,7 @@ async def create_default_config(
     if plus_error is not None:
         return plus_error
 
-    if provider == "openai":
-        success = create_default_openai_config(config_name)
-    elif provider == "gemini":
-        success = create_default_gemini_config(config_name)
-    else:
-        success = create_default_anthropic_config(config_name)
+    success = provider_manager(provider).create_default(config_name)
 
     if success:
         full_name = format_provider_config_name(provider, config_name)
@@ -662,7 +630,7 @@ async def copy_config(
     if plus_error is not None:
         return plus_error
 
-    manager, _ = _get_manager_and_config(provider)
+    manager = provider_manager(provider)
     error = manager.copy(config_name, new_name)
     if error is not None:
         return {"status": 1, "msg": error, "data": None}
@@ -698,7 +666,7 @@ async def delete_config(
     if provider not in SUPPORTED_PROVIDERS:
         return _unsupported_provider_error(provider)
 
-    manager, _ = _get_manager_and_config(provider)
+    manager = provider_manager(provider)
 
     # 检查是否是当前激活的配置（使用 provider++name 格式比较）
     high_level = ai_config.get_config("high_level_provider_config_name").data

@@ -67,8 +67,8 @@ async def main() -> None:
     rows.append(("三条函数内 import（预热后）", _bench(imp)))
 
     # ── 2. 前置判断各行 ──
+    from gsuid_core.ai_core.kits.memory import _image_urls, _in_observe_scope
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.kits.memory.kit import _image_urls, _in_observe_scope
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     rows.append(("ai_config.get_config('enable_memory')", _bench(lambda: ai_config.get_config("enable_memory").data)))

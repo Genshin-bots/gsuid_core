@@ -15,6 +15,7 @@ from gsuid_core.data_store import RES, CONFIGS_PATH
 
 from .models import (
     GSC,
+    GSCData,
     GsDivider,
     ButtonState,
     GsIntConfig,
@@ -765,6 +766,11 @@ class ConfigSetManager(ABC):
         for name in self.list_available():
             result[name] = self.get_config(name)
         return result
+
+    def get_config_dict(self, config_name: str) -> Dict[str, GSCData]:
+        """获取指定配置名的键值字典"""
+        config = self.get_config(config_name)
+        return {key: config.get_config(key).data for key in self._config_template}
 
     def exists(self, config_name: str) -> bool:
         """
