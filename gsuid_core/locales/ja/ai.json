@@ -691,5 +691,6 @@
   "log.ai.migrations_isolation_marker_read_failed": "[Migrations] クロスグループ分離の水位マーカー読み取り失敗: {e}（未移行として扱い、旧データは不開放）",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した",
   "log.ai.kanban_node_hard_timeout": "[Kanban] サブタスクノードがハードタイムアウトで終了 task={task} ({mins}分)",
-  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 期限切れの対話グループタスクを無言アーカイブ task={task} elapsed={mins}分"
+  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 期限切れの対話グループタスクを無言アーカイブ task={task} elapsed={mins}分",
+  "log.ai.artifact_index_drain_fail": "[Artifact] シャットダウン前の在途成果物インデックスタスク収束失敗: {e}"
 }

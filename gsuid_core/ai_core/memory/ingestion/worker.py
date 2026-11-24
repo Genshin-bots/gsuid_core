@@ -280,9 +280,23 @@ class IngestionWorker:
         self._llm_semaphore: asyncio.Semaphore | None = None
         self._flush_lock: asyncio.Lock | None = None
         self._stop_event: asyncio.Event | None = None
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._bg_tasks: set[asyncio.Task[None]] = set()
         self._running = False
         self._priority_flush_at: dict[str, float] = {}
+
+    def _on_bg_flush_done(self, task: asyncio.Task[None]) -> None:
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(i18n_t("log.memory.flush_fail", e=exc), exc_info=exc)
+
+    def _spawn_flush(self, scope_key: str) -> None:
+        task = asyncio.create_task(self._flush(scope_key), name=f"memory_flush:{scope_key}")
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._on_bg_flush_done)
 
     def start(self) -> None:
         if self._running:
@@ -305,6 +319,11 @@ class IngestionWorker:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(consume_task, timer_task, return_exceptions=True)
+            bg_tasks = [t for t in self._bg_tasks if not t.done()]
+            for task in bg_tasks:
+                task.cancel()
+            if bg_tasks:
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
             try:
                 if self._windows or not self._queue.empty():
                     await asyncio.wait_for(self._flush_all_inner(), timeout=_SHUTDOWN_FLUSH_TIMEOUT)
@@ -325,7 +344,7 @@ class IngestionWorker:
                 window = self._windows.setdefault(record.scope_key, _ScopeWindowBuffer())
                 window.push(record)
                 if len(window.records) >= _WINDOW_CAPACITY and record.scope_key not in self._flushing:
-                    asyncio.create_task(self._flush(record.scope_key))
+                    self._spawn_flush(record.scope_key)
             except sync_queue.Empty:
                 if self._stop_event is not None:
                     try:
@@ -349,7 +368,7 @@ class IngestionWorker:
             for scope_key, window in list(self._windows.items()):
                 if scope_key in self._flushing or not window.should_flush(now):
                     continue
-                asyncio.create_task(self._flush(scope_key))
+                self._spawn_flush(scope_key)
 
     async def _flush(self, scope_key: str, *, force_settle: bool = False) -> None:
         if scope_key in self._flushing:
@@ -448,7 +467,7 @@ class IngestionWorker:
         if now - last < memory_config.preference_flush_settle_seconds:
             return
         self._priority_flush_at[scope_key] = now
-        asyncio.create_task(self._flush(scope_key))
+        self._spawn_flush(scope_key)
 
     def peek_buffers(self, scope_keys: Collection[str]) -> list[ObservationRecord]:
         wanted = frozenset(scope_keys)

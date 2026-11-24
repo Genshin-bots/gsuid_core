@@ -100,14 +100,6 @@ def _inclusive_stride_indices(n: int, cap: int) -> list[int]:
     return [int(i * (n - 1) / (cap - 1)) for i in range(cap)]
 
 
-def stride_episodes_chrono(episodes: list[Episode], cap: int) -> list[Episode]:
-    """按 valid_at 均匀取样，两端都留。禁止取时间序前缀。"""
-    if cap <= 0:
-        return []
-    eps = sorted(episodes, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
-    return [eps[i] for i in _inclusive_stride_indices(len(eps), cap)]
-
-
 def episode_mentions_speaker(content: str, user_id: str) -> bool:
     """本条里有没有这个说话人。群聊钉本人，私聊不靠这个过滤。"""
     uid = (user_id or "").strip()

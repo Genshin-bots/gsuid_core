@@ -1712,21 +1712,27 @@ async def get_manual_knowledge_list(
 
     # 本地 Qdrant scroll 不支持 offset 分页，需分批迭代后在内存切片。
     all_records: list[Mapping[str, object]] = []
-    if offset + limit > 0:
+    end_idx = offset + limit
+    stopped_early = False
+    if end_idx > 0:
         async for records in _iter_qdrant_scroll(client, scroll_filter=list_filter, limit=100):
             for record in records:
                 if record.payload:
                     all_records.append(record.payload)
-            if len(all_records) >= offset + limit:
+            if len(all_records) >= end_idx:
+                stopped_early = True
                 break
 
-    end_idx = offset + limit
+    page_records = all_records[offset:end_idx]
+    has_more = end_idx < len(all_records) or (
+        stopped_early and limit > 0 and len(page_records) == limit and end_idx < total.count
+    )
     return {
-        "list": all_records[offset:end_idx],
+        "list": page_records,
         "total": total.count,
         "offset": offset,
         "limit": limit,
-        "next_offset": end_idx if end_idx < len(all_records) else None,
+        "next_offset": end_idx if has_more else None,
     }
 
 

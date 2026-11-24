@@ -41,6 +41,10 @@ from gsuid_core.ai_core.rag.qmodels import (
 )
 
 
+class QdrantTransportError(ConnectionError):
+    """Qdrant HTTP 传输断连、超时或熔断快速失败（继承 ConnectionError/OSError）。"""
+
+
 class UnexpectedResponse(Exception):
     """Qdrant 返回了 4xx/5xx。消息里保留响应正文，供维度/索引错误识别。"""
 
@@ -384,15 +388,17 @@ class HttpQdrant:
         params: dict[str, str] | None = None,
     ) -> object:
         if time.monotonic() < self._circuit_open_until:
-            raise httpx2.ConnectError("Qdrant circuit open (recent connection failures)")
+            raise QdrantTransportError("Qdrant circuit open (recent connection failures)")
         session = await self._session()
         try:
             response = await session.request(method, path, json=body, params=params)
-        except (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout, OSError):
+        except (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout, OSError) as exc:
             self._consec_conn_failures += 1
             if self._consec_conn_failures >= _CIRCUIT_FAILURE_THRESHOLD:
                 self._circuit_open_until = time.monotonic() + _CIRCUIT_COOLDOWN_SEC
-            raise
+            raise QdrantTransportError(str(exc) or type(exc).__name__) from exc
+        except httpx2.HTTPError as exc:
+            raise QdrantTransportError(str(exc) or type(exc).__name__) from exc
         self._consec_conn_failures = 0
         self._circuit_open_until = 0.0
         if response.status_code >= 400:

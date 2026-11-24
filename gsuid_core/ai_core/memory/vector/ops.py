@@ -71,28 +71,6 @@ async def _upsert_locked(collection_name: str, points: list[PointStruct]) -> Non
         raise RuntimeError(f"{written}/{len(points)}")
 
 
-def _embed(text: str) -> list[float]:
-    """同步单条嵌入"""
-    from gsuid_core.ai_core.rag.base import embedding_provider
-
-    if embedding_provider is None:
-        raise RuntimeError(t("embedding_provider 未初始化，请检查 rag/base.py 的 init_embedding_model()"))
-    return embedding_provider.embed_single_sync(text)
-
-
-def _embed_batch(texts: list[str]) -> list[list[float]]:
-    """同步批量嵌入，利用底层批量接口一次处理多条文本。
-
-    相比逐条调用 _embed，批量接口可减少 Python↔C++ 上下文切换开销，
-    在 45 条文本场景下性能提升约 10-40x。
-    """
-    from gsuid_core.ai_core.rag.base import embedding_provider
-
-    if embedding_provider is None:
-        raise RuntimeError(t("embedding_provider 未初始化，请检查 rag/base.py 的 init_embedding_model()"))
-    return embedding_provider.embed_sync(texts)
-
-
 async def _embed_async(text: str) -> list[float]:
     """异步单条嵌入（直接使用 provider 的异步接口）"""
     from gsuid_core.ai_core.rag.base import embedding_provider

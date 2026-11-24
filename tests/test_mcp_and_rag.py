@@ -733,37 +733,52 @@ def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pyte
 
 
 def test_qdrant_circuit_breaker_and_search_tools_bm25_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HttpQdrant 连续断连触发熔断快速失败，且 search_tools 断连时无缝降级到内存 BM25 词法召回。"""
+    """HttpQdrant 传输异常归一与熔断、search_tools 断连降级 BM25、知识分页边界。"""
     import httpx2
     from pydantic_ai.tools import Tool
 
     import gsuid_core.ai_core.rag.base as rag_base
     import gsuid_core.ai_core.rag.tools as rag_tools
     from gsuid_core.ai_core.models import ToolBase, ToolContext
-    from gsuid_core.ai_core.rag.qhttp import HttpQdrant
+    from gsuid_core.ai_core.rag.qhttp import HttpQdrant, QdrantTransportError
+    from gsuid_core.ai_core.rag.qmodels import CountResult, ScoredPoint
+    from gsuid_core.ai_core.rag.knowledge import get_manual_knowledge_list
     from gsuid_core.ai_core.rag.tool_lexical import rebuild_index
+
+    assert issubclass(QdrantTransportError, ConnectionError)
+    assert issubclass(QdrantTransportError, OSError)
 
     # 1. HttpQdrant 连续 2 次连接拒绝后进入熔断，第 3 次不发真实 HTTP 请求直接快速失败
     calls = {"n": 0}
+    mode = {"kind": "connect"}
 
-    def _refuse(request: httpx2.Request) -> httpx2.Response:
+    def _fail_transport(request: httpx2.Request) -> httpx2.Response:
         calls["n"] += 1
+        if mode["kind"] == "read_timeout":
+            raise httpx2.ReadTimeout("slow qdrant", request=request)
         raise httpx2.ConnectError("connection refused", request=request)
 
     async def _verify_breaker() -> None:
         client = HttpQdrant(url="http://127.0.0.1:6333", api_key=None, timeout=1.0)
-        client._http = httpx2.AsyncClient(base_url="http://127.0.0.1:6333", transport=httpx2.MockTransport(_refuse))
+        client._http = httpx2.AsyncClient(
+            base_url="http://127.0.0.1:6333",
+            transport=httpx2.MockTransport(_fail_transport),
+        )
         try:
             assert client.is_circuit_open is False
             for _ in range(2):
-                with pytest.raises(httpx2.ConnectError):
+                with pytest.raises(QdrantTransportError):
                     await client.collection_exists("demo_col")
             assert client.is_circuit_open is True
             assert calls["n"] == 2
-            with pytest.raises(httpx2.ConnectError, match="circuit open"):
+            with pytest.raises(QdrantTransportError, match="circuit open"):
                 await client.collection_exists("demo_col")
             assert calls["n"] == 2
             client.reset_circuit_breaker()
+            assert client.is_circuit_open is False
+            mode["kind"] = "read_timeout"
+            with pytest.raises(QdrantTransportError):
+                await client.collection_exists("demo_col")
             assert client.is_circuit_open is False
         finally:
             await client.close()
@@ -791,7 +806,7 @@ def test_qdrant_circuit_breaker_and_search_tools_bm25_fallback(monkeypatch: pyte
 
     class _DeadQdrant:
         async def query_points(self, **_kw: object) -> object:
-            raise httpx2.ConnectError("qdrant down")
+            raise QdrantTransportError("qdrant down")
 
     monkeypatch.setattr(rag_base, "embedding_model", _DeadEmbedder())
     monkeypatch.setattr(rag_base, "client", _DeadQdrant())
@@ -802,3 +817,36 @@ def test_qdrant_circuit_breaker_and_search_tools_bm25_fallback(monkeypatch: pyte
     en_hits = asyncio.run(rag_tools.search_tools("ascension gap", limit=5, rerank=False))
     assert "demo_ascension_calculator" in [t.name for t in cjk_hits]
     assert "demo_ascension_calculator" in [t.name for t in en_hits]
+
+    # 3. 知识分页：offset+limit 恰为 100 整数倍且仍有剩余时不得过早返回 next_offset=None
+    class _ScrollQdrant:
+        def __init__(self, total: int) -> None:
+            self._rows = [
+                ScoredPoint(id=str(i), version=0, score=1.0, payload={"id": str(i), "title": f"条{i}"})
+                for i in range(total)
+            ]
+
+        async def count(self, **_kw: object) -> CountResult:
+            return CountResult(count=len(self._rows))
+
+        async def scroll(
+            self,
+            *,
+            limit: int = 100,
+            offset: object = None,
+            **_kw: object,
+        ) -> tuple[list[ScoredPoint], int | None]:
+            start = offset if isinstance(offset, int) else 0
+            chunk = self._rows[start : start + limit]
+            nxt = start + len(chunk) if start + len(chunk) < len(self._rows) else None
+            return chunk, nxt
+
+    monkeypatch.setattr(rag_base, "client", _ScrollQdrant(150))
+    page_100 = asyncio.run(get_manual_knowledge_list(source_filter="all", offset=80, limit=20))
+    assert len(page_100["list"]) == 20 and page_100["next_offset"] == 100
+    page_end = asyncio.run(get_manual_knowledge_list(source_filter="all", offset=140, limit=20))
+    assert len(page_end["list"]) == 10 and page_end["next_offset"] is None
+
+    monkeypatch.setattr(rag_base, "client", _ScrollQdrant(100))
+    page_exact = asyncio.run(get_manual_knowledge_list(source_filter="all", offset=80, limit=20))
+    assert len(page_exact["list"]) == 20 and page_exact["next_offset"] is None

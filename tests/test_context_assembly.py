@@ -1272,3 +1272,59 @@ def test_phase2a_history_roll_invisible_name_and_later_delivery(monkeypatch: pyt
         private=False,
     )
     assert "#12 " in delta_late and "#13 " in delta_late
+
+
+def test_hub_selection_disjoint_and_kanban_artifact_path_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """枢纽卡片展示与 extra_titles 严格不重叠；Kanban 删产物拒绝兄弟目录前缀越界。"""
+    import gsuid_core.ai_core.cognition.hub as hub_mod
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
+    from gsuid_core.ai_core.cognition.types import CogKind, CogScope, CognitiveHit
+    from gsuid_core.ai_core.planning.kanban import _unlink_artifact_file
+
+    nodes: dict[int, AICogNode] = {
+        1: AICogNode(id=1, kind="entity", ref="world:demo:h1", title="测试专名实体"),
+        2: AICogNode(id=2, kind="entity", ref="world:demo:h2", title="测试词条二"),
+        3: AICogNode(id=3, kind="entity", ref="world:demo:h3", title="测试词条三"),
+        4: AICogNode(id=4, kind="entity", ref="world:demo:h4", title="测试词条四"),
+    }
+
+    async def _get_by_id(nid: int) -> AICogNode | None:
+        return nodes[nid] if nid in nodes else None
+
+    async def _by_title(title: str) -> list[AICogNode]:
+        return [nodes[1]] if title == "测试专名实体" else []
+
+    monkeypatch.setattr(AICogNode, "get_by_id", staticmethod(_get_by_id))
+    monkeypatch.setattr(AICogNode, "list_world_hubs_by_title", staticmethod(_by_title))
+    monkeypatch.setattr(hub_mod, "lookup_surface", lambda _text: None)
+    monkeypatch.setattr(hub_mod, "_rank_hubs_for_scope", lambda items, *_a, **_k: list(items))
+
+    hits = [
+        CognitiveHit(kind=CogKind.ENTITY, id="node_2", title="测试词条二", summary="", score=0.9),
+        CognitiveHit(kind=CogKind.ENTITY, id="node_3", title="测试词条三", summary="", score=0.8),
+        CognitiveHit(kind=CogKind.ENTITY, id="node_4", title="测试词条四", summary="", score=0.7),
+    ]
+    shown, extra_titles = asyncio.run(
+        hub_mod._hubs_from_hits(hits, "测试专名实体", scope=CogScope(group_id="", user_id=""))
+    )
+    shown_titles = [n.title for n in shown]
+    assert shown_titles == ["测试专名实体", "测试词条二"]
+    assert extra_titles == ["测试词条三", "测试词条四"]
+    assert set(shown_titles).isdisjoint(extra_titles)
+
+    # Kanban 删单产物：兄弟目录 artifacts_other 拥有同字符串前缀，必须被 is_relative_to 拦截。
+    artifact_root = tmp_path / "artifacts"
+    inside = artifact_root / "root_1" / "out.txt"
+    sibling = tmp_path / "artifacts_other" / "secret.txt"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    sibling.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_text("ok", encoding="utf-8")
+    sibling.write_text("keep", encoding="utf-8")
+
+    assert _unlink_artifact_file(str(sibling), artifact_root) is False
+    assert sibling.exists()
+    assert _unlink_artifact_file(str(inside), artifact_root) is True
+    assert not inside.exists()

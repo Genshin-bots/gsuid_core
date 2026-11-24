@@ -281,7 +281,7 @@ DB/前端，而在 usage 源头：vLLM/SGLang 系网关（SiliconFlow 等）流�
 「仅最后 chunk 带 usage」的 OpenAI 标准语义逐 chunk 累加 → input ≈ 真实值×chunk 数、
 output 近似平方级膨胀。Moonshot/OpenAI/DeepSeek 官方等标准网关不受影响。
 
-**修复**（`ai_core/configs/models.py` + `openai_config/config_manager.py`）：
+**修复**（`ai_core/configs/models.py` + `configs/provider_config_manager.py`）：
 
 - OpenAI 配置新增 `usage_stats_mode`：`auto`（默认）/ `incremental` / `cumulative`。
 - `auto` = 白名单（`_CUMULATIVE_USAGE_URL_KEYWORDS`）+ 进程内探测注册表

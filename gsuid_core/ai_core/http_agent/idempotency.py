@@ -63,8 +63,5 @@ class IdempotencyStore:
         rec = self._items[store_key]
         rec.state = "completed"
 
-    def reset_for_tests(self) -> None:
-        self._items.clear()
-
 
 idempotency_store = IdempotencyStore()

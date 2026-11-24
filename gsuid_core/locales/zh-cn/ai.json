@@ -691,5 +691,6 @@
   "log.ai.migrations_isolation_marker_read_failed": "[Migrations] 跨群隔离水位线标记读取失败：{e}（按迁移未完成处理，旧数据不放行）",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 搜索: {query}, 返回 {p0} 条结果",
   "log.ai.kanban_node_hard_timeout": "[Kanban] 子任务节点硬超时终止 task={task} ({mins}min)",
-  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 交互式群聊子任务已过期，静默归档不回灌打扰 task={task} elapsed={mins}min"
+  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 交互式群聊子任务已过期，静默归档不回灌打扰 task={task} elapsed={mins}min",
+  "log.ai.artifact_index_drain_fail": "[Artifact] 关闭前收敛在途产物索引任务失败: {e}"
 }

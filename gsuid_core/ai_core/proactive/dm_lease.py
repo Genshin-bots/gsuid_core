@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 import json
 import time
-from typing import TypedDict
 from pathlib import Path
 from threading import Lock
 from dataclasses import dataclass
@@ -17,13 +16,6 @@ from gsuid_core.data_store import AI_CORE_PATH, get_res_path
 
 DM_LEASE_TTL_SECONDS: float = 72 * 3600.0  # 默认 72 小时有效期
 _LOCK = Lock()
-
-
-class DMAffinityLeaseDict(TypedDict):
-    persona_name: str
-    source_group_id: str
-    issued_at: float
-    expires_at: float
 
 
 @dataclass(slots=True)

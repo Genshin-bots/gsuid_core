@@ -882,14 +882,6 @@ def get_fast_model_by_full_name(full_name: str) -> AnyModel:
     return _build_model_by_full_name(full_name, fast=True)
 
 
-def get_fast_model_for_task(task_level: TaskLevel = "low", task_kind: str | None = None) -> AnyModel:
-    """按任务级别取无思考快模型（默认 low）。未配置时抛 ValueError。"""
-    full_name = get_config_name_for_task(task_level, task_kind)
-    if not full_name:
-        raise ValueError(t("log.ai.gscore_ai_config_model_file"))
-    return get_fast_model_by_full_name(full_name)
-
-
 def get_model_config_by_full_name(full_name: str) -> StringConfig:
     """按 provider++name 取对应配置文件（failover 后读实际模型的 model_support）。"""
     provider, config_name = parse_provider_config_name(full_name)

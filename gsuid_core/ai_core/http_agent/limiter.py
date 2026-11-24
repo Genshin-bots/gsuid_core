@@ -80,9 +80,5 @@ class HttpAgentLimiter:
         per_key = {kid: slot.used for kid, slot in self._keys.items()}
         return self._global_used, per_key
 
-    def reset_for_tests(self) -> None:
-        self._global_used = 0
-        self._keys.clear()
-
 
 limiter = HttpAgentLimiter()

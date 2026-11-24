@@ -899,13 +899,6 @@ async def maybe_link_entity_to_world(
     return True
 
 
-async def _link_one(scope_key: str, name: str, entity_id: str) -> None:
-    try:
-        await maybe_link_entity_to_world(entity_id=entity_id, entity_name=name, scope_key=scope_key)
-    except Exception as e:
-        logger.debug(i18n_t("log.ai.cognition_link_entity_fail", name=name[:40], e=e))
-
-
 async def scan_entities_to_world(stats: MountStats) -> None:
     from gsuid_core.ai_core.memory.database.models import AIMemEntity
 
@@ -1289,11 +1282,9 @@ async def _hubs_from_hits(
     named = [h for h in ordered if h.id in named_ids]
     rest = [h for h in ordered if h.id not in named_ids]
     shown = named[:NAMED_HUB_CAP]
-    if len(shown) < HUB_CARD_CAP:
-        shown.extend(rest[: HUB_CARD_CAP - len(shown)])
-        extra_nodes = rest[HUB_CARD_CAP - len(shown) :]
-    else:
-        extra_nodes = named[NAMED_HUB_CAP:] + rest
+    take = max(0, HUB_CARD_CAP - len(shown))
+    shown.extend(rest[:take])
+    extra_nodes = named[NAMED_HUB_CAP:] + rest[take:]
     return shown, [h.title for h in extra_nodes]
 
 

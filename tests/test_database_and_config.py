@@ -301,6 +301,8 @@ def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
     from gsuid_core.ai_core.configs import models, provider_config_manager
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
+    assert set(provider_config_manager.PROVIDER_MANAGERS.keys()) == {"openai", "anthropic", "gemini"}
+    assert set(provider_config_manager.PROVIDER_TEMPLATES.keys()) == {"openai", "anthropic", "gemini"}
     monkeypatch.setitem(
         provider_config_manager.PROVIDER_MANAGERS,
         "openai",

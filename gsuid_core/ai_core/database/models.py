@@ -21,13 +21,6 @@ from gsuid_core.logger import logger
 from gsuid_core.utils.database.base_models import BaseModel, BaseIDModel, with_session, with_read_session
 
 
-def _clamp_favor(value: int) -> int:
-    """把分数钳到 FAVOR_FLOOR..FAVOR_CEIL。"""
-    from gsuid_core.ai_core.relationship.engine import FAVOR_CEIL, FAVOR_FLOOR
-
-    return max(FAVOR_FLOOR, min(FAVOR_CEIL, value))
-
-
 def _escape_like(text: str) -> str:
     # LIKE 的 % 和 _ 必须按字面量匹配，不能变成通配符。
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

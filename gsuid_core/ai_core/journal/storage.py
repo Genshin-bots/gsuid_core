@@ -791,11 +791,6 @@ def _load_full_state() -> Dict[str, PersonaJournalStateEntry]:
         return _load_full_state_unlocked()
 
 
-def _save_full_state(state: Mapping[str, PersonaJournalStateEntry]) -> None:
-    with _STATE_LOCK:
-        _save_full_state_unlocked(state)
-
-
 def _mark_shard_dirty_sync(persona_name: str, shard_id: str) -> None:
     key = _safe_token(persona_name)
     with _STATE_LOCK:

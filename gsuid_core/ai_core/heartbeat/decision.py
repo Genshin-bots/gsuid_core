@@ -569,19 +569,3 @@ async def run_heartbeat(
         return None
     logger.info(t("log.ai.heartbeat_message_proactive", message=repr(message)))
     return mood, message, generator_log_files
-
-
-def _find_recent_ai_turn_index(history: List[MessageRecord]) -> int:
-    for idx in range(len(history) - 1, -1, -1):
-        if history[idx].role == "assistant":
-            return idx
-    return -1
-
-
-def _meta_text(rec: MessageRecord, key: str) -> str:
-    if key not in rec.metadata:
-        return ""
-    raw = rec.metadata[key]
-    if isinstance(raw, str):
-        return raw
-    return ""

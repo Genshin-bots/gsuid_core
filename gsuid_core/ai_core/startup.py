@@ -451,3 +451,14 @@ async def stop_journal_scheduler_on_shutdown() -> None:
         await stop_journal_scheduler()
     except Exception as e:  # noqa: BLE001
         logger.debug(t("log.ai.journal_compact_fail", persona_name="system", e=e))
+
+
+@on_core_shutdown
+async def drain_artifact_index_tasks_on_shutdown() -> None:
+    """关闭前收敛在途产物索引任务；须在 priority=100 的 Qdrant close 之前跑完。"""
+    try:
+        from gsuid_core.ai_core.planning.workspace import drain_pending_index_tasks
+
+        await drain_pending_index_tasks()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(t("log.ai.artifact_index_drain_fail", e=e))

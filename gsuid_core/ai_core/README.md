@@ -275,8 +275,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 |---|---|
 | `ai_config.py` | `ai_config` 主开关（含 `scaffold_wall_clock_budget` / `suppress_intermediate_text` / 呈现层出图兜底等）。 |
 | `models.py` | `get_model_for_task("high" / "low")`：按 `task_level` 路由；§23 墙钟 HTTP 超时。 |
-| `provider_config_manager.py` / `provider_router.py` | 多 provider 注册与路由。 |
-| `openai_config/` / `anthropic_config/` / `gemini_config/` | 内置 provider 工厂。 |
+| `provider_config_manager.py` / `provider_router.py` | 多 provider 模板、配置集管理与主备路由。 |
 
 ### `budget/` / `approval/` / `command_exec/` / `multimodal/` / `image_understand/`
 

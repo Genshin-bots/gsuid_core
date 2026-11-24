@@ -1132,8 +1132,9 @@ async def fail_task_tree(root_task_id: str, reason: str) -> bool:
 # 同步删单个 artifact：async 侧只能经 asyncio.to_thread 调它，越界/异常一律静默跳过
 def _unlink_artifact_file(raw_path: str, artifact_root: Path) -> bool:
     try:
+        root = artifact_root.resolve()
         p = Path(raw_path).resolve()
-        if p.exists() and p.is_file() and str(p).startswith(str(artifact_root)):
+        if p.is_relative_to(root) and p.exists() and p.is_file():
             p.unlink()
             return True
     except OSError:
@@ -1272,9 +1273,16 @@ async def hard_delete_task_tree(
                 if await asyncio.to_thread(_unlink_artifact_file, raw_path, artifact_root):
                     stats["files_deleted"] += 1
             for rid in root_ids:
+                if not rid or "/" in rid or "\\" in rid:
+                    continue
                 try:
                     root_dir = (ARTIFACT_ROOT / rid).resolve()
-                    if root_dir.exists() and root_dir.is_dir() and str(root_dir).startswith(str(artifact_root)):
+                    if (
+                        root_dir != artifact_root
+                        and root_dir.is_relative_to(artifact_root)
+                        and root_dir.exists()
+                        and root_dir.is_dir()
+                    ):
                         shutil.rmtree(root_dir, ignore_errors=True)
                         stats["dirs_deleted"] += 1
                 except OSError:

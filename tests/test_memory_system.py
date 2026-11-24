@@ -1688,3 +1688,97 @@ def test_preference_self_watermark_pushed_to_sql(tmp_path: Path, monkeypatch) ->
             await test_engine.dispose()
 
     asyncio.run(_run_pref_sql())
+
+
+def test_qdrant_transport_error_and_parallel_task_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """并发召回提前失败须回收孤儿任务；IngestionWorker 须接住 QdrantTransportError。"""
+    import gsuid_core.ai_core.memory.ingestion.worker as worker_mod
+    import gsuid_core.ai_core.memory.retrieval.dual_route as dual_mod
+    import gsuid_core.ai_core.memory.retrieval.thread_recall as thread_mod
+    from gsuid_core.ai_core.rag.qhttp import QdrantTransportError
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+
+    async def _scenario() -> None:
+        loop_errors: list[dict[str, object]] = []
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, ctx: loop_errors.append(dict(ctx)))
+
+        span_cancelled = False
+
+        async def _boom_s1(*_args: object, **_kw: object) -> object:
+            await asyncio.sleep(0)
+            raise QdrantTransportError("qdrant down")
+
+        async def _empty_list(*_args: object, **_kw: object) -> list[object]:
+            return []
+
+        async def _hanging_span(*_args: object, **_kw: object) -> tuple[list[object], list[object]]:
+            nonlocal span_cancelled
+            try:
+                await asyncio.sleep(30.0)
+            except asyncio.CancelledError:
+                span_cancelled = True
+                raise
+            return [], []
+
+        async def _failing_temporal(*_args: object, **_kw: object) -> list[object]:
+            raise QdrantTransportError("temporal qdrant down")
+
+        monkeypatch.setattr(dual_mod, "system1_search", _boom_s1)
+        monkeypatch.setattr(dual_mod, "_fts_episodes", _empty_list)
+        monkeypatch.setattr(dual_mod, "_load_document_coverage", _empty_list)
+        monkeypatch.setattr(dual_mod, "_fetch_temporal_episodes", _failing_temporal)
+        monkeypatch.setattr(thread_mod, "recall_span_threads", _hanging_span)
+
+        now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+        with pytest.raises(QdrantTransportError):
+            await dual_mod._gather_candidate_episodes(
+                query="测试回顾",
+                user_id="100000001",
+                group_id="group_1",
+                scope_keys=["group:group_1"],
+                cand_k=5,
+                is_private=False,
+                dm_user_eids=frozenset(),
+                memory_intent="broad_summary",
+                time_range=(now, now),
+            )
+        assert span_cancelled is True
+
+        # IngestionWorker._flush 接住 QdrantTransportError 并记账，托管集合自动回收。
+        stats_calls: list[tuple[int, bool]] = []
+
+        async def _boom_ingest(*_args: object, **_kw: object) -> dict[str, int]:
+            raise QdrantTransportError("qdrant down")
+
+        def _capture_stats(count: int, *, success: bool) -> None:
+            stats_calls.append((count, success))
+
+        monkeypatch.setattr(worker_mod, "ingest_window", _boom_ingest)
+        monkeypatch.setattr(worker_mod, "_record_ingestion_stats", _capture_stats)
+
+        w = worker_mod.IngestionWorker()
+        w._llm_semaphore = asyncio.Semaphore(1)
+        buf = worker_mod._ScopeWindowBuffer()
+        buf.push(
+            ObservationRecord(
+                raw_content="测试消息",
+                speaker_id="100000001",
+                group_id="group_1",
+                scope_key="group:group_1",
+                timestamp=now,
+                message_type="user",
+                speaker_name="测试用户A",
+            )
+        )
+        w._windows["group:group_1"] = buf
+        w._spawn_flush("group:group_1")
+        assert len(w._bg_tasks) == 1
+        await asyncio.gather(*list(w._bg_tasks))
+        await asyncio.sleep(0)
+        assert stats_calls == [(1, False)]
+        assert "group:group_1" not in w._flushing
+        assert not w._bg_tasks
+        assert not loop_errors
+
+    asyncio.run(_scenario())

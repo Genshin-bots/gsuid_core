@@ -16,6 +16,7 @@ Artifact Workspace 内**。仅靠提示词不够，必须工具层强制：
 
 import os
 import shutil
+import asyncio
 import tempfile
 from typing import List, Tuple, Optional
 from pathlib import Path
@@ -57,6 +58,7 @@ _SENSITIVE_DATA_SUBDIRS = {
 
 # data/ai_core/artifacts/{root_task_id}/{task_id}/workspace/...
 ARTIFACT_ROOT: Path = get_res_path(AI_CORE_PATH / "artifacts")
+_BG_INDEX_TASKS: set[asyncio.Task[None]] = set()
 
 # 单 inline 工件上限（设计稿 §5.2：≤4KB 文本用 inline）
 INLINE_PAYLOAD_LIMIT = 4 * 1024
@@ -490,8 +492,6 @@ async def _remember_and_index_artifact(
     payload: str,
 ) -> None:
     """产物登记后写认知节点，并异步建向量索引。"""
-    import asyncio
-
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.cognition.remember import MemoryWrite, remember
 
@@ -532,6 +532,19 @@ async def _remember_and_index_artifact(
             except Exception as idx_e:
                 logger.debug(t("log.ai.cognition_node_sync_fail", kind="artifact_index", ref=art.id, e=idx_e))
 
-        asyncio.create_task(_index())
+        index_task = asyncio.create_task(_index(), name=f"artifact_index:{art.id}")
+        _BG_INDEX_TASKS.add(index_task)
+        index_task.add_done_callback(_BG_INDEX_TASKS.discard)
     except Exception as e:
         logger.debug(t("log.ai.cognition_node_sync_fail", kind="artifact", ref=art.id, e=e))
+
+
+async def drain_pending_index_tasks(timeout: float = 5.0) -> None:
+    """关闭前等在途产物索引任务收尾；超时即取消，须在 Qdrant client 关闭前调用。"""
+    pending = [task for task in _BG_INDEX_TASKS if not task.done()]
+    if not pending:
+        return
+    _, still = await asyncio.wait(pending, timeout=timeout)
+    for task in still:
+        task.cancel()
+    await asyncio.gather(*still, return_exceptions=True)
