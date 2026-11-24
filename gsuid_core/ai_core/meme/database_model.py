@@ -745,7 +745,12 @@ class AiMemeRecord(SQLModel, table=True):
         from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
 
         member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id) == pack_id)
-        filters: List[ColumnElement[bool]] = [col(cls.meme_id).in_(member_ids)]
+        filters: List[ColumnElement[bool]] = [
+            or_(
+                col(cls.meme_id).in_(member_ids),
+                col(cls.pending_pack_id) == pack_id,
+            )
+        ]
         if status:
             filters.append(col(cls.status) == status)
         count_stmt = select(func.count()).select_from(cls).where(*filters)

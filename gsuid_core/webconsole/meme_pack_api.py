@@ -31,7 +31,7 @@ def _pack_name_ok(name: str) -> bool:
     return 1 <= len(name) <= 64 and is_safe_filename(name)
 
 
-def _repo_pack_block(pack_name: str) -> dict[str, object] | None:
+def repo_pack_block(pack_name: str) -> dict[str, object] | None:
     """仓库拥有的包名：内容随仓库同步，手动改会在下次同步时被还原或产生重复包。"""
     from gsuid_core.ai_core.persona.store import is_repo_pack
 
@@ -62,14 +62,15 @@ async def list_meme_packs(_user: SessionRecord = Depends(require_auth)) -> dict[
 
 @app.post("/api/meme/packs", summary="创建空表情包", tags=MEME)
 async def create_meme_pack(body: PackNameBody, _user: SessionRecord = Depends(require_auth)) -> dict[str, object]:
-    if not _pack_name_ok(body.name):
+    name = body.name.strip()
+    if not _pack_name_ok(name):
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
-    if await PackStore.get_by_name(body.name) is not None:
+    if await PackStore.get_by_name(name) is not None:
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
-    blocked = _repo_pack_block(body.name)
+    blocked = repo_pack_block(name)
     if blocked is not None:
         return blocked
-    created = await PackStore.create_pack(body.name)
+    created = await PackStore.create_pack(name)
     return {"status": 0, "msg": "ok", "data": {"pack_id": created.pack_id, "name": created.name}}
 
 
@@ -88,19 +89,20 @@ async def rename_meme_pack(
     pack = await PackStore.get_pack(pack_id)
     if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
-    blocked = _repo_pack_block(pack.name)
+    blocked = repo_pack_block(pack.name)
     if blocked is not None:
         return blocked
-    if not _pack_name_ok(body.name):
+    name = body.name.strip()
+    if not _pack_name_ok(name):
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
-    occupied = await PackStore.get_by_name(body.name)
+    occupied = await PackStore.get_by_name(name)
     if occupied is not None and occupied.pack_id != pack_id:
         return {"status": 1, "msg": "包名无效或已被占用", "data": None}
-    blocked = _repo_pack_block(body.name)
+    blocked = repo_pack_block(name)
     if blocked is not None:
         return blocked
-    await PackStore.rename_pack(pack_id, body.name)
-    return {"status": 0, "msg": "ok", "data": {"pack_id": pack_id, "name": body.name}}
+    await PackStore.rename_pack(pack_id, name)
+    return {"status": 0, "msg": "ok", "data": {"pack_id": pack_id, "name": name}}
 
 
 @app.delete("/api/meme/packs/{pack_id}", summary="删除表情包", tags=MEME)
@@ -108,7 +110,7 @@ async def delete_meme_pack(pack_id: str, _user: SessionRecord = Depends(require_
     pack = await PackStore.get_pack(pack_id)
     if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
-    blocked = _repo_pack_block(pack.name)
+    blocked = repo_pack_block(pack.name)
     if blocked is not None:
         return blocked
     result = await PackStore.delete_pack(pack_id)
@@ -182,7 +184,7 @@ async def add_pack_members(
     pack = await PackStore.get_pack(pack_id)
     if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
-    blocked = _repo_pack_block(pack.name)
+    blocked = repo_pack_block(pack.name)
     if blocked is not None:
         return blocked
     added: list[str] = []
@@ -204,7 +206,7 @@ async def remove_pack_members(
     pack = await PackStore.get_pack(pack_id)
     if pack is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
-    blocked = _repo_pack_block(pack.name)
+    blocked = repo_pack_block(pack.name)
     if blocked is not None:
         return blocked
     removed = await PackStore.remove_members(pack_id, body.meme_ids)

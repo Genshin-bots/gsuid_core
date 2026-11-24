@@ -19,14 +19,19 @@ from pydantic import Field, BaseModel
 from fastapi.responses import StreamingResponse
 
 import gsuid_core.webconsole.meme_pack_api  # noqa: F401  登记 /packs，必须早于 /{meme_id}
+from gsuid_core.pool import to_thread
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.meme.library import (
     MemeLibrary,
     _read_file,
     ext_for_mime,
+    compute_meme_id,
     get_memes_base_path,
+    write_member_payloads,
 )
+from gsuid_core.ai_core.meme.normalize import prepare_meme_image
+from gsuid_core.webconsole.meme_pack_api import repo_pack_block
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 from ._api_tags import MEME
@@ -591,15 +596,31 @@ async def upload_meme(
         if pack_id:
             if folder not in ("common", "inbox"):
                 return {"status": 1, "msg": "选定表情包时，目录只能是 common 或 inbox", "data": None}
-            if not await PackStore.pack_exists(pack_id):
+            pack = await PackStore.get_pack(pack_id)
+            if pack is None:
                 return {"status": 1, "msg": "表情包不存在", "data": None}
+            blocked = repo_pack_block(pack.name)
+            if blocked is not None:
+                return blocked
 
-        record = await MemeLibrary.save_raw(
-            image_data=image_data,
-            file_mime=file_mime,
-            source_group="manual",
-        )
+        prepared = await to_thread(prepare_meme_image)(image_data, file_mime)
+        meme_id = compute_meme_id(prepared.data)
+        existing = await AiMemeRecord.get_by_meme_id(meme_id)
+        if existing is not None:
+            if not pack_id:
+                return {"status": 1, "msg": "保存失败（可能已存在）", "data": None}
+            if existing.status == "rejected":
+                return {"status": 1, "msg": "该表情已被拒绝，请先在已拒绝列表中恢复", "data": None}
+            added = existing.pending_pack_id != pack_id and await PackStore.add_member(pack_id, existing.meme_id)
+            if added and existing.status in _INDEXABLE_STATUSES:
+                await write_member_payloads([existing.meme_id], strict=False)
+            return {
+                "status": 0,
+                "msg": "已加入目标表情包" if added else "该表情已在目标表情包中",
+                "data": {"meme_id": existing.meme_id, "linked": added},
+            }
 
+        record = await MemeLibrary.save_prepared(prepared, source_group="manual")
         if not record:
             return {"status": 1, "msg": "保存失败（可能已存在）", "data": None}
 

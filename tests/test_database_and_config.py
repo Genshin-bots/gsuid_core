@@ -637,3 +637,204 @@ def test_model_http_proxy_pool_isolation_and_leak_guard() -> None:
     wrapped.__cause__ = inner_pool_err
     assert _is_pool_timeout_error(wrapped) is True
     assert _is_pool_timeout_error(httpx2.ReadTimeout("read slow")) is False
+
+
+def test_meme_pack_create_and_batch_upload_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """新建表情包支持首尾去空格；上传待打标图立即可见；已存在图上传至新包自动关联；待打标成员可移出、打标失败保留归属。"""
+    import io
+
+    from PIL import Image
+    from fastapi import UploadFile
+    from sqlmodel import SQLModel
+    from starlette.datastructures import Headers
+
+    import gsuid_core.ai_core.meme.tagger as meme_tagger
+    import gsuid_core.webconsole.meme_api as meme_api
+    import gsuid_core.ai_core.meme.library as meme_library
+    import gsuid_core.ai_core.persona.store as persona_store
+    import gsuid_core.webconsole.meme_pack_api as meme_pack_api
+    from gsuid_core.webconsole.meme_api import upload_meme
+    from gsuid_core.ai_core.meme.library import MemeLibrary
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+    from gsuid_core.webconsole.meme_pack_api import (
+        PackNameBody,
+        MemberIdsBody,
+        create_meme_pack,
+        remove_pack_members,
+    )
+    from gsuid_core.webconsole.session_store import SessionRecord
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+    def _png_bytes(color: tuple[int, int, int]) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (16, 16), color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    def _upload_file(name: str, data: bytes) -> UploadFile:
+        return UploadFile(
+            file=io.BytesIO(data),
+            filename=name,
+            headers=Headers({"content-type": "image/png"}),
+        )
+
+    async def scenario() -> None:
+        db_path = tmp_path / "meme-pack-test.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path.as_posix()}",
+            poolclass=NullPool,
+            connect_args={"check_same_thread": False, "timeout": 5.0},
+        )
+        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+        monkeypatch.setattr(base_models, "async_maker", maker)
+        monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+        monkeypatch.setattr(base_models, "_db_type", "sqlite")
+        monkeypatch.setattr(meme_library, "get_memes_base_path", lambda: tmp_path / "memes")
+        monkeypatch.setattr(meme_api, "get_memes_base_path", lambda: tmp_path / "memes")
+        monkeypatch.setattr(persona_store, "is_repo_pack", lambda _name: False)
+
+        enqueued: list[str] = []
+
+        async def _fake_enqueue(meme_id: str) -> None:
+            enqueued.append(meme_id)
+
+        async def _fake_write_payloads(_ids: list[str] | None = None, *, strict: bool = True) -> None:
+            return None
+
+        monkeypatch.setattr(meme_tagger, "enqueue_tag", _fake_enqueue)
+        monkeypatch.setattr(meme_library, "write_member_payloads", _fake_write_payloads)
+        monkeypatch.setattr(meme_api, "write_member_payloads", _fake_write_payloads)
+        monkeypatch.setattr(meme_pack_api, "write_member_payloads", _fake_write_payloads)
+
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+
+        fake_user: SessionRecord = {
+            "user": {"id": "1", "name": "tester"},
+            "email": "tester@example.invalid",
+            "created": "2026-01-01T00:00:00",
+            "expires": "2099-01-01T00:00:00",
+        }
+
+        # 1. 新建表情包并去除首尾空白
+        res_a = await create_meme_pack(PackNameBody(name="  测试文件夹A  "), _user=fake_user)
+        assert res_a["status"] == 0
+        assert isinstance(res_a["data"], dict)
+        pack_a_id = str(res_a["data"]["pack_id"])
+        assert res_a["data"]["name"] == "测试文件夹A"
+
+        # 2. 上传新图到新建表情包（auto_tag=True）：立即出现在包统计与待打标成员列表
+        img1 = _png_bytes((220, 40, 40))
+        up1 = await upload_meme(
+            file=_upload_file("a.png", img1),
+            folder="common",
+            auto_tag=True,
+            pack_id=pack_a_id,
+            _={},
+        )
+        assert up1["status"] == 0
+        meme1_id = str(up1["data"]["meme_id"])
+        assert enqueued == [meme1_id]
+
+        summaries = {s.pack_id: s for s in await PackStore.list_summaries()}
+        assert summaries[pack_a_id].member_count == 1
+        assert summaries[pack_a_id].tagged_count == 0
+        pending_rows, pending_total = await AiMemeRecord.list_pack_members(pack_a_id, status="pending")
+        assert pending_total == 1
+        assert [r.meme_id for r in pending_rows] == [meme1_id]
+
+        # 3. 已打标图片再次上传至第二个新建表情包：直接关联而非报错失败
+        await AiMemeRecord.update_record(meme1_id, {"status": "tagged"})
+        await PackStore.apply_successful_tag(meme1_id)
+
+        res_b = await create_meme_pack(PackNameBody(name="测试文件夹B"), _user=fake_user)
+        assert res_b["status"] == 0
+        assert isinstance(res_b["data"], dict)
+        pack_b_id = str(res_b["data"]["pack_id"])
+
+        up_dup = await upload_meme(
+            file=_upload_file("a-copy.png", img1),
+            folder="common",
+            auto_tag=True,
+            pack_id=pack_b_id,
+            _={},
+        )
+        assert up_dup["status"] == 0
+        assert up_dup["data"]["meme_id"] == meme1_id
+        assert up_dup["data"]["linked"] is True
+        b_rows, b_total = await AiMemeRecord.list_pack_members(pack_b_id, status="tagged")
+        assert b_total == 1
+        assert [r.meme_id for r in b_rows] == [meme1_id]
+
+        # 4. 已拒绝图片不会通过重复上传静默恢复
+        img2 = _png_bytes((40, 220, 40))
+        up2 = await upload_meme(
+            file=_upload_file("b.png", img2),
+            folder="common",
+            auto_tag=False,
+            pack_id=None,
+            _={},
+        )
+        assert up2["status"] == 0
+        meme2_id = str(up2["data"]["meme_id"])
+        await AiMemeRecord.update_record(meme2_id, {"status": "rejected"})
+        up_rej = await upload_meme(
+            file=_upload_file("b-copy.png", img2),
+            folder="common",
+            auto_tag=True,
+            pack_id=pack_b_id,
+            _={},
+        )
+        assert up_rej["status"] == 1
+
+        # 5. 待打标图重复上传：同包返回未新加入，跨包直接关联并出现在待打标成员中
+        img3 = _png_bytes((40, 40, 220))
+        up3 = await upload_meme(
+            file=_upload_file("c.png", img3),
+            folder="common",
+            auto_tag=True,
+            pack_id=pack_b_id,
+            _={},
+        )
+        assert up3["status"] == 0
+        meme3_id = str(up3["data"]["meme_id"])
+
+        up3_same = await upload_meme(
+            file=_upload_file("c-copy.png", img3),
+            folder="common",
+            auto_tag=True,
+            pack_id=pack_b_id,
+            _={},
+        )
+        assert up3_same["status"] == 0
+        assert up3_same["data"]["linked"] is False
+
+        up3_other = await upload_meme(
+            file=_upload_file("c-copy2.png", img3),
+            folder="common",
+            auto_tag=True,
+            pack_id=pack_a_id,
+            _={},
+        )
+        assert up3_other["status"] == 0
+        assert up3_other["data"]["linked"] is True
+        a_pending_rows, a_pending_total = await AiMemeRecord.list_pack_members(pack_a_id, status="pending")
+        assert a_pending_total == 1
+        assert [r.meme_id for r in a_pending_rows] == [meme3_id]
+
+        # 6. 打标失败保留待定归属；移出时一并取消并计入 removed
+        await MemeLibrary.mark_tag_failed(meme3_id)
+        _, pm_total = await AiMemeRecord.list_pack_members(pack_b_id, status="pending_manual")
+        assert pm_total == 1
+        res_rm = await remove_pack_members(pack_b_id, MemberIdsBody(meme_ids=[meme3_id]), _user=fake_user)
+        assert res_rm["status"] == 0
+        assert isinstance(res_rm["data"], dict)
+        assert res_rm["data"]["removed"] == [meme3_id]
+        _, pm_total_after = await AiMemeRecord.list_pack_members(pack_b_id, status="pending_manual")
+        assert pm_total_after == 0
+        reloaded = await AiMemeRecord.get_by_meme_id(meme3_id)
+        assert reloaded is not None
+        assert reloaded.pending_pack_id == ""
+
+        await engine.dispose()
+
+    asyncio.run(scenario())

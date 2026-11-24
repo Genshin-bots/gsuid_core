@@ -224,11 +224,6 @@ class PackStore:
 
     @classmethod
     @with_read_session
-    async def pack_exists(cls, session: AsyncSession, pack_id: str) -> bool:
-        return await session.get(AiMemePack, pack_id) is not None
-
-    @classmethod
-    @with_read_session
     async def get_pack(cls, session: AsyncSession, pack_id: str) -> PackRef | None:
         row = await session.get(AiMemePack, pack_id)
         if row is None:
@@ -285,6 +280,25 @@ class PackStore:
         ).all()
         member_counts = {str(row[0]): int(row[1]) for row in member_rows}
         from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+        pending_rows = (
+            await session.execute(
+                select(AiMemeRecord.pending_pack_id, func.count())
+                .where(
+                    col(AiMemeRecord.pending_pack_id) != "",
+                    ~select(AiMemePackItem.meme_id)
+                    .where(
+                        col(AiMemePackItem.pack_id) == col(AiMemeRecord.pending_pack_id),
+                        col(AiMemePackItem.meme_id) == col(AiMemeRecord.meme_id),
+                    )
+                    .exists(),
+                )
+                .group_by(AiMemeRecord.pending_pack_id)
+            )
+        ).all()
+        for row in pending_rows:
+            pid = str(row[0])
+            member_counts[pid] = (member_counts[pid] if pid in member_counts else 0) + int(row[1])
 
         tagged_rows = (
             await session.execute(
@@ -368,6 +382,8 @@ class PackStore:
     @classmethod
     @with_session
     async def remove_members(cls, session: AsyncSession, pack_id: str, meme_ids: Sequence[str]) -> list[str]:
+        from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
         removed: list[str] = []
         for meme_id in meme_ids:
             row = await session.get(AiMemePackItem, (pack_id, meme_id))
@@ -375,6 +391,24 @@ class PackStore:
                 continue
             await session.delete(row)
             removed.append(meme_id)
+        pending_rows = (
+            (
+                await session.execute(
+                    select(AiMemeRecord).where(
+                        col(AiMemeRecord.meme_id).in_(list(meme_ids)),
+                        col(AiMemeRecord.pending_pack_id) == pack_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for record in pending_rows:
+            record.pending_pack_id = ""
+            record.updated_at = _now()
+            session.add(record)
+            if record.meme_id not in removed:
+                removed.append(record.meme_id)
         return removed
 
     @classmethod
