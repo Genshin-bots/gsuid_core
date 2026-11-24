@@ -1,8 +1,8 @@
-"""Run-once 宿主类型声明（由 GsCoreAIAgent + 各 Phase mixin 共同实现）。"""
+"""Run-once 宿主类型协议（由 GsCoreAIAgent + 各 Phase 协作者共同满足）。"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Union, Literal, Optional, Protocol, Sequence
 from asyncio import Event as AsyncEvent
 from datetime import datetime
 
@@ -21,26 +21,24 @@ from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 from gsuid_core.ai_core.control.outbound_detectors import FirewallHit
 
 if TYPE_CHECKING:
+    from gsuid_core.ai_core.prefix_probe import PrefixSnapshot
     from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
 
 ReturnMode = Literal["always", "return", "by_bot"]
 
 
-class RunOnceHost:
-    """字段由 GsCoreAIAgent 初始化；跨阶段方法由各 Phase mixin 实现。
-
-    方法槽一律 ``raise NotImplementedError``，仅供类型检查与 MRO 占位。
-    """
+class RunOnceHost(Protocol):
+    """GsCoreAIAgent 与各 Phase 间共享的显式宿主契约（纯结构协议，无运行时桩继承）。"""
 
     # ── 宿主字段（GsCoreAIAgent.__init__）──
     history: list[ModelMessage]
     create_by: str
-    model: AnyModel
+    model: AnyModel | None
     task_level: Literal["high", "low"]
     task_kind: str | None
     _active_config_name: str | None
     system_prompt: str | None
-    max_tokens: int | None
+    max_tokens: int
     _wire_max_tokens: int | None
     max_iterations: int | None
     session_id: str
@@ -53,6 +51,7 @@ class RunOnceHost:
     turn_clock: datetime | None
     route_decision: "TurnRouteDecision | None"
     _session_logger: AISessionLogger
+    _prefix_snapshot: Optional["PrefixSnapshot"]
     _run_sent_texts: set[str]
     _run_sent_order: list[str]
     read_image_ids: set[str]
@@ -66,60 +65,47 @@ class RunOnceHost:
     _last_attempt_tool_outcomes: tuple[frozenset[str], frozenset[str]]
     _last_attempt_thinking: str
     _session_toolset_frozen: Optional[list[str]]
-    #: 上一轮 log_tools_list 记下的装配名单，tools_change 的 diff 基线
+    _session_toolset_tags: Optional[frozenset[str]]
     _last_logged_tool_names: Optional[list[str]]
-    #: 上一轮 find_tools 挂出的工具名，标 tools_change.from_find_tools 用
     _last_run_find_tools_names: list[str]
     _cancel_generation: AsyncEvent
     _history_iter_active: bool
     _consecutive_no_tool_rounds: int
     _unmet_tool_promise: bool
     _last_drift_push_count: int
+    _anchor_journal_ts: float
     _recent_tool_families: dict[str, int]
     _recent_user_texts: list[str]
     _last_assembled_domains: set[str]
-    #: 本 run 出站是否流式；入口写入，loop 读取
     _outbound_stream: bool
-    #: Token 用量分类；空则用 create_by
     _stats_chat_type: str
-    #: 当轮图片 400 重试时禁用原生直投，降级走文字转述
     _disable_direct_image_in_run: bool
 
     # ── GsCoreAIAgent 实现 ──
-    def extract_history(self) -> None:
-        raise NotImplementedError
+    def extract_history(self) -> None: ...
 
-    def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None:
-        raise NotImplementedError
+    def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None: ...
 
-    def _emit_trace(self, kind: TraceKind, text: str) -> None:
-        raise NotImplementedError
+    def _emit_trace(self, kind: TraceKind, text: str) -> None: ...
 
-    def _resolve_budget_scope(self, ev: Event | None) -> tuple[str, str, str] | None:
-        raise NotImplementedError
+    def _resolve_budget_scope(self, ev: Event | None) -> tuple[str, str, str] | None: ...
 
-    def _scrub_fake_done_history(self, fabricated_texts: set[str]) -> None:
-        raise NotImplementedError
+    def _scrub_fake_done_history(self, fabricated_texts: set[str]) -> None: ...
 
-    async def _prepare_user_message(self, content_list: list[UserContent]) -> Union[str, list[UserContent]]:
-        raise NotImplementedError
+    async def _prepare_user_message(self, content_list: list[UserContent]) -> Union[str, list[UserContent]]: ...
 
-    def _model_declares_video(self) -> bool:
-        raise NotImplementedError
+    def _model_declares_video(self) -> bool: ...
 
-    async def _lightweight_text_rewrite(self, rewrite_message: str, *, max_tokens: int | None = None) -> str:
-        raise NotImplementedError
+    async def _lightweight_text_rewrite(self, rewrite_message: str, *, max_tokens: int | None = None) -> str: ...
 
-    def _ooc_hard_hit(self, text: str, ev: Event | None) -> FirewallHit | None:
-        raise NotImplementedError
+    def _ooc_hard_hit(self, text: str, ev: Event | None) -> FirewallHit | None: ...
 
     async def _ooc_recover_persona_voice(
         self,
         hit: FirewallHit,
         original: str,
         ev: Event | None,
-    ) -> str:
-        raise NotImplementedError
+    ) -> str: ...
 
     async def _resolve_output_gate_after_run(
         self,
@@ -130,42 +116,34 @@ class RunOnceHost:
         return_mode: str,
         ooc_blocked: list[tuple[str, FirewallHit]],
         ab_abort: bool,
-    ) -> bool:
-        raise NotImplementedError
+    ) -> bool: ...
 
-    # ── 阶段方法槽（各 Phase mixin 覆盖）──
-    async def _run_once_budget_gate(self, st: RunOnceState) -> object:
-        raise NotImplementedError
+    # ── 阶段协调方法（各 Phase 提供）──
+    async def _run_once_budget_gate(self, st: RunOnceState) -> object: ...
 
-    def _run_once_init_state(self, st: RunOnceState) -> None:
-        raise NotImplementedError
+    def _run_once_init_state(self, st: RunOnceState) -> None: ...
 
-    async def _run_once_prepare_user_message(self, st: RunOnceState) -> None:
-        raise NotImplementedError
+    async def _run_once_prepare_user_message(self, st: RunOnceState) -> None: ...
 
-    async def _run_once_assemble_tools(self, st: RunOnceState) -> None:
-        raise NotImplementedError
+    async def _run_once_assemble_tools(self, st: RunOnceState) -> None: ...
 
-    def _run_once_build_agent_meta(self, st: RunOnceState) -> object:
-        raise NotImplementedError
+    def _run_once_build_agent_meta(self, st: RunOnceState) -> object: ...
 
-    async def _run_once_on_model_request(self, st: RunOnceState, node: object, agent_run: object) -> None:
-        raise NotImplementedError
+    async def _run_once_on_model_request(self, st: RunOnceState, node: object, agent_run: object) -> None: ...
 
-    async def _run_once_on_call_tools(self, st: RunOnceState, node: object, statistics_manager: object) -> None:
-        raise NotImplementedError
+    async def _run_once_on_call_tools(self, st: RunOnceState, node: object, statistics_manager: object) -> None: ...
 
-    async def _run_once_iter_and_settle(self, st: RunOnceState, _agent: object, statistics_manager: object) -> object:
-        raise NotImplementedError
+    async def _run_once_iter_and_settle(
+        self, st: RunOnceState, _agent: object, statistics_manager: object
+    ) -> object: ...
 
-    async def _run_once_settle_result(self, st: RunOnceState, agent_run: object, statistics_manager: object) -> object:
-        raise NotImplementedError
+    async def _run_once_settle_result(
+        self, st: RunOnceState, agent_run: object, statistics_manager: object
+    ) -> object: ...
 
-    async def _run_once_usage_limit_fallback(self, st: RunOnceState, statistics_manager: object) -> object:
-        raise NotImplementedError
+    async def _run_once_usage_limit_fallback(self, st: RunOnceState, statistics_manager: object) -> object: ...
 
-    def _run_once_cleanup(self, st: RunOnceState) -> None:
-        raise NotImplementedError
+    def _run_once_cleanup(self, st: RunOnceState) -> None: ...
 
     async def _execute_run_once(
         self,
@@ -184,5 +162,4 @@ class RunOnceHost:
         turn_graph: Optional[TurnGraph] = None,
         is_framework_injection: bool = False,
         injection_reason: str = "",
-    ) -> object:
-        raise NotImplementedError
+    ) -> object: ...

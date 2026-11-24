@@ -510,7 +510,7 @@ def evaluate_ooc_gate(
 
 
 class SettleRingHost(Protocol):
-    """``run_settle_policy_ring`` 依赖的宿主协议（由 ``SettlePhase`` 实现）。"""
+    """``run_settle_policy_ring`` 依赖的宿主协议（由 ``agent_run.settle._SettleRingBridge`` 实现）。"""
 
     @property
     def persona_name(self) -> str | None: ...

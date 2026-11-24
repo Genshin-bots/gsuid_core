@@ -65,8 +65,8 @@ def _journal_delta_in_recent_history(delta_text: str, history: Sequence[ModelMes
     return all(any(n in txt for txt in recent_texts) for n in needles)
 
 
-class PreparePhase(RunOnceHost):
-    async def _run_once_budget_gate(self, st: RunOnceState) -> object:
+class PreparePhase:
+    async def _run_once_budget_gate(self: RunOnceHost, st: RunOnceState) -> object:
         """预算闸门：超额返回早退值；放行返回 ``BUDGET_GATE_PASS``。"""
         # ============ 预算闸门 + scope 解析（统一入口）============
         # 仅 st.budget_gate=True 的自主入口在此早退；放行/未启用/豁免均零额外开销。
@@ -109,7 +109,7 @@ class PreparePhase(RunOnceHost):
 
         return BUDGET_GATE_PASS
 
-    def _run_once_init_state(self, st: RunOnceState) -> None:
+    def _run_once_init_state(self: RunOnceHost, st: RunOnceState) -> None:
         """scope 绑定、环内可变状态、limits、ToolContext。"""
         # 提前到 try 前设置归属 scope：使本次 run 期间未显式绑定 scope 的嵌套 LLM 调用（含
         # _prepare_user_message 的图片理解）都按此记账；finally 还原，泄漏至多止于本 task。
@@ -278,7 +278,7 @@ class PreparePhase(RunOnceHost):
             allow_user_outbound=st.allow_outbound,
         )
 
-    async def _run_once_prepare_user_message(self, st: RunOnceState) -> None:
+    async def _run_once_prepare_user_message(self: RunOnceHost, st: RunOnceState) -> None:
         """用户消息外壳 / RAG / DS / 无工具提醒 / 脚手架 hints / session log。"""
         from gsuid_core.ai_core.delivery import mention_names_in_text
 
@@ -440,7 +440,7 @@ class PreparePhase(RunOnceHost):
         if st.tools is None:
             st.tools = []
 
-    def _inject_deepseek_rp_marker(self, st: RunOnceState) -> None:
+    def _inject_deepseek_rp_marker(self: RunOnceHost, st: RunOnceState) -> None:
         if self.create_by not in ("Chat", "Agent"):
             return
         marker = INNER_OS_MARKER if ai_config.get_config("enable_deepseek_rp").data else ""

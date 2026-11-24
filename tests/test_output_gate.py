@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
     from gsuid_core.ai_core.output_gate import (
@@ -437,3 +439,67 @@ def test_numeric_recitation_and_initial_dispute_contracts() -> None:
     msg_retry = asyncio.run(dispute_directive(ctx_retry, "上一段是用户明确要求的纯文本口头概括"))
     assert ctx_retry.deps.extra[DISPUTE_CLOSED_KEY] is True
     assert "<SILENCE>" in msg_retry
+
+
+def test_agent_run_guards_state_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DeliveryGuard 状态转移与 ToolCircuitBreaker 响应上限/空转剥离对齐。"""
+    from pydantic_ai.messages import ModelRequest, ToolCallPart, ModelResponse, ModelResponsePart
+
+    import gsuid_core.ai_core.agent_run.guards as guards_mod
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.agent_run import RunOnceState, DeliveryGuard, ToolCircuitBreaker
+    from gsuid_core.ai_core.agent_run.support import canonical_tool_call
+    from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
+
+    monkeypatch.setattr(guards_mod, "_tool_call_targets_render_agent", lambda part: part.tool_name == "create_subagent")
+
+    st = RunOnceState(
+        user_message="hi",
+        bot=None,
+        ev=None,
+        rag_context=None,
+        tools=[],
+        return_mode="by_bot",
+        output_type=None,
+        intent=None,
+        has_active_task=False,
+        budget_gate=False,
+        suppress_intermediate_text=True,
+        fake_done_retry=False,
+        turn_graph=None,
+        is_framework_injection=False,
+        context=ToolContext(extra={}),
+    )
+    assert DeliveryGuard.stage_of(st) == "free"
+    DeliveryGuard.prescan_render_delegation(
+        st,
+        [ToolCallPart(tool_name="create_subagent", args={"agent_profile": "render_agent"})],
+    )
+    assert DeliveryGuard.stage_of(st) == "render_delegated"
+    assert st.context is not None
+    st.context.extra["image_sent_this_run"] = True
+    DeliveryGuard.apply_send_message_return(st)
+    assert DeliveryGuard.stage_of(st) == "free"
+    st.context.extra[DISPUTE_CLOSED_KEY] = True
+    DeliveryGuard.inject_request_contracts(st, ModelRequest(parts=[]))
+    assert DeliveryGuard.stage_of(st) == "silence_only"
+    st.ab_abort = True
+    assert DeliveryGuard.stage_of(st) == "fused"
+
+    many_calls: list[ModelResponsePart] = [
+        ToolCallPart(tool_name="ping", args={"i": i}, tool_call_id=f"c{i}") for i in range(35)
+    ]
+    resp = ModelResponse(parts=many_calls)
+    ToolCircuitBreaker.sanitize_and_cap_response(st, resp, create_by="Chat")
+    assert len(resp.parts) == 30
+
+    dup_resp = ModelResponse(
+        parts=[
+            ToolCallPart(tool_name="ping", args={"x": 1}, tool_call_id="d1"),
+            ToolCallPart(tool_name="other", args={}, tool_call_id="d2"),
+        ]
+    )
+    st.same_tool_name = canonical_tool_call("ping", {"x": 1})
+    st.thrash_fused = True
+    ToolCircuitBreaker.sanitize_and_cap_response(st, dup_resp, create_by="Chat")
+    assert [p.tool_name for p in dup_resp.parts if isinstance(p, ToolCallPart)] == ["other"]

@@ -24,9 +24,9 @@ from gsuid_core.ai_core.configs.task_kinds import capability_agent_task_kind
 from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 
 
-class OrchestratorPhase(RunOnceHost):
+class OrchestratorPhase:
     async def _execute_run_once(
-        self,
+        self: RunOnceHost,
         user_message: Union[str, Sequence[UserContent]],
         bot: Optional[Bot] = None,
         ev: Optional[Event] = None,
